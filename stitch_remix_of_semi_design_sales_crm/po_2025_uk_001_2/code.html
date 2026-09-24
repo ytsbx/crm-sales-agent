@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={darkMode:"class",theme:{extend:{colors:{"on-secondary-fixed-variant":"#5e08bd","surface-container-high":"#e5e8f3","inverse-surface":"#2c3039","background":"#f9f9ff","on-primary-fixed-variant":"#003fa4","on-surface":"#181c23","primary":"#004ec6","tertiary":"#9e3300","on-primary-container":"#f3f3ff","primary-container":"#0064fa","outline-variant":"#c2c6d8","on-tertiary-fixed":"#380d00","secondary-fixed-dim":"#d5baff","secondary-fixed":"#ecdcff","tertiary-fixed":"#ffdbcf","tertiary-fixed-dim":"#ffb59b","secondary-container":"#8e4fee","on-surface-variant":"#424655","primary-fixed-dim":"#b3c5ff","surface-container":"#ebedf9","secondary":"#7431d3","error-container":"#ffdad6","on-tertiary-fixed-variant":"#822800","on-tertiary":"#ffffff","on-tertiary-container":"#fff2ee","error":"#ba1a1a","on-error-container":"#93000a","surface-dim":"#d7dae5","on-primary-fixed":"#001849","surface-container-lowest":"#ffffff","on-primary":"#ffffff","surface-container-highest":"#dfe2ed","inverse-on-surface":"#eef0fc","surface-tint":"#0054d6","primary-fixed":"#dae1ff","inverse-primary":"#b3c5ff","surface-container-low":"#f1f3ff","on-secondary-container":"#fffbff","on-background":"#181c23","tertiary-container":"#c74200","on-error":"#ffffff","on-secondary":"#ffffff","outline":"#727687","surface-bright":"#f9f9ff","surface-variant":"#dfe2ed","surface":"#f9f9ff","on-secondary-fixed":"#270057"},borderRadius:{DEFAULT:"0.125rem",lg:"0.25rem",xl:"0.5rem",full:"0.75rem"},spacing:{"gutter-compact":"12px","margin-header":"16px",gutter:"16px",margin:"24px","space-sm":"8px","space-xs":"4px","space-xl":"32px","space-lg":"24px","space-md":"16px"},fontFamily:{"headline-md":["Inter"],"headline-lg":["Inter"],"headline-xl":["Inter"],"body-compact":["Inter"],title:["Inter"],"label-default":["Inter"],caption:["Inter"],"body-default":["Inter"],"label-medium":["Inter"],"headline-sm":["Inter"]},fontSize:{"headline-md":["20px",{lineHeight:"28px",fontWeight:"600"}],"headline-lg":["24px",{lineHeight:"32px",fontWeight:"600"}],"headline-xl":["32px",{lineHeight:"40px",fontWeight:"600"}],"body-compact":["13px",{lineHeight:"20px",fontWeight:"400"}],title:["14px",{lineHeight:"22px",fontWeight:"600"}],"label-default":["12px",{lineHeight:"18px",fontWeight:"400"}],caption:["11px",{lineHeight:"16px",fontWeight:"400"}],"body-default":["14px",{lineHeight:"22px",fontWeight:"400"}],"label-medium":["12px",{lineHeight:"18px",fontWeight:"500"}],"headline-sm":["16px",{lineHeight:"24px",fontWeight:"600"}]}}}};</script></head><body class="bg-background font-body-default text-body-default text-on-surface antialiased"><aside class="fixed left-0 top-0 h-full w-[220px] bg-surface-container-lowest z-50 flex flex-col shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-14 px-margin flex items-center gap-space-sm"><div class="w-7 h-7 rounded-lg bg-primary-container flex items-center justify-center text-on-primary font-headline-sm text-headline-sm">S</div><div class="flex flex-col"><span class="font-title text-title text-on-surface leading-tight">Enterprise CRM</span><span class="font-caption text-caption text-on-surface-variant">Sales Cloud Pro</span></div></div><div class="px-gutter-compact py-space-xs"><div class="text-caption font-caption text-outline px-space-sm py-space-xs">销售协同中心</div></div><nav class="flex-1 px-gutter-compact flex flex-col gap-space-xs overflow-y-auto" data-active-classes="bg-primary-container text-on-primary font-label-medium rounded-lg"><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="workbench-overview" href="#"><span class="material-symbols-outlined text-[18px]">dashboard</span>工作台看板</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="leads-management" href="#"><span class="material-symbols-outlined text-[18px]">filter_alt</span>线索管理</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="customer-detail" href="#"><span class="material-symbols-outlined text-[18px]">domain</span>客户中心</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="opportunity-pipeline" href="#"><span class="material-symbols-outlined text-[18px]">monetization_on</span>商机漏斗</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="quotes-and-orders" href="#"><span class="material-symbols-outlined text-[18px]">receipt_long</span>报价与订单</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="contacts-directory" href="#"><span class="material-symbols-outlined text-[18px]">contacts</span>联系人通讯录</a><div class="my-space-xs h-[1px] bg-surface-container-high"></div><div class="text-caption font-caption text-outline px-space-sm py-space-xs">效能分析</div><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="sales-analytics" href="#"><span class="material-symbols-outlined text-[18px]">analytics</span>绩效统计</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="system-settings" href="#"><span class="material-symbols-outlined text-[18px]">settings</span>系统配置</a></nav><div class="p-gutter-compact mt-auto"><div class="flex items-center justify-between p-space-sm rounded-lg bg-surface-container-low"><div class="flex items-center gap-space-sm"><span class="material-symbols-outlined text-primary text-[20px]">verified</span><div><div class="font-label-medium text-label-medium text-on-surface">企业标准版</div><div class="font-caption text-caption text-outline">v4.8.2 Active</div></div></div></div></div></aside><div class="pl-[220px]"><header class="fixed top-0 left-[220px] right-0 h-14 bg-surface-container-lowest shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-40 flex items-center justify-between px-margin"><div class="flex items-center gap-space-md w-full max-w-xl"><div class="relative w-full flex items-center"><span class="material-symbols-outlined absolute left-space-sm text-outline pointer-events-none text-[18px]">search</span><input class="w-full h-8 pl-8 pr-gutter bg-surface-container-low text-on-surface placeholder:text-outline rounded-lg text-body-compact font-body-compact focus:outline-none focus:bg-surface-container-lowest transition-all" placeholder="搜索客户、商机、报价、订单、联系人..." type="text"/></div></div><div class="flex items-center gap-space-sm"><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors relative" title="全局通知" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span><span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-error rounded-full"></span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors relative" title="站内消息" type="button"><span class="material-symbols-outlined text-[20px]">chat</span><span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-tertiary-container rounded-full"></span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" title="帮助与文档" type="button"><span class="material-symbols-outlined text-[20px]">help_outline</span></button><div class="h-4 w-[1px] bg-surface-container-high mx-space-xs"></div><div class="flex items-center gap-space-sm pl-space-xs cursor-pointer select-none"><div class="text-right"><div class="font-label-medium text-label-medium text-on-surface leading-tight">张三</div><div class="font-caption text-caption text-on-surface-variant">销售部 · 高级业务经理</div></div><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></header><main class="relative pt-14 bg-background min-h-screen"><div class="flex flex-col w-full">
+<!-- 页面顶部通栏导航与状态条 (Semi Design 架构) -->
+<div class="px-margin pt-space-md pb-space-sm flex flex-col gap-space-xs bg-surface-container-lowest border-b border-surface-container-high">
+<!-- 面包屑与实时同步指标 -->
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-xs font-caption text-caption text-on-surface-variant">
+<span class="hover:text-primary cursor-pointer transition-colors">工作台</span>
+<span>/</span>
+<span class="hover:text-primary cursor-pointer transition-colors">订单中心</span>
+<span>/</span>
+<span class="hover:text-primary cursor-pointer transition-colors">全部订单</span>
+<span>/</span>
+<span class="text-on-surface font-label-medium">PO-2025-UK-001 (英国卫浴 Victoria Plum 首笔框架订单出运与应收履约)</span>
+</div>
+<div class="flex items-center gap-space-sm bg-surface-container-low px-space-sm py-1 rounded">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+<span class="font-caption text-caption text-on-surface-variant font-medium">履约数据流实时同步</span>
+<span class="font-caption text-caption text-outline">(OMS / WMS / 中信保 Link Active)</span>
+</div>
+<div class="h-3 w-[1px] bg-surface-container-high"></div>
+<button class="flex items-center gap-1 font-caption text-caption text-primary hover:text-primary-container transition-colors" type="button">
+<span class="material-symbols-outlined text-[14px]">sync</span>
+          刷新状态
+        </button>
+</div>
+</div>
+<!-- 订单核心信息主标题与操作动作 -->
+<div class="flex items-start justify-between mt-space-xs">
+<div class="flex flex-col gap-space-xs">
+<div class="flex items-center gap-space-sm">
+<h1 class="font-headline-lg text-headline-lg text-on-surface tracking-tight">PO-2025-UK-001</h1>
+<span class="px-2 py-0.5 rounded bg-blue-50 text-primary text-label-medium font-label-medium flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-primary"></span>
+            生产履约中 · 排产齐套率 95%
+          </span>
+<span class="px-2 py-0.5 rounded bg-purple-50 text-secondary text-label-medium font-label-medium">
+            远期信用证 L/C 60天 (不可撤销)
+          </span>
+</div>
+<div class="flex items-center gap-space-md text-label-default font-label-default text-on-surface-variant">
+<div class="flex items-center gap-1">
+<span class="text-outline">买方客户:</span>
+<span class="font-label-medium text-on-surface hover:text-primary cursor-pointer">Victoria Plum Ltd</span>
+<span class="px-1.5 py-0.2 bg-amber-50 text-amber-700 text-[10px] rounded font-medium">英国线上TOP 3卫浴连锁 · AAA级</span>
+</div>
+<div class="h-3 w-[1px] bg-surface-container-high"></div>
+<div class="flex items-center gap-1">
+<span class="text-outline">关联合同:</span>
+<span class="font-label-medium text-primary hover:underline cursor-pointer flex items-center gap-0.5">
+              AGR-2024-UK-0882
+              <span class="material-symbols-outlined text-[14px]">verified</span>
+</span>
+<span class="text-caption text-outline">(已生效 · 电子公章存证)</span>
+</div>
+</div>
+</div>
+<!-- 快捷操作按钮组 -->
+<div class="flex items-center gap-space-sm">
+<button class="h-8 px-3 rounded bg-surface-container-low text-on-surface hover:bg-surface-container-high transition-colors font-label-medium text-label-medium flex items-center gap-1.5" type="button">
+<span class="material-symbols-outlined text-[16px] text-outline">description</span>
+          导出装箱发票 (CI/PL)
+        </button>
+<button class="h-8 px-3 rounded bg-surface-container-low text-on-surface hover:bg-surface-container-high transition-colors font-label-medium text-label-medium flex items-center gap-1.5" type="button">
+<span class="material-symbols-outlined text-[16px] text-outline">edit_calendar</span>
+          更新履约节点
+        </button>
+<button class="h-8 px-3 rounded bg-purple-50 text-secondary hover:bg-purple-100 transition-colors font-label-medium text-label-medium flex items-center gap-1.5" type="button">
+<span class="material-symbols-outlined text-[16px]">verified_user</span>
+          L/C单据预审校验
+        </button>
+<button class="h-8 px-3.5 rounded bg-primary-container text-on-primary hover:bg-primary transition-colors font-label-medium text-label-medium flex items-center gap-1.5" type="button">
+<span class="material-symbols-outlined text-[16px]">local_shipping</span>
+          发起出运报关申请
+        </button>
+<button class="h-8 w-8 rounded bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high flex items-center justify-center transition-colors" title="更多操作" type="button">
+<span class="material-symbols-outlined text-[18px]">more_vert</span>
+</button>
+</div>
+</div>
+</div>
+<!-- 内容主画卷 -->
+<div class="p-margin flex flex-col gap-space-lg">
+<!-- 关键业务指标看板 (Metrics Cards - 4列平铺) -->
+<div class="grid grid-cols-4 gap-gutter">
+<!-- 指标卡 1 -->
+<div class="p-4 rounded-lg bg-surface-container-lowest border border-surface-container-high flex flex-col justify-between">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-default text-label-default text-on-surface-variant">订单合同总额 (FOB)</span>
+<span class="material-symbols-outlined text-[20px] text-primary">payments</span>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="font-headline-xl text-headline-xl text-on-surface font-semibold tracking-tight">$80,000.00</span>
+<span class="font-caption text-caption text-outline">USD</span>
+</div>
+<div class="mt-2 pt-2 border-t border-surface-container-high flex items-center justify-between text-caption font-caption text-on-surface-variant">
+<span>折合 ¥571,200.00 (汇率 7.1400)</span>
+<span class="text-primary font-medium">洋山保税港交货</span>
+</div>
+</div>
+<!-- 指标卡 2 -->
+<div class="p-4 rounded-lg bg-surface-container-lowest border border-surface-container-high flex flex-col justify-between">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-default text-label-default text-on-surface-variant">信用证承兑金额 (L/C 60天)</span>
+<span class="material-symbols-outlined text-[20px] text-purple-600">account_balance</span>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="font-headline-xl text-headline-xl text-on-surface font-semibold tracking-tight">$80,000.00</span>
+<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-caption font-label-medium">已开证预审</span>
+</div>
+<div class="mt-2 pt-2 border-t border-surface-container-high flex items-center justify-between text-caption font-caption text-on-surface-variant">
+<span class="truncate">开证行：渣打英国分行</span>
+<span class="text-emerald-600 font-medium">中信保 100% 赔付背书</span>
+</div>
+</div>
+<!-- 指标卡 3 -->
+<div class="p-4 rounded-lg bg-surface-container-lowest border border-surface-container-high flex flex-col justify-between">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-default text-label-default text-on-surface-variant">履约健康度 &amp; 排产进度</span>
+<span class="material-symbols-outlined text-[20px] text-emerald-600">verified</span>
+</div>
+<div class="flex items-baseline justify-between">
+<div class="flex items-baseline gap-1">
+<span class="font-headline-xl text-headline-xl text-emerald-600 font-semibold tracking-tight">99%</span>
+<span class="font-caption text-caption text-outline">准时交付预估</span>
+</div>
+<span class="font-caption text-caption text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded font-medium">提前计划 2.0天</span>
+</div>
+<div class="mt-2 pt-2 border-t border-surface-container-high flex items-center justify-between text-caption font-caption text-on-surface-variant">
+<span>生产完工 92%</span>
+<span>质检完成度 85%</span>
+</div>
+</div>
+<!-- 指标卡 4 -->
+<div class="p-4 rounded-lg bg-surface-container-lowest border border-surface-container-high flex flex-col justify-between">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-default text-label-default text-on-surface-variant">订舱配载与集港状态</span>
+<span class="material-symbols-outlined text-[20px] text-blue-600">directions_boat</span>
+</div>
+<div class="flex items-baseline gap-2">
+<span class="font-headline-xl text-headline-xl text-on-surface font-semibold tracking-tight">3×40'HQ</span>
+<span class="font-caption text-caption text-outline">(实装 2.4柜)</span>
+</div>
+<div class="mt-2 pt-2 border-t border-surface-container-high flex items-center justify-between text-caption font-caption text-on-surface-variant">
+<span class="truncate">嘉里大通 KL-LHR-98213</span>
+<span class="text-blue-600 font-medium">ETD 03-15</span>
+</div>
+</div>
+</div>
+<!-- 端到端履约时序进度轴 (End-to-End Fulfillment Stepper) -->
+<div class="p-4 rounded-lg bg-surface-container-lowest border border-surface-container-high">
+<div class="flex items-center justify-between mb-4">
+<div class="flex items-center gap-2">
+<span class="w-1 h-3.5 bg-primary rounded-full"></span>
+<h2 class="font-title text-title text-on-surface">全链路跨境履约节点时序进度</h2>
+<span class="font-caption text-caption text-outline">当前运行节点：#3 生产组装质检中</span>
+</div>
+<span class="font-caption text-caption text-on-surface-variant flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px] text-primary">schedule</span>
+          计划整体准时率基准：2025-03-15 启运 / 2025-04-20 目的港签收
+        </span>
+</div>
+<!-- 7 步节点横向布局 -->
+<div class="grid grid-cols-7 gap-2 relative">
+<!-- 连线背景 -->
+<div class="absolute top-4 left-[5%] right-[5%] h-0.5 bg-surface-container-high -z-0"></div>
+<!-- 节点 1：已完成 -->
+<div class="flex flex-col items-center text-center relative z-10">
+<div class="w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center font-label-medium shadow-sm mb-2">
+<span class="material-symbols-outlined text-[18px]">check</span>
+</div>
+<span class="font-label-medium text-label-medium text-on-surface">1. 订单下发与生效</span>
+<span class="font-caption text-caption text-emerald-600 mt-0.5">已生效 · 09-25</span>
+<span class="font-caption text-caption text-outline mt-1 scale-95 hover:text-primary cursor-pointer">电子章存证已归档</span>
+</div>
+<!-- 节点 2：已完成 -->
+<div class="flex flex-col items-center text-center relative z-10">
+<div class="w-8 h-8 rounded-full bg-emerald-600 text-white flex items-center justify-center font-label-medium shadow-sm mb-2">
+<span class="material-symbols-outlined text-[18px]">check</span>
+</div>
+<span class="font-label-medium text-label-medium text-on-surface">2. L/C信用证开立</span>
+<span class="font-caption text-caption text-emerald-600 mt-0.5">已开证 · 09-28</span>
+<span class="font-caption text-caption text-outline mt-1 scale-95">渣打银行 60天无误</span>
+</div>
+<!-- 节点 3：进行中 (当前高亮) -->
+<div class="flex flex-col items-center text-center relative z-10">
+<div class="w-8 h-8 rounded-full bg-primary-container text-white flex items-center justify-center font-label-medium ring-4 ring-blue-100 shadow-sm mb-2">
+<span class="font-label-medium">3</span>
+</div>
+<span class="font-label-medium text-label-medium text-primary font-semibold">3. 生产与组装</span>
+<span class="font-caption text-caption text-primary mt-0.5 font-medium">进行中 (92%)</span>
+<span class="font-caption text-caption text-on-surface-variant mt-1 scale-95">海盐数字车间 03-02完工</span>
+</div>
+<!-- 节点 4：待开始/已预约 -->
+<div class="flex flex-col items-center text-center relative z-10">
+<div class="w-8 h-8 rounded-full bg-surface-container-low border border-surface-container-high text-on-surface-variant flex items-center justify-center font-label-medium mb-2">
+<span class="font-label-medium">4</span>
+</div>
+<span class="font-label-medium text-label-medium text-on-surface">4. WRAS/CE验货</span>
+<span class="font-caption text-caption text-outline mt-0.5">已预约 · 03-05</span>
+<span class="font-caption text-caption text-outline mt-1 scale-95">SGS AQL 1.0抽检</span>
+</div>
+<!-- 节点 5：待开始 -->
+<div class="flex flex-col items-center text-center relative z-10">
+<div class="w-8 h-8 rounded-full bg-surface-container-low border border-surface-container-high text-outline flex items-center justify-center font-label-medium mb-2">
+<span class="font-label-medium">5</span>
+</div>
+<span class="font-label-medium text-label-medium text-on-surface-variant">5. 集港装箱</span>
+<span class="font-caption text-caption text-outline mt-0.5">预计 03-08</span>
+<span class="font-caption text-caption text-outline mt-1 scale-95">洋山保税库待进港</span>
+</div>
+<!-- 节点 6：待开始 -->
+<div class="flex flex-col items-center text-center relative z-10">
+<div class="w-8 h-8 rounded-full bg-surface-container-low border border-surface-container-high text-outline flex items-center justify-center font-label-medium mb-2">
+<span class="font-label-medium">6</span>
+</div>
+<span class="font-label-medium text-label-medium text-on-surface-variant">6. 海运启运</span>
+<span class="font-caption text-caption text-outline mt-0.5">预计 03-15 ETD</span>
+<span class="font-caption text-caption text-outline mt-1 scale-95">洋山 → 费利克斯托</span>
+</div>
+<!-- 节点 7：待开始 -->
+<div class="flex flex-col items-center text-center relative z-10">
+<div class="w-8 h-8 rounded-full bg-surface-container-low border border-surface-container-high text-outline flex items-center justify-center font-label-medium mb-2">
+<span class="font-label-medium">7</span>
+</div>
+<span class="font-label-medium text-label-medium text-on-surface-variant">7. 目的港签收与承兑</span>
+<span class="font-caption text-caption text-outline mt-0.5">预计 04-20 到港</span>
+<span class="font-caption text-caption text-outline mt-1 scale-95">提单后60天银行结汇</span>
+</div>
+</div>
+</div>
+<!-- 主体左右分栏布局 (65% vs 35%) -->
+<div class="grid grid-cols-12 gap-gutter items-start">
+<!-- 左侧宽栏 (65% / 8列) -->
+<div class="col-span-8 flex flex-col gap-space-lg">
+<!-- 模块A：框架履约商品清单与完工明细 -->
+<div class="rounded-lg bg-surface-container-lowest border border-surface-container-high overflow-hidden">
+<div class="px-4 py-3 border-b border-surface-container-high flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="w-1 h-3.5 bg-primary rounded-full"></span>
+<h3 class="font-title text-title text-on-surface">采购清单完工与包装下线明细</h3>
+<span class="px-2 py-0.5 rounded bg-blue-50 text-primary text-caption font-medium">4款英国排他SKU · 共650件</span>
+</div>
+<div class="flex items-center gap-2">
+<button class="h-7 px-2.5 rounded bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high font-label-medium text-caption flex items-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[14px]">qr_code_scanner</span>
+                批次质量追溯
+              </button>
+<button class="h-7 px-2.5 rounded bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high font-label-medium text-caption flex items-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[14px]">download</span>
+                下载生产领料清单
+              </button>
+</div>
+</div>
+<!-- 高密度商品清单表格 -->
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low border-b border-surface-container-high font-label-medium text-caption text-on-surface-variant">
+<th class="py-2.5 px-4 font-medium">产品型号 / 品名规格</th>
+<th class="py-2.5 px-3 font-medium text-right">协议单价</th>
+<th class="py-2.5 px-3 font-medium text-right">订购数</th>
+<th class="py-2.5 px-3 font-medium text-right">已完工 / 进度</th>
+<th class="py-2.5 px-3 font-medium text-right">小计金额</th>
+<th class="py-2.5 px-3 font-medium">外箱规格与托盘</th>
+<th class="py-2.5 px-4 font-medium text-center">当前生产态</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-container-high font-body-compact text-body-compact text-on-surface">
+<!-- SKU 1 -->
+<tr class="hover:bg-surface-container-low/50 transition-colors">
+<td class="py-3 px-4">
+<div class="flex flex-col">
+<div class="flex items-center gap-1.5">
+<span class="font-label-medium text-on-surface">CSW-UK-2025-V01</span>
+<span class="px-1 py-0.2 bg-purple-50 text-secondary text-[10px] rounded font-medium">英国独家</span>
+</div>
+<span class="text-caption text-on-surface-variant truncate max-w-[220px]" title="V-Plum Nordic 1200 悬浮橡木浴室柜 (含智能镜柜+一体岩板盆)">V-Plum Nordic 1200 悬浮橡木浴室柜</span>
+<span class="text-[11px] text-outline">三色智能除雾镜柜 / IP44标准防潮</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-medium">$185.00</td>
+<td class="py-3 px-3 text-right font-medium">200 套</td>
+<td class="py-3 px-3 text-right">
+<div class="flex flex-col items-end">
+<span class="font-label-medium text-emerald-600">190 套</span>
+<div class="w-16 h-1.5 bg-surface-container-high rounded-full overflow-hidden mt-1">
+<div class="bg-emerald-500 h-full rounded-full" style="width: 95%;"></div>
+</div>
+<span class="text-[10px] text-outline mt-0.5">95.0%</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-semibold">$37,000.00</td>
+<td class="py-3 px-3">
+<div class="flex flex-col text-caption text-on-surface-variant">
+<span>1300×850×650mm</span>
+<span class="text-outline">高强度蜂窝箱木托盘</span>
+</div>
+</td>
+<td class="py-3 px-4 text-center">
+<span class="px-2 py-0.5 rounded bg-blue-50 text-primary text-caption font-medium">待总装打标</span>
+</td>
+</tr>
+<!-- SKU 2 -->
+<tr class="hover:bg-surface-container-low/50 transition-colors">
+<td class="py-3 px-4">
+<div class="flex flex-col">
+<div class="flex items-center gap-1.5">
+<span class="font-label-medium text-on-surface">CSW-UK-2025-S94</span>
+<span class="px-1 py-0.2 bg-purple-50 text-secondary text-[10px] rounded font-medium">英国独家</span>
+</div>
+<span class="text-caption text-on-surface-variant truncate max-w-[220px]" title="Royal Matte Black 恒温集成淋浴柜">Royal Matte Black 恒温集成淋浴柜</span>
+<span class="text-[11px] text-outline">黄铜主体 / PVD 顶级哑黑防指纹</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-medium">$140.00</td>
+<td class="py-3 px-3 text-right font-medium">150 套</td>
+<td class="py-3 px-3 text-right">
+<div class="flex flex-col items-end">
+<span class="font-label-medium text-emerald-600">140 套</span>
+<div class="w-16 h-1.5 bg-surface-container-high rounded-full overflow-hidden mt-1">
+<div class="bg-emerald-500 h-full rounded-full" style="width: 93.3%;"></div>
+</div>
+<span class="text-[10px] text-outline mt-0.5">93.3%</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-semibold">$21,000.00</td>
+<td class="py-3 px-3">
+<div class="flex flex-col text-caption text-on-surface-variant">
+<span>1100×320×180mm</span>
+<span class="text-outline">加厚定制全彩外箱</span>
+</div>
+</td>
+<td class="py-3 px-4 text-center">
+<span class="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-caption font-medium">已入待检仓</span>
+</td>
+</tr>
+<!-- SKU 3 -->
+<tr class="hover:bg-surface-container-low/50 transition-colors">
+<td class="py-3 px-4">
+<div class="flex flex-col">
+<div class="flex items-center gap-1.5">
+<span class="font-label-medium text-on-surface">CSW-UK-2025-T11</span>
+<span class="px-1 py-0.2 bg-purple-50 text-secondary text-[10px] rounded font-medium">英国独家</span>
+</div>
+<span class="text-caption text-on-surface-variant truncate max-w-[220px]" title="Zenith Rimless 抗菌挂墙式智能马桶">Zenith Rimless 挂墙智能马桶</span>
+<span class="text-[11px] text-outline">独立双水路 / 脚感感应 / 银离子釉</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-medium">$110.00</td>
+<td class="py-3 px-3 text-right font-medium">100 台</td>
+<td class="py-3 px-3 text-right">
+<div class="flex flex-col items-end">
+<span class="font-label-medium text-emerald-600">90 台</span>
+<div class="w-16 h-1.5 bg-surface-container-high rounded-full overflow-hidden mt-1">
+<div class="bg-emerald-500 h-full rounded-full" style="width: 90%;"></div>
+</div>
+<span class="text-[10px] text-outline mt-0.5">90.0%</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-semibold">$11,000.00</td>
+<td class="py-3 px-3">
+<div class="flex flex-col text-caption text-on-surface-variant">
+<span>720×450×520mm</span>
+<span class="text-outline">防震珍珠棉木架固装</span>
+</div>
+</td>
+<td class="py-3 px-4 text-center">
+<span class="px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-caption font-medium">成品打包中</span>
+</td>
+</tr>
+<!-- SKU 4 -->
+<tr class="hover:bg-surface-container-low/50 transition-colors">
+<td class="py-3 px-4">
+<div class="flex flex-col">
+<div class="flex items-center gap-1.5">
+<span class="font-label-medium text-on-surface">CSW-UK-2025-E09</span>
+<span class="px-1 py-0.2 bg-purple-50 text-secondary text-[10px] rounded font-medium">英国独家</span>
+</div>
+<span class="text-caption text-on-surface-variant truncate max-w-[220px]" title="Horizon 8mm 纳米防爆白玻璃淋浴房">Horizon 8mm 防爆玻璃淋浴房</span>
+<span class="text-[11px] text-outline">极限无框结构 / 符合BS EN 12150</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-medium">$55.00</td>
+<td class="py-3 px-3 text-right font-medium">200 套</td>
+<td class="py-3 px-3 text-right">
+<div class="flex flex-col items-end">
+<span class="font-label-medium text-emerald-600">175 套</span>
+<div class="w-16 h-1.5 bg-surface-container-high rounded-full overflow-hidden mt-1">
+<div class="bg-emerald-500 h-full rounded-full" style="width: 87.5%;"></div>
+</div>
+<span class="text-[10px] text-outline mt-0.5">87.5%</span>
+</div>
+</td>
+<td class="py-3 px-3 text-right font-semibold">$11,000.00</td>
+<td class="py-3 px-3">
+<div class="flex flex-col text-caption text-on-surface-variant">
+<span>1950×900×80mm</span>
+<span class="text-outline">加厚蜂窝纸箱套角</span>
+</div>
+</td>
+<td class="py-3 px-4 text-center">
+<span class="px-2 py-0.5 rounded bg-blue-50 text-primary text-caption font-medium">待封箱喷码</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- 合计行与指标汇总 -->
+<div class="p-3 bg-surface-container-low border-t border-surface-container-high flex items-center justify-between font-label-medium text-caption">
+<div class="flex items-center gap-space-md text-on-surface-variant">
+<span>有效规格：<strong class="text-on-surface font-semibold">4 类</strong></span>
+<span>本次采购总量：<strong class="text-on-surface font-semibold">650 套/件</strong></span>
+<span>当前完工总量：<strong class="text-emerald-600 font-semibold">595 PCS (91.5%)</strong></span>
+<span>货柜装载率：<strong class="text-primary font-semibold">94.2% (2.4个40HQ)</strong></span>
+</div>
+<div class="flex items-center gap-2">
+<span class="text-on-surface-variant">订单总值:</span>
+<span class="font-headline-sm text-headline-sm text-primary font-semibold">$80,000.00 USD</span>
+</div>
+</div>
+</div>
+<!-- 模块B：出运装运与国际物流档案 -->
+<div class="rounded-lg bg-surface-container-lowest border border-surface-container-high p-4 flex flex-col gap-space-sm">
+<div class="flex items-center justify-between border-b border-surface-container-high pb-3">
+<div class="flex items-center gap-2">
+<span class="w-1 h-3.5 bg-primary rounded-full"></span>
+<h3 class="font-title text-title text-on-surface">国际出运、报关与订舱档案</h3>
+<span class="px-1.5 py-0.5 rounded bg-surface-container-high text-on-surface-variant text-caption font-medium">指定船司预配完毕</span>
+</div>
+<span class="font-caption text-caption text-outline">离港前截单时间：2025-03-10 17:00</span>
+</div>
+<div class="grid grid-cols-3 gap-space-md pt-1">
+<div class="flex flex-col gap-1">
+<span class="font-caption text-caption text-outline">承运船司 / 指定货代</span>
+<span class="font-label-medium text-label-medium text-on-surface font-medium">Kerry Logistics (UK) Ltd 嘉里大通</span>
+<span class="text-caption text-on-surface-variant">订舱代号：KL-LHR-98213 (免滞箱期 21天)</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-caption text-caption text-outline">贸易条款 &amp; 发运路径</span>
+<span class="font-label-medium text-label-medium text-on-surface font-medium">FOB Shanghai → CIF Felixstowe</span>
+<span class="text-caption text-on-surface-variant">洋山保税港直装 → 英国费利克斯托</span>
+</div>
+<div class="flex flex-col gap-1">
+<span class="font-caption text-caption text-outline">集装箱预配 (3×40'HQ 通用高柜)</span>
+<span class="font-label-medium text-label-medium text-primary font-mono font-medium">KGIU882910-1 / 2 / 3</span>
+<span class="text-caption text-emerald-600">箱封号已向海关预录入报备</span>
+</div>
+</div>
+<div class="mt-2 p-3 bg-surface-container-low rounded flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px] text-blue-600">verified</span>
+<span class="font-caption text-caption text-on-surface">
+<strong>专属合规要求：</strong>外箱全彩高密 EAN-13 条码喷印，内置干燥剂包，防震护边纸与环保热缩膜，符合英国包装法 (UK Packaging Waste Regs)。
+              </span>
+</div>
+<button class="font-caption text-caption text-primary hover:underline whitespace-nowrap ml-4" type="button">查看出货唛头规范</button>
+</div>
+</div>
+<!-- 模块C：履约协同备忘与关键动态记录 (Timeline) -->
+<div class="rounded-lg bg-surface-container-lowest border border-surface-container-high p-4 flex flex-col gap-space-sm">
+<div class="flex items-center justify-between border-b border-surface-container-high pb-3">
+<div class="flex items-center gap-2">
+<span class="w-1 h-3.5 bg-primary rounded-full"></span>
+<h3 class="font-title text-title text-on-surface">履约协同备忘与关键动态</h3>
+</div>
+<button class="font-caption text-caption text-primary hover:text-primary-container flex items-center gap-1" type="button">
+<span class="material-symbols-outlined text-[14px]">add</span>
+              新增备忘便签
+            </button>
+</div>
+<div class="flex flex-col gap-3 pt-2">
+<!-- 动态1 -->
+<div class="flex items-start gap-3">
+<div class="w-7 h-7 rounded-full bg-blue-50 text-primary flex items-center justify-center font-caption font-semibold mt-0.5">李</div>
+<div class="flex-1 flex flex-col bg-surface-container-low p-2.5 rounded">
+<div class="flex items-center justify-between">
+<span class="font-label-medium text-label-medium text-on-surface">生产车间 · 李工 (海盐制造部)</span>
+<span class="font-caption text-caption text-outline">今日 10:15</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant mt-1">
+                  前 3 批浴室柜与智能马桶已通过底釉耐压初检，当前日均产能 65 套，预计 03-02 下线入库完毕，具备 SGS 验货条件。
+                </p>
+</div>
+</div>
+<!-- 动态2 -->
+<div class="flex items-start gap-3">
+<div class="w-7 h-7 rounded-full bg-purple-50 text-secondary flex items-center justify-center font-caption font-semibold mt-0.5">张</div>
+<div class="flex-1 flex flex-col bg-surface-container-low p-2.5 rounded">
+<div class="flex items-center justify-between">
+<span class="font-label-medium text-label-medium text-on-surface">单证合规 · 张三 (国际单证组)</span>
+<span class="font-caption text-caption text-outline">昨日 16:30</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant mt-1">
+                  渣打银行开立的 L/C 60天正本草案已完成预审，提单要求与品质验资单条款核对 100% 吻合，已提交交单系统锁定。
+                </p>
+</div>
+</div>
+<!-- 动态3 -->
+<div class="flex items-start gap-3">
+<div class="w-7 h-7 rounded-full bg-amber-50 text-amber-700 flex items-center justify-center font-caption font-semibold mt-0.5">孙</div>
+<div class="flex-1 flex flex-col bg-surface-container-low p-2.5 rounded">
+<div class="flex items-center justify-between">
+<span class="font-label-medium text-label-medium text-on-surface">商务主管 · 孙主管 (KA管理部)</span>
+<span class="font-caption text-caption text-outline">2024-09-25 14:30</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant mt-1">
+                  首笔 PO-2025-UK-001 正式下发，框架合同扣减可用额度 $80,000 USD，系统自动锁定 Q1 阶梯返利达标基准。
+                </p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- 右侧侧栏 (35% / 4列) -->
+<div class="col-span-4 flex flex-col gap-space-lg">
+<!-- 侧栏卡片1：远期应收款项与结算全景 (核心金融风控) -->
+<div class="rounded-lg bg-surface-container-lowest border border-surface-container-high p-4 flex flex-col gap-space-sm">
+<div class="flex items-center justify-between border-b border-surface-container-high pb-3">
+<div class="flex items-center gap-2">
+<span class="w-1 h-3.5 bg-purple-600 rounded-full"></span>
+<h3 class="font-title text-title text-on-surface">远期应收与资金回款全景</h3>
+</div>
+<span class="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-caption font-medium">中信保承保</span>
+</div>
+<!-- 结算总览 -->
+<div class="flex flex-col gap-1 bg-surface-container-low p-3 rounded">
+<span class="font-caption text-caption text-outline">已锁定承兑比例 100%</span>
+<div class="flex items-baseline justify-between">
+<span class="font-headline-md text-headline-md text-on-surface font-semibold">$80,000.00 USD</span>
+<span class="font-caption text-caption text-emerald-600 font-medium">见提单60天承兑</span>
+</div>
+<div class="w-full bg-surface-container-high h-1.5 rounded-full overflow-hidden mt-1">
+<div class="bg-purple-600 h-full rounded-full" style="width: 100%;"></div>
+</div>
+</div>
+<!-- 分期付款与开证节点明细 -->
+<div class="flex flex-col gap-2 pt-1 font-caption text-caption">
+<div class="flex items-center justify-between p-2 rounded bg-surface-container-low/60">
+<div class="flex flex-col">
+<span class="font-label-medium text-on-surface">1. 首期 L/C 开立确认</span>
+<span class="text-outline">远期提单日见票 60 天承兑</span>
+</div>
+<div class="text-right">
+<div class="font-label-medium text-on-surface">$80,000.00</div>
+<span class="text-emerald-600 font-medium">已验真备付</span>
+</div>
+</div>
+<div class="p-2.5 rounded border border-surface-container-high flex flex-col gap-1 bg-surface-container-lowest">
+<div class="flex items-center justify-between">
+<span class="text-outline">预估提单日 (B/L):</span>
+<span class="font-medium text-on-surface">2025-03-15</span>
+</div>
+<div class="flex items-center justify-between">
+<span class="text-outline">预计到期解付日:</span>
+<span class="font-medium text-purple-700">2025-05-14 (承兑日)</span>
+</div>
+<div class="flex items-center justify-between pt-1 border-t border-surface-container-high">
+<span class="text-outline">中信保保单编号:</span>
+<span class="font-mono text-on-surface">SINOSURE-2025-0988-UK</span>
+</div>
+<div class="flex items-center justify-between">
+<span class="text-outline">赔付比率背书:</span>
+<span class="text-emerald-600 font-semibold">90% 基础险 + 10% 商业附加</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 侧栏卡片2：框架对赌返利核销专区 (年度框架考核关联) -->
+<div class="rounded-lg bg-surface-container-lowest border border-surface-container-high p-4 flex flex-col gap-space-sm">
+<div class="flex items-center justify-between border-b border-surface-container-high pb-3">
+<div class="flex items-center gap-2">
+<span class="w-1 h-3.5 bg-amber-500 rounded-full"></span>
+<h3 class="font-title text-title text-on-surface">年度框架对赌考核返利</h3>
+</div>
+<span class="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 text-caption font-medium">Q1 门槛已激活</span>
+</div>
+<div class="flex flex-col gap-2 pt-1 font-caption text-caption">
+<div class="flex items-center justify-between">
+<span class="text-outline">本单对赌贡献额：</span>
+<span class="font-label-medium text-on-surface">$80,000.00 USD (达标 25.0%)</span>
+</div>
+<div class="w-full bg-surface-container-high h-2 rounded-full overflow-hidden">
+<div class="bg-amber-500 h-full rounded-full" style="width: 25%;"></div>
+</div>
+<div class="flex items-center justify-between text-outline text-[11px]">
+<span>基准: $80,000</span>
+<span>年度目标: $320,000</span>
+</div>
+<div class="mt-2 p-2.5 bg-amber-50/60 rounded flex flex-col gap-1 text-amber-900">
+<div class="flex items-center justify-between">
+<span class="font-medium">预提返利金额 (3.5% Tier 1):</span>
+<span class="font-semibold text-label-medium">$2,800.00 USD</span>
+</div>
+<span class="text-[11px] text-amber-700">
+                兑现规则：严格按 CEO 终审批复执行，“严禁现金返现，归入 2026 年度首季货款冲抵池”。
+              </span>
+</div>
+</div>
+</div>
+<!-- 侧栏卡片3：买家联系人与即时协同 -->
+<div class="rounded-lg bg-surface-container-lowest border border-surface-container-high p-4 flex flex-col gap-space-sm">
+<div class="flex items-center justify-between border-b border-surface-container-high pb-3">
+<div class="flex items-center gap-2">
+<span class="w-1 h-3.5 bg-primary rounded-full"></span>
+<h3 class="font-title text-title text-on-surface">买家核心联络人</h3>
+</div>
+<span class="flex items-center gap-1 font-caption text-caption text-emerald-600">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              跨国企微已连通
+            </span>
+</div>
+<div class="flex items-center gap-3 pt-1">
+<div class="w-10 h-10 rounded-full bg-surface-container-high flex items-center justify-center text-primary font-semibold font-headline-sm">
+              DH
+            </div>
+<div class="flex flex-col">
+<span class="font-label-medium text-label-medium text-on-surface">David Harrison</span>
+<span class="font-caption text-caption text-on-surface-variant">Head of Procurement &amp; Supply Chain</span>
+<span class="text-[11px] text-outline">Victoria Plum UK (总办事处 · 赫尔 Hull)</span>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-surface-container-high">
+<button class="h-8 rounded bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors font-caption text-caption flex items-center justify-center gap-1" type="button">
+<span class="material-symbols-outlined text-[14px] text-primary">chat</span>
+              发送排产快讯
+            </button>
+<button class="h-8 rounded bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors font-caption text-caption flex items-center justify-center gap-1" type="button">
+<span class="material-symbols-outlined text-[14px] text-primary">videocam</span>
+              预约验货视讯
+            </button>
+</div>
+</div>
+<!-- 侧栏卡片4：AI 履约交付副驾驶 (Fulfillment Copilot) -->
+<div class="rounded-lg bg-purple-50/50 border border-purple-100 p-4 flex flex-col gap-space-sm relative overflow-hidden">
+<div class="flex items-center justify-between pb-2 border-b border-purple-100">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-secondary text-[20px]">smart_toy</span>
+<h3 class="font-title text-title text-secondary">AI 履约交付副驾驶</h3>
+</div>
+<span class="px-1.5 py-0.2 rounded bg-purple-100 text-secondary text-[11px] font-medium">Copilot Active</span>
+</div>
+<p class="font-caption text-caption text-on-surface-variant leading-relaxed">
+            检测到海盐数字车间排产下线速度比原工期提前 <strong>2.0 天</strong>。SGS 驻厂验货计划已自动预约 2025-03-05。洋山港 3 个 40HQ 订舱已落实免滞箱期 21 天，整体准时交付无延期风险。
+          </p>
+<div class="p-2.5 bg-surface-container-lowest rounded border border-purple-100 flex flex-col gap-1.5">
+<div class="flex items-center gap-1 text-purple-700 font-label-medium text-caption">
+<span class="material-symbols-outlined text-[14px]">auto_awesome</span>
+              协同策略建议：
+            </div>
+<p class="font-caption text-caption text-on-surface-variant">
+              建议在 03-03 生成带时间戳与合格码的装箱预报短视频，并通过企微推送买家采购总监 David，提前发起商业发票确认。
+            </p>
+</div>
+<button class="w-full h-8 mt-1 rounded bg-secondary hover:bg-purple-700 text-white font-label-medium text-caption flex items-center justify-center gap-1.5 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">summarize</span>
+            一键生成英方出运进度周报 (English Briefing)
+          </button>
+</div>
+</div>
+</div>
+</div>
+</div></main></div></body></html>

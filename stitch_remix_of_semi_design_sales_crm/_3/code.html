@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={theme:{extend:{"colors":{"surface-dim":"#d7dae5","secondary-fixed-dim":"#d5baff","surface":"#f9f9ff","outline-variant":"#c2c6d8","surface-container-lowest":"#ffffff","on-surface-variant":"#424655","background":"#f9f9ff","surface-container-low":"#f1f3ff","error-container":"#ffdad6","primary-container":"#0064fa","surface-container-high":"#e5e8f3","surface-container":"#ebedf9","secondary-fixed":"#ecdcff","inverse-primary":"#b3c5ff","secondary-container":"#8e4fee","on-secondary":"#ffffff","primary-fixed-dim":"#b3c5ff","on-tertiary-fixed-variant":"#822800","surface-bright":"#f9f9ff","on-primary-fixed-variant":"#003fa4","on-primary-container":"#f3f3ff","on-error":"#ffffff","tertiary-container":"#c74200","error":"#ba1a1a","on-primary-fixed":"#001849","surface-container-highest":"#dfe2ed","on-secondary-fixed":"#270057","tertiary-fixed":"#ffdbcf","on-primary":"#ffffff","surface-tint":"#0054d6","surface-variant":"#dfe2ed","tertiary-fixed-dim":"#ffb59b","inverse-surface":"#2c3039","on-error-container":"#93000a","tertiary":"#9e3300","primary":"#004ec6","on-tertiary-fixed":"#380d00","on-tertiary":"#ffffff","on-background":"#181c23","on-secondary-fixed-variant":"#5e08bd","on-tertiary-container":"#fff2ee","inverse-on-surface":"#eef0fc","outline":"#727687","on-secondary-container":"#fffbff","on-surface":"#181c23","primary-fixed":"#dae1ff","secondary":"#7431d3"},"borderRadius":{"DEFAULT":"0.125rem","lg":"0.25rem","xl":"0.5rem","full":"0.75rem"},"spacing":{"space-sm":"8px","space-md":"16px","gutter":"16px","margin":"24px","gutter-compact":"12px","margin-header":"16px","space-xl":"32px","space-lg":"24px","space-xs":"4px"},"fontFamily":{"caption":["Inter"],"label-default":["Inter"],"headline-xl":["Inter"],"headline-md":["Inter"],"body-compact":["Inter"],"headline-sm":["Inter"],"headline-lg":["Inter"],"body-default":["Inter"],"title":["Inter"],"label-medium":["Inter"]},"fontSize":{"caption":["11px",{"lineHeight":"16px","fontWeight":"400"}],"label-default":["12px",{"lineHeight":"18px","fontWeight":"400"}],"headline-xl":["32px",{"lineHeight":"40px","fontWeight":"600"}],"headline-md":["20px",{"lineHeight":"28px","fontWeight":"600"}],"body-compact":["13px",{"lineHeight":"20px","fontWeight":"400"}],"headline-sm":["16px",{"lineHeight":"24px","fontWeight":"600"}],"headline-lg":["24px",{"lineHeight":"32px","fontWeight":"600"}],"body-default":["14px",{"lineHeight":"22px","fontWeight":"400"}],"title":["14px",{"lineHeight":"22px","fontWeight":"600"}],"label-medium":["12px",{"lineHeight":"18px","fontWeight":"500"}]}}}}</script></head><body class="bg-surface font-body-default text-body-default text-on-surface"><aside class="fixed left-0 top-0 h-full w-[220px] bg-surface-container-lowest border-r border-surface-container-high z-50 flex flex-col"><div class="h-14 px-margin-header flex items-center gap-space-sm border-b border-surface-container-high flex-shrink-0"><div class="w-7 h-7 rounded bg-primary-container flex items-center justify-center text-on-primary font-headline-sm text-headline-sm">S</div><div class="flex flex-col"><span class="font-title text-title text-on-surface tracking-tight leading-none">Sales CRM</span><span class="font-caption text-caption text-on-surface-variant leading-none mt-1">企业协同工作平台</span></div></div><div class="flex-1 overflow-y-auto py-space-sm px-space-xs"><div class="px-space-sm py-space-xs text-caption font-caption text-on-surface-variant uppercase tracking-wider">销售作业</div><nav class="flex flex-col gap-0.5 mb-space-sm" data-active-classes="bg-primary-fixed text-primary font-title"><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="workbench" href="#"><span class="material-symbols-outlined text-[18px]">dashboard</span><span>工作台</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="leads-center" href="#"><span class="material-symbols-outlined text-[18px]">filter_alt</span><span>线索中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="customer-center" href="#"><span class="material-symbols-outlined text-[18px]">domain</span><span>客户中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="opportunity-center" href="#"><span class="material-symbols-outlined text-[18px]">monetization_on</span><span>商机中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="quote-center" href="#"><span class="material-symbols-outlined text-[18px]">request_quote</span><span>报价中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="order-center" href="#"><span class="material-symbols-outlined text-[18px]">receipt_long</span><span>订单中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="payment-center" href="#"><span class="material-symbols-outlined text-[18px]">account_balance_wallet</span><span>回款中心</span></a></nav><div class="px-space-sm py-space-xs text-caption font-caption text-on-surface-variant uppercase tracking-wider">运营管理</div><nav class="flex flex-col gap-0.5 mb-space-sm" data-active-classes="bg-primary-fixed text-primary font-title"><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="product-center" href="#"><span class="material-symbols-outlined text-[18px]">inventory_2</span><span>产品中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="pricing-center" href="#"><span class="material-symbols-outlined text-[18px]">sell</span><span>价格中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="sales-targets" href="#"><span class="material-symbols-outlined text-[18px]">flag</span><span>销售任务</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="approval-center" href="#"><span class="material-symbols-outlined text-[18px]">fact_check</span><span>审批中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="knowledge-base" href="#"><span class="material-symbols-outlined text-[18px]">menu_book</span><span>知识库</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="analytics" href="#"><span class="material-symbols-outlined text-[18px]">insights</span><span>数据分析</span></a></nav><div class="px-space-sm py-space-xs text-caption font-caption text-on-surface-variant uppercase tracking-wider">智能与协同</div><nav class="flex flex-col gap-0.5" data-active-classes="bg-primary-fixed text-primary font-title"><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="ai-sales-agent" href="#"><span class="material-symbols-outlined text-[18px] text-secondary">smart_toy</span><span>AI Sales Agent</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="wecom-sync" href="#"><span class="material-symbols-outlined text-[18px]">forum</span><span>企业微信</span></a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors" data-path="system-settings" href="#"><span class="material-symbols-outlined text-[18px]">settings</span><span>系统设置</span></a></nav></div><div class="p-space-sm border-t border-surface-container-high"><div class="flex items-center justify-between text-caption font-caption text-on-surface-variant px-space-xs"><span>Semi Design 风格</span><span class="px-1.5 py-0.5 rounded bg-surface-container text-on-surface font-label-default text-label-default">v2.8</span></div></div></aside><div class="pl-[220px]"><header class="fixed top-0 left-[220px] right-0 h-14 bg-surface-container-lowest border-b border-surface-container-high z-40 px-margin flex items-center justify-between"><div class="flex items-center gap-space-md w-full max-w-md"><div class="relative w-full flex items-center"><span class="material-symbols-outlined absolute left-2.5 text-[18px] text-on-surface-variant pointer-events-none">search</span><input class="w-full h-8 pl-8 pr-3 bg-surface-container-low border border-surface-container-high rounded font-body-compact text-body-compact text-on-surface placeholder-on-surface-variant outline-none focus:border-primary-container focus:bg-surface-container-lowest transition-colors" placeholder="搜索客户、商机、报价、订单、联系人..." type="text"/></div></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><button class="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span></button><button class="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">chat</span></button><button class="w-8 h-8 rounded flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">help_outline</span></button></div><div class="h-4 w-px bg-surface-container-high"></div><div class="flex items-center gap-space-sm cursor-pointer select-none"><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div><div class="flex flex-col text-left"><span class="font-label-medium text-label-medium text-on-surface leading-tight">张三</span><span class="font-caption text-caption text-on-surface-variant leading-none">销售部 · 高级销售总监</span></div><span class="material-symbols-outlined text-[16px] text-on-surface-variant">expand_more</span></div></div></header><main class="relative pt-14 w-full px-margin bg-background min-h-screen"><div class="flex flex-col w-full pb-space-xl">
+<!-- JavaScript to update shell navigation active state -->
+<script>
+    (function() {
+      const navLinks = document.querySelectorAll('aside nav a');
+      navLinks.forEach(link => {
+        const path = link.getAttribute('data-path');
+        if (path === 'leads-center') {
+          link.className = 'flex items-center gap-space-sm px-space-sm py-2 rounded bg-primary-fixed text-primary font-title text-body-compact transition-colors';
+          const icon = link.querySelector('.material-symbols-outlined');
+          if (icon) icon.style.fontVariationSettings = "'FILL' 1";
+        } else {
+          link.className = 'flex items-center gap-space-sm px-space-sm py-2 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-body-compact text-body-compact transition-colors';
+          const icon = link.querySelector('.material-symbols-outlined');
+          if (icon) icon.style.fontVariationSettings = "'FILL' 0";
+        }
+      });
+    })();
+  </script>
+<!-- 1. Header Area -->
+<div class="flex items-center justify-between py-space-md">
+<div class="flex flex-col">
+<h1 class="font-headline-md text-headline-md text-on-surface tracking-tight">线索列表</h1>
+<p class="font-body-compact text-body-compact text-outline mt-0.5">统一管理销售线索，支持分配、跟进、查重与转化。</p>
+</div>
+<div class="flex items-center gap-space-sm">
+<button class="h-8 px-3 rounded bg-surface-container-lowest text-on-surface hover:bg-surface-container-low font-label-medium text-label-medium flex items-center gap-1 transition-colors shadow-sm" type="button">
+<span class="material-symbols-outlined text-[16px] text-outline">file_upload</span>
+<span>导入</span>
+</button>
+<button class="h-8 px-3 rounded bg-surface-container-lowest text-on-surface hover:bg-surface-container-low font-label-medium text-label-medium flex items-center gap-1 transition-colors shadow-sm" type="button">
+<span class="material-symbols-outlined text-[16px] text-outline">file_download</span>
+<span>导出</span>
+</button>
+<button class="h-8 px-3 rounded bg-surface-container-lowest text-on-surface hover:bg-surface-container-low font-label-medium text-label-medium flex items-center gap-1 transition-colors shadow-sm" type="button">
+<span class="material-symbols-outlined text-[16px] text-outline">tune</span>
+<span>批量操作</span>
+<span class="material-symbols-outlined text-[14px] text-outline">expand_more</span>
+</button>
+<button class="h-8 px-3.5 rounded bg-primary-container hover:bg-primary text-on-primary font-label-medium text-label-medium flex items-center gap-1 transition-colors shadow-sm" type="button">
+<span class="material-symbols-outlined text-[16px]">add</span>
+<span>新建线索</span>
+</button>
+</div>
+</div>
+<!-- 2. KPI Metrics Bar (5 Metrics in a row) -->
+<div class="grid grid-cols-5 gap-space-md mb-space-md">
+<!-- Card 1: 全部线索 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md flex flex-col justify-between shadow-sm hover:shadow transition-shadow">
+<div class="flex items-center justify-between">
+<span class="font-body-compact text-body-compact text-outline">全部线索</span>
+<span class="material-symbols-outlined text-[18px] text-primary">groups</span>
+</div>
+<div class="mt-2 flex items-baseline gap-2">
+<span class="font-headline-lg text-headline-lg text-on-surface tracking-tight" style="font-variant-numeric: tabular-nums;">86</span>
+<span class="font-caption text-caption text-primary flex items-center">
+<span class="material-symbols-outlined text-[14px]">trending_up</span>本周 +14
+        </span>
+</div>
+</div>
+<!-- Card 2: 待分配 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md flex flex-col justify-between shadow-sm hover:shadow transition-shadow">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-tertiary-container animate-pulse"></span>
+<span class="font-body-compact text-body-compact text-outline">待分配</span>
+</div>
+<span class="material-symbols-outlined text-[18px] text-tertiary-container">pending_actions</span>
+</div>
+<div class="mt-2 flex items-baseline gap-2">
+<span class="font-headline-lg text-headline-lg text-on-surface tracking-tight" style="font-variant-numeric: tabular-nums;">12</span>
+<span class="font-caption text-caption text-tertiary font-label-medium">超24h未分 3 条</span>
+</div>
+</div>
+<!-- Card 3: 跟进中 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md flex flex-col justify-between shadow-sm hover:shadow transition-shadow">
+<div class="flex items-center justify-between">
+<span class="font-body-compact text-body-compact text-outline">跟进中</span>
+<span class="material-symbols-outlined text-[18px] text-primary">contact_phone</span>
+</div>
+<div class="mt-2 flex items-baseline gap-2">
+<span class="font-headline-lg text-headline-lg text-on-surface tracking-tight" style="font-variant-numeric: tabular-nums;">38</span>
+<span class="font-caption text-caption text-outline">重点推进 16</span>
+</div>
+</div>
+<!-- Card 4: 已转客户 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md flex flex-col justify-between shadow-sm hover:shadow transition-shadow">
+<div class="flex items-center justify-between">
+<span class="font-body-compact text-body-compact text-outline">已转客户</span>
+<span class="material-symbols-outlined text-[18px] text-primary-container">verified</span>
+</div>
+<div class="mt-2 flex items-baseline gap-2">
+<span class="font-headline-lg text-headline-lg text-on-surface tracking-tight" style="font-variant-numeric: tabular-nums;">28</span>
+<span class="font-caption text-caption text-primary font-label-medium">转化率 32.5%</span>
+</div>
+</div>
+<!-- Card 5: 无效线索 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md flex flex-col justify-between shadow-sm hover:shadow transition-shadow">
+<div class="flex items-center justify-between">
+<span class="font-body-compact text-body-compact text-outline">无效线索</span>
+<span class="material-symbols-outlined text-[18px] text-outline">archive</span>
+</div>
+<div class="mt-2 flex items-baseline gap-2">
+<span class="font-headline-lg text-headline-lg text-on-surface tracking-tight" style="font-variant-numeric: tabular-nums;">8</span>
+<span class="font-caption text-caption text-outline">已归入沉淀库</span>
+</div>
+</div>
+</div>
+<!-- 3. Filter Card -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md mb-space-md shadow-sm">
+<div class="grid grid-cols-4 gap-x-space-md gap-y-3">
+<!-- 字段 1: 线索名称 -->
+<div class="flex items-center gap-2">
+<label class="w-16 font-body-compact text-body-compact text-on-surface-variant flex-shrink-0 text-right">线索名称</label>
+<div class="relative flex-1">
+<input class="w-full h-8 px-2.5 rounded bg-surface-container-low focus:bg-surface-container-lowest text-on-surface placeholder-outline font-body-compact text-body-compact outline-none transition-colors" placeholder="输入线索关键词..." type="text"/>
+</div>
+</div>
+<!-- 字段 2: 公司名称 -->
+<div class="flex items-center gap-2">
+<label class="w-16 font-body-compact text-body-compact text-on-surface-variant flex-shrink-0 text-right">公司名称</label>
+<div class="relative flex-1">
+<input class="w-full h-8 px-2.5 rounded bg-surface-container-low focus:bg-surface-container-lowest text-on-surface placeholder-outline font-body-compact text-body-compact outline-none transition-colors" placeholder="输入公司全称..." type="text"/>
+</div>
+</div>
+<!-- 字段 3: 来源渠道 -->
+<div class="flex items-center gap-2">
+<label class="w-16 font-body-compact text-body-compact text-on-surface-variant flex-shrink-0 text-right">来源渠道</label>
+<div class="relative flex-1">
+<select class="w-full h-8 px-2.5 rounded bg-surface-container-low focus:bg-surface-container-lowest text-on-surface font-body-compact text-body-compact outline-none appearance-none cursor-pointer pr-7">
+<option value="">全部来源</option>
+<option value="1">官网询盘</option>
+<option value="2">广交会展会</option>
+<option value="3">企业微信外部群</option>
+<option value="4">海外社媒LinkedIn</option>
+<option value="5">客户转介绍</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1.5 text-[18px] text-outline pointer-events-none">expand_more</span>
+</div>
+</div>
+<!-- 字段 4: 国家/地区 -->
+<div class="flex items-center gap-2">
+<label class="w-16 font-body-compact text-body-compact text-on-surface-variant flex-shrink-0 text-right">国家/地区</label>
+<div class="relative flex-1">
+<select class="w-full h-8 px-2.5 rounded bg-surface-container-low focus:bg-surface-container-lowest text-on-surface font-body-compact text-body-compact outline-none appearance-none cursor-pointer pr-7">
+<option value="">全部国家/地区</option>
+<option value="DE">德国 (Germany)</option>
+<option value="US">美国 (United States)</option>
+<option value="JP">日本 (Japan)</option>
+<option value="GB">英国 (United Kingdom)</option>
+<option value="AE">阿联酋 (UAE)</option>
+<option value="NL">荷兰 (Netherlands)</option>
+<option value="AU">澳大利亚 (Australia)</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1.5 text-[18px] text-outline pointer-events-none">expand_more</span>
+</div>
+</div>
+<!-- 字段 5: 状态 -->
+<div class="flex items-center gap-2">
+<label class="w-16 font-body-compact text-body-compact text-on-surface-variant flex-shrink-0 text-right">状态</label>
+<div class="relative flex-1">
+<select class="w-full h-8 px-2.5 rounded bg-surface-container-low focus:bg-surface-container-lowest text-on-surface font-body-compact text-body-compact outline-none appearance-none cursor-pointer pr-7">
+<option value="">全部状态</option>
+<option value="pending">待分配</option>
+<option value="following">跟进中</option>
+<option value="converted">已转客户</option>
+<option value="invalid">无效线索</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1.5 text-[18px] text-outline pointer-events-none">expand_more</span>
+</div>
+</div>
+<!-- 字段 6: 负责人 -->
+<div class="flex items-center gap-2">
+<label class="w-16 font-body-compact text-body-compact text-on-surface-variant flex-shrink-0 text-right">负责人</label>
+<div class="relative flex-1">
+<select class="w-full h-8 px-2.5 rounded bg-surface-container-low focus:bg-surface-container-lowest text-on-surface font-body-compact text-body-compact outline-none appearance-none cursor-pointer pr-7">
+<option value="">全部负责人</option>
+<option value="unassigned">-- 未分配 --</option>
+<option value="zhangsan">张三 (销售总监)</option>
+<option value="limanager">李经理</option>
+<option value="wangsupervisor">王主管</option>
+</select>
+<span class="material-symbols-outlined absolute right-2 top-1.5 text-[18px] text-outline pointer-events-none">expand_more</span>
+</div>
+</div>
+<!-- 字段 7: 最近跟进时间 (跨2格或右侧组合) -->
+<div class="col-span-2 flex items-center justify-between gap-4">
+<div class="flex items-center gap-2 flex-1">
+<label class="w-16 font-body-compact text-body-compact text-on-surface-variant flex-shrink-0 text-right">最近跟进</label>
+<div class="relative flex-1 flex items-center bg-surface-container-low rounded px-2.5 h-8">
+<span class="material-symbols-outlined text-[16px] text-outline mr-2">calendar_today</span>
+<input class="bg-transparent w-full text-on-surface font-body-compact text-body-compact outline-none placeholder-outline" placeholder="2024-09-01 ~ 2024-09-25" type="text"/>
+</div>
+</div>
+<!-- 筛选按钮组 -->
+<div class="flex items-center gap-2">
+<button class="h-8 px-3 rounded bg-surface-container text-on-surface-variant hover:bg-surface-container-high font-label-medium text-label-medium transition-colors" type="button">
+            重置
+          </button>
+<button class="h-8 px-4 rounded bg-primary-container hover:bg-primary text-on-primary font-label-medium text-label-medium flex items-center gap-1.5 transition-colors shadow-sm" type="button">
+<span class="material-symbols-outlined text-[16px]">search</span>
+<span>查询</span>
+</button>
+<button class="h-8 px-2 text-primary hover:text-primary-container font-label-medium text-label-medium flex items-center gap-0.5 transition-colors" type="button">
+<span>更多</span>
+<span class="material-symbols-outlined text-[16px]">expand_more</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<!-- 4. High-Density Main Table -->
+<div class="bg-surface-container-lowest rounded-xl shadow-sm flex flex-col overflow-hidden">
+<!-- Toolbar -->
+<div class="h-12 px-space-md flex items-center justify-between bg-surface-container-lowest">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-2">
+<span class="font-title text-title text-on-surface">线索列表数据</span>
+<span class="px-2 py-0.5 rounded-full bg-surface-container text-outline font-caption text-caption">共 86 条</span>
+</div>
+<div class="hidden items-center gap-1 px-2.5 py-0.5 bg-primary-fixed text-primary rounded text-caption font-label-medium" id="selectedCountBadge">
+<span class="material-symbols-outlined text-[14px]">check_circle</span>
+<span>已勾选 <strong id="selectedNum">0</strong> 项</span>
+<button class="ml-1 text-primary hover:underline" onclick="clearAllSelections()" type="button">取消</button>
+</div>
+</div>
+<div class="flex items-center gap-1">
+<button class="w-8 h-8 rounded flex items-center justify-center text-outline hover:text-on-surface hover:bg-surface-container transition-colors" title="刷新表格" type="button">
+<span class="material-symbols-outlined text-[18px]">refresh</span>
+</button>
+<button class="w-8 h-8 rounded flex items-center justify-center text-outline hover:text-on-surface hover:bg-surface-container transition-colors" title="紧凑度" type="button">
+<span class="material-symbols-outlined text-[18px]">density_medium</span>
+</button>
+<button class="w-8 h-8 rounded flex items-center justify-center text-outline hover:text-on-surface hover:bg-surface-container transition-colors" title="字段配置" type="button">
+<span class="material-symbols-outlined text-[18px]">view_column</span>
+</button>
+</div>
+</div>
+<!-- Table Container -->
+<div class="w-full overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low text-on-surface-variant font-label-medium text-caption h-10 select-none">
+<th class="w-10 px-3 text-center">
+<input class="w-4 h-4 rounded text-primary-container cursor-pointer" id="selectAllCheckbox" onchange="toggleSelectAll(this)" type="checkbox"/>
+</th>
+<th class="px-3 min-w-[200px]">线索名称</th>
+<th class="px-3 min-w-[180px]">公司名称</th>
+<th class="px-3 min-w-[140px]">联系人</th>
+<th class="px-3 min-w-[110px]">来源渠道</th>
+<th class="px-3 min-w-[120px]">国家/地区</th>
+<th class="px-3 min-w-[90px]">状态</th>
+<th class="px-3 min-w-[90px]">负责人</th>
+<th class="px-3 min-w-[130px]">最近跟进时间</th>
+<th class="px-3 min-w-[220px]">下一步动作</th>
+<th class="px-3 text-right pr-4 min-w-[170px]">操作</th>
+</tr>
+</thead>
+<tbody class="text-body-compact font-body-compact divide-y divide-surface-container">
+<!-- Row 1 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-primary hover:underline cursor-pointer">
+<div class="truncate max-w-[220px]" title="德国豪华卫浴连锁集采询盘">德国豪华卫浴连锁集采询盘</div>
+</td>
+<td class="px-3 text-on-surface">
+<div class="truncate max-w-[180px]" title="Nordic Bath &amp; Home GmbH">Nordic Bath &amp; Home GmbH</div>
+</td>
+<td class="px-3 text-on-surface-variant">
+<span class="text-on-surface font-label-medium">Hans Schneider</span>
+<span class="text-caption text-outline block">采购总监</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-on-surface-variant font-caption">
+<span class="material-symbols-outlined text-[14px] text-primary">language</span>官网询盘
+              </span>
+</td>
+<td class="px-3 text-on-surface">🇩🇪 德国 (法兰克福)</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-tertiary-fixed text-tertiary">待分配</span>
+</td>
+<td class="px-3 text-outline">--</td>
+<td class="px-3 text-outline text-caption" style="font-variant-numeric: tabular-nums;">10分钟前</td>
+<td class="px-3 text-on-surface-variant">
+<div class="truncate max-w-[210px] text-tertiary" title="待主管分配跟进销售">待主管分配跟进销售</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-primary hover:text-primary-container font-label-medium mr-2" type="button">分配</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium mr-2" type="button">查看</button>
+<button class="text-primary-container hover:underline font-label-medium mr-2" type="button">转客户</button>
+<button class="text-error hover:opacity-80 font-label-medium" type="button">废弃</button>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-primary hover:underline cursor-pointer">
+<div class="truncate max-w-[220px]" title="智能恒温淋浴花洒采购">智能恒温淋浴花洒采购</div>
+</td>
+<td class="px-3 text-on-surface">
+<div class="truncate max-w-[180px]" title="Apex Living Solutions">Apex Living Solutions</div>
+</td>
+<td class="px-3 text-on-surface-variant">
+<span class="text-on-surface font-label-medium">Michael Chang</span>
+<span class="text-caption text-outline block">COO</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-on-surface-variant font-caption">
+<span class="material-symbols-outlined text-[14px] text-secondary">store</span>广交会展会
+              </span>
+</td>
+<td class="px-3 text-on-surface">🇺🇸 美国 (加州)</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-primary-fixed text-primary">跟进中</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 font-label-medium text-on-surface">
+<span class="w-4 h-4 rounded-full bg-primary text-on-primary text-[10px] flex items-center justify-center font-bold">张</span>张三
+              </span>
+</td>
+<td class="px-3 text-on-surface-variant text-caption" style="font-variant-numeric: tabular-nums;">今日 09:30</td>
+<td class="px-3 text-on-surface-variant">
+<div class="truncate max-w-[210px]" title="发送2024产品选型画册与初步报价">发送2024产品选型画册与报价</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-primary hover:text-primary-container font-label-medium mr-2" type="button">记录跟进</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium mr-2" type="button">查看</button>
+<button class="text-primary-container hover:underline font-label-medium mr-2" type="button">转客户</button>
+<button class="text-outline hover:text-on-surface font-label-medium" type="button">更多</button>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-primary hover:underline cursor-pointer">
+<div class="truncate max-w-[220px]" title="商用亚克力一体化浴缸工程批次">商用亚克力一体化浴缸工程批次</div>
+</td>
+<td class="px-3 text-on-surface">
+<div class="truncate max-w-[180px]" title="Global Resort Development">Global Resort Development</div>
+</td>
+<td class="px-3 text-on-surface-variant">
+<span class="text-on-surface font-label-medium">Elena Rostova</span>
+<span class="text-caption text-outline block">工程采购部</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-on-surface-variant font-caption">
+<span class="material-symbols-outlined text-[14px] text-primary-container">forum</span>企业微信
+              </span>
+</td>
+<td class="px-3 text-on-surface">🇦🇪 阿联酋 (迪拜)</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-primary-fixed text-primary">跟进中</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 font-label-medium text-on-surface">
+<span class="w-4 h-4 rounded-full bg-secondary text-on-secondary text-[10px] flex items-center justify-center font-bold">李</span>李经理
+              </span>
+</td>
+<td class="px-3 text-on-surface-variant text-caption" style="font-variant-numeric: tabular-nums;">昨天 16:45</td>
+<td class="px-3 text-on-surface-variant">
+<div class="truncate max-w-[210px]" title="预约远程视频看厂并确认图纸">预约远程视频看厂并确认图纸</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-primary hover:text-primary-container font-label-medium mr-2" type="button">记录跟进</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium mr-2" type="button">查看</button>
+<button class="text-primary-container hover:underline font-label-medium mr-2" type="button">转客户</button>
+<button class="text-outline hover:text-on-surface font-label-medium" type="button">更多</button>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-on-surface hover:underline cursor-pointer">
+<div class="truncate max-w-[220px]" title="东京连锁精品酒店翻新卫浴">东京连锁精品酒店翻新卫浴</div>
+</td>
+<td class="px-3 text-on-surface">
+<div class="truncate max-w-[180px]" title="日本未来ホテル開発株式会社">日本未来ホテル開発株式会社</div>
+</td>
+<td class="px-3 text-on-surface-variant">
+<span class="text-on-surface font-label-medium">佐藤 健一</span>
+<span class="text-caption text-outline block">采购部负责人</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-on-surface-variant font-caption">
+<span class="material-symbols-outlined text-[14px] text-tertiary">share</span>转介绍
+              </span>
+</td>
+<td class="px-3 text-on-surface">🇯🇵 日本 (东京)</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-surface-container-high text-primary font-title">已转客户</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 font-label-medium text-on-surface">
+<span class="w-4 h-4 rounded-full bg-primary text-on-primary text-[10px] flex items-center justify-center font-bold">张</span>张三
+              </span>
+</td>
+<td class="px-3 text-outline text-caption" style="font-variant-numeric: tabular-nums;">3天前</td>
+<td class="px-3 text-outline">
+<div class="truncate max-w-[210px]" title="已关联客户「日本株式会社」，生成商机">已关联客户「日本株式会社」，生成商机</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-primary hover:text-primary-container font-label-medium mr-2" type="button">查看客户</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium" type="button">查看详情</button>
+</td>
+</tr>
+<!-- Row 5 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-primary hover:underline cursor-pointer">
+<div class="truncate max-w-[220px]" title="欧洲快消卫浴五金批发询单">欧洲快消卫浴五金批发询单</div>
+</td>
+<td class="px-3 text-on-surface">
+<div class="truncate max-w-[180px]" title="EuroTrade Commerce B.V.">EuroTrade Commerce B.V.</div>
+</td>
+<td class="px-3 text-on-surface-variant">
+<span class="text-on-surface font-label-medium">Lukas De Boer</span>
+<span class="text-caption text-outline block">商务总监</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-on-surface-variant font-caption">
+<span class="material-symbols-outlined text-[14px] text-primary">public</span>海外LinkedIn
+              </span>
+</td>
+<td class="px-3 text-on-surface">🇳🇱 荷兰 (鹿特丹)</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-primary-fixed text-primary">跟进中</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 font-label-medium text-on-surface">
+<span class="w-4 h-4 rounded-full bg-outline text-on-primary text-[10px] flex items-center justify-center font-bold">王</span>王主管
+              </span>
+</td>
+<td class="px-3 text-on-surface-variant text-caption" style="font-variant-numeric: tabular-nums;">2024-09-22</td>
+<td class="px-3 text-on-surface-variant">
+<div class="truncate max-w-[210px]" title="等待客户内部预算审批回复">等待客户内部预算审批回复</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-primary hover:text-primary-container font-label-medium mr-2" type="button">记录跟进</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium mr-2" type="button">查看</button>
+<button class="text-primary-container hover:underline font-label-medium mr-2" type="button">转客户</button>
+<button class="text-outline hover:text-on-surface font-label-medium" type="button">更多</button>
+</td>
+</tr>
+<!-- Row 6 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-primary hover:underline cursor-pointer">
+<div class="truncate max-w-[220px]" title="英国高端私宅定制水龙头">英国高端私宅定制水龙头</div>
+</td>
+<td class="px-3 text-on-surface">
+<div class="truncate max-w-[180px]" title="Mayfair Interior Architecture">Mayfair Interior Architecture</div>
+</td>
+<td class="px-3 text-on-surface-variant">
+<span class="text-on-surface font-label-medium">Sophie Watson</span>
+<span class="text-caption text-outline block">设计总监</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-on-surface-variant font-caption">
+<span class="material-symbols-outlined text-[14px] text-primary">language</span>官网询盘
+              </span>
+</td>
+<td class="px-3 text-on-surface">🇬🇧 英国 (伦敦)</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-tertiary-fixed text-tertiary">待分配</span>
+</td>
+<td class="px-3 text-outline">--</td>
+<td class="px-3 text-outline text-caption" style="font-variant-numeric: tabular-nums;">2小时前</td>
+<td class="px-3 text-on-surface-variant">
+<div class="truncate max-w-[210px] text-tertiary" title="需技术初审定制可行性">需技术初审定制可行性</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-primary hover:text-primary-container font-label-medium mr-2" type="button">分配</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium mr-2" type="button">查看</button>
+<button class="text-primary-container hover:underline font-label-medium mr-2" type="button">转客户</button>
+<button class="text-error hover:opacity-80 font-label-medium" type="button">废弃</button>
+</td>
+</tr>
+<!-- Row 7 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12 opacity-80">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-outline line-through cursor-pointer">
+<div class="truncate max-w-[220px]" title="低价冲量塑料卫浴配件询价">低价冲量塑料卫浴配件询价</div>
+</td>
+<td class="px-3 text-outline">
+<div class="truncate max-w-[180px]" title="Baza Express Retail">Baza Express Retail</div>
+</td>
+<td class="px-3 text-outline">
+<span class="font-label-medium">Dmitry Ivanov</span>
+<span class="text-caption text-outline block">采购员</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-outline font-caption">
+<span class="material-symbols-outlined text-[14px]">mail</span>公共邮箱
+              </span>
+</td>
+<td class="px-3 text-outline">🇷🇺 俄罗斯</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-surface-container-highest text-on-surface-variant">无效(品类不符)</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 font-label-medium text-outline">
+<span class="w-4 h-4 rounded-full bg-outline text-on-primary text-[10px] flex items-center justify-center font-bold">张</span>张三
+              </span>
+</td>
+<td class="px-3 text-outline text-caption" style="font-variant-numeric: tabular-nums;">2024-09-19</td>
+<td class="px-3 text-outline">
+<div class="truncate max-w-[210px]" title="需求低于最低起订量且非主营，已归档">需求低于最低起订量且非主营，已归档</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium mr-2" type="button">查看</button>
+<button class="text-primary hover:underline font-label-medium" type="button">重新激活</button>
+</td>
+</tr>
+<!-- Row 8 -->
+<tr class="hover:bg-surface-container-low/60 transition-colors h-12">
+<td class="px-3 text-center">
+<input class="row-checkbox w-4 h-4 rounded text-primary cursor-pointer" onchange="onRowSelectChange()" type="checkbox"/>
+</td>
+<td class="px-3 font-title text-body-compact text-on-surface hover:underline cursor-pointer">
+<div class="truncate max-w-[220px]" title="澳洲生态木纹浴室柜系列">澳洲生态木纹浴室柜系列</div>
+</td>
+<td class="px-3 text-on-surface">
+<div class="truncate max-w-[180px]" title="Sydney Coast Living Pty Ltd">Sydney Coast Living Pty Ltd</div>
+</td>
+<td class="px-3 text-on-surface-variant">
+<span class="text-on-surface font-label-medium">Oliver King</span>
+<span class="text-caption text-outline block">合伙人</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 text-on-surface-variant font-caption">
+<span class="material-symbols-outlined text-[14px] text-secondary">store</span>广交会展会
+              </span>
+</td>
+<td class="px-3 text-on-surface">🇦🇺 澳大利亚 (悉尼)</td>
+<td class="px-3">
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-surface-container-high text-primary font-title">已转客户</span>
+</td>
+<td class="px-3">
+<span class="inline-flex items-center gap-1 font-label-medium text-on-surface">
+<span class="w-4 h-4 rounded-full bg-primary text-on-primary text-[10px] flex items-center justify-center font-bold">张</span>张三
+              </span>
+</td>
+<td class="px-3 text-outline text-caption" style="font-variant-numeric: tabular-nums;">2024-09-20</td>
+<td class="px-3 text-outline">
+<div class="truncate max-w-[210px]" title="已建档客户，正在核算海运运费">已建档客户，正在核算海运运费</div>
+</td>
+<td class="px-3 text-right pr-4 whitespace-nowrap">
+<button class="text-primary hover:text-primary-container font-label-medium mr-2" type="button">查看客户</button>
+<button class="text-on-surface-variant hover:text-on-surface font-label-medium" type="button">查看详情</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- 5. High-Density Pagination Bar -->
+<div class="h-12 px-space-md flex items-center justify-between border-t border-surface-container-high bg-surface-container-lowest">
+<div class="flex items-center gap-space-sm text-outline font-body-compact text-body-compact">
+<span>共 <strong class="text-on-surface font-label-medium">86</strong> 条记录</span>
+<span>•</span>
+<div class="flex items-center gap-1">
+<span>每页</span>
+<select class="h-7 px-2 bg-surface-container-low rounded border-none text-on-surface font-body-compact text-caption outline-none cursor-pointer">
+<option selected="" value="10">10 条</option>
+<option value="20">20 条</option>
+<option value="50">50 条</option>
+<option value="100">100 条</option>
+</select>
+</div>
+</div>
+<div class="flex items-center gap-1 select-none">
+<button class="w-7 h-7 flex items-center justify-center rounded text-outline hover:bg-surface-container-low disabled:opacity-30 disabled:pointer-events-none transition-colors" disabled="" type="button">
+<span class="material-symbols-outlined text-[16px]">chevron_left</span>
+</button>
+<button class="w-7 h-7 flex items-center justify-center rounded bg-primary-container text-on-primary font-label-medium text-caption shadow-sm" type="button">1</button>
+<button class="w-7 h-7 flex items-center justify-center rounded text-on-surface hover:bg-surface-container-low font-label-medium text-caption transition-colors" type="button">2</button>
+<button class="w-7 h-7 flex items-center justify-center rounded text-on-surface hover:bg-surface-container-low font-label-medium text-caption transition-colors" type="button">3</button>
+<button class="w-7 h-7 flex items-center justify-center rounded text-on-surface hover:bg-surface-container-low font-label-medium text-caption transition-colors" type="button">4</button>
+<span class="px-1 text-outline text-caption">...</span>
+<button class="w-7 h-7 flex items-center justify-center rounded text-on-surface hover:bg-surface-container-low font-label-medium text-caption transition-colors" type="button">9</button>
+<button class="w-7 h-7 flex items-center justify-center rounded text-outline hover:bg-surface-container-low transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">chevron_right</span>
+</button>
+<div class="flex items-center gap-1.5 ml-3 font-body-compact text-body-compact text-outline">
+<span>跳至</span>
+<input class="w-10 h-7 text-center rounded bg-surface-container-low border-none text-on-surface font-body-compact text-caption outline-none focus:bg-surface-container-lowest" max="9" min="1" type="number" value="1"/>
+<span>页</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Interactive JavaScript -->
+<script>
+    function toggleSelectAll(master) {
+      const checkboxes = document.querySelectorAll('.row-checkbox');
+      checkboxes.forEach(cb => cb.checked = master.checked);
+      onRowSelectChange();
+    }
+
+    function onRowSelectChange() {
+      const checkboxes = document.querySelectorAll('.row-checkbox');
+      const selected = Array.from(checkboxes).filter(cb => cb.checked).length;
+      const badge = document.getElementById('selectedCountBadge');
+      const countSpan = document.getElementById('selectedNum');
+      const selectAll = document.getElementById('selectAllCheckbox');
+
+      if (selected > 0) {
+        badge.classList.remove('hidden');
+        badge.classList.add('inline-flex');
+        countSpan.textContent = selected;
+      } else {
+        badge.classList.add('hidden');
+        badge.classList.remove('inline-flex');
+      }
+
+      if (selectAll) {
+        selectAll.checked = selected === checkboxes.length && checkboxes.length > 0;
+        selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
+      }
+    }
+
+    function clearAllSelections() {
+      const checkboxes = document.querySelectorAll('.row-checkbox');
+      checkboxes.forEach(cb => cb.checked = false);
+      const selectAll = document.getElementById('selectAllCheckbox');
+      if (selectAll) {
+        selectAll.checked = false;
+        selectAll.indeterminate = false;
+      }
+      onRowSelectChange();
+    }
+  </script>
+</div></main></div></body></html>

@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={darkMode:"class",theme:{extend:{colors:{"on-secondary-fixed-variant":"#5e08bd","surface-container-high":"#e5e8f3","inverse-surface":"#2c3039","background":"#f9f9ff","on-primary-fixed-variant":"#003fa4","on-surface":"#181c23","primary":"#004ec6","tertiary":"#9e3300","on-primary-container":"#f3f3ff","primary-container":"#0064fa","outline-variant":"#c2c6d8","on-tertiary-fixed":"#380d00","secondary-fixed-dim":"#d5baff","secondary-fixed":"#ecdcff","tertiary-fixed":"#ffdbcf","tertiary-fixed-dim":"#ffb59b","secondary-container":"#8e4fee","on-surface-variant":"#424655","primary-fixed-dim":"#b3c5ff","surface-container":"#ebedf9","secondary":"#7431d3","error-container":"#ffdad6","on-tertiary-fixed-variant":"#822800","on-tertiary":"#ffffff","on-tertiary-container":"#fff2ee","error":"#ba1a1a","on-error-container":"#93000a","surface-dim":"#d7dae5","on-primary-fixed":"#001849","surface-container-lowest":"#ffffff","on-primary":"#ffffff","surface-container-highest":"#dfe2ed","inverse-on-surface":"#eef0fc","surface-tint":"#0054d6","primary-fixed":"#dae1ff","inverse-primary":"#b3c5ff","surface-container-low":"#f1f3ff","on-secondary-container":"#fffbff","on-background":"#181c23","tertiary-container":"#c74200","on-error":"#ffffff","on-secondary":"#ffffff","outline":"#727687","surface-bright":"#f9f9ff","surface-variant":"#dfe2ed","surface":"#f9f9ff","on-secondary-fixed":"#270057"},borderRadius:{DEFAULT:"0.125rem",lg:"0.25rem",xl:"0.5rem",full:"0.75rem"},spacing:{"gutter-compact":"12px","margin-header":"16px",gutter:"16px",margin:"24px","space-sm":"8px","space-xs":"4px","space-xl":"32px","space-lg":"24px","space-md":"16px"},fontFamily:{"headline-md":["Inter"],"headline-lg":["Inter"],"headline-xl":["Inter"],"body-compact":["Inter"],title:["Inter"],"label-default":["Inter"],caption:["Inter"],"body-default":["Inter"],"label-medium":["Inter"],"headline-sm":["Inter"]},fontSize:{"headline-md":["20px",{lineHeight:"28px",fontWeight:"600"}],"headline-lg":["24px",{lineHeight:"32px",fontWeight:"600"}],"headline-xl":["32px",{lineHeight:"40px",fontWeight:"600"}],"body-compact":["13px",{lineHeight:"20px",fontWeight:"400"}],title:["14px",{lineHeight:"22px",fontWeight:"600"}],"label-default":["12px",{lineHeight:"18px",fontWeight:"400"}],caption:["11px",{lineHeight:"16px",fontWeight:"400"}],"body-default":["14px",{lineHeight:"22px",fontWeight:"400"}],"label-medium":["12px",{lineHeight:"18px",fontWeight:"500"}],"headline-sm":["16px",{lineHeight:"24px",fontWeight:"600"}]}}}};</script></head><body class="bg-background font-body-default text-body-default text-on-surface antialiased"><aside class="fixed left-0 top-0 h-full w-[220px] bg-surface-container-lowest z-50 flex flex-col shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-14 px-margin flex items-center gap-space-sm"><div class="w-7 h-7 rounded-lg bg-primary-container flex items-center justify-center text-on-primary font-headline-sm text-headline-sm">S</div><div class="flex flex-col"><span class="font-title text-title text-on-surface leading-tight">Enterprise CRM</span><span class="font-caption text-caption text-on-surface-variant">Sales Cloud Pro</span></div></div><div class="px-gutter-compact py-space-xs"><div class="text-caption font-caption text-outline px-space-sm py-space-xs">销售协同中心</div></div><nav class="flex-1 px-gutter-compact flex flex-col gap-space-xs overflow-y-auto" data-active-classes="bg-primary-container text-on-primary font-label-medium rounded-lg"><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="workbench-overview" href="#"><span class="material-symbols-outlined text-[18px]">dashboard</span>工作台看板</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="leads-management" href="#"><span class="material-symbols-outlined text-[18px]">filter_alt</span>线索管理</a><a aria-current="page" class="flex items-center gap-space-sm px-space-sm py-2 transition-colors bg-primary-container text-on-primary font-label-medium rounded-lg" data-path="customer-detail" href="#"><span class="material-symbols-outlined text-[18px]">domain</span>客户中心</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="opportunity-pipeline" href="#"><span class="material-symbols-outlined text-[18px]">monetization_on</span>商机漏斗</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="quotes-and-orders" href="#"><span class="material-symbols-outlined text-[18px]">receipt_long</span>报价与订单</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="contacts-directory" href="#"><span class="material-symbols-outlined text-[18px]">contacts</span>联系人通讯录</a><div class="my-space-xs h-[1px] bg-surface-container-high"></div><div class="text-caption font-caption text-outline px-space-sm py-space-xs">效能分析</div><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="sales-analytics" href="#"><span class="material-symbols-outlined text-[18px]">analytics</span>绩效统计</a><a class="flex items-center gap-space-sm px-space-sm py-2 rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="system-settings" href="#"><span class="material-symbols-outlined text-[18px]">settings</span>系统配置</a></nav><div class="p-gutter-compact mt-auto"><div class="flex items-center justify-between p-space-sm rounded-lg bg-surface-container-low"><div class="flex items-center gap-space-sm"><span class="material-symbols-outlined text-primary text-[20px]">verified</span><div><div class="font-label-medium text-label-medium text-on-surface">企业标准版</div><div class="font-caption text-caption text-outline">v4.8.2 Active</div></div></div></div></div></aside><div class="pl-[220px]"><header class="fixed top-0 left-[220px] right-0 h-14 bg-surface-container-lowest shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-40 flex items-center justify-between px-margin"><div class="flex items-center gap-space-md w-full max-w-xl"><div class="relative w-full flex items-center"><span class="material-symbols-outlined absolute left-space-sm text-outline pointer-events-none text-[18px]">search</span><input class="w-full h-8 pl-8 pr-gutter bg-surface-container-low text-on-surface placeholder:text-outline rounded-lg text-body-compact font-body-compact focus:outline-none focus:bg-surface-container-lowest transition-all" placeholder="搜索客户、商机、报价、订单、联系人..." type="text"/></div></div><div class="flex items-center gap-space-sm"><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors relative" title="全局通知" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span><span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-error rounded-full"></span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors relative" title="站内消息" type="button"><span class="material-symbols-outlined text-[20px]">chat</span><span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-tertiary-container rounded-full"></span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" title="帮助与文档" type="button"><span class="material-symbols-outlined text-[20px]">help_outline</span></button><div class="h-4 w-[1px] bg-surface-container-high mx-space-xs"></div><div class="flex items-center gap-space-sm pl-space-xs cursor-pointer select-none"><div class="text-right"><div class="font-label-medium text-label-medium text-on-surface leading-tight">张三</div><div class="font-caption text-caption text-on-surface-variant">销售部 · 高级业务经理</div></div><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></header><main class="relative pt-14 bg-background min-h-screen"><div class="flex flex-col w-full font-body-default text-on-surface">
+<!-- 1. 顶部客户抬头与操作区 (Customer Header) -->
+<header class="bg-surface-container-lowest px-margin py-space-md flex flex-col gap-space-sm shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
+<!-- 面包屑与快捷导航 -->
+<div class="flex items-center gap-space-xs text-caption font-caption text-on-surface-variant">
+<a class="hover:text-primary transition-colors" href="#">客户中心</a>
+<span>/</span>
+<a class="hover:text-primary transition-colors" href="#">全部企业客户</a>
+<span>/</span>
+<span class="text-on-surface font-label-medium">ABC GmbH 详情档案</span>
+</div>
+<!-- 客户核心主体与右侧操作栏 -->
+<div class="flex items-start justify-between gap-space-lg">
+<div class="flex flex-col gap-space-xs min-w-0">
+<div class="flex items-center gap-space-sm flex-wrap">
+<h1 class="font-headline-lg text-headline-lg text-on-surface tracking-tight">ABC GmbH</h1>
+<span class="inline-flex items-center h-[22px] px-2 rounded-lg bg-surface-container-low text-primary text-caption font-label-medium">A类客户</span>
+<span class="inline-flex items-center h-[22px] px-2 rounded-lg bg-tertiary-fixed text-tertiary text-caption font-label-medium">重点客户</span>
+<span class="inline-flex items-center h-[22px] px-2 rounded-lg bg-surface-container-high text-on-surface-variant text-caption font-label-medium">🇩🇪 德国</span>
+<span class="inline-flex items-center gap-1 h-[22px] px-2 rounded-lg bg-surface-container text-outline text-caption font-caption">
+<span class="w-1.5 h-1.5 rounded-full bg-primary-container"></span>
+            活跃中
+          </span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant max-w-4xl line-clamp-1">
+          德国领先的家居用品零售集团，长期采购卫浴及家居类商品，合作年限 3 年，资信等级 AAA。
+        </p>
+</div>
+<!-- 右侧操作组 -->
+<div class="flex items-center gap-space-sm shrink-0">
+<button class="h-8 px-3 rounded-lg bg-primary-container hover:bg-primary text-on-primary font-label-medium text-label-medium flex items-center gap-1 shadow-sm transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">add</span>
+          新建商机
+        </button>
+<button class="h-8 px-3 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-medium text-label-medium flex items-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">history_edu</span>
+          记录跟进
+        </button>
+<button class="h-8 px-3 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-medium text-label-medium flex items-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">request_quote</span>
+          新建报价
+        </button>
+<div class="relative inline-block text-left" id="moreDropdownWrap">
+<button class="h-8 px-2.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-medium text-label-medium flex items-center gap-1 transition-colors" id="moreBtn" type="button">
+<span>更多</span>
+<span class="material-symbols-outlined text-[16px]">expand_more</span>
+</button>
+<div class="hidden absolute right-0 mt-1 w-36 bg-surface-container-lowest rounded-lg shadow-md py-1 z-30" id="moreMenu">
+<a class="px-3 py-1.5 text-body-compact font-body-compact text-on-surface hover:bg-surface-container-low flex items-center gap-2" href="javascript:void(0)">
+<span class="material-symbols-outlined text-[16px]">file_download</span>导出客户档案
+            </a>
+<a class="px-3 py-1.5 text-body-compact font-body-compact text-on-surface hover:bg-surface-container-low flex items-center gap-2" href="javascript:void(0)">
+<span class="material-symbols-outlined text-[16px]">swap_horiz</span>转移负责人
+            </a>
+<a class="px-3 py-1.5 text-body-compact font-body-compact text-on-surface hover:bg-surface-container-low flex items-center gap-2" href="javascript:void(0)">
+<span class="material-symbols-outlined text-[16px]">merge</span>合并重复客户
+            </a>
+</div>
+</div>
+</div>
+</div>
+</header>
+<!-- 2. 业务 Tab 栏 (Semi Design Tabs) -->
+<nav class="bg-surface-container-lowest px-margin flex items-center gap-space-lg shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+<button class="relative py-2.5 font-label-medium text-label-medium text-primary-container font-semibold" type="button">
+      概览
+      <span class="absolute bottom-0 left-0 right-0 h-0.5 bg-primary-container rounded-full"></span>
+</button>
+<button class="py-2.5 font-label-medium text-label-medium text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1" type="button">
+      联系人 <span class="text-caption font-caption px-1.5 py-0.5 rounded-full bg-surface-container text-outline">3</span>
+</button>
+<button class="py-2.5 font-label-medium text-label-medium text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1" type="button">
+      商机 <span class="text-caption font-caption px-1.5 py-0.5 rounded-full bg-surface-container text-outline">2</span>
+</button>
+<button class="py-2.5 font-label-medium text-label-medium text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1" type="button">
+      跟进记录 <span class="text-caption font-caption px-1.5 py-0.5 rounded-full bg-surface-container text-outline">18</span>
+</button>
+<button class="py-2.5 font-label-medium text-label-medium text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1" type="button">
+      报价单 <span class="text-caption font-caption px-1.5 py-0.5 rounded-full bg-surface-container text-outline">6</span>
+</button>
+<button class="py-2.5 font-label-medium text-label-medium text-on-surface-variant hover:text-on-surface transition-colors flex items-center gap-1" type="button">
+      订单 <span class="text-caption font-caption px-1.5 py-0.5 rounded-full bg-surface-container text-outline">4</span>
+</button>
+<button class="py-2.5 font-label-medium text-label-medium text-on-surface-variant hover:text-on-surface transition-colors" type="button">
+      合同与文件
+    </button>
+<button class="py-2.5 font-label-medium text-label-medium text-on-surface-variant hover:text-on-surface transition-colors" type="button">
+      操作日志
+    </button>
+</nav>
+<!-- 页面主体容器 -->
+<div class="p-margin flex flex-col gap-space-md">
+<!-- 3. 页面主体上半部分 —— 三列紧凑网格 -->
+<section class="grid grid-cols-12 gap-space-md items-stretch">
+<!-- 左列 (26% / col-span-3) - 【基本信息】卡片 -->
+<div class="col-span-3 bg-surface-container-lowest rounded-xl p-space-md flex flex-col justify-between shadow-sm">
+<div>
+<div class="flex items-center justify-between pb-space-sm mb-space-sm bg-surface-container-low px-space-sm py-1 rounded-lg">
+<span class="font-title text-title text-on-surface flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px] text-primary">badge</span>
+              基本信息
+            </span>
+<button class="text-caption font-caption text-primary hover:underline" type="button">编辑</button>
+</div>
+<dl class="flex flex-col gap-2 font-body-compact text-body-compact">
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">客户编号</dt>
+<dd class="text-on-surface font-label-medium tabular-nums">CUST-20211105</dd>
+</div>
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">统一税号</dt>
+<dd class="text-on-surface font-label-medium tabular-nums">DE 814529812</dd>
+</div>
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">公司官网</dt>
+<dd class="text-primary hover:underline truncate max-w-[140px] text-right">
+<a href="https://www.nordicbath-home.de" target="_blank">nordicbath-home.de</a>
+</dd>
+</div>
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">所属行业</dt>
+<dd class="text-on-surface truncate text-right">家居 / 卫浴建材零售</dd>
+</div>
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">客户来源</dt>
+<dd class="text-on-surface truncate text-right">广交会展会扫码 (2021秋)</dd>
+</div>
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">国家 / 城市</dt>
+<dd class="text-on-surface text-right">德国 · 法兰克福</dd>
+</div>
+<div class="flex items-start justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">详细地址</dt>
+<dd class="text-on-surface text-right line-clamp-1" title="Industriestraße 42, 60314 Frankfurt">Industriestr. 42, Frankfurt</dd>
+</div>
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">结算币种</dt>
+<dd class="text-on-surface font-label-medium">USD / EUR</dd>
+</div>
+<div class="flex items-baseline justify-between gap-1">
+<dt class="text-outline font-label-default shrink-0">账期条件</dt>
+<dd class="text-on-surface text-right">OA 60天 <span class="text-outline font-caption">($200k)</span></dd>
+</div>
+</dl>
+</div>
+<div class="mt-space-sm pt-space-xs bg-surface-container-low p-space-sm rounded-lg flex flex-col gap-1 text-caption font-caption">
+<div class="flex items-center justify-between">
+<span class="text-outline">归属负责人</span>
+<span class="text-on-surface font-label-medium">张三 (销售总监)</span>
+</div>
+<div class="flex items-center justify-between">
+<span class="text-outline">协同团队</span>
+<span class="text-on-surface-variant">李经理、王主管</span>
+</div>
+</div>
+</div>
+<!-- 中间列 (44% / col-span-5) - 【业务概览】核心数据看板与漏斗快照 -->
+<div class="col-span-5 bg-surface-container-lowest rounded-xl p-space-md flex flex-col justify-between shadow-sm">
+<div>
+<div class="flex items-center justify-between mb-space-sm">
+<div class="flex items-center gap-2">
+<span class="font-title text-title text-on-surface">业务核心看板</span>
+<span class="text-caption font-caption px-2 py-0.5 rounded-full bg-surface-container-high text-on-surface-variant">实时统计</span>
+</div>
+<span class="text-caption font-caption text-outline">货币基准: RMB / USD 结算</span>
+</div>
+<!-- 6 个微型业务数据块 (2行3列高密网格) -->
+<div class="grid grid-cols-3 gap-2">
+<div class="p-2.5 rounded-lg bg-surface-container-low flex flex-col gap-0.5">
+<span class="text-caption font-caption text-outline">进行中商机</span>
+<div class="flex items-baseline gap-1">
+<span class="text-headline-md font-headline-md text-on-surface tabular-nums">2</span>
+<span class="text-caption font-caption text-outline">个</span>
+</div>
+<span class="text-caption font-caption text-on-surface-variant">预估 ¥400,000</span>
+</div>
+<div class="p-2.5 rounded-lg bg-surface-container-low flex flex-col gap-0.5">
+<span class="text-caption font-caption text-outline">累计报价</span>
+<div class="flex items-baseline gap-1">
+<span class="text-headline-md font-headline-md text-on-surface tabular-nums">6</span>
+<span class="text-caption font-caption text-outline">笔</span>
+</div>
+<span class="text-caption font-caption text-primary">已确认 3 笔</span>
+</div>
+<div class="p-2.5 rounded-lg bg-surface-container-low flex flex-col gap-0.5">
+<span class="text-caption font-caption text-outline">累计成交</span>
+<div class="flex items-baseline">
+<span class="text-headline-sm font-headline-sm text-on-surface tabular-nums">¥1.28M</span>
+</div>
+<span class="text-caption font-caption text-on-surface-variant">客单均价 ¥320k</span>
+</div>
+<div class="p-2.5 rounded-lg bg-surface-container-low flex flex-col gap-0.5">
+<span class="text-caption font-caption text-outline">待回款 / 应收</span>
+<div class="flex items-baseline">
+<span class="text-headline-sm font-headline-sm text-tertiary tabular-nums">¥120,000</span>
+</div>
+<span class="text-caption font-caption text-primary">无逾期账款</span>
+</div>
+<div class="p-2.5 rounded-lg bg-surface-container-low flex flex-col gap-0.5">
+<span class="text-caption font-caption text-outline">最近跟进</span>
+<span class="text-body-compact font-label-medium text-on-surface tabular-nums">09-23</span>
+<span class="text-caption font-caption text-outline truncate" title="企微沟通浴桶项目">企微沟通浴桶项目</span>
+</div>
+<div class="p-2.5 rounded-lg bg-surface-container-low flex flex-col gap-0.5">
+<span class="text-caption font-caption text-outline">下次计划跟进</span>
+<span class="text-body-compact font-label-medium text-primary tabular-nums">09-26</span>
+<span class="text-caption font-caption text-primary truncate" title="待确认 Q4 采购计划">待确认 Q4 采购</span>
+</div>
+</div>
+</div>
+<!-- 下方：客户生命周期阶段与健康度指标 -->
+<div class="mt-space-sm pt-space-sm flex flex-col gap-2">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="font-label-medium text-label-medium text-on-surface">客户生命周期阶段</span>
+<span class="text-caption font-caption px-2 py-0.5 rounded-full bg-surface-container text-on-surface-variant">成长期 → 成熟稳定期</span>
+</div>
+<div class="flex items-center gap-1 text-caption font-caption text-on-surface">
+<span>健康度:</span>
+<span class="font-headline-sm text-headline-sm text-primary tabular-nums">94</span>
+<span class="text-outline">/100 (极佳)</span>
+</div>
+</div>
+<!-- 阶段进度条 -->
+<div class="w-full bg-surface-container h-2 rounded-full overflow-hidden flex">
+<div class="bg-primary-container h-full w-[78%]" title="生命周期成熟度 78%"></div>
+<div class="bg-primary-fixed-dim h-full w-[16%]"></div>
+</div>
+<div class="flex justify-between text-caption font-caption text-outline">
+<span>潜在验证</span>
+<span>初步破冰</span>
+<span class="text-primary font-label-medium">持续复购 (当前)</span>
+<span>战略伙伴</span>
+</div>
+</div>
+</div>
+<!-- 右列 (30% / col-span-4) - 【联系人】与【AI 客户洞察】 -->
+<div class="col-span-4 flex flex-col gap-space-md">
+<!-- 上部：主要联系人卡片 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col gap-space-xs">
+<div class="flex items-center justify-between pb-1">
+<span class="font-title text-title text-on-surface flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px] text-primary">contact_phone</span>
+              核心决策人
+            </span>
+<span class="text-caption font-caption text-outline">共 3 位联系人</span>
+</div>
+<div class="flex items-start justify-between">
+<div class="flex items-center gap-space-sm">
+<div class="w-9 h-9 rounded-full bg-primary-container text-on-primary flex items-center justify-center font-headline-sm text-headline-sm shrink-0">
+                LM
+              </div>
+<div class="flex flex-col">
+<div class="flex items-center gap-1">
+<span class="font-headline-sm text-headline-sm text-on-surface">Lukas Müller</span>
+<span class="material-symbols-outlined text-[14px] text-primary" title="企业微信已绑定打通">verified</span>
+</div>
+<span class="text-caption font-caption text-outline">采购总监 · Procurement Director</span>
+</div>
+</div>
+<span class="text-caption font-caption px-2 py-0.5 rounded-full bg-surface-container-low text-primary">负责: 张三</span>
+</div>
+<div class="mt-1 flex flex-col gap-1 text-caption font-caption text-on-surface-variant">
+<div class="flex items-center gap-1.5 truncate">
+<span class="material-symbols-outlined text-[14px] text-outline">mail</span>
+<span class="truncate">lukas.mueller@nordicbath.de</span>
+</div>
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[14px] text-outline">call</span>
+<span>+49 69 12345678</span>
+</div>
+</div>
+<!-- 快捷操作按钮 -->
+<div class="mt-2 grid grid-cols-2 gap-2">
+<button class="h-7 px-2 rounded-lg bg-surface-container-low hover:bg-surface-container text-on-surface font-label-medium text-caption flex items-center justify-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[14px]">send</span>发送邮件
+            </button>
+<button class="h-7 px-2 rounded-lg bg-surface-container-low hover:bg-surface-container text-on-surface font-label-medium text-caption flex items-center justify-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[14px]">chat</span>发起企微会话
+            </button>
+</div>
+</div>
+<!-- 下部：AI 客户总结与建议卡片 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col gap-2 relative overflow-hidden">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1 text-secondary">
+<span class="material-symbols-outlined text-[18px]">auto_awesome</span>
+<span class="font-title text-title">AI 智能洞察与策略</span>
+</div>
+<span class="text-caption font-caption px-1.5 py-0.5 rounded-lg bg-secondary-fixed text-on-secondary-fixed">Sales Copilot</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant bg-surface-container-low p-2 rounded-lg">
+<strong class="text-on-surface">画像快照：</strong>客户近期对欧标独立式亚克力浴桶及恒温龙头需求旺盛，决策链路清晰，对交期稳定性与 CE 认证合规度优先级高于价格。
+          </p>
+<p class="font-body-compact text-body-compact text-on-surface-variant">
+<strong class="text-secondary font-label-medium">建议行动：</strong>建议于 <strong>9月26日</strong> 前跟进 Lukas，锁定浴桶 500 件 V3 报价反馈，争取锁定 Q4 排产。
+          </p>
+<div class="flex items-center gap-2 pt-1">
+<button class="h-6 px-2.5 rounded-lg bg-secondary-fixed hover:bg-secondary-fixed-dim text-on-secondary-fixed text-caption font-label-medium flex items-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[12px]">edit_note</span>生成邮件草稿
+            </button>
+<button class="h-6 px-2.5 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface-variant text-caption font-label-medium transition-colors" type="button">
+              商机复盘
+            </button>
+</div>
+</div>
+</div>
+</section>
+<!-- 4. 页面主体下半部分 —— 三栏式关联业务明细 -->
+<section class="grid grid-cols-12 gap-space-md items-start">
+<!-- 左栏 (34% / col-span-4) - 【最新商机】 -->
+<div class="col-span-4 bg-surface-container-lowest rounded-xl p-space-md flex flex-col gap-space-sm shadow-sm min-h-[380px] justify-between">
+<div>
+<div class="flex items-center justify-between pb-2 mb-2 bg-surface-container-low px-space-sm py-1.5 rounded-lg">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[18px] text-primary">monetization_on</span>
+<span class="font-title text-title text-on-surface">最新商机 (2)</span>
+</div>
+<button class="text-caption font-caption text-primary hover:underline flex items-center" type="button">
+              + 快速录入
+            </button>
+</div>
+<!-- 商机列表 -->
+<div class="flex flex-col gap-space-sm">
+<!-- 商机卡片 1 -->
+<div class="p-3 rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors flex flex-col gap-1.5">
+<div class="flex items-start justify-between gap-2">
+<a class="font-headline-sm text-headline-sm text-on-surface hover:text-primary transition-colors line-clamp-1" href="#">
+                  德国浴桶 500 件采购项目
+                </a>
+<span class="text-caption font-caption px-2 py-0.5 rounded-full bg-surface-container-high text-primary shrink-0">商务谈判</span>
+</div>
+<div class="flex items-baseline justify-between text-caption font-caption">
+<div class="flex items-baseline gap-1">
+<span class="text-headline-sm font-headline-sm text-on-surface tabular-nums">¥80,000</span>
+<span class="text-outline">· 赢率 70%</span>
+</div>
+<span class="text-outline">预计 2024-10-15</span>
+</div>
+<!-- 进度条 -->
+<div class="w-full bg-surface-container h-1.5 rounded-full overflow-hidden mt-1">
+<div class="bg-primary h-full w-[70%]"></div>
+</div>
+<div class="flex items-center justify-between text-caption font-caption text-outline pt-0.5">
+<span>阶段: 商务条款洽谈</span>
+<span>负责人: 张三</span>
+</div>
+</div>
+<!-- 商机卡片 2 -->
+<div class="p-3 rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors flex flex-col gap-1.5">
+<div class="flex items-start justify-between gap-2">
+<a class="font-headline-sm text-headline-sm text-on-surface hover:text-primary transition-colors line-clamp-1" href="#">
+                  2025 春季智能恒温卫浴花洒配套
+                </a>
+<span class="text-caption font-caption px-2 py-0.5 rounded-full bg-surface-container-high text-tertiary shrink-0">需求确认</span>
+</div>
+<div class="flex items-baseline justify-between text-caption font-caption">
+<div class="flex items-baseline gap-1">
+<span class="text-headline-sm font-headline-sm text-on-surface tabular-nums">¥320,000</span>
+<span class="text-outline">· 赢率 40%</span>
+</div>
+<span class="text-outline">预计 2024-11-20</span>
+</div>
+<!-- 进度条 -->
+<div class="w-full bg-surface-container h-1.5 rounded-full overflow-hidden mt-1">
+<div class="bg-tertiary h-full w-[40%]"></div>
+</div>
+<div class="flex items-center justify-between text-caption font-caption text-outline pt-0.5">
+<span>阶段: 样板测试与选型</span>
+<span>负责人: 张三</span>
+</div>
+</div>
+</div>
+</div>
+<div class="pt-2 text-center">
+<a class="text-body-compact font-label-medium text-primary hover:underline flex items-center justify-center gap-1" href="#">
+            查看全部 2 个商机
+            <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+</a>
+</div>
+</div>
+<!-- 中栏 (33% / col-span-4) - 【最近跟进记录】 -->
+<div class="col-span-4 bg-surface-container-lowest rounded-xl p-space-md flex flex-col gap-space-sm shadow-sm min-h-[380px] justify-between">
+<div>
+<div class="flex items-center justify-between pb-2 mb-2 bg-surface-container-low px-space-sm py-1.5 rounded-lg">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[18px] text-primary">timeline</span>
+<span class="font-title text-title text-on-surface">最近跟进记录 (18)</span>
+</div>
+<span class="text-caption font-caption text-outline">近 30 天</span>
+</div>
+<!-- 时间轴列表 -->
+<div class="flex flex-col gap-3 pl-2">
+<!-- 节点 1 -->
+<div class="relative pl-4 flex flex-col gap-1">
+<div class="absolute left-0 top-1 w-2 h-2 rounded-full bg-primary-container"></div>
+<div class="flex items-center justify-between text-caption font-caption">
+<span class="font-label-medium text-on-surface">2024-09-23 16:30 · 企微沟通</span>
+<span class="text-outline">张三 / 李经理</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant line-clamp-2">
+                与采购总监 Lukas 沟通亚克力独立浴桶 MOQ 及 FOB 条款，客户对 V3 报价反馈积极，拟定下周发起采购委员会初审。
+              </p>
+</div>
+<!-- 节点 2 -->
+<div class="relative pl-4 flex flex-col gap-1">
+<div class="absolute left-0 top-1 w-2 h-2 rounded-full bg-outline-variant"></div>
+<div class="flex items-center justify-between text-caption font-caption">
+<span class="font-label-medium text-on-surface">2024-09-18 10:15 · 视频会议</span>
+<span class="text-outline">张三</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant line-clamp-2">
+                技术研发陪同确认欧标 CE/CUPC 卫浴认证文件及防摔包装测试报告，客户认可我方工厂测试标准。
+              </p>
+</div>
+<!-- 节点 3 -->
+<div class="relative pl-4 flex flex-col gap-1">
+<div class="absolute left-0 top-1 w-2 h-2 rounded-full bg-outline-variant"></div>
+<div class="flex items-center justify-between text-caption font-caption">
+<span class="font-label-medium text-on-surface">2024-09-02 14:00 · 邮件往来</span>
+<span class="text-outline">系统自动</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant line-clamp-2">
+                发送 2024 秋季新产品画册与样册 PDF，客户已下载查阅配件清单及材质参数。
+              </p>
+</div>
+</div>
+</div>
+<div class="pt-2">
+<button class="w-full h-8 rounded-lg bg-surface-container hover:bg-surface-container-high text-on-surface font-label-medium text-body-compact flex items-center justify-center gap-1 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">add_comment</span>
+            + 快速新增跟进记录
+          </button>
+</div>
+</div>
+<!-- 右栏 (33% / col-span-4) - 【最新报价与订单】 -->
+<div class="col-span-4 bg-surface-container-lowest rounded-xl p-space-md flex flex-col gap-space-sm shadow-sm min-h-[380px] justify-between">
+<div>
+<div class="flex items-center justify-between pb-2 mb-2 bg-surface-container-low px-space-sm py-1.5 rounded-lg">
+<div class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[18px] text-primary">receipt_long</span>
+<span class="font-title text-title text-on-surface">最新报价与订单</span>
+</div>
+<span class="text-caption font-caption text-outline">单据动态</span>
+</div>
+<!-- 报价单与订单混合流 -->
+<div class="flex flex-col gap-2">
+<!-- 报价单项 1 -->
+<div class="p-2.5 rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors flex items-center justify-between">
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-1.5">
+<span class="text-caption font-caption px-1 rounded bg-primary-fixed text-primary font-label-medium">报价单</span>
+<span class="font-label-medium text-body-compact text-on-surface truncate">Q20240924001 V3</span>
+</div>
+<span class="text-caption font-caption text-outline truncate">德国浴桶项目 · 500套</span>
+</div>
+<div class="flex flex-col items-end shrink-0">
+<span class="font-label-medium text-body-compact text-on-surface tabular-nums">$75,000</span>
+<span class="text-caption font-caption px-1.5 py-0.2 rounded-full bg-surface-container text-tertiary">审批中</span>
+</div>
+</div>
+<!-- 报价单项 2 -->
+<div class="p-2.5 rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors flex items-center justify-between">
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-1.5">
+<span class="text-caption font-caption px-1 rounded bg-surface-container text-outline font-label-medium">报价单</span>
+<span class="font-label-medium text-body-compact text-on-surface truncate">Q20240918001 V1</span>
+</div>
+<span class="text-caption font-caption text-outline truncate">德国浴桶项目 · 初始报价</span>
+</div>
+<div class="flex flex-col items-end shrink-0">
+<span class="font-label-medium text-body-compact text-outline tabular-nums">$82,000</span>
+<span class="text-caption font-caption text-outline">已过期</span>
+</div>
+</div>
+<!-- 订单项 1 -->
+<div class="p-2.5 rounded-lg bg-surface-container-low hover:bg-surface-container transition-colors flex items-center justify-between">
+<div class="flex flex-col min-w-0">
+<div class="flex items-center gap-1.5">
+<span class="text-caption font-caption px-1 rounded bg-secondary-fixed text-on-secondary-fixed font-label-medium">销售单</span>
+<span class="font-label-medium text-body-compact text-on-surface truncate">SO20240901002</span>
+</div>
+<span class="text-caption font-caption text-outline truncate">准时交货率 100%</span>
+</div>
+<div class="flex flex-col items-end shrink-0">
+<span class="font-headline-sm text-headline-sm text-primary tabular-nums">¥460,000</span>
+<span class="text-caption font-caption px-1.5 py-0.2 rounded-full bg-surface-container text-primary font-label-medium">生产中</span>
+</div>
+</div>
+</div>
+</div>
+<div class="pt-2 text-center">
+<a class="text-body-compact font-label-medium text-primary hover:underline flex items-center justify-center gap-1" href="#">
+            查看全部报价与订单明细
+            <span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+</a>
+</div>
+</div>
+</section>
+</div>
+<script>
+    (function() {
+      // 更多操作下拉交互
+      const moreBtn = document.getElementById('moreBtn');
+      const moreMenu = document.getElementById('moreMenu');
+      if (moreBtn && moreMenu) {
+        moreBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          moreMenu.classList.toggle('hidden');
+        });
+        document.addEventListener('click', function() {
+          moreMenu.classList.add('hidden');
+        });
+      }
+    })();
+  </script>
+</div></main></div></body></html>

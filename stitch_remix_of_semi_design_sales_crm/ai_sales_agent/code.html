@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={darkMode:"class",theme:{extend:{colors:{"secondary":"#7431d3","primary-fixed":"#dae1ff","on-tertiary-fixed":"#380d00","surface-dim":"#d7dae5","surface-container-high":"#e5e8f3","on-tertiary":"#ffffff","secondary-fixed":"#ecdcff","on-error":"#ffffff","surface-tint":"#0054d6","on-tertiary-container":"#fff2ee","on-primary-fixed":"#001849","tertiary-container":"#c74200","on-primary":"#ffffff","primary":"#004ec6","error":"#ba1a1a","on-primary-fixed-variant":"#003fa4","outline-variant":"#c2c6d8","on-secondary-fixed-variant":"#5e08bd","surface":"#f9f9ff","outline":"#727687","surface-container":"#ebedf9","inverse-on-surface":"#eef0fc","inverse-surface":"#2c3039","surface-bright":"#f9f9ff","on-tertiary-fixed-variant":"#822800","on-surface":"#181c23","on-secondary-fixed":"#270057","primary-container":"#0064fa","error-container":"#ffdad6","secondary-fixed-dim":"#d5baff","on-error-container":"#93000a","tertiary":"#9e3300","on-surface-variant":"#424655","on-secondary-container":"#fffbff","background":"#f9f9ff","secondary-container":"#8e4fee","on-secondary":"#ffffff","on-primary-container":"#f3f3ff","tertiary-fixed":"#ffdbcf","surface-variant":"#dfe2ed","surface-container-low":"#f1f3ff","inverse-primary":"#b3c5ff","primary-fixed-dim":"#b3c5ff","surface-container-lowest":"#ffffff","surface-container-highest":"#dfe2ed","tertiary-fixed-dim":"#ffb59b","on-background":"#181c23"},borderRadius:{"DEFAULT":"0.125rem","lg":"0.25rem","xl":"0.5rem","full":"0.75rem"},spacing:{"gutter-compact":"12px","space-md":"16px","space-sm":"8px","space-xs":"4px","space-lg":"24px","margin":"24px","space-xl":"32px","gutter":"16px","margin-header":"16px"},fontFamily:{"headline-md":["Inter"],"caption":["Inter"],"headline-sm":["Inter"],"title":["Inter"],"headline-lg":["Inter"],"body-compact":["Inter"],"headline-xl":["Inter"],"label-medium":["Inter"],"label-default":["Inter"],"body-default":["Inter"]},fontSize:{"headline-md":["20px",{"lineHeight":"28px","fontWeight":"600"}],"caption":["11px",{"lineHeight":"16px","fontWeight":"400"}],"headline-sm":["16px",{"lineHeight":"24px","fontWeight":"600"}],"title":["14px",{"lineHeight":"22px","fontWeight":"600"}],"headline-lg":["24px",{"lineHeight":"32px","fontWeight":"600"}],"body-compact":["13px",{"lineHeight":"20px","fontWeight":"400"}],"headline-xl":["32px",{"lineHeight":"40px","fontWeight":"600"}],"label-medium":["12px",{"lineHeight":"18px","fontWeight":"500"}],"label-default":["12px",{"lineHeight":"18px","fontWeight":"400"}],"body-default":["14px",{"lineHeight":"22px","fontWeight":"400"}]}}}}</script></head><body class="bg-surface font-body-default text-body-default text-on-surface"><aside class="fixed left-0 top-0 h-screen w-[220px] bg-surface-container-lowest shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-50 flex flex-col justify-between select-none"><div class="flex flex-col"><div class="h-14 px-margin-header flex items-center gap-space-sm bg-surface-container-lowest"><div class="w-7 h-7 rounded-lg bg-primary-container flex items-center justify-center text-on-primary font-headline-sm text-headline-sm">S</div><div class="flex flex-col"><span class="font-title text-title text-on-surface leading-tight">Semi CRM</span><span class="font-caption text-caption text-on-surface-variant leading-none">智能销售工作台</span></div></div><nav class="flex flex-col px-space-xs pt-space-xs gap-0.5" data-active-classes="bg-primary-container text-on-primary-container font-headline-sm"><div class="px-space-sm pt-space-sm pb-space-xs font-caption text-caption text-on-surface-variant font-headline-sm">销售协同中心</div><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="dashboard-kanban" href="#"><span class="material-symbols-outlined text-[18px]">dashboard</span><span class="font-body-compact text-body-compact">工作台看板</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="lead-management" href="#"><span class="material-symbols-outlined text-[18px]">filter_alt</span><span class="font-body-compact text-body-compact">线索管理</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="customer-center" href="#"><span class="material-symbols-outlined text-[18px]">domain</span><span class="font-body-compact text-body-compact">客户中心</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="opportunity-funnel" href="#"><span class="material-symbols-outlined text-[18px]">insights</span><span class="font-body-compact text-body-compact">商机漏斗</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="quote-and-orders" href="#"><span class="material-symbols-outlined text-[18px]">request_quote</span><span class="font-body-compact text-body-compact">报价与订单</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="contacts-directory" href="#"><span class="material-symbols-outlined text-[18px]">contacts</span><span class="font-body-compact text-body-compact">联系人通讯录</span></a><div class="px-space-sm pt-space-md pb-space-xs font-caption text-caption text-on-surface-variant font-headline-sm">效能分析</div><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="performance-analytics" href="#"><span class="material-symbols-outlined text-[18px]">query_stats</span><span class="font-body-compact text-body-compact">绩效统计</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="system-settings" href="#"><span class="material-symbols-outlined text-[18px]">settings</span><span class="font-body-compact text-body-compact">系统配置</span></a></nav></div><div class="flex flex-col p-space-xs gap-space-xs bg-surface-container-lowest"><div class="px-space-sm py-space-xs font-caption text-caption text-on-surface-variant font-headline-sm">智能与协同</div><a class="flex items-center justify-between px-space-sm py-2 rounded-lg bg-secondary-fixed text-on-secondary-fixed hover:bg-secondary-fixed-dim hover:text-on-secondary-fixed transition-colors" data-path="ai-sales-agent" href="#"><div class="flex items-center gap-space-sm"><span class="material-symbols-outlined text-secondary text-[20px]">smart_toy</span><span class="font-headline-sm text-headline-sm text-secondary">AI 销售助手</span></div><span class="px-1.5 py-0.5 rounded text-caption font-caption bg-secondary text-on-secondary">Active</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" data-path="wecom-integration" href="#"><span class="material-symbols-outlined text-[18px]">forum</span><span class="font-body-compact text-body-compact">企业微信协同</span></a><div class="mt-space-xs pt-space-xs px-space-sm pb-1 flex items-center justify-between font-caption text-caption text-on-surface-variant"><span class="truncate">标准版 v4.8.2</span><span class="w-2 h-2 rounded-full bg-primary inline-block"></span></div></div></aside><div class="pl-[220px]"><header class="fixed top-0 left-[220px] right-0 h-14 bg-surface-container-lowest/90 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-40 flex items-center justify-between px-margin"><div class="flex items-center gap-space-md"><div class="relative flex items-center"><span class="material-symbols-outlined absolute left-2.5 text-outline text-[18px]">search</span><input class="w-80 h-8 pl-8 pr-3 bg-surface-container-low text-on-surface placeholder:text-outline text-body-compact font-body-compact rounded-lg focus:outline-none focus:bg-surface-container-lowest" placeholder="全局搜索客户、商机、报价、订单... (Ctrl+K)" type="text"/></div></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-container-low text-on-surface-variant text-caption font-caption"><span class="w-1.5 h-1.5 rounded-full bg-primary"></span><span>专线已连接</span></div><div class="flex items-center gap-space-xs"><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors relative" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span><span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-error"></span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors relative" type="button"><span class="material-symbols-outlined text-[20px]">mail</span><span class="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-primary"></span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">help</span></button></div><div class="flex items-center gap-space-sm pl-space-xs"><div class="flex flex-col items-end"><span class="font-title text-title text-on-surface leading-none">张三</span><span class="font-caption text-caption text-on-surface-variant leading-tight">销售部 · 高级业务经理</span></div><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></header><main class="relative pt-14 w-full bg-surface min-h-screen"><div class="flex flex-col w-full">
+<!-- Sub-header Workspace Status Bar -->
+<div class="w-full bg-surface-container-lowest px-space-lg py-2.5 flex items-center justify-between border-b border-surface-container select-none">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-2">
+<div class="w-7 h-7 rounded bg-secondary-fixed text-secondary flex items-center justify-center">
+<span class="material-symbols-outlined text-[18px]">smart_toy</span>
+</div>
+<div class="flex flex-col">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm text-on-surface">AI Sales Agent 智能销售助理</span>
+<span class="px-2 py-0.5 rounded-full text-caption font-caption bg-secondary-fixed text-on-secondary-fixed flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+              Claude 3.5 Sonnet / DeepSeek-R1 企业版
+            </span>
+</div>
+<span class="font-caption text-caption text-on-surface-variant flex items-center gap-1.5 mt-0.5">
+<span class="inline-block w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+            运行状态: 实时待命 · 已挂载 CRM 核心知识库 (含 86 客户档案、3 报价版本及企微即时聊天存档)
+          </span>
+</div>
+</div>
+</div>
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-2 px-2.5 py-1 rounded bg-surface-container-low text-caption font-caption text-on-surface-variant">
+<span class="material-symbols-outlined text-[16px] text-outline">verified_user</span>
+<span>数据权限: 销售一部全部可见</span>
+</div>
+<div class="flex items-center gap-2 px-2.5 py-1 rounded bg-surface-container-low">
+<span class="font-caption text-caption text-on-surface-variant">沙盒模拟</span>
+<label class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox"/>
+<div class="w-7 h-4 bg-outline-variant peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-surface-container-lowest after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface-container-lowest after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-primary-container"></div>
+</label>
+</div>
+<div class="flex items-center gap-1.5">
+<button class="h-8 px-2.5 rounded bg-surface text-on-surface-variant hover:bg-surface-container-high transition-colors font-body-compact text-body-compact flex items-center gap-1" id="clear-chat-btn">
+<span class="material-symbols-outlined text-[16px]">restart_alt</span>
+<span>清空上下文</span>
+</button>
+<button class="h-8 px-3 rounded bg-primary-container hover:bg-primary text-on-primary transition-colors font-body-compact text-body-compact flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">add</span>
+<span>新建对话</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Workspace 3-Column Layout Canvas -->
+<div class="w-full flex-1 flex overflow-hidden min-h-[calc(100vh-108px)]">
+<!-- LEFT COLUMN: Conversation Library & Skills (260px) -->
+<div class="w-[260px] bg-surface-container-lowest border-r border-surface-container flex flex-col justify-between shrink-0 select-none">
+<div class="flex flex-col h-full overflow-y-auto">
+<div class="p-space-sm">
+<button class="w-full h-8 rounded bg-primary-fixed text-primary hover:bg-primary-fixed-dim transition-colors font-label-medium text-label-medium flex items-center justify-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">chat_bubble</span>
+<span>+ 新建对话会话</span>
+</button>
+</div>
+<!-- Prompt Skills Section -->
+<div class="px-space-sm pt-space-xs pb-space-sm flex flex-col gap-1">
+<div class="px-2 py-1 flex items-center justify-between text-caption font-caption text-outline">
+<span class="font-headline-sm uppercase text-[10px] tracking-wider">智能场景技能库</span>
+<span class="material-symbols-outlined text-[14px]">auto_fix_high</span>
+</div>
+<button class="w-full text-left px-2.5 py-1.5 rounded bg-surface-container-low text-primary font-body-compact text-body-compact flex items-center gap-2">
+<span class="text-[14px]">💡</span>
+<span class="truncate font-label-medium">报价策略与毛利测算</span>
+</button>
+<button class="w-full text-left px-2.5 py-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-body-compact text-body-compact flex items-center gap-2 transition-colors">
+<span class="text-[14px]">✉️</span>
+<span class="truncate">对德外贸商务邮件草拟</span>
+</button>
+<button class="w-full text-left px-2.5 py-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-body-compact text-body-compact flex items-center gap-2 transition-colors">
+<span class="text-[14px]">📊</span>
+<span class="truncate">USD/CNY 汇率防跌破预演</span>
+</button>
+<button class="w-full text-left px-2.5 py-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-body-compact text-body-compact flex items-center gap-2 transition-colors">
+<span class="text-[14px]">🔍</span>
+<span class="truncate">竞品报价情报与抗辩</span>
+</button>
+<button class="w-full text-left px-2.5 py-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface font-body-compact text-body-compact flex items-center gap-2 transition-colors">
+<span class="text-[14px]">⚡</span>
+<span class="truncate">企微未回复客户唤醒策略</span>
+</button>
+</div>
+<div class="h-[1px] bg-surface-container mx-space-sm my-1"></div>
+<!-- Recent History Section -->
+<div class="px-space-sm py-space-xs flex flex-col gap-1 flex-1">
+<div class="px-2 py-1 font-caption text-caption text-outline uppercase text-[10px] tracking-wider">最近会话历史</div>
+<div class="flex flex-col gap-0.5">
+<span class="px-2 pt-1.5 pb-0.5 text-caption font-caption text-on-surface-variant font-headline-sm">今天</span>
+<a class="px-2.5 py-2 rounded bg-surface-container text-on-surface flex flex-col gap-0.5 transition-colors group" href="#">
+<div class="flex items-center justify-between">
+<span class="font-label-medium text-label-medium truncate text-primary group-hover:text-primary">ABC GmbH 浴桶 V3 降价核算</span>
+<span class="text-caption font-caption text-outline">10:35</span>
+</div>
+<span class="text-caption font-caption text-on-surface-variant truncate">测算结果：方案B综合毛利25.54%</span>
+</a>
+<a class="px-2.5 py-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface flex flex-col gap-0.5 transition-colors" href="#">
+<div class="flex items-center justify-between">
+<span class="font-body-compact text-body-compact truncate">智能恒温龙头英文说明草拟</span>
+<span class="text-caption font-caption text-outline">09:15</span>
+</div>
+</a>
+</div>
+<div class="flex flex-col gap-0.5 mt-2">
+<span class="px-2 pt-1.5 pb-0.5 text-caption font-caption text-on-surface-variant font-headline-sm">本周</span>
+<a class="px-2.5 py-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface flex flex-col gap-0.5 transition-colors" href="#">
+<div class="flex items-center justify-between">
+<span class="font-body-compact text-body-compact truncate">荷兰 Lukas 账期谈判策略</span>
+<span class="text-caption font-caption text-outline">09-22</span>
+</div>
+</a>
+<a class="px-2.5 py-1.5 rounded hover:bg-surface-container text-on-surface-variant hover:text-on-surface flex flex-col gap-0.5 transition-colors" href="#">
+<div class="flex items-center justify-between">
+<span class="font-body-compact text-body-compact truncate">广交会 12 条新线索批量自动打标</span>
+<span class="text-caption font-caption text-outline">09-20</span>
+</div>
+</a>
+</div>
+</div>
+</div>
+<!-- Quick Knowledge Base Sync Info -->
+<div class="p-space-sm border-t border-surface-container bg-surface-container-low flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-primary">cloud_sync</span>
+<span class="text-caption font-caption text-on-surface">CRM 向量库已就绪</span>
+</div>
+<span class="text-caption font-caption text-outline">10:30 同步</span>
+</div>
+</div>
+<!-- MIDDLE COLUMN: Conversation Stream & Structured Reasoning (Flex-1) -->
+<div class="flex-1 bg-surface flex flex-col overflow-hidden">
+<!-- Attached Context Bar -->
+<div class="h-10 px-space-md bg-surface-container-lowest border-b border-surface-container flex items-center justify-between select-none">
+<div class="flex items-center gap-1.5 overflow-x-auto py-1">
+<span class="text-caption font-caption text-outline shrink-0">挂载上下文:</span>
+<div class="flex items-center gap-1 px-2 py-0.5 rounded bg-surface-container text-caption font-caption text-on-surface shrink-0">
+<span>🏢</span>
+<span>客户: ABC GmbH</span>
+<span class="material-symbols-outlined text-[12px] text-outline hover:text-on-surface cursor-pointer">close</span>
+</div>
+<div class="flex items-center gap-1 px-2 py-0.5 rounded bg-surface-container text-caption font-caption text-on-surface shrink-0">
+<span>💼</span>
+<span>商机: 德国浴桶 500 件</span>
+<span class="material-symbols-outlined text-[12px] text-outline hover:text-on-surface cursor-pointer">close</span>
+</div>
+<div class="flex items-center gap-1 px-2 py-0.5 rounded bg-surface-container text-caption font-caption text-on-surface shrink-0">
+<span>📄</span>
+<span>报价单: Q20240924001 V3</span>
+<span class="material-symbols-outlined text-[12px] text-outline hover:text-on-surface cursor-pointer">close</span>
+</div>
+<div class="flex items-center gap-1 px-2 py-0.5 rounded bg-surface-container text-caption font-caption text-on-surface shrink-0">
+<span>💬</span>
+<span>企微: 李经理聊天记录</span>
+<span class="material-symbols-outlined text-[12px] text-outline hover:text-on-surface cursor-pointer">close</span>
+</div>
+</div>
+<button class="text-caption font-caption text-primary hover:underline shrink-0 pl-2">
+          + 添加引用
+        </button>
+</div>
+<!-- Dialogue Scroll Area -->
+<div class="flex-1 p-space-lg overflow-y-auto space-y-5">
+<!-- User Message Bubble -->
+<div class="flex items-start justify-end gap-space-sm">
+<div class="max-w-[75%] flex flex-col items-end">
+<div class="flex items-center gap-2 mb-1">
+<span class="text-caption font-caption text-outline">10:34</span>
+<span class="font-label-medium text-label-medium text-on-surface">张三 (业务经理)</span>
+</div>
+<div class="bg-primary-container text-on-primary p-space-md rounded-xl rounded-tr-none text-body-default font-body-default leading-relaxed shadow-sm">
+              ABC GmbH 的采购总监 Lukas 反馈我们 V3 报价中独立式亚克力浴桶（300件）$128 还是偏高，要求降到 $122，同时保持 30 天交期。如果降到 $122，我们的综合毛利会掉到多少？有没有可行的折中方案或对冲策略？
+            </div>
+</div>
+<div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-on-primary font-headline-sm text-headline-sm shrink-0 mt-6">
+            张
+          </div>
+</div>
+<!-- AI Agent Response -->
+<div class="flex items-start gap-space-sm">
+<div class="w-8 h-8 rounded-full bg-secondary-fixed text-secondary flex items-center justify-center shrink-0 mt-1 shadow-sm">
+<span class="material-symbols-outlined text-[18px]">smart_toy</span>
+</div>
+<div class="flex-1 max-w-[94%] flex flex-col gap-3">
+<div class="flex items-center gap-2">
+<span class="font-headline-sm text-headline-sm text-on-surface">AI Sales Agent</span>
+<span class="px-1.5 py-0.5 rounded text-[11px] font-caption bg-secondary-fixed text-on-secondary-fixed">推理引擎在线</span>
+<span class="text-caption font-caption text-outline">10:35 · 耗时 2.4s</span>
+</div>
+<!-- Thinking Process Collapsible Box -->
+<div class="bg-surface-container-low rounded-lg p-3 border border-surface-container">
+<button class="w-full flex items-center justify-between text-left text-on-surface-variant font-label-medium text-label-medium" id="toggle-thinking">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[16px] text-secondary">psychology</span>
+<span>推理深度思考 · 耗时 2.4s</span>
+<span class="px-1.5 py-0.2 rounded text-[10px] bg-surface-container-high text-outline">CoT 逻辑链已完成</span>
+</div>
+<span class="material-symbols-outlined text-[16px] transition-transform" id="thinking-arrow">expand_more</span>
+</button>
+<div class="mt-2.5 pt-2.5 border-t border-surface-container space-y-1.5 font-caption text-caption text-on-surface-variant" id="thinking-content">
+<div class="flex items-start gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 shrink-0"></span>
+<span><strong>调取 CRM 数据库:</strong> 调出 SKU-BT-001 (亚克力独立浴桶 1700mm) 当前采购基准成本为 $92.50，装箱总体积 42.6 CBM，原 V3 综合毛利率为 26.8% (公司财务审核红线 25.0%)。</span>
+</div>
+<div class="flex items-start gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-error mt-1.5 shrink-0"></span>
+<span><strong>压力测算:</strong> 若单一降价至 $122.00，该 SKU 单项毛利率由 27.73% 跌至 24.18%，带动全单 500 件综合毛利率降至 24.34%，将直接触发 ERP 财务特批锁单。</span>
+</div>
+<div class="flex items-start gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary mt-1.5 shrink-0"></span>
+<span><strong>客户画像对齐:</strong> 调取 Lukas De Boer 企微历史沟通与以往订单，其在每年 Q4 采购注重交期与配件防破损。当前中国至鹿特丹海运整柜微跌 $140/FEU，可借配件礼包置换单价妥协。</span>
+</div>
+</div>
+</div>
+<!-- Warning Banner -->
+<div class="bg-error-container text-on-error-container p-3 rounded-lg flex items-start gap-2.5 border border-error/20">
+<span class="material-symbols-outlined text-[20px] text-error shrink-0">warning</span>
+<div class="flex-1 font-body-compact text-body-compact">
+<span class="font-headline-sm">跌破毛利红线预警：</span>若直接降价至 <strong>$122.00</strong>，订单总毛利率将下滑至 <strong>24.34%</strong>（低于财务审批底线 25.0%）。该操作会触发一级财务总监特批流程，且压缩后续加急排产的容错空间。
+              </div>
+</div>
+<!-- Structured Reasoning Card -->
+<div class="bg-surface-container-lowest rounded-xl p-4 border border-surface-container flex flex-col gap-3.5 shadow-sm">
+<div class="flex items-center justify-between">
+<span class="font-title text-title text-on-surface">多维度降价对冲策略推演</span>
+<span class="text-caption font-caption text-outline">模型置信度: 94.6%</span>
+</div>
+<!-- Mini Data Table Comparison -->
+<div class="w-full overflow-hidden rounded border border-surface-container">
+<table class="w-full text-left font-body-compact text-body-compact border-collapse">
+<thead>
+<tr class="bg-surface-container-low text-on-surface-variant font-label-medium text-[12px] h-9 border-b border-surface-container">
+<th class="px-3 py-1">方案策略</th>
+<th class="px-3 py-1">浴桶单价</th>
+<th class="px-3 py-1">订单总金额</th>
+<th class="px-3 py-1">预估毛利额</th>
+<th class="px-3 py-1">综合毛利率</th>
+<th class="px-3 py-1 text-right">审核结论</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-container">
+<tr class="h-10 hover:bg-surface-container-low/50">
+<td class="px-3 py-1.5 font-label-medium text-error">方案 A (客户底价)</td>
+<td class="px-3 py-1.5 tabular-nums">$122.00</td>
+<td class="px-3 py-1.5 tabular-nums">$71,450</td>
+<td class="px-3 py-1.5 tabular-nums text-on-surface-variant">$17,830</td>
+<td class="px-3 py-1.5 tabular-nums font-label-medium text-error">24.34%</td>
+<td class="px-3 py-1.5 text-right">
+<span class="px-2 py-0.5 rounded text-[11px] bg-error-container text-on-error-container">需总监特批</span>
+</td>
+</tr>
+<tr class="h-10 bg-primary-fixed/20 hover:bg-primary-fixed/30">
+<td class="px-3 py-1.5 font-label-medium text-primary flex items-center gap-1">
+<span>方案 B (推荐平衡)</span>
+<span class="material-symbols-outlined text-[14px]">stars</span>
+</td>
+<td class="px-3 py-1.5 tabular-nums font-label-medium text-on-surface">$125.00</td>
+<td class="px-3 py-1.5 tabular-nums">$72,350</td>
+<td class="px-3 py-1.5 tabular-nums text-on-surface font-label-medium">$18,480</td>
+<td class="px-3 py-1.5 tabular-nums font-label-medium text-primary">25.54%</td>
+<td class="px-3 py-1.5 text-right">
+<span class="px-2 py-0.5 rounded text-[11px] bg-surface-container-highest text-primary font-label-medium">系统自审通过</span>
+</td>
+</tr>
+<tr class="h-10 hover:bg-surface-container-low/50">
+<td class="px-3 py-1.5 font-label-medium text-on-surface">方案 C (年度阶梯)</td>
+<td class="px-3 py-1.5 tabular-nums">$126.00</td>
+<td class="px-3 py-1.5 tabular-nums">$73,550</td>
+<td class="px-3 py-1.5 tabular-nums text-on-surface-variant">$19,260</td>
+<td class="px-3 py-1.5 tabular-nums font-label-medium text-on-surface">26.20%</td>
+<td class="px-3 py-1.5 text-right">
+<span class="px-2 py-0.5 rounded text-[11px] bg-surface-container text-on-surface-variant">条件准入</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Recommendation breakdown text -->
+<div class="p-3 bg-surface-container-low rounded-lg space-y-1.5 text-body-compact font-body-compact text-on-surface-variant">
+<div class="font-headline-sm text-on-surface text-[13px] flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-primary">tips_and_updates</span>
+<span>Agent 谈判谈判对策拆解 (针对方案 B)：</span>
+</div>
+<p class="leading-relaxed">
+                  1. <strong>价格折中：</strong>报 $125.00，相比其要求的 $122.00 仅相差 $3.00，但保住了 25.54% 的安全毛利基准线；<br/>
+                  2. <strong>价值对冲：</strong>随柜赠送价值 $280 的 3% 原厂防刮竹木置物架及密封胶备件（该备件在我方生产边角料成本不足 $65），化解客户直接比价压迫感；<br/>
+                  3. <strong>锁定交期承诺：</strong>在合同中增加「30天准时离港保证 (含延误日千分之一赔付免责条款)」，直接击中 Lukas 最担忧的黑五旺季断货痛点。
+                </p>
+</div>
+<!-- Action Bar -->
+<div class="flex items-center gap-2 pt-1 border-t border-surface-container">
+<button class="h-8 px-3 rounded bg-primary-container text-on-primary hover:bg-primary transition-colors font-label-medium text-label-medium flex items-center gap-1.5 shadow-sm">
+<span class="material-symbols-outlined text-[16px]">draw</span>
+<span>一键生成 V4 报价单草稿 (采纳方案B)</span>
+</button>
+<button class="h-8 px-3 rounded bg-secondary-fixed text-secondary hover:bg-secondary-fixed-dim transition-colors font-label-medium text-label-medium flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">mail</span>
+<span>生成对德回复商务邮件草稿</span>
+</button>
+<button class="h-8 px-3 rounded bg-surface-container text-on-surface hover:bg-surface-container-high transition-colors font-label-medium text-label-medium flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">analytics</span>
+<span>敏感性分析图</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- BOTTOM INPUT AREA -->
+<div class="p-space-md bg-surface-container-lowest border-t border-surface-container flex flex-col gap-2">
+<!-- Quick Prompt Pills -->
+<div class="flex items-center gap-2 overflow-x-auto pb-1 text-caption font-caption text-on-surface-variant">
+<span class="text-outline shrink-0">快捷指令:</span>
+<button class="px-2 py-0.5 rounded-full bg-surface-container hover:bg-surface-container-high text-on-surface flex items-center gap-1 shrink-0 transition-colors">
+<span class="text-primary font-label-medium">@</span> 引用客户资产
+          </button>
+<button class="px-2 py-0.5 rounded-full bg-surface-container hover:bg-surface-container-high text-on-surface flex items-center gap-1 shrink-0 transition-colors">
+<span class="text-secondary font-label-medium">/</span> 快速核算毛利
+          </button>
+<button class="px-2 py-0.5 rounded-full bg-surface-container hover:bg-surface-container-high text-on-surface flex items-center gap-1 shrink-0 transition-colors">
+<span>📈</span> 生成阶梯量价对比图
+          </button>
+<button class="px-2 py-0.5 rounded-full bg-surface-container hover:bg-surface-container-high text-on-surface flex items-center gap-1 shrink-0 transition-colors">
+<span>🇩🇪</span> 德国贸易合规自检
+          </button>
+</div>
+<!-- Input Box -->
+<div class="relative bg-surface rounded-lg border border-surface-container focus-within:border-primary-container focus-within:ring-2 focus-within:ring-primary-container/20 transition-all p-2 flex flex-col justify-between">
+<textarea class="w-full bg-transparent resize-none border-none outline-none font-body-compact text-body-compact text-on-surface placeholder:text-outline" placeholder="向 AI Sales Agent 提问，输入 @ 关联客户/商机/报价，Shift+Enter 换行..." rows="2"></textarea>
+<div class="flex items-center justify-between pt-2 border-t border-surface-container/60">
+<div class="flex items-center gap-1 text-outline">
+<button class="p-1 hover:text-on-surface rounded hover:bg-surface-container transition-colors" title="附加文件">
+<span class="material-symbols-outlined text-[18px]">attach_file</span>
+</button>
+<button class="p-1 hover:text-on-surface rounded hover:bg-surface-container transition-colors" title="引用系统报价单">
+<span class="material-symbols-outlined text-[18px]">receipt_long</span>
+</button>
+<button class="p-1 hover:text-on-surface rounded hover:bg-surface-container transition-colors" title="语音输入">
+<span class="material-symbols-outlined text-[18px]">mic</span>
+</button>
+<span class="text-caption font-caption text-outline-variant pl-2">已就绪 · DeepSeek-R1 增强模式</span>
+</div>
+<div class="flex items-center gap-2">
+<button class="h-7 px-3 rounded bg-primary-container hover:bg-primary text-on-primary transition-colors font-label-medium text-label-medium flex items-center gap-1">
+<span>发送</span>
+<span class="material-symbols-outlined text-[14px]">send</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- RIGHT COLUMN: Real-Time CRM Sandbox & Executive Panel (360px) -->
+<div class="w-[360px] bg-surface-container-lowest border-l border-surface-container flex flex-col shrink-0 select-none overflow-y-auto">
+<!-- Right Panel Tabs -->
+<div class="h-10 bg-surface-container-low border-b border-surface-container flex items-center px-2">
+<button class="flex-1 py-2 text-center font-label-medium text-label-medium text-primary border-b-2 border-primary bg-surface-container-lowest">
+          实时沙盒测算
+        </button>
+<button class="flex-1 py-2 text-center font-body-compact text-body-compact text-on-surface-variant hover:text-on-surface">
+          关联 CRM 画像
+        </button>
+<button class="flex-1 py-2 text-center font-body-compact text-body-compact text-on-surface-variant hover:text-on-surface">
+          执行历史
+        </button>
+</div>
+<div class="p-space-md space-y-space-md flex-1">
+<!-- Interactive What-If Simulator -->
+<div class="bg-surface-container-low rounded-lg p-space-md border border-surface-container flex flex-col gap-space-sm">
+<div class="flex items-center justify-between">
+<span class="font-headline-sm text-headline-sm text-on-surface flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[18px] text-primary">tune</span>
+              What-If 边际测算
+            </span>
+<span class="px-1.5 py-0.5 rounded text-[11px] font-caption bg-surface-container-high text-primary">实时动态联动</span>
+</div>
+<!-- Parameter 1: Price Slider -->
+<div class="space-y-1 pt-1">
+<div class="flex justify-between items-center text-body-compact font-body-compact">
+<span class="text-on-surface-variant">亚克力浴桶单价 (USD)</span>
+<span class="font-headline-sm text-primary tabular-nums" id="price-display">$125.00</span>
+</div>
+<input class="w-full accent-primary h-1.5 bg-surface-container-highest rounded cursor-pointer" id="price-range" max="135" min="115" step="0.5" type="range" value="125"/>
+<div class="flex justify-between text-[11px] font-caption text-outline tabular-nums">
+<span>$115 (破底)</span>
+<span>$122 (客户目标)</span>
+<span>$128 (原报)</span>
+<span>$135</span>
+</div>
+</div>
+<!-- Parameter 2: USD/CNY Exchange -->
+<div class="space-y-1 pt-1">
+<div class="flex justify-between items-center text-body-compact font-body-compact">
+<span class="text-on-surface-variant">基准汇率 (USD/CNY)</span>
+<span class="font-label-medium text-on-surface tabular-nums">7.1800</span>
+</div>
+<div class="grid grid-cols-3 gap-1.5">
+<button class="py-1 rounded bg-surface border border-surface-container text-caption font-caption text-on-surface hover:border-primary">7.1200</button>
+<button class="py-1 rounded bg-primary-fixed/40 border border-primary text-caption font-caption text-primary font-label-medium">7.1800 (当前)</button>
+<button class="py-1 rounded bg-surface border border-surface-container text-caption font-caption text-on-surface hover:border-primary">7.2500</button>
+</div>
+</div>
+<!-- Parameter 3: Port Freight Surcharge -->
+<div class="flex justify-between items-center text-body-compact font-body-compact pt-1">
+<span class="text-on-surface-variant">海运港杂附加 (USD)</span>
+<div class="w-24 h-7 px-2 bg-surface rounded border border-surface-container flex items-center justify-end text-right font-label-medium text-on-surface tabular-nums">
+              $1,700
+            </div>
+</div>
+<!-- Calculated Dashboard KPI inside Sandbox -->
+<div class="mt-2 pt-3 border-t border-surface-container space-y-2">
+<div class="flex items-center justify-between">
+<span class="text-caption font-caption text-outline">推演综合毛利率:</span>
+<span class="font-headline-lg text-headline-lg text-primary tabular-nums" id="margin-kpi">25.54%</span>
+</div>
+<!-- Progress / Safety Bar -->
+<div class="w-full bg-surface-container-high rounded-full h-2 overflow-hidden flex">
+<div class="w-[60%] bg-error/80" title="跌破线"></div>
+<div class="w-[40%] bg-primary transition-all duration-300" id="safety-indicator" title="当前毛利"></div>
+</div>
+<div class="flex justify-between text-[10px] font-caption text-outline">
+<span class="text-error">红线 25.0%</span>
+<span class="text-on-surface-variant">安全毛利区间</span>
+<span class="text-primary">高利润 ≥28%</span>
+</div>
+<div class="grid grid-cols-2 gap-2 pt-2">
+<div class="p-2 rounded bg-surface border border-surface-container flex flex-col">
+<span class="text-[11px] font-caption text-outline">预计净利润</span>
+<span class="font-headline-sm text-on-surface tabular-nums" id="profit-kpi">+$18,480.00</span>
+</div>
+<div class="p-2 rounded bg-surface border border-surface-container flex flex-col">
+<span class="text-[11px] font-caption text-outline">赢单概率推演</span>
+<span class="font-headline-sm text-primary flex items-center gap-0.5 tabular-nums">
+                  82%
+                  <span class="text-[11px] text-primary font-caption">↑ 12%</span>
+</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Buyer Persona & Psychological Insights -->
+<div class="bg-surface-container-low rounded-lg p-space-md border border-surface-container space-y-3">
+<div class="flex items-center justify-between">
+<span class="font-headline-sm text-headline-sm text-on-surface flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[18px] text-secondary">person_search</span>
+              决策人画像透视
+            </span>
+<span class="px-1.5 py-0.5 rounded text-[11px] font-caption bg-secondary-fixed text-on-secondary-fixed">德国籍关键人</span>
+</div>
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-surface-container-high flex items-center justify-center font-headline-sm text-on-surface text-headline-sm shrink-0">
+              LM
+            </div>
+<div class="flex flex-col min-w-0">
+<span class="font-title text-title text-on-surface truncate">Lukas Müller</span>
+<span class="text-caption font-caption text-on-surface-variant truncate">ABC GmbH · 采购总监 (Head of Procurement)</span>
+</div>
+</div>
+<div class="space-y-2 text-caption font-caption text-on-surface-variant border-t border-surface-container pt-2">
+<div class="flex items-center justify-between">
+<span>价格敏感度:</span>
+<span class="font-label-medium text-on-surface">中等 (注重综合ROI)</span>
+</div>
+<div class="flex items-center justify-between">
+<span>核心风险诉求:</span>
+<span class="font-label-medium text-on-surface">到港准时率 / CE认证合规</span>
+</div>
+<div class="flex items-center justify-between">
+<span>沟通习惯:</span>
+<span class="font-label-medium text-on-surface">结构化邮件 / 附件清晰</span>
+</div>
+<div class="flex items-center justify-between">
+<span>决策周期:</span>
+<span class="font-label-medium text-on-surface">3 ~ 5 工作日</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Push to CRM Action -->
+<div class="p-space-md border-t border-surface-container bg-surface-container-lowest">
+<button class="w-full h-9 rounded bg-primary-container text-on-primary hover:bg-primary transition-all font-label-medium text-label-medium flex items-center justify-center gap-1.5 shadow-sm" id="push-to-crm-btn">
+<span class="material-symbols-outlined text-[16px]">cloud_upload</span>
+<span>推送方案至 CRM 报价单 (V4 分支)</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+<script>
+  // Interactive Slider for What-If Simulation
+  const priceRange = document.getElementById('price-range');
+  const priceDisplay = document.getElementById('price-display');
+  const marginKpi = document.getElementById('margin-kpi');
+  const profitKpi = document.getElementById('profit-kpi');
+  const safetyIndicator = document.getElementById('safety-indicator');
+
+  if (priceRange) {
+    priceRange.addEventListener('input', function(e) {
+      const price = parseFloat(e.target.value);
+      priceDisplay.textContent = `$${price.toFixed(2)}`;
+
+      // Approximate dynamic margin model
+      // Base: at $125 -> 25.54%, at $122 -> 24.34%, at $128 -> 26.8%
+      const margin = 24.34 + (price - 122.0) * 0.4;
+      const profit = 17830 + (price - 122.0) * 216;
+
+      marginKpi.textContent = `${margin.toFixed(2)}%`;
+      profitKpi.textContent = `+$${profit.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+      if (margin < 25.0) {
+        marginKpi.className = 'font-headline-lg text-headline-lg text-error tabular-nums';
+        safetyIndicator.className = 'w-[40%] bg-error transition-all duration-300';
+      } else {
+        marginKpi.className = 'font-headline-lg text-headline-lg text-primary tabular-nums';
+        safetyIndicator.className = 'w-[40%] bg-primary transition-all duration-300';
+      }
+    });
+  }
+
+  // Thinking Process Box Collapse Toggle
+  const toggleThinking = document.getElementById('toggle-thinking');
+  const thinkingContent = document.getElementById('thinking-content');
+  const thinkingArrow = document.getElementById('thinking-arrow');
+
+  if (toggleThinking && thinkingContent && thinkingArrow) {
+    toggleThinking.addEventListener('click', () => {
+      const isHidden = thinkingContent.classList.toggle('hidden');
+      thinkingArrow.style.transform = isHidden ? 'rotate(-90deg)' : 'rotate(0deg)';
+    });
+  }
+
+  // Push to CRM feedback
+  const pushBtn = document.getElementById('push-to-crm-btn');
+  if (pushBtn) {
+    pushBtn.addEventListener('click', () => {
+      const originalText = pushBtn.innerHTML;
+      pushBtn.innerHTML = '<span class="material-symbols-outlined text-[16px]">check_circle</span> 方案已同步至报价分支 Q20240924001-V4';
+      pushBtn.classList.remove('bg-primary-container');
+      pushBtn.classList.add('bg-primary');
+      setTimeout(() => {
+        pushBtn.innerHTML = originalText;
+        pushBtn.classList.add('bg-primary-container');
+        pushBtn.classList.remove('bg-primary');
+      }, 2500);
+    });
+  }
+</script></main></div></body></html>

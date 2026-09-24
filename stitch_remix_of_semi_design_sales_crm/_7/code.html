@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "secondary-container": "#8e4fee", "on-error": "#ffffff", "inverse-primary": "#b3c5ff", "secondary-fixed-dim": "#d5baff", "on-surface": "#181c23", "on-tertiary-fixed": "#380d00", "on-tertiary-fixed-variant": "#822800", "surface-container-low": "#f1f3ff", "on-primary-fixed-variant": "#003fa4", "on-secondary-fixed-variant": "#5e08bd", "on-secondary-fixed": "#270057", "inverse-surface": "#2c3039", "on-background": "#181c23", "surface-container-lowest": "#ffffff", "secondary": "#7431d3", "surface-dim": "#d7dae5", "on-surface-variant": "#424655", "on-primary": "#ffffff", "surface-container-highest": "#dfe2ed", "on-tertiary-container": "#fff2ee", "error": "#ba1a1a", "on-secondary": "#ffffff", "surface-variant": "#dfe2ed", "on-secondary-container": "#fffbff", "primary-container": "#0064fa", "surface": "#f9f9ff", "secondary-fixed": "#ecdcff", "on-error-container": "#93000a", "surface-container": "#ebedf9", "tertiary-fixed": "#ffdbcf", "tertiary": "#9e3300", "primary": "#004ec6", "tertiary-fixed-dim": "#ffb59b", "primary-fixed-dim": "#b3c5ff", "primary-fixed": "#dae1ff", "inverse-on-surface": "#eef0fc", "background": "#f9f9ff", "on-tertiary": "#ffffff", "error-container": "#ffdad6", "surface-container-high": "#e5e8f3", "on-primary-container": "#f3f3ff", "outline": "#727687", "tertiary-container": "#c74200", "on-primary-fixed": "#001849", "surface-bright": "#f9f9ff", "outline-variant": "#c2c6d8", "surface-tint": "#0054d6" }, "borderRadius": { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }, "spacing": { "gutter": "16px", "space-sm": "8px", "space-lg": "24px", "margin": "24px", "space-xl": "32px", "space-xs": "4px", "gutter-compact": "12px", "space-md": "16px", "margin-header": "16px" }, "fontFamily": { "title": [ "Inter" ], "headline-lg": [ "Inter" ], "headline-xl": [ "Inter" ], "label-default": [ "Inter" ], "body-default": [ "Inter" ], "headline-sm": [ "Inter" ], "headline-md": [ "Inter" ], "label-medium": [ "Inter" ], "caption": [ "Inter" ], "body-compact": [ "Inter" ] }, "fontSize": { "title": [ "14px", { "lineHeight": "22px", "fontWeight": "600" } ], "headline-lg": [ "24px", { "lineHeight": "32px", "fontWeight": "600" } ], "headline-xl": [ "32px", { "lineHeight": "40px", "fontWeight": "600" } ], "label-default": [ "12px", { "lineHeight": "18px", "fontWeight": "400" } ], "body-default": [ "14px", { "lineHeight": "22px", "fontWeight": "400" } ], "headline-sm": [ "16px", { "lineHeight": "24px", "fontWeight": "600" } ], "headline-md": [ "20px", { "lineHeight": "28px", "fontWeight": "600" } ], "label-medium": [ "12px", { "lineHeight": "18px", "fontWeight": "500" } ], "caption": [ "11px", { "lineHeight": "16px", "fontWeight": "400" } ], "body-compact": [ "13px", { "lineHeight": "20px", "fontWeight": "400" } ] } } } }</script></head><body class="bg-surface font-body-default text-body-default text-on-surface antialiased"><aside class="fixed left-0 top-0 h-screen w-[220px] bg-surface-container-lowest z-50 flex flex-col shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-14 flex items-center px-space-md gap-space-sm"><div class="w-7 h-7 rounded-lg bg-primary-container flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">hub</span></div><div class="flex flex-col"><span class="font-headline-sm text-headline-sm text-on-surface tracking-tight">Apex CRM</span></div></div><div class="flex-1 overflow-y-auto px-space-xs py-space-sm space-y-space-md"><nav class="space-y-space-xs" data-active-classes="bg-primary-container text-on-primary-container font-headline-sm rounded-lg"><div class="px-space-sm py-space-xs font-caption text-caption text-outline uppercase tracking-wider">销售作业</div><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="workbench" href="#"><span class="material-symbols-outlined text-[18px]">dashboard</span>工作台</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="leads-center" href="#"><span class="material-symbols-outlined text-[18px]">filter_alt</span>线索中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="customer-center" href="#"><span class="material-symbols-outlined text-[18px]">domain</span>客户中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="opportunity-center" href="#"><span class="material-symbols-outlined text-[18px]">toll</span>商机中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="quotation-center" href="#"><span class="material-symbols-outlined text-[18px]">request_quote</span>报价中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="order-center" href="#"><span class="material-symbols-outlined text-[18px]">receipt_long</span>订单中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="payment-center" href="#"><span class="material-symbols-outlined text-[18px]">payments</span>回款中心</a></nav><nav class="space-y-space-xs" data-active-classes="bg-primary-container text-on-primary-container font-headline-sm rounded-lg"><div class="px-space-sm py-space-xs font-caption text-caption text-outline uppercase tracking-wider">运营管理</div><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="product-center" href="#"><span class="material-symbols-outlined text-[18px]">inventory_2</span>产品中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="price-center" href="#"><span class="material-symbols-outlined text-[18px]">sell</span>价格中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="sales-targets" href="#"><span class="material-symbols-outlined text-[18px]">flag</span>销售任务</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="approval-center" href="#"><span class="material-symbols-outlined text-[18px]">fact_check</span>审批中心</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="knowledge-base" href="#"><span class="material-symbols-outlined text-[18px]">menu_book</span>知识库</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="data-analytics" href="#"><span class="material-symbols-outlined text-[18px]">analytics</span>数据分析</a></nav><nav class="space-y-space-xs" data-active-classes="bg-primary-container text-on-primary-container font-headline-sm rounded-lg"><div class="px-space-sm py-space-xs font-caption text-caption text-outline uppercase tracking-wider">智能与协同</div><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="ai-sales-agent" href="#"><span class="material-symbols-outlined text-[18px]">smart_toy</span>AI Sales Agent</a><a aria-current="page" class="flex items-center gap-space-sm px-space-sm py-1.5 transition-colors bg-primary-container text-on-primary-container font-headline-sm rounded-lg" data-path="wecom-pending-contacts" href="#"><span class="material-symbols-outlined text-[18px]">forum</span>企业微信</a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-compact text-body-compact" data-path="system-settings" href="#"><span class="material-symbols-outlined text-[18px]">settings</span>系统设置</a></nav></div></aside><div class="pl-[220px]"><header class="fixed top-0 left-[220px] right-0 h-14 bg-surface-container-lowest z-40 flex items-center justify-between px-space-lg shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="flex items-center w-96"><div class="relative w-full"><span class="material-symbols-outlined absolute left-space-sm top-1/2 -translate-y-1/2 text-outline text-[18px]">search</span><input class="w-full h-8 pl-8 pr-space-sm bg-surface-container-low text-on-surface placeholder:text-outline font-body-compact text-body-compact rounded-lg outline-none focus:bg-surface-container-lowest transition-all" placeholder="搜索客户、商机、报价、订单、联系人..." type="text"/></div></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs"><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">notifications</span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">chat</span></button><button class="w-8 h-8 rounded-lg flex items-center justify-center text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors" type="button"><span class="material-symbols-outlined text-[20px]">help_outline</span></button></div><div class="flex items-center gap-space-sm pl-space-sm"><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div><div class="flex flex-col text-left"><span class="font-label-medium text-label-medium text-on-surface leading-tight">张三</span><span class="font-caption text-caption text-outline leading-tight">销售部 · 高级销售总监</span></div></div></div></header><main class="relative pt-14 w-full bg-surface min-h-screen px-space-lg py-space-lg"><div class="flex flex-col w-full">
+<!-- 页面顶部信息区 -->
+<div class="flex items-center justify-between pb-space-md mb-space-md border-b border-surface-container-highest">
+<div class="flex flex-col gap-0.5">
+<div class="flex items-center gap-space-sm">
+<h1 class="font-headline-md text-headline-md text-on-surface tracking-tight">待归一联系人</h1>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-caption font-label-medium bg-primary-fixed text-on-primary-fixed-variant">企微私域资产沉淀</span>
+</div>
+<p class="font-body-compact text-body-compact text-outline">
+        将企业微信外部联系人正确关联到 CRM 客户和联系人，避免重复建档，保障私域线索沉淀与业务连续性。
+      </p>
+</div>
+<!-- 右上角辅助功能 -->
+<div class="flex items-center gap-space-sm">
+<div class="flex items-center gap-1.5 px-space-sm py-1 bg-surface-container-low rounded text-caption font-label-medium text-outline">
+<span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+<span>企业微信同步：已实时连接 · 5分钟前</span>
+</div>
+<button class="inline-flex items-center justify-center w-8 h-8 rounded bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container-high transition-colors shadow-sm" title="快速刷新" type="button">
+<span class="material-symbols-outlined text-[18px]">refresh</span>
+</button>
+<button class="inline-flex items-center gap-1 h-8 px-space-sm rounded bg-surface-container-lowest text-on-surface hover:bg-surface-container-high transition-colors font-body-compact text-body-compact shadow-sm" type="button">
+<span class="material-symbols-outlined text-[16px] text-outline">tune</span>
+<span>自动归一规则</span>
+</button>
+</div>
+</div>
+<!-- 顶部 3 个关键指标 KPI 卡片 -->
+<div class="grid grid-cols-3 gap-space-md mb-space-md">
+<!-- KPI 1 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm relative overflow-hidden flex flex-col justify-between">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-medium text-label-medium text-outline">待处理联系人</span>
+<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-caption font-label-medium bg-amber-50 text-amber-700">
+<span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>需关注
+        </span>
+</div>
+<div class="flex items-baseline gap-space-sm mb-1">
+<span class="font-headline-xl text-headline-xl text-on-surface font-semibold tracking-tight">86</span>
+<span class="text-caption font-label-medium text-tertiary">较昨日 +12</span>
+</div>
+<div class="font-caption text-caption text-outline">
+        包含 14 名今日高意向展会新增外部联系人
+      </div>
+</div>
+<!-- KPI 2 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm relative overflow-hidden flex flex-col justify-between">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-medium text-label-medium text-outline">今日新增外部联系人</span>
+<span class="material-symbols-outlined text-[18px] text-primary-container">person_add</span>
+</div>
+<div class="flex items-baseline gap-space-sm mb-1">
+<span class="font-headline-xl text-headline-xl text-on-surface font-semibold tracking-tight">12</span>
+<span class="text-caption font-label-medium text-primary">实时更新中</span>
+</div>
+<div class="font-caption text-caption text-outline">
+        来自销售添加 9，获客活码扫码 3
+      </div>
+</div>
+<!-- KPI 3 -->
+<div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm relative overflow-hidden flex flex-col justify-between">
+<div class="flex items-center justify-between mb-2">
+<span class="font-label-medium text-label-medium text-outline">已处理归一</span>
+<span class="inline-flex items-center gap-1 text-caption font-label-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+<span class="material-symbols-outlined text-[14px]">trending_up</span>94.6%
+        </span>
+</div>
+<div class="flex items-baseline gap-space-sm mb-1">
+<span class="font-headline-xl text-headline-xl text-on-surface font-semibold tracking-tight">28</span>
+<span class="text-caption font-label-medium text-outline">今日已归并</span>
+</div>
+<div class="font-caption text-caption text-outline">
+        本周累计已归一 142，规则匹配准确率 96.2%
+      </div>
+</div>
+</div>
+<!-- 主体核心交互区域：高密三栏联动工作台 -->
+<div class="grid grid-cols-12 gap-space-md items-start">
+<!-- 左栏：待归一联系人列表 (30% / 4 cols) -->
+<div class="col-span-12 xl:col-span-4 bg-surface-container-lowest rounded-xl shadow-sm flex flex-col overflow-hidden h-[calc(100vh-275px)] min-h-[640px]">
+<!-- 列表顶部 -->
+<div class="p-space-sm border-b border-surface-container-highest flex flex-col gap-space-xs bg-surface-container-lowest">
+<div class="flex items-center justify-between px-1">
+<div class="flex items-center gap-1.5">
+<span class="font-title text-title text-on-surface">待归一联系人</span>
+<span class="px-1.5 py-0.5 rounded-full text-caption font-label-medium bg-surface-container-high text-on-surface-variant">86</span>
+</div>
+<button class="text-caption font-label-medium text-primary hover:underline flex items-center gap-0.5" type="button">
+<span class="material-symbols-outlined text-[14px]">swap_vert</span>按添加时间
+          </button>
+</div>
+<!-- 搜索与筛选 -->
+<div class="relative w-full">
+<span class="material-symbols-outlined absolute left-2.5 top-1/2 -translate-y-1/2 text-outline text-[16px]">search</span>
+<input class="w-full h-8 pl-7 pr-7 bg-surface-container-low rounded text-body-compact placeholder:text-outline text-on-surface focus:outline-none focus:bg-surface-container-lowest focus:ring-1 focus:ring-primary-container transition-all" placeholder="搜索姓名/企业/添加员工..." type="text"/>
+<span class="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-outline text-[16px] cursor-pointer hover:text-on-surface">filter_list</span>
+</div>
+</div>
+<!-- 联系人高密列表项 -->
+<div class="flex-1 overflow-y-auto divide-y divide-surface-container-low">
+<!-- 选中项：李经理 -->
+<div class="p-space-sm bg-primary-fixed/20 border-l-4 border-primary cursor-pointer transition-colors relative">
+<div class="flex items-start gap-2.5">
+<div class="relative flex-shrink-0">
+<div class="w-9 h-9 rounded-lg bg-surface-container-high flex items-center justify-center font-title text-title text-primary font-bold overflow-hidden shadow-xs">
+<span>李</span>
+</div>
+<!-- 企微官方绿标 -->
+<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] ring-2 ring-surface-container-lowest" title="企业微信外部联系人">
+<span class="material-symbols-outlined text-[11px] leading-none">chat</span>
+</span>
+</div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between mb-0.5">
+<div class="flex items-center gap-1.5 truncate">
+<span class="font-title text-title text-on-surface font-semibold truncate">李经理</span>
+<span class="text-caption font-label-medium text-emerald-600 bg-emerald-50 px-1 rounded flex-shrink-0">@微信</span>
+</div>
+<span class="text-caption text-outline flex-shrink-0">09:40</span>
+</div>
+<div class="font-body-compact text-body-compact text-on-surface-variant truncate mb-1">
+                Nordic Bath &amp; Home · 采购总监
+              </div>
+<div class="flex items-center justify-between text-caption text-outline">
+<span class="truncate">添加人: 张三 (销售部)</span>
+<span class="px-1.5 py-0.2 bg-amber-50 text-amber-700 rounded text-[11px]">未归一</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 未选中项 1 -->
+<div class="p-space-sm hover:bg-surface-container-low/70 cursor-pointer transition-colors">
+<div class="flex items-start gap-2.5">
+<div class="relative flex-shrink-0">
+<div class="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center font-title text-title font-bold overflow-hidden">
+<span>EW</span>
+</div>
+<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] ring-2 ring-surface-container-lowest">
+<span class="material-symbols-outlined text-[11px] leading-none">chat</span>
+</span>
+</div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between mb-0.5">
+<div class="flex items-center gap-1.5 truncate">
+<span class="font-title text-title text-on-surface truncate">Emma Wilson</span>
+<span class="text-caption font-label-medium text-emerald-600 bg-emerald-50 px-1 rounded flex-shrink-0">@微信</span>
+</div>
+<span class="text-caption text-outline flex-shrink-0">08:15</span>
+</div>
+<div class="font-body-compact text-body-compact text-on-surface-variant truncate mb-1">
+                Apex Global Retail · 全球采购部负责人
+              </div>
+<div class="flex items-center justify-between text-caption text-outline">
+<span class="truncate">添加人: 李四 · 官网微信客服</span>
+<span class="text-outline">今日</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 未选中项 2 -->
+<div class="p-space-sm hover:bg-surface-container-low/70 cursor-pointer transition-colors">
+<div class="flex items-start gap-2.5">
+<div class="relative flex-shrink-0">
+<div class="w-9 h-9 rounded-lg bg-orange-50 text-orange-700 flex items-center justify-center font-title text-title font-bold overflow-hidden">
+<span>DB</span>
+</div>
+<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] ring-2 ring-surface-container-lowest">
+<span class="material-symbols-outlined text-[11px] leading-none">chat</span>
+</span>
+</div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between mb-0.5">
+<div class="flex items-center gap-1.5 truncate">
+<span class="font-title text-title text-on-surface truncate">David Brown</span>
+<span class="text-caption font-label-medium text-emerald-600 bg-emerald-50 px-1 rounded flex-shrink-0">@微信</span>
+</div>
+<span class="text-caption text-outline flex-shrink-0">昨日</span>
+</div>
+<div class="font-body-compact text-body-compact text-on-surface-variant truncate mb-1">
+                Alliance Logistics · VP of Supply Chain
+              </div>
+<div class="flex items-center justify-between text-caption text-outline">
+<span class="truncate">添加人: 张三 · 海外展会企微</span>
+<span class="text-outline">17:30</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 未选中项 3 -->
+<div class="p-space-sm hover:bg-surface-container-low/70 cursor-pointer transition-colors">
+<div class="flex items-start gap-2.5">
+<div class="relative flex-shrink-0">
+<div class="w-9 h-9 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center font-title text-title font-bold overflow-hidden">
+<span>山</span>
+</div>
+<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] ring-2 ring-surface-container-lowest">
+<span class="material-symbols-outlined text-[11px] leading-none">chat</span>
+</span>
+</div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between mb-0.5">
+<div class="flex items-center gap-1.5 truncate">
+<span class="font-title text-title text-on-surface truncate">山田太郎</span>
+<span class="text-caption font-label-medium text-emerald-600 bg-emerald-50 px-1 rounded flex-shrink-0">@微信</span>
+</div>
+<span class="text-caption text-outline flex-shrink-0">昨日</span>
+</div>
+<div class="font-body-compact text-body-compact text-on-surface-variant truncate mb-1">
+                日清商事株式会社 · 商品企画部 部长
+              </div>
+<div class="flex items-center justify-between text-caption text-outline">
+<span class="truncate">添加人: 王主管 · 同行引荐</span>
+<span class="text-outline">15:10</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 未选中项 4 -->
+<div class="p-space-sm hover:bg-surface-container-low/70 cursor-pointer transition-colors">
+<div class="flex items-start gap-2.5">
+<div class="relative flex-shrink-0">
+<div class="w-9 h-9 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center font-title text-title font-bold overflow-hidden">
+<span>SM</span>
+</div>
+<span class="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] ring-2 ring-surface-container-lowest">
+<span class="material-symbols-outlined text-[11px] leading-none">chat</span>
+</span>
+</div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center justify-between mb-0.5">
+<div class="flex items-center gap-1.5 truncate">
+<span class="font-title text-title text-on-surface truncate">Sophie Martin</span>
+<span class="text-caption font-label-medium text-emerald-600 bg-emerald-50 px-1 rounded flex-shrink-0">@微信</span>
+</div>
+<span class="text-caption text-outline flex-shrink-0">09-23</span>
+</div>
+<div class="font-body-compact text-body-compact text-on-surface-variant truncate mb-1">
+                Studio Arch · Design Lead
+              </div>
+<div class="flex items-center justify-between text-caption text-outline">
+<span class="truncate">添加人: 张三 · 宣传册活码</span>
+<span class="text-outline">11:20</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- 列表底部状态栏 -->
+<div class="p-2 border-t border-surface-container-highest bg-surface-container-lowest flex items-center justify-between text-caption text-outline">
+<span>共 86 条待处理</span>
+<div class="flex items-center gap-1">
+<button class="w-6 h-6 rounded flex items-center justify-center hover:bg-surface-container-high transition-colors" disabled="" type="button">
+<span class="material-symbols-outlined text-[16px] opacity-40">chevron_left</span>
+</button>
+<span class="px-1 text-on-surface font-label-medium">1 / 9</span>
+<button class="w-6 h-6 rounded flex items-center justify-center hover:bg-surface-container-high transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">chevron_right</span>
+</button>
+</div>
+</div>
+</div>
+<!-- 中间栏：外部联系人详细信息 (企业微信原数据) (40% / 5 cols) -->
+<div class="col-span-12 xl:col-span-5 bg-surface-container-lowest rounded-xl shadow-sm flex flex-col overflow-hidden h-[calc(100vh-275px)] min-h-[640px]">
+<!-- 栏头部 -->
+<div class="h-12 px-space-md border-b border-surface-container-highest flex items-center justify-between bg-surface-container-lowest flex-shrink-0">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-emerald-600 text-[20px]">contacts</span>
+<span class="font-title text-title text-on-surface">外部联系人详细信息 (企微源数据)</span>
+</div>
+<span class="text-caption font-label-medium px-2 py-0.5 rounded bg-surface-container-high text-on-surface-variant font-mono">
+          external_userid
+        </span>
+</div>
+<!-- 详细滚动内容 -->
+<div class="flex-1 overflow-y-auto p-space-md space-y-space-md">
+<!-- 身份卡片 -->
+<div class="p-space-md rounded-xl bg-surface-container-low flex items-start gap-space-md">
+<div class="relative flex-shrink-0">
+<div class="w-14 h-14 rounded-xl bg-surface-container-lowest shadow-sm flex items-center justify-center text-primary font-headline-md font-bold">
+              李
+            </div>
+<span class="absolute -bottom-1 -right-1 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-xs">
+<span class="material-symbols-outlined text-[13px]">chat</span>
+</span>
+</div>
+<div class="flex-1 min-w-0">
+<div class="flex items-center gap-2 mb-1 flex-wrap">
+<h2 class="font-headline-sm text-headline-sm text-on-surface">李经理</h2>
+<span class="px-1.5 py-0.5 rounded text-caption font-label-medium bg-emerald-100 text-emerald-800">
+                @微信认证
+              </span>
+<span class="px-2 py-0.5 rounded text-caption bg-surface-container-high text-on-surface-variant font-mono text-[11px]">
+                wm_kxCDwAA4yU9jF8g2_abc99812
+              </span>
+</div>
+<div class="font-body-compact text-body-compact text-on-surface-variant mb-1">
+              企业微信备注名：<span class="text-on-surface font-label-medium">Nordic Bath采购-Hans(李)</span>
+</div>
+<div class="text-caption text-outline flex items-center gap-space-sm">
+<span>添加时间：2024-09-24 09:40</span>
+<span>·</span>
+<span>跟进员工：张三 (销售总监)</span>
+</div>
+</div>
+</div>
+<!-- 两列高密度网格属性 -->
+<div>
+<div class="font-label-medium text-label-medium text-outline mb-2 flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">info</span>
+<span>联系人基本元数据</span>
+</div>
+<div class="grid grid-cols-2 gap-x-space-md gap-y-2.5 p-space-sm bg-surface-container-lowest rounded-lg border border-surface-container-high text-body-compact">
+<div>
+<span class="text-outline block text-caption">所属企业 (原录入)</span>
+<span class="text-on-surface font-label-medium">Nordic Bath &amp; Home GmbH</span>
+</div>
+<div>
+<span class="text-outline block text-caption">国家 / 地区</span>
+<span class="text-on-surface font-label-medium">德国 · 法兰克福 (Frankfurt)</span>
+</div>
+<div>
+<span class="text-outline block text-caption">添加渠道与来源</span>
+<span class="text-on-surface font-label-medium flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-primary-container"></span>
+                广交会展台扫码 (主动添加)
+              </span>
+</div>
+<div>
+<span class="text-outline block text-caption">职务</span>
+<span class="text-on-surface font-label-medium">采购总监 / Procurement Dir.</span>
+</div>
+<div>
+<span class="text-outline block text-caption">联系电话</span>
+<span class="text-on-surface font-label-medium font-mono">+49 69 12345678</span>
+</div>
+<div>
+<span class="text-outline block text-caption">电子邮箱</span>
+<span class="text-on-surface font-label-medium font-mono">hans.schneider@nordicbath.de</span>
+</div>
+</div>
+</div>
+<!-- 企微标签管理 -->
+<div>
+<div class="font-label-medium text-label-medium text-outline mb-2 flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">label</span>
+<span>已同步企微标签</span>
+</div>
+<div class="space-y-2">
+<div>
+<span class="text-caption text-outline block mb-1">企业官方标签：</span>
+<div class="flex flex-wrap gap-1.5">
+<span class="px-2 py-0.5 rounded text-caption font-label-medium bg-surface-container-high text-on-surface">卫浴连锁采购</span>
+<span class="px-2 py-0.5 rounded text-caption font-label-medium bg-surface-container-high text-on-surface">德国KA</span>
+<span class="px-2 py-0.5 rounded text-caption font-label-medium bg-surface-container-high text-on-surface">2024秋季展会</span>
+<span class="px-2 py-0.5 rounded text-caption font-label-medium bg-emerald-50 text-emerald-700 border border-emerald-200">高意向客户</span>
+</div>
+</div>
+<div>
+<span class="text-caption text-outline block mb-1">员工个人标签：</span>
+<div class="flex flex-wrap gap-1.5">
+<span class="px-2 py-0.5 rounded text-caption font-label-medium bg-secondary-fixed/50 text-secondary">决策人</span>
+<span class="px-2 py-0.5 rounded text-caption font-label-medium bg-secondary-fixed/50 text-secondary">需尽快英文报价</span>
+</div>
+</div>
+</div>
+</div>
+<!-- 企微沟通记录摘要 -->
+<div class="p-space-sm rounded-lg bg-surface-container-low border border-surface-container-high">
+<div class="flex items-center justify-between mb-1.5">
+<div class="flex items-center gap-1 font-label-medium text-label-medium text-on-surface">
+<span class="material-symbols-outlined text-[16px] text-primary">chat_bubble_outline</span>
+<span>企微聊天概览 (已同步 18 条记录)</span>
+</div>
+<span class="text-caption text-outline">最新：今日 10:12</span>
+</div>
+<p class="font-body-compact text-body-compact text-on-surface-variant bg-surface-container-lowest p-2 rounded border border-surface-container-highest">
+            “李经理：您好张总，我们在展会现场看的欧洲规格独立浴桶 (Acrylic Free-standing Tub) 现货 MOQ 是多少？请将最新报价单 V3 发至我邮箱，下周初董事会做最终比价。”
+          </p>
+</div>
+<!-- 沟通备注 -->
+<div>
+<span class="text-caption font-label-medium text-outline block mb-1">销售现场备注</span>
+<div class="text-body-compact text-on-surface p-2 bg-surface-container-low rounded">
+            客户在展会现场对亚克力大浴桶及恒温龙头表现强烈兴趣，希望今天内提供 FOB 报价与画册。
+          </div>
+</div>
+</div>
+</div>
+<!-- 右栏：系统候选客户匹配与推荐 (30% / 3 cols) -->
+<div class="col-span-12 xl:col-span-3 bg-surface-container-lowest rounded-xl shadow-sm flex flex-col overflow-hidden h-[calc(100vh-275px)] min-h-[640px]">
+<!-- 栏头部 -->
+<div class="h-12 px-space-md border-b border-surface-container-highest flex items-center justify-between bg-surface-container-lowest flex-shrink-0">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary-container text-[20px]">hub</span>
+<span class="font-title text-title text-on-surface">候选客户匹配推荐</span>
+</div>
+<span class="text-caption font-label-medium text-primary">3 项匹配</span>
+</div>
+<!-- 推荐列表可滚动 -->
+<div class="flex-1 overflow-y-auto p-space-sm space-y-space-sm">
+<!-- AI 智能匹配建议 -->
+<div class="p-space-sm rounded-lg bg-secondary-fixed/20 border border-secondary-fixed">
+<div class="flex items-center gap-1.5 mb-1 text-secondary">
+<span class="material-symbols-outlined text-[16px]">smart_toy</span>
+<span class="font-title text-body-compact font-semibold">AI 辅助归一判定</span>
+</div>
+<p class="text-caption text-on-surface-variant leading-relaxed">
+            根据联系人企业名称、企微聊天中的“德国浴桶项目”及负责人张三的历史商机，判定该联系人 <strong class="text-primary font-semibold">91%</strong> 为 <strong class="text-on-surface">ABC GmbH</strong> 的新任采购负责人。建议直接合并归一。
+          </p>
+</div>
+<!-- 候选卡片 1：强推荐（默认选中） -->
+<div class="p-space-sm rounded-lg border-2 border-primary-container bg-primary-fixed/10 relative transition-all cursor-pointer">
+<div class="flex items-start justify-between mb-1">
+<div class="flex items-center gap-2">
+<input checked="" class="w-4 h-4 text-primary accent-primary cursor-pointer" name="target_customer" type="radio"/>
+<div class="font-title text-title text-on-surface font-semibold">ABC GmbH</div>
+</div>
+<span class="px-1.5 py-0.5 rounded text-caption font-label-medium bg-emerald-100 text-emerald-800">
+              91% 强推荐
+            </span>
+</div>
+<div class="text-caption text-outline space-y-1 pl-6">
+<div class="flex items-center justify-between">
+<span>客户编码: CUST-20230811</span>
+<span>现有联系人: 2名</span>
+</div>
+<div>
+              匹配依据：企业英文名高度重合、德国/家居卫浴零售、跟进人张三存在未结商机“德国浴桶 500 件采购项目”。
+            </div>
+<div class="text-primary font-label-medium pt-0.5">
+              已关联商机：德国浴桶 500 件 (进行中)
+            </div>
+</div>
+</div>
+<!-- 候选卡片 2：中度推荐 -->
+<div class="p-space-sm rounded-lg border border-surface-container-high hover:border-outline-variant bg-surface-container-lowest transition-all cursor-pointer">
+<div class="flex items-start justify-between mb-1">
+<div class="flex items-center gap-2">
+<input class="w-4 h-4 text-primary accent-primary cursor-pointer" name="target_customer" type="radio"/>
+<div class="font-title text-title text-on-surface">ABC Trading Co.</div>
+</div>
+<span class="px-1.5 py-0.5 rounded text-caption font-label-medium bg-amber-50 text-amber-700">
+              67% 匹配
+            </span>
+</div>
+<div class="text-caption text-outline space-y-1 pl-6">
+<div>客户编码: CUST-20220409 · 英国伦敦</div>
+<div>名称前缀重合，但注册地为英国，且无进行中卫浴项目。</div>
+</div>
+</div>
+<!-- 候选卡片 3：弱匹配 -->
+<div class="p-space-sm rounded-lg border border-surface-container-high hover:border-outline-variant bg-surface-container-lowest transition-all cursor-pointer">
+<div class="flex items-start justify-between mb-1">
+<div class="flex items-center gap-2">
+<input class="w-4 h-4 text-primary accent-primary cursor-pointer" name="target_customer" type="radio"/>
+<div class="font-title text-title text-on-surface">Global Home Ltd</div>
+</div>
+<span class="px-1.5 py-0.5 rounded text-caption font-label-medium bg-surface-container-high text-on-surface-variant">
+              45% 偏低
+            </span>
+</div>
+<div class="text-caption text-outline space-y-1 pl-6">
+<div>客户编码: CUST-20211105 · 行业相同</div>
+<div>同属于欧洲家居卫浴进口行业，但法定人与历史联络人无关。</div>
+</div>
+</div>
+</div>
+<!-- 底部固定业务操作栏 -->
+<div class="p-space-sm border-t border-surface-container-highest bg-surface-container-lowest flex flex-col gap-2 flex-shrink-0">
+<button class="w-full h-8.5 px-space-md rounded bg-primary-container hover:bg-primary text-white font-title text-body-compact flex items-center justify-center gap-1.5 transition-colors shadow-xs" type="button">
+<span class="material-symbols-outlined text-[16px]">link</span>
+<span>关联已有客户 (ABC GmbH)</span>
+</button>
+<div class="flex items-center gap-2">
+<button class="flex-1 h-8 rounded border border-surface-container-highest bg-surface-container-lowest hover:bg-surface-container-high text-on-surface font-body-compact text-body-compact transition-colors" type="button">
+            新建为独立客户
+          </button>
+<button class="h-8 px-3 rounded hover:bg-surface-container-high text-outline text-caption font-label-medium transition-colors" type="button">
+            暂不处理 / 忽略
+          </button>
+</div>
+<p class="text-[11px] text-outline text-center leading-tight">
+          归一后将自动打通企微联系人与 CRM 客户、商机与聊天存档的业务关联。
+        </p>
+</div>
+</div>
+</div>
+</div></main></div></body></html>
