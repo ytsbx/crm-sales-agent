@@ -1,0 +1,493 @@
+/* ============================================================
+   设计令牌（取自 Stitch 设计稿的 Material 3 色板）
+   改这里 = 全局改风格；页面里不写死颜色。
+   ============================================================ */
+:root {
+  --crm-primary: #004ec6;
+  --crm-primary-hover: #0064fa;
+  --crm-primary-soft: #dae1ff;
+  --crm-secondary: #7431d3;
+  --crm-secondary-soft: #ecdcff;
+  --crm-error: #ba1a1a;
+  --crm-error-soft: #ffdad6;
+  --crm-warning: #9e3300;
+  --crm-warning-soft: #ffdbcf;
+  /* 状态色：用于"已回款/已完成"这类正向态，以及"待处理/需关注"这类提醒态 */
+  --crm-success: #00b42a;
+  --crm-caution: #ff7d00;
+
+  --crm-bg: #f9f9ff;
+  --crm-surface: #ffffff;
+  --crm-surface-low: #f1f3ff;
+  --crm-surface-mid: #ebedf9;
+  --crm-surface-high: #e5e8f3;
+  --crm-outline: #c2c6d8;
+
+  --crm-text: #181c23;
+  --crm-text-2: #424655;
+  --crm-text-3: #7b8090;
+
+  /* 圆角规格取自设计稿的 tailwind.config：
+     DEFAULT 2px / lg 4px / xl 8px / full 12px */
+  --crm-radius: 8px; /* 卡片：rounded-xl */
+  --crm-radius-sm: 4px; /* 按钮、输入框、导航项：rounded-lg */
+  --crm-radius-pill: 12px; /* 标签、胶囊：rounded-full */
+  /* 设计稿是"描边派"：卡片靠 1px 边框分层，不靠阴影 */
+  --crm-shadow: none;
+  --crm-shadow-lg: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --crm-surface-highest: #dfe2ed;
+  --crm-outline-strong: #727687;
+
+  /* Semi Design 主题变量：让组件库跟随上面的令牌 */
+  --semi-color-primary: var(--crm-primary);
+  --semi-color-primary-hover: var(--crm-primary-hover);
+  --semi-color-primary-active: var(--crm-primary);
+  --semi-color-primary-light-default: var(--crm-primary-soft);
+  --semi-color-primary-light-hover: #eef2ff;
+  --semi-color-danger: var(--crm-error);
+  --semi-color-warning: var(--crm-warning);
+  --semi-color-info: var(--crm-primary);
+  --semi-color-text-0: var(--crm-text);
+  --semi-color-text-1: var(--crm-text-2);
+  --semi-color-text-2: var(--crm-text-3);
+  --semi-color-border: var(--crm-outline);
+  --semi-color-bg-0: var(--crm-surface);
+  --semi-color-bg-1: var(--crm-surface);
+  --semi-color-bg-2: var(--crm-bg);
+  --semi-color-fill-0: var(--crm-surface-low);
+  --semi-color-fill-1: var(--crm-surface-mid);
+  --semi-border-radius-small: 6px;
+  --semi-border-radius-medium: var(--crm-radius-sm);
+  --semi-border-radius-large: var(--crm-radius);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--crm-bg);
+  color: var(--crm-text);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+    'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ============================================================
+   页面骨架
+   ============================================================ */
+.page-container {
+  padding: 20px 24px 40px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  margin: 0 0 6px;
+}
+
+.page-subtitle {
+  color: var(--crm-text-3);
+  font-size: 13px;
+  margin: 0 0 18px;
+}
+
+/* 详情页头部：主标题 + 标题下方的关键信息行（见 shared/components/DetailHeader.tsx） */
+.detail-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  color: var(--crm-text-2);
+  font-size: 13px;
+}
+
+.card-block {
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-surface-high);
+  border-radius: var(--crm-radius);
+  padding: 18px;
+  box-shadow: var(--crm-shadow);
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--crm-text);
+}
+
+.toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+/* ============================================================
+   KPI 卡
+   ============================================================ */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.kpi-card {
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-surface-high);
+  border-radius: var(--crm-radius);
+  padding: 16px 18px;
+  box-shadow: var(--crm-shadow);
+  transition: box-shadow 0.15s ease;
+}
+
+.kpi-card:hover {
+  box-shadow: var(--crm-shadow-lg);
+}
+
+.kpi-label {
+  color: var(--crm-text-3);
+  font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.kpi-value {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.5px;
+  margin-top: 6px;
+  color: var(--crm-text);
+}
+
+/* ============================================================
+   应用框架：顶栏 + 侧边栏 + 多页签
+   ============================================================ */
+.app-shell {
+  height: 100%;
+  display: flex;
+}
+
+.app-sider {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--crm-surface);
+  border-right: 1px solid var(--crm-surface-high);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.sider-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--crm-surface-high);
+}
+
+.sider-logo {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--crm-radius-sm);
+  background: linear-gradient(135deg, var(--crm-primary), var(--crm-primary-hover));
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.sider-brand-name {
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.sider-brand-sub {
+  font-size: 11px;
+  color: var(--crm-text-3);
+}
+
+.nav-group-title {
+  font-size: 11px;
+  color: var(--crm-text-3);
+  padding: 14px 18px 6px;
+  letter-spacing: 0.4px;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 8px;
+  padding: 8px 10px;
+  border-radius: var(--crm-radius-sm);
+  color: var(--crm-text-2);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.nav-link:hover {
+  background: var(--crm-surface-low);
+}
+
+.nav-link.active {
+  background: var(--crm-primary-soft);
+  color: var(--crm-primary);
+  font-weight: 600;
+}
+
+.nav-link .nav-icon {
+  display: flex;
+  align-items: center;
+  font-size: 15px;
+}
+
+.app-header {
+  height: 64px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 24px;
+  background: var(--crm-surface);
+  border-bottom: 1px solid var(--crm-surface-high);
+}
+
+.global-search {
+  width: 420px;
+  max-width: 46vw;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 18px;
+  background: var(--crm-surface-low);
+  color: var(--crm-text-3);
+  font-size: 13px;
+}
+
+.header-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 16px;
+  border-left: 1px solid var(--crm-surface-high);
+}
+
+.header-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--crm-primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tab-strip {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 24px 0;
+  background: var(--crm-bg);
+  border-bottom: 1px solid var(--crm-surface-high);
+  overflow-x: auto;
+}
+
+.tab-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--crm-radius-sm) var(--crm-radius-sm) 0 0;
+  font-size: 13px;
+  color: var(--crm-text-2);
+  background: var(--crm-surface-mid);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-chip.active {
+  background: var(--crm-surface);
+  color: var(--crm-primary);
+  font-weight: 600;
+}
+
+.tab-close {
+  color: var(--crm-text-3);
+  font-size: 11px;
+}
+
+.content-area {
+  flex: 1;
+  overflow: auto;
+  background: var(--crm-bg);
+}
+
+/* ============================================================
+   通用小件
+   ============================================================ */
+.placeholder-box {
+  background: var(--crm-surface-low);
+  border: 1px dashed var(--crm-outline);
+  border-radius: var(--crm-radius);
+  padding: 40px;
+  text-align: center;
+  color: var(--crm-text-3);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--crm-radius-pill);
+  font-size: 11px;
+  background: var(--crm-surface-highest);
+  color: var(--crm-text-2);
+}
+
+.chip-primary {
+  background: var(--crm-primary-soft);
+  color: var(--crm-primary);
+}
+
+.chip-warning {
+  background: var(--crm-warning-soft);
+  color: var(--crm-warning);
+}
+
+.chip-error {
+  background: var(--crm-error-soft);
+  color: var(--crm-error);
+}
+
+.chip-ai {
+  background: var(--crm-secondary-soft);
+  color: var(--crm-secondary);
+}
+
+.progress-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--crm-surface-mid);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--crm-primary);
+}
+
+/* 登录页 */
+.login-page {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(140deg, #eef2ff 0%, var(--crm-bg) 55%, #eef6ff 100%);
+}
+
+.login-card {
+  width: 380px;
+  background: var(--crm-surface);
+  border-radius: var(--crm-radius);
+  padding: 32px;
+  box-shadow: 0 12px 40px rgba(16, 24, 40, 0.1);
+}
+
+.login-title {
+  font-size: 20px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
+.login-hint {
+  color: var(--crm-text-3);
+  font-size: 12px;
+  margin-bottom: 24px;
+  line-height: 1.7;
+}
+
+/* 表格：统一成设计稿里的轻边框风格 */
+.semi-table-thead > .semi-table-row > .semi-table-row-head {
+  background: var(--crm-surface-low) !important;
+  color: var(--crm-text-2) !important;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.semi-table-row-head,
+.semi-table-row-cell {
+  border-bottom: 1px solid var(--crm-surface-high) !important;
+}
+
+/* ============================================================
+   按设计稿改造 Semi 组件：更小的圆角、更紧的字号、更平的描边
+   （设计稿是 Tailwind + Material 3，不用 Semi 的默认视觉）
+   ============================================================ */
+.semi-button {
+  border-radius: var(--crm-radius-sm);
+  font-size: 13px;
+}
+
+.semi-input-wrapper,
+.semi-select-selection,
+.semi-datepicker-range-input {
+  border-radius: var(--crm-radius-sm) !important;
+}
+
+.semi-tag {
+  border-radius: var(--crm-radius-sm);
+  font-size: 12px;
+}
+
+.semi-card,
+.semi-modal-content {
+  border-radius: var(--crm-radius);
+}
+
+.semi-table {
+  font-size: 13px;
+}
+
+.semi-checkbox {
+  border-radius: 2px;
+}
+
+.semi-banner {
+  border-radius: var(--crm-radius);
+}

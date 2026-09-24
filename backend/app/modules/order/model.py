@@ -1,0 +1,75 @@
+"""销售订单、订单明细与履约状态历史。
+
+关于 ERP/MES：文档要求 CRM 推订单、拉履约状态，但对方系统尚未就绪。
+这一版把 `erp_order_id`、状态历史、`external_mappings` 都留好，
+接口接通前状态由人工维护，接通后由 Adapter 回写，CRM 侧结构不用改。
+"""
+
+from datetime import date, datetime
+from decimal import Decimal
+
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.base import Base, IdMixin, TimestampMixin
+
+ORDER_STATUS_LABEL = {
+    "pending": "待生产",
+    "in_production": "生产中",
+    "shipped": "已发货",
+    "delivered": "已签收",
+    "completed": "已完成",
+    "cancelled": "已取消",
+}
+
+
+class SalesOrder(Base, IdMixin, TimestampMixin):
+    __tablename__ = "sales_orders"
+    __table_args__ = (
+        Index("ix_sales_orders_customer", "customer_id"),
+        # 同一报价版本只能转一次订单（幂等）
+        Index("ix_sales_orders_quote_version", "quote_version_id", unique=True),
+    )
+
+    order_no: Mapped[str] = mapped_column(String(32), unique=True)
+    customer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("customers.id"))
+    opportunity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    quote_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    quote_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    erp_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payment_terms: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SalesOrderItem(Base, IdMixin):
+    __tablename__ = "sales_order_items"
+    __table_args__ = (Index("ix_sales_order_items_order", "order_id"),)
+
+    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
+    sku_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("skus.id"))
+    sku_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    specification: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=0)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
+    amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class OrderStatusHistory(Base, IdMixin):
+    __tablename__ = "order_status_history"
+    __table_args__ = (Index("ix_order_status_history_order", "order_id"),)
+
+    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
+    old_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    new_status: Mapped[str] = mapped_column(String(24))
+    source: Mapped[str] = mapped_column(String(16), default="WEB")  # WEB/ERP/AGENT
+    operator_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

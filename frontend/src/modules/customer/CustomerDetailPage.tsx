@@ -1,0 +1,600 @@
+import { useState } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Button, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+
+import {
+  claimCustomer,
+  createContact,
+  getCustomer,
+  listContacts,
+  releaseCustomerToPool,
+  transferCustomer,
+  updateCustomer,
+  type CustomerPayload,
+} from '../../shared/api/customer'
+import { listUsers } from '../../shared/api/system'
+import { getCustomerTimeline, listFollowups, type FollowUp } from '../../shared/api/followup'
+import { listOpportunities, type Opportunity } from '../../shared/api/opportunity'
+import { listOrders, type Order } from '../../shared/api/order'
+import { listQuotes, type Quote } from '../../shared/api/quote'
+import { usePermissions } from '../../shared/hooks/permissions'
+import type { Contact } from '../../shared/types'
+import DetailHeader from '../../shared/components/DetailHeader'
+import FollowUpModal from '../common/FollowUpModal'
+import Timeline from '../common/Timeline'
+import AttachmentPanel from '../common/AttachmentPanel'
+
+const TABS = [
+  { tab: '概览', itemKey: 'overview' },
+  { tab: '联系人', itemKey: 'contacts' },
+  { tab: '商机', itemKey: 'opportunities' },
+  { tab: '跟进', itemKey: 'followups' },
+  { tab: '报价', itemKey: 'quotes' },
+  { tab: '订单', itemKey: 'orders' },
+  { tab: '文件', itemKey: 'files' },
+  { tab: '日志', itemKey: 'logs' },
+]
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{ color: 'var(--crm-text-3)', fontSize: 13, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 14 }}>{value}</div>
+    </div>
+  )
+}
+
+export default function CustomerDetailPage() {
+  const params = useParams()
+  const customerId = Number(params.id)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const { can } = usePermissions()
+  const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'overview')
+  const [contactModal, setContactModal] = useState(false)
+  const [contactForm, setContactForm] = useState<Partial<Contact>>({ name: '', is_primary: false })
+  const [editModal, setEditModal] = useState(false)
+  const [editForm, setEditForm] = useState<CustomerPayload>({ name: '' })
+  const [transferModal, setTransferModal] = useState(false)
+  const [transferTo, setTransferTo] = useState<number | null>(null)
+  const [followupVisible, setFollowupVisible] = useState(false)
+
+  const customerQuery = useQuery({
+    queryKey: ['customer', customerId],
+    queryFn: () => getCustomer(customerId),
+    enabled: Number.isFinite(customerId),
+  })
+
+  const contactsQuery = useQuery({
+    queryKey: ['contacts', customerId],
+    queryFn: () => listContacts(customerId),
+    enabled: Number.isFinite(customerId),
+  })
+
+  const contactMutation = useMutation({
+    mutationFn: (payload: Partial<Contact>) => createContact(customerId, payload),
+    onSuccess: () => {
+      Toast.success('联系人已添加')
+      setContactModal(false)
+      setContactForm({ name: '', is_primary: false })
+      void queryClient.invalidateQueries({ queryKey: ['contacts', customerId] })
+      void queryClient.invalidateQueries({ queryKey: ['customer', customerId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const invalidateCustomer = () => {
+    void queryClient.invalidateQueries({ queryKey: ['customer', customerId] })
+    void queryClient.invalidateQueries({ queryKey: ['customers'] })
+    void queryClient.invalidateQueries({ queryKey: ['workbench'] })
+  }
+
+  const editMutation = useMutation({
+    mutationFn: (payload: CustomerPayload) => updateCustomer(customerId, payload),
+    onSuccess: () => {
+      Toast.success('客户资料已保存')
+      setEditModal(false)
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const transferMutation = useMutation({
+    mutationFn: (ownerId: number | null) => transferCustomer(customerId, { owner_id: ownerId }),
+    onSuccess: () => {
+      Toast.success('负责人已变更')
+      setTransferModal(false)
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const poolMutation = useMutation({
+    mutationFn: (action: 'release' | 'claim') =>
+      action === 'release' ? releaseCustomerToPool(customerId) : claimCustomer(customerId),
+    onSuccess: (_data, action) => {
+      Toast.success(action === 'release' ? '已放入公海' : '领取成功')
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const usersQuery = useQuery({
+    queryKey: ['assignable-users'],
+    queryFn: () => listUsers({ page: 1, page_size: 100 }),
+    enabled: transferModal && can('customer:assign'),
+  })
+
+  const opportunitiesQuery = useQuery({
+    queryKey: ['customer-opportunities', customerId],
+    queryFn: () => listOpportunities({ customer_id: customerId, page_size: 50 }),
+    enabled: Number.isFinite(customerId),
+  })
+  const followupsQuery = useQuery({
+    queryKey: ['followups', { customer_id: customerId }],
+    queryFn: () => listFollowups({ customer_id: customerId, page_size: 100 }),
+    enabled: Number.isFinite(customerId) && activeKey === 'followups',
+  })
+  const timelineQuery = useQuery({
+    queryKey: ['timeline', 'customer', customerId],
+    queryFn: () => getCustomerTimeline(customerId),
+    enabled: Number.isFinite(customerId) && activeKey === 'logs',
+  })
+
+  const quotesQuery = useQuery({
+    queryKey: ['customer-quotes', customerId],
+    queryFn: () => listQuotes({ customer_id: customerId, page_size: 50 }),
+    enabled: Number.isFinite(customerId) && activeKey === 'quotes',
+  })
+  const ordersQuery = useQuery({
+    queryKey: ['customer-orders', customerId],
+    queryFn: () => listOrders({ customer_id: customerId, page_size: 50 }),
+    enabled: Number.isFinite(customerId) && activeKey === 'orders',
+  })
+
+  const customer = customerQuery.data
+
+  if (customerQuery.isLoading) {
+    return <div className="page-container">加载中…</div>
+  }
+  if (!customer) {
+    return <div className="page-container">客户不存在或无权查看</div>
+  }
+
+  const contactColumns = [
+    { title: '姓名', dataIndex: 'name', width: 120 },
+    { title: '职位', dataIndex: 'title', width: 140, render: (v: string | null) => v ?? '-' },
+    { title: '手机', dataIndex: 'mobile', width: 150, render: (v: string | null) => v ?? '-' },
+    { title: '邮箱', dataIndex: 'email', render: (v: string | null) => v ?? '-' },
+    {
+      title: '主要联系人',
+      dataIndex: 'is_primary',
+      width: 110,
+      render: (v: boolean) => (v ? <Tag color="green">是</Tag> : '-'),
+    },
+  ]
+
+  return (
+    <div className="page-container">
+      {/* 头部按设计稿排：标题 + 状态标签一行，关键信息行在标题下方左对齐，按钮贴右 */}
+      <DetailHeader
+        title={customer.name}
+        tags={
+          <>
+            {customer.level && (
+              <Tag color={customer.level === 'A' ? 'green' : customer.level === 'B' ? 'blue' : 'grey'}>
+                {customer.level} 级客户
+              </Tag>
+            )}
+            <Tag color={customer.pool_status === 'public' ? 'orange' : 'blue'}>
+              {customer.pool_status === 'public' ? '公海' : '私海'}
+            </Tag>
+            {customer.country && <Tag>{customer.country}</Tag>}
+          </>
+        }
+        meta={
+          <>
+            <span>负责人：{customer.owner_name ?? '未分配'}</span>
+            <span>地区：{customer.region ?? '-'}</span>
+            <span>来源：{customer.source ?? '-'}</span>
+            <span>联系人：{customer.contact_count}</span>
+          </>
+        }
+        extra={
+          <>
+            {can('customer:update') && (
+              <Button
+                onClick={() => {
+                  setEditForm({
+                    name: customer.name,
+                    short_name: customer.short_name ?? '',
+                    region: customer.region ?? '',
+                    address: customer.address ?? '',
+                    source: customer.source ?? '',
+                    level: customer.level ?? '',
+                    remark: customer.remark ?? '',
+                  })
+                  setEditModal(true)
+                }}
+              >
+                编辑客户
+              </Button>
+            )}
+            {can('followup:create') && (
+              <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+            )}
+            {can('agent:use') && (
+              <Button onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
+                问 Agent
+              </Button>
+            )}
+            {can('customer:assign') && (
+              <Button onClick={() => setTransferModal(true)}>转移负责人</Button>
+            )}
+            {can('customer:assign') && customer.pool_status !== 'public' && (
+              <Popconfirm
+                title="放入公海后负责人会清空，确认？"
+                onConfirm={() => poolMutation.mutate('release')}
+              >
+                <Button>放入公海</Button>
+              </Popconfirm>
+            )}
+            {customer.pool_status === 'public' && (
+              <Button theme="solid" loading={poolMutation.isPending} onClick={() => poolMutation.mutate('claim')}>
+                领取到我名下
+              </Button>
+            )}
+          </>
+        }
+      />
+
+      <div className="card-block">
+        <Tabs
+          type="line"
+          activeKey={activeKey}
+          onChange={(key) => {
+            setActiveKey(key)
+            setSearchParams({ tab: key })
+          }}
+          tabList={TABS}
+        />
+
+        <div style={{ marginTop: 16 }}>
+          {activeKey === 'overview' && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                gap: 20,
+              }}
+            >
+              <Field label="客户名称" value={customer.name} />
+              <Field label="客户简称" value={customer.short_name ?? '-'} />
+              <Field label="客户类型" value={customer.customer_type ?? '-'} />
+              <Field label="国家 / 地区" value={`${customer.country ?? '-'} / ${customer.region ?? '-'}`} />
+              <Field label="统一社会信用代码" value={customer.tax_no ?? '-'} />
+              <Field label="官网域名" value={customer.domain ?? '-'} />
+              <Field label="详细地址" value={customer.address ?? '-'} />
+              <Field
+                label="最近跟进"
+                value={
+                  customer.last_followup_at
+                    ? new Date(customer.last_followup_at).toLocaleString('zh-CN')
+                    : '-'
+                }
+              />
+              <Field label="备注" value={customer.remark ?? '-'} />
+            </div>
+          )}
+
+          {activeKey === 'contacts' && (
+            <>
+              <div className="toolbar">
+                <div style={{ flex: 1 }} />
+                <Button theme="solid" onClick={() => setContactModal(true)}>
+                  新建联系人
+                </Button>
+              </div>
+              <Table<Contact>
+                columns={contactColumns}
+                dataSource={contactsQuery.data ?? []}
+                loading={contactsQuery.isLoading}
+                rowKey="id"
+                pagination={false}
+                empty="还没有联系人"
+              />
+            </>
+          )}
+
+          {activeKey === 'opportunities' && (
+            <Table<Opportunity>
+              columns={[
+                {
+                  title: '商机名称',
+                  dataIndex: 'title',
+                  render: (text: string, record: Opportunity) => (
+                    <Link to={`/opportunities/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
+                      {text}
+                    </Link>
+                  ),
+                },
+                { title: '阶段', dataIndex: 'stage_name', width: 110 },
+                {
+                  title: '预计金额',
+                  dataIndex: 'expected_amount',
+                  width: 130,
+                  render: (value: number | null) => (value ? `¥${value.toLocaleString('zh-CN')}` : '-'),
+                },
+                { title: '预计成交日', dataIndex: 'expected_close_date', width: 130, render: (v: string | null) => v ?? '-' },
+                { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+              ]}
+              dataSource={opportunitiesQuery.data?.items ?? []}
+              loading={opportunitiesQuery.isLoading}
+              rowKey="id"
+              pagination={false}
+              empty="该客户还没有商机"
+            />
+          )}
+
+          {activeKey === 'followups' && (
+            <>
+              <div className="toolbar">
+                <div style={{ flex: 1 }} />
+                <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+              </div>
+              <Table<FollowUp>
+                columns={[
+                  {
+                    title: '时间',
+                    dataIndex: 'created_at',
+                    width: 180,
+                    render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                  },
+                  { title: '方式', dataIndex: 'followup_type', width: 100 },
+                  { title: '内容', dataIndex: 'content' },
+                  { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },
+                  { title: '下一步', dataIndex: 'next_action', render: (v: string | null) => v ?? '-' },
+                ]}
+                dataSource={followupsQuery.data?.items ?? []}
+                loading={followupsQuery.isLoading}
+                rowKey="id"
+                pagination={false}
+                empty="还没有跟进记录"
+              />
+            </>
+          )}
+
+          {activeKey === 'logs' && (
+            <Timeline events={timelineQuery.data ?? []} loading={timelineQuery.isLoading} />
+          )}
+
+          {activeKey === 'quotes' && (
+            <Table<Quote>
+              columns={[
+                {
+                  title: '报价单号',
+                  dataIndex: 'quote_no',
+                  width: 170,
+                  render: (text: string, record: Quote) => (
+                    <Link to={`/quotes/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
+                      {text}
+                    </Link>
+                  ),
+                },
+                { title: '版本', dataIndex: 'current_version_no', width: 80, render: (v: number | null) => (v ? `V${v}` : '-') },
+                {
+                  title: '金额',
+                  dataIndex: 'current_version_amount',
+                  width: 140,
+                  render: (v: number | null) => (v === null || v === undefined ? '-' : `¥${v.toLocaleString('zh-CN')}`),
+                },
+                { title: '状态', dataIndex: 'status_label', width: 110 },
+                { title: '有效期', dataIndex: 'valid_until', width: 120, render: (v: string | null) => v ?? '-' },
+              ]}
+              dataSource={quotesQuery.data?.items ?? []}
+              loading={quotesQuery.isLoading}
+              rowKey="id"
+              pagination={false}
+              empty="该客户还没有报价"
+            />
+          )}
+
+          {activeKey === 'orders' && (
+            <Table<Order>
+              columns={[
+                {
+                  title: '订单号',
+                  dataIndex: 'order_no',
+                  width: 170,
+                  render: (text: string, record: Order) => (
+                    <Link to={`/orders/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
+                      {text}
+                    </Link>
+                  ),
+                },
+                {
+                  title: '订单金额',
+                  dataIndex: 'total_amount',
+                  width: 140,
+                  render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+                },
+                {
+                  title: '已回款',
+                  dataIndex: 'received_amount',
+                  width: 130,
+                  render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+                },
+                { title: '履约状态', dataIndex: 'status_label', width: 120 },
+                { title: '交期', dataIndex: 'delivery_date', width: 120, render: (v: string | null) => v ?? '-' },
+              ]}
+              dataSource={ordersQuery.data?.items ?? []}
+              loading={ordersQuery.isLoading}
+              rowKey="id"
+              pagination={false}
+              empty="该客户还没有订单"
+            />
+          )}
+
+          {activeKey === 'files' && (
+            <AttachmentPanel businessType="customer" businessId={customerId} />
+          )}
+        </div>
+      </div>
+
+      <Modal
+        title="新建联系人"
+        visible={contactModal}
+        onCancel={() => setContactModal(false)}
+        onOk={() => {
+          if (!contactForm.name?.trim()) {
+            Toast.warning('联系人姓名必填')
+            return
+          }
+          contactMutation.mutate(contactForm)
+        }}
+        confirmLoading={contactMutation.isPending}
+        okText="保存"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <div style={{ marginBottom: 4 }}>姓名 *</div>
+            <Input
+              value={contactForm.name ?? ''}
+              onChange={(value) => setContactForm({ ...contactForm, name: value })}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>职位</div>
+              <Input
+                value={contactForm.title ?? ''}
+                onChange={(value) => setContactForm({ ...contactForm, title: value })}
+                placeholder="采购经理"
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>手机</div>
+              <Input
+                value={contactForm.mobile ?? ''}
+                onChange={(value) => setContactForm({ ...contactForm, mobile: value })}
+              />
+            </div>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>邮箱</div>
+            <Input
+              value={contactForm.email ?? ''}
+              onChange={(value) => setContactForm({ ...contactForm, email: value })}
+            />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="编辑客户"
+        visible={editModal}
+        onCancel={() => setEditModal(false)}
+        onOk={() => {
+          if (!editForm.name.trim()) {
+            Toast.warning('客户名称必填')
+            return
+          }
+          editMutation.mutate(editForm)
+        }}
+        confirmLoading={editMutation.isPending}
+        okText="保存"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <div style={{ marginBottom: 4 }}>客户名称 *</div>
+            <Input value={editForm.name} onChange={(v) => setEditForm({ ...editForm, name: v })} />
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>客户简称</div>
+              <Input
+                value={editForm.short_name ?? ''}
+                onChange={(v) => setEditForm({ ...editForm, short_name: v })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>客户等级</div>
+              <Select
+                value={editForm.level ?? undefined}
+                onChange={(v) => setEditForm({ ...editForm, level: v as string })}
+                optionList={['A', 'B', 'C', 'D'].map((value) => ({ value, label: `${value} 级` }))}
+                style={{ width: '100%' }}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>省份 / 地区</div>
+              <Input
+                value={editForm.region ?? ''}
+                onChange={(v) => setEditForm({ ...editForm, region: v })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>客户来源</div>
+              <Input
+                value={editForm.source ?? ''}
+                onChange={(v) => setEditForm({ ...editForm, source: v })}
+              />
+            </div>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>详细地址</div>
+            <Input
+              value={editForm.address ?? ''}
+              onChange={(v) => setEditForm({ ...editForm, address: v })}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>备注</div>
+            <Input
+              value={editForm.remark ?? ''}
+              onChange={(v) => setEditForm({ ...editForm, remark: v })}
+            />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="转移负责人"
+        visible={transferModal}
+        onCancel={() => setTransferModal(false)}
+        onOk={() => transferMutation.mutate(transferTo)}
+        confirmLoading={transferMutation.isPending}
+        okText="确认转移"
+      >
+        <div style={{ marginBottom: 8, color: 'var(--crm-text-2)', fontSize: 13 }}>
+          当前负责人：{customer.owner_name ?? '未分配'}
+        </div>
+        <Select
+          placeholder="选择新的负责人"
+          value={transferTo ?? undefined}
+          onChange={(value) => setTransferTo(value as number)}
+          optionList={(usersQuery.data?.items ?? []).map((item) => ({
+            value: item.id,
+            label: `${item.name}（${item.department ?? '未分配部门'}）`,
+          }))}
+          loading={usersQuery.isLoading}
+          style={{ width: '100%' }}
+        />
+        <div style={{ marginTop: 12, color: 'var(--crm-text-3)', fontSize: 12 }}>
+          转移会记录历史负责人；不选人直接确认 = 放入公海。
+        </div>
+      </Modal>
+
+      <FollowUpModal
+        visible={followupVisible}
+        onClose={() => setFollowupVisible(false)}
+        target={{ customerId }}
+        onCreated={invalidateCustomer}
+      />
+    </div>
+  )
+}
