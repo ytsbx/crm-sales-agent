@@ -389,9 +389,22 @@ async def create_customer(
     user: CurrentUser,
     payload: dict,
 ) -> Customer:
+    """新建客户。
+
+    ## 为什么不能用 `setdefault("owner_id", user.id)`
+
+    `CustomerCreate.owner_id` 的默认值就是 `None`，`model_dump()` 会把
+    `owner_id: None` **显式带进来**；而 `setdefault` 只在**键不存在**时才生效，
+    于是 None 被原样保留 —— 任何人新建的客户都直接掉进公海（无负责人），
+    谁都能看、谁都能领。这是个真实的数据归属缺陷，不是风格问题。
+
+    正确口径：没指定负责人（键缺失或为 None）→ 归创建人自己。
+    要把客户放进公海请走 `transfer_customer(..., None, ...)` / release-to-pool，
+    那是有明确意图、且会写归属历史与审计的动作。
+    """
     payload = dict(payload)
-    # 默认负责人是自己；管理员可以指定他人
-    payload.setdefault("owner_id", user.id)
+    if payload.get("owner_id") is None:
+        payload["owner_id"] = user.id
     customer = Customer(**payload, created_by=user.id)
     session.add(customer)
     await session.flush()

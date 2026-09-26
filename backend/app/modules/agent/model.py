@@ -18,6 +18,7 @@ ACTION_STATUS_LABEL = {
     "approval_required": "需审批",
     "executed": "已执行",
     "rejected": "已拒绝",
+    "cancelled": "已取消",
     "failed": "执行失败",
 }
 

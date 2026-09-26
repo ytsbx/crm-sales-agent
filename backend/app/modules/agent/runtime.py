@@ -1,6 +1,7 @@
 """Agent 运行时：DeepSeek 对话 + 工具调用 + 风险网关。"""
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -155,11 +156,23 @@ async def run_turn(
     agent_session: AgentSession,
     user: CurrentUser,
     text: str,
+    on_event: Callable[[str, dict], None] | None = None,
 ) -> dict:
-    """跑一轮对话：模型可能连续调用多个工具，写动作则挂起等确认。"""
+    """跑一轮对话：模型可能连续调用多个工具，写动作则挂起等确认。
+
+    `on_event(kind, payload)`：进度回调，给 `/agent/sessions/{id}/messages/stream`
+    用。每一轮模型调用与每次工具执行都会回调一次，让前端能实时显示
+    "正在调用 查客户…" 而不是干等十几秒。
+
+    为什么不是 async 生成器：整轮结果（回复 + 动作 + 工具轨迹）是
+    一个整体，拆成生成器会让"写动作挂起等确认"这条路径很难正确表达。
+    用回调把进度推出去，最终结果仍由返回值给出，两边都清晰。
+    """
     user_message = AgentMessage(session_id=agent_session.id, role="user", content=text)
     session.add(user_message)
     await session.commit()
+    if on_event:
+        on_event("user_message", {"content": text})
 
     if not model_ready():
         reply = (
@@ -170,6 +183,8 @@ async def run_turn(
             AgentMessage(session_id=agent_session.id, role="assistant", content=reply)
         )
         await session.commit()
+        if on_event:
+            on_event("notice", {"reason": "model_not_configured", "reply": reply})
         return {"reply": reply, "actions": [], "tool_calls": []}
 
     messages = [
@@ -284,6 +299,17 @@ async def run_turn(
                         "output": result,
                     }
                 )
+                if on_event:
+                    on_event(
+                        "tool_call",
+                        {
+                            "tool": name,
+                            "label": tool_label(name),
+                            "risk": "L1",
+                            "input": args,
+                            "output": result,
+                        },
+                    )
             else:
                 # L2 / L3：不执行，落成待确认动作
                 action = AgentAction(
@@ -574,3 +600,70 @@ async def execute_action(
     )
     await session.commit()
     return result
+
+
+async def retry_tool_call(
+    session: AsyncSession,
+    *,
+    execution_row: AgentExecution,
+    user: CurrentUser,
+    agent_session: AgentSession,
+) -> dict:
+    """重试一次失败的工具调用（03-API §37 Execution）。
+
+    用**原来的入参**再跑一次同一个工具，并记一条**新的**执行记录：
+    失败历史不能覆盖 —— "为什么一直失败"要靠它排查。
+
+    只允许重试读类工具。写类工具（创建跟进/任务、提交审批）重试可能
+    造成重复写入，那是业务事故而不是重试；调用方（router）已挡掉
+    `status == success` 的情况，这里再挡一层写入类工具，防止"上次超时
+    其实已经写成功了"这种最阴的情况。
+    """
+    spec = TOOLS.get(execution_row.tool_name)
+    if spec is None:
+        raise AppError(ErrorCode.NOT_FOUND, "找不到对应的工具", 404)
+    if spec.risk != "L1":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{tool_label(spec.name)}」是写操作，重试可能重复写入，"
+            "请重新发起而不是重试",
+        )
+
+    ctx = ToolContext(
+        session=session, user=user, agent_session_id=agent_session.id
+    )
+    started = datetime.now(UTC)
+    payload = execution_row.input_payload or {}
+    try:
+        result = await spec.handler(ctx, **payload)
+    except AppError as exc:
+        await _record_execution(
+            session,
+            session_id=agent_session.id,
+            action_id=execution_row.action_id,
+            tool_name=execution_row.tool_name,
+            risk=execution_row.risk_level,
+            payload=payload,
+            output=None,
+            status="failed",
+            error=exc.message,
+            user=user,
+            started_at=started,
+        )
+        await session.commit()
+        raise
+
+    await _record_execution(
+        session,
+        session_id=agent_session.id,
+        action_id=execution_row.action_id,
+        tool_name=execution_row.tool_name,
+        risk=execution_row.risk_level,
+        payload=payload,
+        output=result,
+        status="success",
+        user=user,
+        started_at=started,
+    )
+    await session.commit()
+    return {"retried_from": execution_row.id, "tool_name": spec.name, "output": result}

@@ -192,6 +192,11 @@ def main():
     check('建客户', res.get('code'), 0)
     customer_id = res['data']['id']
     CREATED_CUSTOMER_IDS.append(customer_id)
+    # 回归：不指定负责人时，客户必须归创建人自己。
+    # 曾经 `setdefault("owner_id", user.id)` 因为 model_dump 带了 owner_id=None
+    # 而失效，导致**任何人新建的客户都直接掉进公海**（谁都能看、谁都能领）。
+    check('默认负责人是创建人自己', res['data']['owner_id'], admin_id)
+    check('不是公海', res['data']['pool_status'], 'private')
 
     status, res = call('POST', '/customers', token=zhangsan, body={
         'name': f'CHK{RUN}张三客户',
@@ -375,17 +380,23 @@ def main():
     print()
     print('=== 9. 数据范围：张三看不见别人的客户子资源 ===')
     # 张三那个客户的商机/报价/订单都是 admin 的
+    # 显式把商机负责人设成 admin：这条用例要验证的是"客户可见 ≠ 名下商机可见"，
+    # 所以必须让商机的负责人**确定在张三范围外**。
+    # （不指定 owner_id 时商机继承客户负责人，修好客户归属后那就是张三自己，
+    #   测不出数据范围。）
     status, res = call('POST', '/opportunities', token=admin, body={
         'customer_id': zs_customer_id,
         'title': f'CHK{RUN}张三客户商机',
         'expected_amount': 5000,
         'stage_id': stages[0]['id'],
+        'owner_id': admin_id,
     })
     check('给张三客户建商机（owner=admin）', res.get('code'), 0)
+    check('商机负责人确实是 admin', res['data']['owner_id'], admin_id)
 
     status, res = call('GET', f'/customers/{zs_customer_id}/opportunities', token=zhangsan)
     check('张三看自己客户的商机', res.get('code'), 0)
-    check('看不到别人负责的商机', res['data']['total'], 0)
+    check('客户可见不等于名下商机可见', res['data']['total'], 0)
 
     status, res = call('GET', f'/customers/{zs_customer_id}/opportunities', token=admin)
     check('管理员能看到', res['data']['total'], 1)
