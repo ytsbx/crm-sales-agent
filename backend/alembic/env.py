@@ -24,9 +24,11 @@ from app.modules.payment import model as payment_model  # noqa: F401
 from app.modules.pricing import model as pricing_model  # noqa: F401
 from app.modules.product import model as product_model  # noqa: F401
 from app.modules.quote import model as quote_model  # noqa: F401
+from app.modules.sample import model as sample_model  # noqa: F401
 from app.modules.settings import model as settings_model  # noqa: F401
 from app.modules.task import model as task_model  # noqa: F401
 from app.modules.user import model as user_model  # noqa: F401
+from app.modules.wecom import model as wecom_model  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

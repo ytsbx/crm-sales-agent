@@ -23,6 +23,7 @@ import QuoteListPage from '../modules/quote/QuoteListPage'
 import SampleListPage from '../modules/sample/SampleListPage'
 import SettingsPage from '../modules/settings/SettingsPage'
 import TaskListPage from '../modules/task/TaskListPage'
+import WeComPage from '../modules/wecom/WeComPage'
 import WorkbenchPage from '../modules/workbench/WorkbenchPage'
 import { useAuthStore } from '../shared/store/auth'
 
@@ -83,15 +84,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'wecom',
-        element: (
-          <div className="page-container">
-            <h2 className="page-title">企业微信</h2>
-            <p className="page-subtitle">外部联系人同步、待归一、离职继承</p>
-            <div className="placeholder-box">
-              企业微信集成尚未开发：需要 corp id / secret 与公网回调地址。
-            </div>
-          </div>
-        ),
+        element: <WeComPage />,
       },
       {
         path: 'products',

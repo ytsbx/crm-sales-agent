@@ -40,9 +40,36 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     agent_max_tool_rounds: int = 3
 
+    # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------
+    # 全部留空即为"未配置"状态：同步接口会明确返回"还没配置凭据"，
+    # 而不是静默假装成功。拿到 corp id / secret 后填这里即可，代码不用改。
+    wecom_corp_id: str = ""
+    wecom_agent_id: str = ""
+    # 内部成员与部门：通讯录同步密钥
+    wecom_contact_secret: str = ""
+    # 外部联系人：客户联系密钥（企微里是独立的一把 secret）
+    wecom_external_contact_secret: str = ""
+    # 事件回调（企微要求公网 HTTPS）：URL 上的 token 与 EncodingAESKey
+    wecom_callback_token: str = ""
+    wecom_callback_aes_key: str = ""
+    # 企微 API 基址，一般不用改
+    wecom_api_base: str = "https://qyapi.weixin.qq.com"
+    # 单次同步最多拉多少页，防止配错时把对方接口打爆
+    wecom_sync_max_pages: int = 50
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]
+
+    @property
+    def wecom_contact_ready(self) -> bool:
+        """通讯录（部门 / 成员）同步是否具备条件。"""
+        return bool(self.wecom_corp_id and self.wecom_contact_secret)
+
+    @property
+    def wecom_external_ready(self) -> bool:
+        """外部联系人与跟进关系同步是否具备条件。"""
+        return bool(self.wecom_corp_id and self.wecom_external_contact_secret)
 
 
 @lru_cache

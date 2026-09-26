@@ -269,6 +269,7 @@ async function main() {
     { path: '/settings?tab=departments', name: '25-settings-departments' },
     { path: '/agent', name: '20-agent' },
     { path: '/samples', name: '22-samples' },
+    { path: '/wecom', name: '30-wecom' },
     {
       // 带参数进入，才能真正验证"选了 SKU 能出计费重与方案"，
       // 否则只截图到空状态，等于没验证结果区

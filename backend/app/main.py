@@ -31,6 +31,7 @@ from app.modules.timeline.router import router as timeline_router
 from app.modules.user.router import router as user_router
 from app.modules.settings.router import router as settings_router
 from app.modules.search.router import router as search_router
+from app.modules.wecom.router import router as wecom_router
 
 app = FastAPI(
     title=f"{settings.app_name} API",
@@ -80,6 +81,7 @@ app.include_router(file_router, prefix=settings.api_prefix)
 app.include_router(settings_router, prefix=settings.api_prefix)
 app.include_router(search_router, prefix=settings.api_prefix)
 app.include_router(agent_router, prefix=settings.api_prefix)
+app.include_router(wecom_router, prefix=settings.api_prefix)
 
 
 @app.get("/health", tags=["System"])

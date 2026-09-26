@@ -195,3 +195,37 @@ DEEPSEEK_MODEL=deepseek-chat
 
 每次工具调用都会写 `agent_executions`，写动作额外写 `audit_logs`（来源标为 AGENT），
 所以"AI 建议了什么、谁确认的、改了什么"全程可查。
+
+## 企业微信集成（框架已就绪，等凭据）
+
+PRD §8 的四块（部门/成员同步、外部联系人同步、待归一、离职继承）与 API §10 的
+13 个接口都已实现，前端「企业微信」页是设计稿的三栏布局（左待处理 / 中企微详情 / 右候选客户）。
+
+**差的就是凭据。** 在 `backend/.env` 里补齐后重启后端即可，代码不用改：
+
+```text
+WECOM_CORP_ID=ww...
+WECOM_AGENT_ID=1000002
+# 通讯录同步密钥（部门 / 成员）
+WECOM_CONTACT_SECRET=...
+# 客户联系密钥（外部联系人），企微里是独立的一把
+WECOM_EXTERNAL_CONTACT_SECRET=...
+# 事件回调，企微要求公网 HTTPS
+WECOM_CALLBACK_TOKEN=...
+WECOM_CALLBACK_AES_KEY=...
+```
+
+回调地址填：`https://<你的公网域名>/api/v1/webhooks/wecom/events`
+（GET 用于企微后台的 URL 校验，POST 收事件；两者都靠签名校验，不需要登录）。
+
+未配置期间的行为是**刻意设计**的：
+
+- 同步接口返回 `50202` 并说明缺哪个变量，**不会**静默返回"成功 0 条"——
+  否则运营会以为企微里真的没人；
+- 「企业微信」页顶部横幅列出缺哪些配置，页面与接口可以直接联调；
+- 离职继承传 `transfer_wecom=false` 可先只转 CRM 侧（客户/商机/任务负责人），
+  不依赖企微凭据。
+
+一个已知的待办：事件回调目前只把报文记进 `wecom_sync_jobs`（便于确认"企微推了什么"），
+真正的增量同步（收到 `change_external_contact` 只拉那一个人）等拿到真实回调再写——
+没有真实报文的情况下写增量逻辑只能靠猜。

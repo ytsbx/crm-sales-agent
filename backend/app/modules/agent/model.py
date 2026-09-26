@@ -72,7 +72,13 @@ class AgentAction(Base, IdMixin):
 
 class AgentExecution(Base, IdMixin):
     __tablename__ = "agent_executions"
-    __table_args__ = (Index("ix_agent_executions_session", "session_id"),)
+    __table_args__ = (
+        Index("ix_agent_executions_session", "session_id"),
+        # 迁移 f2c8d4e6a1b3 建了这个索引（按调用者查"谁调过工具"），
+        # 但模型里一直没声明，导致 autogenerate 每次都报"要删索引"。
+        # 这里补上声明，让模型与库对齐；索引本身有用，保留。
+        Index("ix_agent_executions_user", "user_id"),
+    )
 
     session_id: Mapped[int] = mapped_column(BigInteger)
     action_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

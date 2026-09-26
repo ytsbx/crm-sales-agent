@@ -71,6 +71,8 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("agent:use", "使用 Sales Agent", "agent", "use"),
     ("sample:view", "查看样品", "sample", "view"),
     ("sample:manage", "管理样品", "sample", "manage"),
+    ("wecom:view", "查看企业微信集成", "wecom", "view"),
+    ("wecom:manage", "同步与归一转处理", "wecom", "manage"),
 ]
 
 SALES_PERMISSIONS = [
@@ -109,6 +111,9 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
     "customer:delete",
     "order:manage",
     "payment:manage",
+    # 企业微信集成：只有主管及以上才需要看同步状态、做待归一处理和离职继承
+    "wecom:view",
+    "wecom:manage",
 ]
 
 FINANCE_PERMISSIONS = [
