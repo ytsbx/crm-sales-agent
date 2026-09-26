@@ -52,9 +52,18 @@ def build_lead_stmt(
     status: str | None = None,
     source: str | None = None,
     owner_id: int | None = None,
+    region: str | None = None,
     unassigned: bool = False,
+    include_deleted: bool = False,
 ) -> Select:
-    stmt = select(Lead).where(Lead.deleted_at.is_(None))
+    """线索列表/导出的公共查询条件。
+
+    `include_deleted=True` 时带上回收站里的（导出用）。
+    `email` 也参与关键字搜索：业务常拿邮箱来找人。
+    """
+    stmt = select(Lead)
+    if not include_deleted:
+        stmt = stmt.where(Lead.deleted_at.is_(None))
     if keyword:
         like = f"%{keyword.strip()}%"
         stmt = stmt.where(
@@ -63,12 +72,15 @@ def build_lead_stmt(
                 Lead.company_name.ilike(like),
                 Lead.contact_name.ilike(like),
                 Lead.mobile.ilike(like),
+                Lead.email.ilike(like),
             )
         )
     if status:
         stmt = stmt.where(Lead.status == status)
     if source:
         stmt = stmt.where(Lead.source == source)
+    if region:
+        stmt = stmt.where(Lead.region == region)
     if owner_id is not None:
         stmt = stmt.where(Lead.owner_id == owner_id)
     if unassigned:
@@ -96,17 +108,43 @@ async def get_lead_or_404(session: AsyncSession, lead_id: int) -> Lead:
     return lead
 
 
+async def assert_lead_visible(session: AsyncSession, user, lead: Lead) -> None:
+    """校验线索在当前用户的数据范围内（不含取数）。
+
+    恢复回收站线索这类"已经有对象、只需校验"的场景用这个，
+    避免为了校验再查一次库。
+    """
+    from app.core.data_scope import ensure_in_scope
+
+    await ensure_in_scope(session, user, owner_id=lead.owner_id, label="线索")
+
+
 async def get_visible_lead(session: AsyncSession, user, lead_id: int) -> Lead:
     """取线索并校验数据范围。
 
     线索池里没有负责人的线索（owner_id 为空）对所有有权限的人可见 ——
     那正是"待分配"的意义；有负责人的则必须在范围内。
     """
-    from app.core.data_scope import ensure_in_scope
-
     lead = await get_lead_or_404(session, lead_id)
-    await ensure_in_scope(session, user, owner_id=lead.owner_id, label="线索")
+    await assert_lead_visible(session, user, lead)
     return lead
+
+
+async def resolve_owner(
+    session: AsyncSession, username: str | None, default_user_id: int
+) -> int:
+    """线索导入用：负责人按登录名匹配，匹配不上就用当前操作人。
+
+    与客户导入同一口径（customer/io.py 的 resolve_owner），
+    故意不共用实现是因为客户那份签名里没有 session 之外的依赖，
+    合并反而要为一个参数抽公共层；两处都只有 5 行。
+    """
+    if not username or not username.strip():
+        return default_user_id
+    row = (
+        await session.execute(select(User).where(User.username == username.strip()))
+    ).scalar_one_or_none()
+    return row.id if row else default_user_id
 
 
 async def owner_names(session: AsyncSession, owner_ids: list[int]) -> dict[int, str]:

@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-secret-please-change"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 720
+    #: `/auth/refresh` 允许"已过期多久之内"仍然续期。过期太久就要求重新登录，
+    #: 否则一个泄漏的旧 token 等于永久有效。
+    refresh_grace_minutes: int = 720
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

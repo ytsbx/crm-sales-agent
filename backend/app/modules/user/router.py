@@ -21,11 +21,21 @@ from app.modules.user.schema import (
     DepartmentCreate,
     DepartmentUpdate,
     RoleCreate,
+    RoleDataScopeUpdate,
+    RolePermissionUpdate,
     RoleUpdate,
     UserCreate,
     UserRolesUpdate,
     UserUpdate,
 )
+
+#: 数据范围的中文名，给界面直接显示（与 02-ER §3 的四个取值一一对应）
+DATA_SCOPE_LABELS = {
+    "self": "仅本人",
+    "department": "本部门",
+    "department_and_sub": "本部门及下级",
+    "all": "全部",
+}
 
 router = APIRouter(tags=["System"])
 
@@ -501,6 +511,119 @@ async def list_permissions(
             }
             for p in rows
         ]
+    )
+
+
+# ================================================================== 角色权限与数据范围
+# 03-API §5 把这四项单独列出（而不是只靠 PATCH /roles/{id}）。
+# 分开的意义：授权与调数据范围是两个不同的人在管，也是两次独立的审计事件。
+
+@router.get("/roles/{role_id}/permissions")
+async def get_role_permissions(
+    role_id: int,
+    _: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """该角色的权限码列表。"""
+    role = await svc.get_role_or_404(session, role_id)
+    codes = await svc.permission_codes_of_role(session, role.id)
+    return ok({"role_id": role.id, "code": role.code, "permission_codes": codes})
+
+
+@router.put("/roles/{role_id}/permissions")
+async def set_role_permissions(
+    role_id: int,
+    payload: RolePermissionUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """覆盖角色的权限集合（03-API §5）。
+
+    传空数组等于收回全部权限 —— 这是合法操作（也是"先清空再逐个加"
+    的常见做法），不做拦截。
+    """
+    role = await svc.get_role_or_404(session, role_id)
+    before = await svc.permission_codes_of_role(session, role.id)
+    await svc.set_role_permissions(session, role, payload.permission_codes)
+    await session.flush()
+    after = await svc.permission_codes_of_role(session, role.id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="set_role_permissions",
+        business_type="role",
+        business_id=role.id,
+        before={"permission_codes": before},
+        after={"permission_codes": after},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({"role_id": role.id, "permission_codes": after}, "权限已更新")
+
+
+@router.get("/roles/{role_id}/data-scope")
+async def get_role_data_scope(
+    role_id: int,
+    _: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """该角色的数据范围，以及实际在用这个角色的人数。
+
+    带上 `user_count` 是因为改数据范围会影响所有人 ——
+    界面要能先告诉管理员"这一改要动 N 个人"。
+    """
+    role = await svc.get_role_or_404(session, role_id)
+    usage = await svc.role_usage(session, role.id)
+    return ok(
+        {
+            "role_id": role.id,
+            "code": role.code,
+            "name": role.name,
+            "data_scope": role.data_scope,
+            "data_scope_label": DATA_SCOPE_LABELS.get(role.data_scope, role.data_scope),
+            **usage,
+        }
+    )
+
+
+@router.put("/roles/{role_id}/data-scope")
+async def set_role_data_scope(
+    role_id: int,
+    payload: RoleDataScopeUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("user:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改角色的数据范围（03-API §5）。
+
+    只改 `data_scope` 一列，不动权限集合 —— 这正是这两个接口分开的意义。
+    改完主动把结果里的 user_count 带回去，让界面能提示影响面。
+    """
+    role = await svc.get_role_or_404(session, role_id)
+    before_scope = role.data_scope
+    role.data_scope = payload.data_scope
+    await session.flush()
+    usage = await svc.role_usage(session, role.id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="set_role_data_scope",
+        business_type="role",
+        business_id=role.id,
+        before={"data_scope": before_scope},
+        after={"data_scope": role.data_scope, **usage},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "role_id": role.id,
+            "data_scope": role.data_scope,
+            "data_scope_label": DATA_SCOPE_LABELS.get(role.data_scope, role.data_scope),
+            **usage,
+        },
+        f"数据范围已改为「{DATA_SCOPE_LABELS.get(role.data_scope, role.data_scope)}」",
     )
 
 

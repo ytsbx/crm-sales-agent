@@ -17,6 +17,16 @@ export interface SystemUser {
   created_at?: string
 }
 
+export interface RoleDataScope {
+  role_id: number
+  code?: string
+  name?: string
+  data_scope: string
+  data_scope_label: string
+  /** 正在使用该角色的人数 —— 改数据范围前界面要能提示影响面 */
+  users: number
+}
+
 export interface SystemRole {
   id: number
   code: string
@@ -123,6 +133,29 @@ export function deleteRole(id: number) {
 
 export function listPermissions() {
   return api.get<SystemPermission[]>('/permissions')
+}
+
+// ---------------------------------------------------------------- 角色权限与数据范围
+// 03-API §5 把这两件事单独列出：授权与调数据范围是两次独立的操作与审计事件。
+
+export function getRolePermissions(id: number) {
+  return api.get<{ role_id: number; code: string; permission_codes: string[] }>(
+    `/roles/${id}/permissions`,
+  )
+}
+
+export function setRolePermissions(id: number, permissionCodes: string[]) {
+  return api.put<{ role_id: number; permission_codes: string[] }>(`/roles/${id}/permissions`, {
+    permission_codes: permissionCodes,
+  })
+}
+
+export function getRoleDataScope(id: number) {
+  return api.get<RoleDataScope>(`/roles/${id}/data-scope`)
+}
+
+export function setRoleDataScope(id: number, dataScope: string) {
+  return api.put<RoleDataScope>(`/roles/${id}/data-scope`, { data_scope: dataScope })
 }
 
 export function listDepartments() {

@@ -5,6 +5,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.csvio import csv_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.response import ok
@@ -23,7 +24,7 @@ async def import_template(
     _: CurrentUser = Depends(require_permission("customer:create")),
 ):
     """下载导入模板：表头 + 一行示例。"""
-    content = io_util.csv_bytes(
+    content = csv_bytes(
         [["示例：宁波宏远包装制品有限公司", "宏远包装", "A", "浙江", "浙江省宁波市…", "展会", "zhangsan", "备注"]],
         io_util.TEMPLATE_HEADERS,
     )
@@ -54,7 +55,7 @@ async def _export(user, session: AsyncSession, stmt: Select | None = None) -> Re
         ).all()
         owners = {int(uid): name for uid, name in owner_rows}
 
-    content = io_util.csv_bytes(
+    content = csv_bytes(
         [
             io_util.customer_export_row(
                 row, owners.get(row.owner_id) if row.owner_id else None

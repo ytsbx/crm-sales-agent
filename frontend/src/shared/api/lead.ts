@@ -85,3 +85,30 @@ export function convertLead(id: number, payload: Record<string, unknown>) {
     opportunity_id: number | null
   }>(`/leads/${id}/convert`, payload)
 }
+
+// ---------------------------------------------------------------- 导入导出与回收站
+
+/** 软删线索（进回收站）。已转化的线索会被后端拒绝。 */
+export function deleteLead(id: number) {
+  return api.delete<null>(`/leads/${id}`)
+}
+
+/** 从回收站恢复。 */
+export function restoreLead(id: number) {
+  return api.post<Lead>(`/leads/${id}/restore`)
+}
+
+/** 按筛选条件导出线索 CSV（API §6 POST /leads/export）。 */
+export function exportLeadsFiltered(
+  payload: {
+    keyword?: string
+    status?: string
+    source?: string
+    region?: string
+    owner_id?: number
+    include_deleted?: boolean
+  },
+  filename = '线索列表.csv',
+) {
+  return api.downloadPost('/leads/export', payload, filename)
+}

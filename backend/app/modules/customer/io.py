@@ -7,14 +7,13 @@
 1. 每行都查重，疑似重复的**跳过并报告**，不往库里塞脏数据；
 2. 一行出错不影响其它行，最后汇总"成功 N / 跳过 M / 失败 K"；
 3. 负责人按登录名匹配，匹配不上就用当前操作人，避免导入的数据没人管。
-"""
 
-import csv
-import io
+CSV 编解码的公共部分在 `app/core/csvio.py`（客户/线索/产品共用）。
+"""
 
 from fastapi import UploadFile
 
-from app.core.errors import AppError, ErrorCode
+from app.core.csvio import parse_csv_upload
 from app.modules.customer.model import Customer
 from app.modules.user.model import User
 
@@ -44,15 +43,6 @@ EXPORT_HEADERS = [
 ]
 
 
-def csv_bytes(rows: list[list], headers: list[str]) -> bytes:
-    """生成带 BOM 的 CSV：Excel 双击打开不乱码。"""
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(headers)
-    writer.writerows(rows)
-    return buffer.getvalue().encode("utf-8-sig")
-
-
 def customer_export_row(customer: Customer, owner_name: str | None) -> list:
     return [
         customer.name,
@@ -70,28 +60,8 @@ def customer_export_row(customer: Customer, owner_name: str | None) -> list:
 
 
 async def parse_upload(file: UploadFile) -> list[dict]:
-    """把上传的 CSV 解析成字典列表。中文 Excel 常存成 GBK，这里两种编码都试。"""
-    raw = await file.read()
-    text = None
-    for encoding in ("utf-8-sig", "utf-8", "gbk"):
-        try:
-            text = raw.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        raise AppError(ErrorCode.PARAM_ERROR, "文件编码无法识别，请另存为 UTF-8 或 GBK 的 CSV")
-
-    reader = csv.DictReader(io.StringIO(text))
-    if not reader.fieldnames:
-        raise AppError(ErrorCode.PARAM_ERROR, "文件是空的，或者没有表头")
-    missing = [name for name in ("客户名称",) if name not in reader.fieldnames]
-    if missing:
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            f"表头缺少：{'、'.join(missing)}。请先下载导入模板按格式填写",
-        )
-    return [row for row in reader if (row.get("客户名称") or "").strip()]
+    """把上传的 CSV 解析成字典列表（客户模板口径）。"""
+    return await parse_csv_upload(file, required_headers=["客户名称"], label="文件")
 
 
 async def resolve_owner(session, username: str | None, default_user_id: int) -> int:

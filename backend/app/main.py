@@ -19,6 +19,7 @@ from app.modules.erp.router import router as erp_router
 from app.modules.followup.router import router as followup_router
 from app.modules.file.router import router as file_router
 from app.modules.lead.router import router as lead_router
+from app.modules.lead.io_router import router as lead_io_router
 from app.modules.opportunity.router import router as opportunity_router
 from app.modules.order.router import router as order_router
 from app.modules.notification.router import router as notification_router
@@ -67,6 +68,8 @@ app.include_router(customer_router, prefix=settings.api_prefix)
 app.include_router(product_router, prefix=settings.api_prefix)
 app.include_router(public_pool_router, prefix=settings.api_prefix)
 app.include_router(user_router, prefix=settings.api_prefix)
+# /leads/import、/leads/export、/leads/import-template 必须在 /leads/{lead_id} 之前
+app.include_router(lead_io_router, prefix=settings.api_prefix)
 app.include_router(lead_router, prefix=settings.api_prefix)
 app.include_router(opportunity_router, prefix=settings.api_prefix)
 app.include_router(followup_router, prefix=settings.api_prefix)

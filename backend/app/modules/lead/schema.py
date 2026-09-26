@@ -16,6 +16,17 @@ class LeadCreate(BaseModel):
     owner_id: int | None = None
 
 
+class LeadExportFilter(BaseModel):
+    """线索导出筛选条件，与列表页参数保持一致。"""
+
+    keyword: str | None = None
+    status: str | None = None
+    source: str | None = None
+    region: str | None = None
+    owner_id: int | None = None
+    include_deleted: bool = False
+
+
 class LeadUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

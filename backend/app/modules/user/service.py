@@ -474,7 +474,7 @@ async def _resolve_permissions(session: AsyncSession, codes: list[str]) -> list[
     return list(rows)
 
 
-async def _set_role_permissions(session: AsyncSession, role: Role, codes: list[str]) -> None:
+async def set_role_permissions(session: AsyncSession, role: Role, codes: list[str]) -> None:
     permissions = await _resolve_permissions(session, codes)
     await session.execute(
         role_permissions.delete().where(role_permissions.c.role_id == role.id)
@@ -505,7 +505,7 @@ async def create_role(session: AsyncSession, data: dict) -> Role:
     )
     session.add(role)
     await session.flush()
-    await _set_role_permissions(session, role, data.get("permission_codes") or [])
+    await set_role_permissions(session, role, data.get("permission_codes") or [])
     return role
 
 
@@ -515,7 +515,7 @@ async def update_role(session: AsyncSession, role: Role, data: dict) -> Role:
             setattr(role, field, data[field])
     await session.flush()
     if data.get("permission_codes") is not None:
-        await _set_role_permissions(session, role, data["permission_codes"])
+        await set_role_permissions(session, role, data["permission_codes"])
     return role
 
 
