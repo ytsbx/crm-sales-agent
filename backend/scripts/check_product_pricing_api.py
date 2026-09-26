@@ -1,0 +1,416 @@
+"""产品/SKU 导入导出 + 产品附件 + 核价权限/模拟/历史 + 报价跟进 回归测试。
+
+跑法（后端必须先起来，默认 http://127.0.0.1:8000）：
+    cd backend
+    $env:PYTHONPATH="."
+    .venv\\Scripts\\python.exe scripts\\check_product_pricing_api.py
+
+脚本自带清库，可反复执行。
+
+## 覆盖
+
+产品/价格（03-API §14 §15 §17 §18）：
+  GET    /products/import-template、/skus/import-template
+  GET|POST /products/export、/skus/export
+  POST   /products/import、/skus/import
+  POST   /products/{id}/files
+  POST   /pricing/check-permission
+  POST   /pricing/simulate
+  GET    /pricing/history
+  PATCH  /customer-price-rules/{id}
+
+报价（03-API §20）：
+  GET /quotes/{id}/followups
+
+## 重点
+
+`check-permission` 与报价明细必须用同一套判定（`calculate_price`）——
+两处各写一遍必然漂移：核价说能报、报价单说不能，业务就不信系统了。
+测试里同时打 `/pricing/check-permission` 和 `/pricing/calculate`，
+断言两者的 `approval_required` / `minimum_price` 一致。
+"""
+
+import asyncio
+import csv
+import io
+import json
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE = 'http://127.0.0.1:8000/api/v1'
+RUN = str(int(time.time()))[-6:]
+FAILURES = []
+
+
+def check(label, actual, expected):
+    good = actual == expected
+    print(f'  {"OK  " if good else "FAIL"} {label}: {actual!r}（期望 {expected!r}）')
+    if not good:
+        FAILURES.append(label)
+
+
+def check_true(label, condition, detail=''):
+    print(f'  {"OK  " if condition else "FAIL"} {label}{f"：{detail}" if detail else ""}')
+    if not condition:
+        FAILURES.append(label)
+
+
+def call(method, path, token=None, body=None, raw_body=None, content_type='application/json'):
+    data = raw_body if raw_body is not None else (
+        json.dumps(body).encode() if body is not None else None
+    )
+    safe_path = urllib.parse.quote(path, safe='/?&=%')
+    req = urllib.request.Request(BASE + safe_path, data=data, method=method)
+    if data is not None:
+        req.add_header('Content-Type', content_type)
+    if token:
+        req.add_header('Authorization', 'Bearer ' + token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            ctype = resp.headers.get('content-type', '')
+            if 'json' not in ctype:
+                return resp.status, {
+                    '_text': raw.decode('utf-8-sig', 'replace'),
+                    '_ctype': ctype,
+                    '_disposition': resp.headers.get('content-disposition', ''),
+                }
+            return resp.status, json.loads(raw.decode())
+    except urllib.error.HTTPError as e:
+        text = e.read().decode('utf-8', 'replace')
+        try:
+            return e.code, json.loads(text)
+        except json.JSONDecodeError:
+            return e.code, {'code': None, 'message': text[:200]}
+
+
+def login(username, password):
+    return call('POST', '/auth/login', body={'username': username, 'password': password})[1][
+        'data'
+    ]['access_token']
+
+
+def csv_bytes(rows, headers):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return buf.getvalue().encode('utf-8-sig')
+
+
+def upload_csv(token, path, headers, rows):
+    boundary = '----crmchk' + RUN
+    body = io.BytesIO()
+    body.write(f'--{boundary}\r\n'.encode())
+    body.write(
+        b'Content-Disposition: form-data; name="file"; filename="t.csv"\r\n'
+        b'Content-Type: text/csv\r\n\r\n'
+    )
+    body.write(csv_bytes(rows, headers))
+    body.write(f'\r\n--{boundary}--\r\n'.encode())
+    return call(
+        'POST', path, token=token, raw_body=body.getvalue(),
+        content_type=f'multipart/form-data; boundary={boundary}',
+    )
+
+
+async def clean(verbose=False):
+    from sqlalchemy import text
+
+    from app.core.database import SessionLocal
+
+    statements = [
+        # 顺序服从外键：先删引用 sku/product 的表，最后删它们本身
+        ('用例客户特殊价', "delete from customer_price_rules where sku_id in "
+                       f"(select id from skus where sku_code like 'CHK{RUN}%') "
+                       f"or customer_id in (select id from customers where name like 'CHK{RUN}%')"),
+        ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
+        ('用例报价明细', "delete from quote_items where quote_version_id in "
+                      "(select id from quote_versions where quote_id in "
+                      f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
+        ('用例报价版本', "delete from quote_versions where quote_id in "
+                      f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
+        ('用例报价', f"delete from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
+        ('用例产品文件', "delete from business_files where business_type = 'product' and business_id in "
+                      f"(select id from products where name like 'CHK{RUN}%')"),
+        ('用例价格规则', "delete from price_rules where sku_id in "
+                      f"(select id from skus where sku_code like 'CHK{RUN}%')"),
+        ('用例成本', "delete from product_costs where sku_id in "
+                   f"(select id from skus where sku_code like 'CHK{RUN}%')"),
+        ('用例 SKU', "delete from skus where sku_code like 'CHK{RUN}%'"),
+        ('用例产品', "delete from products where name like 'CHK{RUN}%'"),
+        ('用例客户', "delete from customers where name like 'CHK{RUN}%'"),
+        ('用例审计', "delete from audit_logs where business_type in "
+                   "('product','sku','price_rule','customer_price_rule') "
+                   "and created_at > now() - interval '2 hours'"),
+    ]
+    async with SessionLocal() as s:
+        for label, sql in statements:
+            result = await s.execute(text(sql))
+            if verbose and result.rowcount:
+                print(f'  {result.rowcount:>4}  {label}')
+        await s.commit()
+
+
+def main():
+    admin = login('admin', 'admin123')
+    zhangsan = login('zhangsan', '123456')
+
+    print()
+    print('=== 1. 产品导入导出 ===')
+    status, res = call('GET', '/products/import-template', token=admin)
+    check('产品模板', status, 200)
+    check_true('表头含产品名称', '产品名称' in res.get('_text', ''), res.get('_text', '')[:60])
+
+    headers = ['产品名称', '产品线', '分类', '品牌', '描述']
+    rows = [
+        [f'CHK{RUN}产品甲', '纸箱', '包装', '宏远', '测试用'],
+        [f'CHK{RUN}产品乙', '纸箱', '包装', '宏远', ''],
+        [f'CHK{RUN}产品甲', '纸箱', '包装', '宏远', '重复的'],
+    ]
+    status, res = upload_csv(admin, '/products/import', headers, rows)
+    check('导入产品', res.get('code'), 0)
+    check('成功 2 条', res['data']['created_count'], 2)
+    check('跳过 1 条重复', res['data']['skipped_count'], 1)
+
+    status, res = call('GET', f'/products/export?keyword=CHK{RUN}', token=admin)
+    check('GET 导出产品', status, 200)
+    text = res.get('_text', '')
+    check_true('含导入的产品', f'CHK{RUN}产品甲' in text, text[:80])
+
+    status, res = call('POST', '/products/export', token=admin,
+                       body={'keyword': f'CHK{RUN}产品乙'})
+    check('POST 筛选导出', status, 200)
+    check_true('只含产品乙', f'CHK{RUN}产品乙' in res.get('_text', ''), '筛选生效')
+    check_true('不含产品甲', f'CHK{RUN}产品甲' not in res.get('_text', ''), '筛选生效')
+
+    print()
+    print('=== 2. SKU 导入导出 ===')
+    status, res = call('GET', '/skus/import-template', token=admin)
+    check('SKU 模板', status, 200)
+    check_true('表头含 SKU编码', 'SKU编码' in res.get('_text', ''), res.get('_text', '')[:60])
+
+    sku_headers = ['SKU编码', '产品名称', '规格名称', '规格', '单位', 'MOQ']
+    sku_rows = [
+        [f'CHK{RUN}-S1', f'CHK{RUN}产品甲', '中号', '400x300x200', '个', '100'],
+        [f'CHK{RUN}-S2', f'CHK{RUN}产品甲', '大号', '500x400x300', '个', '50'],
+        [f'CHK{RUN}-S1', f'CHK{RUN}产品甲', '重复编码', '', '个', ''],
+        [f'CHK{RUN}-S9', f'不存在的产品XYZ', '孤儿', '', '个', ''],
+    ]
+    status, res = upload_csv(admin, '/skus/import', sku_headers, sku_rows)
+    check('导入 SKU', res.get('code'), 0)
+    check('成功 2 条', res['data']['created_count'], 2)
+    check('跳过 1 条重复编码', res['data']['skipped_count'], 1)
+    check('失败 1 条（产品不存在）', res['data']['failed_count'], 1)
+    check_true('失败原因说清是找不到产品',
+               '找不到产品' in (res['data']['failed'][0]['reason'] if res['data']['failed'] else ''),
+               str(res['data']['failed'][:1]))
+
+    status, res = call('GET', f'/skus/export?keyword=CHK{RUN}', token=admin)
+    check('导出 SKU', status, 200)
+    check_true('含 SKU', f'CHK{RUN}-S1' in res.get('_text', ''), res.get('_text', '')[:80])
+
+    status, res = call('GET', f'/skus?keyword=CHK{RUN}', token=admin)
+    sku_ids = [r['id'] for r in res['data']['items']]
+    check_true('查到导入的 SKU', len(sku_ids) >= 2, str(sku_ids))
+
+    print()
+    print('=== 3. 产品附件（POST /products/{id}/files）===')
+    status, res = call('GET', f'/products?keyword=CHK{RUN}产品甲', token=admin)
+    product_id = res['data']['items'][0]['id']
+
+    status, res = call('POST', f'/products/{product_id}/files?file_id=999999', token=admin)
+    check('文件不存在被拒', res.get('code'), 40401)
+    status, res = call('POST', '/products/999999/files?file_id=1', token=admin)
+    check('产品不存在被拒', res.get('code'), 40401)
+
+    print()
+    print('=== 4. 核价权限校验（POST /pricing/check-permission）===')
+    # 必须用**有成本记录**的 SKU：没有成本时成本为 0，
+    # 报 0.01 元也会被算成"利润 100%"，压根测不出审批逻辑。
+    status, res = call('GET', '/skus?page_size=50', token=admin)
+    priced_sku = None
+    for row in res['data']['items']:
+        probe = call('POST', '/pricing/calculate', token=admin,
+                     body={'sku_id': row['id'], 'quantity': 100})[1]
+        if probe.get('code') == 0 and probe['data']['standard_price']:
+            priced_sku = row
+            break
+    check_true('找到有成本记录的 SKU', priced_sku is not None,
+               str(priced_sku and priced_sku['id']))
+    price_sku_id = priced_sku['id']
+    base = {'sku_id': price_sku_id, 'quantity': 100}
+
+    status, res = call('POST', '/pricing/check-permission', token=admin,
+                       body={**base, 'quoted_price': 100000})
+    check('高价 -> 允许', res.get('code'), 0)
+    check('allowed=True', res['data']['allowed'], True)
+    check('不需要审批', res['data']['approval_required'], False)
+    check('reasons 为空', res['data']['reasons'], [])
+    del res
+
+    status, res = call('POST', '/pricing/check-permission', token=admin,
+                       body={**base, 'quoted_price': 0.01})
+    check('白菜价 -> 需要审批', res['data']['approval_required'], True)
+    check('allowed=False', res['data']['allowed'], False)
+    check_true('给了原因', len(res['data']['reasons']) >= 1, str(res['data']['reasons']))
+
+    status, res = call('POST', '/pricing/check-permission', token=admin, body=base)
+    check('缺 quoted_price 被拒', res.get('code'), 40001)
+
+    print()
+    print('=== 5. 与 /pricing/calculate 判定必须一致 ===')
+    for price, label in ((100000, '高价'), (0.01, '白菜价')):
+        _, c = call('POST', '/pricing/calculate', token=admin,
+                    body={**base, 'quoted_price': price})
+        _, p = call('POST', '/pricing/check-permission', token=admin,
+                    body={**base, 'quoted_price': price})
+        check_true(f'{label}：approval_required 一致',
+                   c['data']['approval_required'] == p['data']['approval_required'],
+                   f"calculate={c['data']['approval_required']} check={p['data']['approval_required']}")
+        check_true(f'{label}：minimum_price 一致',
+                   c['data']['minimum_price'] == p['data']['minimum_price'],
+                   f"{c['data']['minimum_price']} vs {p['data']['minimum_price']}")
+        check_true(f'{label}：protection_price 一致',
+                   c['data']['protection_price'] == p['data']['protection_price'],
+                   f"{c['data']['protection_price']} vs {p['data']['protection_price']}")
+
+    print()
+    print('=== 6. 报价模拟（POST /pricing/simulate）===')
+    status, res = call('POST', '/pricing/simulate', token=admin,
+                       body={'base': base, 'candidates': [100000, 500, 0.01]})
+    check('模拟成功', res.get('code'), 0)
+    check('3 个档位', len(res['data']['scenarios']), 3)
+    prices = [s['quoted_price'] for s in res['data']['scenarios']]
+    check('档位顺序保持', prices, [100000.0, 500.0, 0.01])
+    check('高价档不需要审批', res['data']['scenarios'][0]['approval_required'], False)
+    check('低价档需要审批', res['data']['scenarios'][2]['approval_required'], True)
+    check_true('带总额', res['data']['scenarios'][0]['amount'] == 100000.0 * 100,
+               str(res['data']['scenarios'][0]['amount']))
+    check_true('带利润', res['data']['scenarios'][0]['profit'] is not None)
+
+    status, res = call('POST', '/pricing/simulate', token=admin,
+                       body={'base': base, 'margins': [0.1, 0.2, 0.3]})
+    check('按利润率模拟', res.get('code'), 0)
+    check('3 个档位', len(res['data']['scenarios']), 3)
+    rates = [s['profit_rate'] for s in res['data']['scenarios']]
+    check_true('利润率递增', rates == sorted(rates), str(rates))
+
+    status, res = call('POST', '/pricing/simulate', token=admin, body={'base': base})
+    check('不传候选 -> 用关键点位', res.get('code'), 0)
+    check_true('至少 1 个档位', len(res['data']['scenarios']) >= 1,
+               str(len(res['data']['scenarios'])))
+
+    status, res = call('POST', '/pricing/simulate', token=admin,
+                       body={'base': base, 'candidates': [100, 100, 100]})
+    check('重复候选去重', len(res['data']['scenarios']), 1)
+
+    print()
+    print('=== 7. 核价历史（GET /pricing/history）===')
+    status, res = call('GET', '/pricing/history', token=admin)
+    check('历史可读', res.get('code'), 0)
+    check_true('分页结构', 'items' in res['data'] and 'total' in res['data'])
+
+    status, res = call('GET', f'/pricing/history?sku_id={price_sku_id}', token=admin)
+    check('按 SKU 过滤可读', res.get('code'), 0)
+
+    status, res = call('GET', '/pricing/history?page=1&page_size=2', token=admin)
+    check('分页生效', res['data']['page_size'], 2)
+
+    print()
+    print('=== 8. 客户特殊价 PATCH ===')
+    status, res = call('GET', '/customers?keyword=', token=admin)
+    customer_id = res['data']['items'][0]['id']
+    status, res = call('POST', '/customer-price-rules', token=admin, body={
+        'customer_id': customer_id, 'sku_id': price_sku_id,
+        'min_qty': 1, 'max_qty': 100, 'agreed_price': 800, 'remark': f'CHK{RUN}',
+    })
+    check('建客户特殊价', res.get('code'), 0)
+    rule_id = res['data']['id']
+
+    status, res = call('PATCH', f'/customer-price-rules/{rule_id}', token=admin,
+                       body={'agreed_price': 750})
+    check('只改协议价', res.get('code'), 0)
+    check('价格已改', res['data']['agreed_price'], 750.0)
+    check('起订量没被动', res['data']['min_qty'], 1.0)
+    check('备注没被动', res['data']['remark'], f'CHK{RUN}')
+
+    status, res = call('PATCH', f'/customer-price-rules/{rule_id}', token=admin,
+                       body={'min_qty': 200})
+    check('起订量 > 上限被拒', res.get('code'), 40001)
+    check_true('说明原因', '不能大于上限' in (res.get('message') or ''),
+               res.get('message') or '')
+
+    status, res = call('PATCH', f'/customer-price-rules/{rule_id}', token=admin,
+                       body={'min_qty': 50, 'max_qty': 500, 'remark': None})
+    check('区间整体调整', res.get('code'), 0)
+    check('上限已改', res['data']['max_qty'], 500.0)
+    check('备注被清空', res['data']['remark'], None)
+
+    status, res = call('PATCH', '/customer-price-rules/999999', token=admin,
+                       body={'agreed_price': 1})
+    check('规则不存在', res.get('code'), 40401)
+
+    print()
+    print('=== 9. 报价跟进（GET /quotes/{id}/followups）===')
+    status, res = call('POST', '/customers', token=admin, body={'name': f'CHK{RUN}客户'})
+    q_customer = res['data']['id']
+    status, res = call('POST', '/quotes', token=admin, body={'customer_id': q_customer})
+    quote_id = res['data']['quote_id']
+
+    status, res = call('GET', f'/quotes/{quote_id}/followups', token=admin)
+    check('报价跟进列表可读', res.get('code'), 0)
+    check('初始 0 条', res['data']['total'], 0)
+
+    status, res = call('POST', '/followups', token=admin, body={
+        'customer_id': q_customer, 'quote_id': quote_id,
+        'content': f'CHK{RUN}客户说价格再谈谈',
+    })
+    check('建带报价的跟进', res.get('code'), 0)
+
+    status, res = call('GET', f'/quotes/{quote_id}/followups', token=admin)
+    check('现在 1 条', res['data']['total'], 1)
+    check_true('内容是那条', f'CHK{RUN}' in res['data']['items'][0]['content'], '命中')
+
+    status, res = call('GET', '/quotes/999999/followups', token=admin)
+    check('报价不存在', res.get('code'), 40401)
+
+    print()
+    print('=== 10. 权限门槛 ===')
+    for label, method, path, body in [
+        ('产品导入', 'POST', '/products/import', None),
+        ('SKU 导入', 'POST', '/skus/import', None),
+        ('改客户特殊价', 'PATCH', f'/customer-price-rules/{rule_id}', {'agreed_price': 1}),
+    ]:
+        if body is None:
+            # 导入是 multipart，这里只验权限：空 body 也应先被权限挡下
+            status, res = call(method, path, token=zhangsan)
+        else:
+            status, res = call(method, path, token=zhangsan, body=body)
+        check(f'张三{label}被拒', res.get('code'), 40301)
+
+    status, res = call('GET', '/pricing/history', token=zhangsan)
+    check('张三可以看核价历史（product:view）', res.get('code'), 0)
+
+
+if __name__ == '__main__':
+    async def _driver():
+        print('=== 清库（跑前）===')
+        await clean(verbose=True)
+        print()
+        try:
+            main()
+        finally:
+            print()
+            print('=== 清库（跑后）===')
+            await clean(verbose=True)
+
+    asyncio.run(_driver())
+    print()
+    if FAILURES:
+        print(f'FAILED（{len(FAILURES)}）: {FAILURES}')
+        sys.exit(1)
+    print('全部通过')

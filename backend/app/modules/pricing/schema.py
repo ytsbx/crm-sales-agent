@@ -81,6 +81,22 @@ class CustomerPriceCreate(BaseModel):
     remark: str | None = None
 
 
+class CustomerPriceUpdate(BaseModel):
+    """改客户特殊价（03-API §15 PATCH /customer-price-rules/{id}）。
+
+    不允许改 `customer_id` / `sku_id`：那等于换一条规则，
+    删除重建比原地改更清楚（历史审计也读得懂）。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    min_qty: Decimal | None = None
+    max_qty: Decimal | None = None
+    agreed_price: Decimal | None = None
+    minimum_price: Decimal | None = None
+    remark: str | None = None
+
+
 class PricePermissionUpdate(BaseModel):
     minimum_margin: Decimal = Field(default=Decimal("0.15"), ge=0, le=1)
     discount_limit: Decimal | None = Field(default=None, ge=0, le=1)
@@ -143,3 +159,29 @@ class PricingRequest(BaseModel):
     currency: str = "CNY"
     exchange_rate: Decimal | None = None
     tax_refund_rate: Decimal | None = None
+
+
+class PricePermissionCheck(PricingRequest):
+    """询价权限校验（03-API §18 POST /pricing/check-permission）。
+
+    比 calculate 多一个硬要求：必须给出 `quoted_price` ——
+    不问"这个价能不能报"，光核算价没意义。
+    """
+
+    quoted_price: Decimal = Field(gt=0)
+
+
+class PricingSimulation(BaseModel):
+    """报价模拟（03-API §18 POST /pricing/simulate）。
+
+    给定一个基准询价条件，再给一组候选报价，一次算出每个候选的利润、
+    利润率、是否需要审批 —— 谈判前要能一眼看出"降到这个价还赚不赚、
+    会不会触发审批"。
+
+    `candidates`（候选成交价）与 `margins`（候选利润率）二选一，
+    同时给时以 `candidates` 为准。
+    """
+
+    base: PricingRequest
+    candidates: list[Decimal] = Field(default_factory=list)
+    margins: list[Decimal] = Field(default_factory=list)

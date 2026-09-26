@@ -242,6 +242,11 @@ export function createCustomerPriceRule(payload: Record<string, unknown>) {
   return api.post<CustomerPriceRow>('/customer-price-rules', payload)
 }
 
+/** 改客户特殊价 —— 部分更新，只传要改的字段（API §17）。 */
+export function updateCustomerPriceRule(id: number, payload: Record<string, unknown>) {
+  return api.patch<CustomerPriceRow>(`/customer-price-rules/${id}`, payload)
+}
+
 export function deleteCustomerPriceRule(id: number) {
   return api.delete<null>(`/customer-price-rules/${id}`)
 }
@@ -299,3 +304,82 @@ export function listSkusForPricing() {
 export function calculatePrice(payload: Record<string, unknown>) {
   return api.post<PricingResult>('/pricing/calculate', payload)
 }
+
+// ---------------------------------------------------------------- 询价权限 / 模拟 / 历史（API §18）
+
+export interface PricePermissionVerdict {
+  sku_id: number
+  quantity: number | null
+  quoted_price: number | null
+  currency: string
+  allowed: boolean
+  approval_required: boolean
+  can_approve: boolean
+  reasons: string[]
+  minimum_price: number | null
+  protection_price: number | null
+  authorized_min_margin: number | null
+  standard_price: number | null
+  recommended_price: number | null
+  recommended_range: [number | null, number | null]
+  profit: number | null
+  profit_rate: number | null
+  cost_in_quote_currency: number | null
+  approval_triggers: Record<string, boolean>
+  my_roles: string[]
+}
+
+export interface PricingScenario {
+  quoted_price: number | null
+  profit: number | null
+  profit_rate: number | null
+  amount: number | null
+  approval_required: boolean
+  reasons: string[]
+}
+
+export interface PricingSimulationResult {
+  sku: Record<string, unknown>
+  quantity: number | null
+  currency: string
+  cost_in_quote_currency: number | null
+  standard_price: number | null
+  recommended_price: number | null
+  recommended_range: [number | null, number | null]
+  minimum_price: number | null
+  protection_price: number | null
+  scenarios: PricingScenario[]
+}
+
+export interface PricingHistoryRow {
+  id: number
+  business_type: string | null
+  business_id: number | null
+  action: string
+  operator_id: number | null
+  operator_name: string | null
+  before: Record<string, unknown> | null
+  after: Record<string, unknown> | null
+  created_at: string
+}
+
+/** 问"这个价我能不能报"（API §18）。 */
+export function checkPricePermission(payload: Record<string, unknown>) {
+  return api.post<PricePermissionVerdict>('/pricing/check-permission', payload)
+}
+
+/** 一次算多个候选价，看清让步空间（API §18）。 */
+export function simulatePricing(payload: Record<string, unknown>) {
+  return api.post<PricingSimulationResult>('/pricing/simulate', payload)
+}
+
+/** 核价历史，取自审计日志（API §18）。 */
+export function listPricingHistory(query: {
+  sku_id?: number
+  customer_id?: number
+  page?: number
+  page_size?: number
+}) {
+  return api.get<PageResult<PricingHistoryRow>>('/pricing/history', query)
+}
+

@@ -78,3 +78,35 @@ export function enableSku(skuId: number) {
 export function listSkus(query: { keyword?: string; product_id?: number; page?: number; page_size?: number }) {
   return api.get<PageResult<Sku>>('/skus', query)
 }
+
+// ---------------------------------------------------------------- 产品附件与导入导出
+
+/** 给产品挂附件（API §14）。file_id 来自 POST /files/upload。 */
+export function attachProductFile(
+  productId: number,
+  payload: { file_id: number; category?: string; remark?: string },
+) {
+  const params = new URLSearchParams({ file_id: String(payload.file_id) })
+  if (payload.category) params.set('category', payload.category)
+  if (payload.remark) params.set('remark', payload.remark)
+  return api.post<{ business_file_id: number; file_id: number; name: string }>(
+    `/products/${productId}/files?${params.toString()}`,
+  )
+}
+
+/** 按筛选条件导出产品 CSV（API §14）。 */
+export function exportProductsFiltered(
+  payload: { keyword?: string },
+  filename = '产品列表.csv',
+) {
+  return api.downloadPost('/products/export', payload, filename)
+}
+
+/** 按筛选条件导出 SKU CSV（API §15）。 */
+export function exportSkusFiltered(
+  payload: { keyword?: string; product_id?: number },
+  filename = 'SKU列表.csv',
+) {
+  return api.downloadPost('/skus/export', payload, filename)
+}
+

@@ -306,6 +306,50 @@ async def delete_quote(
     return ok(None, "报价单已删除")
 
 
+@router.get("/quotes/{quote_id}/followups")
+async def quote_followups(
+    quote_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """该报价单相关的跟进记录（03-API §20）。
+
+    "报了价之后客户有没有回音" —— 跟进记录里 `quote_id` 指向这一单的那些。
+    """
+    from app.modules.followup.model import FollowUp
+
+    await svc.get_visible_quote(session, user, quote_id)
+    stmt = (
+        select(FollowUp)
+        .where(FollowUp.quote_id == quote_id)
+        .order_by(FollowUp.id.desc())
+    )
+    rows, total = await paginate(session, stmt, page, page_size)
+    return ok(
+        page_data(
+            [
+                {
+                    "id": row.id,
+                    "customer_id": row.customer_id,
+                    "contact_id": row.contact_id,
+                    "followup_type": row.followup_type,
+                    "content": row.content,
+                    "customer_feedback": row.customer_feedback,
+                    "next_action": row.next_action,
+                    "owner_id": row.owner_id,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ],
+            total,
+            page,
+            page_size,
+        )
+    )
+
+
 @router.get("/quotes/{quote_id}/send-logs")
 async def quote_send_logs(
     quote_id: int,

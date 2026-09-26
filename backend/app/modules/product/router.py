@@ -396,6 +396,55 @@ async def list_product_files(
     )
 
 
+@router.post("/products/{product_id}/files")
+async def attach_product_file(
+    product_id: int,
+    request: Request,
+    file_id: int = Query(..., description="先调 POST /files/upload 拿到的文件 id"),
+    category: str | None = None,
+    remark: str | None = None,
+    user: CurrentUser = Depends(require_permission("file:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """给产品挂附件（03-API §14）：图纸、检测报告、认证证书等（POST）。
+
+    与 `POST /business/product/{id}/files` 是同一份实现的两个入口 ——
+    产品详情页用这个更自然。底层都是 `business_files`，不另建表。
+    """
+    from app.modules.file.model import BusinessFile, FileRecord
+
+    product = await session.get(Product, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
+    record = await session.get(FileRecord, file_id)
+    if record is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"文件 id={file_id} 不存在", 404)
+
+    link = BusinessFile(
+        business_type="product",
+        business_id=product_id,
+        file_id=file_id,
+        category=category,
+        remark=remark,
+    )
+    session.add(link)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="attach",
+        business_type="product",
+        business_id=product_id,
+        after={"file_id": file_id, "file_name": record.file_name, "category": category},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {"business_file_id": link.id, "file_id": file_id, "name": record.file_name},
+        "已关联",
+    )
+
+
 @router.get("/products/{product_id}/knowledge")
 async def product_knowledge(
     product_id: int,

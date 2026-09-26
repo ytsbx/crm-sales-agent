@@ -27,6 +27,7 @@ from app.modules.payment.router import router as payment_router
 from app.modules.pricing.logistics_router import router as logistics_router
 from app.modules.pricing.router import router as pricing_router
 from app.modules.product.router import router as product_router
+from app.modules.product.io_router import router as product_io_router
 from app.modules.public_pool.router import router as public_pool_router
 from app.modules.quote.router import router as quote_router
 from app.modules.sample.router import router as sample_router
@@ -65,6 +66,9 @@ app.include_router(customer_tags_router, prefix=settings.api_prefix)
 # /contacts/{contact_id} 之前注册，否则会被当成 id 解析
 app.include_router(contacts_router, prefix=settings.api_prefix)
 app.include_router(customer_router, prefix=settings.api_prefix)
+# /products/import-template、/products/export、/skus/import、/skus/export 同样要排在
+# /products/{product_id}、/skus/{sku_id} 之前
+app.include_router(product_io_router, prefix=settings.api_prefix)
 app.include_router(product_router, prefix=settings.api_prefix)
 app.include_router(public_pool_router, prefix=settings.api_prefix)
 app.include_router(user_router, prefix=settings.api_prefix)

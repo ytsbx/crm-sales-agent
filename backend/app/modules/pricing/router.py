@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import Text, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -26,10 +26,13 @@ from app.modules.pricing.schema import (
     CostCreate,
     CostUpdate,
     CustomerPriceCreate,
+    CustomerPriceUpdate,
     ExchangeRateCreate,
     LogisticsRateCreate,
     PricePermissionCreate,
+    PricePermissionCheck,
     PricePermissionUpdate,
+    PricingSimulation,
     PriceRuleCreate,
     PriceRuleUpdate,
     PricingRequest,
@@ -302,6 +305,60 @@ async def create_customer_price_rule(
     return ok(svc.serialize_customer_price(rule), "客户特殊价已创建")
 
 
+@router.patch("/customer-price-rules/{rule_id}")
+async def update_customer_price_rule(
+    rule_id: int,
+    payload: CustomerPriceUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("price:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改客户特殊价（03-API §15）。
+
+    部分更新：只改传进来的字段。不支持改 customer_id / sku_id ——
+    那等于换一条规则，删除重建更清楚。
+    """
+    rule = await session.get(CustomerPriceRule, rule_id)
+    if rule is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
+
+    before = svc.serialize_customer_price(rule)
+    changes = payload.model_dump(exclude_unset=True)
+
+    if changes.get("min_qty") is not None:
+        rule.min_qty = changes["min_qty"]
+    if "max_qty" in changes:
+        rule.max_qty = changes["max_qty"]
+    if changes.get("agreed_price") is not None:
+        rule.agreed_price = changes["agreed_price"]
+    if "minimum_price" in changes:
+        rule.minimum_price = changes["minimum_price"]
+    if "remark" in changes:
+        rule.remark = changes["remark"]
+
+    # 数量区间必须自洽：min > max 会让这条规则永远匹配不上，
+    # 静默失效比报错难查得多。
+    if rule.max_qty is not None and rule.min_qty is not None and rule.min_qty > rule.max_qty:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"起订量（{rule.min_qty}）不能大于上限（{rule.max_qty}）",
+        )
+
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="customer_price_rule",
+        business_id=rule.id,
+        before=before,
+        after=svc.serialize_customer_price(rule),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_customer_price(rule), "已保存")
+
+
 @router.delete("/customer-price-rules/{rule_id}")
 async def delete_customer_price_rule(
     rule_id: int,
@@ -481,6 +538,272 @@ async def batch_calculate(
             )
         )
     return ok(results)
+
+
+@router.post("/pricing/check-permission")
+async def check_price_permission(
+    payload: PricePermissionCheck,
+    user: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """询价权限校验（03-API §18）。
+
+    `calculate` 回答"建议报多少"，这个回答"我要报的价能不能报"：
+    能不能自主定价、不行的话是谁的问题（低于保护价 / 超出我的授权 /
+    利润不达标），以及要走到哪一级审批。
+
+    判定逻辑与报价明细用的**是同一份** `calculate_price` ——
+    两处各写一遍必然漂移（核价说能报、报价单说不能，业务会不信系统）。
+    """
+    result = await svc.calculate_price(
+        session,
+        sku_id=payload.sku_id,
+        quantity=payload.quantity,
+        customer_id=payload.customer_id,
+        logistics_cost=payload.logistics_cost,
+        target_margin=payload.target_margin,
+        target_profit_amount=payload.target_profit_amount,
+        quoted_price=payload.quoted_price,
+        role_codes=user.roles,
+        currency=payload.currency,
+        exchange_rate=payload.exchange_rate,
+        tax_refund_rate=payload.tax_refund_rate,
+        customer_level=payload.customer_level,
+        country=payload.country,
+        package_type=payload.package_type,
+        shipping_method=payload.shipping_method,
+        payment_terms=payload.payment_terms,
+    )
+
+    triggers = result["approval_triggers"]
+    reasons = []
+    if triggers["below_protection_price"]:
+        reasons.append("低于公司最低保护价")
+    if triggers["below_authorized_price"]:
+        reasons.append("低于你角色被授权的最低价")
+    if triggers["negative_profit"]:
+        reasons.append("负利润")
+    if triggers["below_authorized_margin"]:
+        reasons.append("利润率低于你角色的授权下限")
+
+    approval_required = result["approval_required"]
+    return ok(
+        {
+            "sku_id": payload.sku_id,
+            "quantity": result["quantity"],
+            "quoted_price": result["quoted_price"],
+            "currency": result["currency"],
+            # 结论
+            "allowed": not approval_required,
+            "approval_required": approval_required,
+            "can_approve": result["can_approve"],
+            "reasons": reasons,
+            # 依据（界面要能解释"为什么不行"）
+            "minimum_price": result["minimum_price"],
+            "protection_price": result["protection_price"],
+            "authorized_min_margin": result["authorized_min_margin"],
+            "standard_price": result["standard_price"],
+            "recommended_price": result["recommended_price"],
+            "recommended_range": result["recommended_range"],
+            "profit": result["profit"],
+            "profit_rate": result["profit_rate"],
+            "cost_in_quote_currency": result["cost_in_quote_currency"],
+            "approval_triggers": triggers,
+            "my_roles": user.roles,
+        }
+    )
+
+
+@router.post("/pricing/simulate")
+async def simulate_pricing(
+    payload: PricingSimulation,
+    user: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """报价模拟（03-API §18）：一次算多个候选价，看清让步空间。
+
+    候选来源：显式给的 `candidates`；没给就用 `margins` 各档反推成交价。
+    `margins` 也没给时，按"授权下限 / 保护价 / 建议价"三个关键点位试算 ——
+    这三个点正好是"能让到哪、再低要审批、正常该报多少"。
+    """
+    base = payload.base
+    quantize = Decimal("0.01")
+
+    common = dict(
+        sku_id=base.sku_id,
+        quantity=base.quantity,
+        customer_id=base.customer_id,
+        logistics_cost=base.logistics_cost,
+        target_margin=base.target_margin,
+        target_profit_amount=base.target_profit_amount,
+        role_codes=user.roles,
+        currency=base.currency,
+        exchange_rate=base.exchange_rate,
+        tax_refund_rate=base.tax_refund_rate,
+        customer_level=base.customer_level,
+        country=base.country,
+        package_type=base.package_type,
+        shipping_method=base.shipping_method,
+        payment_terms=base.payment_terms,
+    )
+
+    # 先算一次不带报价的基准，拿到建议价/保护价等锚点
+    baseline = await svc.calculate_price(session, quoted_price=None, **common)
+
+    candidates = [c for c in payload.candidates if c and c > 0]
+    if not candidates and payload.margins:
+        cost = Decimal(str(baseline["cost_in_quote_currency"] or 0))
+        for margin in payload.margins:
+            if margin is None or margin <= 0 or margin >= 1:
+                continue
+            # 价 = 成本 / (1 - 利润率)
+            candidates.append((cost / (Decimal(1) - Decimal(str(margin)))).quantize(quantize))
+    if not candidates:
+        # 三个关键点位：建议价、最低可自主定价、公司保护价
+        for anchor in (
+            baseline["recommended_price"],
+            baseline["minimum_price"],
+            baseline["protection_price"],
+        ):
+            value = Decimal(str(anchor)) if anchor is not None else None
+            if value is not None and value > 0:
+                candidates.append(value.quantize(quantize))
+
+    # 去重并保序，避免同一档位算两遍
+    seen: set[str] = set()
+    unique: list[Decimal] = []
+    for item in candidates:
+        key = str(item)
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    rows = []
+    for price in unique:
+        result = await svc.calculate_price(session, quoted_price=price, **common)
+        triggers = result["approval_triggers"]
+        reasons = []
+        if triggers["below_protection_price"]:
+            reasons.append("低于公司最低保护价")
+        if triggers["below_authorized_price"]:
+            reasons.append("低于你角色被授权的最低价")
+        if triggers["negative_profit"]:
+            reasons.append("负利润")
+        if triggers["below_authorized_margin"]:
+            reasons.append("利润率低于你角色的授权下限")
+        rows.append(
+            {
+                "quoted_price": result["quoted_price"],
+                "profit": result["profit"],
+                "profit_rate": result["profit_rate"],
+                "amount": (
+                    float(Decimal(str(result["quoted_price"])) * Decimal(str(base.quantity)))
+                    if result["quoted_price"] is not None
+                    else None
+                ),
+                "approval_required": result["approval_required"],
+                "reasons": reasons,
+            }
+        )
+
+    return ok(
+        {
+            "sku": baseline["sku"],
+            "quantity": baseline["quantity"],
+            "currency": baseline["currency"],
+            "cost_in_quote_currency": baseline["cost_in_quote_currency"],
+            "standard_price": baseline["standard_price"],
+            "recommended_price": baseline["recommended_price"],
+            "recommended_range": baseline["recommended_range"],
+            "minimum_price": baseline["minimum_price"],
+            "protection_price": baseline["protection_price"],
+            "scenarios": rows,
+        }
+    )
+
+
+@router.get("/pricing/history")
+async def pricing_history(
+    sku_id: int | None = None,
+    customer_id: int | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """核价历史（03-API §18）。
+
+    "这个 SKU 的价格改过几次、谁改的、从多少改到多少" ——
+    数据取自审计日志（报价明细的增删改、成本与价格规则的变更），
+    不另建一张价格历史表：审计日志本来就是这些变更的事实来源，
+    再存一份只会两边不一致。
+    """
+    from app.core.audit import AuditLog
+
+    stmt = select(AuditLog).where(
+        AuditLog.business_type.in_(
+            ("quote", "quote_item", "product_cost", "price_rule", "customer_price_rule")
+        )
+    )
+    if sku_id is not None:
+        stmt = _filter_history_by_sku(stmt, AuditLog, sku_id)
+    if customer_id is not None:
+        stmt = stmt.where(
+            (AuditLog.business_type == "customer_price_rule")
+            & AuditLog.after_data["customer_id"].astext == str(customer_id)
+        )
+    rows, total = await paginate(session, stmt.order_by(AuditLog.id.desc()), page, page_size)
+
+    operator_ids = {row.operator_id for row in rows if row.operator_id}
+    names: dict[int, str] = {}
+    if operator_ids:
+        from app.modules.user.model import User
+
+        found = (
+            await session.execute(
+                select(User.id, User.name).where(User.id.in_(operator_ids))
+            )
+        ).all()
+        names = {int(uid): name for uid, name in found}
+
+    return ok(
+        page_data(
+            [
+                {
+                    "id": row.id,
+                    "business_type": row.business_type,
+                    "business_id": row.business_id,
+                    "action": row.action,
+                    "operator_id": row.operator_id,
+                    "operator_name": names.get(row.operator_id) if row.operator_id else None,
+                    "before": row.before_data,
+                    "after": row.after_data,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ],
+            total,
+            page,
+            page_size,
+        )
+    )
+
+
+def _filter_history_by_sku(stmt, audit_model, sku_id: int):
+    """按 SKU 过滤核价历史。
+
+    审计日志的 `before_data` / `after_data` 是 JSON 列（不是 PostgreSQL
+    原生 jsonb 类型，走的是项目自己的 JSONType），所以**没有 `.astext`**。
+    统一用 `cast(Text)` 再按文本匹配：
+
+    - 顶层 `sku_id` 用精确串匹配（带引号，避免 1 命中 12）；
+    - 报价单的明细数组里 SKU 在 `items[*].sku_id`，用 LIKE 兜住。
+    """
+    key = f'%"sku_id": {sku_id}'  # JSON 序列化后形如 "sku_id": 12
+    return stmt.where(
+        (cast(audit_model.before_data, Text).like(f'%{key}%'))
+        | (cast(audit_model.after_data, Text).like(f'%{key}%'))
+    )
 
 
 @router.get("/skus/{sku_id}/price-summary")
