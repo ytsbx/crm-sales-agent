@@ -6,6 +6,10 @@
  *   node ops/smoke_ui.mjs
  *   SMOKE_USER=admin SMOKE_OUT=/tmp/shots node ops/smoke_ui.mjs
  *
+ * 注意：报价中心为空时，脚本会**临时造一张报价**才能验证 What-if 面板，
+ * 而报价没有删除接口（软删只对列表生效），所以跑完请在界面上手动删掉那张
+ * 「Q开头」的测试报价，或者直接忽略它——它不影响任何统计口径。
+ *
  * 为什么要有这个脚本：这个项目要分 6 个阶段做，每做完一段都得确认「页面真的能打开、
  * 数据真的能读出来」，而不是只看构建有没有过。它用浏览器调试协议驱动 Edge/Chrome，
  * 只依赖 Node 内置能力，不额外装 Playwright。
@@ -66,6 +70,42 @@ async function firstId(path, token) {
     const body = await response.json()
     const items = body?.data?.items ?? []
     return items.length ? items[0].id : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 报价中心为空时临时造一张报价（带 1 条明细），否则 What-if 面板只能截到空态。
+ * 返回新报价的 id；失败返回 null，由调用方跳过依赖它的用例。
+ */
+async function createSeedQuote(token, customerId) {
+  if (!customerId) return null
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    }
+    const created = await fetch(`${API_BASE}/api/v1/quotes`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ customer_id: customerId }),
+    }).then((r) => r.json())
+    const quoteId = created?.data?.quote_id
+    const versionId = created?.data?.version_id
+    if (!quoteId || !versionId) return null
+    const skus = await fetch(`${API_BASE}/api/v1/pricing/sku-options`, { headers }).then((r) =>
+      r.json(),
+    )
+    const skuId = skus?.data?.[0]?.id
+    if (skuId) {
+      await fetch(`${API_BASE}/api/v1/quote-versions/${versionId}/items/batch`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify([{ sku_id: skuId, quantity: 3000, quoted_price: 28 }]),
+      })
+    }
+    return quoteId
   } catch {
     return null
   }
@@ -333,6 +373,17 @@ async function main() {
 
     // ---- 需要点击才出现的交付物：看板 / Copilot 抽屉 / What-if ----------------
     // 这几项是"交互后才有"的，逐页截图覆盖不到，所以单独点一遍。
+    // 依赖报价数据的用例在没有报价时先造一张，否则会拿 404 页面当"通过"。
+    let interactionQuoteId = quoteId
+    if (!interactionQuoteId) {
+      interactionQuoteId = await createSeedQuote(auth.token, customerId)
+      console.log(
+        interactionQuoteId
+          ? `✓ 报价中心是空的，已临时造一张报价 #${interactionQuoteId} 用于验证 What-if`
+          : '（提示：造报价失败，跳过 What-if 用例）',
+      )
+    }
+
     const INTERACTIONS = [
       {
         name: '26-opportunity-board',
@@ -348,19 +399,25 @@ async function main() {
       },
       {
         name: '28-quote-whatif',
-        path: `/quotes/${quoteId ?? 1}`,
+        path: `/quotes/${interactionQuoteId ?? 1}`,
         clicks: [],
         expect: ['版本与方案对比', '边际测算'],
+        skip: !interactionQuoteId,
       },
       {
         name: '29-quote-copilot-context',
-        path: `/quotes/${quoteId ?? 1}`,
+        path: `/quotes/${interactionQuoteId ?? 1}`,
         clicks: ['AI 助手'],
         expect: ['当前上下文：报价单'],
+        skip: !interactionQuoteId,
       },
     ]
 
     for (const item of INTERACTIONS) {
+      if (item.skip) {
+        console.log(`- 跳过 ${item.name}（缺少赖以验证的数据）`)
+        continue
+      }
       await client.send('Page.navigate', { url: `${APP_BASE}${item.path}` })
       let ok = false
       for (let i = 0; i < 60; i += 1) {
