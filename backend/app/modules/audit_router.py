@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditLog
 from app.core.database import get_db
 from app.core.deps import CurrentUser, require_permission
-from app.core.response import ok, page_data, paginate
+from app.core.response import ok, page_data
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Audit"])

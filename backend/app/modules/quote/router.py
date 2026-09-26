@@ -27,7 +27,6 @@ from app.modules.quote.model import (
 from app.modules.quote.pdf import render_quote_pdf
 from app.modules.settings import service as settings_service
 from app.modules.quote.schema import (
-    ApprovalAction,
     DeclinedRequest,
     QuoteChargeInput,
     QuoteCreate,

@@ -24,7 +24,7 @@ from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder, SalesOrderIt
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.pricing import service as pricing_service
 from app.modules.product.model import Product, Sku
-from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote, QuoteItem, QuoteVersion
+from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote, QuoteVersion
 from app.modules.task.model import Task
 
 

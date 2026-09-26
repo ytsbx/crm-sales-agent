@@ -13,9 +13,8 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.integration.model import IntegrationLog
-from app.modules.opportunity.model import Opportunity, OpportunityItem, OpportunityStage
+from app.modules.opportunity.model import Opportunity, OpportunityItem, OpportunityStageHistory
 from app.modules.opportunity.service import get_first_stage
-from app.modules.opportunity.model import OpportunityStageHistory
 from app.modules.order import service as svc
 from app.modules.order.model import ORDER_STATUS_LABEL, OrderStatusHistory, SalesOrder, SalesOrderItem
 from app.modules.order.schema import OrderFromQuote, OrderStatusChange, OrderUpdate

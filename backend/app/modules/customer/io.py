@@ -15,7 +15,6 @@ import io
 from fastapi import UploadFile
 
 from app.core.errors import AppError, ErrorCode
-from app.modules.contact_util import find_duplicate_customers
 from app.modules.customer.model import Customer
 from app.modules.user.model import User
 

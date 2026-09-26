@@ -17,7 +17,6 @@ from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
 from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote
-from app.modules.user.model import User
 
 router = APIRouter(tags=["Search"])
 

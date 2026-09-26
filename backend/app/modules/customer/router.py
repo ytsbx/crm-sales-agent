@@ -11,7 +11,7 @@ from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as svc
 from app.modules.customer import tags as tag_svc
-from app.modules.customer.model import Contact, Customer
+from app.modules.customer.model import Contact
 from app.modules.customer.schema import (
     ContactCreate,
     ContactUpdate,

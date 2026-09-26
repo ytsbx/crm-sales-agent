@@ -7,7 +7,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, String, Text, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
