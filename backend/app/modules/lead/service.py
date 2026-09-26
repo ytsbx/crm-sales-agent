@@ -96,6 +96,19 @@ async def get_lead_or_404(session: AsyncSession, lead_id: int) -> Lead:
     return lead
 
 
+async def get_visible_lead(session: AsyncSession, user, lead_id: int) -> Lead:
+    """取线索并校验数据范围。
+
+    线索池里没有负责人的线索（owner_id 为空）对所有有权限的人可见 ——
+    那正是"待分配"的意义；有负责人的则必须在范围内。
+    """
+    from app.core.data_scope import ensure_in_scope
+
+    lead = await get_lead_or_404(session, lead_id)
+    await ensure_in_scope(session, user, owner_id=lead.owner_id, label="线索")
+    return lead
+
+
 async def owner_names(session: AsyncSession, owner_ids: list[int]) -> dict[int, str]:
     ids = [oid for oid in owner_ids if oid]
     if not ids:

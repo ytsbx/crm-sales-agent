@@ -181,8 +181,8 @@ async def merge_customers(
     session: AsyncSession = Depends(get_db),
 ):
     """把来源客户合并进目标客户（不可逆，先存快照）。"""
-    source = await svc.get_customer_or_404(session, payload.source_customer_id)
-    target = await svc.get_customer_or_404(session, payload.target_customer_id)
+    source = await svc.get_visible_customer(session, user, payload.source_customer_id)
+    target = await svc.get_visible_customer(session, user, payload.target_customer_id)
 
     result = await tag_svc.merge_customers(
         session,

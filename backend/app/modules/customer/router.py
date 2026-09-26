@@ -213,7 +213,7 @@ async def claim_customer(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_customer_or_404(session, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id)
     if customer.pool_status != "public":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该客户不在公海，无法领取")
     await svc.transfer_customer(session, user, customer, user.id, "公海领取")
@@ -392,7 +392,7 @@ async def create_contact(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_customer_or_404(session, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id)
     contact = Contact(
         **payload.model_dump(),
         customer_id=customer.id,
@@ -544,7 +544,7 @@ async def create_standalone_contact(
     与嵌套写法共用 `svc.create_contact_for_customer`，
     所以"第一个联系人自动设为主联系人"这条规则两处一致。
     """
-    customer = await svc.get_customer_or_404(session, payload.customer_id)
+    customer = await svc.get_visible_customer(session, user, payload.customer_id)
     data = payload.model_dump(exclude={"customer_id"})
     contact = await create_contact_for_customer(
         session,
@@ -619,7 +619,7 @@ async def bind_contact_customer(
     语义上是"绑定"，所以允许从"无客户"绑到"有客户"。
     """
     contact = await svc.get_visible_contact(session, user, contact_id)
-    customer = await svc.get_customer_or_404(session, payload.customer_id)
+    customer = await svc.get_visible_customer(session, user, payload.customer_id)
     before = svc.serialize_contact(contact)
     contact.customer_id = customer.id
     if payload.is_primary:
@@ -660,7 +660,7 @@ async def change_contact_customer(
         )
     if contact.customer_id == payload.customer_id:
         raise AppError(ErrorCode.PARAM_ERROR, "联系人已经属于该客户", 422)
-    customer = await svc.get_customer_or_404(session, payload.customer_id)
+    customer = await svc.get_visible_customer(session, user, payload.customer_id)
     before = svc.serialize_contact(contact)
     contact.customer_id = customer.id
     if payload.is_primary:

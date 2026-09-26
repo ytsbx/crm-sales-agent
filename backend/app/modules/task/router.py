@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.data_scope import scoped_owner_ids
+from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -21,6 +21,22 @@ router = APIRouter(tags=["Task"])
 
 PRIORITY_LABEL = {"high": "高", "normal": "中", "low": "低"}
 STATUS_LABEL = {"pending": "待处理", "doing": "处理中", "done": "已完成", "cancelled": "已取消"}
+
+
+async def _visible_task(
+    session: AsyncSession, user: CurrentUser, task_id: int
+) -> Task:
+    """取任务并校验数据范围。
+
+    任务列表按 `owner_id` 过滤，但改/完成/延期等单条操作此前只判断存在 ——
+    实测别人可以改到王五的任务。任务没有"公海"概念，无负责人同样是异常数据，
+    这里一并校验。
+    """
+    task = await session.get(Task, task_id)
+    if task is None:
+        raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
+    await ensure_in_scope(session, user, owner_id=task.owner_id, label="任务")
+    return task
 
 
 def serialize(task: Task, owner_name: str | None = None) -> dict:
@@ -150,9 +166,7 @@ async def update_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await session.get(Task, task_id)
-    if task is None:
-        raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
+    task = await _visible_task(session, user, task_id)
     before = serialize(task)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(task, field, value)
@@ -179,9 +193,7 @@ async def complete_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await session.get(Task, task_id)
-    if task is None:
-        raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
+    task = await _visible_task(session, user, task_id)
     if task.status == "done":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "任务已完成")
     task.status = "done"
@@ -207,9 +219,7 @@ async def cancel_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await session.get(Task, task_id)
-    if task is None:
-        raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
+    task = await _visible_task(session, user, task_id)
     task.status = "cancelled"
     await write_audit(
         session,
@@ -231,9 +241,7 @@ async def postpone_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await session.get(Task, task_id)
-    if task is None:
-        raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
+    task = await _visible_task(session, user, task_id)
     if payload.due_at is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请给出新的截止时间")
     task.due_at = payload.due_at
@@ -258,9 +266,7 @@ async def transfer_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await session.get(Task, task_id)
-    if task is None:
-        raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
+    task = await _visible_task(session, user, task_id)
     if payload.owner_id is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请选择转交给谁")
     task.owner_id = payload.owner_id

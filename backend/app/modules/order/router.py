@@ -98,10 +98,10 @@ async def convert_to_order(
 @router.get("/orders/{order_id}")
 async def get_order(
     order_id: int,
-    _: CurrentUser = Depends(require_permission("order:view")),
+    user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_order_or_404(session, order_id)
+    order = await svc.get_visible_order(session, user, order_id)
     ctx = await svc.order_context(session, [order])
     return ok(
         svc.serialize_order(
@@ -122,7 +122,7 @@ async def update_order(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_order_or_404(session, order_id)
+    order = await svc.get_visible_order(session, user, order_id)
     before = svc.serialize_order(order)
 
     data = payload.model_dump(exclude_unset=True)
@@ -156,10 +156,10 @@ async def update_order(
 @router.get("/orders/{order_id}/items")
 async def list_order_items(
     order_id: int,
-    _: CurrentUser = Depends(require_permission("order:view")),
+    user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_order_or_404(session, order_id)
+    await svc.get_visible_order(session, user, order_id)
     rows = (
         await session.execute(
             select(SalesOrderItem, Sku.sku_code)
@@ -174,9 +174,11 @@ async def list_order_items(
 @router.get("/orders/{order_id}/status-history")
 async def status_history(
     order_id: int,
-    _: CurrentUser = Depends(require_permission("order:view")),
+    user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 先校验订单在数据范围内（实测确认此前能直接读别人的履约变更历史）
+    await svc.get_visible_order(session, user, order_id)
     rows = (
         await session.execute(
             select(OrderStatusHistory, User.name)
@@ -211,7 +213,7 @@ async def change_status(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_order_or_404(session, order_id)
+    order = await svc.get_visible_order(session, user, order_id)
     await svc.change_status(
         session, order, new_status=payload.status, operator_id=user.id, remark=payload.remark
     )
@@ -235,7 +237,7 @@ async def cancel_order(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_order_or_404(session, order_id)
+    order = await svc.get_visible_order(session, user, order_id)
     before_status = order.status
     await svc.change_status(session, order, new_status="cancelled", operator_id=user.id)
     await write_audit(
@@ -266,7 +268,7 @@ async def sync_erp(
     两种情况都**不会**把订单标成已推送。
     实现见 `app/modules/erp/service.py`，调用方无感。
     """
-    order = await svc.get_order_or_404(session, order_id)
+    order = await svc.get_visible_order(session, user, order_id)
     try:
         result = await erp_service.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -293,7 +295,7 @@ async def repurchase(
     session: AsyncSession = Depends(get_db),
 ):
     """复购：以老订单的明细为基础，直接开一个新商机（不重建客户）。"""
-    order = await svc.get_order_or_404(session, order_id)
+    order = await svc.get_visible_order(session, user, order_id)
     stage = await get_first_stage(session)
     opportunity = Opportunity(
         customer_id=order.customer_id,
@@ -349,12 +351,12 @@ async def repurchase(
 @router.get("/orders/{order_id}/receivables")
 async def list_receivables(
     order_id: int,
-    _: CurrentUser = Depends(require_permission("payment:view")),
+    user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
     from app.modules.payment import service as payment_service
 
-    await svc.get_order_or_404(session, order_id)
+    await svc.get_visible_order(session, user, order_id)
     rows = (
         await session.execute(
             select(ReceivablePlan)

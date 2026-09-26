@@ -196,10 +196,10 @@ async def create_opportunity(
 @router.get("/opportunities/{opportunity_id}")
 async def get_opportunity(
     opportunity_id: int,
-    _: CurrentUser = Depends(require_permission("opportunity:view")),
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     customers, owners, counts = await svc.enrichment(session, [opportunity])
     stages = await svc.stage_map(session)
     loss_reason_name = None
@@ -226,7 +226,7 @@ async def update_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     before = svc.serialize_opportunity(opportunity)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(opportunity, field, value)
@@ -253,7 +253,7 @@ async def change_stage(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     if opportunity.status in ("win", "loss"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已成交或已失单的商机不能改阶段")
 
@@ -294,7 +294,7 @@ async def win_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     if opportunity.status == "win":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该商机已经成交")
     stage = await svc.get_won_stage(session)
@@ -328,7 +328,7 @@ async def lose_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     if opportunity.status == "loss":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该商机已经失单")
     reason = await session.get(LossReason, payload.loss_reason_id)
@@ -363,7 +363,7 @@ async def reopen_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     if opportunity.status != "loss":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有失单的商机可以重新激活")
     stage = await svc.get_first_stage(session)
@@ -388,10 +388,10 @@ async def reopen_opportunity(
 @router.get("/opportunities/{opportunity_id}/stage-history")
 async def stage_history(
     opportunity_id: int,
-    _: CurrentUser = Depends(require_permission("opportunity:view")),
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_opportunity_or_404(session, opportunity_id)
+    await svc.get_visible_opportunity(session, user, opportunity_id)
     stages = await svc.stage_map(session)
     rows = (
         await session.execute(
@@ -423,7 +423,7 @@ async def delete_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     before = svc.serialize_opportunity(opportunity)
     opportunity.deleted_at = datetime.now(UTC)
     await write_audit(
@@ -444,10 +444,10 @@ async def delete_opportunity(
 @router.get("/opportunities/{opportunity_id}/items")
 async def list_items(
     opportunity_id: int,
-    _: CurrentUser = Depends(require_permission("opportunity:view")),
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_opportunity_or_404(session, opportunity_id)
+    await svc.get_visible_opportunity(session, user, opportunity_id)
     return ok(await svc.list_items(session, opportunity_id))
 
 
@@ -459,7 +459,7 @@ async def create_item(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_opportunity_or_404(session, opportunity_id)
+    await svc.get_visible_opportunity(session, user, opportunity_id)
     item = OpportunityItem(**payload.model_dump(), opportunity_id=opportunity_id)
     session.add(item)
     await session.flush()
@@ -484,7 +484,7 @@ async def update_item(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    item = await svc.get_item_or_404(session, item_id)
+    item = await svc.get_visible_item(session, user, item_id)
     before = svc.serialize_item(item)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(item, field, value)
@@ -510,7 +510,7 @@ async def delete_item(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    item = await svc.get_item_or_404(session, item_id)
+    item = await svc.get_visible_item(session, user, item_id)
     before = svc.serialize_item(item)
     await session.delete(item)
     await write_audit(
@@ -541,7 +541,7 @@ async def replace_items_batch(
 
     先清空再写入，保证不出现半新半旧的明细。
     """
-    await svc.get_opportunity_or_404(session, opportunity_id)
+    await svc.get_visible_opportunity(session, user, opportunity_id)
     created = await svc.replace_items(
         session,
         opportunity_id=opportunity_id,
@@ -573,8 +573,8 @@ async def copy_items(
     session: AsyncSession = Depends(get_db),
 ):
     """从另一个商机复制需求明细（同客户重复采购时最常用）。"""
-    await svc.get_opportunity_or_404(session, opportunity_id)
-    await svc.get_opportunity_or_404(session, source_opportunity_id)
+    await svc.get_visible_opportunity(session, user, opportunity_id)
+    await svc.get_visible_opportunity(session, user, source_opportunity_id)
     if opportunity_id == source_opportunity_id:
         raise AppError(ErrorCode.PARAM_ERROR, "不能从自己复制需求明细", 422)
 
@@ -602,7 +602,7 @@ async def copy_items(
 async def recommend_products(
     opportunity_id: int,
     payload: RecommendProductsRequest,
-    _: CurrentUser = Depends(require_permission("opportunity:view")),
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """需求商品推荐。
@@ -611,7 +611,7 @@ async def recommend_products(
     每条带推荐理由与来源。**不是模型推荐，也不假装是**：
     等接了推荐模型再换实现，接口形状不变。
     """
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     return ok(
         await svc.recommend_products(
             session, opportunity=opportunity, limit=payload.limit, keyword=payload.keyword
@@ -635,7 +635,7 @@ async def assign_opportunity(
     只动 owner_id，`created_by` 保持原样（02-ER §21：owner_id 可变，
     created_by 不覆盖）——否则"谁创建的"这条审计线索就断了。
     """
-    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     await svc.assert_owner_active(session, payload.owner_id)
 
     before_owner = opportunity.owner_id
@@ -667,7 +667,7 @@ async def clone_opportunity(
 
     新商机不带成交/失单结论、不带金额，阶段回到初始阶段。
     """
-    source = await svc.get_opportunity_or_404(session, opportunity_id)
+    source = await svc.get_visible_opportunity(session, user, opportunity_id)
     clone = await svc.clone_opportunity(
         session,
         source=source,

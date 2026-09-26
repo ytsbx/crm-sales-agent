@@ -83,10 +83,10 @@ async def create_lead(
 @router.get("/leads/{lead_id}")
 async def get_lead(
     lead_id: int,
-    _: CurrentUser = Depends(require_permission("lead:view")),
+    user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     owners = await svc.owner_names(session, [lead.owner_id])
     return ok(svc.serialize_lead(lead, owner_name=owners.get(lead.owner_id) if lead.owner_id else None))
 
@@ -99,7 +99,7 @@ async def update_lead(
     user: CurrentUser = Depends(require_permission("lead:create")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     before = svc.serialize_lead(lead)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(lead, field, value)
@@ -126,7 +126,7 @@ async def assign_lead(
     user: CurrentUser = Depends(require_permission("lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     await svc.assign_lead(
         session, lead, to_user_id=payload.owner_id, operator_id=user.id, reason=payload.reason
     )
@@ -205,7 +205,7 @@ async def claim_lead(
     user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     if lead.owner_id is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该线索已有负责人")
     await svc.assign_lead(
@@ -230,7 +230,7 @@ async def release_lead(
     user: CurrentUser = Depends(require_permission("lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     await svc.assign_lead(
         session, lead, to_user_id=None, operator_id=user.id, reason="释放回线索池"
     )
@@ -254,7 +254,7 @@ async def discard_lead(
     user: CurrentUser = Depends(require_permission("lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     svc.mark_discarded(session, lead, reason=payload.reason, operator_id=user.id)
     await write_audit(
         session,
@@ -272,11 +272,11 @@ async def discard_lead(
 @router.post("/leads/{lead_id}/deduplicate")
 async def deduplicate_lead(
     lead_id: int,
-    _: CurrentUser = Depends(require_permission("lead:view")),
+    user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """查重：给出疑似重复的已有客户，供转化时选择关联。"""
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     candidates = await find_duplicate_customers(
         session,
         company_name=lead.company_name or lead.name,
@@ -293,7 +293,7 @@ async def convert_lead(
     user: CurrentUser = Depends(require_permission("lead:convert")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_lead_or_404(session, lead_id)
+    lead = await svc.get_visible_lead(session, user, lead_id)
     if lead.status == "converted":
         # 一次线索转化必须幂等（02-ER §21）
         raise AppError(ErrorCode.DUPLICATE_CONVERT, "该线索已经转化过", 409)

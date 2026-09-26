@@ -126,10 +126,10 @@ async def create_sample(
 @router.get("/samples/{sample_id}")
 async def get_sample(
     sample_id: int,
-    _: CurrentUser = Depends(require_permission("sample:view")),
+    user: CurrentUser = Depends(require_permission("sample:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    sample = await svc.get_or_404(session, sample_id)
+    sample = await svc.get_visible_or_404(session, user, sample_id)
     return ok(await svc.detail(session, sample))
 
 
@@ -141,7 +141,7 @@ async def update_sample(
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sample = await svc.get_or_404(session, sample_id)
+    sample = await svc.get_visible_or_404(session, user, sample_id)
     before = await svc.detail(session, sample)
     data = payload.model_dump(exclude_unset=True)
     for field in ("contact_id", "owner_id", "remark"):
@@ -171,7 +171,7 @@ async def approve_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """审批样品申请：批准或拒绝（PRD §19 的「样品申请」环节）。"""
-    sample = await svc.get_or_404(session, sample_id)
+    sample = await svc.get_visible_or_404(session, user, sample_id)
     target = "approved" if payload.approved else "rejected"
     svc.ensure_transition(sample.status, target)
 
@@ -209,7 +209,7 @@ async def ship_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """寄样：登记承运商与快递单号（PRD §19 的「寄样 / 快递单号」）。"""
-    sample = await svc.get_or_404(session, sample_id)
+    sample = await svc.get_visible_or_404(session, user, sample_id)
     svc.ensure_transition(sample.status, "shipped")
 
     shipped_at = (
@@ -254,7 +254,7 @@ async def sign_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """签收确认（PRD §19 的「签收」）。"""
-    sample = await svc.get_or_404(session, sample_id)
+    sample = await svc.get_visible_or_404(session, user, sample_id)
     svc.ensure_transition(sample.status, "signed")
 
     signed_at = (
@@ -296,7 +296,7 @@ async def feedback_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """登记客户反馈（PRD §19 的「反馈」）。"""
-    sample = await svc.get_or_404(session, sample_id)
+    sample = await svc.get_visible_or_404(session, user, sample_id)
     if not payload.feedback.strip():
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "反馈内容不能为空")
 
@@ -321,10 +321,10 @@ async def feedback_sample(
 @router.get("/samples/{sample_id}/items")
 async def list_sample_items(
     sample_id: int,
-    _: CurrentUser = Depends(require_permission("sample:view")),
+    user: CurrentUser = Depends(require_permission("sample:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_or_404(session, sample_id)
+    await svc.get_visible_or_404(session, user, sample_id)
     items = await svc.items_of(session, sample_id)
     sku_ids = {item.sku_id for item in items}
     skus = {}
@@ -346,7 +346,7 @@ async def add_sample_item(
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sample = await svc.get_or_404(session, sample_id)
+    sample = await svc.get_visible_or_404(session, user, sample_id)
     if sample.status in ("shipped", "signed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

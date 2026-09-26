@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.data_scope import scoped_owner_ids
+from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Customer
@@ -158,6 +158,31 @@ async def get_opportunity_or_404(session: AsyncSession, opportunity_id: int) -> 
     if opportunity is None or opportunity.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
     return opportunity
+
+
+async def get_visible_opportunity(
+    session: AsyncSession, user: CurrentUser, opportunity_id: int
+) -> Opportunity:
+    """取商机并校验数据范围。
+
+    列表接口一直按 `owner_id` 过滤，但详情/改/删此前只判断存在 ——
+    实测业务员改个 id 就能看和改别人的商机。读与写必须同一口径。
+    """
+    opportunity = await get_opportunity_or_404(session, opportunity_id)
+    await ensure_in_scope(
+        session, user, owner_id=opportunity.owner_id, label="商机"
+    )
+    return opportunity
+
+
+async def get_visible_item(
+    session: AsyncSession, user: CurrentUser, item_id: int
+) -> OpportunityItem:
+    """取需求明细并校验其所属商机在数据范围内（明细自己没有负责人）。"""
+    item = await get_item_or_404(session, item_id)
+    parent = await get_opportunity_or_404(session, item.opportunity_id)
+    await ensure_in_scope(session, user, owner_id=parent.owner_id, label="商机")
+    return item
 
 
 async def enrichment(

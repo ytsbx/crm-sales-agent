@@ -142,10 +142,33 @@ async def get_quote_or_404(session: AsyncSession, quote_id: int) -> Quote:
     return quote
 
 
+async def get_visible_quote(
+    session: AsyncSession, user, quote_id: int
+) -> Quote:
+    """取报价并校验数据范围（列表按 owner_id 过滤，详情此前没校验）。"""
+    from app.core.data_scope import ensure_in_scope
+
+    quote = await get_quote_or_404(session, quote_id)
+    await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+    return quote
+
+
 async def get_version_or_404(session: AsyncSession, version_id: int) -> QuoteVersion:
     version = await session.get(QuoteVersion, version_id)
     if version is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
+    return version
+
+
+async def get_visible_version(
+    session: AsyncSession, user, version_id: int
+) -> QuoteVersion:
+    """取报价版本并校验其所属报价在数据范围内（版本自己没有负责人）。"""
+    from app.core.data_scope import ensure_in_scope
+
+    version = await get_version_or_404(session, version_id)
+    quote = await get_quote_or_404(session, version.quote_id)
+    await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
     return version
 
 

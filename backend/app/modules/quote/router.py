@@ -185,10 +185,10 @@ async def create_quote(
 @router.get("/quotes/{quote_id}")
 async def get_quote(
     quote_id: int,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    quote = await svc.get_quote_or_404(session, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id)
     ctx = await _quote_context(session, [quote])
     return ok(
         svc.serialize_quote(
@@ -204,10 +204,10 @@ async def get_quote(
 @router.get("/quotes/{quote_id}/versions")
 async def list_versions(
     quote_id: int,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_quote_or_404(session, quote_id)
+    await svc.get_visible_quote(session, user, quote_id)
     rows = (
         await session.execute(
             select(QuoteVersion)
@@ -221,11 +221,11 @@ async def list_versions(
 @router.get("/quotes/{quote_id}/version-comparison")
 async def compare_versions(
     quote_id: int,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。"""
-    await svc.get_quote_or_404(session, quote_id)
+    await svc.get_visible_quote(session, user, quote_id)
     return ok(await svc.version_comparison(session, quote_id))
 
 
@@ -240,7 +240,7 @@ async def create_version(
 
     复制逻辑在 `svc.create_version`，与 Agent 工具 `create_quote_version` 共用。
     """
-    quote = await svc.get_quote_or_404(session, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id)
     version = await svc.create_version(session, quote=quote, user=user)
 
     await write_audit(
@@ -259,10 +259,10 @@ async def create_version(
 @router.get("/quote-versions/{version_id}")
 async def get_version(
     version_id: int,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
+    version = await svc.get_visible_version(session, user, version_id)
     items = await svc.version_items(session, version_id)
     charges = await svc.version_charges(session, version_id)
     instance = await svc.latest_approval(session, version_id)
@@ -319,14 +319,14 @@ async def update_version(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
+    version = await svc.get_visible_version(session, user, version_id)
     await svc.ensure_version_editable(version)
     data = payload.model_dump(exclude_unset=True)
     valid_until = data.pop("valid_until", None)
     for field, value in data.items():
         setattr(version, field, value)
     if valid_until is not None:
-        quote = await svc.get_quote_or_404(session, version.quote_id)
+        quote = await svc.get_visible_quote(session, user, version.quote_id)
         quote.valid_until = valid_until
     await write_audit(
         session,
@@ -350,9 +350,9 @@ async def set_items(
     session: AsyncSession = Depends(get_db),
 ):
     """整版替换明细：报价明细按 SKU 逐条计算并落快照。"""
-    version = await svc.get_version_or_404(session, version_id)
+    version = await svc.get_visible_version(session, user, version_id)
     await svc.ensure_version_editable(version)
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
 
     existing = await svc.version_items(session, version_id)
     for item in existing:
@@ -400,9 +400,9 @@ async def update_item(
     item = await session.get(QuoteItem, item_id)
     if item is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_version_or_404(session, item.quote_version_id)
+    version = await svc.get_visible_version(session, user, item.quote_version_id)
     await svc.ensure_version_editable(version)
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
 
     data = payload.model_dump(exclude_unset=True)
     quantity = data.get("quantity", item.quantity)
@@ -464,7 +464,7 @@ async def delete_item(
     item = await session.get(QuoteItem, item_id)
     if item is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_version_or_404(session, item.quote_version_id)
+    version = await svc.get_visible_version(session, user, item.quote_version_id)
     await svc.ensure_version_editable(version)
     before = svc.serialize_item(item)
     await session.delete(item)
@@ -492,7 +492,7 @@ async def add_charge(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
+    version = await svc.get_visible_version(session, user, version_id)
     await svc.ensure_version_editable(version)
     charge = QuoteCharge(
         quote_version_id=version_id,
@@ -530,7 +530,7 @@ async def delete_charge(
     charge = await session.get(QuoteCharge, charge_id)
     if charge is None:
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
-    version = await svc.get_version_or_404(session, charge.quote_version_id)
+    version = await svc.get_visible_version(session, user, charge.quote_version_id)
     await svc.ensure_version_editable(version)
     before = svc.serialize_charge(charge)
     await session.delete(charge)
@@ -558,8 +558,8 @@ async def submit_approval(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    version = await svc.get_visible_version(session, user, version_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
     if version.sent_at is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该版本已经发送，不能再次提交审批")
     instance, required = await svc.submit_for_approval(
@@ -608,7 +608,7 @@ async def withdraw_approval(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
+    version = await svc.get_visible_version(session, user, version_id)
     if version.approval_status != "pending":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "当前没有待审批的申请")
     instance = await svc.latest_approval(session, version_id)
@@ -630,7 +630,7 @@ async def withdraw_approval(
     version.approval_status = "not_submitted"
     version.approval_required = False
     version.submitted_at = None
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
     quote.status = "draft"
     await session.flush()
     # 撤回是审批流里的关键动作，必须留痕：否则"谁在什么时候把审批撤了"查不到
@@ -656,10 +656,10 @@ async def mark_sent(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
+    version = await svc.get_visible_version(session, user, version_id)
     if version.approval_status not in ("approved",):
         raise AppError(ErrorCode.APPROVAL_PENDING, "报价未通过审批，不能发送", 422)
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
     version.sent_at = datetime.now(UTC)
     quote.status = "sent"
     session.add(
@@ -688,9 +688,12 @@ async def mark_sent(
 @router.get("/quote-versions/{version_id}/send-logs")
 async def send_logs(
     version_id: int,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 先校验这一版报价在自己的数据范围内 —— 发送记录里有收件人，
+    # 不校验的话能直接看到别人把报价发给了谁（实测确认过）。
+    await svc.get_visible_version(session, user, version_id)
     rows = (
         await session.execute(
             select(QuoteSendLog)
@@ -719,8 +722,8 @@ async def accept_quote(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    version = await svc.get_visible_version(session, user, version_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
     if quote.status not in ("sent", "approved"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有已发送的报价才能标记客户接受")
     version.accepted_at = datetime.now(UTC)
@@ -745,8 +748,8 @@ async def reject_quote(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_version_or_404(session, version_id)
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    version = await svc.get_visible_version(session, user, version_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
     version.declined_at = datetime.now(UTC)
     quote.status = "declined"
     await write_audit(
@@ -769,8 +772,8 @@ async def download_pdf(
     session: AsyncSession = Depends(get_db),
 ):
     """生成并下载报价单 PDF。数据全部取快照，不回查当前价格。"""
-    version = await svc.get_version_or_404(session, version_id)
-    quote = await svc.get_quote_or_404(session, version.quote_id)
+    version = await svc.get_visible_version(session, user, version_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
     ctx = await _quote_context(session, [quote])
     items = await svc.version_items(session, version_id)
     charges = await svc.version_charges(session, version_id)

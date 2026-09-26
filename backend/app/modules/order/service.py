@@ -87,6 +87,15 @@ async def get_order_or_404(session: AsyncSession, order_id: int) -> SalesOrder:
     return order
 
 
+async def get_visible_order(session: AsyncSession, user, order_id: int) -> SalesOrder:
+    """取订单并校验数据范围（列表按 owner_id 过滤，详情此前没校验）。"""
+    from app.core.data_scope import ensure_in_scope
+
+    order = await get_order_or_404(session, order_id)
+    await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+    return order
+
+
 async def received_amount(session: AsyncSession, order_id: int) -> Decimal:
     """已收金额只统计财务已确认的回款。"""
     total = (

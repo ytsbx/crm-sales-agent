@@ -141,6 +141,17 @@ async def get_or_404(session: AsyncSession, sample_id: int) -> SampleRequest:
     return request
 
 
+async def get_visible_or_404(
+    session: AsyncSession, user: CurrentUser, sample_id: int
+) -> SampleRequest:
+    """取样品申请并校验数据范围（列表按 owner_id 过滤，单条此前没校验）。"""
+    from app.core.data_scope import ensure_in_scope
+
+    request = await get_or_404(session, sample_id)
+    await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
+    return request
+
+
 async def items_of(session: AsyncSession, sample_id: int) -> list[SampleItem]:
     return list(
         (

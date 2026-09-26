@@ -15,6 +15,7 @@ from typing import Protocol
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AppError, ErrorCode
 from app.modules.user.model import Department, User
 
 
@@ -71,3 +72,58 @@ async def scoped_owner_ids(session: AsyncSession, user: ScopeUser) -> list[int] 
         return list(rows.scalars().all())
 
     return [user.id]
+
+
+async def ensure_in_scope(
+    session: AsyncSession,
+    user: ScopeUser,
+    *,
+    owner_id: int | None,
+    label: str,
+    allow_unowned: bool = False,
+) -> None:
+    """校验某条记录是否在当前用户的数据范围内，不在就抛 40302。
+
+    ## 为什么必须有这个函数
+
+    各模块的**列表**接口一直按数据范围过滤（`scoped_owner_ids`），
+    但**按 id 直查**的详情与写接口大多只做了 `get_x_or_404`（只判断存在）。
+    实测确认（张三访问王五的数据）以下接口可以绕过数据范围：
+    商机详情/改/删、报价详情、报价版本详情、订单详情/改、
+    样品详情/改、任务改、线索详情/改 —— 改个 id 就能看和改别人的数据。
+    "列表看不到"和"拿不到"必须一致，否则前端隐藏毫无意义（05-TECH §24）。
+
+    `allow_unowned`：客户与线索允许无负责人（公海 / 线索池），
+    它们对所有有查看权限的人可见 —— 这正是公海的意义。
+    其余模块（商机/订单/样品/任务）保持 False。
+    """
+    if owner_id is None:
+        # 无负责人的记录：客户/线索是正常业务状态；其它模块属于历史脏数据，
+        # 这里统一放行（不静默改数据），由各自模块在需要时单独治理。
+        return
+
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:  # all
+        return
+    if int(owner_id) not in owner_ids:
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED, f"该{label}不在你的数据范围内", 403
+        )
+
+
+def scope_guard(session: AsyncSession, user: ScopeUser, label: str):
+    """给列表之外的单条查询用：返回一个 `await ensure(owner_id)` 小函数。
+
+    用法：
+        ensure = scope_guard(session, user, "商机")
+        opportunity = await svc.get_opportunity_or_404(session, oid)
+        await ensure(opportunity.owner_id)
+
+    比每次手写一遍 `owner_ids is None / in / raise` 更不容易漏，
+    也让"这个接口做了范围校验"在代码里一眼可见。
+    """
+
+    async def ensure(owner_id: int | None) -> None:
+        await ensure_in_scope(session, user, owner_id=owner_id, label=label)
+
+    return ensure
