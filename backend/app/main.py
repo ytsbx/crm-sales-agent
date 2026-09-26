@@ -25,6 +25,7 @@ from app.modules.payment.router import router as payment_router
 from app.modules.pricing.logistics_router import router as logistics_router
 from app.modules.pricing.router import router as pricing_router
 from app.modules.product.router import router as product_router
+from app.modules.public_pool.router import router as public_pool_router
 from app.modules.quote.router import router as quote_router
 from app.modules.sample.router import router as sample_router
 from app.modules.task.router import router as task_router
@@ -60,6 +61,7 @@ app.include_router(customer_io_router, prefix=settings.api_prefix)
 app.include_router(customer_tags_router, prefix=settings.api_prefix)
 app.include_router(customer_router, prefix=settings.api_prefix)
 app.include_router(product_router, prefix=settings.api_prefix)
+app.include_router(public_pool_router, prefix=settings.api_prefix)
 app.include_router(user_router, prefix=settings.api_prefix)
 app.include_router(lead_router, prefix=settings.api_prefix)
 app.include_router(opportunity_router, prefix=settings.api_prefix)
