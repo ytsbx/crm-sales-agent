@@ -21,6 +21,8 @@ from app.modules.opportunity.model import (
     OpportunityStageHistory,
 )
 from app.modules.opportunity.schema import (
+    LossReasonCreate,
+    LossReasonUpdate,
     OpportunityAssign,
     OpportunityClone,
     OpportunityCreate,
@@ -33,6 +35,9 @@ from app.modules.opportunity.schema import (
     OpportunityWin,
     RecommendProductsRequest,
     StageChange,
+    StageCreate,
+    StageReorder,
+    StageUpdate,
 )
 
 router = APIRouter(tags=["Opportunity"])
@@ -57,6 +62,258 @@ async def list_loss_reasons(
     session: AsyncSession = Depends(get_db),
 ):
     return ok(await svc.list_loss_reasons(session))
+
+
+# --------------------------------------------- 03-API §13 阶段与失单原因维护
+#
+# 这两组都是"受控词表"：阶段决定流水线与漏斗口径，失单原因决定失单分析口径。
+# 所以删除时都要挡两件事：
+#   1. 还在被商机使用的不能删（否则历史商机会指向一个不存在的阶段/原因）；
+#   2. 成交/失单这两个特殊阶段不能删（状态机依赖它们，见 change_stage/win/lose）。
+
+
+def _serialize_loss_reason(row: LossReason) -> dict:
+    return {
+        "id": row.id,
+        "code": row.code,
+        "name": row.name,
+        "category": row.category,
+        "status": row.status,
+    }
+
+
+async def _assert_stage_unused(session: AsyncSession, stage_id: int) -> None:
+    used = (
+        await session.execute(
+            select(func.count(Opportunity.id)).where(
+                Opportunity.stage_id == stage_id, Opportunity.deleted_at.is_(None)
+            )
+        )
+    ).scalar_one()
+    if used:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"还有 {used} 个商机停在该阶段，先把它们推进或改阶段再删",
+        )
+
+
+@router.post("/opportunity-stages")
+async def create_stage(
+    payload: StageCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """新增阶段。不传 sequence 时排在最后。"""
+    # `Field(min_length=1)` 挡不住纯空白字符串（'   ' 长度是 3），
+    # 而空编码阶段会让 stage_map、漏斗分组这些按 code 找阶段的地方悄悄失效。
+    code = payload.code.strip()
+    name = payload.name.strip()
+    if not code or not name:
+        raise AppError(ErrorCode.PARAM_ERROR, "阶段编码与名称都不能为空白", 422)
+
+    existing = (
+        await session.execute(
+            select(OpportunityStage).where(OpportunityStage.code == code)
+        )
+    ).scalars().first()
+    if existing is not None:
+        raise AppError(ErrorCode.DUPLICATE, f"阶段编码 {code} 已存在", 409)
+
+    data = payload.model_dump()
+    data["code"] = code
+    data["name"] = name
+    if data.get("sequence") is None:
+        max_seq = (
+            await session.execute(select(func.max(OpportunityStage.sequence)))
+        ).scalar_one()
+        data["sequence"] = int(max_seq or 0) + 1
+
+    row = OpportunityStage(**data)
+    session.add(row)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="opportunity_stage",
+        business_id=row.id,
+        after=svc.serialize_stage(row),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_stage(row), "阶段已创建")
+
+
+@router.patch("/opportunity-stages/{stage_id}")
+async def update_stage(
+    stage_id: int,
+    payload: StageUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await session.get(OpportunityStage, stage_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
+    before = svc.serialize_stage(row)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="opportunity_stage",
+        business_id=row.id,
+        before=before,
+        after=svc.serialize_stage(row),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_stage(row), "已保存")
+
+
+@router.delete("/opportunity-stages/{stage_id}")
+async def delete_stage(
+    stage_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await session.get(OpportunityStage, stage_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
+    if row.is_win or row.is_loss:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{row.name}」是成交/失单阶段，状态机依赖它，不能删除",
+        )
+    await _assert_stage_unused(session, stage_id)
+    before = svc.serialize_stage(row)
+    await session.delete(row)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="opportunity_stage",
+        business_id=stage_id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "阶段已删除")
+
+
+@router.post("/opportunity-stages/reorder")
+async def reorder_stages(
+    payload: StageReorder,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按给定顺序重排阶段。
+
+    只调整传入的这几个的先后，未传入的保持原相对顺序排在后面 ——
+    界面拖动个别阶段时不用把整条流水线传上来。
+    """
+    if not payload.stage_ids:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "stage_ids 不能为空", 422)
+    unique_ids = list(dict.fromkeys(payload.stage_ids))
+
+    all_stages = (
+        await session.execute(
+            select(OpportunityStage).order_by(OpportunityStage.sequence.asc())
+        )
+    ).scalars().all()
+    by_id = {row.id: row for row in all_stages}
+    unknown = [sid for sid in unique_ids if sid not in by_id]
+    if unknown:
+        raise AppError(ErrorCode.NOT_FOUND, f"阶段不存在：{unknown}", 404)
+
+    ordered = [by_id[sid] for sid in unique_ids] + [
+        row for row in all_stages if row.id not in set(unique_ids)
+    ]
+    before = {row.id: row.sequence for row in all_stages}
+    for index, row in enumerate(ordered, start=1):
+        row.sequence = index
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="reorder",
+        business_type="opportunity_stage",
+        business_id=None,
+        before=before,
+        after={row.id: row.sequence for row in ordered},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok([svc.serialize_stage(row) for row in ordered], "顺序已保存")
+
+
+@router.post("/loss-reasons")
+async def create_loss_reason(
+    payload: LossReasonCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    code = payload.code.strip()
+    name = payload.name.strip()
+    if not code or not name:
+        raise AppError(ErrorCode.PARAM_ERROR, "失单原因编码与名称都不能为空白", 422)
+    existing = (
+        await session.execute(select(LossReason).where(LossReason.code == code))
+    ).scalars().first()
+    if existing is not None:
+        raise AppError(ErrorCode.DUPLICATE, f"失单原因编码 {code} 已存在", 409)
+    data = payload.model_dump()
+    data["code"] = code
+    data["name"] = name
+    row = LossReason(**data)
+    session.add(row)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="loss_reason",
+        business_id=row.id,
+        after=_serialize_loss_reason(row),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(_serialize_loss_reason(row), "失单原因已创建")
+
+
+@router.patch("/loss-reasons/{reason_id}")
+async def update_loss_reason(
+    reason_id: int,
+    payload: LossReasonUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await session.get(LossReason, reason_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "失单原因不存在", 404)
+    before = _serialize_loss_reason(row)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(row, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="loss_reason",
+        business_id=row.id,
+        before=before,
+        after=_serialize_loss_reason(row),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(_serialize_loss_reason(row), "已保存")
 
 
 @router.get("/opportunities/funnel")
@@ -215,6 +472,171 @@ async def get_opportunity(
             item_count=counts.get(opportunity.id, 0),
             loss_reason_name=loss_reason_name,
         )
+    )
+
+
+@router.get("/opportunities/{opportunity_id}/overview")
+async def opportunity_overview(
+    opportunity_id: int,
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """商机 360 概览（03-API §11）。
+
+    详情页要同时显示：阶段进度、需求明细汇总、报价/订单/跟进/任务的关联情况。
+    前端原本要发好几个请求才拼得出来；这里一次聚合，
+    每个板块给"数量 + 最近几条"，点进各标签页再拉完整分页。
+
+    金额口径说明：需求明细的 `target_price` 是**客户目标价**，
+    不等于最终报价，所以这里只汇总数量，金额仍以报价为准 ——
+    把目标价当收入显示出去会误导。
+    """
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    stages = await svc.stage_map(session)
+
+    from app.modules.followup.model import FollowUp
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
+    from app.modules.task.model import Task
+
+    async def count_of(model, **filters) -> int:
+        stmt = select(func.count(model.id))
+        for column, value in filters.items():
+            stmt = stmt.where(getattr(model, column) == value)
+        return int((await session.execute(stmt)).scalar_one())
+
+    items = await svc.list_items(session, opportunity_id)
+    stage_history = (
+        await session.execute(
+            select(OpportunityStageHistory)
+            .where(OpportunityStageHistory.opportunity_id == opportunity_id)
+            .order_by(OpportunityStageHistory.id.desc())
+            .limit(10)
+        )
+    ).scalars().all()
+    quote_total = await count_of(Quote, opportunity_id=opportunity_id)
+    order_total = await count_of(SalesOrder, opportunity_id=opportunity_id)
+    followup_total = await count_of(FollowUp, opportunity_id=opportunity_id)
+    task_total = await count_of(Task, opportunity_id=opportunity_id)
+    open_task_total = int(
+        (
+            await session.execute(
+                select(func.count(Task.id)).where(
+                    Task.opportunity_id == opportunity_id,
+                    Task.status.in_(("pending", "doing")),
+                )
+            )
+        ).scalar_one()
+    )
+
+    followups = (
+        await session.execute(
+            select(FollowUp)
+            .where(FollowUp.opportunity_id == opportunity_id)
+            .order_by(FollowUp.id.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+    tasks = (
+        await session.execute(
+            select(Task)
+            .where(Task.opportunity_id == opportunity_id)
+            .order_by(Task.id.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+    quotes = (
+        await session.execute(
+            select(Quote)
+            .where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None))
+            .order_by(Quote.id.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+
+    # 报价金额要看当前版本，得再查一次 quote_versions
+    current_version_ids = {row.current_version_id for row in quotes if row.current_version_id}
+    version_amounts: dict[int, float] = {}
+    version_nos: dict[int, int] = {}
+    if current_version_ids:
+        from app.modules.quote.model import QuoteVersion
+
+        for version_id, version_no, amount in (
+            await session.execute(
+                select(QuoteVersion.id, QuoteVersion.version_no, QuoteVersion.total_amount).where(
+                    QuoteVersion.id.in_(current_version_ids)
+                )
+            )
+        ).all():
+            version_amounts[int(version_id)] = float(amount or 0)
+            version_nos[int(version_id)] = int(version_no)
+
+    customers, owners, _ = await svc.enrichment(session, [opportunity])
+    return ok(
+        {
+            "opportunity": svc.serialize_opportunity(
+                opportunity,
+                stage=stages.get(opportunity.stage_id),
+                customer_name=customers.get(opportunity.customer_id),
+                owner_name=owners.get(opportunity.owner_id) if opportunity.owner_id else None,
+                item_count=len(items),
+            ),
+            "counts": {
+                "items": len(items),
+                "item_quantity": float(sum(item["quantity"] for item in items)),
+                "quotes": quote_total,
+                "orders": order_total,
+                "followups": followup_total,
+                "tasks": task_total,
+                "open_tasks": open_task_total,
+                "stage_changes": len(stage_history),
+            },
+            "stage_history": [
+                {
+                    "id": row.id,
+                    "from_stage": (
+                        stages[row.from_stage_id].name if row.from_stage_id in stages else None
+                    ),
+                    "to_stage": stages[row.to_stage_id].name if row.to_stage_id in stages else None,
+                    "remark": row.remark,
+                    "entered_at": row.entered_at,
+                    "duration_seconds": row.duration_seconds,
+                }
+                for row in stage_history
+            ],
+            "items": items,
+            "quotes": [
+                {
+                    "id": row.id,
+                    "quote_no": row.quote_no,
+                    "status": row.status,
+                    "current_version_no": version_nos.get(row.current_version_id or 0),
+                    "current_version_amount": version_amounts.get(row.current_version_id or 0),
+                    "valid_until": row.valid_until,
+                }
+                for row in quotes
+            ],
+            "followups": [
+                {
+                    "id": row.id,
+                    "followup_type": row.followup_type,
+                    "content": row.content,
+                    "next_action": row.next_action,
+                    "created_at": row.created_at,
+                }
+                for row in followups
+            ],
+            "tasks": [
+                {
+                    "id": row.id,
+                    "title": row.title,
+                    "status": row.status,
+                    "priority": row.priority,
+                    "due_at": row.due_at,
+                }
+                for row in tasks
+            ],
+        }
     )
 
 

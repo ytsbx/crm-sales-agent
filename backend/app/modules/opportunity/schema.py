@@ -126,3 +126,55 @@ class RecommendProductsRequest(BaseModel):
     limit: int = 10
     # 用于按关键词过滤产品名 / 规格
     keyword: str | None = None
+
+
+class StageCreate(BaseModel):
+    """新增阶段（03-API §13）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=64)
+    sequence: int | None = None
+    is_win: bool = False
+    is_loss: bool = False
+    status: str = "active"
+
+
+class StageUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None
+    sequence: int | None = None
+    is_win: bool | None = None
+    is_loss: bool | None = None
+    status: str | None = None
+
+
+class StageReorder(BaseModel):
+    """按给定顺序重排阶段（03-API §13）。
+
+    只传要调整的 id 列表，未出现在列表里的阶段保持原顺序并排在其后 ——
+    这样界面只拖动几个阶段时不用把整条流水线都传上来。
+    """
+
+    stage_ids: list[int]
+
+
+class LossReasonCreate(BaseModel):
+    """新增失单原因（03-API §13）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    code: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=1, max_length=64)
+    category: str | None = None
+    status: str = "active"
+
+
+class LossReasonUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str | None = None
+    category: str | None = None
+    status: str | None = None
