@@ -11,9 +11,15 @@ from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.refs import ensure_refs
 from app.core.response import ok, page_data, paginate
-from app.modules.task.model import Task
+from app.modules.customer.model import Contact, Customer
+from app.modules.lead.model import Lead
 from app.modules.notification import service as notification_service
+from app.modules.opportunity.model import Opportunity
+from app.modules.order.model import SalesOrder
+from app.modules.quote.model import Quote
+from app.modules.task.model import Task
 from app.modules.task.schema import (
     TaskAssign,
     TaskBatchComplete,
@@ -136,6 +142,39 @@ async def create_task(
 ):
     data = payload.model_dump()
     data["owner_id"] = data.get("owner_id") or user.id
+
+    # 这些引用在库里没有外键约束，不校验就会留下悬空引用（静默 200）。
+    await ensure_refs(
+        session, model=User, ids={"owner_id": data["owner_id"]}, label="负责人"
+    )
+    await ensure_refs(
+        session, model=Customer, ids={"customer_id": data.get("customer_id")}, label="客户"
+    )
+    await ensure_refs(
+        session,
+        model=Contact,
+        ids={"contact_id": data.get("contact_id"), "customer_id": data.get("customer_id")},
+        label="联系人",
+    )
+    await ensure_refs(
+        session, model=Lead, ids={"lead_id": data.get("lead_id")}, label="线索"
+    )
+    await ensure_refs(
+        session,
+        model=Opportunity,
+        ids={"opportunity_id": data.get("opportunity_id")},
+        label="商机",
+    )
+    await ensure_refs(
+        session, model=Quote, ids={"quote_id": data.get("quote_id")}, label="报价单"
+    )
+    await ensure_refs(
+        session,
+        model=SalesOrder,
+        ids={"order_id": data.get("order_id")},
+        label="订单",
+    )
+
     task = Task(**data, source="manual")
     session.add(task)
     await session.flush()
@@ -174,7 +213,12 @@ async def update_task(
 ):
     task = await _visible_task(session, user, task_id)
     before = serialize(task)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if "owner_id" in changes:
+        await ensure_refs(
+            session, model=User, ids={"owner_id": changes["owner_id"]}, label="负责人"
+        )
+    for field, value in changes.items():
         setattr(task, field, value)
     await session.flush()
     await write_audit(

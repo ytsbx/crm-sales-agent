@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import Opportunity, OpportunityItem
 from app.modules.pricing import service as pricing_service
 from app.modules.pricing.model import ExchangeRate
@@ -282,6 +282,27 @@ async def create_quote(
     if opportunity is not None:
         customer_id = opportunity.customer_id
 
+    # 客户/联系人必须存在。放在 service 而不是路由：Agent 工具
+    # （`create_quote_draft`）直接调这里，绕开路由校验；漏了就会撞 FK
+    # 约束报 500，而不是可读的 40401。
+    if await session.get(Customer, customer_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"客户 id={customer_id} 不存在", 404)
+    resolved_contact_id = contact_id or (
+        opportunity.primary_contact_id if opportunity else None
+    )
+    if resolved_contact_id is not None:
+        contact = await session.get(Contact, resolved_contact_id)
+        if contact is None:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"联系人 id={resolved_contact_id} 不存在", 404
+            )
+        if contact.customer_id != customer_id:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"联系人 id={resolved_contact_id} 不属于客户 id={customer_id}",
+            )
+    contact_id = resolved_contact_id
+
     # 报价有效期与默认条款从系统配置读，不写死在代码里
     valid_days = int(
         await settings_service.get_number(session, "quote_valid_days", "days", 30)
@@ -379,9 +400,13 @@ async def create_quote(
 
 
 async def create_version(
-    session: AsyncSession, *, quote: Quote, user
+    session: AsyncSession, *, quote: Quote, user, source_version_id: int | None = None
 ) -> QuoteVersion:
     """在已有报价单上新建版本：复制上一版明细与费用，旧版本原样保留。
+
+    `source_version_id` 为空时取最新版（"再来一版"的默认语义）；
+    显式传入时以该版本为准（`POST /quote-versions/{id}/copy` 要用，
+    否则复制历史版本会变成"最新版明细 + 目标版明细"的叠加）。
 
     同样抽到 service 供 Agent 工具复用。
     """
@@ -396,13 +421,22 @@ async def create_version(
     if latest is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价单没有版本", 404)
 
+    source = latest
+    if source_version_id is not None and source_version_id != latest.id:
+        candidate = await session.get(QuoteVersion, source_version_id)
+        if candidate is None or candidate.quote_id != quote.id:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"报价版本 {source_version_id} 不存在", 404
+            )
+        source = candidate
+
     version = QuoteVersion(
         quote_id=quote.id,
         version_no=latest.version_no + 1,
-        currency=latest.currency,
-        payment_terms=latest.payment_terms,
-        delivery_terms=latest.delivery_terms,
-        remark=latest.remark,
+        currency=source.currency,
+        payment_terms=source.payment_terms,
+        delivery_terms=source.delivery_terms,
+        remark=source.remark,
         approval_status="not_submitted",
         created_by=user.id,
         created_at=datetime.now(UTC),
@@ -410,7 +444,7 @@ async def create_version(
     session.add(version)
     await session.flush()
 
-    for item in await version_items(session, latest.id):
+    for item in await version_items(session, source.id):
         session.add(
             QuoteItem(
                 quote_version_id=version.id,
@@ -436,7 +470,7 @@ async def create_version(
                 remark=item.remark,
             )
         )
-    for charge in await version_charges(session, latest.id):
+    for charge in await version_charges(session, source.id):
         session.add(
             QuoteCharge(
                 quote_version_id=version.id,
@@ -455,7 +489,7 @@ async def create_version(
 
     # 版本沿用报价的币种；汇率按「本版本创建时点」重新取快照。
     rate_warning = await apply_exchange_rate_snapshot(
-        session, version, currency=latest.currency, explicit_rate=None
+        session, version, currency=source.currency, explicit_rate=None
     )
     if rate_warning:
         raise AppError(ErrorCode.PARAM_ERROR, rate_warning, 422)

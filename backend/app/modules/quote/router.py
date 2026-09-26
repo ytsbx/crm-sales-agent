@@ -13,7 +13,9 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
+from app.modules.order.model import SalesOrder
 from app.modules.notification import service as notification_service
 from app.modules.quote import service as svc
 from app.modules.quote.model import (
@@ -29,9 +31,13 @@ from app.modules.settings import service as settings_service
 from app.modules.quote.schema import (
     DeclinedRequest,
     QuoteChargeInput,
+    QuoteChargeUpdate,
+    QuoteClone,
     QuoteCreate,
+    QuoteExpire,
     QuoteItemInput,
     QuoteItemUpdate,
+    QuoteUpdate,
     QuoteVersionUpdate,
     SendRequest,
     SubmitApprovalRequest,
@@ -144,6 +150,7 @@ async def create_quote(
         if opportunity is None or opportunity.deleted_at is not None:
             raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
 
+    # 客户/联系人存在性由 svc.create_quote 统一校验（Agent 工具同路）。
     created = await svc.create_quote(
         session,
         user=user,
@@ -216,6 +223,272 @@ async def list_versions(
         )
     ).scalars().all()
     return ok([svc.serialize_version(version) for version in rows])
+
+
+# --------------------------------------------- 03-API §20 补齐的报价单级接口
+
+
+@router.patch("/quotes/{quote_id}")
+async def update_quote(
+    quote_id: int,
+    payload: QuoteUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改报价单本身。
+
+    只允许改"单据级"字段（联系人/负责人/有效期/备注）。
+    金额、明细、费用属于**版本**，必须走版本接口 ——
+    否则会出现"单据金额变了但版本快照没变"，历史报价再也对不上。
+    """
+    quote = await svc.get_visible_quote(session, user, quote_id)
+    before = svc.serialize_quote(quote)
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("owner_id") is not None:
+        owner = await session.get(User, data["owner_id"])
+        if owner is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={data['owner_id']} 不存在", 404)
+        if owner.status != "active":
+            raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用", 422)
+    for field, value in data.items():
+        setattr(quote, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="quote",
+        business_id=quote.id,
+        before=before,
+        after=svc.serialize_quote(quote),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_quote(quote), "已保存")
+
+
+@router.delete("/quotes/{quote_id}")
+async def delete_quote(
+    quote_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """删除报价单（软删）。
+
+    已转订单的报价不能删：订单与报价是追溯关系，删了报价会让订单
+    失去来源。其余情况软删，历史版本与审计都保留。
+    """
+    quote = await svc.get_visible_quote(session, user, quote_id)
+    order_id = (
+        await session.execute(
+            select(SalesOrder.id).where(SalesOrder.quote_id == quote.id)
+        )
+    ).scalars().first()
+    if order_id is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该报价已转成订单（id={order_id}），不能删除",
+        )
+    before = svc.serialize_quote(quote)
+    quote.deleted_at = datetime.now(UTC)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="quote",
+        business_id=quote.id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "报价单已删除")
+
+
+@router.get("/quotes/{quote_id}/send-logs")
+async def quote_send_logs(
+    quote_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """整张报价单的发送记录（03-API §20）。
+
+    与 `/quote-versions/{id}/send-logs` 的区别：那个只看一版，
+    这个跨所有版本 —— "这张报价到底发过几次、发给谁"要看这个。
+    """
+    await svc.get_visible_quote(session, user, quote_id)
+    rows = (
+        await session.execute(
+            select(QuoteSendLog, QuoteVersion.version_no)
+            .join(QuoteVersion, QuoteVersion.id == QuoteSendLog.quote_version_id)
+            .where(QuoteVersion.quote_id == quote_id)
+            .order_by(QuoteSendLog.id.desc())
+        )
+    ).all()
+    return ok(
+        [
+            {
+                "id": log.id,
+                "version_id": log.quote_version_id,
+                "version_no": version_no,
+                "channel": log.channel,
+                "receiver": log.receiver,
+                "status": log.status,
+                "sent_at": log.sent_at,
+                "error_message": log.error_message,
+            }
+            for log, version_no in rows
+        ]
+    )
+
+
+@router.get("/quotes/{quote_id}/approval-history")
+async def quote_approval_history(
+    quote_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """整张报价单的审批历史（03-API §20）。
+
+    按版本聚合，每版给审批实例 + 处理记录 —— "这单被谁卡过、为什么"
+    一次看全，不用逐版点进去。
+    """
+    await svc.get_visible_quote(session, user, quote_id)
+    versions = (
+        await session.execute(
+            select(QuoteVersion)
+            .where(QuoteVersion.quote_id == quote_id)
+            .order_by(QuoteVersion.version_no.asc())
+        )
+    ).scalars().all()
+
+    history = []
+    for version in versions:
+        instance = await svc.latest_approval(session, version.id)
+        if instance is None:
+            continue
+        records = await svc.approval_records(session, instance.id)
+        history.append(
+            {
+                "version_id": version.id,
+                "version_no": version.version_no,
+                "approval_status": version.approval_status,
+                "submitted_at": version.submitted_at,
+                "approved_at": version.approved_at,
+                "instance": {
+                    "id": instance.id,
+                    "status": instance.status,
+                    "current_node": instance.current_node,
+                    "summary": instance.summary,
+                    "created_at": instance.created_at,
+                    "finished_at": instance.finished_at,
+                    "records": records,
+                },
+            }
+        )
+    return ok(history)
+
+
+@router.post("/quotes/{quote_id}/clone")
+async def clone_quote(
+    quote_id: int,
+    payload: QuoteClone,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """复制报价单（03-API §20）。
+
+    复制的是**报价内容**，不是它的审批结论：新报价是草稿、
+    版本状态重置为未提交、不带发送记录。审批通过/已发送是上一单的事实。
+    """
+    source = await svc.get_visible_quote(session, user, quote_id)
+    if payload.customer_id is not None:
+        if await session.get(Customer, payload.customer_id) is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"客户 id={payload.customer_id} 不存在", 404)
+
+    # 币种沿用源报价当前版本的快照；汇率不复制（汇率是时点数据，
+    # 复制一个旧汇率会让新报价按过期汇率算，比让它重新解析更危险）。
+    source_version = (
+        await session.get(QuoteVersion, source.current_version_id)
+        if source.current_version_id
+        else None
+    )
+    source_currency = source_version.currency if source_version else "CNY"
+
+    created = await svc.create_quote(
+        session,
+        user=user,
+        opportunity=None,
+        customer_id=payload.customer_id or source.customer_id,
+        contact_id=payload.contact_id if payload.contact_id is not None else source.contact_id,
+        currency=source_currency,
+        exchange_rate=None,
+        valid_until=payload.valid_until or source.valid_until,
+        payment_terms=source_version.payment_terms if source_version else None,
+        delivery_terms=source_version.delivery_terms if source_version else None,
+        remark=payload.remark or f"由报价 {source.quote_no} 复制",
+    )
+    new_quote = created["_quote"]
+    new_quote.opportunity_id = (
+        payload.opportunity_id if payload.opportunity_id is not None else source.opportunity_id
+    )
+    new_quote.owner_id = payload.owner_id if payload.owner_id is not None else source.owner_id
+
+    copied_items = 0
+    if payload.copy_items and source.current_version_id:
+        source_items = await svc.version_items(session, source.current_version_id)
+        new_version = created["_version"]
+        for item in source_items:
+            session.add(
+                QuoteItem(
+                    quote_version_id=new_version.id,
+                    opportunity_item_id=item.opportunity_item_id,
+                    sku_id=item.sku_id,
+                    sku_code_snapshot=item.sku_code_snapshot,
+                    sku_name_snapshot=item.sku_name_snapshot,
+                    spec_snapshot=item.spec_snapshot,
+                    quantity=item.quantity,
+                    cost_snapshot=item.cost_snapshot,
+                    package_cost_snapshot=item.package_cost_snapshot,
+                    logistics_cost_snapshot=item.logistics_cost_snapshot,
+                    standard_price_snapshot=item.standard_price_snapshot,
+                    recommended_price_snapshot=item.recommended_price_snapshot,
+                    minimum_price_snapshot=item.minimum_price_snapshot,
+                    quoted_price=item.quoted_price,
+                    profit_snapshot=item.profit_snapshot,
+                    profit_rate_snapshot=item.profit_rate_snapshot,
+                    approval_required=item.approval_required,
+                    approval_reason=item.approval_reason,
+                    remark=item.remark,
+                )
+            )
+            copied_items += 1
+        await session.flush()
+        await svc.recalc_version(session, new_version)
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="clone",
+        business_type="quote",
+        business_id=new_quote.id,
+        before={"source_quote_id": source.id},
+        after={"copied_items": copied_items},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "quote_id": new_quote.id,
+            "quote_no": new_quote.quote_no,
+            "version_id": created["_version"].id,
+            "copied_items": copied_items,
+            "source_quote_id": source.id,
+        },
+        f"已从 {source.quote_no} 复制出 {new_quote.quote_no}",
+    )
 
 
 @router.get("/quotes/{quote_id}/version-comparison")
@@ -811,3 +1084,333 @@ async def download_pdf(
 
 
 __all__ = ["date", "QuoteItem"]
+
+
+# --------------------------- 03-API §21 §22 补齐：版本与明细的读取/复制/失效
+#
+# 文档里的路径与既有实现有出入：
+#   `POST /quote-versions/{id}/generate-pdf` 实现为 `GET /quote-versions/{id}/pdf`（保留 GET，
+#     PDF 下载用 GET 更自然，且前端已在用）
+#   `POST /quote-versions/{id}/copy` 等价于 `POST /quotes/{id}/versions`（复制上一版）
+# 这些只加别名不重复实现；下面补的是**功能确实缺**的部分：
+#   版本明细/费用列表、单条费用修改、重算、标记失效、发邮件、版本时间线。
+
+
+@router.get("/quote-versions/{version_id}/items")
+async def list_version_items(
+    version_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """某一版的明细列表（03-API §22）。
+
+    详情接口已经带 items，但这个单独入口是给"只刷新明细表格"用的，
+    避免为了拿几行明细把整版（含审批记录）都重新查一遍。
+    """
+    await svc.get_visible_version(session, user, version_id)
+    items = await svc.version_items(session, version_id)
+    return ok([svc.serialize_item(item) for item in items])
+
+
+@router.post("/quote-versions/{version_id}/items")
+async def add_version_item(
+    version_id: int,
+    payload: QuoteItemInput,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """追加一条明细（03-API §22）。
+
+    与 `/items/batch` 的区别：batch 是整版替换（界面保存整版用），
+    这个是单条追加 —— 逐条录需求时用得上。
+    """
+    version = await svc.get_visible_version(session, user, version_id)
+    await svc.ensure_version_editable(version)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
+    item = await svc.build_item_snapshot(
+        session,
+        version=version,
+        sku_id=payload.sku_id,
+        quantity=payload.quantity,
+        customer_id=quote.customer_id,
+        quoted_price=payload.quoted_price,
+        logistics_cost=payload.logistics_cost,
+        opportunity_item_id=payload.opportunity_item_id,
+        spec_snapshot=payload.spec_snapshot,
+        remark=payload.remark,
+        role_codes=user.roles,
+    )
+    session.add(item)
+    await session.flush()
+    await svc.recalc_version(session, version)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="add_item",
+        business_type="quote",
+        business_id=quote.id,
+        after=svc.serialize_item(item),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_item(item), "明细已添加")
+
+
+@router.get("/quote-versions/{version_id}/charges")
+async def list_version_charges(
+    version_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """某一版的附加费用列表（03-API §22）。"""
+    await svc.get_visible_version(session, user, version_id)
+    charges = await svc.version_charges(session, version_id)
+    return ok(
+        [
+            {**svc.serialize_charge(charge), "type_label": CHARGE_LABEL.get(charge.charge_type)}
+            for charge in charges
+        ]
+    )
+
+
+@router.patch("/quote-charges/{charge_id}")
+async def update_charge(
+    charge_id: int,
+    payload: QuoteChargeUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改一条附加费用（03-API §22）。
+
+    金额变了必须重算版本汇总 —— 否则"合计金额"与附加费用对不上，
+    报价单上两个数字自相矛盾。已发送的版本不允许改（与明细同一规则）。
+    """
+    charge = await session.get(QuoteCharge, charge_id)
+    if charge is None:
+        raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
+    version = await svc.get_visible_version(session, user, charge.quote_version_id)
+    await svc.ensure_version_editable(version)
+
+    before = svc.serialize_charge(charge)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(charge, field, value)
+    await session.flush()
+    await svc.recalc_version(session, version)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update_charge",
+        business_type="quote",
+        business_id=version.quote_id,
+        before=before,
+        after=svc.serialize_charge(charge),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_charge(charge), "已保存并重算合计")
+
+
+@router.post("/quote-versions/{version_id}/recalculate")
+async def recalculate_version(
+    version_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """重算版本汇总（03-API §21）。
+
+    正常情况下每次改动都会自动重算，这个接口是**兜底与排查用**：
+    发现合计对不上时手动跑一次，并返回重算前后对比。
+    已发送的版本也会重算（只算金额、不改报价内容），
+    因为"算错了"本身就该能被纠正。
+    """
+    version = await svc.get_visible_version(session, user, version_id)
+    before = {
+        "subtotal_amount": float(version.subtotal_amount),
+        "charge_amount": float(version.charge_amount),
+        "discount_amount": float(version.discount_amount),
+        "total_amount": float(version.total_amount),
+    }
+    await svc.recalc_version(session, version)
+    await session.flush()
+    after = {
+        "subtotal_amount": float(version.subtotal_amount),
+        "charge_amount": float(version.charge_amount),
+        "discount_amount": float(version.discount_amount),
+        "total_amount": float(version.total_amount),
+    }
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="recalculate",
+        business_type="quote",
+        business_id=version.quote_id,
+        before=before,
+        after=after,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    changed = before != after
+    return ok(
+        {"before": before, "after": after, "changed": changed},
+        "重算完成：合计有变化" if changed else "重算完成：合计本来就对",
+    )
+
+
+@router.post("/quote-versions/{version_id}/copy")
+async def copy_version(
+    version_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """复制这一版为新版本（03-API §21）。
+
+    与 `POST /quotes/{id}/versions` 是同一件事（都是"复制当前版"），
+    区别是这个的入参是**被复制的版本 id**，语义更明确；
+    前端从某个具体版本点"复制"时用这个更自然。
+    """
+    version = await svc.get_visible_version(session, user, version_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
+    # 以"被复制的这一版"为准整版照抄；不传 source 就会变成复制最新版。
+    created = await svc.create_version(
+        session, quote=quote, user=user, source_version_id=version_id
+    )
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="copy_version",
+        business_type="quote",
+        business_id=quote.id,
+        before={"source_version_id": version_id},
+        after={"new_version_id": created.id, "version_no": created.version_no},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "version_id": created.id,
+            "version_no": created.version_no,
+            "source_version_id": version_id,
+        },
+        f"已从 V{version.version_no} 复制出 V{created.version_no}",
+    )
+
+
+@router.post("/quote-versions/{version_id}/expire")
+async def expire_version(
+    version_id: int,
+    payload: QuoteExpire,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """把报价标记为已失效（03-API §21）。
+
+    状态机里一直有 `expired` 但**全库没有任何地方写它** ——
+    过了有效期没人处理，列表里永远停在"已发送"，看起来像还有效。
+    这里补上入口：已发送/已通过的报价才能失效，失效后不能再转订单。
+    """
+    version = await svc.get_visible_version(session, user, version_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
+    if quote.status == "expired":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该报价已经是失效状态")
+    if quote.status not in ("sent", "approved"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"只有已发送或已通过的报价才能标记失效（当前：{QUOTE_STATUS_LABEL.get(quote.status, quote.status)}）",
+        )
+
+    before_status = quote.status
+    quote.status = "expired"
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="expire",
+        business_type="quote",
+        business_id=quote.id,
+        before={"status": before_status},
+        after={"status": "expired", "reason": payload.reason},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {"quote_id": quote.id, "status": quote.status, "version_id": version.id},
+        "已标记为失效",
+    )
+
+
+@router.post("/quote-versions/{version_id}/generate-pdf")
+async def generate_pdf_alias(
+    version_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """生成报价 PDF（03-API §21 的 POST 写法）。
+
+    实现与 `GET /quote-versions/{id}/pdf` 是同一份 `render_quote_pdf`；
+    两个路径并存是因为文档要求 POST、而下载用 GET 更自然，
+    前端已在用 GET。这里不重复实现，只转发。
+    """
+    return await download_pdf(version_id=version_id, user=user, session=session)
+
+
+@router.post("/quote-versions/{version_id}/send-email")
+async def send_email(
+    version_id: int,
+    payload: SendRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """发送报价邮件（03-API §21）。
+
+    **系统里没有邮件服务**（SMTP 未配置），所以这里不假装发送成功：
+    只登记一条发送记录、把渠道记成"邮件"，并把报价标记为已发送 ——
+    这与既有的「标记已发送」是同一件事，只是明确写了渠道与收件人。
+    真正接 SMTP 时替换这一处即可，接口形状不变。
+    """
+    version = await svc.get_visible_version(session, user, version_id)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
+    if version.approval_status == "pending":
+        raise AppError(ErrorCode.APPROVAL_PENDING, "该版本正在审批中，通过前不能发送")
+    if not payload.receiver:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "收件人必填", 422)
+
+    now = datetime.now(UTC)
+    session.add(
+        QuoteSendLog(
+            quote_version_id=version.id,
+            channel=payload.channel or "邮件",
+            receiver=payload.receiver,
+            sent_by=user.id,
+            status="logged",
+            sent_at=now,
+            error_message="尚未配置邮件服务，本次只登记发送记录（未实际投递）",
+        )
+    )
+    version.sent_at = version.sent_at or now
+    if quote.status in ("draft", "approved"):
+        quote.status = "sent"
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="send_email",
+        business_type="quote",
+        business_id=quote.id,
+        after={"receiver": payload.receiver, "delivered": False},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "version_id": version.id,
+            "receiver": payload.receiver,
+            "delivered": False,
+            "reason": "尚未配置邮件服务，已登记发送记录",
+        },
+        "已登记发送记录（邮件服务未配置，未实际投递）",
+    )

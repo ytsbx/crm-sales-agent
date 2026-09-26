@@ -55,8 +55,67 @@ class QuoteChargeInput(BaseModel):
     is_discount: bool = False
 
 
+class QuoteChargeUpdate(BaseModel):
+    """改一条附加费用（03-API §22）。只传要改的字段。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    charge_type: str | None = None
+    description: str | None = None
+    amount: Decimal | None = None
+    is_discount: bool | None = None
+    sort_no: int | None = None
+
+
 class ApprovalAction(BaseModel):
     comment: str | None = None
+
+
+class QuoteUpdate(BaseModel):
+    """改报价单本身（03-API §20）。
+
+    注意：**不能改金额、明细与备注** —— 那些都属于版本
+    （`Quote` 表本身只有 contact_id / owner_id / valid_until 这几个可变字段，
+    备注在 `QuoteVersion.remark` 上）。改版本的备注要走
+    `PATCH /quote-versions/{id}`，否则会出现"单据改了但版本快照没变"。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    contact_id: int | None = None
+    owner_id: int | None = None
+    valid_until: date | None = None
+
+
+class QuoteClone(BaseModel):
+    """复制报价单（03-API §20）。
+
+    典型场景：同款产品给另一家客户报价、或客户要求"照上次再来一单"。
+    复制出的报价是**草稿**，版本内容照抄但状态全部重置 ——
+    审批通过/已发送是上一单的结论，不能继承。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    customer_id: int | None = None
+    opportunity_id: int | None = None
+    contact_id: int | None = None
+    owner_id: int | None = None
+    valid_until: date | None = None
+    copy_items: bool = True
+    remark: str | None = None
+
+
+class QuoteExpire(BaseModel):
+    """把报价标记为已失效（03-API §21）。
+
+    状态机里一直有 `expired` 但**没有任何地方会写它** ——
+    过了有效期没人处理，看板上永远停在"已发送"。这里补上入口。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    reason: str | None = None
 
 
 class SendRequest(BaseModel):

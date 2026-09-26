@@ -11,8 +11,9 @@ from app.core.data_scope import ensure_in_scope
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.refs import ensure_refs
 from app.core.response import ok, page_data, paginate
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
 from app.modules.followup.schema import (
     FollowUpCreate,
@@ -21,6 +22,8 @@ from app.modules.followup.schema import (
 )
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
+from app.modules.order.model import SalesOrder
+from app.modules.quote.model import Quote
 from app.modules.task.model import Task
 from app.modules.user.model import User
 
@@ -119,6 +122,34 @@ async def create_followup(
         [payload.customer_id, payload.opportunity_id, payload.lead_id, payload.quote_id, payload.order_id]
     ):
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "跟进记录必须关联一个业务对象")
+
+    # 库里没有外键约束，不校验就会静默留下悬空引用：下面 `if customer:` /
+    # `if lead:` 的写法会**安静跳过**，跟进记录看起来正常落库，
+    # 但客户"最近跟进时间"永远不会更新 —— 排查起来极难。
+    await ensure_refs(
+        session, model=Customer, ids={"customer_id": payload.customer_id}, label="客户"
+    )
+    await ensure_refs(
+        session,
+        model=Contact,
+        ids={"contact_id": payload.contact_id, "customer_id": payload.customer_id},
+        label="联系人",
+    )
+    await ensure_refs(
+        session, model=Lead, ids={"lead_id": payload.lead_id}, label="线索"
+    )
+    await ensure_refs(
+        session,
+        model=Opportunity,
+        ids={"opportunity_id": payload.opportunity_id},
+        label="商机",
+    )
+    await ensure_refs(
+        session, model=Quote, ids={"quote_id": payload.quote_id}, label="报价单"
+    )
+    await ensure_refs(
+        session, model=SalesOrder, ids={"order_id": payload.order_id}, label="订单"
+    )
 
     data = payload.model_dump(
         exclude={"create_task", "task_title", "task_due_at"}
