@@ -70,14 +70,14 @@ def serialize_item(item: SalesOrderItem, sku_code: str | None = None) -> dict:
 
 
 async def generate_order_no(session: AsyncSession) -> str:
-    today = datetime.now(UTC).strftime("%Y%m%d")
-    prefix = f"SO{today}"
-    count = (
-        await session.execute(
-            select(func.count(SalesOrder.id)).where(SalesOrder.order_no.like(f"{prefix}%"))
-        )
-    ).scalar_one()
-    return f"{prefix}{int(count) + 1:04d}"
+    """按「编号规则」取订单号（PRD §2.6）。
+
+    原先的 `count(*)+1` 会因删除历史单而重号（order_no 有唯一约束，
+    真撞上就是 500），并发也不安全。改走行锁计数器，默认格式不变。
+    """
+    from app.modules.settings import numbering
+
+    return await numbering.next_number(session, "order")
 
 
 async def get_order_or_404(session: AsyncSession, order_id: int) -> SalesOrder:

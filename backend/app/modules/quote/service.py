@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -124,14 +124,15 @@ def serialize_quote(
 
 
 async def generate_quote_no(session: AsyncSession) -> str:
-    today = datetime.now(UTC).strftime("%Y%m%d")
-    prefix = f"Q{today}"
-    count = (
-        await session.execute(
-            select(func.count(Quote.id)).where(Quote.quote_no.like(f"{prefix}%"))
-        )
-    ).scalar_one()
-    return f"{prefix}{int(count) + 1:04d}"
+    """按「编号规则」取报价单号（PRD §2.6）。
+
+    原来的实现是 `count(*)+1`：删掉历史单会重号，并发还会撞。
+    现在走 `settings/numbering.py` 的行锁计数器，默认格式与原来一致
+    （`Q` + YYYYMMDD + 4 位流水），但保证唯一且并发安全。
+    """
+    from app.modules.settings import numbering
+
+    return await numbering.next_number(session, "quote")
 
 
 async def get_quote_or_404(session: AsyncSession, quote_id: int) -> Quote:
