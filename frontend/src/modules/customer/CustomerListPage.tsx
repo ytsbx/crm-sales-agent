@@ -9,6 +9,7 @@ import {
   batchTransferCustomers,
   createCustomer,
   deduplicateCustomers,
+  exportCustomersFiltered,
   listCustomers,
   listTags,
   type DuplicateMatch,
@@ -323,7 +324,17 @@ export default function CustomerListPage() {
           <Button onClick={() => downloadCsv('/api/v1/customers/import-template', '客户导入模板.csv')}>
             下载模板
           </Button>
-          <Button onClick={() => downloadCsv('/api/v1/customers/export', '客户列表.csv')}>
+          {/* 按当前筛选导出（POST /customers/export）：列表页筛出什么就导出什么，数据范围后端强制 */}
+          <Button
+            onClick={() =>
+              void exportCustomersFiltered({
+                keyword: keyword || undefined,
+                level,
+                owner_id: scope === 'mine' ? currentUser?.id : undefined,
+                pool_status: scope === 'pool' ? 'public' : undefined,
+              })
+            }
+          >
             导出
           </Button>
           <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
