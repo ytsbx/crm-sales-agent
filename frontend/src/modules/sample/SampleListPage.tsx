@@ -26,6 +26,7 @@ import {
   type SampleRequestRow,
 } from '../../shared/api/sample'
 import PageHeader from '../../shared/components/PageHeader'
+import SectionCard from '../../shared/components/SectionCard'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 
@@ -269,42 +270,44 @@ export default function SampleListPage() {
         }
       />
 
-      <div className="toolbar">
-        <Input
-          style={{ width: 220 }}
-          placeholder="搜索客户或商机"
-          value={keyword}
-          onChange={setKeyword}
-          showClear
-        />
-        <Select
-          style={{ width: 150 }}
-          placeholder="全部状态"
-          showClear
-          value={status}
-          onChange={(value) => setStatus(value as string | undefined)}
-          optionList={STATUS_OPTIONS}
-        />
-      </div>
+      <SectionCard>
+        <div className="toolbar">
+          <Input
+            style={{ width: 220 }}
+            placeholder="搜索客户或商机"
+            value={keyword}
+            onChange={setKeyword}
+            showClear
+          />
+          <Select
+            style={{ width: 150 }}
+            placeholder="全部状态"
+            showClear
+            value={status}
+            onChange={(value) => setStatus(value as string | undefined)}
+            optionList={STATUS_OPTIONS}
+          />
+        </div>
 
-      <Table
-        size="small"
-        rowKey="id"
-        loading={query.isLoading}
-        columns={columns}
-        dataSource={query.data?.items ?? []}
-        empty="还没有样品申请"
-        pagination={{
-          currentPage: page,
-          pageSize,
-          total: query.data?.total ?? 0,
-          onPageChange: setPage,
-          onPageSizeChange: (size: number) => {
-            setPageSize(size)
-            setPage(1)
-          },
-        }}
-      />
+        <Table
+          size="small"
+          rowKey="id"
+          loading={query.isLoading}
+          columns={columns}
+          dataSource={query.data?.items ?? []}
+          empty="还没有样品申请"
+          pagination={{
+            currentPage: page,
+            pageSize,
+            total: query.data?.total ?? 0,
+            onPageChange: setPage,
+            onPageSizeChange: (size: number) => {
+              setPageSize(size)
+              setPage(1)
+            },
+          }}
+        />
+      </SectionCard>
 
       {/* 新建申请 */}
       <Modal
