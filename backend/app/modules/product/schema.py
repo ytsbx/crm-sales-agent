@@ -61,3 +61,13 @@ class SkuUpdate(BaseModel):
     package_type: str | None = None
     unit: str | None = None
     status: str | None = None
+
+
+class SkuStandaloneCreate(SkuCreate):
+    """扁平路径新增 SKU（03-API §15 `POST /skus`）。
+
+    嵌套路径（`/products/{id}/skus`）的产品 id 在 URL 上，扁平路径没有，
+    所以这里必填。
+    """
+
+    product_id: int

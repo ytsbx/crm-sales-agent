@@ -7,10 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.product import service as svc
 from app.modules.product.model import Product, Sku
-from app.modules.product.schema import ProductCreate, ProductUpdate, SkuCreate, SkuUpdate
+from app.modules.product.schema import (
+    ProductCreate,
+    ProductUpdate,
+    SkuCreate,
+    SkuStandaloneCreate,
+    SkuUpdate,
+)
 
 router = APIRouter(tags=["Product"])
 
@@ -289,3 +296,128 @@ async def delete_sku(
     )
     await session.commit()
     return ok(None, "SKU 已删除")
+
+
+# ------------------- 03-API §14 §15 补齐：SKU 单条与产品子资源
+#
+# 这几条多数是"文档有路径、代码有等价能力"的补齐（SKU 的增改删原本挂在
+# `/products/{id}/skus` 下），但 **产品附件与知识库是文档明确要求、
+# 代码完全没有的**：产品详情页要看图纸/检测报告与产品知识。
+
+
+@router.get("/skus/{sku_id}")
+async def get_sku(
+    sku_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """单条 SKU（03-API §15）。"""
+    sku = await svc.get_sku_or_404(session, sku_id)
+    product = await session.get(Product, sku.product_id)
+    return ok({**svc.serialize_sku(sku), "product_name": product.name if product else None})
+
+
+@router.post("/skus")
+async def create_standalone_sku(
+    payload: SkuStandaloneCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """新增 SKU（03-API §15 的扁平写法）。
+
+    与 `/products/{id}/skus` 同理：产品 id 在 URL 上的那种写法的扁平版，
+    所以这里 product_id 必须在请求体里给。两者共用同一套校验
+    （产品存在 + SKU 编码唯一），不会出现"从哪个入口进来规则不一样"。
+    """
+    product = await svc.get_product_or_404(session, payload.product_id)
+    await svc.ensure_sku_code_unique(session, payload.sku_code)
+    data = payload.model_dump(exclude={"product_id"})
+    sku = Sku(**data, product_id=product.id)
+    session.add(sku)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="sku",
+        business_id=sku.id,
+        after=svc.serialize_sku(sku, product_name=product.name),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_sku(sku, product_name=product.name), "SKU 已创建")
+
+
+@router.get("/products/{product_id}/files")
+async def list_product_files(
+    product_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """产品的附件（03-API §14）：图纸、检测报告、认证证书等。
+
+    复用通用附件表（`business_files`），与客户/商机的附件是同一套机制，
+    不另建一张"产品文档表"。
+    """
+    from app.modules.file.model import BusinessFile, FileRecord
+    from app.modules.file.router import is_previewable
+
+    product = await session.get(Product, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
+
+    rows = (
+        await session.execute(
+            select(BusinessFile, FileRecord)
+            .join(FileRecord, FileRecord.id == BusinessFile.file_id)
+            .where(
+                BusinessFile.business_type == "product",
+                BusinessFile.business_id == product_id,
+            )
+            .order_by(BusinessFile.id.desc())
+        )
+    ).all()
+    return ok(
+        [
+            {
+                "business_file_id": link.id,
+                "file_id": stored.id,
+                "name": stored.file_name,
+                "mime_type": stored.mime_type,
+                "size": stored.size,
+                "category": link.category,
+                "remark": link.remark,
+                "created_at": stored.created_at,
+                "previewable": is_previewable(stored),
+            }
+            for link, stored in rows
+        ]
+    )
+
+
+@router.get("/products/{product_id}/knowledge")
+async def product_knowledge(
+    product_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """产品知识（03-API §14），供销售查阅与 AI 检索引用。
+
+    字段就是产品上的 `knowledge`（PRD 里叫"产品资料/卖点/常见问题"），
+    这里单独出一个接口是因为详情页的"知识"标签要能独立刷新，
+    也方便以后换成结构化知识库而不改前端。
+    """
+    product = await session.get(Product, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
+    return ok(
+        {
+            "product_id": product.id,
+            "name": product.name,
+            "description": product.description,
+            "knowledge": product.knowledge,
+            # 界面上没填知识时给个明确提示，而不是显示空白让人以为加载失败
+            "has_content": bool((product.knowledge or "").strip()),
+        }
+    )

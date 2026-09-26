@@ -16,6 +16,7 @@ from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
 from app.modules.pricing.model import (
     CustomerPriceRule,
+    ExchangeRate,
     LogisticsRate,
     PricePermission,
     PriceRule,
@@ -25,7 +26,9 @@ from app.modules.pricing.schema import (
     CostCreate,
     CostUpdate,
     CustomerPriceCreate,
+    ExchangeRateCreate,
     LogisticsRateCreate,
+    PricePermissionCreate,
     PricePermissionUpdate,
     PriceRuleCreate,
     PriceRuleUpdate,
@@ -523,3 +526,239 @@ async def products_for_pricing(
 
 
 __all__ = ["Decimal", "router"]
+
+
+# ------------------------- 03-API §16 补齐：汇率、单条查询与价格权限创建
+#
+# 这一组多数是"文档有路径、代码有等价能力"的补齐，但**汇率是真缺口**：
+# 汇率表此前只有模型没有接口，外贸报价要么报"没有维护汇率"要么只能改库。
+
+
+def _serialize_exchange_rate(row: ExchangeRate) -> dict:
+    return {
+        "id": row.id,
+        "base_currency": row.base_currency,
+        "quote_currency": row.quote_currency,
+        "rate": float(row.rate),
+        "source": row.source,
+        "effective_at": row.effective_at,
+    }
+
+
+@router.get("/exchange-rates")
+async def list_exchange_rates(
+    quote_currency: str | None = None,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """汇率列表。按生效时间倒序，同币种最新的在最前。"""
+    stmt = select(ExchangeRate)
+    if quote_currency:
+        stmt = stmt.where(ExchangeRate.quote_currency == quote_currency.upper())
+    rows = (
+        await session.execute(
+            stmt.order_by(ExchangeRate.effective_at.desc(), ExchangeRate.id.desc())
+        )
+    ).scalars().all()
+    return ok([_serialize_exchange_rate(row) for row in rows])
+
+
+@router.post("/exchange-rates")
+async def create_exchange_rate(
+    payload: ExchangeRateCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("price:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """新增一条汇率。
+
+    允许同一币种有多条（按 effective_at 取最新）—— 汇率是**时点数据**，
+    覆盖历史会让已经落快照的旧报价与当时的汇率对不上。
+    所以这里不做"同币种只留一条"的约束。
+    """
+    base = (payload.base_currency or "CNY").strip().upper()
+    quote = payload.quote_currency.strip().upper()
+    if not quote:
+        raise AppError(ErrorCode.PARAM_ERROR, "币种不能为空白", 422)
+    if quote == base:
+        raise AppError(ErrorCode.PARAM_ERROR, f"{quote} 与基准币种相同，不需要汇率", 422)
+    if payload.rate <= 0:
+        raise AppError(ErrorCode.PARAM_ERROR, "汇率必须大于 0", 422)
+
+    row = ExchangeRate(
+        base_currency=base,
+        quote_currency=quote,
+        rate=payload.rate,
+        source=payload.source or "手工维护",
+        effective_at=payload.effective_at or datetime.now(UTC),
+    )
+    session.add(row)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="exchange_rate",
+        business_id=row.id,
+        after=_serialize_exchange_rate(row),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(_serialize_exchange_rate(row), f"已维护 {base} → {quote} 汇率")
+
+
+@router.get("/costs/{cost_id}")
+async def get_cost(
+    cost_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """单条成本记录（03-API §16）。"""
+    row = await session.get(ProductCost, cost_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "成本记录不存在", 404)
+    return ok(svc.serialize_cost(row))
+
+
+@router.get("/skus/{sku_id}/cost-history")
+async def cost_history(
+    sku_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """某 SKU 的成本变更历史。
+
+    与 `/skus/{id}/costs` 的区别：那个是"成本记录列表"（含未来生效的），
+    这个按生效时间倒序呈现**变更轨迹**，并标出当前生效的是哪一条 ——
+    排查"为什么这次核价用的成本不一样"时看的就是它。
+    """
+    sku = await session.get(Sku, sku_id)
+    if sku is None or sku.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    rows = (
+        await session.execute(
+            select(ProductCost)
+            .where(ProductCost.sku_id == sku_id)
+            .order_by(ProductCost.effective_from.desc(), ProductCost.id.desc())
+        )
+    ).scalars().all()
+    effective = await svc.get_effective_cost(session, sku_id)
+    return ok(
+        {
+            "sku_id": sku_id,
+            "sku_code": sku.sku_code,
+            "effective_cost_id": effective.id if effective else None,
+            "history": [svc.serialize_cost(row) for row in rows],
+        }
+    )
+
+
+@router.get("/price-rules/{rule_id}")
+async def get_price_rule(
+    rule_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """单条价格规则（03-API §16）。"""
+    row = await session.get(PriceRule, rule_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    codes = await _sku_code_map(session, [row.sku_id])
+    return ok(svc.serialize_price_rule(row, codes.get(row.sku_id)))
+
+
+@router.post("/price-permissions")
+async def create_price_permission(
+    payload: PricePermissionCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("price:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """新增价格权限（03-API §16 的 POST 写法）。
+
+    与已有的 `PUT /price-permissions/{role_id}` 是**同一件事**：
+    一个角色只有一条价格权限，所以"新增"遇到已存在的就直接拒绝，
+    让调用方改用 PUT 更新 —— 否则两次 POST 会悄悄覆盖前一次的配置。
+    """
+    role = await session.get(Role, payload.role_id)
+    if role is None:
+        raise AppError(ErrorCode.NOT_FOUND, "角色不存在", 404)
+    existing = (
+        await session.execute(
+            select(PricePermission).where(PricePermission.role_id == payload.role_id)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"角色「{role.name}」已有价格权限，请用 PUT /price-permissions/{payload.role_id} 更新",
+            409,
+        )
+
+    permission = PricePermission(
+        role_id=payload.role_id,
+        minimum_margin=payload.minimum_margin,
+        discount_limit=payload.discount_limit,
+        can_approve=payload.can_approve,
+        remark=payload.remark,
+        status="active",
+    )
+    session.add(permission)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="price_permission",
+        business_id=permission.id,
+        after=svc.serialize_permission(permission, role.name),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_permission(permission, role.name), "价格权限已创建")
+
+
+@router.patch("/price-permissions/{role_id}")
+async def patch_price_permission(
+    role_id: int,
+    payload: PricePermissionUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("price:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """局部更新价格权限（03-API §16 的 PATCH 写法）。
+
+    只改传入的字段；与 PUT 的区别是 PUT 会把没传的字段也重置为默认值，
+    PATCH 不会 —— 这正是两个方法并存的意义，所以这里单独实现而不是转发给 PUT。
+    """
+    permission = (
+        await session.execute(
+            select(PricePermission).where(PricePermission.role_id == role_id)
+        )
+    ).scalar_one_or_none()
+    if permission is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            f"角色 {role_id} 还没有价格权限，请先用 POST /price-permissions 创建",
+            404,
+        )
+    role = await session.get(Role, role_id)
+    before = svc.serialize_permission(permission, role.name if role else None)
+    data = payload.model_dump(exclude_unset=True, exclude_none=True)
+    for field, value in data.items():
+        setattr(permission, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="price_permission",
+        business_id=permission.id,
+        before=before,
+        after=svc.serialize_permission(permission, role.name if role else None),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        svc.serialize_permission(permission, role.name if role else None), "已保存"
+    )

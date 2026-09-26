@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -24,6 +24,23 @@ class CostUpdate(BaseModel):
     effective_from: date | None = None
     effective_to: date | None = None
     remark: str | None = None
+
+
+class ExchangeRateCreate(BaseModel):
+    """维护汇率（03-API §16）。
+
+    外贸报价必须先有汇率：`resolve_exchange_rate` 找不到就报错，
+    不静默按 1:1 处理（否则外币报价会悄悄算错一个数量级）。
+    此前汇率表只有模型没有接口，只能改库 —— 这条链路是断的。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    base_currency: str = "CNY"
+    quote_currency: str
+    rate: Decimal = Field(gt=0)
+    source: str | None = None
+    effective_at: datetime | None = None
 
 
 class PriceRuleCreate(BaseModel):
@@ -71,6 +88,16 @@ class PricePermissionUpdate(BaseModel):
     remark: str | None = None
 
 
+class PricePermissionCreate(PricePermissionUpdate):
+    """新增价格权限（03-API §16 的 POST 写法）。
+
+    比 Update 多一个 role_id —— 一个角色只有一条价格权限，
+    所以"新增"遇到已存在的会被拒，让调用方改用 PUT。
+    """
+
+    role_id: int
+
+
 class LogisticsRateCreate(BaseModel):
     provider: str
     origin_region: str | None = None
@@ -88,14 +115,16 @@ class LogisticsRateCreate(BaseModel):
 
 class PricingRequest(BaseModel):
     sku_id: int
-    quantity: Decimal = Decimal(1)
+    # 数量必须为正：此前没有约束，quantity=0 会一路算出 0 元的"建议价"，
+    # 界面上看起来像正常的核价结果，实际是无意义数据。
+    quantity: Decimal = Field(default=Decimal(1), gt=0)
     customer_id: int | None = None
-    logistics_cost: Decimal | None = None
-    target_margin: Decimal | None = None
+    logistics_cost: Decimal | None = Field(default=None, ge=0)
+    target_margin: Decimal | None = Field(default=None, gt=0, le=1)
     """利润要求（比率口径）。与 target_profit_amount 二选一，同时给时以比率优先。"""
     target_profit_amount: Decimal | None = None
     """利润要求（绝对金额口径，单件）：PRD §13「利润要求」允许按金额提要求。"""
-    quoted_price: Decimal | None = None
+    quoted_price: Decimal | None = Field(default=None, gt=0)
     """quoted_price 有值时，接口会顺带判断这个报价是否需要审批。"""
 
     # PRD §13 核价输入：客户等级 / 国家 / 包装 / 物流方式 / 付款方式

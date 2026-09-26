@@ -49,12 +49,36 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        """参数校验失败。
+
+        **注意 `exc.errors()` 不能直接塞进 JSONResponse**：Pydantic v2 会把原始
+        输入放在每个错误的 `input` 字段里，如果那个输入是 `Decimal` / `date` /
+        自定义类型，`json.dumps` 会抛 `TypeError` —— 异常处理器自己抛异常，
+        结果是 **500 而不是 400**。
+
+        实测：`{"rate": 0}` 打到带 `Field(gt=0)` 的接口会 500。
+        任何带数值约束的入参（负数量、0 价格、超范围比率…）校验失败都会中招。
+
+        所以这里统一把错误明细转成"一定能序列化"的结构：
+        input 用 str() 呈现，够定位问题，也不会再炸。
+        """
+        details = [
+            {
+                "type": error.get("type"),
+                "loc": [str(part) for part in error.get("loc", ())],
+                "msg": error.get("msg"),
+                "input": (
+                    None if error.get("input") is None else str(error.get("input"))
+                ),
+            }
+            for error in exc.errors()
+        ]
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "code": ErrorCode.PARAM_ERROR,
                 "message": "参数校验失败",
-                "data": exc.errors(),
+                "data": details,
             },
         )
 
