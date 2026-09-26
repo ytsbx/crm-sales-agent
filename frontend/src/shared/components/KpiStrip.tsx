@@ -1,27 +1,39 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 
 export interface KpiItem {
   label: string
   value: ReactNode
   hint?: ReactNode
-  tone?: 'default' | 'warning' | 'error' | 'primary'
+  tone?: 'default' | 'primary' | 'success' | 'warning' | 'error'
   onClick?: () => void
 }
 
 const TONE_STYLE: Record<string, { color?: string; chip: string }> = {
   default: { chip: 'chip' },
   primary: { color: 'var(--crm-primary)', chip: 'chip chip-primary' },
+  success: { color: 'var(--crm-success)', chip: 'chip chip-success' },
   warning: { color: 'var(--crm-warning)', chip: 'chip chip-warning' },
   error: { color: 'var(--crm-error)', chip: 'chip chip-error' },
 }
 
 /** 列表页顶部的一排指标卡，与工作台的 KPI 卡同一套样式。 */
-export default function KpiStrip({ items, columns }: { items: KpiItem[]; columns?: number }) {
+export default function KpiStrip({
+  items,
+  columns,
+  style,
+}: {
+  items: KpiItem[]
+  columns?: number
+  style?: CSSProperties
+}) {
   if (!items.length) return null
   return (
     <div
       className="kpi-grid"
-      style={columns ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined}
+      style={{
+        ...(columns ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : null),
+        ...style,
+      }}
     >
       {items.map((item) => {
         const tone = TONE_STYLE[item.tone ?? 'default']

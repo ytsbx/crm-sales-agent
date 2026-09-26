@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { createProduct, listProducts, type ProductPayload } from '../../shared/api/product'
+import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Product } from '../../shared/types'
 
@@ -73,8 +74,7 @@ export default function ProductListPage() {
 
   return (
     <div className="page-container">
-      <h2 className="page-title">产品中心</h2>
-      <p className="page-subtitle">产品与 SKU 分开维护：产品是资料，SKU 才是可报价的最小单位</p>
+      <PageHeader title="产品中心" subtitle="产品与 SKU 分开维护：产品是资料，SKU 才是可报价的最小单位" />
 
       <div className="card-block">
         <div className="toolbar">

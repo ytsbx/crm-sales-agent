@@ -4,8 +4,9 @@ const KIND_COLOR: Record<string, string> = {
   audit: 'var(--crm-primary)',
   followup: 'var(--crm-success)',
   task: 'var(--crm-caution)',
-  stage: '#722ed1',
-  owner_change: '#eb2f96',
+  /* 阶段推进用色板的紫（secondary）；负责人变更是高信号事件，用品板里仅剩的 error 红 */
+  stage: 'var(--crm-secondary)',
+  owner_change: 'var(--crm-error)',
 }
 
 export default function Timeline({ events, loading }: { events: TimelineEvent[]; loading?: boolean }) {

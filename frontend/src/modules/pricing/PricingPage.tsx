@@ -4,6 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { Banner, Input, Select, Tag } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
+import PageHeader from '../../shared/components/PageHeader'
+import SectionCard from '../../shared/components/SectionCard'
 import { calculatePrice, listSkusForPricing } from '../../shared/api/pricing'
 import { getPublicConfig } from '../../shared/api/settings'
 
@@ -75,12 +77,13 @@ export default function PricingPage() {
 
   return (
     <div className="page-container">
-      <h2 className="page-title">核价</h2>
-      <p className="page-subtitle">填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价</p>
+      <PageHeader
+        title="核价"
+        subtitle="填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价"
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(280px, 1fr) minmax(300px, 1fr)', gap: 16 }}>
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>核价输入</div>
+        <SectionCard title="核价输入">
           <div style={{ display: 'grid', gap: 12 }}>
             <div>
               <div style={{ marginBottom: 4 }}>客户</div>
@@ -162,10 +165,9 @@ export default function PricingPage() {
               </>
             )}
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>成本结构（单件）</div>
+        <SectionCard title="成本结构（单件）">
           {resultQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>计算中…</div>}
           {result && (
             <>
@@ -189,10 +191,9 @@ export default function PricingPage() {
             </>
           )}
           {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>请先选择 SKU</div>}
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>核价结果</div>
+        <SectionCard title="核价结果">
           {result && (
             <>
               <Stat label="标准价" value={money(result.standard_price)} />
@@ -238,7 +239,7 @@ export default function PricingPage() {
             </>
           )}
           {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>选择 SKU 后自动计算</div>}
-        </div>
+        </SectionCard>
       </div>
 
       {result && result.warnings.length > 0 && (

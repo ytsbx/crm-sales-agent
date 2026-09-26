@@ -23,6 +23,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import { convertToOrder } from '../../shared/api/order'
 import DetailHeader from '../../shared/components/DetailHeader'
+import SectionCard from '../../shared/components/SectionCard'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 
@@ -382,8 +383,7 @@ export default function QuoteDetailPage() {
         </div>
       )}
 
-      <div className="card-block" style={{ marginBottom: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 12 }}>报价明细</div>
+      <SectionCard title="报价明细" style={{ marginBottom: 16 }}>
         <Table<QuoteItemRow>
           columns={itemColumns}
           dataSource={detail.items}
@@ -392,22 +392,23 @@ export default function QuoteDetailPage() {
           scroll={{ x: 1300 }}
           empty="没有明细"
         />
-      </div>
+      </SectionCard>
 
       {/* What-if：版本方案对比 + 边际测算（设计稿 Sales Copilot 右栏那个滑杆） */}
       <WhatIfPanel quoteId={quoteId} versionId={version.id} items={detail.items} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div className="card-block">
-          <div className="toolbar">
-            <div style={{ fontWeight: 600 }}>附加费用</div>
-            <div style={{ flex: 1 }} />
-            {canManage && editable && (
+        <SectionCard
+          title="附加费用"
+          extra={
+            canManage &&
+            editable && (
               <Button size="small" onClick={() => setChargeVisible(true)}>
                 添加费用
               </Button>
-            )}
-          </div>
+            )
+          }
+        >
           <Table<QuoteChargeRow>
             columns={[
               { title: '类型', dataIndex: 'type_label', width: 100 },
@@ -437,10 +438,9 @@ export default function QuoteDetailPage() {
             pagination={false}
             empty="没有附加费用"
           />
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>金额汇总</div>
+        <SectionCard title="金额汇总">
           <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--crm-text-3)' }}>商品小计</span>
@@ -472,15 +472,14 @@ export default function QuoteDetailPage() {
               <span>¥{(version.total_profit ?? 0).toFixed(2)}</span>
             </div>
           </div>
-        </div>
+        </SectionCard>
 
         {/* 客户决策关系图（设计稿报价详情右栏），报价要发给谁、谁能拍板都在这 */}
         <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" />
       </div>
 
       {detail.approval && (
-        <div className="card-block" style={{ marginTop: 16 }}>
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>审批记录</div>
+        <SectionCard title="审批记录" style={{ marginTop: 16 }}>
           <Table
             columns={[
               { title: '动作', dataIndex: 'action', width: 120,
@@ -499,7 +498,7 @@ export default function QuoteDetailPage() {
             rowKey="id"
             pagination={false}
           />
-        </div>
+        </SectionCard>
       )}
 
       <Modal
