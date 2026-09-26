@@ -32,6 +32,14 @@ import { listSkus } from '../../shared/api/product'
 import { completeTask, createTask, listTasks, type Task } from '../../shared/api/task'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import SectionCard from '../../shared/components/SectionCard'
+import AgentInsight from '../../shared/components/AgentInsight'
+import {
+  agentOpportunityAnalysis,
+  agentProductRecommendation,
+  agentQuoteDraft,
+  type AnalysisEnvelope,
+} from '../../shared/api/agent'
 import DetailField from '../common/DetailField'
 import FollowUpModal from '../common/FollowUpModal'
 import Timeline from '../common/Timeline'
@@ -61,6 +69,19 @@ export default function OpportunityDetailPage() {
 
   const [activeKey, setActiveKey] = useState('overview')
   const [followupVisible, setFollowupVisible] = useState(false)
+
+  // AI 分析（API §37 专用接口，需 agent:use）
+  const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
+  const aiMutation = useMutation({
+    mutationFn: (kind: 'analysis' | 'recommend' | 'draft') => {
+      if (kind === 'analysis') return agentOpportunityAnalysis({ opportunity_id: opportunityId })
+      if (kind === 'recommend')
+        return agentProductRecommendation({ opportunity_id: opportunityId })
+      return agentQuoteDraft({ opportunity_id: opportunityId })
+    },
+    onSuccess: (data) => setAiEnvelope(data),
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   const [stageVisible, setStageVisible] = useState(false)
   const [targetStage, setTargetStage] = useState<number | null>(null)
@@ -500,6 +521,43 @@ export default function OpportunityDetailPage() {
           )}
         </div>
       </div>
+
+      {can('agent:use') && (
+        <SectionCard
+          title="AI 分析"
+          style={{ marginTop: 16 }}
+          extra={
+            <>
+              <Button
+                size="small"
+                loading={aiMutation.isPending}
+                onClick={() => aiMutation.mutate('analysis')}
+              >
+                商机分析
+              </Button>
+              <Button
+                size="small"
+                loading={aiMutation.isPending}
+                onClick={() => aiMutation.mutate('recommend')}
+              >
+                产品推荐
+              </Button>
+              <Button
+                size="small"
+                loading={aiMutation.isPending}
+                onClick={() => aiMutation.mutate('draft')}
+              >
+                报价草稿建议
+              </Button>
+            </>
+          }
+        >
+          <AgentInsight
+            envelope={aiEnvelope}
+            empty="点右上角按钮运行：商机分析看阶段停留与风险；产品推荐按客户成交历史；报价草稿建议只给建议不落库"
+          />
+        </SectionCard>
+      )}
 
       <FollowUpModal
         visible={followupVisible}

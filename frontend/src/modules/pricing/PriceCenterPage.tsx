@@ -17,12 +17,14 @@ import {
   listPricePermissions,
   listPriceRules,
   listSkusForPricing,
+  listPricingHistory,
   savePricePermission,
   type CostRecord,
   type CustomerPriceRow,
   type LogisticsRateRow,
   type PricePermissionRow,
   type PriceRuleRow,
+  type PricingHistoryRow,
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -33,7 +35,36 @@ const TABS = [
   { tab: '客户特殊价', itemKey: 'customer-prices' },
   { tab: '价格权限', itemKey: 'permissions' },
   { tab: '运费费率', itemKey: 'logistics' },
+  { tab: '核价历史', itemKey: 'history' },
 ]
+
+/** 核价历史里会出现审计日志的 business_type（与后端 /pricing/history 的取值一致）。 */
+const HISTORY_TYPE_LABEL: Record<string, string> = {
+  quote: '报价单',
+  quote_item: '报价明细',
+  product_cost: '成本',
+  price_rule: '价格规则',
+  customer_price_rule: '客户特殊价',
+}
+
+/** 把 before/after 差异压成「字段: 旧 → 新」的短句，最多 4 条。 */
+function historySummary(row: PricingHistoryRow): string {
+  if (row.action === 'create') return '新增'
+  if (row.action === 'delete') return '删除'
+  const before = row.before ?? {}
+  const after = row.after ?? {}
+  const parts: string[] = []
+  for (const [key, value] of Object.entries(after)) {
+    if (parts.length >= 4) {
+      parts.push('…')
+      break
+    }
+    if (!(key in before) || String(before[key]) !== String(value)) {
+      parts.push(`${key}: ${before[key] ?? '-'} → ${value}`)
+    }
+  }
+  return parts.length ? parts.join('；') : '无字段变化'
+}
 
 const money = (value?: number | null) => (value === null || value === undefined ? '-' : `¥${value}`)
 
@@ -81,6 +112,8 @@ export default function PriceCenterPage() {
     min_charge: '',
     eta_days: '',
   })
+  const [historySkuId, setHistorySkuId] = useState<number | undefined>()
+  const [historyPage, setHistoryPage] = useState(1)
 
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const customersQuery = useQuery({
@@ -111,6 +144,12 @@ export default function PriceCenterPage() {
     queryKey: ['logistics-rates'],
     queryFn: listLogisticsRates,
     enabled: activeKey === 'logistics',
+  })
+  const historyQuery = useQuery({
+    queryKey: ['pricing-history', historyPage, historySkuId],
+    queryFn: () =>
+      listPricingHistory({ page: historyPage, page_size: 20, sku_id: historySkuId }),
+    enabled: activeKey === 'history',
   })
 
   const refreshAll = () => {
@@ -486,6 +525,74 @@ export default function PriceCenterPage() {
                 rowKey="id"
                 pagination={false}
                 empty="还没有运费费率"
+              />
+            </>
+          )}
+
+          {activeKey === 'history' && (
+            <>
+              <div className="toolbar">
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+                  报价、成本与价格规则的全部变更（取自审计日志），按 SKU 过滤可追溯一价一改
+                </div>
+                <div style={{ flex: 1 }} />
+                <Select
+                  placeholder="按 SKU 过滤（可空）"
+                  value={historySkuId}
+                  onChange={(value) => {
+                    setHistorySkuId(value as number | undefined)
+                    setHistoryPage(1)
+                  }}
+                  optionList={skuOptions}
+                  filter
+                  showClear
+                  style={{ width: 320 }}
+                />
+              </div>
+              <Table<PricingHistoryRow>
+                columns={[
+                  {
+                    title: '时间',
+                    dataIndex: 'created_at',
+                    width: 170,
+                    render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                  },
+                  {
+                    title: '类型',
+                    dataIndex: 'business_type',
+                    width: 110,
+                    render: (v: string | null) => HISTORY_TYPE_LABEL[v ?? ''] ?? v ?? '-',
+                  },
+                  { title: '对象 ID', dataIndex: 'business_id', width: 90 },
+                  {
+                    title: '动作',
+                    dataIndex: 'action',
+                    width: 90,
+                    render: (v: string) =>
+                      ({ create: '新增', update: '修改', delete: '删除' })[v] ?? v,
+                  },
+                  {
+                    title: '变更内容',
+                    dataIndex: 'after',
+                    render: (_: unknown, record: PricingHistoryRow) => historySummary(record),
+                  },
+                  {
+                    title: '操作人',
+                    dataIndex: 'operator_name',
+                    width: 110,
+                    render: (v: string | null) => v ?? '-',
+                  },
+                ]}
+                dataSource={historyQuery.data?.items ?? []}
+                loading={historyQuery.isLoading}
+                rowKey="id"
+                pagination={{
+                  currentPage: historyPage,
+                  pageSize: 20,
+                  total: historyQuery.data?.total ?? 0,
+                  onPageChange: setHistoryPage,
+                }}
+                empty="还没有变更记录"
               />
             </>
           )}

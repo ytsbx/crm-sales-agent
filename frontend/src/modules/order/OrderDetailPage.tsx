@@ -26,6 +26,9 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
+import SectionCard from '../../shared/components/SectionCard'
+import AgentInsight from '../../shared/components/AgentInsight'
+import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 
 const TABS = [
   { tab: '订单明细', itemKey: 'items' },
@@ -66,6 +69,14 @@ export default function OrderDetailPage() {
   const [generateDates, setGenerateDates] = useState<{ first?: Date; second?: Date }>({})
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
+
+  // AI 回款风险分析（API §37 专用接口，需 agent:use）
+  const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
+  const aiMutation = useMutation({
+    mutationFn: () => agentRiskAnalysis({ order_id: orderId }),
+    onSuccess: (data) => setAiEnvelope(data),
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   const orderQuery = useQuery({
     queryKey: ['order', orderId],
@@ -447,6 +458,23 @@ export default function OrderDetailPage() {
           )}
         </div>
       </div>
+
+      {can('agent:use') && (
+        <SectionCard
+          title="AI 分析"
+          style={{ marginTop: 16 }}
+          extra={
+            <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate()}>
+              回款风险
+            </Button>
+          }
+        >
+          <AgentInsight
+            envelope={aiEnvelope}
+            empty="点右上角按钮运行：统计逾期应收节点、金额与集中度，没配模型也能给出风险等级"
+          />
+        </SectionCard>
+      )}
 
       <Modal
         title="更新履约状态"

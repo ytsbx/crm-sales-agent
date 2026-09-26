@@ -7,6 +7,7 @@ import {
   attachCustomerTags,
   claimCustomer,
   createContact,
+  deduplicateContacts,
   deduplicateCustomers,
   detachCustomerTag,
   getCustomer,
@@ -16,6 +17,7 @@ import {
   releaseCustomerToPool,
   transferCustomer,
   updateCustomer,
+  type ContactDuplicateMatch,
   type CustomerPayload,
 } from '../../shared/api/customer'
 import { listUsers } from '../../shared/api/system'
@@ -26,6 +28,9 @@ import { listQuotes, type Quote } from '../../shared/api/quote'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Contact } from '../../shared/types'
 import DetailHeader from '../../shared/components/DetailHeader'
+import SectionCard from '../../shared/components/SectionCard'
+import AgentInsight from '../../shared/components/AgentInsight'
+import { agentCustomerSummary, agentFollowupSuggestion, type AnalysisEnvelope } from '../../shared/api/agent'
 import FollowUpModal from '../common/FollowUpModal'
 import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
@@ -61,6 +66,8 @@ export default function CustomerDetailPage() {
   const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'overview')
   const [contactModal, setContactModal] = useState(false)
   const [contactForm, setContactForm] = useState<Partial<Contact>>({ name: '', is_primary: false })
+  // 新建联系人时的查重结果；null = 还没查过
+  const [contactDupes, setContactDupes] = useState<ContactDuplicateMatch[] | null>(null)
   const [editModal, setEditModal] = useState(false)
   const [editForm, setEditForm] = useState<CustomerPayload>({ name: '' })
   const [transferModal, setTransferModal] = useState(false)
@@ -105,9 +112,33 @@ export default function CustomerDetailPage() {
       Toast.success('联系人已添加')
       setContactModal(false)
       setContactForm({ name: '', is_primary: false })
+      setContactDupes(null)
       void queryClient.invalidateQueries({ queryKey: ['contacts', customerId] })
       void queryClient.invalidateQueries({ queryKey: ['customer', customerId] })
     },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // 联系人查重（API §8 POST /contacts/deduplicate）：按当前弹窗里已填的姓名/手机/邮箱查
+  const contactDupMutation = useMutation({
+    mutationFn: () =>
+      deduplicateContacts({
+        name: contactForm.name ?? undefined,
+        mobile: contactForm.mobile ?? undefined,
+        email: contactForm.email ?? undefined,
+      }),
+    onSuccess: (data) => setContactDupes(data.matches),
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // AI 分析（API §37 专用接口，需 agent:use）：概览页可一键运行
+  const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
+  const aiMutation = useMutation({
+    mutationFn: (kind: 'summary' | 'followup') =>
+      kind === 'summary'
+        ? agentCustomerSummary({ customer_id: customerId })
+        : agentFollowupSuggestion({ customer_id: customerId }),
+    onSuccess: (data) => setAiEnvelope(data),
     onError: (error: Error) => Toast.error(error.message),
   })
 
@@ -403,7 +434,14 @@ export default function CustomerDetailPage() {
               <div>
                 <div className="toolbar">
                   <div style={{ flex: 1 }} />
-                  <Button theme="solid" onClick={() => setContactModal(true)}>
+                  <Button
+                    theme="solid"
+                    onClick={() => {
+                      setContactForm({ name: '', is_primary: false })
+                      setContactDupes(null)
+                      setContactModal(true)
+                    }}
+                  >
                     新建联系人
                   </Button>
                 </div>
@@ -556,6 +594,28 @@ export default function CustomerDetailPage() {
         </div>
       </div>
 
+      {activeKey === 'overview' && can('agent:use') && (
+        <SectionCard
+          title="AI 分析"
+          style={{ marginTop: 16 }}
+          extra={
+            <>
+              <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('summary')}>
+                客户总结
+              </Button>
+              <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('followup')}>
+                跟进建议
+              </Button>
+            </>
+          }
+        >
+          <AgentInsight
+            envelope={aiEnvelope}
+            empty="点右上角按钮运行：客户总结汇总商机、报价、订单与回款全貌；跟进建议按规则给出下一步动作"
+          />
+        </SectionCard>
+      )}
+
       <Modal
         title="新建联系人"
         visible={contactModal}
@@ -601,6 +661,44 @@ export default function CustomerDetailPage() {
               value={contactForm.email ?? ''}
               onChange={(value) => setContactForm({ ...contactForm, email: value })}
             />
+          </div>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <span style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>疑似重复检查</span>
+              <Button
+                size="small"
+                loading={contactDupMutation.isPending}
+                onClick={() => contactDupMutation.mutate()}
+              >
+                按已填内容查重
+              </Button>
+            </div>
+            {contactDupes !== null &&
+              (contactDupes.length === 0 ? (
+                <div style={{ color: 'var(--crm-success)', fontSize: 13 }}>没有发现疑似重复的联系人</div>
+              ) : (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {contactDupes.map((match) => (
+                    <div
+                      key={match.id}
+                      style={{
+                        fontSize: 13,
+                        padding: '6px 10px',
+                        border: '1px solid var(--crm-warning-soft)',
+                        borderRadius: 'var(--crm-radius-sm)',
+                        background: 'var(--crm-surface-low)',
+                      }}
+                    >
+                      相似度 {match.score}%：{match.name}
+                      {match.mobile ? ` · ${match.mobile}` : ''}
+                      {match.reasons.length ? `（${match.reasons.join('、')}）` : ''}
+                    </div>
+                  ))}
+                  <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                    如确认是同一人，建议取消后到已有客户下补录；确实不同再继续保存。
+                  </div>
+                </div>
+              ))}
           </div>
         </div>
       </Modal>

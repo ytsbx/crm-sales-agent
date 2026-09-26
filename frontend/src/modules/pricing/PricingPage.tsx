@@ -1,13 +1,24 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
-import { Banner, Input, Select, Tag } from '@douyinfe/semi-ui'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { Banner, Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
-import { calculatePrice, listSkusForPricing } from '../../shared/api/pricing'
+import {
+  calculatePrice,
+  checkPricePermission,
+  listSkusForPricing,
+  simulatePricing,
+  type PricePermissionVerdict,
+  type PricingScenario,
+  type PricingSimulationResult,
+} from '../../shared/api/pricing'
 import { getPublicConfig } from '../../shared/api/settings'
+import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
+import { usePermissions } from '../../shared/hooks/permissions'
+import AgentInsight from '../../shared/components/AgentInsight'
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'primary' | 'danger' | 'muted' }) {
   const color = tone === 'primary' ? 'var(--crm-primary)' : tone === 'danger' ? 'var(--crm-error)' : 'var(--crm-text)'
@@ -67,6 +78,52 @@ export default function PricingPage() {
     queryKey: ['pricing', payload],
     queryFn: () => calculatePrice(payload),
     enabled: Boolean(skuId),
+  })
+
+  // 权限校验：同一个 payload，多回答"这个价能不能自主报、不行要走到哪一级"
+  const [verdictVisible, setVerdictVisible] = useState(false)
+  const [verdict, setVerdict] = useState<PricePermissionVerdict | null>(null)
+  const checkMutation = useMutation({
+    mutationFn: () => checkPricePermission(payload),
+    onSuccess: (data) => {
+      setVerdict(data)
+      setVerdictVisible(true)
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // 报价模拟：一次算多个候选价；留空候选价时后端自动试算建议价 / 授权下限 / 保护价
+  const [candidatesText, setCandidatesText] = useState('')
+  const [simulation, setSimulation] = useState<PricingSimulationResult | null>(null)
+  const simulateMutation = useMutation({
+    mutationFn: () =>
+      simulatePricing({
+        base: payload,
+        candidates: candidatesText
+          .split(/,|，/)
+          .map((item) => Number(item.trim()))
+          .filter((item) => Number.isFinite(item) && item > 0),
+      }),
+    onSuccess: (data) => setSimulation(data),
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // AI 核价解读（API §37，需 agent:use）：把核价结果翻译成可执行的判断
+  const { can } = usePermissions()
+  const [aiVisible, setAiVisible] = useState(false)
+  const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
+  const aiMutation = useMutation({
+    mutationFn: () =>
+      agentPricingAnalysis({
+        sku_id: payload.sku_id!,
+        quantity: payload.quantity,
+        customer_id: customerId,
+      }),
+    onSuccess: (data) => {
+      setAiEnvelope(data)
+      setAiVisible(true)
+    },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
   const result = resultQuery.data
@@ -193,7 +250,29 @@ export default function PricingPage() {
           {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>请先选择 SKU</div>}
         </SectionCard>
 
-        <SectionCard title="核价结果">
+        <SectionCard
+          title="核价结果"
+          extra={
+            <>
+              {can('agent:use') && (
+                <Button
+                  disabled={!skuId}
+                  loading={aiMutation.isPending}
+                  onClick={() => aiMutation.mutate()}
+                >
+                  AI 解读
+                </Button>
+              )}
+              <Button
+                disabled={!skuId}
+                loading={checkMutation.isPending}
+                onClick={() => checkMutation.mutate()}
+              >
+                权限校验
+              </Button>
+            </>
+          }
+        >
           {result && (
             <>
               <Stat label="标准价" value={money(result.standard_price)} />
@@ -242,6 +321,76 @@ export default function PricingPage() {
         </SectionCard>
       </div>
 
+      {skuId && (
+        <SectionCard
+          title="报价模拟（What-if）"
+          style={{ marginTop: 16 }}
+          extra={
+            <>
+              <Input
+                placeholder="候选价，逗号分隔；留空用关键点位"
+                value={candidatesText}
+                onChange={setCandidatesText}
+                style={{ width: 260 }}
+              />
+              <Button
+                theme="solid"
+                loading={simulateMutation.isPending}
+                onClick={() => simulateMutation.mutate()}
+              >
+                开始模拟
+              </Button>
+            </>
+          }
+        >
+          {!simulation ? (
+            <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+              按上面同一组条件一次算多个候选价，看清「能让到哪、再低要审批」；留空候选价时自动试算建议价、授权下限、公司保护价三个点位
+            </div>
+          ) : (
+            <Table<PricingScenario>
+              columns={[
+                {
+                  title: '候选报价',
+                  dataIndex: 'quoted_price',
+                  width: 120,
+                  render: (v: number | null) => money(v),
+                },
+                { title: '利润', dataIndex: 'profit', width: 110, render: (v: number | null) => money(v) },
+                {
+                  title: '利润率',
+                  dataIndex: 'profit_rate',
+                  width: 110,
+                  render: (v: number | null) => percent(v),
+                },
+                {
+                  title: '订单金额',
+                  dataIndex: 'amount',
+                  width: 130,
+                  render: (v: number | null) => (v === null ? '-' : `¥${v.toLocaleString('zh-CN')}`),
+                },
+                {
+                  title: '结论',
+                  dataIndex: 'approval_required',
+                  render: (_: unknown, record: PricingScenario) =>
+                    record.approval_required ? (
+                      <span style={{ color: 'var(--crm-error)', fontSize: 13 }}>
+                        需审批：{record.reasons.join('；') || '超出权限'}
+                      </span>
+                    ) : (
+                      <Tag color="green">可自主报价</Tag>
+                    ),
+                },
+              ]}
+              dataSource={simulation.scenarios}
+              rowKey="quoted_price"
+              pagination={false}
+              empty="没有可模拟的价格"
+            />
+          )}
+        </SectionCard>
+      )}
+
       {result && result.warnings.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <Banner
@@ -251,6 +400,71 @@ export default function PricingPage() {
           />
         </div>
       )}
+
+      <Modal
+        title="报价权限校验"
+        visible={verdictVisible}
+        onCancel={() => setVerdictVisible(false)}
+        footer={null}
+        width={520}
+      >
+        {verdict && (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              {verdict.allowed ? (
+                <Tag color="green" size="large">
+                  可以自主报价
+                </Tag>
+              ) : (
+                <Tag color="red" size="large">
+                  需要审批
+                </Tag>
+              )}
+              <span style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+                报 {verdict.quoted_price ?? '-'} 元 · {verdict.currency}
+              </span>
+            </div>
+            {verdict.reasons.length > 0 && (
+              <div style={{ color: 'var(--crm-error)', fontSize: 13, display: 'grid', gap: 4 }}>
+                {verdict.reasons.map((reason) => (
+                  <div key={reason}>· {reason}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 13, color: 'var(--crm-text-2)', display: 'grid', gap: 6 }}>
+              <div>
+                最低允许价（你的授权）：{money(verdict.minimum_price)}　·　公司最低保护价：
+                {money(verdict.protection_price)}
+              </div>
+              <div>
+                授权最低利润率：
+                {verdict.authorized_min_margin != null ? percent(verdict.authorized_min_margin) : '-'}
+                （你的角色：{verdict.my_roles.join('、')}）
+              </div>
+              <div>
+                按这个价：利润 {money(verdict.profit)}，利润率 {percent(verdict.profit_rate)}
+              </div>
+              <div>
+                {verdict.approval_required
+                  ? verdict.can_approve
+                    ? '你自己有审批权，提交后可自行批准'
+                    : '需要提交给有报价审批权的人'
+                  : '无需审批，可以直接对外发送'}
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        title="AI 核价解读"
+        visible={aiVisible}
+        onCancel={() => setAiVisible(false)}
+        footer={null}
+        width={560}
+      >
+        <AgentInsight envelope={aiEnvelope} />
+      </Modal>
     </div>
   )
 }
