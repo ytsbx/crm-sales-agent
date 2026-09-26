@@ -12,6 +12,7 @@ import {
   type LogisticsRouteRow,
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
+import SectionCard from '../../shared/components/SectionCard'
 
 /**
  * 物流试算（PRD §14 / 03-API §19）。
@@ -233,7 +234,7 @@ export default function LogisticsPage() {
       <Tabs activeKey={activeKey} onChange={setActiveKey} type="line">
         <Tabs.TabPane tab="试算" itemKey="calc">
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 380px) 1fr', gap: 16, marginTop: 16 }}>
-            <div className="card-block">
+            <SectionCard>
               <div className="card-title">试算条件</div>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
@@ -314,9 +315,9 @@ export default function LogisticsPage() {
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>请先选择 SKU 并填写大于 0 的数量</div>
                 )}
               </div>
-            </div>
+            </SectionCard>
 
-            <div className="card-block">
+            <SectionCard>
               <div className="card-title">试算结果</div>
 
               {!canCalc && (
@@ -374,7 +375,7 @@ export default function LogisticsPage() {
                   />
                 </>
               )}
-            </div>
+            </SectionCard>
           </div>
         </Tabs.TabPane>
 

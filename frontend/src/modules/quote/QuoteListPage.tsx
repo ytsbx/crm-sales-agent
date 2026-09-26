@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
+import SectionCard from '../../shared/components/SectionCard'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
@@ -68,14 +69,14 @@ export default function QuoteListPage() {
     {
       title: '报价单号',
       dataIndex: 'quote_no',
-      width: 170,
+      width: 160,
       render: (text: string, record: Quote) => (
         <Link to={`/quotes/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
           {text}
         </Link>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 230, render: (v: string | null) => v ?? '-' },
+    { title: '客户', dataIndex: 'customer_name', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '商机', dataIndex: 'opportunity_title', render: (v: string | null) => v ?? '-' },
     {
       title: '当前版本',
@@ -129,7 +130,7 @@ export default function QuoteListPage() {
         subtitle="从商机生成报价，明细自动按核价建议价带入；超出权限的版本必须审批后才能发送"
       />
 
-      <div className="card-block">
+      <SectionCard>
         <div className="toolbar">
           <Input
             placeholder="搜索报价单号"
@@ -188,7 +189,7 @@ export default function QuoteListPage() {
             },
           }}
         />
-      </div>
+      </SectionCard>
 
       <Modal
         title="新建报价"

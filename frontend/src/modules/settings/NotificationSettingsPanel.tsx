@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Switch, Toast } from '@douyinfe/semi-ui'
 
+import SectionCard from '../../shared/components/SectionCard'
 import {
   getNotificationSettings,
   updateNotificationSettings,
@@ -59,7 +60,7 @@ export default function NotificationSettingsPanel() {
 
   return (
     <div style={{ display: 'grid', gap: 16, maxWidth: 720 }}>
-      <div className="card-block">
+      <SectionCard>
         <div style={{ fontWeight: 600, marginBottom: 12 }}>通知渠道</div>
         <div style={{ display: 'grid', gap: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -103,9 +104,9 @@ export default function NotificationSettingsPanel() {
             description="企微渠道已开启，但后端还没配置企微应用（缺 WECOM_AGENT_ID）。当前投递会被标为「未投递」并写明原因，配好密钥后重启后端即可生效。"
           />
         )}
-      </div>
+      </SectionCard>
 
-      <div className="card-block">
+      <SectionCard>
         <div style={{ fontWeight: 600, marginBottom: 4 }}>企微通知范围</div>
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12 }}>
           只有勾选的类型才会往企微发；站内通知始终全发。关掉某类可以避免企微被刷屏。
@@ -122,7 +123,7 @@ export default function NotificationSettingsPanel() {
             </div>
           ))}
         </div>
-      </div>
+      </SectionCard>
 
       <div style={{ display: 'flex', gap: 10 }}>
         <Button

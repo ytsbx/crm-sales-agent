@@ -11,6 +11,7 @@ import {
 } from '../../shared/api/quote'
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
+import SectionCard from '../../shared/components/SectionCard'
 
 const TABS = [
   { tab: '待我审批', itemKey: 'pending' },
@@ -132,7 +133,7 @@ export default function ApprovalPage() {
         subtitle="业务员报价低于自己的价格权限时，必须经审批才能对外发送；审批只看超出权限的部分"
       />
 
-      <div className="card-block">
+      <SectionCard>
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
         <div style={{ marginTop: 16 }}>
           <Table<ApprovalRow>
@@ -145,7 +146,7 @@ export default function ApprovalPage() {
             scroll={{ x: 1300 }}
           />
         </div>
-      </div>
+      </SectionCard>
 
       <Modal
         title="拒绝报价"

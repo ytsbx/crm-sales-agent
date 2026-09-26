@@ -41,6 +41,7 @@ import { Button, Input, Modal, Popconfirm, Select, Switch, Toast } from '@douyin
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
+import SectionCard from '../../shared/components/SectionCard'
 
 const TABS = [
   { tab: '用户', itemKey: 'users' },
@@ -541,7 +542,7 @@ export default function SettingsPage() {
         title="系统设置"
         subtitle="用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改"
       />
-      <div className="card-block">
+      <SectionCard>
         <Tabs
           type="line"
           activeKey={activeKey}
@@ -926,7 +927,7 @@ export default function SettingsPage() {
             </div>
           )}
         </div>
-      </div>
+      </SectionCard>
 
       {/* 用户新增/编辑 */}
       <Modal

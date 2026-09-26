@@ -15,6 +15,7 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import OpportunityBoard from './OpportunityBoard'
+import SectionCard from '../../shared/components/SectionCard'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -166,7 +167,7 @@ export default function OpportunityListPage() {
           ))}
       </div>
 
-      <div className="card-block">
+      <SectionCard>
         <div className="toolbar">
           <Input
             placeholder="搜索商机名称"
@@ -265,7 +266,7 @@ export default function OpportunityListPage() {
             }}
           />
         )}
-      </div>
+      </SectionCard>
 
       <Modal
         title="新建商机"

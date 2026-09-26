@@ -33,6 +33,7 @@ import { listUsers } from '../../shared/api/system'
 import FollowUpModal from '../common/FollowUpModal'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 const STATUS_OPTIONS = [
   { value: 'pending', label: '待分配' },
@@ -273,7 +274,7 @@ export default function LeadListPage() {
     <div className="page-container">
       <PageHeader title="线索中心" subtitle="线索独立存在，转化时才产生客户、联系人和商机" />
 
-      <div className="card-block">
+      <SectionCard>
         <div className="toolbar">
           <Input
             placeholder="搜索线索 / 公司 / 联系人 / 手机"
@@ -341,7 +342,7 @@ export default function LeadListPage() {
             },
           }}
         />
-      </div>
+      </SectionCard>
 
       <Modal
         title="新建线索"
