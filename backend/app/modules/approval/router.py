@@ -194,7 +194,7 @@ async def approve(
     if quote:
         quote.status = "approved"
     if instance.applicant_id:
-        notification_service.notify(
+        await notification_service.notify(
             session,
             user_id=instance.applicant_id,
             type_="approval",
@@ -213,6 +213,7 @@ async def approve(
         ip=client_ip(request),
     )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(None, "已通过，业务员可以发送该报价")
 
 
@@ -246,7 +247,7 @@ async def reject(
     if quote:
         quote.status = "approval_rejected"
     if instance.applicant_id:
-        notification_service.notify(
+        await notification_service.notify(
             session,
             user_id=instance.applicant_id,
             type_="approval",
@@ -265,6 +266,7 @@ async def reject(
         ip=client_ip(request),
     )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(None, "已拒绝，业务员需要调整价格后重新提交")
 
 

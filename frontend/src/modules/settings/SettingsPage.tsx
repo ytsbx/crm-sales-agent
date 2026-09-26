@@ -39,12 +39,14 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Switch, Toast } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
+import NotificationSettingsPanel from './NotificationSettingsPanel'
 
 const TABS = [
   { tab: '用户', itemKey: 'users' },
   { tab: '角色与数据范围', itemKey: 'roles' },
   { tab: '部门', itemKey: 'departments' },
   { tab: '客户标签', itemKey: 'tags' },
+  { tab: '通知', itemKey: 'notifications' },
   { tab: '审计日志', itemKey: 'audit' },
   { tab: '业务规则', itemKey: 'rules' },
 ]
@@ -715,6 +717,7 @@ export default function SettingsPage() {
               />
             </>
           )}
+          {activeKey === 'notifications' && <NotificationSettingsPanel />}
           {activeKey === 'audit' && (
             <Table<AuditLogRow>
               columns={[

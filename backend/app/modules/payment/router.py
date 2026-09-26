@@ -292,7 +292,7 @@ async def confirm_payment(
         await svc.recalc_plan(session, plan)
     order = await session.get(SalesOrder, record.order_id)
     if order and order.owner_id:
-        notification_service.notify(
+        await notification_service.notify(
             session,
             user_id=order.owner_id,
             type_="payment",
@@ -310,8 +310,12 @@ async def confirm_payment(
         after={"comment": payload.comment},
         ip=client_ip(request),
     )
+    # 先序列化取值，再 commit：commit 之后会话里的 ORM 对象会过期，
+    # 那时再取属性可能触发额外的同步 IO（异步会话里会报 MissingGreenlet）。
+    serialized = await svc.serialize_payment(session, record)
     await session.commit()
-    return ok(await svc.serialize_payment(session, record), "财务已确认回款")
+    await notification_service.dispatch_pending(session)
+    return ok(serialized, "财务已确认回款")
 
 
 @router.post("/payments/{payment_id}/reject")

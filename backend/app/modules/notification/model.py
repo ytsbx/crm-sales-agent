@@ -1,7 +1,9 @@
-"""站内通知。
+"""站内通知与企业微信通知渠道。
 
-企业微信通知属于集成层，等 wecom 通道接进来后再补；
-这一版先把站内通知做扎实：谁在什么时候该看到什么。
+投递状态为什么要落库（PRD §25 要求"站内 + 企微"两个渠道）：
+- 只看站内通知，无法回答"这条到底有没有发到企微"；
+- 企微投递可能因为对方没配 userid、应用没发消息权限而失败，
+  失败原因必须留在同一行上，否则运营只能靠猜。
 """
 
 from datetime import datetime
@@ -11,10 +13,32 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin
 
+#: 通知渠道
+CHANNEL_INAPP = "inapp"
+CHANNEL_BOTH = "both"
+
+CHANNEL_LABEL = {
+    CHANNEL_INAPP: "仅站内",
+    CHANNEL_BOTH: "站内 + 企业微信",
+}
+
+#: 企微投递状态。NULL 表示"没走企微渠道"（而不是"发失败了"），
+#: 这样一看字段就知道是没发还是发失败。
+WECOM_STATUS_LABEL = {
+    "pending": "待投递",
+    "sent": "已投递",
+    "skipped": "未投递（未配置或未绑定企微）",
+    "failed": "投递失败",
+}
+
 
 class Notification(Base, IdMixin):
     __tablename__ = "notifications"
-    __table_args__ = (Index("ix_notifications_user_read", "user_id", "read_at"),)
+    __table_args__ = (
+        Index("ix_notifications_user_read", "user_id", "read_at"),
+        # 待投递的企微通知要能被扫出来
+        Index("ix_notifications_wecom_status", "wecom_status"),
+    )
 
     user_id: Mapped[int] = mapped_column(BigInteger)
     type: Mapped[str] = mapped_column(String(32))
@@ -22,6 +46,14 @@ class Notification(Base, IdMixin):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     business_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     business_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 本次通知实际走哪些渠道
+    channel: Mapped[str] = mapped_column(String(16), default=CHANNEL_INAPP)
+    # 企微投递状态与失败原因（没走企微渠道时为 NULL）
+    wecom_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    wecom_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    wecom_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(), server_default=func.now(),

@@ -118,7 +118,7 @@ async def create_task(
     session.add(task)
     await session.flush()
     if task.owner_id and task.owner_id != user.id:
-        notification_service.notify(
+        await notification_service.notify(
             session,
             user_id=task.owner_id,
             type_="task",
@@ -137,6 +137,8 @@ async def create_task(
         ip=client_ip(request),
     )
     await session.commit()
+    # 业务已经落库，再投企微：投递失败不影响任务创建，失败原因记在通知行上
+    await notification_service.dispatch_pending(session)
     return ok(serialize(task, user.name), "任务已创建")
 
 

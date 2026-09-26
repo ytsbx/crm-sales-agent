@@ -81,6 +81,19 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "trade_mode": {"mode": "domestic"},
     "default_currency": {"code": "CNY"},
     "export_tax_refund_rate": {"ratio": 0.0},
+    # 通知渠道（PRD §25 要求"站内 + 企业微信"）。
+    # 默认只开站内：企微投递依赖 WECOM_AGENT_ID 与每个用户的 wecom_userid，
+    # 没配好之前开成默认会每次都失败，反而把"真失败"淹掉。
+    "notification_channels": {
+        "inapp_enabled": True,
+        "wecom_enabled": False,
+        # 哪几类通知走企微；站内通知始终全发
+        "wecom_events": {
+            "approval": True,
+            "task": True,
+            "payment": True,
+        },
+    },
 }
 
 

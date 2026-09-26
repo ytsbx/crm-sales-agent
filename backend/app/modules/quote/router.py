@@ -590,6 +590,7 @@ async def submit_approval(
         ip=client_ip(request),
     )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(
         {
             "approval_required": required,

@@ -265,6 +265,7 @@ async function main() {
     { path: '/settings', name: '18-settings' },
     { path: '/settings?tab=rules', name: '19-settings-rules' },
     { path: '/settings?tab=tags', name: '23-settings-tags' },
+    { path: '/settings?tab=notifications', name: '31-settings-notifications' },
     { path: '/settings?tab=roles', name: '24-settings-roles' },
     { path: '/settings?tab=departments', name: '25-settings-departments' },
     { path: '/agent', name: '20-agent' },
