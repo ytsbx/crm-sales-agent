@@ -15,6 +15,8 @@ import {
   type SkuPayload,
 } from '../../shared/api/product'
 import { usePermissions } from '../../shared/hooks/permissions'
+import DetailHeader from '../../shared/components/DetailHeader'
+import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 
 /** SKU 表单用字符串保存，提交时再转数字——避免半成品输入被强转成 NaN。 */
@@ -179,13 +181,23 @@ export default function ProductDetailPage() {
 
   return (
     <div className="page-container">
-      <div className="card-block" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-          <span style={{ fontSize: 20, fontWeight: 600 }}>{product.name}</span>
-          {product.product_line && <Tag color="blue">{product.product_line}</Tag>}
-          {product.category && <Tag>{product.category}</Tag>}
-          <div style={{ flex: 1 }} />
-          {canManage && (
+      <DetailHeader
+        title={product.name}
+        tags={
+          <>
+            {product.product_line && <Tag color="blue">{product.product_line}</Tag>}
+            {product.category && <Tag>{product.category}</Tag>}
+          </>
+        }
+        meta={
+          <>
+            <span>品牌：{product.brand ?? '-'}</span>
+            <span>SKU 数：{product.sku_count}</span>
+            <span>创建时间：{new Date(product.created_at).toLocaleString('zh-CN')}</span>
+          </>
+        }
+        extra={
+          canManage && (
             <>
               <Button
                 onClick={() => {
@@ -205,28 +217,24 @@ export default function ProductDetailPage() {
                 <Button type="danger">删除产品</Button>
               </Popconfirm>
             </>
-          )}
-        </div>
-        <div style={{ color: 'var(--crm-text-2)', fontSize: 13, display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-          <span>品牌：{product.brand ?? '-'}</span>
-          <span>SKU 数：{product.sku_count}</span>
-          <span>创建时间：{new Date(product.created_at).toLocaleString('zh-CN')}</span>
-        </div>
+          )
+        }
+      >
         {product.description && (
-          <div style={{ marginTop: 12, color: 'var(--crm-text-2)', fontSize: 13 }}>{product.description}</div>
+          <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>{product.description}</div>
         )}
-      </div>
+      </DetailHeader>
 
-      <div className="card-block">
-        <div className="toolbar">
-          <div style={{ fontWeight: 600 }}>SKU 列表</div>
-          <div style={{ flex: 1 }} />
-          {canManage && (
+      <SectionCard
+        title="SKU 列表"
+        extra={
+          canManage && (
             <Button theme="solid" onClick={() => setSkuVisible(true)}>
               新建 SKU
             </Button>
-          )}
-        </div>
+          )
+        }
+      >
         <Table<Sku>
           columns={skuColumns}
           dataSource={skuQuery.data ?? []}
@@ -236,7 +244,7 @@ export default function ProductDetailPage() {
           empty="还没有 SKU，先加一个"
           scroll={{ x: 1200 }}
         />
-      </div>
+      </SectionCard>
 
       <Modal
         title="编辑产品资料"

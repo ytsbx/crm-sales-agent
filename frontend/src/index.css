@@ -271,7 +271,8 @@ a {
 }
 
 .app-header {
-  height: 64px;
+  /* 设计稿顶栏是 h-14 = 56px（_2/code.html），不是 Semi 默认的 64 */
+  height: 56px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -409,6 +410,11 @@ a {
 .chip-primary {
   background: var(--crm-primary-soft);
   color: var(--crm-primary);
+}
+
+.chip-success {
+  background: var(--semi-color-success-light-default);
+  color: var(--crm-success);
 }
 
 .chip-warning {

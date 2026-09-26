@@ -22,6 +22,7 @@ import {
 } from '../../shared/api/system'
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
 import { listAuditLogs, type AuditLogRow } from '../../shared/api/analytics'
+import PageHeader from '../../shared/components/PageHeader'
 import {
   listPublicPoolRules,
   listSettings,
@@ -344,7 +345,7 @@ export default function SettingsPage() {
   if (!isAdmin) {
     return (
       <div className="page-container">
-        <h2 className="page-title">系统设置</h2>
+        <PageHeader title="系统设置" />
         <div className="placeholder-box">只有管理员可以查看用户、角色和部门配置。</div>
       </div>
     )
@@ -536,10 +537,10 @@ export default function SettingsPage() {
 
   return (
     <div className="page-container">
-      <h2 className="page-title">系统设置</h2>
-      <p className="page-subtitle">
-        用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改
-      </p>
+      <PageHeader
+        title="系统设置"
+        subtitle="用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改"
+      />
       <div className="card-block">
         <Tabs
           type="line"

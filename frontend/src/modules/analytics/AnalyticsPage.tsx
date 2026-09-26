@@ -1,6 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { Table } from '@douyinfe/semi-ui'
 
+import PageHeader from '../../shared/components/PageHeader'
+import KpiStrip from '../../shared/components/KpiStrip'
+import SectionCard from '../../shared/components/SectionCard'
 import {
   getCustomerStats,
   getLeadStats,
@@ -47,16 +50,6 @@ function BarList({ data, unit }: { data: NameValue[]; unit?: string }) {
   )
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="kpi-card">
-      <div className="kpi-label">{label}</div>
-      <div className="kpi-value">{value}</div>
-      {hint && <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>{hint}</div>}
-    </div>
-  )
-}
-
 export default function AnalyticsPage() {
   const opportunityQuery = useQuery({ queryKey: ['an-opportunities'], queryFn: getOpportunityStats })
   const quoteQuery = useQuery({ queryKey: ['an-quotes'], queryFn: getQuoteStats })
@@ -82,73 +75,70 @@ export default function AnalyticsPage() {
 
   return (
     <div className="page-container">
-      <h2 className="page-title">数据分析</h2>
-      <p className="page-subtitle">数据从业务流程实时聚合，不做二次录入</p>
+      <PageHeader title="数据分析" subtitle="数据从业务流程实时聚合，不做二次录入" />
 
-      <div className="kpi-grid">
-        <Stat
-          label="商机成交率"
-          value={`${((opportunity?.win_rate ?? 0) * 100).toFixed(0)}%`}
-          hint={`成交 ${opportunity?.won_count ?? 0} / 失单 ${opportunity?.loss_count ?? 0}`}
-        />
-        <Stat
-          label="报价接受率"
-          value={`${((quote?.accept_rate ?? 0) * 100).toFixed(0)}%`}
-          hint={`报价单 ${quote?.quote_count ?? 0} 张`}
-        />
-        <Stat
-          label="平均让价幅度"
-          value={`${((quote?.average_discount ?? 0) * 100).toFixed(2)}%`}
-          hint={`平均版本数 ${quote?.average_versions ?? 0}`}
-        />
-        <Stat
-          label="低价审批比例"
-          value={`${((quote?.approval_rate ?? 0) * 100).toFixed(0)}%`}
-          hint={`需审批 ${quote?.approval_required_count ?? 0} 次`}
-        />
-        <Stat
-          label="应收合计"
-          value={money(receivable?.plan_amount)}
-          hint={`已收 ${money(receivable?.received_amount)}`}
-        />
-        <Stat
-          label="未回款"
-          value={money(receivable?.unreceived_amount)}
-          hint={`逾期节点 ${receivable?.overdue_count ?? 0}`}
-        />
-        <Stat
-          label="线索转化率"
-          value={`${((lead?.conversion_rate ?? 0) * 100).toFixed(0)}%`}
-          hint={
-            lead?.average_conversion_days != null
-              ? `平均 ${lead.average_conversion_days} 天转化`
-              : `线索 ${lead?.total ?? 0} 条`
-          }
-        />
-        <Stat
-          label="客户活跃 / 沉睡"
-          value={`${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`}
-          hint={`复购客户 ${customer?.repeat_customer_count ?? 0} 家`}
-        />
-        <Stat
-          label="平均成交周期"
-          value={cycle?.average_days != null ? `${cycle.average_days} 天` : '-'}
-          hint={
-            cycle?.won_with_history
+      <KpiStrip
+        items={[
+          {
+            label: '商机成交率',
+            value: `${((opportunity?.win_rate ?? 0) * 100).toFixed(0)}%`,
+            hint: `成交 ${opportunity?.won_count ?? 0} / 失单 ${opportunity?.loss_count ?? 0}`,
+          },
+          {
+            label: '报价接受率',
+            value: `${((quote?.accept_rate ?? 0) * 100).toFixed(0)}%`,
+            hint: `报价单 ${quote?.quote_count ?? 0} 张`,
+          },
+          {
+            label: '平均让价幅度',
+            value: `${((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
+            hint: `平均版本数 ${quote?.average_versions ?? 0}`,
+          },
+          {
+            label: '低价审批比例',
+            value: `${((quote?.approval_rate ?? 0) * 100).toFixed(0)}%`,
+            hint: `需审批 ${quote?.approval_required_count ?? 0} 次`,
+          },
+          {
+            label: '应收合计',
+            value: money(receivable?.plan_amount),
+            hint: `已收 ${money(receivable?.received_amount)}`,
+          },
+          {
+            label: '未回款',
+            value: money(receivable?.unreceived_amount),
+            hint: `逾期节点 ${receivable?.overdue_count ?? 0}`,
+          },
+          {
+            label: '线索转化率',
+            value: `${((lead?.conversion_rate ?? 0) * 100).toFixed(0)}%`,
+            hint:
+              lead?.average_conversion_days != null
+                ? `平均 ${lead.average_conversion_days} 天转化`
+                : `线索 ${lead?.total ?? 0} 条`,
+          },
+          {
+            label: '客户活跃 / 沉睡',
+            value: `${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`,
+            hint: `复购客户 ${customer?.repeat_customer_count ?? 0} 家`,
+          },
+          {
+            label: '平均成交周期',
+            value: cycle?.average_days != null ? `${cycle.average_days} 天` : '-',
+            hint: cycle?.won_with_history
               ? `基于 ${cycle.won_with_history} 个有阶段记录的成交商机`
-              : '暂无成交商机'
-          }
-        />
-        <Stat
-          label="逾期应收"
-          value={money(payment?.overdue_amount)}
-          hint={`逾期节点 ${payment?.overdue_node_count ?? 0} 个`}
-        />
-      </div>
+              : '暂无成交商机',
+          },
+          {
+            label: '逾期应收',
+            value: money(payment?.overdue_amount),
+            hint: `逾期节点 ${payment?.overdue_node_count ?? 0} 个`,
+          },
+        ]}
+      />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>销售漏斗（进行中商机）</div>
+        <SectionCard title="销售漏斗（进行中商机）">
           <BarList
             data={(opportunity?.funnel ?? []).map((row) => ({
               name: row.stage_name,
@@ -156,10 +146,9 @@ export default function AnalyticsPage() {
             }))}
             unit=" 个"
           />
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>商机阶段转化（到达过该阶段的商机数）</div>
+        <SectionCard title="商机阶段转化（到达过该阶段的商机数）">
           {(opportunity?.stage_conversion ?? []).length === 0 ? (
             <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
           ) : (
@@ -184,34 +173,29 @@ export default function AnalyticsPage() {
               ]}
             />
           )}
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>客户来源分布</div>
+        <SectionCard title="客户来源分布">
           <BarList data={customer?.by_source ?? []} unit=" 家" />
           <div style={{ fontWeight: 600, margin: '20px 0 12px' }}>客户等级分布</div>
           <BarList data={customer?.by_level ?? []} unit=" 家" />
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>线索来源分布</div>
+        <SectionCard title="线索来源分布">
           <BarList data={lead?.by_source ?? []} unit=" 条" />
           <div style={{ fontWeight: 600, margin: '20px 0 12px' }}>线索状态分布</div>
           <BarList data={lead?.by_status ?? []} unit=" 条" />
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>失单原因分布</div>
+        <SectionCard title="失单原因分布">
           <BarList data={lossQuery.data ?? []} unit=" 单" />
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>逾期账龄分布（未结清节点）</div>
+        <SectionCard title="逾期账龄分布（未结清节点）">
           <BarList data={payment?.aging ?? []} unit=" 个" />
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>回款情况</div>
+        <SectionCard title="回款情况">
           <BarList data={receivable?.by_status ?? []} unit=" 个节点" />
           <div style={{ fontWeight: 600, margin: '20px 0 12px' }}>回款方式分布（金额）</div>
           <BarList
@@ -221,10 +205,9 @@ export default function AnalyticsPage() {
             }))}
             unit=" 元"
           />
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
-          <div style={{ fontWeight: 600, marginBottom: 12 }}>价格分析</div>
+        <SectionCard title="价格分析">
           <BarList
             data={(pricing?.average_quoted_price_by_level ?? []).map((row) => ({
               name: `${row.level} 级（${row.item_count} 条）`,
@@ -237,11 +220,10 @@ export default function AnalyticsPage() {
             <div>平均让价：{((pricing?.average_discount_rate ?? 0) * 100).toFixed(2)}%</div>
             <div>最大让价：{((pricing?.max_discount_rate ?? 0) * 100).toFixed(2)}%</div>
           </div>
-        </div>
+        </SectionCard>
       </div>
 
-      <div className="card-block" style={{ marginTop: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 12 }}>产品表现（询盘 / 报价 / 成交 / 失单 / 利润）</div>
+      <SectionCard title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）" style={{ marginTop: 16 }}>
         <Table<ProductStat>
           columns={[
             { title: 'SKU', dataIndex: 'sku_code', width: 140 },
@@ -270,10 +252,9 @@ export default function AnalyticsPage() {
           pagination={false}
           empty="还没有报价数据"
         />
-      </div>
+      </SectionCard>
 
-      <div className="card-block" style={{ marginTop: 16 }}>
-        <div style={{ fontWeight: 600, marginBottom: 12 }}>业务员表现</div>
+      <SectionCard title="业务员表现" style={{ marginTop: 16 }}>
         <Table<SalesUserStat>
           columns={[
             { title: '姓名', dataIndex: 'name', width: 120 },
@@ -299,7 +280,7 @@ export default function AnalyticsPage() {
           pagination={false}
           empty="暂无数据"
         />
-      </div>
+      </SectionCard>
     </div>
   )
 }

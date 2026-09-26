@@ -9,6 +9,7 @@ import {
   rejectApproval,
   type ApprovalRow,
 } from '../../shared/api/quote'
+import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 
 const TABS = [
@@ -126,10 +127,10 @@ export default function ApprovalPage() {
 
   return (
     <div className="page-container">
-      <h2 className="page-title">报价审批</h2>
-      <p className="page-subtitle">
-        业务员报价低于自己的价格权限时，必须经审批才能对外发送；审批只看超出权限的部分
-      </p>
+      <PageHeader
+        title="报价审批"
+        subtitle="业务员报价低于自己的价格权限时，必须经审批才能对外发送；审批只看超出权限的部分"
+      />
 
       <div className="card-block">
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />

@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Empty, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listUsers } from '../../shared/api/system'
+import KpiStrip from '../../shared/components/KpiStrip'
+import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import {
   bindUnboundContact,
@@ -182,31 +184,26 @@ export default function WeComPage() {
 
   return (
     <div className="page-container">
-      <div className="toolbar" style={{ marginBottom: 12 }}>
-        <div>
-          <h2 className="page-title" style={{ marginBottom: 4 }}>
-            企业微信
-          </h2>
-          <p className="page-subtitle" style={{ margin: 0 }}>
-            外部联系人同步、待归一确认、离职继承
-          </p>
-        </div>
-        <div style={{ flex: 1 }} />
-        {canManage && (
-          <>
-            <Button onClick={() => setTransferVisible(true)}>离职继承</Button>
-            {SYNC_BUTTONS.map((item) => (
-              <Button
-                key={item.key}
-                loading={syncMutation.isPending}
-                onClick={() => syncMutation.mutate(item.run)}
-              >
-                {item.label}
-              </Button>
-            ))}
-          </>
-        )}
-      </div>
+      <PageHeader
+        title="企业微信"
+        subtitle="外部联系人同步、待归一确认、离职继承"
+        extra={
+          canManage && (
+            <>
+              <Button onClick={() => setTransferVisible(true)}>离职继承</Button>
+              {SYNC_BUTTONS.map((item) => (
+                <Button
+                  key={item.key}
+                  loading={syncMutation.isPending}
+                  onClick={() => syncMutation.mutate(item.run)}
+                >
+                  {item.label}
+                </Button>
+              ))}
+            </>
+          )
+        }
+      />
 
       {missing.length > 0 && (
         <Banner
@@ -223,23 +220,27 @@ export default function WeComPage() {
         />
       )}
 
-      <div className="kpi-grid" style={{ marginBottom: 16 }}>
-        {[
-          ['企微成员', readiness?.counts.wecom_users, '含未建 CRM 账号的成员'],
-          ['外部联系人', readiness?.counts.external_contacts, '企微侧同步到的总数'],
-          ['跟进关系', readiness?.counts.follow_relations, '谁加了谁'],
-          ['待归一', readiness?.counts.unbound_contacts, '需要人工确认'],
-          ['未建账号', readiness?.counts.unmatched_users, '企微有、CRM 没有'],
-        ].map(([label, value, hint]) => (
-          <div className="kpi-card" key={label as string}>
-            <div className="kpi-label">{label as string}</div>
-            <div className="kpi-value">{value ?? '-'}</div>
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-              {hint as string}
-            </div>
-          </div>
-        ))}
-      </div>
+      <KpiStrip
+        items={[
+          {
+            label: '企微成员',
+            value: readiness?.counts.wecom_users ?? '-',
+            hint: '含未建 CRM 账号的成员',
+          },
+          {
+            label: '外部联系人',
+            value: readiness?.counts.external_contacts ?? '-',
+            hint: '企微侧同步到的总数',
+          },
+          { label: '跟进关系', value: readiness?.counts.follow_relations ?? '-', hint: '谁加了谁' },
+          { label: '待归一', value: readiness?.counts.unbound_contacts ?? '-', hint: '需要人工确认' },
+          {
+            label: '未建账号',
+            value: readiness?.counts.unmatched_users ?? '-',
+            hint: '企微有、CRM 没有',
+          },
+        ]}
+      />
 
       <div
         style={{

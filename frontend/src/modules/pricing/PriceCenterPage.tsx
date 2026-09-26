@@ -24,6 +24,7 @@ import {
   type PricePermissionRow,
   type PriceRuleRow,
 } from '../../shared/api/pricing'
+import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 
 const TABS = [
@@ -213,16 +214,15 @@ export default function PriceCenterPage() {
 
   return (
     <div className="page-container">
-      <h2 className="page-title">价格中心</h2>
-      <p className="page-subtitle">
-        核价引擎的全部依据都在这一页：成本、标准价与最低保护价、客户特殊价、各角色的让价权限、运费费率
-      </p>
-      <div className="toolbar">
-        <div style={{ flex: 1 }} />
-        <Button theme="solid" onClick={() => navigate('/pricing')}>
-          打开核价
-        </Button>
-      </div>
+      <PageHeader
+        title="价格中心"
+        subtitle="核价引擎的全部依据都在这一页：成本、标准价与最低保护价、客户特殊价、各角色的让价权限、运费费率"
+        extra={
+          <Button theme="solid" onClick={() => navigate('/pricing')}>
+            打开核价
+          </Button>
+        }
+      />
 
       <div className="card-block">
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />

@@ -25,6 +25,7 @@ import {
 } from '../../shared/api/order'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import KpiStrip from '../../shared/components/KpiStrip'
 
 const TABS = [
   { tab: '订单明细', itemKey: 'items' },
@@ -316,34 +317,31 @@ export default function OrderDetailPage() {
           )
         }
       >
-        <div className="kpi-grid" style={{ marginTop: 16, marginBottom: 0 }}>
-          <div className="kpi-card">
-            <div className="kpi-label">订单金额</div>
-            <div className="kpi-value">¥{order.total_amount.toLocaleString('zh-CN')}</div>
-          </div>
-          <div className="kpi-card">
-            <div className="kpi-label">已回款（财务已确认）</div>
-            <div className="kpi-value" style={{ color: 'var(--crm-success)' }}>
-              ¥{order.received_amount.toLocaleString('zh-CN')}
-            </div>
-          </div>
-          <div className="kpi-card">
-            <div className="kpi-label">待回款</div>
-            <div className="kpi-value" style={{ color: order.unreceived_amount > 0 ? 'var(--crm-caution)' : undefined }}>
-              ¥{order.unreceived_amount.toLocaleString('zh-CN')}
-            </div>
-          </div>
-          <div className="kpi-card">
-            <div className="kpi-label">待确认回款</div>
-            <div className="kpi-value">¥{(summary?.pending_confirm_amount ?? 0).toLocaleString('zh-CN')}</div>
-          </div>
-          <div className="kpi-card">
-            <div className="kpi-label">逾期应收节点</div>
-            <div className="kpi-value" style={{ color: (summary?.overdue_count ?? 0) > 0 ? 'var(--crm-error)' : undefined }}>
-              {summary?.overdue_count ?? 0}
-            </div>
-          </div>
-        </div>
+        <KpiStrip
+          style={{ marginTop: 16, marginBottom: 0 }}
+          items={[
+            { label: '订单金额', value: `¥${order.total_amount.toLocaleString('zh-CN')}` },
+            {
+              label: '已回款（财务已确认）',
+              value: `¥${order.received_amount.toLocaleString('zh-CN')}`,
+              tone: 'success',
+            },
+            {
+              label: '待回款',
+              value: `¥${order.unreceived_amount.toLocaleString('zh-CN')}`,
+              tone: order.unreceived_amount > 0 ? 'warning' : 'default',
+            },
+            {
+              label: '待确认回款',
+              value: `¥${(summary?.pending_confirm_amount ?? 0).toLocaleString('zh-CN')}`,
+            },
+            {
+              label: '逾期应收节点',
+              value: summary?.overdue_count ?? 0,
+              tone: (summary?.overdue_count ?? 0) > 0 ? 'error' : 'default',
+            },
+          ]}
+        />
       </DetailHeader>
 
       <div className="card-block">
