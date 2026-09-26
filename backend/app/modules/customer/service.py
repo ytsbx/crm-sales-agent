@@ -12,6 +12,11 @@ from app.modules.customer.model import Contact, Customer, CustomerOwnerHistory
 from app.modules.user.model import User
 
 
+def _f(value) -> float | None:
+    """Decimal/None → float/None。序列化 Numeric 字段时统一走这里。"""
+    return None if value is None else float(value)
+
+
 # ---------------------------------------------------------------- 查询条件
 
 async def apply_data_scope(
@@ -86,6 +91,203 @@ async def owner_names(session: AsyncSession, owner_ids: list[int]) -> dict[int, 
     return {int(uid): name for uid, name in rows}
 
 
+async def customer_overview(session: AsyncSession, customer_id: int) -> dict:
+    """客户 360 概览（03-API §7 `GET /customers/{id}/overview`）。
+
+    前端原先要发 5~6 个请求（商机/报价/订单/跟进/任务/文件）才拼得出这一屏。
+    这里做**一次聚合**：每个板块给"数量 + 最近几条"，够首屏渲染，
+    点进各标签页再拉完整分页。
+
+    只读，不改变任何业务状态；板块之间互不依赖，单个板块为空不影响其他。
+    """
+    from app.modules.file.model import BusinessFile, FileRecord
+    from app.modules.followup.model import FollowUp
+    from app.modules.opportunity.model import Opportunity, OpportunityStage
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
+    from app.modules.task.model import Task
+
+    async def count_of(model, **filters) -> int:
+        stmt = select(func.count(model.id))
+        for column, value in filters.items():
+            stmt = stmt.where(getattr(model, column) == value)
+        return int((await session.execute(stmt)).scalar_one())
+
+    # 商机
+    opportunity_total = await count_of(Opportunity, customer_id=customer_id)
+    opportunity_rows = (
+        await session.execute(
+            select(Opportunity, OpportunityStage.name)
+            .outerjoin(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
+            .where(Opportunity.customer_id == customer_id, Opportunity.deleted_at.is_(None))
+            .order_by(Opportunity.id.desc())
+            .limit(5)
+        )
+    ).all()
+    open_opportunities = await count_of(Opportunity, customer_id=customer_id, status="open")
+
+    # 报价
+    quote_total = await count_of(Quote, customer_id=customer_id)
+    quote_rows = (
+        await session.execute(
+            select(Quote)
+            .where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None))
+            .order_by(Quote.id.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+
+    # 订单
+    order_total = await count_of(SalesOrder, customer_id=customer_id)
+    order_rows = (
+        await session.execute(
+            select(SalesOrder)
+            .where(SalesOrder.customer_id == customer_id)
+            .order_by(SalesOrder.id.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+    order_amount = (
+        await session.execute(
+            select(func.coalesce(func.sum(SalesOrder.total_amount), 0)).where(
+                SalesOrder.customer_id == customer_id
+            )
+        )
+    ).scalar_one()
+
+    # 跟进与任务
+    followup_total = await count_of(FollowUp, customer_id=customer_id)
+    followup_rows = (
+        await session.execute(
+            select(FollowUp)
+            .where(FollowUp.customer_id == customer_id)
+            .order_by(FollowUp.id.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+    task_total = await count_of(Task, customer_id=customer_id)
+    open_task_total = int(
+        (
+            await session.execute(
+                select(func.count(Task.id)).where(
+                    Task.customer_id == customer_id,
+                    Task.status.in_(("pending", "doing")),
+                )
+            )
+        ).scalar_one()
+    )
+    task_rows = (
+        await session.execute(
+            select(Task)
+            .where(Task.customer_id == customer_id)
+            .order_by(Task.id.desc())
+            .limit(5)
+        )
+    ).scalars().all()
+
+    # 附件
+    file_total = int(
+        (
+            await session.execute(
+                select(func.count(BusinessFile.id)).where(
+                    BusinessFile.business_type == "customer",
+                    BusinessFile.business_id == customer_id,
+                )
+            )
+        ).scalar_one()
+    )
+    file_rows = (
+        await session.execute(
+            select(BusinessFile, FileRecord)
+            .join(FileRecord, FileRecord.id == BusinessFile.file_id)
+            .where(
+                BusinessFile.business_type == "customer",
+                BusinessFile.business_id == customer_id,
+            )
+            .order_by(BusinessFile.id.desc())
+            .limit(5)
+        )
+    ).all()
+
+    return {
+        "counts": {
+            "opportunities": opportunity_total,
+            "open_opportunities": open_opportunities,
+            "quotes": quote_total,
+            "orders": order_total,
+            "followups": followup_total,
+            "tasks": task_total,
+            "open_tasks": open_task_total,
+            "files": file_total,
+            "order_amount": float(order_amount or 0),
+        },
+        "opportunities": [
+            {
+                "id": row.id,
+                "title": row.title,
+                "stage_name": stage_name,
+                "status": row.status,
+                "expected_amount": _f(row.expected_amount),
+                "expected_close_date": row.expected_close_date,
+                "owner_id": row.owner_id,
+            }
+            for row, stage_name in opportunity_rows
+        ],
+        "quotes": [
+            {
+                "id": row.id,
+                "quote_no": row.quote_no,
+                "status": row.status,
+                "valid_until": row.valid_until,
+                "created_at": row.created_at,
+            }
+            for row in quote_rows
+        ],
+        "orders": [
+            {
+                "id": row.id,
+                "order_no": row.order_no,
+                "status": row.status,
+                "total_amount": _f(row.total_amount),
+                "erp_order_id": row.erp_order_id,
+                "delivery_date": row.delivery_date,
+            }
+            for row in order_rows
+        ],
+        "followups": [
+            {
+                "id": row.id,
+                "followup_type": row.followup_type,
+                "content": row.content,
+                "next_action": row.next_action,
+                "created_at": row.created_at,
+            }
+            for row in followup_rows
+        ],
+        "tasks": [
+            {
+                "id": row.id,
+                "title": row.title,
+                "status": row.status,
+                "priority": row.priority,
+                "due_at": row.due_at,
+            }
+            for row in task_rows
+        ],
+        "files": [
+            {
+                "business_file_id": link.id,
+                "file_id": stored.id,
+                "name": stored.file_name,
+                "mime_type": stored.mime_type,
+                "size": stored.size,
+                "created_at": stored.created_at,
+            }
+            for link, stored in file_rows
+        ],
+    }
+
+
 def serialize_customer(
     customer: Customer,
     *,
@@ -141,10 +343,44 @@ def serialize_contact(contact: Contact) -> dict:
 
 # ---------------------------------------------------------------- 客户操作
 
+async def assert_customer_visible(
+    session: AsyncSession, user: CurrentUser, customer: Customer
+) -> None:
+    """校验客户在当前用户的数据范围内。
+
+    **这是一处真实的安全漏洞修复**：列表接口一直按数据范围过滤，
+    但按 id 直取的详情、以及各写接口都只做了 `get_customer_or_404`
+    （只判断存在），于是业务员把 id 改一改就能看到别人的客户。
+    "列表看不到"和"拿不到"必须一致，否则前端隐藏毫无意义
+    （05-TECH §24：禁止只靠前端隐藏）。
+
+    公海客户（owner_id 为空）对所有有 customer:view 的人可见 ——
+    这正是公海的意义。
+    """
+    if customer.owner_id is None:
+        return
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:  # 数据范围 all
+        return
+    if int(customer.owner_id) not in owner_ids:
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED, "该客户不在你的数据范围内", 403
+        )
+
+
 async def get_customer_or_404(session: AsyncSession, customer_id: int) -> Customer:
     customer = await session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    return customer
+
+
+async def get_visible_customer(
+    session: AsyncSession, user: CurrentUser, customer_id: int
+) -> Customer:
+    """取客户并校验数据范围。读接口统一用这个，别再单独用 get_customer_or_404。"""
+    customer = await get_customer_or_404(session, customer_id)
+    await assert_customer_visible(session, user, customer)
     return customer
 
 
@@ -208,6 +444,24 @@ async def get_contact_or_404(session: AsyncSession, contact_id: int) -> Contact:
     contact = await session.get(Contact, contact_id)
     if contact is None or contact.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    return contact
+
+
+async def get_visible_contact(
+    session: AsyncSession, user: CurrentUser, contact_id: int
+) -> Contact:
+    """取联系人并校验数据范围。
+
+    联系人自己没有独立的数据范围，跟着所属客户走；
+    没有客户的联系人（还没归一/待绑定）对所有有 customer:view 的人可见 ——
+    它们不属于任何人的客户，藏起来反而没人能处理。
+    """
+    contact = await get_contact_or_404(session, contact_id)
+    if contact.customer_id is None:
+        return contact
+    customer = await session.get(Customer, contact.customer_id)
+    if customer is not None:
+        await assert_customer_visible(session, user, customer)
     return contact
 
 

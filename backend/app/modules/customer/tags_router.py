@@ -224,7 +224,7 @@ async def attach_customer_tags(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_customer_or_404(session, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id)
     added = await tag_svc.attach_tags(session, customer.id, payload.tag_ids)
     await write_audit(
         session,
@@ -247,7 +247,7 @@ async def detach_customer_tag(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_customer_or_404(session, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id)
     await tag_svc.detach_tag(session, customer.id, tag_id)
     await write_audit(
         session,
@@ -348,10 +348,10 @@ async def batch_transfer(
 @router.get("/customers/{customer_id}/merge-logs")
 async def customer_merge_logs(
     customer_id: int,
-    _: CurrentUser = Depends(require_permission("customer:view")),
+    user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await svc.get_customer_or_404(session, customer_id)
+    await svc.get_visible_customer(session, user, customer_id)
     return ok(await tag_svc.merge_logs(session, customer_id))
 
 

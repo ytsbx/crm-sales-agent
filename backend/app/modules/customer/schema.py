@@ -67,3 +67,20 @@ class ContactUpdate(BaseModel):
     wechat: str | None = None
     is_primary: bool | None = None
     remark: str | None = None
+
+
+class ContactStandaloneCreate(ContactCreate):
+    """扁平路径创建联系人（03-API §8 `POST /contacts`）。
+
+    嵌套路径（`/customers/{id}/contacts`）的客户 id 在 URL 上，
+    扁平路径没有，所以这里必填。
+    """
+
+    customer_id: int
+
+
+class ContactBindCustomer(BaseModel):
+    """把联系人绑定 / 改挂到客户（03-API §8）。"""
+
+    customer_id: int
+    is_primary: bool = False
