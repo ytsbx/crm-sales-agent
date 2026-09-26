@@ -2,10 +2,11 @@ import { useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   confirmPayment,
+  createOrder,
   listOrders,
   listPayments,
   listReceivables,
@@ -14,6 +15,10 @@ import {
   type Payment,
   type Receivable,
 } from '../../shared/api/order'
+import { listCustomers } from '../../shared/api/customer'
+import { listSkusForPricing } from '../../shared/api/pricing'
+import { listUsers } from '../../shared/api/system'
+import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 
@@ -39,15 +44,28 @@ const PLAN_TONE: Record<string, TagTone> = {
   overdue: 'red',
 }
 
+/** 手工建单一行明细的空白形态。 */
+const EMPTY_ITEM = { sku_id: null as number | null, quantity: '', unit_price: '', specification: '' }
+
 export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: string }) {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+  const currentUser = useAuthStore((state) => state.user)
   const [activeKey, setActiveKey] = useState(initialTab)
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<string | undefined>()
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
+  const [createVisible, setCreateVisible] = useState(false)
+  const [createForm, setCreateForm] = useState({
+    customer_id: null as number | null,
+    owner_id: null as number | null,
+    delivery_date: '',
+    payment_terms: '',
+    remark: '',
+    items: [{ ...EMPTY_ITEM }],
+  })
 
   const ordersQuery = useQuery({
     queryKey: ['orders', { keyword, status, page, pageSize }],
@@ -63,6 +81,22 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     queryKey: ['payments'],
     queryFn: () => listPayments({ page: 1, page_size: 100 }),
     enabled: activeKey === 'payments',
+  })
+  // 手工建单的下拉数据：客户 / SKU / 负责人
+  const createCustomersQuery = useQuery({
+    queryKey: ['customers-for-select'],
+    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
+    enabled: createVisible,
+  })
+  const createSkusQuery = useQuery({
+    queryKey: ['skus-for-pricing'],
+    queryFn: listSkusForPricing,
+    enabled: createVisible,
+  })
+  const createUsersQuery = useQuery({
+    queryKey: ['users-for-select'],
+    queryFn: () => listUsers({ page: 1, page_size: 100 }),
+    enabled: createVisible,
   })
 
   const refresh = () => {
@@ -87,6 +121,51 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const validItems = createForm.items.filter(
+    (item) => item.sku_id && Number(item.quantity) > 0 && Number(item.unit_price) >= 0,
+  )
+  const createMutation = useMutation({
+    mutationFn: () =>
+      createOrder({
+        customer_id: createForm.customer_id!,
+        items: validItems.map((item) => ({
+          sku_id: item.sku_id!,
+          quantity: Number(item.quantity),
+          unit_price: Number(item.unit_price),
+          specification: item.specification.trim() || undefined,
+        })),
+        owner_id: createForm.owner_id ?? undefined,
+        delivery_date: createForm.delivery_date.trim() || undefined,
+        payment_terms: createForm.payment_terms.trim() || undefined,
+        remark: createForm.remark.trim() || undefined,
+      }),
+    onSuccess: (data) => {
+      Toast.success(`订单 ${data.order_no} 已创建（¥${data.total_amount.toLocaleString('zh-CN')}）`)
+      setCreateVisible(false)
+      setCreateForm({
+        customer_id: null,
+        owner_id: null,
+        delivery_date: '',
+        payment_terms: '',
+        remark: '',
+        items: [{ ...EMPTY_ITEM }],
+      })
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const submitCreate = () => {
+    if (!createForm.customer_id) {
+      Toast.warning('请选择客户')
+      return
+    }
+    if (!validItems.length) {
+      Toast.warning('至少要有一条完整明细（SKU、数量、单价）')
+      return
+    }
+    createMutation.mutate()
+  }
 
   const orderColumns = [
     {
@@ -266,6 +345,11 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 >
                   查询
                 </Button>
+                {can('order:manage') && (
+                  <Button theme="solid" onClick={() => setCreateVisible(true)}>
+                    手工建单
+                  </Button>
+                )}
               </div>
               <Table<Order>
                 columns={orderColumns}
@@ -311,6 +395,148 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
           )}
         </div>
       </div>
+
+      <Modal
+        title="手工建单（线下签约 / 补录历史单）"
+        visible={createVisible}
+        onCancel={() => setCreateVisible(false)}
+        onOk={submitCreate}
+        confirmLoading={createMutation.isPending}
+        okText="创建订单"
+        width={720}
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>客户 *</div>
+              <Select
+                placeholder="选择客户"
+                value={createForm.customer_id ?? undefined}
+                onChange={(value) => setCreateForm({ ...createForm, customer_id: value as number })}
+                optionList={(createCustomersQuery.data?.items ?? []).map((item) => ({
+                  value: item.id,
+                  label: item.name,
+                }))}
+                filter
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>负责人（默认自己）</div>
+              <Select
+                placeholder="选择负责人"
+                value={(createForm.owner_id ?? currentUser?.id) as number}
+                onChange={(value) => setCreateForm({ ...createForm, owner_id: value as number })}
+                optionList={(createUsersQuery.data?.items ?? []).map((item) => ({
+                  value: item.id,
+                  label: item.name,
+                }))}
+                filter
+                style={{ width: '100%' }}
+              />
+            </div>
+          </div>
+
+          <div>
+            <div style={{ marginBottom: 4, fontWeight: 600 }}>订单明细 *</div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {createForm.items.map((item, index) => (
+                <div key={index} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) 90px 110px minmax(0, 1.2fr) auto', gap: 8 }}>
+                  <Select
+                    placeholder="选择 SKU"
+                    value={item.sku_id ?? undefined}
+                    onChange={(value) => {
+                      const items = [...createForm.items]
+                      items[index] = { ...item, sku_id: value as number }
+                      setCreateForm({ ...createForm, items })
+                    }}
+                    optionList={(createSkusQuery.data ?? []).map((sku) => ({
+                      value: sku.id,
+                      label: `${sku.sku_code} · ${sku.product_name ?? ''} ${sku.specification ?? ''}`,
+                    }))}
+                    filter
+                    style={{ width: '100%' }}
+                  />
+                  <Input
+                    placeholder="数量"
+                    value={item.quantity}
+                    onChange={(value) => {
+                      const items = [...createForm.items]
+                      items[index] = { ...item, quantity: value }
+                      setCreateForm({ ...createForm, items })
+                    }}
+                  />
+                  <Input
+                    placeholder="单价"
+                    value={item.unit_price}
+                    onChange={(value) => {
+                      const items = [...createForm.items]
+                      items[index] = { ...item, unit_price: value }
+                      setCreateForm({ ...createForm, items })
+                    }}
+                  />
+                  <Input
+                    placeholder="规格（可空）"
+                    value={item.specification}
+                    onChange={(value) => {
+                      const items = [...createForm.items]
+                      items[index] = { ...item, specification: value }
+                      setCreateForm({ ...createForm, items })
+                    }}
+                  />
+                  <Button
+                    type="danger"
+                    disabled={createForm.items.length === 1}
+                    onClick={() =>
+                      setCreateForm({
+                        ...createForm,
+                        items: createForm.items.filter((_, i) => i !== index),
+                      })
+                    }
+                  >
+                    删
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <Button
+              style={{ marginTop: 8 }}
+              onClick={() => setCreateForm({ ...createForm, items: [...createForm.items, { ...EMPTY_ITEM }] })}
+            >
+              加一行
+            </Button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>交期（YYYY-MM-DD，可空）</div>
+              <Input
+                placeholder="2026-12-31"
+                value={createForm.delivery_date}
+                onChange={(value) => setCreateForm({ ...createForm, delivery_date: value })}
+              />
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>付款条件（可空）</div>
+              <Input
+                placeholder="款到发货"
+                value={createForm.payment_terms}
+                onChange={(value) => setCreateForm({ ...createForm, payment_terms: value })}
+              />
+            </div>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>备注（可空）</div>
+            <Input
+              value={createForm.remark}
+              onChange={(value) => setCreateForm({ ...createForm, remark: value })}
+            />
+          </div>
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+            金额由明细自动算出，不需要手填；创建后可在订单详情里生成应收计划。
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

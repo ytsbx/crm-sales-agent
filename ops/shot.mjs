@@ -134,7 +134,8 @@ try {
   for (const label of clicks) {
     const outcome = await client.send('Runtime.evaluate', {
       expression: `(() => {
-        const hit = Array.from(document.querySelectorAll('button'))
+        // Semi 的 Tabs 页签不是 button，是 .semi-tabs-tab，一并匹配
+        const hit = Array.from(document.querySelectorAll('button, .semi-tabs-tab'))
           .find((n) => (n.innerText || '').trim() === ${JSON.stringify(label)});
         if (!hit) return 'not-found';
         hit.click();
