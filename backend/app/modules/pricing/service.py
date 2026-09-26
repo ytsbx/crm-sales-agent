@@ -441,6 +441,9 @@ async def calculate_price(
         standard_price = convert(standard_price)
         recommended = convert(recommended)
         floor_price = convert(floor_price)
+        # 授权底价同样必须折成计价币种：下面 below_authorized 拿它和 check_price 比，
+        # 不折就会拿美元价 vs 人民币底线（10 号文档第八节踩过的坑，这里别改回去）
+        floor_from_margin = convert(floor_from_margin)
         if protection_price is not None:
             protection_price = convert(protection_price)
         recommended_range = [convert(recommended_range[0]), convert(recommended_range[1])]

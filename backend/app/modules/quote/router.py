@@ -818,6 +818,10 @@ async def add_charge(
         amount=payload.amount,
         is_discount=payload.is_discount,
     )
+    # 折扣在库里的形态恒为负数（recalc_version 直接代数相加）。用户填正数时
+    # 自动取负——不强制的话，"折扣 500"会静默把总额加 500。
+    if charge.is_discount and charge.amount > 0:
+        charge.amount = -charge.amount
     session.add(charge)
     await session.flush()
     await svc.recalc_version(session, version)
@@ -1240,6 +1244,9 @@ async def update_charge(
     before = svc.serialize_charge(charge)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(charge, field, value)
+    # 与 add_charge 同一规则：折扣在库里恒为负数，改完再归一一次
+    if charge.is_discount and charge.amount > 0:
+        charge.amount = -charge.amount
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(

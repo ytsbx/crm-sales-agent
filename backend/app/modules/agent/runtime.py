@@ -530,6 +530,10 @@ async def execute_action(
     session: AsyncSession, *, action: AgentAction, user: CurrentUser
 ) -> dict:
     """用户确认后真正执行 L2 动作（L3 直接转审批流程）。"""
+    # 状态检查与写入不是原子的：并发双击"确认"会各自读到 awaiting_confirmation
+    # 然后各执行一次写动作（记跟进变两条）。先对动作行加行锁再查状态，
+    # 第二个请求会等到第一个提交后，看到的是已处理状态而被拦下。
+    await session.refresh(action, with_for_update=True)
     if action.status not in ("awaiting_confirmation", "approval_required"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该动作已经处理过了")
     spec = TOOLS.get(action.tool_name)

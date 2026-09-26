@@ -551,7 +551,7 @@ export default function QuoteDetailPage() {
           <Input
             value={chargeForm.amount}
             onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
-            placeholder="金额（折扣请填负数）"
+            placeholder="金额（折扣直接填正数，系统自动扣减）"
           />
         </div>
       </Modal>
