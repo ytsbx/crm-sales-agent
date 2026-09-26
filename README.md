@@ -229,3 +229,37 @@ WECOM_CALLBACK_AES_KEY=...
 一个已知的待办：事件回调目前只把报文记进 `wecom_sync_jobs`（便于确认"企微推了什么"），
 真正的增量同步（收到 `change_external_contact` 只拉那一个人）等拿到真实回调再写——
 没有真实报文的情况下写增量逻辑只能靠猜。
+
+## ERP / MES 集成（框架已就绪，等凭据）
+
+API §28 的 6 个接口都已实现，Adapter 分层照 05-TECH §15：
+
+```text
+SalesOrder → erp/service.py → ErpAdapter → 聚水潭 / ERP321 / ...
+```
+
+- `app/modules/erp/adapter.py`：Adapter 接口 + 聚水潭实现 + 未配置时的占位实现。
+  CRM 订单状态固定为六个值，对方的状态词由各 Adapter 的映射表翻译过来，
+  **换 ERP 时业务与前端都不用动**。
+- 幂等（02-ER §21）：推送前先查 `erp_order_id` 与 `external_mappings`，
+  推过的直接返回；请求体带 `idempotency_key`（用 CRM 订单号），对方据此去重。
+- 履约状态回写统一走 `order_status_history`，`source=ERP`，
+  与人工维护的状态共用一张历史表。
+- 订单详情页的「推送 ERP/MES」按钮已接到真实实现，并新增「同步履约状态」。
+
+配置（`backend/.env`）：
+
+```text
+ERP_PROVIDER=jushuitan
+ERP_BASE_URL=
+ERP_APP_KEY=
+ERP_APP_SECRET=
+```
+
+**还缺一件事，不是我能补的**：聚水潭的签名算法（`sign`）需要按对方文档实现，
+而公司服务器上已有的 `erp-bridge` 里就有一份可用实现。拿到它的调用方式后，
+在 `JushuitanAdapter._call` 里补上 `sign` 即可 —— 其余（幂等、日志、
+状态映射、回调）都已就绪并验证过。
+
+未配置期间：推送返回 `50203` 并说明缺哪个变量，订单**不会**被标记为已推送。
+失败记录会先落盘再抛错（`integration_logs`），所以"为什么没推成功"查得到。

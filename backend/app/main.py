@@ -14,6 +14,7 @@ from app.modules.audit_router import router as audit_router
 from app.modules.customer.router import router as customer_router
 from app.modules.customer.io_router import router as customer_io_router
 from app.modules.customer.tags_router import router as customer_tags_router
+from app.modules.erp.router import router as erp_router
 from app.modules.followup.router import router as followup_router
 from app.modules.file.router import router as file_router
 from app.modules.lead.router import router as lead_router
@@ -82,6 +83,7 @@ app.include_router(settings_router, prefix=settings.api_prefix)
 app.include_router(search_router, prefix=settings.api_prefix)
 app.include_router(agent_router, prefix=settings.api_prefix)
 app.include_router(wecom_router, prefix=settings.api_prefix)
+app.include_router(erp_router, prefix=settings.api_prefix)
 
 
 @app.get("/health", tags=["System"])

@@ -15,6 +15,7 @@ import {
   listOrderReceivables,
   listOrderStatusHistory,
   orderFinanceSummary,
+  refreshErpStatus,
   repurchase,
   syncErp,
   type OrderItem,
@@ -162,7 +163,33 @@ export default function OrderDetailPage() {
 
   const syncMutation = useMutation({
     mutationFn: () => syncErp(orderId),
-    onSuccess: (data) => Toast.warning(data.reason),
+    onSuccess: (data) => {
+      // already_synced 是幂等命中：订单早就推过了，不是失败
+      if (data.already_synced) {
+        Toast.info(data.message ?? '该订单已推送过，未重复建单')
+      } else {
+        Toast.success(data.message ?? '已推送到 ERP/MES')
+      }
+      void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const statusSyncMutation = useMutation({
+    mutationFn: () => refreshErpStatus(orderId),
+    onSuccess: (data) => {
+      if (data.changed) {
+        Toast.success(`履约状态已更新为「${data.status_label}」`)
+      } else {
+        Toast.info(
+          data.raw_status
+            ? `状态没有变化（对方回传：${data.raw_status}）`
+            : '状态没有变化',
+        )
+      }
+      void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
+      void queryClient.invalidateQueries({ queryKey: ['order-status-history', orderId] })
+    },
     onError: (error: Error) => Toast.error(error.message),
   })
 
@@ -274,6 +301,13 @@ export default function OrderDetailPage() {
               <Button onClick={() => setStatusVisible(true)}>更新履约状态</Button>
               <Button onClick={() => syncMutation.mutate()} loading={syncMutation.isPending}>
                 推送 ERP/MES
+              </Button>
+              <Button
+                onClick={() => statusSyncMutation.mutate()}
+                loading={statusSyncMutation.isPending}
+                disabled={!order.erp_order_id}
+              >
+                同步履约状态
               </Button>
               <Button onClick={() => repurchaseMutation.mutate()} loading={repurchaseMutation.isPending}>
                 复购开新商机

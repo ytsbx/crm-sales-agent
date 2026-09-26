@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # 单次同步最多拉多少页，防止配错时把对方接口打爆
     wecom_sync_max_pages: int = 50
 
+    # ---- ERP / MES（API §28 / 05-TECH §15）--------------------------------
+    # 与企微同样的原则：留空即"未配置"，推送接口明确报 50203，
+    # 绝不把订单标成已推送（否则 ERP 里没有单、CRM 却显示已同步，最难排查）。
+    # provider 可选 jushuitan / jst；填错或空都会走占位 Adapter（调用即报错）。
+    erp_provider: str = ""
+    erp_base_url: str = ""
+    erp_app_key: str = ""
+    erp_app_secret: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]

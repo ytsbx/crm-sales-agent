@@ -128,7 +128,23 @@ export function cancelOrder(orderId: number) {
 }
 
 export function syncErp(orderId: number) {
-  return api.post<{ pushed: boolean; reason: string }>(`/orders/${orderId}/sync-erp`)
+  return api.post<{
+    pushed: boolean
+    already_synced?: boolean
+    erp_order_id?: string | null
+    message?: string
+  }>(`/orders/${orderId}/sync-erp`)
+}
+
+/** 拉取并回写履约状态（API §28 GET /integrations/erp/orders/{id}/status）。 */
+export function refreshErpStatus(orderId: number) {
+  return api.get<{
+    status: string
+    status_label: string
+    changed: boolean
+    raw_status?: string | null
+    shipped_at?: string | null
+  }>(`/integrations/erp/orders/${orderId}/status`)
 }
 
 export function repurchase(orderId: number) {

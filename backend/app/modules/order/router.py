@@ -12,7 +12,9 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
-from app.modules.integration.model import IntegrationLog
+from app.modules.erp import service as erp_service
+from app.modules.erp.adapter import ErpError, ErpNotConfigured
+from app.modules.erp.router import translate_erp_error as erp_translate
 from app.modules.opportunity.model import Opportunity, OpportunityItem, OpportunityStageHistory
 from app.modules.opportunity.service import get_first_stage
 from app.modules.order import service as svc
@@ -257,42 +259,30 @@ async def sync_erp(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """推送到 ERP/MES。
+    """推送到 ERP/MES（订单详情页的「推送 ERP」按钮走这里）。
 
-    对方系统还没就绪，这里先只记集成日志，**不把订单标记为已推送**
-    （`erp_order_id` 保持为空，避免在 ERP 里其实没有单、CRM 却显示已推送）。
-    等接口接通后把 Adapter 接进这个方法即可，调用方无感。
+    原来这里只写一条 skipped 日志、返回"对方系统未接入"。现在接到真正的
+    `erp` 模块：配置齐了就真推，没配就返回 50203 并说明缺哪个变量，
+    两种情况都**不会**把订单标成已推送。
+    实现见 `app/modules/erp/service.py`，调用方无感。
     """
     order = await svc.get_order_or_404(session, order_id)
-    session.add(
-        IntegrationLog(
-            integration_type="ERP/MES",
-            direction="outbound",
-            business_type="order",
-            business_id=order.id,
-            request_data={
-                "order_no": order.order_no,
-                "total_amount": float(order.total_amount),
-                "note": "对方系统未接入，本次仅记录日志",
-            },
-            status="skipped",
-            error_message="ERP/MES 接口尚未接入，未实际推送",
-        )
-    )
+    try:
+        result = await erp_service.push_order(session, order=order, operator_id=user.id)
+    except (ErpNotConfigured, ErpError) as error:
+        await session.rollback()
+        raise erp_translate(error) from error
     await write_audit(
         session,
         operator_id=user.id,
         action="sync_erp",
         business_type="order",
         business_id=order.id,
-        after={"pushed": False, "reason": "ERP/MES 接口尚未接入"},
+        after={"pushed": result["pushed"], "erp_order_id": result.get("erp_order_id")},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(
-        {"pushed": False, "reason": "ERP/MES 接口尚未接入"},
-        "已记录推送请求，但对方系统未接入",
-    )
+    return ok(result, result["message"])
 
 
 @router.post("/orders/{order_id}/repurchase")
