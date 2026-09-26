@@ -14,7 +14,13 @@ from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.task.model import Task
 from app.modules.notification import service as notification_service
-from app.modules.task.schema import TaskComplete, TaskCreate, TaskUpdate
+from app.modules.task.schema import (
+    TaskAssign,
+    TaskBatchComplete,
+    TaskComplete,
+    TaskCreate,
+    TaskUpdate,
+)
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Task"])
@@ -231,6 +237,129 @@ async def cancel_task(
     )
     await session.commit()
     return ok(serialize(task), "任务已取消")
+
+
+# ------------------------------------------------- 03-API §25 新增的三个接口
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(
+    task_id: int,
+    user: CurrentUser = Depends(require_permission("task:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """单条任务详情。"""
+    task = await _visible_task(session, user, task_id)
+    owners = (
+        await session.execute(select(User.name).where(User.id == task.owner_id))
+    ).scalar_one_or_none() if task.owner_id else None
+    return ok(serialize(task, owners))
+
+
+@router.post("/tasks/{task_id}/assign")
+async def assign_task(
+    task_id: int,
+    payload: TaskAssign,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("task:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """把任务指派 / 改派给他人。
+
+    只动 `owner_id`；已完成或已取消的任务不允许改派 ——
+    改派一个已完成的任务只会让"谁做的"这件事变得说不清。
+    """
+    task = await _visible_task(session, user, task_id)
+    if task.status in ("done", "cancelled"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"任务已{'完成' if task.status == 'done' else '取消'}，不能改派",
+        )
+
+    target = await session.get(User, payload.owner_id)
+    if target is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={payload.owner_id} 不存在", 404)
+    if target.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用", 422)
+
+    before_owner = task.owner_id
+    task.owner_id = payload.owner_id
+    await session.flush()
+
+    # 被指派的人要收到提醒，否则改派了也没人知道
+    await notification_service.notify(
+        session,
+        user_id=target.id,
+        type_="task",
+        title="有任务指派给你",
+        content=task.title,
+        business_type="task",
+        business_id=task.id,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="assign",
+        business_type="task",
+        business_id=task.id,
+        before={"owner_id": before_owner},
+        after={"owner_id": payload.owner_id, "reason": payload.reason},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    await notification_service.dispatch_pending(session)
+    return ok(serialize(task, target.name), f"已指派给「{target.name}」")
+
+
+@router.post("/tasks/batch-complete")
+async def batch_complete_tasks(
+    payload: TaskBatchComplete,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("task:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """批量完成任务。
+
+    逐个走 `_visible_task`：别人的任务会被跳过并说明原因，
+    **不是整批失败** —— 一次勾选十几条时因为一条越权就全不生效，
+    用起来会很难受，而跳过清单能让人看清是哪些。
+    """
+    if not payload.task_ids:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "task_ids 不能为空", 422)
+    unique_ids = list(dict.fromkeys(payload.task_ids))
+
+    completed: list[int] = []
+    skipped: list[dict] = []
+    now = datetime.now(UTC)
+    for task_id in unique_ids:
+        try:
+            task = await _visible_task(session, user, task_id)
+        except AppError as error:
+            skipped.append({"task_id": task_id, "reason": error.message})
+            continue
+        if task.status == "done":
+            skipped.append({"task_id": task_id, "reason": "任务已完成"})
+            continue
+        task.status = "done"
+        task.completed_at = now
+        task.completion_note = payload.completion_note
+        completed.append(task_id)
+
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="batch_complete",
+        business_type="task",
+        business_id=None,
+        after={"completed": len(completed), "skipped": len(skipped)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    message = f"已完成 {len(completed)} 条"
+    if skipped:
+        message += f"，跳过 {len(skipped)} 条"
+    return ok({"completed": completed, "skipped": skipped}, message)
 
 
 @router.post("/tasks/{task_id}/postpone")

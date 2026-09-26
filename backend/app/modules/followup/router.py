@@ -7,13 +7,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import ensure_in_scope
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.customer.model import Customer
 from app.modules.followup.model import FollowUp
-from app.modules.followup.schema import FollowUpCreate, FollowUpUpdate
+from app.modules.followup.schema import (
+    FollowUpCreate,
+    FollowUpNextTask,
+    FollowUpUpdate,
+)
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
 from app.modules.task.model import Task
@@ -39,6 +44,34 @@ def serialize(followup: FollowUp, owner_name: str | None = None) -> dict:
         "next_action": followup.next_action,
         "created_at": followup.created_at,
     }
+
+
+async def _visible_followup(
+    session: AsyncSession, user: CurrentUser, followup_id: int
+) -> FollowUp:
+    """取跟进记录并校验数据范围。
+
+    跟进自己没有负责人语义上的"归属"（owner_id 是记录人），
+    所以跟着它关联的业务对象走：客户 / 线索 / 商机 / 报价 / 订单，
+    哪一个有就用哪一个的范围。全都没关联是脏数据，直接放行并留给治理。
+    """
+    followup = await session.get(FollowUp, followup_id)
+    if followup is None:
+        raise AppError(ErrorCode.NOT_FOUND, "跟进记录不存在", 404)
+
+    owner_id: int | None = None
+    if followup.customer_id:
+        customer = await session.get(Customer, followup.customer_id)
+        owner_id = customer.owner_id if customer else None
+    elif followup.lead_id:
+        lead = await session.get(Lead, followup.lead_id)
+        owner_id = lead.owner_id if lead else None
+    elif followup.opportunity_id:
+        opportunity = await session.get(Opportunity, followup.opportunity_id)
+        owner_id = opportunity.owner_id if opportunity else None
+
+    await ensure_in_scope(session, user, owner_id=owner_id, label="跟进记录")
+    return followup
 
 
 @router.get("/followups")
@@ -149,9 +182,7 @@ async def update_followup(
     user: CurrentUser = Depends(require_permission("followup:create")),
     session: AsyncSession = Depends(get_db),
 ):
-    followup = await session.get(FollowUp, followup_id)
-    if followup is None:
-        raise AppError(ErrorCode.NOT_FOUND, "跟进记录不存在", 404)
+    followup = await _visible_followup(session, user, followup_id)
     before = serialize(followup)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(followup, field, value)
@@ -168,6 +199,95 @@ async def update_followup(
     )
     await session.commit()
     return ok(serialize(followup), "已保存")
+
+
+# ------------------------------------------------- 03-API §24 新增的两个接口
+
+
+@router.get("/followups/{followup_id}")
+async def get_followup(
+    followup_id: int,
+    user: CurrentUser = Depends(require_permission("followup:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """单条跟进详情。"""
+    followup = await _visible_followup(session, user, followup_id)
+    owners = {
+        int(uid): name
+        for uid, name in (
+            await session.execute(
+                select(User.id, User.name).where(User.id == followup.owner_id)
+            )
+        ).all()
+    } if followup.owner_id else {}
+    return ok(
+        serialize(
+            followup, owners.get(followup.owner_id) if followup.owner_id else None
+        )
+    )
+
+
+@router.post("/followups/{followup_id}/create-next-task")
+async def create_next_task(
+    followup_id: int,
+    payload: FollowUpNextTask,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("task:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """在已有跟进上补建后续任务。
+
+    新任务继承这条跟进关联的全部业务对象（客户/联系人/线索/商机），
+    不用再手填一遍 —— 这也是这个接口存在的意义。
+    负责人默认记跟进的本人；显式指定时校验存在且在职。
+    """
+    followup = await _visible_followup(session, user, followup_id)
+
+    owner_id = payload.owner_id if payload.owner_id is not None else followup.owner_id
+    if payload.owner_id is not None:
+        target = await session.get(User, payload.owner_id)
+        if target is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={payload.owner_id} 不存在", 404)
+        if target.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用", 422
+            )
+
+    task = Task(
+        title=payload.title or f"跟进后续：{followup.content[:30]}",
+        task_type=payload.task_type,
+        priority=payload.priority,
+        customer_id=followup.customer_id,
+        contact_id=followup.contact_id,
+        lead_id=followup.lead_id,
+        opportunity_id=followup.opportunity_id,
+        owner_id=owner_id,
+        status="pending",
+        due_at=payload.due_at,
+        source="manual",
+    )
+    session.add(task)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create_next_task",
+        business_type="followup",
+        business_id=followup.id,
+        after={"task_id": task.id, "title": task.title, "due_at": str(task.due_at)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "task_id": task.id,
+            "title": task.title,
+            "owner_id": task.owner_id,
+            "due_at": task.due_at,
+            "followup_id": followup.id,
+        },
+        "后续任务已创建",
+    )
 
 
 @router.delete("/followups/{followup_id}")

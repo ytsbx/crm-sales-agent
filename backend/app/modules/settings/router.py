@@ -224,7 +224,15 @@ async def create_task_rule(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    row = TaskRule(**payload.model_dump(), status="active")
+    # 不能写成 TaskRule(**payload.model_dump(), status="active")：
+    # TaskRuleInput 自带 status 字段，model_dump() 里已经有它，
+    # 再显式传一次会 TypeError: got multiple values for keyword argument 'status'，
+    # 直接 500。这个接口此前一直是坏的（没有用例覆盖到）。
+    data = payload.model_dump()
+    data.setdefault("status", "active")
+    if data.get("status") is None:
+        data["status"] = "active"
+    row = TaskRule(**data)
     session.add(row)
     await session.flush()
     await write_audit(
@@ -267,6 +275,37 @@ async def update_task_rule(
     )
     await session.commit()
     return ok(serialize_task_rule(row), "已保存")
+
+
+@router.delete("/task-rules/{rule_id}")
+async def delete_task_rule(
+    rule_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """删除自动任务规则（03-API §25）。
+
+    规则是配置数据，删掉不会影响已经生成的任务 ——
+    `tasks.source_rule_id` 只做溯源，不做外键级联，
+    所以这里可以安全地真删，历史任务仍能看出"当初是哪条规则生成的"。
+    """
+    row = await session.get(TaskRule, rule_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "规则不存在", 404)
+    before = serialize_task_rule(row)
+    await session.delete(row)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="task_rule",
+        business_id=rule_id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "规则已删除，已生成的任务不受影响")
 
 
 @router.post("/tasks/run-auto-rules")

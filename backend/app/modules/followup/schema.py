@@ -27,3 +27,20 @@ class FollowUpUpdate(BaseModel):
     followup_type: str | None = None
     customer_feedback: str | None = None
     next_action: str | None = None
+
+
+class FollowUpNextTask(BaseModel):
+    """从一条跟进记录生成后续任务（03-API §24）。
+
+    与「记跟进时顺手建任务」（FollowUpCreate.create_task）的区别：
+    那是记录当下就决定下次动作；这是在**已经发生过的**跟进上补一个后续任务，
+    典型场景是回头看历史跟进时发现"当时说好要回访但没人建任务"。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str | None = None
+    due_at: datetime
+    owner_id: int | None = None
+    task_type: str = "followup"
+    priority: str = "normal"
