@@ -189,6 +189,84 @@ async def create_order_from_quote(
     return order
 
 
+async def create_order(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    customer_id: int,
+    items: list,
+    opportunity_id: int | None = None,
+    quote_id: int | None = None,
+    owner_id: int | None = None,
+    currency: str = "CNY",
+    delivery_date: date | None = None,
+    payment_terms: str | None = None,
+    remark: str | None = None,
+) -> SalesOrder:
+    """手工建销售订单（03-API §27 POST /orders）。
+
+    总金额由明细算出来，不接受前端传 —— 两个来源必然漂移。
+    明细的 `unit_price` 直接落库（不比价、不套价格规则）：
+    线下签约的成交价就是谈定的数字，系统不该替业务改。
+    """
+    from app.modules.product.model import Sku
+
+    total = Decimal(0)
+    rows: list[SalesOrderItem] = []
+    for entry in items:
+        sku = await session.get(Sku, entry.sku_id)
+        if sku is None or sku.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU id={entry.sku_id} 不存在", 404)
+        amount = (entry.quantity * entry.unit_price).quantize(Decimal("0.01"))
+        total += amount
+        rows.append(
+            SalesOrderItem(
+                order_id=0,  # flush 后回填
+                sku_id=sku.id,
+                sku_snapshot=sku.name or sku.sku_code,
+                specification=entry.specification or sku.specification,
+                quantity=entry.quantity,
+                unit_price=entry.unit_price,
+                amount=amount,
+                remark=entry.remark,
+            )
+        )
+
+    order = SalesOrder(
+        order_no=await generate_order_no(session),
+        customer_id=customer_id,
+        opportunity_id=opportunity_id,
+        quote_id=quote_id,
+        quote_version_id=None,
+        owner_id=owner_id or user_id,
+        total_amount=total,
+        currency=currency,
+        status="pending",
+        delivery_date=delivery_date,
+        payment_terms=payment_terms,
+        remark=remark,
+        created_by=user_id,
+    )
+    session.add(order)
+    await session.flush()
+    for row in rows:
+        row.order_id = order.id
+        session.add(row)
+    session.add(
+        OrderStatusHistory(
+            order_id=order.id,
+            old_status=None,
+            new_status="pending",
+            source="WEB",
+            operator_id=user_id,
+            remark="手工创建订单",
+            created_at=datetime.now(UTC),
+        )
+    )
+    await session.flush()
+    return order
+
+
 async def change_status(
     session: AsyncSession,
     order: SalesOrder,

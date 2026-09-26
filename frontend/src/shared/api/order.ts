@@ -111,6 +111,28 @@ export function convertToOrder(versionId: number, payload: Record<string, unknow
   )
 }
 
+/** 手工建订单（API §27 POST /orders）。线下签约/补录历史单用；
+ * 正常订单走 convertToOrder（报价版本转订单）。金额由后端按明细算，不用传。 */
+export function createOrder(payload: {
+  customer_id: number
+  items: Array<{
+    sku_id: number
+    quantity: number
+    unit_price: number
+    specification?: string
+    remark?: string
+  }>
+  opportunity_id?: number
+  quote_id?: number
+  owner_id?: number
+  currency?: string
+  delivery_date?: string
+  payment_terms?: string
+  remark?: string
+}) {
+  return api.post<{ order_id: number; order_no: string; total_amount: number }>('/orders', payload)
+}
+
 export function listOrderItems(orderId: number) {
   return api.get<OrderItem[]>(`/orders/${orderId}/items`)
 }
@@ -136,7 +158,22 @@ export function syncErp(orderId: number) {
   }>(`/orders/${orderId}/sync-erp`)
 }
 
-/** 拉取并回写履约状态（API §28 GET /integrations/erp/orders/{id}/status）。 */
+/** 拉取并回写履约状态（API §27 POST /orders/{id}/refresh-status）。
+ *
+ * 与 `GET /integrations/erp/orders/{id}/status` 同一实现；订单详情页用这个
+ * "就地刷新"更自然。
+ */
+export function refreshStatus(orderId: number) {
+  return api.post<{
+    status: string
+    status_label: string
+    changed: boolean
+    raw_status?: string | null
+    shipped_at?: string | null
+  }>(`/orders/${orderId}/refresh-status`)
+}
+
+/** @deprecated 用 refreshStatus() —— 文档定义的是 POST /orders/{id}/refresh-status。 */
 export function refreshErpStatus(orderId: number) {
   return api.get<{
     status: string
@@ -161,6 +198,31 @@ export function generateReceivables(orderId: number, payload: Record<string, unk
 
 export function createReceivable(orderId: number, payload: Record<string, unknown>) {
   return api.post<Receivable>(`/orders/${orderId}/receivables`, payload)
+}
+
+/** 建应收节点（API §29 POST /receivables，order_id 放在 body 里）。 */
+export function createReceivableStandalone(payload: Record<string, unknown>) {
+  return api.post<Receivable>('/receivables', payload)
+}
+
+/** 单个应收节点（API §29 GET /receivables/{id}）。 */
+export function getReceivable(id: number) {
+  return api.get<Receivable>(`/receivables/${id}`)
+}
+
+/** 改应收节点 —— 部分更新，只传要改的字段（API §29 PATCH /receivables/{id}）。 */
+export function updateReceivable(id: number, payload: Record<string, unknown>) {
+  return api.patch<Receivable>(`/receivables/${id}`, payload)
+}
+
+/** 单个回款（API §30 GET /payments/{id}）。 */
+export function getPayment(id: number) {
+  return api.get<Payment>(`/payments/${id}`)
+}
+
+/** 改回款登记 —— 只有待确认的能改（API §30 PATCH /payments/{id}）。 */
+export function updatePayment(id: number, payload: Record<string, unknown>) {
+  return api.patch<Payment>(`/payments/${id}`, payload)
 }
 
 export function listOrderPayments(orderId: number) {

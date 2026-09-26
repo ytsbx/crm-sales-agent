@@ -107,6 +107,54 @@ async def get_payment_or_404(session: AsyncSession, payment_id: int) -> PaymentR
     return record
 
 
+# ---------------------------------------------------------------------------
+# 数据范围
+#
+# 应收/回款没有自己的 owner_id —— 归属跟着订单走，所以可见性统一
+# 「取订单负责人 -> ensure_in_scope」。列表用子查询把范围下推到 SQL，
+# 这样分页和计数都正确（先查出来再过滤会让 total 偏大）。
+# ---------------------------------------------------------------------------
+async def visible_order_ids_stmt(session: AsyncSession, user):
+    """当前用户可见的订单 id 子查询；`all` 权限返回 None 表示不过滤。"""
+    from app.core.data_scope import scoped_owner_ids
+
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
+        return None
+    stmt = select(SalesOrder.id)
+    if owner_ids:
+        stmt = stmt.where(SalesOrder.owner_id.in_(owner_ids))
+    else:
+        # 范围内一个负责人都没有 —— 用一个恒假条件，别退化成"看全部"
+        stmt = stmt.where(SalesOrder.id < 0)
+    return stmt
+
+
+async def assert_order_visible(session: AsyncSession, user, order_id: int) -> None:
+    """校验订单在数据范围内（应收/回款的可见性就等于订单的可见性）。"""
+    from app.core.data_scope import ensure_in_scope
+
+    order = await session.get(SalesOrder, order_id)
+    await ensure_in_scope(session, user, owner_id=order.owner_id if order else None, label="订单")
+
+
+async def get_visible_plan(
+    session: AsyncSession, user, plan_id: int
+) -> ReceivablePlan:
+    plan = await get_plan_or_404(session, plan_id)
+    await assert_order_visible(session, user, plan.order_id)
+    return plan
+
+
+async def get_visible_payment(
+    session: AsyncSession, user, payment_id: int
+) -> PaymentRecord:
+    record = await get_payment_or_404(session, payment_id)
+    await assert_order_visible(session, user, record.order_id)
+    return record
+
+
+
 async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
     """订单的应收/回款概览，给订单详情页顶部用。"""
     plans = (

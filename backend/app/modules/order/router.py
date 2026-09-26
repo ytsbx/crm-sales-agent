@@ -11,7 +11,9 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.refs import ensure_refs
 from app.core.response import ok, page_data, paginate
+from app.modules.customer.model import Customer
 from app.modules.erp import service as erp_service
 from app.modules.erp.adapter import ErpError, ErpNotConfigured
 from app.modules.erp.router import translate_erp_error as erp_translate
@@ -19,10 +21,15 @@ from app.modules.opportunity.model import Opportunity, OpportunityItem, Opportun
 from app.modules.opportunity.service import get_first_stage
 from app.modules.order import service as svc
 from app.modules.order.model import ORDER_STATUS_LABEL, OrderStatusHistory, SalesOrder, SalesOrderItem
-from app.modules.order.schema import OrderFromQuote, OrderStatusChange, OrderUpdate
+from app.modules.order.schema import (
+    OrderCreate,
+    OrderFromQuote,
+    OrderStatusChange,
+    OrderUpdate,
+)
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.product.model import Sku
-from app.modules.quote.model import QuoteVersion
+from app.modules.quote.model import Quote, QuoteVersion
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Order"])
@@ -62,6 +69,82 @@ async def list_orders(
         for order in rows
     ]
     return ok(page_data(items, total, page, page_size))
+
+
+@router.post("/orders")
+async def create_order(
+    payload: OrderCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """手工建销售订单（03-API §27）。
+
+    正常订单来自「报价版本转订单」（`POST /quote-versions/{id}/convert-to-order`），
+    这里是线下签约/补录历史单的入口。金额由明细算出，不接受前端传。
+    """
+    await ensure_refs(
+        session, model=Customer, ids={"customer_id": payload.customer_id}, label="客户"
+    )
+    await ensure_refs(
+        session, model=User, ids={"owner_id": payload.owner_id}, label="负责人"
+    )
+    await ensure_refs(
+        session,
+        model=Opportunity,
+        ids={"opportunity_id": payload.opportunity_id},
+        label="商机",
+    )
+    await ensure_refs(session, model=Quote, ids={"quote_id": payload.quote_id}, label="报价单")
+
+    order = await svc.create_order(
+        session,
+        user_id=user.id,
+        customer_id=payload.customer_id,
+        items=payload.items,
+        opportunity_id=payload.opportunity_id,
+        quote_id=payload.quote_id,
+        owner_id=payload.owner_id,
+        currency=payload.currency,
+        delivery_date=payload.delivery_date,
+        payment_terms=payload.payment_terms,
+        remark=payload.remark,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="order",
+        business_id=order.id,
+        after=svc.serialize_order(order),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {"order_id": order.id, "order_no": order.order_no, "total_amount": float(order.total_amount)},
+        "订单已创建",
+    )
+
+
+@router.post("/orders/{order_id}/refresh-status")
+async def refresh_status(
+    order_id: int,
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """拉取 ERP 履约状态并回写（03-API §27）。
+
+    与 `GET /integrations/erp/orders/{id}/status` 是同一件事，
+    这里给订单详情页一个"就地刷新"的入口。
+    """
+    order = await svc.get_visible_order(session, user, order_id)
+    try:
+        result = await erp_service.refresh_status(session, order=order, operator_id=user.id)
+    except (ErpNotConfigured, ErpError) as error:
+        await session.rollback()
+        raise erp_translate(error) from error
+    await session.commit()
+    return ok(result, "状态已同步" if result["changed"] else "状态没有变化")
 
 
 @router.post("/quote-versions/{version_id}/convert-to-order")
@@ -370,11 +453,12 @@ async def list_receivables(
 @router.get("/orders/{order_id}/payments")
 async def list_order_payments(
     order_id: int,
-    _: CurrentUser = Depends(require_permission("payment:view")),
+    user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
     from app.modules.payment import service as payment_service
 
+    await svc.get_visible_order(session, user, order_id)
     rows = (
         await session.execute(
             select(PaymentRecord)

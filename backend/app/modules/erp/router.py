@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, require_permission
+from app.core.data_scope import ensure_in_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.erp import service as svc
@@ -68,6 +69,8 @@ async def push_by_order_no(
     ).scalars().first()
     if order is None:
         raise AppError(ErrorCode.NOT_FOUND, f"订单 {payload.order_no} 不存在", 404)
+    # 按单号推送也要过数据范围，否则知道单号就能推别人的订单
+    await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
     try:
         result = await svc.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -93,7 +96,7 @@ async def sync_order(
     session: AsyncSession = Depends(get_db),
 ):
     """把订单推送到 ERP/MES（幂等：推过的直接返回，不重复建单）。"""
-    order = await order_service.get_order_or_404(session, order_id)
+    order = await order_service.get_visible_order(session, user, order_id)
     try:
         result = await svc.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -119,7 +122,7 @@ async def order_status(
     session: AsyncSession = Depends(get_db),
 ):
     """拉取履约状态并回写（写入 order_status_history，source=ERP）。"""
-    order = await order_service.get_order_or_404(session, order_id)
+    order = await order_service.get_visible_order(session, user, order_id)
     try:
         result = await svc.refresh_status(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:

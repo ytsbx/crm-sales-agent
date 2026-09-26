@@ -20,8 +20,10 @@ from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.payment.schema import (
     PaymentAction,
     PaymentCreate,
+    PaymentUpdate,
     ReceivableCreate,
     ReceivableGenerate,
+    ReceivableUpdate,
 )
 
 router = APIRouter(tags=["Payment"])
@@ -33,10 +35,15 @@ async def list_receivables(
     order_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("payment:view")),
+    user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = select(ReceivablePlan)
+    # 应收没有自己的负责人，可见性跟着订单走。此前这里完全没过滤，
+    # 张三配了 scope=self 也能看到全公司的应收明细。
+    visible = await svc.visible_order_ids_stmt(session, user)
+    if visible is not None:
+        stmt = stmt.where(ReceivablePlan.order_id.in_(visible))
     if status:
         stmt = stmt.where(ReceivablePlan.status == status)
     if order_id:
@@ -46,25 +53,48 @@ async def list_receivables(
     return ok(page_data(items, total, page, page_size))
 
 
-@router.post("/orders/{order_id}/receivables")
+@router.post("/receivables")
 async def create_receivable(
-    order_id: int,
     payload: ReceivableCreate,
     request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    await get_order_or_404(session, order_id)
+    """建应收节点（03-API §29）；order_id 从 body 取。
+
+    `POST /orders/{id}/receivables` 是同一条逻辑的订单内入口。
+    """
+    if not payload.order_id:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请指定 order_id")
+    return await _create_plan(session, payload.order_id, payload, request, user)
+
+
+@router.get("/receivables/{plan_id}")
+async def get_receivable(
+    plan_id: int,
+    user: CurrentUser = Depends(require_permission("payment:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    plan = await svc.get_visible_plan(session, user, plan_id)
+    return ok(await svc.serialize_plan(session, plan))
+
+
+async def _create_plan(session, order_id, payload, request, user):
+    order = await get_order_or_404(session, order_id)
+    await svc.assert_order_visible(session, user, order_id)
     plan = ReceivablePlan(
         order_id=order_id,
         plan_name=payload.plan_name,
         due_date=payload.due_date,
         amount=Decimal(str(payload.amount)),
+        currency=order.currency,
         status="pending",
         remark=payload.remark,
         created_at=datetime.now(UTC),
     )
     session.add(plan)
+    await session.flush()
+    await svc.recalc_plan(session, plan)
     await session.flush()
     await write_audit(
         session,
@@ -79,6 +109,17 @@ async def create_receivable(
     return ok(await svc.serialize_plan(session, plan), "应收节点已创建")
 
 
+@router.post("/orders/{order_id}/receivables")
+async def create_order_receivable(
+    order_id: int,
+    payload: ReceivableCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    return await _create_plan(session, order_id, payload, request, user)
+
+
 @router.post("/orders/{order_id}/receivables/generate")
 async def generate_receivables(
     order_id: int,
@@ -89,6 +130,7 @@ async def generate_receivables(
 ):
     """按比例生成应收计划，例如 30% 定金 + 70% 尾款。"""
     order = await get_order_or_404(session, order_id)
+    await svc.assert_order_visible(session, user, order_id)
     if not payload.ratios or abs(sum(payload.ratios) - 1) > 0.0001:
         raise AppError(ErrorCode.PARAM_ERROR, "比例之和必须等于 1，例如 [0.3, 0.7]")
 
@@ -131,17 +173,23 @@ async def generate_receivables(
 @router.patch("/receivables/{plan_id}")
 async def update_receivable(
     plan_id: int,
-    payload: ReceivableCreate,
+    payload: ReceivableUpdate,
     request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    plan = await svc.get_plan_or_404(session, plan_id)
+    """改应收节点 —— 部分更新，只改传进来的字段。"""
+    plan = await svc.get_visible_plan(session, user, plan_id)
     before = await svc.serialize_plan(session, plan)
-    plan.plan_name = payload.plan_name
-    plan.due_date = payload.due_date
-    plan.amount = Decimal(str(payload.amount))
-    plan.remark = payload.remark
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("plan_name") is not None:
+        plan.plan_name = changes["plan_name"]
+    if changes.get("due_date") is not None:
+        plan.due_date = changes["due_date"]
+    if changes.get("amount") is not None:
+        plan.amount = Decimal(str(changes["amount"]))
+    if "remark" in changes:
+        plan.remark = changes["remark"]
     await svc.recalc_plan(session, plan)
     await session.flush()
     await write_audit(
@@ -165,7 +213,7 @@ async def delete_receivable(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    plan = await svc.get_plan_or_404(session, plan_id)
+    plan = await svc.get_visible_plan(session, user, plan_id)
     paid = (
         await session.execute(
             select(PaymentRecord.id).where(PaymentRecord.receivable_plan_id == plan_id)
@@ -195,7 +243,7 @@ async def mark_overdue(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    plan = await svc.get_plan_or_404(session, plan_id)
+    plan = await svc.get_visible_plan(session, user, plan_id)
     before_status = plan.status
     plan.status = "overdue"
     await session.flush()
@@ -219,10 +267,14 @@ async def list_payments(
     order_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("payment:view")),
+    user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = select(PaymentRecord)
+    # 同 list_receivables：可见性跟着订单走。
+    visible = await svc.visible_order_ids_stmt(session, user)
+    if visible is not None:
+        stmt = stmt.where(PaymentRecord.order_id.in_(visible))
     if status:
         stmt = stmt.where(PaymentRecord.status == status)
     if order_id:
@@ -230,6 +282,65 @@ async def list_payments(
     rows, total = await paginate(session, stmt.order_by(PaymentRecord.id.desc()), page, page_size)
     items = [await svc.serialize_payment(session, row) for row in rows]
     return ok(page_data(items, total, page, page_size))
+
+
+@router.get("/payments/{payment_id}")
+async def get_payment(
+    payment_id: int,
+    user: CurrentUser = Depends(require_permission("payment:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    record = await svc.get_visible_payment(session, user, payment_id)
+    return ok(await svc.serialize_payment(session, record))
+
+
+@router.patch("/payments/{payment_id}")
+async def update_payment(
+    payment_id: int,
+    payload: PaymentUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改回款登记（03-API §30）。
+
+    只有待确认（pending）的回款能改。确认/驳回都是财务给出的事实结论，
+    事后改金额会让已对账的账目对不上。
+    """
+    record = await svc.get_visible_payment(session, user, payment_id)
+    if record.status != "pending":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"回款已{'确认' if record.status == 'confirmed' else '驳回'}，不能再修改",
+        )
+    before = await svc.serialize_payment(session, record)
+    changes = payload.model_dump(exclude_unset=True)
+    if "received_amount" in changes:
+        record.received_amount = Decimal(str(changes["received_amount"]))
+    if "received_date" in changes:
+        record.received_date = changes["received_date"]
+    if "payment_method" in changes:
+        record.payment_method = changes["payment_method"]
+    if "voucher_note" in changes:
+        record.voucher_note = changes["voucher_note"]
+    await session.flush()
+    # 金额变了要重算应收节点状态，否则收齐了还显示"部分回款"
+    if record.receivable_plan_id:
+        plan = await svc.get_plan_or_404(session, record.receivable_plan_id)
+        await svc.recalc_plan(session, plan)
+        await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="payment",
+        business_id=record.id,
+        before=before,
+        after=await svc.serialize_payment(session, record),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(await svc.serialize_payment(session, record), "已保存")
 
 
 @router.post("/payments")
@@ -242,7 +353,7 @@ async def create_payment(
     plan = None
     order_id = None
     if payload.receivable_plan_id:
-        plan = await svc.get_plan_or_404(session, payload.receivable_plan_id)
+        plan = await svc.get_visible_plan(session, user, payload.receivable_plan_id)
         order_id = plan.order_id
     else:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请指定这笔回款对应的应收节点")
@@ -281,7 +392,7 @@ async def confirm_payment(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    record = await svc.get_payment_or_404(session, payment_id)
+    record = await svc.get_visible_payment(session, user, payment_id)
     if record.status == "confirmed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该回款已确认")
     record.status = "confirmed"
@@ -326,7 +437,7 @@ async def reject_payment(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    record = await svc.get_payment_or_404(session, payment_id)
+    record = await svc.get_visible_payment(session, user, payment_id)
     if record.status == "confirmed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已确认的回款不能驳回")
     before_status = record.status
@@ -349,9 +460,10 @@ async def reject_payment(
 @router.get("/receivables/{plan_id}/payments")
 async def plan_payments(
     plan_id: int,
-    _: CurrentUser = Depends(require_permission("payment:view")),
+    user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    await svc.get_visible_plan(session, user, plan_id)
     rows = (
         await session.execute(
             select(PaymentRecord)
@@ -365,8 +477,9 @@ async def plan_payments(
 @router.get("/orders/{order_id}/finance-summary")
 async def finance_summary(
     order_id: int,
-    _: CurrentUser = Depends(require_permission("payment:view")),
+    user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
     await get_order_or_404(session, order_id)
+    await svc.assert_order_visible(session, user, order_id)
     return ok(await svc.order_finance_summary(session, order_id))

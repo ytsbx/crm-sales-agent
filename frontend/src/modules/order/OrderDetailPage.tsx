@@ -15,7 +15,7 @@ import {
   listOrderReceivables,
   listOrderStatusHistory,
   orderFinanceSummary,
-  refreshErpStatus,
+  refreshStatus,
   repurchase,
   syncErp,
   type OrderItem,
@@ -176,7 +176,7 @@ export default function OrderDetailPage() {
   })
 
   const statusSyncMutation = useMutation({
-    mutationFn: () => refreshErpStatus(orderId),
+    mutationFn: () => refreshStatus(orderId),
     onSuccess: (data) => {
       if (data.changed) {
         Toast.success(`履约状态已更新为「${data.status_label}」`)
