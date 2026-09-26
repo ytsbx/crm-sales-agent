@@ -4,9 +4,11 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import TabBar from './TabBar'
 import GlobalSearch from './GlobalSearch'
 import NotificationBell from '../../modules/common/NotificationBell'
+import CopilotDrawer from '../../modules/common/CopilotDrawer'
 import { MENU_GROUPS, matchMenu } from '../menu'
 import { useAuthStore } from '../../shared/store/auth'
 import { useTabsStore } from '../../shared/store/tabs'
+import { useCopilotStore } from '../../shared/store/copilot'
 
 /** 独立页面（不在左侧菜单里）的页签名 */
 const EXTRA_TABS: Record<string, string> = { '/pricing': '核价' }
@@ -25,6 +27,7 @@ export default function AppLayout() {
   const user = useAuthStore((state) => state.user)
   const clear = useAuthStore((state) => state.clear)
   const openTab = useTabsStore((state) => state.openTab)
+  const openCopilot = useCopilotStore((state) => state.openWith)
 
   const currentMenu = matchMenu(location.pathname)
   const detailMatch = location.pathname.match(
@@ -102,6 +105,10 @@ export default function AppLayout() {
         <header className="app-header">
           <GlobalSearch />
           <div style={{ flex: 1 }} />
+          <button className="copilot-trigger" type="button" onClick={() => openCopilot()}>
+            <span className="copilot-dot" />
+            AI 助手
+          </button>
           <NotificationBell />
           <div className="header-user">
             <div className="header-avatar">{user?.name?.slice(0, 1) ?? '?'}</div>
@@ -123,6 +130,9 @@ export default function AppLayout() {
           <Outlet />
         </div>
       </div>
+
+      {/* 全局 Copilot 抽屉：任何页面都能拉开，自动带上当前页面的业务上下文 */}
+      <CopilotDrawer />
     </div>
   )
 }

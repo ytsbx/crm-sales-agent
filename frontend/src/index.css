@@ -303,6 +303,33 @@ a {
   border-left: 1px solid var(--crm-surface-high);
 }
 
+/* 顶栏「AI 助手」入口：拉起全局 Copilot 抽屉 */
+.copilot-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--crm-outline);
+  border-radius: var(--crm-radius-pill);
+  background: var(--crm-surface);
+  color: var(--crm-text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.copilot-trigger:hover {
+  border-color: var(--crm-secondary);
+  color: var(--crm-secondary);
+}
+
+.copilot-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--crm-secondary);
+}
+
 .header-avatar {
   width: 34px;
   height: 34px;

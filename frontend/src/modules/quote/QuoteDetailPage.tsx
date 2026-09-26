@@ -23,6 +23,8 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import { convertToOrder } from '../../shared/api/order'
 import DetailHeader from '../../shared/components/DetailHeader'
+import WhatIfPanel from './WhatIfPanel'
+import DecisionMakerCard from '../common/DecisionMakerCard'
 
 const STATUS_TONE: Record<string, TagTone> = {
   draft: 'grey',
@@ -392,6 +394,9 @@ export default function QuoteDetailPage() {
         />
       </div>
 
+      {/* What-if：版本方案对比 + 边际测算（设计稿 Sales Copilot 右栏那个滑杆） */}
+      <WhatIfPanel quoteId={quoteId} versionId={version.id} items={detail.items} />
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card-block">
           <div className="toolbar">
@@ -468,6 +473,9 @@ export default function QuoteDetailPage() {
             </div>
           </div>
         </div>
+
+        {/* 客户决策关系图（设计稿报价详情右栏），报价要发给谁、谁能拍板都在这 */}
+        <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" />
       </div>
 
       {detail.approval && (

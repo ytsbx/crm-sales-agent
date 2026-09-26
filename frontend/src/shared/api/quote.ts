@@ -96,6 +96,63 @@ export interface QuoteVersionDetail {
   } | null
 }
 
+export interface VersionComparisonRow {
+  version_id: number
+  version_no: number
+  approval_status: string
+  currency: string
+  item_count: number
+  sku_count: number
+  quantity: number
+  amount_total: number
+  charge_amount: number
+  discount_amount: number
+  total_amount: number
+  cost_total: number
+  profit_total: number
+  margin: number
+  avg_price: number | null
+  avg_cost: number | null
+  /** 单件成本口径（= 商品成本 + 运费；与核价 base_cost 一致）。 */
+  unit_cost?: number | null
+  unit_price?: number | null
+  unit_profit?: number | null
+  /** 整版加权的基准线（单 SKU 的价没法直接和整版均价比，所以按数量加权）。 */
+  unit_floor?: number | null
+  unit_standard?: number | null
+  unit_recommended?: number | null
+  approval_required: boolean
+  created_at: string
+  sent_at?: string | null
+  accepted_at?: string | null
+  trade_terms?: string | null
+  payment_terms?: string | null
+  charges: QuoteChargeRow[]
+}
+
+export interface VersionComparisonChange {
+  sku_id: number | null
+  sku_name?: string | null
+  field: 'added' | 'removed' | 'quantity' | 'quoted_price' | 'charge_amount' | 'discount_amount'
+  before: number | null
+  after: number | null
+}
+
+export interface VersionComparisonDiff {
+  from_version_no: number
+  to_version_no: number
+  amount_delta: number
+  profit_delta: number
+  margin_delta: number
+  changes: VersionComparisonChange[]
+}
+
+export interface VersionComparison {
+  versions: VersionComparisonRow[]
+  diffs: VersionComparisonDiff[]
+  latest_version_id: number | null
+}
+
 export interface ApprovalRow {
   id: number
   business_type: string
@@ -142,6 +199,11 @@ export function listQuoteVersions(quoteId: number) {
 
 export function createQuoteVersion(quoteId: number) {
   return api.post<QuoteVersion>(`/quotes/${quoteId}/versions`)
+}
+
+/** 报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。 */
+export function compareQuoteVersions(quoteId: number) {
+  return api.get<VersionComparison>(`/quotes/${quoteId}/version-comparison`)
 }
 
 export function getQuoteVersion(versionId: number) {

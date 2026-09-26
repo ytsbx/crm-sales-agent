@@ -73,6 +73,38 @@ async function firstId(path, token) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * 按可见文字点击页面元素。
+ *
+ * 有些交付物（商机看板、Copilot 抽屉）默认不出现，只有点一下才渲染出来；
+ * 只截图列表页等于没验证。这里按文字找元素再派发真实点击事件。
+ */
+async function clickByText(client, text, { tag = 'button' } = {}) {
+  const expression = `(() => {
+    const nodes = Array.from(document.querySelectorAll(${JSON.stringify(tag)}));
+    const hit = nodes.find((node) => (node.innerText || '').trim() === ${JSON.stringify(text)});
+    if (!hit) return 'not-found';
+    hit.click();
+    return 'clicked';
+  })()`
+  const result = await client.send('Runtime.evaluate', { expression, returnByValue: true })
+  return result.result.value
+}
+
+/** 等某个文字在页面上出现（交互后用它确认结果真的渲染了）。 */
+async function waitForText(client, text, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await client.send('Runtime.evaluate', {
+      expression: `document.body.innerText.includes(${JSON.stringify(text)})`,
+      returnByValue: true,
+    })
+    if (result.result.value) return true
+    await sleep(250)
+  }
+  return false
+}
+
 async function apiLogin() {
   const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
     method: 'POST',
@@ -297,6 +329,77 @@ async function main() {
       if (!rendered) problems.push(`页面始终没有渲染出内容：${page.path}`)
       console.log(`${rendered ? '✓' : '✗'} ${page.path} → ${file}`)
       console.log(`  页面首屏文本：${text.result.value}`)
+    }
+
+    // ---- 需要点击才出现的交付物：看板 / Copilot 抽屉 / What-if ----------------
+    // 这几项是"交互后才有"的，逐页截图覆盖不到，所以单独点一遍。
+    const INTERACTIONS = [
+      {
+        name: '26-opportunity-board',
+        path: '/opportunities',
+        clicks: ['看板'],
+        expect: ['新询盘', '暂无商机', '推进'],
+      },
+      {
+        name: '27-copilot-drawer',
+        path: '/workbench',
+        clicks: ['AI 助手'],
+        expect: ['Sales Copilot', '当前上下文'],
+      },
+      {
+        name: '28-quote-whatif',
+        path: `/quotes/${quoteId ?? 1}`,
+        clicks: [],
+        expect: ['版本与方案对比', '边际测算'],
+      },
+      {
+        name: '29-quote-copilot-context',
+        path: `/quotes/${quoteId ?? 1}`,
+        clicks: ['AI 助手'],
+        expect: ['当前上下文：报价单'],
+      },
+    ]
+
+    for (const item of INTERACTIONS) {
+      await client.send('Page.navigate', { url: `${APP_BASE}${item.path}` })
+      let ok = false
+      for (let i = 0; i < 60; i += 1) {
+        const probe = await client.send('Runtime.evaluate', {
+          expression:
+            'Boolean(document.querySelector("#root, #app")?.children.length) && document.body.innerText.trim().length > 0',
+          returnByValue: true,
+        })
+        if (probe.result.value) {
+          ok = true
+          break
+        }
+        await sleep(250)
+      }
+      await sleep(600)
+
+      for (const label of item.clicks) {
+        const outcome = await clickByText(client, label)
+        if (outcome !== 'clicked') problems.push(`点不到「${label}」（${item.path}）`)
+        await sleep(500)
+      }
+
+      const missing = []
+      for (const text of item.expect) {
+        // 多个候选文案满足其一即可（看板可能因为没数据只显示空态）
+        const hit = await waitForText(client, text, 3000)
+        missing.push(hit ? null : text)
+      }
+      const missingReal = missing.filter(Boolean)
+      // expect 里任意一条命中就算通过，避免把"没数据"误判成功能缺失
+      if (missingReal.length === item.expect.length) {
+        problems.push(`${item.name}：页面上找不到 ${item.expect.join(' / ')}`)
+      }
+
+      await sleep(400)
+      const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+      const file = join(OUT_DIR, `${item.name}.png`)
+      writeFileSync(file, Buffer.from(shot.data, 'base64'))
+      console.log(`${ok ? '✓' : '✗'} [交互] ${item.path} + ${item.clicks.join('+') || '直接看'} → ${file}`)
     }
 
     if (problems.length > 0) {

@@ -219,6 +219,17 @@ async def list_versions(
     return ok([svc.serialize_version(version) for version in rows])
 
 
+@router.get("/quotes/{quote_id}/version-comparison")
+async def compare_versions(
+    quote_id: int,
+    _: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。"""
+    await svc.get_quote_or_404(session, quote_id)
+    return ok(await svc.version_comparison(session, quote_id))
+
+
 @router.post("/quotes/{quote_id}/versions")
 async def create_version(
     quote_id: int,

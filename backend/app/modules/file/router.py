@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
-from app.modules.file import storage
+from app.modules.file import access, storage
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.user.model import User
 
@@ -28,6 +28,8 @@ def serialize_file(record: FileRecord, uploader: str | None = None) -> dict:
         "mime_type": record.mime_type,
         "size": record.size,
         "storage_provider": record.storage_provider,
+        # 前端据此决定显示"预览"还是"下载"
+        "previewable": is_previewable(record),
         "uploaded_by": record.uploaded_by,
         "uploader_name": uploader,
         "created_at": record.created_at,
@@ -82,24 +84,29 @@ async def upload_file(
 @router.get("/files/{file_id}")
 async def get_file(
     file_id: int,
-    _: CurrentUser = Depends(require_permission("file:view")),
+    user: CurrentUser = Depends(require_permission("file:view")),
     session: AsyncSession = Depends(get_db),
 ):
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    if not await access.can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.FORBIDDEN, "该文件所在的业务对象不在你的数据范围内", 403)
     return ok(serialize_file(record))
 
 
 @router.get("/files/{file_id}/download")
 async def download_file(
     file_id: int,
-    _: CurrentUser = Depends(require_permission("file:view")),
+    user: CurrentUser = Depends(require_permission("file:view")),
     session: AsyncSession = Depends(get_db),
 ):
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    # 附件挂在业务对象上，必须反查可见性；只校验 file:view 会让任何人按 id 取走别人的文件
+    if not await access.can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.FORBIDDEN, "该文件所在的业务对象不在你的数据范围内", 403)
     path = storage.absolute_path(record.object_key)
     if not path.exists():
         raise AppError(ErrorCode.NOT_FOUND, "文件内容已丢失", 404)
@@ -110,6 +117,96 @@ async def download_file(
         headers={
             # 中文文件名要走 RFC 5987，否则浏览器会乱码
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(record.file_name)}"
+        },
+    )
+
+
+# 能内联预览的类型。刻意只放"浏览器原生渲染且不容易执行脚本"的。
+PREVIEWABLE_MIME_PREFIXES = ("image/",)
+PREVIEWABLE_MIME_EXACT = {
+    "application/pdf",
+    "text/plain",
+    "text/csv",
+    "text/markdown",
+}
+
+# 显式拒绝内联的类型。前缀匹配（image/*）会漏掉下面这些，
+# 所以必须先按"危险清单"挡一道：
+#   svg  : 是图片但能内嵌 <script>，内联即 XSS
+#   html/xml: 同理
+# 这类一律降级为下载（浏览器下载后本地打开的风险由用户自己承担，
+# 至少不会以我们站点的身份执行）。
+DANGEROUS_MIME_EXACT = {
+    "image/svg+xml",
+    "text/html",
+    "application/xhtml+xml",
+    "text/xml",
+    "application/xml",
+}
+DANGEROUS_SUFFIXES = {".svg", ".svgz", ".html", ".htm", ".xhtml", ".xml"}
+
+PREVIEWABLE_SUFFIXES = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".pdf",
+    ".txt",
+    ".csv",
+    ".md",
+    ".log",
+}
+
+
+def is_previewable(record: FileRecord) -> bool:
+    mime = (record.mime_type or "").lower()
+    suffix = Path(record.file_name or "").suffix.lower()
+    # 危险清单优先于一切：mime 说是图片也不行
+    if mime in DANGEROUS_MIME_EXACT or suffix in DANGEROUS_SUFFIXES:
+        return False
+    if mime.startswith(PREVIEWABLE_MIME_PREFIXES) or mime in PREVIEWABLE_MIME_EXACT:
+        return True
+    return suffix in PREVIEWABLE_SUFFIXES
+
+
+@router.get("/files/{file_id}/preview")
+async def preview_file(
+    file_id: int,
+    user: CurrentUser = Depends(require_permission("file:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """内联预览（PRD §25 的「预览」）。
+
+    与 download 的区别只在于 `Content-Disposition: inline`：让浏览器直接渲染，
+    而不是弹下载框。**不是**把文件内容转成 HTML —— 那样等于自己造 XSS 通道。
+    不可预览的类型返回 `inline=false` 并让前端走下载，不做静默降级。
+    """
+    record = await session.get(FileRecord, file_id)
+    if record is None:
+        raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    if not await access.can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.FORBIDDEN, "该文件所在的业务对象不在你的数据范围内", 403)
+    path = storage.absolute_path(record.object_key)
+    if not path.exists():
+        raise AppError(ErrorCode.NOT_FOUND, "文件内容已丢失", 404)
+
+    if not is_previewable(record):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{record.file_name}」的类型不支持在线预览，请下载后查看",
+            422,
+        )
+
+    return FileResponse(
+        path,
+        media_type=record.mime_type or "application/octet-stream",
+        filename=record.file_name,
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(record.file_name)}",
+            # 防嗅探：浏览器不得把内容当成别的类型执行
+            "X-Content-Type-Options": "nosniff",
         },
     )
 

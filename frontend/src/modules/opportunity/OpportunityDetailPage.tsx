@@ -36,6 +36,7 @@ import DetailField from '../common/DetailField'
 import FollowUpModal from '../common/FollowUpModal'
 import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
+import DecisionMakerCard from '../common/DecisionMakerCard'
 import type { TagTone } from '../../shared/types'
 
 const TABS = [
@@ -390,31 +391,40 @@ export default function OpportunityDetailPage() {
 
         <div style={{ marginTop: 16 }}>
           {activeKey === 'overview' && (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: 20,
-              }}
-            >
-              <DetailField label="商机名称" value={opportunity.title} />
-              <DetailField label="客户" value={opportunity.customer_name} />
-              <DetailField label="当前阶段" value={opportunity.stage_name} />
-              <DetailField
-                label="预计金额"
-                value={opportunity.expected_amount ? `¥${opportunity.expected_amount.toLocaleString('zh-CN')}` : '-'}
-              />
-              <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
-              <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />
-              <DetailField label="下一步动作" value={opportunity.next_action ?? '-'} />
-              <DetailField label="来源" value={opportunity.source ?? '-'} />
-              <DetailField label="创建时间" value={new Date(opportunity.created_at).toLocaleString('zh-CN')} />
-              {opportunity.status === 'loss' && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 24 }}>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: 20,
+                  alignContent: 'start',
+                }}
+              >
+                <DetailField label="商机名称" value={opportunity.title} />
+                <DetailField label="客户" value={opportunity.customer_name} />
+                <DetailField label="当前阶段" value={opportunity.stage_name} />
                 <DetailField
-                  label="失单原因"
-                  value={`${opportunity.loss_reason_name ?? '-'}${opportunity.loss_remark ? `（${opportunity.loss_remark}）` : ''}`}
+                  label="预计金额"
+                  value={opportunity.expected_amount ? `¥${opportunity.expected_amount.toLocaleString('zh-CN')}` : '-'}
                 />
-              )}
+                <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
+                <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />
+                <DetailField label="下一步动作" value={opportunity.next_action ?? '-'} />
+                <DetailField label="来源" value={opportunity.source ?? '-'} />
+                <DetailField label="创建时间" value={new Date(opportunity.created_at).toLocaleString('zh-CN')} />
+                {opportunity.status === 'loss' && (
+                  <DetailField
+                    label="失单原因"
+                    value={`${opportunity.loss_reason_name ?? '-'}${opportunity.loss_remark ? `（${opportunity.loss_remark}）` : ''}`}
+                  />
+                )}
+              </div>
+              {/* 客户决策关系图（设计稿商机详情右栏）：这单要打通谁一目了然 */}
+              <DecisionMakerCard
+                customerId={opportunity.customer_id}
+                title="客户决策关系图"
+                boxed={false}
+              />
             </div>
           )}
 

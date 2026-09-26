@@ -188,6 +188,9 @@ export interface PricingResult {
   standard_price: number
   recommended_price: number
   recommended_range: [number, number]
+  /** 公司口径的最低价（保护价）：低于它必须走审批，与下面的授权底价分开看。 */
+  protection_price?: number | null
+  /** 当前用户权限内的底价。 */
   minimum_price: number
   authorized_min_margin: number
   can_approve: boolean
@@ -202,6 +205,12 @@ export interface PricingResult {
   profit: number
   profit_rate: number
   approval_required: boolean
+  approval_triggers?: {
+    below_protection_price: boolean
+    below_authorized_price: boolean
+    negative_profit: boolean
+    below_authorized_margin: boolean
+  }
   warnings: string[]
 }
 

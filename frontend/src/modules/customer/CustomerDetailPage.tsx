@@ -29,6 +29,7 @@ import DetailHeader from '../../shared/components/DetailHeader'
 import FollowUpModal from '../common/FollowUpModal'
 import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
+import DecisionMakerCard from '../common/DecisionMakerCard'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -398,22 +399,26 @@ export default function CustomerDetailPage() {
           )}
 
           {activeKey === 'contacts' && (
-            <>
-              <div className="toolbar">
-                <div style={{ flex: 1 }} />
-                <Button theme="solid" onClick={() => setContactModal(true)}>
-                  新建联系人
-                </Button>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16 }}>
+              <div>
+                <div className="toolbar">
+                  <div style={{ flex: 1 }} />
+                  <Button theme="solid" onClick={() => setContactModal(true)}>
+                    新建联系人
+                  </Button>
+                </div>
+                <Table<Contact>
+                  columns={contactColumns}
+                  dataSource={contactsQuery.data ?? []}
+                  loading={contactsQuery.isLoading}
+                  rowKey="id"
+                  pagination={false}
+                  empty="还没有联系人"
+                />
               </div>
-              <Table<Contact>
-                columns={contactColumns}
-                dataSource={contactsQuery.data ?? []}
-                loading={contactsQuery.isLoading}
-                rowKey="id"
-                pagination={false}
-                empty="还没有联系人"
-              />
-            </>
+              {/* 核心决策人卡片（设计稿客户详情右栏） */}
+              <DecisionMakerCard customerId={customerId} boxed={false} />
+            </div>
           )}
 
           {activeKey === 'opportunities' && (

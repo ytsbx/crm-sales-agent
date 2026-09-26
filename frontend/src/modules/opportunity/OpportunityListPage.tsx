@@ -14,6 +14,7 @@ import {
 } from '../../shared/api/opportunity'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
+import OpportunityBoard from './OpportunityBoard'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -33,6 +34,7 @@ export default function OpportunityListPage() {
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<string>('open')
   const [stageId, setStageId] = useState<number | undefined>()
+  const [view, setView] = useState<'table' | 'board'>('table')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
 
@@ -199,6 +201,7 @@ export default function OpportunityListPage() {
             }}
             optionList={STATUS_OPTIONS}
             style={{ width: 130 }}
+            disabled={view === 'board'}
           />
           <Button
             onClick={() => {
@@ -209,6 +212,22 @@ export default function OpportunityListPage() {
             查询
           </Button>
           <div style={{ flex: 1 }} />
+          <div style={{ display: 'flex', gap: 0, marginRight: 8 }}>
+            <Button
+              size="small"
+              theme={view === 'table' ? 'solid' : 'borderless'}
+              onClick={() => setView('table')}
+            >
+              表格
+            </Button>
+            <Button
+              size="small"
+              theme={view === 'board' ? 'solid' : 'borderless'}
+              onClick={() => setView('board')}
+            >
+              看板
+            </Button>
+          </div>
           {can('opportunity:manage') && (
             <Button theme="solid" onClick={() => setCreateVisible(true)}>
               新建商机
@@ -216,25 +235,36 @@ export default function OpportunityListPage() {
           )}
         </div>
 
-        <Table<Opportunity>
-          columns={columns}
-          dataSource={query.data?.items ?? []}
-          loading={query.isLoading}
-          rowKey="id"
-          size="middle"
-          empty="还没有商机"
-          pagination={{
-            currentPage: page,
-            pageSize,
-            total: query.data?.total ?? 0,
-            showSizeChanger: true,
-            onPageChange: (next: number) => setPage(next),
-            onPageSizeChange: (size: number) => {
-              setPageSize(size)
-              setPage(1)
-            },
-          }}
-        />
+        {view === 'board' ? (
+          <OpportunityBoard
+            keyword={keyword}
+            canManage={can('opportunity:manage')}
+            onChanged={() => {
+              void queryClient.invalidateQueries({ queryKey: ['opportunity-board'] })
+              void queryClient.invalidateQueries({ queryKey: ['funnel'] })
+            }}
+          />
+        ) : (
+          <Table<Opportunity>
+            columns={columns}
+            dataSource={query.data?.items ?? []}
+            loading={query.isLoading}
+            rowKey="id"
+            size="middle"
+            empty="还没有商机"
+            pagination={{
+              currentPage: page,
+              pageSize,
+              total: query.data?.total ?? 0,
+              showSizeChanger: true,
+              onPageChange: (next: number) => setPage(next),
+              onPageSizeChange: (size: number) => {
+                setPageSize(size)
+                setPage(1)
+              },
+            }}
+          />
+        )}
       </div>
 
       <Modal

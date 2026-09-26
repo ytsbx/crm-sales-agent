@@ -37,8 +37,34 @@ SYSTEM_PROMPT = """你是公司销售 CRM 里的销售助手，服务对象是�
   **不要把工具函数名（如 search_customers）直接抛给用户**；
 - 回答用中文，简洁、直接、可执行，不要说套话。
 
-当前用户：{name}（角色：{roles}，数据范围：{scope}）
+当前用户：{name}（角色：{roles}，数据范围：{scope}）{context}
 """
+
+
+CONTEXT_LABEL = {
+    "customer": "客户",
+    "opportunity": "商机",
+    "quote": "报价单",
+    "order": "销售订单",
+    "lead": "线索",
+    "sample": "样品申请",
+    "task": "任务",
+}
+
+
+def render_context(agent_session: AgentSession) -> str:
+    """把会话携带的业务上下文写进系统提示词（详情页右侧 Copilot 用）。
+
+    `agent_sessions.context_type / context_id` 这两列一直存在却没被用过，
+    导致从报价详情页打开助手时，模型不知道用户正看着哪张报价单。
+    """
+    if not agent_session.context_type or not agent_session.context_id:
+        return ""
+    label = CONTEXT_LABEL.get(agent_session.context_type, agent_session.context_type)
+    return (
+        f"\n用户当前正在查看：{label} id={agent_session.context_id}。"
+        "相关提问默认指这条记录，先用工具查它再回答。"
+    )
 
 
 def model_ready() -> bool:
@@ -150,7 +176,10 @@ async def run_turn(
         {
             "role": "system",
             "content": SYSTEM_PROMPT.format(
-                name=user.name, roles="、".join(user.roles) or "未分配", scope=user.data_scope
+                name=user.name,
+                roles="、".join(user.roles) or "未分配",
+                scope=user.data_scope,
+                context=render_context(agent_session),
             ),
         },
         *await _history(session, agent_session.id, limit=16),

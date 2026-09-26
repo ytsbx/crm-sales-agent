@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Modal, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   deleteFile,
   downloadFile,
+  fetchFilePreview,
   listBusinessFiles,
   uploadFile,
   type FileRow,
@@ -34,6 +35,29 @@ export default function AttachmentPanel({ businessType, businessId, category }: 
   const { can } = usePermissions()
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
+
+  // 预览状态：objectUrl 用完必须 revoke，否则 blob 会一直留在内存里
+  const [preview, setPreview] = useState<{ name: string; mime: string; url: string } | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+
+  useEffect(
+    () => () => {
+      if (preview) window.URL.revokeObjectURL(preview.url)
+    },
+    [preview],
+  )
+
+  const openPreview = async (record: FileRow) => {
+    setPreviewing(true)
+    try {
+      const { blob, mime } = await fetchFilePreview(record.id)
+      setPreview({ name: record.file_name, mime, url: window.URL.createObjectURL(blob) })
+    } catch (error) {
+      Toast.error(error instanceof Error ? error.message : '预览失败')
+    } finally {
+      setPreviewing(false)
+    }
+  }
 
   const query = useQuery({
     queryKey: ['business-files', businessType, businessId],
@@ -101,7 +125,12 @@ export default function AttachmentPanel({ businessType, businessId, category }: 
             title: '文件名',
             dataIndex: 'file_name',
             render: (name: string, record: FileRow) => (
-              <a style={{ color: 'var(--crm-primary)' }} onClick={() => downloadFile(record.id, name)}>
+              <a
+                style={{ color: 'var(--crm-primary)' }}
+                onClick={() =>
+                  record.previewable ? void openPreview(record) : downloadFile(record.id, name)
+                }
+              >
                 {name}
               </a>
             ),
@@ -128,20 +157,30 @@ export default function AttachmentPanel({ businessType, businessId, category }: 
           },
           {
             title: '操作',
-            width: 140,
-            render: (_: unknown, record: FileRow) =>
-              can('file:manage') ? (
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <a style={{ color: 'var(--crm-primary)' }} onClick={() => downloadFile(record.id, record.file_name)}>
-                    下载
+            width: 170,
+            render: (_: unknown, record: FileRow) => (
+              <div style={{ display: 'flex', gap: 10 }}>
+                {record.previewable && (
+                  <a style={{ color: 'var(--crm-primary)' }} onClick={() => void openPreview(record)}>
+                    预览
                   </a>
-                  <Popconfirm title="删除后不可恢复，确认？" onConfirm={() => deleteMutation.mutate(record.id)}>
+                )}
+                <a
+                  style={{ color: 'var(--crm-primary)' }}
+                  onClick={() => downloadFile(record.id, record.file_name)}
+                >
+                  下载
+                </a>
+                {can('file:manage') && (
+                  <Popconfirm
+                    title="删除后不可恢复，确认？"
+                    onConfirm={() => deleteMutation.mutate(record.id)}
+                  >
                     <a style={{ color: 'var(--crm-error)' }}>删除</a>
                   </Popconfirm>
-                </div>
-              ) : (
-                '-'
-              ),
+                )}
+              </div>
+            ),
           },
         ]}
         dataSource={query.data ?? []}
@@ -150,6 +189,37 @@ export default function AttachmentPanel({ businessType, businessId, category }: 
         pagination={false}
         empty="还没有附件"
       />
+
+      {/* 预览弹窗：图片用 img，PDF / 文本用 iframe（浏览器原生渲染） */}
+      <Modal
+        title={preview ? `预览：${preview.name}` : '预览'}
+        visible={preview !== null}
+        onCancel={() => setPreview(null)}
+        footer={null}
+        width={880}
+        bodyStyle={{ padding: 12 }}
+      >
+        {preview && (
+          <div style={{ maxHeight: '70vh', overflow: 'auto', textAlign: 'center' }}>
+            {preview.mime.startsWith('image/') ? (
+              <img
+                src={preview.url}
+                alt={preview.name}
+                style={{ maxWidth: '100%', borderRadius: 4 }}
+              />
+            ) : (
+              <iframe
+                src={preview.url}
+                title={preview.name}
+                style={{ width: '100%', height: '68vh', border: '1px solid var(--crm-outline)' }}
+              />
+            )}
+          </div>
+        )}
+        <div style={{ marginTop: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
+          预览在浏览器内进行；如需存档请用「下载」。当前会话 {previewing ? '正在加载…' : '已就绪'}。
+        </div>
+      </Modal>
     </>
   )
 }

@@ -739,3 +739,233 @@ async def opportunity_items(session: AsyncSession, opportunity_id: int) -> list[
             )
         ).scalars().all()
     )
+
+
+async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
+    """报价多方案对比（PRD §15.2 + UI 设计稿 What-if A/B/C）。
+
+    逐版本汇总「数量 / SKU 数 / 报价总额 / 成本 / 毛利 / 综合毛利率 / 均价」，
+    并与**上一版**做逐项差异，让业务看清"改了什么导致利润变化"。
+    全部基于版本内已落库的快照字段，不重算、不读当前价——历史版本必须可复现。
+    """
+    versions = list(
+        (
+            await session.execute(
+                select(QuoteVersion)
+                .where(QuoteVersion.quote_id == quote_id)
+                .order_by(QuoteVersion.version_no.asc())
+            )
+        ).scalars().all()
+    )
+    if not versions:
+        return {"versions": [], "diffs": [], "latest_version_id": None}
+
+    version_ids = [v.id for v in versions]
+    items = list(
+        (
+            await session.execute(
+                select(QuoteItem)
+                .where(QuoteItem.quote_version_id.in_(version_ids))
+                .order_by(QuoteItem.id.asc())
+            )
+        ).scalars().all()
+    )
+    charges = list(
+        (
+            await session.execute(
+                select(QuoteCharge)
+                .where(QuoteCharge.quote_version_id.in_(version_ids))
+                .order_by(QuoteCharge.sort_no.asc(), QuoteCharge.id.asc())
+            )
+        ).scalars().all()
+    )
+
+    items_by_version: dict[int, list[QuoteItem]] = {}
+    for item in items:
+        items_by_version.setdefault(item.quote_version_id, []).append(item)
+    charges_by_version: dict[int, list[QuoteCharge]] = {}
+    for charge in charges:
+        charges_by_version.setdefault(charge.quote_version_id, []).append(charge)
+
+    rows: list[dict] = []
+    for version in versions:
+        v_items = items_by_version.get(version.id, [])
+        v_charges = charges_by_version.get(version.id, [])
+        quantity = sum((item.quantity for item in v_items), ZERO)
+        # 单件总成本 = cost_snapshot（商品成本）+ logistics_cost_snapshot（单件运费），
+        # 这与 `build_item_snapshot` 里算 profit_snapshot 的口径以及
+        # `pricing` 的 base_cost = goods_cost + logistics 完全一致。
+        # 少加运费会让汇总毛利和明细的利润快照对不上。
+        cost_total = sum(
+            (
+                (item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity
+                for item in v_items
+            ),
+            ZERO,
+        )
+        amount_total = sum((item.quantity * item.quoted_price for item in v_items), ZERO)
+        # 毛利按明细的利润快照汇总，保证与报价明细表里逐条显示的数字完全对得上
+        profit_total = sum((item.profit_snapshot * item.quantity for item in v_items), ZERO)
+        if not v_items:
+            profit_total = amount_total - cost_total
+        margin = (profit_total / amount_total) if amount_total else ZERO
+        skus = {item.sku_id for item in v_items}
+        rows.append(
+            {
+                "version_id": version.id,
+                "version_no": version.version_no,
+                "approval_status": version.approval_status,
+                "currency": version.currency,
+                "item_count": len(v_items),
+                "sku_count": len(skus),
+                "quantity": _f(quantity),
+                "amount_total": _f(amount_total),
+                "charge_amount": _f(version.charge_amount),
+                "discount_amount": _f(version.discount_amount),
+                "total_amount": _f(version.total_amount),
+                "cost_total": _f(cost_total),
+                "profit_total": _f(profit_total),
+                "margin": _f(margin),
+                "avg_price": _f(amount_total / quantity) if quantity else None,
+                "avg_cost": _f(cost_total / quantity) if quantity else None,
+                # 单件口径单独给一份，前端做滑杆测算时直接用，避免各自算错成本
+                "unit_cost": _f(cost_total / quantity) if quantity else None,
+                "unit_price": _f(amount_total / quantity) if quantity else None,
+                "unit_profit": _f(profit_total / quantity) if quantity else None,
+                # 整版加权的价格基准线：单 SKU 的建议价/最低价跟"整版均价"没法直接比，
+                # 加权之后滑杆上的价格就能和它们逐条对照。
+                "unit_floor": (
+                    _f(
+                        sum(
+                            ((item.minimum_price_snapshot or ZERO) * item.quantity for item in v_items),
+                            ZERO,
+                        )
+                        / quantity
+                    )
+                    if quantity
+                    else None
+                ),
+                "unit_standard": (
+                    _f(
+                        sum(
+                            (
+                                (item.standard_price_snapshot or ZERO) * item.quantity
+                                for item in v_items
+                            ),
+                            ZERO,
+                        )
+                        / quantity
+                    )
+                    if quantity
+                    else None
+                ),
+                "unit_recommended": (
+                    _f(
+                        sum(
+                            (
+                                (item.recommended_price_snapshot or ZERO) * item.quantity
+                                for item in v_items
+                            ),
+                            ZERO,
+                        )
+                        / quantity
+                    )
+                    if quantity
+                    else None
+                ),
+                "approval_required": any(item.approval_required for item in v_items),
+                "created_at": version.created_at,
+                "sent_at": version.sent_at,
+                "accepted_at": version.accepted_at,
+                "trade_terms": version.trade_terms,
+                "payment_terms": version.payment_terms,
+                "charges": [serialize_charge(charge) for charge in v_charges],
+            }
+        )
+
+    diffs: list[dict] = []
+    for previous, current in zip(rows, rows[1:], strict=False):
+        prev_items = {item.sku_id: item for item in items_by_version.get(previous["version_id"], [])}
+        curr_items = {item.sku_id: item for item in items_by_version.get(current["version_id"], [])}
+        changes: list[dict] = []
+        for sku_id in sorted(set(prev_items) | set(curr_items)):
+            before = prev_items.get(sku_id)
+            after = curr_items.get(sku_id)
+            if before is None:
+                changes.append(
+                    {
+                        "sku_id": sku_id,
+                        "sku_name": after.sku_name_snapshot if after else None,
+                        "field": "added",
+                        "before": None,
+                        "after": _f(after.quoted_price) if after else None,
+                    }
+                )
+                continue
+            if after is None:
+                changes.append(
+                    {
+                        "sku_id": sku_id,
+                        "sku_name": before.sku_name_snapshot,
+                        "field": "removed",
+                        "before": _f(before.quoted_price),
+                        "after": None,
+                    }
+                )
+                continue
+            if before.quantity != after.quantity:
+                changes.append(
+                    {
+                        "sku_id": sku_id,
+                        "sku_name": after.sku_name_snapshot,
+                        "field": "quantity",
+                        "before": _f(before.quantity),
+                        "after": _f(after.quantity),
+                    }
+                )
+            if before.quoted_price != after.quoted_price:
+                changes.append(
+                    {
+                        "sku_id": sku_id,
+                        "sku_name": after.sku_name_snapshot,
+                        "field": "quoted_price",
+                        "before": _f(before.quoted_price),
+                        "after": _f(after.quoted_price),
+                    }
+                )
+        if previous["charge_amount"] != current["charge_amount"]:
+            changes.append(
+                {
+                    "sku_id": None,
+                    "sku_name": None,
+                    "field": "charge_amount",
+                    "before": previous["charge_amount"],
+                    "after": current["charge_amount"],
+                }
+            )
+        if previous["discount_amount"] != current["discount_amount"]:
+            changes.append(
+                {
+                    "sku_id": None,
+                    "sku_name": None,
+                    "field": "discount_amount",
+                    "before": previous["discount_amount"],
+                    "after": current["discount_amount"],
+                }
+            )
+        diffs.append(
+            {
+                "from_version_no": previous["version_no"],
+                "to_version_no": current["version_no"],
+                "amount_delta": round(current["amount_total"] - previous["amount_total"], 2),
+                "profit_delta": round(current["profit_total"] - previous["profit_total"], 2),
+                "margin_delta": round(current["margin"] - previous["margin"], 6),
+                "changes": changes,
+            }
+        )
+
+    return {
+        "versions": rows,
+        "diffs": diffs,
+        "latest_version_id": versions[-1].id,
+    }

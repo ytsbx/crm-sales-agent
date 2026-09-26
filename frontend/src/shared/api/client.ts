@@ -71,6 +71,17 @@ export const api = {
     link.remove()
     window.URL.revokeObjectURL(blobUrl)
   },
+  /**
+   * 取二进制内容但不触发下载，交给调用方自己渲染（用于文件预览）。
+   * 注意：这类接口返回的是裸二进制，**不是** {code,message,data} 信封，
+   * 所以不能走 unwrap；错误体仍是 JSON 信封，由响应拦截器统一抛 ApiError。
+   */
+  blob: async (url: string): Promise<{ blob: Blob; mime: string }> => {
+    const response = await http.get(url, { responseType: 'blob' })
+    // axios 的 header 类型是 string | number | boolean | string[] | AxiosHeaders，先归一成字符串
+    const mime = String(response.headers['content-type'] ?? 'application/octet-stream')
+    return { blob: new Blob([response.data], { type: mime }), mime }
+  },
   /** 上传 multipart 表单。 */
   upload: <T>(url: string, form: FormData) =>
     unwrap<T>(http.post(url, form, { headers: { 'Content-Type': 'multipart/form-data' } })),

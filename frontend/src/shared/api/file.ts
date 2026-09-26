@@ -6,6 +6,8 @@ export interface FileRow {
   mime_type?: string | null
   size: number
   storage_provider: string
+  /** 后端判定能否内联预览（图片 / PDF / 纯文本）；html、svg 一律为 false */
+  previewable?: boolean
   uploader_name?: string | null
   created_at: string
   business_file_id?: number
@@ -39,4 +41,13 @@ export function unlinkBusinessFile(businessFileId: number) {
 
 export function downloadFile(fileId: number, fileName: string) {
   return api.download(`/files/${fileId}/download`, fileName)
+}
+
+/**
+ * 取预览内容。走 blob 而不是直接开新窗口：
+ * 前端要拿到 mime 决定用 <img> 还是 <iframe> 渲染，
+ * 而且接口需要带 Authorization 头，新窗口直接打 URL 是带不上的。
+ */
+export function fetchFilePreview(fileId: number): Promise<{ blob: Blob; mime: string }> {
+  return api.blob(`/files/${fileId}/preview`)
 }
