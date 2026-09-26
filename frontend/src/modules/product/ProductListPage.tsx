@@ -7,6 +7,7 @@ import { createProduct, listProducts, type ProductPayload } from '../../shared/a
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Product } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 const EMPTY_FORM: ProductPayload = {
   name: '',
@@ -76,7 +77,7 @@ export default function ProductListPage() {
     <div className="page-container">
       <PageHeader title="产品中心" subtitle="产品与 SKU 分开维护：产品是资料，SKU 才是可报价的最小单位" />
 
-      <div className="card-block">
+      <SectionCard>
         <div className="toolbar">
           <Input
             placeholder="搜索产品名称 / 产品线 / 品牌"
@@ -123,7 +124,7 @@ export default function ProductListPage() {
             },
           }}
         />
-      </div>
+      </SectionCard>
 
       <Modal
         title="新建产品"

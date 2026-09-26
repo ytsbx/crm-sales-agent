@@ -22,6 +22,7 @@ import {
   type WeComUnboundContact,
 } from '../../shared/api/wecom'
 import type { TagTone } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 /**
  * 企业微信待归一页面（04-UI §5，布局照设计稿：左待处理 / 中企微详情 / 右候选客户）。
@@ -251,7 +252,7 @@ export default function WeComPage() {
         }}
       >
         {/* 左：待处理外部联系人 */}
-        <div className="card-block">
+        <SectionCard>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>待处理联系人</div>
           <Input
             placeholder="搜索昵称或企业名"
@@ -313,10 +314,10 @@ export default function WeComPage() {
               下一页
             </Button>
           </div>
-        </div>
+        </SectionCard>
 
         {/* 中：企业微信详情 */}
-        <div className="card-block">
+        <SectionCard>
           {!active ? (
             <Empty description="左侧选一条待归一联系人" />
           ) : (
@@ -398,10 +399,10 @@ export default function WeComPage() {
               </div>
             </>
           )}
-        </div>
+        </SectionCard>
 
         {/* 右：系统候选客户 */}
-        <div className="card-block">
+        <SectionCard>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>疑似客户</div>
           {!active ? (
             <Empty description="选中联系人后显示候选" />
@@ -476,10 +477,10 @@ export default function WeComPage() {
               )}
             </>
           )}
-        </div>
+        </SectionCard>
       </div>
 
-      <div className="card-block" style={{ marginTop: 16 }}>
+      <SectionCard style={{ marginTop: 16 }}>
         <div style={{ fontWeight: 600, marginBottom: 12 }}>同步任务</div>
         <Table
           columns={[
@@ -515,7 +516,7 @@ export default function WeComPage() {
           loading={jobsQuery.isLoading}
           empty="还没有同步记录"
         />
-      </div>
+      </SectionCard>
 
       <Modal
         title="创建新客户"

@@ -21,6 +21,7 @@ import { listUsers } from '../../shared/api/system'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 const TABS = [
   { tab: '销售订单', itemKey: 'orders' },
@@ -301,7 +302,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         subtitle="成交报价转成订单后，履约由 ERP/MES 负责、回款由财务确认；CRM 只保留关键节点"
       />
 
-      <div className="card-block">
+      <SectionCard>
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
@@ -394,7 +395,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
             />
           )}
         </div>
-      </div>
+      </SectionCard>
 
       <Modal
         title="手工建单（线下签约 / 补录历史单）"

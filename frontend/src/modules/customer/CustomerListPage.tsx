@@ -19,6 +19,7 @@ import { listUsers } from '../../shared/api/system'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 type Scope = 'mine' | 'pool' | 'all'
 
@@ -279,7 +280,7 @@ export default function CustomerListPage() {
     <div className="page-container">
       <PageHeader title="客户中心" subtitle="客户、联系人与归属都在这里统一管理" />
 
-      <div className="card-block">
+      <SectionCard>
         <div className="toolbar">
           <Input
             placeholder="搜索客户名称 / 简称 / 地址"
@@ -395,7 +396,7 @@ export default function CustomerListPage() {
             },
           }}
         />
-      </div>
+      </SectionCard>
 
       <Modal
         title="导入结果"

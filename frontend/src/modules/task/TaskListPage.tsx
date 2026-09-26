@@ -6,6 +6,7 @@ import { Button, Checkbox, DatePicker, Input, Modal, Select, Table, Tag, Toast }
 
 import { completeTask, createTask, listTasks, postponeTask, type Task } from '../../shared/api/task'
 import type { TagTone } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 const PRIORITY_COLOR: Record<string, TagTone> = { high: 'red', normal: 'blue', low: 'grey' }
 
@@ -144,7 +145,7 @@ export default function TaskListPage() {
         subtitle="任务记录的是「接下来要做什么」，跟进记录的是「已经发生了什么」"
       />
 
-      <div className="card-block">
+      <SectionCard>
         <div className="toolbar">
           <Checkbox
             checked={mine}
@@ -204,7 +205,7 @@ export default function TaskListPage() {
             },
           }}
         />
-      </div>
+      </SectionCard>
 
       <Modal
         title="新建任务"

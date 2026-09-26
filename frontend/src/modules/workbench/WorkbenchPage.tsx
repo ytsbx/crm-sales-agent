@@ -19,6 +19,7 @@ import {
   type TrendRow,
 } from '../../shared/api/analytics'
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
+import SectionCard from '../../shared/components/SectionCard'
 import { useAuthStore } from '../../shared/store/auth'
 
 const PRIORITY_LABEL: Record<string, string> = { high: '高优先级', normal: '普通', low: '低' }
@@ -279,7 +280,7 @@ export default function WorkbenchPage() {
 
       {/* PRD §4.2 主管视图：只有数据范围 ≥ 部门的人才会拿到 is_team_view */}
       {isTeamView && team && (
-        <div className="card-block" style={{ marginBottom: 16 }}>
+        <SectionCard style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
             <div style={{ fontWeight: 600 }}>
               团队概览
@@ -415,12 +416,12 @@ export default function WorkbenchPage() {
               </tbody>
             </table>
           </div>
-        </div>
+        </SectionCard>
       )}
 
       {/* 漏斗 / 趋势 / 动态 */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.05fr 1.35fr 0.95fr', gap: 16 }}>
-        <div className="card-block">
+        <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
             <span className="card-title">全链路销售转化漏斗</span>
             <Link to="/analytics" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
@@ -455,9 +456,9 @@ export default function WorkbenchPage() {
             })}
             {funnel.length === 0 && <div style={{ color: 'var(--crm-text-3)' }}>暂无商机数据</div>}
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
+        <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <span className="card-title">订单与回款趋势</span>
             <span style={{ display: 'flex', gap: 14, fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -488,9 +489,9 @@ export default function WorkbenchPage() {
               已确认回款：{money(trend.reduce((sum, row) => sum + row.received_amount, 0))}
             </span>
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
+        <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">团队与业务动态</span>
           </div>
@@ -530,12 +531,12 @@ export default function WorkbenchPage() {
             ))}
             {activities.length === 0 && <div style={{ color: 'var(--crm-text-3)' }}>暂无动态</div>}
           </div>
-        </div>
+        </SectionCard>
       </div>
 
       {/* 待办 / 重点商机 / 日程与 AI */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.05fr 1.35fr 0.95fr', gap: 16, marginTop: 16 }}>
-        <div className="card-block">
+        <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">我的待办任务</span>
             <Link to="/tasks" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
@@ -589,9 +590,9 @@ export default function WorkbenchPage() {
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>今天没有待办，轻松一下</div>
             )}
           </div>
-        </div>
+        </SectionCard>
 
-        <div className="card-block">
+        <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">重点跟进商机</span>
             <Link to="/opportunities" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
@@ -639,10 +640,10 @@ export default function WorkbenchPage() {
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无进行中的商机</div>
             )}
           </div>
-        </div>
+        </SectionCard>
 
         <div style={{ display: 'grid', gap: 16 }}>
-          <div className="card-block">
+          <SectionCard>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
               <span className="card-title">
                 <IconCalendar /> 今日日程 ({todayTasks.length})
@@ -677,9 +678,9 @@ export default function WorkbenchPage() {
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>今天没有安排</div>
               )}
             </div>
-          </div>
+          </SectionCard>
 
-          <div className="card-block">
+          <SectionCard>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
               <span className="card-title">
                 <IconComment /> AI Sales Agent
@@ -731,7 +732,7 @@ export default function WorkbenchPage() {
             <div style={{ marginTop: 12, fontSize: 11, color: 'var(--crm-text-3)' }}>
               已关联商机、报价与回款数据
             </div>
-          </div>
+          </SectionCard>
         </div>
       </div>
     </div>

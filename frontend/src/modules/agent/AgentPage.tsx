@@ -16,6 +16,7 @@ import {
   type AgentToolCall,
 } from '../../shared/api/agent'
 import type { TagTone } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 const RISK_TONE: Record<string, TagTone> = { L1: 'green', L2: 'orange', L3: 'red' }
 
@@ -190,7 +191,7 @@ export default function AgentPage() {
 
   return (
     <div className="page-container" style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16 }}>
-      <div className="card-block" style={{ height: 'fit-content' }}>
+      <SectionCard style={{ height: 'fit-content' }}>
         <Button
           block
           theme="solid"
@@ -247,9 +248,9 @@ export default function AgentPage() {
           鼠标停上去可以看到具体能力；函数名（如 search_customers）是系统内部标识，
           界面上不用管它。
         </div>
-      </div>
+      </SectionCard>
 
-      <div className="card-block" style={{ minHeight: 520, display: 'flex', flexDirection: 'column' }}>
+      <SectionCard style={{ minHeight: 520, display: 'flex', flexDirection: 'column' }}>
         <div style={{ flex: 1, overflow: 'auto', maxHeight: 560 }}>
           {messages.length === 0 && (
             <div style={{ color: 'var(--crm-text-3)', fontSize: 13, marginBottom: 16 }}>
@@ -358,7 +359,7 @@ export default function AgentPage() {
             {sendMutation.isPending ? '思考中…' : '发送'}
           </Button>
         </div>
-      </div>
+      </SectionCard>
     </div>
   )
 }

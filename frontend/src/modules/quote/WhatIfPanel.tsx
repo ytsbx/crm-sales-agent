@@ -8,6 +8,7 @@ import {
   type VersionComparisonRow,
 } from '../../shared/api/quote'
 import type { TagTone } from '../../shared/types'
+import SectionCard from '../../shared/components/SectionCard'
 
 /**
  * 报价 What-if（UI 设计稿 `ai_sales_agent` 右栏「What-if 边际测算」+ 正文
@@ -204,7 +205,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
 
   return (
     <>
-      <div className="card-block" style={{ marginBottom: 16 }}>
+      <SectionCard style={{ marginBottom: 16 }}>
         <div className="toolbar" style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600 }}>版本与方案对比（What-if）</div>
           <div style={{ flex: 1 }} />
@@ -267,9 +268,9 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
             ))}
           </div>
         )}
-      </div>
+      </SectionCard>
 
-      <div className="card-block" style={{ marginBottom: 16 }}>
+      <SectionCard style={{ marginBottom: 16 }}>
         <div className="toolbar" style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600 }}>边际测算（What-if）</div>
           <div style={{ flex: 1 }} />
@@ -476,7 +477,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
             </div>
           </div>
         )}
-      </div>
+      </SectionCard>
     </>
   )
 }

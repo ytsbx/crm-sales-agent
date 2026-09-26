@@ -28,6 +28,7 @@ import {
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
+import SectionCard from '../../shared/components/SectionCard'
 
 const TABS = [
   { tab: '成本', itemKey: 'costs' },
@@ -263,7 +264,7 @@ export default function PriceCenterPage() {
         }
       />
 
-      <div className="card-block">
+      <SectionCard>
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
@@ -597,7 +598,7 @@ export default function PriceCenterPage() {
             </>
           )}
         </div>
-      </div>
+      </SectionCard>
 
       <Modal
         title="新增成本"

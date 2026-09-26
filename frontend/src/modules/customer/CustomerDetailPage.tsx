@@ -359,7 +359,7 @@ export default function CustomerDetailPage() {
         }
       />
 
-      <div className="card-block">
+      <SectionCard>
         <Tabs
           type="line"
           activeKey={activeKey}
@@ -592,7 +592,7 @@ export default function CustomerDetailPage() {
             <AttachmentPanel businessType="customer" businessId={customerId} />
           )}
         </div>
-      </div>
+      </SectionCard>
 
       {activeKey === 'overview' && can('agent:use') && (
         <SectionCard

@@ -25,7 +25,9 @@
 
   --crm-text: #181c23;
   --crm-text-2: #424655;
-  --crm-text-3: #7b8090;
+  /* 次要文字：取设计稿 outline #727687（白底对比度 4.51 ≥ AA 4.5）。
+     初版发明的 #7b8090 只有 3.94，不达标且不在设计稿任何一张稿子里。 */
+  --crm-text-3: #727687;
 
   /* 圆角规格取自设计稿的 tailwind.config：
      DEFAULT 2px / lg 4px / xl 8px / full 12px */
@@ -183,6 +185,13 @@ a {
   letter-spacing: -0.5px;
   margin-top: 6px;
   color: var(--crm-text);
+}
+
+/* 空表格不画横向滚动条：Semi 对列宽合计超出容器的表，即使没有数据也会渲染
+   横向滚动条（"还没有报价单"下面躺着一条）。空态时直接关掉溢出。 */
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-header,
+.semi-table-wrapper:has(.semi-table-placeholder) .semi-table-body {
+  overflow-x: hidden;
 }
 
 /* ============================================================

@@ -407,7 +407,7 @@ export default function OpportunityDetailPage() {
         }
       />
 
-      <div className="card-block">
+      <SectionCard>
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
@@ -520,7 +520,7 @@ export default function OpportunityDetailPage() {
             <AttachmentPanel businessType="opportunity" businessId={opportunityId} />
           )}
         </div>
-      </div>
+      </SectionCard>
 
       {can('agent:use') && (
         <SectionCard
