@@ -22,6 +22,96 @@ export interface CustomerPayload {
   remark?: string | null
 }
 
+// ---------------------------------------------------------------- 子资源响应
+
+export interface CustomerOpportunity {
+  id: number
+  title: string
+  stage_id: number | null
+  stage_name: string | null
+  status: string
+  expected_amount: number | null
+  expected_close_date: string | null
+  owner_id: number | null
+  owner_name: string | null
+  item_count: number
+}
+
+export interface CustomerQuote {
+  id: number
+  quote_no: string
+  customer_id: number
+  owner_id: number | null
+  status: string
+  valid_until: string | null
+  current_version_id: number | null
+  current_version_no: number | null
+  current_version_amount: number | null
+  approval_status: string | null
+  created_at: string
+}
+
+export interface CustomerOrder {
+  id: number
+  order_no: string
+  status: string
+  status_label: string
+  total_amount: number | null
+  received_amount: number | null
+  unreceived_amount: number | null
+  currency: string
+  erp_order_id: string | null
+  delivery_date: string | null
+  item_count: number
+  created_at: string
+}
+
+export interface ContactFollowup {
+  id: number
+  customer_id: number | null
+  followup_type: string
+  content: string
+  customer_feedback: string | null
+  next_action: string | null
+  owner_id: number | null
+  created_at: string
+}
+
+export interface ContactWecomFollower {
+  wecom_userid: string
+  add_time: string | null
+  add_way: string | null
+  remark: string | null
+  status: string
+}
+
+export interface ContactWecom {
+  bound: boolean
+  contact_id: number
+  externals: Array<{
+    id: number
+    external_userid: string
+    name: string | null
+    type: string | null
+    corp_name: string | null
+    crm_customer_id: number | null
+    normalize_status: string
+    last_sync_at: string | null
+    followers: ContactWecomFollower[]
+  }>
+}
+
+export interface ContactDuplicateMatch {
+  id: number
+  name: string
+  customer_id: number | null
+  mobile: string | null
+  email: string | null
+  is_primary: boolean
+  score: number
+  reasons: string[]
+}
+
 export function listCustomers(query: CustomerQuery) {
   return api.get<PageResult<Customer>>('/customers', query)
 }
@@ -48,6 +138,76 @@ export function createContact(customerId: number, payload: Partial<Contact>) {
 
 export function transferCustomer(customerId: number, payload: { owner_id: number | null; reason?: string }) {
   return api.post<Customer>(`/customers/${customerId}/transfer`, payload)
+}
+
+/** 主管分配客户负责人（API §7 POST /customers/{id}/assign）。 */
+export function assignCustomer(customerId: number, payload: { owner_id: number | null; reason?: string }) {
+  return api.post<Customer>(`/customers/${customerId}/assign`, payload)
+}
+
+// ---------------------------------------------------------------- 客户子资源（API §7）
+
+export function listCustomerOpportunities(
+  customerId: number,
+  query: { status?: string; page?: number; page_size?: number } = {},
+) {
+  return api.get<PageResult<CustomerOpportunity>>(`/customers/${customerId}/opportunities`, query)
+}
+
+export function listCustomerQuotes(
+  customerId: number,
+  query: { status?: string; page?: number; page_size?: number } = {},
+) {
+  return api.get<PageResult<CustomerQuote>>(`/customers/${customerId}/quotes`, query)
+}
+
+export function listCustomerOrders(
+  customerId: number,
+  query: { status?: string; page?: number; page_size?: number } = {},
+) {
+  return api.get<PageResult<CustomerOrder>>(`/customers/${customerId}/orders`, query)
+}
+
+/** 按筛选条件导出客户 CSV（API §7 POST /customers/export）。 */
+export function exportCustomersFiltered(
+  payload: {
+    keyword?: string
+    level?: string
+    status?: string
+    source?: string
+    owner_id?: number
+    pool_status?: string
+  },
+  filename = '客户列表.csv',
+) {
+  return api.downloadPost('/customers/export', payload, filename)
+}
+
+// ---------------------------------------------------------------- 联系人子资源（API §8）
+
+export function listContactFollowups(
+  contactId: number,
+  query: { page?: number; page_size?: number } = {},
+) {
+  return api.get<PageResult<ContactFollowup>>(`/contacts/${contactId}/followups`, query)
+}
+
+/** 该联系人的企微绑定关系；没绑定过返回 bound=false（不是 404）。 */
+export function getContactWecom(contactId: number) {
+  return api.get<ContactWecom>(`/contacts/${contactId}/wecom`)
+}
+
+/** 联系人查重（PRD §5.4 线索转化第 2 步）。 */
+export function deduplicateContacts(payload: {
+  contact_id?: number
+  name?: string
+  mobile?: string
+  email?: string
+}) {
+  return api.post<{ matches: ContactDuplicateMatch[]; count: number }>(
+    '/contacts/deduplicate',
+    payload,
+  )
 }
 
 export function releaseCustomerToPool(customerId: number) {

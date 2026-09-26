@@ -147,3 +147,132 @@ async def find_duplicate_customers(
 
     scored.sort(key=lambda item: -item["score"])
     return scored[:limit]
+
+
+async def find_duplicate_contacts(
+    session: AsyncSession,
+    *,
+    user,
+    name: str | None,
+    mobile: str | None = None,
+    email: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """找疑似重复联系人（PRD §5.4 线索转化第 2 步"联系人查重"）。
+
+    ## 为什么手机号/邮箱一致就判重，不走阈值
+
+    `dedup_scoring` 的权重是给**客户**定的：客户靠公司名（70）+ 税号（60）
+    识别，手机号只是辅助（45）。联系人不适用这一套 —— 没有税号，
+    而"手机号一致"几乎就是同一个自然人。
+
+    直接套阈值会得出荒谬结果：阈值 50 > 手机号权重 45，
+    **手机号完全一致也查不出来**，查重形同虚设。
+
+    所以这里的口径是：
+      - 手机号或邮箱**完全一致** → 判重（这两个是唯一性标识）；
+      - 只有姓名 → 走加权打分 + 阈值（人名重名很常见，必须保守）。
+
+    只搜当前用户数据范围内的联系人（联系人跟随所属客户的数据范围；
+    没有客户的"待归一"联系人不属于任何人，也一并纳入 —— 它们正是最可能
+    造成重复的那一批）。
+    """
+    from app.core.data_scope import scoped_owner_ids
+    from app.modules.settings import service as settings_service
+
+    weights = await settings_service.get_setting(session, "dedup_scoring")
+    threshold = int(weights.get("threshold", 50))
+
+    mobile_key = (mobile or "").strip()
+    email_key = (email or "").strip().lower()
+    name_key = (name or "").strip()
+
+    conditions = []
+    if name_key:
+        conditions.append(Contact.name.ilike(f"%{name_key}%"))
+    if mobile_key:
+        conditions.append(Contact.mobile == mobile_key)
+    if email_key:
+        conditions.append(Contact.email == email_key)
+    if not conditions:
+        return []
+
+    stmt = (
+        select(Contact)
+        .where(Contact.deleted_at.is_(None), or_(*conditions))
+        .limit(max(limit * 4, 20))
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+
+    # 数据范围：联系人跟着客户走；没客户的也放行
+    visible: list[Contact] = []
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
+        visible = list(rows)
+    else:
+        customer_ids = {row.customer_id for row in rows if row.customer_id}
+        allowed_customers: set[int] = set()
+        if customer_ids:
+            owner_rows = (
+                await session.execute(
+                    select(Customer.id, Customer.owner_id).where(
+                        Customer.id.in_(customer_ids)
+                    )
+                )
+            ).all()
+            allowed_customers = {
+                int(cid)
+                for cid, owner in owner_rows
+                if owner is None or int(owner) in owner_ids
+            }
+        visible = [
+            row
+            for row in rows
+            if row.customer_id is None or int(row.customer_id) in allowed_customers
+        ]
+
+    scored: list[dict] = []
+    for contact in visible:
+        score = 0
+        reasons: list[str] = []
+
+        strong = False
+        if mobile_key and (contact.mobile or "").strip() == mobile_key:
+            reasons.append("手机号一致")
+            strong = True
+        if email_key and (contact.email or "").strip().lower() == email_key:
+            reasons.append("邮箱一致")
+            strong = True
+
+        if strong:
+            score = 100
+        elif name_key:
+            # 人名不比公司名：不能用 similarity_score 那套（它的 name 权重
+            # 是按"公司名去掉有限公司后缀"定的），否则"张伟"和"张伟明"会被
+            # 判成高度相似。这里只做"完全一致 / 互相包含"两档。
+            actual = (contact.name or "").strip()
+            if actual:
+                if name_key == actual:
+                    score += int(weights.get("weight_name_exact", 70))
+                    reasons.append("姓名一致")
+                elif name_key in actual or actual in name_key:
+                    score += int(weights.get("weight_name_contains", 55))
+                    reasons.append("姓名互相包含")
+
+        if score >= threshold:
+            scored.append(
+                {
+                    "id": contact.id,
+                    "name": contact.name,
+                    "customer_id": contact.customer_id,
+                    "mobile": contact.mobile,
+                    "email": contact.email,
+                    "is_primary": contact.is_primary,
+                    "score": min(score, 100),
+                    "reasons": reasons,
+                }
+            )
+
+    scored.sort(key=lambda item: -item["score"])
+    return scored[:limit]
+

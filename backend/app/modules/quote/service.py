@@ -129,10 +129,13 @@ async def generate_quote_no(session: AsyncSession) -> str:
     原来的实现是 `count(*)+1`：删掉历史单会重号，并发还会撞。
     现在走 `settings/numbering.py` 的行锁计数器，默认格式与原来一致
     （`Q` + YYYYMMDD + 4 位流水），但保证唯一且并发安全。
+
+    `generate_for` 会自动带上"号已被占用就跳过 + 从库里最大号播种"，
+    计数器与已发布号脱节时能自愈（详见 numbering.py 的说明）。
     """
     from app.modules.settings import numbering
 
-    return await numbering.next_number(session, "quote")
+    return await numbering.generate_for(session, "quote", model=Quote, column=Quote.quote_no)
 
 
 async def get_quote_or_404(session: AsyncSession, quote_id: int) -> Quote:

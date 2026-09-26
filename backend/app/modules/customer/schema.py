@@ -43,6 +43,17 @@ class CustomerTransfer(BaseModel):
     reason: str | None = None
 
 
+class CustomerExportFilter(BaseModel):
+    """导出筛选条件，与列表页参数保持一致。"""
+
+    keyword: str | None = None
+    level: str | None = None
+    status: str | None = None
+    source: str | None = None
+    owner_id: int | None = None
+    pool_status: str | None = None
+
+
 class ContactCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     title: str | None = None

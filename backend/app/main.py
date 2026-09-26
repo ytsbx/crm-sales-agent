@@ -12,6 +12,7 @@ from app.modules.agent.router import router as agent_router
 from app.modules.auth.router import router as auth_router
 from app.modules.audit_router import router as audit_router
 from app.modules.customer.router import router as customer_router
+from app.modules.customer.contacts_router import router as contacts_router
 from app.modules.customer.io_router import router as customer_io_router
 from app.modules.customer.tags_router import router as customer_tags_router
 from app.modules.erp.router import router as erp_router
@@ -59,6 +60,9 @@ app.include_router(customer_io_router, prefix=settings.api_prefix)
 # 同理：/tags、/customers/deduplicate、/customers/merge、/customers/batch-* 也要在
 # /customers/{customer_id} 之前注册，否则会被动态路由抢先匹配
 app.include_router(customer_tags_router, prefix=settings.api_prefix)
+# /contacts/deduplicate、/contacts/{id}/wecom、/contacts/{id}/followups 同样要在
+# /contacts/{contact_id} 之前注册，否则会被当成 id 解析
+app.include_router(contacts_router, prefix=settings.api_prefix)
 app.include_router(customer_router, prefix=settings.api_prefix)
 app.include_router(product_router, prefix=settings.api_prefix)
 app.include_router(public_pool_router, prefix=settings.api_prefix)

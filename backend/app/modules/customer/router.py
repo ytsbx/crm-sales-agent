@@ -366,6 +366,185 @@ async def customer_files(
     )
 
 
+# ---------------------------------------------------------------- 客户子资源
+
+@router.get("/customers/{customer_id}/opportunities")
+async def customer_opportunities(
+    customer_id: int,
+    status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """该客户的商机（03-API §7）。
+
+    与 `GET /opportunities?customer_id=` 等价，这里是客户详情页标签页的写法。
+    同样按商机自己的数据范围过滤 —— 客户可见不代表客户名下每条商机都可见。
+    """
+    from app.modules.opportunity import service as opp_svc
+
+    await svc.get_visible_customer(session, user, customer_id)
+    stmt = await opp_svc.apply_data_scope(
+        opp_svc.build_opportunity_stmt(customer_id=customer_id, status=status),
+        user,
+        session,
+    )
+    rows, total = await paginate(session, stmt, page, page_size)
+    stages = await opp_svc.stage_map(session)
+    _, owners, counts = await opp_svc.enrichment(session, rows)
+    return ok(
+        page_data(
+            [
+                opp_svc.serialize_opportunity(
+                    row,
+                    stage=stages.get(row.stage_id),
+                    customer_name=None,
+                    owner_name=owners.get(row.owner_id) if row.owner_id else None,
+                    item_count=counts.get(row.id, 0),
+                )
+                for row in rows
+            ],
+            total,
+            page,
+            page_size,
+        )
+    )
+
+
+@router.get("/customers/{customer_id}/quotes")
+async def customer_quotes(
+    customer_id: int,
+    status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """该客户的报价单（03-API §7）。"""
+    from app.modules.quote.model import Quote, QuoteVersion
+
+    await svc.get_visible_customer(session, user, customer_id)
+    stmt = select(Quote).where(
+        Quote.customer_id == customer_id, Quote.deleted_at.is_(None)
+    )
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(Quote.owner_id.in_(owner_ids))
+    if status:
+        stmt = stmt.where(Quote.status == status)
+    rows, total = await paginate(session, stmt.order_by(Quote.id.desc()), page, page_size)
+
+    # 审批状态与金额在**版本**上，不在报价单上（Quote 没有这两列）。
+    version_ids = [row.current_version_id for row in rows if row.current_version_id]
+    versions: dict[int, QuoteVersion] = {}
+    if version_ids:
+        found = (
+            await session.execute(
+                select(QuoteVersion).where(QuoteVersion.id.in_(version_ids))
+            )
+        ).scalars().all()
+        versions = {item.id: item for item in found}
+
+    def version_of(row):
+        return versions.get(row.current_version_id) if row.current_version_id else None
+
+    items = []
+    for row in rows:
+        version = version_of(row)
+        items.append(
+            {
+                "id": row.id,
+                "quote_no": row.quote_no,
+                "customer_id": row.customer_id,
+                "owner_id": row.owner_id,
+                "status": row.status,
+                "valid_until": row.valid_until,
+                "current_version_id": row.current_version_id,
+                "current_version_no": version.version_no if version else None,
+                "current_version_amount": float(version.total_amount) if version else None,
+                "approval_status": version.approval_status if version else None,
+                "created_at": row.created_at,
+            }
+        )
+    return ok(page_data(items, total, page, page_size))
+
+
+@router.get("/customers/{customer_id}/orders")
+async def customer_orders(
+    customer_id: int,
+    status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """该客户的销售订单（03-API §7）。"""
+    from app.modules.order import service as order_svc
+    from app.modules.order.model import SalesOrder
+
+    await svc.get_visible_customer(session, user, customer_id)
+    stmt = select(SalesOrder).where(SalesOrder.customer_id == customer_id)
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(SalesOrder.owner_id.in_(owner_ids))
+    if status:
+        stmt = stmt.where(SalesOrder.status == status)
+    rows, total = await paginate(session, stmt.order_by(SalesOrder.id.desc()), page, page_size)
+    ctx = await order_svc.order_context(session, rows)
+    return ok(
+        page_data(
+            [
+                order_svc.serialize_order(
+                    row,
+                    customer_name=ctx["customers"].get(row.customer_id),
+                    owner_name=ctx["owners"].get(row.owner_id) if row.owner_id else None,
+                    received_amount=ctx["received"].get(row.id),
+                    item_count=ctx["counts"].get(row.id, 0),
+                )
+                for row in rows
+            ],
+            total,
+            page,
+            page_size,
+        )
+    )
+
+
+@router.post("/customers/{customer_id}/assign")
+async def assign_customer(
+    customer_id: int,
+    payload: CustomerTransfer,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("customer:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """分配客户负责人（03-API §7）。
+
+    与 `POST /customers/{id}/transfer` 是同一件事（同一份 `transfer_customer` 实现），
+    区别只是权限点：transfer 是"业务员之间转"，assign 是"主管分配"。
+    文档两个都列了，就都留着。
+    """
+    customer = await svc.get_visible_customer(session, user, customer_id)
+    before = svc.serialize_customer(customer)
+    await svc.transfer_customer(
+        session, user, customer, payload.owner_id, payload.reason or "主管分配"
+    )
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="assign",
+        business_type="customer",
+        business_id=customer.id,
+        before=before,
+        after=svc.serialize_customer(customer),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_customer(customer), "已分配")
+
+
 # ---------------------------------------------------------------- 联系人
 
 @router.get("/customers/{customer_id}/contacts")

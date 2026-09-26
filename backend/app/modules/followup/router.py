@@ -126,15 +126,21 @@ async def create_followup(
     # 库里没有外键约束，不校验就会静默留下悬空引用：下面 `if customer:` /
     # `if lead:` 的写法会**安静跳过**，跟进记录看起来正常落库，
     # 但客户"最近跟进时间"永远不会更新 —— 排查起来极难。
+    #
+    # 注意：Contact 与 Customer 是**两个不同的模型**，不能塞进同一个 ids 字典
+    # （那样会把 customer_id 当联系人主键去查）。分两次查，再单独校验归属。
     await ensure_refs(
         session, model=Customer, ids={"customer_id": payload.customer_id}, label="客户"
     )
-    await ensure_refs(
-        session,
-        model=Contact,
-        ids={"contact_id": payload.contact_id, "customer_id": payload.customer_id},
-        label="联系人",
-    )
+    if payload.contact_id is not None:
+        contact = await session.get(Contact, payload.contact_id)
+        if contact is None or contact.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"联系人 id={payload.contact_id} 不存在", 404)
+        if payload.customer_id and contact.customer_id != payload.customer_id:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"联系人 id={payload.contact_id} 不属于客户 id={payload.customer_id}",
+            )
     await ensure_refs(
         session, model=Lead, ids={"lead_id": payload.lead_id}, label="线索"
     )

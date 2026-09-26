@@ -82,6 +82,21 @@ export const api = {
     const mime = String(response.headers['content-type'] ?? 'application/octet-stream')
     return { blob: new Blob([response.data], { type: mime }), mime }
   },
+  /**
+   * 用 POST 传筛选条件下载文件（导出接口把条件放 body 里）。
+   * 触发浏览器下载，不返回内容 —— 与 download 的交付方式一致。
+   */
+  downloadPost: async (url: string, body: unknown, filename: string) => {
+    const response = await http.post(url, body, { responseType: 'blob' })
+    const blobUrl = window.URL.createObjectURL(new Blob([response.data]))
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(blobUrl)
+  },
   /** 上传 multipart 表单。 */
   upload: <T>(url: string, form: FormData) =>
     unwrap<T>(http.post(url, form, { headers: { 'Content-Type': 'multipart/form-data' } })),

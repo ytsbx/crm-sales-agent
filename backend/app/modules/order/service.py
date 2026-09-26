@@ -74,10 +74,15 @@ async def generate_order_no(session: AsyncSession) -> str:
 
     原先的 `count(*)+1` 会因删除历史单而重号（order_no 有唯一约束，
     真撞上就是 500），并发也不安全。改走行锁计数器，默认格式不变。
+
+    `generate_for` 带自愈：候选号被占用就跳过、计数器从库里最大号播种，
+    避免计数器与已发布号脱节时永久卡死（详见 numbering.py）。
     """
     from app.modules.settings import numbering
 
-    return await numbering.next_number(session, "order")
+    return await numbering.generate_for(
+        session, "order", model=SalesOrder, column=SalesOrder.order_no
+    )
 
 
 async def get_order_or_404(session: AsyncSession, order_id: int) -> SalesOrder:

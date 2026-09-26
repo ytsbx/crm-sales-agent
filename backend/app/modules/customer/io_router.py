@@ -1,7 +1,7 @@
 """客户导入导出接口。"""
 
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -10,7 +10,9 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.response import ok
 from app.modules.contact_util import find_duplicate_customers
 from app.modules.customer import io as io_util
+from app.modules.customer import service as svc
 from app.modules.customer.model import Customer
+from app.modules.customer.schema import CustomerExportFilter
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Customer"])
@@ -32,28 +34,33 @@ async def import_template(
     )
 
 
-@router.get("/customers/export")
-async def export_customers(
-    user: CurrentUser = Depends(require_permission("customer:view")),
-    session: AsyncSession = Depends(get_db),
-):
-    """导出当前用户数据范围内的客户。"""
-    from app.modules.customer import service as svc
+async def _export(user, session: AsyncSession, stmt: Select | None = None) -> Response:
+    """共用导出实现：查行 → 补负责人名 → 生成 CSV。
 
-    stmt = await svc.apply_data_scope(
-        svc.not_deleted(svc.build_list_stmt()), user, session
-    )
+    数据范围由调用方加进 `stmt`（两个入口都加了，不能漏）。
+    """
+    if stmt is None:
+        stmt = await svc.apply_data_scope(
+            svc.not_deleted(svc.build_list_stmt()), user, session
+        )
     rows = (await session.execute(stmt)).scalars().all()
     owner_ids = {row.owner_id for row in rows if row.owner_id}
     owners: dict[int, str] = {}
     if owner_ids:
         owner_rows = (
-            await session.execute(select(User.id, User.name).where(User.id.in_(owner_ids)))
+            await session.execute(
+                select(User.id, User.name).where(User.id.in_(owner_ids))
+            )
         ).all()
         owners = {int(uid): name for uid, name in owner_rows}
 
     content = io_util.csv_bytes(
-        [io_util.customer_export_row(row, owners.get(row.owner_id) if row.owner_id else None) for row in rows],
+        [
+            io_util.customer_export_row(
+                row, owners.get(row.owner_id) if row.owner_id else None
+            )
+            for row in rows
+        ],
         io_util.EXPORT_HEADERS,
     )
     return Response(
@@ -61,6 +68,43 @@ async def export_customers(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename*=UTF-8''customers.csv"},
     )
+
+
+@router.get("/customers/export")
+async def export_customers(
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """导出当前用户数据范围内的全部客户。"""
+    return await _export(user, session)
+
+
+@router.post("/customers/export")
+async def export_customers_filtered(
+    payload: CustomerExportFilter,
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按筛选条件导出客户（03-API §7 `POST /customers/export`）。
+
+    筛选条件放 body，参数与列表页一致 —— "列表页筛出什么就导出什么"。
+    数据范围仍然强制生效。
+    """
+    stmt = await svc.apply_data_scope(
+        svc.not_deleted(
+            svc.build_list_stmt(
+                keyword=payload.keyword,
+                level=payload.level,
+                status=payload.status,
+                source=payload.source,
+                owner_id=payload.owner_id,
+                pool_status=payload.pool_status,
+            )
+        ),
+        user,
+        session,
+    )
+    return await _export(user, session, stmt=stmt)
 
 
 @router.post("/customers/import")

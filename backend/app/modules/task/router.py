@@ -144,18 +144,26 @@ async def create_task(
     data["owner_id"] = data.get("owner_id") or user.id
 
     # 这些引用在库里没有外键约束，不校验就会留下悬空引用（静默 200）。
+    #
+    # 注意：Contact 与 Customer 是**两个不同的模型**，不能塞进同一个 ids 字典
+    # （那样会把 customer_id 当联系人主键去查，报"联系人 id=客户id 不存在"）。
     await ensure_refs(
         session, model=User, ids={"owner_id": data["owner_id"]}, label="负责人"
     )
     await ensure_refs(
         session, model=Customer, ids={"customer_id": data.get("customer_id")}, label="客户"
     )
-    await ensure_refs(
-        session,
-        model=Contact,
-        ids={"contact_id": data.get("contact_id"), "customer_id": data.get("customer_id")},
-        label="联系人",
-    )
+    if data.get("contact_id") is not None:
+        task_contact = await session.get(Contact, data["contact_id"])
+        if task_contact is None or task_contact.deleted_at is not None:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"联系人 id={data['contact_id']} 不存在", 404
+            )
+        if data.get("customer_id") and task_contact.customer_id != data["customer_id"]:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"联系人 id={data['contact_id']} 不属于客户 id={data['customer_id']}",
+            )
     await ensure_refs(
         session, model=Lead, ids={"lead_id": data.get("lead_id")}, label="线索"
     )
