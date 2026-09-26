@@ -56,3 +56,6 @@ npm-cache/
 
 # 本地服务运行日志（ops/start_*.ps1 写入）
 ops/logs/
+
+# 本地备份（数据不进仓库）
+ops/backups/
