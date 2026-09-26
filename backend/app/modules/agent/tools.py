@@ -10,16 +10,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
 from app.modules.opportunity.model import Opportunity, OpportunityItem, OpportunityStage
-from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
+from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder, SalesOrderItem
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.pricing import service as pricing_service
 from app.modules.product.model import Product, Sku
@@ -64,6 +65,15 @@ TOOL_LABELS: dict[str, str] = {
     "create_task": "创建任务",
     "update_opportunity_next_action": "更新商机下一步动作",
     "request_quote_approval": "提交报价审批",
+    # 03-API §38 补齐的 8 个
+    "search_leads": "查线索",
+    "get_contact": "看联系人",
+    "get_product": "看产品",
+    "search_skus": "搜 SKU",
+    "calculate_logistics": "物流试算",
+    "create_quote_draft": "生成报价草稿",
+    "create_quote_version": "新建报价版本",
+    "get_order": "看订单",
 }
 
 
@@ -107,15 +117,14 @@ def _money(value) -> float | None:
 
 
 async def _scope(stmt, ctx: ToolContext, column):
-    """与业务模块一致的数据范围过滤：Agent 不能绕过权限看数据。"""
-    if ctx.user.data_scope == "all":
-        return stmt
-    from app.modules.user.model import User
+    """与业务模块一致的数据范围过滤：Agent 不能绕过权限看数据。
 
-    if ctx.user.data_scope in ("department", "department_and_sub"):
-        sub = select(User.id).where(User.department_id == ctx.user.department_id)
-        return stmt.where(column.in_(sub))
-    return stmt.where(column == ctx.user.id)
+    `department_and_sub` 会递归到下级部门，见 app/core/data_scope.py。
+    """
+    owner_ids = await scoped_owner_ids(ctx.session, ctx.user)
+    if owner_ids is None:
+        return stmt
+    return stmt.where(column.in_(owner_ids))
 
 
 # ------------------------------------------------------------------ L1 只读
@@ -391,7 +400,8 @@ async def list_my_tasks(ctx: ToolContext) -> dict:
         await ctx.session.execute(
             select(Task)
             .where(Task.owner_id == ctx.user.id, Task.status.in_(["pending", "doing"]))
-            .order_by(Task.due_at.asc().nullslast())
+            # 可移植的 NULLS LAST 写法（.nullslast() 是 PG 专有）
+            .order_by(Task.due_at.is_(None).asc(), Task.due_at.asc())
             .limit(15)
         )
     ).scalars().all()
@@ -701,4 +711,353 @@ async def request_quote_approval(
         "approval_required": required,
         "approval_id": instance.id if instance else None,
         "message": "已提交审批" if required else "价格在权限内，报价已通过",
+    }
+
+
+# ==================================================================
+# 03-API §38 补齐的 8 个工具
+# 只读的走 L1（自动执行），会写数据的一律 L2（用户确认后执行）。
+# 所有读取都走 _scope，Agent 不能绕过数据范围。
+# ==================================================================
+
+
+@tool(
+    "search_leads",
+    "按关键词搜索线索，可按状态过滤（pending 待分配 / assigned 已分配 / following 跟进中 / converted 已转客户 / invalid 无效）。",
+    {
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string"},
+            "status": {"type": "string"},
+        },
+    },
+    "L1",
+)
+async def search_leads(ctx: ToolContext, keyword: str = "", status: str = "") -> dict:
+    from app.modules.lead.model import Lead
+
+    stmt = select(Lead).where(Lead.deleted_at.is_(None))
+    if keyword:
+        like = f"%{keyword}%"
+        stmt = stmt.where(
+            Lead.name.ilike(like) | Lead.company_name.ilike(like) | Lead.mobile.ilike(like)
+        )
+    if status:
+        stmt = stmt.where(Lead.status == status)
+    # 线索池里未分配的线索人人可见，已分配的按数据范围过滤（与业务模块一致）
+    stmt = await _scope(stmt.order_by(Lead.id.desc()).limit(15), ctx, Lead.owner_id)
+
+    from app.modules.lead.service import STATUS_LABEL
+
+    rows = (await ctx.session.execute(stmt)).scalars().all()
+    return {
+        "count": len(rows),
+        "leads": [
+            {
+                "id": lead.id,
+                "name": lead.name,
+                "company_name": lead.company_name,
+                "mobile": lead.mobile,
+                "status": lead.status,
+                "status_label": STATUS_LABEL.get(lead.status, lead.status),
+                "source": lead.source,
+            }
+            for lead in rows
+        ],
+    }
+
+
+@tool(
+    "get_contact",
+    "查看联系人详情（职位、手机、邮箱、是否主要联系人），用于确认对接人。",
+    {"type": "object", "properties": {"contact_id": {"type": "integer"}}, "required": ["contact_id"]},
+    "L1",
+)
+async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
+    contact = await ctx.session.get(Contact, contact_id)
+    if contact is None or contact.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    return {
+        "id": contact.id,
+        "name": contact.name,
+        "customer_id": contact.customer_id,
+        "title": contact.title,
+        "department": contact.department,
+        "mobile": contact.mobile,
+        "phone": contact.phone,
+        "email": contact.email,
+        "wechat": contact.wechat,
+        "is_primary": contact.is_primary,
+    }
+
+
+@tool(
+    "get_product",
+    "查看产品详情及其 SKU 列表（规格、箱规、MOQ、单位）。",
+    {"type": "object", "properties": {"product_id": {"type": "integer"}}, "required": ["product_id"]},
+    "L1",
+)
+async def get_product(ctx: ToolContext, product_id: int) -> dict:
+    product = await ctx.session.get(Product, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
+    skus = (
+        await ctx.session.execute(
+            select(Sku).where(Sku.product_id == product_id, Sku.deleted_at.is_(None))
+        )
+    ).scalars().all()
+    return {
+        "id": product.id,
+        "name": product.name,
+        "product_line": product.product_line,
+        "category": product.category,
+        "brand": product.brand,
+        "description": product.description,
+        "skus": [
+            {
+                "id": sku.id,
+                "sku_code": sku.sku_code,
+                "specification": sku.specification,
+                "color": sku.color,
+                "material": sku.material,
+                "weight": _money(sku.weight),
+                "carton_qty": sku.carton_qty,
+                "moq": sku.moq,
+                "unit": sku.unit,
+                "status": sku.status,
+            }
+            for sku in skus
+        ],
+    }
+
+
+@tool(
+    "search_skus",
+    "按关键词搜索 SKU（编码 / 规格 / 产品名），适合「客户问的是某个规格」这种场景。",
+    {
+        "type": "object",
+        "properties": {"keyword": {"type": "string"}, "limit": {"type": "integer"}},
+        "required": ["keyword"],
+    },
+    "L1",
+)
+async def search_skus(ctx: ToolContext, keyword: str, limit: int = 15) -> dict:
+    like = f"%{keyword.strip()}%"
+    rows = (
+        await ctx.session.execute(
+            select(Sku, Product.name)
+            .join(Product, Product.id == Sku.product_id)
+            .where(
+                Sku.deleted_at.is_(None),
+                Sku.status == "active",
+                or_(
+                    Sku.sku_code.ilike(like),
+                    Sku.specification.ilike(like),
+                    Sku.name.ilike(like),
+                    Product.name.ilike(like),
+                ),
+            )
+            .limit(max(1, min(limit, 50)))
+        )
+    ).all()
+    return {
+        "keyword": keyword,
+        "count": len(rows),
+        "skus": [
+            {
+                "id": sku.id,
+                "product": product_name,
+                "sku_code": sku.sku_code,
+                "specification": sku.specification,
+                "moq": sku.moq,
+                "unit": sku.unit,
+            }
+            for sku, product_name in rows
+        ],
+    }
+
+
+@tool(
+    "calculate_logistics",
+    "物流试算：给 SKU 与数量算计费重、运费与时效，可指定起运地、目的地、运输方式。",
+    {
+        "type": "object",
+        "properties": {
+            "sku_id": {"type": "integer"},
+            "quantity": {"type": "number"},
+            "origin": {"type": "string"},
+            "destination": {"type": "string"},
+            "shipping_method": {"type": "string"},
+        },
+        "required": ["sku_id", "quantity"],
+    },
+    "L1",
+)
+async def calculate_logistics(
+    ctx: ToolContext,
+    sku_id: int,
+    quantity: float,
+    origin: str | None = None,
+    destination: str | None = None,
+    shipping_method: str | None = None,
+) -> dict:
+    from app.modules.pricing import logistics as logistics_service
+
+    prepared = await logistics_service.prepare(
+        ctx.session,
+        sku_id=sku_id,
+        quantity=quantity,
+        origin=origin,
+        destination=destination,
+        shipping_method=shipping_method,
+    )
+    options = prepared["options"]
+    return {
+        "sku": prepared["sku"]["sku_code"],
+        "quantity": prepared["quantity"],
+        "measures": {
+            "actual_weight": _money(prepared["measures"]["actual_weight"]),
+            "volume": _money(prepared["measures"]["volume"]),
+            "chargeable_weight": _money(prepared["measures"]["chargeable_weight"]),
+            "chargeable_basis": prepared["measures"]["chargeable_basis"],
+        },
+        "options": options[:5],
+        "warnings": prepared["warnings"],
+    }
+
+
+@tool(
+    "get_order",
+    "查看订单详情：金额、履约状态、明细、应收与已回款情况。",
+    {"type": "object", "properties": {"order_id": {"type": "integer"}}, "required": ["order_id"]},
+    "L1",
+)
+async def get_order(ctx: ToolContext, order_id: int) -> dict:
+    from app.modules.order import service as order_service
+    from app.modules.payment import service as payment_service
+
+    order = await ctx.session.get(SalesOrder, order_id)
+    if order is None:
+        raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+
+    items = (
+        await ctx.session.execute(
+            select(SalesOrderItem).where(SalesOrderItem.order_id == order_id)
+        )
+    ).scalars().all()
+    plans = (
+        await ctx.session.execute(
+            select(ReceivablePlan).where(ReceivablePlan.order_id == order_id)
+        )
+    ).scalars().all()
+    scope = await order_service.order_context(ctx.session, [order])
+    return {
+        "id": order.id,
+        "order_no": order.order_no,
+        "customer_name": scope["customers"].get(order.customer_id),
+        "total_amount": _money(order.total_amount),
+        "status": order.status,
+        "status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
+        "delivery_date": order.delivery_date.isoformat() if order.delivery_date else None,
+        "items": [
+            {
+                # 订单明细用的是 sku_snapshot（快照字符串），不是 quote_items 的 sku_code_snapshot
+                "sku": item.sku_snapshot,
+                "specification": item.specification,
+                "quantity": _money(item.quantity),
+                "unit_price": _money(item.unit_price),
+                "amount": _money(item.amount),
+            }
+            for item in items
+        ],
+        "receivables": [
+            {
+                "plan_name": plan.plan_name,
+                "due_date": plan.due_date.isoformat() if plan.due_date else None,
+                "amount": _money(plan.amount),
+                "status": plan.status,
+            }
+            for plan in plans
+        ],
+        "received_amount": _money(scope["received"].get(order.id, 0)),
+        "finance": await payment_service.order_finance_summary(ctx.session, order.id),
+    }
+
+
+@tool(
+    "create_quote_draft",
+    "从商机生成报价草稿（按核价建议价自动带入明细）。生成的是**草稿**，不会自动发送或提交审批。需要用户确认后才会写入。",
+    {
+        "type": "object",
+        "properties": {
+            "opportunity_id": {"type": "integer"},
+            "currency": {"type": "string", "description": "默认 CNY（内贸）"},
+        },
+        "required": ["opportunity_id"],
+    },
+    "L2",
+    "quote",
+)
+async def create_quote_draft(
+    ctx: ToolContext, opportunity_id: int, currency: str = "CNY"
+) -> dict:
+    from app.modules.quote import service as quote_service
+
+    opportunity = await ctx.session.get(Opportunity, opportunity_id)
+    if opportunity is None or opportunity.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+
+    quote = await quote_service.create_quote(
+        ctx.session,
+        user=ctx.user,
+        opportunity=opportunity,
+        currency=currency or "CNY",
+    )
+    # 只把标量写进审计与返回值。`_quote` / `_version` 是 ORM 对象，
+    # 混进来会让 JSON 列写入直接报 "not JSON serializable"。
+    payload = {
+        key: value for key, value in quote.items() if not key.startswith("_")
+    }
+    await write_audit(
+        ctx.session,
+        operator_id=ctx.user.id,
+        action="create",
+        business_type="quote",
+        business_id=payload["quote_id"],
+        after={**payload, "source": "AGENT"},
+        source="AGENT",
+    )
+    await ctx.session.commit()
+    payload["message"] = "报价草稿已生成（未发送、未提交审批）"
+    return payload
+
+
+@tool(
+    "create_quote_version",
+    "在已有报价单上新建一个版本（复制上一版明细，用于改价后再谈）。旧版本不会被覆盖。需要用户确认后才会写入。",
+    {"type": "object", "properties": {"quote_id": {"type": "integer"}}, "required": ["quote_id"]},
+    "L2",
+    "quote",
+)
+async def create_quote_version(ctx: ToolContext, quote_id: int) -> dict:
+    from app.modules.quote import service as quote_service
+
+    quote = await quote_service.get_quote_or_404(ctx.session, quote_id)
+    version = await quote_service.create_version(ctx.session, quote=quote, user=ctx.user)
+    await write_audit(
+        ctx.session,
+        operator_id=ctx.user.id,
+        action="create_version",
+        business_type="quote",
+        business_id=quote_id,
+        after={"version_id": version.id, "version_no": version.version_no, "source": "AGENT"},
+        source="AGENT",
+    )
+    await ctx.session.commit()
+    return {
+        "quote_id": quote_id,
+        "version_id": version.id,
+        "version_no": version.version_no,
+        "total_amount": _money(version.total_amount),
+        "message": f"已新建 V{version.version_no}，明细复制自上一版",
     }

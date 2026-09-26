@@ -125,12 +125,22 @@ async def list_pool_rules(
 @router.post("/public-pool/rules")
 async def create_pool_rule(
     payload: PublicPoolRuleInput,
+    request: Request,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     row = PublicPoolRule(**payload.model_dump())
     session.add(row)
     await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="public_pool_rule",
+        business_id=row.id,
+        after=serialize_pool_rule(row),
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(serialize_pool_rule(row), "规则已创建")
 
@@ -139,14 +149,27 @@ async def create_pool_rule(
 async def update_pool_rule(
     rule_id: int,
     payload: PublicPoolRuleInput,
+    request: Request,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     row = await session.get(PublicPoolRule, rule_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "规则不存在", 404)
+    before = serialize_pool_rule(row)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="public_pool_rule",
+        business_id=row.id,
+        before=before,
+        after=serialize_pool_rule(row),
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(serialize_pool_rule(row), "已保存")
 
@@ -156,7 +179,11 @@ async def run_recycle(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """立即执行一次公海回收。正式环境由定时任务调用，这里方便先验证规则。"""
+    """立即执行一次公海回收。
+
+    正式环境由定时任务调用。审计写在 service 内部（它自己 commit），
+    这里不再补写，避免提交后再写审计反而落到另一个事务里。
+    """
     result = await svc.run_public_pool_recycle(session, user.id)
     return ok(result, f"已回收 {result['released_count']} 个客户")
 
@@ -173,12 +200,22 @@ async def list_task_rules(
 @router.post("/task-rules")
 async def create_task_rule(
     payload: TaskRuleInput,
+    request: Request,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     row = TaskRule(**payload.model_dump(), status="active")
     session.add(row)
     await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="task_rule",
+        business_id=row.id,
+        after=serialize_task_rule(row),
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(serialize_task_rule(row), "规则已创建")
 
@@ -187,14 +224,27 @@ async def create_task_rule(
 async def update_task_rule(
     rule_id: int,
     payload: TaskRuleInput,
+    request: Request,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     row = await session.get(TaskRule, rule_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "规则不存在", 404)
+    before = serialize_task_rule(row)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="task_rule",
+        business_id=row.id,
+        before=before,
+        after=serialize_task_rule(row),
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(serialize_task_rule(row), "已保存")
 
@@ -204,5 +254,6 @@ async def run_task_rules(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """立即按规则生成一次自动任务。审计同样写在 service 内部。"""
     result = await svc.run_auto_tasks(session, user.id)
     return ok(result, f"已生成 {result['created_count']} 条自动任务")

@@ -109,12 +109,16 @@ def serialize_logistics_rate(rate: LogisticsRate) -> dict:
     return {
         "id": rate.id,
         "provider": rate.provider,
+        "origin_region": rate.origin_region,
         "destination_region": rate.destination_region,
         "shipping_method": rate.shipping_method,
         "unit_price_per_kg": _f(rate.unit_price_per_kg),
+        "unit_price_per_volume": _f(rate.unit_price_per_volume),
         "min_charge": _f(rate.min_charge),
         "eta_days": rate.eta_days,
+        "eta_days_max": rate.eta_days_max,
         "status": rate.status,
+        "remark": rate.remark,
     }
 
 
@@ -213,26 +217,67 @@ async def resolve_min_margin(session: AsyncSession, role_codes: list[str]) -> tu
 
 
 async def estimate_logistics(
-    session: AsyncSession, *, sku: Sku, quantity: Decimal
+    session: AsyncSession,
+    *,
+    sku: Sku,
+    quantity: Decimal,
+    destination_region: str | None = None,
+    shipping_method: str | None = None,
 ) -> tuple[Decimal | None, str | None]:
     """按费率表估算**单件**运费：单重 × 公斤单价；最低收费按数量摊到单件。
 
     核价全程按「单价」计算，所以运费也必须是单件口径，
     否则一批 3000 件的总运费会被当成一件的运费，算出来的利润完全失真。
+
+    按目的地与运输方式筛费率（PRD §14）：先精确匹配，再退回只按运输方式匹配，
+    最后才退回任意启用中的费率——并在退回时明确告知用了哪条，避免静默取错费率。
     """
     if sku.weight is None:
         return None, "该 SKU 没有维护单重，无法自动估算运费，请手工填写"
-    rate = (
-        await session.execute(
-            select(LogisticsRate).where(LogisticsRate.status == "active").order_by(LogisticsRate.id.asc()).limit(1)
-        )
-    ).scalar_one_or_none()
+
+    base = select(LogisticsRate).where(LogisticsRate.status == "active")
+
+    rate = None
+    note = None
+
+    if destination_region and shipping_method:
+        rate = (
+            await session.execute(
+                base.where(
+                    LogisticsRate.destination_region == destination_region,
+                    LogisticsRate.shipping_method == shipping_method,
+                ).order_by(LogisticsRate.id.asc()).limit(1)
+            )
+        ).scalar_one_or_none()
+
+    if rate is None and shipping_method:
+        rate = (
+            await session.execute(
+                base.where(LogisticsRate.shipping_method == shipping_method)
+                .order_by(LogisticsRate.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if rate is not None:
+            note = f"没有「{destination_region or '未指定目的地'} + {shipping_method}」的费率，已按运输方式「{shipping_method}」的费率估算"
+
+    if rate is None:
+        rate = (
+            await session.execute(base.order_by(LogisticsRate.id.asc()).limit(1))
+        ).scalar_one_or_none()
+        if rate is not None and (destination_region or shipping_method):
+            note = (
+                f"没有匹配「{destination_region or '-'} / {shipping_method or '-'}」的运费费率，"
+                f"已退回第一条启用费率（{rate.provider} {rate.shipping_method}）估算"
+            )
+
     if rate is None:
         return None, "还没有维护运费费率，请先在价格中心配置或手工填写运费"
+
     per_unit = sku.weight * rate.unit_price_per_kg
     if rate.min_charge and quantity > 0:
         per_unit = max(per_unit, rate.min_charge / quantity)
-    return per_unit.quantize(Decimal("0.0001")), None
+    return per_unit.quantize(Decimal("0.0001")), note
 
 
 async def calculate_price(
@@ -243,11 +288,18 @@ async def calculate_price(
     customer_id: int | None = None,
     logistics_cost: Decimal | None = None,
     target_margin: Decimal | None = None,
+    target_profit_amount: Decimal | None = None,
     quoted_price: Decimal | None = None,
     role_codes: list[str] | None = None,
     currency: str = "CNY",
     exchange_rate: Decimal | None = None,
     tax_refund_rate: Decimal | None = None,
+    # PRD §13 要求的其余输入项
+    customer_level: str | None = None,
+    country: str | None = None,
+    package_type: str | None = None,
+    shipping_method: str | None = None,
+    payment_terms: str | None = None,
 ) -> dict:
     """核价。
 
@@ -255,6 +307,11 @@ async def calculate_price(
     外贸口径（可选）：传入 currency ≠ CNY 且给 exchange_rate 时，
     报价按外币计价、成本按汇率折算；再叠加出口退税。
     **两种口径共用同一套代码，不需要切换模式**——传了参数就是外贸，不传就是内贸。
+
+    PRD §13 的两类底价在这里**分开返回**，不再合并：
+    - `protection_price`：最低保护价，来自价格规则/客户特殊价，是「公司规定不能低于」；
+    - `minimum_price`：当前用户授权底价，是「以你的权限不能低于」。
+    审批判定两个都要看（PRD §16「低于业务员授权价」「低于保护价」是两条触发条件）。
     """
     sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
@@ -262,7 +319,8 @@ async def calculate_price(
 
     warnings: list[str] = []
     customer = await session.get(Customer, customer_id) if customer_id else None
-    customer_level = customer.level if customer else None
+    # 显式传入的等级优先，否则按客户档案推
+    resolved_level = customer_level or (customer.level if customer else None)
 
     cost = await get_effective_cost(session, sku_id)
     if cost is None:
@@ -273,8 +331,16 @@ async def calculate_price(
     processing = cost.processing_cost if cost else ZERO
     goods_cost = purchase + production + package + processing
 
+    if package_type and package_type != (sku.package_type or None):
+        # 指定了与 SKU 默认不同的包装：目前没有分包装的成本表，
+        # 只能明确告诉用户「按 SKU 默认包装算的」，避免静默用错口径
+        warnings.append(
+            f"已指定包装「{package_type}」，但系统尚未维护分包装成本，"
+            f"成本仍按 SKU 默认包装（{sku.package_type or '未填'}）计算"
+        )
+
     rule = await find_price_rule(
-        session, sku_id=sku_id, quantity=quantity, customer_level=customer_level
+        session, sku_id=sku_id, quantity=quantity, customer_level=resolved_level
     )
     if rule is None:
         warnings.append("该 SKU 没有匹配的价格规则，已按默认利润率反推标准价")
@@ -302,7 +368,11 @@ async def calculate_price(
 
     if logistics_cost is None:
         logistics_cost, logistics_warning = await estimate_logistics(
-            session, sku=sku, quantity=quantity
+            session,
+            sku=sku,
+            quantity=quantity,
+            destination_region=country,
+            shipping_method=shipping_method,
         )
         if logistics_warning:
             warnings.append(logistics_warning)
@@ -318,17 +388,34 @@ async def calculate_price(
         or (base_cost / (Decimal(1) - margin))
     )
 
+    # 利润要求（绝对金额口径）：反推一个等效的目标利润率，便于统一走后面的算法
+    if target_profit_amount is not None and target_margin is None:
+        if recommended > 0 and target_profit_amount < recommended:
+            margin = (recommended - target_profit_amount) / recommended
+        else:
+            warnings.append(
+                f"要求的单件利润 ¥{target_profit_amount} 高于建议价，已忽略该约束"
+            )
+
     min_margin, can_approve = await resolve_min_margin(session, role_codes or [])
     floor_from_margin = base_cost / (Decimal(1) - min_margin) if min_margin < 1 else base_cost
+
+    # 公司口径的保护价（价格规则 / 客户特殊价），与"我的授权底价"分开
+    protection_candidates = [
+        value
+        for value in [
+            rule.minimum_price if rule else None,
+            customer_rule.minimum_price if customer_rule else None,
+        ]
+        if value is not None
+    ]
+    protection_price = max(protection_candidates) if protection_candidates else None
+
+    # 当前用户的授权底价 = max(利润率反推价, 保护价)
     floor_price = max(
         [
             value
-            for value in [
-                floor_from_margin,
-                rule.minimum_price if rule else None,
-                customer_rule.minimum_price if customer_rule else None,
-                customer_rule.agreed_price if customer_rule else None,
-            ]
+            for value in [floor_from_margin, protection_price]
             if value is not None
         ]
         or [base_cost]
@@ -354,6 +441,8 @@ async def calculate_price(
         standard_price = convert(standard_price)
         recommended = convert(recommended)
         floor_price = convert(floor_price)
+        if protection_price is not None:
+            protection_price = convert(protection_price)
         recommended_range = [convert(recommended_range[0]), convert(recommended_range[1])]
         cost_for_profit = convert(base_cost)
 
@@ -382,17 +471,28 @@ async def calculate_price(
     profit_with_refund = profit + tax_refund
     profit_rate_with_refund = (profit_with_refund / check_price) if check_price else ZERO
 
-    approval_required = bool(
-        check_price < floor_price - Decimal("0.0001")
-        or profit_with_refund < ZERO
-        or (profit_rate_with_refund < min_margin - Decimal("0.000001"))
+    # PRD §16 的两条独立触发条件：低于保护价 / 低于本人授权价
+    below_protection = (
+        protection_price is not None and check_price < protection_price - Decimal("0.0001")
     )
+    below_authorized = check_price < floor_from_margin - Decimal("0.0001")
+    below_profit = profit_with_refund < ZERO
+    below_margin = profit_rate_with_refund < min_margin - Decimal("0.000001")
+
+    approval_required = bool(below_protection or below_authorized or below_profit or below_margin)
 
     if quoted_price is not None and approval_required:
         reason = []
-        if check_price < floor_price:
-            reason.append(f"低于最低允许价 ¥{floor_price:.2f}")
-        if profit_rate < min_margin:
+        if below_protection:
+            reason.append(f"低于最低保护价 ¥{protection_price:.2f}")
+        if below_authorized:
+            reason.append(
+                f"低于你权限内的最低允许价 ¥{floor_price:.2f}"
+                f"（授权利润率 {min_margin * 100:.0f}%）"
+            )
+        if below_profit:
+            reason.append("单件利润为负")
+        if below_margin:
             reason.append(f"利润率 {profit_rate * 100:.2f}% 低于授权 {min_margin * 100:.0f}%")
         warnings.append("该报价需要审批：" + "，".join(reason))
 
@@ -408,7 +508,16 @@ async def calculate_price(
         "quantity": _f(quantity),
         "customer_id": customer_id,
         "customer_name": customer.name if customer else None,
-        "customer_level": customer_level,
+        "customer_level": resolved_level,
+        # PRD §13 的输入项回显，便于界面上让用户看清"这次是按什么算的"
+        "inputs": {
+            "country": country,
+            "package_type": package_type,
+            "shipping_method": shipping_method,
+            "payment_terms": payment_terms,
+            "target_margin": _f(target_margin),
+            "target_profit_amount": _f(target_profit_amount),
+        },
         "cost": {
             "purchase_cost": _f(purchase),
             "production_cost": _f(production),
@@ -425,6 +534,8 @@ async def calculate_price(
         "standard_price": _f(standard_price),
         "recommended_price": _f(recommended),
         "recommended_range": [_f(recommended_range[0]), _f(recommended_range[1])],
+        # 两个底价分开给：保护价是公司口径，minimum_price 是你权限内的口径
+        "protection_price": _f(protection_price),
         "minimum_price": _f(floor_price),
         "authorized_min_margin": _f(min_margin),
         "can_approve": can_approve,
@@ -441,6 +552,12 @@ async def calculate_price(
         "recommended_profit": _f(recommended_profit),
         "recommended_profit_rate": _f(recommended_rate),
         "approval_required": approval_required,
+        "approval_triggers": {
+            "below_protection_price": below_protection,
+            "below_authorized_price": below_authorized,
+            "negative_profit": below_profit,
+            "below_authorized_margin": below_margin,
+        },
         "warnings": warnings,
     }
 

@@ -63,7 +63,7 @@ async def funnel(
     stages = (
         await session.execute(select(OpportunityStage).order_by(OpportunityStage.sequence.asc()))
     ).scalars().all()
-    stmt = svc.apply_data_scope(
+    stmt = await svc.apply_data_scope(
         select(
             Opportunity.stage_id,
             func.count(Opportunity.id),
@@ -72,6 +72,7 @@ async def funnel(
         .where(Opportunity.deleted_at.is_(None), Opportunity.status == "open")
         .group_by(Opportunity.stage_id),
         user,
+        session,
     )
     rows = (await session.execute(stmt)).all()
     stats = {int(sid): (int(count), float(amount or 0)) for sid, count, amount in rows}
@@ -103,7 +104,7 @@ async def list_opportunities(
     user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = svc.apply_data_scope(
+    stmt = await svc.apply_data_scope(
         svc.build_opportunity_stmt(
             keyword=keyword,
             stage_id=stage_id,
@@ -112,6 +113,7 @@ async def list_opportunities(
             customer_id=customer_id,
         ),
         user,
+        session,
     )
     rows, total = await paginate(session, stmt, page, page_size)
     customers, owners, counts = await svc.enrichment(session, rows)

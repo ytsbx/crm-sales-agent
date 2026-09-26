@@ -1,10 +1,32 @@
-"""用户 / 角色 / 权限查询。"""
+"""用户 / 部门 / 角色 的读写逻辑（03-API §3 / §4 / §5）。
 
-from sqlalchemy import select
+写操作集中在 service 里，路由只负责鉴权与审计。几条关键约束都在这里兜底：
+- 用户名唯一；角色 code 唯一；同一父部门下部门名唯一；
+- 部门成环检测（不能把自己或自己的祖先设成父部门）；
+- 停用/删除前检查引用（有下级部门、有在岗用户、角色还有人用）；
+- 不允许停用自己、不允许删掉自己最后的 admin 角色，避免把管理员锁在门外。
+"""
+
+from datetime import UTC, datetime
+
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.user.model import Permission, Role, role_permissions, user_roles
+from app.core.errors import AppError, ErrorCode
+from app.core.security import hash_password
+from app.modules.user.model import (
+    Department,
+    Permission,
+    Role,
+    User,
+    role_permissions,
+    user_roles,
+)
 
+
+# ------------------------------------------------------------------ 登录态查询
+# 注意：下面三个函数被 core/deps.py 用来构造 CurrentUser，是登录链路的一部分，
+# 改动前务必确认 auth / 所有 require_permission 仍然可用。
 
 async def get_user_roles(session: AsyncSession, user_id: int) -> list[Role]:
     stmt = select(Role).join(user_roles, user_roles.c.role_id == Role.id).where(
@@ -32,3 +54,509 @@ def resolve_data_scope(roles: list[Role]) -> str:
         if scope in order and order.index(scope) > order.index(best):
             best = scope
     return best
+
+
+def serialize_user(user: User, *, department_name: str | None = None, roles: list[dict] | None = None) -> dict:
+    """用户对外表示。**永不返回 password_hash。**"""
+    return {
+        "id": user.id,
+        "name": user.name,
+        "username": user.username,
+        "mobile": user.mobile,
+        "email": user.email,
+        "department_id": user.department_id,
+        "department": department_name,
+        "wecom_userid": user.wecom_userid,
+        "status": user.status,
+        "roles": roles or [],
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+def serialize_department(dept: Department) -> dict:
+    return {
+        "id": dept.id,
+        "name": dept.name,
+        "parent_id": dept.parent_id,
+        "wecom_department_id": dept.wecom_department_id,
+        "status": dept.status,
+    }
+
+
+def serialize_role(role: Role, *, permission_codes: list[str] | None = None) -> dict:
+    return {
+        "id": role.id,
+        "code": role.code,
+        "name": role.name,
+        "description": role.description,
+        "data_scope": role.data_scope,
+        "status": role.status,
+        "permission_codes": permission_codes,
+    }
+
+
+# ------------------------------------------------------------------ 用户
+
+async def get_user_or_404(session: AsyncSession, user_id: int) -> User:
+    user = await session.get(User, user_id)
+    if user is None:
+        raise AppError(ErrorCode.NOT_FOUND, "用户不存在", 404)
+    return user
+
+
+async def find_user_by_username(session: AsyncSession, username: str) -> User | None:
+    return (
+        await session.execute(select(User).where(User.username == username.strip()))
+    ).scalar_one_or_none()
+
+
+async def department_names(session: AsyncSession, ids: list[int]) -> dict[int, str]:
+    ids = [i for i in ids if i]
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(select(Department.id, Department.name).where(Department.id.in_(ids)))
+    ).all()
+    return {did: name for did, name in rows}
+
+
+async def roles_of_users(session: AsyncSession, user_ids: list[int]) -> dict[int, list[dict]]:
+    """批量取用户的角色，避免列表 N+1。"""
+    if not user_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(user_roles.c.user_id, Role)
+            .join(Role, Role.id == user_roles.c.role_id)
+            .where(user_roles.c.user_id.in_(user_ids))
+            .order_by(Role.id.asc())
+        )
+    ).all()
+    result: dict[int, list[dict]] = {}
+    for user_id, role in rows:
+        result.setdefault(user_id, []).append(
+            {"id": role.id, "code": role.code, "name": role.name, "data_scope": role.data_scope}
+        )
+    return result
+
+
+async def _validate_department(session: AsyncSession, department_id: int | None) -> None:
+    if department_id is None:
+        return
+    if await session.get(Department, department_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"部门 id={department_id} 不存在", 404)
+
+
+async def _validate_roles(session: AsyncSession, role_ids: list[int]) -> list[Role]:
+    if not role_ids:
+        return []
+    rows = (
+        await session.execute(select(Role).where(Role.id.in_(role_ids)))
+    ).scalars().all()
+    missing = set(role_ids) - {r.id for r in rows}
+    if missing:
+        raise AppError(ErrorCode.NOT_FOUND, f"角色不存在：{sorted(missing)}", 404)
+    return list(rows)
+
+
+async def create_user(session: AsyncSession, data: dict) -> User:
+    username = (data.get("username") or "").strip()
+    if not username:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "登录名不能为空")
+    if await find_user_by_username(session, username) is not None:
+        raise AppError(ErrorCode.DUPLICATE, f"登录名「{username}」已被占用", 409)
+    await _validate_department(session, data.get("department_id"))
+    roles = await _validate_roles(session, data.get("role_ids") or [])
+
+    user = User(
+        name=data["name"].strip(),
+        username=username,
+        password_hash=hash_password(data["password"]),
+        mobile=data.get("mobile"),
+        email=data.get("email"),
+        department_id=data.get("department_id"),
+        wecom_userid=data.get("wecom_userid"),
+        status="active",
+    )
+    session.add(user)
+    await session.flush()
+
+    for role in roles:
+        await session.execute(user_roles.insert().values(user_id=user.id, role_id=role.id))
+    await session.flush()
+    return user
+
+
+async def update_user(session: AsyncSession, user: User, data: dict) -> User:
+    if "department_id" in data:
+        await _validate_department(session, data["department_id"])
+    for field in ("name", "mobile", "email", "department_id", "wecom_userid"):
+        if field in data:
+            value = data[field]
+            if field == "name" and value is not None:
+                value = value.strip()
+                if not value:
+                    raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "姓名不能为空")
+            setattr(user, field, value)
+    if data.get("password"):
+        user.password_hash = hash_password(data["password"])
+    await session.flush()
+    return user
+
+
+async def set_user_status(
+    session: AsyncSession, user: User, *, status: str, operator_id: int | None
+) -> User:
+    if status == "disabled":
+        # 不允许停用自己：否则当前会话下一次请求就会 401，像"把自己踢出系统"
+        if operator_id is not None and user.id == operator_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "不能停用自己的账号", 422)
+        await _assert_not_last_admin(session, user, reason="停用")
+    user.status = status
+    await session.flush()
+    return user
+
+
+async def set_user_roles(session: AsyncSession, user: User, role_ids: list[int]) -> list[Role]:
+    roles = await _validate_roles(session, role_ids)
+    # 摘掉 admin 角色前要确认系统里还有别的管理员
+    current = {r.code for r in await roles_of_user(session, user.id)}
+    new_codes = {r.code for r in roles}
+    if "admin" in current and "admin" not in new_codes:
+        await _assert_not_last_admin(session, user, reason="移除管理员角色")
+
+    await session.execute(user_roles.delete().where(user_roles.c.user_id == user.id))
+    for role in roles:
+        await session.execute(user_roles.insert().values(user_id=user.id, role_id=role.id))
+    await session.flush()
+    return roles
+
+
+async def roles_of_user(session: AsyncSession, user_id: int) -> list[Role]:
+    return list(
+        (
+            await session.execute(
+                select(Role).join(user_roles, user_roles.c.role_id == Role.id).where(
+                    user_roles.c.user_id == user_id
+                )
+            )
+        ).scalars().all()
+    )
+
+
+async def permission_codes_of_role(session: AsyncSession, role_id: int) -> list[str]:
+    return list(
+        (
+            await session.execute(
+                select(Permission.code)
+                .join(role_permissions, role_permissions.c.permission_id == Permission.id)
+                .where(role_permissions.c.role_id == role_id)
+                .order_by(Permission.code.asc())
+            )
+        ).scalars().all()
+    )
+
+
+async def _assert_not_last_admin(session: AsyncSession, user: User, *, reason: str) -> None:
+    """确认这个用户不是系统里最后一个在岗管理员。
+
+    否则一次误操作就能把所有人锁在系统外，且没有找回入口。
+    """
+    is_admin = (
+        await session.execute(
+            select(func.count())
+            .select_from(user_roles)
+            .join(Role, Role.id == user_roles.c.role_id)
+            .where(user_roles.c.user_id == user.id, Role.code == "admin")
+        )
+    ).scalar_one()
+    if not is_admin:
+        return
+    other_admins = (
+        await session.execute(
+            select(func.count())
+            .select_from(user_roles)
+            .join(Role, Role.id == user_roles.c.role_id)
+            .join(User, User.id == user_roles.c.user_id)
+            .where(
+                Role.code == "admin",
+                User.id != user.id,
+                User.status == "active",
+            )
+        )
+    ).scalar_one()
+    if other_admins == 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{user.name}」是系统里最后一个在岗管理员，不能{reason}",
+            422,
+        )
+
+
+# ------------------------------------------------------------------ 部门
+
+async def get_department_or_404(session: AsyncSession, dept_id: int) -> Department:
+    dept = await session.get(Department, dept_id)
+    if dept is None:
+        raise AppError(ErrorCode.NOT_FOUND, "部门不存在", 404)
+    return dept
+
+
+async def list_departments(session: AsyncSession) -> list[Department]:
+    # `NULLS FIRST` 的可移植写法：先按"有没有上级"排（顶级在前），再按 id。
+    # 直接调 .nullsfirst() 是 PostgreSQL 专有，换库即 500。
+    return list(
+        (
+            await session.execute(
+                select(Department).order_by(
+                    Department.parent_id.is_not(None).asc(), Department.id.asc()
+                )
+            )
+        ).scalars().all()
+    )
+
+
+async def department_tree(session: AsyncSession) -> list[dict]:
+    """把平铺的部门列表拼成树。一次查询在内存里拼，避免递归打库。"""
+    rows = await list_departments(session)
+    nodes = {d.id: {**serialize_department(d), "children": []} for d in rows}
+    roots: list[dict] = []
+    for dept in rows:
+        node = nodes[dept.id]
+        parent = nodes.get(dept.parent_id) if dept.parent_id else None
+        if parent is None:
+            roots.append(node)
+        else:
+            parent["children"].append(node)
+    return roots
+
+
+async def _assert_no_cycle(session: AsyncSession, dept_id: int, parent_id: int | None) -> None:
+    """父部门不能是自己或自己的后代，否则树会成环、递归查询会无限循环。"""
+    if parent_id is None:
+        return
+    if parent_id == dept_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "不能把部门设为自己的上级", 422)
+
+    current = parent_id
+    seen: set[int] = set()
+    while current is not None:
+        if current in seen:
+            break  # 数据里本来就有环，先止住别再转
+        seen.add(current)
+        if current == dept_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "不能把部门挂到自己的下级部门下", 422)
+        parent = await session.get(Department, current)
+        current = parent.parent_id if parent else None
+
+
+async def _assert_sibling_name_free(
+    session: AsyncSession, name: str, parent_id: int | None, *, exclude_id: int | None = None
+) -> None:
+    stmt = select(Department).where(
+        Department.name == name.strip(), Department.parent_id.is_(None) if parent_id is None else Department.parent_id == parent_id
+    )
+    if exclude_id is not None:
+        stmt = stmt.where(Department.id != exclude_id)
+    if (await session.execute(stmt)).scalar_one_or_none() is not None:
+        raise AppError(ErrorCode.DUPLICATE, f"同级下已存在部门「{name}」", 409)
+
+
+async def create_department(session: AsyncSession, data: dict) -> Department:
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "部门名称不能为空")
+    parent_id = data.get("parent_id")
+    if parent_id is not None:
+        await get_department_or_404(session, parent_id)
+    await _assert_sibling_name_free(session, name, parent_id)
+
+    dept = Department(
+        name=name,
+        parent_id=parent_id,
+        wecom_department_id=data.get("wecom_department_id"),
+        status="active",
+    )
+    session.add(dept)
+    await session.flush()
+    return dept
+
+
+async def update_department(session: AsyncSession, dept: Department, data: dict) -> Department:
+    new_parent = data.get("parent_id", dept.parent_id)
+    if "parent_id" in data and data["parent_id"] is not None:
+        await get_department_or_404(session, data["parent_id"])
+    await _assert_no_cycle(session, dept.id, new_parent)
+
+    if data.get("name"):
+        await _assert_sibling_name_free(
+            session, data["name"], new_parent, exclude_id=dept.id
+        )
+
+    for field in ("name", "parent_id", "wecom_department_id", "status"):
+        if field in data:
+            value = data[field]
+            if field == "name" and value is not None:
+                value = value.strip()
+            setattr(dept, field, value)
+    await session.flush()
+    return dept
+
+
+async def department_usage(session: AsyncSession, dept_id: int) -> dict:
+    """部门被引用的情况：有几个下级、有几个用户。删前要看这两个数。
+
+    字段名用 `child_count` 而不是 `children`：树接口里 `children` 是子节点**数组**，
+    同名会让前端拿到的东西"有时是数字有时是数组"。
+    """
+    children = (
+        await session.execute(
+            select(func.count()).select_from(Department).where(Department.parent_id == dept_id)
+        )
+    ).scalar_one()
+    users = (
+        await session.execute(
+            select(func.count()).select_from(User).where(User.department_id == dept_id)
+        )
+    ).scalar_one()
+    return {"child_count": int(children), "users": int(users)}
+
+
+async def delete_department(session: AsyncSession, dept: Department) -> None:
+    usage = await department_usage(session, dept.id)
+    if usage["child_count"] > 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该部门下还有 {usage['child_count']} 个下级部门，请先处理",
+            422,
+        )
+    if usage["users"] > 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该部门下还有 {usage['users']} 个用户，请先调整他们的部门",
+            422,
+        )
+    await session.delete(dept)
+
+
+# ------------------------------------------------------------------ 角色与权限
+
+async def get_role_or_404(session: AsyncSession, role_id: int) -> Role:
+    role = await session.get(Role, role_id)
+    if role is None:
+        raise AppError(ErrorCode.NOT_FOUND, "角色不存在", 404)
+    return role
+
+
+async def list_roles(session: AsyncSession) -> list[Role]:
+    return list((await session.execute(select(Role).order_by(Role.id.asc()))).scalars().all())
+
+
+async def list_permissions(session: AsyncSession) -> list[Permission]:
+    return list(
+        (
+            await session.execute(
+                select(Permission).order_by(Permission.resource.asc(), Permission.code.asc())
+            )
+        ).scalars().all()
+    )
+
+
+async def _resolve_permissions(session: AsyncSession, codes: list[str]) -> list[Permission]:
+    if not codes:
+        return []
+    rows = (
+        await session.execute(select(Permission).where(Permission.code.in_(codes)))
+    ).scalars().all()
+    missing = set(codes) - {p.code for p in rows}
+    if missing:
+        raise AppError(ErrorCode.NOT_FOUND, f"权限码不存在：{sorted(missing)}", 404)
+    return list(rows)
+
+
+async def _set_role_permissions(session: AsyncSession, role: Role, codes: list[str]) -> None:
+    permissions = await _resolve_permissions(session, codes)
+    await session.execute(
+        role_permissions.delete().where(role_permissions.c.role_id == role.id)
+    )
+    for perm in permissions:
+        await session.execute(
+            role_permissions.insert().values(role_id=role.id, permission_id=perm.id)
+        )
+    await session.flush()
+
+
+async def create_role(session: AsyncSession, data: dict) -> Role:
+    code = (data.get("code") or "").strip()
+    if not code:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "角色编码不能为空")
+    existing = (
+        await session.execute(select(Role).where(Role.code == code))
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise AppError(ErrorCode.DUPLICATE, f"角色编码「{code}」已存在", 409)
+
+    role = Role(
+        code=code,
+        name=(data.get("name") or code).strip(),
+        description=data.get("description"),
+        data_scope=data.get("data_scope") or "self",
+        status="active",
+    )
+    session.add(role)
+    await session.flush()
+    await _set_role_permissions(session, role, data.get("permission_codes") or [])
+    return role
+
+
+async def update_role(session: AsyncSession, role: Role, data: dict) -> Role:
+    for field in ("name", "description", "data_scope", "status"):
+        if field in data and data[field] is not None:
+            setattr(role, field, data[field])
+    await session.flush()
+    if data.get("permission_codes") is not None:
+        await _set_role_permissions(session, role, data["permission_codes"])
+    return role
+
+
+async def role_usage(session: AsyncSession, role_id: int) -> dict:
+    users = (
+        await session.execute(
+            select(func.count()).select_from(user_roles).where(user_roles.c.role_id == role_id)
+        )
+    ).scalar_one()
+    return {"users": int(users)}
+
+
+async def delete_role(session: AsyncSession, role: Role) -> None:
+    if role.code == "admin":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "内置管理员角色不能删除", 422)
+    usage = await role_usage(session, role.id)
+    if usage["users"] > 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"还有 {usage['users']} 个用户在使用该角色，请先调整他们的角色",
+            422,
+        )
+    await session.execute(
+        role_permissions.delete().where(role_permissions.c.role_id == role.id)
+    )
+    await session.delete(role)
+
+
+async def users_of_department(session: AsyncSession, dept_id: int) -> list[User]:
+    return list(
+        (
+            await session.execute(
+                select(User).where(User.department_id == dept_id).order_by(User.id.asc())
+            )
+        ).scalars().all()
+    )
+
+
+def now() -> datetime:
+    return datetime.now(UTC)
+
+
+def base_user_query() -> Select:
+    return select(User)

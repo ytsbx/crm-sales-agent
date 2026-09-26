@@ -1,0 +1,58 @@
+# CRM 专属中间件：PostgreSQL 15 + Redis 7
+#
+# 为什么用非默认端口：
+#   这台机器上 5432 被 nexus-postgres 占用、6379 被 nexus-redis 占用，
+#   为了不干扰那些项目、也为了让 CRM 能整组启停，这里用 5433 / 6381。
+#   compose 自带 DNS 解析，容器内仍走标准端口。
+#
+# 用法：
+#   docker compose -f ops/docker-compose.yml up -d      启动
+#   docker compose -f ops/docker-compose.yml ps         看状态
+#   docker compose -f ops/docker-compose.yml down       停止（保留数据）
+#   docker compose -f ops/docker-compose.yml down -v    停止并清空数据
+
+name: crm-sales-agent
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: crm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm123456
+      POSTGRES_DB: crm_sales_agent
+      # 中文排序与编码，避免导入中文客户名时出现乱码
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - crm-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm_sales_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: crm-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "127.0.0.1:6381:6379"
+    volumes:
+      - crm-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  crm-pg-data:
+    name: crm-pg-data
+  crm-redis-data:
+    name: crm-redis-data

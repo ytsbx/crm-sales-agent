@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Contact, Customer, CustomerOwnerHistory
@@ -13,14 +14,18 @@ from app.modules.user.model import User
 
 # ---------------------------------------------------------------- 查询条件
 
-def apply_data_scope(stmt: Select, user: CurrentUser) -> Select:
-    """按数据范围过滤客户（05-TECH §24：禁止只靠前端隐藏）。"""
-    if user.data_scope == "all":
+async def apply_data_scope(
+    stmt: Select, user: CurrentUser, session: AsyncSession
+) -> Select:
+    """按数据范围过滤客户（05-TECH §24：禁止只靠前端隐藏）。
+
+    `department_and_sub` 取本部门及所有下级部门，见 app/core/data_scope.py。
+    客户允许没有负责人（公海），所以这里额外放行 owner_id 为空的行。
+    """
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
         return stmt
-    if user.data_scope in ("department", "department_and_sub"):
-        sub = select(User.id).where(User.department_id == user.department_id)
-        return stmt.where(or_(Customer.owner_id.in_(sub), Customer.owner_id.is_(None)))
-    return stmt.where(or_(Customer.owner_id == user.id, Customer.owner_id.is_(None)))
+    return stmt.where(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
 
 
 def not_deleted(stmt: Select) -> Select:
@@ -86,6 +91,7 @@ def serialize_customer(
     *,
     owner_name: str | None = None,
     contact_count: int = 0,
+    tags: list[dict] | None = None,
 ) -> dict:
     return {
         "id": customer.id,
@@ -104,6 +110,8 @@ def serialize_customer(
         "owner_id": customer.owner_id,
         "owner_name": owner_name,
         "contact_count": contact_count,
+        # PRD §6.1：客户列表要能展示标签
+        "tags": tags or [],
         "remark": customer.remark,
         "last_followup_at": customer.last_followup_at,
         "next_followup_at": customer.next_followup_at,
@@ -161,6 +169,20 @@ async def transfer_customer(
     new_owner_id: int | None,
     reason: str | None,
 ) -> None:
+    """变更客户负责人；new_owner_id 为空表示放入公海。
+
+    目标负责人必须存在且在职：此前不校验，传一个不存在的 user id 也会照转，
+    客户会挂到一个空负责人上，事后很难查（单个转移与批量转移都走这里，一处修两处生效）。
+    """
+    if new_owner_id is not None:
+        owner = await session.get(User, new_owner_id)
+        if owner is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={new_owner_id} 不存在", 404)
+        if owner.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，不能接收客户", 422
+            )
+
     old_owner_id = customer.owner_id
     customer.owner_id = new_owner_id
     customer.pool_status = "public" if new_owner_id is None else "private"

@@ -4,10 +4,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
+  attachCustomerTags,
   claimCustomer,
   createContact,
+  deduplicateCustomers,
+  detachCustomerTag,
   getCustomer,
   listContacts,
+  listTags,
+  mergeCustomers,
   releaseCustomerToPool,
   transferCustomer,
   updateCustomer,
@@ -60,6 +65,26 @@ export default function CustomerDetailPage() {
   const [transferModal, setTransferModal] = useState(false)
   const [transferTo, setTransferTo] = useState<number | null>(null)
   const [followupVisible, setFollowupVisible] = useState(false)
+
+  // 标签与合并（03-API §7）
+  const [tagPickerOpen, setTagPickerOpen] = useState(false)
+  const [pendingTagIds, setPendingTagIds] = useState<number[]>([])
+  const [mergeModal, setMergeModal] = useState(false)
+  const [mergeTarget, setMergeTarget] = useState<number | null>(null)
+  const [mergeKeyword, setMergeKeyword] = useState('')
+  const [mergeReason, setMergeReason] = useState('')
+
+  const tagsQuery = useQuery({ queryKey: ['tags'], queryFn: () => listTags(false) })
+
+  // 合并目标候选：按关键词搜其他客户；顺带展示查重打分，优先合并疑似重复的
+  const mergeCandidatesQuery = useQuery({
+    queryKey: ['merge-candidates', mergeKeyword],
+    queryFn: () =>
+      mergeKeyword.trim()
+        ? deduplicateCustomers({ name: mergeKeyword.trim() })
+        : Promise.resolve({ matches: [], count: 0 }),
+    enabled: mergeModal && mergeKeyword.trim().length > 0,
+  })
 
   const customerQuery = useQuery({
     queryKey: ['customer', customerId],
@@ -117,6 +142,46 @@ export default function CustomerDetailPage() {
     onSuccess: (_data, action) => {
       Toast.success(action === 'release' ? '已放入公海' : '领取成功')
       invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const attachTagsMutation = useMutation({
+    mutationFn: (tagIds: number[]) => attachCustomerTags(customerId, tagIds),
+    onSuccess: (result) => {
+      Toast.success(result.added > 0 ? `已添加 ${result.added} 个标签` : '标签已存在，未重复添加')
+      setTagPickerOpen(false)
+      setPendingTagIds([])
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const detachTagMutation = useMutation({
+    mutationFn: (tagId: number) => detachCustomerTag(customerId, tagId),
+    onSuccess: () => {
+      Toast.success('标签已移除')
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const mergeMutation = useMutation({
+    mutationFn: () =>
+      mergeCustomers({
+        source_customer_id: customerId,
+        target_customer_id: mergeTarget!,
+        reason: mergeReason.trim() || undefined,
+      }),
+    onSuccess: (result) => {
+      const movedText = Object.entries(result.moved)
+        .filter(([, count]) => count > 0)
+        .map(([label, count]) => `${label} ${count}`)
+        .join('、')
+      Toast.success(`已合并，迁移：${movedText || '无关联数据'}`)
+      setMergeModal(false)
+      // 来源客户已被软删，跳去目标客户继续操作
+      navigate(`/customers/${result.target_customer_id}`)
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -233,6 +298,18 @@ export default function CustomerDetailPage() {
             {can('customer:assign') && (
               <Button onClick={() => setTransferModal(true)}>转移负责人</Button>
             )}
+            {can('customer:update') && (
+              <Button
+                onClick={() => {
+                  setMergeTarget(null)
+                  setMergeKeyword('')
+                  setMergeReason('')
+                  setMergeModal(true)
+                }}
+              >
+                合并到其他客户
+              </Button>
+            )}
             {can('customer:assign') && customer.pool_status !== 'public' && (
               <Popconfirm
                 title="放入公海后负责人会清空，确认？"
@@ -286,6 +363,37 @@ export default function CustomerDetailPage() {
                 }
               />
               <Field label="备注" value={customer.remark ?? '-'} />
+              <div style={{ gridColumn: '1 / -1' }}>
+                <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 6 }}>
+                  客户标签
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                  {(customer.tags ?? []).length === 0 && (
+                    <span style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>还没有标签</span>
+                  )}
+                  {(customer.tags ?? []).map((tag) => (
+                    <Tag
+                      key={tag.id}
+                      closable={can('customer:update')}
+                      onClose={() => detachTagMutation.mutate(tag.id)}
+                    >
+                      {tag.name}
+                    </Tag>
+                  ))}
+                  {can('customer:update') && (
+                    <Button
+                      size="small"
+                      theme="borderless"
+                      onClick={() => {
+                        setPendingTagIds([])
+                        setTagPickerOpen(true)
+                      }}
+                    >
+                      + 添加标签
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
@@ -586,6 +694,116 @@ export default function CustomerDetailPage() {
         />
         <div style={{ marginTop: 12, color: 'var(--crm-text-3)', fontSize: 12 }}>
           转移会记录历史负责人；不选人直接确认 = 放入公海。
+        </div>
+      </Modal>
+
+      {/* 添加标签 */}
+      <Modal
+        title="添加客户标签"
+        visible={tagPickerOpen}
+        onCancel={() => setTagPickerOpen(false)}
+        onOk={() => attachTagsMutation.mutate(pendingTagIds)}
+        confirmLoading={attachTagsMutation.isPending}
+        okText="添加"
+        okButtonProps={{ disabled: pendingTagIds.length === 0 }}
+      >
+        <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
+          标签是受控字典，可在「系统设置 › 客户标签」里维护。
+        </div>
+        <Select
+          multiple
+          placeholder="选择一个或多个标签"
+          value={pendingTagIds}
+          onChange={(value) => setPendingTagIds((value as number[]) ?? [])}
+          loading={tagsQuery.isLoading}
+          style={{ width: '100%' }}
+          optionList={(tagsQuery.data ?? [])
+            // 已经打过的就不列出来，避免重复选择
+            .filter((tag) => !(customer.tags ?? []).some((own) => own.id === tag.id))
+            .map((tag) => ({ value: tag.id, label: `${tag.name}（${tag.type}）` }))}
+        />
+        {(tagsQuery.data ?? []).length === 0 && !tagsQuery.isLoading && (
+          <div style={{ marginTop: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
+            还没有任何标签，先去「系统设置 › 客户标签」建一个。
+          </div>
+        )}
+      </Modal>
+
+      {/* 合并客户 */}
+      <Modal
+        title="合并到其他客户"
+        visible={mergeModal}
+        onCancel={() => setMergeModal(false)}
+        onOk={() => mergeMutation.mutate()}
+        confirmLoading={mergeMutation.isPending}
+        okText="确认合并"
+        okButtonProps={{ disabled: !mergeTarget }}
+      >
+        <div
+          style={{
+            background: 'var(--crm-warning-soft)',
+            color: 'var(--crm-warning)',
+            padding: 10,
+            borderRadius: 4,
+            fontSize: 13,
+            marginBottom: 12,
+          }}
+        >
+          合并不可逆：「{customer.name}」的联系人、商机、报价、订单、跟进、任务、标签
+          会全部转移到目标客户，然后本客户被删除。
+        </div>
+
+        <Input
+          placeholder="搜索要保留的客户（按名称）"
+          value={mergeKeyword}
+          onChange={setMergeKeyword}
+        />
+
+        {mergeKeyword.trim() && (
+          <div style={{ marginTop: 8 }}>
+            {mergeCandidatesQuery.isLoading && (
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>查询中…</div>
+            )}
+            {!mergeCandidatesQuery.isLoading &&
+              (mergeCandidatesQuery.data?.matches ?? []).filter((m) => m.id !== customerId)
+                .length === 0 && (
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                  没有找到匹配的客户，换个关键词试试。
+                </div>
+              )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {(mergeCandidatesQuery.data?.matches ?? [])
+                .filter((m) => m.id !== customerId)
+                .map((match) => (
+                  <div
+                    key={match.id}
+                    onClick={() => setMergeTarget(match.id)}
+                    style={{
+                      padding: '8px 10px',
+                      border: `1px solid ${
+                        mergeTarget === match.id ? 'var(--crm-primary)' : 'var(--crm-outline)'
+                      }`,
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      background:
+                        mergeTarget === match.id ? 'var(--crm-primary-soft)' : 'var(--crm-surface)',
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>{match.name}</div>
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      相似度 {match.score}%（{match.reasons.join('、')}）
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+            合并原因（可选，会记入合并日志）
+          </div>
+          <Input value={mergeReason} onChange={setMergeReason} placeholder="如：重复录入" />
         </div>
       </Modal>
 

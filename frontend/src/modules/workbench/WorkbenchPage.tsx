@@ -14,6 +14,7 @@ import {
   getDashboardSummary,
   getDashboardTasks,
   getDashboardTrend,
+  getTeamSummary,
   type DashboardTask,
   type TrendRow,
 } from '../../shared/api/analytics'
@@ -133,8 +134,12 @@ export default function WorkbenchPage() {
     queryKey: ['workbench-opportunities'],
     queryFn: () => listOpportunities({ status: 'open', page_size: 5 }),
   })
+  // PRD §4.2 主管视图：数据范围是 self 的人会拿到 is_team_view=false
+  const teamQuery = useQuery({ queryKey: ['dashboard-team'], queryFn: getTeamSummary })
 
   const summary = summaryQuery.data
+  const team = teamQuery.data
+  const isTeamView = Boolean(team?.is_team_view)
   const tasks = tasksQuery.data ?? []
   const funnel = (funnelQuery.data ?? []).filter((row) => row.count > 0 || row.sequence <= 6)
   const maxFunnel = Math.max(...funnel.map((row) => row.count), 1)
@@ -244,6 +249,7 @@ export default function WorkbenchPage() {
               void tasksQuery.refetch()
               void trendQuery.refetch()
               void activitiesQuery.refetch()
+              void teamQuery.refetch()
               Toast.success('已刷新')
             }}
           />
@@ -270,6 +276,147 @@ export default function WorkbenchPage() {
           </div>
         ))}
       </div>
+
+      {/* PRD §4.2 主管视图：只有数据范围 ≥ 部门的人才会拿到 is_team_view */}
+      {isTeamView && team && (
+        <div className="card-block" style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div style={{ fontWeight: 600 }}>
+              团队概览
+              <span style={{ marginLeft: 8, color: 'var(--crm-text-3)', fontSize: 12, fontWeight: 400 }}>
+                {team.member_count} 名成员 ·{' '}
+                {(
+                  {
+                    department: '本部门',
+                    department_and_sub: '本部门及下级',
+                    all: '全部',
+                  } as Record<string, string>
+                )[team.data_scope] ?? team.data_scope}
+              </span>
+            </div>
+          </div>
+
+          <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
+            <div className="kpi-card">
+              <div className="kpi-label">团队待办</div>
+              <div className="kpi-value">{team.team_task_count ?? 0}</div>
+              <div style={{ marginTop: 10 }}>
+                <span
+                  className={(team.team_overdue_count ?? 0) > 0 ? 'chip chip-error' : 'chip'}
+                >
+                  逾期 {team.team_overdue_count ?? 0} 项
+                </span>
+              </div>
+            </div>
+            <div
+              className="kpi-card"
+              style={{ cursor: 'pointer' }}
+              onClick={() => navigate('/approvals')}
+            >
+              <div className="kpi-label">待审批报价</div>
+              <div className="kpi-value">{team.pending_approval_count ?? 0}</div>
+              <div style={{ marginTop: 10 }}>
+                <span
+                  className={(team.pending_approval_count ?? 0) > 0 ? 'chip chip-warning' : 'chip'}
+                >
+                  需要你处理
+                </span>
+              </div>
+            </div>
+            <div
+              className="kpi-card"
+              style={{ cursor: 'pointer' }}
+              onClick={() => navigate('/customers')}
+            >
+              <div className="kpi-label">客户分配</div>
+              <div className="kpi-value">{team.unassigned_customer_count ?? 0}</div>
+              <div style={{ marginTop: 10 }}>
+                <span className="chip">无负责人，待分配</span>
+              </div>
+            </div>
+            <div className="kpi-card">
+              <div className="kpi-label">本月团队成交</div>
+              <div className="kpi-value">{team.team_won_count_this_month ?? 0}</div>
+              <div style={{ marginTop: 10 }}>
+                <span className="chip">
+                  ¥{Math.round(team.team_won_amount_this_month ?? 0).toLocaleString('zh-CN')}
+                </span>
+              </div>
+            </div>
+            <div
+              className="kpi-card"
+              style={{ cursor: 'pointer' }}
+              onClick={() => navigate('/opportunities')}
+            >
+              <div className="kpi-label">风险商机</div>
+              <div className="kpi-value">{team.risky_opportunities?.length ?? 0}</div>
+              <div style={{ marginTop: 10 }}>
+                <span
+                  className={(team.risky_opportunities?.length ?? 0) > 0 ? 'chip chip-error' : 'chip'}
+                >
+                  临近成交 / 长期未更新
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* 成员明细：谁忙、谁逾期、谁没跟客户 */}
+          <div style={{ marginTop: 18 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>成员明细</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                  <th style={{ textAlign: 'left', padding: '6px 0', fontWeight: 500 }}>成员</th>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>待办</th>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>逾期</th>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>
+                    待跟进客户
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>
+                    本月成交额
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {(team.members ?? []).map((member) => (
+                  <tr key={member.user_id} style={{ borderTop: '1px solid var(--crm-surface-high)' }}>
+                    <td style={{ padding: '8px 0' }}>{member.name}</td>
+                    <td style={{ textAlign: 'right', padding: '8px 0' }}>{member.todo_count}</td>
+                    <td
+                      style={{
+                        textAlign: 'right',
+                        padding: '8px 0',
+                        color: member.overdue_count > 0 ? 'var(--crm-error)' : undefined,
+                      }}
+                    >
+                      {member.overdue_count}
+                    </td>
+                    <td
+                      style={{
+                        textAlign: 'right',
+                        padding: '8px 0',
+                        color: member.stale_customer_count > 0 ? 'var(--crm-warning)' : undefined,
+                      }}
+                    >
+                      {member.stale_customer_count}
+                    </td>
+                    <td style={{ textAlign: 'right', padding: '8px 0' }}>
+                      ¥{Math.round(member.won_amount_this_month).toLocaleString('zh-CN')}
+                    </td>
+                  </tr>
+                ))}
+                {(team.members ?? []).length === 0 && (
+                  <tr>
+                    <td colSpan={5} style={{ padding: '12px 0', color: 'var(--crm-text-3)' }}>
+                      数据范围内没有成员
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* 漏斗 / 趋势 / 动态 */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.05fr 1.35fr 0.95fr', gap: 16 }}>

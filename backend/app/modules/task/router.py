@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -68,8 +69,14 @@ async def list_tasks(
     stmt = select(Task)
     if mine or user.data_scope == "self":
         stmt = stmt.where(Task.owner_id == user.id)
-    elif owner_id is not None:
-        stmt = stmt.where(Task.owner_id == owner_id)
+    else:
+        # 原先这里对 department / department_and_sub 完全不施加部门条件
+        # （直接落到 elif owner_id），等于部门范围失效、能看到全公司的任务。
+        owner_ids = await scoped_owner_ids(session, user)
+        if owner_ids is not None:
+            stmt = stmt.where(Task.owner_id.in_(owner_ids))
+        if owner_id is not None:
+            stmt = stmt.where(Task.owner_id == owner_id)
     if status:
         stmt = stmt.where(Task.status == status)
     if overdue:
@@ -80,7 +87,11 @@ async def list_tasks(
         stmt = stmt.where(Task.opportunity_id == opportunity_id)
     if customer_id:
         stmt = stmt.where(Task.customer_id == customer_id)
-    stmt = stmt.order_by(Task.status.asc(), Task.due_at.asc().nullslast(), Task.id.desc())
+    # 用 `NULLS LAST` 的可移植写法：先按"有没有到期日"排，再按到期日排。
+    # 直接调 .nullslast() 是 PostgreSQL 专有，换库即 500（core/config.py 承诺换库只改连接串）。
+    stmt = stmt.order_by(
+        Task.status.asc(), Task.due_at.is_(None).asc(), Task.due_at.asc(), Task.id.desc()
+    )
 
     rows, total = await paginate(session, stmt, page, page_size)
     owner_ids = {row.owner_id for row in rows if row.owner_id}

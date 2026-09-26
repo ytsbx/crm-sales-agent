@@ -78,6 +78,12 @@ class AgentExecution(Base, IdMixin):
     action_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     tool_name: Mapped[str] = mapped_column(String(64))
     risk_level: Mapped[str] = mapped_column(String(4))
+    # 03-API §38 要求记录「谁、以什么身份、在什么数据范围下」调用了工具。
+    # 存成快照而不是只留 user_id：角色与数据范围以后会变，
+    # 只靠 session_id 反查的话，事后无法还原"当时他有没有权限看到这条数据"。
+    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    role_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    data_scope_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
     input_payload: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     output_payload: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="success")

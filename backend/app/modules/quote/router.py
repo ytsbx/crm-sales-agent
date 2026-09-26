@@ -1,6 +1,6 @@
 """报价中心接口（对齐 03-API §20 ~ §22）。"""
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -108,11 +109,9 @@ async def list_quotes(
         stmt = stmt.where(Quote.customer_id == customer_id)
     if owner_id:
         stmt = stmt.where(Quote.owner_id == owner_id)
-    if user.data_scope == "self":
-        stmt = stmt.where(Quote.owner_id == user.id)
-    elif user.data_scope in ("department", "department_and_sub"):
-        sub = select(User.id).where(User.department_id == user.department_id)
-        stmt = stmt.where(Quote.owner_id.in_(sub))
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(Quote.owner_id.in_(owner_ids))
 
     rows, total = await paginate(session, stmt.order_by(Quote.id.desc()), page, page_size)
     ctx = await _quote_context(session, rows)
@@ -136,73 +135,31 @@ async def create_quote(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """从商机生成报价：默认按核价建议价生成 V1，明细来自商机需求明细。"""
+    """从商机生成报价：默认按核价建议价生成 V1，明细来自商机需求明细。
+
+    生成逻辑在 `svc.create_quote`，与 Agent 工具 `create_quote_draft` 共用同一份实现。
+    """
     opportunity = None
-    customer_id = payload.customer_id
     if payload.opportunity_id:
         opportunity = await session.get(Opportunity, payload.opportunity_id)
         if opportunity is None or opportunity.deleted_at is not None:
             raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
-        customer_id = opportunity.customer_id
-    if not customer_id:
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "必须指定商机或客户")
 
-    # 报价有效期与默认条款从系统配置读，不再写死在代码里
-    valid_days = int(await settings_service.get_number(session, "quote_valid_days", "days", 30))
-    default_payment = await settings_service.get_text(
-        session, "default_payment_terms", "text", "款到发货"
-    )
-    default_delivery = await settings_service.get_text(
-        session, "default_delivery_terms", "text", "含运费，送货上门"
-    )
-
-    quote = Quote(
-        quote_no=await svc.generate_quote_no(session),
-        opportunity_id=payload.opportunity_id,
-        customer_id=customer_id,
-        contact_id=payload.contact_id or (opportunity.primary_contact_id if opportunity else None),
-        owner_id=(opportunity.owner_id if opportunity else None) or user.id,
-        status="draft",
-        valid_until=payload.valid_until or (
-            datetime.now(UTC).date() + timedelta(days=valid_days)
-        ),
-        created_by=user.id,
-    )
-    session.add(quote)
-    await session.flush()
-
-    version = QuoteVersion(
-        quote_id=quote.id,
-        version_no=1,
-        payment_terms=payload.payment_terms or default_payment,
-        delivery_terms=payload.delivery_terms or default_delivery,
+    created = await svc.create_quote(
+        session,
+        user=user,
+        opportunity=opportunity,
+        customer_id=payload.customer_id,
+        contact_id=payload.contact_id,
+        currency=payload.currency,
+        exchange_rate=payload.exchange_rate,
+        valid_until=payload.valid_until,
+        payment_terms=payload.payment_terms,
+        delivery_terms=payload.delivery_terms,
         remark=payload.remark,
-        approval_status="not_submitted",
-        created_by=user.id,
-        created_at=datetime.now(UTC),
     )
-    session.add(version)
-    await session.flush()
-    quote.current_version_id = version.id
-
-    if opportunity:
-        for opp_item in await svc.opportunity_items(session, opportunity.id):
-            item = await svc.build_item_snapshot(
-                session,
-                version=version,
-                sku_id=opp_item.sku_id,
-                quantity=opp_item.quantity,
-                customer_id=customer_id,
-                quoted_price=opp_item.target_price,
-                logistics_cost=None,
-                opportunity_item_id=opp_item.id,
-                spec_snapshot=opp_item.specification,
-                remark=opp_item.remark,
-                role_codes=user.roles,
-            )
-            session.add(item)
-        await session.flush()
-        await svc.recalc_version(session, version)
+    quote = created["_quote"]
+    version = created["_version"]
 
     await write_audit(
         session,
@@ -214,7 +171,16 @@ async def create_quote(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok({"quote_id": quote.id, "version_id": version.id}, "报价单已生成")
+    return ok(
+        {
+            "quote_id": quote.id,
+            "version_id": version.id,
+            "currency": version.currency,
+            "exchange_rate_snapshot": created["exchange_rate_snapshot"],
+            "warnings": created["warnings"],
+        },
+        "报价单已生成",
+    )
 
 
 @router.get("/quotes/{quote_id}")
@@ -260,73 +226,12 @@ async def create_version(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """新建版本：复制上一版全部明细与费用，旧版本原样保留、不可覆盖。"""
+    """新建版本：复制上一版全部明细与费用，旧版本原样保留、不可覆盖。
+
+    复制逻辑在 `svc.create_version`，与 Agent 工具 `create_quote_version` 共用。
+    """
     quote = await svc.get_quote_or_404(session, quote_id)
-    latest = (
-        await session.execute(
-            select(QuoteVersion)
-            .where(QuoteVersion.quote_id == quote_id)
-            .order_by(QuoteVersion.version_no.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if latest is None:
-        raise AppError(ErrorCode.NOT_FOUND, "报价单没有版本", 404)
-
-    version = QuoteVersion(
-        quote_id=quote.id,
-        version_no=latest.version_no + 1,
-        currency=latest.currency,
-        payment_terms=latest.payment_terms,
-        delivery_terms=latest.delivery_terms,
-        remark=latest.remark,
-        approval_status="not_submitted",
-        created_by=user.id,
-        created_at=datetime.now(UTC),
-    )
-    session.add(version)
-    await session.flush()
-
-    for item in await svc.version_items(session, latest.id):
-        session.add(
-            QuoteItem(
-                quote_version_id=version.id,
-                opportunity_item_id=item.opportunity_item_id,
-                sku_id=item.sku_id,
-                sku_code_snapshot=item.sku_code_snapshot,
-                sku_name_snapshot=item.sku_name_snapshot,
-                spec_snapshot=item.spec_snapshot,
-                quantity=item.quantity,
-                cost_snapshot=item.cost_snapshot,
-                package_cost_snapshot=item.package_cost_snapshot,
-                logistics_cost_snapshot=item.logistics_cost_snapshot,
-                standard_price_snapshot=item.standard_price_snapshot,
-                recommended_price_snapshot=item.recommended_price_snapshot,
-                minimum_price_snapshot=item.minimum_price_snapshot,
-                quoted_price=item.quoted_price,
-                profit_snapshot=item.profit_snapshot,
-                profit_rate_snapshot=item.profit_rate_snapshot,
-                approval_required=item.approval_required,
-                approval_reason=item.approval_reason,
-                remark=item.remark,
-            )
-        )
-    for charge in await svc.version_charges(session, latest.id):
-        session.add(
-            QuoteCharge(
-                quote_version_id=version.id,
-                charge_type=charge.charge_type,
-                description=charge.description,
-                amount=charge.amount,
-                currency=charge.currency,
-                is_discount=charge.is_discount,
-                sort_no=charge.sort_no,
-            )
-        )
-    await session.flush()
-    await svc.recalc_version(session, version)
-    quote.current_version_id = version.id
-    quote.status = "draft"
+    version = await svc.create_version(session, quote=quote, user=user)
 
     await write_audit(
         session,
@@ -542,6 +447,7 @@ async def update_item(
 @router.delete("/quote-items/{item_id}")
 async def delete_item(
     item_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -550,9 +456,20 @@ async def delete_item(
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
     version = await svc.get_version_or_404(session, item.quote_version_id)
     await svc.ensure_version_editable(version)
+    before = svc.serialize_item(item)
     await session.delete(item)
     await session.flush()
     await svc.recalc_version(session, version)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="quote_item",
+        business_id=item_id,
+        before=before,
+        after={"quote_version_id": version.id, "total_amount": float(version.total_amount)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(None, "已删除")
 
@@ -561,6 +478,7 @@ async def delete_item(
 async def add_charge(
     version_id: int,
     payload: QuoteChargeInput,
+    request: Request,
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -576,6 +494,18 @@ async def add_charge(
     session.add(charge)
     await session.flush()
     await svc.recalc_version(session, version)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="quote_charge",
+        business_id=charge.id,
+        after={
+            **svc.serialize_charge(charge),
+            "total_amount": float(version.total_amount),
+        },
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(svc.serialize_charge(charge), "附加费用已添加")
 
@@ -583,6 +513,7 @@ async def add_charge(
 @router.delete("/quote-charges/{charge_id}")
 async def delete_charge(
     charge_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -591,9 +522,20 @@ async def delete_charge(
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
     version = await svc.get_version_or_404(session, charge.quote_version_id)
     await svc.ensure_version_editable(version)
+    before = svc.serialize_charge(charge)
     await session.delete(charge)
     await session.flush()
     await svc.recalc_version(session, version)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="quote_charge",
+        business_id=charge_id,
+        before=before,
+        after={"quote_version_id": version.id, "total_amount": float(version.total_amount)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(None, "已删除")
 
@@ -651,6 +593,7 @@ async def submit_approval(
 @router.post("/quote-versions/{version_id}/withdraw-approval")
 async def withdraw_approval(
     version_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -658,9 +601,11 @@ async def withdraw_approval(
     if version.approval_status != "pending":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "当前没有待审批的申请")
     instance = await svc.latest_approval(session, version_id)
+    withdrawn_instance_id = None
     if instance:
         instance.status = "withdrawn"
         instance.finished_at = datetime.now(UTC)
+        withdrawn_instance_id = instance.id
         from app.modules.approval.model import ApprovalRecord
 
         session.add(
@@ -676,6 +621,18 @@ async def withdraw_approval(
     version.submitted_at = None
     quote = await svc.get_quote_or_404(session, version.quote_id)
     quote.status = "draft"
+    await session.flush()
+    # 撤回是审批流里的关键动作，必须留痕：否则"谁在什么时候把审批撤了"查不到
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="withdraw_approval",
+        business_type="quote_version",
+        business_id=version.id,
+        before={"approval_status": "pending", "approval_instance_id": withdrawn_instance_id},
+        after={"approval_status": "not_submitted"},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(None, "已撤回审批")
 

@@ -31,27 +31,46 @@ CRM-Sales-Agent-V1.1/
 └── ops/smoke_ui.mjs        界面冒烟测试（无头浏览器逐页截图）
 ```
 
-## 中间件（复用本机已有服务，不新装）
+## 中间件（本项目自带，独立容器）
 
-| 服务 | 地址 | 来源 |
+本仓库自带 `ops/docker-compose.yml`，起一套 CRM 专用的 PostgreSQL 15 + Redis 7：
+
+```bash
+docker compose -f ops/docker-compose.yml up -d      # 启动
+docker compose -f ops/docker-compose.yml ps         # 看状态（应为 healthy）
+docker compose -f ops/docker-compose.yml down       # 停止（保留数据）
+docker compose -f ops/docker-compose.yml down -v    # 停止并清空数据
+```
+
+| 服务 | 地址 | 账号 / 库 |
 |---|---|---|
-| PostgreSQL 15 | 127.0.0.1:5432 | Homebrew，库 `crm_sales_agent`，账号 `crm / crm123456` |
-| Redis 7 | 127.0.0.1:6379 | Docker（rag-assistant-redis），CRM 用 db 2 |
-| Elasticsearch / Qdrant | 9200 / 6333 | Docker，留给 Phase 6 的 Agent 知识库 |
+| PostgreSQL 15 | 127.0.0.1:**5433** | `crm / crm123456`，库 `crm_sales_agent` |
+| Redis 7 | 127.0.0.1:**6381** | CRM 用 db 2 |
 
-## 启动
+> **为什么端口不是默认的 5432 / 6379**：这台机器上 5432 被 `nexus-postgres`、
+> 6379 被 `nexus-redis` 占用（别的项目在用）。为了互不干扰，CRM 用 5433 / 6381
+> 并跑在独立容器里，可以整组启停。
+>
+> Elasticsearch / Qdrant 留给将来 Agent 知识库（RAG）用，当前版本没接。
+
+## 启动（Windows / macOS / Linux 通用）
 
 ### 后端
 
 ```bash
+# ---- 首次 ----
 cd backend
-cp .env.example .env          # 首次
-uv venv --python 3.12 .venv   # 首次
-uv pip install --python .venv/bin/python -r requirements.txt
-.venv/bin/alembic upgrade head
-.venv/bin/python -m scripts.seed
-.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+cp .env.example .env            # 然后把 DATABASE_URL 端口改成 5433、REDIS_URL 改成 6381
+uv venv --python 3.12 .venv     # 没有 uv 就用 python -m venv .venv
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt   # macOS/Linux 用 .venv/bin/python
+.venv/Scripts/python.exe -m alembic upgrade head
+.venv/Scripts/python.exe -m scripts.seed
+
+# ---- 启动 ----
+.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+> Windows 下可执行文件在 `.venv\Scripts\`，macOS/Linux 在 `.venv/bin/`；下文只写前者。
 
 接口文档：<http://127.0.0.1:8000/docs>
 
@@ -59,11 +78,40 @@ uv pip install --python .venv/bin/python -r requirements.txt
 
 ```bash
 cd frontend
-pnpm install        # 首次
-pnpm dev            # http://localhost:5173
+pnpm install        # 没有 pnpm 就用 npm install
+pnpm dev            # http://127.0.0.1:5173
 ```
 
 开发期前端通过 Vite 代理把 `/api` 转给后端 8000 端口，无需额外跨域配置。
+
+## 常驻运行（推荐，不依赖终端）
+
+手工起的 dev server 会随终端关闭而死。用 `ops` 下的脚本 + 计划任务可以让网站常驻：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ops\start_backend.ps1    # 起后端（已在跑则跳过）
+powershell -ExecutionPolicy Bypass -File ops\start_frontend.ps1   # 起前端
+powershell -ExecutionPolicy Bypass -File ops\stop_services.ps1    # 停两个服务
+
+# 注册开机自启（需要「以管理员身份运行」的 PowerShell）
+powershell -ExecutionPolicy Bypass -File ops\install_services.ps1
+```
+
+| 文件 | 作用 |
+|---|---|
+| `ops/docker-compose.yml` | PostgreSQL 15 + Redis 7（5433 / 6381） |
+| `ops/start_backend.ps1` | 起 uvicorn，带崩溃自动重启；日志写 `ops/logs/` |
+| `ops/start_frontend.ps1` | 起 Vite，带崩溃自动重启；日志写 `ops/logs/` |
+| `ops/stop_services.ps1` | 按端口停止，且只停本项目自己的进程 |
+| `ops/install_services.ps1` | 注册 `CRM-Backend` / `CRM-Frontend` 登录自启任务并立即启动 |
+| `ops/smoke_ui.mjs` | 逐页截图冒烟测试，见下节 |
+
+> 计划任务必须在**以管理员身份运行**的 PowerShell 里注册（`Register-ScheduledTask` 需要提权）。
+> 注册前先跑一次 `stop_services.ps1`：start 脚本发现端口被占用会跳过启动，
+> 否则任务会空转、而旧的手工进程继续占着端口。
+>
+> 这些脚本刻意只用 ASCII 字符：Windows PowerShell 5.1 在文件没有 BOM 时按 GBK 读 `.ps1`，
+> 中文注释会导致语法错误。
 
 ## 演示账号
 
@@ -72,6 +120,26 @@ pnpm dev            # http://localhost:5173
 | admin | admin123 | 管理员 | 全部 |
 | lisi | 123456 | 销售主管 | 本部门及下级 |
 | zhangsan | 123456 | 业务员 | 仅本人 |
+
+## 用脚本测接口时的两个坑（都踩过，别再犯）
+
+1. **Windows PowerShell 5.1 发中文 JSON 必须显式转 UTF-8**。
+   `Invoke-RestMethod -Body '{"destination":"华东"}'` 默认按 Latin-1 编码，
+   服务端收到的是乱码，于是"明明有华东费率却匹配不到"，看起来像后端 bug。
+   正确写法：
+
+   ```powershell
+   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+   Invoke-RestMethod -Uri $url -Method Post -Headers $h -Body $bytes
+   ```
+
+   排查这类问题时，先用纯 ASCII 值（如 `DST_A`）跑一遍：若 ASCII 正常而中文异常，
+   就是编码问题，不是业务逻辑问题。
+
+2. **不要同时留多个 `start_backend.ps1` / `start_frontend.ps1`**。
+   脚本有"端口已监听则跳过"的保护，但两个 supervisor 同时存在时会各起一个 uvicorn，
+   其中一个绑定失败却仍在运行，表现为"代码明明是新的，接口却返回旧结果"。
+   重启用 `ops\stop_services.ps1` 先停干净，再起一个。
 
 ## 界面冒烟测试
 

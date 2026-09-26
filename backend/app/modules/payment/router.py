@@ -50,6 +50,7 @@ async def list_receivables(
 async def create_receivable(
     order_id: int,
     payload: ReceivableCreate,
+    request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -65,6 +66,15 @@ async def create_receivable(
     )
     session.add(plan)
     await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create",
+        business_type="receivable_plan",
+        business_id=plan.id,
+        after=await svc.serialize_plan(session, plan),
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(await svc.serialize_plan(session, plan), "应收节点已创建")
 
@@ -73,6 +83,7 @@ async def create_receivable(
 async def generate_receivables(
     order_id: int,
     payload: ReceivableGenerate,
+    request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -104,6 +115,15 @@ async def generate_receivables(
         session.add(plan)
         await session.flush()
         created.append(plan)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="generate",
+        business_type="receivable_plan",
+        business_id=order_id,
+        after={"order_id": order_id, "created": len(created), "ratios": payload.ratios},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok([await svc.serialize_plan(session, plan) for plan in created], "应收计划已生成")
 
@@ -112,15 +132,28 @@ async def generate_receivables(
 async def update_receivable(
     plan_id: int,
     payload: ReceivableCreate,
+    request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     plan = await svc.get_plan_or_404(session, plan_id)
+    before = await svc.serialize_plan(session, plan)
     plan.plan_name = payload.plan_name
     plan.due_date = payload.due_date
     plan.amount = Decimal(str(payload.amount))
     plan.remark = payload.remark
     await svc.recalc_plan(session, plan)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="receivable_plan",
+        business_id=plan.id,
+        before=before,
+        after=await svc.serialize_plan(session, plan),
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(await svc.serialize_plan(session, plan), "已保存")
 
@@ -128,6 +161,7 @@ async def update_receivable(
 @router.delete("/receivables/{plan_id}")
 async def delete_receivable(
     plan_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -139,7 +173,17 @@ async def delete_receivable(
     ).first()
     if paid:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该应收节点已有回款记录，不能删除")
+    before = await svc.serialize_plan(session, plan)
     await session.delete(plan)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="receivable_plan",
+        business_id=plan_id,
+        before=before,
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(None, "已删除")
 
@@ -147,11 +191,24 @@ async def delete_receivable(
 @router.post("/receivables/{plan_id}/mark-overdue")
 async def mark_overdue(
     plan_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     plan = await svc.get_plan_or_404(session, plan_id)
+    before_status = plan.status
     plan.status = "overdue"
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="mark_overdue",
+        business_type="receivable_plan",
+        business_id=plan.id,
+        before={"status": before_status},
+        after={"status": "overdue"},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(await svc.serialize_plan(session, plan), "已标记为逾期")
 
@@ -261,13 +318,26 @@ async def confirm_payment(
 async def reject_payment(
     payment_id: int,
     payload: PaymentAction,
+    request: Request,
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     record = await svc.get_payment_or_404(session, payment_id)
     if record.status == "confirmed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已确认的回款不能驳回")
+    before_status = record.status
     record.status = "rejected"
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="reject",
+        business_type="payment",
+        business_id=record.id,
+        before={"status": before_status},
+        after={"status": "rejected", "comment": payload.comment},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(await svc.serialize_payment(session, record), "已驳回该回款")
 

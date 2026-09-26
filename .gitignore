@@ -48,3 +48,11 @@ __pycache__/
 *.bak
 *.zip
 .workbuddy/
+
+# 冒烟测试截图（每次跑都会重新生成）
+.smoke-shots/
+npm-cache/
+.npm-cache/
+
+# 本地服务运行日志（ops/start_*.ps1 写入）
+ops/logs/

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, get_current_user
 from app.core.response import ok
@@ -21,13 +22,12 @@ from app.modules.user.model import User
 router = APIRouter(tags=["Search"])
 
 
-def _scope(stmt, user: CurrentUser, column):
-    if user.data_scope == "all":
+async def _scope(stmt, user: CurrentUser, column, session: AsyncSession):
+    """统一走 app/core/data_scope.py（`department_and_sub` 递归到下级部门）。"""
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
         return stmt
-    if user.data_scope in ("department", "department_and_sub"):
-        sub = select(User.id).where(User.department_id == user.department_id)
-        return stmt.where(column.in_(sub))
-    return stmt.where(column == user.id)
+    return stmt.where(column.in_(owner_ids))
 
 
 @router.get("/search")
@@ -39,7 +39,7 @@ async def global_search(
 ):
     like = f"%{keyword.strip()}%"
 
-    customer_stmt = _scope(
+    customer_stmt = await _scope(
         select(Customer)
         .where(
             Customer.deleted_at.is_(None),
@@ -53,6 +53,7 @@ async def global_search(
         .limit(limit),
         user,
         Customer.owner_id,
+        session,
     )
     customers = [
         {
@@ -85,7 +86,7 @@ async def global_search(
         for contact, customer_name in contact_rows
     ]
 
-    lead_stmt = _scope(
+    lead_stmt = await _scope(
         select(Lead)
         .where(
             Lead.deleted_at.is_(None),
@@ -95,6 +96,7 @@ async def global_search(
         .limit(limit),
         user,
         Lead.owner_id,
+        session,
     )
     leads = [
         {
@@ -105,7 +107,7 @@ async def global_search(
         for row in (await session.execute(lead_stmt)).scalars().all()
     ]
 
-    opportunity_stmt = _scope(
+    opportunity_stmt = await _scope(
         select(Opportunity, OpportunityStage.name, Customer.name)
         .join(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
         .join(Customer, Customer.id == Opportunity.customer_id)
@@ -114,6 +116,7 @@ async def global_search(
         .limit(limit),
         user,
         Opportunity.owner_id,
+        session,
     )
     opportunities = [
         {
@@ -124,7 +127,7 @@ async def global_search(
         for opp, stage_name, customer_name in (await session.execute(opportunity_stmt)).all()
     ]
 
-    quote_stmt = _scope(
+    quote_stmt = await _scope(
         select(Quote, Customer.name)
         .join(Customer, Customer.id == Quote.customer_id)
         .where(Quote.deleted_at.is_(None), Quote.quote_no.ilike(like))
@@ -132,6 +135,7 @@ async def global_search(
         .limit(limit),
         user,
         Quote.owner_id,
+        session,
     )
     quotes = [
         {
@@ -142,7 +146,7 @@ async def global_search(
         for quote, customer_name in (await session.execute(quote_stmt)).all()
     ]
 
-    order_stmt = _scope(
+    order_stmt = await _scope(
         select(SalesOrder, Customer.name)
         .join(Customer, Customer.id == SalesOrder.customer_id)
         .where(SalesOrder.order_no.ilike(like))
@@ -150,6 +154,7 @@ async def global_search(
         .limit(limit),
         user,
         SalesOrder.owner_id,
+        session,
     )
     orders = [
         {

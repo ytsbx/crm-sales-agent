@@ -6,6 +6,7 @@ import LoginPage from '../modules/auth/LoginPage'
 import CustomerDetailPage from '../modules/customer/CustomerDetailPage'
 import CustomerListPage from '../modules/customer/CustomerListPage'
 import LeadListPage from '../modules/lead/LeadListPage'
+import LogisticsPage from '../modules/logistics/LogisticsPage'
 import OpportunityDetailPage from '../modules/opportunity/OpportunityDetailPage'
 import OpportunityListPage from '../modules/opportunity/OpportunityListPage'
 import OrderDetailPage from '../modules/order/OrderDetailPage'
@@ -19,6 +20,7 @@ import PriceCenterPage from '../modules/pricing/PriceCenterPage'
 import PricingPage from '../modules/pricing/PricingPage'
 import QuoteDetailPage from '../modules/quote/QuoteDetailPage'
 import QuoteListPage from '../modules/quote/QuoteListPage'
+import SampleListPage from '../modules/sample/SampleListPage'
 import SettingsPage from '../modules/settings/SettingsPage'
 import TaskListPage from '../modules/task/TaskListPage'
 import WorkbenchPage from '../modules/workbench/WorkbenchPage'
@@ -101,6 +103,8 @@ export const router = createBrowserRouter([
         element: <PriceCenterPage />,
       },
       { path: 'pricing', element: <PricingPage /> },
+      { path: 'logistics', element: <LogisticsPage /> },
+      { path: 'samples', element: <SampleListPage /> },
       {
         path: 'tasks',
         element: <TaskListPage />,

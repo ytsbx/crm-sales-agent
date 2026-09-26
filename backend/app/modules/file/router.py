@@ -180,6 +180,7 @@ async def list_business_files(
 async def attach_file(
     business_type: str,
     business_id: int,
+    request: Request,
     file_id: int = Query(...),
     category: str | None = None,
     user: CurrentUser = Depends(require_permission("file:manage")),
@@ -196,6 +197,16 @@ async def attach_file(
     )
     session.add(link)
     await session.flush()
+    # 附件挂载属于业务对象的内容变更，要留痕（谁能给客户/商机加附件）
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="attach",
+        business_type=business_type,
+        business_id=business_id,
+        after={"file_id": file_id, "file_name": record.file_name, "category": category},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok({"business_file_id": link.id}, "已关联")
 
@@ -203,13 +214,28 @@ async def attach_file(
 @router.delete("/business-files/{business_file_id}")
 async def unlink_file(
     business_file_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("file:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     link = await session.get(BusinessFile, business_file_id)
     if link is None:
         raise AppError(ErrorCode.NOT_FOUND, "关联不存在", 404)
+    before = {
+        "business_type": link.business_type,
+        "business_id": link.business_id,
+        "file_id": link.file_id,
+    }
     await session.delete(link)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="detach",
+        business_type=link.business_type,
+        business_id=link.business_id,
+        before=before,
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(None, "已取消关联（文件本身保留）")
 

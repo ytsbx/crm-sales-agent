@@ -69,6 +69,8 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("file:manage", "上传与删除文件", "file", "manage"),
     ("settings:manage", "系统设置与规则", "settings", "manage"),
     ("agent:use", "使用 Sales Agent", "agent", "use"),
+    ("sample:view", "查看样品", "sample", "view"),
+    ("sample:manage", "管理样品", "sample", "manage"),
 ]
 
 SALES_PERMISSIONS = [
@@ -94,6 +96,8 @@ SALES_PERMISSIONS = [
     "file:view",
     "file:manage",
     "agent:use",
+    "sample:view",
+    "sample:manage",
 ]
 
 MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
@@ -170,7 +174,11 @@ async def seed() -> None:
                     )
                 ).scalars().all()
             }
-            for code_name in perms:
+            # 去重：角色权限清单里可能出现同一个权限代码（例如 MANAGER_PERMISSIONS
+            # 同时继承了 SALES_PERMISSIONS 的 order:manage 又自己列了一遍）。
+            # 下面的 have 是从库里查的，读不到本事务内尚未 flush 的插入，
+            # 所以必须在这里先用 dict.fromkeys 按原顺序去重，否则撞 role_permissions 主键。
+            for code_name in dict.fromkeys(perms):
                 perm = perm_map.get(code_name)
                 if perm and perm.id not in have:
                     await session.execute(
@@ -722,23 +730,65 @@ async def seed() -> None:
                     )
                 )
 
-        # 12. 运费费率（占位值：陆运 0.9 元/公斤，最低 50 元；改过值会同步更新）
-        rate = (await session.execute(select(LogisticsRate))).scalars().first()
-        if rate is None:
-            session.add(
-                LogisticsRate(
-                    provider="自有合作物流",
-                    destination_region="全国（示例）",
-                    shipping_method="陆运",
-                    unit_price_per_kg=Decimal("0.9"),
-                    min_charge=Decimal("50"),
-                    eta_days=5,
-                    status="active",
+        # 12. 运费费率（占位值：真实费率待业务给；改过值会同步更新）
+        #
+        # 维护三条而不是一条，是为了让「多方案对比」（PRD §14 输出项之一）有东西可比：
+        # 一条经济陆运、一条快递、一条按体积计费的专线。
+        # 体积计费的专线用来演示抛货场景——只按重量算会低估这类货的运费。
+        rate_defs = [
+            {
+                "provider": "自有合作物流",
+                "origin_region": None,
+                "destination_region": "全国",
+                "shipping_method": "陆运",
+                "unit_price_per_kg": Decimal("0.9"),
+                "unit_price_per_volume": None,
+                "min_charge": Decimal("50"),
+                "eta_days": 4,
+                "eta_days_max": 6,
+                "remark": "演示占位费率，待业务替换",
+            },
+            {
+                "provider": "顺丰速运（示例）",
+                "origin_region": None,
+                "destination_region": "全国",
+                "shipping_method": "快递",
+                "unit_price_per_kg": Decimal("3.5"),
+                "unit_price_per_volume": None,
+                "min_charge": Decimal("12"),
+                "eta_days": 1,
+                "eta_days_max": 3,
+                "remark": "演示占位费率，待业务替换",
+            },
+            {
+                "provider": "德邦专线（示例）",
+                "origin_region": None,
+                "destination_region": "华东",
+                "shipping_method": "专线",
+                "unit_price_per_kg": Decimal("0.7"),
+                # 按体积计费：抛货走这条更合适
+                "unit_price_per_volume": Decimal("180"),
+                "min_charge": Decimal("80"),
+                "eta_days": 3,
+                "eta_days_max": 5,
+                "remark": "演示占位费率：按体积计费，适合抛货",
+            },
+        ]
+
+        for definition in rate_defs:
+            existing_rate = (
+                await session.execute(
+                    select(LogisticsRate).where(
+                        LogisticsRate.provider == definition["provider"],
+                        LogisticsRate.shipping_method == definition["shipping_method"],
+                    )
                 )
-            )
-        else:
-            rate.unit_price_per_kg = Decimal("0.9")
-            rate.min_charge = Decimal("50")
+            ).scalar_one_or_none()
+            if existing_rate is None:
+                session.add(LogisticsRate(**definition, status="active"))
+            else:
+                for field, value in definition.items():
+                    setattr(existing_rate, field, value)
 
         # 13. 客户特殊价（宏远包装 3000 件以上执行的一客一价）
         customer_for_price = (

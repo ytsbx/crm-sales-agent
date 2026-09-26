@@ -4,8 +4,19 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
-import { createCustomer, listCustomers, type CustomerPayload } from '../../shared/api/customer'
+import {
+  batchTagCustomers,
+  batchTransferCustomers,
+  createCustomer,
+  deduplicateCustomers,
+  listCustomers,
+  listTags,
+  type DuplicateMatch,
+  type CustomerPayload,
+} from '../../shared/api/customer'
+import { listUsers } from '../../shared/api/system'
 import { useAuthStore } from '../../shared/store/auth'
+import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
 
 type Scope = 'mine' | 'pool' | 'all'
@@ -41,6 +52,8 @@ export default function CustomerListPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const currentUser = useAuthStore((state) => state.user)
+  // 批量转移需要 customer:assign，前端先隐藏按钮，避免点了才吃 403
+  const { can } = usePermissions()
 
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -71,6 +84,64 @@ export default function CustomerListPage() {
     const token = JSON.parse(localStorage.getItem('crm-auth') ?? '{}')?.state?.token
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
+
+  // ---- 批量操作（03-API §7 的 batch-tag / batch-transfer） ----
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
+  const [batchTagOpen, setBatchTagOpen] = useState(false)
+  const [batchTagIds, setBatchTagIds] = useState<number[]>([])
+  const [batchTagMode, setBatchTagMode] = useState<'add' | 'replace' | 'remove'>('add')
+  const [batchTransferOpen, setBatchTransferOpen] = useState(false)
+  const [batchOwnerId, setBatchOwnerId] = useState<number | null>(null)
+
+  // ---- 新建时的查重提示（PRD §6.3） ----
+  const [dupMatches, setDupMatches] = useState<DuplicateMatch[]>([])
+
+  const tagsQuery = useQuery({
+    queryKey: ['tags'],
+    queryFn: () => listTags(false),
+    enabled: batchTagOpen,
+  })
+  const usersQuery = useQuery({
+    queryKey: ['assignable-users'],
+    queryFn: () => listUsers({ page: 1, page_size: 100 }),
+    enabled: batchTransferOpen,
+  })
+
+  const refreshList = () => {
+    void queryClient.invalidateQueries({ queryKey: ['customers'] })
+    setSelectedIds([])
+  }
+
+  const batchTagMutation = useMutation({
+    mutationFn: () =>
+      batchTagCustomers({ customer_ids: selectedIds, tag_ids: batchTagIds, mode: batchTagMode }),
+    onSuccess: (result) => {
+      Toast.success(`已处理 ${result.affected} 个客户`)
+      setBatchTagOpen(false)
+      setBatchTagIds([])
+      refreshList()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const batchTransferMutation = useMutation({
+    mutationFn: () =>
+      batchTransferCustomers({ customer_ids: selectedIds, owner_id: batchOwnerId }),
+    onSuccess: (result) => {
+      Toast.success(`已转移 ${result.affected} 个客户`)
+      setBatchTransferOpen(false)
+      setBatchOwnerId(null)
+      refreshList()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const dedupMutation = useMutation({
+    // 新建表单里只有名称可以用来查重（税号等字段表单没收集）
+    mutationFn: () => deduplicateCustomers({ name: form.name }),
+    onSuccess: (result) => setDupMatches(result.matches ?? []),
+    onError: () => setDupMatches([]),
+  })
 
   const downloadCsv = async (url: string, filename: string) => {
     const { default: axios } = await import('axios')
@@ -159,6 +230,24 @@ export default function CustomerListPage() {
         ),
     },
     { title: '地区', dataIndex: 'region', width: 100, render: (v: string | null) => v ?? '-' },
+    {
+      // PRD §6.1：客户列表要能直接看到标签
+      title: '标签',
+      dataIndex: 'tags',
+      width: 180,
+      render: (tags: Customer['tags']) =>
+        (tags ?? []).length === 0 ? (
+          <span style={{ color: 'var(--crm-text-3)' }}>-</span>
+        ) : (
+          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 4 }}>
+            {(tags ?? []).map((tag) => (
+              <Tag key={tag.id} size="small">
+                {tag.name}
+              </Tag>
+            ))}
+          </span>
+        ),
+    },
     { title: '来源', dataIndex: 'source', width: 120, render: (v: string | null) => v ?? '-' },
     {
       title: '联系人',
@@ -245,6 +334,32 @@ export default function CustomerListPage() {
           </Button>
         </div>
 
+        {selectedIds.length > 0 && (
+          <div
+            className="toolbar"
+            style={{
+              background: 'var(--crm-primary-soft)',
+              padding: '8px 12px',
+              borderRadius: 4,
+              alignItems: 'center',
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>已选 {selectedIds.length} 个客户</span>
+            <Button size="small" onClick={() => setBatchTagOpen(true)}>
+              批量打标签
+            </Button>
+            {can('customer:assign') && (
+              <Button size="small" onClick={() => setBatchTransferOpen(true)}>
+                批量转移负责人
+              </Button>
+            )}
+            <div style={{ flex: 1 }} />
+            <Button size="small" theme="borderless" onClick={() => setSelectedIds([])}>
+              取消选择
+            </Button>
+          </div>
+        )}
+
         <Table<Customer>
           columns={columns}
           dataSource={query.data?.items ?? []}
@@ -252,6 +367,10 @@ export default function CustomerListPage() {
           rowKey="id"
           size="middle"
           empty="没有符合条件的客户"
+          rowSelection={{
+            selectedRowKeys: selectedIds,
+            onChange: (keys) => setSelectedIds((keys ?? []) as number[]),
+          }}
           pagination={{
             currentPage: page,
             pageSize,
@@ -317,6 +436,81 @@ export default function CustomerListPage() {
         )}
       </Modal>
 
+      {/* 批量打标签 */}
+      <Modal
+        title={`批量打标签（已选 ${selectedIds.length} 个客户）`}
+        visible={batchTagOpen}
+        onCancel={() => setBatchTagOpen(false)}
+        onOk={() => batchTagMutation.mutate()}
+        confirmLoading={batchTagMutation.isPending}
+        okText="确认"
+        okButtonProps={{ disabled: batchTagIds.length === 0 }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+              操作方式
+            </div>
+            <Select
+              style={{ width: '100%' }}
+              value={batchTagMode}
+              onChange={(value) => setBatchTagMode(value as 'add' | 'replace' | 'remove')}
+              optionList={[
+                { value: 'add', label: '追加（保留原有标签）' },
+                { value: 'replace', label: '覆盖（先清空原有标签）' },
+                { value: 'remove', label: '摘除（移除选中的标签）' },
+              ]}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>标签</div>
+            <Select
+              multiple
+              style={{ width: '100%' }}
+              placeholder="选择一个或多个标签"
+              value={batchTagIds}
+              onChange={(value) => setBatchTagIds((value as number[]) ?? [])}
+              loading={tagsQuery.isLoading}
+              optionList={(tagsQuery.data ?? []).map((tag) => ({
+                value: tag.id,
+                label: `${tag.name}（${tag.type}）`,
+              }))}
+            />
+            {(tagsQuery.data ?? []).length === 0 && !tagsQuery.isLoading && (
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                还没有标签，先去「系统设置 › 客户标签」建一个。
+              </div>
+            )}
+          </div>
+        </div>
+      </Modal>
+
+      {/* 批量转移负责人 */}
+      <Modal
+        title={`批量转移负责人（已选 ${selectedIds.length} 个客户）`}
+        visible={batchTransferOpen}
+        onCancel={() => setBatchTransferOpen(false)}
+        onOk={() => batchTransferMutation.mutate()}
+        confirmLoading={batchTransferMutation.isPending}
+        okText="确认转移"
+      >
+        <Select
+          style={{ width: '100%' }}
+          placeholder="选择新的负责人"
+          showClear
+          value={batchOwnerId ?? undefined}
+          onChange={(value) => setBatchOwnerId((value as number) ?? null)}
+          loading={usersQuery.isLoading}
+          optionList={(usersQuery.data?.items ?? []).map((item) => ({
+            value: item.id,
+            label: `${item.name}（${item.department ?? '未分配部门'}）`,
+          }))}
+        />
+        <div style={{ marginTop: 12, color: 'var(--crm-text-3)', fontSize: 12 }}>
+          清空选择后确认 = 把这些客户放入公海。每次转移都会记录负责人变更历史。
+        </div>
+      </Modal>
+
       <Modal
         title="新建客户"
         visible={modalVisible}
@@ -337,10 +531,42 @@ export default function CustomerListPage() {
             <div style={{ marginBottom: 4 }}>客户名称 *</div>
             <Input
               value={form.name}
-              onChange={(value) => setForm({ ...form, name: value })}
+              onChange={(value) => {
+                setForm({ ...form, name: value })
+                // 名称改了，旧的查重结果就失效了
+                if (dupMatches.length) setDupMatches([])
+              }}
+              onBlur={() => {
+                if (form.name.trim().length >= 2) dedupMutation.mutate()
+              }}
               placeholder="公司全称，例如：宁波宏远包装制品有限公司"
             />
           </div>
+
+          {/* PRD §6.3：新建时就提示疑似重复，而不是等导入时才拦 */}
+          {dupMatches.length > 0 && (
+            <div
+              style={{
+                background: 'var(--crm-warning-soft)',
+                color: 'var(--crm-warning)',
+                padding: 10,
+                borderRadius: 4,
+                fontSize: 13,
+              }}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                发现 {dupMatches.length} 个疑似重复客户
+              </div>
+              {dupMatches.map((match) => (
+                <div key={match.id} style={{ fontSize: 12, lineHeight: 1.7 }}>
+                  · {match.name}（相似度 {match.score}%：{match.reasons.join('、')}）
+                </div>
+              ))}
+              <div style={{ fontSize: 12, marginTop: 4 }}>
+                如确认是同一家，建议先取消，去已有客户里补资料；确实不同再继续创建。
+              </div>
+            </div>
+          )}
           <div>
             <div style={{ marginBottom: 4 }}>客户简称</div>
             <Input

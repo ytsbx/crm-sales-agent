@@ -433,11 +433,17 @@ async def calculate(
             customer_id=payload.customer_id,
             logistics_cost=payload.logistics_cost,
             target_margin=payload.target_margin,
+            target_profit_amount=payload.target_profit_amount,
             quoted_price=payload.quoted_price,
             role_codes=user.roles,
             currency=payload.currency,
             exchange_rate=payload.exchange_rate,
             tax_refund_rate=payload.tax_refund_rate,
+            customer_level=payload.customer_level,
+            country=payload.country,
+            package_type=payload.package_type,
+            shipping_method=payload.shipping_method,
+            payment_terms=payload.payment_terms,
         )
     )
 
@@ -458,11 +464,17 @@ async def batch_calculate(
                 customer_id=item.customer_id,
                 logistics_cost=item.logistics_cost,
                 target_margin=item.target_margin,
+                target_profit_amount=item.target_profit_amount,
                 quoted_price=item.quoted_price,
                 role_codes=user.roles,
                 currency=item.currency,
                 exchange_rate=item.exchange_rate,
                 tax_refund_rate=item.tax_refund_rate,
+                customer_level=item.customer_level,
+                country=item.country,
+                package_type=item.package_type,
+                shipping_method=item.shipping_method,
+                payment_terms=item.payment_terms,
             )
         )
     return ok(results)

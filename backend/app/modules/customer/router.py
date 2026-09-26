@@ -10,6 +10,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as svc
+from app.modules.customer import tags as tag_svc
 from app.modules.customer.model import Contact, Customer
 from app.modules.customer.schema import (
     ContactCreate,
@@ -37,23 +38,25 @@ async def list_customers(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = svc.apply_data_scope(svc.not_deleted(svc.build_list_stmt(
+    stmt = await svc.apply_data_scope(svc.not_deleted(svc.build_list_stmt(
         keyword=keyword,
         level=level,
         status=status,
         source=source,
         owner_id=owner_id,
         pool_status=pool_status,
-    )), user)
+    )), user, session)
     rows, total = await paginate(session, stmt, page, page_size)
 
     counts = await svc.contact_counts(session, [c.id for c in rows])
     owners = await svc.owner_names(session, [c.owner_id for c in rows])
+    tag_map = await tag_svc.tags_of_customers(session, [c.id for c in rows])
     items = [
         svc.serialize_customer(
             c,
             owner_name=owners.get(c.owner_id) if c.owner_id else None,
             contact_count=counts.get(c.id, 0),
+            tags=tag_map.get(c.id, []),
         )
         for c in rows
     ]
@@ -91,11 +94,13 @@ async def get_customer(
     customer = await svc.get_customer_or_404(session, customer_id)
     owners = await svc.owner_names(session, [customer.owner_id])
     counts = await svc.contact_counts(session, [customer.id])
+    tag_map = await tag_svc.tags_of_customers(session, [customer.id])
     return ok(
         svc.serialize_customer(
             customer,
             owner_name=owners.get(customer.owner_id) if customer.owner_id else None,
             contact_count=counts.get(customer.id, 0),
+            tags=tag_map.get(customer.id, []),
         )
     )
 

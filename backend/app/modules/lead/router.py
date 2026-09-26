@@ -30,11 +30,12 @@ async def list_leads(
     user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = svc.apply_data_scope(
+    stmt = await svc.apply_data_scope(
         svc.build_lead_stmt(
             keyword=keyword, status=status, source=source, owner_id=owner_id, unassigned=unassigned
         ),
         user,
+        session,
     )
     rows, total = await paginate(session, stmt, page, page_size)
     owners = await svc.owner_names(session, [lead.owner_id for lead in rows])

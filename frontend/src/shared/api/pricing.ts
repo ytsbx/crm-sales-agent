@@ -59,12 +59,101 @@ export interface PricePermissionRow {
 export interface LogisticsRateRow {
   id: number
   provider: string
+  origin_region?: string | null
   destination_region?: string | null
   shipping_method: string
   unit_price_per_kg: number
+  unit_price_per_volume?: number | null
   min_charge: number
   eta_days?: number | null
+  eta_days_max?: number | null
   status: string
+  remark?: string | null
+}
+
+/** 物流试算：单件体积/重量与计费重（PRD §14 要求的输出项）。 */
+export interface LogisticsMeasures {
+  actual_weight: number
+  volume: number
+  volumetric_weight: number
+  volumetric_enabled: boolean
+  chargeable_weight: number
+  chargeable_basis: string
+  volume_source?: string | null
+  volumetric_ratio: number
+  warnings: string[]
+}
+
+export interface LogisticsOption {
+  provider: string
+  rate_id: number
+  shipping_method: string
+  origin_region?: string | null
+  destination_region?: string | null
+  amount: number
+  currency: string
+  by_weight_amount: number
+  by_volume_amount: number
+  pricing_basis: string
+  above_minimum: boolean
+  min_charge?: number | null
+  eta_days?: number | null
+  eta_days_max?: number | null
+  eta_text?: string | null
+  unit_price_per_kg?: number | null
+  unit_price_per_volume?: number | null
+}
+
+export interface LogisticsCalculateResult {
+  sku: { id: number; sku_code: string; name?: string | null; specification?: string | null; unit?: string | null; package_type?: string | null }
+  quantity: number
+  origin?: string | null
+  destination?: string | null
+  shipping_method?: string | null
+  package_type?: string | null
+  measures: LogisticsMeasures
+  options: LogisticsOption[]
+  selected?: LogisticsOption | null
+  quoted_id?: number | null
+  warnings: string[]
+}
+
+export interface LogisticsCompareResult {
+  measures: LogisticsMeasures
+  options: LogisticsOption[]
+  option_count: number
+  cheapest_provider?: string | null
+  fastest_provider?: string | null
+  warnings: string[]
+}
+
+export interface LogisticsQuoteRow {
+  id: number
+  customer_id?: number | null
+  opportunity_id?: number | null
+  sku_id?: number | null
+  quantity?: number | null
+  origin?: string | null
+  destination?: string | null
+  shipping_method: string
+  chargeable_weight: number
+  actual_weight: number
+  volume: number
+  currency: string
+  amount: number
+  unit_price?: number | null
+  eta_days?: number | null
+  provider?: string | null
+  created_at?: string | null
+}
+
+export interface LogisticsRouteRow {
+  origin?: string | null
+  destination?: string | null
+  shipping_method: string
+  providers: string[]
+  eta_days_min?: number | null
+  eta_days_max?: number | null
 }
 
 export interface PricingSkuOption {
@@ -162,6 +251,36 @@ export function listLogisticsRates() {
 
 export function createLogisticsRate(payload: Record<string, unknown>) {
   return api.post<LogisticsRateRow>('/logistics/rates', payload)
+}
+
+// ---------------------------------------------------------------- 物流试算
+// 对应 03-API §19 的 6 个接口；页面在 modules/logistics/LogisticsPage.tsx
+
+export function listLogisticsProviders() {
+  return api.get<{ provider: string }[]>('/logistics/providers')
+}
+
+export function listLogisticsRoutes() {
+  return api.get<LogisticsRouteRow[]>('/logistics/routes')
+}
+
+export function calculateLogistics(payload: Record<string, unknown>) {
+  return api.post<LogisticsCalculateResult>('/logistics/calculate', payload)
+}
+
+export function compareLogistics(payload: Record<string, unknown>) {
+  return api.post<LogisticsCompareResult>('/logistics/compare', payload)
+}
+
+export function listLogisticsQuotes(params?: Record<string, unknown>) {
+  return api.get<{ items: LogisticsQuoteRow[]; total: number; page: number; page_size: number }>(
+    '/logistics/quotes',
+    { params },
+  )
+}
+
+export function getLogisticsQuote(id: number) {
+  return api.get<LogisticsQuoteRow>(`/logistics/quotes/${id}`)
 }
 
 export function listSkusForPricing() {

@@ -13,6 +13,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.audit_router import router as audit_router
 from app.modules.customer.router import router as customer_router
 from app.modules.customer.io_router import router as customer_io_router
+from app.modules.customer.tags_router import router as customer_tags_router
 from app.modules.followup.router import router as followup_router
 from app.modules.file.router import router as file_router
 from app.modules.lead.router import router as lead_router
@@ -20,9 +21,11 @@ from app.modules.opportunity.router import router as opportunity_router
 from app.modules.order.router import router as order_router
 from app.modules.notification.router import router as notification_router
 from app.modules.payment.router import router as payment_router
+from app.modules.pricing.logistics_router import router as logistics_router
 from app.modules.pricing.router import router as pricing_router
 from app.modules.product.router import router as product_router
 from app.modules.quote.router import router as quote_router
+from app.modules.sample.router import router as sample_router
 from app.modules.task.router import router as task_router
 from app.modules.timeline.router import router as timeline_router
 from app.modules.user.router import router as user_router
@@ -50,6 +53,9 @@ app.include_router(auth_router, prefix=settings.api_prefix)
 # 注意顺序：/customers/import-template、/customers/export 必须注册在 /customers/{id} 之前，
 # 否则会被动态路由抢先匹配（这个坑在 /products/for-pricing 上踩过一次）
 app.include_router(customer_io_router, prefix=settings.api_prefix)
+# 同理：/tags、/customers/deduplicate、/customers/merge、/customers/batch-* 也要在
+# /customers/{customer_id} 之前注册，否则会被动态路由抢先匹配
+app.include_router(customer_tags_router, prefix=settings.api_prefix)
 app.include_router(customer_router, prefix=settings.api_prefix)
 app.include_router(product_router, prefix=settings.api_prefix)
 app.include_router(user_router, prefix=settings.api_prefix)
@@ -59,7 +65,11 @@ app.include_router(followup_router, prefix=settings.api_prefix)
 app.include_router(task_router, prefix=settings.api_prefix)
 app.include_router(timeline_router, prefix=settings.api_prefix)
 app.include_router(pricing_router, prefix=settings.api_prefix)
+# 注意顺序：/logistics/rates 等静态路径必须在 /logistics/quotes/{id} 之前注册，
+# 否则会被动态路由抢先匹配（这个坑在 /customers/export 上踩过两次）
+app.include_router(logistics_router, prefix=settings.api_prefix)
 app.include_router(quote_router, prefix=settings.api_prefix)
+app.include_router(sample_router, prefix=settings.api_prefix)
 app.include_router(approval_router, prefix=settings.api_prefix)
 app.include_router(order_router, prefix=settings.api_prefix)
 app.include_router(payment_router, prefix=settings.api_prefix)

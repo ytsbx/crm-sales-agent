@@ -83,13 +83,23 @@ async def _record_execution(
     status: str,
     error: str | None = None,
     started_at: datetime | None = None,
+    user: CurrentUser | None = None,
 ) -> None:
+    """记录一次工具调用。
+
+    `user` 用来落「谁、什么角色、什么数据范围」的快照（03-API §38 末段）。
+    存快照而不是只存 user_id：角色和数据范围会变，事后要能还原
+    "当时这个人有没有权限看到这条数据"。
+    """
     session.add(
         AgentExecution(
             session_id=session_id,
             action_id=action_id,
             tool_name=tool_name,
             risk_level=risk,
+            user_id=user.id if user else None,
+            role_snapshot="、".join(user.roles) if user and user.roles else None,
+            data_scope_snapshot=user.data_scope if user else None,
             input_payload=payload,
             output_payload=output,
             status=status,
@@ -210,6 +220,7 @@ async def run_turn(
                         payload=args,
                         output=result,
                         status="success",
+                        user=user,
                         started_at=started,
                     )
                     session.add(
@@ -232,6 +243,7 @@ async def run_turn(
                         output=None,
                         status="failed",
                         error=exc.message,
+                        user=user,
                         started_at=started,
                     )
                 tool_trace.append(
@@ -486,6 +498,7 @@ async def execute_action(
             output=None,
             status="failed",
             error=exc.message,
+            user=user,
             started_at=started,
         )
         await session.commit()
@@ -495,6 +508,22 @@ async def execute_action(
     action.result = result
     action.confirmed_by = user.id
     action.confirmed_at = datetime.now(UTC)
+    # 工具内部会为"业务数据变更"写一条审计；这里再单独记一条"用户确认了哪个 AI 动作"，
+    # 两者缺一不可：前者能查到数据变了，后者才能回答"是哪个 AI 提议、谁点的确认"。
+    await write_audit(
+        session,
+        operator_id=user.id,
+        source="AGENT",
+        action="confirm_agent_action",
+        business_type=action.business_type or "agent_action",
+        business_id=action.business_id,
+        after={
+            "agent_action_id": action.id,
+            "tool_name": action.tool_name,
+            "risk_level": action.risk_level,
+            "payload": action.proposed_payload,
+        },
+    )
     await _record_execution(
         session,
         session_id=action.session_id,
@@ -504,6 +533,7 @@ async def execute_action(
         payload=action.proposed_payload or {},
         output=result,
         status="success",
+        user=user,
         started_at=started,
     )
     session.add(

@@ -81,16 +81,28 @@ export interface QuoteStats {
 export interface CustomerStats {
   total: number
   new_this_month: number
+  /** PRD §23「活跃 / 沉睡 / 复购」 */
+  active_count: number
+  dormant_count: number
+  repeat_customer_count: number
+  active_days: number
+  dormant_days: number
   by_source: NameValue[]
   by_level: NameValue[]
 }
 
 export interface ProductStat {
+  sku_id?: number
   sku_code: string
   specification?: string | null
   product_name?: string | null
+  /** PRD §23「询盘 / 报价 / 成交 / 失单 / 利润」 */
+  inquiry_times: number
   quote_times: number
   quote_quantity: number
+  won_times: number
+  lost_times: number
+  profit_amount: number
 }
 
 export interface SalesUserStat {
@@ -100,6 +112,8 @@ export interface SalesUserStat {
   opportunity_count: number
   quote_count: number
   order_amount: number
+  followup_count: number
+  received_amount: number
 }
 
 export interface ReceivableStats {
@@ -110,12 +124,31 @@ export interface ReceivableStats {
   by_status: NameValue[]
 }
 
+export interface StageConversionRow {
+  stage_id: number
+  stage_name: string
+  sequence: number
+  reached_count: number
+  conversion_from_previous: number | null
+}
+
+export interface OpportunityCycle {
+  won_with_history: number
+  average_days: number | null
+  median_days?: number | null
+  min_days: number | null
+  max_days: number | null
+}
+
 export interface OpportunityStats {
   won_count: number
   loss_count: number
   win_rate: number
   loss_rate: number
   funnel: FunnelRow[]
+  /** PRD §23「阶段转化 / 周期」 */
+  stage_conversion?: StageConversionRow[]
+  cycle?: OpportunityCycle
 }
 
 export interface NotificationRow {
@@ -163,6 +196,38 @@ export function getDashboardActivities(limit = 8) {
   return api.get<ActivityRow[]>('/dashboard/activities', { limit })
 }
 
+// ---------------------------------------------------------------- 主管工作台
+// PRD §4.2。数据范围是 self 的用户会拿到 is_team_view=false 且没有 members，
+// 前端据此隐藏整块（不是拿到数据再靠前端隐藏）。
+
+export interface TeamMemberRow {
+  user_id: number
+  name: string
+  todo_count: number
+  overdue_count: number
+  won_amount_this_month: number
+  stale_customer_count: number
+}
+
+export interface TeamSummary {
+  is_team_view: boolean
+  data_scope: string
+  member_count?: number
+  team_task_count?: number
+  team_overdue_count?: number
+  pending_approval_count?: number
+  unassigned_customer_count?: number
+  team_won_count_this_month?: number
+  team_won_amount_this_month?: number
+  members?: TeamMemberRow[]
+  risky_opportunities?: RiskOpportunity[]
+  funnel?: FunnelRow[]
+}
+
+export function getTeamSummary() {
+  return api.get<TeamSummary>('/dashboard/team')
+}
+
 export function getOpportunityStats() {
   return api.get<OpportunityStats>('/analytics/opportunities')
 }
@@ -189,6 +254,52 @@ export function getReceivableStats() {
 
 export function getLossStats() {
   return api.get<NameValue[]>('/analytics/losses')
+}
+
+// ---------------------------------------------------------------- 新增分析接口
+// 03-API §35 里列出、此前缺失的三个整接口
+
+export interface LeadStats {
+  total: number
+  converted_count: number
+  conversion_rate: number
+  average_conversion_days: number | null
+  by_source: NameValue[]
+  by_status: NameValue[]
+  invalid_reasons: NameValue[]
+}
+
+export interface PricingStats {
+  item_count: number
+  approval_required_count: number
+  low_price_approval_rate: number
+  average_discount_rate: number
+  max_discount_rate: number
+  average_quoted_price_by_level: {
+    level: string
+    item_count: number
+    average_price: number
+  }[]
+}
+
+export interface PaymentStats {
+  plan_count: number
+  overdue_node_count: number
+  overdue_amount: number
+  aging: NameValue[]
+  by_payment_method: NameValue[]
+}
+
+export function getLeadStats() {
+  return api.get<LeadStats>('/analytics/leads')
+}
+
+export function getPricingStats() {
+  return api.get<PricingStats>('/analytics/pricing')
+}
+
+export function getPaymentStats() {
+  return api.get<PaymentStats>('/analytics/payments')
 }
 
 export function listNotifications(unreadOnly = false) {

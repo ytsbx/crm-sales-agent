@@ -1,11 +1,12 @@
 """Sales Agent 接口（对齐 03-API §37）。"""
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import write_audit
 from app.core.database import get_db
-from app.core.deps import CurrentUser, require_permission
+from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.agent import runtime
@@ -59,6 +60,7 @@ async def list_sessions(
 @router.post("/agent/sessions")
 async def create_session(
     payload: SessionIn,
+    request: Request,
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -69,6 +71,21 @@ async def create_session(
         context_id=payload.context_id,
     )
     session.add(row)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        source="AGENT",
+        action="create",
+        business_type="agent_session",
+        business_id=row.id,
+        after={
+            "title": row.title,
+            "context_type": row.context_type,
+            "context_id": row.context_id,
+        },
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok({"id": row.id, "title": row.title}, "会话已创建")
 
@@ -125,11 +142,23 @@ async def get_session_detail(
 @router.delete("/agent/sessions/{session_id}")
 async def delete_session(
     session_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
     row = await _get_session(session, session_id, user.id)
+    title = row.title
     await session.delete(row)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        source="AGENT",
+        action="delete",
+        business_type="agent_session",
+        business_id=session_id,
+        before={"title": title},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(None, "会话已删除")
 
@@ -195,6 +224,7 @@ async def confirm_action(
 async def reject_action(
     action_id: int,
     payload: ActionReject,
+    request: Request,
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -208,6 +238,22 @@ async def reject_action(
     action.result = {"reason": payload.reason}
     action.confirmed_by = user.id
     action.confirmed_at = None
+    await session.flush()
+    # 拒绝也是决策，要和"确认"一样留痕
+    await write_audit(
+        session,
+        operator_id=user.id,
+        source="AGENT",
+        action="reject_agent_action",
+        business_type=action.business_type or "agent_action",
+        business_id=action.business_id,
+        after={
+            "agent_action_id": action.id,
+            "tool_name": action.tool_name,
+            "reason": payload.reason,
+        },
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(runtime.serialize_action(action), "已取消该动作")
 

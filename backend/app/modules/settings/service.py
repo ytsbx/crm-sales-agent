@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import write_audit
 from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
@@ -35,8 +36,18 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "default_target_margin": {"ratio": 0.30},
     "default_min_margin": {"ratio": 0.15},
     "price_range_ratio": {"ratio": 0.04},
+    # 物流试算：体积重系数（每立方米折多少公斤）。
+    # **默认 0 = 不启用体积重，计费重只取实际重量**。
+    # 为什么不给默认值：这个系数强依赖货物形态。纸箱类轻抛货通用 167（≈6000cm³/kg），
+    # 但嵌套运输的塑料周转箱密度只有约 25 kg/m³，套 167 会让体积重变成实际重量的
+    # 十几倍、运费超过货值。PRD §14 只要求输出「计费重」，没给系数口径，
+    # 所以这里留 0，等业务给出真实口径再配——不替业务拍板。
+    "logistics_volumetric_ratio": {"number": 0},
     # 工作台预警
     "customer_stale_days": {"days": 30},
+    # 客户「活跃」口径：最近多少天内有跟进算活跃。
+    # 与上面的「沉睡」分开配置，因为业务上"活跃"的门槛通常比"该回收了"更紧。
+    "customer_active_days": {"days": 30},
     "opportunity_risk_days": {"days": 7},
     "opportunity_stale_days": {"days": 14},
     # 审批分级：按报价总额决定走到哪一级；role_codes 决定谁有权批这一级
@@ -152,6 +163,15 @@ async def run_public_pool_recycle(session: AsyncSession, operator_id: int) -> di
             customer.owner_id = None
             customer.pool_status = "public"
 
+    # 审计与 commit 必须在同一个事务里（本函数自己提交，调用方不再补写）
+    await write_audit(
+        session,
+        operator_id=operator_id,
+        action="run_public_pool_recycle",
+        business_type="public_pool_rule",
+        business_id=None,
+        after={"released_count": len(released), "customers": released},
+    )
     await session.commit()
     return {"released_count": len(released), "customers": released}
 
@@ -287,6 +307,15 @@ async def run_auto_tasks(session: AsyncSession, operator_id: int) -> dict:
                 await session.flush()
                 created.append({"task_id": task.id, "title": task.title})
 
+    # 自动任务由规则批量生成，同样要留痕（谁触发、生成了几条）
+    await write_audit(
+        session,
+        operator_id=operator_id,
+        action="run_auto_tasks",
+        business_type="task_rule",
+        business_id=None,
+        after={"created_count": len(created), "tasks": created},
+    )
     await session.commit()
     return {"created_count": len(created), "tasks": created}
 

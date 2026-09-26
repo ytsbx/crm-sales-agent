@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -43,11 +44,9 @@ async def list_orders(
         stmt = stmt.where(SalesOrder.status == status)
     if customer_id:
         stmt = stmt.where(SalesOrder.customer_id == customer_id)
-    if user.data_scope == "self":
-        stmt = stmt.where(SalesOrder.owner_id == user.id)
-    elif user.data_scope in ("department", "department_and_sub"):
-        sub = select(User.id).where(User.department_id == user.department_id)
-        stmt = stmt.where(SalesOrder.owner_id.in_(sub))
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(SalesOrder.owner_id.in_(owner_ids))
 
     rows, total = await paginate(session, stmt.order_by(SalesOrder.id.desc()), page, page_size)
     ctx = await svc.order_context(session, rows)
@@ -118,12 +117,37 @@ async def get_order(
 async def update_order(
     order_id: int,
     payload: OrderUpdate,
+    request: Request,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     order = await svc.get_order_or_404(session, order_id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    before = svc.serialize_order(order)
+
+    data = payload.model_dump(exclude_unset=True)
+    # 换负责人要校验目标存在且在职，否则订单会挂到一个空负责人上
+    if data.get("owner_id") is not None:
+        owner = await session.get(User, data["owner_id"])
+        if owner is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={data['owner_id']} 不存在", 404)
+        if owner.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，不能接收订单", 422
+            )
+
+    for field, value in data.items():
         setattr(order, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="order",
+        business_id=order.id,
+        before=before,
+        after=svc.serialize_order(order),
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(svc.serialize_order(order), "已保存")
 
@@ -206,11 +230,23 @@ async def change_status(
 @router.post("/orders/{order_id}/cancel")
 async def cancel_order(
     order_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     order = await svc.get_order_or_404(session, order_id)
+    before_status = order.status
     await svc.change_status(session, order, new_status="cancelled", operator_id=user.id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="cancel",
+        business_type="order",
+        business_id=order.id,
+        before={"status": before_status},
+        after={"status": "cancelled"},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(svc.serialize_order(order), "订单已取消")
 
@@ -218,12 +254,14 @@ async def cancel_order(
 @router.post("/orders/{order_id}/sync-erp")
 async def sync_erp(
     order_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """推送到 ERP/MES。
 
-    对方系统还没就绪，这里先只记集成日志并把订单标记为"已推送"，
+    对方系统还没就绪，这里先只记集成日志，**不把订单标记为已推送**
+    （`erp_order_id` 保持为空，避免在 ERP 里其实没有单、CRM 却显示已推送）。
     等接口接通后把 Adapter 接进这个方法即可，调用方无感。
     """
     order = await svc.get_order_or_404(session, order_id)
@@ -242,6 +280,15 @@ async def sync_erp(
             error_message="ERP/MES 接口尚未接入，未实际推送",
         )
     )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sync_erp",
+        business_type="order",
+        business_id=order.id,
+        after={"pushed": False, "reason": "ERP/MES 接口尚未接入"},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok(
         {"pushed": False, "reason": "ERP/MES 接口尚未接入"},
@@ -252,6 +299,7 @@ async def sync_erp(
 @router.post("/orders/{order_id}/repurchase")
 async def repurchase(
     order_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -296,6 +344,15 @@ async def repurchase(
                 remark="复购带入",
             )
         )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="repurchase",
+        business_type="order",
+        business_id=order.id,
+        after={"new_opportunity_id": opportunity.id, "copied_items": len(items)},
+        ip=client_ip(request),
+    )
     await session.commit()
     return ok({"opportunity_id": opportunity.id}, "已生成复购商机")
 

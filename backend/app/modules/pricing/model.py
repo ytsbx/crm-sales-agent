@@ -9,7 +9,7 @@ from decimal import Decimal
 from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.base import Base, IdMixin
+from app.core.base import Base, IdMixin, JSONType
 
 
 class ProductCost(Base, IdMixin):
@@ -100,18 +100,64 @@ class LogisticsRate(Base, IdMixin):
     """国内运费费率表。
 
     文档要求「物流试算」，但接哪家物流商 API 属于待确认事项（澄清清单 3-11），
-    所以先落一张本地费率表：按公斤单价 + 最低收费，能算、能改、能替换成 API。
+    所以先落一张本地费率表：按公斤单价 / 体积单价 + 最低收费，能算、能改、能替换成 API。
+
+    体积单价与时效区间是为 PRD §14「计费重 / 预计时效 / 方案列表」补的：
+    只按重量算，抛货（体积大重量轻）会被严重低估。
     """
 
     __tablename__ = "logistics_rates"
 
     provider: Mapped[str] = mapped_column(String(64))
     destination_region: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_region: Mapped[str | None] = mapped_column(String(64), nullable=True)
     shipping_method: Mapped[str] = mapped_column(String(32), default="陆运")
     unit_price_per_kg: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=1)
+    # 按体积计费时的单价（元/立方米）；为空表示这家不按体积计费
+    unit_price_per_volume: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     min_charge: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     eta_days: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    eta_days_max: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="active")
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class LogisticsQuote(Base, IdMixin):
+    """物流试算结果留痕（02-ER §10 logistics_quotes）。
+
+    为什么要落库而不是纯计算：报价一旦发给客户，事后要能回答
+    「当时这个运费是按哪家、什么费率、多重体积算出来的」。
+    """
+
+    __tablename__ = "logistics_quotes"
+    __table_args__ = (
+        Index("ix_logistics_quotes_customer", "customer_id"),
+        Index("ix_logistics_quotes_opportunity", "opportunity_id"),
+    )
+
+    customer_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("customers.id"), nullable=True
+    )
+    opportunity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    sku_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("skus.id"), nullable=True)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(16, 3), nullable=True)
+    origin: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    destination: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    shipping_method: Mapped[str] = mapped_column(String(32), default="陆运")
+    # 计费重：取「实际重量」与「体积重」的较大者（PRD §14 要求输出）
+    chargeable_weight: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
+    actual_weight: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
+    volume: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True)
+    eta_days: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    raw_data: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
 
 
 class ExchangeRate(Base, IdMixin):

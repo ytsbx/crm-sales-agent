@@ -40,8 +40,8 @@ async def export_customers(
     """导出当前用户数据范围内的客户。"""
     from app.modules.customer import service as svc
 
-    stmt = svc.apply_data_scope(
-        svc.not_deleted(svc.build_list_stmt()), user
+    stmt = await svc.apply_data_scope(
+        svc.not_deleted(svc.build_list_stmt()), user, session
     )
     rows = (await session.execute(stmt)).scalars().all()
     owner_ids = {row.owner_id for row in rows if row.owner_id}

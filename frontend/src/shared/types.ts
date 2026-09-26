@@ -99,6 +99,8 @@ export interface Customer {
   owner_id?: number | null
   owner_name?: string | null
   contact_count: number
+  /** 客户标签（PRD §6.1 列表要展示标签） */
+  tags?: { id: number; name: string; type: string; status: string }[]
   remark?: string | null
   last_followup_at?: string | null
   next_followup_at?: string | null

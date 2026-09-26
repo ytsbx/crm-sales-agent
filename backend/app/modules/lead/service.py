@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.lead.model import Lead, LeadAssignment
@@ -75,14 +76,17 @@ def build_lead_stmt(
     return stmt.order_by(Lead.id.desc())
 
 
-def apply_data_scope(stmt: Select, user: CurrentUser) -> Select:
-    """线索池里的未分配线索大家都能看到，已分配的按数据范围过滤。"""
-    if user.data_scope == "all":
+async def apply_data_scope(
+    stmt: Select, user: CurrentUser, session: AsyncSession
+) -> Select:
+    """线索池里的未分配线索大家都能看到，已分配的按数据范围过滤。
+
+    `department_and_sub` 取本部门及所有下级部门，见 app/core/data_scope.py。
+    """
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
         return stmt
-    if user.data_scope in ("department", "department_and_sub"):
-        sub = select(User.id).where(User.department_id == user.department_id)
-        return stmt.where(or_(Lead.owner_id.in_(sub), Lead.owner_id.is_(None)))
-    return stmt.where(or_(Lead.owner_id == user.id, Lead.owner_id.is_(None)))
+    return stmt.where(or_(Lead.owner_id.in_(owner_ids), Lead.owner_id.is_(None)))
 
 
 async def get_lead_or_404(session: AsyncSession, lead_id: int) -> Lead:

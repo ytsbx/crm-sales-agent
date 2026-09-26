@@ -4,14 +4,26 @@
 - `customers.pool_status`：区分"私海 / 公海"，避免只靠 owner_id IS NULL 判断
   （06-需求澄清清单第 1-8 条的缺口）；
 - `customers.level` 用 A/B/C/D，等级定义待业务确认。
+- `tags` / `customer_tags` / `customer_merge_logs`：02-ER §5 要求的三张表，
+  补齐客户标签与客户合并（查重打分早已完成，但没有"合并"这个后续动作）。
 """
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Table,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.base import Base, IdMixin, TimestampMixin
+from app.core.base import Base, IdMixin, JSONType, TimestampMixin
 
 
 class Customer(Base, IdMixin, TimestampMixin):
@@ -77,4 +89,52 @@ class CustomerOwnerHistory(Base, IdMixin):
     new_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     operator_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class Tag(Base, IdMixin, TimestampMixin):
+    """客户标签（02-ER §5 tags）。
+
+    `type` 用来分组（例如「行业」「等级」「渠道」），前端按 type 分栏展示。
+    标签是受控字典而不是自由文本，否则会出现「华东」「华东区」「华东大区」这类脏数据。
+    """
+
+    __tablename__ = "tags"
+    __table_args__ = (Index("ix_tags_type_status", "type", "status"),)
+
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    type: Mapped[str] = mapped_column(String(32), default="custom")
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    sort_no: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+# 02-ER §5：customer_tags 是 customer_id + tag_id 的关联表
+customer_tags = Table(
+    "customer_tags",
+    Base.metadata,
+    Column("customer_id", BigInteger, ForeignKey("customers.id"), primary_key=True),
+    Column("tag_id", BigInteger, ForeignKey("tags.id"), primary_key=True),
+)
+
+
+class CustomerMergeLog(Base, IdMixin):
+    """客户合并留痕（02-ER §5 customer_merge_logs）。
+
+    合并是不可逆操作，必须记清楚"谁把哪个并进了哪个、当时两边长什么样"。
+    `merge_snapshot` 存被合并方的完整快照，万一合错了还能人工还原关键字段。
+    """
+
+    __tablename__ = "customer_merge_logs"
+    __table_args__ = (
+        Index("ix_customer_merge_logs_source", "source_customer_id"),
+        Index("ix_customer_merge_logs_target", "target_customer_id"),
+    )
+
+    source_customer_id: Mapped[int] = mapped_column(BigInteger)
+    target_customer_id: Mapped[int] = mapped_column(BigInteger)
+    operator_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    merge_snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # 迁移了哪些关联对象，便于事后核对
+    moved: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

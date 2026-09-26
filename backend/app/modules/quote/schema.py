@@ -12,6 +12,10 @@ class QuoteCreate(BaseModel):
     payment_terms: str | None = None
     delivery_terms: str | None = None
     remark: str | None = None
+    # 外贸口径（可选）：不填就是内贸，全人民币
+    currency: str = "CNY"
+    exchange_rate: Decimal | None = None
+    """不填则自动取汇率表里该币种的当前汇率并落快照（02-ER §11）。"""
 
 
 class QuoteVersionUpdate(BaseModel):

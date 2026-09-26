@@ -12,12 +12,43 @@
  */
 
 import { spawn } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const EDGE_BIN =
-  process.env.EDGE_BIN ?? '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'
+/**
+ * 找浏览器：优先 EDGE_BIN 环境变量，否则按平台逐个探测常见安装路径。
+ * 原来这里只写死 macOS 的 Edge，换到 Windows/Linux 上会直接崩，
+ * 所以改成「探测第一个存在的」。
+ */
+function resolveBrowser() {
+  if (process.env.EDGE_BIN) return process.env.EDGE_BIN
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+          'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+          join(process.env.LOCALAPPDATA ?? '', 'Microsoft\\Edge\\Application\\msedge.exe'),
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+          'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        ]
+      : process.platform === 'darwin'
+        ? [
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          ]
+        : ['/usr/bin/microsoft-edge', '/usr/bin/google-chrome', '/usr/bin/chromium']
+  const hit = candidates.find((path) => path && existsSync(path))
+  if (!hit) {
+    throw new Error(
+      '找不到 Edge/Chrome。请设置环境变量 EDGE_BIN 指向浏览器可执行文件，例如：\n' +
+        '  $env:EDGE_BIN="C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"',
+    )
+  }
+  return hit
+}
+
+const EDGE_BIN = resolveBrowser()
 const APP_BASE = process.env.APP_BASE ?? 'http://localhost:5173'
 const API_BASE = process.env.API_BASE ?? 'http://127.0.0.1:8000'
 const USERNAME = process.env.SMOKE_USER ?? 'admin'
@@ -128,7 +159,6 @@ async function main() {
 
   const auth = await apiLogin()
   console.log(`✓ 接口登录成功：${auth.user.name}（${auth.user.roles.join(',')}）`)
-
   // 按真实数据组装用例
   const [customerId, opportunityId, productId, quoteId, skuId, orderId] = await Promise.all([
     firstId('/customers', auth.token),
@@ -162,7 +192,17 @@ async function main() {
     { path: '/tasks', name: '17-tasks' },
     { path: '/settings', name: '18-settings' },
     { path: '/settings?tab=rules', name: '19-settings-rules' },
+    { path: '/settings?tab=tags', name: '23-settings-tags' },
+    { path: '/settings?tab=roles', name: '24-settings-roles' },
+    { path: '/settings?tab=departments', name: '25-settings-departments' },
     { path: '/agent', name: '20-agent' },
+    { path: '/samples', name: '22-samples' },
+    {
+      // 带参数进入，才能真正验证"选了 SKU 能出计费重与方案"，
+      // 否则只截图到空状态，等于没验证结果区
+      path: `/logistics?sku_id=${skuId ?? 1}&quantity=3000&destination=%E5%8D%8E%E4%B8%9C`,
+      name: '21-logistics',
+    },
   ]
   console.log(
     `✓ 用例数据：客户 #${customerId} 商机 #${opportunityId} 产品 #${productId} 报价 #${quoteId} 订单 #${orderId}`,
@@ -215,9 +255,37 @@ async function main() {
       )})`,
     })
 
+    // 预热：Vite 首次启动会在后台做依赖预构建（bundling dependencies），
+    // 这期间页面是空白的。先访问一次等它就绪，否则头几张截图会拍到白屏，
+    // 看起来像"页面打不开"，其实是构建窗口期（Windows 上尤其明显）。
+    await client.send('Page.navigate', { url: `${APP_BASE}/login` })
+    for (let i = 0; i < 120; i += 1) {
+      const probe = await client.send('Runtime.evaluate', {
+        expression: 'Boolean(document.querySelector("#root, #app")?.children.length)',
+        returnByValue: true,
+      })
+      if (probe.result.value) break
+      await sleep(500)
+    }
+    console.log('✓ 前端已就绪（依赖预构建完成）')
+
     for (const page of PAGES) {
       await client.send('Page.navigate', { url: `${APP_BASE}${page.path}` })
-      await sleep(2500)
+      // 等页面真的渲染出来（而不是固定 sleep），最多 15 秒
+      let rendered = false
+      for (let i = 0; i < 60; i += 1) {
+        const probe = await client.send('Runtime.evaluate', {
+          expression:
+            'Boolean(document.querySelector("#root, #app")?.children.length) && document.body.innerText.trim().length > 0',
+          returnByValue: true,
+        })
+        if (probe.result.value) {
+          rendered = true
+          break
+        }
+        await sleep(250)
+      }
+      await sleep(400) // 给 react-query 的数据渲染留一点时间
       const shot = await client.send('Page.captureScreenshot', { format: 'png' })
       const file = join(OUT_DIR, `${page.name}.png`)
       writeFileSync(file, Buffer.from(shot.data, 'base64'))
@@ -226,7 +294,8 @@ async function main() {
         expression: 'document.body.innerText.slice(0, 120).replace(/\\s+/g, " ")',
         returnByValue: true,
       })
-      console.log(`✓ ${page.path} → ${file}`)
+      if (!rendered) problems.push(`页面始终没有渲染出内容：${page.path}`)
+      console.log(`${rendered ? '✓' : '✗'} ${page.path} → ${file}`)
       console.log(`  页面首屏文本：${text.result.value}`)
     }
 
@@ -241,7 +310,23 @@ async function main() {
   } finally {
     browser.kill()
     await sleep(300)
-    rmSync(PROFILE_DIR, { recursive: true, force: true })
+    // 清理临时 profile。这里失败**不能算测试失败**：
+    // 上一次运行被强杀时浏览器进程可能还占着目录（Windows 上会 EPERM），
+    // 之前就因此报过一次假的"冒烟测试失败"，把真正的结论盖掉了。
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        rmSync(PROFILE_DIR, { recursive: true, force: true })
+        break
+      } catch (error) {
+        if (attempt === 2) {
+          console.log(
+            `（提示：临时目录 ${PROFILE_DIR} 没清掉，不影响本次测试结论：${error.code ?? error.message}）`,
+          )
+        } else {
+          await sleep(500)
+        }
+      }
+    }
   }
 }
 

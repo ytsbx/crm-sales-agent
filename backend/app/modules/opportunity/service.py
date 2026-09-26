@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Customer
@@ -142,13 +143,14 @@ def build_opportunity_stmt(
     return stmt.order_by(Opportunity.id.desc())
 
 
-def apply_data_scope(stmt: Select, user: CurrentUser) -> Select:
-    if user.data_scope == "all":
+async def apply_data_scope(
+    stmt: Select, user: CurrentUser, session: AsyncSession
+) -> Select:
+    """`department_and_sub` 取本部门及所有下级部门，见 app/core/data_scope.py。"""
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
         return stmt
-    if user.data_scope in ("department", "department_and_sub"):
-        sub = select(User.id).where(User.department_id == user.department_id)
-        return stmt.where(Opportunity.owner_id.in_(sub))
-    return stmt.where(Opportunity.owner_id == user.id)
+    return stmt.where(Opportunity.owner_id.in_(owner_ids))
 
 
 async def get_opportunity_or_404(session: AsyncSession, opportunity_id: int) -> Opportunity:

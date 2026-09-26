@@ -43,8 +43,27 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(user: CurrentUser = Depends(get_current_user)):
-    # JWT 无状态，登出由前端丢弃 token；此处仅作占位与审计扩展点。
+async def logout(
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """登出。
+
+    JWT 是无状态的，服务端没有可吊销的会话，所以登出本身只由前端丢弃 token。
+    但登录有审计、登出没有会让"会话时长"这类排查缺一半信息，所以这里补一条，
+    与 login 对称。
+    """
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="logout",
+        business_type="auth",
+        business_id=user.id,
+        after={"username": user.username},
+        ip=client_ip(request),
+    )
+    await session.commit()
     return ok(None, "已登出")
 
 
