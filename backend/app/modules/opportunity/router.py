@@ -21,12 +21,17 @@ from app.modules.opportunity.model import (
     OpportunityStageHistory,
 )
 from app.modules.opportunity.schema import (
+    OpportunityAssign,
+    OpportunityClone,
     OpportunityCreate,
+    OpportunityItemCopy,
     OpportunityItemCreate,
     OpportunityItemUpdate,
+    OpportunityItemsBatch,
     OpportunityLose,
     OpportunityUpdate,
     OpportunityWin,
+    RecommendProductsRequest,
     StageChange,
 )
 
@@ -519,3 +524,173 @@ async def delete_item(
     )
     await session.commit()
     return ok(None, "需求明细已删除")
+
+
+# ------------------------------------------------- 03-API §12 新增的四个接口
+
+
+@router.post("/opportunities/{opportunity_id}/items/batch")
+async def replace_items_batch(
+    opportunity_id: int,
+    payload: OpportunityItemsBatch,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("opportunity:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """整批替换需求明细（界面上「保存整版」用）。
+
+    先清空再写入，保证不出现半新半旧的明细。
+    """
+    await svc.get_opportunity_or_404(session, opportunity_id)
+    created = await svc.replace_items(
+        session,
+        opportunity_id=opportunity_id,
+        items=[item.model_dump() for item in payload.items],
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="replace_items",
+        business_type="opportunity",
+        business_id=opportunity_id,
+        after={"count": len(created)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {"count": len(created), "items": [svc.serialize_item(row) for row in created]},
+        f"已保存 {len(created)} 条需求明细",
+    )
+
+
+@router.post("/opportunities/{opportunity_id}/items/copy-from/{source_opportunity_id}")
+async def copy_items(
+    opportunity_id: int,
+    source_opportunity_id: int,
+    payload: OpportunityItemCopy,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("opportunity:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """从另一个商机复制需求明细（同客户重复采购时最常用）。"""
+    await svc.get_opportunity_or_404(session, opportunity_id)
+    await svc.get_opportunity_or_404(session, source_opportunity_id)
+    if opportunity_id == source_opportunity_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "不能从自己复制需求明细", 422)
+
+    result = await svc.copy_items_from(
+        session,
+        target_opportunity_id=opportunity_id,
+        source_opportunity_id=source_opportunity_id,
+        sku_ids=payload.sku_ids,
+        on_conflict=payload.on_conflict,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="copy_items",
+        business_type="opportunity",
+        business_id=opportunity_id,
+        after={**result, "source_opportunity_id": source_opportunity_id},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, f"新增 {result['added']} 条、覆盖 {result['replaced']} 条、跳过 {result['skipped']} 条")
+
+
+@router.post("/opportunities/{opportunity_id}/recommend-products")
+async def recommend_products(
+    opportunity_id: int,
+    payload: RecommendProductsRequest,
+    _: CurrentUser = Depends(require_permission("opportunity:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """需求商品推荐。
+
+    按"该客户历史成交过的 SKU"排序、公司整体成交频次补足，
+    每条带推荐理由与来源。**不是模型推荐，也不假装是**：
+    等接了推荐模型再换实现，接口形状不变。
+    """
+    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    return ok(
+        await svc.recommend_products(
+            session, opportunity=opportunity, limit=payload.limit, keyword=payload.keyword
+        )
+    )
+
+
+# ------------------------------------------------- 03-API §11 新增的两个接口
+
+
+@router.post("/opportunities/{opportunity_id}/assign")
+async def assign_opportunity(
+    opportunity_id: int,
+    payload: OpportunityAssign,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("opportunity:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """变更商机负责人。
+
+    只动 owner_id，`created_by` 保持原样（02-ER §21：owner_id 可变，
+    created_by 不覆盖）——否则"谁创建的"这条审计线索就断了。
+    """
+    opportunity = await svc.get_opportunity_or_404(session, opportunity_id)
+    await svc.assert_owner_active(session, payload.owner_id)
+
+    before_owner = opportunity.owner_id
+    opportunity.owner_id = payload.owner_id
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="assign",
+        business_type="opportunity",
+        business_id=opportunity.id,
+        before={"owner_id": before_owner},
+        after={"owner_id": payload.owner_id, "remark": payload.remark},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    stage = (await svc.stage_map(session)).get(opportunity.stage_id)
+    return ok(svc.serialize_opportunity(opportunity, stage=stage), "负责人已变更")
+
+
+@router.post("/opportunities/{opportunity_id}/clone")
+async def clone_opportunity(
+    opportunity_id: int,
+    payload: OpportunityClone,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("opportunity:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """复制商机（复制"需求"，不复制"结果"）。
+
+    新商机不带成交/失单结论、不带金额，阶段回到初始阶段。
+    """
+    source = await svc.get_opportunity_or_404(session, opportunity_id)
+    clone = await svc.clone_opportunity(
+        session,
+        source=source,
+        user=user,
+        title=payload.title,
+        customer_id=payload.customer_id,
+        owner_id=payload.owner_id,
+        expected_close_date=payload.expected_close_date,
+        copy_items=payload.copy_items,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="clone",
+        business_type="opportunity",
+        business_id=clone.id,
+        before={"source_opportunity_id": source.id},
+        after=svc.serialize_opportunity(clone),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    stage = (await svc.stage_map(session)).get(clone.stage_id)
+    return ok(
+        svc.serialize_opportunity(clone, stage=stage),
+        f"已从「{source.title}」复制出新的商机",
+    )

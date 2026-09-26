@@ -320,10 +320,321 @@ def today() -> date:
     return datetime.now(UTC).date()
 
 
+# ---------------------------------------------------------------- 新增能力
+# 以下四块对应 03-API §11 的 clone/assign 与 §12 的 items/batch、
+# copy-from、recommend-products。
+
+
+async def assert_owner_active(session: AsyncSession, owner_id: int | None) -> User | None:
+    """校验负责人存在且在职。
+
+    客户转移那边已经这么做了；商机这条链路原来没有校验，
+    传一个不存在的 user id 会把商机挂到空负责人上，事后很难查。
+    """
+    if owner_id is None:
+        return None
+    owner = await session.get(User, owner_id)
+    if owner is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+    if owner.status != "active":
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，不能作为商机负责人", 422
+        )
+    return owner
+
+
+async def clone_opportunity(
+    session: AsyncSession,
+    *,
+    source: Opportunity,
+    user: CurrentUser,
+    title: str | None = None,
+    customer_id: int | None = None,
+    owner_id: int | None = None,
+    expected_close_date: date | None = None,
+    copy_items: bool = True,
+) -> Opportunity:
+    """复制商机。
+
+    复制的是"需求"，不是"结果"，所以刻意不带这些：
+      - status / win_quote_version_id / loss_reason_id / loss_remark / reopen_at
+        （上一单成交或失单的结论不该成为新单的事实）
+      - expected_amount（金额随数量与价格变，让业务重新确认）
+      - 阶段回到初始阶段
+    需求明细按 `copy_items` 决定是否一起复制。
+    """
+    await assert_owner_active(session, owner_id)
+    if customer_id is not None and await session.get(Customer, customer_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"客户 id={customer_id} 不存在", 404)
+
+    first_stage = await get_first_stage(session)
+    clone = Opportunity(
+        customer_id=customer_id or source.customer_id,
+        primary_contact_id=source.primary_contact_id,
+        title=title or f"{source.title}（复制）",
+        source=source.source,
+        stage_id=first_stage.id,
+        currency=source.currency,
+        expected_close_date=expected_close_date or source.expected_close_date,
+        owner_id=owner_id if owner_id is not None else source.owner_id,
+        competitor=source.competitor,
+        risk_level=source.risk_level,
+        next_action=source.next_action,
+        status="open",
+        created_by=user.id,
+    )
+    session.add(clone)
+    await session.flush()
+
+    session.add(
+        OpportunityStageHistory(
+            opportunity_id=clone.id,
+            from_stage_id=None,
+            to_stage_id=first_stage.id,
+            operator_id=user.id,
+            remark=f"由商机 #{source.id} 复制而来",
+            entered_at=datetime.now(UTC),
+        )
+    )
+
+    if copy_items:
+        rows = (
+            await session.execute(
+                select(OpportunityItem).where(OpportunityItem.opportunity_id == source.id)
+            )
+        ).scalars().all()
+        for item in rows:
+            session.add(
+                OpportunityItem(
+                    opportunity_id=clone.id,
+                    sku_id=item.sku_id,
+                    quantity=item.quantity,
+                    target_price=item.target_price,
+                    currency=item.currency,
+                    specification=item.specification,
+                    color=item.color,
+                    package_requirement=item.package_requirement,
+                    delivery_date=item.delivery_date,
+                    destination=item.destination,
+                    remark=item.remark,
+                )
+            )
+    await session.flush()
+    return clone
+
+
+async def replace_items(
+    session: AsyncSession, *, opportunity_id: int, items: list[dict]
+) -> list[OpportunityItem]:
+    """整批替换需求明细。
+
+    与报价版本的 `items/batch` 保持同一语义：先清空再写入，
+    这样界面上的"保存整版"是一个原子动作，不会留下半新半旧的明细。
+    """
+    existing = (
+        await session.execute(
+            select(OpportunityItem).where(OpportunityItem.opportunity_id == opportunity_id)
+        )
+    ).scalars().all()
+    for row in existing:
+        await session.delete(row)
+    await session.flush()
+
+    created: list[OpportunityItem] = []
+    for payload in items:
+        item = OpportunityItem(opportunity_id=opportunity_id, **payload)
+        session.add(item)
+        created.append(item)
+    await session.flush()
+    return created
+
+
+async def copy_items_from(
+    session: AsyncSession,
+    *,
+    target_opportunity_id: int,
+    source_opportunity_id: int,
+    sku_ids: list[int] | None = None,
+    on_conflict: str = "skip",
+) -> dict:
+    """把另一个商机的需求明细复制过来。
+
+    `on_conflict` 决定同一个 SKU 已经存在时怎么办：
+      skip    跳过（默认，最安全，不会悄悄改掉已谈好的数量）
+      replace 用来源的数量覆盖
+      add     追加一条（同一 SKU 分批交货的场景）
+    """
+    if on_conflict not in ("skip", "replace", "add"):
+        raise AppError(
+            ErrorCode.PARAM_ERROR, "on_conflict 只能是 skip / replace / add", 422
+        )
+
+    source_rows = (
+        await session.execute(
+            select(OpportunityItem).where(
+                OpportunityItem.opportunity_id == source_opportunity_id
+            )
+        )
+    ).scalars().all()
+    if sku_ids:
+        wanted = set(sku_ids)
+        source_rows = [row for row in source_rows if row.sku_id in wanted]
+
+    existing = {
+        row.sku_id: row
+        for row in (
+            await session.execute(
+                select(OpportunityItem).where(
+                    OpportunityItem.opportunity_id == target_opportunity_id
+                )
+            )
+        ).scalars().all()
+    }
+
+    added = skipped = replaced = 0
+    for row in source_rows:
+        current = existing.get(row.sku_id)
+        if current is not None and on_conflict == "skip":
+            skipped += 1
+            continue
+        if current is not None and on_conflict == "replace":
+            current.quantity = row.quantity
+            current.target_price = row.target_price
+            current.specification = row.specification
+            current.color = row.color
+            current.package_requirement = row.package_requirement
+            current.delivery_date = row.delivery_date
+            current.destination = row.destination
+            replaced += 1
+            continue
+        session.add(
+            OpportunityItem(
+                opportunity_id=target_opportunity_id,
+                sku_id=row.sku_id,
+                quantity=row.quantity,
+                target_price=row.target_price,
+                currency=row.currency,
+                specification=row.specification,
+                color=row.color,
+                package_requirement=row.package_requirement,
+                delivery_date=row.delivery_date,
+                destination=row.destination,
+                remark=row.remark,
+            )
+        )
+        added += 1
+    await session.flush()
+    return {"added": added, "replaced": replaced, "skipped": skipped, "source_total": len(source_rows)}
+
+
+async def recommend_products(
+    session: AsyncSession,
+    *,
+    opportunity: Opportunity,
+    limit: int = 10,
+    keyword: str | None = None,
+) -> list[dict]:
+    """需求商品推荐。
+
+    **没有接推荐模型，也不假装有**：这里按"该客户历史成交过的 SKU"排序，
+    其次按"公司整体成交频次"补足，每条都带上推荐理由与来源单数，
+    业务能看到"为什么推这个"。等接了模型再换掉实现，接口形状不变。
+    """
+    from app.modules.order.model import SalesOrder, SalesOrderItem
+
+    # 该客户历史订单里出现过的 SKU（按出现次数排序）
+    customer_rows = (
+        await session.execute(
+            select(
+                SalesOrderItem.sku_id,
+                func.count(SalesOrderItem.id).label("times"),
+                func.max(SalesOrderItem.unit_price).label("last_price"),
+            )
+            .join(SalesOrder, SalesOrder.id == SalesOrderItem.order_id)
+            .where(SalesOrder.customer_id == opportunity.customer_id)
+            .group_by(SalesOrderItem.sku_id)
+            .order_by(func.count(SalesOrderItem.id).desc())
+            .limit(limit)
+        )
+    ).all()
+    # 显式记住"哪些来自该客户"，后面补全时不会再改这个集合。
+    # （第一版靠列表切片判断，追加数据后含义就变了，是写给自己看的坑。）
+    customer_sku_ids = {int(row.sku_id) for row in customer_rows}
+    seen = set(customer_sku_ids)
+
+    # 不足时用公司整体成交频次补足
+    global_rows = (
+        await session.execute(
+            select(
+                SalesOrderItem.sku_id,
+                func.count(SalesOrderItem.id).label("times"),
+                func.max(SalesOrderItem.unit_price).label("last_price"),
+            )
+            .group_by(SalesOrderItem.sku_id)
+            .order_by(func.count(SalesOrderItem.id).desc())
+            .limit(limit * 3)
+        )
+    ).all()
+    all_rows = list(customer_rows)
+    for row in global_rows:
+        if int(row.sku_id) in seen:
+            continue
+        all_rows.append(row)
+        seen.add(int(row.sku_id))
+        if len(all_rows) >= limit * 2:
+            break
+
+    if not all_rows:
+        return []
+
+    sku_ids = [int(row.sku_id) for row in all_rows]
+    skus = {
+        sku.id: sku
+        for sku in (
+            await session.execute(select(Sku).where(Sku.id.in_(sku_ids)))
+        ).scalars().all()
+    }
+
+    results: list[dict] = []
+    for row in all_rows:
+        sku = skus.get(int(row.sku_id))
+        if sku is None or sku.deleted_at is not None:
+            continue
+        if keyword:
+            haystack = f"{sku.sku_code} {sku.name or ''} {sku.specification or ''}"
+            if keyword.strip().lower() not in haystack.lower():
+                continue
+        from_customer = int(row.sku_id) in customer_sku_ids
+        results.append(
+            {
+                "sku_id": sku.id,
+                "sku_code": sku.sku_code,
+                "name": sku.name,
+                "specification": sku.specification,
+                "unit": sku.unit,
+                "moq": sku.moq,
+                "order_times": int(row.times),
+                "last_unit_price": _number(row.last_price),
+                "reason": (
+                    f"该客户历史成交 {int(row.times)} 次"
+                    if from_customer
+                    else f"公司整体成交 {int(row.times)} 次（该客户没买过）"
+                ),
+                "source": "customer_history" if from_customer else "company_history",
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
 __all__ = [
     "apply_data_scope",
+    "assert_owner_active",
     "build_opportunity_stmt",
     "change_stage",
+    "clone_opportunity",
+    "copy_items_from",
     "create_opportunity_from_lead",
     "enrichment",
     "get_first_stage",
@@ -332,6 +643,8 @@ __all__ = [
     "get_won_stage",
     "list_items",
     "list_loss_reasons",
+    "recommend_products",
+    "replace_items",
     "serialize_item",
     "serialize_opportunity",
     "serialize_stage",

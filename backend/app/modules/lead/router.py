@@ -12,7 +12,14 @@ from app.modules.contact_util import create_contact_for_customer, find_duplicate
 from app.modules.customer.model import Customer
 from app.modules.lead import service as svc
 from app.modules.lead.model import Lead
-from app.modules.lead.schema import LeadAssign, LeadConvert, LeadCreate, LeadDiscard, LeadUpdate
+from app.modules.lead.schema import (
+    LeadAssign,
+    LeadBatchAssign,
+    LeadConvert,
+    LeadCreate,
+    LeadDiscard,
+    LeadUpdate,
+)
 
 router = APIRouter(tags=["Lead"])
 
@@ -135,6 +142,60 @@ async def assign_lead(
     )
     await session.commit()
     return ok(svc.serialize_lead(lead), "已分配")
+
+
+@router.post("/leads/batch-assign")
+async def batch_assign_leads(
+    payload: LeadBatchAssign,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("lead:assign")),
+    session: AsyncSession = Depends(get_db),
+):
+    """批量分配线索（03-API §6）。
+
+    与单条分配共用 `svc.assign_lead`，所以分配历史、通知与"不能分配给停用账号"
+    这些规则都一致。单条失败不影响其余：返回成功/跳过清单，
+    让操作的人知道哪几条没成、为什么。
+    """
+    if not payload.lead_ids:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "lead_ids 不能为空", 422)
+    # 去重但保持顺序，避免重复 id 造成重复记历史
+    unique_ids = list(dict.fromkeys(payload.lead_ids))
+
+    assigned: list[int] = []
+    skipped: list[dict] = []
+    for lead_id in unique_ids:
+        lead = await session.get(Lead, lead_id)
+        if lead is None or lead.deleted_at is not None:
+            skipped.append({"lead_id": lead_id, "reason": "线索不存在"})
+            continue
+        try:
+            await svc.assign_lead(
+                session,
+                lead,
+                to_user_id=payload.owner_id,
+                operator_id=user.id,
+                reason=payload.reason or "批量分配",
+            )
+        except AppError as error:
+            skipped.append({"lead_id": lead_id, "reason": error.message})
+            continue
+        assigned.append(lead_id)
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="batch_assign",
+        business_type="lead",
+        business_id=None,
+        after={"owner_id": payload.owner_id, "assigned": len(assigned), "skipped": len(skipped)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    message = f"已分配 {len(assigned)} 条"
+    if skipped:
+        message += f"，跳过 {len(skipped)} 条"
+    return ok({"assigned": assigned, "skipped": skipped}, message)
 
 
 @router.post("/leads/{lead_id}/claim")

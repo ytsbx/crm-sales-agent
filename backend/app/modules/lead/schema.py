@@ -49,3 +49,20 @@ class LeadConvert(BaseModel):
     opportunity_title: str | None = None
     expected_amount: float | None = None
     expected_close_date: datetime | None = None
+
+
+class LeadBatchAssign(BaseModel):
+    """批量分配线索（03-API §6）。
+
+    公海里的线索经常一次来几十条，逐条点分配不现实。
+    """
+
+    lead_ids: list[int]
+    owner_id: int
+    reason: str | None = None
+
+
+class LeadBatchIds(BaseModel):
+    """按 id 批量操作（导出 / 批量废弃等复用）。"""
+
+    lead_ids: list[int]

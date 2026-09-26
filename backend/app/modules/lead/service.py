@@ -131,6 +131,22 @@ async def assign_lead(
     operator_id: int,
     reason: str | None,
 ) -> None:
+    """分配线索。`to_user_id=None` 表示释放回线索池。
+
+    这里必须校验目标用户存在且在职：此前不校验，传一个不存在的 id 也会照分，
+    线索会挂到一个乌有人身上、分配历史里还留下这个无效 id，事后无法判断
+    到底是"分给了离职的人"还是"传错了参数"。
+    客户转移（`customer/service.py`）早有这道校验，线索这条链路一直漏着。
+    """
+    if to_user_id is not None:
+        target = await session.get(User, to_user_id)
+        if target is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"接收人 id={to_user_id} 不存在", 404)
+        if target.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"接收人「{target.name}」已停用，不能接收线索", 422
+            )
+
     record_assignment(
         session, lead=lead, to_user_id=to_user_id, operator_id=operator_id, reason=reason
     )
