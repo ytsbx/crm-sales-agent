@@ -1,5 +1,6 @@
 """报价中心接口（对齐 03-API §20 ~ §22）。"""
 
+import asyncio
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -1140,7 +1141,9 @@ async def download_pdf(
         "delivery_terms": version.delivery_terms,
         "remark": version.remark,
     }
-    pdf_bytes = render_quote_pdf(data)
+    # reportlab 渲染是同步 CPU 密集操作，直接在事件循环里跑会把
+    # 所有并发请求卡住几百毫秒——必须丢线程池
+    pdf_bytes = await asyncio.to_thread(render_quote_pdf, data)
     filename = f"{quote.quote_no}-V{version.version_no}.pdf"
     return Response(
         content=pdf_bytes,
