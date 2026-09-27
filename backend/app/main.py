@@ -128,4 +128,25 @@ app.include_router(erp_router, prefix=settings.api_prefix)
 
 @app.get("/health", tags=["System"])
 async def health() -> dict:
-    return ok({"status": "up", "app": settings.app_name})
+    """无鉴权探活端点（监控/负载均衡用）。
+
+    附带数据库连通性检查：进程活着但数据库连不上必须能被监控区分出来，
+    否则"后端还在跑但业务全挂"这种状态不会被告警。
+    """
+    from sqlalchemy import text
+
+    from app.core.database import SessionLocal
+
+    db_ok = True
+    try:
+        async with SessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception:
+        db_ok = False
+    return ok(
+        {
+            "status": "up" if db_ok else "degraded",
+            "app": settings.app_name,
+            "database": "ok" if db_ok else "error",
+        }
+    )
