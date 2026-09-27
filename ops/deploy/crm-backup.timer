@@ -1,0 +1,11 @@
+# 备份定时器：每天 02:30 跑一次（避开调度器 02:00/02:10 的任务高峰）。
+
+[Unit]
+Description=Run CRM database backup daily at 02:30
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

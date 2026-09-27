@@ -1,0 +1,20 @@
+# 数据库每日备份的 systemd 服务 + 定时器（二选一：timer 或 cron）。
+#
+# 安装（生产服务器上）：
+#   sudo cp ops/deploy/crm-backup.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now crm-backup.timer
+#   systemctl list-timers | grep crm   # 确认下次触发时间
+#
+# Persistent=true：错过的触发点（服务器关机/重启）开机后补跑一次，
+# 不会因为那天恰好重启了就没有当天备份。
+
+[Unit]
+Description=CRM database backup (pg_dump)
+
+[Service]
+Type=oneshot
+User=crm
+# 连接串（或从 /opt/crm/backend/.env 继承 DATABASE_URL）
+EnvironmentFile=/opt/crm/backend/.env
+ExecStart=/opt/crm/scripts/backup_db.sh

@@ -1,0 +1,34 @@
+# 后端进程守护（Linux systemd）。
+#
+# 安装（生产服务器上）：
+#   sudo cp ops/deploy/crm-backend.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now crm-backend
+#
+# 前提：代码放 /opt/crm，虚拟环境在 backend/.venv（或改 ExecStart 路径）。
+# Restart=always：进程崩了 3 秒内自动拉起——这就是"崩了不影响业务数据"的配套，
+# 因为所有写操作是事务，崩溃只损失正在进行的那个请求，用户刷新重试即可。
+
+[Unit]
+Description=CRM Sales Agent backend (uvicorn)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=exec
+User=crm
+WorkingDirectory=/opt/crm/backend
+Environment=PYTHONPATH=/opt/crm/backend
+# .env 里的 DATABASE_URL / JWT_SECRET / DEEPSEEK_API_KEY 等都从这里进
+EnvironmentFile=/opt/crm/backend/.env
+# 单实例单 worker：不要加 --workers！APScheduler 没有 leader 选举，
+# 多 worker = 公海回收/自动任务每晚重复执行（调度器防重做好之前禁止）
+ExecStart=/opt/crm/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+# 日志走 journald：journalctl -u crm-backend -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
