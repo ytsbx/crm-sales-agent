@@ -30,10 +30,11 @@ BUSINESS_MODELS: dict[str, tuple[type, str]] = {
     "order": (SalesOrder, "owner_id"),
 }
 
-# 没有负责人概念（或按其它维度管控）的对象类型。
-# 附件目前只挂在上面 5 类上；出现未知类型时**默认拒绝**，
+# 没有负责人概念（或按其它维度管控）的对象类型：
+# 产品资料全公司可见（product:view 已经在路由层把守），附件跟随资料本身。
+# 附件目前挂在上面 5 类 + product 上；出现未知类型时**默认拒绝**，
 # 而不是默认放行——宁可让人来登记新类型，也不要默默漏数据。
-NO_OWNER_TYPES: set[str] = set()
+NO_OWNER_TYPES: set[str] = {"product"}
 
 
 async def visible_object(

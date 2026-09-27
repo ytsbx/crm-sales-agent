@@ -16,6 +16,7 @@ import {
 } from '../../shared/api/product'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import AttachmentPanel from '../../shared/components/AttachmentPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 
@@ -70,6 +71,7 @@ export default function ProductDetailPage() {
   const [editVisible, setEditVisible] = useState(false)
   const [productForm, setProductForm] = useState<ProductPayload>({ name: '' })
   const [skuVisible, setSkuVisible] = useState(false)
+  const [editingSku, setEditingSku] = useState<Sku | null>(null)
   const [skuForm, setSkuForm] = useState<SkuForm>(EMPTY_SKU)
 
   const productQuery = useQuery({
@@ -100,10 +102,12 @@ export default function ProductDetailPage() {
   })
 
   const skuMutation = useMutation({
-    mutationFn: (payload: SkuPayload) => createSku(productId, payload),
+    mutationFn: (payload: SkuPayload) =>
+      editingSku ? updateSku(editingSku.id, payload) : createSku(productId, payload),
     onSuccess: () => {
-      Toast.success('SKU 已创建')
+      Toast.success(editingSku ? 'SKU 已保存' : 'SKU 已创建')
       setSkuVisible(false)
+      setEditingSku(null)
       setSkuForm(EMPTY_SKU)
       refresh()
     },
@@ -164,15 +168,41 @@ export default function ProductDetailPage() {
     },
     {
       title: '操作',
-      width: 110,
+      width: 130,
       render: (_: unknown, record: Sku) =>
         canManage ? (
-          <a
-            style={{ color: 'var(--crm-primary)' }}
-            onClick={() => toggleMutation.mutate({ id: record.id, enable: record.status !== 'active' })}
-          >
-            {record.status === 'active' ? '停用' : '启用'}
-          </a>
+          <>
+            <a
+              style={{ color: 'var(--crm-primary)', marginRight: 10 }}
+              onClick={() => {
+                setEditingSku(record)
+                setSkuForm({
+                  sku_code: record.sku_code,
+                  specification: record.specification ?? '',
+                  color: record.color ?? '',
+                  material: record.material ?? '',
+                  length: String(record.length ?? ''),
+                  width: String(record.width ?? ''),
+                  height: String(record.height ?? ''),
+                  weight: String(record.weight ?? ''),
+                  carton_qty: String(record.carton_qty ?? ''),
+                  carton_volume: String(record.carton_volume ?? ''),
+                  moq: String(record.moq ?? ''),
+                  package_type: record.package_type ?? '',
+                  unit: record.unit ?? '件',
+                })
+                setSkuVisible(true)
+              }}
+            >
+              编辑
+            </a>
+            <a
+              style={{ color: 'var(--crm-primary)' }}
+              onClick={() => toggleMutation.mutate({ id: record.id, enable: record.status !== 'active' })}
+            >
+              {record.status === 'active' ? '停用' : '启用'}
+            </a>
+          </>
         ) : (
           '-'
         ),
@@ -229,7 +259,14 @@ export default function ProductDetailPage() {
         title="SKU 列表"
         extra={
           canManage && (
-            <Button theme="solid" onClick={() => setSkuVisible(true)}>
+            <Button
+              theme="solid"
+              onClick={() => {
+                setEditingSku(null)
+                setSkuForm(EMPTY_SKU)
+                setSkuVisible(true)
+              }}
+            >
               新建 SKU
             </Button>
           )
@@ -244,6 +281,11 @@ export default function ProductDetailPage() {
           empty="还没有 SKU，先加一个"
           scroll={{ x: 1200 }}
         />
+      </SectionCard>
+
+      {/* 产品资料/图片附件（方案 §7：产品图片接通；可上传图片/规格书，可预览） */}
+      <SectionCard title="产品资料与图片">
+        <AttachmentPanel businessType="product" businessId={productId} />
       </SectionCard>
 
       <Modal
@@ -296,10 +338,13 @@ export default function ProductDetailPage() {
       </Modal>
 
       <Modal
-        title="新建 SKU"
+        title={editingSku ? `编辑 SKU：${editingSku.sku_code}` : '新建 SKU'}
         visible={skuVisible}
         width={640}
-        onCancel={() => setSkuVisible(false)}
+        onCancel={() => {
+          setSkuVisible(false)
+          setEditingSku(null)
+        }}
         onOk={() => {
           if (!skuForm.sku_code.trim()) {
             Toast.warning('SKU 编码必填')
