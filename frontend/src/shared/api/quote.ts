@@ -249,6 +249,11 @@ export function declineQuote(versionId: number, reason?: string) {
   return api.post<QuoteVersion>(`/quote-versions/${versionId}/reject`, { reason })
 }
 
+/** 转交待审批单给同事（03-API §23）：转的是处理权，不是权限。 */
+export function transferApproval(id: number, to_user_id: number, comment?: string) {
+  return api.post<ApprovalRow>(`/approvals/${id}/transfer`, { to_user_id, comment })
+}
+
 export function listApprovals(query: { status?: string; mine?: boolean; page?: number; page_size?: number }) {
   return api.get<PageResult<ApprovalRow>>('/approvals', query)
 }

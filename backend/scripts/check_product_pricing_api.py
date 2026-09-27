@@ -379,6 +379,82 @@ def main():
     check('报价不存在', res.get('code'), 40401)
 
     print()
+    print('=== 9b. 折扣上限参与审批（discount_limit 此前只存不用）===')
+    status, res = call('GET', '/roles', token=admin)
+    sales_role_id = next(r['id'] for r in res['data'] if r['code'] == 'salesperson')
+    status, res = call('GET', '/price-permissions', token=admin)
+    saved_perm = next((p for p in res['data'] if p['role_id'] == sales_role_id), None)
+    # 给销售角色配一个很紧的折扣上限 10%（库里 0-1 比例口径）
+    status, res = call('PUT', f'/price-permissions/{sales_role_id}', token=admin,
+                       body={'minimum_margin': 0.05, 'discount_limit': 0.1, 'can_approve': True})
+    check('配置折扣上限', res.get('code'), 0)
+    zhangsan = login('zhangsan', '123456')
+    std_probe = call('POST', '/pricing/calculate', token=admin,
+                     body={'sku_id': price_sku_id, 'quantity': 100})
+    standard_price = float(std_probe[1]['data']['standard_price'])
+    body = call('POST', '/pricing/calculate', token=zhangsan,
+                body={'sku_id': price_sku_id, 'quantity': 100,
+                      'quoted_price': standard_price * 0.5})[1]
+    check('张三半价核价成功', body.get('code'), 0)
+    if body.get('code') != 0:
+        print('   返回：', str(body)[:300])
+    else:
+        check_true('让利 50% 触发审批', body['data']['approval_required'] is True,
+                   str(body['data'].get('warnings'))[:120])
+        check_true('原因指明折扣超上限',
+                   any('折扣' in w for w in body['data'].get('warnings', [])),
+                   str(body['data'].get('warnings'))[:160])
+    # 恢复原权限，不污染其他用例
+    if saved_perm:
+        call('PUT', f'/price-permissions/{sales_role_id}', token=admin, body={
+            'minimum_margin': saved_perm['minimum_margin'],
+            'discount_limit': saved_perm['discount_limit'],
+            'can_approve': saved_perm['can_approve'],
+            'remark': saved_perm.get('remark'),
+        })
+
+    print('=== 9c. 核价运费接体积计费（复用物流模块实现）===')
+    # 先清掉历史遗留的测试费率（destination 也是 CHK 开头，会精确匹配干扰断言）
+    status, res = call('GET', '/logistics/rates?keyword=CHK', token=admin)
+    for old_rate in res['data'] or []:
+        call('DELETE', f"/logistics/rates/{old_rate['id']}", token=admin)
+    status, res = call('POST', '/logistics/rates', token=admin, body={
+        'provider': f'CHK{RUN}物流', 'origin_region': '华东', 'destination_region': 'CHK华北测试区',
+        'shipping_method': '陆运', 'unit_price_per_kg': 1, 'unit_price_per_volume': 200,
+        'min_charge': 0})
+    check('建含体积价的费率', res.get('code'), 0)
+    rate_id = res['data']['id']
+    status, res = call('GET', f'/skus/{price_sku_id}', token=admin)
+    old_carton = res['data'].get('carton_volume')
+    call('PATCH', f'/skus/{price_sku_id}', token=admin, body={'carton_volume': 1})
+    probe = call('POST', '/pricing/calculate', token=admin,
+                 body={'sku_id': price_sku_id, 'quantity': 10, 'quoted_price': 100,
+                       'country': 'CHK华北测试区', 'shipping_method': '陆运'})
+    if probe[1].get('code') != 0 or 'logistics' not in (probe[1].get('data', {}).get('cost') or {}):
+        data = probe[1].get('data') or {}
+    logistics = probe[1]['data']['cost']['logistics_cost']
+    # 10 件 × 0.1667m³/件（箱规 1m³ ÷ 6 件）= 1.6667m³；体积计价 1.6667 × 200 = 333.34，
+    # 摊到单件 33.334 —— 旧算法按重量只有 3.5 元/件，抛货被严重低估，这正是接体积的意义
+    check('抛货按体积计价（33.334 元/件）', float(logistics), 33.334)
+    # 回落验证：体积数据真的清空（置 null，而不是恢复回可能是 1.0 的原值），
+    # 应退回按实重计费——证明没录体积的 SKU 行为与旧算法完全一致
+    call('PATCH', f'/skus/{price_sku_id}', token=admin, body={'carton_volume': None})
+    status, res = call('GET', f'/skus/{price_sku_id}', token=admin)
+    unit_weight = float(res['data'].get('weight') or 0)
+    probe = call('POST', '/pricing/calculate', token=admin,
+                 body={'sku_id': price_sku_id, 'quantity': 10, 'quoted_price': 100,
+                       'country': 'CHK华北测试区', 'shipping_method': '陆运'})
+    check('无体积数据回落重量计价', float(probe[1]['data']['cost']['logistics_cost']),
+          round(unit_weight * 10 * 1 / 10, 4))
+    # 恢复原箱规体积
+    call('PATCH', f'/skus/{price_sku_id}', token=admin, body={'carton_volume': old_carton})
+    # 清理测试费率（按关键字兜底删，避免单 id 依赖）
+    status, res = call('GET', '/logistics/rates?keyword=CHK', token=admin)
+    deleted = len(res['data'] or [])
+    for old_rate in res['data'] or []:
+        call('DELETE', f"/logistics/rates/{old_rate['id']}", token=admin)
+    check_true('清理测试费率', deleted >= 1, str(deleted))
+
     print('=== 10. 权限门槛 ===')
     for label, method, path, body in [
         ('产品导入', 'POST', '/products/import', None),

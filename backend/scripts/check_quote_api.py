@@ -440,6 +440,57 @@ def main():
     # 空报价留着没意义，清掉（clean() 会兜底，这里顺手）
     call('DELETE', f'/quotes/{empty_quote_id}', token=admin)
 
+    print('=== 14. 版本号唯一约束（并发撞号不再静默重复）===')
+    from datetime import UTC, datetime as dt
+
+    from sqlalchemy import select
+
+    import threading
+
+    import asyncpg
+
+    from app.core.config import settings
+
+    # main() 是同步的、外层已在事件循环里，不能 asyncio.run 也不能共用
+    # SessionLocal（连接池绑主循环的坑见文件尾注释）——开独立线程自带新循环
+    result: dict = {}
+
+    def _insert_dup():
+        async def _inner():
+            conn = await asyncpg.connect(settings.database_url.replace('+asyncpg', ''))
+            try:
+                row = await conn.fetchrow(
+                    'select quote_id, version_no from quote_versions '
+                    'where version_no is not null order by id desc limit 1'
+                )
+                if row is None:
+                    result['checked'] = False
+                    return
+                result['checked'] = True
+                from datetime import UTC, datetime as dt
+
+                try:
+                    await conn.execute(
+                        'insert into quote_versions (quote_id, version_no, subtotal_amount, '
+                        'charge_amount, discount_amount, total_amount, currency, approval_status, '
+                        'approval_required, created_by, created_at) '
+                        "values ($1, $2, 0, 0, 0, 0, 'CNY', 'not_submitted', false, 1, $3)",
+                        row['quote_id'], row['version_no'], dt.now(UTC),
+                    )
+                    result['blocked'] = False
+                except asyncpg.exceptions.UniqueViolationError:
+                    result['blocked'] = True
+            finally:
+                await conn.close()
+
+        asyncio.run(_inner())
+
+    thread = threading.Thread(target=_insert_dup)
+    thread.start()
+    thread.join()
+    check_true('库里有版本可测', result.get('checked') is True, '')
+    check_true('同号版本被唯一约束拦下', result.get('blocked') is True, str(result))
+
 
 if __name__ == '__main__':
     # 全部塞进**同一个** asyncio.run：多次 run 会各自建事件循环，

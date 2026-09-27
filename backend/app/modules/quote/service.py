@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -445,7 +446,18 @@ async def create_version(
         created_at=datetime.now(UTC),
     )
     session.add(version)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # 并发"再来一版"两个请求同时读到同一个 latest，各自 +1 撞唯一约束。
+        # 数据库约束是兜底（此前没有约束会静默产生两条同号版本）：
+        # 回滚并让客户端拿 409 重试，第二个请求刷新后取到新号。
+        await session.rollback()
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "报价版本并发创建冲突，请刷新后重试",
+            409,
+        ) from exc
 
     for item in await version_items(session, source.id):
         session.add(

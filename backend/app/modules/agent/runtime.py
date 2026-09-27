@@ -484,13 +484,22 @@ async def run_turn(
     和不需要打字机效果的场景走这里。
     """
     result: dict = {}
-    async for kind, data in run_turn_events(
-        session, agent_session=agent_session, user=user, text=text
-    ):
-        if on_event:
-            on_event(kind, data)
-        if kind == "done":
-            result = data
+    try:
+        async for kind, data in run_turn_events(
+            session, agent_session=agent_session, user=user, text=text
+        ):
+            if on_event:
+                on_event(kind, data)
+            if kind == "done":
+                result = data
+    except AppError:
+        raise
+    except Exception as exc:
+        # 同步口没有 SSE 的 error 事件可发：把模型侧失败（欠费/网络/限流）
+        # 转成带真实原因的统一错误，而不是裸 500 纯文本
+        raise AppError(
+            ErrorCode.SYSTEM_ERROR, f"Agent 模型调用失败：{exc}", 500
+        ) from exc
     return result
 
 

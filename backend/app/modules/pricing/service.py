@@ -192,6 +192,28 @@ async def find_customer_price(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def resolve_discount_limit(session: AsyncSession, role_codes: list[str]) -> float | None:
+    """取当前用户角色中最严格的折扣上限（%）；没配置返回 None（不参与判定）。
+
+    discount_limit 此前只在价格权限页能配、计算从不读——配置形同虚设。
+    语义与最低利润率一致：按角色取，多个角色取最严格的一个。
+    """
+    if not role_codes:
+        return None
+    rows = (
+        await session.execute(
+            select(PricePermission.discount_limit)
+            .join(Role, Role.id == PricePermission.role_id)
+            .where(
+                Role.code.in_(role_codes),
+                PricePermission.status == "active",
+                PricePermission.discount_limit.isnot(None),
+            )
+        )
+    ).scalars().all()
+    return min(rows) if rows else None
+
+
 async def resolve_min_margin(session: AsyncSession, role_codes: list[str]) -> tuple[Decimal, bool]:
     """取当前用户角色中最宽松的最低利润率，以及他是否有审批权。
 
@@ -224,60 +246,51 @@ async def estimate_logistics(
     destination_region: str | None = None,
     shipping_method: str | None = None,
 ) -> tuple[Decimal | None, str | None]:
-    """按费率表估算**单件**运费：单重 × 公斤单价；最低收费按数量摊到单件。
+    """按物流模块估算**单件**运费（与物流试算同一份实现，不维护第二套算法）。
 
-    核价全程按「单价」计算，所以运费也必须是单件口径，
-    否则一批 3000 件的总运费会被当成一件的运费，算出来的利润完全失真。
+    计费重取「实际重量 / 体积重」较大者（抛货不再低估运费），费用取
+    「重量计价 / 体积计价」较大者，最低收费按数量摊到单件——核价全程按
+    「单价」计算，运费必须是单件口径，否则利润完全失真。
 
-    按目的地与运输方式筛费率（PRD §14）：先精确匹配，再退回只按运输方式匹配，
-    最后才退回任意启用中的费率——并在退回时明确告知用了哪条，避免静默取错费率。
+    兼容旧口径：SKU 没维护单重时返回 None 请手工填写（与历史行为一致）；
+    没录体积数据的 SKU 计费重=实际重量，结果与旧算法相同（行为不变）。
+    取费率时在匹配到的方案里选**最便宜**的一条（估算口径），并在备注里
+    说明计价方式与时效。
     """
     if sku.weight is None:
         return None, "该 SKU 没有维护单重，无法自动估算运费，请手工填写"
 
-    base = select(LogisticsRate).where(LogisticsRate.status == "active")
+    from app.modules.pricing import logistics as logistics_calc
 
-    rate = None
-    note = None
+    try:
+        prepared = await logistics_calc.prepare(
+            session,
+            sku_id=sku.id,
+            quantity=quantity,
+            destination=destination_region,
+            shipping_method=shipping_method,
+        )
+    except AppError as exc:
+        return None, f"运费自动估算失败：{exc.message}"
 
-    if destination_region and shipping_method:
-        rate = (
-            await session.execute(
-                base.where(
-                    LogisticsRate.destination_region == destination_region,
-                    LogisticsRate.shipping_method == shipping_method,
-                ).order_by(LogisticsRate.id.asc()).limit(1)
-            )
-        ).scalar_one_or_none()
-
-    if rate is None and shipping_method:
-        rate = (
-            await session.execute(
-                base.where(LogisticsRate.shipping_method == shipping_method)
-                .order_by(LogisticsRate.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if rate is not None:
-            note = f"没有「{destination_region or '未指定目的地'} + {shipping_method}」的费率，已按运输方式「{shipping_method}」的费率估算"
-
-    if rate is None:
-        rate = (
-            await session.execute(base.order_by(LogisticsRate.id.asc()).limit(1))
-        ).scalar_one_or_none()
-        if rate is not None and (destination_region or shipping_method):
-            note = (
-                f"没有匹配「{destination_region or '-'} / {shipping_method or '-'}」的运费费率，"
-                f"已退回第一条启用费率（{rate.provider} {rate.shipping_method}）估算"
-            )
-
-    if rate is None:
+    options = prepared["options"]
+    if not options:
         return None, "还没有维护运费费率，请先在价格中心配置或手工填写运费"
 
-    per_unit = sku.weight * rate.unit_price_per_kg
-    if rate.min_charge and quantity > 0:
-        per_unit = max(per_unit, rate.min_charge / quantity)
-    return per_unit.quantize(Decimal("0.0001")), note
+    chosen = options[0]  # prepare 已按金额升序排列，估算取最便宜方案
+    notes: list[str] = []
+    for warning in prepared["warnings"]:
+        if "体积" in warning or "单重" in warning:
+            notes.append(warning)
+    notes.append(
+        f"已按{chosen['pricing_basis']}计价（{chosen['provider']} {chosen['shipping_method']}，"
+        f"{chosen['eta_text'] or '时效未配'}）"
+    )
+    if not chosen["above_minimum"]:
+        notes.append("触发最低收费，已按数量摊入单件")
+
+    unit = (Decimal(str(chosen["amount"])) / quantity).quantize(Decimal("0.0001"))
+    return unit, "；".join(notes)
 
 
 async def calculate_price(
@@ -474,7 +487,7 @@ async def calculate_price(
     profit_with_refund = profit + tax_refund
     profit_rate_with_refund = (profit_with_refund / check_price) if check_price else ZERO
 
-    # PRD §16 的两条独立触发条件：低于保护价 / 低于本人授权价
+    # PRD §16 的四条独立触发条件：低于保护价 / 低于本人授权价 / 折扣超权限 / 利润不足
     below_protection = (
         protection_price is not None and check_price < protection_price - Decimal("0.0001")
     )
@@ -482,7 +495,24 @@ async def calculate_price(
     below_profit = profit_with_refund < ZERO
     below_margin = profit_rate_with_refund < min_margin - Decimal("0.000001")
 
-    approval_required = bool(below_protection or below_authorized or below_profit or below_margin)
+    # 折扣上限（price_permissions.discount_limit，此前只存不用）：
+    # 折扣 = 1 - 报价/标准价；角色配了上限且折扣超出 → 需审批。
+    # 没配上限（None）不参与判定——与最低利润率的"配了才生效"同口径。
+    discount_pct = (
+        (1 - check_price / standard_price) * 100
+        if standard_price and standard_price > 0 and check_price < standard_price
+        else ZERO
+    )
+    role_discount_limit = await resolve_discount_limit(session, role_codes or [])
+    # 库里存的是 0-1 比例（0.3 = 最多让 30%），与百分数口径换算后比较
+    discount_exceeded = (
+        role_discount_limit is not None
+        and discount_pct > Decimal(str(role_discount_limit)) * 100
+    )
+
+    approval_required = bool(
+        below_protection or below_authorized or below_profit or below_margin or discount_exceeded
+    )
 
     if quoted_price is not None and approval_required:
         reason = []
@@ -497,6 +527,10 @@ async def calculate_price(
             reason.append("单件利润为负")
         if below_margin:
             reason.append(f"利润率 {profit_rate * 100:.2f}% 低于授权 {min_margin * 100:.0f}%")
+        if discount_exceeded:
+            reason.append(
+                f"折扣 {discount_pct:.1f}% 超过角色上限 {float(role_discount_limit) * 100:.0f}%"
+            )
         warnings.append("该报价需要审批：" + "，".join(reason))
 
     return {

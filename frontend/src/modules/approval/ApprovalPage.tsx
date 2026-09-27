@@ -1,14 +1,16 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Input, Modal, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   approveApproval,
   listApprovals,
   rejectApproval,
+  transferApproval,
   type ApprovalRow,
 } from '../../shared/api/quote'
+import { listUsers } from '../../shared/api/system'
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
@@ -27,6 +29,9 @@ export default function ApprovalPage() {
   const [activeKey, setActiveKey] = useState('pending')
   const [rejectTarget, setRejectTarget] = useState<ApprovalRow | null>(null)
   const [rejectComment, setRejectComment] = useState('')
+  const [transferTarget, setTransferTarget] = useState<ApprovalRow | null>(null)
+  const [transferUserId, setTransferUserId] = useState<number | null>(null)
+  const [transferComment, setTransferComment] = useState('')
 
   // 规则配置只有管理员可见（后端写接口也是 settings:manage 把门）
   const TABS_WITH_RULES = [
@@ -42,6 +47,13 @@ export default function ApprovalPage() {
         : listApprovals({ status: activeKey, page_size: 50 }),
   })
 
+  // 转交接收人列表：打开始才拉（有 customer:assign / user:manage 权限的人能看到）
+  const usersQuery = useQuery({
+    queryKey: ['transfer-users'],
+    queryFn: () => listUsers({ page_size: 100 }),
+    enabled: Boolean(transferTarget),
+  })
+
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['approvals'] })
     void queryClient.invalidateQueries({ queryKey: ['quotes'] })
@@ -51,6 +63,18 @@ export default function ApprovalPage() {
     mutationFn: (id: number) => approveApproval(id),
     onSuccess: () => {
       Toast.success('已通过')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const transferMutation = useMutation({
+    mutationFn: () => transferApproval(transferTarget!.id, transferUserId!, transferComment || undefined),
+    onSuccess: () => {
+      Toast.success('已转交')
+      setTransferTarget(null)
+      setTransferUserId(null)
+      setTransferComment('')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -138,6 +162,16 @@ export default function ApprovalPage() {
               <a style={{ color: 'var(--crm-error)' }} onClick={() => setRejectTarget(record)}>
                 拒绝
               </a>
+              <a
+                style={{ color: 'var(--crm-text-2)' }}
+                onClick={() => {
+                  setTransferTarget(record)
+                  setTransferUserId(null)
+                  setTransferComment('')
+                }}
+              >
+                转交
+              </a>
             </>
           )}
         </div>
@@ -172,6 +206,40 @@ export default function ApprovalPage() {
           </div>
         )}
       </SectionCard>
+
+      <Modal
+        title={`转交审批：${transferTarget?.quote_no ?? ''}`}
+        visible={Boolean(transferTarget)}
+        onCancel={() => setTransferTarget(null)}
+        onOk={() => {
+          if (!transferUserId) {
+            Toast.warning('请选择接收人')
+            return
+          }
+          transferMutation.mutate()
+        }}
+        confirmLoading={transferMutation.isPending}
+        okText="确认转交"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <Select
+            placeholder="选择接收人（客户/线索分配权限的人）"
+            filter
+            style={{ width: '100%' }}
+            value={transferUserId}
+            onChange={(v) => setTransferUserId(v as number)}
+            optionList={(usersQuery.data?.items ?? []).map((u) => ({
+              value: u.id,
+              label: `${u.name}（${(u.roles ?? []).map((r) => r.name).join('、') || '无角色'}）`,
+            }))}
+          />
+          <Input
+            value={transferComment}
+            onChange={setTransferComment}
+            placeholder="转交说明（可选），例如：我在出差，麻烦处理"
+          />
+        </div>
+      </Modal>
 
       <Modal
         title="拒绝报价"

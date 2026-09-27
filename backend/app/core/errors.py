@@ -3,6 +3,10 @@
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+import logging
+
+logger = logging.getLogger("crm.errors")
+
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
@@ -79,6 +83,23 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "code": ErrorCode.PARAM_ERROR,
                 "message": "参数校验失败",
                 "data": details,
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+        """未捕获异常的兜底：统一信封 + 完整堆栈进日志。
+
+        此前模型调用失败这类裸异常会走 Starlette 默认 500 纯文本，
+        前端只能显示"网络异常"，排查没有 code 可查。
+        """
+        logger.exception("未处理异常：%s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": ErrorCode.SYSTEM_ERROR,
+                "message": "服务器内部错误，请稍后重试或联系管理员",
+                "data": None,
             },
         )
 
