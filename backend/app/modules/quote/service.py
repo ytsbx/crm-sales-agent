@@ -675,6 +675,112 @@ async def version_items(session: AsyncSession, version_id: int) -> list[QuoteIte
     )
 
 
+async def price_drift(
+    session: AsyncSession, *, version: QuoteVersion
+) -> dict:
+    """A09 后半：草稿版本的"价格已有更新"检测。
+
+    逐明细按当前条件重查适用价，与快照拟报价比对：
+    - `price_source` 非空的明细（系统带价）价格或来源变了 → drift；
+    - `price_source` 为空的明细（销售手工价）只提示参考，不算强制漂移，
+      刷新时也**不会**覆盖它们（方案 §5：手工调整不得被无提示覆盖）。
+    """
+    quote = await session.get(Quote, version.quote_id)
+    items = await version_items(session, version.id)
+    customer = await session.get(Customer, quote.customer_id) if quote else None
+    fx = version.exchange_rate_snapshot
+    rows: list[dict] = []
+    any_drift = False
+    for item in items:
+        lookup = (
+            await pricing_service.lookup_applicable_price(
+                session, customer=customer, sku_id=item.sku_id, quantity=item.quantity
+            )
+            if customer is not None
+            else {"status": "pending", "unit_price": None, "source": None}
+        )
+        current = None
+        if lookup["status"] == "ok" and lookup["unit_price"] is not None:
+            current, _ = convert_cny_to(
+                Decimal(str(lookup["unit_price"])),
+                to_currency=version.currency,
+                rate=fx,
+            )
+        hand_priced = item.price_source is None
+        drift = bool(
+            not hand_priced
+            and current is not None
+            and abs(current - item.quoted_price) > Decimal("0.01")
+        )
+        if drift:
+            any_drift = True
+        rows.append(
+            {
+                "item_id": item.id,
+                "sku_code": item.sku_code_snapshot,
+                "quoted_price": _f(item.quoted_price),
+                "current_applicable": _f(current) if current is not None else None,
+                "source": lookup.get("source_label"),
+                "hand_priced": hand_priced,
+                "drift": drift,
+            }
+        )
+    return {"any_drift": any_drift, "items": rows}
+
+
+async def refresh_prices(
+    session: AsyncSession, *, version: QuoteVersion, user
+) -> dict:
+    """把系统带价的明细刷新到当前适用价；手工价明细原样保留。"""
+    quote = await session.get(Quote, version.quote_id)
+    items = await version_items(session, version.id)
+    customer = await session.get(Customer, quote.customer_id)
+    fx = version.exchange_rate_snapshot
+    refreshed = 0
+    skipped = 0
+    for item in items:
+        if item.price_source is None:
+            skipped += 1
+            continue
+        lookup = await pricing_service.lookup_applicable_price(
+            session, customer=customer, sku_id=item.sku_id, quantity=item.quantity
+        )
+        if lookup["status"] != "ok" or lookup["unit_price"] is None:
+            skipped += 1
+            continue
+        new_price, _ = convert_cny_to(
+            Decimal(str(lookup["unit_price"])),
+            to_currency=version.currency,
+            rate=fx,
+        )
+        rebuilt = await build_item_snapshot(
+            session,
+            version=version,
+            sku_id=item.sku_id,
+            quantity=item.quantity,
+            customer_id=quote.customer_id,
+            quoted_price=new_price,
+            logistics_cost=None,
+            opportunity_item_id=item.opportunity_item_id,
+            spec_snapshot=item.spec_snapshot,
+            remark=item.remark,
+            role_codes=user.roles,
+            price_source=lookup["source"],
+            customer_level_snapshot=(customer.level or "").strip() or None if customer else None,
+        )
+        for field in (
+            "quantity", "quoted_price", "cost_snapshot", "logistics_cost_snapshot",
+            "standard_price_snapshot", "recommended_price_snapshot", "minimum_price_snapshot",
+            "profit_snapshot", "profit_rate_snapshot", "price_source",
+            "customer_level_snapshot", "approval_required", "approval_reason",
+        ):
+            setattr(item, field, getattr(rebuilt, field))
+        refreshed += 1
+    await session.flush()
+    await recalc_version(session, version)
+    return {"refreshed": refreshed, "skipped": skipped}
+
+
 async def version_charges(session: AsyncSession, version_id: int) -> list[QuoteCharge]:
     return list(
         (

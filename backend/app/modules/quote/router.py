@@ -546,6 +546,48 @@ async def clone_quote(
     )
 
 
+# ---------------------------------------------------------------- 价格刷新（A09 后半）
+
+@router.get("/quote-versions/{version_id}/price-drift")
+async def price_drift(
+    version_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """草稿版本"价格已有更新"检测（方案 §5/A09）。
+
+    只读：逐明细按当前条件重查适用价，与快照拟报价比对。
+    """
+    version = await svc.get_visible_version(session, user, version_id)
+    return ok(await svc.price_drift(session, version=version))
+
+
+@router.post("/quote-versions/{version_id}/price-refresh")
+async def price_refresh(
+    version_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """把系统带价的明细刷新到当前适用价（仅草稿可刷；手工价明细不覆盖）。"""
+    version = await svc.get_visible_version(session, user, version_id)
+    await svc.ensure_version_editable(version)
+    quote = await svc.get_visible_quote(session, user, version.quote_id)
+
+    result = await svc.refresh_prices(session, version=version, user=user)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="price_refresh",
+        business_type="quote",
+        business_id=quote.id,
+        after=result,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, f"已刷新 {result['refreshed']} 条明细（手工价 {result['skipped']} 条未动）")
+
+
 @router.get("/quotes/{quote_id}/version-comparison")
 async def compare_versions(
     quote_id: int,

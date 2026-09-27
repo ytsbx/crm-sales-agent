@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
+import { createItem, listOpportunities } from '../../shared/api/opportunity'
 import {
   createCost,
   createCustomerPriceRule,
@@ -118,6 +119,9 @@ export default function PriceCenterPage() {
   const [lookupQty, setLookupQty] = useState('1')
   const [lookupResult, setLookupResult] = useState<PriceLookupResult | null>(null)
   const [lookupLoading, setLookupLoading] = useState(false)
+  // 选品打通（§7 行 2）：查价结果一键加入商机需求
+  const [lookupOppId, setLookupOppId] = useState<number | undefined>()
+  const [addingToOpp, setAddingToOpp] = useState(false)
   const [permissionTarget, setPermissionTarget] = useState<PricePermissionRow | null>(null)
   const [permissionForm, setPermissionForm] = useState({ minimum_margin: '0.15', can_approve: false })
   const [rateVisible, setRateVisible] = useState(false)
@@ -132,6 +136,10 @@ export default function PriceCenterPage() {
   const [historyPage, setHistoryPage] = useState(1)
 
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
+  const lookupOppQuery = useQuery({
+    queryKey: ['opportunities-for-lookup'],
+    queryFn: () => listOpportunities({ status: 'open', page: 1, page_size: 100 }),
+  })
   const customersQuery = useQuery({
     queryKey: ['customers-for-select'],
     queryFn: () => listCustomers({ page: 1, page_size: 100 }),
@@ -338,6 +346,48 @@ export default function PriceCenterPage() {
                   查价
                 </Button>
               </div>
+              {lookupResult?.status === 'ok' && (
+                <div className="toolbar">
+                  <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>选品下单：</span>
+                  <Select
+                    placeholder="选择要加入的商机（可选）"
+                    value={lookupOppId}
+                    onChange={(value) => setLookupOppId(value as number)}
+                    optionList={(lookupOppQuery.data?.items ?? []).map((item) => ({
+                      value: item.id,
+                      label: `${item.title ?? item.name ?? '商机'}（${item.customer_name ?? ''}）`,
+                    }))}
+                    filter
+                    style={{ width: 320 }}
+                  />
+                  <Button
+                    disabled={!lookupOppId}
+                    loading={addingToOpp}
+                    onClick={async () => {
+                      setAddingToOpp(true)
+                      try {
+                        await createItem(lookupOppId!, {
+                          sku_id: lookupResult.sku.id,
+                          quantity: Number(lookupQty || 1),
+                          target_price: lookupResult.unit_price,
+                        })
+                        Toast.success(
+                          `已把 ${lookupResult.sku.sku_code}（¥${lookupResult.unit_price}）加入商机需求`,
+                        )
+                      } catch (error) {
+                        Toast.error(error instanceof Error ? error.message : '加入失败')
+                      } finally {
+                        setAddingToOpp(false)
+                      }
+                    }}
+                  >
+                    加入商机需求
+                  </Button>
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    以系统适用价写入需求明细，销售在商机页可再调整目标价
+                  </span>
+                </div>
+              )}
               {lookupResult && (
                 <div style={{ display: 'grid', gap: 10, maxWidth: 640 }}>
                   {lookupResult.status === 'ok' ? (

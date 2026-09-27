@@ -197,6 +197,29 @@ export function listQuoteVersions(quoteId: number) {
   return api.get<QuoteVersion[]>(`/quotes/${quoteId}/versions`)
 }
 
+/** A09：草稿版本"价格已有更新"检测 */
+export function getPriceDrift(versionId: number) {
+  return api.get<{
+    any_drift: boolean
+    items: Array<{
+      item_id: number
+      sku_code: string | null
+      quoted_price: number | null
+      current_applicable: number | null
+      source: string | null
+      hand_priced: boolean
+      drift: boolean
+    }>
+  }>(`/quote-versions/${versionId}/price-drift`)
+}
+
+/** 一键把系统带价的明细刷新到当前适用价（手工价不动） */
+export function refreshPrices(versionId: number) {
+  return api.post<{ refreshed: number; skipped: number }>(
+    `/quote-versions/${versionId}/price-refresh`,
+  )
+}
+
 export function createQuoteVersion(quoteId: number) {
   return api.post<QuoteVersion>(`/quotes/${quoteId}/versions`)
 }

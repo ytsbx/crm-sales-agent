@@ -10,9 +10,11 @@ import {
   declineQuote,
   deleteQuoteCharge,
   downloadQuotePdf,
+  getPriceDrift,
   getQuoteVersion,
   listQuoteVersions,
   markSent,
+  refreshPrices,
   submitApproval,
   updateQuoteItem,
   withdrawApproval,
@@ -99,6 +101,23 @@ export default function QuoteDetailPage() {
   const version = detail?.version
   const quote = detail?.quote
   const editable = version?.approval_status === 'not_submitted' && !version?.sent_at
+
+  // A09 后半：草稿版本检测"价格已有更新"（系统带价的明细与当前适用价比对）
+  const driftQuery = useQuery({
+    queryKey: ['price-drift', version?.id],
+    queryFn: () => getPriceDrift(version!.id),
+    enabled: Boolean(editable && version),
+  })
+
+  const refreshMutation = useMutation({
+    mutationFn: () => refreshPrices(version!.id),
+    onSuccess: (result) => {
+      Toast.success(`已刷新 ${result.refreshed} 条明细（手工价 ${result.skipped} 条未动）`)
+      refresh()
+      void queryClient.invalidateQueries({ queryKey: ['price-drift', version?.id] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   const priceMutation = useMutation({
     mutationFn: () => updateQuoteItem(priceTarget!.id, { quoted_price: Number(newPrice) }),
@@ -373,6 +392,33 @@ export default function QuoteDetailPage() {
           <Tag color="orange" size="large">
             该版本正在审批中，审批通过前不能发送
           </Tag>
+        </div>
+      )}
+      {editable && driftQuery.data?.any_drift && (
+        <div
+          style={{
+            marginBottom: 16,
+            background: 'var(--crm-warning-soft, #fff7e6)',
+            border: '1px solid var(--crm-warning, #fa8c16)',
+            borderRadius: 6,
+            padding: '10px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            价格已有更新：{driftQuery.data.items.filter((it) => it.drift).length} 条明细的适用价与当前拟报价不一致
+            （手工改价的明细不会被自动覆盖）
+          </span>
+          <Button
+            size="small"
+            theme="solid"
+            loading={refreshMutation.isPending}
+            onClick={() => refreshMutation.mutate()}
+          >
+            一键刷新到最新适用价
+          </Button>
         </div>
       )}
       {version.approval_status === 'rejected' && (
