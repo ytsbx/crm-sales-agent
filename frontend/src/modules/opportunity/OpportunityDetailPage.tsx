@@ -25,7 +25,7 @@ import {
   listLossReasons,
   listStages,
   loseOpportunity,
-  winOpportunity,
+  confirmWin,
   type OpportunityItem,
 } from '../../shared/api/opportunity'
 import { listSkus } from '../../shared/api/product'
@@ -168,10 +168,15 @@ export default function OpportunityDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const winMutation = useMutation({
-    mutationFn: () => winOpportunity(opportunityId, { remark: '在商机详情页标记成交' }),
-    onSuccess: () => {
-      Toast.success('商机已成交')
+  // 确认成交并生成订单（方案 §5 / A13）：替代"标记成交后再去报价页转单"的两步操作
+  const confirmWinMutation = useMutation({
+    mutationFn: () => confirmWin(opportunityId, { remark: '在商机详情页确认成交' }),
+    onSuccess: (data) => {
+      Toast.success(
+        data.already_ordered
+          ? `该成交此前已建单：${data.order_no}`
+          : `已确认成交，销售订单 ${data.order_no} 已生成`,
+      )
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -393,8 +398,14 @@ export default function OpportunityDetailPage() {
                 <Button onClick={() => setTaskVisible(true)}>新建任务</Button>
                 {opportunity.status === 'open' && (
                   <>
-                    <Popconfirm title="确认这单成交？" onConfirm={() => winMutation.mutate()}>
-                      <Button theme="solid">标记成交</Button>
+                    <Popconfirm
+                      title="确认成交并生成订单？"
+                      content="将把该商机最新已发送/已接受的报价版本转为销售订单，此前已建单则直接返回原订单"
+                      onConfirm={() => confirmWinMutation.mutate()}
+                    >
+                      <Button theme="solid" loading={confirmWinMutation.isPending}>
+                        确认成交并建单
+                      </Button>
                     </Popconfirm>
                     <Button type="danger" onClick={() => setLoseVisible(true)}>
                       标记失单

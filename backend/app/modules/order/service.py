@@ -138,10 +138,18 @@ async def create_order_from_quote(
     from app.modules.quote.model import Quote
 
     quote = await session.get(Quote, version.quote_id)
-    if quote is None:
-        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
+    if quote is None or quote.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
     if version.approval_status != "approved":
         raise AppError(ErrorCode.APPROVAL_PENDING, "报价未通过审批，不能转订单", 422)
+    # 已失效报价不能转单（方案 A13：有效性校验；此前的口子允许过期报价转单）
+    today = datetime.now(UTC).date()
+    if quote.valid_until and quote.valid_until < today:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"报价已过有效期（{quote.valid_until}），请刷新版本后再转订单",
+            422,
+        )
 
     order = SalesOrder(
         order_no=await generate_order_no(session),

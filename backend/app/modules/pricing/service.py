@@ -516,8 +516,14 @@ async def calculate_price(
     resolved_level = customer_level or (customer.level if customer else None)
 
     cost = await get_effective_cost(session, sku_id)
+    has_cost = cost is not None
     if cost is None:
-        warnings.append("该 SKU 还没有维护成本，计算结果仅供参考")
+        # A06/D5：没有成本就谈不上利润——宁可"利润不可计算"，
+        # 也不能拿 0 成本算出 100% 的假毛利
+        warnings.append(
+            "该 SKU 无生效成本：利润不可计算，利润类审批判定停用；"
+            "按已维护售价报价不受影响"
+        )
     purchase = cost.purchase_cost if cost else ZERO
     production = cost.production_cost if cost else ZERO
     package = cost.package_cost if cost else ZERO
@@ -578,8 +584,10 @@ async def calculate_price(
     recommended = (
         (customer_rule.agreed_price if customer_rule else None)
         or (rule.guide_price if rule and rule.guide_price else None)
-        or (base_cost / (Decimal(1) - margin))
+        or (base_cost / (Decimal(1) - margin) if has_cost else None)
     )
+    if recommended is None:
+        warnings.append("无成本也无已维护售价，无法给出建议价——请先维护成本或价格规则")
 
     # 利润要求（绝对金额口径）：反推一个等效的目标利润率，便于统一走后面的算法
     if target_profit_amount is not None and target_margin is None:
@@ -591,7 +599,12 @@ async def calculate_price(
             )
 
     min_margin, can_approve = await resolve_min_margin(session, role_codes or [])
-    floor_from_margin = base_cost / (Decimal(1) - min_margin) if min_margin < 1 else base_cost
+    # 授权底价由利润率反推——没有成本就没有授权底价（利润类判定同步停用）
+    floor_from_margin = (
+        base_cost / (Decimal(1) - min_margin)
+        if has_cost and min_margin < 1
+        else None
+    )
 
     # 公司口径的保护价（价格规则 / 客户特殊价），与"我的授权底价"分开
     protection_candidates = [
@@ -604,23 +617,25 @@ async def calculate_price(
     ]
     protection_price = max(protection_candidates) if protection_candidates else None
 
-    # 当前用户的授权底价 = max(利润率反推价, 保护价)
-    floor_price = max(
-        [
-            value
-            for value in [floor_from_margin, protection_price]
-            if value is not None
-        ]
-        or [base_cost]
-    )
+    # 当前用户的授权底价 = max(利润率反推价, 保护价)；两者都拿不到时为 None
+    floor_values = [
+        value
+        for value in [floor_from_margin, protection_price]
+        if value is not None
+    ]
+    floor_price = max(floor_values) if floor_values else None
 
     range_ratio = Decimal(
         str(await settings_service.get_number(session, "price_range_ratio", "ratio", 0.04))
     )
-    recommended_range = [
-        recommended * (Decimal(1) - range_ratio),
-        recommended * (Decimal(1) + range_ratio),
-    ]
+    recommended_range = (
+        [
+            recommended * (Decimal(1) - range_ratio),
+            recommended * (Decimal(1) + range_ratio),
+        ]
+        if recommended is not None
+        else [None, None]
+    )
 
     # ---- 外贸口径（可选）：把价格类数字统一折成计价币种，避免"美元价 vs 人民币底线"这种错比 ----
     is_foreign = currency.upper() != "CNY"
@@ -642,7 +657,10 @@ async def calculate_price(
         recommended_range = [convert(recommended_range[0]), convert(recommended_range[1])]
         cost_for_profit = convert(base_cost)
 
-    def metrics(price: Decimal) -> tuple[Decimal, Decimal]:
+    def metrics(price: Decimal) -> tuple[Decimal | None, Decimal | None]:
+        if not has_cost:
+            # A06：无成本不给"利润"，让界面显示不可计算
+            return None, None
         profit = price - cost_for_profit
         rate = profit / price if price else ZERO
         return profit, rate
@@ -664,16 +682,27 @@ async def calculate_price(
     tax_refund = tax_refund_cny if not (is_foreign and fx) else (tax_refund_cny / fx).quantize(
         Decimal("0.0001")
     )
-    profit_with_refund = profit + tax_refund
-    profit_rate_with_refund = (profit_with_refund / check_price) if check_price else ZERO
+    profit_with_refund = (profit + tax_refund) if profit is not None else None
+    profit_rate_with_refund = (
+        (profit_with_refund / check_price) if profit_with_refund is not None and check_price else None
+    )
 
     # PRD §16 的四条独立触发条件：低于保护价 / 低于本人授权价 / 折扣超权限 / 利润不足
+    # 无成本时利润类三条（授权价/负利润/利润率）无从判定，自动停用（A06/D5）
     below_protection = (
         protection_price is not None and check_price < protection_price - Decimal("0.0001")
     )
-    below_authorized = check_price < floor_from_margin - Decimal("0.0001")
-    below_profit = profit_with_refund < ZERO
-    below_margin = profit_rate_with_refund < min_margin - Decimal("0.000001")
+    below_authorized = bool(
+        has_cost
+        and floor_from_margin is not None
+        and check_price < floor_from_margin - Decimal("0.0001")
+    )
+    below_profit = bool(has_cost and profit_with_refund is not None and profit_with_refund < ZERO)
+    below_margin = bool(
+        has_cost
+        and profit_rate_with_refund is not None
+        and profit_rate_with_refund < min_margin - Decimal("0.000001")
+    )
 
     # 折扣上限（price_permissions.discount_limit，此前只存不用）：
     # 折扣 = 1 - 报价/标准价；角色配了上限且折扣超出 → 需审批。
@@ -723,6 +752,7 @@ async def calculate_price(
             "moq": sku.moq,
         },
         "quantity": _f(quantity),
+        "has_cost": has_cost,
         "customer_id": customer_id,
         "customer_name": customer.name if customer else None,
         "customer_level": resolved_level,

@@ -344,6 +344,10 @@ def main():
     check('撤回审批', res.get('code'), 0)
     call('DELETE', f'/quotes/{lisi_quote_id}', token=lisi)
 
+    # A12 收紧后：send-email 也要求版本已通过审批。若该版本还没提交过审批
+    # （此前用例路径没走到），这里补一次提交——正常价会直接自动通过。
+    call('POST', f'/quote-versions/{version_id}/submit-approval', token=admin, body={})
+
     status, res = call(
         'POST',
         f'/quote-versions/{version_id}/send-email',

@@ -720,6 +720,16 @@ async def win_opportunity(
     opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
     if opportunity.status == "win":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该商机已经成交")
+    # 旧口子补校验：成交版本必须真实存在且属于此商机（此前任意 id 直接落库）
+    if payload.win_quote_version_id:
+        from app.modules.quote.model import Quote, QuoteVersion
+
+        win_version = await session.get(QuoteVersion, payload.win_quote_version_id)
+        if win_version is None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
+        win_quote = await session.get(Quote, win_version.quote_id)
+        if win_quote is None or win_quote.opportunity_id != opportunity.id:
+            raise AppError(ErrorCode.PARAM_ERROR, "该报价版本不属于此商机")
     stage = await svc.get_won_stage(session)
     if stage is None:
         raise AppError(ErrorCode.SYSTEM_ERROR, "未配置成交阶段", 500)

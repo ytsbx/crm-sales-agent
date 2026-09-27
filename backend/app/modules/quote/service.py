@@ -587,7 +587,17 @@ async def build_item_snapshot(
         package_type=package_type,
         country=country,
     )
-    price = Decimal(str(quoted_price)) if quoted_price is not None else Decimal(str(result["recommended_price"]))
+    if quoted_price is not None:
+        price = Decimal(str(quoted_price))
+    elif result["recommended_price"] is not None:
+        price = Decimal(str(result["recommended_price"]))
+    else:
+        # A06：无成本也无已维护售价时，宁可报错也不给出"0 成本推算价"
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"SKU {sku.sku_code} 无适用价且无成本记录，无法自动定价；请先维护价格规则或成本",
+            422,
+        )
     # 利润必须与报价同币种，否则会拿美元价减人民币成本（曾算出 -452% 的利润率）。
     # cost_snapshot 等成本类快照仍按本币存：审批判定在人民币口径下做，
     # minimum_price_snapshot 也是人民币，混币种比较会得出错误结论。
@@ -699,6 +709,30 @@ async def submit_for_approval(
         base_cost = item.cost_snapshot + item.logistics_cost_snapshot
         price = item.quoted_price
         price_cny = (price * fx) if foreign else price
+        if base_cost <= 0:
+            # A06/D5：成本快照为 0 说明"没有成本记录"而不是"成本为零"。
+            # 利润类判定（授权底价/负利润/利润率）全部无从谈起，停用；
+            # 保护价是绝对口径，仍然生效。
+            floor = item.minimum_price_snapshot
+            if floor is not None and price_cny < floor - Decimal("0.0001"):
+                item.approval_required = True
+                item.approval_reason = (
+                    f"报价 ¥{price_cny:.2f}（折人民币）低于最低保护价 ¥{floor:.2f}"
+                    f"（该明细无成本记录，利润未评估）"
+                )
+                offending.append(
+                    {
+                        "sku_code": item.sku_code_snapshot,
+                        "quoted_price": float(price),
+                        "quoted_price_cny": float(price_cny),
+                        "minimum_price": float(floor),
+                        "profit_rate": None,
+                    }
+                )
+            else:
+                item.approval_required = False
+                item.approval_reason = None
+            continue
         profit = price_cny - base_cost
         profit_rate = (profit / price_cny) if price_cny else ZERO
         floor = max(item.minimum_price_snapshot or ZERO, base_cost)
@@ -726,6 +760,11 @@ async def submit_for_approval(
     # 整单利润率/加权均价可能已跌破授权——不能逐项检查后就直接放行。
     revenue = version.total_amount
     if revenue and revenue > 0:
+        # 存在无成本明细时，整单利润率等于"拿 0 成本算出来的"，不可信——
+        # 利润率维度跳过（D5），加权保护价是绝对口径仍生效
+        any_missing_cost = any(
+            (item.cost_snapshot + item.logistics_cost_snapshot) <= 0 for item in items
+        )
         revenue_cny = (revenue * fx) if foreign else revenue
         cost_total = sum(
             ((item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity for item in items),
@@ -740,7 +779,10 @@ async def submit_for_approval(
             ) / total_qty
             effective_avg = revenue_cny / total_qty
             weighted_floor_hit = effective_avg < weighted_min - Decimal("0.0001")
-        if whole_margin < min_margin - Decimal("0.000001") or weighted_floor_hit:
+        if (
+            not any_missing_cost
+            and whole_margin < min_margin - Decimal("0.000001")
+        ) or weighted_floor_hit:
             reason = (
                 f"整单有效金额 ¥{revenue_cny:.2f}（含整单优惠）利润率 {whole_margin * 100:.2f}%"
                 f"（授权 {min_margin * 100:.0f}%）"
