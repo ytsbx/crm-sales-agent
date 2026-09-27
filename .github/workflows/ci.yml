@@ -88,7 +88,7 @@ jobs:
           for suite in check_quote_api check_reference_integrity check_order_payment_api \
                        check_customer_contact_api check_lead_auth_role_api \
                        check_product_pricing_api check_agent_api \
-                       check_approval_rules check_agent_stream; do
+                       check_approval_rules check_agent_stream check_scheduler; do
             echo "::group::=== $suite ==="
             PYTHONPATH=. python scripts/$suite.py
             echo "::endgroup::"

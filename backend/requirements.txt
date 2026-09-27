@@ -17,3 +17,6 @@ openai>=1.30
 httpx>=0.27
 # 企微事件回调的消息体是 AES-CBC 加密的，标准库没有 AES
 pycryptodome>=3.20
+
+# 进程内定时任务调度器（公海回收 / 自动任务规则的每日自动执行）
+APScheduler>=3.10,<4

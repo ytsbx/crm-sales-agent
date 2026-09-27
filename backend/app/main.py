@@ -1,5 +1,8 @@
 """FastAPI 入口。"""
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,7 +42,26 @@ from app.modules.settings.router import router as settings_router
 from app.modules.search.router import router as search_router
 from app.modules.wecom.router import router as wecom_router
 
+# 应用日志（含 crm.scheduler 的 INFO）：uvicorn 只配它自己的 logger，
+# 不加这个，应用侧 INFO 日志（如"定时任务已启动"）会静默丢弃
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # 调度器要等事件循环就绪（AsyncIOScheduler 挂在应用自己的 loop 上）
+    from app.core.scheduler import start_scheduler, stop_scheduler
+
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title=f"{settings.app_name} API",
     version="1.1.0",
     docs_url="/docs" if settings.debug else None,

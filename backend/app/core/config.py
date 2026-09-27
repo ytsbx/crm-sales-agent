@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    # ---- 定时任务调度（公海回收 / 自动任务规则的每日自动执行）----
+    # scheduler_enabled=False 可整体关掉（例如多实例部署时只让一台跑）
+    scheduler_enabled: bool = True
+    scheduler_recycle_hour: int = 2   # 公海回收：每天几点跑（24 小时制）
+    scheduler_task_rules_hour: int = 2  # 自动任务规则：每天几点跑
     agent_max_tool_rounds: int = 3
 
     # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------

@@ -133,7 +133,9 @@ async def get_text(session: AsyncSession, key: str, field: str = "text", fallbac
     return str(raw) if raw not in (None, "") else fallback
 
 
-async def run_public_pool_recycle(session: AsyncSession, operator_id: int) -> dict:
+async def run_public_pool_recycle(
+    session: AsyncSession, operator_id: int | None, source: str = "WEB"
+) -> dict:
     """按规则把长期没跟进的客户释放回公海。"""
     rules = (
         await session.execute(
@@ -181,6 +183,7 @@ async def run_public_pool_recycle(session: AsyncSession, operator_id: int) -> di
         session,
         operator_id=operator_id,
         action="run_public_pool_recycle",
+        source=source,
         business_type="public_pool_rule",
         business_id=None,
         after={"released_count": len(released), "customers": released},
@@ -198,7 +201,9 @@ async def _has_open_task(session: AsyncSession, rule_id: int, **filters) -> bool
     return (await session.execute(stmt)).first() is not None
 
 
-async def run_auto_tasks(session: AsyncSession, operator_id: int) -> dict:
+async def run_auto_tasks(
+    session: AsyncSession, operator_id: int | None, source: str = "WEB"
+) -> dict:
     """按规则生成自动任务。同一个对象不会重复生成（按规则去重）。"""
     rules = (
         await session.execute(select(TaskRule).where(TaskRule.status == "active"))
@@ -325,6 +330,7 @@ async def run_auto_tasks(session: AsyncSession, operator_id: int) -> dict:
         session,
         operator_id=operator_id,
         action="run_auto_tasks",
+        source=source,
         business_type="task_rule",
         business_id=None,
         after={"created_count": len(created), "tasks": created},
