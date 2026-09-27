@@ -47,6 +47,14 @@ class OpportunityWin(BaseModel):
     remark: str | None = None
 
 
+class OpportunityConfirmWin(BaseModel):
+    """确认成交并生成订单（方案 §5 / A13）：一次动作完成 接受→成交→建单。"""
+
+    win_quote_version_id: int | None = None
+    delivery_date: date | None = None
+    remark: str | None = None
+
+
 class OpportunityItemCreate(BaseModel):
     sku_id: int
     quantity: float = 1

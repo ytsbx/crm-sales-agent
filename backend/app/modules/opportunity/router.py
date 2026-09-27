@@ -32,6 +32,7 @@ from app.modules.opportunity.schema import (
     OpportunityItemsBatch,
     OpportunityLose,
     OpportunityUpdate,
+    OpportunityConfirmWin,
     OpportunityWin,
     RecommendProductsRequest,
     StageChange,
@@ -740,6 +741,147 @@ async def win_opportunity(
     )
     await session.commit()
     return ok(svc.serialize_opportunity(opportunity, stage=stage), "商机已成交")
+
+
+@router.post("/opportunities/{opportunity_id}/confirm-win")
+async def confirm_win_and_create_order(
+    opportunity_id: int,
+    payload: OpportunityConfirmWin,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("opportunity:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """确认成交并生成订单（方案 §5 / A13）。
+
+    一个动作完成：校验成交版本 → 商机标记成交 → 版本转订单。
+    幂等：商机已成交不重复改；版本已转过单直接返回已有订单（重试安全）。
+    需要同时具备 opportunity:manage 与 order:manage。
+    """
+    from datetime import datetime as dt
+
+    from app.modules.order import service as order_svc
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote, QuoteVersion
+
+    if not user.has("order:manage"):
+        raise AppError(ErrorCode.FORBIDDEN, "确认成交并建单需要订单管理权限", 403)
+
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+
+    # ---- 1. 定位成交版本：显式指定优先，否则取该商机下已发送/已接受的最新报价 ----
+    if payload.win_quote_version_id:
+        version = await session.get(QuoteVersion, payload.win_quote_version_id)
+        if version is None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
+    else:
+        version = (
+            await session.execute(
+                select(QuoteVersion)
+                .join(Quote, Quote.id == QuoteVersion.quote_id)
+                .where(
+                    Quote.opportunity_id == opportunity.id,
+                    Quote.deleted_at.is_(None),
+                    Quote.status.in_(["accepted", "sent"]),
+                )
+                .order_by(QuoteVersion.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if version is None:
+            raise AppError(
+                ErrorCode.REQUIRED_FIELD_MISSING,
+                "该商机下没有已发送/已接受的报价版本，无法确认成交",
+            )
+
+    quote = await session.get(Quote, version.quote_id)
+
+    # ---- 2. 校验（方案 §5：成交报价属于该客户和商机，审批及有效性符合规则）----
+    if quote.opportunity_id != opportunity.id or quote.customer_id != opportunity.customer_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "该报价版本不属于此商机/客户")
+    if quote.status not in ("accepted", "sent"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"报价当前状态「{quote.status}」不可成交（需已发送或客户已接受）",
+        )
+    if version.approval_status != "approved":
+        raise AppError(ErrorCode.APPROVAL_PENDING, "该报价版本未通过审批，不能成交", 422)
+    today = dt.now(UTC).date()
+    if quote.valid_until and quote.valid_until < today:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"报价已过有效期（{quote.valid_until}），请先刷新版本再成交",
+        )
+
+    # ---- 3. 客户确认：已发送未接受的，此动作即视为客户接受 ----
+    quote_already_accepted = quote.status == "accepted"
+    if not quote_already_accepted:
+        quote.status = "accepted"
+        quote.accepted_at = datetime.now(UTC)
+        await session.flush()
+
+    # ---- 4. 商机标记成交（幂等：已成交不重复改阶段）----
+    already_won = opportunity.status == "win"
+    if not already_won:
+        stage = await svc.get_won_stage(session)
+        if stage is None:
+            raise AppError(ErrorCode.SYSTEM_ERROR, "未配置成交阶段", 500)
+        await svc.change_stage(
+            session, opportunity, to_stage=stage, operator_id=user.id, remark="确认成交"
+        )
+        opportunity.status = "win"
+        opportunity.win_quote_version_id = version.id
+        await session.flush()
+
+    # ---- 5. 转订单（版本级幂等：重试返回已有订单）----
+    already_ordered = False
+    try:
+        order = await order_svc.create_order_from_quote(
+            session,
+            version=version,
+            user_id=user.id,
+            delivery_date=payload.delivery_date,
+            remark=payload.remark,
+        )
+    except AppError as exc:
+        if exc.code != ErrorCode.DUPLICATE_CONVERT:
+            raise
+        already_ordered = True
+        order = (
+            await session.execute(
+                select(SalesOrder).where(SalesOrder.quote_version_id == version.id)
+            )
+        ).scalars().first()
+        if order is None:
+            raise
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="confirm_win",
+        business_type="opportunity",
+        business_id=opportunity.id,
+        after={
+            "quote_version_id": version.id,
+            "order_id": order.id,
+            "already_won": already_won,
+            "already_ordered": already_ordered,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "opportunity_id": opportunity.id,
+            "quote_id": quote.id,
+            "win_quote_version_id": version.id,
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "already_won": already_won,
+            "already_accepted": quote_already_accepted,
+            "already_ordered": already_ordered,
+        },
+        "已确认成交并生成订单" if not (already_won and already_ordered) else "该版本此前已成交建单，返回既有订单",
+    )
 
 
 @router.post("/opportunities/{opportunity_id}/lose")
