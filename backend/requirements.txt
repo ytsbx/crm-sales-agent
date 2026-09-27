@@ -10,7 +10,6 @@ pydantic-settings>=2.3
 python-multipart>=0.0.9
 PyJWT>=2.8
 bcrypt>=4.1
-redis>=5.0
 reportlab>=4.0
 openai>=1.30
 # 企业微信 Adapter 发 HTTP 请求用（原来靠 openai 间接带进来，现在直接依赖，别指望间接）

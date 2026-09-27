@@ -21,8 +21,6 @@ class Settings(BaseSettings):
 
     # 数据库。默认 PostgreSQL；改 MySQL 只需换这一行连接串。
     database_url: str = "postgresql+asyncpg://zhaorongkai@127.0.0.1:5432/crm_sales_agent"
-    redis_url: str = "redis://127.0.0.1:6379/0"
-
     jwt_secret: str = "dev-secret-please-change"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 720
