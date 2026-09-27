@@ -190,7 +190,7 @@ export function listQuotes(query: {
 }
 
 export function createQuote(payload: { opportunity_id?: number; customer_id?: number; valid_until?: string }) {
-  return api.post<{ quote_id: number; version_id: number }>('/quotes', payload)
+  return api.post<{ quote_id: number; version_id: number; warnings?: string[] }>('/quotes', payload)
 }
 
 export function listQuoteVersions(quoteId: number) {

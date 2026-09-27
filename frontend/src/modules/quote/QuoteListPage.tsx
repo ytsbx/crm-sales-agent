@@ -58,7 +58,11 @@ export default function QuoteListPage() {
   const createMutation = useMutation({
     mutationFn: () => createQuote({ opportunity_id: opportunityId! }),
     onSuccess: (data) => {
-      Toast.success('报价单已生成，明细已按核价建议价带入')
+      // 拟报价来源说明（方案 §5）：默认取系统适用价；无价回退目标价会在此提示
+      Toast.success('报价单已生成，拟报价默认取系统适用价')
+      for (const warning of data.warnings ?? []) {
+        Toast.warning({ content: warning, duration: 6 })
+      }
       setCreateVisible(false)
       setOpportunityId(null)
       void queryClient.invalidateQueries({ queryKey: ['quotes'] })
@@ -129,7 +133,7 @@ export default function QuoteListPage() {
     <div className="page-container">
       <PageHeader
         title="报价中心"
-        subtitle="从商机生成报价，明细自动按核价建议价带入；超出权限的版本必须审批后才能发送"
+        subtitle="从商机生成报价，拟报价默认取系统适用价（客户目标价仅作参考）；整单优惠后超出权限必须审批"
       />
 
       <SectionCard>
