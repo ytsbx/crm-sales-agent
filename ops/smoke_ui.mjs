@@ -114,6 +114,52 @@ async function createSeedQuote(token, customerId) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
+ * 订单中心为空时自动造一张**真实订单**（建报价 → 提交审批 → 转订单），
+ * 让 /orders/{id} 这条用例测到的是真页面而不是 404 兜底。
+ * 任何一步没走通就返回 null（用例退回 /orders/1 兜底路径，不算失败）。
+ */
+async function createOrderIfEmpty(token, customerId) {
+  if (!customerId) return null
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    }
+    const created = await fetch(`${API_BASE}/api/v1/quotes`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ customer_id: customerId }),
+    }).then((r) => r.json())
+    const versionId = created?.data?.version_id
+    if (!versionId) return null
+    const skus = await fetch(`${API_BASE}/api/v1/pricing/sku-options`, { headers }).then((r) =>
+      r.json(),
+    )
+    const skuId = skus?.data?.[0]?.id
+    if (skuId) {
+      await fetch(`${API_BASE}/api/v1/quote-versions/${versionId}/items/batch`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify([{ sku_id: skuId, quantity: 100, quoted_price: 28 }]),
+      })
+    }
+    const submitted = await fetch(
+      `${API_BASE}/api/v1/quote-versions/${versionId}/submit-approval`,
+      { method: 'POST', headers, body: JSON.stringify({ reason: '冒烟造订单' }) },
+    ).then((r) => r.json())
+    // 走了人工审批（未自动通过）就没法自动转订单——放弃，退回兜底路径
+    if (submitted?.data?.version?.approval_status !== 'approved') return null
+    const converted = await fetch(
+      `${API_BASE}/api/v1/quote-versions/${versionId}/convert-to-order`,
+      { method: 'POST', headers, body: JSON.stringify({}) },
+    ).then((r) => r.json())
+    return converted?.data?.order_id ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
  * 按可见文字点击页面元素。
  *
  * 有些交付物（商机看板、Copilot 抽屉）默认不出现，只有点一下才渲染出来；
@@ -232,7 +278,7 @@ async function main() {
   const auth = await apiLogin()
   console.log(`✓ 接口登录成功：${auth.user.name}（${auth.user.roles.join(',')}）`)
   // 按真实数据组装用例
-  const [customerId, opportunityId, productId, quoteId, skuId, orderId] = await Promise.all([
+  const [customerId, opportunityId, productId, quoteId, skuId, firstOrderId] = await Promise.all([
     firstId('/customers', auth.token),
     firstId('/opportunities', auth.token),
     firstId('/products', auth.token),
@@ -240,6 +286,16 @@ async function main() {
     firstId('/pricing/sku-options', auth.token),
     firstId('/orders', auth.token),
   ])
+  // 订单中心为空（全新库/刚清库）就造一张真实订单，别让详情页用例测 404 兜底
+  let orderId = firstOrderId
+  if (!orderId) {
+    orderId = await createOrderIfEmpty(auth.token, customerId)
+    console.log(
+      orderId
+        ? `✓ 订单中心是空的，已自动「建报价→审批→转订单」造一张订单 #${orderId}`
+        : '（提示：自动造订单失败，订单详情用例退回 /orders/1 兜底）',
+    )
+  }
   const PAGES = [
     { path: '/workbench', name: '01-workbench' },
     { path: '/analytics', name: '02-analytics' },
@@ -343,6 +399,25 @@ async function main() {
     }
     console.log('✓ 前端已就绪（依赖预构建完成）')
 
+    // 预热二遍跑：逐页无断言过一遍，把懒加载路由块编译掉、把 vite 的
+    // 依赖再优化（会触发整页自动刷新）全部提前耗尽。CI 冷环境上，
+    // 预优化会在正式用例的探测窗口里把页面打成白屏（控制台还被清空），
+    // 本地暖环境复现不了——白白背一个"页面打不开"的假警报。
+    console.log('—— 预热：无断言过一遍全部页面（触发懒编译/依赖再优化）——')
+    for (const page of PAGES) {
+      await client.send('Page.navigate', { url: `${APP_BASE}${page.path}` })
+      for (let i = 0; i < 24; i += 1) {
+        const probe = await client.send('Runtime.evaluate', {
+          expression: 'Boolean(document.querySelector("#root, #app")?.children.length)',
+          returnByValue: true,
+        })
+        if (probe.result.value) break
+        await sleep(500)
+      }
+    }
+    await sleep(2500) // 等 vite 依赖再优化与其触发的整页刷新彻底安定
+    console.log('✓ 预热完成')
+
     for (const page of PAGES) {
       await client.send('Page.navigate', { url: `${APP_BASE}${page.path}` })
       // 等页面真的渲染出来（而不是固定 sleep），最多 15 秒
@@ -368,7 +443,15 @@ async function main() {
         expression: 'document.body.innerText.slice(0, 120).replace(/\\s+/g, " ")',
         returnByValue: true,
       })
-      if (!rendered) problems.push(`页面始终没有渲染出内容：${page.path}`)
+      if (!rendered) {
+        // 失败现场自动转储：光说"没渲染"排查不了，把 URL 和 DOM 头部带回来
+        const diag = await client.send('Runtime.evaluate', {
+          expression:
+            'JSON.stringify({ url: location.href, html: document.body.innerHTML.slice(0, 800) })',
+          returnByValue: true,
+        })
+        problems.push(`页面始终没有渲染出内容：${page.path} → ${diag.result.value}`)
+      }
       console.log(`${rendered ? '✓' : '✗'} ${page.path} → ${file}`)
       console.log(`  页面首屏文本：${text.result.value}`)
     }
@@ -438,7 +521,14 @@ async function main() {
 
       for (const label of item.clicks) {
         const outcome = await clickByText(client, label)
-        if (outcome !== 'clicked') problems.push(`点不到「${label}」（${item.path}）`)
+        if (outcome !== 'clicked') {
+          const diag = await client.send('Runtime.evaluate', {
+            expression:
+              'JSON.stringify({ url: location.href, html: document.body.innerHTML.slice(0, 800) })',
+            returnByValue: true,
+          })
+          problems.push(`点不到「${label}」（${item.path}） → ${diag.result.value}`)
+        }
         await sleep(500)
       }
 
