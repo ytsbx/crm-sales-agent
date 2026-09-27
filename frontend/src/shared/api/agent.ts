@@ -1,4 +1,5 @@
-import { api } from './client'
+import { api, ApiError } from './client'
+import { useAuthStore } from '../store/auth'
 import type { PageResult } from '../types'
 
 export interface AgentSessionRow {
@@ -91,6 +92,94 @@ export function deleteAgentSession(id: number) {
 
 export function sendAgentMessage(sessionId: number, content: string) {
   return api.post<AgentTurnResult>(`/agent/sessions/${sessionId}/messages`, { content })
+}
+
+// ---------------------------------------------------------------- 流式对话（token 级打字机）
+//
+// SSE 不能走 axios：浏览器端 axios 拿不到逐块到达的原文，要用 fetch + ReadableStream。
+// 事件协议与后端 `POST /agent/sessions/{id}/messages/stream` 一一对应：
+//   start / user_message / delta（模型文本增量，打字机的来源）/
+//   tool_call / notice（如模型未配置）/ error（模型调用失败）/ done（最终结果）。
+// 没有 delta 时（未配模型或异常）也能退化工作：等 done 一次性渲染。
+
+export type AgentStreamEventKind =
+  | 'start'
+  | 'user_message'
+  | 'delta'
+  | 'tool_call'
+  | 'notice'
+  | 'error'
+  | 'done'
+
+export async function streamAgentMessage(
+  sessionId: number,
+  content: string,
+  onEvent: (kind: AgentStreamEventKind, data: Record<string, unknown>) => void,
+): Promise<AgentTurnResult | null> {
+  const token = useAuthStore.getState().token
+  const resp = await fetch(`/api/v1/agent/sessions/${sessionId}/messages/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ content }),
+  })
+  if (!resp.ok) {
+    // 失败时响应体是统一信封，解析出人话再抛；401 与 axios 拦截器同口径处理
+    let message = `请求失败（HTTP ${resp.status}）`
+    try {
+      const body = await resp.json()
+      message = body?.message ?? message
+      if (resp.status === 401 || body?.code === 40101 || body?.code === 40102) {
+        useAuthStore.getState().clear()
+        if (window.location.pathname !== '/login') window.location.href = '/login'
+      }
+    } catch {
+      /* 保留默认消息 */
+    }
+    throw new ApiError(message, 0)
+  }
+  if (!resp.body) {
+    throw new ApiError('当前浏览器不支持流式读取', 0)
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result: AgentTurnResult | null = null
+
+  // 一帧 = "event: X\ndata: {...}\n\n"；data 是单行 JSON（后端 _sse 保证）
+  const dispatch = (frame: string) => {
+    let kind = 'message'
+    const dataLines: string[] = []
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event: ')) kind = line.slice(7).trim()
+      else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
+    }
+    if (dataLines.length === 0) return
+    let data: Record<string, unknown>
+    try {
+      data = JSON.parse(dataLines.join('\n'))
+    } catch {
+      return
+    }
+    if (kind === 'done') result = data as unknown as AgentTurnResult
+    onEvent(kind as AgentStreamEventKind, data)
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      if (frame.trim()) dispatch(frame)
+    }
+  }
+  return result
 }
 
 export function confirmAgentAction(actionId: number) {

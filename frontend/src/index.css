@@ -533,3 +533,17 @@ a {
 .semi-banner {
   border-radius: var(--crm-radius);
 }
+
+/* Agent 流式回复的打字机光标：跟随最后一个字符闪烁 */
+.stream-cursor::after {
+  content: '▍';
+  margin-left: 1px;
+  color: var(--crm-primary);
+  animation: crm-cursor-blink 0.9s steps(2, start) infinite;
+}
+
+@keyframes crm-cursor-blink {
+  to {
+    visibility: hidden;
+  }
+}

@@ -1,7 +1,6 @@
 """Sales Agent 接口（对齐 03-API §37）。"""
 
 import json
-from collections.abc import Iterable
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
@@ -399,39 +398,29 @@ async def stream_message(
     user: CurrentUser = Depends(require_permission("agent:use")),
     session: AsyncSession = Depends(get_db),
 ):
-    """流式跑一轮对话（03-API §37 Message）。
+    """流式跑一轮对话（03-API §37 Message）——**token 级打字机**。
 
-    ## 这是"事件流"，不是"token 流"
+    `run_turn_events` 是异步生成器：模型每吐一段文本就产生一个 `delta`
+    事件，这里逐事件转成 SSE 帧、立刻 flush，前端逐字渲染。
+    工具调用（`tool_call`）、说明（`notice`）、最终结果（`done`）沿用了
+    原事件流协议，前端兼容两种节奏：没有 delta 时等 done 一次性渲染。
 
-    真正的 token 级流式要求把模型的 function-calling 循环拆成异步生成器，
-    而本项目的一轮对话可能包含**多次工具调用 + 写动作挂起等确认**，
-    拆开会让那条路径很难正确表达（工具执行到一半要落库并等用户点确认）。
-
-    所以这里推的是**轮次内的事件**：每一轮模型调用、每次工具执行、
-    最终回复各推一个 SSE 事件。前端因此能实时显示"正在调用 查客户…"，
-    而不是干等十几秒看到一片空白 —— 这是"流式"要解决的实际问题。
-    事件类型：`start` / `user_message` / `tool_call` / `notice` / `done`。
-
-    ⚠️ 局限：token 级打字机效果需要后续把 `run_turn` 改成生成器才能提供。
+    事件类型：`start` / `user_message` / `delta` / `tool_call` / `notice` / `error` / `done`。
     """
     row = await _get_session(session, session_id, user.id)
-    events: list[tuple[str, dict]] = []
 
-    def collect(kind: str, data: dict) -> None:
-        events.append((kind, data))
-
-    result = await runtime.run_turn(
-        session, agent_session=row, user=user, text=payload.content, on_event=collect
-    )
-
-    def sse() -> Iterable[str]:
+    async def event_stream():
         yield _sse("start", {"session_id": session_id})
-        for kind, data in events:
-            yield _sse(kind, data)
-        yield _sse("done", result)
+        try:
+            async for kind, data in runtime.run_turn_events(
+                session, agent_session=row, user=user, text=payload.content
+            ):
+                yield _sse(kind, data)
+        except Exception as exc:  # 流已经开了，500 发不出去；把原因作为最后一个事件告诉前端
+            yield _sse("error", {"message": str(exc)})
 
     return StreamingResponse(
-        sse(),
+        event_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.response import ok
 from app.modules.approval.router import router as approval_router
+from app.modules.approval.rules_router import router as approval_rules_router
 from app.modules.analytics.router import router as analytics_router
 from app.modules.agent.router import router as agent_router
 from app.modules.auth.router import router as auth_router
@@ -86,6 +87,7 @@ app.include_router(logistics_router, prefix=settings.api_prefix)
 app.include_router(quote_router, prefix=settings.api_prefix)
 app.include_router(sample_router, prefix=settings.api_prefix)
 app.include_router(approval_router, prefix=settings.api_prefix)
+app.include_router(approval_rules_router, prefix=settings.api_prefix)  # 规则接口自带静态/动态顺序，见 rules_router 模块注释
 app.include_router(order_router, prefix=settings.api_prefix)
 app.include_router(payment_router, prefix=settings.api_prefix)
 app.include_router(analytics_router, prefix=settings.api_prefix)

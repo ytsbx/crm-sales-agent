@@ -12,6 +12,7 @@ import {
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
+import RulesPanel from './RulesPanel'
 
 const TABS = [
   { tab: '待我审批', itemKey: 'pending' },
@@ -26,6 +27,12 @@ export default function ApprovalPage() {
   const [activeKey, setActiveKey] = useState('pending')
   const [rejectTarget, setRejectTarget] = useState<ApprovalRow | null>(null)
   const [rejectComment, setRejectComment] = useState('')
+
+  // 规则配置只有管理员可见（后端写接口也是 settings:manage 把门）
+  const TABS_WITH_RULES = [
+    ...TABS,
+    ...(can('settings:manage') ? [{ tab: '规则配置', itemKey: 'rules' }] : []),
+  ]
 
   const query = useQuery({
     queryKey: ['approvals', activeKey],
@@ -91,10 +98,22 @@ export default function ApprovalPage() {
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 100,
-      render: (value: string) => (
-        <Tag color={value === '待审批' ? 'orange' : value === '已通过' ? 'green' : 'grey'}>{value}</Tag>
-      ),
+      width: 120,
+      render: (value: string, record: ApprovalRow) => {
+        // 规则加签的单子：本级通过后停在会签节点，要让人一眼看出现在轮到谁
+        const atCoSign = record.current_node === 'co_sign' && record.summary?.co_sign
+        return (
+          <div style={{ display: 'grid', gap: 2 }}>
+            <Tag color={value === '待审批' ? 'orange' : value === '已通过' ? 'green' : 'grey'}>{value}</Tag>
+            {atCoSign && (
+              <Tag color="red" size="small">
+                待{record.summary.co_sign.label ?? '会签'}
+              </Tag>
+            )}
+            {record.summary?.auto_passed && <Tag color="green" size="small">规则免审</Tag>}
+          </div>
+        )
+      },
     },
     {
       title: '申请说明',
@@ -134,18 +153,24 @@ export default function ApprovalPage() {
       />
 
       <SectionCard>
-        <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
-        <div style={{ marginTop: 16 }}>
-          <Table<ApprovalRow>
-            columns={columns}
-            dataSource={query.data?.items ?? []}
-            loading={query.isLoading}
-            rowKey="id"
-            pagination={false}
-            empty="没有待处理的审批"
-            scroll={{ x: 1300 }}
-          />
-        </div>
+        <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS_WITH_RULES} />
+        {activeKey === 'rules' ? (
+          <div style={{ marginTop: 16 }}>
+            <RulesPanel />
+          </div>
+        ) : (
+          <div style={{ marginTop: 16 }}>
+            <Table<ApprovalRow>
+              columns={columns}
+              dataSource={query.data?.items ?? []}
+              loading={query.isLoading}
+              rowKey="id"
+              pagination={false}
+              empty="没有待处理的审批"
+              scroll={{ x: 1300 }}
+            />
+          </div>
+        )}
       </SectionCard>
 
       <Modal

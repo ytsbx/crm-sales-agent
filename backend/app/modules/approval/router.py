@@ -133,6 +133,7 @@ async def get_approval(
             "records": [
                 {
                     "id": record.id,
+                    "node_code": record.node_code,
                     "action": record.action,
                     "comment": record.comment,
                     "approver_name": name,
@@ -154,11 +155,28 @@ async def _load_pending(session: AsyncSession, approval_id: int) -> ApprovalInst
 
 
 async def _assert_can_approve(session: AsyncSession, user: CurrentUser, instance: ApprovalInstance) -> None:
+    summary = instance.summary or {}
+    co_sign = summary.get("co_sign")
+    if instance.current_node == "co_sign" and co_sign:
+        # 会签节点：只看会签角色（财务默认没有 quote:approve 权限，
+        # 这里按角色放行而不是按权限码，否则会签就没人能批了）。管理员保留兜底。
+        allowed = list(co_sign.get("role_codes") or [])
+        if "admin" not in user.roles and not (set(user.roles) & set(allowed)):
+            raise AppError(
+                ErrorCode.FORBIDDEN,
+                f"该审批处于「{co_sign.get('label', '会签')}」节点，需要 {'、'.join(allowed)} 处理",
+                403,
+            )
+        if instance.applicant_id == user.id and "admin" not in user.roles:
+            raise AppError(ErrorCode.FORBIDDEN, "不能审批自己提交的报价", 403)
+        return
+    # 普通节点：仍然要求 quote:approve 权限（端点上不再依赖权限码，这里显式判）
+    if "admin" not in user.roles and not user.has("quote:approve"):
+        raise AppError(ErrorCode.FORBIDDEN, "你的角色没有审批低价报价的权限", 403)
     _, can_approve = await pricing_service.resolve_min_margin(session, user.roles)
     if not can_approve and "admin" not in user.roles:
         raise AppError(ErrorCode.FORBIDDEN, "你的角色没有审批低价报价的权限", 403)
     # 分级审批：这一级只允许指定角色处理（管理员例外）
-    summary = instance.summary or {}
     allowed_roles = summary.get("node_role_codes") or []
     if allowed_roles and "admin" not in user.roles:
         if not (set(user.roles) & set(allowed_roles)):
@@ -181,11 +199,28 @@ async def _assert_can_approve(session: AsyncSession, user: CurrentUser, instance
         raise AppError(ErrorCode.FORBIDDEN, "不能审批自己提交的报价", 403)
 
 
+async def _user_ids_by_roles(session: AsyncSession, role_codes: list[str]) -> list[int]:
+    """按角色编码找在职用户（会签节点的通知对象）。"""
+    from app.modules.user.model import Role, user_roles
+
+    if not role_codes:
+        return []
+    rows = (
+        await session.execute(
+            select(User.id)
+            .join(user_roles, user_roles.c.user_id == User.id)
+            .join(Role, Role.id == user_roles.c.role_id)
+            .where(Role.code.in_(role_codes), User.status == "active")
+        )
+    ).scalars().all()
+    return list(rows)
+
+
 @router.post("/approvals/{approval_id}/approve")
 async def approve(
     approval_id: int,
     request: Request,
-    user: CurrentUser = Depends(require_permission("quote:approve")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     instance = await _load_pending(session, approval_id)
@@ -193,13 +228,67 @@ async def approve(
 
     version = await session.get(QuoteVersion, instance.business_id)
     quote = await session.get(Quote, version.quote_id) if version else None
+    summary = dict(instance.summary or {})
+
+    if instance.current_node != "co_sign":
+        co_sign = summary.get("co_sign")
+        if co_sign and co_sign.get("status") != "approved":
+            # 本级通过但还有会签节点：审批单保持 pending，切到会签人
+            session.add(
+                ApprovalRecord(
+                    approval_instance_id=instance.id,
+                    node_code=instance.current_node,
+                    approver_id=user.id,
+                    action="approve",
+                    comment=f"本级通过，待「{co_sign.get('label', '会签')}」",
+                )
+            )
+            instance.current_node = "co_sign"
+            summary["co_sign"] = {**co_sign, "status": "pending"}
+            instance.summary = summary
+            await session.flush()
+            co_sign_user_ids = await _user_ids_by_roles(
+                session, list(co_sign.get("role_codes") or [])
+            )
+            for uid in co_sign_user_ids:
+                if uid == instance.applicant_id:
+                    continue
+                await notification_service.notify(
+                    session,
+                    user_id=uid,
+                    type_="approval",
+                    title=f"报价 {summary.get('quote_no', '')} 待会签",
+                    content=(
+                        f"V{summary.get('version_no', '')} 已过业务审批，"
+                        f"需要「{co_sign.get('label', '会签')}」确认（一票否决）"
+                    ),
+                    business_type="quote",
+                    business_id=quote.id if quote else instance.business_id,
+                )
+            await write_audit(
+                session,
+                operator_id=user.id,
+                action="approve",
+                business_type="approval",
+                business_id=instance.id,
+                after={"node": "co_sign", "by": user.id},
+                ip=client_ip(request),
+            )
+            await session.commit()
+            await notification_service.dispatch_pending(session)
+            return ok({"current_node": "co_sign"}, f"本级已通过，进入「{co_sign.get('label', '会签')}」")
+
+    node_code = "co_sign" if instance.current_node == "co_sign" else "manager"
     instance.status = "approved"
     instance.finished_at = datetime.now(UTC)
     instance.current_node = None
+    if summary.get("co_sign"):
+        summary["co_sign"] = {**summary["co_sign"], "status": "approved"}
+        instance.summary = summary
     session.add(
         ApprovalRecord(
             approval_instance_id=instance.id,
-            node_code="manager",
+            node_code=node_code,
             approver_id=user.id,
             action="approve",
         )
@@ -238,7 +327,7 @@ async def reject(
     approval_id: int,
     request: Request,
     comment: str | None = None,
-    user: CurrentUser = Depends(require_permission("quote:approve")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     instance = await _load_pending(session, approval_id)
@@ -246,13 +335,15 @@ async def reject(
 
     version = await session.get(QuoteVersion, instance.business_id)
     quote = await session.get(Quote, version.quote_id) if version else None
+    # 会签节点上拒绝 = 一票否决，整单终止；记录里写清是哪个节点否的
+    node_code = "co_sign" if instance.current_node == "co_sign" else "manager"
     instance.status = "rejected"
     instance.finished_at = datetime.now(UTC)
     instance.current_node = None
     session.add(
         ApprovalRecord(
             approval_instance_id=instance.id,
-            node_code="manager",
+            node_code=node_code,
             approver_id=user.id,
             action="reject",
             comment=comment,
@@ -304,6 +395,7 @@ async def records(
         [
             {
                 "id": record.id,
+                "node_code": record.node_code,
                 "action": record.action,
                 "comment": record.comment,
                 "approver_name": name,

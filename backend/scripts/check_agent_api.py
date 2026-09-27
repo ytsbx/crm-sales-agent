@@ -157,7 +157,7 @@ async def main():
     check('消息分页', res['data']['page_size'], 1)
 
     print()
-    print('=== 3. 流式消息（SSE）===')
+    print('=== 3. 流式消息（SSE，token 级打字机）===')
     status, raw = call_sse(f'/agent/sessions/{sid}/messages/stream', admin,
                            {'content': f'CHK{RUN} 流式测试'})
     check('SSE 状态码', status, 200)
@@ -165,7 +165,16 @@ async def main():
     check_true('含 start 事件', 'event: start' in raw, '')
     check_true('含 user_message 事件', 'event: user_message' in raw, '')
     check_true('含 done 事件', 'event: done' in raw, '')
-    check_true('未配模型给出 notice', 'event: notice' in raw, '')
+    if 'event: notice' in raw:
+        check_true('未配模型：notice 说明原因', 'DEEPSEEK_API_KEY' in raw, '')
+    elif 'event: delta' in raw:
+        check_true('已配模型：delta 逐段推送', raw.count('event: delta') >= 2,
+                   f'{raw.count("event: delta")} 帧')
+    elif 'event: error' in raw:
+        # key 配了但模型侧失败（欠费/网络）：链路本身要能把这个原因告诉前端
+        check_true('模型失败经 error 事件告知而非静默', True, raw[raw.find('event: error'):][:80])
+    else:
+        check_true('既无 notice 也无 delta 也无 error', False, '事件序列异常')
     # 每个 data 行必须是合法 JSON
     bad = []
     for line in raw.splitlines():

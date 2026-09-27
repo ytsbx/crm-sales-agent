@@ -932,11 +932,91 @@ async def seed() -> None:
                     SystemSetting(key=key, value=value, description=description)
                 )
 
+        # 审批流转规则（设计稿 `_6` 的国内业务版）：三条默认规则，发布 V1 并启用。
+        # 只对"有明细超权限"的报价生效；不满足任何规则时仍走金额分档，行为不变。
+        from app.modules.approval.model import ApprovalRule, ApprovalRuleVersion
+
+        default_rules = [
+            {
+                "name": "高毛利小额自动免审",
+                "kind": "auto_pass",
+                "priority": 10,
+                "description": "毛利率达标的小额报价，不必占用主管审批时间（条件可按业务实际调整）",
+                "conditions": [
+                    {"field": "gross_margin", "op": "gte", "value": 25},
+                    {"field": "total_amount", "op": "lte", "value": 100000},
+                    {"field": "customer_has_overdue", "op": "eq", "value": False},
+                ],
+                "action": {},
+            },
+            {
+                "name": "小额让价极速通道",
+                "kind": "express",
+                "priority": 20,
+                "description": "让价金额很小且客户无逾期：跳过高层级，主管一级直接审完",
+                "conditions": [
+                    {"field": "gross_margin", "op": "gte", "value": 22},
+                    {"field": "concession_amount", "op": "lte", "value": 1000},
+                    {"field": "customer_has_overdue", "op": "eq", "value": False},
+                ],
+                "action": {},
+            },
+            {
+                "name": "低毛利强制财务会签",
+                "kind": "exception_route",
+                "priority": 30,
+                "description": "毛利率过低或账期过长：业务审批通过后，财务会签，一票否决",
+                "conditions": [
+                    {"field": "gross_margin", "op": "lte", "value": 22},
+                ],
+                "action": {
+                    "add_node_role_codes": ["finance"],
+                    "add_node_label": "财务会签",
+                    "veto": True,
+                },
+            },
+        ]
+        for spec in default_rules:
+            exists = (
+                await session.execute(
+                    select(ApprovalRule).where(ApprovalRule.name == spec["name"])
+                )
+            ).scalar_one_or_none()
+            if exists is not None:
+                continue
+            rule = ApprovalRule(
+                name=spec["name"],
+                kind=spec["kind"],
+                priority=spec["priority"],
+                enabled=True,
+                conditions=spec["conditions"],
+                action=spec["action"],
+                description=spec["description"],
+                published_version_no=1,
+                published_at=func.now(),
+            )
+            session.add(rule)
+            await session.flush()
+            session.add(
+                ApprovalRuleVersion(
+                    rule_id=rule.id,
+                    version_no=1,
+                    payload={
+                        "name": rule.name,
+                        "kind": rule.kind,
+                        "priority": rule.priority,
+                        "conditions": rule.conditions,
+                        "action": rule.action,
+                        "description": rule.description,
+                    },
+                )
+            )
+
         await session.commit()
         print(
             "种子数据完成：3 个角色、权限清单、3 个账号、3 个示例客户、3 个示例产品、"
             "9 个商机阶段、9 类失单原因、2 条示例线索、1 个示例商机"
-            "、成本与价格规则（占位值）、价格权限、运费费率"
+            "、成本与价格规则（占位值）、价格权限、运费费率、3 条审批规则"
         )
         print("登录账号：admin / admin123     zhangsan / 123456     lisi / 123456")
 

@@ -698,22 +698,101 @@ async def submit_for_approval(
         session.add(definition)
         await session.flush()
 
+    # ---- 审批规则引擎（设计稿 `_6` 的国内业务版）----
+    # 走到这里说明有明细超权限。规则在金额分档**之前**求值，第一条命中的生效：
+    #   auto_pass       → 提交即通过（留一条闭环审批单与规则痕迹）
+    #   express         → 跳过高层级，一律第一级（主管）审
+    #   exception_route → 正常分档 + 末尾追加会签节点
+    # 没有规则命中 → 原金额分档逻辑不变。
+    from app.modules.approval import rules_engine
+
+    decision = await rules_engine.route(
+        session, quote=quote, version=version, items=items, fx=fx
+    )
+    rule_trace: dict | None = None
+    co_sign: dict | None = None
+    force_first_level = False
+    if decision is not None:
+        rule_trace = decision.trace()
+        rule_trace["effect"] = rules_engine.effect_summary(decision.kind, decision.action)
+        if decision.kind == "auto_pass":
+            version.approval_status = "approved"
+            version.approved_at = datetime.now(UTC)
+            quote.status = "approved"
+            instance = ApprovalInstance(
+                definition_id=definition.id,
+                business_type="quote_version",
+                business_id=version.id,
+                applicant_id=applicant_id,
+                status="approved",
+                current_node=None,
+                finished_at=datetime.now(UTC),
+                summary={
+                    "quote_no": quote.quote_no,
+                    "version_no": version.version_no,
+                    "reason": reason,
+                    "offending": offending,
+                    "total_amount": float(version.total_amount or 0),
+                    "auto_passed": True,
+                    "rule_trace": rule_trace,
+                },
+            )
+            session.add(instance)
+            await session.flush()
+            session.add(
+                ApprovalRecord(
+                    approval_instance_id=instance.id,
+                    node_code="rule_engine",
+                    approver_id=applicant_id,
+                    action="auto_pass",
+                    comment=f"命中免审规则「{decision.rule_name}」：{rule_trace['effect']}",
+                )
+            )
+            return instance, True
+        if decision.kind == "express":
+            force_first_level = True
+        elif decision.kind == "exception_route":
+            co_sign = {
+                "role_codes": list(decision.action.get("add_node_role_codes") or ["finance"]),
+                "label": decision.action.get("add_node_label") or "财务会签",
+                "veto": bool(decision.action.get("veto", True)),
+                "status": "pending",
+            }
+
     # 审批分级：按报价总额决定走到哪一级，并记录这一级谁有权批（快照，避免中途改配置影响在途审批）
     from app.modules.settings import service as settings_service
 
     levels = await settings_service.get_list(session, "approval_levels")
     amount = float(version.total_amount or 0)
     node = None
-    for level in levels:
-        max_amount = level.get("max_amount")
-        if max_amount is None or amount <= float(max_amount):
-            node = level
-            break
+    if force_first_level and levels:
+        node = levels[0]  # 极速通道：一律落到第一级（主管）
+    else:
+        for level in levels:
+            max_amount = level.get("max_amount")
+            if max_amount is None or amount <= float(max_amount):
+                node = level
+                break
     if node is None and levels:
         node = levels[-1]
     node_code = str((node or {}).get("node") or "manager")
     node_label = str((node or {}).get("label") or "主管")
     node_roles = list((node or {}).get("role_codes") or [])
+
+    summary = {
+        "quote_no": quote.quote_no,
+        "version_no": version.version_no,
+        "reason": reason,
+        "offending": offending,
+        "authorized_min_margin": float(min_margin),
+        "total_amount": amount,
+        "node_label": node_label,
+        "node_role_codes": node_roles,
+    }
+    if rule_trace:
+        summary["rule_trace"] = rule_trace
+    if co_sign:
+        summary["co_sign"] = co_sign
 
     instance = ApprovalInstance(
         definition_id=definition.id,
@@ -722,16 +801,7 @@ async def submit_for_approval(
         applicant_id=applicant_id,
         status="pending",
         current_node=node_code,
-        summary={
-            "quote_no": quote.quote_no,
-            "version_no": version.version_no,
-            "reason": reason,
-            "offending": offending,
-            "authorized_min_margin": float(min_margin),
-            "total_amount": amount,
-            "node_label": node_label,
-            "node_role_codes": node_roles,
-        },
+        summary=summary,
     )
     session.add(instance)
     await session.flush()

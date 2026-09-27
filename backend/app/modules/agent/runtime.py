@@ -150,29 +150,32 @@ def _risk_summary(spec, args: dict) -> str:
     return f"执行 {spec.name}"
 
 
-async def run_turn(
+async def run_turn_events(
     session: AsyncSession,
     *,
     agent_session: AgentSession,
     user: CurrentUser,
     text: str,
-    on_event: Callable[[str, dict], None] | None = None,
-) -> dict:
-    """跑一轮对话：模型可能连续调用多个工具，写动作则挂起等确认。
+):
+    """跑一轮对话，逐事件产出（异步生成器）：模型可能连续调用多个工具，写动作则挂起等确认。
 
-    `on_event(kind, payload)`：进度回调，给 `/agent/sessions/{id}/messages/stream`
-    用。每一轮模型调用与每次工具执行都会回调一次，让前端能实时显示
-    "正在调用 查客户…" 而不是干等十几秒。
+    事件 `(kind, data)`：
+      user_message  用户消息已落库；
+      delta         模型回复的**文本增量**——打字机效果的来源，来了就推，不缓存整轮；
+      tool_call     一次工具执行完成（L1 出结果，L2/L3 落成待确认动作）；
+      notice        需要说明的情况（模型未配置等）；
+      done          整轮结束，data 是最终结果（reply / actions / tool_calls）。
 
-    为什么不是 async 生成器：整轮结果（回复 + 动作 + 工具轨迹）是
-    一个整体，拆成生成器会让"写动作挂起等确认"这条路径很难正确表达。
-    用回调把进度推出去，最终结果仍由返回值给出，两边都清晰。
+    此前 run_turn 是"回调 + 返回值"的整块函数，流式端点只能把一轮跑完再
+    把事件一次性吐出去。现在改成生成器：文本增量在模型吐出来的那一刻就让出，
+    前端才能逐字渲染。让出点都是安全点——delta 让出时除已提交的用户消息外
+    没有任何未提交的写状态；tool_call 让出时该工具已处理完毕，
+    "写动作挂起等确认"的语义不受影响。
     """
     user_message = AgentMessage(session_id=agent_session.id, role="user", content=text)
     session.add(user_message)
     await session.commit()
-    if on_event:
-        on_event("user_message", {"content": text})
+    yield ("user_message", {"content": text})
 
     if not model_ready():
         reply = (
@@ -183,9 +186,9 @@ async def run_turn(
             AgentMessage(session_id=agent_session.id, role="assistant", content=reply)
         )
         await session.commit()
-        if on_event:
-            on_event("notice", {"reason": "model_not_configured", "reply": reply})
-        return {"reply": reply, "actions": [], "tool_calls": []}
+        yield ("notice", {"reason": "model_not_configured", "reply": reply})
+        yield ("done", {"reply": reply, "actions": [], "tool_calls": []})
+        return
 
     messages = [
         {
@@ -209,31 +212,71 @@ async def run_turn(
     client = _client()
     reply_text = ""
 
+    async def chat_round(msgs: list[dict], with_tools: bool):
+        """流式跑一轮模型调用。
+
+        逐段 `yield ("delta", 增量文本)`；本轮收尾时 `yield ("round", (整段文本, 工具调用))`。
+        工具调用按 OpenAI 流式规范累积：function.name 整段到达（后到覆盖），
+        arguments 分片到达（逐片拼接）。
+        """
+        round_content: list[str] = []
+        acc: dict[int, dict] = {}
+        kwargs: dict = {
+            "model": settings.deepseek_model,
+            "messages": msgs,
+            "temperature": 0.2,
+            "stream": True,
+        }
+        if with_tools:
+            kwargs["tools"] = openai_tools()
+            kwargs["tool_choice"] = "auto"
+        stream = await client.chat.completions.create(**kwargs)
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                round_content.append(piece)
+                yield ("delta", piece)
+            for tc in delta.tool_calls or []:
+                idx = tc.index if tc.index is not None else 0
+                slot = acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                if tc.id:
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn is None:
+                    continue
+                if fn.name:
+                    slot["name"] = fn.name
+                if fn.arguments:
+                    slot["arguments"] += fn.arguments
+        calls = [acc[i] for i in sorted(acc)]
+        yield ("round", ("".join(round_content), calls))
+
     for _ in range(max(1, settings.agent_max_tool_rounds)):
-        response = await client.chat.completions.create(
-            model=settings.deepseek_model,
-            messages=messages,
-            tools=openai_tools(),
-            tool_choice="auto",
-            temperature=0.2,
-        )
-        message = response.choices[0].message
-        calls = message.tool_calls or []
+        content, calls = "", []
+        async for ev_kind, payload in chat_round(messages, with_tools=True):
+            if ev_kind == "delta":
+                yield ("delta", {"text": payload})
+            else:
+                content, calls = payload
         if not calls:
-            reply_text = message.content or ""
+            reply_text = content
             break
 
         messages.append(
             {
                 "role": "assistant",
-                "content": message.content or "",
+                "content": content or "",
                 "tool_calls": [
                     {
-                        "id": call.id,
+                        "id": call["id"],
                         "type": "function",
                         "function": {
-                            "name": call.function.name,
-                            "arguments": call.function.arguments,
+                            "name": call["name"],
+                            "arguments": call["arguments"],
                         },
                     }
                     for call in calls
@@ -242,10 +285,10 @@ async def run_turn(
         )
 
         for call in calls:
-            name = call.function.name
+            name = call["name"]
             spec = TOOLS.get(name)
             try:
-                args = json.loads(call.function.arguments or "{}")
+                args = json.loads(call["arguments"] or "{}")
             except json.JSONDecodeError:
                 args = {}
 
@@ -299,17 +342,16 @@ async def run_turn(
                         "output": result,
                     }
                 )
-                if on_event:
-                    on_event(
-                        "tool_call",
-                        {
-                            "tool": name,
-                            "label": tool_label(name),
-                            "risk": "L1",
-                            "input": args,
-                            "output": result,
-                        },
-                    )
+                yield (
+                    "tool_call",
+                    {
+                        "tool": name,
+                        "label": tool_label(name),
+                        "risk": "L1",
+                        "input": args,
+                        "output": result,
+                    },
+                )
             else:
                 # L2 / L3：不执行，落成待确认动作
                 action = AgentAction(
@@ -344,11 +386,22 @@ async def run_turn(
                         "output": result,
                     }
                 )
+                # L2/L3 也要实时可见：让前端在模型还在说话时就能显示"准备记跟进"
+                yield (
+                    "tool_call",
+                    {
+                        "tool": name,
+                        "label": tool_label(name),
+                        "risk": spec.risk,
+                        "input": args,
+                        "output": result,
+                    },
+                )
 
             messages.append(
                 {
                     "role": "tool",
-                    "tool_call_id": call.id,
+                    "tool_call_id": call["id"],
                     "content": json.dumps(result, ensure_ascii=False)[:3000],
                 }
             )
@@ -357,18 +410,17 @@ async def run_turn(
     if not reply_text:
         # 工具轮次用完了还没轮到模型说话：再要一句收尾总结（这次不给工具，逼它开口）
         try:
-            final = await client.chat.completions.create(
-                model=settings.deepseek_model,
-                messages=messages
-                + [
-                    {
-                        "role": "user",
-                        "content": "请用两三句话总结上面的查询结果，并说明你准备了什么动作、需要我确认什么。",
-                    }
-                ],
-                temperature=0.2,
-            )
-            reply_text = final.choices[0].message.content or ""
+            summary_messages = messages + [
+                {
+                    "role": "user",
+                    "content": "请用两三句话总结上面的查询结果，并说明你准备了什么动作、需要我确认什么。",
+                }
+            ]
+            async for ev_kind, payload in chat_round(summary_messages, with_tools=False):
+                if ev_kind == "delta":
+                    yield ("delta", {"text": payload})
+                else:
+                    reply_text = payload[0]
         except Exception:  # 模型抖动不该让整轮对话失败
             reply_text = ""
         if not reply_text:
@@ -384,11 +436,38 @@ async def run_turn(
         {**serialize_action(action), "display": await action_display(session, action)}
         for action in pending_actions
     ]
-    return {
-        "reply": reply_text,
-        "actions": actions_payload,
-        "tool_calls": tool_trace,
-    }
+    yield (
+        "done",
+        {
+            "reply": reply_text,
+            "actions": actions_payload,
+            "tool_calls": tool_trace,
+        },
+    )
+
+
+async def run_turn(
+    session: AsyncSession,
+    *,
+    agent_session: AgentSession,
+    user: CurrentUser,
+    text: str,
+    on_event: Callable[[str, dict], None] | None = None,
+) -> dict:
+    """同步口径的一轮对话：消费 run_turn_events，进度回调给 on_event，返回最终结果。
+
+    与流式端点共用同一个实现（不要写两份），`POST /agent/sessions/{id}/messages`
+    和不需要打字机效果的场景走这里。
+    """
+    result: dict = {}
+    async for kind, data in run_turn_events(
+        session, agent_session=agent_session, user=user, text=text
+    ):
+        if on_event:
+            on_event(kind, data)
+        if kind == "done":
+            result = data
+    return result
 
 
 def serialize_action(action: AgentAction) -> dict:

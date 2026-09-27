@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -105,7 +105,17 @@ async def list_quotes(
 ):
     stmt = select(Quote).where(Quote.deleted_at.is_(None))
     if keyword:
-        stmt = stmt.where(Quote.quote_no.ilike(f"%{keyword.strip()}%"))
+        # 单号或客户名都能搜（规则沙盒按客户挑单就是走这里）
+        from app.modules.customer.model import Customer
+
+        stmt = stmt.where(
+            or_(
+                Quote.quote_no.ilike(f"%{keyword.strip()}%"),
+                Quote.customer_id.in_(
+                    select(Customer.id).where(Customer.name.ilike(f"%{keyword.strip()}%"))
+                ),
+            )
+        )
     if status:
         stmt = stmt.where(Quote.status == status)
     if opportunity_id:
@@ -891,7 +901,7 @@ async def submit_approval(
         user_roles=user.roles,
         reason=payload.reason,
     )
-    if required:
+    if required and instance is not None and instance.status == "pending":
         await notification_service.notify_approvers(
             session,
             permission_code="quote:approve",
@@ -907,18 +917,26 @@ async def submit_approval(
         action="submit_approval",
         business_type="quote",
         business_id=quote.id,
-        after={"approval_required": required},
+        after={"approval_required": required, "approval_status": version.approval_status},
         ip=client_ip(request),
     )
     await session.commit()
     await notification_service.dispatch_pending(session)
+    if required and instance is not None and (instance.summary or {}).get("auto_passed"):
+        rule_name = (instance.summary or {}).get("rule_trace", {}).get("rule_name")
+        message = f"命中免审规则「{rule_name}」，报价已自动通过"
+    elif required:
+        message = "已提交审批"
+    else:
+        message = "未超出权限，报价已通过"
     return ok(
         {
             "approval_required": required,
             "approval_id": instance.id if instance else None,
+            "auto_passed": bool(instance and (instance.summary or {}).get("auto_passed")),
             "version": svc.serialize_version(version),
         },
-        "已提交审批" if required else "未超出权限，报价已通过",
+        message,
     )
 
 

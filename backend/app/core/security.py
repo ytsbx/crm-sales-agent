@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import bcrypt
+from uuid import uuid4
+
 import jwt
 
 from app.core.config import settings
@@ -31,6 +33,9 @@ def create_access_token(subject: str | int, extra: dict[str, Any] | None = None)
         "sub": str(subject),
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.access_token_expire_minutes)).timestamp()),
+        # 随机 jti：没有它，同一秒内签出的 token 完全相同，
+        # /auth/refresh 会"续期了个寂寞"（新 token == 旧 token）
+        "jti": uuid4().hex,
     }
     if extra:
         payload.update(extra)
