@@ -405,6 +405,8 @@ async def create_quote(
                 spec_snapshot=opp_item.specification,
                 remark=opp_item.remark,
                 role_codes=user.roles,
+                package_type=opp_item.package_requirement,
+                country=opp_item.destination,
             )
             session.add(item)
         await session.flush()
@@ -552,6 +554,8 @@ async def build_item_snapshot(
     spec_snapshot: str | None,
     remark: str | None,
     role_codes: list[str],
+    package_type: str | None = None,
+    country: str | None = None,
 ) -> QuoteItem:
     """生成一条报价明细：成本、标准价、最低价、利润全部落成快照。
 
@@ -579,6 +583,9 @@ async def build_item_snapshot(
         role_codes=role_codes,
         currency=version.currency or "CNY",
         exchange_rate=version.exchange_rate_snapshot,
+        # A07：商机需求里的包装要求与目的地要传进核价，物流匹配才有依据
+        package_type=package_type,
+        country=country,
     )
     price = Decimal(str(quoted_price)) if quoted_price is not None else Decimal(str(result["recommended_price"]))
     # 利润必须与报价同币种，否则会拿美元价减人民币成本（曾算出 -452% 的利润率）。
@@ -713,6 +720,41 @@ async def submit_for_approval(
         else:
             item.approval_required = False
             item.approval_reason = None
+
+    # A10（方案 §7.1）：整单有效金额判定。
+    # 逐项全过 ≠ 整体能过：整单优惠（is_discount 附加费）摊下来后，
+    # 整单利润率/加权均价可能已跌破授权——不能逐项检查后就直接放行。
+    revenue = version.total_amount
+    if revenue and revenue > 0:
+        revenue_cny = (revenue * fx) if foreign else revenue
+        cost_total = sum(
+            ((item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity for item in items),
+            ZERO,
+        )
+        total_qty = sum((item.quantity for item in items), ZERO)
+        whole_margin = ((revenue_cny - cost_total) / revenue_cny) if revenue_cny else ZERO
+        weighted_floor_hit = False
+        if total_qty:
+            weighted_min = sum(
+                ((item.minimum_price_snapshot or ZERO) * item.quantity for item in items), ZERO
+            ) / total_qty
+            effective_avg = revenue_cny / total_qty
+            weighted_floor_hit = effective_avg < weighted_min - Decimal("0.0001")
+        if whole_margin < min_margin - Decimal("0.000001") or weighted_floor_hit:
+            reason = (
+                f"整单有效金额 ¥{revenue_cny:.2f}（含整单优惠）利润率 {whole_margin * 100:.2f}%"
+                f"（授权 {min_margin * 100:.0f}%）"
+            )
+            if weighted_floor_hit:
+                reason += "，或加权均价已低于加权保护价"
+            offending.append(
+                {
+                    "sku_code": "整单（优惠后）",
+                    "quoted_price_cny": float(revenue_cny),
+                    "profit_rate": float(whole_margin),
+                    "reason": reason,
+                }
+            )
 
     version.submitted_at = datetime.now(UTC)
     version.approval_required = bool(offending)
