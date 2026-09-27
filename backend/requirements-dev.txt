@@ -1,0 +1,2 @@
+# 开发 / CI 用依赖（运行时不需要装；运行时下限清单见 requirements.txt）
+pytest>=8.0

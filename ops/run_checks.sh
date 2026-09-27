@@ -27,6 +27,10 @@ PYTHONPATH=. .venv/bin/python scripts/check_model_attrs.py  >/dev/null && echo "
 PYTHONPATH=. .venv/bin/python scripts/check_permissions.py >/dev/null && echo "OK  权限码"   || FAILED+=("check_permissions")
 
 echo
+echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="
+PYTHONPATH=. .venv/bin/python -m pytest || FAILED+=("pytest")
+
+echo
 echo "== 2. 接口回归（顺序跑）=="
 for suite in check_quote_api check_reference_integrity check_order_payment_api \
              check_customer_contact_api check_lead_auth_role_api \
