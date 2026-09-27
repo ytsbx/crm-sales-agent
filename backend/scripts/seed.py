@@ -8,7 +8,7 @@ import asyncio
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.database import SessionLocal
 from app.core.security import hash_password
