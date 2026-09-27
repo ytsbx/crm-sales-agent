@@ -3,6 +3,8 @@ import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { emptyText } from '../../shared/hooks/emptyText'
 import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listOpportunities } from '../../shared/api/opportunity'
@@ -176,7 +178,7 @@ export default function QuoteListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          empty="还没有报价单"
+          empty={emptyText(query, '还没有报价单')}
           pagination={{
             currentPage: page,
             pageSize,

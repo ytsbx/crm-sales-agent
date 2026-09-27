@@ -13,6 +13,7 @@ import {
   type Opportunity,
 } from '../../shared/api/opportunity'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { emptyText } from '../../shared/hooks/emptyText'
 import type { TagTone } from '../../shared/types'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
@@ -252,7 +253,7 @@ export default function OpportunityListPage() {
             loading={query.isLoading}
             rowKey="id"
             size="middle"
-            empty="还没有商机"
+            empty={emptyText(query, '还没有商机')}
             pagination={{
               currentPage: page,
               pageSize,

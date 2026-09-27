@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { emptyText } from '../../shared/hooks/emptyText'
 import { Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -200,7 +202,7 @@ export default function ApprovalPage() {
               loading={query.isLoading}
               rowKey="id"
               pagination={false}
-              empty="没有待处理的审批"
+              empty={emptyText(query, '没有待处理的审批')}
               scroll={{ x: 1300 }}
             />
           </div>

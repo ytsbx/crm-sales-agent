@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { emptyText } from '../../shared/hooks/emptyText'
 import {
   Button,
   Input,
@@ -295,7 +297,7 @@ export default function SampleListPage() {
           loading={query.isLoading}
           columns={columns}
           dataSource={query.data?.items ?? []}
-          empty="还没有样品申请"
+          empty={emptyText(query, '还没有样品申请')}
           pagination={{
             currentPage: page,
             pageSize,

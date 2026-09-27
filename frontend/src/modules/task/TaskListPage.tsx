@@ -2,6 +2,8 @@ import { useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { emptyText } from '../../shared/hooks/emptyText'
 import { Button, Checkbox, DatePicker, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { completeTask, createTask, listTasks, postponeTask, type Task } from '../../shared/api/task'
@@ -192,7 +194,7 @@ export default function TaskListPage() {
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
-          empty="没有任务"
+          empty={emptyText(query, '没有任务')}
           pagination={{
             currentPage: page,
             pageSize,

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { emptyText } from '../../shared/hooks/emptyText'
 import { Button, Input, Modal, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { createProduct, listProducts, type ProductPayload } from '../../shared/api/product'
@@ -111,7 +113,7 @@ export default function ProductListPage() {
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
-          empty="还没有产品资料"
+          empty={emptyText(query, '还没有产品资料')}
           pagination={{
             currentPage: page,
             pageSize,

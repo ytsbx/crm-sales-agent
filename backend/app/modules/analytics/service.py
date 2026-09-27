@@ -300,14 +300,28 @@ async def order_payment_trend(
 async def recent_activities(
     session: AsyncSession, user: CurrentUser, limit: int = 8
 ) -> list[dict]:
-    """团队与业务动态：取最近的操作记录，转成人话。"""
+    """团队与业务动态：取最近的操作记录，转成人话。
+
+    必须按数据范围过滤：动态流暴露的是"谁动了什么"的全局审计，
+    不加过滤的话 `self` 范围的业务员也能看到全公司（含管理员）的操作。
+    口径与列表一致——只展示**数据范围内的人**做出的操作。
+    """
     from app.core.audit import AuditLog
+    from app.core.data_scope import scoped_owner_ids
+
+    conditions = [
+        AuditLog.business_type.is_not(None),
+        AuditLog.action.not_in(["login"]),
+    ]
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        conditions.append(AuditLog.operator_id.in_(owner_ids))
 
     rows = (
         await session.execute(
             select(AuditLog, User.name)
             .outerjoin(User, User.id == AuditLog.operator_id)
-            .where(AuditLog.business_type.is_not(None), AuditLog.action.not_in(["login"]))
+            .where(*conditions)
             .order_by(AuditLog.id.desc())
             .limit(limit)
         )

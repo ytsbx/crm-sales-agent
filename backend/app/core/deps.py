@@ -65,7 +65,13 @@ def require_permission(*codes: str) -> Callable[..., Awaitable[CurrentUser]]:
         # 管理员角色默认放行，避免新建权限时把管理员自己锁在门外
         if "admin" in user.roles or any(user.has(code) for code in codes):
             return user
-        raise AppError(ErrorCode.FORBIDDEN, "无操作权限", 403)
+        # 文案带上缺的权限码：前端列表页会把它显示在空态里，
+        # "无操作权限：需要 opportunity:view" 远比一句干巴巴的"无操作权限"能定位问题
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            f"无操作权限：需要 {' / '.join(codes)}",
+            403,
+        )
 
     return _dep
 

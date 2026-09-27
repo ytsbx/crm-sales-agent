@@ -5,7 +5,7 @@ import TabBar from './TabBar'
 import GlobalSearch from './GlobalSearch'
 import NotificationBell from '../../modules/common/NotificationBell'
 import CopilotDrawer from '../../modules/common/CopilotDrawer'
-import { MENU_GROUPS, matchMenu } from '../menu'
+import { matchMenu, visibleMenuGroups } from '../menu'
 import { useAuthStore } from '../../shared/store/auth'
 import { useTabsStore } from '../../shared/store/tabs'
 import { useCopilotStore } from '../../shared/store/copilot'
@@ -30,6 +30,8 @@ export default function AppLayout() {
   const openCopilot = useCopilotStore((state) => state.openWith)
 
   const currentMenu = matchMenu(location.pathname)
+  // 左侧菜单按当前用户权限过滤：财务不再看到线索/商机等入口，admin 直通全量
+  const menuGroups = visibleMenuGroups(user)
   const detailMatch = location.pathname.match(
     /^\/(customers|products|opportunities|quotes|orders)\/\d+$/,
   )
@@ -74,7 +76,7 @@ export default function AppLayout() {
           </div>
         </div>
 
-        {MENU_GROUPS.map((group) => (
+        {menuGroups.map((group) => (
           <div key={group.title}>
             <div className="nav-group-title">{group.title}</div>
             {group.items.map((item) => {

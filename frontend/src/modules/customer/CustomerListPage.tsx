@@ -2,6 +2,8 @@ import { useRef, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { emptyText } from '../../shared/hooks/emptyText'
 import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -378,7 +380,7 @@ export default function CustomerListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          empty="没有符合条件的客户"
+          empty={emptyText(query, '没有符合条件的客户')}
           rowSelection={{
             selectedRowKeys: selectedIds,
             onChange: (keys) => setSelectedIds((keys ?? []) as number[]),

@@ -2,6 +2,8 @@ import { useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { emptyText } from '../../shared/hooks/emptyText'
 import { Button, Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -357,7 +359,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 dataSource={ordersQuery.data?.items ?? []}
                 loading={ordersQuery.isLoading}
                 rowKey="id"
-                empty="还没有订单，去报价中心把成交的报价转成订单"
+                empty={emptyText(ordersQuery, '还没有订单，去报价中心把成交的报价转成订单')}
                 pagination={{
                   currentPage: page,
                   pageSize,
