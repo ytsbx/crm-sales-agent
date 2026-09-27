@@ -17,6 +17,7 @@ PLAN_STATUS_LABEL = {
     "partial": "部分回款",
     "paid": "已回款",
     "overdue": "已逾期",
+    "cancelled": "已取消（随订单）",
 }
 
 PAYMENT_STATUS_LABEL = {

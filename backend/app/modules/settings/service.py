@@ -293,6 +293,7 @@ async def run_auto_tasks(
 
         elif rule.trigger_type == "receivable_due":
             # 应收到期前 N 天 → 提醒负责人跟进回款
+            # 已取消订单的应收不再派催收（整改审计点：取消订单必须全链路安静）
             due_before = (now + timedelta(days=days_ahead)).date()
             rows = (
                 await session.execute(
@@ -301,6 +302,7 @@ async def run_auto_tasks(
                     .where(
                         ReceivablePlan.status.in_(["pending", "partial"]),
                         ReceivablePlan.due_date <= due_before,
+                        SalesOrder.status != "cancelled",
                     )
                 )
             ).all()

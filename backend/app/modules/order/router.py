@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -320,8 +320,66 @@ async def cancel_order(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """取消订单（方案 §5：取消规则显式化，默认口径如下——要改先改这里）。
+
+    1. 已有**已确认**回款 → 拒绝取消：钱不能随订单静默作废，先人工处理回款；
+    2. 待确认回款 → 随订单一并驳回（登记原因）；
+    3. 未回清的应收计划 → 状态置 `cancelled`，不再派催收/逾期提醒；
+    4. 商机成交状态**不自动回退**：成交是已发生的商业事实，撤销成交走
+       `POST /opportunities/{id}/lose`（先失单再重建）由人工评估——
+       这条默认口径如与业务不符，改这里并在方案 §8 补一条 D 决策。
+    """
     order = await svc.get_visible_order(session, user, order_id)
     before_status = order.status
+
+    from app.modules.payment.model import PaymentRecord, ReceivablePlan
+
+    plans = (
+        await session.execute(
+            select(ReceivablePlan).where(ReceivablePlan.order_id == order.id)
+        )
+    ).scalars().all()
+    plan_ids = [plan.id for plan in plans]
+
+    confirmed = 0
+    if plan_ids:
+        confirmed = (
+            await session.execute(
+                select(func.count())
+                .select_from(PaymentRecord)
+                .where(
+                    PaymentRecord.receivable_plan_id.in_(plan_ids),
+                    PaymentRecord.status == "confirmed",
+                )
+            )
+        ).scalar_one()
+    if confirmed:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该订单有 {confirmed} 笔已确认回款，不能直接取消；请先人工处理回款",
+            422,
+        )
+
+    # 待确认回款随订单驳回
+    if plan_ids:
+        pending_payments = (
+            await session.execute(
+                select(PaymentRecord).where(
+                    PaymentRecord.receivable_plan_id.in_(plan_ids),
+                    PaymentRecord.status == "pending",
+                )
+            )
+        ).scalars().all()
+        for payment in pending_payments:
+            payment.status = "rejected"
+            payment.voucher_note = "订单取消，随单驳回" + (
+                f"（原备注：{payment.voucher_note}）" if payment.voucher_note else ""
+            )
+        # 未回清的应收计划置为已取消
+        for plan in plans:
+            if plan.status != "paid":
+                plan.status = "cancelled"
+
     await svc.change_status(session, order, new_status="cancelled", operator_id=user.id)
     await write_audit(
         session,
@@ -330,11 +388,17 @@ async def cancel_order(
         business_type="order",
         business_id=order.id,
         before={"status": before_status},
-        after={"status": "cancelled"},
+        after={
+            "status": "cancelled",
+            "rejected_pending_payments": len(pending_payments) if plan_ids else 0,
+            "cancelled_receivable_plans": sum(1 for p in plans if p.status == "cancelled"),
+            "opportunity_id": order.opportunity_id,
+            "note": "商机成交状态未自动回退，如需撤销请人工评估",
+        },
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_order(order), "订单已取消")
+    return ok(svc.serialize_order(order), "订单已取消（应收计划已同步取消，回款未受影响）")
 
 
 @router.post("/orders/{order_id}/sync-erp")
