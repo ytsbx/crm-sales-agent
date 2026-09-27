@@ -18,10 +18,12 @@ import {
   listPriceRules,
   listSkusForPricing,
   listPricingHistory,
+  lookupPrice,
   savePricePermission,
   type CostRecord,
   type CustomerPriceRow,
   type LogisticsRateRow,
+  type PriceLookupResult,
   type PricePermissionRow,
   type PriceRuleRow,
   type PricingHistoryRow,
@@ -31,6 +33,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 
 const TABS = [
+  { tab: '客户查价', itemKey: 'lookup' },
   { tab: '成本', itemKey: 'costs' },
   { tab: '价格规则', itemKey: 'rules' },
   { tab: '客户特殊价', itemKey: 'customer-prices' },
@@ -94,6 +97,8 @@ export default function PriceCenterPage() {
     guide_price: '',
     minimum_price: '',
     target_margin: '',
+    effective_from: '',
+    effective_to: '',
   })
   const [customerPriceVisible, setCustomerPriceVisible] = useState(false)
   const [customerPriceForm, setCustomerPriceForm] = useState({
@@ -102,7 +107,16 @@ export default function PriceCenterPage() {
     min_qty: '0',
     agreed_price: '',
     minimum_price: '',
+    effective_from: '',
+    effective_to: '',
   })
+
+  // 客户查价（产品报价中心 · 第一批）：选客户+SKU+数量 → 适用价与来源
+  const [lookupCustomerId, setLookupCustomerId] = useState<number | undefined>()
+  const [lookupSkuId, setLookupSkuId] = useState<number | undefined>()
+  const [lookupQty, setLookupQty] = useState('1')
+  const [lookupResult, setLookupResult] = useState<PriceLookupResult | null>(null)
+  const [lookupLoading, setLookupLoading] = useState(false)
   const [permissionTarget, setPermissionTarget] = useState<PricePermissionRow | null>(null)
   const [permissionForm, setPermissionForm] = useState({ minimum_margin: '0.15', can_approve: false })
   const [rateVisible, setRateVisible] = useState(false)
@@ -188,6 +202,8 @@ export default function PriceCenterPage() {
         guide_price: ruleForm.guide_price ? Number(ruleForm.guide_price) : null,
         minimum_price: ruleForm.minimum_price ? Number(ruleForm.minimum_price) : null,
         target_margin: ruleForm.target_margin ? Number(ruleForm.target_margin) : null,
+        effective_from: ruleForm.effective_from || null,
+        effective_to: ruleForm.effective_to || null,
       }),
     onSuccess: () => {
       Toast.success('价格规则已创建')
@@ -207,6 +223,8 @@ export default function PriceCenterPage() {
         minimum_price: customerPriceForm.minimum_price
           ? Number(customerPriceForm.minimum_price)
           : null,
+        effective_from: customerPriceForm.effective_from || null,
+        effective_to: customerPriceForm.effective_to || null,
       }),
     onSuccess: () => {
       Toast.success('客户特殊价已创建')
@@ -268,6 +286,120 @@ export default function PriceCenterPage() {
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
+          {activeKey === 'lookup' && (
+            <div style={{ display: 'grid', gap: 16 }}>
+              <div className="toolbar">
+                <Select
+                  placeholder="选择客户"
+                  value={lookupCustomerId}
+                  onChange={(value) => setLookupCustomerId(value as number)}
+                  optionList={(customersQuery.data?.items ?? []).map((item) => ({
+                    value: item.id,
+                    label: `${item.name}${item.level ? `（${item.level} 级）` : ''}`,
+                  }))}
+                  filter
+                  style={{ width: 280 }}
+                />
+                <Select
+                  placeholder="选择 SKU"
+                  value={lookupSkuId}
+                  onChange={(value) => setLookupSkuId(value as number)}
+                  optionList={skuOptions}
+                  filter
+                  style={{ width: 360 }}
+                />
+                <Input
+                  value={lookupQty}
+                  onChange={setLookupQty}
+                  style={{ width: 120 }}
+                  placeholder="数量"
+                />
+                <Button
+                  theme="solid"
+                  loading={!lookupResult && lookupLoading}
+                  disabled={!lookupCustomerId || !lookupSkuId}
+                  onClick={async () => {
+                    setLookupLoading(true)
+                    try {
+                      const result = await lookupPrice({
+                        customer_id: lookupCustomerId!,
+                        sku_id: lookupSkuId!,
+                        quantity: Number(lookupQty || 1),
+                      })
+                      setLookupResult(result)
+                    } catch (error) {
+                      Toast.error(error instanceof Error ? error.message : '查价失败')
+                    } finally {
+                      setLookupLoading(false)
+                    }
+                  }}
+                >
+                  查价
+                </Button>
+              </div>
+              {lookupResult && (
+                <div style={{ display: 'grid', gap: 10, maxWidth: 640 }}>
+                  {lookupResult.status === 'ok' ? (
+                    <>
+                      <div>
+                        <span style={{ fontSize: 28, fontWeight: 700 }}>
+                          {lookupResult.unit_price}
+                        </span>
+                        <span style={{ marginLeft: 6, color: 'var(--crm-text-3)' }}>
+                          {lookupResult.currency} / 件（数量 {lookupResult.quantity}）
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: 16 }}>
+                        <Tag color="blue">{lookupResult.source_label}</Tag>
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          {lookupResult.customer.name}
+                          {lookupResult.customer.level ? `（${lookupResult.customer.level} 级）` : ''} ·{' '}
+                          {lookupResult.sku.sku_code} · 有效期{' '}
+                          {lookupResult.effective_from ?? '即日'} ~ {lookupResult.effective_to ?? '长期'}
+                        </span>
+                      </div>
+                      {lookupResult.fallback_note && (
+                        <div
+                          style={{
+                            background: 'var(--crm-warning-soft, #fff7e6)',
+                            padding: '8px 12px',
+                            borderRadius: 6,
+                          }}
+                        >
+                          {lookupResult.fallback_note}
+                        </div>
+                      )}
+                      {lookupResult.can_see_cost && (
+                        <div style={{ color: 'var(--crm-text-3)' }}>
+                          货成本：
+                          {lookupResult.cost ?? '—'}
+                          {lookupResult.cost_note ? `（${lookupResult.cost_note}）` : ''}
+                          {lookupResult.minimum_price != null
+                            ? ` · 保护价 ${lookupResult.minimum_price}`
+                            : ''}
+                        </div>
+                      )}
+                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                        以上为系统适用价；对外拟报价默认带入，销售调整时将按权限检查。
+                      </div>
+                    </>
+                  ) : (
+                    <div
+                      style={{
+                        background: 'var(--crm-warning-soft, #fff7e6)',
+                        padding: '12px 16px',
+                        borderRadius: 6,
+                      }}
+                    >
+                      待定价：该条件下没有维护有效售价
+                      {lookupResult.fallback_note ? `（${lookupResult.fallback_note}）` : ''}
+                      ，请联系价格管理员维护；系统不会用成本推算价冒充有效售价。
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {activeKey === 'costs' && (
             <>
               <div className="toolbar">
@@ -714,6 +846,24 @@ export default function PriceCenterPage() {
               />
             </div>
           </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>生效起始日（留空 = 立即生效）</div>
+              <Input
+                placeholder="2026-10-01"
+                value={ruleForm.effective_from}
+                onChange={(value) => setRuleForm({ ...ruleForm, effective_from: value })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>生效截止日（留空 = 长期有效）</div>
+              <Input
+                placeholder="2026-12-31"
+                value={ruleForm.effective_to}
+                onChange={(value) => setRuleForm({ ...ruleForm, effective_to: value })}
+              />
+            </div>
+          </div>
         </div>
       </Modal>
 
@@ -772,6 +922,24 @@ export default function PriceCenterPage() {
               <Input
                 value={customerPriceForm.minimum_price}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, minimum_price: value })}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>生效起始日（留空 = 立即生效）</div>
+              <Input
+                placeholder="2026-10-01"
+                value={customerPriceForm.effective_from}
+                onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, effective_from: value })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>生效截止日（留空 = 长期有效）</div>
+              <Input
+                placeholder="2026-12-31"
+                value={customerPriceForm.effective_to}
+                onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, effective_to: value })}
               />
             </div>
           </div>

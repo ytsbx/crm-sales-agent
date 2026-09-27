@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { createProduct, listProducts, type ProductPayload } from '../../shared/api/product'
 import PageHeader from '../../shared/components/PageHeader'
@@ -19,6 +19,13 @@ const EMPTY_FORM: ProductPayload = {
   description: '',
 }
 
+interface ImportResult {
+  created_count: number
+  updated_count?: number
+  skipped_count: number
+  failed: Array<{ name: string; reason: string }>
+}
+
 export default function ProductListPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -30,6 +37,53 @@ export default function ProductListPage() {
   const [pageSize, setPageSize] = useState(10)
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<ProductPayload>(EMPTY_FORM)
+
+  // 批量导入/导出（产品报价中心 · 第一批：资料库整理入口）
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [importKind, setImportKind] = useState<'products' | 'skus'>('products')
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<ImportResult | null>(null)
+
+  const tokenHeader = () => {
+    const token = JSON.parse(localStorage.getItem('crm-auth') ?? '{}')?.state?.token
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }
+
+  const downloadCsv = async (url: string, filename: string) => {
+    const { default: axios } = await import('axios')
+    const response = await axios.get(url, { responseType: 'blob', headers: tokenHeader() })
+    const blobUrl = window.URL.createObjectURL(new Blob([response.data]))
+    const link = document.createElement('a')
+    link.href = blobUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(blobUrl)
+  }
+
+  const handleImport = async (file: File) => {
+    setImporting(true)
+    try {
+      const { default: axios } = await import('axios')
+      const formData = new FormData()
+      formData.append('file', file)
+      const response = await axios.post(`/api/v1/${importKind}/import`, formData, {
+        headers: tokenHeader(),
+      })
+      const body = response.data
+      if (body.code !== 0) throw new Error(body.message)
+      Toast.success(body.message)
+      setImportResult(body.data)
+      void queryClient.invalidateQueries({ queryKey: ['products'] })
+      void queryClient.invalidateQueries({ queryKey: ['skus'] })
+    } catch (error) {
+      Toast.error(error instanceof Error ? error.message : '导入失败')
+    } finally {
+      setImporting(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
 
   const query = useQuery({
     queryKey: ['products', { keyword, page, pageSize }],
@@ -101,6 +155,43 @@ export default function ProductListPage() {
             查询
           </Button>
           <div style={{ flex: 1 }} />
+          {can('product:manage') && (
+            <>
+              <Button onClick={() => downloadCsv('/api/v1/products/import-template', '产品导入模板.csv')}>
+                产品模板
+              </Button>
+              <Button onClick={() => downloadCsv('/api/v1/skus/import-template', 'SKU导入模板.csv')}>
+                SKU模板
+              </Button>
+              <Button
+                onClick={() => downloadCsv('/api/v1/products/export', '产品导出.csv')}
+              >
+                导出
+              </Button>
+              <Select
+                value={importKind}
+                onChange={(v) => setImportKind(v as 'products' | 'skus')}
+                style={{ width: 110 }}
+                options={[
+                  { value: 'products', label: '导入产品' },
+                  { value: 'skus', label: '导入SKU' },
+                ]}
+              />
+              <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
+                批量导入
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) void handleImport(file)
+                }}
+              />
+            </>
+          )}
           {can('product:manage') && (
             <Button theme="solid" onClick={() => setModalVisible(true)}>
               新建产品
@@ -177,6 +268,43 @@ export default function ProductListPage() {
             />
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        title="导入结果"
+        visible={Boolean(importResult)}
+        onCancel={() => setImportResult(null)}
+        onOk={() => setImportResult(null)}
+        okText="知道了"
+        cancelText="关闭"
+        footer={null}
+        width={620}
+      >
+        {importResult && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <span className="chip chip-primary">成功 {importResult.created_count} 条</span>
+              {importResult.updated_count ? (
+                <span className="chip chip-primary">更新 {importResult.updated_count} 条</span>
+              ) : null}
+              <span className="chip chip-warning">
+                跳过/失败 {importResult.skipped_count + (importResult.failed?.length ?? 0)} 条
+              </span>
+            </div>
+            {importResult.failed?.length > 0 && (
+              <div style={{ maxHeight: 260, overflow: 'auto' }}>
+                {importResult.failed.map((row, index) => (
+                  <div key={index} style={{ marginBottom: 6 }}>
+                    <Tag color="red" style={{ marginRight: 8 }}>
+                      {row.name}
+                    </Tag>
+                    {row.reason}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   )

@@ -176,8 +176,15 @@ async def find_price_rule(
 
 
 async def find_customer_price(
-    session: AsyncSession, *, customer_id: int, sku_id: int, quantity: Decimal
+    session: AsyncSession,
+    *,
+    customer_id: int,
+    sku_id: int,
+    quantity: Decimal,
+    on_date: date | None = None,
 ) -> CustomerPriceRule | None:
+    """匹配客户专属价。有效期过滤与等级价一致：过期/未来价不命中（方案 §4.1 A02）。"""
+    today = on_date or datetime.now(UTC).date()
     stmt = (
         select(CustomerPriceRule)
         .where(
@@ -185,11 +192,177 @@ async def find_customer_price(
             CustomerPriceRule.sku_id == sku_id,
             CustomerPriceRule.min_qty <= quantity,
             or_(CustomerPriceRule.max_qty.is_(None), CustomerPriceRule.max_qty >= quantity),
+            or_(
+                CustomerPriceRule.effective_from.is_(None),
+                CustomerPriceRule.effective_from <= today,
+            ),
+            or_(
+                CustomerPriceRule.effective_to.is_(None),
+                CustomerPriceRule.effective_to >= today,
+            ),
         )
         .order_by(CustomerPriceRule.min_qty.desc())
         .limit(1)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def _ranges_overlap(a_min, a_max, b_min, b_max) -> bool:
+    """两个闭区间是否重叠；max 为 None 视为无上界。
+
+    边界口径沿用现有匹配语义（上下限都包含）：[100,999] 与 [1000,∞) 不重叠，
+    整数件数按 100至999、1000起 填写即可避免边界重复命中（方案 §4.1）。
+    """
+    if a_max is not None and b_min is not None and b_min > a_max:
+        return False
+    if b_max is not None and a_min is not None and a_min > b_max:
+        return False
+    return True
+
+
+async def find_price_rule_conflict(
+    session: AsyncSession,
+    *,
+    sku_id: int,
+    customer_level: str | None,
+    min_qty: Decimal,
+    max_qty: Decimal | None,
+    effective_from: date | None,
+    effective_to: date | None,
+    exclude_id: int | None = None,
+) -> PriceRule | None:
+    """同 SKU、同等级、数量区间与有效期都重叠的现有规则（方案 §4.1 冲突检查）。
+
+    数量小、规则少，取全量在 Python 里比 NULL 参与的 SQL 比较更不容易写错。
+    """
+    rows = (
+        await session.execute(
+            select(PriceRule).where(PriceRule.sku_id == sku_id, PriceRule.status == "active")
+        )
+    ).scalars().all()
+    for rule in rows:
+        if exclude_id is not None and rule.id == exclude_id:
+            continue
+        if (rule.customer_level or None) != (customer_level or None):
+            continue
+        if _ranges_overlap(min_qty, max_qty, rule.min_qty, rule.max_qty) and _ranges_overlap(
+            effective_from, effective_to, rule.effective_from, rule.effective_to
+        ):
+            return rule
+    return None
+
+
+async def find_customer_price_conflict(
+    session: AsyncSession,
+    *,
+    customer_id: int,
+    sku_id: int,
+    min_qty: Decimal,
+    max_qty: Decimal | None,
+    effective_from: date | None,
+    effective_to: date | None,
+    exclude_id: int | None = None,
+) -> CustomerPriceRule | None:
+    rows = (
+        await session.execute(
+            select(CustomerPriceRule).where(
+                CustomerPriceRule.customer_id == customer_id,
+                CustomerPriceRule.sku_id == sku_id,
+            )
+        )
+    ).scalars().all()
+    for rule in rows:
+        if exclude_id is not None and rule.id == exclude_id:
+            continue
+        if _ranges_overlap(min_qty, max_qty, rule.min_qty, rule.max_qty) and _ranges_overlap(
+            effective_from, effective_to, rule.effective_from, rule.effective_to
+        ):
+            return rule
+    return None
+
+
+# 查价结果的来源标识（方案 §4.1：客户专属价 → 客户等级价 → 通用指导价 → 待定价）
+SOURCE_LABELS = {
+    "customer_specific": "客户专属价",
+    "level": "客户等级价",
+    "general": "通用指导价",
+}
+
+
+async def lookup_applicable_price(
+    session: AsyncSession,
+    *,
+    customer,
+    sku_id: int,
+    quantity: Decimal,
+    on_date: date | None = None,
+) -> dict:
+    """统一查价（方案 §4：只回答「卖多少、依据是什么」）。
+
+    - 顺序：客户专属价 → 客户等级价 → 通用指导价；
+    - 等级价存在但没维护指导价 → 回退通用价并**明确标注**（D4 已确认）；
+    - 都没有 → `status=pending`（待定价），不做成本推算兜底（D4/D5）；
+    - 成本/最低保护价由路由层按 `price:manage` 权限决定是否附加，这里不输出。
+    """
+    level = (customer.level or "").strip() or None
+
+    async def rule_payload(rule: PriceRule, source: str, note: str | None = None) -> dict:
+        return {
+            "status": "ok",
+            "source": source,
+            "source_label": SOURCE_LABELS[source],
+            "unit_price": _f(rule.guide_price),
+            "standard_price": _f(rule.standard_price),
+            "minimum_price": _f(rule.minimum_price),
+            "currency": rule.currency,
+            "rule_id": rule.id,
+            "effective_from": rule.effective_from,
+            "effective_to": rule.effective_to,
+            "fallback_note": note,
+        }
+
+    customer_price = await find_customer_price(
+        session, customer_id=customer.id, sku_id=sku_id, quantity=quantity, on_date=on_date
+    )
+    if customer_price is not None:
+        return {
+            "status": "ok",
+            "source": "customer_specific",
+            "source_label": SOURCE_LABELS["customer_specific"],
+            "unit_price": _f(customer_price.agreed_price),
+            "standard_price": None,
+            "minimum_price": _f(customer_price.minimum_price),
+            "currency": customer_price.currency,
+            "rule_id": customer_price.id,
+            "effective_from": customer_price.effective_from,
+            "effective_to": customer_price.effective_to,
+            "fallback_note": None,
+        }
+
+    level_rule = await find_price_rule(
+        session, sku_id=sku_id, quantity=quantity, customer_level=level, on_date=on_date
+    )
+    if level_rule is not None and level_rule.customer_level == level:
+        # 命中等级专属规则
+        if level_rule.guide_price is not None:
+            return await rule_payload(level_rule, "level")
+        # 等级价没维护指导价：按 D4 回退通用价并标注
+        general = await find_price_rule(
+            session, sku_id=sku_id, quantity=quantity, customer_level=None, on_date=on_date
+        )
+        if general is not None and general.guide_price is not None:
+            return await rule_payload(
+                general, "general", f"{level} 级价未维护指导价，已回退通用指导价"
+            )
+        return {"status": "pending", "source": None, "source_label": None,
+                "unit_price": None, "fallback_note": f"{level} 级价未维护指导价，且无通用指导价"}
+
+    if level_rule is not None and level_rule.guide_price is not None:
+        # 没有等级规则（或客户无等级），find_price_rule 直接回了通用规则
+        return await rule_payload(level_rule, "general")
+
+    return {"status": "pending", "source": None, "source_label": None,
+            "unit_price": None, "fallback_note": None}
 
 
 async def resolve_discount_limit(session: AsyncSession, role_codes: list[str]) -> float | None:

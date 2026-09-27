@@ -68,6 +68,8 @@ class PriceRuleUpdate(BaseModel):
     minimum_price: Decimal | None = None
     target_margin: Decimal | None = None
     status: str | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
     remark: str | None = None
 
 
@@ -78,6 +80,8 @@ class CustomerPriceCreate(BaseModel):
     max_qty: Decimal | None = None
     agreed_price: Decimal
     minimum_price: Decimal | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
     remark: str | None = None
 
 
@@ -94,6 +98,8 @@ class CustomerPriceUpdate(BaseModel):
     max_qty: Decimal | None = None
     agreed_price: Decimal | None = None
     minimum_price: Decimal | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
     remark: str | None = None
 
 

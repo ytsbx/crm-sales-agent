@@ -383,3 +383,32 @@ export function listPricingHistory(query: {
   return api.get<PageResult<PricingHistoryRow>>('/pricing/history', query)
 }
 
+/** 统一查价（产品报价中心 · 第一批）：客户专属价 → 等级价 → 通用指导价 → 待定价。 */
+export interface PriceLookupResult {
+  status: 'ok' | 'pending'
+  source: 'customer_specific' | 'level' | 'general' | null
+  source_label: string | null
+  unit_price: number | null
+  standard_price?: number | null
+  minimum_price?: number | null
+  currency: string
+  rule_id?: number | null
+  effective_from?: string | null
+  effective_to?: string | null
+  fallback_note?: string | null
+  customer: { id: number; name: string; level?: string | null }
+  sku: { id: number; sku_code: string; name?: string | null }
+  quantity: number
+  can_see_cost?: boolean
+  cost?: number | null
+  cost_note?: string | null
+}
+
+export function lookupPrice(query: {
+  customer_id: number
+  sku_id: number
+  quantity: number | string
+}) {
+  return api.get<PriceLookupResult>('/pricing/lookup', query)
+}
+

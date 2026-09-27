@@ -183,6 +183,23 @@ async def create_price_rule(
     sku = await session.get(Sku, payload.sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    # 冲突检查（方案 §4.1）：同 SKU 同等级的数量区间与有效期都重叠时拒绝，
+    # 宁可让人处理冲突资料，也不能让取价随机命中一条
+    conflict = await svc.find_price_rule_conflict(
+        session,
+        sku_id=payload.sku_id,
+        customer_level=payload.customer_level,
+        min_qty=payload.min_qty,
+        max_qty=payload.max_qty,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    if conflict is not None:
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
+            f"有效期 {conflict.effective_from or '∞'} ~ {conflict.effective_to or '∞'}）区间重叠，请调整数量或有效期",
+        )
     rule = PriceRule(**payload.model_dump(), status="active")
     session.add(rule)
     await session.flush()
@@ -213,6 +230,23 @@ async def update_price_rule(
     before = svc.serialize_price_rule(rule)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
+    # 改动后仍不能与其他规则重叠（排除自己）
+    conflict = await svc.find_price_rule_conflict(
+        session,
+        sku_id=rule.sku_id,
+        customer_level=rule.customer_level,
+        min_qty=rule.min_qty,
+        max_qty=rule.max_qty,
+        effective_from=rule.effective_from,
+        effective_to=rule.effective_to,
+        exclude_id=rule.id,
+    )
+    if conflict is not None:
+        await session.rollback()
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+        )
     await session.flush()
     await write_audit(
         session,
@@ -290,6 +324,21 @@ async def create_customer_price_rule(
     session: AsyncSession = Depends(get_db),
 ):
     rule = CustomerPriceRule(**payload.model_dump())
+    # 冲突检查：同客户同 SKU 的数量/有效期重叠直接拒绝（方案 §4.1）
+    conflict = await svc.find_customer_price_conflict(
+        session,
+        customer_id=payload.customer_id,
+        sku_id=payload.sku_id,
+        min_qty=payload.min_qty,
+        max_qty=payload.max_qty,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
+    if conflict is not None:
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+        )
     session.add(rule)
     await session.flush()
     await write_audit(
@@ -333,6 +382,10 @@ async def update_customer_price_rule(
         rule.agreed_price = changes["agreed_price"]
     if "minimum_price" in changes:
         rule.minimum_price = changes["minimum_price"]
+    if "effective_from" in changes:
+        rule.effective_from = changes["effective_from"]
+    if "effective_to" in changes:
+        rule.effective_to = changes["effective_to"]
     if "remark" in changes:
         rule.remark = changes["remark"]
 
@@ -342,6 +395,24 @@ async def update_customer_price_rule(
         raise AppError(
             ErrorCode.PARAM_ERROR,
             f"起订量（{rule.min_qty}）不能大于上限（{rule.max_qty}）",
+        )
+
+    # 改动后仍不能与其他规则重叠（排除自己）
+    conflict = await svc.find_customer_price_conflict(
+        session,
+        customer_id=rule.customer_id,
+        sku_id=rule.sku_id,
+        min_qty=rule.min_qty,
+        max_qty=rule.max_qty,
+        effective_from=rule.effective_from,
+        effective_to=rule.effective_to,
+        exclude_id=rule.id,
+    )
+    if conflict is not None:
+        await session.rollback()
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
         )
 
     await session.flush()
@@ -475,6 +546,67 @@ async def create_logistics_rate(
     )
     await session.commit()
     return ok(svc.serialize_logistics_rate(rate), "运费费率已创建")
+
+
+# ---------------------------------------------------------------- 查价（产品报价中心 · 第一批）
+
+@router.get("/pricing/lookup")
+async def lookup_price(
+    customer_id: int = Query(...),
+    sku_id: int = Query(...),
+    quantity: Decimal = Query(..., gt=0),
+    user: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """统一查价（方案 §4）：返回本次条件的适用价与命中来源。
+
+    - 只读，不落库；选了客户+数量才标为「该客户本次适用价」；
+    - 客户必须在当前用户数据范围内（与客户列表同一口径，公海客户放行）；
+    - 成本/最低保护价只对有 `price:manage` 的角色返回（方案 §7 字段脱敏）；
+    - 缺价返回 `status=pending`（待定价），不做成本推算兜底（D4/D5 已确认）。
+    """
+    from app.core.data_scope import ensure_in_scope
+
+    sku = await session.get(Sku, sku_id)
+    if sku is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    customer = await session.get(Customer, customer_id)
+    if customer is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    await ensure_in_scope(
+        session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
+    )
+
+    result = await svc.lookup_applicable_price(
+        session, customer=customer, sku_id=sku_id, quantity=quantity
+    )
+    result.update(
+        {
+            "customer": {"id": customer.id, "name": customer.name, "level": customer.level},
+            "sku": {"id": sku.id, "sku_code": sku.sku_code, "name": sku.name},
+            "quantity": float(quantity),
+        }
+    )
+
+    # 成本与保护价按角色脱敏：没有 price:manage 的销售只看到适用价
+    can_see_cost = user.has("price:manage")
+    result["can_see_cost"] = can_see_cost
+    if can_see_cost:
+        cost = await svc.get_effective_cost(session, sku_id)
+        if cost is None:
+            result["cost"] = None
+            result["cost_note"] = "该 SKU 无生效成本，利润不可计算"
+        else:
+            # 货成本口径与核价一致：采购+生产+包装+加工
+            goods_cost = (
+                cost.purchase_cost + cost.production_cost + cost.package_cost + cost.processing_cost
+            )
+            result["cost"] = float(goods_cost)
+            result["cost_note"] = None
+    else:
+        result["cost"] = None
+        result["cost_note"] = None
+    return result
 
 
 # ---------------------------------------------------------------- 核价
