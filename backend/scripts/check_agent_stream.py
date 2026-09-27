@@ -183,7 +183,8 @@ async def main():
         await session.commit()
         sid = agent_session.id
 
-        with patch.object(runtime, '_client', lambda: fake):
+        with patch.object(runtime, '_client', lambda: fake), \
+             patch.object(runtime, 'model_ready', lambda: True):
             events = await collect_events(session, agent_session, user, f'CHK{RUN} 查客户')
 
         kinds = [k for k, _ in events]
@@ -231,7 +232,8 @@ async def main():
         session.add(agent_session)
         await session.commit()
 
-        with patch.object(runtime, '_client', lambda: fake2):
+        with patch.object(runtime, '_client', lambda: fake2), \
+             patch.object(runtime, 'model_ready', lambda: True):
             events = await collect_events(session, agent_session, user, f'CHK{RUN} 记跟进')
 
         done = dict(events)['done']
@@ -253,7 +255,8 @@ async def main():
         await session.commit()
 
         collected: list[tuple[str, dict]] = []
-        with patch.object(runtime, '_client', lambda: fake3):
+        with patch.object(runtime, '_client', lambda: fake3), \
+             patch.object(runtime, 'model_ready', lambda: True):
             result = await runtime.run_turn(
                 session, agent_session=agent_session, user=user,
                 text=f'CHK{RUN} 同步', on_event=lambda k, d: collected.append((k, d)),

@@ -345,6 +345,10 @@ async function main() {
       '--disable-gpu',
       '--no-first-run',
       '--no-default-browser-check',
+      // CI 容器 /dev/shm 很小，Chrome 标签页会随机崩（白屏 + "Unable to
+      // capture screenshot"），这两个是官方建议的容器稳定参数
+      '--disable-dev-shm-usage',
+      '--no-sandbox',
       `--remote-debugging-port=${CDP_PORT}`,
       `--user-data-dir=${PROFILE_DIR}`,
       'about:blank',
