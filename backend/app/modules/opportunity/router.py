@@ -813,10 +813,12 @@ async def confirm_win_and_create_order(
         )
 
     # ---- 3. 客户确认：已发送未接受的，此动作即视为客户接受 ----
+    # 注意：quotes 表没有 accepted_at 列（该列在 quote_versions 上），
+    # 赋值给不存在的 ORM 属性会被 SQLAlchemy 静默丢弃
     quote_already_accepted = quote.status == "accepted"
     if not quote_already_accepted:
         quote.status = "accepted"
-        quote.accepted_at = datetime.now(UTC)
+        version.accepted_at = datetime.now(UTC)
         await session.flush()
 
     # ---- 4. 商机标记成交（幂等：已成交不重复改阶段）----

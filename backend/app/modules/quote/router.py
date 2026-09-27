@@ -735,6 +735,7 @@ async def update_item(
     data = payload.model_dump(exclude_unset=True)
     quantity = data.get("quantity", item.quantity)
     price = data.get("quoted_price", item.quoted_price)
+    old_price = float(item.quoted_price)
     logistics = data.get("logistics_cost")
     if logistics is not None:
         item.logistics_cost_snapshot = logistics
@@ -775,6 +776,7 @@ async def update_item(
         action="update_item",
         business_type="quote",
         business_id=quote.id,
+        before={"item_id": item.id, "quoted_price": old_price},
         after={"item_id": item.id, "quoted_price": float(item.quoted_price)},
         ip=client_ip(request),
     )
@@ -1447,8 +1449,16 @@ async def send_email(
     """
     version = await svc.get_visible_version(session, user, version_id)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
+    # A12：审批闸门必须完整——只挡 pending 会让 not_submitted/rejected 的版本
+    # 直接"发出去"，绕过 mark-sent 的 42203 前置
     if version.approval_status == "pending":
         raise AppError(ErrorCode.APPROVAL_PENDING, "该版本正在审批中，通过前不能发送")
+    if version.approval_status != "approved":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该版本未通过审批（未提交或被驳回），不能发送",
+            422,
+        )
     if not payload.receiver:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "收件人必填", 422)
 
@@ -1464,9 +1474,9 @@ async def send_email(
             error_message="尚未配置邮件服务，本次只登记发送记录（未实际投递）",
         )
     )
-    version.sent_at = version.sent_at or now
-    if quote.status in ("draft", "approved"):
-        quote.status = "sent"
+    # A12：未实际投递就不得把版本记成"已发送"——这里只是登记发送记录，
+    # 状态流转仍走「标记已发送」（人工确认已实际送达后）。
+    # 接 SMTP 后由投递结果驱动这一步。
     await write_audit(
         session,
         operator_id=user.id,

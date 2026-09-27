@@ -296,13 +296,16 @@ async def lookup_applicable_price(
     sku_id: int,
     quantity: Decimal,
     on_date: date | None = None,
+    include_customer_specific: bool = True,
 ) -> dict:
     """统一查价（方案 §4：只回答「卖多少、依据是什么」）。
 
     - 顺序：客户专属价 → 客户等级价 → 通用指导价；
     - 等级价存在但没维护指导价 → 回退通用价并**明确标注**（D4 已确认）；
     - 都没有 → `status=pending`（待定价），不做成本推算兜底（D4/D5）；
-    - 成本/最低保护价由路由层按 `price:manage` 权限决定是否附加，这里不输出。
+    - 成本/最低保护价由路由层按 `price:manage` 权限决定是否附加，这里不输出；
+    - `include_customer_specific=False` 用于公海客户（无负责人）：专属价是
+      协议价，只该让负责人看，数据范围放行不等于专属价放行。
     """
     level = (customer.level or "").strip() or None
 
@@ -321,8 +324,12 @@ async def lookup_applicable_price(
             "fallback_note": note,
         }
 
-    customer_price = await find_customer_price(
-        session, customer_id=customer.id, sku_id=sku_id, quantity=quantity, on_date=on_date
+    customer_price = (
+        await find_customer_price(
+            session, customer_id=customer.id, sku_id=sku_id, quantity=quantity, on_date=on_date
+        )
+        if include_customer_specific
+        else None
     )
     if customer_price is not None:
         return {
@@ -342,8 +349,8 @@ async def lookup_applicable_price(
     level_rule = await find_price_rule(
         session, sku_id=sku_id, quantity=quantity, customer_level=level, on_date=on_date
     )
-    if level_rule is not None and level_rule.customer_level == level:
-        # 命中等级专属规则
+    if level and level_rule is not None and level_rule.customer_level == level:
+        # 命中等级专属规则（level 为空的客户走通用价，不能被标成"客户等级价"）
         if level_rule.guide_price is not None:
             return await rule_payload(level_rule, "level")
         # 等级价没维护指导价：按 D4 回退通用价并标注

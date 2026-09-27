@@ -55,9 +55,11 @@ async def _sku_code_map(session: AsyncSession, sku_ids: list[int]) -> dict[int, 
 @router.get("/skus/{sku_id}/costs")
 async def list_costs(
     sku_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    _: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """SKU 成本明细。成本是公司敏感数据（方案 §4.3）：只对价格管理员开放，
+    不能停留在 product:view——那是产品资料的查看权限，不是成本的。"""
     sku = await session.get(Sku, sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
@@ -550,6 +552,85 @@ async def create_logistics_rate(
 
 # ---------------------------------------------------------------- 查价（产品报价中心 · 第一批）
 
+
+async def _ensure_customer_visible(
+    session: AsyncSession, user: CurrentUser, customer_id: int | None
+) -> None:
+    """核价/查价带客户时，客户必须在该用户数据范围内（与客户列表同口径）。"""
+    if customer_id is None:
+        return
+    from app.core.data_scope import ensure_in_scope
+
+    customer = await session.get(Customer, customer_id)
+    if customer is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    await ensure_in_scope(
+        session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
+    )
+
+
+async def _guard_level_override(
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    customer_id: int | None,
+    requested_level: str | None,
+) -> None:
+    """方案 §4.1：临时覆盖客户价格等级需要 `price:manage`。
+
+    普通查价请求不得自行指定等级——传个 A 级就能拿到 A 级价，
+    等于等级价形同虚设。与客户档案等级一致的传值视为无覆盖，放行。
+    """
+    if not requested_level:
+        return
+    if user.has("price:manage"):
+        return
+    archive_level = None
+    if customer_id:
+        customer = await session.get(Customer, customer_id)
+        if customer is not None:
+            archive_level = (customer.level or "").strip().upper() or None
+    if requested_level.strip().upper() != (archive_level or "").upper():
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            f"指定的价格等级（{requested_level}）与客户档案不符，覆盖等级需要价格管理权限",
+            403,
+        )
+
+
+def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
+    """方案 §4.3 / §7：成本与底价只向获授权角色返回。
+
+    对没有 `price:manage` 的调用方，把响应里的成本、保护价、授权底价、
+    利润全部置空（保留建议价与审批判定，销售据此知道"能不能报"）。
+    `price_rule` / `customer_price_rule` 里也内嵌了最低价，一并清掉。
+    """
+    if user.has("price:manage"):
+        return result
+    for key in (
+        "protection_price",
+        "minimum_price",
+        "profit",
+        "profit_rate",
+        "profit_with_refund",
+        "profit_rate_with_refund",
+        "cost_in_quote_currency",
+        "authorized_min_margin",
+    ):
+        if key in result:
+            result[key] = None
+    cost = result.get("cost")
+    if isinstance(cost, dict):
+        for key in list(cost):
+            if key != "source":
+                cost[key] = None
+        result["cost"]["source"] = "成本与保护价仅价格管理员可见"
+    for rule_key in ("price_rule", "customer_price_rule"):
+        rule = result.get(rule_key)
+        if isinstance(rule, dict):
+            rule["minimum_price"] = None
+    return result
+
 @router.get("/pricing/lookup")
 async def lookup_price(
     customer_id: int = Query(...),
@@ -577,8 +658,14 @@ async def lookup_price(
         session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
     )
 
+    # 公海客户（无负责人）不参与专属价匹配：协议价只对负责人可见，
+    # 数据范围放行只代表"这个客户你能看"，不代表"他的协议价你能看"
     result = await svc.lookup_applicable_price(
-        session, customer=customer, sku_id=sku_id, quantity=quantity
+        session,
+        customer=customer,
+        sku_id=sku_id,
+        quantity=quantity,
+        include_customer_specific=customer.owner_id is not None,
     )
     result.update(
         {
@@ -588,9 +675,12 @@ async def lookup_price(
         }
     )
 
-    # 成本与保护价按角色脱敏：没有 price:manage 的销售只看到适用价
+    # 成本与保护价按角色脱敏：没有 price:manage 的销售只看到适用价。
+    # 必须在**后端**剥掉 minimum_price——留在响应里靠前端隐藏等于没防
     can_see_cost = user.has("price:manage")
     result["can_see_cost"] = can_see_cost
+    if not can_see_cost:
+        result["minimum_price"] = None
     if can_see_cost:
         cost = await svc.get_effective_cost(session, sku_id)
         if cost is None:
@@ -617,27 +707,28 @@ async def calculate(
     user: CurrentUser = Depends(require_permission("product:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    return ok(
-        await svc.calculate_price(
-            session,
-            sku_id=payload.sku_id,
-            quantity=payload.quantity,
-            customer_id=payload.customer_id,
-            logistics_cost=payload.logistics_cost,
-            target_margin=payload.target_margin,
-            target_profit_amount=payload.target_profit_amount,
-            quoted_price=payload.quoted_price,
-            role_codes=user.roles,
-            currency=payload.currency,
-            exchange_rate=payload.exchange_rate,
-            tax_refund_rate=payload.tax_refund_rate,
-            customer_level=payload.customer_level,
-            country=payload.country,
-            package_type=payload.package_type,
-            shipping_method=payload.shipping_method,
-            payment_terms=payload.payment_terms,
-        )
+    await _ensure_customer_visible(session, user, payload.customer_id)
+    await _guard_level_override(session, user, customer_id=payload.customer_id, requested_level=payload.customer_level)
+    result = await svc.calculate_price(
+        session,
+        sku_id=payload.sku_id,
+        quantity=payload.quantity,
+        customer_id=payload.customer_id,
+        logistics_cost=payload.logistics_cost,
+        target_margin=payload.target_margin,
+        target_profit_amount=payload.target_profit_amount,
+        quoted_price=payload.quoted_price,
+        role_codes=user.roles,
+        currency=payload.currency,
+        exchange_rate=payload.exchange_rate,
+        tax_refund_rate=payload.tax_refund_rate,
+        customer_level=payload.customer_level,
+        country=payload.country,
+        package_type=payload.package_type,
+        shipping_method=payload.shipping_method,
+        payment_terms=payload.payment_terms,
     )
+    return ok(_sanitize_pricing_result(result, user))
 
 
 @router.post("/pricing/batch-calculate")
@@ -648,25 +739,30 @@ async def batch_calculate(
 ):
     results = []
     for item in items:
+        await _ensure_customer_visible(session, user, item.customer_id)
+        await _guard_level_override(session, user, customer_id=item.customer_id, requested_level=item.customer_level)
         results.append(
-            await svc.calculate_price(
-                session,
-                sku_id=item.sku_id,
-                quantity=item.quantity,
-                customer_id=item.customer_id,
-                logistics_cost=item.logistics_cost,
-                target_margin=item.target_margin,
-                target_profit_amount=item.target_profit_amount,
-                quoted_price=item.quoted_price,
-                role_codes=user.roles,
-                currency=item.currency,
-                exchange_rate=item.exchange_rate,
-                tax_refund_rate=item.tax_refund_rate,
-                customer_level=item.customer_level,
-                country=item.country,
-                package_type=item.package_type,
-                shipping_method=item.shipping_method,
-                payment_terms=item.payment_terms,
+            _sanitize_pricing_result(
+                await svc.calculate_price(
+                    session,
+                    sku_id=item.sku_id,
+                    quantity=item.quantity,
+                    customer_id=item.customer_id,
+                    logistics_cost=item.logistics_cost,
+                    target_margin=item.target_margin,
+                    target_profit_amount=item.target_profit_amount,
+                    quoted_price=item.quoted_price,
+                    role_codes=user.roles,
+                    currency=item.currency,
+                    exchange_rate=item.exchange_rate,
+                    tax_refund_rate=item.tax_refund_rate,
+                    customer_level=item.customer_level,
+                    country=item.country,
+                    package_type=item.package_type,
+                    shipping_method=item.shipping_method,
+                    payment_terms=item.payment_terms,
+                ),
+                user,
             )
         )
     return ok(results)
@@ -687,6 +783,8 @@ async def check_price_permission(
     判定逻辑与报价明细用的**是同一份** `calculate_price` ——
     两处各写一遍必然漂移（核价说能报、报价单说不能，业务会不信系统）。
     """
+    await _ensure_customer_visible(session, user, payload.customer_id)
+    await _guard_level_override(session, user, customer_id=payload.customer_id, requested_level=payload.customer_level)
     result = await svc.calculate_price(
         session,
         sku_id=payload.sku_id,
@@ -718,6 +816,7 @@ async def check_price_permission(
     if triggers["below_authorized_margin"]:
         reasons.append("利润率低于你角色的授权下限")
 
+    _sanitize_pricing_result(result, user)
     approval_required = result["approval_required"]
     return ok(
         {
@@ -758,6 +857,10 @@ async def simulate_pricing(
     `margins` 也没给时，按"授权下限 / 保护价 / 建议价"三个关键点位试算 ——
     这三个点正好是"能让到哪、再低要审批、正常该报多少"。
     """
+    await _ensure_customer_visible(session, user, payload.base.customer_id)
+    await _guard_level_override(
+        session, user, customer_id=payload.base.customer_id, requested_level=payload.base.customer_level
+    )
     base = payload.base
     quantize = Decimal("0.01")
 
@@ -837,6 +940,13 @@ async def simulate_pricing(
                 "reasons": reasons,
             }
         )
+
+    # 候选行的 profit 逐个脱敏，基准响应走统一助手
+    if not user.has("price:manage"):
+        for row in rows:
+            row["profit"] = None
+            row["profit_rate"] = None
+    _sanitize_pricing_result(baseline, user)
 
     return ok(
         {

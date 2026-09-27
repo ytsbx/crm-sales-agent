@@ -498,6 +498,11 @@ async def calculate_price(
     customer_id: int | None = None,
     quoted_price: float | None = None,
 ) -> dict:
+    # 带客户核价时，客户必须在该用户数据范围内（A11：与普通界面同一纪律）
+    if customer_id is not None:
+        await _ensure_in_scope(
+            ctx, Customer.owner_id, Customer.id, customer_id, "客户"
+        )
     result = await pricing_service.calculate_price(
         ctx.session,
         sku_id=sku_id,
@@ -506,7 +511,7 @@ async def calculate_price(
         quoted_price=quoted_price,
         role_codes=ctx.user.roles,
     )
-    return {
+    data = {
         "sku": result["sku"]["sku_code"],
         "base_cost": result["cost"]["base_cost"],
         "standard_price": result["standard_price"],
@@ -520,6 +525,12 @@ async def calculate_price(
         "approval_required": result["approval_required"],
         "warnings": result["warnings"],
     }
+    # A11：Agent 与普通界面同一套脱敏——成本/保护价/利润只给价格管理员
+    if not ctx.user.has("price:manage"):
+        for key in ("base_cost", "minimum_price", "profit", "profit_rate"):
+            data[key] = None
+        data["warnings"] = [*data["warnings"], "成本、保护价与利润仅价格管理员可见"]
+    return data
 
 
 @tool(
