@@ -245,9 +245,15 @@ async def delete_file(
 async def list_business_files(
     business_type: str,
     business_id: int,
-    _: CurrentUser = Depends(require_permission("file:view")),
+    user: CurrentUser = Depends(require_permission("file:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 列附件会暴露文件名/上传人等元数据，与下载同一条可见性规则：
+    # 业务对象本身不在数据范围内，附件清单也不给看（防按 id 枚举）。
+    if not await access.visible_object(
+        session, user, business_type=business_type, business_id=business_id
+    ):
+        raise AppError(ErrorCode.FORBIDDEN, "该业务对象不在你的数据范围内", 403)
     rows = (
         await session.execute(
             select(BusinessFile, FileRecord, User.name)

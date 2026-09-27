@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import CurrentUser, bearer_scheme, client_ip, get_current_user
 from app.core.errors import AppError, ErrorCode
+from app.core import rate_limit
 from app.core.response import ok
 from app.core.security import (
     create_access_token,
@@ -28,12 +29,40 @@ async def login(
     request: Request,
     session: AsyncSession = Depends(get_db),
 ):
+    # 防爆破：同一（用户名+IP）在窗口内连续失败到上限直接拒绝，
+    # 不再执行 bcrypt 校验（既防猜密码，也防拿登录接口耗 CPU）
+    throttle_key = f"{payload.username.lower()}|{client_ip(request) or 'unknown'}"
+    locked = rate_limit.remaining_lock_seconds(
+        throttle_key,
+        max_attempts=settings.login_max_attempts,
+        window_minutes=settings.login_lockout_window_minutes,
+    )
+    if locked:
+        raise AppError(
+            ErrorCode.RATE_LIMITED,
+            f"登录失败次数过多，请 {max(1, locked // 60 + 1)} 分钟后再试",
+            429,
+        )
+
     stmt = select(User).where(User.username == payload.username)
     user = (await session.execute(stmt)).scalar_one_or_none()
     if user is None or not verify_password(payload.password, user.password_hash):
+        locked_after = rate_limit.register_failure(
+            throttle_key,
+            max_attempts=settings.login_max_attempts,
+            window_minutes=settings.login_lockout_window_minutes,
+        )
+        if locked_after:
+            raise AppError(
+                ErrorCode.RATE_LIMITED,
+                f"登录失败次数过多，账号已临时锁定，请 {max(1, locked_after // 60 + 1)} 分钟后再试",
+                429,
+            )
         raise AppError(ErrorCode.PARAM_ERROR, "用户名或密码错误")
     if user.status != "active":
         raise AppError(ErrorCode.FORBIDDEN, "账号已停用", 403)
+
+    rate_limit.reset(throttle_key)
 
     token = create_access_token(user.id, {"name": user.name})
     await write_audit(

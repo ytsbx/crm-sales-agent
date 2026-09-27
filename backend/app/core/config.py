@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     #: 否则一个泄漏的旧 token 等于永久有效。
     refresh_grace_minutes: int = 720
 
+    #: 登录防爆破：滑动窗口内同一（用户名+IP）连续失败达到上限即锁定。
+    login_max_attempts: int = 5
+    login_lockout_window_minutes: int = 10
+
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # 文件存储：先用本地磁盘，接口按对象存储的形状写，将来换 OSS/MinIO 只改这里
