@@ -29,6 +29,7 @@ import {
   type PricingHistoryRow,
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
+import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 
@@ -412,13 +413,21 @@ export default function PriceCenterPage() {
                   style={{ width: 360 }}
                 />
                 {canManage && (
-                  <Button
-                    theme="solid"
-                    disabled={!costSkuId}
-                    onClick={() => setCostVisible(true)}
-                  >
-                    新增成本
-                  </Button>
+                  <>
+                    <CsvImportButtons
+                      templateUrl="/api/v1/costs/import-template"
+                      templateName="成本导入模板.csv"
+                      importUrl="/api/v1/costs/import"
+                      invalidateQueryKeys={['costs']}
+                    />
+                    <Button
+                      theme="solid"
+                      disabled={!costSkuId}
+                      onClick={() => setCostVisible(true)}
+                    >
+                      新增成本
+                    </Button>
+                  </>
                 )}
               </div>
               <Table<CostRecord>
@@ -451,9 +460,17 @@ export default function PriceCenterPage() {
               <div className="toolbar">
                 <div style={{ flex: 1 }} />
                 {canManage && (
-                  <Button theme="solid" onClick={() => setRuleVisible(true)}>
-                    新增价格规则
-                  </Button>
+                  <>
+                    <CsvImportButtons
+                      templateUrl="/api/v1/price-rules/import-template"
+                      templateName="价格规则导入模板.csv"
+                      importUrl="/api/v1/price-rules/import"
+                      invalidateQueryKeys={['price-rules']}
+                    />
+                    <Button theme="solid" onClick={() => setRuleVisible(true)}>
+                      新增价格规则
+                    </Button>
+                  </>
                 )}
               </div>
               <Table<PriceRuleRow>
@@ -521,6 +538,12 @@ export default function PriceCenterPage() {
               <div className="toolbar">
                 <div style={{ flex: 1 }} />
                 {canManage && (
+                  <CsvImportButtons
+                    templateUrl="/api/v1/customer-price-rules/import-template"
+                    templateName="客户特殊价导入模板.csv"
+                    importUrl="/api/v1/customer-price-rules/import"
+                    invalidateQueryKeys={['customer-price-rules']}
+                  />
                   <Button theme="solid" onClick={() => setCustomerPriceVisible(true)}>
                     新增客户特殊价
                   </Button>

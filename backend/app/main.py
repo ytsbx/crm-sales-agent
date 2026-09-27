@@ -28,6 +28,7 @@ from app.modules.opportunity.router import router as opportunity_router
 from app.modules.order.router import router as order_router
 from app.modules.notification.router import router as notification_router
 from app.modules.payment.router import router as payment_router
+from app.modules.pricing.io_router import router as pricing_io_router
 from app.modules.pricing.logistics_router import router as logistics_router
 from app.modules.pricing.router import router as pricing_router
 from app.modules.product.router import router as product_router
@@ -102,6 +103,8 @@ app.include_router(opportunity_router, prefix=settings.api_prefix)
 app.include_router(followup_router, prefix=settings.api_prefix)
 app.include_router(task_router, prefix=settings.api_prefix)
 app.include_router(timeline_router, prefix=settings.api_prefix)
+# /price-rules/import、/costs/import 等静态路径必须在动态路径之前（与产品/客户 io_router 同理）
+app.include_router(pricing_io_router, prefix=settings.api_prefix)
 app.include_router(pricing_router, prefix=settings.api_prefix)
 # 注意顺序：/logistics/rates 等静态路径必须在 /logistics/quotes/{id} 之前注册，
 # 否则会被动态路由抢先匹配（这个坑在 /customers/export 上踩过两次）
