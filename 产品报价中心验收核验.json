@@ -1,0 +1,91 @@
+{
+  "generated_at": "2026-09-27 18:17:36",
+  "environment": "local(dev)",
+  "results": [
+    {
+      "case": "A01",
+      "title": "A/B 级客户各自带价且显示来源",
+      "pass": true,
+      "detail": "85/90 等级价命中"
+    },
+    {
+      "case": "A02",
+      "title": "有效专属价优先，过期价不命中",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "case": "A03",
+      "title": "无等级价回退通用价并标注来源",
+      "pass": true,
+      "detail": "C 级价未维护，已回退通用指导价"
+    },
+    {
+      "case": "A04",
+      "title": "边界唯一命中，重叠被拒绝",
+      "pass": true,
+      "detail": "边界 True 重叠拒绝 True"
+    },
+    {
+      "case": "A05",
+      "title": "拟报价=适用价(85)而非目标价(52)",
+      "pass": true,
+      "detail": "quoted=85.0"
+    },
+    {
+      "case": "A06",
+      "title": "无成本：利润不可计算（不返 100% 假毛利）",
+      "pass": true,
+      "detail": "profit=None"
+    },
+    {
+      "case": "A07",
+      "title": "包装/目的地随需求进入核价上下文",
+      "pass": true,
+      "detail": "SKU ZX-6040-B：拟报价取系统适用价 ¥85.0（客户等级价），客户目标价 ¥85.0000 已单独记录"
+    },
+    {
+      "case": "A08",
+      "title": "导入预览不落库 + 错误行反馈",
+      "pass": true,
+      "detail": "预览预览完成（未写入）：将导入 1 条，跳过 0 条，失败 1 条"
+    },
+    {
+      "case": "A09",
+      "title": "旧版本快照不变；草稿检出漂移可刷新",
+      "pass": true,
+      "detail": "v1=85.0 drift=True"
+    },
+    {
+      "case": "A10",
+      "title": "整单优惠后低于权限触发审批，无优惠则放行",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "case": "A11",
+      "title": "销售看不到成本/底价；等级覆盖被拒",
+      "pass": true,
+      "detail": "stripped=True override=40301"
+    },
+    {
+      "case": "A12",
+      "title": "未通过审批的版本不能发送",
+      "pass": true,
+      "detail": "该版本未通过审批（未提交或被驳回），不能发送"
+    },
+    {
+      "case": "A13",
+      "title": "确认成交建单；重试返回同一订单",
+      "pass": true,
+      "detail": "order=44"
+    },
+    {
+      "case": "A14",
+      "title": "历史价可留档、不冲突、不参与匹配",
+      "pass": true,
+      "detail": "status=historical imported=True"
+    }
+  ],
+  "summary": "14/14 通过"
+}

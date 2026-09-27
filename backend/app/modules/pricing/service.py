@@ -372,8 +372,14 @@ async def lookup_applicable_price(
                 "unit_price": None, "fallback_note": f"{level} 级价未维护指导价，且无通用指导价"}
 
     if level_rule is not None and level_rule.guide_price is not None:
-        # 没有等级规则（或客户无等级），find_price_rule 直接回了通用规则
-        return await rule_payload(level_rule, "general")
+        # 没有等级规则（或客户无等级），find_price_rule 直接回了通用规则。
+        # 客户有等级但没维护该级规则时，回退必须标注（A03/D4：回退须可解释）
+        note = (
+            f"{level} 级价未维护，已回退通用指导价"
+            if level and level_rule.customer_level != level
+            else None
+        )
+        return await rule_payload(level_rule, "general", note)
 
     return {"status": "pending", "source": None, "source_label": None,
             "unit_price": None, "fallback_note": None}
