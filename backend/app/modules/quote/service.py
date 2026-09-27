@@ -355,6 +355,7 @@ async def create_quote(
 
     item_warnings: list[str] = []
     if opportunity is not None:
+        customer_obj = await session.get(Customer, customer_id)
         for opp_item in await opportunity_items(session, opportunity.id):
             # 商机需求明细的 target_price 是「商机币种」口径（一般是人民币），
             # 而报价可能以外币计价。不折算就会把人民币价当外币价，利润率算错一个量级。
@@ -365,13 +366,40 @@ async def create_quote(
             )
             if fx_warning:
                 item_warnings.append(fx_warning)
+
+            # 产品报价中心第二批（方案 §5 / A05）：拟报价默认带「系统适用价」，
+            # 客户目标价只是谈判参考、单独留在商机明细上，不再直接变成拟报价。
+            # 无适用价时不做成本推算（D4/D5），回退目标价并显式留痕要求人工确认。
+            sku = await session.get(Sku, opp_item.sku_id)
+            sku_label = sku.sku_code if sku else str(opp_item.sku_id)
+            lookup = await pricing_service.lookup_applicable_price(
+                session,
+                customer=customer_obj,
+                sku_id=opp_item.sku_id,
+                quantity=opp_item.quantity,
+            )
+            if lookup["status"] == "ok" and lookup["unit_price"] is not None:
+                quoted_price, _ = convert_cny_to(
+                    Decimal(str(lookup["unit_price"])),
+                    to_currency=version.currency,
+                    rate=version.exchange_rate_snapshot,
+                )
+                item_warnings.append(
+                    f"SKU {sku_label}：拟报价取系统适用价 ¥{lookup['unit_price']}（{lookup['source_label']}），"
+                    f"客户目标价 ¥{target_price} 已单独记录"
+                )
+            else:
+                quoted_price = target_price
+                item_warnings.append(
+                    f"SKU {sku_label}：无系统适用价（待定价），拟报价暂用客户目标价，请人工确认"
+                )
             item = await build_item_snapshot(
                 session,
                 version=version,
                 sku_id=opp_item.sku_id,
                 quantity=opp_item.quantity,
                 customer_id=customer_id,
-                quoted_price=target_price,
+                quoted_price=quoted_price,
                 logistics_cost=None,
                 opportunity_item_id=opp_item.id,
                 spec_snapshot=opp_item.specification,
