@@ -2,9 +2,21 @@
 
 面向国内销售团队（人民币、中文）的销售 CRM，核心是把
 **客户 → 商机 → 选品 → 核价 → 报价（多版本 + 审批）→ 跟进 → 成交 → 订单 → 回款**
-这条链管住。
+这条链管住，上面再盖一层能查数据、算价、提议动作的 Sales Agent（DeepSeek）。
 
-当前进度见 [07-开发计划与阶段划分-V1.1.md](./07-开发计划与阶段划分-V1.1.md)。
+**规模**：65 张 ORM 表、408 条后端路由（文档要求 360 个接口，缺口 0）、34 个前端页面、
+10 个回归套件 + 40 例单元测试 + 28 页 UI 冒烟 + GitHub Actions CI。
+
+## 先读哪份文档
+
+| 你是谁 | 读这份 |
+|---|---|
+| **新接手的 agent 会话** | [12-交接说明-2026-09-27.md](./12-交接说明-2026-09-27.md)（当前状态、分支、还剩什么） |
+| **要用它 / 给别人演示的人** | [13-上手指南-V1.1.md](./13-上手指南-V1.1.md)（怎么登录、点哪里、数字从哪来） |
+| 想知道项目整体设计、口径、踩坑 | [10-项目全景与踩坑总集](./10-项目现状与交接说明.md) |
+| 要改业务规则参数 | [09-业务参数配置说明](./09-业务参数配置说明-V1.1.md) |
+| 要加接口 | [11-审计日志覆盖说明](./11-审计日志覆盖说明.md) |
+| 需求 / 数据模型 / 接口 / UI / 架构基线 | 01–05 号文档（source of truth） |
 
 ---
 
@@ -12,149 +24,111 @@
 
 ```text
 CRM-Sales-Agent-V1.1/
-├── 01-PRD … 07-开发计划    设计文档与施工计划
-├── backend/                FastAPI + SQLAlchemy + Alembic
-│   ├── app/core/           配置、数据库、统一响应、错误码、认证、审计
-│   ├── app/modules/        业务模块（auth / user / customer / product / lead /
-│   │                       opportunity / pricing / quote / approval / followup /
-│   │                       task / timeline / order / payment / file / settings /
-│   │                       notification / analytics）
-│   ├── alembic/            数据库迁移
-│   └── scripts/seed.py     初始数据（角色、权限、账号、示例客户/产品/商机/价格）
-├── frontend/               React 19 + TypeScript + Vite + Semi Design
-│   └── src/
-│       ├── app/            路由、布局、多页签
-│       ├── modules/        业务页面（auth / workbench / lead / customer / product /
-│       │                   opportunity / pricing / quote / approval / order /
-│       │                   task / analytics / settings）
-│       └── shared/         API 客户端、状态、类型
-└── ops/smoke_ui.mjs        界面冒烟测试（无头浏览器逐页截图）
+├── 01…05 设计文档      PRD / ER / API / UI / 技术架构
+├── 07…09 计划与配置    开发计划 / 待确认清单 / 业务参数
+├── 10…13 现状与使用    全景与踩坑 / 审计覆盖 / 交接入口 / 上手指南
+├── backend/            FastAPI + SQLAlchemy(async) + Alembic
+│   ├── app/core/       配置、数据库、统一响应、错误码、认证、审计、数据范围、
+│   │                   相似度打分、引用校验、取号、定时调度
+│   ├── app/modules/    21 个业务模块（model + schema + router + service）
+│   ├── scripts/        seed.py 主数据 / seed_demo.py 全链路演示数据 / check_* 回归套件
+│   └── tests/          pytest 纯函数单元测试（不连库不连网）
+├── frontend/           React 19 + TypeScript + Vite + Semi Design
+│   └── src/            app/ 路由菜单布局 · modules/ 页面 · shared/ 接口与组件
+├── ops/                run_checks.sh（本地一键，与 CI 同清单）、smoke_ui.mjs、
+│                       docker-compose.yml、*.ps1（仅 Windows）
+└── stitch_remix_of_semi_design_sales_crm/   24 屏设计稿，只作视觉基线
 ```
 
-## 中间件（本项目自带，独立容器）
+## 依赖与端口
 
-本仓库自带 `ops/docker-compose.yml`，起一套 CRM 专用的 PostgreSQL 15 + Redis 7：
+**只需要 PostgreSQL。** Redis 依赖已移除（零使用），单实例部署唯一真相源就是 PostgreSQL。
 
-```bash
-docker compose -f ops/docker-compose.yml up -d      # 启动
-docker compose -f ops/docker-compose.yml ps         # 看状态（应为 healthy）
-docker compose -f ops/docker-compose.yml down       # 停止（保留数据）
-docker compose -f ops/docker-compose.yml down -v    # 停止并清空数据
-```
-
-| 服务 | 地址 | 账号 / 库 |
+| 服务 | 本机实际 | 说明 |
 |---|---|---|
-| PostgreSQL 15 | 127.0.0.1:**5433** | `crm / crm123456`，库 `crm_sales_agent` |
-| Redis 7 | 127.0.0.1:**6381** | CRM 用 db 2 |
+| PostgreSQL | **127.0.0.1:5432**，库 `crm_sales_agent`，账号 `crm / crm123456` | 这台 Mac 上是原生安装 |
+| 后端 | `127.0.0.1:8000`（或 `0.0.0.0` 供局域网访问） | FastAPI，无 `--reload` |
+| 前端 | `5173` | Vite，`/api` 代理到 8000 |
 
-> **为什么端口不是默认的 5432 / 6379**：这台机器上 5432 被 `nexus-postgres`、
-> 6379 被 `nexus-redis` 占用（别的项目在用）。为了互不干扰，CRM 用 5433 / 6381
-> 并跑在独立容器里，可以整组启停。
->
-> Elasticsearch / Qdrant 留给将来 Agent 知识库（RAG）用，当前版本没接。
+`ops/docker-compose.yml` 提供一套**可选的**独立容器（PG 5433 + Redis 6381），
+用于"不想用本机数据库"或多人隔离的场景——**当前 .env 没用它**，要用的话把
+`DATABASE_URL` 端口改成 5433 并删掉 `REDIS_URL`。
 
-## 启动（Windows / macOS / Linux 通用）
+## 启动
 
 ### 后端
 
 ```bash
-# ---- 首次 ----
 cd backend
-cp .env.example .env            # 然后把 DATABASE_URL 端口改成 5433、REDIS_URL 改成 6381
-uv venv --python 3.12 .venv     # 没有 uv 就用 python -m venv .venv
-uv pip install --python .venv/Scripts/python.exe -r requirements.txt   # macOS/Linux 用 .venv/bin/python
-.venv/Scripts/python.exe -m alembic upgrade head
-.venv/Scripts/python.exe -m scripts.seed
-
-# ---- 启动 ----
-.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+cp .env.example .env                      # 按本机情况改 DATABASE_URL
+uv venv --python 3.12 .venv               # 或 python -m venv .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+.venv/bin/python -m alembic upgrade head
+.venv/bin/python -m scripts.seed          # 角色权限、部门账号、示例客户/产品/价格
+.venv/bin/python -m scripts.seed_demo     # 可选：跑通报价→审批→订单→应收→回款，演示用
+PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-> Windows 下可执行文件在 `.venv\Scripts\`，macOS/Linux 在 `.venv/bin/`；下文只写前者。
+Windows 把 `.venv/bin/` 换成 `.venv\Scripts\`。接口文档：<http://127.0.0.1:8000/docs>（仅 `DEBUG=true`）。
 
-接口文档：<http://127.0.0.1:8000/docs>
+**改 Python 代码必须重启后端**（没有 `--reload`）。
 
 ### 前端
 
 ```bash
-cd frontend
-pnpm install        # 没有 pnpm 就用 npm install
-pnpm dev            # http://127.0.0.1:5173
+cd frontend && pnpm install && pnpm dev     # http://127.0.0.1:5173
 ```
 
-开发期前端通过 Vite 代理把 `/api` 转给后端 8000 端口，无需额外跨域配置。
+### 让局域网同事访问
 
-## 常驻运行（推荐，不依赖终端）
-
-手工起的 dev server 会随终端关闭而死。用 `ops` 下的脚本 + 计划任务可以让网站常驻：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ops\start_backend.ps1    # 起后端（已在跑则跳过）
-powershell -ExecutionPolicy Bypass -File ops\start_frontend.ps1   # 起前端
-powershell -ExecutionPolicy Bypass -File ops\stop_services.ps1    # 停两个服务
-
-# 注册开机自启（需要「以管理员身份运行」的 PowerShell）
-powershell -ExecutionPolicy Bypass -File ops\install_services.ps1
+```bash
+# 后端：--host 0.0.0.0
+PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-| 文件 | 作用 |
-|---|---|
-| `ops/docker-compose.yml` | PostgreSQL 15 + Redis 7（5433 / 6381） |
-| `ops/start_backend.ps1` | 起 uvicorn，带崩溃自动重启；日志写 `ops/logs/` |
-| `ops/start_frontend.ps1` | 起 Vite，带崩溃自动重启；日志写 `ops/logs/` |
-| `ops/stop_services.ps1` | 按端口停止，且只停本项目自己的进程 |
-| `ops/install_services.ps1` | 注册 `CRM-Backend` / `CRM-Frontend` 登录自启任务并立即启动 |
-| `ops/smoke_ui.mjs` | 逐页截图冒烟测试，见下节 |
+`frontend/vite.config.ts` 已配 `host: true` + `allowedHosts: true`；
+`backend/.env` 的 `CORS_ORIGINS` 里加上 `http://<本机IP>:5173`。
+同事打开 `http://<本机IP>:5173` 即可（Vite 代理走服务端转发，后端不必暴露也能用界面）。
 
-> 计划任务必须在**以管理员身份运行**的 PowerShell 里注册（`Register-ScheduledTask` 需要提权）。
-> 注册前先跑一次 `stop_services.ps1`：start 脚本发现端口被占用会跳过启动，
-> 否则任务会空转、而旧的手工进程继续占着端口。
->
-> 这些脚本刻意只用 ASCII 字符：Windows PowerShell 5.1 在文件没有 BOM 时按 GBK 读 `.ps1`，
-> 中文注释会导致语法错误。
+> ⚠️ 演示账号是弱口令（`admin123` / `123456`），局域网内任何人都能登进去改数据。
+> 只发必要账号，别发 admin。
 
 ## 演示账号
 
-| 账号 | 密码 | 角色 | 数据范围 |
-|---|---|---|---|
-| admin | admin123 | 管理员 | 全部 |
-| lisi | 123456 | 销售主管 | 本部门及下级 |
-| zhangsan | 123456 | 业务员 | 仅本人 |
+| 账号 | 密码 | 角色 | 数据范围 | 实际能用的页面 |
+|---|---|---|---|---|
+| admin | admin123 | 管理员 | 全部 | 全部 + 系统设置（唯一入口） |
+| lisi | 123456 | 销售主管 | 本部门及下级 | 业务全部 + 审批 + 价格中心 + 企业微信 |
+| zhangsan | 123456 | 业务员 | 仅本人 | 线索/客户/商机/核价/报价/跟进/任务/订单 |
+| wangwu | 123456 | 财务 | 全部 | **只有订单中心和回款中心**（其余无权限） |
 
-## 用脚本测接口时的两个坑（都踩过，别再犯）
-
-1. **Windows PowerShell 5.1 发中文 JSON 必须显式转 UTF-8**。
-   `Invoke-RestMethod -Body '{"destination":"华东"}'` 默认按 Latin-1 编码，
-   服务端收到的是乱码，于是"明明有华东费率却匹配不到"，看起来像后端 bug。
-   正确写法：
-
-   ```powershell
-   $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-   Invoke-RestMethod -Uri $url -Method Post -Headers $h -Body $bytes
-   ```
-
-   排查这类问题时，先用纯 ASCII 值（如 `DST_A`）跑一遍：若 ASCII 正常而中文异常，
-   就是编码问题，不是业务逻辑问题。
-
-2. **不要同时留多个 `start_backend.ps1` / `start_frontend.ps1`**。
-   脚本有"端口已监听则跳过"的保护，但两个 supervisor 同时存在时会各起一个 uvicorn，
-   其中一个绑定失败却仍在运行，表现为"代码明明是新的，接口却返回旧结果"。
-   重启用 `ops\stop_services.ps1` 先停干净，再起一个。
-
-## 界面冒烟测试
-
-改完前端或后端后，一条命令确认「页面能打开、数据能读出来、控制台无报错」：
+## 怎么验证（改完必须跑）
 
 ```bash
-node ops/smoke_ui.mjs                 # 截图默认落在临时目录
-SMOKE_OUT=/tmp/crm-shots node ops/smoke_ui.mjs
+bash ops/run_checks.sh          # 静态检查 + pytest + 10 个回归套件（与 CI 同清单）
+node ops/smoke_ui.mjs           # 28 页 + 4 交互逐页截图、抓控制台报错（不依赖 Playwright）
 ```
 
-它用浏览器调试协议驱动 Edge/Chrome，不依赖 Playwright。
+**截图要人眼看一遍**——历史上靠截图抓到过"接口正常但界面出错"的问题。
+
+> ⚠️ `scripts/check_*.py` 会**清库**，并且会留下 `CHK*` 前缀的测试数据、把价格权限改成 5%。
+> **不要在验收/演示环境随手跑。**
+
+## 约定
+
+- 接口统一返回 `{ "code": 0, "message": "ok", "data": ... }`，非 0 即业务错误；
+  错误码 = HTTP 状态 × 100 + 序号（40302 越数据范围、42204 版本锁定、42901 登录过于频繁…）
+- 所有写接口都要校验权限并写审计日志；
+- 业务数据按角色数据范围（self / department / department_and_sub / all）过滤，**禁止只靠前端隐藏**；
+- 报价类数据必须存快照，已发送或已审批的版本不可原地修改；
+- 数据库变更一律走 Alembic，禁止手改表结构；
+- 未配置的外部集成一律明确报错，**不返回"看起来成功"的空结果**。
+
+完整约定与踩坑清单见 [10 号文档第七、八节](./10-项目现状与交接说明.md)。
 
 ## 文件存储
 
-当前用本地磁盘（`backend/data/files`），配置项在 `backend/.env`：
+本地磁盘（`backend/data/files`），但字段按对象存储设计（`storage_provider` + `object_key`）：
 
 ```text
 STORAGE_PROVIDER=local
@@ -162,20 +136,9 @@ FILE_ROOT=data/files
 MAX_UPLOAD_MB=20
 ```
 
-字段按对象存储设计（`storage_provider` + `object_key`），
-将来换成 MinIO/OSS 只需在 `app/modules/file/storage.py` 增加一个适配器，业务表不用动。
-
-## 约定
-
-- 接口统一返回 `{ "code": 0, "message": "ok", "data": ... }`，非 0 即业务错误；
-- 所有写接口都要校验权限并写审计日志；
-- 业务数据按角色数据范围（self / department / department_and_sub / all）过滤，禁止只靠前端隐藏；
-- 报价类数据必须存快照，已发送或已审批的版本不可原地修改（Phase 3 落地）；
-- 数据库变更一律走 Alembic，禁止手改表结构。
+换 MinIO/OSS 只需在 `app/modules/file/storage.py` 加一个适配器，业务表不用动。
 
 ## Sales Agent（DeepSeek）
-
-Agent 接的是 DeepSeek（与公司现有知识库项目共用同一套配置），在 `backend/.env` 里配置：
 
 ```text
 DEEPSEEK_API_KEY=sk-...
@@ -183,83 +146,25 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
-未配置 Key 时 Agent 会明确提示"还没有配置模型"，其余功能不受影响。
+未配置 Key 时明确提示"还没有配置模型"，其余功能不受影响。
+20 个工具带三级风控：L1 自动执行（查询/核价）、L2 用户确认后执行（记跟进、建任务、建报价）、
+L3 审批后执行（低价报价提交审批，Agent 自己批不了）。
+每次调用写 `agent_executions`（含**当时的角色与数据范围快照**），写动作再写 `audit_logs`（来源 `AGENT`）。
 
-风控规则（写在 `app/modules/agent/tools.py` 的每个工具上）：
+## 企业微信 / ERP 集成（代码就绪，等凭据）
 
-| 等级 | 含义 | 例子 |
-|---|---|---|
-| L1 | 自动执行 | 查客户、查商机、核价、查回款 |
-| L2 | 用户确认后执行 | 记录跟进、创建任务、改商机下一步动作 |
-| L3 | 审批后执行 | 低价报价提交审批（Agent 不能自己批） |
+企微：部门与成员同步、外部联系人同步、待归一、离职继承、事件回调都已实现；
+缺凭据时同步接口返回 `50202` 并点名缺哪个变量，**不会静默返回"成功 0 条"**。
+回调地址：`https://<公网域名>/api/v1/webhooks/wecom/events`（企微要求公网 HTTPS）。
 
-每次工具调用都会写 `agent_executions`，写动作额外写 `audit_logs`（来源标为 AGENT），
-所以"AI 建议了什么、谁确认的、改了什么"全程可查。
+ERP：`SalesOrder → erp/service.py → ErpAdapter → 聚水潭/ERP321`，
+CRM 订单状态固定六个值、由各 Adapter 的映射表翻译对方状态词，**换 ERP 时业务与前端都不用动**；
+幂等靠 `erp_order_id` + `external_mappings` + 请求体 `idempotency_key`；未配置返回 `50203`。
+还差聚水潭的 `sign` 签名算法（公司已有的 `erp-bridge` 里有一份可抄）。
 
-## 企业微信集成（框架已就绪，等凭据）
+## 用脚本测接口时的两个坑
 
-PRD §8 的四块（部门/成员同步、外部联系人同步、待归一、离职继承）与 API §10 的
-13 个接口都已实现，前端「企业微信」页是设计稿的三栏布局（左待处理 / 中企微详情 / 右候选客户）。
-
-**差的就是凭据。** 在 `backend/.env` 里补齐后重启后端即可，代码不用改：
-
-```text
-WECOM_CORP_ID=ww...
-WECOM_AGENT_ID=1000002
-# 通讯录同步密钥（部门 / 成员）
-WECOM_CONTACT_SECRET=...
-# 客户联系密钥（外部联系人），企微里是独立的一把
-WECOM_EXTERNAL_CONTACT_SECRET=...
-# 事件回调，企微要求公网 HTTPS
-WECOM_CALLBACK_TOKEN=...
-WECOM_CALLBACK_AES_KEY=...
-```
-
-回调地址填：`https://<你的公网域名>/api/v1/webhooks/wecom/events`
-（GET 用于企微后台的 URL 校验，POST 收事件；两者都靠签名校验，不需要登录）。
-
-未配置期间的行为是**刻意设计**的：
-
-- 同步接口返回 `50202` 并说明缺哪个变量，**不会**静默返回"成功 0 条"——
-  否则运营会以为企微里真的没人；
-- 「企业微信」页顶部横幅列出缺哪些配置，页面与接口可以直接联调；
-- 离职继承传 `transfer_wecom=false` 可先只转 CRM 侧（客户/商机/任务负责人），
-  不依赖企微凭据。
-
-一个已知的待办：事件回调目前只把报文记进 `wecom_sync_jobs`（便于确认"企微推了什么"），
-真正的增量同步（收到 `change_external_contact` 只拉那一个人）等拿到真实回调再写——
-没有真实报文的情况下写增量逻辑只能靠猜。
-
-## ERP / MES 集成（框架已就绪，等凭据）
-
-API §28 的 6 个接口都已实现，Adapter 分层照 05-TECH §15：
-
-```text
-SalesOrder → erp/service.py → ErpAdapter → 聚水潭 / ERP321 / ...
-```
-
-- `app/modules/erp/adapter.py`：Adapter 接口 + 聚水潭实现 + 未配置时的占位实现。
-  CRM 订单状态固定为六个值，对方的状态词由各 Adapter 的映射表翻译过来，
-  **换 ERP 时业务与前端都不用动**。
-- 幂等（02-ER §21）：推送前先查 `erp_order_id` 与 `external_mappings`，
-  推过的直接返回；请求体带 `idempotency_key`（用 CRM 订单号），对方据此去重。
-- 履约状态回写统一走 `order_status_history`，`source=ERP`，
-  与人工维护的状态共用一张历史表。
-- 订单详情页的「推送 ERP/MES」按钮已接到真实实现，并新增「同步履约状态」。
-
-配置（`backend/.env`）：
-
-```text
-ERP_PROVIDER=jushuitan
-ERP_BASE_URL=
-ERP_APP_KEY=
-ERP_APP_SECRET=
-```
-
-**还缺一件事，不是我能补的**：聚水潭的签名算法（`sign`）需要按对方文档实现，
-而公司服务器上已有的 `erp-bridge` 里就有一份可用实现。拿到它的调用方式后，
-在 `JushuitanAdapter._call` 里补上 `sign` 即可 —— 其余（幂等、日志、
-状态映射、回调）都已就绪并验证过。
-
-未配置期间：推送返回 `50203` 并说明缺哪个变量，订单**不会**被标记为已推送。
-失败记录会先落盘再抛错（`integration_logs`），所以"为什么没推成功"查得到。
+1. **Windows PowerShell 5.1 发中文 JSON 必须显式转 UTF-8**，否则服务端收到乱码，
+   看起来像"明明有华东费率却匹配不到"。排查先用纯 ASCII 值跑一遍。
+2. **不要同时留多个后端进程**：两个 supervisor 会各起一个 uvicorn，
+   一个绑定失败却仍在跑，表现为"代码是新的、接口返回旧的"。
