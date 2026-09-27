@@ -41,6 +41,11 @@ def decode_upload(raw: bytes, *, label: str = "文件") -> str:
     )
 
 
+def _norm(name: str) -> str:
+    """表头归一：去空格、全角括号转半角——Excel 手填表头最容易在这两个地方跑偏。"""
+    return (name or "").replace("（", "(").replace("）", ")").replace(" ", "").strip()
+
+
 async def parse_csv_upload(
     file: UploadFile,
     *,
@@ -56,13 +61,19 @@ async def parse_csv_upload(
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise AppError(ErrorCode.PARAM_ERROR, f"{label}是空的，或者没有表头")
-    missing = [name for name in required_headers if name not in reader.fieldnames]
+    field_map = {_norm(name): name for name in reader.fieldnames if name}
+    missing = [name for name in required_headers if _norm(name) not in field_map]
     if missing:
         raise AppError(
             ErrorCode.PARAM_ERROR,
             f"表头缺少：{'、'.join(missing)}。请先下载导入模板按格式填写",
         )
-    return [row for row in reader if any((v or "").strip() for v in row.values())]
+    # 行的键同样归一化，调用方按模板表头原样取值即可
+    return [
+        {_norm(k): (v or "") for k, v in row.items() if k}
+        for row in reader
+        if any((v or "").strip() for v in row.values())
+    ]
 
 
 __all__ = ["IMPORT_ENCODINGS", "csv_bytes", "decode_upload", "parse_csv_upload"]

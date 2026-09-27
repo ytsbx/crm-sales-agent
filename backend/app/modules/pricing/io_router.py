@@ -14,7 +14,7 @@
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,9 +73,9 @@ def _result(rows_n: int, created: list, skipped: list, failed: list, message: st
             "created_count": len(created),
             "skipped_count": len(skipped),
             "failed_count": len(failed),
-            "created": created[:50],
-            "skipped": skipped[:50],
-            "failed": failed[:50],
+            "created": created[:200],
+            "skipped": skipped[:200],
+            "failed": failed[:1000],
         },
         message,
     )
@@ -86,14 +86,17 @@ def _result(rows_n: int, created: list, skipped: list, failed: list, message: st
 RULE_TEMPLATE_HEADERS = [
     "SKU编码", "客户等级(留空=通用)", "数量下限", "数量上限(留空=不限)",
     "标准价", "指导价", "最低保护价", "目标利润率(如0.30)",
-    "生效起始日(YYYY-MM-DD)", "生效截止日(YYYY-MM-DD)", "备注",
+    "生效起始日(YYYY-MM-DD)", "生效截止日(YYYY-MM-DD)", "历史标记(填1=历史资料)", "备注",
 ]
 
 
 @router.get("/price-rules/import-template")
 async def price_rule_template(_: CurrentUser = Depends(require_permission("price:manage"))):
     content = csv_bytes(
-        [["SKU-001", "A", "100", "999", "95", "85", "70", "0.30", "2026-10-01", "2026-12-31", "四季度促销档"]],
+        [
+            ["SKU-001", "A", "100", "999", "95", "85", "70", "0.30", "2026-10-01", "2026-12-31", "", "四季度促销档"],
+            ["SKU-001", "", "1", "", "", "100", "", "", "2025-01-01", "2025-06-30", "1", "去年成交价，仅留档（A14）"],
+        ],
         RULE_TEMPLATE_HEADERS,
     )
     return Response(
@@ -107,6 +110,7 @@ async def price_rule_template(_: CurrentUser = Depends(require_permission("price
 async def import_price_rules(
     request: Request,
     file: UploadFile = File(...),
+    preview: bool = Form(False),
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -150,25 +154,29 @@ async def import_price_rules(
             continue
 
         try:
-            conflict = await svc.find_price_rule_conflict(
-                session,
-                sku_id=sku.id,
-                customer_level=level,
-                min_qty=min_qty,
-                max_qty=max_qty,
-                effective_from=effective_from,
-                effective_to=effective_to,
-            )
-            if conflict is not None:
-                failed.append({
-                    "row": index,
-                    "name": code,
-                    "reason": (
-                        f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
-                        f"等级 {conflict.customer_level or '通用'}）重叠，请先处理"
-                    ),
-                })
-                continue
+            historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+            rule_status = "historical" if historical else "active"
+            if not historical:
+                # 历史资料允许与当前规则重叠（A14：不参与匹配也不参与冲突检查）
+                conflict = await svc.find_price_rule_conflict(
+                    session,
+                    sku_id=sku.id,
+                    customer_level=level,
+                    min_qty=min_qty,
+                    max_qty=max_qty,
+                    effective_from=effective_from,
+                    effective_to=effective_to,
+                )
+                if conflict is not None:
+                    failed.append({
+                        "row": index,
+                        "name": code,
+                        "reason": (
+                            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
+                            f"等级 {conflict.customer_level or '通用'}）重叠，请先处理"
+                        ),
+                    })
+                    continue
 
             rule = PriceRule(
                 sku_id=sku.id,
@@ -181,7 +189,7 @@ async def import_price_rules(
                 target_margin=target_margin,
                 effective_from=effective_from,
                 effective_to=effective_to,
-                status="active",
+                status=rule_status,
                 remark=(row.get("备注") or "").strip() or None,
             )
             session.add(rule)
@@ -190,12 +198,25 @@ async def import_price_rules(
         except Exception as exc:  # 单行失败不影响其它行
             failed.append({"row": index, "name": code, "reason": str(exc)[:120]})
 
+    if preview:
+        # 预览：完整跑一遍校验与冲突检查后整体回滚，不落任何数据
+        await session.rollback()
+        return _result(
+            len(rows), created, skipped, failed,
+            f"预览完成（未写入）：将导入 {len(created)} 条，跳过 {len(skipped)} 条，失败 {len(failed)} 条",
+        )
+
     await write_audit(
         session,
         operator_id=user.id,
         action="import",
         business_type="price_rule",
-        after={"created": len(created), "skipped": len(skipped), "failed": len(failed)},
+        after={
+            "file": file.filename,
+            "created": len(created),
+            "skipped": len(skipped),
+            "failed": len(failed),
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -207,14 +228,17 @@ async def import_price_rules(
 CP_TEMPLATE_HEADERS = [
     "客户编号(与客户名称二选一)", "客户名称(精确匹配)", "SKU编码",
     "数量下限", "数量上限(留空=不限)", "约定价", "最低价",
-    "生效起始日(YYYY-MM-DD)", "生效截止日(YYYY-MM-DD)", "备注",
+    "生效起始日(YYYY-MM-DD)", "生效截止日(YYYY-MM-DD)", "历史标记(填1=历史资料)", "备注",
 ]
 
 
 @router.get("/customer-price-rules/import-template")
 async def customer_price_template(_: CurrentUser = Depends(require_permission("price:manage"))):
     content = csv_bytes(
-        [["", "示例客户有限公司", "SKU-001", "1000", "", "88", "75", "2026-01-01", "2026-12-31", "年度框架协议价"]],
+        [
+            ["", "示例客户有限公司", "SKU-001", "1000", "", "88", "75", "2026-01-01", "2026-12-31", "", "年度框架协议价"],
+            ["", "示例客户有限公司", "SKU-001", "1000", "", "80", "", "2025-01-01", "2025-12-31", "1", "去年协议价，仅留档（A14）"],
+        ],
         CP_TEMPLATE_HEADERS,
     )
     return Response(
@@ -228,6 +252,7 @@ async def customer_price_template(_: CurrentUser = Depends(require_permission("p
 async def import_customer_prices(
     request: Request,
     file: UploadFile = File(...),
+    preview: bool = Form(False),
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -267,6 +292,8 @@ async def import_customer_prices(
             continue
 
         try:
+            historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+            rule_status = "historical" if historical else "active"
             customer: Customer | None = None
             if customer_no:
                 customer = await session.get(Customer, int(customer_no))
@@ -296,24 +323,25 @@ async def import_customer_prices(
                 failed.append({"row": index, "name": code, "reason": f"找不到 SKU「{code}」"})
                 continue
 
-            conflict = await svc.find_customer_price_conflict(
-                session,
-                customer_id=customer.id,
-                sku_id=sku.id,
-                min_qty=min_qty,
-                max_qty=max_qty,
-                effective_from=effective_from,
-                effective_to=effective_to,
-            )
-            if conflict is not None:
-                failed.append({
-                    "row": index,
-                    "name": code,
-                    "reason": (
-                        f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）重叠，请先处理"
-                    ),
-                })
-                continue
+            if not historical:
+                conflict = await svc.find_customer_price_conflict(
+                    session,
+                    customer_id=customer.id,
+                    sku_id=sku.id,
+                    min_qty=min_qty,
+                    max_qty=max_qty,
+                    effective_from=effective_from,
+                    effective_to=effective_to,
+                )
+                if conflict is not None:
+                    failed.append({
+                        "row": index,
+                        "name": code,
+                        "reason": (
+                            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）重叠，请先处理"
+                        ),
+                    })
+                    continue
 
             rule = CustomerPriceRule(
                 customer_id=customer.id,
@@ -324,6 +352,7 @@ async def import_customer_prices(
                 minimum_price=minimum_price,
                 effective_from=effective_from,
                 effective_to=effective_to,
+                status=rule_status,
                 remark=(row.get("备注") or "").strip() or None,
             )
             session.add(rule)
@@ -332,12 +361,24 @@ async def import_customer_prices(
         except Exception as exc:
             failed.append({"row": index, "name": code, "reason": str(exc)[:120]})
 
+    if preview:
+        await session.rollback()
+        return _result(
+            len(rows), created, skipped, failed,
+            f"预览完成（未写入）：将导入 {len(created)} 条，跳过 {len(skipped)} 条，失败 {len(failed)} 条",
+        )
+
     await write_audit(
         session,
         operator_id=user.id,
         action="import",
         business_type="customer_price_rule",
-        after={"created": len(created), "skipped": len(skipped), "failed": len(failed)},
+        after={
+            "file": file.filename,
+            "created": len(created),
+            "skipped": len(skipped),
+            "failed": len(failed),
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -369,6 +410,7 @@ async def cost_template(_: CurrentUser = Depends(require_permission("price:manag
 async def import_costs(
     request: Request,
     file: UploadFile = File(...),
+    preview: bool = Form(False),
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -456,12 +498,24 @@ async def import_costs(
         except Exception as exc:
             failed.append({"row": index, "name": code, "reason": str(exc)[:120]})
 
+    if preview:
+        await session.rollback()
+        return _result(
+            len(rows), created, skipped, failed,
+            f"预览完成（未写入）：将导入 {len(created)} 条，更新 {len(skipped)} 条，失败 {len(failed)} 条",
+        )
+
     await write_audit(
         session,
         operator_id=user.id,
         action="import",
         business_type="product_cost",
-        after={"created": len(created), "updated": len(skipped), "failed": len(failed)},
+        after={
+            "file": file.filename,
+            "created": len(created),
+            "updated": len(skipped),
+            "failed": len(failed),
+        },
         ip=client_ip(request),
     )
     await session.commit()

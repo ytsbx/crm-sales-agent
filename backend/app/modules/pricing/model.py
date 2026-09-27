@@ -76,6 +76,8 @@ class CustomerPriceRule(Base, IdMixin):
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     effective_from: Mapped[date | None] = mapped_column(Date, nullable=True)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # A14：active=当前售价（参与匹配）；historical=历史资料（不参与匹配与冲突检查）
+    status: Mapped[str] = mapped_column(String(16), default="active")
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 

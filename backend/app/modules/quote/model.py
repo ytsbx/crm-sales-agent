@@ -98,6 +98,10 @@ class QuoteItem(Base, IdMixin):
     standard_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True)
     recommended_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True)
     minimum_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True)
+    # A09：拟报价来源快照（customer_specific/level/general）与当时客户等级——
+    # 事后要能回答"这一版当初按哪条规则带的价"
+    price_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    customer_level_snapshot: Mapped[str | None] = mapped_column(String(8), nullable=True)
     quoted_price: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     profit_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     profit_rate_snapshot: Mapped[Decimal] = mapped_column(Numeric(10, 6), default=0)

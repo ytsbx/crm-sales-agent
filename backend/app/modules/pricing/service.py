@@ -190,6 +190,8 @@ async def find_customer_price(
         .where(
             CustomerPriceRule.customer_id == customer_id,
             CustomerPriceRule.sku_id == sku_id,
+            # A14：historical 是历史资料，不参与取价
+            CustomerPriceRule.status == "active",
             CustomerPriceRule.min_qty <= quantity,
             or_(CustomerPriceRule.max_qty.is_(None), CustomerPriceRule.max_qty >= quantity),
             or_(
@@ -243,6 +245,9 @@ async def find_price_rule_conflict(
     for rule in rows:
         if exclude_id is not None and rule.id == exclude_id:
             continue
+        # 历史资料（A14）不参与冲突检查
+        if rule.status != "active":
+            continue
         if (rule.customer_level or None) != (customer_level or None):
             continue
         if _ranges_overlap(min_qty, max_qty, rule.min_qty, rule.max_qty) and _ranges_overlap(
@@ -268,6 +273,8 @@ async def find_customer_price_conflict(
             select(CustomerPriceRule).where(
                 CustomerPriceRule.customer_id == customer_id,
                 CustomerPriceRule.sku_id == sku_id,
+                # A14：历史资料不参与冲突检查
+                CustomerPriceRule.status == "active",
             )
         )
     ).scalars().all()

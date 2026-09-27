@@ -47,6 +47,8 @@ def serialize_item(item: QuoteItem) -> dict:
         "standard_price_snapshot": _f(item.standard_price_snapshot),
         "recommended_price_snapshot": _f(item.recommended_price_snapshot),
         "minimum_price_snapshot": _f(item.minimum_price_snapshot),
+        "price_source": item.price_source,
+        "customer_level_snapshot": item.customer_level_snapshot,
         "quoted_price": _f(item.quoted_price),
         "amount": _f(item.quantity * item.quoted_price),
         "profit_snapshot": _f(item.profit_snapshot),
@@ -407,6 +409,9 @@ async def create_quote(
                 role_codes=user.roles,
                 package_type=opp_item.package_requirement,
                 country=opp_item.destination,
+                # A09：把"这版当初按哪条规则带的价"落成快照
+                price_source=lookup.get("source"),
+                customer_level_snapshot=(customer_obj.level or "").strip() or None,
             )
             session.add(item)
         await session.flush()
@@ -556,6 +561,8 @@ async def build_item_snapshot(
     role_codes: list[str],
     package_type: str | None = None,
     country: str | None = None,
+    price_source: str | None = None,
+    customer_level_snapshot: str | None = None,
 ) -> QuoteItem:
     """生成一条报价明细：成本、标准价、最低价、利润全部落成快照。
 
@@ -621,7 +628,9 @@ async def build_item_snapshot(
         logistics_cost_snapshot=Decimal(str(result["cost"]["logistics_cost"] or 0)),
         standard_price_snapshot=Decimal(str(result["standard_price"])),
         recommended_price_snapshot=Decimal(str(result["recommended_price"])),
-        minimum_price_snapshot=Decimal(str(result["minimum_price"])),
+        minimum_price_snapshot=Decimal(str(result["minimum_price"])) if result["minimum_price"] is not None else None,
+        price_source=price_source,
+        customer_level_snapshot=customer_level_snapshot,
         quoted_price=price,
         profit_snapshot=profit,
         profit_rate_snapshot=profit_rate.quantize(Decimal("0.000001")),
