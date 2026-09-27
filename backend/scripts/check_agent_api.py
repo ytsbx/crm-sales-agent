@@ -104,14 +104,51 @@ async def clean(verbose=False):
         ('用例会话', f"delete from agent_sessions where title like '%CHK{RUN}%'"),
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
         ('用例任务', f"delete from tasks where title like '%CHK{RUN}%'"),
+        ('用例回款', "delete from payment_records where order_id in "
+                  "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('用例应收', "delete from receivable_plans where order_id in "
+                  "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('订单状态历史', "delete from order_status_history where order_id in "
+                  "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('用例订单明细', "delete from sales_order_items where order_id in "
+                  "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('用例订单', "delete from sales_orders where customer_id in (select id from customers where name like 'CHK%')"),
+        ('用例客户特殊价', "delete from customer_price_rules where customer_id in "
+                  "(select id from customers where name like 'CHK%')"),
+        ('用例报价明细', "delete from quote_items where quote_version_id in "
+                  "(select id from quote_versions where quote_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK%')))"),
+        ('用例报价版本', "delete from quote_versions where quote_id in "
+                  "(select id from quotes where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('用例报价单', "delete from quotes where customer_id in (select id from customers where name like 'CHK%')"),
         ('用例客户', f"delete from customers where name like 'CHK{RUN}%'"),
     ]
     async with SessionLocal() as s:
-        for label, sql in statements:
-            result = await s.execute(text(sql))
-            if verbose and result.rowcount:
-                print(f'  {result.rowcount:>4}  {label}')
-        await s.commit()
+        # 三次重试：清库期间若有人（比如正在验收的浏览器会话/冒烟造单）
+        # 并发写入被清对象，FK 会随机炸——回滚重跑一遍即可自愈。
+        last_error = None
+        for attempt in range(3):
+            try:
+                for label, sql in statements:
+                    result = await s.execute(text(sql))
+                    if verbose and result.rowcount:
+                        print(f'  {result.rowcount:>4}  {label}')
+                await s.commit()
+                last_error = None
+                break
+            except Exception as exc:
+                await s.rollback()
+                last_error = exc
+        if last_error is not None:
+            # 最终失败：把挡路行查出来，日志可直接定位
+            async with SessionLocal() as s2:
+                blocking = await s2.execute(text(
+                    "select 'order' as kind, o.id, o.order_no from sales_orders o "
+                    "where o.customer_id in (select id from customers where name like 'CHK%') "
+                    "union all "
+                    "select 'customer', id, name from customers where name like 'CHK%'"
+                ))
+                print('  清库失败，挡路数据：', [dict(r) for r in blocking])
+            raise last_error
 
 
 async def main():
@@ -308,6 +345,78 @@ async def main():
     status, res = call('POST', '/agent/customer-summary', token=zhangsan,
                        body={'customer_id': outsider_id})
     check('张三读该客户的 Agent 摘要同样被拒', res.get('code'), 40302)
+
+    print()
+    print('=== 9b. Agent 工具的数据范围（直接调 handler，防"问一句看全公司"）===')
+    # 直接调工具函数而不是走对话：范围校验必须在工具层成立，
+    # 不依赖模型会不会"恰好先搜索再查详情"
+    from app.core.deps import CurrentUser
+    from app.core.errors import AppError
+    from app.modules.agent import tools as agent_tools
+    from app.modules.agent.tools import ToolContext
+    from app.core.database import SessionLocal
+    from app.modules.user.model import User
+
+    status, res = call('POST', '/customers', token=admin,
+                       body={'name': f'CHK{RUN}范围外客户B', 'region': '浙江'})
+    check('admin 建范围外客户 B', res.get('code'), 0)
+    outsider_b = res['data']['id']
+
+    async with SessionLocal() as s:
+        admin_row = await s.get(User, 1)
+        zs_row = await s.get(User, 2)  # zhangsan，数据范围 self
+
+    zs_user = CurrentUser(zs_row, permissions=set(), roles=['salesperson'], data_scope='self')
+    admin_user = CurrentUser(admin_row, permissions=set(), roles=['admin'], data_scope='all')
+
+    async with SessionLocal() as s:
+        ctx_zs = ToolContext(session=s, user=zs_user, agent_session_id=sid)
+        ctx_admin = ToolContext(session=s, user=admin_user, agent_session_id=sid)
+
+        try:
+            await agent_tools.get_customer_overview(ctx_zs, outsider_b)
+            check_true('张三查范围外客户全貌被拒', False, '没有抛错')
+        except AppError as exc:
+            check('张三查范围外客户全貌被拒', exc.code, 40302)
+        try:
+            data = await agent_tools.get_customer_overview(ctx_admin, outsider_b)
+            check_true('admin 查同一客户正常', 'customer' in data, '')
+        except AppError as exc:
+            check_true('admin 查同一客户正常', False, exc.message)
+
+        # 造一条 admin 名下的真实应收+已确认回款，让对比有区分度
+        # （别的套件会清订单表，不能假设库里有单）
+        from datetime import UTC, datetime
+
+        from app.modules.order.model import SalesOrder
+        from app.modules.payment.model import PaymentRecord, ReceivablePlan
+
+        probe_order = SalesOrder(
+            quote_id=None, order_no=f'CHK{RUN}SO', customer_id=outsider_b,
+            owner_id=1, status='fulfilled', total_amount=50000,
+            created_by=1, created_at=datetime.now(UTC),
+        )
+        s.add(probe_order)
+        await s.flush()
+        plan = ReceivablePlan(
+            order_id=probe_order.id, plan_name='全款', amount=50000,
+            due_date=datetime.now(UTC).date(), status='pending',
+            created_at=datetime.now(UTC),
+        )
+        s.add(plan)
+        await s.flush()
+        s.add(PaymentRecord(
+            order_id=probe_order.id, receivable_plan_id=plan.id,
+            received_amount=50000, received_date=datetime.now(UTC).date(),
+            status='confirmed', confirmed_by=1, confirmed_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+        ))
+        await s.commit()
+
+        zs_sum = await agent_tools.get_receivables_summary(ctx_zs)
+        admin_sum = await agent_tools.get_receivables_summary(ctx_admin)
+        check('张三看不到这笔 5 万回款', zs_sum['received_amount'], 0.0)
+        check('admin 看得到', admin_sum['received_amount'], 50000.0)
 
     print()
     print('=== 10. 权限门槛（无 agent:use 的角色）===')

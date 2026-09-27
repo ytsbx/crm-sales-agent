@@ -255,195 +255,219 @@ async def run_turn_events(
         calls = [acc[i] for i in sorted(acc)]
         yield ("round", ("".join(round_content), calls))
 
-    for _ in range(max(1, settings.agent_max_tool_rounds)):
-        content, calls = "", []
-        async for ev_kind, payload in chat_round(messages, with_tools=True):
-            if ev_kind == "delta":
-                yield ("delta", {"text": payload})
-            else:
-                content, calls = payload
-        if not calls:
-            reply_text = content
-            break
+    # 断线兜底用：累计所有已流出的文本增量。断开（刷新/断网/关页面）会把
+    # 生成器关闭（GeneratorExit），此时把已生成的部分回复落库，
+    # 否则会话历史里"AI 说到一半的话"整段消失、刷新后对不上。
+    streamed_parts: list[str] = []
+    _reply_saved = False
 
-        messages.append(
-            {
-                "role": "assistant",
-                "content": content or "",
-                "tool_calls": [
-                    {
-                        "id": call["id"],
-                        "type": "function",
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call["arguments"],
-                        },
-                    }
-                    for call in calls
-                ],
-            }
-        )
-
-        for call in calls:
-            name = call["name"]
-            spec = TOOLS.get(name)
-            try:
-                args = json.loads(call["arguments"] or "{}")
-            except json.JSONDecodeError:
-                args = {}
-
-            if spec is None:
-                result: dict = {"error": f"未知工具 {name}"}
-            elif spec.risk == "L1":
-                started = datetime.now(UTC)
-                try:
-                    result = await spec.handler(ctx, **args)
-                    await _record_execution(
-                        session,
-                        session_id=agent_session.id,
-                        action_id=None,
-                        tool_name=name,
-                        risk="L1",
-                        payload=args,
-                        output=result,
-                        status="success",
-                        user=user,
-                        started_at=started,
-                    )
-                    session.add(
-                        AgentMessage(
-                            session_id=agent_session.id,
-                            role="tool",
-                            tool_name=name,
-                            content=json.dumps(result, ensure_ascii=False)[:2000],
-                        )
-                    )
-                except AppError as exc:
-                    result = {"error": exc.message}
-                    await _record_execution(
-                        session,
-                        session_id=agent_session.id,
-                        action_id=None,
-                        tool_name=name,
-                        risk="L1",
-                        payload=args,
-                        output=None,
-                        status="failed",
-                        error=exc.message,
-                        user=user,
-                        started_at=started,
-                    )
-                tool_trace.append(
-                    {
-                        "tool": name,
-                        "label": tool_label(name),
-                        "risk": "L1",
-                        "input": args,
-                        "output": result,
-                    }
-                )
-                yield (
-                    "tool_call",
-                    {
-                        "tool": name,
-                        "label": tool_label(name),
-                        "risk": "L1",
-                        "input": args,
-                        "output": result,
-                    },
-                )
-            else:
-                # L2 / L3：不执行，落成待确认动作
-                action = AgentAction(
-                    session_id=agent_session.id,
-                    action_type=name,
-                    tool_name=name,
-                    risk_level=spec.risk,
-                    business_type=spec.business_type,
-                    business_id=args.get("customer_id")
-                    or args.get("opportunity_id")
-                    or args.get("quote_version_id"),
-                    title=_risk_summary(spec, args),
-                    proposed_payload=args,
-                    status="awaiting_confirmation" if spec.risk == "L2" else "approval_required",
-                )
-                session.add(action)
-                await session.flush()
-                pending_actions.append(action)
-                result = {
-                    "status": "awaiting_user_confirmation",
-                    "action_id": action.id,
-                    "risk_level": spec.risk,
-                    "risk_label": RISK_LABEL[spec.risk],
-                    "note": "该动作尚未执行，需要用户在界面上确认后才会生效",
-                }
-                tool_trace.append(
-                    {
-                        "tool": name,
-                        "label": tool_label(name),
-                        "risk": spec.risk,
-                        "input": args,
-                        "output": result,
-                    }
-                )
-                # L2/L3 也要实时可见：让前端在模型还在说话时就能显示"准备记跟进"
-                yield (
-                    "tool_call",
-                    {
-                        "tool": name,
-                        "label": tool_label(name),
-                        "risk": spec.risk,
-                        "input": args,
-                        "output": result,
-                    },
-                )
+    try:
+        for _ in range(max(1, settings.agent_max_tool_rounds)):
+            content, calls = "", []
+            async for ev_kind, payload in chat_round(messages, with_tools=True):
+                if ev_kind == "delta":
+                    streamed_parts.append(payload)
+                    yield ("delta", {"text": payload})
+                else:
+                    content, calls = payload
+            if not calls:
+                reply_text = content
+                break
 
             messages.append(
                 {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": json.dumps(result, ensure_ascii=False)[:3000],
+                    "role": "assistant",
+                    "content": content or "",
+                    "tool_calls": [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"],
+                            },
+                        }
+                        for call in calls
+                    ],
                 }
             )
-        await session.commit()
 
-    if not reply_text:
-        # 工具轮次用完了还没轮到模型说话：再要一句收尾总结（这次不给工具，逼它开口）
-        try:
-            summary_messages = messages + [
-                {
-                    "role": "user",
-                    "content": "请用两三句话总结上面的查询结果，并说明你准备了什么动作、需要我确认什么。",
-                }
-            ]
-            async for ev_kind, payload in chat_round(summary_messages, with_tools=False):
-                if ev_kind == "delta":
-                    yield ("delta", {"text": payload})
+            for call in calls:
+                name = call["name"]
+                spec = TOOLS.get(name)
+                try:
+                    args = json.loads(call["arguments"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+
+                if spec is None:
+                    result: dict = {"error": f"未知工具 {name}"}
+                elif spec.risk == "L1":
+                    started = datetime.now(UTC)
+                    try:
+                        result = await spec.handler(ctx, **args)
+                        await _record_execution(
+                            session,
+                            session_id=agent_session.id,
+                            action_id=None,
+                            tool_name=name,
+                            risk="L1",
+                            payload=args,
+                            output=result,
+                            status="success",
+                            user=user,
+                            started_at=started,
+                        )
+                        session.add(
+                            AgentMessage(
+                                session_id=agent_session.id,
+                                role="tool",
+                                tool_name=name,
+                                content=json.dumps(result, ensure_ascii=False)[:2000],
+                            )
+                        )
+                    except AppError as exc:
+                        result = {"error": exc.message}
+                        await _record_execution(
+                            session,
+                            session_id=agent_session.id,
+                            action_id=None,
+                            tool_name=name,
+                            risk="L1",
+                            payload=args,
+                            output=None,
+                            status="failed",
+                            error=exc.message,
+                            user=user,
+                            started_at=started,
+                        )
+                    tool_trace.append(
+                        {
+                            "tool": name,
+                            "label": tool_label(name),
+                            "risk": "L1",
+                            "input": args,
+                            "output": result,
+                        }
+                    )
+                    yield (
+                        "tool_call",
+                        {
+                            "tool": name,
+                            "label": tool_label(name),
+                            "risk": "L1",
+                            "input": args,
+                            "output": result,
+                        },
+                    )
                 else:
-                    reply_text = payload[0]
-        except Exception:  # 模型抖动不该让整轮对话失败
-            reply_text = ""
-        if not reply_text:
-            reply_text = "我已经查完了，结果在上面的工具记录里。"
+                    # L2 / L3：不执行，落成待确认动作
+                    action = AgentAction(
+                        session_id=agent_session.id,
+                        action_type=name,
+                        tool_name=name,
+                        risk_level=spec.risk,
+                        business_type=spec.business_type,
+                        business_id=args.get("customer_id")
+                        or args.get("opportunity_id")
+                        or args.get("quote_version_id"),
+                        title=_risk_summary(spec, args),
+                        proposed_payload=args,
+                        status="awaiting_confirmation" if spec.risk == "L2" else "approval_required",
+                    )
+                    session.add(action)
+                    await session.flush()
+                    pending_actions.append(action)
+                    result = {
+                        "status": "awaiting_user_confirmation",
+                        "action_id": action.id,
+                        "risk_level": spec.risk,
+                        "risk_label": RISK_LABEL[spec.risk],
+                        "note": "该动作尚未执行，需要用户在界面上确认后才会生效",
+                    }
+                    tool_trace.append(
+                        {
+                            "tool": name,
+                            "label": tool_label(name),
+                            "risk": spec.risk,
+                            "input": args,
+                            "output": result,
+                        }
+                    )
+                    # L2/L3 也要实时可见：让前端在模型还在说话时就能显示"准备记跟进"
+                    yield (
+                        "tool_call",
+                        {
+                            "tool": name,
+                            "label": tool_label(name),
+                            "risk": spec.risk,
+                            "input": args,
+                            "output": result,
+                        },
+                    )
 
-    session.add(
-        AgentMessage(session_id=agent_session.id, role="assistant", content=reply_text)
-    )
-    if agent_session.title in ("", "新会话"):
-        agent_session.title = text[:20]
-    await session.commit()
-    actions_payload = [
-        {**serialize_action(action), "display": await action_display(session, action)}
-        for action in pending_actions
-    ]
-    yield (
-        "done",
-        {
-            "reply": reply_text,
-            "actions": actions_payload,
-            "tool_calls": tool_trace,
-        },
-    )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": json.dumps(result, ensure_ascii=False)[:3000],
+                    }
+                )
+            await session.commit()
+
+        if not reply_text:
+            # 工具轮次用完了还没轮到模型说话：再要一句收尾总结（这次不给工具，逼它开口）
+            try:
+                summary_messages = messages + [
+                    {
+                        "role": "user",
+                        "content": "请用两三句话总结上面的查询结果，并说明你准备了什么动作、需要我确认什么。",
+                    }
+                ]
+                async for ev_kind, payload in chat_round(summary_messages, with_tools=False):
+                    if ev_kind == "delta":
+                        streamed_parts.append(payload)
+                        yield ("delta", {"text": payload})
+                    else:
+                        reply_text = payload[0]
+            except Exception:  # 模型抖动不该让整轮对话失败
+                reply_text = ""
+            if not reply_text:
+                reply_text = "我已经查完了，结果在上面的工具记录里。"
+
+        session.add(
+            AgentMessage(session_id=agent_session.id, role="assistant", content=reply_text)
+        )
+        if agent_session.title in ("", "新会话"):
+            agent_session.title = text[:20]
+        await session.commit()
+        actions_payload = [
+            {**serialize_action(action), "display": await action_display(session, action)}
+            for action in pending_actions
+        ]
+        yield (
+            "done",
+            {
+                "reply": reply_text,
+                "actions": actions_payload,
+                "tool_calls": tool_trace,
+            },
+        )
+    except GeneratorExit:
+        # aclose() 允许在清理里 await：提交部分回复后把 GeneratorExit 继续外抛
+        partial = "".join(streamed_parts).strip()
+        if partial and not _reply_saved:
+            session.add(
+                AgentMessage(
+                    session_id=agent_session.id,
+                    role="assistant",
+                    content=partial + "\n\n（连接中断，以上为已生成的部分）",
+                )
+            )
+            if agent_session.title in ("", "新会话"):
+                agent_session.title = text[:20]
+            await session.commit()
+        raise
 
 
 async def run_turn(

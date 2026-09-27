@@ -265,6 +265,45 @@ async def main():
         check_true('on_event 回调仍可用', any(k == 'done' for k, _ in collected), str([k for k, _ in collected]))
 
     print()
+    print('=== 3b. 断线：客户端中途断开，已生成的部分回复要落库 ===')
+    long_text = '这是一段比较长的回复，用来验证客户端中途断开时已生成的部分会被保留下来。'
+    chunks = [long_text[i:i + 6] for i in range(0, len(long_text), 6)]
+    fake_mid = _FakeClient(rounds=[[_Chunk(_Delta(content=c)) for c in chunks]])
+    async with SessionLocal() as session:
+        agent_session = AgentSession(user_id=1, title=f'CHK{RUN}断线')
+        session.add(agent_session)
+        await session.commit()
+        sid = agent_session.id
+
+        with patch.object(runtime, '_client', lambda: fake_mid), \
+             patch.object(runtime, 'model_ready', lambda: True):
+            gen = runtime.run_turn_events(
+                session, agent_session=agent_session, user=user, text=f'CHK{RUN} 断线测试'
+            )
+            got: list[str] = []
+            async for kind, data in gen:
+                if kind == 'delta':
+                    got.append(data['text'])
+                    if len(got) >= 3:
+                        break  # 模拟客户端读到一半断开（async for 退出后 aclose）
+            await gen.aclose()
+
+        partial = ''.join(got)
+        check_true('确实在断开前收到了部分文本', len(partial) > 0, partial[:20])
+        async with SessionLocal() as verify:
+            row = (
+                await verify.execute(
+                    select(AgentMessage)
+                    .where(AgentMessage.session_id == sid, AgentMessage.role == 'assistant')
+                )
+            ).scalars().first()
+            check_true('部分回复已落库',
+                       row is not None and partial in (row.content or ''),
+                       (row.content[:30] if row else '无记录'))
+            check_true('带中断标记（历史能看出这轮没说完）',
+                       row is not None and '连接中断' in row.content, '')
+
+    print()
     print('=== 4. 模型未配置：notice + done，无 delta ===')
     async with SessionLocal() as session:
         agent_session = AgentSession(user_id=1, title=f'CHK{RUN}未配模型')

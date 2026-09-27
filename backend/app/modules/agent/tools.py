@@ -127,6 +127,25 @@ async def _scope(stmt, ctx: ToolContext, column):
     return stmt.where(column.in_(owner_ids))
 
 
+async def _ensure_in_scope(
+    ctx: ToolContext, owner_column, pk_column, entity_id: int, label: str
+) -> None:
+    """按 id 取详情的工具同样要过数据范围（与业务接口同一套纪律）。
+
+    只给列表工具加过滤是不够的：改个 id 就能看别人的客户/订单/财务，
+    等于数据范围形同虚设。越权与不存在返回同一种口径的错误，
+    避免"探测 id"侧信道——不存在已在调用点先按 404 处理，走到这里
+    还查不到就只剩越权一种可能。
+    """
+    owner_ids = await scoped_owner_ids(ctx.session, ctx.user)
+    if owner_ids is None:
+        return
+    stmt = select(pk_column).where(pk_column == entity_id, owner_column.in_(owner_ids))
+    hit = (await ctx.session.execute(stmt)).scalar_one_or_none()
+    if hit is None:
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, f"没有权限查看该{label}", 403)
+
+
 # ------------------------------------------------------------------ L1 只读
 
 @tool(
@@ -170,6 +189,7 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     customer = await ctx.session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    await _ensure_in_scope(ctx, Customer.owner_id, Customer.id, customer_id, "客户")
     contacts = (
         await ctx.session.execute(
             select(Contact).where(Contact.customer_id == customer_id, Contact.deleted_at.is_(None))
@@ -307,6 +327,7 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
     opportunity = await ctx.session.get(Opportunity, opportunity_id)
     if opportunity is None or opportunity.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+    await _ensure_in_scope(ctx, Opportunity.owner_id, Opportunity.id, opportunity_id, "商机")
     items = (
         await ctx.session.execute(
             select(OpportunityItem, Sku.sku_code, Sku.specification)
@@ -508,15 +529,24 @@ async def calculate_price(
     "L1",
 )
 async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None) -> dict:
-    stmt = select(ReceivablePlan)
+    # 财务汇总必须过数据范围：不过滤就是"问一句拿到全公司回款"，
+    # 与业务接口的 apply_data_scope 同一套口径
+    owner_ids = await scoped_owner_ids(ctx.session, ctx.user)
+    order_filter = SalesOrder.id.in_(owner_ids) if owner_ids is not None else True
+    stmt = select(ReceivablePlan).join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
     if order_id:
         stmt = stmt.where(ReceivablePlan.order_id == order_id)
+    stmt = stmt.where(order_filter)
     plans = (await ctx.session.execute(stmt)).scalars().all()
     received = (
         await ctx.session.execute(
             select(func.coalesce(func.sum(PaymentRecord.received_amount), 0)).where(
                 PaymentRecord.status == "confirmed",
                 PaymentRecord.order_id == order_id if order_id else True,
+                select(SalesOrder.id)
+                .where(SalesOrder.id == PaymentRecord.order_id)
+                .where(order_filter)
+                .exists(),
             )
         )
     ).scalar_one()
@@ -777,6 +807,8 @@ async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
     contact = await ctx.session.get(Contact, contact_id)
     if contact is None or contact.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    # 联系人没有 owner，范围跟所属客户走
+    await _ensure_in_scope(ctx, Customer.owner_id, Customer.id, contact.customer_id, "客户")
     return {
         "id": contact.id,
         "name": contact.name,
@@ -939,6 +971,7 @@ async def get_order(ctx: ToolContext, order_id: int) -> dict:
     order = await ctx.session.get(SalesOrder, order_id)
     if order is None:
         raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    await _ensure_in_scope(ctx, SalesOrder.owner_id, SalesOrder.id, order_id, "订单")
 
     items = (
         await ctx.session.execute(

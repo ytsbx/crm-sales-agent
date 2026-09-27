@@ -169,8 +169,11 @@ export default function AgentPage() {
 
   const messages = detailQuery.data?.messages ?? []
   const actions = detailQuery.data?.actions ?? []
-  const pendingActions = actions.filter((a) => a.status === 'awaiting_confirmation')
-  const archivedActions = actions.filter((a) => a.status !== 'awaiting_confirmation')
+  // L3（转审批）动作落库状态是 approval_required，和 L2 的 awaiting_confirmation
+  // 一样都等用户表态——之前只过滤了后者，L3 的确认按钮永远出不来，链路前端断
+  const pendingStatuses = new Set(['awaiting_confirmation', 'approval_required'])
+  const pendingActions = actions.filter((a) => pendingStatuses.has(a.status))
+  const archivedActions = actions.filter((a) => !pendingStatuses.has(a.status))
   // 流式进行中显示实时到达的工具，结束后显示本轮汇总
   const visibleTools = streaming ? streamTools : lastTools
 
