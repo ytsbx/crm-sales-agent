@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -29,6 +30,23 @@ class CustomInquiryUpdate(BaseModel):
 
 class CustomInquiryStatusUpdate(BaseModel):
     status: str
+
+
+class CustomInquiryQuoteRequest(BaseModel):
+    """从定制需求直接发起报价（场景09）。
+
+    只让填两个数：核价成本与报价。数量不填就取需求上的数量；其余（客户、
+    商机、明细来源、快照）都由系统接。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    #: 核价成本（元/件，不含运费）——必填，理由见 quote.service 的定制项分支
+    unit_cost: Decimal
+    quoted_price: Decimal
+    quantity: Decimal | None = None
+    item_name: str | None = None
+    valid_until: date | None = None
 
 
 class CustomInquiryRevise(BaseModel):

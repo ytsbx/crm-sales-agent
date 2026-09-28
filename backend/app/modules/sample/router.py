@@ -109,7 +109,15 @@ async def create_sample(
     await session.flush()
 
     for item in payload.items:
-        await _add_item(session, sample.id, item.sku_id, item.quantity, item.remark)
+        await _add_item(
+            session,
+            sample.id,
+            item.sku_id,
+            item.quantity,
+            item.remark,
+            inquiry_id=item.inquiry_id,
+            item_name=item.item_name,
+        )
 
     await session.flush()
     await write_audit(
@@ -355,7 +363,7 @@ async def list_sample_items(
 ):
     await svc.get_visible_or_404(session, user, sample_id)
     items = await svc.items_of(session, sample_id)
-    sku_ids = {item.sku_id for item in items}
+    sku_ids = {item.sku_id for item in items if item.sku_id}  # 定制项无 SKU
     skus = {}
     if sku_ids:
         skus = {
@@ -382,7 +390,15 @@ async def add_sample_item(
             f"样品已是「{SAMPLE_STATUS_LABEL.get(sample.status, sample.status)}」，不能再加明细",
             422,
         )
-    item = await _add_item(session, sample.id, payload.sku_id, payload.quantity, payload.remark)
+    item = await _add_item(
+        session,
+        sample.id,
+        payload.sku_id,
+        payload.quantity,
+        payload.remark,
+        inquiry_id=payload.inquiry_id,
+        item_name=payload.item_name,
+    )
     await session.flush()
     await write_audit(
         session,
@@ -398,14 +414,50 @@ async def add_sample_item(
 
 
 async def _add_item(
-    session: AsyncSession, sample_id: int, sku_id: int, quantity, remark: str | None
+    session: AsyncSession,
+    sample_id: int,
+    sku_id: int | None,
+    quantity,
+    remark: str | None,
+    *,
+    inquiry_id: int | None = None,
+    item_name: str | None = None,
 ) -> SampleItem:
-    sku = await session.get(Sku, sku_id)
-    if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU {sku_id} 不存在", 404)
-    item = SampleItem(
-        sample_request_id=sample_id, sku_id=sku_id, quantity=quantity, remark=remark
-    )
+    """加一条打样明细。
+
+    两条路径（场景09）：有 SKU 走 SKU；定制件尚无 SKU 时给需求编号——
+    定制件本来就要先打样再定 SKU，强制先建档等于把顺序反过来。
+    两个都不给直接拒：这条明细得说得清打的是什么。
+    """
+    if sku_id is None and inquiry_id is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, "打样明细必须关联 SKU 或定制需求编号", 422
+        )
+    if sku_id is not None:
+        sku = await session.get(Sku, sku_id)
+        if sku is None or sku.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU {sku_id} 不存在", 404)
+        item = SampleItem(
+            sample_request_id=sample_id,
+            sku_id=sku_id,
+            quantity=quantity,
+            remark=remark,
+        )
+    else:
+        from app.modules.inquiry.model import CustomInquiry
+
+        inquiry = await session.get(CustomInquiry, inquiry_id)
+        if inquiry is None or inquiry.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, f"定制需求 id={inquiry_id} 不存在", 404)
+        item = SampleItem(
+            sample_request_id=sample_id,
+            sku_id=None,
+            inquiry_id=inquiry.id,
+            inquiry_no_snapshot=inquiry.inquiry_no,
+            item_name=item_name or inquiry.title,
+            quantity=quantity,
+            remark=remark,
+        )
     session.add(item)
     await session.flush()
     return item

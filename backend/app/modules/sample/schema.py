@@ -7,9 +7,18 @@ from pydantic import BaseModel, ConfigDict
 
 
 class SampleItemInput(BaseModel):
+    """打样明细入参。两条路径（文档场景09）：
+
+    - 现货：给 `sku_id`；
+    - 定制：尚无正式 SKU 时给 `inquiry_id`（需求编号）+ 可选 `item_name`。
+      两者都不给会被拒——明细得说得清打的是什么。
+    """
+
     model_config = ConfigDict(extra="ignore")
 
-    sku_id: int
+    sku_id: int | None = None
+    inquiry_id: int | None = None
+    item_name: str | None = None
     quantity: Decimal = Decimal(1)
     remark: str | None = None
 

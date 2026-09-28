@@ -32,10 +32,15 @@ def serialize_item(item: SampleItem, sku: Sku | None = None) -> dict:
         "id": item.id,
         "sample_request_id": item.sample_request_id,
         "sku_id": item.sku_id,
-        "sku_code": sku.sku_code if sku else None,
-        "sku_name": sku.name if sku else None,
+        # 定制项（场景09）：没有 SKU 时用需求编号/需求名顶上，
+        # 前端与打样单上要能看出"打的是哪条需求"
+        "sku_code": sku.sku_code if sku else item.inquiry_no_snapshot,
+        "sku_name": sku.name if sku else item.item_name,
         "specification": sku.specification if sku else None,
         "unit": sku.unit if sku else None,
+        "inquiry_id": item.inquiry_id,
+        "inquiry_no": item.inquiry_no_snapshot,
+        "is_custom": item.sku_id is None,
         "quantity": _f(item.quantity),
         "remark": item.remark,
     }
@@ -257,7 +262,7 @@ async def shipments_map(
 
 
 async def skus_map(session: AsyncSession, items: list[SampleItem]) -> dict[int, Sku]:
-    sku_ids = {item.sku_id for item in items}
+    sku_ids = {item.sku_id for item in items if item.sku_id}  # 定制项无 SKU
     if not sku_ids:
         return {}
     return {

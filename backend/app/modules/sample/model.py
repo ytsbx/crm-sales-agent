@@ -78,7 +78,16 @@ class SampleItem(Base, IdMixin):
     sample_request_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("sample_requests.id")
     )
-    sku_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("skus.id"))
+    # 定制项（文档场景09）：尚无正式 SKU 时也能打样——sku_id 为空，
+    # 由需求编号说明"打的是哪条需求"。定制件本来就要先打样再定 SKU，
+    # 强制先建档等于把这个顺序反过来。
+    sku_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("skus.id"), nullable=True
+    )
+    inquiry_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    inquiry_no_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 定制项的展示名（没有 SKU 名称可用）
+    item_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=1)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

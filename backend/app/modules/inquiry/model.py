@@ -30,6 +30,14 @@ class CustomInquiry(Base, IdMixin):
         Index("ix_custom_inquiries_status", "status"),
     )
 
+    # 需求编号（文档场景09）：尚无正式 SKU 时，询价/报价/打样三头都靠它
+    # 指向同一条需求——没有它，"这张报价是从哪条定制需求来的"就断了。
+    # 走 settings/numbering 的取号器（XQ+日期+4 位），与报价/订单同一套机制。
+    #
+    # **不设唯一约束**：编号标识需求、version 标识修订，同一条需求的 v1/v2
+    # 是两行、共用同一个编号——加唯一索引会让"修订一次就写不进去"。
+    # 新号不撞旧号由取号器的 taken 探针保证（它按"号是否已存在"逐个探测）。
+    inquiry_no: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 修订链（文档 §3.3/§四"需求及修订"）：客户改了三次要求，要能看出怎么变的。

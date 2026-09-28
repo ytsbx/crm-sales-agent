@@ -28,9 +28,21 @@ class QuoteVersionUpdate(BaseModel):
 
 
 class QuoteItemInput(BaseModel):
-    """报价明细入参：quoted_price 留空则用核价建议价。"""
+    """报价明细入参。两条路径（文档场景09）：
 
-    sku_id: int
+    - **现货**：给 `sku_id`，`quoted_price` 留空则用系统适用价/核价建议价；
+    - **定制**：尚无正式 SKU 时给 `inquiry_id` + 人工核价的 `unit_cost` 与
+      `quoted_price`。定制项必须给成本——不给成本就只能按 0 算，
+      会得出 100% 毛利、低价审批也不会触发（与 A06「无成本不造假」同口径）。
+    """
+
+    sku_id: int | None = None
+    #: 定制需求 id（与 sku_id 至少给一个）
+    inquiry_id: int | None = None
+    #: 定制项展示名，落快照；不填用需求标题
+    item_name: str | None = None
+    #: 定制项人工核价成本（元/件，不含运费）
+    unit_cost: Decimal | None = None
     quantity: Decimal = Decimal(1)
     quoted_price: Decimal | None = None
     opportunity_item_id: int | None = None

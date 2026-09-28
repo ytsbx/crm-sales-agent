@@ -86,6 +86,15 @@ DEFAULT_RULES: dict[str, dict] = {
         "seq_length": 4,
         "reset_period": "daily",
     },
+    # 定制需求编号（场景09）：尚无正式 SKU 时，询价、报价、打样三头都靠它
+    # 指向同一条需求。放在同一套取号器里，规则可配、并发不撞号。
+    "inquiry": {
+        "name": "定制需求编号",
+        "prefix": "XQ",
+        "date_format": "%Y%m%d",
+        "seq_length": 4,
+        "reset_period": "daily",
+    },
 }
 
 RESET_PERIODS = {

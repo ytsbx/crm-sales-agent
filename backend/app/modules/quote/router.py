@@ -762,6 +762,10 @@ async def set_items(
             spec_snapshot=payload.spec_snapshot,
             remark=payload.remark,
             role_codes=user.roles,
+            # 定制项（场景09）：无 SKU 时按需求编号 + 人工核价成本落快照
+            inquiry_id=payload.inquiry_id,
+            item_name=payload.item_name,
+            unit_cost=payload.unit_cost,
         )
         session.add(item)
         hint = await svc.moq_warning(session, payload.sku_id, payload.quantity)
@@ -1300,6 +1304,10 @@ async def add_version_item(
         spec_snapshot=payload.spec_snapshot,
         remark=payload.remark,
         role_codes=user.roles,
+        # 定制项（场景09）：无 SKU 时按需求编号 + 人工核价成本落快照
+        inquiry_id=payload.inquiry_id,
+        item_name=payload.item_name,
+        unit_cost=payload.unit_cost,
     )
     session.add(item)
     await session.flush()

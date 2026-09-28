@@ -39,6 +39,10 @@ def serialize_item(item: QuoteItem) -> dict:
         "sku_id": item.sku_id,
         "sku_code": item.sku_code_snapshot,
         "sku_name": item.sku_name_snapshot,
+        # 定制项（场景09）：sku_id 为空时靠这两栏说明"对着哪条需求报的价"
+        "inquiry_id": item.inquiry_id,
+        "inquiry_no": item.inquiry_no_snapshot,
+        "is_custom": item.sku_id is None,
         "specification": item.spec_snapshot,
         "quantity": _f(item.quantity),
         "cost_snapshot": _f(item.cost_snapshot),
@@ -576,11 +580,112 @@ async def create_version(
     return version
 
 
+async def _build_custom_item_snapshot(
+    session: AsyncSession,
+    *,
+    version: QuoteVersion,
+    inquiry_id: int | None,
+    item_name: str | None,
+    quantity: Decimal,
+    quoted_price: Decimal | None,
+    unit_cost: Decimal | None,
+    logistics_cost: Decimal | None,
+    spec_snapshot: str | None,
+    remark: str | None,
+    opportunity_item_id: int | None,
+) -> QuoteItem:
+    """定制项明细（文档场景09）：尚无正式 SKU 时按需求编号报价。
+
+    为什么三个都必填、缺一就拒：
+    1. **需求**（inquiry_id）：没有 SKU 又没有需求，这条明细无源可溯，
+       对客文件上连"这是什么"都说不清；
+    2. **报价**（quoted_price）：没有 SKU 就没有价格规则可查，只能人工定；
+    3. **成本**（unit_cost）：成本未知时若按 0 记，会算出 100% 毛利、
+       低价审批也永远不会触发——与 A06「无成本不造假」相反。宁可让人填。
+
+    最低保护价按系统已配置的最低毛利率推（成本 ×(1+default_min_margin)），
+    不另创一套定制价政策：定制项与现货项因此走同一个低价审批判定。
+    定制项的成本与报价都按**报价版本的币种**填（外贸单要按该币种录，
+    不在这里折算——折算会引入第二个汇率来源，与汇率快照口径冲突）。
+    """
+    from app.modules.inquiry.model import CustomInquiry
+
+    if not inquiry_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, "明细必须关联 SKU 或定制需求编号", 422
+        )
+    inquiry = await session.get(CustomInquiry, inquiry_id)
+    if inquiry is None or inquiry.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, f"定制需求 id={inquiry_id} 不存在", 404)
+    if quoted_price is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"定制项「{inquiry.title}」请人工填写报价（无系统适用价可查）",
+            422,
+        )
+    if unit_cost is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"定制项「{inquiry.title}」请填写核价成本（缺成本无法判断毛利与低价审批）",
+            422,
+        )
+
+    price = Decimal(str(quoted_price))
+    cost = Decimal(str(unit_cost))
+    freight = Decimal(str(logistics_cost or 0))
+    min_ratio = Decimal(
+        str(await settings_service.get_number(session, "default_min_margin", "ratio", 0.15))
+    )
+    minimum_price = (cost * (1 + min_ratio)).quantize(Decimal("0.01"))
+    profit = price - cost - freight
+    profit_rate = (profit / price) if price else ZERO
+    below_floor = price < minimum_price
+
+    # 需求被报价引用即视为已转下游（只在待评估/开发中时翻转，
+    # 不覆盖人工做的归档决定）
+    if inquiry.status in ("open", "developing"):
+        inquiry.status = "converted"
+
+    return QuoteItem(
+        quote_version_id=version.id,
+        opportunity_item_id=opportunity_item_id,
+        sku_id=None,
+        inquiry_id=inquiry.id,
+        inquiry_no_snapshot=inquiry.inquiry_no,
+        # 快照占住 SKU 的位置：对客文件上要能看出这是哪条定制需求
+        sku_code_snapshot=inquiry.inquiry_no or f"XQ{inquiry.id:04d}",
+        sku_name_snapshot=item_name or inquiry.title,
+        spec_snapshot=spec_snapshot or inquiry.description,
+        quantity=quantity,
+        cost_snapshot=cost,
+        package_cost_snapshot=ZERO,
+        logistics_cost_snapshot=freight,
+        standard_price_snapshot=None,
+        recommended_price_snapshot=price,
+        minimum_price_snapshot=minimum_price,
+        price_source="custom_manual",
+        customer_level_snapshot=None,
+        quoted_price=price,
+        profit_snapshot=profit,
+        profit_rate_snapshot=profit_rate.quantize(Decimal("0.000001")),
+        tax_refund_snapshot=ZERO,
+        profit_with_refund_snapshot=profit,
+        approval_required=below_floor,
+        approval_reason=(
+            f"定制项报价 {price} 低于最低保护价 {minimum_price}"
+            f"（成本 {cost}×(1+{min_ratio})），需审批"
+            if below_floor
+            else None
+        ),
+        remark=remark,
+    )
+
+
 async def build_item_snapshot(
     session: AsyncSession,
     *,
     version: QuoteVersion,
-    sku_id: int,
+    sku_id: int | None,
     quantity: Decimal,
     customer_id: int,
     quoted_price: Decimal | None,
@@ -593,8 +698,14 @@ async def build_item_snapshot(
     country: str | None = None,
     price_source: str | None = None,
     customer_level_snapshot: str | None = None,
+    inquiry_id: int | None = None,
+    item_name: str | None = None,
+    unit_cost: Decimal | None = None,
 ) -> QuoteItem:
     """生成一条报价明细：成本、标准价、最低价、利润全部落成快照。
+
+    `sku_id` 为空即定制项（场景09）：转 `_build_custom_item_snapshot`，
+    那条路径不需要价格规则，靠人工核价的成本与报价。
 
     成本口径（与 02-ER §11 的分层保持一致，别改坏）：
       cost_snapshot            = 商品成本（采购+生产+包装+加工）
@@ -605,6 +716,20 @@ async def build_item_snapshot(
     汇率与退税：按报价版本上快照的币种/汇率核价，并把结果一并落成快照，
     否则外贸报价会静默按人民币口径算（此前汇率快照字段一直没被写入）。
     """
+    if sku_id is None:
+        return await _build_custom_item_snapshot(
+            session,
+            version=version,
+            inquiry_id=inquiry_id,
+            item_name=item_name,
+            quantity=quantity,
+            quoted_price=quoted_price,
+            unit_cost=unit_cost,
+            logistics_cost=logistics_cost,
+            spec_snapshot=spec_snapshot,
+            remark=remark,
+            opportunity_item_id=opportunity_item_id,
+        )
     sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, f"SKU {sku_id} 不存在", 404)
@@ -694,8 +819,10 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
     version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"))
 
 
-async def moq_warning(session: AsyncSession, sku_id: int, quantity: Decimal) -> str | None:
+async def moq_warning(session: AsyncSession, sku_id: int | None, quantity: Decimal) -> str | None:
     """MOQ 提示（方案 §4.1）：数量低于起订量给提示不拦截——拦截与否由业务拍板。"""
+    if sku_id is None:  # 定制项没有 SKU，也就没有起订量可谈
+        return None
     sku = await session.get(Sku, sku_id)
     if sku is not None and sku.moq and quantity < sku.moq:
         return f"SKU {sku.sku_code}：数量 {quantity} 低于起订量 {sku.moq}，请与生产确认能否接单"
@@ -731,6 +858,21 @@ async def price_drift(
     rows: list[dict] = []
     any_drift = False
     for item in items:
+        # 定制项（场景09）没有 SKU，查不到适用价也不该被刷新覆盖：
+        # 它们走的是人工核价，硬套价格规则只会报错或算出没意义的值
+        if item.sku_id is None:
+            rows.append(
+                {
+                    "item_id": item.id,
+                    "sku_code": item.sku_code_snapshot,
+                    "quoted_price": _f(item.quoted_price),
+                    "current_applicable": None,
+                    "source": "定制人工核价",
+                    "hand_priced": True,
+                    "drift": False,
+                }
+            )
+            continue
         lookup = (
             await pricing_service.lookup_applicable_price(
                 session, customer=customer, sku_id=item.sku_id, quantity=item.quantity
@@ -778,6 +920,10 @@ async def refresh_prices(
     refreshed = 0
     skipped = 0
     for item in items:
+        # 定制项（场景09）没有 SKU：人工核价，不参与系统带价刷新
+        if item.sku_id is None:
+            skipped += 1
+            continue
         if item.price_source is None:
             skipped += 1
             continue

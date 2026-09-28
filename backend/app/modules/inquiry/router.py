@@ -14,6 +14,7 @@ from app.modules.inquiry import service as svc
 from app.modules.inquiry.model import CustomInquiry
 from app.modules.inquiry.schema import (
     CustomInquiryCreate,
+    CustomInquiryQuoteRequest,
     CustomInquiryRevise,
     CustomInquiryUpdate,
 )
@@ -103,6 +104,9 @@ async def create_inquiry(
         if await session.get(Customer, payload.customer_id) is None:
             raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
     inquiry = CustomInquiry(
+        # 需求编号（场景09）：定制件在打样投产前没有 SKU，报价与打样要靠
+        # 这个编号指向同一条需求，否则"这张报价是从哪来的"无从追溯
+        inquiry_no=await svc.generate_inquiry_no(session),
         title=payload.title.strip(),
         description=payload.description,
         customer_id=payload.customer_id,
@@ -126,6 +130,67 @@ async def create_inquiry(
     )
     await session.commit()
     return ok(svc.serialize(inquiry), "定制询价已记录")
+
+
+@router.post("/custom-inquiries/{inquiry_id}/create-quote")
+async def create_quote_from_inquiry(
+    inquiry_id: int,
+    payload: CustomInquiryQuoteRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """从定制需求直接发起报价（§3.1/场景09）。
+
+    定制件投产前没有 SKU，报价中心按 SKU 选品选不到它；这个出口把
+    需求 → 商机 → 报价 → 定制明细一步串起，销售只填核价成本与报价。
+    """
+    inquiry = await svc.get_visible_or_404(session, user, inquiry_id)
+    created = await svc.create_quote_from_inquiry(
+        session,
+        inquiry=inquiry,
+        user=user,
+        unit_cost=payload.unit_cost,
+        quoted_price=payload.quoted_price,
+        quantity=payload.quantity,
+        item_name=payload.item_name,
+        valid_until=payload.valid_until,
+    )
+    quote, version, item = created["quote"], created["version"], created["item"]
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create_quote",
+        business_type="custom_inquiry",
+        business_id=inquiry.id,
+        after={
+            "quote_id": quote.id,
+            "quote_no": quote.quote_no,
+            "version_id": version.id,
+            "inquiry_no": inquiry.inquiry_no,
+            "quoted_price": str(item.quoted_price),
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "quote_id": quote.id,
+            "quote_no": quote.quote_no,
+            "version_id": version.id,
+            "opportunity_id": created["opportunity"].id,
+            "inquiry_no": inquiry.inquiry_no,
+            # 直接把"这一价是不是低了"告诉界面，省得销售回报价页才发现要审批
+            "quoted_price": float(item.quoted_price),
+            "minimum_price": (
+                float(item.minimum_price_snapshot)
+                if item.minimum_price_snapshot is not None
+                else None
+            ),
+            "approval_required": item.approval_required,
+        },
+        f"已按需求 {inquiry.inquiry_no or inquiry.id} 生成报价 {quote.quote_no}",
+    )
 
 
 @router.patch("/custom-inquiries/{inquiry_id}")
@@ -192,7 +257,17 @@ async def revise_inquiry(
     """
     old = await svc.get_visible_or_404(session, user, inquiry_id)
 
+    # 编号跟着**需求**走，不跟着版本走：v2 是同一需求的新一版，换号会让
+    # 已发出的报价断在中间。历史数据没有 root 号时才补取一个（迁移前的行）。
+    chain_no = old.inquiry_no
+    if chain_no is None and old.root_id:
+        root = await session.get(CustomInquiry, old.root_id)
+        chain_no = root.inquiry_no if root else None
+    if chain_no is None:
+        chain_no = await svc.generate_inquiry_no(session)
+
     new_version = CustomInquiry(
+        inquiry_no=chain_no,
         title=payload.title or old.title,
         description=payload.description if payload.description is not None else old.description,
         customer_id=old.customer_id,

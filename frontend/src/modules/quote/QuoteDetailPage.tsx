@@ -215,7 +215,23 @@ export default function QuoteDetailPage() {
   }
 
   const itemColumns = [
-    { title: 'SKU', dataIndex: 'sku_code', width: 130 },
+    {
+      title: 'SKU / 需求',
+      dataIndex: 'sku_code',
+      width: 170,
+      // 定制项（场景09）没有 SKU：显示需求编号 + 定制标记，
+      // 否则这一格会是空的，看的人不知道这条是什么
+      render: (v: string | null, record: QuoteItemRow) => (
+        <span>
+          {v ?? '-'}
+          {record.is_custom && (
+            <Tag size="small" type="light" style={{ marginLeft: 6 }}>
+              定制
+            </Tag>
+          )}
+        </span>
+      ),
+    },
     { title: '规格', dataIndex: 'specification', width: 180, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 90, render: (v: number) => v.toLocaleString('zh-CN') },
     {

@@ -66,6 +66,8 @@ def serialize(
 ) -> dict:
     return {
         "id": inquiry.id,
+        # 需求编号：报价/打样明细上要能对回这条需求（场景09）
+        "inquiry_no": inquiry.inquiry_no,
         "title": inquiry.title,
         "description": inquiry.description,
         "customer_id": inquiry.customer_id,
@@ -91,3 +93,111 @@ def serialize(
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+async def generate_inquiry_no(session: AsyncSession) -> str:
+    """取需求编号（场景09：尚无正式 SKU 时，报价/打样靠它溯源）。
+
+    复用 settings/numbering 的取号器（行锁计数器 + 播种 + 撞号跳过），
+    与报价单号/订单号同一套机制——不另写一份 count(*)+1，那种写法会重号。
+    """
+    from app.modules.settings import numbering
+
+    return await numbering.generate_for(
+        session, "inquiry", model=CustomInquiry, column=CustomInquiry.inquiry_no
+    )
+
+
+async def create_quote_from_inquiry(
+    session: AsyncSession,
+    *,
+    inquiry: CustomInquiry,
+    user,
+    unit_cost,
+    quoted_price,
+    quantity=None,
+    item_name: str | None = None,
+    valid_until=None,
+) -> dict:
+    """从定制需求直接发起报价（文档 §3.1「从需求页可发起询价、报价、打样」/场景09）。
+
+    为什么需要这个出口：定制件在投产前没有 SKU，报价中心的「选品下单」
+    按 SKU 选品，选不到它。这里把 需求 → 商机 → 报价 → 定制明细 串成一步，
+    销售只需要填核价成本与报价两个数。
+
+    没有商机时顺手建一个（标题用需求名）并回记到需求上——"报价必须关联商机"
+    是既有口径，不该让销售先去别处建一遍再回来。
+    """
+    from app.modules.opportunity import service as opportunity_service
+    from app.modules.opportunity.model import Opportunity, OpportunityStageHistory
+    from app.modules.quote import service as quote_service
+
+    if not inquiry.customer_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "需求还没关联客户，先补客户再报价", 422)
+    customer = await session.get(Customer, inquiry.customer_id)
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "需求关联的客户不存在", 404)
+
+    opportunity = (
+        await session.get(Opportunity, inquiry.opportunity_id)
+        if inquiry.opportunity_id
+        else None
+    )
+    if opportunity is None or opportunity.deleted_at is not None:
+        stage = await opportunity_service.get_first_stage(session)
+        opportunity = Opportunity(
+            customer_id=customer.id,
+            title=inquiry.title,
+            stage_id=stage.id,
+            owner_id=customer.owner_id or user.id,
+            status="open",
+            created_by=user.id,
+        )
+        session.add(opportunity)
+        await session.flush()
+        session.add(
+            OpportunityStageHistory(
+                opportunity_id=opportunity.id,
+                from_stage_id=None,
+                to_stage_id=stage.id,
+                operator_id=user.id,
+                remark="定制需求转报价",
+                entered_at=now(),
+            )
+        )
+        inquiry.opportunity_id = opportunity.id
+
+    created = await quote_service.create_quote(
+        session,
+        user=user,
+        opportunity=opportunity,
+        customer_id=customer.id,
+        contact_id=inquiry.contact_id,
+        valid_until=valid_until,
+    )
+    quote, version = created["_quote"], created["_version"]
+    item = await quote_service.build_item_snapshot(
+        session,
+        version=version,
+        sku_id=None,  # 定制项：无 SKU，靠需求编号 + 人工核价
+        quantity=quantity if quantity is not None else (inquiry.quantity or 1),
+        customer_id=customer.id,
+        quoted_price=quoted_price,
+        logistics_cost=None,
+        opportunity_item_id=None,
+        spec_snapshot=None,
+        remark=inquiry.description,
+        role_codes=list(user.roles),
+        inquiry_id=inquiry.id,
+        item_name=item_name,
+        unit_cost=unit_cost,
+    )
+    session.add(item)
+    await session.flush()
+    await quote_service.recalc_version(session, version)
+    await session.flush()
+    # 业务进展时钟（§2.3）：从需求发报价同样是客户在推进
+    from app.modules.customer import service as customer_service
+
+    await customer_service.touch_progress(session, customer.id)
+    return {"quote": quote, "version": version, "item": item, "opportunity": opportunity}

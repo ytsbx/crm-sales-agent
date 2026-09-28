@@ -3,6 +3,8 @@ import type { PageResult } from '../types'
 
 export interface CustomInquiryRow {
   id: number
+  /** 需求编号（场景09）：报价/打样明细引用它溯源，同一条需求的各版本共用一个号 */
+  inquiry_no?: string | null
   title: string
   description?: string | null
   customer_id?: number | null
@@ -81,4 +83,32 @@ export function reviseCustomInquiry(
 
 export function customInquiryHistory(id: number) {
   return api.get<CustomInquiryRow[]>(`/custom-inquiries/${id}/history`)
+}
+
+/**
+ * 从定制需求直接发起报价（§3.1/场景09）。
+ *
+ * 定制件投产前没有 SKU，报价中心按 SKU 选品选不到它，所以这里给一个
+ * "填两个数就成单"的出口：核价成本 + 报价，其余（客户/商机/明细快照）系统接。
+ */
+export function createQuoteFromInquiry(
+  id: number,
+  payload: {
+    unit_cost: number
+    quoted_price: number
+    quantity?: number | null
+    item_name?: string | null
+    valid_until?: string | null
+  },
+) {
+  return api.post<{
+    quote_id: number
+    quote_no: string
+    version_id: number
+    opportunity_id: number
+    inquiry_no: string | null
+    quoted_price: number
+    minimum_price: number | null
+    approval_required: boolean
+  }>(`/custom-inquiries/${id}/create-quote`, payload)
 }

@@ -43,9 +43,13 @@ export interface QuoteVersion {
 
 export interface QuoteItemRow {
   id: number
-  sku_id: number
+  /** 定制项（场景09）没有 SKU，此时靠 inquiry_no 溯源 */
+  sku_id: number | null
   sku_code?: string | null
   sku_name?: string | null
+  inquiry_id?: number | null
+  inquiry_no?: string | null
+  is_custom?: boolean
   specification?: string | null
   quantity: number
   cost_snapshot: number

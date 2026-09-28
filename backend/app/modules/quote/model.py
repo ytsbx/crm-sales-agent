@@ -87,7 +87,16 @@ class QuoteItem(Base, IdMixin):
     quote_version_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("quote_versions.id"))
     # 与商机需求明细的追溯关系（06-需求澄清清单第 2-4 条的缺口）
     opportunity_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    sku_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("skus.id"))
+    # 定制项（文档场景09）：尚无正式 SKU 时也能报价——sku_id 为空，
+    # 由 inquiry_id 指向定制需求，成本与价格靠人工核价填。
+    # 非空约束在这里去掉是刻意的：定制件在打样投产前本来就没有 SKU 编码，
+    # 强制先建 SKU 等于把"先报价接单、后建档"的真实流程堵死。
+    sku_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("skus.id"), nullable=True
+    )
+    inquiry_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 编号快照：需求被改名/归档后，这张报价仍要能说明"当时对着哪条需求报的价"
+    inquiry_no_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sku_code_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sku_name_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
     spec_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)

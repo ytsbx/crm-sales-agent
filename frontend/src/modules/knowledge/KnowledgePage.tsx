@@ -1,8 +1,10 @@
 import { useState, type ComponentProps } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
   Input,
+  InputNumber,
   Modal,
   Popconfirm,
   Select,
@@ -17,6 +19,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import { emptyText } from '../../shared/hooks/emptyText'
 import {
   createCustomInquiry,
+  createQuoteFromInquiry,
   customInquiryStatusSummary,
   deleteCustomInquiry,
   listCustomInquiries,
@@ -65,6 +68,7 @@ const EMPTY_FORM: InquiryForm = {
 /** 产品知识库 · 定制询价类（领导模块③）：客户问了但没有标准产品的需求沉淀。 */
 export default function KnowledgePage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [statusFilter, setStatusFilter] = useState<string | undefined>()
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -81,10 +85,38 @@ export default function KnowledgePage() {
     target_price: '',
   })
   const [historyTarget, setHistoryTarget] = useState<CustomInquiryRow | null>(null)
+  // 转报价（§3.1/场景09）：定制件投产前没有 SKU，报价中心选不到它，
+  // 这里给一条"填两个数就成单"的出口
+  const [quoteTarget, setQuoteTarget] = useState<CustomInquiryRow | null>(null)
+  const [quoteForm, setQuoteForm] = useState({
+    unit_cost: null as number | null,
+    quoted_price: null as number | null,
+    quantity: null as number | null,
+  })
   const historyQuery = useQuery({
     queryKey: ['inquiry-history', historyTarget?.id],
     queryFn: () => customInquiryHistory(historyTarget!.id),
     enabled: Boolean(historyTarget),
+  })
+
+  const quoteMutation = useMutation({
+    mutationFn: () =>
+      createQuoteFromInquiry(quoteTarget!.id, {
+        unit_cost: quoteForm.unit_cost!,
+        quoted_price: quoteForm.quoted_price!,
+        quantity: quoteForm.quantity ?? undefined,
+      }),
+    onSuccess: (data) => {
+      setQuoteTarget(null)
+      refresh()
+      Toast.success(
+        data.approval_required
+          ? `报价 ${data.quote_no} 已生成（低于保护价 ${data.minimum_price}，需审批）`
+          : `报价 ${data.quote_no} 已生成`,
+      )
+      navigate(`/quotes/${data.quote_id}`)
+    },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
   const summaryQuery = useQuery({
@@ -187,6 +219,19 @@ export default function KnowledgePage() {
       render: (text: string, record: CustomInquiryRow) => (
         <div>
           <div style={{ fontWeight: 600 }}>
+            {/* 需求编号（场景09）：报价/打样明细引用它溯源，比自增 id 可读 */}
+            {record.inquiry_no && (
+              <span
+                style={{
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  color: 'var(--crm-primary)',
+                  marginRight: 6,
+                }}
+              >
+                {record.inquiry_no}
+              </span>
+            )}
             {text}
             {record.version && record.version > 1 && (
               <Tag size="small" style={{ marginLeft: 6 }}>{`v${record.version}`}</Tag>
@@ -242,11 +287,24 @@ export default function KnowledgePage() {
     },
     {
       title: '操作',
-      width: 150,
+      width: 190,
       render: (_: unknown, record: CustomInquiryRow) => (
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <a onClick={() => openEdit(record)}>编辑</a>
           <a onClick={() => openRevise(record)}>修订</a>
+          {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
+          <a
+            onClick={() => {
+              setQuoteForm({
+                unit_cost: null,
+                quoted_price: null,
+                quantity: record.quantity ?? null,
+              })
+              setQuoteTarget(record)
+            }}
+          >
+            转报价
+          </a>
           {(record.version ?? 1) > 1 && <a onClick={() => setHistoryTarget(record)}>历史</a>}
           {record.status !== 'developing' && record.status !== 'converted' && (
             <a onClick={() => changeStatus(record, 'developing')}>转开发中</a>
@@ -484,6 +542,69 @@ export default function KnowledgePage() {
           rowKey="id"
           pagination={false}
         />
+      </Modal>
+
+      {/* 转报价（§3.1/场景09）：只填两个数——核价成本与报价。
+          成本必填不是啰嗦：按 0 记成本会算出 100% 毛利、低价审批永不触发 */}
+      <Modal
+        title={`转报价：${quoteTarget?.title ?? ''}`}
+        visible={Boolean(quoteTarget)}
+        onCancel={() => setQuoteTarget(null)}
+        onOk={() => {
+          if (quoteForm.unit_cost == null || quoteForm.quoted_price == null) {
+            Toast.warning('请填写核价成本与报价')
+            return
+          }
+          quoteMutation.mutate()
+        }}
+        confirmLoading={quoteMutation.isPending}
+        okText="生成报价"
+        width={520}
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {quoteTarget?.customer_name
+              ? `客户：${quoteTarget.customer_name}`
+              : '这条需求还没关联客户——先去「编辑」补上客户再转报价。'}
+            {quoteTarget?.inquiry_no ? ` · 需求编号 ${quoteTarget.inquiry_no}` : ''}
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>核价成本（元/件，不含运费）*</div>
+            <InputNumber
+              style={{ width: '100%' }}
+              min={0}
+              value={quoteForm.unit_cost ?? undefined}
+              onChange={(value) => setQuoteForm({ ...quoteForm, unit_cost: (value as number) ?? null })}
+            />
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 2 }}>
+              定制件没有系统成本可查，成本由核价环节给出。系统用它算毛利，
+              并按「最低毛利率」推出保护价——低于保护价会转审批。
+            </div>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>报价（元/件）*</div>
+            <InputNumber
+              style={{ width: '100%' }}
+              min={0}
+              value={quoteForm.quoted_price ?? undefined}
+              onChange={(value) =>
+                setQuoteForm({ ...quoteForm, quoted_price: (value as number) ?? null })
+              }
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>数量</div>
+            <InputNumber
+              style={{ width: '100%' }}
+              min={0}
+              value={quoteForm.quantity ?? undefined}
+              onChange={(value) => setQuoteForm({ ...quoteForm, quantity: (value as number) ?? null })}
+            />
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 2 }}>
+              不填就用需求上记的数量
+            </div>
+          </div>
+        </div>
       </Modal>
     </div>
   )
