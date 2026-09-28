@@ -1030,7 +1030,7 @@ async def get_order(ctx: ToolContext, order_id: int) -> dict:
 
 @tool(
     "create_quote_draft",
-    "从商机生成报价草稿（按核价建议价自动带入明细）。生成的是**草稿**，不会自动发送或提交审批。需要用户确认后才会写入。",
+    "从商机生成报价草稿（按核价建议价自动带入明细）。生成的是**草稿**，不会自动发送或提交审批。需要用户确认后才会写入。opportunity_id 必填（D8 口径：报价必须挂商机）：用户没指明商机时，先向用户确认用哪个商机，不要猜测商机 id。",
     {
         "type": "object",
         "properties": {

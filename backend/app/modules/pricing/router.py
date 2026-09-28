@@ -610,6 +610,8 @@ def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
     for key in (
         "protection_price",
         "minimum_price",
+        # 绝对底价由成本推出（成本×(1+X)），同样能反推成本（D7 判定层）
+        "hard_floor_price",
         "profit",
         "profit_rate",
         "profit_with_refund",
@@ -833,6 +835,11 @@ async def check_price_permission(
         reasons.append("负利润")
     if triggers["below_authorized_margin"]:
         reasons.append("利润率低于你角色的授权下限")
+    # D7：绝对底价不是"需审批"而是"不可批"——allowed 直接为 False，
+    # 不给任何审批出路（区别于保护价触发的审批流程）
+    hard_rejected = bool(triggers.get("below_hard_floor"))
+    if hard_rejected:
+        reasons.append("低于公司绝对底价（任何审批都无法通过，提交会被直接拒绝）")
 
     _sanitize_pricing_result(result, user)
     approval_required = result["approval_required"]
@@ -843,7 +850,7 @@ async def check_price_permission(
             "quoted_price": result["quoted_price"],
             "currency": result["currency"],
             # 结论
-            "allowed": not approval_required,
+            "allowed": not approval_required and not hard_rejected,
             "approval_required": approval_required,
             "can_approve": result["can_approve"],
             "reasons": reasons,

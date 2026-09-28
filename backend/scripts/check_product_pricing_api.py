@@ -358,7 +358,13 @@ def main():
     print('=== 9. 报价跟进（GET /quotes/{id}/followups）===')
     status, res = call('POST', '/customers', token=admin, body={'name': f'CHK{RUN}客户'})
     q_customer = res['data']['id']
-    status, res = call('POST', '/quotes', token=admin, body={'customer_id': q_customer})
+    # D8：报价必须挂商机
+    status, res = call('POST', '/opportunities', token=admin, body={
+        'customer_id': q_customer, 'title': f'CHK{RUN}报价商机',
+    })
+    check('建快捷商机', res.get('code'), 0)
+    pp_opp_id = res['data']['id']
+    status, res = call('POST', '/quotes', token=admin, body={'opportunity_id': pp_opp_id})
     quote_id = res['data']['quote_id']
 
     status, res = call('GET', f'/quotes/{quote_id}/followups', token=admin)

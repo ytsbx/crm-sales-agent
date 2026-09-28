@@ -27,6 +27,9 @@ class ErrorCode:
     APPROVAL_REQUIRED = 42202
     APPROVAL_PENDING = 42203
     QUOTE_VERSION_LOCKED = 42204
+    # D7：低于绝对底价。与 PRICE_TOO_LOW（可审批的低价）本质区别：
+    # 这个是硬拒绝，任何审批角色都不能通过，不生成审批单
+    PRICE_BELOW_HARD_FLOOR = 42205
     RATE_LIMITED = 42901
     SYSTEM_ERROR = 50001
     EXTERNAL_ERROR = 50201

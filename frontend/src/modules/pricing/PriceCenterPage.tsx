@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
-import { createItem, listOpportunities } from '../../shared/api/opportunity'
+import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
   createCost,
   createCustomerPriceRule,
@@ -122,6 +122,7 @@ export default function PriceCenterPage() {
   // 选品打通（§7 行 2）：查价结果一键加入商机需求
   const [lookupOppId, setLookupOppId] = useState<number | undefined>()
   const [addingToOpp, setAddingToOpp] = useState(false)
+  const [creatingQuickOpp, setCreatingQuickOpp] = useState(false)
   const [permissionTarget, setPermissionTarget] = useState<PricePermissionRow | null>(null)
   const [permissionForm, setPermissionForm] = useState({ minimum_margin: '0.15', can_approve: false })
   const [rateVisible, setRateVisible] = useState(false)
@@ -382,6 +383,42 @@ export default function PriceCenterPage() {
                     }}
                   >
                     加入商机需求
+                  </Button>
+                  <Button
+                    loading={creatingQuickOpp}
+                    onClick={async () => {
+                      // D8：报价必须挂商机。没有现成商机时当场一键生成极简商机
+                      //（客户名+日期+询价、首个阶段=初始阶段、SKU/数量写入需求明细），
+                      // 让"合规"比"绕开"更省事，而不是让销售回去填一套表
+                      const customer = (customersQuery.data?.items ?? []).find(
+                        (item) => item.id === lookupCustomerId,
+                      )
+                      const d = new Date()
+                      const dateLabel = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+                      setCreatingQuickOpp(true)
+                      try {
+                        const opp = await createOpportunity({
+                          customer_id: lookupCustomerId,
+                          title: `${customer?.name ?? '客户'}-${dateLabel}-询价`,
+                        })
+                        await createItem(opp.id, {
+                          sku_id: lookupResult.sku.id,
+                          quantity: Number(lookupQty || 1),
+                          target_price: lookupResult.unit_price,
+                        })
+                        setLookupOppId(opp.id)
+                        refreshAll()
+                        Toast.success(
+                          `快捷商机已创建并加入 ${lookupResult.sku.sku_code}，可直接去报价`,
+                        )
+                      } catch (error) {
+                        Toast.error(error instanceof Error ? error.message : '快捷商机创建失败')
+                      } finally {
+                        setCreatingQuickOpp(false)
+                      }
+                    }}
+                  >
+                    新建快捷商机并加入
                   </Button>
                   <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                     以系统适用价写入需求明细，销售在商机页可再调整目标价

@@ -86,6 +86,10 @@ CLEAN_STATEMENTS = [
     ('报价费用', 'delete from quote_charges'),
     ('报价版本', 'delete from quote_versions'),
     ('报价单', 'delete from quotes'),
+    # D8 后报价必须挂商机：商机需求/阶段历史/商机随报价一并清（FK 依赖报价先删）
+    ('商机需求明细', 'delete from opportunity_items'),
+    ('商机阶段历史', 'delete from opportunity_stage_history'),
+    ('商机', 'delete from opportunities'),
     ('审批记录', 'delete from approval_records'),
     ('审批实例', 'delete from approval_instances'),
     ('订单明细', 'delete from sales_order_items'),
@@ -127,9 +131,18 @@ def main():
     status, res = call('GET', '/pricing/sku-options', token=admin)
     skus = [row['id'] for row in res['data'][:3]]
 
+    def quick_opp(token, customer_id, title):
+        """D8：报价必须挂商机——用例报价前先造一条快捷商机。"""
+        status, res = call('POST', '/opportunities', token=token, body={
+            'customer_id': customer_id, 'title': title,
+        })
+        check('建快捷商机', res.get('code'), 0)
+        return res['data']['id']
+
     print()
     print('=== 准备：造一张带明细的报价 ===')
-    status, res = call('POST', '/quotes', token=admin, body={'customer_id': 1})
+    opp1 = quick_opp(admin, 1, 'CHKQ-quote-主用例')
+    status, res = call('POST', '/quotes', token=admin, body={'opportunity_id': opp1})
     check('建报价', res.get('code'), 0)
     quote_id, version_id = res['data']['quote_id'], res['data']['version_id']
 
@@ -252,22 +265,24 @@ def main():
     check('新报价是草稿', res['data']['status'], 'draft')
     check('新报价版本未提交', res['data']['approval_status'], 'not_submitted')
 
+    # D8：无商机的报价直接被拒（商机在此口径下是客户的来源，客户不存在由商机创建侧把关）
     status, res = call('POST', '/quotes', token=admin, body={'customer_id': 999999})
-    check('客户不存在被拒', res.get('code'), 40401)
+    check('无商机被拒(D8)', res.get('code'), 40001)
     status, res = call(
-        'POST', '/quotes', token=admin, body={'customer_id': 1, 'contact_id': 999999}
+        'POST', '/quotes', token=admin, body={'opportunity_id': opp1, 'contact_id': 999999}
     )
     check('联系人不存在的被拒', res.get('code'), 40401)
-    # 联系人 1 属于客户 1；拿它配客户 2 应该被拒（不能把 A 的联系人挂到 B 的报价）
+    # 联系人 1 属于客户 1；把它挂到别的客户的商机的报价上应该被拒
     status, res = call('GET', '/contacts/1', token=admin)
     contact1_customer = res['data']['customer_id']
     other_customer = 2 if contact1_customer == 1 else 1
+    opp_other = quick_opp(admin, other_customer, 'CHKQ-quote-联系人不匹配')
     status, res = call(
-        'POST', '/quotes', token=admin, body={'customer_id': other_customer, 'contact_id': 1}
+        'POST', '/quotes', token=admin, body={'opportunity_id': opp_other, 'contact_id': 1}
     )
     check('联系人-客户不匹配被拒', res.get('code'), 40001)
-    status, res = call('POST', '/quotes', token=admin, body={'customer_id': 1})
-    check('客户存在可建', res.get('code'), 0)
+    status, res = call('POST', '/quotes', token=admin, body={'opportunity_id': opp1})
+    check('挂商机可建', res.get('code'), 0)
     empty_quote_id, empty_version_id = res['data']['quote_id'], res['data']['version_id']
     status, res = call('GET', f'/quote-versions/{empty_version_id}/items', token=admin)
     check('没带明细', len(res['data']), 0)
@@ -298,7 +313,8 @@ def main():
     print('=== 7. 发送记录与审批历史（报价单级）===')
     # admin 有 quote:approve，低价报价会直接通过、不生成审批实例（正确行为）。
     # 要造出审批实例必须用没有审批权的角色提交 —— 用李四（sales_manager）。
-    status, res = call('POST', '/quotes', token=lisi, body={'customer_id': 1})
+    opp_lisi = quick_opp(lisi, 1, 'CHKQ-quote-李四审批')
+    status, res = call('POST', '/quotes', token=lisi, body={'opportunity_id': opp_lisi})
     check('李四建报价', res.get('code'), 0)
     lisi_quote_id, lisi_version_id = res['data']['quote_id'], res['data']['version_id']
     call(
@@ -387,7 +403,8 @@ def main():
 
     print()
     print('=== 10. 删除报价 ===')
-    status, res = call('POST', '/quotes', token=admin, body={'customer_id': 1})
+    opp_del = quick_opp(admin, 1, 'CHKQ-quote-删除用例')
+    status, res = call('POST', '/quotes', token=admin, body={'opportunity_id': opp_del})
     del_quote_id = res['data']['quote_id']
     status, res = call('DELETE', f'/quotes/{del_quote_id}', token=admin)
     check('删除报价', res.get('code'), 0)

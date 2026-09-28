@@ -343,8 +343,11 @@ def main():
     status, res = call('POST', '/auth/sso/wecom/callback', body={'wecom_userid': 'x'})
     check_true('未配企微 -> 非 0', res.get('code') not in (0, None),
                f'code={res.get("code")} msg={res.get("message")!r}')
-    check_true('说明未配置', '未配置' in (res.get('message') or ''),
-               res.get('message') or '')
+    # 两种未就绪都算对：开发机可能已配真实凭据（走到"尚未绑定"），
+    # CI 没配凭据（走到"未配置"）——共同点是都明确报错而不是假装成功
+    _sso_msg = res.get('message') or ''
+    check_true('未就绪要有明确说明', ('未配置' in _sso_msg) or ('尚未绑定' in _sso_msg),
+               _sso_msg)
 
     print()
     print('=== 10. 角色权限（GET/PUT /roles/{id}/permissions）===')

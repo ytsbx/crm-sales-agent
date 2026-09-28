@@ -36,6 +36,13 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "default_target_margin": {"ratio": 0.30},
     "default_min_margin": {"ratio": 0.15},
     "price_range_ratio": {"ratio": 0.04},
+    # 绝对底价（D7 判定层 C 步，方案 §8）：命中即 422 硬拒、不生成审批单——
+    # 与最低保护价（触发审批、可被批准）严格区分，任何审批角色都不能通过。
+    # mode: off=不启用（默认，等业务给口径不替业务拍板）/ cost=不得低于生效成本
+    #（商品成本+物流成本）/ cost_markup=不得低于 成本×(1+markup_ratio)。
+    # 后续 A 步（价格规则/客户特殊价上的 hard_floor_price 覆盖列）落库后，
+    # 列有值时覆盖这里的比例判定，无值时仍按本配置算——两套机制叠加而非二选一。
+    "hard_floor": {"mode": "off", "markup_ratio": 0.0},
     # 物流试算：体积重系数（每立方米折多少公斤）。
     # **默认 0 = 不启用体积重，计费重只取实际重量**。
     # 为什么不给默认值：这个系数强依赖货物形态。纸箱类轻抛货通用 167（≈6000cm³/kg），

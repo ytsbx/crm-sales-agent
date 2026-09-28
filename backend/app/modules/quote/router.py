@@ -472,10 +472,25 @@ async def clone_quote(
     )
     source_currency = source_version.currency if source_version else "CNY"
 
+    # D8：复制出的也是**新报价**，同样必须归属商机。先取"显式指定 > 源报价"的
+    # 最终归属，源报价就没挂商机且未指定时按同一口径拒绝（历史数据不追溯，
+    # 但复制产生的是新数据）。create_quote 本身先放行（enforce_opportunity=False），
+    # 因为它建壳在先、归属在后。
+    final_opportunity_id = (
+        payload.opportunity_id if payload.opportunity_id is not None else source.opportunity_id
+    )
+    if final_opportunity_id is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "复制出的报价必须关联商机——源报价没有商机，请在复制时指定 opportunity_id"
+            "（或在查价页「选品下单」一键新建快捷商机）",
+            422,
+        )
     created = await svc.create_quote(
         session,
         user=user,
         opportunity=None,
+        enforce_opportunity=False,
         customer_id=payload.customer_id or source.customer_id,
         contact_id=payload.contact_id if payload.contact_id is not None else source.contact_id,
         currency=source_currency,

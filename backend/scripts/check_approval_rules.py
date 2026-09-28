@@ -124,6 +124,10 @@ async def clean(verbose=False):
         ('报价版本', "delete from quote_versions where quote_id in "
                  f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
         ('报价单', f"delete from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
+        # D8：用例报价挂在快捷商机上，客户删除前先清商机（FK 依赖）
+        ('商机需求明细', f"delete from opportunity_items where opportunity_id in (select id from opportunities where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
+        ('商机阶段历史', f"delete from opportunity_stage_history where opportunity_id in (select id from opportunities where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
+        ('商机', f"delete from opportunities where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
         ('客户特殊价', f"delete from customer_price_rules where remark = 'CHK{RUN}保护价'"),
         ('测试成本', f"delete from product_costs where remark = 'CHK{RUN}成本'"),
         # 规则一律按 CHK 前缀清（都是测试产物，不可能是业务数据）；
@@ -249,8 +253,14 @@ async def main():
     price_rule_id = res['data']['id'] if res.get('code') == 0 else None
 
     def make_quote(price, qty):
-        """建报价：先建空单（客户路径），再整版替换明细（显式报价价）。"""
-        status, res = call('POST', '/quotes', token=zhangsan, body={'customer_id': customer_id})
+        """建报价：先建快捷商机（D8：报价必须挂商机），再整版替换明细（显式报价价）。"""
+        status, res = call('POST', '/opportunities', token=zhangsan, body={
+            'customer_id': customer_id, 'title': f'CHK{RUN}商机-{price}x{qty}',
+        })
+        if res.get('code') != 0:
+            return None, res
+        opp_id = res['data']['id']
+        status, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_id})
         if res.get('code') != 0:
             return None, res
         quote_id, version_id = res['data']['quote_id'], res['data']['version_id']

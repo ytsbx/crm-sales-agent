@@ -132,29 +132,37 @@ def e2e():
         'data'
     ]['access_token']
 
+    # D8：报价必须挂商机（商机不存在由建商机侧把关），客户不存在场景改为无商机被拒；
+    # 联系人引用完整性仍要验：先造一条客户 1 的商机
+    status, res = call('POST', '/opportunities', token=admin,
+                       body={'customer_id': 1, 'title': 'REFCHK 引用完整性商机'})
+    refchk_opp = res.get('data', {}).get('id') if res.get('code') == 0 else None
+    # (label, method, path, body, expected_code)：引用完整性一律 40401，
+    # D8 无商机是业务规则拒绝（40001），单独标注
     cases = [
-        ('建报价单-客户不存在', 'POST', '/quotes', {'customer_id': MISSING_ID}),
-        ('建报价单-联系人不存在', 'POST', '/quotes', {'customer_id': 1, 'contact_id': MISSING_ID}),
-        ('建样品单-客户不存在', 'POST', '/samples', {'customer_id': MISSING_ID}),
-        ('建任务-负责人不存在', 'POST', '/tasks', {'title': 'REFCHK 负责人', 'owner_id': MISSING_ID}),
-        ('建任务-客户不存在', 'POST', '/tasks', {'title': 'REFCHK 客户', 'customer_id': MISSING_ID}),
-        ('建任务-线索不存在', 'POST', '/tasks', {'title': 'REFCHK 线索', 'lead_id': MISSING_ID}),
-        ('建任务-订单不存在', 'POST', '/tasks', {'title': 'REFCHK 订单', 'order_id': MISSING_ID}),
+        ('建报价单-无商机被拒(D8)', 'POST', '/quotes', {'customer_id': MISSING_ID}, 40001),
+        ('建报价单-联系人不存在', 'POST', '/quotes',
+         {'opportunity_id': refchk_opp, 'contact_id': MISSING_ID}, 40401),
+        ('建样品单-客户不存在', 'POST', '/samples', {'customer_id': MISSING_ID}, 40401),
+        ('建任务-负责人不存在', 'POST', '/tasks', {'title': 'REFCHK 负责人', 'owner_id': MISSING_ID}, 40401),
+        ('建任务-客户不存在', 'POST', '/tasks', {'title': 'REFCHK 客户', 'customer_id': MISSING_ID}, 40401),
+        ('建任务-线索不存在', 'POST', '/tasks', {'title': 'REFCHK 线索', 'lead_id': MISSING_ID}, 40401),
+        ('建任务-订单不存在', 'POST', '/tasks', {'title': 'REFCHK 订单', 'order_id': MISSING_ID}, 40401),
         ('建跟进-客户不存在', 'POST', '/followups',
-         {'customer_id': MISSING_ID, 'content': 'REFCHK 客户'}),
+         {'customer_id': MISSING_ID, 'content': 'REFCHK 客户'}, 40401),
         ('建跟进-线索不存在', 'POST', '/followups',
-         {'lead_id': MISSING_ID, 'content': 'REFCHK 线索'}),
+         {'lead_id': MISSING_ID, 'content': 'REFCHK 线索'}, 40401),
         ('建跟进-报价单不存在', 'POST', '/followups',
-         {'quote_id': MISSING_ID, 'content': 'REFCHK 报价'}),
+         {'quote_id': MISSING_ID, 'content': 'REFCHK 报价'}, 40401),
     ]
 
     print()
-    print('=== 端到端：真实接口必须报 40401（不许 200 / 不许 500）===')
+    print('=== 端到端：真实接口必须明确报错（不许 200 / 不许 500）===')
     failures = []
-    for label, method, path, body in cases:
+    for label, method, path, body, expected in cases:
         status, res = call(method, path, token=admin, body=body)
         code = res.get('code')
-        good = code == 40401
+        good = code == expected
         detail = f'http={status} code={code}' + ('' if good else f' msg={res.get("message")!r}')
         print(f'  {"OK  " if good else "FAIL"} {label}：{detail}')
         if not good:

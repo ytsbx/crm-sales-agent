@@ -275,6 +275,7 @@ async def create_quote(
     payment_terms: str | None = None,
     delivery_terms: str | None = None,
     remark: str | None = None,
+    enforce_opportunity: bool = True,
 ) -> dict:
     """从商机（或直接给客户）生成报价单 + V1 版本 + 明细。
 
@@ -283,8 +284,17 @@ async def create_quote(
     否则两处各写一遍，改价规则时必然漂移。
     调用方负责审计与 commit。
     """
-    if opportunity is None and not customer_id:
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "必须指定商机或客户")
+    # D8（已确认）：正式报价必须关联商机——成交端点挂在商机上（confirm-win），
+    # 不挂商机的报价只能走 convert-to-order 旧路；漏斗/渠道归因/需求明细/价格来源
+    # 快照也都依赖商机。只约束新建，历史数据不追溯。
+    # 复制（clone）走 enforce_opportunity=False：它先建壳、再挂回商机，
+    # 但挂不回（源报价就没有商机且未指定）时由调用方按同一口径拒绝。
+    if opportunity is None and enforce_opportunity:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "报价必须关联商机——请选择已有商机，或在查价页「选品下单」一键新建快捷商机",
+            422,
+        )
     if opportunity is not None:
         customer_id = opportunity.customer_id
 
@@ -840,6 +850,55 @@ async def submit_for_approval(
     fx = version.exchange_rate_snapshot
     foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
 
+    # ---- 绝对底价（D7 判定层）：命中即 422 硬拒，不生成任何可批的审批单 ----
+    # 必须排在审批规则引擎（免审/极速通道）之前：auto_pass 不能把低于硬底的价放过去，
+    # 否则"任何人都不能通过"就是空话。保护价走"生成审批单让人批"，这里走"直接拒绝"，
+    # 两者严格分开。合法出口写在报错文案里：调价留审计 / 样品 / 清库存特殊通道。
+    hard_mode = await settings_service.get_text(session, "hard_floor", "mode", "off")
+    if hard_mode in ("cost", "cost_markup"):
+        markup = Decimal(
+            str(await settings_service.get_number(session, "hard_floor", "markup_ratio", 0.0))
+        )
+        factor = (Decimal(1) + markup) if hard_mode == "cost_markup" else Decimal(1)
+        eps = Decimal("0.0001")
+        hard_hits: list[str] = []
+        weighted_floor_total = ZERO
+        total_qty = ZERO
+        for item in items:
+            item_cost = item.cost_snapshot + item.logistics_cost_snapshot
+            if item_cost <= 0:
+                # 无成本记录：硬底无从计算，由保护价/利润判定兜住（A06 同口径）
+                continue
+            price_cny = (item.quoted_price * fx) if foreign else item.quoted_price
+            floor_cny = item_cost * factor
+            if price_cny < floor_cny - eps:
+                hard_hits.append(
+                    f"明细 {item.sku_code_snapshot}：折人民币 ¥{price_cny:.2f}"
+                    f" 低于绝对底价 ¥{floor_cny:.2f}"
+                )
+            weighted_floor_total += floor_cny * item.quantity
+            total_qty += item.quantity
+        # 整单优惠摊到单价后的加权均价同样不得低于加权硬底
+        if not hard_hits and total_qty:
+            revenue_cny = (version.total_amount * fx) if foreign else version.total_amount
+            if revenue_cny and revenue_cny > 0:
+                avg_price = revenue_cny / total_qty
+                avg_floor = weighted_floor_total / total_qty
+                if avg_price < avg_floor - eps:
+                    hard_hits.append(
+                        f"整单（优惠摊后加权均价 ¥{avg_price:.2f}）"
+                        f"低于加权绝对底价 ¥{avg_floor:.2f}"
+                    )
+        if hard_hits:
+            raise AppError(
+                ErrorCode.PRICE_BELOW_HARD_FLOOR,
+                "报价低于公司绝对底价，任何审批都无法通过，已拒绝提交（"
+                + "；".join(hard_hits)
+                + "）。合法出口：请价格管理员调整价格档位并留审计，"
+                "或改走样品 / 清库存等特殊通道",
+                422,
+            )
+
     offending: list[dict] = []
     for item in items:
         base_cost = item.cost_snapshot + item.logistics_cost_snapshot
@@ -1020,8 +1079,6 @@ async def submit_for_approval(
             }
 
     # 审批分级：按报价总额决定走到哪一级，并记录这一级谁有权批（快照，避免中途改配置影响在途审批）
-    from app.modules.settings import service as settings_service
-
     levels = await settings_service.get_list(session, "approval_levels")
     amount = float(version.total_amount or 0)
     node = None

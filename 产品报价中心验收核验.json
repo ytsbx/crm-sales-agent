@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28 09:54:23",
+  "generated_at": "2026-09-28 10:49:07",
   "environment": "local(dev)",
   "results": [
     {
@@ -58,9 +58,9 @@
     },
     {
       "case": "A10",
-      "title": "整单优惠后低于权限触发审批，无优惠则放行",
+      "title": "无商机被拒(D8)；整单优惠触发审批，无优惠放行",
       "pass": true,
-      "detail": ""
+      "detail": "D8拒=True 整单审批=True 无优惠放行=True"
     },
     {
       "case": "A11",
@@ -78,14 +78,20 @@
       "case": "A13",
       "title": "确认成交建单；重试返回同一订单",
       "pass": true,
-      "detail": "order=46"
+      "detail": "order=54"
     },
     {
       "case": "A14",
       "title": "历史价可留档、不冲突、不参与匹配",
       "pass": true,
       "detail": "status=historical imported=True"
+    },
+    {
+      "case": "A15",
+      "title": "低于绝对底价硬拒（免审规则不救）；关闭后放行",
+      "pass": true,
+      "detail": "硬拒=True(code=0) 关闭放行=True"
     }
   ],
-  "summary": "14/14 通过"
+  "summary": "15/15 通过"
 }

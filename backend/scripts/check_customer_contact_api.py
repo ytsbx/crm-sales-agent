@@ -262,7 +262,13 @@ def main():
     check('客户报价列表可读', res.get('code'), 0)
     check('初始无报价', res['data']['total'], 0)
 
-    status, res = call('POST', '/quotes', token=admin, body={'customer_id': customer_id})
+    # D8：报价必须挂商机——先建一条快捷商机承载用例报价
+    status, res = call('POST', '/opportunities', token=admin, body={
+        'customer_id': customer_id, 'title': f'CHK{RUN}快捷商机',
+    })
+    check('建快捷商机', res.get('code'), 0)
+    cc_opp_id = res['data']['id']
+    status, res = call('POST', '/quotes', token=admin, body={'opportunity_id': cc_opp_id})
     check('建报价', res.get('code'), 0)
     quote_id = res['data']['quote_id']
 

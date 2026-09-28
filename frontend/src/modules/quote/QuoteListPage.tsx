@@ -212,6 +212,9 @@ export default function QuoteListPage() {
         okText="生成报价单"
       >
         <div style={{ marginBottom: 8 }}>选择商机（明细取自该商机的需求商品）</div>
+        <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--crm-text-3)' }}>
+          报价必须关联商机；还没有合适商机？去「查价」页选品下单，可一键新建快捷商机
+        </div>
         <Select
           placeholder="选择商机"
           value={opportunityId ?? undefined}

@@ -284,7 +284,17 @@ def main():
 
         # ---------------- A10 整单优惠触发审批 ----------------
         print('== A10 整单审批 ==')
+        # D8：报价必须挂商机——先建两条快捷商机承载用例报价
         _, res = call('POST', '/quotes', token=zhangsan, body={'customer_id': customers['A']})
+        d8_rejected = res['code'] == 40001 and '商机' in res['message']
+        _, res = call('POST', '/opportunities', token=zhangsan, body={
+            'customer_id': customers['A'], 'title': f'{PREFIX}-A10a', 'expected_amount': 1000,
+        })
+        opp_a10 = res['data']['id']
+        created_opps.append(opp_a10)
+        call('POST', f'/opportunities/{opp_a10}/items', token=zhangsan,
+             body={'sku_id': sku_id, 'quantity': 10, 'target_price': 85})
+        _, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a10})
         qid10, vid10 = res['data']['quote_id'], res['data']['version_id']
         created_quotes.append(qid10)
         call('POST', f'/quote-versions/{vid10}/items/batch', token=zhangsan,
@@ -293,13 +303,22 @@ def main():
              body={'charge_name': '整单优惠', 'amount': -700, 'is_discount': True})
         _, res = call('POST', f'/quote-versions/{vid10}/submit-approval', token=zhangsan, body={})
         whole_flagged = bool((res.get('data') or {}).get('approval_required'))
-        _, res2 = call('POST', '/quotes', token=zhangsan, body={'customer_id': customers['A']})
+        _, res = call('POST', '/opportunities', token=zhangsan, body={
+            'customer_id': customers['A'], 'title': f'{PREFIX}-A10b', 'expected_amount': 1000,
+        })
+        opp_a10b = res['data']['id']
+        created_opps.append(opp_a10b)
+        call('POST', f'/opportunities/{opp_a10b}/items', token=zhangsan,
+             body={'sku_id': sku_id, 'quantity': 10, 'target_price': 85})
+        _, res2 = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a10b})
         created_quotes.append(res2['data']['quote_id'])
         call('POST', f"/quote-versions/{res2['data']['version_id']}/items/batch", token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
         _, res3 = call('POST', f"/quote-versions/{res2['data']['version_id']}/submit-approval", token=zhangsan, body={})
         no_discount_pass = not bool((res3.get('data') or {}).get('approval_required'))
-        record('A10', '整单优惠后低于权限触发审批，无优惠则放行', whole_flagged and no_discount_pass)
+        record('A10', '无商机被拒(D8)；整单优惠触发审批，无优惠放行',
+               d8_rejected and whole_flagged and no_discount_pass,
+               f'D8拒={d8_rejected} 整单审批={whole_flagged} 无优惠放行={no_discount_pass}')
 
         # ---------------- A11 脱敏与等级覆盖鉴权 ----------------
         print('== A11 脱敏与权限 ==')
@@ -316,7 +335,14 @@ def main():
 
         # ---------------- A12 未审批不可发送 ----------------
         print('== A12 发送闸门 ==')
-        _, res = call('POST', '/quotes', token=zhangsan, body={'customer_id': customers['A']})
+        _, res = call('POST', '/opportunities', token=zhangsan, body={
+            'customer_id': customers['A'], 'title': f'{PREFIX}-A12', 'expected_amount': 100,
+        })
+        opp_a12 = res['data']['id']
+        created_opps.append(opp_a12)
+        call('POST', f'/opportunities/{opp_a12}/items', token=zhangsan,
+             body={'sku_id': sku_id, 'quantity': 1, 'target_price': 85})
+        _, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a12})
         qid12, vid12 = res['data']['quote_id'], res['data']['version_id']
         created_quotes.append(qid12)
         call('POST', f'/quote-versions/{vid12}/items/batch', token=zhangsan,
@@ -359,6 +385,54 @@ def main():
         record('A14', '历史价可留档、不冲突、不参与匹配', imported_ok and not_matched,
                f"status=historical imported={imported_ok}")
 
+        # ---------------- A15 绝对底价硬拒（D7 判定层）----------------
+        print('== A15 绝对底价 ==')
+        _, res = call('POST', '/pricing/calculate', token=admin,
+                      body={'sku_id': sku_id, 'quantity': 10})
+        base_cost_15 = res['data']['cost']['base_cost']
+        # 免审规则：无条件命中（总额上限放大到必命中），用来验证"免审救不了硬底"
+        _, res = call('POST', '/approval-rules', token=admin, body={
+            'name': f'{PREFIX}-A15免审', 'kind': 'auto_pass', 'priority': 1,
+            'conditions': [{'field': 'total_amount', 'op': 'lte', 'value': 999999999}],
+            'action': {},
+        })
+        rule15 = res['data']['id'] if res.get('code') == 0 else None
+        if rule15:
+            call('POST', f'/approval-rules/{rule15}/publish', token=admin, body={})
+            call('PATCH', f'/approval-rules/{rule15}/enabled', token=admin, body={'enabled': True})
+        try:
+            call('PATCH', '/settings', token=admin,
+                 body={'key': 'hard_floor', 'value': {'mode': 'cost', 'markup_ratio': 0}})
+            _, res = call('POST', '/opportunities', token=zhangsan, body={
+                'customer_id': customers['A'], 'title': f'{PREFIX}-A15', 'expected_amount': 1000,
+            })
+            opp_a15 = res['data']['id']
+            created_opps.append(opp_a15)
+            call('POST', f'/opportunities/{opp_a15}/items', token=zhangsan,
+                 body={'sku_id': sku_id, 'quantity': 10, 'target_price': base_cost_15 * 0.5})
+            _, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': opp_a15})
+            qid15, vid15 = res['data']['quote_id'], res['data']['version_id']
+            created_quotes.append(qid15)
+            _, vres = call('GET', f'/quote-versions/{vid15}', token=zhangsan)
+            item15 = vres['data']['items'][0]
+            call('PATCH', f"/quote-items/{item15['id']}", token=zhangsan,
+                 body={'quoted_price': round(base_cost_15 * 0.5, 2)})
+            _, res = call('POST', f'/quote-versions/{vid15}/submit-approval', token=zhangsan, body={})
+            hard_rejected = res['code'] == 42205 and '绝对底价' in res['message']
+            # 关闭硬底后同一版本可正常提交（证明拦截来自硬底本身）
+            call('PATCH', '/settings', token=admin,
+                 body={'key': 'hard_floor', 'value': {'mode': 'off', 'markup_ratio': 0}})
+            _, res = call('POST', f'/quote-versions/{vid15}/submit-approval', token=zhangsan, body={})
+            off_allowed = res['code'] == 0
+            record('A15', '低于绝对底价硬拒（免审规则不救）；关闭后放行',
+                   hard_rejected and off_allowed,
+                   f"硬拒={hard_rejected}(code={res.get('code')}) 关闭放行={off_allowed}")
+        finally:
+            call('PATCH', '/settings', token=admin,
+                 body={'key': 'hard_floor', 'value': {'mode': 'off', 'markup_ratio': 0}})
+            if rule15:
+                call('DELETE', f'/approval-rules/{rule15}', token=admin)
+
     finally:
         cleanup()
         evidence['results'] = RESULTS
@@ -373,7 +447,7 @@ def main():
     if failed:
         print(f"FAILED 用例：{[r['case'] for r in failed]}")
         sys.exit(1)
-    print('A01–A14 全部通过')
+    print('A01–A15 全部通过')
 
 
 if __name__ == '__main__':

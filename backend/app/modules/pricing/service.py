@@ -638,6 +638,19 @@ async def calculate_price(
     ]
     floor_price = max(floor_values) if floor_values else None
 
+    # ---- 绝对底价（D7 判定层 C 步）----
+    # 由生效成本推出来（成本 / 成本×(1+X)），系统设置里开关与比例。
+    # 与保护价的区别：保护价低过 → 触发审批（可被批准）；绝对底价低过 → 硬拒绝。
+    hard_floor_mode = await settings_service.get_text(session, "hard_floor", "mode", "off")
+    hard_floor_price = None
+    if has_cost and hard_floor_mode in ("cost", "cost_markup"):
+        markup = Decimal(
+            str(await settings_service.get_number(session, "hard_floor", "markup_ratio", 0.0))
+        )
+        hard_floor_price = (
+            base_cost if hard_floor_mode == "cost" else base_cost * (Decimal(1) + markup)
+        )
+
     range_ratio = Decimal(
         str(await settings_service.get_number(session, "price_range_ratio", "ratio", 0.04))
     )
@@ -665,6 +678,8 @@ async def calculate_price(
         # 授权底价同样必须折成计价币种：下面 below_authorized 拿它和 check_price 比，
         # 不折就会拿美元价 vs 人民币底线（10 号文档第八节踩过的坑，这里别改回去）
         floor_from_margin = convert(floor_from_margin)
+        if hard_floor_price is not None:
+            hard_floor_price = convert(hard_floor_price)
         if protection_price is not None:
             protection_price = convert(protection_price)
         recommended_range = [convert(recommended_range[0]), convert(recommended_range[1])]
@@ -736,6 +751,20 @@ async def calculate_price(
         below_protection or below_authorized or below_profit or below_margin or discount_exceeded
     )
 
+    # 绝对底价触发器：不算进 approval_required（它根本不是"需审批"，是"不可批"），
+    # 提交审批/核价权限检查会单独立拿这个标志做硬拒绝（D7）
+    below_hard_floor = bool(
+        hard_floor_price is not None
+        and check_price is not None
+        and check_price < hard_floor_price - Decimal("0.0001")
+    )
+    if quoted_price is not None and below_hard_floor:
+        warnings.append(
+            "该报价低于公司绝对底价：任何审批都无法通过，提交会被直接拒绝——"
+            "如业务确需该价格，请联系价格管理员调整价格档位（留审计），"
+            "或改走样品 / 清库存等特殊通道"
+        )
+
     if quoted_price is not None and approval_required:
         reason = []
         if below_protection:
@@ -794,9 +823,11 @@ async def calculate_price(
         "standard_price": _f(standard_price),
         "recommended_price": _f(recommended),
         "recommended_range": [_f(recommended_range[0]), _f(recommended_range[1])],
-        # 两个底价分开给：保护价是公司口径，minimum_price 是你权限内的口径
+        # 三个底价分开给：保护价是公司口径，minimum_price 是你权限内的口径，
+        # hard_floor_price 是不可审批的绝对底线（D7）；数值对无 price:manage 者脱敏
         "protection_price": _f(protection_price),
         "minimum_price": _f(floor_price),
+        "hard_floor_price": _f(hard_floor_price),
         "authorized_min_margin": _f(min_margin),
         "can_approve": can_approve,
         # 没传报价时 check_price 只是建议价的别名，回显出去等于把成本推算价原样给出去
@@ -818,6 +849,7 @@ async def calculate_price(
             "below_authorized_price": below_authorized,
             "negative_profit": below_profit,
             "below_authorized_margin": below_margin,
+            "below_hard_floor": below_hard_floor,
         },
         "warnings": warnings,
     }

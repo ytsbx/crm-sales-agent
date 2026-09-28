@@ -575,6 +575,7 @@ async def pricing_analysis(
     low = result["recommended_range"][0] if result["recommended_range"] else None
     floor_price = result["minimum_price"]
     protection = result["protection_price"]
+    triggers = result["approval_triggers"]
 
     insights: list[str] = []
     if recommended is None:
@@ -590,6 +591,12 @@ async def pricing_analysis(
         rate = result["profit_rate"]
         if rate is not None and rate < 0:
             insights.append("按建议价算是负利润，必须重新核价")
+        # D7：绝对底价不是"需审批"而是"不可批"，要说清后果与出路
+        if triggers.get("below_hard_floor"):
+            insights.append(
+                "低于公司绝对底价：提交会被直接拒绝，任何审批都无法通过——"
+                "联系价格管理员调整价格档位，或走样品/清库存特殊通道"
+            )
 
     return {
         "sku": result["sku"],
@@ -605,6 +612,7 @@ async def pricing_analysis(
         "profit": result["profit"],
         "profit_rate": result["profit_rate"],
         "approval_required": result["approval_required"],
+        "below_hard_floor": triggers.get("below_hard_floor", False),
         "insights": insights,
     }
 
