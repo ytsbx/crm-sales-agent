@@ -85,14 +85,16 @@ async def list_cases(
     session: AsyncSession, *, user, status: str | None, industry: str | None,
     product_line: str | None, stage: str | None, keyword: str | None,
 ) -> list[dict]:
-    """列表：已发布人尽可读（脱敏）；自己的草稿/被驳可见；主管看全量。"""
+    """列表：已发布人尽可读（脱敏）；未发布的只有作者自己；主管看全量。
+
+    可见范围必须与详情一致（get_case_detail：非 published 仅作者与主管）——
+    此前把 pending_review 漏给了全员，未审案例人人可见。
+    """
     reviewer = is_reviewer(user)
     stmt = select(SalesCase).where(SalesCase.deleted_at.is_(None))
     if not reviewer:
         stmt = stmt.where(
-            (SalesCase.status == "published")
-            | (SalesCase.author_id == user.id)
-            | (SalesCase.status.in_(["pending_review"]))
+            (SalesCase.status == "published") | (SalesCase.author_id == user.id)
         )
     if status:
         stmt = stmt.where(SalesCase.status == status)

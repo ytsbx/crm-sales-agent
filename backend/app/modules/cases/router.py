@@ -96,6 +96,10 @@ async def update_case(
         _forbid("只有作者或主管能修改案例")
     if case.status not in ("draft", "rejected") and not svc.is_reviewer(user):
         _forbid("已提交的案例只有主管能修改")
+    # 与创建同一纪律：改挂客户必须校验该客户在当前用户数据范围内——
+    # 否则作者可以把别人的客户挂上来，再借详情页读到客户名（场景15 脱敏漏口）
+    if payload.customer_id is not None and payload.customer_id != case.customer_id:
+        await customer_service.get_visible_customer(session, user, payload.customer_id)
     svc._apply_update(case, payload)
     case.updated_at = datetime.now(UTC)
     await write_audit(

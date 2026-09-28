@@ -554,6 +554,42 @@ def main():
     check_true('关键词检索命中',
                any(row['id'] == case_id for row in res['data']), '')
 
+    # 回归①：待审核案例不再全员可见——列表可见范围与详情一致（仅作者与主管）
+    status, res = call('POST', '/cases', token=zhangsan, body={
+        'title': f'CHK{RUN}待审核案例',
+        'customer_id': zs_customer_id,
+        'customer_label': '某代称',
+        'key_actions': '待审动作',
+        'lessons': '待审做法',
+    })
+    check('建待审核用例', res.get('code'), 0)
+    pending_id = res['data']['id']
+    status, res = call('POST', f'/cases/{pending_id}/submit', token=zhangsan, body={})
+    check('待审核用例已提交', res.get('code'), 0)
+    wangwu = login('wangwu', '123456')
+    status, res = call('GET', '/cases', token=wangwu)
+    check_true('财务列表看不到待审核案例',
+               not any(row['id'] == pending_id for row in res['data']),
+               str([row['id'] for row in res['data']][:5]))
+    status, res = call('GET', f'/cases/{pending_id}', token=wangwu)
+    check('财务详情也被拒（口径一致）', res.get('code'), 40301)
+    status, res = call('GET', '/cases', token=lisi)
+    check_true('主管列表可见待审核',
+               any(row['id'] == pending_id for row in res['data']), '')
+
+    # 回归②：更新改挂数据范围外的客户被拒（创建时校验了，更新此前漏了）
+    status, res = call('POST', '/customers', token=admin, body={
+        'name': f'CHK{RUN}李四的客户', 'owner_id': other_user['id'],
+    })
+    check('造李四的客户', res.get('code'), 0)
+    lisi_customer_id = res['data']['id']
+    status, res = call('PATCH', f'/cases/{pending_id}', token=zhangsan,
+                       body={'customer_id': lisi_customer_id})
+    check('改挂他人客户被拒', res.get('code'), 40301)
+    status, res = call('GET', f'/cases/{pending_id}', token=zhangsan)
+    check_true('客户归属未被改动', res['data']['customer_id'] == zs_customer_id,
+               str(res['data']['customer_id']))
+
 
 if __name__ == '__main__':
     async def _driver():
