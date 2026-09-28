@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.modules.cases import redaction
 from app.modules.cases.model import CASE_STATUS_LABEL, SalesCase
 from app.modules.user.model import User
 
@@ -24,8 +25,40 @@ def serialize_case(
     customer_name: str | None = None,
     reviewer_name: str | None = None,
     reveal_customer: bool = False,
+    evidence_scope: set[str] | None = None,
 ) -> dict:
-    """序列化。reveal_customer=False 时抹掉真实客户身份（场景15 的脱敏分享）。"""
+    """序列化。
+
+    `reveal_customer=False` 即「分享版」（场景15）：客户身份只留代称，**同时**
+    对正文做价格/联系方式脱敏、并清掉读者无权查看的单据引用（§3.7：分享版对
+    客户电话、合同、成本、特殊价做权限控制或脱敏，原单据仍按业务权限访问）。
+    作者与主管看原文——他们要看的原单据本来就在自己权限内。
+
+    `redaction_summary` 两种视角都返回，用途不同：审核人据此知道"这条案例分享
+    出去会被抹掉哪些片段、要不要先改正文"，培训读者据此知道"这里为什么少了
+    一个数字"。二者都不是可有可无的装饰——少了它，脱敏就从"可解释"变成"神秘消失"。
+    """
+    share_view = not reveal_customer
+    narrative: dict[str, str | None] = {}
+    counters: dict[str, int] = {}
+    for field in redaction.NARRATIVE_FIELDS:
+        raw = getattr(case, field)
+        masked, hits = redaction.mask_text(raw)
+        for label, count in hits.items():
+            counters[label] = counters.get(label, 0) + count
+        # 分享版给脱敏文本；作者/主管给原文，但同样回报命中数（发布前自查用）
+        narrative[field] = masked if share_view else raw
+
+    evidence: dict[str, int | None] = {
+        field: getattr(case, field) for field in redaction.EVIDENCE_PERMISSIONS
+    }
+    hidden_evidence: list[str] = []
+    if share_view and evidence_scope is not None:
+        for field, value in evidence.items():
+            if value is not None and field not in evidence_scope:
+                evidence[field] = None
+                hidden_evidence.append(field)
+
     return {
         "id": case.id,
         "title": case.title,
@@ -39,17 +72,8 @@ def serialize_case(
         "product_line": case.product_line,
         "stage_reached": case.stage_reached,
         "problem_tags": (case.problem_tags or {}).get("tags", []) if isinstance(case.problem_tags, dict) else (case.problem_tags or []),
-        "background": case.background,
-        "goal": case.goal,
-        "key_actions": case.key_actions,
-        "objection_handling": case.objection_handling,
-        "process": case.process,
-        "result": case.result,
-        "lessons": case.lessons,
-        "quote_id": case.quote_id,
-        "order_id": case.order_id,
-        "sample_id": case.sample_id,
-        "opportunity_id": case.opportunity_id,
+        **narrative,
+        **evidence,
         "status": case.status,
         "status_label": CASE_STATUS_LABEL.get(case.status, case.status),
         "reviewer_id": case.reviewer_id,
@@ -57,6 +81,10 @@ def serialize_case(
         "reviewed_at": case.reviewed_at,
         "review_note": case.review_note,
         "created_at": case.created_at,
+        # 脱敏可解释（§3.7）：抹了哪几类、各几处；以及哪些单据引用对读者不可见
+        "redaction_summary": redaction.summarize(counters),
+        "hidden_evidence": hidden_evidence,
+        "share_view": share_view,
     }
 
 
@@ -136,6 +164,7 @@ async def list_cases(
                 )
             ).all()
         }
+    scope = redaction.evidence_scope_for(user)
     return [
         serialize_case(
             row,
@@ -143,6 +172,7 @@ async def list_cases(
             reviewer_name=users.get(row.reviewer_id),
             customer_name=customers.get(row.customer_id) if row.customer_id else None,
             reveal_customer=reviewer or row.author_id == user.id,
+            evidence_scope=scope,
         )
         for row in rows
     ]
@@ -167,6 +197,7 @@ async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> di
         reviewer_name=reviewer_user.name if reviewer_user else None,
         customer_name=customer_name,
         reveal_customer=reveal,
+        evidence_scope=redaction.evidence_scope_for(user),
     )
 
 

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Banner,
   Button,
   Input,
   Modal,
@@ -361,6 +362,29 @@ export default function CasesPage() {
       >
         {detail && (
           <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
+            {/* 脱敏可解释（§3.7）：读者要知道"这里为什么少了个数字"，
+                作者/主管要在发布前知道"分享出去会被抹掉哪些片段" */}
+            {detail.share_view && (detail.redaction_summary ?? []).length > 0 && (
+              <Banner
+                type="info"
+                closeIcon={null}
+                description={`分享版已脱敏：${(detail.redaction_summary ?? []).join('、')}。做法可学，具体价格与联系方式不外泄。`}
+              />
+            )}
+            {!detail.share_view && (detail.redaction_summary ?? []).length > 0 && (
+              <Banner
+                type="warning"
+                closeIcon={null}
+                description={`本案例正文含受限信息（${(detail.redaction_summary ?? []).join('、')}），分享版会自动替换成占位。建议先把正文里的数字改写后再发布，培训价值不受影响。`}
+              />
+            )}
+            {!detail.share_view && (detail.hidden_evidence ?? []).length > 0 && (
+              <Banner
+                type="warning"
+                closeIcon={null}
+                description="注意：这条案例关联的原始单据，部分读者没有查看权限——分享版不会向他们下发单据入口（原单据仍按业务权限访问）。"
+              />
+            )}
             <div>
               {detail.customer_name ?? detail.customer_label ?? '客户未填'}
               {detail.industry ? ` · ${detail.industry}` : ''}
@@ -389,6 +413,11 @@ export default function CasesPage() {
                 {detail.quote_id && <Link to={`/quotes/${detail.quote_id}`}>报价单 #{detail.quote_id}</Link>}
                 {detail.order_id && <Link to={`/orders/${detail.order_id}`}>订单 #{detail.order_id}</Link>}
                 {detail.sample_id && <span>打样单 #{detail.sample_id}</span>}
+              </div>
+            )}
+            {detail.share_view && (detail.hidden_evidence ?? []).length > 0 && (
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                该案例关联的原始单据对当前账号不可见——案例只引用单据，打开仍需原单据权限。
               </div>
             )}
             {(detail.problem_tags ?? []).length > 0 && (
