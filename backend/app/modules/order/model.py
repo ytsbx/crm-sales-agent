@@ -73,3 +73,17 @@ class OrderStatusHistory(Base, IdMixin):
     operator_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OrderMilestone(Base, IdMixin):
+    """跟单里程碑（领导模块⑤）：从客户交期倒推的关键节点，跟单人工登记实际日期。"""
+
+    __tablename__ = "order_milestones"
+    __table_args__ = (Index("ix_order_milestones_order", "order_id"),)
+
+    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
+    node: Mapped[str] = mapped_column(String(32))
+    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    actual_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

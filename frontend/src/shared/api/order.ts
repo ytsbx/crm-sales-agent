@@ -252,3 +252,32 @@ export function confirmPayment(id: number, comment?: string) {
 export function rejectPayment(id: number, comment?: string) {
   return api.post<Payment>(`/payments/${id}/reject`, { comment })
 }
+
+// ---------------------------------------------------------------- 跟单里程碑（模块⑤）
+
+export interface OrderMilestoneRow {
+  id: number
+  node: string
+  label: string
+  planned_date: string | null
+  actual_date: string | null
+  status: 'done' | 'overdue' | 'pending'
+  status_label: string
+  remark?: string | null
+}
+
+export function listOrderMilestones(orderId: number) {
+  return api.get<OrderMilestoneRow[]>(`/orders/${orderId}/milestones`)
+}
+
+export function updateOrderMilestone(
+  orderId: number,
+  milestoneId: number,
+  payload: { planned_date?: string | null; actual_date?: string | null; remark?: string | null },
+) {
+  return api.patch<OrderMilestoneRow>(`/orders/${orderId}/milestones/${milestoneId}`, payload)
+}
+
+export function replanOrderMilestones(orderId: number) {
+  return api.post<{ changed: number }>(`/orders/${orderId}/milestones/replan`)
+}

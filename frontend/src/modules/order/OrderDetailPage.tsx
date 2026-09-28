@@ -11,14 +11,18 @@ import {
   generateReceivables,
   getOrder,
   listOrderItems,
+  listOrderMilestones,
   listOrderPayments,
   listOrderReceivables,
   listOrderStatusHistory,
   orderFinanceSummary,
   refreshStatus,
+  replanOrderMilestones,
   repurchase,
   syncErp,
+  updateOrderMilestone,
   type OrderItem,
+  type OrderMilestoneRow,
   type OrderStatusRow,
   type Payment,
   type Receivable,
@@ -32,10 +36,18 @@ import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent
 
 const TABS = [
   { tab: '订单明细', itemKey: 'items' },
+  { tab: '跟单节点', itemKey: 'milestones' },
   { tab: '履约状态', itemKey: 'status' },
   { tab: '应收计划', itemKey: 'receivables' },
   { tab: '回款记录', itemKey: 'payments' },
 ]
+
+// 跟单里程碑状态（模块⑤）：完成/逾期/待办，逾期由计划日期与当天比较自动判定
+const MILESTONE_TONE: Record<string, TagTone> = {
+  done: 'green',
+  overdue: 'red',
+  pending: 'grey',
+}
 
 const STATUS_TONE: Record<string, TagTone> = {
   pending: 'grey',
@@ -69,6 +81,13 @@ export default function OrderDetailPage() {
   const [generateDates, setGenerateDates] = useState<{ first?: Date; second?: Date }>({})
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
+  // 跟单里程碑（模块⑤）：编辑弹窗状态
+  const [milestoneEdit, setMilestoneEdit] = useState<OrderMilestoneRow | null>(null)
+  const [milestoneForm, setMilestoneForm] = useState<{
+    planned_date: string | null
+    actual_date: string | null
+    remark: string
+  }>({ planned_date: null, actual_date: null, remark: '' })
 
   // AI 回款风险分析（API §37 专用接口，需 agent:use）
   const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
@@ -87,6 +106,12 @@ export default function OrderDetailPage() {
     queryKey: ['order-items', orderId],
     queryFn: () => listOrderItems(orderId),
     enabled: Number.isFinite(orderId),
+  })
+  // 跟单里程碑（模块⑤）：首次打开自动初始化六个节点
+  const milestonesQuery = useQuery({
+    queryKey: ['order-milestones', orderId],
+    queryFn: () => listOrderMilestones(orderId),
+    enabled: Number.isFinite(orderId) && activeKey === 'milestones',
   })
   const statusQuery = useQuery({
     queryKey: ['order-status', orderId],
@@ -108,6 +133,40 @@ export default function OrderDetailPage() {
     queryFn: () => orderFinanceSummary(orderId),
     enabled: Number.isFinite(orderId),
   })
+
+  const milestonesRefresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['order-milestones', orderId] })
+  }
+  const milestoneSaveMutation = useMutation({
+    mutationFn: () =>
+      updateOrderMilestone(orderId, milestoneEdit!.id, {
+        planned_date: milestoneForm.planned_date,
+        actual_date: milestoneForm.actual_date,
+        remark: milestoneForm.remark || null,
+      }),
+    onSuccess: () => {
+      Toast.success('里程碑已更新')
+      setMilestoneEdit(null)
+      milestonesRefresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const replanMutation = useMutation({
+    mutationFn: () => replanOrderMilestones(orderId),
+    onSuccess: (data) => {
+      Toast.success(`已按交期重排 ${data.changed} 个节点`)
+      milestonesRefresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const openMilestoneEdit = (row: OrderMilestoneRow) => {
+    setMilestoneEdit(row)
+    setMilestoneForm({
+      planned_date: row.planned_date,
+      actual_date: row.actual_date,
+      remark: row.remark ?? '',
+    })
+  }
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
@@ -456,8 +515,115 @@ export default function OrderDetailPage() {
               empty="还没有回款记录"
             />
           )}
+
+          {activeKey === 'milestones' && (
+            <>
+              <div className="toolbar" style={{ marginBottom: 10 }}>
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  计划日期按客户交期倒推；登记实际日期后该节点标记完成。交期变了？点「按交期重排」
+                </span>
+                <div style={{ flex: 1 }} />
+                {canManage && (
+                  <Button
+                    size="small"
+                    loading={replanMutation.isPending}
+                    onClick={() => replanMutation.mutate()}
+                  >
+                    按交期重排
+                  </Button>
+                )}
+              </div>
+              <Table<OrderMilestoneRow>
+                columns={[
+                  { title: '节点', dataIndex: 'label', width: 140 },
+                  {
+                    title: '计划日期',
+                    dataIndex: 'planned_date',
+                    width: 130,
+                    render: (v: string | null) => v ?? '-',
+                  },
+                  {
+                    title: '实际日期',
+                    dataIndex: 'actual_date',
+                    width: 130,
+                    render: (v: string | null) => v ?? '-',
+                  },
+                  {
+                    title: '状态',
+                    dataIndex: 'status',
+                    width: 100,
+                    render: (v: string, record: OrderMilestoneRow) => (
+                      <Tag color={MILESTONE_TONE[v] ?? 'grey'}>{record.status_label}</Tag>
+                    ),
+                  },
+                  { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+                  ...(canManage
+                    ? [
+                        {
+                          title: '操作',
+                          width: 80,
+                          render: (_: unknown, record: OrderMilestoneRow) => (
+                            <a onClick={() => openMilestoneEdit(record)}>登记</a>
+                          ),
+                        },
+                      ]
+                    : []),
+                ]}
+                dataSource={milestonesQuery.data ?? []}
+                loading={milestonesQuery.isLoading}
+                rowKey="id"
+                pagination={false}
+                empty="暂无里程碑"
+              />
+            </>
+          )}
         </div>
       </SectionCard>
+
+      <Modal
+        title={`登记里程碑：${milestoneEdit?.label ?? ''}`}
+        visible={Boolean(milestoneEdit)}
+        onCancel={() => setMilestoneEdit(null)}
+        onOk={() => milestoneSaveMutation.mutate()}
+        confirmLoading={milestoneSaveMutation.isPending}
+        okText="保存"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <div style={{ marginBottom: 4 }}>计划日期（交期倒推，可手工调整）</div>
+            <DatePicker
+              type="date"
+              format="yyyy-MM-dd"
+              style={{ width: '100%' }}
+              value={milestoneForm.planned_date ? new Date(milestoneForm.planned_date) : undefined}
+              onChange={(_, dateStr) =>
+                setMilestoneForm({ ...milestoneForm, planned_date: (dateStr as string) || null })
+              }
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>实际日期（登记后该节点标记完成）</div>
+            <DatePicker
+              type="date"
+              format="yyyy-MM-dd"
+              style={{ width: '100%' }}
+              value={milestoneForm.actual_date ? new Date(milestoneForm.actual_date) : undefined}
+              onChange={(_, dateStr) =>
+                setMilestoneForm({ ...milestoneForm, actual_date: (dateStr as string) || null })
+              }
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>备注</div>
+            <Input
+              value={milestoneForm.remark}
+              onChange={(value) => setMilestoneForm({ ...milestoneForm, remark: value })}
+              placeholder="分批发货、延期原因等"
+            />
+          </div>
+        </div>
+      </Modal>
 
       {can('agent:use') && (
         <SectionCard

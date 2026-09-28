@@ -1,6 +1,6 @@
 """订单中心接口（对齐 03-API §27 / §28）。"""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
@@ -22,8 +22,16 @@ from app.modules.notification import service as notification_service
 from app.modules.opportunity.model import Opportunity, OpportunityItem, OpportunityStageHistory
 from app.modules.opportunity.service import get_first_stage
 from app.modules.order import service as svc
-from app.modules.order.model import ORDER_STATUS_LABEL, OrderStatusHistory, SalesOrder, SalesOrderItem
+from app.modules.order import milestones as milestones_svc
+from app.modules.order.model import (
+    ORDER_STATUS_LABEL,
+    OrderMilestone,
+    OrderStatusHistory,
+    SalesOrder,
+    SalesOrderItem,
+)
 from app.modules.order.schema import (
+    MilestoneUpdate,
     OrderCreate,
     OrderFromQuote,
     OrderStatusChange,
@@ -268,6 +276,105 @@ async def list_order_items(
         )
     ).all()
     return ok([svc.serialize_item(item, code) for item, code in rows])
+
+
+@router.get("/orders/{order_id}/milestones")
+async def list_milestones(
+    order_id: int,
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """跟单里程碑（领导模块⑤）：首次访问自动按六节点初始化，计划日期从交期倒推。"""
+    order = await svc.get_visible_order(session, user, order_id)
+    rows = await milestones_svc.ensure_initialized(session, order.id, order.delivery_date)
+    await session.commit()  # 初始化行要落库，否则下次访问会重复初始化
+    today = date.today()
+    items = [
+        {
+            "id": r.id,
+            "node": r.node,
+            "label": milestones_svc.NODE_LABELS.get(r.node, r.node),
+            "planned_date": r.planned_date,
+            "actual_date": r.actual_date,
+            "status": milestones_svc.node_status(r.planned_date, r.actual_date, today),
+            "status_label": milestones_svc.STATUS_LABELS[
+                milestones_svc.node_status(r.planned_date, r.actual_date, today)
+            ],
+            "remark": r.remark,
+        }
+        for r in rows
+    ]
+    return ok(items)
+
+
+@router.patch("/orders/{order_id}/milestones/{milestone_id}")
+async def update_milestone(
+    order_id: int,
+    milestone_id: int,
+    payload: MilestoneUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """登记实际日期 / 调整计划日期 / 备注（exclude_unset：不传的字段不动）。"""
+    order = await svc.get_visible_order(session, user, order_id)
+    row = await session.get(OrderMilestone, milestone_id)
+    if row is None or row.order_id != order.id:
+        raise AppError(ErrorCode.NOT_FOUND, "里程碑不存在", 404)
+    data = payload.model_dump(exclude_unset=True)
+    before = {"planned_date": str(row.planned_date), "actual_date": str(row.actual_date)}
+    for field, value in data.items():
+        setattr(row, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="order_milestone",
+        business_id=row.id,
+        before=before,
+        after={"planned_date": str(row.planned_date), "actual_date": str(row.actual_date)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "id": row.id,
+            "node": row.node,
+            "label": milestones_svc.NODE_LABELS.get(row.node, row.node),
+            "planned_date": row.planned_date,
+            "actual_date": row.actual_date,
+            "status": milestones_svc.node_status(row.planned_date, row.actual_date, date.today()),
+            "status_label": milestones_svc.STATUS_LABELS[
+                milestones_svc.node_status(row.planned_date, row.actual_date, date.today())
+            ],
+            "remark": row.remark,
+        },
+        "里程碑已更新",
+    )
+
+
+@router.post("/orders/{order_id}/milestones/replan")
+async def replan_milestones(
+    order_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """交期变更后重排计划日期（已登记实际日期的节点不动）。"""
+    order = await svc.get_visible_order(session, user, order_id)
+    changed = await milestones_svc.replan(session, order.id, order.delivery_date)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="replan",
+        business_type="order_milestone",
+        business_id=order.id,
+        after={"delivery_date": str(order.delivery_date), "changed": changed},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({"changed": changed}, f"已按交期 {order.delivery_date} 重排 {changed} 个节点")
 
 
 @router.get("/orders/{order_id}/status-history")

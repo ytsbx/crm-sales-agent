@@ -98,6 +98,7 @@ CLEAN_STATEMENTS = [
     ('回款记录', 'delete from payment_records'),
     ('应收计划', 'delete from receivable_plans'),
     ('订单状态历史', 'delete from order_status_history'),
+    ('跟单里程碑', 'delete from order_milestones'),
     ('ERP同步日志', 'delete from integration_logs'),
     ('外部映射', 'delete from external_mappings'),
     ('订单', 'delete from sales_orders'),

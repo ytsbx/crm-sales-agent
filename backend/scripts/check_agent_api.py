@@ -117,6 +117,8 @@ async def clean(verbose=False):
                   "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
         ('订单状态历史', "delete from order_status_history where order_id in "
                   "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('用例跟单里程碑', "delete from order_milestones where order_id in "
+                  "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
         ('用例订单明细', "delete from sales_order_items where order_id in "
                   "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),
         ('用例订单', "delete from sales_orders where customer_id in (select id from customers where name like 'CHK%')"),

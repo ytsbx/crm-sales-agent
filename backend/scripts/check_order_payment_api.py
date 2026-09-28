@@ -106,6 +106,7 @@ async def clean(verbose=False):
         ("回款", "delete from payment_records"),
         ("应收", "delete from receivable_plans"),
         ("订单状态历史", "delete from order_status_history"),
+        ("跟单里程碑", "delete from order_milestones"),
         ("订单明细", "delete from sales_order_items"),
         ("订单", "delete from sales_orders"),
         ("通知", "delete from notifications where business_type = 'order'"),

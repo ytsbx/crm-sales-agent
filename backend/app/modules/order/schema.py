@@ -9,6 +9,14 @@ class OrderFromQuote(BaseModel):
     remark: str | None = None
 
 
+class MilestoneUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    planned_date: date | None = None
+    actual_date: date | None = None
+    remark: str | None = None
+
+
 class OrderItemInput(BaseModel):
     sku_id: int
     quantity: Decimal = Field(gt=0)
