@@ -342,7 +342,7 @@ export default function AnalyticsPage() {
               render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
             },
             {
-              title: '回款额（已确认）',
+              title: '回款额（按订单负责人）',
               dataIndex: 'received_amount',
               render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
             },

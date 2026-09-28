@@ -912,9 +912,14 @@ async def sales_user_stats(
         select(func.count(FollowUp.id))
         .where(FollowUp.owner_id == User.id)
         .scalar_subquery(),
-        # 回款额：只算财务已确认的
+        # 回款额（业绩口径，方案 §3.8）：只算财务已确认的，且按**订单负责人**归属——
+        # "谁的单，回款就算谁的业绩"。此前按 confirmed_by（财务确认人）聚合，
+        # 结果是财务成了收钱最多的人、销售回款业绩全零，还会被直接当成
+        # 业务员目标完成额（文档点名"不能直接用作业务员目标完成额"）。
+        # 财务自己确认了多少，在「回款中心」按确认人单独看得到，不受影响。
         select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
-        .where(PaymentRecord.status == "confirmed", PaymentRecord.confirmed_by == User.id)
+        .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
+        .where(PaymentRecord.status == "confirmed", SalesOrder.owner_id == User.id)
         .scalar_subquery(),
     ).where(User.status == "active")
 

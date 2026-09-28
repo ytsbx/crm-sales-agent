@@ -415,6 +415,30 @@ def main():
     check('发完后整单可完成', res.get('code'), 0)
 
     print()
+    print('=== 13. 回款业绩按订单负责人归属（§3.8：不再按财务确认人）===')
+    status, res = call('GET', '/analytics/sales-users?limit=50', token=admin)
+    check('业绩接口可读', res.get('code'), 0)
+    rows = {row['user_id']: row for row in res['data']}
+    zs_before = rows.get(zs_id, {}).get('received_amount', 0.0)
+    admin_before = rows.get(1, {}).get('received_amount', 0.0)
+
+    # 财务（admin）登记并确认一笔张三订单的回款
+    status, res = call('POST', '/payments', token=admin,
+                       body={'receivable_plan_id': zs_plan_id, 'received_date': '2026-09-27',
+                             'received_amount': 1234, 'payment_method': '电汇'})
+    check('财务登记张三订单回款', res.get('code'), 0)
+    zs_pay_id = res['data']['id']
+    status, res = call('POST', f'/payments/{zs_pay_id}/confirm', token=admin, body={})
+    check('财务确认', res.get('code'), 0)
+
+    status, res = call('GET', '/analytics/sales-users?limit=50', token=admin)
+    rows = {row['user_id']: row for row in res['data']}
+    zs_after = rows.get(zs_id, {}).get('received_amount', 0.0)
+    admin_after = rows.get(1, {}).get('received_amount', 0.0)
+    check('回款计入订单负责人（张三）', round(zs_after - zs_before, 2), 1234.0)
+    check('不计入确认人（admin）', round(admin_after - admin_before, 2), 0.0)
+
+    print()
     print(f'ORDER_IDS={[order_id, zs_order_id]} PLAN_IDS={[plan_id, plan2_id, zs_plan_id]}')
 
 
