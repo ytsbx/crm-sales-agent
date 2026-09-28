@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28 13:05:21",
+  "generated_at": "2026-09-28 18:03:43",
   "environment": "local(dev)",
   "results": [
     {
@@ -78,7 +78,7 @@
       "case": "A13",
       "title": "确认成交建单；重试返回同一订单",
       "pass": true,
-      "detail": "order=101"
+      "detail": "order=259"
     },
     {
       "case": "A14",
