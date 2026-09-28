@@ -276,7 +276,20 @@ async def transfer(
     user: CurrentUser = Depends(require_permission("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """离职继承（PRD §8.4）。不配企微 secret 时传 transfer_wecom=false 只转 CRM 侧。"""
+    """离职继承（PRD §8.4）。不配企微 secret 时传 transfer_wecom=false 只转 CRM 侧。
+
+    ⚠️ 硬锁（WECOM_TRANSFER_ENABLED）：该操作会变更**真实客户**在微信里
+    看到的服务人员，默认禁止执行——需业务确认后由管理员显式开启。
+    """
+    from app.core.config import settings as app_settings
+
+    if not app_settings.wecom_transfer_enabled:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "离职继承已锁定：该操作会变更客户在微信里看到的服务人员。"
+            "需业务确认后由管理员设置 WECOM_TRANSFER_ENABLED=1 才能执行",
+            403,
+        )
     job = await svc.transfer_relations(
         session,
         user=user,

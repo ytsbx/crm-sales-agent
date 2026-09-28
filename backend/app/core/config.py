@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # 企微推送总闸：置 1/true 后 dispatch_pending 把所有待投递通知标 skipped，
     # 真实消息一条不发——开发/跑回归时用，避免测试数据骚扰真实用户
     wecom_push_off: bool = False
+    # 离职继承硬锁：该操作会变更**真实客户**在微信里看到的服务人员，
+    # 默认禁止执行；需业务确认后由管理员置 1 才解锁（403 拒绝并说明）
+    wecom_transfer_enabled: bool = False
 
     # ---- ERP / MES（API §28 / 05-TECH §15）--------------------------------
     # 与企微同样的原则：留空即"未配置"，推送接口明确报 50203，

@@ -157,23 +157,20 @@ class WeComClient:
     # ---- 外部联系人（PRD §8.2）-------------------------------------------
 
     async def list_external_contacts(
-        self, *, wecom_userid: str | None = None, cursor: str = ""
+        self, *, userid: str, cursor: str = ""
     ) -> dict[str, Any]:
-        """拉外部联系人。
+        """拉某个跟进成员名下的客户列表。
 
-        两种口径：
-        - 不传 wecom_userid：企业全部客户，`GET externalcontact/list`
-        - 传 wecom_userid：某个成员名下的客户，`GET externalcontact/list/{userid}`
+        externalcontact/list **必须带 userid**（查询参数，不是路径段）——
+        企微没有"不传成员拉全企业客户"的用法，漏传会报 40058。
         """
         token = await self.access_token(external=True)
-        api = (
-            f"externalcontact/list/{wecom_userid}"
-            if wecom_userid
-            else "externalcontact/list"
-        )
+        params: dict[str, Any] = {"userid": userid}
+        if cursor:
+            params["cursor"] = cursor
         return await self._call(
-            api,
-            params={"cursor": cursor} if cursor else None,
+            "externalcontact/list",
+            params=params,
             access_token=token,
         )
 
@@ -196,25 +193,54 @@ class WeComClient:
         )
         return list(payload.get("follow_user", []))
 
+    async def get_follow_user_ids(self) -> list[str]:
+        """有客户联系权限的内部跟进成员清单（不含任何客户数据）。"""
+        token = await self.access_token(external=True)
+        payload = await self._call(
+            "externalcontact/get_follow_user_list",
+            access_token=token,
+        )
+        return [str(uid) for uid in payload.get("follow_user", [])]
+
     async def list_all_external_contacts(self) -> list[dict[str, Any]]:
-        """翻页拉全量外部联系人，带上每条的详情（详情接口才给 name/avatar）。"""
+        """按跟进成员翻页拉全量外部联系人，每条带详情（详情接口才给 name/avatar）。
+
+        externalcontact/list **必须传 userid**（跟哪个成员拉客户）——企微没有
+        "企业全量、不传成员" 的用法，直接调会报 40058 missing field userid。
+        所以先取跟进成员清单，再逐成员翻页；同一客户被多个成员跟进时会出现
+        多次，按 external_userid 去重（service 侧 upsert 本身也幂等）。
+        """
         results: list[dict[str, Any]] = []
-        cursor = ""
-        for _ in range(max(1, settings.wecom_sync_max_pages)):
-            payload = await self.list_external_contacts(cursor=cursor)
-            for row in payload.get("external_contact_list", []) or []:
-                contact = row.get("external_contact", {}) or {}
-                external_userid = contact.get("external_userid")
-                if not external_userid:
-                    continue
-                # list 接口只给 external_userid 和少量字段，详情要单独拉
-                detail = await self.get_external_contact(str(external_userid))
-                merged = {**contact, **detail}
-                merged.setdefault("follow_user", row.get("follow_info") or {})
-                results.append(merged)
-            cursor = str(payload.get("next_cursor") or "")
-            if not cursor:
-                break
+        seen: set[str] = set()
+        member_errors: list[str] = []
+        last_error: WeComError | None = None
+        for userid in await self.get_follow_user_ids():
+            cursor = ""
+            try:
+                for _ in range(max(1, settings.wecom_sync_max_pages)):
+                    payload = await self.list_external_contacts(userid=userid, cursor=cursor)
+                    for row in payload.get("external_contact_list", []) or []:
+                        contact = row.get("external_contact", {}) or {}
+                        external_userid = contact.get("external_userid")
+                        if not external_userid or str(external_userid) in seen:
+                            continue
+                        seen.add(str(external_userid))
+                        # list 接口只给 external_userid 和少量字段，详情要单独拉
+                        detail = await self.get_external_contact(str(external_userid))
+                        merged = {**contact, **detail}
+                        merged.setdefault("follow_user", row.get("follow_info") or {})
+                        results.append(merged)
+                    cursor = str(payload.get("next_cursor") or "")
+                    if not cursor:
+                        break
+            except WeComError as error:
+                # 84061（成员未开通客户联系）等单个成员的配置问题：跳过该成员
+                # 继续同步其他人，不让一个人把整轮同步炸掉
+                member_errors.append(f"{userid}: {error.errcode} {error.errmsg}"[:120])
+                last_error = error
+        if not results and member_errors:
+            # 一个成员都没拉到时把失败原因抛出去，让同步任务如实记录"为什么是 0"
+            raise last_error  # type: ignore[misc]
         return results
 
     # ---- 离职继承（PRD §8.4）---------------------------------------------
