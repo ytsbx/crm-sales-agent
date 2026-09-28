@@ -8,7 +8,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin
@@ -72,6 +72,16 @@ class Notification(Base, IdMixin):
     wecom_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
     wecom_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
     wecom_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 投递重试（文档 §六/API §32：「发送失败保留业务记录并重试通知」）：
+    # 失败不是终点。试过几次、下次什么时候再试都落库——界面上能解释
+    # "这条为什么没发出去、还会不会自己再试"，而不是只有一行 failed 猜原因。
+    # attempts 达到上限后 next_retry_at 置空，停在 failed 等人工补投。
+    wecom_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    wecom_next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

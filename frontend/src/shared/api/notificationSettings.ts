@@ -9,6 +9,8 @@ export interface NotificationSettings {
     approval: boolean
     task: boolean
     payment: boolean
+    /** 业务动作自动留痕推业务主管（报价提交 / 打样 / 下单）。 */
+    followup: boolean
   }
   /** 后端企微对接是否就绪（用来提示"开了渠道但还没配密钥"）。 */
   wecom_ready: boolean

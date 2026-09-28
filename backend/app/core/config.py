@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_recycle_hour: int = 2   # 公海回收：每天几点跑（24 小时制）
     scheduler_task_rules_hour: int = 2  # 自动任务规则：每天几点跑
+    # 通知失败重投：每多少分钟扫一次"到期该重试"的失败通知（文档 §六）。
+    # 用分钟级而不是每天——退避最大 2 小时，按天扫等于退避毫无意义。
+    scheduler_retry_minutes: int = 10
     agent_max_tool_rounds: int = 3
 
     # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------

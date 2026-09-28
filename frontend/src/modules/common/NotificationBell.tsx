@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Badge, Button, Popover } from '@douyinfe/semi-ui'
+import { Badge, Button, Popover, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   getUnreadCount,
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  redispatchNotification,
   type NotificationRow,
 } from '../../shared/api/analytics'
 
@@ -45,6 +46,18 @@ export default function NotificationBell() {
   const readAllMutation = useMutation({
     mutationFn: markAllNotificationsRead,
     onSuccess: refresh,
+  })
+  // 补投（文档 §六）：失败的通知能人工重发，不必去重跑业务动作——
+  // 重跑业务动作会被业务事件去重挡住，这条通知就永远发不出去了
+  const redispatchMutation = useMutation({
+    mutationFn: (id: number) => redispatchNotification(id),
+    onSuccess: (data) => {
+      Toast[data.sent ? 'success' : 'warning'](
+        data.sent ? '已补投' : '仍未投出，请看失败原因',
+      )
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
   const items = listQuery.data?.items ?? []
@@ -88,9 +101,48 @@ export default function NotificationBell() {
           {item.content && (
             <div style={{ color: 'var(--crm-text-2)', fontSize: 12, marginTop: 2 }}>{item.content}</div>
           )}
-          <div style={{ color: 'var(--crm-text-3)', fontSize: 11, marginTop: 4 }}>
-            {new Date(item.created_at).toLocaleString('zh-CN')}
+          <div
+            style={{
+              color: 'var(--crm-text-3)',
+              fontSize: 11,
+              marginTop: 4,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+            }}
+          >
+            <span>{new Date(item.created_at).toLocaleString('zh-CN')}</span>
+            {item.wecom_status === 'failed' && (
+              <Tag color="red" type="light" size="small">
+                企微投递失败
+              </Tag>
+            )}
+            {item.wecom_status === 'skipped' && (
+              <Tag color="grey" type="light" size="small">
+                未投递
+              </Tag>
+            )}
+            {item.can_redispatch && (
+              <a
+                style={{ color: 'var(--crm-primary)' }}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  redispatchMutation.mutate(item.id)
+                }}
+              >
+                补投
+              </a>
+            )}
           </div>
+          {item.wecom_status === 'failed' && (
+            <div style={{ color: 'var(--crm-error, #ba1a1a)', fontSize: 11, marginTop: 2 }}>
+              {item.wecom_error || '投递失败'}
+              {item.wecom_next_retry_at
+                ? `（${new Date(item.wecom_next_retry_at).toLocaleTimeString('zh-CN')} 自动重试，已试 ${item.wecom_attempts ?? 0} 次）`
+                : `（已试 ${item.wecom_attempts ?? 0} 次，不再自动重试，可点补投）`}
+            </div>
+          )}
         </div>
       ))}
     </div>

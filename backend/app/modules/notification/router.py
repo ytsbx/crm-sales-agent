@@ -40,6 +40,12 @@ def serialize(row: Notification) -> dict:
         ),
         "wecom_error": row.wecom_error,
         "wecom_sent_at": row.wecom_sent_at,
+        # 投递重试（文档 §六）：试过几次、下次什么时候再试都要能看见——
+        # 只给一个 failed，运营不知道该等它自己好还是该点补投
+        "wecom_attempts": row.wecom_attempts or 0,
+        "wecom_next_retry_at": row.wecom_next_retry_at,
+        # 可补投：失败与未投递两种状态都能人工重发；已投递/没走企微渠道的不需要
+        "can_redispatch": row.wecom_status in ("failed", "skipped"),
         "read": row.read_at is not None,
         "created_at": row.created_at,
     }
@@ -102,6 +108,122 @@ async def mark_all_read(
     )
     await session.commit()
     return ok(None, "全部已读")
+
+
+# ---- 投递失败补投（文档 §六：发送失败保留业务记录并重试通知）----------------
+
+
+@router.post("/notifications/{notification_id}/redispatch")
+async def redispatch_notification(
+    notification_id: int,
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """补投单条通知。
+
+    关键设计（回答"为什么原来的补发会失效"）：补投走的是**同一行通知**，
+    不重跑业务动作，因此不经过 business_events 的唯一键——人工补发不会被
+    去重挡住，也不会在客户时间线多出一条留痕。本人可补投自己的，
+    管理员 / 设置管理员可补投任意人的。
+    """
+    from app.modules.notification import service
+
+    row = await session.get(Notification, notification_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "通知不存在", 404)
+    is_manager = "admin" in user.roles or user.has("settings:manage")
+    if row.user_id != user.id and not is_manager:
+        raise AppError(ErrorCode.FORBIDDEN, "只能补投自己的通知", 403)
+    if row.wecom_status not in ("failed", "skipped"):
+        label = WECOM_STATUS_LABEL.get(row.wecom_status or "", "未走企微渠道")
+        raise AppError(ErrorCode.PARAM_ERROR, f"当前状态为「{label}」，不需要补投", 422)
+
+    queued = await service.requeue_for_redispatch(session, ids=[row.id])
+    result = await service.dispatch_pending(session, only_ids={row.id})
+    if queued["requeued"]:
+        await session.refresh(row)
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="redispatch_notification",
+        business_type="notification",
+        business_id=row.id,
+        after={
+            "wecom_status": row.wecom_status,
+            "wecom_attempts": row.wecom_attempts,
+            "wecom_error": row.wecom_error,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+
+    if row.wecom_status == "sent":
+        message = "已补投"
+    else:
+        message = f"仍未能投出：{row.wecom_error or '未知原因'}"
+    return ok(
+        {
+            "id": row.id,
+            "wecom_status": row.wecom_status,
+            "wecom_status_label": WECOM_STATUS_LABEL.get(row.wecom_status or "", None),
+            "wecom_error": row.wecom_error,
+            **result,
+        },
+        message,
+    )
+
+
+@router.get("/notifications/delivery-failures")
+async def delivery_failures(
+    _: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """投递失败概览：多少条没出去、其中多少条还会自动重试。"""
+    from app.modules.notification import service
+
+    return ok(await service.delivery_failure_summary(session))
+
+
+@router.post("/notifications/retry-failed")
+async def retry_failed_notifications(
+    request: Request,
+    limit: int = Query(200, ge=1, le=1000),
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """批量补投：把失败与未投递的通知重新排队后立即投一遍。"""
+    from app.modules.notification import service
+
+    queued = await service.requeue_for_redispatch(session, limit=limit)
+    if not queued["requeued"]:
+        return ok(
+            {
+                "requeued": 0,
+                "attempted": 0,
+                "sent": 0,
+                "skipped": 0,
+                "failed": 0,
+            },
+            "没有需要补投的通知",
+        )
+    result = await service.dispatch_pending(
+        session, only_ids=set(queued["ids"]), limit=len(queued["ids"])
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="redispatch_notifications",
+        business_type="notification",
+        after={"requeued": queued["requeued"], **result},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {"requeued": queued["requeued"], **result},
+        f"补投 {result['sent']} 条，仍失败 {result['failed']} 条",
+    )
 
 
 # ---- 通知设置（API §33）---------------------------------------------------

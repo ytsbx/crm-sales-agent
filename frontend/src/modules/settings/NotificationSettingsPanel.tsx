@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Switch, Toast } from '@douyinfe/semi-ui'
 
 import SectionCard from '../../shared/components/SectionCard'
+import { getDeliveryFailures, retryFailedNotifications } from '../../shared/api/analytics'
 import {
   getNotificationSettings,
   updateNotificationSettings,
@@ -21,6 +22,9 @@ const EVENT_ROWS: Array<{ key: keyof NotificationSettings['wecom_events']; label
   { key: 'approval', label: '审批提醒（提交 / 通过 / 拒绝）' },
   { key: 'task', label: '任务提醒（指派 / 到期）' },
   { key: 'payment', label: '回款提醒（收到款 / 确认）' },
+  // 领导口径的"过程可见"：报价提交 / 打样 / 下单自动留痕推业务主管。
+  // 后端早就支持这一类，界面漏了开关——等于领导要么全收、要么一类都收不到
+  { key: 'followup', label: '业务进展留痕（报价提交 / 打样 / 下单 → 推业务主管）' },
 ]
 
 export default function NotificationSettingsPanel() {
@@ -47,9 +51,31 @@ export default function NotificationSettingsPanel() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  // 投递失败概览 + 人工补投（文档 §六）：失败行不再是终点
+  const failuresQuery = useQuery({
+    queryKey: ['delivery-failures'],
+    queryFn: getDeliveryFailures,
+  })
+  const retryMutation = useMutation({
+    mutationFn: () => retryFailedNotifications(),
+    onSuccess: (data) => {
+      Toast.success(
+        data.requeued
+          ? `补投 ${data.sent} 条，仍失败 ${data.failed} 条`
+          : '没有需要补投的通知',
+      )
+      void queryClient.invalidateQueries({ queryKey: ['delivery-failures'] })
+      void queryClient.invalidateQueries({ queryKey: ['notifications'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   if (query.isLoading || !form) {
     return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
   }
+
+  const failures = failuresQuery.data
+  const stuck = failures ? failures.failed + failures.skipped : 0
 
   const dirty = JSON.stringify(form) !== JSON.stringify(query.data)
   const wecomWarn = form.wecom_enabled && !form.wecom_agent_configured
@@ -123,6 +149,51 @@ export default function NotificationSettingsPanel() {
             </div>
           ))}
         </div>
+      </SectionCard>
+
+      <SectionCard>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>投递失败与补投</div>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12 }}>
+          企微投递失败会保留业务记录并按退避自动重试（最多 {failures?.max_attempts ?? 3} 次
+          {failures && !failures.auto_retry_enabled ? '，当前自动重试已关闭' : ''}
+          ），超过后停在失败等人工处理。补投走的是原通知——不会重跑业务动作，
+          也不会在客户时间线里多出一条记录。
+        </div>
+        {failuresQuery.isLoading ? (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 14 }}>
+              {[
+                { label: '待投递', value: failures?.pending ?? 0, hint: '等下一次投递' },
+                {
+                  label: '投递失败',
+                  value: failures?.failed ?? 0,
+                  hint: `${failures?.retrying ?? 0} 条会自动重试`,
+                },
+                {
+                  label: '未投递',
+                  value: failures?.skipped ?? 0,
+                  hint: '对方未绑企微或渠道未配',
+                },
+                { label: '累计已投递', value: failures?.sent ?? 0, hint: '含补投成功' },
+              ].map((stat) => (
+                <div key={stat.label}>
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{stat.label}</div>
+                  <div style={{ fontSize: 20, fontWeight: 600 }}>{stat.value}</div>
+                  <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>{stat.hint}</div>
+                </div>
+              ))}
+            </div>
+            <Button
+              loading={retryMutation.isPending}
+              disabled={stuck === 0}
+              onClick={() => retryMutation.mutate()}
+            >
+              补投失败与未投递的通知
+            </Button>
+          </>
+        )}
       </SectionCard>
 
       <div style={{ display: 'flex', gap: 10 }}>

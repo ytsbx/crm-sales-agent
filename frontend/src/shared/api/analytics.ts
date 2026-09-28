@@ -160,6 +160,16 @@ export interface NotificationRow {
   business_id?: number | null
   read: boolean
   created_at: string
+  /** 企微投递状态；null 表示这条没走企微渠道（不等于"发失败了"）。 */
+  wecom_status?: string | null
+  wecom_status_label?: string | null
+  wecom_error?: string | null
+  /** 试过几次（文档 §六 投递可靠性）。 */
+  wecom_attempts?: number
+  /** 下次自动重试时间；null 表示已停止自动重试，等人工补投。 */
+  wecom_next_retry_at?: string | null
+  /** 失败 / 未投递的可人工补投。 */
+  can_redispatch?: boolean
 }
 
 export interface AuditLogRow {
@@ -316,6 +326,49 @@ export function markNotificationRead(id: number) {
 
 export function markAllNotificationsRead() {
   return api.post<null>('/notifications/read-all')
+}
+
+/**
+ * 补投单条通知（文档 §六「发送失败保留业务记录并重试通知」）。
+ *
+ * 后端走的是同一行通知、不重跑业务动作，所以不会被业务事件去重挡住。
+ */
+export function redispatchNotification(id: number) {
+  return api.post<{
+    id: number
+    wecom_status: string | null
+    wecom_error: string | null
+    attempted: number
+    sent: number
+    skipped: number
+    failed: number
+  }>(`/notifications/${id}/redispatch`)
+}
+
+/** 投递失败概览：多少条没出去、其中多少条还会自动重试。 */
+export interface DeliveryFailureSummary {
+  pending: number
+  sent: number
+  failed: number
+  skipped: number
+  retrying: number
+  max_attempts: number
+  auto_retry_enabled: boolean
+}
+
+export function getDeliveryFailures() {
+  return api.get<DeliveryFailureSummary>('/notifications/delivery-failures')
+}
+
+/** 批量补投失败与未投递的通知。 */
+export function retryFailedNotifications(limit = 200) {
+  return api.post<{
+    requeued: number
+    attempted: number
+    sent: number
+    skipped: number
+    failed: number
+  }>('/notifications/retry-failed', { limit })
 }
 
 export function listAuditLogs(query: {

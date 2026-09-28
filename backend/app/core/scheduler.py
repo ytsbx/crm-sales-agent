@@ -73,6 +73,28 @@ async def run_milestone_overdue_job() -> None:
     logger.info("跟单逾期扫描完成：推送 %s 个逾期节点", count)
 
 
+async def run_notification_retry_job() -> None:
+    """每 N 分钟：把到期该重试的企微投递失败通知再发一次（文档 §六）。
+
+    只捞"failed 且未超上限且已到退避时间"的行——pending 由业务动作实时投递，
+    skipped（没绑企微）不自动重试。到上限的行停着等设置页的人工补投，
+    这里不碰，避免把确定性失败打成长期噪声。
+    """
+    from app.modules.notification import service as notification_service
+
+    async with SessionLocal() as session:
+        result = await notification_service.dispatch_pending(
+            session, include_failed=True, limit=100
+        )
+    if result["attempted"]:
+        logger.info(
+            "通知失败重投完成：尝试 %s、成功 %s、仍失败 %s",
+            result["attempted"],
+            result["sent"],
+            result["failed"],
+        )
+
+
 def start_scheduler() -> None:
     """应用启动时调用：注册周期任务并启动调度器。
 
@@ -116,13 +138,24 @@ def start_scheduler() -> None:
         coalesce=True,
         misfire_grace_time=3600,
     )
+    scheduler.add_job(
+        run_notification_retry_job,
+        "interval",
+        minutes=settings.scheduler_retry_minutes,
+        id="notification_retry",
+        name="通知失败重投（周期）",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
     scheduler.start()
     logger.info(
         "定时任务调度已启动：公海回收每天 %02d:00、自动任务规则每天 %02d:10、"
-        "跟单逾期提醒每天 %02d:20（Asia/Shanghai）",
+        "跟单逾期提醒每天 %02d:20、通知失败重投每 %s 分钟（Asia/Shanghai）",
         settings.scheduler_recycle_hour,
         settings.scheduler_task_rules_hour,
         settings.scheduler_task_rules_hour,
+        settings.scheduler_retry_minutes,
     )
 
 
