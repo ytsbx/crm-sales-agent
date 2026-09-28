@@ -251,20 +251,32 @@ class WeComClient:
     async def send_text_card(
         self, *, to_user: str, title: str, description: str, url: str | None = None
     ) -> dict[str, Any]:
-        """发应用消息（通知的企微渠道，PRD §25）。"""
+        """发应用消息（通知的企微渠道，PRD §25）。
+
+        有跳转链接用 textcard（卡片可点击跳转）；没有链接时改发 text——
+        textcard 的 url 是必填项，空串会被企微以 41010 拒绝。
+        """
         if not settings.wecom_agent_id:
             raise WeComNotConfigured("WECOM_AGENT_ID")
         token = await self.access_token()
-        body: dict[str, Any] = {
-            "touser": to_user,
-            "msgtype": "textcard",
-            "agentid": int(settings.wecom_agent_id),
-            "textcard": {
-                "title": title,
-                "description": description,
-                "url": url or "",
-            },
-        }
+        if url:
+            body: dict[str, Any] = {
+                "touser": to_user,
+                "msgtype": "textcard",
+                "agentid": int(settings.wecom_agent_id),
+                "textcard": {
+                    "title": title,
+                    "description": description,
+                    "url": url,
+                },
+            }
+        else:
+            body = {
+                "touser": to_user,
+                "msgtype": "text",
+                "agentid": int(settings.wecom_agent_id),
+                "text": {"content": f"{title}\n{description}"},
+            }
         return await self._call("message/send", json_body=body, access_token=token)
 
 
