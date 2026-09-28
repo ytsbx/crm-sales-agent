@@ -72,6 +72,7 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'logistics', path: '/logistics', label: '物流试算', icon: IconSend, ready: true, permission: ['price:manage', 'product:view'] },
       { key: 'tasks', path: '/tasks', label: '销售任务', icon: IconCheckList, ready: true, permission: 'task:view' },
       { key: 'approvals', path: '/approvals', label: '审批中心', icon: IconTickCircle, ready: true, permission: 'quote:view' },
+      { key: 'documents', path: '/documents', label: '文档管理', icon: IconFile, ready: true, permission: 'order:view' },
       { key: 'knowledge', path: '/knowledge', label: '知识库', icon: IconBook, ready: true },
       {
         key: 'analytics',

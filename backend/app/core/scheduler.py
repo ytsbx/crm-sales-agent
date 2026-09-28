@@ -47,7 +47,15 @@ async def run_auto_tasks_job() -> None:
         result = await settings_service.run_auto_tasks(
             session, operator_id=None, source="SCHEDULER"
         )
-    logger.info("定时自动任务完成：生成 %s 条任务", result.get("created_count"))
+        # 月结协议到期提醒（§3.6）：挂在同一个每日任务里，不新增调度项
+        from app.modules.contract import service as contract_service
+
+        expired = await contract_service.notify_expiring_monthly(session)
+        await session.commit()
+    logger.info(
+        "定时自动任务完成：生成 %s 条任务，月结到期提醒 %s 条",
+        result.get("created_count"), expired,
+    )
 
 
 async def run_milestone_overdue_job() -> None:

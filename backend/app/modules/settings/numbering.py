@@ -79,6 +79,13 @@ DEFAULT_RULES: dict[str, dict] = {
         "seq_length": 4,
         "reset_period": "daily",
     },
+    "contract": {
+        "name": "合同编号",
+        "prefix": "CT",
+        "date_format": "%Y%m%d",
+        "seq_length": 4,
+        "reset_period": "daily",
+    },
 }
 
 RESET_PERIODS = {
@@ -115,7 +122,10 @@ async def get_rule(session: AsyncSession, code: str) -> NumberingRule:
     fallback = DEFAULT_RULES.get(code)
     if fallback is None:
         raise AppError(ErrorCode.NOT_FOUND, f"没有编号规则：{code}", 404)
-    # 构造一个未持久化的对象，仅用于本轮格式化
+    # 构造一个未持久化的对象，仅用于本轮格式化。
+    # enabled 显式补 True：SQLAlchemy 的列默认值只在落库时生效，
+    # 未持久化对象上它是 None，next_number 的 `not rule.enabled` 会误判为已停用
+    fallback = {"enabled": True, **fallback}
     return NumberingRule(code=code, **fallback)
 
 

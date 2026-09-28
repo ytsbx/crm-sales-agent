@@ -6,6 +6,7 @@ import LoginPage from '../modules/auth/LoginPage'
 import CustomerDetailPage from '../modules/customer/CustomerDetailPage'
 import CustomerListPage from '../modules/customer/CustomerListPage'
 import KnowledgePage from '../modules/knowledge/KnowledgePage'
+import DocumentsPage from '../modules/contract/DocumentsPage'
 import LeadListPage from '../modules/lead/LeadListPage'
 import LogisticsPage from '../modules/logistics/LogisticsPage'
 import OpportunityDetailPage from '../modules/opportunity/OpportunityDetailPage'
@@ -72,6 +73,7 @@ export const router = createBrowserRouter([
       { path: 'orders/:id', element: <OrderDetailPage /> },
       { path: 'receivables', element: <OrderListPage initialTab="receivables" /> },
       { path: 'knowledge', element: <KnowledgePage /> },
+      { path: 'documents', element: <DocumentsPage /> },
       {
         path: 'wecom',
         element: <WeComPage />,

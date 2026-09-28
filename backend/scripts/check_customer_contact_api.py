@@ -122,6 +122,12 @@ async def clean(verbose=False):
         # 只删本脚本造的数据（名字带 RUN 后缀）。顺序要服从外键：
         # 先删引用了客户的表，最后才删客户本身。
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
+        # 合同台账（场景14）：附件→文档→模板，顺序服从外键
+        ('用例合同附件', f"delete from business_files where business_type='contract' and business_id in "
+                         f"(select id from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
+        ('用例合同文档', f"delete from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
+        ('用例合同模板', f"delete from contract_templates where name like 'CHK{RUN}%'"),
+        ('用例上传文件', "delete from files where object_key like 'chk/%'"),
         ('用例订单回款', "delete from payment_records where order_id in "
                       "(select id from sales_orders where customer_id in "
                       f"(select id from customers where name like 'CHK{RUN}%'))"),
@@ -171,6 +177,9 @@ async def clean(verbose=False):
             if verbose and result.rowcount:
                 print(f'  {result.rowcount:>4}  {label}')
         await s.commit()
+
+
+SIGN_FILE_ID = None
 
 
 def main():
@@ -445,11 +454,83 @@ def main():
     check_true('导出含夹具客户', f'CHK{RUN}测试客户' in res.get('text', ''),
                res.get('text', '')[:80])
 
+    print()
+    print('=== 11. 合同模板与台账（§3.6/场景14）===')
+    status, res = call('POST', '/contract-templates', token=admin, body={
+        'doc_type': 'contract', 'name': f'CHK{RUN}标准销售合同',
+        'body': '客户 {{customer.name}}，付款方式 {{extra.付款方式}}，签约日 {{today}}。',
+    })
+    check('建模板', res.get('code'), 0)
+    template_id = res['data']['id']
+    status, res = call('POST', '/contract-templates', token=admin, body={
+        'doc_type': 'contract', 'name': f'CHK{RUN}标准销售合同', 'body': '第二版 {{customer.name}}',
+    })
+    check('同名模板=新版本', res['data']['version'], 2)
+    tpls = call('GET', '/contract-templates', token=admin)[1]['data']
+    check('旧版本仍存在',
+          sum(1 for t in tpls if t['name'] == f'CHK{RUN}标准销售合同'), 2)
+
+    status, res = call('POST', '/contract-documents', token=admin, body={
+        'template_id': template_id, 'customer_id': customer_id,
+        'extra_fields': {'付款方式': '月结30天'},
+    })
+    check('生成合同草稿', res.get('code'), 0)
+    doc_id, doc_no = res['data']['id'], res['data']['doc_no']
+    check_true('编号 CT 前缀', doc_no.startswith('CT'), doc_no)
+    check_true('客户名已填入', f'CHK{RUN}' in res['data']['content_snapshot'],
+               res['data']['content_snapshot'][:60])
+    check_true('空白项已填入', '月结30天' in res['data']['content_snapshot'], '')
+    check('草稿状态', res['data']['status'], 'draft')
+
+    status, res = call('POST', f'/contract-documents/{doc_id}/sign', token=admin,
+                       body={'file_id': SIGN_FILE_ID, 'note': '线下签'})
+    check('登记签署', res.get('code'), 0)
+    check('状态已签署', res['data']['status'], 'signed')
+    status, res = call('GET', f'/business/contract/{doc_id}/files', token=admin)
+    check_true('签署件已挂载可查', res.get('code') == 0 and len(res.get('data') or []) >= 1,
+               str(res)[:120])
+    status, res = call('POST', f'/contract-documents/{doc_id}/sign', token=admin,
+                       body={'file_id': SIGN_FILE_ID})
+    check('已签文档不能重复签', res.get('code'), 40002)
+
+    # 换负责人：新负责人按权限查看，原负责人失去访问（场景14 后半）
+    status, res = call('GET', '/users?page_size=50', token=admin)
+    other_user = next(
+        (u for u in res['data']['items'] if u['username'] == 'lisi'),
+        next((u for u in res['data']['items'] if u['id'] != 1), None),
+    )
+    status, res = call('GET', f'/customers/{zs_customer_id}', token=zhangsan)
+    original_owner = res['data']['owner_id']
+    status, res = call('POST', f'/customers/{zs_customer_id}/assign', token=admin,
+                       body={'owner_id': other_user['id'], 'reason': '场景14 换负责人'})
+    check('换负责人成功', res.get('code'), 0)
+    status, res = call('GET', f'/contract-documents/{doc_id}', token=zhangsan)
+    check('原负责人失去访问', res.get('code'), 40302)
+    status, res = call('GET', f'/contract-documents/{doc_id}', token=admin)
+    check('管理员仍可读', res.get('code'), 0)
+    call('POST', f'/customers/{zs_customer_id}/assign', token=admin,
+         body={'owner_id': original_owner, 'reason': '场景14 复原'})
+
 
 if __name__ == '__main__':
     async def _driver():
+        global SIGN_FILE_ID
         print('=== 清库（跑前）===')
         await clean(verbose=True)
+        print()
+        # 场景14 需要"已上传的签署件"：直接造一条文件记录（上传接口是 multipart，
+        # 这里只关心 sign 端点与附件挂载的链路）
+        from app.core.database import SessionLocal
+        from app.modules.file.model import FileRecord
+
+        async with SessionLocal() as s:
+            record = FileRecord(
+                object_key=f'chk/{RUN}/signed.pdf', file_name='signed.pdf',
+                mime_type='application/pdf', size=1234, uploaded_by=1,
+            )
+            s.add(record)
+            await s.commit()
+            SIGN_FILE_ID = record.id
         print()
         try:
             main()

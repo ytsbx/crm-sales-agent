@@ -41,6 +41,19 @@ async def visible_object(
     session: AsyncSession, user: CurrentUser, *, business_type: str, business_id: int
 ) -> bool:
     """当前用户能否看到这个业务对象。"""
+    # 合同文档不存负责人快照：可见性实时跟客户**当前**负责人走（场景14——
+    # 换负责人后新负责人按权限查看历史原件，原负责人按数据范围失去访问）
+    if business_type == "contract":
+        from app.modules.contract.model import ContractDocument
+
+        doc = await session.get(ContractDocument, business_id)
+        if doc is None or doc.deleted_at is not None:
+            return False
+        customer = await session.get(Customer, doc.customer_id)
+        if customer is None:
+            return False
+        owner_ids = await scoped_owner_ids(session, user)
+        return owner_ids is None or customer.owner_id in owner_ids
     entry = BUSINESS_MODELS.get(business_type)
     if entry is None:
         return business_type in NO_OWNER_TYPES
