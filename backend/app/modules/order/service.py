@@ -152,6 +152,25 @@ async def create_order_from_quote(
             422,
         )
 
+    # 交期回退（模块⑤）：请求没带交期时，取该商机需求明细里最早的非空交期——
+    # 销售在需求明细里填过一遍的交期，不该让跟单再手填一遍；
+    # 同时这也是应收到期日和跟单里程碑倒推的起点（此前没交期就瞎猜 30 天）
+    effective_delivery = delivery_date
+    if effective_delivery is None and quote.opportunity_id:
+        from app.modules.opportunity.model import OpportunityItem
+
+        effective_delivery = (
+            await session.execute(
+                select(OpportunityItem.delivery_date)
+                .where(
+                    OpportunityItem.opportunity_id == quote.opportunity_id,
+                    OpportunityItem.delivery_date.is_not(None),
+                )
+                .order_by(OpportunityItem.delivery_date.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
     order = SalesOrder(
         order_no=await generate_order_no(session),
         customer_id=quote.customer_id,
@@ -162,7 +181,7 @@ async def create_order_from_quote(
         total_amount=version.total_amount,
         currency=version.currency,
         status="pending",
-        delivery_date=delivery_date,
+        delivery_date=effective_delivery,
         payment_terms=version.payment_terms,
         remark=remark or version.remark,
         created_by=user_id,
@@ -215,7 +234,7 @@ async def create_order_from_quote(
         ReceivablePlan(
             order_id=order.id,
             plan_name="全款",
-            due_date=delivery_date or (today + timedelta(days=30)),
+            due_date=effective_delivery or (today + timedelta(days=30)),
             amount=version.total_amount.quantize(Decimal("0.01")),
             currency=version.currency,
             status="pending",

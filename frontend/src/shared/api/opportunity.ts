@@ -106,7 +106,7 @@ export function winOpportunity(id: number, payload: { remark?: string } = {}) {
 }
 
 /** 确认成交并生成订单（方案 §5 / A13）：接受→成交→建单一次完成，重试幂等。 */
-export function confirmWin(id: number, payload: { win_quote_version_id?: number; remark?: string } = {}) {
+export function confirmWin(id: number, payload: { win_quote_version_id?: number; delivery_date?: string | null; remark?: string } = {}) {
   return api.post<{
     opportunity_id: number
     quote_id: number

@@ -286,7 +286,9 @@ async def list_milestones(
 ):
     """跟单里程碑（领导模块⑤）：首次访问自动按六节点初始化，计划日期从交期倒推。"""
     order = await svc.get_visible_order(session, user, order_id)
-    rows = await milestones_svc.ensure_initialized(session, order.id, order.delivery_date)
+    rows = await milestones_svc.ensure_initialized(
+        session, order.id, order.delivery_date, created_by=user.id
+    )
     await session.commit()  # 初始化行要落库，否则下次访问会重复初始化
     today = date.today()
     items = [
@@ -331,9 +333,10 @@ async def update_milestone(
         operator_id=user.id,
         action="update",
         business_type="order_milestone",
-        business_id=row.id,
+        # 审计统一记订单 id（replan 也是订单 id）：按订单查"跟单改动史"才查得全
+        business_id=order.id,
         before=before,
-        after={"planned_date": str(row.planned_date), "actual_date": str(row.actual_date)},
+        after={"node": row.node, "planned_date": str(row.planned_date), "actual_date": str(row.actual_date)},
         ip=client_ip(request),
     )
     await session.commit()

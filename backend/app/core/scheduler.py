@@ -50,6 +50,18 @@ async def run_auto_tasks_job() -> None:
     logger.info("定时自动任务完成：生成 %s 条任务", result.get("created_count"))
 
 
+async def run_milestone_overdue_job() -> None:
+    """每天定时：扫描逾期未完成的跟单节点，推负责人与业务主管（每节点只推一次）。"""
+    from app.modules.notification import service as notification_service
+    from app.modules.order import milestones as milestones_svc
+
+    async with SessionLocal() as session:
+        count = await milestones_svc.notify_overdue_milestones(session)
+        await session.commit()
+        await notification_service.dispatch_pending(session)
+    logger.info("跟单逾期扫描完成：推送 %s 个逾期节点", count)
+
+
 def start_scheduler() -> None:
     """应用启动时调用：注册周期任务并启动调度器。
 
@@ -78,6 +90,17 @@ def start_scheduler() -> None:
         minute=10,
         id="auto_task_rules",
         name="自动任务规则（每日）",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        run_milestone_overdue_job,
+        "cron",
+        hour=settings.scheduler_task_rules_hour,
+        minute=20,
+        id="milestone_overdue",
+        name="跟单逾期提醒（每日）",
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,

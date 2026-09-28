@@ -170,7 +170,18 @@ export default function OpportunityDetailPage() {
 
   // 确认成交并生成订单（方案 §5 / A13）：替代"标记成交后再去报价页转单"的两步操作
   const confirmWinMutation = useMutation({
-    mutationFn: () => confirmWin(opportunityId, { remark: '在商机详情页确认成交' }),
+    mutationFn: () => {
+      // 模块⑤：交期自动带入——取需求明细里最早的非空交期，
+      // 销售填过一遍的交期不要求再手填（后端也有同样回退兜底）
+      const dates = (itemsQuery.data ?? [])
+        .map((item) => item.delivery_date)
+        .filter((d): d is string => Boolean(d))
+        .sort()
+      return confirmWin(opportunityId, {
+        delivery_date: dates[0] ?? null,
+        remark: '在商机详情页确认成交',
+      })
+    },
     onSuccess: (data) => {
       Toast.success(
         data.already_ordered

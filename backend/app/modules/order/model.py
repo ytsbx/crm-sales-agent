@@ -8,7 +8,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, TimestampMixin
@@ -79,11 +79,18 @@ class OrderMilestone(Base, IdMixin):
     """跟单里程碑（领导模块⑤）：从客户交期倒推的关键节点，跟单人工登记实际日期。"""
 
     __tablename__ = "order_milestones"
-    __table_args__ = (Index("ix_order_milestones_order", "order_id"),)
+    __table_args__ = (
+        Index("ix_order_milestones_order", "order_id"),
+        # 并发首次打开同一订单的跟单 Tab 会同时初始化：唯一约束封死重复行
+        UniqueConstraint("order_id", "node", name="uq_order_milestones_order_node"),
+    )
 
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
     node: Mapped[str] = mapped_column(String(32))
     planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 逾期提醒只在第一次逾期时推一次，这个时间戳就是"推过了"的凭证
+    overdue_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
