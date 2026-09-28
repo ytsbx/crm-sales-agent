@@ -76,6 +76,9 @@ async def list_orders(
             order,
             customer_name=ctx["customers"].get(order.customer_id),
             owner_name=ctx["owners"].get(order.owner_id) if order.owner_id else None,
+            sales_owner_name=(
+                ctx["owners"].get(order.sales_owner_id) if order.sales_owner_id else None
+            ),
             received_amount=ctx["received"].get(order.id, 0),
             item_count=ctx["counts"].get(order.id, 0),
         )
@@ -219,6 +222,9 @@ async def get_order(
             order,
             customer_name=ctx["customers"].get(order.customer_id),
             owner_name=ctx["owners"].get(order.owner_id) if order.owner_id else None,
+            sales_owner_name=(
+                ctx["owners"].get(order.sales_owner_id) if order.sales_owner_id else None
+            ),
             received_amount=ctx["received"].get(order.id, 0),
             item_count=ctx["counts"].get(order.id, 0),
         )
@@ -237,7 +243,8 @@ async def update_order(
     before = svc.serialize_order(order)
 
     data = payload.model_dump(exclude_unset=True)
-    # 换负责人要校验目标存在且在职，否则订单会挂到一个空负责人上
+    # 改的是「当前负责人」（谁跟进、谁看得见），**不动 sales_owner_id**：
+    # 签单归属创建时写死，换人跟进不改变这张单的业绩算谁的（文档 :61）。
     if data.get("owner_id") is not None:
         owner = await session.get(User, data["owner_id"])
         if owner is None:

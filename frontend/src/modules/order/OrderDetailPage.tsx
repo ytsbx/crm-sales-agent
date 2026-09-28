@@ -422,6 +422,13 @@ export default function OrderDetailPage() {
               </Link>
             </span>
             <span>负责人：{order.owner_name ?? '-'}</span>
+            {/* 交接过的单子：当前负责人与签单人不是同一个，得写清楚业绩算谁
+                （文档 :61「交接后保留历史业绩归属」） */}
+            {order.sales_owner_name && order.sales_owner_name !== order.owner_name && (
+              <span style={{ color: 'var(--crm-text-3)' }}>
+                业绩归属：{order.sales_owner_name}（签单时的负责人，交接不改）
+              </span>
+            )}
             <span>交期：{order.delivery_date ?? '-'}</span>
             <span>付款条件：{order.payment_terms ?? '-'}</span>
             {order.quote_id && (

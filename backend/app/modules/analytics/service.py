@@ -61,6 +61,21 @@ async def _scope_filter(
     return stmt.where(column.in_(owner_ids))
 
 
+def _sales_owner_col():
+    """业绩归属列（文档 §3.8 / :61）——注意它**不是**数据范围用的那一列。
+
+    业绩（签单额、回款额、目标实际值）算给**签单时那个人**：`sales_owner_id`
+    在订单创建时写死，离职交接与手工改负责人都不会动它（"交接后保留历史
+    业绩归属"）。`SalesOrder.owner_id` 是**当前负责人**，管数据范围与跟进
+    责任（谁看得见这单、谁去催款），交接会改它。
+
+    一句话：**钱算签单人，活干在当前负责人身上**。
+
+    coalesce 兜底：迁移前的历史订单已由迁移回填，这里防极端空值。
+    """
+    return func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
+
+
 async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
     now = datetime.now(UTC)
     month_start = now.date().replace(day=1)
@@ -141,7 +156,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                     SalesOrder.status != "cancelled", SalesOrder.created_at >= month_start
                 ),
                 user,
-                SalesOrder.owner_id,
+                _sales_owner_col(),
                 session,
             )
         )
@@ -185,7 +200,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
                 .where(PaymentRecord.status == "confirmed", PaymentRecord.received_date >= month_start),
                 user,
-                SalesOrder.owner_id,
+                _sales_owner_col(),
                 session,
             )
         )
@@ -251,7 +266,7 @@ async def order_payment_trend(
                     SalesOrder.status != "cancelled", SalesOrder.created_at >= start
                 ),
                 user,
-                SalesOrder.owner_id,
+                _sales_owner_col(),
                 session,
             )
         )
@@ -267,7 +282,7 @@ async def order_payment_trend(
                     PaymentRecord.received_date >= start.date(),
                 ),
                 user,
-                SalesOrder.owner_id,
+                _sales_owner_col(),
                 session,
             )
         )
@@ -905,8 +920,10 @@ async def sales_user_stats(
         .where(Opportunity.owner_id == User.id, Opportunity.deleted_at.is_(None))
         .scalar_subquery(),
         select(func.count(Quote.id)).where(Quote.owner_id == User.id).scalar_subquery(),
+        # 签单额按**签单归属**（不是当前负责人）：销售离职交接后，
+        # 他谈下来的单子仍算他的成绩（文档 :61）
         select(func.coalesce(func.sum(SalesOrder.total_amount), 0))
-        .where(SalesOrder.owner_id == User.id, SalesOrder.status != "cancelled")
+        .where(_sales_owner_col() == User.id, SalesOrder.status != "cancelled")
         .scalar_subquery(),
         # 跟进数
         select(func.count(FollowUp.id))
@@ -919,7 +936,7 @@ async def sales_user_stats(
         # 财务自己确认了多少，在「回款中心」按确认人单独看得到，不受影响。
         select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
         .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
-        .where(PaymentRecord.status == "confirmed", SalesOrder.owner_id == User.id)
+        .where(PaymentRecord.status == "confirmed", _sales_owner_col() == User.id)
         .scalar_subquery(),
     ).where(User.status == "active")
 
@@ -952,6 +969,9 @@ async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
                 .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
                 .where(SalesOrder.status != "cancelled"),
                 user,
+                # 应收/账龄是**责任口径**：交接后谁接手谁去收，所以按当前负责人。
+                # 下面"实收"是**业绩口径**，按签单归属——同一页两列口径不同不是 bug，
+                # 正是"钱算签单人、活干在当前负责人身上"的落地
                 SalesOrder.owner_id,
                 session,
             )
@@ -965,7 +985,7 @@ async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
                 .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
                 .where(PaymentRecord.status == "confirmed"),
                 user,
-                SalesOrder.owner_id,
+                _sales_owner_col(),
                 session,
             )
         )

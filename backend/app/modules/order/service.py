@@ -33,6 +33,7 @@ def serialize_order(
     *,
     customer_name: str | None = None,
     owner_name: str | None = None,
+    sales_owner_name: str | None = None,
     received_amount: Decimal | None = None,
     item_count: int = 0,
 ) -> dict:
@@ -47,6 +48,9 @@ def serialize_order(
         "quote_version_id": order.quote_version_id,
         "owner_id": order.owner_id,
         "owner_name": owner_name,
+        # 签单归属（文档 :61）：与当前负责人不同时，界面要说明"业绩算谁"
+        "sales_owner_id": order.sales_owner_id,
+        "sales_owner_name": sales_owner_name,
         "total_amount": _f(order.total_amount),
         "received_amount": _f(received),
         "unreceived_amount": _f((order.total_amount or Decimal(0)) - received),
@@ -186,6 +190,8 @@ async def create_order_from_quote(
         quote_id=quote.id,
         quote_version_id=version.id,
         owner_id=quote.owner_id,
+        # 签单归属此刻写死（文档 :61）：往后交接或手工改负责人，业绩都算这一个人
+        sales_owner_id=quote.owner_id,
         total_amount=version.total_amount,
         currency=version.currency,
         status="pending",
@@ -321,6 +327,8 @@ async def create_order(
         quote_id=quote_id,
         quote_version_id=None,
         owner_id=owner_id or user_id,
+        # 签单归属此刻写死（文档 :61）：往后交接或手工改负责人，业绩都算这一个人
+        sales_owner_id=owner_id or user_id,
         total_amount=total,
         currency=currency,
         status="pending",
@@ -664,7 +672,9 @@ async def record_external_order_id(
 
 async def order_context(session: AsyncSession, orders: list[SalesOrder]) -> dict:
     customer_ids = {o.customer_id for o in orders}
+    # 当前负责人与签单归属都要解析姓名：两者不同时界面要说明"业绩算谁"
     owner_ids = {o.owner_id for o in orders if o.owner_id}
+    owner_ids |= {o.sales_owner_id for o in orders if o.sales_owner_id}
     order_ids = [o.id for o in orders]
 
     customers = {

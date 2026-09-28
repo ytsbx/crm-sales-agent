@@ -57,13 +57,16 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
     # extract 的字段名是内联文本，两边渲染完全一致
     order_year = func.extract("year", SalesOrder.created_at)
     order_month = func.extract("month", SalesOrder.created_at)
+    # 目标达成按**签单归属**算（文档 :61）：销售离职交接后，老订单的签单额
+    # 仍计在原销售的目标达成里，不会因为换人跟进就从他名下消失
+    sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
     sales_stmt = (
-        select(order_month, SalesOrder.owner_id, func.sum(SalesOrder.total_amount))
+        select(order_month, sales_owner, func.sum(SalesOrder.total_amount))
         .where(
             SalesOrder.status != "cancelled",
             order_year == year,
         )
-        .group_by(order_month, SalesOrder.owner_id)
+        .group_by(order_month, sales_owner)
     )
     customer_year = func.extract("year", Customer.created_at)
     customer_month = func.extract("month", Customer.created_at)
@@ -76,7 +79,9 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         .group_by(customer_month, Customer.owner_id)
     )
     if owner_ids is not None:
-        sales_stmt = sales_stmt.where(SalesOrder.owner_id.in_(owner_ids or [0]))
+        # 销售额看"本范围的人签的单"，所以按签单归属过滤（与上面的分组同一列）；
+        # 新客户仍是客户维度，按当前负责人
+        sales_stmt = sales_stmt.where(sales_owner.in_(owner_ids or [0]))
         customer_stmt = customer_stmt.where(Customer.owner_id.in_(owner_ids or [0]))
 
     sales_actual: dict[tuple[str, int | None], float] = {}

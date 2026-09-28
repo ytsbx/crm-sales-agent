@@ -43,6 +43,15 @@ class SalesOrder(Base, IdMixin, TimestampMixin):
     quote_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     quote_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 签单负责人 = 业绩归属（文档 :61「交接后保留历史业绩归属」/ §3.8）。
+    # 创建订单时写死，**离职交接与手工改负责人都不动它**。
+    #
+    # 为什么必须和 owner_id 分两列：owner_id 是"当前负责人"，管数据范围与
+    # 跟进责任（谁看得到这单、谁去催款），它会随交接和手工调整而变；业绩若
+    # 跟着它走，销售离职后他谈下来的单子收的钱就记到接手人名下了。反过来
+    # 交接如果不动 owner_id，接手人又看不到这些订单、等于没人跟进。
+    # 两列并存才同时满足"有人接"和"历史业绩不改写"。
+    sales_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     status: Mapped[str] = mapped_column(String(24), default="pending")

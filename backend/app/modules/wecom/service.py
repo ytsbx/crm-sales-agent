@@ -522,10 +522,12 @@ async def transfer_relations(
     """离职继承：把 handover 名下的一切交给 takeover。
 
     企微侧：调 `externalcontact/transfer` 交接客户关系（需要外部联系人 secret）。
-    CRM 侧按 PRD §8.4：
-      - 转移：客户负责人、商机负责人、未完成任务负责人（pending/doing）；
-      - 保留：创建人（created_by）、历史跟进、历史报价、审批与审计日志——
-        这些一律不改，所以这里只动 owner_id 这一列。
+    CRM 侧按 PRD §8.4 / 文档 :61：
+      - 转移「当前负责人」：客户、商机、未完成任务、**未取消订单**——
+        接手人必须看得到这些单子，订单列表是按 owner_id 过滤的；
+      - 保留：创建人（created_by）、历史跟进、历史报价、审批与审计日志，
+        以及 **sales_owner_id（签单归属）**——"交接后保留历史业绩归属"，
+        接手人接手的是跟进责任，不是别人已经谈成的业绩。
     """
     job = await start_job(session, job_type="transfer", operator_id=user.id)
 
@@ -639,12 +641,31 @@ async def transfer_relations(
         task.owner_id = takeover.id
     detail["tasks"] = len(tasks)
 
+    # 5) 订单当前负责人（文档 :61「逐项分配接手人」）。
+    #    只动 owner_id：接手人要能看到并跟进这些订单（订单列表按 owner_id
+    #    过滤，不动等于交接完没人看得到）；sales_owner_id 保持原样，
+    #    这些单的业绩仍算签单的人——"交接后保留历史业绩归属"。
+    from app.modules.order.model import SalesOrder
+
+    orders = (
+        await session.execute(
+            select(SalesOrder).where(
+                SalesOrder.owner_id == handover.id,
+                SalesOrder.status != "cancelled",
+            )
+        )
+    ).scalars().all()
+    for order in orders:
+        order.owner_id = takeover.id
+    detail["orders"] = len(orders)
+
     finish_job(
         job,
         success=int(detail.get("wecom_relations", 0))
         + len(customer_ids)
         + len(opportunities)
-        + len(tasks),
+        + len(tasks)
+        + len(orders),
         fail=len(detail.get("wecom_failures", [])),
         error="；".join(detail.get("wecom_failures", [])[:5]) or None,
         detail=detail,

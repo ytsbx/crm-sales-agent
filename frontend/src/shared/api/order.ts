@@ -11,6 +11,9 @@ export interface Order {
   quote_version_id?: number | null
   owner_id?: number | null
   owner_name?: string | null
+  /** 签单归属（文档 :61）：与 owner 不同时说明这张单的业绩算谁 */
+  sales_owner_id?: number | null
+  sales_owner_name?: string | null
   total_amount: number
   received_amount: number
   unreceived_amount: number

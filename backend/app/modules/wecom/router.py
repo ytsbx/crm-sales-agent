@@ -312,7 +312,8 @@ async def transfer(
         svc.serialize_job(job),
         f"继承完成：企微关系 {detail.get('wecom_relations', 0)} 条、"
         f"客户 {detail.get('customers', 0)} 个、商机 {detail.get('opportunities', 0)} 个、"
-        f"任务 {detail.get('tasks', 0)} 个",
+        f"任务 {detail.get('tasks', 0)} 个、订单 {detail.get('orders', 0)} 单"
+        "（订单转的是跟进责任，业绩归属不变）",
     )
 
 
