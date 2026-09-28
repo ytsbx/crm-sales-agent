@@ -1433,3 +1433,59 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
         "diffs": diffs,
         "latest_version_id": versions[-1].id,
     }
+
+
+async def notify_expired_quotes(session: AsyncSession) -> int:
+    """报价有效期届满且未成单 → 给负责人建待办（文档 §3.4）。
+
+    条件：已对客（sent/approved）+ 已过有效期 + 没有非取消订单引用它。
+    "同一报价只提醒一次"按标题查*任何状态*的任务（完成/忽略过就不再建），
+    否则销售每天都会收到同一条到期提醒。由每日自动任务调用（不新增调度项）。
+    """
+    from app.modules.order.model import SalesOrder
+    from app.modules.task.model import Task
+
+    today = datetime.now(UTC).date()
+    ordered = select(SalesOrder.quote_id).where(
+        SalesOrder.quote_id.is_not(None), SalesOrder.status != "cancelled"
+    )
+    rows = (
+        await session.execute(
+            select(Quote, Customer.owner_id)
+            .join(Customer, Customer.id == Quote.customer_id)
+            .where(
+                Quote.deleted_at.is_(None),
+                Quote.valid_until.is_not(None),
+                Quote.valid_until < today,
+                Quote.status.in_(("sent", "approved", "expired")),
+                Quote.id.not_in(ordered),
+            )
+        )
+    ).all()
+
+    created = 0
+    for quote, owner_id in rows:
+        if owner_id is None:
+            continue
+        title = f"报价 {quote.quote_no} 已过有效期（{quote.valid_until}），请跟进续期或催单"
+        existing = (
+            await session.execute(select(Task.id).where(Task.title == title))
+        ).scalar_one_or_none()
+        if existing is not None:
+            continue
+        session.add(
+            Task(
+                title=title,
+                task_type="followup",
+                customer_id=quote.customer_id,
+                owner_id=owner_id,
+                priority="high",
+                status="pending",
+                due_at=datetime.now(UTC),
+                source="system",
+                source_rule_id=None,
+            )
+        )
+        created += 1
+    await session.flush()
+    return created

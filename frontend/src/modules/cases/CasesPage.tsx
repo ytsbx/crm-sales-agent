@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -20,6 +21,10 @@ import {
   updateCase,
   type CaseRow,
 } from '../../shared/api/cases'
+import { listQuotes } from '../../shared/api/quote'
+import { listOrders } from '../../shared/api/order'
+import { listSamples } from '../../shared/api/sample'
+import { listCustomers } from '../../shared/api/customer'
 
 const STAGES = ['understanding', 'quote', 'sample', 'first_order', 'repeat', 'stable']
 const STAGE_LABEL: Record<string, string> = {
@@ -32,6 +37,10 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'orange' | 'red'> = {
 
 const EMPTY_FORM = {
   title: '',
+  customer_id: undefined as number | undefined,
+  quote_id: undefined as number | undefined,
+  order_id: undefined as number | undefined,
+  sample_id: undefined as number | undefined,
   customer_label: '',
   industry: '',
   product_line: '',
@@ -55,6 +64,10 @@ export default function CasesPage() {
     queryKey: ['cases', filters],
     queryFn: () => listCases(filters),
   })
+  const customersQuery = useQuery({
+    queryKey: ['case-customers'],
+    queryFn: () => listCustomers({ page: 1, page_size: 200 }),
+  })
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['cases'] })
@@ -64,6 +77,24 @@ export default function CasesPage() {
   const [editId, setEditId] = useState<number | null>(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [detail, setDetail] = useState<CaseRow | null>(null)
+
+  // 证据单据（§3.7）：选了客户才去拉这个客户的报价/订单/打样
+  const evidenceCustomerId = editVisible ? form.customer_id : undefined
+  const quotesQuery = useQuery({
+    queryKey: ['case-quotes', evidenceCustomerId],
+    queryFn: () => listQuotes({ customer_id: evidenceCustomerId, page_size: 100 }),
+    enabled: Boolean(evidenceCustomerId),
+  })
+  const ordersQuery = useQuery({
+    queryKey: ['case-orders', evidenceCustomerId],
+    queryFn: () => listOrders({ customer_id: evidenceCustomerId, page_size: 100 }),
+    enabled: Boolean(evidenceCustomerId),
+  })
+  const samplesQuery = useQuery({
+    queryKey: ['case-samples', evidenceCustomerId],
+    queryFn: () => listSamples({ customer_id: evidenceCustomerId, page_size: 100 }),
+    enabled: Boolean(evidenceCustomerId),
+  })
 
   const openCreate = () => {
     setEditId(null)
@@ -75,6 +106,10 @@ export default function CasesPage() {
     setForm({
       ...EMPTY_FORM,
       title: row.title,
+      customer_id: row.customer_id ?? undefined,
+      quote_id: row.quote_id ?? undefined,
+      order_id: row.order_id ?? undefined,
+      sample_id: row.sample_id ?? undefined,
       customer_label: row.customer_label ?? '',
       industry: row.industry ?? '',
       product_line: row.product_line ?? '',
@@ -228,6 +263,24 @@ export default function CasesPage() {
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <Input placeholder="标题 *" value={form.title} onChange={(v) => setForm({ ...form, title: v })} />
+          <Select
+            style={{ width: '100%' }}
+            placeholder="关联客户（选真实客户，看案例的人可按权限跳转）"
+            filter
+            showClear
+            value={form.customer_id}
+            onChange={(v) =>
+              setForm({
+                ...form,
+                customer_id: v as number | undefined,
+                // 换客户时清掉旧证据，避免挂到别的客户的单据上
+                quote_id: undefined,
+                order_id: undefined,
+                sample_id: undefined,
+              })
+            }
+            optionList={(customersQuery.data?.items ?? []).map((c) => ({ value: c.id, label: c.name }))}
+          />
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <Input placeholder="客户代称（脱敏展示，如：某包装厂）" value={form.customer_label} onChange={(v) => setForm({ ...form, customer_label: v })} />
             <Input placeholder="行业" value={form.industry} onChange={(v) => setForm({ ...form, industry: v })} />
@@ -241,6 +294,54 @@ export default function CasesPage() {
             />
           </div>
           <Input placeholder="问题标签（逗号分隔，如：价格异议，交期紧）" value={form.problem_tags} onChange={(v) => setForm({ ...form, problem_tags: v })} />
+          {form.customer_id && (
+            <div
+              style={{
+                display: 'grid',
+                gap: 8,
+                padding: 10,
+                background: 'var(--crm-surface-low)',
+                borderRadius: 8,
+              }}
+            >
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                证据单据（§3.7：从已有时间线和单据里挑证据，看案例的人可跳转查看）
+              </div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder="关联报价单（可空）"
+                showClear
+                value={form.quote_id}
+                onChange={(v) => setForm({ ...form, quote_id: v as number | undefined })}
+                optionList={(quotesQuery.data?.items ?? []).map((q) => ({
+                  value: q.id,
+                  label: `${q.quote_no} · ${q.status_label ?? q.status}`,
+                }))}
+              />
+              <Select
+                style={{ width: '100%' }}
+                placeholder="关联订单（可空）"
+                showClear
+                value={form.order_id}
+                onChange={(v) => setForm({ ...form, order_id: v as number | undefined })}
+                optionList={(ordersQuery.data?.items ?? []).map((o) => ({
+                  value: o.id,
+                  label: `${o.order_no} · ${o.status_label ?? o.status} · ¥${o.total_amount ?? 0}`,
+                }))}
+              />
+              <Select
+                style={{ width: '100%' }}
+                placeholder="关联打样单（可空）"
+                showClear
+                value={form.sample_id}
+                onChange={(v) => setForm({ ...form, sample_id: v as number | undefined })}
+                optionList={(samplesQuery.data?.items ?? []).map((sp) => ({
+                  value: sp.id,
+                  label: `打样单 #${sp.id} · ${sp.status_label ?? sp.status}`,
+                }))}
+              />
+            </div>
+          )}
           <TextArea rows={2} placeholder="客户背景" value={form.background} onChange={(v) => setForm({ ...form, background: v })} />
           <TextArea rows={2} placeholder="客户目标" value={form.goal} onChange={(v) => setForm({ ...form, goal: v })} />
           <TextArea rows={2} placeholder="关键动作 *" value={form.key_actions} onChange={(v) => setForm({ ...form, key_actions: v })} />
@@ -282,6 +383,14 @@ export default function CasesPage() {
                   <div style={{ whiteSpace: 'pre-wrap', color: 'var(--crm-text-2)' }}>{text}</div>
                 </div>
               ))}
+            {(detail.quote_id || detail.order_id || detail.sample_id) && (
+              <div style={{ display: 'flex', gap: 12, fontSize: 13, flexWrap: 'wrap' }}>
+                <span style={{ color: 'var(--crm-text-3)' }}>证据单据：</span>
+                {detail.quote_id && <Link to={`/quotes/${detail.quote_id}`}>报价单 #{detail.quote_id}</Link>}
+                {detail.order_id && <Link to={`/orders/${detail.order_id}`}>订单 #{detail.order_id}</Link>}
+                {detail.sample_id && <span>打样单 #{detail.sample_id}</span>}
+              </div>
+            )}
             {(detail.problem_tags ?? []).length > 0 && (
               <div>
                 {(detail.problem_tags ?? []).map((tag) => (

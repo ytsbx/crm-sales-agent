@@ -19,6 +19,11 @@ export interface CaseRow {
   process: string | null
   result: string | null
   lessons: string | null
+  // 证据单据引用（§3.7：从已有时间线和单据选证据）
+  quote_id: number | null
+  order_id: number | null
+  sample_id: number | null
+  opportunity_id: number | null
   status: string
   status_label: string
   reviewer_name: string | null

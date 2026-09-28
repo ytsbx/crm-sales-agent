@@ -247,6 +247,37 @@ async def main():
             await s.commit()
 
     print()
+    print('=== 7. 报价有效期届满提醒（§3.4：已对客 + 过期 + 未成单 → 待办，只提醒一次）===')
+    from app.modules.quote import service as quote_service
+    from app.modules.quote.model import Quote
+
+    async with SessionLocal() as s:
+        q_no = f'CHKSCHQ{datetime.now(UTC).timestamp():.0f}'
+        quote = Quote(
+            quote_no=q_no, customer_id=1, owner_id=1, status='sent',
+            valid_until=(datetime.now(UTC) - timedelta(days=3)).date(),
+        )
+        s.add(quote)
+        await s.commit()
+        try:
+            first = await quote_service.notify_expired_quotes(s)
+            await s.commit()
+            second = await quote_service.notify_expired_quotes(s)
+            await s.commit()
+            check_true('过期未成单报价生成待办', first >= 1, f'created={first}')
+            check_true('重跑不重复提醒', second == 0, f'second={second}')
+            task_count = (
+                await s.execute(_text(
+                    "select count(*) from tasks where title like :p"
+                ), {'p': f'%{q_no}%'})
+            ).scalar_one()
+            check_true('待办只建了一条', task_count == 1, f'count={task_count}')
+        finally:
+            await s.execute(_text("delete from tasks where title like :p"), {'p': f'%{q_no}%'})
+            await s.execute(_text("delete from quotes where quote_no = :q"), {'q': q_no})
+            await s.commit()
+
+    print()
     print('=== 5. 清理本脚本产生的 SCHEDULER 审计（保持审计表干净）===')
     async with SessionLocal() as s:
         result = await s.execute(
