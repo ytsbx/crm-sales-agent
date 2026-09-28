@@ -136,6 +136,7 @@ async def clean(verbose=False):
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
         ('用例案例', f"delete from sales_cases where title like '%CHK{RUN}%'"),
         ('用例定制询价', f"delete from custom_inquiries where title like '%CHK{RUN}%'"),
+        ('用例新品洞察', f"delete from product_insights where title like '%CHK{RUN}%'"),
         # 合同台账（场景14）：附件→文档→模板，顺序服从外键
         ('用例合同附件', f"delete from business_files where business_type='contract' and business_id in "
                          f"(select id from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
@@ -607,6 +608,44 @@ def main():
     status, res = call('GET', f'/custom-inquiries/{inquiry_v2}', token=zhangsan)
     check('新版数量已改', res['data']['quantity'], 800.0)
     check('新版保留修订说明', res['data']['revision_note'], '客户把烫金改成 UV，数量降到 800')
+
+    print()
+    print('=== 14. 新品洞察：评审通过才可转询价线索（§3.3 第三类）===')
+    status, res = call('POST', '/product-insights', token=admin, body={
+        'title': f'CHK{RUN}可降解餐盒',
+        'source': '展会',
+        'target_customer': '连锁餐饮',
+        'direction': 'PLA 可降解外卖餐盒，主打环保合规',
+        'selling_points': '耐油耐热、可堆肥认证',
+        'price_assumption': 1.85,
+        'conclusion': '认证成本待核算，先做小样',
+        'owner_id': zs_id,
+    })
+    check('建洞察', res.get('code'), 0)
+    insight_id = res['data']['id']
+    check('初始为记录中', res['data']['status'], 'draft')
+    status, res = call('POST', f'/product-insights/{insight_id}/convert', token=admin, body={})
+    check('未评审不能转线索', res.get('code'), 40002)
+    status, res = call('POST', f'/product-insights/{insight_id}/submit', token=admin, body={})
+    check('提交评审', res.get('code'), 0)
+    status, res = call('POST', f'/product-insights/{insight_id}/review', token=zhangsan,
+                       body={'approve': True})
+    check('业务员不能自己评审', res.get('code'), 40301)
+    status, res = call('POST', f'/product-insights/{insight_id}/review', token=lisi,
+                       body={'approve': True, 'note': '方向可以，先做小样'})
+    check('主管评审通过', res.get('code'), 0)
+    check('状态已通过', res['data']['status'], 'approved')
+    status, res = call('POST', f'/product-insights/{insight_id}/convert', token=admin, body={})
+    check('转询价线索', res.get('code'), 0)
+    new_inquiry_id = res['data']['inquiry_id']
+    status, res = call('GET', f'/custom-inquiries/{new_inquiry_id}', token=admin)
+    check('线索已生成且在待评估', res['data']['status'], 'open')
+    check_true('价格假设标注为未确认',
+               '价格假设' in (res['data']['description'] or '')
+               and '未确认' in (res['data']['description'] or ''),
+               (res['data']['description'] or '')[:80])
+    status, res = call('GET', f'/product-insights/{insight_id}', token=admin)
+    check('洞察回写线索 id', res['data']['converted_inquiry_id'], new_inquiry_id)
 
     status, res = call('GET', f'/custom-inquiries/{inquiry_v2}/history', token=zhangsan)
     check('链条两条', len(res['data']), 2)

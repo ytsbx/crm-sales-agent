@@ -74,6 +74,7 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'approvals', path: '/approvals', label: '审批中心', icon: IconTickCircle, ready: true, permission: 'quote:view' },
       { key: 'documents', path: '/documents', label: '文档管理', icon: IconFile, ready: true, permission: 'order:view' },
       { key: 'cases', path: '/cases', label: '案例库', icon: IconTickCircle, ready: true, permission: 'quote:view' },
+      { key: 'insights', path: '/insights', label: '新品洞察', icon: IconBriefcase, ready: true, permission: 'product:view' },
       { key: 'knowledge', path: '/knowledge', label: '知识库', icon: IconBook, ready: true },
       {
         key: 'analytics',

@@ -8,6 +8,7 @@ import CustomerListPage from '../modules/customer/CustomerListPage'
 import KnowledgePage from '../modules/knowledge/KnowledgePage'
 import DocumentsPage from '../modules/contract/DocumentsPage'
 import CasesPage from '../modules/cases/CasesPage'
+import ProductInsightsPage from '../modules/product/ProductInsightsPage'
 import LeadListPage from '../modules/lead/LeadListPage'
 import LogisticsPage from '../modules/logistics/LogisticsPage'
 import OpportunityDetailPage from '../modules/opportunity/OpportunityDetailPage'
@@ -76,6 +77,7 @@ export const router = createBrowserRouter([
       { path: 'knowledge', element: <KnowledgePage /> },
       { path: 'documents', element: <DocumentsPage /> },
       { path: 'cases', element: <CasesPage /> },
+      { path: 'insights', element: <ProductInsightsPage /> },
       {
         path: 'wecom',
         element: <WeComPage />,
