@@ -468,6 +468,20 @@ def main():
     check_true('导出含夹具客户', f'CHK{RUN}测试客户' in res.get('text', ''),
                res.get('text', '')[:80])
 
+    # 异常批量访问告警（§六）：阈值调低后一次导出即触发，写 export_alert 审计并推管理员
+    status, res = call('PATCH', '/settings', token=admin, body={
+        'key': 'export', 'value': {'limit': 5000, 'alert_rows': 1, 'alert_window_hours': 24},
+    })
+    check('调低告警阈值', res.get('code'), 0)
+    call_csv('POST', '/customers/export', token=admin, body={'keyword': f'CHK{RUN}'})
+    status, res = call('GET', '/audit-logs?action=export_alert&page_size=5', token=admin)
+    check_true('触发异常导出告警审计',
+               len(res.get('data', {}).get('items', [])) >= 1,
+               str(res)[:120])
+    call('PATCH', '/settings', token=admin, body={
+        'key': 'export', 'value': {'limit': 5000, 'alert_rows': 20000, 'alert_window_hours': 24},
+    })
+
     print()
     print('=== 11. 合同模板与台账（§3.6/场景14）===')
     status, res = call('POST', '/contract-templates', token=admin, body={

@@ -72,6 +72,7 @@ async def _export(
         },
         ip=client_ip(request) if request else None,
     )
+    await _alert_if_abnormal(session, user=user, ip=client_ip(request) if request else None)
     await session.commit()
     owner_ids = {row.owner_id for row in rows if row.owner_id}
     owners: dict[int, str] = {}
@@ -97,6 +98,66 @@ async def _export(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": "attachment; filename*=UTF-8''customers.csv"},
     )
+
+
+async def _alert_if_abnormal(session: AsyncSession, *, user, ip: str | None) -> None:
+    """异常批量访问告警（文档 §六）：同一人在窗口期内累计导出条数超阈值 → 推管理员。
+
+    只在导出动作之后检查，命中写一条 export_alert 审计并站内推给管理员；
+    不阻断业务（该拦的大单条导出已被 export.limit 拦）。阈值与窗口可配。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.audit import AuditLog
+    from app.modules.notification import service as notification_service
+    from app.modules.settings import service as settings_service
+
+    alert_rows = int(await settings_service.get_number(session, "export", "alert_rows", 20000))
+    window_hours = int(
+        await settings_service.get_number(session, "export", "alert_window_hours", 24)
+    )
+    since = datetime.now(UTC) - timedelta(hours=window_hours)
+    # 导出条数存在审计的 after_data['count'] 里（JSONB），窗口内条数很少，直接取回再累加
+    payloads = (
+        await session.execute(
+            select(AuditLog.after_data).where(
+                AuditLog.operator_id == user.id,
+                AuditLog.action == "export",
+                AuditLog.business_type == "customer",
+                AuditLog.created_at >= since,
+            )
+        )
+    ).scalars().all()
+    total = sum(int((payload or {}).get("count") or 0) for payload in payloads)
+    if total > alert_rows:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="export_alert",
+            business_type="customer",
+            after={
+                "window_hours": window_hours,
+                "rows_in_window": total,
+                "threshold": alert_rows,
+            },
+            ip=ip,
+        )
+        try:
+            await notification_service.notify_roles(
+                session,
+                role_codes=["admin"],
+                type_="system",
+                title="异常批量导出提醒",
+                content=(
+                    f"{getattr(user, 'name', '某用户')} 在 {window_hours} 小时内累计导出客户 "
+                    f"{total} 条，超过阈值 {alert_rows}，请核实用途"
+                ),
+                business_type="customer",
+                business_id=None,
+                exclude_user_id=user.id,
+            )
+        except Exception:  # noqa: BLE001 —— 告警失败不能挡住导出本身
+            pass
 
 
 @router.get("/customers/export")
