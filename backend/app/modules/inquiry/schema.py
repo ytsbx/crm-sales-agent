@@ -29,3 +29,16 @@ class CustomInquiryUpdate(BaseModel):
 
 class CustomInquiryStatusUpdate(BaseModel):
     status: str
+
+
+class CustomInquiryRevise(BaseModel):
+    """修订：新增一版并留修订说明，历史版本不覆盖（§3.3）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    revision_note: str | None = Field(default=None, max_length=255)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    quantity: Decimal | None = None
+    target_price: Decimal | None = None
+    remark: str | None = None

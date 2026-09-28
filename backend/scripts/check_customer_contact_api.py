@@ -135,6 +135,7 @@ async def clean(verbose=False):
         # 先删引用了客户的表，最后才删客户本身。
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
         ('用例案例', f"delete from sales_cases where title like '%CHK{RUN}%'"),
+        ('用例定制询价', f"delete from custom_inquiries where title like '%CHK{RUN}%'"),
         # 合同台账（场景14）：附件→文档→模板，顺序服从外键
         ('用例合同附件', f"delete from business_files where business_type='contract' and business_id in "
                          f"(select id from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
@@ -570,6 +571,34 @@ def main():
     status, res = call('GET', f'/cases?keyword={RUN}', token=zhangsan)
     check_true('关键词检索命中',
                any(row['id'] == case_id for row in res['data']), '')
+
+    print()
+    print('=== 13. 定制询价修订链（§3.3：改了三次要求要能看出怎么变的）===')
+    status, res = call('POST', '/custom-inquiries', token=zhangsan, body={
+        'title': f'CHK{RUN}定制礼盒', 'description': '客户要天地盖礼盒，烫金',
+        'customer_id': zs_customer_id, 'quantity': 1000, 'target_price': 12.5,
+    })
+    check('建询价 v1', res.get('code'), 0)
+    check('初始版本号 1', res['data']['version'], 1)
+    inquiry_v1 = res['data']['id']
+    status, res = call('POST', f'/custom-inquiries/{inquiry_v1}/revise', token=zhangsan, body={
+        'revision_note': '客户把烫金改成 UV，数量降到 800',
+        'description': '天地盖礼盒，UV 工艺', 'quantity': 800,
+    })
+    check('修订成功', res.get('code'), 0)
+    inquiry_v2 = res['data']['id']
+    check('版本号 +1', res['data']['version'], 2)
+    check('新一版回到待评估', res['data']['status'], 'open')
+
+    status, res = call('GET', f'/custom-inquiries/{inquiry_v2}', token=zhangsan)
+    check('新版数量已改', res['data']['quantity'], 800.0)
+    check('新版保留修订说明', res['data']['revision_note'], '客户把烫金改成 UV，数量降到 800')
+
+    status, res = call('GET', f'/custom-inquiries/{inquiry_v2}/history', token=zhangsan)
+    check('链条两条', len(res['data']), 2)
+    check('按版本升序 v1 在前', res['data'][0]['version'], 1)
+    check_true('v1 描述未被改', '烫金' in (res['data'][0]['description'] or ''),
+               res['data'][0]['description'] or '')
 
     # 回归①：待审核案例不再全员可见——列表可见范围与详情一致（仅作者与主管）
     status, res = call('POST', '/cases', token=zhangsan, body={

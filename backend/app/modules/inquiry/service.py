@@ -76,6 +76,11 @@ def serialize(
         "target_price": float(inquiry.target_price) if inquiry.target_price is not None else None,
         "status": inquiry.status,
         "status_label": STATUS_LABELS.get(inquiry.status, inquiry.status),
+        # 修订链（§3.3）：第几版、本版改了什么、链条首版、投产后关联的 SKU
+        "version": inquiry.version or 1,
+        "root_id": inquiry.root_id,
+        "revision_note": inquiry.revision_note,
+        "converted_sku_id": inquiry.converted_sku_id,
         "remark": inquiry.remark,
         "created_by": inquiry.created_by,
         "creator_name": creator_name,

@@ -21,6 +21,8 @@ import {
   deleteCustomInquiry,
   listCustomInquiries,
   updateCustomInquiry,
+  customInquiryHistory,
+  reviseCustomInquiry,
   type CustomInquiryPayload,
   type CustomInquiryRow,
 } from '../../shared/api/inquiry'
@@ -70,6 +72,20 @@ export default function KnowledgePage() {
   const [editVisible, setEditVisible] = useState(false)
   const [editing, setEditing] = useState<CustomInquiryRow | null>(null)
   const [form, setForm] = useState<InquiryForm>(EMPTY_FORM)
+  // 修订（§3.3）：客户改了要求 → 新增一版并留说明，旧版保留
+  const [reviseTarget, setReviseTarget] = useState<CustomInquiryRow | null>(null)
+  const [reviseForm, setReviseForm] = useState({
+    revision_note: '',
+    description: '',
+    quantity: '',
+    target_price: '',
+  })
+  const [historyTarget, setHistoryTarget] = useState<CustomInquiryRow | null>(null)
+  const historyQuery = useQuery({
+    queryKey: ['inquiry-history', historyTarget?.id],
+    queryFn: () => customInquiryHistory(historyTarget!.id),
+    enabled: Boolean(historyTarget),
+  })
 
   const summaryQuery = useQuery({
     queryKey: ['custom-inquiry-summary'],
@@ -102,6 +118,32 @@ export default function KnowledgePage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const reviseMutation = useMutation({
+    mutationFn: () =>
+      reviseCustomInquiry(reviseTarget!.id, {
+        revision_note: reviseForm.revision_note || null,
+        description: reviseForm.description || null,
+        quantity: reviseForm.quantity ? Number(reviseForm.quantity) : null,
+        target_price: reviseForm.target_price ? Number(reviseForm.target_price) : null,
+      }),
+    onSuccess: (row) => {
+      Toast.success(`已生成 v${row.version ?? ''}，旧版保留`)
+      setReviseTarget(null)
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const openRevise = (row: CustomInquiryRow) => {
+    setReviseTarget(row)
+    setReviseForm({
+      revision_note: '',
+      description: row.description ?? '',
+      quantity: row.quantity != null ? String(row.quantity) : '',
+      target_price: row.target_price != null ? String(row.target_price) : '',
+    })
+  }
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteCustomInquiry(id),
@@ -144,7 +186,17 @@ export default function KnowledgePage() {
       dataIndex: 'title',
       render: (text: string, record: CustomInquiryRow) => (
         <div>
-          <div style={{ fontWeight: 600 }}>{text}</div>
+          <div style={{ fontWeight: 600 }}>
+            {text}
+            {record.version && record.version > 1 && (
+              <Tag size="small" style={{ marginLeft: 6 }}>{`v${record.version}`}</Tag>
+            )}
+          </div>
+          {record.revision_note && (
+            <div style={{ fontSize: 12, color: 'var(--crm-warning, #d97706)' }}>
+              本次修改：{record.revision_note}
+            </div>
+          )}
           {record.description && (
             <div
               style={{
@@ -194,6 +246,8 @@ export default function KnowledgePage() {
       render: (_: unknown, record: CustomInquiryRow) => (
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <a onClick={() => openEdit(record)}>编辑</a>
+          <a onClick={() => openRevise(record)}>修订</a>
+          {(record.version ?? 1) > 1 && <a onClick={() => setHistoryTarget(record)}>历史</a>}
           {record.status !== 'developing' && record.status !== 'converted' && (
             <a onClick={() => changeStatus(record, 'developing')}>转开发中</a>
           )}
@@ -354,6 +408,82 @@ export default function KnowledgePage() {
             <Input value={form.remark} onChange={(value) => setForm({ ...form, remark: value })} />
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        title={`修订：${reviseTarget?.title ?? ''}`}
+        visible={Boolean(reviseTarget)}
+        onCancel={() => setReviseTarget(null)}
+        onOk={() => reviseMutation.mutate()}
+        confirmLoading={reviseMutation.isPending}
+        okText="生成新版"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            修订会新增一版（旧版原样保留，可在「历史」里对照），新一版回到「待评估」
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>本次改了什么（建议填，方便回看）</div>
+            <Input
+              placeholder="如：客户把烫金改成 UV，数量降到 800"
+              value={reviseForm.revision_note}
+              onChange={(v) => setReviseForm({ ...reviseForm, revision_note: v })}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>需求描述</div>
+            <TextArea
+              rows={3}
+              value={reviseForm.description}
+              onChange={(v) => setReviseForm({ ...reviseForm, description: v })}
+            />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>数量</div>
+              <Input
+                value={reviseForm.quantity}
+                onChange={(v) => setReviseForm({ ...reviseForm, quantity: v })}
+              />
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>目标价</div>
+              <Input
+                value={reviseForm.target_price}
+                onChange={(v) => setReviseForm({ ...reviseForm, target_price: v })}
+              />
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title={`版本历史：${historyTarget?.title ?? ''}`}
+        visible={Boolean(historyTarget)}
+        onCancel={() => setHistoryTarget(null)}
+        footer={null}
+        width={680}
+      >
+        <Table<CustomInquiryRow>
+          columns={[
+            { title: '版本', dataIndex: 'version', width: 70, render: (v: number) => `v${v ?? 1}` },
+            { title: '需求描述', dataIndex: 'description', render: (v: string | null) => v ?? '-' },
+            { title: '数量', dataIndex: 'quantity', width: 80, render: (v: number | null) => v ?? '-' },
+            { title: '目标价', dataIndex: 'target_price', width: 90, render: (v: number | null) => v ?? '-' },
+            { title: '本版说明', dataIndex: 'revision_note', render: (v: string | null) => v ?? '（原始要求）' },
+            {
+              title: '时间',
+              dataIndex: 'created_at',
+              width: 150,
+              render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+            },
+          ]}
+          dataSource={historyQuery.data ?? []}
+          loading={historyQuery.isLoading}
+          rowKey="id"
+          pagination={false}
+        />
       </Modal>
     </div>
   )

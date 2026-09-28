@@ -32,6 +32,14 @@ class CustomInquiry(Base, IdMixin):
 
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 修订链（文档 §3.3/§四"需求及修订"）：客户改了三次要求，要能看出怎么变的。
+    # 修订 = 新增一版，历史版本永不覆盖；root_id 指向链条首版（原始记录为 NULL，
+    # 查询时把"自己"也算进链条）
+    version: Mapped[int] = mapped_column(BigInteger, default=1)
+    root_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    revision_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 投产时显式关联新 SKU（历史需求不被覆盖）
+    converted_sku_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     customer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     opportunity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

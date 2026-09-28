@@ -14,6 +14,11 @@ export interface CustomInquiryRow {
   status: string
   status_label: string
   remark?: string | null
+  // 修订链（§3.3）：第几版、链条首版、本版改了什么、投产后关联 SKU
+  version?: number
+  root_id?: number | null
+  revision_note?: string | null
+  converted_sku_id?: number | null
   created_by?: number | null
   creator_name?: string | null
   created_at: string
@@ -58,4 +63,22 @@ export function updateCustomInquiry(id: number, payload: Partial<CustomInquiryPa
 
 export function deleteCustomInquiry(id: number) {
   return api.delete<null>(`/custom-inquiries/${id}`)
+}
+
+export function reviseCustomInquiry(
+  id: number,
+  payload: {
+    revision_note?: string | null
+    title?: string
+    description?: string | null
+    quantity?: number | null
+    target_price?: number | null
+    remark?: string | null
+  },
+) {
+  return api.post<CustomInquiryRow>(`/custom-inquiries/${id}/revise`, payload)
+}
+
+export function customInquiryHistory(id: number) {
+  return api.get<CustomInquiryRow[]>(`/custom-inquiries/${id}/history`)
 }
