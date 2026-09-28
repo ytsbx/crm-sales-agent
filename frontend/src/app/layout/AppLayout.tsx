@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import TabBar from './TabBar'
@@ -28,6 +28,8 @@ export default function AppLayout() {
   const clear = useAuthStore((state) => state.clear)
   const openTab = useTabsStore((state) => state.openTab)
   const openCopilot = useCopilotStore((state) => state.openWith)
+  // 移动端（场景23）：侧边栏变成抽屉，顶栏汉堡键开合
+  const [siderOpen, setSiderOpen] = useState(false)
 
   const currentMenu = matchMenu(location.pathname)
   // 左侧菜单按当前用户权限过滤：财务不再看到线索/商机等入口，admin 直通全量
@@ -46,6 +48,8 @@ export default function AppLayout() {
     : null
 
   useEffect(() => {
+    // 路由变化即收起抽屉：手机上点完菜单立刻看到页面
+    setSiderOpen(false)
     if (detailLabel) {
       openTab({ key: location.pathname, label: detailLabel, path: location.pathname })
     } else if (EXTRA_TABS[location.pathname]) {
@@ -66,8 +70,19 @@ export default function AppLayout() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={siderOpen ? 'app-shell sider-open' : 'app-shell'}>
+      {siderOpen && (
+        <div className="sider-backdrop" onClick={() => setSiderOpen(false)} />
+      )}
       <aside className="app-sider">
+        <button
+          className="sider-close"
+          type="button"
+          aria-label="关闭菜单"
+          onClick={() => setSiderOpen(false)}
+        >
+          ×
+        </button>
         <div className="sider-brand">
           <div className="sider-logo">S</div>
           <div>
@@ -105,6 +120,14 @@ export default function AppLayout() {
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         <header className="app-header">
+          <button
+            className="mobile-menu-btn"
+            type="button"
+            aria-label="打开菜单"
+            onClick={() => setSiderOpen(true)}
+          >
+            ☰
+          </button>
           <GlobalSearch />
           <div style={{ flex: 1 }} />
           <button className="copilot-trigger" type="button" onClick={() => openCopilot()}>

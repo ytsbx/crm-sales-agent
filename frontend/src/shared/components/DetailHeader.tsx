@@ -33,14 +33,9 @@ export default function DetailHeader({
 }) {
   return (
     <div className="card-block" style={{ marginBottom: 16, ...style }}>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 1fr) auto',
-          columnGap: 24,
-          alignItems: 'start',
-        }}
-      >
+      {/* 移动端（场景23）：单列堆叠——标题在上、操作按钮换行到下方，
+          手机上不再左右挤在两列里 */}
+      <div className="detail-header-grid">
         <div style={{ minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span className="detail-title">{title}</span>

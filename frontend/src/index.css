@@ -547,3 +547,122 @@ a {
     visibility: hidden;
   }
 }
+
+/* ============================================================
+   移动端适配（文档 §六 / 场景23：查客户、记跟进、查/发报价
+   三项操作在手机上真实可用——不以页面能缩放代替可用）
+   ============================================================ */
+
+/* 桌面端隐藏汉堡键与抽屉关闭键 */
+.mobile-menu-btn,
+.sider-close {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  /* 侧边栏 → 离屏抽屉 */
+  .app-sider {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    overflow-y: auto;
+  }
+  .app-shell.sider-open .app-sider {
+    transform: translateX(0);
+  }
+  .sider-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 99;
+  }
+  .sider-close {
+    display: block;
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    font-size: 20px;
+    color: var(--crm-text-3);
+    cursor: pointer;
+  }
+
+  /* 顶栏：汉堡键出现，次要信息收纳 */
+  .mobile-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--crm-surface-high);
+    border-radius: 8px;
+    background: var(--crm-surface);
+    font-size: 17px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .app-header {
+    padding: 0 12px;
+    gap: 8px;
+  }
+  .header-user > div:last-child {
+    display: none;
+  }
+
+  /* 内容区：收紧留白 */
+  .content-area {
+    padding: 12px;
+  }
+  .toolbar {
+    gap: 8px;
+  }
+  .semi-modal {
+    /* 弹窗一律不超屏：模板里 560/680 宽的编辑框也收进来 */
+    max-width: 94vw !important;
+  }
+
+  /* 表格：容器内横向滚动（列多的列表页左右滑着看，而不是撑破布局） */
+  .semi-table-wrapper {
+    max-width: 100%;
+  }
+}
+
+/* 详情页统一头部：桌面两列（标题/操作），手机单列堆叠（场景23） */
+.detail-header-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 24px;
+  align-items: start;
+}
+@media (max-width: 768px) {
+  .detail-header-grid {
+    grid-template-columns: 1fr;
+    row-gap: 10px;
+  }
+  .detail-header-grid > div:last-child {
+    justify-content: flex-start;
+  }
+}
+
+/* 手机上：多页签横向滑动；全局搜索收窄不挤占顶栏（场景23） */
+@media (max-width: 768px) {
+  .tab-strip {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .global-search {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 170px;
+  }
+  .global-search .semi-input-wrapper {
+    width: 100%;
+  }
+}
