@@ -107,8 +107,10 @@ def start_scheduler() -> None:
     )
     scheduler.start()
     logger.info(
-        "定时任务调度已启动：公海回收每天 %02d:00、自动任务规则每天 %02d:10（Asia/Shanghai）",
+        "定时任务调度已启动：公海回收每天 %02d:00、自动任务规则每天 %02d:10、"
+        "跟单逾期提醒每天 %02d:20（Asia/Shanghai）",
         settings.scheduler_recycle_hour,
+        settings.scheduler_task_rules_hour,
         settings.scheduler_task_rules_hour,
     )
 

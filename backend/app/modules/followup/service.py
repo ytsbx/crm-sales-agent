@@ -80,6 +80,14 @@ async def record_and_notify(
         opportunity_id=opportunity_id,
     )
     try:
+        # 主管按"负责人所在部门"定位：A 部门的动作不推 B 部门主管；
+        # 负责人没有部门时回退为推全公司主管
+        from app.modules.user.model import User
+
+        department_id = None
+        if owner_id:
+            owner_row = await session.get(User, owner_id)
+            department_id = owner_row.department_id if owner_row else None
         await notification_service.notify_roles(
             session,
             role_codes=MANAGER_ROLE_CODES,
@@ -89,6 +97,7 @@ async def record_and_notify(
             business_type=business_type,
             business_id=business_id,
             exclude_user_id=exclude_user_id,
+            department_id=department_id,
         )
     except Exception as exc:  # noqa: BLE001 —— 通知失败不能挡业务
         logger.warning("自动通知业务主管失败（business=%s %s）：%s",

@@ -144,16 +144,22 @@ async def notify_roles(
     business_type: str | None = None,
     business_id: int | None = None,
     exclude_user_id: int | None = None,
+    department_id: int | None = None,
 ) -> int:
-    """按角色推通知：业务动作自动留痕时推给业务主管（sales_manager 等）。"""
-    user_ids = (
-        await session.execute(
-            select(User.id)
-            .join(user_roles, user_roles.c.user_id == User.id)
-            .join(Role, Role.id == user_roles.c.role_id)
-            .where(Role.code.in_(role_codes), User.status == "active")
-        )
-    ).scalars().all()
+    """按角色推通知：业务动作自动留痕时推给业务主管（sales_manager 等）。
+
+    `department_id` 传了就只推该部门的角色用户（跨部门不互扰）；
+    不传推全公司该角色——调用方应在能定位到部门时尽量传。
+    """
+    stmt = (
+        select(User.id)
+        .join(user_roles, user_roles.c.user_id == User.id)
+        .join(Role, Role.id == user_roles.c.role_id)
+        .where(Role.code.in_(role_codes), User.status == "active")
+    )
+    if department_id is not None:
+        stmt = stmt.where(User.department_id == department_id)
+    user_ids = (await session.execute(stmt)).scalars().all()
     settings = await channel_settings(session)
     sent = 0
     for user_id in user_ids:

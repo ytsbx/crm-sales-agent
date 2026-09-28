@@ -170,6 +170,16 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
             await session.execute(select(SalesOrder).where(SalesOrder.id.in_(order_ids)))
         ).scalars().all()
     }
+    # 主管按"订单负责人所在部门"定位：跨部门不互扰
+    from app.modules.user.model import User
+
+    owner_ids = {o.owner_id for o in orders.values() if o.owner_id}
+    owner_departments: dict[int, int | None] = {}
+    if owner_ids:
+        for uid, dept in (
+            await session.execute(select(User.id, User.department_id).where(User.id.in_(owner_ids)))
+        ).all():
+            owner_departments[uid] = dept
 
     notified = 0
     for row in rows:
@@ -203,6 +213,7 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
                 business_type="order",
                 business_id=order.id,
                 exclude_user_id=order.owner_id,
+                department_id=owner_departments.get(order.owner_id) if order.owner_id else None,
             )
         except Exception as exc:  # 通知失败不标记，明天会重试
             logger.warning("逾期提醒推送失败（milestone=%s）：%s", row.id, exc)
