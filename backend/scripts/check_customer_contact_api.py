@@ -122,6 +122,7 @@ async def clean(verbose=False):
         # 只删本脚本造的数据（名字带 RUN 后缀）。顺序要服从外键：
         # 先删引用了客户的表，最后才删客户本身。
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
+        ('用例案例', f"delete from sales_cases where title like '%CHK{RUN}%'"),
         # 合同台账（场景14）：附件→文档→模板，顺序服从外键
         ('用例合同附件', f"delete from business_files where business_type='contract' and business_id in "
                          f"(select id from contract_documents where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
@@ -510,6 +511,48 @@ def main():
     check('管理员仍可读', res.get('code'), 0)
     call('POST', f'/customers/{zs_customer_id}/assign', token=admin,
          body={'owner_id': original_owner, 'reason': '场景14 复原'})
+
+    print()
+    print('=== 12. 案例库：审核发布 + 脱敏分享（§3.7/场景15）===')
+    lisi = login('lisi', '123456')
+    case_payload = {
+        'title': f'CHK{RUN}打样转返单案例',
+        'customer_id': zs_customer_id,
+        'customer_label': '某包装制品厂',
+        'industry': '包装',
+        'product_line': '彩盒',
+        'stage_reached': 'repeat',
+        'problem_tags': ['价格异议', '交期紧'],
+        'key_actions': '产前样提前三天确认，锁定产线档期',
+        'lessons': '交期异议先给生产计划表，不要空口承诺',
+    }
+    status, res = call('POST', '/cases', token=zhangsan, body=case_payload)
+    check('建案例草稿', res.get('code'), 0)
+    case_id = res['data']['id']
+    status, res = call('GET', f'/cases/{case_id}', token=zhangsan)
+    check_true('作者看得到真实客户', res['data']['customer_id'] == zs_customer_id, '')
+    status, res = call('POST', f'/cases/{case_id}/submit', token=zhangsan, body={})
+    check('提交审核', res.get('code'), 0)
+    status, res = call('POST', f'/cases/{case_id}/review', token=zhangsan,
+                       body={'approve': True})
+    check('销售不能自己审核', res.get('code'), 40301)
+    status, res = call('POST', f'/cases/{case_id}/review', token=lisi,
+                       body={'approve': True, 'note': '做法可复制，通过'})
+    check('主管审核发布', res.get('code'), 0)
+    check('状态已发布', res['data']['status'], 'published')
+    status, res = call('GET', f'/cases/{case_id}', token=zhangsan)
+    check_true('作者本人可见自己案例的客户', res['data']['customer_id'] == zs_customer_id, '')
+    wangwu = login('wangwu', '123456')  # 非作者、非主管：脱敏分享视角
+    status, res = call('GET', f'/cases/{case_id}', token=wangwu)
+    check_true('培训视角看不到真实客户ID', res['data']['customer_id'] is None,
+               str(res['data']['customer_id']))
+    check_true('只看到代称', res['data']['customer_label'] == '某包装制品厂', '')
+    check_true('做法内容完整可学', '生产计划表' in res['data']['lessons'], '')
+    status, res = call('GET', f'/cases/{case_id}', token=lisi)
+    check_true('主管可见真实客户', res['data']['customer_id'] == zs_customer_id, '')
+    status, res = call('GET', f'/cases?keyword={RUN}', token=zhangsan)
+    check_true('关键词检索命中',
+               any(row['id'] == case_id for row in res['data']), '')
 
 
 if __name__ == '__main__':

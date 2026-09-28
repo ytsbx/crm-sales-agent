@@ -14,6 +14,7 @@ from app.modules.approval.rules_router import router as approval_rules_router
 from app.modules.analytics.router import router as analytics_router
 from app.modules.agent.router import router as agent_router
 from app.modules.auth.router import router as auth_router
+from app.modules.cases.router import router as cases_router
 from app.modules.audit_router import router as audit_router
 from app.modules.contract.router import router as contract_router
 from app.modules.customer.router import router as customer_router
@@ -128,6 +129,7 @@ app.include_router(agent_router, prefix=settings.api_prefix)
 app.include_router(wecom_router, prefix=settings.api_prefix)
 app.include_router(erp_router, prefix=settings.api_prefix)
 app.include_router(contract_router, prefix=settings.api_prefix)
+app.include_router(cases_router, prefix=settings.api_prefix)
 
 
 @app.get("/health", tags=["System"])

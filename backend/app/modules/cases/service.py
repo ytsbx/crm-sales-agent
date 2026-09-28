@@ -1,0 +1,192 @@
+"""案例库业务逻辑（§3.7/场景15）：检索、脱敏、审核流。"""
+
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.errors import AppError, ErrorCode
+from app.modules.cases.model import CASE_STATUS_LABEL, SalesCase
+from app.modules.user.model import User
+
+#: 有权审核与看全量（含真实客户身份）的角色
+REVIEWER_ROLES = ("sales_manager", "admin")
+
+
+def is_reviewer(user) -> bool:
+    return any(role in REVIEWER_ROLES for role in user.roles) or user.has("settings:manage")
+
+
+def serialize_case(
+    case: SalesCase,
+    *,
+    author_name: str | None = None,
+    customer_name: str | None = None,
+    reviewer_name: str | None = None,
+    reveal_customer: bool = False,
+) -> dict:
+    """序列化。reveal_customer=False 时抹掉真实客户身份（场景15 的脱敏分享）。"""
+    return {
+        "id": case.id,
+        "title": case.title,
+        "author_id": case.author_id,
+        "author_name": author_name,
+        # 受限字段：非授权视角只给代称
+        "customer_id": case.customer_id if reveal_customer else None,
+        "customer_name": customer_name if reveal_customer else None,
+        "customer_label": case.customer_label or ("某客户" if case.customer_id else None),
+        "industry": case.industry,
+        "product_line": case.product_line,
+        "stage_reached": case.stage_reached,
+        "problem_tags": (case.problem_tags or {}).get("tags", []) if isinstance(case.problem_tags, dict) else (case.problem_tags or []),
+        "background": case.background,
+        "goal": case.goal,
+        "key_actions": case.key_actions,
+        "objection_handling": case.objection_handling,
+        "process": case.process,
+        "result": case.result,
+        "lessons": case.lessons,
+        "quote_id": case.quote_id,
+        "order_id": case.order_id,
+        "sample_id": case.sample_id,
+        "opportunity_id": case.opportunity_id,
+        "status": case.status,
+        "status_label": CASE_STATUS_LABEL.get(case.status, case.status),
+        "reviewer_id": case.reviewer_id,
+        "reviewer_name": reviewer_name,
+        "reviewed_at": case.reviewed_at,
+        "review_note": case.review_note,
+        "created_at": case.created_at,
+    }
+
+
+def _apply_update(case: SalesCase, payload) -> None:
+    for field in (
+        "title", "customer_id", "customer_label", "industry", "product_line",
+        "stage_reached", "problem_tags", "background", "goal", "key_actions",
+        "objection_handling", "process", "result", "lessons",
+        "quote_id", "order_id", "sample_id", "opportunity_id",
+    ):
+        value = getattr(payload, field, None)
+        if value is not None:
+            setattr(case, field, value)
+    if isinstance(case.problem_tags, list):
+        case.problem_tags = {"tags": case.problem_tags}
+
+
+async def get_case_or_404(session: AsyncSession, case_id: int) -> SalesCase:
+    case = await session.get(SalesCase, case_id)
+    if case is None or case.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "案例不存在", 404)
+    return case
+
+
+async def list_cases(
+    session: AsyncSession, *, user, status: str | None, industry: str | None,
+    product_line: str | None, stage: str | None, keyword: str | None,
+) -> list[dict]:
+    """列表：已发布人尽可读（脱敏）；自己的草稿/被驳可见；主管看全量。"""
+    reviewer = is_reviewer(user)
+    stmt = select(SalesCase).where(SalesCase.deleted_at.is_(None))
+    if not reviewer:
+        stmt = stmt.where(
+            (SalesCase.status == "published")
+            | (SalesCase.author_id == user.id)
+            | (SalesCase.status.in_(["pending_review"]))
+        )
+    if status:
+        stmt = stmt.where(SalesCase.status == status)
+    if industry:
+        stmt = stmt.where(SalesCase.industry == industry)
+    if product_line:
+        stmt = stmt.where(SalesCase.product_line == product_line)
+    if stage:
+        stmt = stmt.where(SalesCase.stage_reached == stage)
+    if keyword:
+        like = f"%{keyword}%"
+        stmt = stmt.where(
+            (SalesCase.title.like(like))
+            | (SalesCase.lessons.like(like))
+            | (SalesCase.key_actions.like(like))
+        )
+    rows = (
+        await session.execute(stmt.order_by(SalesCase.created_at.desc()).limit(200))
+    ).scalars().all()
+
+    author_ids = {row.author_id for row in rows}
+    reviewer_ids = {row.reviewer_id for row in rows if row.reviewer_id}
+    users = {
+        int(uid): name
+        for uid, name in (
+            await session.execute(select(User.id, User.name).where(User.id.in_(author_ids | reviewer_ids)))
+        ).all()
+    } if (author_ids | reviewer_ids) else {}
+    customer_ids = {row.customer_id for row in rows if row.customer_id and reviewer}
+    customers: dict[int, str] = {}
+    if customer_ids:
+        from app.modules.customer.model import Customer
+
+        customers = {
+            int(cid): name
+            for cid, name in (
+                await session.execute(
+                    select(Customer.id, Customer.name).where(Customer.id.in_(customer_ids))
+                )
+            ).all()
+        }
+    return [
+        serialize_case(
+            row,
+            author_name=users.get(row.author_id),
+            reviewer_name=users.get(row.reviewer_id),
+            customer_name=customers.get(row.customer_id) if row.customer_id else None,
+            reveal_customer=reviewer or row.author_id == user.id,
+        )
+        for row in rows
+    ]
+
+
+async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> dict:
+    reviewer = is_reviewer(user)
+    if case.status != "published" and not (reviewer or case.author_id == user.id):
+        raise AppError(ErrorCode.FORBIDDEN, "该案例未发布，仅作者与主管可见")
+    reveal = reviewer or case.author_id == user.id
+    customer_name = None
+    if case.customer_id and reveal:
+        from app.modules.customer.model import Customer
+
+        customer = await session.get(Customer, case.customer_id)
+        customer_name = customer.name if customer else None
+    author = await session.get(User, case.author_id)
+    reviewer_user = await session.get(User, case.reviewer_id) if case.reviewer_id else None
+    return serialize_case(
+        case,
+        author_name=author.name if author else None,
+        reviewer_name=reviewer_user.name if reviewer_user else None,
+        customer_name=customer_name,
+        reveal_customer=reveal,
+    )
+
+
+async def submit_case(session: AsyncSession, *, case: SalesCase, user) -> None:
+    """提交审核。发布不制造业绩或跟进记录——这里刻意只改状态。"""
+    if case.author_id != user.id and not is_reviewer(user):
+        raise AppError(ErrorCode.FORBIDDEN, "只有作者能提交审核")
+    if case.status not in ("draft", "rejected"):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前状态（{CASE_STATUS_LABEL.get(case.status, case.status)}）不能提交审核")
+    if not case.title or not (case.lessons or case.key_actions):
+        raise AppError(ErrorCode.PARAM_ERROR, "提交前至少填写「标题」和「关键动作/可复用做法」")
+    case.status = "pending_review"
+    await session.flush()
+
+
+async def review_case(session: AsyncSession, *, case: SalesCase, user, approve: bool, note: str | None) -> None:
+    if not is_reviewer(user):
+        raise AppError(ErrorCode.FORBIDDEN, "只有销售主管/管理员能审核案例")
+    if case.status != "pending_review":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该案例不在待审核状态")
+    case.status = "published" if approve else "rejected"
+    case.reviewer_id = user.id
+    case.reviewed_at = datetime.now(UTC)
+    case.review_note = note
+    await session.flush()

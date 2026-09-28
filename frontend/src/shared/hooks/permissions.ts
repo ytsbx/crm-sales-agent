@@ -15,6 +15,8 @@ export function usePermissions() {
 
   return {
     isAdmin: roles.includes('admin'),
+    // 案例库审核等"主管专属"动作的前端显隐（真正的拦截在后端角色检查）
+    isReviewer: roles.includes('sales_manager') || roles.includes('admin'),
     can: (code: string) => roles.includes('admin') || permissions.includes(code),
     dataScopeLabel: DATA_SCOPE_LABEL[user?.data_scope ?? 'self'] ?? '仅本人',
   }
