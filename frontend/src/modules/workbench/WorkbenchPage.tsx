@@ -205,6 +205,7 @@ export default function WorkbenchPage() {
     <div className="page-container">
       {/* 问候 */}
       <div
+        className="wb-greeting"
         style={{
           display: 'flex',
           alignItems: 'flex-start',
@@ -261,7 +262,7 @@ export default function WorkbenchPage() {
       </div>
 
       {/* 6 张 KPI 卡 */}
-      <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(6, minmax(0, 1fr))' }}>
+      <div className="kpi-grid kpi-cols-6">
         {cards.map((card) => (
           <div
             key={card.label}
@@ -297,7 +298,7 @@ export default function WorkbenchPage() {
             </div>
           </div>
 
-          <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(5, minmax(0, 1fr))' }}>
+          <div className="kpi-grid kpi-cols-5">
             <div className="kpi-card">
               <div className="kpi-label">团队待办</div>
               <div className="kpi-value">{team.team_task_count ?? 0}</div>
@@ -420,7 +421,7 @@ export default function WorkbenchPage() {
       )}
 
       {/* 漏斗 / 趋势 / 动态 */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.05fr 1.35fr 0.95fr', gap: 16 }}>
+      <div className="wb-tri-grid">
         <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
             <span className="card-title">全链路销售转化漏斗</span>
@@ -535,7 +536,7 @@ export default function WorkbenchPage() {
       </div>
 
       {/* 待办 / 重点商机 / 日程与 AI */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.05fr 1.35fr 0.95fr', gap: 16, marginTop: 16 }}>
+      <div className="wb-tri-grid" style={{ marginTop: 16 }}>
         <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">我的待办任务</span>

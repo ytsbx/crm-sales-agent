@@ -666,3 +666,44 @@ a {
     width: 100%;
   }
 }
+
+/* 工作台移动端（场景23 实测反馈修复）：内联网格改为类驱动后可被媒体查询覆盖 */
+.kpi-cols-6 {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.kpi-cols-5 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.wb-tri-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 1.35fr 0.95fr;
+  gap: 16px;
+}
+@media (max-width: 768px) {
+  /* KPI 卡：6 列/5 列在手机上挤成竖条 → 两列 */
+  .kpi-cols-6,
+  .kpi-cols-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* 漏斗/趋势/动态：三栏 → 单列堆叠，卡片内文字不再被压成竖排 */
+  .wb-tri-grid {
+    grid-template-columns: 1fr;
+  }
+  /* 问候区：纵向堆叠 */
+  .wb-greeting {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  /* 顶栏：角色文字收纳，AI 助手按钮不许换行竖排 */
+  .header-user {
+    gap: 6px;
+  }
+  .header-user-meta {
+    display: none;
+  }
+  .copilot-trigger {
+    white-space: nowrap;
+    padding: 6px 10px;
+  }
+}
