@@ -11,6 +11,7 @@ from app.core.audit import AuditLog  # noqa: F401  保证 autogenerate 能看到
 from app.core.base import Base
 from app.core.config import settings
 from app.modules.approval import model as approval_model  # noqa: F401
+from app.modules.analytics import model as analytics_model  # noqa: F401
 from app.modules.agent import model as agent_model  # noqa: F401
 from app.modules.customer import model as customer_model  # noqa: F401
 from app.modules.followup import model as followup_model  # noqa: F401

@@ -326,3 +326,31 @@ export function listAuditLogs(query: {
 }) {
   return api.get<PageResult<AuditLogRow>>('/audit-logs', query)
 }
+
+// ---------------------------------------------------------------- 目标管理（模块⑧）
+
+export interface SalesTargetRow {
+  target_id: number | null
+  period: string
+  user_id: number | null
+  user_name: string
+  new_customer_target: number
+  sales_target: number
+  new_customer_actual: number
+  sales_actual: number
+  remark?: string | null
+}
+
+export function listSalesTargets(year: number) {
+  return api.get<{ year: number; rows: SalesTargetRow[] }>('/sales-targets', { year })
+}
+
+export function upsertSalesTarget(payload: {
+  period: string
+  user_id: number | null
+  new_customer_target: number
+  sales_target: number
+  remark?: string | null
+}) {
+  return api.post<{ target_id: number }>('/sales-targets/upsert', payload)
+}

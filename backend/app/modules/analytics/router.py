@@ -1,15 +1,87 @@
 """工作台与数据分析接口。"""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi import Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import write_audit
 from app.core.database import get_db
-from app.core.deps import CurrentUser, require_permission
+from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.response import ok
 from app.modules.analytics import service as svc
+from app.modules.analytics import targets as targets_svc
 
 router = APIRouter(tags=["Analytics"])
+
+
+class SalesTargetUpsert(BaseModel):
+    period: str
+    user_id: int | None = None
+    new_customer_target: int = 0
+    sales_target: float = 0
+    remark: str | None = None
+
+
+@router.get("/sales-targets")
+async def list_sales_targets(
+    year: int = Query(...),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """目标 vs 实际：非 admin 只看自己 + 全公司目标行。"""
+    return ok(await targets_svc.targets_with_actuals(session, user, year))
+
+
+@router.post("/sales-targets/upsert")
+async def upsert_sales_target(
+    payload: SalesTargetUpsert,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    row = await targets_svc.upsert_target(
+        session,
+        user=user,
+        period=payload.period,
+        user_id=payload.user_id,
+        new_customer_target=payload.new_customer_target,
+        sales_target=payload.sales_target,
+        remark=payload.remark,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="upsert",
+        business_type="sales_target",
+        business_id=row.id,
+        after={
+            "period": payload.period,
+            "user_id": payload.user_id,
+            "new_customer_target": payload.new_customer_target,
+            "sales_target": payload.sales_target,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "target_id": row.id,
+            "period": row.period,
+            "user_id": row.user_id,
+            "new_customer_target": row.new_customer_target,
+            "sales_target": float(row.sales_target or 0),
+        },
+        "目标已保存",
+    )
+
+
+class SalesTargetUpsert(BaseModel):
+    period: str
+    user_id: int | None = None
+    new_customer_target: int = 0
+    sales_target: float = 0
+    remark: str | None = None
 
 
 @router.get("/dashboard/summary")
