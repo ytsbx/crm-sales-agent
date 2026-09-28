@@ -26,6 +26,7 @@ from app.modules.order import milestones as milestones_svc
 from app.modules.order.model import (
     ORDER_STATUS_LABEL,
     OrderMilestone,
+    OrderShipmentBatch,
     OrderStatusHistory,
     SalesOrder,
     SalesOrderItem,
@@ -36,6 +37,8 @@ from app.modules.order.schema import (
     OrderFromQuote,
     OrderStatusChange,
     OrderUpdate,
+    ShipmentBatchCreate,
+    ShipmentBatchShip,
 )
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.product.model import Sku
@@ -507,6 +510,17 @@ async def cancel_order(
                 plan.status = "cancelled"
 
     await svc.change_status(session, order, new_status="cancelled", operator_id=user.id)
+    # 未发货的批次随单取消；已发货批次是既成事实，保留原状
+    planned_batches = (
+        await session.execute(
+            select(OrderShipmentBatch).where(
+                OrderShipmentBatch.order_id == order.id,
+                OrderShipmentBatch.status == "planned",
+            )
+        )
+    ).scalars().all()
+    for batch in planned_batches:
+        batch.status = "cancelled"
     await write_audit(
         session,
         operator_id=user.id,
@@ -657,3 +671,103 @@ async def list_order_payments(
         )
     ).scalars().all()
     return ok([await payment_service.serialize_payment(session, row) for row in rows])
+
+
+# ---- 发货批次（§3.5/场景13：分批发货，首批不结束整单）----
+
+
+@router.get("/orders/{order_id}/shipments")
+async def list_shipments(
+    order_id: int,
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """批次与未发量：跟单看承诺/事实分开的数字。"""
+    order = await svc.get_visible_order(session, user, order_id)
+    return ok(await svc.order_shipments(session, order))
+
+
+@router.post("/orders/{order_id}/shipments")
+async def create_shipment(
+    order_id: int,
+    payload: ShipmentBatchCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    order = await svc.get_visible_order(session, user, order_id)
+    if order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再排发货批次")
+    batch = await svc.create_shipment_batch(session, order, payload=payload, user_id=user.id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="create_shipment_batch",
+        business_type="order",
+        business_id=order.id,
+        after={"batch_id": batch.id, "batch_no": batch.batch_no,
+               "items": [{"order_item_id": i.order_item_id, "planned_qty": str(i.planned_qty)} for i in payload.items]},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({"batch_id": batch.id, "batch_no": batch.batch_no}, "发货批次已排")
+
+
+@router.post("/orders/{order_id}/shipments/{batch_id}/ship")
+async def ship_batch(
+    order_id: int,
+    batch_id: int,
+    payload: ShipmentBatchShip,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """登记实发。只推进订单到"已发货"——整单完成由未发量闸门把关（场景13）。"""
+    order = await svc.get_visible_order(session, user, order_id)
+    batch = await session.get(OrderShipmentBatch, batch_id)
+    if batch is None:
+        raise AppError(ErrorCode.NOT_FOUND, "发货批次不存在", 404)
+    await svc.ship_shipment_batch(session, order, batch, payload=payload, operator_id=user.id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="ship_batch",
+        business_type="order",
+        business_id=order.id,
+        after={"batch_id": batch.id, "batch_no": batch.batch_no,
+               "actual_ship_date": str(batch.actual_ship_date),
+               "tracking_no": batch.tracking_no},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    overview = await svc.order_shipments(session, order)
+    return ok(
+        {"order_status": order.status, "summary": overview["summary"]},
+        f"第 {batch.batch_no} 批已登记发货",
+    )
+
+
+@router.delete("/orders/{order_id}/shipments/{batch_id}")
+async def delete_shipment(
+    order_id: int,
+    batch_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    order = await svc.get_visible_order(session, user, order_id)
+    batch = await session.get(OrderShipmentBatch, batch_id)
+    if batch is None or batch.order_id != order.id:
+        raise AppError(ErrorCode.NOT_FOUND, "发货批次不存在", 404)
+    await svc.cancel_shipment_batch(session, batch)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="cancel_shipment_batch",
+        business_type="order",
+        business_id=order.id,
+        after={"batch_id": batch.id, "batch_no": batch.batch_no},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "批次已取消")

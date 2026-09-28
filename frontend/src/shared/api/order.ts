@@ -281,3 +281,65 @@ export function updateOrderMilestone(
 export function replanOrderMilestones(orderId: number) {
   return api.post<{ changed: number }>(`/orders/${orderId}/milestones/replan`)
 }
+
+// ---- 发货批次（§3.5/场景13：分批发货，首批不结束整单）----
+
+export interface ShipmentBatchRow {
+  id: number
+  batch_no: number
+  status: string
+  status_label: string
+  planned_date?: string | null
+  actual_ship_date?: string | null
+  logistics_company?: string | null
+  tracking_no?: string | null
+  remark?: string | null
+  items: Array<{ order_item_id: number; sku: string | null; planned_qty: number; shipped_qty: number }>
+}
+
+export interface ShipmentOverview {
+  items: Array<{
+    order_item_id: number
+    sku: string
+    specification?: string | null
+    ordered: number
+    planned: number
+    shipped: number
+    remaining: number
+    unplanned: number
+  }>
+  batches: ShipmentBatchRow[]
+  summary: { ordered: number; planned: number; shipped: number; remaining: number; all_shipped: boolean }
+}
+
+export function listOrderShipments(orderId: number) {
+  return api.get<ShipmentOverview>(`/orders/${orderId}/shipments`)
+}
+
+export function createOrderShipment(
+  orderId: number,
+  payload: { planned_date?: string | null; remark?: string | null; items: Array<{ order_item_id: number; planned_qty: number }> },
+) {
+  return api.post<{ batch_id: number; batch_no: number }>(`/orders/${orderId}/shipments`, payload)
+}
+
+export function shipOrderShipment(
+  orderId: number,
+  batchId: number,
+  payload: {
+    actual_ship_date?: string | null
+    logistics_company?: string | null
+    tracking_no?: string | null
+    remark?: string | null
+    items?: Array<{ order_item_id: number; shipped_qty: number }> | null
+  },
+) {
+  return api.post<{ order_status: string; summary: ShipmentOverview['summary'] }>(
+    `/orders/${orderId}/shipments/${batchId}/ship`,
+    payload,
+  )
+}
+
+export function cancelOrderShipment(orderId: number, batchId: number) {
+  return api.delete<null>(`/orders/${orderId}/shipments/${batchId}`)
+}

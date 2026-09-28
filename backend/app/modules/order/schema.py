@@ -56,3 +56,31 @@ class OrderUpdate(BaseModel):
 class OrderStatusChange(BaseModel):
     status: str
     remark: str | None = None
+
+
+# ---- 发货批次（文档 §3.5 / 场景13：分批发货，首批不结束整单）----
+
+class ShipmentBatchItemInput(BaseModel):
+    order_item_id: int
+    planned_qty: Decimal = Field(gt=0)
+
+
+class ShipmentBatchCreate(BaseModel):
+    planned_date: date | None = None
+    remark: str | None = None
+    items: list[ShipmentBatchItemInput] = Field(min_length=1)
+
+
+class ShipmentShipItem(BaseModel):
+    order_item_id: int
+    shipped_qty: Decimal = Field(ge=0)
+
+
+class ShipmentBatchShip(BaseModel):
+    """登记实发。items 缺省 = 本批计划量全发；给出时逐明细覆盖。"""
+
+    actual_ship_date: date | None = None
+    logistics_company: str | None = None
+    tracking_no: str | None = None
+    remark: str | None = None
+    items: list[ShipmentShipItem] | None = None

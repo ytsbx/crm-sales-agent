@@ -13,6 +13,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, TimestampMixin
 
+SHIPMENT_STATUS_LABEL = {
+    "planned": "待发货",
+    "shipped": "已发货",
+    "cancelled": "已取消",
+}
+
 ORDER_STATUS_LABEL = {
     "pending": "待生产",
     "in_production": "生产中",
@@ -60,6 +66,45 @@ class SalesOrderItem(Base, IdMixin):
     unit_price: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class OrderShipmentBatch(Base, IdMixin):
+    """发货批次（文档 §3.5/场景13）：分批发货的计划与事实。
+
+    计划（planned_date/各明细 planned_qty）与实际（actual_ship_date/shipped_qty、
+    物流单号）分开记——跟单的承诺和事实不能混在一个字段里。
+    首批发货只推进订单到"已发货"；整单 completed 的闸门在 change_status。
+    """
+
+    __tablename__ = "order_shipment_batches"
+    __table_args__ = (Index("ix_order_shipment_batches_order", "order_id"),)
+
+    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
+    batch_no: Mapped[int] = mapped_column(BigInteger, default=1)  # 第几批，从 1 起
+    status: Mapped[str] = mapped_column(String(16), default="planned")  # planned/shipped/cancelled
+    planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    actual_ship_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    logistics_company: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tracking_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OrderShipmentBatchItem(Base, IdMixin):
+    """批次明细：本批对哪个订单明细发多少。剩余量 = 订购量 − 各已发批次合计。"""
+
+    __tablename__ = "order_shipment_batch_items"
+    __table_args__ = (
+        Index("ix_order_shipment_batch_items_batch", "batch_id"),
+        UniqueConstraint("batch_id", "order_item_id", name="uq_shipment_batch_item"),
+    )
+
+    batch_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("order_shipment_batches.id"))
+    order_item_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_order_items.id"))
+    sku_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    planned_qty: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=0)
+    shipped_qty: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=0)
 
 
 class OrderStatusHistory(Base, IdMixin):

@@ -107,6 +107,8 @@ async def clean(verbose=False):
         ("应收", "delete from receivable_plans"),
         ("订单状态历史", "delete from order_status_history"),
         ("跟单里程碑", "delete from order_milestones"),
+        ("发货批次明细", "delete from order_shipment_batch_items"),
+        ("发货批次", "delete from order_shipment_batches"),
         ("订单明细", "delete from sales_order_items"),
         ("订单", "delete from sales_orders"),
         ("通知", "delete from notifications where business_type = 'order'"),
@@ -369,6 +371,48 @@ def main():
     status, res = call('GET', '/receivables', token=lisi)
     check('主管列表可读', res.get('code'), 0)
     print(f'  （主管看到 {res["data"]["total"]} 条 —— 部门范围，非 0 也正常）')
+
+    print()
+    print('=== 12. 发货批次（§3.5/场景13：分批发货，首批不结束整单）===')
+    status, res = call(
+        'POST', '/orders', token=admin,
+        body={'customer_id': 1, 'items': [{'sku_id': skus[0], 'quantity': 10, 'unit_price': 50}]},
+    )
+    check('批次用例建单', res.get('code'), 0)
+    b_order_id = res['data']['order_id']
+    status, res = call('GET', f'/orders/{b_order_id}/items', token=admin)
+    b_item_id = res['data'][0]['id']
+
+    # 第 1 批：6 件
+    status, res = call('POST', f'/orders/{b_order_id}/shipments', token=admin,
+                       body={'items': [{'order_item_id': b_item_id, 'planned_qty': 6}]})
+    check('排首批', res.get('code'), 0)
+    batch1 = res['data']['batch_id']
+    # 超计划量被拒：再排 5 件（未计划量只剩 4）
+    status, res = call('POST', f'/orders/{b_order_id}/shipments', token=admin,
+                       body={'items': [{'order_item_id': b_item_id, 'planned_qty': 5}]})
+    check('计划量超订购量被拒', res.get('code'), 40001)
+    status, res = call('POST', f'/orders/{b_order_id}/shipments/{batch1}/ship', token=admin,
+                       body={'logistics_company': '顺丰', 'tracking_no': f'SF{RUN}1'})
+    check('首批登记发货', res.get('code'), 0)
+    check('订单推进到 shipped', res['data']['order_status'], 'shipped')
+    check('已发 6 / 未发 4', res['data']['summary']['shipped'], 6.0)
+    check('未发量 4', res['data']['summary']['remaining'], 4.0)
+    # 首批不结束整单（场景13 核心）
+    status, res = call('POST', f'/orders/{b_order_id}/status', token=admin,
+                       body={'status': 'completed'})
+    check('未发完禁止整单完成', res.get('code'), 40002)
+    # 第 2 批：剩余 4 件，发完后闸门放行
+    status, res = call('POST', f'/orders/{b_order_id}/shipments', token=admin,
+                       body={'items': [{'order_item_id': b_item_id, 'planned_qty': 4}]})
+    batch2 = res['data']['batch_id']
+    call('POST', f'/orders/{b_order_id}/shipments/{batch2}/ship', token=admin, body={})
+    status, res = call('GET', f'/orders/{b_order_id}/shipments', token=admin)
+    check('全发完未发量 0', res['data']['summary']['remaining'], 0.0)
+    check('all_shipped=True', res['data']['summary']['all_shipped'], True)
+    status, res = call('POST', f'/orders/{b_order_id}/status', token=admin,
+                       body={'status': 'completed'})
+    check('发完后整单可完成', res.get('code'), 0)
 
     print()
     print(f'ORDER_IDS={[order_id, zs_order_id]} PLAN_IDS={[plan_id, plan2_id, zs_plan_id]}')

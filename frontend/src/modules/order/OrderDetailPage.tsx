@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 import type { TagTone } from '../../shared/types'
 
 import {
+  cancelOrderShipment,
   changeOrderStatus,
   confirmPayment,
+  createOrderShipment,
   createPayment,
   generateReceivables,
   getOrder,
@@ -14,11 +16,13 @@ import {
   listOrderMilestones,
   listOrderPayments,
   listOrderReceivables,
+  listOrderShipments,
   listOrderStatusHistory,
   orderFinanceSummary,
   refreshStatus,
   replanOrderMilestones,
   repurchase,
+  shipOrderShipment,
   syncErp,
   updateOrderMilestone,
   type OrderItem,
@@ -26,6 +30,7 @@ import {
   type OrderStatusRow,
   type Payment,
   type Receivable,
+  type ShipmentBatchRow,
 } from '../../shared/api/order'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
@@ -37,6 +42,7 @@ import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent
 const TABS = [
   { tab: '订单明细', itemKey: 'items' },
   { tab: '跟单节点', itemKey: 'milestones' },
+  { tab: '发货批次', itemKey: 'shipments' },
   { tab: '履约状态', itemKey: 'status' },
   { tab: '应收计划', itemKey: 'receivables' },
   { tab: '回款记录', itemKey: 'payments' },
@@ -133,6 +139,12 @@ export default function OrderDetailPage() {
     queryFn: () => orderFinanceSummary(orderId),
     enabled: Number.isFinite(orderId),
   })
+  // 发货批次（§3.5/场景13）：计划与实发分开，未发量决定整单能否完成
+  const shipmentsQuery = useQuery({
+    queryKey: ['order-shipments', orderId],
+    queryFn: () => listOrderShipments(orderId),
+    enabled: Number.isFinite(orderId) && activeKey === 'shipments',
+  })
 
   const milestonesRefresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['order-milestones', orderId] })
@@ -228,6 +240,65 @@ export default function OrderDetailPage() {
     onSuccess: () => {
       Toast.success('回款已确认')
       refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // ---- 发货批次（§3.5/场景13）----
+  const [createShipmentVisible, setCreateShipmentVisible] = useState(false)
+  const [plannedQtys, setPlannedQtys] = useState<Record<number, string>>({})
+  const [shipTarget, setShipTarget] = useState<ShipmentBatchRow | null>(null)
+  const [shipForm, setShipForm] = useState<{ date: Date | undefined; company: string; tracking: string }>({
+    date: new Date(),
+    company: '',
+    tracking: '',
+  })
+
+  const shipmentsRefresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['order-shipments', orderId] })
+    void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
+    void queryClient.invalidateQueries({ queryKey: ['order-status', orderId] })
+  }
+  const createShipmentMutation = useMutation({
+    mutationFn: () =>
+      createOrderShipment(orderId, {
+        items: Object.entries(plannedQtys)
+          .filter(([, qty]) => Number(qty) > 0)
+          .map(([orderItemId, qty]) => ({ order_item_id: Number(orderItemId), planned_qty: Number(qty) })),
+      }),
+    onSuccess: () => {
+      Toast.success('发货批次已排')
+      setCreateShipmentVisible(false)
+      setPlannedQtys({})
+      shipmentsRefresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const shipShipmentMutation = useMutation({
+    mutationFn: (batchId: number) =>
+      shipOrderShipment(orderId, batchId, {
+        actual_ship_date: shipForm.date ? shipForm.date.toISOString().slice(0, 10) : null,
+        logistics_company: shipForm.company || null,
+        tracking_no: shipForm.tracking || null,
+        // 缺省按计划量全发；后端校验累计不超订购量
+        items: null,
+      }),
+    onSuccess: (result) => {
+      Toast.success(
+        result.summary.all_shipped
+          ? '已全部发完，整单可以标记完成了'
+          : `已登记发货，剩余未发 ${result.summary.remaining}`,
+      )
+      setShipTarget(null)
+      shipmentsRefresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const cancelShipmentMutation = useMutation({
+    mutationFn: (batchId: number) => cancelOrderShipment(orderId, batchId),
+    onSuccess: () => {
+      Toast.success('批次已取消')
+      shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -577,8 +648,146 @@ export default function OrderDetailPage() {
               />
             </>
           )}
+
+          {activeKey === 'shipments' && (
+            <>
+              <div className="toolbar" style={{ marginBottom: 10 }}>
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  订购 {shipmentsQuery.data?.summary.ordered ?? 0} ｜ 已发 {shipmentsQuery.data?.summary.shipped ?? 0} ｜
+                  {' '}未发 <strong>{shipmentsQuery.data?.summary.remaining ?? 0}</strong>
+                  ——首批/分批发货只推进到「已发货」，全部发完才能整单完成
+                </span>
+                <div style={{ flex: 1 }} />
+                {can('order:manage') && (
+                  <Button size="small" theme="solid" onClick={() => setCreateShipmentVisible(true)}>
+                    排发货批次
+                  </Button>
+                )}
+              </div>
+              <Table<ShipmentBatchRow>
+                columns={[
+                  { title: '批次', dataIndex: 'batch_no', width: 80, render: (v: number) => `第 ${v} 批` },
+                  {
+                    title: '状态',
+                    dataIndex: 'status_label',
+                    width: 100,
+                    render: (v: string, record: ShipmentBatchRow) => (
+                      <Tag color={record.status === 'shipped' ? 'green' : record.status === 'cancelled' ? 'grey' : 'orange'}>{v}</Tag>
+                    ),
+                  },
+                  { title: '计划发货', dataIndex: 'planned_date', width: 120, render: (v: string | null) => v ?? '-' },
+                  { title: '实际发货', dataIndex: 'actual_ship_date', width: 120, render: (v: string | null) => v ?? '-' },
+                  {
+                    title: '物流',
+                    width: 170,
+                    render: (_: unknown, record: ShipmentBatchRow) =>
+                      record.tracking_no ? `${record.logistics_company ?? ''} ${record.tracking_no}` : '-',
+                  },
+                  {
+                    title: '本批明细',
+                    render: (_: unknown, record: ShipmentBatchRow) =>
+                      record.items.map((item) => `${item.sku ?? item.order_item_id} ×${item.shipped_qty || item.planned_qty}`).join('；') || '-',
+                  },
+                  ...(can('order:manage')
+                    ? [
+                        {
+                          title: '操作',
+                          width: 130,
+                          render: (_: unknown, record: ShipmentBatchRow) =>
+                            record.status === 'planned' ? (
+                              <span style={{ display: 'inline-flex', gap: 12 }}>
+                                <a onClick={() => setShipTarget(record)}>登记发货</a>
+                                <Popconfirm
+                                  title="取消该批次？"
+                                  onConfirm={() => cancelShipmentMutation.mutate(record.id)}
+                                >
+                                  <a style={{ color: 'var(--crm-danger, #d45)' }}>取消</a>
+                                </Popconfirm>
+                              </span>
+                            ) : (
+                              '-'
+                            ),
+                        },
+                      ]
+                    : []),
+                ]}
+                dataSource={shipmentsQuery.data?.batches ?? []}
+                loading={shipmentsQuery.isLoading}
+                rowKey="id"
+                pagination={false}
+                empty="还没有发货批次——点「排发货批次」从剩余未发量里排"
+              />
+            </>
+          )}
         </div>
       </SectionCard>
+
+      <Modal
+        title="排发货批次"
+        visible={createShipmentVisible}
+        onCancel={() => setCreateShipmentVisible(false)}
+        onOk={() => createShipmentMutation.mutate()}
+        confirmLoading={createShipmentMutation.isPending}
+        okText="保存批次"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            每行填本批计划发货数量（可留空），不能超过该行的未计划量
+          </div>
+          {(shipmentsQuery.data?.items ?? []).map((item) => (
+            <div key={item.order_item_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ flex: 1 }}>
+                {item.sku}（订购 {item.ordered}，未计划 {item.unplanned}）
+              </span>
+              <Input
+                style={{ width: 120 }}
+                placeholder="本批数量"
+                value={plannedQtys[item.order_item_id] ?? ''}
+                onChange={(value) => setPlannedQtys({ ...plannedQtys, [item.order_item_id]: value })}
+              />
+            </div>
+          ))}
+        </div>
+      </Modal>
+
+      <Modal
+        title={`第 ${shipTarget?.batch_no ?? ''} 批登记发货`}
+        visible={Boolean(shipTarget)}
+        onCancel={() => setShipTarget(null)}
+        onOk={() => {
+          if (shipTarget) shipShipmentMutation.mutate(shipTarget.id)
+        }}
+        confirmLoading={shipShipmentMutation.isPending}
+        okText="确认发货"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            默认按计划量全发；批次发货后整单推进到「已发货」，全部发完才能标记完成
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>实际发货日期</div>
+            <DatePicker
+              type="date"
+              format="yyyy-MM-dd"
+              style={{ width: '100%' }}
+              value={shipForm.date}
+              onChange={(_, dateStr) =>
+                setShipForm({ ...shipForm, date: dateStr ? new Date(dateStr as string) : undefined })
+              }
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>承运商</div>
+            <Input value={shipForm.company} onChange={(v) => setShipForm({ ...shipForm, company: v })} />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>运单号</div>
+            <Input value={shipForm.tracking} onChange={(v) => setShipForm({ ...shipForm, tracking: v })} />
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         title={`登记里程碑：${milestoneEdit?.label ?? ''}`}

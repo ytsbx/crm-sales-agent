@@ -10,7 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Customer
 from app.modules.integration.model import ExternalMapping
-from app.modules.order.model import ORDER_STATUS_LABEL, OrderStatusHistory, SalesOrder, SalesOrderItem
+from app.modules.order.model import (
+    ORDER_STATUS_LABEL,
+    SHIPMENT_STATUS_LABEL,
+    OrderShipmentBatch,
+    OrderShipmentBatchItem,
+    OrderStatusHistory,
+    SalesOrder,
+    SalesOrderItem,
+)
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.quote.model import QuoteItem, QuoteVersion
 from app.modules.user.model import User
@@ -355,6 +363,21 @@ async def change_status(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已经是该状态")
     if order.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再变更状态")
+    if new_status == "completed":
+        # 发货批次闸门（§3.5/场景13）：建了批次的订单，未发完不许整单完成——
+        # "首批发货不能把整单标为完成"。没建批次的订单沿用老行为（历史口径）。
+        overview = await order_shipments(session, order)
+        if overview["batches"]:
+            short = [row for row in overview["items"] if Decimal(str(row["remaining"])) > 0]
+            if short:
+                detail = "；".join(
+                    f"{row['sku']} 还差 {row['remaining']}" for row in short[:5]
+                )
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    f"整单还有未发量，不能标记完成（{detail}）——"
+                    "请先登记发货批次或调整批次计划",
+                )
     session.add(
         OrderStatusHistory(
             order_id=order.id,
@@ -369,6 +392,259 @@ async def change_status(
     order.status = new_status
     if new_status == "cancelled":
         order.cancelled_at = datetime.now(UTC)
+
+
+# ---------------------------------------------------------------- 发货批次（§3.5/场景13）
+
+
+def _d(value) -> Decimal:
+    return Decimal(str(value or 0))
+
+
+def _sku_label(item: SalesOrderItem) -> str:
+    return item.sku_snapshot or f"SKU#{item.sku_id}"
+
+
+async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
+    """批次列表 + 按订单明细的计划/实发/未发量（场景13 的"未发量均正确"）。"""
+    items = (
+        await session.execute(
+            select(SalesOrderItem).where(SalesOrderItem.order_id == order.id)
+        )
+    ).scalars().all()
+    batches = (
+        await session.execute(
+            select(OrderShipmentBatch)
+            .where(
+                OrderShipmentBatch.order_id == order.id,
+                OrderShipmentBatch.status != "cancelled",
+            )
+            .order_by(OrderShipmentBatch.batch_no)
+        )
+    ).scalars().all()
+    batch_ids = [batch.id for batch in batches]
+    batch_items = (
+        await session.execute(
+            select(OrderShipmentBatchItem).where(
+                OrderShipmentBatchItem.batch_id.in_(batch_ids)
+            )
+        )
+    ).scalars().all() if batch_ids else []
+
+    # 聚合：ordered 固定；planned/shipped 跨批次累加（已取消批次不计）
+    agg: dict[int, dict] = {
+        item.id: {
+            "order_item_id": item.id,
+            "sku": _sku_label(item),
+            "specification": item.specification,
+            "ordered": _d(item.quantity),
+            "planned": Decimal(0),
+            "shipped": Decimal(0),
+        }
+        for item in items
+    }
+    batch_status_by_id = {batch.id: batch.status for batch in batches}
+    for row in batch_items:
+        entry = agg.get(row.order_item_id)
+        if entry is None:
+            continue
+        entry["planned"] += _d(row.planned_qty)
+        if batch_status_by_id.get(row.batch_id) == "shipped":
+            entry["shipped"] += _d(row.shipped_qty)
+    for entry in agg.values():
+        entry["ordered"] = _f(entry["ordered"])
+        entry["planned"] = _f(entry["planned"])
+        entry["shipped"] = _f(entry["shipped"])
+        entry["remaining"] = _f(max(_d(entry["ordered"]) - _d(entry["shipped"]), Decimal(0)))
+        entry["unplanned"] = _f(max(_d(entry["ordered"]) - _d(entry["planned"]), Decimal(0)))
+
+    batch_by_id = {batch.id: batch for batch in batches}
+    serialized_batches = []
+    for batch in batches:
+        rows = [
+            {
+                "order_item_id": row.order_item_id,
+                "sku": (agg[row.order_item_id]["sku"] if row.order_item_id in agg else row.sku_snapshot),
+                "planned_qty": _f(row.planned_qty),
+                "shipped_qty": _f(row.shipped_qty),
+            }
+            for row in batch_items
+            if row.batch_id == batch.id
+        ]
+        serialized_batches.append({
+            "id": batch.id,
+            "batch_no": batch.batch_no,
+            "status": batch.status,
+            "status_label": SHIPMENT_STATUS_LABEL.get(batch.status, batch.status),
+            "planned_date": batch.planned_date,
+            "actual_ship_date": batch.actual_ship_date,
+            "logistics_company": batch.logistics_company,
+            "tracking_no": batch.tracking_no,
+            "remark": batch.remark,
+            "items": rows,
+        })
+
+    return {
+        "items": list(agg.values()),
+        "batches": serialized_batches,
+        "batch_by_id": batch_by_id,
+        "summary": {
+            "ordered": _f(sum(_d(v["ordered"]) for v in agg.values())),
+            "planned": _f(sum(_d(v["planned"]) for v in agg.values())),
+            "shipped": _f(sum(_d(v["shipped"]) for v in agg.values())),
+            "remaining": _f(sum(_d(v["remaining"]) for v in agg.values())),
+            "all_shipped": bool(agg) and all(
+                _d(v["ordered"]) - _d(v["shipped"]) <= 0 for v in agg.values()
+            ),
+        },
+    }
+
+
+async def create_shipment_batch(
+    session: AsyncSession,
+    order: SalesOrder,
+    *,
+    payload,  # ShipmentBatchCreate
+    user_id: int,
+) -> OrderShipmentBatch:
+    """建批次。计划量不得超过该明细未计划量（订购 − 已计划），防重复排产。"""
+    items = {
+        item.id: item
+        for item in (
+            await session.execute(
+                select(SalesOrderItem).where(SalesOrderItem.order_id == order.id)
+            )
+        ).scalars().all()
+    }
+    overview = await order_shipments(session, order)
+    unplanned = {row["order_item_id"]: _d(row["unplanned"]) for row in overview["items"]}
+
+    for row in payload.items:
+        if row.order_item_id not in items:
+            raise AppError(ErrorCode.NOT_FOUND, f"订单明细 {row.order_item_id} 不存在", 404)
+        if _d(row.planned_qty) > unplanned.get(row.order_item_id, Decimal(0)):
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"{_sku_label(items[row.order_item_id])}：计划发货 "
+                f"{row.planned_qty} 超过未计划量 "
+                f"{unplanned.get(row.order_item_id, Decimal(0))}",
+            )
+
+    batch_no = (
+        max((batch.batch_no for batch in overview["batch_by_id"].values()), default=0) + 1
+    )
+    batch = OrderShipmentBatch(
+        order_id=order.id,
+        batch_no=batch_no,
+        planned_date=payload.planned_date,
+        remark=payload.remark,
+        created_by=user_id,
+        created_at=datetime.now(UTC),
+    )
+    session.add(batch)
+    await session.flush()
+    for row in payload.items:
+        item = items[row.order_item_id]
+        session.add(
+            OrderShipmentBatchItem(
+                batch_id=batch.id,
+                order_item_id=row.order_item_id,
+                sku_snapshot=_sku_label(item),
+                planned_qty=_d(row.planned_qty),
+                shipped_qty=Decimal(0),
+            )
+        )
+    await session.flush()
+    return batch
+
+
+async def ship_shipment_batch(
+    session: AsyncSession,
+    order: SalesOrder,
+    batch: OrderShipmentBatch,
+    *,
+    payload,  # ShipmentBatchShip
+    operator_id: int | None,
+) -> None:
+    """登记实发：批次置 shipped、写实际日期与物流，推进订单状态到"已发货"。"""
+    if batch.order_id != order.id:
+        raise AppError(ErrorCode.NOT_FOUND, "批次不属于该订单", 404)
+    if batch.status == "shipped":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已登记发货")
+    if batch.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已取消")
+
+    batch_items = (
+        await session.execute(
+            select(OrderShipmentBatchItem).where(
+                OrderShipmentBatchItem.batch_id == batch.id
+            )
+        )
+    ).scalars().all()
+    if not batch_items:
+        raise AppError(ErrorCode.PARAM_ERROR, "批次没有明细，先补计划量")
+
+    overview = await order_shipments(session, order)
+    shipped_before = {
+        row["order_item_id"]: _d(row["shipped"]) for row in overview["items"]
+    }
+    ordered = {
+        row["order_item_id"]: _d(row["ordered"]) for row in overview["items"]
+    }
+    ship_inputs = (
+        {row.order_item_id: _d(row.shipped_qty) for row in payload.items}
+        if payload.items is not None
+        else None
+    )
+    for row in batch_items:
+        qty = (
+            ship_inputs.get(row.order_item_id, _d(row.planned_qty))
+            if ship_inputs is not None
+            else _d(row.planned_qty)
+        )
+        if qty < 0:
+            raise AppError(ErrorCode.PARAM_ERROR, "实发量不能为负")
+        total = shipped_before.get(row.order_item_id, Decimal(0)) + qty
+        if total > ordered.get(row.order_item_id, Decimal(0)):
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"{row.sku_snapshot or row.order_item_id}：累计实发 {total} "
+                f"超过订购量 {ordered.get(row.order_item_id, Decimal(0))}",
+            )
+        row.shipped_qty = qty
+
+    batch.status = "shipped"
+    batch.actual_ship_date = payload.actual_ship_date or datetime.now(UTC).date()
+    batch.logistics_company = payload.logistics_company
+    batch.tracking_no = payload.tracking_no
+    if payload.remark:
+        batch.remark = payload.remark
+    await session.flush()
+
+    # 首批/任一批实发只推进到"已发货"；completed 由 change_status 的未发量闸门把关
+    if order.status in ("pending", "in_production"):
+        await change_status(
+            session,
+            order,
+            new_status="shipped",
+            operator_id=operator_id,
+            source="WEB",
+            remark=f"第 {batch.batch_no} 批发货（{batch.tracking_no or '无单号'}）",
+        )
+
+    # §2.3 业务进展时钟：发货算客户活跃
+    from app.modules.customer import service as customer_service
+
+    await customer_service.touch_progress(session, order.customer_id)
+
+
+async def cancel_shipment_batch(
+    session: AsyncSession, batch: OrderShipmentBatch
+) -> None:
+    if batch.status == "shipped":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已发货的批次不能取消，请走退换流程")
+    batch.status = "cancelled"
+    await session.flush()
 
 
 async def record_external_order_id(
