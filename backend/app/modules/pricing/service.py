@@ -752,10 +752,13 @@ async def calculate_price(
     )
 
     # 绝对底价触发器：不算进 approval_required（它根本不是"需审批"，是"不可批"），
-    # 提交审批/核价权限检查会单独立拿这个标志做硬拒绝（D7）
+    # 提交审批/核价权限检查会单独立拿这个标志做硬拒绝（D7）。
+    # 外币但无汇率时整个口径是混的（上面已 warning"暂按人民币口径"），
+    # 此时拿美元数字硬比人民币底价会假阳性硬拒——宁可不判，也不误杀
     below_hard_floor = bool(
         hard_floor_price is not None
         and check_price is not None
+        and not (is_foreign and fx is None)
         and check_price < hard_floor_price - Decimal("0.0001")
     )
     if quoted_price is not None and below_hard_floor:

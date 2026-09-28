@@ -694,6 +694,14 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
     version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"))
 
 
+async def moq_warning(session: AsyncSession, sku_id: int, quantity: Decimal) -> str | None:
+    """MOQ 提示（方案 §4.1）：数量低于起订量给提示不拦截——拦截与否由业务拍板。"""
+    sku = await session.get(Sku, sku_id)
+    if sku is not None and sku.moq and quantity < sku.moq:
+        return f"SKU {sku.sku_code}：数量 {quantity} 低于起订量 {sku.moq}，请与生产确认能否接单"
+    return None
+
+
 async def version_items(session: AsyncSession, version_id: int) -> list[QuoteItem]:
     return list(
         (
@@ -832,6 +840,7 @@ async def submit_for_approval(
     applicant_id: int,
     user_roles: list[str],
     reason: str | None = None,
+    can_see_floor: bool = False,
 ) -> tuple[ApprovalInstance | None, bool]:
     """提交审批。若没有任何明细超出权限，则直接通过，不进审批流。
 
@@ -872,9 +881,13 @@ async def submit_for_approval(
             price_cny = (item.quoted_price * fx) if foreign else item.quoted_price
             floor_cny = item_cost * factor
             if price_cny < floor_cny - eps:
+                # 脱敏纪律：底价由成本推出（mode=cost 时就是成本本身），
+                # 只对价格管理员带数字，销售只看到"低于绝对底价"这一结论
                 hard_hits.append(
                     f"明细 {item.sku_code_snapshot}：折人民币 ¥{price_cny:.2f}"
-                    f" 低于绝对底价 ¥{floor_cny:.2f}"
+                    + (
+                        f" 低于绝对底价 ¥{floor_cny:.2f}" if can_see_floor else " 低于公司绝对底价"
+                    )
                 )
             weighted_floor_total += floor_cny * item.quantity
             total_qty += item.quantity
@@ -887,7 +900,10 @@ async def submit_for_approval(
                 if avg_price < avg_floor - eps:
                     hard_hits.append(
                         f"整单（优惠摊后加权均价 ¥{avg_price:.2f}）"
-                        f"低于加权绝对底价 ¥{avg_floor:.2f}"
+                        + (
+                            f"低于加权绝对底价 ¥{avg_floor:.2f}" if can_see_floor
+                            else "低于公司加权绝对底价"
+                        )
                     )
         if hard_hits:
             raise AppError(

@@ -523,6 +523,7 @@ async def calculate_price(
         "profit_rate": result["profit_rate"],
         "authorized_min_margin": result["authorized_min_margin"],
         "approval_required": result["approval_required"],
+        "below_hard_floor": result["approval_triggers"].get("below_hard_floor", False),
         "warnings": result["warnings"],
     }
     # A11：Agent 与普通界面同一套脱敏——成本/保护价/利润只给价格管理员
@@ -737,6 +738,7 @@ async def request_quote_approval(
         applicant_id=ctx.user.id,
         user_roles=ctx.user.roles,
         reason=reason,
+        can_see_floor=ctx.user.has("price:manage"),
     )
     await write_audit(
         ctx.session,

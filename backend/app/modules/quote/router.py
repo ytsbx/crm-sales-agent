@@ -744,6 +744,7 @@ async def set_items(
         await session.delete(item)
     await session.flush()
 
+    moq_warnings: list[str] = []
     for payload in items:
         item = await svc.build_item_snapshot(
             session,
@@ -759,6 +760,9 @@ async def set_items(
             role_codes=user.roles,
         )
         session.add(item)
+        hint = await svc.moq_warning(session, payload.sku_id, payload.quantity)
+        if hint:
+            moq_warnings.append(hint)
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(
@@ -771,7 +775,10 @@ async def set_items(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_version(version), "报价明细已保存")
+    message = "报价明细已保存"
+    if moq_warnings:
+        message += "；注意：" + "；".join(moq_warnings)
+    return ok(svc.serialize_version(version), message)
 
 
 @router.patch("/quote-items/{item_id}")
@@ -960,6 +967,8 @@ async def submit_approval(
         applicant_id=user.id,
         user_roles=user.roles,
         reason=payload.reason,
+        # 硬拒文案的底价数字只给价格管理员（底价=成本推算，销售可见即泄成本）
+        can_see_floor=user.has("price:manage"),
     )
     if required and instance is not None and instance.status == "pending":
         await notification_service.notify_approvers(
@@ -1282,7 +1291,8 @@ async def add_version_item(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_item(item), "明细已添加")
+    moq_hint = await svc.moq_warning(session, payload.sku_id, payload.quantity)
+    return ok(svc.serialize_item(item), "明细已添加" + (f"；注意：{moq_hint}" if moq_hint else ""))
 
 
 @router.get("/quote-versions/{version_id}/charges")

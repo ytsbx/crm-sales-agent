@@ -123,6 +123,11 @@ async def clean(verbose=False):
         ('用例报价版本', "delete from quote_versions where quote_id in "
                   "(select id from quotes where customer_id in (select id from customers where name like 'CHK%'))"),
         ('用例报价单', "delete from quotes where customer_id in (select id from customers where name like 'CHK%')"),
+        ('用例商机需求', "delete from opportunity_items where opportunity_id in "
+                  "(select id from opportunities where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('用例商机阶段历史', "delete from opportunity_stage_history where opportunity_id in "
+                  "(select id from opportunities where customer_id in (select id from customers where name like 'CHK%'))"),
+        ('用例商机', "delete from opportunities where customer_id in (select id from customers where name like 'CHK%')"),
         ('用例客户', f"delete from customers where name like 'CHK{RUN}%'"),
     ]
     async with SessionLocal() as s:
@@ -157,6 +162,20 @@ async def clean(verbose=False):
 async def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
+
+    # 自建夹具：不依赖演示数据的固定 id（其他套件会清演示商机/客户）
+    status, res = call('POST', '/customers', token=admin,
+                       body={'name': f'CHK{RUN}夹具客户', 'level': 'A'})
+    check('建夹具客户', res.get('code'), 0)
+    fixture_customer = res['data']['id']
+    status, res = call('GET', '/pricing/sku-options', token=admin)
+    fixture_sku = res['data'][0]['id']
+    status, res = call('POST', '/opportunities', token=admin,
+                       body={'customer_id': fixture_customer, 'title': f'CHK{RUN}夹具商机'})
+    check('建夹具商机', res.get('code'), 0)
+    fixture_opp = res['data']['id']
+    call('POST', f'/opportunities/{fixture_opp}/items', token=admin,
+         body={'sku_id': fixture_sku, 'quantity': 100, 'target_price': 1})
 
     print()
     print('=== 1. 会话 CRUD ===')
@@ -277,7 +296,7 @@ async def main():
 
     print()
     print('=== 7. 专用分析：客户摘要 / 商机分析 ===')
-    status, res = call('POST', '/agent/customer-summary', token=admin, body={'customer_id': 1})
+    status, res = call('POST', '/agent/customer-summary', token=admin, body={'customer_id': fixture_customer})
     check('客户摘要', res.get('code'), 0)
     check_true('带客户名', bool(res['data']['customer']['name']), '')
     check_true('带 counts', 'counts' in res['data'], '')
@@ -288,7 +307,7 @@ async def main():
     check('客户不存在', res.get('code'), 40401)
 
     status, res = call('POST', '/agent/opportunity-analysis', token=admin,
-                       body={'opportunity_id': 1})
+                       body={'opportunity_id': fixture_opp})
     check('商机分析', res.get('code'), 0)
     check_true('带阶段停留天数', 'days_in_stage' in res['data'], str(res['data'].get('days_in_stage')))
     check_true('带等级标签', bool(res['data']['level_label']), res['data']['level_label'])
@@ -315,13 +334,13 @@ async def main():
     check_true('带 insights', len(res['data']['insights']) >= 1, str(res['data']['insights'][:1]))
 
     status, res = call('POST', '/agent/quote-draft', token=admin,
-                       body={'opportunity_id': 1})
+                       body={'opportunity_id': fixture_opp})
     check('报价草稿建议', res.get('code'), 0)
     check_true('明确说明未落库', '未落库' in res['data']['note'], res['data']['note'][:60])
     check_true('带明细行', 'items' in res['data'], str(res['data']['item_count']))
 
     status, res = call('POST', '/agent/followup-suggestion', token=admin,
-                       body={'customer_id': 1})
+                       body={'customer_id': fixture_customer})
     check('跟进建议', res.get('code'), 0)
     check_true('有建议', len(res['data']['suggestions']) >= 1, str(res['data']['suggestions'][:1]))
     check_true('每条建议带理由',
@@ -331,7 +350,7 @@ async def main():
     check('既不给客户也不给线索被拒', res.get('code'), 40003)
 
     status, res = call('POST', '/agent/product-recommendation', token=admin,
-                       body={'customer_id': 1})
+                       body={'customer_id': fixture_customer})
     check('产品推荐', res.get('code'), 0)
     check_true('返回 recommendations 列表',
                isinstance(res['data']['recommendations'], list), '')
