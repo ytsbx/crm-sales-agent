@@ -199,6 +199,14 @@ async def dispatch_pending(session: AsyncSession, *, limit: int = 50) -> dict:
 
         client = get_client()
         ready = bool(app_settings.wecom_agent_id and app_settings.wecom_contact_ready)
+        if app_settings.wecom_push_off:
+            # 推送总闸（WECOM_PUSH_OFF=1）：开发/回归期间一条真实消息都不发，
+            # 通知行标 skipped 留痕——"没发"和"发失败"依然分开
+            for row in rows:
+                row.wecom_status = "skipped"
+                row.wecom_error = "推送已临时关闭（WECOM_PUSH_OFF）"
+            await own.commit()
+            return {"attempted": len(rows), "sent": 0, "skipped": len(rows), "failed": 0}
         users = {
             user.id: user
             for user in (

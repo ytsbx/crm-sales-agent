@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     wecom_api_base: str = "https://qyapi.weixin.qq.com"
     # 单次同步最多拉多少页，防止配错时把对方接口打爆
     wecom_sync_max_pages: int = 50
+    # 企微推送总闸：置 1/true 后 dispatch_pending 把所有待投递通知标 skipped，
+    # 真实消息一条不发——开发/跑回归时用，避免测试数据骚扰真实用户
+    wecom_push_off: bool = False
 
     # ---- ERP / MES（API §28 / 05-TECH §15）--------------------------------
     # 与企微同样的原则：留空即"未配置"，推送接口明确报 50203，
