@@ -114,7 +114,15 @@ export default function AppLayout() {
         ))}
 
         <div style={{ marginTop: 'auto', padding: '16px 18px', fontSize: 11, color: 'var(--crm-text-3)' }}>
-          Semi Design 风格 · v1.1
+          {/* 移动端顶栏收起退出链接，登出入口放这里（桌面仍走顶栏） */}
+          <a
+            className="sider-logout"
+            onClick={handleLogout}
+            style={{ display: 'none', fontSize: 13, color: 'var(--crm-text-2)', cursor: 'pointer', marginBottom: 8 }}
+          >
+            退出登录
+          </a>
+          <div>Semi Design 风格 · v1.1</div>
         </div>
       </aside>
 
@@ -144,7 +152,7 @@ export default function AppLayout() {
                 {(user?.roles ?? []).map((role) => ROLE_LABEL[role] ?? role).join(' / ') || '无角色'}
               </div>
             </div>
-            <a onClick={handleLogout} style={{ fontSize: 12, color: 'var(--crm-primary)', cursor: 'pointer' }}>
+            <a className="header-logout" onClick={handleLogout} style={{ fontSize: 12, color: 'var(--crm-primary)', cursor: 'pointer' }}>
               退出
             </a>
           </div>

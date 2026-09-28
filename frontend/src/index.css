@@ -611,9 +611,7 @@ a {
   .app-header {
     padding: 0 12px;
     gap: 8px;
-  }
-  .header-user > div:last-child {
-    display: none;
+    overflow: hidden; /* 顶栏总宽绝不超屏：宁可裁切也不互相叠压 */
   }
 
   /* 内容区：收紧留白 */
@@ -658,9 +656,13 @@ a {
     scrollbar-width: none;
   }
   .global-search {
-    flex: 1 1 auto;
+    width: auto; /* 覆盖基础的 width:420px——它就是顶栏溢出的元凶 */
+    flex: 1 1 120px;
     min-width: 0;
-    max-width: 170px;
+    max-width: 150px;
+  }
+  .global-search span {
+    display: none; /* Ctrl+K 对触屏无意义 */
   }
   .global-search .semi-input-wrapper {
     width: 100%;
@@ -705,5 +707,23 @@ a {
   .copilot-trigger {
     white-space: nowrap;
     padding: 6px 10px;
+  }
+}
+
+/* 顶栏退出链接：桌面显示；手机收进抽屉底部（顶栏宽度预算不够） */
+@media (max-width: 768px) {
+  .header-logout {
+    display: none;
+  }
+  .sider-logout {
+    display: block !important;
+  }
+  .copilot-trigger {
+    padding: 0 8px;
+    gap: 4px;
+  }
+  .header-user {
+    padding-left: 10px;
+    gap: 6px;
   }
 }
