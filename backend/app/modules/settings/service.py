@@ -19,6 +19,7 @@ from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.quote.model import Quote, QuoteVersion
+from app.modules.sample.model import SampleRequest
 from app.modules.settings.model import PublicPoolRule, TaskRule
 from app.modules.task.model import Task
 
@@ -43,6 +44,8 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     # 后续 A 步（价格规则/客户特殊价上的 hard_floor_price 覆盖列）落库后，
     # 列有值时覆盖这里的比例判定，无值时仍按本配置算——两套机制叠加而非二选一。
     "hard_floor": {"mode": "off", "markup_ratio": 0.0},
+    # 导出闸门（§11.2/场景19）：单次导出条数上限，超过需缩小筛选范围
+    "export": {"limit": 5000},
     # 物流试算：体积重系数（每立方米折多少公斤）。
     # **默认 0 = 不启用体积重，计费重只取实际重量**。
     # 为什么不给默认值：这个系数强依赖货物形态。纸箱类轻抛货通用 167（≈6000cm³/kg），
@@ -140,17 +143,79 @@ async def get_text(session: AsyncSession, key: str, field: str = "text", fallbac
     return str(raw) if raw not in (None, "") else fallback
 
 
+def _last_active_at(customer: Customer) -> datetime | None:
+    """活跃时钟 = max(最近有效联系, 最近业务进展)，都没有退回建档时间。
+
+    文档 §11.2：冷落/回收若只看手工跟进时间，"正在履约但没点记录跟进"
+    的客户会被误判。业务进展（报价/打样/下单/回款）刷新的
+    last_progress_at 同样算活跃。
+    """
+    candidates = [
+        value
+        for value in (customer.last_followup_at, customer.last_progress_at)
+        if value is not None
+    ]
+    latest = max(candidates) if candidates else None
+    return latest or customer.created_at
+
+
+async def _protected_customer_ids(session: AsyncSession) -> set[int]:
+    """履约保护名单（文档 §11.2/场景21）：这些客户暂不回收。
+
+    - 有效报价：未删除且仍在有效期内
+    - 在途订单：未完成、未取消
+    - 在途打样：未被拒绝（签收≠接受，也不算结束）
+    - 未结应收：未收完且订单未取消
+    """
+    today = datetime.now(UTC).date()
+    protected: set[int] = set()
+    rows = await session.execute(
+        select(Quote.customer_id).where(
+            Quote.deleted_at.is_(None),
+            Quote.valid_until.is_not(None),
+            Quote.valid_until >= today,
+        )
+    )
+    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
+    rows = await session.execute(
+        select(SalesOrder.customer_id).where(
+            SalesOrder.status.in_(("pending", "in_production", "shipped", "delivered"))
+        )
+    )
+    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
+    rows = await session.execute(
+        select(SampleRequest.customer_id).where(SampleRequest.status != "rejected")
+    )
+    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
+    rows = await session.execute(
+        select(SalesOrder.customer_id)
+        .join(ReceivablePlan, ReceivablePlan.order_id == SalesOrder.id)
+        .where(
+            ReceivablePlan.status.in_(("pending", "partial", "overdue")),
+            SalesOrder.status != "cancelled",
+        )
+    )
+    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
+    return protected
+
+
 async def run_public_pool_recycle(
     session: AsyncSession, operator_id: int | None, source: str = "WEB"
 ) -> dict:
-    """按规则把长期没跟进的客户释放回公海。"""
+    """按规则把长期没活跃的客户释放回公海。
+
+    活跃 = max(最近有效联系, 最近业务进展)；有效报价/在途订单/在途打样/
+    未结应收的客户先按政策保护（§11.2），保护数量随执行结果一并返回。
+    """
     rules = (
         await session.execute(
             select(PublicPoolRule).where(PublicPoolRule.enabled.is_(True))
         )
     ).scalars().all()
     released: list[dict] = []
+    protected_skipped: list[dict] = []
     now = datetime.now(UTC)
+    protected_ids = await _protected_customer_ids(session)
 
     for rule in rules:
         cutoff = now - timedelta(days=rule.days)
@@ -162,12 +227,19 @@ async def run_public_pool_recycle(
         )
         rows = (await session.execute(stmt)).scalars().all()
         for customer in rows:
-            last = customer.last_followup_at or customer.created_at
+            last = _last_active_at(customer)
             if last is None:
                 continue
             if last.tzinfo is None:
                 last = last.replace(tzinfo=UTC)
             if last >= cutoff:
+                continue
+            if customer.id in protected_ids:
+                # 场景21：超期但在履约中（有效报价/在途订单/打样/应收），
+                # 按政策豁免本轮回收，记录下来让执行结果可解释
+                protected_skipped.append(
+                    {"customer_id": customer.id, "name": customer.name, "level": rule.level}
+                )
                 continue
             session.add(
                 CustomerOwnerHistory(
@@ -193,10 +265,20 @@ async def run_public_pool_recycle(
         source=source,
         business_type="public_pool_rule",
         business_id=None,
-        after={"released_count": len(released), "customers": released},
+        after={
+            "released_count": len(released),
+            "customers": released,
+            "protected_count": len(protected_skipped),
+            "protected": protected_skipped[:100],
+        },
     )
     await session.commit()
-    return {"released_count": len(released), "customers": released}
+    return {
+        "released_count": len(released),
+        "customers": released,
+        "protected_count": len(protected_skipped),
+        "protected": protected_skipped[:100],
+    }
 
 
 async def _has_open_task(session: AsyncSession, rule_id: int, **filters) -> bool:
@@ -274,7 +356,8 @@ async def run_auto_tasks(
                 )
             ).scalars().all()
             for customer in rows:
-                last = customer.last_followup_at or customer.created_at
+                # 同一活跃时钟口径：业务进展（报价/打样/下单/回款）也算"有联系"
+                last = _last_active_at(customer)
                 if last is None:
                     continue
                 if last.tzinfo is None:

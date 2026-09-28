@@ -53,6 +53,12 @@ class Customer(Base, IdMixin, TimestampMixin):
     last_followup_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # 最近业务进展时间（文档 §2.3/§11.2）：报价/打样/下单/回款等真实业务动作刷新，
+    # 与"最近有效联系时间"（手工跟进写 last_followup_at）分开记。
+    # 冷落扫描与公海回收看两者取新——避免在履约客户只因没点"记录跟进"被判冷落/回收
+    last_progress_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     next_followup_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -14,6 +14,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
 from app.modules.order.model import SalesOrder
@@ -178,6 +179,8 @@ async def create_quote(
     )
     quote = created["_quote"]
     version = created["_version"]
+    # 业务进展时钟（§2.3）：建报价算客户活跃，冷落/回收不该盯着手工跟进单看
+    await customer_service.touch_progress(session, quote.customer_id)
 
     await write_audit(
         session,
@@ -1086,6 +1089,7 @@ async def mark_sent(
     quote = await svc.get_visible_quote(session, user, version.quote_id)
     version.sent_at = datetime.now(UTC)
     quote.status = "sent"
+    await customer_service.touch_progress(session, quote.customer_id)
     session.add(
         QuoteSendLog(
             quote_version_id=version.id,
@@ -1152,6 +1156,7 @@ async def accept_quote(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有已发送的报价才能标记客户接受")
     version.accepted_at = datetime.now(UTC)
     quote.status = "accepted"
+    await customer_service.touch_progress(session, quote.customer_id)
     await write_audit(
         session,
         operator_id=user.id,

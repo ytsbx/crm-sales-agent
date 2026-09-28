@@ -70,6 +70,11 @@ async def record_and_notify(
     """
     from app.modules.notification import service as notification_service
 
+    # 业务进展时钟（文档 §2.3/§11.2）：走到这里的动作（建/转订单、报价提交、
+    # 打样建/寄）都算客户活跃，冷落扫描与公海回收不应只盯手工跟进
+    from app.modules.customer import service as customer_service
+
+    await customer_service.touch_progress(session, customer_id)
     await record_system_event(
         session,
         customer_id=customer_id,

@@ -8,6 +8,7 @@ from app.core.audit import write_audit
 from app.core.csvio import csv_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.contact_util import find_duplicate_customers
 from app.modules.customer import io as io_util
@@ -35,16 +36,43 @@ async def import_template(
     )
 
 
-async def _export(user, session: AsyncSession, stmt: Select | None = None) -> Response:
+async def _export(
+    user, session: AsyncSession, stmt: Select | None = None, request: Request | None = None
+) -> Response:
     """共用导出实现：查行 → 补负责人名 → 生成 CSV。
 
     数据范围由调用方加进 `stmt`（两个入口都加了，不能漏）。
+    导出闸门（§11.2/场景19）：独立权限在路由层把住；这里做规模阈值
+    和导出审计——"能看列表"不再等于"能批量拿走本范围全部客户"。
     """
     if stmt is None:
         stmt = await svc.apply_data_scope(
             svc.not_deleted(svc.build_list_stmt()), user, session
         )
     rows = (await session.execute(stmt)).scalars().all()
+    from app.modules.settings import service as settings_service
+
+    export_limit = int(await settings_service.get_number(session, "export", "limit", 5000))
+    if len(rows) > export_limit:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"本次导出 {len(rows)} 条，超过单次上限 {export_limit}。"
+            "请缩小筛选范围，或联系管理员调整 export.limit 配置",
+            413,
+        )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="export",
+        business_type="customer",
+        after={
+            "count": len(rows),
+            "filtered": stmt is not None,
+            "customer_ids": [row.id for row in rows[:200]],
+        },
+        ip=client_ip(request) if request else None,
+    )
+    await session.commit()
     owner_ids = {row.owner_id for row in rows if row.owner_id}
     owners: dict[int, str] = {}
     if owner_ids:
@@ -73,17 +101,21 @@ async def _export(user, session: AsyncSession, stmt: Select | None = None) -> Re
 
 @router.get("/customers/export")
 async def export_customers(
-    user: CurrentUser = Depends(require_permission("customer:view")),
+    request: Request,
+    # 导出闸门（§11.2/场景19）：批量导出是独立授权，与 customer:view 分开——
+    # "能看列表"不再等于"能批量拿走本范围全部客户"。admin 角色默认放行
+    user: CurrentUser = Depends(require_permission("customer:export")),
     session: AsyncSession = Depends(get_db),
 ):
     """导出当前用户数据范围内的全部客户。"""
-    return await _export(user, session)
+    return await _export(user, session, request=request)
 
 
 @router.post("/customers/export")
 async def export_customers_filtered(
     payload: CustomerExportFilter,
-    user: CurrentUser = Depends(require_permission("customer:view")),
+    request: Request,
+    user: CurrentUser = Depends(require_permission("customer:export")),
     session: AsyncSession = Depends(get_db),
 ):
     """按筛选条件导出客户（03-API §7 `POST /customers/export`）。
@@ -105,7 +137,7 @@ async def export_customers_filtered(
         user,
         session,
     )
-    return await _export(user, session, stmt=stmt)
+    return await _export(user, session, stmt=stmt, request=request)
 
 
 @router.post("/customers/import")

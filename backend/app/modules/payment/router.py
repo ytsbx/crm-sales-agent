@@ -402,6 +402,11 @@ async def confirm_payment(
         plan = await svc.get_plan_or_404(session, record.receivable_plan_id)
         await svc.recalc_plan(session, plan)
     order = await session.get(SalesOrder, record.order_id)
+    if order:
+        # 业务进展时钟（§2.3）：确认回款算客户活跃
+        from app.modules.customer import service as customer_service
+
+        await customer_service.touch_progress(session, order.customer_id)
     if order and order.owner_id:
         await notification_service.notify(
             session,

@@ -43,6 +43,9 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("customer:update", "编辑客户", "customer", "update"),
     ("customer:delete", "删除客户", "customer", "delete"),
     ("customer:assign", "分配客户", "customer", "assign"),
+    # 导出闸门（§11.2/场景19）：批量导出是独立授权，不给销售默认开通——
+    # "能看列表"不再等于"能批量拿走本范围全部客户"
+    ("customer:export", "导出客户", "customer", "export"),
     ("product:view", "查看产品", "product", "view"),
     ("product:manage", "维护产品", "product", "manage"),
     ("opportunity:view", "查看商机", "opportunity", "view"),

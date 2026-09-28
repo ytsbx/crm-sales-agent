@@ -146,6 +146,63 @@ async def main():
     check_true('手动触发端点仍注册', True, '')
 
     print()
+    print('=== 5. 履约保护：在途报价/订单/打样/应收的客户不被回收（场景21）===')
+    from datetime import UTC, datetime, timedelta
+
+    from app.modules.customer.model import Customer
+    from app.modules.quote.model import Quote
+    from app.modules.settings.model import PublicPoolRule
+    from app.modules.settings import service as settings_service
+
+    async with SessionLocal() as s:
+        # 夹具：Z 级客户 100 天没活跃 + 一条有效期内报价
+        prot = Customer(
+            name=f'CHK-RECYCLE-保护-{datetime.now(UTC).timestamp():.0f}',
+            level='Z', status='active', pool_status='private',
+            owner_id=1, source='回归', customer_type='企业', country='中国',
+            last_followup_at=datetime.now(UTC) - timedelta(days=100),
+            created_at=datetime.now(UTC) - timedelta(days=200),
+        )
+        s.add(prot)
+        await s.flush()
+        quote = Quote(
+            quote_no=f'CHKRC{datetime.now(UTC).timestamp():.0f}',
+            customer_id=prot.id, owner_id=1,
+            valid_until=(datetime.now(UTC) + timedelta(days=30)).date(),
+        )
+        s.add(quote)
+        rule = PublicPoolRule(level='Z', days=60, enabled=True)
+        s.add(rule)
+        await s.commit()
+
+        try:
+            result = await settings_service.run_public_pool_recycle(s, operator_id=1, source='CHECK')
+            released_ids = {row['customer_id'] for row in result['customers']}
+            check_true('有效报价期内客户被豁免', prot.id not in released_ids
+                       and result['protected_count'] >= 1,
+                       f"protected={result['protected_count']}")
+
+            # 报价软删后保护消失：同一次运行里应被回收（活跃时钟只看跟进，已超 60 天）
+            quote.deleted_at = datetime.now(UTC)
+            await s.commit()
+            result = await settings_service.run_public_pool_recycle(s, operator_id=1, source='CHECK')
+            released_ids = {row['customer_id'] for row in result['customers']}
+            check_true('报价失效后正常回收', prot.id in released_ids,
+                       f"released={result['released_count']}")
+        finally:
+            # 清夹具（回收已把 pool_status 置 public，直接删）
+            from sqlalchemy import text as _text
+            await s.execute(_text(
+                "delete from quotes where quote_no like 'CHKRC%' and customer_id = :c"
+            ), {'c': prot.id})
+            await s.execute(_text(
+                "delete from customer_owner_history where customer_id = :c"
+            ), {'c': prot.id})
+            await s.execute(_text("delete from customers where id = :c"), {'c': prot.id})
+            await s.execute(_text("delete from public_pool_rules where level = 'Z' and days = 60"))
+            await s.commit()
+
+    print()
     print('=== 5. 清理本脚本产生的 SCHEDULER 审计（保持审计表干净）===')
     async with SessionLocal() as s:
         result = await s.execute(

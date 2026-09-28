@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
@@ -16,6 +16,25 @@ from app.modules.user.model import User
 def _f(value) -> float | None:
     """Decimal/None → float/None。序列化 Numeric 字段时统一走这里。"""
     return None if value is None else float(value)
+
+
+async def touch_progress(
+    session: AsyncSession, customer_id: int | None, *, at: datetime | None = None
+) -> None:
+    """业务进展刷新「最近业务进展时间」（文档 §2.3/§11.2）。
+
+    报价/打样/下单/回款等真实业务动作调用；与手工跟进写的
+    last_followup_at 分开记。冷落扫描与公海回收取两者较新者——
+    否则"正在履约但没点记录跟进"的客户会被误判冷落甚至回收进公海
+    （场景 05/21 的口径）。customer_id 为空直接跳过，调用方事务内执行。
+    """
+    if not customer_id:
+        return
+    await session.execute(
+        update(Customer)
+        .where(Customer.id == customer_id)
+        .values(last_progress_at=at or datetime.now(UTC))
+    )
 
 
 # ---------------------------------------------------------------- 查询条件
@@ -321,6 +340,7 @@ def serialize_customer(
         "tags": tags or [],
         "remark": customer.remark,
         "last_followup_at": customer.last_followup_at,
+        "last_progress_at": customer.last_progress_at,
         "next_followup_at": customer.next_followup_at,
         "created_at": customer.created_at,
         "updated_at": customer.updated_at,

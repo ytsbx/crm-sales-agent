@@ -433,11 +433,16 @@ def main():
     check_denied('张三无分配权限', res.get('code'))
 
     print()
-    print('=== 10. 导出也受数据范围约束 ===')
+    print('=== 10. 导出闸门：独立权限 + 数据范围 ===')
+    # 导出闸门（§11.2/场景19）：导出是 customer:export 独立授权，
+    # 销售默认没有——"能看列表"不再等于"能批量拿走客户"
     status, res = call_csv('POST', '/customers/export', token=zhangsan,
                            body={'keyword': f'CHK{RUN}测试客户'})
-    check('张三导出请求成功', status, 200)
-    check_true('拿不到别人的客户', f'CHK{RUN}测试客户' not in res.get('text', ''),
+    check('张三无导出权限被拒', res.get('code'), 40301)
+    status, res = call_csv('POST', '/customers/export', token=admin,
+                           body={'keyword': f'CHK{RUN}测试客户'})
+    check('管理员导出成功', status, 200)
+    check_true('导出含夹具客户', f'CHK{RUN}测试客户' in res.get('text', ''),
                res.get('text', '')[:80])
 
 
