@@ -121,6 +121,62 @@ async def sign_document(
     return ok(svc.serialize_document(doc), "已登记签署")
 
 
+@router.get("/contract-documents/{doc_id}/download")
+async def download_document(
+    doc_id: int,
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """生成并下载合同/月结协议 PDF（§3.6）。
+
+    正文取生成时的快照——客户资料之后改了，这份文件也不变。
+    下载不等于已签：签署状态由 /sign 单独登记。
+    """
+    import asyncio
+
+    from fastapi import Response
+
+    from app.modules.contract.pdf import render_contract_pdf
+    from app.modules.settings import service as settings_service
+
+    doc = await svc.get_doc_or_404(session, doc_id)
+    await _ensure_doc_in_scope(session, user, doc)
+    from app.modules.customer.model import Customer
+
+    customer = await session.get(Customer, doc.customer_id)
+    order_no = None
+    if doc.order_id:
+        from app.modules.order.model import SalesOrder
+
+        order = await session.get(SalesOrder, doc.order_id)
+        order_no = order.order_no if order else None
+    quote_no = None
+    if doc.quote_id:
+        from app.modules.quote.model import Quote
+
+        quote = await session.get(Quote, doc.quote_id)
+        quote_no = quote.quote_no if quote else None
+
+    data = {
+        "company_name": await settings_service.get_text(session, "company_name", "text", ""),
+        "doc_no": doc.doc_no,
+        "doc_type_label": svc.DOC_TYPE_LABEL.get(doc.doc_type, doc.doc_type),
+        "customer_name": customer.name if customer else None,
+        "created_date": doc.created_at.strftime("%Y-%m-%d") if doc.created_at else None,
+        "order_no": order_no,
+        "quote_no": quote_no,
+        "expiry_date": doc.expiry_date,
+        "content_snapshot": doc.content_snapshot,
+    }
+    # reportlab 渲染是同步 CPU 密集操作，丢线程池避免卡住事件循环（与报价 PDF 同）
+    pdf_bytes = await asyncio.to_thread(render_contract_pdf, data)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{doc.doc_no}.pdf"'},
+    )
+
+
 @router.post("/contract-documents/{doc_id}/void")
 async def void_document(
     doc_id: int,

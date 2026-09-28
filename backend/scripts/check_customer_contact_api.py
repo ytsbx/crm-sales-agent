@@ -107,6 +107,18 @@ def call_csv(method, path, token=None, body=None):
             return e.code, {'code': None, 'message': text[:200]}
 
 
+def call_raw(path, token=None):
+    """二进制响应（如 PDF 下载）：返回 (status, content-type, 前8字节)。"""
+    req = urllib.request.Request(BASE + path)
+    if token:
+        req.add_header('Authorization', 'Bearer ' + token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, resp.headers.get('content-type', ''), resp.read(8)
+    except urllib.error.HTTPError as e:
+        return e.code, '', e.read(64)
+
+
 def login(username, password):
     return call('POST', '/auth/login', body={'username': username, 'password': password})[1][
         'data'
@@ -493,6 +505,11 @@ def main():
     status, res = call('POST', f'/contract-documents/{doc_id}/sign', token=admin,
                        body={'file_id': SIGN_FILE_ID})
     check('已签文档不能重复签', res.get('code'), 40002)
+
+    # 模板生成 → 可下载（§3.6）：下载的是 PDF，且不代表已签
+    status, ctype, magic = call_raw(f'/contract-documents/{doc_id}/download', admin)
+    check('合同 PDF 下载', status, 200)
+    check_true('返回 PDF 字节', magic.startswith(b'%PDF'), str(magic))
 
     # 换负责人：新负责人按权限查看，原负责人失去访问（场景14 后半）
     status, res = call('GET', '/users?page_size=50', token=admin)

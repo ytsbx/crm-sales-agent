@@ -17,6 +17,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import { listCustomers } from '../../shared/api/customer'
 import {
   createContractTemplate,
+  downloadContractDocument,
   generateContractDocument,
   listContractDocuments,
   listContractTemplates,
@@ -174,6 +175,7 @@ export default function DocumentsPage() {
                       width: 130,
                       render: (_: unknown, record: ContractDocument) => (
                         <span style={{ display: 'inline-flex', gap: 12 }}>
+                          <a onClick={() => void downloadContractDocument(record)}>下载</a>
                           {record.status === 'draft' && (
                             <a onClick={() => setSignTarget(record)}>登记签署</a>
                           )}

@@ -63,6 +63,10 @@ export function generateContractDocument(payload: {
   return api.post<ContractDocument>('/contract-documents', payload)
 }
 
+export function downloadContractDocument(doc: { id: number; doc_no: string }) {
+  return api.download(`/contract-documents/${doc.id}/download`, `${doc.doc_no}.pdf`)
+}
+
 export function signContractDocument(docId: number, payload: { file_id: number; note?: string | null }) {
   return api.post<ContractDocument>(`/contract-documents/${docId}/sign`, payload)
 }
