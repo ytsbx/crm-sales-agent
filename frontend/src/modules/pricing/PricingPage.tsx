@@ -275,7 +275,9 @@ export default function PricingPage() {
         >
           {result && (
             <>
-              <Stat label="标准价" value={money(result.standard_price)} />
+              {/* D3：报价基准是「系统适用价」（专属价→等级价→通用指导价），
+                  标准价只作让价幅度的对比参照，不作为对外报价口径 */}
+              <Stat label="标准价（对比参考）" value={money(result.standard_price)} />
               <Stat label="建议报价" value={money(result.recommended_price)} tone="primary" />
               <Stat
                 label="建议区间"
