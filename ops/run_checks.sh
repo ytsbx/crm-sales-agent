@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 本地一键全量验证（与 CI 同一份清单）：静态检查 + 接口回归 8 套件。
+# 本地一键全量验证（与 CI 同一份清单）：静态检查 + 接口回归 14 套件。
 # 前提：后端已在 127.0.0.1:8000 运行（没跑就先起后端，脚本会提示）。
 # UI 冒烟默认跳过，加 --ui 一起跑（需要本机 Chrome/Edge + 前端 5173 在跑）。
 #
@@ -36,7 +36,9 @@ for suite in check_quote_api check_reference_integrity check_order_payment_api \
              check_customer_contact_api check_lead_auth_role_api \
              check_product_pricing_api check_agent_api \
              check_approval_rules check_agent_stream check_scheduler \
-             check_quote_center_acceptance; do
+             check_quote_center_acceptance \
+             check_custom_no_sku check_sales_attribution \
+             check_notification_retry; do
   if PYTHONPATH=. .venv/bin/python "scripts/$suite.py" >/tmp/crm-check-$suite.log 2>&1; then
     echo "OK  $suite"
   else
