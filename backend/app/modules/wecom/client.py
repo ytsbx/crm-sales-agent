@@ -219,17 +219,31 @@ class WeComClient:
             try:
                 for _ in range(max(1, settings.wecom_sync_max_pages)):
                     payload = await self.list_external_contacts(userid=userid, cursor=cursor)
-                    for row in payload.get("external_contact_list", []) or []:
-                        contact = row.get("external_contact", {}) or {}
-                        external_userid = contact.get("external_userid")
-                        if not external_userid or str(external_userid) in seen:
-                            continue
-                        seen.add(str(external_userid))
-                        # list 接口只给 external_userid 和少量字段，详情要单独拉
-                        detail = await self.get_external_contact(str(external_userid))
-                        merged = {**contact, **detail}
-                        merged.setdefault("follow_user", row.get("follow_info") or {})
-                        results.append(merged)
+                    # 企微这个接口有两种返回形态：带 cursor 翻页时是 external_contact_list
+                    # （每项含 external_contact + follow_info）；不带 cursor 时是老版
+                    # external_userid 纯 ID 列表——两种都要接住，否则静默 0 条
+                    rows = payload.get("external_contact_list") or []
+                    if rows:
+                        for row in rows:
+                            contact = row.get("external_contact", {}) or {}
+                            external_userid = contact.get("external_userid")
+                            if not external_userid or str(external_userid) in seen:
+                                continue
+                            seen.add(str(external_userid))
+                            # list 接口只给 external_userid 和少量字段，详情要单独拉
+                            detail = await self.get_external_contact(str(external_userid))
+                            merged = {**contact, **detail}
+                            merged.setdefault("follow_user", row.get("follow_info") or {})
+                            results.append(merged)
+                    else:
+                        for raw_id in payload.get("external_userid") or []:
+                            external_userid = str(raw_id or "")
+                            if not external_userid or external_userid in seen:
+                                continue
+                            seen.add(external_userid)
+                            detail = await self.get_external_contact(external_userid)
+                            merged = {**detail, "external_userid": external_userid}
+                            results.append(merged)
                     cursor = str(payload.get("next_cursor") or "")
                     if not cursor:
                         break
