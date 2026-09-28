@@ -309,6 +309,9 @@ async def run_auto_tasks(
         await session.execute(select(TaskRule).where(TaskRule.status == "active"))
     ).scalars().all()
     created: list[dict] = []
+    # 被"已约定下次跟进"豁免的客户（§2.3 第三个时钟）：随结果返回，
+    # 让"这个客户为什么没生成提醒"有据可查，而不是看起来漏扫了
+    agreed_skipped: list[dict] = []
     now = datetime.now(UTC)
 
     for rule in rules:
@@ -375,6 +378,21 @@ async def run_auto_tasks(
                     last = last.replace(tzinfo=UTC)
                 if last >= cutoff:
                     continue
+                # 第三个时钟（文档 §2.3）：已约定下次跟进且还没到 → 本轮豁免。
+                # 销售说了"下个月联系"，今天不该再收到"你冷落了客户"。
+                # 这条豁免**只用于提醒**，不用于公海回收：约定是销售的承诺，
+                # 不该变成长期占位的挡箭牌（回收另有预告/复核/履约保护，见
+                # run_public_pool_recycle），两者要求不同，故意不共用。
+                agreed = customer.next_followup_at
+                if agreed is not None:
+                    if agreed.tzinfo is None:
+                        agreed = agreed.replace(tzinfo=UTC)
+                    if agreed > now:
+                        agreed_skipped.append(
+                            {"customer_id": customer.id, "name": customer.name,
+                             "next_followup_at": str(agreed)}
+                        )
+                        continue
                 if await _has_open_task(session, rule.id, customer_id=customer.id):
                     continue
                 task = Task(
@@ -439,7 +457,73 @@ async def run_auto_tasks(
         after={"created_count": len(created), "tasks": created},
     )
     await session.commit()
-    return {"created_count": len(created), "tasks": created}
+    return {
+        "created_count": len(created),
+        "tasks": created,
+        "agreed_skipped_count": len(agreed_skipped),
+        "agreed_skipped": agreed_skipped[:100],
+    }
+
+
+async def notify_due_followups(session: AsyncSession) -> int:
+    """「约定下次跟进时间」已到、任务还开着 → 推负责人一条（文档 §2.3 第三个时钟）。
+
+    这个函数是第三个时钟存在的理由：只写不扫，next_followup_at 就只是个展示值——
+    销售不会因为"我答应客户今天联系"被提醒，而是两周后直接被判冷落。
+    到期未兑现与"从没联系过"是两种不同的失职，提醒文案也分开。
+
+    按任务去重（同一任务只推一次），否则每日扫描会变成每日刷屏。
+    用 type="followup" 而不是 "task"：后者和"新任务指派给你"共用，
+    去重键会互相顶掉，导致这条提醒永远发不出去。
+    """
+    from app.modules.notification import service as notification_service
+    from app.modules.notification.model import Notification
+
+    now = datetime.now(UTC)
+    rows = (
+        await session.execute(
+            select(Customer, Task)
+            .join(Task, Task.customer_id == Customer.id)
+            .where(
+                Customer.deleted_at.is_(None),
+                Customer.pool_status == "private",
+                Customer.next_followup_at.is_not(None),
+                Customer.next_followup_at <= now,
+                Task.task_type == "followup",
+                Task.status.in_(("pending", "doing")),
+                Task.due_at.is_not(None),
+                Task.due_at <= now,
+            )
+        )
+    ).all()
+    sent = 0
+    for customer, task in rows:
+        owner_id = task.owner_id or customer.owner_id
+        if not owner_id:
+            continue
+        already = (
+            await session.execute(
+                select(Notification.id).where(
+                    Notification.user_id == owner_id,
+                    Notification.type == "followup",
+                    Notification.business_type == "task",
+                    Notification.business_id == task.id,
+                )
+            )
+        ).first()
+        if already is not None:
+            continue
+        await notification_service.notify(
+            session,
+            user_id=owner_id,
+            type_="followup",
+            title=f"已到约定的联系时间：{customer.name}",
+            content=f"任务「{task.title}」已到期，按约定联系客户后记得记录跟进",
+            business_type="task",
+            business_id=task.id,
+        )
+        sent += 1
+    return sent
 
 
 async def confirmed_not_paid_count(session: AsyncSession) -> int:

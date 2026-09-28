@@ -133,6 +133,20 @@ async def list_tasks(
     return ok(page_data(items, total, page, page_size))
 
 
+async def _sync_next_followup(session: AsyncSession, task: Task) -> None:
+    """任务变化后重算客户的「约定下次跟进时间」（文档 §2.3 的第三个时钟）。
+
+    约定在系统里的载体就是"一条未完成的跟进任务"，所以任务新建/改期/完成/
+    取消都要把派生值带着走——否则任务做完了客户上还挂着一个过去的约定，
+    冷落扫描会继续拿它当"已约好"的豁免理由。
+    """
+    if task.task_type != "followup" or not task.customer_id:
+        return
+    from app.modules.customer import service as customer_service
+
+    await customer_service.refresh_next_followup_at(session, task.customer_id)
+
+
 @router.post("/tasks")
 async def create_task(
     payload: TaskCreate,
@@ -186,6 +200,7 @@ async def create_task(
     task = Task(**data, source="manual")
     session.add(task)
     await session.flush()
+    await _sync_next_followup(session, task)
     if task.owner_id and task.owner_id != user.id:
         await notification_service.notify(
             session,
@@ -229,6 +244,7 @@ async def update_task(
     for field, value in changes.items():
         setattr(task, field, value)
     await session.flush()
+    await _sync_next_followup(session, task)
     await write_audit(
         session,
         operator_id=user.id,
@@ -258,6 +274,7 @@ async def complete_task(
     task.completed_at = datetime.now(UTC)
     task.completion_note = payload.completion_note
     await session.flush()
+    await _sync_next_followup(session, task)
     await write_audit(
         session,
         operator_id=user.id,
@@ -279,6 +296,8 @@ async def cancel_task(
 ):
     task = await _visible_task(session, user, task_id)
     task.status = "cancelled"
+    await session.flush()
+    await _sync_next_followup(session, task)
     await write_audit(
         session,
         operator_id=user.id,
@@ -382,6 +401,7 @@ async def batch_complete_tasks(
 
     completed: list[int] = []
     skipped: list[dict] = []
+    touched_customers: set[int] = set()
     now = datetime.now(UTC)
     for task_id in unique_ids:
         try:
@@ -396,8 +416,17 @@ async def batch_complete_tasks(
         task.completed_at = now
         task.completion_note = payload.completion_note
         completed.append(task_id)
+        if task.task_type == "followup" and task.customer_id:
+            touched_customers.add(task.customer_id)
 
     await session.flush()
+    # 批量完成后统一重算「约定下次跟进时间」（§2.3）：约定随任务一起消失，
+    # 否则这批客户身上会留着已完成的旧约定，冷落扫描继续误豁免
+    if touched_customers:
+        from app.modules.customer import service as customer_service
+
+        for customer_id in touched_customers:
+            await customer_service.refresh_next_followup_at(session, customer_id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -426,6 +455,9 @@ async def postpone_task(
     if payload.due_at is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请给出新的截止时间")
     task.due_at = payload.due_at
+    await session.flush()
+    # 改期就是改约定：客户上的「约定下次跟进时间」要跟着走（§2.3）
+    await _sync_next_followup(session, task)
     await write_audit(
         session,
         operator_id=user.id,

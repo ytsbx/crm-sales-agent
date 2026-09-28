@@ -239,6 +239,10 @@ async def import_customers(
             owner_id = await io_util.resolve_owner(
                 session, row.get("负责人登录名"), user.id
             )
+            # 老数据迁移（§六 :167）：文件里给了历史联系时间就按真实的写，
+            # 不覆盖成"今天"——否则这批客户进系统当天全算活跃，冷落预警
+            # 要等一整个周期才生效。没给或填错则留空，落回"刚建档"。
+            last_contact = io_util.parse_date(row.get("最后联系日期"))
             customer = Customer(
                 name=name,
                 short_name=(row.get("客户简称") or "").strip() or None,
@@ -253,10 +257,23 @@ async def import_customers(
                 pool_status="private",
                 owner_id=owner_id,
                 created_by=user.id,
+                last_followup_at=last_contact,
             )
             session.add(customer)
             await session.flush()
-            created.append({"row": index, "id": customer.id, "name": customer.name})
+            created.append(
+                {
+                    "row": index,
+                    "id": customer.id,
+                    "name": customer.name,
+                    # 带没带上历史联系时间要能核对——迁移验收就看这个数
+                    "last_followup_at": (
+                        customer.last_followup_at.date().isoformat()
+                        if customer.last_followup_at
+                        else None
+                    ),
+                }
+            )
         except Exception as exc:  # 单行失败不影响其它行
             failed.append({"row": index, "name": name, "reason": str(exc)[:120]})
 

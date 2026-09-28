@@ -37,6 +37,45 @@ async def touch_progress(
     )
 
 
+async def refresh_next_followup_at(
+    session: AsyncSession, customer_id: int | None
+) -> None:
+    """重算「约定的下次跟进时间」（文档 §2.3 的第三个时钟）。
+
+    口径：该客户**最近的未完成跟进任务**的到期时间；没有未完成任务就清空。
+
+    为什么派生而不是让销售另填一个字段：约定这件事在系统里的载体本来就是
+    "建了一条待办"，再维护一份手填时间必然和任务漂移（任务做完了、时间还挂着，
+    冷落扫描继续拿它当豁免理由，客户就永远不失联了）。所以每次跟进留痕、
+    任务完成/取消/延期后重算一次，口径单一。
+
+    "约定了下次跟进"与"最近联系过"必须分开看：销售可以说"我下周联系"，
+    这不代表本周已经联系过——合并成一个时间字段就回答不了"到底约没约、约了到没到"。
+    """
+    if not customer_id:
+        return
+    from app.modules.task.model import Task
+
+    due = (
+        await session.execute(
+            select(Task.due_at)
+            .where(
+                Task.customer_id == customer_id,
+                Task.task_type == "followup",
+                Task.status.in_(("pending", "doing")),
+                Task.due_at.is_not(None),
+            )
+            .order_by(Task.due_at.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    await session.execute(
+        update(Customer)
+        .where(Customer.id == customer_id)
+        .values(next_followup_at=due)
+    )
+
+
 # ---------------------------------------------------------------- 查询条件
 
 async def apply_data_scope(

@@ -278,7 +278,88 @@ async def main():
             await s.commit()
 
     print()
-    print('=== 5. 清理本脚本产生的 SCHEDULER 审计（保持审计表干净）===')
+    print('=== 8. 第三个时钟：约定的下次跟进时间（§2.3）===')
+    from app.modules.customer import service as customer_service
+    from app.modules.customer.model import Customer
+    from app.modules.settings import service as settings_service
+    from app.modules.settings.model import TaskRule
+    from app.modules.task.model import Task
+
+    stamp = f'{datetime.now(UTC).timestamp():.0f}'
+    async with SessionLocal() as s:
+        customer = Customer(
+            name=f'CHK-约定-{stamp}', level='Z', status='active', pool_status='private',
+            owner_id=1, source='回归', customer_type='企业', country='中国',
+            last_followup_at=datetime.now(UTC) - timedelta(days=100),
+            created_at=datetime.now(UTC) - timedelta(days=200),
+        )
+        s.add(customer)
+        rule = TaskRule(
+            code=f'CHK_SILENT_{stamp}',
+            name=f'CHK-冷落-{stamp}', trigger_type='customer_silent',
+            trigger_config={'days': 60, 'levels': ['Z']},
+            action_config={'title': 'CHK-该联系了'}, status='active',
+        )
+        s.add(rule)
+        await s.flush()
+        task = Task(
+            title=f'CHK-约定跟进-{stamp}', task_type='followup', customer_id=customer.id,
+            owner_id=1, status='pending', due_at=datetime.now(UTC) + timedelta(days=3),
+            source='manual',
+        )
+        s.add(task)
+        await s.commit()
+        customer_id, task_id, rule_id = customer.id, task.id, rule.id
+
+        try:
+            # 派生口径：约定的下次跟进时间 = 未完成跟进任务的到期时间
+            await customer_service.refresh_next_followup_at(s, customer_id)
+            await s.commit()
+            await s.refresh(customer)
+            check_true('约定时间派生自未完成跟进任务',
+                       customer.next_followup_at is not None,
+                       f'next_followup_at={customer.next_followup_at}')
+
+            # 已约定且未到 → 冷落提醒豁免
+            result = await settings_service.run_auto_tasks(s, operator_id=None, source='CHECK')
+            skipped_ids = {row['customer_id'] for row in result.get('agreed_skipped', [])}
+            created_titles = [row['title'] for row in result.get('tasks', [])]
+            check_true('已约定下次跟进的客户豁免冷落提醒',
+                       customer_id in skipped_ids and 'CHK-该联系了' not in str(created_titles),
+                       f"skipped={len(skipped_ids)}")
+
+            # 约定到期没联系 → 推负责人一次，重跑不重复推
+            task.due_at = datetime.now(UTC) - timedelta(days=1)
+            await s.commit()
+            await customer_service.refresh_next_followup_at(s, customer_id)
+            await s.commit()
+            first = await settings_service.notify_due_followups(s)
+            await s.commit()
+            second = await settings_service.notify_due_followups(s)
+            await s.commit()
+            check_true('约定到期未联系有提醒', first >= 1, f'sent={first}')
+            check_true('重跑不重复推送', second == 0, f'second={second}')
+
+            # 任务完成后约定自动作废（派生值跟着走）
+            task.status = 'done'
+            await s.flush()
+            await customer_service.refresh_next_followup_at(s, customer_id)
+            await s.commit()
+            await s.refresh(customer)
+            check_true('任务完成后约定清空', customer.next_followup_at is None,
+                       f'next_followup_at={customer.next_followup_at}')
+        finally:
+            from sqlalchemy import text as _text
+            await s.execute(_text(
+                "delete from notifications where business_type='task' and business_id = :t"
+            ), {'t': task_id})
+            await s.execute(_text("delete from tasks where id = :t"), {'t': task_id})
+            await s.execute(_text("delete from task_rules where id = :r"), {'r': rule_id})
+            await s.execute(_text("delete from customers where id = :c"), {'c': customer_id})
+            await s.commit()
+
+    print()
+    print('=== 9. 清理本脚本产生的 SCHEDULER 审计（保持审计表干净）===')
     async with SessionLocal() as s:
         result = await s.execute(
             text("delete from audit_logs where source='SCHEDULER' "

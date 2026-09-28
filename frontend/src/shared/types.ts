@@ -106,6 +106,9 @@ export interface Customer {
   tags?: { id: number; name: string; type: string; status: string }[]
   remark?: string | null
   last_followup_at?: string | null
+  /** 最近业务进展（报价/打样/下单/回款刷新）——与"最近跟进"分开看，§2.3 */
+  last_progress_at?: string | null
+  /** 约定的下次跟进时间（派生自未完成的跟进任务）——三时钟的第三个 */
   next_followup_at?: string | null
   created_at: string
   updated_at: string

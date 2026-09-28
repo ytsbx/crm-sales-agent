@@ -11,6 +11,8 @@
 CSV 编解码的公共部分在 `app/core/csvio.py`（客户/线索/产品共用）。
 """
 
+from datetime import UTC, datetime
+
 from fastapi import UploadFile
 
 from app.core.csvio import parse_csv_upload
@@ -25,6 +27,11 @@ TEMPLATE_HEADERS = [
     "详细地址",
     "客户来源",
     "负责人登录名",
+    # 老数据迁移（§六 :167「导入不应重置客户最近有效联系时间」）：
+    # 历史名单里通常有这个日期，填了就按真实的写；不填才落回"刚建档"。
+    # 没有它，500 个三年没联系的老客户进系统当天全被当成"今天刚联系过"，
+    # 冷落提醒要等一整个周期才生效——上线第一个月等于没有预警。
+    "最后联系日期",
     "备注",
 ]
 
@@ -41,6 +48,27 @@ EXPORT_HEADERS = [
     "最近跟进",
     "创建时间",
 ]
+
+
+def parse_date(value: str | None) -> datetime | None:
+    """解析导入文件里的日期列（YYYY-MM-DD / YYYY/M/D / YYYY.M.D）。
+
+    两种取值明确返回 None 而不是猜：
+    - 解析不了的字符串（不把垃圾数据编成今天，那才是真的"重置联系时间"）；
+    - **未来日期**（老名单里出现的未来日期多半是填错，不能让它变成"永不冷落"）。
+    """
+    if not value:
+        return None
+    text = value.strip().replace("/", "-").replace(".", "-")
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed if parsed <= datetime.now(UTC) else None
+    return None
 
 
 def customer_export_row(customer: Customer, owner_name: str | None) -> list:

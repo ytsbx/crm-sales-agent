@@ -13,6 +13,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.refs import ensure_refs
 from app.core.response import ok, page_data, paginate
+from app.modules.customer import service as customer_service
 from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
 from app.modules.followup.schema import (
@@ -195,6 +196,11 @@ async def create_followup(
         await session.flush()
         created_task_id = task.id
 
+    # 第三个时钟（§2.3）：重算「约定下次跟进时间」。口径是该客户最近的未完成
+    # 跟进任务到期时间——本次跟进约了下次动作就写进去，没约就清空。
+    # 与 last_followup_at（真的联系过了）严格分开：约了 ≠ 联系了。
+    await customer_service.refresh_next_followup_at(session, payload.customer_id)
+
     await write_audit(
         session,
         operator_id=user.id,
@@ -305,6 +311,8 @@ async def create_next_task(
     )
     session.add(task)
     await session.flush()
+    # 补建后续任务 = 补上一个约定：第三个时钟要跟着变（§2.3）
+    await customer_service.refresh_next_followup_at(session, followup.customer_id)
     await write_audit(
         session,
         operator_id=user.id,

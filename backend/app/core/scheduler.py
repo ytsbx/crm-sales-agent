@@ -54,10 +54,17 @@ async def run_auto_tasks_job() -> None:
 
         expired = await contract_service.notify_expiring_monthly(session)
         expired_quotes = await quote_service.notify_expired_quotes(session)
+        # 第三个时钟（§2.3）：约定的下次跟进时间到了却没联系 → 推负责人一次
+        due_followups = await settings_service.notify_due_followups(session)
         await session.commit()
     logger.info(
-        "定时自动任务完成：生成 %s 条任务，月结到期提醒 %s 条，报价到期提醒 %s 条",
-        result.get("created_count"), expired, expired_quotes,
+        "定时自动任务完成：生成 %s 条任务（其中 %s 个客户因\"已约定下次跟进\"豁免），"
+        "月结到期提醒 %s 条，报价到期提醒 %s 条，约定跟进到期提醒 %s 条",
+        result.get("created_count"),
+        result.get("agreed_skipped_count"),
+        expired,
+        expired_quotes,
+        due_followups,
     )
 
 

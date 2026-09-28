@@ -386,11 +386,33 @@ export default function CustomerDetailPage() {
               <Field label="统一社会信用代码" value={customer.tax_no ?? '-'} />
               <Field label="官网域名" value={customer.domain ?? '-'} />
               <Field label="详细地址" value={customer.address ?? '-'} />
+              {/* 三个时钟分开显示（文档 §2.3）：联系过 ≠ 业务有进展 ≠ 约好了下次。
+                  合成一个时间字段就回答不了"到底哪一样断了" */}
               <Field
                 label="最近跟进"
                 value={
                   customer.last_followup_at
                     ? new Date(customer.last_followup_at).toLocaleString('zh-CN')
+                    : '-'
+                }
+              />
+              <Field
+                label="最近业务进展"
+                value={
+                  customer.last_progress_at
+                    ? new Date(customer.last_progress_at).toLocaleString('zh-CN')
+                    : '-'
+                }
+              />
+              <Field
+                label="约定下次跟进"
+                value={
+                  customer.next_followup_at
+                    ? `${new Date(customer.next_followup_at).toLocaleString('zh-CN')}${
+                        new Date(customer.next_followup_at).getTime() < Date.now()
+                          ? '（已到约定时间）'
+                          : ''
+                      }`
                     : '-'
                 }
               />
