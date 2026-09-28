@@ -203,6 +203,50 @@ async def main():
             await s.commit()
 
     print()
+    print('=== 6. 业务事件幂等：重放不新增（场景04）===')
+    from sqlalchemy import func as _func
+
+    from app.modules.followup import service as followup_service
+    from app.modules.followup.model import FollowUp
+
+    key = f"chk:replay:{datetime.now(UTC).timestamp():.0f}"
+    async with SessionLocal() as s:
+        try:
+            for _ in range(2):  # 同一动作真实发生一次 + 重放一次
+                await followup_service.record_and_notify(
+                    s,
+                    customer_id=1,
+                    owner_id=None,
+                    title=f'重放测试 {key}',
+                    content='重放测试内容',
+                    business_type='order',
+                    business_id=None,
+                    event_key=key,
+                )
+            await s.commit()
+            followups = (
+                await s.execute(
+                    select(_func.count()).select_from(FollowUp).where(
+                        FollowUp.content == '【系统】重放测试内容'
+                    )
+                )
+            ).scalar_one()
+            events = (
+                await s.execute(
+                    select(_func.count())
+                    .select_from(text('business_events'))
+                    .where(text(f"event_key = '{key}'"))
+                )
+            ).scalar_one()
+            check_true('重放后时间线只一条', followups == 1, f'followups={followups}')
+            check_true('事件表只一条', events == 1, f'events={events}')
+        finally:
+            await s.execute(_text("delete from business_events where event_key = :k"), {'k': key})
+            await s.execute(_text("delete from followups where content = '【系统】重放测试内容'"))
+            await s.execute(_text("delete from notifications where title = :t"), {'t': f'重放测试 {key}'})
+            await s.commit()
+
+    print()
     print('=== 5. 清理本脚本产生的 SCHEDULER 审计（保持审计表干净）===')
     async with SessionLocal() as s:
         result = await s.execute(

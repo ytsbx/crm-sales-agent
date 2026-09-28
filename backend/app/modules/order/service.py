@@ -265,6 +265,7 @@ async def create_order_from_quote(
         order_id=order.id,
         quote_id=quote.id,
         exclude_user_id=user_id,
+        event_key=f"order:create:{order.id}",
     )
     await session.flush()
     return order

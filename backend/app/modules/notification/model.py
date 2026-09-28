@@ -32,6 +32,26 @@ WECOM_STATUS_LABEL = {
 }
 
 
+class BusinessEvent(Base, IdMixin):
+    """业务事件（文档 §四/验收场景04）：一次真实业务动作一行。
+
+    event_key 由调用点按「动作:对象」确定性生成（如 order:create:42），
+    唯一约束封死重复——重放/重试命中同一 key 时整体跳过：
+    客户时间线只一条、主管只收一次。notifications 表就是逐接收人的投递记录。
+    """
+
+    __tablename__ = "business_events"
+
+    event_key: Mapped[str] = mapped_column(String(128), unique=True)
+    business_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    business_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    customer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class Notification(Base, IdMixin):
     __tablename__ = "notifications"
     __table_args__ = (

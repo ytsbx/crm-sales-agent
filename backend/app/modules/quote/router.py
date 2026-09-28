@@ -1007,6 +1007,8 @@ async def submit_approval(
         business_id=quote.id,
         quote_id=quote.id,
         exclude_user_id=user.id,
+        # 撤销后重提是新的真实事件（新审批实例新 key）；重放由状态机挡在前面
+        event_key=f"quote:submit:{version.id}:{instance.id if instance else 'auto'}",
     )
     await session.commit()
     await notification_service.dispatch_pending(session)

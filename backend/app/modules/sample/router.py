@@ -132,6 +132,7 @@ async def create_sample(
         business_id=sample.id,
         opportunity_id=sample.opportunity_id,
         exclude_user_id=user.id,
+        event_key=f"sample:create:{sample.id}",
     )
     await session.commit()
     await notification_service.dispatch_pending(session)
@@ -266,6 +267,7 @@ async def ship_sample(
         business_id=sample.id,
         opportunity_id=sample.opportunity_id,
         exclude_user_id=user.id,
+        event_key=f"sample:ship:{sample.id}",
     )
     await session.commit()
     await notification_service.dispatch_pending(session)

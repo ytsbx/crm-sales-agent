@@ -12,6 +12,7 @@
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.followup.model import FollowUp
@@ -62,13 +63,39 @@ async def record_and_notify(
     order_id: int | None = None,
     opportunity_id: int | None = None,
     exclude_user_id: int | None = None,
+    event_key: str | None = None,
 ) -> None:
     """过程记录 + 推业务主管（站内/企微，按通知设置走 followup 事件开关）。
 
+    幂等（场景04）：调用点传确定性 event_key（如 order:create:42），
+    同一 key 的重放/重试整体跳过——不留痕、不推送，客户时间线只一条、
+    主管只收一次。业务事件本身落 business_events 表（唯一约束兜底并发）。
     在业务事务内调用：留痕随业务一起 commit；企微投递由调用方
     commit 后 `dispatch_pending`。通知环节异常只告警，不回滚业务。
     """
     from app.modules.notification import service as notification_service
+    from app.modules.notification.model import BusinessEvent
+
+    if event_key:
+        existing = (
+            await session.execute(
+                select(BusinessEvent.id).where(BusinessEvent.event_key == event_key)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            logger.info("业务事件重放跳过（event_key=%s）", event_key)
+            return
+        session.add(
+            BusinessEvent(
+                event_key=event_key,
+                business_type=business_type,
+                business_id=business_id,
+                customer_id=customer_id,
+                title=title,
+                created_at=datetime.now(UTC),
+            )
+        )
+        await session.flush()
 
     # 业务进展时钟（文档 §2.3/§11.2）：走到这里的动作（建/转订单、报价提交、
     # 打样建/寄）都算客户活跃，冷落扫描与公海回收不应只盯手工跟进

@@ -143,6 +143,7 @@ async def create_order(
         business_id=order.id,
         order_id=order.id,
         exclude_user_id=user.id,
+        event_key=f"order:create:{order.id}",
     )
     await session.commit()
     await notification_service.dispatch_pending(session)
