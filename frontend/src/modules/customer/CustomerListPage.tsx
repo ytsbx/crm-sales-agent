@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type ComponentProps } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -13,6 +13,7 @@ import {
   deduplicateCustomers,
   exportCustomersFiltered,
   listCustomers,
+  listStageDistribution,
   listTags,
   type DuplicateMatch,
   type CustomerPayload,
@@ -41,6 +42,17 @@ const LEVEL_OPTIONS = [
 const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入'].map(
   (value) => ({ value, label: value }),
 )
+
+// 领导六阶段（自动推导，非人工填写）：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购
+type TagColor = ComponentProps<typeof Tag>['color']
+const STAGE_TONE: Record<string, TagColor> = {
+  understanding: 'grey',
+  quote: 'blue',
+  sample: 'orange',
+  first_order: 'cyan',
+  repeat: 'purple',
+  stable: 'green',
+}
 
 const EMPTY_FORM: CustomerPayload = {
   name: '',
@@ -104,6 +116,11 @@ export default function CustomerListPage() {
     queryKey: ['tags'],
     queryFn: () => listTags(false),
     enabled: batchTagOpen,
+  })
+  // 六阶段分布（后端按当前数据范围自动推导）
+  const stageDistQuery = useQuery({
+    queryKey: ['customer-stage-distribution'],
+    queryFn: () => listStageDistribution(),
   })
   const usersQuery = useQuery({
     queryKey: ['assignable-users'],
@@ -233,6 +250,18 @@ export default function CustomerListPage() {
           '-'
         ),
     },
+    {
+      // 领导六阶段：由订单/打样/报价事实自动推导（customer/stage.py），不占销售一分钟
+      title: '阶段',
+      dataIndex: 'stage',
+      width: 96,
+      render: (_: unknown, record: Customer) =>
+        record.stage ? (
+          <Tag color={STAGE_TONE[record.stage] ?? 'grey'}>{record.stage_label ?? record.stage}</Tag>
+        ) : (
+          '-'
+        ),
+    },
     { title: '地区', dataIndex: 'region', width: 100, render: (v: string | null) => v ?? '-' },
     {
       // PRD §6.1：客户列表要能直接看到标签
@@ -347,6 +376,30 @@ export default function CustomerListPage() {
             新建客户
           </Button>
         </div>
+
+        {stageDistQuery.data && (
+          <div
+            className="toolbar"
+            style={{
+              background: 'var(--crm-surface-high)',
+              padding: '8px 12px',
+              borderRadius: 4,
+              alignItems: 'center',
+              marginBottom: 12,
+            }}
+          >
+            <span style={{ fontSize: 13, color: 'var(--crm-text-3)' }}>客户阶段分布</span>
+            {stageDistQuery.data.map((item) => (
+              <Tag key={item.stage} color={STAGE_TONE[item.stage] ?? 'grey'} type="light">
+                {item.label} {item.count}
+              </Tag>
+            ))}
+            <div style={{ flex: 1 }} />
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              由订单 / 打样 / 报价事实自动推导，无需人工维护
+            </span>
+          </div>
+        )}
 
         {selectedIds.length > 0 && (
           <div

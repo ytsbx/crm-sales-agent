@@ -24,6 +24,8 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.followup import service as followup_service
+from app.modules.notification import service as notification_service
 from app.modules.opportunity.model import Opportunity
 from app.modules.product.model import Sku
 from app.modules.sample import service as svc
@@ -119,7 +121,20 @@ async def create_sample(
         after=await svc.detail(session, sample),
         ip=client_ip(request),
     )
+    # 领导六阶段口径"过程记录"：打样动作自动写跟进并推送业务主管
+    await followup_service.record_and_notify(
+        session,
+        customer_id=sample.customer_id,
+        owner_id=sample.owner_id,
+        title="打样申请已创建",
+        content=f"样品申请已创建（{len(payload.items)} 个 SKU）",
+        business_type="sample",
+        business_id=sample.id,
+        opportunity_id=sample.opportunity_id,
+        exclude_user_id=user.id,
+    )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(await svc.detail(session, sample), "样品申请已创建")
 
 
@@ -241,7 +256,19 @@ async def ship_sample(
         after=after,
         ip=client_ip(request),
     )
+    await followup_service.record_and_notify(
+        session,
+        customer_id=sample.customer_id,
+        owner_id=sample.owner_id,
+        title="打样已寄出",
+        content=f"打样已寄出（{payload.carrier or '承运商待定'} 单号 {payload.tracking_no or '无'}）",
+        business_type="sample",
+        business_id=sample.id,
+        opportunity_id=sample.opportunity_id,
+        exclude_user_id=user.id,
+    )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(after, "已登记寄样")
 
 

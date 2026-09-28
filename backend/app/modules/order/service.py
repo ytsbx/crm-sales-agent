@@ -223,6 +223,22 @@ async def create_order_from_quote(
             created_at=datetime.now(UTC),
         )
     )
+    # 领导六阶段口径"过程记录"：转单即下单事实，自动留痕 + 推业务主管
+    # （confirm-win 与 convert-to-order 两条路都汇到这里）
+    from app.modules.followup import service as followup_service
+
+    await followup_service.record_and_notify(
+        session,
+        customer_id=quote.customer_id,
+        owner_id=order.owner_id,
+        title=f"订单已创建 {order.order_no}",
+        content=f"{order.order_no} 金额 ¥{float(version.total_amount):,.2f}（由报价转单）",
+        business_type="order",
+        business_id=order.id,
+        order_id=order.id,
+        quote_id=quote.id,
+        exclude_user_id=user_id,
+    )
     await session.flush()
     return order
 

@@ -9,6 +9,7 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Contact, Customer, CustomerOwnerHistory
+from app.modules.customer import stage as stage_module
 from app.modules.user.model import User
 
 
@@ -294,6 +295,7 @@ def serialize_customer(
     owner_name: str | None = None,
     contact_count: int = 0,
     tags: list[dict] | None = None,
+    stage: str | None = None,
 ) -> dict:
     return {
         "id": customer.id,
@@ -311,6 +313,9 @@ def serialize_customer(
         "pool_status": customer.pool_status,
         "owner_id": customer.owner_id,
         "owner_name": owner_name,
+        # 领导六阶段（自动推导，stage.py）：了解/报价/打样/首单/返单/稳定复购
+        "stage": stage,
+        "stage_label": stage_module.STAGE_LABELS.get(stage) if stage else None,
         "contact_count": contact_count,
         # PRD §6.1：客户列表要能展示标签
         "tags": tags or [],

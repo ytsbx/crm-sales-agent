@@ -116,6 +116,17 @@ export function listCustomers(query: CustomerQuery) {
   return api.get<PageResult<Customer>>('/customers', query)
 }
 
+export interface CustomerStageCount {
+  stage: string
+  label: string
+  count: number
+}
+
+/** 六阶段分布：当前数据范围内各阶段客户数（阶段由后端自动推导） */
+export function listStageDistribution() {
+  return api.get<CustomerStageCount[]>('/customers/stage-distribution')
+}
+
 export function getCustomer(id: number) {
   return api.get<Customer>(`/customers/${id}`)
 }

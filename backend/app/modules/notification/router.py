@@ -116,6 +116,7 @@ def _settings_payload(value: dict, *, wecom_ready: bool, agent_configured: bool)
             "approval": bool(events.get("approval", True)),
             "task": bool(events.get("task", True)),
             "payment": bool(events.get("payment", True)),
+            "followup": bool(events.get("followup", True)),
         },
         # 给界面看的就绪度：企微渠道开着但后面对接没配好时要能提示
         "wecom_ready": wecom_ready,
@@ -165,6 +166,7 @@ async def update_notification_settings(
     events.setdefault("approval", True)
     events.setdefault("task", True)
     events.setdefault("payment", True)
+    events.setdefault("followup", True)
 
     data = payload.model_dump(exclude_unset=True)
     if data.get("inapp_enabled") is not None:

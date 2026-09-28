@@ -17,6 +17,8 @@ from app.modules.customer.model import Customer
 from app.modules.erp import service as erp_service
 from app.modules.erp.adapter import ErpError, ErpNotConfigured
 from app.modules.erp.router import translate_erp_error as erp_translate
+from app.modules.followup import service as followup_service
+from app.modules.notification import service as notification_service
 from app.modules.opportunity.model import Opportunity, OpportunityItem, OpportunityStageHistory
 from app.modules.opportunity.service import get_first_stage
 from app.modules.order import service as svc
@@ -119,7 +121,20 @@ async def create_order(
         after=svc.serialize_order(order),
         ip=client_ip(request),
     )
+    # 领导六阶段口径"过程记录"：下单自动写跟进并推送业务主管
+    await followup_service.record_and_notify(
+        session,
+        customer_id=order.customer_id,
+        owner_id=order.owner_id,
+        title=f"订单已创建 {order.order_no}",
+        content=f"{order.order_no} 金额 ¥{float(order.total_amount):,.2f}（手工建单）",
+        business_type="order",
+        business_id=order.id,
+        order_id=order.id,
+        exclude_user_id=user.id,
+    )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(
         {"order_id": order.id, "order_no": order.order_no, "total_amount": float(order.total_amount)},
         "订单已创建",
@@ -175,6 +190,7 @@ async def convert_to_order(
         ip=client_ip(request),
     )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok({"order_id": order.id, "order_no": order.order_no}, "已生成销售订单")
 
 

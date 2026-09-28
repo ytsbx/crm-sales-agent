@@ -25,8 +25,9 @@ from app.modules.notification.model import (
 )
 from app.modules.user.model import Permission, Role, User, role_permissions, user_roles
 
-#: 允许走企微的通知类型（与 notification_channels.wecom_events 的键对应）
-WECOM_EVENT_TYPES = ("approval", "task", "payment")
+#: 允许走企微的通知类型（与 notification_channels.wecom_events 的键对应）。
+#: followup = 业务动作自动留痕推主管（报价提交/打样/下单，领导六阶段口径）
+WECOM_EVENT_TYPES = ("approval", "task", "payment", "followup")
 
 
 async def channel_settings(session: AsyncSession) -> dict:
@@ -122,6 +123,46 @@ async def notify_approvers(
             session,
             user_id=user_id,
             type_="approval",
+            title=title,
+            content=content,
+            business_type=business_type,
+            business_id=business_id,
+            channel_settings_override=settings,
+        )
+        if created is not None:
+            sent += 1
+    return sent
+
+
+async def notify_roles(
+    session: AsyncSession,
+    *,
+    role_codes: list[str],
+    type_: str,
+    title: str,
+    content: str | None = None,
+    business_type: str | None = None,
+    business_id: int | None = None,
+    exclude_user_id: int | None = None,
+) -> int:
+    """按角色推通知：业务动作自动留痕时推给业务主管（sales_manager 等）。"""
+    user_ids = (
+        await session.execute(
+            select(User.id)
+            .join(user_roles, user_roles.c.user_id == User.id)
+            .join(Role, Role.id == user_roles.c.role_id)
+            .where(Role.code.in_(role_codes), User.status == "active")
+        )
+    ).scalars().all()
+    settings = await channel_settings(session)
+    sent = 0
+    for user_id in user_ids:
+        if exclude_user_id and user_id == exclude_user_id:
+            continue
+        created = await notify(
+            session,
+            user_id=user_id,
+            type_=type_,
             title=title,
             content=content,
             business_type=business_type,

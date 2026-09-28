@@ -21,6 +21,7 @@ import urllib.request
 
 BASE = 'http://127.0.0.1:8000/api/v1'
 RUN = str(int(time.time()))[-6:]
+SCRIPT_STARTED_AT = time.strftime('%Y-%m-%d %H:%M:%S+00:00', time.gmtime())
 PREFIX = f'CHKQC{RUN}'
 EVIDENCE_PATH = '../产品报价中心验收核验.json'
 
@@ -120,6 +121,28 @@ def main():
     def cleanup():
         print()
         print('=== 清理验收临时数据 ===')
+        # 六阶段"过程记录"自动留痕/通知（无 CHK 前缀）：按脚本启动时间窗清，
+        # 只删本次运行产生的，不碰演示数据
+        import asyncio
+
+        async def _clean_system_rows():
+            from sqlalchemy import text
+
+            from app.core.database import SessionLocal
+
+            async with SessionLocal() as s:
+                for sql in (
+                    "delete from notifications where business_type in ('quote','order','sample') "
+                    "and created_at > :ts",
+                    "delete from followups where followup_type='系统' and created_at > :ts",
+                ):
+                    await s.execute(text(sql), {'ts': SCRIPT_STARTED_AT})
+                await s.commit()
+
+        try:
+            asyncio.run(_clean_system_rows())
+        except Exception as exc:  # 清理失败不挡结果输出
+            print(f'  （自动留痕清理跳过：{exc}）')
         for rid in rule_ids:
             call('DELETE', f'/price-rules/{rid}', token=admin)
         for oid in created_orders:

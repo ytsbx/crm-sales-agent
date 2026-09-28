@@ -12,7 +12,7 @@ from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
 from app.modules.contact_util import create_contact_for_customer
 from app.modules.customer import service as svc
-from app.modules.customer import tags as tag_svc
+from app.modules.customer import stage, tags as tag_svc
 from app.modules.customer.model import Contact, Customer
 from app.modules.customer.schema import (
     ContactBindCustomer,
@@ -55,16 +55,32 @@ async def list_customers(
     counts = await svc.contact_counts(session, [c.id for c in rows])
     owners = await svc.owner_names(session, [c.owner_id for c in rows])
     tag_map = await tag_svc.tags_of_customers(session, [c.id for c in rows])
+    # 领导六阶段：算出来的字段（订单/打样/报价事实推导），不占人一分钟
+    stage_map = await stage.stage_counts_map(session, [c.id for c in rows])
     items = [
         svc.serialize_customer(
             c,
             owner_name=owners.get(c.owner_id) if c.owner_id else None,
             contact_count=counts.get(c.id, 0),
             tags=tag_map.get(c.id, []),
+            stage=stage.derive_stage(*stage_map.get(c.id, (0, 0, 0))),
         )
         for c in rows
     ]
     return ok(page_data(items, total, page, page_size))
+
+
+@router.get("/customers/stage-distribution")
+async def customers_stage_distribution(
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """六阶段分布：当前数据范围内各阶段客户数（了解/报价/打样/首单/返单/稳定复购）。"""
+    stmt = await svc.apply_data_scope(
+        svc.not_deleted(select(Customer.id)), user, session
+    )
+    ids = list((await session.execute(stmt)).scalars().all())
+    return ok(await stage.stage_distribution(session, ids))
 
 
 @router.post("/customers")

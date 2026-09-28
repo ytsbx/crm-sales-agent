@@ -86,6 +86,8 @@ CLEAN_STATEMENTS = [
     ('报价费用', 'delete from quote_charges'),
     ('报价版本', 'delete from quote_versions'),
     ('报价单', 'delete from quotes'),
+    # 该套件清全库，六阶段自动留痕/通知（无 CHK 前缀）一并清
+    ('自动跟进留痕', "delete from followups where followup_type='系统'"),
     # D8 后报价必须挂商机：商机需求/阶段历史/商机随报价一并清（FK 依赖报价先删）
     ('商机需求明细', 'delete from opportunity_items'),
     ('商机阶段历史', 'delete from opportunity_stage_history'),

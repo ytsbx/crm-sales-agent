@@ -124,6 +124,9 @@ async def clean(verbose=False):
         ('报价版本', "delete from quote_versions where quote_id in "
                  f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
         ('报价单', f"delete from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
+        # 六阶段自动留痕/通知按业务关联清（无 CHK 前缀）
+        ('自动留痕', f"delete from followups where followup_type='系统' and customer_id in (select id from customers where name like 'CHK{RUN}%')"),
+        ('自动通知', f"delete from notifications where (business_type='quote' and business_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%'))) or (business_type='order' and business_id in (select id from sales_orders where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
         # D8：用例报价挂在快捷商机上，客户删除前先清商机（FK 依赖）
         ('商机需求明细', f"delete from opportunity_items where opportunity_id in (select id from opportunities where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
         ('商机阶段历史', f"delete from opportunity_stage_history where opportunity_id in (select id from opportunities where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),

@@ -322,8 +322,10 @@ def main():
 
     print()
     print('=== 8. 客户特殊价 PATCH ===')
-    status, res = call('GET', '/customers?keyword=', token=admin)
-    customer_id = res['data']['items'][0]['id']
+    # 自建夹具客户：抓"列表第一个客户"会撞上库里已有特殊价（40901 冲突），数据依赖型脆弱用例
+    status, res = call('POST', '/customers', token=admin, body={'name': f'CHK{RUN}特殊价客户'})
+    check('建夹具客户', res.get('code'), 0)
+    customer_id = res['data']['id']
     status, res = call('POST', '/customer-price-rules', token=admin, body={
         'customer_id': customer_id, 'sku_id': price_sku_id,
         'min_qty': 1, 'max_qty': 100, 'agreed_price': 800, 'remark': f'CHK{RUN}',
@@ -432,7 +434,10 @@ def main():
     rate_id = res['data']['id']
     status, res = call('GET', f'/skus/{price_sku_id}', token=admin)
     old_carton = res['data'].get('carton_volume')
-    call('PATCH', f'/skus/{price_sku_id}', token=admin, body={'carton_volume': 1})
+    old_carton_qty = res['data'].get('carton_qty')
+    # 箱规数量一并固定为 6：体积计价依赖 carton_volume/carton_qty 两个字段，
+    # 只固定体积会随所选 SKU 的 carton_qty 漂移（数据依赖型脆弱用例）
+    call('PATCH', f'/skus/{price_sku_id}', token=admin, body={'carton_volume': 1, 'carton_qty': 6})
     probe = call('POST', '/pricing/calculate', token=admin,
                  body={'sku_id': price_sku_id, 'quantity': 10, 'quoted_price': 100,
                        'country': 'CHK华北测试区', 'shipping_method': '陆运'})
@@ -452,14 +457,17 @@ def main():
                        'country': 'CHK华北测试区', 'shipping_method': '陆运'})
     check('无体积数据回落重量计价', float(probe[1]['data']['cost']['logistics_cost']),
           round(unit_weight * 10 * 1 / 10, 4))
-    # 恢复原箱规体积
-    call('PATCH', f'/skus/{price_sku_id}', token=admin, body={'carton_volume': old_carton})
+    # 恢复原箱规体积与箱规数量
+    call('PATCH', f'/skus/{price_sku_id}', token=admin,
+         body={'carton_volume': old_carton, 'carton_qty': old_carton_qty})
     # 清理测试费率（按关键字兜底删，避免单 id 依赖）
     status, res = call('GET', '/logistics/rates?keyword=CHK', token=admin)
     deleted = len(res['data'] or [])
     for old_rate in res['data'] or []:
         call('DELETE', f"/logistics/rates/{old_rate['id']}", token=admin)
-    check_true('清理测试费率', deleted >= 1, str(deleted))
+    after_delete = call('GET', '/logistics/rates?keyword=CHK', token=admin)[1]
+    check_true('清理测试费率', deleted >= 1 and not (after_delete.get('data') or []),
+               f"删前 {deleted}，删后 {len(after_delete.get('data') or [])}")
 
     print('=== 10. 权限门槛 ===')
     for label, method, path, body in [

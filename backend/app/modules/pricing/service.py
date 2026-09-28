@@ -450,10 +450,12 @@ async def estimate_logistics(
     取费率时在匹配到的方案里选**最便宜**的一条（估算口径），并在备注里
     说明计价方式与时效。
     """
-    if sku.weight is None:
-        return None, "该 SKU 没有维护单重，无法自动估算运费，请手工填写"
-
     from app.modules.pricing import logistics as logistics_calc
+
+    # 没维护单重但**有体积数据**的 SKU（典型抛货）仍可按体积计价——
+    # 在此直接退出会让体积功能对这类 SKU 失效；单重与体积都缺才请手工填写
+    if sku.weight is None and logistics_calc.sku_unit_volume(sku)[0] is None:
+        return None, "该 SKU 没有维护单重与体积数据，无法自动估算运费，请手工填写"
 
     try:
         prepared = await logistics_calc.prepare(

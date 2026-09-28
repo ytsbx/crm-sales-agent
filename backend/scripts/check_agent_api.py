@@ -102,6 +102,14 @@ async def clean(verbose=False):
                   f"(select id from agent_sessions where title like '%CHK{RUN}%')"),
         ('用例会话', f"delete from agent_sessions where title like '%CHK{RUN}%'"),
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
+        # 六阶段"过程记录"自动留痕/通知没有 CHK 前缀，按业务关联清（无 FK，须在报价/订单删除前后均可）
+        ('用例自动留痕', "delete from followups where followup_type='系统' and ("
+                  "customer_id in (select id from customers where name like 'CHK%') or "
+                  "quote_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK%')) or "
+                  "order_id in (select id from sales_orders where customer_id in (select id from customers where name like 'CHK%')))"),
+        ('用例自动通知', "delete from notifications where ("
+                  "business_type='quote' and business_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK%'))) or ("
+                  "business_type='order' and business_id in (select id from sales_orders where customer_id in (select id from customers where name like 'CHK%')))"),
         ('用例任务', f"delete from tasks where title like '%CHK{RUN}%'"),
         ('用例回款', "delete from payment_records where order_id in "
                   "(select id from sales_orders where customer_id in (select id from customers where name like 'CHK%'))"),

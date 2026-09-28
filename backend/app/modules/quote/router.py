@@ -17,6 +17,7 @@ from app.core.response import ok, page_data, paginate
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
 from app.modules.order.model import SalesOrder
+from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
 from app.modules.quote import service as svc
 from app.modules.quote.model import (
@@ -988,6 +989,21 @@ async def submit_approval(
         business_id=quote.id,
         after={"approval_required": required, "approval_status": version.approval_status},
         ip=client_ip(request),
+    )
+    # 领导六阶段口径"过程记录"：报价更新自动写跟进并推送业务主管
+    await followup_service.record_and_notify(
+        session,
+        customer_id=quote.customer_id,
+        owner_id=quote.owner_id,
+        title=f"报价已提交审批 {quote.quote_no}",
+        content=(
+            f"{quote.quote_no} V{version.version_no} 提交审批，"
+            f"金额 ¥{float(version.total_amount or 0):,.2f}"
+        ),
+        business_type="quote",
+        business_id=quote.id,
+        quote_id=quote.id,
+        exclude_user_id=user.id,
     )
     await session.commit()
     await notification_service.dispatch_pending(session)

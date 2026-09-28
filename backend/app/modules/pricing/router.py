@@ -550,6 +550,32 @@ async def create_logistics_rate(
     return ok(svc.serialize_logistics_rate(rate), "运费费率已创建")
 
 
+@router.delete("/logistics/rates/{rate_id}")
+async def delete_logistics_rate(
+    rate_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("price:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """删除运费费率（此前该端点不存在：配错费率删不掉，测试清理也一直空转）。"""
+    rate = await session.get(LogisticsRate, rate_id)
+    if rate is None:
+        raise AppError(ErrorCode.NOT_FOUND, "费率不存在", 404)
+    before = svc.serialize_logistics_rate(rate)
+    await session.delete(rate)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="logistics_rate",
+        business_id=rate_id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "费率已删除")
+
+
 # ---------------------------------------------------------------- 查价（产品报价中心 · 第一批）
 
 

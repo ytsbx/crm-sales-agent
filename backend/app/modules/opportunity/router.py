@@ -899,6 +899,10 @@ async def confirm_win_and_create_order(
         ip=client_ip(request),
     )
     await session.commit()
+    # 转单时 service 里写了自动跟进留痕 + 主管通知（followup 事件），这里统一投递
+    from app.modules.notification import service as notification_service
+
+    await notification_service.dispatch_pending(session)
     return ok(
         {
             "opportunity_id": opportunity.id,

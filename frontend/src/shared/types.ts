@@ -99,6 +99,9 @@ export interface Customer {
   owner_id?: number | null
   owner_name?: string | null
   contact_count: number
+  /** 领导六阶段（自动推导：了解/报价/打样/首单/返单/稳定复购） */
+  stage?: string | null
+  stage_label?: string | null
   /** 客户标签（PRD §6.1 列表要展示标签） */
   tags?: { id: number; name: string; type: string; status: string }[]
   remark?: string | null
