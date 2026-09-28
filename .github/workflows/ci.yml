@@ -91,7 +91,8 @@ jobs:
           for suite in check_quote_api check_reference_integrity check_order_payment_api \
                        check_customer_contact_api check_lead_auth_role_api \
                        check_product_pricing_api check_agent_api \
-                       check_approval_rules check_agent_stream check_scheduler; do
+                       check_approval_rules check_agent_stream check_scheduler \
+                       check_quote_center_acceptance; do
             echo "::group::=== $suite ==="
             PYTHONPATH=. python scripts/$suite.py
             echo "::endgroup::"
@@ -160,10 +161,15 @@ jobs:
           curl -sf -o /dev/null http://127.0.0.1:8000/docs || { tail -n 40 /tmp/backend.log; exit 1; }
           echo "backend ready"
 
-      - name: 前端：安装依赖并启动 dev server
+      - name: 前端：类型检查 + 构建（白屏根因防线，解析错误在这里先红）
         working-directory: frontend
         run: |
           pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: 前端：启动 dev server
+        working-directory: frontend
+        run: |
           nohup pnpm dev > /tmp/frontend.log 2>&1 &
           for i in $(seq 1 40); do
             curl -s -o /dev/null http://localhost:5173/ && break

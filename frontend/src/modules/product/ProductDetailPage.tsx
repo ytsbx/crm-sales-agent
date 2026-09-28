@@ -11,12 +11,13 @@ import {
   getProduct,
   listProductSkus,
   updateProduct,
+  updateSku,
   type ProductPayload,
   type SkuPayload,
 } from '../../shared/api/product'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
-import AttachmentPanel from '../../shared/components/AttachmentPanel'
+import AttachmentPanel from '../common/AttachmentPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 

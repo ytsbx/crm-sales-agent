@@ -1,9 +1,10 @@
 """订单业务逻辑。"""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -167,7 +168,17 @@ async def create_order_from_quote(
         created_by=user_id,
     )
     session.add(order)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # 并发转单兜底：quote_version_id 唯一索引。串行重试已由上方 existing 检查
+        # 返回 40903；两个请求同时点到这里若不接住会漏到全局兜底变成 500
+        await session.rollback()
+        raise AppError(
+            ErrorCode.DUPLICATE_CONVERT,
+            "该报价版本已转过订单（或正在并发转单），请刷新后重试",
+            409,
+        )
 
     items = (
         await session.execute(
@@ -195,6 +206,20 @@ async def create_order_from_quote(
             source="WEB",
             operator_id=user_id,
             remark="由报价版本转订单",
+            created_at=datetime.now(UTC),
+        )
+    )
+    # 订单→应收（方案 §6）：转单即生成一条全款应收计划，避免"建单靠记性建应收"；
+    # 需要拆定金/尾款时在订单详情页删除后按比例重生成
+    session.add(
+        ReceivablePlan(
+            order_id=order.id,
+            plan_name="全款",
+            due_date=delivery_date or (today + timedelta(days=30)),
+            amount=version.total_amount.quantize(Decimal("0.01")),
+            currency=version.currency,
+            status="pending",
+            remark="转单自动生成，可在订单详情调整或拆分",
             created_at=datetime.now(UTC),
         )
     )

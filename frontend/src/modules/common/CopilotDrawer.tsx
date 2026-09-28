@@ -177,8 +177,10 @@ export default function CopilotDrawer() {
   if (!open) return null
 
   const messages = detailQuery.data?.messages ?? []
+  // L2 待确认 + L3 需审批都要出确认按钮——只认 awaiting_confirmation 的话，
+  // 挂在全局抽屉里的 L3 动作永远确认不了（Agent 页才有完整状态列表）
   const pending = (detailQuery.data?.actions ?? []).filter(
-    (action) => action.status === 'awaiting_confirmation',
+    (action) => action.status === 'awaiting_confirmation' || action.status === 'approval_required',
   )
 
   const renderAction = (action: AgentActionRow) => (

@@ -619,6 +619,24 @@ def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
     ):
         if key in result:
             result[key] = None
+    # 成本可倒推：无价格规则时 standard/recommended = cost/(1-margin)，
+    # 销售拿它乘 (1-margin) 就还原了成本——无规则来源时一律不给（方案 §7）
+    rule = result.get("price_rule")
+    customer_rule = result.get("customer_price_rule")
+    if not (isinstance(rule, dict) and rule.get("standard_price") is not None):
+        result["standard_price"] = None
+    if not (
+        (isinstance(rule, dict) and rule.get("guide_price") is not None)
+        or (isinstance(customer_rule, dict) and customer_rule.get("agreed_price") is not None)
+    ):
+        for key in (
+            "recommended_price",
+            "recommended_range",
+            "recommended_profit",
+            "recommended_profit_rate",
+        ):
+            if key in result:
+                result[key] = None
     cost = result.get("cost")
     if isinstance(cost, dict):
         for key in list(cost):
@@ -1051,7 +1069,9 @@ def _filter_history_by_sku(stmt, audit_model, sku_id: int):
 @router.get("/skus/{sku_id}/price-summary")
 async def price_summary(
     sku_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    # 返回体含生效成本与全部价格规则（含最低保护价），同 /skus/{id}/costs 口径，
+    # 只对价格管理角色开放（方案 §7 脱敏；此前只要求 product:view 是泄露口子）
+    _: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     return ok(await svc.price_summary(session, sku_id))

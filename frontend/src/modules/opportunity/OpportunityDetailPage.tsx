@@ -384,7 +384,20 @@ export default function OpportunityDetailPage() {
         extra={
           <>
             <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
-            <Button onClick={() => navigate('/pricing')}>去核价</Button>
+            <Button
+              onClick={() => {
+                // 深链预填核价页：带上客户；有需求明细时带首条 SKU 与数量
+                const query = new URLSearchParams({ customer_id: String(opportunity.customer_id) })
+                const firstItem = (itemsQuery.data ?? [])[0]
+                if (firstItem?.sku_id) {
+                  query.set('sku_id', String(firstItem.sku_id))
+                  query.set('quantity', String(firstItem.quantity ?? 1000))
+                }
+                navigate(`/pricing?${query.toString()}`)
+              }}
+            >
+              去核价
+            </Button>
             {canManage && (
               <>
                 <Button

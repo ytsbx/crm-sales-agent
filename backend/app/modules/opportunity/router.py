@@ -730,6 +730,19 @@ async def win_opportunity(
         win_quote = await session.get(Quote, win_version.quote_id)
         if win_quote is None or win_quote.opportunity_id != opportunity.id:
             raise AppError(ErrorCode.PARAM_ERROR, "该报价版本不属于此商机")
+        # 与 confirm-win 同一纪律：软删 / 未审批 / 已过期版本不能标成交
+        if win_quote.deleted_at is not None:
+            raise AppError(ErrorCode.PARAM_ERROR, "该报价单已删除，不能标成交")
+        if win_version.approval_status != "approved":
+            raise AppError(ErrorCode.APPROVAL_PENDING, "该报价版本未通过审批，不能成交", 422)
+        from datetime import UTC as _UTC, datetime as _dt
+
+        _today = _dt.now(_UTC).date()
+        if win_quote.valid_until and win_quote.valid_until < _today:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"报价已过有效期（{win_quote.valid_until}），不能标成交",
+            )
     stage = await svc.get_won_stage(session)
     if stage is None:
         raise AppError(ErrorCode.SYSTEM_ERROR, "未配置成交阶段", 500)
@@ -841,6 +854,11 @@ async def confirm_win_and_create_order(
             session, opportunity, to_stage=stage, operator_id=user.id, remark="确认成交"
         )
         opportunity.status = "win"
+        opportunity.win_quote_version_id = version.id
+        await session.flush()
+    elif opportunity.win_quote_version_id != version.id:
+        # 幂等补齐：已成交商机重复确认时，把成交版本对齐到本次实际确认的版本
+        # （此前只在未成交分支写这个字段，DB 里的归属可能停留在旧版本）
         opportunity.win_quote_version_id = version.id
         await session.flush()
 

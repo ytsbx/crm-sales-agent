@@ -248,7 +248,7 @@ def main():
         })
         created_quotes.append(res['data']['quote_id'])
         warns = ' '.join(res['data'].get('warnings', []))
-        record('A07', '包装/目的地随需求进入核价上下文', ('包装' in warns) or ('目的地' in warns) or True,
+        record('A07', '包装/目的地随需求进入核价上下文', ('包装' in warns) or ('目的地' in warns),
                warns[:120])
 
         # ---------------- A08 导入预览与错误清单 ----------------

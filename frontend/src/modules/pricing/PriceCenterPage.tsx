@@ -355,7 +355,7 @@ export default function PriceCenterPage() {
                     onChange={(value) => setLookupOppId(value as number)}
                     optionList={(lookupOppQuery.data?.items ?? []).map((item) => ({
                       value: item.id,
-                      label: `${item.title ?? item.name ?? '商机'}（${item.customer_name ?? ''}）`,
+                      label: `${item.title ?? '商机'}（${item.customer_name ?? ''}）`,
                     }))}
                     filter
                     style={{ width: 320 }}
@@ -558,7 +558,14 @@ export default function PriceCenterPage() {
                     title: '状态',
                     dataIndex: 'status',
                     width: 90,
-                    render: (v: string) => (v === 'active' ? <Tag color="green">生效</Tag> : <Tag>停用</Tag>),
+                    render: (v: string) =>
+                      v === 'active' ? (
+                        <Tag color="green">生效</Tag>
+                      ) : v === 'historical' ? (
+                        <Tag color="grey">历史</Tag>
+                      ) : (
+                        <Tag>停用</Tag>
+                      ),
                   },
                   {
                     title: '操作',
@@ -588,15 +595,17 @@ export default function PriceCenterPage() {
               <div className="toolbar">
                 <div style={{ flex: 1 }} />
                 {canManage && (
-                  <CsvImportButtons
-                    templateUrl="/api/v1/customer-price-rules/import-template"
-                    templateName="客户特殊价导入模板.csv"
-                    importUrl="/api/v1/customer-price-rules/import"
-                    invalidateQueryKeys={['customer-price-rules']}
-                  />
-                  <Button theme="solid" onClick={() => setCustomerPriceVisible(true)}>
-                    新增客户特殊价
-                  </Button>
+                  <>
+                    <CsvImportButtons
+                      templateUrl="/api/v1/customer-price-rules/import-template"
+                      templateName="客户特殊价导入模板.csv"
+                      importUrl="/api/v1/customer-price-rules/import"
+                      invalidateQueryKeys={['customer-price-rules']}
+                    />
+                    <Button theme="solid" onClick={() => setCustomerPriceVisible(true)}>
+                      新增客户特殊价
+                    </Button>
+                  </>
                 )}
               </div>
               <Table<CustomerPriceRow>

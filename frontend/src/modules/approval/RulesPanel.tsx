@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState, type ComponentProps } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -32,7 +32,9 @@ import {
 import { listQuotes, listQuoteVersions } from '../../shared/api/quote'
 import SectionCard from '../../shared/components/SectionCard'
 
-const KIND_TONE: Record<string, string> = {
+type TagColor = ComponentProps<typeof Tag>['color']
+
+const KIND_TONE: Record<string, TagColor> = {
   auto_pass: 'green',
   express: 'blue',
   exception_route: 'red',
@@ -150,7 +152,9 @@ export default function RulesPanel() {
       title: '类型',
       dataIndex: 'kind',
       width: 110,
-      render: (kind: string) => <Tag color={KIND_TONE[kind] ?? 'grey'}>{RULE_KIND_LABEL[kind] ?? kind}</Tag>,
+      render: (kind: string) => (
+        <Tag color={(KIND_TONE[kind] ?? 'grey') as TagColor}>{RULE_KIND_LABEL[kind] ?? kind}</Tag>
+      ),
     },
     {
       title: '触发条件',
@@ -492,7 +496,7 @@ function VersionDrawer({ rule, onClose }: { rule: ApprovalRuleRow | null; onClos
 
 // ---------------------------------------------------------------- 规则沙盒
 
-function SandboxPanel({ fields }: { fields: ConditionFieldMeta[] }) {
+function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
   const [keyword, setKeyword] = useState('')
   const [quoteId, setQuoteId] = useState<number | null>(null)
   const [versionId, setVersionId] = useState<number | null>(null)
@@ -513,11 +517,6 @@ function SandboxPanel({ fields }: { fields: ConditionFieldMeta[] }) {
     onSuccess: (data) => setResult(data),
     onError: (error: Error) => Toast.error(error.message),
   })
-
-  const metaByField = useMemo(
-    () => Object.fromEntries((result?.context_fields ?? fields).map((f) => [f.field, f])),
-    [result, fields],
-  )
 
   return (
     <SectionCard style={{ marginTop: 16 }}>

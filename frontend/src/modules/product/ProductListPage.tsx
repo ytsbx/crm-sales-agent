@@ -172,7 +172,7 @@ export default function ProductListPage() {
                 value={importKind}
                 onChange={(v) => setImportKind(v as 'products' | 'skus')}
                 style={{ width: 110 }}
-                options={[
+                optionList={[
                   { value: 'products', label: '导入产品' },
                   { value: 'skus', label: '导入SKU' },
                 ]}

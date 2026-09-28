@@ -127,13 +127,13 @@ export default function ApprovalPage() {
       width: 120,
       render: (value: string, record: ApprovalRow) => {
         // 规则加签的单子：本级通过后停在会签节点，要让人一眼看出现在轮到谁
-        const atCoSign = record.current_node === 'co_sign' && record.summary?.co_sign
+        const coSign = record.current_node === 'co_sign' ? record.summary?.co_sign : null
         return (
           <div style={{ display: 'grid', gap: 2 }}>
             <Tag color={value === '待审批' ? 'orange' : value === '已通过' ? 'green' : 'grey'}>{value}</Tag>
-            {atCoSign && (
+            {coSign && (
               <Tag color="red" size="small">
-                待{record.summary.co_sign.label ?? '会签'}
+                待{coSign.label ?? '会签'}
               </Tag>
             )}
             {record.summary?.auto_passed && <Tag color="green" size="small">规则免审</Tag>}

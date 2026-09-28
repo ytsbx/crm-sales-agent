@@ -799,7 +799,8 @@ async def calculate_price(
         "minimum_price": _f(floor_price),
         "authorized_min_margin": _f(min_margin),
         "can_approve": can_approve,
-        "quoted_price": _f(check_price),
+        # 没传报价时 check_price 只是建议价的别名，回显出去等于把成本推算价原样给出去
+        "quoted_price": _f(check_price) if quoted_price is not None else None,
         "currency": currency.upper(),
         "exchange_rate": _f(fx),
         "cost_in_quote_currency": _f(cost_for_profit),

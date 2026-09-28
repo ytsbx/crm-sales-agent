@@ -374,11 +374,31 @@ async def create_quote(
             # 无适用价时不做成本推算（D4/D5），回退目标价并显式留痕要求人工确认。
             sku = await session.get(Sku, opp_item.sku_id)
             sku_label = sku.sku_code if sku else str(opp_item.sku_id)
+            if sku is not None and sku.moq and opp_item.quantity < sku.moq:
+                item_warnings.append(
+                    f"SKU {sku_label}：数量 {opp_item.quantity} 低于起订量 {sku.moq}，"
+                    f"请与生产确认能否接单（方案 §4.1 MOQ 校验）"
+                )
+            # 方案 §7：需求里的包装/目的地透传进报价上下文并显式提示，
+            # 但物流/包装费用不计入拟报价（避免与附加费用重复计入），由销售在附加费用里补
+            context_bits = []
+            if opp_item.package_requirement:
+                context_bits.append(f"包装要求「{opp_item.package_requirement}」")
+            if opp_item.destination:
+                context_bits.append(f"目的地「{opp_item.destination}」")
+            if context_bits:
+                item_warnings.append(
+                    f"SKU {sku_label}：需求含 {'、'.join(context_bits)}，"
+                    f"物流/包装费用未计入拟报价，请在附加费用中补充"
+                )
             lookup = await pricing_service.lookup_applicable_price(
                 session,
                 customer=customer_obj,
                 sku_id=opp_item.sku_id,
                 quantity=opp_item.quantity,
+                # 公海客户（无负责人）不参与专属价匹配——与查价路由同一纪律，
+                # 协议价只对负责人可见，此前这里漏传导致公海也能吃到专属价
+                include_customer_specific=customer_obj.owner_id is not None,
             )
             if lookup["status"] == "ok" and lookup["unit_price"] is not None:
                 quoted_price, _ = convert_cny_to(
@@ -657,10 +677,11 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
     ).scalars().all()
     discount = sum((charge.amount for charge in charges if charge.is_discount), ZERO)
     charge_amount = sum((charge.amount for charge in charges if not charge.is_discount), ZERO)
-    version.subtotal_amount = subtotal
-    version.charge_amount = charge_amount
-    version.discount_amount = discount
-    version.total_amount = subtotal + charge_amount + discount
+    version.subtotal_amount = subtotal.quantize(Decimal("0.01"))
+    version.charge_amount = charge_amount.quantize(Decimal("0.01"))
+    version.discount_amount = discount.quantize(Decimal("0.01"))
+    # 统一定点舍入（方案 §5）：与订单侧 amount 口径一致，避免出现 3 位小数的总额
+    version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"))
 
 
 async def version_items(session: AsyncSession, version_id: int) -> list[QuoteItem]:

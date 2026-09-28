@@ -159,6 +159,7 @@ export interface ApprovalRow {
   business_id: number
   status: string
   status_label: string
+  current_node?: string | null
   applicant_id?: number | null
   applicant_name?: string | null
   summary?: {
@@ -167,6 +168,8 @@ export interface ApprovalRow {
     reason?: string
     offending?: Array<{ sku_code: string; quoted_price: number; minimum_price: number; profit_rate: number }>
     authorized_min_margin?: number
+    co_sign?: { label?: string; role_codes?: string[]; status?: string } | null
+    auto_passed?: boolean
   } | null
   created_at: string
   finished_at?: string | null

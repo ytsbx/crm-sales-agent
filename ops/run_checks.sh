@@ -35,7 +35,8 @@ echo "== 2. 接口回归（顺序跑）=="
 for suite in check_quote_api check_reference_integrity check_order_payment_api \
              check_customer_contact_api check_lead_auth_role_api \
              check_product_pricing_api check_agent_api \
-             check_approval_rules check_agent_stream check_scheduler; do
+             check_approval_rules check_agent_stream check_scheduler \
+             check_quote_center_acceptance; do
   if PYTHONPATH=. .venv/bin/python "scripts/$suite.py" >/tmp/crm-check-$suite.log 2>&1; then
     echo "OK  $suite"
   else

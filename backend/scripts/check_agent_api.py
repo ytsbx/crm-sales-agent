@@ -31,7 +31,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from decimal import Decimal
 
 BASE = 'http://127.0.0.1:8000/api/v1'
 RUN = str(int(time.time()))[-6:]
@@ -115,6 +114,10 @@ async def clean(verbose=False):
         ('用例订单', "delete from sales_orders where customer_id in (select id from customers where name like 'CHK%')"),
         ('用例客户特殊价', "delete from customer_price_rules where customer_id in "
                   "(select id from customers where name like 'CHK%')"),
+        ('用例报价附加费用', "delete from quote_charges where quote_version_id in "
+                  "(select id from quote_versions where quote_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK%')))"),
+        ('用例报价发送日志', "delete from quote_send_logs where quote_version_id in "
+                  "(select id from quote_versions where quote_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK%')))"),
         ('用例报价明细', "delete from quote_items where quote_version_id in "
                   "(select id from quote_versions where quote_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK%')))"),
         ('用例报价版本', "delete from quote_versions where quote_id in "
@@ -147,7 +150,7 @@ async def clean(verbose=False):
                     "union all "
                     "select 'customer', id, name from customers where name like 'CHK%'"
                 ))
-                print('  清库失败，挡路数据：', [dict(r) for r in blocking])
+                print('  清库失败，挡路数据：', [dict(r._mapping) for r in blocking])
             raise last_error
 
 
@@ -302,8 +305,13 @@ async def main():
     status, res = call('POST', '/agent/pricing-analysis', token=admin,
                        body={'sku_id': sku_id, 'quantity': 100})
     check('核价分析', res.get('code'), 0)
-    check_true('带建议价', res['data']['recommended_price'] is not None,
-               str(res['data']['recommended_price']))
+    # A06：无成本也无价格规则时建议价为 None（不给成本推算价），此时 insights 会说明缺成本
+    check_true(
+        '带建议价或明确无成本说明',
+        res['data']['recommended_price'] is not None
+        or any('成本' in str(i) for i in res['data'].get('insights', [])),
+        str(res['data']['recommended_price']),
+    )
     check_true('带 insights', len(res['data']['insights']) >= 1, str(res['data']['insights'][:1]))
 
     status, res = call('POST', '/agent/quote-draft', token=admin,
@@ -391,6 +399,11 @@ async def main():
         from app.modules.order.model import SalesOrder
         from app.modules.payment.model import PaymentRecord, ReceivablePlan
 
+        # 基线差值断言（必须在插入探针回款之前取）：库里可能有演示/历史回款
+        # （seed_demo 等），断言只关心"探针的 5 万只有 admin 看得见"，不假设库是空的
+        zs_baseline = (await agent_tools.get_receivables_summary(ctx_zs))['received_amount']
+        admin_baseline = (await agent_tools.get_receivables_summary(ctx_admin))['received_amount']
+
         probe_order = SalesOrder(
             quote_id=None, order_no=f'CHK{RUN}SO', customer_id=outsider_b,
             owner_id=1, status='fulfilled', total_amount=50000,
@@ -415,8 +428,8 @@ async def main():
 
         zs_sum = await agent_tools.get_receivables_summary(ctx_zs)
         admin_sum = await agent_tools.get_receivables_summary(ctx_admin)
-        check('张三看不到这笔 5 万回款', zs_sum['received_amount'], 0.0)
-        check('admin 看得到', admin_sum['received_amount'], 50000.0)
+        check('张三看不到这笔 5 万回款', zs_sum['received_amount'], float(zs_baseline))
+        check('admin 看得到', admin_sum['received_amount'], float(admin_baseline) + 50000.0)
 
     print()
     print('=== 10. 权限门槛（无 agent:use 的角色）===')
