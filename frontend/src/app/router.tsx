@@ -5,6 +5,7 @@ import AppLayout from './layout/AppLayout'
 import LoginPage from '../modules/auth/LoginPage'
 import CustomerDetailPage from '../modules/customer/CustomerDetailPage'
 import CustomerListPage from '../modules/customer/CustomerListPage'
+import KnowledgePage from '../modules/knowledge/KnowledgePage'
 import LeadListPage from '../modules/lead/LeadListPage'
 import LogisticsPage from '../modules/logistics/LogisticsPage'
 import OpportunityDetailPage from '../modules/opportunity/OpportunityDetailPage'
@@ -70,18 +71,7 @@ export const router = createBrowserRouter([
       },
       { path: 'orders/:id', element: <OrderDetailPage /> },
       { path: 'receivables', element: <OrderListPage initialTab="receivables" /> },
-      {
-        path: 'knowledge',
-        element: (
-          <div className="page-container">
-            <h2 className="page-title">知识库</h2>
-            <p className="page-subtitle">产品资料、销售 SOP、常见问题，供 AI 检索引用</p>
-            <div className="placeholder-box">
-              知识库排在 Phase 6 之后：需要接本机的 Qdrant 向量库与文档解析能力。
-            </div>
-          </div>
-        ),
-      },
+      { path: 'knowledge', element: <KnowledgePage /> },
       {
         path: 'wecom',
         element: <WeComPage />,

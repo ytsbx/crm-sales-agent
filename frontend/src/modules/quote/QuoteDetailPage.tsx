@@ -247,6 +247,28 @@ export default function QuoteDetailPage() {
       ),
     },
     {
+      // 方案 §4.1"显示价格来源"：拟报价的依据（客户专属价/等级价/通用指导价/手工）
+      title: '价格来源',
+      dataIndex: 'price_source',
+      width: 110,
+      render: (v: string | null, record: QuoteItemRow) => {
+        const label =
+          v === 'customer_specific'
+            ? '客户专属价'
+            : v === 'level'
+              ? '客户等级价'
+              : v === 'general'
+                ? '通用指导价'
+                : '手工价'
+        return (
+          <Tag type="light" color={v ? 'blue' : 'grey'} size="small">
+            {label}
+            {record.customer_level_snapshot ? `（${record.customer_level_snapshot}）` : ''}
+          </Tag>
+        )
+      },
+    },
+    {
       title: '利润率',
       dataIndex: 'profit_rate_snapshot',
       width: 100,

@@ -53,6 +53,9 @@ export interface QuoteItemRow {
   standard_price_snapshot?: number | null
   recommended_price_snapshot?: number | null
   minimum_price_snapshot?: number | null
+  /** 价格来源快照（方案 §4.1）：customer_specific/level/general，空=手工价 */
+  price_source?: string | null
+  customer_level_snapshot?: string | null
   quoted_price: number
   amount: number
   profit_snapshot: number

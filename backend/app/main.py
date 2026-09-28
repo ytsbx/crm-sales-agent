@@ -21,6 +21,7 @@ from app.modules.customer.io_router import router as customer_io_router
 from app.modules.customer.tags_router import router as customer_tags_router
 from app.modules.erp.router import router as erp_router
 from app.modules.followup.router import router as followup_router
+from app.modules.inquiry.router import router as inquiry_router
 from app.modules.file.router import router as file_router
 from app.modules.lead.router import router as lead_router
 from app.modules.lead.io_router import router as lead_io_router
@@ -101,6 +102,7 @@ app.include_router(lead_io_router, prefix=settings.api_prefix)
 app.include_router(lead_router, prefix=settings.api_prefix)
 app.include_router(opportunity_router, prefix=settings.api_prefix)
 app.include_router(followup_router, prefix=settings.api_prefix)
+app.include_router(inquiry_router, prefix=settings.api_prefix)
 app.include_router(task_router, prefix=settings.api_prefix)
 app.include_router(timeline_router, prefix=settings.api_prefix)
 # /price-rules/import、/costs/import 等静态路径必须在动态路径之前（与产品/客户 io_router 同理）
