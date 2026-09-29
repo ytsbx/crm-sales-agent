@@ -212,6 +212,8 @@ async def import_customers(
     rows = await io_util.parse_upload(file)
     created: list[dict] = []
     skipped: list[dict] = []
+    #: 撞单：照样建档，但归属进争议冻结，等主管裁定（文档 §11.5 :279）
+    disputed: list[dict] = []
     failed: list[dict] = []
 
     for index, row in enumerate(rows, start=2):  # 第 1 行是表头
@@ -227,14 +229,19 @@ async def import_customers(
             )
             if duplicates:
                 top = duplicates[0]
-                skipped.append(
+                # 撞单**不再丢行**（文档 §11.5 :269「历史导入客户不能一律被先建档者
+                # 占有」）：照样建档，同时开待裁定单、进争议冻结，归属等主管裁定。
+                # 以前这里直接 continue，等于导入那一刻就按"谁先建档"把归属定了，
+                # 正是文档点名要避免的。
+                disputed.append(
                     {
                         "row": index,
                         "name": name,
-                        "reason": f"疑似重复：{top['name']}（{top['score']} 分，{'、'.join(top['reasons'])}）",
+                        "candidate": top.get("name"),
+                        "score": top.get("score"),
+                        "reasons": top.get("reasons"),
                     }
                 )
-                continue
 
             owner_id = await io_util.resolve_owner(
                 session, row.get("负责人登录名"), user.id
@@ -261,6 +268,12 @@ async def import_customers(
             )
             session.add(customer)
             await session.flush()
+            if disputed and disputed[-1].get("row") == index:
+                from app.modules.customer import duplicates as dup_service
+
+                await dup_service.open_cases_for_customer(
+                    session, customer=customer, source="import", actor_id=user.id
+                )
             created.append(
                 {
                     "row": index,
@@ -294,7 +307,10 @@ async def import_customers(
             "failed_count": len(failed),
             "created": created[:50],
             "skipped": skipped[:50],
+            "disputed_count": len(disputed),
+            "disputed": disputed[:50],
             "failed": failed[:50],
         },
-        f"导入完成：成功 {len(created)} 条，跳过疑似重复 {len(skipped)} 条，失败 {len(failed)} 条",
+        f"导入完成：成功 {len(created)} 条，其中 {len(disputed)} 条疑似撞单已进待裁定，"
+        f"跳过 {len(skipped)} 条，失败 {len(failed)} 条",
     )
