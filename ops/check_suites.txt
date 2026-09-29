@@ -28,6 +28,7 @@ check_sales_attribution
 check_duplicate_arbitration
 check_sales_targets
 check_dingtalk_idempotency
+check_data_scope
 check_notification_retry
 check_notification_levels
 check_delivery_analytics
