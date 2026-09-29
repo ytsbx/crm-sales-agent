@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Banner, Button, Switch, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Select, Switch, Toast } from '@douyinfe/semi-ui'
 
 import SectionCard from '../../shared/components/SectionCard'
 import { getDeliveryFailures, retryFailedNotifications } from '../../shared/api/analytics'
 import {
+  getLevelPolicy,
   getNotificationSettings,
+  updateLevelPolicy,
   updateNotificationSettings,
   type NotificationSettings,
 } from '../../shared/api/notificationSettings'
@@ -52,6 +54,27 @@ export default function NotificationSettingsPanel() {
   })
 
   // 投递失败概览 + 人工补投（文档 §六）：失败行不再是终点
+  // 通知分级（场景24）：默认"全部即时推"，**不配就不改变投递行为**。
+  // 哪些类型该进日报是业务决策，所以做成可配。
+  const levelQuery = useQuery({ queryKey: ['level-policy'], queryFn: getLevelPolicy })
+  const [policy, setPolicy] = useState<{ default_level: string; by_type: Record<string, string> } | null>(null)
+  useEffect(() => {
+    if (levelQuery.data) {
+      setPolicy({
+        default_level: levelQuery.data.default_level,
+        by_type: levelQuery.data.by_type ?? {},
+      })
+    }
+  }, [levelQuery.data])
+  const levelMutation = useMutation({
+    mutationFn: () => updateLevelPolicy(policy!),
+    onSuccess: () => {
+      Toast.success('分级策略已保存')
+      void queryClient.invalidateQueries({ queryKey: ['level-policy'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const failuresQuery = useQuery({
     queryKey: ['delivery-failures'],
     queryFn: getDeliveryFailures,
@@ -149,6 +172,64 @@ export default function NotificationSettingsPanel() {
             </div>
           ))}
         </div>
+      </SectionCard>
+
+      {/* 场景24：主管一天收几十条业务事件时，逐条即时推等于把人训练成不看通知。
+          这里只改「怎么推」，不改「能不能查」——站内通知永远逐条都在。 */}
+      <SectionCard>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>通知分级（谁即时推、谁攒进日报）</div>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12, lineHeight: 1.7 }}>
+          紧急项即时推送且**不进日报**（不让日报延误紧急事）；普通项即时推；
+          日报项攒起来、每天合成一条发。**站内通知始终逐条都在**，分级只影响企微怎么推。
+          默认全部即时推，不配置就等于维持现状。
+        </div>
+        {policy && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 13, width: 120 }}>默认（未指定类型）</span>
+              <Select
+                value={policy.default_level}
+                onChange={(v) => setPolicy({ ...policy, default_level: v as string })}
+                optionList={(levelQuery.data?.levels ?? []).map((l) => ({
+                  value: l.value,
+                  label: l.label,
+                }))}
+                style={{ width: 220 }}
+              />
+            </div>
+            {EVENT_ROWS.map((row) => (
+              <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 13, width: 120 }}>{row.label}</span>
+                <Select
+                  value={policy.by_type[row.key] ?? ''}
+                  onChange={(v) =>
+                    setPolicy({
+                      ...policy,
+                      by_type: { ...policy.by_type, [row.key]: v as string },
+                    })
+                  }
+                  optionList={[
+                    { value: '', label: '跟随默认' },
+                    ...(levelQuery.data?.levels ?? []).map((l) => ({
+                      value: l.value,
+                      label: l.label,
+                    })),
+                  ]}
+                  style={{ width: 220 }}
+                />
+              </div>
+            ))}
+            <div>
+              <Button
+                theme="solid"
+                loading={levelMutation.isPending}
+                onClick={() => levelMutation.mutate()}
+              >
+                保存分级策略
+              </Button>
+            </div>
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard>
