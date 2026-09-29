@@ -46,11 +46,17 @@ OA_STATUS_LABEL = {
 class OaInstance(Base, IdMixin):
     __tablename__ = "oa_instances"
     __table_args__ = (
-        # 业务键唯一 = 防重复提交（场景11）。重试命中已有行就直接返回，
-        # 不再打钉钉接口——网络重试不能重复建单（文档 :43 的硬要求）。
-        UniqueConstraint(
-            "inquiry_id", "inquiry_version", "oa_type", name="uq_oa_instance_business"
-        ),
+        # **唯一约束落在幂等键上，不落在业务键上**。
+        #
+        # 文档 :43 要挡的是"**网络重试**不能重复建单"；而 §11.3 :152 又要求
+        # "**驳回后重提**跑通"。这两件事对唯一性的要求正好相反：
+        #   - 同一轮提交被重试 → 必须复用同一行（挡住重复建单）
+        #   - 驳回后重提         → 必须能建出**新一轮**（否则永远发不出去）
+        # 早先把唯一约束放在（需求+版本+类型）上，等于把"重提"也一起挡死了。
+        # 现在业务键只做普通索引（列表按它查），唯一性交给 idempotency_key，
+        # 由调用方按"第几轮提交"决定它的值。
+        Index("ix_oa_instances_business", "inquiry_id", "inquiry_version", "oa_type"),
+        UniqueConstraint("idempotency_key", name="uq_oa_instance_idempotency"),
         Index("ix_oa_instances_instance", "instance_id"),
         Index("ix_oa_instances_status", "status"),
     )
@@ -60,6 +66,10 @@ class OaInstance(Base, IdMixin):
     inquiry_id: Mapped[int] = mapped_column(BigInteger)
     inquiry_version: Mapped[int] = mapped_column(BigInteger, default=1)
     oa_type: Mapped[str] = mapped_column(String(24), default="inquiry")
+    #: 幂等键：同一轮提交重复调用只落一行；驳回后重提换一个键，落成新一轮
+    idempotency_key: Mapped[str] = mapped_column(String(128))
+    #: 第几轮提交（驳回后重提 +1）
+    submit_round: Mapped[int] = mapped_column(BigInteger, default=1)
 
     #: 生成实例时用的模板标识与提交人，排障时要能还原"当时拿什么发的"
     process_code: Mapped[str | None] = mapped_column(String(128), nullable=True)

@@ -61,8 +61,18 @@ async def get_by_business_key(
                 OaInstance.inquiry_version == inquiry_version,
                 OaInstance.oa_type == oa_type,
             )
+            .order_by(OaInstance.submit_round.desc())
         )
     ).scalars().first()
+
+
+async def _next_round(
+    session: AsyncSession, *, inquiry_id: int, inquiry_version: int, oa_type: str
+) -> int:
+    latest = await get_by_business_key(
+        session, inquiry_id=inquiry_id, inquiry_version=inquiry_version, oa_type=oa_type
+    )
+    return int(latest.submit_round) + 1 if latest is not None else 1
 
 
 async def create_inquiry_instance(
@@ -76,15 +86,25 @@ async def create_inquiry_instance(
     originator_user_id: str,
     field_map: dict[str, Any],
     oa_type: str = "inquiry",
+    resubmit: bool = False,
 ) -> OaInstance:
-    """发起询价审批（幂等）。已发起过就返回既有行，不再打钉钉。"""
-    existing = await get_by_business_key(
+    """发起询价审批。
+
+    **提交轮次决定幂等键**（文档 :43 挡网络重试，§11.3 :152 要重提能跑通）：
+
+    - `resubmit=False`（默认）——同一轮：已有记录就返回，不再打钉钉。
+      网络重试、页面重复点击都命中这条，不会重复建单；
+    - `resubmit=True`——驳回/撤销之后**业务主动重提**：轮次 +1、换幂等键，
+      在钉钉里建一张新单。这条不这么做的话，重提会被唯一约束挡住、永远发不出去。
+    """
+    latest = await get_by_business_key(
         session, inquiry_id=inquiry_id, inquiry_version=inquiry_version, oa_type=oa_type
     )
-    if existing is not None:
-        # 已发起（哪怕是失败）都先返回：失败的那行要人工决定"重发还是改需求重提"，
-        # 自动重发可能把同一个需求在钉钉里建出两张单——正是场景11 要防的
-        return existing
+    if latest is not None and not resubmit:
+        return latest
+
+    submit_round = (int(latest.submit_round) + 1) if (resubmit and latest) else 1
+    idempotency_key = f"{inquiry_id}:{inquiry_version}:{oa_type}:{submit_round}"
 
     form_values = build_form_values(field_map)
     from app.core.config import settings as app_settings
@@ -97,6 +117,8 @@ async def create_inquiry_instance(
             inquiry_id=inquiry_id,
             inquiry_version=inquiry_version,
             oa_type=oa_type,
+            idempotency_key=idempotency_key,
+            submit_round=submit_round,
             process_code=process_code,
             originator_user_id=originator_user_id,
             form_snapshot={"formValues": form_values},
@@ -114,6 +136,8 @@ async def create_inquiry_instance(
         inquiry_id=inquiry_id,
         inquiry_version=inquiry_version,
         oa_type=oa_type,
+        idempotency_key=idempotency_key,
+        submit_round=submit_round,
         process_code=process_code,
         originator_user_id=originator_user_id,
         form_snapshot={"formValues": form_values},
