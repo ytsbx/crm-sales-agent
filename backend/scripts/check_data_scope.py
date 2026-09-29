@@ -80,8 +80,8 @@ async def cleanup():
         cust = "(select id from customers where name like :p)"
         order = f"(select id from sales_orders where customer_id in {cust})"
         for sql in (
-            f"delete from oa_instances where inquiry_id in "
-            f"(select id from custom_inquiries where inquiry_no like :p)",
+            "delete from oa_instances where inquiry_id in "
+            "(select id from custom_inquiries where inquiry_no like :p)",
             "delete from custom_inquiries where inquiry_no like :p",
             f"delete from integration_logs where business_id in {order}",
             f"delete from order_status_history where order_id in {order}",
