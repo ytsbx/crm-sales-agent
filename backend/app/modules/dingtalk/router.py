@@ -110,6 +110,35 @@ async def start_inquiry_approval(
         if component_id and value not in (None, ""):
             field_map[component_id] = value
 
+    # 「产品参考图片」是**必填的图片控件**：图不能直接塞进审批单，
+    # 得先上传给钉钉换 media_id——**这一步也是对外的**，所以只在总闸打开时真传；
+    # 关着的时候只把"会用哪张图"记下来，等真发的时候再传。
+    from app.core.config import settings as app_settings
+
+    image_component = (cfg or {}).get("image_component")
+    if image_component:
+        biz_type = (cfg or {}).get("inquiry_file_business_type") or "inquiry"
+        found = await svc.first_image_attachment(
+            session, business_type=biz_type, business_id=inquiry.id
+        )
+        if found is None:
+            raise AppError(
+                ErrorCode.REQUIRED_FIELD_MISSING,
+                "钉钉要求必须上传「产品参考图片」，请先在需求里上传图纸或参考图再发起",
+                422,
+            )
+        filename, content = found
+        if app_settings.dingtalk_push_off:
+            # 干跑：不传图，只记下会用哪一张（对外零请求）
+            field_map[image_component] = f"（待上传：{filename}）"
+        else:
+            from app.modules.dingtalk.client import get_client
+
+            media_id = await get_client().upload_media(
+                content=content, filename=filename, media_type="image"
+            )
+            field_map[image_component] = media_id
+
     row = await svc.create_inquiry_instance(
         session,
         user=user,
