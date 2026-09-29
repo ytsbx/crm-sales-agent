@@ -135,6 +135,34 @@ class DingTalkClient:
             )
         return data
 
+    async def get_process_schema(self, process_code: str) -> dict[str, Any]:
+        """拉某个模板的完整表单结构（含每个控件的 componentId）。
+
+        预填必须用 **componentId**，不是中文名称——名字对不上钉钉不报错、
+        只把那格留空，于是"预填成功"的假象下业务还得手填一遍。
+        所以字段映射一律以这个方法的结果为准，不靠人抄。
+
+        接口形状是**按模板查**：`GET .../forms/schemas/processCodes?processCode=xxx`。
+        不带 processCode 会被拒（"processCode is mandatory"），
+        POST 到同一路径是 404——两个都实测过，别再按"拉全部"的思路写。
+        "公司里有哪些审批模板"要用管理端接口或让管理员从后台看。
+        """
+        self._require()
+        token = await self.access_token()
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{settings.dingtalk_base_url}/v1.0/workflow/forms/schemas/processCodes",
+                params={"processCode": process_code},
+                headers={"x-acs-dingtalk-access-token": token},
+            )
+        data = resp.json() if resp.content else {}
+        if resp.status_code != 200:
+            raise DingTalkError(
+                data.get("message") or resp.text[:200],
+                api="forms/schemas/processCodes",
+            )
+        return data.get("result") or data
+
 
 _client: DingTalkClient | None = None
 
