@@ -163,6 +163,33 @@ class DingTalkClient:
             )
         return data.get("result") or data
 
+    async def upload_media(
+        self, *, content: bytes, filename: str, media_type: str = "image"
+    ) -> str:
+        """上传图片/附件，返回 media_id。
+
+        审批模板里的「产品参考图片」是**必填**的图片控件，而图片不能直接塞进
+        审批单——必须先用这个接口换成 media_id 再填。所以"从 CRM 带图过去"
+        这一步绕不开。
+
+        用的是旧版 `oapi.dingtalk.com/media/upload`（它按 multipart 收文件、
+        返回 media_id），新版接口没有等价能力。
+        """
+        self._require()
+        token = await self.access_token()
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.post(
+                "https://oapi.dingtalk.com/media/upload",
+                params={"access_token": token, "type": media_type},
+                files={"media": (filename, content)},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("errcode") or not data.get("media_id"):
+            raise DingTalkError(
+                data.get("errmsg") or resp.text[:200], api="media/upload"
+            )
+        return str(data["media_id"])
+
 
 _client: DingTalkClient | None = None
 
