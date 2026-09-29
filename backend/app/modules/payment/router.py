@@ -131,8 +131,13 @@ async def generate_receivables(
     """按比例生成应收计划，例如 30% 定金 + 70% 尾款。"""
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+    # 比例校验**保持原样**（容差 0.0001）：实测浮点误差只有 1e-16 量级，够不到容差，
+    # 不会误判；而比例微差的风险已由下面"最后一期补差额"兜住——就算有人把比例
+    # 打成 99.99%，最后一期 = 总额 − 前面各期之和，合计仍然严格等于订单总额。
     if not payload.ratios or abs(sum(payload.ratios) - 1) > 0.0001:
         raise AppError(ErrorCode.PARAM_ERROR, "比例之和必须等于 1，例如 [0.3, 0.7]")
+    # 金额计算用 Decimal：保留输入字面值，不引入浮点误差（属于舍入修复的一部分）
+    ratios = [Decimal(str(r)) for r in payload.ratios]
 
     existing = (
         await session.execute(
@@ -144,13 +149,24 @@ async def generate_receivables(
 
     due_dates = [payload.first_due_date, payload.second_due_date or payload.first_due_date]
     names = [payload.first_name, payload.second_name]
+    # 各期金额：前面按比例算，**最后一期用"总额 − 前面各期之和"**。
+    # 每期独立四舍五入会让合计不等于总额（订单 0.05 元按 50%/50% 得
+    # 0.02 + 0.02 = 0.04，少一分）；差额补在最后一期，合计严格等于订单总额。
+    total = Decimal(order.total_amount)
+    amounts: list[Decimal] = []
+    for index, ratio in enumerate(ratios):
+        if index == len(ratios) - 1:
+            amounts.append(total - sum(amounts, Decimal(0)))
+        else:
+            amounts.append((total * ratio).quantize(Decimal("0.01")))
+
     created = []
-    for index, ratio in enumerate(payload.ratios):
+    for index, ratio in enumerate(ratios):
         plan = ReceivablePlan(
             order_id=order_id,
             plan_name=names[index] if index < len(names) else f"第 {index + 1} 期",
             due_date=due_dates[index] if index < len(due_dates) else payload.first_due_date,
-            amount=(order.total_amount * Decimal(str(ratio))).quantize(Decimal("0.01")),
+            amount=amounts[index],
             status="pending",
             created_at=datetime.now(UTC),
         )
