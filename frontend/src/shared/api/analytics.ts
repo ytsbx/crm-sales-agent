@@ -494,6 +494,8 @@ export function getSalesTargetBases(year: number) {
 export function upsertSalesTarget(payload: {
   period: string
   user_id: number | null
+  /** 团队目标（文档 §六 :121）：填了就按部门设，与 user_id 互斥 */
+  department_id?: number | null
   new_customer_target: number
   sales_target: number
   remark?: string | null

@@ -28,7 +28,7 @@ import {
   type SalesTargetRow,
   type SalesUserStat,
 } from '../../shared/api/analytics'
-import { listUsers } from '../../shared/api/system'
+import { listDepartments, listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
 
 function BarList({ data, unit }: { data: NameValue[]; unit?: string }) {
@@ -71,8 +71,9 @@ export default function AnalyticsPage() {
     period?: string
     user_id?: number | null
   }>({ visible: false })
-  const [targetForm, setTargetForm] = useState<{ user_id?: number | null; period: string; new_customer_target: string; sales_target: string }>({
+  const [targetForm, setTargetForm] = useState<{ user_id?: number | null; department_id?: number | null; period: string; new_customer_target: string; sales_target: string }>({
     user_id: undefined,
+    department_id: undefined,
     period: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
     new_customer_target: '',
     sales_target: '',
@@ -105,11 +106,20 @@ export default function AnalyticsPage() {
     queryFn: () => listUsers({ page: 1, page_size: 100 }),
     enabled: targetModal.visible,
   })
+  // 团队目标要选部门（文档 §六 :121「目标按团队、业务员、周期设置」）
+  const departmentsQuery = useQuery({
+    queryKey: ['departments'],
+    queryFn: () => listDepartments(),
+    enabled: targetModal.visible,
+  })
   const targetSaveMutation = useMutation({
     mutationFn: () =>
       upsertSalesTarget({
         period: targetForm.period,
-        user_id: targetForm.user_id ?? null,
+        // 部门与业务员互斥：选了部门就是团队目标，不再带 user_id，
+        // 否则后端会按"人 + 部门"两个条件去找同一行，谁都匹配不上
+        user_id: targetForm.department_id ? null : (targetForm.user_id ?? null),
+        department_id: targetForm.department_id ?? null,
         new_customer_target: Number(targetForm.new_customer_target || 0),
         sales_target: Number(targetForm.sales_target || 0),
       }),
@@ -654,7 +664,13 @@ export default function AnalyticsPage() {
             <Select
               value={targetForm.user_id ?? 0}
               onChange={(value) =>
-                setTargetForm({ ...targetForm, user_id: value === 0 ? null : (value as number) })
+                // 选人就清掉部门：两者互斥（后端按"人 + 部门"两个条件找同一行，
+                // 两个都带谁都匹配不上）
+                setTargetForm({
+                  ...targetForm,
+                  user_id: value === 0 ? null : (value as number),
+                  department_id: undefined,
+                })
               }
               optionList={[
                 { value: 0, label: '全公司' },
@@ -663,6 +679,26 @@ export default function AnalyticsPage() {
               filter
               style={{ width: '100%' }}
               placeholder="选择全公司或某位业务员"
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>团队（可选）</div>
+            <Select
+              value={targetForm.department_id ?? 0}
+              onChange={(value) =>
+                setTargetForm({
+                  ...targetForm,
+                  department_id: value === 0 ? undefined : (value as number),
+                  user_id: undefined,
+                })
+              }
+              optionList={[
+                { value: 0, label: '不限（全公司）' },
+                ...(departmentsQuery.data ?? []).map((d) => ({ value: d.id, label: d.name })),
+              ]}
+              filter
+              style={{ width: '100%' }}
+              placeholder="选部门即设为团队目标"
             />
           </div>
           <div>

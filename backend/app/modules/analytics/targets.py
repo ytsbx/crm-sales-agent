@@ -205,6 +205,7 @@ async def upsert_target(
     user_id: int | None,
     new_customer_target: int,
     sales_target: float,
+    department_id: int | None = None,
     remark: str | None = None,
 ) -> SalesTarget:
     _validate_period(period)
@@ -215,11 +216,18 @@ async def upsert_target(
     stmt = stmt.where(
         SalesTarget.user_id == user_id if user_id is not None else SalesTarget.user_id.is_(None)
     )
+    # 团队目标：按部门匹配（与按人匹配互斥，见 model 里的语义说明）
+    stmt = stmt.where(
+        SalesTarget.department_id == department_id
+        if department_id is not None
+        else SalesTarget.department_id.is_(None)
+    )
     row = (await session.execute(stmt)).scalars().first()
     if row is None:
         row = SalesTarget(
             period=period,
             user_id=user_id,
+            department_id=department_id,
             created_by=user.id,
             created_at=datetime.now(UTC),
         )

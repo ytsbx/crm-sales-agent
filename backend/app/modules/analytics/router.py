@@ -18,6 +18,8 @@ router = APIRouter(tags=["Analytics"])
 class SalesTargetUpsert(BaseModel):
     period: str
     user_id: int | None = None
+    # 团队目标（文档 §六 :121）：与 user_id 互斥——指定部门就是团队目标
+    department_id: int | None = None
     new_customer_target: int = 0
     sales_target: float = 0
     remark: str | None = None
@@ -62,6 +64,7 @@ async def upsert_sales_target(
         user=user,
         period=payload.period,
         user_id=payload.user_id,
+        department_id=payload.department_id,
         new_customer_target=payload.new_customer_target,
         sales_target=payload.sales_target,
         remark=payload.remark,
@@ -75,6 +78,7 @@ async def upsert_sales_target(
         after={
             "period": payload.period,
             "user_id": payload.user_id,
+            "department_id": payload.department_id,
             "new_customer_target": payload.new_customer_target,
             "sales_target": payload.sales_target,
         },
