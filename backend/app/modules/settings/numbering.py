@@ -95,6 +95,22 @@ DEFAULT_RULES: dict[str, dict] = {
         "seq_length": 4,
         "reset_period": "daily",
     },
+    # 对外单据（文档 §3.5 / 场景12）：打样需求单与下单文件分开编号——
+    # 打样单发给工厂、下单文件发给客户，两类文件的号段混在一起对账时要靠文档名猜
+    "sample_doc": {
+        "name": "打样需求单号",
+        "prefix": "DY",
+        "date_format": "%Y%m%d",
+        "seq_length": 4,
+        "reset_period": "daily",
+    },
+    "order_doc": {
+        "name": "下单文件号",
+        "prefix": "XD",
+        "date_format": "%Y%m%d",
+        "seq_length": 4,
+        "reset_period": "daily",
+    },
 }
 
 RESET_PERIODS = {
