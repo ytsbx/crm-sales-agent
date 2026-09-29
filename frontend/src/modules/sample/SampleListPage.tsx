@@ -20,11 +20,14 @@ import { listSkusForPricing } from '../../shared/api/pricing'
 import {
   addSampleItem,
   approveSample,
+  confirmSample,
   createSample,
   feedbackSample,
   listSamples,
+  madeSample,
   shipSample,
   signSample,
+  updateSample,
   type SampleRequestRow,
 } from '../../shared/api/sample'
 import PageHeader from '../../shared/components/PageHeader'
@@ -55,6 +58,11 @@ function fmt(value?: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
 }
 
+/** 生产资料这类"可有可无"的字段统一显示成 —，而不是一片空白。 */
+function dash(value?: string | null) {
+  return value && value.trim() ? value : '—'
+}
+
 export default function SampleListPage() {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
@@ -78,6 +86,19 @@ export default function SampleListPage() {
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
   const [newItem, setNewItem] = useState<{ sku_id?: number; quantity: string }>({ quantity: '1' })
+  // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
+  // 打样需求单出图时逐项带给车间
+  const [prodForm, setProdForm] = useState({
+    purpose: '',
+    craft: '',
+    material: '',
+    drawing_version: '',
+    target_completion_date: '',
+    acceptance_criteria: '',
+    sample_fee: '',
+  })
+  const [prodEditing, setProdEditing] = useState(false)
+  const [confirmRemark, setConfirmRemark] = useState('')
 
   const query = useQuery({
     queryKey: ['samples', { status, keyword, page, pageSize }],
@@ -172,6 +193,47 @@ export default function SampleListPage() {
     onSuccess: () => {
       Toast.success('反馈已登记')
       setFeedback('')
+      void refresh()
+    },
+    onError,
+  })
+
+  // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
+  // 打样需求单出图时逐项带给车间
+  const saveProdMutation = useMutation({
+    mutationFn: () =>
+      updateSample(detailId!, {
+        purpose: prodForm.purpose || null,
+        craft: prodForm.craft || null,
+        material: prodForm.material || null,
+        drawing_version: prodForm.drawing_version || null,
+        target_completion_date: prodForm.target_completion_date || null,
+        acceptance_criteria: prodForm.acceptance_criteria || null,
+        sample_fee: prodForm.sample_fee === '' ? null : Number(prodForm.sample_fee),
+      }),
+    onSuccess: () => {
+      Toast.success('生产资料已保存')
+      setProdEditing(false)
+      void refresh()
+    },
+    onError,
+  })
+
+  const madeMutation = useMutation({
+    mutationFn: () => madeSample(detailId!),
+    onSuccess: () => {
+      Toast.success('已登记制作完成')
+      void refresh()
+    },
+    onError,
+  })
+
+  // 客户确认与签收分开：客户收到样品 ≠ 客户接受（后端也会拦"未签收就确认"）
+  const confirmMutation = useMutation({
+    mutationFn: (accepted: boolean) => confirmSample(detailId!, accepted, confirmRemark),
+    onSuccess: (_row: SampleRequestRow, accepted: boolean) => {
+      Toast.success(accepted ? '已登记：客户接受' : '已登记：客户未通过')
+      setConfirmRemark('')
       void refresh()
     },
     onError,
@@ -605,6 +667,150 @@ export default function SampleListPage() {
                     <div>{detail.feedback}</div>
                   </div>
                 )}
+
+                {/* 生产打样资料（文档 §3.5）：车间照着这张单子干活——
+                    缺材质、图纸版本、交期、验收标准就干不了 */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                    <div style={{ fontWeight: 600, flex: 1 }}>生产打样资料</div>
+                    {canManage && !prodEditing && (
+                      <a
+                        onClick={() => {
+                          setProdForm({
+                            purpose: detail.purpose ?? '',
+                            craft: detail.craft ?? '',
+                            material: detail.material ?? '',
+                            drawing_version: detail.drawing_version ?? '',
+                            target_completion_date: detail.target_completion_date ?? '',
+                            acceptance_criteria: detail.acceptance_criteria ?? '',
+                            sample_fee:
+                              detail.sample_fee != null ? String(detail.sample_fee) : '',
+                          })
+                          setProdEditing(true)
+                        }}
+                      >
+                        编辑
+                      </a>
+                    )}
+                  </div>
+
+                  {prodEditing ? (
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      <Input
+                        placeholder="用途（如：客户新品打样确认）"
+                        value={prodForm.purpose}
+                        onChange={(v) => setProdForm({ ...prodForm, purpose: v })}
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <Input
+                          placeholder="工艺"
+                          value={prodForm.craft}
+                          onChange={(v) => setProdForm({ ...prodForm, craft: v })}
+                        />
+                        <Input
+                          placeholder="材质"
+                          value={prodForm.material}
+                          onChange={(v) => setProdForm({ ...prodForm, material: v })}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <Input
+                          placeholder="图纸版本"
+                          value={prodForm.drawing_version}
+                          onChange={(v) => setProdForm({ ...prodForm, drawing_version: v })}
+                        />
+                        <Input
+                          placeholder="目标完成日 YYYY-MM-DD"
+                          value={prodForm.target_completion_date}
+                          onChange={(v) => setProdForm({ ...prodForm, target_completion_date: v })}
+                        />
+                        <Input
+                          style={{ width: 120 }}
+                          placeholder="费用"
+                          value={prodForm.sample_fee}
+                          onChange={(v) => setProdForm({ ...prodForm, sample_fee: v })}
+                        />
+                      </div>
+                      <TextArea
+                        placeholder="验收标准"
+                        rows={2}
+                        value={prodForm.acceptance_criteria}
+                        onChange={(v) => setProdForm({ ...prodForm, acceptance_criteria: v })}
+                      />
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <Button
+                          theme="solid"
+                          type="primary"
+                          loading={saveProdMutation.isPending}
+                          onClick={() => saveProdMutation.mutate()}
+                        >
+                          保存
+                        </Button>
+                        <Button onClick={() => setProdEditing(false)}>取消</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 1.9 }}>
+                      <div>用途：{dash(detail.purpose)}</div>
+                      <div>
+                        工艺 / 材质：
+                        {[detail.craft, detail.material].filter(Boolean).join(' / ') || '—'}
+                      </div>
+                      <div>图纸版本：{dash(detail.drawing_version)}</div>
+                      <div>目标完成日：{dash(detail.target_completion_date)}</div>
+                      <div>验收标准：{dash(detail.acceptance_criteria)}</div>
+                      <div>
+                        打样费用：{detail.sample_fee != null ? `¥${detail.sample_fee}` : '—'}
+                      </div>
+                      <div>制作完成：{dash(detail.made_at?.slice(0, 10))}</div>
+                    </div>
+                  )}
+
+                  {canManage && detail.status === 'approved' && !detail.made_at && (
+                    <Button
+                      style={{ marginTop: 8 }}
+                      loading={madeMutation.isPending}
+                      onClick={() => madeMutation.mutate()}
+                    >
+                      登记制作完成
+                    </Button>
+                  )}
+                </div>
+
+                {/* 客户确认：签收是物流事实、确认是业务事实，两者分开（文档 §3.5） */}
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>客户确认</div>
+                  <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 8 }}>
+                    当前：{detail.confirm_status_label}
+                    {detail.customer_confirmed_at
+                      ? `（${detail.customer_confirmed_at.slice(0, 10)}）`
+                      : ''}
+                    ｜客户收到样品不等于样品被接受
+                  </div>
+                  {canManage && detail.status === 'signed' && detail.confirm_status === 'pending' && (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <Input
+                        placeholder="客户反馈（可不填）"
+                        value={confirmRemark}
+                        onChange={setConfirmRemark}
+                      />
+                      <Button
+                        type="primary"
+                        loading={confirmMutation.isPending}
+                        onClick={() => confirmMutation.mutate(true)}
+                      >
+                        客户接受
+                      </Button>
+                      <Button
+                        type="danger"
+                        loading={confirmMutation.isPending}
+                        onClick={() => confirmMutation.mutate(false)}
+                      >
+                        未通过
+                      </Button>
+                    </div>
+                  )}
+                </div>
 
                 {/* 场景12：从这张打样申请出打样需求单，来源询价与本次差异随文件落快照 */}
                 <div>
