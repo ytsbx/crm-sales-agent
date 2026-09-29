@@ -277,6 +277,54 @@ async def main():
             True,
         )
 
+        print('=== 4b. 对客 Excel 报价单：金额与报价版本逐项一致 ===')
+        from app.modules.bizdoc.model import DOC_TYPE_FORMAT
+        from app.modules.bizdoc.xlsx import render_quote_xlsx
+
+        check('报价单出的格式是 Excel', DOC_TYPE_FORMAT.get('quote_sheet'), 'xlsx')
+        quote_doc = await bizdoc.generate_quote_doc(
+            s, quote_version_id=qv.id, user=owner_user
+        )
+        await s.commit()
+        check('单据类型', quote_doc.doc_type, 'quote_sheet')
+        check('单号前缀', quote_doc.doc_no[:2], 'BJ')
+        check('来源报价号', quote_doc.source_no, quote.quote_no)
+        check('来源报价版本', quote_doc.source_version, 3)
+        snap_items = quote_doc.input_snapshot['items']
+        check('明细行数', len(snap_items), 1)
+        # 金额取自版本快照的 quoted_price × quantity，两处必须逐项一致
+        check('明细单价与报价版本一致', str(snap_items[0]['unit_price']), '100')
+        check('明细金额 = 数量 × 单价', str(snap_items[0]['amount']), '500')
+        check('合计取自报价版本', str(quote_doc.input_snapshot['total_amount']), '500')
+
+        # 改当前价格规则不能影响已出的表：报价快照是唯一数据源
+        quote_item_row = (
+            await s.execute(select(QuoteItem).where(QuoteItem.quote_version_id == qv.id))
+        ).scalars().one()
+        quote_item_row.quoted_price = Decimal('999')
+        await s.commit()
+        reloaded_doc = await bizdoc.get_doc_or_404(s, quote_doc.id)
+        check(
+            '报价版本事后被改，已出的表不动',
+            str(reloaded_doc.input_snapshot['items'][0]['unit_price']),
+            '100',
+        )
+        quote_item_row.quoted_price = Decimal('100')
+        await s.commit()
+
+        xlsx_bytes = render_quote_xlsx(await bizdoc.doc_pdf_data(s, quote_doc))
+        check_true(
+            '报价单下载得到 xlsx（zip 魔数 PK）',
+            xlsx_bytes[:2] == b'PK',
+            f'前 2 字节 {xlsx_bytes[:2]!r}',
+        )
+        quote_doc2 = await bizdoc.generate_quote_doc(
+            s, quote_version_id=qv.id, user=owner_user
+        )
+        await s.commit()
+        check('重新生成是新增一版', quote_doc2.version, 2)
+        check('新版指向前一版', quote_doc2.parent_id, quote_doc.id)
+
         print('=== 5. 取消的订单不出单 / 越权出单被拒 ===')
         cancelled = SalesOrder(
             order_no=f'{PREFIX}{stamp}C', customer_id=customer.id, owner_id=owner.id,
