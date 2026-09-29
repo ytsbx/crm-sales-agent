@@ -30,6 +30,7 @@ import {
   type CustomInquiryRow,
 } from '../../shared/api/inquiry'
 import { listCustomers } from '../../shared/api/customer'
+import { startInquiryApproval } from '../../shared/api/dingtalk'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 const STATUS_TONE: Record<string, TagColor> = {
@@ -292,6 +293,25 @@ export default function KnowledgePage() {
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <a onClick={() => openEdit(record)}>编辑</a>
           <a onClick={() => openRevise(record)}>修订</a>
+          {/* 场景11：从需求发起钉钉询价审批。
+              注意这不是"随便试试"——真发起会通知审批人（真人）。
+              后端有推送总闸，关着时只会记一条"未发起"，不会打扰任何人。 */}
+          <a
+            onClick={async () => {
+              try {
+                const row = await startInquiryApproval(record.id)
+                if (row.status === 'skipped') {
+                  Toast.info(`未发起：${row.error ?? '推送已关闭'}`)
+                } else {
+                  Toast.success(`钉钉审批：${row.status_label}`)
+                }
+              } catch (error) {
+                Toast.error((error as Error).message)
+              }
+            }}
+          >
+            发起审批
+          </a>
           {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
           <a
             onClick={() => {
