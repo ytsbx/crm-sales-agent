@@ -613,7 +613,11 @@ async def transfer_relations(
         customer = await session.get(Customer, customer_id)
         if customer is not None:
             await customer_service.transfer_customer(
-                session, user, customer, takeover.id, f"离职继承：{handover.name} → {takeover.name}"
+                session, user, customer, takeover.id,
+                f"离职继承：{handover.name} → {takeover.name}",
+                # 离职交接是**系统自动改派**：撞单争议未结案时冻结，
+                # 否则一次交接就把争议客户的归属改成了既成事实（文档 §11.5 :279）
+                automatic=True,
             )
     detail["customers"] = len(customer_ids)
 

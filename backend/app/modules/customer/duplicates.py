@@ -6,7 +6,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -17,6 +17,31 @@ from app.modules.customer.model import (
 )
 
 DECISIONS = tuple(DECISION_LABEL)
+
+
+async def is_disputed(session: AsyncSession, customer_id: int) -> bool:
+    """该客户是否处于撞单争议中（有未决裁定单）。
+
+    文档 §11.5 :279 给的流程里有一环叫**「争议冻结自动改派」**：
+    "谁先建档客户就归谁"不足以处理撞单，历史导入、重名公司、多人协作都会让
+    建档时间失真。所以争议期间系统一律**不许自动改这两个客户的归属**——
+    改归谁由主管裁定（`resolve_case`），不由自动逻辑先动手造成既成事实。
+
+    注意区分：冻结的是**自动改派**（离职交接、公海回收这类批量/定时动作），
+    人工转移仍然允许——人做的决定要留痕，但不能被系统拦住。
+    """
+    row = (
+        await session.execute(
+            select(CustomerDuplicateCase.id).where(
+                CustomerDuplicateCase.status == "pending",
+                or_(
+                    CustomerDuplicateCase.customer_id == customer_id,
+                    CustomerDuplicateCase.candidate_id == customer_id,
+                ),
+            ).limit(1)
+        )
+    ).first()
+    return row is not None
 
 
 def serialize_case(case: CustomerDuplicateCase, names: dict[int, str]) -> dict:
@@ -48,11 +73,15 @@ async def open_cases_for_customer(
     幂等：同一对（新客户, 候选）只留一张未决单，重复导入不会堆出几十条一样的待办
     ——否则裁定页会被同一件事刷屏，人就不看了。
     """
-    from app.modules.customer.tags import find_duplicate_customers
+    # 查重打分在 contact_util（文档 §11.5 :269 点名的"疑似重复识别"），复用它
+    from app.modules.contact_util import find_duplicate_customers
 
     matches = await find_duplicate_customers(
         session,
         company_name=customer.name,
+        # 这几个证据位客户档案上目前没有独立字段（联系人在 contacts 表），
+        # 先按"没有"传；名称与域名是建档时最可靠的两项
+        mobile=None,
         tax_no=customer.tax_no,
         domain=customer.domain,
     )

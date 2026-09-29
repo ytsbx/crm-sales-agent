@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
@@ -235,6 +236,8 @@ async def run_public_pool_recycle(
     ).scalars().all()
     released: list[dict] = []
     protected_skipped: list[dict] = []
+    #: 撞单争议中、被冻结自动改派的客户（文档 §11.5 :279）
+    disputed_skipped: list[dict] = []
     now = datetime.now(UTC)
     protected_ids = await _protected_customer_ids(session)
 
@@ -259,6 +262,13 @@ async def run_public_pool_recycle(
                 # 场景21：超期但在履约中（有效报价/在途订单/打样/应收），
                 # 按政策豁免本轮回收，记录下来让执行结果可解释
                 protected_skipped.append(
+                    {"customer_id": customer.id, "name": customer.name, "level": rule.level}
+                )
+                continue
+            # 撞单争议未结案 → 冻结自动改派（文档 §11.5 :279）：
+            # 回收会把归属清空成既成事实，等主管裁定完再按规则处理
+            if await duplicates.is_disputed(session, customer.id):
+                disputed_skipped.append(
                     {"customer_id": customer.id, "name": customer.name, "level": rule.level}
                 )
                 continue
@@ -291,6 +301,8 @@ async def run_public_pool_recycle(
             "customers": released,
             "protected_count": len(protected_skipped),
             "protected": protected_skipped[:100],
+            "disputed_count": len(disputed_skipped),
+            "disputed": disputed_skipped[:100],
         },
     )
     await session.commit()
@@ -299,6 +311,8 @@ async def run_public_pool_recycle(
         "customers": released,
         "protected_count": len(protected_skipped),
         "protected": protected_skipped[:100],
+        "disputed_count": len(disputed_skipped),
+        "disputed": disputed_skipped[:100],
     }
 
 

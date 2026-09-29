@@ -481,12 +481,28 @@ async def transfer_customer(
     customer: Customer,
     new_owner_id: int | None,
     reason: str | None,
+    *,
+    automatic: bool = False,
 ) -> None:
     """变更客户负责人；new_owner_id 为空表示放入公海。
 
     目标负责人必须存在且在职：此前不校验，传一个不存在的 user id 也会照转，
     客户会挂到一个空负责人上，事后很难查（单个转移与批量转移都走这里，一处修两处生效）。
+
+    `automatic=True` 表示这是**系统自动改派**（离职交接、公海回收这类
+    批量/定时动作）。撞单争议未结案时这类改派一律拦下——文档 §11.5 :279
+    的"争议冻结自动改派"：归属改谁由主管裁定，不让自动逻辑先动手造成既成事实。
+    人工转移不受此限（人做的决定要留痕，但不该被系统拦住）。
     """
+    if automatic:
+        from app.modules.customer import duplicates as dup_service
+
+        if await dup_service.is_disputed(session, customer.id):
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"客户「{customer.name}」处于撞单争议中，自动改派已冻结，等主管裁定后再处理",
+                422,
+            )
     if new_owner_id is not None:
         owner = await session.get(User, new_owner_id)
         if owner is None:
