@@ -7,6 +7,7 @@ import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
 import {
   getCustomerStats,
+  getDeliveryStats,
   getLeadStats,
   getLossStats,
   getOpportunityStats,
@@ -19,6 +20,9 @@ import {
   listSalesTargets,
   upsertSalesTarget,
   type NameValue,
+  type DeliveryOwnerRow,
+  type DeliveryRiskOrder,
+  type DeliveryTrendRow,
   type ProductStat,
   type SalesTargetRow,
   type SalesUserStat,
@@ -84,6 +88,8 @@ export default function AnalyticsPage() {
   const leadQuery = useQuery({ queryKey: ['an-leads'], queryFn: getLeadStats })
   const pricingQuery = useQuery({ queryKey: ['an-pricing'], queryFn: getPricingStats })
   const paymentQuery = useQuery({ queryKey: ['an-payments'], queryFn: getPaymentStats })
+  // 交期整维此前是空的（跟单里程碑与发货批次只写不读）
+  const deliveryQuery = useQuery({ queryKey: ['an-delivery'], queryFn: () => getDeliveryStats() })
   const targetsQuery = useQuery({
     queryKey: ['sales-targets', targetYear],
     queryFn: () => listSalesTargets(targetYear),
@@ -143,6 +149,8 @@ export default function AnalyticsPage() {
   const lead = leadQuery.data
   const pricing = pricingQuery.data
   const payment = paymentQuery.data
+  const delivery = deliveryQuery.data
+  const deliverySummary = delivery?.summary
   const cycle = opportunity?.cycle
   const money = (value?: number) => `¥${Math.round(value ?? 0).toLocaleString('zh-CN')}`
 
@@ -206,6 +214,19 @@ export default function AnalyticsPage() {
             label: '逾期应收',
             value: money(payment?.overdue_amount),
             hint: `逾期节点 ${payment?.overdue_node_count ?? 0} 个`,
+          },
+          {
+            label: '准时交付率',
+            // 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟"
+            value: deliverySummary?.delivered_order_count
+              ? `${(deliverySummary.on_time_rate * 100).toFixed(0)}%`
+              : '-',
+            hint: `准时 ${deliverySummary?.on_time_count ?? 0} / 延迟 ${deliverySummary?.late_count ?? 0}`,
+          },
+          {
+            label: '交期风险',
+            value: `${deliverySummary?.risk_order_count ?? 0} 单`,
+            hint: `${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`,
           },
         ]}
       />
@@ -295,6 +316,118 @@ export default function AnalyticsPage() {
           </div>
         </SectionCard>
       </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
+        <SectionCard title="交期履约（按负责人）">
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
+            准时 = 首批发货日期 ≤ 客户交期；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。
+            未填交期的已发货单不进准时率分母（当前 {deliverySummary?.undated_delivered_count ?? 0} 单）。
+          </div>
+          {(delivery?.by_owner ?? []).length === 0 ? (
+            <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
+          ) : (
+            <Table<DeliveryOwnerRow>
+              size="small"
+              pagination={false}
+              rowKey={(r?: DeliveryOwnerRow) => String(r?.owner_id ?? r?.owner_name ?? '')}
+              dataSource={delivery?.by_owner ?? []}
+              columns={[
+                { title: '负责人', dataIndex: 'owner_name', width: 110 },
+                { title: '已交付', dataIndex: 'order_count', width: 80 },
+                { title: '准时', dataIndex: 'on_time_count', width: 70 },
+                { title: '延迟', dataIndex: 'late_count', width: 70 },
+                {
+                  title: '准时率',
+                  dataIndex: 'on_time_rate',
+                  width: 90,
+                  render: (v: number) => `${(v * 100).toFixed(0)}%`,
+                },
+                {
+                  title: '平均延迟',
+                  dataIndex: 'average_delay_days',
+                  render: (v: number | null) => (v == null ? '—' : `${v} 天`),
+                },
+              ]}
+            />
+          )}
+        </SectionCard>
+
+        <SectionCard title="逾期节点分布（与每日逾期提醒同口径）">
+          <BarList data={delivery?.overdue_nodes ?? []} unit=" 个节点" />
+          <div style={{ marginTop: 16, fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 2 }}>
+            <div>在跟订单：{deliverySummary?.open_order_count ?? 0} 单</div>
+            <div>已过交期仍未发货：{deliverySummary?.risk_order_count ?? 0} 单</div>
+            <div>
+              {deliverySummary?.due_soon_days ?? 7} 天内到期且未发货：
+              {deliverySummary?.due_soon_order_count ?? 0} 单
+            </div>
+            <div>在跟但未填交期：{deliverySummary?.no_due_date_open_count ?? 0} 单</div>
+            <div>
+              平均延迟：
+              {deliverySummary?.average_delay_days != null
+                ? `${deliverySummary.average_delay_days} 天`
+                : '—'}
+              （最长 {deliverySummary?.max_delay_days ?? '—'} 天）
+            </div>
+          </div>
+        </SectionCard>
+      </div>
+
+      <SectionCard title="交期趋势（近 12 个月首批发货）" style={{ marginTop: 16 }}>
+        <Table<DeliveryTrendRow>
+          size="small"
+          pagination={false}
+          rowKey="month"
+          dataSource={(delivery?.trend ?? []).filter((row) => row.on_time + row.late > 0)}
+          columns={[
+            { title: '月份', dataIndex: 'label', width: 90 },
+            { title: '准时', dataIndex: 'on_time', width: 90 },
+            { title: '延迟', dataIndex: 'late', width: 90 },
+            {
+              title: '准时率',
+              width: 100,
+              render: (_: unknown, r: DeliveryTrendRow) =>
+                r.on_time + r.late ? `${((r.on_time / (r.on_time + r.late)) * 100).toFixed(0)}%` : '—',
+            },
+          ]}
+          empty="近 12 个月还没有发货记录"
+        />
+      </SectionCard>
+
+      <SectionCard title="交期风险单（已过交期仍未发货）" style={{ marginTop: 16 }}>
+        <Table<DeliveryRiskOrder>
+          columns={[
+            { title: '订单号', dataIndex: 'order_no', width: 170 },
+            {
+              title: '客户',
+              dataIndex: 'customer_name',
+              width: 160,
+              render: (v: string | null) => v ?? '-',
+            },
+            {
+              title: '负责人',
+              dataIndex: 'owner_name',
+              width: 110,
+              render: (v: string | null) => v ?? '未分配',
+            },
+            { title: '客户交期', dataIndex: 'delivery_date', width: 120 },
+            {
+              title: '超期',
+              dataIndex: 'days_overdue',
+              width: 90,
+              render: (v: number) => (
+                <span style={{ color: 'var(--crm-error)', fontWeight: 600 }}>{v} 天</span>
+              ),
+            },
+            { title: '订单状态', dataIndex: 'status_label', width: 110 },
+          ]}
+          dataSource={delivery?.risk_orders ?? []}
+          loading={deliveryQuery.isLoading}
+          rowKey="order_id"
+          pagination={false}
+          empty="没有超期未发货的订单"
+        />
+      </SectionCard>
 
       <SectionCard title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）" style={{ marginTop: 16 }}>
         <Table<ProductStat>

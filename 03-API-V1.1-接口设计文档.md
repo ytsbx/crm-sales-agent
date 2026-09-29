@@ -577,6 +577,7 @@
 - `GET /analytics/losses`
 - `GET /analytics/receivables`
 - `GET /analytics/payments`
+- `GET /analytics/delivery`
 
 ---
 

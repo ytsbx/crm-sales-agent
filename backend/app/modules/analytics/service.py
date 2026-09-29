@@ -10,7 +10,7 @@
 「改 MySQL 只换连接串」的承诺（core/config.py）失效。
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import Select, case, func, or_, select
@@ -25,7 +25,9 @@ from app.modules.lead.model import Lead
 from app.modules.lead.service import STATUS_LABEL as LEAD_STATUS_LABEL
 from app.modules.opportunity.model import LossReason, Opportunity, OpportunityItem, OpportunityStage
 from app.modules.opportunity.model import OpportunityStageHistory
-from app.modules.order.model import SalesOrder
+from app.modules.order.milestones import NODE_LABELS
+from app.modules.order.model import ORDER_STATUS_LABEL
+from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
 from app.modules.payment.model import PLAN_STATUS_LABEL as PLAN_LABEL
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.product.model import Product, Sku
@@ -1199,6 +1201,267 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
         "by_payment_method": [
             {"name": method or "未填写", "value": _f(amount)} for method, amount in method_rows
         ],
+    }
+
+
+# ================================================================== 交期与履约
+# 文档 §3.5 / 场景13。跟单里程碑（order_milestones）与发货批次
+# （order_shipment_batches）此前**只有写入、没有读取**——跟单员登记的实际日期
+# 没有任何页面消费，"我们有多少单按期交的"系统答不出来。这一节把交期接进分析层。
+#
+# 口径显式定义在这里，前端文案按这里的说法写，避免出现"看板说没有、提醒说逾期"：
+#
+# - **准时**：首批发货实际日期 ≤ 订单客户交期（`sales_orders.delivery_date`）。
+#   首批发货日期 = 该订单已发货批次里 `actual_ship_date` 的最小值，与里程碑
+#   `first_shipment` 节点同源。**没填交期的订单不进准时率分母**——判不了，
+#   既不能算准时也不能算延迟；这类单量单独报（`undated_delivered_count`）。
+# - **延迟天数**：首批发货日期 − 交期；平均/最大只对延迟单取。
+# - **逾期节点**：与 `milestones.notify_overdue_milestones`（销售每天收到的逾期
+#   提醒）**同一口径**——未取消订单里计划日已过、实际日期未登记的节点。两处口径
+#   若不同，就会出现"提醒说逾期、看板说没有"。
+# - **在跟风险单**：未完成未取消、且尚无任何已发货批次，交期已过（已超期未发）
+#   或 7 天内到期（临近）。
+# - 数据范围按**当前负责人**（`owner_id`）过滤：交期是"活"，谁接手谁盯，与应收/
+#   账龄同口径；业绩类指标才按签单归属（文档 §3.8）。
+#
+# 窗口：准时率与趋势只看**近 12 个月**内的首批发货（再往前的单参考价值低，且会
+# 把趋势压平）；在跟风险看的是当前未完成的单，不受窗口限制。
+
+#: 还在跟的订单状态（未完成、未取消）——交期风险只看这些
+OPEN_ORDER_STATUSES: tuple[str, ...] = ("pending", "in_production", "shipped")
+
+#: 「临近交期」预警窗口（天）
+DUE_SOON_DAYS = 7
+
+#: 准时率与趋势的回看窗口（月）
+DELIVERY_WINDOW_MONTHS = 12
+
+
+def _delivery_month_series(today: date) -> list[str]:
+    """近 N 个月（含本月）的月份键，升序。与 order_payment_trend 同一套做法。"""
+    series: list[str] = []
+    year, month = today.year, today.month
+    for _ in range(DELIVERY_WINDOW_MONTHS):
+        series.append(f"{year:04d}-{month:02d}")
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    series.reverse()
+    return series
+
+
+async def delivery_stats(
+    session: AsyncSession, user: CurrentUser, risk_limit: int = 20
+) -> dict:
+    """交期履约：准时交付率、延迟天数、逾期节点分布、在跟风险单。"""
+    today = datetime.now(UTC).date()
+    risk_limit = max(1, min(risk_limit, 100))
+
+    order_rows = (
+        await session.execute(
+            await _scope_filter(
+                select(
+                    SalesOrder.id,
+                    SalesOrder.order_no,
+                    SalesOrder.customer_id,
+                    SalesOrder.owner_id,
+                    SalesOrder.status,
+                    SalesOrder.delivery_date,
+                ).where(SalesOrder.status != "cancelled"),
+                user,
+                # 交期是责任口径，不是业绩口径：交接后由接手人负责盯交期，
+                # 所以按当前负责人过滤（与应收/账龄一致，见 receivable_stats）
+                SalesOrder.owner_id,
+                session,
+            )
+        )
+    ).all()
+    order_ids = [row.id for row in order_rows]
+
+    # 首批发货日期：已发货批次里最早的实际发货日
+    first_ship: dict[int, date] = {
+        order_id: shipped_on
+        for order_id, shipped_on in (
+            await session.execute(
+                select(
+                    OrderShipmentBatch.order_id,
+                    func.min(OrderShipmentBatch.actual_ship_date),
+                )
+                .where(
+                    OrderShipmentBatch.order_id.in_(order_ids),
+                    OrderShipmentBatch.status == "shipped",
+                    OrderShipmentBatch.actual_ship_date.is_not(None),
+                )
+                .group_by(OrderShipmentBatch.order_id)
+            )
+        ).all()
+    }
+
+    # 逾期节点：口径与每日逾期提醒严格一致（见 milestones.notify_overdue_milestones）
+    overdue_by_node: dict[str, int] = {}
+    overdue_order_ids: set[int] = set()
+    for order_id, node, planned, actual in (
+        await session.execute(
+            select(
+                OrderMilestone.order_id,
+                OrderMilestone.node,
+                OrderMilestone.planned_date,
+                OrderMilestone.actual_date,
+            ).where(OrderMilestone.order_id.in_(order_ids))
+        )
+    ).all():
+        if actual is not None or planned is None or planned >= today:
+            continue
+        overdue_by_node[node] = overdue_by_node.get(node, 0) + 1
+        overdue_order_ids.add(order_id)
+
+    owner_names = {
+        uid: name
+        for uid, name in (
+            await session.execute(
+                select(User.id, User.name).where(
+                    User.id.in_({row.owner_id for row in order_rows if row.owner_id})
+                )
+            )
+        ).all()
+    }
+    customer_names = {
+        cid: name
+        for cid, name in (
+            await session.execute(
+                select(Customer.id, Customer.name).where(
+                    Customer.id.in_({row.customer_id for row in order_rows if row.customer_id})
+                )
+            )
+        ).all()
+    }
+
+    series = _delivery_month_series(today)
+    window_start = date.fromisoformat(f"{series[0]}-01")
+
+    open_count = 0
+    no_due_date_open_count = 0
+    due_soon_count = 0
+    risk_orders: list[dict] = []
+    delivered_count = 0
+    undated_delivered_count = 0
+    on_time_count = 0
+    late_count = 0
+    delay_days: list[int] = []
+    by_owner: dict[int | None, dict] = {}
+    trend: dict[str, dict[str, int]] = {}
+
+    for row in order_rows:
+        shipped_on = first_ship.get(row.id)
+        due = row.delivery_date
+
+        # ---- 在跟：交期风险（未发货才算风险，已发首批发货的不在风险里）----
+        if row.status in OPEN_ORDER_STATUSES:
+            open_count += 1
+            if due is None:
+                no_due_date_open_count += 1
+            elif shipped_on is None:
+                days_overdue = (today - due).days
+                if days_overdue > 0:
+                    risk_orders.append(
+                        {
+                            "order_id": row.id,
+                            "order_no": row.order_no,
+                            "customer_name": customer_names.get(row.customer_id),
+                            "owner_id": row.owner_id,
+                            "owner_name": owner_names.get(row.owner_id) if row.owner_id else None,
+                            "delivery_date": due.isoformat(),
+                            "days_overdue": days_overdue,
+                            "status": row.status,
+                            "status_label": ORDER_STATUS_LABEL.get(row.status, row.status),
+                        }
+                    )
+                elif -days_overdue <= DUE_SOON_DAYS:
+                    due_soon_count += 1
+
+        # ---- 交付事实：只看窗口内已发首批发货的单 ----
+        if shipped_on is None or shipped_on < window_start:
+            continue
+        if due is None:
+            undated_delivered_count += 1
+            continue
+
+        delivered_count += 1
+        delay = (shipped_on - due).days
+        bucket = trend.setdefault(_month_key(shipped_on) or "", {"on_time": 0, "late": 0})
+        owner_bucket = by_owner.setdefault(
+            row.owner_id, {"order_count": 0, "on_time": 0, "late": 0, "delay_total": 0}
+        )
+        owner_bucket["order_count"] += 1
+        if delay <= 0:
+            on_time_count += 1
+            bucket["on_time"] += 1
+            owner_bucket["on_time"] += 1
+        else:
+            late_count += 1
+            delay_days.append(delay)
+            bucket["late"] += 1
+            owner_bucket["late"] += 1
+            owner_bucket["delay_total"] += delay
+
+    def _rate(on_time: int, total: int) -> float:
+        return round(on_time / total, 4) if total else 0.0
+
+    by_owner_rows = [
+        {
+            "owner_id": owner_id,
+            "owner_name": owner_names.get(owner_id) or "未分配",
+            "order_count": data["order_count"],
+            "on_time_count": data["on_time"],
+            "late_count": data["late"],
+            "on_time_rate": _rate(data["on_time"], data["order_count"]),
+            "average_delay_days": (
+                round(data["delay_total"] / data["late"], 1) if data["late"] else None
+            ),
+        }
+        for owner_id, data in by_owner.items()
+        if data["order_count"] > 0
+    ]
+    by_owner_rows.sort(key=lambda item: (-item["order_count"], item["owner_id"] or 0))
+
+    risk_orders.sort(key=lambda item: (-item["days_overdue"], item["order_no"]))
+
+    return {
+        "summary": {
+            "open_order_count": open_count,
+            "no_due_date_open_count": no_due_date_open_count,
+            "due_soon_order_count": due_soon_count,
+            "risk_order_count": len(risk_orders),
+            "overdue_node_count": sum(overdue_by_node.values()),
+            "overdue_order_count": len(overdue_order_ids),
+            "delivered_order_count": delivered_count,
+            "undated_delivered_count": undated_delivered_count,
+            "on_time_count": on_time_count,
+            "late_count": late_count,
+            "on_time_rate": _rate(on_time_count, delivered_count),
+            "average_delay_days": (
+                round(sum(delay_days) / len(delay_days), 1) if delay_days else None
+            ),
+            "max_delay_days": max(delay_days) if delay_days else None,
+            "window_months": DELIVERY_WINDOW_MONTHS,
+            "due_soon_days": DUE_SOON_DAYS,
+        },
+        "by_owner": by_owner_rows,
+        "overdue_nodes": [
+            {"name": NODE_LABELS.get(node, node), "value": count}
+            for node, count in sorted(overdue_by_node.items(), key=lambda kv: -kv[1])
+        ],
+        "trend": [
+            {
+                "month": m,
+                "label": f"{int(m[5:7])}月",
+                "on_time": trend.get(m, {}).get("on_time", 0),
+                "late": trend.get(m, {}).get("late", 0),
+            }
+            for m in series
+        ],
+        "risk_orders": risk_orders[:risk_limit],
     }
 
 

@@ -230,3 +230,17 @@ async def analytics_payments(
 ):
     """回款分析：按期状态、逾期账龄分布、回款方式分布。"""
     return ok(await svc.payment_stats(session, user))
+
+
+@router.get("/analytics/delivery")
+async def analytics_delivery(
+    risk_limit: int = Query(20, ge=1, le=100),
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """交期履约：准时交付率、延迟天数、逾期节点分布、在跟风险单。
+
+    数据源是跟单里程碑与发货批次（此前只写不读）；看板里的"逾期节点"
+    与销售每天收到的逾期提醒是同一口径。
+    """
+    return ok(await svc.delivery_stats(session, user, risk_limit))

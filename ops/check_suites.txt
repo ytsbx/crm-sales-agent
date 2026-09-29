@@ -25,3 +25,4 @@ check_quote_center_acceptance
 check_custom_no_sku
 check_sales_attribution
 check_notification_retry
+check_delivery_analytics

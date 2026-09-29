@@ -105,7 +105,7 @@ PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ## 怎么验证（改完必须跑）
 
 ```bash
-bash ops/run_checks.sh          # 静态检查 + pytest + 14 个回归套件（与 CI 同清单）
+bash ops/run_checks.sh          # 静态检查 + pytest + 全部回归套件（与 CI 同清单）
 node ops/smoke_ui.mjs           # 28 页 + 4 交互逐页截图、抓控制台报错（不依赖 Playwright）
 ```
 

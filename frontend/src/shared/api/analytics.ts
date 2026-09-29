@@ -312,6 +312,74 @@ export function getPaymentStats() {
   return api.get<PaymentStats>('/analytics/payments')
 }
 
+// ---------------------------------------------------------------- 交期与履约
+// 交期这一维此前在分析层是空的：跟单里程碑与发货批次**只写不读**。
+//
+// 口径（后端 delivery_stats 的注释是同一份说法）：
+// - 准时 = 首批发货日期 ≤ 客户交期；一单多批次取最早的实际发货日；
+// - **没填交期的已发货单不进准时率分母**——判不了，既不算准时也不算延迟，
+//   单独报 undated_delivered_count，不能让它把准时率算虚；
+// - 逾期节点与销售每天收到的逾期提醒同口径。
+
+export interface DeliverySummary {
+  open_order_count: number
+  no_due_date_open_count: number
+  due_soon_order_count: number
+  risk_order_count: number
+  overdue_node_count: number
+  overdue_order_count: number
+  delivered_order_count: number
+  undated_delivered_count: number
+  on_time_count: number
+  late_count: number
+  on_time_rate: number
+  average_delay_days: number | null
+  max_delay_days: number | null
+  window_months: number
+  due_soon_days: number
+}
+
+export interface DeliveryOwnerRow {
+  owner_id: number | null
+  owner_name: string
+  order_count: number
+  on_time_count: number
+  late_count: number
+  on_time_rate: number
+  average_delay_days: number | null
+}
+
+export interface DeliveryTrendRow {
+  month: string
+  label: string
+  on_time: number
+  late: number
+}
+
+export interface DeliveryRiskOrder {
+  order_id: number
+  order_no: string
+  customer_name?: string | null
+  owner_id?: number | null
+  owner_name?: string | null
+  delivery_date: string
+  days_overdue: number
+  status: string
+  status_label: string
+}
+
+export interface DeliveryStats {
+  summary: DeliverySummary
+  by_owner: DeliveryOwnerRow[]
+  overdue_nodes: NameValue[]
+  trend: DeliveryTrendRow[]
+  risk_orders: DeliveryRiskOrder[]
+}
+
+export function getDeliveryStats(riskLimit = 20) {
+  return api.get<DeliveryStats>('/analytics/delivery', { risk_limit: riskLimit })
+}
+
 export function listNotifications(unreadOnly = false) {
   return api.get<PageResult<NotificationRow>>('/notifications', { unread_only: unreadOnly, page_size: 50 })
 }
