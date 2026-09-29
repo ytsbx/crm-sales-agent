@@ -32,6 +32,18 @@ from app.core.base import Base, IdMixin, JSONType
 DOC_TYPE_LABEL = {
     "sample_request": "打样需求单",
     "order_sheet": "下单文件",
+    #: 对客报价单（文档 §3.5「统一的 Excel 模板嵌入系统」/ 场景10）：
+    #: 与打样单、下单文件共用同一套台账（模板版本 + 输入快照 + 校验值 +
+    #: 旧文件不覆盖），区别只在出图的格式是 xlsx
+    "quote_sheet": "对客报价单",
+}
+
+#: 各类型出图格式。报价单是客户要拿去改/填的表，必须是 Excel；
+#: 打样单与下单文件是给车间/客户的正式文件，PDF 更合适。
+DOC_TYPE_FORMAT = {
+    "sample_request": "pdf",
+    "order_sheet": "pdf",
+    "quote_sheet": "xlsx",
 }
 
 DOC_STATUS_LABEL = {

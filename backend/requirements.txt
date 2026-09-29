@@ -11,6 +11,9 @@ python-multipart>=0.0.9
 PyJWT>=2.8
 bcrypt>=4.1
 reportlab>=4.0
+# 对客 Excel 报价单（文档 §3.5 / 场景10）：统一的 Excel 模板由系统按报价版本出图。
+# 与 reportlab（PDF）同一路子——成熟库、纯 Python、不依赖系统字体/Office。
+openpyxl>=3.1
 openai>=1.30
 # 企业微信 Adapter 发 HTTP 请求用（原来靠 openai 间接带进来，现在直接依赖，别指望间接）
 httpx>=0.27
