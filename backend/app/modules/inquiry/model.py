@@ -56,6 +56,13 @@ class CustomInquiry(Base, IdMixin):
     status: Mapped[str] = mapped_column(String(16), default="open", index=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     extra: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # ---- 钉钉询价审批的对接报价员（场景11）----
+    # 钉钉那张「产品询价申请」里「对接报价员」是**必填的联系人**控件，只能选
+    # 指定的人（目前是子木、宋桂香两位）。钉钉存的是**人的编号**不是姓名，
+    # 所以这里存编号，同时把姓名存一份用于显示——只存编号的话，
+    # 列表里就得回查钉钉才知道"这单给了谁"，而钉钉那条路可能不通。
+    oa_quote_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    oa_quote_user_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

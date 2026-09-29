@@ -72,6 +72,17 @@ async def start_inquiry_approval(
         value = getter(inquiry)
         if value not in (None, ""):
             field_map[component_id] = value
+    # 钉钉那格是必填的**联系人**控件，只能在这几位里选（编号从钉钉通讯录拿的）；
+    # 销售在 CRM 里选好的那位直接带过去
+    quote_component = (cfg or {}).get("quote_owner_component")
+    if quote_component:
+        if not inquiry.oa_quote_user_id:
+            raise AppError(
+                ErrorCode.REQUIRED_FIELD_MISSING,
+                "钉钉要求先指定「对接报价员」，请在需求上选好再发起",
+                422,
+            )
+        field_map[quote_component] = inquiry.oa_quote_user_id
     # 额外字段（业务临时补的）按 componentId 直接给
     for component_id, value in (payload.extra_fields or {}).items():
         if component_id and value not in (None, ""):
