@@ -13,6 +13,7 @@ import { Button, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
 import {
   downloadBizDoc,
   generateOrderDoc,
+  generateQuoteDoc,
   generateSampleDoc,
   listBizDocs,
   voidBizDoc,
@@ -20,11 +21,15 @@ import {
 } from '../api/bizdoc'
 
 interface Props {
-  docType: 'sample_request' | 'order_sheet'
+  docType: 'sample_request' | 'order_sheet' | 'quote_sheet'
   /** 打样申请 id（docType=sample_request 时必填） */
   sampleRequestId?: number
   /** 订单 id（docType=order_sheet 时必填） */
   orderId?: number
+  /** 报价单 id（docType=quote_sheet 时用于列历史版本） */
+  quoteId?: number
+  /** 当前选中的报价版本 id（生成时按这一版的快照出图） */
+  quoteVersionId?: number
   canManage: boolean
 }
 
@@ -33,9 +38,16 @@ const SOURCE_LABEL: Record<string, string> = {
   quote: '来源报价',
 }
 
-export default function BizDocPanel({ docType, sampleRequestId, orderId, canManage }: Props) {
+export default function BizDocPanel({
+  docType,
+  sampleRequestId,
+  orderId,
+  quoteId,
+  quoteVersionId,
+  canManage,
+}: Props) {
   const queryClient = useQueryClient()
-  const queryKey = ['biz-docs', docType, sampleRequestId ?? orderId]
+  const queryKey = ['biz-docs', docType, sampleRequestId ?? orderId ?? quoteId]
 
   const listQuery = useQuery({
     queryKey,
@@ -43,7 +55,9 @@ export default function BizDocPanel({ docType, sampleRequestId, orderId, canMana
       listBizDocs(
         docType === 'sample_request'
           ? { doc_type: docType, sample_request_id: sampleRequestId }
-          : { doc_type: docType, order_id: orderId },
+          : docType === 'quote_sheet'
+            ? { doc_type: docType, quote_id: quoteId }
+            : { doc_type: docType, order_id: orderId },
       ),
   })
 
@@ -51,7 +65,9 @@ export default function BizDocPanel({ docType, sampleRequestId, orderId, canMana
     mutationFn: () =>
       docType === 'sample_request'
         ? generateSampleDoc(sampleRequestId as number)
-        : generateOrderDoc(orderId as number),
+        : docType === 'quote_sheet'
+          ? generateQuoteDoc(quoteVersionId as number)
+          : generateOrderDoc(orderId as number),
     onSuccess: (doc) => {
       Toast.success(`已生成 ${doc.doc_no}（V${doc.version}）`)
       void queryClient.invalidateQueries({ queryKey: ['biz-docs'] })

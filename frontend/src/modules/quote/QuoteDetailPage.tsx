@@ -26,6 +26,7 @@ import type { TagTone } from '../../shared/types'
 import { convertToOrder } from '../../shared/api/order'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import BizDocPanel from '../../shared/components/BizDocPanel'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 
@@ -682,6 +683,17 @@ export default function QuoteDetailPage() {
           />
         </div>
       </Modal>
+
+      {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
+          之后改价或改模板都不会影响已导出的那份 */}
+      <SectionCard title="对外单据（对客报价 Excel）" style={{ marginTop: 16 }}>
+        <BizDocPanel
+          docType="quote_sheet"
+          quoteId={quoteId}
+          quoteVersionId={versionId}
+          canManage={canManage}
+        />
+      </SectionCard>
     </div>
   )
 }

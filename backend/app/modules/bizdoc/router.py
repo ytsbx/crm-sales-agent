@@ -102,6 +102,7 @@ async def list_docs(
     doc_type: str | None = Query(None),
     sample_request_id: int | None = Query(None),
     order_id: int | None = Query(None),
+    quote_id: int | None = Query(None),
     customer_id: int | None = Query(None),
     limit: int = Query(100, ge=1, le=300),
     user: CurrentUser = Depends(require_permission("order:view")),
@@ -114,6 +115,7 @@ async def list_docs(
             doc_type=doc_type,
             sample_request_id=sample_request_id,
             order_id=order_id,
+            quote_id=quote_id,
             customer_id=customer_id,
             limit=limit,
         )

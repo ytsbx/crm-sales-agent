@@ -56,9 +56,18 @@ export function listBizDocs(query: {
   doc_type?: string
   sample_request_id?: number
   order_id?: number
+  quote_id?: number
   customer_id?: number
 }) {
   return api.get<BizDocRow[]>('/biz-docs', query)
+}
+
+/** 生成对客 Excel 报价单：金额取自**这一版**报价的快照，不按当前价现算。 */
+export function generateQuoteDoc(quoteVersionId: number, templateId?: number) {
+  return api.post<BizDocRow>('/biz-docs/quote', {
+    quote_version_id: quoteVersionId,
+    template_id: templateId ?? null,
+  })
 }
 
 /** 生成打样需求单：来源询价与本次差异一起落快照，原单不变。 */

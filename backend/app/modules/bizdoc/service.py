@@ -808,6 +808,7 @@ async def list_docs(
     doc_type: str | None = None,
     sample_request_id: int | None = None,
     order_id: int | None = None,
+    quote_id: int | None = None,
     customer_id: int | None = None,
     limit: int = 100,
 ) -> list[dict]:
@@ -821,6 +822,9 @@ async def list_docs(
         stmt = stmt.where(BizDoc.sample_request_id == sample_request_id)
     if order_id is not None:
         stmt = stmt.where(BizDoc.order_id == order_id)
+    # 对客报价单按报价单挂（一单多版本共用一个 quote_id）
+    if quote_id is not None:
+        stmt = stmt.where(BizDoc.quote_id == quote_id)
     if customer_id is not None:
         stmt = stmt.where(BizDoc.customer_id == customer_id)
     return [serialize_doc(row) for row in (await session.execute(stmt)).scalars().all()]
