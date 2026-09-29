@@ -120,6 +120,7 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "target_id": t.id,
                 "period": t.period,
                 "user_id": t.user_id,
+                "department_id": t.department_id,
                 "new_customer_target": t.new_customer_target,
                 "sales_target": float(t.sales_target or 0),
                 "new_customer_actual": new,
@@ -192,8 +193,24 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
 
         name_rows = await session.execute(select(User.id, User.name).where(User.id.in_(user_ids)))
         user_names.update({uid: name for uid, name in name_rows.all()})
+    # 团队目标的名字要按**部门**查：只认 user_id 的话，部门目标会显示成"全公司"，
+    # 主管会以为自己设的是全公司目标（功能对、标签错，最容易误导人）
+    dept_ids = {r.get("department_id") for r in rows if r.get("department_id")}
+    dept_names: dict[int, str] = {}
+    if dept_ids:
+        from app.modules.user.model import Department
+
+        name_rows = await session.execute(
+            select(Department.id, Department.name).where(Department.id.in_(dept_ids))
+        )
+        dept_names.update({did: name for did, name in name_rows.all()})
     for r in rows:
-        r["user_name"] = "全公司" if r["user_id"] is None else user_names.get(r["user_id"], f"#{r['user_id']}")
+        if r.get("department_id"):
+            r["user_name"] = dept_names.get(r["department_id"], f"部门#{r['department_id']}")
+        elif r["user_id"] is None:
+            r["user_name"] = "全公司"
+        else:
+            r["user_name"] = user_names.get(r["user_id"], f"#{r['user_id']}")
     return {"year": year, "rows": rows}
 
 
