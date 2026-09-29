@@ -465,6 +465,117 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
 # ---------------------------------------------------------------- 生成
 
 
+async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
+    """组装对客报价单快照（场景10）。只读，不落库。
+
+    **金额一律取自报价版本的快照**（`quoted_price` / `quantity` 都是版本行上的
+    快照字段），不按当前价格规则现算——否则客户手里的表会随价格维护悄悄变，
+    "Excel 与对应报价版本金额一致"这条就永远保证不了。
+
+    定制项（无 SKU）那一列按业务定下的口径显示**需求编号 + 产品名**：
+    客户指着某一行问"这是哪个需求"时能对上号；编号留在内部版的做法被否掉了，
+    因为对客沟通里"这一行是哪条需求"才是真正会被追问的。
+    """
+    from app.modules.customer.model import Customer
+    from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
+
+    version_row = await session.get(QuoteVersion, quote_version_id)
+    if version_row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
+    quote = await session.get(Quote, version_row.quote_id)
+    if quote is None:
+        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
+
+    rows = (
+        await session.execute(
+            select(QuoteItem)
+            .where(QuoteItem.quote_version_id == version_row.id)
+            .order_by(QuoteItem.id.asc())
+        )
+    ).scalars().all()
+
+    items = []
+    for row in rows:
+        if row.sku_id is None:
+            # 口径 (a)：需求编号 + 产品名
+            name = " ".join(
+                x for x in (row.inquiry_no_snapshot, row.sku_name_snapshot) if x
+            ) or "（定制项）"
+        else:
+            name = row.sku_name_snapshot or row.sku_code_snapshot or "（未命名）"
+        items.append(
+            {
+                "name": name,
+                "spec": row.spec_snapshot,
+                "quantity": row.quantity,
+                "unit": "",
+                "unit_price": row.quoted_price,
+                # 明细金额由版本快照里的数量×单价得出，两者都取自同一快照，
+                # 所以它不会随之后的价格维护变化
+                "amount": (row.quoted_price or 0) * (row.quantity or 0),
+                "remark": "",
+                "sku_id": row.sku_id,
+            }
+        )
+
+    customer = await session.get(Customer, quote.customer_id) if quote.customer_id else None
+    return {
+        "customer": customer,
+        "contact_id": quote.contact_id,
+        "owner_id": quote.owner_id,
+        "customer_id": quote.customer_id,
+        "inquiry_id": next((r.inquiry_id for r in rows if r.inquiry_id), None),
+        "quote_id": quote.id,
+        "items": items,
+        "diffs": [],
+        "source": {
+            "type": "quote",
+            "id": quote.id,
+            "no": quote.quote_no,
+            "version": version_row.version_no,
+        },
+        "title_suffix": customer.name if customer else "",
+        # 合计取版本行的 total_amount（版本生成时就定死了）
+        "total_amount": version_row.total_amount,
+        "sections": [
+            {
+                "label": "有效期至",
+                "value": quote.valid_until.isoformat() if quote.valid_until else "",
+            },
+        ],
+    }
+
+
+async def generate_quote_doc(
+    session: AsyncSession,
+    *,
+    quote_version_id: int,
+    user: CurrentUser,
+    template_id: int | None = None,
+    extra_fields: dict[str, str] | None = None,
+) -> BizDoc:
+    """从报价版本生成一份对客 Excel 报价单（不动报价单与版本）。"""
+    from app.modules.quote.model import QuoteVersion
+
+    version_row = await session.get(QuoteVersion, quote_version_id)
+    if version_row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
+    built = await build_quote_doc(session, quote_version_id)
+    await ensure_in_scope(
+        session, user, owner_id=built.get("owner_id"), label="报价单"
+    )
+    template = await current_template(session, "quote_sheet", template_id)
+    return await _persist(
+        session,
+        built=built,
+        doc_type="quote_sheet",
+        template=template,
+        user_id=user.id,
+        extra_fields=extra_fields,
+        source_ref=built.get("source"),
+    )
+
+
 def _content_hash(doc_no: str, template_version: int, snapshot: dict) -> str:
     """文件校验值（文档 §四「文件及校验值」）。
 
@@ -496,6 +607,8 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
             "diffs": built.get("diffs") or [],
             "sections": built.get("sections") or [],
             "source": built.get("source"),
+            # 合计（报价单用）：取版本的 total_amount，不在这里对明细求和
+            "total_amount": built.get("total_amount"),
             "body": body,
             "template": {"id": template.id, "name": template.name, "version": template.version},
         }
@@ -530,7 +643,11 @@ async def _persist(
 ) -> BizDoc:
     from app.modules.settings import numbering
 
-    rule_code = "sample_doc" if doc_type == "sample_request" else "order_doc"
+    rule_code = {
+        "sample_request": "sample_doc",
+        "order_sheet": "order_doc",
+        "quote_sheet": "quote_doc",
+    }[doc_type]
     version, parent_id = await _next_doc_version(
         session,
         doc_type=doc_type,
@@ -734,6 +851,7 @@ async def doc_pdf_data(session: AsyncSession, doc: BizDoc) -> dict:
         "diffs": snapshot.get("diffs") or [],
         "sections": snapshot.get("sections") or [],
         "body": snapshot.get("body") or "",
+        "total_amount": snapshot.get("total_amount"),
         "content_sha256": doc.content_sha256,
     }
 

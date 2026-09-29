@@ -12,7 +12,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.response import ok
 from app.modules.bizdoc import service as svc
-from app.modules.bizdoc.model import DOC_TYPE_LABEL
+from app.modules.bizdoc.model import DOC_TYPE_FORMAT, DOC_TYPE_LABEL
 
 router = APIRouter(tags=["BizDoc"])
 
@@ -33,6 +33,14 @@ class SampleDocGenerate(BaseModel):
 
 class OrderDocGenerate(BaseModel):
     order_id: int
+    template_id: int | None = None
+    extra_fields: dict[str, str] | None = None
+
+
+class QuoteDocGenerate(BaseModel):
+    """对客报价单按**报价版本**生成：金额必须来自那一版，而不是"当前价"。"""
+
+    quote_version_id: int
     template_id: int | None = None
     extra_fields: dict[str, str] | None = None
 
@@ -180,6 +188,40 @@ async def generate_order_sheet_doc(
     return ok(svc.serialize_doc(doc), "下单文件已生成")
 
 
+@router.post("/biz-docs/quote")
+async def generate_quote_doc(
+    payload: QuoteDocGenerate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按报价版本生成对客 Excel 报价单（金额取自那一版，不现算）。"""
+    doc = await svc.generate_quote_doc(
+        session,
+        quote_version_id=payload.quote_version_id,
+        user=user,
+        template_id=payload.template_id,
+        extra_fields=payload.extra_fields,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="generate",
+        business_type="biz_doc",
+        business_id=doc.id,
+        after={
+            "doc_no": doc.doc_no,
+            "doc_type": doc.doc_type,
+            "version": doc.version,
+            "source_no": doc.source_no,
+            "source_version": doc.source_version,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_doc(doc), "对客报价单已生成")
+
+
 @router.get("/biz-docs/{doc_id}")
 async def get_doc(
     doc_id: int,
@@ -199,18 +241,30 @@ async def download_doc(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """下载 PDF。正文只取生成时的快照——之后改业务资料不影响已出的文件。"""
+    """下载文件。正文只取生成时的快照——之后改业务资料不影响已出的文件。
+
+    格式按单据类型分流：报价单是客户要拿去改/填的 Excel（xlsx），
+    打样单与下单文件是正式文件（pdf）。两者共用同一套台账。
+    """
     from app.modules.bizdoc.pdf import render_biz_doc_pdf
 
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_scope(session, user, doc)
     data = await svc.doc_pdf_data(session, doc)
-    # reportlab 渲染是同步 CPU 操作，丢线程池避免卡住事件循环（与报价/合同 PDF 同）
-    pdf_bytes = await asyncio.to_thread(render_biz_doc_pdf, data)
+    fmt = DOC_TYPE_FORMAT.get(doc.doc_type, "pdf")
+    if fmt == "xlsx":
+        from app.modules.bizdoc.xlsx import render_quote_xlsx
+
+        content = await asyncio.to_thread(render_quote_xlsx, data)
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        # 渲染是同步 CPU 操作，丢线程池避免卡住事件循环（与报价/合同 PDF 同）
+        content = await asyncio.to_thread(render_biz_doc_pdf, data)
+        media_type = "application/pdf"
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{doc.doc_no}.pdf"'},
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{doc.doc_no}.{fmt}"'},
     )
 
 

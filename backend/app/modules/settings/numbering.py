@@ -111,6 +111,14 @@ DEFAULT_RULES: dict[str, dict] = {
         "seq_length": 4,
         "reset_period": "daily",
     },
+    # 对客报价单（场景10）：客户拿去改/填的 Excel，号段单独一段便于对账
+    "quote_doc": {
+        "name": "对客报价单号",
+        "prefix": "BJ",
+        "date_format": "%Y%m%d",
+        "seq_length": 4,
+        "reset_period": "daily",
+    },
 }
 
 RESET_PERIODS = {
