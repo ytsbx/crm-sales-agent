@@ -140,9 +140,23 @@ async def clean(verbose=False):
                       f"(select id from skus where sku_code like 'CHK{RUN}%')"),
         ('用例成本', "delete from product_costs where sku_id in "
                    f"(select id from skus where sku_code like 'CHK{RUN}%')"),
-        ('用例 SKU', "delete from skus where sku_code like 'CHK{RUN}%'"),
-        ('用例产品', "delete from products where name like 'CHK{RUN}%'"),
-        ('用例客户', "delete from customers where name like 'CHK{RUN}%'"),
+        # 商机必须排在客户前面：opportunities.customer_id 有外键指向 customers，
+        # 少了这一步，"delete from customers" 会直接抛外键错——本套件用例 9
+        # 建了快捷商机，所以此前客户是真的删不掉（而且报错会把后面的清理也带走）。
+        # 明细与阶段历史同属商机链路，一并按依赖顺序清。
+        ('用例商机明细', "delete from opportunity_items where opportunity_id in "
+                     f"(select id from opportunities where customer_id in "
+                     f"(select id from customers where name like 'CHK{RUN}%'))"),
+        ('用例商机阶段历史', "delete from opportunity_stage_history where opportunity_id in "
+                       f"(select id from opportunities where customer_id in "
+                       f"(select id from customers where name like 'CHK{RUN}%'))"),
+        ('用例商机', f"delete from opportunities where customer_id in "
+                  f"(select id from customers where name like 'CHK{RUN}%')"),
+        # 注意这三条必须有 f 前缀：少了它 {RUN} 会原样进 SQL，like 匹配不到任何行，
+        # 清理会"跑完且不报错"地把产品和客户留在库里（曾经真的这样漏了很久）。
+        ('用例 SKU', f"delete from skus where sku_code like 'CHK{RUN}%'"),
+        ('用例产品', f"delete from products where name like 'CHK{RUN}%'"),
+        ('用例客户', f"delete from customers where name like 'CHK{RUN}%'"),
         ('用例审计', "delete from audit_logs where business_type in "
                    "('product','sku','price_rule','customer_price_rule') "
                    "and created_at > now() - interval '2 hours'"),

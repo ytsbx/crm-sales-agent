@@ -197,6 +197,10 @@ def main():
             'name': f'{PREFIX}-客户C(无规则)', 'level': 'C', 'remark': '验收临时客户',
         })
         c_no_rule = res['data']['id']
+        # 登记进 customers 才会被收尾清理；此前只存在局部变量里，
+        # 于是每跑一次就在库里留一个「客户C(无规则)」——清理代码看起来是全覆盖的，
+        # 实际只覆盖了登记过的 A/B。
+        customers['C'] = c_no_rule
         _, res = call('GET', f'/pricing/lookup?customer_id={c_no_rule}&sku_id={sku_id}&quantity=1', token=admin)
         ok = res['source'] == 'general' and bool(res['fallback_note'])
         record('A03', '无等级价回退通用价并标注来源', ok, res['fallback_note'])

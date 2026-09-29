@@ -135,6 +135,13 @@ async def clean(verbose=False):
         ('用例线索归属', "delete from lead_assignments where lead_id in "
                       f"(select id from leads where name like 'CHK{RUN}%')"),
         ('用例线索', f"delete from leads where name like 'CHK{RUN}%'"),
+        # 线索转化（用例 5）会真的建一个客户，名字沿用线索名，此前只删了线索，
+        # 客户就一直留在库里。先清挂在客户下的联系人与归属历史，再删客户本身。
+        ('用例转化客户联系人', "delete from contacts where customer_id in "
+                        f"(select id from customers where name like 'CHK{RUN}%')"),
+        ('用例转化客户归属', "delete from customer_owner_history where customer_id in "
+                       f"(select id from customers where name like 'CHK{RUN}%')"),
+        ('用例转化客户', f"delete from customers where name like 'CHK{RUN}%'"),
         ('用例角色', f"delete from role_permissions where role_id in "
                    f"(select id from roles where code like 'chk{RUN}%')"),
         ('用例角色', f"delete from roles where code like 'chk{RUN}%'"),

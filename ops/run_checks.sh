@@ -43,14 +43,17 @@ echo "== 2. 接口回归（顺序跑）=="
 while read -r suite; do
   case "$suite" in '' | '#'*) continue ;; esac
   if [[ ! -f "scripts/$suite.py" ]]; then
-    echo "FAIL $suite（清单里有，但 scripts/$suite.py 不存在）"
+    # 变量必须写成 ${suite}：后面紧跟的是全角括号，bash 会把多字节字符
+    # 当成变量名的一部分，在 set -u 下报 "unbound variable" 并直接退出——
+    # 结果是"套件失败"变成"脚本崩了"，连是哪个套件失败都看不到（真踩过）。
+    echo "FAIL ${suite}（清单里有，但 scripts/${suite}.py 不存在）"
     FAILED+=("$suite")
     continue
   fi
   if PYTHONPATH=. .venv/bin/python "scripts/$suite.py" >/tmp/crm-check-$suite.log 2>&1; then
     echo "OK  $suite"
   else
-    echo "FAIL $suite（详情：/tmp/crm-check-$suite.log）"
+    echo "FAIL ${suite}（详情：/tmp/crm-check-${suite}.log）"
     FAILED+=("$suite")
   fi
 done < "$SUITES_FILE"

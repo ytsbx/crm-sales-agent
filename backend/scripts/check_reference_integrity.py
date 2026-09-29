@@ -197,6 +197,14 @@ async def clean():
         ("用例任务", "delete from tasks where title like 'REFCHK%'"),
         ("用例跟进", "delete from followups where content like 'REFCHK%'"),
         ("用例通知", "delete from notifications where title like '%REFCHK%'"),
+        # 用例在建"正常商机"那一步真的建了一条商机，此前只有任务/跟进/通知被清，
+        # 商机一直留着——而且它挂在演示客户 id=1 名下，会出现在真实客户的商机列表里。
+        # 商机的明细与阶段历史同属这条链路，按依赖顺序先清。
+        ("用例商机明细", "delete from opportunity_items where opportunity_id in "
+                     "(select id from opportunities where title like 'REFCHK%')"),
+        ("用例商机阶段历史", "delete from opportunity_stage_history where opportunity_id in "
+                       "(select id from opportunities where title like 'REFCHK%')"),
+        ("用例商机", "delete from opportunities where title like 'REFCHK%'"),
     ]
     async with SessionLocal() as s:
         for label, sql in statements:
