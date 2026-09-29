@@ -49,7 +49,7 @@ def translate_erp_error(error: Exception) -> AppError:
 
 @router.get("/integrations/erp/readiness")
 async def erp_readiness(
-    _: CurrentUser = Depends(require_permission("order:view")),
+    user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
     return ok(await svc.readiness(session))
@@ -141,11 +141,12 @@ async def list_sync_logs(
     business_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("order:view")),
+    user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
     items, total = await svc.sync_logs(
         session,
+        user=user,
         direction=direction,
         status=status,
         business_id=business_id,

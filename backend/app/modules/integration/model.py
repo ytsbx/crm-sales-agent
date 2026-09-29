@@ -34,6 +34,11 @@ class IntegrationLog(Base, IdMixin):
     __tablename__ = "integration_logs"
 
     integration_type: Mapped[str] = mapped_column(String(32))
+    #: 厂商/适配器名（如「聚水潭」），**只用于显示**。
+    #: 与 integration_type 分开是刻意的：类型是稳定的口径（查询按它），
+    #: 厂商名会随接入的 ERP 变。此前只有 integration_type，写入存的是厂商名、
+    #: 查询却按 '%ERP%' 匹配 —— 两边靠约定对齐，结果聚水潭的日志一条都查不到。
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
     direction: Mapped[str] = mapped_column(String(16))  # outbound / inbound
     business_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     business_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

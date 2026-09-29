@@ -23,6 +23,8 @@ from app.modules.erp import adapter as erp_adapter
 from app.modules.erp.adapter import ErpError, ErpNotConfigured, get_adapter
 from app.modules.integration.model import ExternalMapping, IntegrationLog
 from app.modules.order.model import ORDER_STATUS_LABEL, OrderStatusHistory, SalesOrder, SalesOrderItem
+from app.core.data_scope import scoped_owner_ids
+from app.core.deps import CurrentUser
 from app.modules.product.model import Sku
 
 
@@ -30,6 +32,7 @@ def serialize_log(row: IntegrationLog) -> dict:
     return {
         "id": row.id,
         "integration_type": row.integration_type,
+        "provider": row.provider,
         "direction": row.direction,
         "business_type": row.business_type,
         "business_id": row.business_id,
@@ -121,7 +124,8 @@ async def push_order(
 
     payload = await build_order_payload(session, order)
     log = IntegrationLog(
-        integration_type=adapter.label,
+        integration_type="erp",
+        provider=adapter.label,
         direction="outbound",
         business_type="order",
         business_id=order.id,
@@ -210,7 +214,8 @@ async def refresh_status(
         )
 
     log = IntegrationLog(
-        integration_type=adapter.label,
+        integration_type="erp",
+        provider=adapter.label,
         direction="inbound",
         business_type="order",
         business_id=order.id,
@@ -291,7 +296,8 @@ async def apply_status_webhook(
     if order is None:
         session.add(
             IntegrationLog(
-                integration_type=adapter.label,
+                integration_type="erp",
+                provider=adapter.label,
                 direction="inbound",
                 business_type="order",
                 status="failed",
@@ -322,7 +328,8 @@ async def apply_status_webhook(
 
     session.add(
         IntegrationLog(
-            integration_type=adapter.label,
+            integration_type="erp",
+            provider=adapter.label,
             direction="inbound",
             business_type="order",
             business_id=order.id,
@@ -346,13 +353,26 @@ async def apply_status_webhook(
 async def sync_logs(
     session: AsyncSession,
     *,
+    user: CurrentUser,
     direction: str | None,
     status: str | None,
     business_id: int | None,
     page: int,
     page_size: int,
 ) -> tuple[list[dict], int]:
-    stmt = select(IntegrationLog).where(IntegrationLog.integration_type.like("%ERP%"))
+    stmt = select(IntegrationLog).where(IntegrationLog.integration_type == "erp")
+    # 按订单数据范围过滤（P2 修复）：日志里带着订单号、请求报文和错误信息，
+    # 不能让所有 order:view 的人看到**别人订单**的同步细节。
+    # 非订单类日志（business_type 不是 order）对非全量范围的人一律不可见——
+    # **看不到归属就看不到**：宁可少给，也不要越权给。
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        stmt = stmt.where(
+            IntegrationLog.business_type == "order",
+            IntegrationLog.business_id.in_(
+                select(SalesOrder.id).where(SalesOrder.owner_id.in_(owner_ids or [0]))
+            ),
+        )
     if direction:
         stmt = stmt.where(IntegrationLog.direction == direction)
     if status:
@@ -400,7 +420,7 @@ async def readiness(session: AsyncSession) -> dict:
         await session.execute(
             select(func.count())
             .select_from(IntegrationLog)
-            .where(IntegrationLog.integration_type.like("%ERP%"))
+            .where(IntegrationLog.integration_type == "erp")
         )
     ).scalar_one()
     from app.core.config import settings
