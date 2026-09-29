@@ -25,6 +25,7 @@ check_quote_center_acceptance
 check_custom_no_sku
 check_sample_production
 check_sales_attribution
+check_duplicate_arbitration
 check_notification_retry
 check_notification_levels
 check_delivery_analytics

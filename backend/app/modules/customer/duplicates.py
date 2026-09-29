@@ -193,6 +193,7 @@ async def resolve_case(
                         new_owner_id=owner_id,
                         reason=f"撞单裁定 #{case.id}（{DECISION_LABEL[decision]}）",
                         operator_id=actor_id,
+                        created_at=datetime.now(UTC),
                     )
                 )
                 customer.owner_id = owner_id
