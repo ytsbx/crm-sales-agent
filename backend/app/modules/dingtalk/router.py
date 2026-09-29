@@ -83,6 +83,28 @@ async def start_inquiry_approval(
                 422,
             )
         field_map[quote_component] = inquiry.oa_quote_user_id
+    # 提报人 / 提报部门：钉钉要的是**人的编号与部门编号**，不是姓名。
+    # 按 CRM 里这个人的姓名去钉钉找同名账号——**找不到就明确报错**，
+    # 不能瞎填一个，否则单子会提给一个不相干的人（或者被钉钉拒掉还看不出原因）。
+    originator_component = (cfg or {}).get("originator_component")
+    dept_component = (cfg or {}).get("dept_component")
+    if originator_component or dept_component:
+        from app.modules.dingtalk.client import get_client
+
+        ding_user_id = await get_client().search_user_id_by_name(user.name)
+        if not ding_user_id:
+            raise AppError(
+                ErrorCode.PARAM_NOT_VALID if hasattr(ErrorCode, "PARAM_NOT_VALID") else ErrorCode.PARAM_ERROR,
+                f"钉钉里找不到与「{user.name}」同名的账号，无法发起审批。"
+                "请确认你的钉钉姓名与本系统一致，或联系管理员",
+                422,
+            )
+        if originator_component:
+            field_map[originator_component] = ding_user_id
+        if dept_component:
+            dept_ids = await get_client().get_user_dept_ids(ding_user_id)
+            if dept_ids:
+                field_map[dept_component] = dept_ids[0]
     # 额外字段（业务临时补的）按 componentId 直接给
     for component_id, value in (payload.extra_fields or {}).items():
         if component_id and value not in (None, ""):

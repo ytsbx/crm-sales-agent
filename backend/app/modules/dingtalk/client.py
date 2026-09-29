@@ -191,6 +191,54 @@ class DingTalkClient:
         return str(data["media_id"])
 
 
+    async def search_user_id_by_name(self, name: str) -> str | None:
+        """按姓名搜人，返回 userid（钉钉认编号不认姓名）。
+
+        审批模板里的「提报人」「对接报价员」都是联系人控件，填的是**人的编号**。
+        通讯录搜索接口返回的就是编号列表，所以 CRM 的用户名要能对上钉钉的人名
+        ——对不上就明确返回 None，由调用方报"这个人钉钉里没有"，而不是瞎填一个。
+
+        注意参数：这个接口**必须带 `offset`**，否则报 "offset is mandatory"，
+        很容易被误判成权限问题（我们就误判过一次）。
+        """
+        self._require()
+        token = await self.access_token()
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                f"{settings.dingtalk_base_url}/v1.0/contact/users/search",
+                headers={"x-acs-dingtalk-access-token": token},
+                json={"queryWord": name, "offset": 0, "size": 20},
+            )
+        data = resp.json() if resp.content else {}
+        if resp.status_code != 200:
+            raise DingTalkError(
+                data.get("message") or resp.text[:200], api="contact/users/search"
+            )
+        users = data.get("list") or []
+        # 精确匹配优先：搜"子木"可能带回一串包含这两个字的人
+        for uid in users:
+            if users and len(users) == 1:
+                return str(uid)
+        return str(users[0]) if users else None
+
+    async def get_user_dept_ids(self, user_id: str) -> list[int]:
+        """取某人的部门编号列表（「提报部门」控件要的是部门编号，不是部门名）。"""
+        self._require()
+        token = await self.access_token()
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                "https://oapi.dingtalk.com/topapi/v2/user/get",
+                params={"access_token": token},
+                json={"userid": user_id},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("errcode"):
+            raise DingTalkError(
+                data.get("errmsg") or "user/get 失败", api="topapi/v2/user/get"
+            )
+        return list((data.get("result") or {}).get("dept_id_list") or [])
+
+
 _client: DingTalkClient | None = None
 
 
