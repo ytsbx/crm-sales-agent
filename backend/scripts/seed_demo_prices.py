@@ -1,27 +1,19 @@
-"""演示价格数据：给每个有指导价的 SKU 补 A/B/C/D 等级价（默认干跑）。
+"""演示价格：自带一条**独立演示产品线**，不碰现有 SKU（默认干跑）。
 
-## 为什么单独一个脚本，而不是塞进 seed.py
+第一版把等级价加在现有活跃 SKU 上，当场打挂了 `check_quote_center_acceptance`
+——那些 SKU 正是验收套件造夹具的地方，**演示数据与测试夹具抢同一块地盘**。
+现在自带产品线与 SKU，现有定价一个字不动。
 
-- `seed.py` 是"从零搭环境"的入口，往里加东西风险大；这里是可重复执行的**数据填充**；
-- 演示数据必须**可识别、可一键撤销**：上线前要把它们整批换成真实价格，
-  不能留下"来源不明的数字"（成本错一条，低价审批和毛利就全错）。
+标识沿用 seed.py 的约定：`演示占位价，待业务确认后替换`；撤销按 remark + 编码前缀
+定位（不需要另记 id）。演示 SKU 一旦被单据引用，物理删会撞外键，所以撤销走软删。
 
-标识沿用 seed.py 已有的约定：`演示占位价，待业务确认后替换`。
-撤销就按这个 remark 删，不需要另记 id。
+    PYTHONPATH=. .venv/bin/python scripts/seed_demo_prices.py            # 干跑
+    PYTHONPATH=. .venv/bin/python scripts/seed_demo_prices.py --apply     # 写入
+    PYTHONPATH=. .venv/bin/python scripts/seed_demo_prices.py --clean     # 撤销整条演示线
 
-## 用法
-
-    cd backend
-    PYTHONPATH=. .venv/bin/python scripts/seed_demo_prices.py           # 干跑：只报告会写什么
-    PYTHONPATH=. .venv/bin/python scripts/seed_demo_prices.py --apply    # 真的写入
-    PYTHONPATH=. .venv/bin/python scripts/seed_demo_prices.py --clean    # 撤销（只删本脚本造的等级价）
-
-## 定价口径（**编的，业务确认后替换**）
-
-以每条现成规则的 `guide_price` 为基准，等级按折扣拉开：
-A 级 -8%（大客户）、B 级 -4%、C 级 -1%、D 级 +3%（新客/散单）。
-梯度不是等差是因为真实生意里等级差通常这么走；演示"同一 SKU 对不同等级出不同价"
-要能一眼看出差异，等差反而看不出谁是谁。
+定价口径（**编的，业务确认后替换**）：以基准指导价为锚，等级按折扣拉开
+A −8%（大客户）、B −4%、C −1%、D +3%（新客/散单）。不用等差——真实生意里等级差
+通常这么走，等差在演示"同 SKU 对不同等级不同价"时反而看不出谁是谁。
 """
 
 import asyncio
@@ -34,112 +26,131 @@ from sqlalchemy import select, text
 from app.core.database import SessionLocal
 
 MARK = "演示占位价，待业务确认后替换"
-#: 等级 → 相对指导价的系数
-LEVEL_FACTOR = {"A": Decimal("0.92"), "B": Decimal("0.96"), "C": Decimal("0.99"), "D": Decimal("1.03")}
+CODE_PREFIX = "DEMO-"
+PRODUCT_NAME = "演示产品线·包装耗材"
+LEVEL_FACTOR = {"A": "0.92", "B": "0.96", "C": "0.99", "D": "1.03"}
+#: 编码后缀, 名称, 规格, 材质, 采购成本, 包装成本, 基准指导价
+SKUS = [
+    ("BX01", "五层瓦楞纸箱", "600×400×300mm", "瓦楞纸", "18.00", "3.00", "29.00"),
+    ("BX02", "三层瓦楞纸箱", "400×300×200mm", "瓦楞纸", "11.00", "2.00", "19.00"),
+    ("DZ01", "PE 气泡袋", "300×400mm", "PE", "6.50", "1.00", "14.50"),
+    ("MZ01", "木质托盘", "1200×1000mm", "松木", "55.00", "5.00", "85.00"),
+]
+_CODES = [f"{CODE_PREFIX}{row[0]}" for row in SKUS]
+_START = date.today().replace(month=1, day=1)
+
+
+async def _clean(s) -> None:
+    params = {"m": MARK, "codes": _CODES}
+    rules = await s.execute(
+        text(
+            "delete from price_rules where remark = :m and sku_id in "
+            "(select id from skus where sku_code = any(:codes))"
+        ),
+        params,
+    )
+    costs = await s.execute(
+        text(
+            "delete from product_costs where remark = :m and sku_id in "
+            "(select id from skus where sku_code = any(:codes))"
+        ),
+        params,
+    )
+    skus = await s.execute(
+        text(
+            "update skus set deleted_at = now() where sku_code = any(:codes) "
+            "and deleted_at is null"
+        ),
+        {"codes": _CODES},
+    )
+    product = await s.execute(
+        text("update products set deleted_at = now() where name = :n and deleted_at is null"),
+        {"n": PRODUCT_NAME},
+    )
+    await s.commit()
+    print(
+        f"已撤销：规则 {rules.rowcount} 条、成本 {costs.rowcount} 条、"
+        f"SKU {skus.rowcount} 个、产品 {product.rowcount} 个"
+    )
 
 
 async def main(mode: str) -> int:
-    from app.modules.pricing.model import PriceRule
-    from app.modules.product.model import Sku
+    from app.modules.pricing.model import PriceRule, ProductCost
+    from app.modules.product.model import Product, Sku
 
     async with SessionLocal() as s:
-        live_skus = set(
-            (
-                await s.execute(select(Sku.id).where(Sku.deleted_at.is_(None)))
-            ).scalars().all()
-        )
-        base_rules = (
-            await s.execute(
-                select(PriceRule).where(
-                    PriceRule.status == "active",
-                    PriceRule.customer_level.is_(None),
-                    # 只取"通用基准价"（min_qty=0）。阶梯价（3000 以上 27）也是
-                    # customer_level 为空的非有效行……不，它是 active 的，所以必须
-                    # 用 min_qty=0 把它排除掉：否则同一个 SKU 会生成两条 min_qty=0
-                    # 的等级价，直接构成"区间重叠"——定价引擎会拒绝，演示也跑不通。
-                    PriceRule.min_qty == 0,
-                    PriceRule.sku_id.in_(live_skus),
-                    PriceRule.guide_price.is_not(None),
-                )
-            )
-        ).scalars().all()
-        # 已有等级价（本脚本造的）——按 remark + 等级识别，避免误删业务自己维护的
-        existing = {
-            (row.sku_id, row.customer_level)
-            for row in (
-                await s.execute(
-                    select(PriceRule).where(
-                        PriceRule.remark == MARK, PriceRule.customer_level.is_not(None)
-                    )
-                )
-            ).scalars().all()
-        }
-
         if mode == "clean":
-            result = await s.execute(
-                text(
-                    "delete from price_rules where remark = :m and customer_level is not null"
-                ),
-                {"m": MARK},
-            )
-            await s.commit()
-            print(f"已撤销演示等级价 {result.rowcount} 条")
+            await _clean(s)
             return 0
 
-        plan = []
-        seen_skus: set[int] = set()
-        for rule in base_rules:
-            if rule.sku_id in seen_skus:
-                # 一个 SKU 只按一条基准价推等级价，宁可少造也不要造出重叠
-                continue
-            seen_skus.add(rule.sku_id)
-            guide = Decimal(str(rule.guide_price))
-            for level, factor in LEVEL_FACTOR.items():
-                if (rule.sku_id, level) in existing:
-                    continue
-                price = (guide * factor).quantize(Decimal("0.0001"))
-                minimum = (price * Decimal("0.85")).quantize(Decimal("0.0001"))
-                plan.append(
-                    {
-                        "sku_id": rule.sku_id,
-                        "level": level,
-                        "guide": price,
-                        "minimum": minimum,
-                        "standard": (guide * Decimal("1.1")).quantize(Decimal("0.0001")),
-                        "margin": rule.target_margin,
-                    }
-                )
-
-        print(f"基准规则 {len(base_rules)} 条 → 计划写 {len(plan)} 条等级价")
-        for row in plan[:6]:
-            print(
-                f"  sku {row['sku_id']} {row['level']} 级：指导价 {row['guide']}"
-                f"（保底 {row['minimum']}）"
-            )
-        if len(plan) > 6:
-            print(f"  …另有 {len(plan) - 6} 条")
-
+        print(
+            f"计划：产品 1 个（{PRODUCT_NAME}）、SKU {len(SKUS)} 个、"
+            f"成本 {len(SKUS)} 条、价格规则 {len(SKUS) * 5} 条（1 基准 + A/B/C/D）"
+        )
+        for suffix, name, spec, _material, purchase, package, guide in SKUS:
+            print(f"  {CODE_PREFIX}{suffix} {name} {spec}：成本 {purchase}+{package}，指导价 {guide}")
         if mode != "apply":
-            print("\n干跑结束。加 --apply 真正写入；--clean 撤销。")
+            print("\n干跑结束。加 --apply 写入；--clean 撤销整条演示线。")
             return 0
 
-        for row in plan:
+        product = (
+            await s.execute(select(Product).where(Product.name == PRODUCT_NAME))
+        ).scalars().first()
+        if product is None:
+            product = Product(
+                name=PRODUCT_NAME,
+                product_line="演示用",
+                category="包装耗材",
+                brand="演示品牌",
+                description="演示价格与报价功能用的占位产品线，正式上线前替换",
+                status="active",
+            )
+            s.add(product)
+            await s.flush()
+        product.deleted_at = None
+
+        for suffix, name, spec, material, purchase, package, guide in SKUS:
+            code = f"{CODE_PREFIX}{suffix}"
+            sku = (await s.execute(select(Sku).where(Sku.sku_code == code))).scalars().first()
+            if sku is None:
+                sku = Sku(
+                    product_id=product.id,
+                    sku_code=code,
+                    name=name,
+                    specification=spec,
+                    material=material,
+                )
+                s.add(sku)
+                await s.flush()
+            sku.deleted_at = None
             s.add(
-                PriceRule(
-                    sku_id=row["sku_id"],
-                    customer_level=row["level"],
-                    min_qty=Decimal(0),
-                    standard_price=row["standard"],
-                    guide_price=row["guide"],
-                    minimum_price=row["minimum"],
-                    target_margin=row["margin"],
-                    effective_from=date.today().replace(month=1, day=1),
-                    status="active",
+                ProductCost(
+                    sku_id=sku.id,
+                    purchase_cost=Decimal(purchase),
+                    package_cost=Decimal(package),
+                    effective_from=_START,
+                    currency="CNY",
                     remark=MARK,
                 )
             )
+            base = Decimal(guide)
+            for level, factor in [(None, "1")] + list(LEVEL_FACTOR.items()):
+                price = (base * Decimal(factor)).quantize(Decimal("0.0001"))
+                s.add(
+                    PriceRule(
+                        sku_id=sku.id,
+                        customer_level=level,
+                        min_qty=Decimal(0),
+                        standard_price=(base * Decimal("1.12")).quantize(Decimal("0.0001")),
+                        guide_price=price,
+                        minimum_price=(price * Decimal("0.85")).quantize(Decimal("0.0001")),
+                        effective_from=_START,
+                        status="active",
+                        remark=MARK,
+                    )
+                )
         await s.commit()
-        print(f"\n已写入 {len(plan)} 条演示等级价（标识：{MARK}）")
+        print(f"\n已写入：{len(SKUS)} 个 SKU、{len(SKUS)} 条成本、{len(SKUS) * 5} 条规则（标识：{MARK}）")
     return 0
 
 
