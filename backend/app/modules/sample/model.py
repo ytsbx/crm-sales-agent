@@ -9,10 +9,10 @@
 但只有阶段没有实体，业务走到那里没有任何东西可录入。这个模块补的就是它。
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin
@@ -34,6 +34,20 @@ SAMPLE_TRANSITIONS: dict[str, set[str]] = {
     "signed": set(),
 }
 
+#: 客户确认状态（文档 §3.5：「客户收到样品不等于样品被接受」）。
+#:
+#: 签收（signed）是物流事实，客户确认才是业务事实——把两者混在一个字段里，
+#: "这批样到底过没过"就说不清。所以确认独立成三态，且**必须签收之后**才能确认。
+CONFIRM_PENDING = "pending"
+CONFIRM_ACCEPTED = "accepted"
+CONFIRM_REJECTED = "rejected"
+
+CONFIRM_STATUS_LABEL: dict[str, str] = {
+    CONFIRM_PENDING: "待客户确认",
+    CONFIRM_ACCEPTED: "客户已接受",
+    CONFIRM_REJECTED: "客户未通过",
+}
+
 
 class SampleRequest(Base, IdMixin):
     __tablename__ = "sample_requests"
@@ -41,6 +55,8 @@ class SampleRequest(Base, IdMixin):
         Index("ix_sample_requests_opportunity", "opportunity_id"),
         Index("ix_sample_requests_customer", "customer_id"),
         Index("ix_sample_requests_owner_status", "owner_id", "status"),
+        # "待客户确认"是跟单要盯的一类单，给它一个索引
+        Index("ix_sample_requests_confirm_status", "confirm_status"),
     )
 
     opportunity_id: Mapped[int | None] = mapped_column(
@@ -56,6 +72,34 @@ class SampleRequest(Base, IdMixin):
     status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     reject_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # ---- 生产打样资料（文档 §3.5：用途、工艺/材质、图纸版本、样品数量、
+    #      目标完成日、验收标准、费用和责任人）----
+    # 没有这几项，打样需求单发给车间是干不了活的：不知道用什么材质、
+    # 按哪版图纸、什么时候要、按什么标准验收。
+    # **样品数量不在这里重复**：它在 sample_items.quantity 上（可以一单多样），
+    # 另立一个汇总字段只会产生两个真相。
+    purpose: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 用途
+    craft: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 工艺
+    material: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 材质
+    drawing_version: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 图纸版本
+    target_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 目标完成日
+    acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)  # 验收标准
+    sample_fee: Mapped[Decimal] = mapped_column(
+        Numeric(16, 2), default=0, server_default="0"
+    )  # 打样费用
+    production_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # 责任人
+    # 制作完成时间：由跟单登记（CRM 管不到车间，所以只记录事实、不当闸门）
+    made_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # ---- 客户确认：与签收分开（「客户收到样品不等于样品被接受」）----
+    confirm_status: Mapped[str] = mapped_column(
+        String(16), default=CONFIRM_PENDING, server_default=CONFIRM_PENDING, nullable=False
+    )
+    customer_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirm_remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)

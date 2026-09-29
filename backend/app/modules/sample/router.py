@@ -32,9 +32,11 @@ from app.modules.sample import service as svc
 from app.modules.sample.model import SAMPLE_STATUS_LABEL, SampleItem, SampleRequest, SampleShipment
 from app.modules.sample.schema import (
     SampleApprove,
+    SampleConfirm,
     SampleCreate,
     SampleFeedback,
     SampleItemAdd,
+    SampleMade,
     SampleShip,
     SampleSign,
     SampleUpdate,
@@ -168,7 +170,21 @@ async def update_sample(
     sample = await svc.get_visible_or_404(session, user, sample_id)
     before = await svc.detail(session, sample)
     data = payload.model_dump(exclude_unset=True)
-    for field in ("contact_id", "owner_id", "remark"):
+    # 生产打样资料（文档 §3.5）与联系人/负责人/备注走同一个"改了留痕"的入口：
+    # 跟单在这里补资料，打样需求单出图时逐项带给车间
+    for field in (
+        "contact_id",
+        "owner_id",
+        "remark",
+        "purpose",
+        "craft",
+        "material",
+        "drawing_version",
+        "target_completion_date",
+        "acceptance_criteria",
+        "sample_fee",
+        "production_owner_id",
+    ):
         if field in data:
             setattr(sample, field, data[field])
     await session.flush()
@@ -353,6 +369,98 @@ async def feedback_sample(
     )
     await session.commit()
     return ok(after, "反馈已登记")
+
+
+@router.post("/samples/{sample_id}/made")
+async def register_sample_made(
+    sample_id: int,
+    payload: SampleMade,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """登记制作完成（文档 §3.5「分别记录制作、寄出、签收、客户确认」）。
+
+    刻意**不做成状态闸门**：CRM 管不到车间，把"制作完成"变成必须点的状态，
+    只会让跟单为了往下走而随手点一下，反而污染数据。这里只记录事实与时间，
+    供打样需求单与跟单看板回答"目标完成日到了没有"。
+    """
+    from datetime import UTC, datetime
+
+    sample = await svc.get_visible_or_404(session, user, sample_id)
+    if sample.status in ("pending", "rejected"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED, "还没批准的打样申请不能登记制作完成", 422
+        )
+    sample.made_at = payload.made_at or datetime.now(UTC)
+    if payload.remark:
+        prefix = f"{sample.remark}\n" if sample.remark else ""
+        sample.remark = f"{prefix}制作说明：{payload.remark}"
+    await session.flush()
+    after = await svc.detail(session, sample)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sample_made",
+        business_type="sample",
+        business_id=sample.id,
+        after={"made_at": sample.made_at.isoformat()},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(after, "已登记制作完成")
+
+
+@router.post("/samples/{sample_id}/confirm")
+async def confirm_sample(
+    sample_id: int,
+    payload: SampleConfirm,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """登记客户确认结果（文档 §3.5）。
+
+    规则只有一条，但它是这条流程的重点：**必须先签收才能确认**。
+    客户没收到样品就"确认接受"在业务上是假数据；签收是物流事实、
+    确认是业务事实，分开记才答得了"这批样到底过没过"。
+    """
+    from datetime import UTC, datetime
+
+    from app.modules.sample.model import CONFIRM_ACCEPTED, CONFIRM_REJECTED
+
+    sample = await svc.get_visible_or_404(session, user, sample_id)
+    if sample.signed_at is None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "还没登记签收，不能登记客户确认（客户收到样品才是确认的前提）",
+            422,
+        )
+    sample.confirm_status = CONFIRM_ACCEPTED if payload.accepted else CONFIRM_REJECTED
+    sample.customer_confirmed_at = payload.confirmed_at or datetime.now(UTC)
+    sample.confirm_remark = payload.remark
+    if payload.remark:
+        # 客户说的话留进反馈里：这是"为什么过/不过"的原始依据
+        sample.feedback = payload.remark
+    await svc.record_opportunity_touch(
+        session, sample, "客户已确认样品" if payload.accepted else "客户未通过样品"
+    )
+    await session.flush()
+    after = await svc.detail(session, sample)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sample_confirm",
+        business_type="sample",
+        business_id=sample.id,
+        after={
+            "confirm_status": sample.confirm_status,
+            "customer_confirmed_at": sample.customer_confirmed_at.isoformat(),
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(after, "客户确认已登记")
 
 
 @router.get("/samples/{sample_id}/items")

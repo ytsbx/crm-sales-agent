@@ -1,6 +1,6 @@
 """样品入参（03-API §26）。"""
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict
@@ -45,6 +45,35 @@ class SampleUpdate(BaseModel):
     contact_id: int | None = None
     owner_id: int | None = None
     remark: str | None = None
+    # ---- 生产打样资料（文档 §3.5）----
+    # 跟单/生产在这几个字段里补生产资料，打样需求单出图时把它们带给车间
+    purpose: str | None = None
+    craft: str | None = None
+    material: str | None = None
+    drawing_version: str | None = None
+    target_completion_date: date | None = None
+    acceptance_criteria: str | None = None
+    sample_fee: Decimal | None = None
+    production_owner_id: int | None = None
+
+
+class SampleMade(BaseModel):
+    """登记制作完成（CRM 管不到车间，这里只记录事实，不当流程闸门）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    made_at: datetime | None = None
+    remark: str | None = None
+
+
+class SampleConfirm(BaseModel):
+    """客户确认。与签收分开：客户收到样品不等于样品被接受。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    accepted: bool
+    remark: str | None = None
+    confirmed_at: datetime | None = None
 
 
 class SampleApprove(BaseModel):

@@ -267,7 +267,7 @@ async def build_sample_request_doc(
     """组装打样需求单的快照（含来源询价与差异）。只读，不落库。"""
     from app.modules.customer.model import Customer
     from app.modules.inquiry.model import CustomInquiry
-    from app.modules.sample.model import SampleItem, SampleRequest
+    from app.modules.sample.model import CONFIRM_STATUS_LABEL, SampleItem, SampleRequest
 
     sample = await session.get(SampleRequest, sample_request_id)
     if sample is None:
@@ -311,6 +311,14 @@ async def build_sample_request_doc(
         ]
 
     customer = await session.get(Customer, sample.customer_id) if sample.customer_id else None
+    # 生产责任人：车间看的是人，不是 id
+    from app.modules.user.model import User
+
+    production_owner = (
+        await session.get(User, sample.production_owner_id)
+        if sample.production_owner_id
+        else None
+    )
     return {
         "customer": customer,
         "contact_id": sample.contact_id,
@@ -331,7 +339,41 @@ async def build_sample_request_doc(
             else None
         ),
         "title_suffix": customer.name if customer else "",
+        # 文档 §3.5 要求生产打样记录：用途、工艺/材质、图纸版本、样品数量、
+        # 目标完成日、验收标准、费用和责任人。**没有这几项，这张单子发给车间
+        # 是干不了活的**（不知道用什么材质、按哪版图纸、什么时候要、按什么验收）。
+        # 样品数量不在这里重复：它在下面的明细里，一单可以多样。
         "sections": [
+            {"label": "用途", "value": sample.purpose or ""},
+            {
+                "label": "工艺 / 材质",
+                "value": " / ".join(x for x in (sample.craft, sample.material) if x),
+            },
+            {"label": "图纸版本", "value": sample.drawing_version or ""},
+            {
+                "label": "目标完成日",
+                "value": (
+                    sample.target_completion_date.isoformat()
+                    if sample.target_completion_date
+                    else ""
+                ),
+            },
+            {"label": "验收标准", "value": sample.acceptance_criteria or ""},
+            {
+                "label": "打样费用",
+                "value": _number(sample.sample_fee) if sample.sample_fee else "",
+            },
+            {
+                "label": "生产责任人",
+                "value": production_owner.name if production_owner else "",
+            },
+            # 客户确认与签收分开：车间关心的是"这批过没过"，不是"寄到了没有"
+            {
+                "label": "客户确认",
+                "value": CONFIRM_STATUS_LABEL.get(sample.confirm_status, "")
+                + (f"（{sample.customer_confirmed_at.date().isoformat()}）"
+                   if sample.customer_confirmed_at else ""),
+            },
             {"label": "打样要求", "value": sample.remark or ""},
         ],
     }

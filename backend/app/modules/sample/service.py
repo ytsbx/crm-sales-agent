@@ -13,6 +13,7 @@ from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
 from app.modules.product.model import Sku
 from app.modules.sample.model import (
+    CONFIRM_STATUS_LABEL,
     SAMPLE_STATUS_LABEL,
     SAMPLE_TRANSITIONS,
     SampleItem,
@@ -85,6 +86,27 @@ def serialize_request(
         "shipped_at": request.shipped_at.isoformat() if request.shipped_at else None,
         "signed_at": request.signed_at.isoformat() if request.signed_at else None,
         "feedback": request.feedback,
+        # ---- 生产打样资料（文档 §3.5）----
+        "purpose": request.purpose,
+        "craft": request.craft,
+        "material": request.material,
+        "drawing_version": request.drawing_version,
+        "target_completion_date": (
+            request.target_completion_date.isoformat() if request.target_completion_date else None
+        ),
+        "acceptance_criteria": request.acceptance_criteria,
+        "sample_fee": _f(request.sample_fee),
+        "production_owner_id": request.production_owner_id,
+        "made_at": request.made_at.isoformat() if request.made_at else None,
+        # ---- 客户确认（与签收分开：收到 ≠ 接受）----
+        "confirm_status": request.confirm_status,
+        "confirm_status_label": CONFIRM_STATUS_LABEL.get(
+            request.confirm_status, request.confirm_status
+        ),
+        "customer_confirmed_at": (
+            request.customer_confirmed_at.isoformat() if request.customer_confirmed_at else None
+        ),
+        "confirm_remark": request.confirm_remark,
         "created_by": request.created_by,
         "created_at": request.created_at.isoformat() if request.created_at else None,
         "items": items or [],
