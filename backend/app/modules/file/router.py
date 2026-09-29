@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
+from app.modules.file.access import can_access_file, visible_object
 from app.modules.file import access, storage
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.user.model import User
@@ -218,6 +219,9 @@ async def delete_file(
     user: CurrentUser = Depends(require_permission("file:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 删文件也是写操作：看不到的文件不能删（`can_access_file` 按关联的业务对象判可见性）
+    if not await can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
@@ -289,6 +293,15 @@ async def attach_file(
     user: CurrentUser = Depends(require_permission("file:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    # **两个方向都要校验**，缺一个就是越权通道：
+    # ① 目标业务对象在不在你的数据范围内——否则能给别人的客户挂附件；
+    # ② 源文件你能不能看——否则可以把别人的文件挂到自己的对象上，
+    #    再走正常下载路径把它拿走（`can_access_file` 只要有一条可见关联就放行，
+    #    所以"挂一条关联"本身就等于授权）。
+    if not await visible_object(session, user, business_type=business_type, business_id=business_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该业务对象不在你的数据范围内", 403)
+    if not await can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
@@ -324,6 +337,8 @@ async def unlink_file(
     link = await session.get(BusinessFile, business_file_id)
     if link is None:
         raise AppError(ErrorCode.NOT_FOUND, "关联不存在", 404)
+    # 解绑同样是内容变更：不能拆别人对象上的附件
+    await visible_object(session, user, link.business_type, link.business_id)
     before = {
         "business_type": link.business_type,
         "business_id": link.business_id,
