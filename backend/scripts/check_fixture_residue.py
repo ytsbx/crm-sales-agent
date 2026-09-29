@@ -63,6 +63,20 @@ CHECKS: list[tuple[str, str, str]] = [
         "select count(*) from tasks where title like 'REFCHK%'",
         "select title from tasks where title like 'REFCHK%' limit 3",
     ),
+    # 价格规则与成本：这一格此前不在检查范围里，于是验收套件留下的
+    # CHK 前缀规则一直没人发现（本项目的价格维护界面会被它们堆成一片）。
+    # 判据用前缀而不是"非有效状态"——历史上刻意留档的停用/历史行是正常业务形态，
+    # 只有夹具才不该出现在这里。
+    (
+        "价格规则",
+        "select count(*) from price_rules where remark like 'CHK%'",
+        "select remark from price_rules where remark like 'CHK%' limit 3",
+    ),
+    (
+        "成本记录",
+        "select count(*) from product_costs where remark like 'CHK%'",
+        "select remark from product_costs where remark like 'CHK%' limit 3",
+    ),
 ]
 
 
