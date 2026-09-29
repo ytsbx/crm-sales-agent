@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
@@ -145,6 +146,23 @@ async def create_inquiry_instance(
         created_by=user.id,
         created_at=datetime.now(UTC),
     )
+    # **先占住业务键，再调外部**（P1）：原顺序是"先调钉钉建单、后落本地唯一键"，
+    # 于是两件事都可能重复建单——并发请求、以及"钉钉建成功了但响应没回来"的重试。
+    # 现在先落一行 submitting 并提交，把唯一键占实；并发对手会撞唯一约束后复用它。
+    row.status = "submitting"
+    session.add(row)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 并发对手已占同一轮：复用它，**不再向钉钉要第二次实例**
+        await session.rollback()
+        existing = await get_by_business_key(
+            session, inquiry_id=inquiry_id, inquiry_version=inquiry_version, oa_type=oa_type
+        )
+        if existing is not None:
+            return existing
+        raise
+
     try:
         instance_id = await get_client().create_process_instance(
             process_code=process_code,
@@ -152,16 +170,17 @@ async def create_inquiry_instance(
             originator_user_id=originator_user_id,
         )
     except Exception as exc:  # 配置缺失/网络/钉钉业务错误：都落痕，不假装成功
+        # 外部结果未知（超时/网络断）也归到这里：**标记 failed 并保留，不自动重试**
+        # （业务确认的口径）。自动重试有重复建单的风险——宁可让人多点一下。
         row.status = "failed"
         row.error = f"{type(exc).__name__}: {exc}"[:500]
-        session.add(row)
-        await session.flush()
+        await session.commit()
         return row
 
     row.instance_id = instance_id
+    row.status = "pending"
     row.synced_at = datetime.now(UTC)
-    session.add(row)
-    await session.flush()
+    await session.commit()
     return row
 
 

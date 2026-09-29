@@ -32,6 +32,8 @@ OA_TYPE_LABEL = {
 
 #: 实例状态。与钉钉的状态词翻译过来，CRM 侧口径固定，避免各处 if 判断漂移。
 OA_STATUS_LABEL = {
+    # 已占住业务键、正在向钉钉发起：这是**中间态**，说明本地已登记但外部结果未知
+    "submitting": "发起中",
     "pending": "审批中",
     "approved": "已通过",
     "rejected": "已驳回",
