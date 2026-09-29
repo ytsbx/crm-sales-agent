@@ -459,6 +459,13 @@ export interface SalesTargetRow {
   sales_target: number
   new_customer_actual: number
   sales_actual: number
+  /** 差额与达成率（场景17）：文档要求"显示确认口径下的实际、差额和来源" */
+  sales_variance: number
+  /** null = 零基期（没设目标），**不给百分比**——文档明确要求零基期不产生错误增长率 */
+  sales_achievement: number | null
+  achievement_note?: string | null
+  new_customer_variance: number
+  new_customer_achievement: number | null
   remark?: string | null
 }
 

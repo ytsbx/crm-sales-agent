@@ -625,7 +625,22 @@ export default function AnalyticsPage() {
             {
               title: '达成率',
               width: 90,
-              render: (_: unknown, r: SalesTargetRow) => rate(r.sales_actual, r.sales_target),
+              // **零基期不给百分比**（文档场景17 要求）：没设目标时后端返回 null，
+              // 这里显示"—"并给出说明，而不是拿 0 当分母算出一个假增长率
+              render: (_: unknown, r: SalesTargetRow) =>
+                r.sales_achievement == null
+                  ? <span style={{ color: 'var(--crm-text-3)' }} title={r.achievement_note ?? ''}>—</span>
+                  : rate(r.sales_actual, r.sales_target),
+            },
+            {
+              title: '差额',
+              dataIndex: 'sales_variance',
+              width: 130,
+              render: (v: number) => (
+                <span style={{ color: v >= 0 ? 'var(--crm-primary)' : 'var(--crm-error)' }}>
+                  {v >= 0 ? '+' : '-'}¥{Math.abs(Math.round(v)).toLocaleString('zh-CN')}
+                </span>
+              ),
             },
             ...(canSetTarget
               ? [
