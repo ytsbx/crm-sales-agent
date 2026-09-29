@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     # 而且不会丢消息（这轮没查到下轮还会查）。询价审批本身要几小时到几天，
     # 几分钟延迟无影响。
     scheduler_oa_sync_minutes: int = 3
+    #: 钉钉推送总闸（与 WECOM_PUSH_OFF 同一套做法）。
+    #: **默认 True = 关**：测试期不允许向钉钉发起任何真实审批单。
+    #: 关闭时"发起审批"只在 CRM 记一行 skipped 并写明原因——
+    #: **不是失败、更不是成功**，联调和演示都能看出"这一步没真的发出去"。
+    #: 要真发必须显式设 DINGTALK_PUSH_OFF=0，并且只对测试用的本人账号发。
+    dingtalk_push_off: bool = True
 
     # 全部留空即为"未配置"状态：同步接口会明确返回"还没配置凭据"，
     # 而不是静默假装成功。拿到 corp id / secret 后填这里即可，代码不用改。

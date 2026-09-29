@@ -87,6 +87,28 @@ async def create_inquiry_instance(
         return existing
 
     form_values = build_form_values(field_map)
+    from app.core.config import settings as app_settings
+
+    # 推送总闸（默认关）：测试期绝不向外部系统发起真实审批单。
+    # 与企微同一套语义——记 skipped 并写明原因，"没发"不等于"发失败"。
+    if app_settings.dingtalk_push_off:
+        blocked = OaInstance(
+            customer_id=customer_id,
+            inquiry_id=inquiry_id,
+            inquiry_version=inquiry_version,
+            oa_type=oa_type,
+            process_code=process_code,
+            originator_user_id=originator_user_id,
+            form_snapshot={"formValues": form_values},
+            status="skipped",
+            error="钉钉推送已关闭（DINGTALK_PUSH_OFF），未向钉钉发起审批",
+            created_by=user.id,
+            created_at=datetime.now(UTC),
+        )
+        session.add(blocked)
+        await session.flush()
+        return blocked
+
     row = OaInstance(
         customer_id=customer_id,
         inquiry_id=inquiry_id,

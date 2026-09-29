@@ -37,6 +37,9 @@ OA_STATUS_LABEL = {
     "rejected": "已驳回",
     "withdrawn": "已撤销",
     "failed": "发起失败",
+    # 推送总闸关着（DINGTALK_PUSH_OFF）时用这个状态：
+    # **"没发"和"发失败"必须分开**，否则测试期的"没发"会被当成故障去查
+    "skipped": "未发起（推送已关闭）",
 }
 
 
