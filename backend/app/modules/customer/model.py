@@ -9,6 +9,7 @@
 """
 
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Numeric,
     String,
     Table,
     Text,
@@ -143,4 +145,53 @@ class CustomerMergeLog(Base, IdMixin):
     # 迁移了哪些关联对象，便于事后核对
     moved: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+#: 撞单裁定的结论（文档 §11.4 验收 20）。
+#:
+#: 系统只负责**摆证据**，归属由人定：常见纠纷是"这条线索到底算谁的"，
+#: 让代码按建档先后自动判，等于把抢单结果交给数据库的时间戳。
+DECISION_LABEL: dict[str, str] = {
+    "keep_both": "判为不同客户，各自保留",
+    "assign_existing": "归已有客户的负责人",
+    "assign_new": "归新导入这条的负责人",
+}
+
+
+class CustomerDuplicateCase(Base, IdMixin):
+    """撞单裁定单（文档 §11.4 验收 20：历史导入与现有客户撞单）。
+
+    查重打分早就有（`find_duplicate_customers`），合并接口也有，
+    缺的是中间那一环：**疑似之后由谁来定**。此前导入遇到疑似是"跳过并报告"，
+    业务拿到的是一行文字提示，没有可跟进的待办，也没有留下"谁定的、依据是什么"。
+
+    两条纪律写进表结构里：
+    - `evidence` 存**当时**的匹配证据快照：事后回看要能还原"当初凭什么提示"，
+      而不是拿今天的数据解释昨天的判断；
+    - `resolved_owner_id` 只由人填：**没有默认值、没有按建档时间自动推导**。
+    """
+
+    __tablename__ = "customer_duplicate_cases"
+    __table_args__ = (
+        Index("ix_customer_dup_status", "status"),
+        Index("ix_customer_dup_customer", "customer_id"),
+    )
+
+    #: 新导入/新建的那条
+    customer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("customers.id"))
+    #: 库里已有的疑似同一条
+    candidate_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("customers.id"))
+    score: Mapped[Decimal | None] = mapped_column(Numeric(6, 2), nullable=True)
+    #: 匹配证据快照（命中哪些字段、各自说明了什么）
+    evidence: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    #: 来源：import（批量导入）/ create（建档）/ manual（人工发起）
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    decision: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    #: 裁定后的归属负责人（人为指定）
+    resolved_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    resolved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
