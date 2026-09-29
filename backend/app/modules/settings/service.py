@@ -126,6 +126,17 @@ DEFAULT_SETTINGS: dict[str, dict] = {
         "default_level": "normal",
         "by_type": {},
     },
+    # 钉钉 OA 询价审批（文档 §11.3 :152 / 场景11）。
+    # **模板与字段映射是配置，不是代码**：业务/IT 定了用哪个模板，
+    # 只改这里就能跑。字段映射的 key 必须是钉钉控件的 **componentId**
+    # （不是中文名——名字对不上钉钉不报错，只把那格留空，"免重复录入"会静默失效）。
+    # 例：{"process_code": "PROC-XXXX", "field_map": {"title": "TextField_XXXX", "quantity": "NumberField_XXXX"}}
+    "dingtalk_oa": {
+        "process_code": "",
+        "field_map": {},
+        # 谁发起：owner = 需求负责人对应的人；不填则用当前操作者
+        "originator_source": "operator",
+    },
 }
 
 

@@ -17,6 +17,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.cases.router import router as cases_router
 from app.modules.audit_router import router as audit_router
 from app.modules.bizdoc.router import router as bizdoc_router
+from app.modules.dingtalk.router import router as dingtalk_router
 from app.modules.contract.router import router as contract_router
 from app.modules.product_insight.router import router as product_insight_router
 from app.modules.customer.router import router as customer_router
@@ -132,6 +133,7 @@ app.include_router(wecom_router, prefix=settings.api_prefix)
 app.include_router(erp_router, prefix=settings.api_prefix)
 app.include_router(contract_router, prefix=settings.api_prefix)
 app.include_router(bizdoc_router, prefix=settings.api_prefix)
+app.include_router(dingtalk_router, prefix=settings.api_prefix)
 app.include_router(cases_router, prefix=settings.api_prefix)
 app.include_router(product_insight_router, prefix=settings.api_prefix)
 
