@@ -327,3 +327,44 @@ export function listCustomerMergeLogs(customerId: number) {
     }[]
   >(`/customers/${customerId}/merge-logs`)
 }
+
+// ---------------------------------------------------------------- 撞单裁定（验收20）
+// 文档 §11.4：系统提示证据并走人工裁定；不依建档先后直接覆盖负责人，不误合并。
+// 首页给出证据，归属由人写——系统不替业务判"这条生意归谁"。
+
+export interface DuplicateCase {
+  id: number
+  customer_id: number
+  customer_name?: string | null
+  candidate_id: number
+  candidate_name?: string | null
+  score?: number | null
+  evidence?: {
+    candidate_name?: string | null
+    reasons?: string[] | null
+    snapshot?: Record<string, unknown> | null
+  } | null
+  source: string
+  status: string
+  decision?: string | null
+  decision_label?: string | null
+  resolved_at?: string | null
+  remark?: string | null
+  created_at?: string | null
+}
+
+export function listDuplicateCases(status = 'pending') {
+  return api.get<DuplicateCase[]>('/customer-duplicate-cases', { status })
+}
+
+/** 对一条客户再跑一次查重并开待裁定单（幂等）。 */
+export function openDuplicateCases(customerId: number) {
+  return api.post<{ opened: number }>(`/customers/${customerId}/duplicate-cases`)
+}
+
+export function resolveDuplicateCase(
+  caseId: number,
+  payload: { decision: string; owner_id?: number | null; remark?: string | null },
+) {
+  return api.post<DuplicateCase>(`/customer-duplicate-cases/${caseId}/resolve`, payload)
+}

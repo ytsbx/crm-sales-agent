@@ -301,6 +301,8 @@ async function main() {
     { path: '/analytics', name: '02-analytics' },
     { path: '/leads', name: '03-leads' },
     { path: '/customers', name: '04-customers' },
+    // 撞单裁定（验收20）：系统摆证据、归属由人裁定
+    { path: '/duplicate-cases', name: '04b-duplicate-cases' },
     { path: `/customers/${customerId ?? 1}`, name: '05-customer-detail' },
     { path: `/customers/${customerId ?? 1}?tab=files`, name: '05b-customer-files' },
     { path: '/opportunities', name: '06-opportunities' },

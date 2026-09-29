@@ -49,6 +49,7 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'workbench', path: '/workbench', label: '工作台', icon: IconHome, ready: true },
       { key: 'leads', path: '/leads', label: '线索中心', icon: IconFilter, ready: true, permission: 'lead:view' },
       { key: 'customers', path: '/customers', label: '客户中心', icon: IconUserGroup, ready: true, permission: 'customer:view' },
+      { key: 'duplicate-cases', path: '/duplicate-cases', label: '撞单裁定', icon: IconUserGroup, ready: true, permission: 'customer:view' },
       {
         key: 'opportunities',
         path: '/opportunities',

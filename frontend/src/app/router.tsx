@@ -5,6 +5,7 @@ import AppLayout from './layout/AppLayout'
 import LoginPage from '../modules/auth/LoginPage'
 import CustomerDetailPage from '../modules/customer/CustomerDetailPage'
 import CustomerListPage from '../modules/customer/CustomerListPage'
+import DuplicateCasePage from '../modules/customer/DuplicateCasePage'
 import KnowledgePage from '../modules/knowledge/KnowledgePage'
 import DocumentsPage from '../modules/contract/DocumentsPage'
 import CasesPage from '../modules/cases/CasesPage'
@@ -52,6 +53,7 @@ export const router = createBrowserRouter([
       { index: true, element: <Navigate to="/workbench" replace /> },
       { path: 'workbench', element: <WorkbenchPage /> },
       { path: 'customers', element: <CustomerListPage /> },
+      { path: 'duplicate-cases', element: <DuplicateCasePage /> },
       { path: 'customers/:id', element: <CustomerDetailPage /> },
       {
         path: 'leads',
