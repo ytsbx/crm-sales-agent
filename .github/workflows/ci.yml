@@ -1,4 +1,4 @@
-# CI：push 时自动跑全量回归（接口 8 套件 + 静态检查 + UI 冒烟）。
+# CI：push 时自动跑全量回归（接口 14 套件 + 静态检查 + UI 冒烟）。
 #
 # 设计说明：
 # - 数据库用 services 起一个全新 PostgreSQL，走 alembic 建表 + seed.py 种子——
@@ -7,6 +7,8 @@
 #   （未配置时明确报说明而不是静默失败，这正是要验证的行为）；
 # - UI 冒烟单独一个 job：需要前端 dev server + Chrome（runner 自带），
 #   与后端 job 并行跑，互不拖累。
+# - 接口套件清单**不在本文件里硬编码**，读的是 ops/check_suites.txt——
+#   本地 ops/run_checks.sh 读同一个文件，避免"本地全绿但 CI 漏跑"（09-28 踩过）。
 #
 # 本地想跑同样的东西：ops/run_checks.sh（需要本机后端已在 8000 运行）。
 
@@ -20,7 +22,7 @@ on:
 
 jobs:
   backend:
-    name: 后端回归（8 套件 + 静态检查）
+    name: 后端回归（14 套件 + 静态检查）
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -85,18 +87,19 @@ jobs:
       - name: 单元测试（pytest，纯函数，不依赖数据库）
         run: PYTHONPATH=. python -m pytest
 
-      - name: 接口回归（顺序跑，套件间互不冲突）
+      - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
         run: |
           set -e
-          for suite in check_quote_api check_reference_integrity check_order_payment_api \
-                       check_customer_contact_api check_lead_auth_role_api \
-                       check_product_pricing_api check_agent_api \
-                       check_approval_rules check_agent_stream check_scheduler \
-                       check_quote_center_acceptance; do
+          while read -r suite; do
+            case "$suite" in '' | '#'*) continue ;; esac
+            if [ ! -f "scripts/$suite.py" ]; then
+              echo "::error::清单里的套件找不到脚本：scripts/$suite.py"
+              exit 1
+            fi
             echo "::group::=== $suite ==="
             PYTHONPATH=. python scripts/$suite.py
             echo "::endgroup::"
-          done
+          done < ../ops/check_suites.txt
 
       - name: 失败时输出后端日志
         if: failure()

@@ -1,0 +1,27 @@
+# 接口回归套件清单（唯一真源，一行一个套件）。
+#
+# 谁在用：
+#   - ops/run_checks.sh           本地一键验证
+#   - .github/workflows/ci.yml    GitHub Actions
+# 两处都直接读本文件，所以「本地全绿但 CI 漏跑」不会再发生。
+#
+# 新增回归脚本时：在 backend/scripts/ 下加脚本，然后把套件名（去掉 .py）追加到本文件。
+# 不要在这里写路径、参数或注释后缀。
+#
+# 顺序有意义：套件之间不能互相干扰，按下面这个顺序串行跑是验证过的。
+# 空行与 # 开头的行会被忽略。
+
+check_quote_api
+check_reference_integrity
+check_order_payment_api
+check_customer_contact_api
+check_lead_auth_role_api
+check_product_pricing_api
+check_agent_api
+check_approval_rules
+check_agent_stream
+check_scheduler
+check_quote_center_acceptance
+check_custom_no_sku
+check_sales_attribution
+check_notification_retry
