@@ -47,12 +47,14 @@ async def start_inquiry_approval(
     session: AsyncSession = Depends(get_db),
 ):
     """从 CRM 的定制需求发起钉钉询价审批（幂等；驳回后重提走 resubmit）。"""
-    from app.modules.inquiry.model import CustomInquiry
     from app.modules.settings import service as settings_service
 
-    inquiry = await session.get(CustomInquiry, inquiry_id)
-    if inquiry is None or inquiry.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, "定制需求不存在", 404)
+    # 复用 inquiry 模块的可见性检查（P1 修复）：直接 `session.get` 按 id 取会**绕过数据范围**
+    # ——业务员能对别人的定制需求发起审批。同一个文件里就有现成的
+    # `get_visible_or_404`，没有理由另写一套（另写必然和列表页的判据分叉）。
+    from app.modules.inquiry import service as inquiry_service
+
+    inquiry = await inquiry_service.get_visible_or_404(session, user, inquiry_id)
 
     cfg = await settings_service.get_setting(session, "dingtalk_oa")
     process_code = (cfg or {}).get("process_code") or ""
@@ -175,6 +177,10 @@ async def list_inquiry_approvals(
     session: AsyncSession = Depends(get_db),
 ):
     """该需求历次提交的审批实例（含被驳回的旧轮次——重提不改写历史）。"""
+    # 读也要过范围（P1）：审批实例里可能带着价格与审批意见，不能按 id 直取
+    from app.modules.inquiry import service as inquiry_service
+
+    await inquiry_service.get_visible_or_404(session, user, inquiry_id)
     rows = (
         await session.execute(
             select(OaInstance)
