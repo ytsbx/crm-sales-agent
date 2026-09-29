@@ -192,9 +192,21 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
             # 单条查失败不影响其他单：记在行上，下一轮还会再试
             row.error = str(exc)[:500]
             continue
-        raw = str(data.get("status") or data.get("result") or "")
-        new_status = _STATUS_MAP.get(raw.upper())
-        row.result = {"raw_status": raw, "payload": data}
+        raw_status = str(data.get("status") or "").upper()
+        # 审批**走完**之后，通过还是驳回要看 `result`（agree / refuse）——
+        # 只看 status 的话 COMPLETED 会被一律记成"已通过"，
+        # **被驳回的单子在 CRM 里会显示成通过**，那是最危险的一类错。
+        raw_result = str(data.get("result") or "").lower()
+        if raw_status == "COMPLETED":
+            if raw_result in ("refuse", "reject", "refused"):
+                new_status = "rejected"
+            elif raw_result in ("agree", "approved", "pass"):
+                new_status = "approved"
+            else:
+                new_status = None
+        else:
+            new_status = _STATUS_MAP.get(raw_status)
+        row.result = {"raw_status": raw_status, "raw_result": raw_result, "payload": data}
         row.synced_at = datetime.now(UTC)
         row.updated_at = datetime.now(UTC)
         if new_status and new_status != row.status:

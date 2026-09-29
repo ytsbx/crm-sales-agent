@@ -129,11 +129,18 @@ class DingTalkClient:
                 headers={"x-acs-dingtalk-access-token": token},
             )
         data = resp.json() if resp.content else {}
-        if resp.status_code != 200 or not data.get("instanceId"):
+        if resp.status_code != 200:
             raise DingTalkError(
                 data.get("message") or resp.text[:200], api="workflow/processInstances:get"
             )
-        return data
+        # 钉钉把审批内容是**包在 `result` 里**的，顶层只有 requestId 之类。
+        # 早先按顶层 `instanceId` 判断成功，于是正常响应被误报成"接口失败"
+        # ——结果是"结果回收"这条链悄悄不工作（审批批完了 CRM 还显示审批中）。
+        # 判据改成"里面有没有审批内容"，拿不到就算失败。
+        inner = data.get("result") or data
+        if not inner.get("title") and not inner.get("status"):
+            raise DingTalkError("响应里没有审批内容", api="workflow/processInstances:get")
+        return inner
 
     async def get_process_schema(self, process_code: str) -> dict[str, Any]:
         """拉某个模板的完整表单结构（含每个控件的 componentId）。
