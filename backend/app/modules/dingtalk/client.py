@@ -6,10 +6,14 @@
 缺配置直接抛，接口层翻成明确说明。绝不返回"成功"然后什么都没做，
 那种假成功在联调时最费时间（看着通了，实际一条单没建）。
 
-**最容易踩的坑**：钉钉的 `formValues` 用**控件 id** 作 key，不是控件名称。
-名字对不上时钉钉不会报错，只会把那一格留空——于是"预填成功"的假象下
-业务还得手填一遍，正好把"免重复录入"这条验收标准踩没。所以模板的
-字段清单（控件 id + 类型）是联调前必须拿到的输入。
+**最容易踩的坑**：发起审批实例请求体里，表单值挂在 **`formComponentValues`**
+这个数组上（元素形如 `{"name": ..., "id": "TextField_XXX", "value": ...}`），
+**没有 `formValues` 这个字段**——这名字是错的（我们原来就写错了，
+后来拿官方 SDK `alibabacloud_dingtalk` 的 `StartProcessInstanceRequest`
+核对才发现：模型里只有 `form_component_values`，而且它是必填）。
+另一层坑是**控件对不上时钉钉不报错，只把那格留空**：于是"预填成功"的假象下
+业务还得手填一遍，正好把"免重复录入"这条验收标准踩没。所以模板的字段清单
+（控件 id + 类型）是联调前必须拿到的输入。
 """
 
 from __future__ import annotations
@@ -89,11 +93,15 @@ class DingTalkClient:
         self,
         *,
         process_code: str,
-        form_values: list[dict[str, Any]],
+        form_component_values: list[dict[str, Any]],
         originator_user_id: str,
         dept_id: int | None = None,
     ) -> str:
-        """发起审批实例，返回 instance_id（场景11：从 CRM 发起询价审批）。"""
+        """发起审批实例，返回 instance_id（场景11：从 CRM 发起询价审批）。
+
+        三个必填项（官方 SDK 里标了 "This parameter is required."）：
+        `processCode` / `originatorUserId`（**钉钉 userid**）/ `formComponentValues`。
+        """
         self._require()
         if not process_code:
             raise DingTalkNotConfigured("审批模板 process_code")
@@ -101,7 +109,10 @@ class DingTalkClient:
         body: dict[str, Any] = {
             "processCode": process_code,
             "originatorUserId": originator_user_id,
-            "formValues": form_values,
+            # 键名就是 `formComponentValues`：官方 SDK 的
+            # `StartProcessInstanceRequest.form_component_values` 序列化出来正好是这个。
+            # 曾经写成 `formValues`——那不是钉钉的字段，钉钉会当没传表单值。
+            "formComponentValues": form_component_values,
         }
         if dept_id is not None:
             body["deptId"] = dept_id

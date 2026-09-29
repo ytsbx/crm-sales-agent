@@ -20,12 +20,18 @@
 3. 落库那行 `oa_instances.originator_user_id` 存的是同一个编号
    （排查"这单谁发起的"时只认这一列）。
 
-## 诚实标注：一条**没验证**的
+## 顺带钉死了"字段名写着写着就错了"这条
 
-`client.create_process_instance` 的请求体里，表单值挂在 `formValues` 这个键上；
-钉钉新版文档里对应字段写的是 `formComponentValues`（元素带 `id` / `componentType`）。
-本地无法判定哪个对，**必须真发一次**才能定（脚本里不做"对错"断言，
-只把当前形状锁住，免得它悄悄漂移还看不见）。这一条同步记在交接说明里。
+发起审批实例的请求体里，表单值必须挂在 **`formComponentValues`** 上，**没有 `formValues`**
+这个字段（我们原来就写的是 `formValues`）。判据不是猜的：
+
+- 官方 Python SDK `alibabacloud_dingtalk`（2.2.60）里
+  `StartProcessInstanceRequest` 只有 `form_component_values`，且标着必填；
+  序列化出来就是 `formComponentValues`。SDK 是按 OpenAPI 规格生成的，这等于规格原文；
+- 真实历史单的响应里也是同名字段（`formComponentValues`，元素带
+  `componentType` / `name` / `bizAlias` / `id` / `value`）。
+
+所以这条断言是"对错断言"，不是"锁现状"：**`formValues` 再出现就该红**。
 """
 
 import asyncio
@@ -206,7 +212,14 @@ async def check_client_payload_shape() -> None:
         client = client_module.DingTalkClient()
         instance_id = await client.create_process_instance(
             process_code=TEST_CONFIG["process_code"],
-            form_values=[{"name": "TextField_CHKOA_NO0", "value": "CHKOA-1"}],
+            form_component_values=[
+                {
+                    "name": "TextField_CHKOA_NO0",
+                    "id": "TextField_CHKOA_NO0",
+                    "componentType": "TextField",
+                    "value": "CHKOA-1",
+                }
+            ],
             originator_user_id=DING_USER_ID,
             dept_id=DING_DEPT_ID,
         )
@@ -228,10 +241,19 @@ async def check_client_payload_shape() -> None:
     check("报文里的模板", body.get("processCode"), TEST_CONFIG["process_code"])
     check("报文里的部门", body.get("deptId"), DING_DEPT_ID)
     check_true(
-        "表单值挂在 formValues 上（**键名未与真实响应核过**）",
-        isinstance(body.get("formValues"), list),
-        "钉钉新版文档写的是 formComponentValues，需真发一次才能定",
+        "表单值挂在 formComponentValues 上（官方 SDK 的字段名）",
+        isinstance(body.get("formComponentValues"), list),
+        "",
     )
+    check_true(
+        "报文里没有 formValues 这个野字段",
+        "formValues" not in body,
+        "曾经写成 formValues——那不是钉钉的字段，表单值会被当成没传",
+    )
+    first = (body.get("formComponentValues") or [{}])[0]
+    check("元素带 id（控件主键）", first.get("id"), "TextField_CHKOA_NO0")
+    check("元素带 componentType", first.get("componentType"), "TextField")
+    check("元素带 value", first.get("value"), "CHKOA-1")
 
 
 async def main() -> int:
@@ -362,8 +384,25 @@ async def main() -> int:
         )
 
         sent = {
-            item["name"]: item["value"] for item in fake.last_kwargs.get("form_values", [])
+            item["id"]: item["value"]
+            for item in fake.last_kwargs.get("form_component_values", [])
         }
+        check_true(
+            "每个表单值都带了 id（钉钉按控件主键认）",
+            all(
+                item.get("id") == item.get("name")
+                for item in fake.last_kwargs.get("form_component_values", [])
+            ),
+            "",
+        )
+        check_true(
+            "componentType 由控件 id 前缀推导（实测 69 个真实控件全一致）",
+            all(
+                item.get("componentType") == item.get("id", "").split("_", 1)[0]
+                for item in fake.last_kwargs.get("form_component_values", [])
+            ),
+            "",
+        )
         check(
             "「提报人」控件填的也是同一个编号",
             sent.get(TEST_CONFIG["originator_component"]),

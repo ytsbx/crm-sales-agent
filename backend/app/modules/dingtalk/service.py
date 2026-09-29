@@ -10,11 +10,13 @@
 （需求 + 需求版本 + OA 类型）查 `oa_instances`，命中就直接返回既有行；
 真并发时还有唯一约束兜底（IntegrityError 里回查一次）。
 
-**2. 表单值用控件 id，不是控件名称。**
-钉钉的 `formValues` 以控件 id 为 key；名字对不上时**钉钉不报错，只把那格留空**。
-于是"预填成功"的假象下业务还得手填一遍，正好把"免重复录入"这条验收标准踩没。
-所以 `build_form_values` 只认调用方给的字段映射，映射从模板字段清单来
-（见 17-交接说明 §6 的待外部输入）。
+**2. 表单值挂在 `formComponentValues` 上，且要按控件对齐。**
+发起审批实例的请求体里，表单值是 `formComponentValues` 这个数组
+（**不是 `formValues`**——那个字段不存在，我们写错过一次，后来拿官方 SDK 核对了）；
+数组元素里 `name` / `value` 必填，另有可选的 `id` / `componentType`。
+控件对不上时**钉钉不报错，只把那格留空**，于是"预填成功"的假象下业务还得手填一遍，
+正好把"免重复录入"这条验收标准踩没。所以 `build_form_component_values`
+只认调用方给的字段映射，映射从模板字段清单来（见 17-交接说明 §6 的待外部输入）。
 """
 
 from datetime import UTC, datetime
@@ -38,18 +40,27 @@ _STATUS_MAP = {
 }
 
 
-def build_form_values(field_map: dict[str, Any]) -> list[dict[str, Any]]:
-    """把 CRM 字段拼成钉钉的 `formValues`。
+def build_form_component_values(field_map: dict[str, Any]) -> list[dict[str, Any]]:
+    """把 CRM 字段拼成钉钉的 `formComponentValues`（发起审批实例的请求体）。
 
-    `field_map` 的 key 必须是**模板控件的 id**（不是中文名）。
-    空值**不提交**——钉钉对空值控件会覆盖已有内容，把"没填"当成"清空"，
-    这在"驳回后重提"时会把上一次填的内容抹掉。
+    - `field_map` 的 key 必须是**模板控件的 id**（不是中文名）；
+    - `name` 和 `id` 都填控件 id：新版接口以 `id` 认控件，而 `name` 按官方文档
+      也允许填 id——两个都带上，任一判据都能命中；
+    - `componentType` 从控件 id 的前缀推导（`TextField_XXX` → `TextField`）。
+      **这不是猜的**：实测两张模板共 69 个控件，服务端返回的 `componentType`
+      与 id 前缀**全部一致**；推导不出来的（id 里没有下划线）就不带这个字段；
+    - 空值**不提交**——钉钉对空值控件会覆盖已有内容，把"没填"当成"清空"，
+      这在"驳回后重提"时会把上一次填的内容抹掉。
     """
-    return [
-        {"name": key, "value": value}
-        for key, value in field_map.items()
-        if value not in (None, "", [], {})
-    ]
+    items: list[dict[str, Any]] = []
+    for component_id, value in field_map.items():
+        if value in (None, "", [], {}):
+            continue
+        item: dict[str, Any] = {"name": component_id, "id": component_id, "value": value}
+        if "_" in component_id:
+            item["componentType"] = component_id.split("_", 1)[0]
+        items.append(item)
+    return items
 
 
 async def get_by_business_key(
@@ -107,7 +118,7 @@ async def create_inquiry_instance(
     submit_round = (int(latest.submit_round) + 1) if (resubmit and latest) else 1
     idempotency_key = f"{inquiry_id}:{inquiry_version}:{oa_type}:{submit_round}"
 
-    form_values = build_form_values(field_map)
+    component_values = build_form_component_values(field_map)
     from app.core.config import settings as app_settings
 
     # 推送总闸（默认关）：测试期绝不向外部系统发起真实审批单。
@@ -122,7 +133,7 @@ async def create_inquiry_instance(
             submit_round=submit_round,
             process_code=process_code,
             originator_user_id=originator_user_id,
-            form_snapshot={"formValues": form_values},
+            form_snapshot={"formComponentValues": component_values},
             status="skipped",
             error="钉钉推送已关闭（DINGTALK_PUSH_OFF），未向钉钉发起审批",
             created_by=user.id,
@@ -141,7 +152,7 @@ async def create_inquiry_instance(
         submit_round=submit_round,
         process_code=process_code,
         originator_user_id=originator_user_id,
-        form_snapshot={"formValues": form_values},
+        form_snapshot={"formComponentValues": component_values},
         status="pending",
         created_by=user.id,
         created_at=datetime.now(UTC),
@@ -166,7 +177,7 @@ async def create_inquiry_instance(
     try:
         instance_id = await get_client().create_process_instance(
             process_code=process_code,
-            form_values=form_values,
+            form_component_values=component_values,
             originator_user_id=originator_user_id,
         )
     except Exception as exc:  # 配置缺失/网络/钉钉业务错误：都落痕，不假装成功
