@@ -30,6 +30,7 @@ import {
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { usePermissions } from '../../shared/hooks/permissions'
+import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
 
 /** 样品（PRD §19 / 03-API §26）。 */
@@ -417,7 +418,7 @@ export default function SampleListPage() {
         title={detail ? `样品申请 #${detail.id}` : '样品申请'}
         visible={detailId !== null}
         onCancel={() => setDetailId(null)}
-        width={520}
+        width={760}
       >
         {detail && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -604,6 +605,16 @@ export default function SampleListPage() {
                     <div>{detail.feedback}</div>
                   </div>
                 )}
+
+                {/* 场景12：从这张打样申请出打样需求单，来源询价与本次差异随文件落快照 */}
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>打样需求单</div>
+                  <BizDocPanel
+                    docType="sample_request"
+                    sampleRequestId={detail.id}
+                    canManage={canManage}
+                  />
+                </div>
               </div>
             )}
           </div>

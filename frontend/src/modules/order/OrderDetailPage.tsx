@@ -37,6 +37,7 @@ import DetailHeader from '../../shared/components/DetailHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
 import AgentInsight from '../../shared/components/AgentInsight'
+import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 
 const TABS = [
@@ -46,6 +47,8 @@ const TABS = [
   { tab: '履约状态', itemKey: 'status' },
   { tab: '应收计划', itemKey: 'receivables' },
   { tab: '回款记录', itemKey: 'payments' },
+  // 场景12：下单文件按模板出图，来源报价与本次差异一起落快照
+  { tab: '对外单据', itemKey: 'bizdocs' },
 ]
 
 // 跟单里程碑状态（模块⑤）：完成/逾期/待办，逾期由计划日期与当天比较自动判定
@@ -504,6 +507,10 @@ export default function OrderDetailPage() {
               rowKey="id"
               pagination={false}
             />
+          )}
+
+          {activeKey === 'bizdocs' && (
+            <BizDocPanel docType="order_sheet" orderId={orderId} canManage={canManage} />
           )}
 
           {activeKey === 'status' && (
