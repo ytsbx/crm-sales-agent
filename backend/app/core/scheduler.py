@@ -123,6 +123,23 @@ async def run_notification_digest_job() -> None:
         )
 
 
+async def run_oa_sync_job() -> None:
+    """每 N 分钟：把还在审批中的 OA 实例状态拉回来（场景11 的结果回收）。
+
+    没有实例在审批中时就是一次空查询；单个实例查询失败只记在那一行上，
+    不影响其它实例，下一轮还会再试——轮询天然自愈。
+    """
+    from app.modules.dingtalk import service as dingtalk_service
+
+    async with SessionLocal() as session:
+        result = await dingtalk_service.sync_pending_instances(session)
+        await session.commit()
+    if result["checked"]:
+        logger.info(
+            "OA 审批状态同步：检查 %s 条，状态变更 %s 条", result["checked"], result["changed"]
+        )
+
+
 def start_scheduler() -> None:
     """应用启动时调用：注册周期任务并启动调度器。
 
@@ -186,6 +203,16 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
         misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        run_oa_sync_job,
+        "interval",
+        minutes=settings.scheduler_oa_sync_minutes,
+        id="oa_sync",
+        name="OA 审批状态同步（周期）",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
     )
     scheduler.start()
     logger.info(

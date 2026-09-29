@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     dingtalk_app_secret: str = ""
     dingtalk_agent_id: str = ""
     dingtalk_base_url: str = "https://api.dingtalk.com"
+    # OA 审批状态轮询：每多少分钟拉一次（文档 §11.3 :152 的"回收状态与结果"）。
+    # 先走轮询而不是事件订阅——不需要公网回调地址、不需要额外的后台授权，
+    # 而且不会丢消息（这轮没查到下轮还会查）。询价审批本身要几小时到几天，
+    # 几分钟延迟无影响。
+    scheduler_oa_sync_minutes: int = 3
 
     # 全部留空即为"未配置"状态：同步接口会明确返回"还没配置凭据"，
     # 而不是静默假装成功。拿到 corp id / secret 后填这里即可，代码不用改。
