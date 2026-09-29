@@ -17,6 +17,7 @@ import {
   getQuoteStats,
   getReceivableStats,
   getSalesUserStats,
+  getSalesTargetBases,
   listSalesTargets,
   upsertSalesTarget,
   type NameValue,
@@ -93,6 +94,11 @@ export default function AnalyticsPage() {
   const targetsQuery = useQuery({
     queryKey: ['sales-targets', targetYear],
     queryFn: () => listSalesTargets(targetYear),
+  })
+  // 目标口径（场景17）：签单/发货/回款三个口径刻意分开显示，不互相顶替
+  const basesQuery = useQuery({
+    queryKey: ['sales-target-bases', targetYear],
+    queryFn: () => getSalesTargetBases(targetYear),
   })
   const usersQuery = useQuery({
     queryKey: ['assignable-users'],
@@ -486,6 +492,82 @@ export default function AnalyticsPage() {
           pagination={false}
           empty="暂无数据"
         />
+      </SectionCard>
+
+      {/* 场景17：三个销售额口径必须分开看，否则"回款没到但签了单"会被当成已完成 */}
+      <SectionCard title="目标口径明细（签单 / 发货 / 回款 + 老客净额）" style={{ marginTop: 16 }}>
+        {(() => {
+          const b = basesQuery.data
+          if (!b) return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
+          const pick = (rows: { month: string; value: number }[], m: string) =>
+            rows.find((r) => r.month === m)?.value ?? 0
+          const months = (b.signed ?? [])
+            .map((r) => r.month)
+            .filter(
+              (m) =>
+                pick(b.signed, m) ||
+                pick(b.shipped, m) ||
+                pick(b.received, m) ||
+                pick(b.repeat_net, m) ||
+                pick(b.new_by_created, m) ||
+                pick(b.new_by_first_deal, m),
+            )
+          return (
+            <>
+              <Table
+                size="small"
+                pagination={false}
+                rowKey="month"
+                dataSource={months.map((m) => ({ month: m }))}
+                empty="今年还没有数据"
+                columns={[
+                  { title: '月份', dataIndex: 'month', width: 80 },
+                  {
+                    title: '签单',
+                    width: 130,
+                    render: (_: unknown, r: { month: string }) =>
+                      `¥${Math.round(pick(b.signed, r.month)).toLocaleString('zh-CN')}`,
+                  },
+                  {
+                    title: '发货',
+                    width: 130,
+                    render: (_: unknown, r: { month: string }) =>
+                      `¥${Math.round(pick(b.shipped, r.month)).toLocaleString('zh-CN')}`,
+                  },
+                  {
+                    title: '回款',
+                    width: 130,
+                    render: (_: unknown, r: { month: string }) =>
+                      `¥${Math.round(pick(b.received, r.month)).toLocaleString('zh-CN')}`,
+                  },
+                  {
+                    title: '老客净额',
+                    width: 130,
+                    render: (_: unknown, r: { month: string }) =>
+                      `¥${Math.round(pick(b.repeat_net, r.month)).toLocaleString('zh-CN')}`,
+                  },
+                  {
+                    title: '新客(建档)',
+                    width: 100,
+                    render: (_: unknown, r: { month: string }) => pick(b.new_by_created, r.month),
+                  },
+                  {
+                    title: '新客(首单)',
+                    width: 100,
+                    render: (_: unknown, r: { month: string }) =>
+                      pick(b.new_by_first_deal, r.month),
+                  },
+                ]}
+              />
+              <div style={{ marginTop: 12, fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.9 }}>
+                <div>{b.source_note}</div>
+                <div>老客：{b.basis_note?.repeat}</div>
+                <div>发货：{b.basis_note?.shipped}</div>
+                <div>新客两种口径：{b.basis_note?.new_by_created}；{b.basis_note?.new_by_first_deal}</div>
+              </div>
+            </>
+          )
+        })()}
       </SectionCard>
 
       <SectionCard title="目标 vs 实际（模块⑧）" style={{ marginTop: 16 }}>

@@ -466,6 +466,31 @@ export function listSalesTargets(year: number) {
   return api.get<{ year: number; rows: SalesTargetRow[] }>('/sales-targets', { year })
 }
 
+// ---------------------------------------------------------------- 目标口径（场景17）
+// 文档要求"销售额分别显示签单、发货、回款"且"系统分别保存计算口径与数据来源"。
+
+export interface TargetBasisRow {
+  month: string
+  value: number
+}
+
+export interface SalesTargetBases {
+  year: number
+  signed: TargetBasisRow[]
+  shipped: TargetBasisRow[]
+  received: TargetBasisRow[]
+  repeat_net: TargetBasisRow[]
+  new_by_created: TargetBasisRow[]
+  new_by_first_deal: TargetBasisRow[]
+  /** 六个口径各自的算法说明——随结果返回，业务能看到"这个数字怎么来的" */
+  basis_note: Record<string, string>
+  source_note: string
+}
+
+export function getSalesTargetBases(year: number) {
+  return api.get<SalesTargetBases>('/sales-targets/bases', { year })
+}
+
 export function upsertSalesTarget(payload: {
   period: string
   user_id: number | null
