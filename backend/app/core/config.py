@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     agent_max_tool_rounds: int = 3
 
     # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------
+    # ---- 钉钉 OA 审批（文档 §11.3 :152 / 场景11）--------------------------
+    # 应用已在钉钉开放平台建好（CRM询价审批对接 / AgentId 5035992137）。
+    # **权限勾选后必须"发布版本"才生效**——控制台顶部那条橙色提示就是它，
+    # 这是联调最常见的卡点：不发布，接口一律报无权限。
+    dingtalk_app_key: str = ""
+    dingtalk_app_secret: str = ""
+    dingtalk_agent_id: str = ""
+    dingtalk_base_url: str = "https://api.dingtalk.com"
+
     # 全部留空即为"未配置"状态：同步接口会明确返回"还没配置凭据"，
     # 而不是静默假装成功。拿到 corp id / secret 后填这里即可，代码不用改。
     wecom_corp_id: str = ""
