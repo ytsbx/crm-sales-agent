@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     erp_base_url: str = ""
     erp_app_key: str = ""
     erp_app_secret: str = ""
+    #: ERP/MES 回调的共享密钥（P0 修复）。
+    #: **空值 = 回调入口关闭**——没配密钥就拒绝，绝不"没配就放行"。
+    #: 这两个回调会直接改订单状态（取消/签收/完成），不能匿名开放：
+    #: 任何能访问到该端口的人都能伪造"已签收"。
+    erp_webhook_secret: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:
