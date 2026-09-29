@@ -145,6 +145,36 @@ async def main():
         check_true('数据来源非空', bool(data['source_note']), data['source_note'][:20])
         check('月度序列长度', len(data['signed']), 12)
 
+        print('=== 5. 差额与达成率；零基期不产生错误增长率 ===')
+        from app.modules.analytics.model import SalesTarget
+        from app.modules.analytics import targets as targets_svc
+
+        month = f'{YEAR}-03'
+        s.add(
+            SalesTarget(
+                period=month, user_id=owner_id,
+                new_customer_target=2, sales_target=Decimal('1000'),
+                created_at=datetime.now(UTC),
+            )
+        )
+        await s.commit()
+        result = await targets_svc.targets_with_actuals(s, user, YEAR)
+        rows = result['rows'] if isinstance(result, dict) else result
+        with_target = next(r for r in rows if r.get('sales_target') == 1000.0)
+        check('差额 = 实际 − 目标', with_target['sales_variance'], -600.0)
+        check('达成率 = 实际 / 目标', with_target['sales_achievement'], 0.4)
+        check('新客差额', with_target['new_customer_variance'], -2)
+        zero_row = next(r for r in rows if not r.get('sales_target'))
+        check_true(
+            '零基期不给百分比（文档场景17 明确要求）',
+            zero_row['sales_achievement'] is None,
+            f"achievement={zero_row['sales_achievement']}",
+        )
+        check_true('零基期给出说明而不是空白', bool(zero_row['achievement_note']),
+                   str(zero_row['achievement_note']))
+        await s.execute(text('delete from sales_targets where period = :p'), {'p': month})
+        await s.commit()
+
     await cleanup()
     print()
     if FAILURES:

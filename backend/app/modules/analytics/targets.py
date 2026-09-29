@@ -167,6 +167,23 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         )
         user_ids.add(owner_id)
 
+    # ---- 差额与达成率（文档 §六 :121 / 场景17）：每个口径都要能回答"差多少" ----
+    # **零基期不给百分比**：分母为 0 时算出来的是错误增长率（文档场景17 明确要求
+    # "零基期不产生错误增长率"）。没设目标就是没设，不编一个百分比出来。
+    # 这里统一后处理，而不是在三处组装行的地方各写一遍——三处各写必然漂移。
+    for row in rows:
+        target = float(row.get("sales_target") or 0)
+        actual = float(row.get("sales_actual") or 0)
+        row["sales_variance"] = round(actual - target, 2)
+        row["sales_achievement"] = round(actual / target, 4) if target else None
+        row["achievement_note"] = None if target else "未设销售目标，不计算达成率"
+        new_target = int(row.get("new_customer_target") or 0)
+        new_actual = int(row.get("new_customer_actual") or 0)
+        row["new_customer_variance"] = new_actual - new_target
+        row["new_customer_achievement"] = (
+            round(new_actual / new_target, 4) if new_target else None
+        )
+
     rows.sort(key=lambda r: (r["period"], r["user_id"] or 0))
 
     user_names: dict[int | None, str] = {None: "全公司"}
