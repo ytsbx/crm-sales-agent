@@ -64,6 +64,10 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("price:manage", "价格维护", "price", "manage"),
     ("order:view", "查看订单", "order", "view"),
     ("order:manage", "维护订单", "order", "manage"),
+    # 转移订单负责人（P1 修复）：改的是"活归谁"。
+    # 与 order:manage 分开是因为它能直接把别人的单子划到自己（或别人）名下，
+    # 属于归属类动作，要和日常改单分开管控（与 customer:assign 同一思路）。
+    ("order:assign", "转移订单负责人", "order", "assign"),
     ("payment:view", "查看回款", "payment", "view"),
     ("payment:manage", "登记与确认回款", "payment", "manage"),
     ("user:manage", "用户管理", "user", "manage"),

@@ -10,6 +10,7 @@ from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.data_scope import ensure_in_scope
 from app.core.errors import AppError, ErrorCode
 from app.core.refs import ensure_refs
 from app.core.response import ok, page_data, paginate
@@ -113,6 +114,24 @@ async def create_order(
     )
     await ensure_refs(session, model=Quote, ids={"quote_id": payload.quote_id}, label="报价单")
 
+    # **存在 ≠ 可见**（P1）：上面只确认了这些对象存在，没确认在当前用户的数据范围内。
+    # 只查存在性的话，业务员可以拿别人的客户/商机/报价建单——建出来的单子还挂在
+    # 自己身上，等于把别人的客户资源搬进自己名下。
+    customer = await session.get(Customer, payload.customer_id)
+    await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
+    if payload.opportunity_id:
+        opportunity = await session.get(Opportunity, payload.opportunity_id)
+        await ensure_in_scope(session, user, owner_id=opportunity.owner_id, label="商机")
+        # 归属一致性：商机必须就是这家客户的。不加这条，就能拿 A 客户的商机
+        # 配 B 客户建单，事后谁也说不清这单算谁的
+        if opportunity.customer_id and opportunity.customer_id != payload.customer_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "商机与客户不是同一家，不能混用", 422)
+    if payload.quote_id:
+        quote = await session.get(Quote, payload.quote_id)
+        await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+        if quote.customer_id and quote.customer_id != payload.customer_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "报价单与客户不是同一家，不能混用", 422)
+
     order = await svc.create_order(
         session,
         user_id=user.id,
@@ -188,6 +207,11 @@ async def convert_to_order(
     version = await session.get(QuoteVersion, version_id)
     if version is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
+    # 转单也要过数据范围（P1）：只判断"版本存在"的话，业务员能拿别人的报价
+    # 转出自己的订单——订单转出来就挂在自己名下，等于把别人的成交搬走
+    quote = await session.get(Quote, version.quote_id)
+    if quote is not None:
+        await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
     order = await svc.create_order_from_quote(
         session,
         version=version,
@@ -246,6 +270,12 @@ async def update_order(
     # 改的是「当前负责人」（谁跟进、谁看得见），**不动 sales_owner_id**：
     # 签单归属创建时写死，换人跟进不改变这张单的业绩算谁的（文档 :61）。
     if data.get("owner_id") is not None:
+        # 转移负责人需要**独立授权**（P1）：这是归属类动作，能把单子划到任何人名下。
+        # 日常 order:manage 不该自带这个能力——否则"能改单"就等于"能抢单"。
+        if not user.has("order:assign"):
+            raise AppError(
+                ErrorCode.FORBIDDEN, "转移订单负责人需要「转移订单负责人」权限", 403
+            )
         owner = await session.get(User, data["owner_id"])
         if owner is None:
             raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={data['owner_id']} 不存在", 404)
