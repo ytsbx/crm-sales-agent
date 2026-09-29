@@ -33,6 +33,23 @@ async def list_sales_targets(
     return ok(await targets_svc.targets_with_actuals(session, user, year))
 
 
+@router.get("/sales-targets/bases")
+async def sales_target_bases(
+    year: int = Query(...),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """三种销售额口径 + 老客净额 + 两种新客口径（文档 §六 :121 / 场景17）。
+
+    口径与数据来源**随结果一起返回**——文档要求"分别保存计算口径与数据来源"，
+    业务要能回答"这个数字是怎么来的"。签单/发货/回款三个数刻意分开，
+    不互相顶替（发货口径按首批实际发货日整单归月，不是拿签单额换个名字）。
+    """
+    from app.modules.analytics import target_bases
+
+    return ok(await target_bases.annual_bases(session, user, year))
+
+
 @router.post("/sales-targets/upsert")
 async def upsert_sales_target(
     payload: SalesTargetUpsert,
