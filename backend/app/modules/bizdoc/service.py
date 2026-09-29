@@ -616,11 +616,22 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
 
 
 async def _next_doc_version(
-    session: AsyncSession, *, doc_type: str, sample_request_id: int | None, order_id: int | None
+    session: AsyncSession,
+    *,
+    doc_type: str,
+    sample_request_id: int | None,
+    order_id: int | None,
+    quote_id: int | None = None,
 ) -> tuple[int, int | None]:
     stmt: Select = select(BizDoc).where(BizDoc.doc_type == doc_type)
-    if sample_request_id is not None:
+    # **按单据类型选键**，不能用"哪个字段非空就按哪个"：
+    # 报价单既没有 sample_request_id 也没有 order_id，那样会落进
+    # `order_id == None` 的分支，把所有 order_id 为空的单据都算成它的历史版本
+    # ——版本号会一路涨、旧文件链也会挂错（回归抓到过：期望 V2，实际 V5）。
+    if doc_type == "sample_request":
         stmt = stmt.where(BizDoc.sample_request_id == sample_request_id)
+    elif doc_type == "quote_sheet":
+        stmt = stmt.where(BizDoc.quote_id == quote_id)
     else:
         stmt = stmt.where(BizDoc.order_id == order_id)
     latest = (
@@ -653,6 +664,7 @@ async def _persist(
         doc_type=doc_type,
         sample_request_id=built.get("sample_request_id"),
         order_id=built.get("order_id"),
+        quote_id=built.get("quote_id") if doc_type == "quote_sheet" else None,
     )
     doc_no = await numbering.generate_for(
         session, rule_code, model=BizDoc, column=BizDoc.doc_no
