@@ -193,6 +193,15 @@ async def check_client_payload_shape() -> None:
 
     real_httpx = client_module.httpx
     client_module.httpx = types.SimpleNamespace(AsyncClient=_StubAsyncClient)
+    # 凭证也要给上假的：`_require()` 只判"有没有配"，没配就抛——本地 `.env` 有真凭证
+    # 所以本地跑得过，**CI 上直接报 DingTalkNotConfigured**（被 CI 抓到过一次）。
+    # 这两行只是让 `_require()` 放行；真正出网的 httpx 已经是上面的桩。
+    from app.core.config import settings as app_settings
+
+    saved_key = app_settings.dingtalk_app_key
+    saved_secret = app_settings.dingtalk_app_secret
+    app_settings.dingtalk_app_key = "STUB-APP-KEY"
+    app_settings.dingtalk_app_secret = "STUB-APP-SECRET"
     try:
         client = client_module.DingTalkClient()
         instance_id = await client.create_process_instance(
@@ -202,6 +211,8 @@ async def check_client_payload_shape() -> None:
             dept_id=DING_DEPT_ID,
         )
     finally:
+        app_settings.dingtalk_app_key = saved_key
+        app_settings.dingtalk_app_secret = saved_secret
         client_module.httpx = real_httpx
 
     create_calls = [

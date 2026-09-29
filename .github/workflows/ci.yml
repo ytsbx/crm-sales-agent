@@ -1,4 +1,4 @@
-# CI：push 时自动跑全量回归（接口 14 套件 + 静态检查 + UI 冒烟）。
+# CI：push 时自动跑全量回归（接口套件按 ops/check_suites.txt，当前 24 个 + 静态检查 + UI 冒烟）。
 #
 # 设计说明：
 # - 数据库用 services 起一个全新 PostgreSQL，走 alembic 建表 + seed.py 种子——
@@ -22,7 +22,7 @@ on:
 
 jobs:
   backend:
-    name: 后端回归（14 套件 + 静态检查）
+    name: 后端回归（套件清单见 ops/check_suites.txt + 静态检查）
     runs-on: ubuntu-latest
     services:
       postgres:
