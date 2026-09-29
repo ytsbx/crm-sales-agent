@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # 通知失败重投：每多少分钟扫一次"到期该重试"的失败通知（文档 §六）。
     # 用分钟级而不是每天——退避最大 2 小时，按天扫等于退避毫无意义。
     scheduler_retry_minutes: int = 10
+    # 通知日报：每天几点把 digest 级通知合成一条发出（验收 24）。
+    # 放在上班后不久，让人一早就能看到昨天攒下的事；紧急项不走这里、即时推。
+    scheduler_digest_hour: int = 9
+    scheduler_digest_minute: int = 30
     agent_max_tool_rounds: int = 3
 
     # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------

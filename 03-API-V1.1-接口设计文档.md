@@ -539,6 +539,9 @@
 - `POST /notifications/read-all`
 - `GET /notification-settings`
 - `PATCH /notification-settings`
+- `GET /notifications/level-policy`
+- `PUT /notifications/level-policy`
+- `POST /notifications/digest/run`
 
 ---
 

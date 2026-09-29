@@ -25,6 +25,7 @@ check_quote_center_acceptance
 check_custom_no_sku
 check_sales_attribution
 check_notification_retry
+check_notification_levels
 check_delivery_analytics
 check_biz_docs
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"

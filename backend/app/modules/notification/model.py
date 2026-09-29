@@ -31,6 +31,27 @@ WECOM_STATUS_LABEL = {
     "failed": "投递失败",
 }
 
+#: 通知分级（文档 §11.4 验收 24）。
+#:
+#: 主管一天会收到大量业务事件，"每条都即时推"等于把人训练成不看通知。
+#: 分级的作用是把"要不要立刻打断人"从业务代码里抽出来，变成可配置的策略：
+#:
+#: - `urgent`：**即时**推送，且不进日报——紧急项不能被日报延误；
+#: - `normal`：即时推送（与分级功能上线前的行为一致）；
+#: - `digest`：不即时推，攒到日报里合成一条发。
+#:
+#: 无论哪一级，站内那一行**都在**：事件本身始终可查，分级只影响"什么时候、
+#: 以几条消息的形式"推给企微。分级策略由业务批准后配置，见 service.level_policy。
+LEVEL_URGENT = "urgent"
+LEVEL_NORMAL = "normal"
+LEVEL_DIGEST = "digest"
+
+LEVEL_LABEL = {
+    LEVEL_URGENT: "紧急（即时推送）",
+    LEVEL_NORMAL: "普通（即时推送）",
+    LEVEL_DIGEST: "日报（攒批投递）",
+}
+
 
 class BusinessEvent(Base, IdMixin):
     """业务事件（文档 §四/验收场景04）：一次真实业务动作一行。
@@ -58,6 +79,8 @@ class Notification(Base, IdMixin):
         Index("ix_notifications_user_read", "user_id", "read_at"),
         # 待投递的企微通知要能被扫出来
         Index("ix_notifications_wecom_status", "wecom_status"),
+        # 日报任务按「级别 + 投递状态」捞待发行（验收 24）
+        Index("ix_notifications_level_status", "level", "wecom_status"),
     )
 
     user_id: Mapped[int] = mapped_column(BigInteger)
@@ -66,6 +89,16 @@ class Notification(Base, IdMixin):
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
     business_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     business_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # 分级（文档 §11.4 验收 24）：决定"即时推"还是"攒进日报"。
+    # 默认 normal = 与分级上线前的行为完全一致，不擅自改变投递策略。
+    level: Mapped[str] = mapped_column(
+        String(16), default=LEVEL_NORMAL, server_default=LEVEL_NORMAL, nullable=False
+    )
+    # 该条是随哪次日报发出去的（NULL = 不是日报发的）。
+    # 有它才能回答"主管说没看到某条"到底是没推、还是夹在日报里推的。
+    digest_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # 本次通知实际走哪些渠道
     channel: Mapped[str] = mapped_column(String(16), default=CHANNEL_INAPP)
     # 企微投递状态与失败原因（没走企微渠道时为 NULL）

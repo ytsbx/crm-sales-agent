@@ -102,6 +102,27 @@ async def run_notification_retry_job() -> None:
         )
 
 
+async def run_notification_digest_job() -> None:
+    """每天一次：把 digest 级通知按收件人合成一条日报发出去（验收 24）。
+
+    与"通知失败重投"的分工：重投管即时通道的失败补发，这里只管攒着的日报。
+    没配分级策略时库里不会有 digest 行，这个任务就是一次空查询。
+    """
+    from app.modules.notification import service as notification_service
+
+    result = await notification_service.send_digest()
+    if result["messages"]:
+        logger.info(
+            "通知日报已投递：%s 人 %s 条消息，覆盖 %s 条事件（成功 %s / 未投递 %s / 失败 %s）",
+            result["users"],
+            result["messages"],
+            result["items"],
+            result["sent"],
+            result["skipped"],
+            result["failed"],
+        )
+
+
 def start_scheduler() -> None:
     """应用启动时调用：注册周期任务并启动调度器。
 
@@ -155,14 +176,28 @@ def start_scheduler() -> None:
         coalesce=True,
         misfire_grace_time=300,
     )
+    scheduler.add_job(
+        run_notification_digest_job,
+        "cron",
+        hour=settings.scheduler_digest_hour,
+        minute=settings.scheduler_digest_minute,
+        id="notification_digest",
+        name="通知日报（每日）",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
     scheduler.start()
     logger.info(
         "定时任务调度已启动：公海回收每天 %02d:00、自动任务规则每天 %02d:10、"
-        "跟单逾期提醒每天 %02d:20、通知失败重投每 %s 分钟（Asia/Shanghai）",
+        "跟单逾期提醒每天 %02d:20、通知失败重投每 %s 分钟、"
+        "通知日报每天 %02d:%02d（Asia/Shanghai）",
         settings.scheduler_recycle_hour,
         settings.scheduler_task_rules_hour,
         settings.scheduler_task_rules_hour,
         settings.scheduler_retry_minutes,
+        settings.scheduler_digest_hour,
+        settings.scheduler_digest_minute,
     )
 
 

@@ -115,6 +115,16 @@ DEFAULT_SETTINGS: dict[str, dict] = {
             "payment": True,
         },
     },
+    # 通知分级（文档 §11.4 验收 24）：逐次推 还是 攒进日报，属业务决策
+    # （文档 §九 列为待批准事项）。默认**全部即时推**，与分级上线前完全一致——
+    # 机制先备好，口径等批准后在设置里改：
+    #   {"default_level": "normal",
+    #    "by_type": {"followup": "digest", "approval": "urgent"}}
+    # urgent/normal 即时推；digest 攒进日报合成一条；紧急项不进日报。
+    "notification_levels": {
+        "default_level": "normal",
+        "by_type": {},
+    },
 }
 
 

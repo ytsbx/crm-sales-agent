@@ -13,6 +13,7 @@ from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.notification.model import (
     CHANNEL_LABEL,
+    LEVEL_LABEL,
     WECOM_STATUS_LABEL,
     Notification,
 )
@@ -29,6 +30,11 @@ def serialize(row: Notification) -> dict:
         "content": row.content,
         "business_type": row.business_type,
         "business_id": row.business_id,
+        # 分级（验收 24）：站内始终逐条可查，level 决定的是"怎么推给对方"
+        "level": row.level,
+        "level_label": LEVEL_LABEL.get(row.level, row.level),
+        # 有值说明这条是夹在日报里出去的——"主管说没看到"时靠它解释
+        "digest_at": row.digest_at.isoformat() if row.digest_at else None,
         "channel": row.channel,
         "channel_label": CHANNEL_LABEL.get(row.channel, row.channel),
         # wecom_status 为 None 表示"没走企微渠道"，与"发失败了"是两回事
@@ -334,4 +340,115 @@ async def update_notification_settings(
     message = "已保存"
     if current["wecom_enabled"] and not app_settings.wecom_agent_id:
         message = "已保存，但企微应用还没配置（缺 WECOM_AGENT_ID），当前投递会被标为未投递"
+    return ok(result, message)
+
+
+# ================================================================== 通知分级与日报
+# 文档 §11.4 验收 24：主管一天收到大量业务事件时，按批准的逐次/分级策略投递，
+# 且紧急项不被日报延误。分级策略是业务决策（§九 列在待批准里），
+# 所以这里是"可配置的机制"，默认值保持全部即时推、不替业务改口径。
+
+
+@router.get("/notifications/level-policy")
+async def get_level_policy(
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """当前分级策略：哪些类型即时推、哪些攒进日报。"""
+    from app.modules.notification import service
+
+    policy = await service.level_policy(session)
+    return ok(
+        {
+            **policy,
+            "levels": [
+                {"value": value, "label": label} for value, label in LEVEL_LABEL.items()
+            ],
+        }
+    )
+
+
+@router.put("/notifications/level-policy")
+async def update_level_policy(
+    payload: dict,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """保存分级策略。
+
+    `by_type` 只接受合法级别；写进来的类型才改变投递方式，其余仍按默认级。
+    校验放在这里而不是"存了再说"——策略写错会直接表现为"通知不发/乱发"，
+    这种错必须在保存那一刻就拦住（与 settings 其它写接口同一纪律）。
+    """
+    from app.modules.settings.model import SystemSetting
+    from sqlalchemy import select as _select
+
+    default_level = payload.get("default_level", "normal")
+    if default_level not in LEVEL_LABEL:
+        raise AppError(ErrorCode.PARAM_ERROR, "default_level 不是合法级别", 422)
+    by_type_raw = payload.get("by_type") or {}
+    if not isinstance(by_type_raw, dict):
+        raise AppError(ErrorCode.PARAM_ERROR, "by_type 必须是对象", 422)
+    bad = {k: v for k, v in by_type_raw.items() if v not in LEVEL_LABEL}
+    if bad:
+        raise AppError(ErrorCode.PARAM_ERROR, f"级别不合法：{bad}", 422)
+
+    current = {
+        "default_level": default_level,
+        "by_type": {str(k): v for k, v in by_type_raw.items()},
+    }
+    existing = (
+        await session.execute(
+            _select(SystemSetting).where(SystemSetting.key == "notification_levels")
+        )
+    ).scalars().first()
+    if existing is None:
+        session.add(SystemSetting(key="notification_levels", value=current))
+    else:
+        existing.value = current
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update_notification_levels",
+        business_type="settings",
+        business_id=existing.id if existing is not None else None,
+        after=current,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(current, "分级策略已保存")
+
+
+@router.post("/notifications/digest/run")
+async def run_digest(
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """立刻跑一次日报（不等定时任务）。
+
+    用途是验收与救急：设好策略后不用等到第二天早上，就能看到"几条攒在一起
+    合成了一条"。它走的是与定时任务**同一个** service 函数，不存在两套逻辑。
+    """
+    from app.modules.notification import service
+
+    result = await service.send_digest()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="run_notification_digest",
+        business_type="notification",
+        business_id=None,
+        after=result,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    message = (
+        f"日报已投递：{result['users']} 人 / {result['messages']} 条消息"
+        f"，覆盖 {result['items']} 条事件"
+        if result["messages"]
+        else "没有攒着的日报级通知"
+    )
     return ok(result, message)

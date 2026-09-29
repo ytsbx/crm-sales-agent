@@ -21,6 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.notification.model import (
     CHANNEL_BOTH,
     CHANNEL_INAPP,
+    LEVEL_DIGEST,
+    LEVEL_NORMAL,
+    LEVEL_URGENT,
     Notification,
 )
 from app.modules.user.model import Permission, Role, User, role_permissions, user_roles
@@ -33,6 +36,19 @@ WECOM_EVENT_TYPES = ("approval", "task", "payment", "followup")
 #: 第 3 次 2 小时。到上限后停在 failed 等人工补投——无限自动重试会把
 #: "对方没绑企微 userid""应用没发消息权限"这类确定性失败变成长期噪声。
 DEFAULT_RETRY_BACKOFF_MINUTES = (5, 30, 120)
+
+#: 分级策略的兜底值（文档 §11.4 验收 24）。
+#:
+#: **默认刻意保持"全部即时推"**：分级是投递策略，属于业务决策
+#: （文档 §九 把"逐次还是分级"列为待批准事项）。代码这里先备好机制、
+#: 不替业务改口径——`by_type` 空着，等批准后在设置里配。
+#: 配了之后：urgent/normal 即时推，digest 攒进日报。
+DEFAULT_LEVEL_POLICY: dict = {
+    "default_level": LEVEL_NORMAL,
+    "by_type": {},
+}
+
+VALID_LEVELS = (LEVEL_URGENT, LEVEL_NORMAL, LEVEL_DIGEST)
 
 
 async def retry_policy(session: AsyncSession) -> dict:
@@ -110,6 +126,33 @@ def _wecom_enabled(settings: dict, type_: str) -> bool:
     return False
 
 
+async def level_policy(session: AsyncSession) -> dict:
+    """读通知分级策略（设置项 notification_levels），缺什么用兜底补齐。"""
+    from app.modules.settings import service as settings_service
+
+    raw = await settings_service.get_setting(session, "notification_levels")
+    policy = dict(DEFAULT_LEVEL_POLICY)
+    if isinstance(raw, dict):
+        default_level = raw.get("default_level")
+        if default_level in VALID_LEVELS:
+            policy["default_level"] = default_level
+        by_type = raw.get("by_type")
+        if isinstance(by_type, dict):
+            policy["by_type"] = {
+                str(k): v for k, v in by_type.items() if v in VALID_LEVELS
+            }
+    return policy
+
+
+def resolve_level(policy: dict, type_: str) -> str:
+    """这个类型的通知该用哪一级。策略里没写的走 default_level。"""
+    level = (policy.get("by_type") or {}).get(type_)
+    if level in VALID_LEVELS:
+        return level
+    fallback = policy.get("default_level")
+    return fallback if fallback in VALID_LEVELS else LEVEL_NORMAL
+
+
 async def notify(
     session: AsyncSession,
     *,
@@ -120,6 +163,8 @@ async def notify(
     business_type: str | None = None,
     business_id: int | None = None,
     channel_settings_override: dict | None = None,
+    level_override: str | None = None,
+    level_policy_override: dict | None = None,
 ) -> Notification | None:
     """写一条站内通知；按配置决定是否同时排队企微投递。
 
@@ -128,10 +173,21 @@ async def notify(
 
     `channel_settings_override` 用于批量场景：一次读配置给多条通知复用，
     避免 `notify_approvers` 里每条都回查一次 system_settings。
+
+    分级（验收 24）：默认按策略给这个 type 定级；调用点明确知道该条有多急时
+    可以传 `level_override` 覆盖策略（例如"这条是紧急停线通知"）。
     """
     settings = channel_settings_override
     if settings is None:
         settings = await channel_settings(session)
+
+    if level_override in VALID_LEVELS:
+        level = level_override
+    else:
+        policy = level_policy_override
+        if policy is None:
+            policy = await level_policy(session)
+        level = resolve_level(policy, type_)
 
     to_wecom = _wecom_enabled(settings, type_)
     inapp_enabled = bool(settings.get("inapp_enabled", True))
@@ -147,6 +203,7 @@ async def notify(
         content=content,
         business_type=business_type,
         business_id=business_id,
+        level=level,
         channel=CHANNEL_BOTH if to_wecom else CHANNEL_INAPP,
         wecom_status="pending" if to_wecom else None,
     )
@@ -268,16 +325,20 @@ async def dispatch_pending(
         policy = await retry_policy(own)
         now = datetime.now(UTC)
         stmt = select(Notification)
+        # 分级（验收 24）：**待投递**的日报级不进即时通道——它要攒起来合成一条。
+        # 已经 failed 的日报行不在这个限制里：宁可让它按既有重投机制单独补发，
+        # 也不能卡在日报里永远出不去（"别把消息攒丢了"比"别多推一条"重要）。
+        immediate = and_(
+            Notification.wecom_status == "pending", Notification.level != LEVEL_DIGEST
+        )
         if only_ids:
             stmt = stmt.where(Notification.id.in_(only_ids))
         elif include_failed and policy["enabled"]:
             # 待投递 ∪ 到期可重试的失败行：重试要"到期"才捞，
             # 否则退避形同虚设、失败一次就立刻再打一次企微接口
-            stmt = stmt.where(
-                or_(Notification.wecom_status == "pending", retry_due_clause(policy, now))
-            )
+            stmt = stmt.where(or_(immediate, retry_due_clause(policy, now)))
         else:
-            stmt = stmt.where(Notification.wecom_status == "pending")
+            stmt = stmt.where(immediate)
         rows = (
             await own.execute(stmt.order_by(Notification.id.asc()).limit(limit))
         ).scalars().all()
@@ -339,6 +400,121 @@ async def dispatch_pending(
         await own.commit()
         return {
             "attempted": len(rows),
+            "sent": sent,
+            "skipped": skipped,
+            "failed": failed,
+        }
+
+
+def build_digest(rows: list[Notification], *, max_items: int = 20) -> tuple[str, str]:
+    """把一批通知合成一条日报（标题, 正文）。
+
+    纯函数：不碰库、不管怎么发。这样"聚合成几条"这件事可以直接断言，
+    不必为了测分组去搭一个假的企微客户端。
+    """
+    shown = rows[:max_items]
+    lines = [f"• {row.title}" for row in shown]
+    if len(rows) > max_items:
+        lines.append(f"…另有 {len(rows) - max_items} 条，请到系统通知中心查看")
+    return f"业务日报（{len(rows)} 条）", "\n".join(lines)
+
+
+async def send_digest(
+    *, limit_users: int = 50, max_items: int = 20
+) -> dict:
+    """把攒着的日报级通知**每个收件人合成一条**发出去（文档 §11.4 验收 24）。
+
+    与 dispatch_pending 的分工：
+    - `dispatch_pending` 管即时通道（urgent/normal，以及失败重投）；
+    - 这里只管 `level=digest 且 wecom_status=pending` 的行。
+
+    **站内那些行一条都不动**：事件仍然逐条可查（列表、通知中心、时间线都在），
+    这里只做两件事——把一个人的明细合成一条消息发出去；发完给这些行盖上
+    `digest_at`，于是"主管说没看到某条"能查到它其实是夹在日报里出去的。
+    """
+    from app.core.config import settings as app_settings
+    from app.core.database import SessionLocal
+    from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client
+
+    async with SessionLocal() as own:
+        policy = await retry_policy(own)
+        now = datetime.now(UTC)
+        rows = (
+            await own.execute(
+                select(Notification)
+                .where(
+                    Notification.wecom_status == "pending",
+                    Notification.level == LEVEL_DIGEST,
+                )
+                .order_by(Notification.id.asc())
+            )
+        ).scalars().all()
+        if not rows:
+            return {"users": 0, "messages": 0, "items": 0, "sent": 0, "skipped": 0, "failed": 0}
+
+        grouped: dict[int, list[Notification]] = {}
+        for row in rows:
+            grouped.setdefault(row.user_id, []).append(row)
+        user_ids = sorted(grouped)[:limit_users]
+        users = {
+            user.id: user
+            for user in (
+                await own.execute(select(User).where(User.id.in_(user_ids)))
+            ).scalars().all()
+        }
+
+        client = get_client()
+        ready = bool(app_settings.wecom_agent_id and app_settings.wecom_contact_ready)
+        messages = items = sent = skipped = failed = 0
+
+        for uid in user_ids:
+            batch = grouped[uid]
+            title, description = build_digest(batch, max_items=max_items)
+            messages += 1
+            items += len(batch)
+            user = users.get(uid)
+            if app_settings.wecom_push_off or not ready or user is None or not user.wecom_userid:
+                reason = (
+                    "推送已临时关闭（WECOM_PUSH_OFF）"
+                    if app_settings.wecom_push_off
+                    else "未配置企微应用"
+                    if not ready
+                    else "该用户没有绑定企业微信 userid"
+                )
+                for row in batch:
+                    row.wecom_status = "skipped"
+                    row.wecom_error = reason
+                    row.digest_at = now
+                skipped += len(batch)
+                continue
+            try:
+                await client.send_text_card(
+                    to_user=user.wecom_userid, title=title, description=description
+                )
+            except (WeComNotConfigured, WeComError) as error:
+                for row in batch:
+                    _mark_failed(row, str(error), policy, now)
+                    row.digest_at = now
+                failed += len(batch)
+            except Exception as error:  # 网络等其它异常同样要落痕
+                for row in batch:
+                    _mark_failed(row, f"{type(error).__name__}: {error}", policy, now)
+                    row.digest_at = now
+                failed += len(batch)
+            else:
+                for row in batch:
+                    row.wecom_status = "sent"
+                    row.wecom_sent_at = now
+                    row.wecom_attempts = (row.wecom_attempts or 0) + 1
+                    row.wecom_next_retry_at = None
+                    row.digest_at = now
+                sent += len(batch)
+
+        await own.commit()
+        return {
+            "users": len(user_ids),
+            "messages": messages,
+            "items": items,
             "sent": sent,
             "skipped": skipped,
             "failed": failed,
