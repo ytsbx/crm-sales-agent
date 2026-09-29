@@ -606,9 +606,26 @@ export default function AnalyticsPage() {
             { title: '新客目标', dataIndex: 'new_customer_target', width: 100 },
             { title: '新客实际', dataIndex: 'new_customer_actual', width: 100 },
             {
+              // 差额与达成率成对看：只看达成率的话，"差了 3 家"和"差了 30 家"
+              // 可能都是同一个百分比（基数不同），差额才是能直接派活的数字
+              title: '新客差额',
+              dataIndex: 'new_customer_variance',
+              width: 100,
+              render: (v: number) => (
+                <span style={{ color: v >= 0 ? 'var(--crm-primary)' : 'var(--crm-error)' }}>
+                  {v >= 0 ? '+' : ''}
+                  {v}
+                </span>
+              ),
+            },
+            {
               title: '达成率',
               width: 90,
-              render: (_: unknown, r: SalesTargetRow) => rate(r.new_customer_actual, r.new_customer_target),
+              // 零基期不给百分比（文档场景17）：没设目标时后端返回 null
+              render: (_: unknown, r: SalesTargetRow) =>
+                r.new_customer_achievement == null
+                  ? <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                  : rate(r.new_customer_actual, r.new_customer_target),
             },
             {
               title: '销售目标',
