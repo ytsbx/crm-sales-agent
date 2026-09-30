@@ -93,7 +93,7 @@ async def main() -> int:
     check('耗时原样落库', res['data'].get('duration_ms'), 185000)
 
     status, res = call('POST', '/usage/timings', token=zhangsan, body={
-        'operation': 'sample_from_inquiry', 'duration_ms': 60000,
+        'operation': 'sample_create', 'duration_ms': 60000,
         'business_type': TAG, 'typed_fields': 4, 'rework_count': 0,
     })
     check('第二条（打样）上报成功', res.get('code'), 0)

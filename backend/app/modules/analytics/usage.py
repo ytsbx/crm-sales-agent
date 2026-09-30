@@ -22,7 +22,10 @@ from app.modules.user.model import User
 #: 流程白名单：键给程序用，标签给人看（汇总表直接显示标签）
 OPERATION_LABELS: dict[str, str] = {
     "quote_from_inquiry": "需求 → 报价",
-    "sample_from_inquiry": "需求 → 打样",
+    # 打样目前只有"样品列表页新建"这一个入口（可挂商机/客户），
+    # 所以标签就照实叫"打样申请"，别写成"需求 → 打样"——
+    # 口径要能被核对，标签夸大了，汇总出来的数字也就不可信了
+    "sample_create": "打样申请（需求 → 打样）",
 }
 
 #: 单次操作上限：8 小时。超过基本是"开着页面过夜"，不是一次操作——

@@ -519,7 +519,7 @@ export function upsertSalesTarget(payload: {
 
 /** 操作耗时埋点（场景18）：计时只能前端做，服务端只校验与聚合。 */
 export function reportOperationTiming(payload: {
-  operation: 'quote_from_inquiry' | 'sample_from_inquiry'
+  operation: 'quote_from_inquiry' | 'sample_create'
   duration_ms: number
   business_type?: string | null
   business_id?: number | null

@@ -18,6 +18,7 @@ import {
   getReceivableStats,
   getSalesUserStats,
   getSalesTargetBases,
+  getOperationTimingSummary,
   listSalesTargets,
   upsertSalesTarget,
   type NameValue,
@@ -101,6 +102,11 @@ export default function AnalyticsPage() {
   const basesQuery = useQuery({
     queryKey: ['sales-target-bases', targetYear],
     queryFn: () => getSalesTargetBases(targetYear),
+  })
+  // 操作耗时（场景18）：回答"系统比表格快多少"，数字来自前端埋点
+  const timingQuery = useQuery({
+    queryKey: ['operation-timings'],
+    queryFn: () => getOperationTimingSummary(30),
   })
   const usersQuery = useQuery({
     queryKey: ['assignable-users'],
@@ -584,6 +590,48 @@ export default function AnalyticsPage() {
             </>
           )
         })()}
+      </SectionCard>
+
+      <SectionCard title="操作耗时（场景18：拿它跟表格流程比）" style={{ marginTop: 16 }}>
+        <Table
+          size="small"
+          pagination={false}
+          dataSource={timingQuery.data?.summary ?? []}
+          rowKey="operation"
+          columns={[
+            { title: '流程', dataIndex: 'operation_label', width: 200 },
+            { title: '样本数', dataIndex: 'samples', width: 80 },
+            {
+              title: '平均耗时',
+              dataIndex: 'avg_ms',
+              width: 110,
+              render: (v: number | null) => (v == null ? '—' : `${Math.round(v / 1000)} 秒`),
+            },
+            {
+              title: '中位数',
+              dataIndex: 'median_ms',
+              width: 100,
+              render: (v: number | null) => (v == null ? '—' : `${Math.round(v / 1000)} 秒`),
+            },
+            {
+              title: 'P90',
+              dataIndex: 'p90_ms',
+              width: 100,
+              render: (v: number | null) => (v == null ? '—' : `${Math.round(v / 1000)} 秒`),
+            },
+            {
+              title: '平均手输字段',
+              dataIndex: 'avg_typed_fields',
+              width: 120,
+              render: (v: number | null) => v ?? '—',
+            },
+          ]}
+        />
+        {timingQuery.data?.note && (
+          <div style={{ marginTop: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
+            {timingQuery.data.note}
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard title="目标 vs 实际（模块⑧）" style={{ marginTop: 16 }}>

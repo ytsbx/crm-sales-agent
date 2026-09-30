@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
@@ -17,6 +17,7 @@ import {
 import { listCustomers } from '../../shared/api/customer'
 import { listOpportunities } from '../../shared/api/opportunity'
 import { listSkusForPricing } from '../../shared/api/pricing'
+import { reportOperationTiming } from '../../shared/api/analytics'
 import {
   addSampleItem,
   approveSample,
@@ -74,6 +75,8 @@ export default function SampleListPage() {
   const [pageSize, setPageSize] = useState(20)
 
   const [createVisible, setCreateVisible] = useState(false)
+  /** 打样申请的计时起点（场景18 操作耗时埋点） */
+  const createStartedAt = useRef<number | null>(null)
   const [form, setForm] = useState<{
     opportunity_id?: number
     customer_id?: number
@@ -144,7 +147,25 @@ export default function SampleListPage() {
             quantity: Number(item.quantity) || 1,
           })),
       }),
-    onSuccess: () => {
+    onSuccess: (created) => {
+      // 计时上报（场景18）：起点在"点新建"那一刻。上报失败不打扰业务——
+      // 埋点是量尺，不该变成新的故障点。
+      const startedAt = createStartedAt.current
+      createStartedAt.current = null
+      if (startedAt) {
+        const duration = Date.now() - startedAt
+        if (duration > 0 && duration <= 8 * 3600 * 1000) {
+          void reportOperationTiming({
+            operation: 'sample_create',
+            duration_ms: duration,
+            business_type: 'sample',
+            business_id: created?.id ?? null,
+            // 手输字段数：备注 + 每个有 SKU 的明细行各算 1
+            typed_fields:
+              (form.remark.trim() ? 1 : 0) + form.items.filter((item) => item.sku_id).length,
+          }).catch(() => undefined)
+        }
+      }
       Toast.success('样品申请已创建')
       setCreateVisible(false)
       setForm({ remark: '', items: [{ quantity: '1' }] })
@@ -328,7 +349,15 @@ export default function SampleListPage() {
         subtitle="样品申请、寄样、签收与反馈；样品进展会回写到商机的下一步动作"
         extra={
           canManage && (
-            <Button theme="solid" type="primary" onClick={() => setCreateVisible(true)}>
+            <Button
+              theme="solid"
+              type="primary"
+              onClick={() => {
+                // 耗时埋点（场景18）：起点在这里——点开"新建样品申请"那一刻
+                createStartedAt.current = Date.now()
+                setCreateVisible(true)
+              }}
+            >
               新建样品申请
             </Button>
           )
