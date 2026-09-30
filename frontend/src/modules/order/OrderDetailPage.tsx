@@ -21,6 +21,10 @@ import {
   orderFinanceSummary,
   refreshStatus,
   replanOrderMilestones,
+  confirmScheduleChange,
+  createScheduleChange,
+  listScheduleChanges,
+  previewScheduleChange,
   repurchase,
   shipOrderShipment,
   syncErp,
@@ -92,6 +96,14 @@ export default function OrderDetailPage() {
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
   // 跟单里程碑（模块⑤）：编辑弹窗状态
   const [milestoneEdit, setMilestoneEdit] = useState<OrderMilestoneRow | null>(null)
+  //: 交期变更弹窗（方案 :105）：先预览受影响面，再生成变更单
+  const [scheduleVisible, setScheduleVisible] = useState(false)
+  const [scheduleForm, setScheduleForm] = useState({ new_delivery_date: '', reason: '' })
+  const [schedulePreview, setSchedulePreview] = useState<{
+    shift_days: number | null
+    nodes: { node: string; label: string; before: string | null; after: string | null }[]
+    batches: { batch_id: number; batch_no: number; before: string | null; after: string | null }[]
+  } | null>(null)
   const [milestoneForm, setMilestoneForm] = useState<{
     planned_date: string | null
     actual_date: string | null
@@ -152,6 +164,40 @@ export default function OrderDetailPage() {
   const milestonesRefresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['order-milestones', orderId] })
   }
+  // 交期变更（方案 :105）：入口在「跟单节点」页，确认后才重排
+  const scheduleChangesQuery = useQuery({
+    queryKey: ['order-schedule-changes', orderId],
+    queryFn: () => listScheduleChanges(orderId),
+    enabled: Number.isFinite(orderId) && activeKey === 'milestones',
+  })
+  const schedulePreviewMutation = useMutation({
+    mutationFn: () => previewScheduleChange(orderId, scheduleForm.new_delivery_date),
+    onSuccess: (data) => setSchedulePreview(data),
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const createScheduleMutation = useMutation({
+    mutationFn: () =>
+      createScheduleChange(orderId, {
+        new_delivery_date: scheduleForm.new_delivery_date,
+        reason: scheduleForm.reason || null,
+      }),
+    onSuccess: () => {
+      Toast.success('已生成交期变更单，确认后才重排计划')
+      setScheduleVisible(false)
+      setSchedulePreview(null)
+      void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const confirmScheduleMutation = useMutation({
+    mutationFn: (changeId: number) => confirmScheduleChange(orderId, changeId),
+    onSuccess: () => {
+      Toast.success('已确认，节点与批次计划日已重排')
+      milestonesRefresh()
+      void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
   const milestoneSaveMutation = useMutation({
     mutationFn: () =>
       updateOrderMilestone(orderId, milestoneEdit!.id, {
@@ -617,7 +663,74 @@ export default function OrderDetailPage() {
                     按交期重排
                   </Button>
                 )}
+                {can('order:manage') && (
+                  <Button
+                    size="small"
+                    theme="solid"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => {
+                      setScheduleForm({ new_delivery_date: order?.delivery_date ?? '', reason: '' })
+                      setSchedulePreview(null)
+                      setScheduleVisible(true)
+                    }}
+                  >
+                    交期变更
+                  </Button>
+                )}
               </div>
+              {/* 交期变更历史（方案 :105「展示受影响节点及批次」「保留修改前后版本」）：
+                  待确认的单要能在这里确认，已确认的单留着当时的前后对比 */}
+              {(scheduleChangesQuery.data?.length ?? 0) > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 6 }}>
+                    交期变更记录（最新在上）
+                  </div>
+                  {scheduleChangesQuery.data!.map((row) => (
+                    <div
+                      key={row.id}
+                      style={{
+                        border: '1px solid var(--crm-border, #e5e5e5)',
+                        borderRadius: 6,
+                        padding: '8px 10px',
+                        marginBottom: 6,
+                        fontSize: 12,
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Tag color={row.status === 'confirmed' ? 'green' : 'orange'}>
+                          {row.status_label}
+                        </Tag>
+                        <span>
+                          交期 {row.old_delivery_date ?? '未设'} → <b>{row.new_delivery_date}</b>
+                        </span>
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          受影响：节点 {row.affected?.nodes?.length ?? 0} 个、批次{' '}
+                          {row.affected?.batches?.length ?? 0} 个
+                        </span>
+                        <div style={{ flex: 1 }} />
+                        {row.status === 'pending' && can('order:manage') && (
+                          <Button
+                            size="small"
+                            theme="solid"
+                            loading={confirmScheduleMutation.isPending}
+                            onClick={() => confirmScheduleMutation.mutate(row.id)}
+                          >
+                            确认并重排
+                          </Button>
+                        )}
+                      </div>
+                      {row.reason && <div style={{ marginTop: 4 }}>原因：{row.reason}</div>}
+                      {row.confirmed_at && (
+                        <div style={{ marginTop: 2, color: 'var(--crm-text-3)' }}>
+                          由 {row.confirmed_by_name ?? row.confirmed_by} 于{' '}
+                          {row.confirmed_at.slice(0, 16).replace('T', ' ')} 确认
+                          {row.confirm_remark ? `（${row.confirm_remark}）` : ''}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               <Table<OrderMilestoneRow>
                 columns={[
                   { title: '节点', dataIndex: 'label', width: 140 },
@@ -800,6 +913,107 @@ export default function OrderDetailPage() {
             <div style={{ marginBottom: 4 }}>运单号</div>
             <Input value={shipForm.tracking} onChange={(v) => setShipForm({ ...shipForm, tracking: v })} />
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="交期变更（方案 :105）"
+        visible={scheduleVisible}
+        onCancel={() => setScheduleVisible(false)}
+        width={720}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <Button onClick={() => setScheduleVisible(false)}>取消</Button>
+            <Button
+              loading={schedulePreviewMutation.isPending}
+              disabled={!scheduleForm.new_delivery_date}
+              onClick={() => schedulePreviewMutation.mutate()}
+            >
+              预览受影响面
+            </Button>
+            <Button
+              theme="solid"
+              loading={createScheduleMutation.isPending}
+              disabled={!schedulePreview}
+              onClick={() => createScheduleMutation.mutate()}
+            >
+              生成变更单
+            </Button>
+          </div>
+        }
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div>
+            <div style={{ marginBottom: 4 }}>新交期（YYYY-MM-DD）</div>
+            <Input
+              value={scheduleForm.new_delivery_date}
+              placeholder={order?.delivery_date ?? '2026-12-31'}
+              onChange={(value) => {
+                setScheduleForm({ ...scheduleForm, new_delivery_date: value })
+                // 改了交期，之前的预览就过期了——必须重新预览，不能拿旧结果去生成单子
+                setSchedulePreview(null)
+              }}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>变更原因（客户改期 / 样品未通过 / 生产延期…）</div>
+            <Input
+              value={scheduleForm.reason}
+              onChange={(value) => setScheduleForm({ ...scheduleForm, reason: value })}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            生成的是**待确认**的变更单：确认之前一个计划日期都不会改。
+          </div>
+          {schedulePreview && (
+            <>
+              <div style={{ fontSize: 12 }}>
+                受影响：节点 {schedulePreview.nodes.length} 个、批次{' '}
+                {schedulePreview.batches.length} 个
+                {schedulePreview.shift_days != null && `（整体平移 ${schedulePreview.shift_days} 天）`}
+              </div>
+              {schedulePreview.nodes.length > 0 && (
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey="node"
+                  dataSource={schedulePreview.nodes}
+                  columns={[
+                    { title: '节点', dataIndex: 'label', width: 160 },
+                    { title: '原计划日', dataIndex: 'before', width: 140 },
+                    {
+                      title: '调整后',
+                      dataIndex: 'after',
+                      width: 140,
+                      render: (v: string | null, r: { before: string | null }) => (
+                        <span style={{ color: v !== r.before ? 'var(--crm-primary)' : undefined }}>
+                          {v ?? '-'}
+                        </span>
+                      ),
+                    },
+                  ]}
+                />
+              )}
+              {schedulePreview.batches.length > 0 && (
+                <Table
+                  size="small"
+                  pagination={false}
+                  rowKey="batch_id"
+                  dataSource={schedulePreview.batches}
+                  columns={[
+                    {
+                      title: '批次',
+                      dataIndex: 'batch_no',
+                      width: 160,
+                      render: (v: number) => `第 ${v} 批`,
+                    },
+                    { title: '原计划发货', dataIndex: 'before', width: 140 },
+                    { title: '调整后', dataIndex: 'after', width: 140 },
+                  ]}
+                />
+              )}
+            </>
+          )}
         </div>
       </Modal>
 

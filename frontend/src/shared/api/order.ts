@@ -346,3 +346,58 @@ export function shipOrderShipment(
 export function cancelOrderShipment(orderId: number, batchId: number) {
   return api.delete<null>(`/orders/${orderId}/shipments/${batchId}`)
 }
+
+// ---------------------------------------------------------------- 交期变更（方案 :105）
+
+export interface ScheduleChangeAffected {
+  nodes: { node: string; label: string; before: string | null; after: string | null }[]
+  batches: { batch_id: number; batch_no: number; before: string | null; after: string | null }[]
+  applied?: ScheduleChangeAffected | null
+}
+
+export interface ScheduleChangeRow {
+  id: number
+  order_id: number
+  old_delivery_date: string | null
+  new_delivery_date: string | null
+  reason: string | null
+  status: 'pending' | 'confirmed' | string
+  status_label: string
+  owner_id: number | null
+  owner_name: string | null
+  confirmed_by: number | null
+  confirmed_by_name: string | null
+  confirmed_at: string | null
+  confirm_remark: string | null
+  affected: ScheduleChangeAffected | null
+  created_at: string | null
+}
+
+export function previewScheduleChange(orderId: number, newDeliveryDate: string) {
+  return api.post<{
+    order_id: number
+    old_delivery_date: string | null
+    new_delivery_date: string
+    shift_days: number | null
+    nodes: ScheduleChangeAffected['nodes']
+    batches: ScheduleChangeAffected['batches']
+  }>(`/orders/${orderId}/schedule-changes/preview`, { new_delivery_date: newDeliveryDate })
+}
+
+export function createScheduleChange(
+  orderId: number,
+  payload: { new_delivery_date: string; reason?: string | null },
+) {
+  return api.post<ScheduleChangeRow>(`/orders/${orderId}/schedule-changes`, payload)
+}
+
+export function listScheduleChanges(orderId: number) {
+  return api.get<ScheduleChangeRow[]>(`/orders/${orderId}/schedule-changes`)
+}
+
+export function confirmScheduleChange(orderId: number, changeId: number, remark?: string) {
+  return api.post<ScheduleChangeRow>(
+    `/orders/${orderId}/schedule-changes/${changeId}/confirm`,
+    { remark: remark ?? null },
+  )
+}
