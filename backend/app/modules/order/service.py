@@ -73,6 +73,10 @@ def serialize_item(item: SalesOrderItem, sku_code: str | None = None) -> dict:
         "order_id": item.order_id,
         "sku_id": item.sku_id,
         "sku_code": sku_code,
+        # 定制件（无 SKU）的溯源：不输出这两项，订单行在对客文件与页面上
+        # 就只剩一个空 sku_id，"这是什么"说不清（字段存了却看不到）
+        "inquiry_id": item.inquiry_id,
+        "inquiry_no_snapshot": item.inquiry_no_snapshot,
         "sku_snapshot": item.sku_snapshot,
         "specification": item.specification,
         "quantity": _f(item.quantity),
@@ -223,7 +227,15 @@ async def create_order_from_quote(
             SalesOrderItem(
                 order_id=order.id,
                 sku_id=item.sku_id,
-                sku_snapshot=item.sku_name_snapshot or item.sku_code_snapshot,
+                # 定制件（无 SKU）：把需求编号一起带过来，订单行才能溯源；
+                # sku_snapshot 取"名称或需求编号"，让对客文件上说得清这是什么
+                inquiry_id=item.inquiry_id,
+                inquiry_no_snapshot=item.inquiry_no_snapshot,
+                sku_snapshot=(
+                    item.sku_name_snapshot
+                    or item.sku_code_snapshot
+                    or item.inquiry_no_snapshot
+                ),
                 specification=item.spec_snapshot,
                 quantity=item.quantity,
                 unit_price=item.quoted_price,
@@ -411,7 +423,12 @@ def _d(value) -> Decimal:
 
 
 def _sku_label(item: SalesOrderItem) -> str:
-    return item.sku_snapshot or f"SKU#{item.sku_id}"
+    # 定制件没有 sku_id：优先用快照，其次需求编号，最后才退回编号占位
+    return (
+        item.sku_snapshot
+        or item.inquiry_no_snapshot
+        or (f"SKU#{item.sku_id}" if item.sku_id else f"明细#{item.id}")
+    )
 
 
 async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:

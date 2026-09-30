@@ -79,7 +79,14 @@ class SalesOrderItem(Base, IdMixin):
     __table_args__ = (Index("ix_sales_order_items_order", "order_id"),)
 
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
-    sku_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("skus.id"))
+    #: 定制件在投产前没有 SKU（场景09）：**必须允许为空**，靠下面的需求编号溯源。
+    #: 此前非空 → 定制报价转到订单这一步必然违反约束，定制主路径断在最后一环。
+    sku_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("skus.id"), nullable=True
+    )
+    #: 定制件的需求溯源（与 quote_items 同构：编号快照 + 外键）
+    inquiry_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    inquiry_no_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sku_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
     specification: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=0)

@@ -74,6 +74,24 @@ async def _purge(s, ids):
     """
     from sqlalchemy import text
 
+    # 订单最先清（转单用例会造单；订单与报价/商机之间没有外键，但明细必须先走）
+    for order_id in ids.get('orders', []):
+        oi = {'o': order_id}
+        await s.execute(text('delete from payment_records where order_id = :o'), oi)
+        await s.execute(text('delete from receivable_plans where order_id = :o'), oi)
+        await s.execute(text('delete from order_status_history where order_id = :o'), oi)
+        await s.execute(text('delete from order_milestones where order_id = :o'), oi)
+        await s.execute(text(
+            'delete from order_shipment_batch_items where batch_id in '
+            '(select id from order_shipment_batches where order_id = :o)'
+        ), oi)
+        await s.execute(text('delete from order_shipment_batches where order_id = :o'), oi)
+        await s.execute(text('delete from sales_order_items where order_id = :o'), oi)
+        await s.execute(text(
+            "delete from notifications where business_type='order' and business_id = :o"
+        ), oi)
+        await s.execute(text('delete from sales_orders where id = :o'), oi)
+
     for quote_id in ids.get('quotes', []):
         q = {'q': quote_id}
         await s.execute(text('delete from followups where quote_id = :q'), q)
@@ -366,6 +384,40 @@ async def main():
     check('需求没挂客户 → 422', status, 422)
     check_true('错误说明该先补什么', '客户' in (payload.get('message') or ''),
                str(payload.get('message'))[:60])
+
+    # ---- 定制报价转订单（场景09 主路径的最后一环）----
+    # 放在**最后**：这一步会把主版本提交审批并标记已发送，之后再改同一版本都会被拒
+    # （回归跑第一版时就是这样把前面两条负面用例弄红的——它们复用同一个版本）。
+    # 回归本体：sales_order_items.sku_id 原本 NOT NULL，而定制明细 sku_id 为 None，
+    # 插入直接违反约束——询价/报价/打样三环都通了，唯独转订单必炸。
+    print()
+    print('=== 9. 定制报价转订单（主路径最后一环）===')
+    status, payload = call('POST', '/approval-rules', token=token, body={
+        'name': f'CHK定制免审-{STAMP}', 'kind': 'auto_pass', 'priority': 1,
+        'conditions': [{'field': 'total_amount', 'op': 'lte', 'value': 999999999}],
+        'action': {},
+    })
+    rule_id = payload['data']['id'] if payload.get('code') == 0 else None
+    if rule_id:
+        call('POST', f'/approval-rules/{rule_id}/publish', token=token, body={})
+        call('PATCH', f'/approval-rules/{rule_id}/enabled', token=token,
+             body={'enabled': True})
+    call('POST', f'/quote-versions/{version_id}/submit-approval', token=token, body={})
+    call('POST', f'/quote-versions/{version_id}/mark-sent', token=token, body={})
+    status, payload = call('POST', f'/opportunities/{opportunity_id}/confirm-win',
+                           token=token, body={})
+    check('定制报价能转订单（以前必炸）', payload.get('code'), 0)
+    order_id = (payload.get('data') or {}).get('order_id')
+    if order_id:
+        ids.setdefault('orders', []).append(order_id)
+        # 明细在这个子端点上（订单详情只回表头；详情里没有 items 键，
+        # 上一版从这里取才一直是 None——是取错地方，不是数据没写进去）
+        status, payload = call('GET', f'/orders/{order_id}/items', token=token)
+        line = (payload.get('data') or [{}])[0]
+        check('订单行带回需求编号', line.get('inquiry_no_snapshot'), inquiry['inquiry_no'])
+        check_true('订单行没有 SKU 也成立', line.get('sku_id') is None, str(line.get('sku_id')))
+    if rule_id:
+        call('DELETE', f'/approval-rules/{rule_id}', token=token)
 
     await cleanup(ids)
     print()
