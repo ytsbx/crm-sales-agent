@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
+from app.core.data_scope import scoped_owner_ids
 from app.core.errors import AppError, ErrorCode
 from app.modules.analytics.model import OperationTiming
 from app.modules.user.model import User
@@ -115,9 +116,14 @@ async def timing_summary(
     "这件事要花多久"，跨范围看别人的耗时没有业务必要性。
     """
     since = datetime.now(UTC) - timedelta(days=max(int(days or 30), 1))
+    # 可见范围走**模块统一的那一套**（`scoped_owner_ids`：all → None 不限；
+    # 否则给出范围内的负责人清单）。原先写的是"非 all 一律只看自己"——
+    # 那样**主管看不到组员的耗时**，与 analytics 其它接口的口径不一致；
+    # 而主管恰恰是最需要看"这件事在团队里要花多久"的人。
+    owner_ids = await scoped_owner_ids(session, user)
     stmt = select(OperationTiming).where(OperationTiming.created_at >= since)
-    if user.data_scope != "all":
-        stmt = stmt.where(OperationTiming.user_id == user.id)
+    if owner_ids is not None:
+        stmt = stmt.where(OperationTiming.user_id.in_(owner_ids or [0]))
     rows = list((await session.execute(stmt)).scalars().all())
 
     names: dict[int, str] = {}

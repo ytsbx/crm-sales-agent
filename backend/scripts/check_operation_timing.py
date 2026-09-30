@@ -145,6 +145,13 @@ async def main() -> int:
     admin_user_ids = {row['user_id'] for row in res['data']['by_user']}
     check_true('管理员看得到两个人',
                len(admin_user_ids) >= 2, str(sorted(admin_user_ids)))
+    # 主管（李四，department_and_sub）要能看到组员的耗时——与 analytics 其它接口
+    # 同一口径；此前这里写的是"非 all 一律只看自己"，主管看不到团队。
+    # 种子里四个账号同属一个部门，所以张三（组员）必须在李四的汇总里。
+    lisi = login('lisi', '123456')
+    status, res = call('GET', '/usage/timings/summary?days=1', token=lisi)
+    lisi_names = {row['user_name'] for row in res['data']['by_user']}
+    check_true('主管能看到组员的耗时', '张三' in lisi_names, str(lisi_names))
 
     await cleanup()
     print()
