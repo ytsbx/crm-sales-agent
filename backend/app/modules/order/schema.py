@@ -14,6 +14,11 @@ class MilestoneUpdate(BaseModel):
 
     planned_date: date | None = None
     actual_date: date | None = None
+    # 方案 :103 要求节点记录责任人、来源证据、逾期原因——
+    # 「计划日/实际日」只是进度，「谁负责/凭什么/为什么晚」才是能追责、能复盘的部分
+    owner_id: int | None = None
+    evidence: str | None = None
+    overdue_reason: str | None = None
     remark: str | None = None
 
 
@@ -67,6 +72,7 @@ class ShipmentBatchItemInput(BaseModel):
 
 class ShipmentBatchCreate(BaseModel):
     planned_date: date | None = None
+    overdue_reason: str | None = None
     remark: str | None = None
     items: list[ShipmentBatchItemInput] = Field(min_length=1)
 
@@ -82,5 +88,8 @@ class ShipmentBatchShip(BaseModel):
     actual_ship_date: date | None = None
     logistics_company: str | None = None
     tracking_no: str | None = None
+    #: 晚了就填原因（"因为分批/因为生产/因为客户改期"）——
+    #: 系统能算出"晚几天"，算不出"为什么"，归因必须有人填
+    overdue_reason: str | None = None
     remark: str | None = None
     items: list[ShipmentShipItem] | None = None

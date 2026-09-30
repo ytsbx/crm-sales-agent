@@ -1427,6 +1427,61 @@ async def delivery_stats(
 
     risk_orders.sort(key=lambda item: (-item["days_overdue"], item["order_no"]))
 
+    # ---- 批次偏差（场景13「受影响节点、批次数量、实际状态和未发量」）----
+    # 按时率 bisher 只看"首批发货 vs 交期"，于是**后几批拖了完全不影响这个数**，
+    # 页面上也看不到——"是不是分批把交期拖了"就只能自己去翻批次表。
+    # 这里把批次偏差接进同一口径：谁晚、晚几天、什么原因，一处算完三处用。
+    batch_risks: list[dict] = []
+    batch_order_ids: set[int] = set()
+    late_batch_count = 0
+    missing_reason_count = 0
+    order_by_id = {row.id: row for row in order_rows}
+    for order_id, batch_no, planned, actual, reason in (
+        await session.execute(
+            select(
+                OrderShipmentBatch.order_id,
+                OrderShipmentBatch.batch_no,
+                OrderShipmentBatch.planned_date,
+                OrderShipmentBatch.actual_ship_date,
+                OrderShipmentBatch.overdue_reason,
+            ).where(
+                OrderShipmentBatch.order_id.in_(order_ids),
+                OrderShipmentBatch.status != "cancelled",
+            )
+        )
+    ).all():
+        if planned is None:
+            continue
+        deviation = (actual - planned).days if actual is not None else (today - planned).days
+        if deviation <= 0:
+            continue
+        batch_order_ids.add(order_id)
+        late_batch_count += 1
+        if not reason:
+            # 晚了但没填原因：**能算出"晚了几天"，算不出"为什么"**。
+            # 这个计数就是提醒"归因还欠着"，不是错误，但要能被看见。
+            missing_reason_count += 1
+        order_row = order_by_id.get(order_id)
+        batch_risks.append(
+            {
+                "order_id": order_id,
+                "order_no": order_row.order_no if order_row else None,
+                "customer_name": customer_names.get(order_row.customer_id) if order_row else None,
+                "owner_name": (
+                    owner_names.get(order_row.owner_id)
+                    if order_row and order_row.owner_id
+                    else None
+                ),
+                "batch_no": batch_no,
+                "planned_date": planned.isoformat(),
+                "actual_ship_date": actual.isoformat() if actual else None,
+                "deviation_days": deviation,
+                "overdue_reason": reason,
+                "shipped": actual is not None,
+            }
+        )
+    batch_risks.sort(key=lambda item: (-item["deviation_days"], item["order_no"] or ""))
+
     return {
         "summary": {
             "open_order_count": open_count,
@@ -1444,6 +1499,10 @@ async def delivery_stats(
                 round(sum(delay_days) / len(delay_days), 1) if delay_days else None
             ),
             "max_delay_days": max(delay_days) if delay_days else None,
+            # 分批口径：交期里最容易被漏掉的那一半
+            "batch_deviation_order_count": len(batch_order_ids),
+            "late_batch_count": late_batch_count,
+            "late_batch_without_reason_count": missing_reason_count,
             "window_months": DELIVERY_WINDOW_MONTHS,
             "due_soon_days": DUE_SOON_DAYS,
         },
@@ -1462,6 +1521,8 @@ async def delivery_stats(
             for m in series
         ],
         "risk_orders": risk_orders[:risk_limit],
+        # 分批延期清单：页面直接显示，不用再去翻批次表
+        "batch_risks": batch_risks[:risk_limit],
     }
 
 

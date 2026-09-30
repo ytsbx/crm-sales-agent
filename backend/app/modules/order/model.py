@@ -95,6 +95,9 @@ class OrderShipmentBatch(Base, IdMixin):
     actual_ship_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     logistics_company: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tracking_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 逾期原因：把"第 2 批晚了几天"归因到"因为分批/因为生产/因为客户改期"。
+    #: 数据只能算出"晚了几天"，算不出"为什么"——归因必须有人填。
+    overdue_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -143,6 +146,14 @@ class OrderMilestone(Base, IdMixin):
     node: Mapped[str] = mapped_column(String(32))
     planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # ---- 文档（方案 :103）要求节点记录「计划日、实际日、责任人、来源证据、逾期原因和状态」----
+    # 前三项原先只有计划日/实际日，责任人、来源证据、逾期原因三项没落地：
+    # 没有"责任人"就不知道该催谁；没有"来源证据"事后无法回看当初凭什么这么排；
+    # 没有"逾期原因"就只能说"晚了 5 天"，说不出"为什么晚"——**归因全靠人填**，
+    # 系统不猜（猜测出来的归因比没有归因更危险，会被当成事实引用）。
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    overdue_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 逾期提醒只在第一次逾期时推一次，这个时间戳就是"推过了"的凭证
     overdue_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

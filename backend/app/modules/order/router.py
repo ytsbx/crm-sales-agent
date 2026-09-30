@@ -343,6 +343,10 @@ async def list_milestones(
             "status_label": milestones_svc.STATUS_LABELS[
                 milestones_svc.node_status(r.planned_date, r.actual_date, today)
             ],
+            # 方案 :103：责任人 / 来源证据 / 逾期原因
+            "owner_id": r.owner_id,
+            "evidence": r.evidence,
+            "overdue_reason": r.overdue_reason,
             "remark": r.remark,
         }
         for r in rows
@@ -392,6 +396,9 @@ async def update_milestone(
             "status_label": milestones_svc.STATUS_LABELS[
                 milestones_svc.node_status(row.planned_date, row.actual_date, date.today())
             ],
+            "owner_id": row.owner_id,
+            "evidence": row.evidence,
+            "overdue_reason": row.overdue_reason,
             "remark": row.remark,
         },
         "里程碑已更新",

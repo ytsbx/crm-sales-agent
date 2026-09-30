@@ -468,6 +468,7 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
         entry["unplanned"] = _f(max(_d(entry["ordered"]) - _d(entry["planned"]), Decimal(0)))
 
     batch_by_id = {batch.id: batch for batch in batches}
+    _today = datetime.now(UTC).date()
     serialized_batches = []
     for batch in batches:
         rows = [
@@ -480,6 +481,16 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
             for row in batch_items
             if row.batch_id == batch.id
         ]
+        # 批次偏差（场景13「受影响节点、批次数量、实际状态和未发量」）：
+        # 已发的按"实际 − 计划"算实际偏差；未发的按"今天 − 计划"算已逾期天数。
+        # 判据落在这里而不是前端：同一套偏差要同时供页面、风险单和提醒使用，
+        # 三处各算一遍必然漂移。
+        if batch.planned_date is None:
+            deviation_days = None
+        elif batch.status == "shipped" and batch.actual_ship_date is not None:
+            deviation_days = (batch.actual_ship_date - batch.planned_date).days
+        else:
+            deviation_days = (_today - batch.planned_date).days
         serialized_batches.append({
             "id": batch.id,
             "batch_no": batch.batch_no,
@@ -489,6 +500,10 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
             "actual_ship_date": batch.actual_ship_date,
             "logistics_company": batch.logistics_company,
             "tracking_no": batch.tracking_no,
+            "deviation_days": deviation_days,
+            #: 已发且晚于计划 = 真的晚；未发且已过期 = 已经拖了几天
+            "late": bool(deviation_days is not None and deviation_days > 0),
+            "overdue_reason": batch.overdue_reason,
             "remark": batch.remark,
             "items": rows,
         })
@@ -505,6 +520,24 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
             "all_shipped": bool(agg) and all(
                 _d(v["ordered"]) - _d(v["shipped"]) <= 0 for v in agg.values()
             ),
+            # 分批口径的汇总：场景13 要能回答"是不是分批拖了交期"
+            "batch_count": len(serialized_batches),
+            "late_batch_count": sum(1 for b in serialized_batches if b["late"]),
+            "max_deviation_days": max(
+                (b["deviation_days"] for b in serialized_batches
+                 if b["deviation_days"] is not None),
+                default=None,
+            ),
+            # 最后一批相对**合同交期**晚了几天（分批单最关心的那个数）
+            "last_batch_vs_delivery_days": next(
+                (
+                    ((b["actual_ship_date"] or _today) - order.delivery_date).days
+                    for b in reversed(serialized_batches)
+                ),
+                None,
+            )
+            if order.delivery_date
+            else None,
         },
     }
 
@@ -546,6 +579,7 @@ async def create_shipment_batch(
         order_id=order.id,
         batch_no=batch_no,
         planned_date=payload.planned_date,
+        overdue_reason=payload.overdue_reason,
         remark=payload.remark,
         created_by=user_id,
         created_at=datetime.now(UTC),
@@ -626,6 +660,10 @@ async def ship_shipment_batch(
     batch.actual_ship_date = payload.actual_ship_date or datetime.now(UTC).date()
     batch.logistics_company = payload.logistics_company
     batch.tracking_no = payload.tracking_no
+    # 逾期原因是"归因"，不是装饰：晚发了就把为什么晚记在这一批上，
+    # 否则事后只能看到"晚了 5 天"，说不出是不是因为分批
+    if payload.overdue_reason:
+        batch.overdue_reason = payload.overdue_reason
     if payload.remark:
         batch.remark = payload.remark
     await session.flush()
