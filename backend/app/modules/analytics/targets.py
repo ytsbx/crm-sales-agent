@@ -103,7 +103,17 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
     repeat_by_owner = await target_bases.repeat_net_by_owner(session, user, year)
 
     def _repeat_actual(month: str, owner_id: int | None) -> float:
-        return round(repeat_by_owner.get(owner_id, {}).get(month[5:], 0.0), 2)
+        """复购实际值。
+
+        `owner_id is None` 的行是**全公司/团队目标**：销售额与新客在那一行把
+        范围内所有人加总（见上面的 actual_for），复购也必须加总——
+        原先直接取 `repeat_by_owner[None]`（"无签单归属"那一桶），
+        于是那一行的复购实际≈0、差额一片负数、达成率 0%，主管每月看到的是错数。
+        """
+        key = month[5:]
+        if owner_id is None:
+            return round(sum(bucket.get(key, 0.0) for bucket in repeat_by_owner.values()), 2)
+        return round(repeat_by_owner.get(owner_id, {}).get(key, 0.0), 2)
 
     def _sort_key(kv: tuple[tuple[str, int | None], object]) -> tuple[str, int]:
         month, owner = kv[0]

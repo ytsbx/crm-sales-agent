@@ -17,7 +17,9 @@ export interface BizDocSource {
 export interface BizDocRow {
   id: number
   doc_no: string
-  doc_type: 'sample_request' | 'order_sheet'
+  // 后端还有 quote_sheet（对客报价单，出图格式是 xlsx）——类型里原先漏了它，
+  // 于是下载时只能写死 .pdf，报价单存下来就是打不开的坏文件
+  doc_type: 'sample_request' | 'order_sheet' | 'quote_sheet'
   doc_type_label: string
   title: string
   version: number
@@ -86,8 +88,15 @@ export function generateOrderDoc(orderId: number, templateId?: number) {
   })
 }
 
-export function downloadBizDoc(doc: { id: number; doc_no: string }) {
-  return api.download(`/biz-docs/${doc.id}/download`, `${doc.doc_no}.pdf`)
+export function downloadBizDoc(doc: {
+  id: number
+  doc_no: string
+  doc_type?: BizDocRow['doc_type']
+}) {
+  // 扩展名必须跟着**真实出图格式**走：报价单是 Excel，其余是 PDF。
+  // 写死 .pdf 的话，客户收到的"报价单"在 Excel 里打不开。
+  const ext = doc.doc_type === 'quote_sheet' ? 'xlsx' : 'pdf'
+  return api.download(`/biz-docs/${doc.id}/download`, `${doc.doc_no}.${ext}`)
 }
 
 export function voidBizDoc(docId: number, reason: string) {
