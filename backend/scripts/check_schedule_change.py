@@ -369,6 +369,25 @@ async def main() -> int:
                        res.get('code') in (40301, 40302, 40401),
                        f"{res.get('code')} {str(res.get('message'))[:60]}")
 
+        # ---- 8. 作废出口：没有它，一张没人确认的单会永久堵死后续变更 ----
+        # 第 7 节留了一张 pending 单（张三没法确认那张）。用它验：
+        # 作废之前不能再发起（40002）→ 作废 → 之后能再发起。
+        print()
+        print('=== 8. 作废待确认的变更单 ===')
+        if outsider_change:
+            status, res = call('POST', f'/orders/{order_id}/schedule-changes', token=admin,
+                               body={'new_delivery_date': '2027-05-01', 'reason': f'{TAG} 被堵'})
+            check('作废前：已有待确认单，确实发不了', res.get('code'), 40002)
+            status, res = call(
+                'POST', f'/orders/{order_id}/schedule-changes/{outsider_change}/cancel',
+                token=admin, body={'reason': f'{TAG} 交期又变回来了'},
+            )
+            check('作废成功', res.get('code'), 0)
+            check('状态已作废', res.get('data', {}).get('status'), 'cancelled')
+            status, res = call('POST', f'/orders/{order_id}/schedule-changes', token=admin,
+                               body={'new_delivery_date': '2027-05-01', 'reason': f'{TAG} 重新发起'})
+            check('作废后：可以重新发起', res.get('code'), 0)
+
     finally:
         await cleanup(order_id)
 

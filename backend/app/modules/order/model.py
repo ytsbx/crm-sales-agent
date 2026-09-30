@@ -214,6 +214,14 @@ class OrderScheduleChange(Base, IdMixin):
         DateTime(timezone=True), nullable=True
     )
     confirm_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 作废（发起人改主意 / 交期又变回来了）。**必须有这条出口**：
+    #: 库上有"一单只能有一张 pending"的部分唯一索引，没有作废路径的话，
+    #: 一张没人确认的变更单会永久堵死这个订单之后所有的交期变更。
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancelled_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -133,7 +133,11 @@ async def create_inquiry_instance(
         #   如果还返回那条 skipped，用户点了等于没点。
         retryable = False
         if latest.status == "submitting":
-            started = latest.created_at or datetime.now(UTC)
+            # 用 **last_attempt_at**（本次尝试的起点）而不是 created_at：
+            # created_at 是"这条记录什么时候产生的"（第一次发起），拿它当尝试时间
+            # 会让"这单最早什么时候发的"变成最后一次重试的时间。
+            # 存量行由迁移抄过一份，这里再兜一层 created_at（老数据/异常数据）。
+            started = latest.last_attempt_at or latest.created_at or datetime.now(UTC)
             retryable = (datetime.now(UTC) - started) > SUBMITTING_STUCK_AFTER
         elif latest.status == "skipped" and not app_settings.dingtalk_push_off:
             retryable = True
@@ -142,7 +146,7 @@ async def create_inquiry_instance(
         # 复用同一条记录重试：idempotency_key 不变，本地不新增行、钉钉不多建单
         latest.status = "submitting"
         latest.error = None
-        latest.created_at = datetime.now(UTC)  # 重置"本次尝试"的起点，供下次判活
+        latest.last_attempt_at = datetime.now(UTC)  # 本次尝试的新起点
         row = latest
         await session.commit()
 
@@ -168,6 +172,7 @@ async def create_inquiry_instance(
             error="钉钉推送已关闭（DINGTALK_PUSH_OFF），未向钉钉发起审批",
             created_by=user.id,
             created_at=datetime.now(UTC),
+            last_attempt_at=datetime.now(UTC),
         )
         session.add(blocked)
         await session.flush()
@@ -192,6 +197,7 @@ async def create_inquiry_instance(
             status="pending",
             created_by=user.id,
             created_at=datetime.now(UTC),
+            last_attempt_at=datetime.now(UTC),
         )
         # **先占住业务键，再调外部**（P1）：原顺序是"先调钉钉建单、后落本地唯一键"，
         # 于是两件事都可能重复建单——并发请求、以及"钉钉建成功了但响应没回来"的重试。

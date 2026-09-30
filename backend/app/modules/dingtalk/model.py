@@ -86,6 +86,13 @@ class OaInstance(Base, IdMixin):
 
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: 本次**尝试**发起的时间（重试会刷新它）。
+    #: 为什么不复用 created_at：created_at 的语义是"这条记录什么时候产生的"
+    #: （第一次发起），拿它当"本次尝试时间"会让排查时问"这单最早什么时候发的"
+    #: 得到最后一次重试的时间——一个字段两个含义，迟早有人被它骗。
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -33,6 +33,12 @@ class ScheduleChangeConfirm(BaseModel):
     remark: str | None = None
 
 
+class ScheduleChangeCancel(BaseModel):
+    """作废待确认的交期变更单（不存在的出口比没有约束更糟：约束会堵死业务）。"""
+
+    reason: str | None = None
+
+
 class OrderItemInput(BaseModel):
     sku_id: int
     quantity: Decimal = Field(gt=0)

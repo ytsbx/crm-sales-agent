@@ -153,6 +153,8 @@ async def main() -> int:
         # 而 expire_all() 会让后续属性访问触发同步 IO（MissingGreenlet）直接崩。
         stuck_row.status = 'submitting'
         stuck_row.created_at = datetime.now(UTC) - timedelta(minutes=20)
+        original_created_at = stuck_row.created_at
+        stuck_row.last_attempt_at = stuck_row.created_at
         await s.commit()
 
         revived = await submit(inquiry_version=2)
@@ -160,6 +162,12 @@ async def main() -> int:
               calls_before_stuck + 1)
         check('重发后状态回到 pending', revived.status, 'pending')
         check('复用的是同一行（幂等键不变，钉钉不会多建单）', revived.id, stuck_row.id)
+        # 重试只该刷新"本次尝试时间"，**不能改写 created_at**——
+        # 那是"这条记录什么时候产生的"（第一次发起），
+        # 被覆盖之后排查时问"这单最早什么时候发的"会得到最后一次重试的时间
+        check('created_at 未被重试改写', revived.created_at, original_created_at)
+        check_true('last_attempt_at 已刷新', revived.last_attempt_at != original_created_at,
+                   str(revived.last_attempt_at))
 
         print('=== 6. 关闸时落的 skipped：开闸后能真正发出 ===')
         settings.dingtalk_push_off = True

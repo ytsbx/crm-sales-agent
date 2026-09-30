@@ -220,6 +220,47 @@ async def confirm_change(
     return change
 
 
+async def cancel_change(
+    session: AsyncSession,
+    order: SalesOrder,
+    change: OrderScheduleChange,
+    *,
+    user: CurrentUser,
+    reason: str | None,
+) -> OrderScheduleChange:
+    """作废一张待确认的变更单。
+
+    **为什么必须有这条出口**：库上有"一个订单只允许一张 pending"的部分唯一索引。
+    没有作废路径的话，一张发起后没人确认的变更单会**永久堵死**该订单之后所有的
+    交期变更——除了直接改库没有出路；而错误文案还写着"请先确认或作废它"，
+    指的是一条不存在的路。
+
+    作废只改状态与留痕，**不动任何计划日期**——它本来就没生效过。
+    """
+    locked = (
+        await session.execute(
+            select(OrderScheduleChange)
+            .where(OrderScheduleChange.id == change.id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
+    change = locked
+    if change.status != "pending":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该交期变更单已是「{change.status}」，不能作废",
+            422,
+        )
+    change.status = "cancelled"
+    change.cancel_reason = reason
+    change.cancelled_by = user.id
+    change.cancelled_at = datetime.now(UTC)
+    await session.flush()
+    return change
+
+
 def serialize_change(row: OrderScheduleChange, *, names: dict[int, str] | None = None) -> dict:
     names = names or {}
     return {
@@ -229,9 +270,14 @@ def serialize_change(row: OrderScheduleChange, *, names: dict[int, str] | None =
         "new_delivery_date": row.new_delivery_date,
         "reason": row.reason,
         "status": row.status,
-        "status_label": {"pending": "待确认", "confirmed": "已确认"}.get(
-            row.status, row.status
-        ),
+        "status_label": {
+            "pending": "待确认",
+            "confirmed": "已确认",
+            "cancelled": "已作废",
+        }.get(row.status, row.status),
+        "cancel_reason": row.cancel_reason,
+        "cancelled_by": row.cancelled_by,
+        "cancelled_at": row.cancelled_at.isoformat() if row.cancelled_at else None,
         "owner_id": row.owner_id,
         "owner_name": names.get(row.owner_id) if row.owner_id else None,
         "confirmed_by": row.confirmed_by,

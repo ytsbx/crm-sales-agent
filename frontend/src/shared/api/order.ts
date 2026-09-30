@@ -412,3 +412,11 @@ export function confirmScheduleChange(orderId: number, changeId: number, remark?
     { remark: remark ?? null },
   )
 }
+
+/** 作废待确认的交期变更单。没有它，一张没人确认的单会永久堵死后续变更。 */
+export function cancelScheduleChange(orderId: number, changeId: number, reason?: string) {
+  return api.post<ScheduleChangeRow>(
+    `/orders/${orderId}/schedule-changes/${changeId}/cancel`,
+    { reason: reason ?? null },
+  )
+}

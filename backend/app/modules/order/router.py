@@ -38,6 +38,7 @@ from app.modules.order.schema import (
     OrderFromQuote,
     OrderStatusChange,
     OrderUpdate,
+    ScheduleChangeCancel,
     ScheduleChangeConfirm,
     ScheduleChangeCreate,
     ShipmentBatchCreate,
@@ -522,6 +523,46 @@ async def confirm_schedule_change(
     )
     await session.commit()
     return ok(schedule_svc.serialize_change(row), "已确认，节点与批次计划日已重排")
+
+
+@router.post("/orders/{order_id}/schedule-changes/{change_id}/cancel")
+async def cancel_schedule_change(
+    order_id: int,
+    change_id: int,
+    payload: ScheduleChangeCancel,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """作废待确认的交期变更单。
+
+    没有这条出口，库级"一单只允许一张 pending"的部分唯一索引会把该订单之后的
+    交期变更**永久堵死**。权限与确认一致：责任人本人，或有 order:assign 的主管。
+    """
+    from app.modules.order import schedule as schedule_svc
+    from app.modules.order.model import OrderScheduleChange
+
+    order = await svc.get_visible_order(session, user, order_id)
+    row = await session.get(OrderScheduleChange, change_id)
+    if row is None or row.order_id != order.id:
+        raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
+    if row.owner_id and user.id != row.owner_id and not user.has("order:assign"):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "该交期变更单应由责任人处理；若已交接，请让有「转移订单负责人」权限的主管处理",
+            403,
+        )
+    row = await schedule_svc.cancel_change(
+        session, order, row, user=user, reason=payload.reason
+    )
+    await write_audit(
+        session, operator_id=user.id, action="cancel_schedule_change",
+        business_type="order", business_id=order.id,
+        after={"change_id": row.id, "reason": row.cancel_reason},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(schedule_svc.serialize_change(row), "已作废，该订单可以重新发起交期变更")
 
 
 @router.post("/orders/{order_id}/milestones/replan")

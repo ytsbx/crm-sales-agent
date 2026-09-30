@@ -22,6 +22,7 @@ import {
   refreshStatus,
   replanOrderMilestones,
   confirmScheduleChange,
+  cancelScheduleChange,
   createScheduleChange,
   listScheduleChanges,
   previewScheduleChange,
@@ -205,6 +206,14 @@ export default function OrderDetailPage() {
     onSuccess: () => {
       Toast.success('已确认，节点与批次计划日已重排')
       milestonesRefresh()
+      void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const cancelScheduleMutation = useMutation({
+    mutationFn: (changeId: number) => cancelScheduleChange(orderId, changeId),
+    onSuccess: () => {
+      Toast.success('已作废，可以重新发起交期变更')
       void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -726,14 +735,25 @@ export default function OrderDetailPage() {
                         </span>
                         <div style={{ flex: 1 }} />
                         {row.status === 'pending' && can('order:manage') && (
-                          <Button
-                            size="small"
-                            theme="solid"
-                            loading={confirmScheduleMutation.isPending}
-                            onClick={() => confirmScheduleMutation.mutate(row.id)}
-                          >
-                            确认并重排
-                          </Button>
+                          <>
+                            <Button
+                              size="small"
+                              theme="solid"
+                              loading={confirmScheduleMutation.isPending}
+                              onClick={() => confirmScheduleMutation.mutate(row.id)}
+                            >
+                              确认并重排
+                            </Button>
+                            {/* 作废出口：库上"一单只允许一张待确认"，
+                                没有它这张单会永久堵死该订单之后的交期变更 */}
+                            <Popconfirm
+                              title="作废这张交期变更单？"
+                              content="不会改动任何计划日期，之后可以重新发起。"
+                              onConfirm={() => cancelScheduleMutation.mutate(row.id)}
+                            >
+                              <a style={{ marginLeft: 8, color: 'var(--crm-text-3)' }}>作废</a>
+                            </Popconfirm>
+                          </>
                         )}
                       </div>
                       {row.reason && <div style={{ marginTop: 4 }}>原因：{row.reason}</div>}
