@@ -141,6 +141,37 @@ async def main() -> int:
         check('同轮再发起：外部调用次数没变', fake.calls, calls_at_failure)
         check('复用的还是那行 failed（等人工决定）', retried.id, failed.id)
 
+        print('=== 5. 卡在 submitting 的行：超时后允许重发（不再永久卡死）===')
+        from datetime import UTC, datetime, timedelta
+
+        fake.fail = False  # 第 4 段把假客户端设成了失败，这里必须复位
+        stuck_row = await submit(inquiry_version=2)
+        calls_before_stuck = fake.calls
+        # 就在**同一个会话**里把它改成"20 分钟前卡在 submitting"：
+        # 模拟"进程在占业务键与调外部之间被杀"。这里刻意不用第二个连接改库
+        # ——异步会话的 identity map 里还是旧对象，读到的是改之前的状态；
+        # 而 expire_all() 会让后续属性访问触发同步 IO（MissingGreenlet）直接崩。
+        stuck_row.status = 'submitting'
+        stuck_row.created_at = datetime.now(UTC) - timedelta(minutes=20)
+        await s.commit()
+
+        revived = await submit(inquiry_version=2)
+        check('超时的 submitting 允许重发（外部调用 +1）', fake.calls,
+              calls_before_stuck + 1)
+        check('重发后状态回到 pending', revived.status, 'pending')
+        check('复用的是同一行（幂等键不变，钉钉不会多建单）', revived.id, stuck_row.id)
+
+        print('=== 6. 关闸时落的 skipped：开闸后能真正发出 ===')
+        settings.dingtalk_push_off = True
+        blocked = await submit(inquiry_version=3)
+        check('关闸时落 skipped', blocked.status, 'skipped')
+        calls_before_open = fake.calls
+        settings.dingtalk_push_off = False
+        sent = await submit(inquiry_version=3)
+        check('开闸后再发起：真的发给钉钉了（外部调用 +1）', fake.calls,
+              calls_before_open + 1)
+        check('状态 pending', sent.status, 'pending')
+
     await cleanup()
     print()
     if FAILURES:
