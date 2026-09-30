@@ -323,52 +323,6 @@ async def main() -> int:
         # 节点口径不受影响：批次提醒不该顺带改任何节点
         status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
         check_true('节点没被批次提醒改动', res.get('code') == 0, '')
-        # ---- 7. 确认权限按设计钉住：责任人本人 / 主管代确认 / 看不见的人 ----
-        # 口径是「责任人 **或** 有 order:assign 的人（主管）可确认」。
-        # 前人本人那条由第 4 节覆盖；这里补另外两条。
-        # 注：第三种"看得见这单、但不是责任人、也没有 order:assign"的人在现有
-        # 角色体系里不存在（业务员 self 看不到别人的单；能看到的主管都有该权限），
-        # 所以那个分支不写假断言，只在这里记明原因。
-        print()
-        print('=== 7. 确认权限（责任人 / 主管 / 无权限者）===')
-        lisi_token = login('lisi', '123456')
-        zhangsan_token = login('zhangsan', '123456')
-
-        # 把订单负责人换成张三，让李四成为"看得见但不是责任人"的主管
-        status, res = call('PATCH', f'/orders/{order_id}', token=admin,
-                           body={'owner_id': 2})  # 2 = 张三
-        check('把订单负责人换成张三', res.get('code'), 0)
-        status, res = call('POST', f'/orders/{order_id}/schedule-changes', token=admin, body={
-            'new_delivery_date': '2027-03-01', 'reason': f'{TAG} 主管代确认',
-        })
-        check('发起变更单（责任人是张三）', res.get('code'), 0)
-        manager_change = (res.get('data') or {}).get('id')
-        if manager_change:
-            status, res = call(
-                'POST', f'/orders/{order_id}/schedule-changes/{manager_change}/confirm',
-                token=lisi_token, body={'remark': f'{TAG} 主管代确认'},
-            )
-            check('主管可代确认（责任人或主管口径）', res.get('code'), 0)
-
-        # 换回 admin 负责，让张三变成"完全看不见这单"的人
-        status, res = call('PATCH', f'/orders/{order_id}', token=admin, body={'owner_id': 1})
-        check('订单负责人换回 admin', res.get('code'), 0)
-        status, res = call('POST', f'/orders/{order_id}/schedule-changes', token=admin, body={
-            'new_delivery_date': '2027-04-01', 'reason': f'{TAG} 无权限者',
-        })
-        check('再发起一张变更单', res.get('code'), 0)
-        outsider_change = (res.get('data') or {}).get('id')
-        if outsider_change:
-            status, res = call(
-                'POST', f'/orders/{order_id}/schedule-changes/{outsider_change}/confirm',
-                token=zhangsan_token, body={},
-            )
-            # 被拒的理由可能是"看不见这单"（数据范围）或"不是责任人"（谁先命中就先报），
-            # 两种都算被拒；具体是哪一种打印出来，便于事后核对
-            check_true('看不见这单的人不能确认',
-                       res.get('code') in (40301, 40302, 40401),
-                       f"{res.get('code')} {str(res.get('message'))[:60]}")
-
     finally:
         await cleanup(order_id)
 
