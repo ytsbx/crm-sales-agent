@@ -202,6 +202,24 @@ async def main() -> int:
     check_denied('他人生成应收', call('POST', f'/orders/{oid}/receivables/generate', outsider_token,
                                       {'ratios': [1], 'first_due_date': '2026-12-01'})[0])
 
+    # ---- 无归属的订单：**连"自己人"也该拒**（开关的安全侧）----
+    # 把负责人清空，做出历史脏数据的形态（正常 API 造不出来，只能这样造）。
+    # 原规则是"owner 为空一律放行"，于是含价格的单据猜到编号就能看；
+    # 现在默认拒绝。这条与"公海客户仍可看"成对：那条守"别把公海误关"，
+    # 这条守"别把无归属误开"——缺哪条都可能改坏一边。
+    from sqlalchemy import text
+
+    async with SessionLocal() as s:
+        await s.execute(text("update sales_orders set owner_id = null where id = :o"),
+                        {'o': oid})
+        await s.commit()
+    check_denied('无归属的订单时间线必须被拒（此前一律放行）',
+                 call('GET', f'/orders/{oid}/timeline', owner_token)[0])
+    async with SessionLocal() as s:  # 还原负责人，免得影响后面的断言与清理
+        await s.execute(text("update sales_orders set owner_id = :u where id = :o"),
+                        {'u': 2, 'o': oid})
+        await s.commit()
+
     print('=== 3. 文件挂载（别人的客户）===')
     check_denied('他人往别人客户上挂附件',
                  call('POST', f'/business/customer/{cid}/files?file_id=1', outsider_token)[0])
