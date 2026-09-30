@@ -87,6 +87,10 @@ async def cleanup():
             f"delete from order_status_history where order_id in {order}",
             f"delete from sales_orders where customer_id in {cust}",
             f"delete from business_files where business_type = 'customer' and business_id in {cust}",
+            # 合并日志先删：它引用两个客户，留着会让下面的客户删除撞外键
+            f"delete from customer_merge_logs where target_customer_id in {cust} "
+            f"or source_customer_id in {cust}",
+            "delete from contacts where name like :p",
             "delete from customers where name like :p",
             "delete from user_roles where user_id in (select id from users where username like :u)",
             "delete from users where username like :u",
@@ -131,11 +135,28 @@ async def main() -> int:
                            created_by=owner.id)
         s.add_all([inquiry, order])
         await s.flush()
+        # 合并夹具：再造一个同属张三的客户，两边各挂一个**主**联系人。
+        # 要验的正是"合并后目标还剩几个主联系人"——原实现把目标客户原有的主联系人
+        # 也一起降级了，合并完常常一个主都不剩，得人工再设。
+        from app.modules.customer.model import Contact
+
+        source_customer = Customer(name=f'{PREFIX}来源客户-{stamp}', level='B',
+                                   status='active', pool_status='private', owner_id=owner.id)
+        s.add(source_customer)
+        await s.flush()
+        s.add_all([
+            Contact(customer_id=customer.id, name=f'{PREFIX}目标主联系人-{stamp}',
+                    mobile='13900000002', is_primary=True),
+            Contact(customer_id=source_customer.id, name=f'{PREFIX}来源主联系人-{stamp}',
+                    mobile='13900000003', is_primary=True),
+        ])
+        await s.flush()
         s.add(IntegrationLog(integration_type='erp', provider='聚水潭', direction='outbound',
                              business_type='order', business_id=order.id, status='success',
                              created_at=datetime.now(UTC)))
         await s.commit()
-        cid, iid, oid, outsider_name = customer.id, inquiry.id, order.id, outsider.username
+        cid, iid, oid = customer.id, inquiry.id, order.id
+        src_cid, outsider_name = source_customer.id, outsider.username
         # 夹具用户需要能登录：设一个临时口令（用与张三相同的哈希来源）
         from app.core.security import hash_password
 
@@ -250,6 +271,26 @@ async def main() -> int:
                      call('GET', f'/logistics/quotes/{lq_id}', outsider_token)[0])
     else:
         print('  （跳过运费试算单越权断言：库里没有挂在张三客户上的试算单）')
+
+    # ---- 客户合并：目标客户原有的主联系人必须保住（我修的那处）----
+    # 这个 bug 的形态是"一个主都不剩"，所以断言写成**恰好 1 个**——
+    # 写成"至少 1 个"就抓不到它。
+    status, res = call('POST', '/customers/merge', owner_token, {
+        'source_customer_id': src_cid, 'target_customer_id': cid,
+        'reason': f'{PREFIX}越权/合并夹具',
+    })
+    check('合并客户成功', res.get('code'), 0)
+    async with SessionLocal() as s:
+        from app.modules.customer.model import Contact
+
+        rows = (
+            await s.execute(
+                select(Contact.id, Contact.is_primary).where(Contact.customer_id == cid)
+            )
+        ).all()
+    primaries = [r for r in rows if r.is_primary]
+    check('两个联系人都并到目标客户名下', len(rows), 2)
+    check('合并后目标恰好剩一个主联系人', len(primaries), 1)
 
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)
