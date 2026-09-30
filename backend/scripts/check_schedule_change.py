@@ -198,6 +198,16 @@ async def main() -> int:
                            token=admin, body={})
         check('重复确认被拒', res.get('code'), 40002)
 
+        # 回归：直改交期的老入口必须被拦——那条路径不重排节点与批次，
+        # 改完交期与计划日静默脱节（页面上看着改了，逾期提醒却还按老交期算）
+        status, res = call('PATCH', f'/orders/{order_id}', token=admin,
+                           body={'delivery_date': '2027-02-20'})
+        # 注意：这里判的是**业务码**（40001=参数错误），不是 HTTP 状态——
+        # 上一版写成 422 是我把两者搞混了
+        check('直改交期被拒（要求走变更单）', res.get('code'), 40001)
+        check_true('错误说明指向变更单入口', '交期变更' in (res.get('message') or ''),
+                   str(res.get('message'))[:60])
+
         print()
         print('=== 6. 批次逾期提醒（旁路：只提醒，不动节点口径）===')
         # 批次不是跟单节点，节点提醒扫不到它——这条旁路就是为"第 N 批该发没发有人管"

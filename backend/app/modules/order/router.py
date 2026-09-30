@@ -269,6 +269,17 @@ async def update_order(
     before = svc.serialize_order(order)
 
     data = payload.model_dump(exclude_unset=True)
+    # 交期**不允许在这里直接改**（P1）：这条路径不会重排跟单节点与发货批次，
+    # 改完交期与计划日就静默脱节——页面上看着改了，实际计划还按老交期排，
+    # 逾期提醒也跟着错。要走「交期变更单」：先预览受影响面、再由责任人确认。
+    if "delivery_date" in data and data["delivery_date"] != order.delivery_date:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "改交期请走「交期变更」：先预览受影响的节点与批次，再由责任人确认，"
+            "系统会在确认时一并重排计划日期。直接改交期不会重排计划，"
+            "会造成交期与计划日脱节",
+            422,
+        )
     # 改的是「当前负责人」（谁跟进、谁看得见），**不动 sales_owner_id**：
     # 签单归属创建时写死，换人跟进不改变这张单的业绩算谁的（文档 :61）。
     if data.get("owner_id") is not None:

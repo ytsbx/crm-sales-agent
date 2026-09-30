@@ -67,7 +67,14 @@ async def preview(
     for row in await _nodes(session, order.id):
         if row.actual_date is not None:
             continue  # 已发生的事实不动
-        new_planned = plan.get(row.node)
+        # 口径与批次**保持一致：按天数平移**，而不是拿新交期重新倒推。
+        # 倒推会把跟单员手工推后的日子一把拉回默认值——那些手工调整往往是因为
+        # 产前样延期、客户改期，抹掉它不但排错日期，还会凭空造出逾期提醒。
+        # 只有"原本没有计划日"（或没有旧交期做基准）时才回退到倒推。
+        if row.planned_date is not None and delta is not None:
+            new_planned = row.planned_date + timedelta(days=delta)
+        else:
+            new_planned = plan.get(row.node)
         if new_planned == row.planned_date:
             continue
         affected_nodes.append(
