@@ -22,6 +22,9 @@ class SalesTargetUpsert(BaseModel):
     department_id: int | None = None
     new_customer_target: int = 0
     sales_target: float = 0
+    # 复购（老客净额）目标：口径见 modules/analytics/target_bases.py，
+    # 以前这个字段只存不算、也没有接口能写，等于设不了
+    repeat_customer_target: float = 0
     remark: str | None = None
 
 
@@ -67,6 +70,7 @@ async def upsert_sales_target(
         department_id=payload.department_id,
         new_customer_target=payload.new_customer_target,
         sales_target=payload.sales_target,
+        repeat_customer_target=payload.repeat_customer_target,
         remark=payload.remark,
     )
     await write_audit(
@@ -95,15 +99,6 @@ async def upsert_sales_target(
         },
         "目标已保存",
     )
-
-
-class SalesTargetUpsert(BaseModel):
-    period: str
-    user_id: int | None = None
-    new_customer_target: int = 0
-    sales_target: float = 0
-    remark: str | None = None
-
 
 @router.get("/dashboard/summary")
 async def dashboard_summary(

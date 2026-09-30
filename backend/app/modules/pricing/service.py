@@ -672,6 +672,10 @@ async def calculate_price(
         warnings.append(f"报价币种是 {currency}，但没有提供汇率，暂按人民币口径核价")
         fx = None
     cost_for_profit = base_cost
+    #: 底价的**人民币原值**。报价明细的 minimum_price_snapshot 必须存人民币
+    #: （前端那个格子写的是 ¥，审批与整单加权底价也都在人民币口径下比），
+    #: 而下面外贸分支会把 floor_price 折成计价币种——所以先留一份原值出去。
+    floor_price_cny = floor_price
     if is_foreign and fx:
         convert = lambda value: (value / fx).quantize(Decimal("0.0001"))  # noqa: E731
         standard_price = convert(standard_price)
@@ -832,6 +836,9 @@ async def calculate_price(
         # hard_floor_price 是不可审批的绝对底线（D7）；数值对无 price:manage 者脱敏
         "protection_price": _f(protection_price),
         "minimum_price": _f(floor_price),
+        # 人民币口径的授权底价：给报价明细落快照用（界面显示用上面的 minimum_price，
+        # 那个已经折成计价币种）。两个都必须有，别只留一个。
+        "minimum_price_cny": _f(floor_price_cny),
         "hard_floor_price": _f(hard_floor_price),
         "authorized_min_margin": _f(min_margin),
         "can_approve": can_approve,

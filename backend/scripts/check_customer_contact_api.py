@@ -606,6 +606,17 @@ def main():
     check('建询价 v1', res.get('code'), 0)
     check('初始版本号 1', res['data']['version'], 1)
     inquiry_v1 = res['data']['id']
+
+    # 回归（照真实用户操作）：把自己的定制需求挂到**别人的客户**上必须被拒。
+    # 原先创建路径只查"客户存在"，于是任何有报价权限的人都能把需求挂到同事的客户上，
+    # 把对方的产品要求与目标价带进自己的报价单。案例库此前踩过同一个坑，
+    # 那里用的是 get_visible_customer——这里必须同一口径。
+    # （注：接口用例原本传的 customer_id 恰好是自己可见的，所以一直没暴露。）
+    status, res = call('POST', '/custom-inquiries', token=zhangsan, body={
+        'title': f'CHK{RUN}越权挂客户', 'customer_id': customer_id, 'quantity': 1,
+    })
+    check_denied('张三把需求挂到别人的客户上', res.get('code'))
+
     status, res = call('POST', f'/custom-inquiries/{inquiry_v1}/revise', token=zhangsan, body={
         'revision_note': '客户把烫金改成 UV，数量降到 800',
         'description': '天地盖礼盒，UV 工艺', 'quantity': 800,
@@ -656,6 +667,26 @@ def main():
                (res['data']['description'] or '')[:80])
     status, res = call('GET', f'/product-insights/{insight_id}', token=admin)
     check('洞察回写线索 id', res['data']['converted_inquiry_id'], new_inquiry_id)
+
+    # 回归（照真实用户操作）：**不传 owner_id**、用**主管**账号再建一条。
+    # 上面那条用例手工传了 owner_id，恰好盖住了"创建时不写归属 → 列表立刻查不到、
+    # 点进去报不在范围内"这个真 bug（前端本来就不传这个字段）。所以这条什么都不传。
+    status, res = call('GET', '/auth/me', token=lisi)
+    lisi_id = res['data']['id']
+    status, res = call('POST', '/product-insights', token=lisi, body={
+        'title': f'CHK{RUN}主管自建洞察',
+        'direction': '主管自己记一条，不指定负责人',
+        'conclusion': '用于验证默认归属',
+    })
+    check('主管建洞察（不传负责人）', res.get('code'), 0)
+    lisi_insight = res['data']['id']
+    check('归属自动落到创建人', res['data']['owner_id'], lisi_id)
+    status, res = call('GET', '/product-insights?page_size=50', token=lisi)
+    check_true('建完立刻能在列表里查到',
+               any(row['id'] == lisi_insight for row in res['data']['items']),
+               f"共 {len(res['data']['items'])} 条")
+    status, res = call('GET', f'/product-insights/{lisi_insight}', token=lisi)
+    check('自己建完能打开', res.get('code'), 0)
 
     status, res = call('GET', f'/custom-inquiries/{inquiry_v2}/history', token=zhangsan)
     check('链条两条', len(res['data']), 2)

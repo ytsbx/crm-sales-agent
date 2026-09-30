@@ -824,6 +824,15 @@ async def update_item(
         spec_snapshot=item.spec_snapshot,
         remark=data.get("remark", item.remark),
         role_codes=user.roles,
+        # 定制行必须把需求编号带下去：重算走的是"sku_id 为空 → 定制分支"，
+        # 少了 inquiry_id 就会报"明细必须关联 SKU 或定制需求编号"，
+        # 于是新做的定制报价只能一次填死、改不动（真踩过）。
+        inquiry_id=item.inquiry_id,
+        item_name=item.sku_name_snapshot,
+        # 没传新成本就沿用原快照（人民币口径），不能丢
+        unit_cost=(
+            data.get("unit_cost", item.cost_snapshot) if item.sku_id is None else None
+        ),
     )
     for field in (
         "quantity",

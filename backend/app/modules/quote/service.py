@@ -605,8 +605,13 @@ async def _build_custom_item_snapshot(
 
     最低保护价按系统已配置的最低毛利率推（成本 ×(1+default_min_margin)），
     不另创一套定制价政策：定制项与现货项因此走同一个低价审批判定。
-    定制项的成本与报价都按**报价版本的币种**填（外贸单要按该币种录，
-    不在这里折算——折算会引入第二个汇率来源，与汇率快照口径冲突）。
+
+    **币种口径（2026-09-30 修正，别改回去）**：成本与运费按**人民币**录入，
+    落成 `cost_snapshot` / `logistics_cost_snapshot` / `minimum_price_snapshot`；
+    只有报价 `quoted_price` 按报价版本币种。外币单的利润先按汇率把成本折过去再算。
+    原文案说"成本按报价币种填"，但审批判定、前端标签（¥）与整单加权底价三处
+    都按人民币读同一批快照——于是美元单上 7 美元成本被当成 7 人民币，与 50 人民币的
+    报价一比永远不触发低价审批与绝对底价，还显示虚高毛利。**静默放行，最危险的那种错。**
     """
     from app.modules.inquiry.model import CustomInquiry
 
@@ -626,20 +631,27 @@ async def _build_custom_item_snapshot(
     if unit_cost is None:
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"定制项「{inquiry.title}」请填写核价成本（缺成本无法判断毛利与低价审批）",
+            f"定制项「{inquiry.title}」请填写核价成本（人民币；缺成本无法判断毛利与低价审批）",
             422,
         )
 
     price = Decimal(str(quoted_price))
-    cost = Decimal(str(unit_cost))
-    freight = Decimal(str(logistics_cost or 0))
+    cost = Decimal(str(unit_cost))  # 人民币：与 SKU 路径、审批判定同一口径
+    freight = Decimal(str(logistics_cost or 0))  # 人民币
     min_ratio = Decimal(
         str(await settings_service.get_number(session, "default_min_margin", "ratio", 0.15))
     )
-    minimum_price = (cost * (1 + min_ratio)).quantize(Decimal("0.01"))
-    profit = price - cost - freight
+    minimum_price = (cost * (1 + min_ratio)).quantize(Decimal("0.01"))  # 人民币
+    # 利润必须与报价同币种：外币单要先把人民币成本折过去再减，
+    # 否则会算出"50 美元 − 350 人民币"这种假数字（与定价服务 cost_in_quote_currency 同口径）
+    fx = version.exchange_rate_snapshot
+    foreign = (version.currency or "CNY").upper() != "CNY" and bool(fx) and fx > 0
+    cost_in_quote = ((cost + freight) / fx) if foreign else (cost + freight)
+    profit = price - cost_in_quote
     profit_rate = (profit / price) if price else ZERO
-    below_floor = price < minimum_price
+    # 比最低保护价同样要同币种：保护价是人民币，先把报价折过去
+    price_cny = (price * fx) if foreign else price
+    below_floor = price_cny < minimum_price
 
     # 需求被报价引用即视为已转下游（只在待评估/开发中时翻转，
     # 不覆盖人工做的归档决定）
@@ -672,8 +684,8 @@ async def _build_custom_item_snapshot(
         profit_with_refund_snapshot=profit,
         approval_required=below_floor,
         approval_reason=(
-            f"定制项报价 {price} 低于最低保护价 {minimum_price}"
-            f"（成本 {cost}×(1+{min_ratio})），需审批"
+            f"定制项报价 ¥{price_cny:.2f}（折人民币）低于最低保护价 ¥{minimum_price:.2f}"
+            f"（成本 ¥{cost}×(1+{min_ratio})），需审批"
             if below_floor
             else None
         ),
@@ -783,7 +795,13 @@ async def build_item_snapshot(
         logistics_cost_snapshot=Decimal(str(result["cost"]["logistics_cost"] or 0)),
         standard_price_snapshot=Decimal(str(result["standard_price"])),
         recommended_price_snapshot=Decimal(str(result["recommended_price"])),
-        minimum_price_snapshot=Decimal(str(result["minimum_price"])) if result["minimum_price"] is not None else None,
+        # 存**人民币**口径（result["minimum_price"] 在外币单上已折成计价币种，
+        # 拿它落快照会让审批把 3.6 美元的保护价当成 3.6 人民币去比）
+        minimum_price_snapshot=(
+            Decimal(str(result["minimum_price_cny"]))
+            if result.get("minimum_price_cny") is not None
+            else None
+        ),
         price_source=price_source,
         customer_level_snapshot=customer_level_snapshot,
         quoted_price=price,
@@ -1610,7 +1628,11 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
     ).all()
 
     created = 0
-    for quote, owner_id in rows:
+    for quote, customer_owner_id in rows:
+        # 派给**这张报价的负责人**，不是客户当前的负责人：
+        # 协作单（客户归 A、这张报价由 B 做）按客户归属派会把提醒发给不相干的人，
+        # 真正做这张报价的人反而收不到。报价没写负责人时才回退到客户负责人。
+        owner_id = quote.owner_id or customer_owner_id
         if owner_id is None:
             continue
         title = f"报价 {quote.quote_no} 已过有效期（{quote.valid_until}），请跟进续期或催单"

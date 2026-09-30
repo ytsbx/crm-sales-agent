@@ -71,12 +71,13 @@ export default function AnalyticsPage() {
     period?: string
     user_id?: number | null
   }>({ visible: false })
-  const [targetForm, setTargetForm] = useState<{ user_id?: number | null; department_id?: number | null; period: string; new_customer_target: string; sales_target: string }>({
+  const [targetForm, setTargetForm] = useState<{ user_id?: number | null; department_id?: number | null; period: string; new_customer_target: string; sales_target: string; repeat_customer_target: string }>({
     user_id: undefined,
     department_id: undefined,
     period: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
     new_customer_target: '',
     sales_target: '',
+    repeat_customer_target: '',
   })
 
   const opportunityQuery = useQuery({ queryKey: ['an-opportunities'], queryFn: getOpportunityStats })
@@ -122,6 +123,7 @@ export default function AnalyticsPage() {
         department_id: targetForm.department_id ?? null,
         new_customer_target: Number(targetForm.new_customer_target || 0),
         sales_target: Number(targetForm.sales_target || 0),
+        repeat_customer_target: Number(targetForm.repeat_customer_target || 0),
       }),
     onSuccess: () => {
       Toast.success('目标已保存')
@@ -138,6 +140,9 @@ export default function AnalyticsPage() {
         period: row.period,
         new_customer_target: String(row.new_customer_target),
         sales_target: String(row.sales_target),
+        repeat_customer_target: row.repeat_customer_target
+          ? String(row.repeat_customer_target)
+          : '',
       })
       setTargetModal({ visible: true, period: row.period, user_id: row.user_id })
     } else {
@@ -146,6 +151,7 @@ export default function AnalyticsPage() {
         period: `${targetYear}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
         new_customer_target: '',
         sales_target: '',
+        repeat_customer_target: '',
       })
       setTargetModal({ visible: true })
     }
@@ -650,6 +656,34 @@ export default function AnalyticsPage() {
                   : rate(r.sales_actual, r.sales_target),
             },
             {
+              // 复购（老客净额）：口径是"期初固定的老客池在本期的订单净额"，
+              // 定义在后端 target_bases.py。以前目标能存、页面看不到，等于设了没人管。
+              title: '复购目标',
+              dataIndex: 'repeat_customer_target',
+              width: 130,
+              render: (v: number) => (v ? `¥${Math.round(v).toLocaleString('zh-CN')}` : '—'),
+            },
+            {
+              title: '复购实际',
+              dataIndex: 'repeat_customer_actual',
+              width: 130,
+              render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
+            },
+            {
+              title: '复购差额',
+              dataIndex: 'repeat_customer_variance',
+              width: 130,
+              render: (v: number, r: SalesTargetRow) =>
+                r.repeat_customer_target ? (
+                  <span style={{ color: v >= 0 ? 'var(--crm-primary)' : 'var(--crm-error)' }}>
+                    {v >= 0 ? '+' : ''}
+                    ¥{Math.round(v).toLocaleString('zh-CN')}
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                ),
+            },
+            {
               title: '差额',
               dataIndex: 'sales_variance',
               width: 130,
@@ -757,6 +791,13 @@ export default function AnalyticsPage() {
             <Input
               value={targetForm.sales_target}
               onChange={(value) => setTargetForm({ ...targetForm, sales_target: value })}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>复购目标（元，老客净额）</div>
+            <Input
+              value={targetForm.repeat_customer_target}
+              onChange={(value) => setTargetForm({ ...targetForm, repeat_customer_target: value })}
             />
           </div>
         </div>

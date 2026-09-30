@@ -221,3 +221,49 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         "basis_note": BASIS_NOTE,
         "source_note": SOURCE_NOTE,
     }
+
+
+async def repeat_net_by_owner(
+    session: AsyncSession, user: CurrentUser, year: int
+) -> dict[int | None, dict[str, float]]:
+    """老客净额，按「签单归属人」拆开的版本（键：负责人 id → 月份 → 金额）。
+
+    口径与 `annual_bases` 里那一份**完全相同**（期初固定客户集合、按签单归属、
+    金额取订单净额），只多拆了"人"这一维——目标页要按人显示复购目标的完成情况，
+    而 `annual_bases` 只在调用者范围内按月汇总，拆不出人。
+
+    **口径只此一处**：`targets.py` 直接用这个函数，不要自己再写一遍，
+    否则两处迟早会漂移成两个数（这个项目已经吃过"各算各的"的亏）。
+    """
+    owner_ids = await scoped_owner_ids(session, user)
+    sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
+    year_start = date(year, 1, 1)
+
+    # 期初 = 该年 1 月 1 日之前已有非取消订单的客户（与 annual_bases 同一判据）
+    veteran_ids = select(SalesOrder.customer_id).where(
+        SalesOrder.status != "cancelled", SalesOrder.created_at < year_start
+    )
+    stmt = (
+        select(
+            func.extract("month", SalesOrder.created_at),
+            sales_owner,
+            func.coalesce(func.sum(SalesOrder.total_amount), 0),
+        )
+        .where(
+            SalesOrder.status != "cancelled",
+            SalesOrder.customer_id.in_(veteran_ids),
+            func.extract("year", SalesOrder.created_at) == year,
+        )
+        .group_by(func.extract("month", SalesOrder.created_at), sales_owner)
+    )
+    if owner_ids is not None:
+        stmt = stmt.where(sales_owner.in_(owner_ids or [0]))
+
+    out: dict[int | None, dict[str, float]] = {}
+    for month, owner_id, amount in (await session.execute(stmt)).all():
+        if month is None:
+            continue
+        bucket = out.setdefault(owner_id, {})
+        key = f"{int(month):02d}"
+        bucket[key] = bucket.get(key, 0.0) + float(amount or 0)
+    return out

@@ -466,6 +466,11 @@ export interface SalesTargetRow {
   achievement_note?: string | null
   new_customer_variance: number
   new_customer_achievement: number | null
+  /** 复购（老客净额）目标与实际：口径见后端 analytics/target_bases.py，以前只存不算 */
+  repeat_customer_target: number
+  repeat_customer_actual: number
+  repeat_customer_variance: number
+  repeat_customer_achievement: number | null
   remark?: string | null
 }
 
@@ -505,6 +510,8 @@ export function upsertSalesTarget(payload: {
   department_id?: number | null
   new_customer_target: number
   sales_target: number
+  /** 复购（老客净额）目标，口径见后端 target_bases.py */
+  repeat_customer_target?: number
   remark?: string | null
 }) {
   return api.post<{ target_id: number }>('/sales-targets/upsert', payload)

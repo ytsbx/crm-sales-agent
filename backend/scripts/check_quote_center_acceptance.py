@@ -1,4 +1,4 @@
-"""产品报价中心 A01–A14 验收脚本（方案 §9）。
+"""产品报价中心 A01–A16 验收脚本（方案 §9）。
 
 跑法（后端必须先起来，默认 http://127.0.0.1:8000）：
     cd backend
@@ -504,6 +504,35 @@ def main():
             if rule15:
                 call('DELETE', f'/approval-rules/{rule15}', token=admin)
 
+        # ---------------- A16 外币单：保护价快照不得被汇率缩小 ----------------
+        print('== A16 外币单的保护价快照 ==')
+        # 回归：minimum_price_snapshot 一度被折成**计价币种**（美元单上 80 人民币的
+        # 保护价存成 11.43），而审批判定按人民币读它——于是低于保护价的美元报价
+        # 静默放行。判据用"同一 SKU 的人民币单与美元单，保护价必须相等"：
+        # 保护价是人民币口径的公司政策，不该随报价币种变。
+        _, res = call('POST', '/quotes', token=zhangsan, body={
+            'customer_id': customers['A'], 'opportunity_id': opp_a05,
+        })
+        cny_quote, cny_version = res['data']['quote_id'], res['data']['version_id']
+        created_quotes.append(cny_quote)
+        _, res = call('POST', f'/quote-versions/{cny_version}/items', token=zhangsan,
+                      body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
+        floor_cny_quote = res['data'].get('minimum_price_snapshot')
+
+        _, res = call('POST', '/quotes', token=zhangsan, body={
+            'customer_id': customers['A'], 'opportunity_id': opp_a05,
+            'currency': 'USD', 'exchange_rate': 7,
+        })
+        usd_quote, usd_version = res['data']['quote_id'], res['data']['version_id']
+        created_quotes.append(usd_quote)
+        _, res = call('POST', f'/quote-versions/{usd_version}/items', token=zhangsan,
+                      body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
+        floor_usd_quote = res['data'].get('minimum_price_snapshot')
+        record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
+               floor_cny_quote is not None and floor_cny_quote == floor_usd_quote,
+               f"人民币单={floor_cny_quote} 美元单={floor_usd_quote}"
+               f"（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）")
+
     finally:
         cleanup()
         evidence['results'] = RESULTS
@@ -518,7 +547,7 @@ def main():
     if failed:
         print(f"FAILED 用例：{[r['case'] for r in failed]}")
         sys.exit(1)
-    print('A01–A15 全部通过')
+    print('A01–A16 全部通过')
 
 
 if __name__ == '__main__':

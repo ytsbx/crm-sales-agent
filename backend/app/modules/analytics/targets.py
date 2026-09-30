@@ -1,13 +1,16 @@
 """目标 vs 实际（领导模块⑧）。
 
-实际值的两个来源（都按数据范围过滤）：
+实际值的三个来源（都按数据范围过滤）：
 - 销售额 = 非取消订单的 total_amount，按负责人 × 月聚合；
-- 新客户 = 客户档案按 created_at 的负责人 × 月计数。
+- 新客户 = 客户档案按 created_at 的负责人 × 月计数；
+- 复购（老客净额）= 期初固定老客池在本月的订单净额，口径定义在 `target_bases.py`，
+  这里只调用不再重写（否则同一口径会出现两个数）。
 
 将来聚水潭接入后，"实际销售额"可切换为出库金额——目标表结构不动。
 """
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+from app.modules.analytics import target_bases
 from app.modules.analytics.model import SalesTarget
 from app.modules.customer.model import Customer
 from app.modules.order.model import SalesOrder
@@ -94,6 +98,13 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         key = (f"{year}-{int(m):02d}", owner_id)
         new_customer_actual[key] = new_customer_actual.get(key, 0) + int(n)
 
+    # 复购（老客净额）：口径定义在 target_bases 里那一处，这里只按 (月份, 人) 取数。
+    # 以前 repeat_customer_target 只存不算——目标页看不到它，等于设了没人管。
+    repeat_by_owner = await target_bases.repeat_net_by_owner(session, user, year)
+
+    def _repeat_actual(month: str, owner_id: int | None) -> float:
+        return round(repeat_by_owner.get(owner_id, {}).get(month[5:], 0.0), 2)
+
     def _sort_key(kv: tuple[tuple[str, int | None], object]) -> tuple[str, int]:
         month, owner = kv[0]
         return (month, owner if owner is not None else -1)
@@ -123,8 +134,10 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "department_id": t.department_id,
                 "new_customer_target": t.new_customer_target,
                 "sales_target": float(t.sales_target or 0),
+                "repeat_customer_target": float(t.repeat_customer_target or 0),
                 "new_customer_actual": new,
                 "sales_actual": round(sales, 2),
+                "repeat_customer_actual": _repeat_actual(t.period, t.user_id),
                 "remark": t.remark,
             }
         )
@@ -142,8 +155,10 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "user_id": owner_id,
                 "new_customer_target": 0,
                 "sales_target": 0,
+                "repeat_customer_target": 0,
                 "new_customer_actual": new_customer_actual.get((month, owner_id), 0),
                 "sales_actual": round(sales, 2),
+                "repeat_customer_actual": _repeat_actual(month, owner_id),
                 "remark": None,
             }
         )
@@ -161,12 +176,39 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "user_id": owner_id,
                 "new_customer_target": 0,
                 "sales_target": 0,
+                "repeat_customer_target": 0,
                 "new_customer_actual": new,
                 "sales_actual": 0.0,
+                "repeat_customer_actual": _repeat_actual(month, owner_id),
                 "remark": None,
             }
         )
         user_ids.add(owner_id)
+
+    # 只有复购、没有签单/新客的 (月, 人) 也要出行，否则设了复购目标的人看不到自己的数
+    for owner_id, months in repeat_by_owner.items():
+        for month_key, value in months.items():
+            period = f"{year}-{month_key}"
+            if (period, owner_id) in seen or not value:
+                continue
+            if any(r["period"] == period and r["user_id"] == owner_id for r in rows):
+                continue
+            rows.append(
+                {
+                    "target_id": None,
+                    "period": period,
+                    "user_id": owner_id,
+                    "new_customer_target": 0,
+                    "sales_target": 0,
+                    "repeat_customer_target": 0,
+                    "new_customer_actual": 0,
+                    "sales_actual": 0.0,
+                    "repeat_customer_actual": round(value, 2),
+                    "remark": None,
+                }
+            )
+            if owner_id:
+                user_ids.add(owner_id)
 
     # ---- 差额与达成率（文档 §六 :121 / 场景17）：每个口径都要能回答"差多少" ----
     # **零基期不给百分比**：分母为 0 时算出来的是错误增长率（文档场景17 明确要求
@@ -183,6 +225,13 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         row["new_customer_variance"] = new_actual - new_target
         row["new_customer_achievement"] = (
             round(new_actual / new_target, 4) if new_target else None
+        )
+        # 复购（老客净额）同样给差额与达成率：文档要求每个口径都能回答"差多少"
+        repeat_target = float(row.get("repeat_customer_target") or 0)
+        repeat_actual_row = float(row.get("repeat_customer_actual") or 0)
+        row["repeat_customer_variance"] = round(repeat_actual_row - repeat_target, 2)
+        row["repeat_customer_achievement"] = (
+            round(repeat_actual_row / repeat_target, 4) if repeat_target else None
         )
 
     rows.sort(key=lambda r: (r["period"], r["user_id"] or 0))
@@ -222,6 +271,7 @@ async def upsert_target(
     user_id: int | None,
     new_customer_target: int,
     sales_target: float,
+    repeat_customer_target: float = 0,
     department_id: int | None = None,
     remark: str | None = None,
 ) -> SalesTarget:
@@ -251,6 +301,7 @@ async def upsert_target(
         session.add(row)
     row.new_customer_target = new_customer_target
     row.sales_target = sales_target
+    row.repeat_customer_target = Decimal(str(repeat_customer_target or 0))
     row.remark = remark
     await session.flush()
     await session.refresh(row)

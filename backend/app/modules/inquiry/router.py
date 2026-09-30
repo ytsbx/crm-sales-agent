@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
-from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.inquiry import service as svc
 from app.modules.inquiry.model import CustomInquiry
@@ -101,8 +101,10 @@ async def create_inquiry(
     session: AsyncSession = Depends(get_db),
 ):
     if payload.customer_id:
-        if await session.get(Customer, payload.customer_id) is None:
-            raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+        # 数据范围校验（与案例库同源）：只查"客户存在"是不够的——
+        # 有报价权限的人可以把自己的定制需求挂到别人的客户上，把对方的产品要求
+        # 与目标价带进自己的报价单。案例库也踩过同一个坑，那里用的是 get_visible_customer。
+        await customer_service.get_visible_customer(session, user, payload.customer_id)
     inquiry = CustomInquiry(
         # 需求编号（场景09）：定制件在打样投产前没有 SKU，报价与打样要靠
         # 这个编号指向同一条需求，否则"这张报价是从哪来的"无从追溯
@@ -205,6 +207,16 @@ async def update_inquiry(
     data = payload.model_dump(exclude_unset=True)
     if "status" in data and data["status"] is not None:
         svc.ensure_status(data["status"])
+    # 改归属同样要过数据范围：不然先把需求建在自己客户上、再 PATCH 客户/商机编号，
+    # 一样能把别人的客户与商机挂进来（创建路径的校验挡不住这一步）
+    if data.get("customer_id"):
+        await customer_service.get_visible_customer(session, user, data["customer_id"])
+    if data.get("opportunity_id"):
+        from app.modules.opportunity import service as opportunity_service
+
+        await opportunity_service.get_visible_opportunity(
+            session, user, data["opportunity_id"]
+        )
     for field, value in data.items():
         setattr(inquiry, field, value)
     await session.flush()

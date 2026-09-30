@@ -237,6 +237,56 @@ async def main():
     check_true('高于保护价不触发审批', item.get('approval_required') is False,
                f"报价 11.5 > 9.2：{item.get('approval_required')}")
 
+    # ---- 3b. 改定制行（照真实用户操作：填完发现价格/数量要调，点进去改）----
+    # 回归：改价要重算快照，而重算走的是"sku_id 为空 → 定制分支"。早先没把
+    # inquiry_id 传下去，于是必然报"明细必须关联 SKU 或定制需求编号"——
+    # 新做的定制报价只能一次填死、改不动。接口用例不碰这条，只有真人会碰。
+    print()
+    print('=== 3b. 改定制行（价格/数量）===')
+    status, payload = call('PATCH', f"/quote-items/{item['id']}", token=token, body={
+        'quantity': 800, 'quoted_price': 12.0,
+    })
+    check('改定制行成功（回归：以前必报错）', status, 200)
+    if status == 200:
+        row = payload['data']
+        check('数量已改', row.get('quantity'), 800.0)
+        check('价格已改', row.get('quoted_price'), 12.0)
+        check('需求编号没丢', row.get('inquiry_no'), inquiry['inquiry_no'])
+        check('成本快照沿用', row.get('cost_snapshot'), 8.0)
+        check('最低保护价跟着重算', row.get('minimum_price_snapshot'), 9.2)
+
+    # ---- 3c. 外币定制行：成本人民币、报价按币种（静默放行过的那个 bug）----
+    # 回归：审批把报价乘汇率折人民币，却把成本当人民币直接用。定制项原先按
+    # "报价币种"存成本，于是美元单上 7 美元成本被当成 7 人民币，与 50 人民币的
+    # 报价一比永远不触发低价审批与绝对底价，页面毛利还虚高——**不报错的错最危险**。
+    print()
+    print('=== 3c. 外币定制行：成本按人民币、报价按币种 ===')
+    status, payload = call('POST', '/quotes', token=token, body={
+        'customer_id': customer_id, 'opportunity_id': opportunity_id,
+        'currency': 'USD', 'exchange_rate': 7,
+    })
+    check('建美元报价', status, 200)
+    fx_quote, fx_version = payload['data']['quote_id'], payload['data']['version_id']
+    ids['quotes'].append(fx_quote)
+    status, payload = call('POST', f'/quote-versions/{fx_version}/items', token=token, body={
+        'inquiry_id': inquiry_id, 'quantity': 10, 'unit_cost': 300, 'quoted_price': 10,
+    })
+    check('美元单定制行落库', status, 200)
+    fx_item = payload['data']
+    check('最低保护价按人民币存 300×(1+0.15)=345',
+          fx_item.get('minimum_price_snapshot'), 345.0)
+    # 下面两条是**能区分新旧实现**的断言，别改成"利润为负"这种两边都成立的弱断言：
+    #   旧实现 profit = 10 − 300 = −290（拿美元价直接减人民币成本）；
+    #   新实现 profit = 10 − 300/7 = −32.857（先把成本折成报价币种）。
+    # 只断言"为负"的话，改回去也照样绿——这正是这个 bug 一直没被发现的原因。
+    profit = float(fx_item.get('profit_snapshot') or 0)
+    check_true('利润按汇率折算（10 − 300/7 ≈ −32.86，而不是 −290）',
+               abs(profit - (-32.8571)) < 0.01, f"profit={profit}")
+    price_cny = 10 * 7
+    check_true('10 美元=70 人民币 < 345 → 触发低价审批',
+               fx_item.get('approval_required') is True and price_cny < 345,
+               f"approval_required={fx_item.get('approval_required')}")
+
     print()
     print('=== 4. 需求状态随报价推进 ===')
     status, payload = call('GET', f'/custom-inquiries/{inquiry_id}', token=token)

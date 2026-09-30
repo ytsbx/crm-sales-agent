@@ -56,6 +56,8 @@ class QuoteItemUpdate(BaseModel):
 
     quantity: Decimal | None = None
     quoted_price: Decimal | None = None
+    #: 定制行的核价成本（人民币）。现货行的成本来自成本表，传了也不生效。
+    unit_cost: Decimal | None = None
     logistics_cost: Decimal | None = None
     remark: str | None = None
 

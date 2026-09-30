@@ -112,8 +112,16 @@ async def create_insight(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    data = payload.model_dump()
+    # 默认负责人 = 创建人。**必须用 `if not data.get(...)` 而不是 setdefault**：
+    # model_dump() 会把 owner_id=None 这个键也带出来，setdefault 永远不生效
+    # （客户模块踩过同一个坑：所有人新建的客户都掉进公海）。
+    # 不写这一行的话，主管/产品岗建完洞察立刻从列表里消失，点进去还报"不在你的范围内"——
+    # 而列表与详情都按 owner_id 过滤，前端又没传这个字段，于是只能由后端兜住。
+    if not data.get("owner_id"):
+        data["owner_id"] = user.id
     row = ProductInsight(
-        **payload.model_dump(),
+        **data,
         status="draft",
         created_by=user.id,
         created_at=datetime.now(UTC),
