@@ -194,6 +194,63 @@ async def main() -> int:
     else:
         print('  （跳过跟进越权断言：库里没有张三名下的既有跟进可作夹具）')
 
+    # 商机 / 线索 / 运费试算单：同样用**既有的、属张三的**记录作夹具。
+    # 不手造的理由和上一条相同——手造的行容易缺字段，基准先炸，后面的 403 就没意义了。
+    async with SessionLocal() as s:
+        from app.modules.lead.model import Lead
+        from app.modules.opportunity.model import Opportunity
+        from app.modules.pricing.model import LogisticsQuote
+
+        opp_id = (
+            await s.execute(
+                select(Opportunity.id)
+                .where(Opportunity.owner_id == owner.id, Opportunity.deleted_at.is_(None))
+                .order_by(Opportunity.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        lead_id = (
+            await s.execute(
+                select(Lead.id)
+                .where(Lead.owner_id == owner.id, Lead.deleted_at.is_(None))
+                .order_by(Lead.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        lq_id = (
+            await s.execute(
+                select(LogisticsQuote.id)
+                .join(Customer, Customer.id == LogisticsQuote.customer_id)
+                .where(Customer.owner_id == owner.id)
+                .order_by(LogisticsQuote.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    if opp_id:
+        check('本人读自己商机时间线（对照）',
+              call('GET', f'/opportunities/{opp_id}/timeline', owner_token)[0], 200)
+        check_denied('他人读别人商机时间线',
+                     call('GET', f'/opportunities/{opp_id}/timeline', outsider_token)[0])
+        check_denied('他人读别人商机的跟进列表',
+                     call('GET', f'/opportunities/{opp_id}/followups', outsider_token)[0])
+    else:
+        print('  （跳过商机越权断言：库里没有张三名下的既有商机）')
+
+    if lead_id:
+        check('本人读自己线索时间线（对照）',
+              call('GET', f'/leads/{lead_id}/timeline', owner_token)[0], 200)
+        check_denied('他人读别人线索时间线',
+                     call('GET', f'/leads/{lead_id}/timeline', outsider_token)[0])
+    else:
+        print('  （跳过线索越权断言：库里没有张三名下的既有线索）')
+
+    if lq_id:
+        check_denied('他人读别人的运费试算单',
+                     call('GET', f'/logistics/quotes/{lq_id}', outsider_token)[0])
+    else:
+        print('  （跳过运费试算单越权断言：库里没有挂在张三客户上的试算单）')
+
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)
     rows = (res.get('data') or {}).get('items') or []
