@@ -256,6 +256,23 @@ def main():
     status, res = call('GET', f'/orders/{order_id}/receivables', token=admin)
     check('订单应收列表 2 条', len(res['data']), 2)
 
+    # ---- 分期负值（回归）----
+    # 末期 = 总额 − 前面各期之和，而前面各期**各自进位**：0.03 元按 5×20% 分，
+    # 前四期各 0.01、末期 −0.01。负数的应收期会让财务核销与催收都对不上，
+    # 必须明确拒绝而不是产出一条负金额。
+    status, res = call('POST', '/orders', token=admin, body={
+        'customer_id': 1,
+        'items': [{'sku_id': skus[0], 'quantity': 0.01, 'unit_price': 3}],
+    })
+    check('建一张极小金额订单（0.03）', res.get('code'), 0)
+    tiny_order_id = (res.get('data') or {}).get('order_id')
+    if tiny_order_id:
+        status, res = call('POST', f'/orders/{tiny_order_id}/receivables', token=admin, body={
+            'ratios': [0.2, 0.2, 0.2, 0.2, 0.2],
+            'first_due_date': '2026-10-01', 'first_name': '第 1 期',
+        })
+        check('极小金额分 5 期 → 拒绝（不产出负数期）', res.get('code'), 40001)
+
     print()
     print('=== 3. 应收部分更新（PATCH 只改传的字段）===')
     status, res = call('PATCH', f'/receivables/{plan_id}', token=admin, body={'amount': 700})

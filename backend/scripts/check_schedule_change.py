@@ -153,6 +153,12 @@ async def main() -> int:
         after_preview = {r['node']: r['planned_date'] for r in res['data']}
         check_true('**预览不改数据**', after_preview == before_nodes, '')
 
+        # 手工推后一个节点（跟单员因为产前样延期之类改过它）。
+        # 这一步必须在"预览不改数据"之后做，否则会把那次快照对比弄脏。
+        status, res = call('PATCH', f"/orders/{order_id}/milestones/{first['id']}",
+                           token=admin, body={'planned_date': '2026-12-20'})
+        check('手工调整节点计划日', res.get('code'), 0)
+
         print()
         print('=== 3. 生成变更单：待确认 ===')
         status, res = call('POST', f'/orders/{order_id}/schedule-changes', token=admin, body={
@@ -186,6 +192,10 @@ async def main() -> int:
         check_true('节点计划日整体平移 15 天',
                    shifted.get('first_shipment') == '2027-01-15',
                    f"first_shipment={shifted.get('first_shipment')}")
+        # 回归：手工推后的节点按天数平移（2026-12-20 + 15 = 2027-01-04），
+        # 而不是拿新交期重新倒推（那样会被拉回 2026-12-16，把跟单员的手工调整抹掉）
+        check('手工调整过的节点按天数平移、没被拉回默认倒推值',
+              shifted.get(first['node']), '2027-01-04')
         status, res = call('GET', f'/orders/{order_id}/shipments', token=admin)
         check('批次计划日也跟着平移',
               res['data']['batches'][0]['planned_date'], '2027-01-15')
