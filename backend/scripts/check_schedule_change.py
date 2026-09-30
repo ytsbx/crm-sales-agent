@@ -84,6 +84,7 @@ async def cleanup(order_id: int | None):
             "delete from order_shipment_batches where order_id = :o",
             "delete from order_status_history where order_id = :o",
             "delete from sales_order_items where order_id = :o",
+            "delete from notifications where business_type = 'order' and business_id = :o",
             "delete from sales_orders where id = :o",
         ):
             await s.execute(text(sql), {'o': order_id})
@@ -196,6 +197,30 @@ async def main() -> int:
         status, res = call('POST', f'/orders/{order_id}/schedule-changes/{change_id}/confirm',
                            token=admin, body={})
         check('重复确认被拒', res.get('code'), 40002)
+
+        print()
+        print('=== 6. 批次逾期提醒（旁路：只提醒，不动节点口径）===')
+        # 批次不是跟单节点，节点提醒扫不到它——这条旁路就是为"第 N 批该发没发有人管"
+        status, res = call('POST', f'/orders/{order_id}/shipments', token=admin, body={
+            'planned_date': '2026-01-01',
+            'items': [{'order_item_id': item_id, 'planned_qty': 10}],
+        })
+        check('建一个计划日已过的批次', res.get('code'), 0)
+
+        from app.core.database import SessionLocal
+        from app.modules.order import milestones as ms
+
+        async with SessionLocal() as s:
+            first = await ms.notify_overdue_batches(s)
+            await s.commit()
+        check_true('第一次扫描推出提醒', first >= 1, f'推送 {first} 条')
+        async with SessionLocal() as s:
+            second = await ms.notify_overdue_batches(s)
+            await s.commit()
+        check('第二次不重复推（每批只推一次）', second, 0)
+        # 节点口径不受影响：批次提醒不该顺带改任何节点
+        status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
+        check_true('节点没被批次提醒改动', res.get('code') == 0, '')
     finally:
         await cleanup(order_id)
 

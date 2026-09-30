@@ -69,15 +69,23 @@ async def run_auto_tasks_job() -> None:
 
 
 async def run_milestone_overdue_job() -> None:
-    """每天定时：扫描逾期未完成的跟单节点，推负责人与业务主管（每节点只推一次）。"""
+    """每天定时：扫逾期未完成的**跟单节点**与**发货批次**，推负责人与业务主管。
+
+    两者都在这里跑，但去重凭证各自一张表（milestone.overdue_notified_at /
+    batch.overdue_notified_at）：节点与批次是两套对象，混用一个凭证会让
+    "节点推了、批次就不推了"这种错沉默地发生。
+    """
     from app.modules.notification import service as notification_service
     from app.modules.order import milestones as milestones_svc
 
     async with SessionLocal() as session:
         count = await milestones_svc.notify_overdue_milestones(session)
+        batch_count = await milestones_svc.notify_overdue_batches(session)
         await session.commit()
         await notification_service.dispatch_pending(session)
-    logger.info("跟单逾期扫描完成：推送 %s 个逾期节点", count)
+    logger.info(
+        "跟单逾期扫描完成：推送 %s 个逾期节点、%s 个逾期批次", count, batch_count
+    )
 
 
 async def run_notification_retry_job() -> None:

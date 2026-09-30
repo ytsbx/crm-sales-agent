@@ -222,3 +222,100 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
         notified += 1
     await session.flush()
     return notified
+
+
+async def notify_overdue_batches(session: AsyncSession) -> int:
+    """每日扫描：逾期的**发货批次**推给订单负责人 + 业务主管，每批只推一次。
+
+    为什么是单独一段而不是复用节点提醒：批次不是跟单节点（15 号清单 §2-1 的取舍
+    ——领导点名六节点、分批写备注），而节点提醒只扫 order_milestones，扫不到批次。
+    业务要的是"第 2 批该发没发有人管"，那就单独给批次一条提醒；
+    代价是系统里多一条平行的逾期逻辑，这一点在代码注释里写明，别当成遗漏。
+
+    `overdue_notified_at` 与节点同一套去重：推过就不再推，批次后来发了也不重推。
+    """
+    from app.modules.notification import service as notification_service
+    from app.modules.order.model import OrderShipmentBatch
+
+    today = date.today()
+    rows = list(
+        (
+            await session.execute(
+                select(OrderShipmentBatch)
+                .join(SalesOrder, SalesOrder.id == OrderShipmentBatch.order_id)
+                .where(
+                    OrderShipmentBatch.status == "planned",
+                    OrderShipmentBatch.planned_date.is_not(None),
+                    OrderShipmentBatch.planned_date < today,
+                    OrderShipmentBatch.overdue_notified_at.is_(None),
+                    SalesOrder.status != "cancelled",
+                )
+                .order_by(OrderShipmentBatch.id.asc())
+            )
+        ).scalars().all()
+    )
+    if not rows:
+        return 0
+
+    orders = {
+        o.id: o
+        for o in (
+            await session.execute(
+                select(SalesOrder).where(
+                    SalesOrder.id.in_({r.order_id for r in rows})
+                )
+            )
+        ).scalars().all()
+    }
+    from app.modules.user.model import User
+
+    owner_ids = {o.owner_id for o in orders.values() if o.owner_id}
+    owner_departments: dict[int, int | None] = {}
+    if owner_ids:
+        for uid, dept in (
+            await session.execute(
+                select(User.id, User.department_id).where(User.id.in_(owner_ids))
+            )
+        ).all():
+            owner_departments[uid] = dept
+
+    notified = 0
+    for row in rows:
+        order = orders.get(row.order_id)
+        if order is None or row.planned_date is None:
+            continue
+        days = (today - row.planned_date).days
+        title = f"发货逾期：{order.order_no} 第 {row.batch_no} 批"
+        content = (
+            f"{order.order_no} 的第 {row.batch_no} 批计划 {row.planned_date} 发货，"
+            f"已逾期 {days} 天仍未发货，请跟进"
+        )
+        try:
+            if order.owner_id:
+                await notification_service.notify(
+                    session,
+                    user_id=order.owner_id,
+                    type_="followup",
+                    title=title,
+                    content=content,
+                    business_type="order",
+                    business_id=order.id,
+                )
+            await notification_service.notify_roles(
+                session,
+                role_codes=["sales_manager"],
+                type_="followup",
+                title=title,
+                content=content,
+                business_type="order",
+                business_id=order.id,
+                exclude_user_id=order.owner_id,
+                department_id=owner_departments.get(order.owner_id) if order.owner_id else None,
+            )
+        except Exception as exc:  # 通知失败不标记，明天会重试
+            logger.warning("批次逾期提醒推送失败（batch=%s）：%s", row.id, exc)
+            continue
+        row.overdue_notified_at = datetime.now(UTC)
+        notified += 1
+    await session.flush()
+    return notified

@@ -109,6 +109,10 @@ class OrderShipmentBatch(Base, IdMixin):
     #: 逾期原因：把"第 2 批晚了几天"归因到"因为分批/因为生产/因为客户改期"。
     #: 数据只能算出"晚了几天"，算不出"为什么"——归因必须有人填。
     overdue_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 批次逾期提醒的"推过了"凭证（与里程碑同一套做法：每批只推一次）
+    overdue_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
