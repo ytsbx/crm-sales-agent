@@ -128,7 +128,13 @@ async def _scope(stmt, ctx: ToolContext, column):
 
 
 async def _ensure_in_scope(
-    ctx: ToolContext, owner_column, pk_column, entity_id: int, label: str
+    ctx: ToolContext,
+    owner_column,
+    pk_column,
+    entity_id: int,
+    label: str,
+    *,
+    allow_unowned: bool = False,
 ) -> None:
     """按 id 取详情的工具同样要过数据范围（与业务接口同一套纪律）。
 
@@ -136,11 +142,19 @@ async def _ensure_in_scope(
     等于数据范围形同虚设。越权与不存在返回同一种口径的错误，
     避免"探测 id"侧信道——不存在已在调用点先按 404 处理，走到这里
     还查不到就只剩越权一种可能。
+
+    `allow_unowned`：客户/线索允许无负责人（公海 / 线索池），
+    与业务接口同一口径——否则"问 Agent 查这个公海客户"和"自己在列表里翻"
+    会得出两个答案，用户会以为系统丢了数据。**其余模块保持 False**：
+    无归属的商机/订单/单据属于脏数据，不该因为"查不到负责人"就放行。
     """
     owner_ids = await scoped_owner_ids(ctx.session, ctx.user)
     if owner_ids is None:
         return
-    stmt = select(pk_column).where(pk_column == entity_id, owner_column.in_(owner_ids))
+    cond = owner_column.in_(owner_ids)
+    if allow_unowned:
+        cond = or_(cond, owner_column.is_(None))
+    stmt = select(pk_column).where(pk_column == entity_id, cond)
     hit = (await ctx.session.execute(stmt)).scalar_one_or_none()
     if hit is None:
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, f"没有权限查看该{label}", 403)
@@ -189,7 +203,10 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     customer = await ctx.session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
-    await _ensure_in_scope(ctx, Customer.owner_id, Customer.id, customer_id, "客户")
+    # 公海客户（无负责人）可见：与业务接口同一口径
+    await _ensure_in_scope(
+        ctx, Customer.owner_id, Customer.id, customer_id, "客户", allow_unowned=True
+    )
     contacts = (
         await ctx.session.execute(
             select(Contact).where(Contact.customer_id == customer_id, Contact.deleted_at.is_(None))
@@ -501,7 +518,7 @@ async def calculate_price(
     # 带客户核价时，客户必须在该用户数据范围内（A11：与普通界面同一纪律）
     if customer_id is not None:
         await _ensure_in_scope(
-            ctx, Customer.owner_id, Customer.id, customer_id, "客户"
+            ctx, Customer.owner_id, Customer.id, customer_id, "客户", allow_unowned=True
         )
     result = await pricing_service.calculate_price(
         ctx.session,
@@ -821,7 +838,14 @@ async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
     if contact is None or contact.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
     # 联系人没有 owner，范围跟所属客户走
-    await _ensure_in_scope(ctx, Customer.owner_id, Customer.id, contact.customer_id, "客户")
+    await _ensure_in_scope(
+        ctx,
+        Customer.owner_id,
+        Customer.id,
+        contact.customer_id,
+        "客户",
+        allow_unowned=True,
+    )
     return {
         "id": contact.id,
         "name": contact.name,

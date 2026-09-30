@@ -421,6 +421,21 @@ async def main():
         except AppError as exc:
             check_true('admin 查同一客户正常', False, exc.message)
 
+        # ---- 公海客户（无负责人）：Agent 也必须能看，与业务接口同一口径 ----
+        # 否则"问 Agent 查这个公海客户"会查不到，而用户自己在列表里能翻到，
+        # 会以为系统丢了数据。owner 为空正常 API 造不出来，这里直接写库造。
+        from app.modules.customer.model import Customer
+
+        public = Customer(name=f'CHK{RUN}公海客户', level='C', status='active',
+                          pool_status='public', owner_id=None)
+        s.add(public)
+        await s.flush()
+        try:
+            data_public = await agent_tools.get_customer_overview(ctx_zs, public.id)
+            check_true('张三能看公海客户（无负责人）', 'customer' in data_public, '')
+        except AppError:
+            check_true('张三能看公海客户（无负责人）', False, '被拒了（应与口径一致：放行）')
+
         # 造一条 admin 名下的真实应收+已确认回款，让对比有区分度
         # （别的套件会清订单表，不能假设库里有单）
         from datetime import UTC, datetime
