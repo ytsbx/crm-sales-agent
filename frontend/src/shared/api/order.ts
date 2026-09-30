@@ -266,6 +266,10 @@ export interface OrderMilestoneRow {
   actual_date: string | null
   status: 'done' | 'overdue' | 'pending'
   status_label: string
+  // 方案 :103 要求节点记录责任人、来源证据、逾期原因
+  owner_id?: number | null
+  evidence?: string | null
+  overdue_reason?: string | null
   remark?: string | null
 }
 
@@ -276,7 +280,14 @@ export function listOrderMilestones(orderId: number) {
 export function updateOrderMilestone(
   orderId: number,
   milestoneId: number,
-  payload: { planned_date?: string | null; actual_date?: string | null; remark?: string | null },
+  payload: {
+    planned_date?: string | null
+    actual_date?: string | null
+    owner_id?: number | null
+    evidence?: string | null
+    overdue_reason?: string | null
+    remark?: string | null
+  },
 ) {
   return api.patch<OrderMilestoneRow>(`/orders/${orderId}/milestones/${milestoneId}`, payload)
 }

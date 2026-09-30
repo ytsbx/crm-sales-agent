@@ -111,6 +111,23 @@ async def main() -> int:
         before_nodes = {r['node']: r['planned_date'] for r in res['data']}
         check_true('首批发货节点有计划日', bool(before_nodes.get('first_shipment')), '')
 
+        # 方案 :103 的三项字段要能写能读（前端"登记"弹窗依赖这条契约）
+        first = res['data'][0]
+        status, res = call('PATCH', f"/orders/{order_id}/milestones/{first['id']}",
+                           token=admin, body={
+                               'owner_id': 1,
+                               'evidence': f'{TAG} 客户邮件确认交期',
+                               'overdue_reason': f'{TAG} 产前样延期',
+                           })
+        check('登记责任人/证据/逾期原因', res.get('code'), 0)
+        check('回读责任人', res['data'].get('owner_id'), 1)
+        check('回读来源证据', res['data'].get('evidence'), f'{TAG} 客户邮件确认交期')
+        check('回读逾期原因', res['data'].get('overdue_reason'), f'{TAG} 产前样延期')
+        status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
+        listed = {r['node']: r for r in res['data']}
+        check('列表里也带这三项',
+              listed[first['node']].get('overdue_reason'), f'{TAG} 产前样延期')
+
         status, res = call('GET', f'/orders/{order_id}/shipments', token=admin)
         item_id = res['data']['items'][0]['order_item_id']
         status, res = call('POST', f'/orders/{order_id}/shipments', token=admin, body={

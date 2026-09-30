@@ -36,6 +36,7 @@ import {
   type Receivable,
   type ShipmentBatchRow,
 } from '../../shared/api/order'
+import { listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
@@ -107,8 +108,11 @@ export default function OrderDetailPage() {
   const [milestoneForm, setMilestoneForm] = useState<{
     planned_date: string | null
     actual_date: string | null
+    owner_id: number | null
+    evidence: string
+    overdue_reason: string
     remark: string
-  }>({ planned_date: null, actual_date: null, remark: '' })
+  }>({ planned_date: null, actual_date: null, owner_id: null, evidence: '', overdue_reason: '', remark: '' })
 
   // AI 回款风险分析（API §37 专用接口，需 agent:use）
   const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
@@ -170,6 +174,13 @@ export default function OrderDetailPage() {
     queryFn: () => listScheduleChanges(orderId),
     enabled: Number.isFinite(orderId) && activeKey === 'milestones',
   })
+  // 节点责任人从用户里选（方案 :103）：手填人名对不上人，逾期了也不知道催谁
+  const milestoneUsersQuery = useQuery({
+    queryKey: ['assignable-users'],
+    queryFn: () => listUsers({ page: 1, page_size: 100 }),
+    // 表格里也要把责任人显示成人名（不只是弹窗里），所以跟着页签加载
+    enabled: Number.isFinite(orderId) && activeKey === 'milestones',
+  })
   const schedulePreviewMutation = useMutation({
     mutationFn: () => previewScheduleChange(orderId, scheduleForm.new_delivery_date),
     onSuccess: (data) => setSchedulePreview(data),
@@ -203,6 +214,9 @@ export default function OrderDetailPage() {
       updateOrderMilestone(orderId, milestoneEdit!.id, {
         planned_date: milestoneForm.planned_date,
         actual_date: milestoneForm.actual_date,
+        owner_id: milestoneForm.owner_id,
+        evidence: milestoneForm.evidence || null,
+        overdue_reason: milestoneForm.overdue_reason || null,
         remark: milestoneForm.remark || null,
       }),
     onSuccess: () => {
@@ -225,6 +239,9 @@ export default function OrderDetailPage() {
     setMilestoneForm({
       planned_date: row.planned_date,
       actual_date: row.actual_date,
+      owner_id: row.owner_id ?? null,
+      evidence: row.evidence ?? '',
+      overdue_reason: row.overdue_reason ?? '',
       remark: row.remark ?? '',
     })
   }
@@ -755,6 +772,25 @@ export default function OrderDetailPage() {
                     ),
                   },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+                  {
+                    // 方案 :103：责任人 / 来源证据 / 逾期原因要能被看到，否则填了也没人用
+                    title: '责任人',
+                    dataIndex: 'owner_id',
+                    width: 100,
+                    render: (v: number | null, record: OrderMilestoneRow) =>
+                      v
+                        ? (milestoneUsersQuery.data?.items ?? []).find((u) => u.id === v)?.name ??
+                          `#${v}`
+                        : record.owner_id
+                          ? `#${record.owner_id}`
+                          : '-',
+                  },
+                  {
+                    title: '逾期原因',
+                    dataIndex: 'overdue_reason',
+                    width: 180,
+                    render: (v: string | null) => v ?? '-',
+                  },
                   ...(canManage
                     ? [
                         {
@@ -1057,6 +1093,37 @@ export default function OrderDetailPage() {
               value={milestoneForm.remark}
               onChange={(value) => setMilestoneForm({ ...milestoneForm, remark: value })}
               placeholder="分批发货、延期原因等"
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>责任人</div>
+            <Select
+              style={{ width: '100%' }}
+              value={milestoneForm.owner_id ?? undefined}
+              placeholder="选一个具体的人（逾期时催他）"
+              onChange={(value) =>
+                setMilestoneForm({ ...milestoneForm, owner_id: (value as number) ?? null })
+              }
+              optionList={(milestoneUsersQuery.data?.items ?? []).map((u) => ({
+                value: u.id,
+                label: u.name,
+              }))}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>来源证据（当初凭什么这么排）</div>
+            <Input
+              value={milestoneForm.evidence}
+              placeholder="例：客户 9/20 邮件确认 10/12 交货"
+              onChange={(value) => setMilestoneForm({ ...milestoneForm, evidence: value })}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>逾期原因（晚了才填）</div>
+            <Input
+              value={milestoneForm.overdue_reason}
+              placeholder="例：客户改期 / 生产排产冲突 / 分批导致"
+              onChange={(value) => setMilestoneForm({ ...milestoneForm, overdue_reason: value })}
             />
           </div>
         </div>
