@@ -59,10 +59,11 @@ async def _visible_followup(
     所以跟着它关联的业务对象走：客户 / 线索 / 商机 / 报价 / 订单，
     哪一个有就用哪一个的范围。全都没关联是脏数据，直接放行并留给治理。
     """
-    # 同一条记录：update / 详情都走 _visible_followup，**只有删除是裸的 session.get**
-    # ——于是任何有跟进权限的人拿别人的 id 就能删（"列表看不到的，按 id 也拿不到"
-    # 是项目自己写死的铁律）。删除是写操作，更要过数据范围。
-    followup = await _visible_followup(session, user, followup_id)
+    # 注意：这里必须用 session.get —— 上一版补丁把"改用 _visible_followup"
+    # 误插进本函数体，造成自我递归，详情接口直接 500（真被套件抓到过）。
+    followup = await session.get(FollowUp, followup_id)
+    if followup is None:
+        raise AppError(ErrorCode.NOT_FOUND, "跟进记录不存在", 404)
 
     owner_id: int | None = None
     if followup.customer_id:
@@ -343,9 +344,9 @@ async def delete_followup(
     user: CurrentUser = Depends(require_permission("followup:create")),
     session: AsyncSession = Depends(get_db),
 ):
-    followup = await session.get(FollowUp, followup_id)
-    if followup is None:
-        raise AppError(ErrorCode.NOT_FOUND, "跟进记录不存在", 404)
+    # update 与详情都走 _visible_followup，删除原先却只 session.get——
+    # 任何有跟进权限的人拿别人的 id 就能删（"列表看不到的，按 id 也拿不到"是本项目铁律）。
+    followup = await _visible_followup(session, user, followup_id)
     await session.delete(followup)
     await write_audit(
         session,
