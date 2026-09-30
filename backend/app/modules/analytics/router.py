@@ -11,10 +11,55 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.response import ok
 from app.modules.analytics import service as svc
 from app.modules.analytics import targets as targets_svc
+from app.modules.analytics import usage as usage_svc
 
 router = APIRouter(tags=["Analytics"])
 
 
+class TimingReport(BaseModel):
+    """前端上报一次操作的耗时（场景18）。"""
+
+    operation: str
+    duration_ms: int
+    business_type: str | None = None
+    business_id: int | None = None
+    typed_fields: int = 0
+    rework_count: int = 0
+
+
+@router.post("/usage/timings")
+async def report_operation_timing(
+    payload: TimingReport,
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """记一条操作耗时。
+
+    **只有前端知道用户真正花了多久**（服务端看到的只是单据落库时间，那是流程跨度）——
+    所以这里由前端上报，服务端只做白名单与合理区间校验，不替用户猜时间。
+    """
+    row = await usage_svc.record_timing(
+        session,
+        user=user,
+        operation=payload.operation,
+        duration_ms=payload.duration_ms,
+        business_type=payload.business_type,
+        business_id=payload.business_id,
+        typed_fields=payload.typed_fields,
+        rework_count=payload.rework_count,
+    )
+    await session.commit()
+    return ok(usage_svc.serialize_timing(row), "已记录")
+
+
+@router.get("/usage/timings/summary")
+async def operation_timing_summary(
+    days: int = Query(30, ge=1, le=365),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按流程聚合耗时：给"我们比 Excel 快多少"提供可核对的数字。"""
+    return ok(await usage_svc.timing_summary(session, user=user, days=days))
 class SalesTargetUpsert(BaseModel):
     period: str
     user_id: int | None = None

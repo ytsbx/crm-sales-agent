@@ -516,3 +516,34 @@ export function upsertSalesTarget(payload: {
 }) {
   return api.post<{ target_id: number }>('/sales-targets/upsert', payload)
 }
+
+/** 操作耗时埋点（场景18）：计时只能前端做，服务端只校验与聚合。 */
+export function reportOperationTiming(payload: {
+  operation: 'quote_from_inquiry' | 'sample_from_inquiry'
+  duration_ms: number
+  business_type?: string | null
+  business_id?: number | null
+  typed_fields?: number
+  rework_count?: number
+}) {
+  return api.post<{ id: number }>('/usage/timings', payload)
+}
+
+export function getOperationTimingSummary(days = 30) {
+  return api.get<{
+    days: number
+    operations: { value: string; label: string }[]
+    summary: {
+      operation: string
+      operation_label: string
+      samples: number
+      avg_ms: number | null
+      median_ms: number | null
+      p90_ms: number | null
+      avg_typed_fields: number | null
+      avg_rework_count: number | null
+    }[]
+    by_user: { user_id: number; user_name: string; samples: number; avg_ms: number }[]
+    note: string
+  }>('/usage/timings/summary', { days })
+}

@@ -1,4 +1,4 @@
-import { useState, type ComponentProps } from 'react'
+import { useRef, useState, type ComponentProps } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -31,6 +31,7 @@ import {
 } from '../../shared/api/inquiry'
 import { listCustomers } from '../../shared/api/customer'
 import { startInquiryApproval } from '../../shared/api/dingtalk'
+import { reportOperationTiming } from '../../shared/api/analytics'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 const STATUS_TONE: Record<string, TagColor> = {
@@ -89,6 +90,8 @@ export default function KnowledgePage() {
   // 转报价（§3.1/场景09）：定制件投产前没有 SKU，报价中心选不到它，
   // 这里给一条"填两个数就成单"的出口
   const [quoteTarget, setQuoteTarget] = useState<CustomInquiryRow | null>(null)
+  /** 转报价的计时起点（场景18 操作耗时埋点） */
+  const quoteStartedAt = useRef<number | null>(null)
   const [quoteForm, setQuoteForm] = useState({
     unit_cost: null as number | null,
     quoted_price: null as number | null,
@@ -108,6 +111,24 @@ export default function KnowledgePage() {
         quantity: quoteForm.quantity ?? undefined,
       }),
     onSuccess: (data) => {
+      // 计时上报（场景18）：失败也不该挡住业务——埋点只是量尺，不能成为新故障点
+      const startedAt = quoteStartedAt.current
+      quoteStartedAt.current = null
+      if (startedAt) {
+        const duration = Date.now() - startedAt
+        // 超过 8 小时当作"中途离开"，不报（服务端也会挡，这里先拦一道避免噪音）
+        if (duration > 0 && duration <= 8 * 3600 * 1000) {
+          void reportOperationTiming({
+            operation: 'quote_from_inquiry',
+            duration_ms: duration,
+            business_type: 'quote',
+            business_id: data.quote_id,
+            // 这一单用户实际手输了几个字段（成本/报价/数量）
+            typed_fields: [quoteForm.unit_cost, quoteForm.quoted_price, quoteForm.quantity]
+              .filter((v) => v !== null && v !== undefined).length,
+          }).catch(() => undefined)
+        }
+      }
       setQuoteTarget(null)
       refresh()
       Toast.success(
@@ -320,6 +341,9 @@ export default function KnowledgePage() {
                 quoted_price: null,
                 quantity: record.quantity ?? null,
               })
+              // 耗时埋点（场景18）：起点在这里——用户点开"转报价"那一刻。
+              // 服务端只看得到单据落库时间，那是流程跨度，不是他真正花的工夫。
+              quoteStartedAt.current = Date.now()
               setQuoteTarget(record)
             }}
           >
