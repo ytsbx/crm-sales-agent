@@ -209,15 +209,90 @@ async def main() -> int:
 
         from app.core.database import SessionLocal
         from app.modules.order import milestones as ms
+        from app.modules.order.model import OrderShipmentBatch
+        from sqlalchemy import select, text
+        from datetime import date
 
         async with SessionLocal() as s:
-            first = await ms.notify_overdue_batches(s)
-            await s.commit()
-        check_true('第一次扫描推出提醒', first >= 1, f'推送 {first} 条')
+            # 只算**逾期**的那几批：本人订单里还有一批计划在交期那天，不该被标记
+            mine = (
+                await s.execute(
+                    select(OrderShipmentBatch.id).where(
+                        OrderShipmentBatch.order_id == order_id,
+                        OrderShipmentBatch.status == 'planned',
+                        OrderShipmentBatch.planned_date < date.today(),
+                    )
+                )
+            ).scalars().all()
+        check_true('本人确有逾期批次可测', len(mine) >= 1, f'{len(mine)} 批')
+
+        async def scan_and_restore() -> None:
+            """跑一次全局扫描，随后把**不属于本用例**的批次状态还原。
+
+            这个函数是**全局**扫描（扫全库逾期批次），不还原就等于把演示库里
+            别人的"提醒过"凭证写死——那些批次从第二天起再也不会提醒。
+            用例改坏别人的数据、还测不出自己想测的东西，是双重问题，所以这里
+            既改成只断言本人的批次，又把别人的状态放回去。
+            """
+            async with SessionLocal() as s:
+                others = (
+                    await s.execute(
+                        select(OrderShipmentBatch.id).where(
+                            OrderShipmentBatch.overdue_notified_at.is_(None),
+                            OrderShipmentBatch.id.not_in(mine or [0]),
+                        )
+                    )
+                ).scalars().all()
+            async with SessionLocal() as s:
+                await ms.notify_overdue_batches(s)
+                await s.commit()
+            if others:
+                async with SessionLocal() as s:
+                    await s.execute(
+                        text(
+                            "update order_shipment_batches set overdue_notified_at = null "
+                            "where id = any(:ids)"
+                        ),
+                        {'ids': others},
+                    )
+                    await s.commit()
+
+        await scan_and_restore()
         async with SessionLocal() as s:
-            second = await ms.notify_overdue_batches(s)
-            await s.commit()
-        check('第二次不重复推（每批只推一次）', second, 0)
+            marked = (
+                await s.execute(
+                    select(OrderShipmentBatch.id).where(
+                        OrderShipmentBatch.id.in_(mine or [0]),
+                        OrderShipmentBatch.overdue_notified_at.is_not(None),
+                    )
+                )
+            ).scalars().all()
+        check('本人的逾期批次被标记为已提醒', len(marked), len(mine))
+
+        await scan_and_restore()
+        async with SessionLocal() as s:
+            first_stamp = (
+                await s.execute(
+                    select(OrderShipmentBatch.overdue_notified_at).where(
+                        OrderShipmentBatch.id.in_(mine or [0])
+                    )
+                )
+            ).scalars().all()
+
+        await scan_and_restore()
+        async with SessionLocal() as s:
+            second_stamp = (
+                await s.execute(
+                    select(OrderShipmentBatch.overdue_notified_at).where(
+                        OrderShipmentBatch.id.in_(mine or [0])
+                    )
+                )
+            ).scalars().all()
+        # 判据用"提醒凭证没被刷新"而不是"通知只有 1 条"：
+        # 一条逾期会推给负责人**和**主管，通知本就是 2 行（按接收人计），
+        # 拿它当"未重复"的证据会误报。
+        check('同一批不会被重复提醒（凭证时间戳未变）', second_stamp, first_stamp)
+        check_true('凭证确实已写', all(s is not None for s in second_stamp), str(second_stamp))
         # 节点口径不受影响：批次提醒不该顺带改任何节点
         status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
         check_true('节点没被批次提醒改动', res.get('code') == 0, '')

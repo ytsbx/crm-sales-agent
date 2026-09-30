@@ -135,7 +135,12 @@ async def main() -> int:
     check('管理员也报一条', res.get('code'), 0)
     status, res = call('GET', '/usage/timings/summary?days=1', token=zhangsan)
     zs_names = {row['user_name'] for row in res['data']['by_user']}
-    check_true('张三的汇总里只有自己', len(zs_names) <= 1, str(zs_names))
+    # 先断言"有样本"，再断言"恰好只有自己"：
+    # 原来写成 len(zs_names) <= 1，接口返回**空**时 0 <= 1 也会绿——
+    # 也就是说"张三什么数据都拿不到"这种彻底故障反而放行。
+    check_true('张三的汇总有样本（非空）', len(res['data']['by_user']) >= 1,
+               f"{len(res['data']['by_user'])} 人")
+    check('张三的汇总里恰好只有自己', zs_names, {'张三'})
     status, res = call('GET', '/usage/timings/summary?days=1', token=admin)
     admin_user_ids = {row['user_id'] for row in res['data']['by_user']}
     check_true('管理员看得到两个人',
