@@ -130,6 +130,22 @@ async def create_change(
             "新交期不影响任何节点或批次（可能交期没变，或受影响的都已发生）",
             422,
         )
+    # 同一订单**只能有一张待确认的变更单**：两张并存时各自确认会互相覆盖计划日，
+    # 而 old_delivery_date 的档案也跟着失真（后者以"前者已改过的交期"为基准）。
+    existing_pending = (
+        await session.execute(
+            select(OrderScheduleChange.id).where(
+                OrderScheduleChange.order_id == order.id,
+                OrderScheduleChange.status == "pending",
+            )
+        )
+    ).first()
+    if existing_pending is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该订单已有一张待确认的交期变更单，请先确认或作废它再发起新的",
+            409,
+        )
     row = OrderScheduleChange(
         order_id=order.id,
         old_delivery_date=order.delivery_date,
@@ -155,6 +171,18 @@ async def confirm_change(
     remark: str | None,
 ) -> OrderScheduleChange:
     """责任人确认后才真正改动：订单交期、节点计划日、批次计划日。"""
+    # 行锁：两个人同时点"确认"时，第二个必须等第一个提交完再读状态，
+    # 否则两边都读到 pending、都往下走，计划日被写两遍。
+    locked = (
+        await session.execute(
+            select(OrderScheduleChange)
+            .where(OrderScheduleChange.id == change.id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
+    change = locked
     if change.status != "pending":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

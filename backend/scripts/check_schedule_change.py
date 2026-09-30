@@ -164,6 +164,13 @@ async def main() -> int:
         status, res = call('GET', f'/orders/{order_id}', token=admin)
         check('**未确认前订单交期不动**', res['data']['delivery_date'], '2026-12-31')
 
+        # 回归：同一订单不能有两张待确认的变更单——两张各自确认会互相覆盖计划日，
+        # 而 old_delivery_date 的档案也跟着失真
+        status, res = call('POST', f'/orders/{order_id}/schedule-changes', token=admin, body={
+            'new_delivery_date': '2027-02-01', 'reason': f'{TAG} 重复发起',
+        })
+        check('已有待确认单时不能再发起', res.get('code'), 40002)
+
         print()
         print('=== 4. 责任人确认：这时才重排 ===')
         status, res = call('POST', f'/orders/{order_id}/schedule-changes/{change_id}/confirm',

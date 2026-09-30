@@ -501,6 +501,16 @@ async def confirm_schedule_change(
     row = await session.get(OrderScheduleChange, change_id)
     if row is None or row.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
+    # 「责任人确认」要真的是责任人：只查 order:manage + 可见性的话，
+    # 任何能改订单的同事都能替别人确认，这个动作就成了摆设。
+    # 例外是主管（order:assign 是归属类独立授权）：交接/离职后需要有人收口。
+    if row.owner_id and user.id != row.owner_id and not user.has("order:assign"):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "该交期变更单应由责任人确认（当前记录的责任人不是您）；"
+            "若已交接，请让有「转移订单负责人」权限的主管确认",
+            403,
+        )
     row = await schedule_svc.confirm_change(
         session, order, row, user=user, remark=payload.remark
     )
