@@ -38,6 +38,8 @@ from app.modules.order.schema import (
     OrderFromQuote,
     OrderStatusChange,
     OrderUpdate,
+    ScheduleChangeConfirm,
+    ScheduleChangeCreate,
     ShipmentBatchCreate,
     ShipmentBatchShip,
 )
@@ -403,6 +405,102 @@ async def update_milestone(
         },
         "里程碑已更新",
     )
+
+
+@router.post("/orders/{order_id}/schedule-changes/preview")
+async def preview_schedule_change(
+    order_id: int,
+    payload: ScheduleChangeCreate,
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改交期前先看"会动到谁"（方案 :105「展示受影响节点及批次」）。只算不改。"""
+    from app.modules.order import schedule as schedule_svc
+
+    order = await svc.get_visible_order(session, user, order_id)
+    return ok(await schedule_svc.preview(session, order, payload.new_delivery_date))
+
+
+@router.post("/orders/{order_id}/schedule-changes")
+async def create_schedule_change(
+    order_id: int,
+    payload: ScheduleChangeCreate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """生成交期变更单（待责任人确认）。**未确认前不动任何计划日期。**"""
+    from app.modules.order import schedule as schedule_svc
+
+    order = await svc.get_visible_order(session, user, order_id)
+    row = await schedule_svc.create_change(
+        session, order, user=user,
+        new_delivery_date=payload.new_delivery_date, reason=payload.reason,
+    )
+    await write_audit(
+        session, operator_id=user.id, action="create_schedule_change",
+        business_type="order", business_id=order.id,
+        after={"change_id": row.id, "new_delivery_date": str(row.new_delivery_date)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        schedule_svc.serialize_change(row),
+        "已生成交期变更单，待责任人确认后才重排计划",
+    )
+
+
+@router.get("/orders/{order_id}/schedule-changes")
+async def list_schedule_changes(
+    order_id: int,
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """变更历史：每张单都留着当时的前后版本对比。"""
+    from app.modules.order import schedule as schedule_svc
+    from app.modules.order.model import OrderScheduleChange
+
+    order = await svc.get_visible_order(session, user, order_id)
+    rows = list(
+        (
+            await session.execute(
+                select(OrderScheduleChange)
+                .where(OrderScheduleChange.order_id == order.id)
+                .order_by(OrderScheduleChange.id.desc())
+            )
+        ).scalars().all()
+    )
+    return ok([schedule_svc.serialize_change(r) for r in rows])
+
+
+@router.post("/orders/{order_id}/schedule-changes/{change_id}/confirm")
+async def confirm_schedule_change(
+    order_id: int,
+    change_id: int,
+    payload: ScheduleChangeConfirm,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """责任人确认：这一刻才真正改交期、重排节点与批次计划日。"""
+    from app.modules.order import schedule as schedule_svc
+    from app.modules.order.model import OrderScheduleChange
+
+    order = await svc.get_visible_order(session, user, order_id)
+    row = await session.get(OrderScheduleChange, change_id)
+    if row is None or row.order_id != order.id:
+        raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
+    row = await schedule_svc.confirm_change(
+        session, order, row, user=user, remark=payload.remark
+    )
+    await write_audit(
+        session, operator_id=user.id, action="confirm_schedule_change",
+        business_type="order", business_id=order.id,
+        after={"change_id": row.id, "delivery_date": str(order.delivery_date)},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(schedule_svc.serialize_change(row), "已确认，节点与批次计划日已重排")
 
 
 @router.post("/orders/{order_id}/milestones/replan")

@@ -8,10 +8,21 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.base import Base, IdMixin, TimestampMixin
+from app.core.base import Base, IdMixin, JSONType, TimestampMixin
 
 SHIPMENT_STATUS_LABEL = {
     "planned": "待发货",
@@ -159,3 +170,40 @@ class OrderMilestone(Base, IdMixin):
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OrderScheduleChange(Base, IdMixin):
+    """交期变更单（方案 :105）。
+
+    原文：「客户改交期、样品未通过或生产延期时，**展示受影响节点及批次**，
+    责任人确认调整并**保留修改前后版本**。」
+
+    三件事各自都有落点：
+    - 展示受影响面 → `affected` 里存节点与批次的"旧计划日 → 新计划日"；
+    - 责任人确认 → `owner_id`(该找谁确认) / `confirmed_by` / `confirmed_at`，
+      未确认前不改任何计划日期，因此"确认"是一个真实动作而不是装饰；
+    - 保留前后版本 → `affected` 在确认时**不回写**，它就是那一版调整的存档，
+      订单交期再改一次会生成新的一张变更单，旧的那张永远留着当时的对比。
+    """
+
+    __tablename__ = "order_schedule_changes"
+    __table_args__ = (Index("ix_order_schedule_changes_order", "order_id"),)
+
+    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
+    old_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    new_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: {"nodes": [...], "batches": [...]}，每项含 before/after 计划日
+    affected: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    #: 该为此变更负责确认的人（默认订单负责人）
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    confirmed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirm_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

@@ -35,5 +35,6 @@ check_notification_levels
 check_delivery_analytics
 check_biz_docs
 check_operation_timing
+check_schedule_change
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

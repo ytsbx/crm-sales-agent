@@ -22,6 +22,17 @@ class MilestoneUpdate(BaseModel):
     remark: str | None = None
 
 
+class ScheduleChangeCreate(BaseModel):
+    """交期变更（方案 :105）：先预览受影响面，责任人确认后才生效。"""
+
+    new_delivery_date: date
+    reason: str | None = None
+
+
+class ScheduleChangeConfirm(BaseModel):
+    remark: str | None = None
+
+
 class OrderItemInput(BaseModel):
     sku_id: int
     quantity: Decimal = Field(gt=0)
