@@ -49,6 +49,18 @@ def serialize_case(
         # 分享版给脱敏文本；作者/主管给原文，但同样回报命中数（发布前自查用）
         narrative[field] = masked if share_view else raw
 
+    # **标题也要脱敏**：它此前不在 NARRATIVE_FIELDS 里，两个视角都原样返回，
+    # 于是分享版的客户名被换成代称、标题里却写着全称，搜索也还能按它命中。
+    # 先按同一套规则抹掉标题里的金额/联系方式，再把**客户全称**换成代称
+    # （名字由调用方按 id 反查，只用于替换，不下发）。
+    title = case.title
+    if share_view:
+        title, title_hits = redaction.mask_text(title)
+        for label, count in title_hits.items():
+            counters[label] = counters.get(label, 0) + count
+        if customer_name and customer_name in title:
+            title = title.replace(customer_name, case.customer_label or "某客户")
+
     evidence: dict[str, int | None] = {
         field: getattr(case, field) for field in redaction.EVIDENCE_PERMISSIONS
     }
@@ -61,7 +73,7 @@ def serialize_case(
 
     return {
         "id": case.id,
-        "title": case.title,
+        "title": title,
         "author_id": case.author_id,
         "author_name": author_name,
         # 受限字段：非授权视角只给代称
@@ -183,8 +195,12 @@ async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> di
     if case.status != "published" and not (reviewer or case.author_id == user.id):
         raise AppError(ErrorCode.FORBIDDEN, "该案例未发布，仅作者与主管可见")
     reveal = reviewer or case.author_id == user.id
+    # **分享版也要按 id 反查客户名**：只用于把标题里的客户全称换成代称，
+    # 不随响应下发（customer_id / customer_name 仍按 reveal 决定是否返回）。
+    # 原先这里带 `and reveal`，分享视角拿不到名字 → 标题原样带着全称，
+    # 而正文与客户字段都已脱敏。
     customer_name = None
-    if case.customer_id and reveal:
+    if case.customer_id:
         from app.modules.customer.model import Customer
 
         customer = await session.get(Customer, case.customer_id)

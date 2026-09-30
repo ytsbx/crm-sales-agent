@@ -559,7 +559,9 @@ def main():
     print('=== 12. 案例库：审核发布 + 脱敏分享（§3.7/场景15）===')
     lisi = login('lisi', '123456')
     case_payload = {
-        'title': f'CHK{RUN}打样转返单案例',
+        # 标题带**客户全称**：这是此前漏掉的泄露源——分享版把客户字段换成代称，
+        # 标题却原样返回（搜索也能按它命中）
+        'title': f'CHK{RUN}张三客户 打样转返单案例',
         'customer_id': zs_customer_id,
         'customer_label': '某包装制品厂',
         'industry': '包装',
@@ -591,6 +593,9 @@ def main():
                str(res['data']['customer_id']))
     check_true('只看到代称', res['data']['customer_label'] == '某包装制品厂', '')
     check_true('做法内容完整可学', '生产计划表' in res['data']['lessons'], '')
+    check_true('分享视角标题不含客户全称',
+               f'CHK{RUN}张三客户' not in (res['data'].get('title') or ''),
+               str(res['data'].get('title')))
     status, res = call('GET', f'/cases/{case_id}', token=lisi)
     check_true('主管可见真实客户', res['data']['customer_id'] == zs_customer_id, '')
     status, res = call('GET', f'/cases?keyword={RUN}', token=zhangsan)
