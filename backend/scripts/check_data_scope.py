@@ -99,6 +99,7 @@ async def main() -> int:
     from datetime import UTC, datetime
 
     from app.modules.customer.model import Customer
+    from app.modules.followup.model import FollowUp
     from app.modules.inquiry.model import CustomInquiry
     from app.modules.integration.model import IntegrationLog
     from app.modules.order.model import SalesOrder
@@ -159,6 +160,39 @@ async def main() -> int:
     print('=== 3. 文件挂载（别人的客户）===')
     check_denied('他人往别人客户上挂附件',
                  call('POST', f'/business/customer/{cid}/files?file_id=1', outsider_token)[0])
+
+    # ---- 同款形状（写路径堵了、读/删路径漏了）的漏口，逐条设门槛 ----
+    # 这四条的价值：以后谁再把校验删掉，这里立刻红。上一轮它们抓到的第一个 bug
+    # 就是我自己刚写进去的（_visible_followup 自我递归）——基准用例先红，
+    # 后面结论才有意义。
+    check('本人读自己客户时间线（对照）',
+          call('GET', f'/customers/{cid}/timeline', owner_token)[0], 200)
+    check_denied('他人读别人客户时间线',
+                 call('GET', f'/customers/{cid}/timeline', outsider_token)[0])
+
+    # 全局搜索：按手机号搜，别人的联系人不该出现（原先六类里只有它没过范围）
+    status, res = call('GET', '/search?keyword=13900000001', outsider_token)
+    hits = [c for c in (res.get('data') or {}).get('contacts', [])
+            if c.get('customer_id') == cid]
+    check('全局搜索搜不到别人的联系人', len(hits), 0)
+
+    # 跟进：直接用张三名下既有的那条做夹具（手造的行字段容易不全，基准会先炸）
+    async with SessionLocal() as s:
+        probe = (
+            await s.execute(
+                select(FollowUp.id)
+                .join(Customer, Customer.id == FollowUp.customer_id)
+                .where(Customer.owner_id == owner.id, FollowUp.owner_id == owner.id)
+                .order_by(FollowUp.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if probe:
+        check('本人读自己的跟进（对照）', call('GET', f'/followups/{probe}', owner_token)[0], 200)
+        check_denied('他人删别人的跟进记录',
+                     call('DELETE', f'/followups/{probe}', outsider_token)[0])
+    else:
+        print('  （跳过跟进越权断言：库里没有张三名下的既有跟进可作夹具）')
 
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)
