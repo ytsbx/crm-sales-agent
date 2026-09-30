@@ -126,6 +126,9 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
     "product:manage",
     "customer:delete",
     "order:manage",
+    # 交期变更要求"责任人确认"，但交接/离职后总得有人收口：
+    # 主管凭这一项可以代确认（口径已确认）。缺了它，离职名下的变更单没人能确认。
+    "order:assign",
     "payment:manage",
     # 企业微信集成：只有主管及以上才需要看同步状态、做待归一处理和离职继承
     "wecom:view",
