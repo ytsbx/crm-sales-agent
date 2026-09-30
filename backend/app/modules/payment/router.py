@@ -139,6 +139,20 @@ async def generate_receivables(
     # 金额计算用 Decimal：保留输入字面值，不引入浮点误差（属于舍入修复的一部分）
     ratios = [Decimal(str(r)) for r in payload.ratios]
 
+    # 比例本身要合法：没有期数、有非正数、期数过多都会算出没意义的计划
+    if not ratios:
+        raise AppError(ErrorCode.PARAM_ERROR, "至少要有一期比例", 422)
+    if any(r <= 0 for r in ratios):
+        raise AppError(ErrorCode.PARAM_ERROR, "每期比例必须大于 0", 422)
+    if len(ratios) > 24:
+        raise AppError(ErrorCode.PARAM_ERROR, f"分期期数过多（{len(ratios)} 期，最多 24 期）", 422)
+    if abs(sum(ratios, Decimal(0)) - Decimal(1)) > Decimal("0.0001"):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"各期比例之和必须等于 1（当前 {sum(ratios, Decimal(0))}）",
+            422,
+        )
+
     existing = (
         await session.execute(
             select(ReceivablePlan.id).where(ReceivablePlan.order_id == order_id)
@@ -159,6 +173,18 @@ async def generate_receivables(
             amounts.append(total - sum(amounts, Decimal(0)))
         else:
             amounts.append((total * ratio).quantize(Decimal("0.01")))
+
+    # 末期兜底之后**必须回头检查有没有非正数期**：前面各期各自四舍五入，
+    # 金额极小时它们之和可能已经超过总额，末期就成了负数
+    # （0.03 元按 5×20% 分：前四期各 0.01，末期 −0.01）。负数的应收期会让
+    # 财务核销和催收都对不上，宁可明确拒绝并要求调整期数/比例。
+    if any(amount <= 0 for amount in amounts):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"订单总额 {total} 按当前比例分 {len(ratios)} 期会分出不大于 0 的期"
+            f"（{'、'.join(str(a) for a in amounts)}）。请减少期数或调整比例",
+            422,
+        )
 
     created = []
     for index, ratio in enumerate(ratios):
