@@ -19,7 +19,7 @@
 只认调用方给的字段映射，映射从模板字段清单来（见 17-交接说明 §6 的待外部输入）。
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -29,6 +29,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import CurrentUser
 from app.modules.dingtalk.client import DingTalkError, get_client
 from app.modules.dingtalk.model import OA_STATUS_LABEL, OaInstance
+
+#: 停在 `submitting` 超过这个时长，就认为那次尝试已经死了（进程被杀/机器重启），
+#: 允许重新发起。取 10 分钟：正常的"占键 → 调钉钉"是秒级，
+#: 留足余量给网络慢的情况，同时用户等十分钟后再点也确实该重试了。
+SUBMITTING_STUCK_AFTER = timedelta(minutes=10)
 
 #: 钉钉的审批状态词 → CRM 侧口径。CRM 侧固定这五个值，
 #: 前端和查询都不用认对方系统的用词（与 ERP Adapter 同一套做法：翻译只发生在一处）。
@@ -107,19 +112,44 @@ async def create_inquiry_instance(
     - `resubmit=False`（默认）——同一轮：已有记录就返回，不再打钉钉。
       网络重试、页面重复点击都命中这条，不会重复建单；
     - `resubmit=True`——驳回/撤销之后**业务主动重提**：轮次 +1、换幂等键，
-      在钉钉里建一张新单。这条不这么做的话，重提会被唯一约束挡住、永远发不出去。
+    在钉钉里建一张新单。这条不这么做的话，重提会被唯一约束挡住、永远发不出去。
     """
+    from app.core.config import settings as app_settings
+
+    # 重试路径复用的是"已经存在的行"（见下面的同轮幂等判断），所以初值必须是 None，
+    # 否则后面 `if row is not None` 会误判成复用、跳过首次插入
+    row: OaInstance | None = None
     latest = await get_by_business_key(
         session, inquiry_id=inquiry_id, inquiry_version=inquiry_version, oa_type=oa_type
     )
     if latest is not None and not resubmit:
-        return latest
+        # 同轮幂等**不能只看"有没有记录"，还要看那条记录是什么状态**，否则两种
+        # 卡死都无解：
+        # - `submitting`：进程在"占业务键的提交"与"调完外部之后的提交"之间被杀，
+        #   行永远停在 submitting —— 轮询只捞 pending，同轮又原样返回，
+        #   既不同步也永不重发。超过阈值即认为那次尝试已死，允许重走一遍
+        #   （复用同一行、同一幂等键，钉钉那边不会建出第二张单）。
+        # - `skipped`：当时总闸关着没发。闸门开了之后再点"发起"，
+        #   如果还返回那条 skipped，用户点了等于没点。
+        retryable = False
+        if latest.status == "submitting":
+            started = latest.created_at or datetime.now(UTC)
+            retryable = (datetime.now(UTC) - started) > SUBMITTING_STUCK_AFTER
+        elif latest.status == "skipped" and not app_settings.dingtalk_push_off:
+            retryable = True
+        if not retryable:
+            return latest
+        # 复用同一条记录重试：idempotency_key 不变，本地不新增行、钉钉不多建单
+        latest.status = "submitting"
+        latest.error = None
+        latest.created_at = datetime.now(UTC)  # 重置"本次尝试"的起点，供下次判活
+        row = latest
+        await session.commit()
 
     submit_round = (int(latest.submit_round) + 1) if (resubmit and latest) else 1
     idempotency_key = f"{inquiry_id}:{inquiry_version}:{oa_type}:{submit_round}"
 
     component_values = build_form_component_values(field_map)
-    from app.core.config import settings as app_settings
 
     # 推送总闸（默认关）：测试期绝不向外部系统发起真实审批单。
     # 与企微同一套语义——记 skipped 并写明原因，"没发"不等于"发失败"。
@@ -143,36 +173,45 @@ async def create_inquiry_instance(
         await session.flush()
         return blocked
 
-    row = OaInstance(
-        customer_id=customer_id,
-        inquiry_id=inquiry_id,
-        inquiry_version=inquiry_version,
-        oa_type=oa_type,
-        idempotency_key=idempotency_key,
-        submit_round=submit_round,
-        process_code=process_code,
-        originator_user_id=originator_user_id,
-        form_snapshot={"formComponentValues": component_values},
-        status="pending",
-        created_by=user.id,
-        created_at=datetime.now(UTC),
-    )
-    # **先占住业务键，再调外部**（P1）：原顺序是"先调钉钉建单、后落本地唯一键"，
-    # 于是两件事都可能重复建单——并发请求、以及"钉钉建成功了但响应没回来"的重试。
-    # 现在先落一行 submitting 并提交，把唯一键占实；并发对手会撞唯一约束后复用它。
-    row.status = "submitting"
-    session.add(row)
-    try:
-        await session.commit()
-    except IntegrityError:
-        # 并发对手已占同一轮：复用它，**不再向钉钉要第二次实例**
-        await session.rollback()
-        existing = await get_by_business_key(
-            session, inquiry_id=inquiry_id, inquiry_version=inquiry_version, oa_type=oa_type
+    if row is not None:
+        # 重试路径：刷新报文快照，保证"本次实际发出去的"与记录一致；
+        # 复用同一行，所以不需要再走一次"占业务键"的插入与唯一约束处理
+        row.form_snapshot = {"formComponentValues": component_values}
+        await session.flush()
+    else:
+        row = OaInstance(
+            customer_id=customer_id,
+            inquiry_id=inquiry_id,
+            inquiry_version=inquiry_version,
+            oa_type=oa_type,
+            idempotency_key=idempotency_key,
+            submit_round=submit_round,
+            process_code=process_code,
+            originator_user_id=originator_user_id,
+            form_snapshot={"formComponentValues": component_values},
+            status="pending",
+            created_by=user.id,
+            created_at=datetime.now(UTC),
         )
-        if existing is not None:
-            return existing
-        raise
+        # **先占住业务键，再调外部**（P1）：原顺序是"先调钉钉建单、后落本地唯一键"，
+        # 于是两件事都可能重复建单——并发请求、以及"钉钉建成功了但响应没回来"的重试。
+        # 现在先落一行 submitting 并提交，把唯一键占实；并发对手会撞唯一约束后复用它。
+        row.status = "submitting"
+        session.add(row)
+        try:
+            await session.commit()
+        except IntegrityError:
+            # 并发对手已占同一轮：复用它，**不再向钉钉要第二次实例**
+            await session.rollback()
+            existing = await get_by_business_key(
+                session,
+                inquiry_id=inquiry_id,
+                inquiry_version=inquiry_version,
+                oa_type=oa_type,
+            )
+            if existing is not None:
+                return existing
+            raise
 
     try:
         instance_id = await get_client().create_process_instance(
