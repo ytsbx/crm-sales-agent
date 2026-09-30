@@ -43,7 +43,11 @@ async def customer_timeline(
     customer = await session.get(Customer, customer_id)
     if customer is None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
-    await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
+    # 公海客户（无负责人）的时间线仍可看：客户档案本身就对有查看权限的人可见，
+    # 时间线是同一批信息的延续（口径已确认）
+    await ensure_in_scope(
+        session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
+    )
     return ok(await build_timeline(session, "customer", customer_id))
 
 
@@ -69,7 +73,10 @@ async def lead_timeline(
     lead = await session.get(Lead, lead_id)
     if lead is None:
         raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
-    await ensure_in_scope(session, user, owner_id=lead.owner_id, label="线索")
+    # 线索池里的无主线索同理：线索对所有有查看权限的人可见
+    await ensure_in_scope(
+        session, user, owner_id=lead.owner_id, label="线索", allow_unowned=True
+    )
     return ok(await build_timeline(session, "lead", lead_id))
 
 
@@ -116,6 +123,6 @@ async def contact_timeline(
         customer = await session.get(Customer, contact.customer_id)
         if customer is not None:
             await ensure_in_scope(
-                session, user, owner_id=customer.owner_id, label="客户"
+                session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
             )
     return ok(await build_timeline(session, "contact", contact_id))

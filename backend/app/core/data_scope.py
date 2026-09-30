@@ -98,9 +98,21 @@ async def ensure_in_scope(
     其余模块（商机/订单/样品/任务）保持 False。
     """
     if owner_id is None:
-        # 无负责人的记录：客户/线索是正常业务状态；其它模块属于历史脏数据，
-        # 这里统一放行（不静默改数据），由各自模块在需要时单独治理。
-        return
+        # 无负责人的记录要**分两类**，不能一律放行：
+        # - `allow_unowned=True`：客户/线索是正常业务状态（公海 / 线索池），
+        #   它们对所有有查看权限的人可见——这正是公海的意义；
+        # - 其余（商机/报价/订单/样品/任务/对客单据）：无归属属于历史脏数据，
+        #   放行等于"含价格的对客文件，猜到编号就能下"。**默认拒绝**，
+        #   要求先把归属补齐（口径已确认：下单/签合同前必须先认领）。
+        # 注：这个参数此前虽然写在签名里，函数体却不读它——调用方传了也没用，
+        # 等于所有模块都按"放行"走（2026-09-30 修正）。
+        if allow_unowned:
+            return
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            f"该{label}没有负责人，无法判定可见范围，已拒绝访问；请先补齐归属",
+            403,
+        )
 
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is None:  # all

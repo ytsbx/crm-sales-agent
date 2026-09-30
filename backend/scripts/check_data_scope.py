@@ -148,6 +148,12 @@ async def main() -> int:
                                    status='active', pool_status='private', owner_id=owner.id)
         s.add(source_customer)
         await s.flush()
+        # 公海客户（无负责人）：用来守"别把公海误关"——刚把无归属默认改成拒绝，
+        # 客户/线索必须显式放行，否则公海就看不成了
+        public_customer = Customer(name=f'{PREFIX}公海客户-{stamp}', level='C',
+                                   status='active', pool_status='public', owner_id=None)
+        s.add(public_customer)
+        await s.flush()
         s.add_all([
             Contact(customer_id=customer.id, name=f'{PREFIX}目标主联系人-{stamp}',
                     mobile='13900000002', is_primary=True),
@@ -173,6 +179,7 @@ async def main() -> int:
         await s.commit()
         cid, iid, oid = customer.id, inquiry.id, order.id
         src_cid, outsider_name = source_customer.id, outsider.username
+        public_cid = public_customer.id
         lq_id = logistics_quote.id
         # 夹具用户需要能登录：设一个临时口令（用与张三相同的哈希来源）
         from app.core.security import hash_password
@@ -207,6 +214,11 @@ async def main() -> int:
           call('GET', f'/customers/{cid}/timeline', owner_token)[0], 200)
     check_denied('他人读别人客户时间线',
                  call('GET', f'/customers/{cid}/timeline', outsider_token)[0])
+    # 另一侧：公海客户（**无负责人**）必须仍可查看。
+    # 刚把"无归属日志默认拒绝"改过来，客户/线索是显式放行的——
+    # 这条守的就是"别在收紧安全口的时候把公海一起关掉"。
+    check('公海客户（无负责人）的时间线仍可看',
+          call('GET', f'/customers/{public_cid}/timeline', outsider_token)[0], 200)
 
     # 全局搜索：按手机号搜，别人的联系人不该出现（原先六类里只有它没过范围）
     status, res = call('GET', '/search?keyword=13900000001', outsider_token)

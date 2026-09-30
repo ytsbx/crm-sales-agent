@@ -116,7 +116,10 @@ async def assert_lead_visible(session: AsyncSession, user, lead: Lead) -> None:
     """
     from app.core.data_scope import ensure_in_scope
 
-    await ensure_in_scope(session, user, owner_id=lead.owner_id, label="线索")
+    # 线索池里的无主线索（无负责人）仍可查看：口径与公海客户一致
+    await ensure_in_scope(
+        session, user, owner_id=lead.owner_id, label="线索", allow_unowned=True
+    )
 
 
 async def get_visible_lead(session: AsyncSession, user, lead_id: int) -> Lead:

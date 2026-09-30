@@ -76,7 +76,13 @@ async def _visible_followup(
         opportunity = await session.get(Opportunity, followup.opportunity_id)
         owner_id = opportunity.owner_id if opportunity else None
 
-    await ensure_in_scope(session, user, owner_id=owner_id, label="跟进记录")
+    kwargs_extra = {}
+    # 跟进记录跟着**被关联对象**走。挂公海客户（无负责人）的跟进仍可看：
+    # 口径已确认——客户档案本身可见，跟进是同一批信息的延续，
+    # 否则"领养前先看看谈到哪一步"就做不到，领取会变成抽盲盒。
+    if followup.customer_id or followup.lead_id:
+        kwargs_extra["allow_unowned"] = True
+    await ensure_in_scope(session, user, owner_id=owner_id, label="跟进记录", **kwargs_extra)
     return followup
 
 
