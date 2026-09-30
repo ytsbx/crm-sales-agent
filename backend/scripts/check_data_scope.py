@@ -91,6 +91,10 @@ async def cleanup():
             f"delete from customer_merge_logs where target_customer_id in {cust} "
             f"or source_customer_id in {cust}",
             "delete from contacts where name like :p",
+            # logistics_quotes 没有 remark/owner 之类可标记的列（上次拿 remark 当标记，
+            # 清理语句直接报 UndefinedColumn、整段 cleanup 中止，残留被守门套件抓到），
+            # 只能按"挂在测试客户上"清。
+            f"delete from logistics_quotes where customer_id in {cust}",
             "delete from customers where name like :p",
             "delete from user_roles where user_id in (select id from users where username like :u)",
             "delete from users where username like :u",
@@ -151,12 +155,25 @@ async def main() -> int:
                     mobile='13900000003', is_primary=True),
         ])
         await s.flush()
+        # 运费试算单夹具：挂在张三客户上（其余列都有默认值）。
+        # 试算单带着报价金额与地址，此前只守 product:view、谁按 id 都能读。
+        from app.modules.pricing.model import LogisticsQuote
+        # LogisticsQuote 有指向 skus 的外键：不先把这个模型导进来，SQLAlchemy
+        # 解析不了关联，建对象时直接 NoReferencedTableError
+        from app.modules.product.model import Sku
+
+        _ = Sku  # 只为触发模型注册，解决上面的外键解析问题
+
+        logistics_quote = LogisticsQuote(customer_id=customer.id)
+        s.add(logistics_quote)
+        await s.flush()
         s.add(IntegrationLog(integration_type='erp', provider='聚水潭', direction='outbound',
                              business_type='order', business_id=order.id, status='success',
                              created_at=datetime.now(UTC)))
         await s.commit()
         cid, iid, oid = customer.id, inquiry.id, order.id
         src_cid, outsider_name = source_customer.id, outsider.username
+        lq_id = logistics_quote.id
         # 夹具用户需要能登录：设一个临时口令（用与张三相同的哈希来源）
         from app.core.security import hash_password
 
@@ -267,6 +284,9 @@ async def main() -> int:
         print('  （跳过线索越权断言：库里没有张三名下的既有线索）')
 
     if lq_id:
+        # 先验对照：本人读得到，才谈得上"他人读不到"
+        check('本人读自己的运费试算单（对照）',
+              call('GET', f'/logistics/quotes/{lq_id}', owner_token)[0], 200)
         check_denied('他人读别人的运费试算单',
                      call('GET', f'/logistics/quotes/{lq_id}', outsider_token)[0])
     else:
