@@ -34,30 +34,42 @@ async def _ensure_exists(session: AsyncSession, model, object_id: int, label: st
 @router.get("/customers/{customer_id}/timeline")
 async def customer_timeline(
     customer_id: int,
-    _: CurrentUser = Depends(require_permission("customer:view")),
+    user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await _ensure_exists(session, Customer, customer_id, "客户")
+    # 文件头自己写着"时间线会带出跟进内容与操作记录，所以补数据范围校验"，
+    # 但当时只补了报价/订单/联系人三条，客户/商机/线索三条漏了——
+    # 拿别人的 id 就能读出跟进内容。这里补齐，判据与其余三条一致。
+    customer = await session.get(Customer, customer_id)
+    if customer is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
     return ok(await build_timeline(session, "customer", customer_id))
 
 
 @router.get("/opportunities/{opportunity_id}/timeline")
 async def opportunity_timeline(
     opportunity_id: int,
-    _: CurrentUser = Depends(require_permission("opportunity:view")),
+    user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await _ensure_exists(session, Opportunity, opportunity_id, "商机")
+    opportunity = await session.get(Opportunity, opportunity_id)
+    if opportunity is None:
+        raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+    await ensure_in_scope(session, user, owner_id=opportunity.owner_id, label="商机")
     return ok(await build_timeline(session, "opportunity", opportunity_id))
 
 
 @router.get("/leads/{lead_id}/timeline")
 async def lead_timeline(
     lead_id: int,
-    _: CurrentUser = Depends(require_permission("lead:view")),
+    user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    await _ensure_exists(session, Lead, lead_id, "线索")
+    lead = await session.get(Lead, lead_id)
+    if lead is None:
+        raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
+    await ensure_in_scope(session, user, owner_id=lead.owner_id, label="线索")
     return ok(await build_timeline(session, "lead", lead_id))
 
 

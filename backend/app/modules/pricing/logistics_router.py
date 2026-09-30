@@ -243,10 +243,17 @@ async def list_quotes(
 @router.get("/logistics/quotes/{quote_id}")
 async def get_quote(
     quote_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    user: CurrentUser = Depends(require_permission("product:view")),
     session: AsyncSession = Depends(get_db),
 ):
     quote = await svc.get_quote_or_404(session, quote_id)
+    # 运费试算单带着报价金额与地址，而 get_quote_or_404 不接收 user
+    # ——函数签名上就不可能做范围判定，守的只是 product:view（业务岗都有）。
+    # 按它挂的客户补数据范围：没有客户归属的试算单（纯比价）不拦。
+    if getattr(quote, "customer_id", None):
+        from app.modules.customer import service as customer_service
+
+        await customer_service.get_visible_customer(session, user, quote.customer_id)
     return ok(svc.serialize_quote(quote))
 
 

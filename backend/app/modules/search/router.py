@@ -63,16 +63,27 @@ async def global_search(
         for row in (await session.execute(customer_stmt)).scalars().all()
     ]
 
+    # 联系人原先**是六类里唯一没过数据范围的**：按手机号/邮箱一搜全公司，
+    # 姓名+手机+邮箱+所属客户名全出来。联系人跟着它所属客户的负责人走。
     contact_rows = (
         await session.execute(
-            select(Contact, Customer.name)
-            .join(Customer, Customer.id == Contact.customer_id)
-            .where(
-                Contact.deleted_at.is_(None),
-                or_(Contact.name.ilike(like), Contact.mobile.ilike(like), Contact.email.ilike(like)),
+            await _scope(
+                select(Contact, Customer.name)
+                .join(Customer, Customer.id == Contact.customer_id)
+                .where(
+                    Contact.deleted_at.is_(None),
+                    or_(
+                        Contact.name.ilike(like),
+                        Contact.mobile.ilike(like),
+                        Contact.email.ilike(like),
+                    ),
+                )
+                .order_by(Contact.id.desc())
+                .limit(limit),
+                user,
+                Customer.owner_id,
+                session,
             )
-            .order_by(Contact.id.desc())
-            .limit(limit)
         )
     ).all()
     contacts = [

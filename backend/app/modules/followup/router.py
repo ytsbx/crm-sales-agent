@@ -59,9 +59,10 @@ async def _visible_followup(
     所以跟着它关联的业务对象走：客户 / 线索 / 商机 / 报价 / 订单，
     哪一个有就用哪一个的范围。全都没关联是脏数据，直接放行并留给治理。
     """
-    followup = await session.get(FollowUp, followup_id)
-    if followup is None:
-        raise AppError(ErrorCode.NOT_FOUND, "跟进记录不存在", 404)
+    # 同一条记录：update / 详情都走 _visible_followup，**只有删除是裸的 session.get**
+    # ——于是任何有跟进权限的人拿别人的 id 就能删（"列表看不到的，按 id 也拿不到"
+    # 是项目自己写死的铁律）。删除是写操作，更要过数据范围。
+    followup = await _visible_followup(session, user, followup_id)
 
     owner_id: int | None = None
     if followup.customer_id:
@@ -361,9 +362,15 @@ async def delete_followup(
 @router.get("/opportunities/{opportunity_id}/followups")
 async def list_opportunity_followups(
     opportunity_id: int,
-    _: CurrentUser = Depends(require_permission("followup:view")),
+    user: CurrentUser = Depends(require_permission("followup:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    from app.modules.opportunity import service as opportunity_service
+
+    # 原先 user 参数写成 `_`（被丢掉），查询只按 opportunity_id 过滤——
+    # 换个商机 id 就能读到别人商机下的全部跟进内容。先按数据范围确认商机可见，
+    # 与"删跟进不校验"是同一个形状，两处一起堵。
+    await opportunity_service.get_visible_opportunity(session, user, opportunity_id)
     rows = (
         await session.execute(
             select(FollowUp)
