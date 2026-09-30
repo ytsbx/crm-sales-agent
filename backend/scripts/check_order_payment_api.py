@@ -35,9 +35,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 
 BASE = 'http://127.0.0.1:8000/api/v1'
 RUN = str(int(time.time()))[-6:]
+#: 本脚本开始跑的时刻。清库靠它圈定"这一轮造的"数据——见 clean() 的说明。
+SCRIPT_STARTED_AT = datetime.now(UTC).isoformat()
 FAILURES = []
 
 
@@ -95,26 +98,55 @@ def login(username, password):
 
 
 # --------------------------------------------------------------------------
-# 清库：只删本脚本造的（订单号带 RUN 前缀无法用，改用客户 1/2 上的订单）
+# 清库：**只删本脚本造的**
 # --------------------------------------------------------------------------
+#
+# 历史教训（2026-09-30 修）：这里的语句原先全都没有 WHERE——一次跑下来，
+# 全库的订单/回款/应收/发货批次/通知/编号计数器被清空两遍（跑前跑后各一次）。
+# 后果和 `check_quote_api` 那次完全一样：演示订单被删（`seed_demo` 建的订单
+# 每轮消失，订单号 1305→1311→1332 一直从头开始），而且"编号计数器"被清会让
+# 单号永远停在 0001。
+#
+# 本脚本造的订单有一个稳定特征：**手工建单（quote_id 为空）**，且发生在本次
+# 运行时间窗内。带 quote_id 的订单都是报价转来的（属业务数据），一条都不碰。
+# 注意顺序：先删引用订单的子表，最后才删订单本身，否则锚点会查空。
+_ANCHOR_ORDER = (
+    "select id from sales_orders where quote_id is null "
+    f"and created_at >= '{SCRIPT_STARTED_AT}'"
+)
+
+
 async def clean(verbose=False):
     from sqlalchemy import text
 
     from app.core.database import SessionLocal
 
     statements = [
-        ("回款", "delete from payment_records"),
-        ("应收", "delete from receivable_plans"),
-        ("订单状态历史", "delete from order_status_history"),
-        ("跟单里程碑", "delete from order_milestones"),
-        ("发货批次明细", "delete from order_shipment_batch_items"),
-        ("发货批次", "delete from order_shipment_batches"),
-        ("订单明细", "delete from sales_order_items"),
-        ("订单", "delete from sales_orders"),
-        ("通知", "delete from notifications where business_type = 'order'"),
-        ("编号计数器", "delete from number_sequences"),
-        ("审计", "delete from audit_logs where business_type in "
-                "('order','payment','receivable_plan')"),
+        ("回款", f"delete from payment_records where order_id in ({_ANCHOR_ORDER})"),
+        ("应收", f"delete from receivable_plans where order_id in ({_ANCHOR_ORDER})"),
+        ("订单状态历史", f"delete from order_status_history where order_id in ({_ANCHOR_ORDER})"),
+        ("跟单里程碑", f"delete from order_milestones where order_id in ({_ANCHOR_ORDER})"),
+        (
+            "发货批次明细",
+            "delete from order_shipment_batch_items where batch_id in "
+            f"(select id from order_shipment_batches where order_id in ({_ANCHOR_ORDER}))",
+        ),
+        ("发货批次", f"delete from order_shipment_batches where order_id in ({_ANCHOR_ORDER})"),
+        ("订单明细", f"delete from sales_order_items where order_id in ({_ANCHOR_ORDER})"),
+        (
+            "通知",
+            "delete from notifications where business_type = 'order' "
+            f"and business_id in ({_ANCHOR_ORDER})",
+        ),
+        ("自动留痕", "delete from followups where followup_type='系统' "
+                 f"and opportunity_id is null and created_at >= '{SCRIPT_STARTED_AT}'"),
+        (
+            "审计",
+            "delete from audit_logs where business_type in ('order','payment','receivable_plan') "
+            f"and business_id in ({_ANCHOR_ORDER})",
+        ),
+        ("订单", f"delete from sales_orders where id in ({_ANCHOR_ORDER})"),
+        # 刻意不删 number_sequences：它是全局递增状态，不是夹具（见 check_quote_api 同处说明）
     ]
     async with SessionLocal() as s:
         for label, sql in statements:
@@ -128,6 +160,16 @@ def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
     lisi = login('lisi', '123456')
+
+    # 张三名下的基线条数。**不能再写死 0/1**：库里本来就可能有业务数据
+    # （比如 seed_demo 演示链的订单与应收就挂在张三名下），旧断言之所以能过，
+    # 只是因为清库把那些数据一并删了。数据范围要验的是"别人的单不会进张三的列表"，
+    # 所以下面统一用"相对基线涨了几条"来判断。
+    zs_base = {}
+    for name, path in (('orders', '/orders'), ('receivables', '/receivables'), ('payments', '/payments')):
+        status, res = call('GET', path, token=zhangsan)
+        zs_base[name] = res['data']['total']
+    print(f"  张三基线：订单 {zs_base['orders']}、应收 {zs_base['receivables']}、回款 {zs_base['payments']}")
 
     status, res = call('GET', '/auth/me', token=admin)
     print(f'  管理员 id={res["data"]["id"]}')
@@ -333,10 +375,11 @@ def main():
 
     print()
     print('=== 9. 数据范围：列表也要过滤 ===')
+    # 口径：别人建的单不该进张三的列表 ⇒ 应该**仍等于基线**（不是等于 0）
     status, res = call('GET', '/receivables', token=zhangsan)
-    check('张三应收列表为空', res['data']['total'], 0)
+    check('张三应收列表没涨（别人的单没漏进来）', res['data']['total'], zs_base['receivables'])
     status, res = call('GET', '/payments', token=zhangsan)
-    check('张三回款列表为空', res['data']['total'], 0)
+    check('张三回款列表没涨（别人的回款没漏进来）', res['data']['total'], zs_base['payments'])
     status, res = call('GET', '/receivables', token=admin)
     check_true('管理员能看到', res['data']['total'] >= 2, str(res['data']['total']))
 
@@ -350,7 +393,7 @@ def main():
     status, res = call('GET', f'/orders/{zs_order_id}', token=zhangsan)
     check('张三看自己的单', res.get('code'), 0)
     status, res = call('GET', '/orders', token=zhangsan)
-    check('张三订单列表共 1 条', res['data']['total'], 1)
+    check('张三订单列表 +1（自己新建的那条）', res['data']['total'], zs_base['orders'] + 1)
 
     status, res = call('POST', '/receivables', token=admin,
                        body={'order_id': zs_order_id, 'plan_name': '全款',
@@ -360,11 +403,11 @@ def main():
     status, res = call('GET', f'/receivables/{zs_plan_id}', token=zhangsan)
     check('张三读自己单上的应收', res.get('code'), 0)
     status, res = call('GET', '/receivables', token=zhangsan)
-    check('张三应收列表 1 条', res['data']['total'], 1)
+    check('张三应收列表 +1', res['data']['total'], zs_base['receivables'] + 1)
     status, res = call('GET', '/payments', token=zhangsan)
-    check('张三回款列表 0 条', res['data']['total'], 0)
+    check('张三回款列表没涨', res['data']['total'], zs_base['payments'])
     status, res = call('GET', '/orders', token=zhangsan)
-    check('张三订单列表 1 条', res['data']['total'], 1)
+    check('张三订单列表仍是 +1', res['data']['total'], zs_base['orders'] + 1)
 
     print()
     print('=== 11. 部门主管（lisi, department_and_sub）===')

@@ -111,6 +111,20 @@ async def clean(verbose=False):
     from app.core.database import SessionLocal
 
     statements = [
+        # 六阶段自动留痕/通知**必须排在最前面**：它们的判据是"挂在本套件 CHK 客户
+        # 的报价/订单上"，而下面第 5、6 条就会把那些报价单删掉——一旦父表先没了，
+        # 这几个子查询就查空、通知一条都删不掉（真踩过：每跑一轮留一批"待审批报价"）。
+        ('自动留痕', f"delete from followups where followup_type='系统' and customer_id in (select id from customers where name like 'CHK{RUN}%')"),
+        ('自动通知', "delete from notifications where business_id in "
+                 "(select id from quotes where customer_id in "
+                 f"(select id from customers where name like 'CHK{RUN}%')) "
+                 "or business_id in "
+                 "(select id from quote_versions where quote_id in "
+                 "(select id from quotes where customer_id in "
+                 f"(select id from customers where name like 'CHK{RUN}%'))) "
+                 "or business_id in "
+                 "(select id from sales_orders where customer_id in "
+                 f"(select id from customers where name like 'CHK{RUN}%'))"),
         ('审批记录', "delete from approval_records where approval_instance_id in "
                  "(select id from approval_instances where business_id in "
                  "(select id from quote_versions where quote_id in "
@@ -124,9 +138,6 @@ async def clean(verbose=False):
         ('报价版本', "delete from quote_versions where quote_id in "
                  f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
         ('报价单', f"delete from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')"),
-        # 六阶段自动留痕/通知按业务关联清（无 CHK 前缀）
-        ('自动留痕', f"delete from followups where followup_type='系统' and customer_id in (select id from customers where name like 'CHK{RUN}%')"),
-        ('自动通知', f"delete from notifications where (business_type='quote' and business_id in (select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%'))) or (business_type='order' and business_id in (select id from sales_orders where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
         # D8：用例报价挂在快捷商机上，客户删除前先清商机（FK 依赖）
         ('商机需求明细', f"delete from opportunity_items where opportunity_id in (select id from opportunities where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),
         ('商机阶段历史', f"delete from opportunity_stage_history where opportunity_id in (select id from opportunities where customer_id in (select id from customers where name like 'CHK{RUN}%'))"),

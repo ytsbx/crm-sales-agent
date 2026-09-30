@@ -77,6 +77,28 @@ CHECKS: list[tuple[str, str, str]] = [
         "select count(*) from product_costs where remark like 'CHK%'",
         "select remark from product_costs where remark like 'CHK%' limit 3",
     ),
+    # 上面两条的判据是"备注带 CHK 前缀"，但套件未必把前缀写进备注——
+    # `check_quote_center_acceptance` 的历史价备注写的是"验收历史行"、等级价甚至
+    # 没有备注，于是 196 条规则挂在真实 SKU 上一直没被这条守门抓到。
+    # 判据改成"**挂在 CHK 前缀 SKU 上的**规则/成本"：不管备注写什么，
+    # 只要 SKU 是夹具，它名下的规则就都该随夹具一起消失。故意不按
+    # `skus.deleted_at` 过滤——SKU 软删了、规则却还在，正是要抓的情形。
+    (
+        "夹具 SKU 上的价格规则",
+        "select count(*) from price_rules pr join skus s on s.id = pr.sku_id "
+        "where s.sku_code like 'CHK%'",
+        "select s.sku_code || '/' || coalesce(nullif(pr.remark, ''), '(无备注)') "
+        "from price_rules pr join skus s on s.id = pr.sku_id "
+        "where s.sku_code like 'CHK%' limit 3",
+    ),
+    (
+        "夹具 SKU 上的成本",
+        "select count(*) from product_costs pc join skus s on s.id = pc.sku_id "
+        "where s.sku_code like 'CHK%'",
+        "select s.sku_code || '/' || coalesce(nullif(pc.remark, ''), '(无备注)') "
+        "from product_costs pc join skus s on s.id = pc.sku_id "
+        "where s.sku_code like 'CHK%' limit 3",
+    ),
 ]
 
 

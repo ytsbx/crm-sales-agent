@@ -13,6 +13,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SUITES_FILE="$SCRIPT_DIR/check_suites.txt"
 cd "$SCRIPT_DIR/../backend"
 
+# 本轮起点：收尾清扫（见下面 2.5）靠它划出"这轮跑出来的数据"，之前的一律不动
+TEST_RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+export TEST_RUN_STARTED_AT
+
 FAILED=()
 
 if [[ ! -f "$SUITES_FILE" ]]; then
@@ -57,6 +61,18 @@ while read -r suite; do
     FAILED+=("$suite")
   fi
 done < "$SUITES_FILE"
+
+echo
+echo "== 2.5 清扫本轮通知与系统留痕 =="
+# 各套件跑真实流程会生成站内通知/客户时间线留痕，它们没有 CHK 前缀、判据又常挂在
+# 套件自己刚删掉的父表上，逐个清容易漏（实测总会剩几条"孤儿"）。这里按本轮时间窗
+# 统一兜底；脚本没有时间窗就拒绝执行，不会误删业务数据。
+if PYTHONPATH=. .venv/bin/python scripts/clean_test_run_leftovers.py; then
+  echo "OK  clean_test_run_leftovers"
+else
+  echo "FAIL clean_test_run_leftovers"
+  FAILED+=("clean_test_run_leftovers")
+fi
 
 if [[ "${1:-}" == "--ui" ]]; then
   echo

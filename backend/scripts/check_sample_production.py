@@ -79,6 +79,12 @@ async def cleanup():
         sample = f"(select id from sample_requests where customer_id in {cust})"
         for sql in (
             f"delete from biz_docs where customer_id in {cust}",
+            # 通知与系统留痕要在样品单还在时清（判据挂在 sample_requests 上），
+            # 否则下面删完样品单，这两条子查询就查空、通知永远删不掉。
+            f"delete from notifications where business_type = 'sample' "
+            f"and business_id in {sample}",
+            f"delete from followups where followup_type = '系统' "
+            f"and customer_id in {cust}",
             f"delete from sample_items where sample_request_id in {sample}",
             f"delete from sample_shipments where sample_request_id in {sample}",
             f"delete from sample_requests where customer_id in {cust}",

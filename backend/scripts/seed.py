@@ -34,6 +34,15 @@ from app.modules.task.model import Task
 from app.modules.settings.model import PublicPoolRule, SystemSetting, TaskRule
 from app.modules.user.model import Department, Permission, Role, User, role_permissions, user_roles
 
+#: 客户等级折扣系数（**行业通用占位**）：A 级大客户 −8%、B −4%、C −1%、
+#: D 级新客/散单 +3%。与 `seed_demo_prices.py` 的演示线共用同一套口径。
+LEVEL_FACTOR: dict[str, Decimal] = {
+    "A": Decimal("0.92"),
+    "B": Decimal("0.96"),
+    "C": Decimal("0.99"),
+    "D": Decimal("1.03"),
+}
+
 # ------------------------------------------------------------------ 权限清单
 
 PERMISSIONS: list[tuple[str, str, str, str]] = [
@@ -683,64 +692,119 @@ async def seed() -> None:
                         created_by=user_map["admin"].id,
                     )
                 )
-            has_rule = (
-                await session.execute(select(PriceRule.id).where(PriceRule.sku_id == sku.id))
-            ).first()
-            if has_rule:
-                continue
-            session.add(
-                PriceRule(
-                    sku_id=sku.id,
-                    min_qty=Decimal(0),
-                    standard_price=Decimal(standard),
-                    guide_price=Decimal(guide),
-                    minimum_price=Decimal(minimum),
-                    target_margin=Decimal(margin),
-                    effective_from=date(today.year, 1, 1),
-                    status="active",
-                    remark="演示占位价，待业务确认后替换",
+            # 数量档：(起订量, 标准价, 指导价, 最低保护价, 备注)。第 0 档是通用价，
+            # 有阶梯的 SKU 再补一档。**等级价按同一套档位复制**，否则会出问题：
+            # 取价是"同 min_qty 下等级价优先于通用价"（pricing/service.find_price_rule），
+            # 只建 min_qty=0 的等级价，3000 件以上的通用阶梯价对 A/B/C/D 客户就永远命不中。
+            bands = [
+                (
+                    Decimal(0),
+                    Decimal(standard),
+                    Decimal(guide),
+                    Decimal(minimum),
+                    "演示占位价，待业务确认后替换",
                 )
-            )
+            ]
             if tier:
-                min_qty, tier_standard, tier_guide, tier_minimum = tier
-                session.add(
-                    PriceRule(
-                        sku_id=sku.id,
-                        min_qty=Decimal(min_qty),
-                        standard_price=Decimal(tier_standard),
-                        guide_price=Decimal(tier_guide),
-                        minimum_price=Decimal(tier_minimum),
-                        target_margin=Decimal(margin),
-                        effective_from=date(today.year, 1, 1),
-                        status="active",
-                        remark=f"阶梯价：{min_qty} 以上",
+                bands.append(
+                    (
+                        Decimal(tier[0]),
+                        Decimal(tier[1]),
+                        Decimal(tier[2]),
+                        Decimal(tier[3]),
+                        f"阶梯价：{tier[0]} 以上",
                     )
                 )
 
-        # 11. 价格权限（占位值：业务员最低利润率 15%，主管 5% 且有审批权）
+            # 判重必须按"**哪一档**在不在"而不是"这个 SKU 有没有规则"：
+            # 老写法是"已有任何规则就 continue"，于是后来新增的等级价一条都补不上、
+            # 缺的阶梯价也补不回来（真踩过：等级价全没插进去）。
+            # 下面用 (等级, 起订量) 作为唯一键逐条判重，分别覆盖通用价与等级价。
+            # 等级系数见模块顶部 LEVEL_FACTOR；与 seed_demo_prices.py 演示线同一套口径。
+            # 重叠检查只在**同等级内**做（service.find_price_rule_conflict），
+            # 所以等级价与空等级的通用价/阶梯价并存不会报 40901。
+            for level, factor in [(None, Decimal(1))] + list(LEVEL_FACTOR.items()):
+                for band_min_qty, band_standard, band_guide, band_minimum, band_remark in bands:
+                    already = (
+                        await session.execute(
+                            select(PriceRule.id).where(
+                                PriceRule.sku_id == sku.id,
+                                PriceRule.customer_level.is_(None)
+                                if level is None
+                                else PriceRule.customer_level == level,
+                                PriceRule.min_qty == band_min_qty,
+                            )
+                        )
+                    ).first()
+                    if already is not None:
+                        continue
+                    session.add(
+                        PriceRule(
+                            sku_id=sku.id,
+                            customer_level=level,
+                            min_qty=band_min_qty,
+                            standard_price=(band_standard * factor).quantize(Decimal("0.01")),
+                            guide_price=(band_guide * factor).quantize(Decimal("0.01")),
+                            minimum_price=(band_minimum * factor).quantize(Decimal("0.01")),
+                            target_margin=Decimal(margin),
+                            effective_from=date(today.year, 1, 1),
+                            status="active",
+                            remark=band_remark
+                            if level is None
+                            else (
+                                f"演示占位等级价（{level} 级 ×{factor}"
+                                + (f"，{band_min_qty} 起" if band_min_qty else "")
+                                + "），待业务确认后替换"
+                            ),
+                        )
+                    )
+
+        # 11. 价格权限（**行业通用占位值**，业务确认后直接在「价格中心 → 价格权限」替换）
+        #
+        # 三档拉开而不是一刀切：业务员最严（15% 利润率 + 折扣上限 10% + 不能自批），
+        # 主管放宽并可审批，管理员不受限。`discount_limit=None` 表示**不设折扣上限**
+        # ——pricing/service.resolve_discount_limit 会跳过 None 的角色。
+        #
+        # 写法必须是"有则更新"而不是"无则插入"：回归套件为了演示「低价弹审批」会把
+        # 业务员权限临时改成 5%/可审批，跑完若没恢复，只插不更的老写法会让这处漂移
+        # 永久留在库里（09-业务参数配置说明 §二 就记着这个警告）。就地更新 = 重跑种子
+        # 即可修复，和下面第 12 段运费费率同一套路。
         permission_defs = [
-            ("admin", "0.0", True, "管理员不受价格限制"),
-            ("sales_manager", "0.05", True, "主管可审批低价报价"),
-            ("salesperson", "0.15", False, "业务员低于 15% 利润率需审批"),
+            {
+                "role_code": "admin",
+                "minimum_margin": Decimal("0.0"),
+                "discount_limit": None,
+                "can_approve": True,
+                "remark": "管理员不受价格限制（不设折扣上限）",
+            },
+            {
+                "role_code": "sales_manager",
+                "minimum_margin": Decimal("0.08"),
+                "discount_limit": Decimal("0.15"),
+                "can_approve": True,
+                "remark": "占位值：主管可审批低价报价，折扣上限 15%",
+            },
+            {
+                "role_code": "salesperson",
+                "minimum_margin": Decimal("0.15"),
+                "discount_limit": Decimal("0.10"),
+                "can_approve": False,
+                "remark": "占位值：业务员低于 15% 利润率或折扣超 10% 需审批",
+            },
         ]
-        for role_code, margin, can_approve, remark in permission_defs:
-            role = role_map[role_code]
-            exists = (
+        for definition in permission_defs:
+            role = role_map[definition["role_code"]]
+            fields = {k: v for k, v in definition.items() if k != "role_code"}
+            permission = (
                 await session.execute(
                     select(PricePermission).where(PricePermission.role_id == role.id)
                 )
             ).scalar_one_or_none()
-            if exists is None:
-                session.add(
-                    PricePermission(
-                        role_id=role.id,
-                        minimum_margin=Decimal(margin),
-                        discount_limit=Decimal("0.10"),
-                        can_approve=can_approve,
-                        status="active",
-                        remark=remark,
-                    )
-                )
+            if permission is None:
+                session.add(PricePermission(role_id=role.id, status="active", **fields))
+            else:
+                for field, value in fields.items():
+                    setattr(permission, field, value)
 
         # 12. 运费费率（占位值：真实费率待业务给；改过值会同步更新）
         #

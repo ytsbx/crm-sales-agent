@@ -5,7 +5,8 @@
     $env:PYTHONPATH="."
     .venv\\Scripts\\python.exe scripts\\check_quote_api.py
 
-脚本自己会先清库再验，跑完把数据清回 seed 状态，可反复执行。
+脚本自己会先清**本套件的夹具**再验，跑完再清一次，可反复执行；
+**不碰任何非本套件的数据**（见下方 CLEAN_STATEMENTS 的说明）。
 
 覆盖：
   PATCH/DELETE /quotes/{id}
@@ -78,37 +79,87 @@ def login(username, password):
 
 
 # --------------------------------------------------------------------------
-# 清库：跑前跑后各一次，保证可重复执行
+# 清库：跑前跑后各一次，**只清本套件自己造的夹具**
 # --------------------------------------------------------------------------
+#
+# 历史教训（2026-09-30 修）：这里原先是**一条 WHERE 都没有的整表 delete**，
+# 跑前跑后各来一遍，等于一次全量回归就把全库的报价/商机/订单/回款/审批/通知/
+# 编号计数器清空两次。后果是连锁的：
+#   - 种子演示商机被删 → 重跑 `seed.py` 以为"商机不存在"，把整段演示数据又插
+#     一遍，跟进与任务越攒越多（实测跟进 12→13、"给宏远包装做周转箱核价"任务 4 条）；
+#   - `seed_demo` 的订单号每轮从新开始（1305→1311→1332），业务数据无法留存；
+#   - 通知表被清 ⇒ "从未向企微发出过消息"这条自查证据也跟着失效（看不出来了）。
+#
+# 本套件的夹具**全部**挂在 `CHKQ-quote-*` 商机下（见 quick_opp 调用处），
+# 所以按这棵夹具树逐层收敛即可。两条纪律：
+#   1. 只认这棵树，不写通配的整表 delete；
+#   2. 顺序必须是"先删引用者、再删父表"——下面的锚点子查询引用 quotes /
+#      quote_versions / sales_orders，父表一旦先删，后面的子查询就变空了。
+_ANCHOR_OPP = "select id from opportunities where title like 'CHKQ-quote-%'"
+_ANCHOR_QUOTE = f"select id from quotes where opportunity_id in ({_ANCHOR_OPP})"
+_ANCHOR_VERSION = f"select id from quote_versions where quote_id in ({_ANCHOR_QUOTE})"
+_ANCHOR_ORDER = f"select id from sales_orders where quote_id in ({_ANCHOR_QUOTE})"
+
 CLEAN_STATEMENTS = [
-    ('报价发送记录', 'delete from quote_send_logs'),
-    ('报价明细', 'delete from quote_items'),
-    ('报价费用', 'delete from quote_charges'),
-    ('报价版本', 'delete from quote_versions'),
-    ('报价单', 'delete from quotes'),
-    # 该套件清全库，六阶段自动留痕/通知（无 CHK 前缀）一并清
-    ('自动跟进留痕', "delete from followups where followup_type='系统'"),
-    # D8 后报价必须挂商机：商机需求/阶段历史/商机随报价一并清（FK 依赖报价先删）
-    ('商机需求明细', 'delete from opportunity_items'),
-    ('商机阶段历史', 'delete from opportunity_stage_history'),
-    ('商机', 'delete from opportunities'),
-    ('审批记录', 'delete from approval_records'),
-    ('审批实例', 'delete from approval_instances'),
-    ('订单明细', 'delete from sales_order_items'),
-    ('回款记录', 'delete from payment_records'),
-    ('应收计划', 'delete from receivable_plans'),
-    ('订单状态历史', 'delete from order_status_history'),
-    ('跟单里程碑', 'delete from order_milestones'),
-    ('ERP同步日志', 'delete from integration_logs'),
-    ('外部映射', 'delete from external_mappings'),
-    ('订单', 'delete from sales_orders'),
-    ('通知', 'delete from notifications'),
-    ('编号计数器', 'delete from number_sequences'),
+    ('报价发送记录', f'delete from quote_send_logs where quote_version_id in ({_ANCHOR_VERSION})'),
+    ('报价明细', f'delete from quote_items where quote_version_id in ({_ANCHOR_VERSION})'),
+    ('报价费用', f'delete from quote_charges where quote_version_id in ({_ANCHOR_VERSION})'),
+    # 通知/审计要在父表还在时清，否则锚点查不到（订单同理，见后面几行）
+    (
+        '通知',
+        "delete from notifications where business_type in ('quote','order','sample') "
+        f"and business_id in ({_ANCHOR_QUOTE} union {_ANCHOR_VERSION})",
+    ),
     (
         '用例审计',
         "delete from audit_logs where business_type in "
-        "('quote','order','approval','numbering_rule')",
+        "('quote','quote_version','order','approval','numbering_rule') "
+        f"and business_id in ({_ANCHOR_QUOTE} union {_ANCHOR_VERSION})",
     ),
+    (
+        '订单批次明细',
+        'delete from order_shipment_batch_items where batch_id in '
+        f"(select id from order_shipment_batches where order_id in ({_ANCHOR_ORDER}))",
+    ),
+    ('订单批次', f'delete from order_shipment_batches where order_id in ({_ANCHOR_ORDER})'),
+    ('订单明细', f'delete from sales_order_items where order_id in ({_ANCHOR_ORDER})'),
+    ('回款记录', f'delete from payment_records where order_id in ({_ANCHOR_ORDER})'),
+    ('应收计划', f'delete from receivable_plans where order_id in ({_ANCHOR_ORDER})'),
+    ('订单状态历史', f'delete from order_status_history where order_id in ({_ANCHOR_ORDER})'),
+    ('跟单里程碑', f'delete from order_milestones where order_id in ({_ANCHOR_ORDER})'),
+    ('ERP同步日志', f'delete from integration_logs where business_id in ({_ANCHOR_ORDER})'),
+    # 注意：external_mappings 的列叫 internal_id（不是 business_id），
+    # 写错列名会让整个 clean() 在第一句就抛异常、后面全不清（真踩过）。
+    (
+        '外部映射',
+        "delete from external_mappings where business_type = 'order' "
+        f"and internal_id in ({_ANCHOR_ORDER})",
+    ),
+    (
+        '审批记录',
+        "delete from approval_records where approval_instance_id in "
+        "(select id from approval_instances where business_type='quote_version' "
+        f"and business_id in ({_ANCHOR_VERSION}))",
+    ),
+    (
+        '审批实例',
+        "delete from approval_instances where business_type='quote_version' "
+        f"and business_id in ({_ANCHOR_VERSION})",
+    ),
+    # 版本 → 订单 → 报价单：父表按这个顺序退场
+    ('报价版本', f'delete from quote_versions where quote_id in ({_ANCHOR_QUOTE})'),
+    ('订单', f'delete from sales_orders where quote_id in ({_ANCHOR_QUOTE})'),
+    ('报价单', f'delete from quotes where opportunity_id in ({_ANCHOR_OPP})'),
+    # 六阶段自动留痕只删挂在本套件商机上的（原来是无条件清全表 followup_type='系统'）
+    ('自动跟进留痕', f'delete from followups where opportunity_id in ({_ANCHOR_OPP})'),
+    ('商机需求明细', f'delete from opportunity_items where opportunity_id in ({_ANCHOR_OPP})'),
+    (
+        '商机阶段历史',
+        f'delete from opportunity_stage_history where opportunity_id in ({_ANCHOR_OPP})',
+    ),
+    ('商机', "delete from opportunities where title like 'CHKQ-quote-%'"),
+    # 刻意**不删** number_sequences：编号计数器是全局递增状态，清掉会让单号
+    # 每轮从 1 重来（订单号 1305→1311→1332 就是这么来的）。它不是夹具。
 ]
 
 

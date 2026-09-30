@@ -9,8 +9,14 @@
 - 仓库根《产品报价中心验收核验.json》——方案附录要求的证据文件
   （上线后在生产环境重跑一次，替换 environment 字段即为正式验收记录）。
 
-数据纪律：全部使用 CHKQC 前缀的临时客户/商机/SKU，结束后清理；
-不触碰演示数据（演示客户/订单不在清理范围）。
+数据纪律：全部使用 CHKQC 前缀的临时客户/商机/产品/SKU，结束后清理；
+不触碰演示数据（演示客户/订单不在清理范围），**也不在真实 SKU 上造价格规则**。
+
+为什么强调"自建 SKU"：本脚本会在夹具 SKU 上造等级价与历史价规则，而
+`DELETE /price-rules/{id}` 只是把 status 改成 disabled（接口有意留痕，不是删除），
+所以夹具规则不会随 cleanup 消失。早期版本取 `/pricing/sku-options[0]`（真实 SKU）
+当夹具，每跑一次就往 ZX-6040-B 上永久堆 5 条残留，攒到过 196 条。现在改成自建
+CHKQC SKU，并在清理时对本脚本自建的 SKU 真删价格规则。
 """
 
 import json
@@ -18,10 +24,15 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 
 BASE = 'http://127.0.0.1:8000/api/v1'
 RUN = str(int(time.time()))[-6:]
-SCRIPT_STARTED_AT = time.strftime('%Y-%m-%d %H:%M:%S+00:00', time.gmtime())
+#: 绑进 SQL 的时间**必须是真的 datetime**：asyncpg 不接受字符串。
+#: 这里原先传的是 time.strftime(...) 得到的字符串，于是整段"自动留痕清理"每次
+#: 都抛 DataError、被外层 except 吞掉（日志里那句"（自动留痕清理跳过：…）"），
+#: 通知与跟进其实一条都没清过——清理代码看起来是生效的，实际从没执行。
+SCRIPT_STARTED_AT = datetime.now(UTC)
 PREFIX = f'CHKQC{RUN}'
 EVIDENCE_PATH = '../产品报价中心验收核验.json'
 
@@ -88,14 +99,41 @@ def main():
     zhangsan = login('zhangsan', '123456')
     evidence = {'generated_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'environment': 'local(dev)', 'results': RESULTS}
 
-    # ---------------- 准备：带成本 SKU + 两个不同等级客户（归张三） ----------------
-    _, res = call('GET', '/pricing/sku-options', token=admin)
-    sku = res['data'][0]
-    sku_id, sku_code = sku['id'], sku['sku_code']
-    cost_res = call('GET', f'/skus/{sku_id}/costs', token=admin)
-    has_cost = bool(cost_res[1]['data'])
-    if not has_cost:
-        print('!! 选中的 SKU 无成本，A06 用例需要无成本 SKU，其他用例也需要有成本 SKU，中止')
+    created_orders, created_quotes, created_opps, created_skus, created_products = [], [], [], [], []
+
+    # ---------------- 准备：**自建**带成本 SKU + 两个不同等级客户（归张三） ----------------
+    # 不能取 /pricing/sku-options 的第一个：那是真实 SKU，本脚本会在它身上造
+    # 等级价/历史价规则，而 DELETE /price-rules/{id} 只是置 disabled，残留会永久堆积。
+    _, res = call('POST', '/products', token=admin, body={'name': f'{PREFIX}-验收产品'})
+    pid_setup = res['data']['id']
+    created_products.append(pid_setup)
+    sku_code = f'{PREFIX}-SKU'
+    _, res = call('POST', f'/products/{pid_setup}/skus', token=admin, body={
+        'sku_code': sku_code, 'name': '验收用 SKU',
+    })
+    if res.get('code') != 0:
+        print(f'!! 建验收 SKU 失败：{res.get("message")}')
+        sys.exit(1)
+    sku_id = res['data']['id']
+    created_skus.append(sku_id)
+    # 这条 SKU 必须**带成本**：除 A06 外的用例都靠它算建议价/最低价
+    # （A06 要的是"无成本"SKU，它自己另建一个 -NC）。
+    _, res = call('POST', f'/skus/{sku_id}/costs', token=admin, body={
+        'purchase_cost': 40, 'package_cost': 5, 'effective_from': '2026-01-01',
+        'remark': '验收临时成本',
+    })
+    if res.get('code') != 0:
+        print(f'!! 建验收成本失败：{res.get("message")}')
+        sys.exit(1)
+    # 通用价（customer_level 为空）：A03「缺等级价回退通用价并标注来源」要有它才成立。
+    # 自建 SKU 之后它就是"通用指导价"的那条，少了它 A03 只会返回待定价。
+    _, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': sku_id, 'min_qty': 0,
+        'standard_price': 105, 'guide_price': 100, 'minimum_price': 80,
+        'remark': f'{PREFIX}-通用价',
+    })
+    if res.get('code') != 0:
+        print(f'!! 建验收通用价失败：{res.get("message")}')
         sys.exit(1)
 
     customers = {}
@@ -135,8 +173,16 @@ def main():
                     "delete from notifications where business_type in ('quote','order','sample') "
                     "and created_at > :ts",
                     "delete from followups where followup_type='系统' and created_at > :ts",
+                    # 价格规则：接口的 DELETE 只置 disabled（有意留痕，不是删除），
+                    # 所以夹具规则不会随 cleanup 消失。对本脚本**自建的 SKU**真删，
+                    # 它们本来就是临时夹具；真实 SKU 一行都不碰。
+                    "delete from price_rules where sku_id = any(:sku_ids)",
+                    # 成本同理：接口没有删成本的路径，不显式清就会留在库里
+                    "delete from product_costs where sku_id = any(:sku_ids)",
                 ):
-                    await s.execute(text(sql), {'ts': SCRIPT_STARTED_AT})
+                    await s.execute(
+                        text(sql), {'ts': SCRIPT_STARTED_AT, 'sku_ids': created_skus}
+                    )
                 await s.commit()
 
         try:
@@ -158,8 +204,6 @@ def main():
         for pid in created_products:
             call('DELETE', f'/products/{pid}', token=admin)
         print('清理完成')
-
-    created_orders, created_quotes, created_opps, created_skus, created_products = [], [], [], [], []
 
     try:
         # ---------------- A01 同一 SKU 分别对 A/B 级客户查价 ----------------

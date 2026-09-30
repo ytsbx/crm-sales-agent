@@ -30,9 +30,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 
 BASE = 'http://127.0.0.1:8000/api/v1'
 RUN = str(int(time.time()))[-6:]
+#: 本脚本开始跑的时刻：导出告警通知不带 CHK 前缀，只能按时间窗圈定。
+SCRIPT_STARTED_AT = datetime.now(UTC).isoformat()
 FAILURES = []
 CREATED_CUSTOMER_IDS: list[int] = []
 CREATED_CONTACT_IDS: list[int] = []
@@ -133,6 +136,13 @@ async def clean(verbose=False):
     statements = [
         # 只删本脚本造的数据（名字带 RUN 后缀）。顺序要服从外键：
         # 先删引用了客户的表，最后才删客户本身。
+        # 导出告警通知是个例外：它的标题是"异常批量导出提醒"、不带 CHK 前缀，
+        # 所以只能按本次运行的时间窗圈（早先漏清，每跑一轮留一条）。
+        (
+            '用例导出告警通知',
+            "delete from notifications where business_type = 'customer' "
+            f"and created_at >= '{SCRIPT_STARTED_AT}'",
+        ),
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
         ('用例案例', f"delete from sales_cases where title like '%CHK{RUN}%'"),
         ('用例定制询价', f"delete from custom_inquiries where title like '%CHK{RUN}%'"),
