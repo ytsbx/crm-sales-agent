@@ -488,6 +488,16 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
 
 # ---------------------------------------------------------------- 生成
 
+#: 附加费类型 → 对客展示名（与前端报价页的 CHARGE_LABEL 保持同一套说法）
+CHARGE_TYPE_LABEL = {
+    "logistics": "运费",
+    "packaging": "包装费",
+    "tax": "税费",
+    "discount": "折扣",
+    "service": "服务费",
+    "other": "其他费用",
+}
+
 
 async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
     """组装对客报价单快照（场景10）。只读，不落库。
@@ -501,7 +511,7 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
     因为对客沟通里"这一行是哪条需求"才是真正会被追问的。
     """
     from app.modules.customer.model import Customer
-    from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
+    from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
 
     version_row = await session.get(QuoteVersion, quote_version_id)
     if version_row is None:
@@ -515,6 +525,13 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
             select(QuoteItem)
             .where(QuoteItem.quote_version_id == version_row.id)
             .order_by(QuoteItem.id.asc())
+        )
+    ).scalars().all()
+    charge_rows = (
+        await session.execute(
+            select(QuoteCharge)
+            .where(QuoteCharge.quote_version_id == version_row.id)
+            .order_by(QuoteCharge.sort_no.asc(), QuoteCharge.id.asc())
         )
     ).scalars().all()
 
@@ -559,6 +576,21 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
             "version": version_row.version_no,
         },
         "title_suffix": customer.name if customer else "",
+        # 明细相加 ≠ 合计的根源：合计含附加费与优惠，但快照此前只带合计。
+        # 把 小计 / 各费用行 / 优惠 一起带出来，对客 Excel 才能逐行列全、
+        # 客户拿计算器加一遍正好等于合计（2026-10-04 口径：给客户看）。
+        "subtotal_amount": version_row.subtotal_amount,
+        "charge_amount": version_row.charge_amount,
+        "discount_amount": version_row.discount_amount,
+        "charges": [
+            {
+                "label": c.description
+                or CHARGE_TYPE_LABEL.get(c.charge_type, c.charge_type),
+                "amount": c.amount,
+                "is_discount": bool(c.is_discount),
+            }
+            for c in charge_rows
+        ],
         # 合计取版本行的 total_amount（版本生成时就定死了）
         "total_amount": version_row.total_amount,
         "sections": [
@@ -633,6 +665,11 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
             "source": built.get("source"),
             # 合计（报价单用）：取版本的 total_amount，不在这里对明细求和
             "total_amount": built.get("total_amount"),
+            # 对客 Excel 的金额区需要：小计 + 各项费用 + 优惠，最后才等于合计
+            "subtotal_amount": built.get("subtotal_amount"),
+            "charge_amount": built.get("charge_amount"),
+            "discount_amount": built.get("discount_amount"),
+            "charges": built.get("charges") or [],
             "body": body,
             "template": {"id": template.id, "name": template.name, "version": template.version},
         }
@@ -891,6 +928,10 @@ async def doc_pdf_data(session: AsyncSession, doc: BizDoc) -> dict:
         "diffs": snapshot.get("diffs") or [],
         "sections": snapshot.get("sections") or [],
         "body": snapshot.get("body") or "",
+        "subtotal_amount": snapshot.get("subtotal_amount"),
+        "charge_amount": snapshot.get("charge_amount"),
+        "discount_amount": snapshot.get("discount_amount"),
+        "charges": snapshot.get("charges") or [],
         "total_amount": snapshot.get("total_amount"),
         "content_sha256": doc.content_sha256,
     }

@@ -82,6 +82,10 @@ def serialize(
         "version": inquiry.version or 1,
         "root_id": inquiry.root_id,
         "revision_note": inquiry.revision_note,
+        # 「已被新版取代」：取代是**版本属性**，不覆盖业务 status（见 model 注释）
+        "superseded_at": inquiry.superseded_at,
+        "is_superseded": inquiry.superseded_at is not None,
+        "version_state_label": "已被新版取代" if inquiry.superseded_at else "当前版",
         "converted_sku_id": inquiry.converted_sku_id,
         "remark": inquiry.remark,
         "created_by": inquiry.created_by,

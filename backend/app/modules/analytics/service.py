@@ -25,7 +25,7 @@ from app.modules.lead.model import Lead
 from app.modules.lead.service import STATUS_LABEL as LEAD_STATUS_LABEL
 from app.modules.opportunity.model import LossReason, Opportunity, OpportunityItem, OpportunityStage
 from app.modules.opportunity.model import OpportunityStageHistory
-from app.modules.order.milestones import NODE_LABELS
+from app.modules.order.milestones import node_label
 from app.modules.order.model import ORDER_STATUS_LABEL
 from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
 from app.modules.payment.model import PLAN_STATUS_LABEL as PLAN_LABEL
@@ -909,8 +909,12 @@ async def sales_user_stats(
 ) -> list[dict]:
     """PRD §23「人员：客户数 / 跟进数 / 商机数 / 报价数 / 成交额 / 回款额」。
 
-    可见范围：管理员/财务看到全部在岗人员；其余角色只看得到数据范围内的
+    可见范围：管理员/财务看到全部人员；其余角色只看得到数据范围内的
     负责人（原实现无过滤，业务员能看到全公司的成交额与回款额）。
+
+    在职口径（2026-10-04 定）：**不按在职过滤**，与应收/实收统一。销售离职后
+    他谈下的单子的业绩仍算他的（文档 :61 签单归属），底层欠款也还得有人收——
+    只把离职的人从榜单抹掉，会让"客户数/成交额/回款额"三处口径打架。
     """
     stmt = select(
         User.id,
@@ -940,7 +944,7 @@ async def sales_user_stats(
         .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
         .where(PaymentRecord.status == "confirmed", _sales_owner_col() == User.id)
         .scalar_subquery(),
-    ).where(User.status == "active")
+    )
 
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is not None:
@@ -1508,7 +1512,7 @@ async def delivery_stats(
         },
         "by_owner": by_owner_rows,
         "overdue_nodes": [
-            {"name": NODE_LABELS.get(node, node), "value": count}
+            {"name": node_label(node), "value": count}
             for node, count in sorted(overdue_by_node.items(), key=lambda kv: -kv[1])
         ],
         "trend": [

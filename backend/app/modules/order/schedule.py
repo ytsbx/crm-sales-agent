@@ -80,7 +80,7 @@ async def preview(
         affected_nodes.append(
             {
                 "node": row.node,
-                "label": milestones_svc.NODE_LABELS.get(row.node, row.node),
+                "label": milestones_svc.node_label(row.node),
                 "before": row.planned_date.isoformat() if row.planned_date else None,
                 "after": new_planned.isoformat() if new_planned else None,
             }

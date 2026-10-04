@@ -28,7 +28,9 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from io import BytesIO
 
+from openpyxl import load_workbook
 from sqlalchemy import select, text
 
 from app.core.database import SessionLocal
@@ -66,6 +68,7 @@ async def cleanup():
             f'delete from sample_items where sample_request_id in {sample}',
             f'delete from sample_requests where customer_id in {cust}',
             f'delete from quote_items where quote_version_id in (select id from quote_versions where quote_id in {quote})',
+            f'delete from quote_charges where quote_version_id in (select id from quote_versions where quote_id in {quote})',
             f'delete from quote_versions where quote_id in {quote}',
             f'delete from quotes where customer_id in {cust}',
             f'delete from sales_order_items where order_id in {order}',
@@ -93,7 +96,7 @@ async def main():
     from app.modules.inquiry.model import CustomInquiry
     from app.modules.order.model import SalesOrder, SalesOrderItem
     from app.modules.product.model import Sku
-    from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
+    from app.modules.quote.model import Quote, QuoteCharge, QuoteItem, QuoteVersion
     from app.modules.sample.model import SampleItem, SampleRequest
 
     stamp = int(time.time())
@@ -226,13 +229,24 @@ async def main():
         )
         s.add(quote)
         await s.flush()
+        # 带一条运费、一条优惠：验"明细相加 = 小计，小计 + 费用 + 优惠 = 合计"。
+        # 500 + 120 + (-70) = 550
         qv = QuoteVersion(
             quote_id=quote.id, version_no=3, subtotal_amount=Decimal('500'),
-            total_amount=Decimal('500'), currency='CNY', created_at=now,
+            charge_amount=Decimal('120'), discount_amount=Decimal('-70'),
+            total_amount=Decimal('550'), currency='CNY', created_at=now,
         )
         s.add(qv)
         await s.flush()
         quote.current_version_id = qv.id
+        s.add(QuoteCharge(
+            quote_version_id=qv.id, charge_type='logistics', description='运费',
+            amount=Decimal('120'), is_discount=False, sort_no=1,
+        ))
+        s.add(QuoteCharge(
+            quote_version_id=qv.id, charge_type='discount', description='整单优惠',
+            amount=Decimal('-70'), is_discount=True, sort_no=2,
+        ))
         s.add(QuoteItem(
             quote_version_id=qv.id, sku_id=sku.id, sku_name_snapshot='ZX-6040-B',
             quantity=Decimal('5'), quoted_price=Decimal('100'),
@@ -295,7 +309,15 @@ async def main():
         # 金额取自版本快照的 quoted_price × quantity，两处必须逐项一致
         check('明细单价与报价版本一致', str(snap_items[0]['unit_price']), '100')
         check('明细金额 = 数量 × 单价', str(snap_items[0]['amount']), '500')
-        check('合计取自报价版本', str(quote_doc.input_snapshot['total_amount']), '500')
+        check('合计取自报价版本', str(quote_doc.input_snapshot['total_amount']), '550')
+        # 明细相加 ≠ 合计是"表里不带费用行"造成的：快照现在要带小计/费用/优惠，
+        # 客户按计算器加一遍正好等于合计。
+        snap = quote_doc.input_snapshot
+        charge_sum = sum(float(c['amount']) for c in snap['charges'])
+        check('小计取自报价版本', float(snap['subtotal_amount']), 500.0)
+        check('费用行数（含优惠）', len(snap['charges']), 2)
+        check('小计 + 费用 + 优惠 = 合计',
+              float(snap['subtotal_amount']) + charge_sum, float(snap['total_amount']))
 
         # 改当前价格规则不能影响已出的表：报价快照是唯一数据源
         quote_item_row = (
@@ -318,6 +340,12 @@ async def main():
             xlsx_bytes[:2] == b'PK',
             f'前 2 字节 {xlsx_bytes[:2]!r}',
         )
+        ws = load_workbook(BytesIO(xlsx_bytes)).active
+        labels = {
+            str(ws.cell(row=r, column=1).value or '') for r in range(1, ws.max_row + 1)
+        }
+        for name in ('小计', '运费', '整单优惠', '合计'):
+            check_true(f'对客 Excel 里有「{name}」行', name in labels, str(sorted(labels)))
         quote_doc2 = await bizdoc.generate_quote_doc(
             s, quote_version_id=qv.id, user=owner_user
         )

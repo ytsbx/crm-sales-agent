@@ -227,6 +227,18 @@ async def main():
     ids['inquiries'].append(revised['id'])
     check('新一版沿用同一编号', revised.get('inquiry_no'), inquiry.get('inquiry_no'))
     check('版本号 +1', revised.get('version'), 2)
+    check('新版没被标记为已取代', revised.get('is_superseded'), False)
+    status, payload = call('GET', f'/custom-inquiries/{inquiry_id}', token=token)
+    check('旧版被标记"已被新版取代"',
+          (payload.get('data') or {}).get('is_superseded'), True)
+    # 在旧版上再发起修订 → 必须被拒（此前不校验，在 v1 上连点两次会出两条 v2）
+    status, payload = call('POST', f'/custom-inquiries/{inquiry_id}/revise', token=token,
+                           body={'revision_note': '在旧版上重复修订'})
+    check('在旧版上再修订被拒', status, 409)
+    # 直接改历史版的内容 → 必须被拒（要改请走修订）
+    status, payload = call('PATCH', f'/custom-inquiries/{inquiry_id}', token=token,
+                           body={'title': '偷偷改历史版内容'})
+    check('改历史版内容被拒', status, 409)
 
     print()
     print('=== 3. 报价明细可无 SKU（场景09 主路径）===')
@@ -237,8 +249,14 @@ async def main():
     check('从需求建商机成功', status, 200)
     opportunity_id = payload['data']['id']
     ids['opportunities'].append(opportunity_id)
-    call('PATCH', f'/custom-inquiries/{inquiry_id}', token=token,
-         body={'opportunity_id': opportunity_id})
+    # 链级字段（挂商机）在旧版上仍可改——这是整条需求共享的，且现有流程就靠它
+    # 把商机链到需求链条上；改一次对链条每一版生效。
+    status, payload = call('PATCH', f'/custom-inquiries/{inquiry_id}', token=token,
+                           body={'opportunity_id': opportunity_id})
+    check('链级字段（挂商机）在旧版上仍可改', status, 200)
+    status, payload = call('GET', f'/custom-inquiries/{revised["id"]}', token=token)
+    check('链级字段对整条链条生效（新版也挂上了商机）',
+          (payload.get('data') or {}).get('opportunity_id'), opportunity_id)
 
     status, payload = call('POST', '/quotes', token=token, body={
         'customer_id': customer_id, 'opportunity_id': opportunity_id,

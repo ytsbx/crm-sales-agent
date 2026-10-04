@@ -350,7 +350,7 @@ async def list_milestones(
         {
             "id": r.id,
             "node": r.node,
-            "label": milestones_svc.NODE_LABELS.get(r.node, r.node),
+            "label": milestones_svc.node_label(r.node),
             "planned_date": r.planned_date,
             "actual_date": r.actual_date,
             "status": milestones_svc.node_status(r.planned_date, r.actual_date, today),
@@ -403,7 +403,7 @@ async def update_milestone(
         {
             "id": row.id,
             "node": row.node,
-            "label": milestones_svc.NODE_LABELS.get(row.node, row.node),
+            "label": milestones_svc.node_label(row.node),
             "planned_date": row.planned_date,
             "actual_date": row.actual_date,
             "status": milestones_svc.node_status(row.planned_date, row.actual_date, date.today()),

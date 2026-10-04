@@ -80,6 +80,7 @@ async def main() -> int:
     from app.core.config import settings
     from app.modules.customer.model import Customer
     from app.modules.dingtalk import service as dt
+    from app.modules.dingtalk.model import OaInstance
     from app.modules.inquiry.model import CustomInquiry
 
     fake = FakeClient()
@@ -141,7 +142,7 @@ async def main() -> int:
         check('同轮再发起：外部调用次数没变', fake.calls, calls_at_failure)
         check('复用的还是那行 failed（等人工决定）', retried.id, failed.id)
 
-        print('=== 5. 卡在 submitting 的行：超时后允许重发（不再永久卡死）===')
+        print('=== 5. 卡在 submitting 的行：转人工，不自动重发 ===')
         from datetime import UTC, datetime, timedelta
 
         fake.fail = False  # 第 4 段把假客户端设成了失败，这里必须复位
@@ -157,17 +158,54 @@ async def main() -> int:
         stuck_row.last_attempt_at = stuck_row.created_at
         await s.commit()
 
-        revived = await submit(inquiry_version=2)
-        check('超时的 submitting 允许重发（外部调用 +1）', fake.calls,
-              calls_before_stuck + 1)
-        check('重发后状态回到 pending', revived.status, 'pending')
-        check('复用的是同一行（幂等键不变，钉钉不会多建单）', revived.id, stuck_row.id)
-        # 重试只该刷新"本次尝试时间"，**不能改写 created_at**——
-        # 那是"这条记录什么时候产生的"（第一次发起），
-        # 被覆盖之后排查时问"这单最早什么时候发的"会得到最后一次重试的时间
-        check('created_at 未被重试改写', revived.created_at, original_created_at)
-        check_true('last_attempt_at 已刷新', revived.last_attempt_at != original_created_at,
-                   str(revived.last_attempt_at))
+        # 超时后再发起：**不自动重发**（钉钉无幂等键，重发可能真建出第二张单），
+        # 改成打 needs_review 交人工；外部调用次数必须原地不动。
+        needs = await submit(inquiry_version=2)
+        check('超时的 submitting 转人工（不自动重发）', needs.status, 'needs_review')
+        check('没有偷偷再调外部', fake.calls, calls_before_stuck)
+        check('复用的是同一行', needs.id, stuck_row.id)
+        check('created_at 没被改写', needs.created_at, original_created_at)
+        check_true('错误说明指向人工核对', '人工' in (needs.error or ''), str(needs.error)[:50])
+
+        # 人工到钉钉核对后：
+        # (a) 确认没建单 → resend 才真的重发
+        resent = await dt.resolve_reviewed_instance(s, needs, action='resend')
+        check('人工 resend 才真的重发（外部调用 +1）', fake.calls, calls_before_stuck + 1)
+        check('resend 后回到 pending', resent.status, 'pending')
+        check('resend 复用同一行', resent.id, stuck_row.id)
+        check_true('last_attempt_at 已刷新', resent.last_attempt_at != original_created_at,
+                   str(resent.last_attempt_at))
+
+        # (b) 确认钉钉已建单 → adopt 把那张接过来（不再调外部）
+        adopt_row = OaInstance(
+            customer_id=inquiry.customer_id, inquiry_id=inquiry.id, inquiry_version=2,
+            oa_type='inquiry', idempotency_key=f'{inquiry.id}:2:inquiry:9',
+            submit_round=9, process_code='PROC-FAKE', originator_user_id='fake-user',
+            form_snapshot={'formComponentValues': []}, status='needs_review',
+            created_by=admin.id, created_at=datetime.now(UTC), last_attempt_at=datetime.now(UTC),
+        )
+        s.add(adopt_row)
+        await s.flush()
+        calls_before_adopt = fake.calls
+        adopted = await dt.resolve_reviewed_instance(
+            s, adopt_row, action='adopt', instance_id='DT-ADOPT-1'
+        )
+        check('adopt 后状态回 pending', adopted.status, 'pending')
+        check('adopt 接住了钉钉实例号', adopted.instance_id, 'DT-ADOPT-1')
+        check('adopt 不调外部', fake.calls, calls_before_adopt)
+
+        # (c) 确认不发了 → abandon 作废本轮
+        abandon_row = OaInstance(
+            customer_id=inquiry.customer_id, inquiry_id=inquiry.id, inquiry_version=5,
+            oa_type='inquiry', idempotency_key=f'{inquiry.id}:5:inquiry:1',
+            submit_round=1, process_code='PROC-FAKE', originator_user_id='fake-user',
+            form_snapshot={'formComponentValues': []}, status='needs_review',
+            created_by=admin.id, created_at=datetime.now(UTC), last_attempt_at=datetime.now(UTC),
+        )
+        s.add(abandon_row)
+        await s.flush()
+        abandoned = await dt.resolve_reviewed_instance(s, abandon_row, action='abandon')
+        check('abandon 后作废', abandoned.status, 'withdrawn')
 
         print('=== 6. 关闸时落的 skipped：开闸后能真正发出 ===')
         settings.dingtalk_push_off = True

@@ -94,16 +94,28 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
         sheet.cell(row=header_row + 1, column=1, value="（无明细）")
         total_row = header_row + 1
 
-    # 合计也取快照里的值，不在这里对明细求和——两处各自算会出现"表内合计
-    # 与报价版本对不上"的经典扯皮
-    sheet.cell(row=total_row + 2, column=1, value="合计").font = bold
-    total = data.get("total_amount")
+    # 金额区：小计 → 各项附加费 → 优惠 → 合计，逐行列全。
+    # 此前表里只有"明细 + 合计"，而合计里含运费/折扣，客户按计算器加明细永远对不上。
+    # 2026-10-04 口径：运费与折扣给客户看，所以把这几行补出来。金额一律取快照，
+    # 不在这里对明细求和——两处各自算会出现"表内合计与报价版本对不上"的经典扯皮。
+    def _money(value: Any) -> str:
+        return "" if value is None else f"{float(value):,.2f}"
+
+    summary_row = total_row + 2
+    sheet.cell(row=summary_row, column=1, value="小计").font = bold
+    sheet.cell(row=summary_row, column=6, value=_money(data.get("subtotal_amount")))
+    summary_row += 1
+    for charge in data.get("charges") or []:
+        sheet.cell(row=summary_row, column=1, value=_text(charge.get("label")))
+        sheet.cell(row=summary_row, column=6, value=_money(charge.get("amount")))
+        summary_row += 1
+    sheet.cell(row=summary_row, column=1, value="合计").font = bold
     total_cell = sheet.cell(
-        row=total_row + 2, column=6, value=_text(total) if total is not None else ""
+        row=summary_row, column=6, value=_money(data.get("total_amount"))
     )
     total_cell.font = bold
 
-    row = total_row + 3
+    row = summary_row + 1
     for section in data.get("sections") or []:
         if not _text(section.get("value")).strip():
             continue

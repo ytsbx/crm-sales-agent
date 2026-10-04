@@ -615,6 +615,13 @@ async def create_shipment_batch(
             )
         )
     await session.flush()
+    # 第 2 批起按批次动态生成跟单节点（口径 2026-10-04）：首批对应「首批发货」，
+    # 后续每批一个独立节点，"分批导致的延期"才统计得出来。
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.ensure_batch_node(
+        session, order.id, batch_no, payload.planned_date, created_by=user_id
+    )
     return batch
 
 
@@ -685,6 +692,13 @@ async def ship_shipment_batch(
         batch.remark = payload.remark
     await session.flush()
 
+    # 动态批次节点：实发时把实际日登记上（首批仍是人工登记，不动固定节点）
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.mark_batch_shipped(
+        session, order.id, batch.batch_no, batch.actual_ship_date
+    )
+
     # 首批/任一批实发只推进到"已发货"；completed 由 change_status 的未发量闸门把关
     if order.status in ("pending", "in_production"):
         await change_status(
@@ -708,6 +722,10 @@ async def cancel_shipment_batch(
     if batch.status == "shipped":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已发货的批次不能取消，请走退换流程")
     batch.status = "cancelled"
+    # 批次取消 → 撤掉它的动态节点，否则会凭空冒出个逾期的"第 N 批发货"
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.drop_batch_node(session, batch.order_id, batch.batch_no)
     await session.flush()
 
 

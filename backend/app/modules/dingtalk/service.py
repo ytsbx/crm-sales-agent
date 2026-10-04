@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
+from app.core.errors import AppError, ErrorCode
 from app.modules.dingtalk.client import DingTalkError, get_client
 from app.modules.dingtalk.model import OA_STATUS_LABEL, OaInstance
 
@@ -126,36 +127,38 @@ async def create_inquiry_instance(
         # 同轮幂等**不能只看"有没有记录"，还要看那条记录是什么状态**，否则两种
         # 卡死都无解：
         # - `submitting`：进程在"占业务键的提交"与"调完外部之后的提交"之间被杀，
-        #   行永远停在 submitting —— 轮询只捞 pending，同轮又原样返回，
-        #   既不同步也永不重发。超过阈值即认为那次尝试已死，允许重走一遍
-        #   （复用本地同一行、同一幂等键）。
+        #   行就会停在 submitting——轮询只捞 pending，同轮又原样返回，既不更新也不重发。
         #
-        #   **已知风险（待外部核对/设计）**：钉钉 workflow 接口没有幂等键，
-        #   本地 idempotency_key 只保证"本地一行"，不保证钉钉只建一张单。
-        #   如果上一次请求其实已经到达钉钉、只是响应丢了，这里的重发会在钉钉
-        #   建出第二张审批单，本地 instance_id 被第二张覆盖、首张成隐形挂单。
-        #   彻底堵死需要"重发前先按业务键去钉钉查一遍"，那需要钉钉侧的查询接口
-        #   （目前 client 只有按 instance_id 单查），先记在这里，不要假装已经安全。
+        #   **口径（2026-10-04 定）：结果不明 → 转人工，不自动重发。**
+        #   钉钉 workflow 接口没有幂等键，本地 idempotency_key 只保证"本地一行"。
+        #   如果上一次请求其实已经到达钉钉、只是响应丢了，自动重发就会在钉钉建出
+        #   第二张审批单，本地 instance_id 被第二张覆盖、首张成"隐形挂单"。所以超过
+        #   阈值后把行标成 needs_review，由人工去钉钉核对后再决定：认领 / 重发 / 作废。
         # - `skipped`：当时总闸关着没发。闸门开了之后再点"发起"，
         #   如果还返回那条 skipped，用户点了等于没点。
-        retryable = False
         if latest.status == "submitting":
             # 用 **last_attempt_at**（本次尝试的起点）而不是 created_at：
-            # created_at 是"这条记录什么时候产生的"（第一次发起），拿它当尝试时间
-            # 会让"这单最早什么时候发的"变成最后一次重试的时间。
+            # created_at 是"这条记录什么时候产生的"（第一次发起）。
             # 存量行由迁移抄过一份，这里再兜一层 created_at（老数据/异常数据）。
             started = latest.last_attempt_at or latest.created_at or datetime.now(UTC)
-            retryable = (datetime.now(UTC) - started) > SUBMITTING_STUCK_AFTER
-        elif latest.status == "skipped" and not app_settings.dingtalk_push_off:
-            retryable = True
-        if not retryable:
+            if (datetime.now(UTC) - started) > SUBMITTING_STUCK_AFTER:
+                latest.status = "needs_review"
+                latest.error = (
+                    "上次发起结果不明（发起过程中断）：钉钉那边可能已经建了审批单。"
+                    "已转人工核对——请先去钉钉确认，再选择「认领 / 重发 / 作废」"
+                )
+                await session.commit()
             return latest
-        # 复用同一条记录重试：idempotency_key 不变，本地不新增行、钉钉不多建单
-        latest.status = "submitting"
-        latest.error = None
-        latest.last_attempt_at = datetime.now(UTC)  # 本次尝试的新起点
-        row = latest
-        await session.commit()
+        if latest.status == "skipped" and not app_settings.dingtalk_push_off:
+            # 闸门开了，重走一遍（复用同一行、同一幂等键）。skipped 是"根本没发"，
+            # 没有重复建单风险，这一条保留自动。
+            latest.status = "submitting"
+            latest.error = None
+            latest.last_attempt_at = datetime.now(UTC)  # 本次尝试的新起点
+            row = latest
+            await session.commit()
+        else:
+            return latest
 
     submit_round = (int(latest.submit_round) + 1) if (resubmit and latest) else 1
     idempotency_key = f"{inquiry_id}:{inquiry_version}:{oa_type}:{submit_round}"
@@ -244,6 +247,73 @@ async def create_inquiry_instance(
     row.status = "pending"
     row.synced_at = datetime.now(UTC)
     await session.commit()
+    return row
+
+
+async def resolve_reviewed_instance(
+    session: AsyncSession,
+    row: OaInstance,
+    *,
+    action: str,
+    instance_id: str | None = None,
+    note: str | None = None,
+) -> OaInstance:
+    """人工处理"结果不明"的发起（口径 2026-10-04：不自动重发，转人工）。
+
+    三种决定，都要人先到钉钉那边看一眼再选：
+    - `adopt`：钉钉其实已经建单 → 填实例号接过来，状态回"审批中"；
+    - `resend`：确认钉钉没有单 → 复用同一轮重新发起（同一行、同一幂等键）；
+    - `abandon`：确认不发了 → 作废本轮记录。
+    """
+    if action == "adopt":
+        if not instance_id:
+            raise AppError(
+                ErrorCode.REQUIRED_FIELD_MISSING, "认领需要填写钉钉那边已有的审批单号", 422
+            )
+        row.instance_id = instance_id
+        row.status = "pending"
+        row.error = None
+        await session.flush()
+        return row
+    if action == "resend":
+        return await resend_instance(session, row)
+    if action == "abandon":
+        row.status = "withdrawn"
+        row.error = note or "人工核对确认钉钉未建单，作废本轮"
+        await session.flush()
+        return row
+    raise AppError(
+        ErrorCode.PARAM_ERROR, "action 只能是 adopt / resend / abandon", 422
+    )
+
+
+async def resend_instance(session: AsyncSession, row: OaInstance) -> OaInstance:
+    """人工确认钉钉没建单后，复用同一轮重新发起（不换行、不加轮次）。
+
+    提交前先落 `submitting` 并提交：万一进程在调用钉钉前后又被打断，下一个人
+    打开还能看到"结果不明"，不会被当成没发过而重复点。
+    """
+    component_values = (row.form_snapshot or {}).get("formComponentValues") or []
+    row.status = "submitting"
+    row.error = None
+    row.last_attempt_at = datetime.now(UTC)
+    await session.commit()
+    try:
+        instance_id = await get_client().create_process_instance(
+            process_code=row.process_code or "",
+            form_component_values=component_values,
+            originator_user_id=row.originator_user_id or "",
+        )
+    except Exception as exc:
+        row.status = "failed"
+        row.error = f"{type(exc).__name__}: {exc}"[:500]
+        await session.flush()
+        return row
+    row.instance_id = instance_id
+    row.status = "pending"
+    row.error = None
+    row.synced_at = datetime.now(UTC)
+    await session.flush()
     return row
 
 

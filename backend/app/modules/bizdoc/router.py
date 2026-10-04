@@ -240,6 +240,7 @@ async def get_doc(
 @router.get("/biz-docs/{doc_id}/download")
 async def download_doc(
     doc_id: int,
+    request: Request,
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -253,6 +254,18 @@ async def download_doc(
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_scope(session, user, doc)
     data = await svc.doc_pdf_data(session, doc)
+    # 下载留痕：含价格的对客文件谁在什么时候取了哪一份要能查（作废件也一样取得到，
+    # 只是纸上带"已作废"，所以这里记状态）。
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="download",
+        business_type="biz_doc",
+        business_id=doc.id,
+        after={"doc_no": doc.doc_no, "status": doc.status},
+        ip=client_ip(request),
+    )
+    await session.commit()
     fmt = DOC_TYPE_FORMAT.get(doc.doc_type, "pdf")
     if fmt == "xlsx":
         from app.modules.bizdoc.xlsx import render_quote_xlsx

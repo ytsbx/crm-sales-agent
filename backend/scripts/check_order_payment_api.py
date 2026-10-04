@@ -472,7 +472,19 @@ def main():
     status, res = call('POST', f'/orders/{b_order_id}/shipments', token=admin,
                        body={'items': [{'order_item_id': b_item_id, 'planned_qty': 4}]})
     batch2 = res['data']['batch_id']
+    # 按批次动态生成跟单节点（口径 2026-10-04）：第 2 批起每批一个独立节点，
+    # "分批导致的延期"才统计得出来；同时固定六节点不能被动态节点顶掉。
+    status, res = call('GET', f'/orders/{b_order_id}/milestones', token=admin)
+    labels = {r['label'] for r in res['data']}
+    check('固定六节点仍在', len([x for x in res['data'] if x['node'] in (
+        'contract', 'deposit', 'pre_sample_sent', 'pre_sample_confirmed',
+        'first_shipment', 'payment')]), 6)
+    check_true('第 2 批自动生成「第 2 批发货」节点', '第 2 批发货' in labels, str(sorted(labels)))
     call('POST', f'/orders/{b_order_id}/shipments/{batch2}/ship', token=admin, body={})
+    status, res = call('GET', f'/orders/{b_order_id}/milestones', token=admin)
+    batch2_node = next((r for r in res['data'] if r['label'] == '第 2 批发货'), None)
+    check_true('第 2 批节点登记了实际发货日',
+               bool(batch2_node and batch2_node.get('actual_date')), str(batch2_node))
     status, res = call('GET', f'/orders/{b_order_id}/shipments', token=admin)
     check('全发完未发量 0', res['data']['summary']['remaining'], 0.0)
     check('all_shipped=True', res['data']['summary']['all_shipped'], True)

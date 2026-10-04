@@ -22,6 +22,18 @@ STATUS_LABELS = {
     "archived": "已归档",
 }
 
+#: 字段归属（口径 2026-10-04）：把"需求"拆成**链级**与**版本级**两层。
+#: - 链级：整条需求共享（哪家客户、哪个联系人、关联哪个商机、对接报价员），
+#:   改一次应该对链条上每一版都生效；
+#: - 版本级：某一版专属（标题/描述/数量/目标价/状态/备注），历史版本**不许改**，
+#:   要改就发起修订生成新一版（§3.3"旧版永不覆盖"）。
+CHAIN_FIELDS = frozenset(
+    {"customer_id", "contact_id", "opportunity_id", "oa_quote_user_id", "oa_quote_user_name"}
+)
+VERSION_FIELDS = frozenset(
+    {"title", "description", "quantity", "target_price", "status", "remark", "revision_note"}
+)
+
 
 class CustomInquiry(Base, IdMixin):
     __tablename__ = "custom_inquiries"
@@ -46,6 +58,12 @@ class CustomInquiry(Base, IdMixin):
     version: Mapped[int] = mapped_column(BigInteger, default=1)
     root_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     revision_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: 「已被新版取代」标记：修订生成新版时给旧版打上。历史版本不覆盖，但要能
+    #: 一眼看出哪版是旧的（不用新状态值去覆盖 status，否则"已转商机"这类
+    #: 业务状态会丢——取代是版本属性，业务状态是另一回事）。
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # 投产时显式关联新 SKU（历史需求不被覆盖）
     converted_sku_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     customer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

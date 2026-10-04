@@ -33,6 +33,27 @@ MILESTONE_NODES: list[tuple[str, str, int]] = [
 
 NODE_LABELS: dict[str, str] = {key: label for key, label, _ in MILESTONE_NODES}
 
+#: 动态批次节点前缀。口径（2026-10-04）：跟单节点**按批次动态生成**——
+#: 首批对应固定的「首批发货」节点；第 2 批起每批自动多一个节点，
+#: 这样"分批导致的延期"才统计得出来（文档 :103 点名的后续分批发货）。
+BATCH_NODE_PREFIX = "shipment_batch_"
+
+
+def batch_node_key(batch_no: int) -> str:
+    return f"{BATCH_NODE_PREFIX}{batch_no}"
+
+
+def node_label(node: str) -> str:
+    """节点展示名：固定节点查表，动态批次节点按 key 现算。"""
+    label = NODE_LABELS.get(node)
+    if label:
+        return label
+    if node.startswith(BATCH_NODE_PREFIX):
+        suffix = node[len(BATCH_NODE_PREFIX):]
+        if suffix.isdigit():
+            return f"第 {suffix} 批发货"
+    return node
+
 STATUS_DONE = "done"
 STATUS_OVERDUE = "overdue"
 STATUS_PENDING = "pending"
@@ -91,13 +112,17 @@ async def ensure_initialized(
     读对方已建的行，外层事务不受污染。
     """
     rows = await _load_rows(session, order_id)
-    if rows:
+    have = {row.node for row in rows}
+    # 只看"固定六节点齐没齐"：按批次动态生成的节点（第 2 批起）可能先于本次
+    # 初始化就存在，不能用"有没有行"当成"六节点齐了"，否则固定节点会被漏建。
+    missing = [node for node in MILESTONE_NODES if node[0] not in have]
+    if not missing:
         return rows
 
     plan = default_plan(delivery_date)
     try:
         async with session.begin_nested():
-            for key, _label, _offset in MILESTONE_NODES:
+            for key, _label, _offset in missing:
                 session.add(
                     OrderMilestone(
                         order_id=order_id,
@@ -109,7 +134,7 @@ async def ensure_initialized(
                 )
             await session.flush()
     except IntegrityError:
-        # 并发初始化：对方已建好六行，回滚到保存点后读现成的
+        # 并发初始化：对方已建好，回滚到保存点后读现成的
         logger.info("订单 %s 里程碑被并发初始化，复用已存在行", order_id)
 
     return await _load_rows(session, order_id)
@@ -142,6 +167,81 @@ async def replan(
             changed += 1
     await session.flush()
     return changed
+
+
+async def ensure_batch_node(
+    session: AsyncSession,
+    order_id: int,
+    batch_no: int,
+    planned_date: date | None,
+    created_by: int | None = None,
+) -> OrderMilestone | None:
+    """给"第 N（>=2）批"生成一个独立跟单节点（首批对应固定的「首批发货」）。
+
+    幂等：(order_id, node) 有唯一约束，已存在就复用。计划日取批次的计划日，
+    之后批次计划日随交期变更平移时，节点也一起平移（schedule.preview 对全部节点
+    一视同仁），所以两边不会脱节。
+    """
+    if batch_no < 2:
+        return None
+    key = batch_node_key(batch_no)
+    existing = (
+        await session.execute(
+            select(OrderMilestone).where(
+                OrderMilestone.order_id == order_id, OrderMilestone.node == key
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if planned_date is not None and existing.actual_date is None:
+            existing.planned_date = planned_date
+        return existing
+    node = OrderMilestone(
+        order_id=order_id,
+        node=key,
+        planned_date=planned_date,
+        created_by=created_by,
+        created_at=_datetime_of(date.today()),
+    )
+    session.add(node)
+    await session.flush()
+    return node
+
+
+async def mark_batch_shipped(
+    session: AsyncSession, order_id: int, batch_no: int, actual_date: date | None
+) -> None:
+    """批次实发时把对应动态节点的实际日登记上（首批仍是人工登记，不动）。"""
+    if batch_no < 2 or actual_date is None:
+        return
+    row = (
+        await session.execute(
+            select(OrderMilestone).where(
+                OrderMilestone.order_id == order_id,
+                OrderMilestone.node == batch_node_key(batch_no),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        row.actual_date = actual_date
+        await session.flush()
+
+
+async def drop_batch_node(session: AsyncSession, order_id: int, batch_no: int) -> None:
+    """批次取消时撤掉它的动态节点（批次都不发了，节点留着只会造逾期提醒）。"""
+    if batch_no < 2:
+        return
+    row = (
+        await session.execute(
+            select(OrderMilestone).where(
+                OrderMilestone.order_id == order_id,
+                OrderMilestone.node == batch_node_key(batch_no),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        await session.delete(row)
+        await session.flush()
 
 
 async def notify_overdue_milestones(session: AsyncSession) -> int:
@@ -196,7 +296,7 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
         if order is None or row.planned_date is None:
             continue
         days = (today - row.planned_date).days
-        label = NODE_LABELS.get(row.node, row.node)
+        label = node_label(row.node)
         title = f"跟单逾期：{order.order_no} {label}"
         content = (
             f"{order.order_no} 的「{label}」计划 {row.planned_date}，"

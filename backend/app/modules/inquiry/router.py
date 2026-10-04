@@ -218,7 +218,33 @@ async def update_inquiry(
         await opportunity_service.get_visible_opportunity(
             session, user, data["opportunity_id"]
         )
-    for field, value in data.items():
+    # 字段归属（口径 2026-10-04）：链级字段（客户/联系人/商机/对接报价员）对整条
+    # 需求生效，写到链条每一版；版本级字段（标题/描述/数量/目标价/状态/备注）只许
+    # 改当前版——历史版本已被新版取代，直接改它等于"悄悄改历史"，要改请走修订。
+    from app.modules.inquiry.model import CHAIN_FIELDS
+
+    chain_data = {k: v for k, v in data.items() if k in CHAIN_FIELDS}
+    version_data = {k: v for k, v in data.items() if k not in CHAIN_FIELDS}
+    if version_data and inquiry.superseded_at is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这是已被新版取代的历史版本，内容不能直接改；请到最新版上改，"
+            "或对最新版发起修订",
+            409,
+        )
+    if chain_data:
+        root_id = inquiry.root_id or inquiry.id
+        chain_rows = (
+            await session.execute(
+                svc.not_deleted(select(CustomInquiry)).where(
+                    (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
+                )
+            )
+        ).scalars().all()
+        for row in chain_rows:
+            for field, value in chain_data.items():
+                setattr(row, field, value)
+    for field, value in version_data.items():
         setattr(inquiry, field, value)
     await session.flush()
     await session.refresh(inquiry)  # updated_at 是 onupdate 服务端值，flush 后已过期，先刷新再序列化
@@ -320,6 +346,8 @@ async def revise_inquiry(
     )
     session.add(new_version)
     await session.flush()
+    # 旧版打上"已被新版取代"。历史版本永不覆盖，但要能一眼看出哪版是旧的。
+    old.superseded_at = svc.now()
     await write_audit(
         session,
         operator_id=user.id,

@@ -217,6 +217,15 @@ async def _ensure_doc_in_scope(session: AsyncSession, user, doc) -> None:
     from app.modules.customer.model import Customer
 
     customer = await session.get(Customer, doc.customer_id)
-    await ensure_in_scope(
-        session, user, owner_id=customer.owner_id if customer else None, label="合同文档"
-    )
+    owner_id = customer.owner_id if customer else None
+    # 客户可能被"超期未跟进自动回收"进公海、或被合并而清空负责人。合同本身是已签
+    # 事实，不能因为客户进了公海就**谁都点不开**（口径 A）：有订单就跟订单负责人，
+    # 没订单就跟当初创建这份合同的人。都没有才落回"无归属默认拒绝"。
+    if owner_id is None and doc.order_id:
+        from app.modules.order.model import SalesOrder
+
+        order = await session.get(SalesOrder, doc.order_id)
+        owner_id = order.owner_id if order else None
+    if owner_id is None:
+        owner_id = doc.created_by
+    await ensure_in_scope(session, user, owner_id=owner_id, label="合同文档")

@@ -174,6 +174,69 @@ async def start_inquiry_approval(
     return ok(svc.serialize(row), row.error or "已发起钉钉询价审批")
 
 
+class ResolveOa(BaseModel):
+    """人工处理"结果不明"的发起：认领 / 重发 / 作废。"""
+
+    action: str
+    instance_id: str | None = None
+    note: str | None = None
+
+
+@router.post("/oa-instances/{oa_id}/resolve")
+async def resolve_oa_instance(
+    oa_id: int,
+    payload: ResolveOa,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """人工处理"结果不明"的钉钉发起（口径 2026-10-04：不自动重发，转人工）。
+
+    发起过程中断时钉钉那边可能已经建单，而接口没有幂等键——所以不自动重发，
+    由人先去钉钉核对，再选择：
+      - `adopt`：钉钉已建单 → 填实例号接过来（状态回"审批中"）；
+      - `resend`：确认没建 → 复用同一轮重新发起；
+      - `abandon`：确认不发了 → 作废本轮。
+    """
+    from app.modules.dingtalk.model import OA_STATUS_LABEL
+    from app.modules.inquiry import service as inquiry_service
+
+    row = await session.get(OaInstance, oa_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "审批记录不存在", 404)
+    # 数据范围跟需求走：能对别人的需求发起审批的人，同样需要能处理它的异常
+    await inquiry_service.get_visible_or_404(session, user, row.inquiry_id)
+    if row.status != "needs_review":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "只有「结果待人工核对」的记录才需要这样处理，当前是"
+            f"「{OA_STATUS_LABEL.get(row.status, row.status)}」",
+            422,
+        )
+    row = await svc.resolve_reviewed_instance(
+        session,
+        row,
+        action=payload.action,
+        instance_id=payload.instance_id,
+        note=payload.note,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action=f"resolve_oa_{payload.action}",
+        business_type="oa_instance",
+        business_id=row.id,
+        after={
+            "status": row.status,
+            "instance_id": row.instance_id,
+            "note": payload.note,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize(row), "已处理")
+
+
 @router.get("/inquiries/{inquiry_id}/oa-approvals")
 async def list_inquiry_approvals(
     inquiry_id: int,
