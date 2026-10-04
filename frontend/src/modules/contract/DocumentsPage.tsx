@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -15,6 +15,7 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import { listCustomers } from '../../shared/api/customer'
+import { listBusinessFiles, uploadFile } from '../../shared/api/file'
 import {
   createContractTemplate,
   downloadContractDocument,
@@ -106,15 +107,43 @@ export default function DocumentsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  // 登记签署：file_id 来自通用上传（客户/订单附件处上传后可复用其文件 id）
+  // 登记签署：直接在本弹窗里上传签署扫描件（或从已上传的文件里挑一份），
+  // 不再要求用户手填文件 ID——那是给排障用的内部编号，业务看不懂也填不对。
   const [signTarget, setSignTarget] = useState<ContractDocument | null>(null)
-  const [signFileId, setSignFileId] = useState('')
+  const [signFileId, setSignFileId] = useState<number | null>(null)
+  const [signUploading, setSignUploading] = useState(false)
+  const signFileInput = useRef<HTMLInputElement>(null)
+  const signFilesQuery = useQuery({
+    queryKey: ['contract-doc-files', signTarget?.id],
+    queryFn: () => listBusinessFiles('contract_document', signTarget!.id),
+    enabled: Boolean(signTarget),
+  })
+
+  const uploadSignFile = async (file: File) => {
+    if (!signTarget) return
+    setSignUploading(true)
+    try {
+      const row = await uploadFile(file, {
+        businessType: 'contract_document',
+        businessId: signTarget.id,
+        category: 'signed',
+      })
+      setSignFileId(row.id)
+      Toast.success('签署件已上传，可直接确认签署')
+      void queryClient.invalidateQueries({ queryKey: ['contract-doc-files', signTarget.id] })
+    } catch (error) {
+      Toast.error(error instanceof Error ? error.message : '上传失败')
+    } finally {
+      setSignUploading(false)
+    }
+  }
+
   const signMutation = useMutation({
-    mutationFn: () => signContractDocument(signTarget!.id, { file_id: Number(signFileId) }),
+    mutationFn: () => signContractDocument(signTarget!.id, { file_id: signFileId! }),
     onSuccess: () => {
       Toast.success('已登记签署')
       setSignTarget(null)
-      setSignFileId('')
+      setSignFileId(null)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -341,14 +370,47 @@ export default function DocumentsPage() {
         onCancel={() => setSignTarget(null)}
         onOk={() => signMutation.mutate()}
         confirmLoading={signMutation.isPending}
+        okButtonProps={{ disabled: !signFileId }}
         okText="确认签署"
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            先在客户/订单附件处上传签署扫描件，然后在这里填它的文件 ID。签署件与草稿在台账上分开可见。
+            上传签署扫描件（或从已上传的文件里选一份）。签署件与草稿在台账上分开可见。
           </div>
-          <Input placeholder="文件 ID（数字）" value={signFileId} onChange={(v) => setSignFileId(v)} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button
+              loading={signUploading}
+              disabled={!can('file:manage')}
+              onClick={() => signFileInput.current?.click()}
+            >
+              上传签署件
+            </Button>
+            <input
+              ref={signFileInput}
+              type="file"
+              style={{ display: 'none' }}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) void uploadSignFile(file)
+                event.target.value = ''
+              }}
+            />
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              {signFileId ? `已选文件 #${signFileId}` : '尚未选择文件'}
+            </span>
+          </div>
+          {(signFilesQuery.data ?? []).length > 0 && (
+            <Select
+              placeholder="或从已上传的文件里选"
+              value={signFileId ?? undefined}
+              onChange={(value) => setSignFileId(value as number)}
+              optionList={(signFilesQuery.data ?? []).map((row) => ({
+                value: row.id,
+                label: row.file_name,
+              }))}
+            />
+          )}
         </div>
       </Modal>
     </div>

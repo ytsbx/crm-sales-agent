@@ -278,13 +278,14 @@ async function main() {
   const auth = await apiLogin()
   console.log(`✓ 接口登录成功：${auth.user.name}（${auth.user.roles.join(',')}）`)
   // 按真实数据组装用例
-  const [customerId, opportunityId, productId, quoteId, skuId, firstOrderId] = await Promise.all([
+  const [customerId, opportunityId, productId, quoteId, skuId, firstOrderId, sampleId] = await Promise.all([
     firstId('/customers', auth.token),
     firstId('/opportunities', auth.token),
     firstId('/products', auth.token),
     firstId('/quotes', auth.token),
     firstId('/pricing/sku-options', auth.token),
     firstId('/orders', auth.token),
+    firstId('/samples', auth.token),
   ])
   // 订单中心为空（全新库/刚清库）就造一张真实订单，别让详情页用例测 404 兜底
   let orderId = firstOrderId
@@ -327,7 +328,11 @@ async function main() {
     { path: '/settings?tab=roles', name: '24-settings-roles' },
     { path: '/settings?tab=departments', name: '25-settings-departments' },
     { path: '/agent', name: '20-agent' },
+    // 知识库：定制询价列表 + 修订链/钉钉审批入口都在这一页
+    { path: '/knowledge', name: '32-knowledge' },
     { path: '/samples', name: '22-samples' },
+    // 深链详情：/samples/:id 直接打开该条详情抽屉（案例证据跳转也走它）
+    ...(sampleId ? [{ path: `/samples/${sampleId}`, name: '22b-sample-detail' }] : []),
     { path: '/wecom', name: '30-wecom' },
     {
       // 带参数进入，才能真正验证"选了 SKU 能出计费重与方案"，

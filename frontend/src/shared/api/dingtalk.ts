@@ -38,6 +38,20 @@ export function startInquiryApproval(inquiryId: number, resubmit = false) {
   })
 }
 
+/**
+ * 人工处理"结果不明"的发起（口径 2026-10-04：不自动重发，转人工）。
+ *
+ * - adopt：钉钉已建单 → 填实例号接过来；
+ * - resend：确认没建 → 复用同一轮重新发起；
+ * - abandon：确认不发了 → 作废本轮。
+ */
+export function resolveOaInstance(
+  oaId: number,
+  payload: { action: 'adopt' | 'resend' | 'abandon'; instance_id?: string; note?: string },
+) {
+  return api.post<OaApprovalInstance>(`/oa-instances/${oaId}/resolve`, payload)
+}
+
 /** 手动拉一次审批状态（与定时任务同一个函数，验收时不用等）。 */
 export function syncOaApprovals() {
   return api.post<{ checked: number; changed: number }>('/dingtalk/oa-sync')

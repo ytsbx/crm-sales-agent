@@ -96,6 +96,8 @@ export const router = createBrowserRouter([
       { path: 'pricing', element: <PricingPage /> },
       { path: 'logistics', element: <LogisticsPage /> },
       { path: 'samples', element: <SampleListPage /> },
+      // 深链：点样品编号 / 从案例证据跳进来时直接打开该条详情
+      { path: 'samples/:id', element: <SampleListPage /> },
       {
         path: 'tasks',
         element: <TaskListPage />,

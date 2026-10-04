@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useParams } from 'react-router-dom'
 
 import { emptyText } from '../../shared/hooks/emptyText'
 import {
@@ -15,6 +16,7 @@ import {
 } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
+import { listCustomInquiries } from '../../shared/api/inquiry'
 import { listOpportunities } from '../../shared/api/opportunity'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import { reportOperationTiming } from '../../shared/api/analytics'
@@ -24,6 +26,7 @@ import {
   confirmSample,
   createSample,
   feedbackSample,
+  getSample,
   listSamples,
   madeSample,
   shipSample,
@@ -55,6 +58,34 @@ const STATUS_OPTIONS = [
   { value: 'signed', label: '已签收' },
 ]
 
+/**
+ * 明细草稿。两条路径（场景09）：现货选 SKU；定制件尚无 SKU，选需求编号。
+ * 定制件本来就要先打样再定 SKU，强制先建档等于把顺序反过来。
+ */
+type ItemDraft = {
+  mode: 'sku' | 'custom'
+  sku_id?: number
+  inquiry_id?: number
+  item_name?: string
+  quantity: string
+}
+
+function draftReady(item: ItemDraft): boolean {
+  return item.mode === 'custom' ? Boolean(item.inquiry_id) : Boolean(item.sku_id)
+}
+
+function draftPayload(item: ItemDraft): Record<string, unknown> {
+  const quantity = Number(item.quantity) || 1
+  if (item.mode === 'custom') {
+    return {
+      inquiry_id: item.inquiry_id,
+      item_name: item.item_name?.trim() || null,
+      quantity,
+    }
+  }
+  return { sku_id: item.sku_id, quantity }
+}
+
 function fmt(value?: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
 }
@@ -74,6 +105,8 @@ export default function SampleListPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
 
+  const params = useParams()
+  const navigate = useNavigate()
   const [createVisible, setCreateVisible] = useState(false)
   /** 打样申请的计时起点（场景18 操作耗时埋点） */
   const createStartedAt = useRef<number | null>(null)
@@ -81,14 +114,14 @@ export default function SampleListPage() {
     opportunity_id?: number
     customer_id?: number
     remark: string
-    items: { sku_id?: number; quantity: string }[]
-  }>({ remark: '', items: [{ quantity: '1' }] })
+    items: ItemDraft[]
+  }>({ remark: '', items: [{ mode: 'sku', quantity: '1' }] })
 
   const [detailId, setDetailId] = useState<number | null>(null)
   const [rejectReason, setRejectReason] = useState('')
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
-  const [newItem, setNewItem] = useState<{ sku_id?: number; quantity: string }>({ quantity: '1' })
+  const [newItem, setNewItem] = useState<ItemDraft>({ mode: 'sku', quantity: '1' })
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间
   const [prodForm, setProdForm] = useState({
@@ -114,10 +147,29 @@ export default function SampleListPage() {
       }),
   })
 
-  // 详情直接复用列表数据里的完整对象（列表已返回 items/shipments），避免多打一次接口
-  const detail: SampleRequestRow | undefined = (query.data?.items ?? []).find(
+  // 深链 /samples/:id：路由带 id 进来时直接打开详情抽屉
+  useEffect(() => {
+    const routeId = Number(params.id)
+    if (Number.isFinite(routeId) && routeId > 0) setDetailId(routeId)
+  }, [params.id])
+
+  const closeDetail = () => {
+    setDetailId(null)
+    // 深链进来的（地址栏是 /samples/:id）关掉后回到列表，别留在一条空路由上
+    if (params.id) navigate('/samples')
+  }
+
+  // 详情优先复用列表数据里的完整对象（列表已返回 items/shipments），避免多打一次接口；
+  // 深链打开的那条如果不在当前列表页，再用 getSample 补一次。
+  const listDetail: SampleRequestRow | undefined = (query.data?.items ?? []).find(
     (row) => row.id === detailId,
   )
+  const detailQuery = useQuery({
+    queryKey: ['sample-detail', detailId],
+    queryFn: () => getSample(detailId!),
+    enabled: detailId !== null && listDetail === undefined && !query.isLoading,
+  })
+  const detail: SampleRequestRow | undefined = listDetail ?? detailQuery.data
 
   const customersQuery = useQuery({
     queryKey: ['customers-for-select'],
@@ -130,6 +182,12 @@ export default function SampleListPage() {
     enabled: createVisible,
   })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
+  // 定制需求下拉：只有打开新建弹窗或详情抽屉时才拉
+  const inquiriesQuery = useQuery({
+    queryKey: ['inquiries-for-sample'],
+    queryFn: () => listCustomInquiries({ page: 1, page_size: 100 }),
+    enabled: createVisible || detailId !== null,
+  })
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['samples'] })
   const onError = (error: Error) => Toast.error(error.message)
@@ -141,11 +199,8 @@ export default function SampleListPage() {
         customer_id: form.customer_id ?? null,
         remark: form.remark.trim() || null,
         items: form.items
-          .filter((item) => item.sku_id)
-          .map((item) => ({
-            sku_id: item.sku_id,
-            quantity: Number(item.quantity) || 1,
-          })),
+          .filter(draftReady)
+          .map(draftPayload),
       }),
     onSuccess: (created) => {
       // 计时上报（场景18）：起点在"点新建"那一刻。上报失败不打扰业务——
@@ -162,13 +217,13 @@ export default function SampleListPage() {
             business_id: created?.id ?? null,
             // 手输字段数：备注 + 每个有 SKU 的明细行各算 1
             typed_fields:
-              (form.remark.trim() ? 1 : 0) + form.items.filter((item) => item.sku_id).length,
+              (form.remark.trim() ? 1 : 0) + form.items.filter(draftReady).length,
           }).catch(() => undefined)
         }
       }
       Toast.success('样品申请已创建')
       setCreateVisible(false)
-      setForm({ remark: '', items: [{ quantity: '1' }] })
+      setForm({ remark: '', items: [{ mode: 'sku', quantity: '1' }] })
       void refresh()
     },
     onError,
@@ -261,14 +316,10 @@ export default function SampleListPage() {
   })
 
   const addItemMutation = useMutation({
-    mutationFn: () =>
-      addSampleItem(detailId!, {
-        sku_id: newItem.sku_id,
-        quantity: Number(newItem.quantity) || 1,
-      }),
+    mutationFn: () => addSampleItem(detailId!, draftPayload(newItem)),
     onSuccess: () => {
       Toast.success('明细已添加')
-      setNewItem({ quantity: '1' })
+      setNewItem({ mode: 'sku', quantity: '1' })
       void refresh()
     },
     onError,
@@ -330,7 +381,14 @@ export default function SampleListPage() {
       title: '操作',
       width: 90,
       render: (_: unknown, record: SampleRequestRow) => (
-        <Button theme="borderless" size="small" onClick={() => setDetailId(record.id)}>
+        <Button
+          theme="borderless"
+          size="small"
+          onClick={() => {
+            setDetailId(record.id)
+            navigate(`/samples/${record.id}`)
+          }}
+        >
           详情
         </Button>
       ),
@@ -340,6 +398,10 @@ export default function SampleListPage() {
   const skuOptions = (skusQuery.data ?? []).map((sku) => ({
     value: sku.id,
     label: `${sku.sku_code}${sku.specification ? ` · ${sku.specification}` : ''}`,
+  }))
+  const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
+    value: row.id,
+    label: `${row.inquiry_no ?? `#${row.id}`} · ${row.title}`,
   }))
 
   return (
@@ -452,17 +514,50 @@ export default function SampleListPage() {
             {form.items.map((item, index) => (
               <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                 <Select
-                  style={{ flex: 1 }}
-                  placeholder="选择 SKU"
-                  filter
-                  value={item.sku_id}
+                  style={{ width: 92 }}
+                  value={item.mode}
                   onChange={(value) => {
                     const items = [...form.items]
-                    items[index] = { ...items[index], sku_id: value as number }
+                    items[index] = {
+                      ...items[index],
+                      mode: value as ItemDraft['mode'],
+                      sku_id: undefined,
+                      inquiry_id: undefined,
+                    }
                     setForm({ ...form, items })
                   }}
-                  optionList={skuOptions}
+                  optionList={[
+                    { value: 'sku', label: '现货 SKU' },
+                    { value: 'custom', label: '定制需求' },
+                  ]}
                 />
+                {item.mode === 'custom' ? (
+                  <Select
+                    style={{ flex: 1 }}
+                    placeholder="选择定制需求（编号）"
+                    filter
+                    value={item.inquiry_id}
+                    onChange={(value) => {
+                      const items = [...form.items]
+                      items[index] = { ...items[index], inquiry_id: value as number }
+                      setForm({ ...form, items })
+                    }}
+                    optionList={inquiryOptions}
+                  />
+                ) : (
+                  <Select
+                    style={{ flex: 1 }}
+                    placeholder="选择 SKU"
+                    filter
+                    value={item.sku_id}
+                    onChange={(value) => {
+                      const items = [...form.items]
+                      items[index] = { ...items[index], sku_id: value as number }
+                      setForm({ ...form, items })
+                    }}
+                    optionList={skuOptions}
+                  />
+                )}
                 <Input
                   style={{ width: 90 }}
                   value={item.quantity}
@@ -487,7 +582,9 @@ export default function SampleListPage() {
             ))}
             <Button
               theme="borderless"
-              onClick={() => setForm({ ...form, items: [...form.items, { quantity: '1' }] })}
+              onClick={() =>
+                setForm({ ...form, items: [...form.items, { mode: 'sku', quantity: '1' }] })
+              }
             >
               + 添加一行
             </Button>
@@ -508,7 +605,7 @@ export default function SampleListPage() {
       <SideSheet
         title={detail ? `样品申请 #${detail.id}` : '样品申请'}
         visible={detailId !== null}
-        onCancel={() => setDetailId(null)}
+        onCancel={closeDetail}
         width={760}
       >
         {detail && (
@@ -544,7 +641,20 @@ export default function SampleListPage() {
                 dataSource={detail.items}
                 empty="暂无明细"
                 columns={[
-                  { title: 'SKU', dataIndex: 'sku_code', render: (v: string | null) => v ?? '-' },
+                  {
+                    title: 'SKU / 需求',
+                    dataIndex: 'sku_code',
+                    render: (v: string | null, row: SampleRequestRow['items'][number]) => (
+                      <span>
+                        {v ?? '-'}
+                        {row.is_custom && (
+                          <Tag size="small" style={{ marginLeft: 6 }}>
+                            定制
+                          </Tag>
+                        )}
+                      </span>
+                    ),
+                  },
                   { title: '规格', dataIndex: 'specification', render: (v: string | null) => v ?? '-' },
                   { title: '数量', dataIndex: 'quantity', width: 80 },
                 ]}
@@ -552,20 +662,45 @@ export default function SampleListPage() {
               {canManage && !['shipped', 'signed'].includes(detail.status) && (
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <Select
-                    style={{ flex: 1 }}
-                    placeholder="追加 SKU"
-                    filter
-                    value={newItem.sku_id}
-                    onChange={(value) => setNewItem({ ...newItem, sku_id: value as number })}
-                    optionList={skuOptions}
+                    style={{ width: 92 }}
+                    value={newItem.mode}
+                    onChange={(value) =>
+                      setNewItem({
+                        mode: value as ItemDraft['mode'],
+                        quantity: newItem.quantity,
+                      })
+                    }
+                    optionList={[
+                      { value: 'sku', label: '现货 SKU' },
+                      { value: 'custom', label: '定制需求' },
+                    ]}
                   />
+                  {newItem.mode === 'custom' ? (
+                    <Select
+                      style={{ flex: 1 }}
+                      placeholder="选择定制需求（编号）"
+                      filter
+                      value={newItem.inquiry_id}
+                      onChange={(value) => setNewItem({ ...newItem, inquiry_id: value as number })}
+                      optionList={inquiryOptions}
+                    />
+                  ) : (
+                    <Select
+                      style={{ flex: 1 }}
+                      placeholder="追加 SKU"
+                      filter
+                      value={newItem.sku_id}
+                      onChange={(value) => setNewItem({ ...newItem, sku_id: value as number })}
+                      optionList={skuOptions}
+                    />
+                  )}
                   <Input
                     style={{ width: 80 }}
                     value={newItem.quantity}
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}
                   />
                   <Button
-                    disabled={!newItem.sku_id}
+                    disabled={!draftReady(newItem)}
                     loading={addItemMutation.isPending}
                     onClick={() => addItemMutation.mutate()}
                   >

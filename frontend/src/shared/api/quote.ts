@@ -251,6 +251,20 @@ export function updateQuoteItem(itemId: number, payload: Record<string, unknown>
   return api.patch<QuoteItemRow>(`/quote-items/${itemId}`, payload)
 }
 
+/** 追加一条明细（逐条录需求时用）。 */
+export function addQuoteVersionItem(versionId: number, payload: Record<string, unknown>) {
+  return api.post<QuoteItemRow>(`/quote-versions/${versionId}/items`, payload)
+}
+
+/**
+ * 整版替换明细（界面"保存整版"用）。
+ *
+ * body 是**裸数组**（后端签名是 `items: list[QuoteItemInput]`），不是 `{items: [...]}`。
+ */
+export function setQuoteVersionItems(versionId: number, items: Record<string, unknown>[]) {
+  return api.post<QuoteItemRow[]>(`/quote-versions/${versionId}/items/batch`, items)
+}
+
 export function addQuoteCharge(versionId: number, payload: Record<string, unknown>) {
   return api.post<QuoteChargeRow>(`/quote-versions/${versionId}/charges`, payload)
 }

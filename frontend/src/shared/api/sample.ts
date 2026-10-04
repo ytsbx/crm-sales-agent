@@ -6,11 +6,15 @@ import type { PageResult } from '../types'
 export interface SampleItem {
   id: number
   sample_request_id: number
-  sku_id: number
+  /** 定制件无 SKU（场景09）：sku_id 为空，改用 inquiry_no / item_name 溯源 */
+  sku_id?: number | null
   sku_code?: string | null
   sku_name?: string | null
   specification?: string | null
   unit?: string | null
+  inquiry_id?: number | null
+  inquiry_no?: string | null
+  is_custom?: boolean
   quantity: number
   remark?: string | null
 }

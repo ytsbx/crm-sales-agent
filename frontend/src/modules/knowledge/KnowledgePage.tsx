@@ -30,7 +30,12 @@ import {
   type CustomInquiryRow,
 } from '../../shared/api/inquiry'
 import { listCustomers } from '../../shared/api/customer'
-import { startInquiryApproval } from '../../shared/api/dingtalk'
+import {
+  listInquiryApprovals,
+  resolveOaInstance,
+  startInquiryApproval,
+  type OaApprovalInstance,
+} from '../../shared/api/dingtalk'
 import { reportOperationTiming } from '../../shared/api/analytics'
 
 type TagColor = ComponentProps<typeof Tag>['color']
@@ -87,6 +92,10 @@ export default function KnowledgePage() {
     target_price: '',
   })
   const [historyTarget, setHistoryTarget] = useState<CustomInquiryRow | null>(null)
+  // 钉钉审批记录：查看历次提交；"结果不明"的单子在这里转人工处理
+  const [approvalTarget, setApprovalTarget] = useState<CustomInquiryRow | null>(null)
+  const [adoptTarget, setAdoptTarget] = useState<OaApprovalInstance | null>(null)
+  const [adoptInstanceId, setAdoptInstanceId] = useState('')
   // 转报价（§3.1/场景09）：定制件投产前没有 SKU，报价中心选不到它，
   // 这里给一条"填两个数就成单"的出口
   const [quoteTarget, setQuoteTarget] = useState<CustomInquiryRow | null>(null)
@@ -101,6 +110,34 @@ export default function KnowledgePage() {
     queryKey: ['inquiry-history', historyTarget?.id],
     queryFn: () => customInquiryHistory(historyTarget!.id),
     enabled: Boolean(historyTarget),
+  })
+  const approvalsQuery = useQuery({
+    queryKey: ['inquiry-approvals', approvalTarget?.id],
+    queryFn: () => listInquiryApprovals(approvalTarget!.id),
+    enabled: Boolean(approvalTarget),
+  })
+  const resolveMutation = useMutation({
+    mutationFn: ({
+      oaId,
+      action,
+      instanceId,
+    }: {
+      oaId: number
+      action: 'adopt' | 'resend' | 'abandon'
+      instanceId?: string
+    }) =>
+      resolveOaInstance(oaId, {
+        action,
+        instance_id: instanceId,
+        note: action === 'abandon' ? '人工核对确认钉钉未建单，作废本轮' : undefined,
+      }),
+    onSuccess: (row) => {
+      Toast.success(`已处理：${row.status_label}`)
+      setAdoptTarget(null)
+      setAdoptInstanceId('')
+      void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
   })
 
   const quoteMutation = useMutation({
@@ -309,7 +346,7 @@ export default function KnowledgePage() {
     },
     {
       title: '操作',
-      width: 190,
+      width: 250,
       render: (_: unknown, record: CustomInquiryRow) => (
         <span style={{ display: 'inline-flex', gap: 10 }}>
           <a onClick={() => openEdit(record)}>编辑</a>
@@ -333,6 +370,8 @@ export default function KnowledgePage() {
           >
             发起审批
           </a>
+          {/* 历次审批 + "结果不明"的人工处理入口（认领/重发/作废） */}
+          <a onClick={() => setApprovalTarget(record)}>审批记录</a>
           {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
           <a
             onClick={() => {
@@ -570,6 +609,14 @@ export default function KnowledgePage() {
         <Table<CustomInquiryRow>
           columns={[
             { title: '版本', dataIndex: 'version', width: 70, render: (v: number) => `v${v ?? 1}` },
+            {
+              title: '状态',
+              dataIndex: 'version_state_label',
+              width: 110,
+              render: (v: string | null, row: CustomInquiryRow) => (
+                <Tag color={row.is_superseded ? 'grey' : 'green'}>{v ?? '当前版'}</Tag>
+              ),
+            },
             { title: '需求描述', dataIndex: 'description', render: (v: string | null) => v ?? '-' },
             { title: '数量', dataIndex: 'quantity', width: 80, render: (v: number | null) => v ?? '-' },
             { title: '目标价', dataIndex: 'target_price', width: 90, render: (v: number | null) => v ?? '-' },
@@ -586,6 +633,110 @@ export default function KnowledgePage() {
           rowKey="id"
           pagination={false}
         />
+      </Modal>
+
+      <Modal
+        title={`钉钉审批记录：${approvalTarget?.title ?? ''}`}
+        visible={Boolean(approvalTarget)}
+        onCancel={() => setApprovalTarget(null)}
+        footer={null}
+        width={720}
+      >
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
+          发起过程中断时钉钉那边可能已经建了单，而钉钉接口没有"只许建一次"的开关，
+          所以**不会自动重发**。请先到钉钉确认，再选「认领 / 重发 / 作废」。
+        </div>
+        <Table<OaApprovalInstance>
+          columns={[
+            { title: '轮次', dataIndex: 'submit_round', width: 60, render: (v: number) => v ?? 1 },
+            {
+              title: '状态',
+              dataIndex: 'status_label',
+              width: 130,
+              render: (v: string, row: OaApprovalInstance) => (
+                <Tag color={row.status === 'needs_review' ? 'orange' : 'grey'}>{v}</Tag>
+              ),
+            },
+            {
+              title: '钉钉单号 / 说明',
+              dataIndex: 'instance_id',
+              render: (v: string | null, row: OaApprovalInstance) => (
+                <div style={{ fontSize: 12 }}>
+                  <div>{v ?? '-'}</div>
+                  {row.error && <div style={{ color: 'var(--crm-text-3)' }}>{row.error}</div>}
+                </div>
+              ),
+            },
+            {
+              title: '操作',
+              width: 210,
+              render: (_: unknown, row: OaApprovalInstance) =>
+                row.status !== 'needs_review' ? (
+                  <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>—</span>
+                ) : (
+                  <span style={{ display: 'inline-flex', gap: 10 }}>
+                    <a
+                      onClick={() => {
+                        setAdoptTarget(row)
+                        setAdoptInstanceId('')
+                      }}
+                    >
+                      认领
+                    </a>
+                    <Popconfirm
+                      title="确认钉钉那边没有这张单？"
+                      content="重发会再向钉钉发起一次；若其实已经建过，就会多出一张审批单。"
+                      onConfirm={() => resolveMutation.mutate({ oaId: row.id, action: 'resend' })}
+                    >
+                      <a>重发</a>
+                    </Popconfirm>
+                    <Popconfirm
+                      title="作废本轮记录？"
+                      content="仅在本系统里作废，不会动钉钉那边。"
+                      onConfirm={() => resolveMutation.mutate({ oaId: row.id, action: 'abandon' })}
+                    >
+                      <a>作废</a>
+                    </Popconfirm>
+                  </span>
+                ),
+            },
+          ]}
+          dataSource={approvalsQuery.data ?? []}
+          loading={approvalsQuery.isLoading}
+          rowKey="id"
+          pagination={false}
+        />
+      </Modal>
+
+      <Modal
+        title="认领钉钉审批单"
+        visible={Boolean(adoptTarget)}
+        onCancel={() => setAdoptTarget(null)}
+        onOk={() => {
+          if (!adoptTarget || !adoptInstanceId.trim()) {
+            Toast.error('请填写钉钉那边已有的审批单号')
+            return
+          }
+          resolveMutation.mutate({
+            oaId: adoptTarget.id,
+            action: 'adopt',
+            instanceId: adoptInstanceId.trim(),
+          })
+        }}
+        confirmLoading={resolveMutation.isPending}
+        okText="认领"
+        width={460}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            到钉钉里找到这张审批单，把它的单号填进来——系统会接着它回收审批结果。
+          </div>
+          <Input
+            placeholder="钉钉审批单号（instanceId）"
+            value={adoptInstanceId}
+            onChange={(value) => setAdoptInstanceId(value)}
+          />
+        </div>
       </Modal>
 
       {/* 转报价（§3.1/场景09）：只填两个数——核价成本与报价。

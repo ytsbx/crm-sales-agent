@@ -20,6 +20,10 @@ export interface CustomInquiryRow {
   version?: number
   root_id?: number | null
   revision_note?: string | null
+  /** 已被新版取代（取代是版本属性，不覆盖业务 status） */
+  superseded_at?: string | null
+  is_superseded?: boolean
+  version_state_label?: string
   converted_sku_id?: number | null
   created_by?: number | null
   creator_name?: string | null

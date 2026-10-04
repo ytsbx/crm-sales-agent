@@ -412,7 +412,9 @@ export default function CasesPage() {
                 <span style={{ color: 'var(--crm-text-3)' }}>证据单据：</span>
                 {detail.quote_id && <Link to={`/quotes/${detail.quote_id}`}>报价单 #{detail.quote_id}</Link>}
                 {detail.order_id && <Link to={`/orders/${detail.order_id}`}>订单 #{detail.order_id}</Link>}
-                {detail.sample_id && <span>打样单 #{detail.sample_id}</span>}
+                {detail.sample_id && (
+                  <Link to={`/samples/${detail.sample_id}`}>打样单 #{detail.sample_id}</Link>
+                )}
               </div>
             )}
             {detail.share_view && (detail.hidden_evidence ?? []).length > 0 && (
