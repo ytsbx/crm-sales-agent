@@ -1,6 +1,6 @@
 """客户导入导出接口。"""
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +14,7 @@ from app.modules.contact_util import find_duplicate_customers
 from app.modules.customer import io as io_util
 from app.modules.customer import service as svc
 from app.modules.customer.model import Customer
-from app.modules.customer.schema import CustomerExportFilter
+from app.modules.customer.schema import CustomerExportFilter, CustomerExportPurpose
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Customer"])
@@ -37,7 +37,14 @@ async def import_template(
 
 
 async def _export(
-    user, session: AsyncSession, stmt: Select | None = None, request: Request | None = None
+    user,
+    session: AsyncSession,
+    stmt: Select | None = None,
+    request: Request | None = None,
+    *,
+    purpose: CustomerExportPurpose,
+    purpose_note: str | None = None,
+    filters: dict | None = None,
 ) -> Response:
     """共用导出实现：查行 → 补负责人名 → 生成 CSV。
 
@@ -66,9 +73,13 @@ async def _export(
         action="export",
         business_type="customer",
         after={
+            "purpose": purpose.value,
+            "purpose_note": purpose_note,
             "count": len(rows),
-            "filtered": stmt is not None,
+            "data_scope": user.data_scope,
+            "filters": filters or {},
             "customer_ids": [row.id for row in rows[:200]],
+            "customer_ids_truncated": len(rows) > 200,
         },
         ip=client_ip(request) if request else None,
     )
@@ -163,13 +174,22 @@ async def _alert_if_abnormal(session: AsyncSession, *, user, ip: str | None) -> 
 @router.get("/customers/export")
 async def export_customers(
     request: Request,
+    purpose: CustomerExportPurpose,
+    purpose_note: str | None = Query(default=None, max_length=200),
     # 导出闸门（§11.2/场景19）：批量导出是独立授权，与 customer:view 分开——
     # "能看列表"不再等于"能批量拿走本范围全部客户"。admin 角色默认放行
     user: CurrentUser = Depends(require_permission("customer:export")),
     session: AsyncSession = Depends(get_db),
 ):
     """导出当前用户数据范围内的全部客户。"""
-    return await _export(user, session, request=request)
+    if purpose == CustomerExportPurpose.OTHER and not (purpose_note or "").strip():
+        raise AppError(ErrorCode.PARAM_ERROR, "用途选择“其他”时，补充说明必填", 422)
+    if purpose != CustomerExportPurpose.OTHER and (purpose_note or "").strip():
+        raise AppError(ErrorCode.PARAM_ERROR, "仅用途选择“其他”时填写补充说明", 422)
+    return await _export(
+        user, session, request=request, purpose=purpose,
+        purpose_note=(purpose_note or "").strip() or None,
+    )
 
 
 @router.post("/customers/export")
@@ -198,7 +218,24 @@ async def export_customers_filtered(
         user,
         session,
     )
-    return await _export(user, session, stmt=stmt, request=request)
+    filters = {
+        "keyword_applied": bool(payload.keyword and payload.keyword.strip()),
+        "level": payload.level,
+        "status": payload.status,
+        "source": payload.source,
+        "owner_id": payload.owner_id,
+        "pool_status": payload.pool_status,
+    }
+    filters = {key: value for key, value in filters.items() if value is not None and value is not False}
+    return await _export(
+        user,
+        session,
+        stmt=stmt,
+        request=request,
+        purpose=payload.purpose,
+        purpose_note=payload.purpose_note,
+        filters=filters,
+    )
 
 
 @router.post("/customers/import")

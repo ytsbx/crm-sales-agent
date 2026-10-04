@@ -14,6 +14,7 @@ import {
   listContacts,
   listTags,
   mergeCustomers,
+  openDuplicateCases,
   releaseCustomerToPool,
   transferCustomer,
   updateCustomer,
@@ -32,6 +33,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import AgentInsight from '../../shared/components/AgentInsight'
 import { agentCustomerSummary, agentFollowupSuggestion, type AnalysisEnvelope } from '../../shared/api/agent'
 import FollowUpModal from '../common/FollowUpModal'
+import FollowUpAttachmentsButton from '../common/FollowUpAttachmentsButton'
 import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
@@ -73,6 +75,7 @@ export default function CustomerDetailPage() {
   const [transferModal, setTransferModal] = useState(false)
   const [transferTo, setTransferTo] = useState<number | null>(null)
   const [followupVisible, setFollowupVisible] = useState(false)
+  const [duplicateCaseCount, setDuplicateCaseCount] = useState(0)
 
   // 标签与合并（03-API §7）
   const [tagPickerOpen, setTagPickerOpen] = useState(false)
@@ -164,6 +167,19 @@ export default function CustomerDetailPage() {
       Toast.success('负责人已变更')
       setTransferModal(false)
       invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const duplicateCaseMutation = useMutation({
+    mutationFn: () => openDuplicateCases(customerId),
+    onSuccess: (result) => {
+      void queryClient.invalidateQueries({ queryKey: ['duplicate-cases'] })
+      if (result.opened > 0) {
+        setDuplicateCaseCount(result.opened)
+      } else {
+        Toast.info('未发现疑似重复客户')
+      }
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -330,6 +346,15 @@ export default function CustomerDetailPage() {
             {can('customer:assign') && (
               <Button onClick={() => setTransferModal(true)}>转移负责人</Button>
             )}
+            {can('customer:assign') && (
+              <Button
+                loading={duplicateCaseMutation.isPending}
+                disabled={duplicateCaseMutation.isPending}
+                onClick={() => duplicateCaseMutation.mutate()}
+              >
+                撞单检查
+              </Button>
+            )}
             {can('customer:update') && (
               <Button
                 onClick={() => {
@@ -358,6 +383,21 @@ export default function CustomerDetailPage() {
           </>
         }
       />
+
+      <Modal
+        title="撞单检查结果"
+        visible={duplicateCaseCount > 0}
+        okText="查看撞单裁定"
+        cancelText="关闭"
+        onCancel={() => setDuplicateCaseCount(0)}
+        onOk={() => {
+          setDuplicateCaseCount(0)
+          navigate('/duplicate-cases')
+        }}
+      >
+        <p>该客户有 {duplicateCaseCount} 条疑似撞单待裁定。重复检查会复用已有的待裁定记录。</p>
+        <p>客户归属保持原样，由有权限的人员核对证据后裁定。</p>
+      </Modal>
 
       <SectionCard>
         <Tabs
@@ -529,6 +569,13 @@ export default function CustomerDetailPage() {
                   { title: '内容', dataIndex: 'content' },
                   { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },
                   { title: '下一步', dataIndex: 'next_action', render: (v: string | null) => v ?? '-' },
+                  {
+                    title: '附件',
+                    width: 90,
+                    render: (_: unknown, record: FollowUp) => (
+                      <FollowUpAttachmentsButton followupId={record.id} />
+                    ),
+                  },
                 ]}
                 dataSource={followupsQuery.data?.items ?? []}
                 loading={followupsQuery.isLoading}

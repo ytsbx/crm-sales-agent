@@ -232,6 +232,7 @@ async def create_opportunity_from_lead(
     owner_id: int | None,
     created_by: int | None,
     expected_amount: float | None = None,
+    expected_close_date: date | None = None,
 ) -> Opportunity:
     stage = await get_first_stage(session)
     opportunity = Opportunity(
@@ -243,6 +244,7 @@ async def create_opportunity_from_lead(
         owner_id=owner_id,
         status="open",
         expected_amount=expected_amount,
+        expected_close_date=expected_close_date,
         created_by=created_by,
     )
     session.add(opportunity)

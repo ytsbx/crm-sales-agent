@@ -7,6 +7,7 @@ import { emptyText } from '../../shared/hooks/emptyText'
 import {
   Button,
   Checkbox,
+  DatePicker,
   Input,
   Modal,
   Popconfirm,
@@ -95,6 +96,7 @@ export default function LeadListPage() {
   const [createOpportunity, setCreateOpportunity] = useState(false)
   const [opportunityTitle, setOpportunityTitle] = useState('')
   const [expectedAmount, setExpectedAmount] = useState('')
+  const [expectedCloseDate, setExpectedCloseDate] = useState<Date | null>(null)
 
   const query = useQuery({
     queryKey: ['leads', { keyword, status, onlyUnassigned, page, pageSize }],
@@ -186,6 +188,9 @@ export default function LeadListPage() {
         create_opportunity: createOpportunity,
         opportunity_title: createOpportunity ? opportunityTitle || null : null,
         expected_amount: expectedAmount ? Number(expectedAmount) : null,
+        expected_close_date: createOpportunity && expectedCloseDate
+          ? `${expectedCloseDate.getFullYear()}-${String(expectedCloseDate.getMonth() + 1).padStart(2, '0')}-${String(expectedCloseDate.getDate()).padStart(2, '0')}`
+          : null,
       }),
     onSuccess: (data) => {
       Toast.success('线索已转化')
@@ -195,6 +200,7 @@ export default function LeadListPage() {
       setCreateOpportunity(false)
       setOpportunityTitle('')
       setExpectedAmount('')
+      setExpectedCloseDate(null)
       refresh()
       if (data.customer_id) navigate(`/customers/${data.customer_id}`)
     },
@@ -253,7 +259,12 @@ export default function LeadListPage() {
             </a>
           )}
           {record.status !== 'converted' && can('lead:convert') && (
-            <a style={{ color: 'var(--crm-primary)' }} onClick={() => setConvertTarget(record)}>
+            <a style={{ color: 'var(--crm-primary)' }} onClick={() => {
+              setOpportunityTitle('')
+              setExpectedAmount('')
+              setExpectedCloseDate(null)
+              setConvertTarget(record)
+            }}>
               转客户
             </a>
           )}
@@ -449,7 +460,10 @@ export default function LeadListPage() {
       <Modal
         title={`线索转客户：${convertTarget?.name ?? ''}`}
         visible={Boolean(convertTarget)}
-        onCancel={() => setConvertTarget(null)}
+        onCancel={() => {
+          setConvertTarget(null)
+          setExpectedCloseDate(null)
+        }}
         onOk={() => {
           if (customerMode === 'existing' && !existingCustomerId) {
             Toast.warning('请选择要关联的客户')
@@ -510,6 +524,12 @@ export default function LeadListPage() {
                   value={expectedAmount}
                   onChange={setExpectedAmount}
                   placeholder="预计金额（元）"
+                />
+                <DatePicker
+                  value={expectedCloseDate ?? undefined}
+                  onChange={(date) => setExpectedCloseDate((date as Date) ?? null)}
+                  placeholder="预计成交日期（选填）"
+                  style={{ width: '100%' }}
                 />
               </div>
             )}

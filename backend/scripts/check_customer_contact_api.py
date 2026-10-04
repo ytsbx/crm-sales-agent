@@ -26,13 +26,15 @@
 
 import asyncio
 import json
+import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
 
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 RUN = str(int(time.time()))[-6:]
 #: 本脚本开始跑的时刻：导出告警通知不带 CHK 前缀，只能按时间窗圈定。
 SCRIPT_STARTED_AT = datetime.now(UTC).isoformat()
@@ -143,6 +145,9 @@ async def clean(verbose=False):
             "delete from notifications where business_type = 'customer' "
             f"and created_at >= '{SCRIPT_STARTED_AT}'",
         ),
+        ('用例导出审计记录', "delete from audit_logs where action in ('export', 'export_alert') "
+                               f"and created_at >= '{SCRIPT_STARTED_AT}' "
+                               "and operator_id in (select id from users where username in ('admin','zhangsan'))"),
         ('用例跟进', f"delete from followups where content like '%CHK{RUN}%'"),
         ('用例案例', f"delete from sales_cases where title like '%CHK{RUN}%'"),
         ('用例定制询价', f"delete from custom_inquiries where title like '%CHK{RUN}%'"),
@@ -194,6 +199,11 @@ async def clean(verbose=False):
         ('用例客户标签', "delete from customer_tags where customer_id in "
                       f"(select id from customers where name like 'CHK{RUN}%')"),
         ('用例客户', f"delete from customers where name like 'CHK{RUN}%'"),
+        ('用例导出探针用户角色', "delete from user_roles where role_id in "
+                                f"(select id from roles where code='CHK{RUN}export_probe')"),
+        ('用例导出探针权限', "delete from role_permissions where role_id in "
+                              f"(select id from roles where code='CHK{RUN}export_probe')"),
+        ('用例导出探针角色', f"delete from roles where code='CHK{RUN}export_probe'"),
         ('用例编号计数器', "delete from number_sequences"),
     ]
     async with SessionLocal() as s:
@@ -207,7 +217,52 @@ async def clean(verbose=False):
 SIGN_FILE_ID = None
 
 
-def main():
+async def grant_customer_export(user_id: int) -> None:
+    """临时给业务员独立导出权限，保持 self 数据范围用于验收场景 19。"""
+    from sqlalchemy import select
+
+    from app.core.database import SessionLocal
+    from app.modules.user.model import Permission, Role, role_permissions, user_roles
+
+    async with SessionLocal() as session:
+        role = Role(
+            code=f'CHK{RUN}export_probe', name=f'CHK{RUN}导出权限探针', data_scope='self'
+        )
+        session.add(role)
+        await session.flush()
+        permission = (await session.execute(
+            select(Permission).where(Permission.code == 'customer:export')
+        )).scalars().one()
+        await session.execute(role_permissions.insert().values(
+            role_id=role.id, permission_id=permission.id
+        ))
+        await session.execute(user_roles.insert().values(
+            user_id=user_id, role_id=role.id
+        ))
+        await session.commit()
+
+
+async def revoke_customer_export() -> None:
+    """在后续“默认无导出权限”断言前，撤销本套件临时授予。"""
+    from sqlalchemy import text
+
+    from app.core.database import SessionLocal
+
+    async with SessionLocal() as session:
+        await session.execute(text(
+            "delete from user_roles where role_id in "
+            "(select id from roles where code=:code)"
+        ), {'code': f'CHK{RUN}export_probe'})
+        await session.execute(text(
+            "delete from role_permissions where role_id in "
+            "(select id from roles where code=:code)"
+        ), {'code': f'CHK{RUN}export_probe'})
+        await session.execute(text("delete from roles where code=:code"),
+                              {'code': f'CHK{RUN}export_probe'})
+        await session.commit()
+
+
+async def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
 
@@ -399,7 +454,8 @@ def main():
 
     print()
     print('=== 8. POST /customers/export（筛选导出 CSV）===')
-    status, res = call_csv('POST', '/customers/export', token=admin, body={})
+    status, res = call_csv('POST', '/customers/export', token=admin,
+                           body={'purpose': 'business_analysis'})
     check('导出成功', status, 200)
     check_true('是 CSV', 'text/csv' in res.get('ctype', ''), str(res.get('ctype')))
     check_true('带文件名', 'customers.csv' in res.get('disposition', ''),
@@ -407,15 +463,72 @@ def main():
     check_true('有表头', '客户名称' in res.get('text', ''), res.get('text', '')[:60])
 
     status, res = call_csv('POST', '/customers/export', token=admin,
-                           body={'keyword': f'CHK{RUN}测试客户'})
+                           body={'keyword': f'CHK{RUN}测试客户', 'purpose': 'business_analysis'})
     check('按关键字筛选导出', status, 200)
     body_text = res.get('text', '')
     check_true('只含目标客户', f'CHK{RUN}测试客户' in body_text, body_text[:100])
     check_true('不含另一个客户', f'CHK{RUN}张三客户' not in body_text, '关键字筛选生效')
 
     status, res = call_csv('POST', '/customers/export', token=admin,
-                           body={'level': '不存在的等级'})
+                           body={'level': '不存在的等级', 'purpose': 'business_analysis'})
     check('筛不到也是 200', status, 200)
+
+    status, res = call_csv('POST', '/customers/export', token=admin, body={})
+    check('未填写导出用途被拒', status, 400)
+    status, res = call_csv('POST', '/customers/export', token=admin,
+                           body={'purpose': 'other'})
+    check('其他未填写补充说明被拒', status, 400)
+
+    status, res = call_csv('GET', '/customers/export?purpose=business_analysis', token=admin)
+    check('GET 导出成功', status, 200)
+    status, res = call_csv('GET', '/customers/export', token=admin)
+    check('GET 未填写导出用途被拒', status, 400)
+    status, res = call_csv('GET', '/customers/export?purpose=other', token=admin)
+    check('GET 其他用途未填写补充说明被拒', status, 422)
+    other_get_query = urllib.parse.urlencode({
+        'purpose': 'other', 'purpose_note': '临时核对数据',
+    })
+    status, res = call_csv('GET', f'/customers/export?{other_get_query}', token=admin)
+    check('GET 其他用途填写补充说明后可导出', status, 200)
+
+    await grant_customer_export(zs_id)
+    # 权限会编码进 JWT；刷新 token 才能反映本次临时授权。
+    zhangsan = login('zhangsan', '123456')
+    scope_csv = call_csv('POST', '/customers/export', token=zhangsan, body={
+        'keyword': f'CHK{RUN}', 'purpose': 'business_analysis',
+    })
+    status, res = scope_csv
+    check('获授权业务员可导出自身范围', status, 200)
+    check_true('导出包含本人客户', f'CHK{RUN}张三客户' in res.get('text', ''),
+               res.get('text', '')[:100])
+    check_true('导出不包含他人客户', f'CHK{RUN}测试客户' not in res.get('text', ''),
+               res.get('text', '')[:100])
+
+    status, res = call_csv('POST', '/customers/export', token=zhangsan, body={
+        'keyword': f'CHK{RUN}张三客户', 'purpose': 'other',
+        'purpose_note': '临时核对客户资料完整性',
+    })
+    check('其他用途填写补充说明后可导出', status, 200)
+    status, res = call('GET', f'/audit-logs?action=export&operator_id={zs_id}&page_size=20',
+                       token=admin)
+    export_audits = (res.get('data') or {}).get('items', [])
+    scoped_audit = next((row for row in export_audits
+                         if (row.get('after_data') or {}).get('purpose') == 'business_analysis'), None)
+    check_true('导出审计记录责任人', scoped_audit is not None and scoped_audit['operator_id'] == zs_id,
+               str(scoped_audit))
+    check_true('审计保留用途、范围、筛选与数量', scoped_audit is not None and
+               bool(scoped_audit.get('created_at')) and
+               scoped_audit['after_data'].get('data_scope') == 'self' and
+               scoped_audit['after_data'].get('filters', {}).get('keyword_applied') is True and
+               scoped_audit['after_data'].get('count') == 1 and
+               len(scoped_audit['after_data'].get('customer_ids') or []) == 1,
+               str((scoped_audit or {}).get('after_data')))
+    other_audit = next((row for row in export_audits
+                        if (row.get('after_data') or {}).get('purpose') == 'other'), None)
+    check_true('其他用途补充说明写入审计', other_audit is not None and
+               other_audit['after_data'].get('purpose_note') == '临时核对客户资料完整性',
+               str((other_audit or {}).get('after_data')))
+    await revoke_customer_export()
 
     print()
     print('=== 9. 数据范围：张三看不见别人的客户子资源 ===')
@@ -471,10 +584,10 @@ def main():
     # 导出闸门（§11.2/场景19）：导出是 customer:export 独立授权，
     # 销售默认没有——"能看列表"不再等于"能批量拿走客户"
     status, res = call_csv('POST', '/customers/export', token=zhangsan,
-                           body={'keyword': f'CHK{RUN}测试客户'})
+                           body={'keyword': f'CHK{RUN}测试客户', 'purpose': 'business_analysis'})
     check('张三无导出权限被拒', res.get('code'), 40301)
     status, res = call_csv('POST', '/customers/export', token=admin,
-                           body={'keyword': f'CHK{RUN}测试客户'})
+                           body={'keyword': f'CHK{RUN}测试客户', 'purpose': 'business_analysis'})
     check('管理员导出成功', status, 200)
     check_true('导出含夹具客户', f'CHK{RUN}测试客户' in res.get('text', ''),
                res.get('text', '')[:80])
@@ -484,7 +597,9 @@ def main():
         'key': 'export', 'value': {'limit': 5000, 'alert_rows': 1, 'alert_window_hours': 24},
     })
     check('调低告警阈值', res.get('code'), 0)
-    call_csv('POST', '/customers/export', token=admin, body={'keyword': f'CHK{RUN}'})
+    call_csv('POST', '/customers/export', token=admin, body={
+        'keyword': f'CHK{RUN}', 'purpose': 'business_analysis',
+    })
     status, res = call('GET', '/audit-logs?action=export_alert&page_size=5', token=admin)
     check_true('触发异常导出告警审计',
                len(res.get('data', {}).get('items', [])) >= 1,
@@ -757,7 +872,7 @@ if __name__ == '__main__':
             SIGN_FILE_ID = record.id
         print()
         try:
-            main()
+            await main()
         finally:
             print()
             print('=== 清库（跑后）===')

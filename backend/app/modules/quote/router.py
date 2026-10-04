@@ -1198,6 +1198,12 @@ async def accept_quote(
     quote = await svc.get_visible_quote(session, user, version.quote_id)
     if quote.status not in ("sent", "approved"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有已发送的报价才能标记客户接受")
+    if svc.quote_is_expired(quote.valid_until):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"报价已过有效期（{quote.valid_until}），不能标记客户接受；请先创建新版本并更新有效期",
+            422,
+        )
     version.accepted_at = datetime.now(UTC)
     quote.status = "accepted"
     await customer_service.touch_progress(session, quote.customer_id)

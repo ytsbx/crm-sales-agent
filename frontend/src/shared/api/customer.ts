@@ -180,8 +180,18 @@ export function listCustomerOrders(
 }
 
 /** 按筛选条件导出客户 CSV（API §7 POST /customers/export）。 */
+export type CustomerExportPurpose =
+  | 'customer_follow_up'
+  | 'business_analysis'
+  | 'management_report'
+  | 'data_reconciliation'
+  | 'historical_migration'
+  | 'other'
+
 export function exportCustomersFiltered(
   payload: {
+    purpose: CustomerExportPurpose
+    purpose_note?: string
     keyword?: string
     level?: string
     status?: string

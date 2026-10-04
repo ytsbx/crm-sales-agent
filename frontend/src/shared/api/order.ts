@@ -76,6 +76,8 @@ export interface Payment {
   received_amount: number
   payment_method?: string | null
   voucher_note?: string | null
+  voucher_file_id?: number | null
+  voucher_file_name?: string | null
   status: string
   status_label: string
   confirmed_by_name?: string | null
@@ -246,6 +248,23 @@ export function listPayments(query: { status?: string; page?: number; page_size?
 
 export function createPayment(payload: Record<string, unknown>) {
   return api.post<Payment>('/payments', payload)
+}
+
+export function uploadPaymentVoucher(id: number, file: File) {
+  const form = new FormData()
+  form.append('file', file)
+  return api.upload<{ voucher_file_id: number; voucher_file_name: string }>(
+    `/payments/${id}/voucher`,
+    form,
+  )
+}
+
+export function deletePaymentVoucher(id: number) {
+  return api.delete<null>(`/payments/${id}/voucher`)
+}
+
+export function downloadPaymentVoucher(id: number, filename: string) {
+  return api.download(`/payments/${id}/voucher`, filename)
 }
 
 export function confirmPayment(id: number, comment?: string) {

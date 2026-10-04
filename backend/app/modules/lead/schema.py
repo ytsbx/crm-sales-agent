@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,7 +59,7 @@ class LeadConvert(BaseModel):
     create_opportunity: bool = False
     opportunity_title: str | None = None
     expected_amount: float | None = None
-    expected_close_date: datetime | None = None
+    expected_close_date: date | None = None
 
 
 class LeadBatchAssign(BaseModel):

@@ -54,5 +54,5 @@ export function resolveOaInstance(
 
 /** 手动拉一次审批状态（与定时任务同一个函数，验收时不用等）。 */
 export function syncOaApprovals() {
-  return api.post<{ checked: number; changed: number }>('/dingtalk/oa-sync')
+  return api.post<{ checked: number; changed: number; disabled?: boolean; message?: string }>('/dingtalk/oa-sync')
 }

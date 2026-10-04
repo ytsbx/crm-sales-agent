@@ -58,8 +58,8 @@ export default function QuoteListPage() {
   const createMutation = useMutation({
     mutationFn: () => createQuote({ opportunity_id: opportunityId! }),
     onSuccess: (data) => {
-      // 拟报价来源说明（方案 §5）：默认取系统适用价；无价回退目标价会在此提示
-      Toast.success('报价单已生成，拟报价默认取系统适用价')
+      // 缺少已维护售价的需求行不会自动写入报价；服务端会在 warnings 中提示人工定价。
+      Toast.success('报价草稿已生成，请核对明细和定价提示')
       for (const warning of data.warnings ?? []) {
         Toast.warning({ content: warning, duration: 6 })
       }

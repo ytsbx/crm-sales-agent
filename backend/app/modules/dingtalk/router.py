@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.config import settings as app_settings
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -85,33 +86,31 @@ async def start_inquiry_approval(
                 422,
             )
         field_map[quote_component] = inquiry.oa_quote_user_id
-    # 提报人 / 提报部门 / **发起人**：钉钉要的是**人的编号与部门编号**，不是姓名。
-    # 按 CRM 里这个人的姓名去钉钉找同名账号——**找不到就明确报错**，
-    # 不能瞎填一个，否则单子会提给一个不相干的人（或者被钉钉拒掉还看不出原因）。
-    #
-    # 「发起人」这格单独说一句：`processInstances` 的 `originatorUserId` **只认钉钉
-    # userid**。原来这里传的是 CRM 的内部数字 id（`user.id`），钉钉那边根本认不出这个人
-    # ——审批链的第一环就是"谁发起的"，这一格错了，后面批给谁、批完回给谁都跟着错。
-    # 所以先换编号，**同一个编号既填提报人控件、也当发起人**；两处各算一次的话，
-    # 迟早会分叉成两个人（换模板、换姓名匹配都会碰到）。
+    # 提报人和发起人必须用同一个真实钉钉编号。关闭总闸时仅记待查询字段，
+    # 不查通讯录，不用 CRM 主键冒充钉钉身份；今后真发前会重新查询并生成表单。
     from app.modules.dingtalk.client import get_client
 
-    ding_user_id = await get_client().search_user_id_by_name(user.name)
-    if not ding_user_id:
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            f"钉钉里找不到与「{user.name}」同名的账号，无法发起审批。"
-            "请确认你的钉钉姓名与本系统一致，或联系管理员",
-            422,
-        )
+    ding_user_id = ""
+    if not app_settings.dingtalk_push_off:
+        ding_user_id = await get_client().search_user_id_by_name(user.name)
+        if not ding_user_id:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"钉钉里找不到与「{user.name}」同名的账号，无法发起审批。"
+                "请确认你的钉钉姓名与本系统一致，或联系管理员",
+                422,
+            )
     originator_component = (cfg or {}).get("originator_component")
     if originator_component:
-        field_map[originator_component] = ding_user_id
+        field_map[originator_component] = ding_user_id or f"（待查询：{user.name}的钉钉编号）"
     dept_component = (cfg or {}).get("dept_component")
     if dept_component:
-        dept_ids = await get_client().get_user_dept_ids(ding_user_id)
-        if dept_ids:
-            field_map[dept_component] = dept_ids[0]
+        if app_settings.dingtalk_push_off:
+            field_map[dept_component] = "（待查询：钉钉部门编号）"
+        else:
+            dept_ids = await get_client().get_user_dept_ids(ding_user_id)
+            if dept_ids:
+                field_map[dept_component] = dept_ids[0]
     # 额外字段（业务临时补的）按 componentId 直接给
     for component_id, value in (payload.extra_fields or {}).items():
         if component_id and value not in (None, ""):
@@ -120,8 +119,6 @@ async def start_inquiry_approval(
     # 「产品参考图片」是**必填的图片控件**：图不能直接塞进审批单，
     # 得先上传给钉钉换 media_id——**这一步也是对外的**，所以只在总闸打开时真传；
     # 关着的时候只把"会用哪张图"记下来，等真发的时候再传。
-    from app.core.config import settings as app_settings
-
     image_component = (cfg or {}).get("image_component")
     if image_component:
         biz_type = (cfg or {}).get("inquiry_file_business_type") or "inquiry"
@@ -268,4 +265,4 @@ async def trigger_oa_sync(
     # 这里不需要 Query 装饰器：它是函数参数，不是请求参数
     result = await svc.sync_pending_instances(session, limit=50)
     await session.commit()
-    return ok(result, f"已检查 {result['checked']} 条，状态变更 {result['changed']} 条")
+    return ok(result, result.get("message") or f"已检查 {result['checked']} 条，状态变更 {result['changed']} 条")

@@ -155,7 +155,7 @@ class CustomerMergeLog(Base, IdMixin):
 DECISION_LABEL: dict[str, str] = {
     "keep_both": "判为不同客户，各自保留",
     "assign_existing": "归已有客户的负责人",
-    "assign_new": "归新导入这条的负责人",
+    "assign_new": "指定负责人",
 }
 
 

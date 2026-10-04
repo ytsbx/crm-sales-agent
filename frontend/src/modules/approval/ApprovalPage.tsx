@@ -29,6 +29,7 @@ export default function ApprovalPage() {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const [activeKey, setActiveKey] = useState('pending')
+  const [page, setPage] = useState(1)
   const [rejectTarget, setRejectTarget] = useState<ApprovalRow | null>(null)
   const [rejectComment, setRejectComment] = useState('')
   const [transferTarget, setTransferTarget] = useState<ApprovalRow | null>(null)
@@ -42,11 +43,12 @@ export default function ApprovalPage() {
   ]
 
   const query = useQuery({
-    queryKey: ['approvals', activeKey],
+    queryKey: ['approvals', activeKey, page],
     queryFn: () =>
       activeKey === 'mine'
-        ? listApprovals({ mine: true, page_size: 50 })
-        : listApprovals({ status: activeKey, page_size: 50 }),
+        ? listApprovals({ mine: true, status: '', page, page_size: 50 })
+        : listApprovals({ status: activeKey, pending_for_me: activeKey === 'pending', page, page_size: 50 }),
+    enabled: activeKey !== 'rules',
   })
 
   // 转交接收人列表：打开始才拉（有 customer:assign / user:manage 权限的人能看到）
@@ -57,6 +59,7 @@ export default function ApprovalPage() {
   })
 
   const refresh = () => {
+    setPage(1)
     void queryClient.invalidateQueries({ queryKey: ['approvals'] })
     void queryClient.invalidateQueries({ queryKey: ['quotes'] })
   }
@@ -156,7 +159,7 @@ export default function ApprovalPage() {
               看报价
             </Link>
           )}
-          {record.status === 'pending' && can('quote:approve') && (
+          {record.can_approve && (
             <>
               <a style={{ color: 'var(--crm-success)' }} onClick={() => approveMutation.mutate(record.id)}>
                 通过
@@ -164,7 +167,7 @@ export default function ApprovalPage() {
               <a style={{ color: 'var(--crm-error)' }} onClick={() => setRejectTarget(record)}>
                 拒绝
               </a>
-              <a
+              {can('quote:approve') && <a
                 style={{ color: 'var(--crm-text-2)' }}
                 onClick={() => {
                   setTransferTarget(record)
@@ -173,7 +176,7 @@ export default function ApprovalPage() {
                 }}
               >
                 转交
-              </a>
+              </a>}
             </>
           )}
         </div>
@@ -189,7 +192,10 @@ export default function ApprovalPage() {
       />
 
       <SectionCard>
-        <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS_WITH_RULES} />
+        <Tabs type="line" activeKey={activeKey} onChange={(key) => {
+          setActiveKey(key)
+          setPage(1)
+        }} tabList={TABS_WITH_RULES} />
         {activeKey === 'rules' ? (
           <div style={{ marginTop: 16 }}>
             <RulesPanel />
@@ -201,7 +207,12 @@ export default function ApprovalPage() {
               dataSource={query.data?.items ?? []}
               loading={query.isLoading}
               rowKey="id"
-              pagination={false}
+              pagination={{
+                currentPage: page,
+                pageSize: 50,
+                total: query.data?.total ?? 0,
+                onPageChange: setPage,
+              }}
               empty={emptyText(query, '没有待处理的审批')}
               scroll={{ x: 1300 }}
             />
@@ -225,7 +236,7 @@ export default function ApprovalPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <Select
-            placeholder="选择接收人（客户/线索分配权限的人）"
+            placeholder="选择有资格处理当前审批的接收人"
             filter
             style={{ width: '100%' }}
             value={transferUserId}

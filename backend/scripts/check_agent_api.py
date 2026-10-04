@@ -26,13 +26,14 @@ Specialized：customer-summary / opportunity-analysis / product-recommendation /
 """
 
 import asyncio
+import os
 import json
 import sys
 import time
 import urllib.error
 import urllib.request
 
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 RUN = str(int(time.time()))[-6:]
 FAILURES = []
 

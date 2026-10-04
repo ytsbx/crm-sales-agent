@@ -133,6 +133,11 @@ async def cleanup(object_key: str | None = None):
 
         delete_object(object_key)
     async with SessionLocal() as s:
+        await s.execute(text(
+            "delete from audit_logs where business_type='oa_instance' and business_id in "
+            "(select id from oa_instances where inquiry_id in "
+            "(select id from custom_inquiries where inquiry_no like :p))"
+        ), {"p": f"{PREFIX}%"})
         await s.execute(
             text(
                 "delete from oa_instances where inquiry_id in "
@@ -258,10 +263,13 @@ async def check_client_payload_shape() -> None:
 
 async def main() -> int:
     from app.core.config import settings
+    from app.core.audit import AuditLog
+    from app.core.errors import AppError, ErrorCode
     from app.modules.customer.model import Customer
     from app.modules.dingtalk import client as client_module
     from app.modules.dingtalk import router as dt_router
     from app.modules.dingtalk import service as dt
+    from app.modules.dingtalk.model import OaInstance
     from app.modules.file.model import BusinessFile, FileRecord
     from app.modules.file.storage import absolute_path
     from app.modules.inquiry.model import CustomInquiry
@@ -278,6 +286,7 @@ async def main() -> int:
     client_module.get_client = lambda: fake
 
     # 总闸只在本进程内打开——**客户端是假的，不会有任何真实请求**
+    saved_push_off = settings.dingtalk_push_off
     settings.dingtalk_push_off = False
 
     saved_setting = None
@@ -356,7 +365,44 @@ async def main() -> int:
             )
             await s.commit()
 
-        print("=== 1. 从 CRM 发起：走的是 router（不是直接调 service）===")
+        print("=== 1. 关闸发起：人员/部门/图片/建单均不得调用 ===")
+        external_attempts = []
+
+        def forbidden_get_client():
+            external_attempts.append('get_client')
+            raise AssertionError('关闸时不应访问任何钉钉客户端')
+
+        settings.dingtalk_push_off = True
+        dt.get_client = forbidden_get_client
+        client_module.get_client = forbidden_get_client
+        async with SessionLocal() as s:
+            admin = (await s.execute(select(User).where(User.username == "admin"))).scalars().one()
+            user = CurrentUser(admin, permissions=set(), roles=[], data_scope="all")
+            dry = await dt_router.start_inquiry_approval(
+                inquiry_id=inquiry_id, payload=dt_router.StartApproval(),
+                request=fake_request(), user=user, session=s,
+            )
+            repeat = await dt_router.start_inquiry_approval(
+                inquiry_id=inquiry_id, payload=dt_router.StartApproval(),
+                request=fake_request(), user=user, session=s,
+            )
+            dry_row = await s.get(OaInstance, dry['data']['id'])
+            snapshot = {item['id']: item['value']
+                        for item in dry_row.form_snapshot['formComponentValues']}
+        check('关闸发起明确为 skipped', dry['data']['status'], 'skipped')
+        check('关闸重复点击复用同一行', repeat['data']['id'], dry['data']['id'])
+        check('关闸没有伪造钉钉身份', dry_row.originator_user_id, '')
+        check_true('待查询的人员和部门明确标记',
+                   '待查询' in snapshot[TEST_CONFIG['originator_component']]
+                   and '待查询' in snapshot[TEST_CONFIG['dept_component']])
+        check_true('图片只记待上传', '待上传' in snapshot[TEST_CONFIG['image_component']])
+        check('关闸没有取得客户端', len(external_attempts), 0)
+
+        # 只在本测试进程开启模拟路径，客户端仍全部为桩；验证 skipped 后可正确重建报文。
+        settings.dingtalk_push_off = False
+        dt.get_client = lambda: fake
+        client_module.get_client = lambda: fake
+        print("=== 2. 假客户端发起：走 router，复用 skipped 记录 ===")
         async with SessionLocal() as s:
             admin = (
                 await s.execute(select(User).where(User.username == "admin"))
@@ -370,6 +416,7 @@ async def main() -> int:
                 session=s,
             )
         check("接口返回码", resp.get("code"), 0)
+        check('模拟发起复用 skipped 的业务键', resp['data']['id'], dry['data']['id'])
         check("外部建单被调用次数", fake.created, 1)
         check("按姓名找人时用的是 CRM 里的姓名", fake.searched_name, "系统管理员")
         check(
@@ -427,7 +474,7 @@ async def main() -> int:
             "图片真的走了上传（没把必填项跳过）", fake.uploaded == 1, f"uploaded={fake.uploaded}"
         )
 
-        print('=== 2. 落库那行：排查"这单谁发起的"只看这一列 ===')
+        print('=== 3. 落库那行：排查"这单谁发起的"只看这一列 ===')
         async with SessionLocal() as s:
             stored = (
                 await s.execute(
@@ -443,6 +490,42 @@ async def main() -> int:
             check("库里存的是钉钉 userid", stored["originator_user_id"], DING_USER_ID)
             check("状态", stored["status"], "pending")
             check("实例号", stored["instance_id"], "FAKE-INST-1")
+
+        print('=== 4. 关闸同步及人工重发：原记录保持不变 ===')
+        settings.dingtalk_push_off = True
+        dt.get_client = forbidden_get_client
+        client_module.get_client = forbidden_get_client
+        async with SessionLocal() as s:
+            oa_id = resp['data']['id']
+            before_sync = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
+            sync = await dt_router.trigger_oa_sync(request=fake_request(), user=user, session=s)
+            after_sync = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
+            check('关闸同步明确返回未执行', sync['data']['disabled'], True)
+            check_true('同步提示不是成功检查零条', '开发阶段未执行' in sync['message'])
+            check('关闸同步不改审批中的记录', after_sync, before_sync)
+
+            row = await s.get(OaInstance, oa_id)
+            row.status = 'needs_review'
+            row.error = '夹具：外部结果未知'
+            await s.commit()
+            before_resend = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
+            audit_before = (await s.execute(select(AuditLog.__table__).order_by(AuditLog.id))).all()
+            try:
+                await dt_router.resolve_oa_instance(
+                    oa_id=oa_id, payload=dt_router.ResolveOa(action='resend'),
+                    request=fake_request(), user=user, session=s,
+                )
+            except AppError as exc:
+                check('关闸重发返回 403', exc.http_status, 403)
+                check('关闸重发错误码', exc.code, ErrorCode.FORBIDDEN)
+                check_true('关闸重发明确提示未执行', '开发阶段未执行' in exc.message)
+            else:
+                check_true('关闸重发必须拒绝', False)
+            after_resend = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
+            audit_after = (await s.execute(select(AuditLog.__table__).order_by(AuditLog.id))).all()
+            check('关闸重发不改结果未知的原记录', after_resend, before_resend)
+            check('关闸重发不写成功审计', audit_after, audit_before)
+        check('发起/同步/重发关闸路径外部调用均为零', len(external_attempts), 0)
     finally:
         # 设置项还回去（CI 上是"新建的那条删掉"）
         async with SessionLocal() as s:
@@ -459,7 +542,7 @@ async def main() -> int:
             await s.commit()
         dt.get_client = original_client_getter
         client_module.get_client = original_client_getter
-        settings.dingtalk_push_off = True
+        settings.dingtalk_push_off = saved_push_off
         await cleanup(object_key)
 
     print()

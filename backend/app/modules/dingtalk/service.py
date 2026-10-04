@@ -27,8 +27,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
+from app.core.config import settings as app_settings
 from app.core.errors import AppError, ErrorCode
-from app.modules.dingtalk.client import DingTalkError, get_client
+from app.modules.dingtalk.client import DINGTALK_DISABLED_MESSAGE, DingTalkError, get_client
 from app.modules.dingtalk.model import OA_STATUS_LABEL, OaInstance
 
 #: 停在 `submitting` 超过这个时长，就认为那次尝试已经死了（进程被杀/机器重启），
@@ -115,8 +116,6 @@ async def create_inquiry_instance(
     - `resubmit=True`——驳回/撤销之后**业务主动重提**：轮次 +1、换幂等键，
     在钉钉里建一张新单。这条不这么做的话，重提会被唯一约束挡住、永远发不出去。
     """
-    from app.core.config import settings as app_settings
-
     # 重试路径复用的是"已经存在的行"（见下面的同轮幂等判断），所以初值必须是 None，
     # 否则后面 `if row is not None` 会误判成复用、跳过首次插入
     row: OaInstance | None = None
@@ -179,7 +178,7 @@ async def create_inquiry_instance(
             originator_user_id=originator_user_id,
             form_snapshot={"formComponentValues": component_values},
             status="skipped",
-            error="钉钉推送已关闭（DINGTALK_PUSH_OFF），未向钉钉发起审批",
+            error=f"{DINGTALK_DISABLED_MESSAGE}；未发起审批",
             created_by=user.id,
             created_at=datetime.now(UTC),
             last_attempt_at=datetime.now(UTC),
@@ -192,6 +191,8 @@ async def create_inquiry_instance(
         # 重试路径：刷新报文快照，保证"本次实际发出去的"与记录一致；
         # 复用同一行，所以不需要再走一次"占业务键"的插入与唯一约束处理
         row.form_snapshot = {"formComponentValues": component_values}
+        row.originator_user_id = originator_user_id
+        row.process_code = process_code
         await session.flush()
     else:
         row = OaInstance(
@@ -293,6 +294,9 @@ async def resend_instance(session: AsyncSession, row: OaInstance) -> OaInstance:
     提交前先落 `submitting` 并提交：万一进程在调用钉钉前后又被打断，下一个人
     打开还能看到"结果不明"，不会被当成没发过而重复点。
     """
+    # 结果不明的原记录必须保留，关闸时不能改成 submitting / failed / skipped。
+    if app_settings.dingtalk_push_off:
+        raise AppError(ErrorCode.FORBIDDEN, f"{DINGTALK_DISABLED_MESSAGE}；不能重发审批", 403)
     component_values = (row.form_snapshot or {}).get("formComponentValues") or []
     row.status = "submitting"
     row.error = None
@@ -324,6 +328,8 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
     在 OA 后台额外授权**，而且天然不会丢消息——这一轮没查到，下一轮还会查。
     代价只是延迟几分钟，而询价审批本来就要几小时到几天。
     """
+    if app_settings.dingtalk_push_off:
+        return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
     rows = (
         await session.execute(
             select(OaInstance)

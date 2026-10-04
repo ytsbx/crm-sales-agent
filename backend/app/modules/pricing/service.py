@@ -556,6 +556,19 @@ async def calculate_price(
     rule = await find_price_rule(
         session, sku_id=sku_id, quantity=quantity, customer_level=resolved_level
     )
+    if (
+        resolved_level
+        and rule is not None
+        and rule.customer_level == resolved_level
+        and rule.guide_price is None
+    ):
+        # 等级专属规则未维护指导价时，回退到通用指导价；不能让报价行把
+        # 成本反推的内部试算误当成销售价。
+        general_rule = await find_price_rule(
+            session, sku_id=sku_id, quantity=quantity, customer_level=None
+        )
+        if general_rule is not None and general_rule.guide_price is not None:
+            rule = general_rule
     if rule is None:
         warnings.append("该 SKU 没有匹配的价格规则，已按默认利润率反推标准价")
     customer_rule = (

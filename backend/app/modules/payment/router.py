@@ -3,15 +3,19 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.file import storage
+from app.modules.file.model import FileRecord
 from app.modules.order.model import SalesOrder
 from app.modules.notification import service as notification_service
 from app.modules.order.service import get_order_or_404
@@ -336,6 +340,108 @@ async def get_payment(
     return ok(await svc.serialize_payment(session, record))
 
 
+@router.get("/payments/{payment_id}/voucher")
+async def download_payment_voucher(
+    payment_id: int,
+    user: CurrentUser = Depends(require_permission("payment:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """下载回款凭证；权限与回款记录相同，销售与财务都按订单数据范围校验。"""
+    record = await svc.get_visible_payment(session, user, payment_id)
+    if not record.voucher_file_id:
+        raise AppError(ErrorCode.NOT_FOUND, "该回款还没有凭证", 404)
+    voucher = await session.get(FileRecord, record.voucher_file_id)
+    if voucher is None:
+        raise AppError(ErrorCode.NOT_FOUND, "回款凭证文件不存在", 404)
+    path = storage.absolute_path(voucher.object_key)
+    if not path.exists():
+        raise AppError(ErrorCode.NOT_FOUND, "回款凭证文件内容已丢失", 404)
+    from urllib.parse import quote
+
+    return FileResponse(
+        path,
+        media_type=voucher.mime_type or "application/octet-stream",
+        filename=voucher.file_name,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(voucher.file_name)}"},
+    )
+
+
+@router.post("/payments/{payment_id}/voucher")
+async def upload_payment_voucher(
+    payment_id: int,
+    request: Request,
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """上传单个待确认回款凭证；通用 file 权限不授予财务角色。"""
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
+    if record.status != "pending":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "回款确认或驳回后不能再上传凭证")
+    if record.voucher_file_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已有凭证，请先删除旧凭证再上传")
+
+    object_key, size, checksum = await storage.save_upload(file)
+    voucher = FileRecord(
+        storage_provider=settings.storage_provider,
+        object_key=object_key,
+        file_name=file.filename or "回款凭证",
+        mime_type=file.content_type,
+        size=size,
+        checksum=checksum,
+        uploaded_by=user.id,
+    )
+    session.add(voucher)
+    await session.flush()
+    record.voucher_file_id = voucher.id
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="attach_voucher",
+        business_type="payment",
+        business_id=record.id,
+        after={"voucher_file_id": voucher.id, "file_name": voucher.file_name, "size": size},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok({"voucher_file_id": voucher.id, "voucher_file_name": voucher.file_name}, "凭证已上传")
+
+
+@router.delete("/payments/{payment_id}/voucher")
+async def delete_payment_voucher(
+    payment_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """仅待确认回款可删除凭证；确认/驳回后保留审计凭据。"""
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
+    if record.status != "pending":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "回款确认或驳回后不能删除凭证")
+    if not record.voucher_file_id:
+        raise AppError(ErrorCode.NOT_FOUND, "该回款还没有凭证", 404)
+
+    voucher = await session.get(FileRecord, record.voucher_file_id)
+    old_file_id = record.voucher_file_id
+    object_key = voucher.object_key if voucher is not None else None
+    record.voucher_file_id = None
+    if voucher is not None:
+        await session.delete(voucher)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="remove_voucher",
+        business_type="payment",
+        business_id=record.id,
+        before={"voucher_file_id": old_file_id, "file_name": voucher.file_name if voucher else None},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    if object_key is not None:
+        storage.delete_object(object_key)
+    return ok(None, "凭证已删除")
+
+
 @router.patch("/payments/{payment_id}")
 async def update_payment(
     payment_id: int,
@@ -349,7 +455,7 @@ async def update_payment(
     只有待确认（pending）的回款能改。确认/驳回都是财务给出的事实结论，
     事后改金额会让已对账的账目对不上。
     """
-    record = await svc.get_visible_payment(session, user, payment_id)
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     if record.status != "pending":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -434,9 +540,8 @@ async def confirm_payment(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    record = await svc.get_visible_payment(session, user, payment_id)
-    if record.status == "confirmed":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该回款已确认")
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
+    svc.ensure_payment_pending(record)
     record.status = "confirmed"
     record.confirmed_by = user.id
     record.confirmed_at = datetime.now(UTC)
@@ -484,10 +589,8 @@ async def reject_payment(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    record = await svc.get_visible_payment(session, user, payment_id)
-    if record.status == "confirmed":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已确认的回款不能驳回")
-    before_status = record.status
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
+    svc.ensure_payment_pending(record)
     record.status = "rejected"
     await session.flush()
     await write_audit(
@@ -496,7 +599,7 @@ async def reject_payment(
         action="reject",
         business_type="payment",
         business_id=record.id,
-        before={"status": before_status},
+        before={"status": "pending"},
         after={"status": "rejected", "comment": payload.comment},
         ip=client_ip(request),
     )

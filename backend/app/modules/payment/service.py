@@ -7,11 +7,22 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.modules.file.model import FileRecord
 from app.modules.order.model import SalesOrder
 from app.modules.payment.model import PAYMENT_STATUS_LABEL, PLAN_STATUS_LABEL, PaymentRecord, ReceivablePlan
 from app.modules.user.model import User
 
 ZERO = Decimal(0)
+
+
+def ensure_payment_pending(record: PaymentRecord) -> None:
+    """Only pending receipts may be edited, confirmed, or rejected."""
+    if record.status != "pending":
+        label = PAYMENT_STATUS_LABEL.get(record.status, record.status)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"只有待财务确认的回款可以操作（当前：{label}）",
+        )
 
 
 def _f(value: Decimal | None) -> float | None:
@@ -72,6 +83,9 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         else None
     )
     order = await session.get(SalesOrder, record.order_id)
+    voucher = (
+        await session.get(FileRecord, record.voucher_file_id) if record.voucher_file_id else None
+    )
     confirmer = await session.get(User, record.confirmed_by) if record.confirmed_by else None
     return {
         "id": record.id,
@@ -84,6 +98,8 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         "currency": record.currency,
         "payment_method": record.payment_method,
         "voucher_note": record.voucher_note,
+        "voucher_file_id": record.voucher_file_id,
+        "voucher_file_name": voucher.file_name if voucher else None,
         "status": record.status,
         "status_label": PAYMENT_STATUS_LABEL.get(record.status, record.status),
         "confirmed_by": record.confirmed_by,
@@ -147,9 +163,20 @@ async def get_visible_plan(
 
 
 async def get_visible_payment(
-    session: AsyncSession, user, payment_id: int
+    session: AsyncSession, user, payment_id: int, *, for_update: bool = False
 ) -> PaymentRecord:
-    record = await get_payment_or_404(session, payment_id)
+    if for_update:
+        record = (
+            await session.execute(
+                select(PaymentRecord)
+                .where(PaymentRecord.id == payment_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if record is None:
+            raise AppError(ErrorCode.NOT_FOUND, "回款记录不存在", 404)
+    else:
+        record = await get_payment_or_404(session, payment_id)
     await assert_order_visible(session, user, record.order_id)
     return record
 

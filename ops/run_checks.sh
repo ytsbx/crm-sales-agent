@@ -11,6 +11,9 @@
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SUITES_FILE="$SCRIPT_DIR/check_suites.txt"
+API_BASE="${API_BASE:-http://127.0.0.1:8000/api/v1}"
+API_ORIGIN="${API_BASE%/api/v1}"
+export API_BASE
 cd "$SCRIPT_DIR/../backend"
 
 # 本轮起点：收尾清扫（见下面 2.5）靠它划出"这轮跑出来的数据"，之前的一律不动
@@ -25,8 +28,8 @@ if [[ ! -f "$SUITES_FILE" ]]; then
 fi
 
 echo "== 0. 后端可达性 =="
-if ! curl -sf -o /dev/null http://127.0.0.1:8000/docs; then
-  echo "后端没在 127.0.0.1:8000 运行。先起后端："
+if ! curl -sf -o /dev/null "$API_ORIGIN/docs"; then
+  echo "后端没在 $API_ORIGIN 运行。先启动后端，或设置 API_BASE："
   echo "  cd backend && PYTHONPATH=. .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000"
   exit 1
 fi

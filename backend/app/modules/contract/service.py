@@ -163,9 +163,21 @@ async def generate_document(session: AsyncSession, *, payload, user_id: int) -> 
     order = await session.get(SalesOrder, payload.order_id) if payload.order_id else None
     if payload.order_id and order is None:
         raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    if order is not None and order.customer_id != customer.id:
+        raise AppError(ErrorCode.PARAM_ERROR, "所选订单不属于该客户", 422)
     quote = await session.get(Quote, payload.quote_id) if payload.quote_id else None
     if payload.quote_id and quote is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
+    if quote is not None and quote.customer_id != customer.id:
+        raise AppError(ErrorCode.PARAM_ERROR, "所选报价不属于该客户", 422)
+    if order is not None and quote is not None and order.quote_id not in (None, quote.id):
+        raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)
+    if payload.parent_id is not None:
+        parent = await session.get(ContractDocument, payload.parent_id)
+        if parent is None or parent.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "被补充的合同文档不存在", 404)
+        if parent.customer_id != customer.id:
+            raise AppError(ErrorCode.PARAM_ERROR, "被补充的合同文档不属于该客户", 422)
 
     content, filled = render_template(
         template.body,

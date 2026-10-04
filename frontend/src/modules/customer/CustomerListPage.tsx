@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
 
 import {
   batchTagCustomers,
@@ -15,6 +15,7 @@ import {
   listCustomers,
   listStageDistribution,
   listTags,
+  type CustomerExportPurpose,
   type DuplicateMatch,
   type CustomerPayload,
 } from '../../shared/api/customer'
@@ -42,6 +43,15 @@ const LEVEL_OPTIONS = [
 const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入'].map(
   (value) => ({ value, label: value }),
 )
+
+const CUSTOMER_EXPORT_PURPOSES: Array<{ value: CustomerExportPurpose; label: string }> = [
+  { value: 'customer_follow_up', label: '客户跟进' },
+  { value: 'business_analysis', label: '经营分析' },
+  { value: 'management_report', label: '管理汇报' },
+  { value: 'data_reconciliation', label: '数据核对' },
+  { value: 'historical_migration', label: '历史数据迁移' },
+  { value: 'other', label: '其他' },
+]
 
 // 领导六阶段（自动推导，非人工填写）：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购
 type TagColor = ComponentProps<typeof Tag>['color']
@@ -95,6 +105,10 @@ export default function CustomerListPage() {
     skipped: Array<{ name: string; reason: string }>
     failed: Array<{ name: string; reason: string }>
   } | null>(null)
+  const [exportModalOpen, setExportModalOpen] = useState(false)
+  const [exportPurpose, setExportPurpose] = useState<CustomerExportPurpose | undefined>()
+  const [exportPurposeNote, setExportPurposeNote] = useState('')
+  const [exporting, setExporting] = useState(false)
 
   const tokenHeader = () => {
     const token = JSON.parse(localStorage.getItem('crm-auth') ?? '{}')?.state?.token
@@ -229,6 +243,29 @@ export default function CustomerListPage() {
     setPage(1)
   }
 
+  const handleExport = async () => {
+    if (!exportPurpose || (exportPurpose === 'other' && !exportPurposeNote.trim())) return
+    setExporting(true)
+    try {
+      await exportCustomersFiltered({
+        keyword: keyword || undefined,
+        level,
+        owner_id: scope === 'mine' ? currentUser?.id : undefined,
+        pool_status: scope === 'pool' ? 'public' : undefined,
+        purpose: exportPurpose,
+        purpose_note: exportPurpose === 'other' ? exportPurposeNote.trim() : undefined,
+      })
+      Toast.success('客户数据已导出，导出用途已记入审计')
+      setExportModalOpen(false)
+      setExportPurpose(undefined)
+      setExportPurposeNote('')
+    } catch {
+      Toast.error('导出失败，请检查权限或筛选范围后重试')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const columns = [
     {
       title: '客户名称',
@@ -359,18 +396,7 @@ export default function CustomerListPage() {
           {/* 按当前筛选导出（POST /customers/export）：列表页筛出什么就导出什么，
               数据范围后端强制；导出是独立权限（customer:export），与查看分开 */}
           {can('customer:export') && (
-            <Button
-              onClick={() =>
-                void exportCustomersFiltered({
-                  keyword: keyword || undefined,
-                  level,
-                  owner_id: scope === 'mine' ? currentUser?.id : undefined,
-                  pool_status: scope === 'pool' ? 'public' : undefined,
-                })
-              }
-            >
-              导出
-            </Button>
+            <Button onClick={() => setExportModalOpen(true)}>导出</Button>
           )}
           <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
             批量导入
@@ -455,6 +481,41 @@ export default function CustomerListPage() {
           }}
         />
       </SectionCard>
+
+      <Modal
+        title="导出客户"
+        visible={exportModalOpen}
+        onCancel={() => setExportModalOpen(false)}
+        onOk={() => void handleExport()}
+        confirmLoading={exporting}
+        okText="确认导出"
+        cancelText="取消"
+        okButtonProps={{
+          disabled: !exportPurpose || (exportPurpose === 'other' && !exportPurposeNote.trim()),
+        }}
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
+            导出的数据受你的客户数据权限范围限制，用途会记录在审计日志中。
+          </div>
+          <Select
+            value={exportPurpose}
+            placeholder="请选择导出用途（必填）"
+            optionList={CUSTOMER_EXPORT_PURPOSES}
+            onChange={(value) => setExportPurpose(value as CustomerExportPurpose)}
+            style={{ width: '100%' }}
+          />
+          {exportPurpose === 'other' && (
+            <TextArea
+              value={exportPurposeNote}
+              placeholder="请说明具体用途（必填，最多 200 字）"
+              maxLength={200}
+              autosize={{ minRows: 2, maxRows: 4 }}
+              onChange={setExportPurposeNote}
+            />
+          )}
+        </div>
+      </Modal>
 
       <Modal
         title="导入结果"

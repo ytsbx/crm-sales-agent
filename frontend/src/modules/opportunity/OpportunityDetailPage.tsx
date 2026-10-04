@@ -42,6 +42,7 @@ import {
 } from '../../shared/api/agent'
 import DetailField from '../common/DetailField'
 import FollowUpModal from '../common/FollowUpModal'
+import FollowUpAttachmentsButton from '../common/FollowUpAttachmentsButton'
 import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
@@ -522,6 +523,13 @@ export default function OpportunityDetailPage() {
                   { title: '内容', dataIndex: 'content' },
                   { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },
                   { title: '记录人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+                  {
+                    title: '附件',
+                    width: 90,
+                    render: (_: unknown, record: FollowUp) => (
+                      <FollowUpAttachmentsButton followupId={record.id} />
+                    ),
+                  },
                 ]}
                 dataSource={followupsQuery.data?.items ?? []}
                 loading={followupsQuery.isLoading}

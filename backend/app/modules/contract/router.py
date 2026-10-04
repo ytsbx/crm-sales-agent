@@ -7,6 +7,7 @@ from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.contract import service as svc
 from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid, TemplateCreate
@@ -65,9 +66,28 @@ async def generate_document(
     session: AsyncSession = Depends(get_db),
 ):
     from app.modules.customer import service as customer_service
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
 
     customer = await customer_service.get_visible_customer(session, user, payload.customer_id)
     await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
+    if payload.order_id is not None:
+        order = await session.get(SalesOrder, payload.order_id)
+        if order is None:
+            raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+        if order.customer_id != customer.id:
+            raise AppError(ErrorCode.PARAM_ERROR, "所选订单不属于该客户", 422)
+        await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+    if payload.quote_id is not None:
+        quote = await session.get(Quote, payload.quote_id)
+        if quote is None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
+        if quote.customer_id != customer.id:
+            raise AppError(ErrorCode.PARAM_ERROR, "所选报价不属于该客户", 422)
+        await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+    if payload.order_id is not None and payload.quote_id is not None:
+        if order.quote_id is not None and order.quote_id != quote.id:
+            raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)
     doc = await svc.generate_document(session, payload=payload, user_id=user.id)
     await write_audit(
         session,
@@ -107,6 +127,10 @@ async def sign_document(
 ):
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_doc_in_scope(session, user, doc)
+    from app.modules.file.access import can_access_file
+
+    if not await can_access_file(session, user, payload.file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权将该文件登记为此合同的签署件", 403)
     await svc.sign_document(session, doc, file_id=payload.file_id, note=payload.note)
     await write_audit(
         session,

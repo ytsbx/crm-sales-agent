@@ -45,6 +45,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
+import PaymentVoucherControl from '../common/PaymentVoucherControl'
 
 const TABS = [
   { tab: '订单明细', itemKey: 'items' },
@@ -638,6 +639,19 @@ export default function OrderDetailPage() {
                 { title: '收款日期', dataIndex: 'received_date', width: 130 },
                 { title: '金额', dataIndex: 'received_amount', width: 130, render: (v: number) => `¥${v.toLocaleString('zh-CN')}` },
                 { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
+                {
+                  title: '回款凭证',
+                  width: 220,
+                  render: (_: unknown, record: Payment) => (
+                    <PaymentVoucherControl
+                      payment={record}
+                      onChanged={() => {
+                        void queryClient.invalidateQueries({ queryKey: ['order-payments', orderId] })
+                        void queryClient.invalidateQueries({ queryKey: ['payments'] })
+                      }}
+                    />
+                  ),
+                },
                 {
                   title: '状态',
                   dataIndex: 'status_label',

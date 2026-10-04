@@ -311,19 +311,47 @@ async def apply_status_webhook(
     new_status = adapter.STATUS_MAP.get(raw_status) if hasattr(adapter, "STATUS_MAP") else None
     changed = False
     if new_status and new_status in VALID_STATUS and new_status != order.status:
-        old_status = order.status
-        order.status = new_status
-        session.add(
-            OrderStatusHistory(
-                order_id=order.id,
-                old_status=old_status,
+        # ERP callbacks must pass through the same lifecycle guards as normal
+        # CRM status changes (cancelled orders stay terminal; completion checks
+        # unfinished shipment batches; cancellation records cancelled_at).
+        # Directly assigning order.status here previously bypassed those rules.
+        from app.modules.order import service as order_service
+
+        try:
+            await order_service.change_status(
+                session,
+                order,
                 new_status=new_status,
-                source="ERP",
                 operator_id=None,
+                source="ERP",
                 remark=remark or f"{adapter.label} 推送状态 {raw_status}",
-                created_at=datetime.now(UTC),
             )
-        )
+        except AppError as exc:
+            session.add(
+                IntegrationLog(
+                    integration_type="erp",
+                    provider=adapter.label,
+                    direction="inbound",
+                    business_type="order",
+                    business_id=order.id,
+                    status="failed",
+                    request_data={"raw_status": raw_status, "order_no": order.order_no},
+                    response_data={"mapped_status": new_status, "changed": False},
+                    error_message=exc.message,
+                )
+            )
+            await session.commit()
+            return {
+                "matched": True,
+                "order_id": order.id,
+                "order_no": order.order_no,
+                "status": order.status,
+                "changed": False,
+                "raw_status": raw_status,
+                "mapped": True,
+                "message": exc.message,
+            }
+        # The shared service already adds the corresponding history row.
         changed = True
 
     session.add(

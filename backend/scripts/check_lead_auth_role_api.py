@@ -33,6 +33,7 @@
 """
 
 import asyncio
+import os
 import csv
 import io
 import json
@@ -42,7 +43,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 RUN = str(int(time.time()))[-6:]
 FAILURES = []
 

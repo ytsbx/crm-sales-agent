@@ -13,12 +13,13 @@
 """
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 DEMO_CUSTOMER_NAME = '示例客户·青岛海川机械（演示）'
 
 

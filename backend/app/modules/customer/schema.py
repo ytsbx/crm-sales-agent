@@ -1,8 +1,9 @@
 """客户与联系人的入参结构。"""
 
 from datetime import datetime
+from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CustomerCreate(BaseModel):
@@ -43,15 +44,36 @@ class CustomerTransfer(BaseModel):
     reason: str | None = None
 
 
+class CustomerExportPurpose(str, Enum):
+    CUSTOMER_FOLLOW_UP = "customer_follow_up"
+    BUSINESS_ANALYSIS = "business_analysis"
+    MANAGEMENT_REPORT = "management_report"
+    DATA_RECONCILIATION = "data_reconciliation"
+    HISTORICAL_MIGRATION = "historical_migration"
+    OTHER = "other"
+
+
 class CustomerExportFilter(BaseModel):
     """导出筛选条件，与列表页参数保持一致。"""
 
+    purpose: CustomerExportPurpose
+    purpose_note: str | None = Field(default=None, max_length=200)
     keyword: str | None = None
     level: str | None = None
     status: str | None = None
     source: str | None = None
     owner_id: int | None = None
     pool_status: str | None = None
+
+    @model_validator(mode="after")
+    def validate_purpose_note(self):
+        note = (self.purpose_note or "").strip()
+        if self.purpose == CustomerExportPurpose.OTHER and not note:
+            raise ValueError("用途选择“其他”时，补充说明必填")
+        if self.purpose != CustomerExportPurpose.OTHER and note:
+            raise ValueError("仅用途选择“其他”时填写补充说明")
+        self.purpose_note = note or None
+        return self
 
 
 class ContactCreate(BaseModel):

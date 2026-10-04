@@ -24,6 +24,7 @@
 """
 
 import asyncio
+import os
 import json
 import sys
 import time
@@ -36,7 +37,7 @@ from sqlalchemy import select, text
 from app.core.database import SessionLocal
 
 FAILURES = []
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 PREFIX = 'CHKSCOPE'
 #: 被拒的两种正常表现：403（范围/权限拒绝）或 404（不可见时不暴露存在性）
 DENIED = (403, 404)
@@ -107,6 +108,12 @@ async def cleanup():
             f"delete from opportunities where customer_id in {cust}",
             "delete from leads where name like :p",
             f"delete from integration_logs where business_id in {order}",
+            f"delete from audit_logs where (business_type = 'order' and business_id in {order}) "
+            f"or (business_type = 'customer' and business_id in {cust}) "
+            f"or (business_type = 'quote' and business_id in "
+            f"(select id from quotes where customer_id in {cust}))",
+            f"delete from notifications where business_type = 'order' and business_id in {order}",
+            f"delete from business_events where business_type = 'order' and business_id in {order}",
             f"delete from order_status_history where order_id in {order}",
             f"delete from sales_orders where customer_id in {cust}",
             f"delete from business_files where business_type = 'customer' and business_id in {cust}",
@@ -114,15 +121,27 @@ async def cleanup():
             f"delete from customer_merge_logs where target_customer_id in {cust} "
             f"or source_customer_id in {cust}",
             "delete from contacts where name like :p",
+            f"delete from audit_logs where business_type='customer_duplicate_case' "
+            f"and business_id in (select id from customer_duplicate_cases "
+            f"where customer_id in {cust} or candidate_id in {cust})",
+            f"delete from customer_duplicate_cases where customer_id in {cust} "
+            f"or candidate_id in {cust}",
+            f"delete from audit_logs where action='open_customer_duplicate_cases' "
+            f"and business_type='customer' and business_id in {cust}",
             # logistics_quotes 没有 remark/owner 之类可标记的列（上次拿 remark 当标记，
             # 清理语句直接报 UndefinedColumn、整段 cleanup 中止，残留被守门套件抓到），
             # 只能按"挂在测试客户上"清。
             f"delete from logistics_quotes where customer_id in {cust}",
             "delete from customers where name like :p",
             "delete from user_roles where user_id in (select id from users where username like :u)",
+            "delete from user_roles where role_id in (select id from roles where code like :r)",
+            "delete from role_permissions where role_id in (select id from roles where code like :r)",
+            "delete from roles where code like :r",
             "delete from users where username like :u",
         ):
-            await s.execute(text(sql), {'p': f'{PREFIX}%', 'u': f'{PREFIX.lower()}%'})
+            await s.execute(text(sql), {
+                'p': f'{PREFIX}%', 'u': f'{PREFIX.lower()}%', 'r': f'{PREFIX}%'
+            })
         await s.commit()
 
 
@@ -134,7 +153,7 @@ async def main() -> int:
     from app.modules.inquiry.model import CustomInquiry
     from app.modules.integration.model import IntegrationLog
     from app.modules.order.model import SalesOrder
-    from app.modules.user.model import Role, User, user_roles
+    from app.modules.user.model import Role, User, role_permissions, user_roles
 
     stamp = int(time.time())
     await cleanup()
@@ -149,6 +168,27 @@ async def main() -> int:
         sales_role = (await s.execute(select(Role).where(Role.code == 'salesperson'))).scalars().one()
         await s.execute(user_roles.insert().values(user_id=outsider.id, role_id=sales_role.id))
 
+        # 临时给两名 self 范围销售删除和分配权限，确保断言测的是数据范围，
+        # 而不是因为缺少模块操作权限而提前被拒。
+        delete_probe_role = Role(
+            code=f'{PREFIX}DELETE{stamp}', name=f'{PREFIX}删除权限探针', data_scope='self'
+        )
+        s.add(delete_probe_role)
+        await s.flush()
+        for code in ('customer:delete', 'customer:assign'):
+            permission_id = (await s.execute(
+                text("select id from permissions where code=:code"), {'code': code}
+            )).scalar_one()
+            await s.execute(role_permissions.insert().values(
+                role_id=delete_probe_role.id, permission_id=permission_id
+            ))
+        await s.execute(user_roles.insert().values(
+            user_id=owner.id, role_id=delete_probe_role.id
+        ))
+        await s.execute(user_roles.insert().values(
+            user_id=outsider.id, role_id=delete_probe_role.id
+        ))
+
         customer = Customer(name=f'{PREFIX}张三客户-{stamp}', level='A', status='active',
                             pool_status='private', owner_id=owner.id)
         s.add(customer)
@@ -160,7 +200,12 @@ async def main() -> int:
                            owner_id=owner.id, sales_owner_id=owner.id,
                            total_amount=Decimal('100'), currency='CNY', status='pending',
                            created_by=owner.id)
-        s.add_all([inquiry, order])
+        cancel_control_order = SalesOrder(
+            order_no=f'{PREFIX}CANCEL{stamp}', customer_id=customer.id,
+            owner_id=owner.id, sales_owner_id=owner.id,
+            total_amount=Decimal('50'), currency='CNY', status='pending', created_by=owner.id,
+        )
+        s.add_all([inquiry, order, cancel_control_order])
         await s.flush()
         # 合并夹具：再造一个同属张三的客户，两边各挂一个**主**联系人。
         # 要验的正是"合并后目标还剩几个主联系人"——原实现把目标客户原有的主联系人
@@ -169,7 +214,11 @@ async def main() -> int:
 
         source_customer = Customer(name=f'{PREFIX}来源客户-{stamp}', level='B',
                                    status='active', pool_status='private', owner_id=owner.id)
-        s.add(source_customer)
+        delete_control_customer = Customer(
+            name=f'{PREFIX}本人删除对照客户-{stamp}', level='C', status='active',
+            pool_status='private', owner_id=owner.id,
+        )
+        s.add_all([source_customer, delete_control_customer])
         await s.flush()
         # 公海客户（无负责人）：用来守"别把公海误关"——刚把无归属默认改成拒绝，
         # 客户/线索必须显式放行，否则公海就看不成了
@@ -235,6 +284,8 @@ async def main() -> int:
         await s.commit()
         cid, iid, oid = customer.id, inquiry.id, order.id
         src_cid, outsider_name = source_customer.id, outsider.username
+        delete_control_cid = delete_control_customer.id
+        cancel_control_oid = cancel_control_order.id
         public_cid = public_customer.id
         lq_id = logistics_quote.id
         followup_id, opp_fixture_id, lead_fixture_id = followup.id, opportunity.id, lead.id
@@ -258,14 +309,19 @@ async def main() -> int:
     check_denied('他人改订单', call('PATCH', f'/orders/{oid}', outsider_token, {'remark': '越权尝试'})[0])
     check_denied('他人生成应收', call('POST', f'/orders/{oid}/receivables/generate', outsider_token,
                                       {'ratios': [1], 'first_due_date': '2026-12-01'})[0])
+    check_denied('他人取消别人的订单', call('POST', f'/orders/{oid}/cancel', outsider_token)[0])
+    status, res = call('GET', f'/orders/{oid}', owner_token)
+    check('他人取消尝试后本人订单仍为待处理', (res.get('data') or {}).get('status'), 'pending')
+    status, res = call('POST', f'/orders/{cancel_control_oid}/cancel', owner_token)
+    check('本人取消自己的订单（对照）', res.get('code'), 0)
+    status, res = call('GET', f'/orders/{cancel_control_oid}', owner_token)
+    check('本人取消后状态已变更', (res.get('data') or {}).get('status'), 'cancelled')
 
     # ---- 无归属的订单：**连"自己人"也该拒**（开关的安全侧）----
     # 把负责人清空，做出历史脏数据的形态（正常 API 造不出来，只能这样造）。
     # 原规则是"owner 为空一律放行"，于是含价格的单据猜到编号就能看；
     # 现在默认拒绝。这条与"公海客户仍可看"成对：那条守"别把公海误关"，
     # 这条守"别把无归属误开"——缺哪条都可能改坏一边。
-    from sqlalchemy import text
-
     async with SessionLocal() as s:
         await s.execute(text("update sales_orders set owner_id = null where id = :o"),
                         {'o': oid})
@@ -280,6 +336,68 @@ async def main() -> int:
     print('=== 3. 文件挂载（别人的客户）===')
     check_denied('他人往别人客户上挂附件',
                  call('POST', f'/business/customer/{cid}/files?file_id=1', outsider_token)[0])
+
+    print('=== 3.1 客户 / 报价删除的数据范围 ===')
+    check_denied('有分配权限的他人仍不能发起别人的撞单检查',
+                 call('POST', f'/customers/{cid}/duplicate-cases', outsider_token)[0])
+    async with SessionLocal() as s:
+        pending_count = (await s.execute(text(
+            "select count(*) from customer_duplicate_cases "
+            "where customer_id=:id or candidate_id=:id"
+        ), {'id': cid})).scalar_one()
+    check('越权撞单检查未创建记录', pending_count, 0)
+    status, res = call('POST', f'/customers/{cid}/duplicate-cases', owner_token)
+    check('有分配权限的本人可以发起撞单检查（对照）', res.get('code'), 0)
+    # 一边是公海、一边是他人私海：只看得见其中一边也不能读或裁定整张案件。
+    from app.modules.customer.model import CustomerDuplicateCase
+
+    async with SessionLocal() as s:
+        case_probe = CustomerDuplicateCase(
+            customer_id=public_cid, candidate_id=cid, source='manual', status='pending',
+            created_at=datetime.now(UTC),
+        )
+        s.add(case_probe)
+        await s.flush()
+        case_probe_id = case_probe.id
+        await s.commit()
+    status, res = call('GET', '/customer-duplicate-cases', outsider_token)
+    check('撞单列表不暴露只看得见一边的案件',
+          status == 200 and all(row['id'] != case_probe_id for row in (res.get('data') or [])), True)
+    status, res = call('GET', '/customer-duplicate-cases', owner_token)
+    check('本人可见完整客户对的撞单案件（对照）',
+          status == 200 and any(row['id'] == case_probe_id for row in (res.get('data') or [])), True)
+    check_denied('有分配权限但看不到候选客户仍不能裁定撞单',
+                 call('POST', f'/customer-duplicate-cases/{case_probe_id}/resolve',
+                      outsider_token, {'decision': 'keep_both'})[0])
+    async with SessionLocal() as s:
+        case_state = (await s.execute(text(
+            'select status from customer_duplicate_cases where id=:id'
+        ), {'id': case_probe_id})).scalar_one()
+    check('越权裁定未改变案件状态', case_state, 'pending')
+    status, res = call('POST', f'/customer-duplicate-cases/{case_probe_id}/resolve',
+                       owner_token, {'decision': 'keep_both'})
+    check('本人可裁定可见客户对（对照）', res.get('code'), 0)
+    check_denied('有删除权限的他人仍不能删除别人的客户',
+                 call('DELETE', f'/customers/{cid}', outsider_token)[0])
+    check('跨人删除客户被拒后负责人仍可读',
+          call('GET', f'/customers/{cid}', owner_token)[0], 200)
+    status, res = call('DELETE', f'/customers/{delete_control_cid}', owner_token)
+    check('本人删除自己的客户（对照）', res.get('code'), 0)
+
+    quote_payload = {'customer_id': cid, 'opportunity_id': opp_fixture_id}
+    _, target_quote = call('POST', '/quotes', owner_token, quote_payload)
+    target_quote_id = (target_quote.get('data') or {}).get('quote_id')
+    _, control_quote = call('POST', '/quotes', owner_token, quote_payload)
+    control_quote_id = (control_quote.get('data') or {}).get('quote_id')
+    if not target_quote_id or not control_quote_id:
+        FAILURES.append('报价删除权限夹具创建失败')
+    else:
+        check_denied('他人删除别人的报价被拒',
+                     call('DELETE', f'/quotes/{target_quote_id}', outsider_token)[0])
+        check('报价删除被拒后负责人仍可读',
+              call('GET', f'/quotes/{target_quote_id}', owner_token)[0], 200)
+        _, res = call('DELETE', f'/quotes/{control_quote_id}', owner_token)
+        check('本人删除自己的报价（对照）', res.get('code'), 0)
 
     # ---- 同款形状（写路径堵了、读/删路径漏了）的漏口，逐条设门槛 ----
     # 这四条的价值：以后谁再把校验删掉，这里立刻红。上一轮它们抓到的第一个 bug

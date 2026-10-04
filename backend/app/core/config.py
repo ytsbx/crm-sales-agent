@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     # ---- 定时任务调度（公海回收 / 自动任务规则的每日自动执行）----
     # scheduler_enabled=False 可整体关掉（例如多实例部署时只让一台跑）
-    scheduler_enabled: bool = True
+    scheduler_enabled: bool = False
     scheduler_recycle_hour: int = 2   # 公海回收：每天几点跑（24 小时制）
     scheduler_task_rules_hour: int = 2  # 自动任务规则：每天几点跑
     # 通知失败重投：每多少分钟扫一次"到期该重试"的失败通知（文档 §六）。
@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     # 而且不会丢消息（这轮没查到下轮还会查）。询价审批本身要几小时到几天，
     # 几分钟延迟无影响。
     scheduler_oa_sync_minutes: int = 3
-    #: 钉钉推送总闸（与 WECOM_PUSH_OFF 同一套做法）。
-    #: **默认 True = 关**：测试期不允许向钉钉发起任何真实审批单。
+    #: 钉钉外部调用总闸。**默认 True = 关**：阻止全部钉钉请求，
+    #: 包括 token、人员/部门/模板查询、图片上传、审批发起/重发及状态同步。
     #: 关闭时"发起审批"只在 CRM 记一行 skipped 并写明原因——
     #: **不是失败、更不是成功**，联调和演示都能看出"这一步没真的发出去"。
     #: 要真发必须显式设 DINGTALK_PUSH_OFF=0，并且只对测试用的本人账号发。
@@ -93,9 +93,9 @@ class Settings(BaseSettings):
     wecom_api_base: str = "https://qyapi.weixin.qq.com"
     # 单次同步最多拉多少页，防止配错时把对方接口打爆
     wecom_sync_max_pages: int = 50
-    # 企微推送总闸：置 1/true 后 dispatch_pending 把所有待投递通知标 skipped，
-    # 真实消息一条不发——开发/跑回归时用，避免测试数据骚扰真实用户
-    wecom_push_off: bool = False
+    # 企微推送总闸：默认关闭。开发/回归数据不得触达真实用户；只有显式设置
+    # WECOM_PUSH_OFF=0 才允许 dispatch_pending 投递外部消息。
+    wecom_push_off: bool = True
     # 离职继承硬锁：该操作会变更**真实客户**在微信里看到的服务人员，
     # 默认禁止执行；需业务确认后由管理员置 1 才解锁（403 拒绝并说明）
     wecom_transfer_enabled: bool = False

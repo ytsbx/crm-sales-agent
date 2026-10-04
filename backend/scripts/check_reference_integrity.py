@@ -27,6 +27,7 @@
 """
 
 import asyncio
+import os
 import sys
 
 sys.path.insert(0, '.')
@@ -110,7 +111,7 @@ def e2e():
     import urllib.error
     import urllib.request
 
-    base = 'http://127.0.0.1:8000/api/v1'
+    base = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 
     def call(method, path, token=None, body=None):
         data = json.dumps(body).encode() if body is not None else None

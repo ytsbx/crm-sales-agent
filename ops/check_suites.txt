@@ -19,6 +19,7 @@ check_lead_auth_role_api
 check_product_pricing_api
 check_agent_api
 check_approval_rules
+check_approval_inbox
 check_agent_stream
 check_scheduler
 check_quote_center_acceptance
@@ -34,6 +35,7 @@ check_notification_retry
 check_notification_levels
 check_delivery_analytics
 check_biz_docs
+check_review_regressions
 check_operation_timing
 check_schedule_change
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"

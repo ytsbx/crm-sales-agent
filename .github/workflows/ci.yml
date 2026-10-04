@@ -1,4 +1,4 @@
-# CI：push 时自动跑全量回归（接口套件按 ops/check_suites.txt，当前 24 个 + 静态检查 + UI 冒烟）。
+# CI：push 时自动跑全量回归（接口套件按 ops/check_suites.txt + 静态检查 + UI 冒烟）。
 #
 # 设计说明：
 # - 数据库用 services 起一个全新 PostgreSQL，走 alembic 建表 + seed.py 种子——
@@ -43,6 +43,9 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_sales_agent
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
+      DINGTALK_PUSH_OFF: "1"
+      WECOM_PUSH_OFF: "1"
+      SCHEDULER_ENABLED: "false"
     defaults:
       run:
         working-directory: backend
@@ -106,7 +109,7 @@ jobs:
         run: tail -n 80 /tmp/backend.log
 
   ui-smoke:
-    name: UI 冒烟（28 页截图 + 控制台报错）
+    name: UI 冒烟（页面内容 + 交互断言）
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -114,19 +117,23 @@ jobs:
         env:
           POSTGRES_USER: crm
           POSTGRES_PASSWORD: crm123456
-          POSTGRES_DB: crm_sales_agent
+          POSTGRES_DB: crm_sales_agent_smoke
           POSTGRES_INITDB_ARGS: "--encoding=UTF8"
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U crm -d crm_sales_agent"
+          --health-cmd "pg_isready -U crm -d crm_sales_agent_smoke"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_sales_agent
+      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_sales_agent_smoke
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
+      DINGTALK_PUSH_OFF: "1"
+      WECOM_PUSH_OFF: "1"
+      SCHEDULER_ENABLED: "false"
+      SMOKE_ENABLE_FIXTURES: "1"
       EDGE_BIN: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@v4
@@ -173,7 +180,7 @@ jobs:
       - name: 前端：启动 dev server
         working-directory: frontend
         run: |
-          nohup pnpm dev > /tmp/frontend.log 2>&1 &
+          nohup pnpm exec vite --host 127.0.0.1 > /tmp/frontend.log 2>&1 &
           for i in $(seq 1 40); do
             curl -s -o /dev/null http://localhost:5173/ && break
             sleep 1

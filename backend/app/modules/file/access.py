@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.errors import AppError
 from app.modules.customer.model import Customer
 from app.modules.file.model import BusinessFile
 from app.modules.lead.model import Lead
@@ -41,6 +42,14 @@ async def visible_object(
     session: AsyncSession, user: CurrentUser, *, business_type: str, business_id: int
 ) -> bool:
     """当前用户能否看到这个业务对象。"""
+    if business_type == "followup":
+        from app.modules.followup.visibility import get_visible_followup
+
+        try:
+            await get_visible_followup(session, user, business_id)
+            return True
+        except AppError:
+            return False
     # 合同文档不存负责人快照：可见性实时跟客户**当前**负责人走（场景14——
     # 换负责人后新负责人按权限查看历史原件，原负责人按数据范围失去访问）
     if business_type == "contract":

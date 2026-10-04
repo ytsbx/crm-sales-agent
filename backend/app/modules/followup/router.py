@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.data_scope import ensure_in_scope, scoped_owner_ids
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -16,6 +16,7 @@ from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
+from app.modules.followup.visibility import get_visible_followup
 from app.modules.followup.schema import (
     FollowUpCreate,
     FollowUpNextTask,
@@ -53,50 +54,8 @@ def serialize(followup: FollowUp, owner_name: str | None = None) -> dict:
 async def _visible_followup(
     session: AsyncSession, user: CurrentUser, followup_id: int
 ) -> FollowUp:
-    """取跟进记录并校验数据范围。
-
-    跟进自己没有负责人语义上的"归属"（owner_id 是记录人），
-    所以跟着它关联的业务对象走：客户 / 线索 / 商机 / 报价 / 订单，
-    哪一个有就用哪一个的范围。全都没关联是脏数据，直接放行并留给治理。
-    """
-    # 注意：这里必须用 session.get —— 上一版补丁把"改用 _visible_followup"
-    # 误插进本函数体，造成自我递归，详情接口直接 500（真被套件抓到过）。
-    followup = await session.get(FollowUp, followup_id)
-    if followup is None:
-        raise AppError(ErrorCode.NOT_FOUND, "跟进记录不存在", 404)
-
-    owner_id: int | None = None
-    allow_unowned = False
-    if followup.customer_id:
-        customer = await session.get(Customer, followup.customer_id)
-        owner_id = customer.owner_id if customer else None
-        allow_unowned = True
-    elif followup.lead_id:
-        lead = await session.get(Lead, followup.lead_id)
-        owner_id = lead.owner_id if lead else None
-        allow_unowned = True
-    elif followup.opportunity_id:
-        opportunity = await session.get(Opportunity, followup.opportunity_id)
-        owner_id = opportunity.owner_id if opportunity else None
-    elif followup.quote_id:
-        # 只挂报价/订单的跟进此前逐个 elif 都没覆盖，owner_id 停在 None，
-        # 于是被"无归属默认拒绝"挡住 —— 连记录人自己都看不了、改不了、删不掉。
-        quote = await session.get(Quote, followup.quote_id)
-        owner_id = quote.owner_id if quote else None
-    elif followup.order_id:
-        order = await session.get(SalesOrder, followup.order_id)
-        owner_id = order.owner_id if order else None
-    else:
-        # 什么业务对象都没关联的脏数据：用记录人兜底，至少让他和主管能治理。
-        owner_id = followup.owner_id
-
-    # 跟进记录跟着**被关联对象**走。挂公海客户（无负责人）的跟进仍可看：
-    # 口径已确认——客户档案本身可见，跟进是同一批信息的延续，
-    # 否则"领养前先看看谈到哪一步"就做不到，领取会变成抽盲盒。
-    await ensure_in_scope(
-        session, user, owner_id=owner_id, label="跟进记录", allow_unowned=allow_unowned
-    )
-    return followup
+    """取跟进记录并校验与附件共用的数据范围。"""
+    return await get_visible_followup(session, user, followup_id)
 
 
 @router.get("/followups")

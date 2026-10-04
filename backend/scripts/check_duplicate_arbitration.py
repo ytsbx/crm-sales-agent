@@ -23,6 +23,7 @@
 import asyncio
 import sys
 import time
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 
@@ -112,6 +113,11 @@ async def main():
         )
         await s.commit()
         check('重复导入不会堆出第二条待办（幂等）', [c.id for c in again], [case.id])
+        reverse = await dup.open_cases_for_customer(
+            s, customer=existing, source='manual', actor_id=admin_id
+        )
+        await s.commit()
+        check('反向检查同一对客户复用待裁定记录', [c.id for c in reverse], [case.id])
         check_true('有争议时 is_disputed 为真', await dup.is_disputed(s, existing_id))
         check_true('新客户也在争议里', await dup.is_disputed(s, incoming_id))
 
@@ -179,6 +185,47 @@ async def main():
             "select count(*) from customers where id in (:a, :b) and deleted_at is null"),
             {'a': case2.customer_id, 'b': case2.candidate_id})).scalar_one()
         check('两条客户都还在（不误合并/误删）', still, 2)
+
+        print('=== 5. 沿用已有客户负责人：无需另传 ID，公海归属同步切换 ===')
+        public = Customer(name=f'{PREFIX}公海归属对照', owner_id=None,
+                          status='active', pool_status='public')
+        s.add(public)
+        await s.flush()
+        public_id = public.id
+        existing_case = CustomerDuplicateCase(
+            customer_id=public_id, candidate_id=existing_id,
+            source='manual', status='pending', created_at=datetime.now(UTC),
+        )
+        s.add(existing_case)
+        await s.flush()
+        existing_case_id = existing_case.id
+        await s.commit()
+
+        # 已有客户的负责人也必须在职；失败不能结案或改派公海客户。
+        existing_owner = await s.get(User, b_id)
+        existing_owner.status = 'disabled'
+        await s.flush()
+        try:
+            await dup.resolve_case(s, case=await s.get(CustomerDuplicateCase, existing_case_id),
+                                   decision='assign_existing', owner_id=None,
+                                   remark='停用负责人对照', actor_id=admin_id)
+            check_true('已有客户的停用负责人不能接收客户', False)
+        except AppError as exc:
+            check('已有客户的停用负责人被拒', exc.http_status, 422)
+        await s.rollback()
+        check('拒绝后案件仍待裁定',
+              (await s.get(CustomerDuplicateCase, existing_case_id)).status, 'pending')
+        check('拒绝后公海客户仍无负责人', (await s.get(Customer, public_id)).owner_id, None)
+
+        await dup.resolve_case(s, case=await s.get(CustomerDuplicateCase, existing_case_id),
+                               decision='assign_existing', owner_id=None,
+                               remark='沿用已有客户负责人', actor_id=admin_id)
+        await s.commit()
+        assigned_public = await s.get(Customer, public_id)
+        check('无需传负责人 ID，也能沿用已有归属', assigned_public.owner_id, b_id)
+        check('分配后的公海客户转为私海', assigned_public.pool_status, 'private')
+        check('裁定记录保存实际负责人',
+              (await s.get(CustomerDuplicateCase, existing_case_id)).resolved_owner_id, b_id)
 
     await cleanup()
     print()

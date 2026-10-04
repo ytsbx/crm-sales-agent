@@ -370,7 +370,7 @@ async def list_duplicate_cases(
     """撞单待裁定队列。系统只摆证据，归属由人写。"""
     from app.modules.customer import duplicates as dup_service
 
-    return ok(await dup_service.list_cases(session, status=status, limit=limit))
+    return ok(await dup_service.list_cases(session, user=user, status=status, limit=limit))
 
 
 @router.post("/customers/{customer_id}/duplicate-cases")
@@ -383,14 +383,21 @@ async def open_duplicate_cases(
     """对一条客户再跑一次查重并开待裁定单（幂等：同一对只留一张未决单）。"""
     from app.modules.customer import duplicates as dup_service
 
-    customer = await session.get(Customer, customer_id)
-    if customer is None or customer.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    customer = await svc.get_visible_customer(session, user, customer_id)
     cases = await dup_service.open_cases_for_customer(
         session, customer=customer, source="manual", actor_id=user.id
     )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="open_customer_duplicate_cases",
+        business_type="customer",
+        business_id=customer.id,
+        after={"source": "manual", "pending_case_ids": [case.id for case in cases]},
+        ip=client_ip(request),
+    )
     await session.commit()
-    return ok({"opened": len(cases)}, f"已开 {len(cases)} 条待裁定")
+    return ok({"opened": len(cases)}, f"该客户有 {len(cases)} 条疑似撞单待裁定")
 
 
 @router.post("/customer-duplicate-cases/{case_id}/resolve")
@@ -401,7 +408,7 @@ async def resolve_duplicate_case(
     user: CurrentUser = Depends(require_permission("customer:assign")),
     session: AsyncSession = Depends(get_db),
 ):
-    """裁定撞单：判为不同客户 / 归已有客户负责人 / 归新客户负责人。
+    """裁定撞单：判为不同客户 / 归已有客户负责人 / 指定负责人。
 
     归属由人指定，代码**不按建档先后推导**（文档 §11.4 对场景 20 的原话）。
     """
@@ -411,6 +418,8 @@ async def resolve_duplicate_case(
     case = await session.get(CustomerDuplicateCase, case_id)
     if case is None:
         raise AppError(ErrorCode.NOT_FOUND, "撞单记录不存在", 404)
+    await svc.get_visible_customer(session, user, case.customer_id)
+    await svc.get_visible_customer(session, user, case.candidate_id)
     await dup_service.resolve_case(
         session,
         case=case,

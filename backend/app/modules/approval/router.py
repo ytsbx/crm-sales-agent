@@ -7,11 +7,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
+from app.modules.approval.access import approval_denial
 from app.modules.approval.schema import (
     ApprovalDefinitionCreate,
     ApprovalDefinitionUpdate,
@@ -21,8 +23,10 @@ from app.modules.approval.schema import (
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as pricing_service
 from app.modules.quote.model import Quote, QuoteVersion
+from app.modules.quote import service as quote_service
 from app.modules.notification import service as notification_service
 from app.modules.user.model import User
+from app.modules.user import service as user_service
 
 router = APIRouter(tags=["Approval"])
 
@@ -66,7 +70,7 @@ async def _context(session: AsyncSession, instances: list[ApprovalInstance]) -> 
     return {"versions": versions, "quotes": quotes, "customers": customers, "users": users}
 
 
-def _serialize(instance: ApprovalInstance, ctx: dict) -> dict:
+def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = False) -> dict:
     version = ctx["versions"].get(instance.business_id)
     quote = ctx["quotes"].get(version.quote_id) if version else None
     return {
@@ -75,6 +79,7 @@ def _serialize(instance: ApprovalInstance, ctx: dict) -> dict:
         "business_id": instance.business_id,
         "status": instance.status,
         "status_label": STATUS_LABEL.get(instance.status, instance.status),
+        "can_approve": can_approve,
         "current_node": instance.current_node,
         "applicant_id": instance.applicant_id,
         "applicant_name": ctx["users"].get(instance.applicant_id) if instance.applicant_id else None,
@@ -90,34 +95,76 @@ def _serialize(instance: ApprovalInstance, ctx: dict) -> dict:
     }
 
 
+async def _ensure_approval_visible(
+    session: AsyncSession, user: CurrentUser, instance: ApprovalInstance
+) -> None:
+    if instance.business_type != "quote_version":
+        raise AppError(ErrorCode.NOT_FOUND, "审批关联的报价不存在", 404)
+    await quote_service.get_visible_version(session, user, instance.business_id)
+
+
 @router.get("/approvals")
 async def list_approvals(
     status: str | None = "pending",
     mine: bool = False,
+    pending_for_me: bool = False,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = select(ApprovalInstance)
+    visible_versions = select(QuoteVersion.id).join(Quote, Quote.id == QuoteVersion.quote_id).where(
+        Quote.deleted_at.is_(None)
+    )
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        visible_versions = visible_versions.where(Quote.owner_id.in_(owner_ids))
+    stmt = stmt.where(
+        ApprovalInstance.business_type == "quote_version",
+        ApprovalInstance.business_id.in_(visible_versions),
+    )
     if status:
         stmt = stmt.where(ApprovalInstance.status == status)
     if mine:
         stmt = stmt.where(ApprovalInstance.applicant_id == user.id)
-    rows, total = await paginate(session, stmt.order_by(ApprovalInstance.id.desc()), page, page_size)
+    _, price_can_approve = await pricing_service.resolve_min_margin(session, user.roles)
+    stmt = stmt.order_by(ApprovalInstance.id.desc())
+    if pending_for_me:
+        stmt = stmt.where(ApprovalInstance.status == "pending")
+        # 先按共用资格规则筛选，再计算总数及取页。分批读取避免把全部待审单
+        # 留在内存里，价格权限只解析一次，逐单判断不再查询数据库。
+        rows, total = [], 0
+        offset = (page - 1) * page_size
+        candidates = await session.stream_scalars(stmt.execution_options(yield_per=200))
+        async for instance in candidates:
+            if approval_denial(user, instance, price_can_approve=price_can_approve) is not None:
+                continue
+            if offset <= total < offset + page_size:
+                rows.append(instance)
+            total += 1
+    else:
+        rows, total = await paginate(session, stmt, page, page_size)
     ctx = await _context(session, rows)
-    return ok(page_data([_serialize(row, ctx) for row in rows], total, page, page_size))
+    return ok(page_data([
+        _serialize(row, ctx, can_approve=row.status == "pending" and approval_denial(
+            user, row, price_can_approve=price_can_approve
+        ) is None)
+        for row in rows
+    ], total, page, page_size))
 
 
 @router.get("/approvals/{approval_id}")
 async def get_approval(
     approval_id: int,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
     instance = await session.get(ApprovalInstance, approval_id)
     if instance is None:
         raise AppError(ErrorCode.NOT_FOUND, "审批单不存在", 404)
+    await _ensure_approval_visible(session, user, instance)
+    _, price_can_approve = await pricing_service.resolve_min_margin(session, user.roles)
     ctx = await _context(session, [instance])
     records = (
         await session.execute(
@@ -129,7 +176,9 @@ async def get_approval(
     ).all()
     return ok(
         {
-            **_serialize(instance, ctx),
+            **_serialize(instance, ctx, can_approve=instance.status == "pending" and approval_denial(
+                user, instance, price_can_approve=price_can_approve
+            ) is None),
             "records": [
                 {
                     "id": record.id,
@@ -155,48 +204,47 @@ async def _load_pending(session: AsyncSession, approval_id: int) -> ApprovalInst
 
 
 async def _assert_can_approve(session: AsyncSession, user: CurrentUser, instance: ApprovalInstance) -> None:
-    summary = instance.summary or {}
-    co_sign = summary.get("co_sign")
-    if instance.current_node == "co_sign" and co_sign:
-        # 会签节点：只看会签角色（财务默认没有 quote:approve 权限，
-        # 这里按角色放行而不是按权限码，否则会签就没人能批了）。管理员保留兜底。
-        allowed = list(co_sign.get("role_codes") or [])
-        if "admin" not in user.roles and not (set(user.roles) & set(allowed)):
-            raise AppError(
-                ErrorCode.FORBIDDEN,
-                f"该审批处于「{co_sign.get('label', '会签')}」节点，需要 {'、'.join(allowed)} 处理",
-                403,
-            )
-        if instance.applicant_id == user.id and "admin" not in user.roles:
-            raise AppError(ErrorCode.FORBIDDEN, "不能审批自己提交的报价", 403)
-        return
-    # 普通节点：仍然要求 quote:approve 权限（端点上不再依赖权限码，这里显式判）
-    if "admin" not in user.roles and not user.has("quote:approve"):
-        raise AppError(ErrorCode.FORBIDDEN, "你的角色没有审批低价报价的权限", 403)
+    await _ensure_approval_visible(session, user, instance)
     _, can_approve = await pricing_service.resolve_min_margin(session, user.roles)
-    if not can_approve and "admin" not in user.roles:
-        raise AppError(ErrorCode.FORBIDDEN, "你的角色没有审批低价报价的权限", 403)
-    # 分级审批：这一级只允许指定角色处理（管理员例外）
-    allowed_roles = summary.get("node_role_codes") or []
-    if allowed_roles and "admin" not in user.roles:
-        if not (set(user.roles) & set(allowed_roles)):
-            raise AppError(
-                ErrorCode.FORBIDDEN,
-                f"该审批需要「{summary.get('node_label', '上级')}」处理，你的角色无权批准",
-                403,
-            )
-    # 被转交过的审批只由当前处理人处理，否则"转交"只是写了个名字：
-    # 转出去以后原审批人照样能批，责任就说不清了。管理员保留兜底处理权
-    # （有人离职又没人接手时要能收尾）。
-    assignee_id = summary.get("current_assignee_id")
-    if assignee_id and "admin" not in user.roles and int(assignee_id) != user.id:
+    denial = approval_denial(user, instance, price_can_approve=can_approve)
+    if denial is not None:
+        raise AppError(ErrorCode.FORBIDDEN, denial, 403)
+
+
+async def _assert_transfer_target(
+    session: AsyncSession, target: User, instance: ApprovalInstance
+) -> None:
+    """按接收人的实际账号权限检查，校验通过前不改审批或创建通知。"""
+    roles = await user_service.get_user_roles(session, target.id)
+    recipient = CurrentUser(
+        user=target,
+        permissions=await user_service.get_user_permission_codes(session, target.id),
+        roles=[role.code for role in roles],
+        data_scope=user_service.resolve_data_scope(roles),
+    )
+    if "admin" not in recipient.roles and not recipient.has("quote:view"):
         raise AppError(
-            ErrorCode.FORBIDDEN,
-            f"该审批已转交给「{summary.get('current_assignee_name', '他人')}」处理",
-            403,
+            ErrorCode.PARAM_ERROR, f"接收人「{target.name}」没有报价查看权限，不能接收审批", 422
         )
-    if instance.applicant_id == user.id and "admin" not in user.roles:
-        raise AppError(ErrorCode.FORBIDDEN, "不能审批自己提交的报价", 403)
+    try:
+        await _ensure_approval_visible(session, recipient, instance)
+    except AppError as exc:
+        if exc.code != ErrorCode.DATA_SCOPE_DENIED:
+            raise
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"关联报价不在接收人「{target.name}」的数据范围内，不能转交",
+            422,
+        ) from exc
+    _, can_approve = await pricing_service.resolve_min_margin(session, recipient.roles)
+    # 当前指派仍是转出人；不能用它排除拟接收人，也不能在检查前改写 summary。
+    denial = approval_denial(
+        recipient, instance, price_can_approve=can_approve, check_assignee=False
+    )
+    if denial is not None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"接收人「{target.name}」不能处理该审批：{denial}", 422
+        )
 
 
 async def _user_ids_by_roles(session: AsyncSession, role_codes: list[str]) -> list[int]:
@@ -380,9 +428,13 @@ async def reject(
 @router.get("/approvals/{approval_id}/records")
 async def records(
     approval_id: int,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    instance = await session.get(ApprovalInstance, approval_id)
+    if instance is None:
+        raise AppError(ErrorCode.NOT_FOUND, "审批单不存在", 404)
+    await _ensure_approval_visible(session, user, instance)
     rows = (
         await session.execute(
             select(ApprovalRecord, User.name)
@@ -435,6 +487,7 @@ async def transfer(
         )
     if target.id == user.id:
         raise AppError(ErrorCode.PARAM_ERROR, "不能转交给自己", 422)
+    await _assert_transfer_target(session, target, instance)
 
     # 把处理人记进 summary：审批链上没有独立的"当前处理人"表，
     # 用 node_assignee 表达最轻量，且序列化时能直接看到。
@@ -504,6 +557,7 @@ async def withdraw(
     那个从报价版本侧发起，这个从审批单侧发起，两者落到同一结果。
     """
     instance = await _load_pending(session, approval_id)
+    await _ensure_approval_visible(session, user, instance)
     if instance.applicant_id != user.id and "admin" not in user.roles:
         raise AppError(ErrorCode.FORBIDDEN, "只能撤回自己提交的审批", 403)
 

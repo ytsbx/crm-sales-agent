@@ -28,9 +28,10 @@ interface Props {
   businessType: string
   businessId: number
   category?: string
+  enabled?: boolean
 }
 
-export default function AttachmentPanel({ businessType, businessId, category }: Props) {
+export default function AttachmentPanel({ businessType, businessId, category, enabled = true }: Props) {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -62,7 +63,7 @@ export default function AttachmentPanel({ businessType, businessId, category }: 
   const query = useQuery({
     queryKey: ['business-files', businessType, businessId],
     queryFn: () => listBusinessFiles(businessType, businessId),
-    enabled: Number.isFinite(businessId),
+    enabled: enabled && Number.isFinite(businessId),
   })
 
   const refresh = () =>

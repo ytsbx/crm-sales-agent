@@ -10,6 +10,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.data_scope import scoped_owner_ids
+from app.core.deps import CurrentUser
 from app.modules.customer.model import (
     DECISION_LABEL,
     Customer,
@@ -93,8 +95,16 @@ async def open_cases_for_customer(
         existing = (
             await session.execute(
                 select(CustomerDuplicateCase).where(
-                    CustomerDuplicateCase.customer_id == customer.id,
-                    CustomerDuplicateCase.candidate_id == candidate_id,
+                    or_(
+                        (
+                            (CustomerDuplicateCase.customer_id == customer.id)
+                            & (CustomerDuplicateCase.candidate_id == candidate_id)
+                        ),
+                        (
+                            (CustomerDuplicateCase.customer_id == candidate_id)
+                            & (CustomerDuplicateCase.candidate_id == customer.id)
+                        ),
+                    ),
                     CustomerDuplicateCase.status == "pending",
                 )
             )
@@ -128,7 +138,7 @@ async def open_cases_for_customer(
 
 
 async def list_cases(
-    session: AsyncSession, *, status: str | None = "pending", limit: int = 100
+    session: AsyncSession, *, user: CurrentUser, status: str | None = "pending", limit: int = 100
 ) -> list[dict]:
     stmt = (
         select(CustomerDuplicateCase)
@@ -137,6 +147,15 @@ async def list_cases(
     )
     if status:
         stmt = stmt.where(CustomerDuplicateCase.status == status)
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        visible_customers = select(Customer.id).where(
+            or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owner_ids))
+        )
+        stmt = stmt.where(
+            CustomerDuplicateCase.customer_id.in_(visible_customers),
+            CustomerDuplicateCase.candidate_id.in_(visible_customers),
+        )
     cases = list((await session.execute(stmt)).scalars().all())
     ids = {c.customer_id for c in cases} | {c.candidate_id for c in cases}
     names = {
@@ -160,8 +179,7 @@ async def resolve_case(
     """人工裁定。
 
     三条纪律：
-    - 归属**必须由人指定**（`owner_id`），代码不按"谁先建档"推导——
-      那等于把抢单结果交给数据库时间戳；
+    - 人选择沿用已有客户负责人，或明确指定负责人；代码不按建档时间推导；
     - `keep_both` 只结案、不动归属，也**不合并**：判为两家不同就各留各的；
     - 裁定只改归属，不删数据；真要合并走既有的 /customers/merge（它单独留痕）。
     """
@@ -171,8 +189,6 @@ async def resolve_case(
         raise AppError(ErrorCode.PARAM_ERROR, f"裁定类型不合法：{decision}", 422)
 
     if decision in ("assign_existing", "assign_new"):
-        if owner_id is None:
-            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422)
         if decision == "assign_existing":
             target = await session.get(Customer, case.candidate_id)
             if target is None or target.owner_id is None:
@@ -180,6 +196,20 @@ async def resolve_case(
                     ErrorCode.PARAM_ERROR, "已有客户没有负责人，无法按它归属", 422
                 )
             owner_id = target.owner_id
+        elif owner_id is None:
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "裁定归属必须指定负责人", 422)
+        # 两种归属裁定都遵守普通客户转移的在职规则。
+        from app.modules.user.model import User
+
+        owner = await session.get(User, owner_id)
+        if owner is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+        if owner.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"负责人「{owner.name}」已停用，不能接收客户",
+                422,
+            )
         # 两条都落到同一个负责人名下：裁定的是"这条生意归谁"，不是改一条留一条
         for cid in (case.customer_id, case.candidate_id):
             customer = await session.get(Customer, cid)
@@ -197,6 +227,8 @@ async def resolve_case(
                     )
                 )
                 customer.owner_id = owner_id
+            if customer is not None:
+                customer.pool_status = "private"
 
     case.status = "resolved"
     case.decision = decision

@@ -24,6 +24,7 @@ import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import PaymentVoucherControl from '../common/PaymentVoucherControl'
 
 const TABS = [
   { tab: '销售订单', itemKey: 'orders' },
@@ -264,6 +265,16 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
     },
     { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
+    {
+      title: '回款凭证',
+      width: 220,
+      render: (_: unknown, record: Payment) => (
+        <PaymentVoucherControl
+          payment={record}
+          onChanged={() => void queryClient.invalidateQueries({ queryKey: ['payments'] })}
+        />
+      ),
+    },
     {
       title: '状态',
       dataIndex: 'status_label',

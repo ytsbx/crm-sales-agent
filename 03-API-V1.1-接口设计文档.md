@@ -156,11 +156,29 @@
 - `POST /customers/{id}/tags`
 - `DELETE /customers/{id}/tags/{tag_id}`
 - `POST /customers/deduplicate`
+- `POST /customers/{id}/duplicate-cases`
+- `GET /customer-duplicate-cases`
+- `POST /customer-duplicate-cases/{id}/resolve`
 - `POST /customers/merge`
 - `POST /customers/batch-transfer`
 - `POST /customers/batch-tag`
 - `POST /customers/import`
 - `POST /customers/export`
+
+客户批量导出用途必填，可选值：`customer_follow_up`（客户跟进）、`business_analysis`（经营分析）、
+`management_report`（管理汇报）、`data_reconciliation`（数据核对）、
+`historical_migration`（历史数据迁移）、`other`（其他）。选择 `other` 时，
+`purpose_note` 必填，最多 200 字。POST 将用途及筛选条件放在 JSON body；
+GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种入口均执行用户数据范围过滤，
+并在审计中记录操作者/时间、用途、数据范围、筛选条件、结果数量及最多 200 个客户 ID。
+
+客户详情的“撞单检查”调用 `POST /customers/{id}/duplicate-cases`，需要 `customer:assign`，
+且发起客户必须在当前用户的数据范围内。它沿用现有查重规则，命中后创建待裁定记录；
+同一对客户已有待裁定记录时直接复用。返回的 `opened` 是本次匹配的待裁定记录数量，
+包含复用的记录；检查不会改变客户归属，人工发起操作写入审计。
+裁定列表和裁定操作要求案件两边的客户均在用户的数据范围内。选择 `assign_existing`
+时无需另传 `owner_id`，系统沿用候选客户的在职负责人；`assign_new` 表示人工指定在职负责人。
+归属裁定成功后客户转入私海，归属变更和裁定均留痕。
 
 ---
 
@@ -416,6 +434,30 @@
 - `POST /approval-definitions`
 - `PATCH /approval-definitions/{id}`
 
+`GET /approvals?pending_for_me=true` 用于“待我审批”：仅返回当前用户数据范围内、
+符合当前节点审批资格的待审批单。列表与通过/拒绝操作共用资格判断，涵盖审批权限、
+价格权限、节点角色、普通节点转交对象、禁止自审及财务会签；筛选后再计数和分页。
+响应中的 `can_approve` 供页面显示通过/拒绝按钮，实际提交时仍重新校验。
+`mine=true` 表示“我已提交”；查询所有提交状态时传 `status=`。
+列表、详情、审批记录及审批操作均按关联报价的数据范围校验。
+`POST /approvals/{id}/transfer` 在修改审批和创建通知前，检查接收人的在职状态、
+报价查看权限、关联报价的数据范围及当前节点审批资格（包括价格权限、节点角色、
+禁止自审及财务会签，管理员保留既有兜底权限）。检查拟接收人时不受旧处理人指派限制。
+接收人不符合权限、范围或节点条件时返回 `422 / 40001` 并说明原因，原处理人保持不变。
+
+## 钉钉 OA 开发总闸
+
+- `POST /inquiries/{id}/oa-approval`
+- `GET /inquiries/{id}/oa-approvals`
+- `POST /oa-instances/{id}/resolve`
+- `POST /dingtalk/oa-sync`
+
+`DINGTALK_PUSH_OFF=1`（默认）阻止全部钉钉外部请求，含 token、人员/部门/模板查询、
+图片上传、审批发起/重发和状态同步；客户端底层同样强制拦截。
+发起仍保留本地 `skipped` 记录，外部身份留空、需外部查询的表单字段标为待查询。
+人工重发返回 `403 / 40301` 并说明开发阶段未执行，原记录及尝试时间不变。
+状态同步返回 `checked=0, changed=0, disabled=true` 和明确的未执行说明，不改原审批状态。
+
 ---
 
 # 24. FollowUp
@@ -512,10 +554,15 @@
 - `POST /payments`
 - `GET /payments/{id}`
 - `PATCH /payments/{id}`
+- `GET /payments/{id}/voucher`
+- `POST /payments/{id}/voucher`
+- `DELETE /payments/{id}/voucher`
 - `POST /payments/{id}/confirm`
 - `POST /payments/{id}/reject`
 - `GET /orders/{id}/payments`
 - `GET /receivables/{id}/payments`
+
+回款凭证随回款和订单的数据范围访问：有 `payment:view` 的销售与财务可以查看/下载；上传和删除仅需 `payment:manage`，且只允许回款待确认时操作。确认或驳回后凭证不可再增删。
 
 ---
 
@@ -528,6 +575,9 @@
 - `GET /business/{type}/{id}/files`
 - `POST /business/{type}/{id}/files`
 - `DELETE /business-files/{id}`
+
+`business_type=followup` 可用于跟进附件；附件清单、上传、下载与删除均沿用该跟进所关联业务对象的数据范围。
+上传时服务端会校验目标对象可见性。其他类型以服务端文件访问层登记的业务对象为准。
 
 ---
 

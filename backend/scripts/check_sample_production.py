@@ -25,6 +25,7 @@
 """
 
 import asyncio
+import os
 import json
 import sys
 import time
@@ -36,7 +37,7 @@ from sqlalchemy import select, text
 from app.core.database import SessionLocal
 
 FAILURES = []
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 PREFIX = 'CHKSP'
 
 

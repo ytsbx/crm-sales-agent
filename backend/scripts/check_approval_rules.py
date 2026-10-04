@@ -25,13 +25,14 @@ salesperson 授权利润率 15%。要让"高毛利"的单子也进审批流，�
 """
 
 import asyncio
+import os
 import json
 import sys
 import time
 import urllib.error
 import urllib.request
 
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 RUN = str(int(time.time()))[-6:]
 FAILURES = []
 

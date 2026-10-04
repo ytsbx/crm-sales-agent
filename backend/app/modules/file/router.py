@@ -47,6 +47,13 @@ async def upload_file(
     user: CurrentUser = Depends(require_permission("file:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    if (business_type is None) != (business_id is None):
+        raise AppError(ErrorCode.PARAM_ERROR, "业务类型和业务 id 必须同时提供", 422)
+    if business_type is not None and business_id is not None and not await visible_object(
+        session, user, business_type=business_type, business_id=business_id
+    ):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该业务对象不在你的数据范围内", 403)
+
     object_key, size, checksum = await storage.save_upload(file)
     record = FileRecord(
         storage_provider=settings.storage_provider,

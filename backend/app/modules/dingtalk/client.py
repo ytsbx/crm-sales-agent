@@ -28,6 +28,15 @@ from app.core.config import settings
 #: access_token 有效期 7200 秒；提前 5 分钟判过期，避免卡在过期那一刻的请求失败
 _TOKEN_SKEW_SECONDS = 300
 
+DINGTALK_DISABLED_MESSAGE = "钉钉外部调用已关闭（DINGTALK_PUSH_OFF），开发阶段未执行外部请求"
+
+
+class DingTalkDisabled(RuntimeError):
+    """开发总闸关闭：在获取 token 或创建 HTTP 客户端前拦截。"""
+
+    def __init__(self) -> None:
+        super().__init__(DINGTALK_DISABLED_MESSAGE)
+
 
 class DingTalkError(RuntimeError):
     """钉钉接口返回了业务错误。"""
@@ -59,6 +68,8 @@ class DingTalkClient:
         return bool(settings.dingtalk_app_key and settings.dingtalk_app_secret)
 
     def _require(self) -> None:
+        if settings.dingtalk_push_off:
+            raise DingTalkDisabled()
         if not settings.dingtalk_app_key:
             raise DingTalkNotConfigured("DINGTALK_APP_KEY")
         if not settings.dingtalk_app_secret:

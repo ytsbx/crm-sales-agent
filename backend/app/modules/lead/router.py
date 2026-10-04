@@ -346,6 +346,7 @@ async def convert_lead(
             owner_id=customer.owner_id or user.id,
             created_by=user.id,
             expected_amount=payload.expected_amount,
+            expected_close_date=payload.expected_close_date,
         )
         opportunity_id = opportunity.id
 

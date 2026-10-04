@@ -30,7 +30,8 @@ class QuoteVersionUpdate(BaseModel):
 class QuoteItemInput(BaseModel):
     """报价明细入参。两条路径（文档场景09）：
 
-    - **现货**：给 `sku_id`，`quoted_price` 留空则用系统适用价/核价建议价；
+    - **现货**：给 `sku_id`，`quoted_price` 留空则只采用已维护的客户价/指导价；
+      没有有效售价时必须手工填写，不能把成本试算当成正式报价；
     - **定制**：尚无正式 SKU 时给 `inquiry_id` + 人工核价的 `unit_cost` 与
       `quoted_price`。定制项必须给成本——不给成本就只能按 0 算，
       会得出 100% 毛利、低价审批也不会触发（与 A06「无成本不造假」同口径）。
@@ -44,7 +45,7 @@ class QuoteItemInput(BaseModel):
     #: 定制项人工核价成本（元/件，不含运费）
     unit_cost: Decimal | None = None
     quantity: Decimal = Decimal(1)
-    quoted_price: Decimal | None = None
+    quoted_price: Decimal | None = Field(default=None, gt=0)
     opportunity_item_id: int | None = None
     spec_snapshot: str | None = None
     logistics_cost: Decimal | None = None
@@ -55,7 +56,7 @@ class QuoteItemUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     quantity: Decimal | None = None
-    quoted_price: Decimal | None = None
+    quoted_price: Decimal | None = Field(default=None, gt=0)
     #: 定制行的核价成本（人民币）。现货行的成本来自成本表，传了也不生效。
     unit_cost: Decimal | None = None
     logistics_cost: Decimal | None = None

@@ -2,13 +2,13 @@
 /**
  * 界面冒烟测试：用无头浏览器打开 CRM，注入登录态后逐页截图，并收集控制台报错。
  *
- * 用法：
+ * 用法（必须明确指向本机服务与本机数据库，并关闭外部投递/调度）：
  *   node ops/smoke_ui.mjs
- *   SMOKE_USER=admin SMOKE_OUT=/tmp/shots node ops/smoke_ui.mjs
+ *   SMOKE_ENABLE_FIXTURES=1 SMOKE_USER=admin SMOKE_OUT=/tmp/shots node ops/smoke_ui.mjs
  *
- * 注意：报价中心为空时，脚本会**临时造一张报价**才能验证 What-if 面板，
- * 而报价没有删除接口（软删只对列表生效），所以跑完请在界面上手动删掉那张
- * 「Q开头」的测试报价，或者直接忽略它——它不影响任何统计口径。
+ * 默认不写报价或订单。只有显式设置 SMOKE_ENABLE_FIXTURES=1 时，才会在**一次性测试库**
+ * 中造测试报价和订单；这些业务夹具不会删除，因此不要对开发库或生产库开启此选项。
+ * 脚本启动前会检查前后端地址、数据库地址及推送/调度开关。
  *
  * 为什么要有这个脚本：这个项目要分 6 个阶段做，每做完一段都得确认「页面真的能打开、
  * 数据真的能读出来」，而不是只看构建有没有过。它用浏览器调试协议驱动 Edge/Chrome，
@@ -64,6 +64,48 @@ const PASSWORD = process.env.SMOKE_PASSWORD ?? 'admin123'
 const CDP_PORT = Number(process.env.CDP_PORT ?? 9333)
 const OUT_DIR = process.env.SMOKE_OUT ?? join(tmpdir(), 'crm-smoke')
 const PROFILE_DIR = join(tmpdir(), `crm-smoke-profile-${CDP_PORT}`)
+const FIXTURES_ENABLED = process.env.SMOKE_ENABLE_FIXTURES === '1'
+
+function assertSafeTargets() {
+  const isLoopback = (value, label) => {
+    let hostname
+    try {
+      hostname = new URL(value).hostname.replace(/^\[|\]$/g, '')
+    } catch {
+      throw new Error(`${label} 不是有效 URL：${value}`)
+    }
+    if (!['localhost', '127.0.0.1', '::1'].includes(hostname)) {
+      throw new Error(`${label} 必须指向本机回环地址，当前为 ${hostname}`)
+    }
+  }
+
+  isLoopback(API_BASE, 'API_BASE')
+  isLoopback(APP_BASE, 'APP_BASE')
+
+  const dbUrl = process.env.DATABASE_URL
+  if (!dbUrl) throw new Error('必须显式设置 DATABASE_URL，避免清理脚本误连 backend/.env 中的数据库')
+  const match = dbUrl.match(/^[^:]+:\/\/(?:[^@/]+@)?([^/?]*)(?:\/[^?]*)?(?:\?(.*))?$/)
+  if (!match) throw new Error('DATABASE_URL 格式无法安全识别')
+  const rawHost = match[1]
+  const host = rawHost.startsWith('[')
+    ? rawHost.slice(1, rawHost.indexOf(']'))
+    : rawHost.split(':')[0]
+  const socketHost = new URLSearchParams(match[2] ?? '').get('host')
+  if (!['localhost', '127.0.0.1', '::1'].includes(host) && !(host === '' && socketHost?.startsWith('/'))) {
+    throw new Error('DATABASE_URL 必须指向本机回环地址或本机 Unix socket')
+  }
+
+  const enabled = (name) => ['1', 'true'].includes(String(process.env[name] ?? '').toLowerCase())
+  const disabled = (name) => ['0', 'false'].includes(String(process.env[name] ?? '').toLowerCase())
+  if (!enabled('DINGTALK_PUSH_OFF') || !enabled('WECOM_PUSH_OFF')) {
+    throw new Error('UI 冒烟要求 DINGTALK_PUSH_OFF=1 和 WECOM_PUSH_OFF=1')
+  }
+  if (!disabled('SCHEDULER_ENABLED')) throw new Error('UI 冒烟要求 SCHEDULER_ENABLED=false')
+  if (process.env.DEEPSEEK_API_KEY) throw new Error('UI 冒烟期间必须清空 DEEPSEEK_API_KEY')
+  if (FIXTURES_ENABLED && !dbUrl.toLowerCase().includes('test') && !dbUrl.toLowerCase().includes('smoke')) {
+    throw new Error('SMOKE_ENABLE_FIXTURES=1 仅允许用于数据库名称含 test 或 smoke 的一次性测试库')
+  }
+}
 
 /**
  * 找后端用的 Python：优先项目自己的 venv，其次 PATH 上的 python3/python。
@@ -111,18 +153,38 @@ function cleanTestResidue(startedAt) {
   console.log(`✓ 收尾清扫：${line}`)
 }
 
-/** 取列表接口里真实存在的 id，避免写死 1 号数据（数据变了用例就失效）。 */
-async function firstId(path, token) {
+/** 取列表接口里真实存在的记录，避免写死演示数据 id。 */
+async function firstRecord(path, token) {
   try {
     const response = await fetch(`${API_BASE}/api/v1${path}`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     const body = await response.json()
-    const items = body?.data?.items ?? []
-    return items.length ? items[0].id : null
+    const items = Array.isArray(body?.data) ? body.data : (body?.data?.items ?? [])
+    return items.length ? items[0] : null
   } catch {
     return null
   }
+}
+
+async function firstId(path, token) {
+  return (await firstRecord(path, token))?.id ?? null
+}
+
+async function checkedJson(path, token, options = {}) {
+  const response = await fetch(`${API_BASE}/api/v1${path}`, {
+    ...options,
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      Authorization: `Bearer ${token}`,
+      ...options.headers,
+    },
+  })
+  const body = await response.json()
+  if (!response.ok || body?.code !== 0) {
+    throw new Error(`${options.method ?? 'GET'} ${path}: ${body?.message ?? response.status}`)
+  }
+  return body.data
 }
 
 /**
@@ -177,48 +239,69 @@ async function createSeedQuote(token, customerId) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
- * 订单中心为空时自动造一张**真实订单**（建报价 → 提交审批 → 转订单），
- * 让 /orders/{id} 这条用例测到的是真页面而不是 404 兜底。
- * 任何一步没走通就返回 null（用例退回 /orders/1 兜底路径，不算失败）。
+ * 订单中心为空时在测试数据中造一张订单，覆盖真实的订单详情页。
+ * 返回错误原因供主流程判失败，避免静默退回 /orders/1 后仍报冒烟通过。
  */
 async function createOrderIfEmpty(token, customerId) {
-  if (!customerId) return null
   try {
-    const headers = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    }
-    const created = await fetch(`${API_BASE}/api/v1/quotes`, {
+    if (!customerId) throw new Error('没有可用于建单的客户')
+
+    let opportunityId = await firstId('/opportunities?page_size=1', token)
+    const skuId = await firstId('/pricing/sku-options', token)
+    if (!skuId) throw new Error('没有可用于建单的 SKU')
+    const priceResult = await checkedJson('/pricing/calculate', token, {
       method: 'POST',
-      headers,
-      body: JSON.stringify({ customer_id: customerId }),
-    }).then((r) => r.json())
-    const versionId = created?.data?.version_id
-    if (!versionId) return null
-    const skus = await fetch(`${API_BASE}/api/v1/pricing/sku-options`, { headers }).then((r) =>
-      r.json(),
-    )
-    const skuId = skus?.data?.[0]?.id
-    if (skuId) {
-      await fetch(`${API_BASE}/api/v1/quote-versions/${versionId}/items/batch`, {
+      body: JSON.stringify({ sku_id: skuId, quantity: 100, customer_id: customerId }),
+    })
+    const quotePrice = Number(priceResult?.recommended_price)
+    if (!Number.isFinite(quotePrice) || quotePrice <= 0) {
+      throw new Error('核价接口未返回有效的建议价，不能创建测试订单')
+    }
+
+    if (!opportunityId) {
+      const opportunity = await checkedJson('/opportunities', token, {
         method: 'POST',
-        headers,
-        body: JSON.stringify([{ sku_id: skuId, quantity: 100, quoted_price: 28 }]),
+        body: JSON.stringify({ customer_id: customerId, title: 'UI 冒烟测试商机' }),
+      })
+      opportunityId = opportunity?.id
+      if (!opportunityId) throw new Error('创建测试商机没有返回 id')
+      await checkedJson(`/opportunities/${opportunityId}/items`, token, {
+        method: 'POST',
+        body: JSON.stringify({ sku_id: skuId, quantity: 100, target_price: quotePrice }),
       })
     }
-    const submitted = await fetch(
-      `${API_BASE}/api/v1/quote-versions/${versionId}/submit-approval`,
-      { method: 'POST', headers, body: JSON.stringify({ reason: '冒烟造订单' }) },
-    ).then((r) => r.json())
-    // 走了人工审批（未自动通过）就没法自动转订单——放弃，退回兜底路径
-    if (submitted?.data?.version?.approval_status !== 'approved') return null
-    const converted = await fetch(
-      `${API_BASE}/api/v1/quote-versions/${versionId}/convert-to-order`,
-      { method: 'POST', headers, body: JSON.stringify({}) },
-    ).then((r) => r.json())
-    return converted?.data?.order_id ?? null
-  } catch {
-    return null
+
+    // 报价必须关联商机；使用同一 SKU 的系统建议价，避免凭空编造价格或触发低价审批。
+    const created = await checkedJson('/quotes', token, {
+      method: 'POST',
+      body: JSON.stringify({ opportunity_id: opportunityId }),
+    })
+    const quoteId = created?.quote_id
+    const versionId = created?.version_id
+    if (!quoteId || !versionId) throw new Error('创建测试报价未返回报价或版本 id')
+
+    await checkedJson(`/quote-versions/${versionId}/items/batch`, token, {
+      method: 'POST',
+      body: JSON.stringify([{ sku_id: skuId, quantity: 100, quoted_price: quotePrice }]),
+    })
+    const submitted = await checkedJson(`/quote-versions/${versionId}/submit-approval`, token, {
+      method: 'POST',
+      body: JSON.stringify({ reason: '仅用于本地 UI 冒烟' }),
+    })
+    if (submitted?.version?.approval_status !== 'approved') {
+      throw new Error(`测试报价未自动通过审批（状态 ${submitted?.version?.approval_status ?? '未知'}）`)
+    }
+
+    // 在一次性数据库内模拟客户接受；此处不发送报价或调用外部服务。
+    await checkedJson(`/quote-versions/${versionId}/accept`, token, { method: 'POST' })
+    const converted = await checkedJson(`/quote-versions/${versionId}/convert-to-order`, token, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+    if (!converted?.order_id) throw new Error('报价转订单没有返回订单 id')
+    return { orderId: converted.order_id, quoteId, opportunityId }
+  } catch (error) {
+    return { orderId: null, quoteId: null, opportunityId: null, error: error.message }
   }
 }
 
@@ -335,6 +418,7 @@ function connect(wsUrl) {
 }
 
 async function main() {
+  assertSafeTargets()
   rmSync(PROFILE_DIR, { recursive: true, force: true })
   mkdirSync(OUT_DIR, { recursive: true })
   // 收尾清扫的时间窗起点：本脚本之前产生的通知一律不动
@@ -343,67 +427,93 @@ async function main() {
   const auth = await apiLogin()
   console.log(`✓ 接口登录成功：${auth.user.name}（${auth.user.roles.join(',')}）`)
   // 按真实数据组装用例
-  const [customerId, opportunityId, productId, quoteId, skuId, firstOrderId, sampleId] = await Promise.all([
-    firstId('/customers', auth.token),
-    firstId('/opportunities', auth.token),
-    firstId('/products', auth.token),
-    firstId('/quotes', auth.token),
-    firstId('/pricing/sku-options', auth.token),
-    firstId('/orders', auth.token),
-    firstId('/samples', auth.token),
+  const [customer, opportunity, product, quote, sku, firstOrder, sample] = await Promise.all([
+    firstRecord('/customers', auth.token),
+    firstRecord('/opportunities', auth.token),
+    firstRecord('/products', auth.token),
+    firstRecord('/quotes', auth.token),
+    firstRecord('/pricing/sku-options', auth.token),
+    firstRecord('/orders', auth.token),
+    firstRecord('/samples', auth.token),
   ])
-  // 订单中心为空（全新库/刚清库）就造一张真实订单，别让详情页用例测 404 兜底
-  let orderId = firstOrderId
+  const customerId = customer?.id ?? null
+  let opportunityId = opportunity?.id ?? null
+  const productId = product?.id ?? null
+  const skuId = sku?.id ?? null
+  let quoteId = quote?.id ?? null
+  let orderId = firstOrder?.id ?? null
+  const setupProblems = []
+
+  // 订单中心为空时必须成功造单；失败要让 UI 冒烟失败，不能静默退回 /orders/1。
   if (!orderId) {
-    orderId = await createOrderIfEmpty(auth.token, customerId)
-    console.log(
-      orderId
-        ? `✓ 订单中心是空的，已自动「建报价→审批→转订单」造一张订单 #${orderId}`
-        : '（提示：自动造订单失败，订单详情用例退回 /orders/1 兜底）',
-    )
+    if (!FIXTURES_ENABLED) {
+      setupProblems.push('订单为空；仅在一次性测试库显式设置 SMOKE_ENABLE_FIXTURES=1 后才会创建测试订单')
+    } else {
+      const created = await createOrderIfEmpty(auth.token, customerId)
+      orderId = created.orderId
+      quoteId ??= created.quoteId
+      opportunityId ??= created.opportunityId
+      if (orderId) console.log(`✓ 订单中心为空，已在测试库造出订单 #${orderId}`)
+      else setupProblems.push(`自动建单失败：${created.error}`)
+    }
   }
+  if (!quoteId) {
+    if (!FIXTURES_ENABLED) {
+      setupProblems.push('没有报价；仅在一次性测试库显式设置 SMOKE_ENABLE_FIXTURES=1 后才会创建测试报价')
+    } else {
+      quoteId = await createSeedQuote(auth.token, customerId)
+      if (!quoteId) setupProblems.push('没有可用于报价详情/What-if 验收的报价')
+    }
+  }
+  if (!customerId) setupProblems.push('没有可用于客户详情验收的客户')
+  if (!opportunityId) setupProblems.push('没有可用于商机详情验收的商机')
+  if (!productId) setupProblems.push('没有可用于产品详情验收的产品')
+  if (!skuId) setupProblems.push('没有可用于核价/物流验收的 SKU')
+  if (!orderId) setupProblems.push('没有可用于订单详情验收的订单')
   const PAGES = [
-    { path: '/workbench', name: '01-workbench' },
-    { path: '/analytics', name: '02-analytics' },
-    { path: '/leads', name: '03-leads' },
-    { path: '/customers', name: '04-customers' },
+    { path: '/workbench', name: '01-workbench', expectText: '今日待办' },
+    { path: '/analytics', name: '02-analytics', expectText: '数据分析' },
+    { path: '/leads', name: '03-leads', expectText: '线索中心' },
+    { path: '/customers', name: '04-customers', expectText: '客户中心' },
     // 撞单裁定（验收20）：系统摆证据、归属由人裁定
-    { path: '/duplicate-cases', name: '04b-duplicate-cases' },
-    { path: `/customers/${customerId ?? 1}`, name: '05-customer-detail' },
-    { path: `/customers/${customerId ?? 1}?tab=files`, name: '05b-customer-files' },
-    { path: '/opportunities', name: '06-opportunities' },
-    { path: `/opportunities/${opportunityId ?? 1}`, name: '07-opportunity-detail' },
-    { path: '/products', name: '08-products' },
-    { path: `/products/${productId ?? 1}`, name: '09-product-detail' },
-    { path: '/prices', name: '10-price-center' },
+    { path: '/duplicate-cases', name: '04b-duplicate-cases', expectText: '撞单裁定' },
+    { path: `/customers/${customerId ?? 1}`, name: '05-customer-detail', expectText: customer?.name ?? '客户不存在' },
+    { path: `/customers/${customerId ?? 1}?tab=files`, name: '05b-customer-files', expectText: '合同、图纸、回款凭证' },
+    { path: '/opportunities', name: '06-opportunities', expectText: '商机中心' },
+    { path: `/opportunities/${opportunityId ?? 1}`, name: '07-opportunity-detail', expectText: opportunity?.title ?? '商机不存在' },
+    { path: '/products', name: '08-products', expectText: '产品中心' },
+    { path: `/products/${productId ?? 1}`, name: '09-product-detail', expectText: product?.name ?? '产品不存在' },
+    { path: '/prices', name: '10-price-center', expectText: '价格中心' },
     {
       path: `/pricing?sku_id=${skuId ?? 1}&customer_id=${customerId ?? 1}&quantity=3000&quoted_price=25`,
       name: '11-pricing',
+      expectText: '核价',
     },
-    { path: '/quotes', name: '12-quotes' },
-    { path: `/quotes/${quoteId ?? 1}`, name: '13-quote-detail' },
-    { path: '/approvals', name: '14-approvals' },
-    { path: '/orders', name: '15-orders' },
-    { path: `/orders/${orderId ?? 1}`, name: '16-order-detail' },
-    { path: '/tasks', name: '17-tasks' },
-    { path: '/settings', name: '18-settings' },
-    { path: '/settings?tab=rules', name: '19-settings-rules' },
-    { path: '/settings?tab=tags', name: '23-settings-tags' },
-    { path: '/settings?tab=notifications', name: '31-settings-notifications' },
-    { path: '/settings?tab=roles', name: '24-settings-roles' },
-    { path: '/settings?tab=departments', name: '25-settings-departments' },
-    { path: '/agent', name: '20-agent' },
+    { path: '/quotes', name: '12-quotes', expectText: '报价中心' },
+    { path: `/quotes/${quoteId ?? 1}`, name: '13-quote-detail', expectText: '版本与方案对比' },
+    { path: '/approvals', name: '14-approvals', expectText: '报价审批' },
+    { path: '/orders', name: '15-orders', expectText: '订单中心' },
+    { path: `/orders/${orderId ?? 1}`, name: '16-order-detail', expectText: '未推送 ERP/MES' },
+    { path: '/tasks', name: '17-tasks', expectText: '销售任务' },
+    { path: '/settings', name: '18-settings', expectText: '系统设置' },
+    { path: '/settings?tab=rules', name: '19-settings-rules', expectText: '业务规则' },
+    { path: '/settings?tab=tags', name: '23-settings-tags', expectText: '客户标签' },
+    { path: '/settings?tab=notifications', name: '31-settings-notifications', expectText: '通知' },
+    { path: '/settings?tab=roles', name: '24-settings-roles', expectText: '角色与数据范围' },
+    { path: '/settings?tab=departments', name: '25-settings-departments', expectText: '部门' },
+    { path: '/agent', name: '20-agent', expectText: '新建会话' },
     // 知识库：定制询价列表 + 修订链/钉钉审批入口都在这一页
-    { path: '/knowledge', name: '32-knowledge' },
-    { path: '/samples', name: '22-samples' },
+    { path: '/knowledge', name: '32-knowledge', expectText: '产品知识库 · 定制询价' },
+    { path: '/samples', name: '22-samples', expectText: '样品管理' },
     // 深链详情：/samples/:id 直接打开该条详情抽屉（案例证据跳转也走它）
-    ...(sampleId ? [{ path: `/samples/${sampleId}`, name: '22b-sample-detail' }] : []),
-    { path: '/wecom', name: '30-wecom' },
+    ...(sample ? [{ path: `/samples/${sample.id}`, name: '22b-sample-detail', expectText: '样品' }] : []),
+    { path: '/wecom', name: '30-wecom', expectText: '企业微信' },
     {
       // 带参数进入，才能真正验证"选了 SKU 能出计费重与方案"，
       // 否则只截图到空状态，等于没验证结果区
       path: `/logistics?sku_id=${skuId ?? 1}&quantity=3000&destination=%E5%8D%8E%E4%B8%9C`,
       name: '21-logistics',
+      expectText: '物流',
     },
   ]
   console.log(
@@ -428,7 +538,7 @@ async function main() {
     { stdio: 'ignore' },
   )
 
-  const problems = []
+  const problems = [...setupProblems]
   try {
     await waitForCdp()
     const target = await openTarget(`${APP_BASE}/login`)
@@ -501,7 +611,7 @@ async function main() {
       for (let i = 0; i < 60; i += 1) {
         const probe = await client.send('Runtime.evaluate', {
           expression:
-            'Boolean(document.querySelector("#root, #app")?.children.length) && document.body.innerText.trim().length > 0',
+            'Boolean(document.querySelector("#root, #app")?.children.length) && Boolean(document.querySelector(".page-container")?.innerText.trim().length)',
           returnByValue: true,
         })
         if (probe.result.value) {
@@ -516,7 +626,7 @@ async function main() {
       writeFileSync(file, Buffer.from(shot.data, 'base64'))
 
       const text = await client.send('Runtime.evaluate', {
-        expression: 'document.body.innerText.slice(0, 120).replace(/\\s+/g, " ")',
+        expression: 'document.querySelector(".page-container")?.innerText.replace(/\\s+/g, " ") ?? ""',
         returnByValue: true,
       })
       if (!rendered) {
@@ -528,8 +638,19 @@ async function main() {
         })
         problems.push(`页面始终没有渲染出内容：${page.path} → ${diag.result.value}`)
       }
-      console.log(`${rendered ? '✓' : '✗'} ${page.path} → ${file}`)
-      console.log(`  页面首屏文本：${text.result.value}`)
+      const pageText = text.result.value ?? ''
+      if (page.expectText && !pageText.includes(page.expectText)) {
+        // 探测完整内容，日志只打印短片段，便于失败后定位且不刷屏。
+        const content = await client.send('Runtime.evaluate', {
+          expression: 'document.querySelector(".page-container")?.innerText ?? ""',
+          returnByValue: true,
+        })
+        problems.push(
+          `页面主内容缺少「${page.expectText}」：${page.path} → ${(content.result.value ?? '').slice(0, 400).replace(/\\s+/g, ' ')}`,
+        )
+      }
+      console.log(`${rendered && (!page.expectText || pageText.includes(page.expectText)) ? '✓' : '✗'} ${page.path} → ${file}`)
+      console.log(`  页面主内容：${pageText.slice(0, 160)}`)
     }
 
     // ---- 需要点击才出现的交付物：看板 / Copilot 抽屉 / What-if ----------------

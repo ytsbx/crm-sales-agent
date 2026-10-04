@@ -161,6 +161,7 @@ export interface VersionComparison {
 }
 
 export interface ApprovalRow {
+  can_approve: boolean
   id: number
   business_type: string
   business_id: number
@@ -302,7 +303,7 @@ export function transferApproval(id: number, to_user_id: number, comment?: strin
   return api.post<ApprovalRow>(`/approvals/${id}/transfer`, { to_user_id, comment })
 }
 
-export function listApprovals(query: { status?: string; mine?: boolean; page?: number; page_size?: number }) {
+export function listApprovals(query: { status?: string; mine?: boolean; pending_for_me?: boolean; page?: number; page_size?: number }) {
   return api.get<PageResult<ApprovalRow>>('/approvals', query)
 }
 

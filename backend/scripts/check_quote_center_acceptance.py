@@ -20,13 +20,14 @@ CHKQC SKU，并在清理时对本脚本自建的 SKU 真删价格规则。
 """
 
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 
-BASE = 'http://127.0.0.1:8000/api/v1'
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 RUN = str(int(time.time()))[-6:]
 #: 绑进 SQL 的时间**必须是真的 datetime**：asyncpg 不接受字符串。
 #: 这里原先传的是 time.strftime(...) 得到的字符串，于是整段"自动留痕清理"每次

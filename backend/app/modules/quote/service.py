@@ -27,6 +27,13 @@ from app.modules.user.model import User
 ZERO = Decimal("0")
 
 
+def quote_is_expired(valid_until, *, today=None) -> bool:
+    """A quote is expired only after its inclusive valid-through date."""
+    if valid_until is None:
+        return False
+    return valid_until < (today or datetime.now(UTC).date())
+
+
 def _f(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
@@ -385,7 +392,7 @@ async def create_quote(
 
             # 产品报价中心第二批（方案 §5 / A05）：拟报价默认带「系统适用价」，
             # 客户目标价只是谈判参考、单独留在商机明细上，不再直接变成拟报价。
-            # 无适用价时不做成本推算（D4/D5），回退目标价并显式留痕要求人工确认。
+            # 无适用价时客户目标价只能作为谈判参考，不能落成拟报价金额。
             sku = await session.get(Sku, opp_item.sku_id)
             sku_label = sku.sku_code if sku else str(opp_item.sku_id)
             if sku is not None and sku.moq and opp_item.quantity < sku.moq:
@@ -425,10 +432,15 @@ async def create_quote(
                     f"客户目标价 ¥{target_price} 已单独记录"
                 )
             else:
-                quoted_price = target_price
                 item_warnings.append(
-                    f"SKU {sku_label}：无系统适用价（待定价），拟报价暂用客户目标价，请人工确认"
+                    f"SKU {sku_label}：无系统适用价（待定价），客户目标价"
+                    f"{target_price if target_price is not None else '未提供'} 仅作参考；"
+                    "未加入报价明细，请在报价页手工定价后添加"
                 )
+                # 目标价不是客户承诺价；如果在这里写入 QuoteItem，后续审批/发送
+                # 会把谈判参考当成正式拟报价。缺价行留在商机需求中，由销售明确
+                # 定价后再添加到报价版本，避免生成金额看似完整的错误报价。
+                continue
             item = await build_item_snapshot(
                 session,
                 version=version,
@@ -769,14 +781,21 @@ async def build_item_snapshot(
         country=country,
     )
     if quoted_price is not None:
+        if Decimal(str(quoted_price)) <= 0:
+            raise AppError(ErrorCode.PARAM_ERROR, "拟报价单价必须大于 0", 422)
         price = Decimal(str(quoted_price))
-    elif result["recommended_price"] is not None:
+    elif (
+        (result.get("customer_price_rule") or {}).get("agreed_price") is not None
+        or (result.get("price_rule") or {}).get("guide_price") is not None
+    ) and result["recommended_price"] is not None:
+        # 未传拟报价时只允许采用已维护的客户专属价/指导价；成本反推值仅供内部
+        # 试算，不得因为它出现在 recommended_price 中就自动写成对客报价。
         price = Decimal(str(result["recommended_price"]))
     else:
-        # A06：无成本也无已维护售价时，宁可报错也不给出"0 成本推算价"
+        # A06/D5：缺少已批准销售价时，不能把成本推算建议变成正式报价。
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"SKU {sku.sku_code} 无适用价且无成本记录，无法自动定价；请先维护价格规则或成本",
+            f"SKU {sku.sku_code} 无适用售价；成本试算不能作为正式报价，请维护指导价或手工填写拟报价",
             422,
         )
     # 利润必须与报价同币种，否则会拿美元价减人民币成本（曾算出 -452% 的利润率）。
