@@ -49,6 +49,23 @@ from app.modules.user.model import User
 
 router = APIRouter(tags=["Quote"])
 
+
+async def _ensure_inquiry_visible(
+    session: AsyncSession, user: CurrentUser, inquiry_id: int | None
+) -> None:
+    """定制明细引用的需求必须在该用户数据范围内。
+
+    此前 `_build_custom_item_snapshot` 只判"需求存在"，拿别人的需求 id 也能挂进
+    自己的报价（需求标题/编号会落进快照、流到对客文件）——与"拿别人的 id 访问"
+    同一形态，入口处先挡。
+    """
+    if inquiry_id is None:
+        return
+    from app.modules.inquiry import service as inquiry_service
+
+    await inquiry_service.get_visible_or_404(session, user, inquiry_id)
+
+
 CHARGE_LABEL = {
     "logistics": "物流",
     "packaging": "包装",
@@ -761,6 +778,7 @@ async def set_items(
 
     moq_warnings: list[str] = []
     for payload in items:
+        await _ensure_inquiry_visible(session, user, payload.inquiry_id)
         item = await svc.build_item_snapshot(
             session,
             version=version,
@@ -1312,6 +1330,7 @@ async def add_version_item(
     version = await svc.get_visible_version(session, user, version_id)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
+    await _ensure_inquiry_visible(session, user, payload.inquiry_id)
     item = await svc.build_item_snapshot(
         session,
         version=version,

@@ -24,9 +24,10 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.customer import service as customer_service
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
-from app.modules.opportunity.model import Opportunity
+from app.modules.opportunity import service as opportunity_service
 from app.modules.product.model import Sku
 from app.modules.sample import service as svc
 from app.modules.sample.model import SAMPLE_STATUS_LABEL, SampleItem, SampleRequest, SampleShipment
@@ -81,15 +82,14 @@ async def create_sample(
     opportunity = None
     customer_id = payload.customer_id
     if payload.opportunity_id:
-        opportunity = await session.get(Opportunity, payload.opportunity_id)
-        if opportunity is None or opportunity.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+        # 数据范围：此前只判"商机存在"，拿别人的商机 id 就能建打样单（跨人引用）
+        opportunity = await opportunity_service.get_visible_opportunity(
+            session, user, payload.opportunity_id
+        )
         customer_id = customer_id or opportunity.customer_id
     if customer_id:
-        from app.modules.customer.model import Customer
-
-        if await session.get(Customer, customer_id) is None:
-            raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+        # 客户同样要过数据范围（公海客户放行，与业务口径一致）
+        await customer_service.get_visible_customer(session, user, customer_id)
     if not customer_id and not opportunity:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "必须指定商机或客户")
 
@@ -113,6 +113,7 @@ async def create_sample(
     for item in payload.items:
         await _add_item(
             session,
+            user,
             sample.id,
             item.sku_id,
             item.quantity,
@@ -500,6 +501,7 @@ async def add_sample_item(
         )
     item = await _add_item(
         session,
+        user,
         sample.id,
         payload.sku_id,
         payload.quantity,
@@ -523,6 +525,7 @@ async def add_sample_item(
 
 async def _add_item(
     session: AsyncSession,
+    user: CurrentUser,
     sample_id: int,
     sku_id: int | None,
     quantity,
@@ -552,11 +555,10 @@ async def _add_item(
             remark=remark,
         )
     else:
-        from app.modules.inquiry.model import CustomInquiry
+        # 定制需求也要过数据范围：此前只 session.get，能引别人的需求编号
+        from app.modules.inquiry import service as inquiry_service
 
-        inquiry = await session.get(CustomInquiry, inquiry_id)
-        if inquiry is None or inquiry.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, f"定制需求 id={inquiry_id} 不存在", 404)
+        inquiry = await inquiry_service.get_visible_or_404(session, user, inquiry_id)
         item = SampleItem(
             sample_request_id=sample_id,
             sku_id=None,

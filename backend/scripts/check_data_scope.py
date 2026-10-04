@@ -91,6 +91,19 @@ async def cleanup():
             f"(select id from opportunities where customer_id in {cust})",
             f"delete from business_events where business_id in "
             f"(select id from opportunities where customer_id in {cust})",
+            # 报价链（本用例给越权者造的夹具）：必须在删商机/客户之前清，
+            # 否则 quotes.opportunity_id、quotes.customer_id 的外键会挡住删除。
+            # quotes.current_version_id 与 quote_versions 互为引用，先置空再删版本。
+            f"update quotes set current_version_id = null where customer_id in {cust}",
+            f"delete from quote_charges where quote_version_id in "
+            f"(select id from quote_versions where quote_id in "
+            f"(select id from quotes where customer_id in {cust}))",
+            f"delete from quote_items where quote_version_id in "
+            f"(select id from quote_versions where quote_id in "
+            f"(select id from quotes where customer_id in {cust}))",
+            f"delete from quote_versions where quote_id in "
+            f"(select id from quotes where customer_id in {cust})",
+            f"delete from quotes where customer_id in {cust}",
             f"delete from opportunities where customer_id in {cust}",
             "delete from leads where name like :p",
             f"delete from integration_logs where business_id in {order}",
@@ -302,6 +315,31 @@ async def main() -> int:
     status, res = call('GET', '/followups?page_size=200', outsider_token)
     leaked_ids = {r['id'] for r in (res.get('data') or {}).get('items', [])}
     check('他人列表里看不到别人名下的跟进', followup_id in leaked_ids, False)
+
+    # 打样新建：拿别人的客户/商机 id 也应被拒（此前只判"存在"，能跨人引用）
+    check_denied('他人用别人的客户建打样单',
+                 call('POST', '/samples', outsider_token, {'customer_id': cid})[0])
+    check_denied('他人用别人的商机建打样单',
+                 call('POST', '/samples', outsider_token, {'opportunity_id': opp_fixture_id})[0])
+
+    # 报价定制明细引别人的需求：给越权者造自己的客户→商机→报价，再挂张三的需求。
+    # 此前 `_build_custom_item_snapshot` 只判需求存在，能把自己的报价挂到别人的需求上
+    # （需求标题/编号会落进快照、流到对客文件）。
+    status, res = call('POST', '/customers', outsider_token,
+                       {'name': f'{PREFIX}越权者客户-{stamp}'})
+    oc_cid = (res.get('data') or {}).get('id')
+    status, res = call('POST', '/opportunities', outsider_token,
+                       {'customer_id': oc_cid, 'title': f'{PREFIX}越权者商机-{stamp}'})
+    oc_oid = (res.get('data') or {}).get('id')
+    status, res = call('POST', '/quotes', outsider_token,
+                       {'customer_id': oc_cid, 'opportunity_id': oc_oid})
+    oc_version_id = (res.get('data') or {}).get('version_id')
+    if oc_version_id:
+        check_denied('他人把别人的定制需求挂进自己的报价明细',
+                     call('POST', f'/quote-versions/{oc_version_id}/items', outsider_token,
+                          {'inquiry_id': iid, 'unit_cost': 8, 'quoted_price': 11})[0])
+    else:
+        FAILURES.append('越权者报价夹具创建失败（拿不到 version_id）')
 
     # 商机 / 线索 / 运费试算单：同样用本用例自建的夹具（setup 里已建）。
     check('本人读自己商机时间线（对照）',
