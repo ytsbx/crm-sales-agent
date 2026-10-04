@@ -15,12 +15,15 @@ import {
   listQuoteVersions,
   markSent,
   refreshPrices,
+  setQuoteVersionItems,
   submitApproval,
   updateQuoteItem,
   withdrawApproval,
   type QuoteChargeRow,
   type QuoteItemRow,
 } from '../../shared/api/quote'
+import { listCustomInquiries } from '../../shared/api/inquiry'
+import { listSkusForPricing } from '../../shared/api/pricing'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import { convertToOrder } from '../../shared/api/order'
@@ -48,6 +51,20 @@ const CHARGE_TYPES = [
   { value: 'discount', label: '折扣' },
   { value: 'other', label: '其他' },
 ]
+
+/**
+ * 批量录入的一行草稿。现货给 sku_id；定制件给 inquiry_id + 成本 + 报价
+ * （定制件没有 SKU，也就没有价格规则可用，成本和报价必须人工给）。
+ */
+type ItemDraftRow = {
+  mode: 'sku' | 'custom'
+  sku_id?: number
+  inquiry_id?: number
+  quantity: string
+  quoted_price: string
+  unit_cost: string
+  remark: string
+}
 
 export default function QuoteDetailPage() {
   const params = useParams()
@@ -81,6 +98,72 @@ export default function QuoteDetailPage() {
   const [sendForm, setSendForm] = useState({ channel: '邮件', receiver: '' })
   const [submitVisible, setSubmitVisible] = useState(false)
   const [submitReason, setSubmitReason] = useState('')
+  // 批量录入整版明细
+  const [itemsVisible, setItemsVisible] = useState(false)
+  const [itemRows, setItemRows] = useState<ItemDraftRow[]>([])
+
+  const skusQuery = useQuery({
+    queryKey: ['skus-for-pricing'],
+    queryFn: listSkusForPricing,
+    enabled: itemsVisible,
+  })
+  const inquiriesQuery = useQuery({
+    queryKey: ['inquiries-for-quote'],
+    queryFn: () => listCustomInquiries({ page: 1, page_size: 100 }),
+    enabled: itemsVisible,
+  })
+
+  const patchRow = (index: number, patch: Partial<ItemDraftRow>) => {
+    setItemRows((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)))
+  }
+
+  const openItemsEditor = () => {
+    const rows = (detail?.items ?? []).map<ItemDraftRow>((item) => ({
+      mode: item.is_custom ? 'custom' : 'sku',
+      sku_id: item.sku_id ?? undefined,
+      inquiry_id: item.inquiry_id ?? undefined,
+      quantity: String(item.quantity ?? ''),
+      quoted_price: String(item.quoted_price ?? ''),
+      // 定制件的成本快照就是当初人工填的核价成本，回填出来方便改
+      unit_cost: item.is_custom ? String(item.cost_snapshot ?? '') : '',
+      remark: item.remark ?? '',
+    }))
+    setItemRows(rows.length ? rows : [{ mode: 'sku', quantity: '1', quoted_price: '', unit_cost: '', remark: '' }])
+    setItemsVisible(true)
+  }
+
+  const itemsMutation = useMutation({
+    mutationFn: () =>
+      setQuoteVersionItems(
+        version!.id,
+        itemRows.map((row) => {
+          const quantity = Number(row.quantity) || 1
+          const price = row.quoted_price.trim() === '' ? null : Number(row.quoted_price)
+          if (row.mode === 'custom') {
+            return {
+              inquiry_id: row.inquiry_id,
+              quantity,
+              quoted_price: price,
+              unit_cost: row.unit_cost.trim() === '' ? null : Number(row.unit_cost),
+              remark: row.remark.trim() || null,
+            }
+          }
+          return {
+            sku_id: row.sku_id,
+            quantity,
+            quoted_price: price,
+            remark: row.remark.trim() || null,
+          }
+        }),
+      ),
+    onSuccess: (updated) => {
+      Toast.success('明细已保存（整版替换）')
+      setItemsVisible(false)
+      refresh()
+      void queryClient.invalidateQueries({ queryKey: ['price-drift', updated?.id] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   const convertMutation = useMutation({
     mutationFn: () => convertToOrder(versionId!),
@@ -323,6 +406,15 @@ export default function QuoteDetailPage() {
     },
   ]
 
+  const skuOptions = (skusQuery.data ?? []).map((sku) => ({
+    value: sku.id,
+    label: `${sku.sku_code}${sku.specification ? ` · ${sku.specification}` : ''}`,
+  }))
+  const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
+    value: row.id,
+    label: `${row.inquiry_no ?? `#${row.id}`} · ${row.title}`,
+  }))
+
   return (
     <div className="page-container">
       {/* 与客户/商机详情页同排布：标题 + 标签一行，关键信息行在标题下方左对齐 */}
@@ -468,7 +560,18 @@ export default function QuoteDetailPage() {
         </div>
       )}
 
-      <SectionCard title="报价明细" style={{ marginBottom: 16 }}>
+      <SectionCard
+        title="报价明细"
+        style={{ marginBottom: 16 }}
+        extra={
+          canManage &&
+          editable && (
+            <Button size="small" onClick={openItemsEditor}>
+              批量录入
+            </Button>
+          )
+        }
+      >
         <Table<QuoteItemRow>
           columns={itemColumns}
           dataSource={detail.items}
@@ -610,6 +713,109 @@ export default function QuoteDetailPage() {
           <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
             保存后会按你的价格权限重新判断是否需要审批。
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title="批量录入明细"
+        visible={itemsVisible}
+        onCancel={() => setItemsVisible(false)}
+        onOk={() => itemsMutation.mutate()}
+        confirmLoading={itemsMutation.isPending}
+        okText="保存整版明细"
+        width={900}
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            保存会「整版替换」这张报价版本的明细（上面那张表会按下面这份重建）。
+            现货给 SKU 即可，系统用适用价；定制件必须填成本与报价——没成本算不出毛利，
+            也判断不了低价审批。
+          </div>
+          {itemRows.map((row, index) => (
+            <div
+              key={index}
+              style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}
+            >
+              <Select
+                style={{ width: 96 }}
+                value={row.mode}
+                onChange={(value) =>
+                  patchRow(index, {
+                    mode: value as ItemDraftRow['mode'],
+                    sku_id: undefined,
+                    inquiry_id: undefined,
+                  })
+                }
+                optionList={[
+                  { value: 'sku', label: '现货 SKU' },
+                  { value: 'custom', label: '定制需求' },
+                ]}
+              />
+              {row.mode === 'custom' ? (
+                <Select
+                  style={{ width: 240 }}
+                  placeholder="选择定制需求"
+                  filter
+                  value={row.inquiry_id}
+                  onChange={(value) => patchRow(index, { inquiry_id: value as number })}
+                  optionList={inquiryOptions}
+                />
+              ) : (
+                <Select
+                  style={{ width: 240 }}
+                  placeholder="选择 SKU"
+                  filter
+                  value={row.sku_id}
+                  onChange={(value) => patchRow(index, { sku_id: value as number })}
+                  optionList={skuOptions}
+                />
+              )}
+              <Input
+                style={{ width: 84 }}
+                placeholder="数量"
+                value={row.quantity}
+                onChange={(value) => patchRow(index, { quantity: value })}
+              />
+              <Input
+                style={{ width: 104 }}
+                placeholder="报价单价"
+                value={row.quoted_price}
+                onChange={(value) => patchRow(index, { quoted_price: value })}
+              />
+              {row.mode === 'custom' && (
+                <Input
+                  style={{ width: 104 }}
+                  placeholder="成本(必填)"
+                  value={row.unit_cost}
+                  onChange={(value) => patchRow(index, { unit_cost: value })}
+                />
+              )}
+              <Input
+                style={{ width: 160 }}
+                placeholder="备注"
+                value={row.remark}
+                onChange={(value) => patchRow(index, { remark: value })}
+              />
+              <Button
+                theme="borderless"
+                type="danger"
+                onClick={() => setItemRows((rows) => rows.filter((_, i) => i !== index))}
+              >
+                删除
+              </Button>
+            </div>
+          ))}
+          <Button
+            theme="borderless"
+            onClick={() =>
+              setItemRows((rows) => [
+                ...rows,
+                { mode: 'sku', quantity: '1', quoted_price: '', unit_cost: '', remark: '' },
+              ])
+            }
+          >
+            + 添加一行
+          </Button>
         </div>
       </Modal>
 

@@ -347,6 +347,25 @@ def main():
     check('建客户特殊价', res.get('code'), 0)
     rule_id = res['data']['id']
 
+    # 取价来源会写成 `customer_specific`（17 字符），而这张明细列以前只有
+    # varchar(16)：**客户有专属价时，给他建报价明细直接 500**
+    # （asyncpg: value too long for type character varying(16)）。这里钉住"建得出来"。
+    status, res = call('POST', '/opportunities', token=admin,
+                       body={'customer_id': customer_id, 'title': f'CHK{RUN}特殊价商机'})
+    check('建夹具商机（专属价客户）', res.get('code'), 0)
+    status, res = call('POST', '/quotes', token=admin,
+                       body={'opportunity_id': res['data']['id']})
+    check('建夹具报价（专属价客户）', res.get('code'), 0)
+    special_version_id = res['data']['version_id']
+    status, res = call('POST', f'/quote-versions/{special_version_id}/items', token=admin,
+                       body={'sku_id': price_sku_id, 'quantity': 1})
+    check('有专属价的客户也能建报价明细（取价来源不再溢出）', res.get('code'), 0)
+    # 价格确实来自专属价规则（800）：验明"专属价这条路真的走通了"，
+    # 而不只是"没报错"。price_source 在报价页直接录明细这条路径上按
+    # "手工价"口径留空（漂移检测据此跳过，不自动覆盖），与核价页选品下单
+    # 那条路（会带规则来源）是两个入口，别混。
+    check('取到了客户专属价', res['data'].get('quoted_price'), 800.0)
+
     status, res = call('PATCH', f'/customer-price-rules/{rule_id}', token=admin,
                        body={'agreed_price': 750})
     check('只改协议价', res.get('code'), 0)

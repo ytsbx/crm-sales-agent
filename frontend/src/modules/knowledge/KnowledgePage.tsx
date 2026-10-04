@@ -644,7 +644,7 @@ export default function KnowledgePage() {
       >
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
           发起过程中断时钉钉那边可能已经建了单，而钉钉接口没有"只许建一次"的开关，
-          所以**不会自动重发**。请先到钉钉确认，再选「认领 / 重发 / 作废」。
+          所以「不会自动重发」。请先到钉钉确认，再选「认领 / 重发 / 作废」。
         </div>
         <Table<OaApprovalInstance>
           columns={[

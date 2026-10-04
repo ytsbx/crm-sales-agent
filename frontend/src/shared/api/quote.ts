@@ -262,7 +262,8 @@ export function addQuoteVersionItem(versionId: number, payload: Record<string, u
  * body 是**裸数组**（后端签名是 `items: list[QuoteItemInput]`），不是 `{items: [...]}`。
  */
 export function setQuoteVersionItems(versionId: number, items: Record<string, unknown>[]) {
-  return api.post<QuoteItemRow[]>(`/quote-versions/${versionId}/items/batch`, items)
+  // 返回的是**重算后的版本**（后端 ok(serialize_version(...))），不是明细数组
+  return api.post<QuoteVersion>(`/quote-versions/${versionId}/items/batch`, items)
 }
 
 export function addQuoteCharge(versionId: number, payload: Record<string, unknown>) {

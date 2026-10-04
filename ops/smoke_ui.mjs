@@ -15,10 +15,14 @@
  * 只依赖 Node 内置能力，不额外装 Playwright。
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const REPO_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
+const BACKEND_DIR = join(REPO_DIR, 'backend')
 
 /**
  * 找浏览器：优先 EDGE_BIN 环境变量，否则按平台逐个探测常见安装路径。
@@ -61,6 +65,52 @@ const CDP_PORT = Number(process.env.CDP_PORT ?? 9333)
 const OUT_DIR = process.env.SMOKE_OUT ?? join(tmpdir(), 'crm-smoke')
 const PROFILE_DIR = join(tmpdir(), `crm-smoke-profile-${CDP_PORT}`)
 
+/**
+ * 找后端用的 Python：优先项目自己的 venv，其次 PATH 上的 python3/python。
+ * CI 的 UI 冒烟 job 是把依赖装进系统 python 再起后端的，所以没有 venv 时
+ * 直接退回 PATH——两边都能跑。
+ */
+function resolvePython() {
+  const candidates =
+    process.platform === 'win32'
+      ? [join(BACKEND_DIR, '.venv', 'Scripts', 'python.exe')]
+      : [join(BACKEND_DIR, '.venv', 'bin', 'python')]
+  const venv = candidates.find((path) => existsSync(path))
+  return venv ?? (process.platform === 'win32' ? 'python' : 'python3')
+}
+
+/**
+ * 收尾：把本轮冒烟跑出来的站内通知/系统留痕清掉。
+ *
+ * 冒烟会走真实业务流程（建报价、提审批、建打样），这些动作会往账号里写
+ * 站内通知；以前跑完就留在那儿，下次谁登录谁看见。复用后端同一个清理脚本
+ * （`clean_test_run_leftovers.py`），**按本轮时间窗**清，窗口之前的一律不动。
+ *
+ * 清理失败要算失败（否则残留会一直悄悄攒）；但找不到 Python / 脚本时只提示，
+ * 不算失败——那是环境没跑后端的情况，不是"留下了垃圾"。
+ */
+function cleanTestResidue(startedAt) {
+  const script = join(BACKEND_DIR, 'scripts', 'clean_test_run_leftovers.py')
+  if (!existsSync(script)) {
+    console.log(`（提示：找不到 ${script}，跳过收尾清扫）`)
+    return
+  }
+  const result = spawnSync(resolvePython(), ['scripts/clean_test_run_leftovers.py'], {
+    cwd: BACKEND_DIR,
+    env: { ...process.env, TEST_RUN_STARTED_AT: startedAt, PYTHONPATH: '.' },
+    encoding: 'utf8',
+  })
+  if (result.error || result.status !== 0) {
+    console.log(
+      `✗ 收尾清扫失败（本轮可能留下站内通知）：${result.error?.message ?? result.stderr?.trim() ?? result.status}`,
+    )
+    process.exitCode = 1
+    return
+  }
+  const line = (result.stdout ?? '').trim().split('\n').filter(Boolean).pop() ?? ''
+  console.log(`✓ 收尾清扫：${line}`)
+}
+
 /** 取列表接口里真实存在的 id，避免写死 1 号数据（数据变了用例就失效）。 */
 async function firstId(path, token) {
   try {
@@ -86,10 +136,23 @@ async function createSeedQuote(token, customerId) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     }
+    // 报价必须挂商机（后端口径），所以先找一张现成商机；一张都没有就用传入的
+    // 客户建一张快捷商机。以前这里只传 customer_id，接口直接 40001，
+    // "报价中心为空时自动造一张"的兜底其实早就失效了。
+    let opportunityId = await firstId('/opportunities?page_size=1', token)
+    if (!opportunityId) {
+      const opp = await fetch(`${API_BASE}/api/v1/opportunities`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ customer_id: customerId, title: '冒烟用例快捷商机' }),
+      }).then((r) => r.json())
+      opportunityId = opp?.data?.id ?? null
+    }
+    if (!opportunityId) return null
     const created = await fetch(`${API_BASE}/api/v1/quotes`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ customer_id: customerId }),
+      body: JSON.stringify({ opportunity_id: opportunityId }),
     }).then((r) => r.json())
     const quoteId = created?.data?.quote_id
     const versionId = created?.data?.version_id
@@ -274,6 +337,8 @@ function connect(wsUrl) {
 async function main() {
   rmSync(PROFILE_DIR, { recursive: true, force: true })
   mkdirSync(OUT_DIR, { recursive: true })
+  // 收尾清扫的时间窗起点：本脚本之前产生的通知一律不动
+  const runStartedAt = new Date().toISOString()
 
   const auth = await apiLogin()
   console.log(`✓ 接口登录成功：${auth.user.name}（${auth.user.roles.join(',')}）`)
@@ -507,6 +572,16 @@ async function main() {
         expect: ['当前上下文：报价单'],
         skip: !interactionQuoteId,
       },
+      {
+        // 批量录入整版明细（只有"未提交、未发送"的草稿版本才有这个按钮；
+        // 当前这张报价不是草稿时跳过，不算功能缺失）
+        name: '33-quote-batch-items',
+        path: `/quotes/${interactionQuoteId ?? 1}`,
+        clicks: ['批量录入'],
+        expect: ['批量录入明细', '整版替换'],
+        optional: true,
+        skip: !interactionQuoteId,
+      },
     ]
 
     for (const item of INTERACTIONS) {
@@ -530,9 +605,16 @@ async function main() {
       }
       await sleep(600)
 
+      let optionalSkip = false
       for (const label of item.clicks) {
         const outcome = await clickByText(client, label)
         if (outcome !== 'clicked') {
+          if (item.optional) {
+            // 可选用例：前置条件不满足（比如这张报价不是草稿）就跳过，不算失败
+            console.log(`- 跳过 ${item.name}（点不到「${label}」：当前数据不满足前置条件）`)
+            optionalSkip = true
+            break
+          }
           const diag = await client.send('Runtime.evaluate', {
             expression:
               'JSON.stringify({ url: location.href, html: document.body.innerHTML.slice(0, 800) })',
@@ -542,6 +624,7 @@ async function main() {
         }
         await sleep(500)
       }
+      if (optionalSkip) continue
 
       const missing = []
       for (const text of item.expect) {
@@ -590,6 +673,8 @@ async function main() {
         }
       }
     }
+    // 收尾清扫放在最后：不管冒烟成功还是中途失败，都要把本轮写出来的通知清掉
+    cleanTestResidue(runStartedAt)
   }
 }
 

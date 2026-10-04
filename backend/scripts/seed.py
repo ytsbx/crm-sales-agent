@@ -231,6 +231,10 @@ async def seed() -> None:
                 )
                 session.add(user)
                 await session.flush()
+            elif user.department_id is None:
+                # 已存在的用户只在**部门为空**时补一次：非空不动，避免覆盖真实
+                # 环境里有意的归属调整（与价格权限那处的处理同一思路）。
+                user.department_id = dept.id
             user_map[username] = user
             exists = (
                 await session.execute(
