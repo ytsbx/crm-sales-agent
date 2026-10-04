@@ -21,12 +21,21 @@ from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote
 router = APIRouter(tags=["Search"])
 
 
-async def _scope(stmt, user: CurrentUser, column, session: AsyncSession):
-    """统一走 app/core/data_scope.py（`department_and_sub` 递归到下级部门）。"""
+async def _scope(
+    stmt, user: CurrentUser, column, session: AsyncSession, *, allow_unowned: bool = False
+):
+    """统一走 app/core/data_scope.py（`department_and_sub` 递归到下级部门）。
+
+    `allow_unowned`：公海客户 / 无主线索（owner_id 为空）要显式放行——
+    否则"详情给 id 能看、全局搜索却搜不到"，与业务口径不一致。
+    """
     owner_ids = await scoped_owner_ids(session, user)
     if owner_ids is None:
         return stmt
-    return stmt.where(column.in_(owner_ids))
+    cond = column.in_(owner_ids)
+    if allow_unowned:
+        cond = or_(cond, column.is_(None))
+    return stmt.where(cond)
 
 
 @router.get("/search")
@@ -53,6 +62,7 @@ async def global_search(
         user,
         Customer.owner_id,
         session,
+        allow_unowned=True,
     )
     customers = [
         {
@@ -83,6 +93,7 @@ async def global_search(
                 user,
                 Customer.owner_id,
                 session,
+                allow_unowned=True,
             )
         )
     ).all()
@@ -107,6 +118,7 @@ async def global_search(
         user,
         Lead.owner_id,
         session,
+        allow_unowned=True,
     )
     leads = [
         {

@@ -219,16 +219,37 @@ async def _sku_map(session: AsyncSession, sku_ids: set[int]) -> dict[int, Any]:
     return {row.id: row for row in rows}
 
 
-def _diff_lines(current: list[dict], source: list[dict], key: str) -> list[dict]:
+def _pair_key(row: dict, key: str | tuple[str, ...]):
+    """按 `key` 给一行算配对键；取不到就返回 None（不参与配对）。
+
+    支持复合键：定制件（无 SKU）两侧 sku_id 都是 None，只按 sku_id 配对会把
+    每条定制行都当成"来源里没有"→客户收到的 PDF 凭空多出一堆差异。改用
+    (sku_id, inquiry_id) 这种"哪个有值用哪个"的复合键，现货按 SKU 配、
+    定制按需求编号配，两条路各归各。
+    """
+    if isinstance(key, str):
+        value = row.get(key)
+        return None if value is None else ((key, value),)
+    parts = tuple((k, row.get(k)) for k in key if row.get(k) is not None)
+    return parts or None
+
+
+def _diff_lines(
+    current: list[dict], source: list[dict], key: str | tuple[str, ...]
+) -> list[dict]:
     """本次明细 vs 来源明细的差异（场景12「修改本次不同内容并查看差异」）。
 
     按 `key`（SKU 或需求编号）配对；来源里没有的记"新增"。
     数量比对用字符串化的数值，避免 Decimal('5.000') 与 Decimal('5') 被判成不同。
     """
-    source_by_key = {row.get(key): row for row in source if row.get(key) is not None}
+    source_by_key = {}
+    for row in source:
+        pk = _pair_key(row, key)
+        if pk is not None:
+            source_by_key[pk] = row
     diffs: list[dict] = []
     for row in current:
-        row_key = row.get(key)
+        row_key = _pair_key(row, key)
         origin = source_by_key.get(row_key) if row_key is not None else None
         if origin is None:
             diffs.append(
@@ -404,6 +425,8 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
             "amount": i.amount,
             "remark": i.remark,
             "sku_id": i.sku_id,
+            # 定制件用需求编号配对（sku_id 两侧都是 None）
+            "inquiry_id": i.inquiry_id,
         }
         for i in items
     ]
@@ -429,6 +452,7 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
                 "name": r.sku_name_snapshot or r.inquiry_no_snapshot or "（未命名）",
                 "quantity": r.quantity,
                 "sku_id": r.sku_id,
+                "inquiry_id": r.inquiry_id,
             }
             for r in rows
         ]
@@ -442,7 +466,7 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
         "order_id": order.id,
         "quote_id": order.quote_id,
         "items": current,
-        "diffs": _diff_lines(current, quote_items, "sku_id"),
+        "diffs": _diff_lines(current, quote_items, ("sku_id", "inquiry_id")),
         "source": (
             {
                 "type": "quote",

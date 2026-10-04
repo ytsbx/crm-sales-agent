@@ -200,6 +200,19 @@ async def main() -> int:
         check('批次计划日也跟着平移',
               res['data']['batches'][0]['planned_date'], '2027-01-15')
 
+        # 回归（P1-4）：独立的重排入口只补"从没排过"的节点，不能把手工调整过的
+        # 计划日拉回默认倒推值。此前 replan 是"按当前交期整体重新倒推"，
+        # 点一次就把上面那条手工平移的结果（2027-01-04）抹回默认值——
+        # 正是这次要保护的东西。
+        status, res = call('POST', f'/orders/{order_id}/milestones/replan', token=admin, body={})
+        check('重排接口可调用', res.get('code'), 0)
+        status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
+        after_replan = {r['node']: r['planned_date'] for r in res['data']}
+        check('手工调整过的节点不被重排拉回默认值',
+              after_replan.get(first['node']), '2027-01-04')
+        check('已平移的节点也不被重排改动',
+              after_replan.get('first_shipment'), '2027-01-15')
+
         print()
         print('=== 5. 前后版本保留 + 不能重复确认 ===')
         status, res = call('GET', f'/orders/{order_id}/schedule-changes', token=admin)
@@ -260,6 +273,10 @@ async def main() -> int:
             别人的"提醒过"凭证写死——那些批次从第二天起再也不会提醒。
             用例改坏别人的数据、还测不出自己想测的东西，是双重问题，所以这里
             既改成只断言本人的批次，又把别人的状态放回去。
+
+            注意还要撤**通知行**：只把 `overdue_notified_at` 放回 NULL、却留下
+            这轮新建的通知，下一轮调度就会给全库逾期批次再推一遍（跑一次扫一遍）。
+            用一个 id 水位把本轮新建的通知删干净。
             """
             async with SessionLocal() as s:
                 others = (
@@ -270,11 +287,24 @@ async def main() -> int:
                         )
                     )
                 ).scalars().all()
+                max_notification_id = int(
+                    (
+                        await s.execute(
+                            text("select coalesce(max(id), 0) from notifications")
+                        )
+                    ).scalar()
+                    or 0
+                )
             async with SessionLocal() as s:
                 await ms.notify_overdue_batches(s)
                 await s.commit()
-            if others:
-                async with SessionLocal() as s:
+            async with SessionLocal() as s:
+                # 撤掉本轮扫描新建的全部通知行（含本人夹具的那几条）
+                await s.execute(
+                    text("delete from notifications where id > :mid"),
+                    {'mid': max_notification_id},
+                )
+                if others:
                     await s.execute(
                         text(
                             "update order_shipment_batches set overdue_notified_at = null "
@@ -282,7 +312,7 @@ async def main() -> int:
                         ),
                         {'ids': others},
                     )
-                    await s.commit()
+                await s.commit()
 
         await scan_and_restore()
         async with SessionLocal() as s:
@@ -323,16 +353,18 @@ async def main() -> int:
         # 节点口径不受影响：批次提醒不该顺带改任何节点
         status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
         check_true('节点没被批次提醒改动', res.get('code') == 0, '')
-        # ---- 7. 确认权限按设计钉住：责任人本人 / 主管代确认 / 看不见的人 ----
+        # ---- 7. 确认权限按设计钉住：责任人本人 / 主管代确认 / 看得见但无权限的人 ----
         # 口径是「责任人 **或** 有 order:assign 的人（主管）可确认」。
-        # 前人本人那条由第 4 节覆盖；这里补另外两条。
-        # 注：第三种"看得见这单、但不是责任人、也没有 order:assign"的人在现有
-        # 角色体系里不存在（业务员 self 看不到别人的单；能看到的主管都有该权限），
-        # 所以那个分支不写假断言，只在这里记明原因。
+        # 责任人本人那条由第 4 节覆盖；这里补另外几条，每条都判**具体错误码**，
+        # 不要再写成 "40301/40302/40401 随便哪个都算" —— 那样把责任人校验整段删掉
+        # 断言照样绿（张三 self 范围在 get_visible_order 就先撞 40302，根本走不到）。
+        # 正确的第三种人是**财务**：data_scope=all（看得见任何订单）、有 order:manage
+        # （能调到确认接口），但既不是责任人、也没有 order:assign。
         print()
-        print('=== 7. 确认权限（责任人 / 主管 / 无权限者）===')
+        print('=== 7. 确认权限（责任人 / 主管 / 看得见但非责任人）===')
         lisi_token = login('lisi', '123456')
         zhangsan_token = login('zhangsan', '123456')
+        finance_token = login('wangwu', '123456')
 
         # 把订单负责人换成张三，让李四成为"看得见但不是责任人"的主管
         status, res = call('PATCH', f'/orders/{order_id}', token=admin,
@@ -359,15 +391,19 @@ async def main() -> int:
         check('再发起一张变更单', res.get('code'), 0)
         outsider_change = (res.get('data') or {}).get('id')
         if outsider_change:
+            # 看不见这单的人：张三（self 范围）在数据范围就被挡，具体码 40302
             status, res = call(
                 'POST', f'/orders/{order_id}/schedule-changes/{outsider_change}/confirm',
                 token=zhangsan_token, body={},
             )
-            # 被拒的理由可能是"看不见这单"（数据范围）或"不是责任人"（谁先命中就先报），
-            # 两种都算被拒；具体是哪一种打印出来，便于事后核对
-            check_true('看不见这单的人不能确认',
-                       res.get('code') in (40301, 40302, 40401),
-                       f"{res.get('code')} {str(res.get('message'))[:60]}")
+            check('看不见这单的人不能确认（数据范围 40302）', res.get('code'), 40302)
+            # 看得见、但不是责任人、也没有 order:assign 的人：财务必须撞责任人校验 40301。
+            # 这一条才是真正钉住"责任人确认"的断言——之前用张三那个是假绿。
+            status, res = call(
+                'POST', f'/orders/{order_id}/schedule-changes/{outsider_change}/confirm',
+                token=finance_token, body={},
+            )
+            check('看得见但非责任人、无 order:assign → 40301', res.get('code'), 40301)
 
         # ---- 8. 作废出口：没有它，一张没人确认的单会永久堵死后续变更 ----
         # 第 7 节留了一张 pending 单（张三没法确认那张）。用它验：

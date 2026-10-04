@@ -83,6 +83,16 @@ async def cleanup():
             "delete from oa_instances where inquiry_id in "
             "(select id from custom_inquiries where inquiry_no like :p)",
             "delete from custom_inquiries where inquiry_no like :p",
+            # 跟进 / 商机 / 线索夹具（本用例自建，见 main 的 setup）
+            f"delete from followups where customer_id in {cust}",
+            f"delete from opportunity_stage_history where opportunity_id in "
+            f"(select id from opportunities where customer_id in {cust})",
+            f"delete from opportunity_items where opportunity_id in "
+            f"(select id from opportunities where customer_id in {cust})",
+            f"delete from business_events where business_id in "
+            f"(select id from opportunities where customer_id in {cust})",
+            f"delete from opportunities where customer_id in {cust}",
+            "delete from leads where name like :p",
             f"delete from integration_logs where business_id in {order}",
             f"delete from order_status_history where order_id in {order}",
             f"delete from sales_orders where customer_id in {cust}",
@@ -173,6 +183,39 @@ async def main() -> int:
         logistics_quote = LogisticsQuote(customer_id=customer.id)
         s.add(logistics_quote)
         await s.flush()
+
+        # 跟进 / 商机 / 线索夹具：**本用例自建**，不再从演示库里"碰运气"找一条。
+        # 以前这三组断言包在 `if probe/opp_id/lead_id:` 里，库里缺夹具就静默跳过、
+        # 套件仍然全绿——等于没测。自建后对照用例一定存在，缺了就是硬失败。
+        from app.modules.lead.model import Lead
+        from app.modules.opportunity.model import Opportunity, OpportunityStage
+
+        stage = (
+            await s.execute(select(OpportunityStage).order_by(OpportunityStage.id.asc()).limit(1))
+        ).scalar_one_or_none()
+        followup = FollowUp(
+            customer_id=customer.id,
+            owner_id=owner.id,
+            followup_type="电话",
+            content=f"{PREFIX}越权夹具跟进",
+        )
+        opportunity = Opportunity(
+            customer_id=customer.id,
+            title=f"{PREFIX}越权夹具商机",
+            stage_id=stage.id,
+            owner_id=owner.id,
+            status="open",
+            created_by=owner.id,
+        )
+        lead = Lead(
+            name=f"{PREFIX}越权夹具线索",
+            owner_id=owner.id,
+            status="assigned",
+            created_by=owner.id,
+        )
+        s.add_all([followup, opportunity, lead])
+        await s.flush()
+
         s.add(IntegrationLog(integration_type='erp', provider='聚水潭', direction='outbound',
                              business_type='order', business_id=order.id, status='success',
                              created_at=datetime.now(UTC)))
@@ -181,6 +224,7 @@ async def main() -> int:
         src_cid, outsider_name = source_customer.id, outsider.username
         public_cid = public_customer.id
         lq_id = logistics_quote.id
+        followup_id, opp_fixture_id, lead_fixture_id = followup.id, opportunity.id, lead.id
         # 夹具用户需要能登录：设一个临时口令（用与张三相同的哈希来源）
         from app.core.security import hash_password
 
@@ -244,83 +288,39 @@ async def main() -> int:
             if c.get('customer_id') == cid]
     check('全局搜索搜不到别人的联系人', len(hits), 0)
 
-    # 跟进：直接用张三名下既有的那条做夹具（手造的行字段容易不全，基准会先炸）
-    async with SessionLocal() as s:
-        probe = (
-            await s.execute(
-                select(FollowUp.id)
-                .join(Customer, Customer.id == FollowUp.customer_id)
-                .where(Customer.owner_id == owner.id, FollowUp.owner_id == owner.id)
-                .order_by(FollowUp.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-    if probe:
-        check('本人读自己的跟进（对照）', call('GET', f'/followups/{probe}', owner_token)[0], 200)
-        check_denied('他人删别人的跟进记录',
-                     call('DELETE', f'/followups/{probe}', outsider_token)[0])
-    else:
-        print('  （跳过跟进越权断言：库里没有张三名下的既有跟进可作夹具）')
+    # 跟进：用本用例自建的夹具（见 setup）。自建保证对照用例一定存在——
+    # 以前这三组断言依赖演示库里恰好有张三的既有记录，缺了就静默跳过仍全绿。
+    check('本人读自己的跟进（对照）',
+          call('GET', f'/followups/{followup_id}', owner_token)[0], 200)
+    check_denied('他人删别人的跟进记录',
+                 call('DELETE', f'/followups/{followup_id}', outsider_token)[0])
+    # 跟进**主列表**也要撒网：此前 list_followups 只看查询参数、从不按数据范围过滤，
+    # 任何有 followup:view 的人加个 page_size=200 就能读全公司跟进内容。
+    status, res = call('GET', '/followups?page_size=200', owner_token)
+    own_ids = {r['id'] for r in (res.get('data') or {}).get('items', [])}
+    check('本人列表里能看到自己的跟进（对照）', followup_id in own_ids, True)
+    status, res = call('GET', '/followups?page_size=200', outsider_token)
+    leaked_ids = {r['id'] for r in (res.get('data') or {}).get('items', [])}
+    check('他人列表里看不到别人名下的跟进', followup_id in leaked_ids, False)
 
-    # 商机 / 线索 / 运费试算单：同样用**既有的、属张三的**记录作夹具。
-    # 不手造的理由和上一条相同——手造的行容易缺字段，基准先炸，后面的 403 就没意义了。
-    async with SessionLocal() as s:
-        from app.modules.lead.model import Lead
-        from app.modules.opportunity.model import Opportunity
-        from app.modules.pricing.model import LogisticsQuote
+    # 商机 / 线索 / 运费试算单：同样用本用例自建的夹具（setup 里已建）。
+    check('本人读自己商机时间线（对照）',
+          call('GET', f'/opportunities/{opp_fixture_id}/timeline', owner_token)[0], 200)
+    check_denied('他人读别人商机时间线',
+                 call('GET', f'/opportunities/{opp_fixture_id}/timeline', outsider_token)[0])
+    check_denied('他人读别人商机的跟进列表',
+                 call('GET', f'/opportunities/{opp_fixture_id}/followups', outsider_token)[0])
 
-        opp_id = (
-            await s.execute(
-                select(Opportunity.id)
-                .where(Opportunity.owner_id == owner.id, Opportunity.deleted_at.is_(None))
-                .order_by(Opportunity.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        lead_id = (
-            await s.execute(
-                select(Lead.id)
-                .where(Lead.owner_id == owner.id, Lead.deleted_at.is_(None))
-                .order_by(Lead.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        lq_id = (
-            await s.execute(
-                select(LogisticsQuote.id)
-                .join(Customer, Customer.id == LogisticsQuote.customer_id)
-                .where(Customer.owner_id == owner.id)
-                .order_by(LogisticsQuote.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+    check('本人读自己线索时间线（对照）',
+          call('GET', f'/leads/{lead_fixture_id}/timeline', owner_token)[0], 200)
+    check_denied('他人读别人线索时间线',
+                 call('GET', f'/leads/{lead_fixture_id}/timeline', outsider_token)[0])
 
-    if opp_id:
-        check('本人读自己商机时间线（对照）',
-              call('GET', f'/opportunities/{opp_id}/timeline', owner_token)[0], 200)
-        check_denied('他人读别人商机时间线',
-                     call('GET', f'/opportunities/{opp_id}/timeline', outsider_token)[0])
-        check_denied('他人读别人商机的跟进列表',
-                     call('GET', f'/opportunities/{opp_id}/followups', outsider_token)[0])
-    else:
-        print('  （跳过商机越权断言：库里没有张三名下的既有商机）')
-
-    if lead_id:
-        check('本人读自己线索时间线（对照）',
-              call('GET', f'/leads/{lead_id}/timeline', owner_token)[0], 200)
-        check_denied('他人读别人线索时间线',
-                     call('GET', f'/leads/{lead_id}/timeline', outsider_token)[0])
-    else:
-        print('  （跳过线索越权断言：库里没有张三名下的既有线索）')
-
-    if lq_id:
-        # 先验对照：本人读得到，才谈得上"他人读不到"
-        check('本人读自己的运费试算单（对照）',
-              call('GET', f'/logistics/quotes/{lq_id}', owner_token)[0], 200)
-        check_denied('他人读别人的运费试算单',
-                     call('GET', f'/logistics/quotes/{lq_id}', outsider_token)[0])
-    else:
-        print('  （跳过运费试算单越权断言：库里没有挂在张三客户上的试算单）')
+    # 先验对照：本人读得到，才谈得上"他人读不到"
+    check('本人读自己的运费试算单（对照）',
+          call('GET', f'/logistics/quotes/{lq_id}', owner_token)[0], 200)
+    check_denied('他人读别人的运费试算单',
+                 call('GET', f'/logistics/quotes/{lq_id}', outsider_token)[0])
 
     # ---- 客户合并：目标客户原有的主联系人必须保住（我修的那处）----
     # 这个 bug 的形态是"一个主都不剩"，所以断言写成**恰好 1 个**——

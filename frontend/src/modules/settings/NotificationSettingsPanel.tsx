@@ -250,7 +250,10 @@ export default function NotificationSettingsPanel() {
                 {
                   label: '投递失败',
                   value: failures?.failed ?? 0,
-                  hint: `${failures?.retrying ?? 0} 条会自动重试`,
+                  hint:
+                    failures && !failures.auto_retry_enabled
+                      ? '自动重试已关闭，等人工补投'
+                      : `${failures?.retrying ?? 0} 条会自动重试`,
                 },
                 {
                   label: '未投递',

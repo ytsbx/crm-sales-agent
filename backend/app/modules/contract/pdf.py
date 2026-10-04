@@ -6,6 +6,7 @@
 
 from io import BytesIO
 from typing import Any
+from xml.sax.saxutils import escape
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -16,6 +17,16 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from reportlab.lib import colors
 
 CN_FONT = "STSong-Light"
+
+
+def _esc(value: Any) -> str:
+    """转义后再进 Paragraph。
+
+    reportlab 的 Paragraph 按 XML/HTML 解析内容：公司名、客户名、正文里只要出现
+    `<` 或没转义的 `&`（"A&B 公司"、"<加急>"），渲染就抛异常 → 下载接口 500。
+    快照里的文本是用户输入，必须转义。
+    """
+    return escape("" if value is None else str(value))
 
 
 def _register_font() -> None:
@@ -55,32 +66,42 @@ def render_contract_pdf(data: dict[str, Any]) -> bytes:
     if data.get("company_name"):
         story.append(
             Paragraph(
-                str(data["company_name"]),
+                _esc(data["company_name"]),
                 ParagraphStyle("CNCompany", parent=normal, fontSize=11, leading=16, alignment=1),
             )
         )
         story.append(Spacer(1, 4 * mm))
 
-    story.append(Paragraph(str(data.get("doc_type_label") or "合同"), title_style))
+    story.append(Paragraph(_esc(data.get("doc_type_label") or "合同"), title_style))
     story.append(Spacer(1, 5 * mm))
 
+    status_label = _esc(data.get("status_label") or "")
     meta_rows = [
         [
-            Paragraph(f"编号：{data.get('doc_no', '-')}", head),
-            Paragraph(f"客户：{data.get('customer_name') or '-'}", head),
+            Paragraph(f"编号：{_esc(data.get('doc_no', '-'))}", head),
+            Paragraph(f"客户：{_esc(data.get('customer_name')) or '-'}", head),
         ],
         [
-            Paragraph(f"生成日期：{data.get('created_date') or '-'}", head),
+            Paragraph(f"生成日期：{_esc(data.get('created_date')) or '-'}", head),
             Paragraph(
-                f"关联订单：{data.get('order_no') or '-'}"
-                f"　关联报价：{data.get('quote_no') or '-'}",
+                f"关联订单：{_esc(data.get('order_no')) or '-'}"
+                f"　关联报价：{_esc(data.get('quote_no')) or '-'}",
                 head,
             ),
         ],
     ]
+    # 状态必须上纸：作废的合同如果看起来和有效的一模一样，客户/工厂拿着它
+    # 继续走流程就是事故。打样/下单 PDF 早就带状态，合同这边此前漏了。
+    if status_label:
+        meta_rows.append(
+            [
+                Paragraph(f"单据状态：{status_label}", head),
+                Paragraph("", head),
+            ]
+        )
     if data.get("expiry_date"):
         meta_rows.append(
-            [Paragraph(f"到期日：{data['expiry_date']}", head), Paragraph("", head)]
+            [Paragraph(f"到期日：{_esc(data['expiry_date'])}", head), Paragraph("", head)]
         )
     table = Table(meta_rows, colWidths=[85 * mm, 85 * mm])
     table.setStyle(
@@ -99,7 +120,7 @@ def render_contract_pdf(data: dict[str, Any]) -> bytes:
     for line in str(data.get("content_snapshot") or "").splitlines():
         text = line.strip()
         if text:
-            story.append(Paragraph(text.replace(" ", "&nbsp;"), normal))
+            story.append(Paragraph(_esc(text).replace(" ", "&nbsp;"), normal))
         else:
             story.append(Spacer(1, 3 * mm))
 

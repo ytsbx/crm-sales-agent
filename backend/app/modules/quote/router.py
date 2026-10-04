@@ -520,6 +520,13 @@ async def clone_quote(
                     quote_version_id=new_version.id,
                     opportunity_item_id=item.opportunity_item_id,
                     sku_id=item.sku_id,
+                    # 复制必须与 create_version 完全对齐，少一个字段就是一条断链：
+                    # 这里曾漏 inquiry_id/inquiry_no_snapshot（定制件失去溯源）、
+                    # price_source/customer_level_snapshot（漂移检测把系统价当人工价）、
+                    # tax_refund_snapshot/profit_with_refund_snapshot（外币单复制后
+                    # 退税利润丢失）。2026-09-30 复核补齐。
+                    inquiry_id=item.inquiry_id,
+                    inquiry_no_snapshot=item.inquiry_no_snapshot,
                     sku_code_snapshot=item.sku_code_snapshot,
                     sku_name_snapshot=item.sku_name_snapshot,
                     spec_snapshot=item.spec_snapshot,
@@ -533,6 +540,10 @@ async def clone_quote(
                     quoted_price=item.quoted_price,
                     profit_snapshot=item.profit_snapshot,
                     profit_rate_snapshot=item.profit_rate_snapshot,
+                    price_source=item.price_source,
+                    customer_level_snapshot=item.customer_level_snapshot,
+                    tax_refund_snapshot=item.tax_refund_snapshot,
+                    profit_with_refund_snapshot=item.profit_with_refund_snapshot,
                     approval_required=item.approval_required,
                     approval_reason=item.approval_reason,
                     remark=item.remark,

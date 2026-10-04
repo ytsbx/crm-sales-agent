@@ -3,11 +3,11 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.data_scope import ensure_in_scope
+from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -66,23 +66,36 @@ async def _visible_followup(
         raise AppError(ErrorCode.NOT_FOUND, "跟进记录不存在", 404)
 
     owner_id: int | None = None
+    allow_unowned = False
     if followup.customer_id:
         customer = await session.get(Customer, followup.customer_id)
         owner_id = customer.owner_id if customer else None
+        allow_unowned = True
     elif followup.lead_id:
         lead = await session.get(Lead, followup.lead_id)
         owner_id = lead.owner_id if lead else None
+        allow_unowned = True
     elif followup.opportunity_id:
         opportunity = await session.get(Opportunity, followup.opportunity_id)
         owner_id = opportunity.owner_id if opportunity else None
+    elif followup.quote_id:
+        # 只挂报价/订单的跟进此前逐个 elif 都没覆盖，owner_id 停在 None，
+        # 于是被"无归属默认拒绝"挡住 —— 连记录人自己都看不了、改不了、删不掉。
+        quote = await session.get(Quote, followup.quote_id)
+        owner_id = quote.owner_id if quote else None
+    elif followup.order_id:
+        order = await session.get(SalesOrder, followup.order_id)
+        owner_id = order.owner_id if order else None
+    else:
+        # 什么业务对象都没关联的脏数据：用记录人兜底，至少让他和主管能治理。
+        owner_id = followup.owner_id
 
-    kwargs_extra = {}
     # 跟进记录跟着**被关联对象**走。挂公海客户（无负责人）的跟进仍可看：
     # 口径已确认——客户档案本身可见，跟进是同一批信息的延续，
     # 否则"领养前先看看谈到哪一步"就做不到，领取会变成抽盲盒。
-    if followup.customer_id or followup.lead_id:
-        kwargs_extra["allow_unowned"] = True
-    await ensure_in_scope(session, user, owner_id=owner_id, label="跟进记录", **kwargs_extra)
+    await ensure_in_scope(
+        session, user, owner_id=owner_id, label="跟进记录", allow_unowned=allow_unowned
+    )
     return followup
 
 
@@ -94,7 +107,7 @@ async def list_followups(
     owner_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("followup:view")),
+    user: CurrentUser = Depends(require_permission("followup:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = select(FollowUp)
@@ -107,6 +120,36 @@ async def list_followups(
     if owner_id:
         stmt = stmt.where(FollowUp.owner_id == owner_id)
     stmt = stmt.order_by(FollowUp.id.desc())
+
+    # 数据范围：列表页此前**只看查询参数、从不撒网** —— 任何有 followup:view
+    # 的业务员加个 page_size=200 就能读全公司跟进内容（详情/删除/商机跟进列表
+    # 都补了校验，唯独最容易的这条主列表漏了）。这里与 _visible_followup 同一口径：
+    # 客户/线索允许无主（公海），商机/报价/订单必须有主且在范围内。
+    visible_owner_ids = await scoped_owner_ids(session, user)
+    if visible_owner_ids is not None:
+        customer_ids = select(Customer.id).where(
+            or_(
+                Customer.owner_id.in_(visible_owner_ids),
+                Customer.owner_id.is_(None),
+            )
+        )
+        lead_ids = select(Lead.id).where(
+            or_(Lead.owner_id.in_(visible_owner_ids), Lead.owner_id.is_(None))
+        )
+        opportunity_ids = select(Opportunity.id).where(
+            Opportunity.owner_id.in_(visible_owner_ids)
+        )
+        quote_ids = select(Quote.id).where(Quote.owner_id.in_(visible_owner_ids))
+        order_ids = select(SalesOrder.id).where(SalesOrder.owner_id.in_(visible_owner_ids))
+        stmt = stmt.where(
+            or_(
+                FollowUp.customer_id.in_(customer_ids),
+                FollowUp.lead_id.in_(lead_ids),
+                FollowUp.opportunity_id.in_(opportunity_ids),
+                FollowUp.quote_id.in_(quote_ids),
+                FollowUp.order_id.in_(order_ids),
+            )
+        )
 
     rows, total = await paginate(session, stmt, page, page_size)
     owner_ids = {row.owner_id for row in rows if row.owner_id}

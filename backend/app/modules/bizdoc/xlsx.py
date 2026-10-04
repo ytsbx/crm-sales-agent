@@ -54,6 +54,9 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
     meta = [
         ("单据编号", _text(data.get("doc_no")), "单据版本", f"V{_text(data.get('version'))}"),
         ("客户", _text(data.get("customer_name")), "生成日期", _text(data.get("created_date"))),
+        # 状态必须进对客 Excel：作废的报价单如果和有效的长得一样，客户拿着它
+        # 继续下单就是事故。打样/下单 PDF 早就带状态，这里此前漏了。
+        ("单据状态", _text(data.get("status_label")), "", ""),
     ]
     source = data.get("source") or {}
     if source.get("no"):

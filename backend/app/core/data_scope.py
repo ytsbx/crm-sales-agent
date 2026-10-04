@@ -97,6 +97,14 @@ async def ensure_in_scope(
     它们对所有有查看权限的人可见 —— 这正是公海的意义。
     其余模块（商机/订单/样品/任务）保持 False。
     """
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is None:
+        # `all`（管理员/财务）能看到全量数据，**无归属也看得见**。
+        # 这里必须排在下面"无归属默认拒绝"之前：口径要挡的是"没有范围的人猜到
+        # 编号就能看含价格的对客文件"，而 `all` 本来就是全量可见，再拒一次只会把
+        # 管理员挡在公海回收、客户合并后遗留的合同/单据之外（历史 bug）。
+        return
+
     if owner_id is None:
         # 无负责人的记录要**分两类**，不能一律放行：
         # - `allow_unowned=True`：客户/线索是正常业务状态（公海 / 线索池），
@@ -114,16 +122,15 @@ async def ensure_in_scope(
             403,
         )
 
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is None:  # all
-        return
     if int(owner_id) not in owner_ids:
         raise AppError(
             ErrorCode.DATA_SCOPE_DENIED, f"该{label}不在你的数据范围内", 403
         )
 
 
-def scope_guard(session: AsyncSession, user: ScopeUser, label: str):
+def scope_guard(
+    session: AsyncSession, user: ScopeUser, label: str, *, allow_unowned: bool = False
+):
     """给列表之外的单条查询用：返回一个 `await ensure(owner_id)` 小函数。
 
     用法：
@@ -133,9 +140,14 @@ def scope_guard(session: AsyncSession, user: ScopeUser, label: str):
 
     比每次手写一遍 `owner_ids is None / in / raise` 更不容易漏，
     也让"这个接口做了范围校验"在代码里一眼可见。
+
+    `allow_unowned`：客户/线索这类允许无负责人的对象要显式传 True，
+    否则用 scope_guard 包客户/线索会把公海一起关掉（与 ensure_in_scope 同一口径）。
     """
 
     async def ensure(owner_id: int | None) -> None:
-        await ensure_in_scope(session, user, owner_id=owner_id, label=label)
+        await ensure_in_scope(
+            session, user, owner_id=owner_id, label=label, allow_unowned=allow_unowned
+        )
 
     return ensure

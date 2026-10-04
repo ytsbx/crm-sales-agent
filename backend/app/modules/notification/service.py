@@ -571,18 +571,23 @@ async def delivery_failure_summary(session: AsyncSession) -> dict:
             )
         ).all()
     )
-    queued_retry = (
-        await session.execute(
-            select(func.count(Notification.id)).where(
-                Notification.wecom_status == "failed",
-                Notification.wecom_attempts < policy["max_attempts"],
-                or_(
-                    Notification.wecom_next_retry_at.is_(None),
-                    Notification.wecom_next_retry_at <= now,
-                ),
+    # 自动重试关着时，"下一次会被捞走"的条数就是 0：真重试的扫描要 enabled
+    # 才会捞 failed 行（见上面的 include_failed and policy["enabled"]）。
+    # 这里不跟着开关走的话，页面会显示"N 条会自动重试"却永远不重试。
+    queued_retry = 0
+    if policy["enabled"]:
+        queued_retry = (
+            await session.execute(
+                select(func.count(Notification.id)).where(
+                    Notification.wecom_status == "failed",
+                    Notification.wecom_attempts < policy["max_attempts"],
+                    or_(
+                        Notification.wecom_next_retry_at.is_(None),
+                        Notification.wecom_next_retry_at <= now,
+                    ),
+                )
             )
-        )
-    ).scalar_one()
+        ).scalar_one()
     return {
         "pending": int(counts.get("pending", 0) or 0),
         "sent": int(counts.get("sent", 0) or 0),

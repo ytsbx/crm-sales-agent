@@ -120,15 +120,24 @@ async def replan(
     order_id: int,
     delivery_date: date | None,
 ) -> int:
-    """按（新）交期重排计划日期；**已登记实际日期的节点不动**。返回重排条数。"""
+    """补齐**还没有计划日**的节点；已排定 / 已登记的都不动。返回补齐条数。
+
+    这里曾经是"按交期重新倒推每个节点"，于是点一次就把跟单员手工推后的日子
+    一把拉回默认值（产前样延期、客户改期导致的手工调整全被抹掉，还会凭空造出
+    逾期提醒）。交期**真正变化**时要按天数平移，那条路走交期变更单
+    （`schedule.preview` 的平移口径）；这个独立入口只负责"从没排过的节点补上默认
+    计划日"，绝不覆盖人工已经排好的日期。
+    """
     rows = await ensure_initialized(session, order_id, delivery_date)
     plan = default_plan(delivery_date)
     changed = 0
     for row in rows:
         if row.actual_date is not None:
             continue
+        if row.planned_date is not None:
+            continue  # 已排定（可能是人工调整过的）：不动
         new_planned = plan.get(row.node)
-        if new_planned != row.planned_date:
+        if new_planned is not None:
             row.planned_date = new_planned
             changed += 1
     await session.flush()

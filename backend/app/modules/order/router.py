@@ -572,7 +572,11 @@ async def replan_milestones(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """交期变更后重排计划日期（已登记实际日期的节点不动）。"""
+    """补齐还没有计划日的节点（已排定 / 已登记的一律不动）。
+
+    交期真正变化时按天数平移计划日走**交期变更单**那条路；这个入口只做
+    "从没排过的补默认值"，避免一次点击把跟单员手工推后的日期拉回默认倒推值。
+    """
     order = await svc.get_visible_order(session, user, order_id)
     changed = await milestones_svc.replan(session, order.id, order.delivery_date)
     await write_audit(
@@ -815,7 +819,15 @@ async def repurchase(
             select(SalesOrderItem).where(SalesOrderItem.order_id == order.id)
         )
     ).scalars().all()
+    copied_items = 0
+    skipped_custom = 0
     for item in items:
+        # 定制件（无 SKU）不能复购进商机明细：opportunity_items.sku_id 是 NOT NULL，
+        # 写 None 直接 IntegrityError → 定制成交单永远复购不了。商机明细是"可复用
+        # 的商品"，本来也承载不了无 SKU 的定制行；跳过并计数，别整单失败。
+        if item.sku_id is None:
+            skipped_custom += 1
+            continue
         session.add(
             OpportunityItem(
                 opportunity_id=opportunity.id,
@@ -827,13 +839,18 @@ async def repurchase(
                 remark="复购带入",
             )
         )
+        copied_items += 1
     await write_audit(
         session,
         operator_id=user.id,
         action="repurchase",
         business_type="order",
         business_id=order.id,
-        after={"new_opportunity_id": opportunity.id, "copied_items": len(items)},
+        after={
+            "new_opportunity_id": opportunity.id,
+            "copied_items": copied_items,
+            "skipped_custom_items": skipped_custom,
+        },
         ip=client_ip(request),
     )
     await session.commit()

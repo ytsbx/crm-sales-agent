@@ -59,6 +59,11 @@ def call(method, path, token=None, body=None):
             return error.status, json.loads(raw or '{}')
         except json.JSONDecodeError:
             return error.status, {'message': raw[:200]}
+    except urllib.error.URLError as error:
+        # 网络层错误（连接被掐断、后端被回收等）以前会直接抛出、中断脚本，
+        # 于是前面建的 auto_pass 规则（=任意金额自动过审）来不及删就留在库里。
+        # 兜成 status=0，让后续断言正常红、脚本能走到收尾清理，而不是半路崩。
+        return 0, {'message': f'URLError: {error}'}
 
 
 def login(username, password):
@@ -174,6 +179,13 @@ async def cleanup_leftovers():
             'samples': [int(x) for x in sample_ids],
         }
         await _purge(s, ids)
+        # 回归里建的 auto_pass 规则（名字以 CHK定制免审 开头）必须一起清：
+        # 漏一条"无限额自动过审"留在库里，就是给全站开了一个后门。
+        await s.execute(text(
+            "delete from approval_rule_versions where rule_id in "
+            "(select id from approval_rules where name like 'CHK定制免审%')"
+        ))
+        await s.execute(text("delete from approval_rules where name like 'CHK定制免审%'"))
         await s.commit()
 
 

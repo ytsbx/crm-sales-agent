@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
@@ -269,6 +270,24 @@ async def revise_inquiry(
     """
     old = await svc.get_visible_or_404(session, user, inquiry_id)
 
+    # 只能对**链条最新版**再修订：此前不校验，在 v1 上连点两次就生成两条 v2，
+    # 历史视图里同版并列，分不清哪条才是当前要求。最新版 = 链条里 version 最大者。
+    root_id = old.root_id or old.id
+    latest_version = (
+        await session.execute(
+            svc.not_deleted(select(func.max(CustomInquiry.version))).where(
+                (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
+            )
+        )
+    ).scalar_one_or_none()
+    if latest_version is not None and (old.version or 1) < int(latest_version):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"只能对最新版（v{int(latest_version)}）再修订；当前这条是 v{old.version or 1}，"
+            f"版本只增不改，请到最新版上发起修订",
+            409,
+        )
+
     # 编号跟着**需求**走，不跟着版本走：v2 是同一需求的新一版，换号会让
     # 已发出的报价断在中间。历史数据没有 root 号时才补取一个（迁移前的行）。
     chain_no = old.inquiry_no
@@ -277,6 +296,8 @@ async def revise_inquiry(
         chain_no = root.inquiry_no if root else None
     if chain_no is None:
         chain_no = await svc.generate_inquiry_no(session)
+        # 补号时把首版一起补上：否则首版停在 NULL，同一 root 会出现"两条各一套编号"。
+        old.inquiry_no = chain_no
 
     new_version = CustomInquiry(
         inquiry_no=chain_no,

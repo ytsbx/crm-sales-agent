@@ -116,15 +116,21 @@ def _money(value) -> float | None:
     return None if value is None else round(float(value), 2)
 
 
-async def _scope(stmt, ctx: ToolContext, column):
+async def _scope(stmt, ctx: ToolContext, column, *, allow_unowned: bool = False):
     """与业务模块一致的数据范围过滤：Agent 不能绕过权限看数据。
 
     `department_and_sub` 会递归到下级部门，见 app/core/data_scope.py。
+
+    `allow_unowned`：客户/线索的公海（无负责人）要显式放行——否则"问 Agent 找
+    这个公海客户"搜不到，而业务接口按 id 又能看，用户会以为系统丢了数据。
     """
     owner_ids = await scoped_owner_ids(ctx.session, ctx.user)
     if owner_ids is None:
         return stmt
-    return stmt.where(column.in_(owner_ids))
+    cond = column.in_(owner_ids)
+    if allow_unowned:
+        cond = or_(cond, column.is_(None))
+    return stmt.where(cond)
 
 
 async def _ensure_in_scope(
@@ -175,7 +181,12 @@ async def search_customers(ctx: ToolContext, keyword: str = "") -> dict:
     stmt = select(Customer).where(Customer.deleted_at.is_(None))
     if keyword:
         stmt = stmt.where(Customer.name.ilike(f"%{keyword}%"))
-    stmt = await _scope(stmt.order_by(Customer.id.desc()).limit(10), ctx, Customer.owner_id)
+    stmt = await _scope(
+        stmt.order_by(Customer.id.desc()).limit(10),
+        ctx,
+        Customer.owner_id,
+        allow_unowned=True,
+    )
     rows = (await ctx.session.execute(stmt)).scalars().all()
     return {
         "count": len(rows),
@@ -805,7 +816,12 @@ async def search_leads(ctx: ToolContext, keyword: str = "", status: str = "") ->
     if status:
         stmt = stmt.where(Lead.status == status)
     # 线索池里未分配的线索人人可见，已分配的按数据范围过滤（与业务模块一致）
-    stmt = await _scope(stmt.order_by(Lead.id.desc()).limit(15), ctx, Lead.owner_id)
+    stmt = await _scope(
+        stmt.order_by(Lead.id.desc()).limit(15),
+        ctx,
+        Lead.owner_id,
+        allow_unowned=True,
+    )
 
     from app.modules.lead.service import STATUS_LABEL
 

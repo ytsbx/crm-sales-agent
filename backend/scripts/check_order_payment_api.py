@@ -35,7 +35,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 BASE = 'http://127.0.0.1:8000/api/v1'
 RUN = str(int(time.time()))[-6:]
@@ -161,6 +161,12 @@ def main():
     zhangsan = login('zhangsan', '123456')
     lisi = login('lisi', '123456')
 
+    # 到期日**相对今天取未来**：写死日期的套件会自己腐烂——到期日一过，
+    # 应收状态就被算成 overdue，而断言期望 pending（本套件原来写死 2026-10-01，
+    # 到 2026-10-04 跑就已经红了）。以后不会再因为"今天几号"而假红。
+    base_due = (date.today() + timedelta(days=45)).isoformat()
+    next_due = (date.today() + timedelta(days=75)).isoformat()
+
     # 张三名下的基线条数。**不能再写死 0/1**：库里本来就可能有业务数据
     # （比如 seed_demo 演示链的订单与应收就挂在张三名下），旧断言之所以能过，
     # 只是因为清库把那些数据一并删了。数据范围要验的是"别人的单不会进张三的列表"，
@@ -233,7 +239,7 @@ def main():
     print()
     print('=== 2. 建应收节点（03-API §29 POST /receivables）===')
     status, res = call('POST', '/receivables', token=admin,
-                       body={'order_id': order_id, 'plan_name': '定金', 'due_date': '2026-10-01',
+                       body={'order_id': order_id, 'plan_name': '定金', 'due_date': base_due,
                              'amount': 600})
     check('建应收（body 带 order_id）', res.get('code'), 0)
     plan_id = res['data']['id']
@@ -244,11 +250,11 @@ def main():
     check('带订单号', res['data']['order_no'] is not None, True)
 
     status, res = call('POST', '/receivables', token=admin,
-                       body={'plan_name': '尾款', 'due_date': '2026-11-01', 'amount': 1400})
+                       body={'plan_name': '尾款', 'due_date': next_due, 'amount': 1400})
     check('缺 order_id 被拒', res.get('code'), 40003)
 
     status, res = call('POST', '/receivables', token=admin,
-                       body={'order_id': order_id, 'plan_name': '尾款', 'due_date': '2026-11-01',
+                       body={'order_id': order_id, 'plan_name': '尾款', 'due_date': next_due,
                              'amount': 1400})
     check('订单内入口同逻辑', res.get('code'), 0)
     plan2_id = res['data']['id']
@@ -269,7 +275,7 @@ def main():
     if tiny_order_id:
         status, res = call('POST', f'/orders/{tiny_order_id}/receivables', token=admin, body={
             'ratios': [0.2, 0.2, 0.2, 0.2, 0.2],
-            'first_due_date': '2026-10-01', 'first_name': '第 1 期',
+            'first_due_date': base_due, 'first_name': '第 1 期',
         })
         check('极小金额分 5 期 → 拒绝（不产出负数期）', res.get('code'), 40001)
 
@@ -279,7 +285,7 @@ def main():
     check('只改金额', res.get('code'), 0)
     check('金额已改', res['data']['amount'], 700.0)
     check('名称没被清空', res['data']['plan_name'], '定金')
-    check('到期日没被清空', res['data']['due_date'], '2026-10-01')
+    check('到期日没被清空', res['data']['due_date'], base_due)
 
     status, res = call('PATCH', f'/receivables/{plan_id}', token=admin, body={'amount': -5})
     check('金额必须 > 0', res.get('code'), 40001)
@@ -414,7 +420,7 @@ def main():
 
     status, res = call('POST', '/receivables', token=admin,
                        body={'order_id': zs_order_id, 'plan_name': '全款',
-                             'due_date': '2026-10-01', 'amount': 100})
+                             'due_date': base_due, 'amount': 100})
     check('给张三的单建应收（payment:manage 归财务/主管）', res.get('code'), 0)
     zs_plan_id = res['data']['id']
     status, res = call('GET', f'/receivables/{zs_plan_id}', token=zhangsan)

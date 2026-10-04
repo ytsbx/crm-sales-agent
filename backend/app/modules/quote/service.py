@@ -534,6 +534,11 @@ async def create_version(
                 quote_version_id=version.id,
                 opportunity_item_id=item.opportunity_item_id,
                 sku_id=item.sku_id,
+                # 定制件溯源 + 价格来源 + 客户等级快照：漏了就断链——
+                # 尤其 price_source 丢成 None 会让漂移检测把"系统带价"当成"人工定价"，
+                # 价格维护后系统价变了也不报警（2026-09-30 复核补回）。
+                inquiry_id=item.inquiry_id,
+                inquiry_no_snapshot=item.inquiry_no_snapshot,
                 sku_code_snapshot=item.sku_code_snapshot,
                 sku_name_snapshot=item.sku_name_snapshot,
                 spec_snapshot=item.spec_snapshot,
@@ -547,6 +552,8 @@ async def create_version(
                 quoted_price=item.quoted_price,
                 profit_snapshot=item.profit_snapshot,
                 profit_rate_snapshot=item.profit_rate_snapshot,
+                price_source=item.price_source,
+                customer_level_snapshot=item.customer_level_snapshot,
                 tax_refund_snapshot=item.tax_refund_snapshot,
                 profit_with_refund_snapshot=item.profit_with_refund_snapshot,
                 approval_required=item.approval_required,
@@ -1634,6 +1641,13 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
         # 真正做这张报价的人反而收不到。报价没写负责人时才回退到客户负责人。
         owner_id = quote.owner_id or customer_owner_id
         if owner_id is None:
+            # 报价与客户都没负责人 → 派不出去。别静默丢：留一条日志，
+            # 否则"记得提醒我"永远不来、又查不出为什么（脏数据没有出口）。
+            import logging
+
+            logging.getLogger("crm.quote").warning(
+                "报价 %s 已过期但无人可派（报价/客户都没有负责人），跳过建待办", quote.id
+            )
             continue
         title = f"报价 {quote.quote_no} 已过有效期（{quote.valid_until}），请跟进续期或催单"
         existing = (
@@ -1646,6 +1660,8 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
                 title=title,
                 task_type="followup",
                 customer_id=quote.customer_id,
+                # 带上 quote_id：待办能指回是哪张报价（task 表早有这一列，此前漏传）
+                quote_id=quote.id,
                 owner_id=owner_id,
                 priority="high",
                 status="pending",

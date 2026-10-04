@@ -7,6 +7,7 @@
 
 from io import BytesIO
 from typing import Any
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -75,6 +76,15 @@ def _text(value: Any) -> str:
     return str(value)
 
 
+def _esc(value: Any) -> str:
+    """进 Paragraph 前必须转义：reportlab 按 XML 解析内容，
+
+    公司名/客户名/正文里的 `<` 或未转义的 `&` 会让渲染抛异常（下载接口 500）。
+    注意：Table 的字符串单元格按纯文本绘制、不走 XML 解析，所以只转 Paragraph。
+    """
+    return escape(_text(value))
+
+
 def _items_table(rows: list[list[str]], headers: list[str], widths: list[float]) -> Table:
     table = Table([headers, *rows], colWidths=widths, repeatRows=1)
     table.setStyle(
@@ -116,8 +126,8 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
 
     flow: list[Any] = []
     company = _text(data.get("company_name")) or "本公司"
-    flow.append(Paragraph(company, style["meta"]))
-    flow.append(Paragraph(_text(data.get("title")), style["title"]))
+    flow.append(Paragraph(_esc(company), style["meta"]))
+    flow.append(Paragraph(_esc(data.get("title")), style["title"]))
 
     meta_rows = [
         ["单据编号", _text(data.get("doc_no")), "单据版本", f"V{_text(data.get('version'))}"],
@@ -189,14 +199,14 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
         if not _text(section.get("value")).strip():
             continue
         flow.append(Paragraph(_text(section.get("label")), style["section"]))
-        flow.append(Paragraph(_text(section.get("value")), style["body"]))
+        flow.append(Paragraph(_esc(section.get("value")), style["body"]))
 
     body = _text(data.get("body")).strip()
     if body:
         flow.append(Paragraph("说明", style["section"]))
         for line in body.splitlines():
             if line.strip():
-                flow.append(Paragraph(line.strip(), style["body"]))
+                flow.append(Paragraph(_esc(line.strip()), style["body"]))
 
     flow.append(Spacer(1, 10))
     flow.append(

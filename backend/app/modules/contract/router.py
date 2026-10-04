@@ -161,6 +161,7 @@ async def download_document(
         "company_name": await settings_service.get_text(session, "company_name", "text", ""),
         "doc_no": doc.doc_no,
         "doc_type_label": svc.DOC_TYPE_LABEL.get(doc.doc_type, doc.doc_type),
+        "status_label": svc.DOC_STATUS_LABEL.get(doc.status, doc.status),
         "customer_name": customer.name if customer else None,
         "created_date": doc.created_at.strftime("%Y-%m-%d") if doc.created_at else None,
         "order_no": order_no,
@@ -170,6 +171,17 @@ async def download_document(
     }
     # reportlab 渲染是同步 CPU 密集操作，丢线程池避免卡住事件循环（与报价 PDF 同）
     pdf_bytes = await asyncio.to_thread(render_contract_pdf, data)
+    # 下载留痕：合同是含价格与条款的对客文件，谁在什么时候取了哪一份要能查
+    # （作废件也一样取得到，只是纸上必须带"已作废"，所以这里记状态）。
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="download",
+        business_type="contract",
+        business_id=doc.id,
+        after={"doc_no": doc.doc_no, "status": doc.status},
+    )
+    await session.commit()
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

@@ -577,6 +577,10 @@ async def recommend_products(
             )
             .join(SalesOrder, SalesOrder.id == SalesOrderItem.order_id)
             .where(SalesOrder.customer_id == opportunity.customer_id)
+            # 定制件（无 SKU）不能进推荐：sku_id 为 None 时 `int(row.sku_id)`
+            # 会直接 TypeError → 500。客户名下只要有一行定制明细，整个"推荐商品"
+            # 就崩。推荐的是"可复用的 SKU"，本来也不该包含无 SKU 的定制行。
+            .where(SalesOrderItem.sku_id.is_not(None))
             .group_by(SalesOrderItem.sku_id)
             .order_by(func.count(SalesOrderItem.id).desc())
             .limit(limit)
@@ -595,6 +599,7 @@ async def recommend_products(
                 func.count(SalesOrderItem.id).label("times"),
                 func.max(SalesOrderItem.unit_price).label("last_price"),
             )
+            .where(SalesOrderItem.sku_id.is_not(None))
             .group_by(SalesOrderItem.sku_id)
             .order_by(func.count(SalesOrderItem.id).desc())
             .limit(limit * 3)
