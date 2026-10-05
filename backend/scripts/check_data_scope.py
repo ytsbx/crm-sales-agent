@@ -139,6 +139,16 @@ async def cleanup():
             "delete from audit_logs where business_type = 'product' and action = 'attach' "
             "and after_data->>'file_name' like :p",
             "delete from files where file_name like :p",
+            # 客户标签夹具（3.2 的批量打标签回归）：customer_tags 对 customers 与 tags
+            # 都有外键，必须先清关联再删客户和标签，顺序反了清理会被 FK 挡住。
+            "delete from customer_tags where customer_id in "
+            "(select id from customers where name like :p)",
+            "delete from customer_tags where tag_id in (select id from tags where name like :p)",
+            "delete from tags where name like :p",
+            # 归属变更历史：转移（含越权转移）会写这张表，它引用 customers，
+            # 不先删就会让下面的删客户撞外键——套件此前没有转移夹具所以一直没暴露。
+            "delete from customer_owner_history where customer_id in "
+            "(select id from customers where name like :p)",
             "delete from customers where name like :p",
             "delete from user_roles where user_id in (select id from users where username like :u)",
             "delete from user_roles where role_id in (select id from roles where code like :r)",
@@ -545,6 +555,57 @@ async def main() -> int:
     primaries = [r for r in rows if r.is_primary]
     check('两个联系人都并到目标客户名下', len(rows), 2)
     check('合并后目标恰好剩一个主联系人', len(primaries), 1)
+
+    print('=== 3.2 批量接口不能绕过数据范围 ===')
+    # 批量入口最容易只判"存在"、漏掉"在不在你的范围内"——它们不走
+    # get_visible_customer，而是裸 session.get。两处都要钉住：
+    # 批量打标签能跨范围改/清空别人客户的标签；批量转移能改归属、把别人客户放公海。
+    # outsider 已被授予 customer:update / customer:assign（见 setup 的探针角色），
+    # 所以下面的 403 只可能来自数据范围，不会是因为缺模块权限。
+    # 标签夹具自建：seed 不造标签（开发库里那几个标签是别处来的），
+    # 直接 select 一个会在干净库里 NoResultFound。名字带 PREFIX 好清理。
+    async with SessionLocal() as s:
+        from app.modules.customer.model import Tag
+
+        fixture_tag = Tag(name=f'{PREFIX}标签-{stamp}', type='custom', status='active')
+        s.add(fixture_tag)
+        await s.flush()
+        real_tag_id = fixture_tag.id
+        await s.commit()
+    tag_batch = {'customer_ids': [cid], 'tag_ids': [real_tag_id], 'mode': 'replace'}
+    check_denied('他人批量改别人客户的标签',
+                 call('POST', '/customers/batch-tag', outsider_token, tag_batch)[0])
+    # 混合批次（自己的客户 + 别人的客户）：既要整体被拒，也要自己的那个没被处理一半——
+    # "部分生效"同样算越权成功了一半，只断言状态码会漏掉它。
+    mixed_batch = {'customer_ids': [oc_cid, cid], 'tag_ids': [real_tag_id], 'mode': 'add'}
+
+    async with SessionLocal() as s:
+        own_tags_before = (
+            await s.execute(
+                text('select count(*) from customer_tags where customer_id = :c'), {'c': oc_cid}
+            )
+        ).scalar_one()
+    check_denied('混合批次含他人客户时整体被拒',
+                 call('POST', '/customers/batch-tag', outsider_token, mixed_batch)[0])
+    async with SessionLocal() as s:
+        own_tags_after = (
+            await s.execute(
+                text('select count(*) from customer_tags where customer_id = :c'), {'c': oc_cid}
+            )
+        ).scalar_one()
+    check('被拒的混合批次没有对自己的客户生效一半', own_tags_after, own_tags_before)
+
+    check_denied('他人批量改别人客户的负责人',
+                 call('POST', '/customers/batch-transfer', outsider_token,
+                      {'customer_ids': [cid], 'owner_id': None,
+                       'reason': f'{PREFIX}越权'} )[0])
+    async with SessionLocal() as s:
+        owner_after = (
+            await s.execute(select(Customer.owner_id).where(Customer.id == cid))
+        ).scalar_one()
+    check('被拒的批量转移未把别人客户放进公海', owner_after, owner.id)
+    check('本人批量给自己客户打标签（对照）',
+          call('POST', '/customers/batch-tag', owner_token, tag_batch)[0], 200)
 
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)

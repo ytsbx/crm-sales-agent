@@ -282,6 +282,10 @@ async def batch_tag(
         customer = await session.get(Customer, customer_id)
         if customer is None or customer.deleted_at is not None:
             continue
+        # 批量不等于可以绕过数据范围：此前这里只判存在，业务员拿 id 就能跨范围
+        # 给别人客户打标签，`replace` 模式还会先摘掉该客户**全部**现有标签。
+        # 与单个路径同口径（单客户走 get_visible_customer）。
+        await svc.assert_customer_visible(session, user, customer)
         if payload.mode == "remove":
             for tag_id in payload.tag_ids:
                 await tag_svc.detach_tag(session, customer.id, tag_id)
@@ -325,6 +329,9 @@ async def batch_transfer(
         customer = await session.get(Customer, customer_id)
         if customer is None or customer.deleted_at is not None:
             continue
+        # 与单个转移 POST /customers/{id}/transfer 同口径（那边用 get_visible_customer）：
+        # 批量入口此前只判存在，成了跨范围改归属、把别人客户放进公海的旁路。
+        await svc.assert_customer_visible(session, user, customer)
         if customer.owner_id == payload.owner_id:
             continue
         await svc.transfer_customer(
