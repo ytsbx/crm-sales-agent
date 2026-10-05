@@ -16,6 +16,11 @@ export interface Task {
   status_label: string
   due_at?: string | null
   source: string
+  /** 自动待办的来源对象（目前只有合同：月结协议到期待办） */
+  source_business_type?: string | null
+  source_business_id?: number | null
+  /** 来源单据号（如月结协议编号），列表上直接显示给人看 */
+  source_doc_no?: string | null
   overdue: boolean
   completed_at?: string | null
   completion_note?: string | null

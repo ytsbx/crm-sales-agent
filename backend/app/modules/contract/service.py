@@ -1,7 +1,7 @@
 """合同模板填充与文档台账的业务逻辑（§3.6/场景14）。"""
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -173,7 +173,12 @@ def serialize_template(template: ContractTemplate, *, is_current: bool = False) 
     }
 
 
-def serialize_document(doc: ContractDocument, *, customer_name: str | None = None) -> dict:
+def serialize_document(
+    doc: ContractDocument,
+    *,
+    customer_name: str | None = None,
+    parent_doc_no: str | None = None,
+) -> dict:
     # 生成时没填上的占位符（正文里留着 {{...}} 原文），编译成人话给界面提示用。
     # 直接给翻译好的：前端只管显示，不必再维护一份 code->文案的映射（两处映射迟早分叉）。
     filled = doc.filled_data or {}
@@ -207,7 +212,11 @@ def serialize_document(doc: ContractDocument, *, customer_name: str | None = Non
         "status": doc.status,
         "status_label": DOC_STATUS_LABEL.get(doc.status, doc.status),
         "expiry_date": doc.expiry_date,
+        "effective_date": doc.effective_date,
         "parent_id": doc.parent_id,
+        # 关系链往上一级：这份是补充/续签谁来的。界面据此显示"基于 CTxxx"，
+        # 没有它就只能看到一个孤零零的 parent_id（审查阶段 C 第 5 点）。
+        "parent_doc_no": parent_doc_no,
         "signed_at": doc.signed_at,
         "void_reason": doc.void_reason,
         "created_at": doc.created_at,
@@ -728,9 +737,65 @@ async def list_documents(
                 )
             ).all()
         )
+    # 父文档号同样批量取：列表上要显示"基于 CTxxx"，一条一查就是 N+1
+    parent_ids = {doc.parent_id for doc in docs if doc.parent_id}
+    parent_nos: dict[int, str] = {}
+    if parent_ids:
+        parent_nos = dict(
+            (
+                await session.execute(
+                    select(ContractDocument.id, ContractDocument.doc_no).where(
+                        ContractDocument.id.in_(parent_ids)
+                    )
+                )
+            ).all()
+        )
     return [
-        serialize_document(doc, customer_name=names.get(doc.customer_id)) for doc in docs
+        serialize_document(
+            doc,
+            customer_name=names.get(doc.customer_id),
+            parent_doc_no=parent_nos.get(doc.parent_id) if doc.parent_id else None,
+        )
+        for doc in docs
     ], total
+
+
+async def list_amendments(session: AsyncSession, doc_id: int) -> list[dict]:
+    """这份文档下面挂了哪些衍生件（补充协议 / 续签）。
+
+    关系链往下走的那一半：往上看是 `parent_doc_no`，往下看是这个。
+    审查阶段 C 第 5 点要的是"关系链可查看"，两头都得给。
+    """
+    rows = (
+        await session.execute(
+            select(
+                ContractDocument.id,
+                ContractDocument.doc_no,
+                ContractDocument.doc_type,
+                ContractDocument.effective_date,
+                ContractDocument.status,
+                ContractDocument.created_at,
+            )
+            .where(
+                ContractDocument.parent_id == doc_id,
+                ContractDocument.deleted_at.is_(None),
+            )
+            .order_by(ContractDocument.id.desc())
+        )
+    ).all()
+    return [
+        {
+            "id": doc_id_,
+            "doc_no": doc_no,
+            "doc_type": doc_type,
+            "doc_type_label": DOC_TYPE_LABEL.get(doc_type, doc_type),
+            "effective_date": effective_date,
+            "status": status,
+            "status_label": DOC_STATUS_LABEL.get(status, status),
+            "created_at": created_at,
+        }
+        for doc_id_, doc_no, doc_type, effective_date, status, created_at in rows
+    ]
 
 
 def _monthly_remind_key(doc_id: int, expiry_date) -> str:
@@ -822,7 +887,10 @@ async def notify_expiring_monthly(session: AsyncSession) -> int:
                 owner_id=owner_id,
                 priority="high",
                 status="pending",
-                due_at=datetime.now(UTC),
+                # 截止时间取**协议到期日**，不是"此刻"。
+                # 用创建时刻会让这条待办一出生就带「已逾期」（due < now 立刻成立），
+                # 负责人看到的是"刚提醒我就已经迟了"，像系统出错。
+                due_at=datetime.combine(doc.expiry_date, time(23, 59), tzinfo=UTC),
                 source="system",
                 source_rule_id=None,
                 source_business_type="contract",

@@ -160,6 +160,14 @@ async def get_document(
 
     customer = await session.get(Customer, doc.customer_id)
     result = svc.serialize_document(doc, customer_name=customer.name if customer else None)
+    # 关系链两头都给：往上是"基于哪一份"（补充协议 / 续签），往下是"被哪几份补充过"。
+    # 父文档用普通 get 而不是 get_doc_or_404：父件被软删时不该让子件详情也打不开。
+    if doc.parent_id:
+        from app.modules.contract.model import ContractDocument
+
+        parent = await session.get(ContractDocument, doc.parent_id)
+        result["parent_doc_no"] = parent.doc_no if parent else None
+    result["amendments"] = await svc.list_amendments(session, doc.id)
     # 签署原件清单：已签状态下前端要有"看签回来的那一份"的入口。
     # 不给的话，用户点「下载」拿到的是生成稿，却以为拿的是签署件。
     result["signed_files"] = await svc.list_signed_files(session, doc.id)

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
+  Checkbox,
   Input,
   Modal,
   Select,
@@ -27,6 +28,7 @@ import {
   signContractDocument,
   voidContractDocument,
   type ContractDocument,
+  type ContractAmendment,
   type ContractSignedFile,
   type ContractTemplate,
 } from '../../shared/api/contract'
@@ -36,6 +38,9 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   draft: 'grey',
   void: 'red',
 }
+
+const DETAIL_LABEL = { fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 2 }
+const DETAIL_VALUE = { fontSize: 13 }
 
 export default function DocumentsPage() {
   const queryClient = useQueryClient()
@@ -94,11 +99,15 @@ export default function DocumentsPage() {
     // 合同钉死的报价版本。报价能出 V2/V3，不指定就没法证明金额依据的是哪一版。
     quote_version_id: undefined as number | undefined,
     expiry_date: '',
+    effective_date: '',
     extras: '付款方式=',
   })
   // 补充协议 / 续签：从原文档发起，带上 parent_id。原件的正文、签署件都不动，
   // 新文档在台账上能顺着 parent_id 找回出处（"这份补充协议是补哪份合同"）。
   const [generateParent, setGenerateParent] = useState<ContractDocument | null>(null)
+  // 续签时是否替代旧协议：**默认不勾**。提前续签、旧协议还在适用期很常见，
+  // 一登记就掐掉旧提醒会让还在生效的协议没人管。
+  const [supersedeParent, setSupersedeParent] = useState(false)
   // 订单 / 报价 / 报价版本三级联动，全部跟着所选客户走——
   // 不这么做的话，跨客户把别家的单子挂上来，只能等提交时被后端拒掉。
   const genOrdersQuery = useQuery({
@@ -139,7 +148,9 @@ export default function DocumentsPage() {
         quote_version_id: generateForm.quote_version_id ?? null,
         extra_fields,
         expiry_date: generateForm.expiry_date || null,
+        effective_date: generateForm.effective_date || null,
         parent_id: generateParent?.id ?? null,
+        supersede_parent: supersedeParent,
         request_key: generateRequestKey || undefined,
       })
     },
@@ -163,6 +174,9 @@ export default function DocumentsPage() {
 
   const openGenerateModal = (parent: ContractDocument | null) => {
     setGenerateParent(parent)
+    // 每次打开都把上一次的续签选项清掉：勾选状态跟着弹窗走，不该跨次留存
+    setSupersedeParent(false)
+    setGenerateForm((prev) => ({ ...prev, effective_date: '' }))
     // 每次打开换一个新键：这一次生成对应这一张弹窗，重试才认得出是同一件事
     setGenerateRequestKey(
       typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`,
@@ -239,16 +253,19 @@ export default function DocumentsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  // 签署原件：已签合同点「看签署原件」时拉详情，列出客户签回来的扫描件。
-  // 和「下载生成稿」是两个入口——只给一个「下载」，用户会以为拿到的是签回来的那一份，
-  // 实际拿到的是我们自己生成的稿子，事后对账就会扯皮。
-  const [signedTarget, setSignedTarget] = useState<ContractDocument | null>(null)
-  const signedFilesQuery = useQuery({
-    queryKey: ['contract-signed-files', signedTarget?.id],
-    queryFn: () => getContractDocument(signedTarget!.id),
-    enabled: Boolean(signedTarget),
+  // 详情弹窗：抬头快照 + 依据（订单 / 报价版本）+ 关系链（基于谁、被哪几份补充）+
+  // 签署原件。这几样散在一张列表上看不出来，得有个地方集中交代（审查阶段 C 第 5 点）。
+  // 单独拿它当"看签署原件"的入口也是这个道理：只给一个「下载」，
+  // 用户会以为拿到的是签回来的那一份，实际是我们自己生成的稿子，事后对账就会扯皮。
+  const [detailTarget, setDetailTarget] = useState<ContractDocument | null>(null)
+  const detailQuery = useQuery({
+    queryKey: ['contract-detail', detailTarget?.id],
+    queryFn: () => getContractDocument(detailTarget!.id),
+    enabled: Boolean(detailTarget),
   })
-  const signedFiles: ContractSignedFile[] = signedFilesQuery.data?.signed_files ?? []
+  const detail = detailQuery.data
+  const signedFiles: ContractSignedFile[] = detail?.signed_files ?? []
+  const amendments: ContractAmendment[] = detail?.amendments ?? []
 
   // 作废要填真实原因：原来前端写死"页面作废"，台账和审计里全是这四个字，等于没写
   const [voidTarget, setVoidTarget] = useState<ContractDocument | null>(null)
@@ -328,15 +345,13 @@ export default function DocumentsPage() {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
                 title: '操作',
-                width: 230,
+                width: 260,
                 render: (_: unknown, record: ContractDocument) => (
                   <span style={{ display: 'inline-flex', gap: 12, flexWrap: 'wrap' }}>
                     <a onClick={() => void downloadContractDocument(record)}>下载生成稿</a>
-                    {/* 已签的合同：签署原件（客户签回来的扫描件）单独一个入口。
-                        它才是"签了什么"的凭证，跟生成稿不是一份东西。 */}
-                    {record.status === 'signed' && can('file:view') && (
-                      <a onClick={() => setSignedTarget(record)}>看签署原件</a>
-                    )}
+                    {/* 详情：抬头快照、依据、关系链、签署原件都收在这里。
+                        签署原件**光看状态看不出来**，必须点进来才知道拿到的到底是哪一份。 */}
+                    <a onClick={() => setDetailTarget(record)}>详情</a>
                     {canManage && record.status === 'draft' && (
                       <a onClick={() => openSignModal(record)}>登记签署</a>
                     )}
@@ -592,6 +607,34 @@ export default function DocumentsPage() {
               onChange={(v) => setGenerateForm({ ...generateForm, expiry_date: v })}
             />
           </div>
+          {generateParent && (
+            <div>
+              <div style={{ marginBottom: 4 }}>协议生效日（续签建议填写）</div>
+              <Input
+                placeholder="2027-01-01（可留空）"
+                value={generateForm.effective_date}
+                onChange={(v) => setGenerateForm({ ...generateForm, effective_date: v })}
+              />
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                只记到期日处理不了"提前签、未来才生效"——那种情况下旧协议还得继续适用一段。
+              </div>
+            </div>
+          )}
+          {generateParent && generateParent.doc_type === 'monthly' && (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <Checkbox
+                checked={supersedeParent}
+                onChange={(e) => setSupersedeParent(Boolean(e.target.checked))}
+              />
+              <div>
+                <div>替代原协议 {generateParent.doc_no}</div>
+                <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  勾上才会结束原协议的在办提醒。原协议本身**不改状态、不动作废**（那是另一回事）。
+                  提前续签、新协议还没生效时别勾——否则还在适用的旧协议就没人管了。
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </Modal>
 
@@ -674,33 +717,84 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
-        title={`签署原件：${signedTarget?.doc_no ?? ''}`}
-        visible={Boolean(signedTarget)}
-        onCancel={() => setSignedTarget(null)}
+        title={`文档详情：${detailTarget?.doc_no ?? ''}`}
+        visible={Boolean(detailTarget)}
+        onCancel={() => setDetailTarget(null)}
         footer={null}
-        width={520}
+        width={620}
       >
-        <div style={{ display: 'grid', gap: 8 }}>
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            这是客户签回来、上传登记的那一份扫描件，和「下载生成稿」拿到的不是同一个文件。
+        {detailQuery.isLoading && <div>读取中…</div>}
+        {detail && (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div>
+              <div style={DETAIL_LABEL}>抬头（生成时固定，客户/公司后来改名也不影响下载）</div>
+              <div style={DETAIL_VALUE}>
+                {detail.header_snapshot?.company_name || '（未设置公司抬头）'} · 客户：
+                {detail.header_snapshot?.customer_name ?? detail.customer_name ?? '-'}
+              </div>
+            </div>
+            <div>
+              <div style={DETAIL_LABEL}>依据</div>
+              <div style={DETAIL_VALUE}>
+                {detail.quote_version_no
+                  ? `${detail.header_snapshot?.quote_no ?? '报价'} V${detail.quote_version_no}`
+                  : detail.header_snapshot?.order_no
+                    ? `订单 ${detail.header_snapshot.order_no}`
+                    : '未绑定——登记签署前必须补上正式依据'}
+                {detail.effective_date ? ` · 生效日 ${detail.effective_date}` : ''}
+                {detail.expiry_date ? ` · 到期日 ${detail.expiry_date}` : ''}
+              </div>
+            </div>
+            <div>
+              <div style={DETAIL_LABEL}>关系链</div>
+              <div style={DETAIL_VALUE}>
+                {detail.parent_doc_no
+                  ? `基于 ${detail.parent_doc_no}（${detail.doc_type === 'monthly' ? '续签' : '补充协议'}）`
+                  : '无上级文档'}
+                {amendments.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    被以下文档补充 / 续签：
+                    {amendments.map((row) => `${row.doc_no}（${row.status_label}）`).join('、')}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <div style={DETAIL_LABEL}>签署原件（客户签回来、上传登记的那一份）</div>
+              {signedFiles.length === 0 ? (
+                <div style={{ color: 'var(--crm-danger, #d45)', fontSize: 12 }}>
+                  {detail.status === 'signed'
+                    ? '没有找到签署原件：登记时挂上的文件可能已被删除或解绑。不能拿生成稿当签署件用，请向经手人确认原件去向。'
+                    : '还没有登记签署。'}
+                </div>
+              ) : (
+                signedFiles.map((row) => (
+                  <div key={row.file_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {can('file:view') ? (
+                      <a onClick={() => void downloadFile(row.file_id, row.file_name)}>{row.file_name}</a>
+                    ) : (
+                      <span>{row.file_name}</span>
+                    )}
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      {Math.max(1, Math.round(row.size / 1024))} KB
+                      {row.attached_at ? ` · 登记于 ${row.attached_at.slice(0, 10)}` : ''}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+            {Object.keys(detail.missing_fields ?? {}).length > 0 && (
+              <div>
+                <div style={DETAIL_LABEL}>生成时没填上的地方（正文里留着占位符）</div>
+                <div style={{ fontSize: 12, color: 'var(--crm-warning, #d68000)' }}>
+                  {Object.entries(detail.missing_fields)
+                    .map(([token, reason]) => `${token}（${reason}）`)
+                    .join('；')}
+                </div>
+              </div>
+            )}
           </div>
-          {signedFilesQuery.isLoading && <div>读取中…</div>}
-          {!signedFilesQuery.isLoading && signedFiles.length === 0 && (
-            <div style={{ color: 'var(--crm-danger, #d45)' }}>
-              没有找到签署原件。登记时挂上的文件可能已被删除或解绑——此时**不能**拿生成稿当签署件用，
-              请向经手人确认原件去向。
-            </div>
-          )}
-          {signedFiles.map((row) => (
-            <div key={row.file_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <a onClick={() => void downloadFile(row.file_id, row.file_name)}>{row.file_name}</a>
-              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                {Math.max(1, Math.round(row.size / 1024))} KB
-                {row.attached_at ? ` · 登记于 ${row.attached_at.slice(0, 10)}` : ''}
-              </span>
-            </div>
-          ))}
-        </div>
+        )}
       </Modal>
     </div>
   )

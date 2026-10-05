@@ -49,6 +49,7 @@ check_sample_sources
 check_order_drafts
 check_delivery_planning
 check_contract_documents
+check_contract_monthly_reminders
 check_attachment_sample_guards
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

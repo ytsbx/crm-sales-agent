@@ -73,8 +73,17 @@ export default function TaskListPage() {
     {
       title: '关联',
       width: 200,
-      render: (_: unknown, record: Task) =>
-        record.opportunity_id ? (
+      render: (_: unknown, record: Task) => {
+        // 自动待办优先显示**来源单据**（月结协议到期这类）。只写「客户 #3」的话，
+        // 用户还得自己猜这条提醒是哪份协议带出来的——审查第 7 条要的正是这一点。
+        if (record.source_business_type === 'contract') {
+          return (
+            <Link to="/documents" style={{ color: 'var(--crm-primary)' }}>
+              月结协议 {record.source_doc_no ?? `#${record.source_business_id}`}
+            </Link>
+          )
+        }
+        return record.opportunity_id ? (
           <Link to={`/opportunities/${record.opportunity_id}`} style={{ color: 'var(--crm-primary)' }}>
             商机 #{record.opportunity_id}
           </Link>
@@ -84,7 +93,8 @@ export default function TaskListPage() {
           </Link>
         ) : (
           '-'
-        ),
+        )
+      },
     },
     {
       title: '优先级',

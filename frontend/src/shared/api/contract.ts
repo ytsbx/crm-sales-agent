@@ -31,6 +31,18 @@ export interface ContractSignedFile {
   attached_at: string
 }
 
+/** 衍生件（补充协议 / 续签）：挂在原文档下面的那一层。 */
+export interface ContractAmendment {
+  id: number
+  doc_no: string
+  doc_type: string
+  doc_type_label: string
+  effective_date: string | null
+  status: string
+  status_label: string
+  created_at: string
+}
+
 export interface ContractDocument {
   id: number
   doc_no: string
@@ -57,7 +69,13 @@ export interface ContractDocument {
   status: string
   status_label: string
   expiry_date: string | null
+  /** 协议生效日（续签时填） */
+  effective_date: string | null
   parent_id: number | null
+  /** 关系链往上一级：这份基于哪一份（补充协议 / 续签） */
+  parent_doc_no?: string | null
+  /** 关系链往下一级：这份被哪几份补充过，只有详情接口返回 */
+  amendments?: ContractAmendment[]
   signed_at: string | null
   void_reason: string | null
   created_at: string
@@ -92,8 +110,12 @@ export function generateContractDocument(payload: {
   title?: string | null
   extra_fields: Record<string, string>
   expiry_date?: string | null
+  /** 协议生效日。续签时填：只记到期日处理不了「提前签、未来才生效」的情况 */
+  effective_date?: string | null
   /** 补充协议 / 续签：指向被补充的原文档，原件不动、旧版保留 */
   parent_id?: number | null
+  /** 续签时是否替代旧协议：勾了才结束旧协议的在办提醒 */
+  supersede_parent?: boolean
   /** 幂等键：同一张弹窗里的重复提交带同一个值，后端据此返回原来那份，而不是再建一份。 */
   request_key?: string
 }) {

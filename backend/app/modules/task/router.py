@@ -51,7 +51,7 @@ async def _visible_task(
     return task
 
 
-def serialize(task: Task, owner_name: str | None = None) -> dict:
+def serialize(task: Task, owner_name: str | None = None, source_doc_no: str | None = None) -> dict:
     overdue = False
     if task.due_at and task.status in ("pending", "doing"):
         due = task.due_at if task.due_at.tzinfo else task.due_at.replace(tzinfo=UTC)
@@ -74,6 +74,12 @@ def serialize(task: Task, owner_name: str | None = None) -> dict:
         "status_label": STATUS_LABEL.get(task.status, task.status),
         "due_at": task.due_at,
         "source": task.source,
+        # 自动待办指向的来源对象：界面据此显示「月结协议 CT2026xxxx」并能跳过去。
+        # 没这两个字段时，用户只看到一句"某某协议即将到期"，不知道是哪一份
+        # （审查第 7 条：待办要能进到具体协议）。
+        "source_business_type": task.source_business_type,
+        "source_business_id": task.source_business_id,
+        "source_doc_no": source_doc_no,
         "overdue": overdue,
         "completed_at": task.completed_at,
         "completion_note": task.completion_note,
@@ -129,7 +135,33 @@ async def list_tasks(
             await session.execute(select(User.id, User.name).where(User.id.in_(owner_ids)))
         ).all()
         names = {int(uid): name for uid, name in name_rows}
-    items = [serialize(row, names.get(row.owner_id) if row.owner_id else None) for row in rows]
+    # 自动待办的来源单据号（目前只有月结协议一种）：批量取一次，别在序列化里逐条查
+    doc_nos: dict[int, str] = {}
+    contract_ids = {
+        row.source_business_id
+        for row in rows
+        if row.source_business_type == "contract" and row.source_business_id
+    }
+    if contract_ids:
+        from app.modules.contract.model import ContractDocument
+
+        doc_nos = dict(
+            (
+                await session.execute(
+                    select(ContractDocument.id, ContractDocument.doc_no).where(
+                        ContractDocument.id.in_(contract_ids)
+                    )
+                )
+            ).all()
+        )
+    items = [
+        serialize(
+            row,
+            names.get(row.owner_id) if row.owner_id else None,
+            doc_nos.get(row.source_business_id) if row.source_business_id else None,
+        )
+        for row in rows
+    ]
     return ok(page_data(items, total, page, page_size))
 
 
