@@ -252,10 +252,13 @@ async def main():
     check_true('有测试 SKU', bool(sku_id), str(sku.get('sku_code') or sku.get('code') or sku_id))
     # 给测试 SKU 自建成本：其他回归套件会清产品成本，不能假设第一个 SKU 有成本。
     # 成本 10 元/件 → 场景毛利可控（单 A 100 元≈89%，单 B 11 元≈-19%，单 C 100 元≈89%）。
-    from datetime import date as _date
+    # 用 **UTC** 日期：成本生效日与业务判据同一个钟。本地 date.today() 在
+    # UTC 16:00 后（本地已跨天）会变成"明天生效"，成本当场查不到。
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
 
     status, res = call('POST', f'/skus/{sku_id}/costs', token=admin, body={
-        'purchase_cost': 10, 'effective_from': str(_date.today()),
+        'purchase_cost': 10, 'effective_from': str(_datetime.now(_UTC).date()),
         'remark': f'CHK{RUN}成本'})
     check('给测试 SKU 建成本', res.get('code'), 0)
 

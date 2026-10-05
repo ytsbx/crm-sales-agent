@@ -21,7 +21,7 @@
 import asyncio
 import os
 import time
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlparse
 
 from sqlalchemy import String, delete, select
@@ -151,7 +151,9 @@ async def main():
         template_ids.append(template["id"])
         monthly_template_id = template["id"]
 
-        soon = date.today() + timedelta(days=10)
+        # 用 **UTC** 日期：提醒逻辑也按 UTC 今天判到期，
+        # 用本地 date.today() 会在 UTC 16:00 后（本地已跨天）差一天
+        soon = datetime.now(UTC).date() + timedelta(days=10)
 
         print("=== 1. 到期提醒按「协议」去重，不再靠标题 ===")
         doc_a = await make_monthly(soon)
@@ -238,7 +240,7 @@ async def main():
         doc_g = api("POST", "/contract-documents", token=admin, body={
             "template_id": monthly_template_id,
             "customer_id": customer_id,
-            "expiry_date": (date.today() + timedelta(days=12)).isoformat(),
+            "expiry_date": (datetime.now(UTC).date() + timedelta(days=12)).isoformat(),
         })
         doc_ids.append(doc_g["id"])
         async with SessionLocal() as session:

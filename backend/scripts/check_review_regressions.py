@@ -13,7 +13,7 @@ from threading import Barrier
 import time
 import urllib.error
 import urllib.request
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import urlparse
 
@@ -114,13 +114,14 @@ async def create_fixtures() -> None:
         )
         rejected_payment = PaymentRecord(
             order_id=own_order.id if own_order.id else 0,
-            received_date=date.today(), received_amount=Decimal("20"), currency="CNY",
-            status="rejected", created_by=admin, created_at=now,
+            # 统一用 UTC 日期（与业务判据同一个钟），别用本地 date.today()
+            received_date=datetime.now(UTC).date(), received_amount=Decimal("20"),
+            currency="CNY", status="rejected", created_by=admin, created_at=now,
         )
         pending_payment = PaymentRecord(
             order_id=own_order.id if own_order.id else 0,
-            received_date=date.today(), received_amount=Decimal("30"), currency="CNY",
-            status="pending", created_by=admin, created_at=now,
+            received_date=datetime.now(UTC).date(), received_amount=Decimal("30"),
+            currency="CNY", status="pending", created_by=admin, created_at=now,
         )
         # Flush the order before creating a record that references it.
         session.add(own_order)
@@ -147,7 +148,7 @@ async def create_fixtures() -> None:
         cost = ProductCost(
             sku_id=sku.id, purchase_cost=Decimal("10"), production_cost=Decimal("0"),
             package_cost=Decimal("0"), processing_cost=Decimal("0"), currency="CNY",
-            effective_from=date.today() - timedelta(days=1), created_by=admin,
+            effective_from=datetime.now(UTC).date() - timedelta(days=1), created_by=admin,
         )
         stage_id = (await session.execute(
             text("select id from opportunity_stages where status='active' order by sequence limit 1")
@@ -167,7 +168,11 @@ async def create_fixtures() -> None:
 
         expired_quote = Quote(
             quote_no=f"{PREFIX}-EXPIRED", customer_id=own_customer.id, owner_id=owner,
-            status="sent", valid_until=date.today() - timedelta(days=1), created_by=owner,
+            status="sent",
+            # 用 **UTC** 日期：判过期的是 `quote_is_expired`（内部取 UTC 今天）。
+            # 原来用本地 `date.today()`，本地比 UTC 早 8 小时，UTC 16:00 后本地已跨天，
+            # 夹具的"昨天"正好等于 UTC 今天 → 不再算过期 → 这条断言每天后半天必挂。
+            valid_until=datetime.now(UTC).date() - timedelta(days=1), created_by=owner,
         )
         session.add(expired_quote)
         await session.flush()
