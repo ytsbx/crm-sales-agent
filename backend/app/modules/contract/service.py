@@ -887,8 +887,18 @@ async def cancel_auto_tasks(session: AsyncSession, doc_id: int) -> int:
     return len(rows)
 
 
-async def notify_expiring_monthly(session: AsyncSession) -> int:
-    """月结协议到期前提醒负责人（§3.6）。挂进每日自动任务，返回本轮新建条数。
+async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None = None) -> int:
+    """月结协议到期前提醒负责人（§3.6），返回本轮新建条数。
+
+    `owner_id`：只扫这个负责人名下的协议。**登录时扫自己那一份走这个参数**
+    （口径已确认 2026-10-05）——定时任务那条路因为 `SCHEDULER_ENABLED` 按约定
+    一直关着，等于永远不会触发，所以把扫描挂到登录上；不传则扫全体（供定时任务/
+    手动补扫用）。
+
+    每建一张待办同时写一条**站内通知**（口径已确认）：只建待办的话，负责人不去翻
+    任务列表就完全不知道，提醒形同虚设。通知类型用 `system`，它不在企微推送名单
+    （`WECOM_EVENT_TYPES`）里，因此只站内、不叠加企微外发——与"建待办 + 站内通知"
+    这个已确认口径一致；以后要加企微推送是改类型的事，不是改这里。
 
     2026-10-05 重写。改之前是**按标题去重、且只看"待处理 / 处理中"的任务**，于是：
     - 任务一旦完成或被取消，下次扫描找不到它 → 又建一条同样的待办，天天冒出来；
@@ -908,23 +918,27 @@ async def notify_expiring_monthly(session: AsyncSession) -> int:
 
     days = int(await settings_service.get_number(session, "contract", "monthly_remind_days", 30))
     today = datetime.now(UTC).date()
+    conditions = [
+        ContractDocument.doc_type == "monthly",
+        ContractDocument.status == "signed",
+        ContractDocument.deleted_at.is_(None),
+        ContractDocument.expiry_date.is_not(None),
+        ContractDocument.expiry_date >= today,
+        ContractDocument.expiry_date <= today + timedelta(days=days),
+    ]
+    if owner_id is not None:
+        conditions.append(Customer.owner_id == owner_id)
     rows = (
         await session.execute(
-            select(ContractDocument, Customer.owner_id)
+            select(ContractDocument, Customer.owner_id, Customer.name)
             .join(Customer, Customer.id == ContractDocument.customer_id)
-            .where(
-                ContractDocument.doc_type == "monthly",
-                ContractDocument.status == "signed",
-                ContractDocument.deleted_at.is_(None),
-                ContractDocument.expiry_date.is_not(None),
-                ContractDocument.expiry_date >= today,
-                ContractDocument.expiry_date <= today + timedelta(days=days),
-            )
+            .where(*conditions)
         )
     ).all()
     created = 0
-    for doc, owner_id in rows:
-        if owner_id is None:
+    for doc, owner_id_of_doc, customer_name in rows:
+        owner = owner_id_of_doc
+        if owner is None:
             continue
         source_key = _monthly_remind_key(doc.id, doc.expiry_date)
         existing = (
@@ -939,7 +953,7 @@ async def notify_expiring_monthly(session: AsyncSession) -> int:
                 title=f"月结协议 {doc.doc_no} 将于 {doc.expiry_date} 到期",
                 task_type="followup",
                 customer_id=doc.customer_id,
-                owner_id=owner_id,
+                owner_id=owner,
                 priority="high",
                 status="pending",
                 # 截止时间取**协议到期日**，不是"此刻"。
@@ -952,6 +966,23 @@ async def notify_expiring_monthly(session: AsyncSession) -> int:
                 source_business_id=doc.id,
                 source_key=source_key,
             )
+        )
+        # 同时写一条站内通知：只建待办的话，负责人不主动翻任务列表就完全不知道。
+        # 同一次扫描里同一份协议只走到这里一次（上面的 source_key 已去重），
+        # 所以通知也不会重复；类型 system 只站内、不排队企微。
+        from app.modules.notification import service as notification_service
+
+        await notification_service.notify(
+            session,
+            user_id=owner,
+            type_="system",
+            title=f"月结协议 {doc.doc_no} 将于 {doc.expiry_date} 到期",
+            content=(
+                f"客户「{customer_name}」的月结协议还有 "
+                f"{(doc.expiry_date - today).days} 天到期，请及时安排续签。"
+            ),
+            business_type="contract",
+            business_id=doc.id,
         )
         created += 1
     await session.flush()

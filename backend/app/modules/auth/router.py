@@ -1,5 +1,7 @@
 """Auth：登录 / 登出 / 当前用户 / 我的权限（对齐 03-API §2）。"""
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
@@ -21,6 +23,8 @@ from app.modules.auth.schema import LoginRequest, WeComSsoCallback
 from app.modules.user.model import Department, User
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/login")
@@ -74,6 +78,24 @@ async def login(
         ip=client_ip(request),
     )
     await session.commit()
+
+    # 月结协议到期提醒（口径已确认 2026-10-05）：**扫描挂在登录上**。
+    # 原本它只挂在每日自动任务里，而 `SCHEDULER_ENABLED` 按约定一直关着（多实例安全），
+    # 于是这条提醒永远不触发、需求等于没做。登录时只扫**这个人自己名下**的协议，
+    # 顺带建待办 + 站内通知（去重靠 source_key，同一协议同一到期周期只会建一次）。
+    # 两处刻意的取舍：
+    # ① 放在 commit **之后**、且整段包在 try 里 —— 提醒是附加动作，
+    #    它出任何问题都不能影响"人能不能登录"；
+    # ② 异常只记日志不回抛（登录已经成功提交了）。
+    try:
+        from app.modules.contract import service as contract_service
+
+        if await contract_service.notify_expiring_monthly(session, owner_id=user.id):
+            await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("登录时的月结到期扫描失败（不影响登录）")
+
     return ok({"access_token": token, "token_type": "Bearer", "user": _user_brief(user)})
 
 

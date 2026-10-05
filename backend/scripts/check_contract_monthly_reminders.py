@@ -228,6 +228,72 @@ async def main():
               doc_b["doc_no"] in details and "作废" in details, details[:80])
         check("续签也留了痕", doc_f["doc_no"] in details, details[:80])
 
+        print("=== 7. 提醒挂在登录上 + 同时写站内通知（口径 2026-10-05）===")
+        # 原来扫描只挂在每日自动任务里，而 SCHEDULER_ENABLED 按约定一直关着
+        # （多实例安全），于是这条提醒**永远不会触发**、需求等于没做。
+        # 已确认口径：改成"有人登录时扫他自己名下的协议"，并且除了建待办还要发站内通知
+        # （只建待办的话，负责人不主动翻任务列表就完全不知道）。
+        # 不能复用 make_monthly：它固定用张三的 token 登记签署，而第 5 节已经把客户
+        # 交接给李四了，张三再签就是跨范围（403）。这里改成用 admin（数据范围 all）签。
+        doc_g = api("POST", "/contract-documents", token=admin, body={
+            "template_id": monthly_template_id,
+            "customer_id": customer_id,
+            "expiry_date": (date.today() + timedelta(days=12)).isoformat(),
+        })
+        doc_ids.append(doc_g["id"])
+        async with SessionLocal() as session:
+            from app.modules.file.model import BusinessFile as _BF
+            from app.modules.file.model import FileRecord as _FR
+
+            record = _FR(
+                storage_provider="local",
+                object_key=f"_fixture/{MARKER}-{doc_g['id']}.pdf",
+                file_name=f"{MARKER}-{doc_g['id']}.pdf",
+                mime_type="application/pdf",
+                size=8,
+                checksum="0" * 64,
+                uploaded_by=zhangsan_id,
+            )
+            session.add(record)
+            await session.flush()
+            session.add(_BF(business_type="contract", business_id=doc_g["id"],
+                            file_id=record.id, category="signed"))
+            await session.commit()
+            file_ids.append(record.id)
+            sign_file_id = record.id
+        api("POST", f"/contract-documents/{doc_g['id']}/sign",
+            body={"file_id": sign_file_id}, token=admin)
+        async with SessionLocal() as session:
+            owner_row = (
+                await session.execute(
+                    select(User.id, User.username)
+                    .join(Customer, Customer.owner_id == User.id)
+                    .where(Customer.id == customer_id)
+                )
+            ).first()
+        if owner_row is None:
+            check("第 7 节需要客户当前有负责人", False, "客户无负责人")
+        else:
+            _, owner_username = owner_row
+            check("新协议此刻还没有提醒", find_task(doc_g["id"]) is None, True)
+            # 登录一次 —— 这就是触发点
+            owner_token = login(owner_username, "123456")
+            check("登录后建出了到期待办", find_task(doc_g["id"]) is not None, True)
+            notes = call("GET", "/notifications?page_size=100", token=owner_token)[1]
+            matched = [
+                n for n in (notes.get("data") or {}).get("items", [])
+                if n.get("business_type") == "contract" and n.get("business_id") == doc_g["id"]
+            ]
+            check("同时写了站内通知（不主动告知等于没提醒）", len(matched), 1)
+            # 再登录一次：去重靠 source_key，不该又冒一条
+            owner_token2 = login(owner_username, "123456")
+            notes2 = call("GET", "/notifications?page_size=100", token=owner_token2)[1]
+            matched2 = [
+                n for n in (notes2.get("data") or {}).get("items", [])
+                if n.get("business_type") == "contract" and n.get("business_id") == doc_g["id"]
+            ]
+            check("再登录一次不会重复提醒", len(matched2), 1)
+
     finally:
         async with SessionLocal() as session:
             from app.modules.file import storage as _storage
