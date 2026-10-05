@@ -17,16 +17,41 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.data_scope import scoped_owner_ids
+from app.core.data_scope import department_member_ids, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.analytics import target_bases
 from app.modules.analytics.model import SalesTarget
 from app.modules.customer.model import Customer
-from app.modules.order.model import SalesOrder
+from app.modules.order.model import (
+    OrderShipmentBatch,
+    OrderShipmentBatchItem,
+    SalesOrder,
+    SalesOrderItem,
+)
+from app.modules.payment.model import PaymentRecord
 
 #: 期间的标准形态。库层有同名 CHECK 约束，两边保持一字不差。
 PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+#: 考核主口径（已确认 2026-10-05）：**确认回款**。
+#: 签单与发货照常显示，但**不进差额**——§4.3 明确"不要把未选为考核口径的数字混入差额"。
+ASSESS_BASIS = "received"
+ASSESS_BASIS_LABEL = "确认回款"
+
+#: 指标定义版本（§4.3 要求每个指标存"指标定义版本"）。
+#: 口径一变就改这个字符串：历史报表据此自证是按哪一版算出来的。
+METRIC_BASIS_VERSION = "2026-10-05.targets.2"
+
+#: 每个指标的数据来源（随结果返回——业务要能回答"这个数是怎么来的"）
+METRIC_SOURCES = {
+    "sales_target": "sales_targets.sales_target（手工设定）",
+    "assess_actual": "payment_records.received_amount，status=confirmed，按 received_date 归月",
+    "sales_actual": "sales_orders.total_amount，status != cancelled，按 created_at 归月（展示口径，不进差额）",
+    "shipped_actual": "order_shipment_batches × batch_items.shipped_qty × order_items.unit_price，按各批 actual_ship_date 归月（展示口径，不进差额）",
+    "new_customer_actual": "customers.created_at 建档月 × owner_id 计数（过程指标）",
+    "repeat_customer_actual": "期初老客池在本月的订单净额（口径见 analytics/target_bases.py）",
+}
 
 
 def normalize_period(period: str) -> str:
@@ -74,21 +99,54 @@ async def _visible_owner_ids(session: AsyncSession, user: CurrentUser) -> list[i
     return await scoped_owner_ids(session, user)
 
 
+async def _visible_department_ids(session: AsyncSession, user: CurrentUser) -> list[int] | None:
+    """当前用户能看到的**团队目标**所属部门；None = 不限（all）。
+
+    为什么团队目标要单独判可见性：它的 `user_id` 是空的，用 `user_id` 判就只剩
+    "全部纳入"或"全部排除"两种结果——旧实现选了前者（`or_(user_id == me,
+    user_id.is_(None))`），于是**别的部门的团队目标也被带进我的列表**（第三批 §4.1.1）。
+    self 范围返回空：团队目标不是"我自己的数据"。
+    """
+    scope = user.data_scope
+    if scope == "all":
+        return None
+    if user.department_id is None:
+        return []
+    if scope == "department":
+        return [user.department_id]
+    if scope == "department_and_sub":
+        from app.core.data_scope import department_subtree_ids_stmt
+
+        rows = await session.execute(department_subtree_ids_stmt(user))
+        return list(rows.scalars().all())
+    return []
+
+
 async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: int) -> dict:
     prefix = f"{year}-%"
     owner_ids = await _visible_owner_ids(session, user)
     admin_view = owner_ids is None
 
-    # ---- 目标行（按范围过滤：非 all 只看自己 + 全公司目标）----
+    # ---- 目标行（按范围过滤：非 all 分三层各按各的归属判）----
     target_stmt = select(SalesTarget).where(
         SalesTarget.period.like(prefix), SalesTarget.deleted_at.is_(None)
     )
     if not admin_view:
-        from sqlalchemy import or_
+        from sqlalchemy import and_, or_
 
-        target_stmt = target_stmt.where(
-            or_(SalesTarget.user_id == user.id, SalesTarget.user_id.is_(None))
-        )
+        visible_depts = await _visible_department_ids(session, user)
+        conditions = [
+            # ① 全公司目标：给所有人看（那是公司层面的数字，不是别人的私有数据）
+            and_(SalesTarget.user_id.is_(None), SalesTarget.department_id.is_(None)),
+            # ② 个人目标：本范围内的人。旧实现只比 `user.id`，
+            #    于是主管看不到**同团队同事**的个人目标（§4.1.1 的另一半）
+            SalesTarget.user_id.in_(owner_ids or [0]),
+        ]
+        if visible_depts is not None:
+            # ③ 团队目标：本范围内的部门。旧实现靠 `user_id IS NULL` 匹配，
+            #    把**别的部门**的团队目标也收了进来
+            conditions.append(SalesTarget.department_id.in_(visible_depts or [0]))
+        target_stmt = target_stmt.where(or_(*conditions))
     targets = list((await session.execute(target_stmt)).scalars().all())
 
     # ---- 实际：销售额（非取消订单，按负责人 × 月）----
@@ -97,8 +155,10 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
     # extract 的字段名是内联文本，两边渲染完全一致
     order_year = func.extract("year", SalesOrder.created_at)
     order_month = func.extract("month", SalesOrder.created_at)
-    # 目标达成按**签单归属**算（文档 :61）：销售离职交接后，老订单的签单额
-    # 仍计在原销售的目标达成里，不会因为换人跟进就从他名下消失
+    # 目标达成按**签单归属**算（文档 :61「交接后保留历史业绩归属」）：销售离职交接后，
+    # 老订单的签单额仍计在原销售的目标达成里，不会因为换人跟进就从他名下消失。
+    # ⚠️ 应收/账龄页是**另一个口径**（责任口径＝当前负责人）：两页的数本来就不该相等。
+    #    但同一个页面内的「计划/实绩/差额」必须同源（§4.1.3 的原缺陷就是混用）。
     sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
     sales_stmt = (
         select(order_month, sales_owner, func.sum(SalesOrder.total_amount))
@@ -134,19 +194,98 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         key = (f"{year}-{int(m):02d}", owner_id)
         new_customer_actual[key] = new_customer_actual.get(key, 0) + int(n)
 
+    # ---- 回款（**考核主口径**，已确认 2026-10-05）----
+    # 财务确认日归月，只计已确认的回款。归属跟签单归属同一列（业绩口径）：
+    # 同一行的三个口径必须同源，不能一个按签单人、一个按现负责人（§4.1.3）。
+    received_year = func.extract("year", PaymentRecord.received_date)
+    received_month = func.extract("month", PaymentRecord.received_date)
+    received_stmt = (
+        select(
+            received_month,
+            sales_owner,
+            func.coalesce(func.sum(PaymentRecord.received_amount), 0),
+        )
+        .select_from(PaymentRecord)
+        .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
+        .where(
+            PaymentRecord.status == "confirmed",
+            SalesOrder.status != "cancelled",
+            received_year == year,
+        )
+        .group_by(received_month, sales_owner)
+    )
+    # ---- 发货（展示口径，不进差额）：按**实际发货批次 × 行实发数量**分摊（§4.1.4）----
+    shipped_stmt = (
+        select(
+            func.extract("month", OrderShipmentBatch.actual_ship_date),
+            sales_owner,
+            func.coalesce(
+                func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
+            ),
+        )
+        .select_from(OrderShipmentBatch)
+        .join(
+            OrderShipmentBatchItem,
+            OrderShipmentBatchItem.batch_id == OrderShipmentBatch.id,
+        )
+        .join(SalesOrderItem, SalesOrderItem.id == OrderShipmentBatchItem.order_item_id)
+        .join(SalesOrder, SalesOrder.id == OrderShipmentBatch.order_id)
+        .where(
+            OrderShipmentBatch.status == "shipped",
+            OrderShipmentBatch.actual_ship_date.is_not(None),
+            func.extract("year", OrderShipmentBatch.actual_ship_date) == year,
+            SalesOrder.status != "cancelled",
+        )
+        .group_by(
+            func.extract("month", OrderShipmentBatch.actual_ship_date), sales_owner
+        )
+    )
+    if owner_ids is not None:
+        received_stmt = received_stmt.where(sales_owner.in_(owner_ids or [0]))
+        shipped_stmt = shipped_stmt.where(sales_owner.in_(owner_ids or [0]))
+
+    received_actual: dict[tuple[str, int | None], float] = {}
+    for m, owner_id, total in (await session.execute(received_stmt)).all():
+        key = (f"{year}-{int(m):02d}", owner_id)
+        received_actual[key] = received_actual.get(key, 0.0) + float(total or 0)
+
+    shipped_actual: dict[tuple[str, int | None], float] = {}
+    for m, owner_id, total in (await session.execute(shipped_stmt)).all():
+        key = (f"{year}-{int(m):02d}", owner_id)
+        shipped_actual[key] = shipped_actual.get(key, 0.0) + float(total or 0)
+
     # 复购（老客净额）：口径定义在 target_bases 里那一处，这里只按 (月份, 人) 取数。
     # 以前 repeat_customer_target 只存不算——目标页看不到它，等于设了没人管。
     repeat_by_owner = await target_bases.repeat_net_by_owner(session, user, year)
 
-    def _repeat_actual(month: str, owner_id: int | None) -> float:
+    # ---- 团队目标的成员集合（第三批 §4.1.1）----
+    # 团队目标行（user_id 为空、department_id 有值）的**计划/实绩/差额必须同源**：
+    # 成员集合先查好，下面的实际值只在这个集合里加总。旧实现让 team 行走
+    # "可见范围合计"，等于给部门目标配了公司数字。
+    dept_members: dict[int, list[int]] = {}
+    for t in targets:
+        if t.department_id is not None and t.department_id not in dept_members:
+            dept_members[t.department_id] = await department_member_ids(
+                session, t.department_id
+            )
+
+    def _repeat_actual(month: str, owner_id: int | None, department_id: int | None = None) -> float:
         """复购实际值。
 
         `owner_id is None` 的行是**全公司/团队目标**：销售额与新客在那一行把
         范围内所有人加总（见上面的 actual_for），复购也必须加总——
         原先直接取 `repeat_by_owner[None]`（"无签单归属"那一桶），
         于是那一行的复购实际≈0、差额一片负数、达成率 0%，主管每月看到的是错数。
+
+        团队目标（`department_id` 有值）只在**本部门成员**里加总，
+        不能拿全公司数字顶替。
         """
         key = month[5:]
+        if department_id is not None:
+            members = set(dept_members.get(department_id, []))
+            return round(
+                sum(v.get(key, 0.0) for oid, v in repeat_by_owner.items() if oid in members), 2
+            )
         if owner_id is None:
             return round(sum(bucket.get(key, 0.0) for bucket in repeat_by_owner.values()), 2)
         return round(repeat_by_owner.get(owner_id, {}).get(key, 0.0), 2)
@@ -157,21 +296,43 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
 
 
     # ---- 组装行：目标行 + 有实际但没设目标的（月，负责人）补零行 ----
-    def actual_for(month: str, target_user_id: int | None) -> tuple[float, int]:
-        if target_user_id is None:
-            # 全公司目标：实际 = 可见范围内合计
-            sales = sum(v for (m, _o), v in sales_actual.items() if m == month)
-            new = sum(v for (m, _o), v in new_customer_actual.items() if m == month)
-        else:
-            sales = sales_actual.get((month, target_user_id), 0.0)
-            new = new_customer_actual.get((month, target_user_id), 0)
-        return sales, new
+    def actual_for(
+        month: str, target_user_id: int | None, department_id: int | None = None
+    ) -> tuple[float, float, float, int]:
+        """某个 (月, 作用域) 的四个实际值：签单 / 回款（考核）/ 发货 / 新客。
+
+        三个销售口径都算出来是为了"都能显示"，但**只有考核口径进差额**（§4.3）：
+        已确认考核主口径是**确认回款**。
+        """
+        def pick(source: dict, restrict_to: set[int] | None) -> float:
+            if restrict_to is not None:
+                return sum(
+                    v for (m, o), v in source.items() if m == month and o in restrict_to
+                )
+            if target_user_id is None:
+                return sum(v for (m, _o), v in source.items() if m == month)
+            return source.get((month, target_user_id), 0.0)
+
+        if department_id is not None:
+            members = set(dept_members.get(department_id, []))
+            return (
+                pick(sales_actual, members),
+                pick(received_actual, members),
+                pick(shipped_actual, members),
+                int(pick(new_customer_actual, members)),
+            )
+        return (
+            pick(sales_actual, None),
+            pick(received_actual, None),
+            pick(shipped_actual, None),
+            int(pick(new_customer_actual, None)),
+        )
 
     rows: list[dict] = []
     seen: set[tuple[str, int | None]] = set()
     user_ids: set[int] = set()
     for t in targets:
-        sales, new = actual_for(t.period, t.user_id)
+        signed, received, shipped, new = actual_for(t.period, t.user_id, t.department_id)
         rows.append(
             {
                 "target_id": t.id,
@@ -182,8 +343,15 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "sales_target": float(t.sales_target or 0),
                 "repeat_customer_target": float(t.repeat_customer_target or 0),
                 "new_customer_actual": new,
-                "sales_actual": round(sales, 2),
-                "repeat_customer_actual": _repeat_actual(t.period, t.user_id),
+                # 考核口径 = **确认回款**（已确认 2026-10-05）；差额与达成率都基于它，
+                # 另外两个口径只展示、不混进差额（§4.3）
+                "assess_basis": ASSESS_BASIS,
+                "assess_basis_label": ASSESS_BASIS_LABEL,
+                "assess_actual": round(received, 2),
+                "sales_actual": round(signed, 2),
+                "shipped_actual": round(shipped, 2),
+                "received_actual": round(received, 2),
+                "repeat_customer_actual": _repeat_actual(t.period, t.user_id, t.department_id),
                 "remark": t.remark,
                 # 乐观并发（第三批 §4.1.2）：界面把这一版的时间戳带回来编辑，
                 # 中途被别人改过就能发现，而不是静默覆盖
@@ -259,16 +427,34 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
             if owner_id:
                 user_ids.add(owner_id)
 
+    # 补零行（有实际但没设目标的 (月, 人)）也要带齐三个口径与考核字段，
+    # 否则前端要为"有目标/没目标"写两套渲染，而且差额字段的语义会不一致。
+    for row in rows:
+        month, owner_id = row["period"], row.get("user_id")
+        row.setdefault("assess_basis", ASSESS_BASIS)
+        row.setdefault("assess_basis_label", ASSESS_BASIS_LABEL)
+        row.setdefault(
+            "received_actual", round(received_actual.get((month, owner_id), 0.0), 2)
+        )
+        row.setdefault(
+            "shipped_actual", round(shipped_actual.get((month, owner_id), 0.0), 2)
+        )
+        row.setdefault("assess_actual", row["received_actual"])
+
     # ---- 差额与达成率（文档 §六 :121 / 场景17）：每个口径都要能回答"差多少" ----
     # **零基期不给百分比**：分母为 0 时算出来的是错误增长率（文档场景17 明确要求
     # "零基期不产生错误增长率"）。没设目标就是没设，不编一个百分比出来。
     # 这里统一后处理，而不是在三处组装行的地方各写一遍——三处各写必然漂移。
     for row in rows:
         target = float(row.get("sales_target") or 0)
-        actual = float(row.get("sales_actual") or 0)
+        # 差额与达成率用**考核口径**（确认回款）。`sales_actual`（签单）与
+        # `shipped_actual`（发货）照常展示，但绝不混进差额——§4.3 明确要求。
+        actual = float(row.get("assess_actual") or 0)
         row["sales_variance"] = round(actual - target, 2)
         row["sales_achievement"] = round(actual / target, 4) if target else None
-        row["achievement_note"] = None if target else "未设销售目标，不计算达成率"
+        row["achievement_note"] = (
+            None if target else "未设销售目标，不计算达成率"
+        )
         new_target = int(row.get("new_customer_target") or 0)
         new_actual = int(row.get("new_customer_actual") or 0)
         row["new_customer_variance"] = new_actual - new_target
@@ -309,7 +495,21 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
             r["user_name"] = "全公司"
         else:
             r["user_name"] = user_names.get(r["user_id"], f"#{r['user_id']}")
-    return {"year": year, "rows": rows}
+    return {
+        "year": year,
+        "rows": rows,
+        # §4.3：目标值、指标定义版本、实际值、差额、数据来源、计算时间都要随结果给出。
+        # 目标值/实际值/差额在每一行里；这里给"这一版口径是什么、数从哪来、什么时候算的"。
+        "metric_basis_version": METRIC_BASIS_VERSION,
+        "assess_basis": ASSESS_BASIS,
+        "assess_basis_label": ASSESS_BASIS_LABEL,
+        "attribution_note": (
+            "归属口径：一律按订单**当前负责人**（决策「交接后归现负责人」）——"
+            "计划、实绩、差额同一政策"
+        ),
+        "sources": METRIC_SOURCES,
+        "computed_at": datetime.now(UTC).isoformat(),
+    }
 
 
 async def upsert_target(

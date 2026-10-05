@@ -63,15 +63,26 @@ async def _scope_filter(
     return stmt.where(column.in_(owner_ids))
 
 
+#: 两个归属口径，**同一个页面的「计划 / 实绩 / 差额」必须用同一个**（§4.1.3）。
+#: 混用就会出"原负责人负未回款、新负责人看不到剩余额"。
+#:
+#: - **业绩口径** = `_sales_owner_col()`：签单归属（`sales_owner_id`）。
+#:   `CRM完整实现方案.md:61` 明确"交接后**保留历史业绩归属**"——钱算签单人，
+#:   离职交接不改它。业绩榜、目标达成、口径页都用它。
+#: - **责任口径** = `SalesOrder.owner_id`：当前负责人。**应收/账龄整页用它**
+#:   （计划与实收都按它）——那一页回答的是"谁去收这笔钱"，交接后责任跟着接手人走。
+#:   页面必须标明这是责任口径，别和业绩榜的实收数对不上时以为是 bug。
 def _sales_owner_col():
-    """业绩归属列（文档 §3.8 / :61）——注意它**不是**数据范围用的那一列。
+    """业绩归属列（文档 §3.8 / :61）：签单时那个人。
 
-    业绩（签单额、回款额、目标实际值）算给**签单时那个人**：`sales_owner_id`
-    在订单创建时写死，离职交接与手工改负责人都不会动它（"交接后保留历史
-    业绩归属"）。`SalesOrder.owner_id` 是**当前负责人**，管数据范围与跟进
-    责任（谁看得见这单、谁去催款），交接会改它。
+    `sales_owner_id` 在订单创建时写死，离职交接与手工改负责人都不会动它
+    （"交接后保留历史业绩归属"）；`SalesOrder.owner_id` 是**当前负责人**，
+    管数据范围与跟进责任（谁看得见这单、谁去催款），交接会改它。
 
     一句话：**钱算签单人，活干在当前负责人身上**。
+
+    注意别把它用到应收/账龄页——那一页两个数都要按当前负责人（责任口径），
+    否则差额 = 计划(现负责人) − 实收(签单人) 会算出负数（§4.1.3 的原缺陷）。
 
     coalesce 兜底：迁移前的历史订单已由迁移回填，这里防极端空值。
     """
@@ -927,7 +938,7 @@ async def sales_user_stats(
         .scalar_subquery(),
         select(func.count(Quote.id)).where(Quote.owner_id == User.id).scalar_subquery(),
         # 签单额按**签单归属**（不是当前负责人）：销售离职交接后，
-        # 他谈下来的单子仍算他的成绩（文档 :61）
+        # 他谈下来的单子仍算他的成绩（文档 :61「交接后保留历史业绩归属」）
         select(func.coalesce(func.sum(SalesOrder.total_amount), 0))
         .where(_sales_owner_col() == User.id, SalesOrder.status != "cancelled")
         .scalar_subquery(),
@@ -967,7 +978,18 @@ async def sales_user_stats(
 
 
 async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
-    """应收与回款汇总。按订单负责人做数据范围过滤（原实现返回全员数据）。"""
+    """应收与回款汇总——**责任口径**页：计划、实收、未回款全部按当前负责人。
+
+    为什么这一页不用业绩口径：它回答的是"**谁去收这笔钱**"。客户交接后责任跟着
+    接手人走，所以计划额与实收都按 `SalesOrder.owner_id`。
+
+    原缺陷（§4.1.3）：计划额按当前负责人、实收按签单归属（`sales_owner_id`），
+    客户一交接，实收落在原负责人、计划落在新负责人 —— 原负责人算出"负未回款"，
+    新负责人又看不到剩余额。**差额 = 计划 − 实收，两边必须同源**。
+
+    注意：这里不再出现"同一页两列口径不同不是 bug"那种说法——那正是这条缺陷。
+    业绩口径（钱算签单人）在业绩榜 / 目标 / 口径页，见 `_sales_owner_col()`。
+    """
     plans = (
         await session.execute(
             await _scope_filter(
@@ -975,9 +997,6 @@ async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
                 .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
                 .where(SalesOrder.status != "cancelled"),
                 user,
-                # 应收/账龄是**责任口径**：交接后谁接手谁去收，所以按当前负责人。
-                # 下面"实收"是**业绩口径**，按签单归属——同一页两列口径不同不是 bug，
-                # 正是"钱算签单人、活干在当前负责人身上"的落地
                 SalesOrder.owner_id,
                 session,
             )
@@ -991,7 +1010,7 @@ async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
                 .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
                 .where(PaymentRecord.status == "confirmed"),
                 user,
-                _sales_owner_col(),
+                SalesOrder.owner_id,
                 session,
             )
         )

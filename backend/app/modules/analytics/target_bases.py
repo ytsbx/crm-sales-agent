@@ -21,7 +21,9 @@
 订单落在该月。两者常不一样——建档后三个月才成交的客户，前者算 1 月、后者算 4 月。
 
 金额一律按**签单归属**（`sales_owner_id`）归属：钱算签单人，与业绩榜同一口径
-（文档 :61）。
+（`CRM完整实现方案.md:61`「交接后保留历史业绩归属」）。
+⚠️ 应收/账龄页是**另一个口径**（责任口径＝当前负责人），两页的数本来就不该相等；
+但同一页内的计划/实绩/差额必须同源（§4.1.3 的原缺陷就是混用）。
 """
 
 from datetime import date
@@ -32,18 +34,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.modules.customer.model import Customer
-from app.modules.order.model import OrderShipmentBatch, SalesOrder
+from app.modules.order.model import (
+    OrderShipmentBatch,
+    OrderShipmentBatchItem,
+    SalesOrder,
+    SalesOrderItem,
+)
 from app.modules.payment.model import PaymentRecord
 
 #: 口径说明与数据来源——文档要求随实际值一起保存/返回，不能只存在于开发脑子里
 SOURCE_NOTE = "CRM 业务单据实时聚合（不读聚水潭、不做二次录入）"
+#: 归属政策（`CRM完整实现方案.md:61`：交接后**保留历史业绩归属**）。
+#: 业绩口径 = 签单归属（`sales_owner_id`）：钱算签单人。
+#: 应收/账龄页是责任口径（当前负责人）——两页的数不该相等，但**同一页内**
+#: 计划/实绩/差额必须同源，否则会出现"原负责人负未回款"（§4.1.3）。
+ATTRIBUTION_NOTE = (
+    "归属口径：本页为**业绩口径**，按订单**签单归属**（`sales_orders.sales_owner_id`）"
+    "——文档 :61「交接后保留历史业绩归属」，钱算签单人。"
+    "应收/账龄页用的是责任口径（当前负责人），两页的数不该相等"
+)
 BASIS_NOTE = {
     "signed": "签单口径：订单创建月，非取消订单的订单金额",
-    "shipped": "发货口径：该订单首批实际发货日所在月，按订单整单金额归月",
+    "shipped": (
+        "发货口径：按**实际发货批次**分摊——每批金额 = Σ(该批实发数量 × 订单行单价)，"
+        "落在该批 `actual_ship_date` 所在月。不再按首批把整单金额归到一个月（§4.1.4）"
+    ),
     "received": "回款口径：财务确认回款日，只计已确认的回款",
     "repeat": "老客口径：年初固定客户集合（1 月 1 日前已有非取消订单）在本期的订单净额；本期新客不进老客池",
-    "new_by_created": "新客口径一：客户档案在本月新建",
-    "new_by_first_deal": "新客口径二：该客户首笔非取消订单落在本月",
+    "new_by_created": "新客口径一（过程指标）：客户档案在本月新建",
+    "new_by_first_deal": "新客口径二（考核口径）：该客户首笔非取消订单落在本月",
 }
 
 
@@ -83,33 +102,45 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     for month, amount in rows.all():
         _bucket(signed, month, amount)
 
-    # ---- 发货：首批实际发货日所在月（整单归月） ----
+    # ---- 发货：按**实际发货批次 × 行实发数量**分摊到各批次所在月（§4.1.4）----
+    # 原来按"订单首批实际发货日"把**整单金额**归到一个月：10 月发 10 件、11 月发 90 件，
+    # 整单都算进 10 月——分批发货直接错期。现在每批各算各的：
+    # 批次金额 = Σ(该批 `shipped_qty` × 订单行 `unit_price`)，落在该批发货日所在月。
     shipped: dict[str, float] = {}
-    first_ship = (
+    batch_value = (
         select(
             OrderShipmentBatch.order_id.label("order_id"),
-            func.min(OrderShipmentBatch.actual_ship_date).label("first_ship"),
+            OrderShipmentBatch.actual_ship_date.label("ship_date"),
+            func.coalesce(
+                func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
+            ).label("amount"),
         )
+        .select_from(OrderShipmentBatch)
+        .join(
+            OrderShipmentBatchItem,
+            OrderShipmentBatchItem.batch_id == OrderShipmentBatch.id,
+        )
+        .join(SalesOrderItem, SalesOrderItem.id == OrderShipmentBatchItem.order_item_id)
         .where(
             OrderShipmentBatch.status == "shipped",
             OrderShipmentBatch.actual_ship_date.is_not(None),
         )
-        .group_by(OrderShipmentBatch.order_id)
+        .group_by(OrderShipmentBatch.order_id, OrderShipmentBatch.actual_ship_date)
         .subquery()
     )
     rows = await session.execute(
         scope(
             select(
-                func.extract("month", first_ship.c.first_ship),
-                func.coalesce(func.sum(SalesOrder.total_amount), 0),
+                func.extract("month", batch_value.c.ship_date),
+                func.coalesce(func.sum(batch_value.c.amount), 0),
             )
-            .select_from(SalesOrder)
-            .join(first_ship, first_ship.c.order_id == SalesOrder.id)
+            .select_from(batch_value)
+            .join(SalesOrder, SalesOrder.id == batch_value.c.order_id)
             .where(
                 SalesOrder.status != "cancelled",
-                func.extract("year", first_ship.c.first_ship) == year,
+                func.extract("year", batch_value.c.ship_date) == year,
             )
-            .group_by(func.extract("month", first_ship.c.first_ship)),
+            .group_by(func.extract("month", batch_value.c.ship_date)),
             sales_owner,
         )
     )
@@ -219,6 +250,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
             {"month": m, "value": int(new_by_first_deal.get(m, 0))} for m in months
         ],
         "basis_note": BASIS_NOTE,
+        "attribution_note": ATTRIBUTION_NOTE,
         "source_note": SOURCE_NOTE,
     }
 

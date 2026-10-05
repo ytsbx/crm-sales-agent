@@ -22,16 +22,25 @@
 import asyncio
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.deps import CurrentUser
-from app.modules.order.model import OrderShipmentBatch, SalesOrder
+from app.modules.order.model import (
+    OrderShipmentBatch,
+    OrderShipmentBatchItem,
+    SalesOrder,
+    SalesOrderItem,
+)
 from app.modules.payment.model import PaymentRecord
-from app.modules.user.model import User
+# 只为了让 SQLAlchemy 认得 `sales_order_items.sku_id` 指向的 `skus` 表：
+# 建夹具时 mapper 要解析外键，目标表的模型没导入就报 NoReferencedTableError
+# （10-交接文档 第八节第 7 类坑）。
+from app.modules.product.model import Sku  # noqa: F401
+from app.modules.user.model import Department, User
 
 FAILURES = []
 PREFIX = 'CHKTGT'
@@ -55,9 +64,14 @@ async def cleanup():
     async with SessionLocal() as s:
         cust = "(select id from customers where name like :p)"
         order = f"(select id from sales_orders where customer_id in {cust})"
+        batch = f"(select id from order_shipment_batches where order_id in {order})"
         for sql in (
+            # 子表先删：批次明细有外键指向批次（§4.1.4 的夹具会建明细）
+            f"delete from order_shipment_batch_items where batch_id in {batch}",
             f"delete from order_shipment_batches where order_id in {order}",
             f"delete from payment_records where order_id in {order}",
+            # 订单明细也是子表（§4.1.4 的分摊夹具要建它才有金额可算）
+            f"delete from sales_order_items where order_id in {order}",
             f"delete from sales_orders where customer_id in {cust}",
             "delete from customers where name like :p",
             "delete from users where username like :u",
@@ -88,6 +102,9 @@ async def main():
                           pool_status='private', created_at=datetime(YEAR, 2, 1, tzinfo=UTC))
         s.add_all([veteran, rookie])
         await s.flush()
+        # 存成普通变量：`commit()` 会让 ORM 属性过期，异步会话里再读 `veteran.id`
+        # 会触发懒加载并报 MissingGreenlet（10-交接文档 第八节第 3 条）
+        veteran_id = veteran.id
 
         def order(customer, amount, created_at, seq):
             # order_no 必须唯一：早先按 customer_id 拼，同一个客户两单直接撞唯一约束
@@ -104,19 +121,73 @@ async def main():
         order(veteran, '400', datetime(YEAR, 3, 10, tzinfo=UTC), 'B')
         rookie_this_year = order(rookie, '700', datetime(YEAR, 4, 5, tzinfo=UTC), 'C')
         await s.flush()
+        # 发货口径现在是**按批次分摊**（§4.1.4）：批次必须带明细，否则算不出金额。
+        # 新客那单：7 件 × 100 元 = 700，一批发完。
+        rookie_item = SalesOrderItem(
+            order_id=rookie_this_year.id, quantity=Decimal('7'),
+            unit_price=Decimal('100'), amount=Decimal('700'),
+        )
+        s.add(rookie_item)
+        await s.flush()
         # 新客那单发了货、也回了款；老客 3 月那单只签单，用来区分三个口径
+        rookie_batch = OrderShipmentBatch(
+            order_id=rookie_this_year.id, batch_no=1, status='shipped',
+            actual_ship_date=date(YEAR, 4, 20),
+            created_at=datetime(YEAR, 4, 20, tzinfo=UTC),
+        )
+        s.add(rookie_batch)
+        await s.flush()
         s.add_all([
-            OrderShipmentBatch(
-                order_id=rookie_this_year.id, batch_no=1, status='shipped',
-                actual_ship_date=datetime(YEAR, 4, 20, tzinfo=UTC).date(),
-                created_at=datetime(YEAR, 4, 20, tzinfo=UTC),
+            OrderShipmentBatchItem(
+                batch_id=rookie_batch.id, order_item_id=rookie_item.id,
+                planned_qty=Decimal('7'), shipped_qty=Decimal('7'),
             ),
             PaymentRecord(
                 order_id=rookie_this_year.id, received_amount=Decimal('700'),
-                received_date=datetime(YEAR, 5, 6, tzinfo=UTC).date(),
+                received_date=date(YEAR, 5, 6),
                 status='confirmed', created_at=datetime(YEAR, 5, 6, tzinfo=UTC),
             ),
         ])
+
+        # §4.1.4 的场景夹具：一张 1000 元的单，**10 月发 10 件、11 月发 90 件**。
+        # 旧实现按首批把整单算进 10 月，分批发货直接错期。
+        split_customer = Customer(
+            name=f'{PREFIX}分批客-{stamp}', owner_id=owner_id, status='active',
+            pool_status='private', created_at=datetime(YEAR, 1, 5, tzinfo=UTC),
+        )
+        s.add(split_customer)
+        await s.flush()
+        split_order = SalesOrder(
+            order_no=f'{PREFIX}{stamp}SPLIT', customer_id=split_customer.id,
+            owner_id=owner_id, sales_owner_id=owner_id, total_amount=Decimal('1000'),
+            currency='CNY', status='completed',
+            # 签单月放在 8 月：发货月由批次决定（10/11 月），签单月不掺进 9 月的团队目标用例
+            created_at=datetime(YEAR, 8, 1, tzinfo=UTC),
+        )
+        s.add(split_order)
+        await s.flush()
+        split_item = SalesOrderItem(
+            order_id=split_order.id, quantity=Decimal('100'),
+            unit_price=Decimal('10'), amount=Decimal('1000'),
+        )
+        s.add(split_item)
+        await s.flush()
+        for seq, (qty, month_no, day) in enumerate(
+            ((Decimal('10'), 10, 15), (Decimal('90'), 11, 20)), start=1
+        ):
+            batch = OrderShipmentBatch(
+                order_id=split_order.id, batch_no=seq, status='shipped',
+                actual_ship_date=date(YEAR, month_no, day),
+                created_at=datetime(YEAR, month_no, day, tzinfo=UTC),
+            )
+            s.add(batch)
+            await s.flush()
+            s.add(
+                OrderShipmentBatchItem(
+                    batch_id=batch.id, order_item_id=split_item.id,
+                    planned_qty=qty, shipped_qty=qty,
+                )
+            )
         await s.commit()
 
         data = await target_bases.annual_bases(s, user, YEAR)
@@ -125,10 +196,22 @@ async def main():
         print('=== 1. 三个销售额口径真的分开 ===')
         check('3 月签单含老客那单', month('signed', '03'), 400.0)
         check('4 月签单含新客那单', month('signed', '04'), 700.0)
-        check('发货口径按"首批实际发货日"归到 4 月', month('shipped', '04'), 700.0)
+        check('发货口径按批次分摊到 4 月', month('shipped', '04'), 700.0)
         check('发货口径不在签单月重复计一次', month('shipped', '03'), 0.0)
         check('回款口径按财务确认日归到 5 月', month('received', '05'), 700.0)
         check('回款口径与签单月不同（三口径确实分开）', month('received', '04'), 0.0)
+
+        print('=== 1.1 分批发货按批次分摊，不按首批把整单归一个月（§4.1.4）===')
+        # 一张 1000 元的单：10 月发 10 件（100 元）、11 月发 90 件（900 元）。
+        # 旧实现取"首批实际发货日"，整单 1000 全落在 10 月——11 月的业绩凭空少 900。
+        check('10 月只算那一批（10 件 × 10 元）', month('shipped', '10'), 100.0)
+        check('11 月算另一批（90 件 × 10 元）', month('shipped', '11'), 900.0)
+        check('两批合计 = 整单金额', month('shipped', '10') + month('shipped', '11'), 1000.0)
+        check_true(
+            '整单没有被整笔算进首批那个月（旧实现这里是 1000）',
+            month('shipped', '10') != 1000.0,
+            f"10月={month('shipped', '10')}",
+        )
 
         print('=== 2. 老客池期初固定：本期新客不进池 ===')
         check('3 月老客净额 = 老客那单', month('repeat_net', '03'), 400.0)
@@ -161,9 +244,28 @@ async def main():
         result = await targets_svc.targets_with_actuals(s, user, YEAR)
         rows = result['rows'] if isinstance(result, dict) else result
         with_target = next(r for r in rows if r.get('sales_target') == 1000.0)
-        check('差额 = 实际 − 目标', with_target['sales_variance'], -600.0)
-        check('达成率 = 实际 / 目标', with_target['sales_achievement'], 0.4)
+        # 考核主口径 = **确认回款**（已确认 2026-10-05）。3 月那单的钱 5 月才确认，
+        # 所以 3 月的考核值是 0；签单额 400 照常展示但**不进差额**（§4.3 明确要求）。
+        check('考核口径是确认回款', result['assess_basis'], 'received')
+        check('考核口径标签', result['assess_basis_label'], '确认回款')
+        check('3 月考核值 = 回款 0（钱 5 月才确认）', with_target['assess_actual'], 0.0)
+        check('差额 = 考核值(回款) − 目标', with_target['sales_variance'], -1000.0)
+        check('达成率 = 考核值 / 目标', with_target['sales_achievement'], 0.0)
+        check('签单额照常展示（只是不进差额）', with_target['sales_actual'], 400.0)
+        check_true(
+            '差额确实不是用签单额算的（否则会是 -600）',
+            with_target['sales_variance'] != -600.0,
+            f"variance={with_target['sales_variance']}",
+        )
         check('新客差额', with_target['new_customer_variance'], -2)
+        # §4.3：目标值、指标定义版本、实际值、差额、数据来源、计算时间都要能拿到
+        check_true('有指标定义版本', bool(result.get('metric_basis_version')),
+                   str(result.get('metric_basis_version')))
+        check_true('有计算时间', bool(result.get('computed_at')), str(result.get('computed_at')))
+        check_true('有数据来源清单', bool(result.get('sources')),
+                   str(list((result.get('sources') or {}).keys()))[:60])
+        check_true('有归属口径说明', bool(result.get('attribution_note')),
+                   str(result.get('attribution_note'))[:40])
         zero_row = next(r for r in rows if not r.get('sales_target'))
         check_true(
             '零基期不给百分比（文档场景17 明确要求）',
@@ -292,6 +394,83 @@ async def main():
         await s.execute(
             text('delete from sales_targets where period in (:p1, :p2)'),
             {'p1': f'{YEAR}-07', 'p2': f'{YEAR}-08'},
+        )
+        await s.commit()
+
+        # === 7. 团队目标与个人目标不混算（§4.1.1）===
+        print('=== 7. 团队目标与个人目标不混算 ===')
+        # 旧实现的过滤是 `or_(user_id == 我, user_id IS NULL)`：
+        #   ① `user_id IS NULL` 一行全收 → **别的部门**的团队目标也进了我的列表；
+        #   ② 只比 `我` → **同团队同事**的个人目标全看不到。
+        dept_a = Department(name=f'{PREFIX}甲部-{stamp}')
+        dept_b = Department(name=f'{PREFIX}乙部-{stamp}')
+        s.add_all([dept_a, dept_b])
+        await s.flush()
+        # 全部存成局部 id：后面有 commit，ORM 属性会过期、异步会话里再读就 MissingGreenlet
+        dept_a_id, dept_b_id = dept_a.id, dept_b.id
+        peer = User(name=f'{PREFIX}同事-{stamp}', username=f'{PREFIX.lower()}_peer_{stamp}',
+                    password_hash='x', status='active', department_id=dept_a_id)
+        outsider = User(name=f'{PREFIX}外部门-{stamp}',
+                        username=f'{PREFIX.lower()}_out_{stamp}',
+                        password_hash='x', status='active', department_id=dept_b_id)
+        s.add_all([peer, outsider])
+        await s.flush()
+        peer_id, outsider_id = peer.id, outsider.id
+        boss = await s.get(User, owner_id)
+        boss.department_id = dept_a_id
+
+        target_month = f'{YEAR}-09'
+        s.add_all([
+            SalesTarget(period=target_month, user_id=None, department_id=dept_a_id,
+                        sales_target=Decimal('5000'), created_at=datetime.now(UTC)),
+            SalesTarget(period=target_month, user_id=peer_id,
+                        sales_target=Decimal('300'), created_at=datetime.now(UTC)),
+            SalesTarget(period=target_month, user_id=None, department_id=dept_b_id,
+                        sales_target=Decimal('9999'), created_at=datetime.now(UTC)),
+        ])
+        # 团队目标的实绩只算**本部门成员**：甲部主管本人的 500 要算，乙部那单 1111 不能算
+        s.add_all([
+            SalesOrder(order_no=f'{PREFIX}{stamp}D9A', customer_id=veteran_id,
+                       owner_id=owner_id, sales_owner_id=owner_id,
+                       total_amount=Decimal('500'), currency='CNY', status='completed',
+                       created_at=datetime(YEAR, 9, 12, tzinfo=UTC)),
+            SalesOrder(order_no=f'{PREFIX}{stamp}D9B', customer_id=veteran_id,
+                       owner_id=outsider_id, sales_owner_id=outsider_id,
+                       total_amount=Decimal('1111'), currency='CNY', status='completed',
+                       created_at=datetime(YEAR, 9, 20, tzinfo=UTC)),
+        ])
+        await s.commit()
+
+        # ① 可见性：甲部主管（department 范围）
+        manager = CurrentUser(boss, permissions=set(), roles=[], data_scope='department')
+        mgr_rows = (await targets_svc.targets_with_actuals(s, manager, YEAR))['rows']
+        seen_depts = {r.get('department_id') for r in mgr_rows if r.get('department_id')}
+        seen_users = {r.get('user_id') for r in mgr_rows if r.get('user_id')}
+        check('本部门的团队目标能看到', dept_a_id in seen_depts, True)
+        check('**别的部门**的团队目标不该出现（旧实现会带进来）',
+              dept_b_id in seen_depts, False)
+        check('同团队同事的个人目标能看到（旧实现只看自己）', peer_id in seen_users, True)
+        check('外部门同事的个人目标不该出现', outsider_id in seen_users, False)
+
+        # ② 实绩口径：团队目标只算本部门成员。用 all 范围看，避免数据范围先把外部门过滤掉，
+        #    否则"算错也没人发现"（这正是这条断言要防的）。
+        admin = CurrentUser(boss, permissions=set(), roles=[], data_scope='all')
+        admin_rows = (await targets_svc.targets_with_actuals(s, admin, YEAR))['rows']
+        team_a_row = next(r for r in admin_rows if r.get('department_id') == dept_a_id)
+        check('团队目标实绩只算本部门成员（500，不含外部门 1111）',
+              team_a_row['sales_actual'], 500.0)
+
+        # 收干净：users 有外键指向 departments，先摘引用再删部门
+        await s.execute(
+            text('update users set department_id = null where department_id in (:a, :b)'),
+            {'a': dept_a_id, 'b': dept_b_id},
+        )
+        await s.execute(
+            text('delete from sales_targets where period = :p'), {'p': target_month}
+        )
+        await s.execute(
+            text('delete from departments where id in (:a, :b)'),
+            {'a': dept_a_id, 'b': dept_b_id},
         )
         await s.commit()
 

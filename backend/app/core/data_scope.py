@@ -74,6 +74,26 @@ async def scoped_owner_ids(session: AsyncSession, user: ScopeUser) -> list[int] 
     return [user.id]
 
 
+async def department_member_ids(session: AsyncSession, department_id: int) -> list[int]:
+    """某部门（**含全部下级**）的成员 id。
+
+    为什么需要它：团队目标的计划、实绩、差额必须用**同一个成员集合**。
+    原来团队目标行（`user_id` 为空）的实际值走的是"可见范围合计"，
+    于是部门目标配上公司数字——达成率永远好看，也永远看不出部门自己做得怎么样
+    （第三批 §4.1.1）。与 `scoped_owner_ids` 共用同一套递归口径，
+    不在这里另写一份部门树展开。
+    """
+    base = select(Department.id).where(Department.id == department_id)
+    subtree = base.cte("dept_subtree_members", recursive=True)
+    subtree_ids = select(subtree.c.id).union_all(
+        select(Department.id).join(subtree, Department.parent_id == subtree.c.id)
+    )
+    rows = await session.execute(
+        select(User.id).where(User.department_id.in_(subtree_ids))
+    )
+    return list(rows.scalars().all())
+
+
 async def ensure_in_scope(
     session: AsyncSession,
     user: ScopeUser,
