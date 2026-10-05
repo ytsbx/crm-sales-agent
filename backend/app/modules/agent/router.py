@@ -13,6 +13,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.agent import insights, runtime
+from app.modules.agent.commentary import build_commentary
 from app.modules.agent.model import (
     ACTION_STATUS_LABEL,
     RISK_LABEL,
@@ -583,17 +584,18 @@ async def list_tools(
 # 永远可用、可测试；模型只负责多给一段人话叙述。
 # 详见 insights.py 的模块说明。
 
-def _with_commentary(payload: dict) -> dict:
-    """补上 `commentary` 字段。
+async def _with_commentary(topic: str, payload: dict) -> dict:
+    """补上 `commentary` 字段：让模型把已经算好的事实讲成人话。
 
-    没配模型时给 `None` + 说明原因 —— 而不是让整个接口 422，
-    那样"回款风险"这种纯统计能力就被一个外部服务的存在与否绑死了。
+    返回给前端的永远是「统计结果 + 可选的叙述」：
+    模型没配、超时、报错，都只是 `commentary` 为 `None` 且 `commentary_note`
+    写清原因 —— 而不是让整个接口失败。否则"回款风险"这种纯统计能力
+    就被一个外部服务的状态绑死了。
+
+    `topic` 决定给模型的关注点（同一份数据，客户摘要和商机分析讲法不同）。
     """
-    return {
-        **payload,
-        "commentary": None,
-        "commentary_note": insights.model_commentary_note(),
-    }
+    commentary, note = await build_commentary(topic, payload)
+    return {**payload, "commentary": commentary, "commentary_note": note}
 
 
 @router.post("/agent/customer-summary")
@@ -606,7 +608,7 @@ async def customer_summary(
     result = await insights.customer_summary(
         session, user, customer_id=payload.customer_id
     )
-    return ok(_with_commentary(result))
+    return ok(await _with_commentary("customer-summary", result))
 
 
 @router.post("/agent/opportunity-analysis")
@@ -619,7 +621,7 @@ async def opportunity_analysis(
     result = await insights.opportunity_analysis(
         session, user, opportunity_id=payload.opportunity_id
     )
-    return ok(_with_commentary(result))
+    return ok(await _with_commentary("opportunity-analysis", result))
 
 
 @router.post("/agent/product-recommendation")
@@ -636,7 +638,7 @@ async def product_recommendation(
         opportunity_id=payload.opportunity_id,
         limit=payload.limit,
     )
-    return ok(_with_commentary(result))
+    return ok(await _with_commentary("product-recommendation", result))
 
 
 @router.post("/agent/pricing-analysis")
@@ -653,7 +655,7 @@ async def pricing_analysis(
         quantity=payload.quantity,
         customer_id=payload.customer_id,
     )
-    return ok(_with_commentary(result))
+    return ok(await _with_commentary("pricing-analysis", result))
 
 
 @router.post("/agent/quote-draft")
@@ -669,7 +671,7 @@ async def quote_draft(
         opportunity_id=payload.opportunity_id,
         customer_id=payload.customer_id,
     )
-    return ok(_with_commentary(result))
+    return ok(await _with_commentary("quote-draft", result))
 
 
 @router.post("/agent/followup-suggestion")
@@ -682,7 +684,7 @@ async def followup_suggestion(
     result = await insights.followup_suggestion(
         session, user, customer_id=payload.customer_id, lead_id=payload.lead_id
     )
-    return ok(_with_commentary(result))
+    return ok(await _with_commentary("followup-suggestion", result))
 
 
 @router.post("/agent/risk-analysis")
@@ -697,4 +699,4 @@ async def risk_analysis(
     没配模型也照样能报警 —— 这正是它不该依赖大模型的原因。
     """
     result = await insights.receivable_risk(session, user, order_id=payload.order_id)
-    return ok(_with_commentary(result))
+    return ok(await _with_commentary("risk-analysis", result))

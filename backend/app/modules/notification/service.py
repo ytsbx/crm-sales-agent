@@ -13,6 +13,7 @@
 `dispatch_pending()` 自己开一个会话，投递结果（成功/失败/跳过）写回同一行。
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -25,6 +26,7 @@ from app.modules.notification.model import (
     LEVEL_NORMAL,
     LEVEL_URGENT,
     Notification,
+    BusinessEvent,
 )
 from app.modules.user.model import Permission, Role, User, role_permissions, user_roles
 
@@ -301,6 +303,123 @@ async def notify_roles(
     return sent
 
 
+async def materialize_business_notifications(
+    session: AsyncSession, *, event_id: int | None = None, limit: int = 100,
+) -> dict:
+    """把已持久化业务事件转为主管通知；行锁与同事务完成标记防止重复。
+
+    独立 savepoint：通知生成失败只回滚通知，业务事件保留为待重试。
+    不在这里 commit 或请求企微。调度与提交后的投递入口会再次处理积压事件。
+    """
+    from app.core.data_scope import scoped_owner_ids
+    from app.core.deps import CurrentUser
+    from app.modules.customer.model import Customer
+    from app.modules.followup.service import MANAGER_ROLE_CODES
+    from app.modules.lead.model import Lead
+    from app.modules.opportunity.model import Opportunity
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
+    from app.modules.sample.model import SampleRequest
+    from app.modules.user.service import get_user_permission_codes, get_user_roles, resolve_data_scope
+
+    stmt = select(BusinessEvent).where(
+        BusinessEvent.notification_payload.is_not(None),
+        BusinessEvent.notification_processed_at.is_(None),
+    )
+    if event_id is not None:
+        stmt = stmt.where(BusinessEvent.id == event_id)
+    events = (await session.execute(stmt.order_by(BusinessEvent.id).limit(limit)
+                                   .with_for_update(skip_locked=True))).scalars().all()
+    result = {"processed": 0, "failed": 0, "notifications": 0}
+    models = {"customer": Customer, "lead": Lead, "opportunity": Opportunity,
+              "quote": Quote, "order": SalesOrder, "sample": SampleRequest}
+    for event in events:
+        saved_id = event.id
+        try:
+            async with session.begin_nested():
+                payload = event.notification_payload
+                source_type, source_id = payload['source_type'], payload['source_id']
+                model = models.get(source_type)
+                source = await session.get(model, source_id) if model and source_id else None
+                customer = await session.get(Customer, payload['customer_id']) if payload.get('customer_id') else None
+                stmt_users = select(User).join(user_roles, user_roles.c.user_id == User.id).join(
+                    Role, Role.id == user_roles.c.role_id
+                ).where(Role.code.in_(MANAGER_ROLE_CODES), User.status == 'active').distinct()
+                if payload.get('department_id') is not None:
+                    stmt_users = stmt_users.where(User.department_id == payload['department_id'])
+                recipients = (await session.execute(stmt_users)).scalars().all()
+                channels = await channel_settings(session)
+                policy = await level_policy(session)
+                count = 0
+                for recipient in recipients:
+                    if recipient.id == payload.get('exclude_user_id') or source is None:
+                        continue
+                    roles = await get_user_roles(session, recipient.id)
+                    viewer = CurrentUser(recipient, await get_user_permission_codes(session, recipient.id),
+                                         [role.code for role in roles], resolve_data_scope(roles))
+                    is_admin = 'admin' in viewer.roles
+                    if not is_admin and not viewer.has(f'{source_type}:view'):
+                        continue
+                    if payload.get('required_permission') and not is_admin and not viewer.has(payload['required_permission']):
+                        continue
+                    if source_type == 'quote' and source.deleted_at is not None:
+                        continue
+                    owner_ids = await scoped_owner_ids(session, viewer)
+                    if owner_ids is not None and source.owner_id not in owner_ids:
+                        if source_type not in ('customer', 'lead') or source.owner_id is not None:
+                            continue
+                    if customer:
+                        if not is_admin and not viewer.has('customer:view'):
+                            continue
+                        if owner_ids is not None and customer.owner_id is not None and customer.owner_id not in owner_ids:
+                            continue
+                    row = await notify(session, user_id=recipient.id, type_='followup',
+                                       title=payload['title'], content=payload['content'],
+                                       business_type=source_type, business_id=source_id,
+                                       channel_settings_override=channels, level_policy_override=policy)
+                    if row is not None:
+                        row.business_event_id = event.id
+                    count += int(row is not None)
+                event.notification_processed_at = datetime.now(UTC)
+                event.notification_error = None
+                await session.flush()
+            result['processed'] += 1
+            result['notifications'] += count
+        except Exception as exc:
+            # savepoint 已撤掉本事件所有部分生成的通知，待办和业务事实仍在。
+            await session.refresh(event)
+            event.notification_error = f'{type(exc).__name__}: {exc}'[:255]
+            result['failed'] += 1
+            logging.getLogger('crm.notification').warning('主管通知生成失败（event=%s）：%s', saved_id, exc)
+    return result
+
+
+async def _check_process_recipients(session: AsyncSession, rows: list[Notification]) -> set[int]:
+    from app.core.deps import CurrentUser
+    from app.modules.notification.visibility import process_notification_filter
+    from app.modules.user.service import get_user_permission_codes, get_user_roles, resolve_data_scope
+
+    allowed = {row.id for row in rows if row.business_event_id is None}
+    recipients = {row.user_id for row in rows if row.business_event_id is not None}
+    for uid in recipients:
+        user = await session.get(User, uid)
+        if user is None or user.status != 'active':
+            continue
+        roles = await get_user_roles(session, uid)
+        viewer = CurrentUser(user, await get_user_permission_codes(session, uid),
+                             [r.code for r in roles], resolve_data_scope(roles))
+        ids = (await session.execute(select(Notification.id).where(
+            Notification.id.in_([row.id for row in rows if row.user_id == uid]),
+            await process_notification_filter(session, viewer),
+        ))).scalars().all()
+        allowed.update(ids)
+    for row in rows:
+        if row.id not in allowed:
+            row.wecom_status = 'skipped'
+            row.wecom_error = '接收人已无原单查看权限，未投递'
+    return allowed
+
+
 async def dispatch_pending(
     session: AsyncSession,
     *,
@@ -322,6 +441,9 @@ async def dispatch_pending(
     from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client
 
     async with SessionLocal() as own:
+        if not only_ids:
+            await materialize_business_notifications(own, limit=limit)
+            await own.commit()
         policy = await retry_policy(own)
         now = datetime.now(UTC)
         stmt = select(Notification)
@@ -355,6 +477,7 @@ async def dispatch_pending(
                 row.wecom_error = "推送已临时关闭（WECOM_PUSH_OFF）"
             await own.commit()
             return {"attempted": len(rows), "sent": 0, "skipped": len(rows), "failed": 0}
+        visible_ids = await _check_process_recipients(own, rows)
         users = {
             user.id: user
             for user in (
@@ -366,6 +489,9 @@ async def dispatch_pending(
 
         sent = skipped = failed = 0
         for row in rows:
+            if row.id not in visible_ids:
+                skipped += 1
+                continue
             user = users.get(row.user_id)
             if not ready or user is None or not user.wecom_userid:
                 # 没配置或这个人没绑企微：标 skipped 而不是 failed，
@@ -452,6 +578,12 @@ async def send_digest(
         if not rows:
             return {"users": 0, "messages": 0, "items": 0, "sent": 0, "skipped": 0, "failed": 0}
 
+        visible_ids = await _check_process_recipients(own, rows)
+        denied = sum(row.id not in visible_ids for row in rows)
+        rows = [row for row in rows if row.id in visible_ids]
+        if not rows:
+            await own.commit()
+            return {"users": 0, "messages": 0, "items": denied, "sent": 0, "skipped": denied, "failed": 0}
         grouped: dict[int, list[Notification]] = {}
         for row in rows:
             grouped.setdefault(row.user_id, []).append(row)
@@ -465,7 +597,8 @@ async def send_digest(
 
         client = get_client()
         ready = bool(app_settings.wecom_agent_id and app_settings.wecom_contact_ready)
-        messages = items = sent = skipped = failed = 0
+        messages = sent = failed = 0
+        items = skipped = denied
 
         for uid in user_ids:
             batch = grouped[uid]
@@ -588,7 +721,11 @@ async def delivery_failure_summary(session: AsyncSession) -> dict:
                 )
             )
         ).scalar_one()
+    business_pending = (await session.execute(select(func.count(BusinessEvent.id)).where(
+        BusinessEvent.notification_payload.is_not(None), BusinessEvent.notification_processed_at.is_(None),
+    ))).scalar_one()
     return {
+        "business_pending": int(business_pending),
         "pending": int(counts.get("pending", 0) or 0),
         "sent": int(counts.get("sent", 0) or 0),
         "failed": int(counts.get("failed", 0) or 0),

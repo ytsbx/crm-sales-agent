@@ -415,9 +415,12 @@ def main():
     check('撤回审批', res.get('code'), 0)
     call('DELETE', f'/quotes/{lisi_quote_id}', token=lisi)
 
-    # A12 收紧后：send-email 也要求版本已通过审批。若该版本还没提交过审批
-    # （此前用例路径没走到），这里补一次提交——正常价会直接自动通过。
-    call('POST', f'/quote-versions/{version_id}/submit-approval', token=admin, body={})
+    # §4 已复制到 V3；历史 V1 不能再借审批改变整张报价状态。
+    # 发送登记与失效用当前版走真实流程，历史版本仍用于上述快照/复制回归。
+    version_id = source_version_id
+    status, res = call('POST', f'/quote-versions/{version_id}/submit-approval', token=admin, body={})
+    check('当前版本通过审批', res.get('code'), 0)
+    check('当前版本审批状态', (res.get('data') or {}).get('version', {}).get('approval_status'), 'approved')
 
     status, res = call(
         'POST',

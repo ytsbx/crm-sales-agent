@@ -104,6 +104,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   })
 
   const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
     void queryClient.invalidateQueries({ queryKey: ['orders'] })
     void queryClient.invalidateQueries({ queryKey: ['receivables'] })
     void queryClient.invalidateQueries({ queryKey: ['payments'] })
@@ -312,6 +313,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     <div className="page-container">
       <PageHeader
         title="订单中心"
+        extra={<Link to="/order-drafts"><Button>订单草稿</Button></Link>}
         subtitle="成交报价转成订单后，履约由 ERP/MES 负责、回款由财务确认；CRM 只保留关键节点"
       />
 

@@ -85,6 +85,25 @@ def _esc(value: Any) -> str:
     return escape(_text(value))
 
 
+def _part_spec(row: dict[str, Any]) -> str:
+    """明细行的「车间依据」：材质 / 工艺 / 图纸版本，拼成一格。
+
+    为什么拼一格而不是铺三列：明细表本来就有名字/规格/数量/单位/备注，
+    再铺三列会把每列挤到放不下中文。而这三项车间总是连起来用
+    （用什么料、怎么做、按哪版图），合成一格读起来反而更顺。
+    """
+    parts = [
+        str(value).strip()
+        for value in (row.get("material"), row.get("craft"))
+        if value and str(value).strip()
+    ]
+    text = " / ".join(parts)
+    version = str(row.get("drawing_version") or "").strip()
+    if version:
+        text = f"{text}（图纸 {version}）" if text else f"图纸 {version}"
+    return text
+
+
 def _items_table(rows: list[list[str]], headers: list[str], widths: list[float]) -> Table:
     table = Table([headers, *rows], colWidths=widths, repeatRows=1)
     table.setStyle(
@@ -157,22 +176,31 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
     items = data.get("items") or []
     flow.append(Paragraph("明细", style["section"]))
     if items:
-        flow.append(
-            _items_table(
-                [
-                    [
-                        _text(row.get("name")),
-                        _text(row.get("spec")),
-                        _text(row.get("quantity")),
-                        _text(row.get("unit")),
-                        _text(row.get("remark")),
-                    ]
-                    for row in items
-                ],
-                ["产品 / 需求", "规格", "数量", "单位", "备注"],
-                [50 * mm, 38 * mm, 20 * mm, 15 * mm, 35 * mm],
-            )
-        )
+        # 「车间依据」（材质/工艺/图纸版本）是打样单才有的，逐行不同。
+        # 下单文件与打样单共用这个渲染函数，所以**只有真有值时才加这一列**——
+        # 否则会给下单文件白加一列空格子。
+        has_part_spec = any(_part_spec(row) for row in items)
+        headers = ["产品 / 需求", "规格", "数量", "单位"]
+        widths = [42 * mm, 30 * mm, 15 * mm, 12 * mm]
+        if has_part_spec:
+            headers.append("材质 / 工艺 / 图纸")
+            widths.append(36 * mm)
+        headers.append("备注")
+        widths.append(29 * mm if has_part_spec else 54 * mm)
+
+        rows = []
+        for row in items:
+            cells = [
+                _text(row.get("name")),
+                _text(row.get("spec")),
+                _text(row.get("quantity")),
+                _text(row.get("unit")),
+            ]
+            if has_part_spec:
+                cells.append(_part_spec(row))
+            cells.append(_text(row.get("remark")))
+            rows.append(cells)
+        flow.append(_items_table(rows, headers, widths))
     else:
         flow.append(Paragraph("（无明细）", style["body"]))
 

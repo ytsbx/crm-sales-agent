@@ -9,7 +9,6 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
-from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
 from app.modules.inquiry import service as svc
 from app.modules.inquiry.model import CustomInquiry
@@ -50,12 +49,18 @@ async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry]) -> dict[i
 async def list_inquiries(
     status: str | None = None,
     keyword: str | None = None,
+    opportunity_id: int | None = None,
+    customer_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = svc.not_deleted(select(CustomInquiry))
+    if opportunity_id is not None:
+        stmt = stmt.where(CustomInquiry.opportunity_id == opportunity_id)
+    if customer_id is not None:
+        stmt = stmt.where(CustomInquiry.customer_id == customer_id)
     if status:
         svc.ensure_status(status)
         stmt = stmt.where(CustomInquiry.status == status)
@@ -101,18 +106,17 @@ async def create_inquiry(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    if payload.customer_id:
-        # 数据范围校验（与案例库同源）：只查"客户存在"是不够的——
-        # 有报价权限的人可以把自己的定制需求挂到别人的客户上，把对方的产品要求
-        # 与目标价带进自己的报价单。案例库也踩过同一个坑，那里用的是 get_visible_customer。
-        await customer_service.get_visible_customer(session, user, payload.customer_id)
+    customer_id = await svc.validate_links(session, user, customer_id=payload.customer_id,
+                                           opportunity_id=payload.opportunity_id,
+                                           contact_id=payload.contact_id)
     inquiry = CustomInquiry(
         # 需求编号（场景09）：定制件在打样投产前没有 SKU，报价与打样要靠
         # 这个编号指向同一条需求，否则"这张报价是从哪来的"无从追溯
         inquiry_no=await svc.generate_inquiry_no(session),
         title=payload.title.strip(),
         description=payload.description,
-        customer_id=payload.customer_id,
+        customer_id=customer_id,
+        opportunity_id=payload.opportunity_id,
         contact_id=payload.contact_id,
         quantity=payload.quantity,
         target_price=payload.target_price,
@@ -205,18 +209,20 @@ async def update_inquiry(
     session: AsyncSession = Depends(get_db),
 ):
     inquiry = await svc.get_visible_or_404(session, user, inquiry_id)
+    await session.execute(select(CustomInquiry).where(
+        CustomInquiry.id == (inquiry.root_id or inquiry.id)
+    ).with_for_update())
+    await session.refresh(inquiry)
     data = payload.model_dump(exclude_unset=True)
     if "status" in data and data["status"] is not None:
         svc.ensure_status(data["status"])
     # 改归属同样要过数据范围：不然先把需求建在自己客户上、再 PATCH 客户/商机编号，
     # 一样能把别人的客户与商机挂进来（创建路径的校验挡不住这一步）
-    if data.get("customer_id"):
-        await customer_service.get_visible_customer(session, user, data["customer_id"])
-    if data.get("opportunity_id"):
-        from app.modules.opportunity import service as opportunity_service
-
-        await opportunity_service.get_visible_opportunity(
-            session, user, data["opportunity_id"]
+    if any(field in data for field in ("customer_id", "opportunity_id", "contact_id")):
+        data["customer_id"] = await svc.validate_links(
+            session, user, customer_id=data.get("customer_id", inquiry.customer_id),
+            opportunity_id=data.get("opportunity_id", inquiry.opportunity_id),
+            contact_id=data.get("contact_id", inquiry.contact_id),
         )
     # 字段归属（口径 2026-10-04）：链级字段（客户/联系人/商机/对接报价员）对整条
     # 需求生效，写到链条每一版；版本级字段（标题/描述/数量/目标价/状态/备注）只许
@@ -295,6 +301,10 @@ async def revise_inquiry(
     §3.3："客户改了三次要求，系统只留最新一版，看不出怎么变的"——这一把修的就是它。
     """
     old = await svc.get_visible_or_404(session, user, inquiry_id)
+    await session.execute(select(CustomInquiry).where(
+        CustomInquiry.id == (old.root_id or old.id)
+    ).with_for_update())
+    await session.refresh(old)
 
     # 只能对**链条最新版**再修订：此前不校验，在 v1 上连点两次就生成两条 v2，
     # 历史视图里同版并列，分不清哪条才是当前要求。最新版 = 链条里 version 最大者。

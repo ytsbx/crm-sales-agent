@@ -38,5 +38,17 @@ check_biz_docs
 check_review_regressions
 check_operation_timing
 check_schedule_change
+check_customer_timeline
+check_process_notifications
+check_followup_plan
+check_task_scans
+check_quote_lifecycle
+check_demand_flow
+check_opportunity_links
+check_sample_sources
+check_order_drafts
+check_delivery_planning
+check_contract_documents
+check_attachment_sample_guards
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

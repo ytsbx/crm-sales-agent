@@ -292,7 +292,10 @@ async function createOrderIfEmpty(token, customerId) {
       throw new Error(`测试报价未自动通过审批（状态 ${submitted?.version?.approval_status ?? '未知'}）`)
     }
 
-    // 在一次性数据库内模拟客户接受；此处不发送报价或调用外部服务。
+    // 在一次性数据库内登记虚构的正式发送事实，再模拟客户接受；不调用外部服务。
+    await checkedJson(`/quote-versions/${versionId}/mark-sent`, token, {
+      method: 'POST', body: JSON.stringify({ channel: '本地验收', receiver: '虚构客户' }),
+    })
     await checkedJson(`/quote-versions/${versionId}/accept`, token, { method: 'POST' })
     const converted = await checkedJson(`/quote-versions/${versionId}/convert-to-order`, token, {
       method: 'POST',
@@ -303,6 +306,43 @@ async function createOrderIfEmpty(token, customerId) {
   } catch (error) {
     return { orderId: null, quoteId: null, opportunityId: null, error: error.message }
   }
+}
+
+/** 三类客户过程事实及原单入口，仅用于显式启用夹具的隔离库。 */
+async function createTimelineFixture(token, customerId, skuId) {
+  const post = (path, body) => checkedJson(path, token, {
+    method: 'POST', body: JSON.stringify(body),
+  })
+  const { order_id: orderId } = await post('/orders', {
+    customer_id: customerId, delivery_date: '2026-12-01',
+    items: [{ sku_id: skuId, quantity: 10, unit_price: 100 }],
+  })
+  await checkedJson(`/orders/${orderId}/milestones`, token)
+  const change = await post(`/orders/${orderId}/schedule-changes`, {
+    delivery_kind: 'shipping', new_delivery_date: '2026-12-08', reason: '客户时间线 UI 冒烟',
+  })
+  await post(`/orders/${orderId}/schedule-changes/${change.id}/confirm`, {})
+  const items = await checkedJson(`/orders/${orderId}/items`, token)
+  const batch = await post(`/orders/${orderId}/shipments`, {
+    items: [{ order_item_id: items[0].id, planned_qty: 10 }],
+  })
+  await post(`/orders/${orderId}/shipments/${batch.batch_id}/ship`, { actual_ship_date: '2026-10-05' })
+  const plan = await post(`/orders/${orderId}/receivables`, {
+    plan_name: 'UI 时间线应收', due_date: '2026-12-08', amount: 1000,
+  })
+  const payment = await post('/payments', {
+    receivable_plan_id: plan.id, received_date: '2026-10-05', received_amount: 100,
+  })
+  await post(`/payments/${payment.id}/confirm`, {})
+  const sample = await post('/samples', {
+    customer_id: customerId, items: [{ sku_id: skuId, quantity: 1 }],
+  })
+  await post(`/samples/${sample.id}/approve`, { approved: true })
+  await post(`/samples/${sample.id}/made`, {})
+  await post(`/samples/${sample.id}/ship`, { carrier: 'UI 测试物流', tracking_no: 'UI-SAMPLE' })
+  await post(`/samples/${sample.id}/sign`, {})
+  await post(`/samples/${sample.id}/confirm`, { accepted: true, remark: '客户时间线 UI 验证' })
+  return { orderId, sampleId: sample.id }
 }
 
 /**
@@ -590,7 +630,7 @@ async function main() {
     // 预优化会在正式用例的探测窗口里把页面打成白屏（控制台还被清空），
     // 本地暖环境复现不了——白白背一个"页面打不开"的假警报。
     console.log('—— 预热：无断言过一遍全部页面（触发懒编译/依赖再优化）——')
-    for (const page of PAGES) {
+    for (const page of (process.env.SMOKE_FOLLOWUP_ONLY === '1' || process.env.SMOKE_RULES_ONLY === '1' || process.env.SMOKE_QUOTE_ONLY === '1' || process.env.SMOKE_COPILOT_ONLY === '1' || process.env.SMOKE_DEMAND_ONLY === '1' || process.env.SMOKE_SAMPLE_SOURCE_ONLY === '1' || process.env.SMOKE_ORDER_DRAFT_ONLY === '1' ? [] : PAGES)) {
       await client.send('Page.navigate', { url: `${APP_BASE}${page.path}` })
       for (let i = 0; i < 24; i += 1) {
         const probe = await client.send('Runtime.evaluate', {
@@ -604,7 +644,7 @@ async function main() {
     await sleep(2500) // 等 vite 依赖再优化与其触发的整页刷新彻底安定
     console.log('✓ 预热完成')
 
-    for (const page of PAGES) {
+    for (const page of (process.env.SMOKE_FOLLOWUP_ONLY === '1' || process.env.SMOKE_RULES_ONLY === '1' || process.env.SMOKE_QUOTE_ONLY === '1' || process.env.SMOKE_COPILOT_ONLY === '1' || process.env.SMOKE_DEMAND_ONLY === '1' || process.env.SMOKE_SAMPLE_SOURCE_ONLY === '1' || process.env.SMOKE_ORDER_DRAFT_ONLY === '1' ? [] : PAGES)) {
       await client.send('Page.navigate', { url: `${APP_BASE}${page.path}` })
       // 等页面真的渲染出来（而不是固定 sleep），最多 15 秒
       let rendered = false
@@ -666,6 +706,9 @@ async function main() {
       )
     }
 
+    const timelineFixture = FIXTURES_ENABLED
+      ? await createTimelineFixture(auth.token, customerId, skuId)
+      : null
     const INTERACTIONS = [
       {
         name: '26-opportunity-board',
@@ -705,7 +748,89 @@ async function main() {
       },
     ]
 
-    for (const item of INTERACTIONS) {
+    if (timelineFixture) INTERACTIONS.push({
+      name: '34-customer-timeline', path: `/customers/${customerId}?tab=logs`, clicks: [],
+      expect: ['已由财务确认', '交期变更', '已实发', '查看原单'], expectAll: true,
+      sourcePath: `/orders/${timelineFixture.orderId}`,
+    })
+
+    if (timelineFixture) INTERACTIONS.push({
+      name: '35-customer-sample-source', path: `/customers/${customerId}?tab=logs`, clicks: [],
+      expect: ['制作完成', '已签收', '客户确认：接受', '查看原单'], expectAll: true,
+      sourcePath: `/samples/${timelineFixture.sampleId}`, sourceText: `样品申请 #${timelineFixture.sampleId}`,
+    })
+
+    if (FIXTURES_ENABLED) INTERACTIONS.push({
+      name: '36-followup-required-plan', path: `/customers/${customerId}?tab=followups`,
+      clicks: ['记录跟进'], expect: ['下一步动作 *', '下次跟进时间 *', '保存后自动生成后续待办。'],
+      expectAll: true, followupPlan: true,
+    }, {
+      name: '37-followup-exemption', path: `/customers/${customerId}?tab=followups`,
+      clicks: ['记录跟进'], expect: ['CHKUI免填跟进'], expectAll: true, followupExemption: true,
+    }, {
+      name: '38-followup-scheduled', path: `/customers/${customerId}?tab=followups`,
+      clicks: ['记录跟进'], expect: ['CHKUI计划跟进', 'CHKUI回访客户'], expectAll: true, followupSchedule: true,
+    })
+
+    if (FIXTURES_ENABLED) INTERACTIONS.push({
+      name: '39-settings-rule-save', path: '/settings?tab=rules', clicks: [],
+      expect: ['自动任务规则', '业务规则'], expectAll: true, ruleSave: true,
+    })
+
+    if (FIXTURES_ENABLED) {
+      const lifecycleId = await createSeedQuote(auth.token, customerId)
+      if (!lifecycleId) throw new Error('报价流程验收未创建测试报价')
+      const versions = await checkedJson(`/quotes/${lifecycleId}/versions`, auth.token)
+      const versionId = versions[0].id
+      const submitted = await checkedJson(`/quote-versions/${versionId}/submit-approval`, auth.token, {
+        method: 'POST', body: JSON.stringify({ reason: '虚构 UI 报价流程' }),
+      })
+      if (submitted.version.approval_status !== 'approved') throw new Error('报价流程 UI 夹具未通过审批')
+      INTERACTIONS.push({
+        name: '40-quote-customer-response', path: `/quotes/${lifecycleId}`, clicks: [],
+        expect: ['客户拒绝'], expectAll: true, quoteLifecycle: { quoteId: lifecycleId, versionId },
+      })
+    }
+
+    if (FIXTURES_ENABLED && (auth.user.roles.includes('admin') || auth.user.permissions.includes('agent:use'))) {
+      INTERACTIONS.push({
+        name: '42-workbench-copilot-analysis', path: '/workbench', clicks: [],
+        expect: ['Sales Copilot', '当前上下文：工作台', '分析本月成交冲刺机会'],
+        expectAll: true, workbenchAnalysis: true,
+      })
+    }
+
+    if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
+      const demand = await checkedJson('/opportunities', auth.token, {
+        method: 'POST', body: JSON.stringify({ title: 'CHKUI独立采购需求', customer_id: customerId }),
+      })
+      INTERACTIONS.push({
+        name: '44-opportunity-demand-records', path: `/opportunities/${demand.id}`, clicks: [],
+        expect: ['关联单据', '定制询价及修订', '报价', '打样', '订单'], expectAll: true,
+        demandFlow: { opportunityId: demand.id, customerId },
+      })
+    }
+
+    if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
+      const inquiry = await checkedJson('/custom-inquiries', auth.token, {
+        method: 'POST', body: JSON.stringify({ title: 'CHKUI来源采购', customer_id: customerId, quantity: 10000, description: '原规格' }),
+      })
+      const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, {
+        method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }),
+      })
+      INTERACTIONS.push({ name: '48-sample-source-quantities', path: `/quotes/${quote.quote_id}`, clicks: [],
+        expect: ['原采购数量', '本次样品数量', '打样来源'], expectAll: true,
+        sampleSource: { ...quote, inquiryId: inquiry.id, opportunityId: quote.opportunity_id },
+      })
+    }
+
+    if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
+      const inquiry = await checkedJson('/custom-inquiries', auth.token, { method: 'POST', body: JSON.stringify({ title: 'CHKUI订单准备', customer_id: customerId, quantity: 10000, description: '订单原规格' }) })
+      const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, { method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }) })
+      INTERACTIONS.push({ name: '50-order-draft-flow', path: `/quotes/${quote.quote_id}`, clicks: [], expect: ['订单详情'], orderDraft: { ...quote, inquiryId: inquiry.id } })
+    }
+
+    for (const item of (process.env.SMOKE_ORDER_DRAFT_ONLY === '1' ? INTERACTIONS.filter((item) => item.orderDraft) : process.env.SMOKE_SAMPLE_SOURCE_ONLY === '1' ? INTERACTIONS.filter((item) => item.sampleSource) : process.env.SMOKE_DEMAND_ONLY === '1' ? INTERACTIONS.filter((item) => item.demandFlow) : process.env.SMOKE_COPILOT_ONLY === '1' ? INTERACTIONS.filter((item) => item.workbenchAnalysis) : process.env.SMOKE_QUOTE_ONLY === '1' ? INTERACTIONS.filter((item) => item.quoteLifecycle) : process.env.SMOKE_RULES_ONLY === '1' ? INTERACTIONS.filter((item) => item.ruleSave) : process.env.SMOKE_FOLLOWUP_ONLY === '1' ? INTERACTIONS.filter((item) => item.followupPlan || item.followupExemption || item.followupSchedule) : INTERACTIONS)) {
       if (item.skip) {
         console.log(`- 跳过 ${item.name}（缺少赖以验证的数据）`)
         continue
@@ -747,6 +872,437 @@ async function main() {
       }
       if (optionalSkip) continue
 
+      if (item.orderDraft) {
+        if (!await waitForText(client, '按此版本建订单草稿')) throw new Error('报价缺少草稿入口')
+        await clickByText(client, '按此版本建订单草稿')
+        if (!await waitForText(client, '本次下单数量：')) throw new Error('建草稿弹窗未打开')
+        const quantity = await client.send('Runtime.evaluate', { expression: `document.querySelector('.semi-modal-content .semi-input-number input')?.value`, returnByValue: true })
+        if (Number(quantity.result.value) !== 10000) throw new Error('订单草稿数量没有沿用来源')
+        await clickByText(client, '建立订单草稿')
+        if (!await waitForText(client, '确认正式下单')) throw new Error('订单草稿详情未打开')
+        const drafts = await checkedJson(`/order-drafts?opportunity_id=${item.orderDraft.opportunity_id}`, auth.token)
+        const draft = drafts.items.find(row => row.source_context.id === item.orderDraft.version_id)
+        if (!draft) throw new Error('草稿未关联商机')
+        if ((await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`, auth.token)).total !== 0) throw new Error('创建草稿时错误生成正式订单')
+        const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '50-order-draft-detail.png'), Buffer.from(shot.data, 'base64'))
+        const setQuantity = async value => {
+          const result=await client.send('Runtime.evaluate', { expression: `(() => { const input=document.querySelector('.page-container .semi-input-number input'); if(!input) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input, ${JSON.stringify(''+value)}); input.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`,returnByValue:true })
+          if(!result.result.value) throw new Error('无法编辑草稿数量')
+          await sleep(150); await clickByText(client,'保存草稿'); await sleep(500)
+        }
+        await setQuantity(2)
+        let saved=await checkedJson(`/order-drafts/${draft.id}`,auth.token)
+        if(saved.items[0].quantity!==2 || Number(saved.items[0].source_snapshot.original_quantity)!==10000) throw new Error('修改草稿覆盖了原数量或未保存')
+        await clickByText(client,'生成草稿需求单'); await sleep(600)
+        const docs=await checkedJson(`/biz-docs?order_draft_id=${draft.id}`,auth.token)
+        if(docs.length!==1 || !docs[0].title.includes('草稿')) throw new Error('草稿文件未生成或未标注草稿')
+        await checkedJson(`/quote-versions/${item.orderDraft.version_id}/submit-approval`,auth.token,{method:'POST',body:JSON.stringify({reason:'虚构订单草稿验收'})})
+        await checkedJson(`/quote-versions/${item.orderDraft.version_id}/mark-sent`,auth.token,{method:'POST',body:JSON.stringify({})})
+        await checkedJson(`/quote-versions/${item.orderDraft.version_id}/accept`,auth.token,{method:'POST'})
+        await client.send('Page.navigate',{url:`${APP_BASE}/order-drafts/${draft.id}`}); await waitForText(client,'确认正式下单'); await sleep(400)
+        await client.send('Runtime.evaluate',{expression:`document.querySelector('.page-container .semi-select')?.click()`})
+        await sleep(300)
+        if(await clickByText(client,item.orderDraft.quote_no,{tag:'[role="option"]'})!=='clicked') {
+          const selected=await client.send('Runtime.evaluate',{expression:`(() => { const option=Array.from(document.querySelectorAll('.semi-select-option')).find(n=>n.innerText.includes(${JSON.stringify(item.orderDraft.quote_no)})); if(!option) return false; option.click(); return true; })()`,returnByValue:true})
+          if(!selected.result.value) throw new Error('无法选择客户确认报价')
+        }
+        await sleep(200); await clickByText(client,'确认正式下单')
+        if(!await waitForText(client,'草稿明细、币种或付款条件与客户确认报价不一致')) { const diag=await client.send('Runtime.evaluate',{expression: `JSON.stringify({text:document.body.innerText,buttons:Array.from(document.querySelectorAll('button')).filter(n=>n.innerText.includes('确认正式下单')).map(n=>({text:n.innerText,disabled:n.disabled,aria:n.getAttribute('aria-disabled')}))})`,returnByValue:true}); throw new Error('未观察到数量不符阻断：'+diag.result.value) }
+        await setQuantity(10000)
+        await clickByText(client,'确认正式下单')
+        if(!await waitForText(client,'订单详情')) throw new Error('核对一致后没有进入正式订单')
+        const orders=await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`,auth.token)
+        if(orders.total!==1 || orders.items[0].total_amount!==200000) throw new Error('没有按确认报价建立一张正式订单')
+        if(!await waitForText(client,'CHKUI订单准备')) throw new Error('定制正式订单没有显示需求名称')
+        const formalShot=await client.send('Page.captureScreenshot',{format:'png'})
+        writeFileSync(join(OUT_DIR,'51-order-draft-confirmed.png'),Buffer.from(formalShot.data,'base64'))
+        if (process.env.SMOKE_DELIVERY_PLANNING === '1') {
+          const orderId = orders.items[0].id
+          await clickByText(client, '跟单节点', {tag: '[role="tab"]'}); await sleep(500)
+          await clickByText(client, '交期与计划')
+          if (!await waitForText(client, '交期与跟单计划')) throw new Error('交期计划弹窗未打开')
+          const setInput = async (selector, value) => {
+            const res=await client.send('Runtime.evaluate',{expression:`(() => { const input=document.querySelector(${JSON.stringify(selector)}); if(!input)return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(String(value))}); input.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`,returnByValue:true})
+            if(!res.result.value) throw new Error('无法填写交期计划: '+selector)
+            await sleep(150)
+          }
+          await setInput('.semi-modal-content input', '2026-10-30')
+          await client.send('Runtime.evaluate',{expression:`document.querySelector('.semi-modal-content .semi-select')?.click()`})
+          await sleep(150)
+          await client.send('Runtime.evaluate',{expression:`Array.from(document.querySelectorAll('.semi-select-option')).find(n=>n.innerText.trim()==='到货日')?.click()`})
+          await sleep(150)
+          await setInput('.semi-modal-content .semi-input-number input', 3)
+          await clickByText(client, '预览受影响面')
+          if (!await waitForText(client, '建议发货日：2026-10-27')) throw new Error('到货日没有按运输天数倒排')
+          let untouched=await checkedJson(`/orders/${orderId}/milestones`,auth.token)
+          if(untouched.some(n=>n.planned_date)) throw new Error('预览错误写入计划')
+          const previewShot=await client.send('Page.captureScreenshot',{format:'png'})
+          writeFileSync(join(OUT_DIR,'52-delivery-planning-preview.png'),Buffer.from(previewShot.data,'base64'))
+          await clickByText(client, '提交待确认计划'); await sleep(500)
+          if((await checkedJson(`/orders/${orderId}`,auth.token)).delivery_kind) throw new Error('未确认就改了交期类型')
+          await clickByText(client, '确认并重排')
+          if(!await waitForText(client, '计划发货日：2026-10-27')) throw new Error('确认后订单日期没有刷新')
+          const rows=await checkedJson(`/orders/${orderId}/milestones`,auth.token)
+          const contract=rows.find(n=>n.node==='contract')
+          await client.send('Runtime.evaluate',{expression:`(() => { const row=Array.from(document.querySelectorAll('tr')).find(n=>n.innerText.includes('签订合同')); Array.from(row?.querySelectorAll('a')||[]).find(n=>n.innerText==='登记')?.click(); })()`})
+          if(!await waitForText(client,'登记里程碑：签订合同')) throw new Error('节点登记未打开')
+          await client.send('Runtime.evaluate',{expression:`document.querySelector('.semi-modal-content .semi-select')?.click()`})
+          await sleep(150)
+          await client.send('Runtime.evaluate',{expression:`Array.from(document.querySelectorAll('.semi-select-option')).find(n=>n.innerText.includes('不适用，跳过此节点'))?.click()`})
+          await sleep(150)
+          await setInput('.semi-modal-content input[aria-label="跳过原因"]', '现货使用已签框架协议')
+          await clickByText(client,'保存'); await sleep(500)
+          const updated=(await checkedJson(`/orders/${orderId}/milestones`,auth.token)).find(n=>n.id===contract.id)
+          if(updated.status!=='skipped' || updated.actual_date) throw new Error('跳过错误计作实际完成')
+          const planShot=await client.send('Page.captureScreenshot',{format:'png'})
+          writeFileSync(join(OUT_DIR,'53-delivery-planning-confirmed.png'),Buffer.from(planShot.data,'base64'))
+        }
+
+      }
+
+      if (item.sampleSource) {
+        if (!await waitForText(client, '按此版本申请打样')) throw new Error('草稿报价缺少打样入口')
+        await clickByText(client, '按此版本申请打样')
+        if (!await waitForText(client, '原采购数量：10,000')) throw new Error('原采购数量未展示')
+        const defaultQty = await client.send('Runtime.evaluate', {
+          expression: `document.querySelector('.semi-modal-content .semi-input-number input')?.value`, returnByValue: true,
+        })
+        if (Number(defaultQty.result.value) !== 1) throw new Error(`样品数量非默认 1：${defaultQty.result.value}`)
+        const sourceShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '48-sample-source-quantities.png'), Buffer.from(sourceShot.data, 'base64'))
+        await clickByText(client, '取消')
+        await checkedJson(`/quotes/${item.sampleSource.quote_id}/versions`, auth.token, { method: 'POST' })
+        await client.send('Page.navigate', { url: `${APP_BASE}/quotes/${item.sampleSource.quote_id}?version=${item.sampleSource.version_id}` })
+        await waitForText(client, '按此版本申请打样')
+        await clickByText(client, '按此版本申请打样')
+        if (!await waitForText(client, '（历史版本）')) throw new Error('历史版本打样来源未标识')
+        const changed = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const dialog = document.querySelector('.semi-modal-content');
+            const input = dialog?.querySelector('.semi-input-number input');
+            const spec = dialog?.querySelector('textarea');
+            if (!input || !spec) return false;
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '2');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(spec, '本次规格');
+            spec.dispatchEvent(new Event('input', { bubbles: true })); return true;
+          })()`, returnByValue: true,
+        })
+        if (!changed.result.value) throw new Error('无法修改本次数量和规格')
+        await sleep(200)
+        await clickByText(client, '建立打样申请')
+        if (!await waitForText(client, '打样来源')) throw new Error('未进入打样详情')
+        const samples = await checkedJson(`/samples?opportunity_id=${item.sampleSource.opportunityId}`, auth.token)
+        const sample = samples.items.find(row => row.source_context?.id === item.sampleSource.version_id)
+        if (!sample || sample.items[0].quantity !== 2 || sample.items[0].original_quantity !== 10000 || sample.items[0].specification !== '本次规格') throw new Error('数量或规格未分开保存')
+        if (!await waitForText(client, '原规格：原规格')) throw new Error('详情未展示原规格差异')
+        const detailShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '49-sample-source-detail.png'), Buffer.from(detailShot.data, 'base64'))
+        await client.send('Page.navigate', { url: `${APP_BASE}/knowledge?opportunity_id=${item.sampleSource.opportunityId}` })
+        if (!await waitForText(client, 'CHKUI来源采购')) throw new Error('询价来源未加载')
+        if (await clickByText(client, '申请打样', { tag: 'a' }) !== 'clicked') throw new Error('询价没有打样入口')
+        if (!await waitForText(client, '原采购数量：10,000')) throw new Error('询价未带入原数量')
+        await clickByText(client, '取消')
+        await checkedJson(`/custom-inquiries/${item.sampleSource.inquiryId}/revise`, auth.token, {
+          method: 'POST', body: JSON.stringify({ quantity: 20000, revision_note: 'UI 历史版本验收' }),
+        })
+        await client.send('Page.navigate', { url: `${APP_BASE}/knowledge?opportunity_id=${item.sampleSource.opportunityId}` })
+        await waitForText(client, '历史')
+        await clickByText(client, '历史', { tag: 'a' })
+        if (!await waitForText(client, '版本历史：')) throw new Error('询价历史未打开')
+        let choseV1 = false
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          const choice = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const row = Array.from(document.querySelectorAll('.semi-modal-content tr')).find(node => node.cells?.[0]?.innerText.trim() === 'v1');
+              const link = row?.querySelector('a'); if (!link) return false; link.click(); return true;
+            })()`, returnByValue: true,
+          })
+          if (choice.result.value) { choseV1 = true; break }
+          await sleep(250)
+        }
+        if (!choseV1) throw new Error('无法在历史表选择 V1')
+        if (!await waitForText(client, '（历史版本）') || !await waitForText(client, '原采购数量：10,000')) throw new Error('询价历史版本未按原数量取用')
+        await clickByText(client, '取消')
+        await client.send('Page.navigate', { url: `${APP_BASE}/samples/${sample.id}` })
+        await waitForText(client, '打样来源')
+      }
+
+      if (item.demandFlow) {
+        const oid = item.demandFlow.opportunityId
+        if (!await waitForText(client, '关联单据')) throw new Error('商机未显示关联单据入口')
+        if (await clickByText(client, '关联单据', { tag: '[role="tab"]' }) !== 'clicked') throw new Error('无法切换关联单据')
+        if (!await waitForText(client, '暂无关联定制询价')) throw new Error('单据页未加载')
+        await clickByText(client, '记录定制询价')
+        if (!await waitForText(client, '记录本次需求的定制询价')) throw new Error('需求询价弹窗未打开')
+        const inquiryTitle = 'CHKUI本次定制采购'
+        const filled = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const dialog = document.querySelector('.semi-modal-content');
+            const input = dialog?.querySelector('input');
+            if (!input) return false;
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(inquiryTitle)});
+            input.dispatchEvent(new Event('input', { bubbles: true })); return true;
+          })()`, returnByValue: true,
+        })
+        if (!filled.result.value) throw new Error('无法填写商机询价标题')
+        await clickByText(client, '保存')
+        if (!await waitForText(client, '定制询价已记录并关联当前商机')) throw new Error('商机询价保存失败')
+        const inquiries = await checkedJson(`/custom-inquiries?opportunity_id=${oid}`, auth.token)
+        const inquiry = inquiries.items.find((row) => row.title === inquiryTitle)
+        if (!inquiry || inquiry.customer_id !== item.demandFlow.customerId) throw new Error('询价没有自动带入商机和客户')
+        const before = await checkedJson(`/opportunities/${oid}`, auth.token)
+        const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, {
+          method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }),
+        })
+        const afterDraft = await checkedJson(`/opportunities/${oid}`, auth.token)
+        if (before.stage_id !== afterDraft.stage_id) throw new Error('生成报价草稿错误推进了阶段')
+        const approved = await checkedJson(`/quote-versions/${quote.version_id}/submit-approval`, auth.token, {
+          method: 'POST', body: JSON.stringify({ reason: '虚构 UI 验收' }),
+        })
+        if (approved.version.approval_status !== 'approved') throw new Error('报价未自动通过审批，无法验证正式发送入口')
+        await client.send('Page.navigate', { url: `${APP_BASE}/quotes/${quote.quote_id}` })
+        if (!await waitForText(client, '标记已发送')) throw new Error('报价发送入口未就绪')
+        await clickByText(client, '标记已发送')
+        if (!await waitForText(client, '确认已实际发送')) throw new Error('报价发送确认未打开')
+        await clickByText(client, '确认已实际发送')
+        if (!await waitForText(client, '已标记为已发送')) throw new Error('报价发送失败')
+        const sent = await checkedJson(`/opportunities/${oid}`, auth.token)
+        if (sent.stage_code !== 'quoted') throw new Error('正式发送后商机未自动推进已报价')
+        await client.send('Page.navigate', { url: `${APP_BASE}/opportunities/${oid}` })
+        await waitForText(client, '关联单据')
+        await clickByText(client, '关联单据', { tag: '[role="tab"]' })
+        if (!await waitForText(client, inquiryTitle) || !await waitForText(client, quote.quote_no)) throw new Error('商机关联单据未显示询价和报价')
+        const recordsShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '45-demand-quote-sent.png'), Buffer.from(recordsShot.data, 'base64'))
+        await clickByText(client, '申请打样')
+        if (!await waitForText(client, '新建样品申请')) throw new Error('打样申请未打开')
+        const selected = await client.send('Runtime.evaluate', {
+          expression: `document.querySelector('.semi-modal-content')?.innerText.includes('CHKUI独立采购需求')`, returnByValue: true,
+        })
+        if (!selected.result.value) throw new Error('打样申请未自动带入当前商机')
+        const sampleShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '46-demand-sample-prefill.png'), Buffer.from(sampleShot.data, 'base64'))
+        await clickByText(client, '取消')
+        await client.send('Page.navigate', { url: `${APP_BASE}/knowledge?opportunity_id=${oid}` })
+        if (!await waitForText(client, inquiryTitle) || !await waitForText(client, '当前商机：')) throw new Error('询价库未按商机筛选')
+        await clickByText(client, '记录定制询价')
+        if (!await waitForText(client, '关联商机（本次采购需求）')) throw new Error('询价库缺少商机关联字段')
+        await sleep(300)
+        const inquiryShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '47-demand-inquiry-link.png'), Buffer.from(inquiryShot.data, 'base64'))
+        await clickByText(client, '取消')
+        await client.send('Page.navigate', { url: `${APP_BASE}/opportunities/${oid}` })
+        await waitForText(client, '关联单据')
+        await clickByText(client, '关联单据', { tag: '[role="tab"]' })
+      }
+
+      if (item.workbenchAnalysis) {
+        const before = await checkedJson('/agent/sessions', auth.token)
+        const paused = []
+        let intercept = true
+        client.on((message) => {
+          if (message.method !== 'Fetch.requestPaused') return
+          if (intercept && message.params.request.method === 'POST') paused.push(message.params)
+          else void client.send('Fetch.continueRequest', { requestId: message.params.requestId })
+        })
+        await client.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/v1/agent/sessions', requestStage: 'Request' }] })
+        await waitForText(client, '分析本月成交冲刺机会', 5000)
+        await client.send('Runtime.evaluate', {
+          expression: `(() => { const button = [...document.querySelectorAll('button')].find((el) => el.innerText.includes('分析本月成交冲刺机会')); button.click(); button.click(); })()`,
+        })
+        if (!await waitForText(client, 'Copilot 正在查数据', 5000)
+            || !await waitForText(client, '本次仅提供分析，不新增或修改业务记录', 2000)) {
+          problems.push('工作台分析：没有自动带入提问或创建会话阶段没有等待状态')
+        }
+        if (paused.length !== 1) problems.push(`工作台分析：连续点击创建了 ${paused.length} 个会话请求`)
+        const pendingShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '43-workbench-analysis-pending.png'), Buffer.from(pendingShot.data, 'base64'))
+        for (const request of paused) {
+          await client.send('Fetch.fulfillRequest', {
+            requestId: request.requestId, responseCode: 503,
+            responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+            body: Buffer.from(JSON.stringify({ code: 50300, message: '本地模拟创建会话失败', data: null })).toString('base64'),
+          })
+        }
+        intercept = false
+        await client.send('Fetch.disable')
+        if (!await waitForText(client, '本地模拟创建会话失败', 5000)) problems.push('工作台分析：创建失败没有可读提示')
+        const restored = await client.send('Runtime.evaluate', {
+          expression: "document.querySelector('aside input')?.value ?? ''", returnByValue: true,
+        })
+        if (!restored.result.value.includes('分析本月成交冲刺机会')) problems.push('工作台分析：失败后问题丢失，不能重试')
+        await clickByText(client, '发送')
+        // 安全前置强制 AI key 为空；验收真实提问已提交，并显示模型未配置的真实结果。
+        if (!await waitForText(client, 'Agent 还没有配置模型', 8000)) problems.push('工作台分析：重试后未显示服务端结果')
+        const after = await checkedJson('/agent/sessions', auth.token)
+        const created = after.filter((row) => !before.some((previous) => previous.id === row.id))
+        if (created.length !== 1) problems.push('工作台分析：重试没有创建唯一会话')
+        if (created.length === 1) {
+          const detail = await checkedJson(`/agent/sessions/${created[0].id}`, auth.token)
+          const users = detail.messages.filter((message) => message.role === 'user')
+          if (users.length !== 1 || !users[0].content.includes('分析本月成交冲刺机会')
+              || !users[0].content.includes('仅提供分析') || detail.actions.length !== 0) {
+            problems.push('工作台分析：没有唯一自动提问，或产生了非分析写动作')
+          }
+        }
+        const location = await client.send('Runtime.evaluate', { expression: 'window.location.pathname', returnByValue: true })
+        if (location.result.value !== '/workbench') problems.push('工作台分析仍只跳转 AI 页面')
+      }
+
+      if (item.quoteLifecycle) {
+        const { quoteId: qid, versionId: vid } = item.quoteLifecycle
+        const actionButtons = async () => (await client.send('Runtime.evaluate', {
+          expression: "[...document.querySelectorAll('.page-container button')].map((el) => el.innerText.trim())", returnByValue: true,
+        })).result.value
+        await waitForText(client, '标记已发送', 5000)
+        const before = await actionButtons()
+        if (before.some((t) => ['客户接受', '客户拒绝', '转销售订单'].includes(t))) {
+          problems.push('未发送报价仍显示客户结果或转单按钮')
+        }
+        await clickByText(client, '标记已发送')
+        if (!await waitForText(client, '确认已实际发送', 5000)) problems.push('发送确认没有说明实际发送事实')
+        await clickByText(client, '确认已实际发送')
+        if (!await waitForText(client, '客户接受', 5000)) problems.push('正式发送后没有客户结果操作')
+        await clickByText(client, '客户拒绝')
+        if (!await waitForText(client, '记录客户拒绝', 5000)) problems.push('客户拒绝没有打开原因弹窗')
+        const reason = 'CHKUI客户要求的交期无法满足'
+        const filled = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const input = [...document.querySelectorAll('textarea')].find((el) => el.placeholder.includes('实际拒绝原因'));
+            if (!input || input.value !== '') return false;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, ${JSON.stringify(reason)});
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+          })()`, returnByValue: true,
+        })
+        if (!filled.result.value) problems.push('拒绝原因缺少输入或预填了虚构原因')
+        const dialogShot = await client.send('Page.captureScreenshot', { format: 'png' })
+        writeFileSync(join(OUT_DIR, '41-quote-decline-reason.png'), Buffer.from(dialogShot.data, 'base64'))
+        await clickByText(client, '确认记录')
+        if (!await waitForText(client, '已记录客户拒绝', 5000)) problems.push('客户拒绝保存失败')
+        const detail = await checkedJson(`/quote-versions/${vid}`, auth.token)
+        const logs = await checkedJson(`/quote-versions/${vid}/send-logs`, auth.token)
+        const follows = await checkedJson(`/followups?quote_id=${qid}&page_size=100`, auth.token)
+        if (detail.quote.status !== 'declined' || !detail.version.declined_at || logs.length !== 1
+            || !follows.items.some((row) => row.quote_id === qid && row.content.includes(reason))) {
+          problems.push('页面输入的拒绝原因未按正式事实保存')
+        }
+        const terminalButtons = await actionButtons()
+        if (terminalButtons.some((t) => ['客户接受', '客户拒绝', '标记已发送', '登记再次发送', '转销售订单'].includes(t))) {
+          problems.push('客户拒绝后仍显示无效的报价动作')
+        }
+      }
+
+      if (item.followupPlan || item.followupExemption || item.followupSchedule) {
+        const typed = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const input = document.querySelector('textarea[placeholder="今天沟通了什么？"]');
+            if (!input) return false;
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '${item.followupSchedule ? 'CHKUI计划跟进' : 'CHKUI免填跟进'}');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+          })()`, returnByValue: true,
+        })
+        if (!typed.result.value) problems.push('跟进表单：无法填写沟通结论')
+        await sleep(200)
+        if (item.followupPlan) {
+          await clickByText(client, '保存')
+          if (!await waitForText(client, '请填写下一动作和下次跟进时间，或选择免填原因', 3000)) {
+            problems.push('跟进表单：缺计划没有阻止保存')
+          }
+        } else if (item.followupSchedule) {
+          await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const set = (input, value) => {
+                input.focus();
+                Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+              };
+              set(document.querySelector('input[placeholder="例如：整理报价并回访客户"]'), 'CHKUI回访客户');
+              set(document.querySelector('input[placeholder="选择下次跟进时间"]'), '2026-10-12 09:00:00');
+            })()`, returnByValue: true,
+          })
+          await sleep(300)
+          await client.send('Runtime.evaluate', { expression: 'document.activeElement.blur()', returnByValue: true })
+          await sleep(300)
+          await clickByText(client, '保存')
+          if (!await waitForText(client, '跟进已记录，并生成了后续任务', 5000)) problems.push('跟进表单：计划保存失败')
+          const response = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
+          const rows = (await response.json()).data
+          const saved = rows.items.filter((row) => row.content === 'CHKUI计划跟进')
+          if (saved.length !== 1 || saved[0].next_action !== 'CHKUI回访客户' || !saved[0].next_task_id || !saved[0].task_due_at) {
+            problems.push('跟进表单：计划/关联任务没有正确保存')
+          }
+        } else {
+          const selection = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const control = [...document.querySelectorAll('.semi-select')].find((el) => el.innerText.includes('安排下一次跟进'));
+              if (!control) return 'missing-select';
+              control.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+              control.click();
+              return 'clicked';
+            })()`, returnByValue: true,
+          })
+          if (selection.result.value !== 'clicked') problems.push('跟进表单：没有打开后续安排下拉')
+          await sleep(200)
+          const choice = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const option = [...document.querySelectorAll('[role="option"], .semi-select-option')].find((el) => el.innerText.includes('免填：等待外部固定节点'));
+              if (!option) return 'missing-option';
+              option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+              option.click();
+              return 'clicked';
+            })()`, returnByValue: true,
+          })
+          if (choice.result.value !== 'clicked') problems.push('跟进表单：没有选中免填原因')
+          if (!await waitForText(client, '保存免填原因，本次不创建后续待办。', 3000)) {
+            problems.push('跟进表单：免填说明没有显示')
+          }
+          await clickByText(client, '保存')
+          if (!await waitForText(client, '跟进已记录', 5000)) problems.push('跟进表单：免填保存失败')
+          const result = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
+          const rows = (await result.json()).data
+          const saved = rows.items.filter((row) => row.content === 'CHKUI免填跟进')
+          if (saved.length !== 1 || saved[0].exemption_reason !== 'waiting_external' || saved[0].next_task_id != null) {
+            problems.push('跟进表单：免填记录/任务不符合要求')
+          }
+        }
+      }
+
+      if (item.ruleSave) {
+        for (const [heading, endpoint, toast] of [
+          ['自动任务规则', '/task-rules', '自动任务规则已保存'],
+          ['公海回收规则', '/public-pool/rules', '公海规则已保存'],
+        ]) {
+          const beforeResponse = await fetch(`${API_BASE}/api/v1${endpoint}`, { headers: { Authorization: `Bearer ${auth.token}` } })
+          const before = (await beforeResponse.json()).data[0]
+          const changed = await client.send('Runtime.evaluate', {
+            expression: `(() => {
+              const heading = [...document.querySelectorAll('div')].find((el) => el.childElementCount === 0 && el.innerText === ${JSON.stringify(heading)});
+              const input = heading?.parentElement.querySelector('input');
+              if (!input) return null;
+              const next = Number(input.value) + 1;
+              input.focus();
+              Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(next));
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.blur();
+              return next;
+            })()`, returnByValue: true,
+          })
+          if (!changed.result.value || !await waitForText(client, toast, 5000)) {
+            problems.push(`${heading}：修改天数未保存`)
+            continue
+          }
+          const afterResponse = await fetch(`${API_BASE}/api/v1${endpoint}`, { headers: { Authorization: `Bearer ${auth.token}` } })
+          const after = (await afterResponse.json()).data.find((row) => row.id === before.id)
+          const days = endpoint === '/task-rules' ? after.trigger_config.days : after.days
+          if (days !== changed.result.value || after.code !== before.code || after.name !== before.name || after.level !== before.level) {
+            problems.push(`${heading}：部分更新结果错误或覆盖原有字段`)
+          }
+        }
+      }
       const missing = []
       for (const text of item.expect) {
         // 多个候选文案满足其一即可（看板可能因为没数据只显示空态）
@@ -755,7 +1311,7 @@ async function main() {
       }
       const missingReal = missing.filter(Boolean)
       // expect 里任意一条命中就算通过，避免把"没数据"误判成功能缺失
-      if (missingReal.length === item.expect.length) {
+      if (item.expectAll ? missingReal.length > 0 : missingReal.length === item.expect.length) {
         problems.push(`${item.name}：页面上找不到 ${item.expect.join(' / ')}`)
       }
 
@@ -764,6 +1320,20 @@ async function main() {
       const file = join(OUT_DIR, `${item.name}.png`)
       writeFileSync(file, Buffer.from(shot.data, 'base64'))
       console.log(`${ok ? '✓' : '✗'} [交互] ${item.path} + ${item.clicks.join('+') || '直接看'} → ${file}`)
+      if (item.sourcePath) {
+        const clicked = await client.send('Runtime.evaluate', {
+          expression: `(() => { const link = document.querySelector('a[href="${item.sourcePath}"]'); if (!link) return false; link.click(); return true })()`,
+          returnByValue: true,
+        })
+        const opened = clicked.result.value && await waitForText(client, item.sourceText ?? '订单明细', 5000)
+        const location = await client.send('Runtime.evaluate', {
+          expression: 'window.location.pathname', returnByValue: true,
+        })
+        if (!opened || location.result.value !== item.sourcePath) {
+          problems.push('客户时间线：原单链接没有打开对应单据')
+        }
+      }
+
     }
 
     if (problems.length > 0) {

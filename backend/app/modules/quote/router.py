@@ -21,6 +21,7 @@ from app.modules.order.model import SalesOrder
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
 from app.modules.quote import service as svc
+from app.modules.quote import lifecycle
 from app.modules.quote.model import (
     QUOTE_STATUS_LABEL,
     Quote,
@@ -370,6 +371,9 @@ async def quote_followups(
                     "content": row.content,
                     "customer_feedback": row.customer_feedback,
                     "next_action": row.next_action,
+                    "task_due_at": row.planned_at,
+                    "exemption_reason": row.exemption_reason,
+                    "next_task_id": row.next_task_id,
                     "owner_id": row.owner_id,
                     "created_at": row.created_at,
                 }
@@ -1002,8 +1006,9 @@ async def submit_approval(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
+    lifecycle.ensure_current_version(quote, version)
     if version.sent_at is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该版本已经发送，不能再次提交审批")
     instance, required = await svc.submit_for_approval(
@@ -1048,6 +1053,7 @@ async def submit_approval(
         business_type="quote",
         business_id=quote.id,
         quote_id=quote.id,
+        operator_id=user.id,
         exclude_user_id=user.id,
         # 撤销后重提是新的真实事件（新审批实例新 key）；重放由状态机挡在前面
         event_key=f"quote:submit:{version.id}:{instance.id if instance else 'auto'}",
@@ -1079,7 +1085,8 @@ async def withdraw_approval(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
+    lifecycle.ensure_current_version(await svc.get_visible_quote(session, user, version.quote_id), version)
     if version.approval_status != "pending":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "当前没有待审批的申请")
     instance = await svc.latest_approval(session, version_id)
@@ -1127,34 +1134,13 @@ async def mark_sent(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
-    if version.approval_status not in ("approved",):
-        raise AppError(ErrorCode.APPROVAL_PENDING, "报价未通过审批，不能发送", 422)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
-    version.sent_at = datetime.now(UTC)
-    quote.status = "sent"
-    await customer_service.touch_progress(session, quote.customer_id)
-    session.add(
-        QuoteSendLog(
-            quote_version_id=version.id,
-            channel=payload.channel,
-            receiver=payload.receiver,
-            sent_by=user.id,
-            status="success",
-            sent_at=datetime.now(UTC),
-        )
-    )
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="send",
-        business_type="quote",
-        business_id=quote.id,
-        after={"channel": payload.channel, "receiver": payload.receiver},
-        ip=client_ip(request),
-    )
+    changed = await lifecycle.mark_version_sent(session, quote=quote, version=version,
+                                                operator_id=user.id, payload=payload, ip=client_ip(request))
     await session.commit()
-    return ok(svc.serialize_version(version), "已标记为已发送")
+    await notification_service.dispatch_pending(session)
+    return ok(svc.serialize_version(version), "已标记为已发送" if changed else "该次发送已记录")
 
 
 @router.get("/quote-versions/{version_id}/send-logs")
@@ -1194,28 +1180,12 @@ async def accept_quote(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
-    if quote.status not in ("sent", "approved"):
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有已发送的报价才能标记客户接受")
-    if svc.quote_is_expired(quote.valid_until):
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"报价已过有效期（{quote.valid_until}），不能标记客户接受；请先创建新版本并更新有效期",
-            422,
-        )
-    version.accepted_at = datetime.now(UTC)
-    quote.status = "accepted"
-    await customer_service.touch_progress(session, quote.customer_id)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="accept",
-        business_type="quote",
-        business_id=quote.id,
-        ip=client_ip(request),
-    )
+    await lifecycle.accept_version(session, quote=quote, version=version,
+                                   operator_id=user.id, ip=client_ip(request))
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(svc.serialize_version(version), "客户已接受，可以转订单了")
 
 
@@ -1227,20 +1197,12 @@ async def reject_quote(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
-    version.declined_at = datetime.now(UTC)
-    quote.status = "declined"
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="decline",
-        business_type="quote",
-        business_id=quote.id,
-        after={"reason": payload.reason},
-        ip=client_ip(request),
-    )
+    await lifecycle.decline_version(session, quote=quote, version=version,
+                                    operator_id=user.id, reason=payload.reason, ip=client_ip(request))
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(svc.serialize_version(version), "已记录客户拒绝")
 
 
@@ -1531,8 +1493,9 @@ async def expire_version(
     过了有效期没人处理，列表里永远停在"已发送"，看起来像还有效。
     这里补上入口：已发送/已通过的报价才能失效，失效后不能再转订单。
     """
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
+    lifecycle.ensure_current_version(quote, version)
     if quote.status == "expired":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该报价已经是失效状态")
     if quote.status not in ("sent", "approved"):
@@ -1586,9 +1549,8 @@ async def send_email(
     """发送报价邮件（03-API §21）。
 
     **系统里没有邮件服务**（SMTP 未配置），所以这里不假装发送成功：
-    只登记一条发送记录、把渠道记成"邮件"，并把报价标记为已发送 ——
-    这与既有的「标记已发送」是同一件事，只是明确写了渠道与收件人。
-    真正接 SMTP 时替换这一处即可，接口形状不变。
+    只登记未投递记录，不写正式发送事实、不自动推进商机。
+    实际对客发送后须使用 mark-sent 确认。
     """
     version = await svc.get_visible_version(session, user, version_id)
     quote = await svc.get_visible_quote(session, user, version.quote_id)

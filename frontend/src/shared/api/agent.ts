@@ -234,8 +234,10 @@ export function retryAgentExecution(executionId: number) {
 // `commentary` 才是可选的 AI 叙述，没配模型时是 null 并带 commentary_note。
 
 export interface AnalysisEnvelope {
+  /** AI 叙述。没配模型 / 生成失败时为 null，此时看 commentary_note。 */
   commentary: string | null
-  commentary_note: string
+  /** 叙述不可用的原因；有叙述时为 null。前端只在 commentary 为空时展示它。 */
+  commentary_note: string | null
   [key: string]: unknown
 }
 

@@ -51,7 +51,6 @@ export default function GlobalSearch() {
             color: 'var(--crm-text)',
           }}
         />
-        <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>Ctrl+K</span>
       </div>
 
       {open && keyword.trim() && (

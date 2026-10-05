@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -134,8 +135,10 @@ class QuoteExpire(BaseModel):
 
 
 class SendRequest(BaseModel):
-    channel: str = "邮件"
-    receiver: str | None = None
+    channel: str = Field(default="邮件", min_length=1, max_length=32)
+    receiver: str | None = Field(default=None, max_length=128)
+    # 同一次人工确认重试沿用；再次实际发送生成新 key，不把重试当重发。
+    request_key: UUID | None = None
 
 
 class SubmitApprovalRequest(BaseModel):

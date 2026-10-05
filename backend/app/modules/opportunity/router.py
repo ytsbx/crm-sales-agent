@@ -11,7 +11,6 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
-from app.modules.customer.model import Customer
 from app.modules.opportunity import service as svc
 from app.modules.opportunity.model import (
     LossReason,
@@ -401,9 +400,9 @@ async def create_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await session.get(Customer, payload.customer_id)
-    if customer is None or customer.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    from app.modules.customer import service as customer_service
+    customer = await customer_service.get_visible_customer(session, user, payload.customer_id)
+    await svc.validate_contact(session, customer_id=customer.id, contact_id=payload.primary_contact_id)
 
     if payload.stage_id:
         stage = await session.get(OpportunityStage, payload.stage_id)
@@ -623,6 +622,9 @@ async def opportunity_overview(
                     "followup_type": row.followup_type,
                     "content": row.content,
                     "next_action": row.next_action,
+                    "task_due_at": row.planned_at,
+                    "exemption_reason": row.exemption_reason,
+                    "next_task_id": row.next_task_id,
                     "created_at": row.created_at,
                 }
                 for row in followups
@@ -650,6 +652,9 @@ async def update_opportunity(
     session: AsyncSession = Depends(get_db),
 ):
     opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    if "primary_contact_id" in payload.model_fields_set:
+        await svc.validate_contact(session, customer_id=opportunity.customer_id,
+                                   contact_id=payload.primary_contact_id)
     before = svc.serialize_opportunity(opportunity)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(opportunity, field, value)
@@ -676,7 +681,7 @@ async def change_stage(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     if opportunity.status in ("win", "loss"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已成交或已失单的商机不能改阶段")
 
@@ -717,7 +722,7 @@ async def win_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     if opportunity.status == "win":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该商机已经成交")
     # 旧口子补校验：成交版本必须真实存在且属于此商机（此前任意 id 直接落库）
@@ -785,11 +790,15 @@ async def confirm_win_and_create_order(
     from app.modules.order import service as order_svc
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote, QuoteVersion
+    from app.modules.quote import service as quote_svc, lifecycle as quote_lifecycle
 
     if not user.has("order:manage"):
         raise AppError(ErrorCode.FORBIDDEN, "确认成交并建单需要订单管理权限", 403)
 
     opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    opportunity = (await session.execute(select(Opportunity).where(Opportunity.id == opportunity.id)
+                   .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    await svc.get_visible_opportunity(session, user, opportunity_id)
 
     # ---- 1. 定位成交版本：显式指定优先，否则取该商机下已发送/已接受的最新报价 ----
     if payload.win_quote_version_id:
@@ -805,6 +814,8 @@ async def confirm_win_and_create_order(
                     Quote.opportunity_id == opportunity.id,
                     Quote.deleted_at.is_(None),
                     Quote.status.in_(["accepted", "sent"]),
+                    QuoteVersion.id == Quote.current_version_id,
+                    QuoteVersion.sent_at.is_not(None),
                 )
                 .order_by(QuoteVersion.id.desc())
                 .limit(1)
@@ -816,11 +827,15 @@ async def confirm_win_and_create_order(
                 "该商机下没有已发送/已接受的报价版本，无法确认成交",
             )
 
-    quote = await session.get(Quote, version.quote_id)
+    version = await quote_svc.get_visible_version(session, user, version.id, for_update=True)
+    quote = await quote_svc.get_visible_quote(session, user, version.quote_id)
 
     # ---- 2. 校验（方案 §5：成交报价属于该客户和商机，审批及有效性符合规则）----
     if quote.opportunity_id != opportunity.id or quote.customer_id != opportunity.customer_id:
         raise AppError(ErrorCode.PARAM_ERROR, "该报价版本不属于此商机/客户")
+    quote_lifecycle.ensure_current_version(quote, version)
+    if opportunity.status == "win" and opportunity.win_quote_version_id != version.id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该商机已成交，不能通过重复确认改换成交版本", 422)
     if quote.status not in ("accepted", "sent"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -838,11 +853,9 @@ async def confirm_win_and_create_order(
     # ---- 3. 客户确认：已发送未接受的，此动作即视为客户接受 ----
     # 注意：quotes 表没有 accepted_at 列（该列在 quote_versions 上），
     # 赋值给不存在的 ORM 属性会被 SQLAlchemy 静默丢弃
-    quote_already_accepted = quote.status == "accepted"
-    if not quote_already_accepted:
-        quote.status = "accepted"
-        version.accepted_at = datetime.now(UTC)
-        await session.flush()
+    quote_already_accepted = version.accepted_at is not None
+    await quote_lifecycle.accept_version(session, quote=quote, version=version,
+                                         operator_id=user.id, ip=client_ip(request))
 
     # ---- 4. 商机标记成交（幂等：已成交不重复改阶段）----
     already_won = opportunity.status == "win"
@@ -854,11 +867,6 @@ async def confirm_win_and_create_order(
             session, opportunity, to_stage=stage, operator_id=user.id, remark="确认成交"
         )
         opportunity.status = "win"
-        opportunity.win_quote_version_id = version.id
-        await session.flush()
-    elif opportunity.win_quote_version_id != version.id:
-        # 幂等补齐：已成交商机重复确认时，把成交版本对齐到本次实际确认的版本
-        # （此前只在未成交分支写这个字段，DB 里的归属可能停留在旧版本）
         opportunity.win_quote_version_id = version.id
         await session.flush()
 
@@ -926,7 +934,7 @@ async def lose_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     if opportunity.status == "loss":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该商机已经失单")
     reason = await session.get(LossReason, payload.loss_reason_id)
@@ -961,7 +969,7 @@ async def reopen_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     if opportunity.status != "loss":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有失单的商机可以重新激活")
     stage = await svc.get_first_stage(session)
@@ -1021,7 +1029,7 @@ async def delete_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     before = svc.serialize_opportunity(opportunity)
     opportunity.deleted_at = datetime.now(UTC)
     await write_audit(
@@ -1233,7 +1241,7 @@ async def assign_opportunity(
     只动 owner_id，`created_by` 保持原样（02-ER §21：owner_id 可变，
     created_by 不覆盖）——否则"谁创建的"这条审计线索就断了。
     """
-    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id)
+    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
     await svc.assert_owner_active(session, payload.owner_id)
 
     before_owner = opportunity.owner_id

@@ -48,7 +48,7 @@ async def customer_timeline(
     await ensure_in_scope(
         session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
     )
-    return ok(await build_timeline(session, "customer", customer_id))
+    return ok(await build_timeline(session, "customer", customer_id, user=user))
 
 
 @router.get("/opportunities/{opportunity_id}/timeline")
@@ -61,7 +61,7 @@ async def opportunity_timeline(
     if opportunity is None:
         raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
     await ensure_in_scope(session, user, owner_id=opportunity.owner_id, label="商机")
-    return ok(await build_timeline(session, "opportunity", opportunity_id))
+    return ok(await build_timeline(session, "opportunity", opportunity_id, user=user))
 
 
 @router.get("/leads/{lead_id}/timeline")
@@ -77,7 +77,7 @@ async def lead_timeline(
     await ensure_in_scope(
         session, user, owner_id=lead.owner_id, label="线索", allow_unowned=True
     )
-    return ok(await build_timeline(session, "lead", lead_id))
+    return ok(await build_timeline(session, "lead", lead_id, user=user))
 
 
 # ------------------------------------------- 03-API §34 补齐的三条时间线
@@ -93,7 +93,7 @@ async def quote_timeline(
     if quote is None or quote.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
     await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
-    return ok(await build_timeline(session, "quote", quote_id))
+    return ok(await build_timeline(session, "quote", quote_id, user=user))
 
 
 @router.get("/orders/{order_id}/timeline")
@@ -106,7 +106,7 @@ async def order_timeline(
     if order is None:
         raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
     await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
-    return ok(await build_timeline(session, "order", order_id))
+    return ok(await build_timeline(session, "order", order_id, user=user))
 
 
 @router.get("/contacts/{contact_id}/timeline")
@@ -125,4 +125,4 @@ async def contact_timeline(
             await ensure_in_scope(
                 session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
             )
-    return ok(await build_timeline(session, "contact", contact_id))
+    return ok(await build_timeline(session, "contact", contact_id, user=user))

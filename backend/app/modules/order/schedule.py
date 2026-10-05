@@ -55,64 +55,96 @@ async def _batches(session: AsyncSession, order_id: int) -> list[OrderShipmentBa
     )
 
 
-async def preview(
-    session: AsyncSession, order: SalesOrder, new_delivery_date: date
-) -> dict:
-    """算一遍"改了会动到谁"：节点按交期倒推重算，批次按天数整体平移。"""
-    old_due = order.delivery_date
-    delta = (new_delivery_date - old_due).days if old_due else None
-    plan = milestones_svc.default_plan(new_delivery_date)
+def planning_snapshot(order: SalesOrder) -> dict:
+    return {
+        "delivery_date": order.delivery_date.isoformat() if order.delivery_date else None,
+        "delivery_kind": order.delivery_kind,
+        "transit_days": order.transit_days,
+        "plan_offsets": order.plan_offsets,
+    }
 
+
+def planning_parameters(order: SalesOrder, new_delivery_date: date, *,
+                        delivery_kind: str | None = None, transit_days: int | None = None,
+                        plan_offsets: dict | None = None) -> dict:
+    kind = delivery_kind or order.delivery_kind
+    if kind not in ("shipping", "arrival"):
+        raise AppError(ErrorCode.PARAM_ERROR, "请明确客户交期是发货日还是到货日", 422)
+    days = transit_days if transit_days is not None else order.transit_days
+    if kind == "shipping":
+        days = 0
+    if days is None or isinstance(days, bool) or not isinstance(days, int) or not 0 <= days <= 365:
+        raise AppError(ErrorCode.PARAM_ERROR, "到货日必须填写预计运输天数（0—365）", 422)
+    offsets = {key: offset for key, _, offset in milestones_svc.MILESTONE_NODES}
+    offsets.update(order.plan_offsets or {})
+    if plan_offsets is not None:
+        if (set(plan_offsets) != set(offsets) or any(
+            isinstance(v, bool) or not isinstance(v, int) or not -365 <= v <= 365
+            for v in plan_offsets.values()
+        )):
+            raise AppError(ErrorCode.PARAM_ERROR, "请填写全部六个节点的提前天数（-365—365；负数表示发货后）", 422)
+        offsets = dict(plan_offsets)
+    return {"delivery_date": new_delivery_date.isoformat(), "delivery_kind": kind,
+            "transit_days": days, "plan_offsets": offsets}
+
+
+def shipment_date(config: dict) -> date | None:
+    if not config.get("delivery_date") or not config.get("delivery_kind"):
+        return None
+    return date.fromisoformat(config["delivery_date"]) - timedelta(days=config.get("transit_days") or 0)
+
+
+async def lock_order(session: AsyncSession, order: SalesOrder) -> SalesOrder:
+    return (await session.execute(select(SalesOrder).where(SalesOrder.id == order.id)
+            .with_for_update().execution_options(populate_existing=True))).scalar_one()
+
+
+async def preview(session: AsyncSession, order: SalesOrder, new_delivery_date: date, *,
+                  delivery_kind: str | None = None, transit_days: int | None = None,
+                  plan_offsets: dict | None = None) -> dict:
+    before = planning_snapshot(order)
+    after = planning_parameters(order, new_delivery_date, delivery_kind=delivery_kind,
+                                transit_days=transit_days, plan_offsets=plan_offsets)
+    old_ship = shipment_date(before)
+    new_ship = shipment_date(after)
+    delta = (new_ship - old_ship).days if old_ship else None
+    offsets = after["plan_offsets"]
+    old_offsets = before.get("plan_offsets") or {}
     affected_nodes = []
-    for row in await _nodes(session, order.id):
-        if row.actual_date is not None:
-            continue  # 已发生的事实不动
-        # 口径与批次**保持一致：按天数平移**，而不是拿新交期重新倒推。
-        # 倒推会把跟单员手工推后的日子一把拉回默认值——那些手工调整往往是因为
-        # 产前样延期、客户改期，抹掉它不但排错日期，还会凭空造出逾期提醒。
-        # 只有"原本没有计划日"（或没有旧交期做基准）时才回退到倒推。
-        if row.planned_date is not None and delta is not None:
+    rows = await _nodes(session, order.id)
+    have = {row.node for row in rows}
+    for row in rows:
+        if row.actual_date is not None or row.skipped_at is not None:
+            continue
+        offset = offsets.get(row.node)
+        if offset is not None and (delta is None or old_offsets.get(row.node) != offset or row.planned_date is None):
+            new_planned = new_ship - timedelta(days=offset)
+        elif row.planned_date is not None and delta is not None:
             new_planned = row.planned_date + timedelta(days=delta)
         else:
-            new_planned = plan.get(row.node)
-        if new_planned == row.planned_date:
-            continue
-        affected_nodes.append(
-            {
-                "node": row.node,
-                "label": milestones_svc.node_label(row.node),
-                "before": row.planned_date.isoformat() if row.planned_date else None,
-                "after": new_planned.isoformat() if new_planned else None,
-            }
-        )
-
+            continue  # 未排期的动态批次不猜日期
+        if new_planned != row.planned_date:
+            affected_nodes.append({"node": row.node, "label": milestones_svc.node_label(row.node),
+                                   "before": row.planned_date.isoformat() if row.planned_date else None,
+                                   "after": new_planned.isoformat()})
+    # 预览是只读的；即使尚未打开跟单页，也要显示六个建议节点。
+    for key, label, _ in milestones_svc.MILESTONE_NODES:
+        if key not in have:
+            affected_nodes.append({"node": key, "label": label, "before": None,
+                                   "after": (new_ship - timedelta(days=offsets[key])).isoformat()})
     affected_batches = []
     for batch in await _batches(session, order.id):
         if batch.planned_date is None or delta is None:
-            # 没有旧交期做基准、或本就没排计划日：不猜，交给责任人手工确认
-            new_planned = batch.planned_date
-        else:
-            new_planned = batch.planned_date + timedelta(days=delta)
-        if new_planned == batch.planned_date:
             continue
-        affected_batches.append(
-            {
-                "batch_id": batch.id,
-                "batch_no": batch.batch_no,
-                "before": batch.planned_date.isoformat() if batch.planned_date else None,
-                "after": new_planned.isoformat() if new_planned else None,
-            }
-        )
-
-    return {
-        "order_id": order.id,
-        "order_no": order.order_no,
-        "old_delivery_date": old_due.isoformat() if old_due else None,
-        "new_delivery_date": new_delivery_date.isoformat(),
-        "shift_days": delta,
-        "nodes": affected_nodes,
-        "batches": affected_batches,
-    }
+        new_planned = batch.planned_date + timedelta(days=delta)
+        if new_planned != batch.planned_date:
+            affected_batches.append({"batch_id": batch.id, "batch_no": batch.batch_no,
+                                    "before": batch.planned_date.isoformat(), "after": new_planned.isoformat()})
+    return {"order_id": order.id, "order_no": order.order_no,
+            "old_delivery_date": before["delivery_date"], "new_delivery_date": after["delivery_date"],
+            "old_shipment_date": old_ship.isoformat() if old_ship else None,
+            "new_shipment_date": new_ship.isoformat(), "planning": {"before": before, "after": after},
+            "shift_days": delta, "nodes": affected_nodes, "batches": affected_batches}
 
 
 async def create_change(
@@ -122,9 +154,13 @@ async def create_change(
     user: CurrentUser,
     new_delivery_date: date,
     reason: str | None,
+    delivery_kind: str | None = None, transit_days: int | None = None,
+    plan_offsets: dict | None = None,
 ) -> OrderScheduleChange:
-    affected = await preview(session, order, new_delivery_date)
-    if not affected["nodes"] and not affected["batches"]:
+    order = await lock_order(session, order)
+    affected = await preview(session, order, new_delivery_date, delivery_kind=delivery_kind,
+                             transit_days=transit_days, plan_offsets=plan_offsets)
+    if not affected["nodes"] and not affected["batches"] and affected["planning"]["before"] == affected["planning"]["after"]:
         raise AppError(
             ErrorCode.PARAM_ERROR,
             "新交期不影响任何节点或批次（可能交期没变，或受影响的都已发生）",
@@ -173,11 +209,13 @@ async def confirm_change(
     """责任人确认后才真正改动：订单交期、节点计划日、批次计划日。"""
     # 行锁：两个人同时点"确认"时，第二个必须等第一个提交完再读状态，
     # 否则两边都读到 pending、都往下走，计划日被写两遍。
+    order = await lock_order(session, order)
     locked = (
         await session.execute(
             select(OrderScheduleChange)
             .where(OrderScheduleChange.id == change.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if locked is None:
@@ -195,8 +233,19 @@ async def confirm_change(
     affected = change.affected or {}
     # 以确认这一刻重算一次为准：预览之后可能又有人登记了实际日期/加了批次，
     # 用旧快照去写会覆盖掉那期间的事实
-    fresh = await preview(session, order, change.new_delivery_date)
+    proposal = affected.get("planning", {})
+    if proposal and proposal["before"] != planning_snapshot(order):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "交期口径已变化，请作废后重新预览", 409)
+    config = proposal.get("after", {})
+    fresh = await preview(session, order, change.new_delivery_date,
+                          delivery_kind=config.get("delivery_kind"), transit_days=config.get("transit_days"),
+                          plan_offsets=config.get("plan_offsets"))
+    await milestones_svc.ensure_initialized(session, order.id, None, created_by=user.id)
     order.delivery_date = change.new_delivery_date
+    new_config = fresh["planning"]["after"]
+    order.delivery_kind = new_config["delivery_kind"]
+    order.transit_days = new_config["transit_days"]
+    order.plan_offsets = new_config["plan_offsets"]
 
     by_node = {n["node"]: n["after"] for n in fresh["nodes"]}
     for row in await _nodes(session, order.id):
@@ -204,15 +253,23 @@ async def confirm_change(
             row.planned_date = date.fromisoformat(by_node[row.node])
 
     by_batch = {b["batch_id"]: b["after"] for b in fresh["batches"]}
+    node_by_key = {row.node: row for row in await _nodes(session, order.id)}
     for batch in await _batches(session, order.id):
         after = by_batch.get(batch.id)
         if after:
             batch.planned_date = date.fromisoformat(after)
+        # 批次节点是**批次这一份事实的投影**：批次计划日定了，节点计划日必须跟着。
+        # 只在节点还没登记实际日期时同步，别覆盖已发生的事实。
+        if batch.planned_date is not None:
+            node = node_by_key.get(milestones_svc.batch_node_key(batch.batch_no))
+            if node is not None and node.actual_date is None:
+                node.planned_date = batch.planned_date
 
     change.status = "confirmed"
     change.confirmed_by = user.id
     change.confirmed_at = datetime.now(UTC)
     change.confirm_remark = remark
+    # 完成/跳过可在预览后发生；实际生效版本与原预览分别留存。
     # 快照保持创建时那一版（预览所见），另存"确认时实际生效"的版本，
     # 两者不一致时说明中间有人动过东西，事后能查出来
     change.affected = {**affected, "applied": fresh}
@@ -237,11 +294,13 @@ async def cancel_change(
 
     作废只改状态与留痕，**不动任何计划日期**——它本来就没生效过。
     """
+    order = await lock_order(session, order)
     locked = (
         await session.execute(
             select(OrderScheduleChange)
             .where(OrderScheduleChange.id == change.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if locked is None:

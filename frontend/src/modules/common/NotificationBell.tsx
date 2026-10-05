@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Badge, Button, Popover, Tag, Toast } from '@douyinfe/semi-ui'
+import { Popover, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   getUnreadCount,
@@ -13,6 +13,12 @@ import {
 } from '../../shared/api/analytics'
 
 const LINK_BY_TYPE: Record<string, (id: number) => string> = {
+  customer: (id) => `/customers/${id}?tab=logs`,
+  lead: (id) => `/leads/${id}`,
+  opportunity: (id) => `/opportunities/${id}`,
+  quote: (id) => `/quotes/${id}`,
+  order: (id) => `/orders/${id}`,
+  sample: (id) => `/samples/${id}`,
   approval: (id) => `/quotes/${id}`,
   payment: (id) => `/orders/${id}`,
   task: () => '/tasks',
@@ -64,30 +70,19 @@ export default function NotificationBell() {
   const count = countQuery.data?.count ?? 0
 
   const content = (
-    <div style={{ width: 340, maxHeight: 420, overflow: 'auto' }}>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 8,
-        }}
-      >
+    <div className="notice-panel">
+      <div className="notice-panel-head">
         <span style={{ fontWeight: 600 }}>通知</span>
         <a style={{ color: 'var(--crm-primary)', fontSize: 13 }} onClick={() => readAllMutation.mutate()}>
           全部已读
         </a>
       </div>
-      {items.length === 0 && <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无通知</div>}
+      {items.length === 0 && <div className="notice-empty">暂无通知</div>}
       {items.map((item: NotificationRow) => (
         <div
           key={item.id}
-          style={{
-            padding: '8px 0',
-            borderBottom: '1px solid var(--crm-surface-high)',
-            cursor: 'pointer',
-            opacity: item.read ? 0.55 : 1,
-          }}
+          className="notice-item"
+          style={{ opacity: item.read ? 0.55 : 1 }}
           onClick={() => {
             readMutation.mutate(item.id)
             const build = item.business_type ? LINK_BY_TYPE[item.business_type] : undefined
@@ -105,7 +100,7 @@ export default function NotificationBell() {
             style={{
               color: 'var(--crm-text-3)',
               fontSize: 11,
-              marginTop: 4,
+              marginTop: 6,
               display: 'flex',
               alignItems: 'center',
               gap: 8,
@@ -156,11 +151,16 @@ export default function NotificationBell() {
       onVisibleChange={setOpen}
       position="bottomRight"
     >
-      <Button theme="borderless" style={{ padding: '0 8px' }}>
-        <Badge count={count} overflowCount={99}>
-          <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>通知</span>
-        </Badge>
-      </Button>
+      <button
+        className="notice-trigger"
+        type="button"
+        aria-label={count > 0 ? `通知，${count} 条未读` : '通知'}
+      >
+        <span>通知</span>
+        {/* 未读数走行内小圆点：跟着文字排队，不会像绝对定位的角标那样压住「通知」。
+            为 0 时整个不渲染，没消息就别摆个 0 在那儿占地方。 */}
+        {count > 0 && <span className="notice-count">{count > 99 ? '99+' : count}</span>}
+      </button>
     </Popover>
   )
 }

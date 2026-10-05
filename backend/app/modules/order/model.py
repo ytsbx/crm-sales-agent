@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -68,6 +69,9 @@ class SalesOrder(Base, IdMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="pending")
     erp_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delivery_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    transit_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan_offsets: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     payment_terms: Mapped[str | None] = mapped_column(String(128), nullable=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -88,6 +92,8 @@ class SalesOrderItem(Base, IdMixin):
     inquiry_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     inquiry_no_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sku_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    quote_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     specification: Mapped[str | None] = mapped_column(String(200), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=0)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
@@ -177,6 +183,9 @@ class OrderMilestone(Base, IdMixin):
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
     overdue_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 逾期提醒只在第一次逾期时推一次，这个时间戳就是"推过了"的凭证
+    skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skipped_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    skipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     overdue_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -226,3 +235,35 @@ class OrderScheduleChange(Base, IdMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class OrderDraft(Base, IdMixin, TimestampMixin):
+    """准备资料，不属于 SalesOrder，不能进入生产、应收或成交统计。"""
+    __tablename__ = 'order_drafts'
+    __table_args__ = (Index('ix_order_drafts_owner', 'owner_id'),)
+    customer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('customers.id'))
+    opportunity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    owner_id: Mapped[int] = mapped_column(BigInteger)
+    source_context: Mapped[dict] = mapped_column(JSONType)
+    status: Mapped[str] = mapped_column(String(16), default='draft', server_default='draft')
+    currency: Mapped[str] = mapped_column(String(8), default='CNY', server_default='CNY')
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payment_terms: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('sales_orders.id'), nullable=True)
+    request_key: Mapped[str] = mapped_column(String(36), unique=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(default=1, server_default='1')
+    created_by: Mapped[int] = mapped_column(BigInteger)
+
+
+class OrderDraftItem(Base, IdMixin):
+    __tablename__ = 'order_draft_items'
+    __table_args__ = (Index('ix_order_draft_items_draft', 'draft_id'),)
+    draft_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('order_drafts.id'))
+    source_snapshot: Mapped[dict] = mapped_column(JSONType)
+    name: Mapped[str] = mapped_column(String(200))
+    quantity: Mapped[Decimal] = mapped_column(Numeric(16,3))
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(16,4), nullable=True)
+    specification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)

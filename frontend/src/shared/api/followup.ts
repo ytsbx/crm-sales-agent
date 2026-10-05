@@ -13,10 +13,14 @@ export interface FollowUp {
   content: string
   customer_feedback?: string | null
   next_action?: string | null
+  task_due_at?: string | null
+  exemption_reason?: string | null
+  next_task_id?: number | null
   created_at: string
 }
 
 export interface TimelineEvent {
+  source?: { type: 'sample' | 'order' | 'quote' | 'opportunity'; id: number } | null
   kind: string
   title: string
   detail?: string | null

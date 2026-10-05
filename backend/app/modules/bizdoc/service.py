@@ -17,7 +17,7 @@
 import hashlib
 import json
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import Select, select
@@ -54,9 +54,12 @@ def _number(value: Any) -> str:
     """数量/金额去掉小数尾巴：5.000 → 5，2.500 → 2.5。"""
     if value is None:
         return ""
-    if isinstance(value, Decimal):
-        normalized = value.normalize()
-        return f"{normalized:f}"
+    try:
+        number = Decimal(str(value))
+        if number.is_finite():
+            return f"{number.normalize():f}"
+    except (InvalidOperation, ValueError):
+        pass
     return str(value)
 
 
@@ -243,13 +246,20 @@ def _diff_lines(
     数量比对用字符串化的数值，避免 Decimal('5.000') 与 Decimal('5') 被判成不同。
     """
     source_by_key = {}
+    ambiguous = set()
     for row in source:
         pk = _pair_key(row, key)
         if pk is not None:
+            if pk in source_by_key:
+                ambiguous.add(pk)
             source_by_key[pk] = row
     diffs: list[dict] = []
     for row in current:
         row_key = _pair_key(row, key)
+        if row_key in ambiguous:
+            diffs.append({"item": row.get("name") or "-", "field": "来源匹配", "before": None,
+                          "after": "历史来源有多条同产品明细且缺少原明细编号，无法逐条比较"})
+            continue
         origin = source_by_key.get(row_key) if row_key is not None else None
         if origin is None:
             diffs.append(
@@ -279,6 +289,13 @@ def _diff_lines(
                     "after": row.get("name"),
                 }
             )
+        if origin.get("unit_price") is not None and _number(row.get("unit_price")) != _number(origin.get("unit_price")):
+            diffs.append({"item": row.get("name") or "-", "field": "单价",
+                          "before": _number(origin.get("unit_price")), "after": _number(row.get("unit_price"))})
+        for field, label in (("spec", "规格"), ("remark", "备注")):
+            if field in origin and (row.get(field) or "") != (origin.get(field) or ""):
+                diffs.append({"item": row.get("name") or "-", "field": label,
+                              "before": origin.get(field), "after": row.get(field)})
     return diffs
 
 
@@ -302,34 +319,31 @@ async def build_sample_request_doc(
     ).scalars().all()
     skus = await _sku_map(session, {i.sku_id for i in items if i.sku_id})
 
-    current = [
-        {
-            "name": (skus[i.sku_id].name if i.sku_id in skus and skus[i.sku_id].name else None)
-            or i.item_name
-            or (skus[i.sku_id].sku_code if i.sku_id in skus else None)
-            or "（未命名）",
-            "spec": skus[i.sku_id].specification if i.sku_id in skus else None,
-            "quantity": i.quantity,
-            "remark": i.remark,
-            "inquiry_id": i.inquiry_id,
-        }
-        for i in items
-    ]
-
-    # 来源：明细里第一条带着需求编号的——"这张打样单是从哪条需求来的"
+    current = []
+    source_rows = []
+    for item in items:
+        sku = skus.get(item.sku_id)
+        snapshot = item.source_snapshot
+        current.append({
+            "name": item.item_name if snapshot else ((sku.name if sku else None) or item.item_name or "（未命名）"),
+            "spec": item.specification if snapshot else (sku.specification if sku else None),
+            "quantity": item.quantity, "remark": item.remark,
+            "inquiry_id": item.inquiry_id,
+            "source_item_id": snapshot.get("source_item_id") if snapshot else None,
+            "original_quantity": item.original_quantity,
+            # 车间依据逐行不同，所以跟着明细走；PDF/XLSX 渲染时按需拼成一列
+            "craft": item.craft,
+            "material": item.material,
+            "drawing_version": item.drawing_version,
+        })
+        if snapshot:
+            source_rows.append({"name": snapshot.get("name"), "spec": snapshot.get("specification"),
+                                "quantity": snapshot.get("original_quantity"), "remark": snapshot.get("remark"),
+                                "source_item_id": snapshot.get("source_item_id")})
     source_item = next((i for i in items if i.inquiry_id), None)
-    inquiry = (
-        await session.get(CustomInquiry, source_item.inquiry_id) if source_item else None
-    )
-    source_rows: list[dict] = []
-    if inquiry is not None:
-        source_rows = [
-            {
-                "name": inquiry.title,
-                "quantity": inquiry.quantity,
-                "inquiry_id": inquiry.id,
-            }
-        ]
+    inquiry = await session.get(CustomInquiry, source_item.inquiry_id) if source_item else None
+    if not sample.source_context and inquiry:
+        source_rows = [{"name": inquiry.title, "quantity": inquiry.quantity, "inquiry_id": inquiry.id}]
 
     customer = await session.get(Customer, sample.customer_id) if sample.customer_id else None
     # 生产责任人：车间看的是人，不是 id
@@ -348,8 +362,8 @@ async def build_sample_request_doc(
         "sample_request_id": sample.id,
         "inquiry_id": inquiry.id if inquiry else None,
         "items": current,
-        "diffs": _diff_lines(current, source_rows, "inquiry_id"),
-        "source": (
+        "diffs": _diff_lines(current, source_rows, "source_item_id" if sample.source_context else "inquiry_id"),
+        "source": sample.source_context or (
             {
                 "type": "inquiry",
                 "id": inquiry.id,
@@ -363,14 +377,14 @@ async def build_sample_request_doc(
         # 文档 §3.5 要求生产打样记录：用途、工艺/材质、图纸版本、样品数量、
         # 目标完成日、验收标准、费用和责任人。**没有这几项，这张单子发给车间
         # 是干不了活的**（不知道用什么材质、按哪版图纸、什么时候要、按什么验收）。
-        # 样品数量不在这里重复：它在下面的明细里，一单可以多样。
+        # 这里只放**整单属性**：用途、目标完成日、验收标准、费用、责任人。
+        # 样品数量在下面的明细里（一单可以多样）；材质 / 工艺 / 图纸版本也在明细里
+        # ——它们逐行不同，混进单头就只能写一份，一单多样时车间会照着一份做错。
         "sections": [
+            *[{"label": f"{i.item_name or '明细'} 原采购数量 / 本次样品数量",
+               "value": f"{_number(i.original_quantity) if i.original_quantity is not None else '未记录'} / {_number(i.quantity)}"}
+              for i in items if i.source_snapshot],
             {"label": "用途", "value": sample.purpose or ""},
-            {
-                "label": "工艺 / 材质",
-                "value": " / ".join(x for x in (sample.craft, sample.material) if x),
-            },
-            {"label": "图纸版本", "value": sample.drawing_version or ""},
             {
                 "label": "目标完成日",
                 "value": (
@@ -427,6 +441,7 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
             "sku_id": i.sku_id,
             # 定制件用需求编号配对（sku_id 两侧都是 None）
             "inquiry_id": i.inquiry_id,
+            "quote_item_id": i.quote_item_id,
         }
         for i in items
     ]
@@ -449,14 +464,22 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
         ).scalars().all()
         quote_items = [
             {
-                "name": r.sku_name_snapshot or r.inquiry_no_snapshot or "（未命名）",
+                "name": r.sku_name_snapshot or r.sku_code_snapshot or r.inquiry_no_snapshot or "（未命名）",
+                "spec": r.spec_snapshot,
+                "remark": r.remark,
                 "quantity": r.quantity,
+                "unit_price": r.quoted_price,
+                "quote_item_id": r.id,
                 "sku_id": r.sku_id,
                 "inquiry_id": r.inquiry_id,
             }
             for r in rows
         ]
 
+    exact_sources = [dict(i.source_snapshot, quote_item_id=i.quote_item_id) for i in items if i.source_snapshot and i.quote_item_id]
+    exact_current = [row for row in current if row["quote_item_id"]]
+    legacy_current = [row for row in current if not row["quote_item_id"]]
+    differences = _diff_lines(exact_current, exact_sources, "quote_item_id") + _diff_lines(legacy_current, quote_items, ("sku_id", "inquiry_id"))
     customer = await session.get(Customer, order.customer_id) if order.customer_id else None
     return {
         "customer": customer,
@@ -466,7 +489,7 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
         "order_id": order.id,
         "quote_id": order.quote_id,
         "items": current,
-        "diffs": _diff_lines(current, quote_items, ("sku_id", "inquiry_id")),
+        "diffs": differences,
         "source": (
             {
                 "type": "quote",
@@ -479,6 +502,7 @@ async def build_order_sheet_doc(session: AsyncSession, order_id: int) -> dict:
         ),
         "title_suffix": customer.name if customer else "",
         "sections": [
+            {"label": "币种", "value": order.currency or ""},
             {"label": "客户交期", "value": order.delivery_date.isoformat() if order.delivery_date else ""},
             {"label": "付款条件", "value": order.payment_terms or ""},
             {"label": "备注", "value": order.remark or ""},
@@ -683,6 +707,7 @@ async def _next_doc_version(
     sample_request_id: int | None,
     order_id: int | None,
     quote_id: int | None = None,
+    order_draft_id: int | None = None,
 ) -> tuple[int, int | None]:
     stmt: Select = select(BizDoc).where(BizDoc.doc_type == doc_type)
     # **按单据类型选键**，不能用"哪个字段非空就按哪个"：
@@ -693,8 +718,10 @@ async def _next_doc_version(
         stmt = stmt.where(BizDoc.sample_request_id == sample_request_id)
     elif doc_type == "quote_sheet":
         stmt = stmt.where(BizDoc.quote_id == quote_id)
+    elif order_draft_id is not None:
+        stmt = stmt.where(BizDoc.order_draft_id == order_draft_id)
     else:
-        stmt = stmt.where(BizDoc.order_id == order_id)
+        stmt = stmt.where(BizDoc.order_id == order_id, BizDoc.order_draft_id.is_(None))
     latest = (
         await session.execute(stmt.order_by(BizDoc.version.desc()).limit(1))
     ).scalars().first()
@@ -725,6 +752,7 @@ async def _persist(
         doc_type=doc_type,
         sample_request_id=built.get("sample_request_id"),
         order_id=built.get("order_id"),
+        order_draft_id=built.get("order_draft_id"),
         quote_id=built.get("quote_id") if doc_type == "quote_sheet" else None,
     )
     doc_no = await numbering.generate_for(
@@ -741,7 +769,7 @@ async def _persist(
     doc = BizDoc(
         doc_no=doc_no,
         doc_type=doc_type,
-        title=f"{DOC_TYPE_LABEL[doc_type]}-{built.get('title_suffix') or ''}".rstrip("-"),
+        title=f"{'订单草稿需求单' if built.get('order_draft_id') else DOC_TYPE_LABEL[doc_type]}-{built.get('title_suffix') or ''}".rstrip("-"),
         version=version,
         parent_id=parent_id,
         status="active",
@@ -750,6 +778,7 @@ async def _persist(
         contact_id=built.get("contact_id"),
         sample_request_id=built.get("sample_request_id"),
         order_id=built.get("order_id"),
+        order_draft_id=built.get("order_draft_id"),
         inquiry_id=built.get("inquiry_id"),
         quote_id=built.get("quote_id"),
         source_type=(source_ref or {}).get("type"),
@@ -846,6 +875,7 @@ def serialize_doc(doc: BizDoc) -> dict:
         "customer_name": snapshot.get("customer_name"),
         "sample_request_id": doc.sample_request_id,
         "order_id": doc.order_id,
+        "order_draft_id": doc.order_draft_id,
         "inquiry_id": doc.inquiry_id,
         "quote_id": doc.quote_id,
         "source": {
@@ -881,6 +911,7 @@ async def list_docs(
     doc_type: str | None = None,
     sample_request_id: int | None = None,
     order_id: int | None = None,
+    order_draft_id: int | None = None,
     quote_id: int | None = None,
     customer_id: int | None = None,
     limit: int = 100,
@@ -895,6 +926,8 @@ async def list_docs(
         stmt = stmt.where(BizDoc.sample_request_id == sample_request_id)
     if order_id is not None:
         stmt = stmt.where(BizDoc.order_id == order_id)
+    if order_draft_id is not None:
+        stmt = stmt.where(BizDoc.order_draft_id == order_draft_id)
     # 对客报价单按报价单挂（一单多版本共用一个 quote_id）
     if quote_id is not None:
         stmt = stmt.where(BizDoc.quote_id == quote_id)
@@ -909,7 +942,7 @@ async def doc_pdf_data(session: AsyncSession, doc: BizDoc) -> dict:
 
     snapshot = doc.input_snapshot or {}
     source = doc.source_type and {
-        "label": {"inquiry": "来源询价", "quote": "来源报价"}.get(doc.source_type, "来源单据"),
+        "label": {"inquiry": "来源询价", "quote": "来源报价", "quote_version": "来源报价"}.get(doc.source_type, "来源单据"),
         "no": doc.source_no,
         "version": doc.source_version,
     }

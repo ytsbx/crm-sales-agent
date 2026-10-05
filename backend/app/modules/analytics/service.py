@@ -1215,7 +1215,7 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
 #
 # 口径显式定义在这里，前端文案按这里的说法写，避免出现"看板说没有、提醒说逾期"：
 #
-# - **准时**：首批发货实际日期 ≤ 订单客户交期（`sales_orders.delivery_date`）。
+# - **准时**：首批发货实际日期 ≤ 明确交期类型后的计划发货日（到货日减运输天数）。
 #   首批发货日期 = 该订单已发货批次里 `actual_ship_date` 的最小值，与里程碑
 #   `first_shipment` 节点同源。**没填交期的订单不进准时率分母**——判不了，
 #   既不能算准时也不能算延迟；这类单量单独报（`undated_delivered_count`）。
@@ -1272,6 +1272,8 @@ async def delivery_stats(
                     SalesOrder.owner_id,
                     SalesOrder.status,
                     SalesOrder.delivery_date,
+                    SalesOrder.delivery_kind,
+                    SalesOrder.transit_days,
                 ).where(SalesOrder.status != "cancelled"),
                 user,
                 # 交期是责任口径，不是业绩口径：交接后由接手人负责盯交期，
@@ -1312,7 +1314,7 @@ async def delivery_stats(
                 OrderMilestone.node,
                 OrderMilestone.planned_date,
                 OrderMilestone.actual_date,
-            ).where(OrderMilestone.order_id.in_(order_ids))
+            ).where(OrderMilestone.order_id.in_(order_ids), OrderMilestone.skipped_at.is_(None))
         )
     ).all():
         if actual is not None or planned is None or planned >= today:
@@ -1358,7 +1360,9 @@ async def delivery_stats(
 
     for row in order_rows:
         shipped_on = first_ship.get(row.id)
-        due = row.delivery_date
+        due = row.delivery_date if row.delivery_kind else None
+        if due and row.delivery_kind == "arrival":
+            due -= timedelta(days=row.transit_days or 0)
 
         # ---- 在跟：交期风险（未发货才算风险，已发首批发货的不在风险里）----
         if row.status in OPEN_ORDER_STATUSES:

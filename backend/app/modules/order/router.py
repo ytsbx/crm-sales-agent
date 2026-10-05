@@ -57,12 +57,15 @@ async def list_orders(
     keyword: str | None = None,
     status: str | None = None,
     customer_id: int | None = None,
+    opportunity_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = select(SalesOrder)
+    if opportunity_id is not None:
+        stmt = stmt.where(SalesOrder.opportunity_id == opportunity_id)
     if keyword:
         stmt = stmt.where(SalesOrder.order_no.ilike(f"%{keyword.strip()}%"))
     if status:
@@ -167,6 +170,7 @@ async def create_order(
         business_type="order",
         business_id=order.id,
         order_id=order.id,
+        operator_id=user.id,
         exclude_user_id=user.id,
         event_key=f"order:create:{order.id}",
     )
@@ -339,7 +343,7 @@ async def list_milestones(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """跟单里程碑（领导模块⑤）：首次访问自动按六节点初始化，计划日期从交期倒推。"""
+    """跟单里程碑（领导模块⑤）：首次访问建立六个空计划节点；计划必须经责任人确认。"""
     order = await svc.get_visible_order(session, user, order_id)
     rows = await milestones_svc.ensure_initialized(
         session, order.id, order.delivery_date, created_by=user.id
@@ -353,15 +357,16 @@ async def list_milestones(
             "label": milestones_svc.node_label(r.node),
             "planned_date": r.planned_date,
             "actual_date": r.actual_date,
-            "status": milestones_svc.node_status(r.planned_date, r.actual_date, today),
+            "status": milestones_svc.row_status(r, today),
             "status_label": milestones_svc.STATUS_LABELS[
-                milestones_svc.node_status(r.planned_date, r.actual_date, today)
+                milestones_svc.row_status(r, today)
             ],
             # 方案 :103：责任人 / 来源证据 / 逾期原因
             "owner_id": r.owner_id,
             "evidence": r.evidence,
             "overdue_reason": r.overdue_reason,
             "remark": r.remark,
+            "skip_reason": r.skip_reason, "skipped_by": r.skipped_by, "skipped_at": r.skipped_at,
         }
         for r in rows
     ]
@@ -379,11 +384,48 @@ async def update_milestone(
 ):
     """登记实际日期 / 调整计划日期 / 备注（exclude_unset：不传的字段不动）。"""
     order = await svc.get_visible_order(session, user, order_id)
-    row = await session.get(OrderMilestone, milestone_id)
+    from app.modules.order.schedule import lock_order
+    await lock_order(session, order)
+    row = (await session.execute(select(OrderMilestone).where(OrderMilestone.id == milestone_id)
+           .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
     if row is None or row.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "里程碑不存在", 404)
     data = payload.model_dump(exclude_unset=True)
-    before = {"planned_date": str(row.planned_date), "actual_date": str(row.actual_date)}
+    # 动态批次节点（「第 N 批发货」）的计划日/实际日是**批次那一份事实的投影**，
+    # 只能由批次的创建、交期变更、发货登记来改。这里放开就会两边各存一份日期：
+    # 之后按期平移各走各的，越差越远；还会出现"节点显示已发货、批次仍待发"。
+    if row.node.startswith(milestones_svc.BATCH_NODE_PREFIX):
+        blocked = [field for field in ("planned_date", "actual_date") if field in data]
+        if blocked:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "「第 N 批发货」节点的计划日/实际日跟随对应批次，"
+                "请在批次上调整计划或登记发货，不要单独改这个节点",
+                422,
+            )
+    before = {"planned_date": str(row.planned_date), "actual_date": str(row.actual_date),
+              "skipped_at": str(row.skipped_at), "skip_reason": row.skip_reason,
+              "skipped_by": row.skipped_by}
+    skipped = data.pop("skipped", None)
+    if skipped is True:
+        if row.actual_date or data.get("actual_date"):
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已实际完成的节点不能标为不适用", 422)
+        reason = (data.get("skip_reason") or "").strip()
+        if not reason:
+            raise AppError(ErrorCode.PARAM_ERROR, "跳过节点必须填写原因", 422)
+        data["skip_reason"] = reason
+        row.skip_reason = reason
+        row.skipped_by = user.id
+        row.skipped_at = datetime.now(UTC)
+    elif skipped is False:
+        row.skip_reason = None
+        row.skipped_by = None
+        row.skipped_at = None
+        data.pop("skip_reason", None)
+    elif "skip_reason" in data:
+        raise AppError(ErrorCode.PARAM_ERROR, "修改跳过原因时请同时提交 skipped=true", 422)
+    if row.skipped_at and data.get("actual_date"):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先恢复适用，再登记实际完成日期", 422)
     for field, value in data.items():
         setattr(row, field, value)
     await session.flush()
@@ -395,7 +437,8 @@ async def update_milestone(
         # 审计统一记订单 id（replan 也是订单 id）：按订单查"跟单改动史"才查得全
         business_id=order.id,
         before=before,
-        after={"node": row.node, "planned_date": str(row.planned_date), "actual_date": str(row.actual_date)},
+        after={"node": row.node, "planned_date": str(row.planned_date), "actual_date": str(row.actual_date),
+               "skipped_at": str(row.skipped_at), "skip_reason": row.skip_reason, "skipped_by": row.skipped_by},
         ip=client_ip(request),
     )
     await session.commit()
@@ -406,14 +449,15 @@ async def update_milestone(
             "label": milestones_svc.node_label(row.node),
             "planned_date": row.planned_date,
             "actual_date": row.actual_date,
-            "status": milestones_svc.node_status(row.planned_date, row.actual_date, date.today()),
+            "status": milestones_svc.row_status(row, date.today()),
             "status_label": milestones_svc.STATUS_LABELS[
-                milestones_svc.node_status(row.planned_date, row.actual_date, date.today())
+                milestones_svc.row_status(row, date.today())
             ],
             "owner_id": row.owner_id,
             "evidence": row.evidence,
             "overdue_reason": row.overdue_reason,
             "remark": row.remark,
+            "skip_reason": row.skip_reason, "skipped_by": row.skipped_by, "skipped_at": row.skipped_at,
         },
         "里程碑已更新",
     )
@@ -430,7 +474,8 @@ async def preview_schedule_change(
     from app.modules.order import schedule as schedule_svc
 
     order = await svc.get_visible_order(session, user, order_id)
-    return ok(await schedule_svc.preview(session, order, payload.new_delivery_date))
+    return ok(await schedule_svc.preview(session, order, payload.new_delivery_date,
+        delivery_kind=payload.delivery_kind, transit_days=payload.transit_days, plan_offsets=payload.plan_offsets))
 
 
 @router.post("/orders/{order_id}/schedule-changes")
@@ -448,6 +493,7 @@ async def create_schedule_change(
     row = await schedule_svc.create_change(
         session, order, user=user,
         new_delivery_date=payload.new_delivery_date, reason=payload.reason,
+        delivery_kind=payload.delivery_kind, transit_days=payload.transit_days, plan_offsets=payload.plan_offsets,
     )
     await write_audit(
         session, operator_id=user.id, action="create_schedule_change",
@@ -515,6 +561,18 @@ async def confirm_schedule_change(
     row = await schedule_svc.confirm_change(
         session, order, row, user=user, remark=payload.remark
     )
+    applied = (row.affected or {}).get("applied", {})
+    await followup_service.record_and_notify(
+        session, customer_id=order.customer_id, operator_id=user.id, owner_id=order.owner_id,
+        title="确认交期变更",
+        content=f"订单 {order.order_no} 交期变更 #{row.id} 已确认："
+                f"客户要求日期 {applied.get('old_delivery_date') or '未设置'} → {row.new_delivery_date}"
+                f"；类型：{'到货日' if order.delivery_kind == 'arrival' else '发货日'}"
+                f"；运输 {order.transit_days} 天；计划发货日 {applied.get('new_shipment_date')}"
+                + (f"；原因：{row.reason}" if row.reason else ""),
+        business_type="order", business_id=order.id, order_id=order.id,
+        event_key=f"order:schedule_confirm:{row.id}",
+    )
     await write_audit(
         session, operator_id=user.id, action="confirm_schedule_change",
         business_type="order", business_id=order.id,
@@ -522,6 +580,7 @@ async def confirm_schedule_change(
         ip=client_ip(request),
     )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(schedule_svc.serialize_change(row), "已确认，节点与批次计划日已重排")
 
 
@@ -572,24 +631,10 @@ async def replan_milestones(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """补齐还没有计划日的节点（已排定 / 已登记的一律不动）。
-
-    交期真正变化时按天数平移计划日走**交期变更单**那条路；这个入口只做
-    "从没排过的补默认值"，避免一次点击把跟单员手工推后的日期拉回默认倒推值。
-    """
-    order = await svc.get_visible_order(session, user, order_id)
-    changed = await milestones_svc.replan(session, order.id, order.delivery_date)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="replan",
-        business_type="order_milestone",
-        business_id=order.id,
-        after={"delivery_date": str(order.delivery_date), "changed": changed},
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok({"changed": changed}, f"已按交期 {order.delivery_date} 重排 {changed} 个节点")
+    """旧重排入口已停用，统一使用预览及责任人确认。"""
+    await svc.get_visible_order(session, user, order_id)
+    raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
+                   "请使用交期与计划预览，生成待确认记录后由责任人确认生效", 422)
 
 
 @router.get("/orders/{order_id}/status-history")
@@ -962,6 +1007,7 @@ async def ship_batch(
         ip=client_ip(request),
     )
     await session.commit()
+    await notification_service.dispatch_pending(session)
     overview = await svc.order_shipments(session, order)
     return ok(
         {"order_status": order.status, "summary": overview["summary"]},

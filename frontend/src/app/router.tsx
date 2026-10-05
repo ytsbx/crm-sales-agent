@@ -1,3 +1,4 @@
+import OrderDraftsPage from '../modules/order/OrderDraftsPage'
 import type { ReactNode } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 
@@ -75,6 +76,8 @@ export const router = createBrowserRouter([
         element: <OrderListPage />,
       },
       { path: 'orders/:id', element: <OrderDetailPage /> },
+      { path: 'order-drafts', element: <OrderDraftsPage /> },
+      { path: 'order-drafts/:id', element: <OrderDraftsPage /> },
       { path: 'receivables', element: <OrderListPage initialTab="receivables" /> },
       { path: 'knowledge', element: <KnowledgePage /> },
       { path: 'documents', element: <DocumentsPage /> },

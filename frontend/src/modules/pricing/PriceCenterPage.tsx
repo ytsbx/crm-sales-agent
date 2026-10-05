@@ -80,7 +80,9 @@ export default function PriceCenterPage() {
   const { can } = usePermissions()
   const canManage = can('price:manage')
 
-  const [activeKey, setActiveKey] = useState('costs')
+  // 默认落在「客户查价」：这是价格中心最高频的入口，
+  // 之前默认停在「成本」，用户进来得先自己找页签。
+  const [activeKey, setActiveKey] = useState('lookup')
   const [costSkuId, setCostSkuId] = useState<number | undefined>()
   const [costVisible, setCostVisible] = useState(false)
   const [costForm, setCostForm] = useState({

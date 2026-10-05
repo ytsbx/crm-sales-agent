@@ -15,6 +15,7 @@ interface TabsState {
   closeTab: (key: string) => void
   setActive: (key: string) => void
   closeAll: () => void
+  closeOthers: (key: string) => void
 }
 
 const HOME_TAB: TabItem = { key: '/workbench', label: '工作台', path: '/workbench' }
@@ -41,4 +42,11 @@ export const useTabsStore = create<TabsState>((set) => ({
     }),
   setActive: (key) => set({ activeKey: key }),
   closeAll: () => set({ tabs: [HOME_TAB], activeKey: HOME_TAB.key }),
+  closeOthers: (key) =>
+    set((state) => {
+      const keep = state.tabs.filter((item) => item.key === key)
+      return keep.length > 0
+        ? { tabs: keep, activeKey: key }
+        : { tabs: [HOME_TAB], activeKey: HOME_TAB.key }
+    }),
 }))

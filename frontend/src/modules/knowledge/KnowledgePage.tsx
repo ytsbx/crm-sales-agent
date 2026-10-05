@@ -1,5 +1,5 @@
 import { useRef, useState, type ComponentProps } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -14,6 +14,8 @@ import {
   Toast,
 } from '@douyinfe/semi-ui'
 
+import SampleFromSourceModal from '../sample/SampleFromSourceModal'
+import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { emptyText } from '../../shared/hooks/emptyText'
@@ -30,6 +32,7 @@ import {
   type CustomInquiryRow,
 } from '../../shared/api/inquiry'
 import { listCustomers } from '../../shared/api/customer'
+import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
   listInquiryApprovals,
   resolveOaInstance,
@@ -57,6 +60,7 @@ interface InquiryForm {
   title: string
   description: string
   customer_id?: number | null
+  opportunity_id?: number | null
   quantity: string
   target_price: string
   remark: string
@@ -76,6 +80,12 @@ const EMPTY_FORM: InquiryForm = {
 export default function KnowledgePage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawOpportunityId = Number(searchParams.get('opportunity_id'))
+  const opportunityFilter = Number.isSafeInteger(rawOpportunityId) && rawOpportunityId > 0 ? rawOpportunityId : undefined
+  const { can } = usePermissions()
+  const [draftSourceId, setDraftSourceId] = useState<number | null>(null)
+  const [sampleSourceId, setSampleSourceId] = useState<number | null>(null)
   const [statusFilter, setStatusFilter] = useState<string | undefined>()
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -183,9 +193,22 @@ export default function KnowledgePage() {
     queryFn: () => customInquiryStatusSummary(),
   })
   const query = useQuery({
-    queryKey: ['custom-inquiries', { statusFilter, keyword, page }],
+    queryKey: ['custom-inquiries', { statusFilter, keyword, page, opportunityFilter }],
     queryFn: () =>
-      listCustomInquiries({ status: statusFilter, keyword, page, page_size: 20 }),
+      listCustomInquiries({ status: statusFilter, keyword, page, page_size: 20, opportunity_id: opportunityFilter }),
+  })
+  const linkedOpportunity = useQuery({
+    queryKey: ['opportunity', opportunityFilter],
+    queryFn: () => getOpportunity(opportunityFilter!), enabled: Boolean(opportunityFilter),
+  })
+  const opportunitiesQuery = useQuery({
+    queryKey: ['opportunities-for-inquiry', form.customer_id],
+    queryFn: () => listOpportunities({ customer_id: form.customer_id ?? undefined, page_size: 100 }),
+    enabled: editVisible && Boolean(form.customer_id),
+  })
+  const selectedOpportunity = useQuery({
+    queryKey: ['opportunity', form.opportunity_id],
+    queryFn: () => getOpportunity(form.opportunity_id!), enabled: editVisible && Boolean(form.opportunity_id),
   })
   const customersQuery = useQuery({
     queryKey: ['customers-for-inquiry'],
@@ -247,7 +270,9 @@ export default function KnowledgePage() {
 
   const openCreate = () => {
     setEditing(null)
-    setForm(EMPTY_FORM)
+    setForm(opportunityFilter && linkedOpportunity.data ? {
+      ...EMPTY_FORM, customer_id: linkedOpportunity.data.customer_id, opportunity_id: opportunityFilter,
+    } : EMPTY_FORM)
     setEditVisible(true)
   }
 
@@ -257,6 +282,7 @@ export default function KnowledgePage() {
       title: row.title,
       description: row.description ?? '',
       customer_id: row.customer_id ?? undefined,
+      opportunity_id: row.opportunity_id ?? undefined,
       quantity: row.quantity != null ? String(row.quantity) : '',
       target_price: row.target_price != null ? String(row.target_price) : '',
       remark: row.remark ?? '',
@@ -349,6 +375,8 @@ export default function KnowledgePage() {
       width: 250,
       render: (_: unknown, record: CustomInquiryRow) => (
         <span style={{ display: 'inline-flex', gap: 10 }}>
+          {can('order:manage') && <a onClick={() => setDraftSourceId(record.id)}>建订单草稿</a>}
+          {can('sample:manage') && <a onClick={() => setSampleSourceId(record.id)}>申请打样</a>}
           <a onClick={() => openEdit(record)}>编辑</a>
           <a onClick={() => openRevise(record)}>修订</a>
           {/* 场景11：从需求发起钉钉询价审批。
@@ -413,6 +441,11 @@ export default function KnowledgePage() {
       />
 
       <SectionCard>
+        {opportunityFilter && <div style={{ marginBottom: 12 }}>
+          当前商机：{linkedOpportunity.data?.title ?? linkedOpportunity.error?.message ?? `#${opportunityFilter}`} ·
+          <Button theme="borderless" onClick={() => { setSearchParams({}); setPage(1) }}>查看全部询价</Button>
+          <Link to={`/opportunities/${opportunityFilter}`}>返回商机</Link>
+        </div>}
         <div className="toolbar">
           {summaryQuery.data?.map((item) => (
             <Tag key={item.status} color={STATUS_TONE[item.status] ?? 'grey'} type="light">
@@ -463,6 +496,8 @@ export default function KnowledgePage() {
         />
       </SectionCard>
 
+      {draftSourceId != null && <SampleFromSourceModal mode="order" source={{ inquiry_id: draftSourceId }} onClose={() => setDraftSourceId(null)} />}
+      {sampleSourceId != null && <SampleFromSourceModal source={{ inquiry_id: sampleSourceId }} onClose={() => setSampleSourceId(null)} />}
       <Modal
         title={editing ? '编辑定制询价' : '记录定制询价'}
         visible={editVisible}
@@ -476,6 +511,7 @@ export default function KnowledgePage() {
             title: form.title.trim(),
             description: form.description.trim() || null,
             customer_id: form.customer_id ?? null,
+            opportunity_id: form.opportunity_id ?? null,
             quantity: form.quantity.trim() ? Number(form.quantity) : null,
             target_price: form.target_price.trim() ? Number(form.target_price) : null,
             remark: form.remark.trim() || null,
@@ -509,16 +545,29 @@ export default function KnowledgePage() {
             <div style={{ marginBottom: 4 }}>客户（可选）</div>
             <Select
               value={form.customer_id ?? undefined}
-              onChange={(value) => setForm({ ...form, customer_id: (value as number) ?? null })}
-              optionList={(customersQuery.data?.items ?? []).map((item) => ({
-                value: item.id,
-                label: item.name,
-              }))}
+              onChange={(value) => setForm({ ...form, customer_id: (value as number) ?? null, opportunity_id: null })}
+              optionList={Array.from(new Map([
+                ...(customersQuery.data?.items ?? []).map((item) => [item.id, { value: item.id, label: item.name }] as const),
+                ...(selectedOpportunity.data ? [[selectedOpportunity.data.customer_id, {
+                  value: selectedOpportunity.data.customer_id,
+                  label: selectedOpportunity.data.customer_name ?? `客户 #${selectedOpportunity.data.customer_id}`,
+                }] as const] : []),
+              ]).values())}
               filter
               style={{ width: '100%' }}
               showClear
               placeholder="关联客户"
             />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>关联商机（本次采购需求）</div>
+            <Select value={form.opportunity_id ?? undefined} disabled={!form.customer_id}
+              onChange={(value) => setForm({ ...form, opportunity_id: (value as number) ?? null })}
+              optionList={Array.from(new Map([
+                ...(opportunitiesQuery.data?.items ?? []),
+                ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
+              ].map((item) => [item.id, item])).values()).map((item) => ({ value: item.id, label: item.title }))}
+              filter showClear style={{ width: '100%' }} placeholder="选择该客户的商机，避免重复创建" />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
@@ -621,6 +670,7 @@ export default function KnowledgePage() {
             { title: '数量', dataIndex: 'quantity', width: 80, render: (v: number | null) => v ?? '-' },
             { title: '目标价', dataIndex: 'target_price', width: 90, render: (v: number | null) => v ?? '-' },
             { title: '本版说明', dataIndex: 'revision_note', render: (v: string | null) => v ?? '（原始要求）' },
+            { title: '操作', render: (_: unknown, row: CustomInquiryRow) => <div>{can('sample:manage') && <a onClick={() => { setHistoryTarget(null); setSampleSourceId(row.id) }}>按此版本申请打样</a>}{can('order:manage') && <a style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); setDraftSourceId(row.id) }}>按此版本建订单草稿</a>}</div> },
             {
               title: '时间',
               dataIndex: 'created_at',

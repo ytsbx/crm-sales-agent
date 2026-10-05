@@ -37,6 +37,13 @@ BUSINESS_MODELS: dict[str, tuple[type, str]] = {
 # 而不是默认放行——宁可让人来登记新类型，也不要默默漏数据。
 NO_OWNER_TYPES: set[str] = {"product"}
 
+#: 有独立可见性入口、但没有统一 owner_id 列的业务类型。
+#: 它们各自已有一套"数据范围 + 越权"判定，这里**复用那一套**，
+#: 不在本文件重写第二份口径——两处口径迟早会分叉。
+#: 名称是与前端、钉钉 OA 取图（`inquiry_file_business_type`，默认 `inquiry`）
+#: 共用的字符串，改一处就得三处一起改。
+DELEGATED_TYPES: set[str] = {"inquiry", "sample", "order_draft"}
+
 
 async def visible_object(
     session: AsyncSession, user: CurrentUser, *, business_type: str, business_id: int
@@ -63,6 +70,26 @@ async def visible_object(
             return False
         owner_ids = await scoped_owner_ids(session, user)
         return owner_ids is None or customer.owner_id in owner_ids
+    # 询价 / 打样 / 订单草稿：复用它们自己的可见性入口。
+    # 没有这一段的后果是**上传和挂载都直接被拒**——钉钉 OA 要求先有询价图纸，
+    # 而标准附件入口挂不上 `inquiry`，那条流程从入口就断了。
+    if business_type in DELEGATED_TYPES:
+        try:
+            if business_type == "inquiry":
+                from app.modules.inquiry import service as inquiry_service
+
+                await inquiry_service.get_visible_or_404(session, user, business_id)
+            elif business_type == "sample":
+                from app.modules.sample import service as sample_service
+
+                await sample_service.get_visible_or_404(session, user, business_id)
+            else:  # order_draft
+                from app.modules.order import drafts as order_drafts
+
+                await order_drafts.get_visible(session, user, business_id)
+        except AppError:
+            return False
+        return True
     entry = BUSINESS_MODELS.get(business_type)
     if entry is None:
         return business_type in NO_OWNER_TYPES

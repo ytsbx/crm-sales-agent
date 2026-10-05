@@ -33,6 +33,7 @@ class ToolContext:
     session: AsyncSession
     user: CurrentUser
     agent_session_id: int
+    action_id: int | None = None
 
 
 @dataclass
@@ -617,7 +618,9 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
             "opportunity_id": {"type": "integer"},
             "followup_type": {"type": "string", "description": "电话 / 微信 / 拜访 / 邮件"},
             "customer_feedback": {"type": "string"},
-            "next_action": {"type": "string"},
+            "next_action": {"type": "string", "description": "下一动作；普通跟进必填"},
+            "task_due_at": {"type": "string", "description": "下次跟进时间，含时区的 ISO 8601；普通跟进必填"},
+            "exemption_reason": {"type": "string", "enum": ["customer_declined", "business_closed", "waiting_external"], "description": "免填原因：客户明确拒绝、业务关闭、等待外部固定节点。选择后不填下一动作和时间"},
         },
         "required": ["content"],
     },
@@ -625,25 +628,18 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
     "customer",
 )
 async def create_followup(ctx: ToolContext, **kwargs) -> dict:
-    payload = {k: v for k, v in kwargs.items() if v is not None}
-    followup = FollowUp(**payload, owner_id=ctx.user.id)
-    ctx.session.add(followup)
-    await ctx.session.flush()
-    if payload.get("customer_id"):
-        customer = await ctx.session.get(Customer, payload["customer_id"])
-        if customer:
-            customer.last_followup_at = datetime.now(UTC)
-    await write_audit(
-        ctx.session,
-        operator_id=ctx.user.id,
-        action="create",
-        business_type="followup",
-        business_id=followup.id,
-        after=payload,
-        source="AGENT",
-    )
-    await ctx.session.commit()
-    return {"followup_id": followup.id, "message": "跟进已记录"}
+    from pydantic import ValidationError
+    from app.modules.followup.schema import FollowUpCreate
+    from app.modules.followup.mutations import create_manual_followup
+
+    try:
+        payload = FollowUpCreate(**{**kwargs, "request_key": f"agent:{ctx.action_id}" if ctx.action_id else None})
+    except ValidationError as exc:
+        raise AppError(ErrorCode.PARAM_ERROR, "请补齐下一动作和含时区的下次时间，或选择免填原因", 422) from exc
+    followup, replayed = await create_manual_followup(ctx.session, ctx.user, payload, source="AGENT")
+    # 与 AgentAction 执行状态一起提交，避免工具先提交导致确认重试重复写入。
+    return {"followup_id": followup.id, "task_id": followup.next_task_id,
+            "replayed": replayed, "message": "跟进已记录"}
 
 
 @tool(

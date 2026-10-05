@@ -348,8 +348,8 @@ export default function AnalyticsPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
         <SectionCard title="交期履约（按负责人）">
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
-            准时 = 首批发货日期 ≤ 客户交期；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。
-            未填交期的已发货单不进准时率分母（当前 {deliverySummary?.undated_delivered_count ?? 0} 单）。
+            准时 = 首批发货日期 ≤ 计划发货日（到货日减运输天数）；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。
+            缺少交期或交期类型未确认的已发货单不进准时率分母（当前 {deliverySummary?.undated_delivered_count ?? 0} 单）。
           </div>
           {(delivery?.by_owner ?? []).length === 0 ? (
             <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
@@ -389,7 +389,7 @@ export default function AnalyticsPage() {
               {deliverySummary?.due_soon_days ?? 7} 天内到期且未发货：
               {deliverySummary?.due_soon_order_count ?? 0} 单
             </div>
-            <div>在跟但未填交期：{deliverySummary?.no_due_date_open_count ?? 0} 单</div>
+            <div>在跟但交期或类型待补充：{deliverySummary?.no_due_date_open_count ?? 0} 单</div>
             <div>
               平均延迟：
               {deliverySummary?.average_delay_days != null
@@ -438,7 +438,7 @@ export default function AnalyticsPage() {
               width: 110,
               render: (v: string | null) => v ?? '未分配',
             },
-            { title: '客户交期', dataIndex: 'delivery_date', width: 120 },
+            { title: '计划发货日', dataIndex: 'delivery_date', width: 120 },
             {
               title: '超期',
               dataIndex: 'days_overdue',

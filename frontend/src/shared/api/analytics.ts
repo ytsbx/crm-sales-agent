@@ -415,6 +415,7 @@ export function redispatchNotification(id: number) {
 
 /** 投递失败概览：多少条没出去、其中多少条还会自动重试。 */
 export interface DeliveryFailureSummary {
+  business_pending?: number
   pending: number
   sent: number
   failed: number
@@ -431,6 +432,7 @@ export function getDeliveryFailures() {
 /** 批量补投失败与未投递的通知。 */
 export function retryFailedNotifications(limit = 200) {
   return api.post<{
+    business_events?: { processed: number; failed: number; notifications: number }
     requeued: number
     attempted: number
     sent: number

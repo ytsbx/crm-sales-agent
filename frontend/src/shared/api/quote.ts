@@ -286,7 +286,7 @@ export function withdrawApproval(versionId: number) {
   return api.post<null>(`/quote-versions/${versionId}/withdraw-approval`)
 }
 
-export function markSent(versionId: number, payload: { channel: string; receiver?: string }) {
+export function markSent(versionId: number, payload: { channel: string; receiver?: string; request_key?: string }) {
   return api.post<QuoteVersion>(`/quote-versions/${versionId}/mark-sent`, payload)
 }
 

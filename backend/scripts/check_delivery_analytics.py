@@ -132,6 +132,7 @@ async def main():
                 currency='CNY',
                 status=status,
                 delivery_date=due,
+                delivery_kind="shipping", transit_days=0,
                 created_by=owner_id,
             )
             s.add(order)

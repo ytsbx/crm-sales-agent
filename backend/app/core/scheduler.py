@@ -21,6 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.core.audit import write_audit
 from app.modules.settings import service as settings_service
 
 logger = logging.getLogger("crm.scheduler")
@@ -47,16 +48,28 @@ async def run_auto_tasks_job() -> None:
         result = await settings_service.run_auto_tasks(
             session, operator_id=None, source="SCHEDULER"
         )
+        if result.get("failed_rule_count"):
+            logger.warning("自动任务规则配置错误，已跳过：%s", result.get("rule_errors"))
         # 月结协议到期提醒（§3.6）+ 报价有效期届满提醒（§3.4）：
         # 都挂在同一个每日任务里，不新增调度项
         from app.modules.contract import service as contract_service
         from app.modules.quote import service as quote_service
+        from app.modules.task.scanning import lock_task_scan
 
+        await lock_task_scan(session)
         expired = await contract_service.notify_expiring_monthly(session)
         expired_quotes = await quote_service.notify_expired_quotes(session)
         # 第三个时钟（§2.3）：约定的下次跟进时间到了却没联系 → 推负责人一次
         due_followups = await settings_service.notify_due_followups(session)
+        await write_audit(
+            session, operator_id=None, source="SCHEDULER", action="run_followup_deadlines",
+            business_type="task_rule", business_id=None,
+            after={"expired_quotes_count": expired_quotes, "due_followups_count": due_followups,
+                   "monthly_expiring_count": expired},
+        )
         await session.commit()
+        from app.modules.notification import service as notification_service
+        await notification_service.dispatch_pending(session)
     logger.info(
         "定时自动任务完成：生成 %s 条任务（其中 %s 个客户因\"已约定下次跟进\"豁免），"
         "月结到期提醒 %s 条，报价到期提醒 %s 条，约定跟进到期提醒 %s 条",

@@ -102,6 +102,7 @@ async def setup():
                                    total_amount=100, approval_status=status, created_at=datetime.now(UTC))
             session.add(version)
             await session.flush()
+            quote.current_version_id = version.id
             instance = ApprovalInstance(
                 definition_id=definition.id, business_type='quote_version', business_id=version.id,
                 applicant_id=users[applicant].id, status=status, current_node=node,

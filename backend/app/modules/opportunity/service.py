@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import (
     LossReason,
     Opportunity,
@@ -161,18 +161,36 @@ async def get_opportunity_or_404(session: AsyncSession, opportunity_id: int) -> 
 
 
 async def get_visible_opportunity(
-    session: AsyncSession, user: CurrentUser, opportunity_id: int
+    session: AsyncSession, user: CurrentUser, opportunity_id: int, *, for_update: bool = False
 ) -> Opportunity:
     """取商机并校验数据范围。
 
     列表接口一直按 `owner_id` 过滤，但详情/改/删此前只判断存在 ——
     实测业务员改个 id 就能看和改别人的商机。读与写必须同一口径。
     """
-    opportunity = await get_opportunity_or_404(session, opportunity_id)
+    if for_update:
+        opportunity = (await session.execute(select(Opportunity).where(
+            Opportunity.id == opportunity_id
+        ).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        if opportunity is None or opportunity.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+    else:
+        opportunity = await get_opportunity_or_404(session, opportunity_id)
     await ensure_in_scope(
         session, user, owner_id=opportunity.owner_id, label="商机"
     )
     return opportunity
+
+
+async def validate_contact(session: AsyncSession, *, customer_id: int, contact_id: int | None) -> None:
+    """商机联系人必须是该客户的有效联系人，创建/修改/复制共用。"""
+    if contact_id is None:
+        return
+    contact = await session.get(Contact, contact_id)
+    if contact is None or contact.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    if contact.customer_id != customer_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "联系人不属于该商机客户", 422)
 
 
 async def get_visible_item(
@@ -391,13 +409,17 @@ async def clone_opportunity(
     需求明细按 `copy_items` 决定是否一起复制。
     """
     await assert_owner_active(session, owner_id)
-    if customer_id is not None and await session.get(Customer, customer_id) is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"客户 id={customer_id} 不存在", 404)
+    from app.modules.customer import service as customer_service
+    target_customer_id = customer_id if customer_id is not None else source.customer_id
+    await customer_service.get_visible_customer(session, user, target_customer_id)
+    # 换客户复制只复制需求内容，原客户的联系人不能跟着新业务走。
+    contact_id = source.primary_contact_id if target_customer_id == source.customer_id else None
+    await validate_contact(session, customer_id=target_customer_id, contact_id=contact_id)
 
     first_stage = await get_first_stage(session)
     clone = Opportunity(
-        customer_id=customer_id or source.customer_id,
-        primary_contact_id=source.primary_contact_id,
+        customer_id=target_customer_id,
+        primary_contact_id=contact_id,
         title=title or f"{source.title}（复制）",
         source=source.source,
         stage_id=first_stage.id,

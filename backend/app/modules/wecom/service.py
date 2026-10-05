@@ -649,7 +649,18 @@ async def transfer_relations(
     #    只动 owner_id：接手人要能看到并跟进这些订单（订单列表按 owner_id
     #    过滤，不动等于交接完没人看得到）；sales_owner_id 保持原样，
     #    这些单的业绩仍算签单的人——"交接后保留历史业绩归属"。
-    from app.modules.order.model import SalesOrder
+    from app.modules.order.model import SalesOrder, OrderDraft
+    from app.modules.bizdoc.model import BizDoc
+
+    drafts = list((await session.execute(select(OrderDraft).where(OrderDraft.owner_id == handover.id))).scalars())
+    draft_ids = [row.id for row in drafts]
+    for draft in drafts:
+        draft.owner_id = takeover.id
+    if draft_ids:
+        documents = list((await session.execute(select(BizDoc).where(BizDoc.order_draft_id.in_(draft_ids)))).scalars())
+        for document in documents:
+            document.owner_id = takeover.id
+    detail["order_drafts"] = len(drafts)
 
     orders = (
         await session.execute(
@@ -669,7 +680,8 @@ async def transfer_relations(
         + len(customer_ids)
         + len(opportunities)
         + len(tasks)
-        + len(orders),
+        + len(orders)
+        + len(drafts),
         fail=len(detail.get("wecom_failures", [])),
         error="；".join(detail.get("wecom_failures", [])[:5]) or None,
         detail=detail,

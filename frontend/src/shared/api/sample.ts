@@ -15,7 +15,13 @@ export interface SampleItem {
   inquiry_id?: number | null
   inquiry_no?: string | null
   is_custom?: boolean
+  original_quantity?: number | null
+  source_snapshot?: SampleSourceLine | null
   quantity: number
+  // ---- 车间依据：逐行不同，所以挂在明细上（不是单头）----
+  craft?: string | null
+  material?: string | null
+  drawing_version?: string | null
   remark?: string | null
 }
 
@@ -30,6 +36,7 @@ export interface SampleShipment {
 }
 
 export interface SampleRequestRow {
+  source_context?: SampleSourceContext | null
   id: number
   opportunity_id?: number | null
   opportunity_title?: string | null
@@ -48,10 +55,8 @@ export interface SampleRequestRow {
   signed_at?: string | null
   feedback?: string | null
   // ---- 生产打样资料（文档 §3.5）----
+  // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，跟着 items 走。
   purpose?: string | null
-  craft?: string | null
-  material?: string | null
-  drawing_version?: string | null
   target_completion_date?: string | null
   acceptance_criteria?: string | null
   sample_fee?: number | null
@@ -98,6 +103,16 @@ export function approveSample(id: number, approved: boolean, rejectReason?: stri
   })
 }
 
+/**
+ * 已驳回的打样单**原样**重新提交审批。
+ *
+ * 和「改资料」是两条路：改了东西走编辑接口（会自动回到待审批），一个字都不想改
+ * 就走这里，明确表达"原样再报一次"—— 否则跟单只能去改个无关字段骗系统回待审批。
+ */
+export function resubmitSample(id: number) {
+  return api.post<SampleRequestRow>(`/samples/${id}/resubmit`)
+}
+
 export function shipSample(id: number, payload: Record<string, unknown>) {
   return api.post<SampleRequestRow>(`/samples/${id}/ship`, payload)
 }
@@ -133,4 +148,37 @@ export function listSampleItems(id: number) {
 
 export function addSampleItem(id: number, payload: Record<string, unknown>) {
   return api.post<SampleRequestRow>(`/samples/${id}/items`, payload)
+}
+
+/**
+ * 改一条明细的车间依据（材质 / 工艺 / 图纸版本）。
+ *
+ * 后端只收这三个字段（多传会报参数错误，不是静默忽略）。改了车间依据 = 审批批的
+ * 那版资料作废，后端会把单据退回「待审批」，所以返回值里的 status 可能变成 pending。
+ */
+export function updateSampleItem(
+  id: number,
+  itemId: number,
+  payload: { craft?: string | null; material?: string | null; drawing_version?: string | null },
+) {
+  return api.patch<SampleRequestRow>(`/samples/${id}/items/${itemId}`, payload)
+}
+
+export interface SampleSourceRef { quote_version_id?: number; inquiry_id?: number }
+export interface SampleSourceContext { type: string; id: number; quote_id?: number; no: string; version: number; is_historical: boolean; approval_status?: string }
+export interface SampleSourceLine {
+  unit_price?: string | null
+  source_item_id: number; name: string; original_quantity: string | null
+  specification?: string | null; remark?: string | null
+}
+export interface SampleSourcePreview {
+  source: SampleSourceContext; customer_name: string; opportunity_title?: string | null; items: SampleSourceLine[]
+}
+export function getSampleSource(source: SampleSourceRef) {
+  return api.get<SampleSourcePreview>('/samples/source', source as Record<string, number>)
+}
+export function createSampleFromSource(payload: SampleSourceRef & {
+  request_key: string; items: { source_item_id: number; quantity: number; specification?: string; remark?: string }[]
+}) {
+  return api.post<SampleRequestRow>('/samples/from-source', payload)
 }

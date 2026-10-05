@@ -54,6 +54,23 @@ async def save_upload(file: UploadFile) -> tuple[str, int, str]:
     return object_key, size, digest.hexdigest()
 
 
+async def save_bytes(data: bytes, suffix: str = ".pdf") -> tuple[str, int, str]:
+    """保存系统自己产出的一段字节（合同生成稿、报表 PDF 等）。
+
+    与 `save_upload` 的分工：那个走流式读上传、带体积上限，是「用户传进来的」；
+    这里是「系统生成的」，体积可控，一次写盘并把 sha256 一并算出来。
+
+    校验值必须落库：它是事后证明"这份原件没被换过 / 和当初一模一样"的唯一依据。
+    合同这类对外文件，光有文件不够，得能自证。
+    """
+    today = datetime.now(UTC).strftime("%Y/%m")
+    object_key = f"{today}/{uuid4().hex}{suffix[:16]}"
+    target = absolute_path(object_key)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return object_key, len(data), hashlib.sha256(data).hexdigest()
+
+
 def delete_object(object_key: str) -> None:
     absolute_path(object_key).unlink(missing_ok=True)
 

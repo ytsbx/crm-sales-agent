@@ -1,5 +1,6 @@
 import type { MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Dropdown } from '@douyinfe/semi-ui'
 
 import { useTabsStore } from '../../shared/store/tabs'
 
@@ -25,6 +26,16 @@ export default function TabBar() {
     }
   }
 
+  // 页签会随浏览不断累积，一个个叉太麻烦：提供两个批量清理入口
+  const handleKeepOnlyActive = () => {
+    useTabsStore.getState().closeOthers(activeKey)
+  }
+
+  const handleCloseAll = () => {
+    useTabsStore.getState().closeAll()
+    navigate('/workbench')
+  }
+
   return (
     <div className="tab-strip">
       {tabs.map((tab) => (
@@ -41,6 +52,22 @@ export default function TabBar() {
           )}
         </div>
       ))}
+      {tabs.length > 1 && (
+        <Dropdown
+          trigger="click"
+          position="bottomRight"
+          render={
+            <Dropdown.Menu>
+              <Dropdown.Item onClick={handleKeepOnlyActive}>关闭其他页签</Dropdown.Item>
+              <Dropdown.Item onClick={handleCloseAll}>关闭全部页签</Dropdown.Item>
+            </Dropdown.Menu>
+          }
+        >
+          <span className="tab-more" title="批量关闭页签">
+            ⋯
+          </span>
+        </Dropdown>
+      )}
     </div>
   )
 }

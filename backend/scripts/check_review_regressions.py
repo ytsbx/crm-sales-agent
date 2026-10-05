@@ -173,7 +173,7 @@ async def create_fixtures() -> None:
         await session.flush()
         expired_version = QuoteVersion(
             quote_id=expired_quote.id, version_no=1, currency="CNY",
-            approval_status="approved", created_by=owner, created_at=now,
+            approval_status="approved", created_by=owner, created_at=now, sent_at=now,
         )
         session.add(expired_version)
         await session.flush()
@@ -310,6 +310,62 @@ def main() -> None:
             check("concurrent payment ends in one terminal state", status == 200
                   and final_state in {"confirmed", "rejected"},
                   f"HTTP {status}; final status={final_state}")
+
+            print("=== Concurrent contract void (row lock) ===")
+            # 作废/签署都不该"点两次都成功"：没有行锁时两个请求都读到 draft、
+            # 都通过检查，台账上会留下两次作废记录（各自一个理由）。
+            if doc_id:
+                void_barrier = Barrier(2)
+
+                def concurrent_void(tag: str):
+                    void_barrier.wait(timeout=10)
+                    return call("POST", f"/contract-documents/{doc_id}/void",
+                                token=zhangsan, body={"reason": f"race-{tag}"})
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    void_futures = [pool.submit(concurrent_void, "a"),
+                                    pool.submit(concurrent_void, "b")]
+                    void_results = [future.result(timeout=30) for future in void_futures]
+                void_statuses = sorted(status for status, _ in void_results)
+                # 后到的那个走到 void_document 里"已经是作废状态"的分支，
+                # 那条 AppError 没指定 http_status，按默认的 400 出来
+                check("only one concurrent contract void succeeds",
+                      void_statuses == [200, 400],
+                      f"HTTP statuses={void_statuses}; results={void_results}")
+
+            print("=== Concurrent contract template version ===")
+            # 同名模板同时新建：没有唯一约束 + 重取逻辑时，两边都算出 v1、
+            # 各插一行 —— 历史文件钉死的"模板 v1"就有两份不同正文。
+            template_name = f"{PREFIX}-TPL-RACE"
+            tpl_barrier = Barrier(2)
+
+            def concurrent_template(tag: str):
+                tpl_barrier.wait(timeout=10)
+                return call("POST", "/contract-templates", token=admin, body={
+                    "doc_type": "contract", "name": template_name,
+                    "body": f"甲方：{{{{party}}}}  # {tag}",
+                })
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                tpl_futures = [pool.submit(concurrent_template, "a"),
+                               pool.submit(concurrent_template, "b")]
+                tpl_results = [future.result(timeout=30) for future in tpl_futures]
+            tpl_statuses = sorted(status for status, _ in tpl_results)
+            tpl_versions = sorted(
+                result.get("data", {}).get("version")
+                for _, result in tpl_results
+                if isinstance(result.get("data"), dict) and "version" in result["data"]
+            )
+            check("concurrent same-name templates get distinct versions",
+                  tpl_statuses == [200, 200] and tpl_versions == [1, 2],
+                  f"HTTP statuses={tpl_statuses}; versions={tpl_versions}; results={tpl_results}")
+
+            status, result = call("POST", "/contract-templates", token=admin, body={
+                "doc_type": "contract", "name": template_name, "body": "甲方：{{party}}  # c",
+            })
+            check("a third same-name template continues the version chain",
+                  status == 200 and result.get("data", {}).get("version") == 3,
+                  f"HTTP {status} {result}")
 
             if settings.erp_webhook_secret:
                 print("=== ERP callback uses normal order lifecycle guards ===")

@@ -9,6 +9,7 @@ class CustomInquiryCreate(BaseModel):
     description: str | None = None
     customer_id: int | None = None
     contact_id: int | None = None
+    opportunity_id: int | None = None
     quantity: Decimal | None = None
     target_price: Decimal | None = None
     remark: str | None = None

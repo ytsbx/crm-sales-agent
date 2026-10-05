@@ -10,8 +10,8 @@
 所以这里的口径是：
 
 - **`analysis` 是主体**：本地确定性计算，永远可用，可测试、可复现；
-- **`commentary` 是可选增强**：模型配了就给一段叙述，
-  没配就是 `None` 并说明原因。
+- **`commentary` 是可选增强**：模型配了就给一段叙述，没配就是 `None` 并说明原因
+  （生成逻辑见 `commentary.py`，本文件只管算事实）。
 
 这样"回款风险"这种功能在没配模型的部署里照样能报警，
 而配了模型的地方多一层人话解释 —— 而不是把核心能力绑在外部服务上。
@@ -37,14 +37,6 @@ ZERO = Decimal(0)
 
 def _f(value) -> float | None:
     return None if value is None else round(float(value), 2)
-
-
-def model_commentary_note() -> str:
-    """没配模型时给前端的说明，避免界面把 None 当成"分析失败"。"""
-    return (
-        "未配置模型（DEEPSEEK_API_KEY 为空），只返回本地统计结果；"
-        "配置后这里会多一段 AI 叙述。"
-    )
 
 
 async def _opportunity_items(session: AsyncSession, opportunity_id: int):
@@ -691,7 +683,11 @@ async def quote_draft(
         "suggested_total": round(total, 2),
         "any_requires_approval": any(line["approval_required"] for line in lines),
         "warnings": warnings,
-        "note": "这只是草稿建议，未落库；确认后用 POST /quotes 生成正式报价单。",
+        # 这句是给界面看的操作提示，业务员会看到它（也会被模型复述），
+        # 所以**不能出现接口路径**。2026-10-05 修过一次：原来写的是
+        # "确认后用 POST /quotes 生成正式报价单"，于是 AI 叙述的末尾就冒出了这句
+        # 接口路径给业务员看。回归套件断言里查的是"未落库"三个字，保留它。
+        "note": "这只是草稿建议，未落库；确认无误后可直接生成正式报价单。",
     }
 
 

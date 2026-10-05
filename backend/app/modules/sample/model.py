@@ -3,7 +3,8 @@
 三张表对应 ER §13：申请单 / 明细 / 寄样记录。
 状态机按 03-API §26 的接口语义推（文档没写明状态名，不自行发明）：
     pending → approved → shipped → signed
-另有 rejected（approve 接口可拒）。
+另有 rejected（approve 接口可拒）。驳回**不是终态**：驳回单改完资料会回到 pending
+重新走一遍审批（见下面 SAMPLE_TRANSITIONS 的说明）。
 
 为什么要独立模块而不是塞进商机：PRD §9.2 的商机阶段里本来就有「样品」阶段，
 但只有阶段没有实体，业务走到那里没有任何东西可录入。这个模块补的就是它。
@@ -15,7 +16,7 @@ from decimal import Decimal
 from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.base import Base, IdMixin
+from app.core.base import Base, IdMixin, JSONType
 
 SAMPLE_STATUS_LABEL: dict[str, str] = {
     "pending": "待审批",
@@ -26,10 +27,16 @@ SAMPLE_STATUS_LABEL: dict[str, str] = {
 }
 
 # 允许的状态流转。写死成一张表，避免各处 if 判断漂移。
+#
+# rejected 的两个出口（业务方 2026-10-05 定：「驳回不是终态」）：
+#   → pending ：**重新提交**。改完资料会自动走这条（"改完再报"）；一个字都不想改的
+#               走 POST /samples/{id}/resubmit 原样再报。没有它，驳回过的单子就只能
+#               重开一张，中间那几轮沟通痕迹全断。
+#   → approved：**主管改判**。上次驳错了直接批回来，不必让跟单先改点什么再绕一圈。
 SAMPLE_TRANSITIONS: dict[str, set[str]] = {
     "pending": {"approved", "rejected"},
     "approved": {"shipped"},
-    "rejected": set(),
+    "rejected": {"pending", "approved"},
     "shipped": {"signed"},
     "signed": set(),
 }
@@ -71,23 +78,25 @@ class SampleRequest(Base, IdMixin):
     )
     status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_context: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    request_key: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reject_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    # ---- 生产打样资料（文档 §3.5：用途、工艺/材质、图纸版本、样品数量、
-    #      目标完成日、验收标准、费用和责任人）----
-    # 没有这几项，打样需求单发给车间是干不了活的：不知道用什么材质、
-    # 按哪版图纸、什么时候要、按什么标准验收。
+    # ---- 生产打样资料（文档 §3.5：用途、目标完成日、验收标准、费用和责任人）----
+    # 没有这几项，打样需求单发给车间是干不了活的：不知道什么时候要、按什么标准验收。
     # **样品数量不在这里重复**：它在 sample_items.quantity 上（可以一单多样），
     # 另立一个汇总字段只会产生两个真相。
+    #
+    # **材质 / 工艺 / 图纸版本也不在这里**：它们逐行不同（一单里两个盒子可能用
+    # 不同材质、走不同工艺、各自按自己的图纸），所以挂在 sample_items 上。
+    # 早先这三项挂在这里（单头），一单多样时只能写进备注，车间拿到的单子看不出区别。
     purpose: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 用途
-    craft: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 工艺
-    material: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 材质
-    drawing_version: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 图纸版本
     target_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 目标完成日
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)  # 验收标准
-    sample_fee: Mapped[Decimal] = mapped_column(
-        Numeric(16, 2), default=0, server_default="0"
-    )  # 打样费用
+    # 打样费用：**空着 = 未填**，与"免费（0 元）"是两回事，所以列可空、不设默认值。
+    # 之前是 NOT NULL + default 0，前端清空输入框传 null 会直接撞非空约束。
+    sample_fee: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)  # 打样费用
     production_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # 责任人
     # 制作完成时间：由跟单登记（CRM 管不到车间，所以只记录事实、不当闸门）
     made_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -132,8 +141,19 @@ class SampleItem(Base, IdMixin):
     inquiry_no_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 定制项的展示名（没有 SKU 名称可用）
     item_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    source_snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    original_quantity: Mapped[Decimal | None] = mapped_column(Numeric(16, 3), nullable=True)
+    specification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ---- 车间依据（文档 §3.5）----
+    # 这三项**逐行不同**：一单里两个商品可能一个用瓦楞纸、一个用 PP 中空板，
+    # 走不同工艺、各自按自己的图纸版本。挂在单头就只能写一份，车间照着做会做错。
+    # 它们同时也是"审批批的是哪一版资料"的核心——改了就等于换了要求，
+    # 所以 update 时会触发退回重审（见 router.update_sample）。
+    craft: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 工艺
+    material: Mapped[str | None] = mapped_column(String(128), nullable=True)  # 材质
+    drawing_version: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 图纸版本
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=1)
-    remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    remark: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SampleShipment(Base, IdMixin):

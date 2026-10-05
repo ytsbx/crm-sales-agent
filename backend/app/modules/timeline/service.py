@@ -10,10 +10,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLog
+from app.core.data_scope import scoped_owner_ids
+from app.core.deps import CurrentUser
 from app.modules.customer.model import CustomerOwnerHistory
 from app.modules.followup.model import FollowUp
-from app.modules.opportunity.model import OpportunityStage, OpportunityStageHistory
+from app.modules.followup.schema import EXEMPTION_LABELS
+from app.modules.followup.visibility import system_source_filter
+from app.modules.opportunity.model import Opportunity, OpportunityStage, OpportunityStageHistory
+from app.modules.order.model import SalesOrder
+from app.modules.quote.model import Quote
 from app.modules.task.model import Task
+from app.modules.sample.model import SampleRequest
 from app.modules.user.model import User
 
 BUSINESS_LABEL = {
@@ -64,11 +71,48 @@ async def _user_names(session: AsyncSession, user_ids: set[int]) -> dict[int, st
     return {int(uid): name for uid, name in rows}
 
 
+async def _visible_sources(
+    session: AsyncSession, user: CurrentUser, followups: list[FollowUp]
+) -> dict[tuple[str, int], dict]:
+    """按模块权限与原单范围批量查可见来源，不继承客户的范围。"""
+    owner_ids = await scoped_owner_ids(session, user)
+    visible = {}
+    for kind, model, column in (
+        ("sample", SampleRequest, "sample_id"),
+        ("order", SalesOrder, "order_id"),
+        ("quote", Quote, "quote_id"),
+        ("opportunity", Opportunity, "opportunity_id"),
+    ):
+        if "admin" not in user.roles and not user.has(f"{kind}:view"):
+            continue
+        ids = {getattr(row, column) for row in followups if getattr(row, column)}
+        if not ids:
+            continue
+        stmt = select(model.id).where(model.id.in_(ids))
+        if owner_ids is not None:
+            stmt = stmt.where(model.owner_id.in_(owner_ids))
+        if kind == "quote":
+            stmt = stmt.where(Quote.deleted_at.is_(None))
+        for source_id in (await session.execute(stmt)).scalars():
+            visible[(kind, source_id)] = {"type": kind, "id": source_id}
+    return visible
+
+
+def _followup_source(row: FollowUp) -> tuple[str, int] | None:
+    for kind in ("sample", "order", "quote", "opportunity"):
+        source_id = getattr(row, f"{kind}_id")
+        if source_id:
+            return kind, source_id
+    return None
+
+
 async def build_timeline(
     session: AsyncSession,
     business_type: str,
     business_id: int,
     limit: int = 100,
+    *,
+    user: CurrentUser,
 ) -> list[dict]:
     events: list[dict] = []
 
@@ -106,17 +150,32 @@ async def build_timeline(
         followups = (
             await session.execute(
                 select(FollowUp)
-                .where(followup_column == business_id)
+                .where(
+                    followup_column == business_id,
+                    await system_source_filter(session, user),
+                )
                 .order_by(FollowUp.id.desc())
                 .limit(limit)
             )
         ).scalars().all()
+        visible_sources = await _visible_sources(session, user, followups)
         for row in followups:
+            source_key = _followup_source(row)
+            source = visible_sources.get(source_key)
+            # 系统单据内容也按来源授权；客户转移/公海不能泄露旧单据事实。
+            if row.followup_type == "系统" and source_key and source is None:
+                continue
             events.append(
                 {
                     "kind": "followup",
-                    "title": f"跟进（{row.followup_type}）",
-                    "detail": row.content,
+                    "title": "业务进展" if row.followup_type == "系统" else f"跟进（{row.followup_type}）",
+                    "source": source,
+                    "detail": row.content + (
+                        f"；下一动作：{row.next_action}；记录时约定：{row.planned_at.isoformat()}"
+                        if row.planned_at else
+                        f"；免填原因：{EXEMPTION_LABELS.get(row.exemption_reason, row.exemption_reason)}"
+                        if row.exemption_reason else ""
+                    ),
                     "operator_id": row.owner_id,
                     "at": row.created_at,
                 }

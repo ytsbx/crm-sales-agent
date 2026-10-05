@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Checkbox, DatePicker, Input, Modal, Select, TextArea, Toast } from '@douyinfe/semi-ui'
+import { DatePicker, Input, Modal, Select, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import { createFollowUp } from '../../shared/api/followup'
 
@@ -29,34 +29,39 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
   const [content, setContent] = useState('')
   const [feedback, setFeedback] = useState('')
   const [nextAction, setNextAction] = useState('')
-  const [withTask, setWithTask] = useState(false)
-  const [taskTitle, setTaskTitle] = useState('')
+  const [exemptionReason, setExemptionReason] = useState<string | null>(null)
+  const submission = useRef<{ signature: string; key: string } | null>(null)
   const [taskDue, setTaskDue] = useState<Date | null>(null)
 
   const reset = () => {
     setContent('')
     setFeedback('')
     setNextAction('')
-    setWithTask(false)
-    setTaskTitle('')
+    setExemptionReason(null)
+    submission.current = null
     setTaskDue(null)
   }
 
   const mutation = useMutation({
-    mutationFn: () =>
-      createFollowUp({
+    mutationFn: () => {
+      const payload = {
         followup_type: followupType,
-        content,
+        content: content.trim(),
         customer_feedback: feedback || null,
-        next_action: nextAction || null,
+        next_action: exemptionReason ? null : nextAction.trim(),
+        exemption_reason: exemptionReason,
         customer_id: target.customerId ?? null,
         contact_id: target.contactId ?? null,
         opportunity_id: target.opportunityId ?? null,
         lead_id: target.leadId ?? null,
-        create_task: withTask,
-        task_title: withTask ? taskTitle || null : null,
-        task_due_at: withTask && taskDue ? taskDue.toISOString() : null,
-      }),
+        task_due_at: !exemptionReason && taskDue ? taskDue.toISOString() : null,
+      }
+      const signature = JSON.stringify(payload)
+      if (submission.current?.signature !== signature) {
+        submission.current = { signature, key: Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, '0')).join('') }
+      }
+      return createFollowUp({ ...payload, request_key: submission.current.key })
+    },
     onSuccess: (data) => {
       Toast.success(data.task_id ? '跟进已记录，并生成了后续任务' : '跟进已记录')
       reset()
@@ -81,8 +86,8 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
           Toast.warning('跟进内容必填')
           return
         }
-        if (withTask && !taskDue) {
-          Toast.warning('要创建后续任务，请选择任务时间')
+        if (!exemptionReason && (!nextAction.trim() || !taskDue)) {
+          Toast.warning('请填写下一动作和下次跟进时间，或选择免填原因')
           return
         }
         mutation.mutate()
@@ -115,30 +120,38 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
           <TextArea value={feedback} onChange={setFeedback} rows={2} />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>下一步动作</div>
-          <Input value={nextAction} onChange={setNextAction} placeholder="例如：明天整理报价" />
+          <div style={{ marginBottom: 4 }}>后续安排</div>
+          <Select
+            value={exemptionReason ?? 'plan'}
+            onChange={(value) => setExemptionReason(value === 'plan' ? null : String(value))}
+            optionList={[
+              { value: 'plan', label: '安排下一次跟进' },
+              { value: 'customer_declined', label: '免填：客户明确拒绝' },
+              { value: 'business_closed', label: '免填：业务已关闭' },
+              { value: 'waiting_external', label: '免填：等待外部固定节点' },
+            ]}
+            style={{ width: '100%' }}
+          />
         </div>
-        <div>
-          <Checkbox checked={withTask} onChange={(event) => setWithTask(Boolean(event.target.checked))}>
-            同时创建后续任务
-          </Checkbox>
-          {withTask && (
-            <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-              <Input
-                value={taskTitle}
-                onChange={setTaskTitle}
-                placeholder="任务标题（可不填）"
-                style={{ flex: 1 }}
-              />
-              <DatePicker
-                type="dateTime"
-                value={taskDue ?? undefined}
-                onChange={(date) => setTaskDue((date as Date) ?? null)}
-                placeholder="任务时间"
-              />
-            </div>
-          )}
-        </div>
+        {!exemptionReason && <>
+          <div>
+            <div style={{ marginBottom: 4 }}>下一步动作 *</div>
+            <Input value={nextAction} maxLength={200} onChange={setNextAction} placeholder="例如：整理报价并回访客户" />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>下次跟进时间 *</div>
+            <DatePicker
+              type="dateTime"
+              value={taskDue ?? undefined}
+              onChange={(date) => setTaskDue((date as Date) ?? null)}
+              placeholder="选择下次跟进时间"
+              style={{ width: '100%' }}
+            />
+            <div style={{ marginTop: 6, color: 'var(--semi-color-text-2)', fontSize: 12 }}>保存后自动生成后续待办。</div>
+          </div>
+        </>}
+        {exemptionReason && <div style={{ color: 'var(--semi-color-text-2)', fontSize: 12 }}>保存免填原因，本次不创建后续待办。</div>}
+
       </div>
     </Modal>
   )

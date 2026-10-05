@@ -110,6 +110,7 @@ class BizDoc(Base, IdMixin):
     contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     sample_request_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    order_draft_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     inquiry_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     quote_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 

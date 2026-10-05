@@ -9,12 +9,12 @@
 事实口径：
 - 订单：status != cancelled（取消单不算成交）
 - 打样：sample_requests.status != rejected（被驳回的打样不算推进）
-- 报价：quotes.deleted_at IS NULL
+- 报价：未删除，且有正式发送/客户接受事实；草稿与内部审批不算对客报价
 
 六阶段从浅到深：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购。
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 STAGE_UNDERSTANDING = "understanding"
@@ -65,7 +65,7 @@ async def stage_counts_map(
         return {}
 
     from app.modules.order.model import SalesOrder
-    from app.modules.quote.model import Quote
+    from app.modules.quote.model import Quote, QuoteVersion
     from app.modules.sample.model import SampleRequest
 
     counts: dict[int, list[int]] = {cid: [0, 0, 0] for cid in customer_ids}
@@ -97,6 +97,9 @@ async def stage_counts_map(
         .where(
             Quote.customer_id.in_(customer_ids),
             Quote.deleted_at.is_(None),
+            or_(Quote.status.in_(("sent", "accepted")),
+                select(QuoteVersion.id).where(QuoteVersion.quote_id == Quote.id,
+                                              QuoteVersion.sent_at.is_not(None)).exists()),
         )
         .group_by(Quote.customer_id)
     )

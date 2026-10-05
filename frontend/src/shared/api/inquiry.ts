@@ -34,6 +34,7 @@ export interface CustomInquiryPayload {
   title: string
   description?: string | null
   customer_id?: number | null
+  opportunity_id?: number | null
   quantity?: number | null
   target_price?: number | null
   remark?: string | null
@@ -49,6 +50,8 @@ export interface InquiryStatusCount {
 export function listCustomInquiries(query: {
   status?: string
   keyword?: string
+  opportunity_id?: number
+  customer_id?: number
   page?: number
   page_size?: number
 }) {

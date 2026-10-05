@@ -1,6 +1,5 @@
 """跟进记录接口（对齐 03-API §24）。"""
 
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import or_, select
@@ -11,16 +10,18 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
-from app.core.refs import ensure_refs
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
-from app.modules.customer.model import Contact, Customer
+from app.modules.customer.model import Customer
 from app.modules.followup.model import FollowUp
-from app.modules.followup.visibility import get_visible_followup
+from app.modules.followup.mutations import serialize, notify_manual_followup, create_manual_followup
+from app.modules.notification import service as notification_service
+from app.modules.followup.visibility import get_visible_followup, system_source_filter
 from app.modules.followup.schema import (
     FollowUpCreate,
     FollowUpNextTask,
     FollowUpUpdate,
+    validate_plan,
 )
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
@@ -30,25 +31,6 @@ from app.modules.task.model import Task
 from app.modules.user.model import User
 
 router = APIRouter(tags=["FollowUp"])
-
-
-def serialize(followup: FollowUp, owner_name: str | None = None) -> dict:
-    return {
-        "id": followup.id,
-        "customer_id": followup.customer_id,
-        "contact_id": followup.contact_id,
-        "lead_id": followup.lead_id,
-        "opportunity_id": followup.opportunity_id,
-        "quote_id": followup.quote_id,
-        "order_id": followup.order_id,
-        "owner_id": followup.owner_id,
-        "owner_name": owner_name,
-        "followup_type": followup.followup_type,
-        "content": followup.content,
-        "customer_feedback": followup.customer_feedback,
-        "next_action": followup.next_action,
-        "created_at": followup.created_at,
-    }
 
 
 async def _visible_followup(
@@ -69,7 +51,7 @@ async def list_followups(
     user: CurrentUser = Depends(require_permission("followup:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = select(FollowUp)
+    stmt = select(FollowUp).where(await system_source_filter(session, user))
     if customer_id:
         stmt = stmt.where(FollowUp.customer_id == customer_id)
     if opportunity_id:
@@ -129,102 +111,11 @@ async def create_followup(
     user: CurrentUser = Depends(require_permission("followup:create")),
     session: AsyncSession = Depends(get_db),
 ):
-    if not any(
-        [payload.customer_id, payload.opportunity_id, payload.lead_id, payload.quote_id, payload.order_id]
-    ):
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "跟进记录必须关联一个业务对象")
-
-    # 库里没有外键约束，不校验就会静默留下悬空引用：下面 `if customer:` /
-    # `if lead:` 的写法会**安静跳过**，跟进记录看起来正常落库，
-    # 但客户"最近跟进时间"永远不会更新 —— 排查起来极难。
-    #
-    # 注意：Contact 与 Customer 是**两个不同的模型**，不能塞进同一个 ids 字典
-    # （那样会把 customer_id 当联系人主键去查）。分两次查，再单独校验归属。
-    await ensure_refs(
-        session, model=Customer, ids={"customer_id": payload.customer_id}, label="客户"
-    )
-    if payload.contact_id is not None:
-        contact = await session.get(Contact, payload.contact_id)
-        if contact is None or contact.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, f"联系人 id={payload.contact_id} 不存在", 404)
-        if payload.customer_id and contact.customer_id != payload.customer_id:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"联系人 id={payload.contact_id} 不属于客户 id={payload.customer_id}",
-            )
-    await ensure_refs(
-        session, model=Lead, ids={"lead_id": payload.lead_id}, label="线索"
-    )
-    await ensure_refs(
-        session,
-        model=Opportunity,
-        ids={"opportunity_id": payload.opportunity_id},
-        label="商机",
-    )
-    await ensure_refs(
-        session, model=Quote, ids={"quote_id": payload.quote_id}, label="报价单"
-    )
-    await ensure_refs(
-        session, model=SalesOrder, ids={"order_id": payload.order_id}, label="订单"
-    )
-
-    data = payload.model_dump(
-        exclude={"create_task", "task_title", "task_due_at"}
-    )
-    followup = FollowUp(**data, owner_id=user.id)
-    session.add(followup)
-    await session.flush()
-
-    now = datetime.now(UTC)
-    # 同步「最近跟进时间」：客户、线索都要更新，供后续自动任务规则使用
-    if payload.customer_id:
-        customer = await session.get(Customer, payload.customer_id)
-        if customer:
-            customer.last_followup_at = now
-    if payload.lead_id:
-        lead = await session.get(Lead, payload.lead_id)
-        if lead:
-            lead.last_followup_at = now
-            if lead.status in ("pending", "assigned"):
-                lead.status = "following"
-
-    created_task_id = None
-    if payload.create_task and payload.task_due_at:
-        task = Task(
-            title=payload.task_title or f"跟进：{payload.content[:30]}",
-            task_type="followup",
-            customer_id=payload.customer_id,
-            contact_id=payload.contact_id,
-            lead_id=payload.lead_id,
-            opportunity_id=payload.opportunity_id,
-            owner_id=user.id,
-            status="pending",
-            due_at=payload.task_due_at,
-            source="manual",
-        )
-        session.add(task)
-        await session.flush()
-        created_task_id = task.id
-
-    # 第三个时钟（§2.3）：重算「约定下次跟进时间」。口径是该客户最近的未完成
-    # 跟进任务到期时间——本次跟进约了下次动作就写进去，没约就清空。
-    # 与 last_followup_at（真的联系过了）严格分开：约了 ≠ 联系了。
-    await customer_service.refresh_next_followup_at(session, payload.customer_id)
-
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="create",
-        business_type="followup",
-        business_id=followup.id,
-        after=serialize(followup),
-        ip=client_ip(request),
-    )
+    followup, replayed = await create_manual_followup(session, user, payload, ip=client_ip(request))
     await session.commit()
-    return ok(
-        {"followup": serialize(followup, user.name), "task_id": created_task_id},
-        "跟进已记录",
-    )
+    await notification_service.dispatch_pending(session)
+    return ok({"followup": serialize(followup, user.name), "task_id": followup.next_task_id,
+               "replayed": replayed}, "跟进已记录")
 
 
 @router.patch("/followups/{followup_id}")
@@ -236,10 +127,49 @@ async def update_followup(
     session: AsyncSession = Depends(get_db),
 ):
     followup = await _visible_followup(session, user, followup_id)
+    if followup.followup_type == "系统":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "系统过程记录不可编辑，请在原单执行业务操作", 422)
+    await session.refresh(followup, with_for_update=True)
     before = serialize(followup)
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(followup, field, value)
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("followup_type") == "系统":
+        raise AppError(ErrorCode.PARAM_ERROR, "人工跟进不能改为系统过程记录", 422)
+    plan_changed = bool(set(changes) & {"next_action", "task_due_at", "exemption_reason"})
+    if plan_changed:
+        next_action = changes.get("next_action", followup.next_action)
+        due_at = changes.get("task_due_at", followup.planned_at)
+        reason = changes.get("exemption_reason", followup.exemption_reason)
+        try:
+            validate_plan(next_action, due_at, reason)
+        except ValueError as exc:
+            raise AppError(ErrorCode.PARAM_ERROR, str(exc), 422) from exc
+        task = (await session.execute(select(Task).where(Task.id == followup.next_task_id)
+                    .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none() if followup.next_task_id else None
+        real_plan_change = (next_action, due_at, reason) != (followup.next_action, followup.planned_at, followup.exemption_reason)
+        if real_plan_change:
+            if task and task.status in ("pending", "doing"):
+                # 任务可能已经转交：不能通过跟进编辑绕过任务的数据范围。
+                from app.modules.task.router import _visible_task
+                await _visible_task(session, user, task.id)
+                if reason:
+                    task.status = "cancelled"
+                else:
+                    task.title, task.due_at = next_action, due_at
+            elif not reason:
+                task = Task(title=next_action, task_type="followup", due_at=due_at,
+                            customer_id=followup.customer_id, contact_id=followup.contact_id,
+                            lead_id=followup.lead_id, opportunity_id=followup.opportunity_id,
+                            quote_id=followup.quote_id, order_id=followup.order_id,
+                            owner_id=user.id, source="manual", status="pending")
+                session.add(task)
+                await session.flush()
+            followup.next_task_id = task.id if task and not reason else None
+        followup.planned_at = due_at
+    for field, value in changes.items():
+        if field != "task_due_at":
+            setattr(followup, field, value)
     await session.flush()
+    await customer_service.refresh_next_followup_at(session, followup.customer_id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -250,7 +180,10 @@ async def update_followup(
         after=serialize(followup),
         ip=client_ip(request),
     )
+    if before != serialize(followup):
+        await notify_manual_followup(session, followup, user, action="update")
     await session.commit()
+    await notification_service.dispatch_pending(session)
     return ok(serialize(followup), "已保存")
 
 
@@ -296,6 +229,16 @@ async def create_next_task(
     """
     followup = await _visible_followup(session, user, followup_id)
 
+    await session.refresh(followup, with_for_update=True)
+    if followup.next_task_id:
+        task = await session.get(Task, followup.next_task_id)
+        if task:
+            if (task.due_at == payload.due_at and task.title == (payload.title or followup.next_action or f"跟进后续：{followup.content[:30]}")
+                    and task.owner_id == (payload.owner_id or followup.owner_id)
+                    and task.task_type == payload.task_type and task.priority == payload.priority):
+                return ok({"task_id": task.id, "title": task.title, "owner_id": task.owner_id,
+                           "due_at": task.due_at, "followup_id": followup.id}, "后续任务已创建")
+            raise AppError(ErrorCode.VERSION_CONFLICT, "已有后续任务，请在待办中修改，或修改跟进计划", 409)
     owner_id = payload.owner_id if payload.owner_id is not None else followup.owner_id
     if payload.owner_id is not None:
         target = await session.get(User, payload.owner_id)
@@ -307,7 +250,7 @@ async def create_next_task(
             )
 
     task = Task(
-        title=payload.title or f"跟进后续：{followup.content[:30]}",
+        title=payload.title or followup.next_action or f"跟进后续：{followup.content[:30]}",
         task_type=payload.task_type,
         priority=payload.priority,
         customer_id=followup.customer_id,
@@ -321,6 +264,11 @@ async def create_next_task(
     )
     session.add(task)
     await session.flush()
+    followup.next_task_id = task.id
+    if followup.followup_type != "系统":
+        followup.next_action = task.title
+        followup.planned_at = task.due_at
+        followup.exemption_reason = None
     # 补建后续任务 = 补上一个约定：第三个时钟要跟着变（§2.3）
     await customer_service.refresh_next_followup_at(session, followup.customer_id)
     await write_audit(
@@ -355,6 +303,8 @@ async def delete_followup(
     # update 与详情都走 _visible_followup，删除原先却只 session.get——
     # 任何有跟进权限的人拿别人的 id 就能删（"列表看不到的，按 id 也拿不到"是本项目铁律）。
     followup = await _visible_followup(session, user, followup_id)
+    if followup.followup_type == "系统":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "系统过程记录不可删除，请在原单执行业务操作", 422)
     await session.delete(followup)
     await write_audit(
         session,

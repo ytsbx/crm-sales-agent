@@ -17,6 +17,32 @@ export class ApiError extends Error {
 
 const http = axios.create({ baseURL: '/api/v1', timeout: 30000 })
 
+/**
+ * 从错误响应里挑出「参数校验失败」的具体字段名。
+ *
+ * 后端这类 400 的信封是 `{code, message:'参数校验失败', data:[{loc:[…], msg, …}]}` ——
+ * 真正有用的字段名藏在 `data` 里，只看 `message` 永远是一句笼统的
+ * 「参数校验失败」，不看后端代码根本不知道是哪个入参的锅。
+ * 这里把 `loc` 中的字段名提出来拼到提示后面（如「参数校验失败：quoted_price」）。
+ *
+ * `data` 不是数组时直接跳过（业务错误一般是 null），所以不会误伤别的提示文案。
+ */
+function pickInvalidFields(body: unknown): string[] {
+  if (!body || typeof body !== 'object') return []
+  const details = (body as { data?: unknown }).data
+  if (!Array.isArray(details)) return []
+  // body / query / path 这类位置前缀对使用者没意义，去掉只留字段名
+  const positions = new Set(['body', 'query', 'path', 'header', 'cookie'])
+  const names = details.map((item) => {
+    const loc = (item as { loc?: unknown })?.loc
+    if (!Array.isArray(loc)) return ''
+    const parts = loc.map((part) => String(part))
+    if (parts.length > 1 && positions.has(parts[0])) parts.shift()
+    return parts.join('.')
+  })
+  return Array.from(new Set(names.filter((name) => name.length > 0)))
+}
+
 http.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token
   if (token) {
@@ -31,7 +57,11 @@ http.interceptors.response.use(
     const status: number | undefined = error.response?.status
     const body = error.response?.data
     const code: number = body?.code ?? status ?? 0
-    const message: string = body?.message ?? '网络异常，请稍后重试'
+    const baseMessage: string = body?.message ?? '网络异常，请稍后重试'
+    // 校验类错误把出问题的字段名一并带上：只显示「参数校验失败」等于什么都没说
+    const invalidFields = pickInvalidFields(body)
+    const message =
+      invalidFields.length > 0 ? `${baseMessage}：${invalidFields.join('、')}` : baseMessage
     if (status === 401 || code === 40101 || code === 40102) {
       useAuthStore.getState().clear()
       if (window.location.pathname !== '/login') {

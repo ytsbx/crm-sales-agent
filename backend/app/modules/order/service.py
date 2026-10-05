@@ -59,6 +59,13 @@ def serialize_order(
         "status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
         "erp_order_id": order.erp_order_id,
         "delivery_date": order.delivery_date,
+        "delivery_kind": order.delivery_kind,
+        "transit_days": order.transit_days,
+        "plan_offsets": order.plan_offsets,
+        "shipment_date": (
+            order.delivery_date - timedelta(days=order.transit_days or 0)
+            if order.delivery_date and order.delivery_kind else None
+        ),
         "payment_terms": order.payment_terms,
         "remark": order.remark,
         "item_count": item_count,
@@ -72,6 +79,8 @@ def serialize_item(item: SalesOrderItem, sku_code: str | None = None) -> dict:
         "id": item.id,
         "order_id": item.order_id,
         "sku_id": item.sku_id,
+        "quote_item_id": item.quote_item_id,
+        "source_snapshot": item.source_snapshot,
         "sku_code": sku_code,
         # 定制件（无 SKU）的溯源：不输出这两项，订单行在对客文件与页面上
         # 就只剩一个空 sku_id，"这是什么"说不清（字段存了却看不到）
@@ -140,6 +149,19 @@ async def create_order_from_quote(
     remark: str | None = None,
 ) -> SalesOrder:
     """报价版本转销售订单：必须已通过审批；同一版本只能转一次（幂等）。"""
+    from app.modules.quote.model import Quote
+    from app.modules.quote.lifecycle import ensure_current_version
+
+    parent = await session.get(Quote, version.quote_id)
+    if parent and parent.opportunity_id:
+        from app.modules.opportunity.model import Opportunity
+        await session.execute(select(Opportunity).where(Opportunity.id == parent.opportunity_id).with_for_update())
+    quote = (await session.execute(select(Quote).where(Quote.id == version.quote_id)
+             .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if quote is None or quote.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
+    version = (await session.execute(select(QuoteVersion).where(QuoteVersion.id == version.id)
+               .with_for_update().execution_options(populate_existing=True))).scalar_one()
     existing = (
         await session.execute(
             select(SalesOrder).where(SalesOrder.quote_version_id == version.id)
@@ -152,13 +174,14 @@ async def create_order_from_quote(
             409,
         )
 
-    from app.modules.quote.model import Quote
-
-    quote = await session.get(Quote, version.quote_id)
-    if quote is None or quote.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
+    ensure_current_version(quote, version)
+    customer = await session.get(Customer, quote.customer_id)
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "报价关联客户不存在或已删除，不能正式下单", 404)
     if version.approval_status != "approved":
         raise AppError(ErrorCode.APPROVAL_PENDING, "报价未通过审批，不能转订单", 422)
+    if quote.status != "accepted" or version.accepted_at is None or version.sent_at is None or version.declined_at is not None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有客户已接受的当前报价版本才能正式下单", 422)
     # 已失效报价不能转单（方案 A13：有效性校验；此前的口子允许过期报价转单）
     today = datetime.now(UTC).date()
     if quote.valid_until and quote.valid_until < today:
@@ -229,6 +252,10 @@ async def create_order_from_quote(
                 sku_id=item.sku_id,
                 # 定制件（无 SKU）：把需求编号一起带过来，订单行才能溯源；
                 # sku_snapshot 取"名称或需求编号"，让对客文件上说得清这是什么
+                quote_item_id=item.id,
+                source_snapshot={"quote_item_id": item.id, "sku_id": item.sku_id, "inquiry_id": item.inquiry_id,
+                    "name": item.sku_name_snapshot or item.sku_code_snapshot or item.inquiry_no_snapshot,
+                    "spec": item.spec_snapshot, "quantity": str(item.quantity), "unit_price": str(item.quoted_price), "remark": item.remark},
                 inquiry_id=item.inquiry_id,
                 inquiry_no_snapshot=item.inquiry_no_snapshot,
                 sku_snapshot=(
@@ -282,6 +309,7 @@ async def create_order_from_quote(
         business_id=order.id,
         order_id=order.id,
         quote_id=quote.id,
+        operator_id=user_id,
         exclude_user_id=user_id,
         event_key=f"order:create:{order.id}",
     )
@@ -636,6 +664,15 @@ async def ship_shipment_batch(
     """登记实发：批次置 shipped、写实际日期与物流，推进订单状态到"已发货"。"""
     if batch.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "批次不属于该订单", 404)
+    # 锁整单，串行核对各批累计实发量；刷新已加载对象，避免等待锁后读旧状态。
+    await session.execute(
+        select(SalesOrder).where(SalesOrder.id == order.id).with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    batch = (await session.execute(
+        select(OrderShipmentBatch).where(OrderShipmentBatch.id == batch.id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one()
     if batch.status == "shipped":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已登记发货")
     if batch.status == "cancelled":
@@ -710,10 +747,19 @@ async def ship_shipment_batch(
             remark=f"第 {batch.batch_no} 批发货（{batch.tracking_no or '无单号'}）",
         )
 
-    # §2.3 业务进展时钟：发货算客户活跃
-    from app.modules.customer import service as customer_service
+    from app.modules.followup.service import record_and_notify
 
-    await customer_service.touch_progress(session, order.customer_id)
+    quantities = "；".join(
+        f"{row.sku_snapshot or row.order_item_id}：{row.shipped_qty}" for row in batch_items
+    )
+    await record_and_notify(
+        session, customer_id=order.customer_id, operator_id=operator_id, owner_id=order.owner_id,
+        title="登记实际发货",
+        content=f"订单 {order.order_no} 第 {batch.batch_no} 批已实发，"
+                f"实发日期 {batch.actual_ship_date}；本批数量：{quantities}",
+        business_type="order", business_id=order.id, order_id=order.id,
+        event_key=f"order:batch_ship:{batch.id}",
+    )
 
 
 async def cancel_shipment_batch(

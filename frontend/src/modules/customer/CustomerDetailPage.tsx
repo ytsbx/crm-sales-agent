@@ -568,7 +568,8 @@ export default function CustomerDetailPage() {
                   { title: '方式', dataIndex: 'followup_type', width: 100 },
                   { title: '内容', dataIndex: 'content' },
                   { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },
-                  { title: '下一步', dataIndex: 'next_action', render: (v: string | null) => v ?? '-' },
+                  { title: '下一步', dataIndex: 'next_action', render: (v: string | null, row: FollowUp) => v ?? (({ customer_declined: '客户明确拒绝', business_closed: '业务已关闭', waiting_external: '等待外部固定节点' } as Record<string, string>)[row.exemption_reason ?? ''] ?? '-') },
+                  { title: '记录时约定', dataIndex: 'task_due_at', width: 170, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
                   {
                     title: '附件',
                     width: 90,

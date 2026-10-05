@@ -4,7 +4,6 @@ import {
   Button,
   Input,
   Modal,
-  Popconfirm,
   Select,
   Table,
   Tabs,
@@ -15,16 +14,20 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import { listCustomers } from '../../shared/api/customer'
-import { listBusinessFiles, uploadFile } from '../../shared/api/file'
+import { listOrders } from '../../shared/api/order'
+import { listQuoteVersions, listQuotes } from '../../shared/api/quote'
+import { downloadFile, listBusinessFiles, uploadFile } from '../../shared/api/file'
 import {
   createContractTemplate,
   downloadContractDocument,
   generateContractDocument,
+  getContractDocument,
   listContractDocuments,
   listContractTemplates,
   signContractDocument,
   voidContractDocument,
   type ContractDocument,
+  type ContractSignedFile,
   type ContractTemplate,
 } from '../../shared/api/contract'
 
@@ -36,19 +39,23 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
 
 export default function DocumentsPage() {
   const queryClient = useQueryClient()
-  const { can } = usePermissions()
+  const { can, isReviewer } = usePermissions()
   const canManage = can('order:manage')
   const canSet = can('settings:manage')
   const [activeKey, setActiveKey] = useState('documents')
 
   const templatesQuery = useQuery({ queryKey: ['contract-templates'], queryFn: listContractTemplates })
+  // 台账真分页：后端原来写死 limit 500，第 501 份合同在页面上永远不出现、也没有提示
+  const [docPage, setDocPage] = useState(1)
   const documentsQuery = useQuery({
-    queryKey: ['contract-documents'],
-    queryFn: () => listContractDocuments(),
+    queryKey: ['contract-documents', docPage],
+    queryFn: () => listContractDocuments({ page: docPage, page_size: 20 }),
   })
+  // 客户下拉改成服务端搜索：原来只拉前 200 个客户，第 201 个以后根本选不到
+  const [customerKeyword, setCustomerKeyword] = useState('')
   const customersQuery = useQuery({
-    queryKey: ['contract-customers'],
-    queryFn: () => listCustomers({ page: 1, page_size: 200 }),
+    queryKey: ['contract-customers', customerKeyword],
+    queryFn: () => listCustomers({ keyword: customerKeyword, page: 1, page_size: 50 }),
   })
 
   const refresh = () => {
@@ -75,12 +82,44 @@ export default function DocumentsPage() {
 
   // 生成合同草稿：空白项一行一条「名称=内容」
   const [generateVisible, setGenerateVisible] = useState(false)
+  // 幂等键：打开弹窗时生成一个，同一张弹窗里的重复提交带的是同一个值。
+  // 后端据此把第二次请求认成"刚才那份"，不再多建一份带独立编号的草稿。
+  const [generateRequestKey, setGenerateRequestKey] = useState('')
   const [generateForm, setGenerateForm] = useState({
     template_id: undefined as number | undefined,
     customer_id: undefined as number | undefined,
+    // 正式依据（业务口径：条款可以先备，但登记签署前必须挂上订单或已发出的报价）
+    order_id: undefined as number | undefined,
+    quote_id: undefined as number | undefined,
+    // 合同钉死的报价版本。报价能出 V2/V3，不指定就没法证明金额依据的是哪一版。
+    quote_version_id: undefined as number | undefined,
     expiry_date: '',
     extras: '付款方式=',
   })
+  // 补充协议 / 续签：从原文档发起，带上 parent_id。原件的正文、签署件都不动，
+  // 新文档在台账上能顺着 parent_id 找回出处（"这份补充协议是补哪份合同"）。
+  const [generateParent, setGenerateParent] = useState<ContractDocument | null>(null)
+  // 订单 / 报价 / 报价版本三级联动，全部跟着所选客户走——
+  // 不这么做的话，跨客户把别家的单子挂上来，只能等提交时被后端拒掉。
+  const genOrdersQuery = useQuery({
+    queryKey: ['contract-gen-orders', generateForm.customer_id],
+    queryFn: () => listOrders({ customer_id: generateForm.customer_id, page: 1, page_size: 50 }),
+    enabled: Boolean(generateForm.customer_id) && generateVisible,
+  })
+  const genQuotesQuery = useQuery({
+    queryKey: ['contract-gen-quotes', generateForm.customer_id],
+    queryFn: () => listQuotes({ customer_id: generateForm.customer_id, page: 1, page_size: 50 }),
+    enabled: Boolean(generateForm.customer_id) && generateVisible,
+  })
+  const genVersionsQuery = useQuery({
+    queryKey: ['contract-gen-quote-versions', generateForm.quote_id],
+    queryFn: () => listQuoteVersions(generateForm.quote_id!),
+    enabled: Boolean(generateForm.quote_id) && generateVisible,
+  })
+  const genOrders = genOrdersQuery.data?.items ?? []
+  const genQuotes = genQuotesQuery.data?.items ?? []
+  const genVersions = genVersionsQuery.data ?? []
+  const selectedOrder = genOrders.find((o) => o.id === generateForm.order_id)
   const generateMutation = useMutation({
     mutationFn: () => {
       const extra_fields: Record<string, string> = {}
@@ -95,17 +134,41 @@ export default function DocumentsPage() {
       return generateContractDocument({
         template_id: generateForm.template_id!,
         customer_id: generateForm.customer_id!,
+        order_id: generateForm.order_id ?? null,
+        quote_id: generateForm.quote_id ?? null,
+        quote_version_id: generateForm.quote_version_id ?? null,
         extra_fields,
         expiry_date: generateForm.expiry_date || null,
+        parent_id: generateParent?.id ?? null,
+        request_key: generateRequestKey || undefined,
       })
     },
     onSuccess: (doc) => {
-      Toast.success(`草稿已生成：${doc.doc_no}`)
+      // 有缺项就不能只报「成功」：正文里留着 {{...}} 占位符，不说一声用户会以为模板坏了。
+      const missing = Object.keys(doc.missing_fields ?? {})
+      if (missing.length > 0) {
+        Toast.warning(
+          `草稿已生成，但有 ${missing.length} 处没填上：${missing.slice(0, 3).join('、')}` +
+            (missing.length > 3 ? ` 等 ${missing.length} 处` : ''),
+        )
+      } else {
+        Toast.success(`草稿已生成：${doc.doc_no}`)
+      }
       setGenerateVisible(false)
+      setGenerateParent(null)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const openGenerateModal = (parent: ContractDocument | null) => {
+    setGenerateParent(parent)
+    // 每次打开换一个新键：这一次生成对应这一张弹窗，重试才认得出是同一件事
+    setGenerateRequestKey(
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`,
+    )
+    setGenerateVisible(true)
+  }
 
   // 登记签署：直接在本弹窗里上传签署扫描件（或从已上传的文件里挑一份），
   // 不再要求用户手填文件 ID——那是给排障用的内部编号，业务看不懂也填不对。
@@ -113,24 +176,52 @@ export default function DocumentsPage() {
   const [signFileId, setSignFileId] = useState<number | null>(null)
   const [signUploading, setSignUploading] = useState(false)
   const signFileInput = useRef<HTMLInputElement>(null)
+  // 弹窗里当前是哪份合同。上传是异步的，回来时得靠它判断"还是不是同一份合同"——
+  // 直接读 state 只会拿到发起上传那一刻的旧值，中途切了合同也照样回填。
+  const signTargetIdRef = useRef<number | null>(null)
+
+  const openSignModal = (doc: ContractDocument) => {
+    // 换合同必须把上一份选的文件清掉，否则可能把 A 的扫描件登记到 B 上
+    signTargetIdRef.current = doc.id
+    setSignFileId(null)
+    setSignTarget(doc)
+  }
+
+  const closeSignModal = () => {
+    signTargetIdRef.current = null
+    setSignFileId(null)
+    setSignUploading(false)
+    setSignTarget(null)
+    if (signFileInput.current) signFileInput.current.value = ''
+  }
+
   const signFilesQuery = useQuery({
     queryKey: ['contract-doc-files', signTarget?.id],
-    queryFn: () => listBusinessFiles('contract_document', signTarget!.id),
+    // 类型必须写 `contract`：后端挂签署件用的就是它（contract/service.sign_document）。
+    // 这里原来写的是 `contract_document`，而后端对没登记的类型**默认拒绝**，
+    // 于是这个下拉永远 403、一个已上传的签署件都列不出来。
+    queryFn: () => listBusinessFiles('contract', signTarget!.id),
     enabled: Boolean(signTarget),
   })
 
   const uploadSignFile = async (file: File) => {
     if (!signTarget) return
+    const startedFor = signTarget.id
     setSignUploading(true)
     try {
       const row = await uploadFile(file, {
-        businessType: 'contract_document',
-        businessId: signTarget.id,
+        businessType: 'contract',
+        businessId: startedFor,
         category: 'signed',
       })
+      // 上传期间用户可能已经关了弹窗、或切到别的合同：那份文件不能算在当前这份头上
+      if (signTargetIdRef.current !== startedFor) {
+        Toast.info('文件已上传，但你已切换到别的合同，这次没有替你选中它')
+        return
+      }
       setSignFileId(row.id)
       Toast.success('签署件已上传，可直接确认签署')
-      void queryClient.invalidateQueries({ queryKey: ['contract-doc-files', signTarget.id] })
+      void queryClient.invalidateQueries({ queryKey: ['contract-doc-files', startedFor] })
     } catch (error) {
       Toast.error(error instanceof Error ? error.message : '上传失败')
     } finally {
@@ -142,24 +233,44 @@ export default function DocumentsPage() {
     mutationFn: () => signContractDocument(signTarget!.id, { file_id: signFileId! }),
     onSuccess: () => {
       Toast.success('已登记签署')
-      setSignTarget(null)
-      setSignFileId(null)
+      closeSignModal()
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  // 签署原件：已签合同点「看签署原件」时拉详情，列出客户签回来的扫描件。
+  // 和「下载生成稿」是两个入口——只给一个「下载」，用户会以为拿到的是签回来的那一份，
+  // 实际拿到的是我们自己生成的稿子，事后对账就会扯皮。
+  const [signedTarget, setSignedTarget] = useState<ContractDocument | null>(null)
+  const signedFilesQuery = useQuery({
+    queryKey: ['contract-signed-files', signedTarget?.id],
+    queryFn: () => getContractDocument(signedTarget!.id),
+    enabled: Boolean(signedTarget),
+  })
+  const signedFiles: ContractSignedFile[] = signedFilesQuery.data?.signed_files ?? []
+
+  // 作废要填真实原因：原来前端写死"页面作废"，台账和审计里全是这四个字，等于没写
+  const [voidTarget, setVoidTarget] = useState<ContractDocument | null>(null)
+  const [voidReason, setVoidReason] = useState('')
+  const closeVoidModal = () => {
+    setVoidTarget(null)
+    setVoidReason('')
+  }
   const voidMutation = useMutation({
     mutationFn: ({ id, reason }: { id: number; reason: string }) => voidContractDocument(id, reason),
     onSuccess: () => {
       Toast.success('文档已作废')
+      closeVoidModal()
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
   const templates = templatesQuery.data ?? []
-  const documents = documentsQuery.data ?? []
+  // 已选签署件的文件名：确认前要让用户看清"签的是哪份文件"，光给内部编号看不懂
+  const selectedSignFile = (signFilesQuery.data ?? []).find((row) => row.id === signFileId)
+  const documents = documentsQuery.data?.items ?? []
 
   return (
     <div style={{ padding: 20, maxWidth: 1200, margin: '0 auto' }}>
@@ -172,11 +283,12 @@ export default function DocumentsPage() {
         <SectionCard>
           <div className="toolbar" style={{ marginBottom: 10 }}>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              生成即快照：客户资料之后修改不影响已生成的合同；签署=上传扫描件登记，下载不等于已签
+              生成即快照：客户资料之后修改不影响已生成的合同；「下载生成稿」和「看签署原件」
+              是两个入口，下载不等于已签
             </span>
             <div style={{ flex: 1 }} />
             {canManage && (
-              <Button theme="solid" onClick={() => setGenerateVisible(true)}>
+              <Button theme="solid" onClick={() => openGenerateModal(null)}>
                 从模板生成
               </Button>
             )}
@@ -197,35 +309,69 @@ export default function DocumentsPage() {
               },
               { title: '到期日', dataIndex: 'expiry_date', width: 110, render: (v: string | null) => v ?? '-' },
               { title: '签署时间', dataIndex: 'signed_at', width: 130, render: (v: string | null) => (v ? v.slice(0, 10) : '-') },
-              ...(canManage
-                ? [
-                    {
-                      title: '操作',
-                      width: 130,
-                      render: (_: unknown, record: ContractDocument) => (
-                        <span style={{ display: 'inline-flex', gap: 12 }}>
-                          <a onClick={() => void downloadContractDocument(record)}>下载</a>
-                          {record.status === 'draft' && (
-                            <a onClick={() => setSignTarget(record)}>登记签署</a>
-                          )}
-                          {record.status !== 'void' && (
-                            <Popconfirm
-                              title="作废后不可恢复，确认？"
-                              onConfirm={() => voidMutation.mutate({ id: record.id, reason: '页面作废' })}
-                            >
-                              <a style={{ color: 'var(--crm-danger, #d45)' }}>作废</a>
-                            </Popconfirm>
-                          )}
-                        </span>
-                      ),
-                    },
-                  ]
-                : []),
+              {
+                // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
+                // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
+                title: '依据',
+                width: 170,
+                render: (_: unknown, record: ContractDocument) => {
+                  const header = record.header_snapshot
+                  if (record.quote_version_no) {
+                    return `${header?.quote_no ?? '报价'} V${record.quote_version_no}`
+                  }
+                  if (header?.order_no) return `订单 ${header.order_no}`
+                  if (header?.quote_no) return `报价 ${header.quote_no}`
+                  return <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
+                },
+              },
+              {
+                // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
+                // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
+                title: '操作',
+                width: 230,
+                render: (_: unknown, record: ContractDocument) => (
+                  <span style={{ display: 'inline-flex', gap: 12, flexWrap: 'wrap' }}>
+                    <a onClick={() => void downloadContractDocument(record)}>下载生成稿</a>
+                    {/* 已签的合同：签署原件（客户签回来的扫描件）单独一个入口。
+                        它才是"签了什么"的凭证，跟生成稿不是一份东西。 */}
+                    {record.status === 'signed' && can('file:view') && (
+                      <a onClick={() => setSignedTarget(record)}>看签署原件</a>
+                    )}
+                    {canManage && record.status === 'draft' && (
+                      <a onClick={() => openSignModal(record)}>登记签署</a>
+                    )}
+                    {/* 补充协议 / 续签：从原文档发起，新文档带 parent_id 指回来。
+                        原件不动，旧版永远查得到。 */}
+                    {canManage && record.status !== 'void' && (
+                      <a onClick={() => openGenerateModal(record)}>补充/续签</a>
+                    )}
+                    {/* 已签合同的作废要主管：不是主管就不给入口，省得点完吃一个 403 */}
+                    {canManage &&
+                      record.status !== 'void' &&
+                      (record.status !== 'signed' || isReviewer) && (
+                        <a
+                          style={{ color: 'var(--crm-danger, #d45)' }}
+                          onClick={() => {
+                            setVoidTarget(record)
+                            setVoidReason('')
+                          }}
+                        >
+                          作废
+                        </a>
+                      )}
+                  </span>
+                ),
+              },
             ]}
             dataSource={documents}
             loading={documentsQuery.isLoading}
             rowKey="id"
-            pagination={false}
+            pagination={{
+              currentPage: docPage,
+              pageSize: 20,
+              total: documentsQuery.data?.total ?? 0,
+              onPageChange: setDocPage,
+            }}
             empty="还没有合同文档——点「从模板生成」"
           />
         </SectionCard>
@@ -309,9 +455,12 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
-        title="从模板生成合同"
+        title={generateParent ? `补充/续签：基于 ${generateParent.doc_no}` : '从模板生成合同'}
         visible={generateVisible}
-        onCancel={() => setGenerateVisible(false)}
+        onCancel={() => {
+          setGenerateVisible(false)
+          setGenerateParent(null)
+        }}
         onOk={() => generateMutation.mutate()}
         confirmLoading={generateMutation.isPending}
         okText="生成草稿"
@@ -319,6 +468,11 @@ export default function DocumentsPage() {
         width={560}
       >
         <div style={{ display: 'grid', gap: 12 }}>
+          {generateParent && (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              这份新文档会挂在 <b>{generateParent.doc_no}</b> 下面（原合同不动，历史版本保留）。
+            </div>
+          )}
           <div>
             <div style={{ marginBottom: 4 }}>模板（当前版）</div>
             <Select
@@ -335,15 +489,92 @@ export default function DocumentsPage() {
             <div style={{ marginBottom: 4 }}>客户</div>
             <Select
               style={{ width: '100%' }}
-              placeholder="选择客户"
+              placeholder="搜索客户名称（服务端搜索，不止前 200 个）"
               filter
+              // remote：不在本地过滤，把关键字交给服务端查 —— 客户上千条时本地那点数据不够用
+              remote
+              loading={customersQuery.isFetching}
+              onSearch={setCustomerKeyword}
               value={generateForm.customer_id}
-              onChange={(v) => setGenerateForm({ ...generateForm, customer_id: v as number })}
+              onChange={(v) =>
+                setGenerateForm({
+                  ...generateForm,
+                  customer_id: v as number,
+                  // 换客户必须把依据一起清掉：上一家的订单/报价挂到这一家头上，
+                  // 提交时会被后端拒掉，但让用户先选好再被拒更莫名其妙。
+                  order_id: undefined,
+                  quote_id: undefined,
+                  quote_version_id: undefined,
+                })
+              }
               optionList={(customersQuery.data?.items ?? []).map((c) => ({
                 value: c.id,
                 label: c.name,
               }))}
             />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder={generateForm.customer_id ? '这张客户下的正式订单' : '先选客户'}
+              filter
+              disabled={!generateForm.customer_id}
+              loading={genOrdersQuery.isFetching}
+              value={generateForm.order_id}
+              onChange={(v) => setGenerateForm({ ...generateForm, order_id: v as number })}
+              optionList={genOrders.map((o) => ({
+                value: o.id,
+                label: `${o.order_no} · ¥${o.total_amount}`,
+              }))}
+            />
+            {selectedOrder?.quote_version_id && (
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                这张订单是照某个报价版本转过来的，生成时会自动采用那一版（不用再选）
+              </div>
+            )}
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>关联报价（可选）</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder={generateForm.customer_id ? '这张客户下的报价单' : '先选客户'}
+              filter
+              disabled={!generateForm.customer_id}
+              loading={genQuotesQuery.isFetching}
+              value={generateForm.quote_id}
+              onChange={(v) =>
+                setGenerateForm({
+                  ...generateForm,
+                  quote_id: v as number,
+                  // 换报价就清掉版本：那是上一张报价的版本号，挂到新报价上必然对不上
+                  quote_version_id: undefined,
+                })
+              }
+              optionList={genQuotes.map((q) => ({
+                value: q.id,
+                label: `${q.quote_no}（${q.status_label}）`,
+              }))}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder={generateForm.quote_id ? '选具体版本' : '先选报价单'}
+              disabled={!generateForm.quote_id}
+              loading={genVersionsQuery.isFetching}
+              value={generateForm.quote_version_id}
+              onChange={(v) => setGenerateForm({ ...generateForm, quote_version_id: v as number })}
+              optionList={genVersions.map((v) => ({
+                value: v.id,
+                label: `V${v.version_no} · ¥${v.total_amount}`,
+              }))}
+            />
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+              合同会钉死这一版：报价之后出 V2、V3 都不会改动已生成的合同。
+              不选也能先备条款，但登记签署前必须补上正式依据。
+            </div>
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>空白项（每行一条「名称=内容」，对应 {'{{extra.名称}}'}）</div>
@@ -367,10 +598,11 @@ export default function DocumentsPage() {
       <Modal
         title={`登记签署：${signTarget?.doc_no ?? ''}`}
         visible={Boolean(signTarget)}
-        onCancel={() => setSignTarget(null)}
+        onCancel={closeSignModal}
         onOk={() => signMutation.mutate()}
         confirmLoading={signMutation.isPending}
-        okButtonProps={{ disabled: !signFileId }}
+        // 上传没结束时不许确认：这会儿 signFileId 可能是上一份的，也可能还是空的
+        okButtonProps={{ disabled: !signFileId || signUploading }}
         okText="确认签署"
         cancelText="取消"
       >
@@ -397,7 +629,9 @@ export default function DocumentsPage() {
               }}
             />
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              {signFileId ? `已选文件 #${signFileId}` : '尚未选择文件'}
+              {signFileId
+                ? `已选：${selectedSignFile?.file_name ?? `文件 #${signFileId}`}`
+                : '尚未选择文件'}
             </span>
           </div>
           {(signFilesQuery.data ?? []).length > 0 && (
@@ -411,6 +645,61 @@ export default function DocumentsPage() {
               }))}
             />
           )}
+        </div>
+      </Modal>
+
+      <Modal
+        title={`作废：${voidTarget?.doc_no ?? ''}`}
+        visible={Boolean(voidTarget)}
+        onCancel={closeVoidModal}
+        onOk={() => voidMutation.mutate({ id: voidTarget!.id, reason: voidReason.trim() })}
+        confirmLoading={voidMutation.isPending}
+        okButtonProps={{ disabled: !voidReason.trim(), type: 'danger' }}
+        okText="确认作废"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            作废后不可恢复，已生成的原件仍保留。原因会写进台账和审计，请写清楚真实原因
+            —— 原来这里固定写死「页面作废」，等于什么也没说。
+          </div>
+          <TextArea
+            placeholder="作废原因（必填）"
+            value={voidReason}
+            onChange={setVoidReason}
+            rows={3}
+            maxCount={255}
+          />
+        </div>
+      </Modal>
+
+      <Modal
+        title={`签署原件：${signedTarget?.doc_no ?? ''}`}
+        visible={Boolean(signedTarget)}
+        onCancel={() => setSignedTarget(null)}
+        footer={null}
+        width={520}
+      >
+        <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            这是客户签回来、上传登记的那一份扫描件，和「下载生成稿」拿到的不是同一个文件。
+          </div>
+          {signedFilesQuery.isLoading && <div>读取中…</div>}
+          {!signedFilesQuery.isLoading && signedFiles.length === 0 && (
+            <div style={{ color: 'var(--crm-danger, #d45)' }}>
+              没有找到签署原件。登记时挂上的文件可能已被删除或解绑——此时**不能**拿生成稿当签署件用，
+              请向经手人确认原件去向。
+            </div>
+          )}
+          {signedFiles.map((row) => (
+            <div key={row.file_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <a onClick={() => void downloadFile(row.file_id, row.file_name)}>{row.file_name}</a>
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                {Math.max(1, Math.round(row.size / 1024))} KB
+                {row.attached_at ? ` · 登记于 ${row.attached_at.slice(0, 10)}` : ''}
+              </span>
+            </div>
+          ))}
         </div>
       </Modal>
     </div>

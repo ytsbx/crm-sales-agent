@@ -550,10 +550,16 @@ async def confirm_payment(
         await svc.recalc_plan(session, plan)
     order = await session.get(SalesOrder, record.order_id)
     if order:
-        # 业务进展时钟（§2.3）：确认回款算客户活跃
-        from app.modules.customer import service as customer_service
+        from app.modules.followup.service import record_and_notify
 
-        await customer_service.touch_progress(session, order.customer_id)
+        await record_and_notify(
+            session, customer_id=order.customer_id, operator_id=user.id, owner_id=order.owner_id,
+            title="财务确认回款",
+            content=f"订单 {order.order_no} 的回款 #{record.id} 已由财务确认，"
+                    f"收款日期 {record.received_date}；金额与凭证请在原单查看",
+            business_type="payment", business_id=record.id, order_id=order.id,
+            event_key=f"payment:confirm:{record.id}",
+        )
     if order and order.owner_id:
         await notification_service.notify(
             session,

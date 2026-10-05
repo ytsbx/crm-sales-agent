@@ -11,7 +11,7 @@
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -23,6 +23,8 @@ from app.modules.quote.model import Quote, QuoteVersion
 from app.modules.sample.model import SampleRequest
 from app.modules.settings.model import PublicPoolRule, TaskRule
 from app.modules.task.model import Task
+from app.modules.task.scanning import lock_task_scan
+from app.modules.followup.model import FollowUp
 
 # ---------------------------------------------------------------- 可配置参数
 #
@@ -188,8 +190,9 @@ def _last_active_at(customer: Customer) -> datetime | None:
         for value in (customer.last_followup_at, customer.last_progress_at)
         if value is not None
     ]
-    latest = max(candidates) if candidates else None
-    return latest or customer.created_at
+    candidates = [value if value.tzinfo else value.replace(tzinfo=UTC) for value in candidates]
+    latest = max(candidates) if candidates else customer.created_at
+    return latest if latest is None or latest.tzinfo else latest.replace(tzinfo=UTC)
 
 
 async def _protected_customer_ids(session: AsyncSession) -> set[int]:
@@ -340,6 +343,7 @@ async def run_auto_tasks(
     session: AsyncSession, operator_id: int | None, source: str = "WEB"
 ) -> dict:
     """按规则生成自动任务。同一个对象不会重复生成（按规则去重）。"""
+    await lock_task_scan(session)
     rules = (
         await session.execute(select(TaskRule).where(TaskRule.status == "active"))
     ).scalars().all()
@@ -347,32 +351,61 @@ async def run_auto_tasks(
     # 被"已约定下次跟进"豁免的客户（§2.3 第三个时钟）：随结果返回，
     # 让"这个客户为什么没生成提醒"有据可查，而不是看起来漏扫了
     agreed_skipped: list[dict] = []
+    errors: list[dict] = []
+    followup_customer_ids: set[int] = set()
     now = datetime.now(UTC)
 
     for rule in rules:
         config = rule.trigger_config or {}
         action = rule.action_config or {}
+        if (not isinstance(config, dict) or not isinstance(action, dict)
+                or rule.trigger_type not in {"quote_no_followup", "customer_silent", "receivable_due"}):
+            errors.append({"rule_id": rule.id, "code": rule.code, "error": "规则类型或配置格式无效"})
+            continue
         title_template = action.get("title") or rule.name
-        days_ahead = int(config.get("days", 3))
+        raw_days = config.get("days", 3)
+        try:
+            days_ahead = int(raw_days)
+            if isinstance(raw_days, bool) or days_ahead < 0 or str(days_ahead) != str(raw_days):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            errors.append({"rule_id": rule.id, "code": rule.code, "error": "days 必须是非负整数"})
+            continue
 
         if rule.trigger_type == "quote_no_followup":
             # 报价发送后 N 天没有跟进记录 → 提醒负责人
             cutoff = now - timedelta(days=days_ahead)
+            latest_sent = (select(QuoteVersion.quote_id, func.max(QuoteVersion.sent_at).label("sent_at"))
+                           .where(QuoteVersion.sent_at.is_not(None))
+                           .group_by(QuoteVersion.quote_id).subquery())
+            ordered = select(SalesOrder.id).where(SalesOrder.quote_id == Quote.id,
+                                                   SalesOrder.status != "cancelled")
+            communicated = select(FollowUp.id).where(
+                FollowUp.followup_type != "系统", FollowUp.created_at >= latest_sent.c.sent_at,
+                or_(FollowUp.quote_id == Quote.id,
+                    and_(FollowUp.customer_id == Quote.customer_id,
+                         FollowUp.quote_id.is_(None), FollowUp.order_id.is_(None),
+                         FollowUp.sample_id.is_(None), FollowUp.lead_id.is_(None),
+                         or_(FollowUp.opportunity_id == Quote.opportunity_id,
+                             FollowUp.opportunity_id.is_(None)))),
+            )
             rows = (
                 await session.execute(
-                    select(QuoteVersion, Quote)
-                    .join(Quote, Quote.id == QuoteVersion.quote_id)
+                    select(Quote)
+                    .join(latest_sent, Quote.id == latest_sent.c.quote_id)
+                    .join(Customer, Customer.id == Quote.customer_id)
                     .where(
-                        QuoteVersion.sent_at.is_not(None),
-                        QuoteVersion.sent_at <= cutoff,
+                        latest_sent.c.sent_at <= cutoff,
+                        Quote.deleted_at.is_(None), Customer.deleted_at.is_(None),
                         Quote.status == "sent",
+                        ~ordered.exists(), ~communicated.exists(),
                     )
                 )
-            ).all()
-            for version, quote in rows:
+            ).scalars().all()
+            for quote in rows:
                 if not quote.owner_id:
                     continue
-                if await _has_open_task(session, rule.id, customer_id=quote.customer_id):
+                if await _has_open_task(session, rule.id, quote_id=quote.id):
                     continue
                 task = Task(
                     title=f"{title_template}：{quote.quote_no}",
@@ -388,12 +421,16 @@ async def run_auto_tasks(
                 )
                 session.add(task)
                 await session.flush()
+                followup_customer_ids.add(quote.customer_id)
                 created.append({"task_id": task.id, "title": task.title})
 
         elif rule.trigger_type == "customer_silent":
             # 某等级客户 N 天没联系 → 给负责人建跟进任务
             cutoff = now - timedelta(days=days_ahead)
             levels = config.get("levels") or ["A"]
+            if not isinstance(levels, list) or not all(isinstance(level, str) for level in levels):
+                errors.append({"rule_id": rule.id, "code": rule.code, "error": "levels 必须是客户等级列表"})
+                continue
             rows = (
                 await session.execute(
                     select(Customer).where(
@@ -404,7 +441,15 @@ async def run_auto_tasks(
                     )
                 )
             ).scalars().all()
+            # 派生缓存不能让既有未来任务失效；扫描时从真实未完任务批量校准。
+            next_due = dict((await session.execute(
+                select(Task.customer_id, func.min(Task.due_at)).where(
+                    Task.customer_id.in_([row.id for row in rows]), Task.task_type == "followup",
+                    Task.status.in_(("pending", "doing")), Task.due_at.is_not(None),
+                ).group_by(Task.customer_id)
+            )).all()) if rows else {}
             for customer in rows:
+                customer.next_followup_at = next_due.get(customer.id)
                 # 同一活跃时钟口径：业务进展（报价/打样/下单/回款）也算"有联系"
                 last = _last_active_at(customer)
                 if last is None:
@@ -443,6 +488,7 @@ async def run_auto_tasks(
                 )
                 session.add(task)
                 await session.flush()
+                followup_customer_ids.add(customer.id)
                 created.append({"task_id": task.id, "title": task.title})
 
         elif rule.trigger_type == "receivable_due":
@@ -454,7 +500,7 @@ async def run_auto_tasks(
                     select(ReceivablePlan, SalesOrder)
                     .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
                     .where(
-                        ReceivablePlan.status.in_(["pending", "partial"]),
+                        ReceivablePlan.status.in_(["pending", "partial", "overdue"]),
                         ReceivablePlan.due_date <= due_before,
                         SalesOrder.status != "cancelled",
                     )
@@ -481,7 +527,10 @@ async def run_auto_tasks(
                 await session.flush()
                 created.append({"task_id": task.id, "title": task.title})
 
-    # 自动任务由规则批量生成，同样要留痕（谁触发、生成了几条）
+    from app.modules.customer.service import refresh_next_followup_at
+    for customer_id in sorted(followup_customer_ids):
+        await refresh_next_followup_at(session, customer_id)
+    # 自动任务由规则批量生成，同样要留痕（谁触发、生成了几条、为何跳过）
     await write_audit(
         session,
         operator_id=operator_id,
@@ -489,7 +538,9 @@ async def run_auto_tasks(
         source=source,
         business_type="task_rule",
         business_id=None,
-        after={"created_count": len(created), "tasks": created},
+        after={"created_count": len(created), "tasks": created,
+               "agreed_skipped_count": len(agreed_skipped), "agreed_skipped": agreed_skipped[:100],
+               "failed_rule_count": len(errors), "rule_errors": errors},
     )
     await session.commit()
     return {
@@ -497,6 +548,8 @@ async def run_auto_tasks(
         "tasks": created,
         "agreed_skipped_count": len(agreed_skipped),
         "agreed_skipped": agreed_skipped[:100],
+        "failed_rule_count": len(errors),
+        "rule_errors": errors,
     }
 
 
@@ -514,6 +567,7 @@ async def notify_due_followups(session: AsyncSession) -> int:
     from app.modules.notification import service as notification_service
     from app.modules.notification.model import Notification
 
+    await lock_task_scan(session)
     now = datetime.now(UTC)
     rows = (
         await session.execute(
@@ -522,8 +576,6 @@ async def notify_due_followups(session: AsyncSession) -> int:
             .where(
                 Customer.deleted_at.is_(None),
                 Customer.pool_status == "private",
-                Customer.next_followup_at.is_not(None),
-                Customer.next_followup_at <= now,
                 Task.task_type == "followup",
                 Task.status.in_(("pending", "doing")),
                 Task.due_at.is_not(None),
@@ -548,7 +600,7 @@ async def notify_due_followups(session: AsyncSession) -> int:
         ).first()
         if already is not None:
             continue
-        await notification_service.notify(
+        notification = await notification_service.notify(
             session,
             user_id=owner_id,
             type_="followup",
@@ -557,7 +609,8 @@ async def notify_due_followups(session: AsyncSession) -> int:
             business_type="task",
             business_id=task.id,
         )
-        sent += 1
+        if notification is not None:
+            sent += 1
     return sent
 
 

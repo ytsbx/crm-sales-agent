@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SettingInput(BaseModel):
@@ -11,9 +11,25 @@ class PublicPoolRuleInput(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     level: str
-    days: int
+    days: int = Field(gt=0)
     enabled: bool = True
     remark: str | None = None
+
+
+class PublicPoolRuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    level: str | None = Field(default=None, min_length=1, max_length=8)
+    days: int | None = Field(default=None, gt=0)
+    enabled: bool | None = None
+    remark: str | None = None
+
+    @field_validator("level", "days", "enabled")
+    @classmethod
+    def non_null(cls, value):
+        if value is None:
+            raise ValueError("该规则字段不能为空")
+        return value
 
 
 class TaskRuleInput(BaseModel):
@@ -25,6 +41,24 @@ class TaskRuleInput(BaseModel):
     trigger_config: dict | None = None
     action_config: dict | None = None
     status: str | None = None
+
+
+class TaskRuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    code: str | None = Field(default=None, min_length=1, max_length=64)
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    trigger_type: str | None = Field(default=None, min_length=1)
+    trigger_config: dict | None = None
+    action_config: dict | None = None
+    status: str | None = Field(default=None, min_length=1)
+
+    @field_validator("code", "name", "trigger_type", "status")
+    @classmethod
+    def non_null(cls, value):
+        if value is None:
+            raise ValueError("该规则字段不能为空")
+        return value
 
 
 class NumberingRuleCreate(BaseModel):

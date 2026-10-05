@@ -74,6 +74,7 @@ function resolveContext(pathname: string): PageContext {
   }
 
   const byList: Array<[RegExp, PageContext]> = [
+    [/^\/workbench/, { title: '工作台', questions: ['分析本月成交冲刺机会', '我手上最该先跟的商机是哪个？', '这个月还有多少应收没回来？'] }],
     [/^\/customers/, { title: '客户中心', questions: ['我手上有哪些客户很久没跟进了？', '帮我查一下客户「宏远包装」'] }],
     [/^\/leads/, { title: '线索中心', questions: ['有哪些新线索还没分配？'] }],
     [/^\/opportunities/, { title: '商机中心', questions: ['我手上最该先跟的商机是哪个？', '这个月能成几单？'] }],
@@ -101,6 +102,9 @@ export default function CopilotDrawer() {
 
   const [sessionId, setSessionId] = useState<number | null>(null)
   const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [pendingContent, setPendingContent] = useState('')
+  const busyRef = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const context = useMemo(() => resolveContext(location.pathname), [location.pathname])
@@ -123,11 +127,12 @@ export default function CopilotDrawer() {
 
   const sendMutation = useMutation({
     mutationFn: ({ id, content }: { id: number; content: string }) => sendAgentMessage(id, content),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['agent-session'] })
-      void queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['agent-session'] }),
+        queryClient.invalidateQueries({ queryKey: ['agent-sessions'] }),
+      ])
     },
-    onError: (error: Error) => Toast.error(error.message),
   })
 
   const confirmMutation = useMutation({
@@ -148,31 +153,42 @@ export default function CopilotDrawer() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
     const content = text.trim()
-    if (!content || sendMutation.isPending) return
+    if (!content || busyRef.current) return
+    busyRef.current = true
+    setSending(true)
+    setPendingContent(content)
     setInput('')
-    if (!sessionId) {
-      createAgentSession({
-        title: content.slice(0, 20),
-        context_type: context.type,
-        context_id: context.id,
-      }).then((created) => {
+    try {
+      let id = sessionId
+      if (!id) {
+        const created = await createAgentSession({
+          title: content.slice(0, 20),
+          context_type: context.type,
+          context_id: context.id,
+        })
+        id = created.id
         setSessionId(created.id)
-        sendMutation.mutate({ id: created.id, content })
-      })
-      return
+      }
+      await sendMutation.mutateAsync({ id, content })
+    } catch (error) {
+      Toast.error((error as Error).message)
+      setInput(content)
+    } finally {
+      busyRef.current = false
+      setSending(false)
+      setPendingContent('')
     }
-    sendMutation.mutate({ id: sessionId, content })
   }
 
   // 快捷按钮带来的问题：抽屉一打开就自动发出去
   useEffect(() => {
-    if (!open || !seed) return
+    if (!open || !seed || busyRef.current) return
     clearSeed()
     send(seed)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, seed])
+  }, [open, seed, sending])
 
   if (!open) return null
 
@@ -264,7 +280,7 @@ export default function CopilotDrawer() {
             </div>
           </div>
           <div style={{ flex: 1 }} />
-          <Button size="small" theme="borderless" onClick={() => setSessionId(null)}>
+          <Button size="small" theme="borderless" disabled={sending} onClick={() => setSessionId(null)}>
             新会话
           </Button>
           <Button size="small" theme="borderless" onClick={close}>
@@ -273,7 +289,7 @@ export default function CopilotDrawer() {
         </div>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          {messages.length === 0 && !sendMutation.isPending && (
+          {messages.length === 0 && !sending && (
             <div style={{ display: 'grid', gap: 8 }}>
               <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
                 问点什么，或者直接点下面的常用问题：
@@ -318,7 +334,15 @@ export default function CopilotDrawer() {
             </div>
           ))}
 
-          {sendMutation.isPending && (
+          {sending && pendingContent && !messages.some((message) => message.role === 'user' && message.content === pendingContent) && (
+            <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ maxWidth: '86%', padding: '8px 12px', borderRadius: 'var(--crm-radius)',
+                fontSize: 13, lineHeight: 1.55, whiteSpace: 'pre-wrap', background: 'var(--crm-primary)', color: '#fff' }}>
+                {pendingContent}
+              </div>
+            </div>
+          )}
+          {sending && (
             <div style={{ color: 'var(--crm-text-3)', fontSize: 12.5, marginBottom: 12 }}>
               Copilot 正在查数据…
             </div>
@@ -349,9 +373,9 @@ export default function CopilotDrawer() {
             onChange={setInput}
             placeholder="问 Copilot，例如：这张报价的利润怎么样"
             onEnterPress={() => send(input)}
-            disabled={sendMutation.isPending}
+            disabled={sending}
           />
-          <Button theme="solid" loading={sendMutation.isPending} onClick={() => send(input)}>
+          <Button theme="solid" loading={sending} onClick={() => send(input)}>
             发送
           </Button>
         </div>

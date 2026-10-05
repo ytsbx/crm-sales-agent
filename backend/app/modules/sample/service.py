@@ -29,20 +29,30 @@ def _f(value) -> float | None:
 
 
 def serialize_item(item: SampleItem, sku: Sku | None = None) -> dict:
+    source = item.source_snapshot
     return {
         "id": item.id,
         "sample_request_id": item.sample_request_id,
         "sku_id": item.sku_id,
         # 定制项（场景09）：没有 SKU 时用需求编号/需求名顶上，
         # 前端与打样单上要能看出"打的是哪条需求"
-        "sku_code": sku.sku_code if sku else item.inquiry_no_snapshot,
-        "sku_name": sku.name if sku else item.item_name,
-        "specification": sku.specification if sku else None,
-        "unit": sku.unit if sku else None,
+        "sku_code": (source.get('sku_code') or item.inquiry_no_snapshot) if source else (sku.sku_code if sku else item.inquiry_no_snapshot),
+        "sku_name": item.item_name if source else (sku.name if sku else item.item_name),
+        "specification": item.specification if source else (sku.specification if sku else None),
+        "source_snapshot": source,
+        "original_quantity": _f(item.original_quantity),
+        "differences": ({'quantity_changed': item.original_quantity != item.quantity if item.original_quantity is not None else None,
+                         'specification_changed': item.specification != source.get('specification'),
+                         'remark_changed': item.remark != source.get('remark')} if source else None),
+        "unit": source.get("unit") if source else (sku.unit if sku else None),
         "inquiry_id": item.inquiry_id,
         "inquiry_no": item.inquiry_no_snapshot,
         "is_custom": item.sku_id is None,
         "quantity": _f(item.quantity),
+        # 车间依据：逐行不同，所以跟着明细走（见 model.SampleItem 的说明）
+        "craft": item.craft,
+        "material": item.material,
+        "drawing_version": item.drawing_version,
         "remark": item.remark,
     }
 
@@ -70,6 +80,7 @@ def serialize_request(
 ) -> dict:
     return {
         "id": request.id,
+        "source_context": request.source_context,
         "opportunity_id": request.opportunity_id,
         "opportunity_title": opportunity_title,
         "customer_id": request.customer_id,
@@ -87,10 +98,8 @@ def serialize_request(
         "signed_at": request.signed_at.isoformat() if request.signed_at else None,
         "feedback": request.feedback,
         # ---- 生产打样资料（文档 §3.5）----
+        # 材质 / 工艺 / 图纸版本不在这里：它们逐行不同，挂在明细上（见 items）。
         "purpose": request.purpose,
-        "craft": request.craft,
-        "material": request.material,
-        "drawing_version": request.drawing_version,
         "target_completion_date": (
             request.target_completion_date.isoformat() if request.target_completion_date else None
         ),
@@ -169,12 +178,18 @@ async def get_or_404(session: AsyncSession, sample_id: int) -> SampleRequest:
 
 
 async def get_visible_or_404(
-    session: AsyncSession, user: CurrentUser, sample_id: int
+    session: AsyncSession, user: CurrentUser, sample_id: int, *, for_update: bool = False
 ) -> SampleRequest:
     """取样品申请并校验数据范围（列表按 owner_id 过滤，单条此前没校验）。"""
     from app.core.data_scope import ensure_in_scope
 
-    request = await get_or_404(session, sample_id)
+    if for_update:
+        request = (await session.execute(select(SampleRequest).where(SampleRequest.id == sample_id)
+                   .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        if request is None:
+            raise AppError(ErrorCode.NOT_FOUND, "样品申请不存在", 404)
+    else:
+        request = await get_or_404(session, sample_id)
     await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
     return request
 

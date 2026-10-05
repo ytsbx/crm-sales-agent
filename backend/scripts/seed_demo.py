@@ -166,6 +166,12 @@ def main():
         print('报价按规则免审，直接通过')
 
     # ---- 6. 标记成交 → 转订单 ----
+    # 虚构演示链路也按正式流程走：审批通过后登记演示发送，再成交转单。
+    status, res = call('POST', f'/quote-versions/{version_id}/mark-sent', token=zhangsan, body={
+        'channel': '演示登记', 'receiver': '虚构演示客户',
+    })
+    if res.get('code') != 0:
+        die('登记演示发送', res)
     status, res = call('POST', f'/opportunities/{opportunity_id}/win', token=zhangsan, body={
         'win_quote_version_id': version_id,
     })

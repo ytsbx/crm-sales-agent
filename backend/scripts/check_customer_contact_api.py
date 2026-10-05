@@ -313,6 +313,7 @@ async def main():
     CREATED_CONTACT_IDS.append(contact2_id)
 
     status, res = call('POST', '/followups', token=admin, body={
+        'exemption_reason': 'waiting_external',
         'customer_id': customer_id,
         'contact_id': contact1_id,
         'content': f'CHK{RUN}电话沟通了报价细节',
@@ -626,6 +627,9 @@ async def main():
 
     status, res = call('POST', '/contract-documents', token=admin, body={
         'template_id': template_id, 'customer_id': customer_id,
+        # 登记签署要求有正式依据（业务口径 2026-10-05）：条款可以先备，
+        # 但签署前必须挂上正式订单或已发送/已接受的报价。这份下面要签，所以现在就绑上订单。
+        'order_id': order_id,
         'extra_fields': {'付款方式': '月结30天'},
     })
     check('生成合同草稿', res.get('code'), 0)

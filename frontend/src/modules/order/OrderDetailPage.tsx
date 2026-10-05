@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 import type { TagTone } from '../../shared/types'
 
 import {
@@ -20,7 +20,6 @@ import {
   listOrderStatusHistory,
   orderFinanceSummary,
   refreshStatus,
-  replanOrderMilestones,
   confirmScheduleChange,
   cancelScheduleChange,
   createScheduleChange,
@@ -63,6 +62,7 @@ const MILESTONE_TONE: Record<string, TagTone> = {
   done: 'green',
   overdue: 'red',
   pending: 'grey',
+  skipped: 'grey',
 }
 
 const STATUS_TONE: Record<string, TagTone> = {
@@ -101,20 +101,26 @@ export default function OrderDetailPage() {
   const [milestoneEdit, setMilestoneEdit] = useState<OrderMilestoneRow | null>(null)
   //: 交期变更弹窗（方案 :105）：先预览受影响面，再生成变更单
   const [scheduleVisible, setScheduleVisible] = useState(false)
-  const [scheduleForm, setScheduleForm] = useState({ new_delivery_date: '', reason: '' })
+  const [scheduleForm, setScheduleForm] = useState({
+    new_delivery_date: '', reason: '', delivery_kind: 'shipping' as 'shipping' | 'arrival', transit_days: 0,
+    plan_offsets: { contract: 30, deposit: 28, pre_sample_sent: 20, pre_sample_confirmed: 15, first_shipment: 0, payment: -15 } as Record<string, number>,
+  })
   const [schedulePreview, setSchedulePreview] = useState<{
+    new_shipment_date: string
     shift_days: number | null
     nodes: { node: string; label: string; before: string | null; after: string | null }[]
     batches: { batch_id: number; batch_no: number; before: string | null; after: string | null }[]
   } | null>(null)
   const [milestoneForm, setMilestoneForm] = useState<{
+    skipped: boolean
+    skip_reason: string
     planned_date: string | null
     actual_date: string | null
     owner_id: number | null
     evidence: string
     overdue_reason: string
     remark: string
-  }>({ planned_date: null, actual_date: null, owner_id: null, evidence: '', overdue_reason: '', remark: '' })
+  }>({ skipped: false, skip_reason: '', planned_date: null, actual_date: null, owner_id: null, evidence: '', overdue_reason: '', remark: '' })
 
   // AI 回款风险分析（API §37 专用接口，需 agent:use）
   const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
@@ -168,6 +174,7 @@ export default function OrderDetailPage() {
   })
 
   const milestonesRefresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
     void queryClient.invalidateQueries({ queryKey: ['order-milestones', orderId] })
   }
   // 交期变更（方案 :105）：入口在「跟单节点」页，确认后才重排
@@ -184,14 +191,14 @@ export default function OrderDetailPage() {
     enabled: Number.isFinite(orderId) && activeKey === 'milestones',
   })
   const schedulePreviewMutation = useMutation({
-    mutationFn: () => previewScheduleChange(orderId, scheduleForm.new_delivery_date),
+    mutationFn: () => previewScheduleChange(orderId, scheduleForm),
     onSuccess: (data) => setSchedulePreview(data),
     onError: (error: Error) => Toast.error(error.message),
   })
   const createScheduleMutation = useMutation({
     mutationFn: () =>
       createScheduleChange(orderId, {
-        new_delivery_date: scheduleForm.new_delivery_date,
+        ...scheduleForm,
         reason: scheduleForm.reason || null,
       }),
     onSuccess: () => {
@@ -207,6 +214,8 @@ export default function OrderDetailPage() {
     onSuccess: () => {
       Toast.success('已确认，节点与批次计划日已重排')
       milestonesRefresh()
+      void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
+      void queryClient.invalidateQueries({ queryKey: ['order-shipments', orderId] })
       void queryClient.invalidateQueries({ queryKey: ['order-schedule-changes', orderId] })
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -222,6 +231,8 @@ export default function OrderDetailPage() {
   const milestoneSaveMutation = useMutation({
     mutationFn: () =>
       updateOrderMilestone(orderId, milestoneEdit!.id, {
+        skipped: milestoneForm.skipped,
+        skip_reason: milestoneForm.skipped ? milestoneForm.skip_reason : undefined,
         planned_date: milestoneForm.planned_date,
         actual_date: milestoneForm.actual_date,
         owner_id: milestoneForm.owner_id,
@@ -236,17 +247,11 @@ export default function OrderDetailPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
-  const replanMutation = useMutation({
-    mutationFn: () => replanOrderMilestones(orderId),
-    onSuccess: (data) => {
-      Toast.success(`已按交期重排 ${data.changed} 个节点`)
-      milestonesRefresh()
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
   const openMilestoneEdit = (row: OrderMilestoneRow) => {
     setMilestoneEdit(row)
     setMilestoneForm({
+      skipped: row.status === 'skipped',
+      skip_reason: row.skip_reason ?? '',
       planned_date: row.planned_date,
       actual_date: row.actual_date,
       owner_id: row.owner_id ?? null,
@@ -257,6 +262,7 @@ export default function OrderDetailPage() {
   }
 
   const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
     void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
     void queryClient.invalidateQueries({ queryKey: ['order-receivables', orderId] })
     void queryClient.invalidateQueries({ queryKey: ['order-payments', orderId] })
@@ -331,6 +337,7 @@ export default function OrderDetailPage() {
   })
 
   const shipmentsRefresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
     void queryClient.invalidateQueries({ queryKey: ['order-shipments', orderId] })
     void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
     void queryClient.invalidateQueries({ queryKey: ['order-status', orderId] })
@@ -426,16 +433,17 @@ export default function OrderDetailPage() {
 
   const summary = summaryQuery.data
 
+  const moneyPrefix = order.currency === 'CNY' ? '¥' : `${order.currency} `
   const itemColumns = [
-    { title: 'SKU', dataIndex: 'sku_code', width: 140 },
+    { title: 'SKU / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{code || row.inquiry_no_snapshot || '—'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot || ''}</div></div> },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 100, render: (v: number) => v.toLocaleString('zh-CN') },
-    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number) => `¥${v}` },
+    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number) => `${moneyPrefix}${v}` },
     {
       title: '金额',
       dataIndex: 'amount',
       width: 140,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}`,
     },
     { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
   ]
@@ -443,9 +451,9 @@ export default function OrderDetailPage() {
   const receivableColumns = [
     { title: '节点', dataIndex: 'plan_name', width: 110 },
     { title: '应收日期', dataIndex: 'due_date', width: 130 },
-    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number) => `¥${v.toLocaleString('zh-CN')}` },
-    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number) => `¥${v.toLocaleString('zh-CN')}` },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number) => `¥${v.toLocaleString('zh-CN')}` },
+    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
+    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
     {
       title: '状态',
       dataIndex: 'status_label',
@@ -505,7 +513,8 @@ export default function OrderDetailPage() {
                 业绩归属：{order.sales_owner_name}（签单时的负责人，交接不改）
               </span>
             )}
-            <span>交期：{order.delivery_date ?? '-'}</span>
+            <span>客户要求{order.delivery_kind === 'arrival' ? '到货日' : order.delivery_kind === 'shipping' ? '发货日' : '交期（类型待确认）'}：{order.delivery_date ?? '-'}</span>
+            {order.shipment_date && <span>计划发货日：{order.shipment_date}{order.delivery_kind === 'arrival' ? `（运输 ${order.transit_days} 天）` : ''}</span>}
             <span>付款条件：{order.payment_terms ?? '-'}</span>
             {order.quote_id && (
               <span>
@@ -544,20 +553,20 @@ export default function OrderDetailPage() {
         <KpiStrip
           style={{ marginTop: 16, marginBottom: 0 }}
           items={[
-            { label: '订单金额', value: `¥${order.total_amount.toLocaleString('zh-CN')}` },
+            { label: '订单金额', value: `${moneyPrefix}${order.total_amount.toLocaleString('zh-CN')}` },
             {
               label: '已回款（财务已确认）',
-              value: `¥${order.received_amount.toLocaleString('zh-CN')}`,
+              value: `${moneyPrefix}${order.received_amount.toLocaleString('zh-CN')}`,
               tone: 'success',
             },
             {
               label: '待回款',
-              value: `¥${order.unreceived_amount.toLocaleString('zh-CN')}`,
+              value: `${moneyPrefix}${order.unreceived_amount.toLocaleString('zh-CN')}`,
               tone: order.unreceived_amount > 0 ? 'warning' : 'default',
             },
             {
               label: '待确认回款',
-              value: `¥${(summary?.pending_confirm_amount ?? 0).toLocaleString('zh-CN')}`,
+              value: `${moneyPrefix}${(summary?.pending_confirm_amount ?? 0).toLocaleString('zh-CN')}`,
             },
             {
               label: '逾期应收节点',
@@ -637,7 +646,7 @@ export default function OrderDetailPage() {
               columns={[
                 { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
                 { title: '收款日期', dataIndex: 'received_date', width: 130 },
-                { title: '金额', dataIndex: 'received_amount', width: 130, render: (v: number) => `¥${v.toLocaleString('zh-CN')}` },
+                { title: '金额', dataIndex: 'received_amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
                 { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',
@@ -691,30 +700,25 @@ export default function OrderDetailPage() {
             <>
               <div className="toolbar" style={{ marginBottom: 10 }}>
                 <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                  计划日期按客户交期倒推；登记实际日期后该节点标记完成。交期变了？点「按交期重排」
+                  通过「交期与计划」预览自然日倒排建议，责任人确认后生效。实际完成另行登记。
                 </span>
                 <div style={{ flex: 1 }} />
-                {canManage && (
-                  <Button
-                    size="small"
-                    loading={replanMutation.isPending}
-                    onClick={() => replanMutation.mutate()}
-                  >
-                    按交期重排
-                  </Button>
-                )}
                 {can('order:manage') && (
                   <Button
                     size="small"
                     theme="solid"
                     style={{ marginLeft: 8 }}
                     onClick={() => {
-                      setScheduleForm({ new_delivery_date: order?.delivery_date ?? '', reason: '' })
+                      setScheduleForm({
+                        new_delivery_date: order?.delivery_date ?? '', reason: '',
+                        delivery_kind: order.delivery_kind ?? 'shipping', transit_days: order.transit_days ?? 0,
+                        plan_offsets: order.plan_offsets ?? { contract: 30, deposit: 28, pre_sample_sent: 20, pre_sample_confirmed: 15, first_shipment: 0, payment: -15 },
+                      })
                       setSchedulePreview(null)
                       setScheduleVisible(true)
                     }}
                   >
-                    交期变更
+                    交期与计划
                   </Button>
                 )}
               </div>
@@ -741,7 +745,7 @@ export default function OrderDetailPage() {
                           {row.status_label}
                         </Tag>
                         <span>
-                          交期 {row.old_delivery_date ?? '未设'} → <b>{row.new_delivery_date}</b>
+                          客户要求日期 {row.old_delivery_date ?? '未设'} → <b>{row.new_delivery_date}</b>
                         </span>
                         <span style={{ color: 'var(--crm-text-3)' }}>
                           受影响：节点 {row.affected?.nodes?.length ?? 0} 个、批次{' '}
@@ -770,6 +774,20 @@ export default function OrderDetailPage() {
                           </>
                         )}
                       </div>
+                      {row.affected?.planning && <div style={{ marginTop: 4 }}>
+                        {row.affected.planning.after.delivery_kind === 'arrival' ? '到货日' : '发货日'}；运输 {row.affected.planning.after.transit_days} 天；
+                        建议发货日 {row.affected.new_shipment_date}（自然日）
+                      </div>}
+                      <details style={{ marginTop: 6 }}><summary>查看计划前后及实际生效记录</summary>
+                        {[['提交时建议', row.affected], ['确认时生效', row.affected?.applied]].map(([label, value]) => {
+                          const snapshot = value as typeof row.affected
+                          if (!snapshot) return null
+                          return <div key={String(label)} style={{ marginTop: 6 }}><b>{String(label)}</b>
+                            {snapshot.nodes.map(n => <div key={n.node}>{n.label}：{n.before ?? '未排期'} → {n.after ?? '未排期'}</div>)}
+                            {snapshot.batches.map(b => <div key={b.batch_id}>第 {b.batch_no} 批：{b.before ?? '未排期'} → {b.after ?? '未排期'}</div>)}
+                          </div>
+                        })}
+                      </details>
                       {row.reason && <div style={{ marginTop: 4 }}>原因：{row.reason}</div>}
                       {row.confirmed_at && (
                         <div style={{ marginTop: 2, color: 'var(--crm-text-3)' }}>
@@ -805,7 +823,7 @@ export default function OrderDetailPage() {
                       <Tag color={MILESTONE_TONE[v] ?? 'grey'}>{record.status_label}</Tag>
                     ),
                   },
-                  { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+                  { title: '备注 / 跳过原因', dataIndex: 'remark', render: (v: string | null, row: OrderMilestoneRow) => row.status === 'skipped' ? row.skip_reason : v ?? '-' },
                   {
                     // 方案 :103：责任人 / 来源证据 / 逾期原因要能被看到，否则填了也没人用
                     title: '责任人',
@@ -967,6 +985,7 @@ export default function OrderDetailPage() {
             <div style={{ marginBottom: 4 }}>实际发货日期</div>
             <DatePicker
               type="date"
+              disabled={milestoneForm.skipped}
               format="yyyy-MM-dd"
               style={{ width: '100%' }}
               value={shipForm.date}
@@ -987,7 +1006,7 @@ export default function OrderDetailPage() {
       </Modal>
 
       <Modal
-        title="交期变更（方案 :105）"
+        title="交期与跟单计划"
         visible={scheduleVisible}
         onCancel={() => setScheduleVisible(false)}
         width={720}
@@ -996,7 +1015,7 @@ export default function OrderDetailPage() {
             <Button onClick={() => setScheduleVisible(false)}>取消</Button>
             <Button
               loading={schedulePreviewMutation.isPending}
-              disabled={!scheduleForm.new_delivery_date}
+              disabled={!scheduleForm.new_delivery_date || !Number.isFinite(scheduleForm.transit_days) || Object.values(scheduleForm.plan_offsets).some((v) => !Number.isFinite(v))}
               onClick={() => schedulePreviewMutation.mutate()}
             >
               预览受影响面
@@ -1007,15 +1026,16 @@ export default function OrderDetailPage() {
               disabled={!schedulePreview}
               onClick={() => createScheduleMutation.mutate()}
             >
-              生成变更单
+              提交待确认计划
             </Button>
           </div>
         }
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>新交期（YYYY-MM-DD）</div>
+            <div style={{ marginBottom: 4 }}>客户要求日期（YYYY-MM-DD）</div>
             <Input
+              disabled={schedulePreviewMutation.isPending || createScheduleMutation.isPending}
               value={scheduleForm.new_delivery_date}
               placeholder={order?.delivery_date ?? '2026-12-31'}
               onChange={(value) => {
@@ -1025,6 +1045,22 @@ export default function OrderDetailPage() {
               }}
             />
           </div>
+          <div style={{ display: 'flex', gap: 16 }}>
+            <div><div>客户要求的是</div><Select aria-label="交期类型" disabled={schedulePreviewMutation.isPending || createScheduleMutation.isPending} value={scheduleForm.delivery_kind} style={{ width: 180 }}
+              optionList={[{ value: 'shipping', label: '发货日' }, { value: 'arrival', label: '到货日' }]}
+              onChange={(v) => { setScheduleForm({ ...scheduleForm, delivery_kind: v as 'shipping' | 'arrival', transit_days: 0 }); setSchedulePreview(null) }} /></div>
+            {scheduleForm.delivery_kind === 'arrival' && <div><div>预计运输天数（自然日）</div>
+              <InputNumber aria-label="预计运输天数" disabled={schedulePreviewMutation.isPending || createScheduleMutation.isPending} min={0} max={365} precision={0} value={scheduleForm.transit_days}
+                onChange={(v) => { setScheduleForm({ ...scheduleForm, transit_days: typeof v === 'number' ? v : NaN }); setSchedulePreview(null) }} /></div>}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>按自然日倒排。以下为建议参数，需责任人核对；正数表示发货前，负数表示发货后。</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+            {Object.entries({ contract: '签订合同', deposit: '付定金', pre_sample_sent: '产前样发出', pre_sample_confirmed: '产前样确认', first_shipment: '首批发货', payment: '收款' }).map(([key, label]) =>
+              <div key={key}><div>{label}提前天数</div><InputNumber aria-label={`${label}提前天数`} disabled={schedulePreviewMutation.isPending || createScheduleMutation.isPending} min={-365} max={365} precision={0}
+                value={scheduleForm.plan_offsets[key]} onChange={(v) => {
+                  setScheduleForm({ ...scheduleForm, plan_offsets: { ...scheduleForm.plan_offsets, [key]: typeof v === 'number' ? v : NaN } }); setSchedulePreview(null)
+                }} /></div>)}
+          </div>
           <div>
             <div style={{ marginBottom: 4 }}>变更原因（客户改期 / 样品未通过 / 生产延期…）</div>
             <Input
@@ -1033,12 +1069,12 @@ export default function OrderDetailPage() {
             />
           </div>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            生成的是**待确认**的变更单：确认之前一个计划日期都不会改。
+            提交后仍是待确认计划，责任人确认后才生效；计划不代表实际完成或对客承诺。
           </div>
           {schedulePreview && (
             <>
               <div style={{ fontSize: 12 }}>
-                受影响：节点 {schedulePreview.nodes.length} 个、批次{' '}
+                建议发货日：{schedulePreview.new_shipment_date}；受影响：节点 {schedulePreview.nodes.length} 个、批次{' '}
                 {schedulePreview.batches.length} 个
                 {schedulePreview.shift_days != null && `（整体平移 ${schedulePreview.shift_days} 天）`}
               </div>
@@ -1097,10 +1133,18 @@ export default function OrderDetailPage() {
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 12 }}>
+          <div><div>节点适用性</div><Select aria-label="节点适用性" value={milestoneForm.skipped ? 'skip' : 'apply'}
+            disabled={Boolean(milestoneEdit?.actual_date)} style={{ width: 220 }}
+            optionList={[{ value: 'apply', label: '适用，继续跟进' }, { value: 'skip', label: '不适用，跳过此节点' }]}
+            onChange={(v) => setMilestoneForm({ ...milestoneForm, skipped: v === 'skip' })} /></div>
+          {milestoneForm.skipped && <div><div>跳过原因（必填）</div><Input aria-label="跳过原因" value={milestoneForm.skip_reason}
+            onChange={(v) => setMilestoneForm({ ...milestoneForm, skip_reason: v })} /></div>}
+
           <div>
             <div style={{ marginBottom: 4 }}>计划日期（交期倒推，可手工调整）</div>
             <DatePicker
               type="date"
+              disabled={milestoneForm.skipped}
               format="yyyy-MM-dd"
               style={{ width: '100%' }}
               value={milestoneForm.planned_date ? new Date(milestoneForm.planned_date) : undefined}
@@ -1113,6 +1157,7 @@ export default function OrderDetailPage() {
             <div style={{ marginBottom: 4 }}>实际日期（登记后该节点标记完成）</div>
             <DatePicker
               type="date"
+              disabled={milestoneForm.skipped}
               format="yyyy-MM-dd"
               style={{ width: '100%' }}
               value={milestoneForm.actual_date ? new Date(milestoneForm.actual_date) : undefined}
@@ -1223,7 +1268,7 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            按订单金额 30% 定金 + 70% 尾款生成两个应收节点（合计 ¥
+            按订单金额 30% 定金 + 70% 尾款生成两个应收节点（合计 {moneyPrefix}
             {order.total_amount.toLocaleString('zh-CN')}）
           </div>
           <div>
@@ -1261,7 +1306,7 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            该节点未收 ¥{paymentTarget?.remaining_amount.toLocaleString('zh-CN')}
+            该节点未收 {moneyPrefix}{paymentTarget?.remaining_amount.toLocaleString('zh-CN')}
           </div>
           <Input
             value={paymentForm.amount}

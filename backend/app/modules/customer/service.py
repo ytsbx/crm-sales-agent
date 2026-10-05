@@ -319,6 +319,9 @@ async def customer_overview(session: AsyncSession, customer_id: int) -> dict:
                 "followup_type": row.followup_type,
                 "content": row.content,
                 "next_action": row.next_action,
+                    "task_due_at": row.planned_at,
+                    "exemption_reason": row.exemption_reason,
+                    "next_task_id": row.next_task_id,
                 "created_at": row.created_at,
             }
             for row in followup_rows
@@ -525,6 +528,28 @@ async def transfer_customer(
             created_at=datetime.now(UTC),
         )
     )
+    # 待办责任跟着客户走（审查第 7 条）：客户换了负责人，他名下**还没办完**的事
+    # 不能留在原来的人手里——否则新负责人看不到该做的动作，老负责人还在被一个
+    # 已经不属于他的客户提醒。**已完成的原样不动**：那是历史记录，当时的处理人
+    # 和完成时间要留在档案里，业绩与责任追溯都靠它。
+    #
+    # 放公海（new_owner_id 为空）时不动：待办终归要有个责任人，这时候保留原负责人
+    # 比让任务悬空好；等主管重新分配客户时它会跟着走。
+    if new_owner_id is not None:
+        from sqlalchemy import update
+
+        from app.modules.task.model import Task
+
+        await session.execute(
+            update(Task)
+            .where(
+                Task.customer_id == customer.id,
+                Task.status.in_(("pending", "doing")),
+                Task.owner_id.is_not(None),
+                Task.owner_id != new_owner_id,
+            )
+            .values(owner_id=new_owner_id)
+        )
 
 
 async def delete_customer(session: AsyncSession, customer: Customer) -> None:

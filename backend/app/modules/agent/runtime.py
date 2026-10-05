@@ -33,6 +33,7 @@ SYSTEM_PROMPT = """你是公司销售 CRM 里的销售助手，服务对象是�
 - 用户要求记录跟进、创建任务、改商机下一步动作这类写操作时，
   **直接调用对应工具**（系统会自动把动作挂起、生成确认卡片），
   不要只在文字里问"要不要我帮你做"；
+- 记录跟进时，普通跟进须有下一动作和含时区的下次跟进时间；客户明确拒绝、业务关闭或等待外部固定节点可选免填原因。信息缺失先向用户补问，不猜日期或原因。
 - 工具返回"待用户确认"后，用一两句话说明你准备了什么、等他点确认，不要说已经完成；
 - 向用户说明你做了什么时用中文描述（例如"我查了客户档案""我算了一下成本"），
   **不要把工具函数名（如 search_customers）直接抛给用户**；
@@ -560,6 +561,11 @@ async def action_display(session: AsyncSession, action: AgentAction) -> dict:
             fields.append({"label": "客户反馈", "value": payload["customer_feedback"]})
         if payload.get("next_action"):
             fields.append({"label": "下一步", "value": payload["next_action"]})
+        if payload.get("task_due_at"):
+            fields.append({"label": "下次跟进", "value": payload["task_due_at"]})
+        if payload.get("exemption_reason"):
+            from app.modules.followup.schema import EXEMPTION_LABELS
+            fields.append({"label": "免填原因", "value": EXEMPTION_LABELS.get(payload["exemption_reason"], "未识别原因")})
 
     elif action.tool_name == "create_task":
         fields.append({"label": "任务", "value": payload.get("title") or "-"})
@@ -652,7 +658,7 @@ async def execute_action(
     if spec is None:
         raise AppError(ErrorCode.NOT_FOUND, "找不到对应的工具", 404)
 
-    ctx = ToolContext(session=session, user=user, agent_session_id=action.session_id)
+    ctx = ToolContext(session=session, user=user, agent_session_id=action.session_id, action_id=action.id)
     started = datetime.now(UTC)
     try:
         result = await spec.handler(ctx, **(action.proposed_payload or {}))
@@ -715,6 +721,9 @@ async def execute_action(
         )
     )
     await session.commit()
+    if action.tool_name == "create_followup":
+        from app.modules.notification.service import dispatch_pending
+        await dispatch_pending(session)
     return result
 
 

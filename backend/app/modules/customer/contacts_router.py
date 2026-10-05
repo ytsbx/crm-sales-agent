@@ -104,6 +104,9 @@ async def contact_followups(
                     "content": row.content,
                     "customer_feedback": row.customer_feedback,
                     "next_action": row.next_action,
+                    "task_due_at": row.planned_at,
+                    "exemption_reason": row.exemption_reason,
+                    "next_task_id": row.next_task_id,
                     "owner_id": row.owner_id,
                     "created_at": row.created_at,
                 }

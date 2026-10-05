@@ -3,9 +3,8 @@
 节点清单领导已点名：签订合同 → 付定金 → 产前样发出 → 产前样确认 →
 首批发货（分批在备注说明）→ 收款。
 
-- 各节点相对交期的天数（负数 = 交期后）集中在 MILESTONE_NODES 一个常量里，
-  业务想调只改这里；
-- 计划日期从交期**倒推**得出，实际日期由跟单人工登记；
+- MILESTONE_NODES 仅提供建议参数；每张订单的提前天数经责任人确认后保存。
+- 初始化只建立空节点；计划由交期与计划预览、确认流程写入。实际日期由跟单登记；
 - 状态是算出来的：有实际日期=完成；过了计划日期还没完成=逾期；否则待办；
 - 逾期推送走 notify_overdue_milestones（每日调度），每节点只推一次。
 """
@@ -17,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.errors import AppError, ErrorCode
 from app.modules.order.model import OrderMilestone, SalesOrder
 
 logger = logging.getLogger("crm.milestones")
@@ -62,6 +62,7 @@ STATUS_LABELS = {
     STATUS_DONE: "已完成",
     STATUS_OVERDUE: "已逾期",
     STATUS_PENDING: "待办",
+    "skipped": "不适用",
 }
 
 
@@ -81,6 +82,12 @@ def node_status(planned: date | None, actual: date | None, today: date) -> str:
     if planned is not None and planned < today:
         return STATUS_OVERDUE
     return STATUS_PENDING
+
+
+def row_status(row: OrderMilestone, today: date) -> str:
+    if row.actual_date is None and row.skipped_at is not None:
+        return "skipped"
+    return node_status(row.planned_date, row.actual_date, today)
 
 
 def _datetime_of(d: date) -> datetime:
@@ -105,7 +112,7 @@ async def ensure_initialized(
     delivery_date: date | None,
     created_by: int | None = None,
 ) -> list[OrderMilestone]:
-    """订单没有里程碑时按六节点初始化（幂等 + 并发安全）。
+    """订单没有里程碑时按六节点初始化为空计划（幂等 + 并发安全）。
 
     并发防护：表上有 (order_id, node) 唯一约束。两个请求同时首次打开时，
     后到者的 flush 会撞唯一索引——在 SAVEPOINT 里插，撞了就回滚到保存点，
@@ -119,7 +126,7 @@ async def ensure_initialized(
     if not missing:
         return rows
 
-    plan = default_plan(delivery_date)
+    plan = default_plan(None)  # 初始化不产生未经确认的计划
     try:
         async with session.begin_nested():
             for key, _label, _offset in missing:
@@ -138,35 +145,6 @@ async def ensure_initialized(
         logger.info("订单 %s 里程碑被并发初始化，复用已存在行", order_id)
 
     return await _load_rows(session, order_id)
-
-
-async def replan(
-    session: AsyncSession,
-    order_id: int,
-    delivery_date: date | None,
-) -> int:
-    """补齐**还没有计划日**的节点；已排定 / 已登记的都不动。返回补齐条数。
-
-    这里曾经是"按交期重新倒推每个节点"，于是点一次就把跟单员手工推后的日子
-    一把拉回默认值（产前样延期、客户改期导致的手工调整全被抹掉，还会凭空造出
-    逾期提醒）。交期**真正变化**时要按天数平移，那条路走交期变更单
-    （`schedule.preview` 的平移口径）；这个独立入口只负责"从没排过的节点补上默认
-    计划日"，绝不覆盖人工已经排好的日期。
-    """
-    rows = await ensure_initialized(session, order_id, delivery_date)
-    plan = default_plan(delivery_date)
-    changed = 0
-    for row in rows:
-        if row.actual_date is not None:
-            continue
-        if row.planned_date is not None:
-            continue  # 已排定（可能是人工调整过的）：不动
-        new_planned = plan.get(row.node)
-        if new_planned is not None:
-            row.planned_date = new_planned
-            changed += 1
-    await session.flush()
-    return changed
 
 
 async def ensure_batch_node(
@@ -224,6 +202,9 @@ async def mark_batch_shipped(
     ).scalar_one_or_none()
     if row is not None:
         row.actual_date = actual_date
+        row.skipped_at = None
+        row.skipped_by = None
+        row.skip_reason = None
         await session.flush()
 
 
@@ -240,6 +221,14 @@ async def drop_batch_node(session: AsyncSession, order_id: int, batch_no: int) -
         )
     ).scalar_one_or_none()
     if row is not None:
+        # 已经登记过实际发货的节点不能顺手删掉——那是**已发生的业务事实**，
+        # 删了以后"这一批到底发没发"就查不出来了。要取消请先更正这条事实。
+        if row.actual_date is not None:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "该批次对应的跟单节点已登记实际发货日期，请先更正该事实再取消批次",
+                422,
+            )
         await session.delete(row)
         await session.flush()
 
@@ -260,6 +249,7 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
                 .join(SalesOrder, SalesOrder.id == OrderMilestone.order_id)
                 .where(
                     OrderMilestone.actual_date.is_(None),
+                    OrderMilestone.skipped_at.is_(None),
                     OrderMilestone.planned_date.is_not(None),
                     OrderMilestone.planned_date < today,
                     OrderMilestone.overdue_notified_at.is_(None),

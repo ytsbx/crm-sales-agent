@@ -26,7 +26,7 @@ const EVENT_ROWS: Array<{ key: keyof NotificationSettings['wecom_events']; label
   { key: 'payment', label: '回款提醒（收到款 / 确认）' },
   // 领导口径的"过程可见"：报价提交 / 打样 / 下单自动留痕推业务主管。
   // 后端早就支持这一类，界面漏了开关——等于领导要么全收、要么一类都收不到
-  { key: 'followup', label: '业务进展留痕（报价提交 / 打样 / 下单 → 推业务主管）' },
+  { key: 'followup', label: '业务过程通知（跟进 / 报价 / 打样 / 订单 / 交期 / 发货 / 回款 → 主管）' },
 ]
 
 export default function NotificationSettingsPanel() {
@@ -83,7 +83,9 @@ export default function NotificationSettingsPanel() {
     mutationFn: () => retryFailedNotifications(),
     onSuccess: (data) => {
       Toast.success(
-        data.requeued
+        data.business_events?.processed || data.business_events?.failed
+          ? `生成主管通知 ${data.business_events.notifications} 条，待办仍失败 ${data.business_events.failed} 项；外部投递成功 ${data.sent} 条`
+          : data.requeued
           ? `补投 ${data.sent} 条，仍失败 ${data.failed} 条`
           : '没有需要补投的通知',
       )
@@ -246,6 +248,7 @@ export default function NotificationSettingsPanel() {
           <>
             <div style={{ display: 'flex', gap: 28, flexWrap: 'wrap', marginBottom: 14 }}>
               {[
+                { label: '主管通知待生成', value: failures?.business_pending ?? 0, hint: '可点击补投处理待办' },
                 { label: '待投递', value: failures?.pending ?? 0, hint: '等下一次投递' },
                 {
                   label: '投递失败',

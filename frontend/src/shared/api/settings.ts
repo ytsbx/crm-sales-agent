@@ -60,5 +60,5 @@ export function updateTaskRule(id: number, payload: Record<string, unknown>) {
 }
 
 export function runAutoTaskRules() {
-  return api.post<{ created_count: number }>('/tasks/run-auto-rules')
+  return api.post<{ created_count: number; failed_rule_count?: number; rule_errors?: { rule_id: number; code: string; error: string }[] }>('/tasks/run-auto-rules')
 }

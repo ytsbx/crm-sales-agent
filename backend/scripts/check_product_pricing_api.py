@@ -408,6 +408,7 @@ def main():
     check('初始 0 条', res['data']['total'], 0)
 
     status, res = call('POST', '/followups', token=admin, body={
+        'exemption_reason': 'waiting_external',
         'customer_id': q_customer, 'quote_id': quote_id,
         'content': f'CHK{RUN}客户说价格再谈谈',
     })

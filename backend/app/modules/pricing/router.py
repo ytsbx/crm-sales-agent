@@ -742,7 +742,10 @@ async def lookup_price(
     else:
         result["cost"] = None
         result["cost_note"] = None
-    return result
+    # 必须走统一信封（03-API §1.1）：前端 api.get 一律按 {code,message,data} 拆包，
+    # 这里直接返回裸 dict 会被 `code !== 0`（实际是 undefined !== 0）判成失败，
+    # 页面表现是"弹一个没有文字的红条、结果不渲染"。
+    return ok(result)
 
 
 # ---------------------------------------------------------------- 核价

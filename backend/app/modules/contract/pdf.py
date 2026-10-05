@@ -76,6 +76,11 @@ def render_contract_pdf(data: dict[str, Any]) -> bytes:
     story.append(Spacer(1, 5 * mm))
 
     status_label = _esc(data.get("status_label") or "")
+    # 报价号带上版本：合同依据的是哪一版报价必须印在纸上。报价后来改过价时，
+    # 只有"Q2026xxx V2"这种写法才能说明这份合同签的是哪一版。
+    quote_text = _esc(data.get("quote_no")) or "-"
+    if data.get("quote_version_no"):
+        quote_text = f"{quote_text} V{_esc(data['quote_version_no'])}"
     meta_rows = [
         [
             Paragraph(f"编号：{_esc(data.get('doc_no', '-'))}", head),
@@ -85,7 +90,7 @@ def render_contract_pdf(data: dict[str, Any]) -> bytes:
             Paragraph(f"生成日期：{_esc(data.get('created_date')) or '-'}", head),
             Paragraph(
                 f"关联订单：{_esc(data.get('order_no')) or '-'}"
-                f"　关联报价：{_esc(data.get('quote_no')) or '-'}",
+                f"　关联报价：{quote_text}",
                 head,
             ),
         ],

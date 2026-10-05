@@ -58,6 +58,7 @@ export function listBizDocs(query: {
   doc_type?: string
   sample_request_id?: number
   order_id?: number
+  order_draft_id?: number
   quote_id?: number
   customer_id?: number
 }) {

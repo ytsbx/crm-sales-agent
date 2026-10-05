@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.notification.visibility import process_notification_filter
 from app.modules.notification.model import (
     CHANNEL_LABEL,
     LEVEL_LABEL,
@@ -65,7 +66,7 @@ async def list_notifications(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Notification).where(Notification.user_id == user.id)
+    stmt = select(Notification).where(Notification.user_id == user.id, await process_notification_filter(session, user))
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
     rows, total = await paginate(session, stmt.order_by(Notification.id.desc()), page, page_size)
@@ -80,7 +81,8 @@ async def unread_count(
     count = (
         await session.execute(
             select(func.count(Notification.id)).where(
-                Notification.user_id == user.id, Notification.read_at.is_(None)
+                Notification.user_id == user.id, Notification.read_at.is_(None),
+                await process_notification_filter(session, user),
             )
         )
     ).scalar_one()
@@ -202,17 +204,18 @@ async def retry_failed_notifications(
     """批量补投：把失败与未投递的通知重新排队后立即投一遍。"""
     from app.modules.notification import service
 
+    business_result = await service.materialize_business_notifications(session, limit=limit)
+    await session.commit()
     queued = await service.requeue_for_redispatch(session, limit=limit)
     if not queued["requeued"]:
+        if business_result['processed'] or business_result['failed']:
+            await write_audit(session, operator_id=user.id, action="retry_business_notifications",
+                              business_type="notification", after=business_result, ip=client_ip(request))
+            await session.commit()
         return ok(
-            {
-                "requeued": 0,
-                "attempted": 0,
-                "sent": 0,
-                "skipped": 0,
-                "failed": 0,
-            },
-            "没有需要补投的通知",
+            {"requeued": 0, "attempted": 0, "sent": 0, "skipped": 0, "failed": 0,
+             "business_events": business_result},
+            "已处理主管通知待办" if business_result['processed'] else "没有需要补投的通知",
         )
     result = await service.dispatch_pending(
         session, only_ids=set(queued["ids"]), limit=len(queued["ids"])
@@ -222,12 +225,12 @@ async def retry_failed_notifications(
         operator_id=user.id,
         action="redispatch_notifications",
         business_type="notification",
-        after={"requeued": queued["requeued"], **result},
+        after={"requeued": queued["requeued"], **result, "business_events": business_result},
         ip=client_ip(request),
     )
     await session.commit()
     return ok(
-        {"requeued": queued["requeued"], **result},
+        {"requeued": queued["requeued"], **result, "business_events": business_result},
         f"补投 {result['sent']} 条，仍失败 {result['failed']} 条",
     )
 

@@ -84,7 +84,18 @@ export default function PricingPage() {
   const [verdictVisible, setVerdictVisible] = useState(false)
   const [verdict, setVerdict] = useState<PricePermissionVerdict | null>(null)
   const checkMutation = useMutation({
-    mutationFn: () => checkPricePermission(payload),
+    mutationFn: () => {
+      // 后端把「拟报价」定为必填、且必须大于 0（pricing/schema.py 的 PricePermissionCheck）：
+      // 空着发过去只会换回一句笼统的「参数校验失败」，界面上看不出是哪里不对 ——
+      // 这里提前拦住，把原因说到人话里，也省掉一次必然失败的请求。
+      if (!quotedPrice.trim()) {
+        throw new Error('请先填「拟报价」：权限校验判断的就是这个价能不能报')
+      }
+      if (!(Number(quotedPrice) > 0)) {
+        throw new Error('「拟报价」要填一个大于 0 的数字')
+      }
+      return checkPricePermission(payload)
+    },
     onSuccess: (data) => {
       setVerdict(data)
       setVerdictVisible(true)
@@ -139,9 +150,9 @@ export default function PricingPage() {
         subtitle="填客户、产品、数量，系统按价格中心的成本和价格规则算出建议价与最低允许价"
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(280px, 1fr) minmax(300px, 1fr)', gap: 16 }}>
+      <div className="pricing-grid">
         <SectionCard title="核价输入">
-          <div style={{ display: 'grid', gap: 12 }}>
+          <div className="pricing-form">
             <div>
               <div style={{ marginBottom: 4 }}>客户</div>
               <Select
@@ -186,6 +197,10 @@ export default function PricingPage() {
             <div>
               <div style={{ marginBottom: 4 }}>拟报价（填了就会判断这单要不要审批）</div>
               <Input value={quotedPrice} onChange={setQuotedPrice} placeholder="例如 25" />
+              {/* 按钮灰着得有个说法，不然只会让人以为坏了 */}
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
+                「权限校验」要判断的也是这个价，空着点不动
+              </div>
             </div>
             {exportEnabled && (
               <div>
@@ -263,8 +278,10 @@ export default function PricingPage() {
                   AI 解读
                 </Button>
               )}
+              {/* 权限校验必带「拟报价」：没填这个价就没什么可校验的，
+                  按钮直接禁用（而不是让他点了再吃一个 400 回来） */}
               <Button
-                disabled={!skuId}
+                disabled={!skuId || !(Number(quotedPrice) > 0)}
                 loading={checkMutation.isPending}
                 onClick={() => checkMutation.mutate()}
               >

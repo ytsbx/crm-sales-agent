@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { IconIndentLeft, IconIndentRight } from '@douyinfe/semi-icons'
 
 import TabBar from './TabBar'
 import GlobalSearch from './GlobalSearch'
@@ -11,7 +12,7 @@ import { useTabsStore } from '../../shared/store/tabs'
 import { useCopilotStore } from '../../shared/store/copilot'
 
 /** 独立页面（不在左侧菜单里）的页签名 */
-const EXTRA_TABS: Record<string, string> = { '/pricing': '核价' }
+const EXTRA_TABS: Record<string, string> = { '/pricing': '核价', '/order-drafts': '订单草稿' }
 
 /** 角色代号 → 中文名 */
 const ROLE_LABEL: Record<string, string> = {
@@ -30,12 +31,20 @@ export default function AppLayout() {
   const openCopilot = useCopilotStore((state) => state.openWith)
   // 移动端（场景23）：侧边栏变成抽屉，顶栏汉堡键开合
   const [siderOpen, setSiderOpen] = useState(false)
+  // 桌面端侧边栏折叠：默认展开，状态记住，下次进来保持一致
+  const [siderCollapsed, setSiderCollapsed] = useState(
+    () => localStorage.getItem('sider-collapsed') === '1',
+  )
+
+  useEffect(() => {
+    localStorage.setItem('sider-collapsed', siderCollapsed ? '1' : '0')
+  }, [siderCollapsed])
 
   const currentMenu = matchMenu(location.pathname)
   // 左侧菜单按当前用户权限过滤：财务不再看到线索/商机等入口，admin 直通全量
   const menuGroups = visibleMenuGroups(user)
   const detailMatch = location.pathname.match(
-    /^\/(customers|products|opportunities|quotes|orders)\/\d+$/,
+    /^\/(customers|products|opportunities|quotes|orders|order-drafts)\/\d+$/,
   )
   const detailLabel = detailMatch
     ? {
@@ -44,6 +53,7 @@ export default function AppLayout() {
         opportunities: '商机详情',
         quotes: '报价详情',
         orders: '订单详情',
+        'order-drafts': '订单草稿详情',
       }[detailMatch[1]]
     : null
 
@@ -69,8 +79,16 @@ export default function AppLayout() {
     navigate('/login')
   }
 
+  const shellClass = [
+    'app-shell',
+    siderOpen && 'sider-open',
+    siderCollapsed && 'sider-collapsed',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
   return (
-    <div className={siderOpen ? 'app-shell sider-open' : 'app-shell'}>
+    <div className={shellClass}>
       {siderOpen && (
         <div className="sider-backdrop" onClick={() => setSiderOpen(false)} />
       )}
@@ -85,10 +103,21 @@ export default function AppLayout() {
         </button>
         <div className="sider-brand">
           <div className="sider-logo">S</div>
-          <div>
+          <div className="sider-brand-text">
             <div className="sider-brand-name">Sales CRM</div>
             <div className="sider-brand-sub">企业协同工作平台</div>
           </div>
+          {/* 折叠开关固定在品牌行右侧：侧栏本身是滚动容器，
+              放导航底部会被二十多个菜单项顶出屏幕，收起来就找不回来 */}
+          <button
+            className="sider-collapse-btn"
+            type="button"
+            aria-label={siderCollapsed ? '展开菜单' : '收起菜单'}
+            title={siderCollapsed ? '展开菜单' : '收起菜单'}
+            onClick={() => setSiderCollapsed((value) => !value)}
+          >
+            {siderCollapsed ? <IconIndentRight /> : <IconIndentLeft />}
+          </button>
         </div>
 
         {menuGroups.map((group) => (
@@ -102,6 +131,7 @@ export default function AppLayout() {
                   key={item.key}
                   to={item.path}
                   className={active ? 'nav-link active' : 'nav-link'}
+                  title={siderCollapsed ? item.label : undefined}
                 >
                   <span className="nav-icon">
                     <Icon />
@@ -113,7 +143,7 @@ export default function AppLayout() {
           </div>
         ))}
 
-        <div style={{ marginTop: 'auto', padding: '16px 18px', fontSize: 11, color: 'var(--crm-text-3)' }}>
+        <div className="sider-version" style={{ marginTop: 'auto', padding: '16px 18px', fontSize: 11, color: 'var(--crm-text-3)' }}>
           {/* 移动端顶栏收起退出链接，登出入口放这里（桌面仍走顶栏） */}
           <a
             className="sider-logout"

@@ -1,5 +1,6 @@
 """文件中心接口（对齐 03-API §31）。"""
 
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
@@ -19,7 +20,15 @@ from app.modules.file import access, storage
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.user.model import User
 
+logger = logging.getLogger("crm.file")
+
 router = APIRouter(tags=["File"])
+
+#: 不允许被通用删除接口清掉原件的附件类别。
+#: `signed` = 已签合同的签署扫描件——那是"签的是哪一版"的唯一证据，
+#: 通用删除（`DELETE /files/{id}`）不能碰它。
+#: 特殊纠错、撤回、保留期限等管理政策另定；这里只保证**普通删除不破坏历史证据**。
+PROTECTED_CATEGORIES: set[str] = {"signed"}
 
 
 def serialize_file(record: FileRecord, uploader: str | None = None) -> dict:
@@ -235,9 +244,26 @@ async def delete_file(
     links = (
         await session.execute(select(BusinessFile).where(BusinessFile.file_id == file_id))
     ).scalars().all()
+    # ① 历史证据：已签署的原件不允许走通用删除。
+    #    否则一次误删就把"签的是哪一版"的唯一凭据抹掉了。
+    if any((link.category or "") in PROTECTED_CATEGORIES for link in links):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该文件是已签署的原件，不能删除；确需纠错请走作废等专门流程",
+            422,
+        )
+    # ② 一个文件挂在多个业务对象上时，删它等于**一次影响全部对象**。
+    #    这种情况先让使用者在对应位置解除关联，不要直接清原件。
+    if len(links) > 1:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该文件仍被 {len(links)} 个业务对象引用，请先解除不需要的关联，不要直接删除原件",
+            422,
+        )
+    file_name = record.file_name
+    object_key = record.object_key
     for link in links:
         await session.delete(link)
-    storage.delete_object(record.object_key)
     await session.delete(record)
     await write_audit(
         session,
@@ -245,10 +271,18 @@ async def delete_file(
         action="delete",
         business_type="file",
         business_id=file_id,
-        before={"file_name": record.file_name},
+        before={"file_name": file_name},
         ip=client_ip(request),
     )
+    # **先提交数据库、再删磁盘**。顺序反过来时，磁盘已删而事务失败，
+    # 库里会留下"记录还在、文件已不在"的坏数据（下载时才 404）。
     await session.commit()
+    # 提交成功后再清原件；清不掉只留一个孤儿文件（无害），
+    # 不回滚已经生效的删除——孤儿文件比"库盘脱节"好收拾。
+    try:
+        storage.delete_object(object_key)
+    except Exception:  # noqa: BLE001 —— 清盘失败不该让已成功的删除回滚
+        logger.warning("文件 %s 已从库中删除，但磁盘原件清理失败：%s", file_id, object_key, exc_info=True)
     return ok(None, "文件已删除")
 
 
@@ -344,8 +378,15 @@ async def unlink_file(
     link = await session.get(BusinessFile, business_file_id)
     if link is None:
         raise AppError(ErrorCode.NOT_FOUND, "关联不存在", 404)
-    # 解绑同样是内容变更：不能拆别人对象上的附件
-    await visible_object(session, user, link.business_type, link.business_id)
+    # 解绑同样是内容变更：不能拆别人对象上的附件。
+    # ① `visible_object` 的 business_type / business_id 是**只能按名字传**的参数
+    #    （签名里有 `*`），按位置传会直接 TypeError → 接口每次必 500；
+    # ② 它返回布尔值，**不判返回值等于没校验**——「能下载某个共享文件」不等于
+    #    「能拆掉它挂在别人业务对象上的关联」。
+    if not await visible_object(
+        session, user, business_type=link.business_type, business_id=link.business_id
+    ):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该附件所在的业务对象不在你的数据范围内", 403)
     before = {
         "business_type": link.business_type,
         "business_id": link.business_id,

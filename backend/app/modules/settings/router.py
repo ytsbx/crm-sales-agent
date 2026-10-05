@@ -29,8 +29,10 @@ from app.modules.settings.schema import (
     NumberingRuleCreate,
     NumberingRuleUpdate,
     PublicPoolRuleInput,
+    PublicPoolRuleUpdate,
     SettingInput,
     TaskRuleInput,
+    TaskRuleUpdate,
 )
 
 router = APIRouter(tags=["Settings"])
@@ -168,7 +170,7 @@ async def create_pool_rule(
 @router.patch("/public-pool/rules/{rule_id}")
 async def update_pool_rule(
     rule_id: int,
-    payload: PublicPoolRuleInput,
+    payload: PublicPoolRuleUpdate,
     request: Request,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
@@ -251,7 +253,7 @@ async def create_task_rule(
 @router.patch("/task-rules/{rule_id}")
 async def update_task_rule(
     rule_id: int,
-    payload: TaskRuleInput,
+    payload: TaskRuleUpdate,
     request: Request,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),

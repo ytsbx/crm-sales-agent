@@ -78,8 +78,9 @@ def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = Fal
         "business_type": instance.business_type,
         "business_id": instance.business_id,
         "status": instance.status,
-        "status_label": STATUS_LABEL.get(instance.status, instance.status),
-        "can_approve": can_approve,
+        "status_label": ("已被新版取代" if (instance.summary or {}).get("closed_reason") == "superseded"
+                         else STATUS_LABEL.get(instance.status, instance.status)),
+        "can_approve": bool(can_approve and quote and version and quote.current_version_id == version.id),
         "current_node": instance.current_node,
         "applicant_id": instance.applicant_id,
         "applicant_name": ctx["users"].get(instance.applicant_id) if instance.applicant_id else None,
@@ -131,7 +132,8 @@ async def list_approvals(
     _, price_can_approve = await pricing_service.resolve_min_margin(session, user.roles)
     stmt = stmt.order_by(ApprovalInstance.id.desc())
     if pending_for_me:
-        stmt = stmt.where(ApprovalInstance.status == "pending")
+        stmt = stmt.where(ApprovalInstance.status == "pending", ApprovalInstance.business_id.in_(
+            visible_versions.where(Quote.current_version_id == QuoteVersion.id)))
         # 先按共用资格规则筛选，再计算总数及取页。分批读取避免把全部待审单
         # 留在内存里，价格权限只解析一次，逐单判断不再查询数据库。
         rows, total = [], 0
@@ -194,12 +196,20 @@ async def get_approval(
     )
 
 
-async def _load_pending(session: AsyncSession, approval_id: int) -> ApprovalInstance:
+async def _load_pending(session: AsyncSession, approval_id: int, user: CurrentUser) -> ApprovalInstance:
     instance = await session.get(ApprovalInstance, approval_id)
     if instance is None:
         raise AppError(ErrorCode.NOT_FOUND, "审批单不存在", 404)
+    if instance.business_type != "quote_version":
+        raise AppError(ErrorCode.NOT_FOUND, "审批关联的报价不存在", 404)
+    version = await quote_service.get_visible_version(session, user, instance.business_id, for_update=True)
+    instance = (await session.execute(select(ApprovalInstance).where(ApprovalInstance.id == approval_id)
+                .with_for_update().execution_options(populate_existing=True))).scalar_one()
     if instance.status != "pending":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该审批单已处理")
+    quote = await quote_service.get_visible_quote(session, user, version.quote_id)
+    if quote.current_version_id != version.id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该审批属于旧报价版本，请处理当前版本的审批", 422)
     return instance
 
 
@@ -271,7 +281,7 @@ async def approve(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    instance = await _load_pending(session, approval_id)
+    instance = await _load_pending(session, approval_id, user)
     await _assert_can_approve(session, user, instance)
 
     version = await session.get(QuoteVersion, instance.business_id)
@@ -378,7 +388,7 @@ async def reject(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    instance = await _load_pending(session, approval_id)
+    instance = await _load_pending(session, approval_id, user)
     await _assert_can_approve(session, user, instance)
 
     version = await session.get(QuoteVersion, instance.business_id)
@@ -475,7 +485,7 @@ async def transfer(
     所以只换 `current_node` 上的处理人记录，不碰角色与权限。
     转交后本人不再能批（除非被转回来），避免"转出去又自己批了"。
     """
-    instance = await _load_pending(session, approval_id)
+    instance = await _load_pending(session, approval_id, user)
     await _assert_can_approve(session, user, instance)
 
     target = await session.get(User, payload.to_user_id)
@@ -556,7 +566,7 @@ async def withdraw(
     业务员可以改价重新提交 —— 这与 `withdraw-approval` 的区别是：
     那个从报价版本侧发起，这个从审批单侧发起，两者落到同一结果。
     """
-    instance = await _load_pending(session, approval_id)
+    instance = await _load_pending(session, approval_id, user)
     await _ensure_approval_visible(session, user, instance)
     if instance.applicant_id != user.id and "admin" not in user.roles:
         raise AppError(ErrorCode.FORBIDDEN, "只能撤回自己提交的审批", 403)

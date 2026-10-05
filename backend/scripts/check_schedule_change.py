@@ -108,6 +108,10 @@ async def main() -> int:
         check('建订单', res.get('code'), 0)
         order_id = res['data']['order_id']
 
+        status, res = call('POST', f'/orders/{order_id}/schedule-changes', token=admin,
+                           body={'new_delivery_date': '2026-12-31', 'delivery_kind': 'shipping'})
+        initial_plan = res['data']['id']
+        call('POST', f'/orders/{order_id}/schedule-changes/{initial_plan}/confirm', token=admin, body={})
         status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
         check('节点初始化', res.get('code'), 0)
         before_nodes = {r['node']: r['planned_date'] for r in res['data']}
@@ -206,7 +210,7 @@ async def main() -> int:
         # 点一次就把上面那条手工平移的结果（2027-01-04）抹回默认值——
         # 正是这次要保护的东西。
         status, res = call('POST', f'/orders/{order_id}/milestones/replan', token=admin, body={})
-        check('重排接口可调用', res.get('code'), 0)
+        check('旧重排入口要求走确认流程', status, 422)
         status, res = call('GET', f'/orders/{order_id}/milestones', token=admin)
         after_replan = {r['node']: r['planned_date'] for r in res['data']}
         check('手工调整过的节点不被重排拉回默认值',

@@ -8,10 +8,10 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text, func
+from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.base import Base, IdMixin
+from app.core.base import Base, IdMixin, JSONType
 
 #: 通知渠道
 CHANNEL_INAPP = "inapp"
@@ -62,6 +62,10 @@ class BusinessEvent(Base, IdMixin):
     """
 
     __tablename__ = "business_events"
+    __table_args__ = (Index(
+        "ix_business_events_pending_notification", "id",
+        postgresql_where=text("notification_payload IS NOT NULL AND notification_processed_at IS NULL"),
+    ),)
 
     event_key: Mapped[str] = mapped_column(String(128), unique=True)
     business_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -72,10 +76,16 @@ class BusinessEvent(Base, IdMixin):
         DateTime(timezone=True), nullable=False
     )
 
+    # 主管通知待办随业务事实提交；站内通知生成失败后可重试，不重做业务动作。
+    notification_payload: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    notification_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notification_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
 
 class Notification(Base, IdMixin):
     __tablename__ = "notifications"
     __table_args__ = (
+        UniqueConstraint("business_event_id", "user_id", name="uq_notification_event_recipient"),
         Index("ix_notifications_user_read", "user_id", "read_at"),
         # 待投递的企微通知要能被扫出来
         Index("ix_notifications_wecom_status", "wecom_status"),
@@ -83,6 +93,7 @@ class Notification(Base, IdMixin):
         Index("ix_notifications_level_status", "level", "wecom_status"),
     )
 
+    business_event_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     user_id: Mapped[int] = mapped_column(BigInteger)
     type: Mapped[str] = mapped_column(String(32))
     title: Mapped[str] = mapped_column(String(200))

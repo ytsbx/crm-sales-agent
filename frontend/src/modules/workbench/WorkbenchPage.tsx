@@ -21,6 +21,8 @@ import {
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
 import SectionCard from '../../shared/components/SectionCard'
 import { useAuthStore } from '../../shared/store/auth'
+import { useCopilotStore } from '../../shared/store/copilot'
+import { usePermissions } from '../../shared/hooks/permissions'
 
 const PRIORITY_LABEL: Record<string, string> = { high: '高优先级', normal: '普通', low: '低' }
 
@@ -121,6 +123,8 @@ function TrendChart({ data }: { data: TrendRow[] }) {
 export default function WorkbenchPage() {
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.user)
+  const openCopilot = useCopilotStore((state) => state.openWith)
+  const { can } = usePermissions()
 
   const summaryQuery = useQuery({ queryKey: ['dashboard-summary'], queryFn: getDashboardSummary })
   const tasksQuery = useQuery({ queryKey: ['dashboard-tasks'], queryFn: getDashboardTasks })
@@ -681,12 +685,12 @@ export default function WorkbenchPage() {
             </div>
           </SectionCard>
 
-          <SectionCard>
+          {can('agent:use') && <SectionCard>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
               <span className="card-title">
                 <IconComment /> AI Sales Agent
               </span>
-              <span className="chip chip-ai">实时运行中</span>
+              <span className="chip chip-ai">按需分析</span>
             </div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
               基于当前销售线为您推荐高频动作：
@@ -712,8 +716,12 @@ export default function WorkbenchPage() {
                   <span style={{ color: 'var(--crm-text-3)' }}>›</span>
                 </Link>
               ))}
-              <Link
-                to="/agent"
+              <button
+                type="button"
+                onClick={() => {
+                  const now = new Date()
+                  openCopilot(`分析本月成交冲刺机会（${now.getFullYear()}年${now.getMonth() + 1}月）。请先查询我有权限查看的进行中商机及关联报价、跟进记录，列出可以推进的机会、当前阻碍和建议的下一步动作。区分已知事实与判断；预计成交日期缺失时注明信息不足，不要编造金额或成交概率。本次仅提供分析，不新增或修改业务记录。`)
+                }}
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
@@ -722,18 +730,23 @@ export default function WorkbenchPage() {
                   border: '1px solid var(--crm-surface-high)',
                   borderRadius: 'var(--crm-radius-sm)',
                   fontSize: 12.5,
+                  background: 'transparent',
+                  width: '100%',
+                  fontFamily: 'inherit',
+                  textAlign: 'left',
+                  cursor: 'pointer',
                 }}
               >
                 <span style={{ color: 'var(--crm-text-2)' }}>
                   <IconArrowUp /> 分析本月成交冲刺机会
                 </span>
                 <span style={{ color: 'var(--crm-text-3)' }}>›</span>
-              </Link>
+              </button>
             </div>
             <div style={{ marginTop: 12, fontSize: 11, color: 'var(--crm-text-3)' }}>
-              已关联商机、报价与回款数据
+              点击后查询当前账号有权限查看的业务数据
             </div>
-          </SectionCard>
+          </SectionCard>}
         </div>
       </div>
     </div>

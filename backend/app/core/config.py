@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     scheduler_digest_hour: int = 9
     scheduler_digest_minute: int = 30
     agent_max_tool_rounds: int = 3
+    #: 专用分析（客户总结 / 跟进建议 / 商机分析 / 回款风险…）的 AI 叙述总闸。
+    #: 置 0 则所有专用分析接口只返回本地统计结果，一次模型都不调。
+    #: 叙述会把客户名、金额等发给模型服务商，不接受外发就关掉它。
+    agent_commentary_enabled: bool = True
+    #: 生成一段叙述的超时（秒）。超时只让 commentary 变 None 并说明原因，
+    #: **不影响**统计结果返回——等模型不该把页面卡死。
+    agent_commentary_timeout: int = 30
 
     # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------
     # ---- 钉钉 OA 审批（文档 §11.3 :152 / 场景11）--------------------------

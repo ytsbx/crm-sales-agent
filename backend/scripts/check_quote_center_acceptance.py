@@ -214,6 +214,8 @@ def main():
         ok = True
         for level, expect in (('A', 85.0), ('B', 90.0)):
             _, res = call('GET', f'/pricing/lookup?customer_id={customers[level]}&sku_id={sku_id}&quantity=1', token=admin)
+            # 查价已按 03-API §1.1 归一到统一信封，先拆 data 再断言
+            res = res['data']
             ok = ok and res['source_label'] == '客户等级价' and res['unit_price'] == expect
         record('A01', 'A/B 级客户各自带价且显示来源', ok, '85/90 等级价命中')
 
@@ -224,6 +226,7 @@ def main():
             'agreed_price': 88, 'effective_from': '2026-01-01', 'effective_to': '2026-12-31',
         })
         _, res = call('GET', f'/pricing/lookup?customer_id={customers["B"]}&sku_id={sku_id}&quantity=1', token=admin)
+        res = res['data']
         ok = res['source'] == 'customer_specific' and res['unit_price'] == 88.0
         _, res = call('POST', '/customer-price-rules', token=admin, body={
             'customer_id': customers['B'], 'sku_id': sku_id, 'min_qty': 1,
@@ -231,6 +234,7 @@ def main():
         })
         expired_id = res['data']['id'] if res.get('code') == 0 else None
         _, res = call('GET', f'/pricing/lookup?customer_id={customers["B"]}&sku_id={sku_id}&quantity=1', token=admin)
+        res = res['data']
         ok = ok and res['unit_price'] == 88.0
         record('A02', '有效专属价优先，过期价不命中', ok)
         if expired_id:
@@ -247,6 +251,7 @@ def main():
         # 实际只覆盖了登记过的 A/B。
         customers['C'] = c_no_rule
         _, res = call('GET', f'/pricing/lookup?customer_id={c_no_rule}&sku_id={sku_id}&quantity=1', token=admin)
+        res = res['data']
         ok = res['source'] == 'general' and bool(res['fallback_note'])
         record('A03', '无等级价回退通用价并标注来源', ok, res['fallback_note'])
 
@@ -453,6 +458,7 @@ def main():
                          [[sku_code, 'A', '1', '', '', '70', '', '', '2025-01-01', '2025-06-30', '1', '验收历史行']])
         imported_ok = res['data']['created_count'] == 1
         _, res = call('GET', f'/pricing/lookup?customer_id={customers["A"]}&sku_id={sku_id}&quantity=1', token=admin)
+        res = res['data']
         not_matched = res['unit_price'] == 95.0 and res['source'] == 'level'
         record('A14', '历史价可留档、不冲突、不参与匹配', imported_ok and not_matched,
                f"status=historical imported={imported_ok}")

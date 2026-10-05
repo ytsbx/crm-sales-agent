@@ -34,6 +34,15 @@ const KEY_LABEL: Record<string, string> = {
   suggested_price: '建议价',
 }
 
+/** 优先级等枚举值的中文显示。 */
+const VALUE_LABEL: Record<string, string> = {
+  high: '高',
+  medium: '中',
+  normal: '中',
+  low: '低',
+  urgent: '紧急',
+}
+
 const isMoneyKey = (key: string) =>
   /price|profit|amount|total|cost/.test(key) && !/rate|count|times/.test(key)
 
@@ -44,6 +53,7 @@ const fmtValue = (key: string, value: unknown): string => {
     return String(value)
   }
   if (typeof value === 'boolean') return value ? '是' : '否'
+  if (key === 'priority' && typeof value === 'string') return VALUE_LABEL[value] ?? value
   return String(value)
 }
 
@@ -79,7 +89,10 @@ function ListBlock({ rows }: { rows: unknown[] }) {
     .slice(0, 10)
     .map((row, index) => ({ ...row, _idx: index }))
   const keys = Object.keys(records[0]).filter(
-    (key) => records.every((row) => typeof row[key] !== 'object' || row[key] === null) && key !== 'id',
+    (key) =>
+      key !== '_idx' &&
+      records.every((row) => typeof row[key] !== 'object' || row[key] === null) &&
+      key !== 'id',
   )
   return (
     <Table
@@ -90,6 +103,7 @@ function ListBlock({ rows }: { rows: unknown[] }) {
       columns={keys.map((key) => ({
         title: KEY_LABEL[key] ?? key,
         dataIndex: key,
+        align: 'center' as const,
         render: (value: unknown) => fmtValue(key, value),
       }))}
       empty="无"

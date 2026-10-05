@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import type { TimelineEvent } from '../../shared/api/followup'
 
 const KIND_COLOR: Record<string, string> = {
@@ -38,6 +39,11 @@ export default function Timeline({ events, loading }: { events: TimelineEvent[];
             <div style={{ fontSize: 14 }}>{event.title}</div>
             {event.detail && (
               <div style={{ color: 'var(--crm-text-2)', fontSize: 13, marginTop: 2 }}>{event.detail}</div>
+            )}
+            {event.source && (
+              <Link style={{ color: 'var(--crm-primary)', fontSize: 13 }} to={`/${{ sample: 'samples', order: 'orders', quote: 'quotes', opportunity: 'opportunities' }[event.source.type]}/${event.source.id}`}>
+                查看原单
+              </Link>
             )}
             <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
               {event.operator_name} · {new Date(event.at).toLocaleString('zh-CN')}

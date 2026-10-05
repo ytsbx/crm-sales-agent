@@ -1,7 +1,8 @@
 from datetime import date
+from typing import Literal
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 
 class OrderFromQuote(BaseModel):
@@ -12,6 +13,8 @@ class OrderFromQuote(BaseModel):
 class MilestoneUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    skipped: bool | None = None
+    skip_reason: str | None = Field(default=None, max_length=2000)
     planned_date: date | None = None
     actual_date: date | None = None
     # 方案 :103 要求节点记录责任人、来源证据、逾期原因——
@@ -26,6 +29,9 @@ class ScheduleChangeCreate(BaseModel):
     """交期变更（方案 :105）：先预览受影响面，责任人确认后才生效。"""
 
     new_delivery_date: date
+    delivery_kind: Literal['shipping', 'arrival'] | None = None
+    transit_days: int | None = Field(default=None, ge=0, le=365, strict=True)
+    plan_offsets: dict[str, StrictInt] | None = None
     reason: str | None = None
 
 
@@ -110,3 +116,44 @@ class ShipmentBatchShip(BaseModel):
     overdue_reason: str | None = None
     remark: str | None = None
     items: list[ShipmentShipItem] | None = None
+
+
+from uuid import UUID
+from pydantic import model_validator
+from app.modules.sample.schema import SampleSource
+
+
+class OrderDraftLine(BaseModel):
+    source_item_id: int = Field(gt=0)
+    quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=4)
+    specification: str | None = None
+    remark: str | None = None
+
+
+class OrderDraftCreate(SampleSource):
+    request_key: UUID
+    items: list[OrderDraftLine] = Field(min_length=1, max_length=200)
+    delivery_date: date | None = None
+    payment_terms: str | None = None
+    remark: str | None = None
+
+    @model_validator(mode='after')
+    def unique_sources(self):
+        if len({i.source_item_id for i in self.items}) != len(self.items):
+            raise ValueError('同一来源明细不能重复勾选')
+        return self
+
+
+class OrderDraftUpdate(BaseModel):
+    revision: int = Field(gt=0)
+    currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
+    items: list[OrderDraftLine] = Field(min_length=1, max_length=200)
+    delivery_date: date | None = None
+    payment_terms: str | None = None
+    remark: str | None = None
+
+
+class OrderDraftConfirm(BaseModel):
+    revision: int = Field(gt=0)
+    quote_version_id: int = Field(gt=0)

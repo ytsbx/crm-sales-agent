@@ -150,11 +150,11 @@ def e2e():
         ('建任务-线索不存在', 'POST', '/tasks', {'title': 'REFCHK 线索', 'lead_id': MISSING_ID}, 40401),
         ('建任务-订单不存在', 'POST', '/tasks', {'title': 'REFCHK 订单', 'order_id': MISSING_ID}, 40401),
         ('建跟进-客户不存在', 'POST', '/followups',
-         {'customer_id': MISSING_ID, 'content': 'REFCHK 客户'}, 40401),
+         {'customer_id': MISSING_ID, 'content': 'REFCHK 客户', 'exemption_reason': 'waiting_external'}, 40401),
         ('建跟进-线索不存在', 'POST', '/followups',
-         {'lead_id': MISSING_ID, 'content': 'REFCHK 线索'}, 40401),
+         {'lead_id': MISSING_ID, 'content': 'REFCHK 线索', 'exemption_reason': 'waiting_external'}, 40401),
         ('建跟进-报价单不存在', 'POST', '/followups',
-         {'quote_id': MISSING_ID, 'content': 'REFCHK 报价'}, 40401),
+         {'quote_id': MISSING_ID, 'content': 'REFCHK 报价', 'exemption_reason': 'waiting_external'}, 40401),
     ]
 
     print()

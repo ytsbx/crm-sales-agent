@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -160,12 +160,26 @@ async def get_quote_or_404(session: AsyncSession, quote_id: int) -> Quote:
 
 
 async def get_visible_quote(
-    session: AsyncSession, user, quote_id: int
+    session: AsyncSession, user, quote_id: int, *, for_update: bool = False
 ) -> Quote:
     """取报价并校验数据范围（列表按 owner_id 过滤，详情此前没校验）。"""
     from app.core.data_scope import ensure_in_scope
 
-    quote = await get_quote_or_404(session, quote_id)
+    if for_update:
+        # 统一按商机 → 报价 → 版本加锁，与确认成交入口保持一致。
+        # 正式发送会推进商机，反向加锁会与确认成交形成死锁。
+        initial = await get_quote_or_404(session, quote_id)
+        await ensure_in_scope(session, user, owner_id=initial.owner_id, label="报价单")
+        if initial.opportunity_id:
+            await session.execute(select(Opportunity).where(
+                Opportunity.id == initial.opportunity_id
+            ).with_for_update())
+        quote = (await session.execute(select(Quote).where(Quote.id == quote_id)
+                 .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        if quote is None or quote.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
+    else:
+        quote = await get_quote_or_404(session, quote_id)
     await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
     return quote
 
@@ -178,14 +192,15 @@ async def get_version_or_404(session: AsyncSession, version_id: int) -> QuoteVer
 
 
 async def get_visible_version(
-    session: AsyncSession, user, version_id: int
+    session: AsyncSession, user, version_id: int, *, for_update: bool = False
 ) -> QuoteVersion:
     """取报价版本并校验其所属报价在数据范围内（版本自己没有负责人）。"""
-    from app.core.data_scope import ensure_in_scope
-
     version = await get_version_or_404(session, version_id)
-    quote = await get_quote_or_404(session, version.quote_id)
-    await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+    await get_visible_quote(session, user, version.quote_id, for_update=for_update)
+    if for_update:
+        # 先锁单据再锁版本；锁等待结束后重读，不能按等待前的状态执行。
+        version = (await session.execute(select(QuoteVersion).where(QuoteVersion.id == version_id)
+                   .with_for_update().execution_options(populate_existing=True))).scalar_one()
     return version
 
 
@@ -307,13 +322,15 @@ async def create_quote(
             422,
         )
     if opportunity is not None:
+        from app.modules.opportunity import service as opportunity_service
+        opportunity = await opportunity_service.get_visible_opportunity(session, user, opportunity.id)
         customer_id = opportunity.customer_id
 
     # 客户/联系人必须存在。放在 service 而不是路由：Agent 工具
     # （`create_quote_draft`）直接调这里，绕开路由校验；漏了就会撞 FK
     # 约束报 500，而不是可读的 40401。
-    if await session.get(Customer, customer_id) is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"客户 id={customer_id} 不存在", 404)
+    from app.modules.customer import service as customer_service
+    await customer_service.get_visible_customer(session, user, customer_id)
     resolved_contact_id = contact_id or (
         opportunity.primary_contact_id if opportunity else None
     )
@@ -495,6 +512,7 @@ async def create_version(
 
     同样抽到 service 供 Agent 工具复用。
     """
+    quote = await get_visible_quote(session, user, quote.id, for_update=True)
     latest = (
         await session.execute(
             select(QuoteVersion)
@@ -589,6 +607,7 @@ async def create_version(
     await recalc_version(session, version)
     quote.current_version_id = version.id
     quote.status = "draft"
+    await close_superseded_approvals(session, quote=quote, new_version=version, user=user)
 
     # 版本沿用报价的币种；汇率按「本版本创建时点」重新取快照。
     rate_warning = await apply_exchange_rate_snapshot(
@@ -597,6 +616,39 @@ async def create_version(
     if rate_warning:
         raise AppError(ErrorCode.PARAM_ERROR, rate_warning, 422)
     return version
+
+
+async def close_superseded_approvals(session: AsyncSession, *, quote: Quote,
+                                     new_version: QuoteVersion, user) -> None:
+    """新版本取代旧方案：结束旧版待审，保留审批历史，不改已完成结论。"""
+    from app.modules.approval.model import ApprovalInstance, ApprovalRecord
+    from app.core.audit import write_audit
+
+    old_versions = list((await session.execute(select(QuoteVersion).where(
+        QuoteVersion.quote_id == quote.id, QuoteVersion.id != new_version.id
+    ).with_for_update())).scalars())
+    old_map = {row.id: row for row in old_versions}
+    instances = list((await session.execute(select(ApprovalInstance).where(
+        ApprovalInstance.business_type == "quote_version",
+        ApprovalInstance.business_id.in_(old_map), ApprovalInstance.status == "pending",
+    ).with_for_update().execution_options(populate_existing=True))).scalars())
+    for instance in instances:
+        old = old_map[instance.business_id]
+        reason = f"建立 V{new_version.version_no}，自动结束 V{old.version_no} 的待审批流程"
+        instance.status = "withdrawn"
+        instance.finished_at = datetime.now(UTC)
+        instance.current_node = None
+        instance.summary = {**(instance.summary or {}), "closed_reason": "superseded",
+                            "superseded_by_version_id": new_version.id, "close_note": reason}
+        if (instance.summary or {}).get("co_sign"):
+            instance.summary = {**instance.summary, "co_sign": {**instance.summary["co_sign"], "status": "withdrawn"}}
+        old.approval_status = "not_submitted"
+        session.add(ApprovalRecord(approval_instance_id=instance.id, node_code="superseded",
+                                  approver_id=user.id, action="withdraw", comment=reason))
+        await write_audit(session, operator_id=user.id, action="supersede_approval",
+                          business_type="quote", business_id=quote.id,
+                          after={"approval_instance_id": instance.id, "old_version_id": old.id,
+                                 "new_version_id": new_version.id, "reason": reason})
 
 
 async def _build_custom_item_snapshot(
@@ -1369,6 +1421,7 @@ async def approval_records(session: AsyncSession, instance_id: int) -> list[dict
         {
             "id": record.id,
             "action": record.action,
+            "node_code": record.node_code,
             "comment": record.comment,
             "approver_id": record.approver_id,
             "approver_name": name,
@@ -1628,13 +1681,16 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
 async def notify_expired_quotes(session: AsyncSession) -> int:
     """报价有效期届满且未成单 → 给负责人建待办（文档 §3.4）。
 
-    条件：已对客（sent/approved）+ 已过有效期 + 没有非取消订单引用它。
+    条件：有正式发送/客户接受事实 + 已过有效期 + 没有非取消订单引用它。
     "同一报价只提醒一次"按标题查*任何状态*的任务（完成/忽略过就不再建），
     否则销售每天都会收到同一条到期提醒。由每日自动任务调用（不新增调度项）。
     """
     from app.modules.order.model import SalesOrder
     from app.modules.task.model import Task
+    from app.modules.task.scanning import lock_task_scan
+    from app.modules.customer.service import refresh_next_followup_at
 
+    await lock_task_scan(session)
     today = datetime.now(UTC).date()
     ordered = select(SalesOrder.quote_id).where(
         SalesOrder.quote_id.is_not(None), SalesOrder.status != "cancelled"
@@ -1647,7 +1703,11 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
                 Quote.deleted_at.is_(None),
                 Quote.valid_until.is_not(None),
                 Quote.valid_until < today,
-                Quote.status.in_(("sent", "approved", "expired")),
+                Quote.status.in_(("sent", "accepted", "expired")),
+                or_(Quote.status.in_(("sent", "accepted")),
+                    select(QuoteVersion.id).where(QuoteVersion.quote_id == Quote.id,
+                                                  QuoteVersion.sent_at.is_not(None)).exists()),
+                Customer.deleted_at.is_(None),
                 Quote.id.not_in(ordered),
             )
         )
@@ -1670,7 +1730,7 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
             continue
         title = f"报价 {quote.quote_no} 已过有效期（{quote.valid_until}），请跟进续期或催单"
         existing = (
-            await session.execute(select(Task.id).where(Task.title == title))
+            await session.execute(select(Task.id).where(Task.title == title).limit(1))
         ).scalar_one_or_none()
         if existing is not None:
             continue
@@ -1691,4 +1751,6 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
         )
         created += 1
     await session.flush()
+    for customer_id in sorted({quote.customer_id for quote, _ in rows}):
+        await refresh_next_followup_at(session, customer_id)
     return created

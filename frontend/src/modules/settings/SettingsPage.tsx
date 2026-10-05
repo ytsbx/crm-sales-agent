@@ -188,7 +188,11 @@ export default function SettingsPage() {
   const autoTaskMutation = useMutation({
     mutationFn: runAutoTaskRules,
     onSuccess: (data) => {
-      Toast.success(`已执行，生成 ${data.created_count} 条自动任务`)
+      if (data.failed_rule_count) {
+        Toast.warning(`生成 ${data.created_count} 条任务；${data.failed_rule_count} 条规则配置有误：${data.rule_errors?.map((row) => `${row.code}：${row.error}`).join('；') ?? '请查看审计记录'}`)
+      } else {
+        Toast.success(`已执行，生成 ${data.created_count} 条自动任务`)
+      }
       refreshRules()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -794,7 +798,12 @@ export default function SettingsPage() {
                           defaultValue={String(days)}
                           style={{ width: 120 }}
                           onBlur={(event) => {
-                            const next = Number((event.target as HTMLInputElement).value)
+                            const raw = (event.target as HTMLInputElement).value.trim()
+                            const next = Number(raw)
+                            if (!raw || !Number.isInteger(next) || next <= 0) {
+                              Toast.warning('公海回收天数须为正整数')
+                              return
+                            }
                             if (Number.isFinite(next) && next !== days) {
                               poolRuleMutation.mutate({ id: record.id, days: next, enabled: record.enabled })
                             }
@@ -859,7 +868,12 @@ export default function SettingsPage() {
                           defaultValue={String(record.trigger_config?.days ?? 3)}
                           style={{ width: 100 }}
                           onBlur={(event) => {
-                            const next = Number((event.target as HTMLInputElement).value)
+                            const raw = (event.target as HTMLInputElement).value.trim()
+                            const next = Number(raw)
+                            if (!raw || !Number.isInteger(next) || next < 0) {
+                              Toast.warning('自动任务天数须为非负整数')
+                              return
+                            }
                             if (Number.isFinite(next) && next !== record.trigger_config?.days) {
                               taskRuleMutation.mutate({ id: record.id, days: next })
                             }

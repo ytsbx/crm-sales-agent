@@ -46,11 +46,13 @@ import FollowUpAttachmentsButton from '../common/FollowUpAttachmentsButton'
 import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
+import OpportunityRecords from './OpportunityRecords'
 import type { TagTone } from '../../shared/types'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
   { tab: '需求商品', itemKey: 'items' },
+  { tab: '关联单据', itemKey: 'records' },
   { tab: '跟进', itemKey: 'followups' },
   { tab: '任务', itemKey: 'tasks' },
   { tab: '文件', itemKey: 'files' },
@@ -509,6 +511,9 @@ export default function OpportunityDetailPage() {
               />
             </>
           )}
+
+          {activeKey === 'records' && <OpportunityRecords key={opportunityId}
+            opportunityId={opportunityId} customerId={opportunity.customer_id} title={opportunity.title} />}
 
           {activeKey === 'followups' && (
             <>

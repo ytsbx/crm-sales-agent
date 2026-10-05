@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
   acceptQuote,
@@ -90,12 +91,16 @@ export default function QuoteDetailPage() {
     enabled: Boolean(versionId),
   })
 
+  const [draftVisible, setDraftVisible] = useState(false)
+  const [sampleVisible, setSampleVisible] = useState(false)
   const [priceTarget, setPriceTarget] = useState<QuoteItemRow | null>(null)
   const [newPrice, setNewPrice] = useState('')
   const [chargeVisible, setChargeVisible] = useState(false)
   const [chargeForm, setChargeForm] = useState({ charge_type: 'logistics', description: '', amount: '' })
   const [sendVisible, setSendVisible] = useState(false)
-  const [sendForm, setSendForm] = useState({ channel: '邮件', receiver: '' })
+  const [sendForm, setSendForm] = useState({ channel: '邮件', receiver: '', request_key: '' })
+  const [declineVisible, setDeclineVisible] = useState(false)
+  const [declineReason, setDeclineReason] = useState('')
   const [submitVisible, setSubmitVisible] = useState(false)
   const [submitReason, setSubmitReason] = useState('')
   // 批量录入整版明细
@@ -175,16 +180,30 @@ export default function QuoteDetailPage() {
   })
 
   const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['opportunity'] })
+    void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+    void queryClient.invalidateQueries({ queryKey: ['funnel'] })
+    void queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
     void queryClient.invalidateQueries({ queryKey: ['quote-version'] })
     void queryClient.invalidateQueries({ queryKey: ['quote-versions'] })
     void queryClient.invalidateQueries({ queryKey: ['quotes'] })
     void queryClient.invalidateQueries({ queryKey: ['approvals'] })
+    void queryClient.invalidateQueries({ queryKey: ['customer'] })
+    void queryClient.invalidateQueries({ queryKey: ['customers'] })
+    void queryClient.invalidateQueries({ queryKey: ['customer-quotes'] })
+    void queryClient.invalidateQueries({ queryKey: ['timeline'] })
+    void queryClient.invalidateQueries({ queryKey: ['followups'] })
+    void queryClient.invalidateQueries({ queryKey: ['notifications'] })
+    void queryClient.invalidateQueries({ queryKey: ['notifications-unread'] })
   }
 
   const detail = detailQuery.data
   const version = detail?.version
   const quote = detail?.quote
-  const editable = version?.approval_status === 'not_submitted' && !version?.sent_at
+  const isCurrentVersion = Boolean(version && quote?.current_version_id === version.id)
+  const editable = isCurrentVersion && version?.approval_status === 'not_submitted' && !version?.sent_at
+  const canRespond = isCurrentVersion && quote?.status === 'sent' && Boolean(version?.sent_at)
+    && version?.approval_status === 'approved' && !version.accepted_at && !version.declined_at
 
   // A09 后半：草稿版本检测"价格已有更新"（系统带价的明细与当前适用价比对）
   const driftQuery = useQuery({
@@ -266,9 +285,11 @@ export default function QuoteDetailPage() {
   })
 
   const declineMutation = useMutation({
-    mutationFn: () => declineQuote(versionId!, '客户认为价格偏高'),
+    mutationFn: () => declineQuote(versionId!, declineReason.trim() || undefined),
     onSuccess: () => {
       Toast.success('已记录客户拒绝')
+      setDeclineVisible(false)
+      setDeclineReason('')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -463,23 +484,27 @@ export default function QuoteDetailPage() {
               提交审批
             </Button>
           )}
-          {canManage && version.approval_status === 'pending' && (
+          {canManage && isCurrentVersion && version.approval_status === 'pending' && (
             <Button onClick={() => withdrawMutation.mutate()}>撤回审批</Button>
           )}
-          {canManage && version.approval_status === 'approved' && (
-            <Button theme="solid" onClick={() => setSendVisible(true)}>
-              标记已发送
+          {canManage && isCurrentVersion && version.approval_status === 'approved'
+            && (quote.status === 'approved' || quote.status === 'sent') && (
+            <Button theme="solid" onClick={() => {
+              setSendForm({ ...sendForm, request_key: Array.from(crypto.getRandomValues(new Uint8Array(16)), (v) => v.toString(16).padStart(2, '0')).join('') })
+              setSendVisible(true)
+            }}>
+              {version.sent_at ? '登记再次发送' : '标记已发送'}
             </Button>
           )}
-          {canManage && (quote.status === 'sent' || quote.status === 'approved') && (
+          {canManage && canRespond && (
             <>
-              <Button onClick={() => acceptMutation.mutate()}>客户接受</Button>
-              <Button type="danger" onClick={() => declineMutation.mutate()}>
+              <Button onClick={() => acceptMutation.mutate()} loading={acceptMutation.isPending}>客户接受</Button>
+              <Button type="danger" onClick={() => setDeclineVisible(true)}>
                 客户拒绝
               </Button>
             </>
           )}
-          {can('order:manage') && (quote.status === 'accepted' || quote.status === 'sent') && (
+          {can('order:manage') && isCurrentVersion && version.sent_at && version.accepted_at && quote.status === 'accepted' && (
             <Button
               theme="solid"
               onClick={() => convertMutation.mutate()}
@@ -564,12 +589,16 @@ export default function QuoteDetailPage() {
         title="报价明细"
         style={{ marginBottom: 16 }}
         extra={
-          canManage &&
+          <div style={{ display: 'flex', gap: 8 }}>
+          {can('order:manage') && <Button size="small" onClick={() => setDraftVisible(true)}>按此版本建订单草稿</Button>}
+          {can('sample:manage') && <Button size="small" onClick={() => setSampleVisible(true)}>按此版本申请打样</Button>}
+          {canManage &&
           editable && (
             <Button size="small" onClick={openItemsEditor}>
               批量录入
             </Button>
-          )
+          )}
+          </div>
         }
       >
         <Table<QuoteItemRow>
@@ -581,6 +610,9 @@ export default function QuoteDetailPage() {
           empty="没有明细"
         />
       </SectionCard>
+
+      {draftVisible && <SampleFromSourceModal mode="order" source={{ quote_version_id: version.id }} onClose={() => setDraftVisible(false)} />}
+      {sampleVisible && <SampleFromSourceModal source={{ quote_version_id: version.id }} onClose={() => setSampleVisible(false)} />}
 
       {/* What-if：版本方案对比 + 边际测算（设计稿 Sales Copilot 右栏那个滑杆） */}
       <WhatIfPanel quoteId={quoteId} versionId={version.id} items={detail.items} />
@@ -868,12 +900,24 @@ export default function QuoteDetailPage() {
       </Modal>
 
       <Modal
+        title="记录客户拒绝"
+        visible={declineVisible}
+        onCancel={() => setDeclineVisible(false)}
+        onOk={() => declineMutation.mutate()}
+        confirmLoading={declineMutation.isPending}
+        okText="确认记录"
+      >
+        <TextArea value={declineReason} onChange={setDeclineReason}
+          placeholder="填写客户实际拒绝原因（可不填）" />
+      </Modal>
+
+      <Modal
         title="标记已发送"
         visible={sendVisible}
         onCancel={() => setSendVisible(false)}
         onOk={() => sendMutation.mutate()}
         confirmLoading={sendMutation.isPending}
-        okText="确认发送"
+        okText="确认已实际发送"
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <Select

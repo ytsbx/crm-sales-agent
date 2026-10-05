@@ -89,6 +89,15 @@ a {
   text-decoration: none;
 }
 
+/* 项目里表格「操作」列的那些链接（下载 / 删除 / 编辑 / 作废…）都是
+   「<a> + onClick」的写法，全项目 70 余处，一个都没写 href。
+   浏览器对这种没有链接地址的 <a> 不给手型光标，鼠标移上去是文本光标
+   （那条 I 字线），看着像要去选字，容易让人以为这一列点不了。
+   在这里统一补上手型 —— 比到 70 个地方各加一遍 cursor 更省事，也不会漏。 */
+a:not([href]) {
+  cursor: pointer;
+}
+
 /* ============================================================
    页面骨架
    ============================================================ */
@@ -210,6 +219,68 @@ a {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  transition: width 0.15s ease;
+}
+
+/* 桌面端折叠开关：钉在品牌行最右侧，永远看得见 */
+.sider-collapse-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--crm-radius-sm);
+  background: transparent;
+  color: var(--crm-text-3);
+  font-size: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sider-collapse-btn:hover {
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+}
+
+/* 折叠态（仅桌面 ≥769px 生效；手机上侧边栏是抽屉，折叠无意义） */
+@media (min-width: 769px) {
+  .app-shell.sider-collapsed .app-sider {
+    width: 60px;
+    overflow-x: hidden;
+  }
+  /* 收起来后品牌行只留开关本身，居中——保证任何时候都点得到「展开」 */
+  .app-shell.sider-collapsed .sider-brand {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+    gap: 0;
+  }
+  .app-shell.sider-collapsed .sider-logo,
+  .app-shell.sider-collapsed .sider-brand-text {
+    display: none;
+  }
+  .app-shell.sider-collapsed .sider-collapse-btn {
+    margin: 0 auto;
+    width: 30px;
+    height: 30px;
+    font-size: 15px;
+  }
+  .app-shell.sider-collapsed .nav-group-title {
+    display: none;
+  }
+  .app-shell.sider-collapsed .nav-link {
+    justify-content: center;
+    padding: 8px 0;
+  }
+  .app-shell.sider-collapsed .nav-link span:not(.nav-icon) {
+    display: none;
+  }
+  .app-shell.sider-collapsed .sider-version {
+    display: none;
+  }
 }
 
 .sider-brand {
@@ -218,6 +289,16 @@ a {
   gap: 10px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--crm-surface-high);
+  /* 钉在顶部：侧栏内容再长，品牌行和折叠开关也始终留在视野里 */
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--crm-surface);
+  flex-shrink: 0;
+}
+
+.sider-brand-text {
+  min-width: 0;
 }
 
 .sider-logo {
@@ -333,6 +414,83 @@ a {
   color: var(--crm-secondary);
 }
 
+/* 顶栏「通知」入口：与 AI 助手同一规格的胶囊，数字角标不压文字 */
+.notice-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--crm-outline);
+  border-radius: var(--crm-radius-pill);
+  background: var(--crm-surface);
+  color: var(--crm-text-2);
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.notice-trigger:hover {
+  border-color: var(--crm-primary);
+  color: var(--crm-primary);
+}
+
+/* 未读数：行内小圆点，跟着「通知」排队，绝不和文字重叠。
+   不用组件库自带的角标——它是绝对定位贴右上角的，一定会压到字上。
+   未读为 0 时组件不渲染这个节点，不留空壳。 */
+.notice-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--crm-error);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+/* 弹出面板：四周留白，条目不再贴着边框 */
+.notice-panel {
+  width: 360px;
+  max-height: 440px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.notice-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+  padding: 6px 8px 8px;
+  border-bottom: 1px solid var(--crm-surface-high);
+}
+
+.notice-item {
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--crm-surface-high);
+  border-radius: var(--crm-radius-sm);
+  cursor: pointer;
+}
+
+.notice-item:hover {
+  background: var(--crm-surface-low);
+}
+
+.notice-empty {
+  padding: 24px 8px;
+  color: var(--crm-text-3);
+  font-size: 13px;
+  text-align: center;
+}
+
 .copilot-dot {
   width: 7px;
   height: 7px;
@@ -387,10 +545,65 @@ a {
   font-size: 11px;
 }
 
+/* 页签栏末尾的批量清理入口：横向滚动时也钉在最右 */
+.tab-more {
+  flex-shrink: 0;
+  position: sticky;
+  right: 0;
+  margin-left: auto;
+  padding: 4px 10px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-bg);
+  color: var(--crm-text-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tab-more:hover {
+  background: var(--crm-surface-mid);
+  color: var(--crm-text);
+}
+
 .content-area {
   flex: 1;
   overflow: auto;
   background: var(--crm-bg);
+}
+
+/* ============================================================
+   核价页：三栏（输入 / 成本结构 / 核价结果）
+
+   三列一律用 minmax(0, 1fr)。grid 子项默认 min-width: auto，
+   不会收缩到比内容的固有宽度更窄 —— 下拉框里的长提示文字会把列撑开，
+   控件就溢出卡片、压到右边那一栏上（之前就是这个毛病）。
+   窄屏改成两列 / 一列，不让三列各自死守最小宽度，把页面撑出横向滚动条。
+   ============================================================ */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+/* 输入表单：字段竖排。同样要 minmax(0, 1fr) 才收得住里面的控件 */
+.pricing-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+/* 两列：视口 1200 以下（扣掉侧栏和左右留白，每列已不足 300） */
+@media (max-width: 1200px) {
+  .pricing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 一列：与全站手机断点保持一致 */
+@media (max-width: 768px) {
+  .pricing-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ============================================================
@@ -585,6 +798,7 @@ a {
     position: absolute;
     top: 10px;
     right: 10px;
+    z-index: 4; /* 高于钉住的品牌行，否则被它的底色盖掉 */
     width: 28px;
     height: 28px;
     border: none;
@@ -592,6 +806,11 @@ a {
     font-size: 20px;
     color: var(--crm-text-3);
     cursor: pointer;
+  }
+
+  /* 手机上侧边栏是抽屉，折叠开关没有意义 */
+  .sider-collapse-btn {
+    display: none;
   }
 
   /* 顶栏：汉堡键出现，次要信息收纳 */
@@ -661,9 +880,6 @@ a {
     min-width: 0;
     max-width: 150px;
   }
-  .global-search span {
-    display: none; /* Ctrl+K 对触屏无意义 */
-  }
   .global-search .semi-input-wrapper {
     width: 100%;
   }
@@ -708,6 +924,10 @@ a {
     white-space: nowrap;
     padding: 6px 10px;
   }
+  .notice-trigger {
+    white-space: nowrap;
+    padding: 0 12px;
+  }
 }
 
 /* 顶栏退出链接：桌面显示；手机收进抽屉底部（顶栏宽度预算不够） */
@@ -725,5 +945,12 @@ a {
   .header-user {
     padding-left: 10px;
     gap: 6px;
+  }
+  .notice-trigger {
+    padding: 0 10px;
+    gap: 4px;
+  }
+  .notice-panel {
+    width: 300px;
   }
 }

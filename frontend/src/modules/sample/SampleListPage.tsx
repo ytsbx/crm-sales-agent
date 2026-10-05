@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { emptyText } from '../../shared/hooks/emptyText'
 import {
@@ -17,7 +17,7 @@ import {
 
 import { listCustomers } from '../../shared/api/customer'
 import { listCustomInquiries } from '../../shared/api/inquiry'
-import { listOpportunities } from '../../shared/api/opportunity'
+import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import { reportOperationTiming } from '../../shared/api/analytics'
 import {
@@ -29,9 +29,12 @@ import {
   getSample,
   listSamples,
   madeSample,
+  resubmitSample,
   shipSample,
   signSample,
   updateSample,
+  updateSampleItem,
+  type SampleItem,
   type SampleRequestRow,
 } from '../../shared/api/sample'
 import PageHeader from '../../shared/components/PageHeader'
@@ -90,6 +93,19 @@ function fmt(value?: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN') : '-'
 }
 
+/**
+ * 保存资料后给一句提示，只在状态**真的变了**的时候才说。
+ *
+ * 不能拿返回后的 status === 'pending' 当判断依据：待审批的单子改完状态还是
+ * 「待审批」，那样会弹「已退回待审批」—— 明明什么都没退。要对比保存前的状态。
+ */
+function reopenedHint(before: string | undefined, after: string): string | null {
+  if (after !== 'pending' || (before !== 'approved' && before !== 'rejected')) return null
+  return before === 'rejected'
+    ? '已保存；单据已重新提交「待审批」，等待重新审批'
+    : '已保存；因修改车间依据，单据已退回「待审批」'
+}
+
 /** 生产资料这类"可有可无"的字段统一显示成 —，而不是一片空白。 */
 function dash(value?: string | null) {
   return value && value.trim() ? value : '—'
@@ -107,6 +123,13 @@ export default function SampleListPage() {
 
   const params = useParams()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawCreateOpportunityId = Number(searchParams.get('create_opportunity_id'))
+  const createOpportunityId = Number.isSafeInteger(rawCreateOpportunityId) && rawCreateOpportunityId > 0 ? rawCreateOpportunityId : undefined
+  const createOpportunityQuery = useQuery({
+    queryKey: ['opportunity', createOpportunityId],
+    queryFn: () => getOpportunity(createOpportunityId!), enabled: Boolean(createOpportunityId) && canManage,
+  })
   const [createVisible, setCreateVisible] = useState(false)
   /** 打样申请的计时起点（场景18 操作耗时埋点） */
   const createStartedAt = useRef<number | null>(null)
@@ -116,6 +139,26 @@ export default function SampleListPage() {
     remark: string
     items: ItemDraft[]
   }>({ remark: '', items: [{ mode: 'sku', quantity: '1' }] })
+  const selectedOpportunityQuery = useQuery({
+    queryKey: ['opportunity', form.opportunity_id],
+    queryFn: () => getOpportunity(form.opportunity_id!),
+    enabled: createVisible && Boolean(form.opportunity_id),
+  })
+
+  useEffect(() => {
+    if (!createOpportunityId || !createOpportunityQuery.data || !canManage) return
+    setForm({ opportunity_id: createOpportunityId, customer_id: createOpportunityQuery.data.customer_id,
+      remark: '', items: [{ mode: 'sku', quantity: '1' }] })
+    createStartedAt.current = Date.now()
+    setCreateVisible(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete('create_opportunity_id')
+    setSearchParams(next, { replace: true })
+  }, [createOpportunityId, createOpportunityQuery.data, canManage, searchParams, setSearchParams])
+
+  useEffect(() => {
+    if (createOpportunityQuery.error) Toast.error(createOpportunityQuery.error.message)
+  }, [createOpportunityQuery.error])
 
   const [detailId, setDetailId] = useState<number | null>(null)
   const [rejectReason, setRejectReason] = useState('')
@@ -123,17 +166,22 @@ export default function SampleListPage() {
   const [feedback, setFeedback] = useState('')
   const [newItem, setNewItem] = useState<ItemDraft>({ mode: 'sku', quantity: '1' })
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
-  // 打样需求单出图时逐项带给车间
+  // 打样需求单出图时逐项带给车间。
+  // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，在明细行上改（见 itemEdit）。
   const [prodForm, setProdForm] = useState({
     purpose: '',
-    craft: '',
-    material: '',
-    drawing_version: '',
     target_completion_date: '',
     acceptance_criteria: '',
     sample_fee: '',
   })
   const [prodEditing, setProdEditing] = useState(false)
+  // 改某一条明细的车间依据（材质 / 工艺 / 图纸版本）
+  const [itemEdit, setItemEdit] = useState<{
+    id: number
+    craft: string
+    material: string
+    drawing_version: string
+  } | null>(null)
   const [confirmRemark, setConfirmRemark] = useState('')
 
   const query = useQuery({
@@ -189,7 +237,10 @@ export default function SampleListPage() {
     enabled: createVisible || detailId !== null,
   })
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['samples'] })
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ['timeline', 'customer'] })
+    return queryClient.invalidateQueries({ queryKey: ['samples'] })
+  }
   const onError = (error: Error) => Toast.error(error.message)
 
   const createMutation = useMutation({
@@ -240,6 +291,17 @@ export default function SampleListPage() {
     onError,
   })
 
+  // 已驳回原样重提：和「改资料自动回待审批」是两条路，这条一个字都不改，
+  // 专门给"认为驳回理由不成立"的跟单用
+  const resubmitMutation = useMutation({
+    mutationFn: () => resubmitSample(detailId!),
+    onSuccess: () => {
+      Toast.success('已重新提交，等待审批')
+      void refresh()
+    },
+    onError,
+  })
+
   const shipMutation = useMutation({
     mutationFn: () =>
       shipSample(detailId!, {
@@ -277,19 +339,44 @@ export default function SampleListPage() {
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间
   const saveProdMutation = useMutation({
-    mutationFn: () =>
-      updateSample(detailId!, {
+    mutationFn: () => {
+      // 「空着 = 未填」是业务确认过的口径：留空就发 null，不要偷偷当 0 存。
+      // 负数和非法数字在前端先挡一道，省得跑一趟后端才看到 422。
+      const raw = prodForm.sample_fee.trim()
+      const fee = raw === '' ? null : Number(raw)
+      if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
+        throw new Error('打样费用要填一个不小于 0 的数字（留空表示「未填」）')
+      }
+      return updateSample(detailId!, {
         purpose: prodForm.purpose || null,
-        craft: prodForm.craft || null,
-        material: prodForm.material || null,
-        drawing_version: prodForm.drawing_version || null,
         target_completion_date: prodForm.target_completion_date || null,
         acceptance_criteria: prodForm.acceptance_criteria || null,
-        sample_fee: prodForm.sample_fee === '' ? null : Number(prodForm.sample_fee),
-      }),
-    onSuccess: () => {
-      Toast.success('生产资料已保存')
+        sample_fee: fee,
+      })
+    },
+    onSuccess: (row: SampleRequestRow) => {
+      // 后端口径：改「车间依据」（目标完成日 / 验收标准）会让已批准的单子退回待审批；
+      // 已驳回的单子改任何一项都算重新提交。提示里必须说清楚，否则用户只会看到
+      // 状态自己变了，以为系统出错。
+      Toast.success(reopenedHint(detail?.status, row.status) ?? '生产资料已保存')
       setProdEditing(false)
+      void refresh()
+    },
+    onError,
+  })
+
+  // 改明细的车间依据：与单头资料同一套闸门（后端 _gate_part_lock）
+  const saveItemMutation = useMutation({
+    mutationFn: () =>
+      updateSampleItem(detailId!, itemEdit!.id, {
+        // 留空 = 没填，发 null 把它清掉；这是「空着=未填」口径的一部分
+        craft: itemEdit!.craft.trim() || null,
+        material: itemEdit!.material.trim() || null,
+        drawing_version: itemEdit!.drawing_version.trim() || null,
+      }),
+    onSuccess: (row: SampleRequestRow) => {
+      Toast.success(reopenedHint(detail?.status, row.status) ?? '车间依据已保存')
+      setItemEdit(null)
       void refresh()
     },
     onError,
@@ -317,8 +404,10 @@ export default function SampleListPage() {
 
   const addItemMutation = useMutation({
     mutationFn: () => addSampleItem(detailId!, draftPayload(newItem)),
-    onSuccess: () => {
-      Toast.success('明细已添加')
+    onSuccess: (row: SampleRequestRow) => {
+      // 往已批准 / 已驳回的单子里加明细也会触发重批：新明细带进来的材质工艺图纸版本
+      // 同样是车间依据（后端走同一道闸门）。这里也要说清楚，别让用户以为状态自己变了。
+      Toast.success(reopenedHint(detail?.status, row.status) ?? '明细已添加')
       setNewItem({ mode: 'sku', quantity: '1' })
       void refresh()
     },
@@ -484,8 +573,16 @@ export default function SampleListPage() {
               filter
               showClear
               value={form.opportunity_id}
-              onChange={(value) => setForm({ ...form, opportunity_id: value as number | undefined })}
-              optionList={(opportunitiesQuery.data?.items ?? []).map((opp) => ({
+              onChange={(value) => {
+                const id = value as number | undefined
+                const opp = opportunitiesQuery.data?.items.find((row) => row.id === id)
+                  ?? (selectedOpportunityQuery.data?.id === id ? selectedOpportunityQuery.data : undefined)
+                setForm({ ...form, opportunity_id: id, customer_id: opp?.customer_id ?? form.customer_id })
+              }}
+              optionList={Array.from(new Map([
+                ...(opportunitiesQuery.data?.items ?? []),
+                ...(selectedOpportunityQuery.data ? [selectedOpportunityQuery.data] : []),
+              ].map((opp) => [opp.id, opp])).values()).map((opp) => ({
                 value: opp.id,
                 label: `${opp.title}${opp.customer_name ? ` · ${opp.customer_name}` : ''}`,
               }))}
@@ -501,11 +598,15 @@ export default function SampleListPage() {
               filter
               showClear
               value={form.customer_id}
+              disabled={Boolean(form.opportunity_id)}
               onChange={(value) => setForm({ ...form, customer_id: value as number | undefined })}
-              optionList={(customersQuery.data?.items ?? []).map((customer) => ({
-                value: customer.id,
-                label: customer.name,
-              }))}
+              optionList={Array.from(new Map([
+                ...(customersQuery.data?.items ?? []).map((customer) => [customer.id, { value: customer.id, label: customer.name }] as const),
+                ...(selectedOpportunityQuery.data ? [[selectedOpportunityQuery.data.customer_id, {
+                  value: selectedOpportunityQuery.data.customer_id,
+                  label: selectedOpportunityQuery.data.customer_name ?? `客户 #${selectedOpportunityQuery.data.customer_id}`,
+                }] as const] : []),
+              ]).values())}
             />
           </div>
 
@@ -621,13 +722,16 @@ export default function SampleListPage() {
             </div>
 
             <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
-              <div>申请人：{detail.owner_name ?? '-'}</div>
+              <div>负责人：{detail.owner_name ?? '-'}</div>
               <div>申请时间：{fmt(detail.requested_at)}</div>
               {detail.approved_at && <div>审批时间：{fmt(detail.approved_at)}</div>}
               {detail.shipped_at && <div>寄样时间：{fmt(detail.shipped_at)}</div>}
               {detail.signed_at && <div>签收时间：{fmt(detail.signed_at)}</div>}
               {detail.reject_reason && (
-                <div style={{ color: 'var(--crm-error)' }}>拒绝原因：{detail.reject_reason}</div>
+                <div style={{ color: 'var(--crm-error)' }}>
+                  {detail.status === 'rejected' ? '拒绝原因' : '上次驳回原因'}：
+                  {detail.reject_reason}
+                </div>
               )}
               {detail.remark && <div>备注：{detail.remark}</div>}
             </div>
@@ -655,8 +759,43 @@ export default function SampleListPage() {
                       </span>
                     ),
                   },
-                  { title: '规格', dataIndex: 'specification', render: (v: string | null) => v ?? '-' },
-                  { title: '数量', dataIndex: 'quantity', width: 80 },
+                  { title: '原采购数量', dataIndex: 'original_quantity', width: 110, render: (v: number | null) => v == null ? '未记录' : v.toLocaleString('zh-CN') },
+                  { title: '本次样品数量', dataIndex: 'quantity', width: 110 },
+                  {
+                    // 车间依据逐行不同：一单里两个盒子可能材质、工艺、图纸都不一样，
+                    // 所以显示在明细行上，而不是单头一栏。
+                    title: '车间依据',
+                    render: (_: unknown, row: SampleItem) => {
+                      const spec = [row.material, row.craft].filter(Boolean).join(' / ')
+                      if (!row.drawing_version) return spec || '—'
+                      return spec ? `${spec}（图纸 ${row.drawing_version}）` : `图纸 ${row.drawing_version}`
+                    },
+                  },
+                  { title: '本次备注', dataIndex: 'remark', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '—'}{row.source_snapshot && (v || '') !== (row.source_snapshot.remark || '') && <div style={{ fontSize: 12 }}>原备注：{row.source_snapshot.remark || '未记录'}</div>}</div> },
+                  { title: '本次规格', dataIndex: 'specification', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '—'}{row.source_snapshot && v !== row.source_snapshot.specification && <div style={{ fontSize: 12 }}>原规格：{row.source_snapshot.specification || '未记录'}</div>}</div> },
+                  // 已寄样/已签收不给改：后端也会拒，这里不显示入口省得点了才报错
+                  ...(canManage && !['shipped', 'signed'].includes(detail.status)
+                    ? [
+                        {
+                          title: '操作',
+                          width: 64,
+                          render: (_: unknown, row: SampleItem) => (
+                            <a
+                              onClick={() =>
+                                setItemEdit({
+                                  id: row.id,
+                                  craft: row.craft ?? '',
+                                  material: row.material ?? '',
+                                  drawing_version: row.drawing_version ?? '',
+                                })
+                              }
+                            >
+                              改依据
+                            </a>
+                          ),
+                        },
+                      ]
+                    : []),
                 ]}
               />
               {canManage && !['shipped', 'signed'].includes(detail.status) && (
@@ -738,13 +877,18 @@ export default function SampleListPage() {
 
             {canManage && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {detail.status === 'pending' && (
+                {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——
+                    主管改判（上次驳错了）、跟单原样重提（认为驳回理由不成立）。
+                    这两条是不同角色在办事，缺哪条都会卡住那一半人。 */}
+                {(detail.status === 'pending' || detail.status === 'rejected') && (
                   <>
-                    <Input
-                      placeholder="拒绝原因（拒绝时必填）"
-                      value={rejectReason}
-                      onChange={setRejectReason}
-                    />
+                    {detail.status === 'pending' && (
+                      <Input
+                        placeholder="拒绝原因（拒绝时必填）"
+                        value={rejectReason}
+                        onChange={setRejectReason}
+                      />
+                    )}
                     <div style={{ display: 'flex', gap: 8 }}>
                       <Button
                         theme="solid"
@@ -752,16 +896,32 @@ export default function SampleListPage() {
                         loading={approveMutation.isPending}
                         onClick={() => approveMutation.mutate(true)}
                       >
-                        批准
+                        {detail.status === 'rejected' ? '改判为批准' : '批准'}
                       </Button>
-                      <Button
-                        type="danger"
-                        loading={approveMutation.isPending}
-                        onClick={() => approveMutation.mutate(false)}
-                      >
-                        拒绝
-                      </Button>
+                      {detail.status === 'pending' && (
+                        <Button
+                          type="danger"
+                          loading={approveMutation.isPending}
+                          onClick={() => approveMutation.mutate(false)}
+                        >
+                          拒绝
+                        </Button>
+                      )}
+                      {detail.status === 'rejected' && (
+                        <Button
+                          loading={resubmitMutation.isPending}
+                          onClick={() => resubmitMutation.mutate()}
+                        >
+                          重新提交审批
+                        </Button>
+                      )}
                     </div>
+                    {detail.status === 'rejected' && (
+                      <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
+                        「改判为批准」是主管纠正误驳回；「重新提交审批」是跟单认为驳回理由不成立、
+                        一个字不改原样再报一次。改了资料会自动回到「待审批」，不必点这两个。
+                      </div>
+                    )}
                   </>
                 )}
 
@@ -832,8 +992,10 @@ export default function SampleListPage() {
                   </div>
                 )}
 
+                {detail.source_context && <p>打样来源：{detail.source_context.no} V{detail.source_context.version}{detail.source_context.is_historical ? '（取用时为历史版本）' : ''}</p>}
                 {/* 生产打样资料（文档 §3.5）：车间照着这张单子干活——
-                    缺材质、图纸版本、交期、验收标准就干不了 */}
+                    这里放的是**整单属性**（用途 / 交期 / 验收标准 / 费用）；
+                    材质、工艺、图纸版本逐行不同，在上面的明细行里改 */}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ fontWeight: 600, flex: 1 }}>生产打样资料</div>
@@ -842,9 +1004,6 @@ export default function SampleListPage() {
                         onClick={() => {
                           setProdForm({
                             purpose: detail.purpose ?? '',
-                            craft: detail.craft ?? '',
-                            material: detail.material ?? '',
-                            drawing_version: detail.drawing_version ?? '',
                             target_completion_date: detail.target_completion_date ?? '',
                             acceptance_criteria: detail.acceptance_criteria ?? '',
                             sample_fee:
@@ -867,30 +1026,13 @@ export default function SampleListPage() {
                       />
                       <div style={{ display: 'flex', gap: 8 }}>
                         <Input
-                          placeholder="工艺"
-                          value={prodForm.craft}
-                          onChange={(v) => setProdForm({ ...prodForm, craft: v })}
-                        />
-                        <Input
-                          placeholder="材质"
-                          value={prodForm.material}
-                          onChange={(v) => setProdForm({ ...prodForm, material: v })}
-                        />
-                      </div>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <Input
-                          placeholder="图纸版本"
-                          value={prodForm.drawing_version}
-                          onChange={(v) => setProdForm({ ...prodForm, drawing_version: v })}
-                        />
-                        <Input
                           placeholder="目标完成日 YYYY-MM-DD"
                           value={prodForm.target_completion_date}
                           onChange={(v) => setProdForm({ ...prodForm, target_completion_date: v })}
                         />
                         <Input
                           style={{ width: 120 }}
-                          placeholder="费用"
+                          placeholder="费用（留空=未填）"
                           value={prodForm.sample_fee}
                           onChange={(v) => setProdForm({ ...prodForm, sample_fee: v })}
                         />
@@ -901,6 +1043,10 @@ export default function SampleListPage() {
                         value={prodForm.acceptance_criteria}
                         onChange={(v) => setProdForm({ ...prodForm, acceptance_criteria: v })}
                       />
+                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                        材质、工艺、图纸版本在「样品明细」里逐行填——它们每个商品可能都不一样。
+                        改这几项（或这里的交期、验收标准）会让已批准的单子退回「待审批」。
+                      </div>
                       <div style={{ display: 'flex', gap: 8 }}>
                         <Button
                           theme="solid"
@@ -916,15 +1062,10 @@ export default function SampleListPage() {
                   ) : (
                     <div style={{ fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 1.9 }}>
                       <div>用途：{dash(detail.purpose)}</div>
-                      <div>
-                        工艺 / 材质：
-                        {[detail.craft, detail.material].filter(Boolean).join(' / ') || '—'}
-                      </div>
-                      <div>图纸版本：{dash(detail.drawing_version)}</div>
                       <div>目标完成日：{dash(detail.target_completion_date)}</div>
                       <div>验收标准：{dash(detail.acceptance_criteria)}</div>
                       <div>
-                        打样费用：{detail.sample_fee != null ? `¥${detail.sample_fee}` : '—'}
+                        打样费用：{detail.sample_fee != null ? `¥${detail.sample_fee}` : '未填'}
                       </div>
                       <div>制作完成：{dash(detail.made_at?.slice(0, 10))}</div>
                     </div>
@@ -990,6 +1131,44 @@ export default function SampleListPage() {
           </div>
         )}
       </SideSheet>
+
+      {/* 改一条明细的车间依据。单独开弹窗而不是行内编辑：这三个字段是「审批批的
+          那一版资料」，改它们会触发退回重审，值得一次明确的确认动作 */}
+      <Modal
+        title="修改车间依据"
+        visible={itemEdit !== null}
+        onCancel={() => setItemEdit(null)}
+        onOk={() => saveItemMutation.mutate()}
+        confirmLoading={saveItemMutation.isPending}
+        okText="保存"
+        cancelText="取消"
+      >
+        {itemEdit && (
+          <div style={{ display: 'grid', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Input
+                placeholder="材质"
+                value={itemEdit.material}
+                onChange={(v) => setItemEdit({ ...itemEdit, material: v })}
+              />
+              <Input
+                placeholder="工艺"
+                value={itemEdit.craft}
+                onChange={(v) => setItemEdit({ ...itemEdit, craft: v })}
+              />
+            </div>
+            <Input
+              placeholder="图纸版本"
+              value={itemEdit.drawing_version}
+              onChange={(v) => setItemEdit({ ...itemEdit, drawing_version: v })}
+            />
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              留空表示「未填」。这三项是车间干活的依据，改完已批准的单子会退回「待审批」，
+              需要主管重新审批；已寄样 / 已签收的单子不能再改。
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

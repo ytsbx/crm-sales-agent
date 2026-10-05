@@ -298,9 +298,12 @@ async def main():
     check_true('有风险等级', data['level'] in ('high', 'medium', 'low'), data['level'])
     check_true('有汇总', 'overdue_amount' in data['summary'], str(data['summary']))
     check_true('有 insights', isinstance(data['insights'], list), str(data['insights']))
-    check_true('commentary 为 None 但有说明',
-               data['commentary'] is None and bool(data['commentary_note']),
-               str(data['commentary_note'])[:60])
+    # 两种环境都要成立：配了模型密钥 → 模型真返回叙述（commentary 有值、说明为 None）；
+    # 没配 / 调用失败 → 反过来。**真正要守的是"不许静默失败"**，不是"必须没叙述"。
+    # 原来只断言后者，本机配了真密钥就必然红，属于把环境当成了契约。
+    check_true('commentary 与说明二者必有其一',
+               bool(data['commentary']) or bool(data['commentary_note']),
+               f"commentary={str(data['commentary'])[:36]!r} note={str(data['commentary_note'])[:36]!r}")
 
     status, res = call('POST', '/agent/risk-analysis', token=admin, body={'order_id': 999999})
     check('订单不存在', res.get('code'), 40401)
@@ -349,6 +352,16 @@ async def main():
     check('报价草稿建议', res.get('code'), 0)
     check_true('明确说明未落库', '未落库' in res['data']['note'], res['data']['note'][:60])
     check_true('带明细行', 'items' in res['data'], str(res['data']['item_count']))
+    # note 里原来写死了「确认后用 POST /quotes 生成正式报价单」，它被当成"事实"
+    # 喂给模型后，AI 叙述的末尾就冒出一句接口路径给业务员看。
+    # 现在 note 已不进提示词（见 commentary._HIDDEN_KEYS），这条断言守结果：
+    # 叙述里不该出现任何接口地址。没配模型时叙述为空，这条会空跑通过。
+    comment_text = res['data'].get('commentary') or ''
+    check_true(
+        'AI 叙述不冒出接口地址',
+        not any(t in comment_text for t in ('POST /', 'GET /', 'PATCH /', 'DELETE /')),
+        comment_text[:80] or '(本轮无叙述)',
+    )
 
     status, res = call('POST', '/agent/followup-suggestion', token=admin,
                        body={'customer_id': fixture_customer})

@@ -54,6 +54,12 @@ def check_true(label, condition, detail=''):
 
 async def cleanup(ids):
     async with SessionLocal() as s:
+        for cid in ids.get('customers', []):
+            await s.execute(text('delete from biz_docs where order_draft_id in (select id from order_drafts where customer_id=:c)'), {'c':cid})
+            await s.execute(text("delete from audit_logs where business_type='order_draft' and business_id in (select id from order_drafts where customer_id=:c)"), {'c':cid})
+            await s.execute(text('delete from order_draft_items where draft_id in (select id from order_drafts where customer_id=:c)'), {'c':cid})
+            await s.execute(text('delete from order_drafts where customer_id=:c'), {'c':cid})
+            await s.execute(text('delete from custom_inquiries where customer_id=:c'), {'c':cid})
         for oid in ids.get('orders', []):
             await s.execute(text('delete from sales_order_items where order_id = :o'), {'o': oid})
             await s.execute(text('delete from order_status_history where order_id = :o'), {'o': oid})
@@ -137,6 +143,20 @@ async def main():
             rows = await analytics_service.sales_user_stats(s, admin_user, limit=200)
             return next((r for r in rows if r['user_id'] == user_id), {})
 
+        from app.modules.inquiry.model import CustomInquiry
+        from app.modules.order import drafts as draft_service
+        from app.modules.order.schema import OrderDraftCreate
+        from app.modules.order.model import OrderDraft
+        from app.modules.bizdoc.model import BizDoc
+        from uuid import uuid4
+        inquiry=CustomInquiry(customer_id=order.customer_id, title='CHK交接草稿需求', inquiry_no='CHK交接', quantity=5)
+        s.add(inquiry); await s.flush()
+        draft_user=CurrentUser(leaver, permissions={'quote:view','order:manage'}, roles=[], data_scope='self')
+        draft=await draft_service.create(s,draft_user,OrderDraftCreate(inquiry_id=inquiry.id,request_key=uuid4(),items=[{'source_item_id':inquiry.id,'quantity':5}]))
+        document=await draft_service.generate_document(s,draft_user,draft.id)
+        draft_id,doc_id,doc_hash=draft.id,document.id,document.content_sha256
+        original_source=dict(draft.source_context)
+        await s.commit()
         takeover_id = takeover.id
         before_leaver = await stat_of(leaver_id)
         before_takeover = await stat_of(takeover_id)
@@ -173,6 +193,13 @@ async def main():
                    str(job_detail.get('orders')))
 
         print()
+        moved_draft=await s.get(OrderDraft,draft_id)
+        moved_doc=await s.get(BizDoc,doc_id)
+        check('交接：草稿负责人转给接手人',moved_draft.owner_id,takeover_id)
+        check('交接：草稿作者保留',moved_draft.created_by,leaver_id)
+        check('交接：草稿来源不改写',moved_draft.source_context,original_source)
+        check('交接：草稿文件随授权交接',moved_doc.owner_id,takeover_id)
+        check('交接：历史文件校验值不改写',moved_doc.content_sha256,doc_hash)
         print('=== 3. 业绩仍算签单的人（钱不跟着交接走）===')
         after_leaver = await stat_of(leaver_id)
         after_takeover = await stat_of(takeover_id)

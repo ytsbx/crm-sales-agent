@@ -58,6 +58,29 @@ def ensure_status(status: str) -> None:
         )
 
 
+async def validate_links(session: AsyncSession, user: CurrentUser, *, customer_id,
+                         opportunity_id, contact_id=None):
+    """需求的客户、商机、联系人必须指向同一笔客户业务，并校验数据范围。"""
+    from app.modules.customer import service as customer_service
+    from app.modules.customer.model import Contact
+    from app.modules.opportunity import service as opportunity_service
+
+    if opportunity_id:
+        opportunity = await opportunity_service.get_visible_opportunity(session, user, opportunity_id)
+        if customer_id is not None and customer_id != opportunity.customer_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "关联商机不属于该客户", 422)
+        customer_id = opportunity.customer_id
+    if customer_id:
+        await customer_service.get_visible_customer(session, user, customer_id)
+    if contact_id:
+        contact = await session.get(Contact, contact_id)
+        if contact is None or contact.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+        if contact.customer_id != customer_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "联系人不属于该客户", 422)
+    return customer_id
+
+
 def serialize(
     inquiry: CustomInquiry,
     *,
@@ -136,21 +159,34 @@ async def create_quote_from_inquiry(
     from app.modules.opportunity.model import Opportunity, OpportunityStageHistory
     from app.modules.quote import service as quote_service
 
+    # 同一修订链同时转报价，只能创建一条归属商机；链级关联对所有版本一致。
+    root_id = inquiry.root_id or inquiry.id
+    root = (await session.execute(select(CustomInquiry).where(CustomInquiry.id == root_id)
+            .with_for_update().execution_options(populate_existing=True))).scalar_one()
+    await session.refresh(inquiry)
+    chain = (await session.execute(not_deleted(select(CustomInquiry)).where(
+        (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
+    ).execution_options(populate_existing=True))).scalars().all()
+    existing_ids = {row.opportunity_id for row in chain if row.opportunity_id}
+    if len(existing_ids) > 1:
+        raise AppError(ErrorCode.PARAM_ERROR, "该修订链关联了多个商机，请先统一关联商机再报价", 422)
+    # 兼容旧数据：以前只回写被报价引用的那一版，不丢掉它已有的商机关联。
+    inquiry.opportunity_id = next(iter(existing_ids), root.opportunity_id)
+    await validate_links(session, user, customer_id=inquiry.customer_id,
+                         opportunity_id=inquiry.opportunity_id, contact_id=inquiry.contact_id)
     if not inquiry.customer_id:
         raise AppError(ErrorCode.PARAM_ERROR, "需求还没关联客户，先补客户再报价", 422)
     customer = await session.get(Customer, inquiry.customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "需求关联的客户不存在", 404)
 
-    opportunity = (
-        await session.get(Opportunity, inquiry.opportunity_id)
-        if inquiry.opportunity_id
-        else None
-    )
-    if opportunity is None or opportunity.deleted_at is not None:
+    opportunity = (await opportunity_service.get_visible_opportunity(session, user, inquiry.opportunity_id)
+                   if inquiry.opportunity_id else None)
+    if opportunity is None:
         stage = await opportunity_service.get_first_stage(session)
         opportunity = Opportunity(
             customer_id=customer.id,
+            primary_contact_id=inquiry.contact_id,
             title=inquiry.title,
             stage_id=stage.id,
             owner_id=customer.owner_id or user.id,
@@ -169,7 +205,8 @@ async def create_quote_from_inquiry(
                 entered_at=now(),
             )
         )
-        inquiry.opportunity_id = opportunity.id
+    for row in chain:
+        row.opportunity_id = opportunity.id
 
     created = await quote_service.create_quote(
         session,

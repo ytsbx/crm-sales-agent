@@ -74,6 +74,18 @@ def login() -> str:
     return res['data']['access_token']
 
 
+def call_raw(path, token):
+    """取原始字节（下载 PDF 用）：走 JSON 的那个 call() 会把二进制读坏。"""
+    req = urllib.request.Request(BASE + path, method='GET')
+    if token:
+        req.add_header('Authorization', 'Bearer ' + token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, resp.headers.get('Content-Type', ''), resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, '', exc.read()
+
+
 async def cleanup():
     async with SessionLocal() as s:
         cust = "(select id from customers where name like :p)"
@@ -119,26 +131,47 @@ async def main():
         },
     )
     sample_id = res['data']['id']
+    item_id = res['data']['items'][0]['id']
     check('打样申请创建成功', res.get('code'), 0)
 
+    # 车间依据（材质/工艺/图纸版本）逐行不同 → 走明细接口，不走单头
+    # （业务口径 2026-10-05：一单多样时每个商品各存一套）
     production = {
         'purpose': '客户新品打样确认',
-        'craft': '注塑+表面拉丝',
-        'material': '304 不锈钢',
-        'drawing_version': 'DWG-2026-A3',
         'target_completion_date': '2026-10-15',
         'acceptance_criteria': '尺寸公差 ±0.2mm，表面无划痕',
         'sample_fee': '800',
+    }
+    part_spec = {
+        'craft': '注塑+表面拉丝',
+        'material': '304 不锈钢',
+        'drawing_version': 'DWG-2026-A3',
     }
     _, res = call('PATCH', f'/samples/{sample_id}', token=token, body=production)
     check('资料保存成功', res.get('code'), 0)
     data = res['data']
     check('用途已存', data['purpose'], production['purpose'])
-    check('图纸版本已存', data['drawing_version'], production['drawing_version'])
     check('目标完成日已存', data['target_completion_date'], production['target_completion_date'])
     check('验收标准已存', data['acceptance_criteria'], production['acceptance_criteria'])
     check('打样费用已存', float(data['sample_fee']), 800.0)
     check('确认状态默认待确认', data['confirm_status'], 'pending')
+
+    _, res = call(
+        'PATCH', f'/samples/{sample_id}/items/{item_id}', token=token, body=part_spec
+    )
+    check('明细车间依据保存成功', res.get('code'), 0)
+    item = res['data']['items'][0]
+    check('工艺已存到明细行', item['craft'], part_spec['craft'])
+    check('材质已存到明细行', item['material'], part_spec['material'])
+    check('图纸版本已存到明细行', item['drawing_version'], part_spec['drawing_version'])
+    # 单头不再有这三项：它们逐行不同，放单头就只有一个真相
+    check('单头不再有材质字段', 'material' in res['data'], False)
+    # 窄接口：多传字段要明确报错，不能静默忽略（否则前端以为改成功了）
+    status, _ = call(
+        'PATCH', f'/samples/{sample_id}/items/{item_id}', token=token,
+        body={'quantity': '5'},
+    )
+    check('明细接口不收无关字段（不静默忽略）', status, 400)
 
     print('=== 2. 顺序不能反：没批准不登记制作 ===')
     status, res = call(
@@ -195,13 +228,26 @@ async def main():
     )
     doc_id = res['data']['id']
     _, res = call('GET', f'/biz-docs/{doc_id}', token=token)
-    sections = {sec['label']: sec['value'] for sec in res['data']['input_snapshot']['sections']}
+    snapshot = res['data']['input_snapshot']
+    sections = {sec['label']: sec['value'] for sec in snapshot['sections']}
     check('用途带上了', sections.get('用途'), production['purpose'])
-    check('工艺/材质带上了', sections.get('工艺 / 材质'), '注塑+表面拉丝 / 304 不锈钢')
-    check('图纸版本带上了', sections.get('图纸版本'), production['drawing_version'])
     check('目标完成日带上了', sections.get('目标完成日'), production['target_completion_date'])
     check('验收标准带上了', sections.get('验收标准'), production['acceptance_criteria'])
     check('打样费用带上了', sections.get('打样费用'), '800')
+    # 车间依据逐行不同 → 跟着明细走，不再混进整单的 sections
+    check('工艺/材质不再混进单头', '工艺 / 材质' in sections, False)
+    check('图纸版本不再混进单头', '图纸版本' in sections, False)
+    doc_item = snapshot['items'][0]
+    check('明细带上工艺', doc_item.get('craft'), part_spec['craft'])
+    check('明细带上材质', doc_item.get('material'), part_spec['material'])
+    check('明细带上图纸版本', doc_item.get('drawing_version'), part_spec['drawing_version'])
+
+    # 真的把 PDF 渲出来：明细表在"有车间依据"时会多一列，
+    # 列宽是手算的、列数变了会溢出或报错——只查快照是查不出这个的
+    status, ctype, payload = call_raw(f'/biz-docs/{doc_id}/download', token)
+    check('打样单可下载', status, 200)
+    check_true('返回 PDF 字节', payload.startswith(b'%PDF'), f'ctype={ctype}')
+    check_true('PDF 有内容（明细表含车间依据列）', len(payload) > 2000, f'{len(payload)} 字节')
     # 文档里这一项刻意带上确认日期：车间/业务看到的是"哪天客户认可的"
     check_true(
         '客户确认状态带上了（含确认日期）',

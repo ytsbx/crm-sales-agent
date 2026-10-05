@@ -425,7 +425,7 @@ export default function CustomerListPage() {
             ))}
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              由订单 / 打样 / 报价事实自动推导，无需人工维护
+              由订单 / 打样 / 正式报价事实自动推导，无需人工维护
             </span>
           </div>
         )}

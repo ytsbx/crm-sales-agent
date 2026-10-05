@@ -14,6 +14,7 @@ export interface Order {
   /** 签单归属（文档 :61）：与 owner 不同时说明这张单的业绩算谁 */
   sales_owner_id?: number | null
   sales_owner_name?: string | null
+  currency: string
   total_amount: number
   received_amount: number
   unreceived_amount: number
@@ -21,6 +22,10 @@ export interface Order {
   status_label: string
   erp_order_id?: string | null
   delivery_date?: string | null
+  delivery_kind?: 'shipping' | 'arrival' | null
+  transit_days?: number | null
+  plan_offsets?: Record<string, number> | null
+  shipment_date?: string | null
   payment_terms?: string | null
   remark?: string | null
   item_count: number
@@ -30,7 +35,9 @@ export interface Order {
 export interface OrderItem {
   id: number
   order_id: number
-  sku_id: number
+  sku_id: number | null
+  inquiry_id?: number | null
+  inquiry_no_snapshot?: string | null
   sku_code?: string | null
   sku_snapshot?: string | null
   specification?: string | null
@@ -99,6 +106,7 @@ export function listOrders(query: {
   keyword?: string
   status?: string
   customer_id?: number
+  opportunity_id?: number
   page?: number
   page_size?: number
 }) {
@@ -283,8 +291,11 @@ export interface OrderMilestoneRow {
   label: string
   planned_date: string | null
   actual_date: string | null
-  status: 'done' | 'overdue' | 'pending'
+  status: 'done' | 'overdue' | 'pending' | 'skipped'
   status_label: string
+  skip_reason?: string | null
+  skipped_by?: number | null
+  skipped_at?: string | null
   // 方案 :103 要求节点记录责任人、来源证据、逾期原因
   owner_id?: number | null
   evidence?: string | null
@@ -300,6 +311,8 @@ export function updateOrderMilestone(
   orderId: number,
   milestoneId: number,
   payload: {
+    skipped?: boolean
+    skip_reason?: string | null
     planned_date?: string | null
     actual_date?: string | null
     owner_id?: number | null
@@ -379,7 +392,23 @@ export function cancelOrderShipment(orderId: number, batchId: number) {
 
 // ---------------------------------------------------------------- 交期变更（方案 :105）
 
+export interface DeliveryPlanningInput {
+  new_delivery_date: string
+  delivery_kind: 'shipping' | 'arrival'
+  transit_days: number
+  plan_offsets: Record<string, number>
+  reason?: string | null
+}
+export interface PlanningSnapshot {
+  delivery_date: string | null
+  delivery_kind: 'shipping' | 'arrival' | null
+  transit_days: number | null
+  plan_offsets: Record<string, number> | null
+}
 export interface ScheduleChangeAffected {
+  planning?: { before: PlanningSnapshot; after: PlanningSnapshot }
+  new_shipment_date?: string
+  old_shipment_date?: string | null
   nodes: { node: string; label: string; before: string | null; after: string | null }[]
   batches: { batch_id: number; batch_no: number; before: string | null; after: string | null }[]
   applied?: ScheduleChangeAffected | null
@@ -403,20 +432,21 @@ export interface ScheduleChangeRow {
   created_at: string | null
 }
 
-export function previewScheduleChange(orderId: number, newDeliveryDate: string) {
+export function previewScheduleChange(orderId: number, payload: DeliveryPlanningInput) {
   return api.post<{
+    new_shipment_date: string
     order_id: number
     old_delivery_date: string | null
     new_delivery_date: string
     shift_days: number | null
     nodes: ScheduleChangeAffected['nodes']
     batches: ScheduleChangeAffected['batches']
-  }>(`/orders/${orderId}/schedule-changes/preview`, { new_delivery_date: newDeliveryDate })
+  }>(`/orders/${orderId}/schedule-changes/preview`, payload)
 }
 
 export function createScheduleChange(
   orderId: number,
-  payload: { new_delivery_date: string; reason?: string | null },
+  payload: DeliveryPlanningInput,
 ) {
   return api.post<ScheduleChangeRow>(`/orders/${orderId}/schedule-changes`, payload)
 }
@@ -439,3 +469,22 @@ export function cancelScheduleChange(orderId: number, changeId: number, reason?:
     { reason: reason ?? null },
   )
 }
+
+export interface OrderDraftLine {
+  id: number; source_item_id: number; name: string; quantity: number; unit_price: number | null
+  specification?: string | null; remark?: string | null
+  source_snapshot: { source_item_id: number; original_quantity: string | null; specification?: string | null; remark?: string | null; unit_price?: string | null }
+}
+export interface OrderDraft {
+  id: number; customer_id: number; opportunity_id?: number | null; status: string; revision: number
+  source_context: { type: string; id: number; no: string; version: number; quote_id?: number }
+  currency: string; delivery_date?: string | null; payment_terms?: string | null; remark?: string | null
+  order_id?: number | null; items: OrderDraftLine[]
+}
+export function listOrderDrafts(query: { opportunity_id?: number; page?: number; page_size?: number } = {}) { return api.get<PageResult<OrderDraft>>('/order-drafts', query) }
+export function getOrderDraft(id: number) { return api.get<OrderDraft>(`/order-drafts/${id}`) }
+export function getOrderDraftSource(source: { quote_version_id?: number; inquiry_id?: number }) { return api.get<import('./sample').SampleSourcePreview>('/order-drafts/source', source) }
+export function createOrderDraft(payload: Record<string, unknown>) { return api.post<OrderDraft>('/order-drafts', payload) }
+export function updateOrderDraft(id: number, payload: Record<string, unknown>) { return api.patch<OrderDraft>(`/order-drafts/${id}`, payload) }
+export function confirmOrderDraft(id: number, revision: number, versionId: number) { return api.post<{ order_id: number; order_no: string }>(`/order-drafts/${id}/confirm`, { revision, quote_version_id: versionId }) }
+export function generateOrderDraftDocument(id: number) { return api.post<import('./bizdoc').BizDocRow>(`/order-drafts/${id}/documents`, {}) }
