@@ -405,6 +405,10 @@ async def unbound_candidates(session: AsyncSession, contact_id: int) -> dict:
         if mobile
     ]
 
+    # 这里**故意不做数据范围过滤**（不传 owner_ids）：企微外部联系人归一是系统级
+    # 匹配动作，要判断"这个新联系人是不是已经存在的某家客户"，只在全库范围内比才有意义；
+    # 过滤成某个人的范围会让同一条外部联系人被不同人重复建档。
+    # 结果本身不直接对业务员开放：它进"待归一"，由有 wecom:manage 的人确认。
     matches = await find_duplicate_customers(
         session,
         company_name=row.corp_name or row.name,

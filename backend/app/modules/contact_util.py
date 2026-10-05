@@ -54,11 +54,19 @@ async def find_duplicate_customers(
     domain: str | None = None,
     address: str | None = None,
     limit: int = 5,
+    owner_ids: list[int] | None = None,
 ) -> list[dict]:
     """找疑似重复客户：先宽松捞候选，再用加权规则打分排序。
 
     打分权重与阈值从系统配置读（dedup_scoring），业务可调；
     返回的 score / reasons 会直接显示在界面上，业务能看到"为什么判它疑似"。
+
+    `owner_ids`：调用者的数据范围（`scoped_owner_ids` 的结果）。**传 None 表示全量**
+    （管理员/财务，或系统同步这类本来就要匹配全库的场景）。
+    这个函数原来没有 user 概念，"先宽松捞候选"就直接捞了全库，返回里还带着
+    客户名、等级、地区、负责人——业务员拿名称前缀/手机/税号就能把全公司客户
+    枚举出来。与客户/线索模块"公海对所有有查看权限的人可见"的口径一致：
+    无负责人的客户始终参与候选。
     """
     from app.modules.settings import service as settings_service
 
@@ -89,6 +97,10 @@ async def find_duplicate_customers(
         .where(Customer.deleted_at.is_(None), or_(*conditions))
         .limit(max(limit * 4, 20))
     )
+    if owner_ids is not None:
+        # 范围内的 + 公海（无负责人）。公海对所有人可见，漏掉它会让"我查重查不到、
+        # 但列表里翻得到"，用户会以为系统丢数据。
+        stmt = stmt.where(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
     rows = (await session.execute(stmt)).scalars().all()
 
     # 取候选客户的主联系人手机号，参与打分

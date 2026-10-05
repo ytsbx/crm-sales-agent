@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -165,7 +166,9 @@ async def deduplicate(
             "至少要提供名称、手机号、税号、域名、地址中的一项才能查重",
         )
 
-    matches = await find_duplicate_customers(session, **fields)
+    matches = await find_duplicate_customers(
+        session, **fields, owner_ids=await scoped_owner_ids(session, user)
+    )
     # 编辑自己时把自己排除掉，否则永远提示"和自己重复"
     if exclude_id is not None:
         matches = [m for m in matches if m.get("id") != exclude_id]

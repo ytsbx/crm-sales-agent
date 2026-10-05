@@ -282,10 +282,16 @@ async def deduplicate_lead(
 ):
     """查重：给出疑似重复的已有客户，供转化时选择关联。"""
     lead = await svc.get_visible_lead(session, user, lead_id)
+    # 按调用者的数据范围限定候选：这个函数原来直接捞全库、返回里还带客户名/等级/
+    # 负责人，业务员拿名称前缀或手机号就能把全公司客户枚举出来。
+    # 跨范围的疑似重复仍有出口——转化或建档时会走"开待裁定单"那条路，由主管裁定。
+    from app.core.data_scope import scoped_owner_ids
+
     candidates = await find_duplicate_customers(
         session,
         company_name=lead.company_name or lead.name,
         mobile=lead.mobile,
+        owner_ids=await scoped_owner_ids(session, user),
     )
     return ok({"candidates": candidates})
 

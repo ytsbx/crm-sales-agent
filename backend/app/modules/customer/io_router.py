@@ -253,6 +253,14 @@ async def import_customers(
     disputed: list[dict] = []
     failed: list[dict] = []
 
+    # 撞单比对本身**仍然全量**：跨部门的重复不能静默放过，否则导入那一刻就按
+    # "谁先建档"把归属定了。但要不要**回显候选客户的身份**取决于调用者的范围——
+    # 否则这个接口就等于"用 Excel 批量试探全公司客户名"。明细在撞单裁定页，
+    # 由有范围的主管看。
+    from app.core.data_scope import scoped_owner_ids
+
+    scope = await scoped_owner_ids(session, user)
+
     for index, row in enumerate(rows, start=2):  # 第 1 行是表头
         name = (row.get("客户名称") or "").strip()
         try:
@@ -274,9 +282,15 @@ async def import_customers(
                     {
                         "row": index,
                         "name": name,
-                        "candidate": top.get("name"),
-                        "score": top.get("score"),
-                        "reasons": top.get("reasons"),
+                        # 范围不足的调用者只得到"这是重复"，拿不到对方是谁
+                        "candidate": None if scope is not None else top.get("name"),
+                        "score": None if scope is not None else top.get("score"),
+                        "reasons": None if scope is not None else top.get("reasons"),
+                        "note": (
+                            "疑似与库内已有客户重复，已开待裁定单，由主管裁定"
+                            if scope is not None
+                            else None
+                        ),
                     }
                 )
 

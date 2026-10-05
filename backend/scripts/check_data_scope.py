@@ -770,6 +770,25 @@ async def main() -> int:
     check('生成稿的关联不能被解绑', call('DELETE', f'/business-files/{gen_link_id}',
                                  owner_token)[0], 422)
 
+    print('=== 3.6 查重不能跨范围枚举客户 ===')
+    # 查重函数原来没有 user 概念，"先宽松捞候选"直接捞全库，返回里还带客户名、
+    # 等级、地区、负责人——业务员拿名称前缀/手机/税号就能把全公司客户枚举出来。
+    async with SessionLocal() as s:
+        owner_customer_name = (
+            await s.execute(select(Customer.name).where(Customer.id == cid))
+        ).scalar_one()
+    status, res = call('POST', '/customers/deduplicate', outsider_token,
+                       {'name': owner_customer_name})
+    hits = (res.get('data') or {}).get('matches') or []
+    check('查重不把范围外客户返给他人',
+          status == 200 and all(h.get('id') != cid for h in hits), True)
+    # 对照：本人查自己的客户要查得到（否则就是把查重改废了）
+    status, res = call('POST', '/customers/deduplicate', owner_token,
+                       {'name': owner_customer_name})
+    hits_own = (res.get('data') or {}).get('matches') or []
+    check('本人查自己的客户仍能查到（对照）',
+          any(h.get('id') == cid for h in hits_own), True)
+
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)
     rows = (res.get('data') or {}).get('items') or []
