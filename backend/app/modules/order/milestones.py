@@ -12,12 +12,12 @@
 import logging
 from datetime import UTC, date, datetime, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
-from app.modules.order.model import OrderMilestone, SalesOrder
+from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
 
 logger = logging.getLogger("crm.milestones")
 
@@ -189,22 +189,59 @@ async def ensure_batch_node(
 async def mark_batch_shipped(
     session: AsyncSession, order_id: int, batch_no: int, actual_date: date | None
 ) -> None:
-    """批次实发时把对应动态节点的实际日登记上（首批仍是人工登记，不动）。"""
-    if batch_no < 2 or actual_date is None:
+    """批次实发时登记实际日（第一批返修 §3.5）。
+
+    第 2 批起登记它自己的动态节点；**「首批发货」这个固定节点改由"首个有效实际
+    发货批次"定义**——即该订单已发货批次里 `actual_ship_date` 的最小值。
+
+    原来首批**只靠人工登记**，于是与分析侧 `min(actual_ship_date)` 两套口径：
+    同一张单"首批发货是哪天"，跟单页写一个数、交付准时率算另一个数，
+    对账时谁也说不清哪个对。改成一件事只有一个来源（谁更早谁说了算）。
+    """
+    if actual_date is None:
         return
-    row = (
+    if batch_no >= 2:
+        row = (
+            await session.execute(
+                select(OrderMilestone).where(
+                    OrderMilestone.order_id == order_id,
+                    OrderMilestone.node == batch_node_key(batch_no),
+                )
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            row.actual_date = actual_date
+            row.skipped_at = None
+            row.skipped_by = None
+            row.skip_reason = None
+            await session.flush()
+    # 首批节点：取已发货批次里最早的实际发货日。**任何一批实发都要重算**——
+    # 第 2 批有可能填了比第 1 批更早的日期（补登记），那它才是真正的首批。
+    earliest = (
+        await session.execute(
+            select(func.min(OrderShipmentBatch.actual_ship_date)).where(
+                OrderShipmentBatch.order_id == order_id,
+                OrderShipmentBatch.status == "shipped",
+                OrderShipmentBatch.actual_ship_date.is_not(None),
+            )
+        )
+    ).scalar_one()
+    if earliest is None:
+        return
+    first = (
         await session.execute(
             select(OrderMilestone).where(
                 OrderMilestone.order_id == order_id,
-                OrderMilestone.node == batch_node_key(batch_no),
+                OrderMilestone.node == "first_shipment",
             )
         )
     ).scalar_one_or_none()
-    if row is not None:
-        row.actual_date = actual_date
-        row.skipped_at = None
-        row.skipped_by = None
-        row.skip_reason = None
+    if first is not None:
+        first.actual_date = earliest
+        # 实发就把"跳过"清掉：跳过不等于实际完成，但现在它真的完成了
+        first.skipped_at = None
+        first.skipped_by = None
+        first.skip_reason = None
         await session.flush()
 
 

@@ -685,7 +685,9 @@ async def change_status(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_visible_order(session, user, order_id)
+    # 状态切换先锁整单：与"登记发货"并发时，两边都必须串行化，
+    # 否则同一时刻可能既取消成功又发货成功（第一批返修 §3.5）。
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     await svc.change_status(
         session, order, new_status=payload.status, operator_id=user.id, remark=payload.remark
     )
@@ -718,7 +720,9 @@ async def cancel_order(
        `POST /opportunities/{id}/lose`（先失单再重建）由人工评估——
        这条默认口径如与业务不符，改这里并在方案 §8 补一条 D 决策。
     """
-    order = await svc.get_visible_order(session, user, order_id)
+    # 取消是不可逆的终态动作，先锁整单：与"登记发货"并发时只能有一个成功
+    # （第一批返修 §3.5：「同一时刻不能既取消又发货成功」）。
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     before_status = order.status
 
     from app.modules.payment.model import PaymentRecord, ReceivablePlan

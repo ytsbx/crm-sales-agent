@@ -118,11 +118,29 @@ async def get_order_or_404(session: AsyncSession, order_id: int) -> SalesOrder:
     return order
 
 
-async def get_visible_order(session: AsyncSession, user, order_id: int) -> SalesOrder:
-    """取订单并校验数据范围（列表按 owner_id 过滤，详情此前没校验）。"""
+async def get_visible_order(
+    session: AsyncSession, user, order_id: int, *, for_update: bool = False
+) -> SalesOrder:
+    """取订单并校验数据范围（列表按 owner_id 过滤，详情此前没校验）。
+
+    `for_update`：写入口要串行化。取消订单与登记发货是两条会互相否定的路径
+    （第一批返修 §3.5：「同一时刻不能既取消又发货成功」）——两边都先锁整单，
+    否则并发下两个请求各读到"还没变"的状态、双双通过各自的检查、双双提交。
+    与 sample / contract 模块的 `get_visible_or_404(..., for_update=True)` 同一写法。
+    """
     from app.core.data_scope import ensure_in_scope
 
-    order = await get_order_or_404(session, order_id)
+    if for_update:
+        order = (
+            await session.execute(
+                select(SalesOrder).where(SalesOrder.id == order_id)
+                .with_for_update().execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if order is None:
+            raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    else:
+        order = await get_order_or_404(session, order_id)
     await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
     return order
 

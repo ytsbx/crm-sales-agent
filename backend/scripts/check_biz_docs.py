@@ -140,6 +140,8 @@ async def main():
         sample = SampleRequest(
             customer_id=customer.id, owner_id=owner.id, status='approved',
             remark='打样要求：材质 304，表面拉丝', created_by=owner.id, requested_at=now,
+            # 费用**填 0**（免费打样）：要和"没填"（None）区分开，见下面 §1 的断言
+            sample_fee=Decimal('0'),
         )
         s.add(sample)
         await s.flush()
@@ -172,6 +174,12 @@ async def main():
         items = doc1.input_snapshot['items']
         check('明细行数', len(items), 2)
         check('明细数量如实（12）', str(items[0]['quantity']), '12')
+        # 费用为 0（免费打样）必须显示成 "0"，不能因为 `if sample.sample_fee` 判假
+        # 而渲染成空白——这一列设计成可空正是为了区分"免费"与"还没填"（第一批返修 §3.5）。
+        fee_rows = [r for r in doc1.input_snapshot['sections'] if r.get('label') == '打样费用']
+        check('打样费用那一栏在单据上', len(fee_rows), 1)
+        check('费用为 0 显示成 "0"（不是空白）',
+              fee_rows[0]['value'] if fee_rows else None, '0')
         diffs = doc1.input_snapshot['diffs']
         check_true(
             '差异里有"数量 10 → 12"',

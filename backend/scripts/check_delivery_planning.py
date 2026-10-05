@@ -76,6 +76,14 @@ async def main():
         req('POST', base + f'/shipments/{batch}/ship', {'actual_ship_date': '2026-10-25'})
         ship = req('GET', base + '/shipments')
         assert ship['summary']['remaining'] == 60 and not ship['summary']['all_shipped']
+        # 「首批发货」节点由**首个有效实际发货批次**定义（第一批返修 §3.5）：
+        # 原来首批只靠人工登记，与分析侧的 min(actual_ship_date) 会分叉——
+        # 同一张单"首批发货是哪天"在跟单页和交付统计里出现两个答案。
+        # 这里**没有人工登记过**该节点，实际日应当自动等于首个已发货批次的发货日。
+        first_node = next(
+            n for n in req('GET', base + '/milestones') if n['node'] == 'first_shipment'
+        )
+        assert first_node['actual_date'] == '2026-10-25', first_node
         config['plan_offsets']['pre_sample_sent'] = 10
         change3 = req('POST', base + '/schedule-changes', config)
         assert next(n['after'] for n in change3['affected']['nodes'] if n['node'] == 'pre_sample_sent') == '2026-10-15'

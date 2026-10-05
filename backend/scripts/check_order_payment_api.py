@@ -501,6 +501,46 @@ def main():
     check('发完后整单可完成', res.get('code'), 0)
 
     print()
+    print('=== 12.1 并发：取消订单与登记发货不能两头都赢（§3.5）===')
+    # 取消路径原来**完全不锁整单**（发货路径锁），于是并发下：发货先提交、取消再把
+    # 批次改成 cancelled 的 UPDATE 排在它之后生效 —— 结果是"批次已发货，却被记成已取消"。
+    # 现在两个入口都先锁整单，串行化后只会有两种自洽结果：
+    #   ① 发货先赢 → 批次 shipped，取消只收走还没发的批次；
+    #   ② 取消先赢 → 批次 cancelled，发货请求被"该批次已取消"拒绝。
+    status, res = call('POST', '/orders', token=admin, body={
+        'customer_id': 1, 'owner_id': zs_id,
+        'items': [{'sku_id': skus[0], 'quantity': 3, 'unit_price': 30}],
+    })
+    race_order = res['data']['order_id']
+    status, res = call('GET', f'/orders/{race_order}/items', token=admin)
+    race_item = res['data'][0]['id']
+    status, res = call('POST', f'/orders/{race_order}/shipments', token=admin,
+                       body={'items': [{'order_item_id': race_item, 'planned_qty': 3}]})
+    race_batch = res['data']['batch_id']
+
+    # main() 是同步函数（外面套了 _driver 异步壳），所以并发用线程池而不是 await。
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_ship = pool.submit(
+            call, 'POST', f'/orders/{race_order}/shipments/{race_batch}/ship',
+            admin, {'actual_ship_date': '2026-10-20'},
+        )
+        f_cancel = pool.submit(call, 'POST', f'/orders/{race_order}/cancel', admin, {})
+        ship_res = f_ship.result()
+        cancel_res = f_cancel.result()
+    ship_ok = ship_res[0] == 200
+    # 用**聚合数字**判断，不去取批次列表的第 0 条：取消一旦先赢，批次被置成 cancelled，
+    # `/shipments` 就不再返回它，按索引取会越界。而"已发数量"正好是这条断言要看的量——
+    # 发货成功却没有已发数量，就是"发货事实被取消覆写掉了"（原实现并发下就会这样）。
+    status, res = call('GET', f'/orders/{race_order}/shipments', token=admin)
+    shipped = float(res['data']['summary']['shipped'])
+    order_status = call('GET', f'/orders/{race_order}', token=admin)[1]['data']['status']
+    check_true('并发下发货事实自洽（发货成功就必须留下已发数量）',
+               (ship_ok and shipped == 3.0) or ((not ship_ok) and shipped == 0.0),
+               f'ship={ship_res[0]} cancel={cancel_res[0]} shipped={shipped} order={order_status}')
+
+    print()
     print('=== 13. 回款业绩按订单负责人归属（§3.8：不再按财务确认人）===')
     status, res = call('GET', '/analytics/sales-users?limit=50', token=admin)
     check('业绩接口可读', res.get('code'), 0)

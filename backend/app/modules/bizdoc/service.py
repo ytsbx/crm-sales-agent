@@ -400,7 +400,10 @@ async def build_sample_request_doc(
             {"label": "验收标准", "value": sample.acceptance_criteria or ""},
             {
                 "label": "打样费用",
-                "value": _number(sample.sample_fee) if sample.sample_fee else "",
+                # **只有 None 才是"未填"**。原写法 `if sample.sample_fee` 会把 0 元
+                # （免费打样）判成假值、渲染成空白，与"还没填"混成一个样子——而这一列
+                # 设计成可空的用意正是区分"免费"和"未填"（见 sample/model.py 的注释）。
+                "value": "" if sample.sample_fee is None else _number(sample.sample_fee),
             },
             {
                 "label": "生产责任人",
