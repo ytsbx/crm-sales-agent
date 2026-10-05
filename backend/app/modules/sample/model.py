@@ -100,6 +100,11 @@ class SampleRequest(Base, IdMixin):
     production_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # 责任人
     # 制作完成时间：由跟单登记（CRM 管不到车间，所以只记录事实、不当闸门）
     made_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 制作事件（结构化，第一批返修 §3.4）：每条 {key, at, note, by, recorded_at}。
+    # 幂等**只看这里的 key**；之前是拿"整段备注里是否包含新说明"做子串匹配，
+    # 新说明只要恰好是旧说明的子串就被判成"已经写过"而被吞掉。
+    # `remark` 退回纯展示字段，不承担任何幂等判断。
+    made_events: Mapped[list | None] = mapped_column(JSONType, nullable=True)
 
     # ---- 客户确认：与签收分开（「客户收到样品不等于样品被接受」）----
     confirm_status: Mapped[str] = mapped_column(

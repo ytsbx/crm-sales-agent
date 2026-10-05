@@ -121,6 +121,10 @@ class SampleMade(BaseModel):
 
     made_at: datetime | None = None
     remark: str | None = None
+    #: 幂等键（第一批返修 §3.4）：客户端重发同一个请求时带同一个值，
+    #: 后端据此认成"这次已经登记过"；不带则按 (完成时间, 说明) 精确算一个。
+    #: 说明只要不同（哪怕恰好是上一条的子串）就是一次**新事件**，照常追加与通知。
+    request_key: str | None = Field(default=None, max_length=64)
 
 
 class SampleConfirm(BaseModel):

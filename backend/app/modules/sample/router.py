@@ -622,16 +622,32 @@ async def register_sample_made(
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, "还没批准的打样申请不能登记制作完成", 422
         )
-    # **重发同一个请求不该留下第二条记录**（弱网下客户端重试很常见）。
-    # 判定不能只看 made_at：带说明的重发会走到下面的追加分支，
-    # 结果是说明重复、过程记录重复、主管被重复通知。所以说明也要一起看。
+    # **幂等靠结构化事件的唯一键，不靠备注文本**（第一批返修 §3.4）。
+    # 旧写法是 `note in sample.remark` —— 整段备注的子串匹配：新说明只要恰好是
+    # 旧说明的子串（"已制作完成，等待寄出" → "已制作"）就被判成"已经写过"而被吞掉，
+    # 界面还回"没有变化"；而且备注是给人看的展示字段，不该承担幂等判定。
+    # 现在：带 request_key 就用它；不带则按 (完成时间, 说明) **精确**算一个键。
+    # 说明只要不同就是一次**新事件**，照常追加、照常通知。
     made_at = payload.made_at or sample.made_at or datetime.now(UTC)
     note = (payload.remark or "").strip()
-    note_already_present = bool(note) and note in (sample.remark or "")
-    if sample.made_at == made_at and (not note or note_already_present):
+    event_key = payload.request_key or _fingerprint(made_at.isoformat(), note)
+    events = list(sample.made_events or [])
+    if any((item or {}).get("key") == event_key for item in events):
+        # 重发同一个请求（弱网下客户端重试很常见）：不重复留痕、不重复通知。
         return ok(await svc.detail(session, sample), "制作完成记录没有变化")
+    events.append(
+        {
+            "key": event_key,
+            "at": made_at.isoformat(),
+            "note": note or None,
+            "by": user.id,
+            "recorded_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    sample.made_events = events
     sample.made_at = made_at
-    if note and not note_already_present:
+    if note:
+        # 备注只负责展示：拼成可读文本。**删掉它也不影响上面的幂等判断**。
         prefix = f"{sample.remark}\n" if sample.remark else ""
         sample.remark = f"{prefix}制作说明：{note}"
     await session.flush()
@@ -649,7 +665,7 @@ async def register_sample_made(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
         title="样品制作完成", content=f"打样 #{sample.id} 制作完成，完成时间 {_event_time(sample.made_at)}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
-        opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:made:{sample.id}:{_fingerprint(made_at, note)}",
+        opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:made:{sample.id}:{event_key}",
     )
     await session.commit()
     await notification_service.dispatch_pending(session)

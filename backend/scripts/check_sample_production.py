@@ -185,6 +185,37 @@ async def main():
     check('批准后可登记制作完成', res.get('code'), 0)
     check_true('制作时间已记', bool(res['data']['made_at']), f"made_at={res['data']['made_at']}")
 
+    print('=== 3.1 制作说明的幂等靠结构化事件，不靠备注子串 ===')
+    # 旧实现是 `note in sample.remark` —— 整段备注的子串匹配：新说明只要恰好是旧说明的
+    # 子串（"已制作完成，等待寄出" → "已制作"）就被判成"已经写过"而**被吞掉**，
+    # 界面还回"没有变化"。现在幂等只看事件 key，备注退回纯展示。
+    same_at = res['data']['made_at']
+    r1 = call('POST', f'/samples/{sample_id}/made', token=token,
+              body={'made_at': same_at, 'remark': '已制作完成，等待寄出'})[1]
+    check('第一条制作说明记成一条事件', len(r1['data'].get('made_events') or []), 2)
+    r2 = call('POST', f'/samples/{sample_id}/made', token=token,
+              body={'made_at': same_at, 'remark': '已制作'})[1]
+    # 这条刻意不依赖新字段：旧实现下它同样会红（备注末尾不会被追加"制作说明：已制作"），
+    # 所以"修复前 FAIL / 修复后 OK"对比在这条上是干净的。
+    check('新说明恰好是旧说明的子串时也要留在备注里（旧实现会吞掉它）',
+          (r2['data'].get('remark') or '').rstrip().endswith('制作说明：已制作'), True)
+    check('新说明恰好是旧说明的子串时也算新事件',
+          len(r2['data'].get('made_events') or []), 3)
+    check('两条说明都留在备注里（备注只负责展示）',
+          '制作说明：已制作完成，等待寄出' in (r2['data'].get('remark') or ''), True)
+    r3 = call('POST', f'/samples/{sample_id}/made', token=token,
+              body={'made_at': same_at, 'remark': '已制作'})[1]
+    check('重发同一个请求不会重复留痕', len(r3['data'].get('made_events') or []), 3)
+    r4 = call('POST', f'/samples/{sample_id}/made', token=token,
+              body={'made_at': same_at, 'remark': '带显式幂等键',
+                    'request_key': f'CHK{stamp}-made-1'})[1]
+    check('带 request_key 的新请求记成一条新事件',
+          len(r4['data'].get('made_events') or []), 4)
+    r5 = call('POST', f'/samples/{sample_id}/made', token=token,
+              body={'made_at': same_at, 'remark': '带显式幂等键',
+                    'request_key': f'CHK{stamp}-made-1'})[1]
+    check('同一 request_key 重发不再追加', len(r5['data'].get('made_events') or []), 4)
+
     status, res = call(
         'POST', f'/samples/{sample_id}/confirm', token=token, body={'accepted': True}
     )

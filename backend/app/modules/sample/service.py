@@ -107,6 +107,8 @@ def serialize_request(
         "sample_fee": _f(request.sample_fee),
         "production_owner_id": request.production_owner_id,
         "made_at": request.made_at.isoformat() if request.made_at else None,
+        # 制作事件（结构化）：幂等的依据在这里；remark 只是给人看的展示文本
+        "made_events": request.made_events or [],
         # ---- 客户确认（与签收分开：收到 ≠ 接受）----
         "confirm_status": request.confirm_status,
         "confirm_status_label": CONFIRM_STATUS_LABEL.get(
