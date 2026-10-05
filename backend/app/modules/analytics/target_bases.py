@@ -26,13 +26,15 @@
 但同一页内的计划/实绩/差额必须同源（§4.1.3 的原缺陷就是混用）。
 """
 
-from datetime import date
+from datetime import UTC, date, datetime, time
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.modules.analytics.model import BasisSnapshot
 from app.modules.customer.model import Customer
 from app.modules.order.model import (
     OrderShipmentBatch,
@@ -73,6 +75,121 @@ def _bucket(out: dict[str, float], month, amount) -> None:
     out[key] = out.get(key, 0.0) + float(amount or 0)
 
 
+#: 口径版本：快照与结果都带它，方便回答"这一版是怎么算的"
+BASIS_VERSION = "2026-10-05.bases.2"
+
+
+async def _build_basis(session: AsyncSession, year: int) -> tuple[list[int], dict[int, str]]:
+    """算出某年的两份基准：年初前已成交的客户、该年首次成交的客户→月份。
+
+    这两份就是"老客池"与"首次成交"口径的**全部依据**。它们一旦落库就不再从
+    可变的订单状态重算，历史指标才不会漂移（§4.1.5）。
+    """
+    year_start = datetime.combine(date(year, 1, 1), time.min, tzinfo=UTC)
+    next_start = datetime.combine(date(year + 1, 1, 1), time.min, tzinfo=UTC)
+    veterans = (
+        await session.execute(
+            select(distinct(SalesOrder.customer_id)).where(
+                SalesOrder.status != "cancelled",
+                SalesOrder.customer_id.is_not(None),
+                SalesOrder.created_at < year_start,
+            )
+        )
+    ).scalars().all()
+    first_deals = (
+        await session.execute(
+            select(SalesOrder.customer_id, func.min(SalesOrder.created_at))
+            .where(SalesOrder.status != "cancelled", SalesOrder.customer_id.is_not(None))
+            .group_by(SalesOrder.customer_id)
+        )
+    ).all()
+    first_deal_month = {
+        int(customer_id): f"{at.year}-{at.month:02d}"
+        for customer_id, at in first_deals
+        if at is not None and year_start <= at < next_start
+    }
+    return [int(x) for x in veterans], first_deal_month
+
+
+async def _freeze_basis(
+    year: int, *, replace: bool = False, operator_id: int | None = None
+) -> BasisSnapshot:
+    """把某年的基准算好并落库。
+
+    为什么用**自己的会话**：这是 GET 里的惰性写入，而请求会话（`get_db`）不提交，
+    写在请求会话里会随请求结束被回滚。并发两个请求同时冻结同一年时靠主键冲突兜底：
+    谁先落谁赢，后到的重读。
+    """
+    from app.core.database import SessionLocal
+
+    async with SessionLocal() as own:
+        veteran_ids, first_deal_month = await _build_basis(own, year)
+        payload = {str(k): v for k, v in first_deal_month.items()}
+        row = await own.get(BasisSnapshot, year)
+        if row is None:
+            row = BasisSnapshot(
+                year=year,
+                veteran_customer_ids=veteran_ids,
+                first_deal_month=payload,
+                metric_basis_version=BASIS_VERSION,
+                computed_at=datetime.now(UTC),
+                computed_by=operator_id,
+            )
+            own.add(row)
+        elif not replace:
+            # 别人已经冻好了：直接用，别覆盖（冻结的意义就是不被后来的重算改写）
+            return row
+        else:
+            row.veteran_customer_ids = veteran_ids
+            row.first_deal_month = payload
+            row.metric_basis_version = BASIS_VERSION
+            row.computed_at = datetime.now(UTC)
+            row.computed_by = operator_id
+        try:
+            await own.commit()
+        except IntegrityError:
+            await own.rollback()
+            existing = await own.get(BasisSnapshot, year)
+            if existing is None:
+                raise
+            return existing
+        await own.refresh(row)
+        return row
+
+
+async def basis_for(
+    session: AsyncSession, year: int, *, refreeze: bool = False, operator_id: int | None = None
+) -> tuple[list[int], dict[int, str], dict]:
+    """取一年的基准，并说明它是否已冻结（§4.1.5）。
+
+    边界刻意保守：**当年不冻结**——数据还在产生，冻了会冻在半路上；
+    **过去年份**第一次被读取时冻结一次，之后一直用快照。管理员要改历史口径时
+    走 `refreeze=True`（带审计），而不是让每次读取都悄悄重算。
+    """
+    current_year = datetime.now(UTC).year
+    if year >= current_year:
+        veteran_ids, first_deal_month = await _build_basis(session, year)
+        return veteran_ids, first_deal_month, {
+            "frozen": False,
+            "frozen_at": None,
+            "version": BASIS_VERSION,
+            "note": "当年数据仍在产生，不冻结；跨年后首次读取时自动冻结",
+        }
+    snapshot = None if refreeze else await session.get(BasisSnapshot, year)
+    if snapshot is None:
+        snapshot = await _freeze_basis(year, replace=refreeze, operator_id=operator_id)
+    return (
+        [int(x) for x in (snapshot.veteran_customer_ids or [])],
+        {int(k): v for k, v in (snapshot.first_deal_month or {}).items()},
+        {
+            "frozen": True,
+            "frozen_at": snapshot.computed_at.isoformat() if snapshot.computed_at else None,
+            "version": snapshot.metric_basis_version,
+            "note": "历史年份口径已冻结：之后的订单变更不会改写这一年已出的数",
+        },
+    )
+
+
 async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> dict:
     """按年返回六个口径的月度序列（键是 `01`~`12`）。"""
     owner_ids = await scoped_owner_ids(session, user)
@@ -82,6 +199,8 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
     year_start = date(year, 1, 1)
     next_year = date(year + 1, 1, 1)
+    # 基准：老客池 + 首次成交。**过去年份读快照、当年实时算**（§4.1.5）
+    veteran_ids, first_deal_month, basis_meta = await basis_for(session, year)
 
     # ---- 签单：订单创建月 ----
     signed: dict[str, float] = {}
@@ -170,10 +289,9 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         _bucket(received, month, amount)
 
     # ---- 老客净额：期初固定客户集合 ----
-    # 期初 = 该年 1 月 1 日之前已有非取消订单的客户；这些客户在本期的订单净额
-    veteran_ids = select(SalesOrder.customer_id).where(
-        SalesOrder.status != "cancelled", SalesOrder.created_at < year_start
-    )
+    # 期初 = 该年 1 月 1 日之前已有非取消订单的客户。这份池子来自**基准**
+    # （过去年份已冻结，§4.1.5），不再每次从订单状态现算——否则事后取消一张往年
+    # 订单，客户就从整年老客池里消失，去年的数今年再看就变了。
     repeat_net: dict[str, float] = {}
     rows = await session.execute(
         scope(
@@ -182,7 +300,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
                 func.coalesce(func.sum(SalesOrder.total_amount), 0),
             ).where(
                 SalesOrder.status != "cancelled",
-                SalesOrder.customer_id.in_(veteran_ids),
+                SalesOrder.customer_id.in_(veteran_ids or [0]),
                 func.extract("year", SalesOrder.created_at) == year,
             ).group_by(func.extract("month", SalesOrder.created_at)),
             sales_owner,
@@ -209,33 +327,29 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     for month, count in rows.all():
         _bucket(new_by_created, month, count)
 
-    first_deal = (
-        select(
-            SalesOrder.customer_id.label("customer_id"),
-            func.min(SalesOrder.created_at).label("first_at"),
-        )
-        .where(SalesOrder.status != "cancelled")
-        .group_by(SalesOrder.customer_id)
-        .subquery()
-    )
+    # 首次成交用**基准里的那份**（§4.1.5）：过去年份已冻结，当年实时。
+    # 不再从 orders 现算 `min(created_at)`——那样事后取消人家的首单，
+    # 首次成交月会往后跳，历史指标被就地改写。
     new_by_first_deal: dict[str, float] = {}
-    rows = await session.execute(
-        scope(
-            select(
-                func.extract("month", first_deal.c.first_at), func.count()
-            )
-            .select_from(first_deal)
-            .join(Customer, Customer.id == first_deal.c.customer_id)
-            .where(
-                Customer.deleted_at.is_(None),
-                func.extract("year", first_deal.c.first_at) == year,
-            )
-            .group_by(func.extract("month", first_deal.c.first_at)),
-            Customer.owner_id,
+    deals = {int(cid): month for cid, month in first_deal_month.items()}
+    if deals:
+        # 数据范围仍按客户**当前负责人**过滤（口径不变，只是基准不再现算）
+        owners = dict(
+            (
+                await session.execute(
+                    select(Customer.id, Customer.owner_id).where(
+                        Customer.deleted_at.is_(None), Customer.id.in_(list(deals))
+                    )
+                )
+            ).all()
         )
-    )
-    for month, count in rows.all():
-        _bucket(new_by_first_deal, month, count)
+        for customer_id, month in deals.items():
+            owner = owners.get(customer_id)
+            if owner is None:
+                continue
+            if owner_ids is not None and owner not in owner_ids:
+                continue
+            _bucket(new_by_first_deal, int(month[5:]), 1)
 
     months = [f"{m:02d}" for m in range(1, 13)]
     return {
@@ -252,6 +366,11 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         "basis_note": BASIS_NOTE,
         "attribution_note": ATTRIBUTION_NOTE,
         "source_note": SOURCE_NOTE,
+        # §4.1.5：基准（老客池 / 首次成交）是否已冻结、什么时候冻的、按哪一版口径
+        "basis_frozen": basis_meta["frozen"],
+        "basis_frozen_at": basis_meta["frozen_at"],
+        "basis_version": basis_meta["version"],
+        "basis_note_freeze": basis_meta["note"],
     }
 
 
@@ -269,12 +388,10 @@ async def repeat_net_by_owner(
     """
     owner_ids = await scoped_owner_ids(session, user)
     sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
-    year_start = date(year, 1, 1)
 
-    # 期初 = 该年 1 月 1 日之前已有非取消订单的客户（与 annual_bases 同一判据）
-    veteran_ids = select(SalesOrder.customer_id).where(
-        SalesOrder.status != "cancelled", SalesOrder.created_at < year_start
-    )
+    # 期初老客池来自**同一份基准**（§4.1.5）：过去年份已冻结。两处各算一遍的话，
+    # 冻结只管住一处、另一处照样漂移，等于没冻。
+    veteran_ids, _first_deal_month, _meta = await basis_for(session, year)
     stmt = (
         select(
             func.extract("month", SalesOrder.created_at),
@@ -283,7 +400,7 @@ async def repeat_net_by_owner(
         )
         .where(
             SalesOrder.status != "cancelled",
-            SalesOrder.customer_id.in_(veteran_ids),
+            SalesOrder.customer_id.in_(veteran_ids or [0]),
             func.extract("year", SalesOrder.created_at) == year,
         )
         .group_by(func.extract("month", SalesOrder.created_at), sales_owner)

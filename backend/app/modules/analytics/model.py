@@ -22,7 +22,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.base import Base, IdMixin
+from app.core.base import Base, IdMixin, JSONType
 
 
 class SalesTarget(Base, IdMixin):
@@ -82,6 +82,36 @@ class SalesTarget(Base, IdMixin):
         DateTime(timezone=True), nullable=True, onupdate=func.now()
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BasisSnapshot(Base):
+    """口径基准快照：老客池与首次成交日**按年冻结**（第三批 §4.1.5）。
+
+    为什么要冻结：这两份基准原来每次都从**可变的订单状态**现算，于是事后取消一张
+    往年订单，会让客户从整年老客池里消失、首次成交月往后跳——去年的数今年再看就变了，
+    而且没法复现当初那一版。
+
+    冻结边界（保守）：**过去年份**第一次被读取时算一次并落库，之后一直用快照；
+    **当年**照旧实时算、不冻结（数据还在产生，冻了会冻在半路上）。
+    管理员可用 `POST /analytics/sales-targets/bases/refreeze?year=` 重算某一年，写审计。
+
+    一行一年，只存指标真正需要的两份数据（不整库快照）：
+    - `veteran_customer_ids`：年初之前已有非取消订单的客户 id；
+    - `first_deal_month`：首次成交落在该年的客户 → `YYYY-MM`。
+    """
+
+    __tablename__ = "analytics_basis_snapshots"
+
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    veteran_customer_ids: Mapped[list] = mapped_column(JSONType, default=list)
+    first_deal_month: Mapped[dict] = mapped_column(JSONType, default=dict)
+    #: 冻结时用的口径版本：与 `target_bases`/`targets` 的版本号同一套，
+    #: 口径改了就能看出这份快照是哪一版算出来的
+    metric_basis_version: Mapped[str] = mapped_column(String(64))
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    computed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class OperationTiming(Base, IdMixin):

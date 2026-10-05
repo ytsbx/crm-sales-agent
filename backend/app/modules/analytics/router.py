@@ -1,6 +1,6 @@
 """工作台与数据分析接口。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi import Query
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.analytics import service as svc
 from app.modules.analytics import targets as targets_svc
@@ -98,11 +99,60 @@ async def sales_target_bases(
 
     口径与数据来源**随结果一起返回**——文档要求"分别保存计算口径与数据来源"，
     业务要能回答"这个数字是怎么来的"。签单/发货/回款三个数刻意分开，
-    不互相顶替（发货口径按首批实际发货日整单归月，不是拿签单额换个名字）。
+    不互相顶替（发货口径按**实际发货批次**分摊到各批次所在月，不是拿签单额换个名字）。
     """
     from app.modules.analytics import target_bases
 
     return ok(await target_bases.annual_bases(session, user, year))
+
+
+@router.post("/sales-targets/bases/refreeze")
+async def refreeze_sales_target_bases(
+    request: Request,
+    year: int = Query(...),
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """重算某一年的口径基准（老客池 / 首次成交）并重新冻结（§4.1.5）。
+
+    为什么需要这个入口：冻结的意义是"历史不被后来的订单变更改写"，但**确实存在
+    需要重算的正当理由**（比如发现一批历史订单的状态当初录错了）。与其让每次读取
+    都悄悄重算（那等于没冻结），不如给一个显式、可审计的口径重置动作。
+    """
+    from app.modules.analytics import target_bases
+
+    if year >= datetime.now(UTC).year:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, "当年数据仍在产生，实时计算即可，不需要冻结", 422
+        )
+    veteran_ids, first_deal_month, meta = await target_bases.basis_for(
+        session, year, refreeze=True, operator_id=user.id
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="refreeze",
+        business_type="analytics_basis",
+        business_id=year,
+        after={
+            "year": year,
+            "veteran_count": len(veteran_ids),
+            "first_deal_count": len(first_deal_month),
+            "frozen_at": meta["frozen_at"],
+            "version": meta["version"],
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "year": year,
+            "veteran_count": len(veteran_ids),
+            "first_deal_count": len(first_deal_month),
+            **meta,
+        },
+        "口径基准已重算并重新冻结",
+    )
 
 
 @router.post("/sales-targets/upsert")

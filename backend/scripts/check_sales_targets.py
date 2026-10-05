@@ -474,6 +474,111 @@ async def main():
         )
         await s.commit()
 
+        # === 8. 历史口径冻结：事后取消旧单不再改写去年已出的数（§4.1.5）===
+        print('=== 8. 历史口径冻结（老客池 / 首次成交按年冻结）===')
+        past_year = YEAR - 1
+        # 先清掉这一年可能残留的快照：本段要自己造基准，否则会读到上一轮的快照
+        await s.execute(
+            text('delete from analytics_basis_snapshots where year = :y'), {'y': past_year}
+        )
+        await s.commit()
+        # 两个客户，别混成一个：**同一客户不可能既是一年的期初老客、又在这一年首次成交**
+        # ① 老客池用：past_year-1 就有成交，past_year 又成交一次
+        frozen_customer = Customer(
+            name=f'{PREFIX}冻结客-{stamp}', owner_id=owner_id, status='active',
+            pool_status='private', created_at=datetime(past_year - 1, 6, 1, tzinfo=UTC),
+        )
+        # ② 首次成交用：past_year 之前一单都没有，首单落在 past_year 的 4 月
+        rookie_past = Customer(
+            name=f'{PREFIX}去年新客-{stamp}', owner_id=owner_id, status='active',
+            pool_status='private', created_at=datetime(past_year, 4, 1, tzinfo=UTC),
+        )
+        s.add_all([frozen_customer, rookie_past])
+        await s.flush()
+        frozen_id, rookie_past_id = frozen_customer.id, rookie_past.id
+        s.add_all([
+            # 往年（past_year - 1）成交 → 该客户是 past_year 的期初老客
+            SalesOrder(order_no=f'{PREFIX}{stamp}PRE', customer_id=frozen_id,
+                       owner_id=owner_id, sales_owner_id=owner_id,
+                       total_amount=Decimal('800'), currency='CNY', status='completed',
+                       created_at=datetime(past_year - 1, 11, 5, tzinfo=UTC)),
+            # past_year 老客池里的那一单
+            SalesOrder(order_no=f'{PREFIX}{stamp}M1', customer_id=frozen_id,
+                       owner_id=owner_id, sales_owner_id=owner_id,
+                       total_amount=Decimal('200'), currency='CNY', status='completed',
+                       created_at=datetime(past_year, 3, 8, tzinfo=UTC)),
+            # past_year 的首次成交（4 月）
+            SalesOrder(order_no=f'{PREFIX}{stamp}R1', customer_id=rookie_past_id,
+                       owner_id=owner_id, sales_owner_id=owner_id,
+                       total_amount=Decimal('300'), currency='CNY', status='completed',
+                       created_at=datetime(past_year, 4, 6, tzinfo=UTC)),
+        ])
+        await s.commit()
+
+        before_freeze = await target_bases.annual_bases(s, user, past_year)
+        fb = lambda key, m: next(  # noqa: E731
+            x['value'] for x in before_freeze[key] if x['month'] == m
+        )
+        check('过去年份会自动冻结口径基准', before_freeze['basis_frozen'], True)
+        check('冻结时记下口径版本', before_freeze['basis_version'],
+              target_bases.BASIS_VERSION)
+        check_true('冻结时间非空', bool(before_freeze['basis_frozen_at']),
+                   str(before_freeze['basis_frozen_at']))
+        check('冻结时：老客 3 月净额含那单', fb('repeat_net', '03'), 200.0)
+        check('冻结时：首次成交记在 4 月', fb('new_by_first_deal', '04'), 1)
+
+        # 事后改动①：取消**往年**那单 —— 现算的话客户会掉出老客池，
+        # 去年整年的老客净额跟着变 0（这正是"历史指标会漂移"）
+        await s.execute(
+            text("update sales_orders set status='cancelled' where order_no = :n"),
+            {'n': f'{PREFIX}{stamp}PRE'},
+        )
+        await s.commit()
+        after_pool = await target_bases.annual_bases(s, user, past_year)
+        ap = lambda key, m: next(  # noqa: E731
+            x['value'] for x in after_pool[key] if x['month'] == m
+        )
+        check('取消往年订单后，冻结的老客池不变（现算会掉出去 -> 0）',
+              ap('repeat_net', '03'), 200.0)
+
+        # 事后改动②：取消人家的首单，再补一张 7 月的 —— 现算的话首次成交月会跳到 7 月
+        await s.execute(
+            text("update sales_orders set status='cancelled' where order_no = :n"),
+            {'n': f'{PREFIX}{stamp}R1'},
+        )
+        s.add(SalesOrder(
+            order_no=f'{PREFIX}{stamp}R2', customer_id=rookie_past_id,
+            owner_id=owner_id, sales_owner_id=owner_id,
+            total_amount=Decimal('300'), currency='CNY', status='completed',
+            created_at=datetime(past_year, 7, 9, tzinfo=UTC),
+        ))
+        await s.commit()
+        after_deal = await target_bases.annual_bases(s, user, past_year)
+        ad = lambda key, m: next(  # noqa: E731
+            x['value'] for x in after_deal[key] if x['month'] == m
+        )
+        check('取消首单后，冻结的首次成交月不变（现算会跳到 7 月）',
+              ad('new_by_first_deal', '04'), 1)
+        check('首次成交没有挪到 7 月', ad('new_by_first_deal', '07'), 0)
+
+        # **已知边界**（写进断言，免得以为已经全冻住了）：**金额**仍按订单**当前状态**算
+        # ——取消首单后那一期的签单额就变 0 了，而"首次成交"这个**基准**不变。
+        # 冻结的是"客户集合与首次成交基准"（§4.1.5 前半句）；"每个期间的实绩落库"
+        # （实际值快照）还没做，那属于 §4.3 的另一半。
+        check('已知边界：金额随订单当前状态变 0，但基准不变', ad('signed', '04'), 0.0)
+        snapshot_rows = (await s.execute(text(
+            'select metric_basis_version, computed_at from analytics_basis_snapshots '
+            'where year = :y'
+        ), {'y': past_year})).all()
+        check('快照确实落库（一行一年）', len(snapshot_rows), 1)
+        check('快照里的口径版本一致', snapshot_rows[0][0], target_bases.BASIS_VERSION)
+
+        # 收干净：本段自己造的快照与订单（订单按 CHKTGT 前缀由 cleanup 收）
+        await s.execute(
+            text('delete from analytics_basis_snapshots where year = :y'), {'y': past_year}
+        )
+        await s.commit()
+
     await cleanup()
     print()
     if FAILURES:
