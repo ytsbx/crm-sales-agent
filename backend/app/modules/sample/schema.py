@@ -140,6 +140,16 @@ class SampleResubmit(BaseModel):
     request_key: str | None = Field(default=None, max_length=64)
 
 
+class SampleRevise(BaseModel):
+    """开新修订版（第一批返修 §3.3，口径已确认 A：原单出 V2、旧版冻结只读）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    #: 为什么要开这一版（给人看）。版本链本身由 version/parent_id 承担，
+    #: **不靠备注假装**——备注只是说明文字。
+    remark: str | None = Field(default=None, max_length=1000)
+
+
 class SampleConfirm(BaseModel):
     """客户确认。与签收分开：客户收到样品不等于样品被接受。"""
 

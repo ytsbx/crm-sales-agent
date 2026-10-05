@@ -216,6 +216,75 @@ async def main():
                     'request_key': f'CHK{stamp}-made-1'})[1]
     check('同一 request_key 重发不再追加', len(r5['data'].get('made_events') or []), 4)
 
+    print('=== 3.2 已制作后改车间依据：原地改被拒，只能开新修订版（§3.3）===')
+    # 另造一张（不动前面那张，免得冻结影响后续步骤）：**已批准 + 已制作、尚未寄出** ——
+    # 正是旧实现会"原地改成功"的那一档（旧代码只挡了 shipped/signed）。
+    _, res = call('POST', '/samples', token=token, body={
+        'customer_id': customer_id,
+        'remark': '§3.3 修订版夹具',
+        'items': [{'sku_id': sku_id, 'quantity': '3'}],
+    })
+    rev_id = res['data']['id']
+    rev_item_id = res['data']['items'][0]['id']
+    # 车间依据**走明细接口**（创建接口的单头/明细都不收 material，别指望一次带上）
+    call('PATCH', f'/samples/{rev_id}/items/{rev_item_id}', token=token,
+         body={'material': 'PP 中空板', 'craft': '注塑', 'drawing_version': 'DWG-V1'})
+    call('POST', f'/samples/{rev_id}/approve', token=token, body={'approved': True})
+    call('POST', f'/samples/{rev_id}/made', token=token, body={})
+
+    # ① 已制作后原地改材质：必须被拒
+    status, _ = call('PATCH', f'/samples/{rev_id}/items/{rev_item_id}', token=token,
+                     body={'material': 'ABS 改料'})
+    check('已制作后原地改车间依据被拒', status, 422)
+    status, res = call('GET', f'/samples/{rev_id}', token=token)
+    check('被拒后原件材质没被动过', res['data']['items'][0]['material'], 'PP 中空板')
+    check('被拒后原件的制作时间还在', bool(res['data']['made_at']), True)
+
+    # ② 开新修订版
+    status, res = call('POST', f'/samples/{rev_id}/revise', token=token,
+                       body={'remark': '客户改了材质要求'})
+    check('开新修订版成功', res.get('code'), 0)
+    # 旧代码没有这个字段/接口，下面整段用 if 守住：那样上面那条会干净地 FAIL，
+    # 而不是在后面越界崩掉（崩了就看不到修复前后的对比）。
+    v2 = (res.get('data') or {})
+    if res.get('code') == 0:
+        check('新版本号 = 旧版 + 1', v2.get('version'), 2)
+        check('新版本指向旧版（修订关系）', v2.get('parent_id'), rev_id)
+        check('新版本从待审批开始', v2.get('status'), 'pending')
+        check('新版本不继承制作完成事实（那是旧版的既成事实）', v2.get('made_at'), None)
+        check('新版本复制了明细行', len(v2.get('items') or []), 1)
+        check('新版本带着旧版车间依据作为起点',
+              ((v2.get('items') or [{}])[0]).get('material'), 'PP 中空板')
+        check('新版本此刻还没被取代', v2.get('superseded_by'), None)
+
+        # ③ 旧版冻结只读，但仍可读、且标出被谁取代——"历史版本可核对"
+        status, _ = call('PATCH', f'/samples/{rev_id}', token=token,
+                         body={'purpose': '偷改'})
+        check('旧版冻结只读（写操作被拒）', status, 422)
+        status, res = call('GET', f'/samples/{rev_id}', token=token)
+        check('旧版仍可读', status, 200)
+        check('旧版标出了被谁取代', (res.get('data') or {}).get('superseded_by'),
+              v2.get('id'))
+        check('旧版保留制作完成时间（事实冻结）',
+              bool((res.get('data') or {}).get('made_at')), True)
+
+        # ④ 列表默认只列当前版本，历史版本要显式要
+        status, res = call('GET', '/samples?page_size=200', token=token)
+        ids = [r['id'] for r in (res.get('data') or {}).get('items', [])]
+        check('列表默认不出现被取代的旧版', rev_id in ids, False)
+        check('列表里有新版本', v2.get('id') in ids, True)
+        status, res = call('GET', '/samples?page_size=200&include_history=true', token=token)
+        ids_hist = [r['id'] for r in (res.get('data') or {}).get('items', [])]
+        check('include_history=true 能看到旧版（历史可核对）', rev_id in ids_hist, True)
+
+    # ⑤ 没有制作/寄出事实的单子不给开修订版：直接改就行，多开一版只会让台账变脏
+    _, res = call('POST', '/samples', token=token, body={
+        'customer_id': customer_id, 'items': [{'sku_id': sku_id, 'quantity': '1'}],
+    })
+    no_fact_id = res['data']['id']
+    status, _ = call('POST', f'/samples/{no_fact_id}/revise', token=token, body={})
+    check('没有制作/寄出事实的单子不给开修订版', status, 422)
+
     status, res = call(
         'POST', f'/samples/{sample_id}/confirm', token=token, body={'accepted': True}
     )

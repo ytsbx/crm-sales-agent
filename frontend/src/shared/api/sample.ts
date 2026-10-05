@@ -47,6 +47,12 @@ export interface SampleRequestRow {
   owner_name?: string | null
   status: string
   status_label: string
+  /** 审批轮次（§3.2）：驳回后重提 / 已批准后改车间依据会自增。 */
+  review_round?: number
+  /** 修订版（§3.3）：第几版、取代了谁、又被谁取代（superseded_by 有值即冻结只读）。 */
+  version?: number
+  parent_id?: number | null
+  superseded_by?: number | null
   remark?: string | null
   reject_reason?: string | null
   requested_at?: string | null
@@ -128,6 +134,17 @@ export function feedbackSample(id: number, feedback: string) {
 /** 登记制作完成（文档 §3.5；CRM 管不到车间，这里只记事实、不当闸门）。 */
 export function madeSample(id: number, remark?: string) {
   return api.post<SampleRequestRow>(`/samples/${id}/made`, { remark: remark ?? null })
+}
+
+/**
+ * 开新修订版（§3.3，口径已确认 A：原单出 V2、旧版冻结只读）。
+ *
+ * 已制作 / 已寄出之后**不能再原地改**车间依据——那样同一行上留着旧制作时间却写着
+ * 新资料，和已经做出来的实物对不上。这里复制出一版新的（版本 +1、指向原单），
+ * 原单连同制作/寄送事实冻结保留、随时可回看。
+ */
+export function reviseSample(id: number, remark?: string) {
+  return api.post<SampleRequestRow>(`/samples/${id}/revise`, { remark: remark ?? null })
 }
 
 /**

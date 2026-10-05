@@ -51,6 +51,7 @@ from app.modules.sample.schema import (
     SampleItemPatch,
     SampleMade,
     SampleResubmit,
+    SampleRevise,
     SampleShip,
     SampleSign,
     SampleUpdate,
@@ -82,12 +83,22 @@ def _gate_part_lock(sample: SampleRequest) -> bool:
 
     只有"锁"没有"退路"会让单据卡死，所以已批准 / 已驳回这两档必须配 _reopen。
     """
-    if sample.status in ("shipped", "signed"):
-        label = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
+    if sample.made_at is not None or sample.status in ("shipped", "signed"):
+        # 已制作 / 已寄出：车间依据**不能再原地改**（§3.3 口径 A）。
+        # 旧写法只挡了 shipped/signed，于是"已制作"的单子改完只是回到待审批——
+        # 同一行上留着旧的制作时间却写着新资料，和已经做出来的实物对不上，
+        # 也看不出这是第几版。现在一律要求开新修订版：
+        # 原单连同制作/寄送事实冻结保留，新版从当前资料起改。
+        why = (
+            "已登记制作完成" if sample.made_at is not None
+            else f"已「{SAMPLE_STATUS_LABEL.get(sample.status, sample.status)}」"
+        )
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"样品已「{label}」，不能再增改车间依据（{PART_LOCK_LABEL}）。"
-            f"货已出，改了会和实物对不上；确需变更请重新开一单",
+            f"该打样单{why}，不能再原地改车间依据（{PART_LOCK_LABEL}）——"
+            f"改了会和已做出来的实物对不上。请开新修订版"
+            f"（POST /samples/{sample.id}/revise）：原单的制作与寄送事实会冻结保留，"
+            f"新版本从当前资料起改，再走一遍审批。",
             422,
         )
     return sample.status in ("approved", "rejected")
@@ -162,6 +173,9 @@ async def list_samples(
     customer_id: int | None = None,
     opportunity_id: int | None = None,
     owner_id: int | None = None,
+    include_history: bool = Query(
+        False, description="是否包含被新修订版取代的历史版本（默认只看当前版本）"
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("sample:view")),
@@ -174,6 +188,15 @@ async def list_samples(
         opportunity_id=opportunity_id,
         owner_id=owner_id,
     )
+    if not include_history:
+        # 默认只列**当前版本**：开过修订版的单子（§3.3）否则会在列表里出现两份，
+        # 看着像重复造单。历史版本仍可按 id 打开、也可显式传 include_history=true 列出——
+        # "历史版本可核对"这条要求不受影响。
+        stmt = stmt.where(
+            SampleRequest.id.not_in(
+                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
+            )
+        )
     stmt = await svc.apply_data_scope(stmt, user, session)
     rows, total = await paginate(session, stmt.order_by(SampleRequest.id.desc()), page, page_size)
 
@@ -471,6 +494,110 @@ async def resubmit_sample(
     await session.commit()
     await notification_service.dispatch_pending(session)
     return ok(after, "已重新提交，等待审批")
+
+
+@router.post("/samples/{sample_id}/revise")
+async def revise_sample(
+    sample_id: int,
+    request: Request,
+    payload: SampleRevise | None = None,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """开新修订版（第一批返修 §3.3，口径已确认 A：原单出 V2、旧版冻结只读）。
+
+    什么时候用它：车间依据（材质 / 工艺 / 图纸版本 / 目标完成日 / 验收标准 / 数量）
+    要在**已制作 / 已寄出之后**改。那时代替"原地改"，这里复制出新的一版：
+
+    - 复制单头与明细（含车间依据）作为起点，`version = 旧版 + 1`、`parent_id = 旧版`；
+    - **不继承**制作 / 寄送 / 签收 / 客户确认与审批结论——那些是旧版身上的**既成事实**，
+      新版本还没做出来，继承过来就是伪造；
+    - 新版本从「待审批」开始，走一遍正常审批；
+    - 旧版自此**冻结只读**（有子版本即冻结），它当时的资料与事实随时可回看对账。
+
+    没有制作/寄出事实时不给开：那种情况直接改就行（改完自动退回重审），
+    多开一版只会让台账变脏。要开就得先有"必须冻结"的事实。
+    """
+    parent = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    if parent.made_at is None and parent.status not in ("shipped", "signed"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该打样单还没有制作/寄出事实，直接改就行（改完会自动退回重审），"
+            "不必开修订版",
+            422,
+        )
+
+    parent_items = (
+        await session.execute(
+            select(SampleItem).where(SampleItem.sample_request_id == parent.id)
+        )
+    ).scalars().all()
+
+    child = SampleRequest(
+        opportunity_id=parent.opportunity_id,
+        customer_id=parent.customer_id,
+        contact_id=parent.contact_id,
+        owner_id=parent.owner_id,
+        # 新版本从待审批开始：它的资料还没被主管批过
+        status="pending",
+        remark=(payload.remark if payload and payload.remark else parent.remark),
+        source_context=parent.source_context,
+        version=(parent.version or 1) + 1,
+        parent_id=parent.id,
+        purpose=parent.purpose,
+        target_completion_date=parent.target_completion_date,
+        acceptance_criteria=parent.acceptance_criteria,
+        sample_fee=parent.sample_fee,
+        production_owner_id=parent.production_owner_id,
+        created_by=user.id,
+        requested_at=svc.now(),
+    )
+    session.add(child)
+    await session.flush()
+    for item in parent_items:
+        session.add(
+            SampleItem(
+                sample_request_id=child.id,
+                sku_id=item.sku_id,
+                inquiry_id=item.inquiry_id,
+                inquiry_no_snapshot=item.inquiry_no_snapshot,
+                item_name=item.item_name,
+                source_snapshot=item.source_snapshot,
+                original_quantity=item.original_quantity,
+                specification=item.specification,
+                craft=item.craft,
+                material=item.material,
+                drawing_version=item.drawing_version,
+                quantity=item.quantity,
+                remark=item.remark,
+            )
+        )
+    await session.flush()
+    after = await svc.detail(session, child)
+
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="revise",
+        business_type="sample",
+        business_id=child.id,
+        before={"parent_id": parent.id, "version": parent.version or 1},
+        after={"id": child.id, "version": child.version, "parent_id": parent.id},
+        ip=client_ip(request),
+    )
+    await followup_service.record_and_notify(
+        session, customer_id=child.customer_id, owner_id=child.owner_id,
+        operator_id=user.id,
+        title="打样单开了新修订版",
+        content=f"打样 #{parent.id}（第 {parent.version or 1} 版）已开第 "
+                f"{child.version} 版待审批；原版制作/寄送事实冻结保留",
+        business_type="sample", business_id=child.id, sample_id=child.id,
+        opportunity_id=child.opportunity_id, exclude_user_id=user.id,
+        event_key=f"sample:revise:{parent.id}:v{child.version}",
+    )
+    await session.commit()
+    await notification_service.dispatch_pending(session)
+    return ok(after, f"已开第 {child.version} 版（原版冻结保留，等审批）")
 
 
 @router.post("/samples/{sample_id}/ship")

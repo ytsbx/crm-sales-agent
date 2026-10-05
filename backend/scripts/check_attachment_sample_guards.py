@@ -335,28 +335,54 @@ async def main():
             check("已登记实际完成的批次节点不随批次取消被删",
                   status == 422 and "实际发货" in json.dumps(result, ensure_ascii=False), f"HTTP {status} {result}")
 
-        print("=== 7. 车间依据闸门：改了就要退回重审 ===")
-        # 此时 sid 已是「已批准 + 已登记制作完成」——正是最该拦住的时刻：
-        # 车间可能已经开工了，改材质等于让它按老要求白干。
-        item_id = api("GET", f"/samples/{sid}/items", token=zhangsan)[0]["id"]
+        print("=== 7. 车间依据闸门：已批准未制作→退回重审；已制作/已寄出→只能开修订版 ===")
+        # ① 「已批准 + **未**制作」：允许原地改，但那一版批准作废 → 退回待审批。
+        #    另造一张来测这档，别动 sid —— 它已经制作完成（见 ②）。
+        gate = api("POST", "/samples", body={
+            "customer_id": own.id, "items": [{"sku_id": sku_id, "quantity": "2"}]},
+            token=zhangsan)
+        gate_id = gate["id"]
+        sample_ids.append(gate_id)
+        gate_item = api("GET", f"/samples/{gate_id}/items", token=zhangsan)[0]["id"]
+        api("POST", f"/samples/{gate_id}/approve", body={"approved": True}, token=zhangsan)
         after = api(
+            "PATCH", f"/samples/{gate_id}/items/{gate_item}", token=zhangsan,
+            body={"material": f"{MARKER} 304不锈钢"},
+        )
+        check("已批准（未制作）改明细车间依据 → 退回待审批",
+              after["status"] == "pending", after["status"])
+        check("退回后批准时间被清掉（那一版批准已作废）",
+              after["approved_at"] is None, after["approved_at"])
+        check("改动确实落库了（不是只退状态）",
+              after["items"][0]["material"] == f"{MARKER} 304不锈钢")
+
+        api("POST", f"/samples/{gate_id}/approve", body={"approved": True}, token=zhangsan)
+        after = api(
+            "PATCH", f"/samples/{gate_id}", token=zhangsan,
+            body={"target_completion_date": "2026-12-31"},
+        )
+        check("已批准（未制作）改单头交期 → 同样退回待审批",
+              after["status"] == "pending", after["status"])
+
+        # ② sid 此刻是「已批准 + **已登记制作完成**」：必须封死原地改（§3.3 口径 A）。
+        #    车间可能已经开工，改材质等于让它按老要求白干；而且同一行上留着旧制作时间
+        #    却写着新资料，和已经做出来的实物对不上。出口是开新修订版（原版冻结保留）。
+        item_id = api("GET", f"/samples/{sid}/items", token=zhangsan)[0]["id"]
+        status, result = call(
             "PATCH", f"/samples/{sid}/items/{item_id}", token=zhangsan,
             body={"material": f"{MARKER} 304不锈钢"},
         )
-        check("已批准时改明细车间依据 → 退回待审批", after["status"] == "pending", after["status"])
-        check("退回后批准时间被清掉（那一版批准已作废）", after["approved_at"] is None, after["approved_at"])
-        check("改动确实落库了（不是只退状态）", after["items"][0]["material"] == f"{MARKER} 304不锈钢")
-
-        api("POST", f"/samples/{sid}/approve", body={"approved": True}, token=zhangsan)
-        after = api(
-            "PATCH", f"/samples/{sid}", token=zhangsan, body={"target_completion_date": "2026-12-31"}
+        check("已制作后原地改明细车间依据被拒（要开修订版）",
+              status == 422, f"HTTP {status} {result}")
+        status, result = call(
+            "PATCH", f"/samples/{sid}", token=zhangsan,
+            body={"acceptance_criteria": "改验收标准"},
         )
-        check("已批准时改单头交期 → 同样退回待审批", after["status"] == "pending", after["status"])
+        check("已制作后原地改单头验收标准被拒", status == 422, f"HTTP {status}")
 
-        # 重新批准并寄出后，车间依据必须**封死**：货都在客户手上了，
-        # 这时候"退回待审批"更荒唐（货都到了），只能重开一单
-        api("POST", f"/samples/{sid}/approve", body={"approved": True}, token=zhangsan)
-        api("POST", f"/samples/{sid}/ship", body={"carrier": "顺丰", "tracking_no": f"SF{MARKER}"}, token=zhangsan)
+        # ③ 已寄样同样封死：货都在客户手上了，"退回待审批"更荒唐（货都到了）
+        api("POST", f"/samples/{sid}/ship",
+            body={"carrier": "顺丰", "tracking_no": f"SF{MARKER}"}, token=zhangsan)
         status, result = call(
             "PATCH", f"/samples/{sid}/items/{item_id}", token=zhangsan, body={"material": "换料"}
         )

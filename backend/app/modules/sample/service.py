@@ -77,9 +77,15 @@ def serialize_request(
     owner_name: str | None = None,
     items: list[dict] | None = None,
     shipments: list[dict] | None = None,
+    superseded_by: int | None = None,
 ) -> dict:
     return {
         "id": request.id,
+        # 修订版（§3.3）：第几版、取代了谁、又被谁取代（superseded_by 有值即冻结只读）。
+        # 由调用方查好传进来——本函数是同步的，拿不到 session。
+        "version": request.version or 1,
+        "parent_id": request.parent_id,
+        "superseded_by": superseded_by,
         "source_context": request.source_context,
         "opportunity_id": request.opportunity_id,
         "opportunity_title": opportunity_title,
@@ -185,7 +191,13 @@ async def get_or_404(session: AsyncSession, sample_id: int) -> SampleRequest:
 async def get_visible_or_404(
     session: AsyncSession, user: CurrentUser, sample_id: int, *, for_update: bool = False
 ) -> SampleRequest:
-    """取样品申请并校验数据范围（列表按 owner_id 过滤，单条此前没校验）。"""
+    """取样品申请并校验数据范围（列表按 owner_id 过滤，单条此前没校验）。
+
+    `for_update=True` 是**写入口**的统一门（所有写接口都用它取单）。因此"这一版
+    已经被新修订版取代、不能再动"的判断也放在这里——**一处把关胜过每个入口各写一遍**
+    （第一批返修 §3.3 要求的正是"统一判断"，各写一遍迟早漏一个）。
+    读接口（`for_update=False`）不受影响：历史版本永远查得到、对得上。
+    """
     from app.core.data_scope import ensure_in_scope
 
     if for_update:
@@ -196,6 +208,23 @@ async def get_visible_or_404(
     else:
         request = await get_or_404(session, sample_id)
     await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
+    if for_update:
+        # 注意：sample_requests **没有** deleted_at（这个模块不做软删），
+        # 别照其它模块的习惯加 `deleted_at.is_(None)`——那是运行期 AttributeError。
+        child = (
+            await session.execute(
+                select(SampleRequest.id)
+                .where(SampleRequest.parent_id == request.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if child is not None:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"这是第 {request.version} 版，已被新修订版（#{child}）取代、不能再改。"
+                "制作与寄送事实已按当时资料冻结保留；要继续改请在新版本上操作",
+                422,
+            )
     return request
 
 
@@ -327,6 +356,18 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
     all_items = [item for items in items_by_request.values() for item in items]
     skus = await skus_map(session, all_items)
     customers, opportunities, owners = await enrichment(session, rows)
+    # 一次查清"谁被谁取代了"（§3.3）：有子版本的那一版冻结只读，
+    # 界面上要标出来。批量一次查询，别在循环里逐条问。
+    child_of: dict[int, int] = {}
+    if ids:
+        # 同样注意：sample_requests 没有 deleted_at（本模块不做软删）
+        for child_id, parent_id in (
+            await session.execute(
+                select(SampleRequest.id, SampleRequest.parent_id)
+                .where(SampleRequest.parent_id.in_(ids))
+            )
+        ).all():
+            child_of.setdefault(parent_id, child_id)
 
     payload = []
     for row in rows:
@@ -346,6 +387,7 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
                     serialize_shipment(shipment)
                     for shipment in shipments_by_request.get(row.id, [])
                 ],
+                superseded_by=child_of.get(row.id),
             )
         )
     return payload

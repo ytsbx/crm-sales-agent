@@ -64,6 +64,8 @@ class SampleRequest(Base, IdMixin):
         Index("ix_sample_requests_owner_status", "owner_id", "status"),
         # "待客户确认"是跟单要盯的一类单，给它一个索引
         Index("ix_sample_requests_confirm_status", "confirm_status"),
+        # 冻结判断要查"这一版有没有子版本"，按 parent_id 建索引
+        Index("ix_sample_requests_parent", "parent_id"),
     )
 
     opportunity_id: Mapped[int | None] = mapped_column(
@@ -86,6 +88,17 @@ class SampleRequest(Base, IdMixin):
     # 当前这一轮是**哪次提交**开的（弱网重试靠它认幂等，不靠"状态是不是待审批"——
     # "待审批时调重提"仍然按原口径被拦）。换轮次时清空。
     review_request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # ---- 修订版（第一批返修 §3.3，口径已确认 A：开新修订版）----
+    # 已制作的单子不能再原地改车间依据：那样看不出这是第几版，旧制作时间还留在同一行，
+    # 和已经做出来/寄走的实物对不上。改成"原单出 V2、旧版冻结只读"。
+    # `parent_id` 指向被取代的那一版；**有子版本即视为冻结**，不另设状态位。
+    version: Mapped[int] = mapped_column(
+        BigInteger, default=1, server_default="1", nullable=False
+    )
+    parent_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sample_requests.id"), nullable=True
+    )
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_context: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     request_key: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)

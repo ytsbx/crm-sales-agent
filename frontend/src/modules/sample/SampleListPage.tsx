@@ -30,6 +30,7 @@ import {
   listSamples,
   madeSample,
   resubmitSample,
+  reviseSample,
   shipSample,
   signSample,
   updateSample,
@@ -386,6 +387,20 @@ export default function SampleListPage() {
     mutationFn: () => madeSample(detailId!),
     onSuccess: () => {
       Toast.success('已登记制作完成')
+      void refresh()
+    },
+    onError,
+  })
+
+  // 开新修订版（§3.3）：已制作/已寄出之后改车间依据的唯一出路。
+  // 后端会拒绝原地改并点名这个接口，界面没有入口就等于把正常操作堵死。
+  // 备注可选，这里不额外开弹窗（是否要写原因的交互留给人自己决定）
+  const reviseMutation = useMutation({
+    mutationFn: () => reviseSample(detailId!),
+    onSuccess: (row: SampleRequestRow) => {
+      Toast.success(`已开第 ${row.version ?? '?'} 版待审批（原版冻结保留）`)
+      setDetailId(row.id)          // 直接切到新版本上继续操作
+      navigate(`/samples/${row.id}`)
       void refresh()
     },
     onError,
@@ -1068,6 +1083,12 @@ export default function SampleListPage() {
                         打样费用：{detail.sample_fee != null ? `¥${detail.sample_fee}` : '未填'}
                       </div>
                       <div>制作完成：{dash(detail.made_at?.slice(0, 10))}</div>
+                      <div>
+                        版本：第 {detail.version ?? 1} 版
+                        {detail.superseded_by
+                          ? `（已被新修订版 #${detail.superseded_by} 取代，只读）`
+                          : ''}
+                      </div>
                     </div>
                   )}
 
@@ -1078,6 +1099,22 @@ export default function SampleListPage() {
                       onClick={() => madeMutation.mutate()}
                     >
                       登记制作完成
+                    </Button>
+                  )}
+
+                  {/* 已制作 / 已寄出之后改车间依据的**唯一出路**（§3.3）：
+                      原地改会被后端拒绝（同一行上留着旧制作时间却写新资料，和已做出来的
+                      实物对不上）。这里开新修订版：原版连同制作/寄送事实冻结保留。
+                      已被取代的那一版不再给入口——它已经冻结只读。 */}
+                  {canManage && !detail.superseded_by
+                    && (detail.made_at || detail.status === 'shipped'
+                        || detail.status === 'signed') && (
+                    <Button
+                      style={{ marginTop: 8, marginLeft: 8 }}
+                      loading={reviseMutation.isPending}
+                      onClick={() => reviseMutation.mutate()}
+                    >
+                      开新修订版（改车间依据）
                     </Button>
                   )}
                 </div>
