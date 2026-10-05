@@ -361,7 +361,10 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 >
                   查询
                 </Button>
-                {can('order:manage') && (
+                {/* 手工建单不需要"客户已接受报价"却计入业绩，口径是**只有主管能用**：
+                    后端按 order:assign 把守，按钮跟着同一权限点走（不能只靠前端隐藏，
+                    但也不该让业务员点到一个必然 403 的按钮）。 */}
+                {can('order:assign') && (
                   <Button theme="solid" onClick={() => setCreateVisible(true)}>
                     手工建单
                   </Button>
