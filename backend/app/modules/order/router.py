@@ -98,13 +98,19 @@ async def list_orders(
 async def create_order(
     payload: OrderCreate,
     request: Request,
-    user: CurrentUser = Depends(require_permission("order:manage")),
+    # 手工建单不需要"客户已接受报价"，却计入成交额与业绩，所以口径定为**只有主管能用**
+    # （已确认）。用 order:assign 落地：它是主管级权限（主管/管理员有，业务员与财务都没有），
+    # 与"代别人分配/确认订单"同一档，不新造角色常量、也不新增一份"主管"判断副本。
+    user: CurrentUser = Depends(require_permission("order:assign")),
     session: AsyncSession = Depends(get_db),
 ):
     """手工建销售订单（03-API §27）。
 
     正常订单来自「报价版本转订单」（`POST /quote-versions/{id}/convert-to-order`），
     这里是线下签约/补录历史单的入口。金额由明细算出，不接受前端传。
+
+    这条路径**不校验"客户已接受报价"**，因此限主管使用：否则它就是绕过客户确认、
+    直接给自己敲单加业绩的后门（金额进成交额，却不生成应收）。
     """
     await ensure_refs(
         session, model=Customer, ids={"customer_id": payload.customer_id}, label="客户"

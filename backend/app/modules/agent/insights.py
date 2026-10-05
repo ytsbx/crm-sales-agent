@@ -560,6 +560,12 @@ async def pricing_analysis(
         await customer_service.get_visible_customer(session, user, customer_id)
 
     from app.modules.pricing import service as pricing_service
+    # 成本与底价只向获授权角色返回（方案 §4.3/§7）。直接复用价格中心那一份脱敏口径，
+    # 不在这里写第二份——写第二份迟早会漏字段或漏一句文案。
+    # 放在解读之前：下面的 insights 是照着 result 的数字拼出来的，先脱敏，
+    # 那些"低于 X 要审批""公司保护价 X"的句子才会因为值为 None 而自然不再出现
+    # （否则等于用自然语言把底价念了一遍，脱敏数字字段也没用）。
+    from app.modules.pricing.router import _sanitize_pricing_result
 
     result = await pricing_service.calculate_price(
         session,
@@ -569,6 +575,7 @@ async def pricing_analysis(
         quoted_price=None,
         role_codes=user.roles,
     )
+    result = _sanitize_pricing_result(result, user)
 
     recommended = result["recommended_price"]
     low = result["recommended_range"][0] if result["recommended_range"] else None

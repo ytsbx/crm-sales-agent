@@ -114,6 +114,16 @@ async def cleanup():
             f"(select id from quotes where customer_id in {cust}))",
             f"delete from notifications where business_type = 'order' and business_id in {order}",
             f"delete from business_events where business_type = 'order' and business_id in {order}",
+            # 订单子表按"引用方先删"的顺序清干净。此前套件建的订单都没有子表，
+            # 3.4 造的手工单第一次带上了明细，才暴露出 sales_order_items 等外键没清。
+            f"delete from order_shipment_batch_items where batch_id in "
+            f"(select id from order_shipment_batches where order_id in {order})",
+            f"delete from order_shipment_batches where order_id in {order}",
+            f"delete from payment_records where order_id in {order}",
+            f"delete from receivable_plans where order_id in {order}",
+            f"delete from order_schedule_changes where order_id in {order}",
+            f"delete from order_milestones where order_id in {order}",
+            f"delete from sales_order_items where order_id in {order}",
             f"delete from order_status_history where order_id in {order}",
             f"delete from sales_orders where customer_id in {cust}",
             f"delete from business_files where business_type = 'customer' and business_id in {cust}",
@@ -631,6 +641,44 @@ async def main() -> int:
     check('本人拿自己的客户跑 Agent 核价分析（对照）',
           call('POST', '/agent/pricing-analysis', owner_token,
                {'sku_id': sku_id, 'quantity': 10, 'customer_id': cid})[0], 200)
+
+    print('=== 3.4 权限口径：成本脱敏 / 手工建单 / 补充续签 ===')
+    manager_token = login('lisi', '123456')
+
+    # ① 成本与底价只向 price:manage 返回（方案 §4.3/§7，与价格中心同一口径）。
+    #    断言分两句：业务员整页仍可用（不能因为脱敏把页面打死），但快照全为空。
+    status, res = call('GET', '/pricing/history?page_size=50', outsider_token)
+    rows = (res.get('data') or {}).get('items') or []
+    check('业务员仍能读核价历史（对照：脱敏不等于整页不可用）', status, 200)
+    check('业务员读到的历史快照全部为空（成本/底价不落地）',
+          all(r.get('before') is None and r.get('after') is None for r in rows), True)
+    status, res = call('GET', '/pricing/history?page_size=50', manager_token)
+    manager_rows = (res.get('data') or {}).get('items') or []
+    check('主管（有 price:manage）仍能读到快照',
+          any(r.get('after') is not None or r.get('before') is not None
+              for r in manager_rows), True)
+
+    # ② 手工建单不需要"客户已接受报价"却计入业绩，口径定为只有主管能用（已确认）。
+    #    这里必须用 **outsider 自己的客户**：改用别人的客户会先被数据范围挡成 403，
+    #    那样没有权限门也会绿——断言就测不到"权限"这一件事。
+    manual_order = {
+        'customer_id': oc_cid, 'owner_id': outsider.id, 'currency': 'CNY',
+        'items': [{'sku_id': sku_id, 'quantity': 1, 'unit_price': 100}],
+    }
+    check_denied('业务员不能手工建单（那会绕过客户确认报价直接加业绩）',
+                 call('POST', '/orders', outsider_token, manual_order)[0])
+
+    # ③ 补充协议 / 续签是管理动作（会结束原协议待办、往已签文档写替代标记），
+    #    与"已签作废要主管"同档；但要确认只挡这一条，不挡普通起草。
+    #    同样用 outsider 自己的客户，并且必须断言**恰好 403**：没有这道门时，
+    #    请求会因为 template_id 不存在返回 404，而 404 也在"被拒"集合里，
+    #    写成 check_denied 就会假绿。
+    status, _ = call('POST', '/contract-documents', outsider_token,
+                     {'customer_id': oc_cid, 'template_id': 999999, 'parent_id': 1})
+    check('业务员发起补充协议 / 续签被按权限拒绝（恰好 403，不是"别的失败"）', status, 403)
+    status, _ = call('POST', '/contract-documents', outsider_token,
+                     {'customer_id': oc_cid, 'template_id': 999999})
+    check('业务员仍可普通起草合同（对照：只挡补充/续签）', status != 403, True)
 
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)

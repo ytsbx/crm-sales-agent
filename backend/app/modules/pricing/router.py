@@ -1024,7 +1024,7 @@ async def pricing_history(
     customer_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("product:view")),
+    user: CurrentUser = Depends(require_permission("product:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """核价历史（03-API §18）。
@@ -1033,8 +1033,16 @@ async def pricing_history(
     数据取自审计日志（报价明细的增删改、成本与价格规则的变更），
     不另建一张价格历史表：审计日志本来就是这些变更的事实来源，
     再存一份只会两边不一致。
+
+    **成本与底价只向获授权角色返回**（方案 §4.3/§7，与 `_sanitize_pricing_result`
+    同一口径）。这里的 before/after 是各业务类型（成本 / 价格规则 / 客户特殊价 /
+    报价明细）的审计快照，字段形状随类型而变；逐字段脱敏得按类型枚举键名，
+    漏一个就等于没脱敏，所以对没有 `price:manage` 的调用方**不返回快照本身**——
+    保留"谁在什么时候改了什么"，拿不到成本与底价的具体数字。
     """
     from app.core.audit import AuditLog
+
+    can_see_cost = user.has("price:manage")
 
     stmt = select(AuditLog).where(
         AuditLog.business_type.in_(
@@ -1072,8 +1080,8 @@ async def pricing_history(
                     "action": row.action,
                     "operator_id": row.operator_id,
                     "operator_name": names.get(row.operator_id) if row.operator_id else None,
-                    "before": row.before_data,
-                    "after": row.after_data,
+                    "before": row.before_data if can_see_cost else None,
+                    "after": row.after_data if can_see_cost else None,
                     "created_at": row.created_at,
                 }
                 for row in rows

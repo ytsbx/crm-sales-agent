@@ -82,6 +82,12 @@ async def generate_document(
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote
 
+    # 补充协议 / 续签是**管理动作**：勾了 supersede 会结束原协议的全部待办，
+    # 并把 `_superseded_by` 写进**已签**文档——效果接近作废，而作废已经限定主管。
+    # 不设这道门，业务员用"续签"就能绕过"已签作废要主管"这条约束（已确认口径）。
+    if payload.parent_id is not None and not _is_manager(user):
+        raise AppError(ErrorCode.FORBIDDEN, "补充协议 / 续签需要主管权限", 403)
+
     customer = await customer_service.get_visible_customer(session, user, payload.customer_id)
     await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
     if payload.order_id is not None:

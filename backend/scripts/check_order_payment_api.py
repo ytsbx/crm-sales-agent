@@ -409,10 +409,17 @@ def main():
 
     print()
     print('=== 10. 张三自己的单能正常用 ===')
-    status, res = call('POST', '/orders', token=zhangsan,
-                       body={'customer_id': 1,
+    # 口径（已确认）：手工建单不需要"客户已接受报价"、却计入成交额与业绩，
+    # 所以定为**只有主管能用**（order:assign）。业务员必须被拒——这是本节第一条断言。
+    status, _ = call('POST', '/orders', token=zhangsan,
+                     body={'customer_id': 1,
+                           'items': [{'sku_id': skus[0], 'quantity': 2, 'unit_price': 50}]})
+    check('业务员手工建单被拒（手工建单按主管口径）', status, 403)
+    # 单子改由主管建、挂在张三名下；后面的断言仍然验"业务员能正常用**自己的**单"。
+    status, res = call('POST', '/orders', token=lisi,
+                       body={'customer_id': 1, 'owner_id': zs_id,
                              'items': [{'sku_id': skus[0], 'quantity': 2, 'unit_price': 50}]})
-    check('张三建单', res.get('code'), 0)
+    check('主管建单', res.get('code'), 0)
     zs_order_id = res['data']['order_id']
     status, res = call('GET', f'/orders/{zs_order_id}', token=zhangsan)
     check('张三看自己的单', res.get('code'), 0)
