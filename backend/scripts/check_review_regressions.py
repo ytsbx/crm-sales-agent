@@ -400,7 +400,51 @@ def main() -> None:
                       and result.get("data", {}).get("status") == "cancelled",
                       f"HTTP {status} {result}")
 
-            print("=== Expiry and formal-price guards ===")
+            print("=== ERP manual refresh also goes through order lifecycle guards (§4.1.8) ===")
+            # 手动刷新（`POST /orders/{id}/refresh-status`）原来**直接赋值** order.status：
+            # ERP 能把已取消的订单"复活"成已发货，也能在还有未发量时把整单标成完成——
+            # §3.5 刚立的闸门被这条后门绕过去（webhook 那条早就改了，这条当时漏了）。
+            # 这里用**桩适配器**在被测进程内替换，不碰任何外部系统。
+            from app.modules.erp import service as erp_service
+            from app.modules.order.model import SalesOrder
+
+            class _StubAdapter:
+                label = "桩ERP"
+                STATUS_MAP = {"Finished": "completed"}
+
+                async def fetch_order_status(self, erp_order_id):
+                    return {"status": "completed", "raw_status": "Finished",
+                            "raw": {"stub": True}}
+
+            async with SessionLocal() as session:
+                # 夹具准备：把这单置成「已取消」并挂上外部单号（直接改库=布置现场，
+                # 不是被测行为）
+                await session.execute(text(
+                    "update sales_orders set status='cancelled', erp_order_id='STUB-REF-1' "
+                    "where id=:id"
+                ), {"id": FIXTURE_IDS["own_order"]})
+                await session.commit()
+                order = await session.get(SalesOrder, FIXTURE_IDS["own_order"])
+                original_adapter = erp_service.get_adapter
+                erp_service.get_adapter = lambda: _StubAdapter()
+                try:
+                    refreshed = await erp_service.refresh_status(
+                        session, order=order, operator_id=None
+                    )
+                    await session.commit()
+                finally:
+                    erp_service.get_adapter = original_adapter
+                await session.refresh(order)
+                check("manual ERP refresh cannot resurrect a cancelled order",
+                      refreshed["changed"] is False
+                      and refreshed["status"] == "cancelled"
+                      and order.status == "cancelled",
+                      f"result={refreshed}; db_status={order.status}")
+                check("the block reason is reported instead of silently doing nothing",
+                      bool(refreshed.get("blocked_reason")),
+                      f"blocked_reason={refreshed.get('blocked_reason')}")
+
+
             status, result = call("POST", f"/quote-versions/{FIXTURE_IDS['expired_version']}/accept",
                                   token=zhangsan)
             check("expired quote cannot be accepted", status == 422, f"HTTP {status} {result}")

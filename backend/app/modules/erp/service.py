@@ -243,28 +243,37 @@ async def refresh_status(
 
     new_status = result.get("status")
     changed = False
+    blocked_reason: str | None = None
     # 对方返回了不认识的状态：不改 CRM 状态，但日志里留 raw_status，
     # 否则"为什么状态没变"要靠猜。
     if new_status and new_status in VALID_STATUS and new_status != order.status:
-        old_status = order.status
-        order.status = new_status
-        session.add(
-            OrderStatusHistory(
-                order_id=order.id,
-                old_status=old_status,
+        # 必须走订单状态服务，**不能直接赋值**（§4.1.8）。
+        # 原来这里是 `order.status = new_status`：ERP 能把已取消的订单"复活"成已发货，
+        # 也能在还有未发量时把整单标成完成——§3.5 刚立的闸门被这条后门绕过去。
+        # （webhook 那条早就改走状态服务了，手动刷新这条当时漏了。）
+        from app.modules.order import service as order_service
+
+        try:
+            await order_service.change_status(
+                session,
+                order,
                 new_status=new_status,
-                source="ERP",
                 operator_id=operator_id,
+                source="ERP",
                 remark=f"{adapter.label} 回传状态",
-                created_at=datetime.now(UTC),
             )
-        )
-        changed = True
+            changed = True
+        except AppError as error:
+            # 被守卫拦下：CRM 状态不动，但把原因写进日志与返回值——
+            # 否则"刷新了却没变"只能靠猜。拉取类接口不该因为守卫而 500。
+            blocked_reason = error.message
+            log.error_message = f"状态未变更（被订单状态守卫拦下）：{error.message}"
 
     return {
         "status": order.status,
         "status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
         "changed": changed,
+        "blocked_reason": blocked_reason,
         "raw_status": result.get("raw_status"),
         "shipped_at": result.get("shipped_at"),
     }
