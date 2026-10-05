@@ -714,6 +714,9 @@ async def update_opportunity_next_action(
     opportunity = await ctx.session.get(Opportunity, opportunity_id)
     if opportunity is None or opportunity.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+    # 与同文件其它商机工具同一纪律（get_opportunity_detail 就是这么做的）：
+    # 只判存在的话，改个 id 就能把别人商机的"下一步动作"改掉。
+    await _ensure_in_scope(ctx, Opportunity.owner_id, Opportunity.id, opportunity_id, "商机")
     before = opportunity.next_action
     opportunity.next_action = next_action
     await write_audit(
@@ -751,10 +754,10 @@ async def request_quote_approval(
 ) -> dict:
     from app.modules.quote import service as quote_service
 
-    version = await ctx.session.get(QuoteVersion, quote_version_id)
-    if version is None:
-        raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
-    quote = await quote_service.get_quote_or_404(ctx.session, version.quote_id)
+    # 与 HTTP 入口（报价的提交审批）同一口径：下面的 submit_for_approval 不带范围参数，
+    # 范围只能在这一层把——否则改个 id 就能把别人的报价版本提交审批（还会触发审批通知）。
+    version = await quote_service.get_visible_version(ctx.session, ctx.user, quote_version_id)
+    quote = await quote_service.get_visible_quote(ctx.session, ctx.user, version.quote_id)
     instance, required = await quote_service.submit_for_approval(
         ctx.session,
         quote=quote,

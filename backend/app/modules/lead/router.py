@@ -61,6 +61,11 @@ async def create_lead(
 ):
     data = payload.model_dump()
     if data.get("owner_id"):
+        # 指定负责人是**归属类动作**：不校验范围，业务员就能把线索直接挂到别人
+        # （甚至别的部门）名下。业务员是 self 范围，只能挂自己；主管可在本部门内分配。
+        from app.core.data_scope import ensure_in_scope
+
+        await ensure_in_scope(session, user, owner_id=data["owner_id"], label="负责人")
         data["status"] = "assigned"
     else:
         data["status"] = "pending"
@@ -304,6 +309,12 @@ async def convert_lead(
         customer = await session.get(Customer, payload.customer_id)
         if customer is None or customer.deleted_at is not None:
             raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+        # 只判存在不够：转化会在该客户下**建联系人和商机**（见下面的
+        # create_contact_for_customer / create_opportunity_from_lead），
+        # 用别人的客户 id 就等于往别人的客户里写数据。与单个客户接口同一口径。
+        from app.core.data_scope import ensure_in_scope
+
+        await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
     else:
         customer = Customer(
             name=lead.company_name or lead.name,

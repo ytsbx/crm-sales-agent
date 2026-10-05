@@ -75,7 +75,12 @@ async def main():
             assert doc.order_id is None and doc.order_draft_id==did and doc.input_snapshot['diffs']==[]
             from app.modules.bizdoc.pdf import render_biz_doc_pdf
             from app.modules.bizdoc.service import doc_pdf_data
-            assert render_biz_doc_pdf(await doc_pdf_data(s,doc)).startswith(b'%PDF')
+            pdf_data=await doc_pdf_data(s,doc)
+            assert render_biz_doc_pdf(pdf_data).startswith(b'%PDF')
+            # 对外文件的正文里不能残留模板占位符：默认下单模板曾引用
+            # {{order.payment_terms}}，而订单草稿根本没有 order 来源，那串语法会**原样
+            # 印到客户看的 PDF 上**。只断言 %PDF 头是抓不到这个的（原实现就漏了）。
+            assert '{{' not in (pdf_data.get('body') or ''), pdf_data.get('body')
         update={'revision':draft['revision'],'items':[{'source_item_id':row['source_item_id'],'quantity':row['quantity'],'unit_price':row['unit_price'],'specification':row['specification'],'remark':row['remark']} for row in draft['items']]}
         update['items'][0]['quantity']=5
         modified=req('PATCH',f'/order-drafts/{did}',update); assert modified['revision']==2

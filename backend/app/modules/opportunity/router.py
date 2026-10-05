@@ -413,6 +413,13 @@ async def create_opportunity(
 
     data = payload.model_dump(exclude={"stage_id"})
     owner_id = data.pop("owner_id", None) or customer.owner_id or user.id
+    # 建商机时可以指定负责人：不校验范围，业务员就能把商机直接挂到别人
+    # （甚至别的部门）名下，绕过"归属类动作要主管"的口径。项目里没有
+    # opportunity:assign，统一用数据范围判定——业务员（self）只能挂自己，
+    # 主管在 department_and_sub 范围内可分配。与建单路径同一写法。
+    from app.core.data_scope import ensure_in_scope
+
+    await ensure_in_scope(session, user, owner_id=owner_id, label="负责人")
     opportunity = Opportunity(
         **data,
         stage_id=stage.id,

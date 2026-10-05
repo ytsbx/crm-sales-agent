@@ -25,10 +25,13 @@ logger = logging.getLogger("crm.file")
 router = APIRouter(tags=["File"])
 
 #: 不允许被通用删除接口清掉原件的附件类别。
-#: `signed` = 已签合同的签署扫描件——那是"签的是哪一版"的唯一证据，
-#: 通用删除（`DELETE /files/{id}`）不能碰它。
+#: `signed` = 已签合同的签署扫描件——那是"签的是哪一版"的唯一证据。
+#: `generated` = 系统生成即落盘的合同生成稿：下载要"同一编号永远同一份"，
+#:   删掉它之后下载会**静默**回退成按当前资料重新渲染，客户改名后同一编号
+#:   下载到的内容就变了，而界面上没有任何提示。
+#: 通用删除（`DELETE /files/{id}`）不能碰这两类。
 #: 特殊纠错、撤回、保留期限等管理政策另定；这里只保证**普通删除不破坏历史证据**。
-PROTECTED_CATEGORIES: set[str] = {"signed"}
+PROTECTED_CATEGORIES: set[str] = {"signed", "generated"}
 
 
 def serialize_file(record: FileRecord, uploader: str | None = None) -> dict:
@@ -387,6 +390,16 @@ async def unlink_file(
         session, user, business_type=link.business_type, business_id=link.business_id
     ):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该附件所在的业务对象不在你的数据范围内", 403)
+    # ③ 已签 / 已生成的原件：**解绑和删除一样能毁掉证据**。拆掉关联后文件不再挂在
+    #    任何业务对象上，而 `can_access_file` 对无关联文件只认上传者——其他人（含主管）
+    #    从此永久拿不到这份签署原件，台账上"签的是哪一版"就再也对不上了。
+    #    "原件不可无痕消失"要同时守住删除**和**解绑两条路径。
+    if (link.category or "") in PROTECTED_CATEGORIES:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该关联指向已签署/已生成的原件，不能解绑；确需纠错请走作废等专门流程",
+            422,
+        )
     before = {
         "business_type": link.business_type,
         "business_id": link.business_id,

@@ -313,6 +313,23 @@ async def generate_document(
     （两份还各有一个 doc_no，事后分不清哪份有效）。
     """
     if payload.request_key:
+        # 先拿 advisory lock 再查：连点 / 网络重发会让两个请求同时越过"查不到"这一句，
+        # 后者 INSERT 时撞 request_key 唯一约束、被错误兜底成 500（而不是"返回原来那份"）。
+        # 与 order/drafts.py 的幂等写法保持一致。
+        import hashlib
+
+        from sqlalchemy import text as _text
+
+        await session.execute(
+            _text("SELECT pg_advisory_xact_lock(:key)"),
+            {
+                "key": int.from_bytes(
+                    hashlib.sha256(f"contract-doc:{payload.request_key}".encode()).digest()[:8],
+                    "big",
+                    signed=True,
+                )
+            },
+        )
         replayed = (
             await session.execute(
                 select(ContractDocument).where(
@@ -322,6 +339,16 @@ async def generate_document(
             )
         ).scalar_one_or_none()
         if replayed is not None:
+            # 命中幂等键，但这一份不是本次要生成的那份：说明编号被复用/猜到了。
+            # 直接返回它等于把**别人客户的合同快照**交给调用方——路由层的范围校验
+            # 只针对本次请求里的客户，管不到被返回的这一份。键相同内容不同一律拒绝。
+            if (
+                replayed.customer_id != payload.customer_id
+                or replayed.template_id != payload.template_id
+            ):
+                raise AppError(
+                    ErrorCode.PARAM_ERROR, "该请求编号已用于另一份合同，请换一个编号", 409
+                )
             return replayed, True
 
     template = await session.get(ContractTemplate, payload.template_id)
@@ -666,6 +693,24 @@ async def sign_document(
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在，请先通过 /files/upload 上传", 404)
+    # 不能把系统自己出的生成稿登记成"客户签回来的那一份"：那会让台账上
+    # "下载到的到底是生成稿还是签署件"彻底分不清，而且生成稿会因此被列入
+    # signed 保护集、看起来像一份真的签署证据。
+    own_generated = doc.generated_file_id == file_id
+    if not own_generated:
+        own_generated = (
+            await session.execute(
+                select(BusinessFile.id)
+                .where(BusinessFile.file_id == file_id, BusinessFile.category == "generated")
+                .limit(1)
+            )
+        ).scalar_one_or_none() is not None
+    if own_generated:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "这是系统生成的合同稿，不能登记为签署原件；请上传客户签回的扫描件",
+            422,
+        )
     session.add(
         BusinessFile(
             business_type="contract",

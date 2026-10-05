@@ -39,7 +39,11 @@ _DEFAULT_BODY = {
     "order_sheet": (
         "1. 规格与数量按上表明细执行；如有变更需书面确认后重新出单。\n"
         "2. 交货时间与地点以本文件为准。\n"
-        "3. 付款条件：{{order.payment_terms}}"
+        # 这里**不能**引用 order.*：订单草稿出图时还没有正式订单，没有这个来源可填，
+        # 而不认得的 token 会按 _fill_tokens 的既定行为**原样印到对外 PDF 上**
+        # （曾经就是 {{order.payment_terms}}，每一份下单文件/订单草稿都会印出这串语法）。
+        # 付款条件已经在上面的 sections 里逐条渲染，正文不必再重复。
+        "3. 付款条件以本文件所列付款条件栏为准。"
     ),
 }
 
@@ -762,6 +766,13 @@ async def _persist(
         "customer": built.get("customer"),
         "extra": extra_fields or {},
     }
+    # 自定义模板可以引用 {{order.xxx}}（默认模板此前就引用了 payment_terms，却没人
+    # 提供这个来源，于是那串占位符原样印到了对外 PDF 上）。有正式订单时才提供它；
+    # 订单草稿没有订单，此时引用 order.* 的模板仍会原样保留占位符——这正是提示作者改模板。
+    if built.get("order_id"):
+        from app.modules.order.model import SalesOrder
+
+        sources["order"] = await session.get(SalesOrder, built["order_id"])
     body = _fill_tokens(template.body, sources, {str(k): str(v) for k, v in (extra_fields or {}).items()})
     snapshot = _snapshot_for_storage(built, body, template)
     snapshot["extra"] = {str(k): str(v) for k, v in (extra_fields or {}).items()}

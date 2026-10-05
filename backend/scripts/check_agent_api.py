@@ -413,6 +413,16 @@ async def main():
     check('admin 建范围外客户 B', res.get('code'), 0)
     outsider_b = res['data']['id']
 
+    # L2/L3 写工具也要有范围夹具：改商机的下一步动作、替别人提交报价审批。
+    # 都挂在 admin 的客户下，所以张三（self 范围）一律够不着。
+    status, res = call('POST', '/opportunities', token=admin,
+                       body={'customer_id': outsider_b, 'title': f'CHK{RUN}范围外商机'})
+    outsider_opp = (res.get('data') or {}).get('id')
+    status, res = call('POST', '/quotes', token=admin,
+                       body={'customer_id': outsider_b, 'opportunity_id': outsider_opp})
+    outsider_version = (res.get('data') or {}).get('version_id')
+    check_true('范围外商机 / 报价夹具就绪', bool(outsider_opp and outsider_version), '')
+
     async with SessionLocal() as s:
         admin_row = await s.get(User, 1)
         zs_row = await s.get(User, 2)  # zhangsan，数据范围 self
@@ -449,6 +459,25 @@ async def main():
             check_true('张三能看公海客户（无负责人）', 'customer' in data_public, '')
         except AppError:
             check_true('张三能看公海客户（无负责人）', False, '被拒了（应与口径一致：放行）')
+
+        # ---- L2 / L3 写工具同样要过范围（此前只有只读工具做了，这两个漏了）----
+        # 门只在接口层把、工具层不把，等于"问 Agent 一句"就能绕过数据范围：
+        # 前者能改别人商机的下一步动作，后者能把别人的报价版本提交审批（触发审批通知）。
+        try:
+            await agent_tools.update_opportunity_next_action(ctx_zs, outsider_opp, '越权改动作')
+            check_true('张三改范围外商机的下一步动作被拒', False, '没有抛错')
+        except AppError as exc:
+            check('张三改范围外商机的下一步动作被拒', exc.code, 40302)
+        try:
+            await agent_tools.request_quote_approval(ctx_zs, outsider_version)
+            check_true('张三提交范围外报价版本审批被拒', False, '没有抛错')
+        except AppError as exc:
+            check('张三提交范围外报价版本审批被拒', exc.code, 40302)
+        # 对照：admin 对同一对象必须照常可用（否则就是把功能改坏了）
+        data_next = await agent_tools.update_opportunity_next_action(
+            ctx_admin, outsider_opp, 'admin 正常改动作'
+        )
+        check_true('admin 改同一商机的下一步动作正常', bool(data_next), '')
 
         # 造一条 admin 名下的真实应收+已确认回款，让对比有区分度
         # （别的套件会清订单表，不能假设库里有单）

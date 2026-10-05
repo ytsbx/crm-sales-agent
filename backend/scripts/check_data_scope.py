@@ -159,6 +159,11 @@ async def cleanup():
             # 不先删就会让下面的删客户撞外键——套件此前没有转移夹具所以一直没暴露。
             "delete from customer_owner_history where customer_id in "
             "(select id from customers where name like :p)",
+            # 合同夹具（3.5 的幂等键回归）：contract_documents 引用 customers 与
+            # contract_templates，必须先删文档、再删模板，最后才轮得到删客户。
+            "delete from contract_documents where customer_id in "
+            "(select id from customers where name like :p)",
+            "delete from contract_templates where name like :p",
             "delete from customers where name like :p",
             "delete from user_roles where user_id in (select id from users where username like :u)",
             "delete from user_roles where role_id in (select id from roles where code like :r)",
@@ -679,6 +684,91 @@ async def main() -> int:
     status, _ = call('POST', '/contract-documents', outsider_token,
                      {'customer_id': oc_cid, 'template_id': 999999})
     check('业务员仍可普通起草合同（对照：只挡补充/续签）', status != 403, True)
+
+    print('=== 3.5 线索转化 / 归属指定 / 合同幂等键 / 原件保护 ===')
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    # 建 ContractDocument 之前必须先把这些模型导进来注册：它的外键指向
+    # quote_versions / sales_orders / contract_templates，没注册就直接
+    # NoReferencedTableError（套件里别处也踩过同一个坑）。
+    from app.modules.contract.model import ContractDocument, ContractTemplate
+    from app.modules.order.model import SalesOrder as _SO
+    from app.modules.quote.model import Quote as _Q
+    from app.modules.quote.model import QuoteVersion as _QV
+
+    _ = (_SO, _Q, _QV)  # 只为触发模型注册
+
+    # ① 线索转化挂到别人客户名下：转化会在该客户下**建联系人和商机**，是跨范围写入。
+    #    线索必须用**本人可见的**（不指定负责人即进线索池）：否则先被"线索本身不可见"
+    #    挡成 403，就测不到"客户范围"这一件事了。
+    status, res = call('POST', '/leads', outsider_token,
+                       {'name': f'{PREFIX}转化线索-{stamp}',
+                        'company_name': f'{PREFIX}转化公司-{stamp}'})
+    convert_lead_id = (res.get('data') or {}).get('id')
+    check('越权转化用的线索夹具就绪', bool(convert_lead_id), True)
+    status, _ = call('POST', f'/leads/{convert_lead_id}/convert', outsider_token,
+                     {'customer_mode': 'existing', 'customer_id': cid})
+    check_denied('把线索转化到别人的客户名下（会往人家客户里写联系人/商机）', status)
+
+    # ② 建线索 / 建商机时可以指定负责人：不校验范围，业务员就能把单子挂到别人名下。
+    status, _ = call('POST', '/leads', outsider_token,
+                     {'name': f'{PREFIX}越权线索-{stamp}', 'owner_id': owner.id})
+    check('业务员建线索不能挂到别人名下', status, 403)
+    status, _ = call('POST', '/opportunities', outsider_token,
+                     {'customer_id': oc_cid, 'title': f'{PREFIX}越权商机-{stamp}',
+                      'owner_id': owner.id})
+    check('业务员建商机不能挂到别人名下', status, 403)
+
+    # ③ 合同生成幂等键：命中**别人**的 request_key 时，绝不能把那份合同交出来。
+    #    路由层的范围校验只针对本次请求里的客户，管不到"被返回的那一份"。
+    async with SessionLocal() as s:
+        tpl = ContractTemplate(doc_type='contract', name=f'{PREFIX}模板-{stamp}', version=1,
+                               body='占位 {{customer.name}}', enabled=True,
+                               created_at=_dt.now(_UTC))
+        s.add(tpl)
+        await s.flush()
+        fixture_tpl_id = tpl.id
+        victim_doc = ContractDocument(
+            doc_no=f'{PREFIX}DOC{stamp}', title=f'{PREFIX}他人合同', customer_id=cid,
+            template_id=tpl.id, content_snapshot='{"金额":"机密"}', status='draft',
+            request_key=f'{PREFIX}KEY{stamp}', created_by=owner.id,
+            created_at=_dt.now(_UTC),
+        )
+        s.add(victim_doc)
+        await s.commit()
+    status, _ = call('POST', '/contract-documents', outsider_token,
+                     {'customer_id': oc_cid, 'template_id': 999999,
+                      'request_key': f'{PREFIX}KEY{stamp}'})
+    check('命中别人的合同幂等键不会把那份合同交出来', status, 409)
+    # 对照：同一个 key + 同一客户 + 同一模板仍走幂等返回（不是被上面的保护误伤）。
+    # 三个字段必须全部一致：这正是"键相同内容不同就拒绝"的另一面。
+    status, res = call('POST', '/contract-documents', owner_token,
+                       {'customer_id': cid, 'template_id': fixture_tpl_id,
+                        'request_key': f'{PREFIX}KEY{stamp}'})
+    check('同一客户重放同一 request_key 仍幂等返回', res.get('code'), 0)
+
+    # ④ 原件保护：生成稿不能被通用删除，也不能被解绑——两条路都能让"同一编号永远
+    #    同一份"的承诺失效（删掉/解绑后下载会静默回退重渲染、别人再也拿不到原件）。
+    #    这条夹具**只挂一个关联**，所以下面的 422 只可能来自"原件保护"这一条规则。
+    async with SessionLocal() as s:
+        gen_file = FileRecord(
+            storage_provider='local', object_key=f'_fixture/{PREFIX}-gen.pdf',
+            file_name=f'{PREFIX}-gen.pdf', mime_type='application/pdf', size=8,
+            checksum='1' * 64, uploaded_by=owner.id,
+        )
+        s.add(gen_file)
+        await s.flush()
+        gen_file_id = gen_file.id
+        gen_link = BusinessFile(business_type='product', business_id=product_id,
+                                file_id=gen_file_id, category='generated')
+        s.add(gen_link)
+        await s.flush()
+        gen_link_id = gen_link.id
+        await s.commit()
+    check('生成稿原件不能被通用删除', call('DELETE', f'/files/{gen_file_id}', owner_token)[0], 422)
+    check('生成稿的关联不能被解绑', call('DELETE', f'/business-files/{gen_link_id}',
+                                 owner_token)[0], 422)
 
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)
