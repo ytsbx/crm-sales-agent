@@ -19,7 +19,6 @@ from app.core.response import ok
 from app.modules.approval import rules_engine
 from app.modules.approval.model import ApprovalRule, ApprovalRuleVersion
 from app.modules.quote import service as quote_service
-from app.modules.quote.model import QuoteVersion
 
 router = APIRouter(tags=["ApprovalRules"])
 
@@ -176,17 +175,20 @@ async def create_rule(
 @router.post("/approval-rules/sandbox")
 async def sandbox(
     payload: SandboxIn,
-    _: CurrentUser = Depends(require_permission("quote:view")),
+    user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """规则沙盒：拿一张真实报价版本试跑全部规则，逐条给出命中明细，不产生任何副作用。
 
     试算对象是**当前草稿状态**——正好用于"改完规则、发布前先验证"这个动作。
     """
-    version = await session.get(QuoteVersion, payload.quote_version_id)
-    if version is None:
-        raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
-    quote = await quote_service.get_quote_or_404(session, version.quote_id)
+    # 必须与读报价详情同口径走数据范围：沙盒把 context 全量回给调用方，
+    # 里面有总额、毛利、最低明细毛利、客户等级与逾期状态。此前只判"版本存在"，
+    # 任何有 quote:view 的人枚举 quote_version_id 就能读到别人的报价与毛利。
+    version = await quote_service.get_visible_version(
+        session, user, payload.quote_version_id
+    )
+    quote = await quote_service.get_visible_quote(session, user, version.quote_id)
     items = await quote_service.version_items(session, version.id)
     ctx = await rules_engine.build_context(
         session, quote=quote, version=version, items=items, fx=version.exchange_rate_snapshot

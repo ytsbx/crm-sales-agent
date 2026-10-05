@@ -445,6 +445,7 @@ async def main() -> int:
     quote_payload = {'customer_id': cid, 'opportunity_id': opp_fixture_id}
     _, target_quote = call('POST', '/quotes', owner_token, quote_payload)
     target_quote_id = (target_quote.get('data') or {}).get('quote_id')
+    target_version_id = (target_quote.get('data') or {}).get('version_id')
     _, control_quote = call('POST', '/quotes', owner_token, quote_payload)
     control_quote_id = (control_quote.get('data') or {}).get('quote_id')
     if not target_quote_id or not control_quote_id:
@@ -456,6 +457,16 @@ async def main() -> int:
               call('GET', f'/quotes/{target_quote_id}', owner_token)[0], 200)
         _, res = call('DELETE', f'/quotes/{control_quote_id}', owner_token)
         check('本人删除自己的报价（对照）', res.get('code'), 0)
+
+        # 审批规则沙盒把报价 context **全量**回给调用方（总额、毛利、最低明细毛利、
+        # 客户等级、客户是否逾期），此前只判"版本存在"、且只要 quote:view，
+        # 于是枚举 quote_version_id 就能读别人的报价与毛利。
+        check_denied('他人拿别人的报价版本跑规则沙盒',
+                     call('POST', '/approval-rules/sandbox', outsider_token,
+                          {'quote_version_id': target_version_id})[0])
+        check('本人跑自己报价版本的规则沙盒（对照）',
+              call('POST', '/approval-rules/sandbox', owner_token,
+                   {'quote_version_id': target_version_id})[0], 200)
 
     # ---- 同款形状（写路径堵了、读/删路径漏了）的漏口，逐条设门槛 ----
     # 这四条的价值：以后谁再把校验删掉，这里立刻红。上一轮它们抓到的第一个 bug
