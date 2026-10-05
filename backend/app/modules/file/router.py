@@ -15,7 +15,12 @@ from app.core.config import settings
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
-from app.modules.file.access import can_access_file, visible_object
+from app.modules.file.access import (
+    can_access_file,
+    file_protection_label,
+    protection_label,
+    visible_object,
+)
 from app.modules.file import access, storage
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.user.model import User
@@ -24,14 +29,9 @@ logger = logging.getLogger("crm.file")
 
 router = APIRouter(tags=["File"])
 
-#: 不允许被通用删除接口清掉原件的附件类别。
-#: `signed` = 已签合同的签署扫描件——那是"签的是哪一版"的唯一证据。
-#: `generated` = 系统生成即落盘的合同生成稿：下载要"同一编号永远同一份"，
-#:   删掉它之后下载会**静默**回退成按当前资料重新渲染，客户改名后同一编号
-#:   下载到的内容就变了，而界面上没有任何提示。
-#: 通用删除（`DELETE /files/{id}`）不能碰这两类。
-#: 特殊纠错、撤回、保留期限等管理政策另定；这里只保证**普通删除不破坏历史证据**。
-PROTECTED_CATEGORIES: set[str] = {"signed", "generated"}
+# 原件保护判据（哪些类别不可破坏、对应什么人话）**集中在 access.PROTECTED_CATEGORIES**，
+# 不在这里再维护一份：删除、解绑、以后任何会动到原件的入口都调
+# `file_protection_label` / `protection_label`。两处口径分叉出来的那一份就是绕过通道。
 
 
 def serialize_file(record: FileRecord, uploader: str | None = None) -> dict:
@@ -249,10 +249,11 @@ async def delete_file(
     ).scalars().all()
     # ① 历史证据：已签署的原件不允许走通用删除。
     #    否则一次误删就把"签的是哪一版"的唯一凭据抹掉了。
-    if any((link.category or "") in PROTECTED_CATEGORIES for link in links):
+    protected = await file_protection_label(session, file_id)
+    if protected is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "该文件是已签署的原件，不能删除；确需纠错请走作废等专门流程",
+            f"该文件是{protected}，不能删除；确需纠错请走作废等专门流程",
             422,
         )
     # ② 一个文件挂在多个业务对象上时，删它等于**一次影响全部对象**。
@@ -394,10 +395,11 @@ async def unlink_file(
     #    任何业务对象上，而 `can_access_file` 对无关联文件只认上传者——其他人（含主管）
     #    从此永久拿不到这份签署原件，台账上"签的是哪一版"就再也对不上了。
     #    "原件不可无痕消失"要同时守住删除**和**解绑两条路径。
-    if (link.category or "") in PROTECTED_CATEGORIES:
+    protected = protection_label(link.category)
+    if protected is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "该关联指向已签署/已生成的原件，不能解绑；确需纠错请走作废等专门流程",
+            f"该关联指向{protected}，不能解绑；确需纠错请走作废等专门流程",
             422,
         )
     before = {

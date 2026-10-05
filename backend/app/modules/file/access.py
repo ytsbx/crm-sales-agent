@@ -37,6 +37,38 @@ BUSINESS_MODELS: dict[str, tuple[type, str]] = {
 # 而不是默认放行——宁可让人来登记新类型，也不要默默漏数据。
 NO_OWNER_TYPES: set[str] = {"product"}
 
+#: 不可破坏的原件类别 → 人话标签（第一批返修 §3.1 要求"三条路径统一判断"）。
+#: - `signed`：已签合同的签署扫描件，是"签的是哪一版"的唯一证据；
+#: - `generated`：系统生成即落盘的合同生成稿，下载承诺"同一编号永远同一份"，
+#:   删掉之后下载会**静默**回退成按当前资料重新渲染。
+#: 判据集中在这一处，删除 / 解绑 / 以后任何会动到原件的入口都用同一份；
+#: 各写一份判断迟早会分叉，分叉出来的那一份就是绕过通道。
+PROTECTED_CATEGORIES: dict[str, str] = {
+    "signed": "已签署的原件",
+    "generated": "系统生成的原件",
+}
+
+
+def protection_label(category: str | None) -> str | None:
+    """这条业务引用的类别是否受保护；受保护时返回人话标签，否则 None。"""
+    return PROTECTED_CATEGORIES.get((category or "").strip())
+
+
+async def file_protection_label(session: AsyncSession, file_id: int) -> str | None:
+    """**文件级**判断：这份文件是否受"原件不可破坏"保护（任意一条受保护引用即算）。
+
+    删除走这一档：删文件影响它身上**所有**引用，所以只要有一条受保护的引用，
+    整份文件就不能被通用删除。
+    """
+    links = (
+        await session.execute(select(BusinessFile).where(BusinessFile.file_id == file_id))
+    ).scalars().all()
+    for link in links:
+        label = protection_label(link.category)
+        if label is not None:
+            return label
+    return None
+
 #: 有独立可见性入口、但没有统一 owner_id 列的业务类型。
 #: 它们各自已有一套"数据范围 + 越权"判定，这里**复用那一套**，
 #: 不在本文件重写第二份口径——两处口径迟早会分叉。

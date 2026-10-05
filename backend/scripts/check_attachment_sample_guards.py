@@ -251,6 +251,22 @@ async def main():
         check("按 contract_document 查仍然被拒（前端必须用 contract）",
               status == 403, f"HTTP {status}")
 
+        # 解绑同样是一条绕过路径（第一批返修 §3.1）：先把签署件从合同上解绑，文件就不再
+        # 挂任何业务对象，而 `can_access_file` 对无关联文件**只认上传者** ——
+        # 上传者随后就能把它删掉，"已签原件不可删"这条保护就白设了。
+        # 所以删除要拦、解绑也要拦，而且失败路径不能改动关联状态。
+        signed_link = next(
+            (r.get("business_file_id") for r in rows if r.get("id") == signed), None
+        )
+        check("找得到签署件那条关联（下面的断言才有意义）", signed_link is not None, True)
+        if signed_link is not None:
+            status, result = call("DELETE", f"/business-files/{signed_link}", token=admin)
+            check("已签署的原件不能被解绑（否则上传者可先解绑再删除）",
+                  status == 422, f"HTTP {status} {result}")
+            rows_after = api("GET", f"/business/contract/{doc['id']}/files", token=zhangsan)
+            check("被拒之后关联还在（失败路径不改状态）",
+                  any(r.get("business_file_id") == signed_link for r in rows_after), True)
+
         # 已签合同的作废要主管（业务方 2026-10-05 定）
         status, result = call("POST", f"/contract-documents/{doc['id']}/void",
                               token=zhangsan, body={"reason": f"{MARKER} 业务员想作废"})
