@@ -722,6 +722,126 @@ async def main():
                any(row['id'] == case_id for row in res['data']), '')
 
     print()
+    print('=== 12.1 分享版脱敏：列表与详情同一口径，正文与审核意见也纳入（§5.1.1/§5.1.2）===')
+    status, res = call('GET', f'/customers/{zs_customer_id}', token=zhangsan)
+    real_name = res['data']['name']
+    status, res = call('POST', '/cases', token=zhangsan, body={
+        # 标题与**正文**都带客户全称：正文此前根本没做全称替换，只有标题做了
+        'title': f'{real_name} 的返单打法',
+        'customer_id': zs_customer_id,
+        'customer_label': '某包装制品厂',
+        'stage_reached': 'repeat',
+        'key_actions': f'先给 {real_name} 做产前样，再锁产线档期',
+        'lessons': '交期紧就把生产计划表发过去',
+    })
+    share_case_id = res['data']['id']
+    call('POST', f'/cases/{share_case_id}/submit', token=zhangsan, body={})
+    # 审核意见里塞手机号与合同号：它也是自由文本，此前完全没进脱敏
+    call('POST', f'/cases/{share_case_id}/review', token=lisi,
+         body={'approve': True,
+               'note': f'已与 {real_name} 的 13800138000 复核，合同 HT2024-7788 已归档'})
+
+    status, detail = call('GET', f'/cases/{share_case_id}', token=wangwu)
+    status, listing = call('GET', f'/cases?keyword={RUN}&page_size=200', token=wangwu)
+    row = next((r for r in listing['data'] if r['id'] == share_case_id), None)
+    check_true('分享视角列表里能找到这条', row is not None, '')
+    if row:
+        check_true('列表标题不含客户全称（此前列表比详情松）',
+                   real_name not in (row.get('title') or ''), str(row.get('title')))
+        # 这条是 §5.1.1 的核心：两个视角不许各脱各的
+        check('列表与详情的标题同口径', row.get('title'), detail['data'].get('title'))
+        check_true('列表正文里的客户全称也被换成代称',
+                   real_name not in (row.get('key_actions') or ''),
+                   str(row.get('key_actions')))
+    check_true('详情正文里的客户全称被换成代称（此前只做了标题）',
+               real_name not in (detail['data'].get('key_actions') or ''),
+               str(detail['data'].get('key_actions')))
+    check_true('正文里出现的是代称',
+               '某包装制品厂' in (detail['data'].get('key_actions') or ''),
+               str(detail['data'].get('key_actions')))
+    note = detail['data'].get('review_note') or ''
+    check_true('审核意见里的手机号被脱敏', '13800138000' not in note, note)
+    check_true('审核意见里的合同号被脱敏', 'HT2024-7788' not in note, note)
+    # 只吃到 `HT2024`、留下 `-7788` 是**半截泄露**：要求整个号都不剩
+    check_true('合同号没有留下半截（HT2024-7788 的尾段也要吃掉）',
+               '7788' not in note, note)
+    check_true('受控片段被换成占位符（不是整段消失）', '〔' in note, note)
+    check_true('脱敏统计里能看到"客户名"这一类',
+               any('客户名' in item for item in (detail['data'].get('redaction_summary') or [])),
+               str(detail['data'].get('redaction_summary')))
+    # 作者看原文：脱敏只作用于分享视角
+    status, own = call('GET', f'/cases/{share_case_id}', token=zhangsan)
+    check_true('作者视角仍是原文（脱敏不误伤作者）',
+               real_name in (own['data'].get('key_actions') or ''),
+               str(own['data'].get('key_actions')))
+
+    print()
+    print('=== 12.2 案例证据：显式 null 能解除、引用必须同客户且在范围内（§5.1.3/§5.1.4）===')
+    # 两个客户各挂一张报价：用来验"别人的单子挂不上来"
+    status, res = call('POST', '/customers', token=zhangsan,
+                       body={'name': f'CHK{RUN}案例第二客户'})
+    other_customer_id = res['data']['id']
+    CREATED_CUSTOMER_IDS.append(other_customer_id)
+    status, res = call('POST', '/opportunities', token=zhangsan,
+                       body={'customer_id': zs_customer_id, 'title': f'CHK{RUN}证据商机A'})
+    ev_opp_a = res['data']['id']
+    status, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': ev_opp_a})
+    ev_quote_a = res['data']['quote_id']
+    status, res = call('POST', '/opportunities', token=zhangsan,
+                       body={'customer_id': other_customer_id, 'title': f'CHK{RUN}证据商机B'})
+    ev_opp_b = res['data']['id']
+    status, res = call('POST', '/quotes', token=zhangsan, body={'opportunity_id': ev_opp_b})
+    ev_quote_b = res['data']['quote_id']
+    check_true('两张报价都建好了（夹具前提）',
+               bool(ev_quote_a) and bool(ev_quote_b), f'{ev_quote_a}/{ev_quote_b}')
+
+    # ① 同客户的报价可以挂
+    status, res = call('POST', '/cases', token=zhangsan, body={
+        'title': f'CHK{RUN}证据校验用例',
+        'customer_id': zs_customer_id,
+        'customer_label': '某包装制品厂',
+        'quote_id': ev_quote_a,
+        'problem_tags': ['价格异议'],
+    })
+    check('挂同客户的报价可以建案例', res.get('code'), 0)
+    ev_case_id = res['data']['id']
+    check('报价关联已写入', res['data']['quote_id'], ev_quote_a)
+    check('问题标签已写入', res['data']['problem_tags'], ['价格异议'])
+
+    # ② 别的客户的单子挂不上来（同客户校验；前端候选筛选不是安全校验）
+    status, res = call('PATCH', f'/cases/{ev_case_id}', token=zhangsan,
+                       body={'quote_id': ev_quote_b})
+    check('挂别的客户的报价被拒（同客户校验）', res.get('code'), 40001)
+
+    # ③ 不存在的单据 → 404（"引用必须存在"）
+    status, res = call('PATCH', f'/cases/{ev_case_id}', token=zhangsan,
+                       body={'quote_id': 999999999})
+    check('挂不存在的报价被拒', status, 404)
+
+    # ④ 显式 null = 解除关联（原来 `if value is not None` 一律跳过，解除不了）
+    status, res = call('PATCH', f'/cases/{ev_case_id}', token=zhangsan,
+                       body={'quote_id': None})
+    check('显式 null 能解除报价关联', res.get('code'), 0)
+    check('报价关联确实被清掉', res['data']['quote_id'], None)
+    status, res = call('PATCH', f'/cases/{ev_case_id}', token=zhangsan,
+                       body={'problem_tags': []})
+    check('传空数组能清掉问题标签', res['data']['problem_tags'], [])
+
+    # ⑤ 换客户时不能把旧客户的证据留在身上（§5.1.4 说的"残留旧客户证据"）
+    status, res = call('POST', '/cases', token=zhangsan, body={
+        'title': f'CHK{RUN}换客户用例', 'customer_id': zs_customer_id,
+        'quote_id': ev_quote_a,
+    })
+    swap_case = res['data']['id']
+    status, res = call('PATCH', f'/cases/{swap_case}', token=zhangsan,
+                       body={'customer_id': other_customer_id})
+    check('换客户但留着旧客户的证据 → 被拒', res.get('code'), 40001)
+    status, res = call('PATCH', f'/cases/{swap_case}', token=zhangsan,
+                       body={'customer_id': other_customer_id, 'quote_id': None})
+    check('换客户同时解除旧证据 → 通过', res.get('code'), 0)
+    check('客户已换成第二家', res['data']['customer_id'], other_customer_id)
+
+    print()
     print('=== 13. 定制询价修订链（§3.3：改了三次要求要能看出怎么变的）===')
     status, res = call('POST', '/custom-inquiries', token=zhangsan, body={
         'title': f'CHK{RUN}定制礼盒', 'description': '客户要天地盖礼盒，烫金',

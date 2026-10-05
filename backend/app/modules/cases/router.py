@@ -59,6 +59,14 @@ async def create_case(
 ):
     if payload.customer_id:
         await customer_service.get_visible_customer(session, user, payload.customer_id)
+    # 证据单据必须**存在、同客户、在数据范围内**（§5.1.3）：
+    # 前端的候选筛选只是方便，直接调 API 就能挂上别人的单子——
+    # 挂上以后详情页的"证据单据"就是一条越权读入口。
+    await svc.validate_evidence(
+        session, user=user, customer_id=payload.customer_id,
+        quote_id=payload.quote_id, order_id=payload.order_id,
+        sample_id=payload.sample_id, opportunity_id=payload.opportunity_id,
+    )
     fields = payload.model_dump()
     tags = fields.pop("problem_tags") or []
     case = SalesCase(
@@ -101,6 +109,13 @@ async def update_case(
     if payload.customer_id is not None and payload.customer_id != case.customer_id:
         await customer_service.get_visible_customer(session, user, payload.customer_id)
     svc._apply_update(case, payload)
+    # 用**改完之后的**关联值再校验一遍（§5.1.3）：换客户的同时可能把旧客户的
+    # 报价/订单留在身上，或者新挂了不属于该客户的证据——两种情况都要拦住
+    await svc.validate_evidence(
+        session, user=user, customer_id=case.customer_id,
+        quote_id=case.quote_id, order_id=case.order_id,
+        sample_id=case.sample_id, opportunity_id=case.opportunity_id,
+    )
     case.updated_at = datetime.now(UTC)
     await write_audit(
         session,

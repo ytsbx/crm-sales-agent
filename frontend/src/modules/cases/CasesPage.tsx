@@ -16,6 +16,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import {
   createCase,
+  getCase,
   listCases,
   reviewCase,
   submitCase,
@@ -78,6 +79,21 @@ export default function CasesPage() {
   const [editId, setEditId] = useState<number | null>(null)
   const [form, setForm] = useState(EMPTY_FORM)
   const [detail, setDetail] = useState<CaseRow | null>(null)
+
+  // 打开详情时**重新拉一次详情接口**，而不是直接拿列表那条记录渲染。
+  // 列表与详情是两套序列化，历史上就漂移过（列表标题带着客户全称、详情已换成代称），
+  // 而详情直接用列表记录打开会把这种漂移放大成"分享版泄露客户身份"（§5.1.1）。
+  // 先用列表记录占位避免弹窗空一下，拿到详情后覆盖。
+  const openDetail = async (row: CaseRow) => {
+    setDetail(row)
+    try {
+      const full = await getCase(row.id)
+      // 期间用户可能已经关掉或换了另一条，只认仍然是同一条的那个响应
+      setDetail((current) => (current && current.id === row.id ? full : current))
+    } catch {
+      // 拉详情失败就保持列表那份（它同样已按分享口径脱敏），不把弹窗关掉
+    }
+  }
 
   // 证据单据（§3.7）：选了客户才去拉这个客户的报价/订单/打样
   const evidenceCustomerId = editVisible ? form.customer_id : undefined
@@ -223,7 +239,7 @@ export default function CasesPage() {
               width: 200,
               render: (_: unknown, record: CaseRow) => (
                 <span style={{ display: 'inline-flex', gap: 10 }}>
-                  <a onClick={() => setDetail(record)}>详情</a>
+                  <a onClick={() => void openDetail(record)}>详情</a>
                   {(record.status === 'draft' || record.status === 'rejected') && (
                     <>
                       <a onClick={() => openEdit(record)}>编辑</a>
