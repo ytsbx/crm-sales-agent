@@ -132,6 +132,13 @@ async def cleanup():
             # 清理语句直接报 UndefinedColumn、整段 cleanup 中止，残留被守门套件抓到），
             # 只能按"挂在测试客户上"清。
             f"delete from logistics_quotes where customer_id in {cust}",
+            # 产品附件挂载夹具（越权下载通道回归，见 main 的 3.0）：
+            # 必须先删关联与审计再删文件本体，顺序反了会被 business_files 的外键挡住。
+            "delete from business_files where file_id in "
+            "(select id from files where file_name like :p)",
+            "delete from audit_logs where business_type = 'product' and action = 'attach' "
+            "and after_data->>'file_name' like :p",
+            "delete from files where file_name like :p",
             "delete from customers where name like :p",
             "delete from user_roles where user_id in (select id from users where username like :u)",
             "delete from user_roles where role_id in (select id from roles where code like :r)",
@@ -336,6 +343,47 @@ async def main() -> int:
     print('=== 3. 文件挂载（别人的客户）===')
     check_denied('他人往别人客户上挂附件',
                  call('POST', f'/business/customer/{cid}/files?file_id=1', outsider_token)[0])
+
+    print('=== 3.0 产品附件挂载不能成为越权下载通道 ===')
+    # 通用挂载入口（file/router.py）两个方向都校验：目标对象可见 + **源文件可见**。
+    # 产品这个别名入口（POST /products/{id}/files）曾经只校验目标产品存在，
+    # 于是成了越权通道：产品属 NO_OWNER_TYPES（对所有人可见），而 can_access_file
+    # 只要有一条可见关联就放行 —— 把别人的 file_id 挂到任意产品上即可下载别人的原件。
+    from app.modules.file.model import BusinessFile, FileRecord
+    from app.modules.product.model import Product
+
+    async with SessionLocal() as s:
+        product_id = (
+            await s.execute(select(Product.id).where(Product.deleted_at.is_(None)).limit(1))
+        ).scalar_one()
+        victim_file = FileRecord(
+            storage_provider='local',
+            object_key=f'_fixture/{PREFIX}-victim.pdf',
+            file_name=f'{PREFIX}-victim.pdf',
+            mime_type='application/pdf',
+            size=8,
+            checksum='0' * 64,
+            uploaded_by=owner.id,  # 等同于张三上传：别人一律不可见
+        )
+        s.add(victim_file)
+        await s.flush()
+        victim_file_id = victim_file.id
+        await s.commit()
+
+    check_denied('他人把别人的文件挂到产品上（越权下载通道）',
+                 call('POST', f'/products/{product_id}/files?file_id={victim_file_id}',
+                      outsider_token)[0])
+    async with SessionLocal() as s:
+        leaked = (
+            await s.execute(
+                select(BusinessFile.id).where(BusinessFile.file_id == victim_file_id)
+            )
+        ).scalars().all()
+    # 挂上了就等于授权了：越权请求即使只回 403、关联却已落库，文件也已经漏了。
+    check('越权挂载未留下任何关联', len(leaked), 0)
+    check('上传者自己挂自己的文件（对照）',
+          call('POST', f'/products/{product_id}/files?file_id={victim_file_id}',
+               owner_token)[0], 200)
 
     print('=== 3.1 客户 / 报价删除的数据范围 ===')
     check_denied('有分配权限的他人仍不能发起别人的撞单检查',

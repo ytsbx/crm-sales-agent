@@ -420,6 +420,15 @@ async def attach_product_file(
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, f"文件 id={file_id} 不存在", 404)
 
+    # 与 `POST /business/{business_type}/{business_id}/files` 同一纪律：**两个方向都要校验**。
+    # 这里曾经只校验目标产品存在、不校验源文件可见性，于是成了越权下载通道——
+    # `product` 属 NO_OWNER_TYPES（全员可见），而 `can_access_file` 只要有一条可见关联就放行，
+    # 所以"挂一条关联"本身就等于授权：把别人的 file_id 挂到任意产品上即可下载别人的原件。
+    from app.modules.file.access import can_access_file
+
+    if not await can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
+
     link = BusinessFile(
         business_type="product",
         business_id=product_id,
