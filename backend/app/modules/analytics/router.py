@@ -155,6 +155,29 @@ async def refreeze_sales_target_bases(
     )
 
 
+@router.get("/sales-targets/drilldown")
+async def sales_target_drilldown(
+    period: str = Query(..., description="YYYY-MM"),
+    metric: str = Query(..., description="signed / shipped / received / new_customer / repeat_net"),
+    user_id: int | None = None,
+    department_id: int | None = None,
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """把某个指标的某个（期间, 作用域）拆到**具体业务记录**（§4.3 可追溯明细）。
+
+    目标页给出的差额要能一路点回到是哪几张单、哪几个发货批次、哪几笔回款——
+    文档要求"所有断言应定位到业务记录或批次，而不是只比汇总数字"。
+    合计与 `sales-targets` / `sales-targets/bases` 用同一套口径与筛选。
+    """
+    return ok(
+        await targets_svc.drilldown(
+            session, user, period=period, metric=metric,
+            user_id=user_id, department_id=department_id,
+        )
+    )
+
+
 @router.post("/sales-targets/upsert")
 async def upsert_sales_target(
     payload: SalesTargetUpsert,

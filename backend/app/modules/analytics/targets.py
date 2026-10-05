@@ -607,3 +607,212 @@ async def upsert_target(
         ) from exc
     await session.refresh(row)
     return row, created, before
+
+
+# --------------------------------------------------------------- 可追溯明细（§4.3）
+
+#: 可以下钻到业务记录的指标。键与 `targets_with_actuals` 返回的行字段对应。
+DRILLDOWN_METRICS = {
+    "signed": "签单额（sales_orders）",
+    "shipped": "发货额（发货批次 × 行实发数量）",
+    "received": "回款额（考核口径，payment_records）",
+    "new_customer": "新客（首次成交口径，customers）",
+    "repeat_net": "老客净额（期初老客池的订单）",
+}
+
+#: 下钻一次最多返回多少条明细（再多的用合计与筛选条件表达，不塞爆响应）
+DRILLDOWN_LIMIT = 200
+
+
+def _row(record_type: str, record_id: int, label: str | None, owner_id: int | None,
+         amount: float, at) -> dict:
+    return {
+        "record_type": record_type,
+        "id": record_id,
+        "label": label,
+        "owner_id": owner_id,
+        "amount": round(amount, 2),
+        "date": at.isoformat() if hasattr(at, "isoformat") else (str(at) if at else None),
+    }
+
+
+async def drilldown(
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    period: str,
+    metric: str,
+    user_id: int | None = None,
+    department_id: int | None = None,
+) -> dict:
+    """把某个指标的某个 (期间, 作用域) 拆到**具体业务记录**（§4.3）。
+
+    为什么必须有它：文档要求"所有断言应定位到业务记录或批次，而不是只比汇总数字"。
+    目标页给出的差额要能一路点回到是哪几张单、哪几个发货批次、哪几笔回款。
+    合计与 `targets_with_actuals` / `annual_bases` 用的是**同一套口径与筛选**，
+    否则"明细加起来对不上汇总"比没有明细更糟。
+    """
+    period = normalize_period(period)
+    if metric not in DRILLDOWN_METRICS:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"未知指标：{metric}；可选：{'、'.join(DRILLDOWN_METRICS)}",
+            422,
+        )
+    if user_id is not None and department_id is not None:
+        raise AppError(ErrorCode.PARAM_ERROR, "user_id 与 department_id 不能同时指定", 422)
+
+    # 作用域 → 负责人集合（None = all，不限）
+    scope_ids = await _visible_owner_ids(session, user)
+    if department_id is not None:
+        allowed = await _visible_department_ids(session, user)
+        if allowed is not None and department_id not in allowed:
+            raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权查看该部门的指标明细", 403)
+        members = await department_member_ids(session, department_id)
+        scope_ids = (
+            members if scope_ids is None else [x for x in members if x in set(scope_ids)]
+        )
+        scope_label = f"部门#{department_id}（含下级）"
+    elif user_id is not None:
+        if scope_ids is not None and user_id not in scope_ids:
+            raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权查看该负责人的指标明细", 403)
+        scope_ids = [user_id]
+        scope_label = f"负责人#{user_id}"
+    else:
+        scope_label = "当前数据范围（不限人）" if scope_ids is None else "当前数据范围"
+
+    year, month = int(period[:4]), int(period[5:7])
+    items: list[dict] = []
+
+    if metric == "signed":
+        stmt = select(
+            SalesOrder.id, SalesOrder.order_no, SalesOrder.owner_id,
+            SalesOrder.total_amount, SalesOrder.created_at,
+        ).where(
+            SalesOrder.status != "cancelled",
+            func.extract("year", SalesOrder.created_at) == year,
+            func.extract("month", SalesOrder.created_at) == month,
+        )
+        if scope_ids is not None:
+            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+        for record_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
+            items.append(_row("order", record_id, order_no, owner, float(amount or 0), at))
+
+    elif metric == "shipped":
+        stmt = (
+            select(
+                OrderShipmentBatch.id,
+                SalesOrder.order_no,
+                OrderShipmentBatch.batch_no,
+                SalesOrder.owner_id,
+                func.coalesce(
+                    func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
+                ),
+                OrderShipmentBatch.actual_ship_date,
+            )
+            .select_from(OrderShipmentBatch)
+            .join(
+                OrderShipmentBatchItem,
+                OrderShipmentBatchItem.batch_id == OrderShipmentBatch.id,
+            )
+            .join(SalesOrderItem, SalesOrderItem.id == OrderShipmentBatchItem.order_item_id)
+            .join(SalesOrder, SalesOrder.id == OrderShipmentBatch.order_id)
+            .where(
+                OrderShipmentBatch.status == "shipped",
+                OrderShipmentBatch.actual_ship_date.is_not(None),
+                func.extract("year", OrderShipmentBatch.actual_ship_date) == year,
+                func.extract("month", OrderShipmentBatch.actual_ship_date) == month,
+                SalesOrder.status != "cancelled",
+            )
+            .group_by(
+                OrderShipmentBatch.id,
+                SalesOrder.order_no,
+                OrderShipmentBatch.batch_no,
+                SalesOrder.owner_id,
+                OrderShipmentBatch.actual_ship_date,
+            )
+        )
+        if scope_ids is not None:
+            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+        for batch_id, order_no, batch_no, owner, amount, ship_date in (
+            await session.execute(stmt)
+        ).all():
+            items.append(
+                _row("shipment_batch", batch_id, f"{order_no} 第{batch_no}批", owner,
+                     float(amount or 0), ship_date)
+            )
+
+    elif metric == "received":
+        stmt = (
+            select(
+                PaymentRecord.id, SalesOrder.order_no, SalesOrder.owner_id,
+                PaymentRecord.received_amount, PaymentRecord.received_date,
+            )
+            .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
+            .where(
+                PaymentRecord.status == "confirmed",
+                SalesOrder.status != "cancelled",
+                func.extract("year", PaymentRecord.received_date) == year,
+                func.extract("month", PaymentRecord.received_date) == month,
+            )
+        )
+        if scope_ids is not None:
+            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+        for pay_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
+            items.append(
+                _row("payment", pay_id, order_no, owner, float(amount or 0), at)
+            )
+
+    elif metric == "new_customer":
+        # 用**首次成交**口径（考核口径）：客户集合与月份都来自已冻结的基准，
+        # 与 `annual_bases` 的 `new_by_first_deal` 同源
+        _veterans, first_deal_month, _meta = await target_bases.basis_for(session, year)
+        month_key = f"{year}-{month:02d}"
+        wanted = [int(cid) for cid, m in first_deal_month.items() if m == month_key]
+        if wanted:
+            stmt = select(
+                Customer.id, Customer.name, Customer.owner_id, Customer.created_at
+            ).where(Customer.deleted_at.is_(None), Customer.id.in_(wanted))
+            if scope_ids is not None:
+                stmt = stmt.where(Customer.owner_id.in_(scope_ids or [0]))
+            for cid, name, owner, at in (await session.execute(stmt)).all():
+                items.append(_row("customer", cid, name, owner, 0.0, at))
+
+    else:  # repeat_net
+        veterans, _first_deal, _meta = await target_bases.basis_for(session, year)
+        stmt = select(
+            SalesOrder.id, SalesOrder.order_no, SalesOrder.owner_id,
+            SalesOrder.total_amount, SalesOrder.created_at,
+        ).where(
+            SalesOrder.status != "cancelled",
+            SalesOrder.customer_id.in_(veterans or [0]),
+            func.extract("year", SalesOrder.created_at) == year,
+            func.extract("month", SalesOrder.created_at) == month,
+        )
+        if scope_ids is not None:
+            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+        for record_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
+            items.append(_row("order", record_id, order_no, owner, float(amount or 0), at))
+
+    total = sum(item["amount"] for item in items)
+    items.sort(key=lambda x: (x["date"] or "", -x["amount"]))
+    return {
+        "period": period,
+        "metric": metric,
+        "metric_label": DRILLDOWN_METRICS[metric],
+        "scope": scope_label,
+        "scope_user_ids": scope_ids,
+        "count": len(items),
+        "total": round(total, 2),
+        "items": items[:DRILLDOWN_LIMIT],
+        "truncated": len(items) > DRILLDOWN_LIMIT,
+        # 口径元数据随明细一起给（§4.3：实际值 + 来源 + 口径版本 + 计算时间）
+        "metric_basis_version": METRIC_BASIS_VERSION,
+        "sources": METRIC_SOURCES.get(
+            {"new_customer": "new_customer_actual", "repeat_net": "repeat_customer_actual"}.get(
+                metric, f"{metric}_actual"
+            ),
+            METRIC_SOURCES.get("assess_actual"),
+        ),
+        "computed_at": datetime.now(UTC).isoformat(),
+    }

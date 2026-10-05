@@ -573,6 +573,56 @@ async def main():
         check('快照确实落库（一行一年）', len(snapshot_rows), 1)
         check('快照里的口径版本一致', snapshot_rows[0][0], target_bases.BASIS_VERSION)
 
+        # 收干净：本段自己造的快照（订单按 CHKTGT 前缀由 cleanup 收）
+        await s.execute(
+            text('delete from analytics_basis_snapshots where year = :y'), {'y': past_year}
+        )
+        await s.commit()
+
+        # === 9. 可追溯明细：汇总能点回到业务记录（§4.3）===
+        print('=== 9. 可追溯明细（汇总 → 具体单据/批次）===')
+        live = await target_bases.annual_bases(s, user, YEAR)
+        lm = lambda key, m: next(  # noqa: E731
+            x['value'] for x in live[key] if x['month'] == m
+        )
+
+        dd = await targets_svc.drilldown(s, user, period=f'{YEAR}-03', metric='signed')
+        check('签单明细合计 = 汇总口径（3 月 400）', dd['total'], lm('signed', '03'))
+        check('签单明细条数', dd['count'], 1)
+        check_true('签单明细定位到具体订单（带 id 与单号）',
+                   all(i['record_type'] == 'order' and i['id'] and i['label']
+                       for i in dd['items']),
+                   str(dd['items'])[:140])
+        check('签单明细带口径版本', dd['metric_basis_version'],
+              targets_svc.METRIC_BASIS_VERSION)
+
+        dd_pay = await targets_svc.drilldown(s, user, period=f'{YEAR}-05', metric='received')
+        check('回款明细合计 = 汇总口径（5 月 700）', dd_pay['total'], lm('received', '05'))
+        check_true('回款明细定位到具体回款记录',
+                   any(i['record_type'] == 'payment' for i in dd_pay['items']),
+                   str(dd_pay['items'])[:140])
+
+        # 分批发货那条最要紧：明细必须给出**批次**，而不是只给订单——
+        # 否则"10 月发 10 件、11 月发 90 件"没法核对到底哪批算错了
+        dd_ship = await targets_svc.drilldown(s, user, period=f'{YEAR}-11', metric='shipped')
+        check('发货明细合计 = 汇总口径（11 月 900）', dd_ship['total'], lm('shipped', '11'))
+        check('11 月只有一个批次', dd_ship['count'], 1)
+        check_true('发货明细定位到批次（不是只给订单）',
+                   all(i['record_type'] == 'shipment_batch' for i in dd_ship['items']),
+                   str(dd_ship['items'])[:140])
+        check('批次金额 = 90 件 × 10 元',
+              dd_ship['items'][0]['amount'] if dd_ship['items'] else None, 900.0)
+
+        # 数据范围：下钻别人的明细要被拒（不能拿别人的 user_id 套出明细）
+        try:
+            await targets_svc.drilldown(
+                s, user, period=f'{YEAR}-03', metric='signed', user_id=outsider_id
+            )
+            denied = None
+        except AppError as exc:
+            denied = exc.code
+        check('下钻别人的明细被拒（数据范围）', denied, ErrorCode.DATA_SCOPE_DENIED)
+
         # 收干净：本段自己造的快照与订单（订单按 CHKTGT 前缀由 cleanup 收）
         await s.execute(
             text('delete from analytics_basis_snapshots where year = :y'), {'y': past_year}
