@@ -11,7 +11,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.cases import service as svc
-from app.modules.cases.model import SalesCase
+from app.modules.cases.model import CASE_STATUS_LABEL, SalesCase
 from app.modules.cases.schema import CaseCreate, CaseReview, CaseUpdate
 from app.modules.customer import service as customer_service
 
@@ -29,6 +29,9 @@ async def list_cases(
     product_line: str | None = Query(None),
     stage: str | None = Query(None),
     keyword: str | None = Query(None),
+    include_history: bool = Query(
+        False, description="是否包含已被修订版取代的历史版本（默认只列当前版本）"
+    ),
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -36,6 +39,7 @@ async def list_cases(
         await svc.list_cases(
             session, user=user, status=status, industry=industry,
             product_line=product_line, stage=stage, keyword=keyword,
+            include_history=include_history,
         )
     )
 
@@ -102,6 +106,17 @@ async def update_case(
     is_author = case.author_id == user.id
     if not is_author and not svc.is_reviewer(user):
         _forbid("只有作者或主管能修改案例")
+    # **已发布 / 已被取代的版本只读**（§5.1.5，已确认口径＝修订稿）：
+    # 审核批的是"这一版内容"，改完内容还挂着"已发布"，等于复用了一个对不上号的
+    # 审核结论。连主管也不能原地改——要改就开修订稿重新走审核。
+    if case.status in ("published", "superseded"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该案例是「{CASE_STATUS_LABEL.get(case.status, case.status)}」，不能原地修改"
+            f"（审核批的是这一版内容）。请开修订稿：POST /cases/{case.id}/revise，"
+            f"重新审核通过后替换当前发布版；当前版本继续可供培训。",
+            422,
+        )
     if case.status not in ("draft", "rejected") and not svc.is_reviewer(user):
         _forbid("已提交的案例只有主管能修改")
     # 与创建同一纪律：改挂客户必须校验该客户在当前用户数据范围内——
@@ -148,6 +163,40 @@ async def submit_case(
     )
     await session.commit()
     return ok(svc.serialize_case(case, reveal_customer=True), "已提交审核")
+
+
+@router.post("/cases/{case_id}/revise")
+async def revise_case(
+    case_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """从已发布的案例开一份**修订稿**（§5.1.5，已确认口径＝修订稿）。
+
+    已发布版继续可供培训（不改动、不断档），修订稿是一份新的草稿：
+    改完 → 提交审核 → 主管批准 → **替换当前发布版**，原版转「已被修订版取代」。
+    审核结论不继承——修订稿还没被批过。
+    """
+    case = await svc.get_case_or_404(session, case_id)
+    if case.author_id != user.id and not svc.is_reviewer(user):
+        _forbid("只有作者或主管能开修订稿")
+    revision = await svc.revise_case(session, case=case, user=user)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="revise",
+        business_type="case",
+        business_id=revision.id,
+        before={"revision_of_id": case.id, "version": case.version or 1},
+        after={"id": revision.id, "version": revision.version},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        await svc.get_case_detail(session, case=revision, user=user),
+        f"已开第 {revision.version} 版修订稿（草稿），原版继续可供培训",
+    )
 
 
 @router.post("/cases/{case_id}/review")

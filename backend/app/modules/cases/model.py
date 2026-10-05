@@ -20,6 +20,8 @@ CASE_STATUS_LABEL = {
     "pending_review": "待审核",
     "published": "已发布",
     "rejected": "已驳回",
+    #: 已被新修订版取代（§5.1.5）：内容不再改动，仍可按已发布口径阅读
+    "superseded": "已被修订版取代",
 }
 
 
@@ -28,6 +30,8 @@ class SalesCase(Base, IdMixin):
     __table_args__ = (
         Index("ix_sales_cases_status", "status"),
         Index("ix_sales_cases_customer", "customer_id"),
+        # 列表要按"有没有被修订版取代"过滤，给它一个索引
+        Index("ix_sales_cases_revision_of", "revision_of_id"),
     )
 
     title: Mapped[str] = mapped_column(String(200))
@@ -55,6 +59,17 @@ class SalesCase(Base, IdMixin):
     sample_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     opportunity_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="draft")
+    # ---- 修订版与审核历史（第四批 §5.1.5，口径已确认＝修订稿）----
+    # 已发布案例**不允许原地改**：批准的是 A 版内容，改完变成 B 版却被复用审核结论。
+    # 要改就另开修订稿重新走审核，批准后替换当前发布版；被取代的那一版转 superseded。
+    version: Mapped[int] = mapped_column(BigInteger, default=1, server_default="1", nullable=False)
+    revision_of_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sales_cases.id"), nullable=True
+    )
+    #: 逐条追加的审核历史（轮次/结论/意见/审核人/时间）。
+    #: 原来只有一个 `review_note` 单值，下一次审核就把它覆盖了——"被驳回过几次、
+    #: 每次谁批的"事后查不出来。与打样"制作完成"的结构化事件同一套做法。
+    review_history: Mapped[list | None] = mapped_column(JSONType, nullable=True)
     reviewer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(String(255), nullable=True)

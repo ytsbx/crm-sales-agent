@@ -842,6 +842,68 @@ async def main():
     check('客户已换成第二家', res['data']['customer_id'], other_customer_id)
 
     print()
+    print('=== 12.3 已发布案例只读 + 修订稿 + 审核历史累加（§5.1.5）===')
+    # 用 12 节那条已发布案例（lisi 批过、note='做法可复制，通过'）
+    status, res = call('PATCH', f'/cases/{case_id}', token=zhangsan,
+                       body={'key_actions': '偷偷改关键内容'})
+    check('作者改已发布案例被拒（审核批的是那一版内容）', status, 422)
+    status, res = call('PATCH', f'/cases/{case_id}', token=lisi,
+                       body={'key_actions': '主管也偷偷改'})
+    check('主管改已发布案例也被拒（要改就开修订稿）', status, 422)
+
+    status, res = call('POST', f'/cases/{case_id}/revise', token=zhangsan, body={})
+    check('可以开修订稿', res.get('code'), 0)
+    revision_id = res['data']['id']
+    check('修订稿版本号 = 原版 + 1', res['data']['version'], 2)
+    check('修订稿指向原版', res['data']['revision_of_id'], case_id)
+    check('修订稿是草稿（不继承审核结论）', res['data']['status'], 'draft')
+    check('修订稿的审核历史是空的', res['data']['review_history'], [])
+    check('修订稿继承了正文内容',
+          res['data']['key_actions'], '产前样提前三天确认，锁定产线档期')
+
+    # 驳回一次再批准：审核历史必须**逐条累加**（原来只有一个 review_note 单值，
+    # 下一次审核就把它覆盖了，"被驳回过几次"事后查不出来）
+    call('POST', f'/cases/{revision_id}/submit', token=zhangsan, body={})
+    call('POST', f'/cases/{revision_id}/review', token=lisi,
+         body={'approve': False, 'note': '先补充证据'})
+    status, res = call('GET', f'/cases/{revision_id}', token=zhangsan)
+    check('驳回后修订稿状态', res['data']['status'], 'rejected')
+    check('驳回留了一条审核历史', len(res['data']['review_history']), 1)
+    check('第一条历史的结论是驳回', res['data']['review_history'][0]['approve'], False)
+
+    call('PATCH', f'/cases/{revision_id}', token=zhangsan,
+         body={'key_actions': '产前样提前三天确认，锁定产线档期（补了证据）'})
+    call('POST', f'/cases/{revision_id}/submit', token=zhangsan, body={})
+    status, res = call('POST', f'/cases/{revision_id}/review', token=lisi,
+                       body={'approve': True, 'note': '这次可以'})
+    check('修订稿批准后发布', res['data']['status'], 'published')
+    check('审核历史累加到两条（不是只剩最后一条）',
+          len(res['data']['review_history']), 2)
+    check('两条历史分别是驳回与批准',
+          [h['approve'] for h in res['data']['review_history']], [False, True])
+    check('历史里带着轮次', [h['round'] for h in res['data']['review_history']], [1, 2])
+
+    # 原版转「已被修订版取代」，但仍可读（培训不断档）
+    status, res = call('GET', f'/cases/{case_id}', token=zhangsan)
+    check('原版转为已被取代', res['data']['status'], 'superseded')
+    check('原版标出被哪一版取代', res['data']['superseded_by'], revision_id)
+    check_true('原版内容仍在（培训不断档）',
+               '产前样' in (res['data'].get('key_actions') or ''),
+               str(res['data'].get('key_actions')))
+    check('原版保留了它自己那一轮审核历史',
+          len(res['data']['review_history']), 1)
+
+    # 列表默认只列当前版本；历史版本要显式要
+    status, res = call('GET', f'/cases?keyword={RUN}&include_history=true&page_size=200',
+                       token=zhangsan)
+    ids_hist = [row['id'] for row in res['data']]
+    check('include_history=true 能看到被取代的原版', case_id in ids_hist, True)
+    status, res = call('GET', f'/cases?keyword={RUN}&page_size=200', token=zhangsan)
+    ids_now = [row['id'] for row in res['data']]
+    check('默认列表不含被取代的原版', case_id in ids_now, False)
+    check('默认列表含修订版', revision_id in ids_now, True)
+
+    print()
     print('=== 13. 定制询价修订链（§3.3：改了三次要求要能看出怎么变的）===')
     status, res = call('POST', '/custom-inquiries', token=zhangsan, body={
         'title': f'CHK{RUN}定制礼盒', 'description': '客户要天地盖礼盒，烫金',

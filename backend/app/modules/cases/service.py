@@ -26,6 +26,7 @@ def serialize_case(
     reviewer_name: str | None = None,
     reveal_customer: bool = False,
     evidence_scope: set[str] | None = None,
+    superseded_by: int | None = None,
 ) -> dict:
     """序列化。
 
@@ -114,6 +115,12 @@ def serialize_case(
         **evidence,
         "status": case.status,
         "status_label": CASE_STATUS_LABEL.get(case.status, case.status),
+        # 修订版（§5.1.5）：第几版、取代了谁、又被谁取代（superseded_by 有值即只读）
+        "version": case.version or 1,
+        "revision_of_id": case.revision_of_id,
+        "superseded_by": superseded_by,
+        # 逐条审核历史（原来只有 review_note 一个单值，下一次审核就覆盖）
+        "review_history": case.review_history or [],
         "reviewer_id": case.reviewer_id,
         "reviewer_name": reviewer_name,
         "reviewed_at": case.reviewed_at,
@@ -219,6 +226,7 @@ async def get_case_or_404(session: AsyncSession, case_id: int) -> SalesCase:
 async def list_cases(
     session: AsyncSession, *, user, status: str | None, industry: str | None,
     product_line: str | None, stage: str | None, keyword: str | None,
+    include_history: bool = False,
 ) -> list[dict]:
     """列表：已发布人尽可读（脱敏）；未发布的只有作者自己；主管看全量。
 
@@ -246,9 +254,31 @@ async def list_cases(
             | (SalesCase.lessons.like(like))
             | (SalesCase.key_actions.like(like))
         )
+    if not include_history:
+        # 默认只列**当前版本**：开过修订稿的案例否则会在列表里出现两份，看着像重复。
+        # 历史版本仍可按 id 打开（详情不受影响），也可显式传 include_history=true 列出。
+        stmt = stmt.where(
+            SalesCase.id.not_in(
+                select(SalesCase.revision_of_id).where(SalesCase.revision_of_id.is_not(None))
+            )
+        )
     rows = (
         await session.execute(stmt.order_by(SalesCase.created_at.desc()).limit(200))
     ).scalars().all()
+
+    # 一次查清"谁被谁取代了"（§5.1.5）：有修订版的那些是只读历史版本
+    child_of: dict[int, int] = {}
+    row_ids = [row.id for row in rows]
+    if row_ids:
+        for child_id, parent_id in (
+            await session.execute(
+                select(SalesCase.id, SalesCase.revision_of_id).where(
+                    SalesCase.revision_of_id.in_(row_ids),
+                    SalesCase.deleted_at.is_(None),
+                )
+            )
+        ).all():
+            child_of.setdefault(parent_id, child_id)
 
     author_ids = {row.author_id for row in rows}
     reviewer_ids = {row.reviewer_id for row in rows if row.reviewer_id}
@@ -284,6 +314,7 @@ async def list_cases(
             customer_name=customers.get(row.customer_id) if row.customer_id else None,
             reveal_customer=reviewer or row.author_id == user.id,
             evidence_scope=scope,
+            superseded_by=child_of.get(row.id),
         )
         for row in rows
     ]
@@ -306,6 +337,14 @@ async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> di
         customer_name = customer.name if customer else None
     author = await session.get(User, case.author_id)
     reviewer_user = await session.get(User, case.reviewer_id) if case.reviewer_id else None
+    # 这一版有没有被修订版取代（有则只读，界面要标出来）
+    child_id = (
+        await session.execute(
+            select(SalesCase.id)
+            .where(SalesCase.revision_of_id == case.id, SalesCase.deleted_at.is_(None))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     return serialize_case(
         case,
         author_name=author.name if author else None,
@@ -313,6 +352,7 @@ async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> di
         customer_name=customer_name,
         reveal_customer=reveal,
         evidence_scope=redaction.evidence_scope_for(user),
+        superseded_by=child_id,
     )
 
 
@@ -329,6 +369,7 @@ async def submit_case(session: AsyncSession, *, case: SalesCase, user) -> None:
 
 
 async def review_case(session: AsyncSession, *, case: SalesCase, user, approve: bool, note: str | None) -> None:
+    """审核。**逐条追加审核历史**，并在批准修订稿时替换掉被取代的那一版（§5.1.5）。"""
     if not is_reviewer(user):
         raise AppError(ErrorCode.FORBIDDEN, "只有销售主管/管理员能审核案例")
     if case.status != "pending_review":
@@ -337,4 +378,70 @@ async def review_case(session: AsyncSession, *, case: SalesCase, user, approve: 
     case.reviewer_id = user.id
     case.reviewed_at = datetime.now(UTC)
     case.review_note = note
+    # 审核历史逐条追加：`review_note` 是单值，下一次审核就把它覆盖了，
+    # 于是"被驳回过几次、每次谁批的、批的是哪一版"事后全查不出来。
+    history = list(case.review_history or [])
+    history.append({
+        "round": len(history) + 1,
+        "approve": bool(approve),
+        "note": note,
+        "reviewer_id": user.id,
+        "reviewed_at": case.reviewed_at.isoformat(),
+        "version": case.version or 1,
+    })
+    case.review_history = history
+
+    # 批准的是**修订稿** → 它替换被取代的那一版（已确认口径：修订稿）。
+    # 旧版转 `superseded`：内容不再改动，仍可按已发布口径阅读（培训不断档）。
+    if approve and case.revision_of_id:
+        original = await session.get(SalesCase, case.revision_of_id)
+        if original is not None and original.deleted_at is None:
+            if original.status != "superseded":
+                original.status = "superseded"
+                original.updated_at = datetime.now(UTC)
     await session.flush()
+
+
+async def revise_case(session: AsyncSession, *, case: SalesCase, user) -> SalesCase:
+    """从已发布的案例开一份**修订稿**（§5.1.5，已确认口径＝修订稿）。
+
+    为什么不能原地改：审核批的是"这一版内容"，改完内容再挂着"已发布"，
+    等于复用了一个对不上号的审核结论。所以已发布（以及已被取代）的版本**只读**，
+    要改就复制一份新的重新走审核；批准后新版本替换当前发布版。
+
+    修订稿继承原稿的全部内容与客户/证据引用（包括真实客户 id：内部字段，
+    可见性仍由各视角决定），但**不继承审核结论**——它还没被批过。
+    """
+    if case.status not in ("published", "superseded") and not is_reviewer(user):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "只有已发布（或已被取代）的案例才需要开修订稿；未发布的直接改就行",
+            422,
+        )
+    if case.status not in ("published", "superseded"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"当前状态（{CASE_STATUS_LABEL.get(case.status, case.status)}）不需要开修订稿，直接改就行",
+            422,
+        )
+    fields = {
+        field: getattr(case, field)
+        for field in (
+            "customer_id", "customer_label", "industry", "product_line", "stage_reached",
+            "problem_tags", "background", "goal", "key_actions", "objection_handling",
+            "process", "result", "lessons",
+            "quote_id", "order_id", "sample_id", "opportunity_id",
+        )
+    }
+    revision = SalesCase(
+        title=case.title,
+        author_id=case.author_id,
+        status="draft",
+        version=(case.version or 1) + 1,
+        revision_of_id=case.id,
+        created_at=datetime.now(UTC),
+        **fields,
+    )
+    session.add(revision)
+    await session.flush()
+    return revision
