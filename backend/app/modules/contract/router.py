@@ -49,6 +49,9 @@ async def create_template(
 async def list_documents(
     customer_id: int | None = Query(None),
     status: str | None = Query(None),
+    # 业务详情页用：订单/报价详情页只看"这一单相关的合同"，不拉整个台账
+    order_id: int | None = Query(None),
+    quote_id: int | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("order:view")),
@@ -60,6 +63,8 @@ async def list_documents(
         owner_ids=owner_ids,
         customer_id=customer_id,
         status=status,
+        order_id=order_id,
+        quote_id=quote_id,
         page=page,
         page_size=page_size,
     )

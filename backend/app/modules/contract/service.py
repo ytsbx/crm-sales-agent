@@ -702,6 +702,8 @@ async def list_documents(
     owner_ids: list[int] | None,
     customer_id: int | None,
     status: str | None,
+    order_id: int | None = None,
+    quote_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
@@ -711,6 +713,10 @@ async def list_documents(
 
     2026-10-05 之前这里是 `.limit(500)` 硬顶：第 501 份合同在页面上永远不出现，
     而且没有任何提示——用户只会以为"一共就这么些"。
+
+    order_id / quote_id 是给业务详情页用的（从订单、报价点进来看"这单签了什么"）。
+    做成服务端筛选而不是前端把全量拉回来本地过滤：台账分页之后，
+    本地那点数据根本不完整，第 21 份以后就直接看不见了。
     """
     stmt = (
         select(ContractDocument)
@@ -719,6 +725,10 @@ async def list_documents(
     )
     if customer_id:
         stmt = stmt.where(ContractDocument.customer_id == customer_id)
+    if order_id:
+        stmt = stmt.where(ContractDocument.order_id == order_id)
+    if quote_id:
+        stmt = stmt.where(ContractDocument.quote_id == quote_id)
     if status:
         stmt = stmt.where(ContractDocument.status == status)
     if owner_ids is not None:

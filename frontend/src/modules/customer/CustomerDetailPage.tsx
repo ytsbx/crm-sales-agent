@@ -30,6 +30,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { Contact } from '../../shared/types'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import AgentInsight from '../../shared/components/AgentInsight'
 import { agentCustomerSummary, agentFollowupSuggestion, type AnalysisEnvelope } from '../../shared/api/agent'
 import FollowUpModal from '../common/FollowUpModal'
@@ -663,6 +664,14 @@ export default function CustomerDetailPage() {
           )}
         </div>
       </SectionCard>
+
+      {activeKey === 'overview' && (
+        <ContractDocsPanel
+          customerId={customerId}
+          style={{ marginTop: 16 }}
+          empty="这家客户还没有合同文档——去合同台账按模板生成"
+        />
+      )}
 
       {activeKey === 'overview' && can('agent:use') && (
         <SectionCard

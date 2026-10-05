@@ -95,7 +95,15 @@ export function createContractTemplate(payload: {
 }
 
 export function listContractDocuments(
-  query: { customer_id?: number; status?: string; page?: number; page_size?: number } = {},
+  query: {
+    customer_id?: number
+    /** 业务详情页用：只看挂在某一单下面的合同 */
+    order_id?: number
+    quote_id?: number
+    status?: string
+    page?: number
+    page_size?: number
+  } = {},
 ) {
   return api.get<PageResult<ContractDocument>>('/contract-documents', query)
 }

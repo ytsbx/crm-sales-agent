@@ -2,7 +2,7 @@
 
 **只在隔离库跑**：库名必须含 test（或 CI=true），且推送开关全关。
 
-覆盖不需要上传文件的 7 处（阶段 A 的 4 处 + 阶段 B 的 3 处）：
+覆盖不需要上传文件的 8 处（阶段 A 的 4 处 + 阶段 B 的 3 处 + 详情页筛选 1 处）：
 
 1. **模板缺项不再被静默清空**：填不上的占位符（模板写错 / 对象没这个字段 /
    这份资料是空的 / 本次没填）连 `{{ }}` 一起原样留在正文里，并作为
@@ -21,6 +21,9 @@
    同一编号两次下载逐字节一致。修复前是每次下载拿当前资料重新渲染。
 7. **登记签署必须有正式依据**：「提前备合同」口径——条款可以先备，
    但签署前得挂上正式订单或**已发送/已接受**的报价（月结协议不受此限）。
+8. **详情页按订单/报价筛合同**：`order_id` / `quote_id` 走服务端筛选，
+   而且**不能绕过数据范围**——新增筛选参数最容易出的漏洞就是
+   "筛选条件把范围条件覆盖掉了"，拿别人的 order_id 就查到了别人的合同。
 
 已签合同作废要主管、签署件类型统一这些要用上传夹具的断言，
 放在 `check_attachment_sample_guards.py` 里（那边已经有签好的合同）。
@@ -82,6 +85,7 @@ async def main():
     doc_ids: list[int] = []
     template_ids: list[int] = []
     quote_ids: list[int] = []
+    order_ids: list[int] = []
 
     def api(method, path, body=None, expected=200, token=None):
         status, result = call(method, path, token=token or admin, body=body)
@@ -430,6 +434,112 @@ async def main():
         check("月结协议只关联客户也能登记签署（不受此限）",
               status == 200, f"HTTP {status} {result}")
 
+        print("=== 8. 详情页按订单 / 报价筛合同（筛选不能绕过数据范围） ===")
+        # 订单夹具：挂在那份「已发送」的报价版本上
+        async with SessionLocal() as session:
+            from app.modules.order.model import SalesOrder
+
+            admin_id = (
+                await session.execute(select(User.id).where(User.username == "admin"))
+            ).scalar_one()
+            order = SalesOrder(
+                order_no=f"{MARKER}O1",
+                customer_id=own.id,
+                owner_id=zhangsan_id,
+                sales_owner_id=zhangsan_id,
+                total_amount=Decimal("12345.67"),
+                status="pending",
+                quote_id=quote_id_saved,
+                quote_version_id=version_id_saved,
+            )
+            session.add(order)
+            await session.flush()
+            await session.commit()
+            order_ids.append(order.id)
+            order_id_saved = order.id
+
+        # 只传订单、不传报价版本：后端要按订单依据的那一版自动带出，
+        # 否则从订单进详情页生成合同的人还得自己去翻是 V1 还是 V2
+        by_order = api(
+            "POST", "/contract-documents", token=zhangsan,
+            body={
+                "template_id": money_template["id"],
+                "customer_id": own.id,
+                "order_id": order_id_saved,
+            },
+        )
+        doc_ids.append(by_order["id"])
+        check("选了订单，报价版本自动带出（不必再手选一次）",
+              by_order.get("quote_version_no") == 2, by_order.get("quote_version_no"))
+
+        scoped_order = api(
+            "GET", f"/contract-documents?order_id={order_id_saved}&page_size=50", token=zhangsan
+        )
+        check("按订单筛只返回挂在这一单下面的合同",
+              [d["id"] for d in scoped_order["items"]] == [by_order["id"]],
+              [d["doc_no"] for d in scoped_order["items"]])
+        check("按订单筛不会把同客户其它合同一起带出来",
+              all(d.get("order_id") == order_id_saved for d in scoped_order["items"]),
+              [(d["doc_no"], d.get("order_id")) for d in scoped_order["items"]])
+
+        scoped_quote = api(
+            "GET", f"/contract-documents?quote_id={quote_id_saved}&page_size=50", token=zhangsan
+        )
+        quote_hits = {d["id"] for d in scoped_quote["items"]}
+        # 注意：只传订单生成的那份（by_order）也会出现在结果里，而且**这是对的**——
+        # 后端会由订单依据的版本反推出报价单（`由版本反推报价单`那段），
+        # 所以这份合同确实"挂在这份报价上"。两个维度查出来的集合本来就不同：
+        # 按订单 = 只有这一单发的；按报价 = 所有依据这一版报价的（可能来自好几张单）。
+        check("按报价筛能查到所有依据这份报价的合同（含从订单带出来的）",
+              {money_doc["id"], signable["id"], by_order["id"]} <= quote_hits, sorted(quote_hits))
+        check("按报价筛不会带出根本没挂这份报价的合同",
+              doc["id"] not in quote_hits and no_source["id"] not in quote_hits, sorted(quote_hits))
+
+        # 越权：新增的筛选参数最容易出的漏洞就是"绕过了数据范围"——
+        # 拿一个别人的 order_id，本该查不到，结果筛选条件把范围条件覆盖掉了。
+        async with SessionLocal() as session:
+            from app.modules.order.model import SalesOrder
+
+            outsider = Customer(name=f"{MARKER}他人客户", owner_id=admin_id)
+            session.add(outsider)
+            await session.flush()
+            customer_ids.append(outsider.id)
+            outsider_order = SalesOrder(
+                order_no=f"{MARKER}O2",
+                customer_id=outsider.id,
+                owner_id=admin_id,
+                sales_owner_id=admin_id,
+                status="pending",
+            )
+            session.add(outsider_order)
+            await session.flush()
+            await session.commit()
+            order_ids.append(outsider_order.id)
+            outsider_customer_id, outsider_order_id = outsider.id, outsider_order.id
+
+        outsider_doc = api(
+            "POST", "/contract-documents", token=admin,
+            body={
+                "template_id": template["id"],
+                "customer_id": outsider_customer_id,
+                "order_id": outsider_order_id,
+            },
+        )
+        doc_ids.append(outsider_doc["id"])
+        mine = api(
+            "GET", f"/contract-documents?order_id={outsider_order_id}&page_size=50", token=admin
+        )
+        check("管理员按该订单查得到（说明夹具本身是有效的）",
+              [d["id"] for d in mine["items"]] == [outsider_doc["id"]],
+              [d["doc_no"] for d in mine["items"]])
+
+        status, peek = call(
+            "GET", f"/contract-documents?order_id={outsider_order_id}&page_size=50", token=zhangsan
+        )
+        leaked = status == 200 and bool((peek.get("data") or {}).get("items"))
+        check("换个人按同一订单查，看不到别家的合同（筛选没绕过数据范围）",
+              not leaked, f"HTTP {status} {json.dumps(peek, ensure_ascii=False)[:90]}")
+
     finally:
         async with SessionLocal() as session:
             from app.modules.file import storage as _storage
@@ -437,6 +547,7 @@ async def main():
             from app.modules.file.model import FileRecord as _FileRecord
             from app.modules.quote.model import Quote as _Quote
             from app.modules.quote.model import QuoteVersion as _QuoteVersion
+            from app.modules.order.model import SalesOrder as _SalesOrder
 
             # 这一批会生成真实落盘的 PDF（生成稿）和一份假的签署件夹具，
             # 文件记录 + 磁盘文件都要收掉，否则每跑一次留一堆孤儿文件。
@@ -464,6 +575,9 @@ async def main():
                     await session.execute(delete(_FileRecord).where(_FileRecord.id.in_(file_ids)))
             if doc_ids:
                 await session.execute(delete(ContractDocument).where(ContractDocument.id.in_(doc_ids)))
+            if order_ids:
+                # 顺序：合同 → 订单 → 客户。合同的 order_id 是外键，必须在订单之前删。
+                await session.execute(delete(_SalesOrder).where(_SalesOrder.id.in_(order_ids)))
             if template_ids:
                 await session.execute(delete(ContractTemplate).where(ContractTemplate.id.in_(template_ids)))
             if quote_ids:
@@ -490,7 +604,7 @@ async def main():
         raise SystemExit(1)
     print(
         "\nOK 合同模板缺项、生成防重、台账分页、作废原因、"
-        "报价版本取值与抬头快照、生成稿落盘、签署依据校验"
+        "报价版本取值与抬头快照、生成稿落盘、签署依据校验、详情页按订单/报价筛选"
     )
 
 

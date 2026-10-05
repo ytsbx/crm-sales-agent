@@ -41,6 +41,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
+import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
@@ -1207,6 +1208,14 @@ export default function OrderDetailPage() {
           </div>
         </div>
       </Modal>
+
+      {/* 这单签了什么，在订单页就能看到：合同向来是照着报价/订单出的，
+          以前只有合同台账那一头能查，从订单倒着找不回去 */}
+      <ContractDocsPanel
+        orderId={orderId}
+        style={{ marginTop: 16 }}
+        empty="这单还没有关联的合同文档"
+      />
 
       {can('agent:use') && (
         <SectionCard

@@ -30,6 +30,7 @@ import type { TagTone } from '../../shared/types'
 import { convertToOrder } from '../../shared/api/order'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
@@ -933,6 +934,14 @@ export default function QuoteDetailPage() {
           />
         </div>
       </Modal>
+
+      {/* 这份报价签了什么：合同会钉死"依据的是哪一版"，所以按报价单整单筛，
+          不是只看当前版本 —— 早期按 V1 签、现在报价走到 V3，那份合同仍要看得见 */}
+      <ContractDocsPanel
+        quoteId={quoteId}
+        style={{ marginTop: 16 }}
+        empty="这份报价还没有关联的合同文档"
+      />
 
       {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
           之后改价或改模板都不会影响已导出的那份 */}
