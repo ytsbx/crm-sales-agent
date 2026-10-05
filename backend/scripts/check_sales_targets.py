@@ -175,6 +175,126 @@ async def main():
         await s.execute(text('delete from sales_targets where period = :p'), {'p': month})
         await s.commit()
 
+        # === 6. 目标约束：期间标准化、非法组合、唯一与乐观并发（§4.1.2 / §4.1.6）===
+        print('=== 6. 目标约束：期间标准化、非法组合、唯一与乐观并发 ===')
+        from app.core.errors import AppError, ErrorCode
+
+        # ① 期间标准化：`2026-1` 与 `2026-01` 不能再并存。
+        #    旧实现只过 strptime('%Y-%m')，它是**宽容**的，`2026-1` 照样存库；
+        #    实际值按 `2026-01` 生成，两边永远对不上，那行目标变成"设了但达成为 0"。
+        check('2026-1 标准化成 2026-01', targets_svc.normalize_period('2026-1'), '2026-01')
+        check('标准期间原样返回', targets_svc.normalize_period('2026-10'), '2026-10')
+        for bad in ('2026-13', '2026-00', '2026-1-1', 'abc', ''):
+            try:
+                targets_svc.normalize_period(bad)
+                rejected = False
+            except AppError:
+                rejected = True
+            check(f'非法期间被拒：{bad!r}', rejected, True)
+
+        async def err_code(coro):
+            try:
+                await coro
+            except AppError as exc:
+                return exc.code
+            return None
+
+        # ② 个人目标与团队目标互斥：同时给就说不清这条到底算谁的
+        check(
+            '人员与部门同时指定被拒',
+            await err_code(targets_svc.upsert_target(
+                s, user=user, period=f'{YEAR}-07', user_id=owner_id, department_id=1,
+                new_customer_target=1, sales_target=10)),
+            ErrorCode.PARAM_ERROR,
+        )
+        # ③ 目标值不得为负
+        check(
+            '负目标被拒',
+            await err_code(targets_svc.upsert_target(
+                s, user=user, period=f'{YEAR}-07', user_id=owner_id,
+                new_customer_target=-1, sales_target=10)),
+            ErrorCode.PARAM_ERROR,
+        )
+
+        # ④ 同一作用域只留一条：第二次 upsert 是**更新**，不是再插一行
+        row1, created1, before1 = await targets_svc.upsert_target(
+            s, user=user, period=f'{YEAR}-7', user_id=owner_id,
+            new_customer_target=1, sales_target=100)
+        await s.commit()
+        check('首次 upsert 是新建', created1, True)
+        check('新建时没有改前快照', before1, None)
+        check('期间已标准化入库', row1.period, f'{YEAR}-07')
+        row2, created2, before2 = await targets_svc.upsert_target(
+            s, user=user, period=f'{YEAR}-07', user_id=owner_id,
+            new_customer_target=3, sales_target=300)
+        await s.commit()
+        check('第二次 upsert 是更新（不是再插一行）', created2, False)
+        check('两次拿到同一行', row2.id, row1.id)
+        check('改前快照记着旧目标值（审计要能回答被谁改成了什么）',
+              (before2 or {}).get('sales_target'), 100.0)
+        count = (await s.execute(text(
+            'select count(*) from sales_targets where period = :p and user_id = :u '
+            'and department_id is null and deleted_at is null'),
+            {'p': f'{YEAR}-07', 'u': owner_id})).scalar_one()
+        check('库里只有一条活行', count, 1)
+
+        # ⑤ 乐观并发：带着读到的时间戳改 → 成功；带旧时间戳改 → 409，不覆盖别人的改动
+        row3, _, _ = await targets_svc.upsert_target(
+            s, user=user, period=f'{YEAR}-07', user_id=owner_id,
+            new_customer_target=3, sales_target=350,
+            expected_updated_at=row2.updated_at)
+        await s.commit()
+        check('带最新时间戳可以改', float(row3.sales_target), 350.0)
+        # 注意：不能用 row1.updated_at 当"过期时间戳"——row1/row2/row3 在同一个 session 里
+        # 是**同一个对象**（identity map），它的 updated_at 会被后面的更新刷成最新值，
+        # 那样测出来的是"没冲突"。这里用一个真正过期的时间戳。
+        check(
+            '带过期时间戳被拒（不静默覆盖别人）',
+            await err_code(targets_svc.upsert_target(
+                s, user=user, period=f'{YEAR}-07', user_id=owner_id,
+                new_customer_target=9, sales_target=999,
+                expected_updated_at=datetime(2000, 1, 1, tzinfo=UTC))),
+            ErrorCode.VERSION_CONFLICT,
+        )
+
+        # ⑥ 库层唯一索引确实存在（不是只写在模型里）：直接插重复行必须被挡
+        dup_blocked = True
+        try:
+            await s.execute(text(
+                'insert into sales_targets (period, user_id, department_id, '
+                'new_customer_target, sales_target, repeat_customer_target, created_at) '
+                'values (:p, :u, null, 1, 1, 0, now())'), {'p': f'{YEAR}-07', 'u': owner_id})
+            dup_blocked = False
+        except Exception:
+            dup_blocked = True
+        await s.rollback()
+        check('库层唯一索引挡住重复插入', dup_blocked, True)
+
+        # ⑦ 团队目标被编辑后不能丢 department_id（§4.1.2 的原缺陷：
+        #    一编辑就从团队目标变成全局目标，主管以为设的是部门目标、其实全公司都在用）
+        dept_id = (await s.execute(text('select id from departments order by id limit 1'))).scalar_one_or_none()
+        if dept_id is None:
+            print('  -    跳过：库里没有部门可供建团队目标')
+        else:
+            team1, _, _ = await targets_svc.upsert_target(
+                s, user=user, period=f'{YEAR}-08', user_id=None, department_id=dept_id,
+                new_customer_target=1, sales_target=500)
+            await s.commit()
+            team2, _, _ = await targets_svc.upsert_target(
+                s, user=user, period=f'{YEAR}-08', user_id=None, department_id=dept_id,
+                new_customer_target=2, sales_target=800)
+            await s.commit()
+            check('团队目标更新后 department_id 没丢', team2.department_id, dept_id)
+            check('团队目标没变成全公司目标', team2.user_id, None)
+            check('更新的是同一行（没有多出一条）', team2.id, team1.id)
+
+        # 本套件自己在库里造的目标行，跑完收干净（默认库**不要**跑这条套件，见文档 §4.1.7）
+        await s.execute(
+            text('delete from sales_targets where period in (:p1, :p2)'),
+            {'p1': f'{YEAR}-07', 'p2': f'{YEAR}-08'},
+        )
+        await s.commit()
+
     await cleanup()
     print()
     if FAILURES:

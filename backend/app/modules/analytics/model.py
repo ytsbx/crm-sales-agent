@@ -9,7 +9,17 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, Index, Integer, Numeric, String, func
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin
@@ -21,6 +31,32 @@ class SalesTarget(Base, IdMixin):
         Index("ix_sales_targets_period_user", "period", "user_id"),
         # 团队目标按月查（文档 §六 :121）
         Index("ix_sales_targets_department", "department_id"),
+        # 作用域唯一（第三批 §4.1.2）：同一期间同一作用域只允许一条活行，
+        # 否则 "month-user_id" 键冲突时先查到哪条算哪条。
+        # `NULLS NOT DISTINCT`（PG15+）：user_id / department_id 都可空，
+        # 默认把 NULL 视为互不相同会让"全公司目标"插出无数行。
+        # 与迁移 f6c2e8a4b1d9 里的同名索引保持一致，别只写在一边。
+        Index(
+            "uq_sales_targets_scope",
+            "period",
+            "user_id",
+            "department_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            r"period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'", name="ck_sales_targets_period"
+        ),
+        CheckConstraint(
+            "new_customer_target >= 0 AND sales_target >= 0 AND repeat_customer_target >= 0",
+            name="ck_sales_targets_nonneg",
+        ),
+        # 个人目标与团队目标互斥：同时有值就说不清这条到底是谁的目标
+        CheckConstraint(
+            "NOT (user_id IS NOT NULL AND department_id IS NOT NULL)",
+            name="ck_sales_targets_owner",
+        ),
     )
 
     period: Mapped[str] = mapped_column(String(7))  # YYYY-MM

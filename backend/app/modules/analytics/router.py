@@ -1,5 +1,7 @@
 """工作台与数据分析接口。"""
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Request
 from fastapi import Query
 from pydantic import BaseModel
@@ -71,6 +73,9 @@ class SalesTargetUpsert(BaseModel):
     # 以前这个字段只存不算、也没有接口能写，等于设不了
     repeat_customer_target: float = 0
     remark: str | None = None
+    #: 乐观并发（第三批 §4.1.2）：把列表里读到的 `updated_at` 带回来，
+    #: 对不上说明这条目标中途被别人改过 → 409，不静默覆盖别人的改动。
+    expected_updated_at: datetime | None = None
 
 
 @router.get("/sales-targets")
@@ -107,7 +112,7 @@ async def upsert_sales_target(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await targets_svc.upsert_target(
+    row, created, before = await targets_svc.upsert_target(
         session,
         user=user,
         period=payload.period,
@@ -117,20 +122,18 @@ async def upsert_sales_target(
         sales_target=payload.sales_target,
         repeat_customer_target=payload.repeat_customer_target,
         remark=payload.remark,
+        expected_updated_at=payload.expected_updated_at,
     )
     await write_audit(
         session,
         operator_id=user.id,
-        action="upsert",
+        # 新建和更新分开记：审计里"这条目标是什么时候被谁建出来的"要能答
+        action="create" if created else "update",
         business_type="sales_target",
         business_id=row.id,
-        after={
-            "period": payload.period,
-            "user_id": payload.user_id,
-            "department_id": payload.department_id,
-            "new_customer_target": payload.new_customer_target,
-            "sales_target": payload.sales_target,
-        },
+        # 改前也要留（§4.1.2「完整审计」）：只记改后，事后看不出被谁改成了什么
+        before=before,
+        after=targets_svc.target_snapshot(row),
         ip=client_ip(request),
     )
     await session.commit()
@@ -139,8 +142,13 @@ async def upsert_sales_target(
             "target_id": row.id,
             "period": row.period,
             "user_id": row.user_id,
+            "department_id": row.department_id,
+            "created": created,
             "new_customer_target": row.new_customer_target,
             "sales_target": float(row.sales_target or 0),
+            "repeat_customer_target": float(row.repeat_customer_target or 0),
+            # 回给前端，下次编辑时原样带回来就是乐观并发
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         },
         "目标已保存",
     )

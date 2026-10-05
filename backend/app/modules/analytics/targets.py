@@ -9,10 +9,12 @@
 将来聚水潭接入后，"实际销售额"可切换为出库金额——目标表结构不动。
 """
 
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
@@ -23,12 +25,46 @@ from app.modules.analytics.model import SalesTarget
 from app.modules.customer.model import Customer
 from app.modules.order.model import SalesOrder
 
+#: 期间的标准形态。库层有同名 CHECK 约束，两边保持一字不差。
+PERIOD_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
-def _validate_period(period: str) -> None:
-    try:
-        datetime.strptime(period, "%Y-%m")
-    except ValueError as exc:
-        raise AppError(ErrorCode.PARAM_ERROR, "period 必须是 YYYY-MM 格式", 422) from exc
+
+def normalize_period(period: str) -> str:
+    """把期间统一成 `YYYY-MM`（第三批 §4.1.6）。
+
+    原来只过 `datetime.strptime(p, '%Y-%m')`，而它是**宽容**的：`2026-1` 照样通过
+    并存进库。实际值那边按 `f"{year}-{int(m):02d}"` 生成 `2026-01`，两边永远对不上
+    ——那一行目标就变成"设了但达成为 0"，而且 `2026-1` 与 `2026-01` 能同时存在。
+    这里先补零、再严格校验；补不出年月的一律拒绝（不去猜它想表达什么）。
+    """
+    raw = (period or "").strip()
+    matched = re.fullmatch(r"(\d{4})-(\d{1,2})", raw)
+    if matched is None:
+        raise AppError(ErrorCode.PARAM_ERROR, "period 必须是 YYYY-MM 格式", 422)
+    month = int(matched.group(2))
+    if not 1 <= month <= 12:
+        raise AppError(ErrorCode.PARAM_ERROR, "period 的月份必须在 01-12 之间", 422)
+    normalized = f"{matched.group(1)}-{month:02d}"
+    if not PERIOD_RE.match(normalized):  # 兜底自证
+        raise AppError(ErrorCode.PARAM_ERROR, "period 必须是 YYYY-MM 格式", 422)
+    return normalized
+
+
+def target_snapshot(row: SalesTarget | None) -> dict | None:
+    """审计用的目标快照（第三批 §4.1.2 要求"完整审计"：改前改后都要留）。"""
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "period": row.period,
+        "user_id": row.user_id,
+        "department_id": row.department_id,
+        "new_customer_target": row.new_customer_target,
+        "sales_target": float(row.sales_target or 0),
+        "repeat_customer_target": float(row.repeat_customer_target or 0),
+        "remark": row.remark,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
 
 
 async def _visible_owner_ids(session: AsyncSession, user: CurrentUser) -> list[int] | None:
@@ -149,6 +185,9 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "sales_actual": round(sales, 2),
                 "repeat_customer_actual": _repeat_actual(t.period, t.user_id),
                 "remark": t.remark,
+                # 乐观并发（第三批 §4.1.2）：界面把这一版的时间戳带回来编辑，
+                # 中途被别人改过就能发现，而不是静默覆盖
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
             }
         )
         seen.add((t.period, t.user_id))
@@ -284,8 +323,35 @@ async def upsert_target(
     repeat_customer_target: float = 0,
     department_id: int | None = None,
     remark: str | None = None,
-) -> SalesTarget:
-    _validate_period(period)
+    expected_updated_at: datetime | None = None,
+) -> tuple[SalesTarget, bool, dict | None]:
+    """新建或更新一条目标，返回 `(行, 是否新建, 改前快照)`。
+
+    第三批 §4.1.2 要求：唯一约束（库层 `uq_sales_targets_scope` 已加）、
+    **乐观并发保护**、完整审计。这里做前两件的应用层部分：
+
+    - 期间标准化（§4.1.6），`2026-1` 不再能与 `2026-01` 并存；
+    - 个人目标与团队目标**互斥**，同时给就报错——否则这条到底算谁的说不清；
+    - 目标值不得为负；
+    - `FOR UPDATE` 先锁住那一行：两个人同时"新建"同一作用域时，唯一索引会让
+      后到的插入失败，锁能让它读到已经建好的那一行、转成更新；
+    - `expected_updated_at` 是**乐观并发**：调用方把它读到的时间戳带回来，
+      对不上说明中途被别人改过 → 409，而不是把人家的改动静默覆盖掉。
+    """
+    period = normalize_period(period)
+    if user_id is not None and department_id is not None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "个人目标与团队目标不能同时指定：要么给 user_id，要么给 department_id",
+            422,
+        )
+    if (
+        int(new_customer_target) < 0
+        or float(sales_target or 0) < 0
+        or float(repeat_customer_target or 0) < 0
+    ):
+        raise AppError(ErrorCode.PARAM_ERROR, "目标值不能为负", 422)
+
     stmt = select(SalesTarget).where(
         SalesTarget.period == period,
         SalesTarget.deleted_at.is_(None),
@@ -299,8 +365,23 @@ async def upsert_target(
         if department_id is not None
         else SalesTarget.department_id.is_(None)
     )
-    row = (await session.execute(stmt)).scalars().first()
-    if row is None:
+    row = (await session.execute(stmt.with_for_update())).scalars().first()
+    before = target_snapshot(row)
+
+    if row is not None and expected_updated_at is not None:
+        current = row.updated_at or row.created_at
+        # 比到秒：HTTP 传回来的时间戳精度可能低于库里的微秒
+        if current is not None and current.replace(microsecond=0) != expected_updated_at.replace(
+            microsecond=0
+        ):
+            raise AppError(
+                ErrorCode.VERSION_CONFLICT,
+                "这条目标刚被别人改过，请刷新后重新编辑（不要覆盖别人的改动）",
+                409,
+            )
+
+    created = row is None
+    if created:
         row = SalesTarget(
             period=period,
             user_id=user_id,
@@ -309,10 +390,20 @@ async def upsert_target(
             created_at=datetime.now(UTC),
         )
         session.add(row)
-    row.new_customer_target = new_customer_target
-    row.sales_target = sales_target
+    row.new_customer_target = int(new_customer_target)
+    row.sales_target = Decimal(str(sales_target or 0))
     row.repeat_customer_target = Decimal(str(repeat_customer_target or 0))
     row.remark = remark
-    await session.flush()
+    row.updated_at = datetime.now(UTC)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # 唯一索引兜底：并发下两个请求都想新建同一作用域，先到的赢
+        await session.rollback()
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "该期间该作用域的目标已存在（并发创建），请刷新后重试",
+            409,
+        ) from exc
     await session.refresh(row)
-    return row
+    return row, created, before
