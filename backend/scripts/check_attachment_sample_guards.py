@@ -440,6 +440,38 @@ async def main():
         status, result = call("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan)
         check("待审批的单子不需要重提（被拦）", rejected(status), f"HTTP {status} {result}")
 
+        # === 7.7 审批轮次：驳回重提是新的一轮，弱网重试不算新轮次 ===
+        # 旧实现的通知/时间线事件键是**固定**的 `sample:approve:{id}` / `sample:resubmit:{id}`，
+        # 于是第二轮会撞上第一轮的键被去重吞掉——事后只看得到一轮，
+        # "驳回过几次、每轮批的是哪版资料"全丢（第一批返修 §3.2）。
+        # 上面这串操作已经产生了几轮，先确认轮次真的在涨、且被拦的重提不虚增。
+        # 用 .get 取：旧代码的 detail 里没有这个字段，那样应当**干净地 FAIL 而不是崩**，
+        # 修复前后的对比才有意义。本文件的 check 是**条件式**（label, condition, detail）。
+        round_now = api("GET", f"/samples/{fresh_id}", token=zhangsan).get("review_round")
+        check("此刻有明确的审批轮次（第 4 轮，不是恒为 1）", round_now == 4,
+              f"review_round={round_now}")
+        check("被拦的那次重提没有虚增轮次",
+              api("GET", f"/samples/{fresh_id}", token=zhangsan).get("review_round") == round_now,
+              f"review_round={round_now}")
+        if round_now is not None:
+            api("POST", f"/samples/{fresh_id}/approve",
+                body={"approved": False, "reject_reason": "轮次回归"}, token=zhangsan)
+            r1 = api("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan,
+                     body={"request_key": f"CHK{fresh_id}-re-round"})
+            check("带键重提开出一个新轮次", r1.get("review_round") == round_now + 1,
+                  f"review_round={r1.get('review_round')}")
+            # 同一个键再来一次 = 弱网重试：幂等，不加轮次、也不重复通知
+            r2 = api("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan,
+                     body={"request_key": f"CHK{fresh_id}-re-round"})
+            check("同一个请求键重试是幂等的（轮次不变）",
+                  r2.get("review_round") == round_now + 1,
+                  f"review_round={r2.get('review_round')}")
+            # 换一把键：仍然按原口径被拦——**不是"带了键就放行"**
+            status, result = call("POST", f"/samples/{fresh_id}/resubmit", token=zhangsan,
+                                  body={"request_key": f"CHK{fresh_id}-re-other"})
+            check("换一把键仍被拦（幂等只认同一次提交）", rejected(status),
+                  f"HTTP {status} {result}")
+
         # 主管改判：上一次驳错了，直接批回来，不必让跟单先改点什么再绕一圈
         api("POST", f"/samples/{fresh_id}/approve",
             body={"approved": False, "reject_reason": "误驳了"}, token=zhangsan)

@@ -77,6 +77,15 @@ class SampleRequest(Base, IdMixin):
         BigInteger, ForeignKey("users.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    # 审批轮次（第一批返修 §3.2）：每次**真的重新回到待审批**（驳回后重提、
+    # 已批准后改车间依据）自增一次。通知/时间线的事件键带上它，否则第二轮会撞上
+    # 第一轮的固定键被去重吞掉，事后看不出"驳回过几次、每轮批的是哪版资料"。
+    review_round: Mapped[int] = mapped_column(
+        BigInteger, default=1, server_default="1", nullable=False
+    )
+    # 当前这一轮是**哪次提交**开的（弱网重试靠它认幂等，不靠"状态是不是待审批"——
+    # "待审批时调重提"仍然按原口径被拦）。换轮次时清空。
+    review_request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_context: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     request_key: Mapped[str | None] = mapped_column(String(36), nullable=True, unique=True)

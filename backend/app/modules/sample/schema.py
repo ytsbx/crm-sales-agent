@@ -127,6 +127,19 @@ class SampleMade(BaseModel):
     request_key: str | None = Field(default=None, max_length=64)
 
 
+class SampleResubmit(BaseModel):
+    """原样重提（第一批返修 §3.2）。
+
+    `request_key` 只为**弱网重试**服务：同一次提交重发时带同一个键，后端认成幂等、
+    不再加一轮也不重复通知。不带键时行为不变——"待审批的单子调重提"仍按原口径被拦，
+    两者靠请求键区分，不是靠状态。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    request_key: str | None = Field(default=None, max_length=64)
+
+
 class SampleConfirm(BaseModel):
     """客户确认。与签收分开：客户收到样品不等于样品被接受。"""
 

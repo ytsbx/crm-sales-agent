@@ -89,6 +89,9 @@ def serialize_request(
         "owner_id": request.owner_id,
         "owner_name": owner_name,
         "status": request.status,
+        # 审批轮次（§3.2）：驳回后重提 / 已批准后改车间依据会自增。
+        # 界面据此显示"第 N 轮"，也让"被驳回过几次"数得出来。
+        "review_round": request.review_round or 1,
         "status_label": SAMPLE_STATUS_LABEL.get(request.status, request.status),
         "remark": request.remark,
         "reject_reason": request.reject_reason,

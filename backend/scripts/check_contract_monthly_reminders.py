@@ -284,7 +284,8 @@ async def main():
                 n for n in (notes.get("data") or {}).get("items", [])
                 if n.get("business_type") == "contract" and n.get("business_id") == doc_g["id"]
             ]
-            check("同时写了站内通知（不主动告知等于没提醒）", len(matched), 1)
+            check("同时写了站内通知（不主动告知等于没提醒）", len(matched) == 1,
+                  f"matched={len(matched)}")
             # 再登录一次：去重靠 source_key，不该又冒一条
             owner_token2 = login(owner_username, "123456")
             notes2 = call("GET", "/notifications?page_size=100", token=owner_token2)[1]
@@ -292,7 +293,7 @@ async def main():
                 n for n in (notes2.get("data") or {}).get("items", [])
                 if n.get("business_type") == "contract" and n.get("business_id") == doc_g["id"]
             ]
-            check("再登录一次不会重复提醒", len(matched2), 1)
+            check("再登录一次不会重复提醒", len(matched2) == 1, f"matched={len(matched2)}")
 
     finally:
         async with SessionLocal() as session:

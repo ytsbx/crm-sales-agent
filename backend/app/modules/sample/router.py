@@ -50,6 +50,7 @@ from app.modules.sample.schema import (
     SampleItemAdd,
     SampleItemPatch,
     SampleMade,
+    SampleResubmit,
     SampleShip,
     SampleSign,
     SampleUpdate,
@@ -98,9 +99,18 @@ def _reopen(sample: SampleRequest) -> None:
     两种由来：已批准的单子改了车间依据（那一版作废），
     或已驳回的单子改完资料重新提交（驳回不是终态）。
     reject_reason 故意不清：主管重审时要能看到上一轮为什么被打回。
+
+    **审批轮次在这里自增**（第一批返修 §3.2）：一次"真的重新提交"就是新的一轮，
+    通知/时间线的事件键带上它，否则第二轮会撞上第一轮的固定键被去重吞掉，
+    事后看不出被驳回过几次。只在状态**真的发生变化**时自增——
+    待审批期间反复改资料不该虚增轮次。
     """
+    if sample.status != "pending":
+        sample.review_round = (sample.review_round or 1) + 1
     sample.status = "pending"
     sample.approved_at = None
+    # 换轮次就把上一轮的请求键清掉：留着会让"上一轮那次提交的重试"误判成幂等。
+    sample.review_request_key = None
 
 
 
@@ -391,7 +401,7 @@ async def approve_sample(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
         title="打样审批结果", content=f"打样 #{sample.id} 已{'批准' if payload.approved else '拒绝'}" + (f"；原因：{payload.reject_reason}" if not payload.approved else ""),
         business_type="sample", business_id=sample.id, sample_id=sample.id,
-        opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:approve:{sample.id}",
+        opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:approve:{sample.id}:r{sample.review_round}",
     )
     await session.commit()
     await notification_service.dispatch_pending(session)
@@ -402,6 +412,7 @@ async def approve_sample(
 async def resubmit_sample(
     sample_id: int,
     request: Request,
+    payload: SampleResubmit | None = None,
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -419,13 +430,23 @@ async def resubmit_sample(
     资料一字不动、`reject_reason` 也保留 —— 主管重审时要知道上一轮为什么被打回。
     """
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    request_key = payload.request_key if payload else None
+    if (request_key and sample.status == "pending"
+            and sample.review_request_key == request_key):
+        # **同一次提交的弱网重试**（第一批返修 §3.2）：幂等返回，不再加一轮、不重复通知。
+        # 只有**带了同一个键**才认幂等——不带键（或换了一把键）时行为完全不变，
+        # 下面 ensure_transition 照旧拦住"待审批的单子又来重提"。
+        # 用状态本身当幂等信号是错的，那会把这条既有口径悄悄改掉。
+        return ok(await svc.detail(session, sample), "已重新提交，等待审批")
     # 状态规则的唯一出处是 SAMPLE_TRANSITIONS，这里不另写一套判断。
     # 非"已驳回"的单子调到这儿会被它拦住（待审批/已批准不支持这个动作）。
     svc.ensure_transition(sample.status, "pending")
     before = await svc.detail(session, sample)
 
-    sample.status = "pending"
-    sample.approved_at = None
+    # 走 _reopen：轮次自增与状态回流是同一件事，别在这里再写一遍
+    _reopen(sample)
+    # _reopen 会把键清空（新的一轮），这里再登记本次提交的键
+    sample.review_request_key = request_key
     await session.flush()
     after = await svc.detail(session, sample)
 
@@ -445,7 +466,7 @@ async def resubmit_sample(
         content=f"打样 #{sample.id} 已原样重新提交至「待审批」，等待审批",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id,
-        event_key=f"sample:resubmit:{sample.id}",
+        event_key=f"sample:resubmit:{sample.id}:r{sample.review_round}",
     )
     await session.commit()
     await notification_service.dispatch_pending(session)
