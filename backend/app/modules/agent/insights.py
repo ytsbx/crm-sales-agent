@@ -552,6 +552,13 @@ async def pricing_analysis(
     不重复实现算价 —— 直接调 `pricing_service.calculate_price`（与
     报价明细、check-permission 同一份），只在其上做解读。
     """
+    # 客户专属价挂在客户上：不校验可见性，任何有 agent:use 的人换个 customer_id
+    # 就能读到别人客户的协议价。本文件其它入口都走 get_visible_customer，这里此前漏了。
+    if customer_id is not None:
+        from app.modules.customer import service as customer_service
+
+        await customer_service.get_visible_customer(session, user, customer_id)
+
     from app.modules.pricing import service as pricing_service
 
     result = await pricing_service.calculate_price(

@@ -618,6 +618,20 @@ async def main() -> int:
     check('本人批量给自己客户打标签（对照）',
           call('POST', '/customers/batch-tag', owner_token, tag_batch)[0], 200)
 
+    print('=== 3.3 Agent 入口不能绕过数据范围 ===')
+    async with SessionLocal() as s:
+        from app.modules.product.model import Sku
+
+        sku_id = (await s.execute(select(Sku.id).limit(1))).scalar_one()
+    # 客户专属价挂在客户上：不校验可见性时，有 agent:use 的人换个 customer_id
+    # 就能读到别人客户的协议价；响应里还带着成本与授权底价（可反推成本）。
+    check_denied('他人拿别人的客户跑 Agent 核价分析',
+                 call('POST', '/agent/pricing-analysis', outsider_token,
+                      {'sku_id': sku_id, 'quantity': 10, 'customer_id': cid})[0])
+    check('本人拿自己的客户跑 Agent 核价分析（对照）',
+          call('POST', '/agent/pricing-analysis', owner_token,
+               {'sku_id': sku_id, 'quantity': 10, 'customer_id': cid})[0], 200)
+
     print('=== 4. 集成日志（别人订单的同步记录）===')
     status, res = call('GET', '/integrations/erp/sync-logs?page_size=200', outsider_token)
     rows = (res.get('data') or {}).get('items') or []
