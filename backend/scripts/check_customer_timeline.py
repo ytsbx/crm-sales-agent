@@ -5,6 +5,7 @@
 import asyncio
 from datetime import UTC, date, datetime
 import os
+import re
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -173,7 +174,47 @@ async def main():
                 BusinessEvent.event_key == f'{marker}:rollback'))).scalar_one_or_none() is None
             assert len((await s.execute(select(FollowUp).where(
                 FollowUp.customer_id == customer_id))).scalars().all()) == 5
-        print('OK 客户时间线：三类事实、两次交期变化、并发重复、操作者、来源授权、时钟与回滚')
+
+            # ---- 时间线上的文案可读性（2026-10-06 修的三处）----
+            # 用户报的原话是「创建商机 owner_id: 2」和
+            # 「记录时约定：2026-10-21T02:00:26+00:00」——
+            # 一条把内部字段名和内部编号亮出来，一条把机器格式的时间原样摆出来。
+            s.add(AuditLog(
+                business_type='customer', business_id=customer_id,
+                action='transfer', operator_id=sales.id,
+                after_data={'owner_id': finance.id},
+                created_at=datetime.now(UTC),
+            ))
+            s.add(FollowUp(
+                customer_id=customer_id, followup_type='微信', content='文案探针',
+                next_action='等回话',
+                planned_at=datetime(2026, 10, 21, 10, 0, tzinfo=UTC),
+                owner_id=sales.id, created_at=datetime.now(UTC),
+            ))
+            await s.flush()
+            probe = await build_timeline(s, 'customer', customer_id, user=viewer)
+
+            audit_probe = next(e for e in probe if (e['detail'] or '').startswith('负责人：'))
+            # 负责人要显示成人名，不能是内部编号（修复前渲染成 `owner_id：2`）
+            assert audit_probe['detail'] == f'负责人：{finance.name}', audit_probe['detail']
+            # 标题不再是「动作 + 对象」硬拼（修复前是「创建商机」这种，
+            # 遇到「添加需求明细」还会拼成「添加需求明细商机」）
+            assert audit_probe['title'] == '客户：转移负责人', audit_probe['title']
+
+            follow_probe = next(e for e in probe if (e['detail'] or '').startswith('文案探针'))
+            # 时间必须是「2026-10-21 18:00」这种；日期部分随时区走，所以只锁格式。
+            # 下面这条才是关键：修复前这里是 `2026-10-21T10:00:00+00:00`。
+            assert '记录时约定：2026-10-21T' not in follow_probe['detail'], follow_probe['detail']
+            assert re.search(r'记录时约定：\d{4}-\d{2}-\d{2} \d{2}:\d{2}', follow_probe['detail']), \
+                follow_probe['detail']
+
+            # 整条时间线上都不该再出现内部字段名
+            for event in probe:
+                detail = event['detail'] or ''
+                for field in ('owner_id', 'quote_version_id', 'loss_reason'):
+                    assert field not in detail, (field, detail)
+            await s.rollback()
+        print('OK 客户时间线：三类事实、两次交期变化、并发重复、操作者、来源授权、时钟与回滚、文案可读性')
     finally:
         if customer_id:
             async with SessionLocal() as s:

@@ -37,6 +37,7 @@ import FollowUpModal from '../common/FollowUpModal'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 const STATUS_OPTIONS = [
   { value: 'pending', label: '待分配' },
@@ -373,7 +374,7 @@ export default function LeadListPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>线索名称 *</div>
+            <FormLabel required>线索名称</FormLabel>
             <Input
               value={form.name}
               onChange={(v) => setForm({ ...form, name: v })}

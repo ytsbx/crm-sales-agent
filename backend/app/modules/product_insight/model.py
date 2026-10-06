@@ -23,6 +23,19 @@ INSIGHT_STATUS_LABEL = {
     "converted": "已转询价线索",
 }
 
+#: 受"评审冻结"约束的内容字段（第五批 §6.1）。
+#:
+#: 为什么是这几个：评审结论是针对**这一份内容**下的判断——批准的是"这个方向、
+#: 这个卖点、卖给这家客户"，改掉其中任何一项，批准的对象就换了人。所以
+#: **待评审期间**不许改（否则审的和提交的不是一份），**已通过之后**改了就退回重审。
+#:
+#: 不在名单里的（remark / images / owner_id）是纯展示或归属信息，改了不影响
+#: "评的是什么"，允许随时改。
+FROZEN_CONTENT_FIELDS = frozenset(
+    {"title", "source", "target_customer", "direction", "selling_points",
+     "price_assumption", "conclusion"}
+)
+
 #: 市场来源候选（可管理字典扩展；这里只是给前端下拉的默认值）
 INSIGHT_SOURCES = ["展会", "1688/阿里", "客户反馈", "竞品调研", "社媒", "供应商推荐", "其他"]
 
@@ -48,6 +61,15 @@ class ProductInsight(Base, IdMixin):
     reviewer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     review_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # ---- 评审轮次（第五批 §6.1）----
+    # 每次**真的重新回到待评审**（已通过后改了关键内容、驳回后重新提交）自增一次。
+    # 审计、以及后续任何对外事件（通知/时间线）的键都要带上它，否则第二轮会撞上
+    # 第一轮的固定键被去重吞掉，事后看不出"审过几轮、每轮批的是哪份内容"。
+    review_round: Mapped[int] = mapped_column(
+        BigInteger, default=1, server_default="1", nullable=False
+    )
+    # 当前这一轮是**哪次提交**开的：弱网重试靠它认幂等，不靠"状态是不是待评审"。
+    review_request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 转换关系：通过评审后转成的定制询价线索
     converted_inquiry_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

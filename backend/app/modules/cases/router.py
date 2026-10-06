@@ -9,7 +9,7 @@ from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
-from app.core.response import ok
+from app.core.response import ok, page_data
 from app.modules.cases import service as svc
 from app.modules.cases.model import CASE_STATUS_LABEL, SalesCase
 from app.modules.cases.schema import CaseCreate, CaseReview, CaseUpdate
@@ -28,20 +28,30 @@ async def list_cases(
     industry: str | None = Query(None),
     product_line: str | None = Query(None),
     stage: str | None = Query(None),
+    problem_tags: str | None = Query(
+        None, description="按问题标签筛：命中的案例标签里包含它"
+    ),
     keyword: str | None = Query(None),
     include_history: bool = Query(
         False, description="是否包含已被修订版取代的历史版本（默认只列当前版本）"
     ),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    return ok(
-        await svc.list_cases(
-            session, user=user, status=status, industry=industry,
-            product_line=product_line, stage=stage, keyword=keyword,
-            include_history=include_history,
-        )
+    """案例列表（真分页，第四批 §5.1.6）。
+
+    这几步筛选（客户类型/产品线/阶段）后端**本来就支持**，缺的是分页与前端联动；
+    改成返回 `items/page/page_size/total` 之后，前端才能知道"还有多少没看到"。
+    """
+    items, total = await svc.list_cases(
+        session, user=user, status=status, industry=industry,
+        product_line=product_line, stage=stage, keyword=keyword,
+        problem_tags=problem_tags,
+        include_history=include_history, page=page, page_size=page_size,
     )
+    return ok(page_data(items, total, page, page_size))
 
 
 @router.get("/cases/{case_id}")

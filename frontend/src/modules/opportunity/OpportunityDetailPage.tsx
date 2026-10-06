@@ -48,6 +48,7 @@ import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import OpportunityRecords from './OpportunityRecords'
 import type { TagTone } from '../../shared/types'
+import FormLabel from '../../shared/components/FormLabel'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -562,7 +563,16 @@ export default function OpportunityDetailPage() {
             </>
           )}
 
-          {activeKey === 'timeline' && <Timeline events={timelineQuery.data ?? []} loading={timelineQuery.isLoading} />}
+          {activeKey === 'timeline' && (
+            /* 不传 currentType 的话，来源指向本商机时会出现一个「查看原单」，
+               点下去原地不动（实测过）。传进去让组件自己掐掉。 */
+            <Timeline
+              events={timelineQuery.data ?? []}
+              loading={timelineQuery.isLoading}
+              currentType="opportunity"
+              currentId={opportunityId}
+            />
+          )}
 
           {activeKey === 'files' && (
             <AttachmentPanel businessType="opportunity" businessId={opportunityId} />
@@ -696,7 +706,7 @@ export default function OpportunityDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>SKU *</div>
+            <FormLabel required>SKU</FormLabel>
             <Select
               placeholder="选择 SKU"
               value={itemForm.sku_id ?? undefined}
@@ -799,29 +809,41 @@ export default function OpportunityDetailPage() {
         okText="创建"
       >
         <div style={{ display: 'grid', gap: 12 }}>
-          <Input
-            value={taskForm.title}
-            onChange={(v) => setTaskForm({ ...taskForm, title: v })}
-            placeholder="例如：给客户寄样"
-          />
+          <div>
+            <FormLabel required>任务标题</FormLabel>
+            <Input
+              value={taskForm.title}
+              onChange={(v) => setTaskForm({ ...taskForm, title: v })}
+              placeholder="例如：给客户寄样"
+            />
+          </div>
           <div style={{ display: 'flex', gap: 12 }}>
-            <Select
-              value={taskForm.priority}
-              onChange={(value) => setTaskForm({ ...taskForm, priority: value as string })}
-              optionList={[
-                { value: 'high', label: '高' },
-                { value: 'normal', label: '中' },
-                { value: 'low', label: '低' },
-              ]}
-              style={{ width: 140 }}
-            />
-            <DatePicker
-              type="dateTime"
-              value={taskForm.due_at ?? undefined}
-              onChange={(date) => setTaskForm({ ...taskForm, due_at: (date as Date) ?? null })}
-              placeholder="截止时间"
-              style={{ flex: 1 }}
-            />
+            <div>
+              {/* 与任务列表页的「新建任务」弹窗保持一字不差：
+                  priority 不影响排序/提醒（全库查过），只能说成"轻重标记"。
+                  ⚠️ 改这里记得同步 TaskListPage.tsx。 */}
+              <FormLabel hint="仅作轻重标记，不影响排序和提醒">优先级</FormLabel>
+              <Select
+                value={taskForm.priority}
+                onChange={(value) => setTaskForm({ ...taskForm, priority: value as string })}
+                optionList={[
+                  { value: 'high', label: '高' },
+                  { value: 'normal', label: '中' },
+                  { value: 'low', label: '低' },
+                ]}
+                style={{ width: 140 }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <FormLabel>截止时间</FormLabel>
+              <DatePicker
+                type="dateTime"
+                value={taskForm.due_at ?? undefined}
+                onChange={(date) => setTaskForm({ ...taskForm, due_at: (date as Date) ?? null })}
+                placeholder="选择时间"
+                style={{ width: '100%' }}
+              />
+            </div>
           </div>
         </div>
       </Modal>

@@ -33,6 +33,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 const TABS = [
   { tab: '客户查价', itemKey: 'lookup' },
@@ -907,7 +908,7 @@ export default function PriceCenterPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>SKU *</div>
+            <FormLabel required>SKU</FormLabel>
             <Select
               value={ruleForm.sku_id ?? undefined}
               onChange={(value) => setRuleForm({ ...ruleForm, sku_id: value as number })}
@@ -1004,7 +1005,7 @@ export default function PriceCenterPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>客户 *</div>
+            <FormLabel required>客户</FormLabel>
             <Select
               value={customerPriceForm.customer_id ?? undefined}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, customer_id: value as number })}
@@ -1014,7 +1015,7 @@ export default function PriceCenterPage() {
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>SKU *</div>
+            <FormLabel required>SKU</FormLabel>
             <Select
               value={customerPriceForm.sku_id ?? undefined}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, sku_id: value as number })}
@@ -1032,7 +1033,7 @@ export default function PriceCenterPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>约定价 *</div>
+              <FormLabel required>约定价</FormLabel>
               <Input
                 value={customerPriceForm.agreed_price}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, agreed_price: value })}
@@ -1109,7 +1110,7 @@ export default function PriceCenterPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>承运方式 *</div>
+            <FormLabel required>承运方式</FormLabel>
             <Input
               value={rateForm.provider}
               onChange={(value) => setRateForm({ ...rateForm, provider: value })}

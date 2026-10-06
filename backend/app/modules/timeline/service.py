@@ -4,7 +4,7 @@
 阶段历史、负责人变更合并后按时间倒序返回，避免出现「两份真相」。
 """
 
-from datetime import UTC
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +60,18 @@ ACTION_LABEL = {
     "cancel": "取消",
     "postpone": "延期",
     "login": "登录",
+}
+
+#: 审计里这几个键以前是**原样摆给用户看的**（渲染出来长 `owner_id：2`、
+#: `remark：没有备注`），等于把内部字段名和内部编号亮在了时间线上。
+#: 这里补一张中文标签表；值本身要不要翻译由 _audit_value 决定。
+AUDIT_FIELD_LABEL = {
+    "stage": "阶段",
+    "loss_reason": "失单原因",
+    "reason": "原因",
+    "remark": "备注",
+    "owner_id": "负责人",
+    "quote_version_id": "依据报价版本",
 }
 
 
@@ -133,10 +145,16 @@ async def build_timeline(
         events.append(
             {
                 "kind": "audit",
-                "title": f"{label}{BUSINESS_LABEL.get(business_type, '记录')}",
-                "detail": _audit_detail(row),
+                # 原来拼成「创建商机」「添加需求明细商机」—— 动作和对象硬接在一起，
+                # 后一种读不通（实测渲染出来就是这个）。改成「商机：添加需求明细」，
+                # 动作和对象分得开，新增动作也不用再想怎么接。
+                "title": f"{BUSINESS_LABEL.get(business_type, '记录')}：{label}",
+                # 留到最后补：detail 里要显示负责人姓名，而姓名得等「要查哪些 id」
+                # 全收集齐才查得到（见文件末尾的统一后处理）。
+                "detail": None,
                 "operator_id": row.operator_id,
                 "at": row.created_at,
+                "_audit_row": row,
             }
         )
 
@@ -171,7 +189,9 @@ async def build_timeline(
                     "title": "业务进展" if row.followup_type == "系统" else f"跟进（{row.followup_type}）",
                     "source": source,
                     "detail": row.content + (
-                        f"；下一动作：{row.next_action}；记录时约定：{row.planned_at.isoformat()}"
+                        # 别再 isoformat()：界面上曾原样出现
+                        # 「记录时约定：2026-10-21T02:00:26+00:00」
+                        f"；下一动作：{row.next_action}；记录时约定：{_human_time(row.planned_at)}"
                         if row.planned_at else
                         f"；免填原因：{EXEMPTION_LABELS.get(row.exemption_reason, row.exemption_reason)}"
                         if row.exemption_reason else ""
@@ -273,8 +293,25 @@ async def build_timeline(
                 }
             )
 
-    names = await _user_names(session, {event["operator_id"] for event in events})
+    # 要查名字的人 = 操作人 + 审计里出现过的「变更后负责人」。
+    # 后者不在 operator_id 集合里：不一起查的话，detail 里只能退回显示内部编号
+    # （这正是老版本渲染出 `owner_id：2` 的原因之一）。
+    audit_owner_ids: set[int] = set()
+    for row in audit_rows:
+        after = row.after_data if isinstance(row.after_data, dict) else {}
+        value = after.get("owner_id")
+        if isinstance(value, int):
+            audit_owner_ids.add(value)
+        elif isinstance(value, str) and value.isdigit():
+            audit_owner_ids.add(int(value))
+
+    names = await _user_names(
+        session, {event["operator_id"] for event in events} | audit_owner_ids
+    )
     for event in events:
+        audit_row = event.pop("_audit_row", None)
+        if audit_row is not None:
+            event["detail"] = _audit_detail(audit_row, names)
         event["operator_name"] = (
             names.get(event["operator_id"], "未知用户") if event["operator_id"] else "系统"
         )
@@ -291,17 +328,53 @@ async def build_timeline(
     return events[:limit]
 
 
-def _audit_detail(row: AuditLog) -> str | None:
-    """把审计里的关键变更压成一行可读文本，避免前端直接铺原始 JSON。"""
+def _audit_value(field: str, value, names: dict[int, str]) -> str:
+    """把内部值翻译成人话。
+
+    目前只有 owner_id 需要翻译：它存的是用户主键，界面直接显示就成了 `2`，
+    业务同事根本不知道是谁。查不到时退回「未知用户（#2）」—— 宁可难看，
+    也别假装知道。
+    """
+    if field == "owner_id":
+        try:
+            return names.get(int(value), f"未知用户（#{value}）")
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _human_time(value: datetime) -> str:
+    """时间点写成业务看得懂的「2026-10-21 10:00」。
+
+    老版本直接 `isoformat()`，界面上就出现 `2026-10-21T02:00:26+00:00`：
+    机器格式不说，库里存的是 +08 的 10:00，isoformat 输出的是 UTC 表示，
+    看着像早了 8 小时。项目没有统一时区配置（其余地方直接用系统本地时间），
+    这里按同一惯例 `astimezone()` 转到本地再格式化。
+    """
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _audit_detail(row: AuditLog, names: dict[int, str] | None = None) -> str | None:
+    """把审计里的关键变更压成一行可读文本，避免前端直接铺原始 JSON。
+
+    键名走 AUDIT_FIELD_LABEL 翻成中文，值走 _audit_value（负责人查成人名）。
+    认不出的键**保持原样**：宁可在界面上看到个英文键来提意见，
+    也不要因为没登记就整条变更都不显示 —— 那等于把事实藏起来了。
+    """
     after = row.after_data if isinstance(row.after_data, dict) else {}
     before = row.before_data if isinstance(row.before_data, dict) else {}
-    for field in ("stage", "loss_reason", "reason", "remark", "owner_id", "quote_version_id"):
+    names = names or {}
+    for field, label in AUDIT_FIELD_LABEL.items():
         value = after.get(field)
         if value not in (None, ""):
-            return f"{field}：{value}"
+            return f"{label}：{_audit_value(field, value, names)}"
     if before and after:
         changed = [
-            f"{key}: {before.get(key)} → {after.get(key)}"
+            f"{AUDIT_FIELD_LABEL.get(key, key)}："
+            f"{_audit_value(key, before.get(key), names)} → "
+            f"{_audit_value(key, after.get(key), names)}"
             for key in after
             if key in before and before.get(key) != after.get(key)
         ]

@@ -17,6 +17,7 @@ import { emptyText } from '../../shared/hooks/emptyText'
 import type { TagTone } from '../../shared/types'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -289,7 +290,7 @@ export default function OpportunityListPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>客户 *</div>
+            <FormLabel required>客户</FormLabel>
             <Select
               placeholder="选择客户"
               value={form.customer_id ?? undefined}
@@ -304,7 +305,7 @@ export default function OpportunityListPage() {
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>商机名称 *</div>
+            <FormLabel required>商机名称</FormLabel>
             <Input
               value={form.title}
               onChange={(v) => setForm({ ...form, title: v })}

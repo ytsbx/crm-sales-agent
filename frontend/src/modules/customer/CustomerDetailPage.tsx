@@ -38,6 +38,7 @@ import FollowUpAttachmentsButton from '../common/FollowUpAttachmentsButton'
 import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -589,7 +590,12 @@ export default function CustomerDetailPage() {
           )}
 
           {activeKey === 'logs' && (
-            <Timeline events={timelineQuery.data ?? []} loading={timelineQuery.isLoading} />
+            <Timeline
+              events={timelineQuery.data ?? []}
+              loading={timelineQuery.isLoading}
+              currentType="customer"
+              currentId={customerId}
+            />
           )}
 
           {activeKey === 'quotes' && (
@@ -711,7 +717,7 @@ export default function CustomerDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>姓名 *</div>
+            <FormLabel required>姓名</FormLabel>
             <Input
               value={contactForm.name ?? ''}
               onChange={(value) => setContactForm({ ...contactForm, name: value })}
@@ -798,7 +804,7 @@ export default function CustomerDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>客户名称 *</div>
+            <FormLabel required>客户名称</FormLabel>
             <Input value={editForm.name} onChange={(v) => setEditForm({ ...editForm, name: v })} />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>

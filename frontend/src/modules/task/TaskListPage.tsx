@@ -9,6 +9,7 @@ import { Button, Checkbox, DatePicker, Input, Modal, Select, Table, Tag, Toast }
 import { completeTask, createTask, listTasks, postponeTask, type Task } from '../../shared/api/task'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 const PRIORITY_COLOR: Record<string, TagTone> = { high: 'red', normal: 'blue', low: 'grey' }
 
@@ -234,29 +235,44 @@ export default function TaskListPage() {
         okText="创建"
       >
         <div style={{ display: 'grid', gap: 12 }}>
-          <Input
-            value={form.title}
-            onChange={(v) => setForm({ ...form, title: v })}
-            placeholder="例如：周五前回复客户报价"
-          />
+          <div>
+            <FormLabel required>任务标题</FormLabel>
+            <Input
+              value={form.title}
+              onChange={(v) => setForm({ ...form, title: v })}
+              placeholder="例如：周五前回复客户报价"
+            />
+          </div>
           <div style={{ display: 'flex', gap: 12 }}>
-            <Select
-              value={form.priority}
-              onChange={(value) => setForm({ ...form, priority: value as string })}
-              optionList={[
-                { value: 'high', label: '高' },
-                { value: 'normal', label: '中' },
-                { value: 'low', label: '低' },
-              ]}
-              style={{ width: 140 }}
-            />
-            <DatePicker
-              type="dateTime"
-              value={form.due_at ?? undefined}
-              onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
-              placeholder="截止时间"
-              style={{ flex: 1 }}
-            />
+            <div>
+              {/* 「优先级」这句说明必须如实：查过全库，priority **不参与任何**
+                  排序、筛选、提醒或统计（任务列表是按「状态 → 截止时间」排的，
+                  见 backend/app/modules/task/router.py 的 order_by）。
+                  它唯一的去处是列表里那个彩色标签。
+                  不写这句，用户会以为选「高」就会被优先处理——那是个空承诺。
+                  ⚠️ 商机详情页有一个一模一样的弹窗，改文案时两处同步。 */}
+              <FormLabel hint="仅作轻重标记，不影响排序和提醒">优先级</FormLabel>
+              <Select
+                value={form.priority}
+                onChange={(value) => setForm({ ...form, priority: value as string })}
+                optionList={[
+                  { value: 'high', label: '高' },
+                  { value: 'normal', label: '中' },
+                  { value: 'low', label: '低' },
+                ]}
+                style={{ width: 140 }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <FormLabel>截止时间</FormLabel>
+              <DatePicker
+                type="dateTime"
+                value={form.due_at ?? undefined}
+                onChange={(date) => setForm({ ...form, due_at: (date as Date) ?? null })}
+                placeholder="选择时间"
+                style={{ width: '100%' }}
+              />
+            </div>
           </div>
         </div>
       </Modal>

@@ -25,6 +25,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
+import FormLabel from '../../shared/components/FormLabel'
 
 const TABS = [
   { tab: '销售订单', itemKey: 'orders' },
@@ -427,7 +428,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
-              <div style={{ marginBottom: 4 }}>客户 *</div>
+              <FormLabel required>客户</FormLabel>
               <Select
                 placeholder="选择客户"
                 value={createForm.customer_id ?? undefined}
@@ -457,7 +458,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
           </div>
 
           <div>
-            <div style={{ marginBottom: 4, fontWeight: 600 }}>订单明细 *</div>
+            <FormLabel required style={{ fontWeight: 600 }}>订单明细</FormLabel>
             <div style={{ display: 'grid', gap: 8 }}>
               {createForm.items.map((item, index) => (
                 <div key={index} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) 90px 110px minmax(0, 1.2fr) auto', gap: 8 }}>

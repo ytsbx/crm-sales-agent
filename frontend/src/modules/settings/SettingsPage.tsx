@@ -42,6 +42,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 const TABS = [
   { tab: '用户', itemKey: 'users' },
@@ -954,7 +955,7 @@ export default function SettingsPage() {
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>姓名 *</div>
+            <FormLabel required style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>姓名</FormLabel>
             <Input
               value={userForm.name}
               onChange={(value) => setUserForm({ ...userForm, name: value })}
@@ -962,7 +963,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              登录名 *{userEditTarget ? '（不可修改）' : ''}
+              登录名<span className="required-mark" aria-hidden="true">*</span>{userEditTarget ? '（不可修改）' : ''}
             </div>
             <Input
               value={userForm.username}
@@ -1040,7 +1041,7 @@ export default function SettingsPage() {
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-                角色编码 *{roleEditTarget ? '（不可修改）' : ''}
+                角色编码<span className="required-mark" aria-hidden="true">*</span>{roleEditTarget ? '（不可修改）' : ''}
               </div>
               <Input
                 value={roleForm.code}
@@ -1050,7 +1051,7 @@ export default function SettingsPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>角色名 *</div>
+              <FormLabel required style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>角色名</FormLabel>
               <Input
                 value={roleForm.name}
                 onChange={(value) => setRoleForm({ ...roleForm, name: value })}
@@ -1107,7 +1108,7 @@ export default function SettingsPage() {
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>部门名称 *</div>
+            <FormLabel required style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>部门名称</FormLabel>
             <Input
               value={deptForm.name}
               onChange={(value) => setDeptForm({ ...deptForm, name: value })}

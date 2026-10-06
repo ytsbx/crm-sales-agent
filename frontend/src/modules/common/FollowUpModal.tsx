@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { DatePicker, Input, Modal, Select, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import { createFollowUp } from '../../shared/api/followup'
+import FormLabel from '../../shared/components/FormLabel'
 
 const TYPES = ['电话', '微信', '企业微信', '拜访', '邮件', '其他'].map((value) => ({
   value,
@@ -107,7 +108,7 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
           />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>跟进内容 *</div>
+          <FormLabel required>跟进内容</FormLabel>
           <TextArea
             value={content}
             onChange={setContent}
@@ -135,11 +136,11 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
         </div>
         {!exemptionReason && <>
           <div>
-            <div style={{ marginBottom: 4 }}>下一步动作 *</div>
+            <FormLabel required>下一步动作</FormLabel>
             <Input value={nextAction} maxLength={200} onChange={setNextAction} placeholder="例如：整理报价并回访客户" />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>下次跟进时间 *</div>
+            <FormLabel required>下次跟进时间</FormLabel>
             <DatePicker
               type="dateTime"
               value={taskDue ?? undefined}

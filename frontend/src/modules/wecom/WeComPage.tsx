@@ -23,6 +23,7 @@ import {
 } from '../../shared/api/wecom'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 /**
  * 企业微信待归一页面（04-UI §5，布局照设计稿：左待处理 / 中企微详情 / 右候选客户）。
@@ -534,7 +535,7 @@ export default function WeComPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>客户名称 *</div>
+            <FormLabel required>客户名称</FormLabel>
             <Input
               value={createForm.name}
               onChange={(value) => setCreateForm({ ...createForm, name: value })}
@@ -580,7 +581,7 @@ export default function WeComPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>交接人（离职）*</div>
+            <FormLabel required>交接人（离职）</FormLabel>
             <Select
               value={transferForm.handover_user_id}
               onChange={(value) =>
@@ -595,7 +596,7 @@ export default function WeComPage() {
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>接管人 *</div>
+            <FormLabel required>接管人</FormLabel>
             <Select
               value={transferForm.takeover_user_id}
               onChange={(value) =>

@@ -10,6 +10,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Product } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 const EMPTY_FORM: ProductPayload = {
   name: '',
@@ -235,7 +236,7 @@ export default function ProductListPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>产品名称 *</div>
+            <FormLabel required>产品名称</FormLabel>
             <Input value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>

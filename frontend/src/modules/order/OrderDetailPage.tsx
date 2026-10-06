@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import FormLabel from '../../shared/components/FormLabel'
 import type { TagTone } from '../../shared/types'
 
 import {
@@ -1138,7 +1139,7 @@ export default function OrderDetailPage() {
             disabled={Boolean(milestoneEdit?.actual_date)} style={{ width: 220 }}
             optionList={[{ value: 'apply', label: '适用，继续跟进' }, { value: 'skip', label: '不适用，跳过此节点' }]}
             onChange={(v) => setMilestoneForm({ ...milestoneForm, skipped: v === 'skip' })} /></div>
-          {milestoneForm.skipped && <div><div>跳过原因（必填）</div><Input aria-label="跳过原因" value={milestoneForm.skip_reason}
+          {milestoneForm.skipped && <div><FormLabel required>跳过原因</FormLabel><Input aria-label="跳过原因" value={milestoneForm.skip_reason}
             onChange={(v) => setMilestoneForm({ ...milestoneForm, skip_reason: v })} /></div>}
 
           <div>

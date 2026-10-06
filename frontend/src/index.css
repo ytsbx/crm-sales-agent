@@ -654,6 +654,27 @@ a:not([href]) {
   color: var(--crm-secondary);
 }
 
+/* 必填星号（用法见 shared/components/FormLabel.tsx）。
+   以前星号是拼在标签文字里的纯文本 —— 文本节点只能继承父级颜色，
+   CSS 也没有选择器能命中「文本里的某个字符」，所以它和标签永远同色：
+   加了个星号等于没加。要单独上色只能给星号一个独立的标签。
+   全站必填标记的样式只有这一处，页面里不要再手写 `*`。 */
+.required-mark {
+  margin-left: 2px;
+  color: var(--crm-error);
+  font-weight: 600;
+}
+
+/* 标签旁的灰色说明（用法见 FormLabel 的 hint）。
+   给「星号说不清」的规则用，例如案例库「关键动作 / 可复用做法」
+   提交审核时二者至少填一项——标星号会是假的。 */
+.label-hint {
+  margin-left: 6px;
+  color: var(--crm-text-3);
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .progress-track {
   height: 8px;
   border-radius: 4px;

@@ -19,6 +19,7 @@ import { getPublicConfig } from '../../shared/api/settings'
 import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 import { usePermissions } from '../../shared/hooks/permissions'
 import AgentInsight from '../../shared/components/AgentInsight'
+import FormLabel from '../../shared/components/FormLabel'
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'primary' | 'danger' | 'muted' }) {
   const color = tone === 'primary' ? 'var(--crm-primary)' : tone === 'danger' ? 'var(--crm-error)' : 'var(--crm-text)'
@@ -169,7 +170,7 @@ export default function PricingPage() {
               />
             </div>
             <div>
-              <div style={{ marginBottom: 4 }}>产品 SKU *</div>
+              <FormLabel required>产品 SKU</FormLabel>
               <Select
                 placeholder="选择 SKU"
                 value={skuId}

@@ -40,6 +40,7 @@ import {
   type OaApprovalInstance,
 } from '../../shared/api/dingtalk'
 import { reportOperationTiming } from '../../shared/api/analytics'
+import FormLabel from '../../shared/components/FormLabel'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 const STATUS_TONE: Record<string, TagColor> = {
@@ -87,8 +88,11 @@ export default function KnowledgePage() {
   const [draftSourceId, setDraftSourceId] = useState<number | null>(null)
   const [sampleSourceId, setSampleSourceId] = useState<number | null>(null)
   const [statusFilter, setStatusFilter] = useState<string | undefined>()
-  const [keywordInput, setKeywordInput] = useState('')
-  const [keyword, setKeyword] = useState('')
+  // 深链（第五批 §6.2(6)）：`?keyword=需求编号` 直接从别处跳进来就能筛出那一条。
+  // 用 keyword 而不是新增一个参数：列表本来就有编号检索，共用同一套逻辑，
+  // 少一个"只在深链时才生效"的分支。
+  const [keywordInput, setKeywordInput] = useState(() => searchParams.get('keyword') ?? '')
+  const [keyword, setKeyword] = useState(() => searchParams.get('keyword') ?? '')
   const [page, setPage] = useState(1)
   const [editVisible, setEditVisible] = useState(false)
   const [editing, setEditing] = useState<CustomInquiryRow | null>(null)
@@ -525,7 +529,7 @@ export default function KnowledgePage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>需求标题 *</div>
+            <FormLabel required>需求标题</FormLabel>
             <Input
               value={form.title}
               onChange={(value) => setForm({ ...form, title: value })}
@@ -814,7 +818,7 @@ export default function KnowledgePage() {
             {quoteTarget?.inquiry_no ? ` · 需求编号 ${quoteTarget.inquiry_no}` : ''}
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>核价成本（元/件，不含运费）*</div>
+            <FormLabel required>核价成本（元/件，不含运费）</FormLabel>
             <InputNumber
               style={{ width: '100%' }}
               min={0}
@@ -827,7 +831,7 @@ export default function KnowledgePage() {
             </div>
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>报价（元/件）*</div>
+            <FormLabel required>报价（元/件）</FormLabel>
             <InputNumber
               style={{ width: '100%' }}
               min={0}

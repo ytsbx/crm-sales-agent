@@ -8,6 +8,7 @@ import { listSamples, type SampleRequestRow } from '../../shared/api/sample'
 import { listOrders, listOrderDrafts, type OrderDraft, type Order } from '../../shared/api/order'
 import { usePermissions } from '../../shared/hooks/permissions'
 import { emptyText } from '../../shared/hooks/emptyText'
+import FormLabel from '../../shared/components/FormLabel'
 
 /** 一条商机承载一次独立采购需求，各单据保留自己的业务状态。 */
 export default function OpportunityRecords({ opportunityId, customerId, title }: {
@@ -132,7 +133,10 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
       }}>
       <div style={{ display: 'grid', gap: 12 }}>
         <div>关联商机：{title}（客户自动带入）</div>
-        <div>需求标题 *<Input value={inquiryForm.title} onChange={(value) => setInquiryForm({ ...inquiryForm, title: value })} /></div>
+        <div>
+          <FormLabel required>需求标题</FormLabel>
+          <Input value={inquiryForm.title} onChange={(value) => setInquiryForm({ ...inquiryForm, title: value })} />
+        </div>
         <div>需求描述<TextArea value={inquiryForm.description} onChange={(value) => setInquiryForm({ ...inquiryForm, description: value })} placeholder="材料、尺寸、图纸要求等" /></div>
         <div>需求数量<Input value={inquiryForm.quantity} onChange={(value) => setInquiryForm({ ...inquiryForm, quantity: value })} /></div>
       </div>

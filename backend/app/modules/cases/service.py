@@ -1,11 +1,14 @@
 """案例库业务逻辑（§3.7/场景15）：检索、脱敏、审核流。"""
 
+import json
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import String, and_, cast, literal, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.response import paginate
 from app.modules.cases import redaction
 from app.modules.cases.model import CASE_STATUS_LABEL, SalesCase
 from app.modules.user.model import User
@@ -88,6 +91,24 @@ def serialize_case(
             counters[hit_label] = counters.get(hit_label, 0) + count
         review_note = _replace_customer_name(review_note)
 
+    # **审核历史要逐条脱敏**（2026-10-06 修，此前是个绕过口）。
+    # `review_note` 只留最新一条，历史在 `review_history` 里逐条追加；
+    # 上面只脱敏了 `review_note`，于是界面呈现为：
+    #     最新意见：某客户 电话〔手机号〕
+    #     历史意见：客户甲 电话13800138000      ← 真名 + 真号码照样在里面
+    # 普通培训读者的列表/详情都能拿到 `review_history`，翻一次就绕过去了。
+    # 规则与其它自由文本完全相同——**不能只处理"最后一条"**。
+    review_history: list[dict] = []
+    for entry in case.review_history or []:
+        item = dict(entry) if isinstance(entry, dict) else {"note": str(entry)}
+        raw_note = item.get("note")
+        if share_view and raw_note:
+            masked, hits = redaction.mask_text(raw_note)
+            for hit_label, count in hits.items():
+                counters[hit_label] = counters.get(hit_label, 0) + count
+            item["note"] = _replace_customer_name(masked)
+        review_history.append(item)
+
     evidence: dict[str, int | None] = {
         field: getattr(case, field) for field in redaction.EVIDENCE_PERMISSIONS
     }
@@ -119,8 +140,10 @@ def serialize_case(
         "version": case.version or 1,
         "revision_of_id": case.revision_of_id,
         "superseded_by": superseded_by,
-        # 逐条审核历史（原来只有 review_note 一个单值，下一次审核就覆盖）
-        "review_history": case.review_history or [],
+        # 逐条审核历史（原来只有 review_note 一个单值，下一次审核就覆盖）。
+        # 走上面脱敏过的 review_history，**不要**在这里再用 case.review_history——
+        # 那等于把刚脱掉的原文又放回去了。
+        "review_history": review_history,
         "reviewer_id": case.reviewer_id,
         "reviewer_name": reviewer_name,
         "reviewed_at": case.reviewed_at,
@@ -226,45 +249,84 @@ async def get_case_or_404(session: AsyncSession, case_id: int) -> SalesCase:
 async def list_cases(
     session: AsyncSession, *, user, status: str | None, industry: str | None,
     product_line: str | None, stage: str | None, keyword: str | None,
+    problem_tags: str | None = None,
     include_history: bool = False,
-) -> list[dict]:
+    page: int = 1, page_size: int = 20,
+) -> tuple[list[dict], int]:
     """列表：已发布人尽可读（脱敏）；未发布的只有作者自己；主管看全量。
 
     可见范围必须与详情一致（get_case_detail：非 published 仅作者与主管）——
     此前把 pending_review 漏给了全员，未审案例人人可见。
+
+    分页（第四批 §5.1.6）：原来是 `.limit(200)` 硬顶——第 201 条案例在页面上
+    永远不出现，而且没有任何提示，用户只会以为"一共就这么些"。
+    改成真分页并返回总数，前端才可能知道自己少看了多少。
     """
     reviewer = is_reviewer(user)
     stmt = select(SalesCase).where(SalesCase.deleted_at.is_(None))
     if not reviewer:
+        # 已发布 + **被修订版取代的旧版**都人尽可读：旧版只是不能再改，
+        # 它还是培训资料。修订稿上线就把旧版从读者视野里抹掉，等于把资料弄丢了
+        # （返工单第 6 条）。
         stmt = stmt.where(
-            (SalesCase.status == "published") | (SalesCase.author_id == user.id)
+            SalesCase.status.in_(("published", "superseded"))
+            | (SalesCase.author_id == user.id)
         )
     if status:
         stmt = stmt.where(SalesCase.status == status)
     if industry:
-        stmt = stmt.where(SalesCase.industry == industry)
+        # 模糊匹配：行业与产品线是**自由文本**（不是字典项），精确匹配等于要求
+        # 用户手打出完整字段名——"机械设备"筛不到"机械设备制造"。
+        stmt = stmt.where(SalesCase.industry.ilike(f"%{industry}%"))
     if product_line:
-        stmt = stmt.where(SalesCase.product_line == product_line)
+        stmt = stmt.where(SalesCase.product_line.ilike(f"%{product_line}%"))
     if stage:
         stmt = stmt.where(SalesCase.stage_reached == stage)
+    if problem_tags:
+        # 问题标签在库里存的是 **`{"tags": [...]}`**，不是裸数组（见 router 的创建路径
+        # 与 `_apply_update`：两边都包了这一层）。比对必须照这个形状来——
+        # 拿裸数组去比永远匹配不上（`{"tags":["x"]} @> ["x"]` 是 false）。
+        #
+        # 三点必须这样写，少一点就是 500 或静默查不到：
+        # 1. 用 `.op("@>")` **显式**给操作符。不能用 `.contains()`：那是 SQLAlchemy 给
+        #    JSON（非 jsonb）准备的，会编译成 `LIKE '%' || ... || '%'` 的字符串匹配，
+        #    语义完全不对（"交期"能匹配到"交期紧"，还会把结构字符算进去）。
+        # 2. 右边先 `literal(..., String)` 保证**按文本绑定**，再 cast 成 jsonb：
+        #    直接传 Python 值的话类型推断会出错，PG 报 `invalid input syntax for type json`。
+        # 3. 用 `json.dumps` 自己序列化，别指望 ORM 的 JSON 绑定处理器在这里生效。
+        tags_json = cast(
+            literal(json.dumps({"tags": [problem_tags]}, ensure_ascii=False), String), JSONB
+        )
+        stmt = stmt.where(SalesCase.problem_tags.op("@>")(tags_json))
     if keyword:
         like = f"%{keyword}%"
-        stmt = stmt.where(
-            (SalesCase.title.like(like))
-            | (SalesCase.lessons.like(like))
-            | (SalesCase.key_actions.like(like))
+        # 标题对所有人可搜：标题本身在分享版是"脱敏后展示"的，读者看得见它。
+        conds = [SalesCase.title.like(like)]
+        # 正文（关键动作 / 可复用做法）**只对拿得到原文的人搜**。
+        # 原因：分享读者的正文是脱敏后下发的，如果 SQL 仍按原文匹配，
+        # 就能拿一个手机号或金额去"探测"某条案例是否命中——内容看不到，
+        # 但"这条案例里存在这个串"这件事泄露了（搜索变成了探测接口）。
+        # 判据与 serialize_case 的 reveal_customer 同源：本人看自己的案例、
+        # 或主管，才拿得到原文。
+        narrative_match = or_(
+            SalesCase.lessons.like(like), SalesCase.key_actions.like(like)
         )
+        if is_reviewer(user):
+            conds.append(narrative_match)
+        else:
+            conds.append(and_(SalesCase.author_id == user.id, narrative_match))
+        stmt = stmt.where(or_(*conds))
     if not include_history:
-        # 默认只列**当前版本**：开过修订稿的案例否则会在列表里出现两份，看着像重复。
-        # 历史版本仍可按 id 打开（详情不受影响），也可显式传 include_history=true 列出。
-        stmt = stmt.where(
-            SalesCase.id.not_in(
-                select(SalesCase.revision_of_id).where(SalesCase.revision_of_id.is_not(None))
-            )
-        )
-    rows = (
-        await session.execute(stmt.order_by(SalesCase.created_at.desc()).limit(200))
-    ).scalars().all()
+        # 默认只列**当前版本**。判据是"自己已被取代"，**不是**"存在指向自己的修订稿"：
+        # 原先只要有人点过"修订"（生成一份还没发布的草稿），原版就立刻从列表里消失，
+        # 作者会以为案例丢了（返工单第 6 条）。
+        # 现在的边界：修订稿还在草稿/待审/被驳回 → 原版照常显示（它才是当前发布版）；
+        # 修订稿发布并把原版置为 `superseded` 之后，原版才从默认列表退场
+        # （仍可用 include_history=true 列出，详情也照样打得开）。
+        stmt = stmt.where(SalesCase.status != "superseded")
+    rows, total = await paginate(
+        session, stmt.order_by(SalesCase.created_at.desc()), page, page_size
+    )
 
     # 一次查清"谁被谁取代了"（§5.1.5）：有修订版的那些是只读历史版本
     child_of: dict[int, int] = {}
@@ -306,7 +368,7 @@ async def list_cases(
             ).all()
         }
     scope = redaction.evidence_scope_for(user)
-    return [
+    items = [
         serialize_case(
             row,
             author_name=users.get(row.author_id),
@@ -318,11 +380,16 @@ async def list_cases(
         )
         for row in rows
     ]
+    return items, total
 
 
 async def get_case_detail(session: AsyncSession, *, case: SalesCase, user) -> dict:
     reviewer = is_reviewer(user)
-    if case.status != "published" and not (reviewer or case.author_id == user.id):
+    # `superseded`（被修订版取代的旧版）与 published 一样**人尽可读、只读**：
+    # 修订稿上线不代表旧版要消失——培训资料得翻得到（返工单第 6 条的口径）。
+    if case.status not in ("published", "superseded") and not (
+        reviewer or case.author_id == user.id
+    ):
         raise AppError(ErrorCode.FORBIDDEN, "该案例未发布，仅作者与主管可见")
     reveal = reviewer or case.author_id == user.id
     # **分享版也要按 id 反查客户名**：只用于把标题里的客户全称换成代称，
@@ -406,24 +473,52 @@ async def revise_case(session: AsyncSession, *, case: SalesCase, user) -> SalesC
     """从已发布的案例开一份**修订稿**（§5.1.5，已确认口径＝修订稿）。
 
     为什么不能原地改：审核批的是"这一版内容"，改完内容再挂着"已发布"，
-    等于复用了一个对不上号的审核结论。所以已发布（以及已被取代）的版本**只读**，
+    等于复用了一个对不上号的审核结论。所以已发布的版本**只读**，
     要改就复制一份新的重新走审核；批准后新版本替换当前发布版。
 
     修订稿继承原稿的全部内容与客户/证据引用（包括真实客户 id：内部字段，
     可见性仍由各视角决定），但**不继承审核结论**——它还没被批过。
+
+    ⚠️ **只能从「当前发布版」开**，`superseded`（已被取代的旧版）不行。
+    实测确认过的坑：从 V1 开出来的草稿取的是 **V1 的旧内容**，而且
+    `version = V1.version + 1` 会跟已发布的 V2 **撞号**；这份草稿一旦审核通过，
+    它就取代 V2 —— 等于**用旧内容把改进过的版本覆盖掉**（内容倒退）。
+    旧版仍然读得到（只读），只是不能从它派生新版本。
     """
-    if case.status not in ("published", "superseded") and not is_reviewer(user):
+    if case.status == "superseded":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "只有已发布（或已被取代）的案例才需要开修订稿；未发布的直接改就行",
+            "这一版已被更新的一版取代，不能再从它开修订稿——"
+            "那样会把旧内容倒着覆盖回当前版本。请基于「当前发布版」开新修订稿"
+            "（在列表里找同名的、状态为「已发布」的那一条）。",
             422,
         )
-    if case.status not in ("published", "superseded"):
+    if case.status != "published":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"当前状态（{CASE_STATUS_LABEL.get(case.status, case.status)}）不需要开修订稿，直接改就行",
+            f"当前状态（{CASE_STATUS_LABEL.get(case.status, case.status)}）不需要开修订稿，"
+            "直接改就行；只有已发布的版本不能原地改。",
             422,
         )
+    # 幂等：同一原版**最多一份在途修订稿**。原先重复点"修订"会建出好几份同版本草稿，
+    # 列表里一排 V2，谁也说不清哪份是正主（返工单第 6 条）。
+    # 已发布 / 已被取代的那一份不算"在途"——那说明上一轮修订已经落地，可以再开新的。
+    pending = (
+        await session.execute(
+            select(SalesCase)
+            .where(
+                SalesCase.revision_of_id == case.id,
+                SalesCase.deleted_at.is_(None),
+                SalesCase.status.in_(("draft", "pending_review", "rejected")),
+            )
+            .order_by(SalesCase.id.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalars().first()
+    if pending is not None:
+        return pending
+
     fields = {
         field: getattr(case, field)
         for field in (

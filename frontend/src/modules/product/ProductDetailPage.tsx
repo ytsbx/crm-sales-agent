@@ -20,6 +20,7 @@ import DetailHeader from '../../shared/components/DetailHeader'
 import AttachmentPanel from '../common/AttachmentPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
+import FormLabel from '../../shared/components/FormLabel'
 
 /** SKU 表单用字符串保存，提交时再转数字——避免半成品输入被强转成 NaN。 */
 interface SkuForm {
@@ -305,7 +306,7 @@ export default function ProductDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>产品名称 *</div>
+            <FormLabel required>产品名称</FormLabel>
             <Input value={productForm.name} onChange={(v) => setProductForm({ ...productForm, name: v })} />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
@@ -373,7 +374,7 @@ export default function ProductDetailPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>SKU 编码 *</div>
+              <FormLabel required>SKU 编码</FormLabel>
               <Input
                 value={skuForm.sku_code}
                 onChange={(v) => setSkuForm({ ...skuForm, sku_code: v })}

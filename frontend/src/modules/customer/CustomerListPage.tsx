@@ -24,6 +24,7 @@ import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 
 type Scope = 'mine' | 'pool' | 'all'
 
@@ -659,7 +660,7 @@ export default function CustomerListPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>客户名称 *</div>
+            <FormLabel required>客户名称</FormLabel>
             <Input
               value={form.name}
               onChange={(value) => {
