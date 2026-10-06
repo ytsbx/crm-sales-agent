@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, DatePicker, Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   confirmPayment,
@@ -297,12 +297,22 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       render: (_: unknown, record: Payment) =>
         record.status === 'pending' && can('payment:manage') ? (
           <div style={{ display: 'flex', gap: 10 }}>
-            <a style={{ color: 'var(--crm-success)' }} onClick={() => confirmMutation.mutate(record.id)}>
-              确认
-            </a>
-            <a style={{ color: 'var(--crm-error)' }} onClick={() => rejectMutation.mutate(record.id)}>
-              驳回
-            </a>
+            {/* 回款确认/驳回是财务动作、点一下立即生效，必须二次确认
+                （主人 2026-10-06：表格里的动作「点一下就转换成功了，有点儿戏」）。 */}
+            <Popconfirm
+              title="确认收到这笔回款？"
+              content="确认后会记入回款并影响业绩口径，请核对金额后再点。"
+              onConfirm={() => confirmMutation.mutate(record.id)}
+            >
+              <a style={{ color: 'var(--crm-success)' }}>确认</a>
+            </Popconfirm>
+            <Popconfirm
+              title="驳回这笔回款？"
+              content="驳回后这笔回款不计入确认口径，需要重新提交。"
+              onConfirm={() => rejectMutation.mutate(record.id)}
+            >
+              <a style={{ color: 'var(--crm-error)' }}>驳回</a>
+            </Popconfirm>
           </div>
         ) : (
           '-'

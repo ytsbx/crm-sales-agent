@@ -499,7 +499,14 @@ export default function QuoteDetailPage() {
           )}
           {canManage && canRespond && (
             <>
-              <Button onClick={() => acceptMutation.mutate()} loading={acceptMutation.isPending}>客户接受</Button>
+              {/* 客户接受是不可逆的商务事实（后续转订单的前置条件），点一下生效太轻 */}
+              <Popconfirm
+                title="登记客户已接受这份报价？"
+                content="登记后这份报价进入「已接受」，是转销售订单的前置条件。"
+                onConfirm={() => acceptMutation.mutate()}
+              >
+                <Button loading={acceptMutation.isPending}>客户接受</Button>
+              </Popconfirm>
               <Button type="danger" onClick={() => setDeclineVisible(true)}>
                 客户拒绝
               </Button>

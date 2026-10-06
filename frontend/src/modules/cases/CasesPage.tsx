@@ -6,6 +6,7 @@ import {
   Button,
   Input,
   Modal,
+  Popconfirm,
   Select,
   Table,
   Tag,
@@ -470,9 +471,15 @@ export default function CasesPage() {
                     )}
                   {isReviewer && record.status === 'pending_review' && (
                     <>
-                      <a style={{ color: 'var(--crm-success)' }} onClick={() => reviewMutation.mutate({ id: record.id, approve: true })}>
-                        通过
-                      </a>
+                      {/* 审核通过会把案例发布出去、成为别人能引用的基线，不可逆，须确认。
+                          「驳回」本来就走原因弹窗，那条不用加。 */}
+                      <Popconfirm
+                        title="通过这份案例的审核？"
+                        content="通过后案例立即发布，会成为可被引用的基线，只能靠开修订稿再改。"
+                        onConfirm={() => reviewMutation.mutate({ id: record.id, approve: true })}
+                      >
+                        <a style={{ color: 'var(--crm-success)' }}>通过</a>
+                      </Popconfirm>
                       <a
                         style={{ color: 'var(--crm-danger, #d45)' }}
                         onClick={() => {

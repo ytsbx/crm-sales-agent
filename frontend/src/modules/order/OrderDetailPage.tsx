@@ -723,9 +723,13 @@ export default function OrderDetailPage() {
                   width: 90,
                   render: (_: unknown, record: Payment) =>
                     record.status === 'pending' && canPayment ? (
-                      <a style={{ color: 'var(--crm-success)' }} onClick={() => confirmMutation.mutate(record.id)}>
-                        确认
-                      </a>
+                      <Popconfirm
+                        title="确认收到这笔回款？"
+                        content="确认后会记入回款并影响业绩口径，请核对金额后再点。"
+                        onConfirm={() => confirmMutation.mutate(record.id)}
+                      >
+                        <a style={{ color: 'var(--crm-success)' }}>确认</a>
+                      </Popconfirm>
                     ) : (
                       '-'
                     ),
@@ -797,14 +801,20 @@ export default function OrderDetailPage() {
                         <div style={{ flex: 1 }} />
                         {row.status === 'pending' && can('order:manage') && (
                           <>
-                            <Button
-                              size="small"
-                              theme="solid"
-                              loading={confirmScheduleMutation.isPending}
-                              onClick={() => confirmScheduleMutation.mutate(row.id)}
+                            {/* 重排会真的改计划交期，同排的「作废」早有确认，这个也该有 */}
+                            <Popconfirm
+                              title="确认并重排交期？"
+                              content="确认后这张变更单会生效，相关批次的计划日期会被改写。"
+                              onConfirm={() => confirmScheduleMutation.mutate(row.id)}
                             >
-                              确认并重排
-                            </Button>
+                              <Button
+                                size="small"
+                                theme="solid"
+                                loading={confirmScheduleMutation.isPending}
+                              >
+                                确认并重排
+                              </Button>
+                            </Popconfirm>
                             {/* 作废出口：库上"一单只允许一张待确认"，
                                 没有它这张单会永久堵死该订单之后的交期变更 */}
                             <Popconfirm

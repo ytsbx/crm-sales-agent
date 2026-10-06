@@ -1159,31 +1159,48 @@ export default function SettingsPage() {
                       已选 {selectedCandidateIds.length} 条
                     </span>
                     <div style={{ flex: 1 }} />
-                    <Button
-                      size="small"
-                      disabled={!selectedCandidateIds.length}
-                      loading={batchMutation.isPending}
-                      onClick={() => batchMutation.mutate({ decision: 'approve' })}
+                    {/* 批量决定一次影响多个人/多个客户，点一下立刻生效太轻
+                        （主人 2026-10-06 定的范围：批量与不可逆的动作都要确认）。 */}
+                    <Popconfirm
+                      title={`批准选中的 ${selectedCandidateIds.length} 条回收候选？`}
+                      content="批准后进入待执行；到期仍未恢复的客户会被真正回收（归属清空）。"
+                      onConfirm={() => batchMutation.mutate({ decision: 'approve' })}
                     >
-                      批量批准
-                    </Button>
-                    <Button
-                      size="small"
-                      disabled={!selectedCandidateIds.length}
-                      loading={batchMutation.isPending}
-                      onClick={() => batchMutation.mutate({ decision: 'defer' })}
+                      <Button
+                        size="small"
+                        disabled={!selectedCandidateIds.length}
+                        loading={batchMutation.isPending}
+                      >
+                        批量批准
+                      </Button>
+                    </Popconfirm>
+                    <Popconfirm
+                      title={`暂缓选中的 ${selectedCandidateIds.length} 条回收候选？`}
+                      content="暂缓后这些客户这一轮不会被回收，过一阵会重新进入候选。"
+                      onConfirm={() => batchMutation.mutate({ decision: 'defer' })}
                     >
-                      批量暂缓
-                    </Button>
-                    <Button
-                      size="small"
-                      type="danger"
-                      disabled={!selectedCandidateIds.length}
-                      loading={batchMutation.isPending}
-                      onClick={() => batchMutation.mutate({ decision: 'reject' })}
+                      <Button
+                        size="small"
+                        disabled={!selectedCandidateIds.length}
+                        loading={batchMutation.isPending}
+                      >
+                        批量暂缓
+                      </Button>
+                    </Popconfirm>
+                    <Popconfirm
+                      title={`驳回选中的 ${selectedCandidateIds.length} 条回收候选？`}
+                      content="驳回后本轮不再回收这些客户，需要重新提名才会再进候选。"
+                      onConfirm={() => batchMutation.mutate({ decision: 'reject' })}
                     >
-                      批量驳回
-                    </Button>
+                      <Button
+                        size="small"
+                        type="danger"
+                        disabled={!selectedCandidateIds.length}
+                        loading={batchMutation.isPending}
+                      >
+                        批量驳回
+                      </Button>
+                    </Popconfirm>
                   </div>
                 )}
                 {batchResult && (

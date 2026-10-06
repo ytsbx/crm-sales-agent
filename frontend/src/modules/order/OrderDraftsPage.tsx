@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, InputNumber, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, InputNumber, Popconfirm, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -82,7 +82,15 @@ export default function OrderDraftsPage() {
       {draft.order_id ? <Link to={`/orders/${draft.order_id}`}>查看正式订单 #{draft.order_id}</Link> : <>
         <p>请选择同一客户、同一商机需求中客户已接受的报价。草稿须与该版本的全部明细、价格和付款条件一致；有改动请先修订报价并取得客户确认。</p>
         <Select placeholder="选择客户已确认报价" style={{ width: 360 }} value={versionId} disabled={busy || !can('order:manage')} optionList={(quotes.data?.items ?? []).filter(q => q.current_version_id).map(q => ({ value: q.current_version_id!, label: q.quote_no }))} onChange={v => setVersionId(Number(v))} />
-        <Button theme="solid" style={{ marginLeft: 12 }} disabled={busy || dirty || !versionId || !can('order:manage')} loading={confirm.isPending} onClick={() => confirm.mutate()}>确认正式下单</Button>
+        {/* 正式下单会真的建订单、进入履约，且不能一键撤回，必须二次确认
+            （主人 2026-10-06 定的范围里明确包含「正式下单」）。 */}
+        <Popconfirm
+          title="确认正式下单？"
+          content="确认后会按这份草稿生成正式订单并进入履约流程，请再核对一遍明细与付款条件。"
+          onConfirm={() => confirm.mutate()}
+        >
+          <Button theme="solid" style={{ marginLeft: 12 }} disabled={busy || dirty || !versionId || !can('order:manage')} loading={confirm.isPending}>确认正式下单</Button>
+        </Popconfirm>
         {quotes.error && <p>{quotes.error.message}</p>}
         {versionId && <p><Link to={`/quotes/${quotes.data?.items.find(q => q.current_version_id === versionId)?.id}?version=${versionId}`}>查看选定报价明细</Link></p>}
         {dirty && <p>请先保存草稿，再核对并下单。</p>}

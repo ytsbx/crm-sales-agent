@@ -270,9 +270,16 @@ export default function LeadListPage() {
             </a>
           )}
           {record.owner_id && can('lead:assign') && (
-            <a style={{ color: 'var(--crm-primary)' }} onClick={() => releaseMutation.mutate(record.id)}>
-              释放
-            </a>
+            /* 释放会丢掉归属（线索回到池子里、别人可以领走），点一下生效太轻。
+               「领取」故意不加确认：抢线索本来就图快，加一步反而添麻烦
+               （主人 2026-10-06 定：只给会丢归属/不可逆的动作加确认）。 */
+            <Popconfirm
+              title="释放这条线索回线索池？"
+              content="释放后你不再是负责人，其他人可以领取。"
+              onConfirm={() => releaseMutation.mutate(record.id)}
+            >
+              <a style={{ color: 'var(--crm-primary)' }}>释放</a>
+            </Popconfirm>
           )}
           {can('lead:assign') && (
             <Popconfirm title="确认废弃这条线索？" onConfirm={() => setDiscardTarget(record)}>

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   approveApproval,
@@ -161,9 +161,15 @@ export default function ApprovalPage() {
           )}
           {record.can_approve && (
             <>
-              <a style={{ color: 'var(--crm-success)' }} onClick={() => approveMutation.mutate(record.id)}>
-                通过
-              </a>
+              {/* 审批通过是不可逆的状态推进（报价随即可以对客发送），点一下生效太轻，
+                  必须二次确认。「拒绝」本来就走原因弹窗，那条不用加。 */}
+              <Popconfirm
+                title="通过这份报价的审批？"
+                content="通过后报价即可对客发送，请确认金额与优惠幅度都核对过。"
+                onConfirm={() => approveMutation.mutate(record.id)}
+              >
+                <a style={{ color: 'var(--crm-success)' }}>通过</a>
+              </Popconfirm>
               <a style={{ color: 'var(--crm-error)' }} onClick={() => setRejectTarget(record)}>
                 拒绝
               </a>
