@@ -44,6 +44,17 @@ class CustomerTransfer(BaseModel):
     reason: str | None = None
 
 
+class PoolRelease(BaseModel):
+    """人工把客户放进公海。
+
+    `reason` 不只是留痕：客户**还在履约中**（有在途订单/未结应收/有效正式报价/
+    在途打样）时，普通释放会被拦；填了原因表示主管**明确要求例外释放**，
+    这时才放行，并把保护事项与原因一起写进审计（返工单 6.3）。
+    """
+
+    reason: str | None = None
+
+
 class CustomerExportPurpose(str, Enum):
     CUSTOMER_FOLLOW_UP = "customer_follow_up"
     BUSINESS_ANALYSIS = "business_analysis"

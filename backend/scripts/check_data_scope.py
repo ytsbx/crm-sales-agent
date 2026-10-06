@@ -433,12 +433,17 @@ async def main() -> int:
         await s.flush()
         case_probe_id = case_probe.id
         await s.commit()
+    # ⚠️ 撞单队列已改**真分页**（返工单 6.5）：`data` 从数组变成了
+    # `{items, page, page_size, total}`。这里显式从 items 里取，
+    # 照旧写法会 `row['id']` 撞在字符串 "items" 上（TypeError）。
     status, res = call('GET', '/customer-duplicate-cases', outsider_token)
+    unknown_items = ((res.get('data') or {}).get('items') or [])
     check('撞单列表不暴露只看得见一边的案件',
-          status == 200 and all(row['id'] != case_probe_id for row in (res.get('data') or [])), True)
+          status == 200 and all(row['id'] != case_probe_id for row in unknown_items), True)
     status, res = call('GET', '/customer-duplicate-cases', owner_token)
+    owner_items = ((res.get('data') or {}).get('items') or [])
     check('本人可见完整客户对的撞单案件（对照）',
-          status == 200 and any(row['id'] == case_probe_id for row in (res.get('data') or [])), True)
+          status == 200 and any(row['id'] == case_probe_id for row in owner_items), True)
     check_denied('有分配权限但看不到候选客户仍不能裁定撞单',
                  call('POST', f'/customer-duplicate-cases/{case_probe_id}/resolve',
                       outsider_token, {'decision': 'keep_both'})[0])

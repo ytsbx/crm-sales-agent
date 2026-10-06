@@ -1112,7 +1112,24 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 
 ## 41.19 公海回收（public-pool，补充条目）
 
-- `POST /public-pool/run-recycle`：立即执行一次公海回收。需要 `settings:manage`。正式环境由定时任务调用。审计写在 service 内部（它自己 commit），路由层不再补写——避免提交后再写审计反而落到另一个事务里。
+- `POST /public-pool/run-recycle`：触发一次公海回收**扫描**。需要 `settings:manage`。正式环境由定时任务调用。审计写在 service 内部（它自己 commit），路由层不再补写——避免提交后再写审计反而落到另一个事务里。
+  **⚠️ 语义已变（返工单 6.3）**：老实现是"扫到就直接清空负责人、客户当场进公海"，不可逆——业务员出差两周没点跟进，跟了半年的客户就没了。现在**只提名**（落一条回收候选 + 预告），回收要等主管批准。返回 `{nominated_count, candidates, protected_count, protected, disputed_count, already_open_count, notice_days}`；`released_count` 恒为 0（保留字段兼容老调用方）。
+  **履约保护的客户不会被提名**（有效正式报价 / 在途订单 / 未结应收 / 在途打样），保护原因随 `protected[].reasons` 返回。
+- `GET /public-pool/recycle-candidates`：回收候选（预告）列表，**真分页**（`items/page/page_size/total`）。需要 `settings:manage`。`status` 默认 `pending`。每行带：原负责人、命中规则与天数、最近有效联系 / 最近业务进展（复核要看得到"是按哪个时间判冷落"）、提名时的保护明细快照、预告到期时间。
+- `POST /public-pool/recycle-candidates/{id}/decide`：复核一条候选。需要 `settings:manage`。`decision` = `approve`（执行回收）/ `reject`（驳回）/ `defer`（暂缓）。
+  - **批准执行前会重新检查**：预告发出之后客户若又有了新跟进、新报价、新订单、新回款，会被 **422** 拦下（提示里说清是哪张单据）；
+  - 仍想例外回收 → 填 `note` 后重试，会记 `exception_approved` 并写审计；
+  - 驳回/暂缓也要填 `note`（谁、为什么）；
+  - **同名客户中途换过人**（`owner_id` 与提名时不一致）→ 409，让主管重新看，避免按过时依据回收。
+- `POST /public-pool/recycle-candidates/batch-decide`：批量复核。需要 `settings:manage`。`candidate_ids` 走请求体（数组），`decision`/`note` 走查询参数。**逐条处理、逐条报结果**：被拦下的不影响其余，且**不会被执行**。
+- `POST /public-pool/recycle-candidates/{id}/restore`：**恢复**——把被回收的客户还给原负责人。需要 `settings:manage`（权限码本身做成配置项 `pool_recycle_restore_permission`，默认 `customer:assign`）。
+  三条纪律：**保留原回收记录**（状态转 `restored`，不删）；客户**已被别人合法领取**时报 **409** 并记下冲突（`restore_conflict_owner_id`），**绝不静默覆盖**；原负责人已停用时 422（改派给别人）。
+- `POST /customers/{id}/release-to-pool`（**人工释放**）：需要 `customer:assign`。客户**还在履约中**时 **422** 拦下并说清是哪张单据；主管确需释放时在请求体里带 `reason` 表示**例外**，会记审计。判据与定时扫描、回收执行共用同一套保护规则。
+- `GET /customer-duplicate-cases`：撞单待裁定队列，**真分页**（`items/page/page_size/total`，原来 `.limit(300)` 硬顶、第 301 条起永远打不开）。需要 `customer:view`。
+- `POST /customer-duplicate-cases/{id}/resolve`：裁定。需要 `customer:assign`。
+  **归属变更复用普通转移那条路径** → **未完成的待办跟着新负责人走**，已完成的原样不动（历史记录）；保存裁定**前**的归属（`before_owners`）与裁定后（`resolved_owner_id`）、证据、结论、操作者与理由。
+  **并发保护**：只有一个人能裁定成功（行锁 + 状态复查），重复请求 422。
+  **未决唯一**：同一对客户（A/B 与 B/A 视为同一对）最多一张未决案件（部分唯一索引），并发查重不会开出两张。
 - `POST /public-pool/customers/{id}/claim` / `POST /public-pool/leads/{id}/claim`：领取公海客户 / 线索。
   客户需要 `customer:view`，线索需要 `lead:view`。与客户详情、线索中心那两条领取路径**共用同一个服务函数**，
   检查项、幂等、报错文案一致（此前两处各写一份、已经漂移）。

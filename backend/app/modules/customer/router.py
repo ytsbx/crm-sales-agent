@@ -22,6 +22,7 @@ from app.modules.customer.schema import (
     CustomerCreate,
     CustomerTransfer,
     CustomerUpdate,
+    PoolRelease,
 )
 
 router = APIRouter(tags=["Customer"])
@@ -205,17 +206,41 @@ async def transfer_customer(
 async def release_to_pool(
     customer_id: int,
     request: Request,
+    payload: PoolRelease | None = None,
     user: CurrentUser = Depends(require_permission("customer:assign")),
     session: AsyncSession = Depends(get_db),
 ):
+    """把客户放进公海（**人工释放**）。
+
+    履约保护在这里也要拦（返工单 6.3 第 5 条）：客户手上还有在途订单、
+    未结应收、有效正式报价或在途打样时，普通操作会被拒，**并说清是哪张单拦住的**。
+
+    主管确需释放时走**例外**：填了 `reason` 就放行，但保护事项与例外决定
+    都会记进审计（第 6 条）—— 例外是要有人担责的事。
+    判据与定时扫描、回收执行共用同一套 `protection_detail`，不各判一套。
+    """
+    from app.modules.settings import service as settings_service
+
     customer = await svc.get_visible_customer(session, user, customer_id)
-    await svc.transfer_customer(session, user, customer, None, "放入公海")
+    reason = (payload.reason if payload else None) or None
+    await settings_service.assert_no_protection(
+        session,
+        customer_id=customer.id,
+        customer_name=customer.name,
+        reason=reason,
+        operator_id=user.id,
+        # 传了原因 = 主管明确要求**例外**释放，放行但留痕。
+        # 没传原因时这里什么也不做，保护照常拦下（见 assert_no_protection）。
+        allow_exception=True,
+    )
+    await svc.transfer_customer(session, user, customer, None, reason or "放入公海")
     await write_audit(
         session,
         operator_id=user.id,
         action="release_to_pool",
         business_type="customer",
         business_id=customer.id,
+        after={"reason": reason},
         ip=client_ip(request),
     )
     await session.commit()

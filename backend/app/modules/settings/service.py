@@ -12,19 +12,32 @@
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.errors import AppError, ErrorCode
 from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
-from app.modules.order.model import SalesOrder
+from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
-from app.modules.quote.model import Quote, QuoteVersion
-from app.modules.sample.model import SampleRequest
-from app.modules.settings.model import PublicPoolRule, TaskRule
+from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote, QuoteVersion
+from app.modules.sample.model import (
+    CONFIRM_STATUS_LABEL,
+    SAMPLE_STATUS_LABEL,
+    SampleRequest,
+)
+from app.modules.settings.model import (
+    RECYCLE_OPEN_STATUSES,
+    RECYCLE_STATUS_LABEL,
+    PublicPoolRecycleCandidate,
+    PublicPoolRule,
+    TaskRule,
+)
 from app.modules.task.model import Task
 from app.modules.task.scanning import lock_task_scan
 from app.modules.followup.model import FollowUp
+from app.modules.user.model import User
 
 # ---------------------------------------------------------------- 可配置参数
 #
@@ -105,6 +118,18 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "trade_mode": {"mode": "domestic"},
     "default_currency": {"code": "CNY"},
     "export_tax_refund_rate": {"ratio": 0.0},
+    # ---------------------------------------------------------------- 公海回收（返工单 6.3）
+    #
+    # 这三项是**业务口径，不能由开发随手写死**（审视方点名要求可配置）。
+    # 这里给的是"看起来合理"的默认值，管理员在「系统设置」里随时能改，改完立刻生效。
+    #: 预告提前多久：扫描命中后先预告这么多天，期间业务员仍可跟进自救。
+    "pool_recycle_notice_days": {"days": 7},
+    #: 暂缓期限：主管点"暂缓"之后多久重新进入视野（现在是暂缓时直接再开一条，
+    #: 无需人工回来点，见 decide_candidate 的 defer 分支）。
+    "pool_recycle_defer_days": {"days": 30},
+    #: 恢复操作需要哪个权限码。做成配置而不是写死角色：
+    #: "谁能把回收掉的客户还回去"是管理口径，不同公司不一样。
+    "pool_recycle_restore_permission": {"text": "customer:assign"},
     # 通知渠道（PRD §25 要求"站内 + 企业微信"）。
     # 默认只开站内：企微投递依赖 WECOM_AGENT_ID 与每个用户的 wecom_userid，
     # 没配好之前开成默认会每次都失败，反而把"真失败"淹掉。
@@ -195,65 +220,167 @@ def _last_active_at(customer: Customer) -> datetime | None:
     return latest if latest is None or latest.tzinfo else latest.replace(tzinfo=UTC)
 
 
+#: 构成"履约保护"的报价状态：**必须已经正式对客发出去**。
+#:
+#: 原来只判"未删除 + 在有效期内"，于是**草稿报价**也算保护 ——
+#: 业务员建个草稿放在那儿，这个客户就永远不会进公海回收。
+#: 客户已经拒绝（`declined`）的也一样：那笔生意黄了，不该继续保护。
+#: `pending_approval` / `approved` 同理 —— 还没发给客户，客户根本不知道有这回事。
+QUOTE_PROTECTIVE_STATUSES = ("sent", "accepted")
+
+#: 打样单在"客户还没给出确认结论"时构成保护的状态。
+#: 与 `sample/model.SAMPLE_STATUS_LABEL` 保持一致（那边是唯一真源）。
+SAMPLE_OPEN_STATUSES = ("pending", "approved", "shipped", "signed")
+
+#: 客户已明确接受样品的确认状态（`sample/model.CONFIRM_ACCEPTED` 的值）。
+#: 单独拎出来是因为这里要判"**这张单到此为止**"——已确认接受的打样不再保护客户回收。
+SAMPLE_CONFIRM_ACCEPTED = "accepted"
+
+
+def _protection_reason(label: str, detail: str) -> str:
+    """拼一句人看得懂的保护原因（主管复核时要能一眼看出是哪张单拦住的）。"""
+    return f"{label}：{detail}"
+
+
+async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
+    """履约保护名单 + **每一笔的具体原因**（返工单 6.4）。
+
+    返回 `{客户id: ["在途订单 SH2024-001（生产中）", "有效报价 QT2024-018（已发送，有效期 2026-12-31）"]}`。
+
+    为什么要把原因也返回：只给一个 `set[int]` 的话，主管看到"这个客户没被回收"
+    却不知道**是被哪张单据拦住的**，想去催也只能靠猜。回收预告页要用它。
+    """
+    today = datetime.now(UTC).date()
+    out: dict[int, list[str]] = {}
+
+    def add(customer_id, reason: str) -> None:
+        if customer_id is None:
+            return
+        out.setdefault(int(customer_id), []).append(reason)
+
+    # ---- 有效报价：**正式对客 + 未失效** ----
+    for cid, quote_no, status, valid_until in (
+        await session.execute(
+            select(Quote.customer_id, Quote.quote_no, Quote.status, Quote.valid_until).where(
+                Quote.deleted_at.is_(None),
+                Quote.status.in_(QUOTE_PROTECTIVE_STATUSES),
+                Quote.valid_until.is_not(None),
+                Quote.valid_until >= today,
+            )
+        )
+    ).all():
+        add(cid, _protection_reason("有效报价", f"{quote_no}（{QUOTE_STATUS_LABEL.get(status, status)}，有效期至 {valid_until}）"))
+
+    # ---- 在途订单 ----
+    for cid, order_no, status in (
+        await session.execute(
+            select(SalesOrder.customer_id, SalesOrder.order_no, SalesOrder.status).where(
+                SalesOrder.status.in_(("pending", "in_production", "shipped", "delivered"))
+            )
+        )
+    ).all():
+        add(cid, _protection_reason("在途订单", f"{order_no}（{ORDER_STATUS_LABEL.get(status, status)}）"))
+
+    # ---- 未结应收 ----
+    for cid, order_no in (
+        await session.execute(
+            select(SalesOrder.customer_id, SalesOrder.order_no)
+            .join(ReceivablePlan, ReceivablePlan.order_id == SalesOrder.id)
+            .where(
+                ReceivablePlan.status.in_(("pending", "partial", "overdue")),
+                SalesOrder.status != "cancelled",
+            )
+        )
+    ).all():
+        add(cid, _protection_reason("未结应收", f"{order_no} 尚有节点未收完"))
+
+    # ---- 打样：**客户明确确认接受之后，这张单不再保护**（已确认口径，返工单 6.4）----
+    #
+    # 原实现是 `status != 'rejected'`：只看"审批有没有驳回"，
+    # **完全没看客户的确认结果**。于是客户早就回复"样品可以，确认接受"、
+    # 之后一直没下单也没再联系，这张历史打样仍然年年保护着他，永远进不了回收流程。
+    #
+    # 现在的边界：
+    # - 已确认接受（`confirm_status='accepted'`）→ **这张单不再保护**
+    #   （这次打样任务已经完成；客户如果还有订单/未结回款/有效报价/另一张进行中的打样，
+    #    那些事项各自保护，不需要这张单再顶一遍）；
+    # - 仅签收、还没给结论（`pending`）→ 继续保护（客户还在看）；
+    # - 未通过（`rejected`）→ 继续保护（多半要重新打样，这单还没完）。
+    #
+    # 注意打样单**没有单号字段**，界面与列表都用 `id` 标识，这里也照它显示。
+    for cid, sample_id, status, confirm in (
+        await session.execute(
+            select(
+                SampleRequest.customer_id,
+                SampleRequest.id,
+                SampleRequest.status,
+                SampleRequest.confirm_status,
+            ).where(
+                # 被审批驳回的单子不算保护
+                SampleRequest.status != "rejected",
+                SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
+                # 客户已明确接受的：**这张单到此为止**
+                SampleRequest.confirm_status.is_distinct_from(SAMPLE_CONFIRM_ACCEPTED),
+            )
+        )
+    ).all():
+        label = SAMPLE_STATUS_LABEL.get(status, status)
+        if confirm:
+            label = f"{label} / {CONFIRM_STATUS_LABEL.get(confirm, confirm)}"
+        add(cid, _protection_reason("在途打样", f"打样单 #{sample_id}（{label}）"))
+
+    return out
+
+
 async def _protected_customer_ids(session: AsyncSession) -> set[int]:
     """履约保护名单（文档 §11.2/场景21）：这些客户暂不回收。
 
-    - 有效报价：未删除且仍在有效期内
-    - 在途订单：未完成、未取消
-    - 在途打样：未被拒绝（签收≠接受，也不算结束）
-    - 未结应收：未收完且订单未取消
+    口径见 `protection_detail` —— 这里只是取它的键集合，
+    **判据只写一处**，避免"定时扫描"和"人工释放"两处各判一套（返工单 6.4 第 6 条）。
     """
-    today = datetime.now(UTC).date()
-    protected: set[int] = set()
-    rows = await session.execute(
-        select(Quote.customer_id).where(
-            Quote.deleted_at.is_(None),
-            Quote.valid_until.is_not(None),
-            Quote.valid_until >= today,
-        )
-    )
-    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
-    rows = await session.execute(
-        select(SalesOrder.customer_id).where(
-            SalesOrder.status.in_(("pending", "in_production", "shipped", "delivered"))
-        )
-    )
-    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
-    rows = await session.execute(
-        select(SampleRequest.customer_id).where(SampleRequest.status != "rejected")
-    )
-    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
-    rows = await session.execute(
-        select(SalesOrder.customer_id)
-        .join(ReceivablePlan, ReceivablePlan.order_id == SalesOrder.id)
-        .where(
-            ReceivablePlan.status.in_(("pending", "partial", "overdue")),
-            SalesOrder.status != "cancelled",
-        )
-    )
-    protected |= {int(cid) for cid in rows.scalars().all() if cid is not None}
-    return protected
+    return set((await protection_detail(session)).keys())
 
 
 async def run_public_pool_recycle(
     session: AsyncSession, operator_id: int | None, source: str = "WEB"
 ) -> dict:
-    """按规则把长期没活跃的客户释放回公海。
+    """扫描长期没活跃的客户，**生成回收预告**（不直接改归属）。
+
+    ⚠️ 行为与改前不同（返工单 6.3）：老实现扫到就直接把 `owner_id` 清空、
+    客户当场进公海。问题是**不可逆**——业务员出差两周没点跟进，跟了半年的客户
+    就没了，谁都能领走。文档 §11.2 要求的是"先预告 → 主管复核 → 再执行"，
+    所以扫描只负责**提名**，真正回收在 `decide_candidate(approve)` 里，
+    而且那一步会**重新检查**预告之后有没有新情况。
 
     活跃 = max(最近有效联系, 最近业务进展)；有效报价/在途订单/在途打样/
-    未结应收的客户先按政策保护（§11.2），保护数量随执行结果一并返回。
+    未结应收的客户按政策保护（§11.2），保护明细随结果一并返回。
     """
     rules = (
         await session.execute(
             select(PublicPoolRule).where(PublicPoolRule.enabled.is_(True))
         )
     ).scalars().all()
-    released: list[dict] = []
+    now = datetime.now(UTC)
+    notice_days = int(await get_number(session, "pool_recycle_notice_days", "days", 7))
+    due_at = now + timedelta(days=notice_days)
+    protection = await protection_detail(session)
+
+    nominated: list[dict] = []
     protected_skipped: list[dict] = []
     #: 撞单争议中、被冻结自动改派的客户（文档 §11.5 :279）
     disputed_skipped: list[dict] = []
-    now = datetime.now(UTC)
-    protected_ids = await _protected_customer_ids(session)
+    already_open: list[int] = []
+
+    # 已经有未结候选的客户：本轮跳过（同一客户不重复预告）
+    open_ids = set(
+        (
+            await session.execute(
+                select(PublicPoolRecycleCandidate.customer_id).where(
+                    PublicPoolRecycleCandidate.status.in_(RECYCLE_OPEN_STATUSES)
+                )
+            )
+        ).scalars().all()
+    )
 
     for rule in rules:
         cutoff = now - timedelta(days=rule.days)
@@ -272,62 +399,521 @@ async def run_public_pool_recycle(
                 last = last.replace(tzinfo=UTC)
             if last >= cutoff:
                 continue
-            if customer.id in protected_ids:
-                # 场景21：超期但在履约中（有效报价/在途订单/打样/应收），
-                # 按政策豁免本轮回收，记录下来让执行结果可解释
+            if customer.id in protection:
+                # 场景21：超期但仍在履约（有效报价/在途订单/打样/应收）→
+                # 按政策豁免本轮。**保护原因一并记下**，主管要看得到是哪张单拦住的
                 protected_skipped.append(
-                    {"customer_id": customer.id, "name": customer.name, "level": rule.level}
+                    {
+                        "customer_id": customer.id,
+                        "name": customer.name,
+                        "level": rule.level,
+                        "reasons": protection[customer.id],
+                    }
                 )
                 continue
-            # 撞单争议未结案 → 冻结自动改派（文档 §11.5 :279）：
-            # 回收会把归属清空成既成事实，等主管裁定完再按规则处理
+            # 撞单争议未结案 → 冻结自动改派（文档 §11.5 :279）
             if await duplicates.is_disputed(session, customer.id):
                 disputed_skipped.append(
                     {"customer_id": customer.id, "name": customer.name, "level": rule.level}
                 )
                 continue
-            session.add(
-                CustomerOwnerHistory(
-                    customer_id=customer.id,
-                    old_owner_id=customer.owner_id,
-                    new_owner_id=None,
-                    reason=f"{rule.level} 级客户超过 {rule.days} 天未跟进，自动回收",
-                    operator_id=operator_id,
-                    created_at=now,
-                )
+            if customer.id in open_ids:
+                already_open.append(customer.id)
+                continue
+
+            candidate = PublicPoolRecycleCandidate(
+                customer_id=customer.id,
+                owner_id=customer.owner_id,
+                rule_id=rule.id,
+                level=rule.level,
+                rule_days=rule.days,
+                last_contact_at=customer.last_followup_at,
+                last_progress_at=customer.last_progress_at,
+                last_active_at=last,
+                protection_snapshot=[],
+                status="pending",
+                notice_at=now,
+                due_at=due_at,
+                created_at=now,
             )
-            released.append(
-                {"customer_id": customer.id, "name": customer.name, "level": rule.level}
+            # SAVEPOINT：定时任务重跑 / 两个实例同时扫时，未结唯一索引会让
+            # 后到的插入失败。接住它、当作"已经提过名了"，而不是让整轮扫描中断。
+            try:
+                async with session.begin_nested():
+                    session.add(candidate)
+                    await session.flush()
+            except IntegrityError:
+                already_open.append(customer.id)
+                continue
+            open_ids.add(customer.id)
+            nominated.append(
+                {
+                    "candidate_id": candidate.id,
+                    "customer_id": customer.id,
+                    "name": customer.name,
+                    "level": rule.level,
+                    "rule_days": rule.days,
+                    "last_active_at": last.isoformat(),
+                }
             )
-            customer.owner_id = None
-            customer.pool_status = "public"
 
     # 审计与 commit 必须在同一个事务里（本函数自己提交，调用方不再补写）
     await write_audit(
         session,
         operator_id=operator_id,
-        action="run_public_pool_recycle",
+        action="scan_public_pool_recycle",
         source=source,
         business_type="public_pool_rule",
         business_id=None,
         after={
-            "released_count": len(released),
-            "customers": released,
+            "nominated_count": len(nominated),
+            "nominated": nominated[:100],
             "protected_count": len(protected_skipped),
             "protected": protected_skipped[:100],
             "disputed_count": len(disputed_skipped),
             "disputed": disputed_skipped[:100],
+            "already_open_count": len(already_open),
         },
     )
     await session.commit()
     return {
-        "released_count": len(released),
-        "customers": released,
+        #: 本轮**提名**（预告）了多少个 —— 注意不是"回收了多少"
+        "nominated_count": len(nominated),
+        "candidates": nominated,
         "protected_count": len(protected_skipped),
         "protected": protected_skipped[:100],
         "disputed_count": len(disputed_skipped),
         "disputed": disputed_skipped[:100],
+        "already_open_count": len(already_open),
+        "notice_days": notice_days,
+        #: 兼容老调用方（定时任务的日志、接口返回）：
+        #: 新版这里恒为 0 —— 回收要等主管批准，不会再"一次调用就释放一批"
+        "released_count": 0,
+        "customers": [],
     }
+
+
+# ---------------------------------------------------------------- 回收候选：复核与执行（返工单 6.3）
+
+
+def serialize_candidate(
+    row: PublicPoolRecycleCandidate, customer_name: str | None = None,
+    owner_name: str | None = None,
+) -> dict:
+    return {
+        "id": row.id,
+        "customer_id": row.customer_id,
+        "customer_name": customer_name,
+        "owner_id": row.owner_id,
+        "owner_name": owner_name,
+        "level": row.level,
+        "rule_days": row.rule_days,
+        "last_contact_at": row.last_contact_at.isoformat() if row.last_contact_at else None,
+        "last_progress_at": row.last_progress_at.isoformat() if row.last_progress_at else None,
+        "last_active_at": row.last_active_at.isoformat() if row.last_active_at else None,
+        "protection": row.protection_snapshot or [],
+        "status": row.status,
+        "status_label": RECYCLE_STATUS_LABEL.get(row.status, row.status),
+        "notice_at": row.notice_at.isoformat() if row.notice_at else None,
+        "due_at": row.due_at.isoformat() if row.due_at else None,
+        "decided_by": row.decided_by,
+        "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+        "decision_note": row.decision_note,
+        "deferred_until": row.deferred_until.isoformat() if row.deferred_until else None,
+        "exception_approved": bool(row.exception_approved),
+        "executed_at": row.executed_at.isoformat() if row.executed_at else None,
+        "restored_at": row.restored_at.isoformat() if row.restored_at else None,
+        "restore_note": row.restore_note,
+        "restore_conflict_owner_id": row.restore_conflict_owner_id,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+async def list_candidates(
+    session: AsyncSession,
+    *,
+    status: str | None = "pending",
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[dict], int]:
+    """回收候选列表（真分页）。主管在这里逐条或批量复核。"""
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    conditions = []
+    if status:
+        conditions.append(PublicPoolRecycleCandidate.status == status)
+
+    total = (
+        await session.execute(
+            select(func.count()).select_from(PublicPoolRecycleCandidate).where(*conditions)
+        )
+    ).scalar_one()
+    rows = list(
+        (
+            await session.execute(
+                select(PublicPoolRecycleCandidate)
+                .where(*conditions)
+                .order_by(PublicPoolRecycleCandidate.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).scalars().all()
+    )
+    cids = {row.customer_id for row in rows}
+    names: dict[int, str] = {}
+    if cids:
+        names = {
+            int(cid): name
+            for cid, name in (
+                await session.execute(
+                    select(Customer.id, Customer.name).where(Customer.id.in_(cids))
+                )
+            ).all()
+        }
+    owner_ids = {row.owner_id for row in rows if row.owner_id}
+    owner_names: dict[int, str] = {}
+    if owner_ids:
+        from app.modules.user.model import User
+
+        owner_names = {
+            int(uid): name
+            for uid, name in (
+                await session.execute(
+                    select(User.id, User.name).where(User.id.in_(owner_ids))
+                )
+            ).all()
+        }
+    return (
+        [
+            serialize_candidate(
+                row, names.get(row.customer_id),
+                owner_names.get(row.owner_id) if row.owner_id else None,
+            )
+            for row in rows
+        ],
+        int(total),
+    )
+
+
+async def _customer_now(session: AsyncSession, customer_id: int) -> Customer | None:
+    """取客户并**加行锁**。
+
+    ⚠️ `populate_existing=True` 不能省（本项目 session 是 `expire_on_commit=False`）：
+    SQLAlchemy 默认不用查询结果覆盖**已加载对象**的属性，而调用方往往在这个会话里
+    已经读过这个客户 —— 那样拿回来的会是内存里的旧对象，锁白加了。
+    """
+    return (
+        await session.execute(
+            select(Customer)
+            .where(Customer.id == customer_id, Customer.deleted_at.is_(None))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+
+
+async def decide_candidate(
+    session: AsyncSession,
+    *,
+    candidate: PublicPoolRecycleCandidate,
+    decision: str,
+    operator_id: int | None,
+    note: str | None = None,
+    source: str = "WEB",
+) -> dict:
+    """主管复核一条候选：`approve` 执行回收 / `reject` 驳回 / `defer` 暂缓。
+
+    **批准执行前必须重新检查**（返工单 6.3 第 4 条）：预告是几天前发的，
+    这期间客户可能又有了新跟进、新报价、新订单、新回款 —— 那些都会让
+    "该回收"这个结论失效。检查用的还是同一套 `protection_detail`，
+    扫描和执行不各判一套。
+
+    如果确实仍有保护、但主管认为还是要收，走 `exception=True` 的例外执行，
+    **必须填原因** —— 例外是要有人担责的事。
+    """
+    now = datetime.now(UTC)
+    locked = (
+        await session.execute(
+            select(PublicPoolRecycleCandidate)
+            .where(PublicPoolRecycleCandidate.id == candidate.id)
+            .with_for_update()
+            # 同 _customer_now：不加这个，路由先读过的旧对象会顶掉库里那一行，
+            # "只有一个人能批/能恢复"就守不住了（本项目 expire_on_commit=False）
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "该回收候选不存在", 404)
+    row = locked
+    if row.status not in ("pending", "deferred"):
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该候选当前是「{RECYCLE_STATUS_LABEL.get(row.status, row.status)}」，不能再处理",
+        )
+
+    if decision == "reject":
+        row.status = "rejected"
+        row.decided_by = operator_id
+        row.decided_at = now
+        row.decision_note = note
+        await session.flush()
+        await write_audit(
+            session, operator_id=operator_id, action="reject_pool_candidate", source=source,
+            business_type="public_pool_candidate", business_id=row.id,
+            after={"customer_id": row.customer_id, "note": note},
+        )
+        await session.commit()
+        return serialize_candidate(row)
+
+    if decision == "defer":
+        defer_days = int(await get_number(session, "pool_recycle_defer_days", "days", 30))
+        row.status = "deferred"
+        row.decided_by = operator_id
+        row.decided_at = now
+        row.decision_note = note
+        row.deferred_until = now + timedelta(days=defer_days)
+        await session.flush()
+        await write_audit(
+            session, operator_id=operator_id, action="defer_pool_candidate", source=source,
+            business_type="public_pool_candidate", business_id=row.id,
+            after={"customer_id": row.customer_id, "note": note, "deferred_until": row.deferred_until.isoformat()},
+        )
+        await session.commit()
+        return serialize_candidate(row)
+
+    if decision != "approve":
+        raise AppError(ErrorCode.PARAM_ERROR, f"未知决定：{decision}", 422)
+
+    customer = await _customer_now(session, row.customer_id)
+    if customer is None:
+        raise AppError(ErrorCode.NOT_FOUND, "该客户已删除，无法回收", 404)
+    if customer.owner_id is None:
+        # 客户已经被别人领走 / 早就进了公海：这条提名过期了，直接作废
+        row.status = "superseded"
+        row.decided_by = operator_id
+        row.decided_at = now
+        row.decision_note = note or "客户已不在原负责人名下，提名作废"
+        await session.flush()
+        await session.commit()
+        return serialize_candidate(row)
+    if row.owner_id is not None and customer.owner_id != row.owner_id:
+        # 中途换过人：提名时的依据已经不成立，让主管重新看
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "该客户的负责人已经变过（提名时是别人），这条提名的依据已失效，"
+            "请驳回它并重新扫描",
+            409,
+        )
+
+    # **执行前重新检查**：预告发出之后有没有新的履约事项 / 新的跟进
+    reasons = (await protection_detail(session)).get(customer.id, [])
+    latest = _last_active_at(customer)
+    if latest is not None and latest.tzinfo is None:
+        latest = latest.replace(tzinfo=UTC)
+    if row.last_active_at is not None:
+        recorded = row.last_active_at
+        if recorded.tzinfo is None:
+            recorded = recorded.replace(tzinfo=UTC)
+        if latest is not None and latest > recorded:
+            reasons = reasons + [
+                f"预告之后又有新的业务往来（最近活跃时间从 "
+                f"{recorded.strftime('%Y-%m-%d %H:%M')} 变成 {latest.strftime('%Y-%m-%d %H:%M')}）"
+            ]
+
+    exception = False
+    if reasons and not (note or "").strip():
+        # 有保护、又没说为什么要破例 → 拦下（这条正是"批准前新增履约事项会重新拦截"）
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该客户现在有履约保护，不能直接回收："
+            + "；".join(reasons)
+            + "。确需例外回收请填写原因后重试",
+            422,
+        )
+    if reasons:
+        # 填了原因 = 主管明确要求例外执行，记下来
+        exception = True
+        row.exception_approved = True
+        row.protection_snapshot = reasons
+
+    session.add(
+        CustomerOwnerHistory(
+            customer_id=customer.id,
+            old_owner_id=customer.owner_id,
+            new_owner_id=None,
+            reason=(
+                f"{row.level or ''} 级客户超过 {row.rule_days} 天未跟进，"
+                f"经主管复核回收"
+                + ("（例外：售后理由见候选记录）" if exception else "")
+            ),
+            operator_id=operator_id,
+            created_at=now,
+        )
+    )
+    customer.owner_id = None
+    customer.pool_status = "public"
+    row.status = "executed"
+    row.decided_by = operator_id
+    row.decided_at = now
+    row.decision_note = note
+    row.executed_at = now
+    await session.flush()
+    await write_audit(
+        session, operator_id=operator_id, action="execute_pool_candidate", source=source,
+        business_type="public_pool_candidate", business_id=row.id,
+        after={
+            "customer_id": customer.id,
+            "reasons": reasons,
+            "exception": exception,
+            "note": note,
+        },
+    )
+    await session.commit()
+    return serialize_candidate(row)
+
+
+async def restore_candidate(
+    session: AsyncSession,
+    *,
+    candidate: PublicPoolRecycleCandidate,
+    operator_id: int,
+    note: str | None,
+    source: str = "WEB",
+) -> dict:
+    """**恢复**：把被回收的客户还给原负责人。
+
+    三条纪律（返工单 6.3 第 8 条）：
+    - 保留原回收记录（这条候选不删，状态改成 `restored`）——
+      回收发生过就是发生过，抹掉它等于让人查不出"为什么这个客户换过人"；
+    - 客户如果**已经被别人合法领取**，绝不静默覆盖：记下冲突、
+      提示交主管处理（`restore_conflict_owner_id`）；
+    - 恢复要写归属变更历史，理由里说明是"恢复回收"。
+    """
+    now = datetime.now(UTC)
+    locked = (
+        await session.execute(
+            select(PublicPoolRecycleCandidate)
+            .where(PublicPoolRecycleCandidate.id == candidate.id)
+            .with_for_update()
+            # 同 _customer_now：不加这个，路由先读过的旧对象会顶掉库里那一行，
+            # "只有一个人能批/能恢复"就守不住了（本项目 expire_on_commit=False）
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "该回收候选不存在", 404)
+    row = locked
+    if row.status != "executed":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"只有「已回收」的客户才能恢复，这条当前是「"
+            f"{RECYCLE_STATUS_LABEL.get(row.status, row.status)}」",
+        )
+
+    customer = await _customer_now(session, row.customer_id)
+    if customer is None:
+        raise AppError(ErrorCode.NOT_FOUND, "该客户已删除，无法恢复", 404)
+
+    if customer.owner_id is not None and customer.owner_id != row.owner_id:
+        # 已经被别人领走了：**不抢**，把冲突记下来交主管
+        row.restore_conflict_owner_id = customer.owner_id
+        row.restore_note = note
+        await session.flush()
+        await write_audit(
+            session, operator_id=operator_id, action="restore_pool_candidate_conflict",
+            source=source, business_type="public_pool_candidate", business_id=row.id,
+            after={"customer_id": customer.id, "current_owner_id": customer.owner_id},
+        )
+        await session.commit()
+        current = await session.get(User, customer.owner_id)
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            f"该客户已经被「{current.name if current else customer.owner_id}」领取，"
+            "不能直接恢复给原负责人；请交主管协调（这条冲突已记录）",
+            409,
+        )
+
+    if row.owner_id is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这条回收没有原负责人，无法恢复")
+
+    owner = await session.get(User, row.owner_id)
+    if owner is None or owner.status != "active":
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"原负责人「{owner.name if owner else row.owner_id}」已停用，不能恢复给他；"
+            "请改派给其他人",
+            422,
+        )
+
+    session.add(
+        CustomerOwnerHistory(
+            customer_id=customer.id,
+            old_owner_id=None,
+            new_owner_id=row.owner_id,
+            reason=f"恢复公海回收（候选 #{row.id}）",
+            operator_id=operator_id,
+            created_at=now,
+        )
+    )
+    customer.owner_id = row.owner_id
+    customer.pool_status = "private"
+    row.status = "restored"
+    row.restored_at = now
+    row.restored_by = operator_id
+    row.restore_note = note
+    row.restore_conflict_owner_id = None
+    await session.flush()
+    await write_audit(
+        session, operator_id=operator_id, action="restore_pool_candidate", source=source,
+        business_type="public_pool_candidate", business_id=row.id,
+        after={"customer_id": customer.id, "owner_id": row.owner_id, "note": note},
+    )
+    await session.commit()
+    return serialize_candidate(row)
+
+
+async def assert_no_protection(
+    session: AsyncSession,
+    *,
+    customer_id: int,
+    customer_name: str,
+    reason: str | None,
+    operator_id: int | None,
+    allow_exception: bool = False,
+) -> list[str]:
+    """人工把客户放进公海前，检查有没有履约保护。
+
+    普通操作遇保护**直接拦下并说清是哪张单**（返工单 6.3 第 5 条）；
+    主管例外放行**必须填原因**，并把保护事项与例外决定记进审计（第 6 条）。
+    返回保护原因列表（空 = 没有保护）。
+
+    判据与定时扫描、回收执行**完全共用** `protection_detail`，
+    不在这里另判一套 —— 两处各判一套必然漂移。
+    """
+    reasons = (await protection_detail(session)).get(customer_id, [])
+    if not reasons:
+        return []
+    if allow_exception and (reason or "").strip():
+        await write_audit(
+            session,
+            operator_id=operator_id,
+            action="pool_release_exception",
+            business_type="customer",
+            business_id=customer_id,
+            after={
+                "customer_name": customer_name,
+                "protection": reasons,
+                "reason": reason,
+            },
+        )
+        return reasons
+    raise AppError(
+        ErrorCode.STATUS_NOT_ALLOWED,
+        f"客户「{customer_name}」还在履约中，不能直接放进公海："
+        + "；".join(reasons)
+        + "。确需释放请由主管填写原因后例外操作",
+        422,
+    )
 
 
 async def _has_open_task(session: AsyncSession, rule_id: int, **filters) -> bool:

@@ -187,13 +187,29 @@ export default function CustomerDetailPage() {
   })
 
   const poolMutation = useMutation({
-    mutationFn: (action: 'release' | 'claim') =>
-      action === 'release' ? releaseCustomerToPool(customerId) : claimCustomer(customerId),
-    onSuccess: (_data, action) => {
+    mutationFn: ({ action, reason }: { action: 'release' | 'claim'; reason?: string }) =>
+      action === 'release'
+        ? releaseCustomerToPool(customerId, reason)
+        : claimCustomer(customerId),
+    onSuccess: (_data, { action }) => {
       Toast.success(action === 'release' ? '已放入公海' : '领取成功')
       invalidateCustomer()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error, { action }) => {
+      // 还在履约中会被后端拦下（返工单 6.3）：提示里已经说清是哪张单拦住的。
+      // 这里再加一步引导 —— 主管确需释放就填原因走例外，而不是让人卡住。
+      if (action === 'release' && error.message.includes('履约中')) {
+        const reason = window.prompt(
+          `${error.message}\n\n确需例外释放请填写原因（会记入审计）：`,
+        )
+        if (reason && reason.trim()) {
+          poolMutation.mutate({ action: 'release', reason: reason.trim() })
+          return
+        }
+        return
+      }
+      Toast.error(error.message)
+    },
   })
 
   const attachTagsMutation = useMutation({
@@ -372,13 +388,13 @@ export default function CustomerDetailPage() {
             {can('customer:assign') && customer.pool_status !== 'public' && (
               <Popconfirm
                 title="放入公海后负责人会清空，确认？"
-                onConfirm={() => poolMutation.mutate('release')}
+                onConfirm={() => poolMutation.mutate({ action: 'release' })}
               >
                 <Button>放入公海</Button>
               </Popconfirm>
             )}
             {customer.pool_status === 'public' && (
-              <Button theme="solid" loading={poolMutation.isPending} onClick={() => poolMutation.mutate('claim')}>
+              <Button theme="solid" loading={poolMutation.isPending} onClick={() => poolMutation.mutate({ action: 'claim' })}>
                 领取到我名下
               </Button>
             )}

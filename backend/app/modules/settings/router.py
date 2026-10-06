@@ -2,7 +2,8 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +11,7 @@ from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
-from app.core.response import ok
+from app.core.response import ok, page_data
 from app.modules.settings import service as svc
 from app.modules.settings.model import (
     DictionaryItem,
@@ -201,13 +202,145 @@ async def run_recycle(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """立即执行一次公海回收。
+    """立即执行一次**公海回收扫描**（生成预告，不直接回收）。
 
-    正式环境由定时任务调用。审计写在 service 内部（它自己 commit），
-    这里不再补写，避免提交后再写审计反而落到另一个事务里。
+    ⚠️ 行为与改前不同（返工单 6.3）：老实现扫到就直接清空负责人、当场进公海，
+    不可逆。现在只**提名**，等主管在 `GET /public-pool/recycle-candidates` 里复核，
+    批准时才执行（且执行前会再检查一遍有没有新的履约事项）。
+    正式环境由定时任务调用。审计写在 service 内部（它自己 commit）。
     """
     result = await svc.run_public_pool_recycle(session, user.id)
-    return ok(result, f"已回收 {result['released_count']} 个客户")
+    return ok(
+        result,
+        f"本轮提名 {result['nominated_count']} 个待复核客户"
+        f"（另有 {result['protected_count']} 个在履约中、已豁免）",
+    )
+
+
+@router.get("/public-pool/recycle-candidates")
+async def list_recycle_candidates(
+    status: str | None = "pending",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    _: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """回收候选（预告）列表。主管在这里逐条或批量复核。"""
+    items, total = await svc.list_candidates(
+        session, status=status, page=page, page_size=page_size
+    )
+    return ok(page_data(items, total, page, page_size))
+
+
+class CandidateDecision(BaseModel):
+    """复核决定：approve 执行回收 / reject 驳回 / defer 暂缓。"""
+
+    decision: str
+    #: 驳回、暂缓、例外执行都要写理由（例外执行时**必填**，见 service）
+    note: str | None = None
+
+
+@router.post("/public-pool/recycle-candidates/{candidate_id}/decide")
+async def decide_recycle_candidate(
+    candidate_id: int,
+    payload: CandidateDecision,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """复核一条回收候选。
+
+    **批准执行前会重新检查**：预告发出之后客户如果又有了新跟进、新报价、
+    新订单、新回款，会被拦下（要破例必须填原因，会记进审计）。
+    """
+    from app.modules.settings.model import PublicPoolRecycleCandidate
+
+    row = await session.get(PublicPoolRecycleCandidate, candidate_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "该回收候选不存在", 404)
+    result = await svc.decide_candidate(
+        session,
+        candidate=row,
+        decision=payload.decision,
+        operator_id=user.id,
+        note=payload.note,
+        source="WEB",
+    )
+    return ok(result, f"已{result['status_label']}")
+
+
+@router.post("/public-pool/recycle-candidates/batch-decide")
+async def batch_decide_recycle_candidates(
+    candidate_ids: list[int],
+    payload: CandidateDecision,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """批量复核（返工单 6.3 第 3 条）。
+
+    **逐条处理、逐条报结果**：某一条因为"预告后又有了新履约事项"被拦下时，
+    不影响其余的 —— 而且失败的那条**不会被执行**，会原样留在待复核里。
+    """
+    from app.modules.settings.model import PublicPoolRecycleCandidate
+
+    if not candidate_ids:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请选择要处理的候选", 422)
+    done: list[dict] = []
+    failed: list[dict] = []
+    for cid in dict.fromkeys(candidate_ids):
+        row = await session.get(PublicPoolRecycleCandidate, cid)
+        if row is None:
+            failed.append({"candidate_id": cid, "reason": "候选不存在", "code": 40401})
+            continue
+        try:
+            result = await svc.decide_candidate(
+                session,
+                candidate=row,
+                decision=payload.decision,
+                operator_id=user.id,
+                note=payload.note,
+                source="WEB",
+            )
+        except AppError as error:
+            failed.append(
+                {"candidate_id": cid, "reason": error.message, "code": error.code}
+            )
+            continue
+        done.append({"candidate_id": cid, "status": result["status"]})
+    return ok(
+        {"done": done, "failed": failed},
+        f"已处理 {len(done)} 条" + (f"，{len(failed)} 条未处理" if failed else ""),
+    )
+
+
+@router.post("/public-pool/recycle-candidates/{candidate_id}/restore")
+async def restore_recycle_candidate(
+    candidate_id: int,
+    payload: dict,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """**恢复**：把被回收的客户还给原负责人。
+
+    谁能恢复做成配置项（`pool_recycle_restore_permission`，默认 `customer:assign`）——
+    "谁能把回收掉的客户还回去"是管理口径，不同公司不一样，不该写死。
+    客户已经被别人合法领取时**不静默覆盖**，会报冲突并记下。
+    """
+    from app.modules.settings.model import PublicPoolRecycleCandidate
+
+    row = await session.get(PublicPoolRecycleCandidate, candidate_id)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "该回收候选不存在", 404)
+    result = await svc.restore_candidate(
+        session,
+        candidate=row,
+        operator_id=user.id,
+        note=payload.get("note"),
+        source="WEB",
+    )
+    return ok(result, "客户已恢复给原负责人")
 
 
 @router.get("/task-rules")

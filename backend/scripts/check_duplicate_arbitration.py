@@ -146,7 +146,7 @@ async def main():
         # 必须重新取一份活的——否则里面读 case.status 就触发同步刷新
         case = await s.get(CustomerDuplicateCase, case_id)
         await dup.resolve_case(s, case=case, decision='assign_new', owner_id=b_id,
-                               remark='两边都是老客户，判给乙', actor_id=admin_id)
+                               remark='两边都是老客户，判给乙', actor=actor)
         await s.commit()
         case = await s.get(CustomerDuplicateCase, case_id)
         check('裁定已结案', case.status, 'resolved')
@@ -174,7 +174,7 @@ async def main():
         )
         case2 = await s.get(CustomerDuplicateCase, case2_id)
         await dup.resolve_case(s, case=case2, decision='keep_both', owner_id=None,
-                               remark='不是同一家', actor_id=admin_id)
+                               remark='不是同一家', actor=actor)
         await s.commit()
         after_pair = (
             (await s.get(Customer, case2.customer_id)).owner_id,
@@ -208,7 +208,7 @@ async def main():
         try:
             await dup.resolve_case(s, case=await s.get(CustomerDuplicateCase, existing_case_id),
                                    decision='assign_existing', owner_id=None,
-                                   remark='停用负责人对照', actor_id=admin_id)
+                                   remark='停用负责人对照', actor=actor)
             check_true('已有客户的停用负责人不能接收客户', False)
         except AppError as exc:
             check('已有客户的停用负责人被拒', exc.http_status, 422)
@@ -219,7 +219,7 @@ async def main():
 
         await dup.resolve_case(s, case=await s.get(CustomerDuplicateCase, existing_case_id),
                                decision='assign_existing', owner_id=None,
-                               remark='沿用已有客户负责人', actor_id=admin_id)
+                               remark='沿用已有客户负责人', actor=actor)
         await s.commit()
         assigned_public = await s.get(Customer, public_id)
         check('无需传负责人 ID，也能沿用已有归属', assigned_public.owner_id, b_id)

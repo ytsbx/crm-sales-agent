@@ -231,8 +231,15 @@ export function deduplicateContacts(payload: {
   )
 }
 
-export function releaseCustomerToPool(customerId: number) {
-  return api.post<Customer>(`/customers/${customerId}/release-to-pool`)
+/**
+ * 把客户放进公海。
+ *
+ * `reason` 不只是留痕：客户**还在履约中**（在途订单/未结应收/有效正式报价/
+ * 在途打样）时，不填原因会被后端拦下；填了原因表示主管**明确要求例外释放**，
+ * 这时才放行，并把保护事项与原因一起写进审计（返工单 6.3）。
+ */
+export function releaseCustomerToPool(customerId: number, reason?: string) {
+  return api.post<Customer>(`/customers/${customerId}/release-to-pool`, { reason })
 }
 
 export function claimCustomer(customerId: number) {
@@ -363,8 +370,21 @@ export interface DuplicateCase {
   created_at?: string | null
 }
 
-export function listDuplicateCases(status = 'pending') {
-  return api.get<DuplicateCase[]>('/customer-duplicate-cases', { status })
+/**
+ * 撞单待裁定队列（**真分页**，返工单 6.5）。
+ *
+ * 原来后端 `.limit()` 硬顶 300、且没有总数：第 301 条之后永远打不开，
+ * 用户看到的是一个"看着就这么多"的列表，不会想到要翻。
+ */
+export function listDuplicateCases(query: {
+  status?: string
+  page?: number
+  page_size?: number
+} = {}) {
+  return api.get<PageResult<DuplicateCase>>('/customer-duplicate-cases', {
+    status: 'pending',
+    ...query,
+  })
 }
 
 /** 对一条客户再跑一次查重并开待裁定单（幂等）。 */

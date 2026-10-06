@@ -243,7 +243,12 @@ async def claim_lead(
     """
     row = (
         await session.execute(
-            select(Lead).where(Lead.id == lead_id, Lead.deleted_at.is_(None)).with_for_update()
+            select(Lead)
+            .where(Lead.id == lead_id, Lead.deleted_at.is_(None))
+            .with_for_update()
+            # 本项目 session 是 expire_on_commit=False：不加这个，同一请求里
+            # 先读过的旧对象会顶掉库里那一行，锁就白加了
+            .execution_options(populate_existing=True)
         )
     ).scalars().first()
     if row is None:

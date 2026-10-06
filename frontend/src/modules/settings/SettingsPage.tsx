@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Table, Tabs, Tag } from '@douyinfe/semi-ui'
 
 import {
@@ -24,7 +24,9 @@ import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../sh
 import { listAuditLogs, type AuditLogRow } from '../../shared/api/analytics'
 import PageHeader from '../../shared/components/PageHeader'
 import {
+  decideRecycleCandidate,
   listPublicPoolRules,
+  listRecycleCandidates,
   listSettings,
   listTaskRules,
   runAutoTaskRules,
@@ -33,10 +35,10 @@ import {
   updatePublicPoolRule,
   updateTaskRule,
   type PublicPoolRuleRow,
+  type RecycleCandidateRow,
   type SystemSettingRow,
   type TaskRuleRow,
 } from '../../shared/api/settings'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Switch, Toast } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
@@ -53,6 +55,15 @@ const TABS = [
   { tab: '审计日志', itemKey: 'audit' },
   { tab: '业务规则', itemKey: 'rules' },
 ]
+
+/** 时间显示成"2026-10-06 12:30"（回收复核要看具体哪天）。空值给个短横。 */
+function fmtDay(value: string | null | undefined): string {
+  if (!value) return '-'
+  const at = new Date(value)
+  if (Number.isNaN(at.getTime())) return String(value).slice(0, 16).replace('T', ' ')
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`
+}
 
 export default function SettingsPage() {
   // 支持深链：/settings?tab=rules
@@ -80,6 +91,13 @@ export default function SettingsPage() {
   const poolRulesQuery = useQuery({
     queryKey: ['public-pool-rules'],
     queryFn: listPublicPoolRules,
+    enabled: isAdmin && activeKey === 'rules',
+  })
+  // 回收候选（预告）：主管逐条复核的对象（返工单 6.3）
+  const [candidatePage, setCandidatePage] = useState(1)
+  const candidatesQuery = useQuery({
+    queryKey: ['recycle-candidates', candidatePage],
+    queryFn: () => listRecycleCandidates({ status: 'pending', page: candidatePage, page_size: 20 }),
     enabled: isAdmin && activeKey === 'rules',
   })
   const taskRulesQuery = useQuery({
@@ -180,11 +198,52 @@ export default function SettingsPage() {
   const recycleMutation = useMutation({
     mutationFn: runPublicPoolRecycle,
     onSuccess: (data) => {
-      Toast.success(`已执行，回收 ${data.released_count} 个客户`)
+      // 文案要说清"提名 ≠ 回收"：老版本这里写的是"已回收 N 个客户"，
+      // 现在扫描只提名，回收要等主管批（返工单 6.3）
+      Toast.success(
+        `扫描完成：提名 ${data.nominated_count} 个待复核`
+          + (data.protected_count ? `，${data.protected_count} 个在履约中已豁免` : ''),
+      )
+      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
       refreshRules()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const decideMutation = useMutation({
+    mutationFn: ({ id, decision, note }: {
+      id: number
+      decision: 'approve' | 'reject' | 'defer'
+      note?: string
+    }) => decideRecycleCandidate(id, decision, note),
+    onSuccess: (row) => {
+      Toast.success(`已${row.status_label}`)
+      void queryClient.invalidateQueries({ queryKey: ['recycle-candidates'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  /** 批准/驳回/暂缓。批准和暂缓可能要填说明（尤其"仍有保护但确需回收"时必须填）。 */
+  const decide = (decision: 'approve' | 'reject' | 'defer', row: RecycleCandidateRow) => {
+    const label = { approve: '批准回收', reject: '驳回', defer: '暂缓' }[decision]
+    const needNote = decision !== 'approve' || (row.protection ?? []).length > 0
+    if (!needNote) {
+      decideMutation.mutate({ id: row.id, decision })
+      return
+    }
+    const note = window.prompt(
+      decision === 'approve' && (row.protection ?? []).length > 0
+        ? `该客户仍有履约事项（${(row.protection ?? []).join('；')}）。`
+          + '确需例外回收，请填写原因（会记入审计）：'
+        : `请填写${label}原因（会记入审计）：`,
+    )
+    if (note === null) return
+    if (!note.trim()) {
+      Toast.error(`请填写${label}原因`)
+      return
+    }
+    decideMutation.mutate({ id: row.id, decision, note: note.trim() })
+  }
 
   const autoTaskMutation = useMutation({
     mutationFn: runAutoTaskRules,
@@ -785,7 +844,10 @@ export default function SettingsPage() {
               <div>
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>公海回收规则</div>
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
-                  客户超过设定天数没有跟进记录，就会被自动释放回公海（原负责人写入历史）
+                  客户超过设定天数没有跟进记录，就会被提名成回收候选。
+                  回收不会自动发生 —— 要先预告、再由主管逐条或批量批准；
+                  批准时还会再检查一遍这期间有没有新的跟进、报价、订单或回款。
+                  客户手上还有在途订单、未结应收、有效正式报价或在途打样时会被保护。
                 </div>
                 <Table<PublicPoolRuleRow>
                   columns={[
@@ -837,12 +899,94 @@ export default function SettingsPage() {
                     onClick={() => recycleMutation.mutate()}
                     loading={recycleMutation.isPending}
                   >
-                    立即执行一次
+                    扫描并生成回收预告
                   </Button>
                   <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 12 }}>
-                    正式运行应由定时任务触发，这里用于验证规则
+                    正式运行由定时任务触发；这里只**提名**候选，不会直接回收
                   </span>
                 </div>
+              </div>
+
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>回收待复核</div>
+                <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
+                  这些客户按规则该回收了，但还没真的回收。逐条或批量批准后才执行；
+                  点「驳回」表示不该回收，点「暂缓」表示过一阵再看。
+                </div>
+                <Table<RecycleCandidateRow>
+                  rowKey="id"
+                  loading={candidatesQuery.isLoading}
+                  dataSource={candidatesQuery.data?.items ?? []}
+                  pagination={{
+                    currentPage: candidatePage,
+                    pageSize: 20,
+                    total: candidatesQuery.data?.total ?? 0,
+                    onPageChange: setCandidatePage,
+                  }}
+                  empty="没有待复核的回收候选"
+                  columns={[
+                    {
+                      title: '客户',
+                      dataIndex: 'customer_name',
+                      render: (v: string | null, r: RecycleCandidateRow) => (
+                        <span>
+                          {v ?? `#${r.customer_id}`}
+                          <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 6 }}>
+                            {r.level ? `${r.level} 级` : ''}
+                            {r.rule_days ? ` · 超 ${r.rule_days} 天未跟进` : ''}
+                          </span>
+                        </span>
+                      ),
+                    },
+                    {
+                      title: '原负责人',
+                      dataIndex: 'owner_name',
+                      width: 110,
+                      render: (v: string | null) => v ?? '-',
+                    },
+                    {
+                      // 复核要看得到"是按哪个时间判它冷落的"，不是只给一句"已超 N 天"
+                      title: '最近有效联系',
+                      dataIndex: 'last_active_at',
+                      width: 150,
+                      render: (v: string | null) => fmtDay(v),
+                    },
+                    {
+                      title: '保护事项',
+                      dataIndex: 'protection',
+                      render: (list: string[]) =>
+                        (list ?? []).length === 0 ? (
+                          <span style={{ color: 'var(--crm-text-3)' }}>无</span>
+                        ) : (
+                          <span style={{ color: 'var(--crm-caution, #b26a00)' }}>
+                            {(list ?? []).join('；')}
+                          </span>
+                        ),
+                    },
+                    {
+                      title: '预告到期',
+                      dataIndex: 'due_at',
+                      width: 130,
+                      render: (v: string | null) => fmtDay(v),
+                    },
+                    {
+                      title: '操作',
+                      width: 190,
+                      render: (_: unknown, r: RecycleCandidateRow) => (
+                        <span style={{ display: 'inline-flex', gap: 10 }}>
+                          <a onClick={() => decide('approve', r)}>批准回收</a>
+                          <a onClick={() => decide('defer', r)}>暂缓</a>
+                          <a
+                            style={{ color: 'var(--crm-danger, #d45)' }}
+                            onClick={() => decide('reject', r)}
+                          >
+                            驳回
+                          </a>
+                        </span>
+                      ),
+                    },
+                  ]}
+                />
               </div>
 
               <div>

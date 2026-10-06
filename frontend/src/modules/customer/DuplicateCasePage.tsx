@@ -33,6 +33,8 @@ export default function DuplicateCasePage() {
   const canArbitrate = can('customer:assign')
   const queryClient = useQueryClient()
   const [status, setStatus] = useState('pending')
+  // 真分页（返工单 6.5）：改筛选回第 1 页，否则翻到第 3 页再筛会看到空白
+  const [page, setPage] = useState(1)
   const [form, setForm] = useState<{
     visible: boolean
     caseId?: number
@@ -42,8 +44,8 @@ export default function DuplicateCasePage() {
   }>({ visible: false, decision: 'keep_both', remark: '' })
 
   const query = useQuery({
-    queryKey: ['duplicate-cases', status],
-    queryFn: () => listDuplicateCases(status),
+    queryKey: ['duplicate-cases', status, page],
+    queryFn: () => listDuplicateCases({ status, page, page_size: 20 }),
   })
   const usersQuery = useQuery({
     queryKey: ['assignable-users'],
@@ -74,12 +76,19 @@ export default function DuplicateCasePage() {
       />
 
       <SectionCard
-        title={`${status === 'pending' ? '待裁定' : '已裁定'}（${(query.data ?? []).length} 条）`}
+        title={
+          // 总数用后端给的 `total`：不能拿"本页条数"当总数 ——
+          // 那会让用户以为"一共就这么些"，旧案件永远翻不到（返工单 6.5）
+          `${status === 'pending' ? '待裁定' : '已裁定'}（${query.data?.total ?? 0} 条）`
+        }
       >
         <div className="toolbar" style={{ marginBottom: 12 }}>
           <Select
             value={status}
-            onChange={(v) => setStatus(v as string)}
+            onChange={(v) => {
+              setStatus(v as string)
+              setPage(1)
+            }}
             optionList={[
               { value: 'pending', label: '待裁定' },
               { value: 'resolved', label: '已裁定' },
@@ -90,9 +99,14 @@ export default function DuplicateCasePage() {
 
         <Table<DuplicateCase>
           rowKey="id"
-          pagination={false}
+          pagination={{
+            currentPage: page,
+            pageSize: 20,
+            total: query.data?.total ?? 0,
+            onPageChange: setPage,
+          }}
           loading={query.isLoading}
-          dataSource={query.data ?? []}
+          dataSource={query.data?.items ?? []}
           empty="没有待裁定的撞单"
           columns={[
             {

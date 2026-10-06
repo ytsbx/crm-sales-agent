@@ -581,6 +581,11 @@ async def claim_customer(
             select(Customer)
             .where(Customer.id == customer_id, Customer.deleted_at.is_(None))
             .with_for_update()
+            # ⚠️ 必须 `populate_existing`：本项目 session 是 `expire_on_commit=False`，
+            # SQLAlchemy 默认**不用查询结果覆盖已加载对象**的属性。调用方如果在
+            # 同一个会话里先读过这个客户，拿回来的就是内存里的旧对象（owner 还是 None），
+            # 于是"已被别人领走"判不出来，行锁等于白加。
+            .execution_options(populate_existing=True)
         )
     ).scalars().first()
     if row is None:

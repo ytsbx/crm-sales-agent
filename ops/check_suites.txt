@@ -40,6 +40,10 @@ check_data_scope
 # 紧跟 check_data_scope：同属"越权"这一类，用的夹具类型也一样（自建用户+角色），
 # 放一起便于排查。它会真的并发打两个领取请求，所以放这附近（此时库还干净）。
 check_pool_scope_concurrency
+# 第六批批次二：撞单裁定统一归属 / 公海回收预告需复核 / 履约保护按真实状态判定
+# （返工单 6.5 / 6.3 / 6.4）。它会造一批"长期未活跃"的客户并跑回收扫描，
+# 放在守门套件之前、且**自己清干净**（含候选表与裁定单）。
+check_pool_recycle_and_merge
 check_notification_retry
 check_notification_levels
 check_delivery_analytics

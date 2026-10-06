@@ -76,7 +76,7 @@ async def main():
         row = (
             await s.execute(
                 text("select source, operator_id from audit_logs "
-                     "where action='run_public_pool_recycle' order by id desc limit 1")
+                     "where action='scan_public_pool_recycle' order by id desc limit 1")
             )
         ).first()
     check_true('公海回收审计存在', row is not None, '')
@@ -146,21 +146,24 @@ async def main():
     check_true('手动触发端点仍注册', True, '')
 
     print()
-    print('=== 5. 履约保护：在途报价/订单/打样/应收的客户不被回收（场景21）===')
+    print('=== 5. 履约保护：在途报价/订单/打样/应收的客户不被提名回收（场景21）===')
+    print('    ⚠️ 口径已变（返工单 6.3/6.4）：扫描只**提名**、不再直接回收；')
+    print('       而且"有效报价"必须是**正式发出**的 —— 草稿不再算保护。')
     from datetime import UTC, datetime, timedelta
 
     from app.modules.customer.model import Customer
     from app.modules.quote.model import Quote
-    from app.modules.settings.model import PublicPoolRule
+    from app.modules.settings.model import PublicPoolRecycleCandidate, PublicPoolRule
     from app.modules.settings import service as settings_service
 
     async with SessionLocal() as s:
-        # 夹具：Z 级客户 100 天没活跃 + 一条有效期内报价
+        # 夹具：Z 级客户 100 天没活跃 + 一条**已发出**且有效期内的报价
         prot = Customer(
             name=f'CHK-RECYCLE-保护-{datetime.now(UTC).timestamp():.0f}',
             level='Z', status='active', pool_status='private',
             owner_id=1, source='回归', customer_type='企业', country='中国',
             last_followup_at=datetime.now(UTC) - timedelta(days=100),
+            last_progress_at=datetime.now(UTC) - timedelta(days=100),
             created_at=datetime.now(UTC) - timedelta(days=200),
         )
         s.add(prot)
@@ -168,6 +171,9 @@ async def main():
         quote = Quote(
             quote_no=f'CHKRC{datetime.now(UTC).timestamp():.0f}',
             customer_id=prot.id, owner_id=1,
+            # **必须 status='sent'**：草稿报价不再构成保护（返工单 6.4）。
+            # 老夹具没写 status（默认 draft），照新口径它是不保护的。
+            status='sent',
             valid_until=(datetime.now(UTC) + timedelta(days=30)).date(),
         )
         s.add(quote)
@@ -175,23 +181,34 @@ async def main():
         s.add(rule)
         await s.commit()
 
+        def nominated_ids(result):
+            return {row['customer_id'] for row in result.get('candidates') or []}
+
         try:
             result = await settings_service.run_public_pool_recycle(s, operator_id=1, source='CHECK')
-            released_ids = {row['customer_id'] for row in result['customers']}
-            check_true('有效报价期内客户被豁免', prot.id not in released_ids
+            check_true('有效报价期内客户被豁免（没被提名）', prot.id not in nominated_ids(result)
                        and result['protected_count'] >= 1,
                        f"protected={result['protected_count']}")
 
-            # 报价软删后保护消失：同一次运行里应被回收（活跃时钟只看跟进，已超 60 天）
+            # 报价软删后保护消失：同一次运行里应被**提名**（活跃时钟已超 60 天）
             quote.deleted_at = datetime.now(UTC)
             await s.commit()
             result = await settings_service.run_public_pool_recycle(s, operator_id=1, source='CHECK')
-            released_ids = {row['customer_id'] for row in result['customers']}
-            check_true('报价失效后正常回收', prot.id in released_ids,
-                       f"released={result['released_count']}")
+            check_true('报价失效后被提名', prot.id in nominated_ids(result),
+                       f"nominated={result['nominated_count']}")
+            # **关键**：提名不等于回收 —— 客户必须仍在原负责人名下
+            still_owner = (
+                await s.execute(
+                    text("select owner_id from customers where id = :c"), {'c': prot.id}
+                )
+            ).scalar_one()
+            check('**提名后客户仍归原负责人**（没有直接回收）', still_owner, 1)
         finally:
             # 清夹具（回收已把 pool_status 置 public，直接删）
             from sqlalchemy import text as _text
+            await s.execute(_text(
+                "delete from public_pool_recycle_candidates where customer_id = :c"
+            ), {'c': prot.id})
             await s.execute(_text(
                 "delete from quotes where quote_no like 'CHKRC%' and customer_id = :c"
             ), {'c': prot.id})
@@ -363,7 +380,8 @@ async def main():
     async with SessionLocal() as s:
         result = await s.execute(
             text("delete from audit_logs where source='SCHEDULER' "
-                 "and action in ('run_public_pool_recycle','run_auto_tasks')")
+                 # 回收那一步的审计动作改名了：现在扫的是"提名"而不是"回收"
+                 "and action in ('scan_public_pool_recycle','run_auto_tasks')")
         )
         await s.commit()
         print(f'  {result.rowcount:>4}  SCHEDULER 审计')

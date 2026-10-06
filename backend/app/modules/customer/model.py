@@ -22,6 +22,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -176,6 +177,19 @@ class CustomerDuplicateCase(Base, IdMixin):
     __table_args__ = (
         Index("ix_customer_dup_status", "status"),
         Index("ix_customer_dup_customer", "customer_id"),
+        # 同一对客户**最多一张未决案件**（返工单 6.5）。
+        # 原来只有"先查有没有、再插入"，两个并发的查重会各插一条。
+        # 用**表达式索引**把 A/B 与 B/A 归一成同一对（LEAST/GREATEST），
+        # 并且只约束未决的（`status='pending'`）——结案后允许再开新的，
+        # 那时是新一轮争议，不该被历史挡着。
+        # 与迁移里的同名索引保持一致，别只写在一边。
+        Index(
+            "uq_customer_dup_pending_pair",
+            text("LEAST(customer_id, candidate_id)"),
+            text("GREATEST(customer_id, candidate_id)"),
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
     )
 
     #: 新导入/新建的那条
@@ -194,4 +208,8 @@ class CustomerDuplicateCase(Base, IdMixin):
     resolved_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: 裁定**前**两条客户的归属（`{客户id: 原负责人id}`）。
+    #: 与 `resolved_owner_id`（裁定后）配成一对 —— 事后回看要答得出
+    #: "这次裁定把谁从谁手里改到了谁名下"，只留一个结果是不够的（返工单 6.5）。
+    before_owners: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

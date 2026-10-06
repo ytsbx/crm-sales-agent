@@ -7,7 +7,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -35,6 +35,102 @@ class PublicPoolRule(Base, IdMixin):
     days: Mapped[int] = mapped_column(BigInteger, default=30)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+#: 候选的状态机。写死成一张表，避免各处 if 判断漂移。
+#:
+#: 为什么把"待复核"和"已执行"分成两步（返工单 6.3）：自动扫描命中后**直接清空负责人**
+#: 是不可逆的 —— 一个客户可能只是业务员出差两周没点跟进，回收掉之后
+#: 他辛辛苦苦跟了半年的客户就进了公海，谁都能领。文档 §11.2 要求的是
+#: "先预告 → 主管复核 → 再执行"，扫描只负责**提名**。
+RECYCLE_STATUS_LABEL = {
+    "pending": "待复核",       # 已预告，等主管批
+    "deferred": "已暂缓",       # 主管决定先不动，过一阵再看
+    "approved": "已批准待执行",  # 批准了但还没落（正常路径上会立刻执行掉）
+    "executed": "已回收",       # 归属已清空，客户进了公海
+    "rejected": "已驳回",       # 主管认为不该回收
+    "restored": "已恢复",       # 回收后又还给了原负责人
+    "superseded": "已被取代",    # 同一客户又开了新的候选，这条作废
+}
+
+#: 还算"未结"的状态：同一客户同时只能有一张。
+RECYCLE_OPEN_STATUSES = ("pending", "deferred", "approved")
+
+
+class PublicPoolRecycleCandidate(Base, IdMixin):
+    """公海回收**候选 / 预告**（返工单 6.3）。
+
+    自动扫描命中后**不再直接改归属**，而是落一条这个 —— 它记录"为什么该回收"
+    的全部依据，交给主管逐条或批量决定。批准执行时会**重新检查**最新情况
+    （预告之后客户又有了新跟进、新报价、新订单、新回款，就不该再回收）。
+
+    一行一次提名。同一客户重复扫描不会堆出多条：有未结的候选就跳过
+    （靠 `uq_pool_candidate_open` 兜底，不只是应用层判断）。
+    """
+
+    __tablename__ = "public_pool_recycle_candidates"
+    __table_args__ = (
+        Index("ix_pool_candidate_status", "status"),
+        Index("ix_pool_candidate_customer", "customer_id"),
+        # 同一客户**同时只允许一张未结候选**。原来靠"先查有没有、再插入"，
+        # 定时任务重跑或两个实例同时扫就会各插一条，主管看到重复的待办。
+        # 部分唯一索引只在未结状态下生效 —— 结案/恢复之后能再提名。
+        Index(
+            "uq_pool_candidate_open",
+            "customer_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending', 'deferred', 'approved')"),
+        ),
+    )
+
+    customer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("customers.id"))
+    #: 提名那一刻的原负责人（快照）。执行时会再核对：**中途换过人就不该按老提名回收**。
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: 命中的规则与等级（事后要能回答"这条是按哪条规则提上来的"）
+    rule_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    level: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    rule_days: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: 两个活跃时钟的快照（最近有效联系 / 最近业务进展）—— 复核时要看得到
+    #: "是按哪个时间判它冷落的"，而不是只给一个"已超 N 天"
+    last_contact_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_progress_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_active_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: 提名那一刻的**履约保护明细快照**（`{原因: 说明}` 的列表）。
+    #: 复核时谁拦着、拦的理由都摆在眼前；执行前还会再算一次，两次都要看。
+    protection_snapshot: Mapped[list | None] = mapped_column(JSONType, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    #: 预告生成时间 / 预告到期时间（到期前不动，给业务员一个缓冲）
+    notice_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    decided_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 主管的决定说明（驳回/暂缓/例外执行都要写清理由）
+    decision_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: 暂缓到什么时候（`status='deferred'` 时有值）
+    deferred_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: 例外执行：批准时**仍有履约保护**，主管明确要求放行（必须填原因）
+    exception_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 恢复：把客户还给原负责人（保留这条记录，不删）
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    restored_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    restore_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: 恢复时如果客户已经被别人领走，记下"冲突"而不是硬抢（见 restore_candidate）
+    restore_conflict_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class TaskRule(Base, IdMixin):

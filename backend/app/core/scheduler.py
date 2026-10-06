@@ -30,15 +30,23 @@ scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
 
 async def run_public_pool_recycle_job() -> None:
-    """每天定时：按公海回收规则把长期未跟进客户释放回公海。"""
+    """每天定时：按公海回收规则生成**回收预告**（不直接回收，返工单 6.3）。
+
+    老实现是扫到就直接清空负责人，不可逆。现在只提名，
+    等主管在「回收待复核」里批了才真的回收 —— 而且批准时还会再检查一遍
+    这期间有没有新的履约事项。
+
+    ⚠️ 与自动任务一样靠 `lock_task_scan` 防重入：同一进程里两个扫描同时跑
+    会互相抢连接、也可能重复提名（虽然有唯一索引兜底）。
+    """
     async with SessionLocal() as session:
         result = await settings_service.run_public_pool_recycle(
             session, operator_id=None, source="SCHEDULER"
         )
     logger.info(
-        "定时公海回收完成：释放 %s 个客户（规则 %s 条命中）",
-        result.get("released_count"),
-        len(result.get("rules_hit") or result.get("customers") or []),
+        "定时公海回收扫描完成：提名 %s 个待复核（履约中豁免 %s 个）",
+        result.get("nominated_count"),
+        result.get("protected_count"),
     )
 
 
