@@ -6,6 +6,138 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.similarity import similarity_score
 from app.modules.customer.model import Contact, Customer
 
+#: 显式授权码：拿到它的人可以看**完整**联系方式（不限于自己负责/本团队的客户）。
+#: 用户 2026-10-06 确认的口径是「负责人本客户、主管本团队、管理员全部；
+#: 其他可见人员脱敏，完整信息需另授权」—— 这个码就是"另授权"的落点。
+#: 默认不授给任何角色（管理员角色本身不受限），由管理员按需开给特定岗位。
+CONTACT_FULL_PERMISSION = "customer:contact_full"
+
+#: 脱敏后仍然保留的字段：这些是"能联系上"的必要信息，不是禁用。
+#: 口径是**脱敏**而不是**隐藏**：销售看得到"有没有填手机号、是不是同一个号"，
+#: 但拿不到完整号码去批量导走（方案第六节：非授权完整信息脱敏）。
+_MASKED_FIELDS = {
+    "mobile": "phone",
+    "phone": "phone",
+    "email": "email",
+    "wechat": "wechat",
+}
+
+
+def mask_contact_value(value: str | None, kind: str = "phone") -> str | None:
+    """联系方式脱敏。空值原样返回（"没填"和"填了但看不到"必须区分得开）。
+
+    - 手机号/电话：保留前 3 后 4（`138****8000`）；太短的保留首位。
+    - 邮箱：保留首字符与域名（`z***@example.com`）。
+    - 微信：保留前 2 位。
+
+    刻意**不做**"打码成 ***"：那会让用户分不清"没填"和"没权限看"，
+    于是反复去找管理员要权限，而其实是他自己没录。
+    """
+    text = (value or "").strip()
+    if not text:
+        return value
+    if kind == "email":
+        name, _, domain = text.partition("@")
+        if not domain:
+            return text[:1] + "***"
+        head = name[:1] if name else ""
+        return f"{head}***@{domain}"
+    if kind == "wechat":
+        return text[:2] + "***" if len(text) > 2 else "***"
+    if len(text) <= 4:
+        return text[:1] + "***"
+    return f"{text[:3]}****{text[-4:]}"
+
+
+def mask_contact_fields(payload: dict) -> dict:
+    """把序列化结果里的联系方式脱敏，并标出 `contact_masked=True`。
+
+    只动 `_MASKED_FIELDS` 里的键：其余字段（姓名、职务、是否为联系人）与
+    "这个客户有哪些联系人"这一层信息仍然可见 —— 要挡的是"拿到完整号码"，
+    不是"知道有这个联系人"。
+    """
+    masked = dict(payload)
+    for field, kind in _MASKED_FIELDS.items():
+        if field in masked:
+            masked[field] = mask_contact_value(masked.get(field), kind)
+    masked["contact_masked"] = True
+    return masked
+
+
+async def can_view_full_contact(
+    session: AsyncSession,
+    user,
+    *,
+    customer_id: int | None,
+    owner_id: int | None = None,
+) -> bool:
+    """当前用户能否看到这条联系人的**完整**联系方式。
+
+    规则（用户 2026-10-06 确认）：
+    - 管理员角色 / `data_scope == "all"`（管理员与财务这类全量可见者）→ 可以；
+    - 持显式授权码 `customer:contact_full` → 可以；
+    - 客户负责人本人 → 可以（"我的客户我总得能打电话"）；
+    - 该负责人的主管（本团队）→ 可以。判定用 `scoped_owner_ids`：
+      `department` / `department_and_sub` 数据范围的人，其集合就是本团队（及下级）成员；
+    - 其余能看到这个客户的人（例如公海客户的所有可见者）→ **脱敏**。
+      这也是"另授权"存在的意义：要完整信息就得显式给权限，而不是"能看客户就行"。
+    """
+    from app.core.data_scope import scoped_owner_ids
+
+    if "admin" in getattr(user, "roles", []) or user.data_scope == "all":
+        return True
+    if CONTACT_FULL_PERMISSION in getattr(user, "permissions", set()):
+        return True
+
+    if owner_id is None and customer_id is not None:
+        owner_row = (
+            await session.execute(
+                select(Customer.owner_id).where(Customer.id == customer_id)
+            )
+        ).first()
+        owner_id = owner_row[0] if owner_row else None
+    if owner_id is None:
+        # 无负责人的客户（公海）：没人"负责"它，因此没有"负责人"这一档豁免
+        return False
+    if int(owner_id) == int(user.id):
+        return True
+
+    allowed = await scoped_owner_ids(session, user)
+    return allowed is not None and int(owner_id) in allowed
+
+
+async def full_contact_customer_ids(
+    session: AsyncSession, user, customer_ids: set[int] | None
+) -> set[int] | None:
+    """批量判定：哪些客户的联系人可以对当前用户显示完整信息。
+
+    返回 `None` 表示**不受限**（管理员/全量范围/显式授权）——
+    列表接口据此走"不脱敏"的快路径，不必逐个客户查一遍。
+    """
+    from app.core.data_scope import scoped_owner_ids
+
+    if "admin" in getattr(user, "roles", []) or user.data_scope == "all":
+        return None
+    if CONTACT_FULL_PERMISSION in getattr(user, "permissions", set()):
+        return None
+    ids = {int(cid) for cid in (customer_ids or set()) if cid is not None}
+    if not ids:
+        return set()
+
+    allowed = await scoped_owner_ids(session, user)
+    if not allowed:
+        return set()
+    rows = (
+        await session.execute(
+            select(Customer.id, Customer.owner_id).where(Customer.id.in_(ids))
+        )
+    ).all()
+    return {
+        int(cid)
+        for cid, owner in rows
+        if owner is not None and int(owner) in allowed
+    }
+
 
 async def create_contact_for_customer(
     session: AsyncSession,

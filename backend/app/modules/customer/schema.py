@@ -19,6 +19,10 @@ class CustomerCreate(BaseModel):
     level: str | None = None
     owner_id: int | None = None
     remark: str | None = None
+    #: 请求幂等键（第八批 8.15）：弱网/超时后的重试带同一把键，服务端只建一条。
+    #: 不给也不报错（老客户端照常工作），但响应里会说明这次没有幂等保护 ——
+    #: 不能让人以为"重试一定安全"。
+    request_key: str | None = Field(default=None, max_length=128)
 
 
 class CustomerUpdate(BaseModel):
@@ -37,6 +41,10 @@ class CustomerUpdate(BaseModel):
     status: str | None = None
     remark: str | None = None
     next_followup_at: datetime | None = None
+    #: 最近有效联系时间。给这个字段的用途是**补核历史客户**（第七批 7.5）：
+    #: 导入时没提供联系日期的老客户被标成"联系时间未知"，不参与自动回收；
+    #: 业务核对出真实时间后填这里，标记随之清掉、重新回到回收视野。
+    last_followup_at: datetime | None = None
 
 
 class CustomerTransfer(BaseModel):

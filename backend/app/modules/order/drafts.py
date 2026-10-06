@@ -170,29 +170,43 @@ async def confirm(session, user, draft_id, payload):
     return order
 
 
-async def generate_document(session, user, draft_id):
+async def generate_document(session, user, draft_id, request_key=None):
+    """给订单草稿出一份下单文件（§8.9 补幂等键）。
+
+    双击 / 弱网重试在这条路径上同样会多出一份：原来每次请求都新插一行，
+    两份内容一模一样、版本号却连着，事后分不清哪份是"要发出去的那份"。
+    带上 request_key 后同一把键重试返回原文件；要明确再出一版就换新键
+    （哪怕内容没变也照出——不能按内容去重，那会挡掉合法的新版）。
+    """
     from app.modules.bizdoc import service as docs
     from app.modules.customer.model import Customer
-    draft = await get_visible(session, user, draft_id, lock=True)
-    rows = await items(session, draft_id)
-    current = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.name,
-                'spec': i.specification, 'quantity': i.quantity, 'unit_price': i.unit_price,
-                'amount': i.quantity*i.unit_price if i.unit_price is not None else None, 'remark': i.remark} for i in rows]
-    original = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.source_snapshot['name'],
-                 'spec': i.source_snapshot.get('specification'), 'quantity': i.source_snapshot.get('original_quantity'),
-                 'remark': i.source_snapshot.get('remark'), 'unit_price': i.source_snapshot.get('unit_price')} for i in rows]
-    built = {'order_draft_id': draft.id, 'customer_id': draft.customer_id,
-        'customer': await session.get(Customer, draft.customer_id), 'owner_id': draft.owner_id,
-        'source': draft.source_context, 'items': current, 'diffs': docs._diff_lines(current, original, 'source_item_id'),
-        'title_suffix': f'#{draft.id}', 'sections': [
-            {'label': '单据性质', 'value': '订单草稿，仅供核对准备，不代表正式下单或生产指令'},
-            {'label': '草稿修订', 'value': str(draft.revision)},
-            {'label': '币种', 'value': draft.currency},
-            {'label': '计划交期', 'value': str(draft.delivery_date or '')},
-            {'label': '付款条件', 'value': draft.payment_terms or ''}, {'label': '备注', 'value': draft.remark or ''}]}
-    template = await docs.current_template(session, 'order_sheet', None)
-    doc = await docs._persist(session, built=built, doc_type='order_sheet', template=template,
-                              user_id=user.id, extra_fields=None, source_ref=draft.source_context)
-    await write_audit(session, operator_id=user.id, action='generate', business_type='order_draft', business_id=draft.id,
-                      after={'document_id': doc.id, 'document_version': doc.version})
+
+    async def _build():
+        draft = await get_visible(session, user, draft_id, lock=True)
+        rows = await items(session, draft_id)
+        current = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.name,
+                    'spec': i.specification, 'quantity': i.quantity, 'unit_price': i.unit_price,
+                    'amount': i.quantity*i.unit_price if i.unit_price is not None else None, 'remark': i.remark} for i in rows]
+        original = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.source_snapshot['name'],
+                     'spec': i.source_snapshot.get('specification'), 'quantity': i.source_snapshot.get('original_quantity'),
+                     'remark': i.source_snapshot.get('remark'), 'unit_price': i.source_snapshot.get('unit_price')} for i in rows]
+        built = {'order_draft_id': draft.id, 'customer_id': draft.customer_id,
+            'customer': await session.get(Customer, draft.customer_id), 'owner_id': draft.owner_id,
+            'source': draft.source_context, 'items': current, 'diffs': docs._diff_lines(current, original, 'source_item_id'),
+            'title_suffix': f'#{draft.id}', 'sections': [
+                {'label': '单据性质', 'value': '订单草稿，仅供核对准备，不代表正式下单或生产指令'},
+                {'label': '草稿修订', 'value': str(draft.revision)},
+                {'label': '币种', 'value': draft.currency},
+                {'label': '计划交期', 'value': str(draft.delivery_date or '')},
+                {'label': '付款条件', 'value': draft.payment_terms or ''}, {'label': '备注', 'value': draft.remark or ''}]}
+        template = await docs.current_template(session, 'order_sheet', None)
+        return await docs._persist(session, built=built, doc_type='order_sheet', template=template,
+                                   user_id=user.id, extra_fields=None, source_ref=draft.source_context)
+
+    doc, replayed = await docs.run_idempotent_generation(
+        session, user_id=user.id, action='bizdoc:order_draft_sheet',
+        request_key=request_key, payload={'order_draft_id': draft_id}, generate=_build)
+    await write_audit(session, operator_id=user.id, action='generate_replay' if replayed else 'generate',
+                      business_type='order_draft', business_id=draft_id,
+                      after={'document_id': doc.id, 'document_version': doc.version, 'replayed': replayed})
     return doc

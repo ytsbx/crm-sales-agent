@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
@@ -48,6 +48,7 @@ import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
+import { newRequestKey } from '../../shared/api/requestKey'
 
 const TABS = [
   { tab: '订单明细', itemKey: 'items' },
@@ -103,6 +104,11 @@ export default function OrderDetailPage() {
   const [generateDates, setGenerateDates] = useState<{ first?: Date; second?: Date }>({})
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
+  // 登记回款的请求键（第七批 7.9）：**一份表单一把键**，打开表单时生成、
+  // 成功后才换新的。弱网重试（服务端已建好、响应没回来，用户再点一次"登记"）
+  // 带的是同一把键，后端据此只建一行；在提交时才现生成等于每点一次换一把键，
+  // 服务端照样会建第二条 —— 那就不叫幂等。
+  const paymentKeyRef = useRef('')
   // 跟单里程碑（模块⑤）：编辑弹窗状态
   const [milestoneEdit, setMilestoneEdit] = useState<OrderMilestoneRow | null>(null)
   //: 交期变更弹窗（方案 :105）：先预览受影响面，再生成变更单
@@ -330,17 +336,25 @@ export default function OrderDetailPage() {
   })
 
   const paymentMutation = useMutation({
-    mutationFn: () =>
-      createPayment({
+    mutationFn: () => {
+      // 兜底：极端情况下（比如将来多开了一个入口忘了生成键）也要保证同一份
+      // 表单的重试复用同一把键，所以这里只在为空时补一把。
+      if (!paymentKeyRef.current) paymentKeyRef.current = newRequestKey()
+      return createPayment({
         receivable_plan_id: paymentTarget!.id,
         received_date: paymentForm.date.toISOString().slice(0, 10),
         received_amount: Number(paymentForm.amount),
         payment_method: paymentForm.method,
-      }),
+        request_key: paymentKeyRef.current,
+      })
+    },
     onSuccess: () => {
       Toast.success('回款已登记，等待财务确认')
       setPaymentTarget(null)
       setPaymentForm({ amount: '', date: new Date(), method: '银行转账' })
+      // 成功才换键：下一次登记是新的一笔，不能复用上一笔的键
+      // （否则会被后端判成"同键不同内容"直接拒绝）。
+      paymentKeyRef.current = ''
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -505,6 +519,8 @@ export default function OrderDetailPage() {
                 date: new Date(),
                 method: '银行转账',
               })
+              // 打开表单就定下这一笔的请求键；中途提交失败重试仍用它。
+              paymentKeyRef.current = newRequestKey()
             }}
           >
             登记回款

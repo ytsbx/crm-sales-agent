@@ -693,6 +693,10 @@ async def run_public_pool_recycle(
     protected_skipped: list[dict] = []
     #: 撞单争议中、被冻结自动改派的客户（文档 §11.5 :279）
     disputed_skipped: list[dict] = []
+    #: **最近联系时间未知**的历史导入客户（第七批 7.5，用户 2026-10-06 确认口径）：
+    #: 先标记未知，补核后才进自动回收候选。这类客户不参与本轮扫描，
+    #: 但要单独列出来 —— 名单上"看不见"才最危险，主管得知道有多少条等着补核。
+    unknown_contact_skipped: list[dict] = []
     already_open: list[int] = []
     #: 本轮实际发出去的预告通知条数（一人一条，原负责人与主管分别算）
     notified = 0
@@ -718,6 +722,19 @@ async def run_public_pool_recycle(
         )
         rows = (await session.execute(stmt)).scalars().all()
         for customer in rows:
+            # 联系时间未知 + 没有任何真实业务进展 → 不能按"刚联系过"或"刚建档"算，
+            # 也不能直接回收（我们并不知道他是什么时候联系的）。跳过并列入待补核。
+            if customer.last_contact_unknown and customer.last_progress_at is None:
+                unknown_contact_skipped.append(
+                    {
+                        "customer_id": customer.id,
+                        "name": customer.name,
+                        "level": rule.level,
+                        "owner_id": customer.owner_id,
+                        "note": "最近联系时间未知（历史导入未提供），补核后才参与自动回收",
+                    }
+                )
+                continue
             last = _last_active_at(customer)
             if last is None:
                 continue
@@ -806,6 +823,8 @@ async def run_public_pool_recycle(
             "protected": protected_skipped[:100],
             "disputed_count": len(disputed_skipped),
             "disputed": disputed_skipped[:100],
+            "unknown_contact_count": len(unknown_contact_skipped),
+            "unknown_contact": unknown_contact_skipped[:100],
             "already_open_count": len(already_open),
             "notified_count": notified,
         },
@@ -819,6 +838,9 @@ async def run_public_pool_recycle(
         "protected": protected_skipped[:100],
         "disputed_count": len(disputed_skipped),
         "disputed": disputed_skipped[:100],
+        #: 联系时间未知、待补核的历史客户：这批不参与自动回收
+        "unknown_contact_count": len(unknown_contact_skipped),
+        "unknown_contact": unknown_contact_skipped[:100],
         "already_open_count": len(already_open),
         #: 发出了多少条预告通知（原负责人与复核主管分别计）
         "notified_count": notified,

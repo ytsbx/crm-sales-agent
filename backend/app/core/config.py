@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     file_root: str = "data/files"
     max_upload_mb: int = 20
 
+    #: 批量导入一次最多返回多少条失败明细（防爆上限）。
+    #: 默认 5000：正常导入的错误量远小于它，等于"全量返回"；
+    #: 真被撑爆时响应里会有 `failed_truncated=true`，**不会**假装是全部。
+    import_max_error_rows: int = 5000
+
     # Sales Agent 用的模型（与公司现有知识库项目保持同一套配置）
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"

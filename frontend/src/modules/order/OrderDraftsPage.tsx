@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, InputNumber, Popconfirm, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
@@ -8,6 +8,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import { confirmOrderDraft, generateOrderDraftDocument, getOrderDraft, listOrderDrafts, updateOrderDraft, type OrderDraft, type OrderDraftLine } from '../../shared/api/order'
 import { listQuotes } from '../../shared/api/quote'
 import { downloadBizDoc, listBizDocs } from '../../shared/api/bizdoc'
+import { newRequestKey } from '../../shared/api/requestKey'
 
 export default function OrderDraftsPage() {
   const { id } = useParams()
@@ -44,7 +45,14 @@ export default function OrderDraftsPage() {
     onSuccess: data => { client.setQueryData(['order-draft', draftId], data); Toast.success('草稿已保存') }, onError: error })
   const confirm = useMutation({ mutationFn: () => confirmOrderDraft(draftId, query.data!.revision, versionId!),
     onSuccess: data => { void client.invalidateQueries({ queryKey: ['orders'] }); void client.invalidateQueries({ queryKey: ['order-drafts'] }); navigate(`/orders/${data.order_id}`); Toast.success('已正式下单') }, onError: error })
-  const generate = useMutation({ mutationFn: () => generateOrderDraftDocument(draftId), onSuccess: () => { void docs.refetch(); Toast.success('草稿需求单已生成') }, onError: error })
+  // 幂等键（§8.9）：同一把键在成功之前保持不变，弱网重试才不会多出一份；
+  // 成功即清空，下一次点击必然是**新键**（= 明确再出一版，不按内容去重）。
+  const docRequestKey = useRef<string | null>(null)
+  const generate = useMutation({ mutationFn: () => {
+      if (!docRequestKey.current) docRequestKey.current = newRequestKey()
+      return generateOrderDraftDocument(draftId, docRequestKey.current)
+    },
+    onSuccess: () => { docRequestKey.current = null; void docs.refetch(); Toast.success('草稿需求单已生成') }, onError: error })
   const busy = save.isPending || confirm.isPending || generate.isPending
   function patch(index: number, change: Partial<OrderDraftLine>) { if (Object.entries(change).every(([key, value]) => rows[index]?.[key as keyof OrderDraftLine] === value)) return; setDirty(true); setRows(old => old.map((row, i) => i === index ? { ...row, ...change } : row)) }
   if (!id) return <div className="page-container"><PageHeader title="订单草稿" subtitle="提前准备资料，不进入生产、应收或成交统计" extra={<Link to="/orders">返回订单中心</Link>} />

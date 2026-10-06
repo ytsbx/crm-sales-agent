@@ -87,26 +87,58 @@ def sku_export_row(sku, product_name: str | None) -> list:
 
 
 def _decimal(raw: str | None):
-    """把可空数字列解析成 Decimal；空串返回 None，非法值抛 ValueError。"""
+    """把可空数字列解析成 Decimal；空串返回 None，非法值抛 ValueError。
+
+    NaN / Infinity 必须挡掉：`Decimal("NaN")` 是合法 Decimal，
+    但写进 Numeric 列会报数据库错、参与比较又一路 False，
+    最后表现成"这个 SKU 的数据看着不对劲"，而不是"导入时告诉用户填错了"。
+    """
     from decimal import Decimal, InvalidOperation
 
     text = (raw or "").strip()
     if not text:
         return None
     try:
-        return Decimal(text)
+        value = Decimal(text)
     except InvalidOperation as exc:
         raise ValueError(f"「{raw}」不是合法数字") from exc
+    if not value.is_finite():
+        raise ValueError(f"「{raw}」不是有限数字")
+    return value
 
 
 def _int(raw: str | None):
+    """整数列。**不做 `int(float(x))` 截断**。
+
+    原来 `int(float("2.9"))` = 2：装箱数、MOQ 这类字段被静默改小，
+    用户看到的和文件里的不一致，而且没有任何提示 —— 比直接报错难查得多。
+    """
+    from decimal import Decimal, InvalidOperation
+
     text = (raw or "").strip()
     if not text:
         return None
     try:
-        return int(float(text))
-    except ValueError as exc:
+        value = Decimal(text)
+    except InvalidOperation as exc:
         raise ValueError(f"「{raw}」不是合法整数") from exc
+    if not value.is_finite() or value != value.to_integral_value():
+        raise ValueError(f"「{raw}」不是合法整数")
+    return int(value)
+
+
+def _text(raw: str | None, label: str, max_length: int) -> str | None:
+    """文本列 + 长度校验。
+
+    超长时数据库会抛 `value too long for type character varying(64)`，
+    用户看到的是一句数据库方言的错误码；这里提前说清是哪个字段、有多长。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if len(text) > max_length:
+        raise ValueError(f"{label}长度不能超过 {max_length}（当前 {len(text)}）")
+    return text
 
 
 # 供 router 使用：把一行 CSV 变成 ORM 字段。
@@ -120,28 +152,55 @@ PRODUCT_COLUMN_LABELS = {
     "knowledge": "产品知识",
 }
 
+#: 文本列的库内长度上限（与 product/model.py 的 String(...) 对齐）。
+#: 导入时就按它校验，超长给一句人话，而不是让数据库抛方言错误。
+PRODUCT_TEXT_LIMITS = {
+    "product_line": 64,
+    "category": 64,
+    "brand": 64,
+    # description / knowledge 是 Text 列，不设实际上限（给一个防爆值即可）
+    "description": 100000,
+    "knowledge": 100000,
+}
+
 
 def product_fields_from_row(row: dict) -> dict:
     return {
-        column: ((row.get(label) or "").strip() or None)
+        column: _text(row.get(label), label, PRODUCT_TEXT_LIMITS[column])
         for column, label in PRODUCT_COLUMN_LABELS.items()
     }
 
 
 def sku_fields_from_row(row: dict) -> dict:
+    """一行 CSV -> Sku 字段。
+
+    非法值一律抛 `ValueError`（带人话原因），由调用方决定记成哪一行的失败；
+    **不做截断、不把非法值当空白**：静默改数比导入失败难查得多。
+    """
+    moq = _int(row.get("MOQ"))
+    if moq is not None and moq < 0:
+        raise ValueError("MOQ 不能为负数")
+    carton_qty = _int(row.get("装箱数"))
+    if carton_qty is not None and carton_qty < 0:
+        raise ValueError("装箱数不能为负数")
+    for label, value in (("长", _decimal(row.get("长"))), ("宽", _decimal(row.get("宽"))),
+                         ("高", _decimal(row.get("高"))), ("重量", _decimal(row.get("重量"))),
+                         ("箱规体积", _decimal(row.get("箱规体积")))):
+        if value is not None and value < 0:
+            raise ValueError(f"{label}不能为负数")
     return {
-        "sku_code": (row.get("SKU编码") or "").strip(),
-        "name": (row.get("规格名称") or "").strip() or None,
-        "specification": (row.get("规格") or "").strip() or None,
-        "color": (row.get("颜色") or "").strip() or None,
-        "material": (row.get("材质") or "").strip() or None,
+        "sku_code": _text(row.get("SKU编码"), "SKU编码", 64) or "",
+        "name": _text(row.get("规格名称"), "规格名称", 200),
+        "specification": _text(row.get("规格"), "规格", 200),
+        "color": _text(row.get("颜色"), "颜色", 64),
+        "material": _text(row.get("材质"), "材质", 64),
         "length": _decimal(row.get("长")),
         "width": _decimal(row.get("宽")),
         "height": _decimal(row.get("高")),
         "weight": _decimal(row.get("重量")),
-        "carton_qty": _int(row.get("装箱数")),
+        "carton_qty": carton_qty,
         "carton_volume": _decimal(row.get("箱规体积")),
-        "moq": _int(row.get("MOQ")),
-        "package_type": (row.get("包装方式") or "").strip() or None,
-        "unit": (row.get("单位") or "").strip() or "件",
+        "moq": moq,
+        "package_type": _text(row.get("包装方式"), "包装方式", 64),
+        "unit": _text(row.get("单位"), "单位", 16) or "件",
     }

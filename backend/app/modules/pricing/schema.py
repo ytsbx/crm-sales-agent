@@ -5,25 +5,34 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class CostCreate(BaseModel):
-    purchase_cost: Decimal = Decimal(0)
-    production_cost: Decimal = Decimal(0)
-    package_cost: Decimal = Decimal(0)
-    processing_cost: Decimal = Decimal(0)
+    """新增成本版本（页面维护入口）。
+
+    第七批 7.4：四项成本可为空，但**不允许全部为空** —— 空表示"未提供"，
+    全空落库就是一条"信息为零的成本"，而核价按"有没有成本行"判断成本已知，
+    会据此算出假毛利。校验放在路由里做（要给出人话原因），这里只保证类型。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    purchase_cost: Decimal | None = Field(default=None, ge=0)
+    production_cost: Decimal | None = Field(default=None, ge=0)
+    package_cost: Decimal | None = Field(default=None, ge=0)
+    processing_cost: Decimal | None = Field(default=None, ge=0)
     effective_from: date
     effective_to: date | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class CostUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    purchase_cost: Decimal | None = None
-    production_cost: Decimal | None = None
-    package_cost: Decimal | None = None
-    processing_cost: Decimal | None = None
+    purchase_cost: Decimal | None = Field(default=None, ge=0)
+    production_cost: Decimal | None = Field(default=None, ge=0)
+    package_cost: Decimal | None = Field(default=None, ge=0)
+    processing_cost: Decimal | None = Field(default=None, ge=0)
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class ExchangeRateCreate(BaseModel):

@@ -1,0 +1,37 @@
+# 隔离恢复演练的 systemd 服务（配套 crm-drill.timer）。
+#
+# 这个单元**默认不启用**，需要人工显式执行一次：
+#   sudo systemctl start crm-drill                 # 手工演练一次
+#   sudo systemctl enable --now crm-drill.timer    # 之后每周自动演练（可选）
+#
+# 为什么不跟每日备份合成一条任务：
+#   演练要建临时库、解包原件、逐条核对 hash，耗时随原件数量增长，而且**失败原因
+#   完全不同**（备份失败=数据没备上；演练失败=备份存在但恢复不出来）。合成一条，
+#   任何一侧失败都会把另一侧的结论搅浑。8.16 的验收也要求恢复演练是独立动作。
+#
+# 演练只写临时库：库名由 restore_drill.sh 生成（^crm_restore_[a-z0-9_]*$，脚本自己拦），
+# 不存在则拒绝执行。默认保留现场供人工翻看，这里加 --cleanup 让自动演练不留垃圾。
+
+[Unit]
+Description=CRM isolated restore drill (temporary database + temporary file tree)
+Wants=crm-backend.service
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=crm
+EnvironmentFile=/opt/crm/backend/.env
+Environment=FILE_ROOT_BASE_DIR=/opt/crm/backend
+# 恢复现场放 /var/tmp/crm-drill：独立区域，避免撑爆 /tmp
+Environment=RESTORE_BASE=/var/tmp/crm-drill
+WorkingDirectory=/opt/crm
+# 库名交给脚本自己按当前时间生成（不在这里拼 date：systemd 的 %% 转义很容易写错，
+# 而且脚本里已经做了"库名必须是一次性名字"的校验）。
+# 取最新一份备份：ls -d 排序取末尾，正好是按时间戳的最近一份。
+ExecStart=/bin/bash -c '/opt/crm/ops/deploy/restore_drill.sh --backup "$(ls -d /var/backups/crm/crm-* | sort | tail -1)" --cleanup'
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -146,60 +146,46 @@ async def refresh(
 
 
 @router.post("/sso/wecom/callback")
-async def wecom_sso_callback(
-    payload: WeComSsoCallback,
-    request: Request,
-    session: AsyncSession = Depends(get_db),
-):
-    """企微网页授权登录回调（03-API §2）。
+async def wecom_sso_callback(payload: WeComSsoCallback, request: Request):
+    """企微网页授权登录回调（03-API §2）：**通道关闭，一律不签发令牌**。
 
-    ## 真实流程与这里的边界
+    ## 为什么关掉
 
-    企微 OAuth 是：前端拿 code → 后端用 code + corpsecret 调
-    `getuserinfo` 换 userid → 按 userid 找本地账号 → 发 token。
+    企微 SSO 里唯一可信的身份来源是**服务端**：后端拿一次性授权 code +
+    corpsecret 调 `getuserinfo` 换 userid，或校验企业桥接的服务端签名 / 受众 /
+    有效期 / 一次性断言。此前本接口信任请求体里自报的 `wecom_userid`，只拿它查一次
+    本地用户就发 token、`state` 也只记进审计不校验 —— 任何知道同事企微工号的人都能
+    换到该同事的 token，而且会留下一条 action='sso_login' 的**成功**审计，事后与真实
+    登录无法区分。错误授权不能作为取舍接受，所以在企业凭据与服务端换取链路到位前，
+    这里直接关闭这条通道（账号密码登录不受影响）。
 
-    本接口负责**第二步之后**：接收已经换好的 `wecom_userid` 并签发 token。
-    换 userid 那一步需要企微应用凭据（`WECOM_*`），当前未配置，
-    所以这里不假装能完成整条链路 —— 未配置时明确报错，
-    而不是"登录成功但用户是空的"。
+    ## 关闭期间的行为
 
-    绑定关系走 `users.wecom_userid`（企微通讯录同步时写入）。
+    明确报错，不静默失败、也不返回"登录成功但用户是空的"：拒绝理由按
+    "凭据未配置 / 服务端换取能力未配置"区分，看到报错的人能直接判断缺什么、找谁配。
+    接通后本接口只接受企微 OAuth 的入参（一次性 code + 一次性 state），
+    且 state 必须一次性消费（防重放）后才允许签发。
     """
     if not settings.wecom_contact_ready:
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            "企微应用凭据未配置，无法完成企微登录；请先配置 WECOM_* 环境变量",
-            422,
+        reason = "企微应用凭据未配置（缺 WECOM_CORP_ID / WECOM_CONTACT_SECRET）"
+    else:
+        # 凭据齐全也只够"调得动企微接口"：本服务里并没有拿 code 换 userid 的实现，
+        # 也没有企业桥接的可验签密钥。此时若放行，等于又回到"自报身份即认证"。
+        reason = (
+            "服务端用授权 code 换取 userid（或校验企业桥接签名/受众/有效期/一次性断言）"
+            "的能力未配置"
         )
-
-    wecom_userid = (payload.wecom_userid or "").strip()
-    if not wecom_userid:
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "wecom_userid 必填")
-
-    user = (
-        await session.execute(select(User).where(User.wecom_userid == wecom_userid))
-    ).scalar_one_or_none()
-    if user is None:
-        raise AppError(
-            ErrorCode.NOT_FOUND,
-            f"企微用户 {wecom_userid} 尚未绑定 CRM 账号，请先用账号密码登录后在个人设置里绑定",
-            404,
-        )
-    if user.status != "active":
-        raise AppError(ErrorCode.FORBIDDEN, "账号已停用", 403)
-
-    token = create_access_token(user.id, {"name": user.name})
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="sso_login",
-        business_type="auth",
-        business_id=user.id,
-        after={"username": user.username, "wecom_userid": wecom_userid},
-        ip=client_ip(request),
+    detail = (
+        f"企微 SSO 未接通，本接口不签发令牌：{reason}。"
+        "登录身份必须由服务端从企微取得，请求体里自报的 wecom_userid 不是凭证，一律不接受。"
+        "请改用账号密码登录，或在服务端换取链路接通后重试。"
     )
-    await session.commit()
-    return ok({"access_token": token, "token_type": "Bearer", "user": _user_brief(user)})
+    if not (payload.code and payload.state):
+        # 入参形状单独提示：顺手带上 code 的调用方通常是按老前端（只报 userid）写的，
+        # 让他一眼看出"不是我不认这个 code，而是整条链路还没接"。
+        detail += "（本次请求未携带企微一次性 code/state）"
+    logger.warning("企微 SSO 登录被拒绝（%s）：ip=%s", reason, client_ip(request))
+    raise AppError(ErrorCode.EXTERNAL_ERROR, detail, 503)
 
 
 @router.post("/logout")

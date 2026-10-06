@@ -17,6 +17,10 @@ class QuoteCreate(BaseModel):
     currency: str = "CNY"
     exchange_rate: Decimal | None = None
     """不填则自动取汇率表里该币种的当前汇率并落快照（02-ER §11）。"""
+    #: 请求幂等键（第八批 8.15）：弱网/超时后的重试带同一把键，服务端只建一条报价。
+    #: 不给也不报错（老客户端照常工作），但响应里会说明这次没有幂等保护。
+    #: **同一把键只允许对应同一份内容**：改完表单再提交请用新键（前端换表单时重新生成）。
+    request_key: str | None = Field(default=None, max_length=128)
 
 
 class QuoteVersionUpdate(BaseModel):

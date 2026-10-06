@@ -57,6 +57,21 @@ async def parse_csv_upload(
     返回 `csv.DictReader` 的行列表，调用方按中文表头取值。
     """
     raw = await file.read()
+    return parse_csv_bytes(raw, required_headers=required_headers, label=label)
+
+
+def parse_csv_bytes(
+    raw: bytes,
+    *,
+    required_headers: list[str],
+    label: str = "文件",
+) -> list[dict]:
+    """`parse_csv_upload` 的字节版。
+
+    单独留一个字节入口，是因为导入还要算**文件摘要**（预览快照按文件比对），
+    而 `UploadFile` 只能读一次 —— 让调用方先 `read()` 再交给这里，
+    比"读完再想办法塞回 UploadFile"干净得多。
+    """
     text = decode_upload(raw, label=label)
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
@@ -76,4 +91,10 @@ async def parse_csv_upload(
     ]
 
 
-__all__ = ["IMPORT_ENCODINGS", "csv_bytes", "decode_upload", "parse_csv_upload"]
+__all__ = [
+    "IMPORT_ENCODINGS",
+    "csv_bytes",
+    "decode_upload",
+    "parse_csv_bytes",
+    "parse_csv_upload",
+]

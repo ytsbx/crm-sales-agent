@@ -5,17 +5,25 @@
 （`/leads/export` 会被当成 lead_id="export" 解析失败）。
 """
 
+import hashlib
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.csvio import csv_bytes, parse_csv_upload
+from app.core.csvio import csv_bytes, parse_csv_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.importing import (
+    ImportReport,
+    RowErrors,
+    RowSkipped,
+    finalize,
+    row_savepoint,
+)
 from app.core.response import ok
 from app.modules.lead import io as io_util
 from app.modules.lead import service as svc
@@ -112,6 +120,8 @@ async def export_leads_filtered(
 async def import_leads(
     request: Request,
     file: UploadFile = File(...),
+    preview: bool = Form(False),
+    preview_token: str | None = Form(None),
     user: CurrentUser = Depends(require_permission("lead:create")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -119,87 +129,83 @@ async def import_leads(
 
     查重口径与客户不同：线索只跳过"公司名或手机号**完全相同**"的行。
     线索是粗筛名单，套客户的相似度阈值会把大量真实新线索挡在门外。
+
+    第七批 7.1 / 7.6：每行一个 SAVEPOINT（坏行不再把后续行一起拖死）、
+    支持 `preview=1`、失败清单全量返回且按唯一行号计数。
     """
-    rows = await parse_csv_upload(
-        file, required_headers=["线索名称"], label="文件"
-    )
-    created: list[dict] = []
-    skipped: list[dict] = []
-    failed: list[dict] = []
+    raw = await file.read()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    rows = parse_csv_bytes(raw, required_headers=["线索名称"], label="文件")
+    report = ImportReport("lead", len(rows))
 
     for index, row in enumerate(rows, start=2):  # 第 1 行是表头
         name = (row.get("线索名称") or "").strip()
         company = (row.get("公司名称") or "").strip() or None
         mobile = (row.get("手机号") or "").strip() or None
+        errs = RowErrors(index, name)
+        if not name:
+            errs.add("线索名称不能为空")
+        if errs:
+            report.failed_row(index, name, errs.reasons)
+            continue
+
         try:
-            if not name:
-                failed.append({"row": index, "name": name, "reason": "线索名称不能为空"})
-                continue
+            async with row_savepoint(session):
+                conditions = []
+                if company:
+                    conditions.append(Lead.company_name == company)
+                if mobile:
+                    conditions.append(Lead.mobile == mobile)
+                if conditions:
+                    duplicate = (
+                        await session.execute(
+                            select(Lead).where(
+                                Lead.deleted_at.is_(None), or_(*conditions)
+                            ).limit(1)
+                        )
+                    ).scalars().first()
+                    if duplicate is not None:
+                        raise RowSkipped(
+                            f"已存在同名公司或同号线索（id={duplicate.id}）"
+                        )
 
-            conditions = []
-            if company:
-                conditions.append(Lead.company_name == company)
-            if mobile:
-                conditions.append(Lead.mobile == mobile)
-            if conditions:
-                duplicate = (
-                    await session.execute(
-                        select(Lead).where(
-                            Lead.deleted_at.is_(None), or_(*conditions)
-                        ).limit(1)
-                    )
-                ).scalars().first()
-                if duplicate is not None:
-                    skipped.append(
-                        {
-                            "row": index,
-                            "name": name,
-                            "reason": f"已存在同名公司或同号线索（id={duplicate.id}）",
-                        }
-                    )
-                    continue
-
-            owner_id = await svc.resolve_owner(session, row.get("负责人登录名"), user.id)
-            lead = Lead(
-                name=name,
-                company_name=company,
-                contact_name=(row.get("联系人") or "").strip() or None,
-                mobile=mobile,
-                email=(row.get("邮箱") or "").strip() or None,
-                region=(row.get("省份") or "").strip() or None,
-                source=(row.get("来源") or "").strip() or "Excel 导入",
-                remark=(row.get("备注") or "").strip() or None,
-                country="中国",
-                status="pending",
-                owner_id=owner_id,
-                created_by=user.id,
-            )
-            session.add(lead)
-            await session.flush()
-            created.append({"row": index, "id": lead.id, "name": lead.name})
+                owner_id = await svc.resolve_owner(
+                    session, row.get("负责人登录名"), user.id
+                )
+                lead = Lead(
+                    name=name,
+                    company_name=company,
+                    contact_name=(row.get("联系人") or "").strip() or None,
+                    mobile=mobile,
+                    email=(row.get("邮箱") or "").strip() or None,
+                    region=(row.get("省份") or "").strip() or None,
+                    source=(row.get("来源") or "").strip() or "Excel 导入",
+                    remark=(row.get("备注") or "").strip() or None,
+                    country="中国",
+                    status="pending",
+                    owner_id=owner_id,
+                    created_by=user.id,
+                )
+                session.add(lead)
+                await session.flush()
+                lead_id = lead.id
+            report.created_row(index, name, id=lead_id)
+        except RowSkipped as skipped:
+            report.skipped_row(index, name, str(skipped))
         except Exception as exc:  # 单行失败不影响其它行
-            failed.append({"row": index, "name": name, "reason": str(exc)[:120]})
+            report.failed_row(index, name, f"写入失败：{str(exc)[:160]}")
 
-    await write_audit(
+    return await finalize(
         session,
+        report,
+        module="lead",
         operator_id=user.id,
-        action="import",
-        business_type="lead",
-        after={"created": len(created), "skipped": len(skipped), "failed": len(failed)},
+        file_name=file.filename,
+        file_sha256=file_sha256,
         ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(
-        {
-            "total": len(rows),
-            "created_count": len(created),
-            "skipped_count": len(skipped),
-            "failed_count": len(failed),
-            "created": created[:50],
-            "skipped": skipped[:50],
-            "failed": failed[:50],
-        },
-        f"导入完成：成功 {len(created)} 条，跳过重复 {len(skipped)} 条，失败 {len(failed)} 条",
+        preview=preview,
+        preview_token=preview_token,
+        business_type="lead",
     )
 
 

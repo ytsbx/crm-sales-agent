@@ -1,0 +1,17 @@
+# 恢复演练定时器：每周日 03:30 跑一次隔离恢复演练。
+#
+# **默认不启用**。开发阶段可以推迟正式自动部署（8.16 原文允许），但对外试运行前
+# 至少手工完成一次演练：sudo systemctl start crm-drill
+#
+# Persistent=true：错过（关机/重启）的开机后补跑一次，避免"那周恰好没演练"。
+# 时点选在备份之后（02:30 备份、03:30 演练），保证演练用的总是当天那份。
+
+[Unit]
+Description=Run CRM isolated restore drill weekly (Sunday 03:30)
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

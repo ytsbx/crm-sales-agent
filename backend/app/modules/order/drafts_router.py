@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -13,6 +14,12 @@ from app.modules.sample.schema import SampleSource
 from app.modules.notification import service as notifications
 
 router = APIRouter(tags=['Order drafts'])
+
+
+class OrderDraftDocGenerate(BaseModel):
+    """订单草稿出单的请求体（§8.9）：目前只有一把可选的幂等键。"""
+
+    request_key: str | None = Field(default=None, max_length=128)
 
 
 @router.get('/order-drafts/source')
@@ -70,8 +77,25 @@ async def confirm(draft_id: int, payload: OrderDraftConfirm, user: CurrentUser =
 
 
 @router.post('/order-drafts/{draft_id}/documents')
-async def document(draft_id: int, user: CurrentUser = Depends(require_permission('order:manage')), session: AsyncSession = Depends(get_db)):
+async def document(draft_id: int, request: Request, payload: OrderDraftDocGenerate | None = None,
+                   user: CurrentUser = Depends(require_permission('order:manage')), session: AsyncSession = Depends(get_db)):
+    """给订单草稿出一份下单文件。
+
+    `request_key`（可选，§8.9）：双击 / 弱网重试带同一把键时只出一份，
+    重复提交返回**原来那一份**；要明确再出一版就换新键（内容一样也照出）。
+    body 不带就退化成原行为（每次请求一份），前端每次点"生成"都必须换新键。
+    """
+    from app.core.idempotency import request_key_from
+    from app.modules.bizdoc import service as docs
     from app.modules.bizdoc.service import serialize_doc
-    doc = await drafts.generate_document(session, user, draft_id)
-    await session.commit()
-    return ok(serialize_doc(doc))
+
+    key = request_key_from(request, payload.request_key if payload else None)
+    doc = await drafts.generate_document(session, user, draft_id, request_key=key)
+    # 出图/存档与业务行同生共死：提交失败要把这次落盘的原件删掉，
+    # 免得盘上留下一份没有记录指向的文件。
+    await docs.commit_doc_generation(session, doc)
+    body = serialize_doc(doc)
+    # 这一份到底受没受幂等保护，要作为**事实**告诉调用方：不写出来的话，
+    # 没带键的调用方会默认"重试安全"，而他每点一次就会多一份。
+    body["idempotency_key_used"] = bool(key)
+    return ok(body)

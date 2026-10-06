@@ -487,4 +487,14 @@ export function getOrderDraftSource(source: { quote_version_id?: number; inquiry
 export function createOrderDraft(payload: Record<string, unknown>) { return api.post<OrderDraft>('/order-drafts', payload) }
 export function updateOrderDraft(id: number, payload: Record<string, unknown>) { return api.patch<OrderDraft>(`/order-drafts/${id}`, payload) }
 export function confirmOrderDraft(id: number, revision: number, versionId: number) { return api.post<{ order_id: number; order_no: string }>(`/order-drafts/${id}/confirm`, { revision, quote_version_id: versionId }) }
-export function generateOrderDraftDocument(id: number) { return api.post<import('./bizdoc').BizDocRow>(`/order-drafts/${id}/documents`, {}) }
+/**
+ * 订单草稿出一份下单文件。
+ *
+ * `requestKey`（§8.9）：同一把键重试只出一份（返回原来那份），成功后换新键
+ * 才是"明确再出一版"——不能按内容去重，那会挡掉合法的新版。
+ */
+export function generateOrderDraftDocument(id: number, requestKey?: string) {
+  return api.post<import('./bizdoc').BizDocRow>(`/order-drafts/${id}/documents`, {
+    request_key: requestKey,
+  })
+}

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import { createCustomInquiry, listCustomInquiries, type CustomInquiryRow } from '../../shared/api/inquiry'
 import { createQuote, listQuotes, type Quote } from '../../shared/api/quote'
+import { newRequestKey } from '../../shared/api/requestKey'
 import { listSamples, type SampleRequestRow } from '../../shared/api/sample'
 import { listOrders, listOrderDrafts, type OrderDraft, type Order } from '../../shared/api/order'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -20,6 +21,9 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
   const [inquiryVisible, setInquiryVisible] = useState(false)
   const [inquiryForm, setInquiryForm] = useState({ title, description: '', quantity: '' })
   const [pages, setPages] = useState({ inquiries: 1, quotes: 1, samples: 1, orders: 1, drafts: 1 })
+  // 一次"生成报价"意图一把键（第八批 8.15）：在 mutationFn 里现生成的话，
+  // 弱网重试会换新键、服务端仍会建第二条报价。
+  const quoteRequestKeyRef = useRef('')
   const inquiries = useQuery({
     queryKey: ['custom-inquiries', { opportunityId, page: pages.inquiries }],
     queryFn: () => listCustomInquiries({ opportunity_id: opportunityId, page: pages.inquiries, page_size: 10 }),
@@ -60,11 +64,17 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
     onError: (error: Error) => Toast.error(error.message),
   })
   const quoteMutation = useMutation({
-    mutationFn: () => createQuote({ opportunity_id: opportunityId }),
+    mutationFn: () =>
+      createQuote({
+        opportunity_id: opportunityId,
+        request_key: quoteRequestKeyRef.current || undefined,
+      }),
     onSuccess: (data) => {
+      quoteRequestKeyRef.current = ''
       void queryClient.invalidateQueries({ queryKey: ['quotes'] })
       navigate(`/quotes/${data.quote_id}`)
     },
+    // 失败不换键：用户改完重试时服务端已释放占位，同一把键可以继续用
     onError: (error: Error) => Toast.error(error.message),
   })
   return <div style={{ display: 'grid', gap: 24 }}>
@@ -89,7 +99,11 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
       </div>
       <div>
         <div className="toolbar"><strong>报价</strong><div style={{ flex: 1 }} />
-          {can('quote:manage') && <Button loading={quoteMutation.isPending} onClick={() => quoteMutation.mutate()}>生成报价草稿</Button>}
+          {can('quote:manage') && <Button loading={quoteMutation.isPending} onClick={() => {
+            // 一次点击 = 一次意图；只有成功后才换新键（见 onSuccess）
+            quoteRequestKeyRef.current = quoteRequestKeyRef.current || newRequestKey()
+            quoteMutation.mutate()
+          }}>生成报价草稿</Button>}
         </div>
         <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 8 }}>
           草稿带入需求商品；无 SKU 的定制件请从上方定制询价转报价。正式发送后才自动推进到“已报价”。

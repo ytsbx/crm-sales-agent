@@ -1,15 +1,17 @@
 """客户导入导出接口。"""
 
-from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
+import hashlib
+
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.csvio import csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
-from app.core.response import ok
+from app.core.importing import ImportReport, RowErrors, finalize, row_savepoint
 from app.modules.contact_util import find_duplicate_customers
 from app.modules.customer import io as io_util
 from app.modules.customer import service as svc
@@ -24,9 +26,26 @@ router = APIRouter(tags=["Customer"])
 async def import_template(
     _: CurrentUser = Depends(require_permission("customer:create")),
 ):
-    """下载导入模板：表头 + 一行示例。"""
+    """下载导入模板：表头 + 一行示例。
+
+    示例行必须与表头**一一对齐**（第七批 7.5）：原来表头 9 列、示例只有 8 个值，
+    于是"备注"落进了"最后联系日期"列 —— 照模板填的人会把备注写在日期列上，
+    导入时又被当成非法日期丢掉，越看越像系统丢数据。
+    """
     content = csv_bytes(
-        [["示例：宁波宏远包装制品有限公司", "宏远包装", "A", "浙江", "浙江省宁波市…", "展会", "zhangsan", "备注"]],
+        [
+            [
+                "示例：宁波宏远包装制品有限公司",  # 客户名称
+                "宏远包装",                        # 客户简称
+                "A",                               # 客户等级
+                "浙江",                            # 省份
+                "浙江省宁波市…",                   # 详细地址
+                "展会",                            # 客户来源
+                "zhangsan",                        # 负责人登录名
+                "2025-03-18",                      # 最后联系日期
+                "历史名单导入，联系时间来自老系统",  # 备注
+            ]
+        ],
         io_util.TEMPLATE_HEADERS,
     )
     return Response(
@@ -242,126 +261,164 @@ async def export_customers_filtered(
 async def import_customers(
     request: Request,
     file: UploadFile = File(...),
+    preview: bool = Form(False),
+    preview_token: str | None = Form(None),
     user: CurrentUser = Depends(require_permission("customer:create")),
     session: AsyncSession = Depends(get_db),
 ):
-    """批量导入客户：逐行查重，疑似重复跳过并报告。"""
-    rows = await io_util.parse_upload(file)
-    created: list[dict] = []
-    skipped: list[dict] = []
-    #: 撞单：照样建档，但归属进争议冻结，等主管裁定（文档 §11.5 :279）
-    disputed: list[dict] = []
-    failed: list[dict] = []
+    """批量导入客户：逐行查重，疑似重复照样建档并开待裁定单。
+
+    第七批 7.1 / 7.5 的返修点：
+    - 每行一个 SAVEPOINT：坏行只回滚自己，不会让后续正常行一起失败；
+    - 非法/未来日期明确报错（不再静默丢成"没填"）；
+    - 负责人登录名写错、账号已停用 → 这一行失败，不静默归到导入人名下；
+    - 没有联系日期的客户标 `last_contact_unknown`，**不参与自动回收扫描**，
+      等补核（用户 2026-10-06 确认的口径）；
+    - 支持 `preview=1`，并在预览里回一份**负责人映射表**供人工核对。
+    """
+    from app.core.data_scope import scoped_owner_ids
+
+    raw = await file.read()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    rows = parse_csv_bytes(raw, required_headers=["客户名称"], label="文件")
+    report = ImportReport("customer", len(rows))
 
     # 撞单比对本身**仍然全量**：跨部门的重复不能静默放过，否则导入那一刻就按
     # "谁先建档"把归属定了。但要不要**回显候选客户的身份**取决于调用者的范围——
     # 否则这个接口就等于"用 Excel 批量试探全公司客户名"。明细在撞单裁定页，
     # 由有范围的主管看。
-    from app.core.data_scope import scoped_owner_ids
-
     scope = await scoped_owner_ids(session, user)
+    #: 负责人映射表：预览时人要看的就是它（哪个登录名落到了谁，谁没匹配上）
+    owner_mapping: dict[str, dict] = {}
+    unknown_contact_rows: list[dict] = []
 
     for index, row in enumerate(rows, start=2):  # 第 1 行是表头
         name = (row.get("客户名称") or "").strip()
-        try:
-            duplicates = await find_duplicate_customers(
-                session,
-                company_name=name,
-                mobile=None,
-                tax_no=None,
-                domain=None,
-                limit=1,
+        errs = RowErrors(index, name)
+        if not name:
+            errs.add("客户名称不能为空")
+        elif len(name) > 200:
+            errs.add(f"客户名称长度不能超过 200（当前 {len(name)}）")
+
+        last_contact, date_error = io_util.parse_date_checked(row.get("最后联系日期"))
+        if date_error:
+            errs.add(date_error)
+
+        owner_id, owner_error, owner_info = await io_util.resolve_owner_checked(
+            session, row.get("负责人登录名"), user.id
+        )
+        if owner_error:
+            errs.add(owner_error)
+        elif owner_info:
+            key = str(owner_info.get("login") or "(未填负责人)")
+            owner_mapping.setdefault(
+                key,
+                {
+                    "login": owner_info.get("login"),
+                    "owner_id": owner_info.get("owner_id"),
+                    "owner_name": owner_info.get("owner_name"),
+                    "resolved": owner_info.get("resolved"),
+                    "note": owner_info.get("note"),
+                },
             )
-            if duplicates:
-                top = duplicates[0]
+
+        if errs:
+            report.failed_row(index, name, errs.reasons)
+            continue
+
+        try:
+            async with row_savepoint(session):
+                duplicates = await find_duplicate_customers(
+                    session,
+                    company_name=name,
+                    mobile=None,
+                    tax_no=None,
+                    domain=None,
+                    limit=1,
+                )
                 # 撞单**不再丢行**（文档 §11.5 :269「历史导入客户不能一律被先建档者
                 # 占有」）：照样建档，同时开待裁定单、进争议冻结，归属等主管裁定。
                 # 以前这里直接 continue，等于导入那一刻就按"谁先建档"把归属定了，
                 # 正是文档点名要避免的。
-                disputed.append(
-                    {
-                        "row": index,
-                        "name": name,
+                if duplicates:
+                    top = duplicates[0]
+                    report.disputed_row(
+                        index,
+                        name,
                         # 范围不足的调用者只得到"这是重复"，拿不到对方是谁
-                        "candidate": None if scope is not None else top.get("name"),
-                        "score": None if scope is not None else top.get("score"),
-                        "reasons": None if scope is not None else top.get("reasons"),
-                        "note": (
+                        candidate=None if scope is not None else top.get("name"),
+                        score=None if scope is not None else top.get("score"),
+                        reasons=None if scope is not None else top.get("reasons"),
+                        note=(
                             "疑似与库内已有客户重复，已开待裁定单，由主管裁定"
                             if scope is not None
                             else None
                         ),
-                    }
-                )
+                    )
 
-            owner_id = await io_util.resolve_owner(
-                session, row.get("负责人登录名"), user.id
-            )
-            # 老数据迁移（§六 :167）：文件里给了历史联系时间就按真实的写，
-            # 不覆盖成"今天"——否则这批客户进系统当天全算活跃，冷落预警
-            # 要等一整个周期才生效。没给或填错则留空，落回"刚建档"。
-            last_contact = io_util.parse_date(row.get("最后联系日期"))
-            customer = Customer(
-                name=name,
-                short_name=(row.get("客户简称") or "").strip() or None,
-                level=(row.get("客户等级") or "").strip() or None,
-                region=(row.get("省份") or "").strip() or None,
-                address=(row.get("详细地址") or "").strip() or None,
-                source=(row.get("客户来源") or "").strip() or "Excel 导入",
-                remark=(row.get("备注") or "").strip() or None,
-                customer_type="企业",
-                country="中国",
-                status="active",
-                pool_status="private",
+                # 老数据迁移（§六 :167）：文件里给了历史联系时间就按真实的写，
+                # 不覆盖成"今天"。没给则标成"联系时间未知"（不参与自动回收），
+                # 等业务补核 —— 不能拿导入时间冒充真实联系时间。
+                customer = Customer(
+                    name=name,
+                    short_name=(row.get("客户简称") or "").strip() or None,
+                    level=(row.get("客户等级") or "").strip() or None,
+                    region=(row.get("省份") or "").strip() or None,
+                    address=(row.get("详细地址") or "").strip() or None,
+                    source=(row.get("客户来源") or "").strip() or "Excel 导入",
+                    remark=(row.get("备注") or "").strip() or None,
+                    customer_type="企业",
+                    country="中国",
+                    status="active",
+                    pool_status="private",
+                    owner_id=owner_id,
+                    created_by=user.id,
+                    last_followup_at=last_contact,
+                    last_contact_unknown=last_contact is None,
+                )
+                session.add(customer)
+                await session.flush()
+                if report.disputed and report.disputed[-1].get("row") == index:
+                    from app.modules.customer import duplicates as dup_service
+
+                    await dup_service.open_cases_for_customer(
+                        session, customer=customer, source="import", actor_id=user.id
+                    )
+                customer_id = customer.id
+                customer_name = customer.name
+            report.created_row(
+                index,
+                name,
+                id=customer_id,
+                # 带没带上历史联系时间要能核对——迁移验收就看这个数
+                last_followup_at=(
+                    last_contact.date().isoformat() if last_contact else None
+                ),
+                last_contact_unknown=last_contact is None,
                 owner_id=owner_id,
-                created_by=user.id,
-                last_followup_at=last_contact,
             )
-            session.add(customer)
-            await session.flush()
-            if disputed and disputed[-1].get("row") == index:
-                from app.modules.customer import duplicates as dup_service
-
-                await dup_service.open_cases_for_customer(
-                    session, customer=customer, source="import", actor_id=user.id
+            if last_contact is None:
+                unknown_contact_rows.append(
+                    {"row": index, "id": customer_id, "name": customer_name}
                 )
-            created.append(
-                {
-                    "row": index,
-                    "id": customer.id,
-                    "name": customer.name,
-                    # 带没带上历史联系时间要能核对——迁移验收就看这个数
-                    "last_followup_at": (
-                        customer.last_followup_at.date().isoformat()
-                        if customer.last_followup_at
-                        else None
-                    ),
-                }
-            )
         except Exception as exc:  # 单行失败不影响其它行
-            failed.append({"row": index, "name": name, "reason": str(exc)[:120]})
+            report.failed_row(index, name, f"写入失败：{str(exc)[:160]}")
 
-    await write_audit(
+    return await finalize(
         session,
+        report,
+        module="customer",
         operator_id=user.id,
-        action="import",
-        business_type="customer",
-        after={"created": len(created), "skipped": len(skipped), "failed": len(failed)},
+        file_name=file.filename,
+        file_sha256=file_sha256,
         ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(
-        {
-            "total": len(rows),
-            "created_count": len(created),
-            "skipped_count": len(skipped),
-            "failed_count": len(failed),
-            "created": created[:50],
-            "skipped": skipped[:50],
-            "disputed_count": len(disputed),
-            "disputed": disputed[:50],
-            "failed": failed[:50],
+        preview=preview,
+        preview_token=preview_token,
+        business_type="customer",
+        extra={
+            # 负责人映射表：预览时先看这里，别等导完才发现登录名写错
+            "owner_mapping": list(owner_mapping.values()),
+            "unknown_contact_count": len(unknown_contact_rows),
+            "unknown_contact": unknown_contact_rows[:200],
         },
-        f"导入完成：成功 {len(created)} 条，其中 {len(disputed)} 条疑似撞单已进待裁定，"
-        f"跳过 {len(skipped)} 条，失败 {len(failed)} 条",
     )

@@ -20,6 +20,8 @@ export interface CustomerPayload {
   source?: string | null
   level?: string | null
   remark?: string | null
+  /** 请求幂等键（第八批 8.15）：同一份表单的多次提交必须用同一把键 */
+  request_key?: string
 }
 
 // ---------------------------------------------------------------- 子资源响应

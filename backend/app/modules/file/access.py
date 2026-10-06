@@ -7,6 +7,11 @@
 
 规则：**只要文件挂在任意一个"当前用户看得到"的业务对象上，就允许访问。**
 一个文件可以同时挂在多个对象上，所以这里是"任一可见即可"，不是"全部可见"。
+
+2026-10-06 补（§8.5）：这里的"看得到"包含**来源模块的查看权限**。
+只守 `file:view` 时，有文件权限、没有 `quote:view` 的人也能从通用入口
+（`GET /files/{id}`、`/business/quote/{id}/files`）把报价附件拿走；
+挂载/解绑同理，要目标模块的**写入权**。判据集中在下面的 `BUSINESS_PERMISSIONS`。
 """
 
 from sqlalchemy import select
@@ -20,6 +25,7 @@ from app.modules.file.model import BusinessFile
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
 from app.modules.order.model import SalesOrder
+from app.modules.product.model import Product
 from app.modules.quote.model import Quote
 
 # business_type -> (模型, 用于数据范围过滤的负责人字段名)
@@ -31,11 +37,45 @@ BUSINESS_MODELS: dict[str, tuple[type, str]] = {
     "order": (SalesOrder, "owner_id"),
 }
 
-# 没有负责人概念（或按其它维度管控）的对象类型：
-# 产品资料全公司可见（product:view 已经在路由层把守），附件跟随资料本身。
-# 附件目前挂在上面 5 类 + product 上；出现未知类型时**默认拒绝**，
-# 而不是默认放行——宁可让人来登记新类型，也不要默默漏数据。
-NO_OWNER_TYPES: set[str] = {"product"}
+#: business_type -> (查看权限, 写入权限)。
+#:
+#: 为什么需要这张表（2026-10-06 修，§8.5）：附件挂载点是**通用**的
+#: （`/business/{type}/{id}/files`）。只守 `file:view` / `file:manage` 的话，
+#: 一个有 `file:view` 而**没有** `quote:view` 的人猜一个 file_id 就能从通用入口
+#: 拿走报价附件；反过来只有订单权限的人也能拿到报价/打样文件——每个模块都被
+#: 开了一个"只认文件权限"的后门。
+#:
+#: 口径：**附件跟随它挂着的那个业务对象**。看要该对象的查看权，挂/解绑要写入权。
+#: 权限码取自各模块自己的路由（不在这里另造）：写入用它们各自的写接口用的那个码，
+#: 比如线索的 PATCH 走 `lead:create`、询价的写接口走 `quote:manage`。
+#: 写入权限写 `None` 表示"本模块的写入授权由文件中心的 `file:manage` 承担"
+#: （目前只有 product，理由见 `NO_OWNER_MODELS` 的注释）。
+BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
+    "customer": ("customer:view", "customer:update"),
+    "lead": ("lead:view", "lead:create"),
+    "opportunity": ("opportunity:view", "opportunity:manage"),
+    "quote": ("quote:view", "quote:manage"),
+    "order": ("order:view", "order:manage"),
+    "product": ("product:view", None),
+    "sample": ("sample:view", "sample:manage"),
+    "inquiry": ("quote:view", "quote:manage"),
+    "order_draft": ("order:view", "order:manage"),
+    "contract": ("order:view", "order:manage"),
+    "followup": ("followup:view", "followup:create"),
+}
+
+#: 没有负责人概念（或按其它维度管控）的对象类型 -> 模型。
+#:
+#: 产品资料全公司可见，附件跟随资料本身，但**必须真查一次存在性**：
+#: 此前这里直接 `return True`，于是给一个**不存在**或**已删除**的产品编号挂附件
+#: 也会被放行（脏关联落库后，谁也说不清它挂在哪、也永远列不出来）。
+#:
+#: 产品附件的**写入**授权为什么仍是 `file:manage`：产品字段维护是 `product:manage`，
+#: 但产品附件的两个入口（通用入口、`POST /products/{id}/files`）一直只要求
+#: `file:manage`，产品详情页的附件面板也对 `product:view` 的人开放；收紧到
+#: `product:manage` 是**改口径**，得连守门套件 `check_data_scope` 的对照用例
+#: （"上传者能给自己的产品挂附件"）一起改，本轮先不动，已在回报里列为待确认项。
+NO_OWNER_MODELS: dict[str, type] = {"product": Product}
 
 #: 不可破坏的原件类别 → 人话标签（第一批返修 §3.1 要求"三条路径统一判断"）。
 #: - `signed`：已签合同的签署扫描件，是"签的是哪一版"的唯一证据；
@@ -134,10 +174,41 @@ async def file_protection_label(session: AsyncSession, file_id: int) -> str | No
 DELEGATED_TYPES: set[str] = {"inquiry", "sample", "order_draft"}
 
 
+def _permitted(user: CurrentUser, code: str | None) -> bool:
+    """当前用户是否具备该权限码。
+
+    管理员角色默认放行：与 `core.deps.require_permission` **同一口径**。
+    两处不一致会造出"路由放行、附件判定拒绝"这种自相矛盾的 403
+    （管理员反而看不到自己刚挂上的附件），而这种错最难排查。
+    权限码为 None 表示本模块的写入授权不在这里判（见 BUSINESS_PERMISSIONS）。
+    """
+    if code is None:
+        return True
+    return "admin" in user.roles or user.has(code)
+
+
 async def visible_object(
-    session: AsyncSession, user: CurrentUser, *, business_type: str, business_id: int
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    business_type: str,
+    business_id: int,
+    write: bool = False,
 ) -> bool:
-    """当前用户能否看到这个业务对象。"""
+    """当前用户能否看到（`write=True` 时：能否改动）这个业务对象上的附件。
+
+    `write=True` 用于挂载/解绑/上传这类**写入**入口：要目标业务对象的写入权，
+    不是"能看见就能改"。读取（列表/详情/下载）用默认的 False。
+    """
+    perms = BUSINESS_PERMISSIONS.get(business_type)
+    if perms is None:
+        # 没登记的类型默认拒绝，而不是默认放行——宁可让人来登记新类型，
+        # 也不要默默漏数据（这条此前由 `NO_OWNER_TYPES` 兜着，语义不变）。
+        return False
+    view_code, write_code = perms
+    if not _permitted(user, write_code if write else view_code):
+        # 权限不够时**提前返回**：不查库，越权的人就无法靠响应差异探测对象是否存在
+        return False
     if business_type == "followup":
         from app.modules.followup.visibility import get_visible_followup
 
@@ -179,12 +250,23 @@ async def visible_object(
         except AppError:
             return False
         return True
+    model = NO_OWNER_MODELS.get(business_type)
+    if model is not None:
+        row = await session.get(model, business_id)
+        # 不存在 / 已软删：与"看不到"同等待遇（都不能再挂新的，也不能读旧的）
+        return row is not None and getattr(row, "deleted_at", None) is None
     entry = BUSINESS_MODELS.get(business_type)
     if entry is None:
-        return business_type in NO_OWNER_TYPES
+        return False
     model, owner_field = entry
     owner_ids = await scoped_owner_ids(session, user)
     stmt = select(model.id).where(model.id == business_id)
+    deleted_at = getattr(model, "deleted_at", None)
+    if deleted_at is not None:
+        # 已软删的对象与"不存在"同等待遇：删掉的客户/报价上的附件不再可见，
+        # 也不能再往上挂新的。此前这里不过滤，软删对象上的附件照样能下载。
+        # （销售订单没有 deleted_at，所以要用 getattr 取，别写死。）
+        stmt = stmt.where(deleted_at.is_(None))
     if owner_ids is not None:
         stmt = stmt.where(getattr(model, owner_field).in_(owner_ids))
     return (await session.execute(stmt)).first() is not None

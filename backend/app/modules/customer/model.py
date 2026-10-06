@@ -56,6 +56,21 @@ class Customer(Base, IdMixin, TimestampMixin):
     last_followup_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: 最近有效联系时间**未知**（历史导入没给、且没有其它可信来源）。
+    #:
+    #: 为什么不能只靠"两个时间都是空"来判断（第七批 7.5，用户 2026-10-06 确认口径）：
+    #: 历史名单导进来的老客户，`created_at` 是**导入当天**，而真实联系时间可能是
+    #: 三年前甚至压根没有。原来 `_last_active_at` 在两者都空时回退建档时间，
+    #: 于是这批客户进系统后一律"今天刚联系过"，冷落预警与公海回收都要等一整个
+    #: 周期才可能触发 —— 上线第一个月等于没有预警。
+    #: 现在的口径是「先标记未知，补核后才进自动回收候选」：
+    #:   · 导入未提供联系日期 → 置 True，**不参与自动回收扫描**；
+    #:   · 之后记录一次真实跟进、或在回收预告页补核联系时间 → 置 False，恢复参与。
+    #: 与 `last_followup_at IS NULL` 的区别正在这里：那是"从没跟进过"，
+    #: 这是"我们不知道他上次联系是什么时候"，后者不能当成刚刚联系过。
+    last_contact_unknown: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
     # 最近业务进展时间（文档 §2.3/§11.2）：报价/打样/下单/回款等真实业务动作刷新，
     # 与"最近有效联系时间"（手工跟进写 last_followup_at）分开记。
     # 冷落扫描与公海回收看两者取新——避免在履约客户只因没点"记录跟进"被判冷落/回收

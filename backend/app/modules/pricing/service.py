@@ -45,6 +45,10 @@ def serialize_cost(cost: ProductCost, sku_code: str | None = None) -> dict:
         "package_cost": _f(cost.package_cost),
         "processing_cost": _f(cost.processing_cost),
         "total_cost": _f(cost.total_cost),
+        # 「未提供」（NULL）与「明确为 0」是两件事：前端据此显示"未填"而不是 0，
+        # 核价据此提示成本不完整。第七批 7.4。
+        "is_complete": cost.is_complete,
+        "missing_components": cost.missing_components,
         "currency": cost.currency,
         "effective_from": cost.effective_from,
         "effective_to": cost.effective_to,
@@ -539,11 +543,19 @@ async def calculate_price(
             "该 SKU 无生效成本：利润不可计算，利润类审批判定停用；"
             "按已维护售价报价不受影响"
         )
-    purchase = cost.purchase_cost if cost else ZERO
-    production = cost.production_cost if cost else ZERO
-    package = cost.package_cost if cost else ZERO
-    processing = cost.processing_cost if cost else ZERO
+    purchase = (cost.purchase_cost if cost else None) or ZERO
+    production = (cost.production_cost if cost else None) or ZERO
+    package = (cost.package_cost if cost else None) or ZERO
+    processing = (cost.processing_cost if cost else None) or ZERO
     goods_cost = purchase + production + package + processing
+    # 成本不完整（部分列未提供，NULL 而不是 0）时必须说出来：合计把 NULL 当 0，
+    # 算出来的毛利率看起来正常，实际是"少算了成本"的高估。第七批 7.4。
+    missing_cost_items = cost.missing_components if cost else []
+    if missing_cost_items:
+        warnings.append(
+            "该 SKU 的生效成本不完整（缺：" + "、".join(missing_cost_items)
+            + "），合计按 0 计入，毛利率会偏高，请补齐成本后再据此定价"
+        )
 
     if package_type and package_type != (sku.package_type or None):
         # 指定了与 SKU 默认不同的包装：目前没有分包装的成本表，

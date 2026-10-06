@@ -1,4 +1,12 @@
-"""产品中心接口（对齐 03-API §14 / §15）。"""
+"""产品中心接口（对齐 03-API §14 / §15）。
+
+文件末尾另有一组第八批 §8.14 的接口（前缀 `/sku-master`）：
+在产 SKU 的字段来源、待核实状态、差异队列与人工确认。
+
+为什么另起一个前缀而不是挂在 `/skus/{sku_id}` 下面：路由是**按注册顺序**匹配的，
+`/skus/master/...` 这样的路径会被先注册的 `/skus/{sku_id}` 吃掉（sku_id="master"
+直接 422）。换个前缀比调整注册顺序更不容易被后来的人改坏。
+"""
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
@@ -9,13 +17,20 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.integration.model import IntegrationDiff
+from app.modules.product import master as master_svc
 from app.modules.product import service as svc
 from app.modules.product.model import Product, Sku
 from app.modules.product.schema import (
     ProductCreate,
     ProductUpdate,
     SkuCreate,
+    SkuAuthorityRequest,
+    SkuIngestRequest,
+    SkuMasterDiffConfirmRequest,
+    SkuRenameRequest,
     SkuStandaloneCreate,
+    SkuStopRequest,
     SkuUpdate,
 )
 
@@ -415,6 +430,8 @@ async def attach_product_file(
 
     product = await session.get(Product, product_id)
     if product is None or product.deleted_at is not None:
+        # 存在性单独一条 404：前端要能区分"这个产品没了"和"你没权限"。
+        # 已软删的产品与不存在同等待遇——不能再往上挂附件。
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     record = await session.get(FileRecord, file_id)
     if record is None:
@@ -422,12 +439,21 @@ async def attach_product_file(
 
     # 与 `POST /business/{business_type}/{business_id}/files` 同一纪律：**两个方向都要校验**。
     # 这里曾经只校验目标产品存在、不校验源文件可见性，于是成了越权下载通道——
-    # `product` 属 NO_OWNER_TYPES（全员可见），而 `can_access_file` 只要有一条可见关联就放行，
+    # `product` 属 NO_OWNER_MODELS（对全体可见），而 `can_access_file` 只要有一条可见关联就放行，
     # 所以"挂一条关联"本身就等于授权：把别人的 file_id 挂到任意产品上即可下载别人的原件。
-    from app.modules.file.access import can_access_file
+    from app.modules.file.access import can_access_file, visible_object
 
     if not await can_access_file(session, user, file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
+    # 目标侧也走**同一份判据**（不再在这里手写"产品在不在"）：产品附件的查看权是
+    # `product:view`；写入权这一档由本接口的 `file:manage` 承担（收紧到 product:manage
+    # 是改口径，见 access.NO_OWNER_MODELS 的说明）。
+    if not await visible_object(
+        session, user, business_type="product", business_id=product_id, write=True
+    ):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED, "不能给该产品挂附件：你没有产品资料的查看权限", 403
+        )
 
     link = BusinessFile(
         business_type="product",
@@ -479,3 +505,282 @@ async def product_knowledge(
             "has_content": bool((product.knowledge or "").strip()),
         }
     )
+
+
+# ================================================================ §8.14
+# 在产 SKU 的权威字段、来源时间与差异确认。
+#
+# 权限口径：读要 `product:view`；凡是**改主数据或定口径**的动作（接收来源、改码、
+# 停用、登记字段权威、核定差异）一律要 `product:manage`，并且每个动作都写审计 ——
+# 这些动作会改掉正在报价用的口径，必须能回答"谁在什么时候改的、依据什么"。
+
+
+@router.get("/sku-master/skus/{sku_id}")
+async def sku_master_overview(
+    sku_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """每个关键字段的**来源 / 更新时间 / 外部身份 / 人工确认版本** + 待确认差异。
+
+    未核实的来源在这里显示"待核实"，未拍板的字段权威显示"未拍板"——
+    这两句话是数据支撑的结论，不是页面上的静态提示。
+    """
+    return ok(await master_svc.sku_master_overview(session, sku_id))
+
+
+@router.get("/sku-master/skus/{sku_id}/confirmed")
+async def sku_confirmed_master(
+    sku_id: int,
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """这个 SKU 最近一版**已确认**的主数据（正式报价应当引用它）。
+
+    没有确认版本时返回 `version=None` 与说明，而不是拿当前值冒充已确认值。
+    """
+    version = await master_svc.confirmed_master_version(session, sku_id)
+    if version is None:
+        return ok(
+            {
+                "sku_id": sku_id,
+                "version": None,
+                "message": "这个 SKU 还没有人工确认过的主数据版本，正式报价不可引用",
+            }
+        )
+    return ok({"sku_id": sku_id, "version": version, "message": "已确认版本"})
+
+
+@router.get("/sku-master/diffs")
+async def list_sku_master_diffs(
+    sku_id: int | None = None,
+    status: str | None = None,
+    diff_type: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """SKU 主数据差异清单（待确认队列）。"""
+    items, total = await master_svc.list_sku_diffs(
+        session,
+        sku_id=sku_id,
+        status=status,
+        diff_type=diff_type,
+        page=page,
+        page_size=page_size,
+    )
+    return ok(page_data(items, total, page, page_size))
+
+
+@router.get("/sku-master/identities")
+async def list_sku_identities(
+    sku_id: int | None = None,
+    system_type: str | None = None,
+    match_status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    _: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """SKU 的外部身份台账；`match_status=pending` 就是**待匹配**（本地还没这条 SKU）。"""
+    items, total = await master_svc.list_identity_sources(
+        session,
+        sku_id=sku_id,
+        system_type=system_type,
+        match_status=match_status,
+        page=page,
+        page_size=page_size,
+    )
+    return ok(page_data(items, total, page, page_size))
+
+
+@router.post("/sku-master/sources/ingest")
+async def ingest_sku_source(
+    payload: SkuIngestRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """接收一条外部来源的 SKU 数据（真实取数列为待外部验收，这里由桥接方喂）。
+
+    只登记"来源值 + 差异"：**不会**改本地 SKU。空值不覆盖，同名不同码不合并。
+    """
+    result = await master_svc.ingest_external_sku(
+        session,
+        system_type=payload.system_type,
+        external_code=payload.external_code,
+        external_name=payload.external_name,
+        shop_id=payload.shop_id,
+        source_updated_at=payload.source_updated_at,
+        fields=payload.fields,
+        operator_id=user.id,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sku_master_ingest",
+        business_type="sku_identity_source",
+        business_id=result["identity"]["id"],
+        after={
+            "system_type": payload.system_type,
+            "external_code": payload.external_code,
+            "matched_sku_id": result.get("matched_sku_id"),
+            "fields": sorted(payload.fields),
+        },
+        source="INTEGRATION",
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result.get("message") or "已登记来源数据")
+
+
+@router.post("/sku-master/identities/{source_id}/replay")
+async def replay_sku_identity(
+    source_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """待匹配的外部身份重放：本地补建 SKU 之后落成字段权威（不必重新取数）。"""
+    source = await master_svc.get_identity_source(session, source_id)
+    result = await master_svc.replay_identity_source(session, source, operator_id=user.id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sku_master_replay",
+        business_type="sku_identity_source",
+        business_id=source.id,
+        after={"replayed": result.get("replayed"), "sku_id": result["identity"]["sku_id"]},
+        source="INTEGRATION",
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
+@router.post("/sku-master/identities/{source_id}/rename")
+async def rename_sku_identity(
+    source_id: int,
+    payload: SkuRenameRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """来源改码：老身份行保留成历史，本地编码不被自动修改。"""
+    source = await master_svc.get_identity_source(session, source_id)
+    result = await master_svc.rename_identity_source(
+        session, source, new_external_code=payload.new_external_code, operator_id=user.id
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sku_master_rename_source",
+        business_type="sku_identity_source",
+        business_id=source.id,
+        after={
+            "old_code": result["old_identity"]["external_code"],
+            "new_code": result["new_identity"]["external_code"],
+        },
+        source="INTEGRATION",
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
+@router.post("/sku-master/identities/{source_id}/stop")
+async def stop_sku_identity(
+    source_id: int,
+    payload: SkuStopRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """来源标记停用：只挂差异，本地 SKU 状态不动（停用要人工确认）。"""
+    source = await master_svc.get_identity_source(session, source_id)
+    result = await master_svc.mark_identity_stopped(
+        session, source, note=payload.note, operator_id=user.id
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sku_master_source_stopped",
+        business_type="sku_identity_source",
+        business_id=source.id,
+        after={"external_code": source.external_code, "note": payload.note},
+        source="INTEGRATION",
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
+@router.post("/sku-master/authority")
+async def set_sku_field_authority(
+    payload: SkuAuthorityRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """登记字段权威归属（留空 = 撤回归属/未拍板）。
+
+    默认是空的：§8.14 要求"不默认任一系统为主"，所以归属必须有人显式说清楚。
+    """
+    result = await master_svc.set_field_authority(
+        session,
+        sku_id=payload.sku_id,
+        field_name=payload.field_name,
+        authority=payload.authority,
+        operator_id=user.id,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sku_master_set_authority",
+        business_type="sku",
+        business_id=payload.sku_id,
+        after={"field_name": payload.field_name, "authority": payload.authority},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
+@router.post("/sku-master/diffs/{diff_id}/confirm")
+async def confirm_sku_master_diff(
+    diff_id: int,
+    payload: SkuMasterDiffConfirmRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """核定一条 SKU 主数据差异：**唯一**能改 SKU 关键字段的入口，改动留版本快照。"""
+    diff = await session.get(IntegrationDiff, diff_id)
+    if diff is None or diff.domain != "sku_master":
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 主数据差异 #{diff_id} 不存在", 404)
+    result = await master_svc.confirm_sku_diff(
+        session,
+        diff,
+        resolution=payload.resolution,
+        note=payload.note,
+        operator_id=user.id,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sku_master_diff_confirm",
+        business_type="integration_diff",
+        business_id=diff.id,
+        before={"status": "open", "diff_type": diff.diff_type},
+        after={
+            "status": result["diff"]["status"],
+            "resolution": payload.resolution,
+            "applied_to_local": result["applied_to_local"],
+            "detail": result["detail"],
+            "version_no": (result.get("version") or {}).get("version_no"),
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])

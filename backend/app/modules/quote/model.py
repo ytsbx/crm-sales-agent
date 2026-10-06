@@ -100,6 +100,11 @@ class QuoteItem(Base, IdMixin):
     sku_code_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sku_name_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
     spec_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: 计价单位快照（第八批 §8.7）：报价那一刻 SKU 的单位（件/套/箱…）。
+    #: 必须存快照，不能等出对客 Excel 时回查 `skus.unit`——单位改了以后，
+    #: 旧版本再生成出来的表就会拿今天的单位冒充当时报的价，客户一比对就是口径不一致。
+    #: 可空：历史版本行没有这个值，出图时明确写"待核实"，不静默补当前单位。
+    unit_snapshot: Mapped[str | None] = mapped_column(String(16), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=1)
     cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     package_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)

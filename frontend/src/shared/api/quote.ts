@@ -200,7 +200,17 @@ export function listQuotes(query: {
   return api.get<PageResult<Quote>>('/quotes', query)
 }
 
-export function createQuote(payload: { opportunity_id?: number; customer_id?: number; valid_until?: string }) {
+export function createQuote(payload: {
+  opportunity_id?: number
+  customer_id?: number
+  valid_until?: string
+  /**
+   * 请求幂等键（第八批 8.15）：同一份表单的多次提交必须带**同一把**键，
+   * 弱网重试才不会建出两条报价。键由调用方在"打开表单时"生成并持有，
+   * 成功后清空；不要在这里现生成 —— 那样每次重试都是新键，等于没有幂等。
+   */
+  request_key?: string
+}) {
   return api.post<{ quote_id: number; version_id: number; warnings?: string[] }>('/quotes', payload)
 }
 

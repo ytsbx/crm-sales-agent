@@ -84,7 +84,32 @@ async def create_cost(
     sku = await session.get(Sku, sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
-    cost = ProductCost(**payload.model_dump(), sku_id=sku_id, created_by=user.id)
+    # 与导入同一套校验（第七批 7.2/7.4：导入、预览、页面维护不能各校验一套，
+    # 否则"页面拦得住、导入绕得过"永远修不干净）
+    values = payload.model_dump()
+    filled = [
+        key
+        for key in ("purchase_cost", "production_cost", "package_cost", "processing_cost")
+        if values.get(key) is not None
+    ]
+    if not filled:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "四项成本都为空，不能保存：这会造出一条全零成本，核价会据此算出假毛利。"
+            "请至少填一项；确实为零请显式填 0",
+            422,
+        )
+    if (
+        payload.effective_to is not None
+        and payload.effective_to < payload.effective_from
+    ):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"生效截止日（{payload.effective_to.isoformat()}）不能早于"
+            f"生效起始日（{payload.effective_from.isoformat()}）",
+            422,
+        )
+    cost = ProductCost(**values, sku_id=sku_id, created_by=user.id)
     session.add(cost)
     await session.flush()
     await write_audit(
@@ -112,7 +137,32 @@ async def update_cost(
     if cost is None:
         raise AppError(ErrorCode.NOT_FOUND, "成本记录不存在", 404)
     before = svc.serialize_cost(cost)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    # 允许把某一项改成"未提供"（NULL），但不允许把四项一起清空 ——
+    # 那等于把一条有内容的成本改成"什么都不知道"，核价却仍当它成本已知
+    cost_columns = ("purchase_cost", "production_cost", "package_cost", "processing_cost")
+    if any(key in changes for key in cost_columns):
+        merged = {
+            key: (changes[key] if key in changes else getattr(cost, key))
+            for key in cost_columns
+        }
+        if all(value is None for value in merged.values()):
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "四项成本不能全部清空：核价会把这条成本当成已知的零成本。"
+                "如该成本不再适用，请改用「失效」而不是清空数值",
+                422,
+            )
+    effective_from = changes.get("effective_from", cost.effective_from)
+    effective_to = changes.get("effective_to", cost.effective_to)
+    if effective_from is not None and effective_to is not None and effective_to < effective_from:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"生效截止日（{effective_to.isoformat()}）不能早于"
+            f"生效起始日（{effective_from.isoformat()}）",
+            422,
+        )
+    for field, value in changes.items():
         setattr(cost, field, value)
     await session.flush()
     await write_audit(
@@ -733,12 +783,19 @@ async def lookup_price(
             result["cost"] = None
             result["cost_note"] = "该 SKU 无生效成本，利润不可计算"
         else:
-            # 货成本口径与核价一致：采购+生产+包装+加工
-            goods_cost = (
-                cost.purchase_cost + cost.production_cost + cost.package_cost + cost.processing_cost
+            # 货成本口径与核价一致：采购+生产+包装+加工。用模型上的 total_cost，
+            # 不要在这里手写四项相加 —— 第七批 7.4 之后这四列可空，
+            # 手写相加遇到 NULL 会直接 TypeError。
+            result["cost"] = float(cost.total_cost)
+            # 未提供的成本项按 0 计入合计，必须一并说出"缺哪几项"，
+            # 否则查价页会把它当成完整成本，毛利率看着偏高却没人知道原因
+            missing = cost.missing_components
+            result["cost_note"] = (
+                None
+                if not missing
+                else "成本不完整（缺：" + "、".join(missing) + "），合计按 0 计入，毛利率会偏高"
             )
-            result["cost"] = float(goods_cost)
-            result["cost_note"] = None
+            result["cost_missing_components"] = missing
     else:
         result["cost"] = None
         result["cost_note"] = None

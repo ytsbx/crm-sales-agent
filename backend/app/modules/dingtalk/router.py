@@ -16,7 +16,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.dingtalk import service as svc
-from app.modules.dingtalk.model import OaInstance
+from app.modules.dingtalk.model import OaInstance, allowed_actions
 
 router = APIRouter(tags=["DingTalk"])
 
@@ -172,11 +172,62 @@ async def start_inquiry_approval(
 
 
 class ResolveOa(BaseModel):
-    """人工处理"结果不明"的发起：认领 / 重发 / 作废。"""
+    """人工处理"结果不明"的发起：认领 / 重发 / 作废。
+
+    `request_key` 是**同一次核定的请求键**（前端每次打开对话框生成一个 uuid）。
+    带上它就能保证"同一次核定重发只生效一次并回放同一份结果"；
+    不带则由服务端按（记录 + 动作）派生一个稳定键——仍然幂等，
+    只是"同一个动作再来一次"也会命中回放。键不能跨记录复用（数据库唯一索引会挡）。
+    """
 
     action: str
     instance_id: str | None = None
     note: str | None = None
+    request_key: str | None = None
+
+
+#: 人工核定在幂等表里的动作名（`request_keys` 按 (用户, 动作, 请求键) 分区）
+RESOLVE_ACTION = "oa:resolve"
+
+#: 允许人工核定的状态：结果未知、明确失败、确定没发出。
+#: 共同点是"外部**没有**一张正在正常走的单"，所以人都可以介入；
+#: pending / approved 不在其中——那两种状态下钉钉有一张活单，人工只该去查询。
+RESOLVABLE_STATUSES = ("needs_review", "failed", "not_sent")
+
+
+async def _drop_stale_reservation(
+    session: AsyncSession, *, user_id: int, key: str, row: OaInstance
+) -> bool:
+    """清掉"同一个请求键留下的死占位"，让**中途重启可恢复**（第七批 7.8）。
+
+    为什么需要它：`request_keys` 的 `in_flight` 占位没有超时机制。进程如果在
+    "占请求键"和"写完结果"之间被杀，这条占位会永久挡住同一把键——
+    而 7.8 要求中途重启后还能恢复，否则用户只能换个键，等于把幂等当摆设。
+
+    判据用 `oa_instances` 上的占用：真正在处理的请求一定同时持有
+    `resolve_state='processing'` 且未僵死。只要这一行**没有**在被有效占用，
+    同键的 `in_flight` 就一定是死占位。清掉它不会让两个请求同时调外部——
+    真正的互斥在行级 CAS 上，清完之后仍要抢占用，抢不到照样 409。
+    """
+    from app.core.idempotency import RequestKey
+
+    if row.resolve_state == "processing" and not svc.is_claim_stale(row):
+        return False
+    stale = (
+        await session.execute(
+            select(RequestKey).where(
+                RequestKey.user_id == user_id,
+                RequestKey.action == RESOLVE_ACTION,
+                RequestKey.request_key == key,
+                RequestKey.status == "in_flight",
+            )
+        )
+    ).scalars().first()
+    if stale is None:
+        return False
+    await session.delete(stale)
+    await session.commit()
+    return True
 
 
 @router.post("/oa-instances/{oa_id}/resolve")
@@ -191,11 +242,15 @@ async def resolve_oa_instance(
 
     发起过程中断时钉钉那边可能已经建单，而接口没有幂等键——所以不自动重发，
     由人先去钉钉核对，再选择：
-      - `adopt`：钉钉已建单 → 填实例号接过来（状态回"审批中"）；
+      - `adopt`：钉钉已建单 → 填实例号接过来（**先核实模板/发起人/来源需求**）；
       - `resend`：确认没建 → 复用同一轮重新发起；
       - `abandon`：确认不发了 → 作废本轮。
+
+    7.8：整段由"请求键 + 行级原子占用"保护。两个并发核定只有一个能碰外部，
+    另一个拿到明确的 409；同一个请求键重放则回放同一份结果。
     """
-    from app.modules.dingtalk.model import OA_STATUS_LABEL
+    from app.core.idempotency import complete, release, request_key_from, reserve
+    from app.modules.dingtalk.model import OA_ACTION_LABEL, OA_STATUS_LABEL
     from app.modules.inquiry import service as inquiry_service
 
     row = await session.get(OaInstance, oa_id)
@@ -203,20 +258,74 @@ async def resolve_oa_instance(
         raise AppError(ErrorCode.NOT_FOUND, "审批记录不存在", 404)
     # 数据范围跟需求走：能对别人的需求发起审批的人，同样需要能处理它的异常
     await inquiry_service.get_visible_or_404(session, user, row.inquiry_id)
-    if row.status != "needs_review":
+
+    # **同键回放排在状态闸门之前**（8.15 的约定：同键同内容必须回放原结果）。
+    # 反过来写的话，`resend` 成功之后状态已经推进到"审批中"，客户端弱网重发
+    # 同一把键会被状态闸门挡成 422「当前是「审批中」」——外部调用确实只有一次，
+    # 但用户看到"状态不允许"，会以为操作失败，转头去点别的按钮。
+    key = request_key_from(request, payload.request_key)
+    reservation = None
+    if key:
+        # 先清掉同一把键留下的死占位（上一次进程被杀时留下的），否则这张单会
+        # 永远报"正在处理中"，而实际上根本没有人在处理
+        await _drop_stale_reservation(session, user_id=user.id, key=key, row=row)
+        reservation = await reserve(
+            session,
+            user_id=user.id,
+            action=RESOLVE_ACTION,
+            request_key=key,
+            payload={
+                "oa_id": oa_id,
+                "action": payload.action,
+                "instance_id": payload.instance_id,
+            },
+            result_type="oa_instance",
+        )
+        if reservation.should_replay:
+            # 同一次核定被重发（弱网 / 用户重复点）：回放同一份结果，**不再碰外部**
+            return ok(
+                reservation.replay_payload, "已处理（同一次核定重放，未再向钉钉发起）"
+            )
+
+    # 卡在"发起中"且已经僵死的，先按统一口径转人工——否则这条记录两头堵：
+    # 同轮发起直接返回（不会重发），核定又因为状态不符被拒。
+    if svc.demote_stuck_submitting(row):
+        await session.commit()
+
+    if row.status not in RESOLVABLE_STATUSES:
+        allowed = [
+            OA_ACTION_LABEL.get(a, a)
+            for a in allowed_actions(row.status, row.resolve_state)
+            if a.startswith("resolve_")
+        ]
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "只有「结果待人工核对」的记录才需要这样处理，当前是"
-            f"「{OA_STATUS_LABEL.get(row.status, row.status)}」",
+            "只有当发起结果是「结果待人工核对 / 发起失败 / 未发出」时才需要人工核定，"
+            f"当前是「{OA_STATUS_LABEL.get(row.status, row.status)}」"
+            + (f"；现在可以做的是：{'、'.join(allowed)}" if allowed else ""),
             422,
         )
-    row = await svc.resolve_reviewed_instance(
-        session,
-        row,
-        action=payload.action,
-        instance_id=payload.instance_id,
-        note=payload.note,
-    )
+
+    try:
+        row = await svc.resolve_reviewed_instance(
+            session,
+            row,
+            action=payload.action,
+            instance_id=payload.instance_id,
+            note=payload.note,
+            request_key=key,
+        )
+    except BaseException:
+        # 业务失败要把请求键还回去：用户改完会带着同一个键重试，
+        # 占着不放就会把"重试"误判成"正在处理中"。
+        # 这里**要提交**：请求异常时 get_db 会 rollback，不提交的话这次释放会被一起回滚，
+        # 同键下次仍然撞"正在处理中"（虽然下次会由 _drop_stale_reservation 补救，
+        # 但那是兜底，不该当成常规路径）
+        if reservation is not None:
+            await release(session, reservation)
+            await session.commit()
+        raise
+
     await write_audit(
         session,
         operator_id=user.id,
@@ -227,9 +336,18 @@ async def resolve_oa_instance(
             "status": row.status,
             "instance_id": row.instance_id,
             "note": payload.note,
+            "request_no": row.idempotency_key,
+            "resolve_request_key": row.resolve_request_key,
         },
         ip=client_ip(request),
     )
+    if reservation is not None:
+        await complete(
+            session,
+            reservation,
+            result_payload=svc.serialize(row),
+            result_id=row.id,
+        )
     await session.commit()
     return ok(svc.serialize(row), "已处理")
 

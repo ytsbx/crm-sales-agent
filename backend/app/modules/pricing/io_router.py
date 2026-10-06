@@ -4,25 +4,34 @@
 单独成 router 的原因与产品/客户一致：`/price-rules/import` 这类静态路径
 必须注册在动态路径之前，本 router 在 main.py 里排在 pricing_router 之前。
 
-导入语义（方案 §6）：
-- 逐行校验，单行失败不影响其它行，结果里给出失败行与原因；
+导入语义（方案 §6，第七批返修后）：
+- 逐行校验，**每行一个 SAVEPOINT**：单行失败只回滚这一行，不影响其它行，
+  也不会把 session 带进失败态（详见 `app/core/importing.py` 的说明）；
+- 数值、区间、有效期、币种按与页面维护同一套规则校验，非法值逐行报错、不静默截断；
 - 与界面维护同一套冲突检查：同 SKU 同等级/同客户、数量区间与有效期
   都重叠的行直接失败（不静默跳过，重叠资料必须人来裁决）；
-- 成本按（SKU, 生效起始日）幂等：同日再导 = 更新那一版成本，不产生重复版本。
+- 成本按（SKU, 生效起始日）幂等：同日再导 = 更新那一版成本，不产生重复版本；
+  空白 = 保留旧值，**四项全空的新建行不落库**（否则会造出"全零成本"的假毛利）。
 """
 
-from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+import hashlib
+from datetime import date
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import write_audit
-from app.core.csvio import csv_bytes, parse_csv_upload
+from app.core.csvio import csv_bytes, parse_csv_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
-from app.core.response import ok
+from app.core.importing import (
+    ImportReport,
+    RowErrors,
+    RowRejected,
+    finalize,
+    row_savepoint,
+)
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
 from app.modules.pricing.model import CustomerPriceRule, PriceRule, ProductCost
@@ -31,54 +40,52 @@ from app.modules.product.model import Sku
 router = APIRouter(tags=["Pricing"])
 
 LEVELS = {"A", "B", "C", "D"}
-
-
-def _parse_date(value: str | None, *, row: int, field: str, errors: list[dict], name: str) -> date | None:
-    text = (value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.strptime(text, "%Y-%m-%d").date()
-    except ValueError:
-        errors.append({"row": row, "name": name, "reason": f"{field} 格式应为 YYYY-MM-DD（收到 {text!r}）"})
-        return None
-
-
-def _parse_decimal(value: str | None, *, row: int, field: str, errors: list[dict], name: str) -> Decimal | None:
-    text = (value or "").strip()
-    if not text:
-        return None
-    try:
-        return Decimal(text)
-    except InvalidOperation:
-        errors.append({"row": row, "name": name, "reason": f"{field} 不是有效数字（收到 {text!r}）"})
-        return None
+#: 成本币种（用户 2026-10-06 确认）：这一批**只允许人民币成本**。
+#: 外币成本要先把汇率来源、换算时点和快照口径定下来，否则核价会把
+#: 美元数字和人民币数字直接相加，得出一个看着正常的错毛利。
+COST_CURRENCIES = {"CNY"}
+REMARK_MAX = 255
 
 
 async def _sku_map_by_code(session: AsyncSession, codes: set[str]) -> dict[str, Sku]:
+    """按编码取 SKU。**已删除的一律不返回**。
+
+    原来这里不筛 `deleted_at`：给已删除的 SKU 导价格/成本会成功落库，
+    而取价、核价永远查不到它 —— 用户看到"导入成功"，实际什么都没生效。
+    """
     if not codes:
         return {}
-    rows = (await session.execute(select(Sku).where(Sku.sku_code.in_(codes)))).scalars().all()
+    rows = (
+        await session.execute(
+            select(Sku).where(Sku.sku_code.in_(codes), Sku.deleted_at.is_(None))
+        )
+    ).scalars().all()
     return {row.sku_code: row for row in rows}
 
 
-def _summary(rows_n: int, created: int, skipped: int, failed: int, skipped_label: str = "跳过") -> str:
-    return f"导入完成：成功 {created} 条，{skipped_label} {skipped} 条，失败 {failed} 条（共 {rows_n} 行）"
+def _sku_rejection(sku: Sku | None, code: str) -> str | None:
+    """SKU 是否存在且可用于价格资料；返回拒绝原因（人话），可用则 None。"""
+    if sku is None:
+        return f"找不到可用 SKU「{code}」，请先导入产品/SKU（已删除的 SKU 不能挂价格）"
+    if sku.status != "active":
+        return f"SKU「{code}」当前状态是「{sku.status}」，停用的 SKU 不接收价格资料；如确需请先启用"
+    return None
 
 
-def _result(rows_n: int, created: list, skipped: list, failed: list, message: str) -> dict:
-    return ok(
-        {
-            "total": rows_n,
-            "created_count": len(created),
-            "skipped_count": len(skipped),
-            "failed_count": len(failed),
-            "created": created[:200],
-            "skipped": skipped[:200],
-            "failed": failed[:1000],
-        },
-        message,
-    )
+def _check_span(errs: RowErrors, *, min_qty: Decimal, max_qty: Decimal | None) -> None:
+    """数量区间：下限大于上限是倒置区间，取价永远匹配不上，必须报错。"""
+    if max_qty is not None and min_qty > max_qty:
+        errs.add(f"数量下限（{min_qty}）不能大于数量上限（{max_qty}）")
+
+
+def _check_period(
+    errs: RowErrors, *, effective_from: date | None, effective_to: date | None
+) -> None:
+    """有效期：起始日晚于截止日是倒置区间，资料会"永远不生效"。"""
+    if effective_from is not None and effective_to is not None and effective_from > effective_to:
+        errs.add(
+            f"生效起始日（{effective_from.isoformat()}）不能晚于生效截止日（{effective_to.isoformat()}）"
+        )
 
 
 # ================================================================== 价格规则
@@ -111,116 +118,121 @@ async def import_price_rules(
     request: Request,
     file: UploadFile = File(...),
     preview: bool = Form(False),
+    preview_token: str | None = Form(None),
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """批量导入价格规则。同 SKU 同等级且区间重叠的行判失败（与界面维护同一规则）。"""
-    rows = await parse_csv_upload(file, required_headers=["SKU编码", "指导价"], label="文件")
-    created: list = []
-    skipped: list = []
-    failed: list = []
+    raw = await file.read()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    rows = parse_csv_bytes(
+        raw, required_headers=["SKU编码", "指导价"], label="文件"
+    )
+    report = ImportReport("price_rule", len(rows))
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
-        errors: list[dict] = []
+        errs = RowErrors(index, code)
+
         level = (row.get("客户等级(留空=通用)") or "").strip().upper() or None
         if level and level not in LEVELS:
-            errors.append({"row": index, "name": code, "reason": f"客户等级必须是 A/B/C/D（收到 {level}）"})
+            errs.add(f"客户等级必须是 A/B/C/D（收到 {level}）")
 
-        min_qty = _parse_decimal(row.get("数量下限"), row=index, field="数量下限", errors=errors, name=code) or Decimal(0)
-        max_qty = _parse_decimal(row.get("数量上限(留空=不限)"), row=index, field="数量上限", errors=errors, name=code)
-        guide_price = _parse_decimal(row.get("指导价"), row=index, field="指导价", errors=errors, name=code)
-        standard_price = _parse_decimal(row.get("标准价"), row=index, field="标准价", errors=errors, name=code)
-        minimum_price = _parse_decimal(row.get("最低保护价"), row=index, field="最低保护价", errors=errors, name=code)
-        target_margin = _parse_decimal(row.get("目标利润率(如0.30)"), row=index, field="目标利润率", errors=errors, name=code)
-        effective_from = _parse_date(row.get("生效起始日(YYYY-MM-DD)"), row=index, field="生效起始日", errors=errors, name=code)
-        effective_to = _parse_date(row.get("生效截止日(YYYY-MM-DD)"), row=index, field="生效截止日", errors=errors, name=code)
-        if errors:
-            failed.extend(errors)
-            continue
+        min_qty = errs.decimal(row.get("数量下限"), "数量下限", non_negative=True)
+        min_qty = Decimal(0) if min_qty is None else min_qty
+        max_qty = errs.decimal(row.get("数量上限(留空=不限)"), "数量上限", non_negative=True)
+        guide_price = errs.decimal(
+            row.get("指导价"), "指导价", required=True, non_negative=True
+        )
+        standard_price = errs.decimal(row.get("标准价"), "标准价", non_negative=True)
+        minimum_price = errs.decimal(row.get("最低保护价"), "最低保护价", non_negative=True)
+        target_margin = errs.decimal(
+            row.get("目标利润率(如0.30)"),
+            "目标利润率",
+            positive=True,
+            maximum=Decimal(1),
+        )
+        if target_margin is None and (row.get("目标利润率(如0.30)") or "").strip():
+            # 走到这里说明上面已经记了原因；补一句口径说明，避免用户以为要填 30
+            errs.add("目标利润率是比率口径：30% 请填 0.30")
+        effective_from = errs.date_value(row.get("生效起始日(YYYY-MM-DD)"), "生效起始日")
+        effective_to = errs.date_value(row.get("生效截止日(YYYY-MM-DD)"), "生效截止日")
+        remark = errs.text_value(row.get("备注"), "备注", max_length=REMARK_MAX)
+        _check_span(errs, min_qty=min_qty, max_qty=max_qty)
+        _check_period(errs, effective_from=effective_from, effective_to=effective_to)
 
         if not code:
-            failed.append({"row": index, "name": code, "reason": "SKU编码不能为空"})
-            continue
-        if guide_price is None:
-            failed.append({"row": index, "name": code, "reason": "指导价必填——没有指导价的规则无法作为取价依据"})
-            continue
-        sku = sku_map.get(code)
-        if sku is None:
-            failed.append({"row": index, "name": code, "reason": f"找不到 SKU「{code}」，请先导入产品/SKU"})
+            errs.add("SKU编码不能为空")
+        if errs:
+            report.failed_row(index, code, errs.reasons)
             continue
 
+        rejection = _sku_rejection(sku_map.get(code), code)
+        if rejection:
+            report.failed_row(index, code, rejection)
+            continue
+        sku = sku_map[code]
+
+        historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+        rule_status = "historical" if historical else "active"
         try:
-            historical = (row.get("历史标记(填1=历史资料)") or "").strip()
-            rule_status = "historical" if historical else "active"
-            if not historical:
-                # 历史资料允许与当前规则重叠（A14：不参与匹配也不参与冲突检查）
-                conflict = await svc.find_price_rule_conflict(
-                    session,
+            async with row_savepoint(session):
+                if not historical:
+                    # 历史资料允许与当前规则重叠（A14：不参与匹配也不参与冲突检查）
+                    conflict = await svc.find_price_rule_conflict(
+                        session,
+                        sku_id=sku.id,
+                        customer_level=level,
+                        min_qty=min_qty,
+                        max_qty=max_qty,
+                        effective_from=effective_from,
+                        effective_to=effective_to,
+                    )
+                    if conflict is not None:
+                        # 业务性拒绝不是异常：直接记行失败，不要走 savepoint 的异常通道
+                        raise RowRejected(
+                            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-"
+                            f"{conflict.max_qty or '∞'}、等级 {conflict.customer_level or '通用'}）"
+                            "重叠，请先处理"
+                        )
+                rule = PriceRule(
                     sku_id=sku.id,
                     customer_level=level,
                     min_qty=min_qty,
                     max_qty=max_qty,
+                    standard_price=standard_price,
+                    guide_price=guide_price,
+                    minimum_price=minimum_price,
+                    target_margin=target_margin,
                     effective_from=effective_from,
                     effective_to=effective_to,
+                    status=rule_status,
+                    remark=remark,
                 )
-                if conflict is not None:
-                    failed.append({
-                        "row": index,
-                        "name": code,
-                        "reason": (
-                            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
-                            f"等级 {conflict.customer_level or '通用'}）重叠，请先处理"
-                        ),
-                    })
-                    continue
-
-            rule = PriceRule(
-                sku_id=sku.id,
-                customer_level=level,
-                min_qty=min_qty,
-                max_qty=max_qty,
-                standard_price=standard_price,
-                guide_price=guide_price,
-                minimum_price=minimum_price,
-                target_margin=target_margin,
-                effective_from=effective_from,
-                effective_to=effective_to,
-                status=rule_status,
-                remark=(row.get("备注") or "").strip() or None,
-            )
-            session.add(rule)
-            await session.flush()
-            created.append({"row": index, "id": rule.id, "sku_code": code})
+                session.add(rule)
+                await session.flush()
+                rule_id = rule.id
+            report.created_row(index, code, id=rule_id, sku_code=code)
+        except RowRejected as rejected:
+            report.failed_row(index, code, str(rejected))
         except Exception as exc:  # 单行失败不影响其它行
-            failed.append({"row": index, "name": code, "reason": str(exc)[:120]})
+            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
 
-    if preview:
-        # 预览：完整跑一遍校验与冲突检查后整体回滚，不落任何数据
-        await session.rollback()
-        return _result(
-            len(rows), created, skipped, failed,
-            f"预览完成（未写入）：将导入 {len(created)} 条，跳过 {len(skipped)} 条，失败 {len(failed)} 条",
-        )
-
-    await write_audit(
+    return await finalize(
         session,
+        report,
+        module="price_rule",
         operator_id=user.id,
-        action="import",
-        business_type="price_rule",
-        after={
-            "file": file.filename,
-            "created": len(created),
-            "skipped": len(skipped),
-            "failed": len(failed),
-        },
+        file_name=file.filename,
+        file_sha256=file_sha256,
         ip=client_ip(request),
+        preview=preview,
+        preview_token=preview_token,
+        business_type="price_rule",
     )
-    await session.commit()
-    return _result(len(rows), created, skipped, failed, _summary(len(rows), len(created), len(skipped), len(failed)))
 
 
 # ================================================================== 客户专属价
@@ -253,136 +265,169 @@ async def import_customer_prices(
     request: Request,
     file: UploadFile = File(...),
     preview: bool = Form(False),
+    preview_token: str | None = Form(None),
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """批量导入客户专属价。客户用「编号」或「名称精确匹配」定位，两种都填以编号为准。"""
-    rows = await parse_csv_upload(file, required_headers=["SKU编码", "约定价"], label="文件")
-    created: list = []
-    skipped: list = []
-    failed: list = []
+    """批量导入客户专属价。
+
+    客户用「编号」或「名称精确匹配」定位。第七批返修（7.3）补齐的四件事：
+    1. 已删除 / 已停用的客户与 SKU 一律不接受（原来只判存在，
+       给已删客户挂专属价会"导入成功但永远匹配不到"）；
+    2. 编号与名称**同时填且指向不同客户**时明确报错，不悄悄以编号为准；
+    3. 名称歧义（同名多家）必须改用编号；
+    4. 逐行按调用者的数据范围校验客户归属：**范围外的客户不能写专属价**，
+       预览也一样（预览会返回逐行结论，泄漏范围外客户身份等于给了个查询接口）。
+       无负责人的公海客户按既有口径对所有有权限的人开放。
+    """
+    from app.core.data_scope import scoped_owner_ids
+
+    raw = await file.read()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    rows = parse_csv_bytes(raw, required_headers=["SKU编码", "约定价"], label="文件")
+    report = ImportReport("customer_price_rule", len(rows))
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
+    owner_ids = await scoped_owner_ids(session, user)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
         customer_no = (row.get("客户编号(与客户名称二选一)") or "").strip()
         customer_name = (row.get("客户名称(精确匹配)") or "").strip()
-        errors: list[dict] = []
+        errs = RowErrors(index, code)
 
-        agreed_price = _parse_decimal(row.get("约定价"), row=index, field="约定价", errors=errors, name=code)
-        minimum_price = _parse_decimal(row.get("最低价"), row=index, field="最低价", errors=errors, name=code)
-        min_qty = _parse_decimal(row.get("数量下限"), row=index, field="数量下限", errors=errors, name=code) or Decimal(0)
-        max_qty = _parse_decimal(row.get("数量上限(留空=不限)"), row=index, field="数量上限", errors=errors, name=code)
-        effective_from = _parse_date(row.get("生效起始日(YYYY-MM-DD)"), row=index, field="生效起始日", errors=errors, name=code)
-        effective_to = _parse_date(row.get("生效截止日(YYYY-MM-DD)"), row=index, field="生效截止日", errors=errors, name=code)
-        if errors:
-            failed.extend(errors)
-            continue
+        agreed_price = errs.decimal(row.get("约定价"), "约定价", required=True, non_negative=True)
+        minimum_price = errs.decimal(row.get("最低价"), "最低价", non_negative=True)
+        min_qty = errs.decimal(row.get("数量下限"), "数量下限", non_negative=True)
+        min_qty = Decimal(0) if min_qty is None else min_qty
+        max_qty = errs.decimal(row.get("数量上限(留空=不限)"), "数量上限", non_negative=True)
+        effective_from = errs.date_value(row.get("生效起始日(YYYY-MM-DD)"), "生效起始日")
+        effective_to = errs.date_value(row.get("生效截止日(YYYY-MM-DD)"), "生效截止日")
+        remark = errs.text_value(row.get("备注"), "备注", max_length=REMARK_MAX)
+        if (
+            agreed_price is not None
+            and minimum_price is not None
+            and minimum_price > agreed_price
+        ):
+            errs.add(f"最低价（{minimum_price}）不能高于约定价（{agreed_price}）")
+        _check_span(errs, min_qty=min_qty, max_qty=max_qty)
+        _check_period(errs, effective_from=effective_from, effective_to=effective_to)
 
         if not code:
-            failed.append({"row": index, "name": code, "reason": "SKU编码不能为空"})
-            continue
-        if agreed_price is None:
-            failed.append({"row": index, "name": code, "reason": "约定价必填"})
-            continue
+            errs.add("SKU编码不能为空")
         if not customer_no and not customer_name:
-            failed.append({"row": index, "name": code, "reason": "客户编号与客户名称至少填一个"})
+            errs.add("客户编号与客户名称至少填一个")
+        if errs:
+            report.failed_row(index, code, errs.reasons)
             continue
 
-        try:
-            historical = (row.get("历史标记(填1=历史资料)") or "").strip()
-            rule_status = "historical" if historical else "active"
-            customer: Customer | None = None
-            if customer_no:
-                customer = await session.get(Customer, int(customer_no))
-                if customer is None:
-                    failed.append({"row": index, "name": code, "reason": f"客户编号 {customer_no} 不存在"})
-                    continue
-            else:
-                found = (
-                    await session.execute(
-                        select(Customer).where(Customer.name == customer_name).limit(2)
-                    )
-                ).scalars().all()
-                if not found:
-                    failed.append({"row": index, "name": code, "reason": f"找不到客户「{customer_name}」"})
-                    continue
-                if len(found) > 1:
-                    failed.append({
-                        "row": index,
-                        "name": code,
-                        "reason": f"客户名称「{customer_name}」匹配到 {len(found)} 家，请改用客户编号",
-                    })
-                    continue
-                customer = found[0]
+        rejection = _sku_rejection(sku_map.get(code), code)
+        if rejection:
+            report.failed_row(index, code, rejection)
+            continue
+        sku = sku_map[code]
 
-            sku = sku_map.get(code)
-            if sku is None:
-                failed.append({"row": index, "name": code, "reason": f"找不到 SKU「{code}」"})
+        customer: Customer | None = None
+        if customer_no:
+            if not customer_no.isdigit():
+                report.failed_row(index, code, f"客户编号应为数字（收到 {customer_no!r}）")
+                continue
+            customer = await session.get(Customer, int(customer_no))
+            if customer is None or customer.deleted_at is not None:
+                report.failed_row(index, code, f"客户编号 {customer_no} 不存在或已删除")
+                continue
+            if customer_name and customer.name != customer_name:
+                report.failed_row(
+                    index,
+                    code,
+                    f"客户编号 {customer_no} 对应的是「{customer.name}」，"
+                    f"与填写的客户名称「{customer_name}」不一致，请核对后只填其一",
+                )
+                continue
+        else:
+            found = (
+                await session.execute(
+                    select(Customer)
+                    .where(Customer.name == customer_name, Customer.deleted_at.is_(None))
+                    .limit(2)
+                )
+            ).scalars().all()
+            if not found:
+                report.failed_row(index, code, f"找不到客户「{customer_name}」（已删除的不算）")
+                continue
+            if len(found) > 1:
+                report.failed_row(
+                    index,
+                    code,
+                    f"客户名称「{customer_name}」匹配到 {len(found)} 家，同名必须改用客户编号指定",
+                )
+                continue
+            customer = found[0]
+
+        # 数据范围：与"能不能看这个客户"同一口径。无负责人（公海）放行。
+        if owner_ids is not None and customer.owner_id is not None:
+            if int(customer.owner_id) not in owner_ids:
+                report.failed_row(
+                    index,
+                    code,
+                    "该客户不在你的数据范围内，不能为它维护专属价；"
+                    "请联系对应负责人或主管处理",
+                )
                 continue
 
-            if not historical:
-                conflict = await svc.find_customer_price_conflict(
-                    session,
+        historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+        rule_status = "historical" if historical else "active"
+        try:
+            async with row_savepoint(session):
+                if not historical:
+                    conflict = await svc.find_customer_price_conflict(
+                        session,
+                        customer_id=customer.id,
+                        sku_id=sku.id,
+                        min_qty=min_qty,
+                        max_qty=max_qty,
+                        effective_from=effective_from,
+                        effective_to=effective_to,
+                    )
+                    if conflict is not None:
+                        raise RowRejected(
+                            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-"
+                            f"{conflict.max_qty or '∞'}）重叠，请先处理"
+                        )
+                rule = CustomerPriceRule(
                     customer_id=customer.id,
                     sku_id=sku.id,
                     min_qty=min_qty,
                     max_qty=max_qty,
+                    agreed_price=agreed_price,
+                    minimum_price=minimum_price,
                     effective_from=effective_from,
                     effective_to=effective_to,
+                    status=rule_status,
+                    remark=remark,
                 )
-                if conflict is not None:
-                    failed.append({
-                        "row": index,
-                        "name": code,
-                        "reason": (
-                            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）重叠，请先处理"
-                        ),
-                    })
-                    continue
-
-            rule = CustomerPriceRule(
-                customer_id=customer.id,
-                sku_id=sku.id,
-                min_qty=min_qty,
-                max_qty=max_qty,
-                agreed_price=agreed_price,
-                minimum_price=minimum_price,
-                effective_from=effective_from,
-                effective_to=effective_to,
-                status=rule_status,
-                remark=(row.get("备注") or "").strip() or None,
-            )
-            session.add(rule)
-            await session.flush()
-            created.append({"row": index, "id": rule.id, "sku_code": code})
+                session.add(rule)
+                await session.flush()
+                rule_id = rule.id
+            report.created_row(index, code, id=rule_id, sku_code=code)
+        except RowRejected as rejected:
+            report.failed_row(index, code, str(rejected))
         except Exception as exc:
-            failed.append({"row": index, "name": code, "reason": str(exc)[:120]})
+            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
 
-    if preview:
-        await session.rollback()
-        return _result(
-            len(rows), created, skipped, failed,
-            f"预览完成（未写入）：将导入 {len(created)} 条，跳过 {len(skipped)} 条，失败 {len(failed)} 条",
-        )
-
-    await write_audit(
+    return await finalize(
         session,
+        report,
+        module="customer_price_rule",
         operator_id=user.id,
-        action="import",
-        business_type="customer_price_rule",
-        after={
-            "file": file.filename,
-            "created": len(created),
-            "skipped": len(skipped),
-            "failed": len(failed),
-        },
+        file_name=file.filename,
+        file_sha256=file_sha256,
         ip=client_ip(request),
+        preview=preview,
+        preview_token=preview_token,
+        business_type="customer_price_rule",
     )
-    await session.commit()
-    return _result(len(rows), created, skipped, failed, _summary(len(rows), len(created), len(skipped), len(failed)))
 
 
 # ================================================================== 成本
@@ -411,112 +456,148 @@ async def import_costs(
     request: Request,
     file: UploadFile = File(...),
     preview: bool = Form(False),
+    preview_token: str | None = Form(None),
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """批量导入成本。按（SKU, 生效起始日）幂等：同日再导 = 更新那一版成本。"""
-    rows = await parse_csv_upload(
-        file, required_headers=["SKU编码", "生效起始日(YYYY-MM-DD)"], label="文件"
+    """批量导入成本。按（SKU, 生效起始日）幂等：同日再导 = 更新那一版成本。
+
+    第七批返修（7.4）的口径：
+    - **新建时四项成本全空 → 这行失败，不落库**。原实现把空白当 0，
+      于是"只填了 SKU 和生效日"的模板行会造出一条四项全零的成本，
+      而核价是靠"有没有成本行"判断成本已知的 —— 直接产生假毛利。
+      确实为零请显式填 0，那是"已知成本为零"，与"没填"是两件事；
+    - 只填部分 → 未填的列存 NULL（"未提供"），核价据此显示成本不完整，
+      不再把 NULL 当成 0 混进合计；
+    - 更新同日已有版本时，空白 = **保留旧值**；
+    - 币种只接受人民币（用户 2026-10-06 确认），外币成本本轮不支持。
+    """
+    raw = await file.read()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    rows = parse_csv_bytes(
+        raw, required_headers=["SKU编码", "生效起始日(YYYY-MM-DD)"], label="文件"
     )
-    created: list = []
-    skipped: list = []
-    failed: list = []
+    report = ImportReport("product_cost", len(rows))
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
-        errors: list[dict] = []
+        errs = RowErrors(index, code)
 
-        def num(field: str):
-            return _parse_decimal(row.get(field), row=index, field=field, errors=errors, name=code)
-
-        purchase = num("采购成本")
-        production = num("生产成本")
-        package = num("包装成本")
-        processing = num("加工成本")
-        effective_from = _parse_date(
-            row.get("生效起始日(YYYY-MM-DD)"), row=index, field="生效起始日", errors=errors, name=code
+        purchase = errs.decimal(row.get("采购成本"), "采购成本", non_negative=True)
+        production = errs.decimal(row.get("生产成本"), "生产成本", non_negative=True)
+        package = errs.decimal(row.get("包装成本"), "包装成本", non_negative=True)
+        processing = errs.decimal(row.get("加工成本"), "加工成本", non_negative=True)
+        effective_from = errs.date_value(
+            row.get("生效起始日(YYYY-MM-DD)"), "生效起始日", required=True
         )
-        effective_to = _parse_date(
-            row.get("生效截止日(YYYY-MM-DD)"), row=index, field="生效截止日", errors=errors, name=code
-        )
-        if errors:
-            failed.extend(errors)
-            continue
-
+        effective_to = errs.date_value(row.get("生效截止日(YYYY-MM-DD)"), "生效截止日")
+        currency = (row.get("币种(默认CNY)") or "CNY").strip().upper() or "CNY"
+        if currency not in COST_CURRENCIES:
+            errs.add(
+                f"本轮只支持人民币成本，币种只能填 CNY（收到 {currency}）。"
+                "外币成本要先确定汇率来源与换算时点，请先按人民币录入或联系管理员"
+            )
+        remark = errs.text_value(row.get("备注"), "备注", max_length=REMARK_MAX)
+        _check_period(errs, effective_from=effective_from, effective_to=effective_to)
         if not code:
-            failed.append({"row": index, "name": code, "reason": "SKU编码不能为空"})
+            errs.add("SKU编码不能为空")
+        if errs:
+            report.failed_row(index, code, errs.reasons)
             continue
-        if effective_from is None:
-            failed.append({"row": index, "name": code, "reason": "生效起始日必填——成本是带生效区间的历史版本"})
+
+        rejection = _sku_rejection(sku_map.get(code), code)
+        if rejection:
+            report.failed_row(index, code, rejection)
             continue
-        if any(v is not None and v < 0 for v in (purchase, production, package, processing)):
-            failed.append({"row": index, "name": code, "reason": "成本项不能为负数"})
-            continue
-        sku = sku_map.get(code)
-        if sku is None:
-            failed.append({"row": index, "name": code, "reason": f"找不到 SKU「{code}」"})
-            continue
+        sku = sku_map[code]
+
+        provided = {
+            "purchase_cost": purchase,
+            "production_cost": production,
+            "package_cost": package,
+            "processing_cost": processing,
+        }
+        filled = {key: value for key, value in provided.items() if value is not None}
 
         try:
-            existing = (
-                await session.execute(
-                    select(ProductCost).where(
-                        ProductCost.sku_id == sku.id,
-                        ProductCost.effective_from == effective_from,
+            async with row_savepoint(session):
+                existing = (
+                    await session.execute(
+                        select(ProductCost).where(
+                            ProductCost.sku_id == sku.id,
+                            ProductCost.effective_from == effective_from,
+                        )
                     )
+                ).scalars().first()
+                if existing is not None:
+                    # 同日起导 = 更新那一版（幂等，不产生重复成本版本）；空白保留旧值
+                    changed = False
+                    for key, value in provided.items():
+                        if value is None:
+                            continue
+                        if getattr(existing, key) != value:
+                            setattr(existing, key, value)
+                            changed = True
+                    if effective_to is not None and existing.effective_to != effective_to:
+                        existing.effective_to = effective_to
+                        changed = True
+                    if remark is not None and existing.remark != remark:
+                        existing.remark = remark
+                        changed = True
+                    await session.flush()
+                    if changed:
+                        report.updated_row(
+                            index, code, id=existing.id, changed=True,
+                            reason=f"已更新同日成本版本 #{existing.id}",
+                        )
+                    else:
+                        report.skipped_row(
+                            index, code,
+                            f"同日成本版本 #{existing.id} 与本次内容一致，未改动",
+                        )
+                    continue
+
+                if not filled:
+                    # 新建 + 四项全空：不能落一条"全零成本"，那会让核价以为成本已知
+                    raise RowRejected(
+                        "四项成本全为空，不能新建成本版本：这会造出一条全零成本，"
+                        "核价会据此算出假毛利。请至少填一项；确实为零请显式填 0"
+                    )
+
+                cost = ProductCost(
+                    sku_id=sku.id,
+                    # 未填的列存 NULL（"未提供"），不写 0（"明确为零"）
+                    purchase_cost=purchase,
+                    production_cost=production,
+                    package_cost=package,
+                    processing_cost=processing,
+                    currency=currency,
+                    effective_from=effective_from,
+                    effective_to=effective_to,
+                    remark=remark,
+                    created_by=user.id,
                 )
-            ).scalars().first()
-            if existing is not None:
-                # 同日起导 = 更新那一版（幂等，不产生重复成本版本）
-                existing.purchase_cost = purchase if purchase is not None else existing.purchase_cost
-                existing.production_cost = production if production is not None else existing.production_cost
-                existing.package_cost = package if package is not None else existing.package_cost
-                existing.processing_cost = processing if processing is not None else existing.processing_cost
-                existing.effective_to = effective_to if effective_to is not None else existing.effective_to
-                existing.remark = (row.get("备注") or "").strip() or existing.remark
-                skipped.append({"row": index, "name": code, "reason": f"已更新现有成本版本 #{existing.id}（同生效日）"})
-                continue
-
-            cost = ProductCost(
-                sku_id=sku.id,
-                purchase_cost=purchase or Decimal(0),
-                production_cost=production or Decimal(0),
-                package_cost=package or Decimal(0),
-                processing_cost=processing or Decimal(0),
-                currency=(row.get("币种(默认CNY)") or "CNY").strip() or "CNY",
-                effective_from=effective_from,
-                effective_to=effective_to,
-                remark=(row.get("备注") or "").strip() or None,
-                created_by=user.id,
-            )
-            session.add(cost)
-            await session.flush()
-            created.append({"row": index, "id": cost.id, "sku_code": code})
+                session.add(cost)
+                await session.flush()
+                cost_id = cost.id
+            report.created_row(index, code, id=cost_id, sku_code=code, filled=list(filled))
+        except RowRejected as rejected:
+            report.failed_row(index, code, str(rejected))
         except Exception as exc:
-            failed.append({"row": index, "name": code, "reason": str(exc)[:120]})
+            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
 
-    if preview:
-        await session.rollback()
-        return _result(
-            len(rows), created, skipped, failed,
-            f"预览完成（未写入）：将导入 {len(created)} 条，更新 {len(skipped)} 条，失败 {len(failed)} 条",
-        )
-
-    await write_audit(
+    return await finalize(
         session,
+        report,
+        module="product_cost",
         operator_id=user.id,
-        action="import",
-        business_type="product_cost",
-        after={
-            "file": file.filename,
-            "created": len(created),
-            "updated": len(skipped),
-            "failed": len(failed),
-        },
+        file_name=file.filename,
+        file_sha256=file_sha256,
         ip=client_ip(request),
+        preview=preview,
+        preview_token=preview_token,
+        business_type="product_cost",
     )
-    await session.commit()
-    return _result(len(rows), created, skipped, failed, _summary(len(rows), len(created), len(skipped), len(failed), "更新"))

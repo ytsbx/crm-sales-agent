@@ -382,6 +382,9 @@ def serialize_customer(
         "tags": tags or [],
         "remark": customer.remark,
         "last_followup_at": customer.last_followup_at,
+        #: 联系时间未知（历史导入未提供）：前端要显式提示"待补核"，
+        #: 否则这批客户在列表里和"刚联系过"长得一模一样（第七批 7.5）
+        "last_contact_unknown": bool(getattr(customer, "last_contact_unknown", False)),
         "last_progress_at": customer.last_progress_at,
         "next_followup_at": customer.next_followup_at,
         "created_at": customer.created_at,
@@ -390,6 +393,12 @@ def serialize_customer(
 
 
 def serialize_contact(contact: Contact) -> dict:
+    """联系人**完整**序列化。
+
+    这是内部口径（审计 before/after、写库后的返回值拼装都用它）：
+    审计必须留完整值，否则"谁把电话改成了什么"就查不出来了。
+    **对外的响应**要走下面那个脱敏版本（第七批 8.2）。
+    """
     return {
         "id": contact.id,
         "customer_id": contact.customer_id,
@@ -406,6 +415,37 @@ def serialize_contact(contact: Contact) -> dict:
         "remark": contact.remark,
         "created_at": contact.created_at,
     }
+
+
+async def serialize_contacts_masked(
+    session: AsyncSession, user: CurrentUser, contacts: list[Contact]
+) -> list[dict]:
+    """对外响应口径：按已确认规则决定是否脱敏（第八批 8.2）。
+
+    规则见 `contact_util.can_view_full_contact`。为什么集中在这里而不是各路由
+    自己判：联系人列表、详情、搜索、AI 工具、导出是**五个**入口，
+    各写一份必然有一份忘了脱敏 —— 而"忘掉的那一份"就是泄漏面。
+    """
+    from app.modules.contact_util import full_contact_customer_ids, mask_contact_fields
+
+    allowed = await full_contact_customer_ids(
+        session, user, {contact.customer_id for contact in contacts}
+    )
+    out: list[dict] = []
+    for contact in contacts:
+        payload = serialize_contact(contact)
+        if allowed is not None and (
+            contact.customer_id is None or int(contact.customer_id) not in allowed
+        ):
+            payload = mask_contact_fields(payload)
+        out.append(payload)
+    return out
+
+
+async def serialize_contact_masked(
+    session: AsyncSession, user: CurrentUser, contact: Contact
+) -> dict:
+    return (await serialize_contacts_masked(session, user, [contact]))[0]
 
 
 # ---------------------------------------------------------------- 客户操作

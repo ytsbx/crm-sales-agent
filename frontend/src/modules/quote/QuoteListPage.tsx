@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { Link, useNavigate } from 'react-router-dom'
@@ -9,6 +9,7 @@ import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-
 
 import { listOpportunities } from '../../shared/api/opportunity'
 import { createQuote, listQuotes, type Quote } from '../../shared/api/quote'
+import { newRequestKey } from '../../shared/api/requestKey'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import { optionMatcher, withCode } from '../../shared/components/optionMatch'
@@ -45,6 +46,9 @@ export default function QuoteListPage() {
   const [pageSize, setPageSize] = useState(10)
   const [createVisible, setCreateVisible] = useState(false)
   const [opportunityId, setOpportunityId] = useState<number | null>(null)
+  // 一次"新建报价"意图一把键（第八批 8.15）：在 mutationFn 里现生成的话，
+  // 弱网重试会换一把新键，服务端仍会建出第二条报价 —— 幂等就白做了。
+  const createRequestKeyRef = useRef('')
 
   const query = useQuery({
     queryKey: ['quotes', { keyword, status, page, pageSize }],
@@ -57,18 +61,25 @@ export default function QuoteListPage() {
   })
 
   const createMutation = useMutation({
-    mutationFn: () => createQuote({ opportunity_id: opportunityId! }),
+    mutationFn: () =>
+      createQuote({
+        opportunity_id: opportunityId!,
+        request_key: createRequestKeyRef.current,
+      }),
     onSuccess: (data) => {
       // 缺少已维护售价的需求行不会自动写入报价；服务端会在 warnings 中提示人工定价。
       Toast.success('报价草稿已生成，请核对明细和定价提示')
       for (const warning of data.warnings ?? []) {
         Toast.warning({ content: warning, duration: 6 })
       }
+      // 这一把键已用完：再开一次表单会换成新键（两次真实报价必须是两条）
+      createRequestKeyRef.current = ''
       setCreateVisible(false)
       setOpportunityId(null)
       void queryClient.invalidateQueries({ queryKey: ['quotes'] })
       navigate(`/quotes/${data.quote_id}`)
     },
+    // 失败**不换键**：用户改完重提时服务端会释放占位，同一把键仍可重试
     onError: (error: Error) => Toast.error(error.message),
   })
 
@@ -171,7 +182,14 @@ export default function QuoteListPage() {
           </Button>
           <div style={{ flex: 1 }} />
           {can('quote:manage') && (
-            <Button theme="solid" onClick={() => setCreateVisible(true)}>
+            <Button
+              theme="solid"
+              onClick={() => {
+                // 每次打开"新建报价"都是一次新意图 → 换一把新的幂等键
+                createRequestKeyRef.current = newRequestKey()
+                setCreateVisible(true)
+              }}
+            >
               新建报价
             </Button>
           )}

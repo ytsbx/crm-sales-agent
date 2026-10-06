@@ -8,7 +8,8 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import write_audit
+from app.core import idempotency
+from app.core.audit import json_safe, write_audit
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
@@ -86,6 +87,10 @@ async def get_receivable(
 async def _create_plan(session, order_id, payload, request, user):
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+    # 与"按比例生成"共用同一把订单行锁（锁序见 svc.lock_order）：否则生成那边
+    # "查无计划"的窗口里还能挤进一个手工节点，两边判断都不算错、结果却混着两套。
+    if await svc.lock_order(session, order_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
     plan = ReceivablePlan(
         order_id=order_id,
         plan_name=payload.plan_name,
@@ -98,6 +103,7 @@ async def _create_plan(session, order_id, payload, request, user):
     )
     session.add(plan)
     await session.flush()
+    # 刚插入的行只有本事务看得见（别的会话连行都选不到），不需要再取节点锁。
     await svc.recalc_plan(session, plan)
     await session.flush()
     await write_audit(
@@ -132,9 +138,49 @@ async def generate_receivables(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """按比例生成应收计划，例如 30% 定金 + 70% 尾款。"""
+    """按比例生成应收计划，例如 30% 定金 + 70% 尾款。
+
+    第七批 7.9：从"查无再插"改成"**先锁订单行**再查无再插"。两个并发的生成
+    请求以前都查到"还没有计划"，于是各插一套（金额各自合法，事后只能人工比对）；
+    现在后到的那个会等在订单行锁上，等到时先到者已提交，`existing` 一定看得见。
+    带 `request_key` 的重复点击另外走通用请求幂等，直接回放第一次那份结果。
+    """
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+
+    data = payload.model_dump()
+    request_key = idempotency.request_key_from(request, data.pop("request_key", None))
+    reservation = None
+    if request_key:
+        reservation = await idempotency.reserve(
+            session,
+            user_id=user.id,
+            action="receivable:generate",
+            request_key=request_key,
+            payload=data,
+            result_type="receivable_plan",
+        )
+        if reservation.should_replay:
+            return ok(
+                reservation.replay_payload,
+                "这次生成此前已成功过，已返回原计划（没有重复生成）",
+            )
+    try:
+        return await _generate_receivables(
+            session, order, order_id, payload, request, user, reservation
+        )
+    except Exception:
+        # 失败就释放占位：用户改完表单会带同一把键重试，内容必然不同，
+        # 不释放会把"改错重填"误判成"同键不同内容"冲突。
+        if reservation is not None:
+            await idempotency.release(session, reservation)
+        raise
+
+
+async def _generate_receivables(session, order, order_id, payload, request, user, reservation):
+    # 锁共同订单行（统一锁序的第一把）：见函数说明。
+    if await svc.lock_order(session, order_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
     # 比例校验**保持原样**（容差 0.0001）：实测浮点误差只有 1e-16 量级，够不到容差，
     # 不会误判；而比例微差的风险已由下面"最后一期补差额"兜住——就算有人把比例
     # 打成 99.99%，最后一期 = 总额 − 前面各期之和，合计仍然严格等于订单总额。
@@ -212,8 +258,16 @@ async def generate_receivables(
         after={"order_id": order_id, "created": len(created), "ratios": payload.ratios},
         ip=client_ip(request),
     )
+    body = [await svc.serialize_plan(session, plan) for plan in created]
+    if reservation is not None:
+        await idempotency.complete(
+            session,
+            reservation,
+            result_payload=json_safe(body),
+            result_id=created[0].id if created else order_id,
+        )
     await session.commit()
-    return ok([await svc.serialize_plan(session, plan) for plan in created], "应收计划已生成")
+    return ok(body, "应收计划已生成")
 
 
 @router.patch("/receivables/{plan_id}")
@@ -224,8 +278,12 @@ async def update_receivable(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """改应收节点 —— 部分更新，只改传进来的字段。"""
-    plan = await svc.get_visible_plan(session, user, plan_id)
+    """改应收节点 —— 部分更新，只改传进来的字段。
+
+    取节点时必须带锁（`for_update=True`）：改金额要重算节点状态，重算不在锁内
+    就是"读旧汇总、写覆盖"——与并发确认撞上时，后写的那个把 paid 改回 partial。
+    """
+    plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     before = await svc.serialize_plan(session, plan)
     changes = payload.model_dump(exclude_unset=True)
     if changes.get("plan_name") is not None:
@@ -259,7 +317,14 @@ async def delete_receivable(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    plan = await svc.get_visible_plan(session, user, plan_id)
+    """删应收节点。
+
+    取节点时带锁：删之前要确认"还没有回款挂在它上面"。不带锁时，另一个事务
+    正好在给这个节点登记回款，两边各自读到"没有/节点还在"，结果回款挂在一个
+    已被删掉的节点上（孤儿账）。锁上之后两种顺序都安全：先登记的先插、删除方
+    看得到；先删的删完，登记方拿到锁后重查节点已不存在 → 404。
+    """
+    plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     paid = (
         await session.execute(
             select(PaymentRecord.id).where(PaymentRecord.receivable_plan_id == plan_id)
@@ -289,7 +354,12 @@ async def mark_overdue(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    plan = await svc.get_visible_plan(session, user, plan_id)
+    """把节点直接标成逾期。
+
+    同样要先锁节点：这是"覆盖状态"的写入，与并发确认的重算放在同一把锁下，
+    谁后写都是基于最新事实（否则确认刚把节点算成 paid，这边一个旧状态覆盖回去）。
+    """
+    plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     before_status = plan.status
     plan.status = "overdue"
     await session.flush()
@@ -454,6 +524,9 @@ async def update_payment(
 
     只有待确认（pending）的回款能改。确认/驳回都是财务给出的事实结论，
     事后改金额会让已对账的账目对不上。
+
+    取记录时带锁（`for_update=True`，内部按「应收节点 → 回款记录」的顺序取锁）：
+    改金额要重算节点状态，重算必须发生在节点锁内，否则与并发确认互相覆盖。
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     if record.status != "pending":
@@ -461,6 +534,13 @@ async def update_payment(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"回款已{'确认' if record.status == 'confirmed' else '驳回'}，不能再修改",
         )
+    # 节点行此时已在前面按统一锁序锁住；这里再取一次是同一事务内的同一把锁，
+    # 不额外阻塞，但能让"重算必须在锁内"在调用点一眼可见。
+    plan = (
+        await svc.lock_plan(session, record.receivable_plan_id)
+        if record.receivable_plan_id
+        else None
+    )
     before = await svc.serialize_payment(session, record)
     changes = payload.model_dump(exclude_unset=True)
     if "received_amount" in changes:
@@ -471,10 +551,18 @@ async def update_payment(
         record.payment_method = changes["payment_method"]
     if "voucher_note" in changes:
         record.voucher_note = changes["voucher_note"]
+    if "currency" in changes:
+        # 币种不能随手改：它决定这笔钱能不能算进这个节点的已收金额。
+        if plan is None:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "这笔回款没有挂应收节点，无法核对币种；请先补挂节点再改币种",
+                422,
+            )
+        record.currency = svc.resolve_payment_currency(plan, changes["currency"])
     await session.flush()
     # 金额变了要重算应收节点状态，否则收齐了还显示"部分回款"
-    if record.receivable_plan_id:
-        plan = await svc.get_plan_or_404(session, record.receivable_plan_id)
+    if plan is not None:
         await svc.recalc_plan(session, plan)
         await session.flush()
     await write_audit(
@@ -498,38 +586,87 @@ async def create_payment(
     user: CurrentUser = Depends(require_permission("payment:manage", "order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    plan = None
-    order_id = None
-    if payload.receivable_plan_id:
-        plan = await svc.get_visible_plan(session, user, payload.receivable_plan_id)
-        order_id = plan.order_id
-    else:
+    """登记一笔回款（03-API §30）。第七批 7.9 收敛三件事：
+
+    1. **同一次录入有稳定请求键**：带 `request_key`（body 字段或 `X-Request-Key`
+       头）时，同一把键反复提交只建一行并回放第一次的结果；键不同就各自建行 ——
+       所以同额同日的两笔真实回款不会被"金额 + 日期相同"这种猜测合并掉。
+       不带键仍然照旧登记，但响应里点明这次没有幂等保护。
+    2. **币种继承应收节点**：给不同币种直接拒绝（跨币种核销口径未定，不猜汇率）。
+    3. **先锁应收节点再插回款**（统一锁序的第一段）：与"删节点""确认回款"
+       并发时不会出现"回款挂到已删节点上"或读旧汇总写覆盖。
+    """
+    if not payload.receivable_plan_id:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请指定这笔回款对应的应收节点")
 
-    record = PaymentRecord(
-        receivable_plan_id=plan.id,
-        order_id=order_id,
-        received_date=payload.received_date,
-        received_amount=Decimal(str(payload.received_amount)),
-        payment_method=payload.payment_method,
-        voucher_note=payload.voucher_note,
-        status="pending",
-        created_by=user.id,
-        created_at=datetime.now(UTC),
-    )
-    session.add(record)
-    await session.flush()
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="create",
-        business_type="payment",
-        business_id=record.id,
-        after=await svc.serialize_payment(session, record),
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(await svc.serialize_payment(session, record), "回款已登记，等待财务确认")
+    data = payload.model_dump()
+    request_key = idempotency.request_key_from(request, data.pop("request_key", None))
+
+    reservation = None
+    if request_key:
+        reservation = await idempotency.reserve(
+            session,
+            user_id=user.id,
+            action="payment:create",
+            request_key=request_key,
+            payload=data,
+            result_type="payment",
+        )
+        if reservation.should_replay:
+            return ok(
+                reservation.replay_payload,
+                "这笔回款此前已登记成功，已返回原记录（没有重复登记）",
+            )
+
+    try:
+        plan = await svc.get_visible_plan(
+            session, user, payload.receivable_plan_id, for_update=True
+        )
+        record = PaymentRecord(
+            receivable_plan_id=plan.id,
+            order_id=plan.order_id,
+            received_date=payload.received_date,
+            received_amount=Decimal(str(payload.received_amount)),
+            # 不传币种时不能落到列默认的 CNY：那会把美元回款记成人民币。
+            currency=svc.resolve_payment_currency(plan, payload.currency),
+            payment_method=payload.payment_method,
+            voucher_note=payload.voucher_note,
+            status="pending",
+            created_by=user.id,
+            created_at=datetime.now(UTC),
+        )
+        session.add(record)
+        await session.flush()
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="create",
+            business_type="payment",
+            business_id=record.id,
+            after=await svc.serialize_payment(session, record),
+            ip=client_ip(request),
+        )
+        body = await svc.serialize_payment(session, record)
+        if reservation is not None:
+            # 存进 request_keys 的响应体必须是 JSON 可序列化的：serialize_payment
+            # 里有 date/datetime，直接塞 JSON 列会在 flush 时 TypeError（500）。
+            await idempotency.complete(
+                session,
+                reservation,
+                result_payload=json_safe(body),
+                result_id=record.id,
+            )
+        await session.commit()
+    except Exception:
+        # 失败就释放占位：用户改完表单会带同一把键重试，内容必然不同，
+        # 不释放会把"改错重填"误判成"同键不同内容"冲突。
+        if reservation is not None:
+            await idempotency.release(session, reservation)
+        raise
+
+    if request_key:
+        return ok(body, "回款已登记，等待财务确认")
+    return ok(body, "回款已登记，等待财务确认（本次未带请求键，弱网重试可能产生重复回款）")
 
 
 @router.post("/payments/{payment_id}/confirm")
@@ -540,13 +677,23 @@ async def confirm_payment(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """财务确认回款（03-API §30）。
+
+    第七批 7.9：`get_visible_payment(..., for_update=True)` 内部按统一锁序
+    先锁**共同应收节点**再锁回款记录。两个各 50 的并发确认锁的是两条不同的
+    回款记录、锁不到彼此，只锁回款记录时双方都会读到"已确认 50"各写一次
+    partial；先锁共同节点后，后到的那个在锁上等，等到时先到者已提交，
+    重算才看得到 100 → 节点 paid。
+    """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     svc.ensure_payment_pending(record)
     record.status = "confirmed"
     record.confirmed_by = user.id
     record.confirmed_at = datetime.now(UTC)
     if record.receivable_plan_id:
-        plan = await svc.get_plan_or_404(session, record.receivable_plan_id)
+        # 节点锁已在 get_visible_payment 里按统一锁序取到；这里再取一次是同一
+        # 事务内的同一把锁，不额外阻塞，只为让"锁内重算"在调用点可见。
+        plan = await svc.lock_plan(session, record.receivable_plan_id)
         await svc.recalc_plan(session, plan)
     order = await session.get(SalesOrder, record.order_id)
     if order:
@@ -595,6 +742,11 @@ async def reject_payment(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """驳回回款。
+
+    同样走带锁的取记录：驳回不重算节点，但要与同一笔/同一节点的并发确认串行，
+    否则"一个确认一个驳回"会各自基于 pending 判断，两个都成功（终态被覆盖）。
+    """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     svc.ensure_payment_pending(record)
     record.status = "rejected"

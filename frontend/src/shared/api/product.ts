@@ -110,3 +110,61 @@ export function exportSkusFiltered(
   return api.downloadPost('/skus/export', payload, filename)
 }
 
+// ---------------------------------------------------------------- SKU 主数据权威（§8.14）
+
+/** 一个关键字段的来源、更新时间、外部身份与人工确认版本。 */
+export interface SkuMasterField {
+  field_name: string
+  field_label: string
+  local_value: string | number | null
+  source_system: string | null
+  source_verified: boolean
+  /** 后端算好的中文结论：未核实的来源一律是「待核实」。 */
+  source_status: string
+  external_identity: string | null
+  source_updated_at: string | null
+  source_value: string | number | null
+  authority: string | null
+  /** 空归属显示「未拍板」——不默认任一系统为主。 */
+  authority_label: string
+  confirmed_version: number
+  confirmed_value: string | number | null
+  confirmed_at: string | null
+  status: string
+}
+
+export interface SkuMasterDiff {
+  id: number
+  diff_type: string
+  field_name: string | null
+  field_label: string | null
+  current_value: unknown
+  incoming_value: unknown
+  status: string
+  allowed_resolutions: string[]
+  requires_note: boolean
+  evidence: Record<string, unknown> | null
+}
+
+export interface SkuMasterOverview {
+  sku_id: number
+  sku_code: string
+  fields: SkuMasterField[]
+  pending_diffs: SkuMasterDiff[]
+  pending_diff_count: number
+  latest_confirmed_version: number
+  notes: string[]
+}
+
+export function getSkuMaster(skuId: number) {
+  return api.get<SkuMasterOverview>(`/sku-master/skus/${skuId}`)
+}
+
+/** 核定一条主数据差异。resolution 由后端按差异类型白名单校验。 */
+export function confirmSkuMasterDiff(diffId: number, payload: { resolution: string; note?: string }) {
+  return api.post<{ applied_to_local: boolean; message: string }>(
+    `/sku-master/diffs/${diffId}/confirm`,
+    payload,
+  )
+}
+

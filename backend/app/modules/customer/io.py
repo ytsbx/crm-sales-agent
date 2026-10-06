@@ -6,7 +6,9 @@
 导入的三条规矩：
 1. 每行都查重，疑似重复的**跳过并报告**，不往库里塞脏数据；
 2. 一行出错不影响其它行，最后汇总"成功 N / 跳过 M / 失败 K"；
-3. 负责人按登录名匹配，匹配不上就用当前操作人，避免导入的数据没人管。
+3. 负责人按登录名匹配：**只在文件里没填负责人时**才落到导入人；
+   登录名写错或账号已停用是**这一行失败**（第七批 7.5）——
+   原来"匹配不上就用当前操作人"会把别人的客户悄悄改派，且毫无痕迹。
 
 CSV 编解码的公共部分在 `app/core/csvio.py`（客户/线索/产品共用）。
 """
@@ -14,6 +16,7 @@ CSV 编解码的公共部分在 `app/core/csvio.py`（客户/线索/产品共用
 from datetime import UTC, datetime
 
 from fastapi import UploadFile
+from sqlalchemy import select
 
 from app.core.csvio import parse_csv_upload
 from app.modules.customer.model import Customer
@@ -53,22 +56,35 @@ EXPORT_HEADERS = [
 def parse_date(value: str | None) -> datetime | None:
     """解析导入文件里的日期列（YYYY-MM-DD / YYYY/M/D / YYYY.M.D）。
 
-    两种取值明确返回 None 而不是猜：
-    - 解析不了的字符串（不把垃圾数据编成今天，那才是真的"重置联系时间"）；
-    - **未来日期**（老名单里出现的未来日期多半是填错，不能让它变成"永不冷落"）。
+    解析不了、或是未来日期一律返回 None。需要"为什么是 None"时用
+    `parse_date_checked`：导入接口要逐行告诉用户填错在哪。
     """
-    if not value:
-        return None
-    text = value.strip().replace("/", "-").replace(".", "-")
+    return parse_date_checked(value)[0]
+
+
+def parse_date_checked(value: str | None) -> tuple[datetime | None, str | None]:
+    """解析日期列，返回 (值, 错误原因)。
+
+    为什么要带原因（第七批 7.5）：原来解析不了和未来日期都静默返回 None，
+    等于把"用户填错"变成"这行没填"。历史联系时间一丢，冷落/回收判断就全错，
+    而且没有任何地方会提示 —— 现在这两种情况都明确报给用户，且**只有真的
+    没填**（空白）才算"未知"。
+    """
+    text = (value or "").strip()
+    if not text:
+        return None, None
+    normalized = text.strip().replace("/", "-").replace(".", "-")
     for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
-            parsed = datetime.strptime(text, fmt)
+            parsed = datetime.strptime(normalized, fmt)
         except ValueError:
             continue
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-        return parsed if parsed <= datetime.now(UTC) else None
-    return None
+        if parsed > datetime.now(UTC):
+            return None, f"最后联系日期不能是未来日期（收到 {text}）"
+        return parsed, None
+    return None, f"最后联系日期格式应为 YYYY-MM-DD（收到 {text}）"
 
 
 def customer_export_row(customer: Customer, owner_name: str | None) -> list:
@@ -94,11 +110,58 @@ async def parse_upload(file: UploadFile) -> list[dict]:
 
 async def resolve_owner(session, username: str | None, default_user_id: int) -> int:
     """负责人按登录名匹配，匹配不上就用当前操作人。"""
-    if not username or not username.strip():
-        return default_user_id
-    from sqlalchemy import select
+    return (await resolve_owner_checked(session, username, default_user_id))[0]
 
-    row = (
-        await session.execute(select(User).where(User.username == username.strip()))
+
+async def resolve_owner_checked(
+    session, username: str | None, default_user_id: int
+) -> tuple[int, str | None, dict]:
+    """负责人映射：返回 (owner_id, 错误原因, 映射说明)。
+
+    第七批 7.5 的口径（原实现是"匹配不上就落到导入人名下"）：
+    - 空白 → 用导入人，并在映射说明里写清"默认：导入人"，预览时能核对；
+    - 登录名不存在 → **这一行失败**，不把客户偷偷占到导入人名下。
+      历史名单里写错的负责人一旦静默变成导入人，等于把别人的客户改派了，
+      而且没有任何痕迹；
+    - 账号已停用 → 同样这一行失败：停用的人不该再接新客户（原来只看账号存在）。
+    """
+    login = (username or "").strip()
+    if not login:
+        row = await session.get(User, default_user_id)
+        return (
+            default_user_id,
+            None,
+            {
+                "login": None,
+                "resolved": "import_operator",
+                "owner_id": default_user_id,
+                "owner_name": getattr(row, "name", None),
+                "note": "文件未填负责人，按导入人归属",
+            },
+        )
+    found = (
+        await session.execute(select(User).where(User.username == login))
     ).scalar_one_or_none()
-    return row.id if row else default_user_id
+    if found is None:
+        return (
+            default_user_id,
+            f"找不到登录名为「{login}」的账号，请核对负责人登录名（不会自动归到导入人名下）",
+            {},
+        )
+    if found.status != "active":
+        return (
+            default_user_id,
+            f"账号「{login}」（{found.name}）已停用，不能作为客户负责人",
+            {},
+        )
+    return (
+        found.id,
+        None,
+        {
+            "login": login,
+            "resolved": "username",
+            "owner_id": found.id,
+            "owner_name": found.name,
+            "note": None,
+        },
+    )

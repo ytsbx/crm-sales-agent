@@ -1,20 +1,44 @@
-# 数据库每日备份的 systemd 服务 + 定时器（二选一：timer 或 cron）。
+# CRM 每日一致备份的 systemd 服务 + 定时器（二选一：timer 或 cron）。
 #
-# 安装（生产服务器上）：
+# 安装（生产服务器上，代码放 /opt/crm）：
 #   sudo cp ops/deploy/crm-backup.{service,timer} /etc/systemd/system/
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now crm-backup.timer
 #   systemctl list-timers | grep crm   # 确认下次触发时间
+#   sudo systemctl start crm-backup     # 先手工跑一次，确认 journalctl 里是 OK
 #
 # Persistent=true：错过的触发点（服务器关机/重启）开机后补跑一次，
 # 不会因为那天恰好重启了就没有当天备份。
+#
+# 连接与目录都从 /opt/crm/backend/.env 继承（DATABASE_URL / FILE_ROOT），
+# 与后端进程读同一份配置——**故意不在这里另写一份连接串**：
+# 两处配置一旦分叉，就会出现"后端连 A 库、备份备 B 库"这种最难发现的错误。
 
 [Unit]
-Description=CRM database backup (pg_dump)
+Description=CRM consistent backup (PostgreSQL dump + file originals + manifest)
+# 备份要读原件目录，先保证后端（也就保证了 .env 与目录存在）——但后端没起来
+# 不等于不能备份，所以是 Wants 而不是 Requires。
+Wants=crm-backend.service
+After=network.target postgresql.service
 
 [Service]
 Type=oneshot
 User=crm
-# 连接串（或从 /opt/crm/backend/.env 继承 DATABASE_URL）
+# .env 里的 DATABASE_URL / FILE_ROOT / BIZ_DOCS_ROOT 等从这里进
 EnvironmentFile=/opt/crm/backend/.env
-ExecStart=/opt/crm/scripts/backup_db.sh
+# FILE_ROOT 是相对路径（默认 data/files）时，按后端 WorkingDirectory 解析：
+# cron/systemd 的 CWD 与后端不同，不显式钉住就会备份到另一棵空目录。
+Environment=FILE_ROOT_BASE_DIR=/opt/crm/backend
+Environment=BACKUP_DIR=/var/backups/crm
+Environment=KEEP_DAYS=14
+# 本机维护用：临时解包/校验目录放 /var/tmp，避免 /tmp 被 noexec/tmpfs 限制影响
+Environment=WORK_DIR=/var/tmp
+WorkingDirectory=/opt/crm
+# 显式用 bash 调用：仓库是从 Windows 侧维护的，脚本的可执行位不保证（git 不跟踪
+# Windows 上的 +x），直接写脚本路径会在服务器上报 203/EXEC。用 bash 调用则与
+# 可执行位无关。脚本内部用 $(dirname "$0") 定位同目录的配套脚本，路径依然正确。
+ExecStart=/bin/bash /opt/crm/ops/deploy/backup_db.sh
+# 备份失败必须是"服务失败"，systemd 才会记失败、监控也才看得到（见 monitor.sh）
+TimeoutStartSec=1800
+StandardOutput=journal
+StandardError=journal

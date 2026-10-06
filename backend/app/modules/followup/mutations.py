@@ -131,7 +131,11 @@ async def create_manual_followup(session: AsyncSession, user: CurrentUser, paylo
         await session.flush()
         followup.next_task_id = task.id
     if objects.get("customer"):
-        objects["customer"].last_followup_at = datetime.now(UTC)
+        customer = objects["customer"]
+        customer.last_followup_at = datetime.now(UTC)
+        # 补核（第七批 7.5）：记了一条真实跟进，"上次联系时间未知"这个标记
+        # 就失效了 —— 这正是历史导入客户回到自动回收视野的方式。
+        customer.last_contact_unknown = False
     if objects.get("lead"):
         lead = objects["lead"]
         lead.last_followup_at = datetime.now(UTC)

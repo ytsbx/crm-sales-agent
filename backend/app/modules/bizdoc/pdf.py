@@ -25,6 +25,11 @@ from reportlab.platypus import (
 
 CN_FONT = "STSong-Light"
 
+#: 出图程序版本（第八批 §8.10）。改渲染逻辑时**必须**动这个字符串：
+#: 它落进 `biz_docs.renderer_version`，用来解释"同一份快照为什么两次出图不同"。
+#: 旧原件不会因此改变——它存的是字节，不是"再渲染一遍的承诺"。
+RENDERER_VERSION = "bizdoc-pdf/1"
+
 
 def _register_font() -> None:
     try:
@@ -58,6 +63,17 @@ def _styles() -> dict[str, ParagraphStyle]:
         ),
         "body": ParagraphStyle(
             "DocBody", parent=base["Normal"], fontName=CN_FONT, fontSize=10, leading=16
+        ),
+        # 草稿提示要**看得见**：红色、略大，和正文条款明显区分
+        "draft": ParagraphStyle(
+            "DocDraft",
+            parent=base["Normal"],
+            fontName=CN_FONT,
+            fontSize=11,
+            leading=16,
+            textColor=colors.HexColor("#C0392B"),
+            spaceBefore=4,
+            spaceAfter=4,
         ),
         "footer": ParagraphStyle(
             "DocFooter",
@@ -147,6 +163,25 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
     company = _text(data.get("company_name")) or "本公司"
     flow.append(Paragraph(_esc(company), style["meta"]))
     flow.append(Paragraph(_esc(data.get("title")), style["title"]))
+
+    # 草稿（第八批 §8.8）：模板变量没解析出来时只允许出草稿，纸面上必须写明
+    # "这不是正式对外文件"，否则一份缺条款的 PDF 会被当成正式件发出去。
+    if data.get("is_draft"):
+        issues = data.get("token_issues") or []
+        detail = "；".join(
+            _text(issue.get("message") or issue.get("token")) for issue in issues
+        ) or "模板变量未解析"
+        flow.append(
+            Paragraph(
+                _esc("【草稿】本文件不是正式对外文件：模板变量未解析。" + detail),
+                style["draft"],
+            )
+        )
+
+    # 副本标记（第八批 §8.10）：这一份不是生成时存档的那份字节，而是现在按快照
+    # 重出的。**必须在纸面上写明**——否则一份"重建副本"会被当成当初发给客户的原件。
+    if data.get("copy_notice"):
+        flow.append(Paragraph(_esc(f"【{data['copy_notice']}】"), style["draft"]))
 
     meta_rows = [
         ["单据编号", _text(data.get("doc_no")), "单据版本", f"V{_text(data.get('version'))}"],
@@ -251,6 +286,20 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
             style["footer"],
         )
     )
+    # 按版本冻结时确实没记录的栏位（历史文件）：在纸面上说明"这些不是当时的空白，
+    # 是系统没留存"，免得客户以为业务当时就是这么定的
+    gaps = (data.get("frozen") or {}).get("gaps") or []
+    if gaps:
+        flow.append(
+            Paragraph(
+                "未留存项（生成时未记录，待核实）："
+                + "；".join(
+                    f"{_text(gap.get('label'))}（{_text(gap.get('display'))}）"
+                    for gap in gaps[:8]
+                ),
+                style["footer"],
+            )
+        )
 
     doc.build(flow)
     return buffer.getvalue()

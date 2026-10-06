@@ -18,7 +18,14 @@ from app.modules.agent.model import (
     AgentMessage,
     AgentSession,
 )
-from app.modules.agent.tools import TOOLS, ToolContext, openai_tools, tool_label
+from app.modules.agent.tools import (
+    TOOLS,
+    ToolContext,
+    ensure_tool_permission,
+    missing_permissions,
+    openai_tools,
+    tool_label,
+)
 
 SYSTEM_PROMPT = """你是公司销售 CRM 里的销售助手，服务对象是业务员和销售主管。
 
@@ -303,6 +310,53 @@ async def run_turn_events(
 
                 if spec is None:
                     result: dict = {"error": f"未知工具 {name}"}
+                elif missing_permissions(spec, user):
+                    # 执行网关的权限闸门（§8.3）：工具声明的模块权限不够就
+                    # **根本不执行、也不交给模型**。此前只把住数据范围，于是只有
+                    # `agent:use` 的人能读到财务/成本——"工具声明风险等级"替代不了授权。
+                    #
+                    # 判据只有 `missing_permissions` 一处；L1/L2/L3 都要过它：
+                    # L2/L3 虽然这里只是落成待确认动作，但确认与重试也是执行入口
+                    # （execute_action / retry_tool_call 会再判一次）。
+                    missing = missing_permissions(spec, user)
+                    result = {
+                        "error": (
+                            f"无操作权限：需要 {' / '.join(missing)}（{spec.label}），"
+                            "请找管理员分配对应模块的查看权限"
+                        )
+                    }
+                    await _record_execution(
+                        session,
+                        session_id=agent_session.id,
+                        action_id=None,
+                        tool_name=name,
+                        risk=spec.risk,
+                        payload=args,
+                        output=None,
+                        status="failed",
+                        error=result["error"],
+                        user=user,
+                        started_at=datetime.now(UTC),
+                    )
+                    tool_trace.append(
+                        {
+                            "tool": name,
+                            "label": tool_label(name),
+                            "risk": spec.risk,
+                            "input": args,
+                            "output": result,
+                        }
+                    )
+                    yield (
+                        "tool_call",
+                        {
+                            "tool": name,
+                            "label": tool_label(name),
+                            "risk": spec.risk,
+                            "input": args,
+                            "output": result,
+                        },
+                    )
                 elif spec.risk == "L1":
                     started = datetime.now(UTC)
                     try:
@@ -657,6 +711,9 @@ async def execute_action(
     spec = TOOLS.get(action.tool_name)
     if spec is None:
         raise AppError(ErrorCode.NOT_FOUND, "找不到对应的工具", 404)
+    # 确认卡也是执行入口：权限可能在"AI 提议"之后被收回，
+    # 所以这里必须再判一次（判据与流式那处同一份 `ToolSpec.permissions`）。
+    ensure_tool_permission(spec, user)
 
     ctx = ToolContext(session=session, user=user, agent_session_id=action.session_id, action_id=action.id)
     started = datetime.now(UTC)
@@ -753,6 +810,9 @@ async def retry_tool_call(
             f"「{tool_label(spec.name)}」是写操作，重试可能重复写入，"
             "请重新发起而不是重试",
         )
+    # 重试同样是执行入口：不给权限的人不能靠"重试之前那次失败的调用"读数据
+    # （失败的执行记录里可能就带着上一次的入参，例如别人的 order_id）。
+    ensure_tool_permission(spec, user)
 
     ctx = ToolContext(
         session=session, user=user, agent_session_id=agent_session.id

@@ -39,12 +39,69 @@ class DingTalkDisabled(RuntimeError):
 
 
 class DingTalkError(RuntimeError):
-    """钉钉接口返回了业务错误。"""
+    """钉钉接口返回了业务错误（对方明确答复了，所以**确定没有建单**）。
 
-    def __init__(self, message: str, *, api: str, code: str | None = None) -> None:
+    `http_status` 必须尽量带上：5xx 说明对方可能已经处理了请求、只是回包失败，
+    与 4xx 的"明确拒绝"在业务后果上完全不同（见 `classify_outcome`）。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        api: str,
+        code: str | None = None,
+        http_status: int | None = None,
+    ) -> None:
         self.api = api
         self.code = code
+        self.http_status = http_status
         super().__init__(f"钉钉接口 {api} 返回错误：{message}")
+
+
+class DingTalkUnknownOutcome(RuntimeError):
+    """请求**可能已经到达钉钉**，但我们读不出结果（超时/连接断/响应不可解析）。
+
+    这是最需要小心的一类：发起审批接口没有幂等键，所以"结果未知"时自动重发
+    会在对方系统里建出第二张单。归到这类之后只能先查询或人工核对。
+    """
+
+
+#: 一次"发起审批"的三种后果（第七批 7.7 要求分开）。对"能不能重试"的答案完全不同。
+OUTCOME_NOT_SENT = "not_sent"
+OUTCOME_REJECTED = "rejected"
+OUTCOME_UNKNOWN = "unknown"
+
+
+def classify_outcome(exc: BaseException) -> str:
+    """把发起审批时的异常翻译成三种后果。**判断只写在这一处**。
+
+    为什么不能 `except Exception` 一刀切（早先就是这么写的，于是超时被记成
+    "发起失败"，而"发起失败"又能被同轮重试——重复建单的入口就开在那里）：
+
+    - `OUTCOME_NOT_SENT`：确定没发出去。缺配置、推送闸门、取 token 失败，
+      以及参数拼装这类本地错误——请求根本没出去，同轮重试安全；
+    - `OUTCOME_REJECTED`：外部明确拒绝（4xx、业务错误码，或 200 但没给 instanceId）。
+      单子没建出来，同轮重试同样安全；
+    - `OUTCOME_UNKNOWN`：超时、连接中断、响应读不出来、5xx。**对方可能已经建单**，
+      只能先查询/人工核对，绝不能再发一次。
+
+    `DingTalkError.http_status` 缺失时按 UNKNOWN 保守处理：宁可多让人看一眼，
+    也不要因为少带一个状态码就自动重发。
+    """
+    if isinstance(exc, (DingTalkDisabled, DingTalkNotConfigured)):
+        return OUTCOME_NOT_SENT
+    if isinstance(exc, DingTalkUnknownOutcome):
+        return OUTCOME_UNKNOWN
+    if isinstance(exc, httpx.HTTPError):
+        # httpx 的错误都发生在"请求已经出去"之后（TimeoutException / TransportError…）
+        return OUTCOME_UNKNOWN
+    if isinstance(exc, DingTalkError):
+        if exc.http_status is None or exc.http_status >= 500:
+            return OUTCOME_UNKNOWN
+        return OUTCOME_REJECTED
+    # 其余异常发生在 HTTP 请求之前（参数拼装等本地错误）→ 确定没发出去
+    return OUTCOME_NOT_SENT
 
 
 class DingTalkNotConfigured(RuntimeError):
@@ -92,7 +149,9 @@ class DingTalkClient:
         data = resp.json() if resp.content else {}
         if resp.status_code != 200 or not data.get("accessToken"):
             raise DingTalkError(
-                data.get("message") or resp.text[:200], api="oauth2/accessToken"
+                data.get("message") or resp.text[:200],
+                api="oauth2/accessToken",
+                http_status=resp.status_code,
             )
         self._token = data["accessToken"]
         self._token_expires_at = (
@@ -116,7 +175,14 @@ class DingTalkClient:
         self._require()
         if not process_code:
             raise DingTalkNotConfigured("审批模板 process_code")
-        token = await self.access_token()
+        try:
+            token = await self.access_token()
+        except (DingTalkError, httpx.HTTPError) as exc:
+            # 取 token 这一步失败，审批单**一定还没建**：归"确定没发出"（同轮重试安全）。
+            # 不能因为它是 5xx/超时就报"结果未知"，那会白白惊动人工核对。
+            raise DingTalkError(
+                f"获取 access_token 失败：{exc}", api="oauth2/accessToken", http_status=400
+            ) from exc
         body: dict[str, Any] = {
             "processCode": process_code,
             "originatorUserId": originator_user_id,
@@ -127,16 +193,31 @@ class DingTalkClient:
         }
         if dept_id is not None:
             body["deptId"] = dept_id
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                f"{settings.dingtalk_base_url}/v1.0/workflow/processInstances",
-                json=body,
-                headers={"x-acs-dingtalk-access-token": token},
-            )
-        data = resp.json() if resp.content else {}
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/workflow/processInstances",
+                    json=body,
+                    headers={"x-acs-dingtalk-access-token": token},
+                )
+        except httpx.HTTPError as exc:
+            # **请求已经发出去了**，只是没等到响应（超时/连接断）。
+            # 钉钉那边可能已经建单，所以必须报"结果未知"而不是"失败"。
+            raise DingTalkUnknownOutcome(
+                f"发起审批实例时外部请求没有得到响应（{type(exc).__name__}）：{exc}"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            # 响应体读不出来：HTTP 已经跑完一轮，同样属于"结果未知"
+            raise DingTalkUnknownOutcome(
+                "发起审批实例后响应无法解析，无法确认是否已建单"
+            ) from exc
         if resp.status_code != 200 or not data.get("instanceId"):
             raise DingTalkError(
-                data.get("message") or resp.text[:200], api="workflow/processInstances"
+                data.get("message") or resp.text[:200],
+                api="workflow/processInstances",
+                http_status=resp.status_code,
             )
         return data["instanceId"]
 
@@ -153,7 +234,9 @@ class DingTalkClient:
         data = resp.json() if resp.content else {}
         if resp.status_code != 200:
             raise DingTalkError(
-                data.get("message") or resp.text[:200], api="workflow/processInstances:get"
+                data.get("message") or resp.text[:200],
+                api="workflow/processInstances:get",
+                http_status=resp.status_code,
             )
         # 钉钉把审批内容是**包在 `result` 里**的，顶层只有 requestId 之类。
         # 早先按顶层 `instanceId` 判断成功，于是正常响应被误报成"接口失败"
@@ -189,6 +272,7 @@ class DingTalkClient:
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
                 api="forms/schemas/processCodes",
+                http_status=resp.status_code,
             )
         return data.get("result") or data
 
@@ -215,7 +299,9 @@ class DingTalkClient:
         data = resp.json() if resp.content else {}
         if data.get("errcode") or not data.get("media_id"):
             raise DingTalkError(
-                data.get("errmsg") or resp.text[:200], api="media/upload"
+                data.get("errmsg") or resp.text[:200],
+                api="media/upload",
+                http_status=resp.status_code,
             )
         return str(data["media_id"])
 
@@ -241,7 +327,9 @@ class DingTalkClient:
         data = resp.json() if resp.content else {}
         if resp.status_code != 200:
             raise DingTalkError(
-                data.get("message") or resp.text[:200], api="contact/users/search"
+                data.get("message") or resp.text[:200],
+                api="contact/users/search",
+                http_status=resp.status_code,
             )
         users = data.get("list") or []
         # 精确匹配优先：搜"子木"可能带回一串包含这两个字的人
@@ -263,7 +351,9 @@ class DingTalkClient:
         data = resp.json() if resp.content else {}
         if data.get("errcode"):
             raise DingTalkError(
-                data.get("errmsg") or "user/get 失败", api="topapi/v2/user/get"
+                data.get("errmsg") or "user/get 失败",
+                api="topapi/v2/user/get",
+                http_status=resp.status_code,
             )
         return list((data.get("result") or {}).get("dept_id_list") or [])
 

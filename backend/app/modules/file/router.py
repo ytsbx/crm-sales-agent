@@ -66,9 +66,15 @@ async def upload_file(
     if (business_type is None) != (business_id is None):
         raise AppError(ErrorCode.PARAM_ERROR, "业务类型和业务 id 必须同时提供", 422)
     if business_type is not None and business_id is not None and not await visible_object(
-        session, user, business_type=business_type, business_id=business_id
+        session, user, business_type=business_type, business_id=business_id, write=True
     ):
-        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该业务对象不在你的数据范围内", 403)
+        # 上传是**写入**：只看"能不能看见"不够。看见了别人的报价不等于能往上加附件，
+        # 而且没有该模块写入权的人也不该借附件改变那个业务对象的内容。
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能给该业务对象上传附件：它不在你的数据范围内，或你没有该模块的维护权限",
+            403,
+        )
     # 打样单制作/寄出之后：新附件只能标成「后续补充资料」。
     # 制作依据（图纸、规格书）必须在制作当时就指定好，事后混进来的资料
     # 不能和依据混为一谈——见 access.sample_write_lock_label。
@@ -94,28 +100,58 @@ async def upload_file(
         checksum=checksum,
         uploaded_by=user.id,
     )
-    session.add(record)
-    await session.flush()
+    try:
+        session.add(record)
+        await session.flush()
 
-    if business_type and business_id:
-        session.add(
-            BusinessFile(
-                business_type=business_type,
-                business_id=business_id,
-                file_id=record.id,
-                category=category,
+        if business_type and business_id:
+            session.add(
+                BusinessFile(
+                    business_type=business_type,
+                    business_id=business_id,
+                    file_id=record.id,
+                    category=category,
+                )
             )
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="upload",
+            business_type="file",
+            business_id=record.id,
+            # 目标业务对象要写进审计：附件挂到哪个对象上，等于把访问范围交给谁。
+            # 只记 business_type 时，事后查不出这份文件到底挂到了哪一条业务记录上
+            # （挂载/解绑的审计也是同一个道理，见 attach/detach）。
+            after={
+                "file_name": record.file_name,
+                "size": size,
+                "target": business_type,
+                "target_id": business_id,
+                "category": category,
+            },
+            ip=client_ip(request),
         )
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="upload",
-        business_type="file",
-        business_id=record.id,
-        after={"file_name": record.file_name, "size": size, "target": business_type},
-        ip=client_ip(request),
-    )
-    await session.commit()
+        await session.commit()
+    except Exception:
+        # 登记失败（约束冲突 / 连接断开 / 审计写入报错）时，刚写上盘的那份文件
+        # 没有任何记录指向它——不清理就永远堆在盘上，而且和"上传成功"的文件
+        # 长得一模一样，事后谁也分不清哪份是垃圾。
+        # 补偿只按本次的 object_key 精确删，并且**先确认库里确实没有这条登记**
+        # 才删：否则可能把一条已经提交成功的记录变成"记录在、文件没了"。
+        try:
+            await session.rollback()
+            registered = (
+                await session.execute(
+                    select(FileRecord.id).where(FileRecord.object_key == object_key)
+                )
+            ).first()
+            if registered is None:
+                storage.delete_object(object_key)
+        except Exception:  # noqa: BLE001 —— 清理失败不该盖掉真正的登记错误
+            logger.warning(
+                "上传登记失败，且临时文件清理失败：%s", object_key, exc_info=True
+            )
+        raise
     return ok(serialize_file(record, user.name), "上传成功")
 
 
@@ -367,12 +403,19 @@ async def attach_file(
     session: AsyncSession = Depends(get_db),
 ):
     # **两个方向都要校验**，缺一个就是越权通道：
-    # ① 目标业务对象在不在你的数据范围内——否则能给别人的客户挂附件；
+    # ① 目标业务对象在不在你的数据范围内**且你有该模块的写入权**——否则能给别人的客户
+    #    挂附件；"看得见"和"能改"是两件事，挂载就是在改那个对象的内容；
     # ② 源文件你能不能看——否则可以把别人的文件挂到自己的对象上，
     #    再走正常下载路径把它拿走（`can_access_file` 只要有一条可见关联就放行，
     #    所以"挂一条关联"本身就等于授权）。
-    if not await visible_object(session, user, business_type=business_type, business_id=business_id):
-        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该业务对象不在你的数据范围内", 403)
+    if not await visible_object(
+        session, user, business_type=business_type, business_id=business_id, write=True
+    ):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能给该业务对象挂附件：它不在你的数据范围内，或你没有该模块的维护权限",
+            403,
+        )
     if not await can_access_file(session, user, file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
     # ③ 打样锁：已制作/寄出后，挂上来的只能是「后续补充资料」。
@@ -426,11 +469,18 @@ async def unlink_file(
     # ① `visible_object` 的 business_type / business_id 是**只能按名字传**的参数
     #    （签名里有 `*`），按位置传会直接 TypeError → 接口每次必 500；
     # ② 它返回布尔值，**不判返回值等于没校验**——「能下载某个共享文件」不等于
-    #    「能拆掉它挂在别人业务对象上的关联」。
+    #    「能拆掉它挂在别人业务对象上的关联」；
+    # ③ 而且"看得见"也不等于"能改"：解绑要该模块的**写入权**（write=True），
+    #    否则只有查看权的人能悄悄摘掉别人单据上的凭证关联。
     if not await visible_object(
-        session, user, business_type=link.business_type, business_id=link.business_id
+        session, user,
+        business_type=link.business_type, business_id=link.business_id, write=True,
     ):
-        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该附件所在的业务对象不在你的数据范围内", 403)
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能解绑该附件：它所在的业务对象不在你的数据范围内，或你没有该模块的维护权限",
+            403,
+        )
     # ③ 已签 / 已生成的原件：**解绑和删除一样能毁掉证据**。拆掉关联后文件不再挂在
     #    任何业务对象上，而 `can_access_file` 对无关联文件只认上传者——其他人（含主管）
     #    从此永久拿不到这份签署原件，台账上"签的是哪一版"就再也对不上了。

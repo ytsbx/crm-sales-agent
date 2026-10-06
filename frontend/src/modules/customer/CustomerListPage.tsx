@@ -20,6 +20,7 @@ import {
   type CustomerPayload,
 } from '../../shared/api/customer'
 import { listUsers } from '../../shared/api/system'
+import { newRequestKey } from '../../shared/api/requestKey'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
@@ -97,6 +98,8 @@ export default function CustomerListPage() {
   const [form, setForm] = useState<CustomerPayload>(EMPTY_FORM)
   // 批量导入导出
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // 本次「新建客户」表单的幂等键：打开表单时生成，成功后清空（第八批 8.15）
+  const createRequestKeyRef = useRef('')
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<{
     created_count: number
@@ -228,11 +231,16 @@ export default function CustomerListPage() {
   })
 
   const createMutation = useMutation({
-    mutationFn: (payload: CustomerPayload) => createCustomer(payload),
+    // 请求幂等键跟着"这一次填表"走：弱网/超时后用户再点一次提交，
+    // 带的是同一把键，服务端只会建一条（第八批 8.15）。
+    mutationFn: (payload: CustomerPayload) =>
+      createCustomer({ ...payload, request_key: createRequestKeyRef.current || undefined }),
     onSuccess: (customer) => {
       Toast.success(`客户「${customer.name}」已创建`)
       setModalVisible(false)
       setForm(EMPTY_FORM)
+      // 这次表单已经用掉了这把键，下一次新建要换新的
+      createRequestKeyRef.current = ''
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
       void queryClient.invalidateQueries({ queryKey: ['workbench'] })
     },
@@ -402,7 +410,14 @@ export default function CustomerListPage() {
           <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
             批量导入
           </Button>
-          <Button theme="solid" onClick={() => setModalVisible(true)}>
+          <Button
+            theme="solid"
+            onClick={() => {
+              // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
+              createRequestKeyRef.current = newRequestKey()
+              setModalVisible(true)
+            }}
+          >
             新建客户
           </Button>
         </div>

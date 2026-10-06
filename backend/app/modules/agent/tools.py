@@ -8,13 +8,14 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.data_scope import scoped_owner_ids
+from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Contact, Customer
@@ -45,6 +46,13 @@ class ToolSpec:
     risk: str
     handler: Callable[..., Awaitable[dict[str, Any]]]
     business_type: str | None = None
+    #: 执行该工具所需的**模块查看/管理权限码**（与各业务模块 `router.py` 上的
+    #: 原字符串逐字一致）。空元组 = 只要求 `agent:use`。
+    #:
+    #: 为什么必须声明，而不是只靠数据范围：数据范围回答"能看谁的数据"，
+    #: 权限回答"这个模块的入口能不能进"。只有 `agent:use` 的人此前能通过
+    #: Agent 读到财务汇总与成本价——因为工具层此前只做了范围过滤（§8.3）。
+    permissions: tuple[str, ...] = ()
 
 
 TOOLS: dict[str, ToolSpec] = {}
@@ -83,7 +91,14 @@ def tool_label(name: str) -> str:
     return TOOL_LABELS.get(name, name)
 
 
-def tool(name: str, description: str, parameters: dict, risk: str, business_type: str | None = None):
+def tool(
+    name: str,
+    description: str,
+    parameters: dict,
+    risk: str,
+    business_type: str | None = None,
+    permissions: tuple[str, ...] = (),
+):
     def decorator(handler):
         TOOLS[name] = ToolSpec(
             name=name,
@@ -93,10 +108,36 @@ def tool(name: str, description: str, parameters: dict, risk: str, business_type
             risk=risk,
             handler=handler,
             business_type=business_type,
+            permissions=permissions,
         )
         return handler
 
     return decorator
+
+
+def missing_permissions(spec: ToolSpec, user: CurrentUser) -> list[str]:
+    """当前用户缺哪些权限码（管理员与 `require_permission` 同一口径：默认放行）。"""
+    if "admin" in user.roles:
+        return []
+    return [code for code in spec.permissions if not user.has(code)]
+
+
+def ensure_tool_permission(spec: ToolSpec, user: CurrentUser) -> None:
+    """执行网关的权限闸门：无权就抛 403，文案带上缺的权限码。
+
+    文案与 `core/deps.require_permission` 同风格——"无操作权限：需要
+    payment:view"远比"没有权限"能定位问题：看到的人知道该给谁配哪个权限。
+
+    **三处入口都要调它**（`runtime.run_turn_events` / `execute_action` /
+    `retry_tool_call`）：只把住流式那一处，等于用"重试"或"确认卡"绕过去。
+    """
+    missing = missing_permissions(spec, user)
+    if missing:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            f"无操作权限：需要 {' / '.join(missing)}（工具「{spec.label}」）",
+            403,
+        )
 
 
 def openai_tools() -> list[dict]:
@@ -115,6 +156,37 @@ def openai_tools() -> list[dict]:
 
 def _money(value) -> float | None:
     return None if value is None else round(float(value), 2)
+
+
+async def _may_see_full_contact(ctx: ToolContext, customer: Customer) -> bool:
+    """能否看到该客户联系人的**完整**联系方式。
+
+    转调 `contact_util.can_view_full_contact`（用户 2026-10-06 确认的统一口径）：
+    负责人本客户 / 主管本团队 / 管理员或全量范围 / 显式授权 `customer:contact_full`；
+    其余（含公海客户的所有可见者）脱敏。
+
+    为什么不再在这里自己判：客户详情、联系人列表、搜索、AI、导出是**五个**入口，
+    各写一份"谁算自己人"的规则，迟早有一份漏掉 —— 而漏掉的那份就是泄漏面。
+    """
+    from app.modules.contact_util import can_view_full_contact
+
+    return await can_view_full_contact(
+        ctx.session, ctx.user, customer_id=customer.id, owner_id=customer.owner_id
+    )
+
+
+def _mask_mobile(mobile: str | None) -> str | None:
+    """手机号脱敏。格式统一交给 `contact_util.mask_contact_value`，
+    避免 AI 回答与页面上显示成两种样子。"""
+    from app.modules.contact_util import mask_contact_value
+
+    return mask_contact_value(mobile, "phone")
+
+
+def _mask_email(email: str | None) -> str | None:
+    from app.modules.contact_util import mask_contact_value
+
+    return mask_contact_value(email, "email")
 
 
 async def _scope(stmt, ctx: ToolContext, column, *, allow_unowned: bool = False):
@@ -177,6 +249,7 @@ async def _ensure_in_scope(
         "properties": {"keyword": {"type": "string", "description": "客户名称关键词，可留空"}},
     },
     "L1",
+    permissions=('customer:view',),
 )
 async def search_customers(ctx: ToolContext, keyword: str = "") -> dict:
     stmt = select(Customer).where(Customer.deleted_at.is_(None))
@@ -210,8 +283,31 @@ async def search_customers(ctx: ToolContext, keyword: str = "") -> dict:
     "获取一个客户的完整画像：基本信息、联系人、商机、报价、订单与待回款。",
     {"type": "object", "properties": {"customer_id": {"type": "integer"}}, "required": ["customer_id"]},
     "L1",
+    permissions=('customer:view',),
 )
 async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
+    """客户全貌：**逐模块**授权 + 逐块取数。
+
+    修前的三处问题（§8.3）：
+    1. 只验了"客户在不在我的数据范围"，随后按 customer_id 把联系人/商机/报价/
+       订单**全取**——只有 `agent:use` 的人也能从 Agent 读到财务口径；
+    2. 完整手机号直接进返回值，模型和确认卡都拿得到；
+    3. 待回款用 `整单金额 − 已确认回款` 的 float 累加，还包含已取消订单。
+
+    修法：
+    - **只要求 `customer:view` 作为工具门槛**（网关那一层按 `ToolSpec.permissions`
+      已经把住），块级权限在函数内部再各自判定——因为一个工具对应多个模块，
+      网关只能回答"能不能用这个工具"，回答不了"块能不能给"；
+    - **无权块一次查询都不发**，键根本不出现，只在 `unavailable_blocks` 里留说明，
+      避免"空数组"被误读成"这个客户没有商机"；
+    - 联系方式按可见性脱敏（见 `_may_see_full_contact`）。
+
+    范围口径沿用**客户全貌页已经批准的规则**（`customer/router.py::customer_overview`
+    只校验客户可见性，商机/报价/订单跟着客户走）：客户在范围内 → 该公司名下的
+    历史资料可见。**刻意不逐条要求 `opp.owner_id == 当前用户`**——客户交接后
+    历史商机/报价/订单的负责人仍是原负责人，机械按 owner 过滤会把合法交接资料
+    全挡掉（文档 §8.3 明确点名这一点）。
+    """
     customer = await ctx.session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
@@ -219,39 +315,21 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     await _ensure_in_scope(
         ctx, Customer.owner_id, Customer.id, customer_id, "客户", allow_unowned=True
     )
+
+    unavailable: list[str] = []
+
+    # ---- 联系人（customer:view；工具门槛已含，这里再做字段级判断）----
+    # 联系人手机号此前无条件返回。规则尚未最终拍板（24-号文档 §0.3 第 3 条），
+    # 这里先落**保守侧**：只有管理员/本客户负责人/该负责人的主管看得到完整值，
+    # 其余可见人员只看脱敏值。
     contacts = (
         await ctx.session.execute(
             select(Contact).where(Contact.customer_id == customer_id, Contact.deleted_at.is_(None))
         )
     ).scalars().all()
-    opportunities = (
-        await ctx.session.execute(
-            select(Opportunity, OpportunityStage.name)
-            .join(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
-            .where(Opportunity.customer_id == customer_id, Opportunity.deleted_at.is_(None))
-        )
-    ).all()
-    quotes = (
-        await ctx.session.execute(
-            select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None))
-        )
-    ).scalars().all()
-    orders = (
-        await ctx.session.execute(
-            select(SalesOrder).where(SalesOrder.customer_id == customer_id)
-        )
-    ).scalars().all()
-    pending_receivable = 0.0
-    for order in orders:
-        received = (
-            await ctx.session.execute(
-                select(func.coalesce(func.sum(PaymentRecord.received_amount), 0)).where(
-                    PaymentRecord.order_id == order.id, PaymentRecord.status == "confirmed"
-                )
-            )
-        ).scalar_one()
-        pending_receivable += float(order.total_amount or 0) - float(received)
-    return {
+    full_contact = await _may_see_full_contact(ctx, customer)
+
+    result: dict = {
         "customer": {
             "id": customer.id,
             "name": customer.name,
@@ -265,10 +343,29 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
             else None,
         },
         "contacts": [
-            {"id": c.id, "name": c.name, "title": c.title, "mobile": c.mobile, "is_primary": c.is_primary}
+            {
+                "id": c.id,
+                "name": c.name,
+                "title": c.title,
+                "mobile": c.mobile if full_contact else _mask_mobile(c.mobile),
+                "email": c.email if full_contact else _mask_email(c.email),
+                "is_primary": c.is_primary,
+            }
             for c in contacts
         ],
-        "opportunities": [
+        "contact_masked": not full_contact,
+    }
+
+    # ---- 商机（opportunity:view）----
+    if ctx.user.has("opportunity:view"):
+        opportunities = (
+            await ctx.session.execute(
+                select(Opportunity, OpportunityStage.name)
+                .join(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
+                .where(Opportunity.customer_id == customer_id, Opportunity.deleted_at.is_(None))
+            )
+        ).all()
+        result["opportunities"] = [
             {
                 "id": opp.id,
                 "title": opp.title,
@@ -280,8 +377,18 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
                 else None,
             }
             for opp, stage_name in opportunities
-        ],
-        "quotes": [
+        ]
+    else:
+        unavailable.append("商机（需要 opportunity:view）")
+
+    # ---- 报价（quote:view）----
+    if ctx.user.has("quote:view"):
+        quotes = (
+            await ctx.session.execute(
+                select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None))
+            )
+        ).scalars().all()
+        result["quotes"] = [
             {
                 "id": q.id,
                 "quote_no": q.quote_no,
@@ -289,8 +396,19 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
                 "valid_until": q.valid_until.isoformat() if q.valid_until else None,
             }
             for q in quotes
-        ],
-        "orders": [
+        ]
+    else:
+        unavailable.append("报价（需要 quote:view）")
+
+    # ---- 订单（order:view）----
+    orders = []
+    if ctx.user.has("order:view"):
+        orders = (
+            await ctx.session.execute(
+                select(SalesOrder).where(SalesOrder.customer_id == customer_id)
+            )
+        ).scalars().all()
+        result["orders"] = [
             {
                 "id": o.id,
                 "order_no": o.order_no,
@@ -299,9 +417,65 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
                 "delivery_date": o.delivery_date.isoformat() if o.delivery_date else None,
             }
             for o in orders
-        ],
-        "pending_receivable_amount": round(pending_receivable, 2),
-    }
+        ]
+    else:
+        unavailable.append("订单（需要 order:view）")
+
+    # ---- 待回款（payment:view）----
+    # 原实现无条件算，且用 float 逐单累加、把已取消订单也算进去。
+    # 这里①没有 payment:view 就不算（连数字都不出现）；②**复用
+    # `_receivables_by_currency`**（与应收汇总同一套 Decimal + 币种分组口径）；
+    # ③订单集合走 `_active_order_ids`（排除取消单、按订单当前负责人过滤）。
+    #
+    # ⚠️ 这个字段仍然是**参考口径**（未取消订单的整单金额 − 已确认回款），
+    # 不等于正式应收：正式应收以应收计划为准。口径混用正是 §8.4 点名的风险，
+    # 所以把差别写进 `receivable_note` 一起交给模型。
+    if ctx.user.has("payment:view"):
+        # 按币种分别累加"未取消订单的整单金额"与"已确认回款"，**不跨币种相加**
+        order_total: dict[str, Decimal] = {}
+        for order in orders:
+            if order.status == "cancelled":
+                continue
+            code = _currency_of(order.currency)
+            order_total[code] = order_total.get(code, Decimal(0)) + Decimal(
+                order.total_amount or 0
+            )
+        by_currency, _plans = await _receivables_by_currency(
+            ctx, await _active_order_ids(ctx, customer_id=customer_id)
+        )
+        pending = {
+            code: order_total.get(code, Decimal(0))
+            - Decimal(str(by_currency.get(code, {}).get("received_amount", 0)))
+            for code in sorted(set(order_total) | set(by_currency))
+        }
+        # 单币种给标量（既有调用方读的就是这个键）；多币种只给分组列表——
+        # 合计数在多币种下必然错，宁可不给。
+        if len(pending) <= 1:
+            only_code = next(iter(pending), "CNY")
+            result["pending_receivable_amount"] = float(round(pending.get(only_code, Decimal(0)), 2))
+            result["pending_receivable_currency"] = only_code
+        else:
+            result["pending_receivable_by_currency"] = [
+                {
+                    "currency": code,
+                    "order_total_amount": float(round(order_total.get(code, Decimal(0)), 2)),
+                    "received_amount": float(
+                        round(Decimal(str(by_currency.get(code, {}).get("received_amount", 0))), 2)
+                    ),
+                    "pending_amount": float(round(pending[code], 2)),
+                }
+                for code in sorted(pending)
+            ]
+        result["receivable_note"] = (
+            "待回款为「未取消订单的整单金额 − 已确认回款」的参考值，不等于正式应收；"
+            "正式应收以应收计划为准（可让「查应收与回款」按计划口径再看一次）"
+        )
+    else:
+        unavailable.append("应收与回款（需要 payment:view）")
+
+    if unavailable:
+        result["unavailable_blocks"] = unavailable
+    return result
 
 
 @tool(
@@ -315,6 +489,7 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
         },
     },
     "L1",
+    permissions=('opportunity:view',),
 )
 async def list_opportunities(ctx: ToolContext, status: str = "open", keyword: str = "") -> dict:
     stmt = (
@@ -351,6 +526,7 @@ async def list_opportunities(ctx: ToolContext, status: str = "open", keyword: st
     "获取商机详情：客户需求明细、最近报价版本、阶段流转与最近跟进。",
     {"type": "object", "properties": {"opportunity_id": {"type": "integer"}}, "required": ["opportunity_id"]},
     "L1",
+    permissions=('opportunity:view',),
 )
 async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
     opportunity = await ctx.session.get(Opportunity, opportunity_id)
@@ -444,6 +620,7 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
     "列出当前用户的待办任务。",
     {"type": "object", "properties": {}},
     "L1",
+    permissions=('followup:view',),
 )
 async def list_my_tasks(ctx: ToolContext) -> dict:
     rows = (
@@ -479,6 +656,7 @@ async def list_my_tasks(ctx: ToolContext) -> dict:
     "列出可报价的 SKU（含 id、编码、规格、起订量）。核价前先用它拿到 sku_id。",
     {"type": "object", "properties": {"keyword": {"type": "string"}}},
     "L1",
+    permissions=('product:view',),
 )
 async def list_sku_options(ctx: ToolContext, keyword: str = "") -> dict:
     stmt = (
@@ -519,6 +697,7 @@ async def list_sku_options(ctx: ToolContext, keyword: str = "") -> dict:
         "required": ["sku_id", "quantity"],
     },
     "L1",
+    permissions=('product:view',),
 )
 async def calculate_price(
     ctx: ToolContext,
@@ -563,46 +742,253 @@ async def calculate_price(
     return data
 
 
-@tool(
-    "get_receivables_summary",
-    "汇总应收与回款情况：应收合计、已收、未收、逾期节点。",
-    {"type": "object", "properties": {"order_id": {"type": "integer"}}},
-    "L1",
-)
-async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None) -> dict:
-    # 财务汇总必须过数据范围：不过滤就是"问一句拿到全公司回款"，
-    # 与业务接口的 apply_data_scope 同一套口径
-    owner_ids = await scoped_owner_ids(ctx.session, ctx.user)
-    order_filter = SalesOrder.id.in_(owner_ids) if owner_ids is not None else True
+async def _active_order_ids(
+    ctx: ToolContext, *, customer_id: int | None = None, order_id: int | None = None
+) -> list[int]:
+    """当前用户责任范围内、**未取消**的订单 id。
+
+    口径与 `payment/service.visible_order_ids_stmt`（应收与回款的唯一范围来源）
+    和 `analytics.receivable_stats`（排除取消单）保持一致：
+    "计划与实收同范围、取消单不计"。三个取数入口（应收汇总、客户全貌待回款、
+    订单详情财务块）共用它，避免又写出第四套范围判断。
+    """
+    from app.modules.payment import service as payment_service
+
+    stmt = select(SalesOrder.id).where(SalesOrder.status != "cancelled")
+    if customer_id is not None:
+        stmt = stmt.where(SalesOrder.customer_id == customer_id)
+    if order_id is not None:
+        stmt = stmt.where(SalesOrder.id == order_id)
+    visible = await payment_service.visible_order_ids_stmt(ctx.session, ctx.user)
+    if visible is not None:
+        stmt = stmt.where(SalesOrder.id.in_(visible))
+    return list((await ctx.session.execute(stmt)).scalars().all())
+
+
+def _currency_of(value: str | None) -> str:
+    """币种归一：空值按人民币兜底（库里历史行的默认值就是 CNY）。"""
+    return (value or "CNY").upper()
+
+
+async def _receivable_scope_stmt(ctx: ToolContext, order_id: int | None = None):
+    """应收范围过滤——**复用 payment 模块已有的责任范围子查询**。
+
+    `payment/service.visible_order_ids_stmt` 就是"当前用户可见订单"的唯一实现
+    （列表、详情、回款确认都用它），这里直接调用而不是再写一遍
+    `SalesOrder.owner_id.in_(scoped_owner_ids)`：口径只有一份，才不会出现
+    "应收页看不到、AI 却报得出来"这种两套真相。
+
+    顺带修掉原先的 `SalesOrder.id.in_(owner_ids)`——它把**员工编号**当成了
+    **订单编号**（§8.4：员工 10 自己的订单 700 应收 100 被漏掉，别人 id=10 的
+    订单 500 被算进来）。
+    """
+    from app.modules.payment import service as payment_service
+
     stmt = select(ReceivablePlan).join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
-    if order_id:
+    # 已取消订单不产生正式应收（与 analytics.receivable_stats / payment_stats
+    # 的既有规则一致：`SalesOrder.status != "cancelled"`）
+    stmt = stmt.where(SalesOrder.status != "cancelled")
+    visible = await payment_service.visible_order_ids_stmt(ctx.session, ctx.user)
+    if visible is not None:
+        stmt = stmt.where(ReceivablePlan.order_id.in_(visible))
+    if order_id is not None:
         stmt = stmt.where(ReceivablePlan.order_id == order_id)
-    stmt = stmt.where(order_filter)
-    plans = (await ctx.session.execute(stmt)).scalars().all()
-    received = (
+    return stmt
+
+
+async def _receivables_by_currency(
+    ctx: ToolContext, order_ids: list[int]
+) -> tuple[dict[str, dict], list[ReceivablePlan]]:
+    """按订单集合汇总应收与已确认回款，**按币种分组**。
+
+    口径与 `analytics.service.receivable_stats` 完全一致（那页是责任口径：
+    计划与实收都按订单当前负责人），差别只有两点，都是为了 AI 场景更安全：
+
+    1. **按币种分组**：计划/回款的 `currency` 各自分组。直接把 USD 与 CNY
+       相加会得出"200 元"这种没有币种的假数字，所以这里不提供跨币种合计；
+    2. **Decimal 计算**：不经过 float，避免累加误差。
+    """
+    groups: dict[str, dict] = {}
+    if not order_ids:
+        return groups, []
+
+    plans = (
         await ctx.session.execute(
-            select(func.coalesce(func.sum(PaymentRecord.received_amount), 0)).where(
-                PaymentRecord.status == "confirmed",
-                PaymentRecord.order_id == order_id if order_id else True,
-                select(SalesOrder.id)
-                .where(SalesOrder.id == PaymentRecord.order_id)
-                .where(order_filter)
-                .exists(),
+            select(ReceivablePlan).where(
+                ReceivablePlan.order_id.in_(order_ids),
+                ReceivablePlan.status != "cancelled",
             )
         )
-    ).scalar_one()
-    plan_amount = sum((float(p.amount or 0) for p in plans), 0.0)
-    return {
-        "plan_count": len(plans),
-        "plan_amount": round(plan_amount, 2),
-        "received_amount": round(float(received), 2),
-        "unreceived_amount": round(plan_amount - float(received), 2),
-        "overdue": [
-            {"order_id": p.order_id, "plan_name": p.plan_name, "due_date": p.due_date.isoformat()}
-            for p in plans
-            if p.status == "overdue"
-        ],
+    ).scalars().all()
+
+    plan_amount: dict[str, Decimal] = {}
+    plan_count: dict[str, int] = {}
+    for plan in plans:
+        code = _currency_of(plan.currency)
+        plan_amount[code] = plan_amount.get(code, Decimal(0)) + Decimal(plan.amount or 0)
+        plan_count[code] = plan_count.get(code, 0) + 1
+
+    received_rows = (
+        await ctx.session.execute(
+            select(
+                PaymentRecord.currency,
+                func.coalesce(func.sum(PaymentRecord.received_amount), 0),
+            )
+            .where(
+                PaymentRecord.status == "confirmed",
+                PaymentRecord.order_id.in_(order_ids),
+            )
+            .group_by(PaymentRecord.currency)
+        )
+    ).all()
+    received_amount: dict[str, Decimal] = {}
+    for code, total in received_rows:
+        key = _currency_of(code)
+        received_amount[key] = received_amount.get(key, Decimal(0)) + Decimal(total or 0)
+
+    for code in sorted(set(plan_amount) | set(received_amount)):
+        planned = plan_amount.get(code, Decimal(0))
+        got = received_amount.get(code, Decimal(0))
+        groups[code] = {
+            "currency": code,
+            "plan_count": plan_count.get(code, 0),
+            "plan_amount": float(round(planned, 2)),
+            "received_amount": float(round(got, 2)),
+            "unreceived_amount": float(round(planned - got, 2)),
+        }
+    return groups, list(plans)
+
+
+@tool(
+    "get_receivables_summary",
+    "汇总应收与回款情况：应收合计、已收、未收、逾期节点（按币种分组）。",
+    {"type": "object", "properties": {"order_id": {"type": "integer"}}},
+    "L1",
+    permissions=('payment:view',),
+)
+async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None) -> dict:
+    """应收与回款汇总（责任口径：按订单**当前负责人**）。
+
+    修前的两个错（§8.4）：
+    1. `SalesOrder.id.in_(owner_ids)` 把员工编号当订单编号——既漏掉自己的应收，
+       又读到"订单 id 恰好等于某员工编号"的别人的金额；
+    2. 计划额与实收额之间没有币种分组，100 USD 与 100 CNY 会被相加成"200"。
+
+    修法：范围走 `payment.visible_order_ids_stmt`（唯一口径）、排除取消订单、
+    Decimal 计算、按币种分组。指定 `order_id` 时**先校验订单在不在责任范围内**，
+    范围外返回受控的"无权/不可见"响应（不泄漏该订单是否存在之外的信息）。
+    """
+    from app.modules.payment import service as payment_service
+
+    if order_id is not None:
+        order = await ctx.session.get(SalesOrder, order_id)
+        if order is None:
+            raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+        # `allow_unowned=False`：无负责人的订单属于脏数据，不放行
+        # （与 `payment.assert_order_visible` / `insights.receivable_risk` 同口径）
+        await ensure_in_scope(
+            ctx.session, ctx.user, owner_id=order.owner_id, label="订单"
+        )
+        if order.status == "cancelled":
+            # 取消单没有正式应收。明确说出来，而不是回一堆 0 让人以为"收齐了"。
+            return {
+                "scope": {"order_id": order_id},
+                "order_status": "cancelled",
+                "order_status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
+                "groups": [],
+                "overdue": [],
+                "notice": "该订单已取消，按现有规则不产生正式应收",
+            }
+        order_ids = [order_id]
+    else:
+        visible = await payment_service.visible_order_ids_stmt(ctx.session, ctx.user)
+        if visible is None:
+            order_ids = list(
+                (
+                    await ctx.session.execute(
+                        select(SalesOrder.id).where(SalesOrder.status != "cancelled")
+                    )
+                ).scalars().all()
+            )
+        else:
+            order_ids = list(
+                (
+                    await ctx.session.execute(
+                        select(SalesOrder.id).where(
+                            SalesOrder.status != "cancelled",
+                            SalesOrder.id.in_(visible),
+                        )
+                    )
+                ).scalars().all()
+            )
+
+    groups, plans = await _receivables_by_currency(ctx, order_ids)
+
+    # 逐节点未收金额：已确认回款要按**节点的**币种抵消，不能跨币种相减
+    received_by_plan: dict[int, Decimal] = {}
+    if plans:
+        rows = (
+            await ctx.session.execute(
+                select(
+                    PaymentRecord.receivable_plan_id,
+                    func.coalesce(func.sum(PaymentRecord.received_amount), 0),
+                )
+                .where(
+                    PaymentRecord.status == "confirmed",
+                    PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
+                )
+                .group_by(PaymentRecord.receivable_plan_id)
+            )
+        ).all()
+        received_by_plan = {int(pid): Decimal(total or 0) for pid, total in rows}
+
+    overdue = [
+        {
+            "order_id": plan.order_id,
+            "plan_name": plan.plan_name,
+            "due_date": plan.due_date.isoformat() if plan.due_date else None,
+            "currency": _currency_of(plan.currency),
+            "remaining_amount": float(
+                round(Decimal(plan.amount or 0) - received_by_plan.get(plan.id, Decimal(0)), 2)
+            ),
+        }
+        for plan in plans
+        if plan.status == "overdue"
+    ]
+
+    # 单币种时补一组顶层标量，方便模型直接引用与既有调用方复用；
+    # 多币种时**故意不给**顶层合计——给了必然被误当成"总金额"相加。
+    result: dict = {
+        "scope": {"order_id": order_id},
+        "currency_count": len(groups),
+        "by_currency": list(groups.values()),
+        "overdue": overdue,
+        "overdue_count": len(overdue),
     }
+    if len(groups) == 1:
+        only = next(iter(groups.values()))
+        result.update(
+            {
+                "currency": only["currency"],
+                "plan_count": only["plan_count"],
+                "plan_amount": only["plan_amount"],
+                "received_amount": only["received_amount"],
+                "unreceived_amount": only["unreceived_amount"],
+            }
+        )
+    elif not groups:
+        result.update(
+            {
+                "currency": None,
+                "plan_count": 0,
+                "plan_amount": 0.0,
+                "received_amount": 0.0,
+                "unreceived_amount": 0.0,
+            }
+        )
+    else:
+        result["notice"] = "存在多个币种的应收，已按币种分组；不同币种不做合计"
+    return result
 
 
 # ------------------------------------------------------------------ L2 确认后执行
@@ -626,6 +1012,7 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
     },
     "L2",
     "customer",
+    ("followup:create",),
 )
 async def create_followup(ctx: ToolContext, **kwargs) -> dict:
     from pydantic import ValidationError
@@ -658,6 +1045,7 @@ async def create_followup(ctx: ToolContext, **kwargs) -> dict:
     },
     "L2",
     "task",
+    ("task:manage",),
 )
 async def create_task(ctx: ToolContext, **kwargs) -> dict:
     payload = {k: v for k, v in kwargs.items() if v is not None}
@@ -707,6 +1095,7 @@ async def create_task(ctx: ToolContext, **kwargs) -> dict:
     },
     "L2",
     "opportunity",
+    ("opportunity:manage",),
 )
 async def update_opportunity_next_action(
     ctx: ToolContext, opportunity_id: int, next_action: str
@@ -748,6 +1137,7 @@ async def update_opportunity_next_action(
     },
     "L3",
     "quote",
+    ("quote:manage",),
 )
 async def request_quote_approval(
     ctx: ToolContext, quote_version_id: int, reason: str | None = None
@@ -802,6 +1192,7 @@ async def request_quote_approval(
         },
     },
     "L1",
+    permissions=('lead:view',),
 )
 async def search_leads(ctx: ToolContext, keyword: str = "", status: str = "") -> dict:
     from app.modules.lead.model import Lead
@@ -847,6 +1238,7 @@ async def search_leads(ctx: ToolContext, keyword: str = "", status: str = "") ->
     "查看联系人详情（职位、手机、邮箱、是否主要联系人），用于确认对接人。",
     {"type": "object", "properties": {"contact_id": {"type": "integer"}}, "required": ["contact_id"]},
     "L1",
+    permissions=('customer:view',),
 )
 async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
     contact = await ctx.session.get(Contact, contact_id)
@@ -880,6 +1272,7 @@ async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
     "查看产品详情及其 SKU 列表（规格、箱规、MOQ、单位）。",
     {"type": "object", "properties": {"product_id": {"type": "integer"}}, "required": ["product_id"]},
     "L1",
+    permissions=('product:view',),
 )
 async def get_product(ctx: ToolContext, product_id: int) -> dict:
     product = await ctx.session.get(Product, product_id)
@@ -924,6 +1317,7 @@ async def get_product(ctx: ToolContext, product_id: int) -> dict:
         "required": ["keyword"],
     },
     "L1",
+    permissions=('product:view',),
 )
 async def search_skus(ctx: ToolContext, keyword: str, limit: int = 15) -> dict:
     like = f"%{keyword.strip()}%"
@@ -976,6 +1370,7 @@ async def search_skus(ctx: ToolContext, keyword: str, limit: int = 15) -> dict:
         "required": ["sku_id", "quantity"],
     },
     "L1",
+    permissions=('product:view',),
 )
 async def calculate_logistics(
     ctx: ToolContext,
@@ -1015,6 +1410,7 @@ async def calculate_logistics(
     "查看订单详情：金额、履约状态、明细、应收与已回款情况。",
     {"type": "object", "properties": {"order_id": {"type": "integer"}}, "required": ["order_id"]},
     "L1",
+    permissions=('order:view',),
 )
 async def get_order(ctx: ToolContext, order_id: int) -> dict:
     from app.modules.order import service as order_service
@@ -1030,17 +1426,27 @@ async def get_order(ctx: ToolContext, order_id: int) -> dict:
             select(SalesOrderItem).where(SalesOrderItem.order_id == order_id)
         )
     ).scalars().all()
-    plans = (
-        await ctx.session.execute(
-            select(ReceivablePlan).where(ReceivablePlan.order_id == order_id)
-        )
-    ).scalars().all()
+    # 应收/回款块要 `payment:view`：`order:view` 回答的是"能不能看这张单"，
+    # 回答不了"能不能看这家公司的钱"。财务块的取数也要一起省掉——
+    # 无权还去查一遍，等于把"有没有这笔钱"通过耗时/日志漏出去（§8.3 同一纪律）。
+    finance_ok = ctx.user.has("payment:view")
+    plans = []
+    if finance_ok:
+        plans = (
+            await ctx.session.execute(
+                select(ReceivablePlan).where(
+                    ReceivablePlan.order_id == order_id,
+                    ReceivablePlan.status != "cancelled",
+                )
+            )
+        ).scalars().all()
     scope = await order_service.order_context(ctx.session, [order])
-    return {
+    result = {
         "id": order.id,
         "order_no": order.order_no,
         "customer_name": scope["customers"].get(order.customer_id),
         "total_amount": _money(order.total_amount),
+        "currency": _currency_of(order.currency),
         "status": order.status,
         "status_label": ORDER_STATUS_LABEL.get(order.status, order.status),
         "delivery_date": order.delivery_date.isoformat() if order.delivery_date else None,
@@ -1055,18 +1461,24 @@ async def get_order(ctx: ToolContext, order_id: int) -> dict:
             }
             for item in items
         ],
-        "receivables": [
+    }
+    if finance_ok:
+        result["receivables"] = [
             {
                 "plan_name": plan.plan_name,
                 "due_date": plan.due_date.isoformat() if plan.due_date else None,
                 "amount": _money(plan.amount),
+                "currency": _currency_of(plan.currency),
                 "status": plan.status,
             }
             for plan in plans
-        ],
-        "received_amount": _money(scope["received"].get(order.id, 0)),
-        "finance": await payment_service.order_finance_summary(ctx.session, order.id),
-    }
+        ]
+        result["received_amount"] = _money(scope["received"].get(order.id, 0))
+        result["received_currency"] = _currency_of(order.currency)
+        result["finance"] = await payment_service.order_finance_summary(ctx.session, order.id)
+    else:
+        result["unavailable_blocks"] = ["应收与回款（需要 payment:view）"]
+    return result
 
 
 @tool(
@@ -1082,6 +1494,7 @@ async def get_order(ctx: ToolContext, order_id: int) -> dict:
     },
     "L2",
     "quote",
+    ("quote:manage",),
 )
 async def create_quote_draft(
     ctx: ToolContext, opportunity_id: int, currency: str = "CNY"
@@ -1123,6 +1536,7 @@ async def create_quote_draft(
     {"type": "object", "properties": {"quote_id": {"type": "integer"}}, "required": ["quote_id"]},
     "L2",
     "quote",
+    ("quote:manage",),
 )
 async def create_quote_version(ctx: ToolContext, quote_id: int) -> dict:
     from app.modules.quote import service as quote_service

@@ -572,6 +572,8 @@ async def create_version(
                 sku_code_snapshot=item.sku_code_snapshot,
                 sku_name_snapshot=item.sku_name_snapshot,
                 spec_snapshot=item.spec_snapshot,
+                # 单位快照跟着复制：漏了它，新版本一建出来就对客文件显示"待核实"
+                unit_snapshot=item.unit_snapshot,
                 quantity=item.quantity,
                 cost_snapshot=item.cost_snapshot,
                 package_cost_snapshot=item.package_cost_snapshot,
@@ -746,6 +748,9 @@ async def _build_custom_item_snapshot(
         standard_price_snapshot=None,
         recommended_price_snapshot=price,
         minimum_price_snapshot=minimum_price,
+        # 定制项没有 SKU，也就没有系统单位可冻结（§8.7）：留空，
+        # 对客文件上显示"待核实"，不拿别的 SKU 的单位凑一个数字上去
+        unit_snapshot=None,
         price_source="custom_manual",
         customer_level_snapshot=None,
         quoted_price=price,
@@ -867,6 +872,9 @@ async def build_item_snapshot(
         sku_code_snapshot=sku.sku_code,
         sku_name_snapshot=sku.name or (product.name if product else None),
         spec_snapshot=spec_snapshot or sku.specification,
+        # 单位按报价那一刻的 SKU 落快照（§8.7）：之后 SKU 单位改了，
+        # 旧版本的对客表也不会跟着变
+        unit_snapshot=sku.unit,
         quantity=quantity,
         cost_snapshot=Decimal(str(result["cost"]["goods_cost"])),
         package_cost_snapshot=Decimal(str(result["cost"]["package_cost"])),
@@ -1054,6 +1062,9 @@ async def refresh_prices(
             "standard_price_snapshot", "recommended_price_snapshot", "minimum_price_snapshot",
             "profit_snapshot", "profit_rate_snapshot", "price_source",
             "customer_level_snapshot", "approval_required", "approval_reason",
+            # 单位快照一并刷新：刷新重建的是"当前条件下这一版的价格与单位"，
+            # 不带上它会让刚刷新过的版本行反而显示"待核实"
+            "unit_snapshot",
         ):
             setattr(item, field, getattr(rebuilt, field))
         refreshed += 1

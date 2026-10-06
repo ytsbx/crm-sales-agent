@@ -1,4 +1,4 @@
-import { useRef, useState, type ComponentProps } from 'react'
+import { useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -41,6 +41,7 @@ import {
   type OaApprovalInstance,
 } from '../../shared/api/dingtalk'
 import { reportOperationTiming } from '../../shared/api/analytics'
+import { newRequestKey } from '../../shared/api/requestKey'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
@@ -113,6 +114,8 @@ export default function KnowledgePage() {
   const [approvalTarget, setApprovalTarget] = useState<CustomInquiryRow | null>(null)
   const [adoptTarget, setAdoptTarget] = useState<OaApprovalInstance | null>(null)
   const [adoptInstanceId, setAdoptInstanceId] = useState('')
+  /** 当前这次人工核定的请求键：打开对话框时生成，成功后清掉（重试复用同一个） */
+  const resolveKeyRef = useRef<string | null>(null)
   // 转报价（§3.1/场景09）：定制件投产前没有 SKU，报价中心选不到它，
   // 这里给一条"填两个数就成单"的出口
   const [quoteTarget, setQuoteTarget] = useState<CustomInquiryRow | null>(null)
@@ -138,24 +141,47 @@ export default function KnowledgePage() {
       oaId,
       action,
       instanceId,
+      requestKey,
     }: {
       oaId: number
       action: 'adopt' | 'resend' | 'abandon'
       instanceId?: string
+      requestKey?: string
     }) =>
       resolveOaInstance(oaId, {
         action,
         instance_id: instanceId,
         note: action === 'abandon' ? '人工核对确认钉钉未建单，作废本轮' : undefined,
+        // 同一次核定带同一个请求键：重试只生效一次并回放同一份结果。
+        // 换新键等于告诉后端"这是一次新的核定"（就会再打一次钉钉）
+        request_key: requestKey,
       }),
     onSuccess: (row) => {
       Toast.success(`已处理：${row.status_label}`)
       setAdoptTarget(null)
       setAdoptInstanceId('')
+      resolveKeyRef.current = null
       void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+  // 重提/重试共用「发起审批」接口：两轮之间是"另建一张单"，同一轮内是"再发一次"，
+  // 到底允许哪一个由服务端的 allowed_actions 决定（见下面审批记录表的按钮）
+  const approvalMutation = useMutation({
+    mutationFn: ({ inquiryId, resubmit }: { inquiryId: number; resubmit: boolean }) =>
+      startInquiryApproval(inquiryId, resubmit),
+    onSuccess: (row) => {
+      Toast.success(`钉钉审批：${row.status_label}（第 ${row.submit_round ?? 1} 轮）`)
+      void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const approvalRows = approvalsQuery.data ?? []
+  // 只有**最新一轮**才谈得上重提/重试：旧轮次即使状态允许，服务端也会按最新一轮拒绝
+  const latestApprovalRound = approvalRows.reduce(
+    (max, row) => Math.max(max, row.submit_round ?? 1),
+    0,
+  )
 
   const quoteMutation = useMutation({
     mutationFn: () =>
@@ -725,6 +751,8 @@ export default function KnowledgePage() {
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
           发起过程中断时钉钉那边可能已经建了单，而钉钉接口没有"只许建一次"的开关，
           所以「不会自动重发」。请先到钉钉确认，再选「认领 / 重发 / 作废」。
+          按钮由服务端返回的可用动作决定——待审批、已通过、结果未知都不会给出「重提」，
+          因为那会在钉钉里另建一张单。
         </div>
         <Table<OaApprovalInstance>
           columns={[
@@ -734,54 +762,123 @@ export default function KnowledgePage() {
               dataIndex: 'status_label',
               width: 130,
               render: (v: string, row: OaApprovalInstance) => (
-                <Tag color={row.status === 'needs_review' ? 'orange' : 'grey'}>{v}</Tag>
+                <div>
+                  <Tag color={row.status === 'needs_review' ? 'orange' : 'grey'}>{v}</Tag>
+                  {row.resolve_state === 'processing' && (
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>核定处理中</div>
+                  )}
+                </div>
               ),
             },
             {
-              title: '钉钉单号 / 说明',
+              title: '钉钉单号 / 请求号',
               dataIndex: 'instance_id',
               render: (v: string | null, row: OaApprovalInstance) => (
                 <div style={{ fontSize: 12 }}>
                   <div>{v ?? '-'}</div>
+                  {/* 请求号 + 尝试次数：出问题时拿这两个数与钉钉那一次请求对账 */}
+                  <div style={{ color: 'var(--crm-text-3)' }}>
+                    请求号 {row.request_no ?? '-'}｜已发起 {row.attempt_count ?? 0} 次
+                  </div>
                   {row.error && <div style={{ color: 'var(--crm-text-3)' }}>{row.error}</div>}
                 </div>
               ),
             },
             {
               title: '操作',
-              width: 210,
-              render: (_: unknown, row: OaApprovalInstance) =>
-                row.status !== 'needs_review' ? (
-                  <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>—</span>
-                ) : (
-                  <span style={{ display: 'inline-flex', gap: 10 }}>
+              width: 240,
+              render: (_: unknown, row: OaApprovalInstance) => {
+                // **按钮只看服务端给的 allowed_actions**：前端不再自己判断状态，
+                // 两边各写一套 if 必然分叉，分叉出去的那一侧就是重复建实例的入口
+                const actions = row.allowed_actions ?? []
+                const isLatest = (row.submit_round ?? 1) === latestApprovalRound
+                const buttons: ReactNode[] = []
+                if (actions.includes('resolve_adopt')) {
+                  buttons.push(
                     <a
+                      key="adopt"
                       onClick={() => {
+                        resolveKeyRef.current = newRequestKey()
                         setAdoptTarget(row)
                         setAdoptInstanceId('')
                       }}
                     >
                       认领
-                    </a>
+                    </a>,
+                  )
+                }
+                if (actions.includes('resolve_resend')) {
+                  buttons.push(
                     <Popconfirm
+                      key="resend"
                       title="确认钉钉那边没有这张单？"
                       content="重发会再向钉钉发起一次；若其实已经建过，就会多出一张审批单。"
-                      onConfirm={() => resolveMutation.mutate({ oaId: row.id, action: 'resend' })}
+                      onConfirm={() =>
+                        resolveMutation.mutate({
+                          oaId: row.id,
+                          action: 'resend',
+                          requestKey: newRequestKey(),
+                        })
+                      }
                     >
                       <a>重发</a>
-                    </Popconfirm>
+                    </Popconfirm>,
+                  )
+                }
+                if (actions.includes('resolve_abandon')) {
+                  buttons.push(
                     <Popconfirm
+                      key="abandon"
                       title="作废本轮记录？"
                       content="仅在本系统里作废，不会动钉钉那边。"
-                      onConfirm={() => resolveMutation.mutate({ oaId: row.id, action: 'abandon' })}
+                      onConfirm={() =>
+                        resolveMutation.mutate({
+                          oaId: row.id,
+                          action: 'abandon',
+                          requestKey: newRequestKey(),
+                        })
+                      }
                     >
                       <a>作废</a>
-                    </Popconfirm>
-                  </span>
-                ),
+                    </Popconfirm>,
+                  )
+                }
+                if (isLatest && actions.includes('resubmit')) {
+                  buttons.push(
+                    <Popconfirm
+                      key="resubmit"
+                      title="驳回后重提？"
+                      content="会向钉钉**新建一轮**审批（旧轮次保留在记录里）。"
+                      onConfirm={() =>
+                        approvalMutation.mutate({ inquiryId: row.inquiry_id, resubmit: true })
+                      }
+                    >
+                      <a>驳回后重提</a>
+                    </Popconfirm>,
+                  )
+                }
+                if (isLatest && actions.includes('retry')) {
+                  buttons.push(
+                    <Popconfirm
+                      key="retry"
+                      title="重新发起？"
+                      content="沿用同一轮、同一请求号再发一次（外部确认没建单时才适用）。"
+                      onConfirm={() =>
+                        approvalMutation.mutate({ inquiryId: row.inquiry_id, resubmit: false })
+                      }
+                    >
+                      <a>重新发起</a>
+                    </Popconfirm>,
+                  )
+                }
+                if (buttons.length === 0) {
+                  return <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>—</span>
+                }
+                return <span style={{ display: 'inline-flex', gap: 10 }}>{buttons}</span>
+              },
             },
           ]}
-          dataSource={approvalsQuery.data ?? []}
+          dataSource={approvalRows}
           loading={approvalsQuery.isLoading}
           rowKey="id"
           pagination={false}
@@ -801,6 +898,9 @@ export default function KnowledgePage() {
             oaId: adoptTarget.id,
             action: 'adopt',
             instanceId: adoptInstanceId.trim(),
+            // 同一个对话框里重试复用同一个键：服务端靠它回放结果，
+            // 而不是把"再点一次认领"当成新的一次核定
+            requestKey: resolveKeyRef.current ?? undefined,
           })
         }}
         confirmLoading={resolveMutation.isPending}
@@ -809,7 +909,8 @@ export default function KnowledgePage() {
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            到钉钉里找到这张审批单，把它的单号填进来——系统会接着它回收审批结果。
+            到钉钉里找到这张审批单，把它的单号填进来——系统会先核实模板、发起人和来源需求，
+            对不上就拒绝采纳，然后才接着它回收审批结果。
           </div>
           <Input
             placeholder="钉钉审批单号（instanceId）"

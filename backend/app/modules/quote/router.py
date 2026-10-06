@@ -174,52 +174,91 @@ async def create_quote(
     """从商机生成报价：默认按核价建议价生成 V1，明细来自商机需求明细。
 
     生成逻辑在 `svc.create_quote`，与 Agent 工具 `create_quote_draft` 共用同一份实现。
+
+    **请求幂等（第八批 8.15）**：带同一把 `request_key`（body 字段或
+    `X-Request-Key` 头）时，弱网重试只建一条报价并回放第一次的响应；
+    同键不同内容报冲突。**没有键就照旧创建**，但响应里说明这次没有幂等保护——
+    不假装重试是安全的。注意：同客户两次真实需求必须用**不同的键**，
+    服务端不会按"内容相同"否定合法的新报价。
     """
-    opportunity = None
-    if payload.opportunity_id:
-        opportunity = await session.get(Opportunity, payload.opportunity_id)
-        if opportunity is None or opportunity.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+    from app.core import idempotency
 
-    # 客户/联系人存在性由 svc.create_quote 统一校验（Agent 工具同路）。
-    created = await svc.create_quote(
-        session,
-        user=user,
-        opportunity=opportunity,
-        customer_id=payload.customer_id,
-        contact_id=payload.contact_id,
-        currency=payload.currency,
-        exchange_rate=payload.exchange_rate,
-        valid_until=payload.valid_until,
-        payment_terms=payload.payment_terms,
-        delivery_terms=payload.delivery_terms,
-        remark=payload.remark,
-    )
-    quote = created["_quote"]
-    version = created["_version"]
-    # 业务进展时钟（§2.3）：建报价算客户活跃，冷落/回收不该盯着手工跟进单看
-    await customer_service.touch_progress(session, quote.customer_id)
+    data = payload.model_dump()
+    request_key = idempotency.request_key_from(request, data.pop("request_key", None))
 
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="create",
-        business_type="quote",
-        business_id=quote.id,
-        after=svc.serialize_quote(quote, version=version),
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(
-        {
+    reservation = None
+    if request_key:
+        reservation = await idempotency.reserve(
+            session,
+            user_id=user.id,
+            action="quote:create",
+            request_key=request_key,
+            payload=data,
+            result_type="quote",
+        )
+        if reservation.should_replay:
+            return ok(
+                reservation.replay_payload,
+                "这次提交此前已成功生成过报价，已返回原报价（没有重复创建）",
+            )
+
+    try:
+        opportunity = None
+        if payload.opportunity_id:
+            opportunity = await session.get(Opportunity, payload.opportunity_id)
+            if opportunity is None or opportunity.deleted_at is not None:
+                raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+
+        # 客户/联系人存在性由 svc.create_quote 统一校验（Agent 工具同路）。
+        created = await svc.create_quote(
+            session,
+            user=user,
+            opportunity=opportunity,
+            customer_id=payload.customer_id,
+            contact_id=payload.contact_id,
+            currency=payload.currency,
+            exchange_rate=payload.exchange_rate,
+            valid_until=payload.valid_until,
+            payment_terms=payload.payment_terms,
+            delivery_terms=payload.delivery_terms,
+            remark=payload.remark,
+        )
+        quote = created["_quote"]
+        version = created["_version"]
+        # 业务进展时钟（§2.3）：建报价算客户活跃，冷落/回收不该盯着手工跟进单看
+        await customer_service.touch_progress(session, quote.customer_id)
+
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="create",
+            business_type="quote",
+            business_id=quote.id,
+            after=svc.serialize_quote(quote, version=version),
+            ip=client_ip(request),
+        )
+        body = {
             "quote_id": quote.id,
             "version_id": version.id,
             "currency": version.currency,
             "exchange_rate_snapshot": created["exchange_rate_snapshot"],
             "warnings": created["warnings"],
-        },
-        "报价单已生成",
-    )
+        }
+        if reservation is not None:
+            await idempotency.complete(
+                session, reservation, result_payload=body, result_id=quote.id
+            )
+        await session.commit()
+    except Exception:
+        # 失败就释放占位：用户改完表单会带同一把键重试，改完的内容必然不同，
+        # 不释放会把"改错重填"误判成"同键不同内容"冲突（与客户创建同口径）。
+        if reservation is not None:
+            await idempotency.release(session, reservation)
+        raise
+
+    if request_key:
+        return ok(body, "报价单已生成")
+    return ok(body, "报价单已生成（本次未带请求键，弱网重试可能产生重复报价）")
 
 
 @router.get("/quotes/{quote_id}")
@@ -551,6 +590,8 @@ async def clone_quote(
                     sku_code_snapshot=item.sku_code_snapshot,
                     sku_name_snapshot=item.sku_name_snapshot,
                     spec_snapshot=item.spec_snapshot,
+                    # 单位快照同样要复制（§8.7）：少一个字段就是一条断链
+                    unit_snapshot=item.unit_snapshot,
                     quantity=item.quantity,
                     cost_snapshot=item.cost_snapshot,
                     package_cost_snapshot=item.package_cost_snapshot,
@@ -880,6 +921,8 @@ async def update_item(
         "approval_required",
         "approval_reason",
         "remark",
+        # 单位快照（§8.7）：改一条明细会重建快照，落下它才不会让改完的行显示"待核实"
+        "unit_snapshot",
     ):
         setattr(item, field, getattr(rebuilt, field))
     await session.flush()

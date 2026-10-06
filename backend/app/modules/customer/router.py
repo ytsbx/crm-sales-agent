@@ -91,19 +91,61 @@ async def create_customer(
     user: CurrentUser = Depends(require_permission("customer:create")),
     session: AsyncSession = Depends(get_db),
 ):
+    """新建客户（第八批 8.15：支持请求幂等）。
+
+    弱网重试是真实场景：服务端已经建好了、响应没回到客户端，用户再点一次。
+    带同一把 `request_key`（body 字段或 `X-Request-Key` 头）时：
+    同键同内容回放第一次的结果、同键不同内容报冲突、同键并发只允许一个成功。
+    没带键就照旧创建，但响应里会说明**这次没有幂等保护**。
+    """
+    from app.core import idempotency
+
     data = payload.model_dump()
-    customer = await svc.create_customer(session, user, data)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="create",
-        business_type="customer",
-        business_id=customer.id,
-        after=svc.serialize_customer(customer),
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(svc.serialize_customer(customer), "客户已创建")
+    request_key = idempotency.request_key_from(request, data.pop("request_key", None))
+
+    reservation = None
+    if request_key:
+        reservation = await idempotency.reserve(
+            session,
+            user_id=user.id,
+            action="customer:create",
+            request_key=request_key,
+            payload=data,
+            result_type="customer",
+        )
+        if reservation.should_replay:
+            return ok(
+                reservation.replay_payload,
+                "这次提交此前已成功创建过，已返回原记录（没有重复创建）",
+            )
+
+    try:
+        customer = await svc.create_customer(session, user, data)
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="create",
+            business_type="customer",
+            business_id=customer.id,
+            after=svc.serialize_customer(customer),
+            ip=client_ip(request),
+        )
+        body = svc.serialize_customer(customer)
+        if reservation is not None:
+            await idempotency.complete(
+                session, reservation, result_payload=body, result_id=customer.id
+            )
+        await session.commit()
+    except Exception:
+        # 失败就释放占位：用户改完表单会带同一把键重试，内容必然不同，
+        # 不释放会把"改错重填"误判成"同键不同内容"冲突。
+        if reservation is not None:
+            await idempotency.release(session, reservation)
+        raise
+
+    if request_key:
+        return ok(body, "客户已创建")
+    return ok(body, "客户已创建（本次未带请求键，弱网重试可能产生重复客户）")
 
 
 @router.get("/customers/{customer_id}")
@@ -136,8 +178,13 @@ async def update_customer(
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
     before = svc.serialize_customer(customer)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    for field, value in changes.items():
         setattr(customer, field, value)
+    # 补核历史联系时间（第七批 7.5）：填了真实联系时间就说明"未知"不成立了，
+    # 这个客户重新回到自动回收/冷落扫描的视野里。
+    if changes.get("last_followup_at") is not None:
+        customer.last_contact_unknown = False
     await session.flush()
     await write_audit(
         session,
@@ -616,7 +663,9 @@ async def list_contacts(
         .order_by(Contact.is_primary.desc(), Contact.id.asc())
     )
     rows = (await session.execute(stmt)).scalars().all()
-    return ok([svc.serialize_contact(c) for c in rows])
+    # 对外响应一律走脱敏版本（第八批 8.2）：是否完整按已确认规则决定，
+    # 见 contact_util.can_view_full_contact。审计里仍然保留完整值。
+    return ok(await svc.serialize_contacts_masked(session, user, list(rows)))
 
 
 @router.post("/customers/{customer_id}/contacts")
@@ -648,7 +697,7 @@ async def create_contact(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_contact(contact), "联系人已创建")
+    return ok(await svc.serialize_contact_masked(session, user, contact), "联系人已创建")
 
 
 @router.patch("/contacts/{contact_id}")
@@ -677,7 +726,7 @@ async def update_contact(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_contact(contact), "已保存")
+    return ok(await svc.serialize_contact_masked(session, user, contact), "已保存")
 
 
 @router.delete("/contacts/{contact_id}")
@@ -752,7 +801,10 @@ async def list_all_contacts(
     rows, total = await paginate(session, stmt.order_by(Contact.id.desc()), page, page_size)
     return ok(
         page_data(
-            [svc.serialize_contact(row) for row in rows], total, page, page_size
+            await svc.serialize_contacts_masked(session, user, list(rows)),
+            total,
+            page,
+            page_size,
         )
     )
 
@@ -764,7 +816,7 @@ async def get_contact(
     session: AsyncSession = Depends(get_db),
 ):
     contact = await svc.get_visible_contact(session, user, contact_id)
-    return ok(svc.serialize_contact(contact))
+    return ok(await svc.serialize_contact_masked(session, user, contact))
 
 
 @router.post("/contacts")
@@ -806,7 +858,7 @@ async def create_standalone_contact(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_contact(contact), "联系人已创建")
+    return ok(await svc.serialize_contact_masked(session, user, contact), "联系人已创建")
 
 
 @router.post("/contacts/{contact_id}/set-primary")
@@ -836,7 +888,9 @@ async def set_primary_contact(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_contact(contact), "已设为主联系人")
+    return ok(
+        await svc.serialize_contact_masked(session, user, contact), "已设为主联系人"
+    )
 
 
 @router.post("/contacts/{contact_id}/bind-customer")
@@ -871,7 +925,10 @@ async def bind_contact_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_contact(contact), f"已关联到客户「{customer.name}」")
+    return ok(
+        await svc.serialize_contact_masked(session, user, contact),
+        f"已关联到客户「{customer.name}」",
+    )
 
 
 @router.post("/contacts/{contact_id}/change-customer")
@@ -912,4 +969,7 @@ async def change_contact_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_contact(contact), f"已改挂到客户「{customer.name}」")
+    return ok(
+        await svc.serialize_contact_masked(session, user, contact),
+        f"已改挂到客户「{customer.name}」",
+    )

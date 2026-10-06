@@ -1,7 +1,15 @@
 # 备份定时器：每天 02:30 跑一次（避开调度器 02:00/02:10 的任务高峰）。
+#
+# 为什么每天只备一份、而恢复演练单独排：
+#   备份是高频的（每天必须有一份完整快照），恢复演练是要建库、解包、逐条校验 hash 的
+#   重活（时长取决于原件数量）。合成一条任务会让"每周的演练失败"掩盖"每天的备份情况"。
+#   演练见同目录 crm-drill.timer（默认关闭，由人工在对外试运行前启用一次/每周一次）。
+#
+# 定时器只负责触发 crm-backup.service；备份成功与否由服务退出码和 monitor.sh 判定，
+# 不由定时器判定（oneshot 服务跑完就没有进程了，"服务在跑"从来不代表"备份成了"）。
 
 [Unit]
-Description=Run CRM database backup daily at 02:30
+Description=Run CRM consistent backup daily at 02:30
 
 [Timer]
 OnCalendar=*-*-* 02:30:00

@@ -13,14 +13,32 @@ from app.core.base import Base, IdMixin, JSONType
 
 
 class ProductCost(Base, IdMixin):
+    """SKU 成本（按生效区间留版本）。
+
+    ## 为什么四项成本可以为 NULL（第七批 7.4 返修）
+
+    原来这四列是 `NOT NULL DEFAULT 0`，于是"没填"和"填了 0"在库里长得一模一样。
+    导入时把空白当 0，就造出了一条"四项全零"的成本 —— 而核价是靠
+    "有没有生效成本行"判断成本已知的，结果是：**只有 SKU 和生效日、
+    成本一个字没填的模板行，进系统后就变成了已知的零成本，毛利率 100%**。
+
+    改成可空之后：
+    - `NULL` = 未提供（核价要提示成本不完整，不能装作零成本）；
+    - `0` = 明确为零（真实业务里存在，例如客户供料）；
+    - 四项全空的新建行一律不落库（见 pricing/io_router.py 的导入校验）。
+
+    历史数据里那些"四项全零"的行无法自动分辨是哪一种，
+    所以只**列核对清单**（`scripts/list_zero_cost_rows.py`），不擅自删改。
+    """
+
     __tablename__ = "product_costs"
     __table_args__ = (Index("ix_product_costs_sku", "sku_id", "effective_from"),)
 
     sku_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("skus.id"))
-    purchase_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=0)
-    production_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=0)
-    package_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=0)
-    processing_cost: Mapped[Decimal] = mapped_column(Numeric(14, 4), default=0)
+    purchase_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    production_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    package_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    processing_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     effective_from: Mapped[date] = mapped_column(Date)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -30,14 +48,37 @@ class ProductCost(Base, IdMixin):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    #: 四项成本的中文名，报"缺哪几项"时直接用，避免前端再维护一份映射
+    COST_LABELS = {
+        "purchase_cost": "采购成本",
+        "production_cost": "生产成本",
+        "package_cost": "包装成本",
+        "processing_cost": "加工成本",
+    }
+
     @property
     def total_cost(self) -> Decimal:
+        """合计。未提供的列按 0 参与合计 —— 但调用方必须自己看 `is_complete`，
+        不能拿这个数当"完整成本"用。"""
         return (
             (self.purchase_cost or Decimal(0))
             + (self.production_cost or Decimal(0))
             + (self.package_cost or Decimal(0))
             + (self.processing_cost or Decimal(0))
         )
+
+    @property
+    def missing_components(self) -> list[str]:
+        """未提供的成本项中文名（空列表 = 四项都填了）。"""
+        return [
+            label
+            for column, label in self.COST_LABELS.items()
+            if getattr(self, column) is None
+        ]
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.missing_components
 
 
 class PriceRule(Base, IdMixin):

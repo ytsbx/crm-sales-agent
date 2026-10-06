@@ -1,18 +1,22 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
+  confirmSkuMasterDiff,
   createSku,
   deleteProduct,
   disableSku,
   enableSku,
   getProduct,
+  getSkuMaster,
   listProductSkus,
   updateProduct,
   updateSku,
   type ProductPayload,
+  type SkuMasterDiff,
+  type SkuMasterField,
   type SkuPayload,
 } from '../../shared/api/product'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -21,6 +25,41 @@ import AttachmentPanel from '../common/AttachmentPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
+
+/**
+ * 主数据差异的中文口径与核定结论。
+ *
+ * 为什么在前端再放一份文案：后端返回的是稳定取值（keep_local 这类），
+ * 页面要给业务同事看中文。允许的结论**不由前端决定** —— 用的是后端随差异下发的
+ * `allowed_resolutions`，所以"同名不同码不能选自动合并"这类规则只在一个地方维护。
+ */
+const DIFF_TYPE_LABELS: Record<string, string> = {
+  unit_conflict: '单位冲突',
+  package_conflict: '包装冲突',
+  field_conflict: '字段不一致',
+  confirmed_value_differs: '与已确认版本不一致',
+  null_overwrite: '来源上报了空值',
+  code_rename: '来源改码',
+  stopped_source: '来源标记停用',
+  same_name_diff_code: '同名不同码',
+  unmatched_sku_source: '本地还没有这条 SKU',
+}
+
+const RESOLUTION_LABELS: Record<string, string> = {
+  keep_local: '以本地为准',
+  take_external: '以来源为准',
+  manual: '人工已处理',
+  ignore: '不是差异',
+  rename_local: '按来源新编码改本地编码',
+  disable_local: '按来源停用本地 SKU',
+}
+
+const FIELD_STATUS_LABELS: Record<string, { text: string; color: 'grey' | 'orange' | 'green' | 'red' }> = {
+  unverified: { text: '待核实', color: 'grey' },
+  pending_confirmation: { text: '待确认', color: 'orange' },
+  confirmed: { text: '已确认', color: 'green' },
+  conflict: { text: '有冲突', color: 'red' },
+}
 
 /** SKU 表单用字符串保存，提交时再转数字——避免半成品输入被强转成 NaN。 */
 interface SkuForm {
@@ -75,6 +114,10 @@ export default function ProductDetailPage() {
   const [skuVisible, setSkuVisible] = useState(false)
   const [editingSku, setEditingSku] = useState<Sku | null>(null)
   const [skuForm, setSkuForm] = useState<SkuForm>(EMPTY_SKU)
+  /** 正在看"来源/待核实/差异"的 SKU（null = 没打开面板）。 */
+  const [masterSku, setMasterSku] = useState<Sku | null>(null)
+  const [resolutions, setResolutions] = useState<Record<number, string>>({})
+  const [notes, setNotes] = useState<Record<number, string>>({})
 
   const productQuery = useQuery({
     queryKey: ['product', productId],
@@ -136,9 +179,79 @@ export default function ProductDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /**
+   * 主数据来源/差异只在**打开面板时**才拉：按 SKU 逐个预取会给列表页带来
+   * 一堆没人看的请求，而这套数据（来源、确认版本、差异）本来就是按需查看的。
+   */
+  const masterQuery = useQuery({
+    queryKey: ['sku-master', masterSku?.id],
+    queryFn: () => getSkuMaster(masterSku!.id),
+    enabled: masterSku !== null,
+  })
+
+  const confirmDiffMutation = useMutation({
+    mutationFn: ({ diffId, resolution, note }: { diffId: number; resolution: string; note?: string }) =>
+      confirmSkuMasterDiff(diffId, { resolution, note }),
+    onSuccess: (data) => {
+      Toast.success(data.message)
+      void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
+      void queryClient.invalidateQueries({ queryKey: ['product-skus', productId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const product = productQuery.data
   if (productQuery.isLoading) return <div className="page-container">加载中…</div>
   if (!product) return <div className="page-container">产品不存在</div>
+
+  /** 字段级"来源 / 来源状态 / 更新时间 / 权威归属 / 确认版本"。 */
+  const masterFieldColumns = [
+    { title: '字段', dataIndex: 'field_label', width: 100 },
+    {
+      title: '本地值',
+      width: 120,
+      render: (_: unknown, record: SkuMasterField) => record.local_value ?? '-',
+    },
+    {
+      title: '来源',
+      width: 110,
+      render: (_: unknown, record: SkuMasterField) => record.source_system ?? '—',
+    },
+    {
+      title: '来源状态',
+      width: 100,
+      render: (_: unknown, record: SkuMasterField) =>
+        record.source_verified ? <Tag color="green">已核实</Tag> : <Tag>待核实</Tag>,
+    },
+    {
+      title: '来源更新时间',
+      width: 170,
+      render: (_: unknown, record: SkuMasterField) =>
+        record.source_updated_at ? new Date(record.source_updated_at).toLocaleString('zh-CN') : '—',
+    },
+    {
+      title: '权威归属',
+      width: 110,
+      render: (_: unknown, record: SkuMasterField) => record.authority_label,
+    },
+    {
+      title: '确认版本',
+      width: 100,
+      render: (_: unknown, record: SkuMasterField) =>
+        record.confirmed_version > 0 ? `v${record.confirmed_version}` : '—',
+    },
+    {
+      title: '状态',
+      width: 100,
+      render: (_: unknown, record: SkuMasterField) => {
+        const meta = FIELD_STATUS_LABELS[record.status] ?? {
+          text: record.status,
+          color: 'grey' as const,
+        }
+        return <Tag color={meta.color}>{meta.text}</Tag>
+      },
+    },
+  ]
 
   const skuColumns = [
     { title: 'SKU 编码', dataIndex: 'sku_code', width: 140 },
@@ -167,6 +280,22 @@ export default function ProductDetailPage() {
       dataIndex: 'status',
       width: 90,
       render: (v: string) => (v === 'active' ? <Tag color="green">在售</Tag> : <Tag>停用</Tag>),
+    },
+    {
+      title: '主数据来源',
+      width: 130,
+      render: (_: unknown, record: Sku) => (
+        <a
+          style={{ color: 'var(--crm-primary)' }}
+          onClick={() => {
+            setResolutions({})
+            setNotes({})
+            setMasterSku(record)
+          }}
+        >
+          来源/待核实/差异
+        </a>
+      ),
     },
     {
       title: '操作',
@@ -455,6 +584,121 @@ export default function ProductDetailPage() {
             </div>
           </div>
         </div>
+      </Modal>
+
+      {/*
+        第八批 §8.14：每个关键字段的**来源、更新时间、外部身份与人工确认版本**，
+        以及待确认差异的人工核定入口。
+        来源未核实一律显示「待核实」、权威归属未定显示「未拍板」——
+        这两句话来自后端数据（`source_status` / `authority_label`），不是页面写死的文案。
+      */}
+      <Modal
+        title={masterSku ? `主数据来源与差异：${masterSku.sku_code}` : '主数据来源与差异'}
+        visible={masterSku !== null}
+        width={920}
+        footer={null}
+        onCancel={() => setMasterSku(null)}
+      >
+        {masterQuery.isLoading && <div>加载中…</div>}
+        {masterQuery.data && (
+          <div style={{ display: 'grid', gap: 16 }}>
+            <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+              {masterQuery.data.notes.join('；')}
+            </div>
+            <Table<SkuMasterField>
+              columns={masterFieldColumns}
+              dataSource={masterQuery.data.fields}
+              rowKey="field_name"
+              size="small"
+              pagination={false}
+              scroll={{ x: 900 }}
+            />
+            <div>
+              <div style={{ marginBottom: 8 }}>
+                待确认差异（{masterQuery.data.pending_diff_count}）
+                {masterQuery.data.latest_confirmed_version > 0
+                  ? `｜最近已确认版本 v${masterQuery.data.latest_confirmed_version}`
+                  : '｜还没有人工确认过的主数据版本'}
+              </div>
+              {masterQuery.data.pending_diffs.length === 0 && (
+                <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>没有待确认差异</div>
+              )}
+              {masterQuery.data.pending_diffs.map((diff: SkuMasterDiff) => (
+                <div
+                  key={diff.id}
+                  style={{
+                    border: '1px solid var(--semi-color-border)',
+                    borderRadius: 6,
+                    padding: 10,
+                    marginBottom: 8,
+                    display: 'grid',
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Tag color="orange">{DIFF_TYPE_LABELS[diff.diff_type] ?? diff.diff_type}</Tag>
+                    {diff.field_label && <span>{diff.field_label}</span>}
+                    <span style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+                      本地 {String(diff.current_value ?? '—')} → 来源{' '}
+                      {diff.incoming_value === null || diff.incoming_value === undefined
+                        ? '空值'
+                        : String(diff.incoming_value)}
+                    </span>
+                    {diff.requires_note && <Tag>核定需写依据</Tag>}
+                  </div>
+                  {canManage ? (
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <Select
+                        style={{ width: 220 }}
+                        placeholder="选择核定结论"
+                        value={resolutions[diff.id]}
+                        onChange={(value: unknown) =>
+                          setResolutions({ ...resolutions, [diff.id]: String(value) })
+                        }
+                        optionList={diff.allowed_resolutions.map((item) => ({
+                          value: item,
+                          label: RESOLUTION_LABELS[item] ?? item,
+                        }))}
+                      />
+                      <Input
+                        style={{ flex: 1 }}
+                        placeholder={diff.requires_note ? '必填：依据 / 来源与时点' : '备注（可选）'}
+                        value={notes[diff.id] ?? ''}
+                        onChange={(value: string) => setNotes({ ...notes, [diff.id]: value })}
+                      />
+                      <Button
+                        theme="solid"
+                        loading={confirmDiffMutation.isPending}
+                        onClick={() => {
+                          const resolution = resolutions[diff.id]
+                          if (!resolution) {
+                            Toast.warning('先选择核定结论')
+                            return
+                          }
+                          if (diff.requires_note && !(notes[diff.id] ?? '').trim()) {
+                            Toast.warning('这条差异必须写清依据')
+                            return
+                          }
+                          confirmDiffMutation.mutate({
+                            diffId: diff.id,
+                            resolution,
+                            note: notes[diff.id],
+                          })
+                        }}
+                      >
+                        核定
+                      </Button>
+                    </div>
+                  ) : (
+                    <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+                      需要产品维护权限才能核定
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )

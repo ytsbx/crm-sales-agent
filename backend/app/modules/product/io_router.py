@@ -5,15 +5,23 @@
 动态路由抢先匹配成 id="import"。
 """
 
-from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+import hashlib
+
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import write_audit
-from app.core.csvio import csv_bytes, parse_csv_upload
+from app.core.csvio import csv_bytes, parse_csv_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
-from app.core.response import ok
+from app.core.importing import (
+    ImportReport,
+    RowErrors,
+    RowRejected,
+    RowSkipped,
+    finalize,
+    row_savepoint,
+)
 from app.modules.product import io as io_util
 from app.modules.product.model import Product, Sku
 
@@ -95,68 +103,79 @@ async def _export_products(session: AsyncSession, *, keyword: str | None = None)
 async def import_products(
     request: Request,
     file: UploadFile = File(...),
+    preview: bool = Form(False),
+    preview_token: str | None = Form(None),
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """批量导入产品：按名称查重，重名跳过。"""
-    rows = await parse_csv_upload(
-        file, required_headers=["产品名称"], label="文件"
-    )
-    created: list[dict] = []
-    skipped: list[dict] = []
-    failed: list[dict] = []
+    """批量导入产品：按名称查重，重名跳过。
+
+    第七批 7.1 / 7.6：
+    - 每行一个 SAVEPOINT：坏行只回滚自己，不会把 session 带进失败态；
+    - **支持 `preview=1`**：原来这个接口没有 preview 参数，而通用导入组件
+      一律先发 `preview=true` —— FastAPI 忽略未知表单字段，于是"预览"这一步
+      实际上**真的写库了**，用户以为只是在看结果；
+    - 失败清单全量返回（防爆上限见 settings.import_max_error_rows），
+      同一行的多个问题算一行失败。
+    """
+    raw = await file.read()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    rows = parse_csv_bytes(raw, required_headers=["产品名称"], label="文件")
+    report = ImportReport("product", len(rows))
 
     for index, row in enumerate(rows, start=2):
         name = (row.get("产品名称") or "").strip()
+        errs = RowErrors(index, name)
+        if not name:
+            errs.add("产品名称不能为空")
+        if len(name) > 200:
+            errs.add(f"产品名称长度不能超过 200（当前 {len(name)}）")
         try:
-            if not name:
-                failed.append({"row": index, "name": name, "reason": "产品名称不能为空"})
-                continue
-            duplicate = (
-                await session.execute(
-                    select(Product)
-                    .where(Product.name == name, Product.deleted_at.is_(None))
-                    .limit(1)
-                )
-            ).scalars().first()
-            if duplicate is not None:
-                skipped.append(
-                    {"row": index, "name": name, "reason": f"同名产品已存在（id={duplicate.id}）"}
-                )
-                continue
+            fields = io_util.product_fields_from_row(row)
+        except ValueError as exc:
+            fields = None
+            errs.add(str(exc))
+        if errs:
+            report.failed_row(index, name, errs.reasons)
+            continue
 
-            product = Product(
-                name=name,
-                status="active",
-                created_by=user.id,
-                **io_util.product_fields_from_row(row),
-            )
-            session.add(product)
-            await session.flush()
-            created.append({"row": index, "id": product.id, "name": product.name})
+        try:
+            async with row_savepoint(session):
+                duplicate = (
+                    await session.execute(
+                        select(Product)
+                        .where(Product.name == name, Product.deleted_at.is_(None))
+                        .limit(1)
+                    )
+                ).scalars().first()
+                if duplicate is not None:
+                    raise RowSkipped(f"同名产品已存在（id={duplicate.id}）")
+                product = Product(
+                    name=name,
+                    status="active",
+                    created_by=user.id,
+                    **(fields or {}),
+                )
+                session.add(product)
+                await session.flush()
+                product_id = product.id
+            report.created_row(index, name, id=product_id)
+        except RowSkipped as skipped:
+            report.skipped_row(index, name, str(skipped))
         except Exception as exc:
-            failed.append({"row": index, "name": name, "reason": str(exc)[:120]})
+            report.failed_row(index, name, f"写入失败：{str(exc)[:160]}")
 
-    await write_audit(
+    return await finalize(
         session,
+        report,
+        module="product",
         operator_id=user.id,
-        action="import",
-        business_type="product",
-        after={"created": len(created), "skipped": len(skipped), "failed": len(failed)},
+        file_name=file.filename,
+        file_sha256=file_sha256,
         ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(
-        {
-            "total": len(rows),
-            "created_count": len(created),
-            "skipped_count": len(skipped),
-            "failed_count": len(failed),
-            "created": created[:50],
-            "skipped": skipped[:50],
-            "failed": failed[:50],
-        },
-        f"导入完成：成功 {len(created)} 条，跳过重名 {len(skipped)} 条，失败 {len(failed)} 条",
+        preview=preview,
+        preview_token=preview_token,
+        business_type="product",
     )
 
 
@@ -238,6 +257,8 @@ async def _export_skus(
 async def import_skus(
     request: Request,
     file: UploadFile = File(...),
+    preview: bool = Form(False),
+    preview_token: str | None = Form(None),
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -245,80 +266,77 @@ async def import_skus(
 
     - `SKU编码` 全局唯一，重复的直接跳过；
     - `产品名称` 必须能匹配到已有产品 —— **不自动建产品**：
-      型号录错时自动建会把问题变成一堆重复产品，比导入失败难收拾。
+      型号录错时自动建会把问题变成一堆重复产品，比导入失败难收拾；
+    - 第七批 7.1 / 7.2 / 7.6：每行一个 SAVEPOINT、支持 preview、
+      数值（含 MOQ 必须是整数、不能为负）逐行校验、失败清单全量返回。
     """
-    rows = await parse_csv_upload(
-        file, required_headers=["SKU编码", "产品名称"], label="文件"
-    )
-    created: list[dict] = []
-    skipped: list[dict] = []
-    failed: list[dict] = []
+    raw = await file.read()
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    rows = parse_csv_bytes(raw, required_headers=["SKU编码", "产品名称"], label="文件")
+    report = ImportReport("sku", len(rows))
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
         product_name = (row.get("产品名称") or "").strip()
+        errs = RowErrors(index, code)
+        if not code:
+            errs.add("SKU编码不能为空")
+        elif len(code) > 64:
+            errs.add(f"SKU编码长度不能超过 64（当前 {len(code)}）")
+        if not product_name:
+            errs.add("产品名称不能为空")
         try:
-            if not code:
-                failed.append({"row": index, "name": code, "reason": "SKU编码不能为空"})
-                continue
-            if not product_name:
-                failed.append({"row": index, "name": code, "reason": "产品名称不能为空"})
-                continue
-
-            duplicate = (
-                await session.execute(
-                    select(Sku).where(Sku.sku_code == code).limit(1)
-                )
-            ).scalars().first()
-            if duplicate is not None:
-                skipped.append(
-                    {"row": index, "name": code, "reason": f"SKU编码已存在（id={duplicate.id}）"}
-                )
-                continue
-
-            product = (
-                await session.execute(
-                    select(Product)
-                    .where(Product.name == product_name, Product.deleted_at.is_(None))
-                    .limit(1)
-                )
-            ).scalars().first()
-            if product is None:
-                failed.append(
-                    {
-                        "row": index,
-                        "name": code,
-                        "reason": f"找不到产品「{product_name}」，请先导入产品",
-                    }
-                )
-                continue
-
             fields = io_util.sku_fields_from_row(row)
-            sku = Sku(product_id=product.id, status="active", **fields)
-            session.add(sku)
-            await session.flush()
-            created.append({"row": index, "id": sku.id, "sku_code": sku.sku_code})
-        except Exception as exc:  # 单行失败不影响其它行
-            failed.append({"row": index, "name": code, "reason": str(exc)[:120]})
+        except ValueError as exc:
+            fields = None
+            errs.add(str(exc))
+        if errs:
+            report.failed_row(index, code, errs.reasons)
+            continue
 
-    await write_audit(
+        try:
+            async with row_savepoint(session):
+                duplicate = (
+                    await session.execute(
+                        select(Sku).where(Sku.sku_code == code).limit(1)
+                    )
+                ).scalars().first()
+                if duplicate is not None:
+                    raise RowSkipped(f"SKU编码已存在（id={duplicate.id}）")
+
+                product = (
+                    await session.execute(
+                        select(Product)
+                        .where(Product.name == product_name, Product.deleted_at.is_(None))
+                        .limit(1)
+                    )
+                ).scalars().first()
+                if product is None:
+                    raise RowRejected(
+                        f"找不到产品「{product_name}」，请先导入产品（已删除的产品不算）"
+                    )
+                sku = Sku(product_id=product.id, status="active", **(fields or {}))
+                session.add(sku)
+                await session.flush()
+                sku_id = sku.id
+            report.created_row(index, code, id=sku_id, sku_code=code)
+        except (RowSkipped, RowRejected) as exc:
+            if isinstance(exc, RowSkipped):
+                report.skipped_row(index, code, str(exc))
+            else:
+                report.failed_row(index, code, str(exc))
+        except Exception as exc:  # 单行失败不影响其它行
+            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
+
+    return await finalize(
         session,
+        report,
+        module="sku",
         operator_id=user.id,
-        action="import",
-        business_type="sku",
-        after={"created": len(created), "skipped": len(skipped), "failed": len(failed)},
+        file_name=file.filename,
+        file_sha256=file_sha256,
         ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(
-        {
-            "total": len(rows),
-            "created_count": len(created),
-            "skipped_count": len(skipped),
-            "failed_count": len(failed),
-            "created": created[:50],
-            "skipped": skipped[:50],
-            "failed": failed[:50],
-        },
-        f"导入完成：成功 {len(created)} 条，跳过重复 {len(skipped)} 条，失败 {len(failed)} 条",
+        preview=preview,
+        preview_token=preview_token,
+        business_type="sku",
     )
