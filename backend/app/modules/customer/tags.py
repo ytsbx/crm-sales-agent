@@ -246,65 +246,165 @@ async def _count_special_links(session: AsyncSession, *, source_id: int) -> list
     ]
 
 
+def _range_label(min_qty, max_qty) -> str:
+    """数量区间的人话写法（`100~1000 件` / `1000 件起`），界面展示用。"""
+    low = str(min_qty)
+    return f"{low} 件起" if max_qty is None else f"{low}~{max_qty} 件"
+
+
+async def _active_customer_rules(
+    session: AsyncSession, customer_id: int
+) -> list:
+    """某客户名下**生效中**的专属价（历史资料不参与冲突检查，A14 口径）。"""
+    from app.modules.pricing.model import CustomerPriceRule
+
+    return list(
+        (
+            await session.execute(
+                select(CustomerPriceRule).where(
+                    CustomerPriceRule.customer_id == customer_id,
+                    CustomerPriceRule.status == "active",
+                )
+            )
+        ).scalars().all()
+    )
+
+
+async def _price_conflicts(
+    session: AsyncSession, *, source: Customer, target: Customer
+) -> list[dict]:
+    """两边都生效、且**数量区间与有效期都重叠**、价却不相同的专属价冲突。
+
+    判据**复用价格中心那一套**（`pricing.service._ranges_overlap`，方案 §4.1）：
+    同一个 SKU 下，两边的数量区间重叠、有效期也重叠，才叫"客户按某个数量买
+    会同时命中两套价"的真冲突。
+
+    此前只比"SKU + 起订量完全相同"，于是下面这种漏掉了（第六批审查第 5 条）：
+      来源客户 100~1,000 件 10 元；目标客户 0~500 件 20 元；有效期重叠。
+      按"起订量相同"判 → 判成无冲突；实际买 200 件时两条都命中。
+
+    **返回完整列表、绝不截断** —— 调用方（归档）必须处理每一对，
+    截断的那一份会让剩下的冲突在合并后继续生效。
+    """
+    from app.modules.pricing.service import _ranges_overlap
+
+    source_rules = await _active_customer_rules(session, source.id)
+    target_rules = await _active_customer_rules(session, target.id)
+
+    out: list[dict] = []
+    for rule in source_rules:
+        for other in target_rules:
+            if other.sku_id != rule.sku_id:
+                continue
+            if not _ranges_overlap(
+                rule.min_qty, rule.max_qty, other.min_qty, other.max_qty
+            ):
+                continue
+            if not _ranges_overlap(
+                rule.effective_from,
+                rule.effective_to,
+                other.effective_from,
+                other.effective_to,
+            ):
+                continue
+            if other.agreed_price == rule.agreed_price:
+                continue
+            out.append(
+                {
+                    "sku_id": rule.sku_id,
+                    "min_qty": str(rule.min_qty),
+                    "source_range": _range_label(rule.min_qty, rule.max_qty),
+                    "target_range": _range_label(other.min_qty, other.max_qty),
+                    "source_price": str(rule.agreed_price),
+                    "target_price": str(other.agreed_price),
+                    "source_rule_id": rule.id,
+                    "target_rule_id": other.id,
+                }
+            )
+    return out
+
+
+async def price_conflict_exists(
+    session: AsyncSession, *, source: Customer, target: Customer
+) -> bool:
+    """两个客户之间是否存在**需要价格维护权限**的有效专属价冲突。
+
+    给路由做鉴权用（第六批审查第 6 条）：合并时选 keep_source/keep_target
+    会把一边的生效价转成历史资料，改变了实际适用价，那是价格维护的活。
+    """
+    return bool(await _price_conflicts(session, source=source, target=target))
+
+
+async def _customer_self_conflicts(
+    session: AsyncSession, *, customer_id: int
+) -> list[dict]:
+    """同一客户**自己名下**两两冲突的生效专属价（合并完成后自检用）。
+
+    合并把来源那批价搬过来之后，目标客户名下可能出现互相矛盾的两条。
+    这一步兜住"选择值没覆盖到 / 归档漏掉"的情况：真有冲突就整笔拒绝，
+    不留下自相矛盾的有效价（第六批审查第 5 条）。
+    """
+    from app.modules.pricing.service import _ranges_overlap
+
+    rules = await _active_customer_rules(session, customer_id)
+    out: list[dict] = []
+    for index, first in enumerate(rules):
+        for second in rules[index + 1 :]:
+            if first.sku_id != second.sku_id:
+                continue
+            if not _ranges_overlap(
+                first.min_qty, first.max_qty, second.min_qty, second.max_qty
+            ):
+                continue
+            if not _ranges_overlap(
+                first.effective_from,
+                first.effective_to,
+                second.effective_from,
+                second.effective_to,
+            ):
+                continue
+            if first.agreed_price == second.agreed_price:
+                continue
+            out.append(
+                {
+                    "sku_id": first.sku_id,
+                    "rule_ids": [first.id, second.id],
+                    "prices": [str(first.agreed_price), str(second.agreed_price)],
+                }
+            )
+    return out
+
+
 async def _detect_conflicts(
     session: AsyncSession, *, source: Customer, target: Customer
 ) -> list[dict]:
     """合并前**必须先有人拍板**的冲突（返工单 6.8 第 5 条：不许静默覆盖）。
 
     两类：
-    1. **专属价格**：同一个 SKU + 同一数量档，两边各有一条生效中的客户特殊价，
-       且价格不同。都留着就是两条互相矛盾的报价依据 —— 系统不替业务选价。
+    1. **专属价格**：同一个 SKU 下，两边的**数量区间与有效期都重叠**、
+       价却不相同。都留着就是两条互相矛盾的报价依据 —— 系统不替业务选价。
     2. **协议主体不一致**：两边都填了纳税人识别号却不一样。税号不同通常说明
        这本来就是两家公司，合之前要人确认。
     """
     conflicts: list[dict] = []
 
-    from app.modules.pricing.model import CustomerPriceRule
-
-    source_rules = (
-        await session.execute(
-            select(CustomerPriceRule).where(
-                CustomerPriceRule.customer_id == source.id,
-                CustomerPriceRule.status == "active",
-            )
-        )
-    ).scalars().all()
-    target_index = {
-        (rule.sku_id, str(rule.min_qty)): rule
-        for rule in (
-            await session.execute(
-                select(CustomerPriceRule).where(
-                    CustomerPriceRule.customer_id == target.id,
-                    CustomerPriceRule.status == "active",
-                )
-            )
-        ).scalars().all()
-    }
-    price_conflicts: list[dict] = []
-    for rule in source_rules:
-        other = target_index.get((rule.sku_id, str(rule.min_qty)))
-        if other is None or other.agreed_price == rule.agreed_price:
-            continue
-        price_conflicts.append(
-            {
-                "sku_id": rule.sku_id,
-                "min_qty": str(rule.min_qty),
-                "source_price": str(rule.agreed_price),
-                "target_price": str(other.agreed_price),
-                "source_rule_id": rule.id,
-                "target_rule_id": other.id,
-            }
-        )
+    price_conflicts = await _price_conflicts(session, source=source, target=target)
     if price_conflicts:
         conflicts.append(
             {
                 "key": "customer_price",
                 "label": "专属价格",
-                "detail": f"{len(price_conflicts)} 个「SKU + 数量档」两边都定了不同的价",
+                "detail": (
+                    f"{len(price_conflicts)} 对「数量区间与有效期都重叠、价却不一样」的专属价"
+                ),
                 "options": [
                     {"value": "keep_target", "label": "保留目标客户的价格（来源那几条转为历史资料）"},
                     {"value": "keep_source", "label": "改用来源客户的价格（目标那几条转为历史资料）"},
                 ],
+                # 展示只给前 20 条（界面够看就行），**执行用的是完整集合**
+                # （归档时重新取，见 merge_customers）。此前把这份截断集合
+                # 直接拿去执行：25 对冲突只处理了 20 对，剩下 5 对合并后
+                # 仍然同时生效（第六批审查第 5 条）。
                 "items": price_conflicts[:20],
                 "count": len(price_conflicts),
             }
@@ -477,15 +577,29 @@ async def merge_customers(
 
         from app.modules.pricing.model import CustomerPriceRule
 
-        if conflicts_applied["customer_price"] == "keep_source":
-            losing = [row["target_rule_id"] for row in price_conflict["items"]]
+        choice = conflicts_applied.get("customer_price")
+        # **校验选择值**：非法值不能默默按"保留目标"处理（第六批审查第 5 条）
+        # —— 那等于调用方拼错一个字符串，价格就被静默裁决了
+        if choice not in ("keep_source", "keep_target"):
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"专属价格冲突的处理方式无效：{choice!r}。"
+                "只能是 keep_source（改用来源价）或 keep_target（保留目标价）",
+                422,
+            )
+        # 按**完整**冲突集合归档：`conflicts` 里那份是截断过的展示数据，
+        # 拿它执行会漏掉第 20 对之后的冲突（第六批审查第 5 条）
+        full_conflicts = await _price_conflicts(session, source=source, target=target)
+        if choice == "keep_source":
+            losing = [row["target_rule_id"] for row in full_conflicts]
         else:
-            losing = [row["source_rule_id"] for row in price_conflict["items"]]
-        await session.execute(
-            sql_update(CustomerPriceRule)
-            .where(CustomerPriceRule.id.in_(losing))
-            .values(status="historical")
-        )
+            losing = [row["source_rule_id"] for row in full_conflicts]
+        if losing:
+            await session.execute(
+                sql_update(CustomerPriceRule)
+                .where(CustomerPriceRule.id.in_(losing))
+                .values(status="historical")
+            )
 
     snapshot = {
         "name": source.name,
@@ -599,6 +713,21 @@ async def merge_customers(
     )
     session.add(log)
     await session.flush()
+
+    # **合并后自检**：目标客户名下不能留下互相冲突的生效专属价
+    # （第六批审查第 5 条）。上面的归档是按"合并前算出来的冲突"做的，
+    # 万一有没被覆盖到的组合（例如来源客户自己名下本来就有两条重叠），
+    # 这一步兜住：真有冲突就整笔拒绝，不合并出一堆自相矛盾的有效价。
+    # 此时事务尚未提交，抛错即整体回滚，数据保持原状。
+    self_conflicts = await _customer_self_conflicts(session, customer_id=target.id)
+    if self_conflicts:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"合并后目标客户「{target.name}」名下仍有 {len(self_conflicts)} 组"
+            "互相重叠的生效专属价，本次合并已中止（未改动任何数据）。"
+            "请先到价格中心整理这些价格，再重新发起合并",
+            422,
+        )
 
     return {
         "moved": moved,

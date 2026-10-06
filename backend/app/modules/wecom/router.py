@@ -339,7 +339,9 @@ async def transfer(
     # 部分成功时要说清成功了什么、还剩什么、下一步去哪处理。
     parts = [
         f"客户 {detail.get('customers', 0)} 个、商机 {detail.get('opportunities', 0)} 个、"
-        f"待办 {detail.get('tasks', 0)} 个、打样 {detail.get('samples', 0)} 张、"
+        f"待办 {detail.get('tasks', 0)} 个、"
+        f"打样跟单 {detail.get('samples', 0)} 张、"
+        f"打样生产责任 {detail.get('sample_production', 0)} 张、"
         f"订单 {detail.get('orders', 0)} 单、草稿 {detail.get('order_drafts', 0)} 份"
         "（订单/打样转的是跟进责任，业绩归属不变）"
     ]
@@ -405,7 +407,21 @@ async def retry_transfer(
 
     已经转出去的企微关系、已经改好的归属都不会再动一遍 ——
     整体重跑会把转接重复发一次，企微那边会报重复操作。
+
+    ⚠️ **硬锁（WECOM_TRANSFER_ENABLED）与首次执行同档**（第六批审查第 3 条）：
+    重试同样会向真实客户发起企微转接，此前这里漏了这道开关，
+    关掉开关之后重试仍然能把转接发出去。人员在职、撞单争议、
+    责任人是否已被调整这些校验在 svc.retry_transfer 内部统一做。
     """
+    from app.core.config import settings as app_settings
+
+    if not app_settings.wecom_transfer_enabled:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "离职继承已锁定：该操作会变更客户在微信里看到的服务人员。"
+            "需业务确认后由管理员设置 WECOM_TRANSFER_ENABLED=1 才能执行",
+            403,
+        )
     result = await svc.retry_transfer(session, user=user, job_id=job_id)
     await write_audit(
         session,

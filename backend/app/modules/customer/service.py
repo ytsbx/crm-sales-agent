@@ -487,8 +487,15 @@ async def transfer_customer(
     *,
     automatic: bool = False,
     only_from_owner_id: int | None = None,
+    default_reason: str | None = None,
 ) -> None:
     """变更客户负责人；new_owner_id 为空表示放入公海。
+
+    ⚠️ `reason` 是**调用方给的原始原因**，`default_reason` 只在它为空时用于
+    归属历史（让档案里读起来像句人话，比如「放入公海」）。
+    **两者绝不能混用**：履约保护的例外判断看的是"到底有没有填原因"，
+    要是在这里先塞一个默认文案再判断，那"没填原因"就永远变成"填了"，
+    例外闸门等于没有（2026-10-06 实测被 check_pool_recycle_and_merge 抓到）。
 
     目标负责人必须存在且在职：此前不校验，传一个不存在的 user id 也会照转，
     客户会挂到一个空负责人上，事后很难查（单个转移与批量转移都走这里，一处修两处生效）。
@@ -515,6 +522,28 @@ async def transfer_customer(
             raise AppError(
                 ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，不能接收客户", 422
             )
+    else:
+        # 清空负责人 = 把客户放回公海。这是「释放」，不是「转移」，必须过履约保护。
+        #
+        # 此前只有专门的 release-to-pool 接口做检查，而单个转移、分配、批量转移
+        # 都能传 `owner_id=null` —— 换个入口就能把还在履约中（在途订单/未结应收/
+        # 有效正式报价/在途打样）的客户丢进公海，连"填原因后例外释放"这一关
+        # 也一并绕过去了（第六批审查第 1 条，已复现：保护检查调用次数 0）。
+        #
+        # 收口到服务层：**凡是把负责人清空的入口都共用这一处校验**，
+        # 判据与定时扫描、回收执行共用 `protection_detail`，不各判一套。
+        from app.modules.settings import service as settings_service
+
+        await settings_service.assert_no_protection(
+            session,
+            customer_id=customer.id,
+            customer_name=customer.name,
+            reason=reason,
+            operator_id=user.id,
+            # 填了原因 = 主管明确要求**例外**释放：放行，但保护事项与原因
+            # 一起写进审计（例外是要有人担责的事）。
+            allow_exception=True,
+        )
 
     old_owner_id = customer.owner_id
     customer.owner_id = new_owner_id
@@ -524,7 +553,8 @@ async def transfer_customer(
             customer_id=customer.id,
             old_owner_id=old_owner_id,
             new_owner_id=new_owner_id,
-            reason=reason,
+            # 历史里用"人话"的原因：调用方没写时退回 default_reason
+            reason=reason or default_reason,
             operator_id=user.id,
             created_at=datetime.now(UTC),
         )

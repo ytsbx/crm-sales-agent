@@ -208,6 +208,24 @@ async def merge_customers(
     source = await svc.get_visible_customer(session, user, payload.source_customer_id)
     target = await svc.get_visible_customer(session, user, payload.target_customer_id)
 
+    # **涉及有效专属价裁决时，额外要求价格维护权限**（第六批审查第 6 条）。
+    # 选 keep_source / keep_target 会把另一边的生效价转成历史资料，
+    # 等于改了这个客户实际适用的价 —— 那属于价格维护（正常维护客户专属价
+    # 要求 price:manage）。此前合并只要求 customer:update，
+    # 于是"有客户编辑权、没有价格权"的业务员也能借合并完成价格裁决。
+    #
+    # 只在**真有冲突**时才要求：不涉及价格裁决的普通合并不该被卡住。
+    # 检查放在任何写入之前 —— 拒绝时不会迁移任何关联。
+    if "admin" not in user.roles and not user.has("price:manage"):
+        if await tag_svc.price_conflict_exists(session, source=source, target=target):
+            raise AppError(
+                ErrorCode.FORBIDDEN,
+                "这次合并涉及有效专属价格的裁决（要决定保留哪一边的价），"
+                "需要价格维护权限（price:manage）。请让有价格权限的同事处理，"
+                "或先到价格中心把两边的价整理一致，再重新发起合并",
+                403,
+            )
+
     result = await tag_svc.merge_customers(
         session,
         source=source,
@@ -349,7 +367,9 @@ async def batch_transfer(
 ):
     """批量转移负责人；owner_id 为空表示放入公海。
 
-    目标负责人的存在性/在职校验放在 svc.transfer_customer 里，单个与批量共用同一条规则。
+    目标负责人的存在性/在职校验，以及**清空负责人时的履约保护校验**，
+    都放在 svc.transfer_customer 里，单个与批量共用同一条规则
+    （第六批审查第 1 条：批量入口曾是绕过保护把客户丢进公海的旁路）。
     """
     if not payload.customer_ids:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请先选择客户")
@@ -365,21 +385,28 @@ async def batch_transfer(
         if customer.owner_id == payload.owner_id:
             continue
         await svc.transfer_customer(
-            session, user, customer, payload.owner_id, payload.reason or "批量转移"
+            session, user, customer, payload.owner_id, payload.reason,
+            # 原始 reason 参与保护校验，默认文案只进归属历史
+            default_reason="批量转移",
         )
         affected += 1
 
+    # 批量放公海与批量转给人，审计动作分开记（同单个转移的口径）
+    to_pool = payload.owner_id is None
     await write_audit(
         session,
         operator_id=user.id,
-        action="batch_transfer",
+        action="batch_transfer_to_pool" if to_pool else "batch_transfer",
         business_type="customer",
         business_id=None,
         after={"customer_ids": payload.customer_ids, "owner_id": payload.owner_id},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok({"affected": affected}, f"已转移 {affected} 个客户")
+    return ok(
+        {"affected": affected},
+        f"已放入公海 {affected} 个客户" if to_pool else f"已转移 {affected} 个客户",
+    )
 
 
 @router.get("/customers/{customer_id}/merge-logs")

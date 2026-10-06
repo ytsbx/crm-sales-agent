@@ -188,10 +188,13 @@ async def transfer_customer(
     before = svc.serialize_customer(customer)
     await svc.transfer_customer(session, user, customer, payload.owner_id, payload.reason)
     await session.flush()
+    # 「转给某个人」与「放回公海」是两种动作，审计分开记（第六批审查第 1 条）：
+    # 事后要能看出这个客户是被谁、从哪个入口放回公海的，而不是笼统一条 transfer。
+    to_pool = payload.owner_id is None
     await write_audit(
         session,
         operator_id=user.id,
-        action="transfer",
+        action="transfer_to_pool" if to_pool else "transfer",
         business_type="customer",
         business_id=customer.id,
         before=before,
@@ -199,7 +202,7 @@ async def transfer_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "负责人已变更")
+    return ok(svc.serialize_customer(customer), "已放入公海" if to_pool else "负责人已变更")
 
 
 @router.post("/customers/{customer_id}/release-to-pool")
@@ -218,22 +221,18 @@ async def release_to_pool(
     主管确需释放时走**例外**：填了 `reason` 就放行，但保护事项与例外决定
     都会记进审计（第 6 条）—— 例外是要有人担责的事。
     判据与定时扫描、回收执行共用同一套 `protection_detail`，不各判一套。
-    """
-    from app.modules.settings import service as settings_service
 
+    校验**不在这里做**：`svc.transfer_customer(..., None, ...)` 内部统一拦
+    （第六批审查第 1 条）。这样单个转移、分配、批量转移这些同样能把负责人
+    清空的入口，走的是同一道关，也不会出现两处各判一套。
+    """
     customer = await svc.get_visible_customer(session, user, customer_id)
     reason = (payload.reason if payload else None) or None
-    await settings_service.assert_no_protection(
-        session,
-        customer_id=customer.id,
-        customer_name=customer.name,
-        reason=reason,
-        operator_id=user.id,
-        # 传了原因 = 主管明确要求**例外**释放，放行但留痕。
-        # 没传原因时这里什么也不做，保护照常拦下（见 assert_no_protection）。
-        allow_exception=True,
+    # 注意传的是**原始 reason**（可能为空）—— 保护校验靠它判断"到底有没有填原因"。
+    # 默认文案交给 default_reason，只用于归属历史，不参与例外判断。
+    await svc.transfer_customer(
+        session, user, customer, None, reason, default_reason="放入公海"
     )
-    await svc.transfer_customer(session, user, customer, None, reason or "放入公海")
     await write_audit(
         session,
         operator_id=user.id,
@@ -581,13 +580,17 @@ async def assign_customer(
     customer = await svc.get_visible_customer(session, user, customer_id)
     before = svc.serialize_customer(customer)
     await svc.transfer_customer(
-        session, user, customer, payload.owner_id, payload.reason or "主管分配"
+        session, user, customer, payload.owner_id, payload.reason,
+        # 原始 reason 参与保护校验，默认文案只进归属历史
+        default_reason="主管分配",
     )
     await session.flush()
+    # 同 transfer：owner_id 为空就是「放回公海」，审计动作分开记
+    to_pool = payload.owner_id is None
     await write_audit(
         session,
         operator_id=user.id,
-        action="assign",
+        action="assign_to_pool" if to_pool else "assign",
         business_type="customer",
         business_id=customer.id,
         before=before,
@@ -595,7 +598,7 @@ async def assign_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "已分配")
+    return ok(svc.serialize_customer(customer), "已放入公海" if to_pool else "已分配")
 
 
 # ---------------------------------------------------------------- 联系人

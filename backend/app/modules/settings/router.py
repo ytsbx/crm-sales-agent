@@ -222,12 +222,18 @@ async def list_recycle_candidates(
     status: str | None = "pending",
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    _: CurrentUser = Depends(require_permission("settings:manage")),
+    user: CurrentUser = Depends(require_permission("customer:pool_review")),
     session: AsyncSession = Depends(get_db),
 ):
-    """回收候选（预告）列表。主管在这里逐条或批量复核。"""
+    """回收候选（预告）列表。主管在这里逐条或批量复核。
+
+    需要 `customer:pool_review` —— **独立的业务权限**，不再复用 `settings:manage`
+    （第六批审查第 7 条：默认销售主管没有系统设置权限，"主管逐条或批量批准"
+    实际上打不通；而给主管开整个系统设置权限又会顺带放开全公司数据）。
+    列表同时**按客户数据范围过滤**，只给得到自己管理范围内的候选。
+    """
     items, total = await svc.list_candidates(
-        session, status=status, page=page, page_size=page_size
+        session, user=user, status=status, page=page, page_size=page_size
     )
     return ok(page_data(items, total, page, page_size))
 
@@ -245,19 +251,23 @@ async def decide_recycle_candidate(
     candidate_id: int,
     payload: CandidateDecision,
     request: Request,
-    user: CurrentUser = Depends(require_permission("settings:manage")),
+    user: CurrentUser = Depends(require_permission("customer:pool_review")),
     session: AsyncSession = Depends(get_db),
 ):
     """复核一条回收候选。
 
     **批准执行前会重新检查**：预告发出之后客户如果又有了新跟进、新报价、
     新订单、新回款，会被拦下（要破例必须填原因，会记进审计）。
+
+    单条操作也要**校验数据范围**（第六批审查第 7 条）：列表过滤只解决"看不见"，
+    直接拿 id 调接口仍然要拦在本团队范围内。
     """
     from app.modules.settings.model import PublicPoolRecycleCandidate
 
     row = await session.get(PublicPoolRecycleCandidate, candidate_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "该回收候选不存在", 404)
+    await svc.assert_candidate_in_scope(session, user, row)
     result = await svc.decide_candidate(
         session,
         candidate=row,
@@ -274,13 +284,16 @@ async def batch_decide_recycle_candidates(
     candidate_ids: list[int],
     payload: CandidateDecision,
     request: Request,
-    user: CurrentUser = Depends(require_permission("settings:manage")),
+    user: CurrentUser = Depends(require_permission("customer:pool_review")),
     session: AsyncSession = Depends(get_db),
 ):
     """批量复核（返工单 6.3 第 3 条）。
 
     **逐条处理、逐条报结果**：某一条因为"预告后又有了新履约事项"被拦下时，
     不影响其余的 —— 而且失败的那条**不会被执行**，会原样留在待复核里。
+
+    每条都**校验数据范围**（第六批审查第 7 条）：越界的那条单独记为失败，
+    其余照常处理，不会因为一条越界把整批拖停。
     """
     from app.modules.settings.model import PublicPoolRecycleCandidate
 
@@ -294,6 +307,7 @@ async def batch_decide_recycle_candidates(
             failed.append({"candidate_id": cid, "reason": "候选不存在", "code": 40401})
             continue
         try:
+            await svc.assert_candidate_in_scope(session, user, row)
             result = await svc.decide_candidate(
                 session,
                 candidate=row,
@@ -319,13 +333,19 @@ async def restore_recycle_candidate(
     candidate_id: int,
     payload: dict,
     request: Request,
-    user: CurrentUser = Depends(require_permission("settings:manage")),
+    user: CurrentUser = Depends(require_permission("customer:pool_review")),
     session: AsyncSession = Depends(get_db),
 ):
     """**恢复**：把被回收的客户还给原负责人。
 
-    谁能恢复做成配置项（`pool_recycle_restore_permission`，默认 `customer:assign`）——
+    谁能恢复是配置项（`pool_recycle_restore_permission`，默认 `customer:assign`）——
     "谁能把回收掉的客户还回去"是管理口径，不同公司不一样，不该写死。
+    **这个配置此前只在默认值表里躺着、从未参与授权**（第六批审查追加口径 2），
+    现在真正生效：原负责人的主管能恢复本团队的客户，管理员不受限，
+    普通业务员不能恢复。
+
+    还要**校验客户数据范围** —— 客户进了公海虽然人人可见，但不能因此
+    让任意主管把别人团队的客户捞回来。
     客户已经被别人合法领取时**不静默覆盖**，会报冲突并记下。
     """
     from app.modules.settings.model import PublicPoolRecycleCandidate
@@ -333,6 +353,19 @@ async def restore_recycle_candidate(
     row = await session.get(PublicPoolRecycleCandidate, candidate_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "该回收候选不存在", 404)
+    await svc.assert_candidate_in_scope(session, user, row)
+
+    # 恢复权限按配置项判断（默认 customer:assign）。管理员默认放行，
+    # 与 require_permission 的口径保持一致。
+    restore_perm = await svc.get_text(
+        session, "pool_recycle_restore_permission", "text", "customer:assign"
+    )
+    if "admin" not in user.roles and not user.has(restore_perm):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            f"恢复已回收的客户需要权限：{restore_perm}",
+            403,
+        )
     result = await svc.restore_candidate(
         session,
         candidate=row,

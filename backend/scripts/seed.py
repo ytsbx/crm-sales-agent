@@ -89,6 +89,10 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("file:view", "查看文件", "file", "view"),
     ("file:manage", "上传与删除文件", "file", "manage"),
     ("settings:manage", "系统设置与规则", "settings", "manage"),
+    # 公海回收复核（第六批审查第 7 条）：批准/驳回/暂缓别人的回收候选是
+    # **业务动作**，不该和"系统设置"共用一个权限码 ——
+    # 默认销售主管要能做这件事，但不该顺带拿到整个系统设置的权限。
+    ("customer:pool_review", "公海回收复核", "customer", "pool_review"),
     ("agent:use", "使用 Sales Agent", "agent", "use"),
     ("sample:view", "查看样品", "sample", "view"),
     ("sample:manage", "管理样品", "sample", "manage"),
@@ -161,6 +165,10 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
     # 企业微信集成：只有主管及以上才需要看同步状态、做待归一处理和离职继承
     "wecom:view",
     "wecom:manage",
+    # 公海回收复核：主管复核本团队客户的回收候选（批准/驳回/暂缓）。
+    # 独立于 settings:manage —— 此前复用系统设置权限，默认主管根本没有它，
+    # 于是"主管逐条或批量批准"实际上打不通（第六批审查第 7 条）。
+    "customer:pool_review",
 ]
 
 FINANCE_PERMISSIONS = [

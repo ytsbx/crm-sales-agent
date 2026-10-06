@@ -68,8 +68,16 @@ function fmtDay(value: string | null | undefined): string {
 export default function SettingsPage() {
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
-  const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'users')
-  const { isAdmin } = usePermissions()
+  const { isAdmin, can } = usePermissions()
+  // 公海回收复核走**独立业务权限** `customer:pool_review`（第六批审查第 7 条）：
+  // 销售主管要能批准/驳回/暂缓本团队的回收候选，但不该因此拿到整个系统设置页
+  // （用户、角色、部门这些是管理员的东西）。所以非管理员只放行
+  //「业务规则」这一个页签，进来后也默认停在这一页。
+  const canReviewPool = can('customer:pool_review')
+  const visibleTabs = isAdmin ? TABS : TABS.filter((item) => item.itemKey === 'rules')
+  const [activeKey, setActiveKey] = useState(
+    searchParams.get('tab') ?? (isAdmin ? 'users' : 'rules')
+  )
 
   const usersQuery = useQuery({
     queryKey: ['settings-users'],
@@ -98,7 +106,8 @@ export default function SettingsPage() {
   const candidatesQuery = useQuery({
     queryKey: ['recycle-candidates', candidatePage],
     queryFn: () => listRecycleCandidates({ status: 'pending', page: candidatePage, page_size: 20 }),
-    enabled: isAdmin && activeKey === 'rules',
+    // 有回收复核权（主管）或管理员都能看，不再限死管理员
+    enabled: (isAdmin || canReviewPool) && activeKey === 'rules',
   })
   const taskRulesQuery = useQuery({
     queryKey: ['task-rules'],
@@ -407,7 +416,7 @@ export default function SettingsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  if (!isAdmin) {
+  if (!isAdmin && !canReviewPool) {
     return (
       <div className="page-container">
         <PageHeader title="系统设置" />
@@ -614,7 +623,7 @@ export default function SettingsPage() {
             setActiveKey(key)
             setSearchParams({ tab: key })
           }}
-          tabList={TABS}
+          tabList={visibleTabs}
         />
         <div style={{ marginTop: 16 }}>
           {activeKey === 'users' && (

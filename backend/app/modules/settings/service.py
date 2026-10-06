@@ -16,6 +16,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
+from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
@@ -530,16 +532,27 @@ def serialize_candidate(
 async def list_candidates(
     session: AsyncSession,
     *,
+    user: CurrentUser,
     status: str | None = "pending",
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
-    """回收候选列表（真分页）。主管在这里逐条或批量复核。"""
+    """回收候选列表（真分页）。主管在这里逐条或批量复核。
+
+    **按客户数据范围过滤**（第六批审查第 7 条）：候选是"某人的客户要被收走"，
+    所以拿提名时的原负责人 `owner_id` 去比对用户可见的负责人集合。
+    此前完全不过滤 —— 任何拿到权限的人都能看到并处理全公司候选；
+    而"给主管开整个系统设置权限"不是可接受的解法（那会顺带放开全公司数据）。
+    """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
     conditions = []
     if status:
         conditions.append(PublicPoolRecycleCandidate.status == status)
+    allowed = await scoped_owner_ids(session, user)
+    if allowed is not None:
+        # `all` 范围返回 None，不加过滤；其余只给本范围内的
+        conditions.append(PublicPoolRecycleCandidate.owner_id.in_(allowed))
 
     total = (
         await session.execute(
@@ -608,6 +621,27 @@ async def _customer_now(session: AsyncSession, customer_id: int) -> Customer | N
             .execution_options(populate_existing=True)
         )
     ).scalars().first()
+
+
+async def assert_candidate_in_scope(
+    session: AsyncSession, user: CurrentUser, candidate: PublicPoolRecycleCandidate
+) -> None:
+    """校验这条回收候选是否落在当前用户的**客户数据范围**内。
+
+    列表过滤只解决"看不见"；直接拿 id 调单条/批量接口仍然能操作到别人的候选。
+    所以复核与恢复的入口都要过这一关（第六批审查第 7 条）。
+
+    比对的是候选**提名时记下的原负责人** —— 这次回收要动的就是这个人的客户。
+    """
+    allowed = await scoped_owner_ids(session, user)
+    if allowed is None:
+        return  # `all` 范围：都能处理
+    if candidate.owner_id is None or candidate.owner_id not in allowed:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "这条回收候选不在你的管理范围内（该客户的原负责人不在你负责的团队里）",
+            403,
+        )
 
 
 async def decide_candidate(

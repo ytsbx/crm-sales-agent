@@ -165,7 +165,11 @@ TRANSFER_KIND_LABEL: dict[str, str] = {
     "contact": "联系人",
     "opportunity": "商机",
     "task": "待办任务",
-    "sample": "打样单",
+    # 打样有两个责任字段，都可能挂在离职人名下，要分开盘点、可以指定不同接手人
+    # （跟单给业务员、生产给车间主管是常见分工）——
+    # 此前只盘"跟单"，离职人担任**生产责任人**的单子没人接（第六批审查第 4 条）
+    "sample": "打样单（跟单）",
+    "sample_production": "打样单（生产）",
     "order": "销售订单",
     "order_draft": "订单草稿",
     "wecom_relation": "企微客户关系",
