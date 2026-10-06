@@ -9,11 +9,13 @@ import { listCustomers } from '../../shared/api/customer'
 import {
   convertProductInsight,
   createProductInsight,
+  listInsightRounds,
   listProductInsights,
   reviewProductInsight,
   submitProductInsight,
   updateProductInsight,
   type InsightConvertResult,
+  type InsightRound,
   type ProductInsightRow,
 } from '../../shared/api/insight'
 import { optionMatcher, withCode } from '../../shared/components/optionMatch'
@@ -48,6 +50,32 @@ function parseImages(text: string): string[] | null {
   return list.length ? list : null
 }
 
+/**
+ * 逐轮快照里的内部字段名 → 中文（R08）。
+ * 和核价历史那次同一个教训：审计/快照里存的是英文内部名，
+ * 直接渲染出来就是「title: xxx」这种机器话，用户看不懂。
+ */
+const ROUND_CONTENT_LABEL: Record<string, string> = {
+  title: '标题',
+  source: '市场来源',
+  target_customer: '目标客户',
+  direction: '产品方向',
+  selling_points: '假设卖点',
+  price_assumption: '价格假设',
+  conclusion: '结论',
+}
+
+/** 时间戳转成人看的格式。 */
+function fmtTime(value: string | null): string {
+  return value ? new Date(value).toLocaleString('zh-CN') : '—'
+}
+
+/** 快照里的值转成能看的字：空值说「未填」，而不是显示 null。 */
+function fmtValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '（未填）'
+  return String(value)
+}
+
 /** 新品洞察（§3.3 第三类：运营日常选品 → 评审 → 转需求）。 */
 export default function ProductInsightsPage() {
   const queryClient = useQueryClient()
@@ -64,6 +92,16 @@ export default function ProductInsightsPage() {
   const query = useQuery({
     queryKey: ['product-insights', { status, keyword, page }],
     queryFn: () => listProductInsights({ status, keyword, page, page_size: 20 }),
+  })
+
+  // 审核历史（R08）：列表那一行只有**最后一轮**的意见与结果，
+  // 「每一轮报了什么、谁提交的、谁批的、什么时候」只有落表的逐轮记录才有。
+  // 点开某一条才去拉，不用给列表每行都发一个请求。
+  const [historyTarget, setHistoryTarget] = useState<ProductInsightRow | null>(null)
+  const roundsQuery = useQuery({
+    queryKey: ['insight-rounds', historyTarget?.id],
+    queryFn: () => listInsightRounds(historyTarget!.id),
+    enabled: Boolean(historyTarget),
   })
 
   const refresh = () => void queryClient.invalidateQueries({ queryKey: ['product-insights'] })
@@ -309,36 +347,53 @@ export default function ProductInsightsPage() {
             },
             {
               title: '操作',
-              width: 200,
-              render: (_: unknown, record: ProductInsightRow) => (
-                <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap' }}>
-                  {canManage && record.status !== 'converted' && record.status !== 'under_review' && (
-                    <a onClick={() => openEdit(record)}>编辑</a>
-                  )}
-                  {canManage && (record.status === 'draft' || record.status === 'rejected') && (
-                    <a onClick={() => submitMutation.mutate(record.id)}>提交评审</a>
-                  )}
-                  {canReview && record.status === 'under_review' && (
-                    <>
-                      <a style={{ color: 'var(--crm-success)' }} onClick={() => openReview(record, true)}>
-                        通过
-                      </a>
-                      <a style={{ color: 'var(--crm-error)' }} onClick={() => openReview(record, false)}>
-                        否决
-                      </a>
-                    </>
-                  )}
-                  {canManage && record.status === 'approved' && (
-                    <a onClick={() => openConvert(record)}>转需求</a>
-                  )}
-                  {/* 已转：给得出去的深链，不是一串死编号（§6.1(7)） */}
-                  {record.converted_inquiry_id && (
-                    <Link to="/inquiries?keyword=" style={{ color: 'var(--crm-text-3)' }}>
-                      已转需求 #{record.converted_inquiry_id}
-                    </Link>
-                  )}
-                </span>
-              ),
+              width: 230,
+              render: (_: unknown, record: ProductInsightRow) => {
+                // 逐条可操作性（R08）：后端随每一行下发"这条归不归我管""我现在能不能评"。
+                // 原来只按权限码判，于是**数据范围外**的那几条也长着「编辑 / 提交评审 /
+                // 转需求」，点下去才 403 —— 看着能点、其实是坏的。
+                // 用 `??` 而不是 `||`：can_edit=false 是有效结论，不能被当成"没值"。
+                // 老数据没有这两个字段时退回原判据，行为不变。
+                const editable = canManage && (record.can_edit ?? true)
+                const reviewable =
+                  record.can_review ?? (canReview && record.status === 'under_review')
+                return (
+                  <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap' }}>
+                    {editable && record.status !== 'converted' && record.status !== 'under_review' && (
+                      <a onClick={() => openEdit(record)}>编辑</a>
+                    )}
+                    {editable && (record.status === 'draft' || record.status === 'rejected') && (
+                      <a onClick={() => submitMutation.mutate(record.id)}>提交评审</a>
+                    )}
+                    {reviewable && (
+                      <>
+                        <a style={{ color: 'var(--crm-success)' }} onClick={() => openReview(record, true)}>
+                          通过
+                        </a>
+                        <a style={{ color: 'var(--crm-error)' }} onClick={() => openReview(record, false)}>
+                          否决
+                        </a>
+                      </>
+                    )}
+                    {editable && record.status === 'approved' && (
+                      <a onClick={() => openConvert(record)}>转需求</a>
+                    )}
+                    {/* 审核历史：能看见这一页的人就能看它的评审史（后端读入口同权限） */}
+                    <a
+                      style={{ color: 'var(--crm-text-2)' }}
+                      onClick={() => setHistoryTarget(record)}
+                    >
+                      审核历史
+                    </a>
+                    {/* 已转：给得出去的深链，不是一串死编号（§6.1(7)） */}
+                    {record.converted_inquiry_id && (
+                      <Link to="/inquiries?keyword=" style={{ color: 'var(--crm-text-3)' }}>
+                        已转需求 #{record.converted_inquiry_id}
+                      </Link>
+                    )}
+                  </span>
+                )
+              },
             },
           ]}
           dataSource={query.data?.items ?? []}
@@ -569,6 +624,84 @@ export default function ProductInsightsPage() {
             )}
           </div>
         )}
+      </Modal>
+
+      {/* 审核历史（R08）：逐轮记录，从最早一轮往下排。
+          列表那一行只有**最后一轮**的值，看不出"驳回过几次、每次是什么意见、
+          改完又报了什么" —— 那些只有落表的逐轮记录才回答得了。 */}
+      <Modal
+        title={`审核历史：${historyTarget?.title ?? ''}`}
+        visible={Boolean(historyTarget)}
+        onCancel={() => setHistoryTarget(null)}
+        footer={<Button onClick={() => setHistoryTarget(null)}>关闭</Button>}
+        width={620}
+      >
+        {roundsQuery.isLoading && (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
+        )}
+        {!roundsQuery.isLoading && (roundsQuery.data ?? []).length === 0 && (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+            还没有评审记录。提交评审之后，每一轮报了什么、谁批的都会逐条留在这里。
+          </div>
+        )}
+        <div style={{ display: 'grid', gap: 10 }}>
+          {(roundsQuery.data ?? []).map((round: InsightRound) => {
+            const pending = !round.review_result
+            return (
+              <div
+                key={round.round}
+                style={{
+                  border: '1px solid var(--crm-surface-high)',
+                  borderRadius: 'var(--crm-radius-sm)',
+                  padding: '10px 12px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>第 {round.round} 轮</span>
+                  <Tag color={pending ? 'orange' : round.review_result === 'approved' ? 'green' : 'red'}>
+                    {pending ? '待评审' : (round.review_result_label ?? round.review_result)}
+                  </Tag>
+                  <div style={{ flex: 1 }} />
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    提交：{round.submitted_by_name ?? '—'} · {fmtTime(round.submitted_at)}
+                  </span>
+                </div>
+
+                {/* 这一轮报上去的内容快照：过了几轮之后要能回答"当时批的是哪一版" */}
+                {round.content && (
+                  <div
+                    style={{
+                      display: 'grid',
+                      gap: 2,
+                      fontSize: 12,
+                      color: 'var(--crm-text-2)',
+                      marginBottom: round.review_note || round.reviewed_at ? 8 : 0,
+                    }}
+                  >
+                    {Object.entries(ROUND_CONTENT_LABEL).map(([key, label]) =>
+                      key in round.content! ? (
+                        <div key={key}>
+                          {label}：{fmtValue(round.content![key])}
+                        </div>
+                      ) : null,
+                    )}
+                  </div>
+                )}
+
+                {round.review_note && (
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-2)', marginBottom: 4 }}>
+                    评审意见：{round.review_note}
+                  </div>
+                )}
+                {round.reviewed_at && (
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    评审：{round.reviewer_name ?? '—'} · {fmtTime(round.reviewed_at)}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </Modal>
     </div>
   )

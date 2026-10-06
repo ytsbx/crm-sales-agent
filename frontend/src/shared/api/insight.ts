@@ -23,6 +23,37 @@ export interface ProductInsightRow {
   review_round: number
   converted_inquiry_id: number | null
   created_at: string
+  /**
+   * 逐条可操作性（返修 R08）：后端随每一行下发的判断结果。
+   *
+   * 为什么不能只用权限码判：`product:manage` 是"能不能改这一类东西"，
+   * 而"这条归不归我管"要看数据范围。原来列表只按权限码显隐，于是
+   * 数据范围外的那几条也长着「编辑 / 提交评审 / 转需求」按钮，
+   * 点下去才 403 —— 看着能点、其实是坏的。
+   * 老记录（接口升级前）没有这个字段，所以标成可选。
+   */
+  can_edit?: boolean
+  can_review?: boolean
+}
+
+/**
+ * 一轮评审记录（与后端 `_serialize_rounds` 的字段一一对应）。
+ *
+ * ⚠️ 字段名和案例库那边**不一样**（案例用 `approve`/`at`，这里用
+ * `review_result`/`reviewed_at`）。照抄案例页的字段名会渲染出一片空白。
+ */
+export interface InsightRound {
+  round: number
+  content: Record<string, unknown> | null
+  submitted_by: number | null
+  submitted_by_name: string | null
+  submitted_at: string | null
+  review_result: string | null
+  review_result_label: string | null
+  reviewer_id: number | null
+  reviewer_name: string | null
+  reviewed_at: string | null
+  review_note: string | null
 }
 
 /** 转换结果（第五批 §6.1(3)）：带编号与来源类型，前端能直接给深链和提示。 */
@@ -90,4 +121,15 @@ export function convertProductInsight(
 
 export function deleteProductInsight(id: number) {
   return api.delete<null>(`/product-insights/${id}`)
+}
+
+/**
+ * 逐轮评审记录（返修 R08）。
+ *
+ * 列表行上只有**最后一轮**的意见；这份接口才拿得到"每一轮报了什么、
+ * 谁提交的、谁批的、什么时候、结论是什么"。读入口只要求 `product:view`，
+ * 所以任何能看这一页的人都能看它的评审史。
+ */
+export function listInsightRounds(id: number) {
+  return api.get<InsightRound[]>(`/product-insights/${id}/rounds`)
 }

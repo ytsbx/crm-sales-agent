@@ -360,7 +360,19 @@ async def list_insights(
     stmt = stmt.order_by(ProductInsight.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
     names = await _owner_names(session, rows)
-    return ok(page_data([_serialize(r, owner_name=names.get(r.owner_id)) for r in rows], total, page, page_size))
+    # 逐条可操作性（返修 R08）：列表页要按"**这一条**"决定按钮显不显示。
+    # 原先前端只能拿"这个人有没有某个权限码"粗判，于是数据范围外的那几条
+    # 也会长出「编辑 / 提交评审 / 转需求」按钮，点下去才 403 ——
+    # 看着像能点、其实是坏的。这里把判断结果随行下发。
+    # 注意：藏按钮**不是**权限，后端每个写入口仍会用 `_get_writable` 再判一次。
+    can_review_any = _can_review(user)
+    items = []
+    for r in rows:
+        item = _serialize(r, owner_name=names.get(r.owner_id))
+        item["can_edit"] = owner_ids is None or r.owner_id in owner_ids
+        item["can_review"] = can_review_any and r.status == "under_review"
+        items.append(item)
+    return ok(page_data(items, total, page, page_size))
 
 
 @router.get("/product-insights/{insight_id}")
