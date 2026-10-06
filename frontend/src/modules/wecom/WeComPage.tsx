@@ -312,14 +312,8 @@ export default function WeComPage() {
         ]}
       />
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '300px minmax(0, 1fr) 320px',
-          gap: 16,
-          alignItems: 'start',
-        }}
-      >
+      {/* 三栏原来写死 300px + 320px，窗口一窄就先把自己撑破（整页横向滚动） */}
+      <div className="split-multi" style={{ gap: 16 }}>
         {/* 左：待处理外部联系人 */}
         <SectionCard>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>待处理联系人</div>

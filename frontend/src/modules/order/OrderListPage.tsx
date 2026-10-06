@@ -426,7 +426,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         width={720}
       >
         <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
             <div>
               <FormLabel required>客户</FormLabel>
               <Select
@@ -527,7 +527,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
             </Button>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>
             <div>
               <div style={{ marginBottom: 4 }}>交期（可空）</div>
               <DatePicker

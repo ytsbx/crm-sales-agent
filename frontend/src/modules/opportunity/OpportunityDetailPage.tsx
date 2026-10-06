@@ -451,8 +451,9 @@ export default function OpportunityDetailPage() {
 
         <div style={{ marginTop: 16 }}>
           {activeKey === 'overview' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 24 }}>
+            <div className="detail-split" style={{ gap: 24 }}>
               <div
+                className="split-main"
                 style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
@@ -479,12 +480,15 @@ export default function OpportunityDetailPage() {
                   />
                 )}
               </div>
-              {/* 客户决策关系图（设计稿商机详情右栏）：这单要打通谁一目了然 */}
-              <DecisionMakerCard
-                customerId={opportunity.customer_id}
-                title="客户决策关系图"
-                boxed={false}
-              />
+              {/* 客户决策关系图（设计稿商机详情右栏）：这单要打通谁一目了然。
+                  窄屏时整块落到左栏下方，不会被压成一条 */}
+              <div className="split-side">
+                <DecisionMakerCard
+                  customerId={opportunity.customer_id}
+                  title="客户决策关系图"
+                  boxed={false}
+                />
+              </div>
             </div>
           )}
 

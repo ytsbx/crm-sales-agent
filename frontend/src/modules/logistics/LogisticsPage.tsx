@@ -258,7 +258,7 @@ export default function LogisticsPage() {
                   <Input value={quantity} onChange={setQuantity} placeholder="1000" />
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>起运地</div>
                     <Input value={origin} onChange={setOrigin} placeholder="如：上海" />
@@ -286,7 +286,7 @@ export default function LogisticsPage() {
                   <Input value={packageType} onChange={setPackageType} placeholder="仅作记录，如：纸箱" />
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 12 }}>
                   <div>
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
                       单件重量 kg（可选）
@@ -337,7 +337,7 @@ export default function LogisticsPage() {
                     />
                   )}
 
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 32px', marginTop: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: '0 32px', marginTop: 12 }}>
                     <SummaryRow
                       label="实际重量"
                       value={`${result.measures.actual_weight.toLocaleString('zh-CN')} kg`}

@@ -235,7 +235,8 @@ export default function AgentPage() {
   )
 
   return (
-    <div className="page-container" style={{ display: 'grid', gridTemplateColumns: '240px 1fr', gap: 16 }}>
+    // 会话列表固定 240px；用 minmax(0, …) 圈住，宽度不够时它自己缩，不会顶出横向滚动
+    <div className="page-container" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 240px) minmax(0, 1fr)', gap: 16 }}>
       <SectionCard style={{ height: 'fit-content' }}>
         <Button
           block

@@ -571,7 +571,7 @@ export default function CasesPage() {
               optionList={(customersQuery.data?.items ?? []).map((c) => ({ value: c.id, label: c.name }))}
             />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10 }}>
             <div>
               <FormLabel hint="对外展示用，别写客户真名">客户代称</FormLabel>
               <Input placeholder="如：某包装厂" value={form.customer_label} onChange={(v) => setForm({ ...form, customer_label: v })} />

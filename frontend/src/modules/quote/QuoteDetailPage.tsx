@@ -618,7 +618,8 @@ export default function QuoteDetailPage() {
       {/* What-if：版本方案对比 + 边际测算（设计稿 Sales Copilot 右栏那个滑杆） */}
       <WhatIfPanel quoteId={quoteId} versionId={version.id} items={detail.items} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      {/* 两张卡里各有一张表，列宽不能写死 1fr（会被表的固有宽度顶住、整页横向滚动） */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
         <SectionCard
           title="附加费用"
           extra={

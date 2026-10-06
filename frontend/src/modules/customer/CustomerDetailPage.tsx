@@ -531,8 +531,8 @@ export default function CustomerDetailPage() {
           )}
 
           {activeKey === 'contacts' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: 16 }}>
-              <div>
+            <div className="detail-split">
+              <div className="split-main">
                 <div className="toolbar">
                   <div style={{ flex: 1 }} />
                   <Button
@@ -555,8 +555,10 @@ export default function CustomerDetailPage() {
                   empty="还没有联系人"
                 />
               </div>
-              {/* 核心决策人卡片（设计稿客户详情右栏） */}
-              <DecisionMakerCard customerId={customerId} boxed={false} />
+              {/* 核心决策人卡片（设计稿客户详情右栏）：窄屏时整块落到下方 */}
+              <div className="split-side">
+                <DecisionMakerCard customerId={customerId} boxed={false} />
+              </div>
             </div>
           )}
 

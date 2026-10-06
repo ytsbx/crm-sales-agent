@@ -633,7 +633,7 @@ export default function KnowledgePage() {
               onChange={(v) => setReviseForm({ ...reviseForm, description: v })}
             />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 10 }}>
             <div>
               <div style={{ marginBottom: 4 }}>数量</div>
               <Input

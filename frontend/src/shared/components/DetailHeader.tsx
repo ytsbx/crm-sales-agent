@@ -10,6 +10,9 @@ import type { CSSProperties, ReactNode } from 'react'
  *
  * 关键信息行必须在标题**下方**并且靠左，不能跑到标题右边——
  * 标题右边留给状态标签，按钮贴右边缘，这样四页看起来才是同一套。
+ *
+ * 宽度不够时（按钮多 + 窗口窄，见 index.css 的 .detail-header-grid）：
+ * 按钮整块换到标题下方并靠左，标题独占一行，不会再互相压字。
  */
 export default function DetailHeader({
   title,
@@ -33,30 +36,17 @@ export default function DetailHeader({
 }) {
   return (
     <div className="card-block" style={{ marginBottom: 16, ...style }}>
-      {/* 移动端（场景23）：单列堆叠——标题在上、操作按钮换行到下方，
-          手机上不再左右挤在两列里 */}
+      {/* 宽度不够时自动换行：标题在上、操作按钮落到下方靠左（见 index.css） */}
       <div className="detail-header-grid">
-        <div style={{ minWidth: 0 }}>
+        <div className="dh-main">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span className="detail-title">{title}</span>
             {tags}
           </div>
           {meta && <div className="detail-meta">{meta}</div>}
         </div>
-        {extra && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              flexWrap: 'wrap',
-              justifyContent: 'flex-end',
-            }}
-          >
-            {extra}
-          </div>
-        )}
-        {children && <div style={{ gridColumn: '1 / -1' }}>{children}</div>}
+        {extra && <div className="dh-actions">{extra}</div>}
+        {children && <div className="dh-full">{children}</div>}
       </div>
     </div>
   )

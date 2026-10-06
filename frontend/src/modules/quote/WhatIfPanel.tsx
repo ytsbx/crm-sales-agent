@@ -284,7 +284,8 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
         {items.length === 0 ? (
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>本版还没有明细，无法测算</div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 20 }}>
+          // 比例保持 1.4:1；最小宽度放开，避免列被内容固有宽度顶破
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)', gap: 20 }}>
             <div>
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 6 }}>
                 成交均价（拖动调整整版价格，同比缩放数量）

@@ -367,7 +367,7 @@ export default function AnalyticsPage() {
         ]}
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16 }}>
         <SectionCard title="销售漏斗（进行中商机）">
           <BarList
             data={(opportunity?.funnel ?? []).map((row) => ({
@@ -453,7 +453,7 @@ export default function AnalyticsPage() {
         </SectionCard>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginTop: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16, marginTop: 16 }}>
         <SectionCard title="交期履约（按负责人）">
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
             准时 = 首批发货日期 ≤ 计划发货日（到货日减运输天数）；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。

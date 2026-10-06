@@ -1060,7 +1060,7 @@ export default function OrderDetailPage() {
                 onChange={(v) => { setScheduleForm({ ...scheduleForm, transit_days: typeof v === 'number' ? v : NaN }); setSchedulePreview(null) }} /></div>}
           </div>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>按自然日倒排。以下为建议参数，需责任人核对；正数表示发货前，负数表示发货后。</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 10 }}>
             {Object.entries({ contract: '签订合同', deposit: '付定金', pre_sample_sent: '产前样发出', pre_sample_confirmed: '产前样确认', first_shipment: '首批发货', payment: '收款' }).map(([key, label]) =>
               <div key={key}><div>{label}提前天数</div><InputNumber aria-label={`${label}提前天数`} disabled={schedulePreviewMutation.isPending || createScheduleMutation.isPending} min={-365} max={365} precision={0}
                 value={scheduleForm.plan_offsets[key]} onChange={(v) => {

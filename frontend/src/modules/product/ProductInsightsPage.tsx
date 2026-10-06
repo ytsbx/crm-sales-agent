@@ -372,7 +372,7 @@ export default function ProductInsightsPage() {
               onChange={(v) => setForm({ ...form, title: v })}
             />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 160px), 1fr))', gap: 10 }}>
             <div>
               <FormLabel>市场来源</FormLabel>
               <Select
@@ -503,7 +503,7 @@ export default function ProductInsightsPage() {
               }))}
             />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 10 }}>
             <Input
               placeholder="数量（可留空）"
               value={convertForm.quantity}
