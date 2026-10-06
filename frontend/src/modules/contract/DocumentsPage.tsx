@@ -43,6 +43,29 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
 const DETAIL_LABEL = { fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 2 }
 const DETAIL_VALUE = { fontSize: 13 }
 
+/** 模板正文里要求补充的「空白项」：解析 `{{extra.名称}}`，按出现顺序去重。
+ *
+ * 为什么要从模板里读、而不是让人手写：
+ * 模板作者在正文里写 `付款方式：{{extra.付款方式}}`，生成合同的人只需要知道
+ * **「付款方式」这一格填什么**。此前界面上给的是一个空文本框 + 一行提示
+ * "每行一条「名称=内容」，对应 {{extra.名称}}" —— 等于把模板语法甩给业务员：
+ * 既不知道该填哪几项（要回去翻模板正文），也不知道格式对不对
+ * （漏个等号、用错中文逗号都只会静默不生效）。
+ * 字段名以模板为准，用户只填值，这一类错误就不存在了。
+ */
+function parseExtraFields(body: string): string[] {
+  const names: string[] = []
+  const seen = new Set<string>()
+  for (const match of body.matchAll(/\{\{\s*extra\.([^}]+?)\s*\}\}/g)) {
+    const name = match[1].trim()
+    if (name && !seen.has(name)) {
+      seen.add(name)
+      names.push(name)
+    }
+  }
+  return names
+}
+
 export default function DocumentsPage() {
   const queryClient = useQueryClient()
   const { can, isReviewer } = usePermissions()
@@ -86,7 +109,7 @@ export default function DocumentsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  // 生成合同草稿：空白项一行一条「名称=内容」
+  // 生成合同草稿
   const [generateVisible, setGenerateVisible] = useState(false)
   // 幂等键：打开弹窗时生成一个，同一张弹窗里的重复提交带的是同一个值。
   // 后端据此把第二次请求认成"刚才那份"，不再多建一份带独立编号的草稿。
@@ -101,8 +124,20 @@ export default function DocumentsPage() {
     quote_version_id: undefined as number | undefined,
     expiry_date: '',
     effective_date: '',
-    extras: '付款方式=',
+    // 模板空白项的值：键就是模板里 {{extra.名称}} 的名称。
+    // 之所以不再是一个手写的「名称=内容」文本框，见 parseExtraFields 的注释。
+    extraValues: {} as Record<string, string>,
   })
+  // 当前选中的模板，以及**它要求补充哪几项**（字段名直接从模板正文解析）。
+  // 界面上只让用户填值，不再让他自己写 `名称=内容`（见 parseExtraFields）。
+  const selectedTemplate = (templatesQuery.data ?? []).find(
+    (t) => t.id === generateForm.template_id,
+  )
+  const extraFieldNames = selectedTemplate ? parseExtraFields(selectedTemplate.body) : []
+  const unfilledExtras = extraFieldNames.filter(
+    (name) => !(generateForm.extraValues[name] ?? '').trim(),
+  )
+
   // 补充协议 / 续签：从原文档发起，带上 parent_id。原件的正文、签署件都不动，
   // 新文档在台账上能顺着 parent_id 找回出处（"这份补充协议是补哪份合同"）。
   const [generateParent, setGenerateParent] = useState<ContractDocument | null>(null)
@@ -132,15 +167,14 @@ export default function DocumentsPage() {
   const selectedOrder = genOrders.find((o) => o.id === generateForm.order_id)
   const generateMutation = useMutation({
     mutationFn: () => {
+      // 只提交**当前模板真正要求**的那几项：中途换过模板时，旧模板的字段值还留在
+      // state 里，但新模板里没有它 —— 一并提交出去只会变成没人看的杂项。
+      // 空值不提交（后端对"没填"与"填了空"的处理一样，都会登记成缺项）。
       const extra_fields: Record<string, string> = {}
-      generateForm.extras
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .forEach((line) => {
-          const idx = line.indexOf('=')
-          if (idx > 0) extra_fields[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
-        })
+      for (const name of extraFieldNames) {
+        const value = (generateForm.extraValues[name] ?? '').trim()
+        if (value) extra_fields[name] = value
+      }
       return generateContractDocument({
         template_id: generateForm.template_id!,
         customer_id: generateForm.customer_id!,
@@ -177,7 +211,9 @@ export default function DocumentsPage() {
     setGenerateParent(parent)
     // 每次打开都把上一次的续签选项清掉：勾选状态跟着弹窗走，不该跨次留存
     setSupersedeParent(false)
-    setGenerateForm((prev) => ({ ...prev, effective_date: '' }))
+    // 空白项的值也一起清掉：上一次填的"付款方式"是上一份合同的约定，
+    // 留到这一次很容易被顺手带进新合同
+    setGenerateForm((prev) => ({ ...prev, effective_date: '', extraValues: {} }))
     // 每次打开换一个新键：这一次生成对应这一张弹窗，重试才认得出是同一件事
     setGenerateRequestKey(
       typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`,
@@ -466,6 +502,14 @@ export default function DocumentsPage() {
               value={templateForm.body}
               onChange={(v) => setTemplateForm({ ...templateForm, body: v })}
             />
+            {/* 写模板的人能立刻看到"这份模板会让业务员填哪几项"——
+                占位符名写错了（少个括号、extra 拼成 extta）在这里就能发现，
+                否则要等生成合同时正文里留着一串 {{}} 才看得出来。 */}
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+              业务员生成时要补充：
+              {parseExtraFields(templateForm.body).join('、') ||
+                '（这个模板没有空项，业务员直接生成即可）'}
+            </div>
           </div>
         </div>
       </Modal>
@@ -592,14 +636,51 @@ export default function DocumentsPage() {
               不选也能先备条款，但登记签署前必须补上正式依据。
             </div>
           </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>空白项（每行一条「名称=内容」，对应 {'{{extra.名称}}'}）</div>
-            <TextArea
-              rows={3}
-              value={generateForm.extras}
-              onChange={(v) => setGenerateForm({ ...generateForm, extras: v })}
-            />
-          </div>
+          {/* 模板空白项：字段名**从模板正文里读出来**，用户只填值。
+              此前是一个空文本框 + 提示"每行一条「名称=内容」，对应 {{extra.名称}}"
+              —— 业务员既不知道该填哪几项，也不知道格式对不对。 */}
+          {extraFieldNames.length > 0 ? (
+            <div>
+              <div style={{ marginBottom: 4 }}>
+                需要补充的信息（这个模板有 {extraFieldNames.length} 处待填）
+              </div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {extraFieldNames.map((name) => (
+                  <div
+                    key={name}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'minmax(0, 110px) minmax(0, 1fr)',
+                      gap: 8,
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>{name}</div>
+                    <Input
+                      value={generateForm.extraValues[name] ?? ''}
+                      placeholder={`填写「${name}」`}
+                      onChange={(v) =>
+                        setGenerateForm({
+                          ...generateForm,
+                          extraValues: { ...generateForm.extraValues, [name]: v },
+                        })
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>
+                {unfilledExtras.length > 0
+                  ? `还有 ${unfilledExtras.length} 项没填（${unfilledExtras.join('、')}）。` +
+                    '不填也能先生成草稿，正文里会留着空白标记，确认后再补。'
+                  : '这几项会填进合同正文对应的位置。'}
+              </div>
+            </div>
+          ) : selectedTemplate ? (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              这个模板没有需要临时补充的空项，直接生成即可。
+            </div>
+          ) : null}
           <div>
             <div style={{ marginBottom: 4 }}>到期日（月结协议建议填写，到期前自动提醒负责人）</div>
             <DatePicker
