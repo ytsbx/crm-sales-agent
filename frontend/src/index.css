@@ -750,6 +750,36 @@ a:not([href]) {
   border-bottom: 1px solid var(--crm-surface-high) !important;
 }
 
+/* 表格内容统一居中（2026-10-06 主人要求：全站表格一律居中，不留特例）。
+   为什么要 !important：Semi 只在列上单独声明 align 时才给单元格写内联的
+   对齐样式，全项目 80 张表里只有 8 个列写过（报价试算 7 列右对齐、洞察
+   1 列居中）。内联样式优先级高于普通类规则，只有作者声明带 !important
+   才压得住，否则会出现"数据居中了、表头还靠右"的错位。
+   数据格子的规则打在内层 .semi-table-row-cell 上：它自身的声明优先于
+   从 td 继承来的值，所以 td 上的内联对齐同样被盖住。 */
+.semi-table-thead > .semi-table-row > .semi-table-row-head,
+.semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+  text-align: center !important;
+}
+
+/* 操作列：有 7 处把按钮包在横向排列的容器里（BizDocPanel、OrderListPage、
+   AttachmentPanel、LeadListPage、TaskListPage、RulesPanel、ApprovalPage）。
+   这种容器的内容位置由 justify-content 说了算，text-align 管不到它，
+   要单独把里面的按钮拉到中间，否则全表都居中了、只有操作列还贴在左边。 */
+.semi-table-tbody > .semi-table-row > .semi-table-row-cell > div[style*="display: flex"],
+.semi-table-tbody > .semi-table-row > .semi-table-row-cell > div[style*="display:flex"] {
+  justify-content: center;
+}
+
+/* 工作台「成员明细」是一张手写的原生表格（不走上面的表格组件），
+   自带左对齐/右对齐的内联样式，上面几条选择器都盖不到它。
+   全项目只有这一处手写表，用 :not(.semi-table) 精准圈住即可 ——
+   组件渲染出来的表本身带 .semi-table 类，不会被误伤。（2026-10-06 全站扫描发现） */
+table:not(.semi-table) th,
+table:not(.semi-table) td {
+  text-align: center !important;
+}
+
 /* ============================================================
    按设计稿改造 Semi 组件：更小的圆角、更紧的字号、更平的描边
    （设计稿是 Tailwind + Material 3，不用 Semi 的默认视觉）
