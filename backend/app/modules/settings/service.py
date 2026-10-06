@@ -23,7 +23,9 @@ from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote, QuoteVersion
 from app.modules.sample.model import (
+    CONFIRM_ACCEPTED,
     CONFIRM_STATUS_LABEL,
+    SAMPLE_OPEN_STATUSES,
     SAMPLE_STATUS_LABEL,
     SampleRequest,
 )
@@ -228,13 +230,9 @@ def _last_active_at(customer: Customer) -> datetime | None:
 #: `pending_approval` / `approved` 同理 —— 还没发给客户，客户根本不知道有这回事。
 QUOTE_PROTECTIVE_STATUSES = ("sent", "accepted")
 
-#: 打样单在"客户还没给出确认结论"时构成保护的状态。
-#: 与 `sample/model.SAMPLE_STATUS_LABEL` 保持一致（那边是唯一真源）。
-SAMPLE_OPEN_STATUSES = ("pending", "approved", "shipped", "signed")
-
-#: 客户已明确接受样品的确认状态（`sample/model.CONFIRM_ACCEPTED` 的值）。
-#: 单独拎出来是因为这里要判"**这张单到此为止**"——已确认接受的打样不再保护客户回收。
-SAMPLE_CONFIRM_ACCEPTED = "accepted"
+#: 客户已明确接受样品的确认状态 —— 直接引 `sample/model.CONFIRM_ACCEPTED`，
+#: 不再自己抄一份字面量：抄一份就多一处会跟源定义漂开的地方。
+SAMPLE_CONFIRM_ACCEPTED = CONFIRM_ACCEPTED
 
 
 def _protection_reason(label: str, detail: str) -> str:

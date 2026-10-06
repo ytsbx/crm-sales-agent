@@ -11,6 +11,7 @@ import {
   deduplicateCustomers,
   detachCustomerTag,
   getCustomer,
+  getCustomerMergePreview,
   listContacts,
   listTags,
   mergeCustomers,
@@ -86,6 +87,9 @@ export default function CustomerDetailPage() {
   const [mergeTarget, setMergeTarget] = useState<number | null>(null)
   const [mergeKeyword, setMergeKeyword] = useState('')
   const [mergeReason, setMergeReason] = useState('')
+  //: 冲突处理口径：`{customer_price: 'keep_target'}`。合并不可逆，
+  //: 这种"两边各有一个价"的事必须人先选，不能由代码默默挑一个。
+  const [mergeResolutions, setMergeResolutions] = useState<Record<string, string>>({})
 
   const tagsQuery = useQuery({ queryKey: ['tags'], queryFn: () => listTags(false) })
 
@@ -98,6 +102,18 @@ export default function CustomerDetailPage() {
         : Promise.resolve({ matches: [], count: 0 }),
     enabled: mergeModal && mergeKeyword.trim().length > 0,
   })
+
+  // 选定目标客户后自动拉"会跟着走什么、有什么冲突"——合并前必须让人看到这一页
+  const mergePreviewQuery = useQuery({
+    queryKey: ['merge-preview', customerId, mergeTarget],
+    queryFn: () => getCustomerMergePreview(customerId, mergeTarget!),
+    enabled: mergeModal && Boolean(mergeTarget),
+  })
+  const mergePreview = mergePreviewQuery.data
+  /** 还有冲突没给口径 → 不允许提交 */
+  const unresolvedConflicts = (mergePreview?.blocking ?? []).filter(
+    (key) => !mergeResolutions[key],
+  )
 
   const customerQuery = useQuery({
     queryKey: ['customer', customerId],
@@ -238,14 +254,19 @@ export default function CustomerDetailPage() {
         source_customer_id: customerId,
         target_customer_id: mergeTarget!,
         reason: mergeReason.trim() || undefined,
+        // 冲突口径原样带上；没有冲突时是空对象（后端也不要求）
+        resolutions: Object.keys(mergeResolutions).length ? mergeResolutions : undefined,
       }),
     onSuccess: (result) => {
-      const movedText = Object.entries(result.moved)
-        .filter(([, count]) => count > 0)
+      const moved = Object.entries(result.moved).filter(([, count]) => count > 0)
+      const movedText = moved
+        .slice(0, 6)
         .map(([label, count]) => `${label} ${count}`)
         .join('、')
-      Toast.success(`已合并，迁移：${movedText || '无关联数据'}`)
+      const more = moved.length > 6 ? ` 等 ${moved.length} 类` : ''
+      Toast.success(`已合并，迁移：${movedText ? movedText + more : '无关联资料'}`)
       setMergeModal(false)
+      setMergeResolutions({})
       // 来源客户已被软删，跳去目标客户继续操作
       navigate(`/customers/${result.target_customer_id}`)
     },
@@ -937,11 +958,15 @@ export default function CustomerDetailPage() {
       <Modal
         title="合并到其他客户"
         visible={mergeModal}
-        onCancel={() => setMergeModal(false)}
+        onCancel={() => {
+          setMergeModal(false)
+          setMergeResolutions({})
+        }}
         onOk={() => mergeMutation.mutate()}
         confirmLoading={mergeMutation.isPending}
         okText="确认合并"
-        okButtonProps={{ disabled: !mergeTarget }}
+        okButtonProps={{ disabled: !mergeTarget || unresolvedConflicts.length > 0 }}
+        width={680}
       >
         <div
           style={{
@@ -953,8 +978,11 @@ export default function CustomerDetailPage() {
             marginBottom: 12,
           }}
         >
-          合并不可逆：「{customer.name}」的联系人、商机、报价、订单、跟进、任务、标签
+          合并不可逆：「{customer.name}」的联系人、商机、报价、订单、跟进、任务、标签、
+          定制需求、打样单、订单草稿、合同、案例、物流报价、专属价格、企微映射与附件
           会全部转移到目标客户，然后本客户被删除。
+          <br />
+          历史报价、合同签署文件、打样图纸与确认记录的<b>内容</b>不会改写，只换档案归属。
         </div>
 
         <Input
@@ -981,7 +1009,11 @@ export default function CustomerDetailPage() {
                 .map((match) => (
                   <div
                     key={match.id}
-                    onClick={() => setMergeTarget(match.id)}
+                    onClick={() => {
+                      setMergeTarget(match.id)
+                      // 换了目标客户，之前选的口径就不作数了
+                      setMergeResolutions({})
+                    }}
                     style={{
                       padding: '8px 10px',
                       border: `1px solid ${
@@ -1000,6 +1032,91 @@ export default function CustomerDetailPage() {
                   </div>
                 ))}
             </div>
+          </div>
+        )}
+
+        {/* 影响清单：选中目标客户后自动展开 */}
+        {mergeTarget && (
+          <div style={{ marginTop: 14 }}>
+            {mergePreviewQuery.isLoading && (
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>正在统计影响…</div>
+            )}
+            {mergePreview && (
+              <>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+                  这次会跟着走 {mergePreview.total_links} 条资料
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 6,
+                    marginBottom: 10,
+                  }}
+                >
+                  {mergePreview.targets
+                    .filter((item) => item.count > 0)
+                    .map((item) => (
+                      <Tag key={item.key} size="small">
+                        {item.label} {item.count}
+                      </Tag>
+                    ))}
+                  {mergePreview.total_links === 0 && (
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      没有关联资料需要迁移
+                    </span>
+                  )}
+                </div>
+
+                {mergePreview.conflicts.length > 0 && (
+                  <div
+                    style={{
+                      border: '1px solid var(--crm-warning)',
+                      borderRadius: 4,
+                      padding: '10px 12px',
+                      marginBottom: 10,
+                      display: 'grid',
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--crm-warning)' }}>
+                      合并前要先拿定主意（{mergePreview.conflicts.length} 处）
+                    </div>
+                    {mergePreview.conflicts.map((conflict) => (
+                      <div key={conflict.key}>
+                        <div style={{ fontSize: 13 }}>{conflict.label}</div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: 'var(--crm-text-3)',
+                            margin: '2px 0 6px',
+                          }}
+                        >
+                          {conflict.detail}
+                        </div>
+                        <Select
+                          value={mergeResolutions[conflict.key]}
+                          placeholder="请选择处理方式"
+                          onChange={(value) =>
+                            setMergeResolutions({
+                              ...mergeResolutions,
+                              [conflict.key]: value as string,
+                            })
+                          }
+                          optionList={conflict.options.map((option) => ({
+                            value: option.value,
+                            label: option.label,
+                          }))}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{mergePreview.note}</div>
+              </>
+            )}
           </div>
         )}
 

@@ -318,15 +318,53 @@ export function deduplicateCustomers(payload: {
   return api.post<{ matches: DuplicateMatch[]; count: number }>('/customers/deduplicate', payload)
 }
 
+/** 合并影响清单里的一项：某类关联会跟着走多少条。 */
+export interface MergeImpactTarget {
+  key: string
+  label: string
+  count: number
+}
+
+/** 合并前必须先有人拍板的冲突（专属价格不一致、税号不一致）。 */
+export interface MergeConflict {
+  key: string
+  label: string
+  detail: string
+  options: { value: string; label: string }[]
+  items: Record<string, unknown>[]
+  count: number
+}
+
+export interface MergePreview {
+  source: { id: number; name: string; owner_id?: number | null; tax_no?: string | null }
+  target: { id: number; name: string; owner_id?: number | null; tax_no?: string | null }
+  targets: MergeImpactTarget[]
+  total_links: number
+  conflicts: MergeConflict[]
+  /** 必须先给口径才能合并的那些冲突 key */
+  blocking: string[]
+  note: string
+}
+
+/** 合并前的**影响清单**（只读）。先看这个再决定合不合。 */
+export function getCustomerMergePreview(customerId: number, targetCustomerId: number) {
+  return api.get<MergePreview>(`/customers/${customerId}/merge-preview`, {
+    target_customer_id: targetCustomerId,
+  })
+}
+
 export function mergeCustomers(payload: {
   source_customer_id: number
   target_customer_id: number
   reason?: string
+  /** 冲突处理口径：`{customer_price: 'keep_target'}`。不带就可能被 422 拒绝。 */
+  resolutions?: Record<string, string>
 }) {
   return api.post<{
     target_customer_id: number
     source_customer_id: number
     moved: Record<string, number>
+    conflicts?: Record<string, string> | null
     merge_log_id: number
   }>('/customers/merge', payload)
 }

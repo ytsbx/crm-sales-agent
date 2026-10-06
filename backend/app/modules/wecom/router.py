@@ -10,7 +10,10 @@
   POST /integrations/wecom/unbound-contacts/{id}/create-customer 建新客户
   POST /integrations/wecom/unbound-contacts/{id}/ignore          暂不处理
   POST /integrations/wecom/transfer                  离职继承
+  GET  /integrations/wecom/transfer-preview          交接清单预览（执行前先看）
   GET  /integrations/wecom/transfer/{job_id}         继承任务进度
+  GET  /integrations/wecom/transfer/{job_id}/items   交接逐项结果（分页，含失败明细）
+  POST /integrations/wecom/transfer/{job_id}/retry   按项重试未完成的部分
   GET  /integrations/wecom/sync-jobs                 同步任务列表
   GET  /integrations/wecom/sync-jobs/{id}            同步任务详情
   POST /webhooks/wecom/events                        事件回调（无需登录）
@@ -269,6 +272,28 @@ async def ignore_contact(
     return ok({"id": row.id, "normalize_status": row.normalize_status}, "已标记为暂不处理")
 
 
+@router.get("/integrations/wecom/transfer-preview")
+async def transfer_preview(
+    handover_user_id: int = Query(..., description="离职人（交接方）"),
+    takeover_user_id: int = Query(..., description="接管人"),
+    _: CurrentUser = Depends(require_permission("wecom:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """离职交接**清单预览**（只读，返工单 6.6）。
+
+    执行前先看这个：按客户/商机/待办/打样/订单/草稿分类列出每项的
+    当前责任人、拟接手人、状态与"不能交接的原因"。看清单和实际执行
+    读的是同一份数据——不会出现"清单里没有、执行时却动了"。
+    """
+    return ok(
+        await svc.preview_transfer(
+            session,
+            handover_user_id=handover_user_id,
+            takeover_user_id=takeover_user_id,
+        )
+    )
+
+
 @router.post("/integrations/wecom/transfer")
 async def transfer(
     payload: TransferRequest,
@@ -296,6 +321,8 @@ async def transfer(
         handover_user_id=payload.handover_user_id,
         takeover_user_id=payload.takeover_user_id,
         transfer_wecom=payload.transfer_wecom,
+        # 逐项调整过的接手人（清单里某几项指定给别人）
+        item_assignees=payload.item_assignees,
     )
     await write_audit(
         session,
@@ -308,13 +335,30 @@ async def transfer(
     )
     await session.commit()
     detail = job.detail or {}
-    return ok(
-        svc.serialize_job(job),
-        f"继承完成：企微关系 {detail.get('wecom_relations', 0)} 条、"
+    # 提示语按**实际结果**拼，不再笼统说"继承完成"（返工单 6.7）：
+    # 部分成功时要说清成功了什么、还剩什么、下一步去哪处理。
+    parts = [
         f"客户 {detail.get('customers', 0)} 个、商机 {detail.get('opportunities', 0)} 个、"
-        f"任务 {detail.get('tasks', 0)} 个、订单 {detail.get('orders', 0)} 单"
-        "（订单转的是跟进责任，业绩归属不变）",
-    )
+        f"待办 {detail.get('tasks', 0)} 个、打样 {detail.get('samples', 0)} 张、"
+        f"订单 {detail.get('orders', 0)} 单、草稿 {detail.get('order_drafts', 0)} 份"
+        "（订单/打样转的是跟进责任，业绩归属不变）"
+    ]
+    if detail.get("wecom_transferred") or detail.get("wecom_failed"):
+        parts.append(
+            f"企微客户关系转接 {detail.get('wecom_transferred', 0)} 条"
+        )
+    frozen = int(detail.get("frozen") or 0)
+    failed = int(detail.get("failures_count") or 0)
+    tail = []
+    if frozen:
+        tail.append(f"{frozen} 个客户因撞单争议被冻结，主管裁定后可再次发起交接")
+    if failed:
+        tail.append(f"{failed} 项失败，可在本页的交接明细里逐条重试")
+    headline = "继承完成" if not (frozen or failed) else "继承部分完成"
+    message = f"{headline}：" + "、".join(parts)
+    if tail:
+        message += "；" + "；".join(tail)
+    return ok(svc.serialize_job(job), message)
 
 
 @router.get("/integrations/wecom/transfer/{job_id}")
@@ -327,6 +371,56 @@ async def get_transfer_job(
     if job is None or job.job_type != "transfer":
         raise AppError(ErrorCode.NOT_FOUND, "继承任务不存在", 404)
     return ok(svc.serialize_job(job))
+
+
+@router.get("/integrations/wecom/transfer/{job_id}/items")
+async def list_transfer_items(
+    job_id: int,
+    kind: str | None = Query(None, description="按类别过滤（customer/sample/...）"),
+    pending_only: bool = Query(False, description="只看还没办完的"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    _: CurrentUser = Depends(require_permission("wecom:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """交接**逐项结果**（返工单 6.7：失败明细完整保存、界面可翻页）。
+
+    12 条失败就是 12 条，不会再像原来那样在存储阶段被截断成 10 条。
+    """
+    items, total = await svc.list_transfer_items(
+        session, job_id=job_id, page=page, page_size=page_size,
+        kind=kind, pending_only=pending_only,
+    )
+    return ok(page_data(items, total, page, page_size))
+
+
+@router.post("/integrations/wecom/transfer/{job_id}/retry")
+async def retry_transfer(
+    job_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """按**逐项状态**重试没办完的项（返工单 6.7）。
+
+    已经转出去的企微关系、已经改好的归属都不会再动一遍 ——
+    整体重跑会把转接重复发一次，企微那边会报重复操作。
+    """
+    result = await svc.retry_transfer(session, user=user, job_id=job_id)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="wecom_transfer_retry",
+        business_type="integration",
+        business_id=job_id,
+        after=result,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        result,
+        f"已重试 {result['retried']} 项，还剩 {result['remaining']} 项未完成",
+    )
 
 
 @router.get("/integrations/wecom/sync-jobs")

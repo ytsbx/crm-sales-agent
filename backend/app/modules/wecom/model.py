@@ -142,3 +142,99 @@ class WeComSyncJob(Base, IdMixin):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 同步/转交的业务明细：拉了哪些页、跳过了哪些人、转交清单等
     detail: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+
+
+# ---- 离职继承的逐项结果（PRD §8.4）----------------------------------------
+#
+# 为什么要单开一张表，而不是继续往 `WeComSyncJob.detail` 这个 JSON 里塞：
+#
+# 1. **明细会被截断**。原实现是 `detail["wecom_failures"] = failures[:10]`，
+#    而失败计数又取这个截断后列表的长度——12 条失败最终只报出来一部分，
+#    而且**存进去的那一份本身就是残的**，事后想补查也查不到。JSON 只适合
+#    放汇总，逐项明细必须一行一项。
+# 2. **两侧结果要分开记**。一次交接有两个独立的动作：改 CRM 归属、
+#    调企微转接客户关系。企微那边的调用一旦发出就去不掉（第三方系统，
+#    本地事务回滚不了它），所以"CRM 成功、企微失败"是必须能表达的状态，
+#    而不是一个笼统的"成功/失败"。
+# 3. **重试要按项来**。整体重试会把已经转出去的关系再发一遍，
+#    企微侧会报重复；按项重试才知道哪些真的还没完成。
+
+#: 交接对象的类别（`kind`）。也是界面上分组的依据。
+TRANSFER_KIND_LABEL: dict[str, str] = {
+    "customer": "客户",
+    "contact": "联系人",
+    "opportunity": "商机",
+    "task": "待办任务",
+    "sample": "打样单",
+    "order": "销售订单",
+    "order_draft": "订单草稿",
+    "wecom_relation": "企微客户关系",
+}
+
+#: CRM 侧的逐项结果。
+#: `not_applicable` 用于"这一项没有 CRM 归属要改"——企微客户关系就是这种：
+#: 它是外部系统的关系记录，不构成 CRM 里的归属，重试也不该把它算成待办。
+TRANSFER_CRM_STATUS_LABEL: dict[str, str] = {
+    "moved": "已交接",
+    "frozen": "已冻结（撞单争议）",
+    "failed": "交接失败",
+    "skipped": "无需处理",
+    "pending": "待交接",
+    "not_applicable": "不涉及",
+}
+
+#: 企微侧的逐项结果。`not_applicable` 用于"这项没有对应的企微关系"。
+TRANSFER_WECOM_STATUS_LABEL: dict[str, str] = {
+    "transferred": "已转接",
+    "failed": "转接失败",
+    "skipped": "未转接",
+    "not_applicable": "不涉及",
+    "pending": "待转接",
+}
+
+#: **还没办完**的状态，重试只挑这些。
+#: 注意 `frozen`（撞单争议冻结）不算在内：它不是"没做完"，而是"现在不能做"，
+#: 要等主管裁定后**重新发起一次交接**，不是原地重试。
+CRM_OPEN_STATUSES = ("pending", "failed")
+WECOM_OPEN_STATUSES = ("pending", "failed")
+
+
+class WeComTransferItem(Base, IdMixin):
+    """离职继承的**逐项结果**：一行 = 一个被交接的对象。
+
+    两侧状态分开记：`crm_status` 是 CRM 里的归属有没有改成功，
+    `wecom_status` 是企微侧的关系有没有转出去。一侧成功一侧失败时，
+    这一项保持"待处理"，可以单独重试，不会把已经成功的那侧再动一遍。
+    """
+
+    __tablename__ = "wecom_transfer_items"
+    __table_args__ = (
+        Index("ix_wecom_transfer_items_job", "job_id", "kind"),
+        Index("ix_wecom_transfer_items_open", "job_id", "crm_status"),
+    )
+
+    job_id: Mapped[int] = mapped_column(
+        # 级联删除：逐项结果是**某次交接的从属记录**，任务本身没了就没有留着的意义。
+        # 更现实的原因是：清理历史数据时（套件/运维脚本会按条件删 sync_jobs），
+        # 没有级联就会撞外键、把清理脚本整个打断，连带它自己的夹具也清不掉。
+        BigInteger, ForeignKey("wecom_sync_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(24))
+    business_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: 人看的标识（客户名 / 订单号 / 外部联系人 id），排查时不用再去反查 id
+    label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    from_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    to_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    from_owner_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_owner_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    crm_status: Mapped[str] = mapped_column(String(16), default="pending")
+    crm_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    wecom_status: Mapped[str] = mapped_column(String(16), default="not_applicable")
+    wecom_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    #: 这一项被尝试过几次（含人工重试）。只增不减，便于看出哪项一直不过。
+    attempts: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

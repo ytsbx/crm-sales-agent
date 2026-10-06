@@ -44,6 +44,13 @@ class CustomerMergeRequest(BaseModel):
     target_customer_id: int
     """保留的客户。"""
     reason: str | None = None
+    resolutions: dict[str, str] | None = None
+    """冲突处理口径，键见「合并影响」返回的 `blocking`。
+
+    例：`{"customer_price": "keep_target"}` = 两边同一个 SKU 定了不同价时
+    保留目标客户的价格（来源那几条转为历史资料）。**不给口径就拒绝合并**，
+    不替业务默认选一个。
+    """
 
 
 class CustomerBatchTransfer(BaseModel):

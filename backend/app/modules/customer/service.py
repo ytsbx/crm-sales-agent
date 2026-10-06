@@ -486,6 +486,7 @@ async def transfer_customer(
     reason: str | None,
     *,
     automatic: bool = False,
+    only_from_owner_id: int | None = None,
 ) -> None:
     """变更客户负责人；new_owner_id 为空表示放入公海。
 
@@ -535,21 +536,26 @@ async def transfer_customer(
     #
     # 放公海（new_owner_id 为空）时不动：待办终归要有个责任人，这时候保留原负责人
     # 比让任务悬空好；等主管重新分配客户时它会跟着走。
+    #
+    # `only_from_owner_id`（离职交接专用，业务方 2026-10-06 定）：
+    # 离职交接只迁**离职人自己的**责任，其他在职协作人的任务原样留着。
+    # 不带这个参数时（普通转移、撞单裁定）仍然是"这个客户名下的未完成待办全跟着走"——
+    # 那里换的是客户归属，协作人没必要跟着换；而离职场景下把在职同事的活
+    # 一起挪给接手人，等于把别人的工作悄悄抢走了。
     if new_owner_id is not None:
         from sqlalchemy import update
 
         from app.modules.task.model import Task
 
-        await session.execute(
-            update(Task)
-            .where(
-                Task.customer_id == customer.id,
-                Task.status.in_(("pending", "doing")),
-                Task.owner_id.is_not(None),
-                Task.owner_id != new_owner_id,
-            )
-            .values(owner_id=new_owner_id)
-        )
+        conditions = [
+            Task.customer_id == customer.id,
+            Task.status.in_(("pending", "doing")),
+            Task.owner_id.is_not(None),
+            Task.owner_id != new_owner_id,
+        ]
+        if only_from_owner_id is not None:
+            conditions.append(Task.owner_id == only_from_owner_id)
+        await session.execute(update(Task).where(*conditions).values(owner_id=new_owner_id))
 
 
 async def claim_customer(

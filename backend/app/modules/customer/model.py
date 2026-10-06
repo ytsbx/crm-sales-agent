@@ -145,6 +145,10 @@ class CustomerMergeLog(Base, IdMixin):
     merge_snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     # 迁移了哪些关联对象，便于事后核对
     moved: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    #: 冲突是怎么处理的（返工单 6.8）：例如 `{"customer_price": "keep_target"}`
+    #: 表示两边同一个 SKU 定了不同价、当时选择保留目标客户的价格。
+    #: 事后有人问"这个价为什么变成这样"，答案在这里而不在某个人的记忆里。
+    conflicts: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

@@ -11,14 +11,20 @@ import {
   createCustomerFromContact,
   getUnboundCandidates,
   getWeComReadiness,
+  getWeComTransferPreview,
   ignoreUnboundContact,
   listUnboundContacts,
   listWeComSyncJobs,
+  listWeComTransferItems,
+  retryWeComTransfer,
   syncWeComDepartments,
   syncWeComExternalContacts,
   syncWeComFollowRelations,
   syncWeComUsers,
   transferWeComRelations,
+  type WeComSyncJob,
+  type WeComTransferItem,
+  type WeComTransferPreview,
   type WeComUnboundContact,
 } from '../../shared/api/wecom'
 import type { TagTone } from '../../shared/types'
@@ -64,6 +70,17 @@ export default function WeComPage() {
     handover_user_id?: number
     takeover_user_id?: number
   }>({})
+  //: 交接走三步：填人 → **先看清单** → 执行后看逐项结果。
+  //: 中间那步是必须的：合并/交接这类不可逆动作，不能点一下才发现
+  //: 有两百个对象跟着换人。
+  const [transferStage, setTransferStage] = useState<'form' | 'preview' | 'result'>('form')
+  const [transferPreview, setTransferPreview] = useState<WeComTransferPreview | null>(null)
+  //: 逐项调整过的接手人（键 `kind:business_id`）。业务方 2026-10-06 定：
+  //: "交接清单可以逐项调整" —— 某个客户本来就该归另一位同事时不用再操作一遍。
+  const [transferAssignees, setTransferAssignees] = useState<Record<string, number>>({})
+  const [transferJob, setTransferJob] = useState<WeComSyncJob | null>(null)
+  //: 交接后**还没办完**的项（失败或没轮到的），可以逐条重试
+  const [transferOpen, setTransferOpen] = useState<WeComTransferItem[]>([])
 
   const readinessQuery = useQuery({
     queryKey: ['wecom-readiness'],
@@ -157,6 +174,33 @@ export default function WeComPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const resetTransfer = () => {
+    setTransferVisible(false)
+    setTransferStage('form')
+    setTransferPreview(null)
+    setTransferJob(null)
+    setTransferOpen([])
+    setTransferAssignees({})
+    setTransferForm({})
+  }
+
+  /** 拉这次交接里**还没办完**的项（失败或没轮到的）。 */
+  const loadOpenItems = async (jobId: number) => {
+    const result = await listWeComTransferItems(jobId, { pending_only: true, page_size: 100 })
+    setTransferOpen(result.items)
+    return result.total
+  }
+
+  const previewMutation = useMutation({
+    mutationFn: () =>
+      getWeComTransferPreview(transferForm.handover_user_id!, transferForm.takeover_user_id!),
+    onSuccess: (preview) => {
+      setTransferPreview(preview)
+      setTransferStage('preview')
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const transferMutation = useMutation({
     mutationFn: () =>
       transferWeComRelations({
@@ -164,14 +208,38 @@ export default function WeComPage() {
         takeover_user_id: transferForm.takeover_user_id!,
         // 没配外部联系人 secret 时只转 CRM 侧，避免调企微报错白跑一趟
         transfer_wecom: Boolean(readinessQuery.data?.can_sync_external),
+        item_assignees: Object.keys(transferAssignees).length ? transferAssignees : undefined,
       }),
-    onSuccess: (job) => {
-      Toast.success(`继承完成：${job.status_label}`)
-      setTransferVisible(false)
-      setTransferForm({})
+    onSuccess: async (job) => {
+      const detail = (job.detail ?? {}) as Record<string, unknown>
+      const failed = Number(detail.failures_count ?? 0)
+      const frozen = Number(detail.frozen ?? 0)
+      // **按实际结果说人话**：不再笼统报"继承完成"。
+      // 部分成功时要说清成功了多少、还剩多少、下一步去哪处理。
+      if (failed || frozen) {
+        const parts: string[] = []
+        if (frozen) parts.push(`${frozen} 个客户因撞单争议被冻结`)
+        if (failed) parts.push(`${failed} 项没成`)
+        Toast.warning(`交接部分完成：${parts.join('、')}。可在下方逐项处理`)
+      } else {
+        Toast.success('交接完成')
+      }
+      setTransferJob(job)
+      setTransferStage('result')
+      const remaining = await loadOpenItems(job.id)
       refresh()
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
       void queryClient.invalidateQueries({ queryKey: ['opportunities'] })
+      return remaining
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const retryMutation = useMutation({
+    mutationFn: () => retryWeComTransfer(transferJob!.id),
+    onSuccess: async (result) => {
+      Toast.success(`已重试 ${result.retried} 项，还剩 ${result.remaining} 项未完成`)
+      await loadOpenItems(transferJob!.id)
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -568,56 +636,254 @@ export default function WeComPage() {
       <Modal
         title="离职继承"
         visible={transferVisible}
-        onCancel={() => setTransferVisible(false)}
-        onOk={() => {
-          if (!transferForm.handover_user_id || !transferForm.takeover_user_id) {
-            Toast.warning('请选择交接人与接管人')
-            return
-          }
-          transferMutation.mutate()
-        }}
-        confirmLoading={transferMutation.isPending}
-        okText="执行继承"
+        onCancel={resetTransfer}
+        footer={
+          transferStage === 'form' ? (
+            <>
+              <Button onClick={resetTransfer}>取消</Button>
+              <Button
+                theme="solid"
+                loading={previewMutation.isPending}
+                onClick={() => {
+                  if (!transferForm.handover_user_id || !transferForm.takeover_user_id) {
+                    Toast.warning('请选择交接人与接管人')
+                    return
+                  }
+                  previewMutation.mutate()
+                }}
+              >
+                查看交接清单
+              </Button>
+            </>
+          ) : transferStage === 'preview' ? (
+            <>
+              <Button onClick={() => setTransferStage('form')}>返回修改</Button>
+              <Button
+                theme="solid"
+                loading={transferMutation.isPending}
+                onClick={() => transferMutation.mutate()}
+              >
+                执行交接
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button onClick={resetTransfer}>关闭</Button>
+              {transferOpen.length > 0 && (
+                <Button
+                  theme="solid"
+                  loading={retryMutation.isPending}
+                  onClick={() => retryMutation.mutate()}
+                >
+                  重试未完成的 {transferOpen.length} 项
+                </Button>
+              )}
+            </>
+          )
+        }
+        width={680}
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
-            <FormLabel required>交接人（离职）</FormLabel>
-            <Select
-              value={transferForm.handover_user_id}
-              onChange={(value) =>
-                setTransferForm({ ...transferForm, handover_user_id: value as number })
-              }
-              optionList={(usersQuery.data?.items ?? []).map((user) => ({
-                value: user.id,
-                label: `${user.name}（${user.username}）`,
-              }))}
-              filter
-              style={{ width: '100%' }}
-            />
+        {transferStage === 'form' && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div>
+              <FormLabel required>交接人（离职）</FormLabel>
+              <Select
+                value={transferForm.handover_user_id}
+                onChange={(value) =>
+                  setTransferForm({ ...transferForm, handover_user_id: value as number })
+                }
+                optionList={(usersQuery.data?.items ?? []).map((user) => ({
+                  value: user.id,
+                  label: `${user.name}（${user.username}）`,
+                }))}
+                filter
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div>
+              <FormLabel required>接管人</FormLabel>
+              <Select
+                value={transferForm.takeover_user_id}
+                onChange={(value) =>
+                  setTransferForm({ ...transferForm, takeover_user_id: value as number })
+                }
+                optionList={(usersQuery.data?.items ?? []).map((user) => ({
+                  value: user.id,
+                  label: `${user.name}（${user.username}）`,
+                }))}
+                filter
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ color: 'var(--crm-text-2)', fontSize: 12.5 }}>
+              会转移：企微客户关系
+              {readiness?.can_sync_external ? '' : '（未配外部联系人密钥，本次跳过企微侧，只转 CRM）'}
+              、CRM 客户负责人、商机负责人、未完成任务、在途打样单、订单与草稿。
+              <br />
+              会保留：创建人、历史跟进、历史报价、审批与审计日志、签单业绩归属；
+              客户名下其他在职同事的待办也不动。
+              <br />
+              下一步会先给你看完整交接清单（每一项都可以单独改接手人），确认之后再执行。
+            </div>
           </div>
-          <div>
-            <FormLabel required>接管人</FormLabel>
-            <Select
-              value={transferForm.takeover_user_id}
-              onChange={(value) =>
-                setTransferForm({ ...transferForm, takeover_user_id: value as number })
-              }
-              optionList={(usersQuery.data?.items ?? []).map((user) => ({
-                value: user.id,
-                label: `${user.name}（${user.username}）`,
-              }))}
-              filter
-              style={{ width: '100%' }}
-            />
+        )}
+
+        {transferStage === 'preview' && transferPreview && (
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ fontSize: 13.5 }}>
+              把「{transferPreview.handover.name}」名下的 <b>{transferPreview.total}</b> 项
+              交接给「{transferPreview.takeover.name}」
+            </div>
+            {transferPreview.sample_count > 0 && (
+              <Banner
+                type="info"
+                closeIcon={null}
+                description={
+                  <span>
+                    含 <b>{transferPreview.sample_count}</b> 张在途打样单。
+                    交过去之后接手人才看得到、能继续跟；原负责人将看不到。
+                  </span>
+                }
+              />
+            )}
+            <div style={{ maxHeight: 320, overflow: 'auto', display: 'grid', gap: 8 }}>
+              {transferPreview.sections.map((section) => (
+                <div
+                  key={section.kind}
+                  style={{
+                    border: '1px solid var(--crm-border)',
+                    borderRadius: 6,
+                    padding: '8px 10px',
+                  }}
+                >
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>
+                    {section.label}（{section.items.length}）
+                  </div>
+                  <div style={{ fontSize: 12.5, color: 'var(--crm-text-2)', marginTop: 4 }}>
+                    {section.items.map((item) => {
+                      const key = `${item.kind}:${item.business_id}`
+                      return (
+                        <div
+                          key={key}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}
+                        >
+                          <span style={{ flex: 1 }}>
+                            · {item.label}
+                            {item.blocked_reason ? (
+                              <Tag color="orange" size="small" style={{ marginLeft: 6 }}>
+                                本次冻结
+                              </Tag>
+                            ) : null}
+                          </span>
+                          {/* 逐项调整接手人：不选就是跟统一接管人 */}
+                          {!item.blocked_reason && (
+                            <Select
+                              size="small"
+                              value={transferAssignees[key]}
+                              placeholder={`跟随 ${transferPreview.takeover.name}`}
+                              showClear
+                              filter
+                              onChange={(value) =>
+                                setTransferAssignees((prev) => {
+                                  const next = { ...prev }
+                                  if (value === undefined || value === null) delete next[key]
+                                  else next[key] = value as number
+                                  return next
+                                })
+                              }
+                              optionList={(usersQuery.data?.items ?? [])
+                                .filter((user) => user.id !== transferForm.handover_user_id)
+                                .map((user) => ({ value: user.id, label: user.name }))}
+                              style={{ width: 168 }}
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {transferPreview.blocked.length > 0 && (
+              <Banner
+                type="warning"
+                closeIcon={null}
+                description={
+                  <span>
+                    有 {transferPreview.blocked.length} 个客户处于<b>撞单争议</b>中：
+                    归属冻结、企微转接也不会发出，等主管裁定后单独发起一次交接。
+                  </span>
+                }
+              />
+            )}
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              {transferPreview.note}
+            </div>
           </div>
-          <div style={{ color: 'var(--crm-text-2)', fontSize: 12.5 }}>
-            会转移：企微客户关系
-            {readiness?.can_sync_external ? '' : '（未配外部联系人密钥，本次跳过企微侧，只转 CRM）'}
-            、CRM 客户负责人、商机负责人、未完成任务。
-            <br />
-            会保留：创建人、历史跟进、历史报价、审批与审计日志。
+        )}
+
+        {transferStage === 'result' && transferJob && (
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ fontSize: 13.5 }}>
+              任务 #{transferJob.id}：<b>{transferJob.status_label}</b>
+              ，成功 {transferJob.success_count} 项、失败 {transferJob.fail_count} 项
+            </div>
+            {transferOpen.length === 0 ? (
+              <Empty description="没有未完成的项" />
+            ) : (
+              <>
+                <div style={{ fontSize: 12.5, color: 'var(--crm-text-2)' }}>
+                  下面这 {transferOpen.length} 项还没完成。可以点右下角重试 ——
+                  已经转出去的企微关系不会再发一遍。
+                </div>
+                <Table<WeComTransferItem>
+                  rowKey="id"
+                  size="small"
+                  pagination={false}
+                  dataSource={transferOpen}
+                  columns={[
+                    { title: '类别', dataIndex: 'kind_label', width: 80 },
+                    {
+                      title: '对象',
+                      dataIndex: 'label',
+                      render: (v: string | null) => v || '—',
+                    },
+                    {
+                      title: 'CRM 侧',
+                      dataIndex: 'crm_status_label',
+                      width: 110,
+                      render: (v: string, row) => (
+                        <span title={row.crm_error ?? ''}>
+                          <Tag color={row.crm_status === 'failed' ? 'red' : 'grey'} size="small">
+                            {v}
+                          </Tag>
+                        </span>
+                      ),
+                    },
+                    {
+                      title: '企微侧',
+                      dataIndex: 'wecom_status_label',
+                      width: 110,
+                      render: (v: string, row) => (
+                        <span title={row.wecom_error ?? ''}>
+                          <Tag
+                            color={row.wecom_status === 'failed' ? 'red' : 'grey'}
+                            size="small"
+                          >
+                            {v}
+                          </Tag>
+                        </span>
+                      ),
+                    },
+                  ]}
+                />
+                <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  鼠标停在状态上可以看到具体失败原因。
+                </div>
+              </>
+            )}
           </div>
-        </div>
+        )}
       </Modal>
     </div>
   )

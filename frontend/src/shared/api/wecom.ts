@@ -142,8 +142,80 @@ export function transferWeComRelations(payload: {
   handover_user_id: number
   takeover_user_id: number
   transfer_wecom: boolean
+  /** 逐项接手人：键 `"{kind}:{business_id}"`，不指定的项跟 takeover_user_id */
+  item_assignees?: Record<string, number>
 }) {
   return api.post<WeComSyncJob>('/integrations/wecom/transfer', payload)
+}
+
+/** 交接清单里的一项（预览与执行读的是同一份数据）。 */
+export interface WeComTransferScopeItem {
+  kind: string
+  business_id: number
+  label: string
+  status: string
+  /** 不能交接时的原因（撞单争议冻结）；能交接则为空 */
+  blocked_reason?: string | null
+}
+
+export interface WeComTransferPreview {
+  handover: { id: number; name: string }
+  takeover: { id: number; name: string }
+  sections: {
+    kind: string
+    label: string
+    items: WeComTransferScopeItem[]
+  }[]
+  totals: Record<string, number>
+  total: number
+  /** 这次交接动不了的项（撞单争议冻结） */
+  blocked: WeComTransferScopeItem[]
+  sample_count: number
+  note: string
+}
+
+export function getWeComTransferPreview(handoverUserId: number, takeoverUserId: number) {
+  return api.get<WeComTransferPreview>('/integrations/wecom/transfer-preview', {
+    handover_user_id: handoverUserId,
+    takeover_user_id: takeoverUserId,
+  })
+}
+
+/** 交接的逐项结果：CRM 侧与企微侧分别记状态。 */
+export interface WeComTransferItem {
+  id: number
+  job_id: number
+  kind: string
+  kind_label: string
+  business_id?: number | null
+  label?: string | null
+  from_owner_name?: string | null
+  to_owner_name?: string | null
+  crm_status: string
+  crm_status_label: string
+  crm_error?: string | null
+  wecom_status: string
+  wecom_status_label: string
+  wecom_error?: string | null
+  attempts: number
+  updated_at?: string | null
+}
+
+export function listWeComTransferItems(
+  jobId: number,
+  query: { kind?: string; pending_only?: boolean; page?: number; page_size?: number },
+) {
+  return api.get<PageResult<WeComTransferItem>>(
+    `/integrations/wecom/transfer/${jobId}/items`,
+    query,
+  )
+}
+
+/** 按逐项状态重试没办完的项（已完成的外部转接不会重发）。 */
+export function retryWeComTransfer(jobId: number) {
+  return api.post<{ job_id: number; retried: number; remaining: number }>(
+    `/integrations/wecom/transfer/${jobId}/retry`,
+  )
 }
 
 export function listWeComSyncJobs(query: {

@@ -1066,7 +1066,16 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 
 - `GET /customers/stage-distribution`：六阶段分布——当前数据范围内各阶段客户数（了解/报价/打样/首单/返单/稳定复购）。需要 `customer:view`。
 - `POST /customers/{customer_id}/contacts`：给客户新增联系人。需要 `customer:update`。
-- `GET /customers/{customer_id}/merge-logs`：客户合并记录。需要 `customer:view`。
+- `GET /customers/{customer_id}/merge-logs`：客户合并记录。需要 `customer:view`。返回里含 `moved`（各类关联各自迁移了多少条）与 `conflicts`（**当时冲突是怎么处理的**）。
+- `GET /customers/{customer_id}/merge-preview`：**合并影响清单**（只读，返工单 6.8）。需要 `customer:view`。参数 `target_customer_id`。
+  返回 `targets`（15 类关联各有多少条会跟着走，含**字段名不叫 `customer_id`** 的企微客户映射与客户附件）、`total_links`、`conflicts`、`blocking`。
+  **合并不可逆，先给人看这一页**：不能点一下才发现有两百张单子跟着换门牌。
+- `POST /customers/merge`：把来源客户合并进目标客户。需要 `customer:update`。请求体多一个 `resolutions`（冲突处理口径，键见影响清单的 `blocking`）。
+  - **合并前列出全部关联对象**：联系人、商机、报价、订单、跟进、任务、定制需求、打样单、订单草稿、合同、销售案例、物流报价、专属价格、企微客户映射、客户附件 —— 原实现只有前 6 类，其余单据在来源客户被软删后成了孤儿（订单在目标客户下、打样还挂在被删的来源客户上；合同和附件在目标档案里找不到）；
+  - **冲突必须有人拍板，绝不静默覆盖**：专属价格（同一 SKU + 同一数量档两边价不同）要求选 `keep_target` / `keep_source`，被淘汰的一边转 `historical`（不删，价目历史要留着）；两边税号不一致要求 `confirm`。**不给口径 → 422**；
+  - 历史报价、合同签署文件、打样图纸与确认记录的**内容不改写**，只换档案归属；
+  - **并发保护**：先按 id 排序加行锁并重读最新值，两个人同时对同一对客户点合并不会各改一遍；
+  - 合并日志记下**实际迁移的对象、数量与冲突处理结果**；任一必须处理的关联失败则不返回整体成功。
 - `POST /customers/{customer_id}/claim`：**领取公海客户**。需要 `customer:view`。
   与 `POST /public-pool/customers/{id}/claim` 走**同一个服务函数**，行为完全一致。
   语义（返工单 6.2 统一后的口径）：
@@ -1095,6 +1104,34 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /integrations/erp/readiness`：ERP 就绪度。需要 `order:view`。
 - `GET /integrations/wecom/readiness`：企微就绪度——凭据缺哪些 + 本地已同步多少数据。需要 `wecom:view`。
 - `POST /integrations/wecom/unbound-contacts/{contact_id}/ignore`：暂不处理某条未绑定联系人（PRD §8.3 的第 3 步之三）。需要 `wecom:manage`。
+
+## 41.16b 离职交接（wecom，返工单 6.6 / 6.7）
+
+- `GET /integrations/wecom/transfer-preview`：**交接清单预览**（只读）。需要 `wecom:view`。
+  参数 `handover_user_id`、`takeover_user_id`。按类别返回逐项清单：客户、商机、待办任务、
+  **打样单**、订单、订单草稿、企微客户关系；每项带当前责任人、拟接手人、状态与
+  **不能交接的原因**（撞单争议冻结）。关注字段：`sections`（分类明细）、`blocked`（本次动不了的项）、
+  `sample_count`（在途打样数）、`totals`。
+  **看清单和实际执行读的是同一份数据** —— 不会出现"清单里明明没有、执行时却改了"。
+- `POST /integrations/wecom/transfer`：离职继承（PRD §8.4）。需要 `wecom:manage`，
+  且需管理员开启 `WECOM_TRANSFER_ENABLED=1`（该操作会变更客户在微信里看到的服务人员）。
+  **执行顺序（返工单 6.7）**：先做完**全部**前置检查（接手人在职、撞单冻结、清单盘点），
+  之后才发企微转接，最后改本地归属。老实现是"先调企微、再改 CRM"，CRM 那步一旦因撞单
+  争议报错回滚，**已经发出去的企微转接撤不回来** —— 客户在微信里看到的服务人员已经变了，
+  本地却什么都没留下。
+  - 争议冻结的客户**不交接、也不发出企微转接**；
+  - **只迁离职人的责任**：客户名下其他在职同事的未完成待办原样保留；
+  - 转移：客户、商机、未完成待办、**未结束的打样单**、订单、订单草稿及其对外单据；
+  - 保留：创建人、历史跟进、历史报价、审批与审计日志、`sales_owner_id`（签单业绩归属）；
+  - 返回 `detail` 汇总（两侧分开算）：`crm_moved` / `wecom_transferred` / `wecom_failed` /
+    `frozen` / `pending_items` / `failures`（**完整失败明细，不再截断到 10 条**）。
+- `GET /integrations/wecom/transfer/{job_id}/items`：**逐项交接结果**，真分页。需要 `wecom:view`。
+  `kind` 按类别过滤（`customer` / `sample` / `wecom_relation` …），`pending_only=true` 只看没办完的。
+  每项**两侧状态分开记**：`crm_status` / `crm_status_label` 与 `wecom_status` / `wecom_status_label`，
+  外加各自的错误原因与 `attempts`。企微侧的客户关系本身没有 CRM 归属要改，`crm_status` 记 `not_applicable`。
+- `POST /integrations/wecom/transfer/{job_id}/retry`：**按逐项状态重试**没办完的项。需要 `wecom:manage`。
+  已完成（成交付/已转接）的项一律不碰 —— 整体重跑会把已经转出去的关系再发一遍，
+  企微那边会当成重复操作报错。返回 `{retried, remaining}`。
 
 ## 41.17 打样（samples，补充条目）
 

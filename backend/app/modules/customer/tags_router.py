@@ -176,6 +176,23 @@ async def deduplicate(
     return ok({"matches": matches, "count": len(matches)})
 
 
+@router.get("/customers/{customer_id}/merge-preview")
+async def merge_preview(
+    customer_id: int,
+    target_customer_id: int = Query(..., description="要保留的那个客户"),
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """合并**影响清单**（只读，返工单 6.8）。
+
+    先看这个再决定合不合：会跟着走的关联各有多少条、有没有必须先拍板的冲突。
+    合并不可逆，不能点一下才发现有两百张单子跟着换门牌。
+    """
+    source = await svc.get_visible_customer(session, user, customer_id)
+    target = await svc.get_visible_customer(session, user, target_customer_id)
+    return ok(await tag_svc.merge_preview(session, source=source, target=target))
+
+
 @router.post("/customers/merge")
 async def merge_customers(
     payload: CustomerMergeRequest,
@@ -183,7 +200,11 @@ async def merge_customers(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    """把来源客户合并进目标客户（不可逆，先存快照）。"""
+    """把来源客户合并进目标客户（不可逆，先存快照）。
+
+    有冲突（专属价不一致、税号不一致）时必须带上 `resolutions`，
+    否则返回 422 让你先去「合并影响」做选择——不静默覆盖。
+    """
     source = await svc.get_visible_customer(session, user, payload.source_customer_id)
     target = await svc.get_visible_customer(session, user, payload.target_customer_id)
 
@@ -193,6 +214,7 @@ async def merge_customers(
         target=target,
         operator_id=user.id,
         reason=payload.reason,
+        resolutions=payload.resolutions,
     )
 
     await write_audit(
@@ -202,7 +224,11 @@ async def merge_customers(
         business_type="customer",
         business_id=target.id,
         before={"source_customer_id": source.id, "source_snapshot": result["snapshot"]},
-        after={"target_customer_id": target.id, "moved": result["moved"]},
+        after={
+            "target_customer_id": target.id,
+            "moved": result["moved"],
+            "conflicts": result.get("conflicts"),
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -211,6 +237,7 @@ async def merge_customers(
             "target_customer_id": target.id,
             "source_customer_id": source.id,
             "moved": result["moved"],
+            "conflicts": result.get("conflicts"),
             "merge_log_id": result["merge_log_id"],
         },
         f"已将「{result['snapshot']['name']}」合并进「{target.name}」",

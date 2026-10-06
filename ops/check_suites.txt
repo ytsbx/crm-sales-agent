@@ -44,6 +44,13 @@ check_pool_scope_concurrency
 # （返工单 6.5 / 6.3 / 6.4）。它会造一批"长期未活跃"的客户并跑回收扫描，
 # 放在守门套件之前、且**自己清干净**（含候选表与裁定单）。
 check_pool_recycle_and_merge
+# 第六批批次三：离职交接清单（含打样责任）与企微交接顺序（返工单 6.6 / 6.7）。
+# 两者都写在 wecom 那几张表 + 客户/打样/任务上，自己清干净。
+# 它会把企微客户端换成假替身（只在套件进程内），所以不依赖真实的企微凭据。
+check_wecom_handover
+# 客户合并的影响清单与漏关联（返工单 6.8）。会造一整套关联对象再合并，
+# 自己清干净；与前面的套件无耦合。
+check_customer_merge
 check_notification_retry
 check_notification_levels
 check_delivery_analytics

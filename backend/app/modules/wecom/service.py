@@ -20,16 +20,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.contact_util import create_contact_for_customer, find_duplicate_customers
+from app.modules.customer import duplicates as duplicate_service
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import Opportunity
+from app.modules.sample.model import SAMPLE_OPEN_STATUSES, SAMPLE_STATUS_LABEL, SampleRequest
 from app.modules.task.model import Task
 from app.modules.user.model import Department, User
 from app.modules.wecom import client as wecom_client
 from app.modules.wecom.model import (
+    CRM_OPEN_STATUSES,
+    TRANSFER_KIND_LABEL,
+    WECOM_OPEN_STATUSES,
     WeComExternalContact,
     WeComFollowRelationship,
     WeComSyncJob,
+    WeComTransferItem,
     WeComUser,
 )
 
@@ -515,6 +521,210 @@ async def ignore_contact(
 # ---- 离职继承（PRD §8.4）--------------------------------------------------
 
 
+async def collect_transfer_scope(
+    session: AsyncSession, *, handover: User, takeover: User
+) -> dict[str, list[dict]]:
+    """盘点离职人名下**要交接的东西**，按类别返回逐项清单。
+
+    这是**预览和执行共用的同一份清单**：页面上看到的和实际会动的必须完全一致，
+    否则"清单里明明没有、执行时却改了"就成了新的黑箱。
+
+    每项固定带这几个字段，界面照着渲染即可：
+      - `kind` 类别、`business_id` 对象 id、`label` 人看的标识；
+      - `status` 现状（人话）；
+      - `blocked_reason` **不能交接**的原因（能交接则为空）。
+    """
+    scope: dict[str, list[dict]] = {kind: [] for kind in TRANSFER_KIND_LABEL}
+
+    # ---- 客户：撞单争议未结案的先标出来，它会被冻结，企微那边也不发转接 ----
+    customers = (
+        await session.execute(
+            select(Customer).where(
+                Customer.owner_id == handover.id, Customer.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    for customer in customers:
+        scope["customer"].append(
+            {
+                "kind": "customer",
+                "business_id": customer.id,
+                "label": customer.name,
+                "status": "待交接",
+                "blocked_reason": (
+                    "处于撞单争议中，自动改派已冻结，等主管裁定后再交接"
+                    if await duplicate_service.is_disputed(session, customer.id)
+                    else None
+                ),
+            }
+        )
+
+    # ---- 商机 ----
+    for opportunity in (
+        await session.execute(
+            select(Opportunity).where(
+                Opportunity.owner_id == handover.id, Opportunity.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all():
+        scope["opportunity"].append(
+            {
+                "kind": "opportunity",
+                "business_id": opportunity.id,
+                "label": opportunity.title,
+                "status": "跟进中",
+                "blocked_reason": None,
+            }
+        )
+
+    # ---- 未完成任务（已完成的属于历史记录，不在此列）----
+    for task in (
+        await session.execute(
+            select(Task).where(
+                Task.owner_id == handover.id, Task.status.in_(OPEN_TASK_STATUS)
+            )
+        )
+    ).scalars().all():
+        scope["task"].append(
+            {
+                "kind": "task",
+                "business_id": task.id,
+                "label": task.title,
+                "status": "待办" if task.status == "pending" else "进行中",
+                "blocked_reason": None,
+            }
+        )
+
+    # ---- 打样单：**这部分原来整块漏了**（返工单 6.6）----
+    # 打样列表和详情的可见性按 `SampleRequest.owner_id` 判（见 sample/service
+    # 的 ensure_in_scope）。客户交给新人、打样还挂在离职人名下的话，
+    # 接手人打开打样列表根本看不到它，也就没法继续跟——单子成了没人管的孤儿。
+    # 只交接**没结束**的打样：驳回作罢、已归档的不该再算"接手人的活"。
+    for sample in (
+        await session.execute(
+            select(SampleRequest).where(
+                SampleRequest.owner_id == handover.id,
+                SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
+            )
+        )
+    ).scalars().all():
+        status_label = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
+        confirm = sample.confirm_status or "pending"
+        scope["sample"].append(
+            {
+                "kind": "sample",
+                "business_id": sample.id,
+                "label": f"打样单 #{sample.id}（{status_label}，"
+                f"{'客户已确认' if confirm == 'accepted' else '待客户确认'}）",
+                "status": status_label,
+                "blocked_reason": None,
+            }
+        )
+
+    # ---- 订单与草稿 ----
+    from app.modules.order.model import OrderDraft, SalesOrder
+
+    for order in (
+        await session.execute(
+            select(SalesOrder).where(
+                SalesOrder.owner_id == handover.id, SalesOrder.status != "cancelled"
+            )
+        )
+    ).scalars().all():
+        scope["order"].append(
+            {
+                "kind": "order",
+                "business_id": order.id,
+                "label": order.order_no,
+                "status": "在途",
+                "blocked_reason": None,
+            }
+        )
+
+    for draft in (
+        await session.execute(select(OrderDraft).where(OrderDraft.owner_id == handover.id))
+    ).scalars().all():
+        scope["order_draft"].append(
+            {
+                "kind": "order_draft",
+                "business_id": draft.id,
+                "label": f"订单草稿 #{draft.id}",
+                "status": "已转订单" if draft.order_id else "起草中",
+                "blocked_reason": None,
+            }
+        )
+
+    # ---- 企微客户关系 ----
+    for relation in (
+        await session.execute(
+            select(WeComFollowRelationship).where(
+                WeComFollowRelationship.wecom_userid == (handover.wecom_userid or ""),
+                WeComFollowRelationship.status == "active",
+            )
+        )
+    ).scalars().all():
+        contact = await session.get(WeComExternalContact, relation.external_contact_id)
+        scope["wecom_relation"].append(
+            {
+                "kind": "wecom_relation",
+                "business_id": relation.id,
+                "label": (contact.external_userid if contact else None)
+                or f"关系 #{relation.id}",
+                "status": "跟进中",
+                "blocked_reason": None,
+                # 私用字段：执行时要知道对应哪个 CRM 客户，好判断它是否被冻结
+                "_crm_customer_id": contact.crm_customer_id if contact else None,
+            }
+        )
+
+    return scope
+
+
+async def preview_transfer(
+    session: AsyncSession, *, handover_user_id: int, takeover_user_id: int
+) -> dict:
+    """交接清单预览（只读）。**执行前先看这个**，逐项确认接手人。
+
+    返回里 `blocked` 是"这次交接动不了"的项（撞单争议冻结），
+    `totals` 是各类别的条数。看清单和执行拿到的是同一份数据。
+    """
+    handover = await session.get(User, handover_user_id)
+    takeover = await session.get(User, takeover_user_id)
+    if handover is None or takeover is None:
+        raise AppError(ErrorCode.NOT_FOUND, "交接人或接管人不存在", 404)
+
+    scope = await collect_transfer_scope(session, handover=handover, takeover=takeover)
+    sections = []
+    totals: dict[str, int] = {}
+    blocked: list[dict] = []
+    for kind, rows in scope.items():
+        # 内部用的关联字段不下发
+        clean = [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
+        totals[kind] = len(clean)
+        for row in clean:
+            if row["blocked_reason"]:
+                blocked.append(row)
+        if clean:
+            sections.append({"kind": kind, "label": TRANSFER_KIND_LABEL[kind], "items": clean})
+
+    return {
+        "handover": {"id": handover.id, "name": handover.name},
+        "takeover": {"id": takeover.id, "name": takeover.name},
+        "sections": sections,
+        "totals": totals,
+        "total": sum(totals.values()),
+        "blocked": blocked,
+        # 打样单以前不在清单里，界面上要能看出这次包含了多少
+        "sample_count": totals.get("sample", 0),
+        "note": (
+            "清单与执行读的是同一份数据。撞单争议中的客户会被冻结"
+            "（不交接、也不发出企微转接），等主管裁定后单独处理。"
+            "只迁移离职人的责任，其他在职同事的待办保留不动。"
+            "每一项都可以单独指定接手人，不指定就跟统一接管人。"
+        ),
+    }
+
+
 async def transfer_relations(
     session: AsyncSession,
     *,
@@ -522,16 +732,27 @@ async def transfer_relations(
     handover_user_id: int,
     takeover_user_id: int,
     transfer_wecom: bool = True,
+    item_assignees: dict[str, int] | None = None,
 ) -> WeComSyncJob:
     """离职继承：把 handover 名下的一切交给 takeover。
 
     企微侧：调 `externalcontact/transfer` 交接客户关系（需要外部联系人 secret）。
     CRM 侧按 PRD §8.4 / 文档 :61：
-      - 转移「当前负责人」：客户、商机、未完成任务、**未取消订单**——
-        接手人必须看得到这些单子，订单列表是按 owner_id 过滤的；
+      - 转移「当前负责人」：客户、商机、未完成任务、**未完成打样**、草稿、
+        **未取消订单**——接手人必须看得到这些单子，列表是按 `owner_id` 过滤的，
+        不动等于交接完没人看得到；
       - 保留：创建人（created_by）、历史跟进、历史报价、审批与审计日志，
         以及 **sales_owner_id（签单归属）**——"交接后保留历史业绩归属"，
-        接手人接手的是跟进责任，不是别人已经谈成的业绩。
+        接手人接手的是跟进责任，不是别人已经谈成的业绩；
+      - **只迁离职人的责任**（业务方 2026-10-06 定）：客户名下其他在职同事的
+        未完成待办原样保留。旧实现把该客户下**所有**负责人的未办事项一起改给
+        接手人，等于把在职同事手上的活悄悄挪走了。
+
+    **执行顺序**（返工单 6.7）：先检查、后调外部接口。
+    旧实现是"先调企微转接 → 再改 CRM 归属"，而 CRM 那一步可能因为撞单争议
+    报错回滚——可**已经发出去的企微转接回滚不了**：客户在微信里看到的服务人员
+    已经变了，本地却什么都没留下。现在把所有前置检查放在最前面，
+    确认哪些能动、哪些要冻，之后才发外部调用，最后改本地归属。
     """
     job = await start_job(session, job_type="transfer", operator_id=user.id)
 
@@ -547,51 +768,158 @@ async def transfer_relations(
         finish_job(job, success=0, fail=1, error=f"接管人「{takeover.name}」已停用")
         raise AppError(ErrorCode.PARAM_ERROR, f"接管人「{takeover.name}」已停用", 422)
 
-    detail: dict = {"handover": handover.name, "takeover": takeover.name}
+    detail: dict = {
+        "handover": handover.name,
+        "takeover": takeover.name,
+        # 存 id 而不只是名字：重试要按 id 找回这两个账号
+        "handover_id": handover.id,
+        "takeover_id": takeover.id,
+    }
 
-    # 1) 企微客户关系
+    # 1) 盘点：清单在动手之前就定下来，预览页看到的和这里动的是同一份
+    scope = await collect_transfer_scope(session, handover=handover, takeover=takeover)
+    frozen_customer_ids = {
+        row["business_id"] for row in scope["customer"] if row["blocked_reason"]
+    }
+
+    # 1b) **逐项接手人**（业务方 2026-10-06 定："交接清单可以逐项调整"）
+    #     默认全部交给 takeover；个别项可以指定别人（比如某个客户本来就该归
+    #     另一位同事）。键是 `"{kind}:{business_id}"`，与清单里那一项一一对应。
+    overrides: dict[str, int] = {
+        key: int(value) for key, value in (item_assignees or {}).items() if value
+    }
+    assignees: dict[int, User] = {takeover.id: takeover}
+    for user_id in set(overrides.values()):
+        if user_id in assignees:
+            continue
+        row_user = await session.get(User, user_id)
+        if row_user is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"接手人 id={user_id} 不存在", 404)
+        if row_user.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"接手人「{row_user.name}」已停用，不能接收交接",
+                422,
+            )
+        assignees[user_id] = row_user
+
+    def _assignee_of(kind: str, business_id: int) -> User:
+        """这一项实际交给谁：逐项指定优先，否则跟统一接手人。"""
+        return assignees[overrides.get(f"{kind}:{business_id}", takeover.id)]
+
+    # 客户 id → 该项在逐项结果里的行，便于边执行边更新状态
+    items: dict[tuple[str, int], WeComTransferItem] = {}
+    for kind, rows in scope.items():
+        for row in rows:
+            target_user = _assignee_of(kind, row["business_id"])
+            item = WeComTransferItem(
+                job_id=job.id,
+                kind=kind,
+                business_id=row["business_id"],
+                label=row["label"],
+                from_owner_id=handover.id,
+                to_owner_id=target_user.id,
+                from_owner_name=handover.name,
+                # 记**实际**接手人而不是统一那个人：逐项调整过之后，
+                # 事后要能看出这一项到底给了谁
+                to_owner_name=target_user.name,
+                # 企微关系没有"CRM 归属"要改（它本身就是外部系统的记录），
+                # CRM 侧直接记"不涉及"而不是"待处理" —— 否则它会一直挂在
+                # "未完成"清单里，重试也会白跑一趟。
+                crm_status="not_applicable" if kind == "wecom_relation" else "pending",
+                wecom_status="pending" if kind == "wecom_relation" else "not_applicable",
+                attempts=0,
+            )
+            session.add(item)
+            items[(kind, row["business_id"])] = item
+    await session.flush()
+    detail["item_assignees"] = {
+        key: assignees[value].name for key, value in overrides.items()
+    }
+
+    def _mark_crm(kind: str, business_id: int, status: str, error: str | None = None) -> None:
+        """就地更新某一项的 CRM 侧结果（不存在就忽略，不让记录影响主流程）。"""
+        item = items.get((kind, business_id))
+        if item is None:
+            return
+        item.crm_status = status
+        item.crm_error = error
+        item.attempts = (item.attempts or 0) + 1
+        item.updated_at = datetime.now(UTC)
+
+    def _mark_wecom(kind: str, business_id: int, status: str, error: str | None = None) -> None:
+        item = items.get((kind, business_id))
+        if item is None:
+            return
+        item.wecom_status = status
+        item.wecom_error = error
+        item.attempts = (item.attempts or 0) + 1
+        item.updated_at = datetime.now(UTC)
+
+    # 冻结的客户：CRM 侧明确标成 frozen（不留成"待处理"，否则重试会一直捞它）
+    for row in scope["customer"]:
+        if row["blocked_reason"]:
+            _mark_crm("customer", row["business_id"], "frozen", row["blocked_reason"])
+
+    # 2) 企微客户关系 —— **只转没被冻结的客户**
+    #    这一步是外部调用，发出去就撤不回来，所以放在所有本地检查之后，
+    #    并严格按第 1 步算出来的冻结清单过滤：争议客户的客户关系不动。
     if transfer_wecom:
         api = wecom_client.get_client()
-        relations = (
-            await session.execute(
-                select(WeComFollowRelationship)
-                .where(
-                    WeComFollowRelationship.wecom_userid == (handover.wecom_userid or ""),
-                    WeComFollowRelationship.status == "active",
-                )
-            )
-        ).scalars().all()
         moved = 0
-        failures: list[str] = []
-        for relation in relations:
-            contact = await session.get(WeComExternalContact, relation.external_contact_id)
-            if contact is None:
+        failed = 0
+        for row in scope["wecom_relation"]:
+            relation_id = row["business_id"]
+            relation = await session.get(WeComFollowRelationship, relation_id)
+            contact = (
+                await session.get(WeComExternalContact, relation.external_contact_id)
+                if relation is not None
+                else None
+            )
+            if relation is None or contact is None:
+                _mark_wecom("wecom_relation", relation_id, "skipped", "跟进关系已不存在")
                 continue
+            if row.get("_crm_customer_id") in frozen_customer_ids:
+                _mark_wecom(
+                    "wecom_relation",
+                    relation_id,
+                    "skipped",
+                    "对应客户处于撞单争议中，未发出转接",
+                )
+                continue
+            # 这条关系交给谁 —— 可能是逐项指定过的别人，不一定是最初那个接管人
+            relation_item = items[("wecom_relation", relation_id)]
+            relation_owner = assignees.get(relation_item.to_owner_id) or takeover
             try:
                 await api.transfer_customer(
                     external_userid=contact.external_userid,
                     handover_userid=handover.wecom_userid or "",
-                    takeover_userid=takeover.wecom_userid or "",
+                    takeover_userid=relation_owner.wecom_userid or "",
                 )
             except Exception as error:
-                failures.append(f"{contact.external_userid}: {str(error)[:80]}")
+                failed += 1
+                # 失败原因**整条存下来**（原来截断到 10 条并挤进 JSON，
+                # 存进去的那一份本身就是残的，事后想补查都查不到）
+                _mark_wecom("wecom_relation", relation_id, "failed", str(error)[:500])
                 continue
             relation.status = "transferred"
             moved += 1
-            # 接管人名下补一条跟进关系
+            _mark_wecom("wecom_relation", relation_id, "transferred")
+            # 接手人名下补一条跟进关系
             duplicate = (
                 await session.execute(
                     select(WeComFollowRelationship).where(
                         WeComFollowRelationship.external_contact_id == contact.id,
-                        WeComFollowRelationship.wecom_userid == (takeover.wecom_userid or ""),
+                        WeComFollowRelationship.wecom_userid
+                        == (relation_owner.wecom_userid or ""),
                     )
                 )
             ).scalars().first()
-            if duplicate is None and takeover.wecom_userid:
+            if duplicate is None and relation_owner.wecom_userid:
                 session.add(
                     WeComFollowRelationship(
                         external_contact_id=contact.id,
-                        wecom_userid=takeover.wecom_userid,
+                        wecom_userid=relation_owner.wecom_userid,
                         add_time=datetime.now(UTC),
                         add_way="离职继承",
                         status="active",
@@ -599,98 +927,407 @@ async def transfer_relations(
                     )
                 )
         detail["wecom_relations"] = moved
-        if failures:
-            detail["wecom_failures"] = failures[:10]
-
-    # 2) CRM 客户负责人
-    customer_ids = [
-        int(cid)
-        for cid in (
-            await session.execute(
-                select(Customer.id).where(
-                    Customer.owner_id == handover.id, Customer.deleted_at.is_(None)
-                )
+        detail["wecom_failed"] = failed
+    else:
+        for row in scope["wecom_relation"]:
+            _mark_wecom(
+                "wecom_relation", row["business_id"], "skipped", "本次未要求转接企微关系"
             )
-        ).scalars().all()
+        detail["wecom_relations"] = 0
+        detail["wecom_failed"] = 0
+
+    # 3) CRM 客户负责人（冻结的原样留着，等主管裁定）
+    customer_ids = [
+        row["business_id"] for row in scope["customer"] if not row["blocked_reason"]
     ]
     for customer_id in customer_ids:
         customer = await session.get(Customer, customer_id)
-        if customer is not None:
-            await customer_service.transfer_customer(
-                session, user, customer, takeover.id,
-                f"离职继承：{handover.name} → {takeover.name}",
-                # 离职交接是**系统自动改派**：撞单争议未结案时冻结，
-                # 否则一次交接就把争议客户的归属改成了既成事实（文档 §11.5 :279）
-                automatic=True,
-            )
+        if customer is None:
+            _mark_crm("customer", customer_id, "skipped", "客户已不存在")
+            continue
+        owner = items[("customer", customer_id)].to_owner_id
+        owner_name = items[("customer", customer_id)].to_owner_name
+        await customer_service.transfer_customer(
+            session, user, customer, owner,
+            f"离职继承：{handover.name} → {owner_name}",
+            # 离职交接是**系统自动改派**：撞单争议未结案时冻结，
+            # 否则一次交接就把争议客户的归属改成了既成事实（文档 §11.5 :279）
+            automatic=True,
+            # **只迁离职人的待办**：客户名下在职同事的活留着（业务方 2026-10-06 定）
+            only_from_owner_id=handover.id,
+        )
+        _mark_crm("customer", customer_id, "moved")
     detail["customers"] = len(customer_ids)
+    detail["customers_frozen"] = len(frozen_customer_ids)
 
-    # 3) 商机负责人（只动 owner_id，created_by 保持原样）
-    opportunities = (
-        await session.execute(
-            select(Opportunity).where(
-                Opportunity.owner_id == handover.id, Opportunity.deleted_at.is_(None)
+    # 4) 商机负责人（只动 owner_id，created_by 保持原样）
+    for row in scope["opportunity"]:
+        opportunity = await session.get(Opportunity, row["business_id"])
+        if opportunity is None or opportunity.deleted_at is not None:
+            _mark_crm("opportunity", row["business_id"], "skipped", "商机已不存在")
+            continue
+        opportunity.owner_id = items[("opportunity", row["business_id"])].to_owner_id
+        _mark_crm("opportunity", row["business_id"], "moved")
+    detail["opportunities"] = len(scope["opportunity"])
+
+    # 5) 未完成任务（`status in OPEN_TASK_STATUS` 已在盘点时过滤）
+    for row in scope["task"]:
+        task = await session.get(Task, row["business_id"])
+        if task is None:
+            _mark_crm("task", row["business_id"], "skipped", "任务已不存在")
+            continue
+        task.owner_id = items[("task", row["business_id"])].to_owner_id
+        _mark_crm("task", row["business_id"], "moved")
+    detail["tasks"] = len(scope["task"])
+
+    # 6) 打样单（返工单 6.6 补的整块）
+    #    只动 `owner_id`：打样列表/详情就是按它判可见性的，不动等于
+    #    接手人打开列表看不到这张单。产品、图纸、制作依据、确认记录都不动。
+    for row in scope["sample"]:
+        sample = await session.get(SampleRequest, row["business_id"])
+        if sample is None:
+            _mark_crm("sample", row["business_id"], "skipped", "打样单已不存在")
+            continue
+        sample.owner_id = items[("sample", row["business_id"])].to_owner_id
+        _mark_crm("sample", row["business_id"], "moved")
+    detail["samples"] = len(scope["sample"])
+
+    # 7) 订单草稿 + 它生成的对外单据
+    from app.modules.bizdoc.model import BizDoc
+    from app.modules.order.model import OrderDraft, SalesOrder
+
+    for row in scope["order_draft"]:
+        draft = await session.get(OrderDraft, row["business_id"])
+        if draft is None:
+            _mark_crm("order_draft", row["business_id"], "skipped", "草稿已不存在")
+            continue
+        owner = items[("order_draft", row["business_id"])].to_owner_id
+        draft.owner_id = owner
+        documents = (
+            await session.execute(
+                select(BizDoc).where(BizDoc.order_draft_id == draft.id)
             )
-        )
-    ).scalars().all()
-    for opportunity in opportunities:
-        opportunity.owner_id = takeover.id
-    detail["opportunities"] = len(opportunities)
+        ).scalars().all()
+        for document in documents:
+            document.owner_id = owner
+        _mark_crm("order_draft", row["business_id"], "moved")
+    detail["order_drafts"] = len(scope["order_draft"])
 
-    # 4) 未完成任务
-    tasks = (
-        await session.execute(
-            select(Task).where(
-                Task.owner_id == handover.id, Task.status.in_(OPEN_TASK_STATUS)
-            )
-        )
-    ).scalars().all()
-    for task in tasks:
-        task.owner_id = takeover.id
-    detail["tasks"] = len(tasks)
-
-    # 5) 订单当前负责人（文档 :61「逐项分配接手人」）。
+    # 8) 订单当前负责人（文档 :61「逐项分配接手人」）。
     #    只动 owner_id：接手人要能看到并跟进这些订单（订单列表按 owner_id
     #    过滤，不动等于交接完没人看得到）；sales_owner_id 保持原样，
     #    这些单的业绩仍算签单的人——"交接后保留历史业绩归属"。
-    from app.modules.order.model import SalesOrder, OrderDraft
-    from app.modules.bizdoc.model import BizDoc
+    for row in scope["order"]:
+        order = await session.get(SalesOrder, row["business_id"])
+        if order is None:
+            _mark_crm("order", row["business_id"], "skipped", "订单已不存在")
+            continue
+        order.owner_id = items[("order", row["business_id"])].to_owner_id
+        _mark_crm("order", row["business_id"], "moved")
+    detail["orders"] = len(scope["order"])
 
-    drafts = list((await session.execute(select(OrderDraft).where(OrderDraft.owner_id == handover.id))).scalars())
-    draft_ids = [row.id for row in drafts]
-    for draft in drafts:
-        draft.owner_id = takeover.id
-    if draft_ids:
-        documents = list((await session.execute(select(BizDoc).where(BizDoc.order_draft_id.in_(draft_ids)))).scalars())
-        for document in documents:
-            document.owner_id = takeover.id
-    detail["order_drafts"] = len(drafts)
+    # 9) 汇总（返工单 6.7：两侧结果分开算，失败明细完整保存不再截断）
+    crm_moved = sum(1 for i in items.values() if i.crm_status == "moved")
+    crm_failed = sum(1 for i in items.values() if i.crm_status == "failed")
+    wecom_transferred = sum(1 for i in items.values() if i.wecom_status == "transferred")
+    wecom_failed = sum(1 for i in items.values() if i.wecom_status == "failed")
+    frozen = sum(1 for i in items.values() if i.crm_status == "frozen")
+    #: 还没办完的项：任一侧处于未完成状态。重试只挑这些。
+    #: `frozen` 不算（它是"现在不能做"，要等裁定后重新发起，不是原地重试）。
+    pending_items = [
+        item
+        for item in items.values()
+        if item.crm_status in CRM_OPEN_STATUSES or item.wecom_status in WECOM_OPEN_STATUSES
+    ]
+    failure_messages = [
+        f"{TRANSFER_KIND_LABEL.get(item.kind, item.kind)}「{item.label}」："
+        f"{item.crm_error or item.wecom_error}"
+        for item in items.values()
+        if item.crm_status == "failed" or item.wecom_status == "failed"
+    ]
 
-    orders = (
-        await session.execute(
-            select(SalesOrder).where(
-                SalesOrder.owner_id == handover.id,
-                SalesOrder.status != "cancelled",
-            )
-        )
-    ).scalars().all()
-    for order in orders:
-        order.owner_id = takeover.id
-    detail["orders"] = len(orders)
+    detail.update(
+        {
+            "crm_moved": crm_moved,
+            "crm_failed": crm_failed,
+            "wecom_transferred": wecom_transferred,
+            "wecom_failed": wecom_failed,
+            "frozen": frozen,
+            "items_total": len(items),
+            "pending_items": len(pending_items),
+            # 失败明细**完整**列出：12 条就报 12 条
+            "failures": failure_messages,
+            "failures_count": len(failure_messages),
+        }
+    )
 
     finish_job(
         job,
-        success=int(detail.get("wecom_relations", 0))
-        + len(customer_ids)
-        + len(opportunities)
-        + len(tasks)
-        + len(orders)
-        + len(drafts),
-        fail=len(detail.get("wecom_failures", [])),
-        error="；".join(detail.get("wecom_failures", [])[:5]) or None,
+        success=crm_moved + wecom_transferred,
+        # 这里以前是 `len(detail["wecom_failures"])`，而那个列表**在存的时候就
+        # 截断成 10 条了** —— 失败 12 条，报表上只数出 10 条，明细还少 2 条。
+        fail=len(failure_messages),
+        error="；".join(failure_messages[:5]) or None,
         detail=detail,
     )
     return job
+
+
+# ---- 交接结果查询与重试（API §10）------------------------------------------
+
+
+async def list_transfer_items(
+    session: AsyncSession, *, job_id: int, page: int = 1, page_size: int = 20,
+    kind: str | None = None, pending_only: bool = False,
+) -> tuple[list[dict], int]:
+    """某次交接的**逐项结果**，真分页。
+
+    界面据此显示"哪些成了、哪些没成、为什么"，失败 12 条就是 12 条，
+    可以一页页翻完（原来失败明细在存储阶段就被截断，翻都翻不到）。
+    """
+    from sqlalchemy import func as _func
+
+    job = await session.get(WeComSyncJob, job_id)
+    if job is None or job.job_type != "transfer":
+        raise AppError(ErrorCode.NOT_FOUND, "继承任务不存在", 404)
+
+    conditions = [WeComTransferItem.job_id == job_id]
+    if kind:
+        conditions.append(WeComTransferItem.kind == kind)
+    if pending_only:
+        conditions.append(
+            or_(
+                WeComTransferItem.crm_status.in_(CRM_OPEN_STATUSES),
+                WeComTransferItem.wecom_status.in_(WECOM_OPEN_STATUSES),
+            )
+        )
+
+    total = (
+        await session.execute(
+            select(_func.count(WeComTransferItem.id)).where(*conditions)
+        )
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            select(WeComTransferItem)
+            .where(*conditions)
+            .order_by(WeComTransferItem.kind, WeComTransferItem.id)
+            .offset(max(0, (page - 1) * page_size))
+            .limit(page_size)
+        )
+    ).scalars().all()
+    return [serialize_transfer_item(row) for row in rows], int(total)
+
+
+def serialize_transfer_item(item: WeComTransferItem) -> dict:
+    from app.modules.wecom.model import TRANSFER_CRM_STATUS_LABEL, TRANSFER_WECOM_STATUS_LABEL
+
+    return {
+        "id": item.id,
+        "job_id": item.job_id,
+        "kind": item.kind,
+        "kind_label": TRANSFER_KIND_LABEL.get(item.kind, item.kind),
+        "business_id": item.business_id,
+        "label": item.label,
+        "from_owner_id": item.from_owner_id,
+        "from_owner_name": item.from_owner_name,
+        "to_owner_id": item.to_owner_id,
+        "to_owner_name": item.to_owner_name,
+        "crm_status": item.crm_status,
+        "crm_status_label": TRANSFER_CRM_STATUS_LABEL.get(item.crm_status, item.crm_status),
+        "crm_error": item.crm_error,
+        "wecom_status": item.wecom_status,
+        "wecom_status_label": TRANSFER_WECOM_STATUS_LABEL.get(
+            item.wecom_status, item.wecom_status
+        ),
+        "wecom_error": item.wecom_error,
+        "attempts": item.attempts,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+async def retry_transfer(
+    session: AsyncSession, *, user: CurrentUser, job_id: int
+) -> dict:
+    """按**逐项状态**重试没办完的项，已完成的一律不碰。
+
+    为什么要按项重试而不是整体重跑：企微的转接是外部调用，
+    把已经转出去的关系再发一遍，企微那边会当成重复操作报错，
+    运营看到一堆莫名其妙的失败。这里只捞 `pending`/`failed` 的项。
+    """
+    job = await session.get(WeComSyncJob, job_id)
+    if job is None or job.job_type != "transfer":
+        raise AppError(ErrorCode.NOT_FOUND, "继承任务不存在", 404)
+
+    detail = job.detail or {}
+    handover = await session.get(User, detail.get("handover_id") or 0)
+    takeover = await session.get(User, detail.get("takeover_id") or 0)
+    if handover is None or takeover is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "这一版之前的交接记录里没有留存双方账号，无法自动重试。请重新发起一次交接（系统只处理未完成的项）",
+            422,
+        )
+
+    rows = (
+        await session.execute(
+            select(WeComTransferItem).where(WeComTransferItem.job_id == job_id)
+        )
+    ).scalars().all()
+    retried = 0
+
+    for item in rows:
+        crm_open = item.crm_status in CRM_OPEN_STATUSES
+        wecom_open = item.wecom_status in WECOM_OPEN_STATUSES
+        if not (crm_open or wecom_open):
+            continue
+        retried += 1
+        # ---- CRM 侧：归属还没改过去 ----
+        if crm_open and item.business_id is not None:
+            try:
+                moved = await _retry_move_crm(
+                    session, item=item, handover=handover, takeover=takeover
+                )
+            except AppError as error:
+                item.crm_status = "failed"
+                item.crm_error = error.message
+            else:
+                item.crm_status = "moved" if moved else "skipped"
+                item.crm_error = None
+            item.attempts = (item.attempts or 0) + 1
+            item.updated_at = datetime.now(UTC)
+
+        # ---- 企微侧：关系还没转出去 ----
+        if wecom_open and item.kind == "wecom_relation" and item.business_id is not None:
+            await _retry_move_wecom(
+                session, item=item, handover=handover, takeover=takeover
+            )
+            item.attempts = (item.attempts or 0) + 1
+            item.updated_at = datetime.now(UTC)
+
+    await session.flush()
+    remaining = (
+        await session.execute(
+            select(WeComTransferItem).where(
+                WeComTransferItem.job_id == job_id,
+                or_(
+                    WeComTransferItem.crm_status.in_(CRM_OPEN_STATUSES),
+                    WeComTransferItem.wecom_status.in_(WECOM_OPEN_STATUSES),
+                ),
+            )
+        )
+    ).scalars().all()
+    return {
+        "job_id": job_id,
+        "retried": retried,
+        "remaining": len(remaining),
+    }
+
+
+async def _retry_move_crm(
+    session: AsyncSession, *, item: WeComTransferItem, handover: User, takeover: User
+) -> bool:
+    """重试某一项的 CRM 归属变更。返回是否真的改了。"""
+    from app.modules.order.model import OrderDraft, SalesOrder
+
+    # 每一项都按**它自己被记下的**接手人走：清单里可能逐项调整过，
+    # 重试时不能一律丢给最初那个接管人
+    owner = item.to_owner_id
+    if owner is None:
+        return False
+    if item.kind == "customer":
+        customer = await session.get(Customer, item.business_id)
+        if customer is None or customer.deleted_at is not None:
+            return False
+        await customer_service.transfer_customer(
+            session, _system_user(handover), customer, owner,
+            f"离职继承重试：{handover.name} → {item.to_owner_name or ''}",
+            automatic=True,
+            only_from_owner_id=handover.id,
+        )
+        return True
+    if item.kind == "opportunity":
+        row = await session.get(Opportunity, item.business_id)
+        if row is None or row.deleted_at is not None:
+            return False
+        row.owner_id = owner
+        return True
+    if item.kind == "task":
+        row = await session.get(Task, item.business_id)
+        if row is None:
+            return False
+        row.owner_id = owner
+        return True
+    if item.kind == "sample":
+        row = await session.get(SampleRequest, item.business_id)
+        if row is None:
+            return False
+        row.owner_id = owner
+        return True
+    if item.kind == "order":
+        row = await session.get(SalesOrder, item.business_id)
+        if row is None:
+            return False
+        row.owner_id = owner
+        return True
+    if item.kind == "order_draft":
+        row = await session.get(OrderDraft, item.business_id)
+        if row is None:
+            return False
+        row.owner_id = owner
+        return True
+    return False
+
+
+async def _retry_move_wecom(
+    session: AsyncSession, *, item: WeComTransferItem, handover: User, takeover: User
+) -> bool:
+    """重试某一条企微客户关系的转接。已转过的不会再转（调用方按状态筛选）。"""
+    relation = await session.get(WeComFollowRelationship, item.business_id)
+    if relation is None:
+        item.wecom_status = "skipped"
+        item.wecom_error = "跟进关系已不存在"
+        return False
+    if relation.status == "transferred":
+        # 上一次其实转成功了、只是没来得及落状态：补上状态，不再发一次调用
+        item.wecom_status = "transferred"
+        item.wecom_error = None
+        return True
+    contact = await session.get(WeComExternalContact, relation.external_contact_id)
+    if contact is None:
+        item.wecom_status = "skipped"
+        item.wecom_error = "外部联系人已不存在"
+        return False
+    # 这条关系交给谁：按该项记下的接手人（可能逐项指定过）
+    owner = await session.get(User, item.to_owner_id) if item.to_owner_id else takeover
+    if owner is None:
+        item.wecom_status = "failed"
+        item.wecom_error = "接手人已不存在"
+        return False
+    api = wecom_client.get_client()
+    try:
+        await api.transfer_customer(
+            external_userid=contact.external_userid,
+            handover_userid=handover.wecom_userid or "",
+            takeover_userid=owner.wecom_userid or "",
+        )
+    except Exception as error:
+        item.wecom_status = "failed"
+        item.wecom_error = str(error)[:500]
+        return False
+    relation.status = "transferred"
+    item.wecom_status = "transferred"
+    item.wecom_error = None
+    return True
+
+
+def _system_user(actor: User) -> CurrentUser:
+    """把发起交接的人包装成 `CurrentUser`，供只记 `operator_id` 的调用使用。
+
+    只用于归属变更的留痕（`transfer_customer` 只读 `user.id`），
+    所以权限与数据范围给空集/全量即可 —— 这里不做任何鉴权判断。
+    """
+    return CurrentUser(actor, set(), [], "all")
 
 
 # ---- 同步任务查询（API §10 sync-jobs）------------------------------------
