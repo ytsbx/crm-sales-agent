@@ -126,6 +126,50 @@ const MONEY_FIELDS = new Set([
 ])
 
 /**
+ * 这些是**技术字段**：改了也不该出现在「变更内容」里。
+ *
+ * 实测发现（2026-10-06 在真实数据上复看）：新增明细那条渲染成了
+ * 「id：空 → 5,284；金额：空 → ¥20；产品：空 → 678」——
+ * `id` 是内部编号、`678` 是产品的内部编号，对使用者毫无意义，
+ * 而且会把真正有用的"数量/单价"挤出前四位。
+ */
+const SKIP_FIELDS = new Set([
+  'id',
+  'item_id',
+  'sku_id',
+  'customer_id',
+  'contact_id',
+  'opportunity_id',
+  'owner_id',
+  'reviewer_id',
+  'created_at',
+  'updated_at',
+  'current_version_id',
+  'quote_version_id',
+  'version_id',
+  'converted_inquiry_id',
+])
+
+/** 英文枚举值 → 中文。快照里存的是 `approved` 这种值，直接上屏是机器话。 */
+const VALUE_LABEL: Record<string, string> = {
+  approved: '已通过',
+  rejected: '未通过',
+  pending: '审批中',
+  not_submitted: '未提交',
+  approval_rejected: '审批未通过',
+  pending_approval: '待审批',
+  draft: '草稿',
+  sent: '已发送',
+  accepted: '已接受',
+  declined: '客户拒绝',
+  converted: '已转客户',
+  open: '进行中',
+  closed: '已关闭',
+  active: '启用',
+  disabled: '停用',
+}
+
+/**
  * 各类型「新增 / 删除」时值得说出来的关键字段（按顺序取）。
  * 不是把整个快照倒出来——快照里有二三十个字段，全列出来等于没重点。
  */
@@ -148,6 +192,7 @@ const SUMMARY_FIELDS: Record<string, string[]> = {
 function fmtField(key: string, value: unknown): string {
   if (value === null || value === undefined || value === '') return '空'
   if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'string' && VALUE_LABEL[value]) return VALUE_LABEL[value]
   if (typeof value === 'number') {
     if (MONEY_FIELDS.has(key)) return `¥${value.toLocaleString('zh-CN')}`
     // 比率类存的是小数（0.15 = 15%），直接显示 0.15 会让人以为是 0.15%
@@ -192,6 +237,25 @@ function historySummary(row: PricingHistoryRow): string {
     // 也反查不出东西，只能在这儿把结果说清楚。
     return `批量导入：新增 ${after.created ?? 0} 条、失败 ${after.failed ?? 0} 条、跳过 ${after.skipped ?? 0} 条`
   }
+  if (row.action === 'add_item' || row.action === 'delete_item') {
+    // 明细增删：要直接说清"加了哪一行、数量单价多少"，
+    // 别让 id / sku_id 这些内部编号占掉前四位（实测就会这样）
+    const snap = row.action === 'add_item' ? after : before
+    const parts = ['sku_code', 'sku_name', 'quantity', 'quoted_price', 'amount']
+      .map((key) =>
+        snap[key] === null || snap[key] === undefined || snap[key] === ''
+          ? null
+          : `${HISTORY_FIELD_LABEL[key] ?? key} ${fmtField(key, snap[key])}`,
+      )
+      .filter((item): item is string => Boolean(item))
+    const verb = row.action === 'add_item' ? '新增一行明细' : '删除一行明细'
+    return parts.length ? `${verb}：${parts.join('、')}` : verb
+  }
+  if (row.action === 'accept') return '客户接受本版报价'
+  if (row.action === 'decline' || row.action === 'reject') return '客户拒绝本版报价'
+  if (row.action === 'submit_approval') return '提交审批'
+  if (row.action === 'withdraw_approval') return '撤回审批'
+  if (row.action === 'mark_sent') return '标记为已发送'
   if (row.action === 'clone') {
     const n = after.copied_items ?? after.copied
     return n === null || n === undefined ? '复制了一份明细' : `复制了 ${n} 条明细`
@@ -223,6 +287,8 @@ function historySummary(row: PricingHistoryRow): string {
   const changed: string[] = []
   const keys = [...new Set([...Object.keys(after), ...Object.keys(before)])]
   for (const key of keys) {
+    // 技术字段（内部编号、时间戳）一律不展示：用户看不懂，还会挤掉有用信息
+    if (SKIP_FIELDS.has(key)) continue
     const oldValue = before[key]
     const newValue = after[key]
     if (String(oldValue ?? '') === String(newValue ?? '')) continue
