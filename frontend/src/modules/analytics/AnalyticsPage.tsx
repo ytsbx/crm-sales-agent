@@ -34,6 +34,7 @@ import {
 } from '../../shared/api/analytics'
 import { listDepartments, listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 /** 下钻明细里 record_type 的中文名：直接亮 shipment_batch 这种内部标识没人看得懂。 */
 const DRILLDOWN_TYPE_LABEL: Record<string, string> = {
@@ -1106,7 +1107,7 @@ export default function AnalyticsPage() {
                 { value: 0, label: '全公司' },
                 ...(usersQuery.data?.items ?? []).map((u) => ({ value: u.id, label: u.name })),
               ]}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
               placeholder="选择全公司或某位业务员"
             />
@@ -1126,7 +1127,7 @@ export default function AnalyticsPage() {
                 { value: 0, label: '不限（全公司）' },
                 ...(departmentsQuery.data ?? []).map((d) => ({ value: d.id, label: d.name })),
               ]}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
               placeholder="选部门即设为团队目标"
             />

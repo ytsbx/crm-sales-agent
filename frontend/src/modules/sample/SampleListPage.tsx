@@ -46,6 +46,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 /** 样品（PRD §19 / 03-API §26）。 */
 
@@ -612,7 +613,7 @@ export default function SampleListPage() {
             <Select
               style={{ width: '100%' }}
               placeholder="选择商机（会自动带出客户）"
-              filter
+              filter={optionMatcher}
               showClear
               value={form.opportunity_id}
               onChange={(value) => {
@@ -637,7 +638,7 @@ export default function SampleListPage() {
             <Select
               style={{ width: '100%' }}
               placeholder="选择客户"
-              filter
+              filter={optionMatcher}
               showClear
               value={form.customer_id}
               disabled={Boolean(form.opportunity_id)}
@@ -678,7 +679,7 @@ export default function SampleListPage() {
                   <Select
                     style={{ flex: 1 }}
                     placeholder="选择定制需求（编号）"
-                    filter
+                    filter={optionMatcher}
                     value={item.inquiry_id}
                     onChange={(value) => {
                       const items = [...form.items]
@@ -691,7 +692,7 @@ export default function SampleListPage() {
                   <Select
                     style={{ flex: 1 }}
                     placeholder="选择 SKU"
-                    filter
+                    filter={optionMatcher}
                     value={item.sku_id}
                     onChange={(value) => {
                       const items = [...form.items]
@@ -860,7 +861,7 @@ export default function SampleListPage() {
                     <Select
                       style={{ flex: 1 }}
                       placeholder="选择定制需求（编号）"
-                      filter
+                      filter={optionMatcher}
                       value={newItem.inquiry_id}
                       onChange={(value) => setNewItem({ ...newItem, inquiry_id: value as number })}
                       optionList={inquiryOptions}
@@ -869,7 +870,7 @@ export default function SampleListPage() {
                     <Select
                       style={{ flex: 1 }}
                       placeholder="追加 SKU"
-                      filter
+                      filter={optionMatcher}
                       value={newItem.sku_id}
                       onChange={(value) => setNewItem({ ...newItem, sku_id: value as number })}
                       optionList={skuOptions}

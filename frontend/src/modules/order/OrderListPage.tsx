@@ -26,6 +26,7 @@ import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '销售订单', itemKey: 'orders' },
@@ -447,7 +448,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                   value: item.id,
                   label: item.name,
                 }))}
-                filter
+                filter={optionMatcher}
                 style={{ width: '100%' }}
               />
             </div>
@@ -461,7 +462,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                   value: item.id,
                   label: item.name,
                 }))}
-                filter
+                filter={optionMatcher}
                 style={{ width: '100%' }}
               />
             </div>
@@ -484,7 +485,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                       value: sku.id,
                       label: `${sku.sku_code} · ${sku.product_name ?? ''} ${sku.specification ?? ''}`,
                     }))}
-                    filter
+                    filter={optionMatcher}
                     style={{ width: '100%' }}
                   />
                   <Input

@@ -20,6 +20,7 @@ import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/ag
 import { usePermissions } from '../../shared/hooks/permissions'
 import AgentInsight from '../../shared/components/AgentInsight'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'primary' | 'danger' | 'muted' }) {
   const color = tone === 'primary' ? 'var(--crm-primary)' : tone === 'danger' ? 'var(--crm-error)' : 'var(--crm-text)'
@@ -159,7 +160,7 @@ export default function PricingPage() {
                   value: item.id,
                   label: `${item.name}（${item.level ?? '-'} 级）`,
                 }))}
-                filter
+                filter={optionMatcher}
                 showClear
                 style={{ width: '100%' }}
               />
@@ -174,7 +175,7 @@ export default function PricingPage() {
                   value: sku.id,
                   label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
                 }))}
-                filter
+                filter={optionMatcher}
                 style={{ width: '100%' }}
               />
             </div>

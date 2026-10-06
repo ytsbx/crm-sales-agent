@@ -31,6 +31,7 @@ import {
 } from '../../shared/api/approval'
 import { listQuotes, listQuoteVersions } from '../../shared/api/quote'
 import SectionCard from '../../shared/components/SectionCard'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 
@@ -538,7 +539,7 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
           }}
           placeholder="选报价单"
           style={{ width: 280 }}
-          filter
+          filter={optionMatcher}
           optionList={(quotesQuery.data?.items ?? []).map((q) => ({
             value: q.id,
             label: `${q.quote_no}（${q.customer_name ?? '-'}）`,

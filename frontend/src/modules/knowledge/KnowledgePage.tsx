@@ -42,6 +42,7 @@ import {
 } from '../../shared/api/dingtalk'
 import { reportOperationTiming } from '../../shared/api/analytics'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 const STATUS_TONE: Record<string, TagColor> = {
@@ -582,7 +583,7 @@ export default function KnowledgePage() {
                   label: selectedOpportunity.data.customer_name ?? `客户 #${selectedOpportunity.data.customer_id}`,
                 }] as const] : []),
               ]).values())}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
               showClear
               placeholder="关联客户"

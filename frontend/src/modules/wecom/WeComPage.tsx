@@ -30,6 +30,7 @@ import {
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 /**
  * 企业微信待归一页面（04-UI §5，布局照设计稿：左待处理 / 中企微详情 / 右候选客户）。
@@ -708,7 +709,7 @@ export default function WeComPage() {
                   value: user.id,
                   label: `${user.name}（${user.username}）`,
                 }))}
-                filter
+                filter={optionMatcher}
                 style={{ width: '100%' }}
               />
             </div>
@@ -723,7 +724,7 @@ export default function WeComPage() {
                   value: user.id,
                   label: `${user.name}（${user.username}）`,
                 }))}
-                filter
+                filter={optionMatcher}
                 style={{ width: '100%' }}
               />
             </div>
@@ -794,7 +795,7 @@ export default function WeComPage() {
                               value={transferAssignees[key]}
                               placeholder={`跟随 ${transferPreview.takeover.name}`}
                               showClear
-                              filter
+                              filter={optionMatcher}
                               onChange={(value) =>
                                 setTransferAssignees((prev) => {
                                   const next = { ...prev }

@@ -48,6 +48,7 @@ import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/
 import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '用户', itemKey: 'users' },
@@ -1610,7 +1611,7 @@ export default function SettingsPage() {
             </div>
             <Select
               multiple
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
               placeholder="搜索并选择权限"
               value={roleForm.permission_codes}

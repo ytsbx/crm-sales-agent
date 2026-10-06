@@ -16,6 +16,7 @@ import {
   type InsightConvertResult,
   type ProductInsightRow,
 } from '../../shared/api/insight'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const SOURCES = ['展会', '1688/阿里', '客户反馈', '竞品调研', '社媒', '供应商推荐', '其他']
 const STATUS_TONE: Record<string, 'grey' | 'orange' | 'green' | 'red' | 'blue'> = {
@@ -490,7 +491,7 @@ export default function ProductInsightsPage() {
             <Select
               style={{ width: '100%' }}
               placeholder="搜客户名称（不选就是内部开发需求）"
-              filter
+              filter={optionMatcher}
               remote
               showClear
               loading={convertCustomers.isFetching}

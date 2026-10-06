@@ -49,6 +49,7 @@ import DecisionMakerCard from '../common/DecisionMakerCard'
 import OpportunityRecords from './OpportunityRecords'
 import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -728,7 +729,7 @@ export default function OpportunityDetailPage() {
                 label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
               }))}
               loading={skusQuery.isLoading}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
             />
           </div>

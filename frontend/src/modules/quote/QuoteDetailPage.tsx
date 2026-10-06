@@ -34,6 +34,7 @@ import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const STATUS_TONE: Record<string, TagTone> = {
   draft: 'grey',
@@ -796,7 +797,7 @@ export default function QuoteDetailPage() {
                 <Select
                   style={{ width: 240 }}
                   placeholder="选择定制需求"
-                  filter
+                  filter={optionMatcher}
                   value={row.inquiry_id}
                   onChange={(value) => patchRow(index, { inquiry_id: value as number })}
                   optionList={inquiryOptions}
@@ -805,7 +806,7 @@ export default function QuoteDetailPage() {
                 <Select
                   style={{ width: 240 }}
                   placeholder="选择 SKU"
-                  filter
+                  filter={optionMatcher}
                   value={row.sku_id}
                   onChange={(value) => patchRow(index, { sku_id: value as number })}
                   optionList={skuOptions}

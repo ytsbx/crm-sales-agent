@@ -18,6 +18,7 @@ import type { TagTone } from '../../shared/types'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -300,7 +301,7 @@ export default function OpportunityListPage() {
                 label: item.name,
               }))}
               loading={customersQuery.isLoading}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
             />
           </div>

@@ -33,6 +33,7 @@ import {
   type ContractSignedFile,
   type ContractTemplate,
 } from '../../shared/api/contract'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -550,7 +551,7 @@ export default function DocumentsPage() {
             <Select
               style={{ width: '100%' }}
               placeholder="搜索客户名称（服务端搜索，不止前 200 个）"
-              filter
+              filter={optionMatcher}
               // remote：不在本地过滤，把关键字交给服务端查 —— 客户上千条时本地那点数据不够用
               remote
               loading={customersQuery.isFetching}
@@ -578,7 +579,7 @@ export default function DocumentsPage() {
             <Select
               style={{ width: '100%' }}
               placeholder={generateForm.customer_id ? '这张客户下的正式订单' : '先选客户'}
-              filter
+              filter={optionMatcher}
               disabled={!generateForm.customer_id}
               loading={genOrdersQuery.isFetching}
               value={generateForm.order_id}
@@ -599,7 +600,7 @@ export default function DocumentsPage() {
             <Select
               style={{ width: '100%' }}
               placeholder={generateForm.customer_id ? '这张客户下的报价单' : '先选客户'}
-              filter
+              filter={optionMatcher}
               disabled={!generateForm.customer_id}
               loading={genQuotesQuery.isFetching}
               value={generateForm.quote_id}

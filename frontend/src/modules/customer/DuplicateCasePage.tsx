@@ -20,6 +20,7 @@ import {
   type DuplicateCase,
 } from '../../shared/api/customer'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 // 与后端 DECISION_LABEL 同一套口径：没有"按建档时间自动判"这一项
 const DECISION_OPTIONS = [
@@ -213,7 +214,7 @@ export default function DuplicateCasePage() {
           {form.decision === 'assign_new' && (
             <Select
               placeholder="指定负责人"
-              filter
+              filter={optionMatcher}
               value={form.owner_id}
               onChange={(v) => setForm({ ...form, owner_id: v as number })}
               optionList={(usersQuery.data?.items ?? []).map((u) => ({

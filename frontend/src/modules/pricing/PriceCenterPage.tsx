@@ -34,6 +34,7 @@ import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '客户查价', itemKey: 'lookup' },
@@ -314,7 +315,7 @@ export default function PriceCenterPage() {
                     value: item.id,
                     label: `${item.name}${item.level ? `（${item.level} 级）` : ''}`,
                   }))}
-                  filter
+                  filter={optionMatcher}
                   style={{ width: 280 }}
                 />
                 <Select
@@ -322,7 +323,7 @@ export default function PriceCenterPage() {
                   value={lookupSkuId}
                   onChange={(value) => setLookupSkuId(value as number)}
                   optionList={skuOptions}
-                  filter
+                  filter={optionMatcher}
                   style={{ width: 360 }}
                 />
                 <Input
@@ -396,7 +397,7 @@ export default function PriceCenterPage() {
                       value: item.id,
                       label: `${item.title ?? '商机'}（${item.customer_name ?? ''}）`,
                     }))}
-                    filter
+                    filter={optionMatcher}
                     style={{ width: 320 }}
                   />
                   {/* 同一个页面里同款毛病，一起修：禁用按钮外面包一层，
@@ -551,7 +552,7 @@ export default function PriceCenterPage() {
                   value={costSkuId}
                   onChange={(value) => setCostSkuId(value as number)}
                   optionList={skuOptions}
-                  filter
+                  filter={optionMatcher}
                   style={{ width: 360 }}
                 />
                 {canManage && (
@@ -851,7 +852,7 @@ export default function PriceCenterPage() {
                     setHistoryPage(1)
                   }}
                   optionList={skuOptions}
-                  filter
+                  filter={optionMatcher}
                   showClear
                   style={{ width: 320 }}
                 />
@@ -971,7 +972,7 @@ export default function PriceCenterPage() {
               value={ruleForm.sku_id ?? undefined}
               onChange={(value) => setRuleForm({ ...ruleForm, sku_id: value as number })}
               optionList={skuOptions}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
             />
           </div>
@@ -1080,7 +1081,7 @@ export default function PriceCenterPage() {
               value={customerPriceForm.customer_id ?? undefined}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, customer_id: value as number })}
               optionList={(customersQuery.data?.items ?? []).map((item) => ({ value: item.id, label: item.name }))}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
             />
           </div>
@@ -1090,7 +1091,7 @@ export default function PriceCenterPage() {
               value={customerPriceForm.sku_id ?? undefined}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, sku_id: value as number })}
               optionList={skuOptions}
-              filter
+              filter={optionMatcher}
               style={{ width: '100%' }}
             />
           </div>

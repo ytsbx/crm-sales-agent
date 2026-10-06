@@ -17,6 +17,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import RulesPanel from './RulesPanel'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '待我审批', itemKey: 'pending' },
@@ -243,7 +244,7 @@ export default function ApprovalPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <Select
             placeholder="选择有资格处理当前审批的接收人"
-            filter
+            filter={optionMatcher}
             style={{ width: '100%' }}
             value={transferUserId}
             onChange={(v) => setTransferUserId(v as number)}

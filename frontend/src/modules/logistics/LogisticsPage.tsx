@@ -13,6 +13,7 @@ import {
 } from '../../shared/api/pricing'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 /**
  * 物流试算（PRD §14 / 03-API §19）。
@@ -243,7 +244,7 @@ export default function LogisticsPage() {
                   <Select
                     style={{ width: '100%' }}
                     placeholder="选择 SKU"
-                    filter
+                    filter={optionMatcher}
                     value={skuId}
                     onChange={(value) => setSkuId(value as number)}
                     optionList={(skusQuery.data ?? []).map((sku) => ({

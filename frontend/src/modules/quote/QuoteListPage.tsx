@@ -11,6 +11,7 @@ import { listOpportunities } from '../../shared/api/opportunity'
 import { createQuote, listQuotes, type Quote } from '../../shared/api/quote'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
@@ -223,7 +224,7 @@ export default function QuoteListPage() {
             value: item.id,
             label: `${item.title}（${item.customer_name ?? ''}）`,
           }))}
-          filter
+          filter={optionMatcher}
           loading={opportunitiesQuery.isLoading}
           style={{ width: '100%' }}
         />

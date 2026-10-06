@@ -33,6 +33,7 @@ import { listOrders } from '../../shared/api/order'
 import { listSamples } from '../../shared/api/sample'
 import { listCustomers } from '../../shared/api/customer'
 import { getCustomerTimeline } from '../../shared/api/followup'
+import { optionMatcher } from '../../shared/components/optionMatch'
 
 const STAGES = ['understanding', 'quote', 'sample', 'first_order', 'repeat', 'stable']
 /** 证据类别 → 详情页的跳转路径（点开原单核对）。 */
@@ -562,7 +563,7 @@ export default function CasesPage() {
             <Select
               style={{ width: '100%' }}
               placeholder="选择客户"
-              filter
+              filter={optionMatcher}
               showClear
               value={form.customer_id}
               onChange={(v) =>
@@ -668,7 +669,7 @@ export default function CasesPage() {
                     style={{ flex: 1 }}
                     placeholder="选择这个客户的报价单 / 订单 / 打样单"
                     value={evidencePick}
-                    filter
+                    filter={optionMatcher}
                     onChange={(v) => setEvidencePick(v as string)}
                     optionList={[
                       ...(quotesQuery.data?.items ?? []).map((q) => ({
