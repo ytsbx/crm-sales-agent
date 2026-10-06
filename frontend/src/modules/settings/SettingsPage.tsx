@@ -1430,7 +1430,14 @@ export default function SettingsPage() {
                   ]}
                   dataSource={settingsQuery.data ?? []}
                   loading={settingsQuery.isLoading}
-                  rowKey="id"
+                  // 用 key 而不是 id 当行标识（2026-10-06 修）：
+                  // `/settings` 返回的行里有一批是**代码内置默认项**，库里没有对应
+                  // 记录，id 是 null。Semi 对 null 的 rowKey 会**退回数组下标**，
+                  // 于是下标 2/10/11/13/14/15 跟同一张表里真实存在的 id 撞车，
+                  // 控制台刷 36 条 "two children with the same key"，
+                  // 界面上则可能认错行（保存后不刷新/串行）。配置项的 key 唯一且
+                  // 必填，保存接口本来就是按 key 走的，用它当行标识天然不会撞。
+                  rowKey="key"
                   pagination={false}
                 />
               </div>
