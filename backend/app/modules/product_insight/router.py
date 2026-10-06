@@ -17,7 +17,9 @@
    想让产品/开发岗评审，原来只能给他开主管角色，而那会把数据范围一起放大。
 """
 
+import json
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
@@ -33,7 +35,9 @@ from app.modules.inquiry.model import CustomInquiry
 from app.modules.product_insight.model import (
     FROZEN_CONTENT_FIELDS,
     INSIGHT_STATUS_LABEL,
+    ROUND_RESULT_LABEL,
     ProductInsight,
+    ProductInsightRound,
 )
 from app.modules.product_insight.schema import (
     InsightConvert,
@@ -50,6 +54,31 @@ router = APIRouter(tags=["ProductInsight"])
 _FROZEN_LABEL = "标题、市场来源、目标客户、产品方向、假设卖点、价格假设、评估结论"
 
 
+def _normalize_for_compare(value):
+    """把一个字段值归一成"人眼看上去一样就是一样"的形态（返工单 P1-4）。
+
+    用来判断"这次到底改了没有"。要归一三类差异，它们都不是真的改动：
+    · 字符串的首尾空白 —— `"  标题"` 与 `"标题"` 是同一个标题；
+    · 数字类型 —— 库里存的是 `Decimal("12.30")`，前端传 `12.3`，直接比不相等；
+    · 空值 —— `None` 与 `""` 对"内容有没有变"是一回事。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return Decimal(str(value)).normalize()
+        except (InvalidOperation, ValueError):
+            return str(value)
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    return value
+
+
 def _can_review(user) -> bool:
     """能评审新品洞察（第五批 §6.3 口径已确认：指定产品/开发评审人 + 主管按授权）。
 
@@ -57,6 +86,9 @@ def _can_review(user) -> bool:
     想让产品/开发岗评审就得给他开主管角色——主管的数据范围是"本部门及下级"，
     等于借评审之名拿到了整个部门的客户、报价、订单可见权。
     权限码授的是"能不能评审"这一件事，与看多少数据无关。
+
+    ⚠️ 它只回答"能不能看见"（`_get_visible` 用）。**写入口不许用它放行** ——
+    见 `_get_writable`（返工单 P1-3）。
     """
     return user.has("product:review")
 
@@ -99,16 +131,169 @@ async def _owner_names(session: AsyncSession, rows: list[ProductInsight]) -> dic
     }
 
 
+def _content_snapshot(row: ProductInsight) -> dict:
+    """这一轮"报的是什么"：只取受评审约束的那几项（返工单 P1-4）。
+
+    存快照而不是只存"改了哪几个字段名"——事后要能回答"当时批准的是这一份内容"，
+    光记字段名答不了。价格转成 float 是为了 JSON 能直接存（`Decimal` 不是 JSON 类型）。
+    """
+    return {
+        field: (
+            float(value)
+            if isinstance(value, Decimal)
+            else (value if isinstance(value, (str, int, float, bool, list, dict)) else None)
+        )
+        for field in sorted(FROZEN_CONTENT_FIELDS)
+        for value in [getattr(row, field)]
+    }
+
+
+async def _round_entry(
+    session: AsyncSession, *, insight_id: int, round_no: int
+) -> ProductInsightRound | None:
+    return (
+        await session.execute(
+            select(ProductInsightRound)
+            .where(
+                ProductInsightRound.insight_id == insight_id,
+                ProductInsightRound.round == round_no,
+            )
+            .with_for_update()
+        )
+    ).scalars().first()
+
+
+async def _record_round_submit(
+    session: AsyncSession, *, row: ProductInsight, user, when: datetime
+) -> None:
+    """落这一轮的"提交"部分。
+
+    同一轮重复提交（带回同一个 `request_key` 的弱网重试）覆盖而不新增行：
+    唯一约束 `(insight_id, round)` 是底线，覆盖是本意——重试不该在评审记录里
+    留下两条一模一样的"第 2 轮提交"。
+    """
+    round_no = row.review_round or 1
+    entry = await _round_entry(session, insight_id=row.id, round_no=round_no)
+    if entry is None:
+        entry = ProductInsightRound(
+            insight_id=row.id, round=round_no, created_at=when
+        )
+        session.add(entry)
+    entry.content_snapshot = _content_snapshot(row)
+    entry.submitted_by = user.id
+    entry.submitted_at = when
+    # 这一次提交之前那一轮的结果不再适用于这一份内容
+    entry.review_result = None
+    entry.reviewer_id = None
+    entry.reviewed_at = None
+    entry.review_note = None
+    await session.flush()
+
+
+async def _record_round_review(
+    session: AsyncSession, *, row: ProductInsight, user, approve: bool,
+    note: str | None, when: datetime,
+) -> None:
+    """在当轮记录上补"审核结果"部分。
+
+    找不到当轮记录时补建一行（只带审核结果）：这个功能上线之前提交的那些洞察
+    没有提交留痕，不能因此把结论丢掉 —— 结论比内容更不可再生。
+    """
+    round_no = row.review_round or 1
+    entry = await _round_entry(session, insight_id=row.id, round_no=round_no)
+    if entry is None:
+        entry = ProductInsightRound(
+            insight_id=row.id, round=round_no, created_at=when
+        )
+        session.add(entry)
+    entry.review_result = "approved" if approve else "rejected"
+    entry.reviewer_id = user.id
+    entry.reviewed_at = when
+    entry.review_note = note
+    await session.flush()
+
+
+async def _serialize_rounds(session: AsyncSession, insight_id: int) -> list[dict]:
+    """逐轮记录（提交内容 + 审核结果 + 审核人 + 时间），供前端展示。"""
+    entries = (
+        await session.execute(
+            select(ProductInsightRound)
+            .where(ProductInsightRound.insight_id == insight_id)
+            .order_by(ProductInsightRound.round)
+        )
+    ).scalars().all()
+    person_ids = set()
+    for entry in entries:
+        person_ids |= {entry.submitted_by, entry.reviewer_id} - {None}
+    names: dict[int, str] = {}
+    if person_ids:
+        names = {
+            int(uid): name
+            for uid, name in (
+                await session.execute(
+                    select(User.id, User.name).where(User.id.in_(person_ids))
+                )
+            ).all()
+        }
+    return [
+        {
+            "round": entry.round,
+            "content": entry.content_snapshot,
+            "submitted_by": entry.submitted_by,
+            "submitted_by_name": names.get(entry.submitted_by) if entry.submitted_by else None,
+            "submitted_at": entry.submitted_at,
+            "review_result": entry.review_result,
+            "review_result_label": (
+                ROUND_RESULT_LABEL.get(entry.review_result) if entry.review_result else None
+            ),
+            "reviewer_id": entry.reviewer_id,
+            "reviewer_name": names.get(entry.reviewer_id) if entry.reviewer_id else None,
+            "reviewed_at": entry.reviewed_at,
+            "review_note": entry.review_note,
+        }
+        for entry in entries
+    ]
+
+
+async def _assert_assignee(session: AsyncSession, user, owner_id: int | None) -> None:
+    """校验"要挂到这个负责人名下"这件事能不能做（返工单 P1-3）。
+
+    三条：人存在、在职、以及**在我能看得到的范围内**（我不能把东西塞给一个
+    我看不见的人 —— 那样既等于替他建了东西，又马上从我自己的列表里消失）。
+    """
+    if owner_id is None:
+        return
+    target = await session.get(User, owner_id)
+    if target is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+    if target.status != "active":
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用，不能接收洞察", 422
+        )
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None and owner_id not in owner_ids:
+        raise AppError(
+            ErrorCode.FORBIDDEN, "不能把洞察交给数据范围之外的人", 403
+        )
+
+
 async def _get_visible(
     session: AsyncSession, user, insight_id: int, *, for_update: bool = False
 ) -> ProductInsight:
-    """取可见的洞察；`for_update` 时加行锁（转换要用，防并发双击转出两条需求）。"""
+    """取**可读**的洞察；`for_update` 时加行锁（转换要用，防并发双击转出两条需求）。
+
+    这个函数只回答"**能不能看见**"。评审人要能审别人的洞察，所以
+    `product:review` 在这里放行（他仍然看不到别人的客户与报价）。
+    ⚠️ 但**不能拿它当写入口的取数**：能评审不等于能改别人的草稿。
+    写入口一律用 `_get_writable`（返工单 P1-3）。
+    """
     if for_update:
         row = (
             await session.execute(
                 select(ProductInsight)
                 .where(ProductInsight.id == insight_id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
     else:
@@ -123,6 +308,34 @@ async def _get_visible(
     if owner_ids is not None and row.owner_id not in owner_ids:
         # 同上：数据范围之外是 403，不是 400
         raise AppError(ErrorCode.FORBIDDEN, "不在你的数据范围内", 403)
+    return row
+
+
+async def _get_writable(
+    session: AsyncSession, user, insight_id: int, *, for_update: bool = False
+) -> ProductInsight:
+    """取**可写**的洞察：编辑、提交、删除、转换都走这里（返工单 P1-3）。
+
+    与 `_get_visible` 的唯一区别是**不给评审权限开后门**。
+
+    为什么必须分开：`_get_visible` 里那句"有 `product:review` 就直接返回"
+    本来只为"评审人能看到别人的单子"，但编辑 / 提交 / 删除 / 转换四个写入口
+    也都复用了它 —— 于是"仅本人范围 + 持有产品管理和评审权限"的账号，
+    可以**直接改掉其他人名下的草稿**（实测复现）。
+    评审要看别人的东西是职责，改别人的东西不是。
+
+    数据范围之外是 **403**（不是 400）：这是权限问题，前端该提示"你改不了"，
+    而不是让操作者去检查自己传的参数。
+    """
+    row = await _get_visible(session, user, insight_id, for_update=for_update)
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None and row.owner_id not in owner_ids:
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "这条洞察的负责人不在你的数据范围内，不能修改"
+            "（有评审权限可以看，但改不了别人的）",
+            403,
+        )
     return row
 
 
@@ -158,7 +371,15 @@ async def get_insight(
 ):
     row = await _get_visible(session, user, insight_id)
     names = await _owner_names(session, [row])
-    return ok(_serialize(row, owner_name=names.get(row.owner_id)))
+    payload = _serialize(row, owner_name=names.get(row.owner_id))
+    # 逐轮评审记录一起带上（列表里那一行只有最后一轮的值，逐轮的要落表才留得住）
+    payload["rounds"] = await _serialize_rounds(session, row.id)
+    # 能不能改这条：前端据此决定按钮显不显示。**后端仍然逐入口再判一次** ——
+    # 藏按钮不是权限（返工单 P1-3 明确说了不能只靠前端）。
+    owner_ids = await scoped_owner_ids(session, user)
+    payload["can_edit"] = owner_ids is None or row.owner_id in owner_ids
+    payload["can_review"] = _can_review(user) and row.status == "under_review"
+    return ok(payload)
 
 
 @router.post("/product-insights")
@@ -176,6 +397,10 @@ async def create_insight(
     # 而列表与详情都按 owner_id 过滤，前端又没传这个字段，于是只能由后端兜住。
     if not data.get("owner_id"):
         data["owner_id"] = user.id
+    # 传了负责人就要校验一遍（返工单 P1-3：创建/修改负责人时要校验接收人及分配授权）。
+    # 不校验的话，把 owner_id 填成数据范围外的人，这条洞察建完立刻从自己的列表里
+    # 消失、还挂到了一个他管不着的人头上。
+    await _assert_assignee(session, user, data.get("owner_id"))
     row = ProductInsight(
         **data,
         status="draft",
@@ -212,7 +437,9 @@ async def update_insight(
     会被跳过，界面上看着清空了、库里旧值还在（§6.2 已确认的缺陷）。
     `exclude_unset=True` 拿到的只有"这次真的传了的字段"。
     """
-    row = await _get_visible(session, user, insight_id)
+    # 加行锁：编辑与「提交/审核/转换」会互相覆盖（返工单 P1-4）。
+    # 不加锁时，一个人正在审、另一个人同时改了内容，审的就成了旧内容。
+    row = await _get_writable(session, user, insight_id, for_update=True)
     if row.status == "converted":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已转询价线索的记录不可再修改")
 
@@ -220,6 +447,24 @@ async def update_insight(
     if not changes:
         return ok(_serialize(row), "没有改动")
 
+    # 改负责人要校验接收人（在职 + 在可分配范围内），与创建同一套判据
+    if "owner_id" in changes:
+        await _assert_assignee(session, user, changes["owner_id"])
+
+    # **只留下值确实变了的字段**（返工单 P1-4）。
+    # 原来只看"请求里带没带这些字段名"：把标题原样再提交一遍，也会被当成改了内容、
+    # 把已通过的记录退回待评审、轮次 +1（实测复现）。评审记录上就多出一轮
+    # 内容完全相同的"重审"，事后看的人以为真改了什么。
+    # 判据改成比较**值**：和库里一模一样就当作没改。
+    effective = {
+        field: value
+        for field, value in changes.items()
+        if _normalize_for_compare(getattr(row, field)) != _normalize_for_compare(value)
+    }
+    if not effective:
+        return ok(_serialize(row), "没有改动")
+
+    changes = effective
     touched = sorted(set(changes) & FROZEN_CONTENT_FIELDS)
 
     if row.status == "under_review" and touched:
@@ -275,7 +520,7 @@ async def submit_insight(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await _get_visible(session, user, insight_id)
+    row = await _get_writable(session, user, insight_id, for_update=True)
     request_key = payload.request_key if payload else None
 
     # 弱网重试：**带了同一个键**且已经在待评审 → 幂等返回（不加轮次、不重复留痕）。
@@ -293,6 +538,10 @@ async def submit_insight(
         row.review_round = (row.review_round or 1) + 1
     row.status = "under_review"
     row.review_request_key = request_key
+
+    # **把这一轮报到的东西记下来**（返工单 P1-4）：只记轮次号没用，
+    # 事后要能回答"第 2 轮批的是哪一份内容"。快照与"冻结字段"同一份口径。
+    await _record_round_submit(session, row=row, user=user, when=datetime.now(UTC))
 
     await write_audit(
         session, operator_id=user.id, action="submit",
@@ -320,14 +569,28 @@ async def review_insight(
             "没有评审新品洞察的权限（需要 product:review）",
             403,
         )
-    row = await _get_visible(session, user, insight_id)
+    # 加行锁：两个人同时点「通过/驳回」时，后到的会等前面提交完再读，
+    # 读到的是已审状态 → 被下面的状态检查挡下，只有一个能成功。
+    row = await _get_visible(session, user, insight_id, for_update=True)
     if row.status != "under_review":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该记录不在待评审状态")
 
+    reviewed_at = datetime.now(UTC)
     row.status = "approved" if payload.approve else "rejected"
     row.reviewer_id = user.id
-    row.reviewed_at = datetime.now(UTC)
+    row.reviewed_at = reviewed_at
     row.review_note = payload.note
+    # 在**当轮**记录上补审核结果（返工单 P1-4）：列表里那一行 `review_note`
+    # 只有最后一轮的值，逐轮结论得落在轮次表上，否则第二轮通过之后
+    # 第一轮是谁为什么否的就查不回来了。
+    await _record_round_review(
+        session,
+        row=row,
+        user=user,
+        approve=payload.approve,
+        note=payload.note,
+        when=reviewed_at,
+    )
     await write_audit(
         session, operator_id=user.id, action="review", business_type="product_insight",
         business_id=row.id,
@@ -340,6 +603,20 @@ async def review_insight(
     )
     await session.commit()
     return ok(_serialize(row), "评审完成")
+
+
+@router.get("/product-insights/{insight_id}/rounds")
+async def list_insight_rounds(
+    insight_id: int,
+    user: CurrentUser = Depends(require_permission("product:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """逐轮评审记录（返工单 P1-4）：每一轮报的内容、谁批的、什么时候、结论。
+
+    读入口用 `_get_visible`（评审人要能看别人那条的评审史）。
+    """
+    await _get_visible(session, user, insight_id)
+    return ok(await _serialize_rounds(session, insight_id))
 
 
 @router.post("/product-insights/{insight_id}/convert")
@@ -366,7 +643,7 @@ async def convert_insight(
 
     价格假设仍只作为线索里的参考文字，**不写入任何价格规则**。
     """
-    row = await _get_visible(session, user, insight_id, for_update=True)
+    row = await _get_writable(session, user, insight_id, for_update=True)
 
     if row.status == "converted":
         # 幂等：已经转过了就把既有目标还回去（重试、连点两次都走这里）。
@@ -470,7 +747,7 @@ async def delete_insight(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await _get_visible(session, user, insight_id)
+    row = await _get_writable(session, user, insight_id, for_update=True)
     if row.status == "converted":
         # 删了之后需求那边的 source_insight_id 就指向一个查不到的行，
         # 来源追溯直接断掉（§6.1(6)）。要停用应该去需求那边归档。

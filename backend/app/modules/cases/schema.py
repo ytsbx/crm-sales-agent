@@ -1,6 +1,21 @@
 """案例接口请求体。"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CaseEvidenceItem(BaseModel):
+    """案例的一条证据单据（§3.7：一个案例可以有多张单据支撑）。
+
+    `kind` 取值见后端 `cases/model.CASE_EVIDENCE_KINDS`
+    （`quote` / `order` / `sample` / `opportunity`）。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str
+    business_id: int
+    label: str | None = Field(None, max_length=128)
+    note: str | None = Field(None, max_length=255)
 
 
 class CaseCreate(BaseModel):
@@ -22,6 +37,8 @@ class CaseCreate(BaseModel):
     order_id: int | None = None
     sample_id: int | None = None
     opportunity_id: int | None = None
+    #: 证据单据列表（多条）。传了就以它为准，旧的四列自动同步成每类的第一条。
+    evidences: list[CaseEvidenceItem] = Field(default_factory=list)
 
 
 class CaseUpdate(BaseModel):
@@ -45,6 +62,9 @@ class CaseUpdate(BaseModel):
     order_id: int | None = None
     sample_id: int | None = None
     opportunity_id: int | None = None
+    #: 证据单据列表（多条）。**传了就整体替换**（不是追加）——
+    #: 界面提交的是"这一版挂了哪几张单"，逐条增删反而容易漏。
+    evidences: list[CaseEvidenceItem] | None = None
 
 
 class CaseReview(BaseModel):

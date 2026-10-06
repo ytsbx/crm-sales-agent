@@ -24,14 +24,24 @@ import {
   reviewCase,
   submitCase,
   updateCase,
+  type CaseEvidenceItem,
   type CaseRow,
 } from '../../shared/api/cases'
 import { listQuotes } from '../../shared/api/quote'
 import { listOrders } from '../../shared/api/order'
 import { listSamples } from '../../shared/api/sample'
 import { listCustomers } from '../../shared/api/customer'
+import { getCustomerTimeline } from '../../shared/api/followup'
 
 const STAGES = ['understanding', 'quote', 'sample', 'first_order', 'repeat', 'stable']
+/** 证据类别 → 详情页的跳转路径（点开原单核对）。 */
+const EVIDENCE_PATH: Record<string, string> = {
+  quote: '/quotes/',
+  order: '/orders/',
+  sample: '/samples/',
+  opportunity: '/opportunities/',
+}
+
 const STAGE_LABEL: Record<string, string> = {
   understanding: '了解', quote: '报价', sample: '打样',
   first_order: '首单', repeat: '返单', stable: '稳定复购',
@@ -45,9 +55,13 @@ const STATUS_TONE: Record<string, 'green' | 'grey' | 'orange' | 'red'> = {
 const EMPTY_FORM = {
   title: '',
   customer_id: undefined as number | undefined,
+  // 旧字段保留（后端仍下发、仍接受），但界面已改成证据列表：
+  // 打开老案例时用 `evidences` 回填，提交时传 `evidences`。
   quote_id: undefined as number | undefined,
   order_id: undefined as number | undefined,
   sample_id: undefined as number | undefined,
+  /** 证据单据列表（**可以多条**，§3.7：一个案例常由多张单据支撑） */
+  evidences: [] as CaseEvidenceItem[],
   customer_label: '',
   industry: '',
   product_line: '',
@@ -71,15 +85,21 @@ export default function CasesPage() {
   const [filters, setFilters] = useState({
     keyword: '',
     status: undefined as string | undefined,
-    // 第四批 §5.1.6：下面这几个筛选后端早就支持（标签之外），此前只是前端没接通，
+    // 第四批 §5.1.6：下面这几个筛选此前只是前端没接通，
     // 看起来像"只能按关键词和状态搜"。
     industry: undefined as string | undefined,
     product_line: undefined as string | undefined,
     stage: undefined as string | undefined,
     problem_tags: undefined as string | undefined,
+    // **客户类型**（企业/个人）：取自关联客户，与「行业」不是一回事。
+    // 方案 §3.7 的检索维度是"客户类型、产品线、阶段及问题"——
+    // 之前拿「行业」顶替了客户类型，两个筛选合一，等于少一个维度。
+    customer_type: undefined as string | undefined,
   })
   const [page, setPage] = useState(1)
   const [includeHistory, setIncludeHistory] = useState(false)
+  //: 「按单据挑」那个下拉当前选中的值（格式 `kind:id`），点「添加」才进证据列表
+  const [evidencePick, setEvidencePick] = useState<string | undefined>(undefined)
 
   // 改筛选条件要回到第 1 页：否则筛完还停在第 5 页，翻出来是空的，
   // 看着像"没有符合条件的案例"，其实只是页码越界了。
@@ -159,6 +179,47 @@ export default function CasesPage() {
     queryFn: () => listSamples({ customer_id: evidenceCustomerId, page_size: 100 }),
     enabled: Boolean(evidenceCustomerId),
   })
+  // 表单里那份时间线（「从时间线挑」用）：跟着表单选的客户走
+  const formTimelineQuery = useQuery({
+    queryKey: ['case-form-timeline', evidenceCustomerId],
+    queryFn: () => getCustomerTimeline(evidenceCustomerId!),
+    enabled: Boolean(evidenceCustomerId),
+  })
+
+  /** 把 `kind:id` 加进证据列表（已加过的忽略，后端也有唯一约束兜底）。 */
+  const addEvidence = (token: string) => {
+    const [kind, rawId] = token.split(':')
+    const businessId = Number(rawId)
+    if (!kind || !Number.isFinite(businessId)) return
+    const labels: Record<string, string> = {
+      quote: '报价单',
+      order: '销售订单',
+      sample: '打样单',
+      opportunity: '商机',
+    }
+    setForm((current) => {
+      if (
+        current.evidences.some(
+          (row) => row.kind === kind && row.business_id === businessId,
+        )
+      ) {
+        Toast.info('这条已经挂上了')
+        return current
+      }
+      return {
+        ...current,
+        evidences: [
+          ...current.evidences,
+          {
+            kind,
+            kind_label: labels[kind] ?? kind,
+            business_id: businessId,
+            label: null,
+          },
+        ],
+      }
+    })
+  }
 
   const openCreate = () => {
     setEditId(null)
@@ -186,6 +247,27 @@ export default function CasesPage() {
       process: row.process ?? '',
       result: row.result ?? '',
       lessons: row.lessons ?? '',
+      // 回填证据列表：**以 `evidences` 为准**（多条），旧的四列只作为兜底 ——
+      // 老案例还没跑迁移时后端仍会从旧列补出来，这里两种都能接住。
+      evidences:
+        row.evidences && row.evidences.length > 0
+          ? row.evidences
+          : ([
+              ['quote', row.quote_id],
+              ['order', row.order_id],
+              ['sample', row.sample_id],
+              ['opportunity', row.opportunity_id],
+            ] as [string, number | null][])
+              .filter(([, id]) => id != null)
+              .map(([kind, id]) => ({
+                kind,
+                kind_label:
+                  { quote: '报价单', order: '销售订单', sample: '打样单', opportunity: '商机' }[
+                    kind
+                  ] ?? kind,
+                business_id: id as number,
+                label: null,
+              })),
     })
     setEditVisible(true)
   }
@@ -198,6 +280,12 @@ export default function CasesPage() {
           .split(/[,，]/)
           .map((tag) => tag.trim())
           .filter(Boolean),
+        // 证据以列表形式提交（后端会整体替换 `case_evidences` 并同步旧列）
+        evidences: form.evidences.map((item) => ({
+          kind: item.kind,
+          business_id: item.business_id,
+          label: item.label ?? null,
+        })),
       }
       return editId ? updateCase(editId, payload) : createCase(payload)
     },
@@ -272,6 +360,19 @@ export default function CasesPage() {
             placeholder="行业"
             value={filters.industry ?? ''}
             onChange={(v) => applyFilter({ industry: v || undefined })}
+          />
+          {/* 客户类型：企业 / 个人。取自关联客户档案，
+              与上面那个「行业」是两件事（一个企业客户可以属于任何行业）。 */}
+          <Select
+            style={{ width: 110 }}
+            placeholder="客户类型"
+            value={filters.customer_type}
+            showClear
+            onChange={(v) => applyFilter({ customer_type: (v as string) || undefined })}
+            optionList={[
+              { value: '企业', label: '企业' },
+              { value: '个人', label: '个人' },
+            ]}
           />
           <Input
             style={{ width: 110 }}
@@ -512,47 +613,127 @@ export default function CasesPage() {
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                 证据单据（§3.7：从已有时间线和单据里挑证据，看案例的人可跳转查看）
               </div>
-              <div>
-                <FormLabel hint="可不填">关联报价单</FormLabel>
-                <Select
-                  style={{ width: '100%' }}
-                  placeholder="选择报价单"
-                  showClear
-                  value={form.quote_id}
-                  onChange={(v) => setForm({ ...form, quote_id: v as number | undefined })}
-                  optionList={(quotesQuery.data?.items ?? []).map((q) => ({
-                    value: q.id,
-                    label: `${q.quote_no} · ${q.status_label ?? q.status}`,
-                  }))}
-                />
+
+              {/* 已选证据：**可以挂多条**（一个案例常常是三张订单、两份打样支撑的）。
+                  原来每种只能选一张，遇到"三个订单一起说明问题"就表达不了。 */}
+              <div style={{ display: 'grid', gap: 4 }}>
+                {form.evidences.length === 0 ? (
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    还没有挂证据
+                  </div>
+                ) : (
+                  form.evidences.map((item) => (
+                    <div
+                      key={`${item.kind}:${item.business_id}`}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}
+                    >
+                      <Tag size="small" color="blue">
+                        {item.kind_label}
+                      </Tag>
+                      <span style={{ flex: 1 }}>{item.label || `#${item.business_id}`}</span>
+                      <a
+                        style={{ color: 'var(--crm-danger, #d45)' }}
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            evidences: form.evidences.filter(
+                              (row) =>
+                                !(
+                                  row.kind === item.kind &&
+                                  row.business_id === item.business_id
+                                ),
+                            ),
+                          })
+                        }
+                      >
+                        移除
+                      </a>
+                    </div>
+                  ))
+                )}
               </div>
+
+              {/* 添加入口一：按单据挑（下拉会列出该客户名下的报价/订单/打样） */}
               <div>
-                <FormLabel hint="可不填">关联订单</FormLabel>
-                <Select
-                  style={{ width: '100%' }}
-                  placeholder="选择订单"
-                  showClear
-                  value={form.order_id}
-                  onChange={(v) => setForm({ ...form, order_id: v as number | undefined })}
-                  optionList={(ordersQuery.data?.items ?? []).map((o) => ({
-                    value: o.id,
-                    label: `${o.order_no} · ${o.status_label ?? o.status} · ¥${o.total_amount ?? 0}`,
-                  }))}
-                />
+                <FormLabel hint="可多选，选完点右侧「添加」">按单据挑</FormLabel>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Select
+                    style={{ flex: 1 }}
+                    placeholder="选择这个客户的报价单 / 订单 / 打样单"
+                    value={evidencePick}
+                    filter
+                    onChange={(v) => setEvidencePick(v as string)}
+                    optionList={[
+                      ...(quotesQuery.data?.items ?? []).map((q) => ({
+                        value: `quote:${q.id}`,
+                        label: `报价 ${q.quote_no} · ${q.status_label ?? q.status}`,
+                      })),
+                      ...(ordersQuery.data?.items ?? []).map((o) => ({
+                        value: `order:${o.id}`,
+                        label: `订单 ${o.order_no} · ¥${o.total_amount ?? 0}`,
+                      })),
+                      ...(samplesQuery.data?.items ?? []).map((sp) => ({
+                        value: `sample:${sp.id}`,
+                        label: `打样 #${sp.id} · ${sp.status_label ?? sp.status}`,
+                      })),
+                    ]}
+                  />
+                  <Button
+                    disabled={!evidencePick}
+                    onClick={() => {
+                      if (!evidencePick) return
+                      addEvidence(evidencePick)
+                      setEvidencePick(undefined)
+                    }}
+                  >
+                    添加
+                  </Button>
+                </div>
               </div>
+
+              {/* 添加入口二：**从时间线挑**（§3.7 的原话就是"从已有时间线和单据选证据"）。
+                  时间线里的事件带 source（哪张单产生的），点一下就把它加成证据 ——
+                  比在几十张单里翻编号直观得多。没有 source 的事件（纯跟进记录）
+                  不给按钮：它不是单据，挂不上。 */}
               <div>
-                <FormLabel hint="可不填">关联打样单</FormLabel>
-                <Select
-                  style={{ width: '100%' }}
-                  placeholder="选择打样单"
-                  showClear
-                  value={form.sample_id}
-                  onChange={(v) => setForm({ ...form, sample_id: v as number | undefined })}
-                  optionList={(samplesQuery.data?.items ?? []).map((sp) => ({
-                    value: sp.id,
-                    label: `打样单 #${sp.id} · ${sp.status_label ?? sp.status}`,
-                  }))}
-                />
+                <FormLabel hint={`共 ${formTimelineQuery.data?.length ?? 0} 条事件`}>
+                  从时间线挑
+                </FormLabel>
+                <div
+                  style={{
+                    maxHeight: 150,
+                    overflow: 'auto',
+                    display: 'grid',
+                    gap: 4,
+                    fontSize: 12.5,
+                  }}
+                >
+                  {(formTimelineQuery.data ?? []).map((event, index) => (
+                    <div
+                      key={`${event.at}-${index}`}
+                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                    >
+                      <span style={{ color: 'var(--crm-text-3)' }}>
+                        {event.at?.slice(0, 10)}
+                      </span>
+                      <span style={{ flex: 1 }}>{event.title}</span>
+                      {event.source ? (
+                        <a
+                          onClick={() =>
+                            addEvidence(`${event.source!.type}:${event.source!.id}`)
+                          }
+                        >
+                          设为证据
+                        </a>
+                      ) : (
+                        <span style={{ color: 'var(--crm-text-3)' }}>非单据</span>
+                      )}
+                    </div>
+                  ))}
+                  {(formTimelineQuery.data ?? []).length === 0 && (
+                    <div style={{ color: 'var(--crm-text-3)' }}>这个客户还没有时间线事件</div>
+                  )}
+                </div>
               </div>
             </div>
           )}
@@ -700,14 +881,74 @@ export default function CasesPage() {
                   <div style={{ whiteSpace: 'pre-wrap', color: 'var(--crm-text-2)' }}>{text}</div>
                 </div>
               ))}
-            {(detail.quote_id || detail.order_id || detail.sample_id) && (
-              <div style={{ display: 'flex', gap: 12, fontSize: 13, flexWrap: 'wrap' }}>
-                <span style={{ color: 'var(--crm-text-3)' }}>证据单据：</span>
-                {detail.quote_id && <Link to={`/quotes/${detail.quote_id}`}>报价单 #{detail.quote_id}</Link>}
-                {detail.order_id && <Link to={`/orders/${detail.order_id}`}>订单 #{detail.order_id}</Link>}
-                {detail.sample_id && (
-                  <Link to={`/samples/${detail.sample_id}`}>打样单 #{detail.sample_id}</Link>
-                )}
+            {(detail.evidences ?? []).length > 0 ? (
+              <div style={{ display: 'grid', gap: 4, fontSize: 13 }}>
+                <span style={{ color: 'var(--crm-text-3)' }}>
+                  证据单据（{(detail.evidences ?? []).length} 条，可点开原单）：
+                </span>
+                {(detail.evidences ?? []).map((item) => (
+                  <Link
+                    key={`${item.kind}:${item.business_id}`}
+                    to={EVIDENCE_PATH[item.kind] ? `${EVIDENCE_PATH[item.kind]}${item.business_id}` : '#'}
+                  >
+                    {item.label || `${item.kind_label} #${item.business_id}`}
+                    <span style={{ color: 'var(--crm-text-3)' }}> · {item.kind_label}</span>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              (detail.quote_id || detail.order_id || detail.sample_id) && (
+                <div style={{ display: 'flex', gap: 12, fontSize: 13, flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--crm-text-3)' }}>证据单据：</span>
+                  {detail.quote_id && <Link to={`/quotes/${detail.quote_id}`}>报价单 #{detail.quote_id}</Link>}
+                  {detail.order_id && <Link to={`/orders/${detail.order_id}`}>订单 #{detail.order_id}</Link>}
+                  {detail.sample_id && (
+                    <Link to={`/samples/${detail.sample_id}`}>打样单 #{detail.sample_id}</Link>
+                  )}
+                </div>
+              )
+            )}
+            {/* 逐轮审核历史（返工单 P2-8）：`review_note` 只有最后一次，
+                前几轮是谁、什么时候、结论如何，只有这里能看到。
+                字段名过去前后端不一致（前端写 `at`、后端存 `reviewed_at`），
+                所以这一块一直显示不出审核人和时间。 */}
+            {(detail.review_history ?? []).length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                  审核记录（共 {(detail.review_history ?? []).length} 轮）
+                </div>
+                <div style={{ display: 'grid', gap: 6, fontSize: 13 }}>
+                  {(detail.review_history ?? []).map((round, index) => (
+                    <div
+                      key={`${round.reviewed_at ?? index}`}
+                      style={{
+                        padding: '6px 8px',
+                        border: '1px solid var(--crm-outline)',
+                        borderRadius: 4,
+                      }}
+                    >
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <Tag color={round.approve ? 'green' : 'red'} size="small">
+                          {round.approve ? '通过' : '驳回'}
+                        </Tag>
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          第 {round.round ?? index + 1} 轮
+                          {round.version ? ` · V${round.version}` : ''}
+                        </span>
+                        <span style={{ flex: 1 }} />
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          {round.reviewer_name || '—'}
+                        </span>
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          {round.reviewed_at ? round.reviewed_at.slice(0, 16).replace('T', ' ') : ''}
+                        </span>
+                      </div>
+                      {round.note && (
+                        <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{round.note}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             {detail.share_view && (detail.hidden_evidence ?? []).length > 0 && (

@@ -10,7 +10,15 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -76,3 +84,54 @@ class SalesCase(Base, IdMixin):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+#: 证据单据的类别 → 中文名。与 `redaction.EVIDENCE_PERMISSIONS` 一一对应
+#: （那边定义"看这类单据要什么权限"）。
+CASE_EVIDENCE_KINDS: dict[str, str] = {
+    "quote": "报价单",
+    "order": "销售订单",
+    "sample": "打样单",
+    "opportunity": "商机",
+}
+
+#: 旧版本在案例表上写死了四个字段（`quote_id` / `order_id` / `sample_id` /
+#: `opportunity_id`），**每种只能挂一条**。这一层映射用于读取老数据与兼容，
+#: 新建的引用一律进 `case_evidences`。
+LEGACY_EVIDENCE_FIELDS: dict[str, str] = {
+    "quote": "quote_id",
+    "order": "order_id",
+    "sample": "sample_id",
+    "opportunity": "opportunity_id",
+}
+
+
+class CaseEvidence(Base, IdMixin):
+    """案例的证据单据（§3.7："编写者从已有时间线和单据选证据"）。
+
+    为什么单开一张表：原来在案例上写了四个字段，**每种只能挂一条**。
+    可一个案例常常是多张单据支撑起来的（三个订单、两份打样），单字段表达不了；
+    而且类型写死在列名里，以后想挂合同、询价就得再加列、再改一轮代码。
+    一行 = 一条引用，`(case_id, kind, business_id)` 唯一，重复挂同一条会被拦。
+    """
+
+    __tablename__ = "case_evidences"
+    __table_args__ = (
+        # 同一案例、同一单据只挂一次（重复提交不该在证据列表里出现两遍）
+        UniqueConstraint("case_id", "kind", "business_id", name="uq_case_evidence"),
+        Index("ix_case_evidence_case", "case_id"),
+    )
+
+    case_id: Mapped[int] = mapped_column(
+        # 级联：证据是**案例的从属引用**，案例没了它就没有意义。
+        # 不写级联的话，清理历史数据时会撞外键、把清理脚本整个打断（踩过一次）。
+        BigInteger,
+        ForeignKey("sales_cases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(24))
+    business_id: Mapped[int] = mapped_column(BigInteger)
+    #: 人看的标识（订单号 / 报价单号），列表与详情直接显示，不用再反查
+    label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

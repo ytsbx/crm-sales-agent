@@ -51,6 +51,10 @@ check_wecom_handover
 # 客户合并的影响清单与漏关联（返工单 6.8）。会造一整套关联对象再合并，
 # 自己清干净；与前面的套件无耦合。
 check_customer_merge
+# 第四轮返工：冻结实绩的数据范围、新客口径、洞察权限与并发、
+# 案例首次修订并发、分享版搜索。会自造角色与四种数据范围的账号，
+# 并真的打并发请求（自带清理，含基准快照）。
+check_fourth_round_fixes
 check_notification_retry
 check_notification_levels
 check_delivery_analytics

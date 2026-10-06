@@ -1,6 +1,31 @@
 import type { PageResult } from '../types'
 import { api } from './client'
 
+/** 案例的一条证据。`kind` 取值与后端 `cases/model.CASE_EVIDENCE_KINDS` 一致。 */
+export interface CaseEvidenceItem {
+  kind: string
+  kind_label: string
+  business_id: number
+  label?: string | null
+}
+
+/**
+ * 一轮审核记录。
+ *
+ * 字段名必须与后端 `review_case` 写进 `review_history` 的一致 ——
+ * 这份类型此前写的是 `at`，而后端存的是 `reviewed_at`，于是页面上
+ * "谁批的、什么时候批的"一直是空的（返工单 P2-8 点名的就是这处）。
+ */
+export interface CaseReviewRound {
+  round?: number
+  approve?: boolean
+  note?: string | null
+  reviewer_id?: number | null
+  reviewer_name?: string | null
+  reviewed_at?: string | null
+  version?: number
+}
+
 export interface CaseRow {
   id: number
   title: string
@@ -49,15 +74,22 @@ export interface CaseRow {
    * 只是不能再改——要改就基于它再开一份修订稿。
    */
   superseded_by?: number | null
-  /** 逐条审核历史（每一轮的意见都留着，不会被下一次审核覆盖） */
-  review_history?: { approve?: boolean; note?: string | null; reviewer_name?: string | null; at?: string | null }[]
+  /**
+   * 证据单据**列表**（§3.7：一个案例常由多张单据支撑）。
+   * 上面那四个 `*_id` 是旧字段，仍然下发（兼容），但新界面读这个。
+   * 读者没有对应单据权限时，那一条不会出现在这里 → 去 `hidden_evidence` 看类别。
+   */
+  evidences?: CaseEvidenceItem[]
+  /** 逐条审核历史（每一轮的意见都留着，不会被下一次审核覆盖）。 */
+  review_history?: CaseReviewRound[]
 }
 
 /**
  * 案例列表（第四批 §5.1.6 改成真分页）。
  *
- * `industry` / `product_line` / `stage` 这三个筛选后端**一直就支持**，
- * 之前只是前端没接通——列表看着"只能按关键词和状态搜"。
+ * `industry` / `product_line` / `stage` / `problem_tags` 后端一直支持。
+ * `customer_type` 是**客户类型**（企业/个人），来自关联客户——
+ * 与 `industry`（案例自己填的行业自由文本）不是一回事，不能互相顶替。
  * `include_history` 为 true 时才列出被修订版取代的历史版本。
  */
 export function listCases(
@@ -67,6 +99,9 @@ export function listCases(
     industry?: string
     product_line?: string
     stage?: string
+    /** 客户类型：企业 / 个人（取自关联客户，不是案例上的行业） */
+    customer_type?: string
+    problem_tags?: string
     include_history?: boolean
     page?: number
     page_size?: number

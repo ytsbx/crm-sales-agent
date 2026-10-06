@@ -119,6 +119,55 @@ async def _build_basis(session: AsyncSession, year: int) -> tuple[list[int], dic
     return [int(x) for x in veterans], first_deal_month
 
 
+async def new_customer_rows(
+    session: AsyncSession, year: int
+) -> list[tuple[str, int | None, int, str, datetime | None]]:
+    """本年「首次有效成交」的新客：`(期间, 负责人, 客户id, 客户名, 首成交时间)`。
+
+    **汇总与明细共用这一份，不许各写一段** —— 返工单第 2 条的根因就是
+    目标页的汇总按「建档月」数、下钻明细按「首次成交」列：两个口径，
+    于是页面上写"新客 3 个"、点开明细只看到 1 个。
+    集合只算一次、两边消费同一份数据，"对不上"从源头上就不可能发生。
+
+    首成交时间单独查一次是为了明细里能显示"这笔是哪天成的" ——
+    用客户建档案那天会让人困惑（3 月建的档、9 月才成第一单，
+    却在 9 月的明细里看到 3 月的日期）。
+    """
+    from app.modules.customer.model import Customer
+
+    _veterans, first_deal_month, _meta = await basis_for(session, year)
+    if not first_deal_month:
+        return []
+    ids = [int(cid) for cid in first_deal_month]
+    deal_at: dict[int, datetime] = {
+        int(cid): at
+        for cid, at in (
+            await session.execute(
+                select(SalesOrder.customer_id, func.min(SalesOrder.created_at))
+                .where(
+                    SalesOrder.status != "cancelled",
+                    SalesOrder.customer_id.in_(ids),
+                )
+                .group_by(SalesOrder.customer_id)
+            )
+        ).all()
+        if at is not None
+    }
+    # 与明细同一套筛法：未删除的客户档案。**只按 id 取，不按建档时间取** ——
+    # 那样又把口径拉回"建档月"了。
+    rows = (
+        await session.execute(
+            select(Customer.id, Customer.name, Customer.owner_id).where(
+                Customer.deleted_at.is_(None), Customer.id.in_(ids)
+            )
+        )
+    ).all()
+    return [
+        (first_deal_month[int(cid)], owner_id, int(cid), name, deal_at.get(int(cid)))
+        for cid, name, owner_id in rows
+    ]
+
+
 async def _freeze_basis(
     year: int, *, replace: bool = False, operator_id: int | None = None
 ) -> BasisSnapshot:

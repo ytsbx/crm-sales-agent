@@ -35,6 +35,20 @@ export interface SampleShipment {
   signed_at?: string | null
 }
 
+/** 制作依据快照里的一项（后端 `serialize_request` 的 `basis_files[]`）。 */
+export interface BasisFile {
+  file_id: number
+  file_name?: string | null
+  /** 文件内容的校验值（sha256）：只记文件名证明不了是哪一份文件 */
+  checksum?: string | null
+  size?: number | null
+  category?: string | null
+  /** 登记依据时的打样版本：V1、V2 各用各的依据 */
+  sample_version?: number | null
+  designated_at?: string | null
+  designated_by?: number | null
+}
+
 export interface SampleRequestRow {
   source_context?: SampleSourceContext | null
   id: number
@@ -68,6 +82,15 @@ export interface SampleRequestRow {
   sample_fee?: number | null
   production_owner_id?: number | null
   made_at?: string | null
+  /**
+   * 制作依据快照（第一批返修 §3.5）：登记制作完成时**显式指定**照哪几份文件做的。
+   * 每项含文件名、校验值（sha256）、当时的打样版本与登记人、时间。
+   * 空数组 = 没登记过依据；`null`/缺省 = 这条数据来自加这个字段之前（两者含义不同，
+   * 界面上要分开说）。
+   */
+  basis_files?: BasisFile[] | null
+  /** 制作完成事件流水（含说明、时间、登记人） */
+  made_events?: { key?: string; at?: string; note?: string | null; by?: number }[] | null
   // 客户确认与签收分开：签收是物流事实，确认是业务事实
   confirm_status: string
   confirm_status_label: string
@@ -131,9 +154,22 @@ export function feedbackSample(id: number, feedback: string) {
   return api.post<SampleRequestRow>(`/samples/${id}/feedback`, { feedback })
 }
 
-/** 登记制作完成（文档 §3.5；CRM 管不到车间，这里只记事实、不当闸门）。 */
-export function madeSample(id: number, remark?: string) {
-  return api.post<SampleRequestRow>(`/samples/${id}/made`, { remark: remark ?? null })
+/**
+ * 登记制作完成（文档 §3.5；CRM 管不到车间，这里只记事实、不当闸门）。
+ *
+ * `basisFileIds` 是**制作依据**（第一批返修 §3.5）：这次照哪几份文件做的。
+ * 只传 `remark` 而不传它，快照就是空的 —— 事后没人说得清"按哪版图纸做的"，
+ * 出了质量问题连比对对象都没有。所以登记页必须让操作人选一次。
+ */
+export function madeSample(
+  id: number,
+  remark?: string,
+  basisFileIds?: number[],
+) {
+  return api.post<SampleRequestRow>(`/samples/${id}/made`, {
+    remark: remark ?? null,
+    basis_file_ids: basisFileIds && basisFileIds.length ? basisFileIds : null,
+  })
 }
 
 /**

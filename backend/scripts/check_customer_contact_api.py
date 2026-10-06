@@ -742,9 +742,36 @@ async def main():
                'note': f'已与 {real_name} 的 13800138000 复核，合同 HT2024-7788 已归档'})
 
     status, detail = call('GET', f'/cases/{share_case_id}', token=wangwu)
-    status, listing = call('GET', f'/cases?keyword={RUN}&page_size=200', token=wangwu)
+    # 搜**读者看得见的词**：标题里的「返单打法」与正文里的「产前样」都该命中。
+    # 这同时证明"正文搜索没有被取消"——审查方明确要求案例仍要能按做法和问题检索。
+    status, listing = call(
+        'GET', '/cases?keyword=' + urllib.parse.quote('返单打法') + '&page_size=200',
+        token=wangwu,
+    )
     row = next((r for r in listing['data']['items'] if r['id'] == share_case_id), None)
-    check_true('分享视角列表里能找到这条', row is not None, '')
+    check_true('分享视角按**看得见的标题**能搜到这条', row is not None, '')
+    status, listing = call(
+        'GET', '/cases?keyword=' + urllib.parse.quote('产前样') + '&page_size=200',
+        token=wangwu,
+    )
+    check_true('分享视角按**看得见的正文**能搜到这条',
+               any(r['id'] == share_case_id for r in listing['data']['items']), '')
+
+    print()
+    print('=== 12.1b 搜索不能变成"探测接口"（返工单 P1-6）===')
+    # 读者看见的是「某包装制品厂 的电话〔手机号〕」。那么拿**被隐藏的原文**去搜
+    # 就不该命中：命中等于确认"这条案例里存在这个号码"——内容没看到，事实泄露了。
+    # 判据必须与列表/详情下发时**同一套**（否则列表脱敏、搜索漏风）。
+    status, listing = call('GET', f'/cases?keyword={RUN}&page_size=200', token=wangwu)
+    check_true('分享视角搜客户全称搜不到（那个词他看不见）',
+               not any(r['id'] == share_case_id for r in listing['data']['items']), '')
+    status, listing = call('GET', f'/cases?keyword=13800138000&page_size=200', token=wangwu)
+    check_true('分享视角搜被隐藏的手机号搜不到',
+               not any(r['id'] == share_case_id for r in listing['data']['items']), '')
+    # 原文搜索**保留给有原文权限的人**：同一个词主管照样搜得到
+    status, listing = call('GET', f'/cases?keyword={RUN}&page_size=200', token=lisi)
+    check_true('主管按原文仍能搜到（原文搜索没有取消）',
+               any(r['id'] == share_case_id for r in listing['data']['items']), '')
     if row:
         check_true('列表标题不含客户全称（此前列表比详情松）',
                    real_name not in (row.get('title') or ''), str(row.get('title')))

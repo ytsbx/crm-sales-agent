@@ -10,7 +10,17 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Numeric, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, JSONType
@@ -80,3 +90,58 @@ class ProductInsight(Base, IdMixin):
         DateTime(timezone=True), nullable=True, onupdate=func.now()
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+#: 每一轮的评审结果。
+ROUND_RESULT_LABEL = {
+    "approved": "通过",
+    "rejected": "否决",
+}
+
+
+class ProductInsightRound(Base, IdMixin):
+    """洞察的**逐轮提交内容与评审结果**（返工单 P1-4）。
+
+    为什么必须落成一张表、而不是往 `product_insights` 上加几个字段：
+    那条记录上的 `review_round` / `review_note` / `reviewer_id` / `reviewed_at`
+    都只有**最后一轮**的值 —— 第 3 轮通过之后，第 1 轮报的是什么内容、
+    第 2 轮是谁为什么否掉的，全部被覆盖，查不回来了。审计日志那边只记了
+    "改了哪几个字段名"，也没有当时的内容，等于没有留痕。
+
+    一行 = 一轮。评审记录要能回答的是："这一轮**报的是什么**、谁批的、
+    什么时候、结论是什么"。四样都得在。
+    """
+
+    __tablename__ = "product_insight_rounds"
+    __table_args__ = (
+        # 同一轮只允许一行。它同时是**并发保护**：两个请求同时提交一轮，
+        # 数据库层面只会留下一行（应用层的行锁负责给出友好提示，这里是底线）。
+        UniqueConstraint("insight_id", "round", name="uq_insight_round"),
+        Index("ix_insight_round_insight", "insight_id"),
+    )
+
+    insight_id: Mapped[int] = mapped_column(
+        # 级联：轮次记录是**洞察的从属明细**，洞察删了它就没有留着的意义。
+        # 不写级联的话，清理历史数据时会撞外键、把清理脚本整个打断（踩过一次）。
+        BigInteger,
+        ForeignKey("product_insights.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    round: Mapped[int] = mapped_column(BigInteger, default=1)
+    #: 这一轮提交时的**关键内容快照**（取值与 `FROZEN_CONTENT_FIELDS` 一致）。
+    #: 存快照而不是存"字段名"，是因为事后要能复现"当时报的是这一份"。
+    content_snapshot: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    submitted_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: approved / rejected；未审为空
+    review_result: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reviewer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    review_note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

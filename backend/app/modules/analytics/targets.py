@@ -42,7 +42,9 @@ ASSESS_BASIS_LABEL = "确认回款"
 #: 指标定义版本（§4.3 要求每个指标存"指标定义版本"）。
 #: 口径一变就改这个字符串：历史报表据此自证是按哪一版算出来的。
 #: .3：回款归月依据由「到账日」改为「财务确认时间」（返工单第 2 条）。
-METRIC_BASIS_VERSION = "2026-10-06.targets.3"
+#: .4：新客**考核**口径由「建档月」改为「首次有效成交月」，建档数降为过程指标另列；
+#:     冻结快照的读取与补行补上数据范围判断（返工单 P1-1 / P1-2）。
+METRIC_BASIS_VERSION = "2026-10-06.targets.4"
 
 #: 每个指标的数据来源（随结果返回——业务要能回答"这个数是怎么来的"）
 METRIC_SOURCES = {
@@ -53,7 +55,15 @@ METRIC_SOURCES = {
     ),
     "sales_actual": "sales_orders.total_amount，status != cancelled，按 created_at 归月（展示口径，不进差额）",
     "shipped_actual": "order_shipment_batches × batch_items.shipped_qty × order_items.unit_price，按各批 actual_ship_date 归月（展示口径，不进差额）",
-    "new_customer_actual": "customers.created_at 建档月 × owner_id 计数（过程指标）",
+    "new_customer_actual": (
+        "该客户**首笔非取消订单**落在本月 → 计 1 个（考核口径）。"
+        "客户集合取自月度基准快照（analytics/target_bases.py），"
+        "与年度统计、下钻明细、冻结快照同源"
+    ),
+    "new_customer_created_actual": (
+        "customers.created_at 建档月 × owner_id 计数（**过程指标**，"
+        "只展示、不进差额与达成率）"
+    ),
     "repeat_customer_actual": "期初老客池在本月的订单净额（口径见 analytics/target_bases.py）",
 }
 
@@ -126,12 +136,56 @@ async def _visible_department_ids(session: AsyncSession, user: CurrentUser) -> l
     return []
 
 
+def _filter_frozen_by_scope(
+    frozen: dict[str, dict[tuple[str, str], object]],
+    *,
+    allowed_users: set[int] | None,
+    allowed_depts: set[int],
+) -> dict[str, dict[tuple[str, str], object]]:
+    """把快照裁到操作者能看的作用域（返工单：冻结实绩绕过数据范围，P1）。
+
+    **为什么要在"读取"时就裁，而不是在展示时过滤**：快照按
+    (期间, 作用域, 指标) 存，一次读回**整年所有作用域**，它有三个消费点 ——
+    补零行、覆盖实时值、查人员名称。任何一处漏判都是越权，而且漏出去的是
+    "某个人的签单额与回款额"这种最敏感的东西。所以在门口裁一次，
+    后面三处消费的都是裁过的数据；补零行那处再判一次是最后一道（纵深防御，
+    安全判断重复一遍是划算的，漏一遍的代价是业绩泄露）。
+
+    `allowed_users is None` = 全公司范围，不裁。
+    公司汇总行（作用域键为 `company`，即 `user_id is None`）保留：
+    那是既定的"全公司目标人人可见"规则，它只有一个汇总值，
+    不带任何个人的数，不会借它把谁的业绩漏出去。
+    """
+    if allowed_users is None:
+        return frozen
+
+    from app.modules.analytics.target_actuals import parse_scope_key
+
+    out: dict[str, dict[tuple[str, str], object]] = {}
+    for period, snap in frozen.items():
+        kept: dict[tuple[str, str], object] = {}
+        for (scope_key, metric), value in snap.items():
+            user_id, dept_id = parse_scope_key(scope_key)
+            if dept_id is not None:
+                if dept_id in allowed_depts:
+                    kept[(scope_key, metric)] = value
+            elif user_id is None or user_id in allowed_users:
+                kept[(scope_key, metric)] = value
+        # 空 dict 也要写进去：`actual_frozen` 靠"期间在不在 frozen 里"判断，
+        # 少一个键会让已结账的那一期被标成"实时值"。
+        out[period] = kept
+    return out
+
+
 async def targets_with_actuals(
     session: AsyncSession, user: CurrentUser, year: int, *, ignore_snapshot: bool = False
 ) -> dict:
     prefix = f"{year}-%"
     owner_ids = await _visible_owner_ids(session, user)
     admin_view = owner_ids is None
+    # 团队目标所属部门的可见范围，同时也是**快照裁剪**的依据（见下面补行那段）。
+    # 提前算一次、两处共用：各算各的迟早漂移，而这里的漂移就是越权。
+    visible_depts = await _visible_department_ids(session, user)
 
     # 这一年的实绩快照（第三批 §4.1.5 后半）：按"期间"分好组的已结账数字。
     # 逐期决定用存档还是实时——同一年里可能几个月结了账、几个月还没结。
@@ -141,6 +195,13 @@ async def targets_with_actuals(
     from app.modules.analytics import target_actuals
 
     frozen = {} if ignore_snapshot else await target_actuals.frozen_map(session, year)
+    # 进门先裁到本例账号能看的作用域（见函数说明）：后面补零行、覆盖实时值、
+    # 查人员名称三处都只消费裁过的数据，不会再出现"漏判一处就漏业绩"。
+    frozen = _filter_frozen_by_scope(
+        frozen,
+        allowed_users=None if admin_view else set(owner_ids or []),
+        allowed_depts=set(visible_depts or []),
+    )
 
     # ---- 目标行（按范围过滤：非 all 分三层各按各的归属判）----
     target_stmt = select(SalesTarget).where(
@@ -149,7 +210,6 @@ async def targets_with_actuals(
     if not admin_view:
         from sqlalchemy import and_, or_
 
-        visible_depts = await _visible_department_ids(session, user)
         conditions = [
             # ① 全公司目标：给所有人看（那是公司层面的数字，不是别人的私有数据）
             and_(SalesTarget.user_id.is_(None), SalesTarget.department_id.is_(None)),
@@ -204,10 +264,30 @@ async def targets_with_actuals(
         key = (f"{year}-{int(m):02d}", owner_id)
         sales_actual[key] = sales_actual.get(key, 0.0) + float(total or 0)
 
+    # ---- 新客：**两条口径，考核只认其中一条**（返工单：新客口径，P1）----
+    #
+    #  · `new_customer_actual`（考核口径）= **首次有效成交**落在本月的客户数。
+    #    与 `annual_bases.new_by_first_deal`、下钻明细、冻结快照全部同源。
+    #  · `new_customer_created_actual`（过程指标）= 客户档案在本月**新建**的数量。
+    #    它衡量的是"跑了多少新客"，跟"成了多少"是两件事，所以**另列一栏**，
+    #    不参与差额与达成率。
+    #
+    # 老实现把后者当成了考核实绩：9 月只新建一个客户、一单没成，目标页照样显示
+    # "新客实绩 1"。同一页里汇总按建档、明细按首成交，两个数字还会互相打脸。
     new_customer_actual: dict[tuple[str, int | None], int] = {}
+    #: 建档口径（过程指标）。**保留 **——审查方明确说它可以另列，不是要删掉。
+    new_customer_created: dict[tuple[str, int | None], int] = {}
+    in_scope = None if owner_ids is None else set(owner_ids)
     for m, owner_id, n in (await session.execute(customer_stmt)).all():
         key = (f"{year}-{int(m):02d}", owner_id)
-        new_customer_actual[key] = new_customer_actual.get(key, 0) + int(n)
+        new_customer_created[key] = new_customer_created.get(key, 0) + int(n)
+    for period, owner_id, _cid, _name, _at in await target_bases.new_customer_rows(
+        session, year
+    ):
+        if in_scope is not None and (owner_id is None or owner_id not in in_scope):
+            continue
+        key = (period, owner_id)
+        new_customer_actual[key] = new_customer_actual.get(key, 0) + 1
 
     # ---- 回款（**考核主口径**，已确认 2026-10-05）----
     # 归月依据 = **财务确认时间**（`confirmed_at`），不是到账日（返工单第 2 条）：
@@ -345,11 +425,14 @@ async def targets_with_actuals(
     # ---- 组装行：目标行 + 有实际但没设目标的（月，负责人）补零行 ----
     def actual_for(
         month: str, target_user_id: int | None, department_id: int | None = None
-    ) -> tuple[float, float, float, int]:
-        """某个 (月, 作用域) 的四个实际值：签单 / 回款（考核）/ 发货 / 新客。
+    ) -> tuple[float, float, float, int, int]:
+        """某个 (月, 作用域) 的实际值：签单 / 回款（考核）/ 发货 / 新客 / 新建档。
 
         三个销售口径都算出来是为了"都能显示"，但**只有考核口径进差额**（§4.3）：
         已确认考核主口径是**确认回款**。
+        新客那一项**考核看首次成交**（`new_customer_actual`），
+        新建档数量只作过程指标另列（`new_customer_created_actual`）——
+        两者都要返回，但只有前者参与差额与达成率。
 
         这里**只看实时值**；已结账期间的存档值在下面的统一后处理里覆盖
         （那边一处收口，三个地方各写一遍必然漂移——第一版就漏了"补零行"那条路）。
@@ -370,19 +453,23 @@ async def targets_with_actuals(
                 pick(received_actual, members),
                 pick(shipped_actual, members),
                 int(pick(new_customer_actual, members)),
+                int(pick(new_customer_created, members)),
             )
         return (
             pick(sales_actual, None),
             pick(received_actual, None),
             pick(shipped_actual, None),
             int(pick(new_customer_actual, None)),
+            int(pick(new_customer_created, None)),
         )
 
     rows: list[dict] = []
     seen: set[tuple[str, int | None]] = set()
     user_ids: set[int] = set()
     for t in targets:
-        signed, received, shipped, new = actual_for(t.period, t.user_id, t.department_id)
+        signed, received, shipped, new, new_created = actual_for(
+            t.period, t.user_id, t.department_id
+        )
         rows.append(
             {
                 "target_id": t.id,
@@ -393,6 +480,9 @@ async def targets_with_actuals(
                 "sales_target": float(t.sales_target or 0),
                 "repeat_customer_target": float(t.repeat_customer_target or 0),
                 "new_customer_actual": new,
+                # 过程指标：本月**新建档**的客户数（不参与差额与达成率）。
+                # 与考核值合看才有意义："建档 8 个、成交 1 个"说明前端转化有问题。
+                "new_customer_created_actual": new_created,
                 # 考核口径 = **确认回款**（已确认 2026-10-05）；差额与达成率都基于它，
                 # 另外两个口径只展示、不混进差额（§4.3）
                 "assess_basis": ASSESS_BASIS,
@@ -444,11 +534,32 @@ async def targets_with_actuals(
     # 所以：**该期存档里出现过的（期间, 人）也要出行**。用 "sales" 作锚点——
     # 结账时各指标是一起写的（见 `target_actuals.freeze_period`），取一项即可。
     # 部门作用域由目标行承载，这里不补（补零行只按人，与上面几个来源一致）。
+    #
+    # ⚠️ **范围判断必须加在这里**（返工单：冻结实绩绕过数据范围，P1）。
+    # `frozen_map` 读的是**整年所有作用域**的快照，而上面那几个键都来自
+    # 已按范围过滤过的实时聚合 —— 只有这一段没有判断，于是"仅本人"的账号
+    # 会看到别人的（期间, 人）行，带着别人冻结的签单额与回款额。
+    # 这是我上一轮修"结账后那行消失"时引入的：只顾着把行补回来，忘了补范围。
+    #
+    # 判据与实时查询**同一套口径**，不因为"这一期结过账"就放宽：
+    #  · 部门快照：只在我能看的部门里才用它（`department` 范围只含自己那个部门，
+    #    `department_and_sub` 含子树，`self` 是空集）。
+    #  · 个人快照：只在我能看的人里才补行；`user_id is None` 是**公司汇总行**，
+    #    属于既定的"全公司目标人人可见"规则，保留 —— 它只有一个汇总值，
+    #    不带任何个人的数，不会借它把某人的业绩漏出去。
+    allowed_users = None if owner_ids is None else set(owner_ids)
+    allowed_depts = None if visible_depts is None else set(visible_depts)
     for frozen_period, snap in frozen.items():
         for scope_key, metric in snap:
             if metric != "sales":
                 continue
             frozen_user_id, frozen_dept_id = target_actuals.parse_scope_key(scope_key)
+            if allowed_users is not None:
+                if frozen_dept_id is not None:
+                    if frozen_dept_id not in (allowed_depts or set()):
+                        continue
+                elif frozen_user_id is not None and frozen_user_id not in allowed_users:
+                    continue
             if frozen_dept_id is not None:
                 continue
             actual_keys.add((frozen_period, frozen_user_id))
@@ -465,6 +576,9 @@ async def targets_with_actuals(
                 "sales_target": 0,
                 "repeat_customer_target": 0,
                 "new_customer_actual": int(new_customer_actual.get((month, owner_id), 0)),
+                "new_customer_created_actual": int(
+                    new_customer_created.get((month, owner_id), 0)
+                ),
                 "sales_actual": round(sales_actual.get((month, owner_id), 0.0), 2),
                 "repeat_customer_actual": _repeat_actual(month, owner_id),
                 "remark": None,
@@ -924,19 +1038,23 @@ async def drilldown(
             )
 
     elif metric == "new_customer":
-        # 用**首次成交**口径（考核口径）：客户集合与月份都来自已冻结的基准，
-        # 与 `annual_bases` 的 `new_by_first_deal` 同源
-        _veterans, first_deal_month, _meta = await target_bases.basis_for(session, year)
+        # **首次有效成交**口径（考核口径）——与汇总、年度统计、冻结快照同源。
+        #
+        # 这里刻意改成调用汇总用的那一份取数（`target_bases.new_customer_rows`），
+        # 而不是自己再写一段 SQL：返工单第 2 条的根因就是"汇总一段、明细一段"，
+        # 两段迟早会漂。共用一份之后，"汇总几个、点开就是几个"是结构保证，
+        # 不靠人记得同步改两处。
         month_key = f"{year}-{month:02d}"
-        wanted = [int(cid) for cid, m in first_deal_month.items() if m == month_key]
-        if wanted:
-            stmt = select(
-                Customer.id, Customer.name, Customer.owner_id, Customer.created_at
-            ).where(Customer.deleted_at.is_(None), Customer.id.in_(wanted))
-            if scope_ids is not None:
-                stmt = stmt.where(Customer.owner_id.in_(scope_ids or [0]))
-            for cid, name, owner, at in (await session.execute(stmt)).all():
-                items.append(_row("customer", cid, name, owner, 0.0, at))
+        scope_set = None if scope_ids is None else set(scope_ids)
+        for period, owner_id, cid, name, deal_at in await target_bases.new_customer_rows(
+            session, year
+        ):
+            if period != month_key:
+                continue
+            if scope_set is not None and (owner_id is None or owner_id not in scope_set):
+                continue
+            # 显示**首成交时间**：显示建档日会让用户困惑（3 月建档案、9 月才成首单）
+            items.append(_row("customer", cid, name, owner_id, 0.0, deal_at))
 
     else:  # repeat_net
         veterans, _first_deal, _meta = await target_bases.basis_for(session, year)

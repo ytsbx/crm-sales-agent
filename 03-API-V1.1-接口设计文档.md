@@ -930,13 +930,16 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 
 ## 41.1 案例库（cases）
 
-- `GET /cases`：案例列表。需要 `quote:view`。返回**真分页**（`items/page/page_size/total`，第四批 §5.1.6 之前是 `.limit(200)` 硬顶，第 201 条起永远看不到也无提示）。筛选：`status`、`industry`、`product_line`、`stage`、`problem_tags`（JSONB 包含匹配）、`keyword`、`include_history`。**默认只列当前版本**，判据是「自己已被取代」（`status=superseded`）而**不是**「库里存在指向自己的修订稿」——后者会让作者一点「开修订稿」（只生成一份还没发布的草稿）原版就从列表里消失，看着像案例丢了（返工单第 6 条）。`include_history=true` 时把被取代的旧版一并列出。可见范围：`published` **与 `superseded`** 均人尽可读（脱敏），其余只有作者本人与主管可见。
+- `GET /cases`：案例列表。需要 `quote:view`。**筛选维度按方案 §3.7：客户类型、产品线、阶段及问题**。`customer_type`（企业/个人）取的是**关联客户档案上的字段**，不案例自己的「行业」——行业是案例填的自由文本，一个企业客户可以属于任何行业，两者不能互相顶替（第四轮返工 P2-8）。
+  **搜索按"读者看得见的文字"匹配（第四轮返工 P1-6）**：有原文权限的人（主管/管理员/作者看自己那条）照旧在 DB 层按原文搜标题与正文；其余读者用**脱敏后**的标题与正文做匹配 —— 因为分享版下发的就是脱敏文字，若 SQL 仍按原文匹配，读者拿一个被隐藏的手机号一搜就能确认"这条案例里有这个号码"，**搜索变成了探测接口**。判据与 `serialize_case` 共用同一份（同一套抹除规则、同一个客户全称换代称），不另立一套。返回**真分页**（`items/page/page_size/total`，第四批 §5.1.6 之前是 `.limit(200)` 硬顶，第 201 条起永远看不到也无提示）。筛选：`status`、`industry`、`product_line`、`stage`、`problem_tags`（JSONB 包含匹配）、`keyword`、`include_history`。**默认只列当前版本**，判据是「自己已被取代」（`status=superseded`）而**不是**「库里存在指向自己的修订稿」——后者会让作者一点「开修订稿」（只生成一份还没发布的草稿）原版就从列表里消失，看着像案例丢了（返工单第 6 条）。`include_history=true` 时把被取代的旧版一并列出。可见范围：`published` **与 `superseded`** 均人尽可读（脱敏），其余只有作者本人与主管可见。
 - `POST /cases`：新建案例（落 `draft`）。需要 `quote:view`。`title` 必填；证据单据必须存在、同客户、在数据范围内（防"挂上别人的单子"变成越权读入口）。
 - `GET /cases/{case_id}`：详情。可见范围与列表一致；`pending_review` 不对外。**已被取代的旧版（`superseded`）照样打得开**——它是培训资料，不该因为出了新版就读不到（只读，见 PATCH）。
 - `PATCH /cases/{case_id}`：修改。需要 `quote:view`，且仅作者在 `draft` / `rejected` 状态可改。`published` / `superseded` **一律拒（422）**，连主管也不能原地改——审核批的是"这一版内容"，改完还挂着"已发布"等于复用了一个对不上号的审核结论；要改就开修订稿重新走审核。
 - `DELETE /cases/{case_id}`：删除。需要 `quote:view`（作者或主管）。
 - `POST /cases/{case_id}/submit`：提交审核。需要 `quote:view`，仅作者可提交，状态须为 `draft` / `rejected`。**闸门**：`title` 非空 **且**（`key_actions` 或 `lessons` 至少一项非空）——注意「关键动作」与「可复用做法」是**二选一**，不是各自必填。
 - `POST /cases/{case_id}/review`：审核。需要 `quote:view`，仅主管/管理员可驳回或批准；状态须为 `pending_review`。逐条追加审核历史；批准修订稿时替换被取代的那一版。
+- **证据单据可以挂多条**（第四轮返工 P2-8，§3.7「从已有时间线和单据选证据」）：请求体带 `evidences: [{kind, business_id, label}]`，`kind` ∈ `quote` / `order` / `sample` / `opportunity`；**传了就整体替换**（界面提交的是"这一版挂了哪几张单"）。新增表 `case_evidences`（唯一约束 `(case_id, kind, business_id)`，重复挂同一条会被 422 拒掉）；案例表上旧的四个 `*_id` 列**保留并自动同步成每类的第一条**，老查询不受影响。校验与单条版同一套：存在、**同客户**、在操作者数据范围内 —— 挂上别人的单子等于开了一条越权读入口。返回体的 `evidences` 是**按读者权限过滤后**的列表，被滤掉的那几类记在 `hidden_evidence` 里。
+  为什么要改成多条：原来四个列每种只能挂一张，"三个订单一起支撑这个案例"就表达不了。
 - `POST /cases/{case_id}/revise`：从已发布案例开**修订稿**（§5.1.5 已确认口径＝修订稿）。已发布版继续可供培训（不改动、不断档）；修订稿走「改完 → 提交审核 → 批准 → 替换当前发布版」，原版转「已被修订版取代」。审核结论不继承。**幂等**：同一原版最多一份「在途」修订稿（`draft` / `pending_review` / `rejected`）——重复调用返回**已有的那一份**，不会建出一排同版本草稿（返工单第 6 条）。
 
 ## 41.2 新品洞察（product-insights）
@@ -945,9 +948,15 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /product-insights`：新建。需要 `product:manage`。`title` 必填且**去空白后不得为空**；`price_assumption` 不得为负；窄接口 `extra="forbid"`。
 - `GET /product-insights/{insight_id}`：详情。需要 `product:view`。返回参考图 `images`、来源洞察回链、评审轮次。
 - `PATCH /product-insights/{insight_id}`：更新。需要 `product:manage`。**语义：传了就改（含传 `null` ＝ 清空），没传就不动**（`exclude_unset=True`；旧实现用 `if value is not None`，导致"传 null 想清空"被跳过，界面清了库里还在）。内容冻结：`under_review` 期间不得改关键内容；`approved` 后改关键内容会**退回待评审**并 `review_round + 1`。
+  **写入口的数据范围（第四轮返工 P1-3）**：编辑 / 提交 / 删除 / 转换一律走 `_get_writable` —— **有 `product:review` 不等于能改别人的**。此前这四个入口复用了"评审可见性"那个取数函数，而它对评审权限直接放行，于是"仅本人范围 + 有评审权限"的账号能直接改掉他人名下的草稿。能评审是职责（看得到），不能改是边界（改不动），两件事分开判。
+  **改负责人**要校验接收人：存在、在职、且在操作者可分配范围内（与创建同一套判据）。
+  **"改了没有"比的是值，不是"请求带没带这个字段"（P1-4）**：把标题原样再提交一遍不会被当成改动（否则已通过的记录会被误退回重审、轮次 +1）。字符串首尾空白、`Decimal('12.30')` 与 `12.3`、`None` 与空串都算"没变"。
+  **所有状态写入都加行锁**（编辑 / 提交 / 审核 / 删除 / 转换），并发时后到的会读到最新状态并被状态检查挡下。
 - `DELETE /product-insights/{insight_id}`：删除。需要 `product:manage`。**已转换的洞察不可删**（会断开来源追溯）。
 - `POST /product-insights/{insight_id}/submit`：提交评审。需要 `product:manage`。
-- `POST /product-insights/{insight_id}/review`：评审。需要 `product:view` + **`product:review` 权限码**（2026-10-06 新增，不再写死"主管角色"）；否决必须写意见。
+- `POST /product-insights/{insight_id}/review`：评审。需要 `product:view` + **`product:review` 权限码**（2026-10-06 新增，不再写死"主管角色"）；否决必须写意见。**这是唯一放行评审权限的写入口**：评审人要能审别人的单子，所以可见性放开；但他仍然改不了别人的内容（见 PATCH 那条）。落结论时会在**当轮记录**上补审核结果（谁、什么时候、结论、意见）。
+- `GET /product-insights/{insight_id}/rounds`：**逐轮评审记录**（第四轮返工 P1-4）。需要 `product:view`。每轮含：提交时的**关键内容快照**（标题/来源/目标客户/方向/卖点/价格假设/结论）、提交人、提交时间、审核结果、审核人（含姓名）、审核时间、审核意见。
+  为什么要这张表：`product_insights` 上那几个字段只有**最后一轮**的值 —— 第 3 轮通过之后，第 1 轮报的是什么内容、第 2 轮是谁为什么否掉的，全被覆盖；审计日志只记了"改了哪几个字段名"，没有当时的内容。详情接口的返回里也带 `rounds`。
 - `POST /product-insights/{insight_id}/convert`：转成需求。需要 `product:manage`。走 `inquiry` 模块的统一创建流程（统一取号 `inquiry_no` + 客户/商机一致性校验）；未选客户时转为**内部开发需求**（`origin=internal_dev`），其可见范围只归提出者、评审岗与管理员，**不再出现"没挂客户所以人人可见"**。带行锁与转换关系唯一约束，重复请求返回既有单据。
 
 ## 41.3 定制询价（custom-inquiries）
@@ -1009,8 +1018,10 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 ## 41.8 销售目标与实绩（sales-targets）
 
 - `GET /sales-targets`：目标 vs 实际。需要 `customer:view`。非 admin 只看自己 + 全公司目标行；团队指标只对 `department` 及以上开放。**考核口径＝确认回款**（差额与达成率都用它），归月依据是**财务确认时间**（`payment_records.confirmed_at`）而*不是*客户打款那天——跨月确认（1 月底到账、2 月初确认）时按确认月计（返工单第 2 条）；签单额 / 发货额只展示、**不进差额**。返回里带：`attribution_note`（本页是**业绩口径**＝签单归属，与应收/账龄页的责任口径不同，同一页内计划/实绩/差额/明细必须同源）、`actual_frozen`（这一期是否为结账存档）、`missing_confirmed_at_count` 与 `missing_confirmed_at_note`（状态已确认却没记确认时间的回款笔数——这些钱**没进任何金额**，要提示业务去补录，不能拿打款日顶替）。
-- `GET /sales-targets/bases`：三种销售额口径 + 老客净额 + 两种新客口径（文档 §六 / 场景17）。需要 `customer:view`。**口径与数据来源随结果一起返回**（业务要能回答"这个数字怎么来的"）；签单/发货/回款三个数刻意分开、不互相顶替，发货口径按**实际发货批次**分摊到各批次所在月。**回款口径＝按财务确认时间（`payment_records.confirmed_at`）归月**，不是客户打款那天；已确认但没记确认时间的**不计入**（不拿打款日顶替，否则同一列里混进两个口径）——返工单第 2 条。
-- `GET /sales-targets/drilldown`：把某个指标的某个（期间, 作用域）拆到**具体业务记录**（§4.3 可追溯明细）。需要 `customer:view`。参数 `metric`、`period`、`user_id` / `department_id`。合计与上面两个接口用同一套口径与筛选——文档要求"所有断言应定位到业务记录或批次，而不是只比汇总数字"。**归属与汇总同源**：销售类指标一律按**签单归属**（`coalesce(sales_owner_id, owner_id)`），不再是"明细按当前负责人"——否则交接过的单子点开明细永远对不上汇总（返工单第 3 条）。**已结账的期间读存档明细**（`source=snapshot`，`actual_frozen=true`），与冻结的汇总同一次写入，退货/改单之后仍然对得上；未结账的期间是 `source=live` 实时算。`items[].date` 已格式化为可读的本地时间（如 `2026-06-05 10:00`）。
+  **新客口径（第四轮返工 P1-2）**：`new_customer_actual` ＝ 该客户**首笔非取消订单**落在本月的客户数（考核口径，与年度统计、下钻明细、冻结快照同源）；另返回 `new_customer_created_actual` ＝ 本月**新建档**客户数，作为**过程指标**单独一列，**不进差额与达成率**。此前把"建档数"当成了考核实绩（9 月只建档、一单没成也显示"新客实绩 1"），而明细按首成交列 —— 同一页两个口径，点开还会互相打脸。
+  **数据范围（第四轮返工 P1-1）**：**冻结快照的读取、补零行、覆盖值与人员名称查询统一按操作者范围过滤**，不因为"这一期结过账"就放宽。个人快照按人、部门快照按部门各自授权；公司汇总行仍按既定规则人人可见（它只有一个汇总值，不带任何个人业绩）。
+- `GET /sales-targets/bases`：三种销售额口径 + 老客净额 + 两种新客口径（文档 §六 / 场景17）。需要 `customer:view`。**口径与数据来源随结果一起返回**（业务要能回答"这个数字怎么来的"）；签单/发货/回款三个数刻意分开、不互相顶替，发货口径按**实际发货批次**分摊到各批次所在月。**回款口径＝按财务确认时间（`payment_records.confirmed_at`）归月**，不是客户打款那天；已确认但没记确认时间的**不计入**（不拿打款日顶替，否则同一列里混进两个口径）——返工单第 2 条。本页同时给出 `new_by_created`（过程指标）与 `new_by_first_deal`（考核口径）两条序列。
+- `GET /sales-targets/drilldown`：把某个指标的某个（期间, 作用域）拆到**具体业务记录**（§4.3 可追溯明细）。需要 `customer:view`。参数 `metric`、`period`、`user_id` / `department_id`。合计与上面两个接口用同一套口径与筛选——文档要求"所有断言应定位到业务记录或批次，而不是只比汇总数字"。**归属与汇总同源**：销售类指标一律按**签单归属**（`coalesce(sales_owner_id, owner_id)`），不再是"明细按当前负责人"——否则交接过的单子点开明细永远对不上汇总（返工单第 3 条）。**新客明细与汇总走同一份取数**（`target_bases.new_customer_rows`）：一行 = 一个首成交客户，`count` 必然等于汇总的 `new_customer_actual`（返工单 P1-2 要求"数量必须与明细一致"）。**已结账的期间读存档明细**（`source=snapshot`，`actual_frozen=true`），与冻结的汇总同一次写入，退货/改单之后仍然对得上；未结账的期间是 `source=live` 实时算。`items[].date` 已格式化为可读的本地时间（如 `2026-06-05 10:00`）。
 - `POST /sales-targets/upsert`：新增/更新目标行。需要 `settings:manage`。
 - `POST /sales-targets/bases/refreeze`：重算某一年的口径基准（老客池 / 首次成交）并重新冻结（§4.1.5）。需要 `settings:manage`。冻结的意义是"历史不被后来的订单变更改写"，但确实存在需要重算的正当理由（如历史订单状态当初录错）；与其让每次读取都悄悄重算（等于没冻结），不如给一个**显式、可审计**的重置动作。
 - `POST /sales-targets/actuals/freeze`：**结账**——把已经过完的这一期的实绩抄一份存档（§4.1.5 后半）。需要 `settings:manage`，且必须 `data_scope=all`（只冻自己看得到的那部分，等于把半张报表当账结了）。之后这一期的数字不再随订单状态变：客户今年退掉去年的一张单，去年结过账的那一期照样是原来的数。（在此之前报表是每次打开现算的，年底发奖金拿的那份报表过几个月再看就变了。）**存档的是整行五个指标**（签单 / 确认回款 / 发货 / 新客 / **老客净额**——`target_actuals.ACTUAL_METRICS`），**构成这批数的明细会一起冻**（新表 `analytics_actual_snapshot_items`）——只冻汇总的话，结账后一张退货单就会让"点开明细"比"合计"少一笔（返工单第 4 条）。返回 `{period, rows, scopes, items}`。当月不允许结账（数据还在产生）。

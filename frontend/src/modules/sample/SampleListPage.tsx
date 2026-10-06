@@ -35,9 +35,11 @@ import {
   signSample,
   updateSample,
   updateSampleItem,
+  type BasisFile,
   type SampleItem,
   type SampleRequestRow,
 } from '../../shared/api/sample'
+import { listBusinessFiles } from '../../shared/api/file'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -383,10 +385,34 @@ export default function SampleListPage() {
     onError,
   })
 
+  // 登记制作完成（含**制作依据**，第一批返修 §3.5）。
+  // 为什么必须弹窗而不是直接提交：依据是"这次照哪几份图纸做的"，事后出了质量问题
+  // 拿什么比对全看这一笔。原来页面只发 remark、连 remark 都没传，
+  // 快照永远是空的 —— 后端字段白做了（返工单 P2-7）。
+  const [madeModal, setMadeModal] = useState(false)
+  const [madeForm, setMadeForm] = useState<{ remark: string; fileIds: number[] }>({
+    remark: '',
+    fileIds: [],
+  })
+  // 这张打样单上已挂的附件：只有挂在本单上的文件才能作为它的制作依据
+  // （后端会校验这一点，前端不列出来等于让人猜文件名）
+  const madeFilesQuery = useQuery({
+    queryKey: ['sample-files', detailId],
+    queryFn: () => listBusinessFiles('sample', detailId!),
+    enabled: madeModal && Boolean(detailId),
+  })
+
   const madeMutation = useMutation({
-    mutationFn: () => madeSample(detailId!),
+    mutationFn: () =>
+      madeSample(detailId!, madeForm.remark.trim() || undefined, madeForm.fileIds),
     onSuccess: () => {
-      Toast.success('已登记制作完成')
+      Toast.success(
+        madeForm.fileIds.length
+          ? `已登记制作完成，并记下 ${madeForm.fileIds.length} 份制作依据`
+          : '已登记制作完成（未指定制作依据）',
+      )
+      setMadeModal(false)
+      setMadeForm({ remark: '', fileIds: [] })
       void refresh()
     },
     onError,
@@ -1083,6 +1109,45 @@ export default function SampleListPage() {
                         打样费用：{detail.sample_fee != null ? `¥${detail.sample_fee}` : '未填'}
                       </div>
                       <div>制作完成：{dash(detail.made_at?.slice(0, 10))}</div>
+                      {/* 制作依据（第一批返修 §3.5）：这次照哪几份文件做的。
+                          三种情况必须分开说（返工单 P2-7）：
+                            · 还没登记制作 → 不适用；
+                            · 这条记录早于本功能 → **明确标注"未登记"**，
+                              绝不能显示成"已确认没有依据"（那是把"不知道"说成了"没有"）；
+                            · 登记过但当时没选 → 如实说"登记时未指定"。 */}
+                      <div>
+                        制作依据：
+                        {!detail.made_at ? (
+                          <span style={{ color: 'var(--crm-text-3)' }}>还没登记制作完成</span>
+                        ) : !detail.basis_files ? (
+                          <span style={{ color: 'var(--crm-warning)' }}>
+                            这条记录早于「制作依据」功能，当时没有登记（不代表没有依据）
+                          </span>
+                        ) : detail.basis_files.length === 0 ? (
+                          <span style={{ color: 'var(--crm-text-3)' }}>登记时未指定</span>
+                        ) : (
+                          detail.basis_files.map((file: BasisFile) => (
+                            <div key={file.file_id} style={{ marginLeft: 8 }}>
+                              · {file.file_name || `文件 #${file.file_id}`}
+                              <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                                （第 {file.sample_version ?? 1} 版依据，校验值{' '}
+                                {file.checksum ? `${file.checksum.slice(0, 12)}…` : '未记录'}）
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                      {detail.made_events && detail.made_events.length > 0 && (
+                        <div>
+                          制作记录：
+                          {detail.made_events.map((event, index) => (
+                            <div key={event.key ?? index} style={{ marginLeft: 8 }}>
+                              · {event.at?.slice(0, 10) || '—'}
+                              {event.note ? `：${event.note}` : ''}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div>
                         版本：第 {detail.version ?? 1} 版
                         {detail.superseded_by
@@ -1095,8 +1160,10 @@ export default function SampleListPage() {
                   {canManage && detail.status === 'approved' && !detail.made_at && (
                     <Button
                       style={{ marginTop: 8 }}
-                      loading={madeMutation.isPending}
-                      onClick={() => madeMutation.mutate()}
+                      onClick={() => {
+                        setMadeForm({ remark: '', fileIds: [] })
+                        setMadeModal(true)
+                      }}
                     >
                       登记制作完成
                     </Button>
@@ -1171,6 +1238,87 @@ export default function SampleListPage() {
 
       {/* 改一条明细的车间依据。单独开弹窗而不是行内编辑：这三个字段是「审批批的
           那一版资料」，改它们会触发退回重审，值得一次明确的确认动作 */}
+      {/* 登记制作完成（含制作依据，第一批返修 §3.5 / 返工单 P2-7）。
+          「照哪几份文件做的」必须在这里点一次：不点，事后出了质量问题连
+          比对对象都没有；而"制作依据"这个字段后端早就存了，只是页面一直没接。 */}
+      <Modal
+        title="登记制作完成"
+        visible={madeModal}
+        onCancel={() => setMadeModal(false)}
+        onOk={() => madeMutation.mutate()}
+        confirmLoading={madeMutation.isPending}
+        okText="登记"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-2)', marginBottom: 4 }}>
+              制作说明（可选）
+            </div>
+            <TextArea
+              rows={2}
+              value={madeForm.remark}
+              onChange={(value) => setMadeForm({ ...madeForm, remark: value })}
+              placeholder="如：按第 2 版图纸做，色差已和客户确认"
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+              这次照哪几份文件做的？
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 6 }}>
+              只能选「挂在这张打样单上的附件」（后端会校验）。选中的会连同文件校验值
+              一起存成快照，事后可核对"就是这一份"。不选也能登记，但将来对不了账。
+            </div>
+            {madeFilesQuery.isLoading && (
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>正在读附件…</div>
+            )}
+            {!madeFilesQuery.isLoading && (madeFilesQuery.data ?? []).length === 0 && (
+              <div style={{ fontSize: 12, color: 'var(--crm-warning)' }}>
+                这张单子上还没有附件。请先在详情的附件区上传图纸/确认件，再回来登记依据。
+              </div>
+            )}
+            <div style={{ display: 'grid', gap: 4 }}>
+              {(madeFilesQuery.data ?? []).map((file) => {
+                const checked = madeForm.fileIds.includes(file.id)
+                return (
+                  <label
+                    key={file.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      padding: '6px 8px',
+                      border: `1px solid ${checked ? 'var(--crm-primary)' : 'var(--crm-outline)'}`,
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                      background: checked ? 'var(--crm-primary-soft)' : 'transparent',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() =>
+                        setMadeForm({
+                          ...madeForm,
+                          fileIds: checked
+                            ? madeForm.fileIds.filter((id) => id !== file.id)
+                            : [...madeForm.fileIds, file.id],
+                        })
+                      }
+                    />
+                    <span style={{ fontSize: 13 }}>
+                      {file.file_name}
+                      {file.category ? `（${file.category}）` : ''}
+                    </span>
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </Modal>
+
       <Modal
         title="修改车间依据"
         visible={itemEdit !== null}
