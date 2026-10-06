@@ -542,8 +542,8 @@ async function main() {
     { path: '/settings?tab=roles', name: '24-settings-roles', expectText: '角色与数据范围' },
     { path: '/settings?tab=departments', name: '25-settings-departments', expectText: '部门' },
     { path: '/agent', name: '20-agent', expectText: '新建会话' },
-    // 知识库：定制询价列表 + 修订链/钉钉审批入口都在这一页
-    { path: '/knowledge', name: '32-knowledge', expectText: '产品知识库 · 定制询价' },
+    // 定制需求（原菜单名「知识库」）：需求列表 + 修订链/钉钉审批入口都在这一页
+    { path: '/inquiries', name: '32-inquiries', expectText: '定制需求' },
     { path: '/samples', name: '22-samples', expectText: '样品管理' },
     // 深链详情：/samples/:id 直接打开该条详情抽屉（案例证据跳转也走它）
     ...(sample ? [{ path: `/samples/${sample.id}`, name: '22b-sample-detail', expectText: '样品' }] : []),
@@ -999,7 +999,7 @@ async function main() {
         if (!await waitForText(client, '原规格：原规格')) throw new Error('详情未展示原规格差异')
         const detailShot = await client.send('Page.captureScreenshot', { format: 'png' })
         writeFileSync(join(OUT_DIR, '49-sample-source-detail.png'), Buffer.from(detailShot.data, 'base64'))
-        await client.send('Page.navigate', { url: `${APP_BASE}/knowledge?opportunity_id=${item.sampleSource.opportunityId}` })
+        await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${item.sampleSource.opportunityId}` })
         if (!await waitForText(client, 'CHKUI来源采购')) throw new Error('询价来源未加载')
         if (await clickByText(client, '申请打样', { tag: 'a' }) !== 'clicked') throw new Error('询价没有打样入口')
         if (!await waitForText(client, '原采购数量：10,000')) throw new Error('询价未带入原数量')
@@ -1007,7 +1007,7 @@ async function main() {
         await checkedJson(`/custom-inquiries/${item.sampleSource.inquiryId}/revise`, auth.token, {
           method: 'POST', body: JSON.stringify({ quantity: 20000, revision_note: 'UI 历史版本验收' }),
         })
-        await client.send('Page.navigate', { url: `${APP_BASE}/knowledge?opportunity_id=${item.sampleSource.opportunityId}` })
+        await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${item.sampleSource.opportunityId}` })
         await waitForText(client, '历史')
         await clickByText(client, '历史', { tag: 'a' })
         if (!await waitForText(client, '版本历史：')) throw new Error('询价历史未打开')
@@ -1085,7 +1085,7 @@ async function main() {
         const sampleShot = await client.send('Page.captureScreenshot', { format: 'png' })
         writeFileSync(join(OUT_DIR, '46-demand-sample-prefill.png'), Buffer.from(sampleShot.data, 'base64'))
         await clickByText(client, '取消')
-        await client.send('Page.navigate', { url: `${APP_BASE}/knowledge?opportunity_id=${oid}` })
+        await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${oid}` })
         if (!await waitForText(client, inquiryTitle) || !await waitForText(client, '当前商机：')) throw new Error('询价库未按商机筛选')
         await clickByText(client, '记录定制询价')
         if (!await waitForText(client, '关联商机（本次采购需求）')) throw new Error('询价库缺少商机关联字段')

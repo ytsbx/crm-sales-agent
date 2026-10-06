@@ -77,7 +77,8 @@ const EMPTY_FORM: InquiryForm = {
   remark: '',
 }
 
-/** 产品知识库 · 定制询价类（领导模块③）：客户问了但没有标准产品的需求沉淀。 */
+/** 定制需求（文档 §3.3「产品知识库」三态里的定制询价那一类）：客户问了但没有标准产品的需求沉淀。
+ *  标签此前叫「知识库」，与文档里的伞概念重名，2026-10-06 统一改成「定制需求」。 */
 export default function KnowledgePage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -440,7 +441,7 @@ export default function KnowledgePage() {
   return (
     <div className="page-container">
       <PageHeader
-        title="产品知识库 · 定制询价"
+        title="定制需求"
         subtitle="客户问了但我们还没有标准产品的需求都沉淀在这里——这是找开发方向的原料"
       />
 

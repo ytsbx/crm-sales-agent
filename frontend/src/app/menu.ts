@@ -9,7 +9,6 @@ import type { ComponentType } from 'react'
 import {
   IconAt,
   IconBarChartHStroked,
-  IconBook,
   IconBox,
   IconBriefcase,
   IconBulb,
@@ -21,6 +20,7 @@ import {
   IconFolder,
   IconGift,
   IconHome,
+  IconInbox,
   IconMoneyExchangeStroked,
   IconPriceTag,
   IconSend,
@@ -80,7 +80,12 @@ export const MENU_GROUPS: MenuGroup[] = [
       { key: 'documents', path: '/documents', label: '文档管理', icon: IconFolder, ready: true, permission: 'order:view' },
       { key: 'cases', path: '/cases', label: '案例库', icon: IconStar, ready: true, permission: 'quote:view' },
       { key: 'insights', path: '/insights', label: '新品洞察', icon: IconBulb, ready: true, permission: 'product:view' },
-      { key: 'knowledge', path: '/knowledge', label: '知识库', icon: IconBook, ready: true },
+      // 这条原来叫「知识库」，但「知识库」是文档里的伞概念（新品洞察 → 定制需求
+      // → 在产产品三类的合称），扣在这一条上名不副实。页面内里、编号规则、
+      // 别处链接文案（「已转需求」「去看这条需求」）本来就都叫「定制需求」，
+      // 只有标签和标题还挂着「知识库」——这次统一过来。编号前缀 XQ 正是
+      // 「需求」的拼音首字母，改完两者才对得上。
+      { key: 'inquiries', path: '/inquiries', label: '定制需求', icon: IconInbox, ready: true },
       {
         key: 'analytics',
         path: '/analytics',

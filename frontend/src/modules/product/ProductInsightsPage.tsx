@@ -332,7 +332,7 @@ export default function ProductInsightsPage() {
                   )}
                   {/* 已转：给得出去的深链，不是一串死编号（§6.1(7)） */}
                   {record.converted_inquiry_id && (
-                    <Link to="/knowledge?keyword=" style={{ color: 'var(--crm-text-3)' }}>
+                    <Link to="/inquiries?keyword=" style={{ color: 'var(--crm-text-3)' }}>
                       已转需求 #{record.converted_inquiry_id}
                     </Link>
                   )}
@@ -545,7 +545,7 @@ export default function ProductInsightsPage() {
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button onClick={() => setConvertResult(null)}>知道了</Button>
             {convertResult && (
-              <Link to={`/knowledge?keyword=${encodeURIComponent(convertResult.inquiry_no ?? '')}`}>
+              <Link to={`/inquiries?keyword=${encodeURIComponent(convertResult.inquiry_no ?? '')}`}>
                 <Button theme="solid">去看这条需求</Button>
               </Link>
             )}

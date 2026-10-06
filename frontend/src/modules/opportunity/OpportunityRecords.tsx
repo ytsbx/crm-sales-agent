@@ -82,7 +82,7 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
           dataSource={inquiries.data?.items ?? []} empty={emptyText(inquiries, '暂无关联定制询价')}
           pagination={pagination('inquiries', inquiries.data?.total ?? 0)} columns={[
             { title: '需求编号', dataIndex: 'inquiry_no' },
-            { title: '需求', render: (_: unknown, row: CustomInquiryRow) => <Link to={`/knowledge?opportunity_id=${opportunityId}`}>{row.title}</Link> },
+            { title: '需求', render: (_: unknown, row: CustomInquiryRow) => <Link to={`/inquiries?opportunity_id=${opportunityId}`}>{row.title}</Link> },
             { title: '版本', render: (_: unknown, row: CustomInquiryRow) => `V${row.version ?? 1} · ${row.version_state_label ?? '当前版'}` },
             { title: '状态', dataIndex: 'status_label' },
           ]} />

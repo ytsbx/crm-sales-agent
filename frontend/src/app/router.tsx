@@ -79,7 +79,7 @@ export const router = createBrowserRouter([
       { path: 'order-drafts', element: <OrderDraftsPage /> },
       { path: 'order-drafts/:id', element: <OrderDraftsPage /> },
       { path: 'receivables', element: <OrderListPage initialTab="receivables" /> },
-      { path: 'knowledge', element: <KnowledgePage /> },
+      { path: 'inquiries', element: <KnowledgePage /> },
       { path: 'documents', element: <DocumentsPage /> },
       { path: 'cases', element: <CasesPage /> },
       { path: 'insights', element: <ProductInsightsPage /> },
