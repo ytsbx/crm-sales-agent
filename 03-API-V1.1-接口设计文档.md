@@ -911,3 +911,200 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /orders/{id}/milestones` 首次仅初始化六个空计划节点；已存在的历史计划不改。旧 `POST /orders/{id}/milestones/replan` 返回 422 并引导使用预览与责任人确认流程，避免绕过确认直接写计划。
 - `PATCH /orders/{id}/milestones/{node_id}` 支持 `skipped=true` + 非空 `skip_reason`，记录 `skipped_by/skipped_at`，返回 `status=skipped`（不适用）。已实际完成不得跳过；跳过中不得直接登记实际完成，须先以 `skipped=false` 恢复适用。跳过及恢复均审计留痕。逾期提醒和节点统计排除跳过项；到货型订单的发货履约比较使用计划发货日；历史交期类型未明确的订单归入交期待补充，不按发货日猜测，也不计入准时率分母。
 - 新迁移 `e9c3a7b1d5f4` 在一次性测试库验收；业务数据库尚未升级。
+
+
+---
+
+# 41. 实现已落地、本文档此前未登记的接口（2026-10-06 补齐）
+
+> 起因：`ops/api_gap.py` 做的是**单向**对账（"文档有、代码没有"），一直报 0 条。
+> 2026-10-06 补做了**反向**对账，发现代码注册 514 条、本文档只写了 380 条，**缺 113 条**：
+> 案例库、新品洞察、合同、对外单据、订单草稿、销售目标、定制询价、审批规则、标签、
+> 物流费率等**整章都没有**。
+>
+> 本章把这 113 条登记齐（跳过纯辅助类：导入模板下载、导出、前端埋点、`/meta`、
+> `/search`、`/files/{id}/preview`、`/webhooks/wecom/events`、`/agent/tools`）。
+> 补齐后 `api_gap.py` 两个方向都应为 0。
+>
+> 每条格式：`路径` + **权限码** + 关键约束。路径不含 `/api/v1` 前缀（与全文一致）。
+
+## 41.1 案例库（cases）
+
+- `GET /cases`：案例列表。需要 `quote:view`。返回**真分页**（`items/page/page_size/total`，第四批 §5.1.6 之前是 `.limit(200)` 硬顶，第 201 条起永远看不到也无提示）。筛选：`status`、`industry`、`product_line`、`stage`、`problem_tags`（JSONB 包含匹配）、`keyword`、`include_history`。**默认只列当前版本**，判据是「自己已被取代」（`status=superseded`）而**不是**「库里存在指向自己的修订稿」——后者会让作者一点「开修订稿」（只生成一份还没发布的草稿）原版就从列表里消失，看着像案例丢了（返工单第 6 条）。`include_history=true` 时把被取代的旧版一并列出。可见范围：`published` **与 `superseded`** 均人尽可读（脱敏），其余只有作者本人与主管可见。
+- `POST /cases`：新建案例（落 `draft`）。需要 `quote:view`。`title` 必填；证据单据必须存在、同客户、在数据范围内（防"挂上别人的单子"变成越权读入口）。
+- `GET /cases/{case_id}`：详情。可见范围与列表一致；`pending_review` 不对外。**已被取代的旧版（`superseded`）照样打得开**——它是培训资料，不该因为出了新版就读不到（只读，见 PATCH）。
+- `PATCH /cases/{case_id}`：修改。需要 `quote:view`，且仅作者在 `draft` / `rejected` 状态可改。`published` / `superseded` **一律拒（422）**，连主管也不能原地改——审核批的是"这一版内容"，改完还挂着"已发布"等于复用了一个对不上号的审核结论；要改就开修订稿重新走审核。
+- `DELETE /cases/{case_id}`：删除。需要 `quote:view`（作者或主管）。
+- `POST /cases/{case_id}/submit`：提交审核。需要 `quote:view`，仅作者可提交，状态须为 `draft` / `rejected`。**闸门**：`title` 非空 **且**（`key_actions` 或 `lessons` 至少一项非空）——注意「关键动作」与「可复用做法」是**二选一**，不是各自必填。
+- `POST /cases/{case_id}/review`：审核。需要 `quote:view`，仅主管/管理员可驳回或批准；状态须为 `pending_review`。逐条追加审核历史；批准修订稿时替换被取代的那一版。
+- `POST /cases/{case_id}/revise`：从已发布案例开**修订稿**（§5.1.5 已确认口径＝修订稿）。已发布版继续可供培训（不改动、不断档）；修订稿走「改完 → 提交审核 → 批准 → 替换当前发布版」，原版转「已被修订版取代」。审核结论不继承。**幂等**：同一原版最多一份「在途」修订稿（`draft` / `pending_review` / `rejected`）——重复调用返回**已有的那一份**，不会建出一排同版本草稿（返工单第 6 条）。
+
+## 41.2 新品洞察（product-insights）
+
+- `GET /product-insights`：列表。需要 `product:view`。数据范围按 `owner_id` 过滤。
+- `POST /product-insights`：新建。需要 `product:manage`。`title` 必填且**去空白后不得为空**；`price_assumption` 不得为负；窄接口 `extra="forbid"`。
+- `GET /product-insights/{insight_id}`：详情。需要 `product:view`。返回参考图 `images`、来源洞察回链、评审轮次。
+- `PATCH /product-insights/{insight_id}`：更新。需要 `product:manage`。**语义：传了就改（含传 `null` ＝ 清空），没传就不动**（`exclude_unset=True`；旧实现用 `if value is not None`，导致"传 null 想清空"被跳过，界面清了库里还在）。内容冻结：`under_review` 期间不得改关键内容；`approved` 后改关键内容会**退回待评审**并 `review_round + 1`。
+- `DELETE /product-insights/{insight_id}`：删除。需要 `product:manage`。**已转换的洞察不可删**（会断开来源追溯）。
+- `POST /product-insights/{insight_id}/submit`：提交评审。需要 `product:manage`。
+- `POST /product-insights/{insight_id}/review`：评审。需要 `product:view` + **`product:review` 权限码**（2026-10-06 新增，不再写死"主管角色"）；否决必须写意见。
+- `POST /product-insights/{insight_id}/convert`：转成需求。需要 `product:manage`。走 `inquiry` 模块的统一创建流程（统一取号 `inquiry_no` + 客户/商机一致性校验）；未选客户时转为**内部开发需求**（`origin=internal_dev`），其可见范围只归提出者、评审岗与管理员，**不再出现"没挂客户所以人人可见"**。带行锁与转换关系唯一约束，重复请求返回既有单据。
+
+## 41.3 定制询价（custom-inquiries）
+
+- `GET /custom-inquiries`：列表。需要 `quote:view`。数据范围：本范围客户 + 自己创建的 + 未挂客户的**客户询价**；内部开发需求只对提出者/评审岗/管理员可见。
+- `POST /custom-inquiries`：新建。需要 `quote:manage`。`title` 必填。
+- `GET /custom-inquiries/status-summary`：各状态条数（待评估/开发中/已转商机/已归档），页面顶部徽章用。需要 `quote:view`。
+- `GET /custom-inquiries/{inquiry_id}`：详情。需要 `quote:view`。前端修订表单用它回填当前版内容。
+- `PATCH /custom-inquiries/{inquiry_id}`：修改。需要 `quote:manage`。
+- `DELETE /custom-inquiries/{inquiry_id}`：删除。需要 `quote:manage`。
+- `GET /custom-inquiries/{inquiry_id}/history`：整条修订链，按版本升序（先看最早的原始要求）。需要 `quote:view`。
+- `POST /custom-inquiries/{inquiry_id}/revise`：客户改要求 → 新增一版（版本号 +1、留修订说明），旧版原样保留。需要 `quote:manage`。（§3.3："改了三次要求却只留最新一版、看不出怎么变的"。）
+- `POST /custom-inquiries/{inquiry_id}/create-quote`：从定制需求直接发起报价（§3.1/场景09）。需要 `quote:manage`。定制件投产前没有 SKU，按 SKU 选品选不到它，这条把「需求 → 商机 → 报价 → 定制明细」一步串起。
+
+## 41.4 标签（tags）
+
+- `GET /tags`：标签列表。需要 `customer:view`。
+- `POST /tags`：新建标签。需要 `customer:update`。
+- `PATCH /tags/{tag_id}`：修改。需要 `customer:update`。
+- `DELETE /tags/{tag_id}`：删除。需要 `customer:update`。
+
+## 41.5 审批规则（approval-rules）
+
+> 与 #23 Approval（审批**单**）不是一回事：这里管的是"规则本身"的草稿 / 发布 / 版本。
+
+- `GET /approval-rules`：规则列表。需要 `quote:view`。
+- `POST /approval-rules`：新建规则（落草稿）。需要 `settings:manage`。
+- `GET /approval-rules/condition-fields`：条件字段目录。需要 `quote:view`。前端编辑器的字段/操作符下拉、单位与提示语都来自这里。
+- `GET /approval-rules/{rule_id}/versions`：规则版本列表。需要 `quote:view`。
+- `PATCH /approval-rules/{rule_id}`：编辑草稿。需要 `settings:manage`。**改动不立即生效**——引擎只按已发布版本求值，要生效须 `publish`。
+- `POST /approval-rules/{rule_id}/publish`：把当前草稿发布成新版本（生成不可变快照），引擎从此按这一版求值。需要 `settings:manage`。
+- `PATCH /approval-rules/{rule_id}/enabled`：启停开关，立即生效的运维动作（与草稿/发布无关）。需要 `settings:manage`。未发布过的规则打开开关也**不会**生效。
+- `POST /approval-rules/sandbox`：规则沙盒——拿一张真实报价版本试跑全部规则，逐条给出命中明细，**不产生任何副作用**。需要 `quote:view`。试算对象是当前草稿状态，正好用于"改完规则、发布前先验证"。
+- `DELETE /approval-rules/{rule_id}`：删除规则。需要 `settings:manage`。审批单上的规则痕迹存的是名称快照，删规则不影响历史留痕。
+
+## 41.6 合同 / 月结协议（contract-documents、contract-templates）
+
+- `GET /contract-documents`：台账。需要 `order:view`。**真分页**（`items/page/page_size/total`）。筛选：`customer_id`、`status`、**`order_id`**、**`quote_id`**（后两个 2026-10-06 新增，供客户/订单/报价详情页嵌"这家客户的合同"用；服务端筛选而非前端本地过滤，否则分页后第 21 条起就看不见了）。数据范围跟客户负责人**当前**归属走。
+- `POST /contract-documents`：从模板生成草稿。需要 `order:manage`。入参含 `template_id`、`customer_id`、`quote_id`、**`quote_version_id`**（2026-10-06 新增：把合同钉死在**具体报价版本**上，报价后来出 V2 不影响已生成的这份）、`order_id`、`extra_fields`、`expiry_date`、`parent_id`（补充协议/续签指回原件）、`request_key`（幂等键，重试/连点只出一份）。生成时把**抬头（公司名/客户名/订单号/报价号）连同正文一起落快照**，并把 PDF 渲染一次落盘、记 sha256。
+- `GET /contract-documents/{doc_id}`：详情。需要 `order:view`。返回正文快照、生成时的缺项清单（`missing_fields`）、关系链（基于哪份 / 被哪几份补充或续签）、以及**签署原件清单 `signed_files`**（2026-10-06 新增）。
+- `GET /contract-documents/{doc_id}/download`：下载**生成稿**（§3.6）。需要 `order:view`。**返回生成时落盘的那一份**——客户后来改名、公司换抬头、报价出了 V2，都不会让已经发出去的那份跟着变；只有本批之前生成的老数据（没有 `generated_file_id`）才回落到实时渲染，且审计会记明是回落。签署原件不放这里，走签署件清单单独取。
+- `POST /contract-documents/{doc_id}/sign`：登记签署（上传客户签回的扫描件）。需要 `order:manage`。**闸门**：未签草稿可先备条款，但登记签署前必须挂上正式依据（正式订单，或**已发送/已接受**的报价；月结协议可只关联客户）——"允许提前备合同"口径，2026-10-05 定。
+- `POST /contract-documents/{doc_id}/void`：作废。需要 `order:manage`。**已签合同的作废要求主管权限**，原因必填且不得为纯空白；原件保留（作废 ≠ 删档）。
+- `GET /contract-templates`：模板列表（按类型多版本并存）。需要 `order:view`。
+- `POST /contract-templates`：新增一版模板。需要 `settings:manage`。**不覆盖旧版**，已生成的文件仍指向它们当时用的那一版。`(doc_type, name, version)` 有唯一约束，并发建同名模板会拿保存点重试取下一个版本号。
+
+## 41.7 对外单据（biz-docs、biz-doc-templates）
+
+- `GET /biz-docs`：单据台账。需要 `order:view`。可用 `order_draft_id` 等条件查询。
+- `GET /biz-docs/{doc_id}`：单据详情。需要 `order:view`。
+- `GET /biz-docs/{doc_id}/download`：下载单据。需要 `order:view`。正文只取生成时的**快照**——之后改业务资料不影响已出的文件。格式按类型分流：报价单是客户要拿去改/填的 **Excel（xlsx）**，打样单与下单文件是正式文件（**PDF**）；两者共用同一套台账。明细表的「材质/工艺/图纸」列**只在真有值时才加**（下单文件共用同一个渲染函数，无脑加列会给它加一片空格子）。
+- `POST /biz-docs/quote`：按报价版本生成对客 Excel 报价单。需要 `quote:manage`。金额取自那一版，不现算。
+- `POST /biz-docs/order`：按订单生成下单文件。需要 `order:manage`。来源报价与差异一起落快照，订单本身不变。
+- `POST /biz-docs/sample-request`：按打样申请生成打样需求单。需要 `sample:manage`。来源询价与差异一起落快照，原单不变。
+- `POST /biz-docs/{doc_id}/void`：作废。需要 `order:manage`。状态改掉，**内容与校验值不动**（作废 ≠ 删档）。
+- `GET /biz-doc-templates`：对外单据模板列表（按类型多版本并存）。需要 `settings:manage`。
+- `POST /biz-doc-templates`：新增一版模板。需要 `settings:manage`。不覆盖旧版。
+
+## 41.8 销售目标与实绩（sales-targets）
+
+- `GET /sales-targets`：目标 vs 实际。需要 `customer:view`。非 admin 只看自己 + 全公司目标行；团队指标只对 `department` 及以上开放。**考核口径＝确认回款**（差额与达成率都用它），归月依据是**财务确认时间**（`payment_records.confirmed_at`）而*不是*客户打款那天——跨月确认（1 月底到账、2 月初确认）时按确认月计（返工单第 2 条）；签单额 / 发货额只展示、**不进差额**。返回里带：`attribution_note`（本页是**业绩口径**＝签单归属，与应收/账龄页的责任口径不同，同一页内计划/实绩/差额/明细必须同源）、`actual_frozen`（这一期是否为结账存档）、`missing_confirmed_at_count` 与 `missing_confirmed_at_note`（状态已确认却没记确认时间的回款笔数——这些钱**没进任何金额**，要提示业务去补录，不能拿打款日顶替）。
+- `GET /sales-targets/bases`：三种销售额口径 + 老客净额 + 两种新客口径（文档 §六 / 场景17）。需要 `customer:view`。**口径与数据来源随结果一起返回**（业务要能回答"这个数字怎么来的"）；签单/发货/回款三个数刻意分开、不互相顶替，发货口径按**实际发货批次**分摊到各批次所在月。**回款口径＝按财务确认时间（`payment_records.confirmed_at`）归月**，不是客户打款那天；已确认但没记确认时间的**不计入**（不拿打款日顶替，否则同一列里混进两个口径）——返工单第 2 条。
+- `GET /sales-targets/drilldown`：把某个指标的某个（期间, 作用域）拆到**具体业务记录**（§4.3 可追溯明细）。需要 `customer:view`。参数 `metric`、`period`、`user_id` / `department_id`。合计与上面两个接口用同一套口径与筛选——文档要求"所有断言应定位到业务记录或批次，而不是只比汇总数字"。**归属与汇总同源**：销售类指标一律按**签单归属**（`coalesce(sales_owner_id, owner_id)`），不再是"明细按当前负责人"——否则交接过的单子点开明细永远对不上汇总（返工单第 3 条）。**已结账的期间读存档明细**（`source=snapshot`，`actual_frozen=true`），与冻结的汇总同一次写入，退货/改单之后仍然对得上；未结账的期间是 `source=live` 实时算。`items[].date` 已格式化为可读的本地时间（如 `2026-06-05 10:00`）。
+- `POST /sales-targets/upsert`：新增/更新目标行。需要 `settings:manage`。
+- `POST /sales-targets/bases/refreeze`：重算某一年的口径基准（老客池 / 首次成交）并重新冻结（§4.1.5）。需要 `settings:manage`。冻结的意义是"历史不被后来的订单变更改写"，但确实存在需要重算的正当理由（如历史订单状态当初录错）；与其让每次读取都悄悄重算（等于没冻结），不如给一个**显式、可审计**的重置动作。
+- `POST /sales-targets/actuals/freeze`：**结账**——把已经过完的这一期的实绩抄一份存档（§4.1.5 后半）。需要 `settings:manage`，且必须 `data_scope=all`（只冻自己看得到的那部分，等于把半张报表当账结了）。之后这一期的数字不再随订单状态变：客户今年退掉去年的一张单，去年结过账的那一期照样是原来的数。（在此之前报表是每次打开现算的，年底发奖金拿的那份报表过几个月再看就变了。）**存档的是整行五个指标**（签单 / 确认回款 / 发货 / 新客 / **老客净额**——`target_actuals.ACTUAL_METRICS`），**构成这批数的明细会一起冻**（新表 `analytics_actual_snapshot_items`）——只冻汇总的话，结账后一张退货单就会让"点开明细"比"合计"少一笔（返工单第 4 条）。返回 `{period, rows, scopes, items}`。当月不允许结账（数据还在产生）。
+- `POST /sales-targets/actuals/refreeze`：**重算**已结账期间的实绩。需要 `settings:manage` + `data_scope=all`。**必须填原因**——改历史数字是要有人担责的事；不带原因的重算等于让"数字为什么变了"永远查不出来。改动前后的考核口径合计都写进审计。重算是「按现在的数重出一份」，会把上一版有、这一版没有的**陈旧汇总键一并清掉**（返回里的 `removed`），明细也**按现在的数据重出**（不会把上一版的明细原样抄回去，那样"重算"等于什么都没干）。当月不允许结账（数据还在产生）。
+
+## 41.9 订单（orders）
+
+- `POST /orders/{order_id}/status`：变更订单状态。需要 `order:manage`。
+- `GET /orders/{order_id}/finance-summary`：财务汇总。需要 `payment:view`。
+- `POST /orders/{order_id}/receivables`：新增手动应收计划。需要 `payment:manage`。
+- `POST /orders/{order_id}/receivables/generate`：按比例生成应收计划（如 30% 定金 + 70% 尾款）。需要 `payment:manage`。
+- `GET /orders/{order_id}/shipments`：批次与未发量——跟单看"承诺/事实"分开的数字。需要 `order:view`。
+- `POST /orders/{order_id}/shipments`：新建发货批次（计划）。需要 `order:manage`。
+- `POST /orders/{order_id}/shipments/{batch_id}/ship`：登记实发。需要 `order:manage`。只推进订单到「已发货」——整单完成由**未发量闸门**把关（场景13）。
+- `DELETE /orders/{order_id}/shipments/{batch_id}`：删除批次。需要 `order:manage`。
+- `GET /orders/{order_id}/schedule-changes`：交期变更历史（留着当时的前后版本对比）。需要 `order:view`。
+- `POST /orders/{order_id}/schedule-changes`：生成交期变更单（待责任人确认）。需要 `order:manage`。**未确认前不动任何计划日期。**
+- `POST /orders/{order_id}/schedule-changes/{change_id}/confirm`：责任人确认——这一刻才真正改交期、重排节点与批次计划日。需要 `order:manage`。
+- `POST /orders/{order_id}/schedule-changes/{change_id}/cancel`：作废待确认的交期变更单。需要 `order:manage`。权限与确认一致：责任人本人，或有 `order:assign` 的主管。**没有这条出口**，库级"一单只允许一张 pending"的部分唯一索引会把该订单之后的交期变更**永久堵死**。
+- `POST /orders/{order_id}/milestones/replan`：旧重排入口**已停用**，统一使用"预览 + 责任人确认"。需要 `order:manage`，调用返回 422 并引导走新流程（避免绕过确认直接写计划）。
+- `POST /orders/{order_id}/repurchase`：复购——以老订单明细为基础直接开一个新商机（不重建客户）。需要 `opportunity:manage`。
+
+## 41.10 订单草稿（order-drafts）
+
+> 口径见前文「订单草稿与正式下单（2026-10-05）」。生成草稿**不等于**正式下单。
+
+- `GET /order-drafts`：草稿列表。需要 `order:view`。分页支持 `opportunity_id` / `customer_id` 筛选，按负责人范围授权。
+- `GET /order-drafts/source`：读取询价或报价版本的已知资料。需要 `order:manage`。参数 `quote_version_id` 或 `inquiry_id`，**只能指定一个**。询价目标价不能当成交价。
+- `POST /order-drafts`：从来源生成草稿。需要 `order:manage`。接收唯一来源、UUID `request_key`、勾选明细及正数本次数量；保留原快照。相同请求重放返回同一草稿，内容变化返回 409。草稿单价未知保持空值，不写正式订单、应收或成交数据。
+- `GET /order-drafts/{draft_id}`：草稿详情。需要 `order:view`。
+- `PATCH /order-drafts/{draft_id}`：编辑草稿。需要 `order:manage`。编辑需带 `revision`，过期返回 409；**已转单的草稿不可编辑**。
+- `POST /order-drafts/{draft_id}/confirm`：草稿转正式订单。需要 `order:manage`。接收 `revision` 与 `quote_version_id`。**同客户/商机、当前且有效、已审批并正式发送、客户已接受**的报价才能正式下单；草稿全部明细、数量、规格、单价、备注、币种及付款条件须与该确认版本一致，不同则先修订报价并取得确认。同草稿同确认版本重复请求返回同一正式订单；其他草稿不能再次消耗已转单版本。
+- `POST /order-drafts/{draft_id}/documents`：生成明确标注"草稿"的需求单 PDF。需要 `order:manage`。单独按草稿编号保存文件版本和修改差异，不覆盖原资料或旧文件。
+
+## 41.11 报价版本（quote-versions）
+
+- `GET /quote-versions/{version_id}/pdf`：生成并下载报价单 PDF。需要 `quote:view`。数据全部取**快照**，不回查当前价格。
+- `GET /quote-versions/{version_id}/send-logs`：发送记录。需要 `quote:view`。
+- `GET /quote-versions/{version_id}/price-drift`：草稿版本"价格已有更新"检测（方案 §5/A09）。需要 `quote:view`。**只读**：逐明细按当前条件重查适用价，与快照拟报价比对。
+- `POST /quote-versions/{version_id}/price-refresh`：把系统带价的明细刷新到当前适用价。需要 `quote:manage`。**仅草稿可刷；手工价明细不覆盖。**
+
+## 41.12 产品与查价（products、pricing、logistics）
+
+- `POST /products/{product_id}/skus`：给产品新增 SKU。需要 `product:manage`。
+- `GET /pricing/lookup`：统一查价（方案 §4）——返回本次条件的适用价与命中来源。需要 `product:view`。**只读、不落库**；客户必须在当前用户数据范围内（与客户列表同一口径，公海客户放行）；**成本 / 最低保护价只对有 `price:manage` 的角色返回**（方案 §7 字段脱敏）；缺价返回 `status=pending`（待定价），不做成本推算兜底（D4/D5 已确认）。
+- `GET /pricing/sku-options`：给价格中心与核价页的下拉用——SKU + 所属产品名，一次取全。需要 `product:view`。**注意路径**：不要挂到 `/products/xxx` 下面，否则会被 `/products/{product_id}` 抢先匹配。
+- `PUT /price-permissions/{role_id}`：设置角色的价格权限（最小利润率、折扣上限等）。需要 `price:manage`。
+- `GET /logistics/rates`：运费费率列表。需要 `product:view`。
+- `POST /logistics/rates`：新增费率。需要 `price:manage`。
+- `DELETE /logistics/rates/{rate_id}`：删除费率。需要 `price:manage`。（此前该端点不存在：配错费率删不掉，测试清理也一直空转。）
+
+## 41.13 客户（customers，补充条目）
+
+- `GET /customers/stage-distribution`：六阶段分布——当前数据范围内各阶段客户数（了解/报价/打样/首单/返单/稳定复购）。需要 `customer:view`。
+- `POST /customers/{customer_id}/contacts`：给客户新增联系人。需要 `customer:update`。
+- `GET /customers/{customer_id}/merge-logs`：客户合并记录。需要 `customer:view`。
+
+## 41.14 工作台看板（dashboard）
+
+> 与 #35 Dashboard / Analytics 互补：这三个是**主管/个人工作台**的聚合接口。
+
+- `GET /dashboard/trend`：趋势。需要 `customer:view`。
+- `GET /dashboard/activities`：动态。需要 `customer:view`。
+- `GET /dashboard/team`：PRD §4.2 主管工作台汇总。需要 `customer:view`。数据范围是 `self` 的用户会拿到 `is_team_view: false` 与**空指标**，而不是全员数据——团队指标只对 `department` 及以上开放。
+
+## 41.15 通知补投（notifications，补充条目）
+
+- `GET /notifications/delivery-failures`：投递失败概览——多少条没出去、其中多少条还会自动重试。需要 `settings:manage`。
+- `POST /notifications/retry-failed`：批量补投——把失败与未投递的通知重新排队后立即投一遍。需要 `settings:manage`。
+- `POST /notifications/{notification_id}/redispatch`：补投**单条**通知。只需登录，权限在函数内判：**本人可补投自己的，管理员 / 设置管理员可补投任意人的**。关键设计：补投走的是同一行通知、不重跑业务动作，因此不经过 `business_events` 的唯一键——人工补发不会被去重挡住，也不会在客户时间线多出一条留痕。
+
+## 41.16 集成就绪度（integrations）
+
+- `GET /integrations/erp/readiness`：ERP 就绪度。需要 `order:view`。
+- `GET /integrations/wecom/readiness`：企微就绪度——凭据缺哪些 + 本地已同步多少数据。需要 `wecom:view`。
+- `POST /integrations/wecom/unbound-contacts/{contact_id}/ignore`：暂不处理某条未绑定联系人（PRD §8.3 的第 3 步之三）。需要 `wecom:manage`。
+
+## 41.17 打样（samples，补充条目）
+
+> 补齐 #26 Sample。以下 5 条与原 10 条合计 **15 条**。
+
+- `POST /samples/{sample_id}/made`：登记**制作完成**（文档 §3.5「分别记录制作、寄出、签收、客户确认」）。需要 `sample:manage`。刻意**不做成状态闸门**：CRM 管不到车间，把"制作完成"变成必点的状态只会让跟单为了往下走随手一点，反而污染数据。这里只记事实与时间，供打样需求单与跟单看板回答"目标完成日到了没有"。
+- `POST /samples/{sample_id}/confirm`：登记**客户确认结果**（文档 §3.5）。需要 `sample:manage`。规则只有一条但是重点：**必须先签收才能确认**——客户没收到样品就"确认接受"是假数据；签收是物流事实、确认是业务事实，分开记才答得了"这批样到底过没过"。
+- `POST /samples/{sample_id}/resubmit`：把**已驳回**的打样单**原样**重新提交审批（业务方 2026-10-05 定）。需要 `sample:manage`。为什么要有专门的接口：「改资料会自动回到待审批」只覆盖了"改完再报"；跟单若认为驳回理由不成立、一个字都不想改，就**没有任何入口**——只能去改个无关字段"骗"系统回待审批，那条留痕是假的（审计里写着改了备注，实际什么都没改）。原样重提时**保留上次的驳回原因**（单子还要再批，主管需要看到上一轮为什么被打回）。已驳回的单子也可由主管**直接改判为批准**。
+- `POST /samples/{sample_id}/revise`：开**新修订版**（第一批返修 §3.3，口径已确认 A：原单出 V2、旧版冻结只读）。需要 `sample:manage`。用在"车间依据（材质/工艺/图纸版本/目标完成日/验收标准/数量）要在**已制作或已寄出之后**改"的场合，代替原地改：复制单头与明细（含车间依据）作为起点，`version = 旧版 + 1`、`parent_id = 旧版`；**不继承旧版的制作与寄送事实**（继承过来就是伪造）。
+- `PATCH /samples/{sample_id}/items/{item_id}`：改一条明细的**车间依据**（材质 / 工艺 / 图纸版本）。需要 `sample:manage`。与单头资料的编辑**共用同一套闸门**（`_gate_part_lock`）：已批准的单子改了这三项就退回「待审批」重新批，已寄样/已签收直接拒。两处各写一份规则迟早会漂移，而"哪一档能改"是业务口径，只该有一个出处。**注意**：明细与单头用同一套闸门，但"同值重发不算改动"——只传没变化的字段会被判为无改动，不会误退回。
+
+## 41.18 商机补充：确认成交（opportunities）
+
+- `POST /opportunities/{opportunity_id}/confirm-win`：确认成交并生成订单（方案 §5 / A13）。需要 `opportunity:manage`，**且需同时具备 `order:manage`**。一个动作完成：校验成交版本 → 商机标记成交 → 版本转订单。幂等：商机已成交不重复改；版本已转过单直接返回已有订单（重试安全）。
+
+## 41.19 公海回收（public-pool，补充条目）
+
+- `POST /public-pool/run-recycle`：立即执行一次公海回收。需要 `settings:manage`。正式环境由定时任务调用。审计写在 service 内部（它自己 commit），路由层不再补写——避免提交后再写审计反而落到另一个事务里。
+
+
+

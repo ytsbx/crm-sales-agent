@@ -28,6 +28,11 @@ check_sample_production
 check_sales_attribution
 check_duplicate_arbitration
 check_sales_targets
+# 实绩快照紧跟目标口径：它读的就是目标报表，而且会结账 2025-05 那一期。
+# 放这里（check_sales_targets 之后）是为了让"目标口径实时算"的断言先跑完，
+# 免得被本套件的存档值影响——两边一个用当年、一个用去年，本不会撞，
+# 但顺序固定住最省心。
+check_target_actuals
 check_dingtalk_idempotency
 check_dingtalk_contract
 check_data_scope
@@ -36,6 +41,9 @@ check_notification_levels
 check_delivery_analytics
 check_biz_docs
 check_review_regressions
+# 案例修订稿生命周期（返工单第 6 条：开修订稿不丢原版、幂等、旧版仍可读且只读）。
+# 只碰 sales_cases 与自己的审计行，与前后套件无耦合。
+check_case_revisions
 check_operation_timing
 check_schedule_change
 check_customer_timeline
@@ -51,5 +59,8 @@ check_delivery_planning
 check_contract_documents
 check_contract_monthly_reminders
 check_attachment_sample_guards
+# 新品洞察（第五批）：评审冻结、转换、内部开发需求的权限连续性。
+# 放在案例库那套（check_customer_contact_api）之后——那边也测洞察的转换链路。
+check_product_insights
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

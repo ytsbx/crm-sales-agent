@@ -83,44 +83,110 @@ def documented_endpoints() -> list[tuple[str, str]]:
     return entries
 
 
-def main() -> int:
+#: 有意**不写进接口文档**的接口：纯辅助类，平时没人照它对接。
+#: 反向对账（--reverse）用这份白名单过滤噪音；改这份名单等于改口径，
+#: 加东西前先想清楚"这是不是真的不该写进设计基线"。
+DOC_EXEMPT_PREFIXES = (
+    # 导入模板下载 / 导入执行（前端按钮直接用，不对外）
+    '/customers/export', '/customers/import-template',
+    '/leads/export', '/leads/import-template',
+    '/products/export', '/products/import-template',
+    '/skus/export', '/skus/import-template',
+    '/costs/import-template', '/costs/import',
+    '/price-rules/import-template', '/price-rules/import',
+    '/customer-price-rules/import-template', '/customer-price-rules/import',
+    # 前端埋点、基础设施
+    '/usage/timings', '/meta/config', '/search', '/agent/tools',
+    '/files/{}/preview',
+    # 外部系统回调（由对方调用，不是本系统对外提供）
+    '/webhooks/wecom/events',
+)
+
+
+def reverse_missing() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """代码注册了、文档没写的接口。
+
+    返回（业务类缺口, 有意跳过的辅助类）。2026-10-06 加：
+    原来只做单向对账（文档有代码没有），永远报 0 条，
+    结果是**文档悄悄落后了 113 条也没人发现**（案例库、新品洞察、合同、
+    对外单据、订单草稿、销售目标等整章都没写）。反向必须一起查。
+    """
     actual = registered_routes()
-    seen: set[tuple[str, str]] = set()
-    missing: list[tuple[str, str]] = []
-    for method, path in documented_endpoints():
-        key = (method, path)
-        if key in seen:
-            continue
-        seen.add(key)
-        if key not in actual:
-            missing.append(key)
+    documented = {key for key in documented_endpoints()}
+    missing = {key for key in actual if key not in documented}
+    skipped = {
+        key for key in missing
+        if any(key[1].startswith(prefix) for prefix in DOC_EXEMPT_PREFIXES)
+    }
+    return missing - skipped, skipped
 
-    print(f'文档接口去重后 {len(seen)} 条；实际注册路由 {len(actual)} 条')
-    print(f'文档有、代码没有：{len(missing)} 条')
-    print()
 
-    buckets: dict[str, list[tuple[str, str]]] = {name: [] for name in GROUPS}
-    for method, path in missing:
-        for name, prefixes in GROUPS.items():
-            if name == '其他':
+def main() -> int:
+    argv = sys.argv[1:]
+    # 默认行为与加这个选项之前**完全一致**（有人可能拿它的输出做别的事）
+    do_forward = ('--reverse' not in argv) or ('--both' in argv)
+    do_reverse = ('--reverse' in argv) or ('--both' in argv)
+    # --strict：反向也不许有业务类缺口，用于挂进回归（非零退出＝有缺口）
+    strict = '--strict' in argv
+
+    rc = 0
+    if do_forward:
+        actual = registered_routes()
+        seen: set[tuple[str, str]] = set()
+        missing: list[tuple[str, str]] = []
+        for method, path in documented_endpoints():
+            key = (method, path)
+            if key in seen:
                 continue
-            if any(path.startswith(prefix) for prefix in prefixes):
-                buckets[name].append((method, path))
-                break
-        else:
-            buckets['其他'].append((method, path))
+            seen.add(key)
+            if key not in actual:
+                missing.append(key)
 
-    for name, rows in buckets.items():
-        if not rows:
-            continue
-        print(f'【{name}】{len(rows)} 条')
-        for method, path in rows:
-            print(f'    {method:6} {path}')
+        print(f'文档接口去重后 {len(seen)} 条；实际注册路由 {len(actual)} 条')
+        print(f'文档有、代码没有：{len(missing)} 条')
         print()
 
-    print('提示：以上是"路径对不上"，不等于"功能缺失"，需人工复核一遍。')
-    return 0
+        buckets: dict[str, list[tuple[str, str]]] = {name: [] for name in GROUPS}
+        for method, path in missing:
+            for name, prefixes in GROUPS.items():
+                if name == '其他':
+                    continue
+                if any(path.startswith(prefix) for prefix in prefixes):
+                    buckets[name].append((method, path))
+                    break
+            else:
+                buckets['其他'].append((method, path))
+
+        for name, rows in buckets.items():
+            if not rows:
+                continue
+            print(f'【{name}】{len(rows)} 条')
+            for method, path in rows:
+                print(f'    {method:6} {path}')
+            print()
+
+        print('提示：以上是"路径对不上"，不等于"功能缺失"，需人工复核一遍。')
+        if missing:
+            rc = 1
+
+    if do_reverse:
+        real, skipped = reverse_missing()
+        print()
+        print(f'代码有、文档没有（业务类）：{len(real)} 条')
+        for method, path in sorted(real):
+            print(f'    {method:6} {path}')
+        print(f'代码有、文档没有（有意跳过的辅助类）：{len(skipped)} 条'
+              f'（清单见 DOC_EXEMPT_PREFIXES）')
+        if real:
+            print()
+            print('业务类缺口应补进 03-API —— 文档落后于代码时，'
+                  '对账就只剩单向可用，下一批改动又会漏同样的事。')
+            if strict:
+                rc = 1
+
+    return rc
 
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
