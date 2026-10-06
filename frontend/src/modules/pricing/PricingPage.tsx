@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Banner, Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Input, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
 import PageHeader from '../../shared/components/PageHeader'
@@ -81,8 +81,8 @@ export default function PricingPage() {
     enabled: Boolean(skuId),
   })
 
-  // 权限校验：同一个 payload，多回答"这个价能不能自主报、不行要走到哪一级"
-  const [verdictVisible, setVerdictVisible] = useState(false)
+  // 权限校验：同一个 payload，多回答"这个价能不能自主报、不行要走到哪一级"。
+  // 结果原地显示在下面的卡片里（原先弹窗会把底下的核价数据整个遮暗，看不了对照）。
   const [verdict, setVerdict] = useState<PricePermissionVerdict | null>(null)
   const checkMutation = useMutation({
     mutationFn: () => {
@@ -97,10 +97,7 @@ export default function PricingPage() {
       }
       return checkPricePermission(payload)
     },
-    onSuccess: (data) => {
-      setVerdict(data)
-      setVerdictVisible(true)
-    },
+    onSuccess: (data) => setVerdict(data),
     onError: (error: Error) => Toast.error(error.message),
   })
 
@@ -120,9 +117,10 @@ export default function PricingPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  // AI 核价解读（API §37，需 agent:use）：把核价结果翻译成可执行的判断
+  // AI 核价解读（API §37，需 agent:use）：把核价结果翻译成可执行的判断。
+  // 与客户/订单/商机详情页保持一致：结果原地显示在下面的卡片里，
+  // 不弹窗——弹窗会加一层遮罩把底下的核价数据全压暗，没法对照着看。
   const { can } = usePermissions()
-  const [aiVisible, setAiVisible] = useState(false)
   const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
   const aiMutation = useMutation({
     mutationFn: () =>
@@ -131,10 +129,7 @@ export default function PricingPage() {
         quantity: payload.quantity,
         customer_id: customerId,
       }),
-    onSuccess: (data) => {
-      setAiEnvelope(data)
-      setAiVisible(true)
-    },
+    onSuccess: (data) => setAiEnvelope(data),
     onError: (error: Error) => Toast.error(error.message),
   })
 
@@ -266,31 +261,7 @@ export default function PricingPage() {
           {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>请先选择 SKU</div>}
         </SectionCard>
 
-        <SectionCard
-          title="核价结果"
-          extra={
-            <>
-              {can('agent:use') && (
-                <Button
-                  disabled={!skuId}
-                  loading={aiMutation.isPending}
-                  onClick={() => aiMutation.mutate()}
-                >
-                  AI 解读
-                </Button>
-              )}
-              {/* 权限校验必带「拟报价」：没填这个价就没什么可校验的，
-                  按钮直接禁用（而不是让他点了再吃一个 400 回来） */}
-              <Button
-                disabled={!skuId || !(Number(quotedPrice) > 0)}
-                loading={checkMutation.isPending}
-                onClick={() => checkMutation.mutate()}
-              >
-                权限校验
-              </Button>
-            </>
-          }
-        >
+        <SectionCard title="核价结果">
           {result && (
             <>
               {/* D3：报价基准是「系统适用价」（专属价→等级价→通用指导价），
@@ -340,6 +311,100 @@ export default function PricingPage() {
           {!skuId && <div style={{ color: 'var(--crm-text-3)' }}>选择 SKU 后自动计算</div>}
         </SectionCard>
       </div>
+
+      {/* AI 解读与权限校验：与客户/订单/商机详情页同一个做法 ——
+          按钮在卡片右上角、结果在卡片里原地显示。
+          原先两处都是弹窗，一层遮罩把底下的核价数据全压暗，
+          想「一边看数字一边看解读」就做不到了。 */}
+      {can('agent:use') && (
+        <SectionCard
+          title="AI 核价解读"
+          style={{ marginTop: 16 }}
+          extra={
+            <Button
+              disabled={!skuId}
+              loading={aiMutation.isPending}
+              onClick={() => aiMutation.mutate()}
+            >
+              AI 解读
+            </Button>
+          }
+        >
+          <AgentInsight
+            envelope={aiEnvelope}
+            empty="点右上角「AI 解读」：把核价结果翻成能直接用的判断——这个价合不合理、手上最多能让到哪、再低要走到哪一级"
+          />
+        </SectionCard>
+      )}
+
+      <SectionCard
+        title="报价权限校验"
+        style={{ marginTop: 16 }}
+        extra={
+          /* 必带「拟报价」：没填这个价就没什么可校验的，按钮直接禁用
+             （而不是让他点了再吃一个 400 回来） */
+          <Button
+            disabled={!skuId || !(Number(quotedPrice) > 0)}
+            loading={checkMutation.isPending}
+            onClick={() => checkMutation.mutate()}
+          >
+            权限校验
+          </Button>
+        }
+      >
+        {verdict ? (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              {verdict.allowed ? (
+                <Tag color="green" size="large">
+                  可以自主报价
+                </Tag>
+              ) : (
+                <Tag color="red" size="large">
+                  需要审批
+                </Tag>
+              )}
+              <span style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+                报 {verdict.quoted_price ?? '-'} 元 · {verdict.currency}
+              </span>
+            </div>
+            {verdict.reasons.length > 0 && (
+              <div style={{ color: 'var(--crm-error)', fontSize: 13, display: 'grid', gap: 4 }}>
+                {verdict.reasons.map((reason) => (
+                  <div key={reason}>· {reason}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 13, color: 'var(--crm-text-2)', display: 'grid', gap: 6 }}>
+              <div>
+                最低允许价（你的授权）：{money(verdict.minimum_price)}　·　公司最低保护价：
+                {money(verdict.protection_price)}
+              </div>
+              <div>
+                授权最低利润率：
+                {verdict.authorized_min_margin != null ? percent(verdict.authorized_min_margin) : '-'}
+                （你的角色：{verdict.my_roles.join('、')}）
+              </div>
+              <div>
+                按这个价：利润 {money(verdict.profit)}，利润率 {percent(verdict.profit_rate)}
+              </div>
+              <div>
+                {verdict.approval_required
+                  ? verdict.can_approve
+                    ? '你自己有审批权，提交后可自行批准'
+                    : '需要提交给有报价审批权的人'
+                  : '无需审批，可以直接对外发送'}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+            {skuId
+              ? '点右上角「权限校验」：核对这个价能不能自主报、不行要交给谁批（先在左边填上「拟报价」）'
+              : '选择 SKU 并在左边填上「拟报价」后可用'}
+          </div>
+        )}
+      </SectionCard>
 
       {skuId && (
         <SectionCard
@@ -420,71 +485,6 @@ export default function PricingPage() {
           />
         </div>
       )}
-
-      <Modal
-        title="报价权限校验"
-        visible={verdictVisible}
-        onCancel={() => setVerdictVisible(false)}
-        footer={null}
-        width={520}
-      >
-        {verdict && (
-          <div style={{ display: 'grid', gap: 14 }}>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              {verdict.allowed ? (
-                <Tag color="green" size="large">
-                  可以自主报价
-                </Tag>
-              ) : (
-                <Tag color="red" size="large">
-                  需要审批
-                </Tag>
-              )}
-              <span style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-                报 {verdict.quoted_price ?? '-'} 元 · {verdict.currency}
-              </span>
-            </div>
-            {verdict.reasons.length > 0 && (
-              <div style={{ color: 'var(--crm-error)', fontSize: 13, display: 'grid', gap: 4 }}>
-                {verdict.reasons.map((reason) => (
-                  <div key={reason}>· {reason}</div>
-                ))}
-              </div>
-            )}
-            <div style={{ fontSize: 13, color: 'var(--crm-text-2)', display: 'grid', gap: 6 }}>
-              <div>
-                最低允许价（你的授权）：{money(verdict.minimum_price)}　·　公司最低保护价：
-                {money(verdict.protection_price)}
-              </div>
-              <div>
-                授权最低利润率：
-                {verdict.authorized_min_margin != null ? percent(verdict.authorized_min_margin) : '-'}
-                （你的角色：{verdict.my_roles.join('、')}）
-              </div>
-              <div>
-                按这个价：利润 {money(verdict.profit)}，利润率 {percent(verdict.profit_rate)}
-              </div>
-              <div>
-                {verdict.approval_required
-                  ? verdict.can_approve
-                    ? '你自己有审批权，提交后可自行批准'
-                    : '需要提交给有报价审批权的人'
-                  : '无需审批，可以直接对外发送'}
-              </div>
-            </div>
-          </div>
-        )}
-      </Modal>
-
-      <Modal
-        title="AI 核价解读"
-        visible={aiVisible}
-        onCancel={() => setAiVisible(false)}
-        footer={null}
-        width={560}
-      >
-        <AgentInsight envelope={aiEnvelope} />
-      </Modal>
     </div>
   )
 }
