@@ -563,10 +563,15 @@ async def _notify_recycle_candidate(
     接收对象与内容按确认口径来：两方都要收到，内容含**客户、回收原因、
     最近活跃时间、到期时间和查看入口**（放不下的部分放正文里说清去哪看）。
 
-    去重：同一 (接收人, 类型, 业务对象) 已经有一条就不再发。定时任务重跑、
-    扫描被重复触发、通知补投，都不会让人收到两条一样的预告。
+    去重：同一 (接收人, 类型, 业务对象) 在本轮预告期内已经有一条就不再发。
+    定时任务重跑、扫描被重复触发、通知补投，都不会让人收到两条一样的预告。
     这也是"通知失败要能查到并补发"的前提 —— 补发走的是同一条记录，
     不会再造一条新的候选、也不会重复回收。
+
+    ⚠️ 去重范围**必须限定在本轮预告期内**（返修 R11）：同一客户第二次进入
+    预告时是一条**新候选**（新 id、新 notice_at），原负责人理应再收到一次提醒。
+    早期实现只比四元组，而原负责人那条的对象编号用的是客户编号（跨轮次不变），
+    于是第二轮被静默挡掉。详见下面去重处与 `candidate.notice_at` 的注释。
 
     返回新发出的条数。
     """
@@ -618,7 +623,21 @@ async def _notify_recycle_candidate(
     settings = await channel_settings(session)
     sent = 0
     for uid, business_type, business_id, title, content in targets:
-        # 去重：同一接收人 + 同一对象只发一条（重跑扫描不会重复打扰）
+        # 去重：只挡**本轮预告**里的重复投递（返修 R11 修的就是这个边界）。
+        #
+        # 为什么不能只按 (接收人, 类型, 对象, 标题) 四元组去重：
+        # 原负责人那条的 business_id 用的是 `customer.id` —— 他点进去要落在
+        # **客户详情**（"我的哪个客户要没了"），前端是按 business_type 拼跳转的，
+        # 这个键不能动。可 `customer.id` **跨轮次不变**，于是同一客户第二次进入
+        # 预告时四元组与上一轮完全相同，去重把第二条通知直接挡掉：
+        # 客户要被回收了，原负责人却收不到第二次提醒。
+        # （主管那条用的是 candidate.id，每轮新候选、id 自然不同，所以不受影响 ——
+        #   这也正是"同一件事、两个人、一个收得到一个收不到"的原因。）
+        #
+        # 加 `created_at >= candidate.notice_at` 把去重范围收到本轮：
+        #   · 同一轮扫描重跑 / 通知补投 → notice_at 不变，仍在范围内 → 照样挡住，
+        #     不会重复打扰（原有行为保住）
+        #   · 下一轮预告 → 新候选的 notice_at 更晚，上一轮那条落在范围外 → 重新发
         exists = (
             await session.execute(
                 select(Notification.id).where(
@@ -626,6 +645,7 @@ async def _notify_recycle_candidate(
                     Notification.business_type == business_type,
                     Notification.business_id == business_id,
                     Notification.title == title,
+                    Notification.created_at >= candidate.notice_at,
                 )
             )
         ).first()
