@@ -1070,6 +1070,10 @@ async def pricing_history(
         ).all()
         names = {int(uid): name for uid, name in found}
 
+    # 业务摘要：把 business_id（内部编号）翻成"报价单 Q2026xxxx / 产品编码"这类
+    # 人能看懂的东西（返修：核价历史列表未做人性化显示）。
+    targets = await _history_targets(session, rows)
+
     return ok(
         page_data(
             [
@@ -1077,6 +1081,14 @@ async def pricing_history(
                     "id": row.id,
                     "business_type": row.business_type,
                     "business_id": row.business_id,
+                    # 展示用："报价单 Q202610060001 · ZX-6040-B"；查不到时为 None
+                    "target_label": (targets.get((row.business_type, row.business_id)) or {}).get(
+                        "label"
+                    ),
+                    # 能跳就跳（目前只有报价类有页面可跳），跳不了给 None
+                    "target_link": (targets.get((row.business_type, row.business_id)) or {}).get(
+                        "link"
+                    ),
                     "action": row.action,
                     "operator_id": row.operator_id,
                     "operator_name": names.get(row.operator_id) if row.operator_id else None,
@@ -1108,6 +1120,134 @@ def _filter_history_by_sku(stmt, audit_model, sku_id: int):
         (cast(audit_model.before_data, Text).like(f'%{key}%'))
         | (cast(audit_model.after_data, Text).like(f'%{key}%'))
     )
+
+
+async def _history_targets(session: AsyncSession, rows) -> dict[tuple[str, int], dict]:
+    """把 (业务类型, 业务对象编号) 翻成人能看懂的对象描述。
+
+    为什么要反查：审计表只有 `business_type` + `business_id`，**没有业务单号列**。
+    列表原先直接渲染 `business_id`（295、4320），业务上根本看不出是哪张单。
+
+    各类型的"单号"在哪（逐个查证过）：
+      · quote               → 整对象快照里带 `quote_no`，取不到才回查 quotes 表
+      · quote_item          → **明细可能已被硬删**（delete_item 走 session.delete），
+                              按 business_id 回查会落空，只能靠快照里的
+                              `quote_version_id` → quote_versions.quote_id → quotes.quote_no
+      · product_cost        → 快照里的 `sku_id` → skus.sku_code
+      · price_rule          → 同上（注意 update 的快照里 sku_code 恒为 None，只能回查）
+      · customer_price_rule → sku_id → sku_code，另加 customer_id → customers.name
+
+    返回 {(类型, 编号): {"label": 展示用文字, "link": 可跳转路径(可空)}}。
+    查不到的留 None，前端会退回显示编号 —— 不会因为查不到就把那一格变成空白。
+    """
+    from app.modules.customer.model import Customer
+    from app.modules.product.model import Sku
+    from app.modules.quote.model import Quote, QuoteVersion
+
+    def from_snapshot(row, key: str):
+        """快照里的某个键：先看 after 再看 before（删除动作只有 before 有内容）。"""
+        for data in (row.after_data, row.before_data):
+            if isinstance(data, dict) and data.get(key) is not None:
+                return data[key]
+        return None
+
+    sku_ids: set[int] = set()
+    customer_ids: set[int] = set()
+    version_ids: set[int] = set()
+    quote_ids: set[int] = set()
+
+    for row in rows:
+        bt = row.business_type
+        if bt in ("product_cost", "price_rule", "customer_price_rule", "quote_item"):
+            value = from_snapshot(row, "sku_id")
+            if value is not None:
+                sku_ids.add(int(value))
+        if bt == "customer_price_rule":
+            value = from_snapshot(row, "customer_id")
+            if value is not None:
+                customer_ids.add(int(value))
+        if bt == "quote_item":
+            value = from_snapshot(row, "quote_version_id")
+            if value is not None:
+                version_ids.add(int(value))
+        if bt == "quote" and row.business_id is not None:
+            quote_ids.add(int(row.business_id))
+
+    sku_codes: dict[int, str] = {}
+    if sku_ids:
+        sku_codes = {
+            int(i): code
+            for i, code in (
+                await session.execute(select(Sku.id, Sku.sku_code).where(Sku.id.in_(sku_ids)))
+            ).all()
+        }
+    customer_names: dict[int, str] = {}
+    if customer_ids:
+        customer_names = {
+            int(i): name
+            for i, name in (
+                await session.execute(
+                    select(Customer.id, Customer.name).where(Customer.id.in_(customer_ids))
+                )
+            ).all()
+        }
+    version_quote: dict[int, int] = {}
+    if version_ids:
+        version_quote = {
+            int(i): int(q)
+            for i, q in (
+                await session.execute(
+                    select(QuoteVersion.id, QuoteVersion.quote_id).where(
+                        QuoteVersion.id.in_(version_ids)
+                    )
+                )
+            ).all()
+        }
+        quote_ids |= set(version_quote.values())
+    quote_nos: dict[int, str] = {}
+    if quote_ids:
+        quote_nos = {
+            int(i): no
+            for i, no in (
+                await session.execute(
+                    select(Quote.id, Quote.quote_no).where(Quote.id.in_(quote_ids))
+                )
+            ).all()
+        }
+
+    out: dict[tuple[str, int], dict] = {}
+    for row in rows:
+        bt, bid = row.business_type, row.business_id
+        if bt is None or bid is None:
+            continue
+        label: str | None = None
+        link: str | None = None
+        sku_value = from_snapshot(row, "sku_id")
+        code = sku_codes.get(int(sku_value)) if sku_value is not None else None
+
+        if bt == "quote":
+            no = from_snapshot(row, "quote_no") or quote_nos.get(int(bid))
+            label = f"报价单 {no}" if no else "报价单"
+            link = f"/quotes/{int(bid)}"
+        elif bt == "quote_item":
+            version_value = from_snapshot(row, "quote_version_id")
+            quote_id = (
+                version_quote.get(int(version_value)) if version_value is not None else None
+            )
+            no = quote_nos.get(quote_id) if quote_id else None
+            pieces = [p for p in ((f"报价单 {no}" if no else "报价单"), code) if p]
+            label = " · ".join(pieces)
+            link = f"/quotes/{quote_id}" if quote_id else None
+        elif bt == "customer_price_rule":
+            customer_value = from_snapshot(row, "customer_id")
+            name = customer_names.get(int(customer_value)) if customer_value is not None else None
+            pieces = [p for p in (name, code) if p]
+            label = " · ".join(pieces) if pieces else None
+        else:
+            label = code
+
+        out[(bt, int(bid))] = {"label": label, "link": link}
+    return out
 
 
 @router.get("/skus/{sku_id}/price-summary")

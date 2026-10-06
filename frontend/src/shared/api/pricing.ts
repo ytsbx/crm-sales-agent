@@ -355,6 +355,14 @@ export interface PricingHistoryRow {
   id: number
   business_type: string | null
   business_id: number | null
+  /**
+   * 业务对象的人话描述，如「报价单 Q202610060001 · ZX-6040-B」。
+   * 后端反查出来的（审计表本身只有内部编号，看不出是哪张单）。
+   * 查不到时为 null —— 前端退回显示编号，不要因此把那一格变空白。
+   */
+  target_label?: string | null
+  /** 能跳转就跳（目前只有报价类有页面），跳不了给 null。 */
+  target_link?: string | null
   action: string
   operator_id: number | null
   operator_name: string | null

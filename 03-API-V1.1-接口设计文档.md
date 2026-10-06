@@ -344,6 +344,15 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `POST /pricing/check-permission`
 - `POST /pricing/simulate`
 - `GET /pricing/history`
+  - 核价历史：报价 / 报价明细 / 成本 / 价格规则 / 客户特殊价的变更，取自审计日志。
+  - 每条原本只有内部编号 `business_type` + `business_id`，界面上看不出是哪张单。
+    **2026-10-06 起每条额外返回**：
+    - `target_label`：业务对象的人话描述，如「报价单 Q202610060001 · ZX-6040-B」。
+      报价明细可能已被硬删，此类记录靠快照里的 `quote_version_id` 反查报价单号；
+      成本 / 价格规则 / 客户特殊价靠 `sku_id` 反查产品编码，客户特殊价另带客户名。
+      反查不到时为 `null`（前端退回显示「类型 #编号」）。
+    - `target_link`：可跳转的前端路径（目前只有报价类给得出来），跳不了为 `null`。
+  - 成本与底价相关的 `before` / `after` 快照仍只对 `price:manage` 返回。
 
 返回示例：
 
@@ -945,6 +954,10 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 ## 41.2 新品洞察（product-insights）
 
 - `GET /product-insights`：列表。需要 `product:view`。数据范围按 `owner_id` 过滤。
+  **2026-10-06 起每行额外返回逐条可操作性（返修 R08）**：
+  `can_edit`（这条是否在操作者的数据范围内）、`can_review`（此刻能否评审这条）。
+  此前前端只能按权限码粗判，于是数据范围外的那几条也长着「编辑 / 提交评审 / 转需求」按钮，
+  点下去才 403。**藏按钮不是权限**：每个写入口仍会走 `_get_writable` 再判一次。
 - `POST /product-insights`：新建。需要 `product:manage`。`title` 必填且**去空白后不得为空**；`price_assumption` 不得为负；窄接口 `extra="forbid"`。
 - `GET /product-insights/{insight_id}`：详情。需要 `product:view`。返回参考图 `images`、来源洞察回链、评审轮次。
 - `PATCH /product-insights/{insight_id}`：更新。需要 `product:manage`。**语义：传了就改（含传 `null` ＝ 清空），没传就不动**（`exclude_unset=True`；旧实现用 `if value is not None`，导致"传 null 想清空"被跳过，界面清了库里还在）。内容冻结：`under_review` 期间不得改关键内容；`approved` 后改关键内容会**退回待评审**并 `review_round + 1`。

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
@@ -55,23 +55,190 @@ const HISTORY_TYPE_LABEL: Record<string, string> = {
   customer_price_rule: '客户特殊价',
 }
 
-/** 把 before/after 差异压成「字段: 旧 → 新」的短句，最多 4 条。 */
-function historySummary(row: PricingHistoryRow): string {
-  if (row.action === 'create') return '新增'
-  if (row.action === 'delete') return '删除'
-  const before = row.before ?? {}
-  const after = row.after ?? {}
+/**
+ * 快照里的内部字段名 → 中文（2026-10-06 主人反馈）。
+ *
+ * 原来的实现直接把内部名拼上屏：`id: - → 5284；amount: - → 20；remark: - → null`。
+ * 那是"机器话"——字段名是英文内部名、空值原样显示、还把新增说成"新增"两个字
+ * 等于把"动作"列又抄了一遍。数据本身存得很好（改前改后快照都在），
+ * 缺的是把它翻成人话这一步。
+ */
+const HISTORY_FIELD_LABEL: Record<string, string> = {
+  quote_no: '报价单号',
+  status: '状态',
+  status_label: '状态',
+  current_version_no: '当前版本',
+  current_version_amount: '报价总额',
+  valid_until: '有效期',
+  owner_id: '负责人',
+  owner_name: '负责人',
+  approval_status: '审批状态',
+  approval_required: '需审批',
+  opportunity_id: '商机',
+  customer_id: '客户',
+  contact_id: '联系人',
+  quantity: '数量',
+  quoted_price: '单价',
+  amount: '金额',
+  total_amount: '总额',
+  sku_id: '产品',
+  sku_code: '产品编码',
+  sku_name: '产品名称',
+  purchase_cost: '采购成本',
+  production_cost: '生产成本',
+  package_cost: '包装成本',
+  processing_cost: '加工成本',
+  total_cost: '总成本',
+  standard_price: '标准价',
+  guide_price: '指导价',
+  minimum_price: '最低保护价',
+  target_margin: '目标利润率',
+  min_qty: '起订量',
+  max_qty: '最大数量',
+  customer_level: '客户等级',
+  agreed_price: '约定价',
+  price_source: '价格来源',
+  profit_rate_snapshot: '利润率',
+  effective_from: '生效日',
+  effective_to: '失效日',
+  remark: '备注',
+  currency: '币种',
+  calculation: '计算口径',
+  item_count: '明细条数',
+  count: '条数',
+}
+
+/** 金额类字段：显示时带上 ¥，否则「20」看不出是钱还是件。 */
+const MONEY_FIELDS = new Set([
+  'current_version_amount',
+  'amount',
+  'total_amount',
+  'quoted_price',
+  'purchase_cost',
+  'production_cost',
+  'package_cost',
+  'processing_cost',
+  'total_cost',
+  'standard_price',
+  'guide_price',
+  'minimum_price',
+  'agreed_price',
+])
+
+/**
+ * 各类型「新增 / 删除」时值得说出来的关键字段（按顺序取）。
+ * 不是把整个快照倒出来——快照里有二三十个字段，全列出来等于没重点。
+ */
+const SUMMARY_FIELDS: Record<string, string[]> = {
+  quote: ['quote_no', 'status_label', 'current_version_amount', 'valid_until'],
+  quote_item: ['sku_code', 'quantity', 'quoted_price', 'amount'],
+  product_cost: [
+    'sku_code',
+    'purchase_cost',
+    'production_cost',
+    'package_cost',
+    'processing_cost',
+    'total_cost',
+  ],
+  price_rule: ['sku_code', 'standard_price', 'minimum_price', 'target_margin'],
+  customer_price_rule: ['customer_id', 'sku_code', 'agreed_price', 'minimum_price'],
+}
+
+/** 单个值 → 人能看的字。空值说「空」，不显示 null。 */
+function fmtField(key: string, value: unknown): string {
+  if (value === null || value === undefined || value === '') return '空'
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'number') {
+    if (MONEY_FIELDS.has(key)) return `¥${value.toLocaleString('zh-CN')}`
+    // 比率类存的是小数（0.15 = 15%），直接显示 0.15 会让人以为是 0.15%
+    if (key === 'target_margin') return `${(value * 100).toFixed(1)}%`
+    return value.toLocaleString('zh-CN')
+  }
+  return String(value)
+}
+
+/** 从一份快照里挑出关键字段，拼成「产品编码 ZX-6040-B、数量 100」这种短句。 */
+function summaryOfSnapshot(
+  businessType: string | null,
+  snap: Record<string, unknown>,
+): string {
+  const fields = SUMMARY_FIELDS[businessType ?? ''] ?? []
   const parts: string[] = []
-  for (const [key, value] of Object.entries(after)) {
-    if (parts.length >= 4) {
-      parts.push('…')
-      break
-    }
-    if (!(key in before) || String(before[key]) !== String(value)) {
-      parts.push(`${key}: ${before[key] ?? '-'} → ${value}`)
+  for (const key of fields) {
+    const value = snap[key]
+    if (value === null || value === undefined || value === '') continue
+    parts.push(`${HISTORY_FIELD_LABEL[key] ?? key} ${fmtField(key, value)}`)
+  }
+  return parts.join('、')
+}
+
+/**
+ * 把一条审计记录翻成人话（2026-10-06 重写）。
+ *
+ * 三件事都要做对：
+ *  ① 新增/删除不能只写「新增」「删除」——那是把"动作"列又抄一遍，
+ *     要说出**加了什么**（从快照里挑关键字段）；
+ *  ② 修改只列**真正变了**的字段，且用中文名、空值说「空」；
+ *  ③ 同一 `business_type` 下不同 `action` 的快照形状**不一样**
+ *     （cloned 只记条数、recalculate 只记金额），不能一刀切按"整对象"处理。
+ */
+function historySummary(row: PricingHistoryRow): string {
+  const before = (row.before ?? {}) as Record<string, unknown>
+  const after = (row.after ?? {}) as Record<string, unknown>
+
+  // 这些动作只记了一两个字段，按动作单独说清楚，比逐字段比对准确得多
+  if (row.action === 'import') {
+    // 批量导入：快照里只有统计数字（没有单个 SKU 对象），所以「对象」那列
+    // 也反查不出东西，只能在这儿把结果说清楚。
+    return `批量导入：新增 ${after.created ?? 0} 条、失败 ${after.failed ?? 0} 条、跳过 ${after.skipped ?? 0} 条`
+  }
+  if (row.action === 'clone') {
+    const n = after.copied_items ?? after.copied
+    return n === null || n === undefined ? '复制了一份明细' : `复制了 ${n} 条明细`
+  }
+  if (row.action === 'set_items') {
+    const n = after.count
+    return n === null || n === undefined ? '明细整批替换' : `明细整批替换为 ${n} 条`
+  }
+  if (row.action === 'refresh_prices') {
+    return `按最新价重算：刷新 ${after.refreshed ?? 0} 条、跳过 ${after.skipped ?? 0} 条`
+  }
+  if (row.action === 'update_item') {
+    const oldPrice = before.quoted_price
+    const newPrice = after.quoted_price
+    if (oldPrice !== undefined && newPrice !== undefined) {
+      return `明细单价 ${fmtField('quoted_price', oldPrice)} → ${fmtField('quoted_price', newPrice)}`
     }
   }
-  return parts.length ? parts.join('；') : '无字段变化'
+
+  if (row.action === 'create' || row.action === 'delete') {
+    const snap = row.action === 'create' ? after : before
+    const parts = summaryOfSnapshot(row.business_type, snap)
+    const verb = row.action === 'create' ? '新增' : '删除'
+    // 挑不出关键字段时也别只说「新增」——把能确定的类型说进去
+    return parts ? `${verb}：${parts}` : `${verb}了一条${HISTORY_TYPE_LABEL[row.business_type ?? ''] ?? '记录'}`
+  }
+
+  // 修改：只列真正变了的字段
+  const changed: string[] = []
+  const keys = [...new Set([...Object.keys(after), ...Object.keys(before)])]
+  for (const key of keys) {
+    const oldValue = before[key]
+    const newValue = after[key]
+    if (String(oldValue ?? '') === String(newValue ?? '')) continue
+    changed.push(
+      `${HISTORY_FIELD_LABEL[key] ?? key}：${fmtField(key, oldValue)} → ${fmtField(key, newValue)}`,
+    )
+    if (changed.length >= 4) {
+      changed.push('…')
+      break
+    }
+  }
+  if (changed.length) return changed.join('；')
+
+  // 没字段差异（如 recalculate 只记了重算后的金额）：退回用快照说结果
+  const fallback = summaryOfSnapshot(row.business_type, after)
+  return fallback ? `重算：${fallback}` : '无字段变化'
 }
 
 const money = (value?: number | null) => (value === null || value === undefined ? '-' : `¥${value}`)
@@ -871,7 +1038,33 @@ export default function PriceCenterPage() {
                     width: 110,
                     render: (v: string | null) => HISTORY_TYPE_LABEL[v ?? ''] ?? v ?? '-',
                   },
-                  { title: '对象 ID', dataIndex: 'business_id', width: 90 },
+                  {
+                    // 「对象」而不是内部编号（2026-10-06 主人反馈）：
+                    // 原先这一列显示 295、4320 这种内部 id，业务上根本看不出是哪张单。
+                    // 后端已把 business_id 反查成人话（报价单号 / 产品编码 / 客户名）随行下发。
+                    title: '对象',
+                    dataIndex: 'target_label',
+                    width: 230,
+                    ellipsis: true,
+                    render: (label: string | null, record: PricingHistoryRow) =>
+                      label ? (
+                        record.target_link ? (
+                          <Link to={record.target_link} style={{ color: 'var(--crm-primary)' }}>
+                            {label}
+                          </Link>
+                        ) : (
+                          <span title={label}>{label}</span>
+                        )
+                      ) : (
+                        // 反查不到就退回显示"类型 #编号"，别让这一格变成空白
+                        //（历史记录里可能有对象已被删除、或类型不在反查范围内的）
+                        <span style={{ color: 'var(--crm-text-3)' }}>
+                          {(HISTORY_TYPE_LABEL[record.business_type ?? ''] ??
+                            record.business_type) ?? '-'}
+                          {record.business_id != null ? ` #${record.business_id}` : ''}
+                        </span>
+                      ),
+                  },
                   {
                     title: '动作',
                     dataIndex: 'action',
