@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
   Checkbox,
+  DatePicker,
   Input,
   Modal,
   Select,
@@ -601,19 +602,31 @@ export default function DocumentsPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>到期日（月结协议建议填写，到期前自动提醒负责人）</div>
-            <Input
-              placeholder="2026-12-31（可留空）"
-              value={generateForm.expiry_date}
-              onChange={(v) => setGenerateForm({ ...generateForm, expiry_date: v })}
+            <DatePicker
+              type="date"
+              format="yyyy-MM-dd"
+              showClear
+              style={{ width: '100%' }}
+              placeholder="选择到期日（可留空）"
+              value={generateForm.expiry_date ? new Date(generateForm.expiry_date) : undefined}
+              onChange={(_, dateStr) =>
+                setGenerateForm({ ...generateForm, expiry_date: (dateStr as string) || '' })
+              }
             />
           </div>
           {generateParent && (
             <div>
               <div style={{ marginBottom: 4 }}>协议生效日（续签建议填写）</div>
-              <Input
-                placeholder="2027-01-01（可留空）"
-                value={generateForm.effective_date}
-                onChange={(v) => setGenerateForm({ ...generateForm, effective_date: v })}
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                showClear
+                style={{ width: '100%' }}
+                placeholder="选择生效日（可留空）"
+                value={generateForm.effective_date ? new Date(generateForm.effective_date) : undefined}
+                onChange={(_, dateStr) =>
+                  setGenerateForm({ ...generateForm, effective_date: (dateStr as string) || '' })
+                }
               />
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
                 只记到期日处理不了"提前签、未来才生效"——那种情况下旧协议还得继续适用一段。

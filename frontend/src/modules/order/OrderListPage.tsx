@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   confirmPayment,
@@ -529,11 +529,17 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>
-              <div style={{ marginBottom: 4 }}>交期（YYYY-MM-DD，可空）</div>
-              <Input
-                placeholder="2026-12-31"
-                value={createForm.delivery_date}
-                onChange={(value) => setCreateForm({ ...createForm, delivery_date: value })}
+              <div style={{ marginBottom: 4 }}>交期（可空）</div>
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                showClear
+                style={{ width: '100%' }}
+                placeholder="选择交期"
+                value={createForm.delivery_date ? new Date(createForm.delivery_date) : undefined}
+                onChange={(_, dateStr) =>
+                  setCreateForm({ ...createForm, delivery_date: (dateStr as string) || '' })
+                }
               />
             </div>
             <div>

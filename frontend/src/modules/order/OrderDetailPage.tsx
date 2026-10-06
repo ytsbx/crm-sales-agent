@@ -1035,13 +1035,17 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>客户要求日期（YYYY-MM-DD）</div>
-            <Input
+            <div style={{ marginBottom: 4 }}>客户要求日期</div>
+            <DatePicker
+              type="date"
+              format="yyyy-MM-dd"
+              showClear
+              style={{ width: '100%' }}
               disabled={schedulePreviewMutation.isPending || createScheduleMutation.isPending}
-              value={scheduleForm.new_delivery_date}
-              placeholder={order?.delivery_date ?? '2026-12-31'}
-              onChange={(value) => {
-                setScheduleForm({ ...scheduleForm, new_delivery_date: value })
+              value={scheduleForm.new_delivery_date ? new Date(scheduleForm.new_delivery_date) : undefined}
+              placeholder={order?.delivery_date ?? '选择日期'}
+              onChange={(_, dateStr) => {
+                setScheduleForm({ ...scheduleForm, new_delivery_date: (dateStr as string) || '' })
                 // 改了交期，之前的预览就过期了——必须重新预览，不能拿旧结果去生成单子
                 setSchedulePreview(null)
               }}

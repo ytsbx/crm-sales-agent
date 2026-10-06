@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
@@ -882,10 +882,16 @@ export default function PriceCenterPage() {
           ))}
           <div>
             <div style={{ marginBottom: 4 }}>生效日期</div>
-            <Input
-              value={costForm.effective_from}
-              onChange={(value) => setCostForm({ ...costForm, effective_from: value })}
-              placeholder="2026-01-01"
+            <DatePicker
+              type="date"
+              format="yyyy-MM-dd"
+              showClear
+              style={{ width: '100%' }}
+              placeholder="选择生效日期"
+              value={costForm.effective_from ? new Date(costForm.effective_from) : undefined}
+              onChange={(_, dateStr) =>
+                setCostForm({ ...costForm, effective_from: (dateStr as string) || '' })
+              }
             />
           </div>
         </div>
@@ -971,18 +977,30 @@ export default function PriceCenterPage() {
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>生效起始日（留空 = 立即生效）</div>
-              <Input
-                placeholder="2026-10-01"
-                value={ruleForm.effective_from}
-                onChange={(value) => setRuleForm({ ...ruleForm, effective_from: value })}
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                showClear
+                style={{ width: '100%' }}
+                placeholder="选择起始日"
+                value={ruleForm.effective_from ? new Date(ruleForm.effective_from) : undefined}
+                onChange={(_, dateStr) =>
+                  setRuleForm({ ...ruleForm, effective_from: (dateStr as string) || '' })
+                }
               />
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>生效截止日（留空 = 长期有效）</div>
-              <Input
-                placeholder="2026-12-31"
-                value={ruleForm.effective_to}
-                onChange={(value) => setRuleForm({ ...ruleForm, effective_to: value })}
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                showClear
+                style={{ width: '100%' }}
+                placeholder="选择截止日"
+                value={ruleForm.effective_to ? new Date(ruleForm.effective_to) : undefined}
+                onChange={(_, dateStr) =>
+                  setRuleForm({ ...ruleForm, effective_to: (dateStr as string) || '' })
+                }
               />
             </div>
           </div>
@@ -1050,18 +1068,40 @@ export default function PriceCenterPage() {
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>生效起始日（留空 = 立即生效）</div>
-              <Input
-                placeholder="2026-10-01"
-                value={customerPriceForm.effective_from}
-                onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, effective_from: value })}
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                showClear
+                style={{ width: '100%' }}
+                placeholder="选择起始日"
+                value={
+                  customerPriceForm.effective_from ? new Date(customerPriceForm.effective_from) : undefined
+                }
+                onChange={(_, dateStr) =>
+                  setCustomerPriceForm({
+                    ...customerPriceForm,
+                    effective_from: (dateStr as string) || '',
+                  })
+                }
               />
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>生效截止日（留空 = 长期有效）</div>
-              <Input
-                placeholder="2026-12-31"
-                value={customerPriceForm.effective_to}
-                onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, effective_to: value })}
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                showClear
+                style={{ width: '100%' }}
+                placeholder="选择截止日"
+                value={
+                  customerPriceForm.effective_to ? new Date(customerPriceForm.effective_to) : undefined
+                }
+                onChange={(_, dateStr) =>
+                  setCustomerPriceForm({
+                    ...customerPriceForm,
+                    effective_to: (dateStr as string) || '',
+                  })
+                }
               />
             </div>
           </div>

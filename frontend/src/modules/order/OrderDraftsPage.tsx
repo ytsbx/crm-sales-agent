@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, InputNumber, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, InputNumber, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -69,7 +69,7 @@ export default function OrderDraftsPage() {
         <p>本次备注</p><TextArea value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />
       </div>)}
       <p>币种</p><Input value={form.currency} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, currency: v.toUpperCase() }) }} />
-      <p>计划交期</p><Input type="date" value={form.delivery_date} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, delivery_date: v }) }} />
+      <p>计划交期</p><DatePicker type="date" format="yyyy-MM-dd" showClear style={{ width: '100%' }} placeholder="选择计划交期" value={form.delivery_date ? new Date(form.delivery_date) : undefined} disabled={!editable} onChange={(_, v) => { setDirty(true); setForm({ ...form, delivery_date: (v as string) || '' }) }} />
       <p>付款条件</p><Input value={form.payment_terms} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, payment_terms: v }) }} />
       <p>备注</p><TextArea value={form.remark} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, remark: v }) }} />
       {draft.status === 'draft' && can('order:manage') && <Button style={{ marginTop: 12 }} loading={save.isPending} disabled={!editable || !dirty} onClick={() => save.mutate()}>保存草稿</Button>}

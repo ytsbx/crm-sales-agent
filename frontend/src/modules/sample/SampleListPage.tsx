@@ -5,6 +5,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { emptyText } from '../../shared/hooks/emptyText'
 import {
   Button,
+  DatePicker,
   Input,
   Modal,
   Select,
@@ -1066,10 +1067,23 @@ export default function SampleListPage() {
                         onChange={(v) => setProdForm({ ...prodForm, purpose: v })}
                       />
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <Input
-                          placeholder="目标完成日 YYYY-MM-DD"
-                          value={prodForm.target_completion_date}
-                          onChange={(v) => setProdForm({ ...prodForm, target_completion_date: v })}
+                        <DatePicker
+                          type="date"
+                          format="yyyy-MM-dd"
+                          showClear
+                          style={{ flex: 1 }}
+                          placeholder="选择目标完成日"
+                          value={
+                            prodForm.target_completion_date
+                              ? new Date(prodForm.target_completion_date)
+                              : undefined
+                          }
+                          onChange={(_, dateStr) =>
+                            setProdForm({
+                              ...prodForm,
+                              target_completion_date: (dateStr as string) || '',
+                            })
+                          }
                         />
                         <Input
                           style={{ width: 120 }}
