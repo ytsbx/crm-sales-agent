@@ -41,12 +41,16 @@ ASSESS_BASIS_LABEL = "确认回款"
 
 #: 指标定义版本（§4.3 要求每个指标存"指标定义版本"）。
 #: 口径一变就改这个字符串：历史报表据此自证是按哪一版算出来的。
-METRIC_BASIS_VERSION = "2026-10-05.targets.2"
+#: .3：回款归月依据由「到账日」改为「财务确认时间」（返工单第 2 条）。
+METRIC_BASIS_VERSION = "2026-10-06.targets.3"
 
 #: 每个指标的数据来源（随结果返回——业务要能回答"这个数是怎么来的"）
 METRIC_SOURCES = {
     "sales_target": "sales_targets.sales_target（手工设定）",
-    "assess_actual": "payment_records.received_amount，status=confirmed，按 received_date 归月",
+    "assess_actual": (
+        "payment_records.received_amount，status=confirmed，"
+        "按 confirmed_at（财务确认时间）归月；缺确认时间的记录不计入"
+    ),
     "sales_actual": "sales_orders.total_amount，status != cancelled，按 created_at 归月（展示口径，不进差额）",
     "shipped_actual": "order_shipment_batches × batch_items.shipped_qty × order_items.unit_price，按各批 actual_ship_date 归月（展示口径，不进差额）",
     "new_customer_actual": "customers.created_at 建档月 × owner_id 计数（过程指标）",
@@ -122,10 +126,21 @@ async def _visible_department_ids(session: AsyncSession, user: CurrentUser) -> l
     return []
 
 
-async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: int) -> dict:
+async def targets_with_actuals(
+    session: AsyncSession, user: CurrentUser, year: int, *, ignore_snapshot: bool = False
+) -> dict:
     prefix = f"{year}-%"
     owner_ids = await _visible_owner_ids(session, user)
     admin_view = owner_ids is None
+
+    # 这一年的实绩快照（第三批 §4.1.5 后半）：按"期间"分好组的已结账数字。
+    # 逐期决定用存档还是实时——同一年里可能几个月结了账、几个月还没结。
+    #
+    # `ignore_snapshot=True` 是给**结账/重算**用的：那两件事要的恰恰是"现在的数"，
+    # 若读到上一次的存档，重算就变成"把上次的值再抄一遍"，等于没算。
+    from app.modules.analytics import target_actuals
+
+    frozen = {} if ignore_snapshot else await target_actuals.frozen_map(session, year)
 
     # ---- 目标行（按范围过滤：非 all 分三层各按各的归属判）----
     target_stmt = select(SalesTarget).where(
@@ -195,10 +210,16 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         new_customer_actual[key] = new_customer_actual.get(key, 0) + int(n)
 
     # ---- 回款（**考核主口径**，已确认 2026-10-05）----
-    # 财务确认日归月，只计已确认的回款。归属跟签单归属同一列（业绩口径）：
-    # 同一行的三个口径必须同源，不能一个按签单人、一个按现负责人（§4.1.3）。
-    received_year = func.extract("year", PaymentRecord.received_date)
-    received_month = func.extract("month", PaymentRecord.received_date)
+    # 归月依据 = **财务确认时间**（`confirmed_at`），不是到账日（返工单第 2 条）：
+    # 销售登记的是"客户什么时候打的钱"，**财务确认才是这笔钱算数的时点**。
+    # 跨月确认时（1 月底到账、2 月初才确认）老实现把它归进 1 月，与"确认回款"这个名字不符。
+    # `extract` 按**数据库会话时区**取年月——本库是 Asia/Shanghai（北京时间），
+    # 与全项目其它归月（订单创建月、发货月）同一套口径。
+    #
+    # 归属跟签单归属同一列（业绩口径）：同一行的三个口径必须同源，
+    # 不能一个按签单人、一个按现负责人（§4.1.3）。
+    received_year = func.extract("year", PaymentRecord.confirmed_at)
+    received_month = func.extract("month", PaymentRecord.confirmed_at)
     received_stmt = (
         select(
             received_month,
@@ -209,10 +230,27 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
         .where(
             PaymentRecord.status == "confirmed",
+            # 缺确认时间的记录**归不了月**：先不算，由下面那个计数提示业务去补录。
+            # 不能拿 received_date 顶替——那会让同一列里混进两个口径，
+            # 以后没人分得清哪笔是按什么算的（返工单第 2 条的原始缺陷）。
+            PaymentRecord.confirmed_at.is_not(None),
             SalesOrder.status != "cancelled",
             received_year == year,
         )
         .group_by(received_month, sales_owner)
+    )
+    # 「已确认、却没记确认时间」的回款笔数：按**到账日的年份**判断它大概属于哪一年
+    # （没有确认时间，只能拿这个判），只用于提示补录，不进任何金额。
+    missing_confirmed_stmt = (
+        select(func.count())
+        .select_from(PaymentRecord)
+        .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
+        .where(
+            PaymentRecord.status == "confirmed",
+            PaymentRecord.confirmed_at.is_(None),
+            SalesOrder.status != "cancelled",
+            func.extract("year", PaymentRecord.received_date) == year,
+        )
     )
     # ---- 发货（展示口径，不进差额）：按**实际发货批次 × 行实发数量**分摊（§4.1.4）----
     shipped_stmt = (
@@ -243,11 +281,19 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
     if owner_ids is not None:
         received_stmt = received_stmt.where(sales_owner.in_(owner_ids or [0]))
         shipped_stmt = shipped_stmt.where(sales_owner.in_(owner_ids or [0]))
+        missing_confirmed_stmt = missing_confirmed_stmt.where(
+            sales_owner.in_(owner_ids or [0])
+        )
 
     received_actual: dict[tuple[str, int | None], float] = {}
     for m, owner_id, total in (await session.execute(received_stmt)).all():
         key = (f"{year}-{int(m):02d}", owner_id)
         received_actual[key] = received_actual.get(key, 0.0) + float(total or 0)
+
+    # 本年度「已确认但缺确认时间」的笔数（只提示，不进金额）
+    missing_confirmed_count = int(
+        (await session.execute(missing_confirmed_stmt)).scalar_one() or 0
+    )
 
     shipped_actual: dict[tuple[str, int | None], float] = {}
     for m, owner_id, total in (await session.execute(shipped_stmt)).all():
@@ -290,8 +336,9 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
             return round(sum(bucket.get(key, 0.0) for bucket in repeat_by_owner.values()), 2)
         return round(repeat_by_owner.get(owner_id, {}).get(key, 0.0), 2)
 
-    def _sort_key(kv: tuple[tuple[str, int | None], object]) -> tuple[str, int]:
-        month, owner = kv[0]
+    def _sort_key(key: tuple[str, int | None]) -> tuple[str, int]:
+        """按「月，人」排序；无归属人（None）排在本月最后一个。"""
+        month, owner = key
         return (month, owner if owner is not None else -1)
 
 
@@ -303,6 +350,9 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
 
         三个销售口径都算出来是为了"都能显示"，但**只有考核口径进差额**（§4.3）：
         已确认考核主口径是**确认回款**。
+
+        这里**只看实时值**；已结账期间的存档值在下面的统一后处理里覆盖
+        （那边一处收口，三个地方各写一遍必然漂移——第一版就漏了"补零行"那条路）。
         """
         def pick(source: dict, restrict_to: set[int] | None) -> float:
             if restrict_to is not None:
@@ -351,6 +401,10 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "sales_actual": round(signed, 2),
                 "shipped_actual": round(shipped, 2),
                 "received_actual": round(received, 2),
+                # 这一期的数字是存档值还是实时算的（§4.1.5）。
+                # 界面上要说清楚：存档值不会因为后来的退货变小，
+                # 实时值会——两者对不上时，先看这个标志再怀疑数据。
+                "actual_frozen": t.period in frozen,
                 "repeat_customer_actual": _repeat_actual(t.period, t.user_id, t.department_id),
                 "remark": t.remark,
                 # 乐观并发（第三批 §4.1.2）：界面把这一版的时间戳带回来编辑，
@@ -362,7 +416,44 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         if t.user_id:
             user_ids.add(t.user_id)
 
-    for (month, owner_id), sales in sorted(sales_actual.items(), key=_sort_key):
+    # ---- 组装行：目标行 + 有实际值但没设目标的（月，负责人）补零行 ----
+    #
+    # ⚠️ 补零行的键必须来自**所有**实际值来源，不能只看签单。
+    # 1 月签单、2 月才回款是常态：只按 `sales_actual` 的键生成行的话，
+    # 2 月根本不会有这一行 —— 那笔回款在报表上凭空消失，而它明明计进了
+    # 6 月的合计（返工单第 2 条把归月依据改成"财务确认时间"之后，
+    # 签单月与回款月不一致的情形比原来多得多）。
+    # 新客那一维排除 `owner_id is None`：无负责人的新客出成一行没有意义。
+    actual_keys: set[tuple[str, int | None]] = (
+        set(sales_actual) | set(received_actual) | set(shipped_actual)
+    )
+    actual_keys |= {key for key in new_customer_actual if key[1] is not None}
+    # 只有复购、没有签单/新客的 (月, 人) 也要出行，否则设了复购目标的人看不到自己的数
+    for repeat_owner, months in repeat_by_owner.items():
+        for month_key, value in months.items():
+            if value:
+                actual_keys.add((f"{year}-{month_key}", repeat_owner))
+
+    # ⚠️ **已结账期间的行不能依赖实时值**（2026-10-06 实测抓到的真 bug）。
+    #
+    # 上面那几个键都来自**实时**聚合。结账之后客户退货、回款被驳回，
+    # 实时值就没了 —— 于是那一行**根本不生成**，后面"用存档覆盖"自然无从发生，
+    # 报表上那一期的数字凭空消失。可冻结的全部意义就是"结账之后这张报表不再变"，
+    # 这比数字算错更糟：领导查数发现上个月的数不见了。
+    #
+    # 所以：**该期存档里出现过的（期间, 人）也要出行**。用 "sales" 作锚点——
+    # 结账时各指标是一起写的（见 `target_actuals.freeze_period`），取一项即可。
+    # 部门作用域由目标行承载，这里不补（补零行只按人，与上面几个来源一致）。
+    for frozen_period, snap in frozen.items():
+        for scope_key, metric in snap:
+            if metric != "sales":
+                continue
+            frozen_user_id, frozen_dept_id = target_actuals.parse_scope_key(scope_key)
+            if frozen_dept_id is not None:
+                continue
+            actual_keys.add((frozen_period, frozen_user_id))
+
+    for month, owner_id in sorted(actual_keys, key=_sort_key):
         if (month, owner_id) in seen:
             continue
         rows.append(
@@ -373,59 +464,14 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
                 "new_customer_target": 0,
                 "sales_target": 0,
                 "repeat_customer_target": 0,
-                "new_customer_actual": new_customer_actual.get((month, owner_id), 0),
-                "sales_actual": round(sales, 2),
+                "new_customer_actual": int(new_customer_actual.get((month, owner_id), 0)),
+                "sales_actual": round(sales_actual.get((month, owner_id), 0.0), 2),
                 "repeat_customer_actual": _repeat_actual(month, owner_id),
                 "remark": None,
             }
         )
         if owner_id:
             user_ids.add(owner_id)
-    for (month, owner_id), new in sorted(new_customer_actual.items(), key=_sort_key):
-        if (month, owner_id) in seen or owner_id is None:
-            continue
-        if any(r["period"] == month and r["user_id"] == owner_id for r in rows):
-            continue
-        rows.append(
-            {
-                "target_id": None,
-                "period": month,
-                "user_id": owner_id,
-                "new_customer_target": 0,
-                "sales_target": 0,
-                "repeat_customer_target": 0,
-                "new_customer_actual": new,
-                "sales_actual": 0.0,
-                "repeat_customer_actual": _repeat_actual(month, owner_id),
-                "remark": None,
-            }
-        )
-        user_ids.add(owner_id)
-
-    # 只有复购、没有签单/新客的 (月, 人) 也要出行，否则设了复购目标的人看不到自己的数
-    for owner_id, months in repeat_by_owner.items():
-        for month_key, value in months.items():
-            period = f"{year}-{month_key}"
-            if (period, owner_id) in seen or not value:
-                continue
-            if any(r["period"] == period and r["user_id"] == owner_id for r in rows):
-                continue
-            rows.append(
-                {
-                    "target_id": None,
-                    "period": period,
-                    "user_id": owner_id,
-                    "new_customer_target": 0,
-                    "sales_target": 0,
-                    "repeat_customer_target": 0,
-                    "new_customer_actual": 0,
-                    "sales_actual": 0.0,
-                    "repeat_customer_actual": round(value, 2),
-                    "remark": None,
-                }
-            )
-            if owner_id:
-                user_ids.add(owner_id)
 
     # 补零行（有实际但没设目标的 (月, 人)）也要带齐三个口径与考核字段，
     # 否则前端要为"有目标/没目标"写两套渲染，而且差额字段的语义会不一致。
@@ -440,6 +486,43 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
             "shipped_actual", round(shipped_actual.get((month, owner_id), 0.0), 2)
         )
         row.setdefault("assess_actual", row["received_actual"])
+        # ---- 已结账的期间：用存档值覆盖实时算出来的数（第三批 §4.1.5 后半）----
+        #
+        # **必须放在这里统一做，不能塞进 actual_for**：报表有三种组装行的路径
+        # （有目标的、有实绩没设目标的补零行、只有复购的），其中补零行根本不走
+        # actual_for —— 第一版就栽在这：设了目标的人结账后数字冻住了，
+        # 没设目标的人照样漂移。放一处，三条路都盖到。
+        #
+        # 覆盖要发生在**差额与达成率之前**（就在下面那个循环里），否则差额还是按实时值算的。
+        scope_key = target_actuals.scope_key_of(row.get("user_id"), row.get("department_id"))
+        snap = frozen.get(month) or {}
+        # 以「签单」这一项在不在作为"这一行冻过"的标记：结账时四项是一起写的
+        # （见 target_actuals.freeze_period），拿它当锚点最稳。
+        frozen_row = (scope_key, "sales") in snap
+        if frozen_row:
+            # 逐项取、缺了就回落实时值：结账永远写满四项，但万一历史数据不全，
+            # 宁可显示实时值也不要 KeyError 把整张报表打挂。
+            def frozen_value(metric: str, live):
+                key = (scope_key, metric)
+                if key not in snap:
+                    return live
+                return int(snap[key]) if metric == "new_customer" else round(float(snap[key]), 2)
+
+            row["sales_actual"] = frozen_value("sales", row.get("sales_actual") or 0)
+            row["received_actual"] = frozen_value("received", row.get("received_actual") or 0)
+            row["shipped_actual"] = frozen_value("shipped", row.get("shipped_actual") or 0)
+            row["new_customer_actual"] = frozen_value(
+                "new_customer", row.get("new_customer_actual") or 0
+            )
+            # 复购（老客净额）也在冻结之列（返工单第 4 条）：
+            # 同一行里的四个数一起冻，不能只冻三个、留一个实时算
+            row["repeat_customer_actual"] = frozen_value(
+                "repeat_net", row.get("repeat_customer_actual") or 0
+            )
+            row["assess_actual"] = row["received_actual"]
+        # 这一行的数字是**存档值**还是**实时算的**。界面上必须说清楚：
+        # 存档值不会因为后来的退货变小，实时值会——两者对不上时先看这个标志。
+        row["actual_frozen"] = frozen_row
 
     # ---- 差额与达成率（文档 §六 :121 / 场景17）：每个口径都要能回答"差多少" ----
     # **零基期不给百分比**：分母为 0 时算出来的是错误增长率（文档场景17 明确要求
@@ -503,9 +586,24 @@ async def targets_with_actuals(session: AsyncSession, user: CurrentUser, year: i
         "metric_basis_version": METRIC_BASIS_VERSION,
         "assess_basis": ASSESS_BASIS,
         "assess_basis_label": ASSESS_BASIS_LABEL,
+        # ⚠️ 这段会**原样显示在页面上**，别用 markdown 星号加粗——
+        # 前端是纯文本渲染，星号会跟着一起露出来（`**签单归属**`）。
+        # 要强调用「」或书名号。
         "attribution_note": (
-            "归属口径：一律按订单**当前负责人**（决策「交接后归现负责人」）——"
-            "计划、实绩、差额同一政策"
+            "归属口径（业绩口径）：一律按订单「签单归属」（`sales_orders.sales_owner_id`，"
+            "为空才回落到 owner_id）——文档 :61「交接后保留历史业绩归属」，钱算签单人。"
+            "汇总、差额、下钻明细同一政策：点开明细加起来的数必须等于这一行。"
+            "应收/账龄页用的是责任口径（当前负责人），两页的数本来就不该相等"
+        ),
+        # 「已确认、却没记确认时间」的回款笔数（本年度、本人范围内）：
+        # 这些钱**没有进任何金额**，界面上必须提示业务去补录，
+        # 否则用户看到"回款比实际少"却不知道少在哪（返工单第 2 条的收尾）。
+        "missing_confirmed_at_count": missing_confirmed_count,
+        "missing_confirmed_at_note": (
+            f"有 {missing_confirmed_count} 笔已确认回款没记确认时间，未计入任何月份，"
+            "请到「回款管理」补填确认时间"
+            if missing_confirmed_count
+            else None
         ),
         "sources": METRIC_SOURCES,
         "computed_at": datetime.now(UTC).isoformat(),
@@ -624,6 +722,24 @@ DRILLDOWN_METRICS = {
 DRILLDOWN_LIMIT = 200
 
 
+def _fmt_at(at) -> str | None:
+    """明细里的业务时间写成人看得懂的格式。
+
+    老实现直接 `isoformat()`，界面会原样出现 `2026-01-05T10:30:00+00:00`
+    ——机器格式不说，还是 UTC 表示，看着比北京时间早 8 小时（时间线那次已经吃过这个亏）。
+    `date` 类（如发货日）保持 `YYYY-MM-DD` 不变。
+    """
+    if at is None:
+        return None
+    if isinstance(at, datetime):
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        return at.astimezone().strftime("%Y-%m-%d %H:%M")
+    if hasattr(at, "isoformat"):
+        return at.isoformat()
+    return str(at)
+
+
 def _row(record_type: str, record_id: int, label: str | None, owner_id: int | None,
          amount: float, at) -> dict:
     return {
@@ -632,7 +748,7 @@ def _row(record_type: str, record_id: int, label: str | None, owner_id: int | No
         "label": label,
         "owner_id": owner_id,
         "amount": round(amount, 2),
-        "date": at.isoformat() if hasattr(at, "isoformat") else (str(at) if at else None),
+        "date": _fmt_at(at),
     }
 
 
@@ -644,6 +760,8 @@ async def drilldown(
     metric: str,
     user_id: int | None = None,
     department_id: int | None = None,
+    unlimited: bool = False,
+    ignore_snapshot: bool = False,
 ) -> dict:
     """把某个指标的某个 (期间, 作用域) 拆到**具体业务记录**（§4.3）。
 
@@ -651,6 +769,18 @@ async def drilldown(
     目标页给出的差额要能一路点回到是哪几张单、哪几个发货批次、哪几笔回款。
     合计与 `targets_with_actuals` / `annual_bases` 用的是**同一套口径与筛选**，
     否则"明细加起来对不上汇总"比没有明细更糟。
+
+    **已结账的期间读存档明细**（返工单第 4 条）：那一期的汇总已经冻住了，
+    明细要是还实时算，结账之后发生退货/取消就会比汇总少一笔。
+    存档是结账时和汇总**同一次**写下来的，所以永远对得上。
+    返回里 `source` 字段说明这一份是 `snapshot`（存档）还是 `live`（实时）。
+
+    `unlimited=True` 给**结账**用：要落档的是完整明细，不能按展示上限截断，
+    否则存下来的明细天生不全，将来加总与汇总对不上。
+
+    `ignore_snapshot=True` 是给**结账 / 重算时收集明细**用的：那两件事要的恰恰是
+    "按现在数据算出来的明细"，读存档就等于把上次的明细又抄一遍（等于没重算）。
+    汇总那边同一个开关叫 `ignore_snapshot`（见 `targets_with_actuals`），名字保持一致。
     """
     period = normalize_period(period)
     if metric not in DRILLDOWN_METRICS:
@@ -684,9 +814,34 @@ async def drilldown(
     year, month = int(period[:4]), int(period[5:7])
     items: list[dict] = []
 
-    if metric == "signed":
+    #: 业绩归属（签单归属），与汇总 `targets_with_actuals` 用的是**同一个表达式**。
+    #: 老实现这里直接拿 `SalesOrder.owner_id`（当前负责人）：汇总按签单人分、
+    #: 明细按现负责人分，交接过的单子上点开明细永远对不上汇总（返工单第 3 条）。
+    #: 注意 `coalesce` 只是"没填签单人时回落"，真正要修的是**两处归属列必须同源**。
+    sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
+
+    # 已结账的期间读**存档明细**（返工单第 4 条）：汇总已经冻住，
+    # 明细要是还实时算，结账之后一张退货单就会让两边差一笔。
+    # 判据用"期间结过账"而不是"存档非空"——某期确实没有回款时，
+    # 空明细才是正确答案，回落到实时算会把结账之后的新回款补进来。
+    #
+    # ⚠️ 但**结账/重算时来收集明细**必须走实时（`ignore_snapshot=True`）：
+    # 那时 archive 里躺的正是上一次的明细，读它等于把旧明细原样抄回去，
+    # "重算"变成什么都没干（实测：改过存档明细之后重算，明细纹丝不动）。
+    from app.modules.analytics import target_actuals
+
+    snapshot_frozen = (
+        False if ignore_snapshot else await target_actuals.is_frozen(session, period)
+    )
+    if snapshot_frozen:
+        allowed = None if scope_ids is None else set(scope_ids)
+        for item in await target_actuals.frozen_items(session, period, metric):
+            if allowed is not None and item.get("owner_id") not in allowed:
+                continue
+            items.append(item)
+    elif metric == "signed":
         stmt = select(
-            SalesOrder.id, SalesOrder.order_no, SalesOrder.owner_id,
+            SalesOrder.id, SalesOrder.order_no, sales_owner,
             SalesOrder.total_amount, SalesOrder.created_at,
         ).where(
             SalesOrder.status != "cancelled",
@@ -694,7 +849,7 @@ async def drilldown(
             func.extract("month", SalesOrder.created_at) == month,
         )
         if scope_ids is not None:
-            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+            stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
         for record_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
             items.append(_row("order", record_id, order_no, owner, float(amount or 0), at))
 
@@ -704,7 +859,7 @@ async def drilldown(
                 OrderShipmentBatch.id,
                 SalesOrder.order_no,
                 OrderShipmentBatch.batch_no,
-                SalesOrder.owner_id,
+                sales_owner,
                 func.coalesce(
                     func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
                 ),
@@ -728,12 +883,12 @@ async def drilldown(
                 OrderShipmentBatch.id,
                 SalesOrder.order_no,
                 OrderShipmentBatch.batch_no,
-                SalesOrder.owner_id,
+                sales_owner,
                 OrderShipmentBatch.actual_ship_date,
             )
         )
         if scope_ids is not None:
-            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+            stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
         for batch_id, order_no, batch_no, owner, amount, ship_date in (
             await session.execute(stmt)
         ).all():
@@ -743,21 +898,26 @@ async def drilldown(
             )
 
     elif metric == "received":
+        # 归月依据 = **财务确认时间**，与汇总同一个表达式（返工单第 2 条）。
+        # 明细里显示的时间也换成确认时间：这一行是"按什么归月就显示什么"，
+        # 否则明细显示到账日、汇总按确认日算，用户会以为有一笔错月了。
         stmt = (
             select(
-                PaymentRecord.id, SalesOrder.order_no, SalesOrder.owner_id,
-                PaymentRecord.received_amount, PaymentRecord.received_date,
+                PaymentRecord.id, SalesOrder.order_no, sales_owner,
+                PaymentRecord.received_amount, PaymentRecord.confirmed_at,
             )
             .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
             .where(
                 PaymentRecord.status == "confirmed",
+                # 与汇总严格一致：缺确认时间的既不算进汇总，也不列进明细
+                PaymentRecord.confirmed_at.is_not(None),
                 SalesOrder.status != "cancelled",
-                func.extract("year", PaymentRecord.received_date) == year,
-                func.extract("month", PaymentRecord.received_date) == month,
+                func.extract("year", PaymentRecord.confirmed_at) == year,
+                func.extract("month", PaymentRecord.confirmed_at) == month,
             )
         )
         if scope_ids is not None:
-            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+            stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
         for pay_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
             items.append(
                 _row("payment", pay_id, order_no, owner, float(amount or 0), at)
@@ -781,7 +941,7 @@ async def drilldown(
     else:  # repeat_net
         veterans, _first_deal, _meta = await target_bases.basis_for(session, year)
         stmt = select(
-            SalesOrder.id, SalesOrder.order_no, SalesOrder.owner_id,
+            SalesOrder.id, SalesOrder.order_no, sales_owner,
             SalesOrder.total_amount, SalesOrder.created_at,
         ).where(
             SalesOrder.status != "cancelled",
@@ -790,12 +950,13 @@ async def drilldown(
             func.extract("month", SalesOrder.created_at) == month,
         )
         if scope_ids is not None:
-            stmt = stmt.where(SalesOrder.owner_id.in_(scope_ids or [0]))
+            stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
         for record_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
             items.append(_row("order", record_id, order_no, owner, float(amount or 0), at))
 
     total = sum(item["amount"] for item in items)
     items.sort(key=lambda x: (x["date"] or "", -x["amount"]))
+    cap = None if unlimited else DRILLDOWN_LIMIT
     return {
         "period": period,
         "metric": metric,
@@ -804,8 +965,12 @@ async def drilldown(
         "scope_user_ids": scope_ids,
         "count": len(items),
         "total": round(total, 2),
-        "items": items[:DRILLDOWN_LIMIT],
-        "truncated": len(items) > DRILLDOWN_LIMIT,
+        "items": items if cap is None else items[:cap],
+        "truncated": cap is not None and len(items) > cap,
+        # 这一份是**存档**（结账那一刻抄的，不会因为后来退货变小）
+        # 还是**实时算**的。两者对不上时，先看这个标志再怀疑数据。
+        "source": "snapshot" if snapshot_frozen else "live",
+        "actual_frozen": snapshot_frozen,
         # 口径元数据随明细一起给（§4.3：实际值 + 来源 + 口径版本 + 计算时间）
         "metric_basis_version": METRIC_BASIS_VERSION,
         "sources": METRIC_SOURCES.get(

@@ -128,6 +128,21 @@ class SampleRequest(Base, IdMixin):
     # `remark` 退回纯展示字段，不承担任何幂等判断。
     made_events: Mapped[list | None] = mapped_column(JSONType, nullable=True)
 
+    # ---- 制作依据（2026-10-06）：这次到底是照**哪几份文件**做出来的 ----
+    #
+    # 为什么必须有它：`sample_items.drawing_version` 只是**一串自由文字**
+    # （如 "DWG-2026-A3"），它和任何文件之间原本**没有任何关联**。
+    # 于是"这批样按图纸做的，做出问题来了"这种事发生时报不了账——
+    # 系统里查不出当时用的到底是哪一份图纸，照片、规格书也一样。
+    #
+    # 登记制作完成时由跟单**显式指定**，存下当时的文件 id、文件名、sha256、
+    # 大小与挂载类别。**只记文件名不算**（文件可以被换掉），必须是能自证的
+    # 校验值；将来对账时把它和实际文件一比，就知道是不是同一份。
+    #
+    # 语义：**登记即固化**。要换依据只能开修订版（新的制作依据属于新版本，
+    # 不能拿旧版的凭证去背书新版的活）。
+    basis_files: Mapped[list | None] = mapped_column(JSONType, nullable=True)
+
     # ---- 客户确认：与签收分开（「客户收到样品不等于样品被接受」）----
     confirm_status: Mapped[str] = mapped_column(
         String(16), default=CONFIRM_PENDING, server_default=CONFIRM_PENDING, nullable=False

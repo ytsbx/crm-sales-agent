@@ -145,6 +145,12 @@ async def main():
             PaymentRecord(
                 order_id=rookie_this_year.id, received_amount=Decimal('700'),
                 received_date=date(YEAR, 5, 6),
+                # **必须给确认时间**：回款归月依据是"财务确认时间"（返工单第 2 条），
+                # 只有到账日、没有确认时间的记录会被判为"数据不全"而不计入任何月份。
+                # 这里的夹具是照旧口径写的（当时代码还用到账日），补上才是这条断言的本意：
+                # 断言标题本来就是"按财务确认日归到 5 月"。
+                confirmed_at=datetime(YEAR, 5, 6, 2, 0, tzinfo=UTC),
+                confirmed_by=1,
                 status='confirmed', created_at=datetime(YEAR, 5, 6, tzinfo=UTC),
             ),
         ])
@@ -226,6 +232,13 @@ async def main():
         print('=== 4. 口径与来源随结果返回 ===')
         check('口径说明条数', len(data['basis_note']), 6)
         check_true('数据来源非空', bool(data['source_note']), data['source_note'][:20])
+        # 这些说明文字是**前端直接渲染**的（AnalyticsPage 里 `<div>{b.basis_note?.shipped}</div>`），
+        # 前端按纯文本显示，写 `**实际发货批次**` 会把星号一起露在页面上。
+        # 实测踩过：shipped 那条一直带着星号显示。
+        check_true('口径说明里不带 markdown 星号（前端是纯文本，星号会露出来）',
+                   not any('**' in v for v in data['basis_note'].values())
+                   and '**' not in (data.get('attribution_note') or ''),
+                   str([v[:20] for v in data['basis_note'].values() if '**' in v])[:60])
         check('月度序列长度', len(data['signed']), 12)
 
         print('=== 5. 差额与达成率；零基期不产生错误增长率 ===')
@@ -266,6 +279,9 @@ async def main():
                    str(list((result.get('sources') or {}).keys()))[:60])
         check_true('有归属口径说明', bool(result.get('attribution_note')),
                    str(result.get('attribution_note'))[:40])
+        # 同上：这段也显示在页面底部（目标表格下面那行小字）
+        check_true('归属口径说明里不带 markdown 星号',
+                   '**' not in (result.get('attribution_note') or ''), '')
         zero_row = next(r for r in rows if not r.get('sales_target'))
         check_true(
             '零基期不给百分比（文档场景17 明确要求）',

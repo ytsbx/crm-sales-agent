@@ -57,6 +57,11 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("customer:export", "导出客户", "customer", "export"),
     ("product:view", "查看产品", "product", "view"),
     ("product:manage", "维护产品", "product", "manage"),
+    # 评审新品洞察（第五批 §6.3 口径已确认：指定产品/开发评审人，销售主管按授权参与）。
+    # **单列一个权限码**，不继续写死"主管/管理员"角色：想让产品/开发岗评审，
+    # 原来只能给他开主管角色，而那会把他的**数据范围**一起放大成"看全公司"——
+    # 交接说明明确警告过这一点。授的应该是"能不能评审"这一件事，与看多少客户数据无关。
+    ("product:review", "评审新品洞察", "product", "review"),
     ("opportunity:view", "查看商机", "opportunity", "view"),
     ("opportunity:manage", "维护商机", "opportunity", "manage"),
     ("lead:view", "查看线索", "lead", "view"),
@@ -118,12 +123,35 @@ SALES_PERMISSIONS = [
     "sample:manage",
 ]
 
+#: 产品/开发评审人（第五批 §6.3 口径：指定产品/开发评审人）。
+#:
+#: **`data_scope` 保持 self**：评审要能看见"待评审"的洞察，这由代码里
+#: "持 product:review 的人可以看全部洞察"来满足；**不能**靠把数据范围放大到
+#: 部门或全公司来实现——那等于借评审之名拿到了所有客户、报价、订单的可见权
+#: （交接说明的原文警告："不要因为评审权限而扩大整个部门的数据权限"）。
+PRODUCT_REVIEWER_PERMISSIONS = [
+    "product:view",
+    "product:manage",
+    "product:review",
+    # 需求列表（定制询价）走的是 `quote:view`。**必须给**：产品岗转出需求之后
+    # 得看得到它，否则"转完就看不见自己转的东西"，还得回头找管理员要权限。
+    # 只给"看"，不给 quote:manage——他不改报价。
+    "quote:view",
+    "file:view",
+    "file:manage",
+    "agent:use",
+]
+
 MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
     "customer:assign",
     "lead:assign",
     "quote:approve",
     "price:manage",
     "product:manage",
+    # 销售主管按授权参与新品洞察评审（第五批 §6.3）。给主管保留这一项是**为了不回退**：
+    # 原来评审写死成"主管/管理员"角色，改权限码后若不授，主管会突然评不了。
+    # 产品/开发岗走下面独立的新角色，不通过"开主管角色"来拿评审权。
+    "product:review",
     "customer:delete",
     "order:manage",
     # 交期变更要求"责任人确认"，但交接/离职后总得有人收口：
@@ -176,6 +204,13 @@ async def seed() -> None:
             ("admin", "管理员", "all", list(perm_map.keys()), "拥有全部权限"),
             ("sales_manager", "销售主管", "department_and_sub", MANAGER_PERMISSIONS, "管团队、审报价"),
             ("salesperson", "业务员", "self", SALES_PERMISSIONS, "管自己的客户与报价"),
+            (
+                "product_reviewer",
+                "产品/开发评审人",
+                "self",
+                PRODUCT_REVIEWER_PERMISSIONS,
+                "评审新品洞察；数据范围不因此放大",
+            ),
             ("finance", "财务", "all", FINANCE_PERMISSIONS, "应收、回款确认"),
         ]
         role_map: dict[str, Role] = {}
@@ -214,6 +249,9 @@ async def seed() -> None:
             ("admin", "系统管理员", "admin123", "admin"),
             ("zhangsan", "张三", "123456", "salesperson"),
             ("lisi", "李四", "123456", "sales_manager"),
+            # 产品/开发评审人（第五批）：用来证明"有评审权但数据范围仍是 self"
+            # ——他能评审别人的洞察，却看不到别人的客户与报价。
+            ("zhaoliu", "赵六", "123456", "product_reviewer"),
             ("wangwu", "王五", "123456", "finance"),
         ]
         user_map: dict[str, User] = {}
@@ -797,6 +835,15 @@ async def seed() -> None:
                 "discount_limit": Decimal("0.10"),
                 "can_approve": False,
                 "remark": "占位值：业务员低于 15% 利润率或折扣超 10% 需审批",
+            },
+            {
+                # 评审人不是销售岗，价格权限按最严给：他不需要报价，
+                # 但缺了这条记录，`resolve_discount_limit` 会走到"角色没配置"的分支。
+                "role_code": "product_reviewer",
+                "minimum_margin": Decimal("0.15"),
+                "discount_limit": Decimal("0.10"),
+                "can_approve": False,
+                "remark": "占位值：评审岗不参与报价，按最严档位",
             },
         ]
         for definition in permission_defs:

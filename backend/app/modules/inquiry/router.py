@@ -346,7 +346,20 @@ async def revise_inquiry(
         target_price=(
             payload.target_price if payload.target_price is not None else old.target_price
         ),
-        # 新一版回到"待评估"：改过要求就得重新看
+        # **来源必须跟着走**（2026-10-06 修）：这里原来三项都没复制，
+        # 于是 `origin` 回落成模型默认的 `customer`——一条"内部开发需求"
+        # 只要被修订一次，性质就变成了普通客户询价，而 `apply_scope` 对
+        # "没挂客户的客户询价"是放行的，**等于修订一下就对全体同事开放了**。
+        # 这是权限泄露，不是显示问题。
+        origin=old.origin,
+        # `extra` 里存的是结构化来源（insight_id / insight_source /
+        # insight_target_customer）。不复制的话，修订后的版本看不出它是从哪条
+        # 洞察转来的，而"这条需求怎么来的"正是内部开发需求唯一的价值锚点。
+        extra=old.extra,
+        # `source_insight_id` **刻意不复制**：它在迁移 a3f7c1e5b9d2 里带
+        # 部分唯一索引（一个洞察只能转出一条需求），复制过来会直接撞唯一约束。
+        # 它属于**链级**属性，留在链条首版上；回链要显示时通过 `extra.insight_id`
+        # 或沿 root_id 找首版，两者都在（前者已随 extra 复制过来）。
         status="open",
         remark=payload.remark if payload.remark is not None else old.remark,
         version=(old.version or 1) + 1,
@@ -378,14 +391,26 @@ async def inquiry_history(
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """整条修订链：从 v1 到最新，按版本升序（先看最早的原始要求）。"""
+    """整条修订链：从 v1 到最新，按版本升序（先看最早的原始要求）。
+
+    **逐版本按同一套可见性规则过滤**（2026-10-06 修）。原来只校验入口那一版的
+    权限、随后把整条链原样返回——于是只要能看见链条上**任意一版**，就能把
+    更早的受限版本一起读出来。典型的走法：内部开发需求的 V1 被某一版修成了
+    普通客户询价（见 `revise_inquiry` 那个已修的 bug），拿可见的 V2 进来，
+    整条链连同 V1 的内部资料一并返回。
+
+    链条上各版本来就应该同源（`origin` 现在会跟着修订走），这里的过滤是
+    **第二道防线**：即使数据因为历史原因同链不同源，也只返回看得到的那几版。
+    """
     current = await svc.get_visible_or_404(session, user, inquiry_id)
     root_id = current.root_id or current.id
+    stmt = svc.not_deleted(select(CustomInquiry)).where(
+        (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
+    )
+    stmt = await svc.apply_scope(stmt, user, session)
     rows = (
         await session.execute(
-            svc.not_deleted(select(CustomInquiry))
-            .where((CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id))
-            .order_by(CustomInquiry.version.asc(), CustomInquiry.id.asc())
+            stmt.order_by(CustomInquiry.version.asc(), CustomInquiry.id.asc())
         )
     ).scalars().all()
     ctx = await _ctx_names(session, rows)

@@ -719,7 +719,7 @@ async def main():
     check_true('主管可见真实客户', res['data']['customer_id'] == zs_customer_id, '')
     status, res = call('GET', f'/cases?keyword={RUN}', token=zhangsan)
     check_true('关键词检索命中',
-               any(row['id'] == case_id for row in res['data']), '')
+               any(row['id'] == case_id for row in res['data']['items']), '')
 
     print()
     print('=== 12.1 分享版脱敏：列表与详情同一口径，正文与审核意见也纳入（§5.1.1/§5.1.2）===')
@@ -743,7 +743,7 @@ async def main():
 
     status, detail = call('GET', f'/cases/{share_case_id}', token=wangwu)
     status, listing = call('GET', f'/cases?keyword={RUN}&page_size=200', token=wangwu)
-    row = next((r for r in listing['data'] if r['id'] == share_case_id), None)
+    row = next((r for r in listing['data']['items'] if r['id'] == share_case_id), None)
     check_true('分享视角列表里能找到这条', row is not None, '')
     if row:
         check_true('列表标题不含客户全称（此前列表比详情松）',
@@ -896,14 +896,130 @@ async def main():
     # 列表默认只列当前版本；历史版本要显式要
     status, res = call('GET', f'/cases?keyword={RUN}&include_history=true&page_size=200',
                        token=zhangsan)
-    ids_hist = [row['id'] for row in res['data']]
+    ids_hist = [row['id'] for row in res['data']['items']]
     check('include_history=true 能看到被取代的原版', case_id in ids_hist, True)
     status, res = call('GET', f'/cases?keyword={RUN}&page_size=200', token=zhangsan)
-    ids_now = [row['id'] for row in res['data']]
+    ids_now = [row['id'] for row in res['data']['items']]
     check('默认列表不含被取代的原版', case_id in ids_now, False)
     check('默认列表含修订版', revision_id in ids_now, True)
 
+    print('=== 12.5 审核历史逐条脱敏（审视第 5 条：最新脱敏了、历史没有）===')
+    # 审视原话：「最新的 review_note 会脱敏，但新增的 review_history 原样返回。
+    # 普通培训读者仍可从历史意见得到真实客户名和手机号」。
+    # 根因：serialize_case 里只有 review_note 走了 mask_text，review_history
+    # 是 `case.review_history or []` 直接下发的。这里造一条两轮审核、每轮意见
+    # 都写了手机号的案例，再从普通读者视角读它 —— 两轮意见都不能漏。
+    cust_real_name = f'CHK{RUN}测试客户'
+    real_phone = '13800138000'
+    status, res = call('POST', '/cases', token=admin, body={
+        # 标题**必须带 CHK 前缀**：本套件的清库按 `title like '%CHK{RUN}%'` 物理删，
+        # 少这个前缀就会留下一条活着的案例，删客户时撞外键、清理整段中断，
+        # 后面几个套件跟着一起红（实测踩过）。
+        'title': f'CHK{RUN}脱敏历史案例', 'customer_id': customer_id,
+        'industry': '食品', 'product_line': '重型',
+        'key_actions': '按计划推进',
+        # 手机号**写进正文**（可搜索字段），下面才能验"搜索算不算探测口"。
+        # 写在审核意见里是搜不到的——测试搜索却把串放在不可搜字段上，等于没测。
+        'lessons': f'提前锁产线，客户电话{real_phone}',
+    })
+    check('造一条待审案例', res.get('code'), 0)
+    leak_id = res['data']['id']
+    call('POST', f'/cases/{leak_id}/submit', token=admin, body={})
+    call('POST', f'/cases/{leak_id}/review', token=lisi, body={
+        'approve': False, 'note': f'第一轮：客户甲 电话{real_phone}，请补充',
+    })
+    call('POST', f'/cases/{leak_id}/submit', token=admin, body={})
+    call('POST', f'/cases/{leak_id}/review', token=lisi, body={
+        'approve': True, 'note': f'第二轮：客户甲 电话{real_phone}，通过',
+    })
+    # 用一个**非作者、非主管**的账号读：wangwu（财务）。对案例而言他仍是普通
+    # 读者——分享版按"是否作者/主管"判，不看数据范围。
+    status, res = call('GET', f'/cases/{leak_id}', token=wangwu)
+    check('普通读者能读到这条案例', status, 200)
+    hist = res['data'].get('review_history') or []
+    check('两轮审核历史都在', len(hist), 2)
+    notes = ' '.join(str(h.get('note') or '') for h in hist)
+    check_true('历史意见里不能出现真手机号', real_phone not in notes, notes[:80])
+    check_true('历史意见里的手机号已换成占位', '〔手机号〕' in notes, notes[:80])
+    check_true('历史意见里的真实客户名也被换成代称',
+               cust_real_name not in notes, notes[:80])
+    check_true('最新那条意见同样脱敏（这条原来就是对的，别改坏）',
+               real_phone not in str(res['data'].get('review_note') or ''),
+               str(res['data'].get('review_note'))[:60])
+
+    # 搜索口径：普通读者不能拿敏感串去"探测"某条案例是否命中。
+    # 正文对他脱敏了，若 SQL 仍按原文匹配，搜索就变成了探测接口——
+    # 内容看不到，但"这条案例里有这个号码"这件事泄露了。
+    status, res = call('GET', f'/cases?keyword={real_phone}&page_size=50', token=wangwu)
+    check_true('普通读者按手机号搜不到这条案例（探测口已封）',
+               all(row['id'] != leak_id for row in res['data']['items']),
+               [row['id'] for row in res['data']['items']][:5])
+    # 但**拿得到原文的人**（主管）照常搜得到——别把正常检索能力一刀切掉
+    status, res = call('GET', f'/cases?keyword={real_phone}&page_size=50', token=lisi)
+    check_true('主管仍能按手机号搜到（检索能力没被砍）',
+               any(row['id'] == leak_id for row in res['data']['items']),
+               [row['id'] for row in res['data']['items']][:5])
+
+    # 清掉这条夹具，别留给守门套件。
+    # 走接口删（本套件是**纯 HTTP**、不连数据库），软删就够——
+    # 守门套件看的是"活着的"记录。
+    status, res = call('DELETE', f'/cases/{leak_id}', token=lisi)
+    check('夹具已清理（主管可删）', res.get('code'), 0)
+
     print()
+    print('=== 12.4 案例列表：真分页 + 完整筛选（第四批 §5.1.6）===')
+    # 关键词里有中文，**必须编码**再拼进 URL：不编码的话 urllib 会在发包前
+    # 拿 ascii 编 URL，直接抛 UnicodeEncodeError——看着像"请求被拒"，
+    # 其实是脚本自己崩了（同一个坑在别的套件里也踩过一次）。
+    PAGE_KW = urllib.parse.quote(f'{RUN}分页案例')
+    # 造 3 条可筛的：两个行业、两个产品线、三个阶段、一条带问题标签。
+    # 全部走发布流程，否则普通读者看不到，后面的筛选断言会空跑。
+    paged_ids: list[int] = []
+    for idx, (industry, line, stage, tags) in enumerate([
+        ('机械', '重型包装线', 'sample', ['交期紧']),
+        ('机械', '轻型包装线', 'first_order', []),
+        ('食品', '重型包装线', 'repeat', []),
+    ]):
+        status, res = call('POST', '/cases', token=admin, body={
+            # 标题必须带 CHK{RUN} 前缀：本套件的清理是按 `title like '%CHK{RUN}%'` 删的，
+            # 少写这个前缀，夹具会留在库里、被守门套件当场抓住。
+            'title': f'CHK{RUN}分页案例{idx}', 'industry': industry,
+            'product_line': line, 'stage_reached': stage, 'problem_tags': tags,
+            'key_actions': '按计划推进', 'lessons': '提前锁产线',
+        })
+        assert status == 200, res
+        made_id = res['data']['id']
+        call('POST', f'/cases/{made_id}/submit', token=admin, body={})
+        call('POST', f'/cases/{made_id}/review', token=lisi,
+             body={'approve': True, 'note': '分页夹具'})
+        paged_ids.append(made_id)
+
+    status, page1 = call('GET', f'/cases?keyword={PAGE_KW}&page=1&page_size=2', token=admin)
+    check_true('案例列表返回分页结构（此前是裸数组、limit 200 硬顶）',
+               sorted(page1['data']) == ['items', 'page', 'page_size', 'total'], sorted(page1['data']))
+    check('page_size 真生效', len(page1['data']['items']), 2)
+    check('total 是总数而不是本页条数', page1['data']['total'], 3)
+    status, page2 = call('GET', f'/cases?keyword={PAGE_KW}&page=2&page_size=2', token=admin)
+    check('第二页拿到剩下的那条', len(page2['data']['items']), 1)
+    check_true('两页不重复',
+               page1['data']['items'][0]['id'] not in [r['id'] for r in page2['data']['items']])
+
+    status, by_industry = call('GET', f'/cases?keyword={PAGE_KW}&industry={urllib.parse.quote("食品")}', token=admin)
+    check_true('按行业筛（包含匹配，不用打全称）',
+               len(by_industry['data']['items']) == 1
+               and by_industry['data']['items'][0]['industry'] == '食品',
+               [r['industry'] for r in by_industry['data']['items']])
+
+    status, by_line = call('GET', f'/cases?keyword={PAGE_KW}&product_line={urllib.parse.quote("重型")}', token=admin)
+    check('按产品线筛（包含匹配，前端此前没接通）', len(by_line['data']['items']), 2)
+
+    status, by_stage = call('GET', f'/cases?keyword={PAGE_KW}&stage=repeat', token=admin)
+    check('按阶段筛', len(by_stage['data']['items']), 1)
+
+    status, by_tag = call('GET', f'/cases?keyword={PAGE_KW}&problem_tags={urllib.parse.quote("交期紧")}', token=admin)
+    check('按问题标签筛（这个筛选后端此前根本没有，交接说明把它算进「已支持」了）',
+          len(by_tag['data']['items']), 1)
+
     print('=== 13. 定制询价修订链（§3.3：改了三次要求要能看出怎么变的）===')
     status, res = call('POST', '/custom-inquiries', token=zhangsan, body={
         'title': f'CHK{RUN}定制礼盒', 'description': '客户要天地盖礼盒，烫金',
@@ -1015,13 +1131,13 @@ async def main():
     wangwu = login('wangwu', '123456')
     status, res = call('GET', '/cases', token=wangwu)
     check_true('财务列表看不到待审核案例',
-               not any(row['id'] == pending_id for row in res['data']),
-               str([row['id'] for row in res['data']][:5]))
+               not any(row['id'] == pending_id for row in res['data']['items']),
+               str([row['id'] for row in res['data']['items']][:5]))
     status, res = call('GET', f'/cases/{pending_id}', token=wangwu)
     check('财务详情也被拒（口径一致）', res.get('code'), 40301)
     status, res = call('GET', '/cases', token=lisi)
     check_true('主管列表可见待审核',
-               any(row['id'] == pending_id for row in res['data']), '')
+               any(row['id'] == pending_id for row in res['data']['items']), '')
 
     # 回归②：更新改挂数据范围外的客户被拒（创建时校验了，更新此前漏了）
     status, res = call('POST', '/customers', token=admin, body={

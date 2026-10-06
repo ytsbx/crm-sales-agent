@@ -16,9 +16,13 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.file.access import (
+    SUPPLEMENT_CATEGORY,
+    SUPPLEMENT_LABEL,
     can_access_file,
     file_protection_label,
     protection_label,
+    sample_basis_lock_label,
+    sample_write_lock_label,
     visible_object,
 )
 from app.modules.file import access, storage
@@ -65,6 +69,20 @@ async def upload_file(
         session, user, business_type=business_type, business_id=business_id
     ):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该业务对象不在你的数据范围内", 403)
+    # 打样单制作/寄出之后：新附件只能标成「后续补充资料」。
+    # 制作依据（图纸、规格书）必须在制作当时就指定好，事后混进来的资料
+    # 不能和依据混为一谈——见 access.sample_write_lock_label。
+    if business_type == "sample" and business_id is not None:
+        lock = await sample_write_lock_label(session, business_id)
+        if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"{lock}，不能再往上加制作依据类的附件。"
+                f"事后补进来的资料请把类别选成「{SUPPLEMENT_LABEL}」"
+                f"（category={SUPPLEMENT_CATEGORY}）——两者要能分得开，"
+                f"否则事后说不清当时是按哪份资料做的",
+                422,
+            )
 
     object_key, size, checksum = await storage.save_upload(file)
     record = FileRecord(
@@ -264,6 +282,16 @@ async def delete_file(
             f"该文件仍被 {len(links)} 个业务对象引用，请先解除不需要的关联，不要直接删除原件",
             422,
         )
+    # ③ 打样单的**制作依据**：单子已制作/寄出/签收时，那份文件就是"当时按它做的"
+    #    的凭证，删掉之后账就报不清了（2026-10-06 补）。原来只挡了 signed/generated
+    #    两类原件，图纸这类过程附件不在其中，是个后门。
+    basis_lock = await sample_basis_lock_label(session, file_id)
+    if basis_lock is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"不能删除：{basis_lock}。它是对账时唯一的凭证；确需纠错请走作废/修订流程",
+            422,
+        )
     file_name = record.file_name
     object_key = record.object_key
     for link in links:
@@ -347,6 +375,18 @@ async def attach_file(
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该业务对象不在你的数据范围内", 403)
     if not await can_access_file(session, user, file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
+    # ③ 打样锁：已制作/寄出后，挂上来的只能是「后续补充资料」。
+    #    与上传接口同一条判据，避免"上传被拦、改用挂载绕过去"。
+    if business_type == "sample":
+        lock = await sample_write_lock_label(session, business_id)
+        if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"{lock}，不能再往上挂制作依据类的附件。"
+                f"事后补进来的资料请把类别选成「{SUPPLEMENT_LABEL}」"
+                f"（category={SUPPLEMENT_CATEGORY}）",
+                422,
+            )
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
@@ -402,6 +442,19 @@ async def unlink_file(
             f"该关联指向{protected}，不能解绑；确需纠错请走作废等专门流程",
             422,
         )
+    # ④ 打样单的制作依据（2026-10-06 补）：**解绑和删除一样能毁掉证据**——
+    #    拆掉关联后文件不再挂在任何业务对象上，`can_access_file` 对无关联文件
+    #    只认上传者，其他人（含主管）从此拿不到那份图纸，事后对不上账。
+    #    已制作/寄出的单子，它的过程附件一律不许解绑。
+    if link.business_type == "sample":
+        lock = await sample_write_lock_label(session, link.business_id)
+        if lock is not None:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"{lock}，不能解绑它的过程附件（可能是制作依据）。"
+                f"确需更换资料请开修订版，让新版用新依据、旧版凭证原样留着",
+                422,
+            )
     before = {
         "business_type": link.business_type,
         "business_id": link.business_id,

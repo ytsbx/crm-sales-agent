@@ -456,11 +456,23 @@ export interface SalesTargetRow {
   target_id: number | null
   period: string
   user_id: number | null
+  /** 团队目标才有；有值时 user_name 是部门名 */
+  department_id?: number | null
   user_name: string
   new_customer_target: number
   sales_target: number
   new_customer_actual: number
+  /** 签单额（展示口径，**不进差额**） */
   sales_actual: number
+  /** 发货额（展示口径，**不进差额**） */
+  shipped_actual?: number
+  /** 确认回款（**考核口径**，差额与达成率都用它） */
+  received_actual?: number
+  assess_actual?: number
+  assess_basis?: string
+  assess_basis_label?: string
+  /** true = 这一期已结账，数字是存档值，不会因为后来的退货变小 */
+  actual_frozen?: boolean
   /** 差额与达成率（场景17）：文档要求"显示确认口径下的实际、差额和来源" */
   sales_variance: number
   /** null = 零基期（没设目标），**不给百分比**——文档明确要求零基期不产生错误增长率 */
@@ -476,8 +488,95 @@ export interface SalesTargetRow {
   remark?: string | null
 }
 
+export interface SalesTargetList {
+  year: number
+  rows: SalesTargetRow[]
+  assess_basis?: string
+  assess_basis_label?: string
+  /** 归属口径说明：本页是**业绩口径**（签单归属），与应收/账龄页的责任口径不同 */
+  attribution_note?: string
+  metric_basis_version?: string
+  /** 已确认、却没记确认时间的回款笔数（这些钱没进任何金额，需要去补录） */
+  missing_confirmed_at_count?: number
+  missing_confirmed_at_note?: string | null
+  sources?: Record<string, string>
+  computed_at?: string
+}
+
 export function listSalesTargets(year: number) {
-  return api.get<{ year: number; rows: SalesTargetRow[] }>('/sales-targets', { year })
+  return api.get<SalesTargetList>('/sales-targets', { year })
+}
+
+// ---------------------------------------------------------------- 结账 / 重算 / 可追溯明细
+// 第三批 §4.1.5 后半 + §4.3。此前后端三个接口都有，前端**一个都没接通**——
+// 于是"结账"这件事在界面上根本不存在，实绩永远在实时漂移（返工单第 4 条）。
+
+/**
+ * 结账：把这一期已经过完的实绩（**含构成它的明细**）抄一份存档。
+ *
+ * 之后这一期的数字不再随订单状态变——年底发奖金拿的那份报表，过几个月再看还是这个数。
+ * 需要全公司范围权限（只冻自己看得到的那部分，等于把半张报表当账结了）。
+ */
+export function freezeSalesActuals(period: string, note?: string) {
+  return api.post<{ period: string; rows: number; scopes: number; items: number }>(
+    '/sales-targets/actuals/freeze',
+    undefined,
+    { params: { period, note } },
+  )
+}
+
+/**
+ * 重算已结账期间的实绩。**必须填原因**——改历史数字是要有人担责的事。
+ *
+ * 返回里的 `removed` 是"上一版有、这一版没有"被清掉的陈旧汇总行数：
+ * 不报出来的话，事后没人知道某人的历史数字是被移除、还是从来没算过。
+ */
+export function refreezeSalesActuals(period: string, reason: string) {
+  return api.post<{
+    period: string
+    rows: number
+    removed: number
+    items: number
+    reason: string
+  }>('/sales-targets/actuals/refreeze', undefined, { params: { period, reason } })
+}
+
+export interface DrilldownItem {
+  record_type: string
+  id: number
+  label?: string | null
+  owner_id?: number | null
+  amount: number
+  /** 已格式化的可读时间（后端统一格式化，前端直接显示） */
+  date?: string | null
+}
+
+export interface DrilldownResult {
+  period: string
+  metric: string
+  metric_label: string
+  scope: string
+  scope_user_ids?: number[] | null
+  count: number
+  total: number
+  items: DrilldownItem[]
+  truncated: boolean
+  /** snapshot = 读的结账存档（不会变）；live = 实时算的 */
+  source: 'snapshot' | 'live'
+  actual_frozen: boolean
+  metric_basis_version?: string
+  sources?: string
+  computed_at?: string
+}
+
+/** 可追溯明细（§4.3）：把某个指标的某期某作用域拆到具体单据。 */
+export function getSalesTargetDrilldown(params: {
+  period: string
+  metric: string
+  user_id?: number | null
+  department_id?: number | null
+}) {
+  return api.get<DrilldownResult>('/sales-targets/drilldown', params)
 }
 
 // ---------------------------------------------------------------- 目标口径（场景17）

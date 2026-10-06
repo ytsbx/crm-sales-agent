@@ -44,9 +44,18 @@ def _f(value) -> float:
 
 
 def _month_key(value) -> str | None:
-    """把一个日期类值折成 `YYYY-MM`，跨方言通用。"""
+    """把一个日期类值折成 `YYYY-MM`，跨方言通用。
+
+    ⚠️ 带时区的 datetime 必须**先转成本地时区再取年月**：asyncpg 把 timestamptz
+    读回来是 UTC 表示的，直接取 `.year/.month` 等于按 UTC 归月，与 SQL 那侧
+    `extract`（按数据库会话时区，本库 Asia/Shanghai）差 8 小时——
+    北京时间月初 0:00-8:00 发生的事会被算到上个月去。
+    项目惯例见 `timeline/service._human_time`（同样 `astimezone()`）。
+    """
     if value is None:
         return None
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        value = value.astimezone()
     return f"{value.year:04d}-{value.month:02d}"
 
 
@@ -205,13 +214,24 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
     ).scalar_one()
 
     # 本月回款（财务已确认）
+    # 归月依据 = **财务确认时间**，与目标页同一口径（返工单第 2 条）。
+    # "本月"也交给数据库判（`extract(now())` 与 `extract(confirmed_at)` 同源），
+    # 不用 Python 算的月初日期做下界：那要经过 UTC↔会话时区换算，
+    # 月初那几个小时会算错月份。
     month_received = (
         await session.execute(
             await _scope_filter(
                 select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
                 .select_from(PaymentRecord)
                 .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
-                .where(PaymentRecord.status == "confirmed", PaymentRecord.received_date >= month_start),
+                .where(
+                    PaymentRecord.status == "confirmed",
+                    PaymentRecord.confirmed_at.is_not(None),
+                    func.extract("year", PaymentRecord.confirmed_at)
+                    == func.extract("year", func.now()),
+                    func.extract("month", PaymentRecord.confirmed_at)
+                    == func.extract("month", func.now()),
+                ),
                 user,
                 _sales_owner_col(),
                 session,
@@ -270,7 +290,10 @@ async def order_payment_trend(
             month = 12
             year -= 1
     series.reverse()
-    start = datetime.fromisoformat(f"{series[0]}-01T00:00:00+00:00")
+    # 下界往前多留一天：SQL 侧是"带时区时间戳比较"，Python 侧按**本地时区**归月
+    # （见 `_month_key`），两者差 8 小时，卡在窗口第一个月初的数据可能被下界挡掉。
+    # 多取的这一天会落进正确的月份桶里，窗口外的月份在下面的输出里本来就不返回，不会重复计。
+    start = datetime.fromisoformat(f"{series[0]}-01T00:00:00+00:00") - timedelta(days=1)
 
     order_rows = (
         await session.execute(
@@ -287,12 +310,14 @@ async def order_payment_trend(
     payment_rows = (
         await session.execute(
             await _scope_filter(
-                select(PaymentRecord.received_date, PaymentRecord.received_amount)
+                # 归月依据 = **财务确认时间**，与目标页、工作台同一口径（返工单第 2 条）
+                select(PaymentRecord.confirmed_at, PaymentRecord.received_amount)
                 .select_from(PaymentRecord)
                 .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
                 .where(
                     PaymentRecord.status == "confirmed",
-                    PaymentRecord.received_date >= start.date(),
+                    PaymentRecord.confirmed_at.is_not(None),
+                    PaymentRecord.confirmed_at >= start,
                 ),
                 user,
                 _sales_owner_col(),

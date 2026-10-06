@@ -2,14 +2,14 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.core.data_scope import scoped_owner_ids
 from app.modules.customer.model import Customer
-from app.modules.inquiry.model import STATUS_LABELS, CustomInquiry
+from app.modules.inquiry.model import ORIGIN_LABELS, STATUS_LABELS, CustomInquiry
 
 VALID_STATUSES = set(STATUS_LABELS)
 
@@ -19,19 +19,42 @@ def not_deleted(stmt: Select) -> Select:
 
 
 async def apply_scope(stmt: Select, user: CurrentUser, session: AsyncSession) -> Select:
-    """数据范围：数据范围=all 看全部；否则本范围客户 + 自己创建的 + 未挂客户的记录。"""
+    """数据范围：数据范围=all 看全部；否则本范围客户 + 自己创建的 + 未挂客户的记录。
+
+    第五批（§6.1(4)）在这里修掉一处**权限扩大**：原来"未挂客户"是一律放行的
+    （`customer_id IS NULL`），而洞察转出来的内部开发需求正好也没有客户——
+    于是市场研究资料变成"仅本人"范围的同事也看得到。
+
+    现在按来源分开：
+    - **客户询价**（含"客户还没定、先把需求记下来"的正常单据）：维持原样，
+      未挂客户仍然可见（那是有意为之，业务上确实需要同事之间能接续）；
+    - **内部开发需求**：只归提出者、**持有 `product:review` 的评审岗**、以及
+      数据范围=all 的人。它本来就是"没客户"的，不能再拿"没客户"当公开的理由。
+
+    为什么给评审岗开这个口子（口径已确认 2026-10-06）：内部开发需求是产品/开发岗
+    之间要接着做的活，只认提出者的话，**换个人或换岗之后这些需求就没人看得到了**
+    （只剩管理员能翻）。它们通篇不含客户数据，多开的这个可见面比客户资料小得多。
+    """
     if user.data_scope == "all":
         return stmt
     stmt = stmt.outerjoin(Customer, Customer.id == CustomInquiry.customer_id)
     owner_ids = await scoped_owner_ids(session, user)
-    return stmt.where(
-        or_(
-            CustomInquiry.created_by == user.id,
-            Customer.owner_id.in_(owner_ids or [0]),
-            Customer.owner_id.is_(None),
-            CustomInquiry.customer_id.is_(None),
-        )
-    )
+    conditions = [
+        CustomInquiry.created_by == user.id,
+        Customer.owner_id.in_(owner_ids or [0]),
+        and_(
+            CustomInquiry.origin == "customer",
+            or_(
+                Customer.owner_id.is_(None),
+                CustomInquiry.customer_id.is_(None),
+            ),
+        ),
+    ]
+    if user.has("product:review"):
+        # 评审岗之间共享内部开发需求。**只放这一类**——客户询价仍按上面那三条，
+        # 别把评审权当成"看更多客户数据的通行证"。
+        conditions.append(CustomInquiry.origin == "internal_dev")
+    return stmt.where(or_(*conditions))
 
 
 async def get_visible_or_404(
@@ -101,6 +124,19 @@ def serialize(
         "target_price": float(inquiry.target_price) if inquiry.target_price is not None else None,
         "status": inquiry.status,
         "status_label": STATUS_LABELS.get(inquiry.status, inquiry.status),
+        # 来源类型（第五批 §6.1(3)）：客户询价 / 内部开发需求。
+        # 列表上要能一眼分辨——内部开发需求**不是**"客户已经提出采购需求"，
+        # 拿它去报价或承诺交期就搞错了对象。
+        "origin": inquiry.origin or "customer",
+        "origin_label": ORIGIN_LABELS.get(inquiry.origin or "customer", inquiry.origin),
+        "source_insight_id": inquiry.source_insight_id,
+        # 结构化来源（洞察转过来的那些：insight_id / insight_source /
+        # insight_target_customer）。
+        # 为什么必须返回：`source_insight_id` 带部分唯一索引（一个洞察只能转出
+        # 一条需求），所以**修订出的新版本不能再占一份**，它只挂在链条首版上。
+        # 若这里不回 `extra`，V2 的回链就彻底看不出来了——而"这条需求是从哪条
+        # 洞察转来的"正是内部开发需求唯一的价值锚点。`extra` 会随修订复制。
+        "extra": inquiry.extra,
         # 修订链（§3.3）：第几版、本版改了什么、链条首版、投产后关联的 SKU
         "version": inquiry.version or 1,
         "root_id": inquiry.root_id,

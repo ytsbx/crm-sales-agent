@@ -125,6 +125,14 @@ class SampleMade(BaseModel):
     #: 后端据此认成"这次已经登记过"；不带则按 (完成时间, 说明) 精确算一个。
     #: 说明只要不同（哪怕恰好是上一条的子串）就是一次**新事件**，照常追加与通知。
     request_key: str | None = Field(default=None, max_length=64)
+    #: **制作依据**（2026-10-06）：本次实际采用的附件 id 列表（`files.id`）。
+    #:
+    #: 为什么必须有：车间依据里的"图纸版本"只是一串自由文字，和文件之间没有
+    #: 任何关联——出了质量问题，系统答不出"当时按哪份图纸做的"。
+    #: 这里显式指定后，后端会把文件 id / 文件名 / sha256 / 大小一起快照下来。
+    #: 登记即固化：要换依据只能开修订版。
+    basis_file_ids: list[int] | None = None
+
 
 
 class SampleResubmit(BaseModel):

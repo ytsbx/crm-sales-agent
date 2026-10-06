@@ -54,6 +54,63 @@ def protection_label(category: str | None) -> str | None:
     return PROTECTED_CATEGORIES.get((category or "").strip())
 
 
+#: 打样锁定后**仍允许新增**的附件类别：事后补进来的验收报告、整改说明、
+#: 客户反馈截图这类资料。
+#: 为什么要留这个口子：如果锁定后一律禁止新增，正常补料也补不进来，
+#: 结果大家会把资料塞进备注文字里——那才是真的查不到。
+#: 它反过来也是判据：**非此类别的新附件在锁定后一律拒绝**，
+#: 这样"制作依据"和"事后补充"在台账上永远分得开。
+SUPPLEMENT_CATEGORY = "supplement"
+SUPPLEMENT_LABEL = "后续补充资料"
+
+
+async def sample_write_lock_label(session: AsyncSession, business_id: int) -> str | None:
+    """打样单是否已**锁定附件写入**；锁定时返回人话原因，否则 None。
+
+    触发条件（与"开修订版"的口径同源，见 sample/router.revise_sample）：
+    已登记制作完成（`made_at` 非空），或状态已到寄样/签收。
+
+    为什么需要这道锁（2026-10-06 修）：打样模块自己的写接口会检查历史版本，
+    但**通用附件接口只检查"能不能看见这张打样单"**——于是已制作的单子，
+    图纸照样能从 `DELETE /business-files/{id}` 解绑。原件保护原来只覆盖
+    `signed` / `generated` 两类，图纸不在其中，等于开着一个后门。
+    """
+    from app.modules.sample.model import SampleRequest
+
+    sample = await session.get(SampleRequest, business_id)
+    if sample is None:
+        return None
+    if sample.status in ("shipped", "signed"):
+        from app.modules.sample.model import SAMPLE_STATUS_LABEL
+
+        label = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
+        return f"打样单已是「{label}」"
+    if sample.made_at is not None:
+        return "打样单已登记制作完成"
+    return None
+
+
+async def sample_basis_lock_label(session: AsyncSession, file_id: int) -> str | None:
+    """这份文件是否被某张**已锁定**的打样单当作制作依据引用着。
+
+    删除走这一档：解绑只是摘掉一条关联，删文件影响的是文件本身，
+    所以要把该文件身上所有打样关联都过一遍，只要有一条落在锁定的单子上就不许删。
+    """
+    links = (
+        await session.execute(
+            select(BusinessFile).where(
+                BusinessFile.file_id == file_id,
+                BusinessFile.business_type == "sample",
+            )
+        )
+    ).scalars().all()
+    for link in links:
+        reason = await sample_write_lock_label(session, link.business_id)
+        if reason is not None:
+            return f"{reason}；这份文件是它的制作/过程附件"
+    return None
+
+
 async def file_protection_label(session: AsyncSession, file_id: int) -> str | None:
     """**文件级**判断：这份文件是否受"原件不可破坏"保护（任意一条受保护引用即算）。
 

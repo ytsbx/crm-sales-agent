@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     func,
     text,
 )
@@ -112,6 +113,92 @@ class BasisSnapshot(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     computed_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class ActualSnapshot(Base):
+    """期间实绩快照：结账后把「这个月每个人的完成额」抄一份存档（第三批 §4.1.5 后半）。
+
+    **为什么需要它**：报表原来是**每次打开现算**的。客户今年退掉去年的一张单，
+    去年那一期的数字就跟着变小——年底发奖金、做总结、给领导查数拿的都是"当时那份报表"，
+    以后再看却变了，对账永远对不上。这跟基准快照（老客池/首次成交，已按年冻结）
+    是同一类问题，只是当初冻了一半，金额这一半没冻。
+
+    **冻结边界（保守，与 BasisSnapshot 同一套思路）**：
+    - 只冻**已经过完的期间**——当月不冻，数据还在产生，冻了等于冻在半路上；
+    - 冻结是**显式动作**（结账时点由人定），不是"第一次读就偷偷冻"：
+      什么时候算结完账，只有人知道；
+    - 重算必须带原因、写审计（谁在什么时候、为什么改了历史数字）。
+
+    **一行 =（期间 × 作用域 × 指标）**。作用域用字符串键
+    （`company` / `dept:3` / `user:5`）而不是两个可空列：复合主键里的 NULL
+    在唯一性上有坑——PG 里 NULL 互不相等，同一期间能插出无数行"全公司"。
+
+    已声明的边界（**返工单第 4 条之后已补齐**）：汇总值冻在这里，
+    构成它的**明细条目**冻在 `ActualSnapshotItem` 里——两者同一次结账写入，
+    所以"点开明细加起来的数"永远等于这一行的汇总值。
+    老实现只冻汇总、明细实时算，退货或取消订单之后两边就对不上了。
+    """
+
+    __tablename__ = "analytics_actual_snapshots"
+
+    period: Mapped[str] = mapped_column(String(7), primary_key=True)  # YYYY-MM
+    scope_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    metric: Mapped[str] = mapped_column(String(24), primary_key=True)
+    actual_value: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    #: 冻结时用的口径版本：口径改了能看出这份快照是哪一版算出来的
+    metric_basis_version: Mapped[str] = mapped_column(String(64))
+    frozen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    frozen_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: 重算原因（首次冻结留空）
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ActualSnapshotItem(Base, IdMixin):
+    """实绩快照的**明细条目**：结账时把"这几笔分别是哪张单"一起抄下来（返工单第 4 条）。
+
+    为什么必须和汇总一起冻：结账之后客户退掉一张单，汇总还是结账那天的数（对），
+    可明细是实时算的，点开会少一笔（对不上）。报表上"合计"和"点开看明细"
+    是同一个数的一体两面，一个冻一个不冻，等于自相矛盾。
+
+    存的是**当时的快照**，不是指针——金额、归属人、时间都是结账那一刻的值：
+    - 金额：订单后来被改价、退货，这里不变；
+    - `owner_id`：**当时的业绩归属人**（签单归属）。交接之后新负责人再看这张单，
+      这里仍是老签单人，与汇总（也是按签单归属）一致；
+    - `at_text`：已经格式化好的可读时间字符串（`2026-02-03 09:30`）。
+      存字符串而不是时间戳，是因为"冻结"的意义就是连展示都钉住，
+      也避免 date 与 datetime 两种类型混在一列里。
+
+    一行 =（期间 × 指标 × 单据）。同一张订单在不同指标下（签单 / 老客净额）
+    会各存一条，因为它们是两个指标各自的构成明细。
+    """
+
+    __tablename__ = "analytics_actual_snapshot_items"
+    __table_args__ = (
+        # 下钻永远是"某期间 + 某指标（+ 某些归属人）"，按这个顺序建索引
+        Index("ix_actual_snapshot_items_lookup", "period", "metric", "owner_id"),
+    )
+
+    period: Mapped[str] = mapped_column(String(7))  # YYYY-MM
+    #: 与 `targets.DRILLDOWN_METRICS` 的键一致：signed / shipped / received /
+    #: new_customer / repeat_net
+    metric: Mapped[str] = mapped_column(String(24))
+    #: order / shipment_batch / payment / customer
+    record_type: Mapped[str] = mapped_column(String(24))
+    record_id: Mapped[int] = mapped_column(BigInteger)
+    #: 当时的业绩归属人（可为空：无归属的订单）
+    owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: 展示用标签：订单号 / 批次号 / 客户名
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    #: 业务时间，已格式化（见类文档）
+    at_text: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    metric_basis_version: Mapped[str] = mapped_column(String(64))
+    frozen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    frozen_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class OperationTiming(Base, IdMixin):

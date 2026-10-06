@@ -20,6 +20,12 @@
    ① 改任何一项资料（含费用这类非车间依据的字段）自动回「待审批」；
    ② 一个字都不改，走 `/samples/{id}/resubmit` 原样再报一次；
    ③ 主管直接「改判为批准」（上一次驳错了）。同值重发不算改动。
+9. 打样附件锁 + 制作依据（2026-10-06 补，审视第 1 条）：
+   已制作/已寄出的打样单，其附件**不能解绑、不能删除**，也不能再挂"依据类"附件
+   （这两条此前都能从通用附件入口穿过去——原件保护只覆盖 signed/generated）；
+   「后续补充资料」（`category=supplement`）仍可上传；
+   登记制作完成时可**显式指定制作依据**，快照里带 sha256，登记即固化；
+   拿别的打样单上的文件当依据会被拒。
 
 跑法（隔离库；不要对着默认开发库跑，`check_*` 会清库）：
     cd backend
@@ -518,6 +524,96 @@ async def main():
                     body={"sku_id": sku_id, "quantity": "2", "material": f"{MARKER} 追加料"})
         check("已批准的单子加明细 → 退回待审批", after["status"] == "pending", after["status"])
 
+        # ================================================================
+        print("=== 8. 打样附件锁 + 制作依据（2026-10-06 补）===")
+        # 审视原话：「一张已经制作完成的打样单，仍可以通过通用接口解除附件关联」。
+        # 根因：链路上只有 visible_object 一道判断——它答的是「你能不能看见这张
+        # 打样单」，与「这张单是否已经制作/寄出」无关；原件保护又只覆盖
+        # signed/generated 两类，图纸不在其中。于是通用解绑/删除都能穿过去。
+        print("---- 8.1 制作依据要能证明用的是哪份文件（记 sha256，不只是文件名）----")
+        lock = api("POST", "/samples", body={
+            "customer_id": own.id, "items": [{"sku_id": sku_id, "quantity": "3"}]},
+            token=zhangsan)
+        lock_id = lock["id"]
+        sample_ids.append(lock_id)
+        # ① 制作**之前**附件可以自由增删：这道锁只在有制作事实之后才生效，
+        #    否则单子还在改资料阶段就被锁死，跟单没法干活。
+        status, res = upload(zhangsan, "dwg-v1.png", business_type="sample",
+                             business_id=lock_id, category="drawing")
+        check("制作前传图纸成功", status == 200, f"HTTP {status} {res}")
+        dwg_id = res["data"]["id"]
+        file_ids.append(dwg_id)
+        # 关联行的编号要从清单接口取：上传返回的是文件本身，不含关联编号。
+        # 清单行里 `id` 是文件、`business_file_id` 是那条关联（两个别搞混）。
+        dwg_link = api("GET", f"/business/sample/{lock_id}/files", token=zhangsan)[0]["business_file_id"]
+        status, _ = call("DELETE", f"/business-files/{dwg_link}", token=zhangsan)
+        check("制作前解绑图纸照常放行（锁还没生效）", status == 200, f"HTTP {status}")
+        # 挂回去，后面要拿它当制作依据
+        status, res = call(
+            "POST", f"/business/sample/{lock_id}/files?file_id={dwg_id}&category=drawing",
+            token=zhangsan,
+        )
+        check("重新把图纸挂回打样单", status == 200, f"HTTP {status} {res}")
+
+        api("POST", f"/samples/{lock_id}/approve", body={"approved": True}, token=zhangsan)
+        made = api("POST", f"/samples/{lock_id}/made", token=zhangsan,
+                   body={"remark": "按图纸制作完成", "basis_file_ids": [dwg_id]})
+        basis = made.get("basis_files") or []
+        check("制作依据记下来了", len(basis) == 1, basis)
+        check("依据里带 sha256（光有文件名证明不了是哪一份）",
+              bool(basis) and bool(basis[0].get("checksum")), basis[:1])
+        check("依据里记了它属于哪一版（V1 的依据不能背书 V2）",
+              bool(basis) and basis[0].get("sample_version") == 1, basis[:1])
+        check("依据里带原始文件名",
+              bool(basis) and basis[0].get("file_name") == "dwg-v1.png", basis[:1])
+
+        print("---- 8.2 已制作之后，三条写入路径都要挡住 ----")
+        # ② 解绑：拆掉关联后文件不再挂任何对象，`can_access_file` 对无关联文件
+        #    只认上传者——其他人（含主管）从此拿不到那份图纸，账就报不清了。
+        links = api("GET", f"/business/sample/{lock_id}/files", token=zhangsan)
+        dwg_link = next((r["business_file_id"] for r in links if r["id"] == dwg_id), None)
+        status, result = call("DELETE", f"/business-files/{dwg_link}", token=zhangsan)
+        check("已制作后解绑图纸被拒", status == 422, f"HTTP {status} {result}")
+        # ③ 删除：整份文件清掉等于把凭证毁了
+        status, result = call("DELETE", f"/files/{dwg_id}", token=zhangsan)
+        check("已制作后删除图纸文件被拒", status == 422, f"HTTP {status} {result}")
+        # ④ 挂载：不能再往里塞依据性质的资料（事后补的必须和依据分得开）
+        status, result = call(
+            "POST", f"/business/sample/{lock_id}/files?file_id={dwg_id}&category=drawing",
+            token=zhangsan,
+        )
+        check("已制作后再挂依据类附件被拒", status == 422, f"HTTP {status} {result}")
+        # 但「后续补充资料」必须放行——否则验收报告、整改说明这类正常补料也进不来，
+        # 大家只能把资料塞进备注文字里，那才是真的查不到。
+        status, res = upload(zhangsan, "验收报告.png", business_type="sample",
+                             business_id=lock_id, category="supplement")
+        check("锁定后「后续补充资料」仍可上传", status == 200, f"HTTP {status} {res}")
+        extra_id = res["data"]["id"]
+        file_ids.append(extra_id)
+        after = api("GET", f"/samples/{lock_id}", token=zhangsan)
+        check("补充资料没有被算成制作依据",
+              len(after.get("basis_files") or []) == 1, after.get("basis_files"))
+
+        print("---- 8.3 依据登记即固化 ----")
+        status, result = call(
+            "POST", f"/samples/{lock_id}/made", token=zhangsan,
+            body={"remark": "换一份图纸", "basis_file_ids": [extra_id]},
+        )
+        check("想改已登记的制作依据被拒（要开修订版）", status == 422, f"HTTP {status} {result}")
+
+        print("---- 8.4 依据必须挂在这一单上，不能拿别处的文件背书 ----")
+        stranger = api("POST", "/samples", body={
+            "customer_id": own.id, "items": [{"sku_id": sku_id, "quantity": "1"}]},
+            token=zhangsan)
+        stranger_id = stranger["id"]
+        sample_ids.append(stranger_id)
+        api("POST", f"/samples/{stranger_id}/approve", body={"approved": True}, token=zhangsan)
+        status, result = call(
+            "POST", f"/samples/{stranger_id}/made", token=zhangsan,
+            body={"remark": "拿别单的图纸当依据", "basis_file_ids": [dwg_id]},
+        )
+        check("拿别张打样单的图纸当依据被拒", status == 422, f"HTTP {status} {result}")
+
     finally:
         async with SessionLocal() as session:
             if order_ids:
@@ -573,7 +669,7 @@ async def main():
     if FAILURES:
         print(f"\n失败 {len(FAILURES)} 项：{FAILURES}")
         raise SystemExit(1)
-    print("\nOK 附件解绑与可见性、询价附件类型、删除保护、打样入参、重试去重、批次节点一致性、车间依据闸门、驳回重提与改判")
+    print("\nOK 附件解绑与可见性、询价附件类型、删除保护、打样入参、重试去重、批次节点一致性、车间依据闸门、驳回重提与改判、打样附件锁与制作依据")
 
 
 if __name__ == "__main__":

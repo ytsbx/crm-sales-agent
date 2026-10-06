@@ -1,6 +1,8 @@
 """工作台与数据分析接口。"""
 
+import re
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi import Query
@@ -152,6 +154,219 @@ async def refreeze_sales_target_bases(
             **meta,
         },
         "口径基准已重算并重新冻结",
+    )
+
+
+def _ensure_past_period(period: str) -> None:
+    """结账只针对**已经过完**的期间（§4.1.5 后半）。
+
+    当月不许结：数据还在产生，冻了就是冻在半路上——月底前冻一次，
+    后面进来的单子全都不算数，而报表上看不出"这是结早了的存档"。
+    """
+    if not re.fullmatch(r"\d{4}-\d{2}", period or ""):
+        raise AppError(ErrorCode.PARAM_ERROR, "期间格式应为 YYYY-MM", 422)
+    if period >= datetime.now(UTC).strftime("%Y-%m"):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{period} 还没过完（数据仍在产生），不需要结账",
+            422,
+        )
+
+
+async def _collect_period_actuals(session: AsyncSession, user, period: str) -> dict:
+    """把某一期各作用域的实绩收齐，准备落档。
+
+    `ignore_snapshot=True`：要的是**现在的数**，不是上一次存的值——
+    否则"重算"会变成把上次的值再抄一遍，等于没算。
+    """
+    from app.modules.analytics import target_actuals
+
+    result = await targets_svc.targets_with_actuals(
+        session, user, int(period[:4]), ignore_snapshot=True
+    )
+    values: dict[tuple[str, str], Decimal] = {}
+    for row in result["rows"]:
+        if row["period"] != period:
+            continue
+        key = target_actuals.scope_key_of(row.get("user_id"), row.get("department_id"))
+        values[(key, "sales")] = Decimal(str(row.get("sales_actual") or 0))
+        values[(key, "received")] = Decimal(str(row.get("assess_actual") or 0))
+        values[(key, "shipped")] = Decimal(str(row.get("shipped_actual") or 0))
+        values[(key, "new_customer")] = Decimal(str(row.get("new_customer_actual") or 0))
+        # 复购（老客净额）也要落档（返工单第 4 条）：同一行里的四个数就该一起冻，
+        # 单留一个实时算的，结账之后它照样漂移，用户看到的是"冻结了一半的报表"。
+        values[(key, "repeat_net")] = Decimal(str(row.get("repeat_customer_actual") or 0))
+    return values
+
+
+def _received_total(values: dict) -> Decimal:
+    """某一期的考核口径合计——审计里用来一眼看出"改了多少"。"""
+    return sum(
+        (v for (key, metric), v in values.items() if metric == "received"), Decimal("0")
+    )
+
+
+async def _collect_period_items(session: AsyncSession, user, period: str) -> list[dict]:
+    """把某一期各指标的**贡献单据**收齐，准备与汇总一起落档（返工单第 4 条）。
+
+    这里用的 `drilldown` 就是页面上"点开看明细"的那个函数，所以**存下来的明细**
+    和**当时点开看到的明细**是同一批（同一套口径、同一批筛选），不会出现
+    "账存的和当时看的不一样"。
+
+    `unlimited=True`：落档要完整明细，不能按页面的展示上限（200 条）截断——
+    截断之后存下来的明细天生不全，将来加总与汇总对不上，还不如不冻。
+
+    `ignore_snapshot=True`：要**按现在的数据**重出一份明细。这一期已经结过账时，
+    存档里躺的正是上一次的明细，读它等于把旧明细原样抄回去——
+    "重算"就变成什么都没干（实测踩到：改过存档明细之后重算，明细纹丝不动）。
+    汇总那边用的也是同一个开关（`_collect_period_actuals` 传 ignore_snapshot）。
+    """
+    items: list[dict] = []
+    for metric in targets_svc.DRILLDOWN_METRICS:
+        detail = await targets_svc.drilldown(
+            session, user, period=period, metric=metric,
+            unlimited=True, ignore_snapshot=True,
+        )
+        for item in detail["items"]:
+            items.append({**item, "metric": metric})
+    return items
+
+
+@router.post("/sales-targets/actuals/freeze")
+async def freeze_sales_actuals(
+    request: Request,
+    period: str = Query(..., description="YYYY-MM，要结账的期间"),
+    note: str | None = Query(None, max_length=255),
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """**结账**：把已经过完的这一期的实绩抄一份存档（§4.1.5 后半）。
+
+    之后这一期的数字不再随订单状态变——客户今年退掉去年的一张单，
+    去年结过账的那一期照样是原来的数。在此之前报表是每次打开现算的，
+    年底发奖金拿的那份报表过几个月再看就变了，对账永远对不上。
+
+    需要**全公司范围**的权限：只冻自己看得到的那部分，等于把半张报表当账结了。
+    """
+    from app.modules.analytics import target_actuals
+
+    if user.data_scope != "all":
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "结账需要全公司范围的权限——只结自己可见的部分会结出半张报表",
+            403,
+        )
+    _ensure_past_period(period)
+    values = await _collect_period_actuals(session, user, period)
+    if not values:
+        raise AppError(
+            ErrorCode.NOT_FOUND, f"{period} 没有任何目标或实绩，没有可结的数", 404
+        )
+    # 明细与汇总**同一次**写入（返工单第 4 条）：只冻汇总的话，
+    # 结账之后一张退货单就会让"点开明细"比"合计"少一笔，用户不知道该信哪个。
+    items = await _collect_period_items(session, user, period)
+    written = await target_actuals.freeze_period(
+        session,
+        period=period,
+        values=values,
+        basis_version=targets_svc.METRIC_BASIS_VERSION,
+        operator_id=user.id,
+        note=note,
+        items=items,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="freeze_actuals",
+        business_type="analytics_actuals",
+        business_id=None,
+        after={
+            "period": period,
+            "rows": written["written"],
+            "items": written["items"],
+            "note": note,
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "period": period,
+            "rows": written["written"],
+            # 作用域数 = 总行数 / 每个作用域几项指标。**别硬编码 4**：
+            # 指标清单在 target_actuals.ACTUAL_METRICS，加一项这里要跟着错。
+            "scopes": written["written"] // max(len(target_actuals.ACTUAL_METRICS), 1),
+            "items": written["items"],
+        },
+        f"{period} 已结账，共存档 {written['written']} 个数字、{written['items']} 条明细",
+    )
+
+
+@router.post("/sales-targets/actuals/refreeze")
+async def refreeze_sales_actuals(
+    request: Request,
+    period: str = Query(..., description="YYYY-MM"),
+    reason: str = Query(..., min_length=1, max_length=255),
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """**重算**已结账期间的实绩。
+
+    确实存在正当理由（比如发现一批历史订单当初状态录错了）。但**必须填原因**——
+    改历史数字是要有人担责的事；不带原因的重算，等于让"数字为什么变了"永远查不出来。
+    改动前后的考核口径合计都写进审计，一眼能看出改了多少。
+    """
+    from app.modules.analytics import target_actuals
+
+    if user.data_scope != "all":
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "重算历史实绩需要全公司范围的权限", 403)
+    _ensure_past_period(period)
+    before = await target_actuals.frozen_for(session, period)
+    if not before:
+        raise AppError(ErrorCode.NOT_FOUND, f"{period} 还没结过账，请先结账", 404)
+    values = await _collect_period_actuals(session, user, period)
+    # 明细跟着一起重出（返工单第 4 条）：只换汇总不换明细，等于把
+    # "刚重算的合计"和"上一版的明细"摆在同一页上，比不重算还乱。
+    items = await _collect_period_items(session, user, period)
+    written = await target_actuals.freeze_period(
+        session,
+        period=period,
+        values=values,
+        basis_version=targets_svc.METRIC_BASIS_VERSION,
+        operator_id=user.id,
+        replace=True,
+        note=reason,
+        items=items,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="refreeze_actuals",
+        business_type="analytics_actuals",
+        business_id=None,
+        before={"period": period, "received_total": str(_received_total(before))},
+        after={
+            "period": period,
+            "rows": written["written"],
+            # 清掉了几条"上一版有、这一版没有"的陈旧汇总：不报出来，
+            # 事后没人知道某人的历史数字是被移除还是从来没算过
+            "removed": written["removed"],
+            "items": written["items"],
+            "reason": reason,
+            "received_total": str(_received_total(values)),
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        {
+            "period": period,
+            "rows": written["written"],
+            "removed": written["removed"],
+            "items": written["items"],
+            "reason": reason,
+        },
+        f"{period} 实绩已重算",
     )
 
 

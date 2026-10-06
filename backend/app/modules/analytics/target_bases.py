@@ -50,18 +50,26 @@ SOURCE_NOTE = "CRM 业务单据实时聚合（不读聚水潭、不做二次录�
 #: 业绩口径 = 签单归属（`sales_owner_id`）：钱算签单人。
 #: 应收/账龄页是责任口径（当前负责人）——两页的数不该相等，但**同一页内**
 #: 计划/实绩/差额必须同源，否则会出现"原负责人负未回款"（§4.1.3）。
+#:
+#: ⚠️ 下面这些字符串会**原样显示在页面上**（`AnalyticsPage` 直接渲染 `basis_note`），
+#: 所以不许写 markdown 星号——前端是纯文本，`**实际发货批次**` 会把星号一起露出来。
+#: 要强调就用「」或书名号。加新口径说明时照这个来。
 ATTRIBUTION_NOTE = (
-    "归属口径：本页为**业绩口径**，按订单**签单归属**（`sales_orders.sales_owner_id`）"
+    "归属口径：本页为「业绩口径」，按订单「签单归属」（`sales_orders.sales_owner_id`）"
     "——文档 :61「交接后保留历史业绩归属」，钱算签单人。"
     "应收/账龄页用的是责任口径（当前负责人），两页的数不该相等"
 )
 BASIS_NOTE = {
     "signed": "签单口径：订单创建月，非取消订单的订单金额",
     "shipped": (
-        "发货口径：按**实际发货批次**分摊——每批金额 = Σ(该批实发数量 × 订单行单价)，"
+        "发货口径：按「实际发货批次」分摊——每批金额 = Σ(该批实发数量 × 订单行单价)，"
         "落在该批 `actual_ship_date` 所在月。不再按首批把整单金额归到一个月（§4.1.4）"
     ),
-    "received": "回款口径：财务确认回款日，只计已确认的回款",
+    "received": (
+        "回款口径：按「财务确认时间」（`payment_records.confirmed_at`）归月，"
+        "只计已确认的回款；已确认但没记确认时间的不计入"
+        "（请到回款管理补填——不拿收款日顶替，否则同一列里混进两个口径）"
+    ),
     "repeat": "老客口径：年初固定客户集合（1 月 1 日前已有非取消订单）在本期的订单净额；本期新客不进老客池",
     "new_by_created": "新客口径一（过程指标）：客户档案在本月新建",
     "new_by_first_deal": "新客口径二（考核口径）：该客户首笔非取消订单落在本月",
@@ -197,8 +205,6 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         lambda stmt, col: stmt.where(col.in_(owner_ids or [0]))
     )
     sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
-    year_start = date(year, 1, 1)
-    next_year = date(year + 1, 1, 1)
     # 基准：老客池 + 首次成交。**过去年份读快照、当年实时算**（§4.1.5）
     veteran_ids, first_deal_month, basis_meta = await basis_for(session, year)
 
@@ -266,22 +272,25 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     for month, amount in rows.all():
         _bucket(shipped, month, amount)
 
-    # ---- 回款：财务确认日 ----
+    # ---- 回款：**财务确认时间**归月（返工单第 2 条，与 targets.py 同一口径）----
     received: dict[str, float] = {}
     rows = await session.execute(
         scope(
             select(
-                func.extract("month", PaymentRecord.received_date),
+                func.extract("month", PaymentRecord.confirmed_at),
                 func.coalesce(func.sum(PaymentRecord.received_amount), 0),
             )
             .select_from(PaymentRecord)
             .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
             .where(
                 PaymentRecord.status == "confirmed",
-                PaymentRecord.received_date >= year_start,
-                PaymentRecord.received_date < next_year,
+                # 缺确认时间的归不了月，不进这一列（与目标页一致：先不算、由那边提示补录）
+                PaymentRecord.confirmed_at.is_not(None),
+                # 年份边界也用 extract，与下面 group_by 的月份**同一套时区口径**：
+                # 一个用带时区的时间戳比较、一个按会话时区分月，跨年边界会差 8 小时
+                func.extract("year", PaymentRecord.confirmed_at) == year,
             )
-            .group_by(func.extract("month", PaymentRecord.received_date)),
+            .group_by(func.extract("month", PaymentRecord.confirmed_at)),
             sales_owner,
         )
     )

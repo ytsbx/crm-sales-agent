@@ -22,6 +22,18 @@ STATUS_LABELS = {
     "archived": "已归档",
 }
 
+#: 来源类型（第五批 §6.1(3)，口径已确认：允许转「内部开发需求」）。
+#:
+#: 为什么必须显式区分、不能靠"有没有客户"去猜：业务上本来就有"客户还没定、
+#: 先把需求记下来"的正常询价；而洞察转出来的内部开发需求**性质完全不同**——
+#: 它是市场研究资料，不是客户提出的采购需求（文档明说"不要把市场研究资料
+#: 伪装成客户已提出采购需求"）。两者的权限口径也不一样：正常无客户询价
+#: 按现有规则对同事可见，内部开发需求只对提出者与管理者可见。
+ORIGIN_LABELS = {
+    "customer": "客户询价",
+    "internal_dev": "内部开发需求",
+}
+
 #: 字段归属（口径 2026-10-04）：把"需求"拆成**链级**与**版本级**两层。
 #: - 链级：整条需求共享（哪家客户、哪个联系人、关联哪个商机、对接报价员），
 #:   改一次应该对链条上每一版都生效；
@@ -81,6 +93,15 @@ class CustomInquiry(Base, IdMixin):
     # 列表里就得回查钉钉才知道"这单给了谁"，而钉钉那条路可能不通。
     oa_quote_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     oa_quote_user_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # ---- 来源类型与来源洞察回链（第五批 §6.1(3)）----
+    # `customer`（默认）= 客户提出的询价；`internal_dev` = 市场研究转来的内部开发需求。
+    # 存量行一律 customer（见迁移注释）。
+    origin: Mapped[str] = mapped_column(
+        String(16), default="customer", server_default="customer", nullable=False
+    )
+    # 由哪条新品洞察转来（部分唯一索引见迁移：一个洞察只能转出一条）。
+    # 有了它，需求详情能回链到洞察、洞察也能证明"我转出去的是哪一条"。
+    source_insight_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

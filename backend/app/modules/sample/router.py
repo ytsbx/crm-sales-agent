@@ -36,6 +36,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
+from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
 from app.modules.opportunity import service as opportunity_service
@@ -794,6 +795,61 @@ async def register_sample_made(
     )
     sample.made_events = events
     sample.made_at = made_at
+    # ---- 制作依据快照（2026-10-06）----
+    # 显式指定"这次照哪几份文件做的"。校验三点：
+    #   ① 文件确实挂在这张打样单上——否则等于拿别处的文件来背书这一单；
+    #   ② 文件本身存在；
+    #   ③ 之前没登记过（登记即固化，要换开修订版）。
+    # 快照里存 sha256：光有文件名证明不了是哪一份，文件可以被同名替换。
+    basis_ids = [int(fid) for fid in (payload.basis_file_ids or [])]
+    if basis_ids:
+        if sample.basis_files:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "这张打样单已经登记过制作依据，不能改。要换依据请开修订版——"
+                "新版用新依据，旧版的凭证原样留着，这样每批样按什么做的都查得到",
+                422,
+            )
+        attached = {
+            link.file_id: link.category
+            for link in (
+                await session.execute(
+                    select(BusinessFile).where(
+                        BusinessFile.business_type == "sample",
+                        BusinessFile.business_id == sample.id,
+                        BusinessFile.file_id.in_(basis_ids),
+                    )
+                )
+            ).scalars().all()
+        }
+        missing = [fid for fid in basis_ids if fid not in attached]
+        if missing:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"这些文件没有挂在这张打样单上（不能拿别处的文件当依据）：{missing}",
+                422,
+            )
+        records = {
+            row.id: row
+            for row in (
+                await session.execute(select(FileRecord).where(FileRecord.id.in_(basis_ids)))
+            ).scalars().all()
+        }
+        sample.basis_files = [
+            {
+                "file_id": fid,
+                "file_name": records[fid].file_name if fid in records else None,
+                # 校验值才是"就是这一份"的凭据；文件名可以被同名替换
+                "checksum": records[fid].checksum if fid in records else None,
+                "size": records[fid].size if fid in records else None,
+                "category": attached[fid],
+                # 记下这是哪一版打样单的依据（V1 的依据不能拿来背书 V2）
+                "sample_version": sample.version or 1,
+                "designated_at": datetime.now(UTC).isoformat(),
+                "designated_by": user.id,
+            }
+            for fid in basis_ids
+        ]
     if note:
         # 备注只负责展示：拼成可读文本。**删掉它也不影响上面的幂等判断**。
         prefix = f"{sample.remark}\n" if sample.remark else ""

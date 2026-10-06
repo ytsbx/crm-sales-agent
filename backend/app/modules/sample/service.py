@@ -115,6 +115,10 @@ def serialize_request(
         "acceptance_criteria": request.acceptance_criteria,
         "sample_fee": _f(request.sample_fee),
         "production_owner_id": request.production_owner_id,
+        # 制作依据（2026-10-06）：登记制作完成时指定的那几份文件（含 sha256）。
+        # 空列表 = 这一单当时没指定依据（老数据都是这样），**不是"没有依据"**——
+        # 界面要说清这个区别，不能让空值看起来像"查过了，没有"。
+        "basis_files": request.basis_files or [],
         "made_at": request.made_at.isoformat() if request.made_at else None,
         # 制作事件（结构化）：幂等的依据在这里；remark 只是给人看的展示文本
         "made_events": request.made_events or [],

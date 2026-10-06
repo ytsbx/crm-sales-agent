@@ -6,6 +6,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
 import {
+  freezeSalesActuals,
   getCustomerStats,
   getDeliveryStats,
   getLeadStats,
@@ -16,10 +17,12 @@ import {
   getProductStats,
   getQuoteStats,
   getReceivableStats,
-  getSalesUserStats,
   getSalesTargetBases,
+  getSalesTargetDrilldown,
+  getSalesUserStats,
   getOperationTimingSummary,
   listSalesTargets,
+  refreezeSalesActuals,
   upsertSalesTarget,
   type NameValue,
   type DeliveryOwnerRow,
@@ -31,6 +34,14 @@ import {
 } from '../../shared/api/analytics'
 import { listDepartments, listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
+
+/** 下钻明细里 record_type 的中文名：直接亮 shipment_batch 这种内部标识没人看得懂。 */
+const DRILLDOWN_TYPE_LABEL: Record<string, string> = {
+  order: '订单',
+  shipment_batch: '发货批次',
+  payment: '回款',
+  customer: '客户',
+}
 
 function BarList({ data, unit }: { data: NameValue[]; unit?: string }) {
   if (!data.length) return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
@@ -138,6 +149,103 @@ export default function AnalyticsPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  // ---- 结账 / 重算（返工单第 4 条：这三个接口后端早就有，前端一个都没接）----
+  // 结账是"把这一期已经过完的账抄一份存档"的**显式动作**：什么时候算结完账只有人知道，
+  // 程序猜不出来（见后端 target_actuals.py 的模块说明）。
+  const [freezeModal, setFreezeModal] = useState<{
+    visible: boolean
+    mode: 'freeze' | 'refreeze'
+  }>({ visible: false, mode: 'freeze' })
+  const [freezePeriod, setFreezePeriod] = useState('')
+  const [freezeNote, setFreezeNote] = useState('')
+
+  // 可结账的期间 = 已经过完的月份（当月不结：数据还在产生，冻了等于冻在半路上）
+  const pastPeriods = (() => {
+    const list: string[] = []
+    const cursor = new Date()
+    let year = cursor.getFullYear()
+    let month = cursor.getMonth() // 0-based；当月没过完，所以从上一个月开始倒推
+    for (let i = 0; i < 12; i += 1) {
+      month -= 1
+      if (month < 0) {
+        month = 11
+        year -= 1
+      }
+      list.push(`${year}-${String(month + 1).padStart(2, '0')}`)
+    }
+    return list
+  })()
+
+  const openFreezeModal = (mode: 'freeze' | 'refreeze', period?: string) => {
+    setFreezePeriod(period ?? pastPeriods[0])
+    setFreezeNote('')
+    setFreezeModal({ visible: true, mode })
+  }
+
+  const freezeMutation = useMutation({
+    mutationFn: async () => {
+      if (freezeModal.mode === 'refreeze') {
+        // 重算必须带原因，后端也会再校验一次（这里只是把话说在前面）
+        const result = await refreezeSalesActuals(freezePeriod, freezeNote)
+        return { removed: result.removed }
+      }
+      await freezeSalesActuals(freezePeriod, freezeNote || undefined)
+      return { removed: 0 }
+    },
+    onSuccess: ({ removed }) => {
+      Toast.success(
+        freezeModal.mode === 'freeze'
+          ? `${freezePeriod} 已结账：实绩与构成明细一并存档`
+          : `${freezePeriod} 已重算${removed ? `，清除陈旧汇总 ${removed} 条` : ''}`,
+      )
+      setFreezeModal({ visible: false, mode: 'freeze' })
+      void queryClient.invalidateQueries({ queryKey: ['sales-targets'] })
+      void queryClient.invalidateQueries({ queryKey: ['target-drilldown'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // ---- 可追溯明细（§4.3）----
+  // 三个销售口径都值得点开看，默认看**考核口径**（确认回款）——
+  // 差额就是按它算的，用户最想核的就是这一列。
+  const [drilldown, setDrilldown] = useState<{
+    visible: boolean
+    period?: string
+    user_id?: number | null
+    department_id?: number | null
+    user_name?: string
+    metric: string
+  }>({ visible: false, metric: 'received' })
+
+  const drilldownQuery = useQuery({
+    queryKey: [
+      'target-drilldown',
+      drilldown.period,
+      drilldown.metric,
+      drilldown.user_id,
+      drilldown.department_id,
+    ],
+    queryFn: () =>
+      getSalesTargetDrilldown({
+        period: drilldown.period as string,
+        metric: drilldown.metric,
+        user_id: drilldown.user_id ?? null,
+        department_id: drilldown.department_id ?? null,
+      }),
+    enabled: drilldown.visible && !!drilldown.period,
+  })
+
+  const openDrilldown = (row: SalesTargetRow, metric: string) => {
+    setDrilldown({
+      visible: true,
+      period: row.period,
+      user_id: row.user_id,
+      department_id: row.department_id ?? null,
+      user_name: row.user_name,
+      metric,
+    })
+  }
 
   const openTargetModal = (row?: SalesTargetRow) => {
     if (row) {
@@ -646,15 +754,35 @@ export default function AnalyticsPage() {
             style={{ width: 120 }}
           />
           <div style={{ flex: 1 }} />
+          {canSetTarget && (
+            <Button onClick={() => openFreezeModal('freeze')} style={{ marginRight: 8 }}>
+              结账存档
+            </Button>
+          )}
           {canSetTarget && <Button theme="solid" onClick={() => openTargetModal()}>设定目标</Button>}
         </div>
         <Table<SalesTargetRow>
+          scroll={{ x: 1950 }}
           columns={[
             {
               title: '月份',
               dataIndex: 'period',
-              width: 100,
-              render: (v: string) => v.slice(5) + ' 月',
+              width: 130,
+              render: (v: string, r: SalesTargetRow) => (
+                <span>
+                  {v.slice(5)} 月
+                  {r.actual_frozen && (
+                    // 存档 / 实时必须一眼分得清：存档值不会因为后来的退货变小，
+                    // 两者对不上时先看这个标记再怀疑数据（§4.1.5）
+                    <span
+                      style={{ marginLeft: 6, fontSize: 11, color: 'var(--crm-text-3)' }}
+                      title="这一期已结账：数字是结账当天抄下来的存档值，不会因为后来的退货、改单变小"
+                    >
+                      已结账
+                    </span>
+                  )}
+                </span>
+              ),
             },
             { title: '对象', dataIndex: 'user_name', width: 120 },
             { title: '新客目标', dataIndex: 'new_customer_target', width: 100 },
@@ -688,20 +816,46 @@ export default function AnalyticsPage() {
               render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
             },
             {
-              title: '销售实际',
+              // **考核口径**：确认回款。差额与达成率都是按它算的（§4.3）。
+              // 这一列以前显示的是签单额、而差额用的是回款——同一行里摆了两个口径，
+              // 用户看到的"实际"和"差额"自然对不上（返工单第 3 条同一类问题）。
+              title: '实际·确认回款',
+              dataIndex: 'assess_actual',
+              width: 160,
+              render: (v: number | undefined, r: SalesTargetRow) => (
+                <span>
+                  ¥{Math.round(v ?? 0).toLocaleString('zh-CN')}
+                  <a style={{ marginLeft: 6, fontSize: 12 }} onClick={() => openDrilldown(r, 'received')}>
+                    明细
+                  </a>
+                </span>
+              ),
+            },
+            {
+              // 展示口径：签单额。照常显示，但**不进差额**（§4.3）
+              title: '签单额',
               dataIndex: 'sales_actual',
-              width: 130,
-              render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
+              width: 120,
+              render: (v?: number) => `¥${Math.round(v ?? 0).toLocaleString('zh-CN')}`,
+            },
+            {
+              // 展示口径：发货额（按实际发货批次分摊，§4.1.4）
+              title: '发货额',
+              dataIndex: 'shipped_actual',
+              width: 120,
+              render: (v?: number) => `¥${Math.round(v ?? 0).toLocaleString('zh-CN')}`,
             },
             {
               title: '达成率',
               width: 90,
               // **零基期不给百分比**（文档场景17 要求）：没设目标时后端返回 null，
-              // 这里显示"—"并给出说明，而不是拿 0 当分母算出一个假增长率
+              // 这里显示"—"并给出说明，而不是拿 0 当分母算出一个假增长率。
+              // 分子必须用**考核口径**（确认回款），否则这个百分比跟同一行的差额
+              // 不是同一个算法，两个数都"有道理"却互相打脸。
               render: (_: unknown, r: SalesTargetRow) =>
                 r.sales_achievement == null
                   ? <span style={{ color: 'var(--crm-text-3)' }} title={r.achievement_note ?? ''}>—</span>
-                  : rate(r.sales_actual, r.sales_target),
+                  : rate(r.assess_actual ?? r.sales_actual, r.sales_target),
             },
             {
               // 复购（老客净额）：口径是"期初固定的老客池在本期的订单净额"，
@@ -745,8 +899,21 @@ export default function AnalyticsPage() {
               ? [
                   {
                     title: '操作',
-                    width: 80,
-                    render: (_: unknown, r: SalesTargetRow) => <a onClick={() => openTargetModal(r)}>编辑</a>,
+                    width: 120,
+                    render: (_: unknown, r: SalesTargetRow) => (
+                      <>
+                        <a onClick={() => openTargetModal(r)}>编辑</a>
+                        {r.actual_frozen && (
+                          // 只有已结账的期间才谈得上"重算"：没结过账本来就在实时算
+                          <a
+                            style={{ marginLeft: 8 }}
+                            onClick={() => openFreezeModal('refreeze', r.period)}
+                          >
+                            重算
+                          </a>
+                        )}
+                      </>
+                    ),
                   },
                 ]
               : []),
@@ -758,10 +925,140 @@ export default function AnalyticsPage() {
           empty="还没有目标数据"
         />
         <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)' }}>
-          实际值按月自动统计（销售额 = 非取消订单金额，新客户 = 新建客户档案数）；
-          将来聚水潭接入后销售额可切换为出库口径。
+          {targetsQuery.data?.attribution_note ??
+            '归属口径（业绩口径）：按订单签单归属——交接后钱仍算签单人。汇总、差额、明细同一政策。'}
+        </div>
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
+          考核口径 = <b>确认回款</b>（按财务确认时间归月，不是客户打款那天）；
+          签单额与发货额只展示、不进差额。
+          {targetsQuery.data?.missing_confirmed_at_note && (
+            <span style={{ color: 'var(--crm-caution)', marginLeft: 6 }}>
+              {targetsQuery.data.missing_confirmed_at_note}
+            </span>
+          )}
         </div>
       </SectionCard>
+
+      <Modal
+        title={freezeModal.mode === 'freeze' ? '结账存档' : '重算已结账的实绩'}
+        visible={freezeModal.visible}
+        onCancel={() => setFreezeModal({ visible: false, mode: 'freeze' })}
+        onOk={() => {
+          // 前端先把话说清楚，别把后端的字段名（`参数校验失败：reason`）甩给用户。
+          // 后端仍会再校验一次——纵深防御，前端拦不住也有兜底。
+          if (freezeModal.mode === 'refreeze' && !freezeNote.trim()) {
+            Toast.error('请填写重算原因：改了历史数字，事后得能查出是谁、为什么改的')
+            return
+          }
+          freezeMutation.mutate()
+        }}
+        confirmLoading={freezeMutation.isPending}
+        okText={freezeModal.mode === 'freeze' ? '结账' : '重算'}
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <div style={{ marginBottom: 4 }}>期间</div>
+            <Select
+              value={freezePeriod}
+              onChange={(value) => setFreezePeriod(value as string)}
+              optionList={pastPeriods.map((p) => ({ value: p, label: p }))}
+              // 重算只能针对已经结过账的那一期，期间不再让改
+              disabled={freezeModal.mode === 'refreeze'}
+              style={{ width: '100%' }}
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>
+              {freezeModal.mode === 'freeze' ? '备注（可不填）' : '重算原因（必填）'}
+            </div>
+            <Input
+              value={freezeNote}
+              onChange={setFreezeNote}
+              placeholder={
+                freezeModal.mode === 'freeze'
+                  ? '例如：9 月账已关'
+                  : '例如：发现有批 9 月订单的状态当初录错了'
+              }
+            />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {freezeModal.mode === 'freeze'
+              ? '结账后这一期的实绩和「构成它的明细」都抄一份存档：之后订单再被退货、改单，这一期也不会变。当月不能结——数据还在产生。'
+              : '重算会按现在的数据重出一份，并清掉「上一版有、这一版没有」的陈旧汇总。改了历史数字会写进审计（谁、什么时候、为什么）。'}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        title={`${drilldown.period ?? ''} · ${drilldown.user_name ?? ''} 的实际构成`}
+        visible={drilldown.visible}
+        onCancel={() => setDrilldown({ visible: false, metric: 'received' })}
+        footer={null}
+        width={780}
+      >
+        <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Select
+            value={drilldown.metric}
+            onChange={(value) => setDrilldown({ ...drilldown, metric: value as string })}
+            optionList={[
+              { value: 'received', label: '确认回款（考核口径）' },
+              { value: 'signed', label: '签单额' },
+              { value: 'shipped', label: '发货额' },
+              { value: 'new_customer', label: '新客户' },
+              { value: 'repeat_net', label: '老客净额（复购）' },
+            ]}
+            style={{ width: 220 }}
+          />
+          <span style={{ fontSize: 13 }}>
+            合计 ¥{Math.round(drilldownQuery.data?.total ?? 0).toLocaleString('zh-CN')} ·{' '}
+            {drilldownQuery.data?.count ?? 0} 条
+          </span>
+          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {drilldownQuery.data?.source === 'snapshot'
+              ? '读的是结账存档（不会因为后来的退货变小）'
+              : '实时统计'}
+          </span>
+        </div>
+        <Table
+          columns={[
+            {
+              title: '单据',
+              dataIndex: 'label',
+              render: (v: string | null | undefined, r) => v ?? `#${r?.id ?? ''}`,
+            },
+            {
+              title: '类型',
+              dataIndex: 'record_type',
+              width: 110,
+              render: (v: string) => DRILLDOWN_TYPE_LABEL[v] ?? v,
+            },
+            {
+              title: '金额',
+              dataIndex: 'amount',
+              width: 130,
+              render: (v?: number) => `¥${Math.round(v ?? 0).toLocaleString('zh-CN')}`,
+            },
+            {
+              title: '时间',
+              dataIndex: 'date',
+              width: 150,
+              render: (v?: string | null) => v ?? '—',
+            },
+          ]}
+          dataSource={drilldownQuery.data?.items ?? []}
+          loading={drilldownQuery.isLoading}
+          rowKey={(r?: { record_type: string; id: number }) => `${r?.record_type}-${r?.id}`}
+          pagination={false}
+          scroll={{ y: 360 }}
+          empty="这一期该指标没有明细"
+        />
+        {drilldownQuery.data?.truncated && (
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--crm-caution)' }}>
+            明细超过 200 条，只显示前 200 条；合计数是全部。
+          </div>
+        )}
+      </Modal>
 
       <Modal
         title={targetModal.period ? '设定目标' : '设定目标'}
