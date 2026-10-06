@@ -26,7 +26,7 @@ import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, withCode } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '销售订单', itemKey: 'orders' },
@@ -446,7 +446,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 onChange={(value) => setCreateForm({ ...createForm, customer_id: value as number })}
                 optionList={(createCustomersQuery.data?.items ?? []).map((item) => ({
                   value: item.id,
-                  label: item.name,
+                  label: withCode(item.name, item.id),
                 }))}
                 filter={optionMatcher}
                 style={{ width: '100%' }}

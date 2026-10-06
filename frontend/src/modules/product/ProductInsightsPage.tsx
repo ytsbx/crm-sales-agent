@@ -16,7 +16,7 @@ import {
   type InsightConvertResult,
   type ProductInsightRow,
 } from '../../shared/api/insight'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, withCode } from '../../shared/components/optionMatch'
 
 const SOURCES = ['展会', '1688/阿里', '客户反馈', '竞品调研', '社媒', '供应商推荐', '其他']
 const STATUS_TONE: Record<string, 'grey' | 'orange' | 'green' | 'red' | 'blue'> = {
@@ -500,7 +500,7 @@ export default function ProductInsightsPage() {
               onChange={(v) => setConvertCustomerId(v as number | undefined)}
               optionList={(convertCustomers.data?.items ?? []).map((c) => ({
                 value: c.id,
-                label: c.name,
+                label: withCode(c.name, c.id),
               }))}
             />
           </div>

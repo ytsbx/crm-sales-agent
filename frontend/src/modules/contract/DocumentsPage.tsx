@@ -33,7 +33,7 @@ import {
   type ContractSignedFile,
   type ContractTemplate,
 } from '../../shared/api/contract'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, withCode } from '../../shared/components/optionMatch'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -570,7 +570,7 @@ export default function DocumentsPage() {
               }
               optionList={(customersQuery.data?.items ?? []).map((c) => ({
                 value: c.id,
-                label: c.name,
+                label: withCode(c.name, c.id),
               }))}
             />
           </div>

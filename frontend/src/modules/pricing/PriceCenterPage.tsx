@@ -34,7 +34,7 @@ import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, withCode } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '客户查价', itemKey: 'lookup' },
@@ -313,7 +313,7 @@ export default function PriceCenterPage() {
                   onChange={(value) => setLookupCustomerId(value as number)}
                   optionList={(customersQuery.data?.items ?? []).map((item) => ({
                     value: item.id,
-                    label: `${item.name}${item.level ? `（${item.level} 级）` : ''}`,
+                    label: withCode(`${item.name}${item.level ? `（${item.level} 级）` : ''}`, item.id),
                   }))}
                   filter={optionMatcher}
                   style={{ width: 280 }}
@@ -395,7 +395,7 @@ export default function PriceCenterPage() {
                     onChange={(value) => setLookupOppId(value as number)}
                     optionList={(lookupOppQuery.data?.items ?? []).map((item) => ({
                       value: item.id,
-                      label: `${item.title ?? '商机'}（${item.customer_name ?? ''}）`,
+                      label: withCode(`${item.title ?? '商机'}（${item.customer_name ?? ''}）`, item.id),
                     }))}
                     filter={optionMatcher}
                     style={{ width: 320 }}
@@ -1080,7 +1080,7 @@ export default function PriceCenterPage() {
             <Select
               value={customerPriceForm.customer_id ?? undefined}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, customer_id: value as number })}
-              optionList={(customersQuery.data?.items ?? []).map((item) => ({ value: item.id, label: item.name }))}
+              optionList={(customersQuery.data?.items ?? []).map((item) => ({ value: item.id, label: withCode(item.name, item.id) }))}
               filter={optionMatcher}
               style={{ width: '100%' }}
             />

@@ -33,7 +33,7 @@ import { listOrders } from '../../shared/api/order'
 import { listSamples } from '../../shared/api/sample'
 import { listCustomers } from '../../shared/api/customer'
 import { getCustomerTimeline } from '../../shared/api/followup'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, withCode } from '../../shared/components/optionMatch'
 
 const STAGES = ['understanding', 'quote', 'sample', 'first_order', 'repeat', 'stable']
 /** 证据类别 → 详情页的跳转路径（点开原单核对）。 */
@@ -576,7 +576,7 @@ export default function CasesPage() {
                   sample_id: undefined,
                 })
               }
-              optionList={(customersQuery.data?.items ?? []).map((c) => ({ value: c.id, label: c.name }))}
+              optionList={(customersQuery.data?.items ?? []).map((c) => ({ value: c.id, label: withCode(c.name, c.id) }))}
             />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10 }}>

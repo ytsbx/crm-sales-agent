@@ -20,7 +20,7 @@ import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/ag
 import { usePermissions } from '../../shared/hooks/permissions'
 import AgentInsight from '../../shared/components/AgentInsight'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, withCode } from '../../shared/components/optionMatch'
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'primary' | 'danger' | 'muted' }) {
   const color = tone === 'primary' ? 'var(--crm-primary)' : tone === 'danger' ? 'var(--crm-error)' : 'var(--crm-text)'
@@ -158,7 +158,7 @@ export default function PricingPage() {
                 onChange={(value) => setCustomerId(value as number | undefined)}
                 optionList={(customersQuery.data?.items ?? []).map((item) => ({
                   value: item.id,
-                  label: `${item.name}（${item.level ?? '-'} 级）`,
+                  label: withCode(`${item.name}（${item.level ?? '-'} 级）`, item.id),
                 }))}
                 filter={optionMatcher}
                 showClear
