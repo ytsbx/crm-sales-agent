@@ -283,6 +283,10 @@ export default function PriceCenterPage() {
     label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
   }))
 
+  // 查价的两个必填项。按钮在没选齐时是禁用态，但**禁用≠可以不解释**：
+  // 见下面 Button 外那层 span 的注释（主人 2026-10-06 反馈「灰着没有任何解释」）。
+  const lookupReady = Boolean(lookupCustomerId && lookupSkuId)
+
   return (
     <div className="page-container">
       <PageHeader
@@ -327,28 +331,59 @@ export default function PriceCenterPage() {
                   style={{ width: 120 }}
                   placeholder="数量"
                 />
-                <Button
-                  theme="solid"
-                  loading={!lookupResult && lookupLoading}
-                  disabled={!lookupCustomerId || !lookupSkuId}
-                  onClick={async () => {
-                    setLookupLoading(true)
-                    try {
-                      const result = await lookupPrice({
-                        customer_id: lookupCustomerId!,
-                        sku_id: lookupSkuId!,
-                        quantity: Number(lookupQty || 1),
-                      })
-                      setLookupResult(result)
-                    } catch (error) {
-                      Toast.error(error instanceof Error ? error.message : '查价失败')
-                    } finally {
-                      setLookupLoading(false)
+                {/* 禁用按钮必须能解释自己（主人 2026-10-06：「查价按钮灰着没有任何解释
+                    ——你填了数量还以为是自己错」）。两个要点：
+                    ① 禁用时按钮旁给一行灰字，说清缺什么；
+                    ② 禁用时点一下要**有反应**，而不是石沉大海。
+                    难点：这个组件库的禁用按钮用的是原生 `disabled` 属性，浏览器对
+                    原生禁用控件**根本不派发点击事件**，所以外面这层 span 收不到。
+                    破法是在禁用态下给按钮加 `pointerEvents: 'none'` —— 按钮对点击
+                    透明，点击的落点就变成外层 span，span 上的 onClick 才接得住。
+                    可用态则不加这个样式，按钮自己处理点击（冒泡上来的那次由
+                    `lookupReady` 判断挡掉，不会重复触发）。 */}
+                <span
+                  style={{ cursor: lookupReady ? undefined : 'not-allowed' }}
+                  onClick={() => {
+                    if (!lookupReady) {
+                      Toast.warning(
+                        !lookupCustomerId && !lookupSkuId
+                          ? '请先选择客户和产品，再点查价'
+                          : !lookupCustomerId
+                            ? '请先选择客户，再点查价'
+                            : '请先选择产品，再点查价',
+                      )
                     }
                   }}
                 >
-                  查价
-                </Button>
+                  <Button
+                    theme="solid"
+                    loading={!lookupResult && lookupLoading}
+                    disabled={!lookupReady}
+                    style={lookupReady ? undefined : { pointerEvents: 'none' }}
+                    onClick={async () => {
+                      setLookupLoading(true)
+                      try {
+                        const result = await lookupPrice({
+                          customer_id: lookupCustomerId!,
+                          sku_id: lookupSkuId!,
+                          quantity: Number(lookupQty || 1),
+                        })
+                        setLookupResult(result)
+                      } catch (error) {
+                        Toast.error(error instanceof Error ? error.message : '查价失败')
+                      } finally {
+                        setLookupLoading(false)
+                      }
+                    }}
+                  >
+                    查价
+                  </Button>
+                </span>
+                {!lookupReady && (
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    选好客户和产品后才能查价
+                  </span>
+                )}
               </div>
               {lookupResult?.status === 'ok' && (
                 <div className="toolbar">
@@ -364,29 +399,46 @@ export default function PriceCenterPage() {
                     filter
                     style={{ width: 320 }}
                   />
-                  <Button
-                    disabled={!lookupOppId}
-                    loading={addingToOpp}
-                    onClick={async () => {
-                      setAddingToOpp(true)
-                      try {
-                        await createItem(lookupOppId!, {
-                          sku_id: lookupResult.sku.id,
-                          quantity: Number(lookupQty || 1),
-                          target_price: lookupResult.unit_price,
-                        })
-                        Toast.success(
-                          `已把 ${lookupResult.sku.sku_code}（¥${lookupResult.unit_price}）加入商机需求`,
-                        )
-                      } catch (error) {
-                        Toast.error(error instanceof Error ? error.message : '加入失败')
-                      } finally {
-                        setAddingToOpp(false)
+                  {/* 同一个页面里同款毛病，一起修：禁用按钮外面包一层，
+                      禁用态下让按钮对点击透明，点击落到外层 span 上给提示。 */}
+                  <span
+                    style={{ cursor: lookupOppId ? undefined : 'not-allowed' }}
+                    onClick={() => {
+                      if (!lookupOppId) {
+                        Toast.warning('请先选择一个商机，或点右边的「新建快捷商机」')
                       }
                     }}
                   >
-                    加入商机需求
-                  </Button>
+                    <Button
+                      disabled={!lookupOppId}
+                      loading={addingToOpp}
+                      style={lookupOppId ? undefined : { pointerEvents: 'none' }}
+                      onClick={async () => {
+                        setAddingToOpp(true)
+                        try {
+                          await createItem(lookupOppId!, {
+                            sku_id: lookupResult.sku.id,
+                            quantity: Number(lookupQty || 1),
+                            target_price: lookupResult.unit_price,
+                          })
+                          Toast.success(
+                            `已把 ${lookupResult.sku.sku_code}（¥${lookupResult.unit_price}）加入商机需求`,
+                          )
+                        } catch (error) {
+                          Toast.error(error instanceof Error ? error.message : '加入失败')
+                        } finally {
+                          setAddingToOpp(false)
+                        }
+                      }}
+                    >
+                      加入商机需求
+                    </Button>
+                  </span>
+                  {!lookupOppId && (
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      选一个已有商机，右边也能一键新建
+                    </span>
+                  )}
                   <Button
                     loading={creatingQuickOpp}
                     onClick={async () => {

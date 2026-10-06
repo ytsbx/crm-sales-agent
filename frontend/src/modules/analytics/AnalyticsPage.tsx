@@ -762,7 +762,7 @@ export default function AnalyticsPage() {
           {canSetTarget && <Button theme="solid" onClick={() => openTargetModal()}>设定目标</Button>}
         </div>
         <Table<SalesTargetRow>
-          scroll={{ x: 1950 }}
+          scroll={{ x: 2060 }}
           columns={[
             {
               title: '月份',
@@ -787,6 +787,21 @@ export default function AnalyticsPage() {
             { title: '对象', dataIndex: 'user_name', width: 120 },
             { title: '新客目标', dataIndex: 'new_customer_target', width: 100 },
             { title: '新客实际', dataIndex: 'new_customer_actual', width: 100 },
+            {
+              // R09：新建客户档案数（过程指标）。
+              // 放在「新客实际」旁边而不是替换它——两个是不同口径：
+              // 新客实际按**首次有效成交**算，这一列按**建档时间**算。
+              // 并排才看得出「档案开了一堆、成交没跟上」这种过程问题。
+              // 明确标注"不进差额与达成率"，否则会被误当成考核口径。
+              title: '新建档数',
+              dataIndex: 'new_customer_created_actual',
+              width: 110,
+              render: (v: number | undefined) => (
+                <span title="本月新建客户档案数（过程指标，只展示，不进差额与达成率）">
+                  {v ?? 0}
+                </span>
+              ),
+            },
             {
               // 差额与达成率成对看：只看达成率的话，"差了 3 家"和"差了 30 家"
               // 可能都是同一个百分比（基数不同），差额才是能直接派活的数字

@@ -13,6 +13,10 @@ import '../node_modules/@douyinfe/semi-ui/dist/css/semi.min.css'
 import './index.css'
 
 import { router } from './app/router'
+import { installToastGuard } from './shared/toast-guard'
+
+// 提示条兜底闸：必须在任何页面渲染前装好，否则首批提示可能还是空白的
+installToastGuard()
 
 const queryClient = new QueryClient({
   defaultOptions: {

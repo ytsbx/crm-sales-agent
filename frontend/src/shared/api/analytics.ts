@@ -462,6 +462,14 @@ export interface SalesTargetRow {
   new_customer_target: number
   sales_target: number
   new_customer_actual: number
+  /**
+   * 本月**新建客户档案数**（R09）。
+   * 与 `new_customer_actual` 是两个口径，别混：
+   *  - `new_customer_actual` = 首次有效成交（**考核口径**）
+   *  - `new_customer_created_actual` = 按建档时间计数（**过程指标**，不进差额与达成率）
+   * 后端一直有返回，只是这一页以前没显示。
+   */
+  new_customer_created_actual?: number
   /** 签单额（展示口径，**不进差额**） */
   sales_actual: number
   /** 发货额（展示口径，**不进差额**） */

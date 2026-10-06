@@ -43,6 +43,30 @@ function pickInvalidFields(body: unknown): string[] {
   return Array.from(new Set(names.filter((name) => name.length > 0)))
 }
 
+/**
+ * 把后端给的 message 归一成「一定有字」的提示文案。
+ *
+ * 为什么需要：原来拦截器写的是 `body?.message ?? '网络异常，请稍后重试'`，
+ * 但 `??` **只在 undefined / null 时兜底** —— 后端返回 `message: ''`（或
+ * 空白串）时兜不住，于是一条 Toast **只剩一个红点、一个字都没有**，
+ * 用户完全不知道发生了什么（主人 2026-10-06 反馈的就是这个）。
+ *
+ * 另一条路径更隐蔽：`unwrap()` 里 `new ApiError(body.message, ...)` 传 null
+ * 进去，`new Error(null).message` 会变成**字符串 "null"** 显示在界面上。
+ *
+ * 所以这里统一判：拿不到可用文字时，退化成一句带错误码的人话
+ * （「系统内部错误」也比空白强）。
+ */
+function readableMessage(raw: unknown, code: number): string {
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (!text || text === 'null' || text === 'undefined') {
+    return code
+      ? `系统内部错误（错误码 ${code}），请稍后重试或联系管理员`
+      : '网络异常，请稍后重试'
+  }
+  return text
+}
+
 http.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token
   if (token) {
@@ -57,7 +81,7 @@ http.interceptors.response.use(
     const status: number | undefined = error.response?.status
     const body = error.response?.data
     const code: number = body?.code ?? status ?? 0
-    const baseMessage: string = body?.message ?? '网络异常，请稍后重试'
+    const baseMessage: string = readableMessage(body?.message, code)
     // 校验类错误把出问题的字段名一并带上：只显示「参数校验失败」等于什么都没说
     const invalidFields = pickInvalidFields(body)
     const message =
@@ -76,7 +100,8 @@ async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<
   const response = await promise
   const body = response.data
   if (body.code !== 0) {
-    throw new ApiError(body.message, body.code)
+    // 同样要归一：这里直接透传 body.message，为空时会抛出一条没有文字的提示
+    throw new ApiError(readableMessage(body.message, body.code), body.code)
   }
   return body.data
 }
