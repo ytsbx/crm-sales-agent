@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
+  Dropdown,
   Input,
   InputNumber,
   Modal,
@@ -302,6 +303,35 @@ export default function KnowledgePage() {
       .catch((error: Error) => Toast.error(error.message))
   }
 
+  /** 场景11：从需求发起钉钉询价审批。
+   *  注意这不是"随便试试"——真发起会通知审批人（真人）。
+   *  后端有推送总闸，关着时只会记一条"未发起"，不会打扰任何人。 */
+  const startApproval = async (row: CustomInquiryRow) => {
+    try {
+      const result = await startInquiryApproval(row.id)
+      if (result.status === 'skipped') {
+        Toast.info(`未发起：${result.error ?? '推送已关闭'}`)
+      } else {
+        Toast.success(`钉钉审批：${result.status_label}`)
+      }
+    } catch (error) {
+      Toast.error((error as Error).message)
+    }
+  }
+
+  /** 场景09：定制件没有 SKU，报价中心选不到它，这里给一条"填两个数就成单"的出口。
+   *  耗时埋点（场景18）的起点在"用户点开转报价那一刻"——服务端只看得到单据落库
+   *  时间，那是流程跨度，不是他真正花的工夫。 */
+  const openQuote = (row: CustomInquiryRow) => {
+    setQuoteForm({
+      unit_cost: null,
+      quoted_price: null,
+      quantity: row.quantity ?? null,
+    })
+    quoteStartedAt.current = Date.now()
+    setQuoteTarget(row)
+  }
+
   const columns = [
     {
       title: '需求',
@@ -378,63 +408,57 @@ export default function KnowledgePage() {
     {
       title: '操作',
       width: 250,
-      render: (_: unknown, record: CustomInquiryRow) => (
-        <span style={{ display: 'inline-flex', gap: 10 }}>
-          {can('order:manage') && <a onClick={() => setDraftSourceId(record.id)}>建订单草稿</a>}
-          {can('sample:manage') && <a onClick={() => setSampleSourceId(record.id)}>申请打样</a>}
-          <a onClick={() => openEdit(record)}>编辑</a>
-          <a onClick={() => openRevise(record)}>修订</a>
-          {/* 场景11：从需求发起钉钉询价审批。
-              注意这不是"随便试试"——真发起会通知审批人（真人）。
-              后端有推送总闸，关着时只会记一条"未发起"，不会打扰任何人。 */}
-          <a
-            onClick={async () => {
-              try {
-                const row = await startInquiryApproval(record.id)
-                if (row.status === 'skipped') {
-                  Toast.info(`未发起：${row.error ?? '推送已关闭'}`)
-                } else {
-                  Toast.success(`钉钉审批：${row.status_label}`)
-                }
-              } catch (error) {
-                Toast.error((error as Error).message)
+      render: (_: unknown, record: CustomInquiryRow) => {
+        // 次要动作收进「更多」下拉。原来 9~11 个操作全铺在这一格里，容器是
+        // inline-flex 且 flex-wrap: nowrap —— 挤不下时每个链接被压扁成
+        // 17px 宽、100px 高（"申请打样"四个字竖着一字一行，2026-10-06 实测）。
+        // 只把最常用的留在外面，其余进下拉；容器补上 flex-wrap 兜底。
+        const moreActions: { key: string; label: string; onClick: () => void }[] = []
+        if (can('order:manage')) {
+          moreActions.push({ key: 'draft', label: '建订单草稿', onClick: () => setDraftSourceId(record.id) })
+        }
+        if (can('sample:manage')) {
+          moreActions.push({ key: 'sample', label: '申请打样', onClick: () => setSampleSourceId(record.id) })
+        }
+        moreActions.push({ key: 'oa-start', label: '发起审批', onClick: () => { void startApproval(record) } })
+        // 历次审批 + "结果不明"的人工处理入口（认领/重发/作废）
+        moreActions.push({ key: 'oa-log', label: '审批记录', onClick: () => setApprovalTarget(record) })
+        if ((record.version ?? 1) > 1) {
+          moreActions.push({ key: 'history', label: '历史', onClick: () => setHistoryTarget(record) })
+        }
+        if (record.status !== 'developing' && record.status !== 'converted') {
+          moreActions.push({ key: 'developing', label: '转开发中', onClick: () => changeStatus(record, 'developing') })
+        }
+        if (record.status !== 'archived') {
+          moreActions.push({ key: 'archived', label: '归档', onClick: () => changeStatus(record, 'archived') })
+        }
+        return (
+          <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <a onClick={() => openEdit(record)}>编辑</a>
+            <a onClick={() => openRevise(record)}>修订</a>
+            {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
+            <a onClick={() => openQuote(record)}>转报价</a>
+            <Popconfirm title="删除这条定制询价？" onConfirm={() => deleteMutation.mutate(record.id)}>
+              <a style={{ color: 'var(--crm-error)' }}>删除</a>
+            </Popconfirm>
+            <Dropdown
+              trigger="click"
+              position="bottomRight"
+              render={
+                <Dropdown.Menu>
+                  {moreActions.map((action) => (
+                    <Dropdown.Item key={action.key} onClick={action.onClick}>
+                      {action.label}
+                    </Dropdown.Item>
+                  ))}
+                </Dropdown.Menu>
               }
-            }}
-          >
-            发起审批
-          </a>
-          {/* 历次审批 + "结果不明"的人工处理入口（认领/重发/作废） */}
-          <a onClick={() => setApprovalTarget(record)}>审批记录</a>
-          {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
-          <a
-            onClick={() => {
-              setQuoteForm({
-                unit_cost: null,
-                quoted_price: null,
-                quantity: record.quantity ?? null,
-              })
-              // 耗时埋点（场景18）：起点在这里——用户点开"转报价"那一刻。
-              // 服务端只看得到单据落库时间，那是流程跨度，不是他真正花的工夫。
-              quoteStartedAt.current = Date.now()
-              setQuoteTarget(record)
-            }}
-          >
-            转报价
-          </a>
-          {(record.version ?? 1) > 1 && <a onClick={() => setHistoryTarget(record)}>历史</a>}
-          {record.status !== 'developing' && record.status !== 'converted' && (
-            <a onClick={() => changeStatus(record, 'developing')}>转开发中</a>
-          )}
-          {record.status !== 'archived' && (
-            <a style={{ color: 'var(--crm-text-3)' }} onClick={() => changeStatus(record, 'archived')}>
-              归档
-            </a>
-          )}
-          <Popconfirm title="删除这条定制询价？" onConfirm={() => deleteMutation.mutate(record.id)}>
-            <a style={{ color: 'var(--crm-error)' }}>删除</a>
-          </Popconfirm>
-        </span>
-      ),
+            >
+              <a title="更多操作">更多</a>
+            </Dropdown>
+          </span>
+        )
+      },
     },
   ]
 
