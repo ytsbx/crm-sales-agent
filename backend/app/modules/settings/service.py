@@ -127,12 +127,19 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     # 这三项是**业务口径，不能由开发随手写死**（审视方点名要求可配置）。
     # 这里给的是"看起来合理"的默认值，管理员在「系统设置」里随时能改，改完立刻生效。
     #: 预告提前多久：扫描命中后先预告这么多天，期间业务员仍可跟进自救。
+    #:
+    #: ⚠️ **7 天是开发默认值，不是已经确认的正式业务规则**（追加口径 1）。
+    #: 界面上会照实标注；改成多少由业务定，改完立刻对新提名的候选生效。
+    #: 已经在跑的候选**不受影响** —— 它们各自记着生成时的天数与绝对到期时间。
     "pool_recycle_notice_days": {"days": 7},
-    #: 暂缓期限：主管点"暂缓"之后多久重新进入视野（现在是暂缓时直接再开一条，
-    #: 无需人工回来点，见 decide_candidate 的 defer 分支）。
+    #: 暂缓期限：主管点"暂缓"之后要等这么多天才能再批准回收（暂缓期内仍可驳回）。
+    #:
+    #: ⚠️ **30 天同样是开发默认值**，同上：口径未定，界面上标明。
     "pool_recycle_defer_days": {"days": 30},
     #: 恢复操作需要哪个权限码。做成配置而不是写死角色：
     #: "谁能把回收掉的客户还回去"是管理口径，不同公司不一样。
+    #: 默认 `customer:assign` —— 销售主管有这个权限，普通业务员没有。
+    #: 保存时会校验这个码在权限表里真实存在（写错等于谁都恢复不了）。
     "pool_recycle_restore_permission": {"text": "customer:assign"},
     # 通知渠道（PRD §25 要求"站内 + 企业微信"）。
     # 默认只开站内：企微投递依赖 WECOM_AGENT_ID 与每个用户的 wecom_userid，
@@ -169,6 +176,63 @@ DEFAULT_SETTINGS: dict[str, dict] = {
         "originator_source": "operator",
     },
 }
+
+
+#: 配置项的**取值规则**（返修单第六批追加口径 1："后端校验参数合法性"）。
+#:
+#: 只列需要校验的项；没列的照旧存任意 JSON。
+#: 放在服务层而不是路由里：接口、以后的批量导入、脚本改配置都共用一份，
+#: 不会出现"页面上挡得住、脚本里绕过"的口子。
+#:
+#: 为什么必须挡在入口：预告期写成 -3 天，候选的到期时间会直接算成"过去"，
+#: 于是扫描一提名就立刻可回收；而这类错值往往要到半夜定时任务里才现形。
+SETTING_NUMBER_RULES: dict[str, tuple[str, int, int, str]] = {
+    # key: (字段名, 下限, 上限, 中文名)
+    "pool_recycle_notice_days": ("days", 0, 365, "回收预告期"),
+    "pool_recycle_defer_days": ("days", 0, 365, "主管暂缓等待期"),
+}
+
+
+async def validate_setting_value(
+    session: AsyncSession, key: str, value: dict | None
+) -> None:
+    """保存配置前的合法性校验。不合法直接 422，不让坏值落库。"""
+    rule = SETTING_NUMBER_RULES.get(key)
+    if rule is not None:
+        field, low, high, label = rule
+        raw = (value or {}).get(field)
+        try:
+            number = int(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"{label}必须是整数天（{low}–{high}）", 422
+            )
+        if number < low or number > high:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"{label}须在 {low}–{high} 天之间，当前填的是 {number}",
+                422,
+            )
+        return
+
+    if key == "pool_recycle_restore_permission":
+        from app.modules.user.model import Permission
+
+        code = str((value or {}).get("text") or "").strip()
+        if not code:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "恢复权限不能留空（默认 customer:assign）",
+                422,
+            )
+        exists = (
+            await session.execute(select(Permission.code).where(Permission.code == code))
+        ).first()
+        if exists is None:
+            # 写错一个字母，界面上看起来"设了权限"，实际谁都恢复不了 —— 挡在这里
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"权限码「{code}」不在系统权限表里，请核对", 422
+            )
 
 
 async def get_list(session: AsyncSession, key: str, field: str = "levels") -> list:
@@ -308,22 +372,43 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
     # - 未通过（`rejected`）→ 继续保护（多半要重新打样，这单还没完）。
     #
     # 注意打样单**没有单号字段**，界面与列表都用 `id` 标识，这里也照它显示。
-    for cid, sample_id, status, confirm in (
-        await session.execute(
-            select(
-                SampleRequest.customer_id,
-                SampleRequest.id,
-                SampleRequest.status,
-                SampleRequest.confirm_status,
-            ).where(
-                # 被审批驳回的单子不算保护
-                SampleRequest.status != "rejected",
-                SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
-                # 客户已明确接受的：**这张单到此为止**
-                SampleRequest.confirm_status.is_distinct_from(SAMPLE_CONFIRM_ACCEPTED),
+    #
+    # ---- 修订链：被新版本替代的旧版**不再独立承担保护**（返修单第六批第 9 条）----
+    #
+    # 打样修订会新建一张单、`parent_id` 指向旧版。此前保护判断完全不看这条链：
+    # V1 签收、客户没通过，之后开了 V2 并**确认接受**，V1 依然挂在保护名单上，
+    # 而 V1 早被冻结、改都改不了 —— 保护一个已经作废的版本，客户就永远进不了回收。
+    #
+    # 口径（已确认）：
+    # - 被替代的历史版本**不独立保护**（资料与确认结果照旧留着，不删历史）；
+    # - 最新有效版本未完成 → 继续按下面的规则保护；
+    # - 最新版本客户已接受 → 这张单到此为止；
+    # - 同客户另一张**独立**打样（不在链上）各自保护。
+    #
+    # "最新版"就是"没有任何单把它当 parent"的那张：V1→V2→V3 时 V1、V2 都出现在
+    # 这个集合里，只有 V3 参与判断，规则自动成立，不用递归去追链头。
+    superseded_ids = set(
+        (
+            await session.execute(
+                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
             )
-        )
-    ).all():
+        ).scalars().all()
+    )
+    sample_stmt = select(
+        SampleRequest.customer_id,
+        SampleRequest.id,
+        SampleRequest.status,
+        SampleRequest.confirm_status,
+    ).where(
+        # 被审批驳回的单子不算保护
+        SampleRequest.status != "rejected",
+        SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
+        # 客户已明确接受的：**这张单到此为止**
+        SampleRequest.confirm_status.is_distinct_from(SAMPLE_CONFIRM_ACCEPTED),
+    )
+    if superseded_ids:
+        sample_stmt = sample_stmt.where(SampleRequest.id.not_in(superseded_ids))
+    for cid, sample_id, status, confirm in (await session.execute(sample_stmt)).all():
         label = SAMPLE_STATUS_LABEL.get(status, status)
         if confirm:
             label = f"{label} / {CONFIRM_STATUS_LABEL.get(confirm, confirm)}"
@@ -339,6 +424,148 @@ async def _protected_customer_ids(session: AsyncSession) -> set[int]:
     **判据只写一处**，避免"定时扫描"和"人工释放"两处各判一套（返工单 6.4 第 6 条）。
     """
     return set((await protection_detail(session)).keys())
+
+
+async def recycle_reviewer_ids(
+    session: AsyncSession, owner_id: int | None
+) -> list[int]:
+    """能复核「这个客户」回收候选的主管（返修单第六批追加口径 3）。
+
+    口径是**按管理范围挑**，不是"有权限的都通知"：
+
+    1. 先取持 `customer:pool_review`（或管理员）的人 —— 这是"有资格复核"；
+    2. 再按数据范围过滤 —— 只有"这条候选的原负责人正好归他管"的人才收得到。
+
+    为什么要把范围加进来：大公司里持有复核权限的有几十个主管，只按权限发，
+    每个人都会收到一堆跟自己团队无关的预告，很快就没人看了；
+    而"给主管开全系统设置权限"更不是解法（会顺带放开全公司数据）。
+
+    停用账号直接跳过（通知发出去也没人处理）。
+    """
+    from app.core.data_scope import scoped_owner_ids
+    from app.core.deps import CurrentUser
+    from app.modules.notification.service import approver_user_ids
+    from app.modules.user.model import User
+    from app.modules.user.service import (
+        get_user_permission_codes,
+        get_user_roles,
+        resolve_data_scope,
+    )
+
+    out: list[int] = []
+    for uid in await approver_user_ids(session, "customer:pool_review"):
+        user = await session.get(User, uid)
+        if user is None or user.status != "active":
+            continue
+        roles = await get_user_roles(session, uid)
+        viewer = CurrentUser(
+            user,
+            await get_user_permission_codes(session, uid),
+            [role.code for role in roles],
+            resolve_data_scope(roles),
+        )
+        allowed = await scoped_owner_ids(session, viewer)
+        # `None` = 全公司范围（管理员），不受限
+        if allowed is None or owner_id is None or owner_id in allowed:
+            out.append(uid)
+    return out
+
+
+async def _notify_recycle_candidate(
+    session: AsyncSession,
+    *,
+    candidate: PublicPoolRecycleCandidate,
+    customer: Customer,
+    notice_days: int,
+) -> int:
+    """发出**回收预告**：原负责人收到一条，管理范围内的复核主管各收到一条。
+
+    返修单第 8 条点名的缺口是"扫描只落了候选记录，一条预告都没发，
+    原负责人也没有查看入口" —— 于是"预告"这两个字只体现在数据库里。
+
+    接收对象与内容按确认口径来：两方都要收到，内容含**客户、回收原因、
+    最近活跃时间、到期时间和查看入口**（放不下的部分放正文里说清去哪看）。
+
+    去重：同一 (接收人, 类型, 业务对象) 已经有一条就不再发。定时任务重跑、
+    扫描被重复触发、通知补投，都不会让人收到两条一样的预告。
+    这也是"通知失败要能查到并补发"的前提 —— 补发走的是同一条记录，
+    不会再造一条新的候选、也不会重复回收。
+
+    返回新发出的条数。
+    """
+    from app.modules.notification.model import Notification
+    from app.modules.notification.service import channel_settings, notify
+
+    due_text = candidate.due_at.strftime("%Y-%m-%d") if candidate.due_at else "—"
+    active = candidate.last_active_at
+    active_text = active.strftime("%Y-%m-%d") if active else "无记录"
+    reason = (
+        f"{candidate.level or ''} 级客户超过 {candidate.rule_days} 天未跟进"
+        if candidate.rule_days
+        else "长期未跟进"
+    )
+
+    owner = await session.get(User, candidate.owner_id) if candidate.owner_id else None
+
+    targets: list[tuple[int, str, int, str, str]] = []
+    if candidate.owner_id:
+        # 原负责人：点进**客户详情**（他关心的是"我的哪个客户要没了"）
+        targets.append(
+            (
+                candidate.owner_id,
+                "customer",
+                customer.id,
+                "客户回收预告",
+                f"你的客户「{customer.name}」{reason}，最近活跃 {active_text}。"
+                f"预告期至 {due_text}，到期后主管可批准回收。"
+                f"请尽快跟进；如已不再负责，请联系主管说明。",
+            )
+        )
+    for uid in await recycle_reviewer_ids(session, candidate.owner_id):
+        if uid == candidate.owner_id:
+            continue
+        # 复核主管：点进**回收待复核**（他要去处理的那一屏）
+        targets.append(
+            (
+                uid,
+                "pool_recycle",
+                candidate.id,
+                "回收预告待复核",
+                f"客户「{customer.name}」{reason}，最近活跃 {active_text}，"
+                f"原负责人 {owner.name if owner else candidate.owner_id}。"
+                f"预告期至 {due_text}，到期后可在「系统设置 → 业务规则 → "
+                f"回收待复核」批准或驳回。",
+            )
+        )
+
+    settings = await channel_settings(session)
+    sent = 0
+    for uid, business_type, business_id, title, content in targets:
+        # 去重：同一接收人 + 同一对象只发一条（重跑扫描不会重复打扰）
+        exists = (
+            await session.execute(
+                select(Notification.id).where(
+                    Notification.user_id == uid,
+                    Notification.business_type == business_type,
+                    Notification.business_id == business_id,
+                    Notification.title == title,
+                )
+            )
+        ).first()
+        if exists is not None:
+            continue
+        created = await notify(
+            session,
+            user_id=uid,
+            type_="approval",
+            title=title,
+            content=content,
+            business_type=business_type,
+            business_id=business_id,
+            channel_settings_override=settings,
+        )
+        sent += int(created is not None)
+    return sent
 
 
 async def run_public_pool_recycle(
@@ -370,6 +597,8 @@ async def run_public_pool_recycle(
     #: 撞单争议中、被冻结自动改派的客户（文档 §11.5 :279）
     disputed_skipped: list[dict] = []
     already_open: list[int] = []
+    #: 本轮实际发出去的预告通知条数（一人一条，原负责人与主管分别算）
+    notified = 0
 
     # 已经有未结候选的客户：本轮跳过（同一客户不重复预告）
     open_ids = set(
@@ -430,10 +659,13 @@ async def run_public_pool_recycle(
                 last_contact_at=customer.last_followup_at,
                 last_progress_at=customer.last_progress_at,
                 last_active_at=last,
-                protection_snapshot=[],
+                protection_snapshot=protection.get(customer.id, []),
                 status="pending",
                 notice_at=now,
                 due_at=due_at,
+                # 把"这条是按几天预告的"留在行上：管理员以后改了预告期，
+                # 已在跑的候选仍按当时的天数到期（追加口径 1）
+                notice_days=notice_days,
                 created_at=now,
             )
             # SAVEPOINT：定时任务重跑 / 两个实例同时扫时，未结唯一索引会让
@@ -446,6 +678,11 @@ async def run_public_pool_recycle(
                 already_open.append(customer.id)
                 continue
             open_ids.add(customer.id)
+            # **发预告**（返修单第 8 条）：只落一条候选记录不算预告，
+            # 原负责人和复核主管都要真的收到通知，才知道有这个事。
+            notified += await _notify_recycle_candidate(
+                session, candidate=candidate, customer=customer, notice_days=notice_days
+            )
             nominated.append(
                 {
                     "candidate_id": candidate.id,
@@ -473,6 +710,7 @@ async def run_public_pool_recycle(
             "disputed_count": len(disputed_skipped),
             "disputed": disputed_skipped[:100],
             "already_open_count": len(already_open),
+            "notified_count": notified,
         },
     )
     await session.commit()
@@ -485,6 +723,8 @@ async def run_public_pool_recycle(
         "disputed_count": len(disputed_skipped),
         "disputed": disputed_skipped[:100],
         "already_open_count": len(already_open),
+        #: 发出了多少条预告通知（原负责人与复核主管分别计）
+        "notified_count": notified,
         "notice_days": notice_days,
         #: 兼容老调用方（定时任务的日志、接口返回）：
         #: 新版这里恒为 0 —— 回收要等主管批准，不会再"一次调用就释放一批"
@@ -496,10 +736,29 @@ async def run_public_pool_recycle(
 # ---------------------------------------------------------------- 回收候选：复核与执行（返工单 6.3）
 
 
+def earliest_action_at(row: PublicPoolRecycleCandidate) -> datetime | None:
+    """这条候选**最早能批准回收**的时间点（返修单第六批第 8 条）。
+
+    - 还没复核（`pending`）→ 预告到期时间 `due_at`：预告期内业务员仍可自救，
+      没到点就不该收；
+    - 主管已暂缓（`deferred`）→ 暂缓到期时间 `deferred_until`：说好"过一阵再看"，
+      时间没到就再来收，等于暂缓两个字没写过。
+
+    返回 None 表示不受等待期限制（例如老数据没有到期时间），此时按原逻辑走。
+
+    **驳回不受这个限制** —— 驳回是"不用回收了"，不会造成既成事实，
+    想什么时候结案都可以（返修单第六批追加口径确认）。
+    """
+    if row.status == "deferred":
+        return row.deferred_until
+    return row.due_at
+
+
 def serialize_candidate(
     row: PublicPoolRecycleCandidate, customer_name: str | None = None,
     owner_name: str | None = None,
 ) -> dict:
+    earliest = earliest_action_at(row)
     return {
         "id": row.id,
         "customer_id": row.customer_id,
@@ -516,11 +775,18 @@ def serialize_candidate(
         "status_label": RECYCLE_STATUS_LABEL.get(row.status, row.status),
         "notice_at": row.notice_at.isoformat() if row.notice_at else None,
         "due_at": row.due_at.isoformat() if row.due_at else None,
+        #: 提名时用的预告天数快照（改配置不追溯旧候选，见 model 注释）
+        "notice_days": row.notice_days,
+        #: **最早可回收时间**：pending 看预告到期，deferred 看暂缓到期。
+        #: 前端据此决定"批准回收"能不能点、并显示可操作时间（追加口径 1）。
+        "earliest_action_at": earliest.isoformat() if earliest else None,
         "decided_by": row.decided_by,
         "decided_at": row.decided_at.isoformat() if row.decided_at else None,
         "decision_note": row.decision_note,
         "deferred_until": row.deferred_until.isoformat() if row.deferred_until else None,
+        "defer_days": row.defer_days,
         "exception_approved": bool(row.exception_approved),
+        "early_approved": bool(row.early_approved),
         "executed_at": row.executed_at.isoformat() if row.executed_at else None,
         "restored_at": row.restored_at.isoformat() if row.restored_at else None,
         "restore_note": row.restore_note,
@@ -652,6 +918,7 @@ async def decide_candidate(
     operator_id: int | None,
     note: str | None = None,
     source: str = "WEB",
+    allow_early: bool = False,
 ) -> dict:
     """主管复核一条候选：`approve` 执行回收 / `reject` 驳回 / `defer` 暂缓。
 
@@ -662,6 +929,23 @@ async def decide_candidate(
 
     如果确实仍有保护、但主管认为还是要收，走 `exception=True` 的例外执行，
     **必须填原因** —— 例外是要有人担责的事。
+
+    ---- 等待期（返修单第六批第 8 条）----
+
+    候选上早就存了 `due_at`（预告到期）和 `deferred_until`（暂缓到期），
+    但此前**根本不看**：预告当天批准就能立刻收走，"预告 7 天""暂缓 30 天"
+    只是数据库里的两个时间戳。现在两道闸门都真的关上：
+
+    - `pending`：预告期没满 → 拒绝；
+    - `deferred`：暂缓期没满 → 拒绝（说好"过一阵再看"，时间没到就再来收，
+      等于暂缓两个字没写过）。
+
+    **驳回不受限制** —— 驳回是"不用回收了"，不造成既成事实，随时可结案
+    （口径确认：暂缓期内"能结掉、不能收掉"）。
+
+    确需提前收的走 `allow_early=True` 的**提前回收**例外动作，
+    **必须填原因**，并单独记 `early_approved` 与审计 —— 与"带着履约保护硬收"
+    是两件事，分开留痕，事后统计才分得清。
     """
     now = datetime.now(UTC)
     locked = (
@@ -703,6 +987,8 @@ async def decide_candidate(
         row.decided_by = operator_id
         row.decided_at = now
         row.decision_note = note
+        # 暂缓的**等待期**同样快照下来：改配置不追溯已经在等的这条
+        row.defer_days = defer_days
         row.deferred_until = now + timedelta(days=defer_days)
         await session.flush()
         await write_audit(
@@ -736,6 +1022,35 @@ async def decide_candidate(
             "请驳回它并重新扫描",
             409,
         )
+
+    # **等待期校验**（返修单第六批第 8 条）：预告期 / 暂缓期没满就不该收。
+    # 这是"等待期限真正执行"那一条的直接落点 —— 此前 due_at / deferred_until
+    # 只是存着好看。
+    earliest = earliest_action_at(row)
+    if earliest is not None and earliest.tzinfo is None:
+        earliest = earliest.replace(tzinfo=UTC)
+    early = False
+    if earliest is not None and now < earliest:
+        if not allow_early:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"还没到可回收时间（最早 {earliest.strftime('%Y-%m-%d %H:%M')}）："
+                + (
+                    f"预告期 {row.notice_days or ''} 天内业务员还可以跟进自救"
+                    if row.status == "pending"
+                    else f"主管已暂缓 {row.defer_days or ''} 天，暂缓期内不做回收"
+                )
+                + "。确需提前回收，请由主管填写原因后按「提前回收」例外处理",
+                422,
+            )
+        if not (note or "").strip():
+            raise AppError(
+                ErrorCode.REQUIRED_FIELD_MISSING,
+                "提前回收会让预告/暂缓等待期失效，必须填写原因（会记入审计）",
+                422,
+            )
+        early = True
+        row.early_approved = True
 
     # **执行前重新检查**：预告发出之后有没有新的履约事项 / 新的跟进
     reasons = (await protection_detail(session)).get(customer.id, [])
@@ -776,7 +1091,8 @@ async def decide_candidate(
             reason=(
                 f"{row.level or ''} 级客户超过 {row.rule_days} 天未跟进，"
                 f"经主管复核回收"
-                + ("（例外：售后理由见候选记录）" if exception else "")
+                + ("（例外：仍有履约保护，理由见候选记录）" if exception else "")
+                + ("（提前回收：未满预告/暂缓等待期，理由见候选记录）" if early else "")
             ),
             operator_id=operator_id,
             created_at=now,
@@ -791,12 +1107,20 @@ async def decide_candidate(
     row.executed_at = now
     await session.flush()
     await write_audit(
-        session, operator_id=operator_id, action="execute_pool_candidate", source=source,
-        business_type="public_pool_candidate", business_id=row.id,
+        session,
+        operator_id=operator_id,
+        # 提前回收单独一个 action：事后查审计能一眼分出"等满等待期正常收的"
+        # 与"没等满就收的"，这也是例外动作要留痕的意义
+        action=("execute_pool_candidate_early" if early else "execute_pool_candidate"),
+        source=source,
+        business_type="public_pool_candidate",
+        business_id=row.id,
         after={
             "customer_id": customer.id,
             "reasons": reasons,
             "exception": exception,
+            "early": early,
+            "earliest_action_at": earliest.isoformat() if earliest else None,
             "note": note,
         },
     )

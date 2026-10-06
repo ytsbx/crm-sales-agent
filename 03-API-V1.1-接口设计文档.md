@@ -1161,16 +1161,25 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 ## 41.19 公海回收（public-pool，补充条目）
 
 - `POST /public-pool/run-recycle`：触发一次公海回收**扫描**。需要 `settings:manage`。正式环境由定时任务调用。审计写在 service 内部（它自己 commit），路由层不再补写——避免提交后再写审计反而落到另一个事务里。
-  **⚠️ 语义已变（返工单 6.3）**：老实现是"扫到就直接清空负责人、客户当场进公海"，不可逆——业务员出差两周没点跟进，跟了半年的客户就没了。现在**只提名**（落一条回收候选 + 预告），回收要等主管批准。返回 `{nominated_count, candidates, protected_count, protected, disputed_count, already_open_count, notice_days}`；`released_count` 恒为 0（保留字段兼容老调用方）。
+  **⚠️ 语义已变（返工单 6.3）**：老实现是"扫到就直接清空负责人、客户当场进公海"，不可逆——业务员出差两周没点跟进，跟了半年的客户就没了。现在**只提名**（落一条回收候选 + 预告），回收要等主管批准。返回 `{nominated_count, candidates, protected_count, protected, disputed_count, already_open_count, notified_count, notice_days}`；`released_count` 恒为 0（保留字段兼容老调用方）。
   **履约保护的客户不会被提名**（有效正式报价 / 在途订单 / 未结应收 / 在途打样），保护原因随 `protected[].reasons` 返回。
-- `GET /public-pool/recycle-candidates`：回收候选（预告）列表，**真分页**（`items/page/page_size/total`）。需要 `settings:manage`。`status` 默认 `pending`。每行带：原负责人、命中规则与天数、最近有效联系 / 最近业务进展（复核要看得到"是按哪个时间判冷落"）、提名时的保护明细快照、预告到期时间。
-- `POST /public-pool/recycle-candidates/{id}/decide`：复核一条候选。需要 `settings:manage`。`decision` = `approve`（执行回收）/ `reject`（驳回）/ `defer`（暂缓）。
+  **预告同时真的发出去**（返修单第六批 8 + 追加口径 3）：提名后给**原负责人**和**管理范围内的复核主管**各发一条站内通知，内容含客户、回收原因、最近活跃时间、到期时间与查看入口；`notified_count` 是本轮实际发出的条数。按 `(接收人, 类型, 业务对象, 标题)` 去重，定时任务重跑不会重复打扰；通知失败可在通知中心补投，不会重复生成候选或重复回收。
+- `GET /public-pool/recycle-candidates`：回收候选（预告）列表，**真分页**（`items/page/page_size/total`）。需要 **`customer:pool_review`**（返修单第六批第 7 条：这是**独立业务权限**，默认授给销售主管；此前复用 `settings:manage`，而默认主管根本没有它，"主管逐条或批量批准"实际打不通）。`status` 默认 `pending`，可选 `deferred`（已暂缓）/ `executed`（已回收）/ `rejected`（已驳回）。**列表与单条操作都按客户数据范围过滤** —— 只能看到/处理本团队客户的候选。
+  每行带：原负责人、命中规则与天数、最近有效联系 / 最近业务进展（复核要看得到"是按哪个时间判冷落"）、提名时的保护明细快照、`notice_days`（提名时的预告天数快照）、`earliest_action_at`（**最早可回收时间**：待复核看预告到期、已暂缓看暂缓到期）、`defer_days`、`early_approved`。
+- `POST /public-pool/recycle-candidates/{id}/decide`：复核一条候选。需要 `customer:pool_review` + 数据范围校验。请求体 `{decision, note?, early?}`，`decision` = `approve`（执行回收）/ `reject`（驳回）/ `defer`（暂缓）。
+  - **等待期必须真的走完**（返修单第六批第 8 条）：`pending` 状态下未到 `due_at`、`deferred` 状态下未到 `deferred_until` 时，`approve` 会被 **422** 拦下并提示最早可回收时间；此前这两个时间戳只是存着，当天就能收走。
+  - **提前回收是独立例外动作**：等待期未满确需回收时传 `early=true` **且必须填 `note`**，单独记 `early_approved` 与审计动作 `execute_pool_candidate_early`（与"带着履约保护硬收"分开留痕）。
+  - **驳回不受等待期限制**（暂缓期内也可以随时结案）。
   - **批准执行前会重新检查**：预告发出之后客户若又有了新跟进、新报价、新订单、新回款，会被 **422** 拦下（提示里说清是哪张单据）；
   - 仍想例外回收 → 填 `note` 后重试，会记 `exception_approved` 并写审计；
   - 驳回/暂缓也要填 `note`（谁、为什么）；
   - **同名客户中途换过人**（`owner_id` 与提名时不一致）→ 409，让主管重新看，避免按过时依据回收。
-- `POST /public-pool/recycle-candidates/batch-decide`：批量复核。需要 `settings:manage`。`candidate_ids` 走请求体（数组），`decision`/`note` 走查询参数。**逐条处理、逐条报结果**：被拦下的不影响其余，且**不会被执行**。
-- `POST /public-pool/recycle-candidates/{id}/restore`：**恢复**——把被回收的客户还给原负责人。需要 `settings:manage`（权限码本身做成配置项 `pool_recycle_restore_permission`，默认 `customer:assign`）。
+- `POST /public-pool/recycle-candidates/batch-decide`：批量复核。需要 `customer:pool_review` + 逐条数据范围校验。**请求体一次带齐** `{candidate_ids: number[], decision, note?, early?}`（返修单第六批第 10 条：此前 id 走查询参数、决定走请求体，与前端正好反着，从未调通）。**逐条处理、逐条报结果**（`{done: [{candidate_id, status}], failed: [{candidate_id, reason, code}]}`）：被拦下的不影响其余，且**不会被执行**，仍留在待复核里。
+- `POST /public-pool/recycle-candidates/{id}/restore`：**恢复**——把被回收的客户还给原负责人。需要配置项 `pool_recycle_restore_permission` 指定的权限（默认 `customer:assign`，即销售主管；管理员不受限；**普通业务员不能恢复**），并**校验客户数据范围**——客户进了公海虽然人人可见，也不能因此让别的团队的主管捞走。
+  三条纪律：**保留原回收记录**（状态转 `restored`，不删）；客户**已被别人合法领取**时报 **409** 并记下冲突（`restore_conflict_owner_id`），**绝不静默覆盖**；原负责人已停用时 422（改派给别人）。
+- `PATCH /settings`（回收相关配置）：需要 `settings:manage`。可改 `pool_recycle_notice_days`（回收预告期，天）、`pool_recycle_defer_days`（主管暂缓等待期，天）、`pool_recycle_restore_permission`（恢复所需权限码）。
+  **校验取值**（天数须为 0–365 的整数，权限码必须在权限表里真实存在），**审计记下修改前后值与修改人/时间**。
+  **改动只对新提名的候选生效**：候选上各自存着生成时的天数与绝对到期时间，不追溯改期（追加口径 1）。`GET /settings` 会把"代码默认值里配了、库里还没落行"的项一并返回并标 `is_default=true`，界面上据此标注"当前为开发默认值"。
   三条纪律：**保留原回收记录**（状态转 `restored`，不删）；客户**已被别人合法领取**时报 **409** 并记下冲突（`restore_conflict_owner_id`），**绝不静默覆盖**；原负责人已停用时 422（改派给别人）。
 - `POST /customers/{id}/release-to-pool`（**人工释放**）：需要 `customer:assign`。客户**还在履约中**时 **422** 拦下并说清是哪张单据；主管确需释放时在请求体里带 `reason` 表示**例外**，会记审计。判据与定时扫描、回收执行共用同一套保护规则。
 - `GET /customer-duplicate-cases`：撞单待裁定队列，**真分页**（`items/page/page_size/total`，原来 `.limit(300)` 硬顶、第 301 条起永远打不开）。需要 `customer:view`。

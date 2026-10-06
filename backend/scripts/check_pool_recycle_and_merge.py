@@ -390,6 +390,19 @@ async def main() -> int:
         check("库里这个客户只有一条候选", n, 1)
 
         print("=== 4. 6.3 批准前新增履约事项 → 执行时重新拦截 ===")
+        # 先把预告期走完：扫描刚生成的候选 `due_at` 在 7 天后，
+        # 而"等待期没满不许批"是另一条独立的闸门（由 check_sixth_round_p2 覆盖）。
+        # 不先走完它，这里会被"还没到可回收时间"拦下，就测不到本节要说的事
+        # —— 预告之后客户又有新履约事项时，执行前会**再查一遍**并说清是哪张单。
+        async with SessionLocal() as s:
+            await s.execute(
+                text(
+                    "update public_pool_recycle_candidates "
+                    "set due_at = now() - interval '1 day' where id = :i"
+                ),
+                {"i": cand_id},
+            )
+            await s.commit()
         # 预告发出后，客户又被报了价（正式发出、有效）→ 执行应当被拦
         async with SessionLocal() as s:
             s.add(Quote(quote_no=f"{PREFIX}LATE{stamp}", customer_id=ids["stale"],

@@ -238,7 +238,25 @@ export default function WeComPage() {
   const retryMutation = useMutation({
     mutationFn: () => retryWeComTransfer(transferJob!.id),
     onSuccess: async (result) => {
-      Toast.success(`已重试 ${result.retried} 项，还剩 ${result.remaining} 项未完成`)
+      // **任务汇总跟着重试结果一起刷新**（返修单第六批第 11 条）：
+      // 此前只重拉了"未完成项"列表，任务上的成功数/失败数还是重试前的值 ——
+      // 于是页面会一边显示"还剩 0 项"、一边挂着旧的"失败若干项"，两边对不上。
+      // 后端返回的就是按逐项最终状态重算过的数，直接用，不在这里另算一套。
+      setTransferJob((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: result.remaining === 0 ? 'success' : prev.status,
+              success_count: result.succeeded,
+              fail_count: result.failed,
+              detail: { ...(prev.detail ?? {}), remaining: result.remaining },
+            }
+          : prev,
+      )
+      Toast.success(
+        `已重试 ${result.retried} 项，还剩 ${result.remaining} 项未完成`
+          + (result.failed ? `（累计失败 ${result.failed} 项）` : ''),
+      )
       await loadOpenItems(transferJob!.id)
     },
     onError: (error: Error) => Toast.error(error.message),

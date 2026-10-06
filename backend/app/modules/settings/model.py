@@ -109,6 +109,13 @@ class PublicPoolRecycleCandidate(Base, IdMixin):
     #: 预告生成时间 / 预告到期时间（到期前不动，给业务员一个缓冲）
     notice_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: 提名那一刻用的**预告天数**（快照）。
+    #:
+    #: 为什么要存快照而不是每次回读配置：管理员中途把预告期从 7 天改成 3 天，
+    #: 已经在跑的候选**不该**因此提前到期 —— 那等于用新规则追溯旧决定。
+    #: `due_at` 是绝对时间，本身已经不受配置影响；这一列只为把
+    #: "这条是按几天预告的"留在行上，复核时说得清。实测口径见返修单第六批追加 1。
+    notice_days: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     decided_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -118,8 +125,15 @@ class PublicPoolRecycleCandidate(Base, IdMixin):
     deferred_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: 这次暂缓用的**等待天数**（快照），同 `notice_days`：改配置不追溯旧候选。
+    defer_days: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: 例外执行：批准时**仍有履约保护**，主管明确要求放行（必须填原因）
     exception_approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: 提前执行：**预告期/暂缓等待期还没满**就要求回收，主管走了例外动作（必须填原因）。
+    #:
+    #: 与 `exception_approved` 分开记：一个回答"是不是带着履约保护硬收的"，
+    #: 一个回答"是不是没等满等待期就收的"，两件事，审计和统计都要分得开。
+    early_approved: Mapped[bool] = mapped_column(Boolean, default=False)
 
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: 恢复：把客户还给原负责人（保留这条记录，不删）

@@ -212,10 +212,21 @@ export function listWeComTransferItems(
 }
 
 /** 按逐项状态重试没办完的项（已完成的外部转接不会重发）。 */
+/**
+ * 按逐项状态重试没办完的项。
+ *
+ * 返回里带上重算后的**任务汇总**（返修单第六批第 11 条）：重试会改动
+ * 成功数/失败数/剩余数，页面要跟着更新，否则会一边显示"还剩 0 项"、
+ * 一边挂着旧的失败数，两边对不上。
+ */
 export function retryWeComTransfer(jobId: number) {
-  return api.post<{ job_id: number; retried: number; remaining: number }>(
-    `/integrations/wecom/transfer/${jobId}/retry`,
-  )
+  return api.post<{
+    job_id: number
+    retried: number
+    remaining: number
+    succeeded: number
+    failed: number
+  }>(`/integrations/wecom/transfer/${jobId}/retry`)
 }
 
 export function listWeComSyncJobs(query: {

@@ -67,6 +67,9 @@ def serialize_setting(row: SystemSetting) -> dict:
         "value": row.value,
         "description": row.description,
         "updated_at": row.updated_at,
+        #: 这条是**代码里的开发默认值**，系统里还没改过（返修单第六批追加口径 1：
+        #: 页面要标明"开发默认值"，不能让人以为已经是确认过的正式规则）
+        "is_default": False,
     }
 
 
@@ -100,7 +103,26 @@ async def list_settings(
     rows = (
         await session.execute(select(SystemSetting).order_by(SystemSetting.key.asc()))
     ).scalars().all()
-    return ok([serialize_setting(row) for row in rows])
+    items = [serialize_setting(row) for row in rows]
+    # 代码默认值里配了、但库里还没落行的项一并返回（`is_default=True`）。
+    # 不补这一步，"回收预告期 7 天"这类**开箱默认值**在界面上根本不会出现，
+    # 管理员看得见却改不了来源，也就无从判断当前到底按哪套在跑。
+    known = {row.key for row in rows}
+    for key, value in svc.DEFAULT_SETTINGS.items():
+        if key in known:
+            continue
+        items.append(
+            {
+                "id": None,
+                "key": key,
+                "value": value,
+                "description": "开发默认值（系统里还没改过）",
+                "updated_at": None,
+                "is_default": True,
+            }
+        )
+    items.sort(key=lambda item: item["key"])
+    return ok(items)
 
 
 @router.patch("/settings")
@@ -110,9 +132,20 @@ async def upsert_setting(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """保存一条系统配置。
+
+    - **校验取值**（追加口径 1）：天数类必须是范围内的整数，权限类必须真实存在；
+    - **审计记下修改前后值**（追加口径 1 要求"保存修改人、修改时间及修改前后值"）：
+      此前只记 after，"这个参数被谁从多少改到了多少"查不出来。
+
+    改配置**不影响已经生成的回收候选**：候选上各自存着生成时的天数与绝对到期
+    时间，不回头读这里（追加口径 1 明确要求）。
+    """
     row = (
         await session.execute(select(SystemSetting).where(SystemSetting.key == payload.key))
     ).scalar_one_or_none()
+    before_value = row.value if row is not None else None
+    await svc.validate_setting_value(session, payload.key, payload.value)
     if row is None:
         row = SystemSetting(key=payload.key, description=payload.description)
         session.add(row)
@@ -127,6 +160,7 @@ async def upsert_setting(
         action="update",
         business_type="setting",
         business_id=row.id,
+        before={"key": payload.key, "value": before_value},
         after={"key": payload.key, "value": payload.value},
         ip=client_ip(request),
     )
@@ -244,6 +278,20 @@ class CandidateDecision(BaseModel):
     decision: str
     #: 驳回、暂缓、例外执行都要写理由（例外执行时**必填**，见 service）
     note: str | None = None
+    #: **提前回收**（返修单第六批第 8 条）：预告期 / 暂缓等待期还没满就要求回收。
+    #: 单独一个开关，不能把普通批准当成提前执行 —— 必须填原因，会单独记审计。
+    early: bool = False
+
+
+class BatchCandidateDecision(CandidateDecision):
+    """批量复核的请求体：**候选 id 与决定放在同一个 body 里**。
+
+    返修单第六批第 10 条：改之前前端把 id 数组塞进请求体、把决定挂到地址栏，
+    而后端正好相反（id 走查询参数、决定走请求体），两边谁也调不通。
+    统一成"全部走请求体"一个形状：参数在哪一栏不用猜，`note` 也才有地方放。
+    """
+
+    candidate_ids: list[int]
 
 
 @router.post("/public-pool/recycle-candidates/{candidate_id}/decide")
@@ -275,28 +323,33 @@ async def decide_recycle_candidate(
         operator_id=user.id,
         note=payload.note,
         source="WEB",
+        allow_early=payload.early,
     )
     return ok(result, f"已{result['status_label']}")
 
 
 @router.post("/public-pool/recycle-candidates/batch-decide")
 async def batch_decide_recycle_candidates(
-    candidate_ids: list[int],
-    payload: CandidateDecision,
+    payload: BatchCandidateDecision,
     request: Request,
     user: CurrentUser = Depends(require_permission("customer:pool_review")),
     session: AsyncSession = Depends(get_db),
 ):
     """批量复核（返工单 6.3 第 3 条）。
 
-    **逐条处理、逐条报结果**：某一条因为"预告后又有了新履约事项"被拦下时，
-    不影响其余的 —— 而且失败的那条**不会被执行**，会原样留在待复核里。
+    请求体一次带齐 `candidate_ids` + `decision`（+ `note`/`early`）——
+    之前 id 走查询参数、决定走请求体，跟前端的传法正好反着，从来没能调通
+    （返修单第六批第 10 条）。
+
+    **逐条处理、逐条报结果**：某一条因为"还没到可回收时间""预告后又有了新履约事项"
+    被拦下时，不影响其余的 —— 而且失败的那条**不会被执行**，会原样留在待复核里。
 
     每条都**校验数据范围**（第六批审查第 7 条）：越界的那条单独记为失败，
     其余照常处理，不会因为一条越界把整批拖停。
     """
     from app.modules.settings.model import PublicPoolRecycleCandidate
 
+    candidate_ids = payload.candidate_ids
     if not candidate_ids:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请选择要处理的候选", 422)
     done: list[dict] = []
@@ -315,6 +368,7 @@ async def batch_decide_recycle_candidates(
                 operator_id=user.id,
                 note=payload.note,
                 source="WEB",
+                allow_early=payload.early,
             )
         except AppError as error:
             failed.append(

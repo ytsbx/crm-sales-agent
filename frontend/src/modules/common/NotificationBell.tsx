@@ -22,6 +22,10 @@ const LINK_BY_TYPE: Record<string, (id: number) => string> = {
   approval: (id) => `/quotes/${id}`,
   payment: (id) => `/orders/${id}`,
   task: () => '/tasks',
+  // 回收预告发给**主管**的那条：直接落到复核那一屏，点进去就能处理。
+  // （发给原负责人的那条走 business_type='customer'，点进客户详情 ——
+  //   他关心的是"我的哪个客户要没了"，而不是去复核。）
+  pool_recycle: () => '/settings?tab=rules',
 }
 
 export default function NotificationBell() {
