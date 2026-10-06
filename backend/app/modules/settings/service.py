@@ -9,6 +9,7 @@
 每个数字都有一个配置键，管理员在系统设置界面上就能改。
 """
 
+import re
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -193,6 +194,44 @@ SETTING_NUMBER_RULES: dict[str, tuple[str, int, int, str]] = {
 }
 
 
+def _strict_int(raw: object, label: str, low: int, high: int) -> int:
+    """把天数配置严格读成整数（返修单 R14）。
+
+    此前用的是 `int(raw)`，它有两个安静的坑：
+
+    - `int(1.9)` → **1**：界面上明明填的是 1.9，落库变成 1，
+      保存值、展示值、执行值三者不一致，事后对账对不上；
+    - `int(True)` → **1**：布尔是 int 的子类，真/假会被当整数收下。
+
+    现在只认两种输入：**真正的整数**，和**纯数字字符串**（表单可能传字符串）。
+    小数、布尔、空、负数串、其它类型一律 422，并说清收到的是什么。
+    """
+    if isinstance(raw, bool):
+        # 必须先挡布尔：bool 是 int 的子类，不挡的话 True 会静默变成 1
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}必须是整数天（{low}–{high}），不能填真/假",
+            422,
+        )
+    if isinstance(raw, int):
+        number = raw
+    elif isinstance(raw, str) and re.fullmatch(r"[0-9]+", raw.strip()):
+        number = int(raw.strip())
+    else:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}必须是整数天（{low}–{high}），收到的不是整数：{raw!r}",
+            422,
+        )
+    if number < low or number > high:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}须在 {low}–{high} 天之间，当前填的是 {number}",
+            422,
+        )
+    return number
+
+
 async def validate_setting_value(
     session: AsyncSession, key: str, value: dict | None
 ) -> None:
@@ -200,19 +239,7 @@ async def validate_setting_value(
     rule = SETTING_NUMBER_RULES.get(key)
     if rule is not None:
         field, low, high, label = rule
-        raw = (value or {}).get(field)
-        try:
-            number = int(raw)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            raise AppError(
-                ErrorCode.PARAM_ERROR, f"{label}必须是整数天（{low}–{high}）", 422
-            )
-        if number < low or number > high:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"{label}须在 {low}–{high} 天之间，当前填的是 {number}",
-                422,
-            )
+        _strict_int((value or {}).get(field), label, low, high)
         return
 
     if key == "pool_recycle_restore_permission":
@@ -233,6 +260,56 @@ async def validate_setting_value(
             raise AppError(
                 ErrorCode.PARAM_ERROR, f"权限码「{code}」不在系统权限表里，请核对", 422
             )
+
+
+async def recompute_open_candidates(
+    session: AsyncSession, *, key: str, days: int, now: datetime | None = None
+) -> int:
+    """改完「预告期 / 暂缓期」天数后，把**还在等的候选**一起重算到期时间。
+
+    口径由主人 2026-10-06 定：**一起重算**。
+
+    此前是"只影响以后新提名的候选，已经在跑的按生成时的天数走完"。主人要求
+    改成跟着变 —— 管理员一改配置，所有还没结案的候选都按新天数重新算，
+    避免库里同时跑着两套天数。
+
+    只动 `pending` / `deferred` 这两种"还在等"的状态：
+    `executed` / `rejected` / `superseded` / `restored` 已经结案，
+    重算它们等于改历史，不动。
+
+    `notice_at` / `decided_at` 是**当时的绝对时间点**（提名那一刻、暂缓那一刻），
+    用它俩当基准加新天数，才不会把已经过去的时间也算进去。
+
+    返回重算了几条，供审计和界面提示用。
+    """
+    moment = now or datetime.now(UTC)
+    if key == "pool_recycle_notice_days":
+        rows = (
+            await session.execute(
+                select(PublicPoolRecycleCandidate).where(
+                    PublicPoolRecycleCandidate.status.in_(["pending", "deferred"])
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            row.notice_days = days
+            row.due_at = (row.notice_at or moment) + timedelta(days=days)
+        return len(rows)
+
+    if key == "pool_recycle_defer_days":
+        rows = (
+            await session.execute(
+                select(PublicPoolRecycleCandidate).where(
+                    PublicPoolRecycleCandidate.status == "deferred"
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            row.defer_days = days
+            row.deferred_until = (row.decided_at or moment) + timedelta(days=days)
+        return len(rows)
+
+    return 0
 
 
 async def get_list(session: AsyncSession, key: str, field: str = "levels") -> list:
@@ -736,22 +813,49 @@ async def run_public_pool_recycle(
 # ---------------------------------------------------------------- 回收候选：复核与执行（返工单 6.3）
 
 
+def _deadline_hint(row: PublicPoolRecycleCandidate, earliest: datetime) -> str:
+    """这条到底卡在哪个等待期上 —— 提示必须说对（返修单 R13）。
+
+    `earliest_action_at` 改成"取较晚者"之后，一个 `deferred` 的候选**也可能卡在
+    预告期上**（暂缓天数比剩余预告期短时）。此时若还照着 `status` 说
+    "暂缓期内不做回收"，主管会以为要等暂缓、其实该等预告 —— 提示反而把人带偏。
+    所以按**绑定的是哪个时间点**来说。
+    """
+    due = row.due_at
+    if due is not None and due.tzinfo is None:
+        due = due.replace(tzinfo=UTC)
+    if due is not None and earliest == due:
+        return f"预告期 {row.notice_days or ''} 天内业务员还可以跟进自救"
+    return f"主管已暂缓 {row.defer_days or ''} 天，暂缓期内不做回收"
+
+
 def earliest_action_at(row: PublicPoolRecycleCandidate) -> datetime | None:
     """这条候选**最早能批准回收**的时间点（返修单第六批第 8 条）。
 
-    - 还没复核（`pending`）→ 预告到期时间 `due_at`：预告期内业务员仍可自救，
-      没到点就不该收；
-    - 主管已暂缓（`deferred`）→ 暂缓到期时间 `deferred_until`：说好"过一阵再看"，
-      时间没到就再来收，等于暂缓两个字没写过。
+    规则：**暂缓只能延长，不能缩短**（返修单 R13，2026-10-06 修）。
 
-    返回 None 表示不受等待期限制（例如老数据没有到期时间），此时按原逻辑走。
+    取「预告到期 `due_at`」与「暂缓到期 `deferred_until`」中**较晚的那个**。
+    为什么要取较晚：暂缓期满不等于预告期满。比如预告还剩 7 天，主管暂缓 1 天 ——
+    若只看暂缓到期，1 天后这条就显示成"正常到期"，等于**用一次暂缓把预告期
+    悄悄缩掉了**，业务员那 7 天的自救窗口凭空消失。取较晚者，暂缓就只会
+    把时间往后推，不会往前拉。
+
+    想真的提前收，必须走**例外通道**（主管填原因 → `early_approved` 留痕，
+    审计里单独一个 action），不能被当成"正常到期"。
+
+    返回 None 表示不受等待期限制（例如老数据两个时间都没有），按原逻辑走。
 
     **驳回不受这个限制** —— 驳回是"不用回收了"，不会造成既成事实，
     想什么时候结案都可以（返修单第六批追加口径确认）。
     """
-    if row.status == "deferred":
-        return row.deferred_until
-    return row.due_at
+    stamps: list[datetime] = []
+    for value in (row.due_at, row.deferred_until):
+        if value is None:
+            continue
+        # 两个列都是带时区的，但老数据可能存成 naive —— 混着比会直接抛
+        # TypeError（naive 与 aware 不可比），所以先统一挂上 UTC
+        stamps.append(value if value.tzinfo is not None else value.replace(tzinfo=UTC))
+    return max(stamps) if stamps else None
 
 
 def serialize_candidate(
@@ -775,10 +879,12 @@ def serialize_candidate(
         "status_label": RECYCLE_STATUS_LABEL.get(row.status, row.status),
         "notice_at": row.notice_at.isoformat() if row.notice_at else None,
         "due_at": row.due_at.isoformat() if row.due_at else None,
-        #: 提名时用的预告天数快照（改配置不追溯旧候选，见 model 注释）
+        #: 提名时用的预告天数快照。改配置会**连带重算**还没结案的候选，
+        #: 所以这一列的意思是"这条当前按几天预告"，不是"当初提名时是几天"
         "notice_days": row.notice_days,
-        #: **最早可回收时间**：pending 看预告到期，deferred 看暂缓到期。
-        #: 前端据此决定"批准回收"能不能点、并显示可操作时间（追加口径 1）。
+        #: **最早可回收时间**：取预告到期与暂缓到期中**较晚**的那个
+        #: （暂缓只能延长不能缩短，见 earliest_action_at）。前端据此决定
+        #: "批准回收"能不能点、并显示可操作时间（追加口径 1 + 返修单 R13）。
         "earliest_action_at": earliest.isoformat() if earliest else None,
         "decided_by": row.decided_by,
         "decided_at": row.decided_at.isoformat() if row.decided_at else None,
@@ -1035,11 +1141,7 @@ async def decide_candidate(
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
                 f"还没到可回收时间（最早 {earliest.strftime('%Y-%m-%d %H:%M')}）："
-                + (
-                    f"预告期 {row.notice_days or ''} 天内业务员还可以跟进自救"
-                    if row.status == "pending"
-                    else f"主管已暂缓 {row.defer_days or ''} 天，暂缓期内不做回收"
-                )
+                + _deadline_hint(row, earliest)
                 + "。确需提前回收，请由主管填写原因后按「提前回收」例外处理",
                 422,
             )

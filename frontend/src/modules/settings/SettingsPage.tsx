@@ -706,8 +706,14 @@ export default function SettingsPage() {
   return (
     <div className="page-container">
       <PageHeader
-        title="系统设置"
-        subtitle="用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改"
+        // 非管理员看到的只有「业务规则」里的公海回收复核（返修单 R12）：
+        // 标题跟着换，否则主管会以为自己拿到了整个系统设置
+        title={isAdmin ? '系统设置' : '公海回收复核'}
+        subtitle={
+          isAdmin
+            ? '用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改'
+            : '复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定'
+        }
       />
       <SectionCard>
         <Tabs
@@ -944,6 +950,12 @@ export default function SettingsPage() {
           )}
           {activeKey === 'rules' && (
             <div style={{ display: 'grid', gap: 20 }}>
+              {/* ⚠️ 下面这三块（公海回收规则 / 自动任务规则 / 系统配置）都是**管理员**的活儿：
+                  改规则、调参数、跑扫描，后端一律要 `settings:manage`。
+                  主管只有 `customer:pool_review`，看到这些控件也点不动（会吃 403），
+                  所以对非管理员**整块不渲染** —— 返修单 R12 要求"主管只进入本团队
+                  复核功能"，露着不能用的按钮比藏起来更糟。 */}
+              {isAdmin && (
               <div>
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>公海回收规则</div>
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
@@ -1009,15 +1021,17 @@ export default function SettingsPage() {
                   </span>
                 </div>
               </div>
+              )}
 
               {isAdmin && (
                 <div>
                   <div style={{ fontWeight: 600, marginBottom: 8 }}>回收节奏与恢复权限</div>
                   <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
                     <b>预告期与暂缓期现在跑的是开发默认值（7 天 / 30 天），还没经过业务确认</b>
-                    —— 口径定了在这里改，改完对新提名的候选立刻生效。
-                    已经在跑的候选<b>不受影响</b>：它们各自记着生成时的天数与到期时间，
-                    不会被追溯改期。三项的改动都会记进审计（含修改前后值）。
+                    —— 口径定了在这里改。改完<b>立刻生效</b>：已经提名、还没结案的候选
+                    （待复核 / 已暂缓）会按新天数<b>一起重算到期时间</b>，不会新旧两套天数
+                    并存；已回收 / 已驳回 / 已作废的不动。三项的改动都会记进审计
+                    （含修改前后值、以及同步重算了几条候选）。
                   </div>
                   <div
                     style={{
@@ -1340,6 +1354,7 @@ export default function SettingsPage() {
                 />
               </div>
 
+              {isAdmin && (
               <div>
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>自动任务规则</div>
                 <Table<TaskRuleRow>
@@ -1401,7 +1416,9 @@ export default function SettingsPage() {
                   </span>
                 </div>
               </div>
+              )}
 
+              {isAdmin && (
               <div>
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>系统配置</div>
                 <Table<SystemSettingRow>
@@ -1441,6 +1458,7 @@ export default function SettingsPage() {
                   pagination={false}
                 />
               </div>
+              )}
             </div>
           )}
         </div>

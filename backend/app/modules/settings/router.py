@@ -134,26 +134,49 @@ async def upsert_setting(
 ):
     """保存一条系统配置。
 
-    - **校验取值**（追加口径 1）：天数类必须是范围内的整数，权限类必须真实存在；
+    - **校验取值**（追加口径 1 + 返修单 R14）：天数类必须是**严格整数**
+      —— 小数（1.9）与布尔（true）一律 422，不再被 `int()` 悄悄截成整数；
+      权限类必须真实存在；
     - **审计记下修改前后值**（追加口径 1 要求"保存修改人、修改时间及修改前后值"）：
-      此前只记 after，"这个参数被谁从多少改到了多少"查不出来。
-
-    改配置**不影响已经生成的回收候选**：候选上各自存着生成时的天数与绝对到期
-    时间，不回头读这里（追加口径 1 明确要求）。
+      此前只记 after，"这个参数被谁从多少改到了多少"查不出来；
+    - **改天数会连带重算还没结案的候选**（主人 2026-10-06 定的口径）：
+      改「预告期 / 暂缓期」时，把所有 `pending` / `deferred` 的候选按新天数
+      重算到期时间（已结案的不动）。原设计是"只影响新候选"，本次按要求
+      改成一起重算，免得库里同时跑着两套天数。重算了几条一并记进审计。
     """
     row = (
         await session.execute(select(SystemSetting).where(SystemSetting.key == payload.key))
     ).scalar_one_or_none()
     before_value = row.value if row is not None else None
     await svc.validate_setting_value(session, payload.key, payload.value)
+
+    # 天数类：把值**归一化成整数再落库**（返修单 R14）。
+    # 校验放行 "13" 这种数字串，但直接存会把字符串写进 JSONB —— 于是
+    # "保存值 / 展示值 / 执行值"三者形态不一致（执行时 int("13") 没问题，
+    # 但下次读出来是字符串，别处一比较就出岔子）。这里统一成整数走到底。
+    stored_value = payload.value
+    days: int | None = None
+    if payload.key in svc.SETTING_NUMBER_RULES:
+        field, low, high, label = svc.SETTING_NUMBER_RULES[payload.key]
+        days = svc._strict_int((payload.value or {}).get(field), label, low, high)
+        stored_value = {**(payload.value or {}), field: days}
+
     if row is None:
         row = SystemSetting(key=payload.key, description=payload.description)
         session.add(row)
-    row.value = payload.value
+    row.value = stored_value
     if payload.description:
         row.description = payload.description
     row.updated_by = user.id
     await session.flush()
+
+    # 改「预告期 / 暂缓期」→ 连带重算还在等的候选（返修单追加口径 1，主人 2026-10-06）
+    recomputed = 0
+    if days is not None:
+        recomputed = await svc.recompute_open_candidates(
+            session, key=payload.key, days=days
+        )
+
     await write_audit(
         session,
         operator_id=user.id,
@@ -161,11 +184,14 @@ async def upsert_setting(
         business_type="setting",
         business_id=row.id,
         before={"key": payload.key, "value": before_value},
-        after={"key": payload.key, "value": payload.value},
+        after={"key": payload.key, "value": stored_value, "recomputed_candidates": recomputed},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(serialize_setting(row), "已保存")
+    message = "已保存"
+    if recomputed:
+        message = f"已保存；同步重算了 {recomputed} 条还没结案的候选到期时间"
+    return ok(serialize_setting(row), message)
 
 
 @router.get("/public-pool/rules")

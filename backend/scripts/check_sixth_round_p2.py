@@ -13,9 +13,11 @@
 验收：**未到期被拦 / 提前回收要原因 / 暂缓期内能驳回不能收 / 通知双方且去重**。
 
 **追加口径 1 参数可配**
-预告期与暂缓期做成配置，后端校验合法性、审计记前后值；
-**每条候选保存生成时的天数与到期时间，改配置不追溯旧候选**。
-验收：**非法值被拒 / 审计有 before / 改配置后旧候选期限不变**。
+预告期与暂缓期做成配置，后端校验合法性、审计记前后值。
+⚠️ 口径已于 2026-10-06 变更：原设计是"每条候选保存生成时的天数、改配置不追溯
+旧候选"；主人改成**一起重算** —— 改天数时把还没结案的候选（pending/deferred）
+按新天数重新算到期时间。本套件对应的断言已跟着翻面。
+验收：**非法值被拒（含小数/布尔，R14）/ 审计有 before / 改配置后旧候选期限跟着重算**。
 
 **追加口径 2 恢复权限**
 恢复改读配置项 `pool_recycle_restore_permission`（此前只在默认值表里躺着），
@@ -480,8 +482,49 @@ async def section2_notice(admin: str, mgr_a: str, mgr_b: str, sales_a_t: str) ->
 # ---------------------------------------------------------------- 追加口径 1：配置
 
 async def section3_config(admin: str) -> None:
-    print("\n== 追加口径 1：参数可配、校验、审计、不追溯旧候选 ==")
-    before = await candidate_row(IDS["cand_deferred"])
+    print("\n== 追加口径 1：参数可配、校验、审计、改配置一起重算 ==")
+    # 造两条**还在等**的候选来做重算断言。
+    # ⚠️ 不能用 `cand_deferred`：section1 已经把它**驳回结案**了，
+    # 而按新口径结案的候选**不该**被重算 —— 它在这里的角色是**反例**。
+    now = datetime.now(UTC)
+    async with SessionLocal() as s:
+        fresh_ids = []
+        for tag in ("重算待复核", "重算已暂缓"):
+            c = Customer(
+                name=f"{PREFIX}{tag}-{STAMP}", owner_id=IDS["sales_a"],
+                pool_status="private", created_by=IDS["sales_a"], level="Y",
+                last_followup_at=now,
+            )
+            s.add(c)
+            await s.flush()
+            fresh_ids.append(c.id)
+        await s.commit()
+
+    def make_candidate(customer_id: int, status: str, **kw) -> PublicPoolRecycleCandidate:
+        payload = {
+            "customer_id": customer_id, "owner_id": IDS["sales_a"],
+            "level": "Y", "rule_days": 1, "protection_snapshot": [],
+            "status": status, "notice_at": now, "created_at": now, "notice_days": 7,
+        }
+        payload.update(kw)
+        return PublicPoolRecycleCandidate(**payload)
+
+    async with SessionLocal() as s:
+        p = make_candidate(fresh_ids[0], "pending", due_at=now + timedelta(days=7))
+        d = make_candidate(
+            fresh_ids[1], "deferred",
+            due_at=now + timedelta(days=7), defer_days=30,
+            deferred_until=now + timedelta(days=30), decided_at=now,
+        )
+        s.add_all([p, d])
+        await s.flush()
+        open_pending, open_deferred = p.id, d.id
+        await s.commit()
+
+    # ⚠️ 这两个"改之前"的快照必须在**任何** PATCH 之前取 —— 下面"合法值"那一节
+    # 就会改一次预告期，取晚了断言必假红。
+    before_pending = await candidate_row(open_pending)
+    before_closed = await candidate_row(IDS["cand_deferred"])
 
     status, _ = call(
         "PATCH", "/settings", admin,
@@ -498,6 +541,17 @@ async def section3_config(admin: str) -> None:
         {"key": "pool_recycle_notice_days", "value": {"days": "七天"}},
     )
     check_in("预告期填非数字 → 被拒", status, REJECTED)
+    # R14：小数与布尔曾经被 `int()` 悄悄收下（1.9→1、True→1）
+    status, _ = call(
+        "PATCH", "/settings", admin,
+        {"key": "pool_recycle_notice_days", "value": {"days": 1.9}},
+    )
+    check_in("预告期填小数 1.9 → 被拒", status, REJECTED)
+    status, _ = call(
+        "PATCH", "/settings", admin,
+        {"key": "pool_recycle_notice_days", "value": {"days": True}},
+    )
+    check_in("预告期填布尔 true → 被拒", status, REJECTED)
     status, _ = call(
         "PATCH", "/settings", admin,
         {"key": "pool_recycle_restore_permission", "value": {"text": "no:such:permission"}},
@@ -532,13 +586,36 @@ async def section3_config(admin: str) -> None:
         after_json[:90],
     )
 
-    # 改配置**不追溯**已经在跑的候选
-    after = await candidate_row(IDS["cand_deferred"])
-    check("改配置不改旧候选的等待天数快照", after["notice_days"], before["notice_days"])
-    check("改配置不改旧候选的到期时间", after["deferred_until"], before["deferred_until"])
+    # 改配置**会连带重算**还没结案的候选 —— 口径已于 2026-10-06 变更：
+    # 原来是"改配置不追溯旧候选"，主人明确要求改成"一起重算"，
+    # 免得库里同时跑着两套天数。所以这里的断言跟着翻面。
+    after_pending = await candidate_row(open_pending)
+    check("改「预告期」→ 未结候选的天数快照跟着变", after_pending["notice_days"], 5)
+    check_true(
+        "改「预告期」→ 预告到期时间被重算",
+        after_pending["due_at"] != before_pending["due_at"],
+        f"改前 {before_pending['due_at']} → 改后 {after_pending['due_at']}",
+    )
+    after_closed = await candidate_row(IDS["cand_deferred"])
+    check(
+        "**已驳回**的候选不动（结案了，重算等于改历史）",
+        after_closed["notice_days"], before_closed["notice_days"],
+    )
+
+    # 改「暂缓期」→ 已经暂缓着的那条重算暂缓到期时间
+    before_defer = await candidate_row(open_deferred)
+    call("PATCH", "/settings", admin, {"key": "pool_recycle_defer_days", "value": {"days": 10}})
+    after_defer = await candidate_row(open_deferred)
+    check("改「暂缓期」→ 候选的暂缓天数跟着变", after_defer["defer_days"], 10)
+    check_true(
+        "改「暂缓期」→ 暂缓到期时间被重算",
+        after_defer["deferred_until"] != before_defer["deferred_until"],
+        f"改前 {before_defer['deferred_until']} → 改后 {after_defer['deferred_until']}",
+    )
 
     # 恢复默认，避免影响后面的用例
     call("PATCH", "/settings", admin, {"key": "pool_recycle_notice_days", "value": {"days": 7}})
+    call("PATCH", "/settings", admin, {"key": "pool_recycle_defer_days", "value": {"days": 30}})
 
 
 # ---------------------------------------------------------------- 第 9 条：打样修订链

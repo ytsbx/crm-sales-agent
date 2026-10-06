@@ -6,7 +6,7 @@ import TabBar from './TabBar'
 import GlobalSearch from './GlobalSearch'
 import NotificationBell from '../../modules/common/NotificationBell'
 import CopilotDrawer from '../../modules/common/CopilotDrawer'
-import { matchMenu, visibleMenuGroups } from '../menu'
+import { matchMenu, menuLabel, visibleMenuGroups } from '../menu'
 import { useAuthStore } from '../../shared/store/auth'
 import { useTabsStore } from '../../shared/store/tabs'
 import { useCopilotStore } from '../../shared/store/copilot'
@@ -126,17 +126,19 @@ export default function AppLayout() {
             {group.items.map((item) => {
               const Icon = item.icon
               const active = currentMenu?.key === item.key
+              // 同一个入口对不同身份可能该叫不同名字（主管看到的是「公海回收复核」）
+              const label = menuLabel(item, user)
               return (
                 <Link
                   key={item.key}
                   to={item.path}
                   className={active ? 'nav-link active' : 'nav-link'}
-                  title={siderCollapsed ? item.label : undefined}
+                  title={siderCollapsed ? label : undefined}
                 >
                   <span className="nav-icon">
                     <Icon />
                   </span>
-                  <span>{item.label}</span>
+                  <span>{label}</span>
                 </Link>
               )
             })}

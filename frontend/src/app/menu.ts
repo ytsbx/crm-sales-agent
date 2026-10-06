@@ -39,6 +39,15 @@ export interface MenuItem {
   ready: boolean
   /** 需要的权限码；字符串数组表示"任一命中即可"。缺省 = 所有人可见。 */
   permission?: string | string[]
+  /**
+   * 另一个身份看同一个入口时该叫什么。
+   *
+   * 例：`/settings` 对管理员是「系统设置」；而销售主管拿的是
+   * `customer:pool_review`（公海回收复核），他进去本来就只看得到复核这一块，
+   * 菜单上继续叫「系统设置」会让他以为拿到了整个系统设置。
+   * `when` 命中且没有主权限时，用 `label` 显示（返修单 R12）。
+   */
+  altLabel?: { when: string; label: string }
 }
 
 export interface MenuGroup {
@@ -102,7 +111,20 @@ export const MENU_GROUPS: MenuGroup[] = [
     items: [
       { key: 'agent', path: '/agent', label: 'AI Sales Agent', icon: IconComment, ready: true, permission: 'agent:use' },
       { key: 'wecom', path: '/wecom', label: '企业微信', icon: IconAt, ready: true, permission: 'wecom:view' },
-      { key: 'settings', path: '/settings', label: '系统设置', icon: IconSetting, ready: true, permission: 'settings:manage' },
+      {
+        key: 'settings',
+        path: '/settings',
+        label: '系统设置',
+        // 销售主管拿的是 `customer:pool_review`（公海回收复核），**不是**
+        // `settings:manage`。原来这条只认 settings:manage，于是主管**常规菜单里
+        // 根本没有入口**，只能靠回收预告的通知链接撞进去（返修单 R12）。
+        // 现在两种权限任一命中都给入口，且**不给他系统设置权限本身**；
+        // 没有 settings:manage 时菜单改名 —— 他进去本来就只看得到复核那一块。
+        altLabel: { when: 'customer:pool_review', label: '公海回收复核' },
+        icon: IconSetting,
+        ready: true,
+        permission: ['settings:manage', 'customer:pool_review'],
+      },
     ],
   },
 ]
@@ -134,4 +156,23 @@ export function visibleMenuGroups(
     ...group,
     items: group.items.filter((item) => item.ready && hasPermission(user, item.permission)),
   })).filter((group) => group.items.length > 0)
+}
+
+/**
+ * 当前用户看到的菜单名。
+ *
+ * 同一个入口对不同身份可能该叫不同名字：`/settings` 对管理员是「系统设置」，
+ * 对只有公海回收复核权的主管是「公海回收复核」（返修单 R12）。
+ * 判据：配了 `altLabel`、**没有主权限**、但 `altLabel.when` 命中。
+ */
+export function menuLabel(
+  item: MenuItem,
+  user: { roles: string[]; permissions?: string[] } | null,
+): string {
+  const alt = item.altLabel
+  if (alt) {
+    const primary = Array.isArray(item.permission) ? item.permission[0] : item.permission
+    if (!hasPermission(user, primary) && hasPermission(user, alt.when)) return alt.label
+  }
+  return item.label
 }

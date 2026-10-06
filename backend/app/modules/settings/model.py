@@ -111,10 +111,13 @@ class PublicPoolRecycleCandidate(Base, IdMixin):
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     #: 提名那一刻用的**预告天数**（快照）。
     #:
-    #: 为什么要存快照而不是每次回读配置：管理员中途把预告期从 7 天改成 3 天，
-    #: 已经在跑的候选**不该**因此提前到期 —— 那等于用新规则追溯旧决定。
-    #: `due_at` 是绝对时间，本身已经不受配置影响；这一列只为把
-    #: "这条是按几天预告的"留在行上，复核时说得清。实测口径见返修单第六批追加 1。
+    #: `due_at` 是绝对时间，本身已经不受配置影响；这一列把"这条按几天预告"
+    #: 留在行上，复核时说得清。
+    #:
+    #: ⚠️ 口径已改（2026-10-06，主人定）：改「预告期」配置会**连带重算**
+    #: 还没结案的候选（`pending` / `deferred`）—— 天数与 `due_at` 一起更新。
+    #: 原设计是"只影响新候选、不追溯旧候选"，本次按要求改成一起重算，
+    #: 免得库里同时跑着两套天数。已结案的不动。
     notice_days: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     decided_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -125,7 +128,8 @@ class PublicPoolRecycleCandidate(Base, IdMixin):
     deferred_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    #: 这次暂缓用的**等待天数**（快照），同 `notice_days`：改配置不追溯旧候选。
+    #: 这次暂缓用的**等待天数**（快照）。同 `notice_days`：改「暂缓期」配置会
+    #: 连带重算 `deferred` 状态候选的 `defer_days` 与 `deferred_until`。
     defer_days: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     #: 例外执行：批准时**仍有履约保护**，主管明确要求放行（必须填原因）
     exception_approved: Mapped[bool] = mapped_column(Boolean, default=False)
