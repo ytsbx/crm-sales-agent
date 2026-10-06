@@ -1,6 +1,7 @@
 """线索中心接口（对齐 03-API §6）。"""
 
 from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -132,6 +133,7 @@ async def assign_lead(
     session: AsyncSession = Depends(get_db),
 ):
     lead = await svc.get_visible_lead(session, user, lead_id)
+    before_owner = lead.owner_id
     await svc.assign_lead(
         session, lead, to_user_id=payload.owner_id, operator_id=user.id, reason=payload.reason
     )
@@ -142,7 +144,9 @@ async def assign_lead(
         action="assign",
         business_type="lead",
         business_id=lead.id,
-        after={"owner_id": lead.owner_id},
+        # 审计要能回答"原来归谁、改成了谁"（返工单 6.1 第 6 条）
+        before={"owner_id": before_owner},
+        after={"owner_id": lead.owner_id, "reason": payload.reason},
         ip=client_ip(request),
     )
     await session.commit()
@@ -161,6 +165,14 @@ async def batch_assign_leads(
     与单条分配共用 `svc.assign_lead`，所以分配历史、通知与"不能分配给停用账号"
     这些规则都一致。单条失败不影响其余：返回成功/跳过清单，
     让操作的人知道哪几条没成、为什么。
+
+    **批量不是绕过数据范围的旁路**：逐条走 `svc.assert_lead_visible`，
+    与单条 `get_visible_lead` 同一口径 —— 越权的那条按"无权分配"跳过，
+    **不改任何数据**，也不会因为"批量"就悄悄改成。
+    结果里 `reason` 与 `code` 成对给出，和单条入口的拒绝原因一致。
+
+    每条用 **SAVEPOINT** 包起来：某条中途失败时只回滚这一条，
+    不会把前面成功的一起带走，也不会留下"历史写了、负责人没改"的半截状态。
     """
     if not payload.lead_ids:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "lead_ids 不能为空", 422)
@@ -170,20 +182,32 @@ async def batch_assign_leads(
     assigned: list[int] = []
     skipped: list[dict] = []
     for lead_id in unique_ids:
-        lead = await session.get(Lead, lead_id)
-        if lead is None or lead.deleted_at is not None:
-            skipped.append({"lead_id": lead_id, "reason": "线索不存在"})
-            continue
         try:
-            await svc.assign_lead(
-                session,
-                lead,
-                to_user_id=payload.owner_id,
-                operator_id=user.id,
-                reason=payload.reason or "批量分配",
-            )
+            async with session.begin_nested():  # SAVEPOINT：这一条失败只回滚这一条
+                lead = (
+                    await session.execute(
+                        select(Lead).where(
+                            Lead.id == lead_id, Lead.deleted_at.is_(None)
+                        )
+                    )
+                ).scalars().first()
+                if lead is None:
+                    raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
+                # 与单条入口同口径的范围校验（无权的那条在这里被拦下）
+                await svc.assert_lead_visible(session, user, lead)
+                await svc.assign_lead(
+                    session,
+                    lead,
+                    to_user_id=payload.owner_id,
+                    operator_id=user.id,
+                    reason=payload.reason or "批量分配",
+                )
         except AppError as error:
-            skipped.append({"lead_id": lead_id, "reason": error.message})
+            # 逐条报出"为什么没成"，且 code 与单条入口一致，
+            # 前端不用为批量单独写一套文案
+            skipped.append(
+                {"lead_id": lead_id, "reason": error.message, "code": error.code}
+            )
             continue
         assigned.append(lead_id)
 
@@ -210,22 +234,28 @@ async def claim_lead(
     user: CurrentUser = Depends(require_permission("lead:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_visible_lead(session, user, lead_id)
-    if lead.owner_id is not None:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该线索已有负责人")
-    await svc.assign_lead(
-        session, lead, to_user_id=user.id, operator_id=user.id, reason="线索池领取"
-    )
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="claim",
-        business_type="lead",
-        business_id=lead.id,
-        ip=client_ip(request),
-    )
+    """领取线索。
+
+    与公海页面的 `POST /public-pool/leads/{id}/claim` 走**同一个服务函数**
+    （`svc.claim_lead`）：行锁、可领取状态（已转客户/已废弃的不能领）、
+    幂等、报错文案全部一致。此前两处各写一份，只判"有没有负责人"。
+    """
+    lead, claimed = await svc.claim_lead(session, user, lead_id, reason="线索池领取")
+    if claimed:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="claim",
+            business_type="lead",
+            business_id=lead.id,
+            after={"owner_id": user.id},
+            ip=client_ip(request),
+        )
     await session.commit()
-    return ok(svc.serialize_lead(lead), "领取成功")
+    return ok(
+        svc.serialize_lead(lead),
+        "领取成功" if claimed else f"线索「{lead.name}」已经是你的",
+    )
 
 
 @router.post("/leads/{lead_id}/release")

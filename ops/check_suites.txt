@@ -36,6 +36,10 @@ check_target_actuals
 check_dingtalk_idempotency
 check_dingtalk_contract
 check_data_scope
+# 公海/线索的取数与授权 + 领取并发（返工单 6.1 / 6.2）。
+# 紧跟 check_data_scope：同属"越权"这一类，用的夹具类型也一样（自建用户+角色），
+# 放一起便于排查。它会真的并发打两个领取请求，所以放这附近（此时库还干净）。
+check_pool_scope_concurrency
 check_notification_retry
 check_notification_levels
 check_delivery_analytics

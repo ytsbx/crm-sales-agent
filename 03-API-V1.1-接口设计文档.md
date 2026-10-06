@@ -1067,6 +1067,14 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /customers/stage-distribution`：六阶段分布——当前数据范围内各阶段客户数（了解/报价/打样/首单/返单/稳定复购）。需要 `customer:view`。
 - `POST /customers/{customer_id}/contacts`：给客户新增联系人。需要 `customer:update`。
 - `GET /customers/{customer_id}/merge-logs`：客户合并记录。需要 `customer:view`。
+- `POST /customers/{customer_id}/claim`：**领取公海客户**。需要 `customer:view`。
+  与 `POST /public-pool/customers/{id}/claim` 走**同一个服务函数**，行为完全一致。
+  语义（返工单 6.2 统一后的口径）：
+  - **取行锁**后才判可领取 —— 两个人同时领只有一个人成功，另一个拿到 **409**（提示被谁领走）；
+  - 可领取条件 = 有效记录 + `pool_status=public` + 无负责人；
+  - **幂等**：已经在自己名下时返回成功但**不再写一条归属变更历史**（网络重试不会留两条）；
+  - 私有客户按操作者数据范围判（不在范围内 **403**），公海客户人人可领；
+  - 失败**不写归属历史、不发通知**。
 
 ## 41.14 工作台看板（dashboard）
 
@@ -1105,6 +1113,22 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 ## 41.19 公海回收（public-pool，补充条目）
 
 - `POST /public-pool/run-recycle`：立即执行一次公海回收。需要 `settings:manage`。正式环境由定时任务调用。审计写在 service 内部（它自己 commit），路由层不再补写——避免提交后再写审计反而落到另一个事务里。
+- `POST /public-pool/customers/{id}/claim` / `POST /public-pool/leads/{id}/claim`：领取公海客户 / 线索。
+  客户需要 `customer:view`，线索需要 `lead:view`。与客户详情、线索中心那两条领取路径**共用同一个服务函数**，
+  检查项、幂等、报错文案一致（此前两处各写一份、已经漂移）。
+  客户可领取 = 有效 + `public` + 无负责人；线索可领取 = 无负责人 **且状态为 `pending`**
+  （已转客户 `converted`、已废弃 `invalid` 即使没有负责人也不许领，拒绝码 40002）；
+  并发只有一人成功（另一个 409）。
+- `POST /public-pool/customers/{id}/assign` / `POST /public-pool/leads/{id}/assign`：把公海对象指派给某人。
+  客户需要 `customer:assign`，线索需要 `lead:assign`。
+  **取数必须与单条转移同口径**：`get_visible_customer` / `get_visible_lead` ——
+  公海对象（无负责人）人人可见，**私有对象必须在操作者数据范围内**。
+  此前这里用 `get_customer_or_404` / `get_lead_or_404`（只判存在），
+  成了"本人仅自己范围的业务员拿 id 就能把别人私有客户改给自己"的旁路
+  （返工单 6.1）。审计记录改前改后的负责人与原因。
+- `POST /leads/batch-assign`：批量分配线索。需要 `lead:assign`。
+  逐条走与单条入口**同一套范围校验**，越权的那条按"无权分配"跳过并给出**与单条一致的 code（40302）**，
+  且**不改动任何数据**。每条包在 SAVEPOINT 里，单条失败不会留下"历史写了、负责人没改"的半截状态。
 
 
 

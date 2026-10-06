@@ -218,3 +218,56 @@ def mark_discarded(session: AsyncSession, lead: Lead, *, reason: str, operator_i
     record_assignment(
         session, lead=lead, to_user_id=None, operator_id=operator_id, reason=f"废弃：{reason}"
     )
+
+
+#: 可领取的线索状态。**只认 `pending`（待分配）**：
+#: 线索没有独立的 pool_status，"没有负责人"就表示待分配（见 model 的说明）。
+#: 但光看 `owner_id is None` 不够 —— 已转客户的线索（`converted`）与已废弃的
+#: （`invalid`）也可能因为没有负责人而"看起来可领"，实际上一领就把
+#: "这条线索已经变成客户了"这个事实盖掉。
+LEAD_CLAIMABLE_STATUS = "pending"
+
+
+async def claim_lead(
+    session: AsyncSession,
+    user: CurrentUser,
+    lead_id: int,
+    *,
+    reason: str = "线索池领取",
+) -> tuple[Lead, bool]:
+    """领取线索池里的线索，返回 `(线索, 本次是否真的领取了)`。
+
+    两条领取路径（线索中心与公海页面）都走这里。加锁与幂等的理由同
+    `customer/service.claim_customer`：并发领取不能两个人都成功，
+    重试也不能在分配历史里留下两条。
+    """
+    row = (
+        await session.execute(
+            select(Lead).where(Lead.id == lead_id, Lead.deleted_at.is_(None)).with_for_update()
+        )
+    ).scalars().first()
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
+
+    # 线索池里没有负责人的线索对所有人可见（allow_unowned），有负责人的要在范围内
+    await assert_lead_visible(session, user, row)
+
+    if row.owner_id is not None and row.owner_id == user.id:
+        return row, False  # 已经是自己的：幂等返回
+    if row.owner_id is not None:
+        owner = await session.get(User, row.owner_id)
+        who = owner.name if owner else f"id={row.owner_id}"
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            f"该线索刚被「{who}」领取，你不能再领了；请刷新后另选",
+            409,
+        )
+    if row.status != LEAD_CLAIMABLE_STATUS:
+        # 已转客户 / 已废弃的线索即使没有负责人也不许领
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该线索当前是「{STATUS_LABEL.get(row.status, row.status)}」，不能领取",
+        )
+
+    await assign_lead(session, row, to_user_id=user.id, operator_id=user.id, reason=reason)
+    return row, True

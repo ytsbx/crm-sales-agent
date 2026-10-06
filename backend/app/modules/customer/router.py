@@ -229,20 +229,29 @@ async def claim_customer(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_visible_customer(session, user, customer_id)
-    if customer.pool_status != "public":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该客户不在公海，无法领取")
-    await svc.transfer_customer(session, user, customer, user.id, "公海领取")
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="claim",
-        business_type="customer",
-        business_id=customer.id,
-        ip=client_ip(request),
-    )
+    """领取公海客户。
+
+    与公海页面的 `POST /public-pool/customers/{id}/claim` 走**同一个服务函数**
+    （`svc.claim_customer`）：行锁、可领取条件、幂等、报错文案全部一致。
+    此前两处各写一份，检查项已经漂移（公海那边查 pool_status + owner_id，
+    这边只查 pool_status）。
+    """
+    customer, claimed = await svc.claim_customer(session, user, customer_id, reason="公海领取")
+    if claimed:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="claim",
+            business_type="customer",
+            business_id=customer.id,
+            after={"owner_id": user.id},
+            ip=client_ip(request),
+        )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "领取成功")
+    return ok(
+        svc.serialize_customer(customer),
+        "领取成功" if claimed else f"客户「{customer.name}」已经是你的",
+    )
 
 
 # ---------------------------------------------------------------- 客户 360

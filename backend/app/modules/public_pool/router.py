@@ -13,8 +13,15 @@ PRD 把「公海」明确为一项能力：放入公海 / 领取 / 分配 / 自�
   POST /public-pool/customers/{id}/assign     管理员直接指派
   POST /public-pool/leads/{id}/assign         管理员直接指派
 
-复用既有 service（`customer.transfer_customer` / `lead.assign_lead`），
-所以分配历史、目标负责人校验、数据范围规则与单条接口完全一致。
+复用既有 service（`customer.claim_customer` / `customer.transfer_customer` /
+`lead.claim_lead` / `lead.assign_lead`），分配历史、目标负责人校验、
+数据范围规则与单条接口完全一致。
+
+⚠️ 注意"取数"这一步：**公海接口必须和单条接口用同一个取数函数**
+（客户 `get_visible_customer`、线索 `get_visible_lead`）。
+此前这里用的是 `get_customer_or_404` / `get_lead_or_404`（只判存在），
+而单条接口用的是带数据范围校验的那两个 —— 同一个动作两套取数，
+公海路径就成了"本人范围也能改走别人私有客户"的旁路。
 """
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -88,29 +95,29 @@ async def claim_public_customer(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """领取公海客户到自己名下。"""
-    customer = await customer_service.get_customer_or_404(session, customer_id)
-    if customer.pool_status != "public":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该客户不在公海，无法领取")
-    if customer.owner_id is not None:
-        # 数据不一致时明确报错，而不是悄悄抢走别人的客户
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"该客户当前负责人是 id={customer.owner_id}，不在公海",
-        )
-    await customer_service.transfer_customer(session, user, customer, user.id, "公海领取")
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="pool_claim",
-        business_type="customer",
-        business_id=customer.id,
-        after={"owner_id": user.id},
-        ip=client_ip(request),
+    """领取公海客户到自己名下。
+
+    与客户详情的 `POST /customers/{id}/claim` 走**同一个服务函数**
+    （`customer_service.claim_customer`）：行锁、可领取条件、幂等、报错文案
+    全部一致。此前两处各写一遍，检查项已经漂移了。
+    """
+    customer, claimed = await customer_service.claim_customer(
+        session, user, customer_id, reason="公海领取"
     )
+    if claimed:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="pool_claim",
+            business_type="customer",
+            business_id=customer.id,
+            after={"owner_id": user.id},
+            ip=client_ip(request),
+        )
     await session.commit()
     return ok(
-        customer_service.serialize_customer(customer), f"已领取客户「{customer.name}」"
+        customer_service.serialize_customer(customer),
+        f"已领取客户「{customer.name}」" if claimed else f"客户「{customer.name}」已经是你的",
     )
 
 
@@ -133,12 +140,17 @@ async def assign_public_customer(
     这样也不会出现"前置检查把真正该报的错盖掉"：
     目标负责人不存在会在 `transfer_customer` 里报 404，不会被这里拦成 40002。
     """
-    customer = await customer_service.get_customer_or_404(session, customer_id)
+    # 取数必须与单条转移同口径（`get_visible_customer` 内含数据范围校验）：
+    # 公海客户人人可见，**私有客户必须在操作者范围内** ——
+    # 此前这里用 get_customer_or_404（只判存在），本人范围的业务员
+    # 拿 id 就能把别人名下的私有客户改给自己。
+    customer = await customer_service.get_visible_customer(session, user, customer_id)
     if payload.owner_id is None and customer.owner_id is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             "该客户已有负责人，请用客户详情里的「放入公海」以留下变更历史",
         )
+    before_owner = customer.owner_id
     await customer_service.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason or "公海指派"
     )
@@ -148,6 +160,8 @@ async def assign_public_customer(
         action="pool_assign",
         business_type="customer",
         business_id=customer.id,
+        # 审计要能回答"原来归谁、改成了谁、为什么"（返工单 6.1 第 6 条）
+        before={"owner_id": before_owner},
         after={"owner_id": payload.owner_id, "reason": payload.reason},
         ip=client_ip(request),
     )
@@ -218,29 +232,25 @@ async def claim_public_lead(
 ):
     """领取公海线索。
 
-    与线索中心的 `/leads/{id}/claim` 落同一结果（都走 `assign_lead`），
-    区别只是这个挂在公海路径下，供公海页面调用。
+    与线索中心的 `POST /leads/{id}/claim` 走**同一个服务函数**
+    （`lead_service.claim_lead`）：行锁、可领取状态、幂等、报错文案全部一致。
     """
-    lead = await lead_service.get_lead_or_404(session, lead_id)
-    if lead.owner_id is not None:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED, "该线索已有负责人，请用「分配」而不是「领取」"
+    lead, claimed = await lead_service.claim_lead(session, user, lead_id, reason="公海领取")
+    if claimed:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="pool_claim",
+            business_type="lead",
+            business_id=lead.id,
+            after={"owner_id": user.id},
+            ip=client_ip(request),
         )
-    await lead_service.assign_lead(
-        session, lead, to_user_id=user.id, operator_id=user.id, reason="公海领取"
-    )
-    await session.flush()
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="pool_claim",
-        business_type="lead",
-        business_id=lead.id,
-        after={"owner_id": user.id},
-        ip=client_ip(request),
-    )
     await session.commit()
-    return ok(lead_service.serialize_lead(lead), f"已领取线索「{lead.name}」")
+    return ok(
+        lead_service.serialize_lead(lead),
+        f"已领取线索「{lead.name}」" if claimed else f"线索「{lead.name}」已经是你的",
+    )
 
 
 @router.post("/public-pool/leads/{lead_id}/assign")
@@ -252,7 +262,9 @@ async def assign_public_lead(
     session: AsyncSession = Depends(get_db),
 ):
     """把公海线索指派给某人（`owner_id` 为空表示放回线索池）。"""
-    lead = await lead_service.get_lead_or_404(session, lead_id)
+    # 同上：取数用带数据范围校验的那个，与 `/leads/{id}/assign` 一致
+    lead = await lead_service.get_visible_lead(session, user, lead_id)
+    before_owner = lead.owner_id
     await lead_service.assign_lead(
         session,
         lead,
@@ -260,13 +272,13 @@ async def assign_public_lead(
         operator_id=user.id,
         reason=payload.reason or "公海指派",
     )
-    await session.flush()
     await write_audit(
         session,
         operator_id=user.id,
         action="pool_assign",
         business_type="lead",
         business_id=lead.id,
+        before={"owner_id": before_owner},
         after={"owner_id": payload.owner_id, "reason": payload.reason},
         ip=client_ip(request),
     )

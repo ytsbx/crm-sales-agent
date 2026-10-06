@@ -552,6 +552,63 @@ async def transfer_customer(
         )
 
 
+async def claim_customer(
+    session: AsyncSession,
+    user: CurrentUser,
+    customer_id: int,
+    *,
+    reason: str = "公海领取",
+) -> tuple[Customer, bool]:
+    """领取公海客户，返回 `(客户, 本次是否真的领取了)`。
+
+    **两条客户领取路径（客户详情与公海页面）都走这里**，行为必须一模一样 ——
+    此前两处各写一遍，检查项就已经漂移了（公海那边查 pool_status + owner_id，
+    客户那边只查 pool_status）。
+
+    为什么要**加行锁**：领取是"读当前归属 → 判断无主 → 改成自己"三步。
+    两个用户同时读到公海状态时，两边都会通过检查、先后覆盖负责人，
+    还各写一条领取历史 —— 归属看着像"最后点的那个"，档案里却记着两个人都领过。
+    `SELECT ... FOR UPDATE` 把这三步变成原子的：后到的请求会等前面提交完再读，
+    读到的就是"已有负责人"，于是按规则被拒。
+
+    幂等：如果客户**已经是自己的**，直接返回 `(客户, False)`，不再写一条领取历史 ——
+    网络重试或连点两下，不该在档案里留下两条"某人领取"。
+    """
+    # 先按主键加锁。可领取条件刻意放到**锁后**再判：
+    # 这样"不在公海"与"已被别人领走"能给出不同提示，而不是笼统报一句。
+    row = (
+        await session.execute(
+            select(Customer)
+            .where(Customer.id == customer_id, Customer.deleted_at.is_(None))
+            .with_for_update()
+        )
+    ).scalars().first()
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+
+    # 锁后判数据范围：私有客户必须在操作者范围内；公海客户人人可领。
+    # 顺序有意如此 —— **先判范围再判"已被谁领走"**：
+    # 反过来的话，越权者能从报错里读出"这个客户现在归谁"。
+    await assert_customer_visible(session, user, row)
+
+    if row.owner_id is not None and row.owner_id == user.id:
+        return row, False  # 已经是自己的：幂等返回，不重复记历史
+    if row.owner_id is not None:
+        owner = await session.get(User, row.owner_id)
+        who = owner.name if owner else f"id={row.owner_id}"
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            f"该客户刚被「{who}」领取，你不能再领了；请刷新后另选",
+            409,
+        )
+    if row.pool_status != "public":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该客户不在公海，无法领取")
+
+    # 归属变更与人工改派共用同一条路径（历史、待办责任、目标负责人校验都在里面）
+    await transfer_customer(session, user, row, user.id, reason)
+    return row, True
+
+
 async def delete_customer(session: AsyncSession, customer: Customer) -> None:
     customer.deleted_at = datetime.now(UTC)
 
@@ -601,6 +658,7 @@ __all__ = [
     "contact_counts",
     "create_customer",
     "delete_customer",
+    "claim_customer",
     "get_contact_or_404",
     "get_customer_or_404",
     "not_deleted",
