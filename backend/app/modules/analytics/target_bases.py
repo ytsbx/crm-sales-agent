@@ -83,15 +83,25 @@ def _bucket(out: dict[str, float], month, amount) -> None:
     out[key] = out.get(key, 0.0) + float(amount or 0)
 
 
-#: 口径版本：快照与结果都带它，方便回答"这一版是怎么算的"
-BASIS_VERSION = "2026-10-05.bases.2"
+#: 口径版本：快照与结果都带它，方便回答"这一版是怎么算的"。
+#: `bases.3`（2026-10-06，R07）：首次成交**连日期与来源订单一起冻**，
+#: 不再拿当前订单实时重算日期。bases.2 及更早冻的快照没有那一段，
+#: 读出来要如实说"日期未知"（见 `_detail_of_snapshot`）。
+BASIS_VERSION = "2026-10-06.bases.3"
 
 
-async def _build_basis(session: AsyncSession, year: int) -> tuple[list[int], dict[int, str]]:
-    """算出某年的两份基准：年初前已成交的客户、该年首次成交的客户→月份。
+async def _build_basis(
+    session: AsyncSession, year: int
+) -> tuple[list[int], dict[int, str], dict[int, dict]]:
+    """算出某年的两份基准：年初前已成交的客户、该年首次成交的客户→月份（+日期）。
 
     这两份就是"老客池"与"首次成交"口径的**全部依据**。它们一旦落库就不再从
     可变的订单状态重算，历史指标才不会漂移（§4.1.5）。
+
+    第三个返回值是 R07 补的：**首次成交的具体日期与来源订单**
+    （`{客户id: {"at": ISO, "order_id": 订单id}}`）。此前只冻了"哪个月"，
+    明细上的日期靠事后实时重算 —— 原首单被取消后重算会跳到下一张单，
+    于是同一行里出现"归属一月、首次成交日期显示三月"的自相矛盾。
     """
     year_start = datetime.combine(date(year, 1, 1), time.min, tzinfo=UTC)
     next_start = datetime.combine(date(year + 1, 1, 1), time.min, tzinfo=UTC)
@@ -104,19 +114,58 @@ async def _build_basis(session: AsyncSession, year: int) -> tuple[list[int], dic
             )
         )
     ).scalars().all()
-    first_deals = (
+    # 每客户最早的那张非取消订单。**连订单 id 一起取** —— 以后要能回答
+    # "这个客户的首单到底是哪一张"。`DISTINCT ON (customer_id)` 配
+    # `ORDER BY customer_id, created_at, id` ＝ 每组取最早的一条。
+    first_deal_rows = (
         await session.execute(
-            select(SalesOrder.customer_id, func.min(SalesOrder.created_at))
+            select(SalesOrder.customer_id, SalesOrder.created_at, SalesOrder.id)
             .where(SalesOrder.status != "cancelled", SalesOrder.customer_id.is_not(None))
-            .group_by(SalesOrder.customer_id)
+            .order_by(SalesOrder.customer_id, SalesOrder.created_at, SalesOrder.id)
+            .distinct(SalesOrder.customer_id)
         )
     ).all()
-    first_deal_month = {
-        int(customer_id): f"{at.year}-{at.month:02d}"
-        for customer_id, at in first_deals
-        if at is not None and year_start <= at < next_start
-    }
-    return [int(x) for x in veterans], first_deal_month
+    first_deal_month: dict[int, str] = {}
+    first_deal_detail: dict[int, dict] = {}
+    for customer_id, at, order_id in first_deal_rows:
+        if at is None or not (year_start <= at < next_start):
+            continue
+        cid = int(customer_id)
+        first_deal_month[cid] = f"{at.year}-{at.month:02d}"
+        first_deal_detail[cid] = {"at": at.isoformat(), "order_id": int(order_id)}
+    return [int(x) for x in veterans], first_deal_month, first_deal_detail
+
+
+def _detail_of_snapshot(snapshot: BasisSnapshot) -> dict[int, dict]:
+    """从快照里取"首次成交的具体日期 + 来源订单"。
+
+    **旧版冻的快照没有这一段**（`first_deal_detail` 是 NULL）—— 那就返回空 dict，
+    调用方据此显示"日期未知"。**不要**借机去实时重算：重算出来的日期与已经冻住的
+    归属月份可能对不上，那正是 R07 要修的病。
+    """
+    raw = getattr(snapshot, "first_deal_detail", None) or {}
+    out: dict[int, dict] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict) or not value.get("at"):
+            continue
+        try:
+            out[int(key)] = value
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _deal_at_of(entry: dict | None) -> datetime | None:
+    """把快照里存的那条 `{"at": ISO 时间…}` 还原成 `datetime`；没有就返回 None。"""
+    if not entry:
+        return None
+    raw = entry.get("at")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 async def new_customer_rows(
@@ -129,30 +178,21 @@ async def new_customer_rows(
     于是页面上写"新客 3 个"、点开明细只看到 1 个。
     集合只算一次、两边消费同一份数据，"对不上"从源头上就不可能发生。
 
-    首成交时间单独查一次是为了明细里能显示"这笔是哪天成的" ——
-    用客户建档案那天会让人困惑（3 月建的档、9 月才成第一单，
-    却在 9 月的明细里看到 3 月的日期）。
+    首成交时间是为了明细里能显示"这笔是哪天成的" —— 用客户建档案那天会让人困惑
+    （3 月建的档、9 月才成第一单，却在 9 月的明细里看到 3 月的日期）。
+
+    但它取的是**与月份一起冻结的那一份**（R07，2026-10-06 修）：此前这里每次现查
+    "该客户当前最早的非取消订单"，而归属月份读的却是快照 —— 两边**来源不同**，
+    原首单被取消后就会打架（月份还冻在一月，日期却跳到三月）。
+    现在日期与来源订单跟月份一起冻；**老快照没冻日期就如实返回 None**
+    （界面显示"未知"），不拿实时重算的数字顶上。
     """
     from app.modules.customer.model import Customer
 
-    _veterans, first_deal_month, _meta = await basis_for(session, year)
+    _veterans, first_deal_month, first_deal_detail, _meta = await basis_for(session, year)
     if not first_deal_month:
         return []
     ids = [int(cid) for cid in first_deal_month]
-    deal_at: dict[int, datetime] = {
-        int(cid): at
-        for cid, at in (
-            await session.execute(
-                select(SalesOrder.customer_id, func.min(SalesOrder.created_at))
-                .where(
-                    SalesOrder.status != "cancelled",
-                    SalesOrder.customer_id.in_(ids),
-                )
-                .group_by(SalesOrder.customer_id)
-            )
-        ).all()
-        if at is not None
-    }
     # 与明细同一套筛法：未删除的客户档案。**只按 id 取，不按建档时间取** ——
     # 那样又把口径拉回"建档月"了。
     rows = (
@@ -163,7 +203,15 @@ async def new_customer_rows(
         )
     ).all()
     return [
-        (first_deal_month[int(cid)], owner_id, int(cid), name, deal_at.get(int(cid)))
+        (
+            first_deal_month[int(cid)],
+            owner_id,
+            int(cid),
+            name,
+            # 老快照（没冻日期）这里是 None —— 界面如实显示"未知"。
+            # 绝不回头查当前订单补一个日期：那正是 R07 的自相矛盾来源。
+            _deal_at_of(first_deal_detail.get(int(cid))),
+        )
         for cid, name, owner_id in rows
     ]
 
@@ -180,14 +228,18 @@ async def _freeze_basis(
     from app.core.database import SessionLocal
 
     async with SessionLocal() as own:
-        veteran_ids, first_deal_month = await _build_basis(own, year)
-        payload = {str(k): v for k, v in first_deal_month.items()}
+        veteran_ids, first_deal_month, first_deal_detail = await _build_basis(own, year)
+        month_payload = {str(k): v for k, v in first_deal_month.items()}
+        # 日期与来源订单跟月份**在同一个事务里一起落**（R07）：分开写就有机会
+        # 一半成功一半失败，留下"有月份没日期"的残档。
+        detail_payload = {str(k): v for k, v in first_deal_detail.items()}
         row = await own.get(BasisSnapshot, year)
         if row is None:
             row = BasisSnapshot(
                 year=year,
                 veteran_customer_ids=veteran_ids,
-                first_deal_month=payload,
+                first_deal_month=month_payload,
+                first_deal_detail=detail_payload,
                 metric_basis_version=BASIS_VERSION,
                 computed_at=datetime.now(UTC),
                 computed_by=operator_id,
@@ -198,7 +250,8 @@ async def _freeze_basis(
             return row
         else:
             row.veteran_customer_ids = veteran_ids
-            row.first_deal_month = payload
+            row.first_deal_month = month_payload
+            row.first_deal_detail = detail_payload
             row.metric_basis_version = BASIS_VERSION
             row.computed_at = datetime.now(UTC)
             row.computed_by = operator_id
@@ -216,8 +269,12 @@ async def _freeze_basis(
 
 async def basis_for(
     session: AsyncSession, year: int, *, refreeze: bool = False, operator_id: int | None = None
-) -> tuple[list[int], dict[int, str], dict]:
+) -> tuple[list[int], dict[int, str], dict[int, dict], dict]:
     """取一年的基准，并说明它是否已冻结（§4.1.5）。
+
+    返回 `(老客池, 客户→归属月, 客户→首次成交日期与来源订单, 元信息)`。
+    第三项可能不完整：**旧版冻的快照没有日期**（R07 之前只冻了月份），
+    此时它是空 dict，调用方要如实显示"未知"，不要回头实时重算。
 
     边界刻意保守：**当年不冻结**——数据还在产生，冻了会冻在半路上；
     **过去年份**第一次被读取时冻结一次，之后一直用快照。管理员要改历史口径时
@@ -225,8 +282,8 @@ async def basis_for(
     """
     current_year = datetime.now(UTC).year
     if year >= current_year:
-        veteran_ids, first_deal_month = await _build_basis(session, year)
-        return veteran_ids, first_deal_month, {
+        veteran_ids, first_deal_month, first_deal_detail = await _build_basis(session, year)
+        return veteran_ids, first_deal_month, first_deal_detail, {
             "frozen": False,
             "frozen_at": None,
             "version": BASIS_VERSION,
@@ -238,6 +295,7 @@ async def basis_for(
     return (
         [int(x) for x in (snapshot.veteran_customer_ids or [])],
         {int(k): v for k, v in (snapshot.first_deal_month or {}).items()},
+        _detail_of_snapshot(snapshot),
         {
             "frozen": True,
             "frozen_at": snapshot.computed_at.isoformat() if snapshot.computed_at else None,
@@ -255,7 +313,9 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     )
     sales_owner = func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
     # 基准：老客池 + 首次成交。**过去年份读快照、当年实时算**（§4.1.5）
-    veteran_ids, first_deal_month, basis_meta = await basis_for(session, year)
+    veteran_ids, first_deal_month, _first_deal_detail, basis_meta = await basis_for(
+        session, year
+    )
 
     # ---- 签单：订单创建月 ----
     signed: dict[str, float] = {}
@@ -449,7 +509,7 @@ async def repeat_net_by_owner(
 
     # 期初老客池来自**同一份基准**（§4.1.5）：过去年份已冻结。两处各算一遍的话，
     # 冻结只管住一处、另一处照样漂移，等于没冻。
-    veteran_ids, _first_deal_month, _meta = await basis_for(session, year)
+    veteran_ids, _first_deal_month, _first_deal_detail, _meta = await basis_for(session, year)
     stmt = (
         select(
             func.extract("month", SalesOrder.created_at),

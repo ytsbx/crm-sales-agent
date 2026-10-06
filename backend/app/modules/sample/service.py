@@ -28,6 +28,33 @@ def _f(value) -> float | None:
     return None if value is None else round(float(value), 4)
 
 
+#: 制作依据的四种状态（R06，2026-10-06）。光看 `basis_files` 空不空是分不出
+#: "这块功能当时还没上线"和"登记的人明确没选"的——而这两件事在事后对账时
+#: 意义完全相反：前者是"当时没记，不可考"，后者是"有人做过一个判断，就是没有"。
+BASIS_STATE_LABEL = {
+    "not_made": "尚未登记制作完成",
+    "unknown": "历史未知（登记时系统还没有这个功能）",
+    "none": "登记时明确未选",
+    "specified": "已指定依据",
+}
+
+
+def basis_state(request: SampleRequest) -> str:
+    """制作依据处于哪种状态（`BASIS_STATE_LABEL` 的键）。
+
+    - `not_made`：还没登记制作完成 —— 这时候问"依据是什么"本来就无从谈起；
+    - `unknown`：制作完成了，但 `basis_files` 是 NULL —— 那是**功能上线前**的老单，
+      当时这个字段根本不存在。是"当时没记"，不是"当时没有"；
+    - `none`：登记的人**明确没选**任何依据（存的是空列表，是一次真实的判断）；
+    - `specified`：指定了依据。
+    """
+    if request.basis_files:
+        return "specified"
+    if request.basis_files is None:
+        return "unknown" if request.made_at else "not_made"
+    return "none"
+
+
 def serialize_item(item: SampleItem, sku: Sku | None = None) -> dict:
     source = item.source_snapshot
     return {
@@ -79,6 +106,7 @@ def serialize_request(
     shipments: list[dict] | None = None,
     superseded_by: int | None = None,
 ) -> dict:
+    basis = basis_state(request)
     return {
         "id": request.id,
         # 修订版（§3.3）：第几版、取代了谁、又被谁取代（superseded_by 有值即冻结只读）。
@@ -116,9 +144,17 @@ def serialize_request(
         "sample_fee": _f(request.sample_fee),
         "production_owner_id": request.production_owner_id,
         # 制作依据（2026-10-06）：登记制作完成时指定的那几份文件（含 sha256）。
-        # 空列表 = 这一单当时没指定依据（老数据都是这样），**不是"没有依据"**——
-        # 界面要说清这个区别，不能让空值看起来像"查过了，没有"。
-        "basis_files": request.basis_files or [],
+        #
+        # **这三个值不能混为一谈**（R06，2026-10-06 修）：
+        #   None  = 功能上线前就制完的老单 —— 「历史未知」；
+        #   []    = 登记时**明确没选**依据 —— 是一次真实的判断；
+        #   [...] = 指定的那几份。
+        # 此前一律 `or []` 下发，把"历史未知"抹成了"明确没选"，
+        # 前端只能写"登记时未指定"——等于替老数据作了判断。
+        "basis_files": request.basis_files,
+        # 给一个现成的判据，免得各处自己拿 `made_at` / 空列表去猜（见 `basis_state`）
+        "basis_state": basis,
+        "basis_state_label": BASIS_STATE_LABEL[basis],
         "made_at": request.made_at.isoformat() if request.made_at else None,
         # 制作事件（结构化）：幂等的依据在这里；remark 只是给人看的展示文本
         "made_events": request.made_events or [],

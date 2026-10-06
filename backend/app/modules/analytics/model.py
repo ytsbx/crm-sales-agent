@@ -106,6 +106,16 @@ class BasisSnapshot(Base):
     year: Mapped[int] = mapped_column(Integer, primary_key=True)
     veteran_customer_ids: Mapped[list] = mapped_column(JSONType, default=list)
     first_deal_month: Mapped[dict] = mapped_column(JSONType, default=dict)
+    #: **首次成交的具体日期与来源订单**（R07，2026-10-06）：
+    #: `{客户id: {"at": ISO 时间, "order_id": 订单id}}`。
+    #:
+    #: 为什么单开一列、不塞进 `first_deal_month`：那一列的值是 `"YYYY-MM"` 这种
+    #: 纯字符串，改成对象会让所有读它的地方（口径页、下钻、报表）都得跟着改。
+    #:
+    #: **NULL / 缺项 = 这份快照是旧版冻的，日期不可考。** 读的时候要如实说"未知"，
+    #: 不能回头拿当前订单重算 —— 原首单被取消后，重算出来的日期会跳到下一张单，
+    #: 与已经冻结的归属月份自相矛盾（"计入一月的新客、首次成交日期显示三月"）。
+    first_deal_detail: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     #: 冻结时用的口径版本：与 `target_bases`/`targets` 的版本号同一套，
     #: 口径改了就能看出这份快照是哪一版算出来的
     metric_basis_version: Mapped[str] = mapped_column(String(64))

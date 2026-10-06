@@ -850,6 +850,13 @@ async def register_sample_made(
             }
             for fid in basis_ids
         ]
+    elif sample.basis_files is None:
+        # **明确没选，也要留痕**（R06，2026-10-06 修）。此前不选就什么都不写，
+        # 结果"登记的人明确没选依据"和"功能上线前的老单"在库里长得一模一样
+        # （都是 NULL），界面分不出来，只能含糊成"登记时未指定"——
+        # 既冤枉了老数据（当时根本没得选），也抹掉了登记人做过的那个判断。
+        # 写一个空列表把这次判断记下来：[] 与 NULL 是两件事。
+        sample.basis_files = []
     if note:
         # 备注只负责展示：拼成可读文本。**删掉它也不影响上面的幂等判断**。
         prefix = f"{sample.remark}\n" if sample.remark else ""

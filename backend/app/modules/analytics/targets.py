@@ -1057,7 +1057,9 @@ async def drilldown(
             items.append(_row("customer", cid, name, owner_id, 0.0, deal_at))
 
     else:  # repeat_net
-        veterans, _first_deal, _meta = await target_bases.basis_for(session, year)
+        veterans, _first_deal, _first_deal_detail, _meta = await target_bases.basis_for(
+            session, year
+        )
         stmt = select(
             SalesOrder.id, SalesOrder.order_no, sales_owner,
             SalesOrder.total_amount, SalesOrder.created_at,

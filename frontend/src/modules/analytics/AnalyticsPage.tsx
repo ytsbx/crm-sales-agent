@@ -1043,7 +1043,11 @@ export default function AnalyticsPage() {
               title: '时间',
               dataIndex: 'date',
               width: 150,
-              render: (v?: string | null) => v ?? '—',
+              // 新客行的日期取自**冻结快照**（R07）。旧版快照只冻了归属月份、
+              // 没冻日期，这里就是空的 —— 如实说「未记录」，不拿现在的订单
+              // 重算一个顶上（那正是自相矛盾的来源：归属一月、日期跳三月）。
+              render: (v?: string | null, r?: { record_type?: string }) =>
+                v ?? (r?.record_type === 'customer' ? '未记录' : '—'),
             },
           ]}
           dataSource={drilldownQuery.data?.items ?? []}

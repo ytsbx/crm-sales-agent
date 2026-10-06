@@ -127,7 +127,7 @@ async def refreeze_sales_target_bases(
         raise AppError(
             ErrorCode.PARAM_ERROR, "当年数据仍在产生，实时计算即可，不需要冻结", 422
         )
-    veteran_ids, first_deal_month, meta = await target_bases.basis_for(
+    veteran_ids, first_deal_month, _first_deal_detail, meta = await target_bases.basis_for(
         session, year, refreeze=True, operator_id=user.id
     )
     await write_audit(

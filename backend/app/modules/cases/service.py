@@ -307,6 +307,46 @@ async def sync_evidences(
     await session.flush()
 
 
+async def clone_evidences(
+    session: AsyncSession, *, source_case_id: int, target: SalesCase
+) -> int:
+    """把一份案例的证据引用**原样搬**到另一份（开修订稿用），返回搬了几条。
+
+    为什么不复用 `sync_evidences`：那条路要按**发起人的数据范围**逐条复验可见性。
+    开修订稿是"同一份内容的复制"，原案例当初已经校验过一次；再拿发起人的范围量一遍，
+    只要范围没有完全覆盖原范围就会误拦（同事的客户里挂的订单，主管来开修订稿就报错）。
+    这里只做无条件的原样搬移，不引入新的判断。
+
+    `label` / `note` 一并搬 —— 那是作者写在证据上的说明，属于内容的一部分。
+    """
+    rows = (
+        await session.execute(
+            select(CaseEvidence).where(CaseEvidence.case_id == source_case_id)
+        )
+    ).scalars().all()
+    by_kind: dict[str, int] = {}
+    for row in rows:
+        session.add(
+            CaseEvidence(
+                case_id=target.id,
+                kind=row.kind,
+                business_id=row.business_id,
+                label=row.label,
+                note=row.note,
+                created_at=datetime.now(UTC),
+            )
+        )
+        by_kind.setdefault(row.kind, row.business_id)
+    # 旧字段与证据表保持一致（同 `sync_evidences` 的纪律：两个读法给同一份证据）。
+    # 只在该类别**确实搬到了**证据时覆盖；一类都没搬到就保留上面 `fields` 带过来的原值，
+    # 不要把它清成 None（那些是还没跑迁移、只写了旧字段的环境）。
+    for kind, field in LEGACY_EVIDENCE_FIELDS.items():
+        if kind in by_kind:
+            setattr(target, field, by_kind[kind])
+    await session.flush()
+    return len(rows)
+
+
 async def validate_evidences(
     session: AsyncSession,
     *,
@@ -319,13 +359,47 @@ async def validate_evidences(
     逐条走对应模块的**可见性取单**（不存在/不在范围 → 404 或 403），
     再核对与本案例是同一个客户。多条之后多一件事：**同一条不许挂两遍**。
     """
-    valid = [
-        item
-        for item in evidences
-        if item.get("kind") in CASE_EVIDENCE_KINDS and item.get("business_id") is not None
-    ]
-    if not valid:
+    # **明确传空列表 = "这一版不挂任何证据"**，是合法清空，直接放行（R04 要求把
+    # "用户明确清空"和"提交里有脏数据"分开对待）。
+    if not evidences:
         return
+    # 非法项**整笔拒绝**（R04，2026-10-06 修）。此前是"过滤掉非法项、只校验合法的"，
+    # 于是传一个不认识的 kind 时 `valid` 为空、直接 return 放行；而调用方
+    # `sync_evidences` 是"先删干净、再逐条插入"——被过滤掉的那些既没插进去、
+    # 原有证据又已经被删，**一次带脏数据的提交就把整份证据清空了**。
+    # 证据是决策依据，宁可报错让人改正，也不能静默抹掉。
+    for item in evidences:
+        raw_kind = item.get("kind")
+        kind = str(raw_kind or "").strip()
+        if kind not in CASE_EVIDENCE_KINDS:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"证据类型「{raw_kind}」不认识，只能从这几类里选："
+                + "、".join(CASE_EVIDENCE_KINDS.values()),
+                422,
+            )
+        raw_id = item.get("business_id")
+        if raw_id is None:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"{CASE_EVIDENCE_KINDS[kind]} 没给单据编号，不能作为证据挂上来",
+                422,
+            )
+        try:
+            number = int(raw_id)
+        except (TypeError, ValueError):
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"{CASE_EVIDENCE_KINDS[kind]} 的单据编号「{raw_id}」不是有效编号",
+                422,
+            ) from None
+        if number < 1:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"{CASE_EVIDENCE_KINDS[kind]} 的单据编号「{number}」不是有效编号",
+                422,
+            )
+    valid = list(evidences)
     if customer_id is None:
         raise AppError(
             ErrorCode.PARAM_ERROR, "挂了证据单据就必须先选定客户（否则无法核对是否同一客户）", 422
@@ -881,4 +955,9 @@ async def revise_case(session: AsyncSession, *, case: SalesCase, user) -> SalesC
     )
     session.add(revision)
     await session.flush()
+    # 证据引用一并复制（R04，2026-10-06 修）。上面 `fields` 只带了四个**旧字段**，
+    # 每个类别顶多一条；新表里的多条证据（两张报价、三张订单）此前**一条都不会跟过来**。
+    # 而修订稿是要**替换**原版的，批准之后原版那批引用就等于被一次性抹掉了 ——
+    # 修订的初衷只是改内容，不该顺手删证据。
+    await clone_evidences(session, source_case_id=case.id, target=revision)
     return revision

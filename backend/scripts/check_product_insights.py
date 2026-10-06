@@ -164,6 +164,28 @@ async def main():
         check("上一轮的评审意见保留（新一轮评审有参考）",
               reopened["review_note"] == "通过", reopened["review_note"])
 
+        # R05（2026-10-06）：**自动重审也要留"这一轮报的是什么"**。
+        # 此前只有手动点「提交评审」那条路写轮次记录，自动退回这条路只把
+        # `review_round` 加一 —— 事后翻评审记录，第二轮只有结论，
+        # 答不出"这一轮报的到底是哪一份内容"。
+        status, rounds = call(
+            "GET", f"/product-insights/{frozen_target['id']}/rounds", token=zhaoliu
+        )
+        check("能读到逐轮记录", status == 200, f"HTTP {status} {rounds}")
+        entries = rounds.get("data") or []
+        second = next((r for r in entries if r.get("round") == 2), None)
+        check("第 2 轮有记录（旧写法：这一轮根本没有行）",
+              second is not None, str(entries)[:160])
+        if second is not None:
+            snapshot = second.get("content") or {}
+            check("第 2 轮记下了提交人", second.get("submitted_by") is not None,
+                  str(second.get("submitted_by")))
+            check("第 2 轮记下了提交时间", bool(second.get("submitted_at")),
+                  str(second.get("submitted_at")))
+            check("第 2 轮存了内容快照", bool(snapshot), str(snapshot)[:120])
+            check("快照是**改后**的内容（不是上一轮那份）",
+                  snapshot.get("direction") == "改成新方向", str(snapshot.get("direction")))
+
         print("=== 3. 字段校验与 null 清空 ===")
         status, result = call("POST", "/product-insights", token=zhaoliu,
                               body={"title": "   "})

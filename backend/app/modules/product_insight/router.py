@@ -491,6 +491,13 @@ async def update_insight(
         # review_note 故意保留：上一轮的评价对新一轮评审有参考价值
         # （与打样保留 reject_reason 同一个理由）
         reopened = True
+        # **自动重审也要留提交快照**（R05，2026-10-06 修）。
+        # 退回重审本身就是一次"重新提交"，但此前只有手动点「提交评审」那条路
+        # 会写轮次记录，这条自动的路只把 `review_round` 加了 1 ——
+        # 事后翻评审记录，第二轮只有审批结论、答不出"这一轮报的到底是哪一份内容"。
+        # 与 `submit_insight` 共用同一个 `_record_round_submit`，口径完全一致
+        # （同一事务、同一份 `_content_snapshot` 口径），不另起一套写法。
+        await _record_round_submit(session, row=row, user=user, when=datetime.now(UTC))
 
     await write_audit(
         session,

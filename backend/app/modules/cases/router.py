@@ -186,19 +186,38 @@ async def update_case(
             ],
         )
     elif any(field in changed_fields for field in LEGACY_EVIDENCE_FIELDS.values()):
-        # 老调用方直接改 `quote_id` 这类旧字段：把它们当成证据列表同步一次。
-        # **只在旧字段真的被改时**才同步 —— 否则一次改标题的 PATCH 会把
-        # 通过新接口挂上的多条证据截断成"每类第一条"。
-        await svc.sync_evidences(
-            session,
-            case=case,
-            user=user,
-            evidences=[
-                {"kind": kind, "business_id": getattr(case, field)}
-                for kind, field in LEGACY_EVIDENCE_FIELDS.items()
-                if getattr(case, field) is not None
-            ],
-        )
+        # 老调用方直接改 `quote_id` 这类旧字段：**只重建被改的那一类**，
+        # 其他类别原样保留（R04，2026-10-06 修）。
+        #
+        # 此前是"照旧字段把整个证据列表重建一遍"：改一个 `quote_id`，`order` /
+        # `sample` / `opportunity` 三类也被一起重写成"每类第一条" ——
+        # 通过新接口挂上的第二、第三张订单就这么被截掉了。旧字段本来就每类只有一条，
+        # 它只该管自己那一类，不该顺手清理别人。
+        #
+        # "只在旧字段真的被改时才同步"这条纪律保留：否则一次改标题的 PATCH
+        # 会把多条证据截断成每类第一条。
+        changed_kinds = {
+            kind
+            for kind, field in LEGACY_EVIDENCE_FIELDS.items()
+            if field in changed_fields
+        }
+        current = (await svc.load_evidences(session, [case.id])).get(case.id, [])
+        merged = [
+            {
+                "kind": row.kind,
+                "business_id": row.business_id,
+                # label / note 是作者写在证据上的说明，未改动的类别要原样带着走
+                "label": row.label,
+                "note": getattr(row, "note", None),
+            }
+            for row in current
+            if row.kind not in changed_kinds
+        ]
+        for kind in changed_kinds:
+            value = getattr(case, LEGACY_EVIDENCE_FIELDS[kind])
+            if value is not None:
+                merged.append({"kind": kind, "business_id": value})
+        await svc.sync_evidences(session, case=case, user=user, evidences=merged)
     else:
         # 证据没动，但仍要校验**当前**的这一批：换了客户之后，
         # 原来那几张单据可能已经不属于新客户了
