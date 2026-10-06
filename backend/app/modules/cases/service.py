@@ -145,12 +145,22 @@ def serialize_case(
             if kind not in hidden_evidence:
                 hidden_evidence.append(kind)
             continue
+        # **证据标签也要脱敏**（2026-10-06 修 R01）：标签是作者手写的自由文本，
+        # 写「某某集团 138… 成本 12 元」是常事。此前只有正文/标题/审核意见走脱敏，
+        # 标签原样下发——正文遮得严严实实，证据那一行的客户全名照样露着。
+        # 规则与其它自由文本完全相同：先抹金额/联系方式，再把客户全称换成代称。
+        item_label = row.label
+        if share_view and item_label:
+            item_label, label_hits = redaction.mask_text(item_label)
+            for hit_label, count in label_hits.items():
+                counters[hit_label] = counters.get(hit_label, 0) + count
+            item_label = _replace_customer_name(item_label)
         evidence_items.append(
             {
                 "kind": kind,
                 "kind_label": CASE_EVIDENCE_KINDS[kind],
                 "business_id": row.business_id,
-                "label": row.label,
+                "label": item_label,
             }
         )
 

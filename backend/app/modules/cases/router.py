@@ -144,7 +144,12 @@ async def update_case(
     user: CurrentUser = Depends(require_permission("quote:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    case = await svc.get_case_or_404(session, case_id)
+    # 行锁 + 锁内重读（R02，2026-10-06）：并发审核可能刚好把这条发布掉。
+    # 此前这里是 `get_case_or_404`（无锁），状态判完就直接写 —— 编辑请求停留期间
+    # 主管把它审过发了，旧编辑仍会覆盖已发布正文（`_apply_update` 只写叙述列、
+    # 不写 status，"已发布"这个状态保留着，正文却已经换了）。
+    # 与 submit / review 用同一把锁：**凡是会改案例的动作都从同一个加锁入口进**。
+    case = await svc._lock_case(session, case_id)
     is_author = case.author_id == user.id
     if not is_author and not svc.is_reviewer(user):
         _forbid("只有作者或主管能修改案例")

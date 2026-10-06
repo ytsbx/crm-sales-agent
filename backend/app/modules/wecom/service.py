@@ -1355,6 +1355,27 @@ async def retry_transfer(
     }
 
 
+async def _lock_business_row(session: AsyncSession, model, row_id: int):
+    """按 id 锁住一条**实际业务记录**并返回库里的最新值（R10(b)，2026-10-06 修）。
+
+    重试此前只锁了交接任务（`wecom_sync_jobs`）和逐项结果（`wecom_transfer_items`），
+    那两张表**挡不住"别人同时在任务/订单模块里改派"** —— 那些代码路径根本不碰
+    这两张表，锁了等于没锁。锁住业务行之后，重试走到这里读到的才是真正的
+    当前责任人，下面 `_conflict` 的判据也才有了意义。
+
+    `populate_existing=True` 不能省：本项目 session 是 `expire_on_commit=False`，
+    不加这句拿回来的可能是 identity map 里的旧对象（这个坑在案例那边踩过）。
+    """
+    return (
+        await session.execute(
+            select(model)
+            .where(model.id == row_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+
+
 async def _retry_move_crm(
     session: AsyncSession, *, item: WeComTransferItem, handover: User, takeover: User
 ) -> bool:
@@ -1381,8 +1402,21 @@ async def _retry_move_crm(
     owner = item.to_owner_id
     if owner is None:
         return False
+    # **接手人必须存在且在职**（R10(a)，2026-10-06 修）：首次执行时校验过，但重试
+    # 可能发生在几天之后，那时接手人已经停用。此前只有客户类（走 transfer_customer，
+    # 它自己会拦）和企微关系类是安全的 —— 待办/商机/打样/订单/订单草稿这 5 类
+    # 会把活**直接转给一个已停用的人**，转完还没人发现。
+    owner_user = await session.get(User, owner)
+    if owner_user is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"接手人 id={owner} 不存在", 404)
+    if owner_user.status != "active":
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"接手人「{owner_user.name}」已停用，不能接收交接",
+            422,
+        )
     if item.kind == "customer":
-        customer = await session.get(Customer, item.business_id)
+        customer = await _lock_business_row(session, Customer, item.business_id)
         if customer is None or customer.deleted_at is not None:
             return False
         if customer.owner_id is not None and customer.owner_id != handover.id:
@@ -1395,7 +1429,7 @@ async def _retry_move_crm(
         )
         return True
     if item.kind == "opportunity":
-        row = await session.get(Opportunity, item.business_id)
+        row = await _lock_business_row(session, Opportunity, item.business_id)
         if row is None or row.deleted_at is not None:
             return False
         if row.owner_id is not None and row.owner_id != handover.id:
@@ -1403,7 +1437,7 @@ async def _retry_move_crm(
         row.owner_id = owner
         return True
     if item.kind == "task":
-        row = await session.get(Task, item.business_id)
+        row = await _lock_business_row(session, Task, item.business_id)
         if row is None:
             return False
         if row.owner_id is not None and row.owner_id != handover.id:
@@ -1411,7 +1445,7 @@ async def _retry_move_crm(
         row.owner_id = owner
         return True
     if item.kind == "sample":
-        row = await session.get(SampleRequest, item.business_id)
+        row = await _lock_business_row(session, SampleRequest, item.business_id)
         if row is None:
             return False
         if row.owner_id is not None and row.owner_id != handover.id:
@@ -1419,7 +1453,7 @@ async def _retry_move_crm(
         row.owner_id = owner
         return True
     if item.kind == "sample_production":
-        row = await session.get(SampleRequest, item.business_id)
+        row = await _lock_business_row(session, SampleRequest, item.business_id)
         if row is None:
             return False
         if (
@@ -1430,7 +1464,7 @@ async def _retry_move_crm(
         row.production_owner_id = owner
         return True
     if item.kind == "order":
-        row = await session.get(SalesOrder, item.business_id)
+        row = await _lock_business_row(session, SalesOrder, item.business_id)
         if row is None:
             return False
         if row.owner_id is not None and row.owner_id != handover.id:
@@ -1438,7 +1472,7 @@ async def _retry_move_crm(
         row.owner_id = owner
         return True
     if item.kind == "order_draft":
-        row = await session.get(OrderDraft, item.business_id)
+        row = await _lock_business_row(session, OrderDraft, item.business_id)
         if row is None:
             return False
         if row.owner_id is not None and row.owner_id != handover.id:
@@ -1521,6 +1555,8 @@ async def _retry_move_wecom(
             relation.status = "transferred"
             item.wecom_status = "transferred"
             item.wecom_error = None
+            # 同上：确认了外部事实就先落库，后面补跟进关系失败也不影响它
+            await session.commit()
             await _ensure_takeover_relation(session, contact=contact, owner=owner)
             return True
 
@@ -1537,6 +1573,15 @@ async def _retry_move_wecom(
     relation.status = "transferred"
     item.wecom_status = "transferred"
     item.wecom_error = None
+    # **外部已发生的事实立刻落库**（R10(c)，2026-10-06 修）：企微那边一旦转过去
+    # 就收不回来。此前重试全程只有一个外层 commit，中间任何一步抛异常都会把
+    # "已经转过去了"跟着回滚 —— 本地永远记着"没转"，下次重试得靠
+    # `get_follow_users` 复核才补得回来（进程中断就彻底对不上）。
+    # 首次执行路径早就是这么分段的（先 commit 外部结果，再做 CRM 变更），
+    # 这里补齐同样的纪律。
+    # ⚠️ 必须放在**补跟进关系之前**：补关系那步自己也可能出错，
+    # 而它出错不该把已经发生的外部转接一起带走。
+    await session.commit()
     # 接手人名下补一条跟进关系 —— **与首次执行共用同一段逻辑**（第 11 条）：
     # 此前重试只把原关系标成已转接，不补接手人的关系，
     # 于是"重试成功"之后接手人在列表里看不到这个客户。

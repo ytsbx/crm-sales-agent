@@ -30,8 +30,17 @@ Create Date: 2026-10-06
 ## 存量数据
 
 建索引前先处理历史遗留的重复版本：同一 `(revision_of_id, version)` 只保留
-**id 最小**的那条，其余转 `superseded`（**不删** —— 删除会让发生过的事失去痕迹，
-而 superseded 状态本来就表示"不是当前版本、内容仍可读"）。
+**id 最小**的那条，其余**软删**（`deleted_at = now()`）。
+
+> 2026-10-06 修正（R03）：原实现是把重复行转 `superseded` 保留可读，但那有两处错——
+> 唯一索引的条件里没有 status，转状态并不能让它们退出索引（索引仍建不起来）；
+> 而且这些重复行是并发 bug 产生的副本、原本多为草稿，转 superseded 等于
+> 替没审核过的东西伪造一段发布历史。改为软删：数据仍可查可恢复，
+> 但不占索引、也不进任何正常视图。
+>
+> 验收要求：**必须用"已经存在重复版本数据"的库跑这条迁移**，
+> 空库升级通过不算数（空库走不到 UPDATE 分支，看不出索引会不会撞）。
+
 线上这套数据目前是空的（案例与洞察都是 0 条），这段主要为已有环境的库兜底。
 """
 
@@ -73,10 +82,20 @@ def upgrade() -> None:
     )
 
     # ---- 案例：同一原版同一版本号只允许一条未删除记录 ----
-    # 先给存量重复"降级"（保留 id 最小的那条），否则索引建不起来
+    # ⚠️ 2026-10-06 修正（R03）：此前这里写的是
+    #   `UPDATE sales_cases SET status = 'superseded' WHERE ... rn > 1`，
+    # 有两个问题，导致「降级」这一步实际没起作用：
+    #   ① 唯一索引的 WHERE 是 `revision_of_id IS NOT NULL AND deleted_at IS NULL`
+    #      —— **不含 status**。被标成 superseded 的行依旧落在索引范围内，
+    #      CREATE UNIQUE INDEX 照样报 duplicate key，迁移直接失败（等于没修）。
+    #   ② 这些重复行是并发 bug「各建一份」的**副本**，原本多是 draft；
+    #      转成 superseded 会让它们摇身变成「可公开阅读的历史版本」，
+    #      等于替一份没审核过的东西伪造了一段发布历史。
+    # 改成 **软删**（deleted_at）：一行数据都不丢（仍可查、可恢复），
+    # 但退出唯一索引、也不再出现在任何正常视图里。
     op.execute(
         """
-        UPDATE sales_cases SET status = 'superseded'
+        UPDATE sales_cases SET deleted_at = now()
         WHERE id IN (
             SELECT id FROM (
                 SELECT id, row_number() OVER (
