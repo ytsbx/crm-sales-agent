@@ -685,6 +685,25 @@ async def change_status(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """更新订单的**履约**状态（待生产 / 生产中 / 已发货 / 已签收 / 已完成）。
+
+    ⚠️ **不接受 `cancelled`**（2026-10-06 收口）：把状态改成"已取消"看起来只是
+    改一个字段，但取消订单要连带处理钱和账 —— 专用接口 `POST /orders/{id}/cancel`
+    会做四件事：已确认回款直接拒绝取消、待确认回款随单驳回、未回清的应收计划
+    置为 `cancelled` 以停止催收、未发货批次随单取消。
+
+    之前前端把这个下拉里也放了"已取消"，等于告诉用户"这也是一种状态"，
+    点下去却只改了状态位：订单显示已取消，**催收和逾期提醒照旧发**，
+    已收到钱的订单也能取消。所以这里从服务端也堵一道 —— 换个入口也绕不过去，
+    规则只认一个出口。
+    """
+    if payload.status == "cancelled":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "取消订单会连带作废应收计划、驳回待确认回款，请走「取消订单」"
+            "（POST /orders/{id}/cancel），不要用更新履约状态代替",
+            422,
+        )
     # 状态切换先锁整单：与"登记发货"并发时，两边都必须串行化，
     # 否则同一时刻可能既取消成功又发货成功（第一批返修 §3.5）。
     order = await svc.get_visible_order(session, user, order_id, for_update=True)
@@ -701,7 +720,12 @@ async def change_status(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_order(order), f"已更新为「{ORDER_STATUS_LABEL.get(payload.status)}」")
+    # 文案带上订单号：这句话是全局浮层，用户切到别的页面还会挂几秒，
+    # 只写"已更新为「已发货」"根本对不上是哪个订单。
+    return ok(
+        svc.serialize_order(order),
+        f"{order.order_no} 的履约状态已更新为「{ORDER_STATUS_LABEL.get(payload.status)}」",
+    )
 
 
 @router.post("/orders/{order_id}/cancel")

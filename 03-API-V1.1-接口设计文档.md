@@ -1029,7 +1029,13 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 
 ## 41.9 订单（orders）
 
-- `POST /orders/{order_id}/status`：变更订单状态。需要 `order:manage`。
+- `POST /orders/{order_id}/status`：变更订单**履约**状态（待生产 / 生产中 / 已发货 / 已签收 / 已完成）。需要 `order:manage`。
+  **不接受 `status=cancelled` → 422**（2026-10-06 收口）：把状态改成"已取消"看起来只是改一个字段，但取消订单要连带处理钱和账，必须走下面的 `POST /orders/{id}/cancel`。此前前端把这个下拉里也放了"已取消"，走那条路**只改状态位** —— 订单显示已取消、催收与逾期提醒却照旧发，已收到钱的订单也能取消。现在服务端也堵一道，**换个入口同样绕不过去**。
+  成功提示带订单号（`{order_no} 的履约状态已更新为「…」`）：提示是全局浮层，用户切到别的页面还会挂几秒，没有主语就对不上是哪个订单。
+- `POST /orders/{order_id}/cancel`：**取消订单**（不可逆的终态动作）。需要 `order:manage`，并校验数据范围。
+  四条连带规则（默认口径，要改先改 `order/router.py`）：① 已有**已确认**回款 → **422 拒绝取消**（钱不能随订单静默作废，先人工处理回款）；② **待确认**回款 → 随订单一并驳回（原因写进凭证备注）；③ **未回清**的应收计划 → 置 `cancelled`，**不再派催收/逾期提醒**；④ 未发货的批次 → 随单取消（已发货的批次是既成事实，保留）。
+  商机成交状态**不自动回退**：成交是已发生的商业事实，撤销成交走 `POST /opportunities/{id}/lose` 由人工评估（这条也写进审计）。
+  先锁整单再改：与"登记发货"并发时只能有一个成功。前端入口是订单详情页的**「取消订单」按钮**（独立确认弹窗，列出上述连带影响），不在"更新履约状态"的下拉里。
 - `GET /orders/{order_id}/finance-summary`：财务汇总。需要 `payment:view`。
 - `POST /orders/{order_id}/receivables`：新增手动应收计划。需要 `payment:manage`。
 - `POST /orders/{order_id}/receivables/generate`：按比例生成应收计划（如 30% 定金 + 70% 尾款）。需要 `payment:manage`。

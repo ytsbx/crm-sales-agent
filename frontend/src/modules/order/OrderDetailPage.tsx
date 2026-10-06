@@ -6,6 +6,7 @@ import FormLabel from '../../shared/components/FormLabel'
 import type { TagTone } from '../../shared/types'
 
 import {
+  cancelOrder,
   cancelOrderShipment,
   changeOrderStatus,
   confirmPayment,
@@ -95,6 +96,9 @@ export default function OrderDetailPage() {
   const [activeKey, setActiveKey] = useState('items')
   const [statusVisible, setStatusVisible] = useState(false)
   const [targetStatus, setTargetStatus] = useState<string | null>(null)
+  //: 取消订单是**不可逆的终态动作**，单独一个确认弹窗把影响讲清楚
+  //: （见下面「取消订单」那个 Modal）。
+  const [cancelVisible, setCancelVisible] = useState(false)
   const [generateVisible, setGenerateVisible] = useState(false)
   const [generateDates, setGenerateDates] = useState<{ first?: Date; second?: Date }>({})
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
@@ -278,8 +282,31 @@ export default function OrderDetailPage() {
   const statusMutation = useMutation({
     mutationFn: () => changeOrderStatus(orderId, targetStatus!, '在订单详情页更新'),
     onSuccess: (result) => {
-      Toast.success(`已更新为「${result.status_label}」`)
+      // 文案要说清**是什么对象**变了，不能只写"已更新为「已发货」"——
+      // 提示是全局浮层，用户切到别的页面它还会挂几秒，没有主语就完全对不上号。
+      Toast.success(`${result.order_no} 的履约状态已更新为「${result.status_label}」`)
       setStatusVisible(false)
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  /**
+   * **取消订单**（不可逆的终态动作）。
+   *
+   * 这里必须走 `cancelOrder`（`POST /orders/{id}/cancel`）而不是把履约状态
+   * 改成 `cancelled` —— 两者后果差很远：专用接口会同步处理回款与应收
+   * （已有确认回款直接拒绝取消、待确认回款随单驳回、未回清的应收计划置为
+   * 已取消以停止催收、未发货批次随单取消）。走"更新履约状态"那条路，
+   * 上面这些**一件都不会发生**，会留下"订单已取消但催收照发"的脏账。
+   */
+  const cancelMutation = useMutation({
+    mutationFn: () => cancelOrder(orderId),
+    onSuccess: (result) => {
+      Toast.success(
+        `${result.order_no} 已取消；未回清的应收计划已一并作废，不再发催收提醒`,
+      )
+      setCancelVisible(false)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -534,7 +561,21 @@ export default function OrderDetailPage() {
         extra={
           canManage && (
             <>
-              <Button onClick={() => setStatusVisible(true)}>更新履约状态</Button>
+              {/* 已取消是**终态**，状态不能再改、也不能再取消：
+                  入口留着只会让人点了必然失败（后端会拒），所以两个都不给。
+                  改状态一直要给，是因为履约状态本来就是逐段推进的。 */}
+              {order.status !== 'cancelled' && (
+                <>
+                  <Button onClick={() => setStatusVisible(true)}>更新履约状态</Button>
+                  {/* 取消订单**单独一个入口**，不混在"更新履约状态"的下拉里：
+                      它牵动回款与应收（作废应收计划、驳回待确认回款、取消计划批次），
+                      混进一个通用下拉，用户既不知道选下去会发生什么，
+                      也会绕过取消规则（已收到确认回款的订单本不该能取消）。 */}
+                  <Button type="danger" onClick={() => setCancelVisible(true)}>
+                    取消订单
+                  </Button>
+                </>
+              )}
               <Button onClick={() => syncMutation.mutate()} loading={syncMutation.isPending}>
                 推送 ERP/MES
               </Button>
@@ -1266,10 +1307,56 @@ export default function OrderDetailPage() {
             { value: 'shipped', label: '已发货' },
             { value: 'delivered', label: '已签收' },
             { value: 'completed', label: '已完成' },
-            { value: 'cancelled', label: '已取消' },
+            // 「已取消」**故意不在这里**：取消订单是不可逆的终态动作，
+            // 还要连带处理回款与应收，必须走右上角那个专门的「取消订单」。
+            // 放在这个下拉里，用户看不到后果，规则也会被绕过。
           ]}
           style={{ width: '100%' }}
         />
+      </Modal>
+
+      {/* 取消订单：把"取消到底会影响什么"写在确认之前 */}
+      <Modal
+        title="取消订单"
+        visible={cancelVisible}
+        onCancel={() => setCancelVisible(false)}
+        onOk={() => cancelMutation.mutate()}
+        confirmLoading={cancelMutation.isPending}
+        okText="确认取消订单"
+        cancelText="再想想"
+        okButtonProps={{ type: 'danger' }}
+      >
+        <div style={{ display: 'grid', gap: 10, fontSize: 13 }}>
+          <div>
+            即将取消订单 <b>{order.order_no}</b>
+            {order.customer_name ? `（${order.customer_name}）` : ''}， 金额{' '}
+            {moneyPrefix}
+            {order.total_amount.toLocaleString('zh-CN')}。
+            <b>取消不可撤销。</b>
+          </div>
+          <div>取消会连带做这几件事：</div>
+          <ul style={{ margin: 0, paddingLeft: 20, color: 'var(--crm-text-2)' }}>
+            <li>
+              未回清的应收计划
+              {(() => {
+                const open = (receivablesQuery.data ?? []).filter(
+                  (row) => row.status !== 'paid' && row.status !== 'cancelled',
+                ).length
+                return open ? `（当前 ${open} 笔）` : ''
+              })()}
+              → 一并作废，<b>不再发催收和逾期提醒</b>
+            </li>
+            <li>还在「待确认」的回款 → 随订单驳回</li>
+            <li>还没发货的发货批次 → 随订单取消（已发货的保留，那是既成事实）</li>
+          </ul>
+          <div style={{ color: 'var(--crm-caution, #b26a00)' }}>
+            这单如果已经收到过「已确认」的回款，系统会<b>直接拒绝取消</b> ——
+            钱不能跟着订单静默消失，请先人工处理回款。
+          </div>
+          <div style={{ color: 'var(--crm-text-3)' }}>
+            商机成交状态不会自动回退；确需撤销请走失单流程由人工评估。
+          </div>
+        </div>
       </Modal>
 
       <Modal
