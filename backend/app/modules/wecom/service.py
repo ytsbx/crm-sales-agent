@@ -1055,32 +1055,60 @@ async def transfer_relations(
     await session.commit()
 
     # 3) CRM 客户负责人（冻结的原样留着，等主管裁定）
+    #
+    # **逐项判"现在还是不是离职人的"**（第九批复审 P1，2026-10-07）：交接跑到这里
+    # 之前，同事完全可能已经把这个客户接走了（主管重新分配、日常转移、撞单裁定
+    # 都会）。此时必须**保留同事的归属**、把这一项记成"跳过"，而不是照旧改成
+    # 接管人 —— 那等于把人家刚接的活又抢走一次，还留下一条错误的归属历史。
+    #
+    # 判据在 `customer_service.transfer_customer` 的**客户行锁之内**（核验与变更
+    # 同一事务、同一把锁，见那边的注释）；这里只负责把"已不在交接范围内"翻译成
+    # 逐项状态。因为服务在**写入之前**就报错退出，这次客户转移附带的归属历史与
+    # 待办迁移都没有发生，单据搬运也不会跑到（`move_documents=False`）。
     customer_ids = [
         row["business_id"] for row in scope["customer"] if not row["blocked_reason"]
     ]
+    customers_moved = 0
+    customers_skipped = 0
     for customer_id in customer_ids:
         customer = await session.get(Customer, customer_id)
         if customer is None:
             _mark_crm("customer", customer_id, "skipped", "客户已不存在")
+            customers_skipped += 1
             continue
         owner = items[("customer", customer_id)].to_owner_id
         owner_name = items[("customer", customer_id)].to_owner_name
-        await customer_service.transfer_customer(
-            session, user, customer, owner,
-            f"离职继承：{handover.name} → {owner_name}",
-            # 离职交接是**系统自动改派**：撞单争议未结案时冻结，
-            # 否则一次交接就把争议客户的归属改成了既成事实（文档 §11.5 :279）
-            automatic=True,
-            # **只迁离职人的待办**：客户名下在职同事的活留着（业务方 2026-10-06 定）
-            only_from_owner_id=handover.id,
-            # 单据**不在这里搬**：离职交接支持逐项指定接手人（打样的跟单责任与
-            # 生产责任可以分别给两个人），单据由本函数下面那套逐项搬运处理。
-            # 这里若也整批搬一遍，会先按"客户接手人"改一轮、再被逐项指派覆盖，
-            # 而且 job 的逐项状态会全变成"跳过：负责人已改，不再是离职人"。
-            move_documents=False,
-        )
+        try:
+            await customer_service.transfer_customer(
+                session, user, customer, owner,
+                f"离职继承：{handover.name} → {owner_name}",
+                # 离职交接是**系统自动改派**：撞单争议未结案时冻结，
+                # 否则一次交接就把争议客户的归属改成了既成事实（文档 §11.5 :279）
+                automatic=True,
+                # **只迁离职人的待办**：客户名下在职同事的活留着（业务方 2026-10-06 定）；
+                # 它同时也是"这一项现在是否仍属离职人"的判据（第九批复审 P1）
+                only_from_owner_id=handover.id,
+                # 单据**不在这里搬**：离职交接支持逐项指定接手人（打样的跟单责任与
+                # 生产责任可以分别给两个人），单据由本函数下面那套逐项搬运处理。
+                # 这里若也整批搬一遍，会先按"客户接手人"改一轮、再被逐项指派覆盖，
+                # 而且 job 的逐项状态会全变成"跳过：负责人已改，不再是离职人"。
+                move_documents=False,
+            )
+        except AppError as error:
+            # 只认"已被别人接手"这一种冲突（40902）；别的错照旧往外抛
+            if error.code != ErrorCode.VERSION_CONFLICT:
+                raise
+            _mark_crm("customer", customer_id, "skipped", "客户已由其他同事接手")
+            customers_skipped += 1
+            continue
         _mark_crm("customer", customer_id, "moved")
-    detail["customers"] = len(customer_ids)
+        customers_moved += 1
+    # 汇总按**实际执行结果**记（第九批复审 P1）：`customers` 是真正交接成功的数，
+    # 被同事接走/客户已不存在的记在 `customers_skipped`，撞单冻结的记 frozen。
+    # 三者相加 = 本次盘点到的（未冻结）客户数，页面口径才对得上。
+    # 与重试那段重算出来的 `customers`（按 `crm_status == "moved"` 数）同一口径。
+    detail["customers"] = customers_moved
+    detail["customers_skipped"] = customers_skipped
     detail["customers_frozen"] = len(frozen_customer_ids)
 
     # 4) 商机负责人（只动 owner_id，created_by 保持原样）
@@ -1526,6 +1554,12 @@ async def retry_transfer(
     detail.update(
         {
             "customers": kind_counts.get("customer", 0),
+            # 跳过数也要跟着重算：它是首次执行写下的旧值，重试可能又判掉一两项
+            # （第九批复审 P1 的并发跳过），不重算页面就会挂着过期数字。
+            "customers_skipped": sum(
+                1 for i in all_items
+                if i.kind == "customer" and i.crm_status == "skipped"
+            ),
             "customers_frozen": crm_frozen,
             "opportunities": kind_counts.get("opportunity", 0),
             "tasks": kind_counts.get("task", 0),

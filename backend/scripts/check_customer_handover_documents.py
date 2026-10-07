@@ -44,7 +44,12 @@ seed 里的张三/李四不合用：李四是销售主管（本部门都看得�
 17. 两条交接路共用的类别名单不漂移（`DOCUMENT_KINDS` 对得上离职交接的名单，
     `DOCUMENT_KIND_LABEL` 覆盖全部类别）
 18. **离职交接首跑的逐项搬运**也是"带条件的更新"：同事中途接走的业务行与生成文件
-    都不被覆盖（直接测服务层那两个搬运函数，用行锁确定性复现）
+    都不被覆盖（直接测服务层那两个搬运函数，用行锁确定性复现。注意这一条只覆盖
+    "搬运辅助函数"，**客户那一格不在其中** —— 见下一条）
+19. **离职交接首跑真的会跳过被同事接手的客户**（第九批复审 P1）：调**完整**的
+    `transfer_relations()`（不是只测辅助函数）—— 交接进行中同事把客户接走，
+    客户留在同事手里、该项记「跳过：客户已由其他同事接手」、不新增归属历史、
+    也不执行这次客户转移附带的待办迁移；成功数/跳过数按实际结果汇总
 
 跑法：
 
@@ -162,6 +167,12 @@ async def cleanup() -> None:
             f"delete from tasks where customer_id in {cust}",
             f"delete from order_drafts where customer_id in {cust}",
             f"delete from customer_owner_history where customer_id in {cust}",
+            # 离职交接的首跑记录（第 9 段会真的调 `transfer_relations`）。
+            # **必须在删 users 之前**：`wecom_sync_jobs.operator_id` 引用 users，
+            # 顺序反了清理就中断、夹具留在库里被守门套件抓出来。
+            "delete from wecom_transfer_items where job_id in "
+            "(select id from wecom_sync_jobs where detail::text like :m)",
+            "delete from wecom_sync_jobs where detail::text like :m",
             "delete from customers where name like :p",
             # 生成的对客文件（本套件造的历史件，owner 都挂在三个夹具账号名下）。
             # **必须在删 users 之前**：biz_docs 引用用户，顺序反了清理就中断，
@@ -172,7 +183,9 @@ async def cleanup() -> None:
             "(select id from users where username like :u)",
             "delete from users where username like :u",
         ):
-            await s.execute(text(sql), {"p": f"{PREFIX}%", "u": f"{PREFIX.lower()}_%"})
+            await s.execute(
+                text(sql), {"p": f"{PREFIX}%", "m": f"%{PREFIX}%", "u": f"{PREFIX.lower()}_%"}
+            )
         await s.commit()
     # 显式收池：async 引擎的连接池绑在创建它的那个事件循环上，
     # 留着不关容易在别的脚本里报 "attached to a different loop"。
@@ -613,6 +626,200 @@ async def assert_handover_move_is_conditional(ids: dict) -> None:
         await s.commit()
 
 
+class _NoWeComCalls:
+    """这段夹具没有企微关系，所以**不该**发出任何企微转接。
+
+    真被调到就说明夹具造错了（多挂了企微关系），直接抛错比静默记账好 ——
+    本项目 `.env` 里有真实凭据，任何"以为不会被调、其实被调了"的口子都危险。
+    """
+
+    async def transfer_customer(self, **kwargs):  # pragma: no cover - 只做保险
+        raise AssertionError(f"这段交接不该发出企微转接：{kwargs}")
+
+
+async def assert_handover_first_run_skips_taken_customer() -> None:
+    """离职交接**首跑**：交接跑到一半，同事把客户接走了 —— 必须跳过，不许抢回来。
+
+    这一条**调完整的 `transfer_relations()`**（不是只测搬运辅助函数）。
+    复验里露出来的缺口恰恰是"辅助函数都带上条件了，客户那一格没有"：
+    只测辅助函数根本照不出来，必须走完整条流程。
+
+    **复现时序**（与复验里那段一致，用行锁做到确定性，不赌时序）：
+      ① 一个**未提交**的事务把客户改派给同事 C（握着客户那一行的写锁）；
+      ② 启动完整交接 —— 盘点时读到的还是旧负责人 A（C 还没提交），
+         执行到"改客户负责人"时会卡在客户行锁上；
+      ③ 确认交接**确实卡住**了，才让 C 提交；
+      ④ 交接继续执行：必须发现"这个客户现在不是离职人的了"，记成跳过。
+
+    断言（每一条在修好之前都会红）：
+      - 客户仍归同事 C（没有被交接覆盖成接管人 B）；
+      - 该项的 CRM 状态是 `skipped`、原因写明"已由其他同事接手"；
+      - **没有**新增一条客户归属历史（不该留下错误记录）；
+      - 成功数里**不含**这个客户，`customers_skipped` 记 1；
+      - 该客户名下、离职人的待办**照它自己那一格**走（指定给了第三个人）——
+        如果"客户转移附带的待办迁移"偷偷跑了，它会先被改成客户接管人，
+        于是第 5 步的带条件更新就会跳掉它，这条断言随即变红。
+    """
+    from app.core.deps import CurrentUser
+    from app.modules.customer.model import Customer, CustomerOwnerHistory
+    from app.modules.task.model import Task
+    from app.modules.user.model import User, user_roles
+    from app.modules.wecom.model import WeComSyncJob, WeComTransferItem
+
+    stamp = f"{STAMP}b"
+    async with SessionLocal() as s:
+        admin = (
+            await s.execute(select(User).where(User.username == "admin"))
+        ).scalars().first()
+        dept_id = (
+            await s.execute(text("select id from departments order by id limit 1"))
+        ).scalar_one_or_none()
+        role_id = (
+            await s.execute(text("select id from roles where code = 'salesperson'"))
+        ).scalar_one()
+
+        def make_user(tag: str, label: str) -> User:
+            return User(
+                username=f"{PREFIX.lower()}_{tag}_{stamp}", name=f"{PREFIX}{label}-{stamp}",
+                password_hash=hash_password(PASSWORD), status="active",
+                department_id=dept_id,
+            )
+
+        # 这一段的三个账号**单独造**（不复用上面那三个）：完整交领会把"离职人"
+        # 名下的东西**全量**扫一遍，共用账号会把前面几段的夹具一起搬走。
+        leaver = make_user("ho2", "首跑离职人")
+        taker = make_user("to2", "首跑接管人")
+        colleague = make_user("col2", "首跑同事")
+        s.add_all([leaver, taker, colleague])
+        await s.flush()
+        for user in (leaver, taker, colleague):
+            await s.execute(user_roles.insert().values(user_id=user.id, role_id=role_id))
+
+        customer = Customer(
+            name=f"{PREFIX}首跑客户-{stamp}", owner_id=leaver.id,
+            status="active", pool_status="private", level="A",
+        )
+        s.add(customer)
+        await s.flush()
+        task = Task(
+            customer_id=customer.id, title=f"{PREFIX}首跑待办-{stamp}",
+            owner_id=leaver.id, priority="normal", status="pending", source="manual",
+        )
+        s.add(task)
+        await s.flush()
+        ids = {
+            "admin": admin.id, "leaver": leaver.id, "taker": taker.id,
+            "colleague": colleague.id, "customer": customer.id, "task": task.id,
+        }
+        # 必须提交：接口/另一个会话才看得到（只 flush 会话一关就回滚）。
+        await s.commit()
+
+    async def run_full_transfer() -> int:
+        """在**本进程内**跑一整条离职交接，返回任务 id。"""
+        from app.modules.wecom import client as wecom_client
+        from app.modules.wecom import service as wecom_service
+
+        original = wecom_client._client
+        wecom_client._client = _NoWeComCalls()
+        try:
+            async with SessionLocal() as s:
+                admin_user = await s.get(User, ids["admin"])
+                user = CurrentUser(admin_user, {"wecom:manage"}, ["admin"], "all")
+                job = await wecom_service.transfer_relations(
+                    s,
+                    user=user,
+                    handover_user_id=ids["leaver"],
+                    takeover_user_id=ids["taker"],
+                    # 这份夹具没有企微关系，整条企微侧无事可做
+                    transfer_wecom=False,
+                    # 待办指定给**第三个人**：见函数说明里最后那条断言
+                    item_assignees={f"task:{ids['task']}": ids["colleague"]},
+                )
+                job_id = job.id
+                await s.commit()
+            return job_id
+        finally:
+            wecom_client._client = original
+
+    async with SessionLocal() as holder:
+        # ① 未提交：同事把这个客户接走（握着客户那一行的写锁）
+        await holder.execute(
+            text("update customers set owner_id = :c where id = :i"),
+            {"c": ids["colleague"], "i": ids["customer"]},
+        )
+        # ② 启动完整交接；它会卡在客户行锁上
+        running = asyncio.create_task(run_full_transfer())
+        blocked = await _wait_until_locked("customers")
+        # ③ 确认卡住之后再放行
+        await holder.commit()
+        job_id = await asyncio.wait_for(running, timeout=60)
+
+    check_true("并发复现有效：交接确实卡在了同事握着的客户行锁上", blocked,
+               f"观测到「等行锁的后端」={blocked}")
+
+    async with SessionLocal() as s:
+        owner = (await s.get(Customer, ids["customer"])).owner_id
+        history = (
+            await s.execute(
+                select(func.count()).select_from(CustomerOwnerHistory).where(
+                    CustomerOwnerHistory.customer_id == ids["customer"]
+                )
+            )
+        ).scalar_one()
+        customer_item = (
+            await s.execute(
+                select(WeComTransferItem).where(
+                    WeComTransferItem.job_id == job_id,
+                    WeComTransferItem.kind == "customer",
+                    WeComTransferItem.business_id == ids["customer"],
+                )
+            )
+        ).scalars().one()
+        task_item = (
+            await s.execute(
+                select(WeComTransferItem).where(
+                    WeComTransferItem.job_id == job_id,
+                    WeComTransferItem.kind == "task",
+                    WeComTransferItem.business_id == ids["task"],
+                )
+            )
+        ).scalars().one()
+        task_owner = (await s.get(Task, ids["task"])).owner_id
+        job = await s.get(WeComSyncJob, job_id)
+        detail = dict(job.detail or {})
+        success_count = job.success_count
+        customer_status, customer_error = customer_item.crm_status, customer_item.crm_error
+        task_status = task_item.crm_status
+
+    check("并发下：客户仍在同事手里（没有被交接抢走）", owner, ids["colleague"])
+    check("交接项记成「跳过」而不是「已交接」", customer_status, "skipped")
+    check_true("跳过原因说清了是「已由其他同事接手」",
+               "其他同事接手" in (customer_error or ""), customer_error or "")
+    check("跳过时**没有**新增客户归属历史（不留错误记录）", history, 0)
+    check("客户分类统计按实际结果：成功 0 个、跳过 1 个",
+          (detail.get("customers"), detail.get("customers_skipped")), (0, 1))
+    check("跳过时**没有**执行这次客户转移附带的待办迁移", task_owner, ids["colleague"])
+    check("待办那一项照它自己那一格交接成功（走的是第 5 段，不是客户那一格）",
+          task_status, "moved")
+    check("成功数只算真正改掉的项（被跳过的那一项不计进去）", success_count, 1)
+
+    # 收尾：这段夹具自己删掉（全局 cleanup 也会按前缀兜底）
+    async with SessionLocal() as s:
+        await s.execute(
+            text("delete from wecom_transfer_items where job_id = :j"), {"j": job_id}
+        )
+        await s.execute(text("delete from wecom_sync_jobs where id = :j"), {"j": job_id})
+        await s.execute(text("delete from customer_owner_history where customer_id = :c"),
+                        {"c": ids["customer"]})
+        await s.execute(text("delete from tasks where id = :t"), {"t": ids["task"]})
+        await s.execute(text("delete from customers where id = :c"), {"c": ids["customer"]})
+        await s.execute(text("delete from user_roles where user_id in (:a, :b, :d)"),
+                        {"a": ids["leaver"], "b": ids["taker"], "d": ids["colleague"]})
+        await s.execute(text("delete from users where id in (:a, :b, :d)"),
+                        {"a": ids["leaver"], "b": ids["taker"], "d": ids["colleague"]})
+        await s.commit()
+
+
 async def main() -> None:
     db_name = require_isolated_db()
     print(f"隔离库：{db_name}")
@@ -709,6 +916,11 @@ async def main() -> None:
 
     # ── 8) 离职交接首跑的逐项搬运同样是"带条件的更新" ────────────────────
     await assert_handover_move_is_conditional(ids)
+
+    # ── 9) 离职交接首跑真的会跳过"已被同事接手"的客户（第九批复审 P1）────
+    #     调**完整** transfer_relations()：前面第 8 段只覆盖了搬运辅助函数，
+    #     客户那一格没被照到，正是这次复验露出来的缺口。
+    await assert_handover_first_run_skips_taken_customer()
 
     await cleanup()
 

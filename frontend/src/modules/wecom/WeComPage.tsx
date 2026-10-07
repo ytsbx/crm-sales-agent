@@ -215,13 +215,21 @@ export default function WeComPage() {
       const detail = (job.detail ?? {}) as Record<string, unknown>
       const failed = Number(detail.failures_count ?? 0)
       const frozen = Number(detail.frozen ?? 0)
+      // 并发下被同事先接走的客户（第九批复审 P1）：后端按"跳过"处理、保留同事的归属，
+      // 这里必须如实报出来 —— 否则操作者以为客户都交接完了，实际有几个留在了别人名下。
+      const skipped = Number(detail.customers_skipped ?? 0)
       // **按实际结果说人话**：不再笼统报"继承完成"。
       // 部分成功时要说清成功了多少、还剩多少、下一步去哪处理。
+      const parts: string[] = []
+      if (frozen) parts.push(`${frozen} 个客户因撞单争议被冻结`)
+      if (skipped) parts.push(`${skipped} 个客户已由其他同事接手（保留其归属）`)
+      if (failed) parts.push(`${failed} 项没成`)
       if (failed || frozen) {
-        const parts: string[] = []
-        if (frozen) parts.push(`${frozen} 个客户因撞单争议被冻结`)
-        if (failed) parts.push(`${failed} 项没成`)
         Toast.warning(`交接部分完成：${parts.join('、')}。可在下方逐项处理`)
+      } else if (skipped) {
+        // 没有"待处理"的项（跳过的项是终态，不会出现在下面的未完成清单里），
+        // 所以别再说"可在下方逐项处理"，免得操作者去下面找却找不到
+        Toast.warning(`交接完成：${parts.join('、')}`)
       } else {
         Toast.success('交接完成')
       }
