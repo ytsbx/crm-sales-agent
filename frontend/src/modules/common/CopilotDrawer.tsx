@@ -128,6 +128,20 @@ export default function CopilotDrawer() {
   const sendMutation = useMutation({
     mutationFn: ({ id, content }: { id: number; content: string }) => sendAgentMessage(id, content),
     onSuccess: async () => {
+      // 为什么先 cancel 再 invalidate（2026-10-07，UI 冒烟时红时绿的根因）：
+      //
+      // 新会话的第一条消息有两条请求几乎同时发出 —— 「建会话后首次拉详情」
+      // （`sessionId` 一变就触发）和本条的「发送」。「首次拉详情」很可能读到
+      // **回复还没落库**的那一刻，于是结果里一条消息都没有。
+      //
+      // 原来只调 invalidateQueries：它遇到"同一 query 已经有请求在途"时会合并，
+      // 这次重取就被吃掉，界面停在上面那份空结果上 —— 抽屉里只剩快捷提问，
+      // 用户明明等到「发送」结束却看不到回复（后端其实 18ms 内就写好了）。
+      // 实测约 1/6~1/3 概率，`42-workbench-copilot-analysis` 那条断言因此时红时绿。
+      //
+      // 先取消在途请求，再 invalidate，重取才一定真的发出去；顺带把 `sending`
+      // 多留一会儿，避免中间态闪一下空会话。
+      await queryClient.cancelQueries({ queryKey: ['agent-session'] })
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['agent-session'] }),
         queryClient.invalidateQueries({ queryKey: ['agent-sessions'] }),
