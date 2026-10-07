@@ -799,6 +799,26 @@ async def _build_custom_item_snapshot(
     )
 
 
+def _pick_confirmed(confirmed: dict[str, str], field: str, fallback):
+    """字段来源：**按"确认过没有"选，不按"值空不空"**。
+
+    已确认过（键存在）就用确认值 —— 哪怕确认的就是空串。例：某产品本来没有规格，
+    人工确认「规格 = 空」就是对公司认可结论的确认，明细必须原样印这个空值；
+    退回本地值等于替客户换了个口径。
+
+    原写法 `confirmed.get(field) or fallback` 把"确认为空"和"没确认过"混成一档
+    （空串是 falsy），于是：确认为空 → 本地 SKU 后填一个新规格 → 新明细悄悄用上
+    那个**未确认**的值，而 `master_version_no` 仍指着旧快照；正式发送的校验只查
+    "快照里有没有这个键"，看不出值已经被换过 → 一路放行到 `sent`
+    （§8.14 复审第四轮的反例）。
+
+    只有"从没确认过"（键都不存在）才退回本地值。
+    """
+    if field in confirmed:
+        return confirmed[field]
+    return fallback
+
+
 async def build_item_snapshot(
     session: AsyncSession,
     *,
@@ -914,13 +934,22 @@ async def build_item_snapshot(
         opportunity_item_id=opportunity_item_id,
         sku_id=sku_id,
         sku_code_snapshot=sku.sku_code,
-        # 名称/规格优先用**已确认**的主数据值（§8.14）：确认过的口径才代表
-        # "公司认可的这条 SKU 叫什么、规格是什么"，没确认则退回本地值。
-        sku_name_snapshot=confirmed.get("name") or sku.name or (product.name if product else None),
-        spec_snapshot=spec_snapshot or confirmed.get("specification") or sku.specification,
-        # 单位按报价那一刻的 SKU 落快照（§8.7）：之后 SKU 单位改了，
-        # 旧版本的对客表也不会跟着变
-        unit_snapshot=confirmed.get("unit") or sku.unit,
+        # 名称/规格/单位用**已确认**的主数据值（§8.14）：确认过的口径才代表
+        # "公司认可的这条 SKU 叫什么、规格是什么、单位是什么"。
+        # 判据是"这个字段**确认过没有**"（见 `_pick_confirmed`），不是"值空不空" ——
+        # 已确认为空必须保留为空，只有从没确认过才退回本地值；否则一个未确认的
+        # 新本地值会被悄悄印给客户，而校验只看"快照里有没有这个键"，拦不住。
+        sku_name_snapshot=_pick_confirmed(
+            confirmed, "name", sku.name or (product.name if product else None)
+        ),
+        spec_snapshot=(
+            spec_snapshot
+            if spec_snapshot
+            else _pick_confirmed(confirmed, "specification", sku.specification)
+        ),
+        # 单位同样先看确认值（§8.7 的单位快照 + §8.14 的确认优先）：
+        # 之后 SKU 单位改了，旧版本的对客表也不会跟着变
+        unit_snapshot=_pick_confirmed(confirmed, "unit", sku.unit),
         # §8.14：把"这条明细用的是哪一版主数据"一并落快照（0 → NULL＝当时还没确认过）
         master_version_no=master["version_no"] or None,
         quantity=quantity,
@@ -988,25 +1017,48 @@ async def master_confirmation_problems(
 
     §8.14 复审（第三轮）修的第二个待办：原判据只看 `master_version_no is None`，
     而**只确认了名称**也会拿到版本号 —— 于是"缺单位"的报价照样发出去（实测进到
-    `sent`）。现在改成回查**明细自己记的那一版快照**，检查印给客户的三个字段
+    `sent`）。改成回查**明细自己记的那一版快照**，检查印给客户的三个字段
     （名称/规格/单位）在不在里面；判据落在 `master.quoted_snapshot_problems` 一份上。
+
+    §8.14 复审（第四轮）补的第三个待办：只查"字段在不在那一版"还不够 ——
+    **明细实际印出去的值还必须与那一版一致**。反例是"确认为空规格 → 本地后填新
+    规格 → 生成明细被 `or` 回退成新规格"，字段键在快照里、值却被换过了。所以这里
+    把明细的三个快照值一并读出来交给同一份判据做比对（见 `quoted_snapshot_problems`
+    的 `actual` 参数）。
 
     **一份判据两处用**：正式发送（`ensure_items_master_confirmed` 据此抛错）与
     业务文件生成（`bizdoc` 据此落成草稿），避免两边各写一套、迟早漂移。
     """
     rows = (
         await session.execute(
-            select(QuoteItem.sku_id, QuoteItem.master_version_no, QuoteItem.sku_code_snapshot)
+            select(
+                QuoteItem.sku_id,
+                QuoteItem.master_version_no,
+                QuoteItem.sku_code_snapshot,
+                QuoteItem.sku_name_snapshot,
+                QuoteItem.spec_snapshot,
+                QuoteItem.unit_snapshot,
+            )
             .where(QuoteItem.quote_version_id == version_id, QuoteItem.sku_id.is_not(None))
         )
     ).all()
     problems: list[str] = []
-    for sku_id, version_no, code in rows:
+    for sku_id, version_no, code, name, spec, unit in rows:
         missing = await master_service.quoted_snapshot_problems(
-            session, sku_id=int(sku_id), version_no=version_no
+            session,
+            sku_id=int(sku_id),
+            version_no=version_no,
+            actual={"name": name, "specification": spec, "unit": unit},
         )
-        if missing:
-            problems.append(f"{code or f'SKU#{sku_id}'} 缺 {'、'.join(missing)}")
+        if not missing:
+            continue
+        # 纯字段名 = 那一版压根没确认过这些字段（要先去确认）；带括号 = 确认过、
+        # 但明细印的值与那一版对不上（要重新生成这版明细）。两种整改动作不同，
+        # 所以分开措辞，别混成一句。
+        blank = [m for m in missing if "（" not in m]
+        drifted = [m for m in missing if "（" in m]
+        parts = ([f"缺 {'、'.join(blank)}"] if blank else []) + drifted
+        problems.append(f"{code or f'SKU#{sku_id}'}：" + "；".join(parts))
     return problems
 
 

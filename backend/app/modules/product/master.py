@@ -1606,8 +1606,9 @@ async def quoted_snapshot_problems(
     sku_id: int,
     version_no: int | None,
     fields: tuple[str, ...] = QUOTE_DISPLAY_FIELDS,
+    actual: dict[str, str | None] | None = None,
 ) -> list[str]:
-    """明细引用的那一版主数据快照，**够不够印给客户**（返回缺的字段中文名）。
+    """明细引用的那一版主数据快照，**够不够印给客户**（返回有问题的字段中文名）。
 
     判据是"回查 `quote_items.master_version_no` 指向的那一版
     `sku_master_versions`，看它里面有没有这些字段"，而不是"现在这个 SKU
@@ -1618,6 +1619,19 @@ async def quoted_snapshot_problems(
     - 也回答得了审查的那句"校验明细引用的**真实主数据快照**及其字段确认完整性"。
 
     `version_no` 为 None（生成明细时还没有可引用的快照）时返回一条明确的说明。
+
+    **`actual`（这一版明细实际要印给客户的值）传进来时，还要逐字段比对
+    "明细实际值 == 所引用快照的值"** —— §8.14 复审（第四轮）补的第三个待办。
+    只查"键在不在"挡不住下面这条链：
+
+        确认名称/规格/单位，其中规格**确认为空** → 整版 V3（specification: ""）
+        → 本地 SKU 后填一个"尚未确认的新规格"
+        → 生成明细被 `or` 回退成那个新规格，而 master_version_no 仍指着 V3
+        → 只查键：V3 里有 specification → 放行 ✗
+
+    比对按**字符串**做：确认值是 `""`（合法的空规格）时明细也必须是 `""`，
+    明细填了别的东西就对不上 → 报不一致。依据始终是明细记下的那一版，
+    不拿今天的 SKU 值替代 —— 否则"事后改 SKU"就能把旧明细洗白。
     """
     if version_no is None:
         return ["（没有可引用的已确认主数据版本）"]
@@ -1630,11 +1644,25 @@ async def quoted_snapshot_problems(
         )
     ).scalars().first()
     values = (snapshot.values if snapshot is not None else None) or {}
-    # 判据是"**这个字段有没有确认值**"，不是"确认值非空"：
-    # 快照里根本没有这个键 = 从没确认过 → 缺；
-    # 有键但值是空串 = 确认过、而这个 SKU 的该字段本来就是空（例如没有规格的产品），
-    # 不该因为"确认为空"就挡住正式报价（那会把合法业务也拦下来）。
-    return [MASTER_FIELDS[field] for field in fields if field not in values]
+    problems: list[str] = []
+    for field in fields:
+        # 判据是"**这个字段有没有确认值**"，不是"确认值非空"：
+        # 快照里根本没有这个键 = 从没确认过 → 缺；
+        # 有键但值是空串 = 确认过、而这个 SKU 的该字段本来就是空（例如没有规格的产品），
+        # 不该因为"确认为空"就挡住正式报价（那会把合法业务也拦下来）。
+        if field not in values:
+            problems.append(MASTER_FIELDS[field])
+            continue
+        if actual is None:
+            continue
+        if str(values[field] or "") != str(actual.get(field) or ""):
+            # 值对不上：把"差在哪"一起说出来，否则用户只看到「规格」两个字、
+            # 不知道究竟要改什么。空值写成「空」，避免看起来像没渲染。
+            problems.append(
+                f"{MASTER_FIELDS[field]}（明细用的是「{actual.get(field) or '空'}」，"
+                f"与所引用确认版本的「{values[field] or '空'}」不一致）"
+            )
+    return problems
 
 
 async def quoted_master_version_no(
