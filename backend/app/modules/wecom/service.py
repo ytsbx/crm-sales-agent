@@ -1371,6 +1371,7 @@ async def transfer_relations(
 async def list_transfer_items(
     session: AsyncSession, *, job_id: int, page: int = 1, page_size: int = 20,
     kind: str | None = None, pending_only: bool = False,
+    crm_status: str | None = None,
 ) -> tuple[list[dict], int]:
     """某次交接的**逐项结果**，真分页。
 
@@ -1386,6 +1387,9 @@ async def list_transfer_items(
     conditions = [WeComTransferItem.job_id == job_id]
     if kind:
         conditions.append(WeComTransferItem.kind == kind)
+    if crm_status:
+        # 按 CRM 侧逐项状态过滤（界面用它单独把"跳过"的项拉出来看）
+        conditions.append(WeComTransferItem.crm_status == crm_status)
     if pending_only:
         conditions.append(
             or_(
@@ -1412,7 +1416,20 @@ async def list_transfer_items(
 
 
 def serialize_transfer_item(item: WeComTransferItem) -> dict:
-    from app.modules.wecom.model import TRANSFER_CRM_STATUS_LABEL, TRANSFER_WECOM_STATUS_LABEL
+    from app.modules.wecom.model import (
+        TRANSFER_CRM_STATUS_LABEL,
+        TRANSFER_SKIP_TAKEN_REASONS,
+        TRANSFER_WECOM_STATUS_LABEL,
+    )
+
+    # "被同事先动了所以跳过"单独给前端一个标记（第九批复审 P1 收尾）：
+    # 它和"客户已不存在"这类真·无需处理不是一回事，界面上要能分辨、
+    # 也要能单独列出来 —— 否则那笔被跳过的客户只留在一句结果提示里，
+    # 操作者根本不知道是哪几个客户留在了别人名下。
+    taken = (
+        item.crm_status == "skipped"
+        and (item.crm_error or "") in TRANSFER_SKIP_TAKEN_REASONS
+    )
 
     return {
         "id": item.id,
@@ -1428,6 +1445,8 @@ def serialize_transfer_item(item: WeComTransferItem) -> dict:
         "crm_status": item.crm_status,
         "crm_status_label": TRANSFER_CRM_STATUS_LABEL.get(item.crm_status, item.crm_status),
         "crm_error": item.crm_error,
+        # 这一项是"被同事先动了、交接让开"，不是"本来就不用管"
+        "crm_taken": taken,
         "wecom_status": item.wecom_status,
         "wecom_status_label": TRANSFER_WECOM_STATUS_LABEL.get(
             item.wecom_status, item.wecom_status

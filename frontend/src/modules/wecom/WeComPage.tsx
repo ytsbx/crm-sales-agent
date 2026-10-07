@@ -82,6 +82,10 @@ export default function WeComPage() {
   const [transferJob, setTransferJob] = useState<WeComSyncJob | null>(null)
   //: 交接后**还没办完**的项（失败或没轮到的），可以逐条重试
   const [transferOpen, setTransferOpen] = useState<WeComTransferItem[]>([])
+  //: 交接后**被跳过**的项（终态、不进重试）。其中"已被同事接手"那类要单独点名 ——
+  //: 它意味着有别人的操作被顶掉了，只在结果提示里报个数字远远不够
+  //: （第九批复审 P1 的收尾：要能看见是哪几个客户留在了别人名下）。
+  const [transferSkipped, setTransferSkipped] = useState<WeComTransferItem[]>([])
 
   const readinessQuery = useQuery({
     queryKey: ['wecom-readiness'],
@@ -181,15 +185,25 @@ export default function WeComPage() {
     setTransferPreview(null)
     setTransferJob(null)
     setTransferOpen([])
+    setTransferSkipped([])
     setTransferAssignees({})
     setTransferForm({})
   }
 
-  /** 拉这次交接里**还没办完**的项（失败或没轮到的）。 */
+  /**
+   * 拉这次交接的逐项结果：
+   * - **还没办完**的（失败或没轮到的）→ 可以做逐条重试；
+   * - **被跳过**的（终态）→ 只展示。其中"已被同事接手/负责人已改"那类必须点名，
+   *   否则操作者只能从结果提示里看到一个数字，不知道是哪几笔留在了别人名下。
+   */
   const loadOpenItems = async (jobId: number) => {
-    const result = await listWeComTransferItems(jobId, { pending_only: true, page_size: 100 })
-    setTransferOpen(result.items)
-    return result.total
+    const [open, skipped] = await Promise.all([
+      listWeComTransferItems(jobId, { pending_only: true, page_size: 100 }),
+      listWeComTransferItems(jobId, { crm_status: 'skipped', page_size: 100 }),
+    ])
+    setTransferOpen(open.items)
+    setTransferSkipped(skipped.items)
+    return open.total
   }
 
   const previewMutation = useMutation({
@@ -271,6 +285,8 @@ export default function WeComPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  //: 被跳过的项里，真正属于"别人先动了"的那几笔（客户被同事接手、负责人已改）
+  const skippedTaken = transferSkipped.filter((item) => item.crm_taken)
   const readiness = readinessQuery.data
   const configured = readiness?.configured
   const missing = configured
@@ -902,6 +918,56 @@ export default function WeComPage() {
                   鼠标停在状态上可以看到具体失败原因。
                 </div>
               </>
+            )}
+
+            {/* 被跳过的项是**终态**，不进上面的重试清单；但"对象已被别人先动过"
+                的那几笔必须点名 —— 只报一个数字，操作者不知道是哪几笔、
+                留在了谁名下（第九批复审 P1 的收尾）。 */}
+            {transferSkipped.length > 0 && (
+              <div style={{ display: 'grid', gap: 6 }}>
+                <div style={{ fontSize: 12.5, color: 'var(--crm-text-2)' }}>
+                  {`另有 ${transferSkipped.length} 项本次未处理（已结束，不参与重试）。`}
+                  {skippedTaken.length > 0 && (
+                    <>
+                      {`其中 ${skippedTaken.length} 项在交接途中已被同事接手、或负责人已改，`}
+                      <b>归属保持不动</b>
+                      {'，需要时请单独与对方确认。'}
+                    </>
+                  )}
+                </div>
+                <Table<WeComTransferItem>
+                  rowKey="id"
+                  size="small"
+                  pagination={false}
+                  dataSource={transferSkipped}
+                  columns={[
+                    { title: '类别', dataIndex: 'kind_label', width: 90 },
+                    {
+                      title: '对象',
+                      dataIndex: 'label',
+                      width: 200,
+                      ellipsis: true,
+                      render: (v: string | null) => v || '—',
+                    },
+                    {
+                      title: 'CRM 侧',
+                      dataIndex: 'crm_status_label',
+                      width: 110,
+                      render: (v: string, row) => (
+                        <Tag color={row.crm_taken ? 'orange' : 'grey'} size="small">
+                          {row.crm_taken ? '已跳过' : v}
+                        </Tag>
+                      ),
+                    },
+                    {
+                      title: '说明',
+                      dataIndex: 'crm_error',
+                      ellipsis: true,
+                      render: (v: string | null) => v || '—',
+                    },
+                  ]}
+                />
+              </div>
             )}
           </div>
         )}

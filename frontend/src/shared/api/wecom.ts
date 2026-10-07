@@ -194,6 +194,11 @@ export interface WeComTransferItem {
   crm_status: string
   crm_status_label: string
   crm_error?: string | null
+  /**
+   * 这一项属于"对象已被别人先动过、交接主动让开"（客户被同事接手、
+   * 各类负责人已改），不是"本来就不用管"。界面上要与真·无需处理分开显示。
+   */
+  crm_taken?: boolean
   wecom_status: string
   wecom_status_label: string
   wecom_error?: string | null
@@ -203,7 +208,14 @@ export interface WeComTransferItem {
 
 export function listWeComTransferItems(
   jobId: number,
-  query: { kind?: string; pending_only?: boolean; page?: number; page_size?: number },
+  query: {
+    kind?: string
+    pending_only?: boolean
+    /** 按 CRM 侧状态过滤：`skipped` 单独拉出"已跳过"的项 */
+    crm_status?: string
+    page?: number
+    page_size?: number
+  },
 ) {
   return api.get<PageResult<WeComTransferItem>>(
     `/integrations/wecom/transfer/${jobId}/items`,

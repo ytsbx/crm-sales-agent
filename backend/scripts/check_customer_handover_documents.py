@@ -50,6 +50,10 @@ seed 里的张三/李四不合用：李四是销售主管（本部门都看得�
     `transfer_relations()`（不是只测辅助函数）—— 交接进行中同事把客户接走，
     客户留在同事手里、该项记「跳过：客户已由其他同事接手」、不新增归属历史、
     也不执行这次客户转移附带的待办迁移；成功数/跳过数按实际结果汇总
+20. **「跳过」要分清两类**（第九批复审 P1 的收尾）：被同事先动过（客户被接手、
+    各类负责人已改）与真·无需处理（对象已不存在、本次未要求转接）不能共用一句
+    「无需处理」—— 前者序列化时标 `crm_taken`，界面单独列出来；判据用的原因
+    登记表与 `service.py` 的真实调用点**双向对账**（改名只改一边要能查出来）
 
 跑法：
 
@@ -790,6 +794,10 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
         success_count = job.success_count
         customer_status, customer_error = customer_item.crm_status, customer_item.crm_error
         task_status = task_item.crm_status
+        # 界面拿到的就是这一份（`serialize_transfer_item`）—— 判定要在下发的形态上做
+        from app.modules.wecom.service import serialize_transfer_item
+
+        customer_payload = serialize_transfer_item(customer_item)
 
     check("并发下：客户仍在同事手里（没有被交接抢走）", owner, ids["colleague"])
     check("交接项记成「跳过」而不是「已交接」", customer_status, "skipped")
@@ -802,6 +810,9 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
     check("待办那一项照它自己那一格交接成功（走的是第 5 段，不是客户那一格）",
           task_status, "moved")
     check("成功数只算真正改掉的项（被跳过的那一项不计进去）", success_count, 1)
+    check_true("该跳过项被单独标成「已被他人先动过」（crm_taken），不再混进「无需处理」",
+               customer_payload.get("crm_taken") is True,
+               f"crm_taken={customer_payload.get('crm_taken')!r}")
 
     # 收尾：这段夹具自己删掉（全局 cleanup 也会按前缀兜底）
     async with SessionLocal() as s:
@@ -818,6 +829,73 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
         await s.execute(text("delete from users where id in (:a, :b, :d)"),
                         {"a": ids["leaver"], "b": ids["taker"], "d": ids["colleague"]})
         await s.commit()
+
+
+def assert_skip_taken_marking() -> None:
+    """「跳过」要分清两种：**对象已被别人先动过** vs **本来就不用管**。
+
+    第九批复审 P1 的收尾。并发下被同事接手的客户记成 `skipped`，而 `skipped`
+    的中文标签是全站共用的一句「无需处理」——它同时罩着"客户已不存在"
+    "跟进关系已不存在""本次未要求转接企微关系"这些**真的无事可做**的项。
+    于是那笔被跳掉的客户：标签看不出差别，又因为跳过是终态、不进"未完成"清单，
+    界面上**任何列表里都找不到它**，操作者只看到一个数字，不知道是哪几笔、
+    留在了谁名下。
+
+    这里钉两件事（都不碰 `crm_status` 本身：重试、汇总、索引都挂在它上面）：
+
+      ① 序列化时把"被别人先动过"的那类单独标成 `crm_taken`，其余跳过不标、
+         其它状态（已交接/冻结/失败）也不会被误标；
+      ② 判据用的那份原因登记表与 `service.py` 的真实调用点**双向一致** ——
+         改名时只改一边，这些项会悄悄退回「无需处理」，没有断言就查不出来。
+    """
+    import ast
+    from pathlib import Path
+
+    from app.modules.wecom.model import TRANSFER_SKIP_TAKEN_REASONS, WeComTransferItem
+    from app.modules.wecom.service import serialize_transfer_item
+
+    def payload(status: str, error: str | None) -> dict:
+        # 不落库：只验序列化这一层的判定
+        return serialize_transfer_item(
+            WeComTransferItem(
+                job_id=0, kind="customer", business_id=0, label="检查用",
+                crm_status=status, wecom_status="not_applicable", crm_error=error,
+            )
+        )
+
+    for reason in sorted(TRANSFER_SKIP_TAKEN_REASONS):
+        check_true(f"「{reason}」标成已被他人先动过（crm_taken）",
+                   payload("skipped", reason)["crm_taken"] is True, reason)
+    for reason in ("客户已不存在", "跟进关系已不存在", "本次未要求转接企微关系"):
+        check_true(f"「{reason}」仍是真·无需处理，不标 crm_taken",
+                   payload("skipped", reason)["crm_taken"] is False, reason)
+    for status in ("moved", "frozen", "failed", "pending", "not_applicable"):
+        check_true(f"状态 {status} 不会被误标 crm_taken",
+                   payload(status, "客户已由其他同事接手")["crm_taken"] is False, status)
+
+    # ② 登记表 ↔ 调用点双向对账（判据是文案，最怕"只改一边"）
+    src = Path(__file__).resolve().parents[1] / "app" / "modules" / "wecom" / "service.py"
+    tree = ast.parse(src.read_text(encoding="utf-8"))
+    marked: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Name) and func.id == "_mark_crm"):
+            continue
+        args = node.args
+        if len(args) < 4:
+            continue
+        status, error = args[2], args[3]
+        if not (isinstance(status, ast.Constant) and status.value == "skipped"):
+            continue
+        if not (isinstance(error, ast.Constant) and isinstance(error.value, str)):
+            continue
+        if "已改，不再是离职人" in error.value or "已由其他同事接手" in error.value:
+            marked.add(error.value)
+
+    check("「被别人先动过」的原因：登记表与 service.py 的真实调用点完全一致",
+          sorted(marked), sorted(TRANSFER_SKIP_TAKEN_REASONS))
 
 
 async def main() -> None:
@@ -921,6 +999,10 @@ async def main() -> None:
     #     调**完整** transfer_relations()：前面第 8 段只覆盖了搬运辅助函数，
     #     客户那一格没被照到，正是这次复验露出来的缺口。
     await assert_handover_first_run_skips_taken_customer()
+
+    # ── 10) 「跳过」要分清"被同事先动过"与"本来就不用管" ─────────────────
+    print("\n── 10) 跳过的分类（crm_taken）与原因登记表对账")
+    assert_skip_taken_marking()
 
     await cleanup()
 

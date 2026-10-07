@@ -380,6 +380,9 @@ async def list_transfer_items(
     job_id: int,
     kind: str | None = Query(None, description="按类别过滤（customer/sample/...）"),
     pending_only: bool = Query(False, description="只看还没办完的"),
+    crm_status: str | None = Query(
+        None, description="按 CRM 侧逐项状态过滤（skipped=已跳过，frozen=已冻结）"
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     _: CurrentUser = Depends(require_permission("wecom:view")),
@@ -391,7 +394,7 @@ async def list_transfer_items(
     """
     items, total = await svc.list_transfer_items(
         session, job_id=job_id, page=page, page_size=page_size,
-        kind=kind, pending_only=pending_only,
+        kind=kind, pending_only=pending_only, crm_status=crm_status,
     )
     return ok(page_data(items, total, page, page_size))
 
