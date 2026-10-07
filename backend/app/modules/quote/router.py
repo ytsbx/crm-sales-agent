@@ -197,6 +197,18 @@ async def create_quote(
             result_type="quote",
         )
         if reservation.should_replay:
+            # 回放前重查**当前**可见性（2026-10-07 修）：这份报价可能已经移交给别人、
+            # 或者被软删了。原来直接返回缓存 —— 报价早就不是你的了，凭旧请求键照样读走。
+            # 口径：**幂等保护的是"不重复创建"，不是"永久授权"**。
+            if reservation.replay_id is not None:
+                try:
+                    await svc.get_visible_quote(session, user, reservation.replay_id)
+                except AppError:
+                    raise AppError(
+                        ErrorCode.DATA_SCOPE_DENIED,
+                        "这条记录已不在你的可见范围内（可能已移交或删除），无法回放原结果",
+                        403,
+                    ) from None
             return ok(
                 reservation.replay_payload,
                 "这次提交此前已成功生成过报价，已返回原报价（没有重复创建）",
@@ -210,6 +222,8 @@ async def create_quote(
                 raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
 
         # 客户/联系人存在性由 svc.create_quote 统一校验（Agent 工具同路）。
+        # §8.14：主数据未确认只提示、不阻断（字段权威业务尚未拍板）
+        unconfirmed_master: set[str] = set()
         created = await svc.create_quote(
             session,
             user=user,
@@ -222,6 +236,7 @@ async def create_quote(
             payment_terms=payload.payment_terms,
             delivery_terms=payload.delivery_terms,
             remark=payload.remark,
+            unconfirmed_out=unconfirmed_master,
         )
         quote = created["_quote"]
         version = created["_version"]
@@ -256,9 +271,16 @@ async def create_quote(
             await idempotency.release(session, reservation)
         raise
 
+    message = "报价单已生成"
+    if unconfirmed_master:
+        message += (
+            "；主数据提醒："
+            + "；".join(sorted(unconfirmed_master))
+            + "（本次按本地值报价，确认后请重新生成明细）"
+        )
     if request_key:
-        return ok(body, "报价单已生成")
-    return ok(body, "报价单已生成（本次未带请求键，弱网重试可能产生重复报价）")
+        return ok(body, message)
+    return ok(body, message + "（本次未带请求键，弱网重试可能产生重复报价）")
 
 
 @router.get("/quotes/{quote_id}")
@@ -550,6 +572,8 @@ async def clone_quote(
             "（或在查价页「选品下单」一键新建快捷商机）",
             422,
         )
+    # §8.14：主数据未确认只提示、不阻断
+    unconfirmed_master: set[str] = set()
     created = await svc.create_quote(
         session,
         user=user,
@@ -563,6 +587,7 @@ async def clone_quote(
         payment_terms=source_version.payment_terms if source_version else None,
         delivery_terms=source_version.delivery_terms if source_version else None,
         remark=payload.remark or f"由报价 {source.quote_no} 复制",
+        unconfirmed_out=unconfirmed_master,
     )
     new_quote = created["_quote"]
     new_quote.opportunity_id = (
@@ -592,6 +617,8 @@ async def clone_quote(
                     spec_snapshot=item.spec_snapshot,
                     # 单位快照同样要复制（§8.7）：少一个字段就是一条断链
                     unit_snapshot=item.unit_snapshot,
+                    # §8.14：主数据版本号也要复制 —— 明细内容原样搬过来，追溯口径不变
+                    master_version_no=item.master_version_no,
                     quantity=item.quantity,
                     cost_snapshot=item.cost_snapshot,
                     package_cost_snapshot=item.package_cost_snapshot,
@@ -626,6 +653,13 @@ async def clone_quote(
         ip=client_ip(request),
     )
     await session.commit()
+    clone_message = f"已从 {source.quote_no} 复制出 {new_quote.quote_no}"
+    if unconfirmed_master:
+        clone_message += (
+            "；主数据提醒："
+            + "；".join(sorted(unconfirmed_master))
+            + "（本次按本地值报价）"
+        )
     return ok(
         {
             "quote_id": new_quote.id,
@@ -634,7 +668,7 @@ async def clone_quote(
             "copied_items": copied_items,
             "source_quote_id": source.id,
         },
-        f"已从 {source.quote_no} 复制出 {new_quote.quote_no}",
+        clone_message,
     )
 
 
@@ -822,6 +856,8 @@ async def set_items(
     await session.flush()
 
     moq_warnings: list[str] = []
+    # §8.14：这几条 SKU 的关键字段主数据还没人工确认 —— 只提示，不阻断报价
+    unconfirmed_master: set[str] = set()
     for payload in items:
         await _ensure_inquiry_visible(session, user, payload.inquiry_id)
         item = await svc.build_item_snapshot(
@@ -840,6 +876,7 @@ async def set_items(
             inquiry_id=payload.inquiry_id,
             item_name=payload.item_name,
             unit_cost=payload.unit_cost,
+            unconfirmed_out=unconfirmed_master,
         )
         session.add(item)
         hint = await svc.moq_warning(session, payload.sku_id, payload.quantity)
@@ -860,6 +897,12 @@ async def set_items(
     message = "报价明细已保存"
     if moq_warnings:
         message += "；注意：" + "；".join(moq_warnings)
+    if unconfirmed_master:
+        message += (
+            "；主数据提醒："
+            + "；".join(sorted(unconfirmed_master))
+            + "（本次按本地值报价，确认后请重新生成明细）"
+        )
     return ok(svc.serialize_version(version), message)
 
 
@@ -886,6 +929,8 @@ async def update_item(
     if logistics is not None:
         item.logistics_cost_snapshot = logistics
 
+    # §8.14：主数据未确认只提示、不阻断（见 build_item_snapshot 的说明）
+    unconfirmed_master: set[str] = set()
     rebuilt = await svc.build_item_snapshot(
         session,
         version=version,
@@ -907,6 +952,7 @@ async def update_item(
         unit_cost=(
             data.get("unit_cost", item.cost_snapshot) if item.sku_id is None else None
         ),
+        unconfirmed_out=unconfirmed_master,
     )
     for field in (
         "quantity",
@@ -923,6 +969,8 @@ async def update_item(
         "remark",
         # 单位快照（§8.7）：改一条明细会重建快照，落下它才不会让改完的行显示"待核实"
         "unit_snapshot",
+        # §8.14：重建会重新经过主数据解析，版本号跟着重建后的口径走
+        "master_version_no",
     ):
         setattr(item, field, getattr(rebuilt, field))
     await session.flush()
@@ -938,7 +986,14 @@ async def update_item(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_item(item), "已保存")
+    message = "已保存"
+    if unconfirmed_master:
+        message += (
+            "；主数据提醒："
+            + "；".join(sorted(unconfirmed_master))
+            + "（本次按本地值报价）"
+        )
+    return ok(svc.serialize_item(item), message)
 
 
 @router.delete("/quote-items/{item_id}")
@@ -1342,6 +1397,8 @@ async def add_version_item(
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
     await _ensure_inquiry_visible(session, user, payload.inquiry_id)
+    # §8.14：主数据未确认只提示、不阻断
+    unconfirmed_master: set[str] = set()
     item = await svc.build_item_snapshot(
         session,
         version=version,
@@ -1358,6 +1415,7 @@ async def add_version_item(
         inquiry_id=payload.inquiry_id,
         item_name=payload.item_name,
         unit_cost=payload.unit_cost,
+        unconfirmed_out=unconfirmed_master,
     )
     session.add(item)
     await session.flush()
@@ -1373,7 +1431,16 @@ async def add_version_item(
     )
     await session.commit()
     moq_hint = await svc.moq_warning(session, payload.sku_id, payload.quantity)
-    return ok(svc.serialize_item(item), "明细已添加" + (f"；注意：{moq_hint}" if moq_hint else ""))
+    message = "明细已添加"
+    if moq_hint:
+        message += f"；注意：{moq_hint}"
+    if unconfirmed_master:
+        message += (
+            "；主数据提醒："
+            + "；".join(sorted(unconfirmed_master))
+            + "（本次按本地值报价）"
+        )
+    return ok(svc.serialize_item(item), message)
 
 
 @router.get("/quote-versions/{version_id}/charges")

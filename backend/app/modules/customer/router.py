@@ -114,6 +114,20 @@ async def create_customer(
             result_type="customer",
         )
         if reservation.should_replay:
+            # 回放前重查**当前**可见性（2026-10-07 修）：这条客户可能已经移交给别人、
+            # 或者被软删了。原来直接返回缓存 —— 于是客户早就不是你的了，凭一把旧请求键
+            # 照样能把资料读走。
+            # 口径：**幂等保护的是"不重复创建"，不是"永久授权"**；失去权限就不给回放，
+            # 但也不因此再创建一条新记录（回放失败不等于重新执行）。
+            if reservation.replay_id is not None:
+                try:
+                    await svc.get_visible_customer(session, user, reservation.replay_id)
+                except AppError:
+                    raise AppError(
+                        ErrorCode.DATA_SCOPE_DENIED,
+                        "这条记录已不在你的可见范围内（可能已移交或删除），无法回放原结果",
+                        403,
+                    ) from None
             return ok(
                 reservation.replay_payload,
                 "这次提交此前已成功创建过，已返回原记录（没有重复创建）",

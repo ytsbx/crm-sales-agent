@@ -798,12 +798,12 @@ async def _frozen_header(session: AsyncSession, *, quote, version_row, customer)
     为什么值来自"当时"而不是"现在"：
     - 币种 / 付款条件 / 交付条件 / 贸易条款在 `QuoteVersion` 行上（版本生成时写入），
       读它们天然就是那一版的口径；
-    - 有效期在报价主单上（版本自己没有这一列），在**这份文件的生成时点**抄进快照：
-      已出的这一份之后不管主单怎么改，表上的有效期都不会变；
-    - 客户名称 / 联系人 / 负责人同理由生成时点抄录（历史报价无从追溯当时的抬头，
-      所以只能是生成时点；但一旦落进快照，之后改客户资料也不影响已出的文件）。
+    - 有效期 / 客户名 / 联系人名同样取**版本快照**（2026-10-07 修）：这三列现在跟
+      币种、条款一样钉在报价版本上，生成时直接读，不再实时查客户资料或报价主单。
+      历史版本没有这些列 → 出图写「待核实」，不回填当前值
+      （拿今天的客户名填进老版本，等于造一份假的留存证据）。
+    - 负责人仍按生成时点取：他不参与对客内容口径，历史报价也追溯不到。
     """
-    from app.modules.customer.model import Contact
     from app.modules.user.model import User
 
     gaps: list[dict] = []
@@ -821,15 +821,19 @@ async def _frozen_header(session: AsyncSession, *, quote, version_row, customer)
             return None
         return value
 
-    contact = (
-        await session.get(Contact, quote.contact_id) if getattr(quote, "contact_id", None) else None
-    )
     owner = (
         await session.get(User, quote.owner_id) if getattr(quote, "owner_id", None) else None
     )
     header = {
-        "customer_name": _need("customer_name", "客户", customer.name if customer else None),
-        "contact_name": _need("contact_name", "联系人", contact.name if contact else None),
+        # 抬头取**版本快照**（审查 2026-10-07 修）：原来实时读当前客户 / 联系人资料，
+        # 客户改名之后同一个版本重出就印成新名字，与当初发给客户的那份对不上。
+        # 历史版本没有留存 → `_need` 会记进 gaps、出图写「待核实」，不补当前值。
+        "customer_name": _need(
+            "customer_name", "客户", version_row.customer_name_snapshot
+        ),
+        "contact_name": _need(
+            "contact_name", "联系人", version_row.contact_name_snapshot
+        ),
         "owner_name": owner.name if owner else None,
         "quote_no": quote.quote_no,
         "version_no": version_row.version_no,
@@ -838,7 +842,13 @@ async def _frozen_header(session: AsyncSession, *, quote, version_row, customer)
         # 币种是 §8.7 的主诉：以前只从报价主单读、且 Excel 不显示，
         # 美元单打印出来和人民币单一模一样。
         "currency": version_row.currency,
-        "valid_until": quote.valid_until.isoformat() if quote.valid_until else None,
+        # 有效期同样取版本快照（原来读 `quote.valid_until` 的当前值：
+        # 主单改了有效期，旧版本重出会跟着变）。
+        "valid_until": (
+            version_row.valid_until_snapshot.isoformat()
+            if version_row.valid_until_snapshot
+            else None
+        ),
         "payment_terms": version_row.payment_terms,
         "delivery_terms": version_row.delivery_terms,
         "trade_terms": version_row.trade_terms,

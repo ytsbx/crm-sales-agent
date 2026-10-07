@@ -15,7 +15,6 @@
 """
 
 import hashlib
-from datetime import date
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
@@ -72,20 +71,10 @@ def _sku_rejection(sku: Sku | None, code: str) -> str | None:
     return None
 
 
-def _check_span(errs: RowErrors, *, min_qty: Decimal, max_qty: Decimal | None) -> None:
-    """数量区间：下限大于上限是倒置区间，取价永远匹配不上，必须报错。"""
-    if max_qty is not None and min_qty > max_qty:
-        errs.add(f"数量下限（{min_qty}）不能大于数量上限（{max_qty}）")
-
-
-def _check_period(
-    errs: RowErrors, *, effective_from: date | None, effective_to: date | None
-) -> None:
-    """有效期：起始日晚于截止日是倒置区间，资料会"永远不生效"。"""
-    if effective_from is not None and effective_to is not None and effective_from > effective_to:
-        errs.add(
-            f"生效起始日（{effective_from.isoformat()}）不能晚于生效截止日（{effective_to.isoformat()}）"
-        )
+# 数量区间 / 有效期 / 数值的校验统一走 `svc.check_price_rule_values`：
+# **导入与普通维护接口必须共用同一份判据**（见 pricing/service.py 里那段说明）。
+# 原来这里各留一份 `_check_span` / `_check_period`，正是"导入被拦、换个接口就能写"
+# 的成因 —— 同一份脏数据走哪条路进来，结果都该一样。
 
 
 # ================================================================== 价格规则
@@ -141,28 +130,28 @@ async def import_price_rules(
         if level and level not in LEVELS:
             errs.add(f"客户等级必须是 A/B/C/D（收到 {level}）")
 
-        min_qty = errs.decimal(row.get("数量下限"), "数量下限", non_negative=True)
+        min_qty = errs.decimal(row.get("数量下限"), "数量下限")
         min_qty = Decimal(0) if min_qty is None else min_qty
-        max_qty = errs.decimal(row.get("数量上限(留空=不限)"), "数量上限", non_negative=True)
-        guide_price = errs.decimal(
-            row.get("指导价"), "指导价", required=True, non_negative=True
-        )
-        standard_price = errs.decimal(row.get("标准价"), "标准价", non_negative=True)
-        minimum_price = errs.decimal(row.get("最低保护价"), "最低保护价", non_negative=True)
-        target_margin = errs.decimal(
-            row.get("目标利润率(如0.30)"),
-            "目标利润率",
-            positive=True,
-            maximum=Decimal(1),
-        )
-        if target_margin is None and (row.get("目标利润率(如0.30)") or "").strip():
-            # 走到这里说明上面已经记了原因；补一句口径说明，避免用户以为要填 30
-            errs.add("目标利润率是比率口径：30% 请填 0.30")
+        max_qty = errs.decimal(row.get("数量上限(留空=不限)"), "数量上限")
+        guide_price = errs.decimal(row.get("指导价"), "指导价", required=True)
+        standard_price = errs.decimal(row.get("标准价"), "标准价")
+        minimum_price = errs.decimal(row.get("最低保护价"), "最低保护价")
+        target_margin = errs.decimal(row.get("目标利润率(如0.30)"), "目标利润率")
         effective_from = errs.date_value(row.get("生效起始日(YYYY-MM-DD)"), "生效起始日")
         effective_to = errs.date_value(row.get("生效截止日(YYYY-MM-DD)"), "生效截止日")
         remark = errs.text_value(row.get("备注"), "备注", max_length=REMARK_MAX)
-        _check_span(errs, min_qty=min_qty, max_qty=max_qty)
-        _check_period(errs, effective_from=effective_from, effective_to=effective_to)
+        # 数值、倒置区间、倒置有效期、利润率比率 —— **与普通维护接口共用同一份判据**。
+        svc.check_price_rule_values(
+            errs,
+            min_qty=min_qty,
+            max_qty=max_qty,
+            standard_price=standard_price,
+            guide_price=guide_price,
+            minimum_price=minimum_price,
+            target_margin=target_margin,
+            effective_from=effective_from,
+            effective_to=effective_to,
+        )
 
         if not code:
             errs.add("SKU编码不能为空")
@@ -297,22 +286,24 @@ async def import_customer_prices(
         customer_name = (row.get("客户名称(精确匹配)") or "").strip()
         errs = RowErrors(index, code)
 
-        agreed_price = errs.decimal(row.get("约定价"), "约定价", required=True, non_negative=True)
-        minimum_price = errs.decimal(row.get("最低价"), "最低价", non_negative=True)
-        min_qty = errs.decimal(row.get("数量下限"), "数量下限", non_negative=True)
+        agreed_price = errs.decimal(row.get("约定价"), "约定价", required=True)
+        minimum_price = errs.decimal(row.get("最低价"), "最低价")
+        min_qty = errs.decimal(row.get("数量下限"), "数量下限")
         min_qty = Decimal(0) if min_qty is None else min_qty
-        max_qty = errs.decimal(row.get("数量上限(留空=不限)"), "数量上限", non_negative=True)
+        max_qty = errs.decimal(row.get("数量上限(留空=不限)"), "数量上限")
         effective_from = errs.date_value(row.get("生效起始日(YYYY-MM-DD)"), "生效起始日")
         effective_to = errs.date_value(row.get("生效截止日(YYYY-MM-DD)"), "生效截止日")
         remark = errs.text_value(row.get("备注"), "备注", max_length=REMARK_MAX)
-        if (
-            agreed_price is not None
-            and minimum_price is not None
-            and minimum_price > agreed_price
-        ):
-            errs.add(f"最低价（{minimum_price}）不能高于约定价（{agreed_price}）")
-        _check_span(errs, min_qty=min_qty, max_qty=max_qty)
-        _check_period(errs, effective_from=effective_from, effective_to=effective_to)
+        # 数值、区间、有效期、最低价与约定价的关系 —— **与普通维护接口共用同一份判据**。
+        svc.check_price_rule_values(
+            errs,
+            min_qty=min_qty,
+            max_qty=max_qty,
+            agreed_price=agreed_price,
+            minimum_price=minimum_price,
+            effective_from=effective_from,
+            effective_to=effective_to,
+        )
 
         if not code:
             errs.add("SKU编码不能为空")
@@ -501,7 +492,10 @@ async def import_costs(
                 "外币成本要先确定汇率来源与换算时点，请先按人民币录入或联系管理员"
             )
         remark = errs.text_value(row.get("备注"), "备注", max_length=REMARK_MAX)
-        _check_period(errs, effective_from=effective_from, effective_to=effective_to)
+        # 成本也有生效区间，顺序判据与价格规则共用同一份。
+        svc.check_effective_period(
+            errs, effective_from=effective_from, effective_to=effective_to
+        )
         if not code:
             errs.add("SKU编码不能为空")
         if errs:

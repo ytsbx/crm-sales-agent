@@ -1537,6 +1537,56 @@ async def require_confirmed_master(
     }
 
 
+async def resolve_confirmed_master(
+    session: AsyncSession, sku_id: int, fields: list[str] | None = None
+) -> dict:
+    """报价流程用的**不阻断**版本：解析这个 SKU 的已确认主数据（§8.14 接线）。
+
+    口径（2026-10-07 确认）：**默认放行 + 如实提示**。
+
+    为什么不做成硬闸门：字段权威表整张还是空的（业务还没拍板"哪个字段以谁为准"），
+    要求"没有已确认版本就不许报价"等于**把所有报价堵死**。
+    但也不能不接 —— `require_confirmed_master` 写了却零调用，
+    "正式报价只用已确认的主数据"就只是注释里的一句话。
+
+    实现上**判据只有一份**：内部照常调 `require_confirmed_master`，
+    只把"缺确认"这一档（40002 + 那句"不能用于正式报价"）降级为
+    "能拿到多少就用多少，缺的列出来提示"。另抄一份判定逻辑迟早会和闸门漂移，
+    那正是"看着接了线、其实没生效"的来源。
+    其它错误（字段名非法、SKU 不存在）照抛，不吞。
+    """
+    wanted = list(fields or MASTER_FIELDS)
+    try:
+        gate = await require_confirmed_master(session, sku_id, wanted)
+        confirmed = gate["values"]
+        missing: list[str] = []
+        version = gate["version"]
+    except AppError as exc:
+        if exc.code != ErrorCode.STATUS_NOT_ALLOWED:
+            raise
+        # 闸门因"有字段未确认"拒绝：这里不阻断，改为能拿多少用多少。
+        rows = (
+            await session.execute(
+                select(SkuFieldAuthority).where(
+                    SkuFieldAuthority.sku_id == sku_id,
+                    SkuFieldAuthority.field_name.in_(wanted),
+                    SkuFieldAuthority.confirmed_version > 0,
+                )
+            )
+        ).scalars().all()
+        confirmed = {row.field_name: row.confirmed_value for row in rows}
+        missing = [field for field in wanted if field not in confirmed]
+        version = await confirmed_master_version(session, sku_id)
+    return {
+        "sku_id": sku_id,
+        "values": confirmed,
+        "unconfirmed": missing,
+        "unconfirmed_labels": [MASTER_FIELDS[field] for field in missing],
+        "version_no": (version or {}).get("version_no", 0),
+        "version": version,
+    }
+
+
 __all__ = [
     "ALLOWED_RESOLUTIONS",
     "MASTER_FIELDS",
@@ -1559,6 +1609,7 @@ __all__ = [
     "rename_identity_source",
     "replay_identity_source",
     "require_confirmed_master",
+    "resolve_confirmed_master",
     "serialize_identity",
     "serialize_sku_diff",
     "serialize_version",

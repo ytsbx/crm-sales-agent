@@ -11,6 +11,7 @@ from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.importing import RowErrors
 from app.core.response import ok, page_data, paginate
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
@@ -225,6 +226,19 @@ async def list_price_rules(
     return ok(page_data(items, total, page, page_size))
 
 
+def _reject_bad_price_rule(**values) -> None:
+    """数值 / 区间 / 有效期有问题就一次性拒绝（判据与导入**共用同一份**）。
+
+    为什么要在维护接口也校验（审查 2026-10-07 实测）：导入会被拦的数据，
+    换 `POST/PATCH /price-rules` 就能存下 —— 负指导价、数量下限大于上限、
+    有效期倒置、利润率 2 全都能落库，而取价/核价读的就是这些数字。
+    """
+    errs = RowErrors(0, "")
+    svc.check_price_rule_values(errs, **values)
+    if errs:
+        raise AppError(ErrorCode.PARAM_ERROR, "；".join(errs.reasons), 400)
+
+
 @router.post("/price-rules")
 async def create_price_rule(
     payload: PriceRuleCreate,
@@ -232,6 +246,16 @@ async def create_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    _reject_bad_price_rule(
+        min_qty=payload.min_qty,
+        max_qty=payload.max_qty,
+        standard_price=payload.standard_price,
+        guide_price=payload.guide_price,
+        minimum_price=payload.minimum_price,
+        target_margin=payload.target_margin,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
     sku = await session.get(Sku, payload.sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
@@ -282,6 +306,22 @@ async def update_price_rule(
     before = svc.serialize_price_rule(rule)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
+    # 校验**合并后的完整记录**（2026-10-07 修）：只校验传进来的那几个字段不够 ——
+    # "把数量下限改到上限之上"这种，单看每个传入字段都是合法的。
+    try:
+        _reject_bad_price_rule(
+            min_qty=rule.min_qty,
+            max_qty=rule.max_qty,
+            standard_price=rule.standard_price,
+            guide_price=rule.guide_price,
+            minimum_price=rule.minimum_price,
+            target_margin=rule.target_margin,
+            effective_from=rule.effective_from,
+            effective_to=rule.effective_to,
+        )
+    except AppError:
+        await session.rollback()
+        raise
     # 改动后仍不能与其他规则重叠（排除自己）
     conflict = await svc.find_price_rule_conflict(
         session,
@@ -375,6 +415,20 @@ async def create_customer_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 引用与范围（2026-10-07 修）：客户与 SKU 必须真实存在且未删，客户还要在数据范围内。
+    # 原来直接 `CustomerPriceRule(**payload.model_dump())` —— 一个客户权限查询都没有，
+    # 于是"导入被拦、换个接口就能给任意客户（含已删、别人家的）建专属价"。
+    await svc.ensure_customer_price_targets(
+        session, user=user, customer_id=payload.customer_id, sku_id=payload.sku_id
+    )
+    _reject_bad_price_rule(
+        min_qty=payload.min_qty,
+        max_qty=payload.max_qty,
+        agreed_price=payload.agreed_price,
+        minimum_price=payload.minimum_price,
+        effective_from=payload.effective_from,
+        effective_to=payload.effective_to,
+    )
     rule = CustomerPriceRule(**payload.model_dump())
     # 冲突检查：同客户同 SKU 的数量/有效期重叠直接拒绝（方案 §4.1）
     conflict = await svc.find_customer_price_conflict(
@@ -441,13 +495,24 @@ async def update_customer_price_rule(
     if "remark" in changes:
         rule.remark = changes["remark"]
 
-    # 数量区间必须自洽：min > max 会让这条规则永远匹配不上，
-    # 静默失效比报错难查得多。
-    if rule.max_qty is not None and rule.min_qty is not None and rule.min_qty > rule.max_qty:
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            f"起订量（{rule.min_qty}）不能大于上限（{rule.max_qty}）",
+    # 数据范围与引用、数值与区间、有效期 —— 全部按**合并后的完整记录**校验
+    # （2026-10-07 修）。原来这里只查 min > max 一条：改 max_qty 把区间弄倒置、
+    # 把约定价填成负数、改有效期弄倒置，都能存下去（静默失效比报错难查得多）。
+    try:
+        await svc.ensure_customer_price_targets(
+            session, user=user, customer_id=rule.customer_id, sku_id=rule.sku_id
         )
+        _reject_bad_price_rule(
+            min_qty=rule.min_qty,
+            max_qty=rule.max_qty,
+            agreed_price=rule.agreed_price,
+            minimum_price=rule.minimum_price,
+            effective_from=rule.effective_from,
+            effective_to=rule.effective_to,
+        )
+    except AppError:
+        await session.rollback()
+        raise
 
     # 改动后仍不能与其他规则重叠（排除自己）
     conflict = await svc.find_customer_price_conflict(

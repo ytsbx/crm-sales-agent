@@ -17,17 +17,24 @@
    这里用 `ImportReport.failed_row` 按行号合并，`failed_count` 是**唯一行号数**。
 
 3. **预览和执行是两次请求**（7.6）
-   中间别人可能改了数据。底线是执行时**重新校验**（各路由都做到了），
-   但用户还需要知道"我预览时说要新增的行，现在结论变了"。为此预览返回一个
-   `preview_token`：文件摘要 + 每行计划的压缩快照 + HMAC 签名。它是自包含的，
-   不落库、不需要新表；执行时带上它就能报出结论变化的行号。
+   中间别人可能改了数据，用户自己也可能换了文件。底线是执行时**重新校验**
+   （各路由都做到了），但更要紧的是：**结论一旦和预览不一样就不能提交**。
+   为此预览返回一个 `preview_token`：文件摘要 + 每行计划的压缩快照 + HMAC 签名。
+   它是自包含的，不落库、不需要新表；执行时带上它，`finalize` 会比对
+   「文件摘要 + 每行结论」，**不一致就整体回滚并报 40902，要求重新预览**。
+   （原实现算完差异只塞进响应体、然后照常 commit —— 等于"先改数据再提醒"，
+   用户确认的是预览里那份结果，落库的却是另一份，等于没有防护。）
    签名用 `settings.jwt_secret`，与登录令牌同一把密钥；token 只用于比对，
-   不携带任何权限语义。
+   不携带任何权限语义，也不影响"两次请求之间权限被收回"的判定
+   （数据范围在执行时照常重新校验）。
 
 4. **完整错误清单**
-   `failed` 默认全量返回（前端"下载失败清单"直接用它），只在超过
-   `settings.import_max_error_rows` 这条防爆上限时截断，并显式给出
-   `failed_truncated`——**截断必须说出来**，不能让人以为拿到的是全部。
+   两道闸一起才成立：① 单个文件的数据行数不超过 `settings.import_max_rows`
+   （超了当场拒绝、让用户拆文件）；② `failed` 超过 `settings.import_max_error_rows`
+   才截断。因为失败行数**永远 ≤ 总行数**，①的阈值不高于②时截断**不会发生** ——
+   用户拿到的就是完整清单，不需要再给一个"补下载剩下的错误"的入口。
+   万一配置被人改坏真的截断了，响应里仍会带 `failed_truncated=true`：
+   **截断必须说出来**，不能让人以为拿到的是全部。
 """
 
 import base64
@@ -242,6 +249,18 @@ class ImportReport:
     """
 
     def __init__(self, module: str, rows_n: int, *, failed_label: str = "失败") -> None:
+        # §7.6：先卡文件规模。失败行数**永远 ≤ 总行数**，所以
+        # "文件行数上限 ≤ 失败清单上限"就保证 `failed` 不会被截断 ——
+        # 用户拿到的必然是完整清单，不需要另开一个补下载的口子。
+        # 卡在这里而不是各路由里，是为了**不可能漏**：导入都要经过这个构造。
+        limit = settings.import_max_rows
+        if limit > 0 and rows_n > limit:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"文件有 {rows_n} 行，超过单次导入上限 {limit} 行："
+                "请拆成多个文件分批导入（这样失败清单也能一次看全）。",
+                422,
+            )
         self.module = module
         self.rows_n = rows_n
         self.failed_label = failed_label
@@ -503,9 +522,35 @@ async def finalize(
 
     if preview_token:
         planned_file, planned = read_preview_token(preview_token, module)
-        body_extra["preview_diff"] = diff_preview(
+        preview_diff = diff_preview(
             planned, report.plan(), file_sha256=file_sha256, planned_file=planned_file
         )
+        # §7.6 的核心：预览之后**文件本身或每行结论**变了，就不能再提交。
+        # 原来的实现算完差异只把它塞进响应体、**然后继续往下 commit** ——
+        # 等于"先改数据、再提醒用户"，而他确认时看到的是另一份结果。
+        # 这里的纪律与并发冲突一致：**冲突就整体回滚，要求重新预览**，
+        # 不是"提交完再告诉他不一致"（那时数据已经改了，提示只是事后通知）。
+        if preview_diff["file_changed"] or preview_diff["changed_rows"]:
+            await session.rollback()
+            changed = preview_diff["changed_rows"]
+            detail = "、".join(
+                f"第 {item['row']} 行（预览时{item['before_label']}，本次{item['after_label']}）"
+                for item in changed[:5]
+            )
+            if len(changed) > 5:
+                detail += f"，等共 {len(changed)} 行"
+            reason = (
+                "导入文件与预览时不是同一份（内容已变化）"
+                if preview_diff["file_changed"]
+                else "导入结论与预览时不一致"
+            )
+            raise AppError(
+                ErrorCode.VERSION_CONFLICT,
+                f"{reason}：{detail or '（结论明细见重新预览结果）'}。"
+                "本次没有写入任何数据，请重新预览并确认。",
+                409,
+            )
+        body_extra["preview_diff"] = preview_diff
 
     from app.core.audit import write_audit  # 局部导入：避免 core 内部循环引用
 

@@ -26,7 +26,8 @@ _MASKED_FIELDS = {
 def mask_contact_value(value: str | None, kind: str = "phone") -> str | None:
     """联系方式脱敏。空值原样返回（"没填"和"填了但看不到"必须区分得开）。
 
-    - 手机号/电话：保留前 3 后 4（`138****8000`）；太短的保留首位。
+    - 手机号/电话：**按长度分档**保留，硬要求是"至少藏住一位数字"（见函数内注释）。
+      11 位手机号仍是大家习惯的 `138****8000` 形状。
     - 邮箱：保留首字符与域名（`z***@example.com`）。
     - 微信：保留前 2 位。
 
@@ -44,8 +45,22 @@ def mask_contact_value(value: str | None, kind: str = "phone") -> str | None:
         return f"{head}***@{domain}"
     if kind == "wechat":
         return text[:2] + "***" if len(text) > 2 else "***"
-    if len(text) <= 4:
-        return text[:1] + "***"
+    # 电话类：**按长度分档**，硬要求是"至少藏住一位数字"。
+    # 原来固定写 `前3 + **** + 后4`，遇到 7 位号码正好 3+4=7 —— 中间那四个星号
+    # 一个数字都没挡住（1234567 原样可还原）；5、6 位还会把同一批数字重复显示。
+    # 座机、短号、分机号都落在这些档里，业务上讲"脱敏"就必须真的挡住。
+    length = len(text)
+    if length <= 2:
+        return "*" * length
+    if length <= 4:
+        return text[:1] + "*" * (length - 1)
+    if length <= 7:
+        # 5~7 位（短号 / 不带区号的座机）：留前 2 后 1
+        return text[:2] + "*" * (length - 3) + text[-1]
+    if length <= 10:
+        # 8~10 位（带区号的座机）：留前 3 后 3
+        return text[:3] + "*" * (length - 6) + text[-3:]
+    # 11 位及以上（手机号）：保持"前 3 后 4"，这个形状业务已经看惯了
     return f"{text[:3]}****{text[-4:]}"
 
 

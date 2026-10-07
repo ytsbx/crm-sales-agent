@@ -1258,6 +1258,24 @@ async def get_record(session: AsyncSession, record_id: int) -> ExternalRecord:
     return row
 
 
+async def record_is_visible(
+    session: AsyncSession, record_id: int, owner_ids: list[int] | None
+) -> bool:
+    """**单条**原始事实是否落在当前数据范围内（None = 全量范围，直接放行）。
+
+    为什么要单独一个函数（2026-10-07 修）：详情接口原来用
+    `list_records(page=1, page_size=1)` 取"可见的第一条"，再判断请求的那条在不在其中 ——
+    用户有两条以上合法记录时，**只要请求的不是排序第一条就会被误判无权**（合法访问被 403）。
+    列表过滤与详情判定必须用**同一份判据**（都走 `visible_record_condition`），
+    而且详情要**针对这条记录**算，不能用"它在列表里出现过"来代替。
+    """
+    scope = visible_record_condition(owner_ids)
+    if scope is None:
+        return True
+    stmt = select(ExternalRecord.id).where(ExternalRecord.id == record_id, scope)
+    return (await session.execute(stmt)).first() is not None
+
+
 async def get_mapping(session: AsyncSession, mapping_id: int) -> ExternalObjectMapping:
     row = await session.get(ExternalObjectMapping, mapping_id)
     if row is None:

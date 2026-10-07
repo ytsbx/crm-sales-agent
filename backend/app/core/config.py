@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     #: 真被撑爆时响应里会有 `failed_truncated=true`，**不会**假装是全部。
     import_max_error_rows: int = 5000
 
+    #: 单次导入允许的最大数据行数（不含表头）。
+    #: 为什么要有它（§7.6 返修）：失败行数**永远 ≤ 总行数**，所以只要
+    #: "文件行数上限 ≤ 失败清单上限"，就撞不上 `failed` 截断 ——
+    #: "剩下的错误拿不到"这个场景从根上消失，而不是再给用户补一个下载入口。
+    #: 超限当场拒绝、让他拆文件（明确且立刻可改），好过导到一半只给半份清单。
+    import_max_rows: int = 5000
+
     # Sales Agent 用的模型（与公司现有知识库项目保持同一套配置）
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"

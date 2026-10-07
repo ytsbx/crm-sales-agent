@@ -205,6 +205,12 @@ async def main():
             payment_terms="30% 预付，余款见提单副本",
             delivery_terms="FOB 宁波",
             trade_terms="FOB",
+            # 2026-10-07：抬头与有效期改为取**版本快照**（原来实时读客户资料 / 报价主单）。
+            # 本套件的夹具是直插库的，所以要自己把这三列写上 —— 这也更贴近真实：
+            # 正常走接口创建版本时，服务层会写这三列。
+            customer_name_snapshot=customer.name,
+            contact_name_snapshot=contact.name,
+            valid_until_snapshot=quote.valid_until,
             subtotal_amount=Decimal("850.00"),
             charge_amount=Decimal("80.00"),
             discount_amount=Decimal("-30.00"),

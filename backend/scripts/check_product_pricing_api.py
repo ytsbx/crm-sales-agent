@@ -377,7 +377,9 @@ def main():
     status, res = call('PATCH', f'/customer-price-rules/{rule_id}', token=admin,
                        body={'min_qty': 200})
     check('起订量 > 上限被拒', res.get('code'), 40001)
-    check_true('说明原因', '不能大于上限' in (res.get('message') or ''),
+    # 2026-10-07：区间文案与导入侧统一成"不能大于数量上限"（原先一边叫"上限"、
+    # 一边叫"数量上限"，两套判据两套话术）。
+    check_true('说明原因', '不能大于数量上限' in (res.get('message') or ''),
                res.get('message') or '')
 
     status, res = call('PATCH', f'/customer-price-rules/{rule_id}', token=admin,

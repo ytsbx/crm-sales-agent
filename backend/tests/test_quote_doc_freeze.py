@@ -54,6 +54,11 @@ def _records(*, unit_snapshot: str | None = "套", currency: str = "USD"):
         payment_terms=None,  # 版本上没填：必须显示"未留存"，不能空着
         delivery_terms="FOB 宁波",
         trade_terms="FOB",
+        # 2026-10-07：抬头与有效期改为取**版本快照**（原来实时读客户资料 / 报价主单），
+        # 所以夹具要把这三列放在版本上；不放的话出图会（正确地）标「未留存」。
+        customer_name_snapshot="虚构客户",
+        contact_name_snapshot="王经理",
+        valid_until_snapshot=None,
         exchange_rate_snapshot=None,
         subtotal_amount=Decimal("420"),
         charge_amount=Decimal("80"),

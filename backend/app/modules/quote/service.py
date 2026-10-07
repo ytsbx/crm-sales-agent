@@ -13,6 +13,7 @@ from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import Opportunity, OpportunityItem
 from app.modules.pricing import service as pricing_service
 from app.modules.pricing.model import ExchangeRate
+from app.modules.product import master as master_service
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import (
     QUOTE_STATUS_LABEL,
@@ -60,6 +61,8 @@ def serialize_item(item: QuoteItem) -> dict:
         "minimum_price_snapshot": _f(item.minimum_price_snapshot),
         "price_source": item.price_source,
         "customer_level_snapshot": item.customer_level_snapshot,
+        # §8.14：这条明细按哪一版 SKU 主数据算的（空＝当时还没有确认记录）
+        "master_version_no": item.master_version_no,
         "quoted_price": _f(item.quoted_price),
         "amount": _f(item.quantity * item.quoted_price),
         "profit_snapshot": _f(item.profit_snapshot),
@@ -302,6 +305,7 @@ async def create_quote(
     delivery_terms: str | None = None,
     remark: str | None = None,
     enforce_opportunity: bool = True,
+    unconfirmed_out: set[str] | None = None,
 ) -> dict:
     """从商机（或直接给客户）生成报价单 + V1 版本 + 明细。
 
@@ -330,10 +334,12 @@ async def create_quote(
     # （`create_quote_draft`）直接调这里，绕开路由校验；漏了就会撞 FK
     # 约束报 500，而不是可读的 40401。
     from app.modules.customer import service as customer_service
-    await customer_service.get_visible_customer(session, user, customer_id)
+    # 接住客户对象：创建版本时要把「当时的客户抬头」钉进版本快照（审查 2026-10-07）。
+    customer = await customer_service.get_visible_customer(session, user, customer_id)
     resolved_contact_id = contact_id or (
         opportunity.primary_contact_id if opportunity else None
     )
+    contact = None
     if resolved_contact_id is not None:
         contact = await session.get(Contact, resolved_contact_id)
         if contact is None:
@@ -377,6 +383,12 @@ async def create_quote(
         version_no=1,
         payment_terms=payment_terms or default_payment,
         delivery_terms=delivery_terms or default_delivery,
+        # 抬头与有效期在这里**定格**（审查 2026-10-07 修）：出对客文件时不再实时读
+        # `customers.name` / `contacts.name` / `quotes.valid_until`，否则客户改名、
+        # 主单有效期改动之后，同一版本重出会印成"今天的样子"，与当初发给客户的那份对不上。
+        customer_name_snapshot=customer.name if customer else None,
+        contact_name_snapshot=contact.name if contact else None,
+        valid_until_snapshot=quote.valid_until,
         remark=remark,
         approval_status="not_submitted",
         created_by=user.id,
@@ -475,6 +487,7 @@ async def create_quote(
                 # A09：把"这版当初按哪条规则带的价"落成快照
                 price_source=lookup.get("source"),
                 customer_level_snapshot=(customer_obj.level or "").strip() or None,
+                unconfirmed_out=unconfirmed_out,
             )
             session.add(item)
         await session.flush()
@@ -533,12 +546,19 @@ async def create_version(
             )
         source = candidate
 
+    # 新版本的抬头与有效期**按创建这一刻**定格（不是照抄上一版）：
+    # 客户改了名，现在发出去的新版本就该印新名字，而上一版继续保留它当时的名字。
+    customer = await session.get(Customer, quote.customer_id)
+    contact = await session.get(Contact, quote.contact_id) if quote.contact_id else None
     version = QuoteVersion(
         quote_id=quote.id,
         version_no=latest.version_no + 1,
         currency=source.currency,
         payment_terms=source.payment_terms,
         delivery_terms=source.delivery_terms,
+        customer_name_snapshot=customer.name if customer else None,
+        contact_name_snapshot=contact.name if contact else None,
+        valid_until_snapshot=quote.valid_until,
         remark=source.remark,
         approval_status="not_submitted",
         created_by=user.id,
@@ -574,6 +594,9 @@ async def create_version(
                 spec_snapshot=item.spec_snapshot,
                 # 单位快照跟着复制：漏了它，新版本一建出来就对客文件显示"待核实"
                 unit_snapshot=item.unit_snapshot,
+                # §8.14：主数据版本号一并带过去 —— 新版本复制自上一版，
+                # 明细没重新取值，追溯口径就该还是原来那一版
+                master_version_no=item.master_version_no,
                 quantity=item.quantity,
                 cost_snapshot=item.cost_snapshot,
                 package_cost_snapshot=item.package_cost_snapshot,
@@ -789,6 +812,7 @@ async def build_item_snapshot(
     inquiry_id: int | None = None,
     item_name: str | None = None,
     unit_cost: Decimal | None = None,
+    unconfirmed_out: set[str] | None = None,
 ) -> QuoteItem:
     """生成一条报价明细：成本、标准价、最低价、利润全部落成快照。
 
@@ -803,6 +827,11 @@ async def build_item_snapshot(
 
     汇率与退税：按报价版本上快照的币种/汇率核价，并把结果一并落成快照，
     否则外贸报价会静默按人民币口径算（此前汇率快照字段一直没被写入）。
+
+    §8.14（本轮接线）：报价明细的名称/规格/单位改从**已确认的主数据版本**取。
+    口径是"默认放行 + 如实提示"——字段权威表目前整表为空（业务未拍板），
+    所以有确认值就用确认值，没有的照常用本地 SKU 值，并把未确认的字段名
+    收进 `unconfirmed_out` 交给调用方如实提示，既不静默也不阻断报价。
     """
     if sku_id is None:
         return await _build_custom_item_snapshot(
@@ -822,6 +851,14 @@ async def build_item_snapshot(
     if sku is None or sku.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, f"SKU {sku_id} 不存在", 404)
     product = await session.get(Product, sku.product_id)
+
+    # §8.14 接线点。`resolve_confirmed_master` 与闸门版同源，只差"缺确认不抛错"。
+    master = await master_service.resolve_confirmed_master(session, sku_id)
+    confirmed = master["values"]
+    if unconfirmed_out is not None and master["unconfirmed"]:
+        unconfirmed_out.add(
+            f"{sku.sku_code} 的「{'、'.join(master['unconfirmed_labels'])}」主数据尚未确认"
+        )
 
     result = await pricing_service.calculate_price(
         session,
@@ -870,11 +907,15 @@ async def build_item_snapshot(
         opportunity_item_id=opportunity_item_id,
         sku_id=sku_id,
         sku_code_snapshot=sku.sku_code,
-        sku_name_snapshot=sku.name or (product.name if product else None),
-        spec_snapshot=spec_snapshot or sku.specification,
+        # 名称/规格优先用**已确认**的主数据值（§8.14）：确认过的口径才代表
+        # "公司认可的这条 SKU 叫什么、规格是什么"，没确认则退回本地值。
+        sku_name_snapshot=confirmed.get("name") or sku.name or (product.name if product else None),
+        spec_snapshot=spec_snapshot or confirmed.get("specification") or sku.specification,
         # 单位按报价那一刻的 SKU 落快照（§8.7）：之后 SKU 单位改了，
         # 旧版本的对客表也不会跟着变
-        unit_snapshot=sku.unit,
+        unit_snapshot=confirmed.get("unit") or sku.unit,
+        # §8.14：把"这条明细用的是哪一版主数据"一并落快照（0 → NULL＝当时还没确认过）
+        master_version_no=master["version_no"] or None,
         quantity=quantity,
         cost_snapshot=Decimal(str(result["cost"]["goods_cost"])),
         package_cost_snapshot=Decimal(str(result["cost"]["package_cost"])),
@@ -1065,6 +1106,8 @@ async def refresh_prices(
             # 单位快照一并刷新：刷新重建的是"当前条件下这一版的价格与单位"，
             # 不带上它会让刚刷新过的版本行反而显示"待核实"
             "unit_snapshot",
+            # §8.14：刷新会重新经过主数据解析，版本号也要跟着刷新后的口径走
+            "master_version_no",
         ):
             setattr(item, field, getattr(rebuilt, field))
         refreshed += 1

@@ -213,6 +213,106 @@ async def find_customer_price(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+def check_effective_period(
+    errs, *, effective_from: date | None, effective_to: date | None
+) -> None:
+    """生效区间的顺序检查（价格规则 / 客户专属价 / 成本导入共用同一份）。
+
+    起始日晚于截止日 = 倒置区间，资料会"永远不生效" —— 静默失效比报错难查得多。
+    文案与 `scripts/check_import_integrity.py` 的断言保持兼容（"不能晚于生效截止日"）。
+    """
+    if effective_from is not None and effective_to is not None and effective_from > effective_to:
+        errs.add(
+            f"生效起始日（{effective_from.isoformat()}）"
+            f"不能晚于生效截止日（{effective_to.isoformat()}）"
+        )
+
+
+def check_price_rule_values(
+    errs,
+    *,
+    min_qty: Decimal | None,
+    max_qty: Decimal | None,
+    standard_price: Decimal | None = None,
+    guide_price: Decimal | None = None,
+    minimum_price: Decimal | None = None,
+    agreed_price: Decimal | None = None,
+    target_margin: Decimal | None = None,
+    effective_from: date | None = None,
+    effective_to: date | None = None,
+) -> None:
+    """把一条价格规则的**数值与区间**问题收进 `errs`（对象只要有 `add(str)` 即可）。
+
+    覆盖两类规则：通用价格规则（标准价/指导价/最低保护价/利润率）与
+    客户专属价（约定价 + 最低价）。传入哪些字段就校验哪些。
+
+    为什么要收成一份（审查 2026-10-07 实测）：导入入口逐行校验（SAVEPOINT + RowErrors），
+    而普通维护接口 `POST/PATCH /price-rules` 只查"区间重叠" —— 同一份数据
+    "导入被拦、换个接口就能写"：负指导价、数量下限大于上限、有效期倒置、利润率 2
+    全都能落库。取价与核价读的就是这些数字，脏数据会直接算错。
+
+    ⚠️ **修改（PATCH）时必须传合并后的完整记录**，不能只传改了的那几个字段 ——
+    否则"把下限改到上限之上"这种问题查不出来（单看传入的每个字段都合法）。
+
+    文案与 `scripts/check_import_integrity.py` 的三条断言保持兼容：
+    "不能为负数" / "不能大于数量上限" / "不能晚于生效截止日"。
+    """
+    for label, value in (
+        ("数量下限", min_qty),
+        ("数量上限", max_qty),
+        ("标准价", standard_price),
+        ("指导价", guide_price),
+        ("最低保护价", minimum_price),
+        ("约定价", agreed_price),
+    ):
+        if value is not None and value < 0:
+            errs.add(f"{label}不能为负数（收到 {value}）")
+    if min_qty is not None and max_qty is not None and min_qty > max_qty:
+        errs.add(f"数量下限（{min_qty}）不能大于数量上限（{max_qty}）")
+    # 刻意**不**校验"最低价不得高于约定价"（2026-10-07 决定）：保护价高于约定价在业务上
+    # 是合法的 —— 它表示"这个客户的价一开始就低于保护线、每单都要走审批"，
+    # 而 `check_approval_rules` 正是用这个配置来构造"破保护价进审批"的场景。
+    # 审查要求补的是**数值与区间**（负数 / 倒置区间 / 倒置有效期 / 利润率口径），
+    # 不是把业务上能成立的组合也一并堵掉。
+    if target_margin is not None and not (Decimal(0) < target_margin <= Decimal(1)):
+        errs.add(
+            "目标利润率是比率口径：30% 请填 0.30"
+            f"（取值应大于 0 且不超过 1，收到 {target_margin}）"
+        )
+    check_effective_period(errs, effective_from=effective_from, effective_to=effective_to)
+
+
+async def ensure_customer_price_targets(
+    session: AsyncSession, *, user, customer_id: int, sku_id: int
+) -> tuple[Customer, Sku]:
+    """客户专属价的**引用与范围**校验：客户与 SKU 都要真实存在且未删，客户还要在数据范围内。
+
+    为什么要单独一个函数（审查 2026-10-07 实测）：导入入口逐行做了"客户存在性 +
+    数据范围"校验，而 `POST /customer-price-rules` 直接
+    `CustomerPriceRule(**payload.model_dump())` —— **一个客户权限查询都没有**。
+    于是同一件事两套标准：导入被拦、换个接口就能给任意客户编号（已删的、别人家的）
+    建专属价。判据与导入侧同源（见 pricing/io_router.py 的 358 行那段）。
+    """
+    from app.core.data_scope import scoped_owner_ids
+
+    sku = await session.get(Sku, sku_id)
+    if sku is None or getattr(sku, "deleted_at", None) is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除，不能挂专属价", 404)
+    customer = await session.get(Customer, customer_id)
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在或已删除，不能为它维护专属价", 404)
+    # 数据范围：与"能不能看这个客户"同一口径。无负责人（公海）放行。
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None and customer.owner_id is not None:
+        if int(customer.owner_id) not in owner_ids:
+            raise AppError(
+                ErrorCode.DATA_SCOPE_DENIED,
+                "该客户不在你的数据范围内，不能为它维护专属价；请联系对应负责人或主管处理",
+                403,
+            )
+    return customer, sku
+
+
 def _ranges_overlap(a_min, a_max, b_min, b_max) -> bool:
     """两个闭区间是否重叠；max 为 None 视为无上界。
 

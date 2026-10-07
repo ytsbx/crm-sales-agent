@@ -167,6 +167,11 @@ def _fixture(session):
         payment_terms="30% 预付",
         delivery_terms="FOB 宁波",
         trade_terms="FOB",
+        # 2026-10-07：抬头与有效期改为取**版本快照**（原来实时读客户资料 / 报价主单），
+        # 夹具要把这三列放在版本上，否则出图会（正确地）标「未留存」。
+        customer_name_snapshot="冻结客户-原名",
+        contact_name_snapshot="联系人-原名",
+        valid_until_snapshot=date(2026, 12, 31),
         subtotal_amount=Decimal("420"),
         charge_amount=Decimal("80"),
         discount_amount=Decimal("-20"),
@@ -339,6 +344,11 @@ def test_old_version_terms_unaffected_by_current_data_changes():
             payment_terms="全额预付",
             delivery_terms="CIF 上海",
             trade_terms="CIF",
+            # 新版本按"创建这一刻"定格抬头（2026-10-07 口径）：客户这时候已经改名，
+            # 所以新版本记新名字，而旧版本继续保留它当时的名字 —— 这正是本用例要验的。
+            customer_name_snapshot="冻结客户-已改名",
+            contact_name_snapshot="联系人-已改名",
+            valid_until_snapshot=date(2026, 12, 31),
             subtotal_amount=Decimal("100"),
             charge_amount=Decimal("0"),
             discount_amount=Decimal("0"),

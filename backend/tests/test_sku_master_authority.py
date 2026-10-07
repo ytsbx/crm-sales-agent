@@ -364,6 +364,66 @@ def test_require_confirmed_master_blocks_unconfirmed_fields():
     assert "specification" in caught.value.message
 
 
+def test_resolve_confirmed_master_does_not_block_but_reports_missing():
+    """§8.14 接线用的解析函数：缺确认**不抛错**，但要把缺的字段如实列出来。
+
+    口径（2026-10-07）：默认放行 + 如实提示 —— 字段权威表目前整表为空，
+    硬拦会把所有报价堵死；但也不能不接（`require_confirmed_master` 曾零调用，
+    "正式报价只用已确认主数据"没有任何代码承担）。
+    """
+    session = _session()
+    sku_id = _sku(session, code="A-1", name="甲件", unit="件")
+    _ingest(session, fields={"unit": "箱"})
+    unit_diff = next(
+        row for row in _diffs(session)[0] if row["diff_type"] == DIFF_UNIT_CONFLICT
+    )
+
+    # 一个字段都没确认：放行，并把缺的列出来（报价侧据此提示用户）
+    resolved = asyncio.run(m.resolve_confirmed_master(session, sku_id, ["unit"]))
+    assert resolved["values"] == {}
+    assert resolved["unconfirmed"] == ["unit"]
+    assert resolved["unconfirmed_labels"] == ["单位"]
+    assert resolved["version_no"] == 0
+
+    # 确认过之后：报价快照要用确认值
+    _confirm(session, unit_diff["id"], RESOLUTION_KEEP_LOCAL, note="以本地口径为准")
+    resolved = asyncio.run(m.resolve_confirmed_master(session, sku_id, ["unit"]))
+    assert resolved["values"] == {"unit": "件"}
+    assert resolved["unconfirmed"] == []
+    assert resolved["version_no"] == 1
+
+
+def test_resolve_confirmed_master_goes_through_the_gate(monkeypatch):
+    """判据只有一份：解析函数内部**确实经过**闸门，不是另抄一套判定。
+
+    这正是 §8.14 返工的成因 —— 闸门写好了没人调、报价侧另走一条路，
+    于是"接线"只存在于注释里。这条测试钉住"调用链从闸门穿过"。
+    """
+    session = _session()
+    sku_id = _sku(session, code="A-1", name="甲件", unit="件")
+    real = m.require_confirmed_master
+    calls: list[tuple] = []
+
+    async def spy(session_, sku_id_, fields=None):
+        calls.append((sku_id_, tuple(fields or ())))
+        return await real(session_, sku_id_, fields)
+
+    monkeypatch.setattr(m, "require_confirmed_master", spy)
+    asyncio.run(m.resolve_confirmed_master(session, sku_id, ["unit"]))
+    assert calls, "解析函数必须经过闸门，否则判据就是两份"
+    assert calls[0][0] == sku_id
+
+
+def test_resolve_confirmed_master_still_raises_for_bad_input():
+    """降级只降"缺确认"这一档；字段名非法这类错误照抛，不能一并吞掉。"""
+    session = _session()
+    sku_id = _sku(session, code="A-1", name="甲件")
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(m.resolve_confirmed_master(session, sku_id, ["not_a_field"]))
+    assert "不是 SKU 关键字段" in caught.value.message
+
+
 def test_field_authority_is_recorded_only_when_someone_claims_it():
     """字段权威归属：默认空；登记谁就记谁与时间，撤回也要留痕。"""
     session = _session()

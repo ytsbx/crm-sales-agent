@@ -110,7 +110,14 @@ def _patched(create):
         quote_router.svc, "serialize_quote", lambda *args, **kwargs: {"quote_id": "fake"}
     ), patch.object(
         quote_router.customer_service, "touch_progress", AsyncMock()
-    ), patch.object(quote_router, "write_audit", AsyncMock()):
+    ), patch.object(quote_router, "write_audit", AsyncMock()), patch.object(
+        # 2026-10-07：回放前新增了「重查当前可见性」。本用例只建了 request_keys 一张表
+        # （没有 quotes 表），所以要把这一步挡掉 —— 挡的是**数据库访问**，
+        # 不是被测的幂等逻辑本身。
+        quote_router.svc,
+        "get_visible_quote",
+        AsyncMock(),
+    ):
         yield
 
 

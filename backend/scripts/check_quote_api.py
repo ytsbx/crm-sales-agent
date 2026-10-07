@@ -208,12 +208,19 @@ def main():
         body=[{'sku_id': skus[0], 'quantity': 100, 'quoted_price': 100}],
     )
     check('写明细', res.get('code'), 0)
+    # §8.14：字段权威还没拍板时**不阻断**报价，但要如实提示"这批明细的主数据未确认"
+    check_true(
+        '主数据未确认时明确提示（不阻断）',
+        '主数据提醒' in (res.get('message') or ''),
+    )
 
     print()
     print('=== 1. 明细与费用列表 ===')
     status, res = call('GET', f'/quote-versions/{version_id}/items', token=admin)
     check('明细列表', res.get('code'), 0)
     check('1 条明细', len(res['data']), 1)
+    # §8.14 的追溯列：这条明细按哪一版 SKU 主数据算的（没确认过就是空）
+    check_true('明细带主数据版本字段', 'master_version_no' in res['data'][0])
 
     status, res = call('GET', f'/quote-versions/{version_id}/charges', token=admin)
     check('费用列表', res.get('code'), 0)

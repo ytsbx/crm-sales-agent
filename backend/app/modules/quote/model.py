@@ -11,7 +11,18 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, TimestampMixin
@@ -68,6 +79,15 @@ class QuoteVersion(Base, IdMixin):
     trade_terms: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payment_terms: Mapped[str | None] = mapped_column(String(128), nullable=True)
     delivery_terms: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 客户抬头快照（第八批 §8.7 返修，审查 2026-10-07 实测）。
+    #: 出对客文件时"客户名"原来实时读 `customers.name`：客户改了名，**旧版本再出图
+    #: 就印成新名字**，与当时真正发给客户的那一份对不上。必须跟计价单位一样存快照。
+    #: 可空：历史版本没有留存，出图明确写"待核实"，不静默补当前客户名。
+    customer_name_snapshot: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 联系人抬头快照，理由同上（原来实时读 `contacts.name`）。
+    contact_name_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 有效期快照，理由同上（原来实时读 `quotes.valid_until` 的当前值）。
+    valid_until_snapshot: Mapped[date | None] = mapped_column(Date, nullable=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     approval_status: Mapped[str] = mapped_column(String(24), default="not_submitted")
     approval_required: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -105,6 +125,12 @@ class QuoteItem(Base, IdMixin):
     #: 旧版本再生成出来的表就会拿今天的单位冒充当时报的价，客户一比对就是口径不一致。
     #: 可空：历史版本行没有这个值，出图时明确写"待核实"，不静默补当前单位。
     unit_snapshot: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: 这条明细按**哪一版 SKU 主数据**算的（第八批 §8.14）。
+    #: 为空表示生成这条明细时，这个 SKU 还没有任何"已确认"的主数据。
+    #: 存版本号而不是只存"确认过"这个布尔：确认值会随新的确认动作演进，
+    #: 只记"确认过"没法回答"当时用的是哪一版"。与旁边那排 *_snapshot 同一性质 ——
+    #: 事后能追溯，不靠回查当下的主数据。
+    master_version_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=1)
     cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     package_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)

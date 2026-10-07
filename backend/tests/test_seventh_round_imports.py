@@ -624,6 +624,50 @@ def test_import_report_truncates_loudly(monkeypatch):
     assert len(body["failed"]) == 2
 
 
+def test_import_rows_none_of_the_failures_can_be_lost(monkeypatch):
+    """§7.6 的闭环：文件行数上限 ≤ 失败清单上限 → 截断永远不可能发生。
+
+    失败行数永远 ≤ 总行数，所以把"单文件行数"卡住，就不存在
+    "失败了 6001 条、只能看到前 5000 条"这种拿不全的情况。
+    """
+    from app.core import importing
+
+    monkeypatch.setattr(importing.settings, "import_max_error_rows", 100)
+    monkeypatch.setattr(importing.settings, "import_max_rows", 100)
+    # 顶到上限：全部失败也一条不落
+    report = ImportReport("probe", 100)
+    for row in range(2, 102):
+        report.failed_row(row, f"SKU-{row}", "随便一个原因")
+    body = report.payload(message="x")["data"]
+    assert body["failed_count"] == 100
+    assert body["failed_truncated"] is False
+    assert len(body["failed"]) == 100
+
+
+def test_import_rejects_a_file_over_the_row_limit(monkeypatch, db):
+    """超限当场拒绝并让他拆文件，而不是导到一半只给半份失败清单。"""
+    from app.core import importing
+    from app.modules.product import io_router as product_io
+
+    monkeypatch.setattr(importing.settings, "import_max_rows", 2)
+    seed_basics(db)
+    csv_text = "产品名称,产品线\n甲产品,包装\n乙产品,包装\n丙产品,包装\n"  # 3 行 > 2
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            product_io.import_products(
+                request=FakeRequest(),
+                file=upload(csv_text),
+                preview=True,
+                preview_token=None,
+                user=FakeUser(),
+                session=db.session,
+            )
+        )
+    assert caught.value.code == 40001
+    assert "请拆成多个文件" in caught.value.message
+
+
 def test_product_import_preview_does_not_write(db):
     """product 导入原来**没有** preview 参数：通用导入组件发 preview=true 时
     它照样写库（FastAPI 忽略未知表单字段）。现在必须真的不写。"""
@@ -665,3 +709,93 @@ def test_product_import_continues_after_a_bad_row(db):
     assert result["data"]["created_count"] == 2
     assert result["data"]["failed_count"] == 1
     assert {"好产品一", "好产品二"} <= names
+
+
+# --------------------------------------------- §7.6 预览 → 确认 的闭环真的拦得住
+
+
+def test_import_refuses_when_conclusions_differ_from_preview(db):
+    """§7.6：确认时结论与预览不一致，必须**整体回滚并报 40902**。
+
+    原实现算完差异只把它塞进响应体、然后照常 commit —— 用户确认的是预览里
+    那份结果，落库的却是另一份，等于没有防护。这里钉住"冲突就不许写"。
+    """
+    import hashlib as _hashlib
+
+    from app.modules.product import io_router as product_io
+
+    seed_basics(db)
+    content = "产品名称,产品线\n甲产品,包装\n乙产品,包装\n"
+    digest = _hashlib.sha256(content.encode("utf-8-sig")).hexdigest()
+    # 预览时说第 2 行"将跳过"；本次执行两行都是新增 → 第 2 行结论变了
+    token = make_preview_token("product", digest, {"2": "skipped", "3": "created"})
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            product_io.import_products(
+                request=FakeRequest(),
+                file=upload(content),
+                preview=False,
+                preview_token=token,
+                user=FakeUser(),
+                session=db.session,
+            )
+        )
+    assert caught.value.code == 40902
+    assert "重新预览" in caught.value.message
+    # 关键：一条都没写进去（不是"提交完再提示"）
+    assert "甲产品" not in set(db.scalars_all(select(Product.name)))
+
+
+def test_import_refuses_when_the_file_changed_after_preview(db):
+    """§7.6：预览的是 A 文件、确认时传了 B 文件，也要拦。
+
+    只比结论不比文件的话，换一份内容不同但结论分布相同的文件就能绕过。
+    """
+    from app.modules.product import io_router as product_io
+
+    seed_basics(db)
+    content = "产品名称,产品线\n丙产品,包装\n"
+    token = make_preview_token("product", "another-file-sha", {"2": "created"})
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            product_io.import_products(
+                request=FakeRequest(),
+                file=upload(content),
+                preview=False,
+                preview_token=token,
+                user=FakeUser(),
+                session=db.session,
+            )
+        )
+    assert caught.value.code == 40902
+    assert "不是同一份" in caught.value.message
+    assert "丙产品" not in set(db.scalars_all(select(Product.name)))
+
+
+def test_import_with_matching_preview_token_goes_through(db):
+    """结论与文件都没变时正常提交，并把比对结果一并返回（前端可据此展示）。"""
+    import hashlib as _hashlib
+
+    from app.modules.product import io_router as product_io
+
+    seed_basics(db)
+    content = "产品名称,产品线\n丁产品,包装\n"
+    digest = _hashlib.sha256(content.encode("utf-8-sig")).hexdigest()
+    token = make_preview_token("product", digest, {"2": "created"})
+
+    result = asyncio.run(
+        product_io.import_products(
+            request=FakeRequest(),
+            file=upload(content),
+            preview=False,
+            preview_token=token,
+            user=FakeUser(),
+            session=db.session,
+        )
+    )
+    assert result["data"]["created_count"] == 1
+    assert result["data"]["preview_diff"]["changed_rows"] == []
+    assert result["data"]["preview_diff"]["file_changed"] is False
+    assert "丁产品" in set(db.scalars_all(select(Product.name)))

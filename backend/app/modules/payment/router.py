@@ -613,6 +613,18 @@ async def create_payment(
             result_type="payment",
         )
         if reservation.should_replay:
+            # 回放前重查**当前**可见性（2026-10-07 修）：订单可能已经换了负责人，
+            # 这笔回款也就跟着不再属于你。原来直接返回缓存 —— 凭旧请求键照样读走。
+            # 口径：**幂等保护的是"不重复登记"，不是"永久授权"**。
+            if reservation.replay_id is not None:
+                try:
+                    await svc.get_visible_payment(session, user, reservation.replay_id)
+                except AppError:
+                    raise AppError(
+                        ErrorCode.DATA_SCOPE_DENIED,
+                        "这条记录已不在你的可见范围内（可能已移交或删除），无法回放原结果",
+                        403,
+                    ) from None
             return ok(
                 reservation.replay_payload,
                 "这笔回款此前已登记成功，已返回原记录（没有重复登记）",

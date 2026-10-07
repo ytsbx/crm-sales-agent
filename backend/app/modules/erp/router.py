@@ -380,23 +380,16 @@ async def get_external_record(
     """单条原始事实（原始报文全文）。"""
     row = await collect_svc.get_record(session, record_id)
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        # 逐条也要过范围：列表过滤 + 详情不校验，等于猜到 id 就能看别家的原始报文。
-        visible, _ = await collect_svc.list_records(
-            session,
-            owner_ids=owner_ids,
-            system_type=row.system_type,
-            shop_id=row.shop_id,
-            object_type=row.object_type,
-            page=1,
-            page_size=1,
+    # 逐条也要过范围：列表过滤 + 详情不校验，等于猜到 id 就能看别家的原始报文。
+    # 判据必须**针对这一条**算（2026-10-07 修）：原来拿"可见列表第 1 页第 1 条"
+    # 再判断目标在不在里面 —— 用户有两条以上合法记录时，请求不是排序第一条的那个
+    # 会被**误判无权**，合法访问被 403 挡掉（方向与越权相反，但同样是 bug）。
+    if not await collect_svc.record_is_visible(session, row.id, owner_ids):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "该原始事实不在你的数据范围内（它关联的订单不属于你可见的负责人）",
+            403,
         )
-        if row.id not in {item["id"] for item in visible}:
-            raise AppError(
-                ErrorCode.DATA_SCOPE_DENIED,
-                "该原始事实不在你的数据范围内（它关联的订单不属于你可见的负责人）",
-                403,
-            )
     return ok(collect_svc.serialize_record(row))
 
 

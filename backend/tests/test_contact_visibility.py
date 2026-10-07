@@ -35,8 +35,33 @@ NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 
 def test_mask_phone_keeps_head_and_tail():
     assert mask_contact_value("13812348000", "phone") == "138****8000"
-    # 带分隔符的座机一样按"前 3 后 4"处理，分隔符不参与保留
+    # 带分隔符的长号仍按"前 3 后 4"处理，分隔符不参与保留
     assert mask_contact_value("021-88889999", "phone") == "021****9999"
+
+
+def test_mask_short_phone_never_reveals_everything():
+    """短号 / 座机也要**真的挡住数字**（审查 2026-10-07 实测的漏洞）。
+
+    原来固定写 `前3 + **** + 后4`：7 位号码正好 3+4=7，中间四个星号一个数字都没挡
+    （`1234567` 原样可还原）；5、6 位还会把同一批数字重复显示。
+    现在按长度分档，硬判据是"至少挡住两位原字符"。
+    """
+    cases = {
+        "12": "**",  # 2 位：全遮
+        "123": "1**",
+        "1234": "1***",
+        "12345": "12**5",  # 5 位：留前 2 后 1
+        "123456": "12***6",
+        "1234567": "12****7",  # 7 位：改前会整串露出
+        "12345678": "123**678",  # 8 位：留前 3 后 3
+        "1234567890": "123****890",
+        "13812348000": "138****8000",  # 11 位手机号形状保持不变
+    }
+    for raw, expected in cases.items():
+        masked = mask_contact_value(raw, "phone")
+        assert masked == expected, f"{raw} → {masked}，期望 {expected}"
+        hidden = sum(1 for a, b in zip(raw, masked) if a != b)
+        assert hidden >= 2, f"{raw} 脱敏后只挡住 {hidden} 个字符，等于没脱敏"
 
 
 def test_mask_email_keeps_first_char_and_domain():
