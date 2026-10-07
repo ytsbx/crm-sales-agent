@@ -416,7 +416,13 @@ export default function ProductDetailPage() {
 
       {/* 产品资料/图片附件（方案 §7：产品图片接通；可上传图片/规格书，可预览） */}
       <SectionCard title="产品资料与图片">
-        <AttachmentPanel businessType="product" businessId={productId} />
+        {/* 产品附件的写入跟产品自己的写权限走（2026-10-07 口径），
+            所以要把产品权限码传进去；不传就默认按文件中心，会与后端不一致。 */}
+        <AttachmentPanel
+          businessType="product"
+          businessId={productId}
+          writePermission="product:manage"
+        />
       </SectionCard>
 
       <Modal

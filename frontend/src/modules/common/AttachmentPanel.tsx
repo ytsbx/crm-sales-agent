@@ -29,11 +29,26 @@ interface Props {
   businessId: number
   category?: string
   enabled?: boolean
+  /**
+   * 上传/挂载要**目标模块自己的**写权限码，默认按文件中心（file:manage）。
+   * 产品这类"写权限跟业务模块走"的对象要显式传 —— 只判 file:manage 会出现
+   * "按钮能点、接口 403"。删除按钮不看它（删文件本身是文件中心的动作）。
+   */
+  writePermission?: string
 }
 
-export default function AttachmentPanel({ businessType, businessId, category, enabled = true }: Props) {
+export default function AttachmentPanel({
+  businessType,
+  businessId,
+  category,
+  enabled = true,
+  writePermission = 'file:manage',
+}: Props) {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+  // 上传是两步（先传文件、再挂到业务对象），两道权限都要过：
+  // 文件中心那一道（file:manage）+ 目标模块那一道（writePermission）。
+  const canWrite = can('file:manage') && can(writePermission)
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
 
@@ -99,7 +114,7 @@ export default function AttachmentPanel({ businessType, businessId, category, en
           合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB
         </div>
         <div style={{ flex: 1 }} />
-        {can('file:manage') && (
+        {canWrite && (
           <>
             <input
               ref={inputRef}

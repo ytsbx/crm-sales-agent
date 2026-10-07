@@ -494,14 +494,25 @@ async def main() -> int:
     check_denied("没有 customer:update：不能往客户挂附件", status)
     check("被拒的挂载没有留下关联", await count_links(customer_file), 1)
 
-    # 产品附件的写入授权本轮仍由 file:manage 承担（收紧到 product:manage 属改口径，
-    # 现有守门套件 check_data_scope 的对照用例钉住了"上传者能给自己的产品挂附件"）。
+    # 产品附件的写入授权 2026-10-07 收紧为 product:manage（业务口径已确认）：
+    # 原来只守 file:manage，于是"有文件管理权、但不管产品"的人也能改产品上的资料。
+    # limited 角色有 file:manage + product:view，唯独没有 product:manage —— 正是这一档。
     limited_file = upload_id(limited, f"{PREFIX}-limited.png")
     status, result = call(
         "POST", f"/products/{product_id}/files?file_id={limited_file}", token=limited
     )
-    check("对照：有 file:manage + product:view 的人能给产品挂附件", status, 200)
-    check("对照：挂上后本人能读", call_status("GET", f"/files/{limited_file}", limited), 200)
+    check_denied("没有 product:manage：不能给产品挂附件（哪怕有 file:manage）", status)
+    check("被拒的挂载没有留下关联（产品）", await count_links(limited_file), 0)
+    # 对照：管理员（有 product:manage）挂**自己上传的**文件 —— 证明上一句拒的是权限，
+    # 不是接口坏了。注意 `can_access_file` 对"还没挂过"的裸文件只放行**上传者本人**，
+    # 所以这里必须是 admin 自己传的那份，不能拿 limited 那份（那会 403，测的就不是权限了）。
+    admin_file = upload_id(admin, f"{PREFIX}-admin.png")
+    status, result = call(
+        "POST", f"/products/{product_id}/files?file_id={admin_file}", token=admin
+    )
+    check("对照：有 product:manage 的人能给产品挂附件", status, 200)
+    check("对照：挂上后能读（产品附件对 product:view 的人可见）",
+          call_status("GET", f"/files/{admin_file}", limited), 200)
 
     # ---------------------------------------------------------------- 4
     print("\n=== 4. 只获报价权限的角色：自己的报价附件仍能合法下载（不能收成谁都下不了）===")
@@ -512,7 +523,7 @@ async def main() -> int:
     check("附件可下载", call_status("GET", f"/files/{quote_file}/download", quote_only), 200)
     check_denied(
         "但拿不到产品附件（没有 product:view）",
-        call_status("GET", f"/files/{limited_file}", quote_only),
+        call_status("GET", f"/files/{admin_file}", quote_only),
     )
 
     # ---------------------------------------------------------------- 5

@@ -381,6 +381,9 @@ async def main() -> int:
         product_id = (
             await s.execute(select(Product.id).where(Product.deleted_at.is_(None)).limit(1))
         ).scalar_one()
+        mgr_id = (
+            await s.execute(select(User.id).where(User.username == 'lisi'))
+        ).scalar_one()
         victim_file = FileRecord(
             storage_provider='local',
             object_key=f'_fixture/{PREFIX}-victim.pdf',
@@ -390,9 +393,20 @@ async def main() -> int:
             checksum='0' * 64,
             uploaded_by=owner.id,  # 等同于张三上传：别人一律不可见
         )
-        s.add(victim_file)
+        # 主管（有 product:manage）自己上传的一份，用作"接口本身是好的"这一条对照
+        mgr_file = FileRecord(
+            storage_provider='local',
+            object_key=f'_fixture/{PREFIX}-mgr.pdf',
+            file_name=f'{PREFIX}-mgr.pdf',
+            mime_type='application/pdf',
+            size=8,
+            checksum='0' * 64,
+            uploaded_by=mgr_id,
+        )
+        s.add_all([victim_file, mgr_file])
         await s.flush()
         victim_file_id = victim_file.id
+        mgr_file_id = mgr_file.id
         await s.commit()
 
     check_denied('他人把别人的文件挂到产品上（越权下载通道）',
@@ -406,9 +420,16 @@ async def main() -> int:
         ).scalars().all()
     # 挂上了就等于授权了：越权请求即使只回 403、关联却已落库，文件也已经漏了。
     check('越权挂载未留下任何关联', len(leaked), 0)
-    check('上传者自己挂自己的文件（对照）',
-          call('POST', f'/products/{product_id}/files?file_id={victim_file_id}',
-               owner_token)[0], 200)
+    # 2026-10-07 收紧：产品附件的写入授权改为 product:manage（原来是 file:manage）。
+    # 张三（销售）有 file:manage 但没有 product:manage —— 连自己上传的文件也挂不上，
+    # 这正是收紧的目的：产品不该被"只管文件、不管产品"的人改。
+    check_denied('销售只有 file:manage：连自己的文件也不能挂到产品上',
+                 call('POST', f'/products/{product_id}/files?file_id={victim_file_id}',
+                      owner_token)[0])
+    # 对照：换成有 product:manage 的主管挂自己的文件 —— 证明被拒是权限，不是接口坏了。
+    check('有 product:manage 的人可以给产品挂自己的文件（对照）',
+          call('POST', f'/products/{product_id}/files?file_id={mgr_file_id}',
+               login('lisi', '123456'))[0], 200)
 
     print('=== 3.1 客户 / 报价删除的数据范围 ===')
     check_denied('有分配权限的他人仍不能发起别人的撞单检查',
@@ -772,8 +793,11 @@ async def main() -> int:
         gen_link_id = gen_link.id
         await s.commit()
     check('生成稿原件不能被通用删除', call('DELETE', f'/files/{gen_file_id}', owner_token)[0], 422)
-    check('生成稿的关联不能被解绑', call('DELETE', f'/business-files/{gen_link_id}',
-                                 owner_token)[0], 422)
+    # 2026-10-07 起产品附件的**写入**要 product:manage（原来是 file:manage）。张三没有这个
+    # 权限，解绑会**先**被 403 拦下、走不到"原件保护"那一条 —— 这是行为变更、不是回归，
+    # 所以改用有产品写权限的主管来验 422（否则这条断言以后测的就变成权限、而不是原件保护）。
+    check('生成稿的关联不能被解绑（有产品写权限的人来解）',
+          call('DELETE', f'/business-files/{gen_link_id}', login('lisi', '123456'))[0], 422)
 
     print('=== 3.6 查重不能跨范围枚举客户 ===')
     # 查重函数原来没有 user 概念，"先宽松捞候选"直接捞全库，返回里还带客户名、

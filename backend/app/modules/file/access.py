@@ -48,15 +48,17 @@ BUSINESS_MODELS: dict[str, tuple[type, str]] = {
 #: 口径：**附件跟随它挂着的那个业务对象**。看要该对象的查看权，挂/解绑要写入权。
 #: 权限码取自各模块自己的路由（不在这里另造）：写入用它们各自的写接口用的那个码，
 #: 比如线索的 PATCH 走 `lead:create`、询价的写接口走 `quote:manage`。
-#: 写入权限写 `None` 表示"本模块的写入授权由文件中心的 `file:manage` 承担"
-#: （目前只有 product，理由见 `NO_OWNER_MODELS` 的注释）。
+#: 写入权限都写**本模块自己的**权限码。现在没有任何模块写 `None` 了：
+#: 原来只有 product 写 `None`（表示"由文件中心的 `file:manage` 承担"），
+#: 2026-10-07 按业务口径收紧为 `product:manage`，理由见 `NO_OWNER_MODELS` 的注释。
+#: （`visible_object` 仍保留 `None` 的分支：将来若有模块确实该由文件权限承担，照旧可用。）
 BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
     "customer": ("customer:view", "customer:update"),
     "lead": ("lead:view", "lead:create"),
     "opportunity": ("opportunity:view", "opportunity:manage"),
     "quote": ("quote:view", "quote:manage"),
     "order": ("order:view", "order:manage"),
-    "product": ("product:view", None),
+    "product": ("product:view", "product:manage"),
     "sample": ("sample:view", "sample:manage"),
     "inquiry": ("quote:view", "quote:manage"),
     "order_draft": ("order:view", "order:manage"),
@@ -70,11 +72,16 @@ BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
 #: 此前这里直接 `return True`，于是给一个**不存在**或**已删除**的产品编号挂附件
 #: 也会被放行（脏关联落库后，谁也说不清它挂在哪、也永远列不出来）。
 #:
-#: 产品附件的**写入**授权为什么仍是 `file:manage`：产品字段维护是 `product:manage`，
-#: 但产品附件的两个入口（通用入口、`POST /products/{id}/files`）一直只要求
-#: `file:manage`，产品详情页的附件面板也对 `product:view` 的人开放；收紧到
-#: `product:manage` 是**改口径**，得连守门套件 `check_data_scope` 的对照用例
-#: （"上传者能给自己的产品挂附件"）一起改，本轮先不动，已在回报里列为待确认项。
+#: 产品附件的**写入**授权在 2026-10-07 收紧为 `product:manage`（业务口径已确认）：
+#: 原先只要求 `file:manage`，于是"有文件管理权、但不管产品"的人（例如行政）
+#: 也能给产品挂附件、换掉产品上的资料 —— 产品是全站唯一一个"写权限不跟业务模块走"
+#: 的例外。现在与客户/报价/订单一致：**谁管产品，谁才管产品上的附件**。
+#: 收紧时一并改了三处，漏一处就会出现"按钮能点、接口 403"：
+#:   —— `product/router.py` 的 `POST /products/{id}/files`（路由级权限码）；
+#:   —— 前端 `AttachmentPanel` 的 `writePermission`（上传按钮的显示条件）；
+#:   —— 三个测试（`tests/test_file_access_authorization.py`、
+#:      `scripts/check_attachment_business_auth.py`、`scripts/check_data_scope.py`），
+#:      它们原来钉的是旧口径。
 NO_OWNER_MODELS: dict[str, type] = {"product": Product}
 
 #: 不可破坏的原件类别 → 人话标签（第一批返修 §3.1 要求"三条路径统一判断"）。

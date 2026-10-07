@@ -418,7 +418,7 @@ async def attach_product_file(
     file_id: int = Query(..., description="先调 POST /files/upload 拿到的文件 id"),
     category: str | None = None,
     remark: str | None = None,
-    user: CurrentUser = Depends(require_permission("file:manage")),
+    user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """给产品挂附件（03-API §14）：图纸、检测报告、认证证书等（POST）。
@@ -446,13 +446,13 @@ async def attach_product_file(
     if not await can_access_file(session, user, file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
     # 目标侧也走**同一份判据**（不再在这里手写"产品在不在"）：产品附件的查看权是
-    # `product:view`；写入权这一档由本接口的 `file:manage` 承担（收紧到 product:manage
-    # 是改口径，见 access.NO_OWNER_MODELS 的说明）。
+    # `product:view`、写入权是 `product:manage`（2026-10-07 收紧，与路由级权限码
+    # 是同一个；见 access.NO_OWNER_MODELS 的说明）。
     if not await visible_object(
         session, user, business_type="product", business_id=product_id, write=True
     ):
         raise AppError(
-            ErrorCode.DATA_SCOPE_DENIED, "不能给该产品挂附件：你没有产品资料的查看权限", 403
+            ErrorCode.DATA_SCOPE_DENIED, "不能给该产品挂附件：你没有产品资料的维护权限", 403
         )
 
     link = BusinessFile(

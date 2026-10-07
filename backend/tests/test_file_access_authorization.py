@@ -239,20 +239,27 @@ def test_unknown_business_type_defaults_to_denied():
     assert allowed is False
 
 
-def test_product_write_gate_stays_on_file_manage():
-    """产品附件的**写入**授权仍由文件中心的 file:manage 承担。
+def test_product_write_gate_follows_product_permission():
+    """产品附件的**写入**授权跟产品自己的写权限走（2026-10-07 收紧）。
 
-    产品字段维护是 product:manage，但产品附件的两个入口（通用入口与
-    `POST /products/{id}/files`）一直只要求 file:manage；收紧到 product:manage
-    属于改口径，得连守门套件 check_data_scope 的对照用例一起改，本轮先不动。
+    原来只要求 file:manage，于是"有文件管理权、但不管产品"的人也能给产品挂附件、
+    换掉产品上的资料 —— 产品是全站唯一一个写权限不跟业务模块走的例外。
+    现在与客户/报价/订单一致：谁管产品，谁才管产品上的附件。
     """
     session = _FakeSession(get_result=_Product())
 
-    allowed = asyncio.run(
+    # 只有文件管理权、没有产品维护权：挡住
+    denied = asyncio.run(
         visible_object(session, _user("file:view", "file:manage", "product:view"),
                        business_type="product", business_id=1, write=True)
     )
+    assert denied is False
 
+    # 有产品维护权：放行
+    allowed = asyncio.run(
+        visible_object(session, _user("file:view", "product:view", "product:manage"),
+                       business_type="product", business_id=1, write=True)
+    )
     assert allowed is True
 
 
