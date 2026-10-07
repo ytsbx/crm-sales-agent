@@ -524,7 +524,19 @@ async def main() -> int:
             after_resend = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()
             audit_after = (await s.execute(select(AuditLog.__table__).order_by(AuditLog.id))).all()
             check('关闸重发不改结果未知的原记录', after_resend, before_resend)
-            check('关闸重发不写成功审计', audit_after, audit_before)
+            # ⚠️ 这里**不能**把两个整表直接传给 `check()`（曾经就是这么写的）。
+            # `check()` 在断言**通过时也会 print 出实际值**，而这两侧是整张 audit_logs 表
+            # ——实测输出一根 224,732 字节的行（该套件其余 48 行加起来才 10KB）。
+            # 本地把它写进文件是毫秒级，CI 把它往回传时卡死：日志停在那一行之前、
+            # 之后 136 秒零输出，job 最终被判失败，红了整整两天查不出原因（2026-10-07）。
+            # 现在判据**一点没放宽**（仍然要求两侧完全相等），只是不再打印整表。
+            audit_same = audit_after == audit_before
+            check_true(
+                '关闸重发不写成功审计',
+                audit_same,
+                f'审计 {len(audit_before)} 行 → {len(audit_after)} 行，'
+                + ('完全一致' if audit_same else '存在差异（明细见库，不在此展开）'),
+            )
         check('发起/同步/重发关闸路径外部调用均为零', len(external_attempts), 0)
     finally:
         # 设置项还回去（CI 上是"新建的那条删掉"）

@@ -91,7 +91,7 @@ jobs:
         run: PYTHONPATH=. python -m pytest
 
       - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
-        # 两处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：
+        # 三处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：
         # 1) `PYTHONUNBUFFERED` + `python -u`：CI 不是终端，不关缓冲的话 stdout 会走
         #    块缓冲 —— 套件崩溃时**缓冲区里还没来得及刷出的日志全部丢失**，
         #    "失败在哪、为什么失败"就永远看不见（实测：日志里几十行 OK 的时间戳
@@ -99,10 +99,16 @@ jobs:
         # 2) 不再用 `set -e` 一个失败就中断：**跑完所有套件再汇总失败清单**，
         #    并在注解里点名是哪些套件红的。原来静默中断只会告诉你"失败了"，
         #    红了两天都没人知道为什么红 —— 信号价值等于零。
+        # 3) 输出 `tee` 落盘 + 量最长行：**超长单行会把日志上传卡死**。
+        #    实测（check_dingtalk_contract 把整张 audit_logs 表交给 check() 打印）
+        #    输出了一行 224,732 字符 —— job 静默卡 136 秒后被判失败，日志停在
+        #    那一行之前，连报错都没有，靠翻日志永远查不出来。
+        #    现在超过 10000 字符就 `::warning::` 点名（正常套件最长行 ≤ 3200）。
         env:
           PYTHONUNBUFFERED: "1"
         run: |
           set -u
+          set -o pipefail
           failed=""
           while read -r suite; do
             case "$suite" in '' | '#'*) continue ;; esac
@@ -112,11 +118,17 @@ jobs:
               continue
             fi
             echo "::group::=== $suite ==="
-            if PYTHONPATH=. python -u "scripts/$suite.py"; then
+            out="$(mktemp)"
+            if PYTHONPATH=. python -u "scripts/$suite.py" 2>&1 | tee "$out"; then
               echo "OK  $suite"
             else
               echo "::error::套件失败：$suite"
               failed="$failed $suite"
+            fi
+            maxlen=$(wc -L < "$out" 2>/dev/null || echo 0)
+            rm -f "$out"
+            if [ "${maxlen:-0}" -gt 10000 ]; then
+              echo "::warning::$suite 有超长单行（最长 $maxlen 字符），日志上传可能卡住：多半是某处把大对象直接 print 出来、或传给了 check() 去打印"
             fi
             echo "::endgroup::"
           done < ../ops/check_suites.txt
