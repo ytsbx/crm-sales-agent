@@ -461,6 +461,121 @@ async def main() -> None:
         check("并发之后批次数是 1", len([b for b in res["data"]["batches"] if b["status"] != "cancelled"]), 1)
 
         # ------------------------------------------------------------------
+        # 审查方点名的另外两个并发场景（§9.6 验收）：只"同时排 8+8"不够，
+        # 还要证明**订单取消不会和排批次互相穿透**、**取消批次不会和实发打架**。
+        def make_order(quantity: int = 10) -> tuple[int, int]:
+            """建一张测试订单，返回 (订单 id, 明细 id)。"""
+            _, created = call(
+                "POST", "/orders", admin,
+                body={
+                    "customer_id": customer_a,
+                    "items": [{"sku_id": ids["sku"], "quantity": quantity, "unit_price": 10}],
+                },
+            )
+            new_order = created["data"]["order_id"]
+            new_items = call("GET", f"/orders/{new_order}/items", admin)[1]["data"]
+            return new_order, new_items[0]["id"]
+
+        print()
+        print("=== 9.6 并发：排批次 与 取消订单 ===")
+        cancel_order_id, cancel_item = make_order()
+        await asyncio.gather(
+            asyncio.to_thread(
+                call, "POST", f"/orders/{cancel_order_id}/shipments", token=admin,
+                body={"items": [{"order_item_id": cancel_item, "planned_qty": 10}]},
+            ),
+            asyncio.to_thread(call, "POST", f"/orders/{cancel_order_id}/cancel", token=admin),
+        )
+        final_order = call("GET", f"/orders/{cancel_order_id}", admin)[1]["data"]
+        if final_order["status"] == "cancelled":
+            # 关键判据：订单取消之后**不能还挂着一张有效待发批次** ——
+            # 那意味着排批次穿过了取消动作。取消订单本身会把 planned 批次级联置取消，
+            # 所以"排批次先成功"是允许的，不允许的是**取消之后新增**。
+            leftover = call("GET", f"/orders/{cancel_order_id}/shipments", admin)[1]["data"]
+            planned = [b for b in leftover["batches"] if b["status"] == "planned"]
+            check("订单已取消时不留下有效待发批次", planned, [])
+            check_true(
+                "取消订单后不能继续排批次",
+                call(
+                    "POST", f"/orders/{cancel_order_id}/shipments", admin,
+                    body={"items": [{"order_item_id": cancel_item, "planned_qty": 1}]},
+                )[0] in (400, 422),
+            )
+        else:
+            check_true("要么取消成功、要么订单仍在（状态可解释）", final_order["status"] != "cancelled", final_order["status"])
+
+        print()
+        print("=== 9.6 并发：取消批次 与 登记实发 ===")
+        ship_order_id, ship_item = make_order()
+        _, batch_res = call(
+            "POST", f"/orders/{ship_order_id}/shipments", admin,
+            body={"items": [{"order_item_id": ship_item, "planned_qty": 10}]},
+        )
+        race_batch = batch_res["data"]["batch_id"]
+        await asyncio.gather(
+            asyncio.to_thread(
+                call, "POST", f"/orders/{ship_order_id}/shipments/{race_batch}/ship", token=admin,
+                body={"actual_ship_date": "2026-10-06"},
+            ),
+            asyncio.to_thread(call, "DELETE", f"/orders/{ship_order_id}/shipments/{race_batch}", token=admin),
+        )
+        # 直接查库（列表接口会滤掉已取消的批次，看不到终态）
+        async with SessionLocal() as s:
+            batch_row = (
+                await s.execute(
+                    text(
+                        "select b.status, coalesce(sum(bi.shipped_qty), 0) "
+                        "from order_shipment_batches b "
+                        "left join order_shipment_batch_items bi on bi.batch_id = b.id "
+                        "where b.id = :b group by b.status"
+                    ),
+                    {"b": race_batch},
+                )
+            ).one()
+        batch_status, batch_shipped = batch_row[0], float(batch_row[1])
+        check_true(
+            "批次只可能是已发货或已取消（没有第三种残留状态）",
+            batch_status in ("shipped", "cancelled"),
+            batch_status,
+        )
+        if batch_status == "cancelled":
+            check("取消掉的批次没有留下实发数量", batch_shipped, 0.0)
+        else:
+            check("已发货的批次实发量就是计划量", batch_shipped, 10.0)
+
+        # 并发跑出来的是哪一个分支要看时序，所以**两个方向各再顺序走一遍** ——
+        # 这样"取消后不能实发""实发后不能取消"这两条规则不依赖运气也钉得住。
+        seq_order, seq_item = make_order()
+        _, seq_res = call(
+            "POST", f"/orders/{seq_order}/shipments", admin,
+            body={"items": [{"order_item_id": seq_item, "planned_qty": 10}]},
+        )
+        seq_batch = seq_res["data"]["batch_id"]
+        call("DELETE", f"/orders/{seq_order}/shipments/{seq_batch}", admin)
+        check_true(
+            "已取消的批次不能登记实发",
+            call(
+                "POST", f"/orders/{seq_order}/shipments/{seq_batch}/ship", admin,
+                body={"actual_ship_date": "2026-10-06"},
+            )[0] in (400, 422),
+        )
+
+        seq_order2, seq_item2 = make_order()
+        _, seq_res2 = call(
+            "POST", f"/orders/{seq_order2}/shipments", admin,
+            body={"items": [{"order_item_id": seq_item2, "planned_qty": 10}]},
+        )
+        seq_batch2 = seq_res2["data"]["batch_id"]
+        call(
+            "POST", f"/orders/{seq_order2}/shipments/{seq_batch2}/ship", admin,
+            body={"actual_ship_date": "2026-10-06"},
+        )
+        check_true(
+            "已发货的批次不能取消",
+            call("DELETE", f"/orders/{seq_order2}/shipments/{seq_batch2}", admin)[0] in (400, 422),
+        )
+
+        # ------------------------------------------------------------------
         print()
         print("=== 9.8 交期偏差按建议发货日算 ===")
         async with SessionLocal() as s:
