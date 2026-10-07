@@ -623,6 +623,13 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
             "items": rows,
         })
 
+    # 整单是否发完：**逐明细按数量判**（不是数"还有几个批次没发"）。
+    # §9.8 复审的坑：订购 10、已发 6、剩 4 件**根本没排新批次**时
+    # `pending_batch_count` 是 0 —— 拿它当"发完了"会提前下最终结论。
+    settled = bool(agg) and all(
+        _d(v["ordered"]) - _d(v["shipped"]) <= 0 for v in agg.values()
+    )
+
     # 「最后一批 vs 交期」的两个输入（第九批 §9.8）：
     # 建议发货日 = 客户交期换算（到货类减运输天数）；发货日取**实际最晚**那个。
     suggested_ship = suggested_ship_date(
@@ -647,9 +654,7 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
             "planned": _f(sum(_d(v["planned"]) for v in agg.values())),
             "shipped": _f(sum(_d(v["shipped"]) for v in agg.values())),
             "remaining": _f(sum(_d(v["remaining"]) for v in agg.values())),
-            "all_shipped": bool(agg) and all(
-                _d(v["ordered"]) - _d(v["shipped"]) <= 0 for v in agg.values()
-            ),
+            "all_shipped": settled,
             # 分批口径的汇总：场景13 要能回答"是不是分批拖了交期"
             "batch_count": len(serialized_batches),
             "late_batch_count": sum(1 for b in serialized_batches if b["late"]),
@@ -667,9 +672,13 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
             #    原来算出 -3（看着像提前发了）。现在与交期分析共用同一份换算。
             # ② "最后一批"按实际最晚发货日取（业务 2026-10-07 拍板）：
             #    编号大不等于发得晚，第 2 批晚于第 3 批发出时按编号会得出反的结论。
+            # ③ **只有整单发完才给这个"最终结论"**（§9.8 复审）：订购 10、已发 6、
+            #    剩 4 件而后面又没排新批次时，原来照样算出 "-2 天"，读起来像
+            #    "这单晚了 2 天" —— 其实它根本没发完。未发完保持空值，
+            #    进度由 `all_shipped` / `remaining` 说明（前端据此显示"未完成 · 还剩 N"）。
             "last_batch_vs_delivery_days": (
                 (last_shipped_on - suggested_ship).days
-                if last_shipped_on and suggested_ship
+                if settled and last_shipped_on and suggested_ship
                 else None
             ),
             #: 这个偏差比的是**发货**，不是到货。系统里没有"实际到货日"这个

@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business, to_business
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.order.model import SalesOrder
@@ -75,6 +76,66 @@ async def _visible_order_ids(session: AsyncSession, user) -> list[int] | None:
     return list((await session.execute(stmt)).scalars().all())
 
 
+def _is_overdue(due_at, today) -> bool:
+    """这条待办逾期了吗（按**业务日期**比，§9.10）。
+
+    原来写 `due_at.date() < today`：`.date()` 取的是 **UTC** 日期，而 `due_at` 是
+    timestamptz（库里存 UTC）。北京时间凌晨那 8 小时里，"今天到期"会被算成
+    "昨天到期"，凭空多出一条"有 N 个任务已逾期"的结论。
+    """
+    if due_at is None:
+        return False
+    return to_business(due_at).date() < today
+
+
+async def _visible_open_tasks(
+    session: AsyncSession,
+    user,
+    *,
+    customer_id: int | None = None,
+    lead_id: int | None = None,
+    opportunity_id: int | None = None,
+    limit: int | None = None,
+) -> list[Task] | None:
+    """某个业务对象下**当前用户看得见**的未办完待办。
+
+    §9.1 复审（第九批复验）：客户摘要 / 跟进建议 / 商机分析原来是各写一遍
+    `select(Task).where(<对象>_id == X, status in ...)`，**都只判了 `task:view`、
+    没按负责人收范围** —— 于是"业务对象在范围内"又成了一条绕过任务模块的通道：
+    只管自己数据的销售，能通过 AI 摘要读到**别人负责**的待办标题，而同一个客户的
+    概览页与 `/customers/{id}/tasks` 却正确地什么也不给（同一份响应里自相矛盾）。
+
+    现在三处共用这一份，口径与 `customer/router.py::/customers/{id}/tasks`、
+    `customer/service.py::customer_overview` 完全一致（`scoped_owner_ids`）。
+
+    返回 `None` 表示**没有 `task:view` 权限**（"看不到" ≠ "一条都没有"）；
+    返回 `[]` 表示有权限、但这个对象名下确实没有你看得见的未办完待办。
+    """
+    if not ("admin" in getattr(user, "roles", []) or user.has("task:view")):
+        return None
+
+    conditions = [Task.status.in_(("pending", "doing"))]
+    if customer_id is not None:
+        conditions.append(Task.customer_id == customer_id)
+    if lead_id is not None:
+        conditions.append(Task.lead_id == lead_id)
+    if opportunity_id is not None:
+        conditions.append(Task.opportunity_id == opportunity_id)
+
+    stmt = select(Task).where(*conditions)
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        # 范围不是 all 时按负责人收；`[]`（有权限但一个人都看不到）用恒假条件，
+        # 不用 `in_([])` —— 后者在不同库上的语义不直观，恒假更直白。
+        stmt = stmt.where(Task.owner_id.in_(owner_ids) if owner_ids else Task.id < 0)
+    # 排序要可移植：`.nulls_last()` 是 PG 专有写法，本项目 `task/router.py:159`
+    # 已经踩过（换库即 500）。改成"先排没有截止时间的、再按时间升序"。
+    stmt = stmt.order_by(Task.due_at.is_(None).asc(), Task.due_at.asc())
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await session.execute(stmt)).scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # 回款风险（03-API §37 POST /agent/risk-analysis）
 # ---------------------------------------------------------------------------
@@ -85,7 +146,7 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
     这是**确定性**风险：一个节点过了到期日还没收齐，就是逾期，
     不需要模型判断。模型只负责把它讲成人话。
     """
-    today = datetime.now(UTC).date()
+    today = today_business()
     visible = await _visible_order_ids(session, user)
 
     stmt = select(ReceivablePlan).where(
@@ -236,27 +297,20 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     customer = await customer_service.get_visible_customer(session, user, customer_id)
     overview = await customer_service.customer_overview(session, user, customer_id)
     owner = await session.get(User, customer.owner_id) if customer.owner_id else None
-    today = datetime.now(UTC).date()
+    today = today_business()
 
     days_since_followup = None
     if customer.last_followup_at:
         days_since_followup = (datetime.now(UTC) - customer.last_followup_at).days
 
-    # 待办与概览同一口径（第九批 §9.1）：没有 `task:view` 就不取、不返回，
-    # 否则"客户可见"又变成了一条绕过任务模块的通道。
-    open_tasks: list[Task] = []
-    if "admin" in user.roles or user.has("task:view"):
-        open_tasks = (
-            await session.execute(
-                select(Task)
-                .where(
-                    Task.customer_id == customer_id,
-                    Task.status.in_(("pending", "doing")),
-                )
-                .order_by(Task.due_at.asc().nulls_last())
-                .limit(10)
-            )
-        ).scalars().all()
+    # 待办与概览同一口径（第九批 §9.1；复审时补上**负责人数据范围**）：
+    # 只判 `task:view` 挡得住"没有任务模块权限的人"，挡不住"有权限、但这条待办是
+    # 别人负责的" —— 那正是复验抓到的越权（概览返回空、摘要却列出别人的待办）。
+    # 返回 None＝没有 task:view；[]＝有权限但没有你看得见的待办。两者不能混。
+    open_tasks_rows = await _visible_open_tasks(
+        session, user, customer_id=customer_id, limit=10
+    )
+    open_tasks: list[Task] = open_tasks_rows or []
 
     insights: list[str] = []
     if days_since_followup is None:
@@ -266,9 +320,7 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     elif days_since_followup >= 14:
         insights.append(f"{days_since_followup} 天没跟进了，可以安排一次回访")
 
-    overdue_tasks = [
-        row for row in open_tasks if row.due_at and row.due_at.date() < today
-    ]
+    overdue_tasks = [row for row in open_tasks if _is_overdue(row.due_at, today)]
     if overdue_tasks:
         insights.append(f"有 {len(overdue_tasks)} 个任务已逾期")
 
@@ -315,17 +367,22 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
         "recent_quotes": overview["quotes"],
         "recent_orders": overview["orders"],
         "recent_followups": overview["followups"],
-        "open_tasks": [
-            {
-                "id": row.id,
-                "title": row.title,
-                "status": row.status,
-                "priority": row.priority,
-                "due_at": row.due_at,
-                "overdue": bool(row.due_at and row.due_at.date() < today),
-            }
-            for row in open_tasks
-        ],
+        # 没有 task:view 时给 None（"看不到" ≠ "一条都没有"）；有权限但没有可见待办时给 []
+        "open_tasks": (
+            None
+            if open_tasks_rows is None
+            else [
+                {
+                    "id": row.id,
+                    "title": row.title,
+                    "status": row.status,
+                    "priority": row.priority,
+                    "due_at": row.due_at,
+                    "overdue": _is_overdue(row.due_at, today),
+                }
+                for row in open_tasks
+            ]
+        ),
         "insights": insights,
         "as_of": today,
     }
@@ -348,7 +405,7 @@ async def followup_suggestion(
             ErrorCode.REQUIRED_FIELD_MISSING, "至少要提供 customer_id 或 lead_id"
         )
 
-    today = datetime.now(UTC).date()
+    today = today_business()
     target: dict
     last_followup_at = None
     open_tasks: list[Task] = []
@@ -359,16 +416,9 @@ async def followup_suggestion(
 
         customer = await customer_service.get_visible_customer(session, user, customer_id)
         last_followup_at = customer.last_followup_at
-        open_tasks = list(
-            (
-                await session.execute(
-                    select(Task).where(
-                        Task.customer_id == customer_id,
-                        Task.status.in_(("pending", "doing")),
-                    )
-                )
-            ).scalars().all()
-        )
+        # 只算**自己范围内**的待办（§9.1 复审）：原来这里不按负责人过滤，
+        # 于是"14 天没跟进"的建议里会混进别人负责的逾期任务。
+        open_tasks = await _visible_open_tasks(session, user, customer_id=customer_id) or []
         open_opportunities = int(
             (
                 await session.execute(
@@ -386,22 +436,13 @@ async def followup_suggestion(
 
         lead = await lead_service.get_visible_lead(session, user, lead_id)
         last_followup_at = lead.last_followup_at
-        open_tasks = list(
-            (
-                await session.execute(
-                    select(Task).where(
-                        Task.lead_id == lead_id,
-                        Task.status.in_(("pending", "doing")),
-                    )
-                )
-            ).scalars().all()
-        )
+        open_tasks = await _visible_open_tasks(session, user, lead_id=lead_id) or []
         target = {"type": "lead", "id": lead.id, "name": lead.name}
 
     days_since = None
     if last_followup_at:
         days_since = (datetime.now(UTC) - last_followup_at).days
-    overdue_tasks = [t for t in open_tasks if t.due_at and t.due_at.date() < today]
+    overdue_tasks = [t for t in open_tasks if _is_overdue(t.due_at, today)]
 
     suggestions: list[dict] = []
     if days_since is None:
@@ -482,7 +523,7 @@ async def opportunity_analysis(session: AsyncSession, user, *, opportunity_id: i
     from app.modules.opportunity.model import OpportunityStageHistory
 
     opportunity = await opp_service.get_visible_opportunity(session, user, opportunity_id)
-    today = datetime.now(UTC).date()
+    today = today_business()
 
     stage = (
         await session.get(OpportunityStage, opportunity.stage_id)
@@ -502,17 +543,11 @@ async def opportunity_analysis(session: AsyncSession, user, *, opportunity_id: i
         (datetime.now(UTC) - stage_entered_at).days if stage_entered_at else None
     )
 
-    open_tasks = list(
-        (
-            await session.execute(
-                select(Task).where(
-                    Task.opportunity_id == opportunity_id,
-                    Task.status.in_(("pending", "doing")),
-                )
-            )
-        ).scalars().all()
-    )
-    overdue_tasks = [t for t in open_tasks if t.due_at and t.due_at.date() < today]
+    # 同 §9.1：只算自己范围内的待办，否则商机分析会泄露别人负责的任务数
+    open_tasks = (
+        await _visible_open_tasks(session, user, opportunity_id=opportunity_id)
+    ) or []
+    overdue_tasks = [t for t in open_tasks if _is_overdue(t.due_at, today)]
 
     items = await _opportunity_items(session, opportunity_id)
 

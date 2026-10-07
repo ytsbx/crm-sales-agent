@@ -1,4 +1,4 @@
-import { Component, createElement, lazy, Suspense, type ComponentType, type ReactNode } from 'react'
+import { Component, createElement, lazy, Suspense, useEffect, useRef, type ComponentType, type ReactNode } from 'react'
 
 /**
  * 路由级懒加载的统一包装（第九批 §9.11）。
@@ -20,14 +20,41 @@ import { Component, createElement, lazy, Suspense, type ComponentType, type Reac
  * - 不在页面**已经渲染出来之后**自动刷新：那时用户可能已经填了半张表，
  *   刷一下全没了（报告要求"不因资源失败直接丢弃录入"）。渲染之后的错误
  *   只提示 + 给按钮，由用户决定何时刷新。
+ *   §9.11 复审发现：这条口径原来**只写在注释里、实现里没判断** —— 于是
+ *   "先渲染成功、之后某个懒加载块失败"照样整页刷新。现在用 `loadedRef`
+ *   把它真正落实了。
  * - 不用 localStorage 存表单草稿来"兜底"：客户资料属敏感数据，
  *   未经授权的本地持久化反而制造新的泄露面。
  */
 
-const RELOAD_FLAG = 'crm-chunk-reload'
+const RELOAD_FLAG_PREFIX = 'crm-chunk-reload:'
+
+/** 刷新标记按**当前路由**记：每个页面各留一次自动刷新机会。 */
+function reloadFlagKey(): string {
+  return RELOAD_FLAG_PREFIX + window.location.pathname
+}
+
+/** 这个页面在本次会话里是不是已经自动刷过一次了。 */
+function alreadyReloaded(): boolean {
+  try {
+    return sessionStorage.getItem(reloadFlagKey()) === '1'
+  } catch {
+    // 隐私模式下 sessionStorage 可能直接抛错；那就当作"已经刷过"——
+    // 宁可不刷，也不要因为"读不到标记"而反复刷新。
+    return true
+  }
+}
+
+function markReloaded(): void {
+  try {
+    sessionStorage.setItem(reloadFlagKey(), '1')
+  } catch {
+    /* 存不下就算了：下面的"已渲染"信号仍能挡住重复刷新 */
+  }
+}
 
 class PageBoundary extends Component<
-  { children: ReactNode },
+  { children: ReactNode; loadedRef: { current: boolean } },
   { message: string | null }
 > {
   state: { message: string | null } = { message: null }
@@ -41,10 +68,17 @@ class PageBoundary extends Component<
     const staleChunk = /dynamically imported module|Importing a module script failed|ChunkLoadError/i.test(
       text,
     )
-    // 只对"块取不到"自动刷新，且**每会话只刷一次** —— 否则资源真缺失时
-    // 会陷入刷新死循环，用户连"重新加载"按钮都点不到。
-    if (!staleChunk || sessionStorage.getItem(RELOAD_FLAG)) return
-    sessionStorage.setItem(RELOAD_FLAG, '1')
+    if (!staleChunk) return
+
+    // ⚠️ §9.11 复审：**页面一旦成功渲染过，就绝不自动刷新**。
+    // 原来只判"文案匹配 + 本会话没刷过"，于是"先正常渲染、之后某个懒加载块失败"
+    // 也会整页刷新 —— 用户填了半张表就这么没了，跟上面写的口径正好相反。
+    if (this.props.loadedRef.current) return
+
+    // 防无限刷新：**每个页面各一次**。原来是一个全站共用的开关，
+    // 结果任一页面刷过之后，别的页面首屏真的加载失败也不会再自动刷新了。
+    if (alreadyReloaded()) return
+    markReloaded()
     window.location.reload()
   }
 
@@ -67,7 +101,13 @@ class PageBoundary extends Component<
               type="button"
               className="semi-button semi-button-primary"
               onClick={() => {
-                sessionStorage.removeItem(RELOAD_FLAG)
+                // 手动刷新：上面已提示过"未提交的内容会丢"，由用户自己决定；
+                // 顺手清掉本页标记，让下次真遇到旧 chunk 时还能自动救一次。
+                try {
+                  sessionStorage.removeItem(reloadFlagKey())
+                } catch {
+                  /* 清不掉也无妨 */
+                }
                 window.location.reload()
               }}
             >
@@ -81,6 +121,26 @@ class PageBoundary extends Component<
   }
 }
 
+/**
+ * 子组件**真正挂载**（= 懒加载的块拿到了、页面渲染出来了）时置位。
+ *
+ * 为什么要在 Suspense **里面**再包一层：直接放进 `LazyPage` 的话，块还在下载、
+ * 界面显示"页面加载中…"时那个 effect 就已经跑了 —— 那一步并不代表页面渲染成功。
+ * 包在被加载组件的同一层，`lazy` 抛 promise 时这一层根本不会挂载，语义才对。
+ */
+function MarkLoaded({
+  loadedRef,
+  children,
+}: {
+  loadedRef: { current: boolean }
+  children: ReactNode
+}) {
+  useEffect(() => {
+    loadedRef.current = true
+  }, [loadedRef])
+  return <>{children}</>
+}
+
 /** 把一个页面组件包成"按需加载 + 加载态 + 出错可重试"的路由元素。 */
 export function lazyPage<P extends object>(
   loader: () => Promise<{ default: ComponentType<P> }>,
@@ -88,10 +148,12 @@ export function lazyPage<P extends object>(
   const Page = lazy(loader)
 
   function LazyPage(props: P) {
+    // "这个页面成功渲染过没有"——用 ref 不用 state：只给错误边界读，不需要重渲染
+    const loadedRef = useRef(false)
     return (
-      <PageBoundary>
+      <PageBoundary loadedRef={loadedRef}>
         <Suspense fallback={<div className="page-container">页面加载中…</div>}>
-          {createElement(Page, props)}
+          <MarkLoaded loadedRef={loadedRef}>{createElement(Page, props)}</MarkLoaded>
         </Suspense>
       </PageBoundary>
     )

@@ -55,6 +55,11 @@ async def _visible_task(
 #: （"重新打开已完成任务"是另一条业务规则，本批**不自行增加**）。
 FINAL_TASK_STATUSES = ("done", "cancelled")
 
+#: 库里 NOT NULL、但更新模型里写成 `X | None` 的字段（那是为了"不传就不改"）。
+#: **显式传 `null` 不算"不传"** —— 它会撞上 NOT NULL 变成 500（§9.3 复审实测
+#: `{"status": null}`）。这些字段明确传空要报参数错误。
+_NOT_NULL_LABELS = {"title": "标题", "priority": "优先级", "status": "状态"}
+
 
 def _final_label(task: Task) -> str:
     return "完成" if task.status == "done" else "取消"
@@ -374,6 +379,23 @@ async def update_task(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"任务已{_final_label(task)}，若要重新打开请走专门的流程",
         )
+
+    # ── 显式传空 ≠ 不传（§9.3 复审）──
+    # 这几个字段在模型里是 `X | None`（为了"不传就不改"），可**明确传 `null`** 时
+    # `exclude_unset` 仍会保留它，接着 `setattr(..., None)` 撞上库里的 NOT NULL，
+    # `flush()` 抛 IntegrityError、被全局兜底翻成 **500**（实测 `{"status": null}`）。
+    # 参数错误必须在写库**之前**拒绝 —— 否则既报 500，还可能留下半截更新。
+    for field, label in _NOT_NULL_LABELS.items():
+        if field in changes and changes[field] is None:
+            raise AppError(ErrorCode.PARAM_ERROR, f"{label}不能为空", 422)
+
+    # ── 终态任务同样不许改期（§9.3 复审）──
+    # 原来只挡了状态与负责人：`/postpone` 会拦，`PATCH {"due_at": …}` 却返回 200、
+    # 而且真的把截止时间改掉了（**清空也算改**）。同一个动作两条入口两套规矩，
+    # 正是审查点名的"换个入口就绕过"。这里走 `_ensure_not_final`，
+    # 与 postpone / cancel / assign / transfer 用同一份判据。
+    if is_final and "due_at" in changes and changes["due_at"] != task.due_at:
+        _ensure_not_final(task, "改期")
 
     reassigned_to: User | None = None
     if "owner_id" in changes:

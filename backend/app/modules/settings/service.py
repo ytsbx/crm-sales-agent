@@ -20,6 +20,7 @@ from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business
 from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
@@ -391,7 +392,8 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
     为什么要把原因也返回：只给一个 `set[int]` 的话，主管看到"这个客户没被回收"
     却不知道**是被哪张单据拦住的**，想去催也只能靠猜。回收预告页要用它。
     """
-    today = datetime.now(UTC).date()
+    # 回收预告里的"今天"按业务日期（§9.10 复审）：与报价过期、客户动态同一个基准
+    today = today_business()
     out: dict[int, list[str]] = {}
 
     def add(customer_id, reason: str) -> None:

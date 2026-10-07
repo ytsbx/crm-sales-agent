@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
@@ -37,6 +37,7 @@ import {
   type Payment,
   type Receivable,
   type ShipmentBatchRow,
+  type ShipmentOverview,
 } from '../../shared/api/order'
 import { listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -48,13 +49,76 @@ import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 import { otherOption } from '../../shared/components/otherOption'
-import { currencyPrefix } from '../../shared/components/money'
+import { formatMoney } from '../../shared/components/money'
 
 /** 收款方式。值是中文本身（后端 `payment_method` 是自由文本），
  *  选中「其他」后写的内容可以直接存回该字段。 */
 const PAYMENT_METHODS = ['银行转账', '承兑汇票', '现金', '支票', '其他']
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
+
+/**
+ * 整单交期结论（§9.8 复审）。
+ *
+ * 口径（业务 2026-10-07 拍板）：**全部发完**才给「最后一批 vs 交期」的最终结论；
+ * 没发完就如实说"未完成 · 还剩几件"，不要把中间状态当结论 ——
+ * 原来订购 10、已发 6、剩 4 件又没排新批次时，照样显示"-2 天"。
+ */
+function ShipmentVerdict({ summary }: { summary?: ShipmentOverview['summary'] }) {
+  if (!summary) return null
+  const base = summary.last_batch_vs_delivery_basis === 'shipping' ? '建议发货日' : '客户交期'
+  const box: CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 12,
+    color: 'var(--crm-text-2)',
+    padding: '8px 10px',
+    marginBottom: 10,
+    borderRadius: 6,
+    background: 'var(--crm-fill-0, rgba(0,0,0,0.03))',
+  }
+
+  if (!summary.all_shipped) {
+    return (
+      <div style={box}>
+        <Tag color="orange">未完成</Tag>
+        <span>
+          整单还没发完，还剩 <strong>{summary.remaining}</strong> 件未发
+          {summary.remaining > 0 && summary.pending_batch_count === 0
+            ? '（当前也没有待发批次，请先「排发货批次」）'
+            : ''}
+          。发完才会给出「最后一批 vs 交期」的最终结论。
+        </span>
+      </div>
+    )
+  }
+
+  const days = summary.last_batch_vs_delivery_days
+  return (
+    <div style={box}>
+      <Tag color="green">已发完</Tag>
+      <span>
+        {days === null ? (
+          '这单没有可比的交期或发货日，算不出偏差。'
+        ) : (
+          <>
+            按{base}
+            {summary.suggested_ship_date ? `（${summary.suggested_ship_date}）` : ''}算，最后一批
+            {days > 0 ? (
+              <strong style={{ color: 'var(--crm-danger, #d45)' }}>晚了 {days} 天</strong>
+            ) : days < 0 ? (
+              <strong>提前了 {Math.abs(days)} 天</strong>
+            ) : (
+              <strong>正好准时</strong>
+            )}
+            。
+          </>
+        )}
+      </span>
+    </div>
+  )
+}
 
 const TABS = [
   { tab: '订单明细', itemKey: 'items' },
@@ -489,19 +553,19 @@ export default function OrderDetailPage() {
 
   const summary = summaryQuery.data
 
-  // 币种前缀统一走 shared/components/money（第九批 §9.9）：原来的三元写法在
-  // 币种为空（历史订单）时会渲染出 `undefined 1,000`。
-  const moneyPrefix = currencyPrefix(order.currency)
+  // §9.9 复审：详情页原来只取"币种前缀"再自己拼，币种为空（历史订单）时就成了
+  // 一个**裸金额** —— 而列表页早就用 `formatMoney`（空币种会写「币种待核实」）。
+  // 同一个数在两个页面口径不同，这里统一成 formatMoney。
   const itemColumns = [
     { title: 'SKU / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{code || row.inquiry_no_snapshot || '—'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot || ''}</div></div> },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 100, render: (v: number) => v.toLocaleString('zh-CN') },
-    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number) => `${moneyPrefix}${v}` },
+    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number) => formatMoney(v, order.currency) },
     {
       title: '金额',
       dataIndex: 'amount',
       width: 140,
-      render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}`,
+      render: (v: number) => formatMoney(v, order.currency),
     },
     { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
   ]
@@ -509,9 +573,10 @@ export default function OrderDetailPage() {
   const receivableColumns = [
     { title: '节点', dataIndex: 'plan_name', width: 110 },
     { title: '应收日期', dataIndex: 'due_date', width: 130 },
-    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
-    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
+    // 行自带币种就优先用它（历史数据里可能与订单币种不一致），没有才退回订单币种
+    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
+    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
     {
       title: '状态',
       dataIndex: 'status_label',
@@ -627,20 +692,20 @@ export default function OrderDetailPage() {
         <KpiStrip
           style={{ marginTop: 16, marginBottom: 0 }}
           items={[
-            { label: '订单金额', value: `${moneyPrefix}${order.total_amount.toLocaleString('zh-CN')}` },
+            { label: '订单金额', value: formatMoney(order.total_amount, order.currency) },
             {
               label: '已回款（财务已确认）',
-              value: `${moneyPrefix}${order.received_amount.toLocaleString('zh-CN')}`,
+              value: formatMoney(order.received_amount, order.currency),
               tone: 'success',
             },
             {
               label: '待回款',
-              value: `${moneyPrefix}${order.unreceived_amount.toLocaleString('zh-CN')}`,
+              value: formatMoney(order.unreceived_amount, order.currency),
               tone: order.unreceived_amount > 0 ? 'warning' : 'default',
             },
             {
               label: '待确认回款',
-              value: `${moneyPrefix}${(summary?.pending_confirm_amount ?? 0).toLocaleString('zh-CN')}`,
+              value: formatMoney(summary?.pending_confirm_amount ?? 0, order.currency),
             },
             {
               label: '逾期应收节点',
@@ -720,7 +785,7 @@ export default function OrderDetailPage() {
               columns={[
                 { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
                 { title: '收款日期', dataIndex: 'received_date', width: 130 },
-                { title: '金额', dataIndex: 'received_amount', width: 130, render: (v: number) => `${moneyPrefix}${v.toLocaleString('zh-CN')}` },
+                { title: '金额', dataIndex: 'received_amount', width: 130, render: (v: number, r: Payment) => formatMoney(v, r.currency ?? order.currency) },
                 { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',
@@ -963,6 +1028,8 @@ export default function OrderDetailPage() {
                   </Button>
                 )}
               </div>
+              {/* 整单交期结论（§9.8 复审）：发完才给最终数字；没发完如实说"未完成 · 还剩几件" */}
+              <ShipmentVerdict summary={shipmentsQuery.data?.summary} />
               <Table<ShipmentBatchRow>
                 columns={[
                   { title: '批次', dataIndex: 'batch_no', width: 80, render: (v: number) => `第 ${v} 批` },
@@ -981,6 +1048,21 @@ export default function OrderDetailPage() {
                     width: 170,
                     render: (_: unknown, record: ShipmentBatchRow) =>
                       record.tracking_no ? `${record.logistics_company ?? ''} ${record.tracking_no}` : '-',
+                  },
+                  {
+                    title: '本批偏差',
+                    width: 110,
+                    render: (_: unknown, record: ShipmentBatchRow) => {
+                      const d = record.deviation_days
+                      if (d === null || d === undefined) return '-'
+                      // 这是**批次自己的**偏差，和上面的"整单结论"不是一回事：
+                      // 未发的批次按"今天 − 计划"算已拖几天，也算在这里。
+                      return (
+                        <span style={{ color: record.late ? 'var(--crm-danger, #d45)' : undefined }}>
+                          {d > 0 ? `晚 ${d} 天` : d < 0 ? `早 ${Math.abs(d)} 天` : '准时'}
+                        </span>
+                      )
+                    },
                   },
                   {
                     title: '本批明细',
@@ -1371,8 +1453,7 @@ export default function OrderDetailPage() {
           <div>
             即将取消订单 <b>{order.order_no}</b>
             {order.customer_name ? `（${order.customer_name}）` : ''}， 金额{' '}
-            {moneyPrefix}
-            {order.total_amount.toLocaleString('zh-CN')}。
+            {formatMoney(order.total_amount, order.currency)}。
             <b>取消不可撤销。</b>
           </div>
           <div>取消会连带做这几件事：</div>
@@ -1410,8 +1491,8 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            按订单金额 30% 定金 + 70% 尾款生成两个应收节点（合计 {moneyPrefix}
-            {order.total_amount.toLocaleString('zh-CN')}）
+            按订单金额 30% 定金 + 70% 尾款生成两个应收节点（合计{' '}
+            {formatMoney(order.total_amount, order.currency)}）
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>定金到期日</div>
@@ -1448,7 +1529,11 @@ export default function OrderDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            该节点未收 {moneyPrefix}{paymentTarget?.remaining_amount.toLocaleString('zh-CN')}
+            该节点未收{' '}
+            {formatMoney(
+              paymentTarget?.remaining_amount ?? 0,
+              paymentTarget?.currency ?? order.currency,
+            )}
           </div>
           <Input
             value={paymentForm.amount}

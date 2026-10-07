@@ -343,6 +343,11 @@ export interface ShipmentBatchRow {
   actual_ship_date?: string | null
   logistics_company?: string | null
   tracking_no?: string | null
+  /** 这一批自己的偏差天数（§9.8）：已发的＝实际−计划，未发的＝今天−计划（已拖几天） */
+  deviation_days?: number | null
+  /** 这一批是不是真的晚了（已发晚于计划 / 未发且已过期） */
+  late?: boolean
+  overdue_reason?: string | null
   remark?: string | null
   items: Array<{ order_item_id: number; sku: string | null; planned_qty: number; shipped_qty: number }>
 }
@@ -359,7 +364,29 @@ export interface ShipmentOverview {
     unplanned: number
   }>
   batches: ShipmentBatchRow[]
-  summary: { ordered: number; planned: number; shipped: number; remaining: number; all_shipped: boolean }
+  summary: {
+    ordered: number
+    planned: number
+    shipped: number
+    remaining: number
+    /** 整单是否发完（逐明细按数量判，不是数批次） */
+    all_shipped: boolean
+    batch_count: number
+    late_batch_count: number
+    /** 各批偏差里的最大值（**批次口径**，未发批次的逾期天数也会算进来） */
+    max_deviation_days: number | null
+    /**
+     * 整单结论：最后一批（按实际最晚发货日）比建议发货日晚了几天。
+     * **只有整单发完才有值**（§9.8 复审）—— 未发完时是 null，
+     * 由 `all_shipped` / `remaining` 说明进度，不要拿它当"这单的结果"。
+     */
+    last_batch_vs_delivery_days: number | null
+    /** 上面那个偏差比的是"发货"还是"到货"；系统里目前只算发货口径 */
+    last_batch_vs_delivery_basis: string
+    suggested_ship_date: string | null
+    /** 还没发完的批次数。**不能拿它代表整单发完**：剩货没排批次时它是 0 */
+    pending_batch_count: number
+  }
 }
 
 export function listOrderShipments(orderId: number) {

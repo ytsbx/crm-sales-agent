@@ -1,12 +1,12 @@
 """应收与回款逻辑。"""
 
-from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business
 from app.modules.file.model import FileRecord
 from app.modules.order.model import SalesOrder
 from app.modules.payment.model import PAYMENT_STATUS_LABEL, PLAN_STATUS_LABEL, PaymentRecord, ReceivablePlan
@@ -56,7 +56,7 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
     elif received > 0:
         plan.status = "partial"
     else:
-        today = datetime.now(UTC).date()
+        today = today_business()
         plan.status = "overdue" if plan.due_date < today else "pending"
 
 

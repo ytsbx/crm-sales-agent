@@ -9,13 +9,14 @@
 - 无价格权限 → 默认最低利润率 15%（与 07 计划的占位值一致）。
 """
 
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business
 from app.modules.customer.model import Customer
 from app.modules.pricing.model import (
     CustomerPriceRule,
@@ -143,7 +144,7 @@ async def get_effective_cost(
     session: AsyncSession, sku_id: int, on_date: date | None = None
 ) -> ProductCost | None:
     """取生效中的成本。成本带生效区间，改价不影响历史报价。"""
-    today = on_date or datetime.now(UTC).date()
+    today = on_date or today_business()
     stmt = (
         select(ProductCost)
         .where(
@@ -166,7 +167,7 @@ async def find_price_rule(
     on_date: date | None = None,
 ) -> PriceRule | None:
     """按「客户等级 + 数量区间」匹配价格规则；等级专属规则优先于通用规则。"""
-    today = on_date or datetime.now(UTC).date()
+    today = on_date or today_business()
     stmt = select(PriceRule).where(
         PriceRule.sku_id == sku_id,
         PriceRule.status == "active",
@@ -201,7 +202,7 @@ async def find_customer_price(
     on_date: date | None = None,
 ) -> CustomerPriceRule | None:
     """匹配客户专属价。有效期过滤与等级价一致：过期/未来价不命中（方案 §4.1 A02）。"""
-    today = on_date or datetime.now(UTC).date()
+    today = on_date or today_business()
     stmt = (
         select(CustomerPriceRule)
         .where(

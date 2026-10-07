@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business
 from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import (
     LossReason,
@@ -362,7 +363,8 @@ async def touch_last_followup(session: AsyncSession, opportunity: Opportunity) -
 
 
 def today() -> date:
-    return datetime.now(UTC).date()
+    """业务日期（§9.10 复审）：原来取 UTC 日期，北京时间凌晨会差一天。"""
+    return today_business()
 
 
 # ---------------------------------------------------------------- 新增能力

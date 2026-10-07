@@ -37,6 +37,8 @@ from app.core.timebase import (
     business_year,
     month_key,
     now_business,
+    to_business,
+    today_business,
 )
 from app.modules.payment.model import PLAN_STATUS_LABEL as PLAN_LABEL
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
@@ -109,7 +111,10 @@ def _sales_owner_col():
 
 async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
     now = datetime.now(UTC)
-    month_start = now.date().replace(day=1)
+    # "本月"按**业务时区**取（§9.10 复审）：原来用 UTC 月初，北京时间凌晨那 8 小时
+    # 会把上个月最后一天的成交算成"本月"。`now` 本身仍用于"已逾期"这类瞬时比较。
+    today = today_business()
+    month_start = business_day_start(today.year, today.month, 1)
 
     todo_count = (
         await session.execute(
@@ -497,7 +502,7 @@ async def risk_opportunities(
     session: AsyncSession, user: CurrentUser, limit: int = 10
 ) -> list[dict]:
     """风险商机：预计成交日临近，或超过 14 天没更新。"""
-    today = datetime.now(UTC).date()
+    today = today_business()
     from app.modules.settings import service as settings_service
 
     soon = today + timedelta(
@@ -803,9 +808,15 @@ async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
         by_level[level] = by_level.get(level, 0) + 1
 
     now = datetime.now(UTC)
-    month_start = now.date().replace(day=1)
+    # "本月新建"同样按业务时区（§9.10 复审）：`created_at.date()` 是 UTC 日期，
+    # 拿它跟 UTC 月初比，会把北京时间每月 1 日凌晨建档的客户漏掉。
+    month_first = today_business().replace(day=1)
     new_this_month = len(
-        [c for c in customers if c.created_at and c.created_at.date() >= month_start]
+        [
+            c
+            for c in customers
+            if c.created_at and to_business(c.created_at).date() >= month_first
+        ]
     )
 
     # PRD §23「客户：活跃 / 沉睡」：口径由系统配置决定，不写死天数。
@@ -1217,7 +1228,7 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).scalars().all()
 
-    today = datetime.now(UTC).date()
+    today = today_business()
     buckets = {"未到期": 0, "1-30 天": 0, "31-60 天": 0, "61-90 天": 0, "90 天以上": 0}
     overdue_amount = 0.0
     for plan in plans:
@@ -1314,7 +1325,7 @@ async def delivery_stats(
     session: AsyncSession, user: CurrentUser, risk_limit: int = 20
 ) -> dict:
     """交期履约：准时交付率、延迟天数、逾期节点分布、在跟风险单。"""
-    today = datetime.now(UTC).date()
+    today = today_business()
     risk_limit = max(1, min(risk_limit, 100))
 
     order_rows = (
@@ -1612,7 +1623,9 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
         return {"is_team_view": False, "data_scope": user.data_scope}
 
     now = datetime.now(UTC)
-    month_start = now.date().replace(day=1)
+    # 团队"本月成交"按业务时区（§9.10 复审），与工作台同口径
+    today = today_business()
+    month_start = business_day_start(today.year, today.month, 1)
     owner_ids = await scoped_owner_ids(session, user)
 
     def scoped(stmt: Select, column) -> Select:
@@ -1679,9 +1692,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 ).where(
                     Opportunity.deleted_at.is_(None),
                     Opportunity.status == "win",
-                    Opportunity.updated_at >= datetime.combine(
-                        month_start, datetime.min.time(), tzinfo=UTC
-                    ),
+                    Opportunity.updated_at >= month_start,
                 ),
                 Opportunity.owner_id,
             )
@@ -1716,9 +1727,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
                     Opportunity.owner_id == member.id,
                     Opportunity.deleted_at.is_(None),
                     Opportunity.status == "win",
-                    Opportunity.updated_at >= datetime.combine(
-                        month_start, datetime.min.time(), tzinfo=UTC
-                    ),
+                    Opportunity.updated_at >= month_start,
                 )
             )
         ).scalar_one()

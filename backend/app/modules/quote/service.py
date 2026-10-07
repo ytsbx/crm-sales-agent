@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
 from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import Opportunity, OpportunityItem
@@ -29,10 +30,15 @@ ZERO = Decimal("0")
 
 
 def quote_is_expired(valid_until, *, today=None) -> bool:
-    """A quote is expired only after its inclusive valid-through date."""
+    """A quote is expired only after its inclusive valid-through date.
+
+    §9.10 复审：默认的"今天"取**业务日期**（北京时间），原来取 UTC 日期 ——
+    北京时间 10-07 01:00 时 UTC 还停在 10-06，于是"有效期到 10-06"的报价
+    被判成"没过期"，正式发送照放（那 8 小时里操作与展示各说各话）。
+    """
     if valid_until is None:
         return False
-    return valid_until < (today or datetime.now(UTC).date())
+    return valid_until < (today or today_business())
 
 
 def _f(value: Decimal | None) -> float | None:
@@ -379,7 +385,7 @@ async def create_quote(
         owner_id=(opportunity.owner_id if opportunity else None) or user.id,
         status="draft",
         valid_until=valid_until
-        or (datetime.now(UTC).date() + timedelta(days=valid_days)),
+        or (today_business() + timedelta(days=valid_days)),
         created_by=user.id,
     )
     session.add(quote)
@@ -1855,7 +1861,9 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
     from app.modules.customer.service import refresh_next_followup_at
 
     await lock_task_scan(session)
-    today = datetime.now(UTC).date()
+    # 过期扫描的"今天"也按业务日期（§9.10 复审）：UTC 日期在北京时间凌晨会差一天，
+    # 提醒、展示、发送拦截三处必须同一个"今天"。
+    today = today_business()
     ordered = select(SalesOrder.quote_id).where(
         SalesOrder.quote_id.is_not(None), SalesOrder.status != "cancelled"
     )

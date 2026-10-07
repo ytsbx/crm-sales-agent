@@ -1,7 +1,7 @@
 """工作台与数据分析接口。"""
 
 import re
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Request
@@ -14,7 +14,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 # 业务时间基准（第九批 §9.10）：判定"期间有没有过完"也走北京时间
-from app.core.timebase import month_key, now_business
+from app.core.timebase import month_key, now_business, today_business
 from app.core.response import ok
 from app.modules.analytics import service as svc
 from app.modules.analytics import targets as targets_svc
@@ -125,7 +125,9 @@ async def refreeze_sales_target_bases(
     """
     from app.modules.analytics import target_bases
 
-    if year >= datetime.now(UTC).year:
+    # "当年"按业务年判（§9.10 复审）：UTC 年在北京时间元旦 0-8 点还是上一年，
+    # 那段时间会把业务上的"过去年份"误判成"当年"而拒绝重算。
+    if year >= today_business().year:
         raise AppError(
             ErrorCode.PARAM_ERROR, "当年数据仍在产生，实时计算即可，不需要冻结", 422
         )

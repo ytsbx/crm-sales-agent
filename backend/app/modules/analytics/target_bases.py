@@ -35,7 +35,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import scoped_owner_ids
 # 业务时间基准（第九批 §9.10）：归年 / 归月一律走这里，不再依赖宿主机时区
 # 或数据库会话时区 —— 换了环境同一个报表会变，那是审计意义上的缺陷。
-from app.core.timebase import business_month, business_year, year_bounds
+from app.core.timebase import (
+    business_month,
+    business_year,
+    month_key,
+    today_business,
+    year_bounds,
+)
 from app.core.deps import CurrentUser
 from app.modules.analytics.model import BasisSnapshot
 from app.modules.customer.model import Customer
@@ -133,7 +139,11 @@ async def _build_basis(
         if at is None or not (year_start <= at < next_start):
             continue
         cid = int(customer_id)
-        first_deal_month[cid] = f"{at.year}-{at.month:02d}"
+        # 归月用业务时区（§9.10 复审）：`at.year/at.month` 读的是 **UTC** 年月，
+        # 北京时间 2026-01-01 01:00 的首单（UTC 2025-12-31 17:00）会被写成 "2025-12"。
+        # 归年过滤用的是 `year_bounds`（业务时区），于是出现"选进了 2026 年、
+        # 归属月却是 2025-12" —— 该客户在 2026 年的下钻明细里会彻底查不到。
+        first_deal_month[cid] = month_key(at)
         first_deal_detail[cid] = {"at": at.isoformat(), "order_id": int(order_id)}
     return [int(x) for x in veterans], first_deal_month, first_deal_detail
 
@@ -282,7 +292,9 @@ async def basis_for(
     **过去年份**第一次被读取时冻结一次，之后一直用快照。管理员要改历史口径时
     走 `refreeze=True`（带审计），而不是让每次读取都悄悄重算。
     """
-    current_year = datetime.now(UTC).year
+    # "当年"要按**业务年**判（§9.10 复审）：用 UTC 年的话，北京时间元旦 0-8 点这段
+    # `datetime.now(UTC).year` 还是上一年，业务上的"过去年份"会被当成"当年"而不冻结。
+    current_year = today_business().year
     if year >= current_year:
         veteran_ids, first_deal_month, first_deal_detail = await _build_basis(session, year)
         return veteran_ids, first_deal_month, first_deal_detail, {

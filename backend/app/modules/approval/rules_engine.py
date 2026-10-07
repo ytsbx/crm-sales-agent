@@ -21,12 +21,12 @@ exception_route    异常加签：按金额分档走，末尾追加一个会签�
 
 import re
 from dataclasses import dataclass, field
-from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timebase import today_business
 from app.modules.approval.model import ApprovalRule
 from app.modules.payment.model import ReceivablePlan
 from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
@@ -222,7 +222,9 @@ async def build_context(
         "_quote_no": quote.quote_no,
         "_version_no": version.version_no,
         "_customer_name": customer_row.name if customer_row else None,
-        "_today": date.today().isoformat(),
+        # 展示辅助（不参与求值，沙盒直接展示）。原来用 `date.today()` —— 那跟着
+        # **宿主机时区**走，同一套规则在 UTC 机器和北京机器上会显示不同的"今天"。
+        "_today": today_business().isoformat(),
     }
 
 

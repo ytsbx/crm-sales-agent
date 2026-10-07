@@ -589,15 +589,50 @@ async def main() -> None:
             await s.commit()
         status, res = call("GET", f"/orders/{order}/shipments", admin)
         summary = res["data"]["summary"]
-        # 建议发货日 = 10-20 − 7 = 10-13；实际 10-17 发 → 晚 4 天
-        check("最后一批偏差按建议发货日算（+4）", summary["last_batch_vs_delivery_days"], 4)
-        check("标明比较的是发货", summary["last_batch_vs_delivery_basis"], "shipping")
-        check("给出建议发货日", summary["suggested_ship_date"], "2026-10-13")
+        # §9.8 复审（第九批复验）：这时第 2 批还**没发**（`all_shipped=False`），
+        # 所以不该给最终结论 —— 原来这里会算出一个 "+4" 来，读起来像"这单晚了 4 天"，
+        # 其实它根本没发完。业务 2026-10-07 拍板：发完才给最终数字。
         check_true(
-            "未发完的批次单独计数",
-            summary.get("pending_batch_count") in (1, 2),
-            str(summary.get("pending_batch_count")),
+            "未发完时不给最终偏差（保持空值）",
+            summary["last_batch_vs_delivery_days"] is None,
+            str(summary["last_batch_vs_delivery_days"]),
         )
+        check("整单未发完（逐明细按数量判）", summary["all_shipped"], False)
+        check("剩余未发数量照实给出", summary["remaining"], 4)
+        check("标明比较的是发货", summary["last_batch_vs_delivery_basis"], "shipping")
+        check("建议发货日照常给出（前端拿它解释还剩几天）", summary["suggested_ship_date"], "2026-10-13")
+        check("未发完的批次数单独给出", summary["pending_batch_count"], 1)
+
+        # 「发完之后才给结论」**另起一张干净订单**验：上面那张的批次在 9.6 段
+        # 被取消/重整过，已经不是"发了一半"的状态（照原样复用 `batch2` 会踩坑）。
+        paid_order, paid_item = make_order(quantity=4)
+        # 不用单独登记：本套件的 cleanup 是按客户删订单的，新订单会跟着清掉
+        async with SessionLocal() as s:
+            await s.execute(
+                text(
+                    "update sales_orders set delivery_kind = 'arrival', transit_days = 7, "
+                    "delivery_date = '2026-10-20' where id = :i"
+                ),
+                {"i": paid_order},
+            )
+            await s.commit()
+        _, res = call(
+            "POST", f"/orders/{paid_order}/shipments", admin,
+            body={"planned_date": "2026-10-13",
+                  "items": [{"order_item_id": paid_item, "planned_qty": 4}]},
+        )
+        paid_batch = res["data"]["batch_id"]
+        status, res = call(
+            "POST", f"/orders/{paid_order}/shipments/{paid_batch}/ship", admin,
+            body={"actual_ship_date": "2026-10-17",
+                  "items": [{"order_item_id": paid_item, "shipped_qty": 4}]},
+        )
+        check("这张单一次发完", res.get("code"), 0)
+        status, res = call("GET", f"/orders/{paid_order}/shipments", admin)
+        summary = res["data"]["summary"]
+        check("整单已发完", summary["all_shipped"], True)
+        # 建议发货日 = 10-20 − 7 = 10-13；实际 10-17 发 → 晚 4 天（这时才给数字）
+        check("发完之后才给最终偏差：+4", summary["last_batch_vs_delivery_days"], 4)
 
         # ------------------------------------------------------------------
         print()

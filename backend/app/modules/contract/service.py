@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business
 from app.core.response import paginate
 from app.modules.contract.model import (
     DOC_STATUS_LABEL,
@@ -917,7 +918,7 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
     from app.modules.task.model import Task
 
     days = int(await settings_service.get_number(session, "contract", "monthly_remind_days", 30))
-    today = datetime.now(UTC).date()
+    today = today_business()
     conditions = [
         ContractDocument.doc_type == "monthly",
         ContractDocument.status == "signed",
