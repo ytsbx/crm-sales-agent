@@ -91,18 +91,40 @@ jobs:
         run: PYTHONPATH=. python -m pytest
 
       - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
+        # 两处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：
+        # 1) `PYTHONUNBUFFERED` + `python -u`：CI 不是终端，不关缓冲的话 stdout 会走
+        #    块缓冲 —— 套件崩溃时**缓冲区里还没来得及刷出的日志全部丢失**，
+        #    "失败在哪、为什么失败"就永远看不见（实测：日志里几十行 OK 的时间戳
+        #    全在同一毫秒，说明是一次性 flush 的，真实执行其实分散在几百毫秒里）。
+        # 2) 不再用 `set -e` 一个失败就中断：**跑完所有套件再汇总失败清单**，
+        #    并在注解里点名是哪些套件红的。原来静默中断只会告诉你"失败了"，
+        #    红了两天都没人知道为什么红 —— 信号价值等于零。
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
-          set -e
+          set -u
+          failed=""
           while read -r suite; do
             case "$suite" in '' | '#'*) continue ;; esac
             if [ ! -f "scripts/$suite.py" ]; then
               echo "::error::清单里的套件找不到脚本：scripts/$suite.py"
-              exit 1
+              failed="$failed $suite"
+              continue
             fi
             echo "::group::=== $suite ==="
-            PYTHONPATH=. python scripts/$suite.py
+            if PYTHONPATH=. python -u "scripts/$suite.py"; then
+              echo "OK  $suite"
+            else
+              echo "::error::套件失败：$suite"
+              failed="$failed $suite"
+            fi
             echo "::endgroup::"
           done < ../ops/check_suites.txt
+          if [ -n "$failed" ]; then
+            echo "::error::接口回归有套件未通过：$failed"
+            exit 1
+          fi
+          echo "接口回归：清单里的套件全部通过"
 
       - name: 失败时输出后端日志
         if: failure()
@@ -190,6 +212,16 @@ jobs:
 
       - name: UI 冒烟
         run: node ops/smoke_ui.mjs
+
+      # 与后端回归同一个道理：失败时要把"现场"打出来。
+      # 否则注解里只有一句 exit code 1，没人知道是前端还是后端的问题。
+      - name: UI 冒烟失败时输出两侧日志
+        if: failure()
+        run: |
+          echo "=== 前端 dev server 日志 ==="
+          tail -n 60 /tmp/frontend.log || true
+          echo "=== 后端日志 ==="
+          tail -n 60 /tmp/backend.log || true
 
       - name: 上传截图
         if: always()
