@@ -30,17 +30,31 @@ jobs:
         env:
           POSTGRES_USER: crm
           POSTGRES_PASSWORD: crm123456
-          POSTGRES_DB: crm_sales_agent
+          # 库名必须"看起来就是一次性的"：多个套件有护栏，看到库名疑似开发库
+          # （crm_sales_agent）会直接拒跑，理由是会写库、怕污染真数据。
+          # 原来这里就叫 crm_sales_agent —— 与开发库同名，于是两个套件一直拒跑，
+          # 只是以前 CI 在前面的套件就卡死了，从没跑到它们（2026-10-07 暴露）。
+          # 取名 crm_iso_test 是三种判据的交集：多数套件要 "test" in 库名、
+          # check_biz_doc_freeze 要 "iso"/"check"（它**不看** CI 变量）、
+          # check_attachment_business_auth 要 crm_iso/crm_check 前缀。
+          POSTGRES_DB: crm_iso_test
           POSTGRES_INITDB_ARGS: "--encoding=UTF8"
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U crm -d crm_sales_agent"
+          --health-cmd "pg_isready -U crm -d crm_iso_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_sales_agent
+      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_test
+      # 与本地 ops/run_checks.sh 对齐：那边 export API_BASE，这里原来没给。
+      # 十个套件"必须显式给 API_BASE"（不给就拒跑，怕默认打到开发后端），
+      # 另有 `check_delivery_planning` 硬取这个变量会 KeyError。
+      # 端口用 8001 而不是 8000：三个套件的护栏是 `if "8000" in API_BASE: 拒跑`
+      # （8000 被定义为"开发后端"），CI 里后端也跟着挪到 8001，
+      # 这样护栏语义在 CI 里依然成立，不用去改套件判断。
+      API_BASE: http://127.0.0.1:8001/api/v1
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
       DINGTALK_PUSH_OFF: "1"
@@ -71,14 +85,14 @@ jobs:
       - name: 种子数据
         run: PYTHONPATH=. python scripts/seed.py
 
-      - name: 启动后端（8000）
+      - name: 启动后端（8001）
         run: |
-          PYTHONPATH=. nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/backend.log 2>&1 &
+          PYTHONPATH=. nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 > /tmp/backend.log 2>&1 &
           for i in $(seq 1 30); do
-            curl -s -o /dev/null http://127.0.0.1:8000/docs && break
+            curl -s -o /dev/null http://127.0.0.1:8001/docs && break
             sleep 1
           done
-          curl -sf -o /dev/null http://127.0.0.1:8000/docs || { tail -n 40 /tmp/backend.log; exit 1; }
+          curl -sf -o /dev/null http://127.0.0.1:8001/docs || { tail -n 40 /tmp/backend.log; exit 1; }
           echo "backend ready"
 
       - name: 静态检查（pyflakes / 模型列 / 权限码）
