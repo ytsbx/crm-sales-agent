@@ -393,6 +393,32 @@ def main():
     check('规则不存在', res.get('code'), 40401)
 
     print()
+    print('=== 8b. 客户特殊价的数据范围（审查 2026-10-07 第二轮）===')
+    # 上面的夹具客户是 admin 建的、负责人就是 admin；张三只有自己的范围。
+    # 上一轮只给"新增/修改"接了范围判据，删除和列表漏了 —— 这里把四处都钉住。
+    status, res = call('GET', f'/customer-price-rules?customer_id={customer_id}',
+                       token=zhangsan)
+    check('范围外客户：指定编号也读不到', res.get('code'), 40302)
+
+    status, res = call('GET', '/customer-price-rules?page=1&page_size=200', token=zhangsan)
+    check('范围外客户：列表接口能读', res.get('code'), 0)
+    listed = {item['id'] for item in (res['data'].get('items') or [])}
+    check_true('别人的专属价不该出现在列表里', rule_id not in listed,
+               f'列表里出现了 {rule_id}')
+
+    # 张三没有 price:manage，会先被权限挡下（40301）；范围判据本身（有权限但范围外）
+    # 由单元测试直接覆盖 —— 本项目 seed 里**所有有改价权的账号都在同一个部门**
+    # （admin / 李四 / 张三 的 department_id 都是 1），端到端造不出
+    # "有权限但看不到这个客户"的组合。无论走哪一道，结论都必须是"拒绝 + 原规则还在"。
+    status, res = call('DELETE', f'/customer-price-rules/{rule_id}', token=zhangsan)
+    check_true('范围外客户：删除被拒', res.get('code') in (40301, 40302), str(res.get('code')))
+    # 越权被拒之后原规则必须还在（不能"先删掉再判权限"）
+    status, res = call('GET', f'/customer-price-rules?customer_id={customer_id}', token=admin)
+    survivors = [item for item in (res['data'].get('items') or []) if item['id'] == rule_id]
+    check_true('越权删除后原规则仍在', len(survivors) == 1, f'剩 {len(survivors)} 条')
+    # 保留这条规则：后面的用例还要用它（别在这里删掉把别人测挂了）
+
+    print()
     print('=== 9. 报价跟进（GET /quotes/{id}/followups）===')
     status, res = call('POST', '/customers', token=admin, body={'name': f'CHK{RUN}客户'})
     q_customer = res['data']['id']

@@ -35,7 +35,7 @@ NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
 
 def test_mask_phone_keeps_head_and_tail():
     assert mask_contact_value("13812348000", "phone") == "138****8000"
-    # 带分隔符的长号仍按"前 3 后 4"处理，分隔符不参与保留
+    # 带分隔符的长号仍按"前 3 后 4"处理，分隔符先剔掉再数
     assert mask_contact_value("021-88889999", "phone") == "021****9999"
 
 
@@ -44,7 +44,7 @@ def test_mask_short_phone_never_reveals_everything():
 
     原来固定写 `前3 + **** + 后4`：7 位号码正好 3+4=7，中间四个星号一个数字都没挡
     （`1234567` 原样可还原）；5、6 位还会把同一批数字重复显示。
-    现在按长度分档，硬判据是"至少挡住两位原字符"。
+    现在**按数字个数**分档，硬判据是"至少挡住两位数字"。
     """
     cases = {
         "12": "**",  # 2 位：全遮
@@ -62,6 +62,34 @@ def test_mask_short_phone_never_reveals_everything():
         assert masked == expected, f"{raw} → {masked}，期望 {expected}"
         hidden = sum(1 for a, b in zip(raw, masked) if a != b)
         assert hidden >= 2, f"{raw} 脱敏后只挡住 {hidden} 个字符，等于没脱敏"
+
+
+def test_mask_ignores_separators_when_counting_digits():
+    """分隔符不能替数字"被遮住"（审查 2026-10-07 复验的第二种写法）。
+
+    `"123    4567"` 有 11 个**字符**但只有 7 个**数字**：按字符长度分档会把它
+    归进"11 位以上"那一档，于是 `前3 + **** + 后4` 的四个星号正好压在空格上，
+    七个数字一位都没挡住。**判据只能是数字的个数。**
+
+    验收要求（审查原文）：带空格短号、带横线短号、区号、括号、国际号码及分机格式，
+    未授权返回值都不能完整还原原号码。
+    """
+    cases = {
+        "123    4567": "12****7",
+        "123 - 4567": "12****7",
+        "12 34567": "12****7",
+        "(123)4567": "12****7",
+        "021-88889999": "021****9999",
+        "(021) 8888 9999": "021****9999",
+        "+86 138 1234 8000": "861****8000",
+        "010-8888-6666-801": "010****6801",  # 带分机的座机
+    }
+    for raw, expected in cases.items():
+        masked = mask_contact_value(raw, "phone")
+        assert masked == expected, f"{raw} → {masked}，期望 {expected}"
+        original = "".join(ch for ch in raw if ch.isdigit())
+        visible = "".join(ch for ch in masked if ch.isdigit())
+        assert len(visible) < len(original), f"{raw} 的数字一个都没藏住（{masked}）"
 
 
 def test_mask_email_keeps_first_char_and_domain():

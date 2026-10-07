@@ -384,12 +384,30 @@ async def list_customer_price_rules(
     customer_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("product:view")),
+    user: CurrentUser = Depends(require_permission("product:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    """客户特殊价列表（03-API §17）。
+
+    数据范围（审查 2026-10-07 第二轮实测）：只看得到"客户在我范围内"（或无负责人的
+    公海客户）的专属价。原来直接全表查、只按 customer_id 过滤，还把客户名称和
+    专属价一起返回 —— 业务员翻一页就把全公司的特殊价看光了。
+    范围在**分页与计数之前**生效（条件进 SQL，不是取回来再筛）。
+    """
     stmt = select(CustomerPriceRule)
     if customer_id:
+        # 指定客户也不能绕过：走与增删改**同一份判据**
+        await svc.ensure_customer_in_scope_for_price(
+            session, user=user, customer_id=customer_id
+        )
         stmt = stmt.where(CustomerPriceRule.customer_id == customer_id)
+    else:
+        from app.core.data_scope import scoped_owner_ids
+
+        condition = svc.customer_scope_condition(await scoped_owner_ids(session, user))
+        if condition is not None:
+            visible_customers = select(Customer.id).where(condition)
+            stmt = stmt.where(CustomerPriceRule.customer_id.in_(visible_customers))
     rows, total = await paginate(session, stmt.order_by(CustomerPriceRule.id.desc()), page, page_size)
     codes = await _sku_code_map(session, [rule.sku_id for rule in rows])
     customer_ids = {rule.customer_id for rule in rows}
@@ -557,6 +575,13 @@ async def delete_customer_price_rule(
     rule = await session.get(CustomerPriceRule, rule_id)
     if rule is None:
         raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
+    # 与新增 / 修改 / 列表**同一份判据**：这条规则属于哪个客户，那个客户就得在
+    # 操作人的数据范围内。原来只查 price:manage —— "本人仅自己"范围的业务员拿 id
+    # 就能删掉别人客户的专属价，删完那个客户后续报价改用通用价，等于悄悄改价。
+    # 必须在 delete 与审计**之前**判：越权时原规则仍在、也不许留下"删除成功"的痕迹。
+    await svc.ensure_customer_in_scope_for_price(
+        session, user=user, customer_id=rule.customer_id
+    )
     await session.delete(rule)
     await write_audit(
         session,

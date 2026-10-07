@@ -95,6 +95,42 @@ def upload_csv(token, path, headers, rows, preview=False):
         return json.loads(resp.read().decode())
 
 
+def confirm_sku_master(sku_id: int) -> None:
+    """把某个 SKU 的关键字段标成「已人工确认」——§8.14 的夹具。
+
+    正式发送要求明细引用的主数据已确认（口径 2026-10-07 确认）。夹具直接写确认表，
+    等价于产品岗做过一次人工确认；走 API 得先制造外部差异，代价大且会牵动别的断言。
+    只确认 `name`、值取 SKU 的真实名称，让行为与「未确认」保持一致。
+    """
+    import asyncio
+
+    from sqlalchemy import text as sql_text
+
+    from app.core.database import SessionLocal, engine
+
+    async def _run() -> None:
+        try:
+            async with SessionLocal() as s:
+                await s.execute(
+                    sql_text(
+                        "insert into sku_field_authorities "
+                        "(sku_id, field_name, source_verified, confirmed_version, "
+                        " confirmed_value, status, created_at, updated_at) "
+                        "select s.id, 'name', false, 1, to_jsonb(s.name), 'confirmed', "
+                        "now(), now() from skus s where s.id = :sku"
+                    ),
+                    {"sku": sku_id},
+                )
+                await s.commit()
+        finally:
+            # 本脚本末尾还有一次 asyncio.run（清理留痕），而 async 引擎的连接池
+            # **绑在创建它的那个事件循环**上：不清池，后面那次就会报
+            # "attached to a different loop"，于是清理被跳过、夹具留在库里。
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
 def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
@@ -180,6 +216,9 @@ def main():
                     "delete from price_rules where sku_id = any(:sku_ids)",
                     # 成本同理：接口没有删成本的路径，不显式清就会留在库里
                     "delete from product_costs where sku_id = any(:sku_ids)",
+                    # §8.14 的确认夹具（confirm_sku_master 写的）也要一起收：
+                    # SKU 是**软删**的，挂在它上面的行不会自己消失。
+                    "delete from sku_field_authorities where sku_id = any(:sku_ids)",
                 ):
                     await s.execute(
                         text(sql), {'ts': SCRIPT_STARTED_AT, 'sku_ids': created_skus}
@@ -428,6 +467,27 @@ def main():
                       body={'receiver': 'buyer@example.com'})
         # not_submitted 状态直接发送 → 业务码 40002（HTTP 422，A12 修复的核心场景）
         record('A12', '未通过审批的版本不能发送', res['code'] == 40002, res.get('message'))
+
+        # ---------------- A17 未确认的主数据不能正式发送（§8.14）----------------
+        # 口径（2026-10-07 确认）：草稿随便建、**正式发送时必须过**。
+        # 先把它测掉，再补确认 —— 后面的成交流程才发得出去。
+        print('== A17 未确认的主数据不能正式发送 ==')
+        _, res = call('POST', '/quotes', token=zhangsan, body={
+            'customer_id': customers['A'], 'opportunity_id': opp_a05,
+        })
+        qid17, vid17 = res['data']['quote_id'], res['data']['version_id']
+        created_quotes.append(qid17)
+        call('POST', f'/quote-versions/{vid17}/items/batch', token=zhangsan,
+             body=[{'sku_id': sku_id, 'quantity': 1, 'quoted_price': 85}])
+        call('POST', f'/quote-versions/{vid17}/submit-approval', token=zhangsan, body={})
+        _, res = call('POST', f'/quote-versions/{vid17}/mark-sent', token=zhangsan, body={})
+        record('A17', '未确认主数据：草稿可建，正式发送被拦',
+               res.get('code') == 40002 and '主数据' in (res.get('message') or ''),
+               f"code={res.get('code')} {res.get('message')}")
+
+        # 补上确认（模拟产品岗做完主数据确认）：下面 A13 才能正常走完成交流程。
+        # 注意顺序 —— A13 的明细是在**确认之后**生成的，它引用的版本才是已确认的那版。
+        confirm_sku_master(sku_id)
 
         # ---------------- A13 成交建单幂等 ----------------
         print('== A13 成交建单 ==')

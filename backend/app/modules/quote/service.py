@@ -974,6 +974,43 @@ async def moq_warning(session: AsyncSession, sku_id: int | None, quantity: Decim
     return None
 
 
+async def ensure_items_master_confirmed(session: AsyncSession, *, version_id: int) -> None:
+    """正式发送前的**硬校验**：这版明细引用的主数据必须是已确认的（§8.14）。
+
+    口径（2026-10-07 确认）：**草稿随便建、正式发送时必须过**。
+    生成明细那一步只提示不阻断 —— 字段权威表整表为空时硬拦会把所有报价堵死；
+    但对外那一步不行：印在客户文件上的名称/规格/单位必须是确认过的值。
+
+    判据看**明细自己记的版本号**（`quote_items.master_version_no`），不回查
+    "这个 SKU 现在有没有确认记录" —— 否则事后补了确认，旧的未确认明细会被
+    当成合格，而那一版对客文件用的仍然是没确认的值。
+
+    定制项（没有 SKU）不适用：它们是独立业务身份，不要求提前建 SKU。
+    """
+    rows = (
+        await session.execute(
+            select(QuoteItem.sku_id, QuoteItem.master_version_no, QuoteItem.sku_code_snapshot)
+            .where(QuoteItem.quote_version_id == version_id, QuoteItem.sku_id.is_not(None))
+        )
+    ).all()
+    missing = [(int(sku_id), code) for sku_id, version_no, code in rows if version_no is None]
+    if not missing:
+        return
+    # 只说"未确认"用户不知道该补什么 —— 逐个把缺的字段名查出来
+    details: list[str] = []
+    for sku_id, code in missing:
+        resolved = await master_service.resolve_confirmed_master(session, sku_id)
+        labels = "、".join(resolved["unconfirmed_labels"]) or "（确认记录已不完整）"
+        details.append(f"{code or f'SKU#{sku_id}'} 缺 {labels}")
+    raise AppError(
+        ErrorCode.STATUS_NOT_ALLOWED,
+        "以下明细的 SKU 主数据尚未确认，不能正式发送："
+        + "；".join(details)
+        + "。请先在这些 SKU 上确认主数据，再重新生成这版明细。",
+        422,
+    )
+
+
 async def version_items(session: AsyncSession, version_id: int) -> list[QuoteItem]:
     return list(
         (

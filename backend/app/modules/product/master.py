@@ -1582,9 +1582,31 @@ async def resolve_confirmed_master(
         "values": confirmed,
         "unconfirmed": missing,
         "unconfirmed_labels": [MASTER_FIELDS[field] for field in missing],
-        "version_no": (version or {}).get("version_no", 0),
+        # 版本号取"这些字段是在第几版被确认的"里的最大值。只要有确认字段，
+        # 报价明细就会把它记下来（`quote_items.master_version_no`）；
+        # 一个都没有才是 0，表示"当时这个 SKU 还没有任何已确认主数据"。
+        # 不直接读 `SkuMasterVersion` 表：判据应当只看**字段有没有被确认** ——
+        # 否则"字段已确认、却没有版本行"的数据会得出自相矛盾的结论。
+        "version_no": await _confirmed_version_no(session, sku_id, confirmed),
         "version": version,
     }
+
+
+async def _confirmed_version_no(
+    session: AsyncSession, sku_id: int, confirmed: dict[str, str]
+) -> int:
+    """已确认字段里最大的确认版本号（没有确认字段则为 0）。"""
+    if not confirmed:
+        return 0
+    values = (
+        await session.execute(
+            select(SkuFieldAuthority.confirmed_version).where(
+                SkuFieldAuthority.sku_id == sku_id,
+                SkuFieldAuthority.field_name.in_(list(confirmed)),
+            )
+        )
+    ).scalars().all()
+    return max((int(value or 0) for value in values), default=0)
 
 
 __all__ = [

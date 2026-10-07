@@ -19,6 +19,7 @@ import asyncio
 import csv as csv_module
 import io
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import event, select
@@ -587,8 +588,9 @@ def test_customer_import_preview_lists_owner_mapping_and_writes_nothing(db):
 def test_preview_token_detects_changed_rows():
     plan = {"2": "created", "3": "created"}
     token = make_preview_token("product", "sha-of-file", plan)
-    file_sha, planned = read_preview_token(token, "product")
+    file_sha, planned, baselines = read_preview_token(token, "product")
     assert file_sha == "sha-of-file"
+    assert baselines == {}  # 没有更新行 → 没有原值指纹
 
     diff = diff_preview(
         planned,
@@ -799,3 +801,84 @@ def test_import_with_matching_preview_token_goes_through(db):
     assert result["data"]["preview_diff"]["changed_rows"] == []
     assert result["data"]["preview_diff"]["file_changed"] is False
     assert "丁产品" in set(db.scalars_all(select(Product.name)))
+
+
+def test_diff_preview_flags_changed_baseline_even_when_outcome_same():
+    """结论一样、但目标记录的原值变了 —— 只有指纹能发现（审查 2026-10-07 第二轮）。"""
+    same = {"2": "updated"}
+    diff = diff_preview(
+        same,
+        same,
+        file_sha256="sha",
+        planned_file="sha",
+        planned_baselines={"2": "aaa"},
+        actual_baselines={"2": "bbb"},
+    )
+    assert diff["changed_rows"] == []
+    assert diff["file_changed"] is False
+    assert [item["row"] for item in diff["baseline_changed"]] == [2]
+    # 两边都没指纹（旧令牌 / 新增行）不该误报冲突
+    quiet = diff_preview(
+        same, same, file_sha256="sha", planned_file="sha",
+        planned_baselines={}, actual_baselines={},
+    )
+    assert quiet["baseline_changed"] == []
+
+
+def test_import_refuses_when_target_row_changed_since_preview(db):
+    """§7.6：目标记录在预览之后被别人改过，**即使结论仍是"更新"也要拦**。
+
+    复现顺序（审查 2026-10-07 第二轮）：原采购成本 100 → 导入文件准备改成 20、
+    预览显示"更新 1 条" → 另一个会话把成本改成 200 → 拿旧预览令牌确认。
+    两次结论都是"更新"，只比结论就放行了，20 会无声盖掉别人刚写的 200。
+
+    确认必须失败、要求重新预览，而且库里要保留别人的 200。
+    """
+    from app.modules.pricing import io_router as pricing_io
+
+    seed_basics(db)
+    asyncio.run(
+        pricing_io.import_costs(
+            request=FakeRequest(),
+            file=upload(COST_HEADER + "SKU-1,100,,,,CNY,2026-10-01,,首发\n"),
+            preview=False,
+            preview_token=None,
+            user=FakeUser(),
+            session=db.session,
+        )
+    )
+
+    change = COST_HEADER + "SKU-1,20,,,,CNY,2026-10-01,,改价\n"
+    preview = asyncio.run(
+        pricing_io.import_costs(
+            request=FakeRequest(),
+            file=upload(change),
+            preview=True,
+            preview_token=None,
+            user=FakeUser(),
+            session=db.session,
+        )
+    )
+    assert preview["data"]["updated_count"] == 1, "预览应当被判成'更新 1 条'"
+    token = preview["data"]["preview_token"]
+
+    # "别人"在预览与确认之间把成本改成 200
+    cost = db.scalars_one(select(ProductCost))
+    cost.purchase_cost = Decimal("200")
+    db.raw.commit()
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            pricing_io.import_costs(
+                request=FakeRequest(),
+                file=upload(change),
+                preview=False,
+                preview_token=token,
+                user=FakeUser(),
+                session=db.session,
+            )
+        )
+    assert caught.value.code == 40902
+    assert "原数据已被改动" in caught.value.message
+    # 关键：库里的 200 不能被 20 覆盖
+    assert float(db.scalars_one(select(ProductCost)).purchase_cost) == 200.0

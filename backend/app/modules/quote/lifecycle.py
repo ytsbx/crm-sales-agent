@@ -13,7 +13,7 @@ from app.modules.opportunity import service as opportunity_service
 from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.quote.model import Quote, QuoteSendLog, QuoteVersion
 from app.modules.quote.schema import SendRequest
-from app.modules.quote.service import quote_is_expired
+from app.modules.quote.service import ensure_items_master_confirmed, quote_is_expired
 
 
 def ensure_current_version(quote: Quote, version: QuoteVersion) -> None:
@@ -70,6 +70,10 @@ async def mark_version_sent(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "当前报价状态不能标记发送，请新建版本后重新审批", 422)
     if quote_is_expired(quote.valid_until):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "报价已过有效期，请新建版本并更新有效期后发送", 422)
+    # §8.14 的出口硬校验：印给客户的名称/规格/单位必须来自**已确认**的主数据。
+    # 放在所有写操作之前 —— 拦下就不许写发送记录、不许推进商机。
+    # 草稿阶段不受影响（生成明细时只提示），所以这里才是真正的闸门。
+    await ensure_items_master_confirmed(session, version_id=version.id)
     now = datetime.now(UTC)
     version.sent_at = now
     quote.status = "sent"

@@ -51,6 +51,19 @@ from app.modules.user.model import User
 router = APIRouter(tags=["Quote"])
 
 
+def _with_master_warnings(payload: dict, warnings: set[str]) -> dict:
+    """把"哪些 SKU 的主数据还没确认"放进**响应体**。
+
+    为什么不能只拼在 message 里（审查 2026-10-07 实测）：前端统一客户端
+    （`shared/api/client.ts` 的 `unwrap`）只把 `body.data` 交给页面，
+    `message` 根本到不了界面，提示等于没写 —— 原来那个"起订量提醒"也是这样白写的。
+    草稿阶段不阻断，但要让用户在明细页看得见"这几条的主数据还没确认"。
+    """
+    if not warnings:
+        return payload
+    return {**payload, "master_warnings": sorted(warnings)}
+
+
 async def _ensure_inquiry_visible(
     session: AsyncSession, user: CurrentUser, inquiry_id: int | None
 ) -> None:
@@ -258,6 +271,10 @@ async def create_quote(
             "currency": version.currency,
             "exchange_rate_snapshot": created["exchange_rate_snapshot"],
             "warnings": created["warnings"],
+            # §8.14：草稿里哪些 SKU 的主数据还没确认。必须放进**响应体** ——
+            # 前端统一客户端只把 data 交给页面，拼在 message 里的提示根本到不了界面
+            # （审查 2026-10-07 实测；原来那个"起订量提醒"也是同样白写）。
+            "master_warnings": sorted(unconfirmed_master),
         }
         if reservation is not None:
             await idempotency.complete(
@@ -345,6 +362,20 @@ async def update_quote(
             raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={data['owner_id']} 不存在", 404)
         if owner.status != "active":
             raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用", 422)
+    if "valid_until" in data:
+        # §8.7：有效期是**对客字段**，主单与当前版本的快照必须一起动 ——
+        # 否则主单显示 12-01、对客文件还是 11-01，而发送与过期判断又在用主单，
+        # 三方口径互不一致（审查 2026-10-07 复验的第二种写法）。
+        # 可编辑的草稿版同步；已提交审批/已发送的版本按既定锁定规则**拒绝** ——
+        # 不允许借"改一下主单"把已经对外的历史口径改掉。
+        current_version = (
+            await session.get(QuoteVersion, quote.current_version_id)
+            if quote.current_version_id
+            else None
+        )
+        if current_version is not None:
+            await svc.ensure_version_editable(current_version)
+            current_version.valid_until_snapshot = data["valid_until"]
     for field, value in data.items():
         setattr(quote, field, value)
     await session.flush()
@@ -661,13 +692,16 @@ async def clone_quote(
             + "（本次按本地值报价）"
         )
     return ok(
-        {
-            "quote_id": new_quote.id,
-            "quote_no": new_quote.quote_no,
-            "version_id": created["_version"].id,
-            "copied_items": copied_items,
-            "source_quote_id": source.id,
-        },
+        _with_master_warnings(
+            {
+                "quote_id": new_quote.id,
+                "quote_no": new_quote.quote_no,
+                "version_id": created["_version"].id,
+                "copied_items": copied_items,
+                "source_quote_id": source.id,
+            },
+            unconfirmed_master,
+        ),
         clone_message,
     )
 
@@ -903,7 +937,9 @@ async def set_items(
             + "；".join(sorted(unconfirmed_master))
             + "（本次按本地值报价，确认后请重新生成明细）"
         )
-    return ok(svc.serialize_version(version), message)
+    return ok(
+        _with_master_warnings(svc.serialize_version(version), unconfirmed_master), message
+    )
 
 
 @router.patch("/quote-items/{item_id}")
@@ -993,7 +1029,9 @@ async def update_item(
             + "；".join(sorted(unconfirmed_master))
             + "（本次按本地值报价）"
         )
-    return ok(svc.serialize_item(item), message)
+    return ok(
+        _with_master_warnings(svc.serialize_item(item), unconfirmed_master), message
+    )
 
 
 @router.delete("/quote-items/{item_id}")
@@ -1321,11 +1359,19 @@ async def download_pdf(
         "company_name": await settings_service.get_text(session, "company_name", "text", ""),
         "quote_no": quote.quote_no,
         "version_no": version.version_no,
-        "customer_name": ctx["customers"].get(quote.customer_id),
+        "customer_name": version.customer_name_snapshot or "待核实",
         "opportunity_title": ctx["titles"].get(quote.opportunity_id) if quote.opportunity_id else None,
         "owner_name": ctx["owners"].get(quote.owner_id) if quote.owner_id else user.name,
         "quote_date": version.created_at.strftime("%Y-%m-%d"),
-        "valid_until": quote.valid_until,
+        # §8.7：对客口径一律取**这一版冻结的快照**，不回查当前客户资料 / 主单。
+        # 原来这里读的是 `ctx["customers"]`（当前客户名）和 `quote.valid_until`
+        # （主单当前有效期），于是同一个 V1：BizDoc 印的是旧名、PDF 印的是新名。
+        # 历史版本没留存 → 显示"待核实"，不拿今天的资料冒充当时发出去的那一份。
+        "valid_until": (
+            version.valid_until_snapshot.isoformat()
+            if version.valid_until_snapshot
+            else "待核实"
+        ),
         "status_label": QUOTE_STATUS_LABEL.get(quote.status, quote.status),
         "items": [svc.serialize_item(item) for item in items],
         "charges": [
@@ -1440,7 +1486,9 @@ async def add_version_item(
             + "；".join(sorted(unconfirmed_master))
             + "（本次按本地值报价）"
         )
-    return ok(svc.serialize_item(item), message)
+    return ok(
+        _with_master_warnings(svc.serialize_item(item), unconfirmed_master), message
+    )
 
 
 @router.get("/quote-versions/{version_id}/charges")

@@ -270,6 +270,8 @@ class ImportReport:
         self.updated: list[dict] = []
         #: 行号 -> {"row", "name", "reason", "problems"}：按行去重的失败清单
         self._failed: dict[int, dict] = {}
+        #: 行号 -> 目标记录的原值指纹（只有"更新已有记录"的行才有）
+        self._baselines: dict[int, str] = {}
 
     # ------------------------------------------------------------ 记录
 
@@ -278,11 +280,25 @@ class ImportReport:
         self.created.append(item)
         return item
 
-    def updated_row(self, row: int, name: str = "", **extra) -> dict:
-        """同一条记录被本次导入更新（例如同生效日的成本版本）。"""
+    def updated_row(
+        self, row: int, name: str = "", *, baseline: str | None = None, **extra
+    ) -> dict:
+        """同一条记录被本次导入更新（例如同生效日的成本版本）。
+
+        `baseline`：**读到目标记录时、改它之前**算出的原值指纹
+        （用 `baseline_fingerprint(...)`，只喂参与更新的那几个字段）。
+        预览与确认两次各算一次，比对它就能发现"预览之后、确认之前别人改过
+        这条记录" —— 少了它，两次结论都是"更新"，覆盖掉别人刚改的值也看不出来。
+        """
         item = {"row": row, "name": name, **extra}
         self.updated.append(item)
+        if baseline:
+            self._baselines[row] = baseline
         return item
+
+    def baselines(self) -> dict[str, str]:
+        """行号 -> 原值指纹。与 `plan()` 一起进预览令牌。"""
+        return {str(row): value for row, value in self._baselines.items()}
 
     def skipped_row(self, row: int, name: str, reason: str) -> dict:
         item = {"row": row, "name": name, "reason": reason}
@@ -393,20 +409,44 @@ def ok_body(body: dict, message: str) -> dict:
 # ==================================================================== 预览快照
 
 
+def baseline_fingerprint(*values) -> str:
+    """把"目标记录当前的关键字段值"压成一个短指纹。
+
+    用途（审查 2026-10-07 第二轮实测的漏洞）：预览时算一次、确认时再算一次，
+    不一致就说明**预览之后有人改过这条记录**，必须要求重新预览。
+    原来令牌里只存"第 2 行：更新"这种结论，于是"预览是更新、确认也是更新"
+    而中间被人从 100 改成 200，系统认为没变化，直接把 20 覆盖上去。
+
+    **只放真正参与更新的那几个字段**，不要把整行塞进来：无关字段的变动
+    （别人只改了备注之类）不该把这次导入拦下来，否则一有并发就永远导不进去。
+    """
+    raw = "\x1f".join("" if value is None else str(value) for value in values)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
 def _sign(payload: bytes) -> str:
     return hmac.new(
         settings.jwt_secret.encode("utf-8"), payload, hashlib.sha256
     ).hexdigest()
 
 
-def make_preview_token(module: str, file_sha256: str, plan: dict[str, str]) -> str:
-    """预览快照：文件摘要 + 每行结论，压缩后签名。
+def make_preview_token(
+    module: str,
+    file_sha256: str,
+    plan: dict[str, str],
+    baselines: dict[str, str] | None = None,
+) -> str:
+    """预览快照：文件摘要 + 每行结论 + 每行目标记录的原值指纹，压缩后签名。
 
     只放进 token 不进库，是为了让 7.6 的"预览→确认"闭环不需要新表和新迁移；
     代价是 token 会随行数变大（1000 行约几 KB），作为表单字段完全够用。
+
+    为什么要带**原值指纹**（审查 2026-10-07 第二轮实测）：只存结论的话，
+    "预览时是更新、确认时还是更新"看起来毫无变化，但目标记录完全可能在这中间
+    被别人改过（100 → 200），于是确认时把 20 覆盖上去，别人的修改无声消失。
     """
     raw = json.dumps(
-        {"m": module, "f": file_sha256, "p": plan},
+        {"m": module, "f": file_sha256, "p": plan, "b": baselines or {}},
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
@@ -414,8 +454,10 @@ def make_preview_token(module: str, file_sha256: str, plan: dict[str, str]) -> s
     return f"{base64.urlsafe_b64encode(compressed).decode()}.{_sign(compressed)}"
 
 
-def read_preview_token(token: str, module: str) -> tuple[str, dict[str, str]]:
-    """校验并解开预览快照，返回 (文件摘要, 行结论)。
+def read_preview_token(
+    token: str, module: str
+) -> tuple[str, dict[str, str], dict[str, str]]:
+    """校验并解开预览快照，返回 (文件摘要, 行结论, 行原值指纹)。
 
     签名不对、模块不对、结构不对一律拒绝：这份快照会直接影响
     "要不要提示用户结论变了"，让它可以被伪造等于让提示失灵。
@@ -436,7 +478,16 @@ def read_preview_token(token: str, module: str) -> tuple[str, dict[str, str]]:
     plan = data.get("p")
     if not isinstance(plan, dict):
         raise AppError(ErrorCode.PARAM_ERROR, "预览快照无法解析，请重新预览", 422)
-    return str(data.get("f") or ""), {str(k): str(v) for k, v in plan.items()}
+    baselines = data.get("b")
+    return (
+        str(data.get("f") or ""),
+        {str(k): str(v) for k, v in plan.items()},
+        (
+            {str(k): str(v) for k, v in baselines.items()}
+            if isinstance(baselines, dict)
+            else {}
+        ),
+    )
 
 
 #: 结论码的人话。提示里说"第 7 行：预览时说要新增，现在失败"，比给个数字有用。
@@ -450,12 +501,20 @@ OUTCOME_LABEL = {
 
 
 def diff_preview(
-    planned: dict[str, str], actual: dict[str, str], *, file_sha256: str, planned_file: str
+    planned: dict[str, str],
+    actual: dict[str, str],
+    *,
+    file_sha256: str,
+    planned_file: str,
+    planned_baselines: dict[str, str] | None = None,
+    actual_baselines: dict[str, str] | None = None,
 ) -> dict:
-    """比对预览结论与本次执行结论。
+    """比对预览结论与本次执行结论，以及**目标记录的原值有没有被动过**。
 
-    返回的 `changed` 只列**结论变了**的行（含预览时不在本次结果里的行），
+    返回的 `changed_rows` 只列**结论变了**的行（含预览时不在本次结果里的行），
     每项都带上下两段人话，前端可以直接显示"哪几行和预览不一样了"。
+    `baseline_changed` 列的是**结论没变但原值变了**的行（例如两次都是"更新"，
+    但这中间别人把成本从 100 改成了 200）—— 这种只能靠指纹发现。
     """
     changed: list[dict] = []
     for row in sorted(set(planned) | set(actual), key=lambda x: int(x)):
@@ -472,11 +531,21 @@ def diff_preview(
                 "after_label": OUTCOME_LABEL.get(after or "", "本次未涉及"),
             }
         )
+    # 结论相同也要比原值：这是"预览之后别人改了这条记录"的唯一线索。
+    # 只比**两边都有指纹**的行 —— 预览时没有指纹（旧令牌或新增行）不该报冲突。
+    before_map = planned_baselines or {}
+    after_map = actual_baselines or {}
+    stale = [
+        {"row": int(row), "fingerprint": before_map[row], "now": after_map[row]}
+        for row in sorted(set(before_map) & set(after_map), key=lambda x: int(x))
+        if before_map[row] != after_map[row]
+    ]
     return {
         "file_changed": bool(planned_file) and planned_file != file_sha256,
         "planned_file_sha256": planned_file,
         "file_sha256": file_sha256,
         "changed_rows": changed,
+        "baseline_changed": stale,
     }
 
 
@@ -509,7 +578,7 @@ async def finalize(
         # 预览：完整跑一遍校验与冲突检查后整体回滚，不落任何数据
         await session.rollback()
         body_extra["preview_token"] = make_preview_token(
-            module, file_sha256, report.plan()
+            module, file_sha256, report.plan(), report.baselines()
         )
         message = (
             f"预览完成（未写入）：将新增 {report.created_count} 条，"
@@ -521,29 +590,46 @@ async def finalize(
         return report.payload(message=message, preview=True, extra=body_extra)
 
     if preview_token:
-        planned_file, planned = read_preview_token(preview_token, module)
+        planned_file, planned, planned_baselines = read_preview_token(preview_token, module)
         preview_diff = diff_preview(
-            planned, report.plan(), file_sha256=file_sha256, planned_file=planned_file
+            planned,
+            report.plan(),
+            file_sha256=file_sha256,
+            planned_file=planned_file,
+            planned_baselines=planned_baselines,
+            actual_baselines=report.baselines(),
         )
-        # §7.6 的核心：预览之后**文件本身或每行结论**变了，就不能再提交。
-        # 原来的实现算完差异只把它塞进响应体、**然后继续往下 commit** ——
-        # 等于"先改数据、再提醒用户"，而他确认时看到的是另一份结果。
-        # 这里的纪律与并发冲突一致：**冲突就整体回滚，要求重新预览**，
+        # §7.6 的核心：预览之后只要**文件、每行结论、或目标记录原值**任一变过，
+        # 就不能再提交。三者缺一不可 —— 只看结论的话，"两次都是更新"会漏掉
+        # "别人把目标值改了"这一路（审查 2026-10-07 第二轮实测：成本 100 →
+        # 别人改成 200 → 拿旧令牌确认，20 直接盖上去，别人的修改无声消失）。
+        # 纪律与并发冲突一致：**冲突就整体回滚、要求重新预览**，
         # 不是"提交完再告诉他不一致"（那时数据已经改了，提示只是事后通知）。
-        if preview_diff["file_changed"] or preview_diff["changed_rows"]:
+        if (
+            preview_diff["file_changed"]
+            or preview_diff["changed_rows"]
+            or preview_diff["baseline_changed"]
+        ):
             await session.rollback()
-            changed = preview_diff["changed_rows"]
-            detail = "、".join(
-                f"第 {item['row']} 行（预览时{item['before_label']}，本次{item['after_label']}）"
-                for item in changed[:5]
-            )
-            if len(changed) > 5:
-                detail += f"，等共 {len(changed)} 行"
-            reason = (
-                "导入文件与预览时不是同一份（内容已变化）"
-                if preview_diff["file_changed"]
-                else "导入结论与预览时不一致"
-            )
+            if preview_diff["baseline_changed"]:
+                stale = preview_diff["baseline_changed"]
+                reason = "预览之后，这些行在系统里的原数据已被改动"
+                detail = "、".join(f"第 {item['row']} 行" for item in stale[:5])
+                if len(stale) > 5:
+                    detail += f"，等共 {len(stale)} 行"
+            elif preview_diff["file_changed"]:
+                reason = "导入文件与预览时不是同一份（内容已变化）"
+                detail = ""
+            else:
+                changed = preview_diff["changed_rows"]
+                reason = "导入结论与预览时不一致"
+                detail = "、".join(
+                    f"第 {item['row']} 行（预览时{item['before_label']}，"
+                    f"本次{item['after_label']}）"
+                    for item in changed[:5]
+                )
+                if len(changed) > 5:
+                    detail += f"，等共 {len(changed)} 行"
             raise AppError(
                 ErrorCode.VERSION_CONFLICT,
                 f"{reason}：{detail or '（结论明细见重新预览结果）'}。"

@@ -28,6 +28,7 @@ from app.core.importing import (
     ImportReport,
     RowErrors,
     RowRejected,
+    baseline_fingerprint,
     finalize,
     row_savepoint,
 )
@@ -520,13 +521,32 @@ async def import_costs(
             async with row_savepoint(session):
                 existing = (
                     await session.execute(
-                        select(ProductCost).where(
+                        select(ProductCost)
+                        .where(
                             ProductCost.sku_id == sku.id,
                             ProductCost.effective_from == effective_from,
                         )
+                        # 行锁 + `populate_existing`：本会话此前可能已经读过这一行，
+                        # 少了后面那句拿回来的是**内存里的旧值**（会话是
+                        # `expire_on_commit=False`），"别人改过没有"就判不出来 ——
+                        # 锁住了库里的行却比对了旧值，并发保护等于白加。
+                        .with_for_update()
+                        .execution_options(populate_existing=True)
                     )
                 ).scalars().first()
                 if existing is not None:
+                    # 原值指纹必须在**动它之前**算：确认导入时再算一次比对，
+                    # 就能发现"预览之后别人改过这一行"（审查 2026-10-07 第二轮实测：
+                    # 两次结论都是"更新"，于是 20 直接盖掉了别人刚写的 200）。
+                    # 只喂真正参与更新的字段 —— 无关字段变动不该拦下这次导入。
+                    baseline = baseline_fingerprint(
+                        existing.purchase_cost,
+                        existing.production_cost,
+                        existing.package_cost,
+                        existing.processing_cost,
+                        existing.effective_to,
+                        existing.remark,
+                    )
                     # 同日起导 = 更新那一版（幂等，不产生重复成本版本）；空白保留旧值
                     changed = False
                     for key, value in provided.items():
@@ -546,6 +566,7 @@ async def import_costs(
                         report.updated_row(
                             index, code, id=existing.id, changed=True,
                             reason=f"已更新同日成本版本 #{existing.id}",
+                            baseline=baseline,
                         )
                     else:
                         report.skipped_row(

@@ -83,7 +83,10 @@ class QuoteVersion(Base, IdMixin):
     #: 出对客文件时"客户名"原来实时读 `customers.name`：客户改了名，**旧版本再出图
     #: 就印成新名字**，与当时真正发给客户的那一份对不上。必须跟计价单位一样存快照。
     #: 可空：历史版本没有留存，出图明确写"待核实"，不静默补当前客户名。
-    customer_name_snapshot: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 长度必须**与 `customers.name` 一致（200）**：原来是 128，于是 129~200 字的
+    #: 合法客户名一建报价就撞 asyncpg 22001（value too long），报价直接建不出来。
+    #: 加列时没有回头核对源字段长度 —— 快照列一律按源列长度取，别再手写一个数。
+    customer_name_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
     #: 联系人抬头快照，理由同上（原来实时读 `contacts.name`）。
     contact_name_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)
     #: 有效期快照，理由同上（原来实时读 `quotes.valid_until` 的当前值）。

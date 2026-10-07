@@ -282,6 +282,48 @@ def check_price_rule_values(
     check_effective_period(errs, effective_from=effective_from, effective_to=effective_to)
 
 
+async def ensure_customer_in_scope_for_price(
+    session: AsyncSession, *, user, customer_id: int
+) -> Customer:
+    """客户专属价的**唯一范围判据**：新增 / 修改 / 删除 / 列表都走它。
+
+    口径：管理员（`scoped_owner_ids` 返回 None）不限；无负责人的客户（公海）放行；
+    其余要求该客户的负责人在操作人的数据范围内。
+
+    为什么要收成函数（审查 2026-10-07 第二轮实测）：上一轮只给**新增和修改**接了这个
+    判据，删除和列表漏了 —— 于是"本人仅自己"范围的业务员拿 id 就能删掉别人客户的
+    专属价（删完那个客户后续报价改用通用价，等于悄悄改价），列表还能把全公司的
+    专属价连同客户名一起翻出来。**判据散着写就一定会漏，所以四处共用这一份。**
+    """
+    from app.core.data_scope import scoped_owner_ids
+
+    customer = await session.get(Customer, customer_id)
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在或已删除", 404)
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None and customer.owner_id is not None:
+        if int(customer.owner_id) not in owner_ids:
+            raise AppError(
+                ErrorCode.DATA_SCOPE_DENIED,
+                "该客户不在你的数据范围内，不能为它维护专属价；请联系对应负责人或主管处理",
+                403,
+            )
+    return customer
+
+
+def customer_scope_condition(owner_ids: list[int] | None):
+    """列表用的范围条件 —— 与 `ensure_customer_in_scope_for_price` **同一口径**。
+
+    `owner_ids` 为 None（管理员）表示不加条件，返回 None。
+    放在判据函数旁边是为了让两者挨着：它们一漂，列表就会列出不该列的东西。
+    """
+    if owner_ids is None:
+        return None
+    # 范围内的 + 公海（无负责人）。公海客户对所有人可见，漏掉它会出现
+    # "详情页能维护、列表里却查不到"这种自相矛盾。
+    return or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None))
+
+
 async def ensure_customer_price_targets(
     session: AsyncSession, *, user, customer_id: int, sku_id: int
 ) -> tuple[Customer, Sku]:
@@ -293,23 +335,12 @@ async def ensure_customer_price_targets(
     于是同一件事两套标准：导入被拦、换个接口就能给任意客户编号（已删的、别人家的）
     建专属价。判据与导入侧同源（见 pricing/io_router.py 的 358 行那段）。
     """
-    from app.core.data_scope import scoped_owner_ids
-
     sku = await session.get(Sku, sku_id)
     if sku is None or getattr(sku, "deleted_at", None) is not None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除，不能挂专属价", 404)
-    customer = await session.get(Customer, customer_id)
-    if customer is None or customer.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, "客户不存在或已删除，不能为它维护专属价", 404)
-    # 数据范围：与"能不能看这个客户"同一口径。无负责人（公海）放行。
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None and customer.owner_id is not None:
-        if int(customer.owner_id) not in owner_ids:
-            raise AppError(
-                ErrorCode.DATA_SCOPE_DENIED,
-                "该客户不在你的数据范围内，不能为它维护专属价；请联系对应负责人或主管处理",
-                403,
-            )
+    customer = await ensure_customer_in_scope_for_price(
+        session, user=user, customer_id=customer_id
+    )
     return customer, sku
 
 
