@@ -15,6 +15,24 @@
 后面订单详情、客户接受/拒绝等一连串验收全部连带失败。
 按项目规矩：**行为变更要改夹具，不是放宽规则** —— 所以给夹具补上确认记录。
 
+## 第二轮收紧（2026-10-07，前八批遗留 §8.14-①）：还要落一版「整版快照」
+
+复审把闸门口径又收紧了一档：不再看"这个 SKU 现在的字段确认状态"，而是**回查报价明细
+自己记下的那一版快照**（`quote_items.master_version_no` → `sku_master_versions`），
+检查**印给客户的三个字段**（名称/规格/单位）在那一版里在不在
+（`quote/service.master_confirmation_problems` → `product/master.quoted_snapshot_problems`）。
+
+于是只补 `sku_field_authorities` 不够了：明细生成时要能取到一个**整版号**
+（`product/master.quoted_master_version_no` 只在确实存在、且逐字段值与确认值一致时
+才返回非 0），否则明细落成 `master_version_no = NULL`，正式发送照旧被 422 拦下：
+
+    POST /quote-versions/{id}/mark-sent
+    → 422 以下明细的主数据尚未确认，不能正式发送：ZX-6040-B 缺 （没有可引用的已确认主数据版本）
+
+所以本脚本现在**一次做两件事**：补字段确认 + 落一版整版快照。快照的 `values`
+用与 `confirmed_value` **完全相同**的 `to_jsonb(s.<列>)` 构造，保证
+`quoted_master_version_no` 的逐字段比对能对上（只造一份值、两处引用，避免表示形式漂移）。
+
 ## 只允许对一次性库跑
 
 库名不含 test / iso / smoke 一律拒绝执行（与其它夹具脚本同一口径）：
@@ -78,10 +96,36 @@ async def main() -> None:
                 {"field": field},
             )
             inserted += result.rowcount or 0
+
+        # 再落一版整版快照（version_no = 1）：报价明细的 master_version_no 指向的就是它。
+        # 字段值与上面 confirmed_value 用同一个表达式（to_jsonb(s.<列>)），
+        # 两边读出来完全相同，quoted_master_version_no 的比对才过得去。
+        # 列名来自 MASTER_FIELDS 白名单，不是外部输入。
+        snapshot_pairs = ", ".join(
+            f"'{field}', to_jsonb(s.{field})" for field in MASTER_FIELDS
+        )
+        snapshots = await conn.execute(
+            text(
+                f"""
+                insert into sku_master_versions
+                    (sku_id, version_no, values, source_summary, confirmed_by,
+                     confirmed_at, note, created_at, updated_at)
+                select s.id, 1, jsonb_build_object({snapshot_pairs}),
+                       '{{}}'::jsonb, NULL, now(),
+                       '冒烟夹具：确认关键字段并落一版整版快照', now(), now()
+                from skus s
+                where s.deleted_at is null
+                on conflict (sku_id, version_no) do update set
+                    values = excluded.values, updated_at = now()
+                """
+            )
+        )
+        snapshot_count = snapshots.rowcount or 0
     await engine.dispose()
     print(
         f"库 {db_name}：已补 {inserted} 条字段确认"
-        f"（{len(MASTER_FIELDS)} 个字段 × 未删除的 SKU，已有的不动）"
+        f"（{len(MASTER_FIELDS)} 个字段 × 未删除的 SKU，已有的不动），"
+        f"并落整版快照 {snapshot_count} 版"
     )
 
 
