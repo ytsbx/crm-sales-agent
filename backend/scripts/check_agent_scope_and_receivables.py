@@ -623,10 +623,27 @@ async def main() -> int:
             "pending_receivable_amount" not in overview,
             str(overview.get("pending_receivable_amount")),
         )
+        # 口径变更（2026-10-07，业务拍板）：客户全貌与**客户页**完全对齐 ——
+        # 逐块判模块权限，再按**每个对象自己的负责人**收数据范围（与
+        # `customer/router.py::customer_overview`、`/customers/{id}/orders` 同一套）。
+        # 所以：只该算**业务员自己名下**那张 100 的单；主管名下那张 500 **不算进来**
+        # （客户可见 ≠ 客户名下每条单据都可见）。
+        #
+        # 改之前这条的期望值是 600.0（"客户可见 → 名下资料全可见"），那条口径已作废：
+        # 交接现在会把单据的负责人搬干净（`customer/documents.py`），"按单据负责人
+        # 过滤"不会再挡住接手人的合法历史 —— 这正是 §8.3 想要的结果。
         check(
-            "CNY 待回款分组：算的是本客户全部未取消单（自己的 100 + 主管名下那单 500）",
+            "CNY 待回款分组：只算自己名下那张（主管名下那单 500 不算进来）",
             grouped.get("CNY", {}).get("order_total_amount"),
-            600.0,
+            100.0,
+        )
+        # 订单块同理：**自己名下的都在**（本夹具里还有 USD 单与取消单，各自也算他的），
+        # **别人名下那张不在**（这才是这条口径要挡的）。
+        order_ids = [row["id"] for row in overview.get("orders", [])]
+        check_true(
+            "订单块只列自己名下的（主管名下那张不在里面）",
+            IDS["my_order"] in order_ids and IDS["other_order"] not in order_ids,
+            f"拿到 {order_ids}；自己的 {IDS['my_order']}、别人的 {IDS['other_order']}",
         )
         check_true(
             "取消单的 9999 没被算进来",

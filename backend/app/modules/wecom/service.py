@@ -1041,6 +1041,11 @@ async def transfer_relations(
             automatic=True,
             # **只迁离职人的待办**：客户名下在职同事的活留着（业务方 2026-10-06 定）
             only_from_owner_id=handover.id,
+            # 单据**不在这里搬**：离职交接支持逐项指定接手人（打样的跟单责任与
+            # 生产责任可以分别给两个人），单据由本函数下面那套逐项搬运处理。
+            # 这里若也整批搬一遍，会先按"客户接手人"改一轮、再被逐项指派覆盖，
+            # 而且 job 的逐项状态会全变成"跳过：负责人已改，不再是离职人"。
+            move_documents=False,
         )
         _mark_crm("customer", customer_id, "moved")
     detail["customers"] = len(customer_ids)
@@ -1534,6 +1539,8 @@ async def _retry_move_crm(
             f"离职继承重试：{handover.name} → {item.to_owner_name or ''}",
             automatic=True,
             only_from_owner_id=handover.id,
+            # 同上：单据由离职交接的逐项搬运处理，不在这里整批搬
+            move_documents=False,
         )
         return True
     if item.kind == "opportunity":

@@ -302,16 +302,23 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
       避免"空数组"被误读成"这个客户没有商机"；
     - 联系方式按可见性脱敏（见 `_may_see_full_contact`）。
 
-    范围口径：**客户在范围内 → 该公司名下的历史资料可见**，刻意不逐条要求
-    `opp.owner_id == 当前用户`——客户交接后历史单据的负责人可能仍是原负责人，
-    机械按 owner 过滤会把合法历史全挡掉（文档 §8.3 明确点名这一点）。
+    范围口径（2026-10-07 业务拍板后**已与页面完全对齐**）：逐块判对应模块的
+    查看权限，再按**每个对象自己的负责人**收数据范围（下文的 `_scope`）——
+    与 `/customers/{id}/orders` 等子资源接口、以及客户全貌页
+    （`customer/router.py::customer_overview`）用的是同一套判据。
 
-    ⚠️ 与客户全貌页的差异（2026-10-07 第九批 §9.1 起，**有意保留**）：
-    `customer/router.py::customer_overview` 已改为**逐板块判模块权限 + 按各模块
-    自己的数据范围过滤**（与 `/customers/{id}/orders` 等子资源接口对齐——审查
-    指出"有客户查看权就能绕过订单模块"）。本工具属 **Agent 读侧**，保留
-    "客户可见 → 名下资料可见"，依据是 §8.3（Agent 要能回放交接前的历史）。
-    两处口径若要统一，先拍板"交接后历史单据对承接人是否可见"这条业务规则。
+    为什么此前这里**刻意**不同（记下来，免得以后又改回去）：当时的顾虑是
+    "客户交接之后，单据的负责人可能还是原来那个人，机械按 owner 过滤会把接手人的
+    合法历史全挡掉"。这个顾虑**是真的**，但正确的修法不是"Agent 放宽可见性"，
+    而是**交接时把单据搬干净** —— 2026-10-07 已实现（`customer/documents.py`）：
+    日常转移、主管分配、批量转移、撞单裁定、公海领取都会把原负责人名下的
+    商机／打样／报价／订单草稿／订单以及生成的文件一并改到新负责人名下。
+    搬干净之后，"按单据负责人过滤"就不再挡历史了，两条路自然同口径，
+    也不需要 Agent 开特例。
+
+    （这也回答了审查 §8.3 那句"不能机械要求全部对象旧 owner 等于接手人而把合法
+    历史资料全挡住"：现在不再挡，是因为**交接把 owner 改对了**，
+    而不是读侧不看 owner。）
     """
     customer = await ctx.session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:
@@ -363,13 +370,16 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
 
     # ---- 商机（opportunity:view）----
     if ctx.user.has("opportunity:view"):
-        opportunities = (
-            await ctx.session.execute(
-                select(Opportunity, OpportunityStage.name)
-                .join(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
-                .where(Opportunity.customer_id == customer_id, Opportunity.deleted_at.is_(None))
-            )
-        ).all()
+        # 与客户页的"商机"标签同一口径：先判模块权限，再按**商机自己的负责人**
+        # 收数据范围（见本函数开头关于"两条路口径"的说明）。
+        opp_stmt = await _scope(
+            select(Opportunity, OpportunityStage.name)
+            .join(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
+            .where(Opportunity.customer_id == customer_id, Opportunity.deleted_at.is_(None)),
+            ctx,
+            Opportunity.owner_id,
+        )
+        opportunities = (await ctx.session.execute(opp_stmt)).all()
         result["opportunities"] = [
             {
                 "id": opp.id,
@@ -388,11 +398,13 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
 
     # ---- 报价（quote:view）----
     if ctx.user.has("quote:view"):
-        quotes = (
-            await ctx.session.execute(
-                select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None))
-            )
-        ).scalars().all()
+        # 同商机：按报价自己的负责人收范围（与客户页的"报价"标签一致）
+        quote_stmt = await _scope(
+            select(Quote).where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None)),
+            ctx,
+            Quote.owner_id,
+        )
+        quotes = (await ctx.session.execute(quote_stmt)).scalars().all()
         result["quotes"] = [
             {
                 "id": q.id,
@@ -408,11 +420,13 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
     # ---- 订单（order:view）----
     orders = []
     if ctx.user.has("order:view"):
-        orders = (
-            await ctx.session.execute(
-                select(SalesOrder).where(SalesOrder.customer_id == customer_id)
-            )
-        ).scalars().all()
+        # 同商机/报价：按订单自己的负责人收范围（与客户页的"订单"标签一致）
+        order_stmt = await _scope(
+            select(SalesOrder).where(SalesOrder.customer_id == customer_id),
+            ctx,
+            SalesOrder.owner_id,
+        )
+        orders = (await ctx.session.execute(order_stmt)).scalars().all()
         result["orders"] = [
             {
                 "id": o.id,

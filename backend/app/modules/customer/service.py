@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+from app.modules.customer import documents as documents_service
 from app.modules.customer.model import Contact, Customer, CustomerOwnerHistory
 from app.modules.customer import stage as stage_module
 from app.modules.user.model import User
@@ -592,6 +593,7 @@ async def transfer_customer(
     automatic: bool = False,
     only_from_owner_id: int | None = None,
     default_reason: str | None = None,
+    move_documents: bool = True,
 ) -> None:
     """变更客户负责人；new_owner_id 为空表示放入公海。
 
@@ -608,7 +610,40 @@ async def transfer_customer(
     批量/定时动作）。撞单争议未结案时这类改派一律拦下——文档 §11.5 :279
     的"争议冻结自动改派"：归属改谁由主管裁定，不让自动逻辑先动手造成既成事实。
     人工转移不受此限（人做的决定要留痕，但不该被系统拦住）。
+
+    `move_documents`（2026-10-07 业务口径）：本函数除了改客户负责人，还会把
+    **原本挂在这个客户原负责人名下**的单据（商机／打样／报价／订单草稿／订单
+    以及它们生成的文件）一并改到新负责人名下 —— 否则"客户归了新人，
+    但客户名下的报价、订单还写着原来那个人"，新人打开客户什么都看不到
+    （子资源接口按单据自己的负责人过滤）。详见 `customer/documents.py`。
+
+    只有**离职交接**会传 `move_documents=False`：它支持逐项指定不同的接手人，
+    单据由它自己那套逐项搬运处理，这里再搬一遍会和逐项结果打架。
     """
+    # 行锁。改负责人现在会连着搬这个客户名下的单据，两个人同时转移、
+    # 或者"转移"和"公海回收/指派"撞上时，必须让后来者等前面提交完再读，
+    # 否则两边都按自己读到的旧归属各搬一套 —— 轻则重复写，重则后提交的
+    # 把前一次的搬运结果覆盖掉。
+    #
+    # ⚠️ 必须 `populate_existing`：本项目 session 是 `expire_on_commit=False`，
+    # SQLAlchemy 默认**不用查询结果覆盖已加载对象**的属性。调用方（路由、
+    # 批量转移、领取、撞单裁定）大多在同一个会话里先读过这个客户，少了这一条
+    # 就是"锁住了库里的行、手里还捏着内存里的旧值"，锁等于白加
+    # （`claim_customer` 那条路上踩过同样的坑）。
+    #
+    # 同一个会话 + 同一个主键，`populate_existing` 拿回来的**就是 `customer`
+    # 这个对象本身**（只是属性被库里的最新值刷新了），所以下面继续用 `customer`。
+    locked = (
+        await session.execute(
+            select(Customer)
+            .where(Customer.id == customer.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+
     if automatic:
         from app.modules.customer import duplicates as dup_service
 
@@ -690,6 +725,51 @@ async def transfer_customer(
         if only_from_owner_id is not None:
             conditions.append(Task.owner_id == only_from_owner_id)
         await session.execute(update(Task).where(*conditions).values(owner_id=new_owner_id))
+
+    # 单据跟着客户走（2026-10-07 业务口径）：原本挂在**这个客户原负责人**名下的
+    # 商机／打样／报价／订单草稿／订单，以及它们生成的对客文件，一起改到新负责人名下。
+    # 边界（只搬原负责人名下的、业绩归属与历史创建人一个字不碰）见
+    # `customer/documents.py` 开头那段说明。
+    #
+    # 放公海（new_owner_id 为空）不搬：单据留在最后经手人名下，档案里仍查得到；
+    # 等有人领走时按下面这条规则一并接过去。
+    if move_documents and new_owner_id is not None:
+        source_owner_id = old_owner_id
+        if source_owner_id is None:
+            # 客户当前没有负责人（从公海领走、或公海指派给某人）：取归属历史里
+            # 最近一位非空的旧负责人 —— "客户被谁管过、单据就跟着谁"，
+            # 有人接走时一并接过来，否则新人还是看不到历史。
+            source_owner_id = await _previous_owner_from_history(session, customer.id)
+        if source_owner_id is not None and source_owner_id != new_owner_id:
+            await documents_service.reassign_customer_documents(
+                session,
+                customer_id=customer.id,
+                from_owner_id=source_owner_id,
+                to_owner_id=new_owner_id,
+            )
+
+
+async def _previous_owner_from_history(
+    session: AsyncSession, customer_id: int
+) -> int | None:
+    """归属历史里最近一位**非空的**旧负责人。
+
+    给"客户当前没有负责人"的场景用（从公海领取 / 公海指派）：客户在公海时自己
+    没有负责人，但它的单据还挂在最后经手人名下；"有人领走时一并接过来"总得有个
+    A，就取这一位。取不到（历史里从来没挂过人也可能是公海新建的客户）就返回 None，
+    调用方按"没有可搬的"处理。
+    """
+    return (
+        await session.execute(
+            select(CustomerOwnerHistory.old_owner_id)
+            .where(
+                CustomerOwnerHistory.customer_id == customer_id,
+                CustomerOwnerHistory.old_owner_id.is_not(None),
+            )
+            .order_by(CustomerOwnerHistory.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
 
 
 async def claim_customer(

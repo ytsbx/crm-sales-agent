@@ -815,10 +815,14 @@ async function main() {
 
     if (timelineFixture) INTERACTIONS.push({
       name: '34-customer-timeline', path: `/customers/${customerId}?tab=logs`, clicks: [],
-      // 「交期变更」这条断言一直是错的：`order/schedule.py` 的确认动作**从不写**
-      // 客户时间线（它只动订单节点，没有 record_and_notify），所以那个文案
-      // 在任何写入路径里都不存在（2026-10-07 用 git log -S 核过，从未出现）。
-      // 换成订单侧**真实会写进客户时间线**的事件：建单金额、已实发、回款确认。
+      // ⚠️ 更正（2026-10-07）：这里原来写着「交期变更的确认动作**从不写**客户时间线、
+      // 那个文案在任何写入路径里都不存在」——**那句是错的**。
+      // `order/schedule.py` 里算计划日的那段确实不写，但它的**调用方**写了：
+      // 确认交期变更的那条路由（`order/router.py`）调了 `record_and_notify`，
+      // 标题就是「确认交期变更」，从 2026-10-05 的 d7def5f 起就在写。
+      // 当时断言失败的真实原因更可能是**翻页**：本夹具先确认交期，之后又写实发、
+      // 应收、回款、打样一大串，客户时间线按 id 倒序、每页 20 条，那条被挤到第 2 页了。
+      // 期望值保持下面这组（订单侧稳定会写、且靠后的事件），但别再沿用"交期变更不写"这个错结论。
       expect: ['手工建单', '已实发', '已由财务确认', '查看原单'], expectAll: true,
       sourcePath: `/orders/${timelineFixture.orderId}`,
     })
