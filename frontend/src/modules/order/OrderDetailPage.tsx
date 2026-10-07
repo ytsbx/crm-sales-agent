@@ -47,6 +47,11 @@ import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
+import { otherOption } from '../../shared/components/otherOption'
+
+/** 收款方式。值是中文本身（后端 `payment_method` 是自由文本），
+ *  选中「其他」后写的内容可以直接存回该字段。 */
+const PAYMENT_METHODS = ['银行转账', '承兑汇票', '现金', '支票', '其他']
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
 
@@ -104,6 +109,13 @@ export default function OrderDetailPage() {
   const [generateDates, setGenerateDates] = useState<{ first?: Date; second?: Date }>({})
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
+
+  // 收款方式的「其他」：选中后多一个输入框写具体方式（不填就保持「其他」）。
+  const methodOption = otherOption({
+    options: PAYMENT_METHODS,
+    value: paymentForm.method,
+    onChange: (v) => setPaymentForm({ ...paymentForm, method: v }),
+  })
   // 登记回款的请求键（第七批 7.9）：**一份表单一把键**，打开表单时生成、
   // 成功后才换新的。弱网重试（服务端已建好、响应没回来，用户再点一次"登记"）
   // 带的是同一把键，后端据此只建一行；在提交时才现生成等于每点一次换一把键，
@@ -1446,11 +1458,18 @@ export default function OrderDetailPage() {
             style={{ width: '100%' }}
           />
           <Select
-            value={paymentForm.method}
-            onChange={(value) => setPaymentForm({ ...paymentForm, method: value as string })}
-            optionList={['银行转账', '承兑汇票', '现金', '支票', '其他'].map((value) => ({ value, label: value }))}
+            value={methodOption.selectValue}
+            onChange={methodOption.onSelect}
+            optionList={PAYMENT_METHODS.map((value) => ({ value, label: value }))}
             style={{ width: '100%' }}
           />
+          {methodOption.showInput && (
+            <Input
+              value={methodOption.inputValue}
+              onChange={methodOption.onInput}
+              placeholder="请说明是什么收款方式（可不填）"
+            />
+          )}
           <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
             登记后需要财务确认，确认后才会计入已回款。
           </div>

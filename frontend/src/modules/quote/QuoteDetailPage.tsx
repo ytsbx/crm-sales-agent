@@ -35,6 +35,7 @@ import BizDocPanel from '../../shared/components/BizDocPanel'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import { optionMatcher } from '../../shared/components/optionMatch'
+import { otherOption } from '../../shared/components/otherOption'
 
 const STATUS_TONE: Record<string, TagTone> = {
   draft: 'grey',
@@ -54,6 +55,18 @@ const CHARGE_TYPES = [
   { value: 'discount', label: '折扣' },
   { value: 'other', label: '其他' },
 ]
+
+/**
+ * 报价的发送渠道。
+ *
+ * 这里的值是**中文本身**（后端 `channel` 也是自由文本），所以选中「其他」后
+ * 用户写的内容可以直接存回这个字段。
+ *
+ * ⚠️ 上面的 `CHARGE_TYPES` 不一样：它的值是 `logistics` 这类**分类码**，
+ * 后端拿它查 `CHARGE_LABEL` 生成中文标签，所以费用类型那处**不能**照这个套路改
+ * （把"运费补贴"写进 charge_type，这条费用就脱离了原有分类）。
+ */
+const SEND_CHANNELS = ['邮件', '企业微信', '微信', '其他']
 
 /**
  * 批量录入的一行草稿。现货给 sku_id；定制件给 inquiry_id + 成本 + 报价
@@ -101,6 +114,14 @@ export default function QuoteDetailPage() {
   const [chargeForm, setChargeForm] = useState({ charge_type: 'logistics', description: '', amount: '' })
   const [sendVisible, setSendVisible] = useState(false)
   const [sendForm, setSendForm] = useState({ channel: '邮件', receiver: '', request_key: '' })
+
+  // 发送渠道的「其他」：选中后多一个输入框写具体渠道（不填就保持「其他」），
+  // 写的内容直接存进 channel。
+  const channelOption = otherOption({
+    options: SEND_CHANNELS,
+    value: sendForm.channel,
+    onChange: (v) => setSendForm({ ...sendForm, channel: v }),
+  })
   const [declineVisible, setDeclineVisible] = useState(false)
   const [declineReason, setDeclineReason] = useState('')
   const [submitVisible, setSubmitVisible] = useState(false)
@@ -931,11 +952,18 @@ export default function QuoteDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <Select
-            value={sendForm.channel}
-            onChange={(value) => setSendForm({ ...sendForm, channel: value as string })}
-            optionList={['邮件', '企业微信', '微信', '其他'].map((value) => ({ value, label: value }))}
+            value={channelOption.selectValue}
+            onChange={channelOption.onSelect}
+            optionList={SEND_CHANNELS.map((value) => ({ value, label: value }))}
             style={{ width: '100%' }}
           />
+          {channelOption.showInput && (
+            <Input
+              value={channelOption.inputValue}
+              onChange={channelOption.onInput}
+              placeholder="请说明是什么渠道（可不填）"
+            />
+          )}
           <Input
             value={sendForm.receiver}
             onChange={(value) => setSendForm({ ...sendForm, receiver: value })}

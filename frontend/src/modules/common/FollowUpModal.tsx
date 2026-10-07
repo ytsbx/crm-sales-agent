@@ -4,7 +4,10 @@ import { DatePicker, Input, Modal, Select, TextArea, Toast } from '@douyinfe/sem
 
 import { createFollowUp } from '../../shared/api/followup'
 import FormLabel from '../../shared/components/FormLabel'
+import { otherOption } from '../../shared/components/otherOption'
 
+// 跟进方式。值是中文本身（后端 `followup_type` 是自由文本），
+// 选中「其他」后写的内容直接存回该字段。
 const TYPES = ['电话', '微信', '企业微信', '拜访', '邮件', '其他'].map((value) => ({
   value,
   label: value,
@@ -33,6 +36,13 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
   const [exemptionReason, setExemptionReason] = useState<string | null>(null)
   const submission = useRef<{ signature: string; key: string } | null>(null)
   const [taskDue, setTaskDue] = useState<Date | null>(null)
+
+  // 跟进方式的「其他」：选中后多一个输入框写具体方式（不填就保持「其他」）。
+  const typeOption = otherOption({
+    options: TYPES.map((item) => item.value),
+    value: followupType,
+    onChange: setFollowupType,
+  })
 
   const reset = () => {
     setContent('')
@@ -101,11 +111,19 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
         <div>
           <div style={{ marginBottom: 4 }}>跟进方式</div>
           <Select
-            value={followupType}
-            onChange={(value) => setFollowupType(value as string)}
+            value={typeOption.selectValue}
+            onChange={typeOption.onSelect}
             optionList={TYPES}
             style={{ width: 180 }}
           />
+          {typeOption.showInput && (
+            <Input
+              style={{ marginTop: 8 }}
+              value={typeOption.inputValue}
+              onChange={typeOption.onInput}
+              placeholder="请说明是什么方式（可不填）"
+            />
+          )}
         </div>
         <div>
           <FormLabel required>跟进内容</FormLabel>

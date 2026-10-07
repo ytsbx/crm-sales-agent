@@ -19,6 +19,7 @@ import {
   type ProductInsightRow,
 } from '../../shared/api/insight'
 import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { otherOption } from '../../shared/components/otherOption'
 
 const SOURCES = ['展会', '1688/阿里', '客户反馈', '竞品调研', '社媒', '供应商推荐', '其他']
 const STATUS_TONE: Record<string, 'grey' | 'orange' | 'green' | 'red' | 'blue'> = {
@@ -109,6 +110,15 @@ export default function ProductInsightsPage() {
   const [editVisible, setEditVisible] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [form, setForm] = useState(EMPTY_FORM)
+
+  // 市场来源里的「其他」：选中它时下面多一个输入框写具体是什么
+  // （不填就保持「其他」）。规则见 shared/components/otherOption.ts。
+  // 空值这里转成 undefined，沿用原来的"空字符串一律发 null"口径。
+  const sourceOption = otherOption({
+    options: SOURCES,
+    value: form.source,
+    onChange: (v) => setForm({ ...form, source: v || undefined }),
+  })
 
   const openCreate = () => {
     setEditingId(null)
@@ -435,10 +445,18 @@ export default function ProductInsightsPage() {
                 style={{ width: '100%' }}
                 placeholder="选择来源"
                 showClear
-                value={form.source}
-                onChange={(v) => setForm({ ...form, source: v as string })}
+                value={sourceOption.selectValue}
+                onChange={sourceOption.onSelect}
                 optionList={SOURCES.map((s) => ({ value: s, label: s }))}
               />
+              {sourceOption.showInput && (
+                <Input
+                  style={{ marginTop: 8 }}
+                  placeholder="请说明具体来源（可不填）"
+                  value={sourceOption.inputValue}
+                  onChange={sourceOption.onInput}
+                />
+              )}
             </div>
             <div>
               <FormLabel>目标客户</FormLabel>
