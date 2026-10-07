@@ -839,7 +839,7 @@ export default function KnowledgePage() {
                         })
                       }
                     >
-                      <a>作废</a>
+                      <a style={{ color: 'var(--crm-error)' }}>作废</a>
                     </Popconfirm>,
                   )
                 }

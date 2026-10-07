@@ -197,7 +197,7 @@ export default function BizDocPanel({
                 )}
                 {canManage && r.status === 'active' && (
                   <Popconfirm title="作废这份文件？（内容与校验值不变）" onConfirm={() => voidMutation.mutate(r.id)}>
-                    <a>作废</a>
+                    <a style={{ color: 'var(--crm-error)' }}>作废</a>
                   </Popconfirm>
                 )}
               </div>
