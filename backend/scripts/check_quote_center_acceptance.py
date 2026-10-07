@@ -600,6 +600,31 @@ def main():
                f"人民币单={floor_cny_quote} 美元单={floor_usd_quote}"
                f"（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）")
 
+        # ---------------- A18 长客户名仍能建报价（§8.7 快照列长度）----------------
+        # 快照列曾经写死 `varchar(128)`，而客户名允许 200 —— 129 字的名字一建报价
+        # 就撞 asyncpg 22001（value too long），报价单根本生成不出来。
+        # 成因是**加列时没回头核对源列长度**，所以这里要连边界一起钉住：
+        # 129（刚过旧的 128）和 200（源列上限）都能建出来，等于要求
+        # "快照列长度 ≥ customers.name 的长度"。
+        print('== A18 长客户名建报价 ==')
+        for length in (129, 200):
+            head = f'{PREFIX}长名{length}-'
+            name = head + '甲' * (length - len(head))
+            _, res = call('POST', '/customers', token=admin, body={'name': name})
+            long_cid = res['data']['id']
+            customers[f'long{length}'] = long_cid
+            _, res = call('POST', '/opportunities', token=admin, body={
+                'customer_id': long_cid, 'title': f'{PREFIX}长名商机{length}',
+            })
+            long_oid = res['data']['id']
+            created_opps.append(long_oid)
+            _, res = call('POST', '/quotes', token=admin, body={'opportunity_id': long_oid})
+            built = res.get('code') == 0
+            if built:
+                created_quotes.append(res['data']['quote_id'])
+            record('A18', f'{length} 字客户名能建出报价',
+                   built, f'len={len(name)} code={res.get("code")} {res.get("message")}')
+
     finally:
         cleanup()
         evidence['results'] = RESULTS
@@ -614,7 +639,7 @@ def main():
     if failed:
         print(f"FAILED 用例：{[r['case'] for r in failed]}")
         sys.exit(1)
-    print('A01–A16 全部通过')
+    print('A01–A18 全部通过')
 
 
 if __name__ == '__main__':
