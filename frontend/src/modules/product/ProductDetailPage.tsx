@@ -204,45 +204,54 @@ export default function ProductDetailPage() {
   if (productQuery.isLoading) return <div className="page-container">加载中…</div>
   if (!product) return <div className="page-container">产品不存在</div>
 
-  /** 字段级"来源 / 来源状态 / 更新时间 / 权威归属 / 确认版本"。 */
+  /**
+   * 字段级"来源 / 来源状态 / 更新时间 / 权威归属 / 确认版本"。
+   *
+   * 列宽合计必须 ≤ 弹窗内容区宽度（MASTER_MODAL_WIDTH 减去左右内边距）。
+   * 原来合计 910px，而 920 宽的弹窗扣掉内边距只剩约 872px —— 表格放不下，
+   * 最后一列「状态」被挤到可视区之外，表头也被压成两行。
+   * 现在按"表头文字宽 + 内边距"逐列量过，合计 870px，弹窗加宽后留有余量。
+   */
   const masterFieldColumns = [
-    { title: '字段', dataIndex: 'field_label', width: 100 },
+    { title: '字段', dataIndex: 'field_label', width: 110, ellipsis: true },
     {
       title: '本地值',
-      width: 120,
+      width: 130,
+      ellipsis: true,
       render: (_: unknown, record: SkuMasterField) => record.local_value ?? '-',
     },
     {
       title: '来源',
-      width: 110,
+      width: 100,
+      ellipsis: true,
       render: (_: unknown, record: SkuMasterField) => record.source_system ?? '—',
     },
     {
       title: '来源状态',
-      width: 100,
+      width: 92,
       render: (_: unknown, record: SkuMasterField) =>
         record.source_verified ? <Tag color="green">已核实</Tag> : <Tag>待核实</Tag>,
     },
     {
       title: '来源更新时间',
-      width: 170,
+      width: 150,
       render: (_: unknown, record: SkuMasterField) =>
         record.source_updated_at ? new Date(record.source_updated_at).toLocaleString('zh-CN') : '—',
     },
     {
       title: '权威归属',
-      width: 110,
+      width: 100,
       render: (_: unknown, record: SkuMasterField) => record.authority_label,
     },
     {
       title: '确认版本',
-      width: 100,
+      width: 92,
       render: (_: unknown, record: SkuMasterField) =>
         record.confirmed_version > 0 ? `v${record.confirmed_version}` : '—',
     },
     {
       title: '状态',
-      width: 100,
+      width: 96,
       render: (_: unknown, record: SkuMasterField) => {
         const meta = FIELD_STATUS_LABELS[record.status] ?? {
           text: record.status,
@@ -252,6 +261,10 @@ export default function ProductDetailPage() {
       },
     },
   ]
+  /** 表格列宽合计：与上面 8 列 widths 之和保持一致，改列宽时同步改这里。 */
+  const MASTER_TABLE_WIDTH = 870
+  /** 弹窗外宽；窄屏（笔记本、分屏）由 maxWidth 兜住，不会顶出屏幕。 */
+  const MASTER_MODAL_WIDTH = 1080
 
   const skuColumns = [
     { title: 'SKU 编码', dataIndex: 'sku_code', width: 140 },
@@ -601,26 +614,39 @@ export default function ProductDetailPage() {
       <Modal
         title={masterSku ? `主数据来源与差异：${masterSku.sku_code}` : '主数据来源与差异'}
         visible={masterSku !== null}
-        width={920}
+        width={MASTER_MODAL_WIDTH}
+        // 窄屏兜底：分屏或小窗口下不让弹窗顶出屏幕，宽度不足时表格内部横向滚动。
+        style={{ maxWidth: 'calc(100vw - 48px)' }}
         footer={null}
         onCancel={() => setMasterSku(null)}
       >
         {masterQuery.isLoading && <div>加载中…</div>}
         {masterQuery.data && (
           <div style={{ display: 'grid', gap: 16 }}>
-            <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-              {masterQuery.data.notes.join('；')}
-            </div>
+            {/* 逐条一行：原来用「；」连成一大段，在窄弹窗里挤成好几行、断句也难看 */}
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: 18,
+                color: 'var(--crm-text-2)',
+                fontSize: 13,
+                lineHeight: 1.7,
+              }}
+            >
+              {masterQuery.data.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
             <Table<SkuMasterField>
               columns={masterFieldColumns}
               dataSource={masterQuery.data.fields}
               rowKey="field_name"
               size="small"
               pagination={false}
-              scroll={{ x: 900 }}
+              scroll={{ x: MASTER_TABLE_WIDTH }}
             />
             <div>
-              <div style={{ marginBottom: 8 }}>
+              <div style={{ marginBottom: 8, fontWeight: 500 }}>
                 待确认差异（{masterQuery.data.pending_diff_count}）
                 {masterQuery.data.latest_confirmed_version > 0
                   ? `｜最近已确认版本 v${masterQuery.data.latest_confirmed_version}`
