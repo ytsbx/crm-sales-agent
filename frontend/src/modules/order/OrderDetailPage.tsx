@@ -48,6 +48,7 @@ import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 import { otherOption } from '../../shared/components/otherOption'
+import { currencyPrefix } from '../../shared/components/money'
 
 /** 收款方式。值是中文本身（后端 `payment_method` 是自由文本），
  *  选中「其他」后写的内容可以直接存回该字段。 */
@@ -488,7 +489,9 @@ export default function OrderDetailPage() {
 
   const summary = summaryQuery.data
 
-  const moneyPrefix = order.currency === 'CNY' ? '¥' : `${order.currency} `
+  // 币种前缀统一走 shared/components/money（第九批 §9.9）：原来的三元写法在
+  // 币种为空（历史订单）时会渲染出 `undefined 1,000`。
+  const moneyPrefix = currencyPrefix(order.currency)
   const itemColumns = [
     { title: 'SKU / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{code || row.inquiry_no_snapshot || '—'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot || ''}</div></div> },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },

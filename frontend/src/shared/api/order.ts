@@ -71,6 +71,8 @@ export interface Receivable {
   status: string
   status_label: string
   remark?: string | null
+  /** 币种（第九批 §9.9）：跟着订单走，前端不能假设是人民币 */
+  currency?: string | null
 }
 
 export interface Payment {
@@ -90,6 +92,8 @@ export interface Payment {
   confirmed_by_name?: string | null
   confirmed_at?: string | null
   created_at: string
+  /** 币种（第九批 §9.9）：回款跟着订单币种，不能写死人民币 */
+  currency?: string | null
 }
 
 export interface FinanceSummary {
@@ -143,7 +147,7 @@ export function createOrder(payload: {
   payment_terms?: string
   remark?: string
 }) {
-  return api.post<{ order_id: number; order_no: string; total_amount: number }>('/orders', payload)
+  return api.post<{ order_id: number; order_no: string; total_amount: number; currency?: string }>('/orders', payload)
 }
 
 export function listOrderItems(orderId: number) {

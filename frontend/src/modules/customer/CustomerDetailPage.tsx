@@ -40,6 +40,9 @@ import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import FormLabel from '../../shared/components/FormLabel'
+// 金额一律带**实际币种**（第九批 §9.9）：这几张表原来都写死 `¥`，
+// 同一客户同时有 CNY / USD 订单时，旁边那张表显示的就是错的。
+import { formatMoney } from '../../shared/components/money'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -307,6 +310,14 @@ export default function CustomerDetailPage() {
   })
 
   const customer = customerQuery.data
+
+  // 第九批 §9.1：板块权限改由服务端**逐块**判（没权限就不返回、不查）。
+  // 这里把"请求失败（多半是没有该模块权限）"与"确实没有数据"分开显示——
+  // 否则用户会看到"该客户还没有订单"，把"无权查看"误读成"真的没有"。
+  const emptyHint = (failed: boolean, normal: string, error?: unknown) =>
+    failed
+      ? ((error as Error | undefined)?.message || '无权查看该板块（也可能是加载失败），请确认账号权限')
+      : normal
 
   if (customerQuery.isLoading) {
     return <div className="page-container">加载中…</div>
@@ -579,7 +590,8 @@ export default function CustomerDetailPage() {
                   title: '预计金额',
                   dataIndex: 'expected_amount',
                   width: 130,
-                  render: (value: number | null) => (value ? `¥${value.toLocaleString('zh-CN')}` : '-'),
+                  render: (value: number | null, record: Opportunity) =>
+                    formatMoney(value, record.currency),
                 },
                 { title: '预计成交日', dataIndex: 'expected_close_date', width: 130, render: (v: string | null) => v ?? '-' },
                 { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
@@ -588,7 +600,7 @@ export default function CustomerDetailPage() {
               loading={opportunitiesQuery.isLoading}
               rowKey="id"
               pagination={false}
-              empty="该客户还没有商机"
+              empty={emptyHint(opportunitiesQuery.isError, '该客户还没有商机', opportunitiesQuery.error)}
             />
           )}
 
@@ -623,7 +635,7 @@ export default function CustomerDetailPage() {
                 loading={followupsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有跟进记录"
+                empty={emptyHint(followupsQuery.isError, '还没有跟进记录', followupsQuery.error)}
               />
             </>
           )}
@@ -655,7 +667,7 @@ export default function CustomerDetailPage() {
                   title: '金额',
                   dataIndex: 'current_version_amount',
                   width: 140,
-                  render: (v: number | null) => (v === null || v === undefined ? '-' : `¥${v.toLocaleString('zh-CN')}`),
+                  render: (v: number | null, record: Quote) => formatMoney(v, record.currency),
                 },
                 { title: '状态', dataIndex: 'status_label', width: 110 },
                 { title: '有效期', dataIndex: 'valid_until', width: 120, render: (v: string | null) => v ?? '-' },
@@ -664,7 +676,7 @@ export default function CustomerDetailPage() {
               loading={quotesQuery.isLoading}
               rowKey="id"
               pagination={false}
-              empty="该客户还没有报价"
+              empty={emptyHint(quotesQuery.isError, '该客户还没有报价', quotesQuery.error)}
             />
           )}
 
@@ -685,13 +697,13 @@ export default function CustomerDetailPage() {
                   title: '订单金额',
                   dataIndex: 'total_amount',
                   width: 140,
-                  render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+                  render: (v: number, record: Order) => formatMoney(v, record.currency),
                 },
                 {
                   title: '已回款',
                   dataIndex: 'received_amount',
                   width: 130,
-                  render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+                  render: (v: number, record: Order) => formatMoney(v, record.currency),
                 },
                 { title: '履约状态', dataIndex: 'status_label', width: 120 },
                 { title: '交期', dataIndex: 'delivery_date', width: 120, render: (v: string | null) => v ?? '-' },
@@ -700,7 +712,7 @@ export default function CustomerDetailPage() {
               loading={ordersQuery.isLoading}
               rowKey="id"
               pagination={false}
-              empty="该客户还没有订单"
+              empty={emptyHint(ordersQuery.isError, '该客户还没有订单', ordersQuery.error)}
             />
           )}
 

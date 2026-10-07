@@ -26,13 +26,16 @@
 但同一页内的计划/实绩/差额必须同源（§4.1.3 的原缺陷就是混用）。
 """
 
-from datetime import UTC, date, datetime, time
+from datetime import UTC, datetime
 
 from sqlalchemy import distinct, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
+# 业务时间基准（第九批 §9.10）：归年 / 归月一律走这里，不再依赖宿主机时区
+# 或数据库会话时区 —— 换了环境同一个报表会变，那是审计意义上的缺陷。
+from app.core.timebase import business_month, business_year, year_bounds
 from app.core.deps import CurrentUser
 from app.modules.analytics.model import BasisSnapshot
 from app.modules.customer.model import Customer
@@ -103,8 +106,7 @@ async def _build_basis(
     明细上的日期靠事后实时重算 —— 原首单被取消后重算会跳到下一张单，
     于是同一行里出现"归属一月、首次成交日期显示三月"的自相矛盾。
     """
-    year_start = datetime.combine(date(year, 1, 1), time.min, tzinfo=UTC)
-    next_start = datetime.combine(date(year + 1, 1, 1), time.min, tzinfo=UTC)
+    year_start, next_start = year_bounds(year)
     veterans = (
         await session.execute(
             select(distinct(SalesOrder.customer_id)).where(
@@ -322,14 +324,14 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     rows = await session.execute(
         scope(
             select(
-                func.extract("month", SalesOrder.created_at),
+                business_month(SalesOrder.created_at),
                 func.coalesce(func.sum(SalesOrder.total_amount), 0),
             )
             .where(
                 SalesOrder.status != "cancelled",
-                func.extract("year", SalesOrder.created_at) == year,
+                business_year(SalesOrder.created_at) == year,
             )
-            .group_by(func.extract("month", SalesOrder.created_at)),
+            .group_by(business_month(SalesOrder.created_at)),
             sales_owner,
         )
     )
@@ -386,7 +388,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     rows = await session.execute(
         scope(
             select(
-                func.extract("month", PaymentRecord.confirmed_at),
+                business_month(PaymentRecord.confirmed_at),
                 func.coalesce(func.sum(PaymentRecord.received_amount), 0),
             )
             .select_from(PaymentRecord)
@@ -397,9 +399,9 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
                 PaymentRecord.confirmed_at.is_not(None),
                 # 年份边界也用 extract，与下面 group_by 的月份**同一套时区口径**：
                 # 一个用带时区的时间戳比较、一个按会话时区分月，跨年边界会差 8 小时
-                func.extract("year", PaymentRecord.confirmed_at) == year,
+                business_year(PaymentRecord.confirmed_at) == year,
             )
-            .group_by(func.extract("month", PaymentRecord.confirmed_at)),
+            .group_by(business_month(PaymentRecord.confirmed_at)),
             sales_owner,
         )
     )
@@ -414,13 +416,13 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     rows = await session.execute(
         scope(
             select(
-                func.extract("month", SalesOrder.created_at),
+                business_month(SalesOrder.created_at),
                 func.coalesce(func.sum(SalesOrder.total_amount), 0),
             ).where(
                 SalesOrder.status != "cancelled",
                 SalesOrder.customer_id.in_(veteran_ids or [0]),
-                func.extract("year", SalesOrder.created_at) == year,
-            ).group_by(func.extract("month", SalesOrder.created_at)),
+                business_year(SalesOrder.created_at) == year,
+            ).group_by(business_month(SalesOrder.created_at)),
             sales_owner,
         )
     )
@@ -432,13 +434,13 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     rows = await session.execute(
         scope(
             select(
-                func.extract("month", Customer.created_at), func.count()
+                business_month(Customer.created_at), func.count()
             )
             .where(
                 Customer.deleted_at.is_(None),
-                func.extract("year", Customer.created_at) == year,
+                business_year(Customer.created_at) == year,
             )
-            .group_by(func.extract("month", Customer.created_at)),
+            .group_by(business_month(Customer.created_at)),
             Customer.owner_id,
         )
     )
@@ -512,16 +514,16 @@ async def repeat_net_by_owner(
     veteran_ids, _first_deal_month, _first_deal_detail, _meta = await basis_for(session, year)
     stmt = (
         select(
-            func.extract("month", SalesOrder.created_at),
+            business_month(SalesOrder.created_at),
             sales_owner,
             func.coalesce(func.sum(SalesOrder.total_amount), 0),
         )
         .where(
             SalesOrder.status != "cancelled",
             SalesOrder.customer_id.in_(veteran_ids or [0]),
-            func.extract("year", SalesOrder.created_at) == year,
+            business_year(SalesOrder.created_at) == year,
         )
-        .group_by(func.extract("month", SalesOrder.created_at), sales_owner)
+        .group_by(business_month(SalesOrder.created_at), sales_owner)
     )
     if owner_ids is not None:
         stmt = stmt.where(sales_owner.in_(owner_ids or [0]))

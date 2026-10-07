@@ -15,6 +15,8 @@ export interface Quote {
   current_version_id?: number | null
   current_version_no?: number | null
   current_version_amount?: number | null
+  /** 当前版本的币种（第九批 §9.9）：金额不能假设是人民币 */
+  currency?: string | null
   approval_status?: string | null
   approval_required?: boolean
   valid_until?: string | null

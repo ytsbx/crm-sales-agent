@@ -1,37 +1,50 @@
-import OrderDraftsPage from '../modules/order/OrderDraftsPage'
 import type { ReactNode } from 'react'
 import { createBrowserRouter, Navigate } from 'react-router-dom'
 
 import AppLayout from './layout/AppLayout'
-import LoginPage from '../modules/auth/LoginPage'
-import CustomerDetailPage from '../modules/customer/CustomerDetailPage'
-import CustomerListPage from '../modules/customer/CustomerListPage'
-import DuplicateCasePage from '../modules/customer/DuplicateCasePage'
-import KnowledgePage from '../modules/knowledge/KnowledgePage'
-import DocumentsPage from '../modules/contract/DocumentsPage'
-import CasesPage from '../modules/cases/CasesPage'
-import ProductInsightsPage from '../modules/product/ProductInsightsPage'
-import LeadListPage from '../modules/lead/LeadListPage'
-import LogisticsPage from '../modules/logistics/LogisticsPage'
-import OpportunityDetailPage from '../modules/opportunity/OpportunityDetailPage'
-import OpportunityListPage from '../modules/opportunity/OpportunityListPage'
-import OrderDetailPage from '../modules/order/OrderDetailPage'
-import OrderListPage from '../modules/order/OrderListPage'
-import ApprovalPage from '../modules/approval/ApprovalPage'
-import AnalyticsPage from '../modules/analytics/AnalyticsPage'
-import AgentPage from '../modules/agent/AgentPage'
-import ProductDetailPage from '../modules/product/ProductDetailPage'
-import ProductListPage from '../modules/product/ProductListPage'
-import PriceCenterPage from '../modules/pricing/PriceCenterPage'
-import PricingPage from '../modules/pricing/PricingPage'
-import QuoteDetailPage from '../modules/quote/QuoteDetailPage'
-import QuoteListPage from '../modules/quote/QuoteListPage'
-import SampleListPage from '../modules/sample/SampleListPage'
-import SettingsPage from '../modules/settings/SettingsPage'
-import TaskListPage from '../modules/task/TaskListPage'
-import WeComPage from '../modules/wecom/WeComPage'
-import WorkbenchPage from '../modules/workbench/WorkbenchPage'
+import { lazyPage } from './lazyPage'
 import { useAuthStore } from '../shared/store/auth'
+
+// ---------------------------------------------------------------------------
+// 页面按需加载（第九批 §9.11）
+//
+// 这里此前是 33 条**同步 import**，构建成一个 1.79 MB 的单文件：进登录页也要
+// 先下载报价中心、洞察、知识库的全部代码。改成 `lazyPage` 之后，每个页面各自
+// 成块（`app/lazyPage.tsx` 里统一带了加载态、失败重试与"发版后旧资源"的处理），
+// 图表、Excel 等重依赖只跟着用到它们的页面走。
+//
+// 注意：同一个页面组件被多条路由复用（例：`OrderListPage` 同时服务
+// `/orders` 与 `/receivables`），`lazyPage` 对同一个 loader 只会取一次块。
+// ---------------------------------------------------------------------------
+const LoginPage = lazyPage(() => import('../modules/auth/LoginPage'))
+const WorkbenchPage = lazyPage(() => import('../modules/workbench/WorkbenchPage'))
+const CustomerListPage = lazyPage(() => import('../modules/customer/CustomerListPage'))
+const CustomerDetailPage = lazyPage(() => import('../modules/customer/CustomerDetailPage'))
+const DuplicateCasePage = lazyPage(() => import('../modules/customer/DuplicateCasePage'))
+const LeadListPage = lazyPage(() => import('../modules/lead/LeadListPage'))
+const OpportunityListPage = lazyPage(() => import('../modules/opportunity/OpportunityListPage'))
+const OpportunityDetailPage = lazyPage(() => import('../modules/opportunity/OpportunityDetailPage'))
+const QuoteListPage = lazyPage(() => import('../modules/quote/QuoteListPage'))
+const QuoteDetailPage = lazyPage(() => import('../modules/quote/QuoteDetailPage'))
+const ApprovalPage = lazyPage(() => import('../modules/approval/ApprovalPage'))
+const OrderListPage = lazyPage(() => import('../modules/order/OrderListPage'))
+const OrderDetailPage = lazyPage(() => import('../modules/order/OrderDetailPage'))
+const OrderDraftsPage = lazyPage(() => import('../modules/order/OrderDraftsPage'))
+const KnowledgePage = lazyPage(() => import('../modules/knowledge/KnowledgePage'))
+const DocumentsPage = lazyPage(() => import('../modules/contract/DocumentsPage'))
+const CasesPage = lazyPage(() => import('../modules/cases/CasesPage'))
+const ProductInsightsPage = lazyPage(() => import('../modules/product/ProductInsightsPage'))
+const WeComPage = lazyPage(() => import('../modules/wecom/WeComPage'))
+const ProductListPage = lazyPage(() => import('../modules/product/ProductListPage'))
+const ProductDetailPage = lazyPage(() => import('../modules/product/ProductDetailPage'))
+const PriceCenterPage = lazyPage(() => import('../modules/pricing/PriceCenterPage'))
+const PricingPage = lazyPage(() => import('../modules/pricing/PricingPage'))
+const LogisticsPage = lazyPage(() => import('../modules/logistics/LogisticsPage'))
+const SampleListPage = lazyPage(() => import('../modules/sample/SampleListPage'))
+const TaskListPage = lazyPage(() => import('../modules/task/TaskListPage'))
+const AnalyticsPage = lazyPage(() => import('../modules/analytics/AnalyticsPage'))
+const AgentPage = lazyPage(() => import('../modules/agent/AgentPage'))
+const SettingsPage = lazyPage(() => import('../modules/settings/SettingsPage'))
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const token = useAuthStore((state) => state.token)

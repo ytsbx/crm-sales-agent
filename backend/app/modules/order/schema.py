@@ -2,7 +2,7 @@ from datetime import date
 from typing import Literal
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 
 class OrderFromQuote(BaseModel):
@@ -99,6 +99,20 @@ class ShipmentBatchCreate(BaseModel):
     remark: str | None = None
     items: list[ShipmentBatchItemInput] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def unique_items(self):
+        """同一订单明细在一张计划里只能出现一次（第九批 §9.7）。
+
+        重复提交（前端重放、手工拼包）时，原来的校验循环**逐行**比余额、
+        且不扣减本请求内已占用的额度，两行都能通过；随后插入明细触发
+        `uq_shipment_batch_item` 唯一约束 —— 前端只看到一个 500，
+        既不知道哪一行错了，也不知道该怎么改。
+        """
+        ids = [row.order_item_id for row in self.items]
+        if len(set(ids)) != len(ids):
+            raise ValueError("同一订单明细不能在一张发货计划里重复出现")
+        return self
+
 
 class ShipmentShipItem(BaseModel):
     order_item_id: int
@@ -117,9 +131,22 @@ class ShipmentBatchShip(BaseModel):
     remark: str | None = None
     items: list[ShipmentShipItem] | None = None
 
+    @model_validator(mode="after")
+    def unique_items(self):
+        """实发明细也不能重复（第九批 §9.7）。
+
+        重复项在后端会被 `{order_item_id: qty}` 字典**静默覆盖**，
+        表现为"少算了一条"，比直接报错更难发现。
+        """
+        if self.items is None:
+            return self
+        ids = [row.order_item_id for row in self.items]
+        if len(set(ids)) != len(ids):
+            raise ValueError("同一订单明细不能重复登记实发数量")
+        return self
+
 
 from uuid import UUID
-from pydantic import model_validator
 from app.modules.sample.schema import SampleSource
 
 

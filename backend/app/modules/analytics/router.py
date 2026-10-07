@@ -13,6 +13,8 @@ from app.core.audit import write_audit
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+# 业务时间基准（第九批 §9.10）：判定"期间有没有过完"也走北京时间
+from app.core.timebase import month_key, now_business
 from app.core.response import ok
 from app.modules.analytics import service as svc
 from app.modules.analytics import targets as targets_svc
@@ -165,7 +167,7 @@ def _ensure_past_period(period: str) -> None:
     """
     if not re.fullmatch(r"\d{4}-\d{2}", period or ""):
         raise AppError(ErrorCode.PARAM_ERROR, "期间格式应为 YYYY-MM", 422)
-    if period >= datetime.now(UTC).strftime("%Y-%m"):
+    if period >= month_key(now_business()):
         raise AppError(
             ErrorCode.PARAM_ERROR,
             f"{period} 还没过完（数据仍在产生），不需要结账",

@@ -88,10 +88,39 @@ def planning_parameters(order: SalesOrder, new_delivery_date: date, *,
             "transit_days": days, "plan_offsets": offsets}
 
 
+def suggested_ship_date(
+    delivery_date: date | None,
+    delivery_kind: str | None,
+    transit_days: int | None,
+) -> date | None:
+    """客户交期 → **建议发货日**（全项目唯一一份换算，第九批 §9.8）。
+
+    只有"到货类"交期才需要减运输天数：客户要求 10-20 **到货**、路上 7 天，
+    那 10-13 就该发货；"发货类"交期本身就是发货日，不再减。
+    没填交期日期或交期类型时返回 None（视为没有交期基准）。
+
+    这三处必须共用它 —— 此前各写一份，而且只有分析那处区分了交期类型，
+    于是同一个"最后一批 vs 交期"，订单页算出 -3、分析口径算出 +4：
+
+    - 订单详情的"计划发货日"（`order/service.serialize_order`）
+    - 批次交期偏差（`order/service.order_shipments`）
+    - 交期分析（`analytics/service.delivery_stats`）
+    """
+    if delivery_date is None or not delivery_kind:
+        return None
+    if delivery_kind == "arrival":
+        return delivery_date - timedelta(days=transit_days or 0)
+    return delivery_date
+
+
 def shipment_date(config: dict) -> date | None:
     if not config.get("delivery_date") or not config.get("delivery_kind"):
         return None
-    return date.fromisoformat(config["delivery_date"]) - timedelta(days=config.get("transit_days") or 0)
+    return suggested_ship_date(
+        date.fromisoformat(config["delivery_date"]),
+        config.get("delivery_kind"),
+        config.get("transit_days"),
+    )
 
 
 async def lock_order(session: AsyncSession, order: SalesOrder) -> SalesOrder:

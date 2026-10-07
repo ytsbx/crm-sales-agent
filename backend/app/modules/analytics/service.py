@@ -28,6 +28,16 @@ from app.modules.opportunity.model import OpportunityStageHistory
 from app.modules.order.milestones import node_label
 from app.modules.order.model import ORDER_STATUS_LABEL
 from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
+# 交期换算只有一份（第九批 §9.8）：订单详情、批次指标、这里共用
+from app.modules.order.schedule import suggested_ship_date
+# 业务时间基准（第九批 §9.10）：归月 / 归年 / "今天"都收在 core/timebase
+from app.core.timebase import (
+    business_day_start,
+    business_month,
+    business_year,
+    month_key,
+    now_business,
+)
 from app.modules.payment.model import PLAN_STATUS_LABEL as PLAN_LABEL
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.product.model import Product, Sku
@@ -44,18 +54,17 @@ def _f(value) -> float:
 
 
 def _month_key(value) -> str | None:
-    """把一个日期类值折成 `YYYY-MM`，跨方言通用。
+    """把一个日期类值折成 `YYYY-MM`（**业务时区**归月，第九批 §9.10）。
 
-    ⚠️ 带时区的 datetime 必须**先转成本地时区再取年月**：asyncpg 把 timestamptz
-    读回来是 UTC 表示的，直接取 `.year/.month` 等于按 UTC 归月，与 SQL 那侧
-    `extract`（按数据库会话时区，本库 Asia/Shanghai）差 8 小时——
-    北京时间月初 0:00-8:00 发生的事会被算到上个月去。
-    项目惯例见 `timeline/service._human_time`（同样 `astimezone()`）。
+    这里此前用的是 `value.astimezone()` —— 跟着**宿主机时区**走，而 SQL 那侧
+    `extract` 走的是数据库会话时区，两处基准本来就不同：换了部署环境（例如
+    服务器改成 UTC），同一个报表的月份会跟着变。现在统一到
+    `core/timebase.month_key`（北京时间），结果与环境无关。
     """
     if value is None:
         return None
     if isinstance(value, datetime) and value.tzinfo is not None:
-        value = value.astimezone()
+        return month_key(value)
     return f"{value.year:04d}-{value.month:02d}"
 
 
@@ -227,10 +236,10 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 .where(
                     PaymentRecord.status == "confirmed",
                     PaymentRecord.confirmed_at.is_not(None),
-                    func.extract("year", PaymentRecord.confirmed_at)
-                    == func.extract("year", func.now()),
-                    func.extract("month", PaymentRecord.confirmed_at)
-                    == func.extract("month", func.now()),
+                    business_year(PaymentRecord.confirmed_at)
+                    == business_year(func.now()),
+                    business_month(PaymentRecord.confirmed_at)
+                    == business_month(func.now()),
                 ),
                 user,
                 _sales_owner_col(),
@@ -279,7 +288,8 @@ async def order_payment_trend(
 ) -> list[dict]:
     """近 N 个月的订单金额与回款金额，用于工作台趋势图。"""
     months = max(1, min(months, 12))
-    now = datetime.now(UTC)
+    # 业务时区的"现在"（第九批 §9.10）：原来取 UTC，月初 0-8 点时序列会差一个月
+    now = now_business()
     # 生成月份序列（含本月）
     series: list[str] = []
     year, month = now.year, now.month
@@ -290,10 +300,11 @@ async def order_payment_trend(
             month = 12
             year -= 1
     series.reverse()
-    # 下界往前多留一天：SQL 侧是"带时区时间戳比较"，Python 侧按**本地时区**归月
-    # （见 `_month_key`），两者差 8 小时，卡在窗口第一个月初的数据可能被下界挡掉。
-    # 多取的这一天会落进正确的月份桶里，窗口外的月份在下面的输出里本来就不返回，不会重复计。
-    start = datetime.fromisoformat(f"{series[0]}-01T00:00:00+00:00") - timedelta(days=1)
+    # 窗口下界 = 业务时区下第一个月的月初（换算成 UTC 瞬时后再和库里的列比较）。
+    # 此前是"UTC 月初再往前多留一天"：因为 Python 侧按宿主机时区归月、SQL 侧按
+    # 数据库会话时区，两边差 8 小时，要靠多取一天来兜。第九批 §9.10 把两处
+    # 基准统一之后，这个补丁不再需要 —— 边界本身就是精确的。
+    start = business_day_start(int(series[0][:4]), int(series[0][5:7]))
 
     order_rows = (
         await session.execute(
@@ -1404,9 +1415,12 @@ async def delivery_stats(
 
     for row in order_rows:
         shipped_on = first_ship.get(row.id)
-        due = row.delivery_date if row.delivery_kind else None
-        if due and row.delivery_kind == "arrival":
-            due -= timedelta(days=row.transit_days or 0)
+        # 客户交期 → 建议发货日（到货类减运输天数）。与订单详情、批次指标
+        # 共用同一份换算（第九批 §9.8）—— 此处原本是**唯一**区分交期类型的地方，
+        # 另两处没区分，同一个指标能算出相反的符号。
+        due = suggested_ship_date(
+            row.delivery_date, row.delivery_kind, row.transit_days
+        )
 
         # ---- 在跟：交期风险（未发货才算风险，已发首批发货的不在风险里）----
         if row.status in OPEN_ORDER_STATUSES:

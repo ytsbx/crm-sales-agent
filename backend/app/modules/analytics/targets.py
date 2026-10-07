@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import department_member_ids, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+# 业务时间基准（第九批 §9.10）：SQL 侧归年/归月显式指定业务时区
+from app.core.timebase import business_month, business_year
 from app.modules.analytics import target_bases
 from app.modules.analytics.model import SalesTarget
 from app.modules.customer.model import Customer
@@ -228,8 +230,8 @@ async def targets_with_actuals(
     # 注意不能用 to_char(created_at, 'YYYY-MM')：格式串是绑定参数，
     # SELECT 与 GROUP BY 的参数位不同，PG 无法判定表达式等价会报 GroupingError；
     # extract 的字段名是内联文本，两边渲染完全一致
-    order_year = func.extract("year", SalesOrder.created_at)
-    order_month = func.extract("month", SalesOrder.created_at)
+    order_year = business_year(SalesOrder.created_at)
+    order_month = business_month(SalesOrder.created_at)
     # 目标达成按**签单归属**算（文档 :61「交接后保留历史业绩归属」）：销售离职交接后，
     # 老订单的签单额仍计在原销售的目标达成里，不会因为换人跟进就从他名下消失。
     # ⚠️ 应收/账龄页是**另一个口径**（责任口径＝当前负责人）：两页的数本来就不该相等。
@@ -243,8 +245,8 @@ async def targets_with_actuals(
         )
         .group_by(order_month, sales_owner)
     )
-    customer_year = func.extract("year", Customer.created_at)
-    customer_month = func.extract("month", Customer.created_at)
+    customer_year = business_year(Customer.created_at)
+    customer_month = business_month(Customer.created_at)
     customer_stmt = (
         select(customer_month, Customer.owner_id, func.count())
         .where(
@@ -298,8 +300,8 @@ async def targets_with_actuals(
     #
     # 归属跟签单归属同一列（业绩口径）：同一行的三个口径必须同源，
     # 不能一个按签单人、一个按现负责人（§4.1.3）。
-    received_year = func.extract("year", PaymentRecord.confirmed_at)
-    received_month = func.extract("month", PaymentRecord.confirmed_at)
+    received_year = business_year(PaymentRecord.confirmed_at)
+    received_month = business_month(PaymentRecord.confirmed_at)
     received_stmt = (
         select(
             received_month,
@@ -959,8 +961,8 @@ async def drilldown(
             SalesOrder.total_amount, SalesOrder.created_at,
         ).where(
             SalesOrder.status != "cancelled",
-            func.extract("year", SalesOrder.created_at) == year,
-            func.extract("month", SalesOrder.created_at) == month,
+            business_year(SalesOrder.created_at) == year,
+            business_month(SalesOrder.created_at) == month,
         )
         if scope_ids is not None:
             stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
@@ -1026,8 +1028,8 @@ async def drilldown(
                 # 与汇总严格一致：缺确认时间的既不算进汇总，也不列进明细
                 PaymentRecord.confirmed_at.is_not(None),
                 SalesOrder.status != "cancelled",
-                func.extract("year", PaymentRecord.confirmed_at) == year,
-                func.extract("month", PaymentRecord.confirmed_at) == month,
+                business_year(PaymentRecord.confirmed_at) == year,
+                business_month(PaymentRecord.confirmed_at) == month,
             )
         )
         if scope_ids is not None:
@@ -1066,8 +1068,8 @@ async def drilldown(
         ).where(
             SalesOrder.status != "cancelled",
             SalesOrder.customer_id.in_(veterans or [0]),
-            func.extract("year", SalesOrder.created_at) == year,
-            func.extract("month", SalesOrder.created_at) == month,
+            business_year(SalesOrder.created_at) == year,
+            business_month(SalesOrder.created_at) == month,
         )
         if scope_ids is not None:
             stmt = stmt.where(sales_owner.in_(scope_ids or [0]))

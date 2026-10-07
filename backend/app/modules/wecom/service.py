@@ -643,6 +643,26 @@ async def collect_transfer_scope(
                 }
             )
 
+    # ---- 报价单（第九批 §9.4 补：此前整类都不在交接清单里）----
+    from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote
+
+    for quote in (
+        await session.execute(
+            select(Quote).where(
+                Quote.owner_id == handover.id, Quote.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all():
+        scope["quote"].append(
+            {
+                "kind": "quote",
+                "business_id": quote.id,
+                "label": quote.quote_no,
+                "status": QUOTE_STATUS_LABEL.get(quote.status, quote.status),
+                "blocked_reason": None,
+            }
+        )
+
     # ---- 订单与草稿 ----
     from app.modules.order.model import OrderDraft, SalesOrder
 
@@ -700,6 +720,46 @@ async def collect_transfer_scope(
         )
 
     return scope
+
+
+async def _reassign_generated_docs(
+    session: AsyncSession,
+    *,
+    handover_id: int,
+    to_owner_id: int,
+    field: str,
+    business_id: int,
+) -> int:
+    """把某个业务对象**生成**的对外单据（`BizDoc`）连同责任交给接手人。
+
+    第九批 §9.4：文件的列表 / 详情 / 下载一律按 `BizDoc.owner_id` 判数据范围
+    （`bizdoc/service.py` 的列表过滤 + `bizdoc/router.py` 的 `ensure_in_scope`）。
+    交接此前只迁了业务对象本身、**没迁它生成的文件**，于是接手人虽然成了订单 /
+    打样单 / 报价单的负责人，打开历史原件仍然 403 —— 而文档要求"交接后按权限
+    访问历史原件"。
+
+    两条铁律（照搬订单草稿那段的既有约定）：
+    - **只改原本挂在离职人名下的那一批**（`owner_id == handover_id`）：
+      中途被在职同事接过去的不动，否则等于把人家的活又抢走一次；
+    - 只动 `owner_id`：不碰文件字节、生成快照、创建人、签署信息与历史业绩。
+
+    返回实际改动的张数（供测试与日志使用）。
+
+    `field` 是 BizDoc 上指向该业务对象的字段名（如 `"order_id"`）。
+    """
+    from app.modules.bizdoc.model import BizDoc
+
+    documents = (
+        await session.execute(
+            select(BizDoc).where(getattr(BizDoc, field) == business_id)
+        )
+    ).scalars().all()
+    moved = 0
+    for document in documents:
+        if document.owner_id == handover_id:
+            document.owner_id = to_owner_id
+            moved += 1
+    return moved
 
 
 async def preview_transfer(
@@ -1021,7 +1081,17 @@ async def transfer_relations(
                 "sample", row["business_id"], "skipped", "跟单责任人已改，不再是离职人"
             )
             continue
-        sample.owner_id = items[("sample", row["business_id"])].to_owner_id
+        sample_owner = items[("sample", row["business_id"])].to_owner_id
+        sample.owner_id = sample_owner
+        # 打样单**生成**的对外单据（图纸、确认单等）跟着跟单责任走（第九批 §9.4）：
+        # 不迁的话，接手人点开历史原件会被 403 挡在外面。
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=sample_owner,
+            field="sample_request_id",
+            business_id=sample.id,
+        )
         _mark_crm("sample", row["business_id"], "moved")
     detail["samples"] = len(scope["sample"])
 
@@ -1047,6 +1117,33 @@ async def transfer_relations(
         ].to_owner_id
         _mark_crm("sample_production", row["business_id"], "moved")
     detail["sample_production"] = len(scope["sample_production"])
+
+    # 6c) 报价单 + 它生成的报价档案（第九批 §9.4）
+    #     报价单此前**不在清单里**：离职人名下的报价没人接（接手人在报价列表里
+    #     看不到），它生成的报价档案更是谁也打不开（文件按 BizDoc.owner_id 判）。
+    from app.modules.quote.model import Quote
+
+    for row in scope["quote"]:
+        quote = await session.get(Quote, row["business_id"])
+        if quote is None:
+            _mark_crm("quote", row["business_id"], "skipped", "报价单已不存在")
+            continue
+        if quote.owner_id != handover.id:
+            _mark_crm(
+                "quote", row["business_id"], "skipped", "报价负责人已改，不再是离职人"
+            )
+            continue
+        quote_owner = items[("quote", row["business_id"])].to_owner_id
+        quote.owner_id = quote_owner
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=quote_owner,
+            field="quote_id",
+            business_id=quote.id,
+        )
+        _mark_crm("quote", row["business_id"], "moved")
+    detail["quotes"] = len(scope["quote"])
 
     # 7) 订单草稿 + 它生成的对外单据
     from app.modules.bizdoc.model import BizDoc
@@ -1087,7 +1184,17 @@ async def transfer_relations(
         if order is None:
             _mark_crm("order", row["business_id"], "skipped", "订单已不存在")
             continue
-        order.owner_id = items[("order", row["business_id"])].to_owner_id
+        order_owner = items[("order", row["business_id"])].to_owner_id
+        order.owner_id = order_owner
+        # 正式订单**生成**的对外单据（下单文件、合同生成稿）同样跟着走
+        # （第九批 §9.4）：交接前生成的旧原件，接手人也要能按权限打开。
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=order_owner,
+            field="order_id",
+            business_id=order.id,
+        )
         _mark_crm("order", row["business_id"], "moved")
     detail["orders"] = len(scope["order"])
 
@@ -1387,6 +1494,7 @@ async def _retry_move_crm(
     又抢走一次。现在只要责任人已经不是离职人，就报冲突并跳过，不覆盖。
     """
     from app.modules.order.model import OrderDraft, SalesOrder
+    from app.modules.quote.model import Quote
 
     def _conflict(label: str) -> AppError:
         return AppError(
@@ -1451,6 +1559,14 @@ async def _retry_move_crm(
         if row.owner_id is not None and row.owner_id != handover.id:
             raise _conflict(f"打样单 #{row.id} 的跟单责任")
         row.owner_id = owner
+        # 打样生成的对外单据跟着跟单责任走（与首次执行同一规则，第九批 §9.4）
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=owner,
+            field="sample_request_id",
+            business_id=row.id,
+        )
         return True
     if item.kind == "sample_production":
         row = await _lock_business_row(session, SampleRequest, item.business_id)
@@ -1470,6 +1586,30 @@ async def _retry_move_crm(
         if row.owner_id is not None and row.owner_id != handover.id:
             raise _conflict(f"订单「{row.order_no}」")
         row.owner_id = owner
+        # 订单生成的对外单据跟着走（与首次执行同一规则，第九批 §9.4）
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=owner,
+            field="order_id",
+            business_id=row.id,
+        )
+        return True
+    if item.kind == "quote":
+        # 报价单（第九批 §9.4 新增的交接类别）
+        row = await _lock_business_row(session, Quote, item.business_id)
+        if row is None or row.deleted_at is not None:
+            return False
+        if row.owner_id is not None and row.owner_id != handover.id:
+            raise _conflict(f"报价单「{row.quote_no}」")
+        row.owner_id = owner
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=owner,
+            field="quote_id",
+            business_id=row.id,
+        )
         return True
     if item.kind == "order_draft":
         row = await _lock_business_row(session, OrderDraft, item.business_id)
@@ -1480,16 +1620,13 @@ async def _retry_move_crm(
         row.owner_id = owner
         # 关联的对外单据：**与首次执行同一条规则** —— 只改原负责人是离职人的，
         # 在职同事负责的单据保留（第六批审查第 4 条）
-        from app.modules.bizdoc.model import BizDoc
-
-        documents = (
-            await session.execute(
-                select(BizDoc).where(BizDoc.order_draft_id == row.id)
-            )
-        ).scalars().all()
-        for document in documents:
-            if document.owner_id == handover.id:
-                document.owner_id = owner
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=owner,
+            field="order_draft_id",
+            business_id=row.id,
+        )
         return True
     return False
 

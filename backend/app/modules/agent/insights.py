@@ -234,7 +234,7 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     from app.modules.customer import service as customer_service
 
     customer = await customer_service.get_visible_customer(session, user, customer_id)
-    overview = await customer_service.customer_overview(session, customer_id)
+    overview = await customer_service.customer_overview(session, user, customer_id)
     owner = await session.get(User, customer.owner_id) if customer.owner_id else None
     today = datetime.now(UTC).date()
 
@@ -242,17 +242,21 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     if customer.last_followup_at:
         days_since_followup = (datetime.now(UTC) - customer.last_followup_at).days
 
-    open_tasks = (
-        await session.execute(
-            select(Task)
-            .where(
-                Task.customer_id == customer_id,
-                Task.status.in_(("pending", "doing")),
+    # 待办与概览同一口径（第九批 §9.1）：没有 `task:view` 就不取、不返回，
+    # 否则"客户可见"又变成了一条绕过任务模块的通道。
+    open_tasks: list[Task] = []
+    if "admin" in user.roles or user.has("task:view"):
+        open_tasks = (
+            await session.execute(
+                select(Task)
+                .where(
+                    Task.customer_id == customer_id,
+                    Task.status.in_(("pending", "doing")),
+                )
+                .order_by(Task.due_at.asc().nulls_last())
+                .limit(10)
             )
-            .order_by(Task.due_at.asc().nulls_last())
-            .limit(10)
-        )
-    ).scalars().all()
+        ).scalars().all()
 
     insights: list[str] = []
     if days_since_followup is None:
@@ -268,10 +272,25 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     if overdue_tasks:
         insights.append(f"有 {len(overdue_tasks)} 个任务已逾期")
 
-    if overview["counts"]["open_opportunities"] > 0:
-        insights.append(f"还有 {overview['counts']['open_opportunities']} 个在谈商机")
-    if overview["counts"]["order_amount"] > 0:
-        insights.append(f"累计成交 {overview['counts']['order_amount']:.2f} 元")
+    # 第九批 §9.1：概览改成逐板块判权限后，没权限的板块计数是 None
+    # （"看不到" ≠ "一条都没有"）。这里按"没有就不说"处理 ——
+    # 不能把 None 当成 0 去比大小，更不能据此编出一句结论。
+    open_opps = overview["counts"]["open_opportunities"]
+    if open_opps:
+        insights.append(f"还有 {open_opps} 个在谈商机")
+    # 金额按币种分组（第九批 §9.9）：只有一种币种时才下"累计成交多少"的结论；
+    # 多币种就并列写出来 —— 折算是业务规则，没拍板前不替它选汇率、也不加总。
+    amounts = overview["counts"]["order_amounts"] or []
+    if len(amounts) == 1:
+        single = amounts[0]
+        insights.append(
+            f"累计成交 {single['amount']:.2f} {single['currency'] or '（币种待核实）'}"
+        )
+    elif amounts:
+        parts = "；".join(
+            f"{item['currency'] or '币种待核实'} {item['amount']:.2f}" for item in amounts
+        )
+        insights.append(f"累计成交（分币种）：{parts}")
 
     return {
         "customer": {
@@ -289,6 +308,9 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
             "days_since_followup": days_since_followup,
         },
         "counts": overview["counts"],
+        # 没权限、因而**没有取**的板块（第九批 §9.1）。明确列出来，
+        # 免得模型把"没给"读成"这个客户没有"。
+        "restricted": overview["restricted"],
         "recent_opportunities": overview["opportunities"],
         "recent_quotes": overview["quotes"],
         "recent_orders": overview["orders"],

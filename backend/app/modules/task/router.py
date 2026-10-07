@@ -11,7 +11,6 @@ from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
-from app.core.refs import ensure_refs
 from app.core.response import ok, page_data, paginate
 from app.modules.customer.model import Contact, Customer
 from app.modules.lead.model import Lead
@@ -49,6 +48,42 @@ async def _visible_task(
         raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
     await ensure_in_scope(session, user, owner_id=task.owner_id, label="任务")
     return task
+
+
+#: 任务的**终态**：到了这两个状态，"谁做的、什么时候做的"已经落定。
+#: 终态任务不允许再改派、改期、取消，也不允许凭普通编辑把它们改回进行中
+#: （"重新打开已完成任务"是另一条业务规则，本批**不自行增加**）。
+FINAL_TASK_STATUSES = ("done", "cancelled")
+
+
+def _final_label(task: Task) -> str:
+    return "完成" if task.status == "done" else "取消"
+
+
+def _ensure_not_final(task: Task, action: str) -> None:
+    """终态任务不许再做 {action}。
+
+    第九批 §9.3：改派接口（`/assign`）原来单独挡了这条路，但**普通编辑**
+    （`PATCH /tasks/{id}`）直接写 `owner_id`/`status` 就绕过去了 ——
+    "一个动作换个入口就放行"。这里收成一份，五个入口共用。
+    """
+    if task.status in FINAL_TASK_STATUSES:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED, f"任务已{_final_label(task)}，不能{action}"
+        )
+
+
+async def _active_owner(session: AsyncSession, owner_id: int) -> User:
+    """改派目标必须**存在且在岗**（指派 / 转交 / 普通编辑改负责人共用一份）。
+
+    原来只有 `/assign` 做了"已停用"检查，`/transfer` 连"这个用户存不存在"都没查。
+    """
+    target = await session.get(User, owner_id)
+    if target is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
+    if target.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用", 422)
+    return target
 
 
 def serialize(task: Task, owner_name: str | None = None, source_doc_no: str | None = None) -> dict:
@@ -189,45 +224,103 @@ async def create_task(
     data = payload.model_dump()
     data["owner_id"] = data.get("owner_id") or user.id
 
-    # 这些引用在库里没有外键约束，不校验就会留下悬空引用（静默 200）。
+    # 负责人必须存在且**在职**（第九批 §9.2）。
+    # `ensure_refs` 只判"有没有这一行"，于是停用账号照样能被指派 ——
+    # 与 `/tasks/{id}/assign` 的"已停用"检查口径不一致，这里对齐。
+    task_owner = await session.get(User, data["owner_id"])
+    if task_owner is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={data['owner_id']} 不存在", 404)
+    if task_owner.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{task_owner.name}」已停用", 422)
+
+    # 关联对象：存在性 → **数据范围** → **是否同一客户**（第九批 §9.2）。
     #
+    # 此前这里**只判存在**（`ensure_refs`），实测可以 ①给别人的客户建待办；
+    # ②一张待办同时挂"客户 B"和"客户 A 的订单"——后者会污染客户待办、
+    # 后续提醒和交接清单。跟进创建早就有这整套校验
+    # （`followup/mutations.py`），待办漏了，现在与它对齐；差别只在
+    # **待办允许完全没有关联对象**（纯日程待办）。
+    #
+    # 这些引用在库里没有外键约束，不校验就会留下悬空引用（静默 200）。
     # 注意：Contact 与 Customer 是**两个不同的模型**，不能塞进同一个 ids 字典
     # （那样会把 customer_id 当联系人主键去查，报"联系人 id=客户id 不存在"）。
-    await ensure_refs(
-        session, model=User, ids={"owner_id": data["owner_id"]}, label="负责人"
-    )
-    await ensure_refs(
-        session, model=Customer, ids={"customer_id": data.get("customer_id")}, label="客户"
-    )
+    ref_labels = {
+        "customer": "客户",
+        "lead": "线索",
+        "opportunity": "商机",
+        "quote": "报价单",
+        "order": "订单",
+    }
+    customer_id = data.get("customer_id")
+    checked_customer_id: int | None = None
+    for kind, model in (
+        ("customer", Customer),
+        ("lead", Lead),
+        ("opportunity", Opportunity),
+        ("quote", Quote),
+        ("order", SalesOrder),
+    ):
+        obj_id = data.get(f"{kind}_id")
+        if not obj_id:
+            continue
+        obj = await session.get(model, obj_id)
+        if obj is None or getattr(obj, "deleted_at", None) is not None:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"{ref_labels[kind]} id={obj_id} 不存在", 404
+            )
+        # 客户/线索允许无主（公海 / 线索池），其余必须落在我的数据范围内。
+        await ensure_in_scope(
+            session,
+            user,
+            owner_id=obj.owner_id,
+            label=ref_labels[kind],
+            allow_unowned=kind in ("customer", "lead"),
+        )
+        if kind == "customer":
+            checked_customer_id = obj_id
+        # 单据自带客户：它就确定了这张待办的客户；显式传了别的客户直接拒。
+        linked_customer = getattr(obj, "customer_id", None)
+        if linked_customer:
+            if customer_id and customer_id != linked_customer:
+                raise AppError(
+                    ErrorCode.PARAM_ERROR,
+                    "待办所选的客户与关联单据不是同一家客户，请确认后再保存",
+                    422,
+                )
+            customer_id = linked_customer
+
+    # 联系人：先由它确定客户，再比归属（第九批 §9.2）。
+    # 原实现只在"同时传了 customer_id"时才比对，于是"只传联系人 + 一张别人的单"
+    # 这条路径整段跳过校验。
     if data.get("contact_id") is not None:
         task_contact = await session.get(Contact, data["contact_id"])
         if task_contact is None or task_contact.deleted_at is not None:
             raise AppError(
                 ErrorCode.NOT_FOUND, f"联系人 id={data['contact_id']} 不存在", 404
             )
-        if data.get("customer_id") and task_contact.customer_id != data["customer_id"]:
+        if customer_id is None:
+            customer_id = task_contact.customer_id
+        elif task_contact.customer_id != customer_id:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"联系人 id={data['contact_id']} 不属于客户 id={data['customer_id']}",
+                f"联系人 id={data['contact_id']} 不属于客户 id={customer_id}",
+                422,
             )
-    await ensure_refs(
-        session, model=Lead, ids={"lead_id": data.get("lead_id")}, label="线索"
-    )
-    await ensure_refs(
-        session,
-        model=Opportunity,
-        ids={"opportunity_id": data.get("opportunity_id")},
-        label="商机",
-    )
-    await ensure_refs(
-        session, model=Quote, ids={"quote_id": data.get("quote_id")}, label="报价单"
-    )
-    await ensure_refs(
-        session,
-        model=SalesOrder,
-        ids={"order_id": data.get("order_id")},
-        label="订单",
-    )
+
+    # 最终确定的客户统一再过一次范围校验：它可能是**推断**出来的
+    # （来自单据或联系人），推断不该成为绕过数据范围的通道。
+    if customer_id is not None and customer_id != checked_customer_id:
+        final_customer = await session.get(Customer, customer_id)
+        if final_customer is None or final_customer.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "关联客户不存在", 404)
+        await ensure_in_scope(
+            session,
+            user,
+            owner_id=final_customer.owner_id,
+            label="客户",
+            allow_unowned=True,
+        )
+    data["customer_id"] = customer_id
 
     task = Task(**data, source="manual")
     session.add(task)
@@ -269,14 +362,53 @@ async def update_task(
     task = await _visible_task(session, user, task_id)
     before = serialize(task)
     changes = payload.model_dump(exclude_unset=True)
-    if "owner_id" in changes:
-        await ensure_refs(
-            session, model=User, ids={"owner_id": changes["owner_id"]}, label="负责人"
+
+    # ── 终态任务：状态与责任都已落定，普通编辑不能再动这两样（第九批 §9.3）──
+    # 原来只有 `/assign` 挡住了终点改派，改走 PATCH 就能把已完成的任务改给别人；
+    # 而且"直接改成 done"不写完成时间，会留下"已完成但没有完成时间"的脏数据。
+    # （"重新打开已完成任务"是另一条业务规则，本批不自行增加 —— 所以这里拒绝，
+    #   而不是顺手做一个"重开"。）
+    is_final = task.status in FINAL_TASK_STATUSES
+    if changes.get("status") not in (None, task.status) and is_final:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"任务已{_final_label(task)}，若要重新打开请走专门的流程",
         )
+
+    reassigned_to: User | None = None
+    if "owner_id" in changes:
+        new_owner_id = changes["owner_id"]
+        if new_owner_id is None:
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "负责人不能为空", 422)
+        if new_owner_id != task.owner_id:
+            if is_final:
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    f"任务已{_final_label(task)}，不能改负责人（谁完成的已经落定）",
+                )
+            reassigned_to = await _active_owner(session, new_owner_id)
+
     for field, value in changes.items():
         setattr(task, field, value)
+
+    # 完成时间跟着状态走：编辑改成 done 与走 `/tasks/{id}/complete` 必须留下
+    # 同样的痕迹，否则"什么时候完成的"只在一条路径上有。
+    if changes.get("status") == "done" and task.completed_at is None:
+        task.completed_at = datetime.now(UTC)
+
     await session.flush()
     await _sync_next_followup(session, task)
+    # 普通编辑改了负责人，被指派的人也要收到提醒（与 /assign 同口径）
+    if reassigned_to is not None and reassigned_to.id != user.id:
+        await notification_service.notify(
+            session,
+            user_id=reassigned_to.id,
+            type_="task",
+            title="有任务指派给你",
+            content=task.title,
+            business_type="task",
+            business_id=task.id,
+        )
     await write_audit(
         session,
         operator_id=user.id,
@@ -288,6 +420,9 @@ async def update_task(
         ip=client_ip(request),
     )
     await session.commit()
+    # 有改派才需要投递：业务已落库，投递失败不影响保存
+    if reassigned_to is not None:
+        await notification_service.dispatch_pending(session)
     return ok(serialize(task), "已保存")
 
 
@@ -302,6 +437,8 @@ async def complete_task(
     task = await _visible_task(session, user, task_id)
     if task.status == "done":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "任务已完成")
+    if task.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "任务已取消，不能标记为完成")
     task.status = "done"
     task.completed_at = datetime.now(UTC)
     task.completion_note = payload.completion_note
@@ -327,6 +464,7 @@ async def cancel_task(
     session: AsyncSession = Depends(get_db),
 ):
     task = await _visible_task(session, user, task_id)
+    _ensure_not_final(task, "取消")
     task.status = "cancelled"
     await session.flush()
     await _sync_next_followup(session, task)
@@ -373,17 +511,8 @@ async def assign_task(
     改派一个已完成的任务只会让"谁做的"这件事变得说不清。
     """
     task = await _visible_task(session, user, task_id)
-    if task.status in ("done", "cancelled"):
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"任务已{'完成' if task.status == 'done' else '取消'}，不能改派",
-        )
-
-    target = await session.get(User, payload.owner_id)
-    if target is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={payload.owner_id} 不存在", 404)
-    if target.status != "active":
-        raise AppError(ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用", 422)
+    _ensure_not_final(task, "改派")
+    target = await _active_owner(session, payload.owner_id)
 
     before_owner = task.owner_id
     task.owner_id = payload.owner_id
@@ -441,8 +570,10 @@ async def batch_complete_tasks(
         except AppError as error:
             skipped.append({"task_id": task_id, "reason": error.message})
             continue
-        if task.status == "done":
-            skipped.append({"task_id": task_id, "reason": "任务已完成"})
+        if task.status in FINAL_TASK_STATUSES:
+            skipped.append(
+                {"task_id": task_id, "reason": f"任务已{_final_label(task)}"}
+            )
             continue
         task.status = "done"
         task.completed_at = now
@@ -486,6 +617,7 @@ async def postpone_task(
     task = await _visible_task(session, user, task_id)
     if payload.due_at is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请给出新的截止时间")
+    _ensure_not_final(task, "改期")
     task.due_at = payload.due_at
     await session.flush()
     # 改期就是改约定：客户上的「约定下次跟进时间」要跟着走（§2.3）
@@ -514,15 +646,33 @@ async def transfer_task(
     task = await _visible_task(session, user, task_id)
     if payload.owner_id is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请选择转交给谁")
-    task.owner_id = payload.owner_id
+    # 第九批 §9.3：转交原来的检查**比改派还松** —— 不判终态、不查用户是否存在、
+    # 不看是否停用。这里与 `/assign` 收在同一套约束里。
+    _ensure_not_final(task, "转交")
+    target = await _active_owner(session, payload.owner_id)
+    before_owner = task.owner_id
+    task.owner_id = target.id
+    await session.flush()
+    if target.id != user.id:
+        await notification_service.notify(
+            session,
+            user_id=target.id,
+            type_="task",
+            title="有任务指派给你",
+            content=task.title,
+            business_type="task",
+            business_id=task.id,
+        )
     await write_audit(
         session,
         operator_id=user.id,
         action="transfer",
         business_type="task",
         business_id=task.id,
-        after={"owner_id": payload.owner_id},
+        before={"owner_id": before_owner},
+        after={"owner_id": target.id},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(serialize(task), "任务已转交")
+    await notification_service.dispatch_pending(session)
+    return ok(serialize(task, target.name), f"已转交给「{target.name}」")

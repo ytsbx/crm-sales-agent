@@ -27,6 +27,9 @@ import SectionCard from '../../shared/components/SectionCard'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+// 金额一律带**实际币种**（第九批 §9.9）：列表以前写死 `¥`，
+// 有外币订单时显示的就是错的数字。
+import { formatMoney } from '../../shared/components/money'
 
 const TABS = [
   { tab: '销售订单', itemKey: 'orders' },
@@ -148,7 +151,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         remark: createForm.remark.trim() || undefined,
       }),
     onSuccess: (data) => {
-      Toast.success(`订单 ${data.order_no} 已创建（¥${data.total_amount.toLocaleString('zh-CN')}）`)
+      Toast.success(`订单 ${data.order_no} 已创建（${formatMoney(data.total_amount, data.currency)}）`)
       setCreateVisible(false)
       setCreateForm({
         customer_id: null,
@@ -190,7 +193,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '订单金额',
       dataIndex: 'total_amount',
       width: 140,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number, record: Order) => formatMoney(v, record.currency),
     },
     {
       title: '已回款',
@@ -198,7 +201,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       width: 130,
       render: (v: number, record: Order) => (
         <span style={{ color: v >= record.total_amount ? 'var(--crm-success)' : undefined }}>
-          ¥{v.toLocaleString('zh-CN')}
+          {formatMoney(v, record.currency)}
         </span>
       ),
     },
@@ -206,7 +209,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '待回款',
       dataIndex: 'unreceived_amount',
       width: 130,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number, record: Order) => formatMoney(v, record.currency),
     },
     {
       title: '履约状态',
@@ -233,19 +236,19 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '应收金额',
       dataIndex: 'amount',
       width: 130,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number, record: Receivable) => formatMoney(v, record.currency),
     },
     {
       title: '已收',
       dataIndex: 'received_amount',
       width: 130,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number, record: Receivable) => formatMoney(v, record.currency),
     },
     {
       title: '未收',
       dataIndex: 'remaining_amount',
       width: 130,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number, record: Receivable) => formatMoney(v, record.currency),
     },
     {
       title: '状态',
@@ -265,7 +268,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '金额',
       dataIndex: 'received_amount',
       width: 130,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number, record: Payment) => formatMoney(v, record.currency),
     },
     { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
     {

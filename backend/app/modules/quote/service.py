@@ -132,6 +132,9 @@ def serialize_quote(
         "current_version_id": quote.current_version_id,
         "current_version_no": version.version_no if version else None,
         "current_version_amount": _f(version.total_amount) if version else None,
+        # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币。
+        # 没有当前版本时给 null，由前端提示"币种待核实"。
+        "currency": version.currency if version else None,
         "approval_status": version.approval_status if version else None,
         "approval_required": version.approval_required if version else False,
         "valid_until": quote.valid_until,

@@ -76,6 +76,22 @@ def require_permission(*codes: str) -> Callable[..., Awaitable[CurrentUser]]:
     return _dep
 
 
+def ensure_permission(user: CurrentUser, code: str) -> None:
+    """在函数体里校验一个权限。
+
+    为什么需要它：`require_permission` 是写在路由依赖里的，一个接口只能声明一组
+    "**任一**满足"的权限码。但客户 360 概览这类接口要**逐板块**用不同的模块权限判断
+    （订单板块要 `order:view`、跟进板块要 `followup:view`……），写不进依赖里，
+    只能在函数体内判。文案与 `require_permission` 保持一致，前端拿到的提示同源。
+
+    管理员（admin 角色）一律放行，理由同 `require_permission`：新建权限码时
+    不会把管理员自己锁在门外。
+    """
+    if "admin" in user.roles or user.has(code):
+        return
+    raise AppError(ErrorCode.FORBIDDEN, f"无操作权限：需要 {code}", 403)
+
+
 def client_ip(request: Request) -> str | None:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:

@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
 from app.modules.contact_util import create_contact_for_customer
@@ -351,9 +351,14 @@ async def customer_overview(
 
     前端原先要发 5~6 个请求才能拼出这一屏；这里一次聚合，
     每个板块给"数量 + 最近 5 条"，点进各标签页再拉完整分页。
+
+    2026-10-07（第九批 §9.1）：**逐板块**判对应模块的查看权限与数据范围。
+    只要求 `customer:view` 是不够的 —— 有客户查看权、没有 `order:view` 的账号
+    （例如财务）此前能从这一个入口拿到订单编号与金额。没权限的板块
+    **不查询、不返回**，板块名进 `restricted`，前端据此显示"不可查看"。
     """
     await svc.get_visible_customer(session, user, customer_id)
-    return ok(await svc.customer_overview(session, customer_id))
+    return ok(await svc.customer_overview(session, user, customer_id))
 
 
 @router.get("/customers/{customer_id}/followups")
@@ -364,11 +369,22 @@ async def customer_followups(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """该客户的跟进记录（03-API §7）。"""
-    from app.modules.followup.model import FollowUp
+    """该客户的跟进记录（03-API §7）。
 
+    2026-10-07（第九批 §9.1）：补 `followup:view` 与系统过程记录的来源单据校验。
+    此前只要求 `customer:view`、且不判记录归属 —— 有客户查看权的人能看到该客户
+    名下**所有人**的跟进内容。现在与 `GET /followups?customer_id=` 同一口径
+    （含 `system_source_filter`：系统过程记录仍要看得见来源单据）。
+    """
+    from app.modules.followup.model import FollowUp
+    from app.modules.followup.visibility import system_source_filter
+
+    ensure_permission(user, "followup:view")
     await svc.get_visible_customer(session, user, customer_id)
-    stmt = select(FollowUp).where(FollowUp.customer_id == customer_id)
+    stmt = select(FollowUp).where(
+        FollowUp.customer_id == customer_id,
+        await system_source_filter(session, user),
+    )
     rows, total = await paginate(session, stmt.order_by(FollowUp.id.desc()), page, page_size)
     return ok(
         page_data(
@@ -403,11 +419,19 @@ async def customer_tasks(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """该客户关联的任务（03-API §7）。"""
+    """该客户关联的任务（03-API §7）。
+
+    2026-10-07（第九批 §9.1）：补 `task:view` 与任务自己的数据范围 ——
+    客户可见不代表客户名下**别人**的任务可见（与任务列表同一口径）。
+    """
     from app.modules.task.model import Task
 
+    ensure_permission(user, "task:view")
     await svc.get_visible_customer(session, user, customer_id)
     stmt = select(Task).where(Task.customer_id == customer_id)
+    task_scope = await scoped_owner_ids(session, user)
+    if task_scope is not None:
+        stmt = stmt.where(Task.owner_id.in_(task_scope))
     if status:
         stmt = stmt.where(Task.status == status)
     rows, total = await paginate(session, stmt.order_by(Task.id.desc()), page, page_size)
@@ -494,9 +518,11 @@ async def customer_opportunities(
 
     与 `GET /opportunities?customer_id=` 等价，这里是客户详情页标签页的写法。
     同样按商机自己的数据范围过滤 —— 客户可见不代表客户名下每条商机都可见。
+    第九批 §9.1 补：还要有 `opportunity:view`，否则"有客户权限就能绕过商机模块"。
     """
     from app.modules.opportunity import service as opp_svc
 
+    ensure_permission(user, "opportunity:view")
     await svc.get_visible_customer(session, user, customer_id)
     stmt = await opp_svc.apply_data_scope(
         opp_svc.build_opportunity_stmt(customer_id=customer_id, status=status),
@@ -534,9 +560,13 @@ async def customer_quotes(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """该客户的报价单（03-API §7）。"""
+    """该客户的报价单（03-API §7）。
+
+    第九批 §9.1：补 `quote:view`（数据范围过滤原本就有，缺的是模块权限本身）。
+    """
     from app.modules.quote.model import Quote, QuoteVersion
 
+    ensure_permission(user, "quote:view")
     await svc.get_visible_customer(session, user, customer_id)
     stmt = select(Quote).where(
         Quote.customer_id == customer_id, Quote.deleted_at.is_(None)
@@ -576,6 +606,9 @@ async def customer_quotes(
                 "current_version_id": row.current_version_id,
                 "current_version_no": version.version_no if version else None,
                 "current_version_amount": float(version.total_amount) if version else None,
+                # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币。
+                # 版本缺失时给 null，由前端提示"币种待核实"。
+                "currency": version.currency if version else None,
                 "approval_status": version.approval_status if version else None,
                 "created_at": row.created_at,
             }
@@ -592,10 +625,14 @@ async def customer_orders(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """该客户的销售订单（03-API §7）。"""
+    """该客户的销售订单（03-API §7）。
+
+    第九批 §9.1：补 `order:view`（数据范围过滤原本就有，缺的是模块权限本身）。
+    """
     from app.modules.order import service as order_svc
     from app.modules.order.model import SalesOrder
 
+    ensure_permission(user, "order:view")
     await svc.get_visible_customer(session, user, customer_id)
     stmt = select(SalesOrder).where(SalesOrder.customer_id == customer_id)
     owner_ids = await scoped_owner_ids(session, user)

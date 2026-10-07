@@ -1,6 +1,14 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+#: 任务状态**唯一的一份枚举**（第九批 §9.3）。
+#:
+#: 此前 `TaskUpdate.status` 是裸 `str`、库里也是裸 `String(16)`，于是
+#: `status="whatever"` 能存进去；而"完成/取消/指派"三个专门接口各有各的判定，
+#: 普通编辑却能直接写 status 与 owner_id —— 同一个动作换个入口就放行了。
+TASK_STATUSES = ("pending", "doing", "done", "cancelled")
 
 
 class TaskCreate(BaseModel):
@@ -22,7 +30,8 @@ class TaskUpdate(BaseModel):
 
     title: str | None = None
     priority: str | None = None
-    status: str | None = None
+    # 明确枚举：未知值由 pydantic 直接拒（422），不再写进库里
+    status: Literal["pending", "doing", "done", "cancelled"] | None = None
     due_at: datetime | None = None
     owner_id: int | None = None
 

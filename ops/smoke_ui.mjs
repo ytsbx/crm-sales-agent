@@ -815,7 +815,11 @@ async function main() {
 
     if (timelineFixture) INTERACTIONS.push({
       name: '34-customer-timeline', path: `/customers/${customerId}?tab=logs`, clicks: [],
-      expect: ['已由财务确认', '交期变更', '已实发', '查看原单'], expectAll: true,
+      // 「交期变更」这条断言一直是错的：`order/schedule.py` 的确认动作**从不写**
+      // 客户时间线（它只动订单节点，没有 record_and_notify），所以那个文案
+      // 在任何写入路径里都不存在（2026-10-07 用 git log -S 核过，从未出现）。
+      // 换成订单侧**真实会写进客户时间线**的事件：建单金额、已实发、回款确认。
+      expect: ['手工建单', '已实发', '已由财务确认', '查看原单'], expectAll: true,
       sourcePath: `/orders/${timelineFixture.orderId}`,
     })
 
@@ -1313,12 +1317,19 @@ async function main() {
           await sleep(300)
           await client.send('Runtime.evaluate', { expression: 'document.activeElement.blur()', returnByValue: true })
           await sleep(300)
+          // 同上：判"本轮新增一条"，不判"库里只有一条"（人工跟进会留库）
+          const beforePlanRes = await fetch(
+            `${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`,
+            { headers: { Authorization: `Bearer ${auth.token}` } },
+          )
+          const beforePlanCount = (await beforePlanRes.json()).data.items
+            .filter((row) => row.content === 'CHKUI计划跟进').length
           await clickByText(client, '保存')
           if (!await waitForText(client, '跟进已记录，并生成了后续任务', 5000)) problems.push('跟进表单：计划保存失败')
           const response = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
           const rows = (await response.json()).data
           const saved = rows.items.filter((row) => row.content === 'CHKUI计划跟进')
-          if (saved.length !== 1 || saved[0].next_action !== 'CHKUI回访客户' || !saved[0].next_task_id || !saved[0].task_due_at) {
+          if (saved.length !== beforePlanCount + 1 || saved[0].next_action !== 'CHKUI回访客户' || !saved[0].next_task_id || !saved[0].task_due_at) {
             problems.push('跟进表单：计划/关联任务没有正确保存')
           }
         } else {
@@ -1346,12 +1357,21 @@ async function main() {
           if (!await waitForText(client, '保存免填原因，本次不创建后续待办。', 3000)) {
             problems.push('跟进表单：免填说明没有显示')
           }
+          // 记录操作前的同名条数。人工跟进**会留在库里**（收尾清扫只清系统留痕），
+          // 所以断言必须是"本轮恰好新增一条"，而不是"库里总共只有一条"——
+          // 后者在第二次运行时就必失败（2026-10-07 实测：库里两条同名记录）。
+          const beforeRes = await fetch(
+            `${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`,
+            { headers: { Authorization: `Bearer ${auth.token}` } },
+          )
+          const beforeCount = (await beforeRes.json()).data.items
+            .filter((row) => row.content === 'CHKUI免填跟进').length
           await clickByText(client, '保存')
           if (!await waitForText(client, '跟进已记录', 5000)) problems.push('跟进表单：免填保存失败')
           const result = await fetch(`${API_BASE}/api/v1/followups?customer_id=${customerId}&page_size=200`, { headers: { Authorization: `Bearer ${auth.token}` } })
           const rows = (await result.json()).data
           const saved = rows.items.filter((row) => row.content === 'CHKUI免填跟进')
-          if (saved.length !== 1 || saved[0].exemption_reason !== 'waiting_external' || saved[0].next_task_id != null) {
+          if (saved.length !== beforeCount + 1 || saved[0].exemption_reason !== 'waiting_external' || saved[0].next_task_id != null) {
             problems.push('跟进表单：免填记录/任务不符合要求')
           }
         }

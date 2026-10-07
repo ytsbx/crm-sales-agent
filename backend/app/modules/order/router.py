@@ -1,6 +1,6 @@
 """订单中心接口（对齐 03-API §27 / §28）。"""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
@@ -23,6 +23,7 @@ from app.modules.notification import service as notification_service
 from app.modules.opportunity.model import Opportunity, OpportunityItem, OpportunityStageHistory
 from app.modules.opportunity.service import get_first_stage
 from app.modules.order import service as svc
+from app.core.timebase import today_business
 from app.modules.order import milestones as milestones_svc
 from app.modules.order.model import (
     ORDER_STATUS_LABEL,
@@ -183,7 +184,14 @@ async def create_order(
     await session.commit()
     await notification_service.dispatch_pending(session)
     return ok(
-        {"order_id": order.id, "order_no": order.order_no, "total_amount": float(order.total_amount)},
+        {
+            "order_id": order.id,
+            "order_no": order.order_no,
+            "total_amount": float(order.total_amount),
+            # 币种跟着金额一起给（第九批 §9.9）：前端成功提示要按订单币种显示，
+            # 不能假设是人民币
+            "currency": order.currency,
+        },
         "订单已创建",
     )
 
@@ -355,7 +363,7 @@ async def list_milestones(
         session, order.id, order.delivery_date, created_by=user.id
     )
     await session.commit()  # 初始化行要落库，否则下次访问会重复初始化
-    today = date.today()
+    today = today_business()
     items = [
         {
             "id": r.id,
@@ -455,9 +463,9 @@ async def update_milestone(
             "label": milestones_svc.node_label(row.node),
             "planned_date": row.planned_date,
             "actual_date": row.actual_date,
-            "status": milestones_svc.row_status(row, date.today()),
+            "status": milestones_svc.row_status(row, today_business()),
             "status_label": milestones_svc.STATUS_LABELS[
-                milestones_svc.row_status(row, date.today())
+                milestones_svc.row_status(row, today_business())
             ],
             "owner_id": row.owner_id,
             "evidence": row.evidence,

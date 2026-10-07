@@ -302,11 +302,16 @@ async def get_customer_overview(ctx: ToolContext, customer_id: int) -> dict:
       避免"空数组"被误读成"这个客户没有商机"；
     - 联系方式按可见性脱敏（见 `_may_see_full_contact`）。
 
-    范围口径沿用**客户全貌页已经批准的规则**（`customer/router.py::customer_overview`
-    只校验客户可见性，商机/报价/订单跟着客户走）：客户在范围内 → 该公司名下的
-    历史资料可见。**刻意不逐条要求 `opp.owner_id == 当前用户`**——客户交接后
-    历史商机/报价/订单的负责人仍是原负责人，机械按 owner 过滤会把合法交接资料
-    全挡掉（文档 §8.3 明确点名这一点）。
+    范围口径：**客户在范围内 → 该公司名下的历史资料可见**，刻意不逐条要求
+    `opp.owner_id == 当前用户`——客户交接后历史单据的负责人可能仍是原负责人，
+    机械按 owner 过滤会把合法历史全挡掉（文档 §8.3 明确点名这一点）。
+
+    ⚠️ 与客户全貌页的差异（2026-10-07 第九批 §9.1 起，**有意保留**）：
+    `customer/router.py::customer_overview` 已改为**逐板块判模块权限 + 按各模块
+    自己的数据范围过滤**（与 `/customers/{id}/orders` 等子资源接口对齐——审查
+    指出"有客户查看权就能绕过订单模块"）。本工具属 **Agent 读侧**，保留
+    "客户可见 → 名下资料可见"，依据是 §8.3（Agent 要能回放交接前的历史）。
+    两处口径若要统一，先拍板"交接后历史单据对承接人是否可见"这条业务规则。
     """
     customer = await ctx.session.get(Customer, customer_id)
     if customer is None or customer.deleted_at is not None:

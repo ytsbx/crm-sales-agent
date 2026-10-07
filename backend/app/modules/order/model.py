@@ -110,7 +110,14 @@ class OrderShipmentBatch(Base, IdMixin):
     """
 
     __tablename__ = "order_shipment_batches"
-    __table_args__ = (Index("ix_order_shipment_batches_order", "order_id"),)
+    __table_args__ = (
+        Index("ix_order_shipment_batches_order", "order_id"),
+        # 第九批 §9.6：同一订单的批次号必须唯一。
+        # 应用层已经做了两件事（排批次与实发统一锁订单行；取号看全部批次、
+        # 含已取消），这条约束是**兜底**：万一并发还是漏过应用层的锁，
+        # 也应该在库里撞住，而不是写出两个"第 1 批"。
+        UniqueConstraint("order_id", "batch_no", name="uq_shipment_batch_no"),
+    )
 
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
     batch_no: Mapped[int] = mapped_column(BigInteger, default=1)  # 第几批，从 1 起

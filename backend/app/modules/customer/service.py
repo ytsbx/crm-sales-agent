@@ -150,7 +150,9 @@ async def owner_names(session: AsyncSession, owner_ids: list[int]) -> dict[int, 
     return {int(uid): name for uid, name in rows}
 
 
-async def customer_overview(session: AsyncSession, customer_id: int) -> dict:
+async def customer_overview(
+    session: AsyncSession, user: CurrentUser, customer_id: int
+) -> dict:
     """客户 360 概览（03-API §7 `GET /customers/{id}/overview`）。
 
     前端原先要发 5~6 个请求（商机/报价/订单/跟进/任务/文件）才拼得出这一屏。
@@ -158,117 +160,173 @@ async def customer_overview(session: AsyncSession, customer_id: int) -> dict:
     点进各标签页再拉完整分页。
 
     只读，不改变任何业务状态；板块之间互不依赖，单个板块为空不影响其他。
+
+    ## 权限与数据范围（2026-10-07 第九批 §9.1 收口）
+
+    此前这个函数**不接 user**：只要客户本身在范围内，就把该客户名下的订单金额、
+    报价单号、跟进内容一次性交出去。于是"有 `customer:view`、没有 `order:view`"
+    的账号（例如财务）能从这一个入口看到完整订单板块 —— 等于绕过订单模块自己的闸门；
+    而且客户可见 ≠ 客户名下每条单据都可见（子资源列表接口是**按各自模块的数据范围**
+    过滤的，概览却是全量聚合，两条路口径不一）。现在：
+
+    - 每个板块先判**对应模块的查看权限**，没权限就**不查询、不返回**：
+      计数给 `None`、列表给空数组，板块名进 `restricted`，前端据此显示"不可查看"；
+    - 有权限的板块复用各模块自己的数据范围（`scoped_owner_ids`），
+      与 `/customers/{id}/orders` 等子资源接口同一口径；
+    - **计数与明细共用同一个 base 语句**：不再出现"显示有三份报价、只列出两份"
+      （原来是计数不加软删、明细加软删，两处 where 各写一份）；
+    - 跟进板块沿用 `followup/visibility` 的 `system_source_filter`：
+      系统过程记录仍要能看见它的来源单据才放行。
     """
     from app.modules.file.model import BusinessFile, FileRecord
     from app.modules.followup.model import FollowUp
+    from app.modules.followup.visibility import system_source_filter
     from app.modules.opportunity.model import Opportunity, OpportunityStage
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote
     from app.modules.task.model import Task
 
-    async def count_of(model, **filters) -> int:
-        stmt = select(func.count(model.id))
-        for column, value in filters.items():
-            stmt = stmt.where(getattr(model, column) == value)
+    def can(code: str) -> bool:
+        """本板块要的模块查看权限。管理员与 require_permission 同口径放行。"""
+        return "admin" in user.roles or user.has(code)
+
+    owner_ids = await scoped_owner_ids(session, user)
+    restricted: list[str] = []
+
+    def scoped(stmt, model):
+        """按数据范围收窄。`owner_ids is None` = 全量（管理员/财务角色），不加条件。"""
+        if owner_ids is None:
+            return stmt
+        return stmt.where(model.owner_id.in_(owner_ids))
+
+    async def count_of(base) -> int:
+        """计数由**明细的 base** 派生：同一份 where，口径不可能再漂。"""
+        stmt = select(func.count()).select_from(base.order_by(None).subquery())
         return int((await session.execute(stmt)).scalar_one())
 
-    # 商机
-    opportunity_total = await count_of(Opportunity, customer_id=customer_id)
-    opportunity_rows = (
-        await session.execute(
+
+    # ── 商机 ──
+    opportunity_rows: list = []
+    opportunity_total: int | None = None
+    open_opportunities: int | None = None
+    if can("opportunity:view"):
+        opp_base = scoped(
             select(Opportunity, OpportunityStage.name)
             .outerjoin(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
-            .where(Opportunity.customer_id == customer_id, Opportunity.deleted_at.is_(None))
-            .order_by(Opportunity.id.desc())
-            .limit(5)
-        )
-    ).all()
-    open_opportunities = await count_of(Opportunity, customer_id=customer_id, status="open")
-
-    # 报价
-    quote_total = await count_of(Quote, customer_id=customer_id)
-    quote_rows = (
-        await session.execute(
-            select(Quote)
-            .where(Quote.customer_id == customer_id, Quote.deleted_at.is_(None))
-            .order_by(Quote.id.desc())
-            .limit(5)
-        )
-    ).scalars().all()
-
-    # 订单
-    order_total = await count_of(SalesOrder, customer_id=customer_id)
-    order_rows = (
-        await session.execute(
-            select(SalesOrder)
-            .where(SalesOrder.customer_id == customer_id)
-            .order_by(SalesOrder.id.desc())
-            .limit(5)
-        )
-    ).scalars().all()
-    order_amount = (
-        await session.execute(
-            select(func.coalesce(func.sum(SalesOrder.total_amount), 0)).where(
-                SalesOrder.customer_id == customer_id
-            )
-        )
-    ).scalar_one()
-
-    # 跟进与任务
-    followup_total = await count_of(FollowUp, customer_id=customer_id)
-    followup_rows = (
-        await session.execute(
-            select(FollowUp)
-            .where(FollowUp.customer_id == customer_id)
-            .order_by(FollowUp.id.desc())
-            .limit(5)
-        )
-    ).scalars().all()
-    task_total = await count_of(Task, customer_id=customer_id)
-    open_task_total = int(
-        (
-            await session.execute(
-                select(func.count(Task.id)).where(
-                    Task.customer_id == customer_id,
-                    Task.status.in_(("pending", "doing")),
-                )
-            )
-        ).scalar_one()
-    )
-    task_rows = (
-        await session.execute(
-            select(Task)
-            .where(Task.customer_id == customer_id)
-            .order_by(Task.id.desc())
-            .limit(5)
-        )
-    ).scalars().all()
-
-    # 附件
-    file_total = int(
-        (
-            await session.execute(
-                select(func.count(BusinessFile.id)).where(
-                    BusinessFile.business_type == "customer",
-                    BusinessFile.business_id == customer_id,
-                )
-            )
-        ).scalar_one()
-    )
-    file_rows = (
-        await session.execute(
-            select(BusinessFile, FileRecord)
-            .join(FileRecord, FileRecord.id == BusinessFile.file_id)
             .where(
-                BusinessFile.business_type == "customer",
-                BusinessFile.business_id == customer_id,
-            )
-            .order_by(BusinessFile.id.desc())
-            .limit(5)
+                Opportunity.customer_id == customer_id,
+                Opportunity.deleted_at.is_(None),
+            ),
+            Opportunity,
         )
+        opportunity_total = await count_of(opp_base)
+        open_opportunities = await count_of(opp_base.where(Opportunity.status == "open"))
+        opportunity_rows = (
+            await session.execute(opp_base.order_by(Opportunity.id.desc()).limit(5))
+        ).all()
+    else:
+        restricted.append("opportunities")
+
+    # ── 报价 ──
+    quote_rows: list = []
+    quote_total: int | None = None
+    if can("quote:view"):
+        quote_base = scoped(
+            select(Quote).where(
+                Quote.customer_id == customer_id, Quote.deleted_at.is_(None)
+            ),
+            Quote,
+        )
+        quote_total = await count_of(quote_base)
+        quote_rows = (
+            await session.execute(quote_base.order_by(Quote.id.desc()).limit(5))
+        ).scalars().all()
+    else:
+        restricted.append("quotes")
+
+    # ── 订单（金额随权限一起消失：没权限就不算、不返回）──
+    order_rows: list = []
+    order_total: int | None = None
+    order_amounts: list[dict] | None = None
+    if can("order:view"):
+        order_base = scoped(
+            select(SalesOrder).where(SalesOrder.customer_id == customer_id), SalesOrder
+        )
+        order_total = await count_of(order_base)
+        # 金额**按币种分组**（第九批 §9.9）：100 CNY + 100 USD 直接相加没有意义，
+        # 而"统一折算规则"还没拍板，代码不该替业务选一个汇率。
+        order_sub = order_base.order_by(None).subquery()
+        amount_rows = (
+            await session.execute(
+                select(order_sub.c.currency, func.sum(order_sub.c.total_amount))
+                .group_by(order_sub.c.currency)
+                .order_by(order_sub.c.currency)
+            )
+        ).all()
+        order_amounts = [
+            # currency 为空 = 历史数据没记币种，**如实标出来**（curreny 给 null），
+            # 不默认当成人民币 —— 那等于给一条没根据的数字。
+            {"currency": currency, "amount": float(total or 0)}
+            for currency, total in amount_rows
+        ]
+        order_rows = (
+            await session.execute(order_base.order_by(SalesOrder.id.desc()).limit(5))
+        ).scalars().all()
+    else:
+        restricted.append("orders")
+
+    # ── 跟进（沿用 followup/visibility：系统过程记录仍要看得见来源单据）──
+    followup_rows: list = []
+    followup_total: int | None = None
+    if can("followup:view"):
+        followup_base = select(FollowUp).where(
+            FollowUp.customer_id == customer_id,
+            await system_source_filter(session, user),
+        )
+        followup_total = await count_of(followup_base)
+        followup_rows = (
+            await session.execute(followup_base.order_by(FollowUp.id.desc()).limit(5))
+        ).scalars().all()
+    else:
+        restricted.append("followups")
+
+    # ── 任务 ──
+    task_rows: list = []
+    task_total: int | None = None
+    open_task_total: int | None = None
+    if can("task:view"):
+        task_base = scoped(select(Task).where(Task.customer_id == customer_id), Task)
+        task_total = await count_of(task_base)
+        open_task_total = await count_of(
+            task_base.where(Task.status.in_(("pending", "doing")))
+        )
+        task_rows = (
+            await session.execute(task_base.order_by(Task.id.desc()).limit(5))
+        ).scalars().all()
+    else:
+        restricted.append("tasks")
+
+    # ── 附件 ──
+    # 这里**不另判 `file:view`**：按 file/access.py 的映射，"客户附件的查看权"
+    # 就是 `customer:view`（附件跟随它挂着的业务对象），而客户本身已经过
+    # `get_visible_customer`。多判一道会让"能看客户、看不到这个计数"，
+    # 与 `/business/customer/{id}/files` 的口径打架。
+    file_base = (
+        select(BusinessFile, FileRecord)
+        .join(FileRecord, FileRecord.id == BusinessFile.file_id)
+        .where(
+            BusinessFile.business_type == "customer",
+            BusinessFile.business_id == customer_id,
+        )
+    )
+    file_total = await count_of(file_base)
+    file_rows = (
+        await session.execute(file_base.order_by(BusinessFile.id.desc()).limit(5))
     ).all()
 
     return {
+        # 没权限的板块计数给 None（而不是 0）："看不到"和"确实一条都没有"
+        # 是两件事，前端据 restricted 显示"不可查看"，不要显示成 0 条。
         "counts": {
             "opportunities": opportunity_total,
             "open_opportunities": open_opportunities,
@@ -278,8 +336,12 @@ async def customer_overview(session: AsyncSession, customer_id: int) -> dict:
             "tasks": task_total,
             "open_tasks": open_task_total,
             "files": file_total,
-            "order_amount": float(order_amount or 0),
+            # 按币种分组的订单金额（第九批 §9.9）。**没有**合并后的总额：
+            # 不同币种直接相加没有意义，折算规则未拍板前不替业务选汇率。
+            "order_amounts": order_amounts,
         },
+        # 无权限、因而**根本没查**的板块（前端据此显示"不可查看"）
+        "restricted": restricted,
         "opportunities": [
             {
                 "id": row.id,
@@ -307,6 +369,8 @@ async def customer_overview(session: AsyncSession, customer_id: int) -> dict:
                 "id": row.id,
                 "order_no": row.order_no,
                 "status": row.status,
+                # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币
+                "currency": row.currency,
                 "total_amount": _f(row.total_amount),
                 "erp_order_id": row.erp_order_id,
                 "delivery_date": row.delivery_date,

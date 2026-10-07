@@ -19,6 +19,12 @@ from app.modules.order.model import (
     SalesOrder,
     SalesOrderItem,
 )
+# 交期换算只有一份：`schedule.suggested_ship_date`（第九批 §9.8）。
+# 订单详情、批次指标、交期分析三处共用它，避免同一个指标算出两个符号。
+from app.modules.order.schedule import suggested_ship_date
+# 业务时区的"今天"（第九批 §9.10）：批次逾期、报价有效性这些判断统一用它，
+# 不再混用 `date.today()`（跟宿主机走）与 `now(UTC).date()`。
+from app.core.timebase import today_business
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.quote.model import QuoteItem, QuoteVersion
 from app.modules.user.model import User
@@ -62,9 +68,11 @@ def serialize_order(
         "delivery_kind": order.delivery_kind,
         "transit_days": order.transit_days,
         "plan_offsets": order.plan_offsets,
-        "shipment_date": (
-            order.delivery_date - timedelta(days=order.transit_days or 0)
-            if order.delivery_date and order.delivery_kind else None
+        # 建议发货日：**到货类交期要减掉运输天数**（第九批 §9.8 统一到
+        # `schedule.suggested_ship_date` 算 —— 原来订单页、批次指标、交期分析
+        # 各写一份，只有分析那处区分了交期类型，同一个指标能算出两个符号）。
+        "shipment_date": suggested_ship_date(
+            order.delivery_date, order.delivery_kind, order.transit_days
         ),
         "payment_terms": order.payment_terms,
         "remark": order.remark,
@@ -200,8 +208,10 @@ async def create_order_from_quote(
         raise AppError(ErrorCode.APPROVAL_PENDING, "报价未通过审批，不能转订单", 422)
     if quote.status != "accepted" or version.accepted_at is None or version.sent_at is None or version.declined_at is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有客户已接受的当前报价版本才能正式下单", 422)
-    # 已失效报价不能转单（方案 A13：有效性校验；此前的口子允许过期报价转单）
-    today = datetime.now(UTC).date()
+    # 已失效报价不能转单（方案 A13：有效性校验；此前的口子允许过期报价转单）。
+    # "今天"取**业务时区**的今天（第九批 §9.10）：按 UTC 算的话，北京时间
+    # 凌晨 0—8 点会把"昨天已经过期"的报价当成还有效。
+    today = today_business()
     if quote.valid_until and quote.valid_until < today:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -477,6 +487,35 @@ def _sku_label(item: SalesOrderItem) -> str:
     )
 
 
+async def _lock_order_row(session: AsyncSession, order_id: int) -> None:
+    """锁住订单行 —— 排批次 / 取消批次 / 实发共用同一把锁（第九批 §9.6）。
+
+    **必须带 `populate_existing=True`**：本项目的 session 是
+    `expire_on_commit=False`，SQLAlchemy 默认**不用查询结果覆盖已加载对象**。
+    少了这一行，行锁确实锁住了库里的行，但拿回来的属性还是内存里的旧值 ——
+    "已经被别人改过"判不出来，等于没锁（并发断言会"时红时绿"）。
+
+    锁顺序固定为「先订单、后批次」，四个入口都按这个顺序拿锁，才不会互相咬住。
+    """
+    await session.execute(
+        select(SalesOrder)
+        .where(SalesOrder.id == order_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+
+
+async def _reload_order(session: AsyncSession, order_id: int) -> SalesOrder:
+    """等锁之后**重新读**订单：等待锁之前读到的状态与余额一律不用。"""
+    return (
+        await session.execute(
+            select(SalesOrder)
+            .where(SalesOrder.id == order_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+
+
 async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
     """批次列表 + 按订单明细的计划/实发/未发量（场景13 的"未发量均正确"）。"""
     items = (
@@ -520,9 +559,20 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
         entry = agg.get(row.order_item_id)
         if entry is None:
             continue
-        entry["planned"] += _d(row.planned_qty)
         if batch_status_by_id.get(row.batch_id) == "shipped":
+            # 已发货结束的批次**按实发量占用**（第九批 §9.5）。
+            #
+            # 原来一律按 `planned_qty` 占用：订购 10、本批计划 10、实际只发 6 时，
+            # 系统仍认为 10 件全被占着 →「未发量 4、未计划量 0」，
+            # 剩余 4 件永远排不进新批次；而整单完成的闸门又看"未发量 > 0"，
+            # 于是这单**既完不成、也补不了**，卡成死锁。
+            #
+            # 释放的只是"占用额度"：每个批次明细里**原始的 planned_qty 原样保留**
+            # （"原计划 10、实际发 6"是事实，不美化、不改历史）。
+            entry["planned"] += _d(row.shipped_qty)
             entry["shipped"] += _d(row.shipped_qty)
+        else:
+            entry["planned"] += _d(row.planned_qty)
     for entry in agg.values():
         entry["ordered"] = _f(entry["ordered"])
         entry["planned"] = _f(entry["planned"])
@@ -531,7 +581,9 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
         entry["unplanned"] = _f(max(_d(entry["ordered"]) - _d(entry["planned"]), Decimal(0)))
 
     batch_by_id = {batch.id: batch for batch in batches}
-    _today = datetime.now(UTC).date()
+    # "今天"取业务时区（第九批 §9.10）：下面算"未发批次已经逾期几天"要用它，
+    # 按 UTC 算会在北京时间凌晨差一天。
+    _today = today_business()
     serialized_batches = []
     for batch in batches:
         rows = [
@@ -571,6 +623,21 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
             "items": rows,
         })
 
+    # 「最后一批 vs 交期」的两个输入（第九批 §9.8）：
+    # 建议发货日 = 客户交期换算（到货类减运输天数）；发货日取**实际最晚**那个。
+    suggested_ship = suggested_ship_date(
+        order.delivery_date, order.delivery_kind, order.transit_days
+    )
+    shipped_dates = [
+        batch["actual_ship_date"]
+        for batch in serialized_batches
+        if batch["actual_ship_date"] is not None
+    ]
+    last_shipped_on = max(shipped_dates) if shipped_dates else None
+    pending_batch_count = sum(
+        1 for batch in serialized_batches if batch["status"] != "shipped"
+    )
+
     return {
         "items": list(agg.values()),
         "batches": serialized_batches,
@@ -591,16 +658,27 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
                  if b["deviation_days"] is not None),
                 default=None,
             ),
-            # 最后一批相对**合同交期**晚了几天（分批单最关心的那个数）
-            "last_batch_vs_delivery_days": next(
-                (
-                    ((b["actual_ship_date"] or _today) - order.delivery_date).days
-                    for b in reversed(serialized_batches)
-                ),
-                None,
-            )
-            if order.delivery_date
-            else None,
+            # 最后一批（按**实际最晚发货日**）相对**建议发货日**晚了几天
+            # —— 分批单最关心的那个数（第九批 §9.8）。两处修正：
+            #
+            # ① 原来拿"实际发货日 − 客户交期"直接相减，而客户交期可能是**到货日**
+            #    —— 两个含义不同的日期相减是错的。客户要 10-20 到货、运输 7 天
+            #    → 应 10-13 发货；实际 10-17 发，应体现"晚 4 天"，
+            #    原来算出 -3（看着像提前发了）。现在与交期分析共用同一份换算。
+            # ② "最后一批"按实际最晚发货日取（业务 2026-10-07 拍板）：
+            #    编号大不等于发得晚，第 2 批晚于第 3 批发出时按编号会得出反的结论。
+            "last_batch_vs_delivery_days": (
+                (last_shipped_on - suggested_ship).days
+                if last_shipped_on and suggested_ship
+                else None
+            ),
+            #: 这个偏差比的是**发货**，不是到货。系统里没有"实际到货日"这个
+            #: 事实字段，所以不能声称知道实际到货延迟 —— 名字和这里都写清楚。
+            "last_batch_vs_delivery_basis": "shipping",
+            #: 客户交期换算出来的建议发货日（前端可拿它解释"还剩几天"）
+            "suggested_ship_date": suggested_ship,
+            #: 还没发完的批次数 —— 它们不参与上面的偏差，单独标出来
+            "pending_batch_count": pending_batch_count,
         },
     }
 
@@ -612,7 +690,18 @@ async def create_shipment_batch(
     payload,  # ShipmentBatchCreate
     user_id: int,
 ) -> OrderShipmentBatch:
-    """建批次。计划量不得超过该明细未计划量（订购 − 已计划），防重复排产。"""
+    """建批次。计划量不得超过该明细未计划量（订购 − 已计划），防重复排产。
+
+    第九批 §9.6：这里原来**没有锁**（而发货登记有）。两个并发请求能同时读到
+    "订购 10、未计划 10"，各排 8 件 → 总计划 16，两个批次的 `batch_no` 还都是 1。
+    现在与 `ship_shipment_batch` 统一口径：**先锁订单行、刷新已加载对象，
+    等锁之后再读余额与订单状态**（等待锁之前读到的值一律不用）。
+    """
+    await _lock_order_row(session, order.id)
+    order = await _reload_order(session, order.id)
+    if order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再排发货批次")
+
     items = {
         item.id: item
         for item in (
@@ -624,6 +713,7 @@ async def create_shipment_batch(
     overview = await order_shipments(session, order)
     unplanned = {row["order_item_id"]: _d(row["unplanned"]) for row in overview["items"]}
 
+    # 先把整张计划**全部校验完**再落库（第九批 §9.7）：中途报错时不留半张批次。
     for row in payload.items:
         if row.order_item_id not in items:
             raise AppError(ErrorCode.NOT_FOUND, f"订单明细 {row.order_item_id} 不存在", 404)
@@ -631,13 +721,22 @@ async def create_shipment_batch(
             raise AppError(
                 ErrorCode.PARAM_ERROR,
                 f"{_sku_label(items[row.order_item_id])}：计划发货 "
-                f"{row.planned_qty} 超过未计划量 "
+                f"{row.planned_qty} 超过还可安排的 "
                 f"{unplanned.get(row.order_item_id, Decimal(0))}",
             )
 
-    batch_no = (
-        max((batch.batch_no for batch in overview["batch_by_id"].values()), default=0) + 1
-    )
+    # 取号看**全部批次（含已取消）**（第九批 §9.6）：只看未取消批次时，
+    # 取消掉编号最大的那一批之后，新批次会复用该编号，与它对应的动态跟单节点
+    # （按 `batch_no` 命名）错配。
+    max_batch_no = (
+        await session.execute(
+            select(func.max(OrderShipmentBatch.batch_no)).where(
+                OrderShipmentBatch.order_id == order.id
+            )
+        )
+    ).scalar_one() or 0
+    batch_no = int(max_batch_no) + 1
+
     batch = OrderShipmentBatch(
         order_id=order.id,
         batch_no=batch_no,
@@ -647,20 +746,30 @@ async def create_shipment_batch(
         created_by=user_id,
         created_at=datetime.now(UTC),
     )
-    session.add(batch)
-    await session.flush()
-    for row in payload.items:
-        item = items[row.order_item_id]
-        session.add(
-            OrderShipmentBatchItem(
-                batch_id=batch.id,
-                order_item_id=row.order_item_id,
-                sku_snapshot=_sku_label(item),
-                planned_qty=_d(row.planned_qty),
-                shipped_qty=Decimal(0),
-            )
-        )
-    await session.flush()
+    try:
+        # SAVEPOINT 包住插入：`(order_id, batch_no)` 的唯一约束是**兜底**，
+        # 极端并发下撞上时也要给出可理解的业务错误，而不是一个 500。
+        async with session.begin_nested():
+            session.add(batch)
+            await session.flush()
+            for row in payload.items:
+                item = items[row.order_item_id]
+                session.add(
+                    OrderShipmentBatchItem(
+                        batch_id=batch.id,
+                        order_item_id=row.order_item_id,
+                        sku_snapshot=_sku_label(item),
+                        planned_qty=_d(row.planned_qty),
+                        shipped_qty=Decimal(0),
+                    )
+                )
+            await session.flush()
+    except IntegrityError as error:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "该订单的批次号刚刚被占用（可能有人同时在排批次），请刷新后重试",
+            409,
+        ) from error
     # 第 2 批起按批次动态生成跟单节点（口径 2026-10-04）：首批对应「首批发货」，
     # 后续每批一个独立节点，"分批导致的延期"才统计得出来。
     from app.modules.order import milestones as milestones_svc
@@ -682,11 +791,10 @@ async def ship_shipment_batch(
     """登记实发：批次置 shipped、写实际日期与物流，推进订单状态到"已发货"。"""
     if batch.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "批次不属于该订单", 404)
-    # 锁整单，串行核对各批累计实发量；刷新已加载对象，避免等待锁后读旧状态。
-    await session.execute(
-        select(SalesOrder).where(SalesOrder.id == order.id).with_for_update()
-        .execution_options(populate_existing=True)
-    )
+    # 统一锁顺序：**先锁订单、再锁批次**（与排批次 / 取消批次共用同一把锁），
+    # 等待锁之后重新读数量余额与订单状态。
+    await _lock_order_row(session, order.id)
+    order = await _reload_order(session, order.id)
     batch = (await session.execute(
         select(OrderShipmentBatch).where(OrderShipmentBatch.id == batch.id)
         .with_for_update().execution_options(populate_existing=True)
@@ -718,6 +826,22 @@ async def ship_shipment_batch(
         if payload.items is not None
         else None
     )
+    # 第九批 §9.7：报上来的明细必须**属于本批次**。
+    # 原来循环遍历的是本批自己的明细、用 `ship_inputs.get(id, 计划量)` 取值 ——
+    # 传一个不属于本批的明细号时它匹配不到，就被**静默丢弃**，本批明细反而按
+    # 计划量全发（"给错误明细登记发 1 件"，结果把正确明细的计划 10 件全发出去）。
+    if ship_inputs is not None:
+        unknown = sorted(set(ship_inputs) - {row.order_item_id for row in batch_items})
+        if unknown:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"明细 {unknown[0]} 不属于本批次，请刷新页面后重新选择",
+                422,
+            )
+
+    # **先把整批算完并校验，再落数量**（第九批 §9.7）：原来是边算边写，
+    # 中途报错时前面的明细已经改过 `shipped_qty`，留下一半的脏数量。
+    resolved: dict[int, Decimal] = {}
     for row in batch_items:
         qty = (
             ship_inputs.get(row.order_item_id, _d(row.planned_qty))
@@ -733,10 +857,13 @@ async def ship_shipment_batch(
                 f"{row.sku_snapshot or row.order_item_id}：累计实发 {total} "
                 f"超过订购量 {ordered.get(row.order_item_id, Decimal(0))}",
             )
-        row.shipped_qty = qty
+        resolved[row.order_item_id] = qty
+
+    for row in batch_items:
+        row.shipped_qty = resolved[row.order_item_id]
 
     batch.status = "shipped"
-    batch.actual_ship_date = payload.actual_ship_date or datetime.now(UTC).date()
+    batch.actual_ship_date = payload.actual_ship_date or today_business()
     batch.logistics_company = payload.logistics_company
     batch.tracking_no = payload.tracking_no
     # 逾期原因是"归因"，不是装饰：晚发了就把为什么晚记在这一批上，
@@ -783,8 +910,24 @@ async def ship_shipment_batch(
 async def cancel_shipment_batch(
     session: AsyncSession, batch: OrderShipmentBatch
 ) -> None:
+    """取消一个还没发货的批次。
+
+    第九批 §9.6：这里原来**没有加锁**，和排批次 / 实发并发时会读到过期状态。
+    现在按统一顺序拿锁（先订单、后批次），再判状态。
+    """
+    await _lock_order_row(session, batch.order_id)
+    batch = (
+        await session.execute(
+            select(OrderShipmentBatch)
+            .where(OrderShipmentBatch.id == batch.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
     if batch.status == "shipped":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已发货的批次不能取消，请走退换流程")
+    if batch.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已取消")
     batch.status = "cancelled"
     # 批次取消 → 撤掉它的动态节点，否则会凭空冒出个逾期的"第 N 批发货"
     from app.modules.order import milestones as milestones_svc

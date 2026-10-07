@@ -17,6 +17,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+# 业务时区的"今天"（第九批 §9.10）：节点逾期判断原来用 `today_business()`，
+# 跟着宿主机时区走 —— 服务器换成 UTC 之后，北京时间凌晨的判定会差一天。
+from app.core.timebase import today_business
 from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
 
 logger = logging.getLogger("crm.milestones")
@@ -136,7 +139,7 @@ async def ensure_initialized(
                         node=key,
                         planned_date=plan.get(key),
                         created_by=created_by,
-                        created_at=_datetime_of(date.today()),
+                        created_at=_datetime_of(today_business()),
                     )
                 )
             await session.flush()
@@ -179,7 +182,7 @@ async def ensure_batch_node(
         node=key,
         planned_date=planned_date,
         created_by=created_by,
-        created_at=_datetime_of(date.today()),
+        created_at=_datetime_of(today_business()),
     )
     session.add(node)
     await session.flush()
@@ -278,7 +281,7 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
     """
     from app.modules.notification import service as notification_service
 
-    today = date.today()
+    today = today_business()
     rows = list(
         (
             await session.execute(
@@ -373,7 +376,7 @@ async def notify_overdue_batches(session: AsyncSession) -> int:
     from app.modules.notification import service as notification_service
     from app.modules.order.model import OrderShipmentBatch
 
-    today = date.today()
+    today = today_business()
     rows = list(
         (
             await session.execute(
