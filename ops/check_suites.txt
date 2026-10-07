@@ -193,5 +193,10 @@ check_master_confirmed_empty_value
 # **真冻结业务时钟**（替掉 core/timebase 读的那个 datetime），验的是真实调用链；
 # 展示时间还会在服务器 TZ=UTC 与 Asia/Shanghai 下各跑一遍，要求结果相同。
 check_business_time_edges
+# 回收站（2026-10-07 第一版）：删掉的线索/产品/SKU 能在回收站看到并捡回来；
+# 恢复产品会连带恢复它名下的 SKU；SKU 的产品还在回收站时不许单独恢复；
+# 客户只读（被合并的标出「并入了谁」，且**没有**恢复接口）；能看列表 ≠ 能恢复。
+# 自造线索/产品/SKU/客户并自己清干净（含删除与恢复留下的审计行），与前后套件无耦合。
+check_recycle_bin
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

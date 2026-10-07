@@ -15,6 +15,7 @@ import {
   IconCheckList,
   IconComment,
   IconCreditCard,
+  IconDelete,
   IconFile,
   IconFilter,
   IconFolder,
@@ -103,6 +104,16 @@ export const MENU_GROUPS: MenuGroup[] = [
         ready: true,
         // 各分析接口的权限不同，任一可看即给入口
         permission: ['customer:view', 'opportunity:view', 'quote:view', 'payment:view', 'product:view'],
+      },
+      // 回收站：三块（线索/产品/客户）集中在一个页面。任一业务模块可看即给入口，
+      // 页面内部再按各自权限决定显示哪几块（与"数据分析"同一套写法）。
+      {
+        key: 'recycle-bin',
+        path: '/recycle-bin',
+        label: '回收站',
+        icon: IconDelete,
+        ready: true,
+        permission: ['lead:view', 'product:view', 'customer:view'],
       },
     ],
   },

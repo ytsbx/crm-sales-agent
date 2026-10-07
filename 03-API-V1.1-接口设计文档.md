@@ -282,6 +282,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `GET /products/{id}`
 - `PATCH /products/{id}`
 - `DELETE /products/{id}`
+- `POST /products/{id}/restore`（从回收站恢复，连带恢复其名下的 SKU；详见 #42）
 - `GET /products/{id}/skus`
 - `GET /products/{id}/files`
 - `POST /products/{id}/files`
@@ -298,6 +299,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `GET /skus/{id}`
 - `PATCH /skus/{id}`
 - `DELETE /skus/{id}`
+- `POST /skus/{id}/restore`（从回收站恢复；所属产品必须已恢复，详见 #42）
 - `POST /skus/{id}/enable`
 - `POST /skus/{id}/disable`
 - `GET /skus/{id}/costs`
@@ -1222,6 +1224,49 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /leads/batch-assign`：批量分配线索。需要 `lead:assign`。
   逐条走与单条入口**同一套范围校验**，越权的那条按"无权分配"跳过并给出**与单条一致的 code（40302）**，
   且**不改动任何数据**。每条包在 SAVEPOINT 里，单条失败不会留下"历史写了、负责人没改"的半截状态。
+
+---
+
+# 42. 回收站（2026-10-07 第一版）
+
+> 跨业务对象的"看被删的 + 捡回来"。三个分区集中在一个页面（线索 / 产品 / 客户），
+> **客户只做看** —— 不给恢复按钮，只给"跳到合并后那个客户"的链接。
+> 清单只回**被软删**的行；"谁看得见"沿用各模块自己的数据范围，不另立一套口径。
+
+## 42.1 清单（都支持 `page` / `page_size`，真分页）
+
+- `GET /recycle-bin/leads`：被删的线索。需要 `lead:view`。
+  数据范围与线索列表**同一套**（含无主线索）：没有范围的人看不到别人范围内的已删线索。
+- `GET /recycle-bin/products`：被删的产品。需要 `product:view`。
+  每行带 `deleted_sku_count` —— 恢复这个产品时会一并捡回来的 SKU 条数。
+- `GET /recycle-bin/skus`：被删的 SKU。需要 `product:view`。
+  每行带 `product_deleted`（所属产品是否也在回收站里）与 `code_occupied`（编码是否被别人占着）。
+- `GET /recycle-bin/customers`：被删的客户，**只读**。需要 `customer:view`，按客户数据范围过滤。
+  被合并掉的额外带 `merged_into: {id, name}`（"并入了谁"），直接删的为 `null`。
+
+## 42.2 恢复
+
+- `POST /leads/{id}/restore`：线索（复用 #6 已有的那条）。需要 `lead:assign`。
+- `POST /products/{id}/restore`：需要 `product:manage`。**连带恢复**该产品名下被删的 SKU。
+  返回 `{restored_skus, skipped_skus}`；编码被占用的 SKU 单独跳过、在 `skipped_skus` 里给出原因，
+  不让一次冲突把整批恢复搞崩。
+- `POST /skus/{id}/restore`：需要 `product:manage`。**它所属的产品必须已经恢复** ——
+  产品还在回收站时恢复 SKU 会造出"挂在已删产品下"的孤儿，直接 **400** 让你先恢复产品。
+- **客户没有恢复接口**（这块只做看）。合并怎么还原是留痕快照的事，不在本版做。
+
+## 42.3 口径备注（写下来省得后人再踩）
+
+- **SKU 编码在库里是全局唯一索引**（`ix_skus_code`，不排除已删行），所以删掉的 SKU
+  一直占着那个编码：既不能用同码建新 SKU（会被拦成 409），**恢复时反而不会撞码**。
+  `code_occupied` 与 `skipped_skus` 是**纵深防御**，当前不会触发；一旦索引改成
+  "排除已删行"的部分索引，它们就是必要的。
+- **恢复产品为什么是"整体恢复它名下所有被删的 SKU"**：删产品时 SKU 是一起软删的
+  （避免孤儿），但库里**没有记**哪些 SKU 是被产品连坐删的、哪些是单独删的，
+  无从精确区分 —— 所以按"该产品名下所有被删的 SKU"一并恢复。
+- **客户软删只有两个来源**：`DELETE /customers/{id}`（直接删）与合并（来源客户被置删）。
+  合并那条同时把负责人清空了，于是它落进"无主"那一档 ——
+  与客户列表里公海客户的处理完全一致（这也是清单按 `apply_data_scope` 过滤而不越权的原因）。
+
 
 
 

@@ -33,6 +33,7 @@ from app.modules.product.schema import (
     SkuStopRequest,
     SkuUpdate,
 )
+from app.modules.recycle import service as recycle_svc
 
 router = APIRouter(tags=["Product"])
 
@@ -149,6 +150,50 @@ async def delete_product(
     )
     await session.commit()
     return ok(None, "产品已删除")
+
+
+@router.post("/products/{product_id}/restore")
+async def restore_product(
+    product_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """从回收站恢复产品，连带把它下面被删的 SKU 一起捡回来。
+
+    取数**带行锁**：恢复要改 `deleted_at`、还要扫一遍它名下的 SKU 逐个恢复，
+    不加锁的话"正在恢复产品"与"同时去删它的 SKU"交叉，可能留下半截状态。
+    `populate_existing=True` 不能少 —— 本会话 `expire_on_commit=False`，
+    少了它拿回来的是内存里的旧值（`deleted_at` 已经被读过），行锁等于白加。
+
+    撞码的 SKU 单独跳过、在结果里报出来（见 `recycle.service.restore_product`）。
+    """
+    row = (
+        await session.execute(
+            select(Product)
+            .where(Product.id == product_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
+
+    result = await recycle_svc.restore_product(session, row)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="restore",
+        business_type="product",
+        business_id=row.id,
+        after=result,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    skipped = len(result["skipped_skus"])
+    if skipped:
+        return ok(result, f"产品已恢复；有 {skipped} 个 SKU 因编码被占用未恢复")
+    return ok(result, "产品已恢复")
 
 
 # ---------------------------------------------------------------- SKU
@@ -311,6 +356,45 @@ async def delete_sku(
     )
     await session.commit()
     return ok(None, "SKU 已删除")
+
+
+@router.post("/skus/{sku_id}/restore")
+async def restore_sku(
+    sku_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """从回收站恢复单个 SKU。
+
+    它的产品必须**已经恢复**：产品还在回收站时恢复 SKU，等于造出一个挂在
+    已删产品下的孤儿 —— 产品列表里根本看不到它（口径见
+    `recycle.service.restore_sku`）。这种情况直接让用户先恢复产品。
+
+    同样带行锁 + `populate_existing=True`（理由见 `restore_product`）。
+    """
+    row = (
+        await session.execute(
+            select(Sku)
+            .where(Sku.id == sku_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+
+    await recycle_svc.restore_sku(session, row)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="restore",
+        business_type="sku",
+        business_id=row.id,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "SKU 已恢复")
 
 
 # ------------------- 03-API §14 §15 补齐：SKU 单条与产品子资源

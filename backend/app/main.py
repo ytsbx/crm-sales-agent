@@ -42,6 +42,7 @@ from app.modules.product.router import router as product_router
 from app.modules.product.io_router import router as product_io_router
 from app.modules.public_pool.router import router as public_pool_router
 from app.modules.quote.router import router as quote_router
+from app.modules.recycle.router import router as recycle_router
 from app.modules.sample.router import router as sample_router
 from app.modules.task.router import router as task_router
 from app.modules.timeline.router import router as timeline_router
@@ -118,6 +119,9 @@ app.include_router(pricing_router, prefix=settings.api_prefix)
 # 否则会被动态路由抢先匹配（这个坑在 /customers/export 上踩过两次）
 app.include_router(logistics_router, prefix=settings.api_prefix)
 app.include_router(quote_router, prefix=settings.api_prefix)
+# 回收站：跨模块的"看被删的 + 捡回来"。前缀独立（/recycle-bin），
+# 不会和任何 /xxx/{id} 动态路由抢匹配。
+app.include_router(recycle_router, prefix=settings.api_prefix)
 app.include_router(sample_router, prefix=settings.api_prefix)
 app.include_router(approval_router, prefix=settings.api_prefix)
 app.include_router(approval_rules_router, prefix=settings.api_prefix)  # 规则接口自带静态/动态顺序，见 rules_router 模块注释
