@@ -668,14 +668,33 @@ async def transfer_customer(
     # 中间没有窗口；报冲突时 `customer` 还一个字段都没动（下面 693 行才是第一次赋值），
     # 所以不会有"历史写了、负责人没改"这种半截状态。
     #
-    # 判据与重试那条路（`wecom/service._retry_move_crm`）**同一口径**：
-    # 客户当前**没有负责人**（在公海）不算"被别人接手" —— 那是"没人管"，
-    # 交接把它接过去并不侵害谁；只有明确挂在**另一位同事**名下时才拦。
-    if (
-        only_from_owner_id is not None
-        and customer.owner_id is not None
-        and customer.owner_id != only_from_owner_id
-    ):
+    # 判据与重试那条路（`wecom/service._retry_move_crm` 的客户分支）**同一口径**：
+    # 只要客户**已经不归这个人**就拦 —— **包括"被放回公海"**（owner_id 为空）。
+    #
+    # 曾经把公海排除在外（`and customer.owner_id is not None`），理由是"没人管、
+    # 接过去不侵害谁"。这个理由漏掉了一种真实情况（第九批复审收尾）：
+    # **主管在盘点与执行之间，主动把客户放回了公海**。放回公海不是把字段抹掉 ——
+    # 它得过履约保护检查、会写一条归属历史（见下面 704 行那段），是一次
+    # **已落库、已留痕的正规决定**。交接再把它改给接手人，等于覆盖主管刚做的安排，
+    # 而且还会多写一条"从公海被接走"的历史，把"主管刚放回去"这件事盖住。
+    #
+    # 更根本的是：这个判据本来就与 `only_from_owner_id` 自己的语义相悖 ——
+    # 参数的说明是"只对**现在仍归这个人**的客户生效"，公海客户已经不归他了。
+    #
+    # 跳过后客户留在公海，主管想给谁重新指派即可（公海本来就有认领/指派入口），
+    # 决定权还给他，不会让人无路可走。
+    #
+    # ⚠️ 报价单/订单等其他对象**没有"公海"概念**，那边的同名判据
+    # （`wecom/service._move_owner_if_still` 里的 `owner_id is not None`）保持原样：
+    # 它们的"无主"确实只是"还没分配"，不存在"被人有意识放走"这一说。
+    if only_from_owner_id is not None and customer.owner_id != only_from_owner_id:
+        if customer.owner_id is None:
+            raise AppError(
+                ErrorCode.VERSION_CONFLICT,
+                f"客户「{customer.name}」已被放回公海，不在这次交接范围内。"
+                "已按这次调整保留在公海，未做改动",
+                409,
+            )
         raise AppError(
             ErrorCode.VERSION_CONFLICT,
             f"客户「{customer.name}」当前的负责人已经不是原负责人了，"

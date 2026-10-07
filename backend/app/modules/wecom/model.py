@@ -221,6 +221,10 @@ WECOM_OPEN_STATUSES = ("pending", "failed")
 TRANSFER_SKIP_TAKEN_REASONS: frozenset[str] = frozenset(
     {
         "客户已由其他同事接手",
+        # 盘点到执行之间被主管放回公海：同样是"别人先动过这一项"，
+        # 交接主动让开。留在这里才会被标成 `crm_taken` 单独列出来
+        # （第九批复审收尾，2026-10-07）。
+        "客户已回到公海",
         "商机负责人已改，不再是离职人",
         "任务负责人已改，不再是离职人",
         "跟单责任人已改，不再是离职人",

@@ -54,6 +54,11 @@ seed 里的张三/李四不合用：李四是销售主管（本部门都看得�
     各类负责人已改）与真·无需处理（对象已不存在、本次未要求转接）不能共用一句
     「无需处理」—— 前者序列化时标 `crm_taken`，界面单独列出来；判据用的原因
     登记表与 `service.py` 的真实调用点**双向对账**（改名只改一边要能查出来）
+21. **被主管放回公海的客户也不接走**（第九批复审收尾，2026-10-07）：盘点到执行
+    之间客户被放回公海（负责人为空）—— 交接同样跳过、让它留在公海，不覆盖主管
+    刚做的调整、也不新增归属历史；原因是单独一句「客户已回到公海」，与"被别人
+    接手"分开显示。⚠️ 这条只对**客户**成立：报价单/订单等没有"公海"概念，
+    它们的"无主"确实只是"还没分配"，那边照旧可以接走
 
 跑法：
 
@@ -831,6 +836,173 @@ async def assert_handover_first_run_skips_taken_customer() -> None:
         await s.commit()
 
 
+async def assert_handover_first_run_skips_pooled_customer() -> None:
+    """离职交接**首跑**：交接跑到一半，主管把客户放回了公海 —— 必须跳过，留在公海。
+
+    第九批复审收尾（2026-10-07）。原来的判据写着"当前没有负责人不算被别人接手，
+    那是没人管、接过去不侵害谁"，于是**主管在盘点与执行之间主动把客户放回公海**的
+    这种情况会被交接重新接走 —— 覆盖掉一次刚发生、且已经留痕的归属调整，
+    还多写一条"从公海被接走"的历史把这件事盖住。
+
+    现在口径改为：只要客户**已经不归离职人**（含被放回公海）就跳过 ——
+    跳过后客户留在公海，主管想给谁重新指派即可。
+
+    **复现时序**（用行锁做到确定性，不赌时序）：
+      ① 一个**未提交**的事务把客户放回公海（owner_id 置空、pool_status=public），
+         握着客户那一行的写锁；
+      ② 启动完整交接 —— 盘点时读到的还是旧负责人，执行到时卡在客户行锁上；
+      ③ 确认交接**确实卡住**了，才提交；
+      ④ 交接继续执行：必须发现"这个客户已经不归离职人了"，记成跳过。
+
+    断言（每一条在修好之前都会红）：
+      - 客户**留在公海**（负责人仍为空），没有被交接接走；
+      - 该项的 CRM 状态是 `skipped`、原因写明"已回到公海"；
+      - **没有**新增一条客户归属历史（不留错误记录）；
+      - 成功数里**不含**这个客户，`customers_skipped` 记 1；
+      - 该跳过项被单独标成 `crm_taken`，不会混进「无需处理」。
+    """
+    from app.core.deps import CurrentUser
+    from app.modules.customer.model import Customer, CustomerOwnerHistory
+    from app.modules.user.model import User, user_roles
+    from app.modules.wecom.model import WeComSyncJob, WeComTransferItem
+
+    stamp = f"{STAMP}c"
+    async with SessionLocal() as s:
+        admin = (
+            await s.execute(select(User).where(User.username == "admin"))
+        ).scalars().first()
+        dept_id = (
+            await s.execute(text("select id from departments order by id limit 1"))
+        ).scalar_one_or_none()
+        role_id = (
+            await s.execute(text("select id from roles where code = 'salesperson'"))
+        ).scalar_one()
+
+        def make_user(tag: str, label: str) -> User:
+            return User(
+                username=f"{PREFIX.lower()}_{tag}_{stamp}", name=f"{PREFIX}{label}-{stamp}",
+                password_hash=hash_password(PASSWORD), status="active",
+                department_id=dept_id,
+            )
+
+        # 这一段单独造账号：完整交领会把离职人名下的东西**全量**扫一遍，
+        # 共用账号会把前面几段的夹具一起搬走。
+        leaver = make_user("ho3", "公海离职人")
+        taker = make_user("to3", "公海接管人")
+        s.add_all([leaver, taker])
+        await s.flush()
+        for user in (leaver, taker):
+            await s.execute(user_roles.insert().values(user_id=user.id, role_id=role_id))
+
+        customer = Customer(
+            name=f"{PREFIX}公海客户-{stamp}", owner_id=leaver.id,
+            status="active", pool_status="private", level="A",
+        )
+        s.add(customer)
+        await s.flush()
+        ids = {
+            "admin": admin.id, "leaver": leaver.id, "taker": taker.id,
+            "customer": customer.id,
+        }
+        # 必须提交：接口/另一个会话才看得到（只 flush 会话一关就回滚）。
+        await s.commit()
+
+    async def run_full_transfer() -> int:
+        """在**本进程内**跑一整条离职交接，返回任务 id。"""
+        from app.modules.wecom import client as wecom_client
+        from app.modules.wecom import service as wecom_service
+
+        original = wecom_client._client
+        wecom_client._client = _NoWeComCalls()
+        try:
+            async with SessionLocal() as s:
+                admin_user = await s.get(User, ids["admin"])
+                user = CurrentUser(admin_user, {"wecom:manage"}, ["admin"], "all")
+                job = await wecom_service.transfer_relations(
+                    s,
+                    user=user,
+                    handover_user_id=ids["leaver"],
+                    takeover_user_id=ids["taker"],
+                    # 这份夹具没有企微关系，整条企微侧无事可做
+                    transfer_wecom=False,
+                )
+                job_id = job.id
+                await s.commit()
+            return job_id
+        finally:
+            wecom_client._client = original
+
+    async with SessionLocal() as holder:
+        # ① 未提交：主管把客户放回公海（握着客户那一行的写锁）
+        await holder.execute(
+            text("update customers set owner_id = null, pool_status = 'public' where id = :i"),
+            {"i": ids["customer"]},
+        )
+        # ② 启动完整交接；它会卡在客户行锁上
+        running = asyncio.create_task(run_full_transfer())
+        blocked = await _wait_until_locked("customers")
+        # ③ 确认卡住之后再放行
+        await holder.commit()
+        job_id = await asyncio.wait_for(running, timeout=60)
+
+    check_true("并发复现有效：交接确实卡在了被放回公海的那行客户上", blocked,
+               f"观测到「等行锁的后端」={blocked}")
+
+    async with SessionLocal() as s:
+        owner = (await s.get(Customer, ids["customer"])).owner_id
+        history = (
+            await s.execute(
+                select(func.count()).select_from(CustomerOwnerHistory).where(
+                    CustomerOwnerHistory.customer_id == ids["customer"]
+                )
+            )
+        ).scalar_one()
+        customer_item = (
+            await s.execute(
+                select(WeComTransferItem).where(
+                    WeComTransferItem.job_id == job_id,
+                    WeComTransferItem.kind == "customer",
+                    WeComTransferItem.business_id == ids["customer"],
+                )
+            )
+        ).scalars().one()
+        job = await s.get(WeComSyncJob, job_id)
+        detail = dict(job.detail or {})
+        success_count = job.success_count
+        customer_status, customer_error = customer_item.crm_status, customer_item.crm_error
+        # 界面拿到的就是这一份（`serialize_transfer_item`）—— 判定要在下发的形态上做
+        from app.modules.wecom.service import serialize_transfer_item
+
+        customer_payload = serialize_transfer_item(customer_item)
+
+    check("客户**留在了公海**（没有被交接接走）", owner, None)
+    check("交接项记成「跳过」而不是「已交接」", customer_status, "skipped")
+    check_true("跳过原因说清了是「已回到公海」",
+               "回到公海" in (customer_error or ""), customer_error or "")
+    check("跳过时**没有**新增客户归属历史（不留错误记录）", history, 0)
+    check("客户分类统计按实际结果：成功 0 个、跳过 1 个",
+          (detail.get("customers"), detail.get("customers_skipped")), (0, 1))
+    check("成功数只算真正改掉的项（被跳过的那一项不计进去）", success_count, 0)
+    check_true("该跳过项被单独标成「已被他人先动过」（crm_taken），不再混进「无需处理」",
+               customer_payload.get("crm_taken") is True,
+               f"crm_taken={customer_payload.get('crm_taken')!r}")
+
+    # 收尾：这段夹具自己删掉（全局 cleanup 也会按前缀兜底）
+    async with SessionLocal() as s:
+        await s.execute(
+            text("delete from wecom_transfer_items where job_id = :j"), {"j": job_id}
+        )
+        await s.execute(text("delete from wecom_sync_jobs where id = :j"), {"j": job_id})
+        await s.execute(text("delete from customer_owner_history where customer_id = :c"),
+                        {"c": ids["customer"]})
+        await s.execute(text("delete from customers where id = :c"), {"c": ids["customer"]})
+        await s.execute(text("delete from user_roles where user_id in (:a, :b)"),
+                        {"a": ids["leaver"], "b": ids["taker"]})
+        await s.execute(text("delete from users where id in (:a, :b)"),
+                        {"a": ids["leaver"], "b": ids["taker"]})
+        await s.commit()
+
+
 def assert_skip_taken_marking() -> None:
     """「跳过」要分清两种：**对象已被别人先动过** vs **本来就不用管**。
 
@@ -889,10 +1061,27 @@ def assert_skip_taken_marking() -> None:
         status, error = args[2], args[3]
         if not (isinstance(status, ast.Constant) and status.value == "skipped"):
             continue
-        if not (isinstance(error, ast.Constant) and isinstance(error.value, str)):
-            continue
-        if "已改，不再是离职人" in error.value or "已由其他同事接手" in error.value:
-            marked.add(error.value)
+        # 第 4 个参数不一定是个直接量：首跑里"被同事接手 / 已回到公海"写成了
+        # 三元表达式（`"客户已回到公海" if ... else "客户已由其他同事接手"`），
+        # 只认 `ast.Constant` 会把首跑那一条整个漏掉（第九批复审收尾发现）。
+        # 两个分支都要收进来。
+        values: list[str] = []
+        pending: list[ast.expr] = [error]
+        while pending:
+            node_expr = pending.pop()
+            if isinstance(node_expr, ast.Constant) and isinstance(node_expr.value, str):
+                values.append(node_expr.value)
+            elif isinstance(node_expr, ast.IfExp):
+                pending.extend((node_expr.body, node_expr.orelse))
+        # ⚠️ 新增"被别人先动过"这类跳过原因时，登记表、service.py 的调用点，
+        #    **以及下面这串子串**三处要同步，否则对账会红。
+        for value in values:
+            if (
+                "已改，不再是离职人" in value
+                or "已由其他同事接手" in value
+                or "已回到公海" in value
+            ):
+                marked.add(value)
 
     check("「被别人先动过」的原因：登记表与 service.py 的真实调用点完全一致",
           sorted(marked), sorted(TRANSFER_SKIP_TAKEN_REASONS))
@@ -999,6 +1188,10 @@ async def main() -> None:
     #     调**完整** transfer_relations()：前面第 8 段只覆盖了搬运辅助函数，
     #     客户那一格没被照到，正是这次复验露出来的缺口。
     await assert_handover_first_run_skips_taken_customer()
+
+    # ── 9b) 首跑同样跳过"已被放回公海"的客户（第九批复审收尾，2026-10-07）──
+    #     与 9) 只差一处：并发进来的是"被主管放回公海"而不是"被同事接走"。
+    await assert_handover_first_run_skips_pooled_customer()
 
     # ── 10) 「跳过」要分清"被同事先动过"与"本来就不用管" ─────────────────
     print("\n── 10) 跳过的分类（crm_taken）与原因登记表对账")

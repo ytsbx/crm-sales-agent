@@ -1095,10 +1095,22 @@ async def transfer_relations(
                 move_documents=False,
             )
         except AppError as error:
-            # 只认"已被别人接手"这一种冲突（40902）；别的错照旧往外抛
+            # 只认"这一项已经不在交接范围内了"这一种冲突（40902）；别的错照旧往外抛
             if error.code != ErrorCode.VERSION_CONFLICT:
                 raise
-            _mark_crm("customer", customer_id, "skipped", "客户已由其他同事接手")
+            # 分清两种情况（第九批复审收尾，2026-10-07）：被同事接手 vs 被放回公海。
+            # 两者都是"别人先动了这一项、交接主动让开"，但排查时要能一眼分辨。
+            #
+            # `customer` 就是 `transfer_customer` 在客户行锁内用 `populate_existing`
+            # 刷新过的**同一个对象**（同会话 + 同主键，那边注释写过），而报冲突发生在
+            # 任何写入之前、也没有 rollback —— 所以这里读到的是锁内的最新归属：
+            # 为空就是被放回了公海。
+            _mark_crm(
+                "customer",
+                customer_id,
+                "skipped",
+                "客户已回到公海" if customer.owner_id is None else "客户已由其他同事接手",
+            )
             customers_skipped += 1
             continue
         _mark_crm("customer", customer_id, "moved")
@@ -1641,11 +1653,11 @@ async def _retry_move_crm(
     from app.modules.order.model import OrderDraft, SalesOrder
     from app.modules.quote.model import Quote
 
-    def _conflict(label: str) -> AppError:
+    def _conflict(label: str, detail: str = "可能已被重新分配") -> AppError:
         return AppError(
             ErrorCode.VERSION_CONFLICT,
             f"{label}当前的负责人已经不是「{handover.name}」，"
-            "不在这次交接范围内了（可能已被重新分配）。"
+            f"不在这次交接范围内了（{detail}）。"
             "请重新发起交接，不要直接覆盖",
             409,
         )
@@ -1672,8 +1684,14 @@ async def _retry_move_crm(
         customer = await _lock_business_row(session, Customer, item.business_id)
         if customer is None or customer.deleted_at is not None:
             return False
-        if customer.owner_id is not None and customer.owner_id != handover.id:
-            raise _conflict(f"客户「{customer.name}」")
+        if customer.owner_id != handover.id:
+            # 公海（owner_id 为空）也算"已不归离职人"：主管把客户放回公海是过得去
+            # 履约保护、会留痕的正规动作，交接不再把它接走 —— 与
+            # `customer_service.transfer_customer` 里那条判断同一口径（第九批复审收尾）。
+            raise _conflict(
+                f"客户「{customer.name}」",
+                "已被放回公海" if customer.owner_id is None else "可能已被重新分配",
+            )
         await customer_service.transfer_customer(
             session, _system_user(handover), customer, owner,
             f"离职继承重试：{handover.name} → {item.to_owner_name or ''}",
