@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>自测：按需加载的局部兜底</title>
+    <script>
+      // 统计"这个页面被加载了几次"（跨刷新保留在 sessionStorage 里）。
+      // 为什么要放在这里、而不是组件里：自动刷新是在错误边界里同步触发的，
+      // 组件内的副作用不保证来得及跑，计数会漏 —— 那样就验不出"只刷一次"。
+      // 冒烟脚本会先把这个键清掉，再导航过来数。
+      try {
+        var n = Number(sessionStorage.getItem('selftest-loads') || '0') + 1
+        sessionStorage.setItem('selftest-loads', String(n))
+      } catch (e) {
+        /* 隐私模式下存不下就算了，脚本那条断言会明确报"数不到" */
+      }
+    </script>
+  </head>
+  <body>
+    <div id="selftest-root"></div>
+    <script type="module" src="/src/app/selftest/main.tsx"></script>
+  </body>
+</html>

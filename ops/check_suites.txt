@@ -188,5 +188,10 @@ check_customer_handover_documents
 # 反例：确认规格为空 → 本地后填新规格 → 明细曾被回退成新值、且照样正式发送。
 # 同时钉住：合法空规格不误拦、不一致时拦发送且文件只出草稿、新确认版本不影响旧件。
 check_master_confirmed_empty_value
+# 业务时间边界（第九批复审 §9.10 的四处遗漏）：合同模板/业务文件模板的 {{today}}、
+# 成本失效入口写入的截止日期、统计明细与时间线的展示时间、导入的「未来日期」判断。
+# **真冻结业务时钟**（替掉 core/timebase 读的那个 datetime），验的是真实调用链；
+# 展示时间还会在服务器 TZ=UTC 与 Asia/Shanghai 下各跑一遍，要求结果相同。
+check_business_time_edges
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

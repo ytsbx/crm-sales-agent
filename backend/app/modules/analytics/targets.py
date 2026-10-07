@@ -21,7 +21,7 @@ from app.core.data_scope import department_member_ids, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 # 业务时间基准（第九批 §9.10）：SQL 侧归年/归月显式指定业务时区
-from app.core.timebase import business_month, business_year
+from app.core.timebase import business_month, business_year, to_business
 from app.modules.analytics import target_bases
 from app.modules.analytics.model import SalesTarget
 from app.modules.customer.model import Customer
@@ -844,13 +844,16 @@ def _fmt_at(at) -> str | None:
     老实现直接 `isoformat()`，界面会原样出现 `2026-01-05T10:30:00+00:00`
     ——机器格式不说，还是 UTC 表示，看着比北京时间早 8 小时（时间线那次已经吃过这个亏）。
     `date` 类（如发货日）保持 `YYYY-MM-DD` 不变。
+
+    ⚠️ 第九批复审 §9.10 又抓到一个：中间那版用的是**无参** `astimezone()` ——
+    它转到的是**服务器本地时区**，宿主机部署成 UTC 时，明细里就会出现
+    「归属月份已按北京时间算对、时间点却还停在上一年」的自相矛盾。
+    现在统一走 `to_business()`（唯一基准在 `core/timebase.py`），换环境结果不变。
     """
     if at is None:
         return None
     if isinstance(at, datetime):
-        if at.tzinfo is None:
-            at = at.replace(tzinfo=UTC)
-        return at.astimezone().strftime("%Y-%m-%d %H:%M")
+        return to_business(at).strftime("%Y-%m-%d %H:%M")
     if hasattr(at, "isoformat"):
         return at.isoformat()
     return str(at)

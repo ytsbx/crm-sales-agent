@@ -106,7 +106,9 @@ def render_template(
         value: str | None = None
 
         if token == "today":
-            value = datetime.now(UTC).date().isoformat()
+            # 业务日期（第九批复审 §9.10）：`datetime.now(UTC).date()` 在北京时间
+            # 凌晨 0-8 点会算成**前一天** —— 凌晨生成的合同正文日期就落后一天。
+            value = today_business().isoformat()
         elif token.startswith("extra."):
             key = token[len("extra."):].strip()
             if extra.get(key, "").strip():

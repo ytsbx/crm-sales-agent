@@ -66,6 +66,17 @@ const OUT_DIR = process.env.SMOKE_OUT ?? join(tmpdir(), 'crm-smoke')
 const PROFILE_DIR = join(tmpdir(), `crm-smoke-profile-${CDP_PORT}`)
 const FIXTURES_ENABLED = process.env.SMOKE_ENABLE_FIXTURES === '1'
 
+/**
+ * 自测页（`/selftest-lazy-region.html`）会**故意**制造"代码块取不到"的失败
+ * （`/missing-region.js`、`/missing-page.js`）—— 那正是它要验的场景。
+ * React 会把错误边界接住的错误照样 `console.error` 出来，于是这些**预期输出**
+ * 会被"控制台报错"这条检查当成产品缺陷。
+ *
+ * 只放过**带这两个标记**的报错：自测页上真出别的错、或别的页面出任何错，
+ * 照样会被抓到（不要图省事按"当前页是自测页"整页跳过 —— 那会把真问题一起放过去）。
+ */
+const EXPECTED_SELFTEST_ERRORS = /\/missing-(region|page)\.js/
+
 function assertSafeTargets() {
   const isLoopback = (value, label) => {
     let hostname
@@ -438,6 +449,118 @@ async function waitForText(client, text, timeoutMs = 8000) {
   return false
 }
 
+/** 往一个受控输入框里填值（Semi 受控组件：直接改 .value 不触发，得走原生 setter）。 */
+async function fillInput(client, selector, value) {
+  const result = await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      set.call(el, ${JSON.stringify(value)});
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return el.value;
+    })()`,
+    returnByValue: true,
+  })
+  return result.result.value
+}
+
+/**
+ * 自测页：页面内「按需加载的一小块」失败时，**不能把整页连表单一起顶掉**
+ * （第九批复审 §9.11 的第二条）。
+ *
+ * 这里**必须断言输入框里的值还在** —— 只断言"没有整页刷新"是不够的：
+ * 修之前确实不刷新了，但错误边界把整页换成了提示，表单连同值一起被卸载，
+ * 用户填的东西在点「重新加载」之前就已经没了。所以判据是"值还在不在"，
+ * 不是"刷没刷新"。
+ *
+ * 顺带验路由级那条老口径没被破坏：**首次**加载失败仍自动刷新一次，但只刷一次。
+ */
+async function checkLazyRegionSelfTest(client, problems) {
+  await client.send('Runtime.evaluate', {
+    expression:
+      "try { sessionStorage.removeItem('selftest-loads'); sessionStorage.removeItem('crm-chunk-reload:/selftest-lazy-region.html'); } catch (e) {}",
+  })
+  await client.send('Page.navigate', { url: `${APP_BASE}/selftest-lazy-region.html` })
+  if (!await waitForText(client, '未保存的内容', 15000)) {
+    problems.push('自测页：打不开（第二个入口没被 vite 服务？）')
+    return
+  }
+
+  // ① 填一段"未保存的内容"
+  const typed = await fillInput(client, '#selftest-name', '王五-填了一半')
+  if (typed !== '王五-填了一半') {
+    problems.push('自测页：没法往输入框里填内容')
+    return
+  }
+
+  // ② 让那一块去加载 —— 它第一次必定取不到代码
+  await clickByText(client, '让那一块去加载')
+  if (!await waitForText(client, '没能加载出来', 8000)) {
+    problems.push('自测页：局部加载失败没有提示（局部兜底没生效）')
+    return
+  }
+
+  // ③ 核心断言：表单还在、值没丢、整页没被替换
+  const survived = await client.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      formStillThere: Boolean(document.querySelector('#selftest-name')),
+      value: document.querySelector('#selftest-name')?.value ?? null,
+      pageKept: document.body.innerText.includes('按需加载区域的局部兜底'),
+      regionExplains: document.body.innerText.includes('都还在'),
+    })`,
+    returnByValue: true,
+  })
+  const state = JSON.parse(survived.result.value)
+  if (!state.formStillThere || state.value !== '王五-填了一半') {
+    problems.push(
+      `自测页：局部资源失败把表单弄丢了（输入框在=${state.formStillThere}，值=${state.value}）`,
+    )
+  }
+  if (!state.pageKept) problems.push('自测页：局部失败把整页替换掉了')
+  if (!state.regionExplains) problems.push('自测页：局部失败没有说清「其他内容还在」')
+
+  // ④ 局部重试：只把那一块重新拉一次
+  await clickByText(client, '重新加载这一块')
+  if (!await waitForText(client, '这一块已经加载出来了', 8000)) {
+    problems.push('自测页：局部重试没有把那一块加载出来')
+  }
+
+  // ⑤ 重试之后继续填写、提交都要正常
+  if (await fillInput(client, '#selftest-name', '李四-重试后') !== '李四-重试后') {
+    problems.push('自测页：局部失败之后输入框不能用了')
+  } else if (!await clickByText(client, '提交') || !await waitForText(client, '已提交：李四-重试后', 5000)) {
+    problems.push('自测页：局部失败之后提交结果不对')
+  }
+
+  // ⑥ 首次加载失败：自动刷新一次就够，绝不无限刷新
+  await client.send('Runtime.evaluate', {
+    expression:
+      "try { sessionStorage.removeItem('selftest-loads'); sessionStorage.removeItem('crm-chunk-reload:/selftest-lazy-region.html'); } catch (e) {}",
+  })
+  await client.send('Page.navigate', { url: `${APP_BASE}/selftest-lazy-region.html?fail=1` })
+  await sleep(4000)
+  const loads = await client.send('Runtime.evaluate', {
+    expression: "Number(sessionStorage.getItem('selftest-loads') || '0')",
+    returnByValue: true,
+  })
+  if (loads.result.value !== 2) {
+    problems.push(
+      `自测页：首次加载失败的自动刷新次数不对（应为 2 次页面加载，实际 ${loads.result.value}）`,
+    )
+  }
+  if (!await waitForText(client, '重新加载', 8000)) {
+    problems.push('自测页：首次加载失败没有给出可点的重新加载入口')
+  }
+  if (!await waitForText(client, '没有被提交', 5000)) {
+    problems.push('自测页：整页刷新前没有提示未保存内容的影响')
+  }
+
+  const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT_DIR, '55-lazy-region-boundary.png'), Buffer.from(shot.data, 'base64'))
+  console.log(`✓ [交互] /selftest-lazy-region.html + 局部资源失败 → ${join(OUT_DIR, '55-lazy-region-boundary.png')}`)
+}
+
 async function apiLogin() {
   const response = await fetch(`${API_BASE}/api/v1/auth/login`, {
     method: 'POST',
@@ -651,12 +774,16 @@ async function main() {
 
     client.on((message) => {
       if (message.method === 'Runtime.exceptionThrown') {
-        problems.push(`未捕获异常：${message.params.exceptionDetails.text}`)
+        const text = message.params.exceptionDetails.text ?? ''
+        if (!EXPECTED_SELFTEST_ERRORS.test(text)) {
+          problems.push(`未捕获异常：${text}`)
+        }
       }
       if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
-        problems.push(
-          `控制台报错：${message.params.args.map((a) => a.value ?? a.description).join(' ')}`,
-        )
+        const text = message.params.args.map((a) => a.value ?? a.description).join(' ')
+        if (!EXPECTED_SELFTEST_ERRORS.test(text)) {
+          problems.push(`控制台报错：${text}`)
+        }
       }
     })
 
@@ -1445,6 +1572,9 @@ async function main() {
       }
 
     }
+
+    // 自测页：页面内「按需加载的一块」失败时不能把整页连表单一起顶掉（第九批复审 §9.11）
+    await checkLazyRegionSelfTest(client, problems)
 
     if (problems.length > 0) {
       console.log('\n发现前端运行时报错：')

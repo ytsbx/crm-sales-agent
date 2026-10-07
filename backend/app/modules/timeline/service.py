@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import AuditLog
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.timebase import to_business
 from app.modules.customer.model import CustomerOwnerHistory
 from app.modules.followup.model import FollowUp
 from app.modules.followup.schema import EXEMPTION_LABELS
@@ -348,12 +349,14 @@ def _human_time(value: datetime) -> str:
 
     老版本直接 `isoformat()`，界面上就出现 `2026-10-21T02:00:26+00:00`：
     机器格式不说，库里存的是 +08 的 10:00，isoformat 输出的是 UTC 表示，
-    看着像早了 8 小时。项目没有统一时区配置（其余地方直接用系统本地时间），
-    这里按同一惯例 `astimezone()` 转到本地再格式化。
+    看着像早了 8 小时。
+
+    ⚠️ 中间那版改成**无参** `astimezone()` —— 那是**服务器本地时区**：
+    宿主机部署成 UTC 时，同一条记录在这里显示的时间点会跟别处不一样
+    （第九批复审 §9.10 实测）。现在走 `core/timebase.to_business()`，
+    与统计明细、归期、业务「今天」同一基准，换环境结果不变。
     """
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.astimezone().strftime("%Y-%m-%d %H:%M")
+    return to_business(value).strftime("%Y-%m-%d %H:%M")
 
 
 def _audit_detail(row: AuditLog, names: dict[int, str] | None = None) -> str | None:

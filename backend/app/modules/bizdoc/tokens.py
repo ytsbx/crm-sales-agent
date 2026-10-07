@@ -18,8 +18,9 @@
 """
 
 import re
-from datetime import UTC, datetime
 from typing import Any, Mapping
+
+from app.core.timebase import today_business
 
 #: 模板语法。与 `_fill_tokens` 的既有实现保持同一个正则（含 `{{ a.b }}` 里的空格）。
 TOKEN_PATTERN = re.compile(r"\{\{([^}]+)\}\}")
@@ -167,7 +168,9 @@ def resolve_tokens(
     def _replace(match: "re.Match[str]") -> str:
         token = match.group(1).strip()
         if token == "today":
-            return datetime.now(UTC).date().isoformat()
+            # 业务日期（第九批复审 §9.10）：与合同模板同一个入口口径，
+            # 用 `today_business()` 而不是 UTC 的今天。
+            return today_business().isoformat()
         if token.startswith(EXTRA_PREFIX):
             key = token[len(EXTRA_PREFIX):].strip()
             if key in extra and extra[key] is not None:

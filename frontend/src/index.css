@@ -648,6 +648,40 @@ a:not([href]) {
   color: var(--crm-text-3);
 }
 
+/* 页面内「按需加载的一小块」的三态（见 shared/components/LazyRegion.tsx）。
+   刻意做得像"页面上的一块"而不是"整页报错"：它就是**局部**的，
+   提示语也要让用户看出"别处没坏、不用整页刷新"。 */
+.lazy-region-loading {
+  padding: 24px;
+  text-align: center;
+  color: var(--crm-text-3);
+  font-size: 13px;
+  background: var(--crm-surface-low);
+  border-radius: var(--crm-radius);
+}
+
+.lazy-region-error {
+  padding: 20px;
+  border: 1px solid var(--crm-warning-soft);
+  border-radius: var(--crm-radius);
+  background: var(--crm-surface);
+  display: grid;
+  gap: 8px;
+}
+
+.lazy-region-hint {
+  color: var(--crm-text-3);
+  font-size: 12px;
+}
+
+.lazy-region-ok {
+  padding: 24px;
+  text-align: center;
+  color: var(--crm-success);
+  background: var(--crm-surface-low);
+  border-radius: var(--crm-radius);
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

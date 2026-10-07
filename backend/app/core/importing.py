@@ -50,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppError, ErrorCode
+from app.core.timebase import today_business
 
 #: 行结果分类。预览快照与正式执行用同一套码，才能逐行比对"结论变没变"。
 OUTCOME_CREATED = "created"
@@ -218,7 +219,7 @@ class RowErrors:
         if parsed is None:
             self.add(f"{field}格式应为 YYYY-MM-DD（收到 {text!r}）")
             return None
-        if not allow_future and parsed > datetime.now(UTC).date():
+        if not allow_future and parsed > today_business():
             self.add(f"{field}不能是未来日期（收到 {text}）")
             return None
         if not_before is not None and parsed < not_before:
