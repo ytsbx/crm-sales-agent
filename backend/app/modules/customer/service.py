@@ -594,8 +594,13 @@ async def transfer_customer(
     only_from_owner_id: int | None = None,
     default_reason: str | None = None,
     move_documents: bool = True,
-) -> None:
+) -> dict:
     """变更客户负责人；new_owner_id 为空表示放入公海。
+
+    返回**这次单据跟着走的结果**（`customer/documents.empty_result()` 的形状：
+    `moved` / `skipped` / `moved_total` / `skipped_total` / `skipped_labels`）；
+    没有可搬的（放公海、离职交接、负责人没变）返回空结果。`skipped` 是并发下
+    "已经被同事接走、因此留在同事手里"的那些 —— 接口要把它如实报给操作者。
 
     ⚠️ `reason` 是**调用方给的原始原因**，`default_reason` 只在它为空时用于
     归属历史（让档案里读起来像句人话，比如「放入公海」）。
@@ -741,12 +746,13 @@ async def transfer_customer(
             # 有人接走时一并接过来，否则新人还是看不到历史。
             source_owner_id = await _previous_owner_from_history(session, customer.id)
         if source_owner_id is not None and source_owner_id != new_owner_id:
-            await documents_service.reassign_customer_documents(
+            return await documents_service.reassign_customer_documents(
                 session,
                 customer_id=customer.id,
                 from_owner_id=source_owner_id,
                 to_owner_id=new_owner_id,
             )
+    return documents_service.empty_result()
 
 
 async def _previous_owner_from_history(

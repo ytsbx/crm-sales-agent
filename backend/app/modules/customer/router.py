@@ -237,6 +237,22 @@ async def delete_customer(
     return ok(None, "客户已删除")
 
 
+def _transfer_message(base: str, documents: dict) -> str:
+    """转移/分配成功后那句话：把"有单据被同事先接走"如实说出来。
+
+    为什么要有：客户转过去之后，名下的单据也会跟着走（`documents.py`）。但如果
+    某张单据**恰好在同一瞬间**被别的同事先接走了，它会留在那位同事手里 ——
+    这是对的（谁先接的归谁），可操作者看到"客户名下少了一张单据"会莫名其妙。
+    所以这里把张数与类别一并讲清楚（主人口径 2026-10-07：要提示，不要静默）。
+    """
+    skipped = documents.get("skipped_total") or 0
+    if not skipped:
+        return base
+    kinds = "、".join(documents.get("skipped_labels") or [])
+    detail = f"（{kinds}）" if kinds else ""
+    return f"{base}；有 {skipped} 张单据{detail}因已被其他同事接手，未跟着转"
+
+
 @router.post("/customers/{customer_id}/transfer")
 async def transfer_customer(
     customer_id: int,
@@ -247,7 +263,9 @@ async def transfer_customer(
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
     before = svc.serialize_customer(customer)
-    await svc.transfer_customer(session, user, customer, payload.owner_id, payload.reason)
+    documents = await svc.transfer_customer(
+        session, user, customer, payload.owner_id, payload.reason
+    )
     await session.flush()
     # 「转给某个人」与「放回公海」是两种动作，审计分开记（第六批审查第 1 条）：
     # 事后要能看出这个客户是被谁、从哪个入口放回公海的，而不是笼统一条 transfer。
@@ -263,7 +281,11 @@ async def transfer_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "已放入公海" if to_pool else "负责人已变更")
+    data = svc.serialize_customer(customer)
+    # 「哪些单据跟着走了、有没有被同事先接走的」一并回给前端（§并发提示）：
+    # 统一客户端只把 `data` 交给页面，所以这项必须放在 data 里，不能只写在 message。
+    data["document_transfer"] = documents
+    return ok(data, _transfer_message("已放入公海" if to_pool else "负责人已变更", documents))
 
 
 @router.post("/customers/{customer_id}/release-to-pool")
@@ -677,7 +699,7 @@ async def assign_customer(
     """
     customer = await svc.get_visible_customer(session, user, customer_id)
     before = svc.serialize_customer(customer)
-    await svc.transfer_customer(
+    documents = await svc.transfer_customer(
         session, user, customer, payload.owner_id, payload.reason,
         # 原始 reason 参与保护校验，默认文案只进归属历史
         default_reason="主管分配",
@@ -696,7 +718,9 @@ async def assign_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "已放入公海" if to_pool else "已分配")
+    data = svc.serialize_customer(customer)
+    data["document_transfer"] = documents  # 同 transfer：并发的如实交代要回给页面
+    return ok(data, _transfer_message("已放入公海" if to_pool else "已分配", documents))
 
 
 # ---------------------------------------------------------------- 联系人

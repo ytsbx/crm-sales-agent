@@ -184,8 +184,20 @@ export default function CustomerDetailPage() {
 
   const transferMutation = useMutation({
     mutationFn: (ownerId: number | null) => transferCustomer(customerId, { owner_id: ownerId }),
-    onSuccess: () => {
-      Toast.success('负责人已变更')
+    onSuccess: (result) => {
+      // 客户名下的单据会跟着走；但**恰好被同事先接走**的那些会留在同事手里。
+      // 后端把张数与类别带了回来，这里如实提示一句 —— 否则操作者看到
+      // "客户名下怎么少了一张订单"会莫名其妙（主人口径：要提示，不要静默）。
+      const skipped = result.document_transfer?.skipped_total ?? 0
+      if (skipped > 0) {
+        const kinds = result.document_transfer?.skipped_labels ?? []
+        Toast.warning(
+          `负责人已变更；有 ${skipped} 张单据${kinds.length ? `（${kinds.join('、')}）` : ''}` +
+            '因已被其他同事接手，未跟着转',
+        )
+      } else {
+        Toast.success('负责人已变更')
+      }
       setTransferModal(false)
       invalidateCustomer()
     },

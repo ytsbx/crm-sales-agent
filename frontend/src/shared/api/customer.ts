@@ -26,6 +26,25 @@ export interface CustomerPayload {
 
 // ---------------------------------------------------------------- 子资源响应
 
+/**
+ * 转移/分配客户之后，**名下单据跟着走**的结果。
+ *
+ * 客户换负责人时，原本挂在原负责人名下的商机／打样／报价／订单草稿／订单
+ * 以及它们生成的文件会一并改到新负责人名下（后端 `customer/documents.py`）。
+ * `skipped` 是"恰好在同一瞬间被别的同事先接走、因此留在同事手里"的那些 ——
+ * 后端把张数与类别一并回给页面，用来提示操作者，而不是静默少几张。
+ */
+export interface DocumentTransfer {
+  moved: Record<string, number>
+  skipped: Record<string, number>
+  moved_total: number
+  skipped_total: number
+  skipped_labels: string[]
+}
+
+/** 转移/分配的返回：客户本体 + 这次单据跟着走的结果。 */
+export type CustomerTransferResult = Customer & { document_transfer?: DocumentTransfer }
+
 export interface CustomerOpportunity {
   id: number
   title: string
@@ -150,12 +169,12 @@ export function createContact(customerId: number, payload: Partial<Contact>) {
 }
 
 export function transferCustomer(customerId: number, payload: { owner_id: number | null; reason?: string }) {
-  return api.post<Customer>(`/customers/${customerId}/transfer`, payload)
+  return api.post<CustomerTransferResult>(`/customers/${customerId}/transfer`, payload)
 }
 
 /** 主管分配客户负责人（API §7 POST /customers/{id}/assign）。 */
 export function assignCustomer(customerId: number, payload: { owner_id: number | null; reason?: string }) {
-  return api.post<Customer>(`/customers/${customerId}/assign`, payload)
+  return api.post<CustomerTransferResult>(`/customers/${customerId}/assign`, payload)
 }
 
 // ---------------------------------------------------------------- 客户子资源（API §7）

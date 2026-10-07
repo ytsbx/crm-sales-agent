@@ -14,7 +14,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser
@@ -722,6 +722,38 @@ async def collect_transfer_scope(
     return scope
 
 
+async def _move_owner_if_still(
+    session: AsyncSession,
+    model,
+    *,
+    business_id: int,
+    field: str,
+    from_owner_id: int,
+    to_owner_id: int,
+) -> bool:
+    """把一条业务记录的负责人从离职人改成接手人，**只在该字段仍属离职人时才改**。
+
+    返回是否真的改了。
+
+    为什么是"带条件的更新"而不是"先读一眼、再赋值"：后者在并发下会覆盖别人的
+    改动（2026-10-07 复验）：一次交接跑到一半，别的同事正好把这一项接走
+    （主管重新分配、日常转移、撞单裁定都会），而我们手里那份对象是更早读到的 ——
+    直接赋值就等于把人家刚接的活又抢走一次。带上条件之后，PostgreSQL 在
+    READ COMMITTED 下拿到行锁会**重新判定条件**，发现"已经不是离职人的了"就跳过。
+
+    ⚠️ `field` 必须是模型上的**真列名**（如 `owner_id`）：本函数用它同时当判据
+    与赋值目标，两处用同一个字段，不会错位。
+    """
+    column = getattr(model, field)
+    result = await session.execute(
+        update(model)
+        .where(model.id == business_id, column == from_owner_id)
+        .values({field: to_owner_id})
+        .returning(model.id)
+    )
+    return result.scalars().first() is not None
+
+
 async def _reassign_generated_docs(
     session: AsyncSession,
     *,
@@ -745,21 +777,21 @@ async def _reassign_generated_docs(
 
     返回实际改动的张数（供测试与日志使用）。
 
+    实现是**带条件的更新**：`owner_id == handover_id` 直接进 UPDATE 的 WHERE，
+    而不是"查出来再逐张赋值" —— 后者在并发下会覆盖同事刚接手的文件
+    （同 `_move_owner_if_still` 的说明）。
+
     `field` 是 BizDoc 上指向该业务对象的字段名（如 `"order_id"`）。
     """
     from app.modules.bizdoc.model import BizDoc
 
-    documents = (
-        await session.execute(
-            select(BizDoc).where(getattr(BizDoc, field) == business_id)
-        )
-    ).scalars().all()
-    moved = 0
-    for document in documents:
-        if document.owner_id == handover_id:
-            document.owner_id = to_owner_id
-            moved += 1
-    return moved
+    result = await session.execute(
+        update(BizDoc)
+        .where(getattr(BizDoc, field) == business_id, BizDoc.owner_id == handover_id)
+        .values(owner_id=to_owner_id)
+        .returning(BizDoc.id)
+    )
+    return len(result.scalars().all())
 
 
 async def preview_transfer(
@@ -1057,7 +1089,18 @@ async def transfer_relations(
         if opportunity is None or opportunity.deleted_at is not None:
             _mark_crm("opportunity", row["business_id"], "skipped", "商机已不存在")
             continue
-        opportunity.owner_id = items[("opportunity", row["business_id"])].to_owner_id
+        if not await _move_owner_if_still(
+            session,
+            Opportunity,
+            business_id=opportunity.id,
+            field="owner_id",
+            from_owner_id=handover.id,
+            to_owner_id=items[("opportunity", row["business_id"])].to_owner_id,
+        ):
+            _mark_crm(
+                "opportunity", row["business_id"], "skipped", "商机负责人已改，不再是离职人"
+            )
+            continue
         _mark_crm("opportunity", row["business_id"], "moved")
     detail["opportunities"] = len(scope["opportunity"])
 
@@ -1067,7 +1110,18 @@ async def transfer_relations(
         if task is None:
             _mark_crm("task", row["business_id"], "skipped", "任务已不存在")
             continue
-        task.owner_id = items[("task", row["business_id"])].to_owner_id
+        if not await _move_owner_if_still(
+            session,
+            Task,
+            business_id=task.id,
+            field="owner_id",
+            from_owner_id=handover.id,
+            to_owner_id=items[("task", row["business_id"])].to_owner_id,
+        ):
+            _mark_crm(
+                "task", row["business_id"], "skipped", "任务负责人已改，不再是离职人"
+            )
+            continue
         _mark_crm("task", row["business_id"], "moved")
     detail["tasks"] = len(scope["task"])
 
@@ -1081,13 +1135,21 @@ async def transfer_relations(
         if sample is None:
             _mark_crm("sample", row["business_id"], "skipped", "打样单已不存在")
             continue
-        if sample.owner_id != handover.id:
+        sample_owner = items[("sample", row["business_id"])].to_owner_id
+        # 带条件的更新：负责人**仍是离职人**才改。并发被别人接走就跳过 ——
+        # 而且它的生成文件也不动（文件跟着跟单责任走，见下面那句注释）
+        if not await _move_owner_if_still(
+            session,
+            SampleRequest,
+            business_id=sample.id,
+            field="owner_id",
+            from_owner_id=handover.id,
+            to_owner_id=sample_owner,
+        ):
             _mark_crm(
                 "sample", row["business_id"], "skipped", "跟单责任人已改，不再是离职人"
             )
             continue
-        sample_owner = items[("sample", row["business_id"])].to_owner_id
-        sample.owner_id = sample_owner
         # 打样单**生成**的对外单据（图纸、确认单等）跟着跟单责任走（第九批 §9.4）：
         # 不迁的话，接手人点开历史原件会被 403 挡在外面。
         await _reassign_generated_docs(
@@ -1109,7 +1171,14 @@ async def transfer_relations(
                 "sample_production", row["business_id"], "skipped", "打样单已不存在"
             )
             continue
-        if sample.production_owner_id != handover.id:
+        if not await _move_owner_if_still(
+            session,
+            SampleRequest,
+            business_id=sample.id,
+            field="production_owner_id",
+            from_owner_id=handover.id,
+            to_owner_id=items[("sample_production", row["business_id"])].to_owner_id,
+        ):
             _mark_crm(
                 "sample_production",
                 row["business_id"],
@@ -1117,9 +1186,6 @@ async def transfer_relations(
                 "生产责任人已改，不再是离职人",
             )
             continue
-        sample.production_owner_id = items[
-            ("sample_production", row["business_id"])
-        ].to_owner_id
         _mark_crm("sample_production", row["business_id"], "moved")
     detail["sample_production"] = len(scope["sample_production"])
 
@@ -1133,13 +1199,19 @@ async def transfer_relations(
         if quote is None:
             _mark_crm("quote", row["business_id"], "skipped", "报价单已不存在")
             continue
-        if quote.owner_id != handover.id:
+        quote_owner = items[("quote", row["business_id"])].to_owner_id
+        if not await _move_owner_if_still(
+            session,
+            Quote,
+            business_id=quote.id,
+            field="owner_id",
+            from_owner_id=handover.id,
+            to_owner_id=quote_owner,
+        ):
             _mark_crm(
                 "quote", row["business_id"], "skipped", "报价负责人已改，不再是离职人"
             )
             continue
-        quote_owner = items[("quote", row["business_id"])].to_owner_id
-        quote.owner_id = quote_owner
         await _reassign_generated_docs(
             session,
             handover_id=handover.id,
@@ -1151,7 +1223,6 @@ async def transfer_relations(
     detail["quotes"] = len(scope["quote"])
 
     # 7) 订单草稿 + 它生成的对外单据
-    from app.modules.bizdoc.model import BizDoc
     from app.modules.order.model import OrderDraft, SalesOrder
 
     for row in scope["order_draft"]:
@@ -1159,24 +1230,29 @@ async def transfer_relations(
         if draft is None:
             _mark_crm("order_draft", row["business_id"], "skipped", "草稿已不存在")
             continue
-        if draft.owner_id != handover.id:
+        owner = items[("order_draft", row["business_id"])].to_owner_id
+        if not await _move_owner_if_still(
+            session,
+            OrderDraft,
+            business_id=draft.id,
+            field="owner_id",
+            from_owner_id=handover.id,
+            to_owner_id=owner,
+        ):
             _mark_crm(
                 "order_draft", row["business_id"], "skipped", "草稿负责人已改，不再是离职人"
             )
             continue
-        owner = items[("order_draft", row["business_id"])].to_owner_id
-        draft.owner_id = owner
-        # 草稿生成的对外单据：**逐张核对负责人**，只改原本挂在离职人名下的
-        # （第六批审查第 4 条）。此前是无条件全改给接手人 ——
-        # 那些单据如果是在职同事负责的，责任会被一起改走。
-        documents = (
-            await session.execute(
-                select(BizDoc).where(BizDoc.order_draft_id == draft.id)
-            )
-        ).scalars().all()
-        for document in documents:
-            if document.owner_id == handover.id:
-                document.owner_id = owner
+        # 草稿生成的对外单据：**只改原本挂在离职人名下的**（第六批审查第 4 条：
+        # 此前是无条件全改给接手人，在职同事负责的单据责任会被一起改走）。
+        # 与其它几处共用 `_reassign_generated_docs` —— 那里的判据也是带条件的更新。
+        await _reassign_generated_docs(
+            session,
+            handover_id=handover.id,
+            to_owner_id=owner,
+            field="order_draft_id",
+            business_id=draft.id,
+        )
         _mark_crm("order_draft", row["business_id"], "moved")
     detail["order_drafts"] = len(scope["order_draft"])
 
@@ -1190,7 +1266,18 @@ async def transfer_relations(
             _mark_crm("order", row["business_id"], "skipped", "订单已不存在")
             continue
         order_owner = items[("order", row["business_id"])].to_owner_id
-        order.owner_id = order_owner
+        # 带条件的更新：只有负责人**仍是离职人**才改。此前这里**没核对**就直接赋值，
+        # 交接跑到一半被别人接走的订单会被悄悄覆盖回接手人（同批复验的一致口径）。
+        if not await _move_owner_if_still(
+            session,
+            SalesOrder,
+            business_id=order.id,
+            field="owner_id",
+            from_owner_id=handover.id,
+            to_owner_id=order_owner,
+        ):
+            _mark_crm("order", row["business_id"], "skipped", "订单负责人已改，不再是离职人")
+            continue
         # 正式订单**生成**的对外单据（下单文件、合同生成稿）同样跟着走
         # （第九批 §9.4）：交接前生成的旧原件，接手人也要能按权限打开。
         await _reassign_generated_docs(
