@@ -70,6 +70,8 @@ def _sqlite_compat() -> None:
 def _tables(*, with_files: bool = True):
     from app.core.idempotency import RequestKey
     from app.modules.file.model import FileRecord
+    # §8.14 复审后，"生成正式件"要求明细引用的主数据快照里有印给客户的字段
+    from app.modules.product.model import SkuFieldAuthority, SkuMasterVersion
     from app.modules.settings.model import NumberSequence, NumberingRule, SystemSetting
 
     models = [
@@ -78,6 +80,8 @@ def _tables(*, with_files: bool = True):
         Contact,
         Product,
         Sku,
+        SkuFieldAuthority,
+        SkuMasterVersion,
         Quote,
         QuoteVersion,
         QuoteItem,
@@ -151,6 +155,41 @@ def isolated_file_root(tmp_path, monkeypatch):
     return root
 
 
+def _confirm_customer_facing_fields(session, sku) -> None:
+    """把"印给客户的三个字段"确认掉（§8.14 复审后，这是生成**正式件**的前置条件）。
+
+    未确认的报价只能出**草稿**对客文件；本文件的用例测的是正式件的幂等与归档，
+    所以夹具先把主数据确认掉（补夹具，不放宽规则）。
+    """
+    from app.modules.product.model import SkuFieldAuthority, SkuMasterVersion
+
+    values = {"name": sku.name, "specification": sku.specification, "unit": sku.unit}
+    for field, value in values.items():
+        session.add(
+            SkuFieldAuthority(
+                sku_id=sku.id,
+                field_name=field,
+                confirmed_version=1,
+                confirmed_value=value,
+                confirmed_by=1,
+                status="confirmed",
+                source_verified=False,
+            )
+        )
+    session.add(
+        SkuMasterVersion(
+            sku_id=sku.id,
+            version_no=1,
+            values=values,
+            source_summary={},
+            confirmed_by=1,
+            confirmed_at=datetime.now(UTC),
+            note="测试夹具：把印给客户的字段确认掉",
+        )
+    )
+    session.flush()
+
+
 def _fixture(session):
     """一条报价版本：USD、按套计价、带运费与优惠、小数数量。"""
     user = User(
@@ -182,6 +221,7 @@ def _fixture(session):
     )
     session.add(sku)
     session.flush()
+    _confirm_customer_facing_fields(session, sku)
     quote = Quote(
         quote_no="Q-DOC-1",
         customer_id=customer.id,
@@ -217,6 +257,9 @@ def _fixture(session):
             sku_code_snapshot=sku.sku_code,
             sku_name_snapshot=sku.name,
             spec_snapshot=sku.specification,
+            # §8.14 复审：明细要记"引用的那一版主数据快照"，否则生成对客文件
+            # 会判成"没有可引用的已确认主数据版本"→ 落草稿
+            master_version_no=1,
             quantity=Decimal("3.500"),
             quoted_price=Decimal("120"),
             unit_snapshot="套",

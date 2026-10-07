@@ -84,6 +84,13 @@ async def cleanup():
             f"delete from sales_order_items where order_id in {order}",
             f"delete from sales_orders where customer_id in {cust}",
             f"delete from contacts where customer_id in {cust}",
+            # §8.14 复审：夹具现在会插主数据确认与整版快照，它们**引用 skus**，
+            # 必须在删 SKU 之前先删（否则外键挡住，整个清理断在这里、
+            # 夹具留在库里被守门套件抓出来）
+            "delete from sku_master_versions where sku_id in "
+            "(select id from skus where sku_code like :sku)",
+            "delete from sku_field_authorities where sku_id in "
+            "(select id from skus where sku_code like :sku)",
             "delete from skus where sku_code like :sku",
             # 夹具还建了一个**产品**（报价单要挂在产品/SKU 上）：原来只删 SKU，
             # 产品行留在库里，最后被 check_fixture_residue 揪出来。
@@ -186,6 +193,38 @@ async def main():
         )
         s.add(sku)
         await s.flush()
+        # §8.14 复审后，生成**正式件**要求明细引用的那一版主数据快照里有
+        # 名称/规格/单位（未确认只能出草稿）。本套件测的是正式件的冻结行为，
+        # 所以夹具先把这三个字段确认掉并落一版整版快照（明细引用 version_no=1）。
+        from app.modules.product.model import SkuFieldAuthority, SkuMasterVersion  # noqa: E402
+
+        display_values = {
+            "name": sku.name,
+            "specification": sku.specification,
+            "unit": sku.unit,
+        }
+        for field, value in display_values.items():
+            s.add(
+                SkuFieldAuthority(
+                    sku_id=sku.id,
+                    field_name=field,
+                    confirmed_version=1,
+                    confirmed_value=value,
+                    status="confirmed",
+                    source_verified=False,
+                )
+            )
+        s.add(
+            SkuMasterVersion(
+                sku_id=sku.id,
+                version_no=1,
+                values=display_values,
+                source_summary={},
+                confirmed_at=datetime.now(UTC),
+                note="套件夹具：确认印给客户的三个字段",
+            )
+        )
+        await s.flush()
         quote = Quote(
             quote_no=f"{PREFIX}-Q",
             customer_id=customer.id,
@@ -227,6 +266,10 @@ async def main():
                 sku_code_snapshot=sku.sku_code,
                 sku_name_snapshot=sku.name,
                 spec_snapshot=sku.specification,
+                # §8.14 复审：明细要记"引用的那一版主数据快照"。不填的话，
+                # 生成对客文件会判成"没有可引用的已确认主数据版本"→ 落草稿，
+                # 而本套件测的是**正式件**的冻结行为。
+                master_version_no=1,
                 quantity=Decimal("7.500"),  # 小数数量
                 quoted_price=Decimal("113.3333"),
                 unit_snapshot="套",

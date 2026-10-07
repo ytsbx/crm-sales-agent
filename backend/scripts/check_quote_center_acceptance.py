@@ -96,11 +96,15 @@ def upload_csv(token, path, headers, rows, preview=False):
 
 
 def confirm_sku_master(sku_id: int) -> None:
-    """把某个 SKU 的关键字段标成「已人工确认」——§8.14 的夹具。
+    """把某个 SKU **印给客户的三个字段**（名称/规格/单位）标成「已人工确认」——§8.14 的夹具。
 
-    正式发送要求明细引用的主数据已确认（口径 2026-10-07 确认）。夹具直接写确认表，
-    等价于产品岗做过一次人工确认；走 API 得先制造外部差异，代价大且会牵动别的断言。
-    只确认 `name`、值取 SKU 的真实名称，让行为与「未确认」保持一致。
+    2026-10-07 复审后口径收紧了：正式发送要求明细**引用的那一版主数据快照**里，
+    名称/规格/单位都有确认值。原来只要求"版本号非空"，于是**只确认名称也能发出去**
+    （审查实测），所以这个夹具原来只插 `name` 一行 —— 现在它必须一次确认三个字段，
+    **并落一版整版快照**：报价明细的 `master_version_no` 指向的正是那一版。
+
+    走 API 得先制造外部差异，代价大且会牵动别的断言，所以这里直接写库，
+    等价于产品岗做过一次完整确认。
     """
     import asyncio
 
@@ -116,8 +120,37 @@ def confirm_sku_master(sku_id: int) -> None:
                         "insert into sku_field_authorities "
                         "(sku_id, field_name, source_verified, confirmed_version, "
                         " confirmed_value, status, created_at, updated_at) "
-                        "select s.id, 'name', false, 1, to_jsonb(s.name), 'confirmed', "
-                        "now(), now() from skus s where s.id = :sku"
+                        "select s.id, f.field_name, false, 1, "
+                        "       to_jsonb(jsonb_build_object("
+                        "         'name', coalesce(s.name, ''), "
+                        "         'specification', coalesce(s.specification, ''), "
+                        "         'unit', coalesce(s.unit, '')) ->> f.field_name), "
+                        "       'confirmed', now(), now() "
+                        "from skus s "
+                        "cross join (values ('name'), ('specification'), ('unit')) "
+                        "  as f(field_name) "
+                        "where s.id = :sku "
+                        "on conflict (sku_id, field_name) do update set "
+                        "  confirmed_version = 1, confirmed_value = excluded.confirmed_value, "
+                        "  status = 'confirmed', updated_at = now()"
+                    ),
+                    {"sku": sku_id},
+                )
+                await s.execute(
+                    sql_text(
+                        "insert into sku_master_versions "
+                        "(sku_id, version_no, values, source_summary, confirmed_by, "
+                        " confirmed_at, note, created_at, updated_at) "
+                        "select s.id, 1, "
+                        "       jsonb_build_object("
+                        "         'name', coalesce(s.name, ''), "
+                        "         'specification', coalesce(s.specification, ''), "
+                        "         'unit', coalesce(s.unit, '')), "
+                        "       '{}'::jsonb, NULL, now(), "
+                        "       '套件夹具：确认印给客户的三个字段', now(), now() "
+                        "from skus s where s.id = :sku "
+                        "on conflict (sku_id, version_no) do update set "
+                        "  values = excluded.values, updated_at = now()"
                     ),
                     {"sku": sku_id},
                 )
@@ -499,7 +532,11 @@ def main():
         call('POST', f'/quote-versions/{vid13}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
         call('POST', f'/quote-versions/{vid13}/submit-approval', token=zhangsan, body={})
-        call('POST', f'/quote-versions/{vid13}/mark-sent', token=zhangsan, body={})
+        _, sent_res = call('POST', f'/quote-versions/{vid13}/mark-sent', token=zhangsan, body={})
+        if sent_res.get('code') != 0:
+            # 这里以前不看返回值，于是"发送被拦"会一路传到 A13 才以"order=None"出现，
+            # 看不出真正原因。明确打出来。
+            print(f'   （mark-sent 未通过：{sent_res.get("code")} {sent_res.get("message")}）')
         _, res = call('POST', f'/opportunities/{opp_a05}/confirm-win', token=zhangsan, body={})
         first_ok = res.get('code') == 0
         order_id = (res.get('data') or {}).get('order_id')

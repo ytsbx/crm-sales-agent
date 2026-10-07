@@ -186,6 +186,11 @@ export default function QuoteDetailPage() {
       ),
     onSuccess: (updated) => {
       Toast.success('明细已保存（整版替换）')
+      // §8.14 复审：明细保存后如实提示"哪些 SKU 的主数据还没确认"
+      // （详情页另有一条常驻提示，刷新也在）
+      for (const warning of updated?.master_warnings ?? []) {
+        Toast.warning({ content: warning, duration: 8 })
+      }
       setItemsVisible(false)
       refresh()
       void queryClient.invalidateQueries({ queryKey: ['price-drift', updated?.id] })
@@ -251,6 +256,11 @@ export default function QuoteDetailPage() {
       Toast.success(
         item.approval_required ? '已改价：该明细超出你的价格权限，提交后会走审批' : '已改价',
       )
+      // §8.14 复审：改价会重算明细快照，主数据未确认的提醒要跟着出来
+      // （详情页另有一条常驻提示，不依赖这次 Toast）
+      for (const warning of item.master_warnings ?? []) {
+        Toast.warning({ content: warning, duration: 8 })
+      }
       setPriceTarget(null)
       setNewPrice('')
       refresh()
@@ -572,6 +582,31 @@ export default function QuoteDetailPage() {
           ))}
         </div>
       </DetailHeader>
+
+      {/* §8.14 复审：主数据未确认要**常驻显示** —— 不是一闪而过的 Toast。
+          刷新页面、隔天再打开、换个人来看，都该看到"这几条不能用做正式报价"。
+          数据来自版本详情接口附带的 `master_warnings`（后端按"明细引用的那一版
+          快照里有没有名称/规格/单位"算出来的）。 */}
+      {(detail.master_warnings ?? []).length > 0 && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '10px 14px',
+            borderRadius: 6,
+            background: 'var(--crm-warning-bg, #FFF7E6)',
+            border: '1px solid var(--crm-warning-border, #FFD591)',
+            fontSize: 13,
+            lineHeight: 1.8,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 2 }}>
+            这几条明细的主数据还没确认，不能用来做正式报价
+          </div>
+          {(detail.master_warnings ?? []).map((warning) => (
+            <div key={warning}>· {warning}</div>
+          ))}
+        </div>
+      )}
 
       {version.approval_status === 'pending' && (
         <div style={{ marginBottom: 16 }}>

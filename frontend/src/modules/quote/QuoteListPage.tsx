@@ -72,6 +72,12 @@ export default function QuoteListPage() {
       for (const warning of data.warnings ?? []) {
         Toast.warning({ content: warning, duration: 6 })
       }
+      // §8.14 复审：主数据未确认的提醒由后端放在**另一个字段** `master_warnings`
+      // 里（内容形如「ZX-6040 的「规格、单位」主数据尚未确认」）。原来前端只读
+      // `warnings`，这条提示等于没接上 —— 用户看不到缺什么，直到发送被拒。
+      for (const warning of data.master_warnings ?? []) {
+        Toast.warning({ content: warning, duration: 8 })
+      }
       // 这一把键已用完：再开一次表单会换成新键（两次真实报价必须是两条）
       createRequestKeyRef.current = ''
       setCreateVisible(false)

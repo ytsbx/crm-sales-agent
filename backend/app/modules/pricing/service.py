@@ -12,7 +12,7 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -57,7 +57,9 @@ def serialize_cost(cost: ProductCost, sku_code: str | None = None) -> dict:
     }
 
 
-def serialize_price_rule(rule: PriceRule, sku_code: str | None = None) -> dict:
+def serialize_price_rule(
+    rule: PriceRule, sku_code: str | None = None, *, can_see_cost: bool = True
+) -> dict:
     return {
         "id": rule.id,
         "sku_id": rule.sku_id,
@@ -67,7 +69,8 @@ def serialize_price_rule(rule: PriceRule, sku_code: str | None = None) -> dict:
         "max_qty": _f(rule.max_qty),
         "standard_price": _f(rule.standard_price),
         "guide_price": _f(rule.guide_price),
-        "minimum_price": _f(rule.minimum_price),
+        # 最低保护价按权限隐藏（§7.3 复审）：与核价/查价同一判据（`price:manage`）
+        "minimum_price": _f(rule.minimum_price) if can_see_cost else None,
         "target_margin": _f(rule.target_margin),
         "currency": rule.currency,
         "effective_from": rule.effective_from,
@@ -78,7 +81,17 @@ def serialize_price_rule(rule: PriceRule, sku_code: str | None = None) -> dict:
 
 
 def serialize_customer_price(rule: CustomerPriceRule, sku_code: str | None = None,
-                             customer_name: str | None = None) -> dict:
+                             customer_name: str | None = None, *,
+                             can_see_cost: bool = True) -> dict:
+    """客户专属价。
+
+    §7.3 复审（第三轮）：此前只有核价/查价两个接口按 `price:manage` 隐藏保护价，
+    专属价列表对"只有 `product:view`"的操作人**原样返回 `minimum_price`** ——
+    同一个字段、两个入口、两种口径。这里与那两个接口对齐。
+
+    **只隐藏保护价**：`agreed_price`（这家客户谈定的价）是销售查价真正要用的，
+    保留；价格管理权限本就该能看见全部，不受影响。
+    """
     return {
         "id": rule.id,
         "customer_id": rule.customer_id,
@@ -88,7 +101,7 @@ def serialize_customer_price(rule: CustomerPriceRule, sku_code: str | None = Non
         "min_qty": _f(rule.min_qty),
         "max_qty": _f(rule.max_qty),
         "agreed_price": _f(rule.agreed_price),
-        "minimum_price": _f(rule.minimum_price),
+        "minimum_price": _f(rule.minimum_price) if can_see_cost else None,
         "currency": rule.currency,
         "effective_from": rule.effective_from,
         "effective_to": rule.effective_to,
@@ -314,14 +327,21 @@ async def ensure_customer_in_scope_for_price(
 def customer_scope_condition(owner_ids: list[int] | None):
     """列表用的范围条件 —— 与 `ensure_customer_in_scope_for_price` **同一口径**。
 
-    `owner_ids` 为 None（管理员）表示不加条件，返回 None。
-    放在判据函数旁边是为了让两者挨着：它们一漂，列表就会列出不该列的东西。
+    `owner_ids` 为 None（管理员/财务这类全量范围）表示不加**范围**条件，
+    但**软删客户照样要排除** —— "这个客户已经删了"不是范围问题，是这条专属价
+    引用已经失效：管理员翻列表也不该看到它（指定客户查询那边本来就会拒）。
+    第一版把软删条件写在 `if owner_ids is None: return None` **后面**，
+    于是管理员这条分支整段跳过过滤，审查复现时照样能查到。
     """
+    alive = Customer.deleted_at.is_(None)
     if owner_ids is None:
-        return None
+        return alive
     # 范围内的 + 公海（无负责人）。公海客户对所有人可见，漏掉它会出现
     # "详情页能维护、列表里却查不到"这种自相矛盾。
-    return or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None))
+    return and_(
+        or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)),
+        alive,
+    )
 
 
 async def ensure_customer_price_targets(

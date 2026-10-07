@@ -540,12 +540,24 @@ def diff_preview(
         for row in sorted(set(before_map) & set(after_map), key=lambda x: int(x))
         if before_map[row] != after_map[row]
     ]
+    # 旧版令牌（没有原值指纹）不能**静默降级**（§7.6 复审第三轮）。
+    #
+    # 原来只比"两边都有指纹"的行，于是旧格式令牌的更新行被整条跳过 ——
+    # 实测拿旧令牌确认，成本从 200 被覆盖成 20，这个令牌本来要防的就是这件事。
+    # 现在：**预览说"将更新"的行必须有原值指纹**，没有就要求重新预览。
+    # 新增行不涉及已有记录，本来就没有"原值"，不需要指纹（两者不能混为一谈）。
+    missing_baseline = sorted(
+        int(row)
+        for row, outcome in planned.items()
+        if outcome == OUTCOME_UPDATED and row not in before_map
+    )
     return {
         "file_changed": bool(planned_file) and planned_file != file_sha256,
         "planned_file_sha256": planned_file,
         "file_sha256": file_sha256,
         "changed_rows": changed,
         "baseline_changed": stale,
+        "missing_baseline": missing_baseline,
     }
 
 
@@ -609,9 +621,21 @@ async def finalize(
             preview_diff["file_changed"]
             or preview_diff["changed_rows"]
             or preview_diff["baseline_changed"]
+            or preview_diff["missing_baseline"]
         ):
             await session.rollback()
-            if preview_diff["baseline_changed"]:
+            if preview_diff["missing_baseline"]:
+                # 旧格式/缺指纹的令牌：更新行没有原值可比 → 要求重新预览，
+                # **不静默降级**成"只比结论"（§7.6 复审第三轮）
+                rows_without_baseline = preview_diff["missing_baseline"]
+                detail = "、".join(f"第 {row} 行" for row in rows_without_baseline[:5])
+                if len(rows_without_baseline) > 5:
+                    detail += f"，等共 {len(rows_without_baseline)} 行"
+                reason = (
+                    "这次预览没有包含目标记录的原始值（预览结果可能是旧版本生成的）"
+                    f"：{detail}"
+                )
+            elif preview_diff["baseline_changed"]:
                 stale = preview_diff["baseline_changed"]
                 reason = "预览之后，这些行在系统里的原数据已被改动"
                 detail = "、".join(f"第 {item['row']} 行" for item in stale[:5])

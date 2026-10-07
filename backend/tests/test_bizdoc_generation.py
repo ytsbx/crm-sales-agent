@@ -59,6 +59,9 @@ def _sqlite_compat() -> None:
 def _tables():
     from app.modules.bizdoc.model import BizDoc
     from app.modules.file.model import FileRecord
+    # §8.14 复审后，"生成正式件"要求明细引用的主数据快照里有印给客户的字段，
+    # 所以夹具要能落这两张表（`_confirm_customer_facing_fields` 用）
+    from app.modules.product.model import SkuFieldAuthority, SkuMasterVersion
     from app.modules.settings.model import NumberSequence, NumberingRule, SystemSetting
 
     return [
@@ -69,6 +72,8 @@ def _tables():
             Contact,
             Product,
             Sku,
+            SkuFieldAuthority,
+            SkuMasterVersion,
             Quote,
             QuoteVersion,
             QuoteItem,
@@ -125,6 +130,42 @@ def _user(user_id=901):
     return row, CurrentUser(row, permissions={"quote:view", "quote:manage"}, roles=[], data_scope="self")
 
 
+def _confirm_customer_facing_fields(session, sku) -> None:
+    """把"印给客户的三个字段"确认掉（§8.14 复审后，这是生成**正式件**的前置条件）。
+
+    未确认的报价只能出**草稿**对客文件（`generate_quote_doc` 会检查明细引用的
+    那一版主数据快照里有没有名称/规格/单位）。本文件的用例测的是"正式件"的
+    内容冻结与幂等 —— 按项目规矩**补夹具**，不去放宽刚加上的规则。
+    """
+    from app.modules.product.model import SkuFieldAuthority, SkuMasterVersion
+
+    values = {"name": sku.name, "specification": sku.specification, "unit": sku.unit}
+    for field, value in values.items():
+        session.add(
+            SkuFieldAuthority(
+                sku_id=sku.id,
+                field_name=field,
+                confirmed_version=1,
+                confirmed_value=value,
+                confirmed_by=1,
+                status="confirmed",
+                source_verified=False,
+            )
+        )
+    session.add(
+        SkuMasterVersion(
+            sku_id=sku.id,
+            version_no=1,
+            values=values,
+            source_summary={},
+            confirmed_by=1,
+            confirmed_at=datetime.now(UTC),
+            note="测试夹具：把印给客户的字段确认掉",
+        )
+    )
+    session.flush()
+
+
 def _fixture(session):
     """一条报价版本：USD、按套计价、带运费与优惠、小数数量。"""
     user, current_user = _user()
@@ -148,6 +189,7 @@ def _fixture(session):
     )
     session.add(sku)
     session.flush()
+    _confirm_customer_facing_fields(session, sku)
     quote = Quote(
         quote_no="Q-FREEZE-1",
         customer_id=customer.id,
@@ -188,6 +230,9 @@ def _fixture(session):
             sku_code_snapshot=sku.sku_code,
             sku_name_snapshot=sku.name,
             spec_snapshot=sku.specification,
+            # §8.14 复审：明细要记"引用的那一版主数据快照"。不填的话，
+            # 生成对客文件时会判成"没有可引用的已确认主数据版本"→ 落草稿
+            master_version_no=1,
             quantity=Decimal("3.500"),
             quoted_price=Decimal("120"),
             unit_snapshot="套",

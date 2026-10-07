@@ -110,6 +110,14 @@ _DECIMAL_FIELDS = ("length", "width", "height", "weight", "carton_volume")
 UNIT_FIELDS = ("unit",)
 PACKAGE_FIELDS = ("package_type", "carton_qty", "carton_volume")
 
+#: 报价明细里**印给客户**的三个字段（§8.14 复审：只有这三个必须先确认）。
+#:
+#: 为什么是这三个：报价单上给客户看的"这条东西叫什么、什么规格、按什么单位算"。
+#: 单位尤其关键 —— 它决定报价数量的含义（"10 件" vs "10 箱"）。
+#: 其余字段（材质、重量、装箱数…）本地值照旧可用，未确认只如实提示、不拦发送；
+#: 那个口径是 2026-10-07 定的"默认放行 + 如实提示"，本轮只把**这三个**收紧成硬闸门。
+QUOTE_DISPLAY_FIELDS: tuple[str, ...] = ("name", "specification", "unit")
+
 #: 每种差异允许的核定结论。
 ALLOWED_RESOLUTIONS: dict[str, tuple[str, ...]] = {
     DIFF_UNIT_CONFLICT: (
@@ -1582,31 +1590,90 @@ async def resolve_confirmed_master(
         "values": confirmed,
         "unconfirmed": missing,
         "unconfirmed_labels": [MASTER_FIELDS[field] for field in missing],
-        # 版本号取"这些字段是在第几版被确认的"里的最大值。只要有确认字段，
-        # 报价明细就会把它记下来（`quote_items.master_version_no`）；
-        # 一个都没有才是 0，表示"当时这个 SKU 还没有任何已确认主数据"。
-        # 不直接读 `SkuMasterVersion` 表：判据应当只看**字段有没有被确认** ——
-        # 否则"字段已确认、却没有版本行"的数据会得出自相矛盾的结论。
-        "version_no": await _confirmed_version_no(session, sku_id, confirmed),
+        # 版本号必须指向**真正的整版快照**（`sku_master_versions.version_no`）。
+        # 上一版这里取"字段确认次数里最大的那个"—— 两套编号来源完全不同，
+        # 实测：确认名称 → 整版 V1；再确认单位 → 整版 V2；此时字段确认次数
+        # 最大值仍是 1，于是明细记成 1，**按这个号回查整版 V1 里根本没有单位**。
+        # 详见 `quoted_master_version_no`。
+        "version_no": await quoted_master_version_no(session, sku_id, confirmed),
         "version": version,
     }
 
 
-async def _confirmed_version_no(
-    session: AsyncSession, sku_id: int, confirmed: dict[str, str]
-) -> int:
-    """已确认字段里最大的确认版本号（没有确认字段则为 0）。"""
-    if not confirmed:
-        return 0
-    values = (
+async def quoted_snapshot_problems(
+    session: AsyncSession,
+    *,
+    sku_id: int,
+    version_no: int | None,
+    fields: tuple[str, ...] = QUOTE_DISPLAY_FIELDS,
+) -> list[str]:
+    """明细引用的那一版主数据快照，**够不够印给客户**（返回缺的字段中文名）。
+
+    判据是"回查 `quote_items.master_version_no` 指向的那一版
+    `sku_master_versions`，看它里面有没有这些字段"，而不是"现在这个 SKU
+    确认了没有"。差别很实在：
+
+    - 事后补确认**不能**给旧明细洗白 —— 旧明细的版本号指向旧快照，
+      而那份快照里确实没有该字段，那一版对客文件用的就是没确认的值；
+    - 也回答得了审查的那句"校验明细引用的**真实主数据快照**及其字段确认完整性"。
+
+    `version_no` 为 None（生成明细时还没有可引用的快照）时返回一条明确的说明。
+    """
+    if version_no is None:
+        return ["（没有可引用的已确认主数据版本）"]
+    snapshot = (
         await session.execute(
-            select(SkuFieldAuthority.confirmed_version).where(
-                SkuFieldAuthority.sku_id == sku_id,
-                SkuFieldAuthority.field_name.in_(list(confirmed)),
+            select(SkuMasterVersion).where(
+                SkuMasterVersion.sku_id == sku_id,
+                SkuMasterVersion.version_no == version_no,
             )
         )
-    ).scalars().all()
-    return max((int(value or 0) for value in values), default=0)
+    ).scalars().first()
+    values = (snapshot.values if snapshot is not None else None) or {}
+    # 判据是"**这个字段有没有确认值**"，不是"确认值非空"：
+    # 快照里根本没有这个键 = 从没确认过 → 缺；
+    # 有键但值是空串 = 确认过、而这个 SKU 的该字段本来就是空（例如没有规格的产品），
+    # 不该因为"确认为空"就挡住正式报价（那会把合法业务也拦下来）。
+    return [MASTER_FIELDS[field] for field in fields if field not in values]
+
+
+async def quoted_master_version_no(
+    session: AsyncSession, sku_id: int, confirmed: dict[str, str]
+) -> int:
+    """报价明细应当引用的**整版主数据快照**编号（0 = 没有可引用的快照）。
+
+    §8.14 复审（前三轮修完还剩的第二个待办）：上一版取的是
+    "已确认字段各自 `confirmed_version` 的最大值"，而整版快照有**另一套编号**
+    （`sku_master_versions.version_no`，每次确认动作新出一版）。两套数不能互替：
+
+        确认名称 → 整版 V1（values 只有 name）
+        再确认单位 → 整版 V2（values 有 name + unit）
+        新明细：unit 用的是已确认的"件"，`master_version_no` 却记成 1
+        回查整版 V1 → 里面没有 unit
+
+    于是"按保存的版本号回溯实际来源"这件事做不到。现在改成取**最新整版**，
+    并要求该版**确实包含明细采用的每个字段值**；对不上就返回 0
+    （如实表示"没有可引用的快照"），**不拼一个看起来有效的号**。
+
+    没有确认字段、或该 SKU 还没有任何整版快照时同样返回 0 ——
+    调用方把它落成 `NULL`，语义是"当时还没有可引用的已确认主数据"。
+    """
+    if not confirmed:
+        return 0
+    row = (
+        await session.execute(
+            select(SkuMasterVersion)
+            .where(SkuMasterVersion.sku_id == sku_id)
+            .order_by(SkuMasterVersion.version_no.desc())
+        )
+    ).scalars().first()
+    if row is None:
+        return 0
+    values = row.values or {}
+    for field, value in confirmed.items():
+        if str(values.get(field) or "") != str(value or ""):
+            return 0
+    return int(row.version_no)
 
 
 __all__ = [
@@ -1620,6 +1687,10 @@ __all__ = [
     "build_sku_diff_key",
     "confirm_sku_diff",
     "confirmed_master_version",
+    # §8.14 复审补的：整版快照号 + "那一版够不够印给客户"的判据
+    "quoted_master_version_no",
+    "quoted_snapshot_problems",
+    "QUOTE_DISPLAY_FIELDS",
     "get_identity_source",
     "get_sku_or_404",
     "ingest_external_sku",

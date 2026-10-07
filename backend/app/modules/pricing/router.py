@@ -211,10 +211,12 @@ async def list_price_rules(
     keyword: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    _: CurrentUser = Depends(require_permission("product:view")),
+    user: CurrentUser = Depends(require_permission("product:view")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = select(PriceRule).join(Sku, Sku.id == PriceRule.sku_id)
+    # 软删 SKU 上的价目不再列出（§7.3 复审：与专属价列表同一份有效引用条件）
+    stmt = stmt.where(Sku.deleted_at.is_(None))
     if sku_id:
         stmt = stmt.where(PriceRule.sku_id == sku_id)
     if keyword:
@@ -222,7 +224,12 @@ async def list_price_rules(
     stmt = stmt.order_by(PriceRule.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
     codes = await _sku_code_map(session, [rule.sku_id for rule in rows])
-    items = [svc.serialize_price_rule(rule, codes.get(rule.sku_id)) for rule in rows]
+    # 最低保护价按权限隐藏（与核价/查价同判据；`_` 用不上权限，这里要判）
+    can_see_cost = user.has("price:manage")
+    items = [
+        svc.serialize_price_rule(rule, codes.get(rule.sku_id), can_see_cost=can_see_cost)
+        for rule in rows
+    ]
     return ok(page_data(items, total, page, page_size))
 
 
@@ -393,8 +400,18 @@ async def list_customer_price_rules(
     公海客户）的专属价。原来直接全表查、只按 customer_id 过滤，还把客户名称和
     专属价一起返回 —— 业务员翻一页就把全公司的特殊价看光了。
     范围在**分页与计数之前**生效（条件进 SQL，不是取回来再筛）。
+
+    §7.3 复审（第三轮）又补两条：
+    - **软删客户/SKU 的规则不再列出**（客户侧条件已在 `customer_scope_condition` 里
+      加了 `deleted_at`，SKU 侧在这里补）—— 指定客户分支原本会拒绝已删客户，
+      只有这条分支漏了；
+    - **最低保护价按权限隐藏**：与核价/查价同一判据（`price:manage`）。
     """
     stmt = select(CustomerPriceRule)
+    # 软删 SKU 上的专属价同样是"失效引用"，与指定客户分支同口径
+    stmt = stmt.where(
+        CustomerPriceRule.sku_id.in_(select(Sku.id).where(Sku.deleted_at.is_(None)))
+    )
     if customer_id:
         # 指定客户也不能绕过：走与增删改**同一份判据**
         await svc.ensure_customer_in_scope_for_price(
@@ -420,7 +437,12 @@ async def list_customer_price_rules(
         ).all()
         names = {int(cid): name for cid, name in name_rows}
     items = [
-        svc.serialize_customer_price(rule, codes.get(rule.sku_id), names.get(rule.customer_id))
+        svc.serialize_customer_price(
+            rule,
+            codes.get(rule.sku_id),
+            names.get(rule.customer_id),
+            can_see_cost=user.has("price:manage"),
+        )
         for rule in rows
     ]
     return ok(page_data(items, total, page, page_size))
@@ -1572,7 +1594,7 @@ async def cost_history(
 @router.get("/price-rules/{rule_id}")
 async def get_price_rule(
     rule_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    user: CurrentUser = Depends(require_permission("product:view")),
     session: AsyncSession = Depends(get_db),
 ):
     """单条价格规则（03-API §16）。"""
@@ -1580,7 +1602,13 @@ async def get_price_rule(
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
     codes = await _sku_code_map(session, [row.sku_id])
-    return ok(svc.serialize_price_rule(row, codes.get(row.sku_id)))
+    # 单条也要按权限隐藏保护价（§7.3 复审：列表/指定查询/单条一个口径，
+    # 否则"列表里看不到保护价，拿 id 单独查就看到了"）
+    return ok(
+        svc.serialize_price_rule(
+            row, codes.get(row.sku_id), can_see_cost=user.has("price:manage")
+        )
+    )
 
 
 @router.post("/price-permissions")

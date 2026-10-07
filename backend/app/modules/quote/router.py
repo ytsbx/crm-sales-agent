@@ -802,9 +802,8 @@ async def get_version(
     )
     quote = await session.get(Quote, version.quote_id)
     ctx = await _quote_context(session, [quote]) if quote else None
-    return ok(
-        {
-            "version": svc.serialize_version(version, total_profit),
+    body = {
+        "version": svc.serialize_version(version, total_profit),
             "quote": (
                 svc.serialize_quote(
                     quote,
@@ -837,8 +836,14 @@ async def get_version(
                 if instance
                 else None
             ),
-        }
+    }
+    # §8.14 复审（第四项）：未确认清单要随**详情**一起给，页面才能"持续显示"。
+    # 只靠保存明细时闪一次 Toast 不够 —— 刷新页面、换个人打开、隔天再看，
+    # 都该看得到"这几条的主数据还没确认"，而不是等到发送被拒才知道。
+    master_problems = await svc.master_confirmation_problems(
+        session, version_id=version_id
     )
+    return ok(_with_master_warnings(body, set(master_problems)))
 
 
 @router.patch("/quote-versions/{version_id}")
@@ -857,7 +862,18 @@ async def update_version(
         setattr(version, field, value)
     if valid_until is not None:
         quote = await svc.get_visible_quote(session, user, version.quote_id)
-        quote.valid_until = valid_until
+        # §8.7 复审（第三轮）修的两个毛病：
+        #
+        # ① **本版快照也要跟着改**。原来只写主单，于是"主单 2027-01-01、
+        #    版本快照与 PDF/BizDoc 还是 2026-12-01" —— 业务判断（发送/过期读主单）
+        #    和印给客户的文件对不上。快照是这一版对客有效期的唯一依据。
+        # ② **只有当前版本才动主单**。主单的 `valid_until` 语义是"当前版本的
+        #    对客有效期"；编辑一个**历史草稿版**时若顺手改主单，等于把另一个
+        #    版本（以及正在生效的那一版）的有效期改掉了。
+        if quote.current_version_id == version.id:
+            quote.valid_until = valid_until
+        version.valid_until_snapshot = valid_until
+        data["valid_until_snapshot"] = valid_until.isoformat()
     await write_audit(
         session,
         operator_id=user.id,

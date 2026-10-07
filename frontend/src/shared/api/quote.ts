@@ -88,6 +88,18 @@ export interface ApprovalRecordRow {
   created_at: string
 }
 
+/**
+ * 后端在**写入口与版本详情**的响应体里附带的主数据提醒（§8.14 复审）。
+ *
+ * 内容是"哪个 SKU 的哪些字段还没确认"（例如「ZX-6040 的「规格、单位」主数据尚未确认」）。
+ * 为什么放在 `data` 里而不是 `message`：统一客户端只把 `data` 交给页面，
+ * `message` 到不了界面（`_with_master_warnings` 的注释里写着这个坑）。
+ *
+ * 前端必须**接住并持续显示**：只闪一次 Toast 的话，刷新页面、换个人打开就看不到了，
+ * 用户往往到"发送被拒"时才知道是主数据的问题。
+ */
+export type WithMasterWarnings<T> = T & { master_warnings?: string[] }
+
 export interface QuoteVersionDetail {
   version: QuoteVersion
   quote: Quote | null
@@ -213,7 +225,7 @@ export function createQuote(payload: {
    */
   request_key?: string
 }) {
-  return api.post<{ quote_id: number; version_id: number; warnings?: string[] }>('/quotes', payload)
+  return api.post<WithMasterWarnings<{ quote_id: number; version_id: number; warnings?: string[] }>>('/quotes', payload)
 }
 
 export function listQuoteVersions(quoteId: number) {
@@ -253,7 +265,8 @@ export function compareQuoteVersions(quoteId: number) {
 }
 
 export function getQuoteVersion(versionId: number) {
-  return api.get<QuoteVersionDetail>(`/quote-versions/${versionId}`)
+  // 详情一直带 `master_warnings`：明细页据此**持续显示**未确认状态（§8.14 复审）
+  return api.get<WithMasterWarnings<QuoteVersionDetail>>(`/quote-versions/${versionId}`)
 }
 
 export function updateQuoteVersion(versionId: number, payload: Record<string, unknown>) {
@@ -261,12 +274,12 @@ export function updateQuoteVersion(versionId: number, payload: Record<string, un
 }
 
 export function updateQuoteItem(itemId: number, payload: Record<string, unknown>) {
-  return api.patch<QuoteItemRow>(`/quote-items/${itemId}`, payload)
+  return api.patch<WithMasterWarnings<QuoteItemRow>>(`/quote-items/${itemId}`, payload)
 }
 
 /** 追加一条明细（逐条录需求时用）。 */
 export function addQuoteVersionItem(versionId: number, payload: Record<string, unknown>) {
-  return api.post<QuoteItemRow>(`/quote-versions/${versionId}/items`, payload)
+  return api.post<WithMasterWarnings<QuoteItemRow>>(`/quote-versions/${versionId}/items`, payload)
 }
 
 /**
@@ -275,8 +288,9 @@ export function addQuoteVersionItem(versionId: number, payload: Record<string, u
  * body 是**裸数组**（后端签名是 `items: list[QuoteItemInput]`），不是 `{items: [...]}`。
  */
 export function setQuoteVersionItems(versionId: number, items: Record<string, unknown>[]) {
-  // 返回的是**重算后的版本**（后端 ok(serialize_version(...))），不是明细数组
-  return api.post<QuoteVersion>(`/quote-versions/${versionId}/items/batch`, items)
+  // 返回的是**重算后的版本**（后端 ok(serialize_version(...))），不是明细数组，
+  // 并附带 `master_warnings`（哪些明细的主数据还没确认）
+  return api.post<WithMasterWarnings<QuoteVersion>>(`/quote-versions/${versionId}/items/batch`, items)
 }
 
 export function addQuoteCharge(versionId: number, payload: Record<string, unknown>) {

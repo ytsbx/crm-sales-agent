@@ -1061,7 +1061,22 @@ async def generate_quote_doc(
     template_id: int | None = None,
     extra_fields: dict[str, str] | None = None,
 ) -> BizDoc:
-    """从报价版本生成一份对客 Excel 报价单（不动报价单与版本）。"""
+    """从报价版本生成一份对客 Excel 报价单（不动报价单与版本）。
+
+    §8.14 复审（第三轮）修的"文件入口没接校验"：发送入口挡了主数据未确认，
+    文件入口没挡 —— 同一张发不出去的报价，却能生成并归档一份
+    `status=active`/「有效」的对客 Excel，用户直接就能拿出去。
+
+    现在生成前执行**同一份**判据（`quote_service.master_confirmation_problems`：
+    回查明细引用的那一版主数据快照里有没有名称/规格/单位）。不达标时：
+
+    - **不拒绝**（内部草稿准备本来就该允许）；
+    - 落成**草稿**（`allow_draft=True` → `status=draft`、标题带【草稿】、
+      列表里有标识、不进正式台账），并把"缺什么"写进文件快照，页面上能解释。
+
+    历史归档的读取不受影响：这里只管**新生成**的文件。
+    """
+    from app.modules.quote import service as quote_service
     from app.modules.quote.model import QuoteVersion
 
     version_row = await session.get(QuoteVersion, quote_version_id)
@@ -1072,6 +1087,14 @@ async def generate_quote_doc(
         session, user, owner_id=built.get("owner_id"), label="报价单"
     )
     template = await current_template(session, "quote_sheet", template_id)
+
+    master_problems = await quote_service.master_confirmation_problems(
+        session, version_id=quote_version_id
+    )
+    draft_reason = None
+    if master_problems:
+        # **只标草稿原因，不动 `allow_draft`** —— 后者会把模板闸门一起关掉
+        draft_reason = "主数据未确认：" + "；".join(master_problems)
     return await _persist(
         session,
         built=built,
@@ -1080,6 +1103,7 @@ async def generate_quote_doc(
         user_id=user.id,
         extra_fields=extra_fields,
         source_ref=built.get("source"),
+        draft_reason=draft_reason,
     )
 
 
@@ -1174,6 +1198,7 @@ async def _persist(
     extra_fields: dict[str, str] | None,
     source_ref: dict | None,
     allow_draft: bool = False,
+    draft_reason: str | None = None,
 ) -> BizDoc:
     """落一份对外单据。
 
@@ -1244,7 +1269,19 @@ async def _persist(
             "模板变量未解析，不能作为有效对外文件：" + _issue_summary(unresolved),
             422,
         )
+    # 落草稿的两种来源：
+    #   ① 模板变量填不出来（§8.8）—— 此时 `unresolved` 非空；
+    #   ② 调用方明确标了原因（§8.14 复审：主数据未确认的报价文件只能落草稿）。
+    #
+    # ⚠️ **不要用 `allow_draft` 表达第 ② 种**：它的原语义是"模板填不出来也出图"，
+    # 一旦为真就同时跳过上面那道模板闸门 —— 实测会把"模板变量未解析"也放行
+    # （打红 `test_unresolved_template_variable_blocks_formal_document`：
+    # 本该 422 的请求变成 200）。两者必须是**独立**的信号。
+    as_draft = bool(unresolved) or bool(draft_reason)
     snapshot = _snapshot_for_storage(built, body, template)
+    if draft_reason:
+        # 为什么是草稿，跟着文件一起存下来（页面上要能解释，事后也查得到）
+        snapshot["draft_reason"] = draft_reason
     snapshot["extra"] = extra
     if unresolved:
         # 草稿的"缺什么"必须留在快照里：前端要展示给用户，事后也查得到
@@ -1256,13 +1293,13 @@ async def _persist(
         doc_type=doc_type,
         title=(
             f"【草稿】{title_label}-{built.get('title_suffix') or ''}".rstrip("-")
-            if unresolved
+            if as_draft
             else f"{title_label}-{built.get('title_suffix') or ''}".rstrip("-")
         ),
         version=version,
         parent_id=parent_id,
         # 草稿不是正式对外文件：状态栏/列表一眼能看出来，且不允许当有效件下载使用
-        status="draft" if unresolved else "active",
+        status="draft" if as_draft else "active",
         owner_id=built.get("owner_id"),
         customer_id=built.get("customer_id"),
         contact_id=built.get("contact_id"),
