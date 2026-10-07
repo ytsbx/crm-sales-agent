@@ -10,7 +10,9 @@
 1. 合同模板与业务文件模板的 `{{today}}`（两个**渲染入口**）；
 2. 成本失效入口写入的截止日期；
 3. 统计明细 / 时间线的**展示**时间（无参 `astimezone()` 跟宿主机走）；
-4. 导入时"不能是未来日期"的判断（同类，自查发现）。
+4. 导入时"不能是未来日期"的判断（同类，自查发现）；
+5. 商机**两个成交入口**的有效期判断（本次复核查出：旧的「标记成交」单独写了
+   一段 `now(UTC).date()`，而 confirm-win 那条另写一段，两处迟早会漂）。
 
 ## 怎么"固定时间"
 
@@ -38,20 +40,25 @@ from decimal import Decimal
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from starlette.requests import Request
 
 from app.core import timebase
 from app.core.database import SessionLocal, engine
 from app.core.deps import CurrentUser
+from app.core.errors import AppError
 from app.core.importing import RowErrors
 from app.modules.analytics import targets as targets_service
 from app.modules.bizdoc import tokens as bizdoc_tokens
 from app.modules.contract import service as contract_service
 from app.modules.customer.model import Customer
+from app.modules.opportunity import router as opportunity_router
+from app.modules.opportunity.model import Opportunity, OpportunityStage
+from app.modules.opportunity.schema import OpportunityConfirmWin, OpportunityWin
 from app.modules.pricing import router as pricing_router
 from app.modules.pricing import service as pricing_service
 from app.modules.pricing.model import ProductCost
+from app.modules.quote.model import Quote, QuoteVersion
 from app.modules.timeline import service as timeline_service
 from app.modules.user.model import User
 from app.modules.product.model import Sku
@@ -279,6 +286,201 @@ def check_import_future_guard() -> None:
     check("拒掉时给出可读原因", bool(errs_future.reasons), True)
 
 
+# --------------------------------------------------------------------------
+# ⑤ 商机两个成交入口的有效期判断
+# --------------------------------------------------------------------------
+
+async def check_opportunity_win_entry_boundary() -> None:
+    """成交入口的有效期判断必须按**业务日期（北京时间）**。
+
+    复现单：北京时间 2026-01-01 01:00，报价有效期 2025-12-31（北京"昨天"）。
+    旧的「标记成交」入口写的是 `datetime.now(UTC).date()` —— 那一刻 UTC 还停在
+    2025-12-31，"昨天 < 今天"不成立，于是**已经过期的报价照样被标成交**。
+
+    这里**直接调两个成交入口**（而不是只验 `quote_is_expired()` 这个工具函数），
+    并把"有效期到昨天 → 拦"和"有效期到今天 → 按既有规则放行"两个方向都钉住。
+    """
+    async with SessionLocal() as session:
+        admin = (
+            await session.execute(select(User).where(User.username == "admin"))
+        ).scalars().first()
+        if admin is None:
+            raise SystemExit("库里没有 admin 账号，先跑 scripts/seed.py")
+
+        won_stage = (
+            await session.execute(
+                select(OpportunityStage).where(OpportunityStage.is_win.is_(True))
+            )
+        ).scalars().first()
+        if won_stage is None:
+            raise SystemExit("库里没有成交阶段（is_win），先跑 scripts/seed.py")
+        open_stage = (
+            await session.execute(
+                select(OpportunityStage)
+                .where(
+                    OpportunityStage.status == "active",
+                    OpportunityStage.is_win.is_(False),
+                    OpportunityStage.is_loss.is_(False),
+                )
+                .order_by(OpportunityStage.sequence.asc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if open_stage is None:
+            raise SystemExit("库里没有可用的进行中阶段，先跑 scripts/seed.py")
+
+        # confirm-win 第一步就查 order:manage，权限要一起给
+        user = CurrentUser(admin, {"opportunity:manage", "order:manage"}, ["admin"], "all")
+        request = _fake_request()
+
+        customer = Customer(
+            name=f"{PREFIX}成交边界客户", owner_id=admin.id, created_by=admin.id
+        )
+        session.add(customer)
+        await session.flush()
+
+        created_quote_ids: list[int] = []
+        quote_seq = 0
+
+        async def make_opportunity(title: str) -> Opportunity:
+            opportunity = Opportunity(
+                customer_id=customer.id,
+                title=title,
+                stage_id=open_stage.id,
+                owner_id=admin.id,
+                status="open",
+            )
+            session.add(opportunity)
+            await session.flush()
+            return opportunity
+
+        async def make_quote(opportunity: Opportunity, valid_until: date) -> QuoteVersion:
+            """造一份"走到成交入口就会撞有效期"的报价。
+
+            `status="accepted"` 是刻意选的：两个入口都放行 accepted，而
+            `accept_version()` 遇到 accepted 会在**不写任何东西**的情况下停住 ——
+            正好用来确认 confirm-win 已经走过了有效期这一关。
+            """
+            nonlocal quote_seq
+            quote_seq += 1
+            stamp = datetime(2025, 12, 31, 2, 0, tzinfo=UTC)
+            quote = Quote(
+                quote_no=f"{PREFIX}-Q{quote_seq}",
+                opportunity_id=opportunity.id,
+                customer_id=customer.id,
+                owner_id=admin.id,
+                status="accepted",
+                valid_until=valid_until,
+                created_by=admin.id,
+            )
+            session.add(quote)
+            await session.flush()
+            version = QuoteVersion(
+                quote_id=quote.id,
+                version_no=1,
+                approval_status="approved",
+                sent_at=stamp,
+                valid_until_snapshot=valid_until,
+                created_at=stamp,
+                created_by=admin.id,
+            )
+            session.add(version)
+            await session.flush()
+            quote.current_version_id = version.id
+            await session.flush()
+            created_quote_ids.append(quote.id)
+            return version
+
+        async def call_entry(entry: str, opportunity: Opportunity, version: QuoteVersion):
+            """调**真实的**成交入口；被拦时返回错误说明，没被拦返回 None。"""
+            try:
+                if entry == "win":
+                    await opportunity_router.win_opportunity(
+                        opportunity.id,
+                        OpportunityWin(
+                            win_quote_version_id=version.id, remark=f"{PREFIX}边界"
+                        ),
+                        request,
+                        user,
+                        session,
+                    )
+                else:
+                    await opportunity_router.confirm_win_and_create_order(
+                        opportunity.id,
+                        OpportunityConfirmWin(
+                            win_quote_version_id=version.id, remark=f"{PREFIX}边界"
+                        ),
+                        request,
+                        user,
+                        session,
+                    )
+            except AppError as exc:
+                return exc.message or ""
+            return None
+
+        opp_blocked = await make_opportunity(f"{PREFIX}成交边界-应拦")
+        opp_pass = await make_opportunity(f"{PREFIX}成交边界-应放行")
+
+        # ---- 方向一：有效期到"北京昨天" → 两个入口都必须拦 ----
+        for label, instant, yesterday in (
+            (
+                "北京时间 2026-10-07 01:00（UTC 还停在前一天）",
+                beijing(2026, 10, 7, 1),
+                date(2026, 10, 6),
+            ),
+            ("元旦凌晨 2026-01-01 01:00（跨年）", beijing(2026, 1, 1, 1), date(2025, 12, 31)),
+        ):
+            version = await make_quote(opp_blocked, yesterday)
+            with frozen_business_clock(instant):
+                for entry, tag in (("win", "标记成交"), ("confirm", "确认成交并建单")):
+                    message = await call_entry(entry, opp_blocked, version)
+                    check(
+                        f"{label}｜有效期到昨天 → {tag}被拦下",
+                        message is not None and "已过有效期" in message,
+                        True,
+                    )
+        check("被拦之后商机没有被标成交", opp_blocked.status, "open")
+
+        # ---- 方向二：有效期到"北京今天" → 按既有规则（截止日**含**当天）放行 ----
+        version = await make_quote(opp_pass, date(2026, 1, 1))
+        with frozen_business_clock(beijing(2026, 1, 1, 1)):
+            message = await call_entry("win", opp_pass, version)
+        check("元旦凌晨｜有效期到今天 → 标记成交放行", message is None, True)
+        check("放行后商机状态确实变成已成交", opp_pass.status, "win")
+
+        # confirm-win 的"放行"方向只验到**过了有效期这一关**为止：再往后它会真的
+        # 接受报价并建单，那是别的套件的活。让它停在下一道「接受」闸门即可 ——
+        # 能停在那里，就说明有效期这一关已经放行（否则报的会是"已过有效期"）。
+        version = await make_quote(opp_blocked, date(2026, 1, 1))
+        with frozen_business_clock(beijing(2026, 1, 1, 1)):
+            message = await call_entry("confirm", opp_blocked, version)
+        check(
+            "元旦凌晨｜有效期到今天 → 确认成交不再被有效期拦下",
+            message is not None and "已过有效期" not in message,
+            True,
+        )
+        check(
+            "确认成交停在的确实是下一道「接受」闸门",
+            bool(message) and "才能接受或拒绝" in (message or ""),
+            True,
+        )
+
+        # ---- 收尾：本套件自己造的夹具自己删 ----
+        opp_ids = f"{opp_blocked.id}, {opp_pass.id}"
+        quote_ids = ", ".join(str(qid) for qid in created_quote_ids)
+        for sql in (
+            f"delete from opportunity_stage_history where opportunity_id in ({opp_ids})",
+            "delete from audit_logs where business_type = 'opportunity' "
+            f"and business_id in ({opp_ids})",
+            f"delete from quote_versions where quote_id in ({quote_ids})",
+            f"delete from quotes where id in ({quote_ids})",
+            f"delete from opportunities where id in ({opp_ids})",
+            f"delete from customers where id = {customer.id}",
+        ):
+            await session.execute(text(sql))
+        await session.commit()
+
+
 async def main() -> None:
     db_name = require_isolated_db()
     print(f"隔离库：{db_name}")
@@ -295,6 +497,9 @@ async def main() -> None:
 
     print("\n④ 导入的「未来日期」判断")
     check_import_future_guard()
+
+    print("\n⑤ 商机两个成交入口的有效期判断")
+    await check_opportunity_win_entry_boundary()
 
     await engine.dispose()
 

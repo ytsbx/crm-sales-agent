@@ -735,6 +735,7 @@ async def win_opportunity(
     # 旧口子补校验：成交版本必须真实存在且属于此商机（此前任意 id 直接落库）
     if payload.win_quote_version_id:
         from app.modules.quote.model import Quote, QuoteVersion
+        from app.modules.quote.service import quote_is_expired
 
         win_version = await session.get(QuoteVersion, payload.win_quote_version_id)
         if win_version is None:
@@ -747,10 +748,10 @@ async def win_opportunity(
             raise AppError(ErrorCode.PARAM_ERROR, "该报价单已删除，不能标成交")
         if win_version.approval_status != "approved":
             raise AppError(ErrorCode.APPROVAL_PENDING, "该报价版本未通过审批，不能成交", 422)
-        from datetime import UTC as _UTC, datetime as _dt
-
-        _today = _dt.now(_UTC).date()
-        if win_quote.valid_until and win_quote.valid_until < _today:
+        # 有效期按**业务日期（北京时间）**判 —— 与 confirm-win 用**同一个** helper，
+        # 不再各写一段 `now(UTC).date()`：北京时间凌晨（UTC 还停在前一天）时，
+        # 那个写法会把"有效期到昨天"的报价当成没过期、照样放行。
+        if quote_is_expired(win_quote.valid_until):
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
                 f"报价已过有效期（{win_quote.valid_until}），不能标成交",
@@ -792,8 +793,6 @@ async def confirm_win_and_create_order(
     幂等：商机已成交不重复改；版本已转过单直接返回已有订单（重试安全）。
     需要同时具备 opportunity:manage 与 order:manage。
     """
-    from datetime import datetime as dt
-
     from app.modules.order import service as order_svc
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote, QuoteVersion
@@ -850,8 +849,9 @@ async def confirm_win_and_create_order(
         )
     if version.approval_status != "approved":
         raise AppError(ErrorCode.APPROVAL_PENDING, "该报价版本未通过审批，不能成交", 422)
-    today = dt.now(UTC).date()
-    if quote.valid_until and quote.valid_until < today:
+    # 有效期一律走 `quote_is_expired()`（内部取**业务日期/北京时间**）——
+    # 与上面旧的「标记成交」入口共用一个判据，杜绝两处各写一段日期逻辑又慢慢漂开。
+    if quote_svc.quote_is_expired(quote.valid_until):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"报价已过有效期（{quote.valid_until}），请先刷新版本再成交",

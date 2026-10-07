@@ -16,9 +16,10 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -75,7 +76,8 @@ const FIXTURES_ENABLED = process.env.SMOKE_ENABLE_FIXTURES === '1'
  * 只放过**带这两个标记**的报错：自测页上真出别的错、或别的页面出任何错，
  * 照样会被抓到（不要图省事按"当前页是自测页"整页跳过 —— 那会把真问题一起放过去）。
  */
-const EXPECTED_SELFTEST_ERRORS = /\/missing-(region|page)\.js/
+const EXPECTED_SELFTEST_ERRORS =
+  /\/missing-(region|page)\.js|\/__lazy\/mod-|这一块的代码第一次故意取不到/
 
 function assertSafeTargets() {
   const isLoopback = (value, label) => {
@@ -559,6 +561,275 @@ async function checkLazyRegionSelfTest(client, problems) {
   const shot = await client.send('Page.captureScreenshot', { format: 'png' })
   writeFileSync(join(OUT_DIR, '55-lazy-region-boundary.png'), Buffer.from(shot.data, 'base64'))
   console.log(`✓ [交互] /selftest-lazy-region.html + 局部资源失败 → ${join(OUT_DIR, '55-lazy-region-boundary.png')}`)
+}
+
+/**
+ * 临时小服务：给自测页提供"真实会失败、之后会恢复"的模块地址。
+ *
+ * 为什么不能再用"第一次主动抛错"那种假失败：它只证明了"重挂 React 组件能成功"，
+ * 没证明**浏览器还会不会再去取那个失败的模块**。实测结论是**不会** ——
+ * 浏览器把失败的模块地址记在**模块映射**里，同一地址再 `import()` 连请求都不发
+ * （脚本这里靠服务端**请求计数**断言，不靠猜）。
+ *
+ * - `/__lazy/mod-transient.js`：先 503；`/__lazy/recover` 之后返回 200；
+ * - `/__lazy/mod-gone.js`：一直 404（发版后旧代码块已经不在了）；
+ * - 传了 `staticRoot` 就顺带托管一份静态产物（生产构建那一轮用，页面与模块同源）。
+ */
+const LAZY_MODULE_SOURCE = `export default function Loaded() {
+  return window.__React.createElement(
+    'div',
+    { className: 'lazy-region-ok' },
+    '这一块已经加载出来了',
+  )
+}`
+
+const STATIC_CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.mjs': 'application/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+}
+
+async function startLazyModuleServer({ staticRoot = null } = {}) {
+  const state = { requests: [] } // { method, url }
+  let recovered = false
+
+  const server = createServer((request, response) => {
+    const url = request.url || '/'
+    const path = url.split('?')[0]
+    state.requests.push({ method: request.method || 'GET', url })
+    response.setHeader('Cache-Control', 'no-store')
+    // 开发服务那一轮页面在前端 dev server（5173），模块在这个服务上 → 跨域，
+    // 动态 import 与探测都需要放行
+    response.setHeader('Access-Control-Allow-Origin', '*')
+
+    if (path === '/__lazy/recover') {
+      recovered = true
+      response.writeHead(200, { 'Content-Type': 'text/plain' })
+      response.end('recovered')
+      return
+    }
+    if (path === '/__lazy/mod-transient.js') {
+      if (!recovered) {
+        response.writeHead(503, { 'Content-Type': 'text/plain' })
+        response.end('temporarily unavailable')
+        return
+      }
+      response.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' })
+      response.end(LAZY_MODULE_SOURCE)
+      return
+    }
+    if (path === '/__lazy/mod-gone.js') {
+      response.writeHead(404, { 'Content-Type': 'text/plain' })
+      response.end('this chunk is gone')
+      return
+    }
+    if (staticRoot) {
+      const target = join(staticRoot, path === '/' ? 'index.html' : decodeURIComponent(path))
+      if (target.startsWith(staticRoot) && existsSync(target) && statSync(target).isFile()) {
+        response.writeHead(200, {
+          'Content-Type': STATIC_CONTENT_TYPES[extname(target)] ?? 'application/octet-stream',
+        })
+        response.end(readFileSync(target))
+        return
+      }
+    }
+    response.writeHead(404, { 'Content-Type': 'text/plain' })
+    response.end('not found')
+  })
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  return {
+    state,
+    origin: `http://127.0.0.1:${port}`,
+    url: (path) => `http://127.0.0.1:${port}${path}`,
+    recover: () => {
+      recovered = true
+    },
+    close: () => new Promise((resolve) => server.close(resolve)),
+  }
+}
+
+/** 读一次自测页的现场：输入框的值还在不在、整页有没有被替换。 */
+async function readSelftestState(client) {
+  const result = await client.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      formStillThere: Boolean(document.querySelector('#selftest-name')),
+      value: document.querySelector('#selftest-name')?.value ?? null,
+      pageKept: document.body.innerText.includes('按需加载区域的局部兜底'),
+    })`,
+    returnByValue: true,
+  })
+  return JSON.parse(result.result.value)
+}
+
+/** 那一块的"已经加载出来了"是否出现（两种模式共用同一句文案）。 */
+const REGION_OK_TEXT = '这一块已经加载出来了'
+
+/**
+ * 真实网络失败场景（本轮复核补的那条），开发服务与生产产物各跑一遍。
+ *
+ * 三轮断言：① 服务端**真的收到了**第一次请求；② 点重试后服务端**又收到了新的请求**
+ * 且带上了换地址用的参数；③ 全程用户填的内容都在。另一条反例是"地址已经不存在"——
+ * 界面必须改口成「刷新页面」，不能给一个永远点不通的重试。
+ *
+ * @param resolveModule 把服务端路径变成页面能用的模块地址：
+ *                      开发那一轮要绝对地址（跨域），生产那一轮用相对路径（同源）。
+ */
+async function runLazyRegionNetworkScenario(client, problems, options) {
+  const { pageBase, server, resolveModule, tag, shotFile } = options
+
+  const openPage = async (modulePath) => {
+    await client.send('Runtime.evaluate', {
+      expression: "try { sessionStorage.clear() } catch (e) {}",
+    })
+    await client.send('Page.navigate', {
+      url: `${pageBase}/selftest-lazy-region.html?region=${encodeURIComponent(resolveModule(modulePath))}`,
+    })
+    return waitForText(client, '未保存的内容', 15000)
+  }
+
+  // ── ① 服务先不可用，恢复后点「重新加载这一块」必须真的再发一次请求 ──
+  if (!await openPage('/__lazy/mod-transient.js')) {
+    problems.push(`${tag}：自测页打不开（带 ?region= 的入口）`)
+    return
+  }
+  if (await fillInput(client, '#selftest-name', '赵六-网络重试前') !== '赵六-网络重试前') {
+    problems.push(`${tag}：没法往输入框里填内容`)
+    return
+  }
+  await clickByText(client, '让那一块去加载')
+  if (!await waitForText(client, '没能加载出来', 8000)) {
+    problems.push(`${tag}：模块取不到时没有给出局部提示`)
+    return
+  }
+  const firstFetch = server.state.requests.filter(
+    (item) => item.method === 'GET' && item.url.includes('/__lazy/mod-transient.js'),
+  )
+  if (firstFetch.length < 1) {
+    problems.push(`${tag}：那一块根本没有真的去取模块（服务端没收到请求）`)
+  }
+  let state = await readSelftestState(client)
+  if (!state.formStillThere || state.value !== '赵六-网络重试前') {
+    problems.push(`${tag}：失败后表单值丢了（输入框在=${state.formStillThere}，值=${state.value}）`)
+  }
+  if (!state.pageKept) problems.push(`${tag}：局部失败把整页替换掉了`)
+
+  // 服务恢复 → 点重试
+  server.recover()
+  const beforeRetry = server.state.requests.length
+  await clickByText(client, '重新加载这一块')
+  if (!await waitForText(client, REGION_OK_TEXT, 10000)) {
+    problems.push(`${tag}：服务恢复后点重试仍然没有加载出来`)
+  }
+  const retryRequests = server.state.requests
+    .slice(beforeRetry)
+    .filter((item) => item.method === 'GET' && item.url.includes('__lazy_retry='))
+  if (retryRequests.length === 0) {
+    problems.push(
+      `${tag}：重试没有向服务器发出**新的**请求 —— 浏览器把失败的模块地址记在模块映射里，`
+      + '同一个地址再取连请求都不发，必须换一个新地址（带 __lazy_retry 参数）',
+    )
+  }
+  state = await readSelftestState(client)
+  if (state.value !== '赵六-网络重试前') {
+    problems.push(`${tag}：重试成功后表单值丢了（值=${state.value}）`)
+  }
+
+  // ── ② 地址已经不存在 → 不给点不完的重试，改口让用户刷新，内容保留 ──
+  if (!await openPage('/__lazy/mod-gone.js')) {
+    problems.push(`${tag}：自测页（地址已不存在那一路）打不开`)
+    return
+  }
+  await fillInput(client, '#selftest-name', '钱七-旧版本')
+  await clickByText(client, '让那一块去加载')
+  if (!await waitForText(client, '已经没有了', 8000)) {
+    problems.push(`${tag}：地址已不存在时，没有说清「这块代码在当前版本里已经没有了」`)
+  }
+  const goneResult = await client.send('Runtime.evaluate', {
+    expression: `JSON.stringify({
+      value: document.querySelector('#selftest-name')?.value ?? null,
+      hasReload: document.body.innerText.includes('刷新页面'),
+      hasRetry: document.body.innerText.includes('重新加载这一块'),
+    })`,
+    returnByValue: true,
+  })
+  const gone = JSON.parse(goneResult.result.value)
+  if (gone.value !== '钱七-旧版本') {
+    problems.push(`${tag}：地址已不存在时表单值丢了（值=${gone.value}）`)
+  }
+  if (!gone.hasReload) problems.push(`${tag}：地址已不存在时没有给出「刷新页面」这一步`)
+  if (gone.hasRetry) {
+    problems.push(`${tag}：地址已不存在时还挂着「重新加载这一块」—— 那是一个永远点不通的重试`)
+  }
+
+  const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+  writeFileSync(join(OUT_DIR, shotFile), Buffer.from(shot.data, 'base64'))
+  console.log(`✓ [交互] ${tag} → ${join(OUT_DIR, shotFile)}`)
+}
+
+/** 开发服务上的真实网络失败（页面在 vite dev server，模块在脚本起的小服务上）。 */
+async function checkLazyRegionNetworkRetry(client, problems) {
+  const server = await startLazyModuleServer()
+  try {
+    await runLazyRegionNetworkScenario(client, problems, {
+      pageBase: APP_BASE,
+      server,
+      resolveModule: (path) => server.url(path),
+      tag: '自测页（真实网络·开发服务）',
+      shotFile: '56-lazy-region-network-dev.png',
+    })
+  } finally {
+    await server.close()
+  }
+}
+
+/**
+ * 同一套断言再在**生产构建产物**上跑一遍。
+ *
+ * 复核方要求"防止方案只在开发服务里有效"：自测页刻意不进主包，主构建的产物里
+ * 没有它，所以这里用第二份构建配置单独把它打成生产产物（`vite.selftest.config.ts`），
+ * 再由脚本自己起的静态服务托管 —— 页面与模块同源，和线上更像。
+ */
+async function checkLazyRegionProdBuild(client, problems) {
+  const viteBin = join(REPO_DIR, 'frontend', 'node_modules', '.bin', 'vite')
+  if (!existsSync(viteBin)) {
+    problems.push('自测页生产构建：找不到 vite（前端依赖没装？）')
+    return
+  }
+  const outDir = join(tmpdir(), 'crm-lazy-selftest-dist')
+  rmSync(outDir, { recursive: true, force: true })
+  const built = spawnSync(viteBin, ['build', '--config', 'vite.selftest.config.ts'], {
+    cwd: join(REPO_DIR, 'frontend'),
+    env: { ...process.env, SELFTEST_OUT: outDir },
+    encoding: 'utf8',
+  })
+  if (built.status !== 0) {
+    problems.push(
+      `自测页生产构建失败：${(built.stderr || built.stdout || '').slice(-400)}`,
+    )
+    return
+  }
+
+  const server = await startLazyModuleServer({ staticRoot: outDir })
+  try {
+    await runLazyRegionNetworkScenario(client, problems, {
+      pageBase: server.origin,
+      server,
+      resolveModule: (path) => path, // 同源，用相对路径即可
+      tag: '自测页（真实网络·生产构建产物）',
+      shotFile: '57-lazy-region-network-prod.png',
+    })
+  } finally {
+    await server.close()
+    rmSync(outDir, { recursive: true, force: true })
+  }
 }
 
 async function apiLogin() {
@@ -1575,6 +1846,9 @@ async function main() {
 
     // 自测页：页面内「按需加载的一块」失败时不能把整页连表单一起顶掉（第九批复审 §9.11）
     await checkLazyRegionSelfTest(client, problems)
+    // 同一块的**真实网络**失败与恢复：重试必须真的再发一次请求（不能只在开发服务里有效）
+    await checkLazyRegionNetworkRetry(client, problems)
+    await checkLazyRegionProdBuild(client, problems)
 
     if (problems.length > 0) {
       console.log('\n发现前端运行时报错：')
