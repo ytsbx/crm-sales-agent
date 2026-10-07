@@ -153,6 +153,40 @@ function cleanTestResidue(startedAt) {
   console.log(`✓ 收尾清扫：${line}`)
 }
 
+/**
+ * 给隔离库里的 SKU 补上「主数据已确认」——正式发送报价的前置条件。
+ *
+ * 为什么需要（2026-10-07）：正式发送前有一道硬校验，这版明细引用的主数据必须
+ * 已经确认过（`quote/service.ensure_items_master_confirmed`，口径：草稿随便建、
+ * 正式发送时必须过）。而本脚本用的 SKU 是 seed 造的演示数据、默认没有确认记录，
+ * 于是"自动建单"那步的发送被 422 拦下，后面订单详情、客户接受/拒绝一连串验收
+ * 全部连带失败。按项目规矩：**行为变更要改夹具，不是放宽规则**。
+ *
+ * 必须在**建任何报价明细之前**调用 —— 明细是生成时把主数据版本号一起快照下来的，
+ * 建完再补确认，那一版明细仍然是"未确认"（这正是那条规则要防的事）。
+ */
+function confirmSkuMaster() {
+  const script = join(BACKEND_DIR, 'scripts', 'confirm_sku_master.py')
+  if (!existsSync(script)) {
+    console.log(`（提示：找不到 ${script}，跳过主数据确认）`)
+    return
+  }
+  const result = spawnSync(resolvePython(), ['scripts/confirm_sku_master.py'], {
+    cwd: BACKEND_DIR,
+    env: { ...process.env, PYTHONPATH: '.' },
+    encoding: 'utf8',
+  })
+  if (result.error || result.status !== 0) {
+    console.log(
+      `✗ 主数据确认失败：${result.error?.message ?? result.stderr?.trim() ?? result.status}`,
+    )
+    process.exitCode = 1
+    return
+  }
+  const line = (result.stdout ?? '').trim().split('\n').filter(Boolean).pop() ?? ''
+  console.log(`✓ 主数据确认：${line}`)
+}
+
 /** 取列表接口里真实存在的记录，避免写死演示数据 id。 */
 async function firstRecord(path, token) {
   try {
@@ -363,6 +397,33 @@ async function clickByText(client, text, { tag = 'button' } = {}) {
   return result.result.value
 }
 
+/**
+ * 点掉一层二次确认（Semi Popconfirm 的「确定」）。
+ *
+ * 为什么需要（2026-10-07）：正式下单 2026-10-06 起加了二次确认
+ * （主人当时定的范围明确包含「正式下单」——它会真的建订单、进入履约、不能一键撤回），
+ * Popconfirm 的按钮默认就是「确定」。脚本原来点完"确认正式下单"就在等报错，
+ * 二次确认没点掉、请求根本没发出去，于是表现成"未观察到数量不符阻断"。
+ * **功能是好的，是脚本没跟上那次改版。**
+ *
+ * 限定在 `.semi-popconfirm` 里找按钮，避免误点到页面上别的「确定」。
+ */
+async function clickPopconfirm(client, label = '确定') {
+  const result = await client.send('Runtime.evaluate', {
+    expression: `(() => {
+      const root = document.querySelector('.semi-popconfirm');
+      if (!root) return 'no-popconfirm';
+      const btn = Array.from(root.querySelectorAll('button'))
+        .find((node) => (node.innerText || '').trim() === ${JSON.stringify(label)});
+      if (!btn) return 'no-button';
+      btn.click();
+      return 'clicked';
+    })()`,
+    returnByValue: true,
+  })
+  return result.result.value
+}
+
 /** 等某个文字在页面上出现（交互后用它确认结果真的渲染了）。 */
 async function waitForText(client, text, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs
@@ -483,6 +544,10 @@ async function main() {
   let quoteId = quote?.id ?? null
   let orderId = firstOrder?.id ?? null
   const setupProblems = []
+
+  // 建任何报价明细之前，先把 SKU 的主数据确认掉（明细生成时会把主数据版本号
+  // 快照下来，晚一步补确认，这一版明细照样会被"未确认"拦在正式发送那一步）。
+  if (FIXTURES_ENABLED) confirmSkuMaster()
 
   // 订单中心为空时必须成功造单；失败要让 UI 冒烟失败，不能静默退回 /orders/1。
   if (!orderId) {
@@ -762,7 +827,10 @@ async function main() {
 
     if (FIXTURES_ENABLED) INTERACTIONS.push({
       name: '36-followup-required-plan', path: `/customers/${customerId}?tab=followups`,
-      clicks: ['记录跟进'], expect: ['下一步动作 *', '下次跟进时间 *', '保存后自动生成后续待办。'],
+      // 星号现在是 FormLabel 里的**独立标签**（不再拼在标签文字里，
+      // 为了让必填标记能单独上色），innerText 里就没有那个空格了 ——
+      // 所以这里写「下一步动作*」而不是「下一步动作 *」。
+      clicks: ['记录跟进'], expect: ['下一步动作*', '下次跟进时间*', '保存后自动生成后续待办。'],
       expectAll: true, followupPlan: true,
     }, {
       name: '37-followup-exemption', path: `/customers/${customerId}?tab=followups`,
@@ -908,9 +976,14 @@ async function main() {
           if(!selected.result.value) throw new Error('无法选择客户确认报价')
         }
         await sleep(200); await clickByText(client,'确认正式下单')
+        await sleep(300)
+        // 点掉二次确认，请求才会真的发出去（数量是 2 ≠ 原数量，后端应当回 422）
+        if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
         if(!await waitForText(client,'草稿明细、币种或付款条件与客户确认报价不一致')) { const diag=await client.send('Runtime.evaluate',{expression: `JSON.stringify({text:document.body.innerText,buttons:Array.from(document.querySelectorAll('button')).filter(n=>n.innerText.includes('确认正式下单')).map(n=>({text:n.innerText,disabled:n.disabled,aria:n.getAttribute('aria-disabled')}))})`,returnByValue:true}); throw new Error('未观察到数量不符阻断：'+diag.result.value) }
         await setQuantity(10000)
         await clickByText(client,'确认正式下单')
+        await sleep(300)
+        if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
         if(!await waitForText(client,'订单详情')) throw new Error('核对一致后没有进入正式订单')
         const orders=await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`,auth.token)
         if(orders.total!==1 || orders.items[0].total_amount!==200000) throw new Error('没有按确认报价建立一张正式订单')
@@ -1001,15 +1074,28 @@ async function main() {
         writeFileSync(join(OUT_DIR, '49-sample-source-detail.png'), Buffer.from(detailShot.data, 'base64'))
         await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${item.sampleSource.opportunityId}` })
         if (!await waitForText(client, 'CHKUI来源采购')) throw new Error('询价来源未加载')
-        if (await clickByText(client, '申请打样', { tag: 'a' }) !== 'clicked') throw new Error('询价没有打样入口')
+        // 「申请打样」等次要动作 2026-10-06 起收进了行内的「更多」下拉
+        // （11 个操作平铺时链接被压成 17px 宽、"申请打样"四个字竖着一字一行）。
+        // 所以要先点开下拉、再从菜单里点它 —— 直接找 <a>申请打样</a> 永远找不到，
+        // CI 上就表现成"询价没有打样入口"，看着像功能没了，其实是**脚本没跟上改版**。
+        await clickByText(client, '更多', { tag: 'a' })
+        await sleep(200)
+        if (await clickByText(client, '申请打样', { tag: '.semi-dropdown-item' }) !== 'clicked') {
+          throw new Error('询价没有打样入口（「更多」菜单里也没有）')
+        }
         if (!await waitForText(client, '原采购数量：10,000')) throw new Error('询价未带入原数量')
         await clickByText(client, '取消')
         await checkedJson(`/custom-inquiries/${item.sampleSource.inquiryId}/revise`, auth.token, {
           method: 'POST', body: JSON.stringify({ quantity: 20000, revision_note: 'UI 历史版本验收' }),
         })
         await client.send('Page.navigate', { url: `${APP_BASE}/inquiries?opportunity_id=${item.sampleSource.opportunityId}` })
-        await waitForText(client, '历史')
-        await clickByText(client, '历史', { tag: 'a' })
+        await waitForText(client, 'CHKUI来源采购')
+        // 「历史」同样在「更多」下拉里（只有版本 > 1 的记录才有这一项，
+        // 上一段刚 revise 过，所以这里应该有）。别再用 waitForText 等它出现 ——
+        // 菜单没展开时未必渲染，等不到就会白等满 8 秒。
+        await clickByText(client, '更多', { tag: 'a' })
+        await sleep(200)
+        await clickByText(client, '历史', { tag: '.semi-dropdown-item' })
         if (!await waitForText(client, '版本历史：')) throw new Error('询价历史未打开')
         let choseV1 = false
         for (let attempt = 0; attempt < 40; attempt += 1) {
