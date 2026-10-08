@@ -48,6 +48,9 @@ import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
@@ -60,7 +63,7 @@ from app.modules.user.model import User
 FAILURES: list[str] = []
 PREFIX = "CHKEMPTY"
 STAMP = str(int(time.time()))
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 STARTED_AT = datetime.now(UTC)
 
 

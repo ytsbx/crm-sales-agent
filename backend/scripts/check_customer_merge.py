@@ -23,7 +23,6 @@
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.request
@@ -31,11 +30,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select, text
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 from app.core.database import SessionLocal
 
 FAILURES: list[str] = []
-BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000/api/v1")
+BASE = require_api_base()
 PREFIX = "CHKMERGE"
 
 

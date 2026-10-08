@@ -37,11 +37,13 @@ R11：同一客户第二次进入回收预告时，**原负责人收不到通知
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import select, text
@@ -68,7 +70,7 @@ RULE_DAYS = 30
 #: 原负责人那条通知的标题（与 service.py 里的字符串一致）
 OWNER_TITLE = "客户回收预告"
 
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 
 #: ⚠️ 必须**显式**给 API_BASE，不给就拒跑。
 #:

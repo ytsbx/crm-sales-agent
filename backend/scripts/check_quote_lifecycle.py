@@ -11,6 +11,9 @@ from unittest.mock import patch
 import httpx
 
 from sqlalchemy import delete, select
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 from app.core.audit import AuditLog
 from app.core.config import settings

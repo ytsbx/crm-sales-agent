@@ -39,6 +39,9 @@ import time
 import urllib.error
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import text
@@ -50,7 +53,7 @@ from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.user.model import User
 
 FAILURES: list[str] = []
-BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000/api/v1")
+BASE = require_api_base()
 PREFIX = "CHKCANCEL"
 STAMP = str(int(time.time()))
 #: 业务规则拒绝

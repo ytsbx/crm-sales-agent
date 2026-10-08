@@ -32,10 +32,12 @@ CTE 的定义里就只剩"起点部门"这一条，递归那半句落到了**外
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.request
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
@@ -49,13 +51,8 @@ from app.core.data_scope import (
 )
 from app.core.database import SessionLocal
 
-if not os.environ.get("API_BASE"):
-    raise SystemExit(
-        "必须显式设置 API_BASE（不能依赖默认的 8000，那是开发后端）：\n"
-        "  API_BASE=http://127.0.0.1:8001/api/v1 DATABASE_URL=...crm_iso_test_xxx \\\n"
-        "    PYTHONPATH=. .venv/bin/python scripts/check_tenth_round_scope_assign.py"
-    )
-BASE = os.environ["API_BASE"].rstrip("/")
+# 地址与库的防呆统一收在 _test_support（判据只留一处）
+BASE = require_api_base()
 
 PREFIX = f"CHKSCOPE{int(time.time())}"
 FAILURES: list[str] = []

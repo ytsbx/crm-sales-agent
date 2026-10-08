@@ -48,6 +48,9 @@ def check_true(label, condition, detail=''):
     print(f'  {"OK  " if condition else "FAIL"} {label}{f"：{detail}" if detail else ""}')
     if not condition:
         FAILURES.append(label)
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 
 def require_isolated_db() -> str:

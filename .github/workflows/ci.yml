@@ -10,7 +10,10 @@
 # - 接口套件清单**不在本文件里硬编码**，读的是 ops/check_suites.txt——
 #   本地 ops/run_checks.sh 读同一个文件，避免"本地全绿但 CI 漏跑"（09-28 踩过）。
 #
-# 本地想跑同样的东西：ops/run_checks.sh（需要本机后端已在 8000 运行）。
+# 本地想跑同样的东西：ops/run_checks.sh —— 也要像这里一样显式给 API_BASE 与
+# DATABASE_URL（指向一次性隔离库的后端，例如 8001 + crm_iso_test）。
+# 2026-10-08 起套件与 run_checks.sh 都有防呆：API_BASE 不许指 8000（开发后端）、
+# 库名必须是一次性库，否则直接退出（判据见 backend/scripts/_test_support.py）。
 
 name: CI
 

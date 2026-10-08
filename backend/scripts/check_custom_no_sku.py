@@ -20,7 +20,6 @@
 """
 
 import asyncio
-import os
 import json
 import sys
 import time
@@ -30,8 +29,11 @@ import urllib.request
 # 外币夹具：造美元报价前要先把业务口径放开（业务方也是这么做的），跑完收回。
 # 见 scripts/_fx_scope.py 的说明 —— 收不回去会连累后面所有套件。
 from _fx_scope import open_export, restore_domestic
+from _test_support import require_api_base, require_isolated_db
 
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+require_isolated_db()
+
+BASE = require_api_base()
 FAILURES = []
 STAMP = str(int(time.time()))
 

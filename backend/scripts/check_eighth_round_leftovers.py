@@ -38,6 +38,9 @@ import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
@@ -51,7 +54,7 @@ from app.modules.product import master as master_svc
 from app.modules.user.model import User
 
 FAILURES: list[str] = []
-BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000/api/v1")
+BASE = require_api_base()
 PREFIX = "CHK8LEFT"
 STAMP = str(int(time.time()))
 

@@ -35,6 +35,9 @@ from threading import Thread
 # pydantic-settings 的优先级是「进程环境变量 > .env」，所以这里能把 .env 里
 # 的真实企微凭据盖掉——这正是"演练不会发真实消息"的保证。
 # ---------------------------------------------------------------------------
+from _test_support import require_isolated_db
+
+require_isolated_db()
 FAKE_WECOM_PORT = 9101
 os.environ['WECOM_API_BASE'] = f'http://127.0.0.1:{FAKE_WECOM_PORT}'
 os.environ['WECOM_CORP_ID'] = 'ww-e2e-fake'

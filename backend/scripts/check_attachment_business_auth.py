@@ -37,6 +37,9 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import select, text
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 from app.core.audit import AuditLog
 from app.core.config import settings
@@ -48,7 +51,7 @@ from app.modules.file import storage
 from app.modules.quote.model import Quote
 from app.modules.user.model import Role, User, role_permissions
 
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 PREFIX = "CHKATTAUTH"
 STAMP = str(int(time.time()))
 FAILURES: list[str] = []

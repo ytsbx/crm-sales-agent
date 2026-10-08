@@ -79,12 +79,14 @@
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from decimal import Decimal
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
@@ -105,13 +107,8 @@ from app.modules.user.model import User
 #: 本套件会真的落物流试算记录、建客户与费率。别的套件默认打 8000（开发后端），
 #: 一旦忘了传 API_BASE，请求就会打到**开发库**：夹具建在隔离库、写入落在开发库。
 #: 宁可跑不起来，也别悄悄写错库（`check_pool_wait_and_settings` 同款防呆）。
-if not os.environ.get("API_BASE"):
-    raise SystemExit(
-        "必须显式设置 API_BASE（不能依赖默认的 8000，那是开发后端）：\n"
-        "  API_BASE=http://127.0.0.1:8001/api/v1 DATABASE_URL=...crm_iso_test_xxx \\\n"
-        "    PYTHONPATH=. .venv/bin/python scripts/check_tenth_round_logistics.py"
-    )
-BASE = os.environ["API_BASE"].rstrip("/")
+# 地址与库的防呆统一收在 _test_support（判据只留一处）
+BASE = require_api_base()
 
 MARKER = f"CHKLOG{int(time.time())}"
 FAILURES: list[str] = []

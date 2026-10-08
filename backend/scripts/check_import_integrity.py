@@ -30,10 +30,12 @@
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.request
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import select, text
@@ -46,7 +48,7 @@ from app.modules.user.model import Department, User
 FAILURES: list[str] = []
 PREFIX = "CHKIMP"
 STAMP = str(int(time.time()))
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 
 #: 和别的套件同样的要求：不给 API_BASE 就拒跑，避免打到开发后端
 if not BASE:

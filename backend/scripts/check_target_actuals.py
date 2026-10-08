@@ -42,6 +42,9 @@ from decimal import Decimal
 from urllib.parse import quote, urlparse
 
 from sqlalchemy import text
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 from app.core.config import settings
 from app.core.database import SessionLocal

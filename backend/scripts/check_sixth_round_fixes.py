@@ -51,11 +51,13 @@
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata（缺表会 NoReferencedTableError）
 from sqlalchemy import text
@@ -74,7 +76,7 @@ from app.modules.wecom import service as wecom_service
 from app.modules.wecom.model import WeComSyncJob, WeComTransferItem
 
 FAILURES: list[str] = []
-BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000/api/v1")
+BASE = require_api_base()
 PREFIX = "CHK6TH"
 STAMP = str(int(time.time()))
 #: 被拒的正常表现：403（权限/数据范围）或 404（不可见时不暴露存在性）

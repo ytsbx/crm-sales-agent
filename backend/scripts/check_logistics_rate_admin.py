@@ -42,8 +42,11 @@ import os
 import urllib.error
 import urllib.request
 from uuid import uuid4
+from _test_support import require_api_base, require_isolated_db
 
-BASE = (os.environ.get("API_BASE") or "").rstrip("/")
+require_isolated_db()
+
+BASE = require_api_base()
 PREFIX = "CHKRATE" + uuid4().hex[:6]
 FAILURES: list[str] = []
 

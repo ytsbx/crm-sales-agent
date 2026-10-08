@@ -13,9 +13,15 @@ import asyncio
 
 from sqlalchemy import select
 
-from app.core.database import SessionLocal
-from app.modules.settings.model import SystemSetting
-from app.modules.settings.service import DEFAULT_SETTINGS
+from _test_support import require_isolated_db
+
+# 它会改系统配置 —— 决不允许连到正式库（见 _test_support 的「防呆」一节）。
+# 必须排在 `from app.*` 之前：settings 在 import 时就定下了连哪个库。
+require_isolated_db()
+
+from app.core.database import SessionLocal  # noqa: E402
+from app.modules.settings.model import SystemSetting  # noqa: E402
+from app.modules.settings.service import DEFAULT_SETTINGS  # noqa: E402
 
 
 async def main() -> int:

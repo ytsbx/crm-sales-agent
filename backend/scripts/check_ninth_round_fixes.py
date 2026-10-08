@@ -56,6 +56,9 @@ import time
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata（缺表会 NoReferencedTableError）
 from sqlalchemy import text
@@ -65,7 +68,7 @@ from app.core.security import hash_password
 from app.modules.user.model import Role, User
 
 FAILURES: list[str] = []
-BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000/api/v1")
+BASE = require_api_base()
 PREFIX = "CHK9TH"
 STAMP = str(int(time.time()))
 DENIED = (403, 404)

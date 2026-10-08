@@ -30,15 +30,17 @@
 """
 
 import asyncio
-import os
 import json
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
+from _test_support import require_api_base, require_isolated_db
 
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+require_isolated_db()
+
+BASE = require_api_base()
 RUN = str(int(time.time()))[-6:]
 #: 本脚本开始跑的时刻。清库靠它圈定"这一轮造的"数据——见 clean() 的说明。
 SCRIPT_STARTED_AT = datetime.now(UTC).isoformat()

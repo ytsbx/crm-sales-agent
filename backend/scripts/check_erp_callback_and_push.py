@@ -25,12 +25,14 @@
 
 import asyncio
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from decimal import Decimal
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # 副作用导入：保证所有模型都注册进 metadata（下面按 ORM 查询）
 from sqlalchemy import select, text
@@ -49,7 +51,7 @@ from scripts._test_support import align_id_sequences
 #: （`import app.main` 本身只为触发模型注册，不引用它静态检查必报未使用）。
 MODELS_REGISTERED = app.main.__name__
 
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 FAILURES: list[str] = []
 PREFIX = "CHKERP"
 STAMP = str(int(time.time()))

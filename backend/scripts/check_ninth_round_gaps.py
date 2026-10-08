@@ -43,6 +43,9 @@ import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import text
@@ -57,7 +60,7 @@ from app.modules.user.model import Role, User
 FAILURES: list[str] = []
 PREFIX = "CHK9GAP"
 STAMP = str(int(time.time()))
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 PASSWORD = "CHK9gap123"
 #: 被拦的动作：STATUS_NOT_ALLOWED(40002) 在本项目一律是 **400**，参数错误是 422
 REJECTED = (400, 422)

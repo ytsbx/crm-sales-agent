@@ -18,14 +18,16 @@
 """
 
 import asyncio
-import os
 import json
 import sys
 import time
 import urllib.error
 import urllib.request
+from _test_support import require_api_base, require_isolated_db
 
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+require_isolated_db()
+
+BASE = require_api_base()
 RUN = str(int(time.time()))[-6:]
 TAG = f'CHK{RUN}'
 FAILURES = []

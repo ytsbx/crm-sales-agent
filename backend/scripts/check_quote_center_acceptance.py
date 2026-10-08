@@ -23,14 +23,16 @@ import json
 
 # 外币夹具：造美元报价前要先把业务口径放开，跑完收回（见 scripts/_fx_scope.py）
 from _fx_scope import open_export, restore_domestic
-import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
+from _test_support import require_api_base, require_isolated_db
 
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+require_isolated_db()
+
+BASE = require_api_base()
 RUN = str(int(time.time()))[-6:]
 #: 绑进 SQL 的时间**必须是真的 datetime**：asyncpg 不接受字符串。
 #: 这里原先传的是 time.strftime(...) 得到的字符串，于是整段"自动留痕清理"每次

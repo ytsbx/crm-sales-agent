@@ -29,13 +29,15 @@
 
 import asyncio
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from decimal import Decimal
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import select, text
@@ -61,7 +63,7 @@ from app.modules.order.model import SalesOrder
 from app.modules.product.model import Product, Sku, SkuFieldAuthority, SkuIdentitySource, SkuMasterVersion
 from app.modules.user.model import User
 
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 FAILURES: list[str] = []
 PREFIX = "CHKCOLLECT"
 STAMP = str(int(time.time()))

@@ -40,6 +40,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from openpyxl import load_workbook  # noqa: E402
 from sqlalchemy import select, text  # noqa: E402
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 from app.core.config import settings  # noqa: E402
 from app.core.database import SessionLocal  # noqa: E402

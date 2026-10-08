@@ -34,13 +34,15 @@
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import select, text
@@ -59,7 +61,7 @@ FAILURES: list[str] = []
 PREFIX = "CHKSCOPEAI"
 STAMP = str(int(time.time()))
 
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 
 # ⚠️ 必须**显式**给 API_BASE：本套件会写夹具、也会真的调接口。
 # 忘了传就会打到开发后端（默认 8000），夹具落在隔离库、请求落在开发库。

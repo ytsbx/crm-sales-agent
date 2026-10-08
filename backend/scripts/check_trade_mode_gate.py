@@ -53,8 +53,11 @@ from decimal import Decimal
 from uuid import uuid4
 
 from sqlalchemy import select, text
+from _test_support import require_api_base, require_isolated_db
 
-BASE = (os.environ.get("API_BASE") or "").rstrip("/")
+require_isolated_db()
+
+BASE = require_api_base()
 PREFIX = "CHKTRADEMODE" + uuid4().hex[:6]
 FAILURES: list[str] = []
 

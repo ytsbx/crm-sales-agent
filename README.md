@@ -108,7 +108,10 @@ PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ## 怎么验证（改完必须跑）
 
 ```bash
-bash ops/run_checks.sh          # 静态检查 + pytest + 全部回归套件（与 CI 同清单）
+# 必须显式指定「一次性隔离库的后端 + 一次性库」——不给就拒跑（2026-10-08 起）：
+API_BASE=http://127.0.0.1:8001/api/v1 \
+DATABASE_URL=postgresql+asyncpg://crm:***@127.0.0.1:5432/crm_iso_test \
+  bash ops/run_checks.sh        # 静态检查 + pytest + 全部回归套件（与 CI 同清单）
 node ops/smoke_ui.mjs           # 28 页 + 4 交互逐页截图、抓控制台报错（不依赖 Playwright）
 ```
 
@@ -116,6 +119,14 @@ node ops/smoke_ui.mjs           # 28 页 + 4 交互逐页截图、抓控制台�
 
 > ⚠️ `scripts/check_*.py` 会**清库**，并且会留下 `CHK*` 前缀的测试数据、把价格权限改成 5%。
 > **不要在验收/演示环境随手跑。**
+>
+> 2026-10-08 起，套件与 `run_checks.sh` 都**必须先过防呆**：`API_BASE` 不许指向
+> 8000（开发后端）、`DATABASE_URL` 必须是一次性库（`crm_iso*` / `crm_check*` /
+> `crm_test*` 开头，或 `_test` 结尾），否则直接退出。判据只有一处：
+> `backend/scripts/_test_support.py`。真要在开发环境上临时跑一次，加
+> `ALLOW_DEV_TARGETS=1`（明知故犯，会大声提醒）。
+> 之前"不显式指定就直接跑"，等于在开发库上跑测试——开发库里因此留下过测试角色、
+> 测试账号和订单残渣。
 
 ## 约定
 

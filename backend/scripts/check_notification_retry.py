@@ -22,6 +22,9 @@ import asyncio
 import sys
 from datetime import UTC, datetime, timedelta
 
+from _test_support import require_isolated_db
+
+require_isolated_db()
 FAILURES = []
 
 

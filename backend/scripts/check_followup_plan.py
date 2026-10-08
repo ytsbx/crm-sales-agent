@@ -7,6 +7,9 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import String, delete, func, select
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 from app.core.audit import AuditLog
 from app.core.config import settings

@@ -26,15 +26,17 @@
 
 import asyncio
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
+from _test_support import require_api_base, require_isolated_db
 
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+require_isolated_db()
+
+BASE = require_api_base()
 RUN = str(int(time.time()))[-6:]
 #: 本脚本开始跑的时刻：导出告警通知不带 CHK 前缀，只能按时间窗圈定。
 SCRIPT_STARTED_AT = datetime.now(UTC).isoformat()

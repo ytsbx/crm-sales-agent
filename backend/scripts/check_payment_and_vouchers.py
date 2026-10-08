@@ -39,12 +39,14 @@
 import asyncio
 import io
 import json
-import os
 import threading
 import time
 import urllib.error
 import urllib.request
 from decimal import Decimal
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
@@ -62,13 +64,8 @@ from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.user.model import User
 
 #: ⚠️ 必须**显式**给 API_BASE，不给就拒跑（会真建订单/回款/凭证夹具）。
-if not os.environ.get("API_BASE"):
-    raise SystemExit(
-        "必须显式设置 API_BASE（不能依赖默认的 8000，那是开发后端）：\n"
-        "  API_BASE=http://127.0.0.1:8001/api/v1 DATABASE_URL=...crm_iso_test_xxx \\\n"
-        "    PYTHONPATH=. .venv/bin/python scripts/check_payment_and_vouchers.py"
-    )
-BASE = os.environ["API_BASE"].rstrip("/")
+# 地址与库的防呆统一收在 _test_support（判据只留一处）
+BASE = require_api_base()
 
 MARKER = f"CHKPAY{int(time.time())}"
 FAILURES: list[str] = []

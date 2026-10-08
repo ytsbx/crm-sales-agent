@@ -38,7 +38,6 @@
 
 import asyncio
 import json
-import os
 import sys
 import time
 import urllib.error
@@ -47,10 +46,11 @@ import urllib.request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+from _test_support import require_api_base
 
 from app.core.config import settings
 
-BASE = os.environ.get("API_BASE", "")
+BASE = require_api_base()
 if not BASE:
     raise SystemExit(
         "必须显式设置 API_BASE（本套件会写夹具并调接口，不能默认打到开发后端 8000）"

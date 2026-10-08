@@ -46,7 +46,10 @@ import urllib.request
 
 #: ⚠️ 这两个变量必须在 import app.* **之前**校验：settings 在 import 时就读
 #: DATABASE_URL，指错库的代价是直接写别人的数据。
-BASE = (os.environ.get("API_BASE") or "").rstrip("/")
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
+BASE = require_api_base()
 DATABASE_URL = os.environ.get("DATABASE_URL") or ""
 if not BASE:
     raise SystemExit(

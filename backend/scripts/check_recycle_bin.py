@@ -57,6 +57,9 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import select, text
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 from app.core.config import settings
 from app.core.database import SessionLocal

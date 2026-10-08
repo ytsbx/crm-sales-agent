@@ -26,6 +26,9 @@ import asyncio
 import sys
 
 from sqlalchemy import text
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 from app.core.database import SessionLocal
 

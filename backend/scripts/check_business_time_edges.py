@@ -37,6 +37,9 @@ import time as time_module
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 

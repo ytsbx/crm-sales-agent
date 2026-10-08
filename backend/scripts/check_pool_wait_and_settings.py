@@ -30,11 +30,13 @@
 
 import asyncio
 import json
-import os
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import text
@@ -58,13 +60,8 @@ REJECTED = (400, 422)
 #: （2026-10-06 实测踩过：漏传一次，开发库被写进两行配置和一批审计。）
 #: 这里的检查和 smoke_ui.mjs 要求显式 DATABASE_URL 是同一个思路：宁可跑不起来，
 #: 也别悄悄写错库。
-if not os.environ.get("API_BASE"):
-    raise SystemExit(
-        "必须显式设置 API_BASE（不能依赖默认的 8000，那是开发后端）：\n"
-        "  API_BASE=http://127.0.0.1:8001/api/v1 DATABASE_URL=...crm_sales_agent_test \\\n"
-        "    PYTHONPATH=. .venv/bin/python scripts/check_pool_wait_and_settings.py"
-    )
-BASE = os.environ["API_BASE"]
+# 地址与库的防呆统一收在 _test_support（判据只留一处）
+BASE = require_api_base()
 
 NOTICE_KEY = "pool_recycle_notice_days"
 DEFER_KEY = "pool_recycle_defer_days"

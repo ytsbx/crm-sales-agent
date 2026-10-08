@@ -27,7 +27,13 @@ from datetime import datetime
 
 from sqlalchemy import text
 
-from app.core.database import SessionLocal
+from _test_support import require_isolated_db
+
+# 这个脚本会真的删数据 —— 决不允许连到正式库（见 _test_support 的「防呆」一节）。
+# 必须排在 `from app.*` 之前：settings 在 import 时就定下了连哪个库。
+require_isolated_db()
+
+from app.core.database import SessionLocal  # noqa: E402
 
 ENV_KEY = 'TEST_RUN_STARTED_AT'
 

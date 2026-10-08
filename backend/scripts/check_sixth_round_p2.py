@@ -48,6 +48,9 @@ import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime, timedelta
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 from sqlalchemy import text
@@ -61,7 +64,7 @@ from app.modules.settings.model import PublicPoolRecycleCandidate, PublicPoolRul
 from app.modules.user.model import Department, Role, User
 
 FAILURES: list[str] = []
-BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000/api/v1")
+BASE = require_api_base()
 PREFIX = "CHK6P2"
 STAMP = str(int(time.time()))
 REJECTED = (400, 422)

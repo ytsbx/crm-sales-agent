@@ -10,12 +10,15 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from sqlalchemy import select, text
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import hash_password
 
-BASE = os.getenv('API_BASE', 'http://127.0.0.1:8000/api/v1').rstrip('/')
+BASE = require_api_base()
 PREFIX = f'CHKAIN{uuid4().hex[:8]}'
 USERS = {}
 CASES = {}

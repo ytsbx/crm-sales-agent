@@ -40,6 +40,9 @@ import time
 import types
 
 from sqlalchemy import select, text
+from _test_support import require_isolated_db
+
+require_isolated_db()
 
 from app.core.database import SessionLocal
 from app.core.deps import CurrentUser

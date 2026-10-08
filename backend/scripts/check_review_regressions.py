@@ -18,11 +18,14 @@ from decimal import Decimal
 from urllib.parse import urlparse
 
 from sqlalchemy import text
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 
-BASE = os.getenv("API_BASE", os.getenv("CRM_TEST_BASE_URL", "http://127.0.0.1:8000/api/v1")).rstrip("/")
+BASE = require_api_base()
 PREFIX = f"CHKREV{int(time.time())}"
 FAILURES: list[str] = []
 FIXTURE_IDS: dict[str, int] = {}

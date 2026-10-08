@@ -38,7 +38,6 @@
 
 import asyncio
 import json
-import os
 import sys
 import threading
 import time
@@ -48,18 +47,15 @@ import urllib.request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 from app.core.config import settings
 
-if not os.environ.get('API_BASE'):
-    # 默认的 8000 是开发后端：本套件会建/停用户与角色，打到开发库等于拿真实数据做实验。
-    raise SystemExit(
-        '必须显式设置 API_BASE（默认的 http://127.0.0.1:8000 是开发后端）。\n'
-        '例：API_BASE="http://127.0.0.1:8001/api/v1" PYTHONPATH=. .venv/bin/python '
-        'scripts/check_tenth_round_roles.py'
-    )
+# 地址与库的防呆统一收在 _test_support（判据只留一处）
 
-BASE = os.environ['API_BASE']
+BASE = require_api_base()
 RUN = str(int(time.time()))[-6:]
 FAILURES: list[str] = []
 

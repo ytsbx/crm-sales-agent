@@ -27,9 +27,11 @@
 """
 
 import asyncio
-import os
 import sys
 
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 sys.path.insert(0, '.')
 
 # --------------------------------------------------------------------------
@@ -111,7 +113,7 @@ def e2e():
     import urllib.error
     import urllib.request
 
-    base = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+    base = require_api_base()
 
     def call(method, path, token=None, body=None):
         data = json.dumps(body).encode() if body is not None else None

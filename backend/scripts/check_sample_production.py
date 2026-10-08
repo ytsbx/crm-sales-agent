@@ -25,7 +25,6 @@
 """
 
 import asyncio
-import os
 import json
 import sys
 import time
@@ -33,11 +32,14 @@ import urllib.error
 import urllib.request
 
 from sqlalchemy import select, text
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 
 from app.core.database import SessionLocal
 
 FAILURES = []
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+BASE = require_api_base()
 PREFIX = 'CHKSP'
 
 

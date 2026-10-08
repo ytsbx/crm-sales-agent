@@ -27,6 +27,9 @@ import json
 import sys
 import time
 
+from _test_support import require_isolated_db
+
+require_isolated_db()
 RUN = str(int(time.time()))[-6:]
 FAILURES = []
 

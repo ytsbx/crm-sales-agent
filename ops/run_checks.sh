@@ -1,20 +1,41 @@
 #!/usr/bin/env bash
 # 本地一键全量验证（与 CI 同一份清单）：静态检查 + 接口回归。
 # 套件清单来自 ops/check_suites.txt（唯一真源），CI 读的是同一个文件。
-# 前提：后端已在 127.0.0.1:8000 运行（没跑就先起后端，脚本会提示）。
 # UI 冒烟默认跳过，加 --ui 一起跑（需要本机 Chrome/Edge + 前端 5173 在跑）。
 #
+# ⚠️ 2026-10-08 起：下面这两样**必须显式给**，不给就拒绝跑：
+#     API_BASE      一次性隔离库后端的地址，**不能是 8000**（那是开发后端）
+#     DATABASE_URL  一次性隔离库，库名以 crm_iso / crm_check / crm_test 开头，或 _test 结尾
+#   从前 API_BASE 默认就是 8000，而 backend/.env 里的 DATABASE_URL 指向开发库
+#   —— 于是"什么都不配直接跑"等于在正式库上跑测试，开发库里因此留下过测试角色、
+#   测试账号和订单残渣。判据收在 backend/scripts/_test_support.py 一处，这里复用。
+#   真要在开发环境上跑一次：加 ALLOW_DEV_TARGETS=1（明知故犯，会大声提醒）。
+#
 # 用法：
-#   bash ops/run_checks.sh          # 静态 + 接口回归
-#   bash ops/run_checks.sh --ui     # 再加 UI 冒烟
+#   API_BASE=http://127.0.0.1:8001/api/v1 \
+#   DATABASE_URL=postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_test \
+#     bash ops/run_checks.sh          # 静态 + 接口回归
+#   ... --ui                          # 再加 UI 冒烟
 
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SUITES_FILE="$SCRIPT_DIR/check_suites.txt"
-API_BASE="${API_BASE:-http://127.0.0.1:8000/api/v1}"
+cd "$SCRIPT_DIR/../backend"
+
+echo "== 0. 防呆（不许打到开发后端 / 正式库）=="
+# 判据不在这里重写：直接问 backend/scripts/_test_support.py（全项目只留那一处）
+if ! PYTHONPATH=. .venv/bin/python -c '
+import sys
+sys.path.insert(0, "scripts")
+from _test_support import require_api_base, require_isolated_db
+print("   接口地址 =", require_api_base())
+print("   测试库   =", require_isolated_db())
+'; then
+  echo "防呆拦住了：按上面的提示给 API_BASE（隔离后端）和一次性库的 DATABASE_URL 再跑。"
+  exit 1
+fi
 API_ORIGIN="${API_BASE%/api/v1}"
 export API_BASE
-cd "$SCRIPT_DIR/../backend"
 
 # 本轮起点：收尾清扫（见下面 2.5）靠它划出"这轮跑出来的数据"，之前的一律不动
 TEST_RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
@@ -27,10 +48,11 @@ if [[ ! -f "$SUITES_FILE" ]]; then
   exit 1
 fi
 
-echo "== 0. 后端可达性 =="
-if ! curl -sf -o /dev/null "$API_ORIGIN/docs"; then
-  echo "后端没在 $API_ORIGIN 运行。先启动后端，或设置 API_BASE："
-  echo "  cd backend && PYTHONPATH=. .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000"
+echo "== 0.1 后端可达性 =="
+if ! curl -sf --noproxy '*' -o /dev/null "$API_ORIGIN/docs"; then
+  echo "后端没在 $API_ORIGIN 运行。先把这个隔离后端起起来："
+  echo "  cd backend && DATABASE_URL=<一次性库> PYTHONPATH=. .venv/bin/uvicorn \\"
+  echo "      app.main:app --host 127.0.0.1 --port 8001"
   exit 1
 fi
 echo "backend ready"

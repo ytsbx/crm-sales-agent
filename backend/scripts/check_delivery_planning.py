@@ -2,10 +2,13 @@
 import asyncio
 import os
 from urllib.parse import urlparse
+from _test_support import require_api_base, require_isolated_db
+
+require_isolated_db()
 from scripts.check_schedule_change import call, login, cleanup
 
 async def main():
-    assert urlparse(os.environ['API_BASE']).hostname in ('127.0.0.1', 'localhost')
+    assert urlparse(require_api_base()).hostname in ('127.0.0.1', 'localhost')
     assert 'test' in os.environ['DATABASE_URL']
     token = login('admin', 'admin123')
     oid = None
