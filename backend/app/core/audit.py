@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, String, func
+from sqlalchemy import BigInteger, DateTime, Index, String, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,6 +13,13 @@ from app.core.base import Base, IdMixin, JSONType
 
 class AuditLog(Base, IdMixin):
     __tablename__ = "audit_logs"
+    #: 按「业务类型 + 对象 id」反查用（回收站要看"这条是谁删的"）。
+    #: `id DESC` 是配合「取最新一条」的写法 —— 「删掉 → 恢复 → 再删」之后
+    #: 要显示**本次**那个人，不能翻出第一次的旧留痕。建法见迁移 `a7c1e5b9d3f2`。
+    #: 这张表是全项目长得最快的一张，没有它每次打开回收站都是全表扫描。
+    __table_args__ = (
+        Index("ix_audit_logs_business", "business_type", "business_id", desc("id")),
+    )
 
     operator_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     source: Mapped[str] = mapped_column(String(32), default="WEB")  # WEB/API/AGENT/INTEGRATION/SYSTEM

@@ -32,9 +32,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import AuditLog
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
@@ -54,10 +57,121 @@ def _iso(value) -> str | None:
     return value.isoformat() if value else None
 
 
+# ================================================================ 操作人与操作方式
+#
+# 回收站要回答两个问题：「谁把他删了」和「他是怎么没的」。
+#
+# 操作人**只记在 `audit_logs`**（`business_type` / `business_id` / `operator_id`），
+# 四类对象各一个 `business_type`。客户的"被合并"另有一份更精确的留痕
+# （`customer_merge_logs.operator_id`），那边直接用，不绕流水账。
+#
+# 「怎么没的」只有**真有两种来源**的对象才有意义：
+#   客户 —— 有人直接删的 / 被合并掉的（并进别人，自己消失）
+#   SKU  —— 有人单独删的 / 跟着它所属的产品一起被删的
+# 线索和产品只可能是被人直接删的，前端也就不为它们单列一栏
+# （字段照样下发，四个接口保持同形，省得前端两套写法）。
+
+REMOVED_DIRECT = "direct"
+REMOVED_MERGED = "merged"
+REMOVED_WITH_PRODUCT = "with_product"
+
+
+async def _latest_delete_audits(
+    session: AsyncSession, pairs: dict[str, list[int]]
+) -> dict[tuple[str, int], tuple[int | None, datetime]]:
+    """一批「业务类型 + 对象 id」→（操作人 id, 操作时刻），取**最新一条**删除留痕。
+
+    一次查询取回整页要的人 —— 别逐条去查，列表页 20 行就是 20 次往返。
+
+    取**最新**一条是刻意的：「删掉 → 恢复 → 再删」之后要显示的是**本次**谁删的，
+    不能翻出第一次那条旧留痕。`order_by(id.desc())` + `setdefault` 正好留下最新的。
+
+    ⚠️ 依赖 `audit_logs` 上 `(business_type, business_id)` 的索引（迁移 `a7c1e5b9d3f2`）。
+    少了它，每次打开回收站都要把这本流水账从头翻一遍。
+
+    留痕里 `operator_id` 可能为空（历史数据、系统动作）—— 调用方据此标「待核实」，
+    **绝不能拿负责人顶替**：负责人说的是"这客户归谁管"，跟"谁删的"是两件事。
+    """
+    cleaned = {btype: sorted({i for i in ids if i}) for btype, ids in pairs.items()}
+    cleaned = {btype: ids for btype, ids in cleaned.items() if ids}
+    if not cleaned:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                AuditLog.business_type,
+                AuditLog.business_id,
+                AuditLog.operator_id,
+                AuditLog.created_at,
+            )
+            .where(
+                AuditLog.action == "delete",
+                or_(
+                    *[
+                        and_(AuditLog.business_type == btype, AuditLog.business_id.in_(ids))
+                        for btype, ids in cleaned.items()
+                    ]
+                ),
+            )
+            .order_by(AuditLog.id.desc())
+        )
+    ).all()
+    out: dict[tuple[str, int], tuple[int | None, datetime]] = {}
+    for btype, bid, operator_id, created_at in rows:
+        out.setdefault((str(btype), int(bid)), (operator_id, created_at))
+    return out
+
+
+def _delete_info(
+    audits: dict[tuple[str, int], tuple[int | None, datetime]],
+    btype: str,
+    oid: int,
+    names: dict[int, str],
+) -> tuple[int | None, str | None, bool]:
+    """留痕 →（操作人 id, 操作人名字, 是否"待核实"）。"""
+    hit = audits.get((btype, oid))
+    if hit is None or hit[0] is None:
+        return None, None, True
+    return hit[0], names.get(hit[0]), False
+
+
+def _pick_sku_removal(
+    deleted_at: datetime,
+    sku_hit: tuple[int | None, datetime] | None,
+    product_hit: tuple[int | None, datetime] | None,
+) -> tuple[str, tuple[int | None, datetime] | None, bool]:
+    """SKU 是**怎么**没掉的：挑与 `deleted_at` 时间上最贴近的那条留痕。
+
+    为什么不能简单看「SKU 有没有自己的删除留痕」：`删除 → 恢复 → 再删` 之后，
+    SKU 自己的**旧**留痕还在，而本次可能是跟着产品删的（或反过来）。两条候选
+    来自不同一次操作，只有**与 `deleted_at` 同一次**的那条才对得上时间。
+    审计和 `deleted_at` 是同一笔事务写下的，相差毫秒级；不同次操作则差得远。
+    """
+    candidates: list[tuple[float, str, tuple[int | None, datetime]]] = []
+    if sku_hit is not None:
+        candidates.append((abs((sku_hit[1] - deleted_at).total_seconds()), REMOVED_DIRECT, sku_hit))
+    if product_hit is not None:
+        candidates.append(
+            (abs((product_hit[1] - deleted_at).total_seconds()), REMOVED_WITH_PRODUCT, product_hit)
+        )
+    if not candidates:
+        return REMOVED_DIRECT, None, True
+    candidates.sort(key=lambda item: item[0])
+    _, via, hit = candidates[0]
+    return via, hit, False
+
+
 # ============================================================ 线索
 
 
-def serialize_recycle_lead(lead: Lead, *, owner_name: str | None = None) -> dict:
+def serialize_recycle_lead(
+    lead: Lead,
+    *,
+    owner_name: str | None = None,
+    deleted_by_id: int | None = None,
+    deleted_by_name: str | None = None,
+    deleted_by_pending: bool = False,
+) -> dict:
     return {
         "id": lead.id,
         "name": lead.name,
@@ -66,9 +180,17 @@ def serialize_recycle_lead(lead: Lead, *, owner_name: str | None = None) -> dict
         "mobile": lead.mobile,
         "status": lead.status,
         "status_label": lead_service.STATUS_LABEL.get(lead.status, lead.status),
+        # 【负责人】这线索原来归谁管。与下面的"谁删的"是两件事，别混。
         "owner_id": lead.owner_id,
         "owner_name": owner_name,
         "deleted_at": _iso(lead.deleted_at),
+        # 【谁删的】取自流水账里最新一条删除留痕。线索只可能是被人直接删的，
+        # 所以没有 `removed_via` 这个字段（前端也不为它单列一栏）。
+        "deleted_by_id": deleted_by_id,
+        "deleted_by_name": deleted_by_name,
+        # 留痕里没有操作人（老数据 / 流水账缺失）→ 前端显示「历史操作人待核实」，
+        # **不拿负责人顶替**。
+        "deleted_by_pending": deleted_by_pending,
         "created_at": _iso(lead.created_at),
     }
 
@@ -91,15 +213,38 @@ async def list_deleted_leads(
     rows, total = await paginate(
         session, await _deleted_lead_stmt(user, session), page, page_size
     )
-    owners = await customer_service.owner_names(session, [r.owner_id for r in rows])
-    items = [serialize_recycle_lead(r, owner_name=owners.get(r.owner_id)) for r in rows]
+    audits = await _latest_delete_audits(session, {"lead": [r.id for r in rows]})
+    # 负责人和操作人可能不是同一个人，两批 id 一起取名（`owner_names` 就是
+    # "按用户 id 取名字"，名字虽有 owner 二字，功能是通用的，不另写一份）
+    owners = await customer_service.owner_names(
+        session, [r.owner_id for r in rows] + [op for op, _ in audits.values()]
+    )
+    items = []
+    for row in rows:
+        by_id, by_name, pending = _delete_info(audits, "lead", row.id, owners)
+        items.append(
+            serialize_recycle_lead(
+                row,
+                owner_name=owners.get(row.owner_id),
+                deleted_by_id=by_id,
+                deleted_by_name=by_name,
+                deleted_by_pending=pending,
+            )
+        )
     return items, total
 
 
 # ============================================================ 产品 / SKU
 
 
-def serialize_recycle_product(product: Product, *, deleted_sku_count: int = 0) -> dict:
+def serialize_recycle_product(
+    product: Product,
+    *,
+    deleted_sku_count: int = 0,
+    deleted_by_id: int | None = None,
+    deleted_by_name: str | None = None,
+    deleted_by_pending: bool = False,
+) -> dict:
     return {
         "id": product.id,
         "name": product.name,
@@ -110,6 +255,10 @@ def serialize_recycle_product(product: Product, *, deleted_sku_count: int = 0) -
         # 恢复这个产品时，会连带把它下面这些 SKU 一起捡回来 —— 先让人知道有几条
         "deleted_sku_count": deleted_sku_count,
         "deleted_at": _iso(product.deleted_at),
+        # 【谁删的】同上。产品也只可能是被人直接删的，没有 `removed_via`。
+        "deleted_by_id": deleted_by_id,
+        "deleted_by_name": deleted_by_name,
+        "deleted_by_pending": deleted_by_pending,
         "created_at": _iso(product.created_at),
     }
 
@@ -120,6 +269,10 @@ def serialize_recycle_sku(
     product_name: str | None = None,
     product_deleted: bool = False,
     code_occupied: bool = False,
+    removed_via: str = REMOVED_DIRECT,
+    deleted_by_id: int | None = None,
+    deleted_by_name: str | None = None,
+    deleted_by_pending: bool = False,
 ) -> dict:
     return {
         "id": sku.id,
@@ -133,6 +286,15 @@ def serialize_recycle_sku(
         "product_deleted": product_deleted,
         # 编码被别的 SKU 占着（当前库里不可能，见 sku_code_occupied 的说明）
         "code_occupied": code_occupied,
+        # 【怎么没的】`direct`＝有人单独删了它；`with_product`＝跟着所属产品一起
+        # 被删的。后者要让人看出"不是这条 SKU 被点名删掉，是那个产品连带删的"，
+        # 恢复时也该去恢复产品（`product_deleted` 那个按钮换文案已经这么引导了）。
+        "removed_via": removed_via,
+        # 【谁删的】`with_product` 时给的是**删产品的那个人** —— 正是要能回答
+        # "谁通过删产品把它带走的"。
+        "deleted_by_id": deleted_by_id,
+        "deleted_by_name": deleted_by_name,
+        "deleted_by_pending": deleted_by_pending,
         "deleted_at": _iso(sku.deleted_at),
         "created_at": _iso(sku.created_at),
     }
@@ -163,9 +325,22 @@ async def list_deleted_products(
         ).all()
         counts = {int(pid): int(cnt) for pid, cnt in count_rows}
 
-    items = [
-        serialize_recycle_product(p, deleted_sku_count=counts.get(p.id, 0)) for p in rows
-    ]
+    audits = await _latest_delete_audits(session, {"product": product_ids})
+    names = await customer_service.owner_names(
+        session, [op for op, _ in audits.values()]
+    )
+    items = []
+    for product in rows:
+        by_id, by_name, pending = _delete_info(audits, "product", product.id, names)
+        items.append(
+            serialize_recycle_product(
+                product,
+                deleted_sku_count=counts.get(product.id, 0),
+                deleted_by_id=by_id,
+                deleted_by_name=by_name,
+                deleted_by_pending=pending,
+            )
+        )
     return items, total
 
 
@@ -236,15 +411,35 @@ async def list_deleted_skus(
             .all()
         )
 
-    items = [
-        serialize_recycle_sku(
-            r,
-            product_name=products.get(r.product_id, (None, False))[0],
-            product_deleted=products.get(r.product_id, (None, False))[1],
-            code_occupied=r.sku_code in occupied,
+    # 删除留痕有两处可能：SKU 自己那条（单独删）与它所属产品那条（连坐删）。
+    # 两条都要取回，再按"与 deleted_at 同一次"挑（见 `_pick_sku_removal`）。
+    sku_audits = await _latest_delete_audits(session, {"sku": [r.id for r in rows]})
+    product_audits = await _latest_delete_audits(session, {"product": product_ids})
+    names = await customer_service.owner_names(
+        session,
+        [op for op, _ in sku_audits.values()] + [op for op, _ in product_audits.values()],
+    )
+
+    items = []
+    for row in rows:
+        via, hit, pending = _pick_sku_removal(
+            row.deleted_at,
+            sku_audits.get(("sku", row.id)),
+            product_audits.get(("product", row.product_id)),
         )
-        for r in rows
-    ]
+        by_id = hit[0] if hit is not None else None
+        items.append(
+            serialize_recycle_sku(
+                row,
+                product_name=products.get(row.product_id, (None, False))[0],
+                product_deleted=products.get(row.product_id, (None, False))[1],
+                code_occupied=row.sku_code in occupied,
+                removed_via=via,
+                deleted_by_id=by_id,
+                deleted_by_name=names.get(by_id) if by_id else None,
+                deleted_by_pending=pending or by_id is None,
+            )
+        )
     return items, total
 
 
@@ -348,6 +543,10 @@ def serialize_recycle_customer(
     merged_into: dict | None = None,
     final_target: dict | None = None,
     merge_reason: str | None = None,
+    removed_via: str = REMOVED_DIRECT,
+    deleted_by_id: int | None = None,
+    deleted_by_name: str | None = None,
+    deleted_by_pending: bool = False,
 ) -> dict:
     return {
         "id": customer.id,
@@ -370,7 +569,17 @@ def serialize_recycle_customer(
         "merged_into": merged_into,
         # 【最终去处】A→B→C 时的 C。与直接历史相同时为 None（不重复下发）
         "final_target": final_target,
+        # 【合并原因】被合并掉的才有；直接删除的为 None（不要显示一个空的"原因"列）
         "merge_reason": merge_reason,
+        # 【怎么没的】`direct`＝有人直接删的；`merged`＝被合并掉的（并进别人、自己消失）。
+        # 页面靠这个说清"这条客户是被删了还是被合并了" —— 从前只能从"去向"那一栏去猜。
+        "removed_via": removed_via,
+        # 【谁干的】合并来源取合并留痕里的操作人（`customer_merge_logs.operator_id`），
+        # 那是"谁把这条并进了哪条"的**精确**对应；直接删除的取流水账。
+        # 两者都查不到 → `deleted_by_pending`，前端显示「历史操作人待核实」。
+        "deleted_by_id": deleted_by_id,
+        "deleted_by_name": deleted_by_name,
+        "deleted_by_pending": deleted_by_pending,
     }
 
 
@@ -648,10 +857,20 @@ async def list_deleted_customers(
     }
     refs = await _merge_refs(session, user, direct_targets | finals)
 
-    # 当前负责人和原负责人可能不是同一个人（合并时负责人被清空过），一次把两批 id 都查了
+    # 「谁删的」：**只有直接删除的客户**才去查流水账。合并来源不查 ——
+    # 它有一条更精确的留痕（`customer_merge_logs.operator_id`，记的正是"谁把这条
+    # 并进了哪条"），而流水账里那条 `merge` 审计的 `business_id` 是**目标**客户，
+    # 从来源反查要绕一圈、还容易认错人。
+    audits = await _latest_delete_audits(
+        session, {"customer": [c.id for c in rows if c.id not in merge_map]}
+    )
+    # 当前负责人、原负责人、以及「谁删的」可能各是不同的人，一次把三批 id 都查了
     owner_names = await customer_service.owner_names(
         session,
-        [c.owner_id for c in rows] + [original_owner.get(c.id) for c in rows],
+        [c.owner_id for c in rows]
+        + [original_owner.get(c.id) for c in rows]
+        + [op for op, _ in audits.values()]
+        + [log.operator_id for log in merge_map.values()],
     )
     items = []
     for customer in rows:
@@ -675,6 +894,15 @@ async def list_deleted_customers(
                 # 只在与直接历史**不同**时才下发，省得前端重复渲染一层
                 final_target = refs.get(final_id)
         original_id = original_owner.get(customer.id)
+        if log is not None:
+            removed_via = REMOVED_MERGED
+            by_id = log.operator_id
+            by_pending = by_id is None
+        else:
+            removed_via = REMOVED_DIRECT
+            by_id, _, by_pending = _delete_info(
+                audits, "customer", customer.id, owner_names
+            )
         items.append(
             serialize_recycle_customer(
                 customer,
@@ -685,6 +913,10 @@ async def list_deleted_customers(
                 merged_into=merged_into,
                 final_target=final_target,
                 merge_reason=log.reason if log else None,
+                removed_via=removed_via,
+                deleted_by_id=by_id,
+                deleted_by_name=owner_names.get(by_id) if by_id else None,
+                deleted_by_pending=by_pending,
             )
         )
     return items, total

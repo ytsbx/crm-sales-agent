@@ -28,6 +28,11 @@
 - **并发**（2026-10-08 复审 RB03 补）：产品"正在被删"（事务已写未提交）时，
   恢复 SKU / 新增 SKU 都必须**等**产品行锁，不能读着旧状态抢先落库 —— 否则
   产品一提交就留下挂在已删产品下的有效 SKU。
+- **谁删的 / 怎么没的**（2026-10-08 复审 RB06 补）：四个列表都下发删除操作人；
+  SKU 还要说清是**单独删**还是**随产品删**（后者给的是**删产品的那个人**）；
+  客户要说清是**直接删除**还是**被合并移除**，并带上合并原因。
+  **删 → 恢复 → 再删** 之后显示的是**本次**那个人，不是第一次那条旧留痕；
+  留痕缺失时如实标「历史操作人待核实」，**不拿负责人顶替**。
 - **权限**：能看列表 ≠ 能恢复。业务员（有 `*:view`）列表 200、恢复 403。
 
 跑法（需要后端在跑，且**不能用 8000**）：
@@ -617,6 +622,200 @@ async def assert_create_sku_waits_for_product_lock(ids: dict, admin: str) -> Non
     check("没有插进孤儿 SKU", int(count), 0)
 
 
+async def assert_removed_by(ids: dict, admin: str) -> None:
+    """RB06（2026-10-08 复审）：「谁把他删了」和「他是怎么没的」。
+
+    操作人**一直都记着** —— 删除记在 `audit_logs`（`business_type` / `business_id` /
+    `operator_id`），合并另有一份更精确的留痕（`customer_merge_logs.operator_id`，
+    记的正是"谁把这条并进了哪条"）。缺的只是"没往外接"。这一节守五件事：
+
+    1. 四个列表都下发「谁删的」；
+    2. **SKU 要说清"单独删"还是"随产品删"**，而且随产品删时给的是
+       **删产品的那个人** —— 正是"谁通过删产品把它带走的"；
+    3. 客户要说清"直接删除"还是"被合并移除"，并带上合并原因；
+    4. **删 → 恢复 → 再删 之后显示的是本次那个人**，不是第一次那条旧留痕；
+    5. 留痕缺失时如实标「待核实」，**不拿负责人顶替**。
+
+    第 4 条得手工构造：有权限删线索的只有管理员一个人，光走接口造不出
+    "换个人删"的局面 —— 所以把**第一次**那条审计的操作人改成李四，再看第二次
+    删完显示的是谁。实现若取"最早一条"，这里必定报红。
+    """
+    print()
+    print("=== 18. 回收站：谁删的 / 怎么没的（复审 RB06）===")
+
+    tag = uuid4().hex[:6]
+    async with SessionLocal() as s:
+        from app.modules.customer.model import Customer
+        from app.modules.lead.model import Lead
+        from app.modules.product.model import Product, Sku
+
+        lead = Lead(name=f"{PREFIX}删人{tag}", owner_id=ids["zhangsan"],
+                    status="assigned", created_by=ids["admin"])
+        no_trace = Lead(name=f"{PREFIX}无痕{tag}", owner_id=ids["zhangsan"],
+                        status="assigned", created_by=ids["admin"])
+        p_with = Product(name=f"{PREFIX}连带{tag}", created_by=ids["admin"])
+        p_alone = Product(name=f"{PREFIX}单独{tag}", created_by=ids["admin"])
+        c_direct = Customer(name=f"{PREFIX}直删{tag}", owner_id=ids["admin"],
+                            status="active", pool_status="private")
+        c_src = Customer(name=f"{PREFIX}被并{tag}", owner_id=ids["admin"],
+                         status="active", pool_status="private")
+        c_tgt = Customer(name=f"{PREFIX}去处{tag}", owner_id=ids["admin"],
+                         status="active", pool_status="private")
+        s.add_all([lead, no_trace, p_with, p_alone, c_direct, c_src, c_tgt])
+        await s.flush()
+        sk_with = Sku(product_id=p_with.id, sku_code=f"{PREFIX}-W{tag}", name="随产品删")
+        sk_alone = Sku(product_id=p_alone.id, sku_code=f"{PREFIX}-S{tag}", name="单独删")
+        s.add_all([sk_with, sk_alone])
+        await s.flush()
+        lead_id, no_trace_id = lead.id, no_trace.id
+        prod_with_id = p_with.id
+        sku_with_id, sku_alone_id = sk_with.id, sk_alone.id
+        cust_direct_id, cust_src_id, cust_tgt_id = c_direct.id, c_src.id, c_tgt.id
+        await s.commit()
+
+    def sku_row(rid: int) -> dict:
+        _, body = call("GET", "/recycle-bin/skus?page_size=200", token=admin)
+        return row_of(body, rid) or {}
+
+    # ---- SKU：单独删 ----
+    check("删掉一个 SKU（单独删）", call("DELETE", f"/skus/{sku_alone_id}", token=admin)[0], 200)
+    row = sku_row(sku_alone_id)
+    check("单独删的标成 direct", row.get("removed_via"), "direct")
+    check("记下了是谁删的", row.get("deleted_by_id"), ids["admin"])
+    check_true("也给了名字，不是只有一串编号", bool(row.get("deleted_by_name")),
+               repr(row.get("deleted_by_name")))
+    check("有留痕就不是「待核实」", row.get("deleted_by_pending"), False)
+
+    # ---- SKU：随产品删（这条 SKU 自己**没有**删除留痕，只能靠产品那条）----
+    check("删掉产品（连带删它名下的 SKU）",
+          call("DELETE", f"/products/{prod_with_id}", token=admin)[0], 200)
+    row = sku_row(sku_with_id)
+    check("随产品删的标成 with_product", row.get("removed_via"), "with_product")
+    check("给的是**删产品的那个人**（谁把它带走的）", row.get("deleted_by_id"), ids["admin"])
+    check("有留痕就不是「待核实」", row.get("deleted_by_pending"), False)
+    async with SessionLocal() as s:
+        own_trace = (
+            await s.execute(
+                text("select count(*) from audit_logs where business_type = 'sku'"
+                     " and business_id = :b and action = 'delete'"),
+                {"b": sku_with_id},
+            )
+        ).scalar_one()
+    check("前提成立：这条 SKU 自己一条删除留痕都没有（所以只能靠产品那条）",
+          int(own_trace), 0)
+
+    # ---- SKU：先单独删过、恢复过，再被产品连坐删 → 仍要说成"随产品删" ----
+    # 这一条才真正考验判据：库里**既有它自己的旧留痕、又有产品那条**，
+    # 只有"与本次删除时刻同一次"的那条才对得上。若只看"有没有自己的留痕"，
+    # 会认成"单独删"—— 可那条留痕是上一次的，早就不作数了。
+    async with SessionLocal() as s:
+        p_mix = Product(name=f"{PREFIX}混合{tag}", created_by=ids["admin"])
+        s.add(p_mix)
+        await s.flush()
+        sk_mix = Sku(product_id=p_mix.id, sku_code=f"{PREFIX}-M{tag}", name="先单独删过")
+        s.add(sk_mix)
+        await s.flush()
+        p_mix_id, sk_mix_id = p_mix.id, sk_mix.id
+        await s.commit()
+
+    check("（混合用例）先单独删一次", call("DELETE", f"/skus/{sk_mix_id}", token=admin)[0], 200)
+    check("（混合用例）把它恢复", call("POST", f"/skus/{sk_mix_id}/restore", token=admin)[0], 200)
+    check("（混合用例）再删产品，它被连坐",
+          call("DELETE", f"/products/{p_mix_id}", token=admin)[0], 200)
+    row = sku_row(sk_mix_id)
+    check("恢复过又被产品连坐删 → 仍然说「随产品删」（没翻出上次那条旧留痕）",
+          row.get("removed_via"), "with_product")
+
+    # 反过来：先随产品删 → 恢复产品（SKU 一起回来）→ 再单独删这个 SKU
+    async with SessionLocal() as s:
+        p_rev = Product(name=f"{PREFIX}反向{tag}", created_by=ids["admin"])
+        s.add(p_rev)
+        await s.flush()
+        sk_rev = Sku(product_id=p_rev.id, sku_code=f"{PREFIX}-R{tag}", name="先随产品删过")
+        s.add(sk_rev)
+        await s.flush()
+        p_rev_id, sk_rev_id = p_rev.id, sk_rev.id
+        await s.commit()
+
+    check("（反向用例）先删产品（它被连坐）",
+          call("DELETE", f"/products/{p_rev_id}", token=admin)[0], 200)
+    check("（反向用例）恢复产品，SKU 一起回来",
+          call("POST", f"/products/{p_rev_id}/restore", token=admin)[0], 200)
+    check("（反向用例）再单独删这个 SKU",
+          call("DELETE", f"/skus/{sk_rev_id}", token=admin)[0], 200)
+    row = sku_row(sk_rev_id)
+    check("产品恢复过、又单独删 → 说「单独删除」（没翻出产品那条旧留痕）",
+          row.get("removed_via"), "direct")
+
+    # ---- 产品列表 ----
+    _, body = call("GET", "/recycle-bin/products?page_size=200", token=admin)
+    row = row_of(body, prod_with_id) or {}
+    check("产品列表也记下了谁删的", row.get("deleted_by_id"), ids["admin"])
+
+    # ---- 线索 ----
+    check("删掉一条线索", call("DELETE", f"/leads/{lead_id}", token=admin)[0], 200)
+    _, body = call("GET", "/recycle-bin/leads?page_size=200", token=admin)
+    row = row_of(body, lead_id) or {}
+    check("线索列表记下了谁删的", row.get("deleted_by_id"), ids["admin"])
+    check_true("线索也给了名字", bool(row.get("deleted_by_name")), repr(row.get("deleted_by_name")))
+
+    # ---- 客户：直接删 ----
+    check("删掉一个客户（直接删）",
+          call("DELETE", f"/customers/{cust_direct_id}", token=admin)[0], 200)
+    _, body = call("GET", "/recycle-bin/customers?page_size=200", token=admin)
+    row = row_of(body, cust_direct_id) or {}
+    check("客户直接删标成 direct", row.get("removed_via"), "direct")
+    check("客户直接删也记下了谁删的", row.get("deleted_by_id"), ids["admin"])
+    check("直接删的没有合并原因（不显示一个空的「原因」）", row.get("merge_reason"), None)
+
+    # ---- 客户：被合并掉 ----
+    reason = f"{PREFIX}同一个客户重复建档{tag}"
+    status, body = call("POST", "/customers/merge", token=admin, body={
+        "source_customer_id": cust_src_id, "target_customer_id": cust_tgt_id, "reason": reason,
+    })
+    check("合并两个客户", status, 200)
+    _, body = call("GET", "/recycle-bin/customers?page_size=200", token=admin)
+    row = row_of(body, cust_src_id) or {}
+    check("被合并掉的标成 merged", row.get("removed_via"), "merged")
+    check("合并的操作人也记下来了（取合并留痕，不是流水账）",
+          row.get("deleted_by_id"), ids["admin"])
+    check("合并原因一起下发", row.get("merge_reason"), reason)
+
+    # ---- 删 → 恢复 → 再删：要显示**本次**那个人 ----
+    check("先把那条线索恢复", call("POST", f"/leads/{lead_id}/restore", token=admin)[0], 200)
+    async with SessionLocal() as s:
+        await s.execute(
+            text("update audit_logs set operator_id = :who where business_type = 'lead'"
+                 " and business_id = :b and action = 'delete'"),
+            {"who": ids["lisi"], "b": lead_id},
+        )
+        await s.commit()
+    check("再删一次（本次是管理员删的）",
+          call("DELETE", f"/leads/{lead_id}", token=admin)[0], 200)
+    _, body = call("GET", "/recycle-bin/leads?page_size=200", token=admin)
+    row = row_of(body, lead_id) or {}
+    check("删了又恢复再删：给的是**本次**那个人",
+          row.get("deleted_by_id"), ids["admin"])
+    check_true("没有翻出第一次那条旧留痕（李四）",
+               row.get("deleted_by_id") != ids["lisi"], repr(row))
+
+    # ---- 留痕缺失：如实说"待核实"，**不拿负责人顶替** ----
+    check("删掉另一条线索", call("DELETE", f"/leads/{no_trace_id}", token=admin)[0], 200)
+    async with SessionLocal() as s:
+        await s.execute(
+            text("delete from audit_logs where business_type = 'lead'"
+                 " and business_id = :b and action = 'delete'"),
+            {"b": no_trace_id},
+        )
+        await s.commit()
+    _, body = call("GET", "/recycle-bin/leads?page_size=200", token=admin)
+    row = row_of(body, no_trace_id) or {}
+    check("留痕没了 → 标成「待核实」", row.get("deleted_by_pending"), True)
+    check("这时候不给名字（不拿负责人顶替）", row.get("deleted_by_name"), None)
+    check("负责人那一栏照旧有值 —— 两件事分开，不能互相顶替",
+          row.get("owner_id"), ids["zhangsan"])
+
+
 async def main() -> int:
     import app.main  # noqa: F401  触发模型注册（不启调度器）
     _ = app.main
@@ -776,6 +975,7 @@ async def main() -> int:
         await assert_merge_chain_over_cap(ids, admin)
         await assert_restore_sku_waits_for_product_lock(ids, admin)
         await assert_create_sku_waits_for_product_lock(ids, admin)
+        await assert_removed_by(ids, admin)
 
     finally:
         await cleanup()

@@ -1,8 +1,30 @@
 import { api } from './client'
 import type { PageResult } from '../types'
 
+/**
+ * 一条记录「是怎么没掉的」。
+ *
+ * 只有**真有两种来源**的对象才有这个字段 —— 客户（有人直接删 / 被合并掉）与
+ * SKU（有人单独删 / 跟着所属产品一起删）。线索和产品只可能是被人直接删的，
+ * 后端不下发它，界面也就不为它们单列一栏（加了永远是同一个值）。
+ */
+export type RemovedVia = 'direct' | 'merged' | 'with_product'
+
+/**
+ * 「谁删的」那一组字段。三个接口共用。
+ *
+ * `deleted_by_pending` 为真＝留痕里没有操作人（老数据 / 流水账缺失），界面要
+ * 如实说「历史操作人待核实」。**绝不能拿负责人顶替** —— 负责人说的是"这归谁管"，
+ * 跟"谁删的"是两件事，混起来会让人找错人。
+ */
+interface DeletedByFields {
+  deleted_by_id: number | null
+  deleted_by_name: string | null
+  deleted_by_pending: boolean
+}
+
 /** 回收站里的线索（后端只返回"已被软删"的、且在当前用户数据范围内）。 */
-export interface RecycleLead {
+export interface RecycleLead extends DeletedByFields {
   id: number
   name: string
   company_name: string | null
@@ -17,7 +39,7 @@ export interface RecycleLead {
 }
 
 /** 回收站里的产品。`deleted_sku_count` = 恢复它时会连带捡回来的 SKU 数。 */
-export interface RecycleProduct {
+export interface RecycleProduct extends DeletedByFields {
   id: number
   name: string
   product_line: string | null
@@ -30,7 +52,7 @@ export interface RecycleProduct {
 }
 
 /** 回收站里的 SKU。 */
-export interface RecycleSku {
+export interface RecycleSku extends DeletedByFields {
   id: number
   sku_code: string
   name: string | null
@@ -41,6 +63,11 @@ export interface RecycleSku {
   product_deleted: boolean
   /** 编码被别的 SKU 占着（当前库里不会发生，留作纵深防御）。 */
   code_occupied: boolean
+  /**
+   * `direct` ＝ 有人单独删了这条 SKU；`with_product` ＝ 跟着它所属的产品一起被删。
+   * 后者要让人看出"不是这条 SKU 被点名删掉" —— 恢复时也该去恢复产品。
+   */
+  removed_via: RemovedVia
   deleted_at: string | null
   created_at: string | null
 }
@@ -63,7 +90,7 @@ export interface MergeRef {
   state: 'ok' | 'forbidden' | 'gone' | 'loop' | 'truncated'
 }
 
-export interface RecycleCustomer {
+export interface RecycleCustomer extends DeletedByFields {
   id: number
   name: string
   short_name: string | null
@@ -90,7 +117,10 @@ export interface RecycleCustomer {
   merged_into: MergeRef | null
   /** 最终去处：A→B→C 时的 C。与 `merged_into` 相同时后端不下发（为 null）。 */
   final_target: MergeRef | null
+  /** 合并原因：被合并掉的才有；直接删除的为 null（别显示一个空的"原因"）。 */
   merge_reason: string | null
+  /** `direct` ＝ 有人直接删的；`merged` ＝ 被合并掉的（并进别人、自己消失）。 */
+  removed_via: RemovedVia
 }
 
 export interface RestoreProductResult {

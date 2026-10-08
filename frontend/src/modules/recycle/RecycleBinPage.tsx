@@ -10,7 +10,7 @@
  * 每个分区的数据各自分页、各自刷新，互不干扰；没有权限的分区直接不显示。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
@@ -32,6 +32,7 @@ import {
   type RecycleLead,
   type RecycleProduct,
   type RecycleSku,
+  type RemovedVia,
 } from '../../shared/api/recycle'
 
 const fmt = (value: string | null) => (value ? new Date(value).toLocaleString('zh-CN') : '-')
@@ -87,6 +88,35 @@ const MERGE_STATE_TEXT: Record<MergeRef['state'], string> = {
 /** 链没走通的两种状态：没有可跳转的目标，说明文案本身已经是一句完整的话。 */
 const CHAIN_UNRESOLVED: ReadonlyArray<MergeRef['state']> = ['loop', 'truncated']
 
+const HINT: CSSProperties = { color: 'var(--crm-text-3)' }
+
+/**
+ * 「这条是怎么没的」的文案。
+ *
+ * 客户和 SKU 各有自己的两种来源，**同一个 `direct` 在两边叫法不同**
+ * （客户是"直接删除"、SKU 是"单独删除"），所以各配一张表，别共用一张。
+ */
+const CUSTOMER_REMOVED_TEXT: Record<RemovedVia, string> = {
+  direct: '直接删除',
+  merged: '被合并移除',
+  with_product: '—',
+}
+
+const SKU_REMOVED_TEXT: Record<RemovedVia, string> = {
+  direct: '单独删除',
+  with_product: '随产品删除',
+  merged: '—',
+}
+
+/**
+ * 「谁删的」那一栏的统一渲染。
+ *
+ * 留痕里没有操作人就如实说「历史操作人待核实」——**不拿负责人顶替**：
+ * 负责人说的是"这客户归谁管"，跟"谁删的"是两件事，混起来会让人找错人。
+ */
+const renderDeletedBy = (name: string | null, pending: boolean) =>
+  pending ? <span style={HINT}>历史操作人待核实</span> : (name ?? '—')
+
 function LeadsPanel() {
   const { can } = usePermissions()
   const queryClient = useQueryClient()
@@ -123,6 +153,14 @@ function LeadsPanel() {
       render: (v: string) => <Tag>{v}</Tag>,
     },
     { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
+    {
+      // 线索只可能是被人直接删的，所以没有"删除方式"那一栏 —— 谁删的还是要看
+      title: '删除人',
+      dataIndex: 'deleted_by_name',
+      width: 150,
+      render: (v: string | null, record: RecycleLead) =>
+        renderDeletedBy(v, record.deleted_by_pending),
+    },
     ...(can('lead:assign')
       ? [
           {
@@ -224,6 +262,14 @@ function ProductsPanel() {
       render: (count: number) => (count > 0 ? `${count} 个将一起恢复` : '无'),
     },
     { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
+    {
+      // 产品也只可能是被人直接删的，同样不需要"删除方式"那一栏
+      title: '删除人',
+      dataIndex: 'deleted_by_name',
+      width: 150,
+      render: (v: string | null, record: RecycleProduct) =>
+        renderDeletedBy(v, record.deleted_by_pending),
+    },
     ...(canRestore
       ? [
           {
@@ -252,7 +298,28 @@ function ProductsPanel() {
         return <Tag>可单独恢复</Tag>
       },
     },
+    {
+      // 「随产品删除」标成橙色：它直接决定下一步该去恢复**产品**，
+      // 而不是对着这条 SKU 点恢复（那样只会得到一句"请先恢复产品"）
+      title: '删除方式',
+      dataIndex: 'removed_via',
+      width: 150,
+      render: (via: RemovedVia) =>
+        via === 'with_product' ? (
+          <Tag color="orange">{SKU_REMOVED_TEXT[via]}</Tag>
+        ) : (
+          <Tag>{SKU_REMOVED_TEXT[via]}</Tag>
+        ),
+    },
     { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
+    {
+      // 「随产品删除」时这里给的是**删产品的那个人** —— 正是"谁把它带走的"
+      title: '删除人',
+      dataIndex: 'deleted_by_name',
+      width: 150,
+      render: (v: string | null, record: RecycleSku) =>
+        renderDeletedBy(v, record.deleted_by_pending),
+    },
     ...(canRestore
       ? [
           {
@@ -348,11 +415,25 @@ function CustomersPanel() {
         record.owner_pending ? '待核实' : (v ?? '未分配'),
     },
     {
+      // 客户有两种"没掉"的方式：有人直接删的 / 被合并掉的。从前只能从「去向」那一栏
+      // 去猜 —— 现在直接说明。两栏分工：这一栏说**动作**，那一栏说**结果**。
+      title: '操作方式',
+      dataIndex: 'removed_via',
+      width: 130,
+      render: (via: RemovedVia) =>
+        via === 'merged' ? (
+          <Tag color="orange">{CUSTOMER_REMOVED_TEXT[via]}</Tag>
+        ) : (
+          <Tag>{CUSTOMER_REMOVED_TEXT[via]}</Tag>
+        ),
+    },
+    {
       title: '去向',
       dataIndex: 'merged_into',
       width: 280,
       render: (merged: RecycleCustomer['merged_into'], record: RecycleCustomer) => {
-        if (!merged) return <Tag>直接删除</Tag>
+        // 没有去向＝没人接手。操作方式那一栏已经说了"直接删除"，这里不再重复一遍
+        if (!merged) return <span style={HINT}>—</span>
         return (
           <div>
             <div>已并入 {renderTarget(merged)}</div>
@@ -369,7 +450,23 @@ function CustomersPanel() {
         )
       },
     },
+    {
+      // 合并原因：只有被合并掉的才有；直接删除的为空 —— 显示成"—"而不是一个空框
+      title: '合并原因',
+      dataIndex: 'merge_reason',
+      width: 200,
+      render: (v: string | null) => v || <span style={HINT}>—</span>,
+    },
     { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
+    {
+      // 合并来源给的是**合并留痕里的操作人**（谁把这条并进了哪条），
+      // 直接删除的取流水账；两者都查不到时说"待核实"，不拿负责人顶替
+      title: '删除人',
+      dataIndex: 'deleted_by_name',
+      width: 150,
+      render: (v: string | null, record: RecycleCustomer) =>
+        renderDeletedBy(v, record.deleted_by_pending),
+    },
   ]
 
   return (
