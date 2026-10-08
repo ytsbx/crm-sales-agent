@@ -156,6 +156,27 @@ async def owner_names(session: AsyncSession, owner_ids: list[int]) -> dict[int, 
     return {int(uid): name for uid, name in rows}
 
 
+async def owner_active_flags(
+    session: AsyncSession, owner_ids: list[int]
+) -> dict[int, bool]:
+    """负责人 id → **还能不能接手**（账号存在且在岗）。
+
+    给回收站客户清单用（回收站复审第三轮，2026-10-08）：原负责人已停用（或账号
+    已经没了）时，恢复这条客户**必须先指定一位新负责人** —— 界面得能提前把这件事
+    标出来，而不是等用户点下去被拒才知道。
+
+    判据与 `transfer_customer` / `restore_customer` 里那道**同一口径**
+    （`User.status == "active"`）。查不到的 id 不放进字典 —— 调用方按"不能接手"
+    处理，正好等于"账号不存在"。
+    """
+    ids = [oid for oid in owner_ids if oid]
+    if not ids:
+        return {}
+    stmt = select(User.id, User.status).where(User.id.in_(ids))
+    rows = (await session.execute(stmt)).all()
+    return {int(uid): status == "active" for uid, status in rows}
+
+
 async def customer_overview(
     session: AsyncSession, user: CurrentUser, customer_id: int
 ) -> dict:
@@ -930,11 +951,15 @@ async def lock_deleted_customer(
 
 
 async def restore_customer(
-    session: AsyncSession, customer: Customer, *, new_owner_id: int | None = None
-) -> None:
+    session: AsyncSession,
+    user: CurrentUser,
+    customer: Customer,
+    *,
+    new_owner_id: int | None = None,
+) -> dict:
     """恢复一个**被直接删除**的客户（03-API §42.2）。
 
-    ## 为什么"恢复"可以这么轻
+    ## 为什么"恢复"本身可以这么轻（关联对象一条都不用搬回来）
 
     客户进回收站有两条路（见 03-API §42.1 的 `removed_via`）：
 
@@ -950,12 +975,33 @@ async def restore_customer(
     用户会以为数据丢了，其实数据在目标客户那儿好好的。所以直接 400，
     让人去合并后的那个客户下看。
 
-    ## 归属：默认还原负责人，但停用的要拦住
+    ## 不换人 = 撤销删除；换人 = 一次真正的改派
 
-    `delete_customer` **没有**清空负责人，所以默认就是归还原负责人。
+    `delete_customer` **没有**清空负责人，所以不传 `new_owner_id` 时就是归还原负责人
+    （原本在公海的仍留在公海）—— 这一步**只撤销删除标记**，单据与责任一个字不动。
+
     可原负责人可能已经停用（账号甚至可能没了）—— 那种情况把客户恢复出来，
     等于制造一条"挂在停用账号下、谁都看不到"的脏数据，所以这里**拒绝**，
     并要求调用方在 `new_owner_id` 里给出一个人选（在职且存在）。
+
+    ⚠️ **给了 `new_owner_id` 就不再是"撤销"了，是一次改派**（回收站复审第三轮修）。
+    从前这里只把 `customer.owner_id` 一改了事，于是新人接手的是个**空壳**：
+    客户名下的报价、订单他打开是 403，未完成待办看不到，公海标记还是"公海"，
+    归属历史里也没有这一笔。现在直接复用 `transfer_customer`（人工转移 /
+    公海指派 / 离职交接都走它）：归属历史、未完成待办、名下单据、公海/私海标记
+    一次办完，**全在同一笔事务里**（调用方还在同一事务里写恢复审计）。
+
+    两条边界跟着改派走（与离职交接**同一条规则**）：
+    - **只搬原负责人名下的**（`only_from_owner_id`）：其他在职同事手里的活留着 ——
+      把别人的活一起挪走，等于把别人的责任悄悄划走了；
+    - 订单的业绩归属、各表的历史创建人**一个字不碰**（见 `documents.py`）。
+
+    客户被删时若**本就在公海**（`owner_id` 为空），它没有"原负责人"可依 ——
+    这时按"公海把客户指派给某人"的同一套语义走（名下未完成待办全跟过去），
+    而不是套离职交接那套"只搬某一个人的"。
+
+    返回值是**这次单据跟着走的结果**（形状见 `documents.empty_result()`）；
+    没换人、或没有可搬的就返回空结果 —— 调用方据此把"有单据被同事先接走"如实报出来。
     """
     merged = (
         await session.execute(
@@ -972,30 +1018,51 @@ async def restore_customer(
             400,
         )
 
-    if new_owner_id is not None:
-        target = await session.get(User, new_owner_id)
-        if target is None:
-            raise AppError(
-                ErrorCode.NOT_FOUND, f"新负责人 id={new_owner_id} 不存在", 404
-            )
-        if target.status != "active":
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"新负责人「{target.name}」已停用，不能接收客户",
-                422,
-            )
-        customer.owner_id = new_owner_id
-    elif customer.owner_id is not None:
-        owner = await session.get(User, customer.owner_id)
-        if owner is None or owner.status != "active":
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                "这条客户的原负责人已停用（或账号已不存在），恢复出来没人能接手；"
-                "请在恢复时指定一位新的负责人",
-                422,
-            )
+    if new_owner_id is None:
+        # 归还原负责人（或原样留在公海）。原负责人停用 / 账号没了的要拦住。
+        if customer.owner_id is not None:
+            owner = await session.get(User, customer.owner_id)
+            if owner is None or owner.status != "active":
+                # ⚠️ 这里用 `REQUIRED_FIELD_MISSING`(40003) 而**不是**笼统的
+                # `PARAM_ERROR`(40001)：调用方要能**凭错误标识**认出"这条得先指定
+                # 一位新负责人"，而不是去匹配提示文字。这个接口只有这一处会抛 40003，
+                # 标识是唯一的（`CustomerRestore` 只有 owner_id 一个字段，
+                # 参数校验失败走的是 40001，撞不上）。
+                raise AppError(
+                    ErrorCode.REQUIRED_FIELD_MISSING,
+                    "这条客户的原负责人已停用（或账号已不存在），恢复出来没人能接手；"
+                    "请在恢复时指定一位新的负责人",
+                    422,
+                )
+        customer.deleted_at = None
+        return documents_service.empty_result()
 
+    # ---- 换人恢复：这是一次改派，整条责任一起接过去 ----
+    target = await session.get(User, new_owner_id)
+    if target is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"新负责人 id={new_owner_id} 不存在", 404)
+    if target.status != "active":
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"新负责人「{target.name}」已停用，不能接收客户", 422
+        )
+
+    old_owner_id = customer.owner_id
     customer.deleted_at = None
+    if old_owner_id == new_owner_id:
+        # 指定的就是原来那位：没有可搬的责任，但"私海"标记要与"有负责人"自洽
+        customer.pool_status = "private"
+        return documents_service.empty_result()
+
+    return await transfer_customer(
+        session,
+        user,
+        customer,
+        new_owner_id,
+        None,
+        # 只搬原负责人名下的活；客户原本在公海（没有原负责人）时按公海指派那套走
+        only_from_owner_id=old_owner_id,
+        default_reason="恢复客户时指定了负责人",
+    )
 
 
 # ---------------------------------------------------------------- 联系人操作

@@ -59,6 +59,12 @@ seed 里的张三/李四不合用：李四是销售主管（本部门都看得�
     刚做的调整、也不新增归属历史；原因是单独一句「客户已回到公海」，与"被别人
     接手"分开显示。⚠️ 这条只对**客户**成立：报价单/订单等没有"公海"概念，
     它们的"无主"确实只是"还没分配"，那边照旧可以接走
+22. **从回收站「恢复」时指定新负责人**（回收站复审第三轮，2026-10-08）也要办
+    同一套事 —— 从前那条路只把客户负责人一改了事：新人打开原报价/原订单是 403、
+    客户下的待办是空列表，单据负责人还写着旧人，公海标记也不动。
+    现在归属历史、未完成待办、名下单据、公海/私海标记一起办完（与「转移负责人」
+    共用同一个服务函数），**只搬原负责人名下的**，其他在职同事的活与业绩归属不动；
+    反过来，**不换人**的恢复只撤销删除标记，一个字段都不动、也不写归属历史
 
 跑法：
 
@@ -1087,6 +1093,124 @@ def assert_skip_taken_marking() -> None:
           sorted(marked), sorted(TRANSFER_SKIP_TAKEN_REASONS))
 
 
+async def assert_restore_with_new_owner(ids: dict, admin_token: str) -> None:
+    """**从回收站恢复**时指定新负责人，要和「转移负责人」办一样的事。
+
+    复审复现的那个错：客户、报价、订单、未完成待办原本归离职人 A，删除后由管理员
+    指定 B 恢复 —— 结果客户是归了 B，可他打开原报价/原订单是 **403**、客户下的待办是
+    **空列表**，单据负责人还写着 A，客户归属历史里也没留痕。根因是恢复那条路只把
+    `customer.owner_id` 一改了事，**没有走改派**。
+
+    这一段接在第 5 段之后跑：此时客户归 `from`、单据在 `from` 名下，
+    `order_colleague` / `doc_colleague` 在同事名下 —— 正是复审描述的局面。
+    """
+    print("\n── 11) 恢复时换负责人 = 一次改派（回收站复审第三轮）")
+    cid = ids["customer"]
+
+    async with SessionLocal() as s:
+        history_before = int(
+            (
+                await s.execute(
+                    text(
+                        "select count(*) from customer_owner_history where customer_id = :c"
+                    ),
+                    {"c": cid},
+                )
+            ).scalar_one()
+        )
+
+    # ---- 11.1 先删掉它（走真实接口，真的进回收站）----
+    status, res = call("DELETE", f"/customers/{cid}", token=admin_token)
+    check_true("删客户成功（进回收站）", status == 200 and res.get("code") == 0,
+               f"HTTP {status} {res.get('message')}")
+
+    # ---- 11.2 恢复时指定新负责人 ----
+    status, res = call("POST", f"/customers/{cid}/restore", admin_token,
+                       {"owner_id": ids["to"]})
+    check_true("恢复时指定新负责人成功", status == 200 and res.get("code") == 0,
+               f"HTTP {status} {res.get('message')}")
+    check_true("接口话术说明了负责人已一并换过来",
+               "负责人" in (res.get("message") or ""), res.get("message"))
+    st = await read_state(ids)
+
+    check("客户负责人换成了指定那位", st["customer_owner"], ids["to"])
+    check("原负责人名下的订单也接过去", st["order_mine_owner"], ids["to"])
+    check("商机也接过去", st["opportunity_owner"], ids["to"])
+    check("报价也接过去", st["quote_owner"], ids["to"])
+    check("打样（跟单责任）也接过去", st["sample_owner"], ids["to"])
+    check("打样（生产责任）也接过去", st["sample_production_owner"], ids["to"])
+    check("没办完的待办也接过去", st["open_task_owner"], ids["to"])
+    check("已完成的待办不动（历史记录要留档）", st["done_task_owner"], ids["from"])
+    check("在职同事负责的订单不动", st["order_colleague_owner"], ids["colleague"])
+    check("业绩归属一个字没动", st["order_mine_sales_owner"], ids["colleague"])
+    check("历史创建人一个字没动", st["order_mine_created_by"], ids["colleague"])
+    check("打样历史文件跟着跟单责任走", st["doc_mine_owner"], ids["to"])
+    check("在职同事名下的文件不动", st["doc_colleague_owner"], ids["colleague"])
+    check("客户归属历史新增了一条（恢复也必须写）",
+          st["history_count"], history_before + 1)
+
+    async with SessionLocal() as s:
+        pool = (
+            await s.execute(
+                text("select pool_status from customers where id = :c"), {"c": cid}
+            )
+        ).scalar_one()
+        restored = int(
+            (
+                await s.execute(
+                    text(
+                        "select count(*) from audit_logs where business_type = 'customer'"
+                        " and business_id = :c and action = 'restore'"
+                    ),
+                    {"c": cid},
+                )
+            ).scalar_one()
+        )
+    check("指定负责人后是**私海**（不再出现在公海筛选里）", pool, "private")
+    check_true("恢复审计仍然留着（没被改派那笔顶掉）", restored >= 1, f"{restored} 条")
+
+    # ---- 11.3 接手人真的能用接口打开这些单据（复审那张表的正面）----
+    to_token = login(ids["to_username"], PASSWORD)
+    check("接手人能打开客户", call("GET", f"/customers/{cid}", to_token)[0], 200)
+    check("接手人能打开原订单", call("GET", f"/orders/{ids['order_mine']}", to_token)[0], 200)
+    check("接手人能打开原商机",
+          call("GET", f"/opportunities/{ids['opportunity']}", to_token)[0], 200)
+    check("接手人能打开原报价",
+          call("GET", f"/quotes/{ids['quote']}", to_token)[0], 200)
+    status, res = call("GET", f"/customers/{cid}/orders", to_token)
+    check("接手人能看到客户下的订单（同事那张仍看不到）",
+          sorted(row["id"] for row in items_of(res)), [ids["order_mine"]])
+    status, res = call("GET", f"/customers/{cid}/tasks", to_token)
+    check_true("接手人能看到客户下没办完的待办（从前是空列表）",
+               ids["open_task"] in {row["id"] for row in items_of(res)},
+               str(items_of(res)))
+
+    # ---- 11.4 旧负责人已经看不到它了 ----
+    from_token = login(ids["from_username"], PASSWORD)
+    check("旧负责人打开原订单 → 403",
+          call("GET", f"/orders/{ids['order_mine']}", from_token)[0], 403)
+
+    # ---- 11.5 不换人的恢复：一个字段都不动，也不写归属历史 ----
+    async with SessionLocal() as s:
+        before_plain = int(
+            (
+                await s.execute(
+                    text(
+                        "select count(*) from customer_owner_history where customer_id = :c"
+                    ),
+                    {"c": cid},
+                )
+            ).scalar_one()
+        )
+    check("再删一次", call("DELETE", f"/customers/{cid}", token=admin_token)[0], 200)
+    check_true("不指定负责人恢复 → 成功",
+               call("POST", f"/customers/{cid}/restore", admin_token, {})[0] == 200)
+    st = await read_state(ids)
+    check("不换人：负责人不变", st["customer_owner"], ids["to"])
+    check("不换人：单据不动", st["order_mine_owner"], ids["to"])
+    check("不换人：不新增归属历史", st["history_count"], before_plain)
+
+
 async def main() -> None:
     db_name = require_isolated_db()
     print(f"隔离库：{db_name}")
@@ -1196,6 +1320,11 @@ async def main() -> None:
     # ── 10) 「跳过」要分清"被同事先动过"与"本来就不用管" ─────────────────
     print("\n── 10) 跳过的分类（crm_taken）与原因登记表对账")
     assert_skip_taken_marking()
+
+    # ── 11) 恢复时换负责人 = 一次改派（回收站复审第三轮）────────────────
+    #     与第 1 段同一条口径，只是入口换成「回收站恢复」——
+    #     从前它只改客户负责人，新人接手是个空壳（报价/订单 403、待办空列表）。
+    await assert_restore_with_new_owner(ids, admin_token)
 
     await cleanup()
 

@@ -140,38 +140,36 @@ def _delete_info(
     return hit[0], names.get(hit[0]), False
 
 
-#: 判定「这条留痕是不是**本次**删除留下的」时，给**历史留痕**留的时间容差。
-#:
-#: 只在留痕没记下当时的 `deleted_at` 时才用得上（新留痕会记，见下面第 ① 条）。
-#: 审计的 `created_at` 由**库**生成（PostgreSQL 的 `now()` 在同一事务内固定），
-#: SKU 的 `deleted_at` 由**应用**生成 —— 同一笔事务里两者相差只可能是毫秒级；
-#: 不同次操作至少隔着"人点一下"。60 秒足够区分，又不会被时钟微调误伤。
-SAME_OPERATION_TOLERANCE_SECONDS = 60
-
-
 def _audit_is_this_deletion(
     deleted_at: datetime, hit: tuple[int | None, datetime, dict | None]
 ) -> bool:
     """这条留痕是不是**本次**删除留下的。
 
-    两条判据，优先用精确的那条：
+    **只有一条判据**：留痕里钉下的那个 `deleted_at` 与当前值**完全相等**。
 
-    ① 留痕里记了当时的 `deleted_at`（新删除都会记）→ 直接比那个值，**不用猜时间**；
-    ② 没记（历史留痕）→ 只认"同一笔事务"那种毫秒级贴近。
+    为什么不再留"时间容差"这条路（回收站复审第三轮的边界问题）：
 
-    ⚠️ 这是 RB07 的要害。从前没有这道判定：只要有两张候选留痕，就挑与
-    `deleted_at` 时间**最贴近**的那条，哪怕差一个月也照认 —— 于是一条早就删掉、
-    只是没留下自己删除记录的 SKU，会被算到**今天删产品的人**头上。
+    - 新留痕本来就钉着当时的删除时刻 —— `delete_sku` / `delete_product` 写的是
+      `after={"via": ..., "deleted_at": sku.deleted_at.isoformat()}`，与写进库里的
+      是**同一个值**，精确比对成立。用"1 秒内"去代替"同一次"是**把判据放松了**：
+      实测另一次删除只差 0.5 秒，照样被认成本次这条。
+    - 老留痕（更早版本写的，只有审计的 `created_at`）**只能证明"那时候有过一条
+      删除留痕"**，证明不了"它就是本次这条"。拿 60 秒、哪怕 1 秒去贴，本质上还是
+      猜；而猜错的方向恰恰是**把旧操作人算到今天这次操作头上**。
+      这种情形如实说「待核实」，不猜。
+
+    ⚠️ 这是 RB07 的要害，也是它的收尾。RB07 之前这里没有"是不是同一次"的判定，
+    只挑与 `deleted_at` 时间**最贴近**的那条，哪怕差一个月也照认 —— 于是一条早就
+    删掉、只是没留下自己删除记录的 SKU，会被算到**今天删产品的人**头上。
     """
     recorded = (hit[2] or {}).get("deleted_at")
-    if isinstance(recorded, str):
-        try:
-            return abs((datetime.fromisoformat(recorded) - deleted_at).total_seconds()) <= 1
-        except ValueError:
-            return False
-    return (
-        abs((hit[1] - deleted_at).total_seconds()) <= SAME_OPERATION_TOLERANCE_SECONDS
-    )
+    if not isinstance(recorded, str):
+        # 老留痕：只有审计时间，无法证明它对应本次删除 → 交给调用方标「待核实」
+        return False
+    try:
+        return datetime.fromisoformat(recorded) == deleted_at
+    except ValueError:
+        return False
 
 
 def _pick_sku_removal(
@@ -581,6 +579,7 @@ def serialize_recycle_customer(
     owner_name: str | None = None,
     original_owner_id: int | None = None,
     original_owner_name: str | None = None,
+    original_owner_active: bool | None = None,
     owner_pending: bool = False,
     merged_into: dict | None = None,
     final_target: dict | None = None,
@@ -603,6 +602,13 @@ def serialize_recycle_customer(
         # 同一件事，前端拿到 (null, "张三") 这种组合只能猜。
         "original_owner_id": original_owner_id,
         "original_owner_name": original_owner_name,
+        # 【这位原负责人还能不能接手】三态，别只当布尔看：
+        #   `None` ＝ 本来就没有原负责人（客户在公海 → 直接恢复就行，不必选人）；
+        #   `True` ＝ 账号在岗 → 点恢复直接还原；
+        #   `False` ＝ 已停用 / 账号已不存在 → **必须先指定一位新负责人**，
+        #   否则后端会拒（40003）。界面据此提前把「已停用」标出来并弹选人框 ——
+        #   不必等用户点下去被拒才知道（回收站复审第三轮，2026-10-08）。
+        "original_owner_active": original_owner_active,
         # 快照里没留下负责人（老数据 / 快照缺失）→ 两个都是 null，这里置真。
         "owner_pending": owner_pending,
         "deleted_at": _iso(customer.deleted_at),
@@ -914,6 +920,11 @@ async def list_deleted_customers(
         + [op for op, _dt, _after in audits.values()]
         + [log.operator_id for log in merge_map.values()],
     )
+    # 原负责人**还能不能接手**（停用 / 账号没了 → 恢复前必须先指定新人）。
+    # 判据与 `restore_customer` 里那道同一口径，只查原负责人这一批 id。
+    original_owner_active = await customer_service.owner_active_flags(
+        session, [original_owner.get(c.id) for c in rows]
+    )
     items = []
     for customer in rows:
         log = merge_map.get(customer.id)
@@ -951,6 +962,10 @@ async def list_deleted_customers(
                 owner_name=owner_names.get(customer.owner_id) if customer.owner_id else None,
                 original_owner_id=original_id,
                 original_owner_name=owner_names.get(original_id) if original_id else None,
+                # 三态：None = 本来就没负责人（公海），True/False = 能不能接手
+                original_owner_active=(
+                    None if original_id is None else bool(original_owner_active.get(original_id))
+                ),
                 owner_pending=customer.id in pending,
                 merged_into=merged_into,
                 final_target=final_target,

@@ -110,6 +110,14 @@ export interface RecycleCustomer extends DeletedByFields {
   original_owner_id: number | null
   original_owner_name: string | null
   /**
+   * 这位原负责人**还能不能接手**。三态，别只当布尔看：
+   *   `null` ＝ 本来就没有原负责人（客户在公海）→ 直接恢复即可，不必选人；
+   *   `true` ＝ 账号在岗 → 点恢复直接还原；
+   *   `false` ＝ 已停用 / 账号已不存在 → **必须先指定一位在职的新负责人**，
+   *   否则后端会拿 `OWNER_REQUIRED_CODE` 拒掉。
+   */
+  original_owner_active: boolean | null
+  /**
    * 原负责人"待核实"：这是一条**合并来源**记录，但合并留痕里没留下当时的负责人，
    * 于是不知道该归谁看 —— 后端只把它给管理员。界面照实说明，别显示成"未分配"。
    */
@@ -180,4 +188,22 @@ export function restoreCustomer(customerId: number, ownerId?: number | null) {
   return api.post<RecycleCustomer>(`/customers/${customerId}/restore`, {
     owner_id: ownerId ?? null,
   })
+}
+
+/**
+ * 后端「这条客户得先指定一位新负责人」的**错误标识**。
+ *
+ * 为什么要专门导出一个常量：判据要认**码**，**不许去匹配提示文字** ——
+ * 文案随时会改，一改就悄悄失效（回收站复审第三轮点名过这件事）。
+ * 恢复接口只有这一处会抛这个码（见 `customer/router.py` 的 restore 端点）。
+ */
+export const OWNER_REQUIRED_CODE = 40003
+
+/** 这个错是不是「得先指定新负责人」。 */
+export function isOwnerRequiredError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === OWNER_REQUIRED_CODE
+  )
 }

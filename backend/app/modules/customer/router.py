@@ -251,20 +251,37 @@ async def restore_customer(
     与删除**共用同一把钥匙**（`customer:delete`）：谁删的谁能拾回来，不为它单开
     权限码 —— 线索、产品那两个模块的恢复也都是复用已有码。
 
-    两条硬边界（都在服务层，见 `svc.restore_customer`）：
+    **但"顺手改归属"要多一把钥匙**（主人口径 2026-10-08）：传了 `owner_id` 就不再是
+    "把客户捡回来"，而是一次**改派**——改派本来就归 `customer:assign` 管，这里跟着要。
+    否则只有"删除客户"权限的人能借恢复这个入口把客户交到别人名下，等于绕开了分配权限。
+    不传 `owner_id`（归还原负责人）不额外要权限。
+
+    三条硬边界：
     - **被合并掉的客户不给恢复**（400）。它名下已经被搬空，恢复只会得到一个空壳，
       还会把"它已经并进某某了"这个事实盖掉 —— 用户会以为数据丢了。界面上那一类
       本来也只给"去向"链接、不给恢复按钮。
-    - **原负责人已停用 / 账号已没**时 422，可在恢复时用 `owner_id` 指定新人选 ——
-      否则恢复出来的是一条"挂在停用账号下、谁都看不到"的脏数据。
+    - **原负责人已停用 / 账号已没**时，返回 `REQUIRED_FIELD_MISSING`(40003) + 422，
+      文案是"请指定一位新的负责人"。**调用方认这个错误标识，别去匹配提示文字** ——
+      本接口只有这一处会抛 40003（`CustomerRestore` 只有 `owner_id` 一个字段，
+      参数校验失败走的是 40001，撞不上）。带上在职的 `owner_id` 再来一次即可。
+    - **换了负责人就是把责任一起接过去**（回收站复审第三轮修）：归属历史、未完成待办、
+      名下单据、公海/私海标记都在服务层的**同一笔事务**里办完，而且只搬**原负责人**
+      名下的 —— 其他在职同事的活、订单的业绩归属一个字不动。
     """
+    new_owner_id = payload.owner_id if payload else None
+    # 先判权限再取数：没有分配权限的人，连"这个客户存不存在"都不必知道
+    if new_owner_id is not None:
+        ensure_permission(user, "customer:assign")
     customer = await svc.lock_deleted_customer(session, user, customer_id)
     before = svc.serialize_customer(customer)
     # 入参整个可以不传（恢复最常见的情形就是"归还原负责人"），
     # 所以 `payload` 有默认值 —— 不带 body 请求也能恢复，别逼调用方编一个空对象。
-    await svc.restore_customer(
-        session, customer, new_owner_id=payload.owner_id if payload else None
+    documents = await svc.restore_customer(
+        session, user, customer, new_owner_id=new_owner_id
     )
+    base = "客户已恢复"
+    if new_owner_id is not None and new_owner_id != before.get("owner_id"):
+        base = "客户已恢复，负责人已一并换过来"
     await write_audit(
         session,
         operator_id=user.id,
@@ -276,7 +293,7 @@ async def restore_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_customer(customer), "客户已恢复")
+    return ok(svc.serialize_customer(customer), _transfer_message(base, documents))
 
 
 def _transfer_message(base: str, documents: dict) -> str:

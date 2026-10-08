@@ -14,13 +14,16 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { emptyText } from '../../shared/hooks/emptyText'
+import FormLabel from '../../shared/components/FormLabel'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import { listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
 import {
+  isOwnerRequiredError,
   listRecycleCustomers,
   listRecycleLeads,
   listRecycleProducts,
@@ -390,6 +393,9 @@ function CustomersPanel() {
   // 恢复与删除**共用同一把钥匙**（后端也是这么定的）：谁删的谁能拾回来，
   // 不为它单开权限码 —— 与线索、产品那两个模块的恢复一致
   const canRestore = can('customer:delete')
+  // 「恢复时把客户交给别人」= 一次改派，后端**额外**要分配权限（主人口径 2026-10-08）。
+  // 界面跟着同一口径给入口：没这个权限就别把选人框弹出来让人白填一遍。
+  const canAssign = can('customer:assign')
 
   const query = useQuery({
     queryKey: ['recycle', 'customers', pager.page, pager.pageSize],
@@ -397,17 +403,82 @@ function CustomersPanel() {
   })
   useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
 
+  // 「指定新负责人」弹窗只服务一种情况：**原负责人已停用（或账号没了）** ——
+  // 这种客户不指定人就恢复不出来（后端拿 `OWNER_REQUIRED_CODE` 拦）。
+  // 其余情况点「恢复」是**一步到位**的，不该多弹一层。
+  const [ownerPicker, setOwnerPicker] = useState<RecycleCustomer | null>(null)
+  const [pickedOwnerId, setPickedOwnerId] = useState<number | null>(null)
+  const usersQuery = useQuery({
+    queryKey: ['assignable-users', 'active'],
+    queryFn: () => listUsers({ status: 'active', page: 1, page_size: 200 }),
+    // 真要选人时才去拉名单 —— 这条接口本身要「分配客户」或「用户管理」权限
+    enabled: ownerPicker !== null && canAssign,
+  })
+
+  const closeOwnerPicker = () => {
+    setOwnerPicker(null)
+    setPickedOwnerId(null)
+  }
+
   const restoreMutation = useMutation({
-    mutationFn: (id: number) => restoreCustomer(id),
+    // `ownerId` 只在弹窗里选人时才有值；两个入口共用一次提交与一套刷新
+    mutationFn: (vars: { id: number; ownerId?: number | null }) =>
+      restoreCustomer(vars.id, vars.ownerId ?? null),
     onSuccess: () => {
       Toast.success('客户已恢复')
+      closeOwnerPicker()
       void queryClient.invalidateQueries({ queryKey: ['recycle', 'customers'] })
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
     },
-    // 后端会拿 400/422 说明为什么不给恢复（被合并掉的、原负责人已停用的），
-    // 原样显示出来 —— 别把它盖成一句"操作失败"
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error, vars) => {
+      // 「还没指定新负责人」不是失败，是**这一步还没做完**：把选人框弹出来接着做。
+      // 判据认后端给的**错误标识**，不匹配提示文字（文案改了也不会悄悄失效）。
+      if (isOwnerRequiredError(error)) {
+        if (vars.ownerId != null) {
+          // 人已经选过了 → **把他的选择留着**（弹窗不关、选中项不清），只提示一句
+          Toast.warning(error.message)
+          return
+        }
+        const target = (query.data?.items ?? []).find((row) => row.id === vars.id)
+        if (target && canAssign) {
+          setPickedOwnerId(null)
+          setOwnerPicker(target)
+          Toast.warning(error.message)
+          return
+        }
+      }
+      // 其余失败（被合并掉的、没权限、选到的人刚被停用……）原样显示后端那句话，
+      // 别把它盖成一句"操作失败"
+      Toast.error(error.message)
+    },
   })
+
+  /** 点「恢复」：原负责人不能接手就先选人，否则直接恢复。 */
+  const startRestore = (record: RecycleCustomer) => {
+    if (record.original_owner_active === false) {
+      if (!canAssign) {
+        // 换负责人要分配权限，硬点也是 403 —— 直接说清去找谁，别让人白点一次
+        Toast.warning(
+          '这条客户的原负责人已停用，得另指定一位在职的负责人；' +
+            '请找有「分配客户」权限的同事处理',
+        )
+        return
+      }
+      setPickedOwnerId(null)
+      setOwnerPicker(record)
+      return
+    }
+    restoreMutation.mutate({ id: record.id })
+  }
+
+  const submitOwnerPick = () => {
+    if (!ownerPicker) return
+    if (pickedOwnerId == null) {
+      Toast.warning('请选择一位在职的新负责人')
+      return
+    }
+    restoreMutation.mutate({ id: ownerPicker.id, ownerId: pickedOwnerId })
+  }
 
   /**
    * 渲染一个「去向」：能打开就给链接，打不开就说明为什么。
@@ -430,11 +501,24 @@ function CustomersPanel() {
     {
       title: '原负责人',
       dataIndex: 'original_owner_name',
-      width: 110,
+      width: 160,
       // "待核实" ≠ "未分配"：前者是合并留痕里没记当时的负责人（只有管理员看得到），
       // 后者是这条客户本来就没有负责人。说成一样的会把人往错的方向带。
-      render: (v: string | null, record: RecycleCustomer) =>
-        record.owner_pending ? '待核实' : (v ?? '未分配'),
+      render: (v: string | null, record: RecycleCustomer) => {
+        if (record.owner_pending) return '待核实'
+        if (!v) return '未分配'
+        // 已停用（或账号已不存在）：这条客户恢复时**必须先指定新负责人**。
+        // 提前标出来 —— 用户点之前就知道会弹选人框，而不是被拒了才知道。
+        if (record.original_owner_active === false) {
+          return (
+            <span>
+              {v}
+              <span style={{ color: 'var(--crm-text-3)', marginLeft: 4 }}>已停用</span>
+            </span>
+          )
+        }
+        return v
+      },
     },
     {
       // 客户有两种"没掉"的方式：有人直接删的 / 被合并掉的。从前只能从「去向」那一栏
@@ -496,7 +580,8 @@ function CustomersPanel() {
             width: 90,
             render: (_: unknown, record: RecycleCustomer) =>
               record.removed_via === 'direct' ? (
-                <a onClick={() => restoreMutation.mutate(record.id)}>恢复</a>
+                // 原负责人已停用的那条会先弹选人框（`startRestore` 里分派）
+                <a onClick={() => startRestore(record)}>恢复</a>
               ) : (
                 // 被合并掉的**不给**恢复按钮：它名下已经被搬空，恢复只会得到空壳，
                 // 还会把"已经被合并"这个事实盖掉。去向那一栏本来就有跳转。
@@ -508,23 +593,62 @@ function CustomersPanel() {
   ]
 
   return (
-    <SectionCard title="被合并掉的客户会显示「已并入某某」，可点进合并后的客户（那一类不提供恢复）；直接删除的可以恢复。">
-      <Table<RecycleCustomer>
-        columns={columns}
-        dataSource={query.data?.items ?? []}
-        loading={query.isLoading}
-        rowKey="id"
-        empty={emptyText(query, '回收站里没有客户')}
-        pagination={{
-          currentPage: pager.page,
-          pageSize: pager.pageSize,
-          total: query.data?.total ?? 0,
-          showSizeChanger: true,
-          onPageChange: pager.setPage,
-          onPageSizeChange: pager.changePageSize,
-        }}
-      />
-    </SectionCard>
+    <>
+      <SectionCard title="被合并掉的客户会显示「已并入某某」，可点进合并后的客户（那一类不提供恢复）；直接删除的可以恢复。原负责人已停用的，恢复时要先指定一位在职的接手人。">
+        <Table<RecycleCustomer>
+          columns={columns}
+          dataSource={query.data?.items ?? []}
+          loading={query.isLoading}
+          rowKey="id"
+          empty={emptyText(query, '回收站里没有客户')}
+          pagination={{
+            currentPage: pager.page,
+            pageSize: pager.pageSize,
+            total: query.data?.total ?? 0,
+            showSizeChanger: true,
+            onPageChange: pager.setPage,
+            onPageSizeChange: pager.changePageSize,
+          }}
+        />
+      </SectionCard>
+      <Modal
+        title="指定新负责人"
+        visible={ownerPicker !== null}
+        // 取消不清"已经选过的人"以外的东西；选项本身在这里清掉是安全的
+        onCancel={closeOwnerPicker}
+        onOk={submitOwnerPick}
+        confirmLoading={restoreMutation.isPending}
+        okText="恢复并交给这位"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 1.7 }}>
+            客户「{ownerPicker?.name}」的原负责人
+            {ownerPicker?.original_owner_name ? `（${ownerPicker.original_owner_name}）` : ''}
+            已停用，照原样恢复出来没人能接手。请指定一位在职的同事：
+          </div>
+          <div>
+            <FormLabel required>新负责人</FormLabel>
+            <Select
+              value={pickedOwnerId ?? undefined}
+              onChange={(value) => setPickedOwnerId((value as number | undefined) ?? null)}
+              placeholder="从在职同事里选一位"
+              style={{ width: '100%' }}
+              filter
+              loading={usersQuery.isLoading}
+              optionList={(usersQuery.data?.items ?? []).map((item) => ({
+                label: item.name,
+                value: item.id,
+              }))}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+            恢复后，原本挂在这位原负责人名下的未完成待办、报价、订单等会跟着一起接过去；
+            其他同事手里的活、订单的历史业绩归属一个字不动。
+          </div>
+        </div>
+      </Modal>
+    </>
   )
 }
 

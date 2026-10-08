@@ -33,12 +33,13 @@
   客户要说清是**直接删除**还是**被合并移除**，并带上合并原因。
   **删 → 恢复 → 再删** 之后显示的是**本次**那个人，不是第一次那条旧留痕；
   留痕缺失时如实标「历史操作人待核实」，**不拿负责人顶替**。
-- **不许张冠李戴**（2026-10-08 复审 RB07 补）：判"这条 SKU 是怎么没的、谁删的"
-  必须**确认是同一次操作**。从前只比"哪条留痕的时间更近"，于是**一个月前**就删掉、
-  但没有自己删除记录的 SKU，会被算到**今天删产品的人**头上。
+- **不许张冠李戴**（2026-10-08 复审 RB07 补，第三轮收尾）：判"这条 SKU 是怎么没的、
+  谁删的"必须**确认是同一次操作**。从前只比"哪条留痕的时间更近"，于是**一个月前**
+  就删掉、但没有自己删除记录的 SKU，会被算到**今天删产品的人**头上。
   现在：随产品删也**各写一条 SKU 自己的**留痕（带 `via` 与当时的 `deleted_at`）；
-  判"是不是本次"优先比那个 `deleted_at`（精确），历史留痕才退回"同一笔事务"的
-  毫秒级贴近；拿不到、对不上就 `removed_via=null` + 待核实，**不猜**。
+  判"是不是本次"**只认留痕里钉下的那个 `deleted_at` 是否完全相等** —— 新留痕本来就
+  记准了，"1 秒内"代替"同一次"是把判据放松了（另一次删除只差 0.5 秒也会被认错）；
+  老留痕只有审计时间、证明不了对应本次 → 一律「待核实」，**不再靠时间容差猜**。
 - **权限**：能看列表 ≠ 能恢复。业务员（有 `*:view`）列表 200、恢复 403。
 
 跑法（需要后端在跑，且**不能用 8000**）：
@@ -123,8 +124,19 @@ async def cleanup() -> None:
             # 内容里还带着夹具名的，兜底再扫一遍（删除/恢复/合并都会写）
             "delete from audit_logs where business_type in ('lead', 'product', 'sku', 'customer')"
             " and (coalesce(before_data::text, '') like :m or coalesce(after_data::text, '') like :m)",
+            # 权限用例自造的账号与角色（第 8 段）。**必须最后删**：角色与用户
+            # 被关联表指着，而且此时业务行已经清完，不会再撞外键。
+            "delete from user_roles where user_id in "
+            "(select id from users where username like :u)",
+            "delete from users where username like :u",
+            "delete from role_permissions where role_id in "
+            "(select id from roles where code like :p)",
+            "delete from roles where code like :p",
         ):
-            await s.execute(text(sql), {"p": f"{PREFIX}%", "m": f"%{PREFIX}%"})
+            await s.execute(
+                text(sql),
+                {"p": f"{PREFIX}%", "m": f"%{PREFIX}%", "u": f"{PREFIX.lower()}%"},
+            )
         await s.commit()
 
 
@@ -135,10 +147,17 @@ async def seed_fixtures() -> dict:
     于是"没数据范围的人看不到、管理员看得到"这条能被稳定验出来，
     不必依赖某个角色恰好是 self 还是 department。
     """
+    from app.core.security import hash_password
     from app.modules.customer.model import Customer
     from app.modules.lead.model import Lead
     from app.modules.product.model import Product, Sku
-    from app.modules.user.model import User
+    from app.modules.user.model import (
+        Permission,
+        Role,
+        User,
+        role_permissions,
+        user_roles,
+    )
 
     ids: dict = {}
     async with SessionLocal() as s:
@@ -159,6 +178,45 @@ async def seed_fixtures() -> dict:
             raise SystemExit("库里缺 zhangsan / lisi 账号，先跑 scripts/seed.py")
         ids["zhangsan"] = zhangsan.id
         ids["lisi"] = lisi.id
+
+        # 权限两档要用一个"能删能恢复、但**不能**改归属"的账号。
+        # seed 里没有这一档：业务员两样都没有、销售主管两样都有 —— 所以自造一个，
+        # 只授 `customer:view` + `customer:delete`。跑完在 `cleanup()` 里连角色一起删。
+        role = Role(
+            code=f"{PREFIX}DELONLY",
+            name=f"{PREFIX}只删不改归属",
+            status="active",
+            data_scope="all",
+        )
+        s.add(role)
+        await s.flush()
+        perm_ids = (
+            await s.execute(
+                select(Permission.id).where(
+                    Permission.code.in_(["customer:view", "customer:delete"])
+                )
+            )
+        ).scalars().all()
+        if len(perm_ids) != 2:
+            raise SystemExit(
+                "权限码 customer:view / customer:delete 不全，先跑 scripts/seed.py"
+            )
+        for perm_id in perm_ids:
+            await s.execute(
+                role_permissions.insert().values(role_id=role.id, permission_id=perm_id)
+            )
+        delonly = User(
+            username=f"{PREFIX.lower()}delonly",
+            name=f"{PREFIX}只删不改归属",
+            password_hash=hash_password("123456"),
+            status="active",
+            department_id=admin.department_id,
+        )
+        s.add(delonly)
+        await s.flush()
+        await s.execute(user_roles.insert().values(user_id=delonly.id, role_id=role.id))
+        ids["delonly"] = delonly.id
+        ids["delonly_username"] = delonly.username
 
         mine = Lead(
             name=f"{PREFIX}我的线索", company_name=f"{PREFIX}公司",
@@ -853,15 +911,18 @@ async def assert_stale_sku_not_blamed(ids: dict, admin: str) -> None:
     根因是判据只认"时间谁更近"：把 SKU 自己的留痕和它所属产品的留痕都当候选，
     **没有"是不是同一次操作"这道判定**，差一个月也照认。
 
-    ## 现在的口径
+    ## 现在的口径（第三轮把最后那点容差也去掉了）
 
     - 「随产品删除」有 **SKU 自己的**留痕（`delete_product` 给每个被连坐删的 SKU
       各写一条，带 `via=product_delete` 与当时的 `deleted_at`）；
-    - 判"是不是本次"优先比留痕里记下的 `deleted_at`（**精确**），历史留痕没记时才
-      退回到"同一笔事务"那种毫秒级贴近；
-    - 拿不到自己的留痕、或者对不上，一律 **`removed_via=None` + 待核实**，不猜。
+    - 判"是不是本次"**只认留痕里钉下的那个 `deleted_at` 与当前值完全相等** ——
+      新留痕本来就记准了，"1 秒内"代替"同一次"是把判据放松了；
+    - 老留痕只有审计时间、证明不了对应本次 → 一律 **`removed_via=None` + 待核实**，
+      **不再退回任何时间容差**（拿 60 秒、20 秒去贴，本质还是猜）；
+    - 拿不到自己的留痕、或者对不上，同样一律待核实，不猜。
 
-    下面五个场景逐条对应复审给的验收清单。
+    下面七个场景逐条对应复审给的验收清单；场景 6 / 7 是第三轮补的"本次留痕缺失"
+    两种形态（**只差 0.5 秒**的新格式留痕、**只差 20 秒**的老格式留痕）。
     """
     print()
     print("=== 19. SKU 的删除人：不许张冠李戴（复审 RB07）===")
@@ -895,6 +956,28 @@ async def assert_stale_sku_not_blamed(ids: dict, admin: str) -> None:
             pid, sid = p.id, sk.id
             await s.commit()
         return pid, sid
+
+    async def add_delete_trace(bid: int, *, operator_id: int, created_at, after=None):
+        """直接往流水账里插一条删除留痕（模拟"本次留痕缺失、只剩旧的那一条"）。
+
+        走 ORM 而不是拼 SQL：`after_data` 是 JSONB 列，用 `text()` 传字符串会报
+        "column after_data is of type jsonb but expression is of type character varying"。
+        """
+        from app.core.audit import AuditLog
+
+        async with SessionLocal() as s:
+            s.add(
+                AuditLog(
+                    operator_id=operator_id,
+                    source="WEB",
+                    business_type="sku",
+                    business_id=bid,
+                    action="delete",
+                    after_data=after,
+                    created_at=created_at,
+                )
+            )
+            await s.commit()
 
     # ---- 场景 1：早就删掉、没有自己的留痕，后来删产品 → 待核实，不许归给删产品的人
     p1, sk1 = await new_product_and_sku("OLD", deleted_at=long_ago)
@@ -949,17 +1032,8 @@ async def assert_stale_sku_not_blamed(ids: dict, admin: str) -> None:
 
     # ---- 场景 5：只有一条**无关**的旧留痕 → 待核实，不许取旧人顶替
     p5, sk5 = await new_product_and_sku("STALE", deleted_at=now)
-    async with SessionLocal() as s:
-        # 老格式的留痕：没记 `deleted_at`，而且时间在 30 天前 —— 与本次删除无关
-        await s.execute(
-            text(
-                "insert into audit_logs (operator_id, source, business_type, business_id,"
-                " action, after_data, created_at)"
-                " values (:op, 'WEB', 'sku', :b, 'delete', NULL, :at)"
-            ),
-            {"op": ids["lisi"], "b": sk5, "at": long_ago},
-        )
-        await s.commit()
+    # 老格式的留痕：没记 `deleted_at`，而且时间在 30 天前 —— 与本次删除无关
+    await add_delete_trace(sk5, operator_id=ids["lisi"], created_at=long_ago)
     row = sku_row(sk5)
     check("场景5：库里只有一条无关旧留痕 → **不取那个人**顶替",
           row.get("deleted_by_id"), None)
@@ -968,19 +1042,64 @@ async def assert_stale_sku_not_blamed(ids: dict, admin: str) -> None:
     check("场景5：删除方式同样判不出来", row.get("removed_via"), None)
     check("场景5：如实标成「待核实」", row.get("deleted_by_pending"), True)
 
+    # ---- 场景 6（第三轮补）：本次留痕缺失，只剩"上一次删除"的留痕，而且只差 0.5 秒
+    #
+    # 这是"历史留痕不完整时的边界"：**新格式**留痕记着当时的 `deleted_at`，
+    # 但它与本次删除只差 0.5 秒。从前那道判据给新格式留了"1 秒内"的容差，
+    # 于是这**另一次**操作照样被认成本次 —— 旧操作人被算到今天这次头上，
+    # 还不标「待核实」。这是**把判据放松**（新留痕本来就钉得住，不必留容差）。
+    p6, sk6 = await new_product_and_sku("NEAR", deleted_at=now)
+    near = now - timedelta(seconds=0.5)
+    await add_delete_trace(
+        sk6,
+        operator_id=ids["lisi"],
+        created_at=near,
+        after={"via": "direct", "deleted_at": near.isoformat()},
+    )
+    row = sku_row(sk6)
+    check("场景6：只差 0.5 秒的**另一次**删除 → 不许认成本次", row.get("deleted_by_id"), None)
+    check_true("场景6：也不能把李四算成删它的人",
+               row.get("deleted_by_id") != ids["lisi"], repr(row))
+    check("场景6：删除方式同样判不出来", row.get("removed_via"), None)
+    check("场景6：如实标成「待核实」", row.get("deleted_by_pending"), True)
+
+    # ---- 场景 7（第三轮补）：老格式留痕、只差 20 秒 → 同样不认
+    #
+    # 老留痕只有审计时间，**证明不了它对应本次删除**。从前靠"60 秒内"去贴，
+    # 差 20 秒就认了 —— 那还是猜，而且猜错的方向正是"把旧操作人算到今天头上"。
+    p7, sk7 = await new_product_and_sku("OLD20", deleted_at=now)
+    await add_delete_trace(
+        sk7,
+        operator_id=ids["lisi"],
+        created_at=now - timedelta(seconds=20),
+    )
+    row = sku_row(sk7)
+    check("场景7：老格式留痕只差 20 秒 → **不认**（证明不了是同一次）",
+          row.get("deleted_by_id"), None)
+    check("场景7：删除方式同样判不出来", row.get("removed_via"), None)
+    check("场景7：如实标成「待核实」", row.get("deleted_by_pending"), True)
+
 
 async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
     """客户恢复（2026-10-08 主人拍板；03-API §42.2）。
 
-    口径（都是"核实过代码"才这么定的）：
+    口径（都是"核实过代码"才这么定的；回收站复审第三轮补齐）：
+
     - **只有"直接删除"的客户能恢复**。`delete_customer` 只把客户本人的
       `deleted_at` 置上 —— 名下联系人/商机/报价/订单**一条都没删**、也没改挂。
-      所以恢复就是把标记去掉，那些东西**自动就回来了**，不需要连带恢复任何东西。
+      所以**不换人**的恢复就是把标记去掉，那些东西**自动就回来了**。
     - **被合并掉的不能恢复**（400）：它名下已经被改挂到目标客户，恢复只会得到一个
       空壳，还会把"它已经被并进某某了"这个事实盖掉 —— 用户会以为数据丢了。
-    - **原负责人已停用 / 账号已没**时 422，可以在恢复时用 `owner_id` 指定新人选；
-      否则恢复出来的是一条"挂在停用账号下、谁都看不到"的脏数据。
-    - 恢复与删除**共用同一把钥匙**（`customer:delete`）：谁删的谁能拾回来。业务员没有 → 403。
+    - **原负责人已停用 / 账号已没**时，用 `REQUIRED_FIELD_MISSING`（**40003**）+ 422
+      拒掉 —— **调用方认这个错误码，不许去匹配提示文字**。带上 `owner_id` 指定一位
+      在职的人选即可；否则恢复出来是一条"挂在停用账号下、谁都看不到"的脏数据。
+    - **给了 `owner_id` 就是一次改派**（第三轮修）：不再只改客户负责人，归属历史、
+      未完成待办、名下单据、公海/私海标记都要一起办完。**"责任有没有真的搬过去"
+      由 `check_customer_handover_documents` 第 11 段钉住**（那边才有各类单据的夹具）；
+      这里只验接口层面：要不要权限、要不要选人、公海私海、归属历史。
+    - **权限两档**：恢复给原负责人只要 `customer:delete`（谁删的谁能拾回来）；
+      **把客户交给别人额外要 `customer:assign`** —— 否则只有"删除客户"权限的人
+      借恢复这个入口就能改归属，等于绕开分配权限。业务员两样都没有 → 403。
     """
     print()
     print("=== 20. 客户恢复（只有「直接删除」的能恢复）===")
@@ -1111,6 +1230,11 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
     try:
         status, body = call("POST", f"/customers/{stale_id}/restore", token=admin, body={})
         check("（5）原负责人已停用 → 422（不制造挂在停用账号下的脏数据）", status, 422)
+        check(
+            "（5）错误**码**要能认出「得先指定新负责人」（调用方不靠文案判断）",
+            body.get("code"),
+            40003,
+        )
         check_true(
             "（5）理由指路了「指定新负责人」",
             "负责人" in (body.get("message") or ""),
@@ -1143,6 +1267,113 @@ async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
         "（6）把这条恢复回去，别留给守门套件",
         call("POST", f"/customers/{plain_id}/restore", token=admin, body={})[0],
         200,
+    )
+
+    # ---- 7. 公海客户：指定新人 → 同步设成私海；不指定 → 保留公海 ----
+    #
+    # 复审里那条：原来在公海的已删除客户，指定 B 恢复后负责人变成了 B，
+    # 但 `pool_status` 还是 `public`——它照样出现在公海筛选里，自相矛盾。
+    async def pool_of(cid: int) -> str | None:
+        async with SessionLocal() as s:
+            return (
+                await s.execute(
+                    text("select pool_status from customers where id = :i"), {"i": cid}
+                )
+            ).scalar_one()
+
+    async with SessionLocal() as s:
+        pub = Customer(
+            name=f"{PREFIX}公海待恢复{tag}", owner_id=None,
+            status="active", pool_status="public",
+        )
+        s.add(pub)
+        await s.flush()
+        pub_id = pub.id
+        await s.commit()
+
+    check("（7）删掉这条公海客户", call("DELETE", f"/customers/{pub_id}", token=admin)[0], 200)
+    check(
+        "（7）不指定负责人恢复 → 200（本来没负责人，照原样回公海）",
+        call("POST", f"/customers/{pub_id}/restore", token=admin, body={})[0],
+        200,
+    )
+    check("（7）负责人仍是空的", await owner_of(pub_id), None)
+    check("（7）公海标记不变（原本在公海就留在公海）", await pool_of(pub_id), "public")
+
+    check("（7）再删一次", call("DELETE", f"/customers/{pub_id}", token=admin)[0], 200)
+    check(
+        "（7）指定负责人恢复 → 200",
+        call("POST", f"/customers/{pub_id}/restore", token=admin,
+             body={"owner_id": ids["zhangsan"]})[0],
+        200,
+    )
+    check("（7）负责人换成了指定那位", await owner_of(pub_id), ids["zhangsan"])
+    check("（7）**同步设为私海**（否则还挂在公海筛选里）", await pool_of(pub_id), "private")
+
+    # ---- 8. 权限两档：归还原负责人用删除权限；换给别人额外要分配权限 ----
+    #
+    # 主人口径（2026-10-08）：不给"改归属"另加一道闸，就有人能借「恢复」把客户
+    # 交到别人名下 —— 那是分配权限该管的事。夹具账号 `delonly` 只有
+    # `customer:view` + `customer:delete`，正是这一档。
+    delonly_token = login(ids["delonly_username"], "123456")
+    async with SessionLocal() as s:
+        perm = Customer(
+            name=f"{PREFIX}权限客户{tag}", owner_id=ids["lisi"],
+            status="active", pool_status="private",
+        )
+        s.add(perm)
+        await s.flush()
+        perm_id = perm.id
+        await s.commit()
+
+    check(
+        "（8）前提：这个账号能看回收站",
+        call("GET", "/recycle-bin/customers", token=delonly_token)[0],
+        200,
+    )
+    check("（8）删掉这条客户", call("DELETE", f"/customers/{perm_id}", token=admin)[0], 200)
+    check(
+        "（8）只有「删除客户」权限：**归还原负责人** → 200",
+        call("POST", f"/customers/{perm_id}/restore", token=delonly_token, body={})[0],
+        200,
+    )
+    check("（8）再删一次", call("DELETE", f"/customers/{perm_id}", token=admin)[0], 200)
+    status, body = call(
+        "POST", f"/customers/{perm_id}/restore", token=delonly_token,
+        body={"owner_id": ids["zhangsan"]},
+    )
+    check("（8）同一个人要**把客户交给别人** → 403（改归属归「分配客户」管）", status, 403)
+    check_true(
+        "（8）拒绝时点名缺的是哪一项权限",
+        "customer:assign" in (body.get("message") or ""),
+        body.get("message"),
+    )
+    check_true(
+        "（8）被拒之后客户**仍在回收站**（一个字段都没动）",
+        not customer_listed(perm_id),
+    )
+    check(
+        "（8）有「分配客户」权限的人去换人 → 200",
+        call("POST", f"/customers/{perm_id}/restore", token=login("lisi", "123456"),
+             body={"owner_id": ids["zhangsan"]})[0],
+        200,
+    )
+    check("（8）负责人换成了指定那位", await owner_of(perm_id), ids["zhangsan"])
+    async with SessionLocal() as s:
+        perm_history = int(
+            (
+                await s.execute(
+                    text(
+                        "select count(*) from customer_owner_history where customer_id = :i"
+                    ),
+                    {"i": perm_id},
+                )
+            ).scalar_one()
+        )
+    check(
+        "（8）换人写了一条归属历史（不换人的那两次一个字都没写）",
+        perm_history,
+        1,
     )
 
 
