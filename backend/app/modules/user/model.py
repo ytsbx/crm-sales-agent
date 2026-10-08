@@ -9,6 +9,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, TimestampMixin
 
+#: 角色状态里「生效」的那一个（第十批 10.10）。
+#:
+#: 放在 model 层而不是 service 层，是为了让所有需要「按有效角色取数」的模块
+#: （通知、审批、用户等）都能从同一个地方 import，不必各自写一遍字面量，
+#: 也不会因为 import 权限服务而绕出循环依赖。
+#: 语义：`status != "active"` 的角色 —— 仍挂在人身上、但**不参与**权限、
+#: 角色特例与数据范围的计算。
+ROLE_ACTIVE = "active"
+
 
 class Department(Base, IdMixin, TimestampMixin):
     __tablename__ = "departments"

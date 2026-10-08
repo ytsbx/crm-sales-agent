@@ -19,6 +19,7 @@ from app.modules.user.model import (
     Permission,
     Role,
     User,
+    ROLE_ACTIVE,
     role_permissions,
     user_roles,
 )
@@ -28,28 +29,57 @@ from app.modules.user.model import (
 # 注意：下面三个函数被 core/deps.py 用来构造 CurrentUser，是登录链路的一部分，
 # 改动前务必确认 auth / 所有 require_permission 仍然可用。
 
+# 角色状态里「生效」的那一个：`ROLE_ACTIVE`（定义在 `user/model.py`，此处 import）。
+# 停用的角色**不参与**权限、角色特例与数据范围的计算（第十批 10.10）——
+# 此前这三处都不看状态，于是停用一个角色等于没停：权限接口照旧把它返回、
+# 客户列表照样进得去、配了「全部」范围的角色停了也仍然全量可见。
+
+
 async def get_user_roles(session: AsyncSession, user_id: int) -> list[Role]:
-    stmt = select(Role).join(user_roles, user_roles.c.role_id == Role.id).where(
-        user_roles.c.user_id == user_id
+    """**运行时生效**的角色（登录链路与权限判定都走它）。
+
+    与 `roles_of_user` / `roles_of_users` 的区别很要紧，两边的口径是刻意分开的：
+    那两个是**管理视图**用的，不过滤状态 —— 用户管理页要显示「这个人挂着哪些角色、
+    哪几个已经停用」。这里必须只给启用中的角色，否则停用角色会顺着
+    `core/deps.py` 一路渗进权限特例与数据范围。
+
+    改这里之前先确认 auth / 所有 require_permission 仍然可用（见本段的说明）。
+    """
+    stmt = (
+        select(Role)
+        .join(user_roles, user_roles.c.role_id == Role.id)
+        .where(user_roles.c.user_id == user_id, Role.status == ROLE_ACTIVE)
     )
     return list((await session.execute(stmt)).scalars().all())
 
 
 async def get_user_permission_codes(session: AsyncSession, user_id: int) -> set[str]:
+    """该用户**当前实际拥有**的权限码。
+
+    注意这里要显式 join 到 Role：过滤条件落在 `Role.status` 上，
+    不 join 就没法判角色是不是停用了（原来只 join 了中间表）。
+    """
     stmt = (
         select(Permission.code)
         .join(role_permissions, role_permissions.c.permission_id == Permission.id)
-        .join(user_roles, user_roles.c.role_id == role_permissions.c.role_id)
-        .where(user_roles.c.user_id == user_id)
+        .join(Role, Role.id == role_permissions.c.role_id)
+        .join(user_roles, user_roles.c.role_id == Role.id)
+        .where(user_roles.c.user_id == user_id, Role.status == ROLE_ACTIVE)
     )
     return {code for code in (await session.execute(stmt)).scalars().all()}
 
 
 def resolve_data_scope(roles: list[Role]) -> str:
-    """多个角色时取范围最大者。"""
+    """多个角色时取范围最大者。**只算启用中的角色。**
+
+    这里再过滤一次是防御性的：调用方可能传进来的是管理视图那份（含停用角色）的
+    列表。多挡一道，比指望每个调用点都记得先走 `get_user_roles` 更可靠。
+    """
     order = ["self", "department", "department_and_sub", "all"]
     best = "self"
     for role in roles:
+        if (getattr(role, "status", ROLE_ACTIVE) or ROLE_ACTIVE) != ROLE_ACTIVE:
+            continue
         scope = role.data_scope or "self"
         if scope in order and order.index(scope) > order.index(best):
             best = scope
@@ -135,7 +165,14 @@ async def roles_of_users(session: AsyncSession, user_ids: list[int]) -> dict[int
     result: dict[int, list[dict]] = {}
     for user_id, role in rows:
         result.setdefault(user_id, []).append(
-            {"id": role.id, "code": role.code, "name": role.name, "data_scope": role.data_scope}
+            {
+                "id": role.id,
+                "code": role.code,
+                "name": role.name,
+                "data_scope": role.data_scope,
+                # 管理视图要能看出"这个角色已经停用、所以不生效"（第十批 10.10）
+                "status": role.status,
+            }
         )
     return result
 
@@ -257,38 +294,107 @@ async def permission_codes_of_role(session: AsyncSession, role_id: int) -> list[
     )
 
 
-async def _assert_not_last_admin(session: AsyncSession, user: User, *, reason: str) -> None:
-    """确认这个用户不是系统里最后一个在岗管理员。
+#: 「最后一位有效管理员」保护的**全局事务锁**键（第十批 10.11）。
+#:
+#: 为什么要一把与具体用户无关的锁：互相停用是两个**不同的用户**，
+#: 各自锁自己那一行，谁也挡不住谁 —— 两边都数到「对方还在岗」，
+#: 于是一起放行，最后 0 个管理员。行锁在这里结构上就不够用。
+#:
+#: 用 `pg_advisory_xact_lock` 而不是自建锁表：它**随事务提交/回滚自动释放**，
+#: 漏了手工解锁也不会把系统永久锁死，正好是「事务级保护」要的语义。
+#: 这个数字没有业务含义，只要全项目一致且固定即可。
+_ADMIN_GUARD_LOCK_KEY = 7301001
 
-    否则一次误操作就能把所有人锁在系统外，且没有找回入口。
-    """
-    is_admin = (
+
+async def _lock_admin_guard(session: AsyncSession) -> None:
+    """取得「有效管理员人数」保护锁，并持有到本事务结束。"""
+    await session.execute(select(func.pg_advisory_xact_lock(_ADMIN_GUARD_LOCK_KEY)))
+
+
+async def _is_active_admin(session: AsyncSession, user_id: int) -> bool:
+    """这个人是不是**有效**管理员：持有启用中的 admin 角色。"""
+    count = (
         await session.execute(
             select(func.count())
             .select_from(user_roles)
             .join(Role, Role.id == user_roles.c.role_id)
-            .where(user_roles.c.user_id == user.id, Role.code == "admin")
-        )
-    ).scalar_one()
-    if not is_admin:
-        return
-    other_admins = (
-        await session.execute(
-            select(func.count())
-            .select_from(user_roles)
-            .join(Role, Role.id == user_roles.c.role_id)
-            .join(User, User.id == user_roles.c.user_id)
             .where(
+                user_roles.c.user_id == user_id,
                 Role.code == "admin",
-                User.id != user.id,
-                User.status == "active",
+                Role.status == ROLE_ACTIVE,
             )
         )
     ).scalar_one()
-    if other_admins == 0:
+    return bool(count)
+
+
+async def count_active_admins(
+    session: AsyncSession,
+    *,
+    exclude_user_id: int | None = None,
+    exclude_role_id: int | None = None,
+) -> int:
+    """当前有效管理员人数：**账号在岗 且 持有启用中的 admin 角色**。
+
+    `exclude_*` 用来模拟「这次操作已经生效之后」的样子：
+    停用账号 / 摘角色时排掉这个人，停用管理员角色时排掉这个角色。
+
+    两个维度缺一不可 —— 只数角色不看账号在岗，会把停用账号也算成管理员；
+    只数账号不看角色状态，会在「角色全被停用」时仍以为还有人
+    （第十批 10.10 与 10.11 是同一个根）。
+    """
+    stmt = (
+        select(func.count(func.distinct(User.id)))
+        .select_from(User)
+        .join(user_roles, user_roles.c.user_id == User.id)
+        .join(Role, Role.id == user_roles.c.role_id)
+        .where(
+            Role.code == "admin",
+            Role.status == ROLE_ACTIVE,
+            User.status == "active",
+        )
+    )
+    if exclude_user_id is not None:
+        stmt = stmt.where(User.id != exclude_user_id)
+    if exclude_role_id is not None:
+        stmt = stmt.where(Role.id != exclude_role_id)
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def _assert_not_last_admin(session: AsyncSession, user: User, *, reason: str) -> None:
+    """确认这个用户不是系统里最后一个有效管理员。
+
+    否则一次误操作就能把所有人锁在系统外，且没有找回入口。
+
+    **顺序很关键：先取锁、再统计。** 统计放在锁外面等于没保护 ——
+    两个并发请求会各自读到「对方还在」，然后一起放行。
+    """
+    await _lock_admin_guard(session)
+    if not await _is_active_admin(session, user.id):
+        # 他持有的 admin 角色本身已停用：停用他 / 摘掉这个角色都不会减少有效
+        # 管理员数，不该被拦 —— 否则「清理一个已经没用的停用角色」会做不下去
+        return
+    if await count_active_admins(session, exclude_user_id=user.id) == 0:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{user.name}」是系统里最后一个在岗管理员，不能{reason}",
+            f"「{user.name}」是系统里最后一位有效管理员，不能{reason}",
+            422,
+        )
+
+
+async def _assert_role_disable_keeps_admin(
+    session: AsyncSession, role: Role, *, reason: str
+) -> None:
+    """停用一个管理员角色前，确认停完还剩有效管理员。
+
+    与「停用一个人」不同：停用 admin 角色会一次带走**所有**持有该角色的人，
+    所以判据按角色排除，不能按人排除。
+    """
+    await _lock_admin_guard(session)
+    if await count_active_admins(session, exclude_role_id=role.id) == 0:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"停用后系统里将没有有效管理员，「{role.name}」不能{reason}",
             422,
         )
 
@@ -510,6 +616,16 @@ async def create_role(session: AsyncSession, data: dict) -> Role:
 
 
 async def update_role(session: AsyncSession, role: Role, data: dict) -> Role:
+    # 停用管理员角色 = 一次摘掉一批人的管理员身份，必须先确认停完还剩人（第十批 10.11）。
+    # 检查放在 setattr **之前**：被拒绝时一个字段都还没改，事务回滚最干净。
+    new_status = data.get("status")
+    if (
+        role.code == "admin"
+        and new_status is not None
+        and new_status != ROLE_ACTIVE
+        and new_status != role.status
+    ):
+        await _assert_role_disable_keeps_admin(session, role, reason="停用")
     for field in ("name", "description", "data_scope", "status"):
         if field in data and data[field] is not None:
             setattr(role, field, data[field])

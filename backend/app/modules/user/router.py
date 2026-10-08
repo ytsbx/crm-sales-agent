@@ -89,7 +89,7 @@ async def create_user(
     after = svc.serialize_user(
         created,
         department_name=dept_map.get(created.department_id) if created.department_id else None,
-        roles=[{"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope} for r in roles],
+        roles=[{"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status} for r in roles],
     )
     await write_audit(
         session,
@@ -117,7 +117,7 @@ async def get_user(
         svc.serialize_user(
             target,
             department_name=dept_map.get(target.department_id) if target.department_id else None,
-            roles=[{"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope} for r in roles],
+            roles=[{"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status} for r in roles],
         )
     )
 
@@ -211,7 +211,7 @@ async def get_user_roles(
     roles = await svc.roles_of_user(session, user_id)
     return ok(
         [
-            {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope}
+            {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status}
             for r in roles
         ]
     )
@@ -242,7 +242,7 @@ async def set_user_roles(
     await session.commit()
     return ok(
         [
-            {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope}
+            {"id": r.id, "code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status}
             for r in roles
         ],
         "角色已更新",
@@ -266,7 +266,7 @@ async def get_user_data_scope(
             "department": dept_map.get(target.department_id) if target.department_id else None,
             "data_scope": svc.resolve_data_scope(roles),
             "roles": [
-                {"code": r.code, "name": r.name, "data_scope": r.data_scope} for r in roles
+                {"code": r.code, "name": r.name, "data_scope": r.data_scope, "status": r.status} for r in roles
             ],
         }
     )

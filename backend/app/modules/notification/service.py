@@ -28,7 +28,14 @@ from app.modules.notification.model import (
     Notification,
     BusinessEvent,
 )
-from app.modules.user.model import Permission, Role, User, role_permissions, user_roles
+from app.modules.user.model import (
+    Permission,
+    Role,
+    User,
+    ROLE_ACTIVE,
+    role_permissions,
+    user_roles,
+)
 
 #: 允许走企微的通知类型（与 notification_channels.wecom_events 的键对应）。
 #: followup = 业务动作自动留痕推主管（报价提交/打样/下单，领导六阶段口径）
@@ -214,13 +221,20 @@ async def notify(
 
 
 async def approver_user_ids(session: AsyncSession, permission_code: str) -> list[int]:
-    """找出有某个权限（或管理员角色）的用户，用于审批类通知。"""
+    """找出有某个权限（或管理员角色）的用户，用于审批类通知。
+
+    只算**启用中**的角色：角色停用后就不该再往它的人身上推审批通知，
+    否则"停用角色"等于没停（第十批 10.10）。
+    """
     stmt = (
         select(user_roles.c.user_id)
         .join(Role, Role.id == user_roles.c.role_id)
         .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
         .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
-        .where((Permission.code == permission_code) | (Role.code == "admin"))
+        .where(
+            (Permission.code == permission_code) | (Role.code == "admin"),
+            Role.status == ROLE_ACTIVE,
+        )
         .distinct()
     )
     return [int(uid) for uid in (await session.execute(stmt)).scalars().all()]
@@ -278,7 +292,7 @@ async def notify_roles(
         select(User.id)
         .join(user_roles, user_roles.c.user_id == User.id)
         .join(Role, Role.id == user_roles.c.role_id)
-        .where(Role.code.in_(role_codes), User.status == "active")
+        .where(Role.code.in_(role_codes), Role.status == ROLE_ACTIVE, User.status == "active")
     )
     if department_id is not None:
         stmt = stmt.where(User.department_id == department_id)
@@ -344,7 +358,11 @@ async def materialize_business_notifications(
                 customer = await session.get(Customer, payload['customer_id']) if payload.get('customer_id') else None
                 stmt_users = select(User).join(user_roles, user_roles.c.user_id == User.id).join(
                     Role, Role.id == user_roles.c.role_id
-                ).where(Role.code.in_(MANAGER_ROLE_CODES), User.status == 'active').distinct()
+                ).where(
+                    Role.code.in_(MANAGER_ROLE_CODES),
+                    Role.status == ROLE_ACTIVE,
+                    User.status == 'active',
+                ).distinct()
                 if payload.get('department_id') is not None:
                     stmt_users = stmt_users.where(User.department_id == payload['department_id'])
                 recipients = (await session.execute(stmt_users)).scalars().all()

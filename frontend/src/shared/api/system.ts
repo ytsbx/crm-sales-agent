@@ -13,7 +13,8 @@ export interface SystemUser {
   department?: string | null
   wecom_userid?: string | null
   status: string
-  roles?: { id: number; code: string; name: string; data_scope: string }[]
+  /** 关联的角色。**含已停用的角色**（管理页要能看出"挂着但已停用"），逐项带 status。 */
+  roles?: { id: number; code: string; name: string; data_scope: string; status?: string }[]
   created_at?: string
 }
 
@@ -62,7 +63,7 @@ export interface UserDataScope {
   department_id?: number | null
   department?: string | null
   data_scope: string
-  roles: { code: string; name: string; data_scope: string }[]
+  roles: { code: string; name: string; data_scope: string; status?: string }[]
 }
 
 export interface DepartmentTreeNode extends SystemDepartment {

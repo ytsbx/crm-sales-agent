@@ -382,8 +382,10 @@ export default function SettingsPage() {
     name: string
     description: string
     data_scope: string
+    /** 启用 / 停用。停用后该角色不再参与权限、角色特例与数据范围计算（第十批 10.10）。 */
+    status: string
     permission_codes: string[]
-  }>({ code: '', name: '', description: '', data_scope: 'self', permission_codes: [] })
+  }>({ code: '', name: '', description: '', data_scope: 'self', status: 'active', permission_codes: [] })
 
   const [deptModal, setDeptModal] = useState(false)
   const [deptEditTarget, setDeptEditTarget] = useState<SystemDepartment | null>(null)
@@ -455,6 +457,7 @@ export default function SettingsPage() {
             name: roleForm.name,
             description: roleForm.description || null,
             data_scope: roleForm.data_scope,
+            status: roleForm.status,
             permission_codes: roleForm.permission_codes,
           })
         : createRole({
@@ -548,11 +551,18 @@ export default function SettingsPage() {
           <span style={{ color: 'var(--crm-text-3)' }}>-</span>
         ) : (
           <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 4 }}>
-            {(roles ?? []).map((role) => (
-              <Tag key={role.id} size="small">
-                {role.name}
-              </Tag>
-            ))}
+            {(roles ?? []).map((role) => {
+              // 停用的角色仍挂在人身上（不删关联），但已经**不生效**：
+              // 权限与数据范围都按启用中的角色算。界面上要看得出来，否则
+              // 「这个人明明有权限却进不去」会变成排查不了的谜题（第十批 10.10）。
+              const disabled = Boolean(role.status) && role.status !== 'active'
+              return (
+                <Tag key={role.id} size="small" style={disabled ? { opacity: 0.6 } : undefined}>
+                  {role.name}
+                  {disabled ? '（已停用）' : ''}
+                </Tag>
+              )
+            })}
           </span>
         ),
     },
@@ -606,6 +616,14 @@ export default function SettingsPage() {
     { title: '角色码', dataIndex: 'code', width: 150 },
     { title: '角色名', dataIndex: 'name', width: 130 },
     {
+      // 停用状态必须能一眼看到：停用的角色仍然挂在人身上，但已经不参与
+      // 权限与数据范围计算（第十批 10.10）。
+      title: '状态',
+      dataIndex: 'status',
+      width: 90,
+      render: (v: string) => (v === 'active' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
+    },
+    {
       title: '数据范围',
       dataIndex: 'data_scope',
       width: 130,
@@ -636,6 +654,7 @@ export default function SettingsPage() {
                 name: record.name,
                 description: record.description ?? '',
                 data_scope: record.data_scope,
+                status: record.status ?? 'active',
                 permission_codes: record.permission_codes ?? [],
               })
               setRoleModal(true)
@@ -771,6 +790,7 @@ export default function SettingsPage() {
                       name: '',
                       description: '',
                       data_scope: 'self',
+                      status: 'active',
                       permission_codes: [],
                     })
                     setRoleModal(true)
@@ -1595,6 +1615,18 @@ export default function SettingsPage() {
                 onChange={(value) => setRoleForm({ ...roleForm, name: value })}
               />
             </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>状态</div>
+            <Select
+              style={{ width: '100%' }}
+              value={roleForm.status}
+              onChange={(value) => setRoleForm({ ...roleForm, status: value as string })}
+              optionList={[
+                { value: 'active', label: '启用' },
+                { value: 'disabled', label: '停用（该角色不再参与权限与数据范围）' },
+              ]}
+            />
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>数据范围</div>

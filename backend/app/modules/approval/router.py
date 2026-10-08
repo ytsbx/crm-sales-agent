@@ -258,8 +258,12 @@ async def _assert_transfer_target(
 
 
 async def _user_ids_by_roles(session: AsyncSession, role_codes: list[str]) -> list[int]:
-    """按角色编码找在职用户（会签节点的通知对象）。"""
-    from app.modules.user.model import Role, user_roles
+    """按角色编码找在职用户（会签节点的通知对象）。
+
+    只算**启用中**的角色：角色停用后它的人不再是"该角色的在职用户"，
+    否则会签节点会找出一批已经不该参与的人（第十批 10.10）。
+    """
+    from app.modules.user.model import ROLE_ACTIVE, Role, user_roles
 
     if not role_codes:
         return []
@@ -268,7 +272,11 @@ async def _user_ids_by_roles(session: AsyncSession, role_codes: list[str]) -> li
             select(User.id)
             .join(user_roles, user_roles.c.user_id == User.id)
             .join(Role, Role.id == user_roles.c.role_id)
-            .where(Role.code.in_(role_codes), User.status == "active")
+            .where(
+                Role.code.in_(role_codes),
+                Role.status == ROLE_ACTIVE,
+                User.status == "active",
+            )
         )
     ).scalars().all()
     return list(rows)
