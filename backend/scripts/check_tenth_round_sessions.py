@@ -40,6 +40,7 @@ import asyncio
 import base64
 import json
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -52,6 +53,7 @@ from _test_support import require_api_base, require_isolated_db
 require_isolated_db()
 
 from app.core.config import settings
+from app.core.security import hash_password
 
 # 地址与库的防呆统一收在 _test_support（判据只留一处）
 
@@ -111,6 +113,73 @@ def sid_of(token: str) -> str | None:
     part = token.split('.')[1]
     part += '=' * (-len(part) % 4)
     return json.loads(base64.urlsafe_b64decode(part)).get('sid')
+
+
+def call_later(method, path, *, token=None, body=None):
+    """把一次真实请求放到后台线程发（手法同 check_tenth_round_conversion）。"""
+    slot: dict = {}
+
+    def run() -> None:
+        slot['result'] = call(method, path, token=token, body=body)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, slot
+
+
+def _await(thread: threading.Thread, slot: dict):
+    thread.join(timeout=30)
+    return slot.get('result', (-1, {}))
+
+
+class _PasswordChangeHolder(threading.Thread):
+    """另起一条连接，把「改密码」的两条 UPDATE 执行掉但**不提交**，等放行再提交。
+
+    用途：把"改密码正在执行、尚未生效"这个瞬间**固定住** —— 这正是"在途登录"
+    能钻过去的窗口。修好之后登录会卡在同一把账号行锁上（装置自检就断言这一点）。
+
+    ⚠️ 必须**自建 NullPool 引擎**，不能复用应用的全局 engine：它的连接池绑在主
+    事件循环上，子线程里拿到会 `attached to a different loop`，而异常在子线程里
+    抛出、**完全静默**。
+    """
+
+    def __init__(self, user_id: int, new_hash: str):
+        super().__init__(daemon=True)
+        self._uid = user_id
+        self._hash = new_hash
+        self.ready = threading.Event()
+        self._release = threading.Event()
+        self.error: str | None = None
+
+    def run(self) -> None:
+        async def go() -> None:
+            eng = create_async_engine(settings.database_url, poolclass=NullPool)
+            try:
+                async with eng.connect() as conn:
+                    await conn.execute(
+                        text('update users set password_hash = :h where id = :i'),
+                        {'h': self._hash, 'i': self._uid},
+                    )
+                    await conn.execute(
+                        text("update login_sessions set status = 'revoked', "
+                             "revoked_reason = 'password_change', revoked_at = now() "
+                             "where user_id = :i and status = 'active'"),
+                        {'i': self._uid},
+                    )
+                    self.ready.set()
+                    self._release.wait(30)
+                    await conn.commit()
+            finally:
+                await eng.dispose()
+
+        try:
+            asyncio.run(go())
+        except Exception as exc:  # noqa: BLE001
+            self.error = repr(exc)
+            self.ready.set()
+
+    def release(self) -> None:
+        self._release.set()
 
 
 # ---------------------------------------------------------------- 直连库
@@ -377,6 +446,40 @@ def main():
     fake = mint({'sid': 'does-not-exist'})
     check('凭空编一个 sid 也不行', call('GET', '/auth/me', fake)[1].get('code'), 40101)
     check('凭空编 sid 也不能续期', call('POST', '/auth/refresh', fake)[1].get('code'), 40101)
+
+    # ---------------- 6b. 改密码与「在途」的旧密码登录（复审 10.12）----------------
+    print()
+    print('=== 6b. 改密码与「在途」的旧密码登录（复审 10.12）===')
+    # 场景：一次登录**已经通过密码校验、会话还没写进库**的那一瞬间，管理员改了密码。
+    # "作废此刻已有的会话"挡不住它 —— 那条会话还不存在，随后照样落库、照样能用。
+    # 这里用外部连接把"改密码已执行、尚未提交"这个瞬间固定住：
+    #   修好之后：登录会卡在**同一把账号行锁**上；放行后它读到的已是新哈希 → 被拒。
+    #   没修：登录读到的还是旧哈希，一路畅通并建出一条新会话。
+    inflight_user = f'chksess{RUN}inflight'
+    inflight_pwd = 'chk-inflight-123456'
+    status, res = call('POST', '/users', token=admin_token, body={
+        'name': f'CHK{RUN}在途账号', 'username': inflight_user,
+        'password': inflight_pwd, 'role_ids': role_ids,
+    })
+    check('建「在途」夹具账号', res.get('code'), 0)
+    inflight_uid = res['data']['id']
+
+    holder = _PasswordChangeHolder(inflight_uid, hash_password('chk-inflight-new-456'))
+    holder.start()
+    holder.ready.wait(30)
+    check_true('装置就绪：改密码事务已持住账号行锁（尚未提交）',
+               holder.ready, holder.error or '')
+
+    thread, slot = call_later('POST', '/auth/login',
+                              body={'username': inflight_user, 'password': inflight_pwd})
+    time.sleep(1.5)
+    check_true('在途的旧密码登录被账号行锁挡住（装置自检：确实在等锁）',
+               'result' not in slot, '见日志')
+    holder.release()
+    status, res = _await(thread, slot)
+    check_true('放行之后：旧密码不能再拿到令牌（改密码先完成）',
+               not (status == 200 and res.get('code') == 0),
+               f'HTTP {status} {res.get("message")}')
 
     # ---------------- 7. 收尾检查 ----------------
     print()

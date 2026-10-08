@@ -225,6 +225,17 @@ async def create_user(session: AsyncSession, data: dict) -> User:
     return user
 
 
+async def lock_user_row(session: AsyncSession, user_id: int) -> None:
+    """锁住这个账号的行 —— **项目内取这把账号锁的唯一入口**。
+
+    登录（`auth/router.login`）与改密码（`update_user`）都要经过它：两件事必须
+    互斥，否则「进行中的登录」会绕过「改密码时作废旧会话」（第十批 10.12 复审）。
+    与 `contact_util.take_primary_slot` 里那把客户锁同一路数：只在这一处取锁，
+    谁都不许自己写 `with_for_update`。
+    """
+    await session.execute(select(User.id).where(User.id == user_id).with_for_update())
+
+
 async def update_user(session: AsyncSession, user: User, data: dict) -> User:
     if "department_id" in data:
         await _validate_department(session, data["department_id"])
@@ -237,6 +248,13 @@ async def update_user(session: AsyncSession, user: User, data: dict) -> User:
                     raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "姓名不能为空")
             setattr(user, field, value)
     if data.get("password"):
+        # 先与「登录」争**同一把账号锁**（第十批 10.12 复审）：抢到锁的先跑完。
+        #
+        # 只作废"此刻已有的会话"挡不住一次**正在途中**的登录 —— 那次登录的会话
+        # 要等它自己 commit 才落库，作废时根本还不存在。加了这把锁之后两种顺序都成立：
+        # 登录整个跑在前 → 它刚建的会话会被下面这条 UPDATE 扫到、一起作废；
+        # 改密码跑在前 → 登录拿到锁时读到的已经是新哈希，旧密码直接不认。
+        await lock_user_row(session, user.id)
         user.password_hash = hash_password(data["password"])
         # 改（或重置）密码 = 该账号的**全部旧凭据一次性作废**（第十批 10.12）。
         #

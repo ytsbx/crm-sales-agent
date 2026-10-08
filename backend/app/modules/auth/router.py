@@ -56,7 +56,22 @@ async def login(
             429,
         )
 
-    stmt = select(User).where(User.username == payload.username)
+    # 登录必须与「改密码 / 重置密码」互斥到**同一把账号锁**上（第十批 10.12 复审）。
+    #
+    # 只在改密码时"作废该账号已有会话"是挡不住的：一次登录可能**正在途中** ——
+    # 密码已经校验通过、会话还没写进去。那一刻作废，扫不到这条还没诞生的会话，
+    # 它随后照样落库、照样能访问接口（复审复现的正是这一条）。
+    # 所以两件事要抢同一把锁：抢到的先跑完，另一个才轮到。
+    #
+    # ⚠️ 锁必须**在读密码之前**拿，并且 `populate_existing` 让这次读覆盖内存里的旧值：
+    # 否则校验用的是加锁前读到的旧哈希，"改密码先完成"那个顺序照样让旧密码进来。
+    # 这把锁一直持有到本函数末尾那次 `commit` —— 中间不提交。
+    stmt = (
+        select(User)
+        .where(User.username == payload.username)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     user = (await session.execute(stmt)).scalar_one_or_none()
     if user is None or not verify_password(payload.password, user.password_hash):
         locked_after = rate_limit.register_failure(
