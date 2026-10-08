@@ -599,7 +599,13 @@ async def attach_product_file(
     # （第十一批 11.2 第 7 条）。
     from app.modules.file import service as file_service
 
-    await file_service.lock_file_row(session, file_id)
+    # ⚠️ 拿到锁之后**必须用重读到的这一条**（2026-10-08 复审 11.2）：上面那次
+    # `session.get` 是加锁前的快照，而"删文件"完全可以在这两步之间提交 ——
+    # 只用锁不用重读，等锁等到了文件却已经被删，照样插一条悬空关联。
+    # 返回 None = 这份文件已经不在库里了。
+    record = await file_service.lock_file_row(session, file_id)
+    if record is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"文件 id={file_id} 不存在", 404)
     link = BusinessFile(
         business_type="product",
         business_id=product_id,

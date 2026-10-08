@@ -61,6 +61,7 @@ from app.modules.file import storage
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.order.model import SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.product.model import Product
 from app.modules.user.model import User
 
 #: ⚠️ 必须**显式**给 API_BASE，不给就拒跑（会真建订单/回款/凭证夹具）。
@@ -564,6 +565,66 @@ async def main():
                 )
             ).scalar_one()
         check("关联真的落库了", int(linked) == 1, int(linked))
+
+        # ---------------------------------------------- 复审 11.2：等锁之后必须重读
+        print("\n=== 9b. 等锁等到了、文件却已经被删 → 不能再建引用（复审 11.2）===")
+        # 与第 9 节的区别：那一节只**锁住**文件行（文件还在），放锁后关联成功是对的。
+        # 这一节在持锁的同一个事务里**把行删掉** —— 于是"拿到锁"与"文件还在"是两件事。
+        # 原实现只加锁、不重读：调用方早先 `session.get` 到的那条记录还在内存里，
+        # 于是照样插关联、照样回 200，库里留下一条指向已删文件的悬空引用
+        # （`files` 表**没有任何外键**指向它，数据库不会替我们挡住）。
+        p_gone = api(
+            "POST",
+            "/payments",
+            {
+                "receivable_plan_id": usd_plan["id"],
+                "received_date": "2026-11-29",
+                "received_amount": 2,
+            },
+        )["id"]
+        status, res = upload_voucher(p_gone, admin, b"%PDF-1.4 gone", f"{MARKER}-gone.pdf")
+        gone_file_id = res["data"]["voucher_file_id"]
+        file_ids.append(gone_file_id)
+        gone_row = await file_row(gone_file_id)
+        created_keys.append(gone_row.object_key)
+
+        async with SessionLocal() as session:
+            gone_product_id = (await session.execute(select(Product.id).limit(1))).scalar_one()
+
+        deleter = SessionLocal()
+        await deleter.execute(
+            select(FileRecord.id).where(FileRecord.id == gone_file_id).with_for_update()
+        )
+        await deleter.execute(delete(FileRecord).where(FileRecord.id == gone_file_id))
+        try:
+            # ⚠️ 走**产品挂附件**这条：它先 `session.get` 记下文件（进 identity map）、
+            # 之后才加锁 —— 正是复审复现的那条路径。通用挂载是"先锁后查"，风险小一档。
+            attacher2, slot2 = _call_later(
+                "POST",
+                f"/products/{gone_product_id}/files?file_id={gone_file_id}",
+                token=admin,
+            )
+            time.sleep(2.0)
+            check(
+                "给已删文件加引用的一方确实等过锁（2 秒后仍未返回）",
+                "result" not in slot2,
+                f"实际已返回：{slot2.get('result')}",
+            )
+            await deleter.commit()  # 放锁：删除那边提交了
+            attacher2.join(timeout=20)
+        finally:
+            await deleter.close()
+        status2 = (slot2.get("result") or (None, None))[0]
+        check("★放锁之后：挂附件**被拒**（不再是 200）", status2 == 404, status2)
+        async with SessionLocal() as session:
+            still_linked = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(BusinessFile)
+                    .where(BusinessFile.file_id == gone_file_id)
+                )
+            ).scalar_one()
+        check("★没有留下指向已删文件的悬空关联", int(still_linked) == 0, int(still_linked))
 
         # ---------------------------------------------- 11.8 上传失败清理
         print("\n=== 10. 上传登记失败 → 磁盘不留「没有记录的文件」（11.8）===")

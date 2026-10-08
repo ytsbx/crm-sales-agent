@@ -515,8 +515,10 @@ async def attach_file(
             )
     # 给一个**已存在**的文件新增引用之前，先锁住它的行：与删除入口（通用删除、
     # 回款删凭证）串行化，避免"查引用时还没有、真正删掉后才挂上来"的悬空引用。
-    await service.lock_file_row(session, file_id)
-    record = await session.get(FileRecord, file_id)
+    # ⚠️ 用**锁后重读到的那一条**（2026-10-08 复审 11.2）：加锁前那次
+    # `session.get` 是快照，identity map 里存着旧对象；拿到锁后继续用它，
+    # 就会出现"锁等到了、文件却已经被删掉"。返回 None = 已经没了。
+    record = await service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
     link = BusinessFile(

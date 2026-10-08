@@ -45,20 +45,35 @@ async def discard_unregistered_upload(session: AsyncSession, object_key: str) ->
         logger.warning("上传登记失败，且临时文件清理失败：%s", object_key, exc_info=True)
 
 
-async def lock_file_row(session: AsyncSession, file_id: int) -> None:
-    """给一份**已经存在**的文件加引用之前，先把它的行锁住。
+async def lock_file_row(session: AsyncSession, file_id: int) -> FileRecord | None:
+    """锁住这份文件的**行**，并返回**重新读到的**那条记录；它已经被删就返回 None。
 
     为什么需要（第十一批 11.2 第 7 条）：删除那两个入口是"**先锁文件行 → 查引用
     → 删**"。建立引用的一方如果不拿同一把锁，它完全可以插在"查完引用"和"真删"
     中间 —— 结果是一条指向已删文件的悬空引用（合同登记了签署件，文件却没了）。
 
+    ⚠️ **光加锁不够，必须在同一把锁里重新读一次**（2026-10-08 复审 11.2）。
+    调用方通常早就 `session.get(FileRecord, ...)` 过一次（做存在性、可见性判断），
+    identity map 里存着那个**旧的**对象；拿到锁之后继续用它，就会出现
+    "锁等到了、文件却已经被删掉"—— 照样插一条悬空关联。
+    （实测 `files` 表**没有任何外键指向它**，数据库不会替我们挡住。）
+    所以这里连 `populate_existing=True` 一起做：读到的就是**此刻**的真相。
+
+    返回 `None` = 这份文件已经不在库里了，调用方应当拒绝，不要建引用、不要写审计。
+
     哪几处需要它：**给已存在的文件新增引用**的入口（通用挂载、给产品挂附件、
-    合同登记签署）。**不需要**的是"新建文件 + 同一事务里立刻关联"那两处 ——
+    合同登记签署、打样挑选已有文件作依据）。**不需要**的是"新建文件 + 同一事务里
+    立刻关联"那几处（通用上传、合同生成稿、单据生成稿、回款上传凭证）——
     刚插入的行别的会话根本看不见，没有竞争。
     """
-    await session.execute(
-        select(FileRecord.id).where(FileRecord.id == file_id).with_for_update()
-    )
+    return (
+        await session.execute(
+            select(FileRecord)
+            .where(FileRecord.id == file_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
 
 
 @dataclass(frozen=True)

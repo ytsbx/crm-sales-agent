@@ -744,7 +744,7 @@ async def sign_document(
 
     签的是扫描件（电子签章不是前置）；草稿状态与签署件在台账上永远分明。
     """
-    from app.modules.file.model import BusinessFile, FileRecord
+    from app.modules.file.model import BusinessFile
 
     if doc.status == "signed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该文档已登记签署")
@@ -757,8 +757,10 @@ async def sign_document(
     # （第十一批 11.2 第 7 条）。
     from app.modules.file import service as file_service
 
-    await file_service.lock_file_row(session, file_id)
-    record = await session.get(FileRecord, file_id)
+    # ⚠️ 用**锁后重读到的那一条**（2026-10-08 复审 11.2）：`lock_file_row` 之前
+    # 可能已经 `session.get` 过，identity map 里存着旧对象；拿到锁后继续用它，
+    # 就会出现"锁等到了、文件却已经被删掉"。返回 None = 已经没了，直接拒绝。
+    record = await file_service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在，请先通过 /files/upload 上传", 404)
     # 不能把系统自己出的生成稿登记成"客户签回来的那一份"：那会让台账上

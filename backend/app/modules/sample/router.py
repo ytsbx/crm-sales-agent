@@ -829,12 +829,22 @@ async def register_sample_made(
                 f"这些文件没有挂在这张打样单上（不能拿别处的文件当依据）：{missing}",
                 422,
             )
-        records = {
-            row.id: row
-            for row in (
-                await session.execute(select(FileRecord).where(FileRecord.id.in_(basis_ids)))
-            ).scalars().all()
-        }
+        # ⚠️ 逐个**锁住文件行并重读**（2026-10-08 复审 11.2）：上面那句"挂在这张单上吗"
+        # 是普通查询，完全可能读到一份**正在被删**的文件（删除事务尚未提交）。
+        # 不锁不重读，就会把一份马上要消失的文件记成"制作依据"——而依据是要长期留证的。
+        # 按 id 升序取锁：与别处"一次锁多行"的入口统一锁序，避免互相等成环。
+        from app.modules.file import service as file_service
+
+        records: dict[int, FileRecord] = {}
+        for fid in sorted(basis_ids):
+            rec = await file_service.lock_file_row(session, fid)
+            if rec is None:
+                raise AppError(
+                    ErrorCode.NOT_FOUND,
+                    f"制作依据里有文件已经不存在（id={fid}），请重新选择附件",
+                    404,
+                )
+            records[fid] = rec
         sample.basis_files = [
             {
                 "file_id": fid,
