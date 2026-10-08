@@ -12,12 +12,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
-from app.modules.customer.model import Contact, Customer
-from app.modules.lead.model import Lead
 from app.modules.notification import service as notification_service
-from app.modules.opportunity.model import Opportunity
-from app.modules.order.model import SalesOrder
-from app.modules.quote.model import Quote
 from app.modules.task.model import Task
 from app.modules.task.schema import (
     TaskAssign,
@@ -249,83 +244,15 @@ async def create_task(
     # 这些引用在库里没有外键约束，不校验就会留下悬空引用（静默 200）。
     # 注意：Contact 与 Customer 是**两个不同的模型**，不能塞进同一个 ids 字典
     # （那样会把 customer_id 当联系人主键去查，报"联系人 id=客户id 不存在"）。
-    ref_labels = {
-        "customer": "客户",
-        "lead": "线索",
-        "opportunity": "商机",
-        "quote": "报价单",
-        "order": "订单",
-    }
-    customer_id = data.get("customer_id")
-    checked_customer_id: int | None = None
-    for kind, model in (
-        ("customer", Customer),
-        ("lead", Lead),
-        ("opportunity", Opportunity),
-        ("quote", Quote),
-        ("order", SalesOrder),
-    ):
-        obj_id = data.get(f"{kind}_id")
-        if not obj_id:
-            continue
-        obj = await session.get(model, obj_id)
-        if obj is None or getattr(obj, "deleted_at", None) is not None:
-            raise AppError(
-                ErrorCode.NOT_FOUND, f"{ref_labels[kind]} id={obj_id} 不存在", 404
-            )
-        # 客户/线索允许无主（公海 / 线索池），其余必须落在我的数据范围内。
-        await ensure_in_scope(
-            session,
-            user,
-            owner_id=obj.owner_id,
-            label=ref_labels[kind],
-            allow_unowned=kind in ("customer", "lead"),
-        )
-        if kind == "customer":
-            checked_customer_id = obj_id
-        # 单据自带客户：它就确定了这张待办的客户；显式传了别的客户直接拒。
-        linked_customer = getattr(obj, "customer_id", None)
-        if linked_customer:
-            if customer_id and customer_id != linked_customer:
-                raise AppError(
-                    ErrorCode.PARAM_ERROR,
-                    "待办所选的客户与关联单据不是同一家客户，请确认后再保存",
-                    422,
-                )
-            customer_id = linked_customer
+    # 关联校验**只此一份**：普通建任务与「补建后续任务」共用
+    # `task/refs.normalize_task_refs`（第十一批 11.6 复审 —— 两个入口各写一套的
+    # 结果是"普通入口拦得住、补建入口照单全收"）。三关：在不在 → 归不归我 → 同不同客户。
+    from app.modules.task.refs import normalize_task_refs
 
-    # 联系人：先由它确定客户，再比归属（第九批 §9.2）。
-    # 原实现只在"同时传了 customer_id"时才比对，于是"只传联系人 + 一张别人的单"
-    # 这条路径整段跳过校验。
-    if data.get("contact_id") is not None:
-        task_contact = await session.get(Contact, data["contact_id"])
-        if task_contact is None or task_contact.deleted_at is not None:
-            raise AppError(
-                ErrorCode.NOT_FOUND, f"联系人 id={data['contact_id']} 不存在", 404
-            )
-        if customer_id is None:
-            customer_id = task_contact.customer_id
-        elif task_contact.customer_id != customer_id:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"联系人 id={data['contact_id']} 不属于客户 id={customer_id}",
-                422,
-            )
+    data, _ = await normalize_task_refs(session, user, data, strict=True)
 
-    # 最终确定的客户统一再过一次范围校验：它可能是**推断**出来的
-    # （来自单据或联系人），推断不该成为绕过数据范围的通道。
-    if customer_id is not None and customer_id != checked_customer_id:
-        final_customer = await session.get(Customer, customer_id)
-        if final_customer is None or final_customer.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, "关联客户不存在", 404)
-        await ensure_in_scope(
-            session,
-            user,
-            owner_id=final_customer.owner_id,
-            label="客户",
-            allow_unowned=True,
-        )
-    data["customer_id"] = customer_id
+    # 联系人归属、单据与客户的一致性、以及"推断出来的客户"的兜底范围校验，
+    # 都在上面那次 `normalize_task_refs` 里做完了 —— 不再在这里重复一套。
 
     task = Task(**data, source="manual")
     session.add(task)

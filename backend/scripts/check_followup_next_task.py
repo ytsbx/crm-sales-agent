@@ -45,8 +45,9 @@ from sqlalchemy import String, delete, func, select
 
 from app.core.audit import AuditLog
 from app.core.database import SessionLocal
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Contact, Customer
 from app.modules.followup.model import FollowUp
+from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.order.model import SalesOrder
 from app.modules.quote.model import Quote, QuoteVersion
@@ -384,6 +385,100 @@ async def main():
         task_ids.append(data["task_id"])
         check("改选在职负责人 → 成功且确实是这个人", (await task_row(data["task_id"]))["owner_id"], admin_id)
 
+        # ==================================================== 复审 11.6
+        print("\n=== 5. 补建入口与普通建任务**同一把尺子**（复审 11.6）===")
+        # 复审实测两种情况：
+        # ① 同一客户下、报价由**别人**负责 —— 普通建任务挂它会 403，补建却照样写进去；
+        # ② 跨客户的联系人/商机、已删除的线索 —— 原样照抄进新任务，skipped 还是空的。
+        # 现在两个入口共用 `task/refs.normalize_task_refs`：越权 / 跨客户 / 已删一律跳过。
+        zhangsan = login("zhangsan", "123456")
+        async with SessionLocal() as session:
+            zhangsan_id = (
+                await session.execute(select(User.id).where(User.username == "zhangsan"))
+            ).scalar_one()
+            lisi_id = (
+                await session.execute(select(User.id).where(User.username == "lisi"))
+            ).scalar_one()
+            # 客户归 zhangsan；报价挂在 lisi 名下（同一客户下的独立单据，各有归属）
+            mine2 = Customer(
+                name=f"{MARKER}权限客户", customer_type="企业", country="中国",
+                source="其他渠道", level="C", status="active",
+                pool_status="private", owner_id=zhangsan_id, created_by=zhangsan_id,
+            )
+            session.add(mine2)
+            await session.flush()
+            other_quote = Quote(
+                quote_no=f"{MARKER}Q2", customer_id=mine2.id, owner_id=lisi_id,
+                status="sent", created_by=lisi_id, created_at=datetime.now(UTC),
+            )
+            session.add(other_quote)
+            await session.flush()
+            fu5 = FollowUp(
+                customer_id=mine2.id, quote_id=other_quote.id, owner_id=zhangsan_id,
+                followup_type="电话", content=f"{MARKER}跟进（挂了别人的报价）",
+            )
+            session.add(fu5)
+            await session.flush()
+            fu5_id, other_quote_id = fu5.id, other_quote.id
+            followup_ids.append(fu5_id)
+            await session.commit()
+
+        status, res0 = call("POST", "/tasks", token=zhangsan,
+                            body={"title": f"{MARKER}对照任务", "quote_id": other_quote_id})
+        check("对照：普通建任务挂「别人的报价」→ 403", status, 403)
+        check("对照的 403 说的是「报价越权」而不是别的（否则这条对照是假绿）",
+              "报价" in json.dumps(res0, ensure_ascii=False), True)
+
+        status, res = call(
+            "POST", f"/followups/{fu5_id}/create-next-task", token=zhangsan,
+            body={"due_at": (datetime.now(UTC) + timedelta(days=5)).isoformat()},
+        )
+        check("补建照样成功（跳过的关联不该让整件事做不成）", status, 200)
+        new_task = res["data"]["task_id"]
+        task_ids.append(new_task)
+        check("★「没有权限的报价」没有被带进新任务", (await task_row(new_task))["quote_id"], None)
+        skipped5 = " ".join(str(s) for s in (res["data"].get("skipped_references") or []))
+        check("并且说明了是哪一类（点了「报价」）", "报价" in skipped5, True)
+        check("★说明里**不出现**受限报价的单号（不泄露名称/编号）",
+              f"{MARKER}Q2" in json.dumps(res, ensure_ascii=False), False)
+
+        print("\n=== 6. 跨客户联系人 / 已删线索也不继承（复审 11.6）===")
+        async with SessionLocal() as session:
+            other_contact = Contact(
+                customer_id=other_id, name=f"{MARKER}别人家的人",
+                mobile="13700006001", is_primary=True,
+            )
+            dead_lead = Lead(
+                name=f"{MARKER}已删线索", status="pending",
+                deleted_at=datetime.now(UTC), created_at=datetime.now(UTC),
+            )
+            session.add_all([other_contact, dead_lead])
+            await session.flush()
+            fu6 = FollowUp(
+                customer_id=mine_id, contact_id=other_contact.id, lead_id=dead_lead.id,
+                owner_id=admin_id, followup_type="电话",
+                content=f"{MARKER}跟进（跨客户联系人 + 已删线索）",
+            )
+            session.add(fu6)
+            await session.flush()
+            fu6_id = fu6.id
+            followup_ids.append(fu6_id)
+            await session.commit()
+
+        status, res = call(
+            "POST", f"/followups/{fu6_id}/create-next-task", token=admin,
+            body={"due_at": (datetime.now(UTC) + timedelta(days=6)).isoformat()},
+        )
+        check("补建成功", status, 200)
+        t6 = res["data"]["task_id"]
+        task_ids.append(t6)
+        row6 = await task_row(t6)
+        check("★跨客户的联系人没有被带进来", row6["contact_id"], None)
+        check("★已删除的线索没有被带进来", row6["lead_id"], None)
+        skipped6 = " ".join(str(s) for s in (res["data"].get("skipped_references") or []))
+        check("两条都在 skipped_references 里点了名",
+              ("联系人" in skipped6) and ("线索" in skipped6), True)
+
     finally:
         print("\n=== 收尾清理 ===")
 
@@ -400,6 +495,9 @@ async def main():
         doomed_quotes = select(Quote.id).where(Quote.customer_id.in_(doomed_customers))
         await _drop("任务", delete(Task).where(Task.title.like(f"{MARKER}%")))
         await _drop("跟进", delete(FollowUp).where(FollowUp.customer_id.in_(doomed_customers)))
+        # 复审新增的夹具：联系人在客户**之前**删（`contacts.customer_id` 是外键）
+        await _drop("联系人", delete(Contact).where(Contact.name.like(f"{MARKER}%")))
+        await _drop("线索", delete(Lead).where(Lead.name.like(f"{MARKER}%")))
         await _drop("报价版本", delete(QuoteVersion).where(QuoteVersion.quote_id.in_(doomed_quotes)))
         await _drop("报价", delete(Quote).where(Quote.id.in_(doomed_quotes)))
         await _drop("报价（按单号）", delete(Quote).where(Quote.quote_no.like(f"{MARKER}%")))

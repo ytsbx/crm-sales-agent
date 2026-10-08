@@ -27,7 +27,6 @@ from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
 from app.modules.order.model import SalesOrder
 from app.modules.quote.model import Quote
-from app.modules.sample.model import SampleRequest
 from app.modules.task.model import Task
 from app.modules.user.model import User
 
@@ -266,43 +265,39 @@ async def create_next_task(
     # 每个关联都**当场复核**：对象还在、没被软删、且属于**同一个客户**。
     # 不为了"复制字段"把一条越权或跨客户的脏关联带进新任务；对不上的就不继承，
     # 并在返回里说明（原历史跟进一个字不动）。
-    skipped: list[str] = []
-    quote_id: int | None = None
-    if followup.quote_id is not None:
-        quote = await session.get(Quote, followup.quote_id)
-        if (
-            quote is not None
-            and quote.deleted_at is None
-            and quote.customer_id == followup.customer_id
-        ):
-            quote_id = quote.id
-        else:
-            skipped.append(f"报价 #{followup.quote_id}")
-    order_id: int | None = None
-    if followup.order_id is not None:
-        order = await session.get(SalesOrder, followup.order_id)
-        if order is not None and order.customer_id == followup.customer_id:
-            order_id = order.id
-        else:
-            skipped.append(f"订单 #{followup.order_id}")
-    sample_id: int | None = None
-    if followup.sample_id is not None:
-        sample = await session.get(SampleRequest, followup.sample_id)
-        if sample is not None and sample.customer_id == followup.customer_id:
-            sample_id = sample.id
-        else:
-            skipped.append(f"打样 #{followup.sample_id}")
+    # 业务关联继承走**普通建任务那一份校验**（`task/refs.normalize_task_refs`，
+    # 这里用 strict=False 的"跳过"档）—— 关联是从历史数据**继承**来的，用户并没有
+    # 在"选关联"，对不上的跳过、不报错；跳过的在返回里列出来（只说类别与编号）。
+    from app.modules.task.refs import normalize_task_refs
+
+    inherited, skipped = await normalize_task_refs(
+        session,
+        user,
+        {
+            "customer_id": followup.customer_id,
+            "contact_id": followup.contact_id,
+            "lead_id": followup.lead_id,
+            "opportunity_id": followup.opportunity_id,
+            "quote_id": followup.quote_id,
+            "order_id": followup.order_id,
+            "sample_id": followup.sample_id,
+        },
+        strict=False,
+        base_customer_id=followup.customer_id,
+    )
+    # 打样没有自己的列，落在"来源业务对象"上（任务详情据此跳转）
+    sample_id: int | None = inherited.get("sample_id")
 
     task = Task(
         title=payload.title or followup.next_action or f"跟进后续：{followup.content[:30]}",
         task_type=payload.task_type,
         priority=payload.priority,
-        customer_id=followup.customer_id,
-        contact_id=followup.contact_id,
-        lead_id=followup.lead_id,
-        opportunity_id=followup.opportunity_id,
-        quote_id=quote_id,
-        order_id=order_id,
+        customer_id=inherited.get("customer_id"),
+        contact_id=inherited.get("contact_id"),
+        lead_id=inherited.get("lead_id"),
+        opportunity_id=inherited.get("opportunity_id"),
+        quote_id=inherited.get("quote_id"),
+        order_id=inherited.get("order_id"),
         owner_id=owner_id,
         status="pending",
         due_at=payload.due_at,
@@ -333,8 +328,8 @@ async def create_next_task(
     message = "后续任务已创建"
     if skipped:
         # "明确处理结果"（11.6 第 4 条）：哪些关联没带过来、为什么，要让人看得见，
-        # 而不是悄悄少几个字段。
-        message += "；以下关联已不存在或不属于这个客户，未继承：" + "、".join(skipped)
+        # 而不是悄悄少几个字段。⚠️ 说明里**只有类别与编号** —— 受限对象的名字不写出来。
+        message += "；以下关联未继承：" + "、".join(skipped)
     return ok(
         {
             "task_id": task.id,
