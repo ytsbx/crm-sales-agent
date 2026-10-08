@@ -106,6 +106,33 @@ async function unwrap<T>(promise: Promise<AxiosResponse<Envelope<T>>>): Promise<
   return body.data
 }
 
+/**
+ * 从 `Content-Disposition` 响应头里抠出文件名；抠不到返回 null。
+ *
+ * 优先 `filename*=UTF-8''<百分号编码>`（RFC 5987，中文名都走这条），
+ * 其次 `filename="<名字>"`。服务端两种都发时以前者为准 —— 它才是完整的那个。
+ */
+function filenameFromDisposition(header: unknown): string | null {
+  if (typeof header !== 'string' || !header) return null
+  const starred = /filename\*\s*=\s*([^;]+)/i.exec(header)
+  if (starred) {
+    const raw = starred[1].trim().replace(/^["']|["']$/g, '')
+    // 形如 UTF-8''%E5%90%88%E5%90%8C.pdf；语言标签用 '' 分隔
+    const encoded = raw.includes("''") ? raw.slice(raw.indexOf("''") + 2) : raw
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      // 编码坏了就退回下面那条 filename=
+    }
+  }
+  const plain = /filename\s*=\s*("([^"]*)"|([^;]+))/i.exec(header)
+  if (plain) {
+    const value = (plain[2] ?? plain[3] ?? '').trim()
+    if (value) return value
+  }
+  return null
+}
+
 export const api = {
   get: <T>(url: string, params?: unknown, config?: AxiosRequestConfig) =>
     unwrap<T>(http.get(url, { params, ...config })),
@@ -114,13 +141,28 @@ export const api = {
   patch: <T>(url: string, data?: unknown) => unwrap<T>(http.patch(url, data)),
   put: <T>(url: string, data?: unknown) => unwrap<T>(http.put(url, data)),
   delete: <T>(url: string) => unwrap<T>(http.delete(url)),
-  /** 下载二进制文件（如报价单 PDF）：走同一个 axios 实例，自动带 token。 */
-  download: async (url: string, filename: string) => {
+  /**
+   * 下载二进制文件（如报价单 PDF）：走同一个 axios 实例，自动带 token。
+   *
+   * `filename` 两种用法：
+   * - **传**一个名字：直接用（导出类接口服务端不回 `Content-Disposition`）；
+   * - **不传**：从响应头 `Content-Disposition` 取服务端给的名字
+   *   （`filename*=UTF-8''...` 优先 —— 中文名走这条 RFC 5987 编码）。
+   *
+   * 为什么要有"用服务端名字"这一档（第十一批 11.3 复审）：合同的历史副本，
+   * 服务端特意把「（依据历史数据生成的副本）」写进了文件名，前端却固定用
+   * `${doc_no}.pdf` 覆盖掉 —— 用户下载完根本看不出这是副本。
+   */
+  download: async (url: string, filename?: string) => {
     const response = await http.get(url, { responseType: 'blob' })
+    const name =
+      filename ??
+      filenameFromDisposition(response.headers['content-disposition']) ??
+      'download'
     const blobUrl = window.URL.createObjectURL(new Blob([response.data]))
     const link = document.createElement('a')
     link.href = blobUrl
-    link.download = filename
+    link.download = name
     document.body.appendChild(link)
     link.click()
     link.remove()

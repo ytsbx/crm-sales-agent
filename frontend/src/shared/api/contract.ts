@@ -138,7 +138,12 @@ export function getContractDocument(docId: number) {
 
 /** 下载**生成稿**（生成时落盘的那一份）。注意不是签署原件。 */
 export function downloadContractDocument(doc: { id: number; doc_no: string }) {
-  return api.download(`/contract-documents/${doc.id}/download`, `${doc.doc_no}.pdf`)
+  // **不传文件名**：让 `download` 从响应头 `Content-Disposition` 取服务端给的名字。
+  // 服务端对正常存档发 `<单据编号>.pdf`，对**历史副本**发
+  // `CT-LEGACY（依据历史数据生成的副本）.pdf`，并另给 `X-Contract-Source`。
+  // 固定传 `${doc.doc_no}.pdf` 会把「这是副本」这个辨识**覆盖掉**
+  // —— 用户下载完看不出差异，那 11.3 做的那套标识就白做了（复审 11.3）。
+  return api.download(`/contract-documents/${doc.id}/download`)
 }
 
 export function signContractDocument(docId: number, payload: { file_id: number; note?: string | null }) {
