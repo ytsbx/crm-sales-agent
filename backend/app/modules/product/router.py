@@ -447,8 +447,16 @@ async def create_standalone_sku(
     与 `/products/{id}/skus` 同理：产品 id 在 URL 上的那种写法的扁平版，
     所以这里 product_id 必须在请求体里给。两者共用同一套校验
     （产品存在 + SKU 编码唯一），不会出现"从哪个入口进来规则不一样"。
+
+    ⚠️ **也要先取产品行锁**，理由与嵌套写法一字不差：产品有效才允许挂 SKU，
+    而"读一眼产品还在不在"和"真的插进去"之间隔着一段时间 —— 期间产品可能正好
+    被删掉（连它名下 SKU 一起软删），插入就落成挂在已删产品下的孤儿。
+    这里原先走的是**不带锁**的 `get_product_or_404`：同一个规矩、两个入口两套写法，
+    等于把漏洞留在了没跟着改的那扇门上（并发下表现为"产品已删、SKU 还在"）。
     """
-    product = await svc.get_product_or_404(session, payload.product_id)
+    product = await svc.lock_product(session, payload.product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     await svc.ensure_sku_code_unique(session, payload.sku_code)
     data = payload.model_dump(exclude={"product_id"})
     sku = Sku(**data, product_id=product.id)

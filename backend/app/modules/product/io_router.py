@@ -23,6 +23,7 @@ from app.core.importing import (
     row_savepoint,
 )
 from app.modules.product import io as io_util
+from app.modules.product import service as svc
 from app.modules.product.model import Product, Sku
 
 router = APIRouter(tags=["Product"])
@@ -253,6 +254,58 @@ async def _export_skus(
     )
 
 
+async def _lock_products_for_import(
+    session: AsyncSession, rows: list[dict]
+) -> dict[str, int]:
+    """导入 SKU 前，把文件里出现过的产品**按产品 id 升序**统一取行锁。
+
+    返回 `{产品名: 产品 id}`，只含"存在且未删除"的；查不到的名字不在返回里，
+    逐行处理时按"找不到产品"如实报该行失败。
+
+    ## 为什么要"先收集、再排序、统一取锁"
+
+    行锁一旦拿到就持有到**整个事务结束**。若按"处理到哪一行就锁哪个产品"来取，
+    那么两份文件同时导入、而它们提到产品的先后顺序相反时：我占住甲等乙、对方占住
+    乙等甲 —— 谁也拿不到第二把，数据库只能强行掐掉一个。这种报错要"顺序相反 +
+    正好同时"才会出现，事后极难复现。
+
+    统一按产品 id 升序取锁，就把"两份文件谁先谁后"从变量里消掉了：大家排在同一个
+    队里，不可能互相等。产品删除 / 恢复 / 新增 SKU 也都是"先产品、后 SKU"，
+    这里跟上同一个规矩，全项目只有一种锁序。
+
+    顺带省掉每行一次的库往返：一个产品只查一次。
+
+    ⚠️ **为什么必须取锁**（不只是为了顺序）：导入要"先确认产品还在、再把 SKU
+    挂上去"。不取锁时产品可能正好在两句话之间被删（删除会连带软删它名下 SKU），
+    插入就落成挂在已删产品下的孤儿 —— 并发下表现为"产品已删、SKU 却还在"。
+    """
+    wanted = {(row.get("产品名称") or "").strip() for row in rows}
+    wanted.discard("")
+    if not wanted:
+        return {}
+
+    found = (
+        await session.execute(
+            select(Product.name, Product.id).where(
+                Product.name.in_(wanted), Product.deleted_at.is_(None)
+            )
+        )
+    ).all()
+    # 同名产品取 id 最小的那个（与原先 `.limit(1)` 的口径一致，但结果确定）
+    name_to_id: dict[str, int] = {}
+    for name, pid in sorted(found, key=lambda r: int(r[1])):
+        name_to_id.setdefault(name, int(pid))
+
+    locked: dict[str, int] = {}
+    for name, pid in name_to_id.items():
+        product = await svc.lock_product(session, pid)
+        if product is None or product.deleted_at is not None:
+            # 收集之后、取锁之前被人删掉 → 该名字不进返回，相关行按"找不到"失败
+            continue
+        locked[name] = pid
+    return locked
+
+
 @router.post("/skus/import")
 async def import_skus(
     request: Request,
@@ -269,11 +322,16 @@ async def import_skus(
       型号录错时自动建会把问题变成一堆重复产品，比导入失败难收拾；
     - 第七批 7.1 / 7.2 / 7.6：每行一个 SAVEPOINT、支持 preview、
       数值（含 MOQ 必须是整数、不能为负）逐行校验、失败清单全量返回。
+
+    ⚠️ **开工前先把涉及的产品统一取行锁**（见 `_lock_products_for_import`）：
+    不取锁时，"确认产品还在"与"插入 SKU"之间产品可能被删，落下孤儿 SKU；
+    而取锁顺序不统一时，两份产品顺序相反的文件同时导入会互相等（死锁）。
     """
     raw = await file.read()
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["SKU编码", "产品名称"], label="文件")
     report = ImportReport("sku", len(rows))
+    locked_products = await _lock_products_for_import(session, rows)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
@@ -304,18 +362,14 @@ async def import_skus(
                 if duplicate is not None:
                     raise RowSkipped(f"SKU编码已存在（id={duplicate.id}）")
 
-                product = (
-                    await session.execute(
-                        select(Product)
-                        .where(Product.name == product_name, Product.deleted_at.is_(None))
-                        .limit(1)
-                    )
-                ).scalars().first()
-                if product is None:
+                # 用开工前统一取好锁的那份映射：拿得到就说明"产品存在 + 未删除 +
+                # 导入期间不会被删"（我们握着它的行锁，删除方得等我们提交）。
+                product_id = locked_products.get(product_name)
+                if product_id is None:
                     raise RowRejected(
                         f"找不到产品「{product_name}」，请先导入产品（已删除的产品不算）"
                     )
-                sku = Sku(product_id=product.id, status="active", **(fields or {}))
+                sku = Sku(product_id=product_id, status="active", **(fields or {}))
                 session.add(sku)
                 await session.flush()
                 sku_id = sku.id
