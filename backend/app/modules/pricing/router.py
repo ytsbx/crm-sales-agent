@@ -13,7 +13,6 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import RowErrors
 from app.core.response import ok, page_data, paginate
-from app.core.timebase import today_business
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
 from app.modules.pricing.model import (
@@ -191,9 +190,13 @@ async def expire_cost(
     cost = await session.get(ProductCost, cost_id)
     if cost is None:
         raise AppError(ErrorCode.NOT_FOUND, "成本记录不存在", 404)
-    # 截止日期按**业务日期**写（第九批复审 §9.10）：取价那边判"这条成本还生不生效"
-    # 用的是北京时间，这里若写 UTC 的今天，凌晨做的失效操作会少一天。
-    cost.effective_to = today_business()
+    # **人工立即停用**（第十一批 11.5，口径 2026-10-08 与主人确认）：写 `stopped_at`，
+    # **不动 `effective_to`**。取价那边只多加一条"没被人工停用"，区间判据
+    # （"截止日含当天"）一个字不改 —— 否则会连累另一类正常设置的有效期。
+    # 从前是把截止日写成今天：判据含当天，于是"点了失效当天照样能取到"。
+    # 已经停用过的重复提交不改原时刻（幂等，也保住"第一次停用于何时"）。
+    if cost.stopped_at is None:
+        cost.stopped_at = datetime.now(UTC)
     await write_audit(
         session,
         operator_id=user.id,

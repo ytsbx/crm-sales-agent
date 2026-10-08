@@ -172,7 +172,21 @@ def check_template_today() -> None:
 # --------------------------------------------------------------------------
 
 async def check_cost_expire() -> None:
-    """凌晨做的失效操作，写进去的截止日期应当是**北京那天**，且与取价判断一致。"""
+    """点"失效"= **人工立即停用**：当天立刻退出核价（第十一批 11.5）。
+
+    ⚠️ 本节的断言在 2026-10-08 按新口径**改过一次**。
+    原来断言的是"失效入口写入的截止日期 = 北京那天" + "失效当天仍算生效
+    （截止日含当天）"—— 那套口径已被主人否掉：点失效就该立刻停用，不能拖到第二天。
+    现在实现改为写 `stopped_at`、**不动 `effective_to`**（区间判据"含当天"对
+    其他成本仍然成立，不能被这一条连累），所以断言跟着换成：
+
+    - 写入了"人工停用时刻"；
+    - `effective_to` **没被动过**（这是"没有连累正常区间语义"的证据）；
+    - **当天立刻取不到**，第二天也取不到。
+
+    北京时间这一层仍然要守：判据与"今天几号"无关，所以凌晨和白天结果必须一致 ——
+    原来那个"凌晨写 UTC 日期会少一天"的坑，因为不再写日期而自然消失。
+    """
     async with SessionLocal() as session:
         admin = (await session.execute(select(User).where(User.username == "admin"))).scalars().first()
         if admin is None:
@@ -206,25 +220,65 @@ async def check_cost_expire() -> None:
         saved = (
             await session.execute(select(ProductCost).where(ProductCost.id == cost_id))
         ).scalars().first()
-        check("成本失效入口写入的截止日期 = 北京那天", saved.effective_to, date(2026, 10, 7))
+        check("失效入口写入了「人工停用时刻」", saved.stopped_at is not None, True)
+        check(
+            "**没有**去改截止日（区间判据一个字没动，不连累正常设置的有效期）",
+            saved.effective_to,
+            None,
+        )
 
-        # 与取价判断一致：当天仍算生效（截止日是**含**当天），第二天才失效
+        # 新口径：点完立刻停用，当天就取不到
         same_day = await pricing_service.get_effective_cost(session, sku_id, date(2026, 10, 7))
         next_day = await pricing_service.get_effective_cost(session, sku_id, date(2026, 10, 8))
         check(
-            "失效当天取到的仍是这条成本（截止日含当天）",
-            same_day is not None and same_day.id == cost_id,
+            "★失效当天立刻取不到这条成本（旧口径是「当天仍生效」，按新口径已改）",
+            same_day is None or same_day.id != cost_id,
             True,
         )
         check(
-            "第二天不再取到这条成本（区间已结束）",
+            "第二天同样取不到",
             next_day is None or next_day.id != cost_id,
             True,
         )
 
+        # ---- 区间边界**没被连累**（复审第 4 条：不能为了一个"立即停用"
+        #      把"截止日含当天"这条规则一起改掉）----
+        natural = ProductCost(
+            sku_id=sku_id,
+            purchase_cost=Decimal("20"),
+            effective_from=date(2026, 10, 1),
+            effective_to=date(2026, 10, 7),  # 正常设置的区间，没被人停用
+            remark=f"{PREFIX}区间边界（跑完即删）",
+            created_by=admin.id,
+        )
+        session.add(natural)
+        await session.flush()
+        natural_id = natural.id
+        boundary = await pricing_service.get_effective_cost(session, sku_id, date(2026, 10, 7))
+        check(
+            "正常设置的「截止日含当天」没被连累：当天仍取得到",
+            boundary is not None and boundary.id == natural_id,
+            True,
+        )
+        after = await pricing_service.get_effective_cost(session, sku_id, date(2026, 10, 8))
+        check(
+            "过了截止日自然取不到（区间语义照旧）",
+            after is None or after.id != natural_id,
+            True,
+        )
+
+        # ---- 重复点失效：幂等，不报错、也不改写第一次那一刻 ----
+        first_stamp = saved.stopped_at
+        await pricing_router.expire_cost(cost_id, _fake_request(), user, session)
+        await session.commit()
+        again = (
+            await session.execute(select(ProductCost).where(ProductCost.id == cost_id))
+        ).scalars().first()
+        check("重复点失效 → 不报错，且不改写第一次的停用时刻", again.stopped_at, first_stamp)
+
         # 收尾：本套件自己造的成本自己删
         await session.execute(
-            ProductCost.__table__.delete().where(ProductCost.id == cost_id)
+            ProductCost.__table__.delete().where(ProductCost.id.in_([cost_id, natural_id]))
         )
         await session.commit()
 

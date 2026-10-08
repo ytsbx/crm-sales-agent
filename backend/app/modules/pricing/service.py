@@ -53,6 +53,9 @@ def serialize_cost(cost: ProductCost, sku_code: str | None = None) -> dict:
         "currency": cost.currency,
         "effective_from": cost.effective_from,
         "effective_to": cost.effective_to,
+        # 「人工停用」与「自然到期」分开下发：前端据此显示「已停用」而不是「已过期」
+        # （第十一批 11.5）。非空即已停用，值就是停用时刻。
+        "stopped_at": cost.stopped_at,
         "remark": cost.remark,
         "created_at": cost.created_at,
     }
@@ -143,12 +146,22 @@ def serialize_logistics_rate(rate: LogisticsRate) -> dict:
 async def get_effective_cost(
     session: AsyncSession, sku_id: int, on_date: date | None = None
 ) -> ProductCost | None:
-    """取生效中的成本。成本带生效区间，改价不影响历史报价。"""
+    """取生效中的成本。成本带生效区间，改价不影响历史报价。
+
+    ⚠️ 两件事必须同时成立（第十一批 11.5）：
+    - **没被人工停用**（`stopped_at IS NULL`）：点"失效"要**当天立即**退出核价。
+      从前只改 `effective_to = 今天`，而下面那条判据是"含当天"，于是点了失效
+      当天照样取得到（复审实测）。
+    - 落在生效区间内 —— 这条判据**一个字没改**（仍然是"含截止日当天"），
+      因为另一类正常设置的有效期就是这个语义，为了一个"立即停用"去改它会把
+      正常边界弄坏。
+    """
     today = on_date or today_business()
     stmt = (
         select(ProductCost)
         .where(
             ProductCost.sku_id == sku_id,
+            ProductCost.stopped_at.is_(None),
             ProductCost.effective_from <= today,
             or_(ProductCost.effective_to.is_(None), ProductCost.effective_to >= today),
         )

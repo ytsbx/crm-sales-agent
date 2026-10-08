@@ -819,7 +819,19 @@ export default function PriceCenterPage() {
                     width: 120,
                     render: (value: number) => <span style={{ fontWeight: 600 }}>{money(value)}</span>,
                   },
-                  { title: '失效日期', dataIndex: 'effective_to', width: 130, render: (v: string | null) => v ?? '生效中' },
+                  {
+                    // 「人工停用」和「自然到期」必须分得开（第十一批 11.5）：
+                    // 一条被点过「失效」的成本 `stopped_at` 有值、`effective_to` 仍是空，
+                    // 只按日期渲染会显示成「生效中」—— 正好把已经停用的说成还在生效。
+                    title: '状态',
+                    dataIndex: 'stopped_at',
+                    width: 140,
+                    render: (stopped: string | null, record: { effective_to?: string | null }) => {
+                      if (stopped) return <Tag color="grey">已停用</Tag>
+                      if (record.effective_to) return <Tag>到 {record.effective_to} 止</Tag>
+                      return <Tag color="green">生效中</Tag>
+                    },
+                  },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                 ]}
                 dataSource={costsQuery.data ?? []}

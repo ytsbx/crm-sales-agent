@@ -13,6 +13,9 @@ export interface CostRecord {
   currency: string
   effective_from: string
   effective_to?: string | null
+  /** 人工"立即停用"的时刻（第十一批 11.5）。非空即已停用 —— 与 `effective_to` 是两回事：
+   *  前者是"人点失效"，后者是"自然到期"，界面上必须分得开。 */
+  stopped_at?: string | null
   remark?: string | null
 }
 

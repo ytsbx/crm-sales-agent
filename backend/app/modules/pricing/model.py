@@ -42,6 +42,19 @@ class ProductCost(Base, IdMixin):
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     effective_from: Mapped[date] = mapped_column(Date)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: 人工"立即停用"的时刻（第十一批 11.5）。非空 = 这条成本不再参与**任何新的核价**。
+    #:
+    #: 为什么单独一列、而不是"把截止日写成昨天"来实现立即停用：那样库里的截止日就
+    #: 不再等于操作日，事后分不清"人停用的"和"自然到昨天到期"；而且"今天才生效"的
+    #: 成本会形成 `effective_from > effective_to` 的怪区间。
+    #: 也**不能**反过来把取价判据改成"不含当天"——那会动到另一类正常设置的有效期。
+    #: 落成时间戳而不是布尔：翻记录时能直接看出**什么时候**被停用的。
+    #:
+    #: 停用**不删历史、也不动已保存报价的成本快照**：历史报价记的是它当时取到的那份
+    #: 成本，不随这条被停用而变。
+    stopped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     remark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
