@@ -4,8 +4,9 @@
  * 三块集中在一个页面（主人 2026-10-07 定的口径）：
  *   - 线索：可恢复（复用线索模块现成的删/恢复）
  *   - 产品 / SKU：可恢复。恢复产品会把它名下被删的 SKU **一起**捡回来
- *   - 客户：**只读**。列出被删的客户，被合并掉的标出"已并入某某"并给跳转，
- *     不给恢复按钮 —— 合并怎么还原是留痕快照的事，不在这里做
+ *   - 客户：**只有"直接删除"的能恢复**（2026-10-08 加）。被合并掉的标出
+ *     "已并入某某"并给跳转，**不给恢复按钮** —— 它名下已经被搬空，恢复只会得到
+ *     一个空壳，还会把"已经被合并"这个事实盖掉。这两类靠 `removed_via` 分。
  *
  * 每个分区的数据各自分页、各自刷新，互不干扰；没有权限的分区直接不显示。
  */
@@ -24,6 +25,7 @@ import {
   listRecycleLeads,
   listRecycleProducts,
   listRecycleSkus,
+  restoreCustomer,
   restoreLead,
   restoreProduct,
   restoreSku,
@@ -383,12 +385,29 @@ function ProductsPanel() {
 function CustomersPanel() {
   const navigate = useNavigate()
   const pager = usePageSize()
+  const { can } = usePermissions()
+  const queryClient = useQueryClient()
+  // 恢复与删除**共用同一把钥匙**（后端也是这么定的）：谁删的谁能拾回来，
+  // 不为它单开权限码 —— 与线索、产品那两个模块的恢复一致
+  const canRestore = can('customer:delete')
 
   const query = useQuery({
     queryKey: ['recycle', 'customers', pager.page, pager.pageSize],
     queryFn: () => listRecycleCustomers({ page: pager.page, page_size: pager.pageSize }),
   })
   useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
+
+  const restoreMutation = useMutation({
+    mutationFn: (id: number) => restoreCustomer(id),
+    onSuccess: () => {
+      Toast.success('客户已恢复')
+      void queryClient.invalidateQueries({ queryKey: ['recycle', 'customers'] })
+      void queryClient.invalidateQueries({ queryKey: ['customers'] })
+    },
+    // 后端会拿 400/422 说明为什么不给恢复（被合并掉的、原负责人已停用的），
+    // 原样显示出来 —— 别把它盖成一句"操作失败"
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   /**
    * 渲染一个「去向」：能打开就给链接，打不开就说明为什么。
@@ -470,10 +489,26 @@ function CustomersPanel() {
       render: (v: string | null, record: RecycleCustomer) =>
         renderDeletedBy(v, record.deleted_by_pending),
     },
+    ...(canRestore
+      ? [
+          {
+            title: '操作',
+            width: 90,
+            render: (_: unknown, record: RecycleCustomer) =>
+              record.removed_via === 'direct' ? (
+                <a onClick={() => restoreMutation.mutate(record.id)}>恢复</a>
+              ) : (
+                // 被合并掉的**不给**恢复按钮：它名下已经被搬空，恢复只会得到空壳，
+                // 还会把"已经被合并"这个事实盖掉。去向那一栏本来就有跳转。
+                <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+              ),
+          },
+        ]
+      : []),
   ]
 
   return (
-    <SectionCard title="被合并掉的客户会显示「已并入某某」，可点进合并后的客户；这里不提供恢复。">
+    <SectionCard title="被合并掉的客户会显示「已并入某某」，可点进合并后的客户（那一类不提供恢复）；直接删除的可以恢复。">
       <Table<RecycleCustomer>
         columns={columns}
         dataSource={query.data?.items ?? []}

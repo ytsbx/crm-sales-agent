@@ -52,6 +52,20 @@ class CustomerTransfer(BaseModel):
     reason: str | None = None
 
 
+class CustomerRestore(BaseModel):
+    """恢复一个被**直接删除**的客户（03-API §42.2）。
+
+    为什么带一个可选的新负责人：**原负责人可能已经停用**（账号也可能没了）。
+    那种情况下把客户恢复出来，等于制造一条"挂在停用账号下"的脏数据 ——
+    所以服务层会拒绝并要一个人选，由调用方在这里一并指定。
+    不传就沿用原负责人（删除时**没有**清空过它）。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    owner_id: int | None = None
+
+
 class PoolRelease(BaseModel):
     """人工把客户放进公海。
 

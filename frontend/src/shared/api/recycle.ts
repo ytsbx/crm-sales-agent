@@ -166,3 +166,18 @@ export function restoreProduct(productId: number) {
 export function restoreSku(skuId: number) {
   return api.post<null>(`/skus/${skuId}/restore`)
 }
+
+/**
+ * 恢复一个被**直接删除**的客户。
+ *
+ * **被合并掉的客户不能走这里**（后端 400）：它名下已经空了，恢复只会得到一个空壳。
+ * 界面上那一类本来也只给"去向"链接、不给恢复按钮。
+ *
+ * `ownerId`：原负责人**已停用**（或账号没了）时后端会 422 要一个人选 ——
+ * 把新负责人一起传上就能恢复。正常情况下留空即可（归还原负责人）。
+ */
+export function restoreCustomer(customerId: number, ownerId?: number | null) {
+  return api.post<RecycleCustomer>(`/customers/${customerId}/restore`, {
+    owner_id: ownerId ?? null,
+  })
+}

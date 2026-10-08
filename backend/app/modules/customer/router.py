@@ -20,6 +20,7 @@ from app.modules.customer.schema import (
     ContactStandaloneCreate,
     ContactUpdate,
     CustomerCreate,
+    CustomerRestore,
     CustomerTransfer,
     CustomerUpdate,
     PoolRelease,
@@ -235,6 +236,47 @@ async def delete_customer(
     )
     await session.commit()
     return ok(None, "客户已删除")
+
+
+@router.post("/customers/{customer_id}/restore")
+async def restore_customer(
+    customer_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("customer:delete")),
+    session: AsyncSession = Depends(get_db),
+    payload: CustomerRestore | None = None,
+):
+    """恢复一个被**直接删除**的客户（03-API §42.2）。
+
+    与删除**共用同一把钥匙**（`customer:delete`）：谁删的谁能拾回来，不为它单开
+    权限码 —— 线索、产品那两个模块的恢复也都是复用已有码。
+
+    两条硬边界（都在服务层，见 `svc.restore_customer`）：
+    - **被合并掉的客户不给恢复**（400）。它名下已经被搬空，恢复只会得到一个空壳，
+      还会把"它已经并进某某了"这个事实盖掉 —— 用户会以为数据丢了。界面上那一类
+      本来也只给"去向"链接、不给恢复按钮。
+    - **原负责人已停用 / 账号已没**时 422，可在恢复时用 `owner_id` 指定新人选 ——
+      否则恢复出来的是一条"挂在停用账号下、谁都看不到"的脏数据。
+    """
+    customer = await svc.lock_deleted_customer(session, user, customer_id)
+    before = svc.serialize_customer(customer)
+    # 入参整个可以不传（恢复最常见的情形就是"归还原负责人"），
+    # 所以 `payload` 有默认值 —— 不带 body 请求也能恢复，别逼调用方编一个空对象。
+    await svc.restore_customer(
+        session, customer, new_owner_id=payload.owner_id if payload else None
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="restore",
+        business_type="customer",
+        business_id=customer.id,
+        before=before,
+        after=svc.serialize_customer(customer),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_customer(customer), "客户已恢复")
 
 
 def _transfer_message(base: str, documents: dict) -> str:

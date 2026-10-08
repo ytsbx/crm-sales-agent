@@ -9,7 +9,12 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.customer import documents as documents_service
-from app.modules.customer.model import Contact, Customer, CustomerOwnerHistory
+from app.modules.customer.model import (
+    Contact,
+    Customer,
+    CustomerMergeLog,
+    CustomerOwnerHistory,
+)
 from app.modules.customer import stage as stage_module
 from app.modules.user.model import User
 
@@ -895,6 +900,102 @@ async def claim_customer(
 
 async def delete_customer(session: AsyncSession, customer: Customer) -> None:
     customer.deleted_at = datetime.now(UTC)
+
+
+async def lock_deleted_customer(
+    session: AsyncSession, user: CurrentUser, customer_id: int
+) -> Customer:
+    """取一条**已被删除**的客户 + 行锁 + 校验数据范围（恢复入口的第一步）。
+
+    为什么另开一个、不复用 `get_visible_customer`：那个的取数是
+    `get_customer_or_404`，只认"活着"的客户 —— 恢复要的恰恰是**已经删掉**的那条。
+
+    `populate_existing=True` 不能少：本项目会话是 `expire_on_commit=False`，
+    SQLAlchemy 默认不用查询结果覆盖已加载对象的属性；调用方若在同一会话里先读过
+    这条客户，少了它拿回来的就是内存里的旧值（`deleted_at` 还是空的），
+    行锁等于白加 —— 并发下的表现是"时对时错"。
+    """
+    row = (
+        await session.execute(
+            select(Customer)
+            .where(Customer.id == customer_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if row is None or row.deleted_at is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户不存在或没有被删除", 404)
+    await assert_customer_visible(session, user, row)
+    return row
+
+
+async def restore_customer(
+    session: AsyncSession, customer: Customer, *, new_owner_id: int | None = None
+) -> None:
+    """恢复一个**被直接删除**的客户（03-API §42.2）。
+
+    ## 为什么"恢复"可以这么轻
+
+    客户进回收站有两条路（见 03-API §42.1 的 `removed_via`）：
+
+    - **直接删除**（`direct`）：`delete_customer` **只**把客户本人的 `deleted_at`
+      置上 —— 名下的联系人、商机、报价、订单、跟进**一条都没动**，也没改挂。
+      所以恢复就是把那个标记去掉，那些东西**自动就都回来了**，不用连带恢复任何东西。
+    - **被合并移除**（`merged`）：名下关联对象**已经被改挂到目标客户**了，
+      这条客户只剩一个空壳。
+
+    ## 第二条路要**拒绝**，不能给它一个假希望
+
+    对合并来源，恢复只会得到一个空壳，还会把"它已经被并进某某了"这个事实盖掉 ——
+    用户会以为数据丢了，其实数据在目标客户那儿好好的。所以直接 400，
+    让人去合并后的那个客户下看。
+
+    ## 归属：默认还原负责人，但停用的要拦住
+
+    `delete_customer` **没有**清空负责人，所以默认就是归还原负责人。
+    可原负责人可能已经停用（账号甚至可能没了）—— 那种情况把客户恢复出来，
+    等于制造一条"挂在停用账号下、谁都看不到"的脏数据，所以这里**拒绝**，
+    并要求调用方在 `new_owner_id` 里给出一个人选（在职且存在）。
+    """
+    merged = (
+        await session.execute(
+            select(CustomerMergeLog.id)
+            .where(CustomerMergeLog.source_customer_id == customer.id)
+            .limit(1)
+        )
+    ).first()
+    if merged is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该客户是被合并掉的（已经并进另一个客户），不能直接恢复；"
+            "请到合并后的那个客户下查看",
+            400,
+        )
+
+    if new_owner_id is not None:
+        target = await session.get(User, new_owner_id)
+        if target is None:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"新负责人 id={new_owner_id} 不存在", 404
+            )
+        if target.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"新负责人「{target.name}」已停用，不能接收客户",
+                422,
+            )
+        customer.owner_id = new_owner_id
+    elif customer.owner_id is not None:
+        owner = await session.get(User, customer.owner_id)
+        if owner is None or owner.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "这条客户的原负责人已停用（或账号已不存在），恢复出来没人能接手；"
+                "请在恢复时指定一位新的负责人",
+                422,
+            )
+
+    customer.deleted_at = None
 
 
 # ---------------------------------------------------------------- 联系人操作

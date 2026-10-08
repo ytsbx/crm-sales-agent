@@ -969,6 +969,183 @@ async def assert_stale_sku_not_blamed(ids: dict, admin: str) -> None:
     check("场景5：如实标成「待核实」", row.get("deleted_by_pending"), True)
 
 
+async def assert_customer_restore(ids: dict, admin: str, sales: str) -> None:
+    """客户恢复（2026-10-08 主人拍板；03-API §42.2）。
+
+    口径（都是"核实过代码"才这么定的）：
+    - **只有"直接删除"的客户能恢复**。`delete_customer` 只把客户本人的
+      `deleted_at` 置上 —— 名下联系人/商机/报价/订单**一条都没删**、也没改挂。
+      所以恢复就是把标记去掉，那些东西**自动就回来了**，不需要连带恢复任何东西。
+    - **被合并掉的不能恢复**（400）：它名下已经被改挂到目标客户，恢复只会得到一个
+      空壳，还会把"它已经被并进某某了"这个事实盖掉 —— 用户会以为数据丢了。
+    - **原负责人已停用 / 账号已没**时 422，可以在恢复时用 `owner_id` 指定新人选；
+      否则恢复出来的是一条"挂在停用账号下、谁都看不到"的脏数据。
+    - 恢复与删除**共用同一把钥匙**（`customer:delete`）：谁删的谁能拾回来。业务员没有 → 403。
+    """
+    print()
+    print("=== 20. 客户恢复（只有「直接删除」的能恢复）===")
+
+    tag = uuid4().hex[:6]
+    async with SessionLocal() as s:
+        from app.modules.customer.model import Contact, Customer
+
+        plain = Customer(name=f"{PREFIX}待恢复{tag}", owner_id=ids["lisi"],
+                         status="active", pool_status="private")
+        with_data = Customer(name=f"{PREFIX}带数据{tag}", owner_id=ids["lisi"],
+                             status="active", pool_status="private")
+        src = Customer(name=f"{PREFIX}并入{tag}", owner_id=ids["lisi"],
+                       status="active", pool_status="private")
+        tgt = Customer(name=f"{PREFIX}去处{tag}", owner_id=ids["lisi"],
+                       status="active", pool_status="private")
+        alive = Customer(name=f"{PREFIX}没删{tag}", owner_id=ids["lisi"],
+                         status="active", pool_status="private")
+        stale = Customer(name=f"{PREFIX}停用负责人{tag}", owner_id=ids["lisi"],
+                         status="active", pool_status="private")
+        s.add_all([plain, with_data, src, tgt, alive, stale])
+        await s.flush()
+        # 给"带数据"那条挂一个联系人：用来证明"删客户没动名下的东西"
+        s.add(
+            Contact(
+                customer_id=with_data.id,
+                name=f"{PREFIX}联系人{tag}",
+                mobile="13900000001",
+            )
+        )
+        await s.flush()
+        plain_id, with_data_id = plain.id, with_data.id
+        src_id, tgt_id, alive_id, stale_id = src.id, tgt.id, alive.id, stale.id
+        await s.commit()
+
+    async def owner_of(cid: int) -> int | None:
+        async with SessionLocal() as s:
+            return (
+                await s.execute(
+                    text("select owner_id from customers where id = :i"), {"i": cid}
+                )
+            ).scalar_one()
+
+    async def contact_count(cid: int) -> int:
+        async with SessionLocal() as s:
+            return int(
+                (
+                    await s.execute(
+                        text("select count(*) from contacts where customer_id = :i"),
+                        {"i": cid},
+                    )
+                ).scalar_one()
+            )
+
+    def customer_listed(cid: int) -> bool:
+        _, body = call("GET", f"/customers?keyword={PREFIX}&page_size=200", token=admin)
+        return cid in ids_of(body)
+
+    # ---- 1. 直接删除 → 可以恢复，归属还原 ----
+    check("（1）删掉一条客户", call("DELETE", f"/customers/{plain_id}", token=admin)[0], 200)
+    check_true("删完它就从客户列表里消失了", not customer_listed(plain_id))
+    check(
+        "（1）恢复它",
+        call("POST", f"/customers/{plain_id}/restore", token=admin, body={})[0],
+        200,
+    )
+    check_true("恢复后回到客户列表", customer_listed(plain_id))
+    check("（1）归属还原给原负责人（删除时没有清空过）", await owner_of(plain_id), ids["lisi"])
+    async with SessionLocal() as s:
+        restored_trace = int(
+            (
+                await s.execute(
+                    text(
+                        "select count(*) from audit_logs where business_type = 'customer'"
+                        " and business_id = :b and action = 'restore'"
+                    ),
+                    {"b": plain_id},
+                )
+            ).scalar_one()
+        )
+    check("（1）恢复写了留痕（谁在什么时候恢复的）", restored_trace, 1)
+
+    # ---- 2. 删客户**不动**名下的数据（所以恢复才这么轻）----
+    before_contacts = await contact_count(with_data_id)
+    check("（2）前提：这条客户名下挂着 1 个联系人", before_contacts, 1)
+    check("（2）删掉这条客户", call("DELETE", f"/customers/{with_data_id}", token=admin)[0], 200)
+    check("（2）删客户**没有**连带删它名下的联系人", await contact_count(with_data_id), 1)
+    check(
+        "（2）恢复它",
+        call("POST", f"/customers/{with_data_id}/restore", token=admin, body={})[0],
+        200,
+    )
+    check("（2）恢复后联系人仍在（本来就没被动过）", await contact_count(with_data_id), 1)
+
+    # ---- 3. 被合并掉的客户：不给恢复 ----
+    check(
+        "（3）把一条客户合并进另一条",
+        call("POST", "/customers/merge", token=admin, body={
+            "source_customer_id": src_id, "target_customer_id": tgt_id,
+            "reason": f"{PREFIX}恢复用例{tag}",
+        })[0],
+        200,
+    )
+    status, body = call(
+        "POST", f"/customers/{src_id}/restore", token=admin, body={}
+    )
+    check("（3）恢复被合并掉的客户 → 400（空壳，不能给假希望）", status, 400)
+    check_true(
+        "（3）理由说清是「被合并掉的」、并指路到合并后那个客户",
+        "合并" in (body.get("message") or ""),
+        body.get("message"),
+    )
+
+    # ---- 4. 没被删的客户：谈不上恢复 ----
+    check(
+        "（4）恢复一条没被删的客户 → 404",
+        call("POST", f"/customers/{alive_id}/restore", token=admin, body={})[0],
+        404,
+    )
+
+    # ---- 5. 原负责人已停用：422，可指定新人选 ----
+    check("（5）删掉一条（负责人是李四）", call("DELETE", f"/customers/{stale_id}", token=admin)[0], 200)
+    async with SessionLocal() as s:
+        await s.execute(
+            text("update users set status = 'inactive' where id = :i"), {"i": ids["lisi"]}
+        )
+        await s.commit()
+    try:
+        status, body = call("POST", f"/customers/{stale_id}/restore", token=admin, body={})
+        check("（5）原负责人已停用 → 422（不制造挂在停用账号下的脏数据）", status, 422)
+        check_true(
+            "（5）理由指路了「指定新负责人」",
+            "负责人" in (body.get("message") or ""),
+            body.get("message"),
+        )
+        check(
+            "（5）恢复时指定新负责人 → 200",
+            call("POST", f"/customers/{stale_id}/restore", token=admin,
+                 body={"owner_id": ids["zhangsan"]})[0],
+            200,
+        )
+        check("（5）负责人换成了指定那位", await owner_of(stale_id), ids["zhangsan"])
+    finally:
+        # 李四的状态**必须改回来**：后面还有别的断言按"在职"来
+        async with SessionLocal() as s:
+            await s.execute(
+                text("update users set status = 'active' where id = :i"), {"i": ids["lisi"]}
+            )
+            await s.commit()
+
+    # ---- 6. 权限：恢复与删除共用同一把钥匙 ----
+    check("（6）前提：业务员能看回收站", call("GET", "/recycle-bin/customers", token=sales)[0], 200)
+    check("（6）再删一条给业务员试", call("DELETE", f"/customers/{plain_id}", token=admin)[0], 200)
+    check(
+        "（6）业务员（无 customer:delete）恢复 → 403",
+        call("POST", f"/customers/{plain_id}/restore", token=sales, body={})[0],
+        403,
+    )
+    check(
+        "（6）把这条恢复回去，别留给守门套件",
+        call("POST", f"/customers/{plain_id}/restore", token=admin, body={})[0],
+        200,
+    )
+
+
 async def main() -> int:
     import app.main  # noqa: F401  触发模型注册（不启调度器）
     _ = app.main
@@ -1110,9 +1287,13 @@ async def main() -> int:
               (direct_row or {}).get("owner_id"), ids["admin"])
 
         print()
-        print("=== 9. 客户：只读 —— 没有恢复接口 ===")
-        status, _ = call("POST", f"/customers/{ids['cust_src']}/restore", token=admin)
-        check_true("客户恢复接口不存在（404/405）", status in (404, 405), f"实际 {status}")
+        print("=== 9. 客户：只有『直接删除』的能恢复（2026-10-08 起）===")
+        # 这一段在 2026-10-07 第一版是"客户只读、没有恢复接口"；主人 2026-10-08
+        # 拍板给**直接删除**的客户加恢复（被合并掉的不给，见第 20 节）。
+        status, _ = call("POST", f"/customers/{ids['cust_src']}/restore", token=admin, body={})
+        check("被合并掉的客户不给恢复 → 400", status, 400)
+        status, _ = call("POST", f"/customers/{ids['cust_direct']}/restore", token=admin, body={})
+        check("直接删除的客户可以恢复 → 200", status, 200)
 
         print()
         print("=== 10. 匿名访问被拒 ===")
@@ -1130,6 +1311,7 @@ async def main() -> int:
         await assert_create_sku_waits_for_product_lock(ids, admin)
         await assert_removed_by(ids, admin)
         await assert_stale_sku_not_blamed(ids, admin)
+        await assert_customer_restore(ids, admin, sales)
 
     finally:
         await cleanup()
