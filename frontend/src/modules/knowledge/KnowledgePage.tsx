@@ -848,7 +848,7 @@ export default function KnowledgePage() {
                     <Popconfirm
                       key="resubmit"
                       title="驳回后重提？"
-                      content="会向钉钉**新建一轮**审批（旧轮次保留在记录里）。"
+                      content="会向钉钉「新建一轮」审批（旧轮次保留在记录里）。"
                       onConfirm={() =>
                         approvalMutation.mutate({ inquiryId: row.inquiry_id, resubmit: true })
                       }
