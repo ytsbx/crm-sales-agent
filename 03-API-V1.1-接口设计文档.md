@@ -1203,9 +1203,14 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /custom-inquiries/status-summary`：各状态条数（待评估/开发中/已转商机/已归档），页面顶部徽章用。需要 `quote:view`。
 - `GET /custom-inquiries/{inquiry_id}`：详情。需要 `quote:view`。前端修订表单用它回填当前版内容。
 - `PATCH /custom-inquiries/{inquiry_id}`：修改。需要 `quote:manage`。
-- `DELETE /custom-inquiries/{inquiry_id}`：删除。需要 `quote:manage`。
-- `GET /custom-inquiries/{inquiry_id}/history`：整条修订链，按版本升序（先看最早的原始要求）。需要 `quote:view`。
-- `POST /custom-inquiries/{inquiry_id}/revise`：客户改要求 → 新增一版（版本号 +1、留修订说明），旧版原样保留。需要 `quote:manage`。（§3.3："改了三次要求却只留最新一版、看不出怎么变的"。）
+- `DELETE /custom-inquiries/{inquiry_id}`：删除（软删）。需要 `quote:manage`。删掉某一版后**重算整条链的"当前有效版"**：还活着的版本里编号最大的那个成为当前版（拿掉"已被新版取代"），其余活着的标上 —— 否则会留下"V1 说自己被取代了、可取代它的 V2 已经删掉"这种对不上号的状态（第十二批 12.6）。
+- `GET /custom-inquiries/{inquiry_id}/history`：整条修订链，按版本升序（先看最早的原始要求）。需要 `quote:view`。**含已删除的版本**（下发 `is_deleted`，`version_state_label` 为 `已删除`）：删掉 V2 后链条是 `V1 → V2(已删除) → V3`，不这样列会看着像系统跳了号（第十二批 12.6）。
+- `POST /custom-inquiries/{inquiry_id}/revise`：客户改要求 → 新增一版（留修订说明），旧版原样保留。需要 `quote:manage`。（§3.3："改了三次要求却只留最新一版、看不出怎么变的"。）**口径（2026-10-08，第十二批 12.6）**：
+  - 只能对**当前有效版**（还活着的版本里编号最大的那个）再修订；对已被取代的历史版发起修订 → `409`。
+  - 新版本号取**整条链历史最大编号 + 1，含已删除的版本** —— 删掉 V2 之后以 V1 为基础生成的是 **V3**（不是又一个 V2）。已删版本不恢复、不覆盖、编号不复用。
+  - 内容取自"作为基础的那一版"（删掉 V2 后即 V1）。
+  - 修订说明未填时自动写「以 V1 为基础生成 V3」；操作日志记 `from_version`。
+  - **链级行锁 + 唯一约束 `uq_custom_inquiries_chain_version`** 防并发出两个同一版本。
 - `POST /custom-inquiries/{inquiry_id}/create-quote`：从定制需求直接发起报价（§3.1/场景09）。需要 `quote:manage`。定制件投产前没有 SKU，按 SKU 选品选不到它，这条把「需求 → 商机 → 报价 → 定制明细」一步串起。
 
 ## 41.4 标签（tags）
