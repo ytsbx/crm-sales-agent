@@ -177,6 +177,52 @@ async def full_contact_customer_ids(
     }
 
 
+async def take_primary_slot(
+    session: AsyncSession, customer_id: int | None, *, exclude: int | None = None
+) -> None:
+    """占住「主联系人」这个位子：**锁客户行** + 把同客户其它主联系人的标记取消。
+
+    主联系人是**客户级**的唯一资源 —— 库上有一条部分唯一索引
+    `uq_contacts_primary_per_customer` 兜底（迁移 `c3f8a1d6e9b4`）。
+
+    ## 为什么必须在**写库之前**调
+
+    顺序反了（先 INSERT / UPDATE、再取消别人）**这次写入自己就会撞上那条索引**，
+    用户看到的是 500 —— 而实际意思只是"这个客户已经有主联系人了"。
+    正确顺序永远是：**腾位 → 写入**。
+
+    ## 为什么还要先锁客户行
+
+    不锁的话，两个并发请求各自"腾位 + 写自己"会交错，后一个照样撞索引。
+    主联系人是客户级的唯一资源，锁客户行最自然，也不引入新的锁序。
+
+    ## `exclude` 是给"把某条已有的设为主"那条路用的
+
+    ⚠️ 必须把**要设为主的那条自己**排掉。`take_primary_slot` 走的是 Core 的
+    `UPDATE`，SQLAlchemy 不知道它动过哪个 ORM 对象；要是把自己也刷成 False，
+    而内存里的 `is_primary` 又是 True（赋值没变，ORM 认为无需回写），
+    库里就留下一条"谁都不是主"的联系人 —— 症状是接口回 200、主位却是空的。
+    （第一版把原实现里的 `Contact.id != contact.id` 丢了，就是这么翻车的。）
+
+    调用点（都在写库之前）：新建联系人 / 更新联系人 / 转化时内部建联系人，
+    这三个是"新记录还没进库"，`exclude=None` 即可；
+    `customer.service.set_primary_contact` 传 `exclude=contact.id`。
+    """
+    if customer_id is None:
+        return
+    await session.execute(
+        select(Customer.id).where(Customer.id == customer_id).with_for_update()
+    )
+    stmt = Contact.__table__.update().where(
+        Contact.customer_id == customer_id,
+        Contact.deleted_at.is_(None),
+        Contact.is_primary.is_(True),
+    )
+    if exclude is not None:
+        stmt = stmt.where(Contact.id != exclude)
+    await session.execute(stmt.values(is_primary=False))
+
+
 async def create_contact_for_customer(
     session: AsyncSession,
     *,
@@ -188,7 +234,17 @@ async def create_contact_for_customer(
     source: str | None = None,
     is_primary: bool | None = None,
 ) -> Contact:
-    """创建联系人。未显式指定时：该客户还没有主联系人就把这条设为主联系人。"""
+    """创建联系人。未显式指定时：该客户还没有主联系人就把这条设为主联系人。
+
+    「主联系人」是**客户级**的唯一资源（一个客户只能有一个）。这里有两件事要做对：
+
+    1. **显式传 `is_primary=True` 时，先把同客户其它主联系人的标记取消** ——
+       从前只在"自动判断"那条路上看有没有主，显式传 True 就一路置真，
+       于是一个客户能有两个主联系人。
+    2. **要占主位时先锁住客户行**：并发下两个人各自"取消别人 + 设自己"会交错，
+       结果还是两个主（库上那条部分唯一索引则会直接让后一个报 500）。
+       主位是客户级的，锁客户行最自然，也不引入新的锁序。
+    """
     if is_primary is None:
         existing_primary = (
             await session.execute(
@@ -200,6 +256,9 @@ async def create_contact_for_customer(
             )
         ).first()
         is_primary = existing_primary is None
+
+    if is_primary:
+        await take_primary_slot(session, customer_id)
 
     contact = Contact(
         customer_id=customer_id,
@@ -329,6 +388,50 @@ async def find_duplicate_customers(
 
     scored.sort(key=lambda item: -item["score"])
     return scored[:limit]
+
+
+async def find_contact_in_customer(
+    session: AsyncSession,
+    *,
+    customer_id: int,
+    mobile: str | None = None,
+    email: str | None = None,
+) -> Contact | None:
+    """这个客户下有没有**同一个自然人**（手机号或邮箱完全一致）？有就返回那条。
+
+    线索转化时用来避免建出重复联系人：同一个手机号在同一个客户下出现两次，
+    几乎只会是重复录入 —— 直接复用那一条，不再新建。
+
+    ⚠️ **只在同一个客户内查，不做跨客户匹配。** 同一个人完全可以同时在两家
+    客户处任职，"跨客户同号"是正常业务，拿它拦转化会误伤；那一类重复该走
+    **客户合并**，不是联系人复用。
+    （所以这里没有直接用 `find_duplicate_contacts` —— 那个是跨客户、还要过
+    数据范围与打分阈值的，口径不一样。）
+
+    有主联系人就优先返回它：转化时把线索里的联系人接到已有的主联系人上，
+    比另建一条更像业务实际。
+    """
+    conditions = []
+    mobile_key = (mobile or "").strip()
+    email_key = (email or "").strip().lower()
+    if mobile_key:
+        conditions.append(Contact.mobile == mobile_key)
+    if email_key:
+        conditions.append(Contact.email == email_key)
+    if not conditions:
+        return None
+    return (
+        await session.execute(
+            select(Contact)
+            .where(
+                Contact.customer_id == customer_id,
+                Contact.deleted_at.is_(None),
+                or_(*conditions),
+            )
+            .order_by(Contact.is_primary.desc(), Contact.id.asc())
+            .limit(1)
+        )
+    ).scalars().first()
 
 
 async def find_duplicate_contacts(

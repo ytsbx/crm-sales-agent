@@ -142,17 +142,36 @@
 
 ### 线索转化
 
-`POST /leads/{id}/convert`
+`POST /leads/{id}/convert`。需要 `lead:convert`。
 
 ```json
 {
   "customer_mode": "existing",
   "customer_id": 1001,
   "create_contact": true,
+  "reuse_contact_id": null,
   "create_opportunity": true,
   "opportunity_title": "德国浴桶采购"
 }
 ```
+
+**幂等与并发**（2026-10-08 第十批 10.1）：转化第一步就是**锁住这条线索**
+（`lock_lead`：行锁 + `populate_existing`），锁内重读状态。从前读的是不加锁的
+`get_visible_lead` —— 两个人同时点转化都会读到"还没转化"，然后各建一套客户，
+幂等判断形同虚设（实测过 `[200, 200]`、库里多出一个客户）。已转化的线索再转
+一律 **409**（`DUPLICATE_CONVERT`）。
+
+**联系人复用**（同批 10.2）：
+
+- 建联系人**之前**先看这个客户下有没有**同手机号 / 同邮箱**的人，有就**复用**
+  那一条（不新建）。预览那一步查过一次，但预览到提交之间可能又有人录了一遍，
+  提交时不再查就会在同一个客户下留下两个"同一个手机号"。
+- 只查**同一个客户内**，不做跨客户匹配 —— 同一个人可以同时在两家客户处任职，
+  拿它拦转化会误伤（那一类重复该走**客户合并**）。
+- 想显式复用某一条（例如预览里给用户选过），传 `reuse_contact_id`。
+  **只接受已经挂在目标客户下的联系人**：拿别人的联系人 id 过来等于借转化做一次
+  越权的改挂，返回 **422**。
+- `create_contact: false` 表示这次不碰联系人。
 
 ---
 
@@ -218,6 +237,29 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `GET /contacts/{id}/timeline`
 - `GET /contacts/{id}/wecom`
 - `POST /contacts/deduplicate`
+
+## 主要联系人唯一（2026-10-08 第十批 10.4）
+
+**一个客户最多一个主联系人** —— 库上有部分唯一索引兜底：
+
+    UNIQUE (customer_id) WHERE is_primary AND deleted_at IS NULL
+
+（只管"没删且是主"的行，删掉的联系人不占主位；建法与清老数据见迁移 `c3f8a1d6e9b4`。）
+
+应用层三个入口在**写库之前**统一调 `take_primary_slot`（**先锁客户行、再把同客户
+其它主联系人的标记取消**，这一整套叫"腾位"）：新建联系人 / 更新联系人 / 转化时
+内部建联系人。顺序是关键 —— **腾位永远排在写入之前**：反过来（先 INSERT/UPDATE
+再取消别人）这次写入自己就会撞上那条索引，用户看到的是 500。
+
+两个容易出错的细节：
+
+- **腾位要把"这次要设为主的那条自己"排掉**（`exclude=`）。`take_primary_slot`
+  走的是 Core 的 `UPDATE`，SQLAlchemy 不知道它动过哪个 ORM 对象；把自己也刷成
+  False 而内存里仍是 True 时，ORM 认为"没变化"不回写 —— 结果是接口回 200、
+  主位却是空的。第一版就把原实现里的 `Contact.id != contact.id` 丢了，栽在这。
+- **改挂客户时必须显式清掉主标记**（`bind-customer` / `change-customer` 且没传
+  `is_primary`）。主标记是"在某个客户名下"的属性，跟着人走的话：新客户凭空多
+  一个主联系人，而老客户的主位空着。
 
 ---
 

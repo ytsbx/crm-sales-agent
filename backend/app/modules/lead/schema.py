@@ -56,6 +56,12 @@ class LeadConvert(BaseModel):
     customer_mode: str = Field(default="new", pattern="^(new|existing)$")
     customer_id: int | None = None
     create_contact: bool = True
+    reuse_contact_id: int | None = None
+    """**复用**这个已经挂在目标客户下的联系人，不再新建一条。
+
+    预览那一步会把"这个客户下已有同号的人"查出来给用户选，选完带这个字段回来。
+    不传也行 —— 后端在新建前会自己再查一遍，同一个客户下手机号/邮箱一致的直接复用。
+    """
     create_opportunity: bool = False
     opportunity_title: str | None = None
     expected_amount: float | None = None

@@ -85,7 +85,19 @@ class Customer(Base, IdMixin, TimestampMixin):
 
 class Contact(Base, IdMixin, TimestampMixin):
     __tablename__ = "contacts"
-    __table_args__ = (Index("ix_contacts_customer", "customer_id"),)
+    __table_args__ = (
+        Index("ix_contacts_customer", "customer_id"),
+        # 「一个客户最多一个主联系人」的库层兜底（2026-10-08 第十批 10.4）。
+        # **部分索引**：只管"没删且是主"的行 —— 删掉的联系人不占主位。
+        # 应用层已经在三个入口收敛（新建 / 设主 / 改绑客户），这条是防"绕过接口
+        # 直接写库"与"并发漏网"的最后一道；建法与清老数据见迁移 `c3f8a1d6e9b4`。
+        Index(
+            "uq_contacts_primary_per_customer",
+            "customer_id",
+            unique=True,
+            postgresql_where=text("is_primary AND deleted_at IS NULL"),
+        ),
+    )
 
     customer_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("customers.id"), nullable=True

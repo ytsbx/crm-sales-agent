@@ -621,11 +621,10 @@ async def merge_customers(
     moved: dict[str, int] = {}
 
     # 1) 关联对象改挂
-    # 并过来的联系人 id 要**先记下来**：下面判断"主要联系人唯一"时，
-    # 只能降级"刚并过来的那几个"，不能连目标客户原有的主联系人一起清掉。
-    # 原实现是 where(customer_id == target.id and is_primary) 全置假，
-    # 分不清哪些是刚并过来的——注释写"把并过来的降级"，代码却把目标原有的也清了，
-    # 结果合并完常常一个主联系人都不剩，要人工再设。
+    # 并过来的联系人 id 要**先记下来**：下面第 2 步要区分"目标本来就有的主"与
+    # "刚并过来的"，后者在目标原本没主时会被顶成主。
+    # （历史教训：原实现把目标客户原有的主也一起清掉了，合并完常常一个主都不剩，
+    #  得人工再设一个。）
     merged_contact_ids = list(
         (
             await session.execute(select(Contact.id).where(Contact.customer_id == source.id))
@@ -633,41 +632,48 @@ async def merge_customers(
     )
     for module_path, class_name, label in MERGE_TARGETS:
         model = _load_model(module_path, class_name)
+        values: dict = {"customer_id": target.id}
+        if model is Contact:
+            # ⚠️ 联系人的主标记**必须在这条改挂语句里一并清掉**（2026-10-08 第十批 10.4）。
+            # 先改挂、后面再降级是**来不及的**：改挂那一刻目标客户名下就凑出了第二个
+            # 主联系人，库上那条部分唯一索引会直接让整次合并报 500
+            # （`check_data_scope` 把它抓出来了）。
+            # 同一个道理在"新建联系人"那三个入口上也踩过 ——
+            # **腾位永远排在任何写入之前**。
+            # 目标原本没有主的场合，见下面第 2 步：从并过来的这批里挑一个顶上。
+            values["is_primary"] = False
         result = await session.execute(
             model.__table__.update()
             .where(model.customer_id == source.id)
-            .values(customer_id=target.id)
+            .values(**values)
         )
         moved[label] = int(result.rowcount or 0)
 
     # 1b) 字段名不叫 customer_id 的关联（企微映射、附件）
     moved.update(await _move_special_links(session, source=source, target=target))
 
-    # 2) 主要联系人唯一：target 已有主要联系人时，把并过来的降级为非主要
-    has_primary = (
+    # 2) 主要联系人：上面改挂时已经把所有并过来的统统降级了（不降级会撞唯一索引）。
+    #    剩下只有一种情况要处理 —— **目标原本一个主都没有**：把并过来的第一个
+    #    （id 最小）顶上。这与"目标没有负责人就继承来源的负责人"是同一个口径：
+    #    合并完目标名下不该突然变得一个主联系人都没有。
+    #
+    #    目标原来就有主的话**什么都别做**：那位才是主人，并过来的保持非主。
+    #    （从前这里写的是"有主就降级并过来的"，那句判断本身没错，错在它跑在
+    #    改挂之后 —— 降级是补的，索引早在改挂那一步就拦下来了。）
+    has_own_primary = (
         await session.execute(
             select(func.count(Contact.id)).where(
                 Contact.customer_id == target.id,
                 Contact.is_primary.is_(True),
-                # 必须是**目标原有的**主联系人：这个判断跑在"改挂之后"，
-                # 不排掉并过来的那几个，就会把"目标原来没有主、并过来的那个是主"
-                # 也当成有主而一起降级——合并完反而一个主联系人都不剩。
-                Contact.id.not_in(merged_contact_ids or [0]),
             )
         )
     ).scalar_one()
-    if has_primary:
-        # 只降级刚并过来的联系人（它们在 source 名下时是主要的那几个）
-        if merged_contact_ids:
-            await session.execute(
-                Contact.__table__.update()
-                .where(
-                    Contact.id.in_(merged_contact_ids),
-                    Contact.customer_id == target.id,
-                    Contact.is_primary.is_(True),
-                )
-                .values(is_primary=False)
-            )
+    if not has_own_primary and merged_contact_ids:
+        await session.execute(
+            Contact.__table__.update()
+            .where(Contact.id == min(merged_contact_ids))
+            .values(is_primary=True)
+        )
 
     # 3) 标签并入
     source_tag_ids = list(

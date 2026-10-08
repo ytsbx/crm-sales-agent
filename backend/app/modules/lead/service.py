@@ -133,6 +133,32 @@ async def get_visible_lead(session: AsyncSession, user, lead_id: int) -> Lead:
     return lead
 
 
+async def lock_lead(session: AsyncSession, user, lead_id: int) -> Lead:
+    """取线索**行锁** + 校验可见性（转化等"先判状态、再写一堆东西"的场景第一步）。
+
+    为什么必须先锁：转化是「先看这条线索转过没有 → 没有就建客户/联系人/商机 →
+    最后把线索标成已转化」。不加锁的话，两个人同时点转化**都会读到"还没转化"**，
+    然后各建一套 —— 幂等判断形同虚设，库里多出一个客户和一条线索指向它的记录。
+
+    `populate_existing=True` 不能少：本项目 session 是 `expire_on_commit=False`，
+    SQLAlchemy 默认**不用查询结果覆盖已加载对象**。调用方（路由层）若在同一个
+    会话里先读过这条线索，少了它拿回来的就是内存里的旧值（`status` 还是转化前的），
+    行锁等于白加。写法与 `claim_lead` 完全一致 —— 锁线索只有这一处出口。
+    """
+    row = (
+        await session.execute(
+            select(Lead)
+            .where(Lead.id == lead_id, Lead.deleted_at.is_(None))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, "线索不存在", 404)
+    await assert_lead_visible(session, user, row)
+    return row
+
+
 async def resolve_owner(
     session: AsyncSession, username: str | None, default_user_id: int
 ) -> int:

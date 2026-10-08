@@ -925,14 +925,24 @@ async def get_visible_contact(
 
 
 async def set_primary_contact(session: AsyncSession, contact: Contact) -> None:
-    """主要联系人唯一：先把同客户下其它联系人取消标记。"""
+    """主要联系人唯一：先把同客户下其它联系人取消标记。
+
+    ⚠️ 改标记之前**先锁住客户行**（2026-10-08 第十批 10.4 修）。从前这一步的
+    UPDATE 完全不加锁，并发时两个人各自"取消别人 + 设自己"交错执行，会留下
+    两个主联系人；库上那条部分唯一索引则会让后一个直接报 500。
+    主联系人是**客户级**的唯一资源，锁客户行最自然。
+
+    `deleted_at IS NULL` 与唯一索引的口径保持一致 —— 已删的联系人不占主位，
+    不必再去清它的标记。
+    """
     if contact.customer_id is None:
         return
-    await session.execute(
-        Contact.__table__.update()
-        .where(Contact.customer_id == contact.customer_id, Contact.id != contact.id)
-        .values(is_primary=False)
-    )
+    # 局部 import：`contact_util` 用的是 model 层，不会绕回来，
+    # 但这里没必要为了一个函数把模块级依赖连上
+    from app.modules.contact_util import take_primary_slot
+
+    # exclude=自己：腾位只腾**别人**，别把这条也刷成 False（见 take_primary_slot 的说明）
+    await take_primary_slot(session, contact.customer_id, exclude=contact.id)
     contact.is_primary = True
 
 

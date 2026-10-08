@@ -9,7 +9,11 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
-from app.modules.contact_util import create_contact_for_customer, find_duplicate_customers
+from app.modules.contact_util import (
+    create_contact_for_customer,
+    find_contact_in_customer,
+    find_duplicate_customers,
+)
 from app.modules.customer.model import Customer
 from app.modules.lead import service as svc
 from app.modules.lead.model import Lead
@@ -334,7 +338,9 @@ async def convert_lead(
     user: CurrentUser = Depends(require_permission("lead:convert")),
     session: AsyncSession = Depends(get_db),
 ):
-    lead = await svc.get_visible_lead(session, user, lead_id)
+    # ⚠️ 必须先**锁住**这条线索再判状态。无锁判断是**假的幂等**：两个人同时点转化，
+    # 都会读到"还没转化"，然后各建一套客户/联系人 —— 锁内重读才算数。
+    lead = await svc.lock_lead(session, user, lead_id)
     if lead.status == "converted":
         # 一次线索转化必须幂等（02-ER §21）
         raise AppError(ErrorCode.DUPLICATE_CONVERT, "该线索已经转化过", 409)
@@ -369,17 +375,42 @@ async def convert_lead(
         await session.flush()
 
     contact_id = None
-    if payload.create_contact and (lead.contact_name or lead.mobile):
-        contact = await create_contact_for_customer(
+    if payload.reuse_contact_id is not None:
+        # 用户明确指定复用哪一条。只接受**已经挂在这个客户下**的 ——
+        # 拿别人的联系人 id 过来复用，等于借转化做一次越权的改挂。
+        from app.modules.customer import service as customer_service
+
+        contact = await customer_service.get_visible_contact(
+            session, user, payload.reuse_contact_id
+        )
+        if contact.customer_id != customer.id:
+            raise AppError(
+                ErrorCode.PARAM_ERROR, "要复用的联系人不在这个客户名下", 422
+            )
+        contact_id = contact.id
+    elif payload.create_contact and (lead.contact_name or lead.mobile):
+        # 建之前先看这个客户下有没有**同号 / 同邮箱**的人，有就复用那一条。
+        # 转化预览里查过一次，但预览到提交之间可能又有人录了一遍；提交时不再查，
+        # 就会在同一个客户下留下两个"同一个手机号"的联系人。
+        existing = await find_contact_in_customer(
             session,
             customer_id=customer.id,
-            name=lead.contact_name or lead.name,
             mobile=lead.mobile,
             email=lead.email,
-            owner_id=customer.owner_id,
-            source=lead.source or "线索转化",
         )
-        contact_id = contact.id
+        if existing is not None:
+            contact_id = existing.id
+        else:
+            contact = await create_contact_for_customer(
+                session,
+                customer_id=customer.id,
+                name=lead.contact_name or lead.name,
+                mobile=lead.mobile,
+                email=lead.email,
+                owner_id=customer.owner_id,
+                source=lead.source or "线索转化",
+            )
+            contact_id = contact.id
 
     opportunity_id = None
     if payload.create_opportunity:

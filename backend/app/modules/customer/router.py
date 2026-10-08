@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
-from app.modules.contact_util import create_contact_for_customer
+from app.modules.contact_util import create_contact_for_customer, take_primary_slot
 from app.modules.customer import service as svc
 from app.modules.customer import stage, tags as tag_svc
 from app.modules.customer.model import Contact, Customer
@@ -752,6 +752,11 @@ async def create_contact(
     session: AsyncSession = Depends(get_db),
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
+    if payload.is_primary:
+        # **先腾位再插**：占主位必须排在任何写入之前，否则这次 INSERT 自己就会
+        # 撞上那条部分唯一索引（第十批 10.4）。腾位 = 锁客户行 + 取消同客户
+        # 其它主联系人的标记。
+        await take_primary_slot(session, customer.id)
     contact = Contact(
         **payload.model_dump(),
         customer_id=customer.id,
@@ -785,6 +790,10 @@ async def update_contact(
 ):
     contact = await svc.get_visible_contact(session, user, contact_id)
     before = svc.serialize_contact(contact)
+    if payload.is_primary:
+        # 要占主位：先腾位再写库（理由同新建那条接口）。
+        # `exclude=自己`：这条联系人可能本来就是主，腾位时别把它一起刷掉。
+        await take_primary_slot(session, contact.customer_id, exclude=contact.id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(contact, field, value)
     await session.flush()
@@ -988,6 +997,11 @@ async def bind_contact_customer(
     contact.customer_id = customer.id
     if payload.is_primary:
         await svc.set_primary_contact(session, contact)
+    else:
+        # **换了客户，主标记不能跟着走。** 这个联系人可能在原来的客户那里是主；
+        # 不显式清掉，他到了新客户名下还挂着 is_primary —— 新客户凭空多一个主，
+        # 而老客户的主位空着（第十批 10.4 修）。
+        contact.is_primary = False
     await session.flush()
     await write_audit(
         session,
@@ -1032,6 +1046,10 @@ async def change_contact_customer(
     contact.customer_id = customer.id
     if payload.is_primary:
         await svc.set_primary_contact(session, contact)
+    else:
+        # 同 bind：主标记是"在某个客户名下"的属性，换客户必须显式清掉，
+        # 否则新客户凭空多一个主联系人（第十批 10.4 修）。
+        contact.is_primary = False
     await session.flush()
     await write_audit(
         session,
