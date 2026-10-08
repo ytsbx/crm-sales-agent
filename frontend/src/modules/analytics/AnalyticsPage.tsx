@@ -1,10 +1,26 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
+import EChart from '../../shared/components/charts/EChart'
+import DonutLegend from '../../shared/components/charts/DonutLegend'
+import {
+  asMoney,
+  asPercent,
+  asPercentValue,
+  columnChartOption,
+  comboBarLineOption,
+  compactMoney,
+  donutChartOption,
+  funnelChartOption,
+  lineChartOption,
+  plainNumber,
+  rankBarChartOption,
+  type ValueFormat,
+} from '../../shared/components/charts/options'
 import {
   freezeSalesActuals,
   getCustomerStats,
@@ -44,34 +60,114 @@ const DRILLDOWN_TYPE_LABEL: Record<string, string> = {
   customer: '客户',
 }
 
-function BarList({ data, unit }: { data: NameValue[]; unit?: string }) {
-  if (!data.length) return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
-  const max = Math.max(...data.map((item) => item.value), 1)
+/**
+ * 一列一排的格子：同一行**等高**（grid 默认就是拉伸的），所以用几列由内容定，
+ * 窄屏自动掉成一列。整页的排版都靠它，别各写各的 grid。
+ */
+function Row({ columns = 4, children }: { columns?: 1 | 2 | 3 | 4; children: ReactNode }) {
+  // 列数由 CSS 类按断点控制（见 index.css 的 .row-*）：用 auto-fit 会在某个宽度
+  // 把最后一张卡挤到下一行、自成一行，那一张就不跟别人等高了。
+  return <div className={`row-${columns}`}>{children}</div>
+}
+
+/**
+ * 卡片：图表/表格都塞在这里，**强制撑满行高**（`height: '100%'`）——
+ * 不写这一句，网格里矮的那张卡会缩成自己内容的高度，一行就高矮不齐了。
+ */
+function Card({
+  title,
+  note,
+  children,
+  extra,
+}: {
+  title: string
+  note?: string
+  children: ReactNode
+  extra?: ReactNode
+}) {
   return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      {data.map((item) => (
-        <div key={item.name}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
-            <span>{item.name}</span>
-            <span style={{ color: 'var(--crm-text-2)' }}>
-              {item.value}
-              {unit ?? ''}
-            </span>
-          </div>
-          <div style={{ height: 6, background: 'var(--crm-surface-high)', borderRadius: 3, marginTop: 4 }}>
-            <div
-              style={{
-                width: `${(item.value / max) * 100}%`,
-                height: '100%',
-                background: 'var(--crm-primary)',
-                borderRadius: 3,
-              }}
-            />
-          </div>
-        </div>
-      ))}
+    <SectionCard
+      title={note ? `${title}（${note}）` : title}
+      extra={extra}
+      style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
+    >
+      {children}
+    </SectionCard>
+  )
+}
+
+/** 数量 + 单位：`12 家`。图和提示里都用它，免得一处写"家"一处写"个"。 */
+const asCount = (unit: string) => (value: number) =>
+  `${Math.round(value).toLocaleString('zh-CN')} ${unit}`
+
+/** 环形图：图 + 右侧图例（名字 / 数量 / 占比）。 */
+function Donut({
+  data,
+  format,
+  centerLabel,
+  centerValueFormat,
+}: {
+  data: NameValue[]
+  format: ValueFormat
+  centerLabel: string
+  centerValueFormat?: ValueFormat
+}) {
+  if (!data.length) return <NoData />
+  const total = data.reduce((sum, item) => sum + item.value, 0)
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+      <div style={{ width: 146, flex: 'none' }}>
+        <EChart
+          height={146}
+          ariaLabel={`占比环形图，共 ${format(total)}`}
+          option={donutChartOption({
+            data,
+            format,
+            // 中间那两行**一个给数、一个给名**：`4 家` 配 `家客户`。
+            // 两个都带上单位会出现「4 家 / 家」这种重复。
+            centerLabel,
+            centerValue: (centerValueFormat ?? plainNumber)(total),
+          })}
+        />
+      </div>
+      <DonutLegend data={data} format={format} />
     </div>
   )
+}
+
+/** 纵向柱：**分档 / 分阶段**的量。分类名横着排不开时可以斜 30 度。 */
+function Columns({
+  data,
+  unit,
+  height = 220,
+  rotateLabels = false,
+}: {
+  data: NameValue[]
+  unit: string
+  height?: number
+  rotateLabels?: boolean
+}) {
+  if (!data.length) return <NoData />
+  return (
+    <EChart
+      height={height}
+      ariaLabel={`柱状图：${data.map((item) => `${item.name} ${item.value}`).join('，')}`}
+      option={columnChartOption({
+        categories: data.map((item) => item.name),
+        series: [{ name: unit, values: data.map((item) => item.value) }],
+        format: asCount(unit),
+        rotateLabels,
+      })}
+    />
+  )
+}
+
+/** 横向排名条：名字长、类别多的（业务员、失单原因）用它。 */
+const rankHeight = (rows: number) => Math.max(130, rows * 32 + 26)
+
+/** 没有数据时给一句话，**不要**画一张空图（空坐标系比空白更像"出错了"）。 */
+function NoData() {
+  return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
 }
 
 export default function AnalyticsPage() {
@@ -304,6 +400,24 @@ export default function AnalyticsPage() {
     paymentQuery.data?.currency_warnings,
   ].find((notes) => (notes?.length ?? 0) > 0) ?? []
 
+  // 业绩趋势：四个口径拼到一条横轴上。**全为零的月份不画** —— 十二个月里只有两三个月
+  // 有数时，剩下十条贴地的线只会让图看着像坏了。
+  const bases = basesQuery.data
+  const basisValue = (rows: { month: string; value: number }[] | undefined, month: string) =>
+    (rows ?? []).find((row) => row.month === month)?.value ?? 0
+  const trendMonths = (bases?.signed ?? [])
+    .map((row) => row.month)
+    .filter(
+      (month) =>
+        basisValue(bases?.signed, month) ||
+        basisValue(bases?.shipped, month) ||
+        basisValue(bases?.received, month) ||
+        basisValue(bases?.repeat_net, month),
+    )
+
+  // 交期趋势：单量柱 + 准时率线，只用有发货记录的那几个月
+  const deliveryTrend = (delivery?.trend ?? []).filter((row) => row.on_time + row.late > 0)
+
   return (
     <div className="page-container">
       <PageHeader title="数据分析" subtitle="数据从业务流程实时聚合，不做二次录入" />
@@ -387,130 +501,245 @@ export default function AnalyticsPage() {
         ]}
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16 }}>
-        <SectionCard title="销售漏斗（进行中商机）">
-          <BarList
-            data={(opportunity?.funnel ?? []).map((row) => ({
-              name: row.stage_name,
-              value: row.count,
-            }))}
-            unit=" 个"
-          />
-        </SectionCard>
-
-        <SectionCard title="商机阶段转化（到达过该阶段的商机数）">
-          {(opportunity?.stage_conversion ?? []).length === 0 ? (
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
+      {/* ── ① 趋势：随时间变的东西，只有折线说得清 ─────────────────────── */}
+      <Row columns={2}>
+        <Card title="业绩趋势" note="月度 · 签单 / 发货 / 回款，另附老客净额">
+          {trendMonths.length === 0 ? (
+            <NoData />
           ) : (
-            <Table
-              size="small"
-              pagination={false}
-              rowKey="stage_id"
-              dataSource={opportunity?.stage_conversion ?? []}
-              columns={[
-                { title: '阶段', dataIndex: 'stage_name', width: 130 },
-                { title: '到达', dataIndex: 'reached_count', width: 90 },
-                {
-                  title: '较上一阶段转化',
-                  dataIndex: 'conversion_from_previous',
-                  render: (v: number | null) =>
-                    v === null ? (
-                      <span style={{ color: 'var(--crm-text-3)' }}>—</span>
-                    ) : (
-                      `${(v * 100).toFixed(0)}%`
-                    ),
-                },
-              ]}
+            <EChart
+              height={264}
+              ariaLabel="月度签单、发货、回款与老客净额的折线图"
+              option={lineChartOption({
+                categories: trendMonths,
+                series: [
+                  { name: '签单', values: trendMonths.map((m) => basisValue(bases?.signed, m)) },
+                  { name: '发货', values: trendMonths.map((m) => basisValue(bases?.shipped, m)) },
+                  { name: '回款', values: trendMonths.map((m) => basisValue(bases?.received, m)) },
+                  {
+                    name: '老客净额',
+                    values: trendMonths.map((m) => basisValue(bases?.repeat_net, m)),
+                  },
+                ],
+                format: asMoney,
+                axisFormat: compactMoney,
+              })}
             />
           )}
-        </SectionCard>
+          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.8 }}>
+            与下方「目标口径明细」同一份数：签单看成交日、发货看首批发货、回款看到账日。
+          </div>
+        </Card>
 
-        <SectionCard title="客户来源分布">
-          <BarList data={customer?.by_source ?? []} unit=" 家" />
-          <div style={{ fontWeight: 600, margin: '20px 0 12px' }}>客户等级分布</div>
-          <BarList data={customer?.by_level ?? []} unit=" 家" />
-        </SectionCard>
+        <Card title="交期趋势" note="近 12 个月首批发货 · 柱=单量，线=准时率">
+          {deliveryTrend.length === 0 ? (
+            <NoData />
+          ) : (
+            <EChart
+              height={188}
+              ariaLabel="每月准时与延迟发货单量的堆叠柱，叠加准时率折线"
+              option={comboBarLineOption({
+                categories: deliveryTrend.map((row) => row.label),
+                bars: [
+                  { name: '准时', values: deliveryTrend.map((row) => row.on_time) },
+                  { name: '延迟', values: deliveryTrend.map((row) => row.late) },
+                ],
+                line: {
+                  name: '准时率',
+                  values: deliveryTrend.map((row) =>
+                    row.on_time + row.late > 0
+                      ? Math.round((row.on_time / (row.on_time + row.late)) * 100)
+                      : null,
+                  ),
+                },
+                barFormat: asCount('单'),
+                lineFormat: asPercentValue,
+                lineAxis: 'percent',
+              })}
+            />
+          )}
+          <Table<DeliveryTrendRow>
+            size="small"
+            pagination={false}
+            rowKey="month"
+            dataSource={deliveryTrend}
+            columns={[
+              { title: '月份', dataIndex: 'label', width: 80 },
+              { title: '准时', dataIndex: 'on_time', width: 70 },
+              { title: '延迟', dataIndex: 'late', width: 70 },
+              {
+                title: '准时率',
+                render: (_: unknown, r: DeliveryTrendRow) =>
+                  r.on_time + r.late ? `${((r.on_time / (r.on_time + r.late)) * 100).toFixed(0)}%` : '—',
+              },
+            ]}
+            empty="近 12 个月还没有发货记录"
+          />
+        </Card>
+      </Row>
 
-        <SectionCard title="线索来源分布">
-          <BarList data={lead?.by_source ?? []} unit=" 条" />
-          <div style={{ fontWeight: 600, margin: '20px 0 12px' }}>线索状态分布</div>
-          <BarList data={lead?.by_status ?? []} unit=" 条" />
-        </SectionCard>
-
-        <SectionCard title="失单原因分布">
-          <BarList data={lossQuery.data ?? []} unit=" 单" />
-        </SectionCard>
-
-        <SectionCard title="逾期账龄分布（未结清节点）">
-          <BarList data={payment?.aging ?? []} unit=" 个" />
-        </SectionCard>
-
-        <SectionCard title="回款情况">
-          <BarList data={receivable?.by_status ?? []} unit=" 个节点" />
-          <div style={{ fontWeight: 600, margin: '20px 0 12px' }}>回款方式分布（金额）</div>
-          <BarList
+      {/* ── ② 占比：看"各占几成"，环形比横条直观 ───────────────────────── */}
+      <Row columns={4}>
+        <Card title="客户来源分布">
+          <Donut data={customer?.by_source ?? []} format={asCount('家')} centerLabel="家客户" />
+        </Card>
+        <Card title="客户等级分布">
+          <Donut data={customer?.by_level ?? []} format={asCount('家')} centerLabel="家客户" />
+        </Card>
+        <Card title="线索来源分布">
+          <Donut data={lead?.by_source ?? []} format={asCount('条')} centerLabel="条线索" />
+        </Card>
+        <Card title="回款方式分布" note="按金额">
+          <Donut
             data={(payment?.by_payment_method ?? []).map((row) => ({
               name: row.name,
               value: Math.round(row.value),
             }))}
-            unit=" 元"
+            format={asMoney}
+            centerValueFormat={asMoney}
+            centerLabel="合计"
           />
-        </SectionCard>
+        </Card>
+      </Row>
 
-        <SectionCard title="价格分析">
-          <BarList
-            data={(pricing?.average_quoted_price_by_level ?? []).map((row) => ({
-              name: `${row.level} 级（${row.item_count} 条）`,
-              value: row.average_price,
-            }))}
-            unit=" 元均价"
-          />
-          <div style={{ marginTop: 16, fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 2 }}>
-            <div>低价审批率：{((pricing?.low_price_approval_rate ?? 0) * 100).toFixed(0)}%</div>
+      {/* ── ③ 分档：每一档各多少，且顺序有意义 ───────────────────────────── */}
+      <Row columns={3}>
+        <Card title="线索状态分布">
+          <Columns data={lead?.by_status ?? []} unit="条" />
+        </Card>
+        <Card title="应收节点状态">
+          <Columns data={receivable?.by_status ?? []} unit="个节点" />
+        </Card>
+        <Card title="逾期账龄分布" note="未结清节点 · 顺序即账龄">
+          <Columns data={payment?.aging ?? []} unit="个" rotateLabels />
+        </Card>
+      </Row>
+
+      {/* ── ④ 漏斗：只有"到达过"才是逐级减少，才配画成漏斗 ───────────────── */}
+      <Row columns={1}>
+        <Card title="商机阶段转化" note="到达过该阶段的商机数（累计，逐级递减）">
+          {(opportunity?.stage_conversion ?? []).length === 0 ? (
+            <NoData />
+          ) : (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))',
+                gap: 16,
+                alignItems: 'start',
+              }}
+            >
+              <EChart
+                height={Math.max(240, (opportunity?.stage_conversion ?? []).length * 38)}
+                ariaLabel="商机阶段转化漏斗图"
+                option={funnelChartOption({
+                  data: (opportunity?.stage_conversion ?? []).map((row) => ({
+                    name: row.stage_name,
+                    value: row.reached_count,
+                  })),
+                  format: asCount('个'),
+                })}
+              />
+              <Table
+                size="small"
+                pagination={false}
+                rowKey="stage_id"
+                dataSource={opportunity?.stage_conversion ?? []}
+                columns={[
+                  { title: '阶段', dataIndex: 'stage_name', width: 130 },
+                  { title: '到达', dataIndex: 'reached_count', width: 80 },
+                  {
+                    title: '较上一阶段转化',
+                    dataIndex: 'conversion_from_previous',
+                    render: (v: number | null) =>
+                      v === null ? (
+                        <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                      ) : (
+                        `${(v * 100).toFixed(0)}%`
+                      ),
+                  },
+                ]}
+              />
+            </div>
+          )}
+        </Card>
+      </Row>
+
+      {/* ── ⑤ 排名：比大小、名字长，横着写才读得顺 ───────────────────────── */}
+      <Row columns={4}>
+        <Card title="进行中商机的阶段分布" note="顺序即阶段先后">
+          {(opportunity?.funnel ?? []).length === 0 ? (
+            <NoData />
+          ) : (
+            <EChart
+              // 九个阶段、名字四五个字：竖着放底下一排标签会互相挤掉，
+              // 横着写才能把每一级都读全（顺序也照阶段先后，不按数量排）
+              height={rankHeight((opportunity?.funnel ?? []).length)}
+              ariaLabel="进行中商机在各阶段的分布条形图"
+              option={rankBarChartOption({
+                data: (opportunity?.funnel ?? []).map((row) => ({
+                  name: row.stage_name,
+                  value: row.count,
+                })),
+                format: asCount('个'),
+              })}
+            />
+          )}
+        </Card>
+
+        <Card title="失单原因分布">
+          {(lossQuery.data ?? []).length === 0 ? (
+            <NoData />
+          ) : (
+            <EChart
+              height={rankHeight(lossQuery.data?.length ?? 0)}
+              ariaLabel="失单原因排名条形图"
+              option={rankBarChartOption({
+                data: lossQuery.data ?? [],
+                format: asCount('单'),
+              })}
+            />
+          )}
+        </Card>
+
+        <Card title="平均报价" note="按客户等级">
+          {(pricing?.average_quoted_price_by_level ?? []).length === 0 ? (
+            <NoData />
+          ) : (
+            <EChart
+              height={rankHeight((pricing?.average_quoted_price_by_level ?? []).length)}
+              ariaLabel="按客户等级的平均报价条形图"
+              option={rankBarChartOption({
+                data: (pricing?.average_quoted_price_by_level ?? []).map((row) => ({
+                  name: `${row.level} 级（${row.item_count} 条）`,
+                  value: row.average_price,
+                })),
+                format: asMoney,
+                axisFormat: compactMoney,
+              })}
+            />
+          )}
+          <div style={{ marginTop: 14, fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 2 }}>
+            <div>低价审批率：{asPercent(pricing?.low_price_approval_rate ?? 0)}</div>
             <div>平均让价：{((pricing?.average_discount_rate ?? 0) * 100).toFixed(2)}%</div>
             <div>最大让价：{((pricing?.max_discount_rate ?? 0) * 100).toFixed(2)}%</div>
           </div>
-        </SectionCard>
-      </div>
+        </Card>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 16, marginTop: 16 }}>
-        <SectionCard title="交期履约（按负责人）">
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
-            准时 = 首批发货日期 ≤ 计划发货日（到货日减运输天数）；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。
-            缺少交期或交期类型未确认的已发货单不进准时率分母（当前 {deliverySummary?.undated_delivered_count ?? 0} 单）。
-          </div>
-          {(delivery?.by_owner ?? []).length === 0 ? (
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
+        <Card title="逾期节点分布" note="与每日逾期提醒同口径">
+          {(delivery?.overdue_nodes ?? []).length === 0 ? (
+            <NoData />
           ) : (
-            <Table<DeliveryOwnerRow>
-              size="small"
-              pagination={false}
-              rowKey={(r?: DeliveryOwnerRow) => String(r?.owner_id ?? r?.owner_name ?? '')}
-              dataSource={delivery?.by_owner ?? []}
-              columns={[
-                { title: '负责人', dataIndex: 'owner_name', width: 110 },
-                { title: '已交付', dataIndex: 'order_count', width: 80 },
-                { title: '准时', dataIndex: 'on_time_count', width: 70 },
-                { title: '延迟', dataIndex: 'late_count', width: 70 },
-                {
-                  title: '准时率',
-                  dataIndex: 'on_time_rate',
-                  width: 90,
-                  render: (v: number) => `${(v * 100).toFixed(0)}%`,
-                },
-                {
-                  title: '平均延迟',
-                  dataIndex: 'average_delay_days',
-                  render: (v: number | null) => (v == null ? '—' : `${v} 天`),
-                },
-              ]}
+            <EChart
+              height={rankHeight((delivery?.overdue_nodes ?? []).length)}
+              ariaLabel="逾期节点分布条形图"
+              option={rankBarChartOption({
+                data: delivery?.overdue_nodes ?? [],
+                format: asCount('个节点'),
+              })}
             />
           )}
-        </SectionCard>
-
-        <SectionCard title="逾期节点分布（与每日逾期提醒同口径）">
-          <BarList data={delivery?.overdue_nodes ?? []} unit=" 个节点" />
-          <div style={{ marginTop: 16, fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 2 }}>
+          <div style={{ marginTop: 14, fontSize: 13, color: 'var(--crm-text-2)', lineHeight: 2 }}>
             <div>在跟订单：{deliverySummary?.open_order_count ?? 0} 单</div>
             <div>已过交期仍未发货：{deliverySummary?.risk_order_count ?? 0} 单</div>
             <div>
@@ -526,28 +755,42 @@ export default function AnalyticsPage() {
               （最长 {deliverySummary?.max_delay_days ?? '—'} 天）
             </div>
           </div>
-        </SectionCard>
-      </div>
+        </Card>
+      </Row>
 
-      <SectionCard title="交期趋势（近 12 个月首批发货）" style={{ marginTop: 16 }}>
-        <Table<DeliveryTrendRow>
-          size="small"
-          pagination={false}
-          rowKey="month"
-          dataSource={(delivery?.trend ?? []).filter((row) => row.on_time + row.late > 0)}
-          columns={[
-            { title: '月份', dataIndex: 'label', width: 90 },
-            { title: '准时', dataIndex: 'on_time', width: 90 },
-            { title: '延迟', dataIndex: 'late', width: 90 },
-            {
-              title: '准时率',
-              width: 100,
-              render: (_: unknown, r: DeliveryTrendRow) =>
-                r.on_time + r.late ? `${((r.on_time / (r.on_time + r.late)) * 100).toFixed(0)}%` : '—',
-            },
-          ]}
-          empty="近 12 个月还没有发货记录"
-        />
+      {/* ── ⑥ 明细表：算账要抄的具体数字，图替代不了 ───────────────────── */}
+      <SectionCard title="交期履约（按负责人）" style={{ marginTop: 16 }}>
+        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
+          准时 = 首批发货日期 ≤ 计划发货日（到货日减运输天数）；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。
+          缺少交期或交期类型未确认的已发货单不进准时率分母（当前 {deliverySummary?.undated_delivered_count ?? 0} 单）。
+        </div>
+        {(delivery?.by_owner ?? []).length === 0 ? (
+          <NoData />
+        ) : (
+          <Table<DeliveryOwnerRow>
+            size="small"
+            pagination={false}
+            rowKey={(r?: DeliveryOwnerRow) => String(r?.owner_id ?? r?.owner_name ?? '')}
+            dataSource={delivery?.by_owner ?? []}
+            columns={[
+              { title: '负责人', dataIndex: 'owner_name', width: 110 },
+              { title: '已交付', dataIndex: 'order_count', width: 80 },
+              { title: '准时', dataIndex: 'on_time_count', width: 70 },
+              { title: '延迟', dataIndex: 'late_count', width: 70 },
+              {
+                title: '准时率',
+                dataIndex: 'on_time_rate',
+                width: 90,
+                render: (v: number) => `${(v * 100).toFixed(0)}%`,
+              },
+              {
+                title: '平均延迟',
+                dataIndex: 'average_delay_days',
+                render: (v: number | null) => (v == null ? '—' : `${v} 天`),
+              },
+            ]}
+          />
+        )}
       </SectionCard>
 
       <SectionCard title="交期风险单（已过交期仍未发货）" style={{ marginTop: 16 }}>

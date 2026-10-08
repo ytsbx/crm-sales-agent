@@ -20,6 +20,12 @@ import {
 } from '../../shared/api/analytics'
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
 import SectionCard from '../../shared/components/SectionCard'
+import EChart from '../../shared/components/charts/EChart'
+import {
+  asMoney,
+  comboBarLineOption,
+  compactMoney,
+} from '../../shared/components/charts/options'
 import { useAuthStore } from '../../shared/store/auth'
 import { useCopilotStore } from '../../shared/store/copilot'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -37,86 +43,28 @@ function greeting() {
   return '晚上好'
 }
 
-/** 订单与回款趋势：柱状（订单）+ 折线（回款），手写 SVG，不引图表库。 */
+/**
+ * 订单与回款趋势：柱=订单金额、线=回款金额，**同一根纵轴**（都是金额，同轴才能直接比）。
+ *
+ * 走全项目共用的图表组件（`shared/components/charts`），不再自己手写 SVG ——
+ * 手写版没有悬浮提示、不跟主题色、缩放也要自己算，分析页那批图同样用它。
+ */
 function TrendChart({ data }: { data: TrendRow[] }) {
-  const width = 520
-  const height = 220
-  const padding = { top: 16, right: 12, bottom: 28, left: 44 }
-  const innerW = width - padding.left - padding.right
-  const innerH = height - padding.top - padding.bottom
-  const max = Math.max(...data.flatMap((d) => [d.order_amount, d.received_amount]), 1)
-  const step = innerW / Math.max(data.length, 1)
-  const barW = Math.min(28, step * 0.42)
-  const y = (value: number) => padding.top + innerH - (value / max) * innerH
-
-  const linePoints = data
-    .map((d, i) => `${padding.left + step * i + step / 2},${y(d.received_amount)}`)
-    .join(' ')
-
+  if (!data.length) {
+    return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
+  }
   return (
-    <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{ display: 'block' }}>
-      {[0, 0.25, 0.5, 0.75, 1].map((ratio) => (
-        <line
-          key={ratio}
-          x1={padding.left}
-          x2={width - padding.right}
-          y1={padding.top + innerH * ratio}
-          y2={padding.top + innerH * ratio}
-          stroke="var(--crm-surface-high)"
-          strokeDasharray="3 4"
-        />
-      ))}
-      {data.map((row, index) => {
-        const x = padding.left + step * index + step / 2 - barW / 2
-        return (
-          <rect
-            key={row.month}
-            x={x}
-            y={y(row.order_amount)}
-            width={barW}
-            height={Math.max(padding.top + innerH - y(row.order_amount), 2)}
-            rx={5}
-            fill="var(--crm-primary)"
-          />
-        )
+    <EChart
+      height={240}
+      ariaLabel="近 6 个月订单金额与回款金额趋势图"
+      option={comboBarLineOption({
+        categories: data.map((row) => row.label),
+        bars: [{ name: '订单金额', values: data.map((row) => row.order_amount) }],
+        line: { name: '回款金额', values: data.map((row) => row.received_amount) },
+        barFormat: asMoney,
+        axisFormat: compactMoney,
       })}
-      <polyline
-        points={linePoints}
-        fill="none"
-        stroke="var(--crm-secondary)"
-        strokeWidth={2}
-        strokeLinejoin="round"
-      />
-      {data.map((row, index) => (
-        <circle
-          key={`${row.month}-dot`}
-          cx={padding.left + step * index + step / 2}
-          cy={y(row.received_amount)}
-          r={3.5}
-          fill="#fff"
-          stroke="var(--crm-secondary)"
-          strokeWidth={2}
-        />
-      ))}
-      {data.map((row, index) => (
-        <text
-          key={`${row.month}-label`}
-          x={padding.left + step * index + step / 2}
-          y={height - 8}
-          textAnchor="middle"
-          fontSize={12}
-          fill="var(--crm-text-3)"
-        >
-          {row.label}
-        </text>
-      ))}
-      <text x={4} y={padding.top + 4} fontSize={11} fill="var(--crm-text-3)">
-        {money(max)}
-      </text>
-      <text x={4} y={padding.top + innerH} fontSize={11} fill="var(--crm-text-3)">
-        0
-      </text>
-    </svg>
+    />
   )
 }
 
@@ -479,16 +427,11 @@ export default function WorkbenchPage() {
         </SectionCard>
 
         <SectionCard>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          {/* 标题右边原来手写了一份图例（■ 订单金额 / ● 回款金额）——那是给
+              老的手写 SVG 补的（它自己画不出图例）。换成 ECharts 之后图例由图表
+              自己出、还能点选隐藏，留着这份就成了两行重复的图例。 */}
+          <div style={{ marginBottom: 8 }}>
             <span className="card-title">订单与回款趋势</span>
-            <span style={{ display: 'flex', gap: 14, fontSize: 12, color: 'var(--crm-text-3)' }}>
-              <span>
-                <span style={{ color: 'var(--crm-primary)' }}>■</span> 订单金额
-              </span>
-              <span>
-                <span style={{ color: 'var(--crm-secondary)' }}>●</span> 回款金额
-              </span>
-            </span>
           </div>
           <TrendChart data={trend} />
           <div

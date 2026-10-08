@@ -172,6 +172,60 @@ a:not([href]) {
 }
 
 /* ============================================================
+   图表区的一行分成几列
+
+   为什么不用 `repeat(auto-fit, minmax(280px, 1fr))`：那个写法在**某一个宽度区间**
+   会把最后一张卡单独挤到下一行（比如 4 张卡排成 3+1）。落单的那张卡自成一行、
+   高度只按自己的内容算，于是整页看上去就是"高矮不齐"——而等高恰恰是靠同一行
+   互相拉伸实现的。
+
+   所以按断点**写死列数**，并且保证每种列数都能整除卡片数：
+   4 张 → 4 列 / 2 列 / 1 列；3 张 → 3 列 / 1 列；2 张 → 2 列 / 1 列。
+   改断点前先数一下那一行有几张卡。
+   ============================================================ */
+.row-1,
+.row-2,
+.row-3,
+.row-4 {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+  align-items: stretch;
+}
+
+.row-1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.row-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.row-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.row-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1400px) {
+  /* 4 张减到 2 列 —— 恰好排成两行两列，不留落单的。
+     3 张那一行**不动**：减到 2 列会变成 2+1，又落单了。 */
+  .row-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1180px) {
+  .row-2,
+  .row-3,
+  .row-4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ============================================================
    KPI 卡
    ============================================================ */
 .kpi-grid {
