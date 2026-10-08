@@ -1053,15 +1053,12 @@ async def bind_contact_customer(
     contact = await svc.get_visible_contact(session, user, contact_id)
     customer = await svc.get_visible_customer(session, user, payload.customer_id)
     before = svc.serialize_contact(contact)
-    contact.customer_id = customer.id
-    if payload.is_primary:
-        await svc.set_primary_contact(session, contact)
-    else:
-        # **换了客户，主标记不能跟着走。** 这个联系人可能在原来的客户那里是主；
-        # 不显式清掉，他到了新客户名下还挂着 is_primary —— 新客户凭空多一个主，
-        # 而老客户的主位空着（第十批 10.4 修）。
-        contact.is_primary = False
-    await session.flush()
+    # 改挂统一走这一条路径：先锁两个客户、腾出目标客户的主位，**最后**才写归属。
+    # 顺序反过来会在"腾位"那次查询上触发 autoflush，把"已挂新客户、还带着主标记"
+    # 的这条先写下去，撞唯一索引报 500（第十批 10.4 复审）。
+    await svc.move_contact_to_customer(
+        session, contact, customer, is_primary=payload.is_primary
+    )
     await write_audit(
         session,
         operator_id=user.id,
@@ -1102,14 +1099,10 @@ async def change_contact_customer(
         raise AppError(ErrorCode.PARAM_ERROR, "联系人已经属于该客户", 422)
     customer = await svc.get_visible_customer(session, user, payload.customer_id)
     before = svc.serialize_contact(contact)
-    contact.customer_id = customer.id
-    if payload.is_primary:
-        await svc.set_primary_contact(session, contact)
-    else:
-        # 同 bind：主标记是"在某个客户名下"的属性，换客户必须显式清掉，
-        # 否则新客户凭空多一个主联系人（第十批 10.4 修）。
-        contact.is_primary = False
-    await session.flush()
+    # 同 bind：共用同一条改挂路径（锁客户 → 腾位 → 写归属），见 move_contact_to_customer。
+    await svc.move_contact_to_customer(
+        session, contact, customer, is_primary=payload.is_primary
+    )
     await write_audit(
         session,
         operator_id=user.id,

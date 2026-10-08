@@ -47,7 +47,10 @@ import app.main  # noqa: F401  保证所有模型都注册进 metadata
 _ = app.main  # 显式"用"一下：只 import 不带这一句，pyflakes 会当成未使用
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 
 # 地址与库的防呆统一收在 _test_support（判据只留一处）
@@ -109,6 +112,47 @@ def _status(thread: threading.Thread, slot: dict) -> int:
     thread.join(timeout=30)
     result = slot.get("result")
     return result[0] if result else -1
+
+
+class _RowLockHolder(threading.Thread):
+    """另起一条连接、在一个显式事务里 `select ... for update` 锁住一行，等放行再回滚。
+
+    用途：把"两个请求已经跑到某一步"这种瞬时状态**固定住**，让并发断言变成确定性的
+    （不然只能靠"多发几次撞一撞"，修没修好都可能绿）。
+
+    ⚠️ 必须**自建 NullPool 引擎**，不能复用应用那个全局 engine —— 它的连接池绑在
+    主事件循环上，子线程里拿到会 `attached to a different loop`，而异常是在子线程里
+    抛的、**完全静默**（量到 0 秒，得出"没加锁"的相反结论）。
+    """
+
+    def __init__(self, sql: str, params: dict):
+        super().__init__(daemon=True)
+        self._sql = sql
+        self._params = params
+        self.ready = threading.Event()
+        self._release = threading.Event()
+        self.error: str | None = None
+
+    def run(self) -> None:
+        async def go() -> None:
+            eng = create_async_engine(settings.database_url, poolclass=NullPool)
+            try:
+                async with eng.connect() as conn:
+                    await conn.execute(text(self._sql), self._params)
+                    self.ready.set()
+                    self._release.wait(30)
+                    await conn.rollback()
+            finally:
+                await eng.dispose()
+
+        try:
+            asyncio.run(go())
+        except Exception as exc:  # noqa: BLE001
+            self.error = repr(exc)
+            self.ready.set()
+
+    def release(self) -> None:
+        self._release.set()
 
 
 async def _contact_state(customer_id: int) -> dict:
@@ -308,6 +352,50 @@ async def main() -> int:
         check("复用「不在这个客户名下」的联系人 → 422（不许借转化改挂别人的联系人）",
               status, 422)
 
+        # ==================================================== 10.2 复审反例：并发
+        print()
+        print("=== 2b. 两条「不同」线索并发转进同一个客户（复审 10.2）===")
+        # 上面第 2 节测的是**串行**复用（先有联系人、再转一条同号线）—— 串行下查得到，
+        # 看不出"查重留在锁外"这个漏。真会漏的是：两个请求**同时**查到"没有"，
+        # 然后各建一条。这里用一把外部客户行锁把两边都钉在"已经进到这一步"，
+        # 放行后只许留一条联系人。
+        c6 = api("POST", "/customers", token=admin, body={
+            "name": f"{PREFIX}并发转化客户", "owner_id": None,
+        })
+        created_customers.append(c6["id"])
+        dup_mobile = "13600000001"
+        l1 = api("POST", "/leads", token=admin, body={
+            "name": f"{PREFIX}并发线1", "company_name": f"{PREFIX}并发公司",
+            "contact_name": "同号甲", "mobile": dup_mobile,
+        })
+        l2 = api("POST", "/leads", token=admin, body={
+            "name": f"{PREFIX}并发线2", "company_name": f"{PREFIX}并发公司",
+            "contact_name": "同号乙", "mobile": dup_mobile,
+        })
+        created_leads.extend([l1["id"], l2["id"]])
+
+        holder = _RowLockHolder(
+            "select id from customers where id = :i for update", {"i": c6["id"]}
+        )
+        holder.start()
+        holder.ready.wait(30)
+        check_true("装置就绪：外部事务已锁住目标客户行", holder.ready, holder.error or "")
+
+        rt1, rs1 = call_later("POST", f"/leads/{l1['id']}/convert", token=admin, body={
+            "customer_mode": "existing", "customer_id": c6["id"], "create_contact": True,
+        })
+        rt2, rs2 = call_later("POST", f"/leads/{l2['id']}/convert", token=admin, body={
+            "customer_mode": "existing", "customer_id": c6["id"], "create_contact": True,
+        })
+        time.sleep(1.5)
+        check_true("两个转化请求都排在同一把客户行锁上（装置自检：确实在等锁）",
+                   not rs1.get("result") and not rs2.get("result"), "见日志")
+        holder.release()
+        codes = sorted([_status(rt1, rs1), _status(rt2, rs2)])
+        check_true("放行后两个转化都成功", codes == [200, 200], str(codes))
+        merged = await _contact_state(c6["id"])
+        check("同一客户下同号联系人**只留一条**（去重守住了）", merged["count"], 1)
+
         # ==================================================== 10.4 主联系人唯一
         print("=== 3. 10.4 一个客户只能有一个主联系人 ===")
         c2 = api("POST", "/customers", token=admin, body={
@@ -391,6 +479,39 @@ async def main() -> int:
         check_true("并发设主：两个请求都不该报 5xx", all(c == 200 for c in codes), str(codes))
         final = await _contact_state(c4["id"])
         check("并发设主之后，主联系人仍**恰好一个**", len(final["primary"]), 1)
+
+        # ⚠️ 复审 10.4 的独立反例：目标客户**本来就有主**，而且改挂时**要求继续当主**。
+        #    上面那条改挂用的是"没有主的客户 + 没要求当主"，恰好绕开了会翻车的组合 ——
+        #    入口若先改归属、再腾主位，"腾位"那次查询会触发 autoflush，把
+        #    "已挂到目标客户、却还带着主标记"的这条先写下去，撞唯一索引报 500。
+        print()
+        print("=== 3b. 改挂到「已有主的客户」并要求继续当主（复审 10.4 反例）===")
+
+        async def _move_case(entry: str, tag: str) -> None:
+            ca = api("POST", "/customers", token=admin,
+                     body={"name": f"{PREFIX}反例{tag}甲", "owner_id": None})
+            cb = api("POST", "/customers", token=admin,
+                     body={"name": f"{PREFIX}反例{tag}乙", "owner_id": None})
+            created_customers.extend([ca["id"], cb["id"]])
+            ca_p = api("POST", f"/customers/{ca['id']}/contacts", token=admin,
+                       body={"name": f"甲的主{tag}", "mobile": f"1351000{tag}",
+                             "is_primary": True})
+            cb_p = api("POST", f"/customers/{cb['id']}/contacts", token=admin,
+                       body={"name": f"乙的主{tag}", "mobile": f"1352000{tag}",
+                             "is_primary": True})
+            status, res = call("POST", f"/contacts/{ca_p['id']}/{entry}", token=admin,
+                               body={"customer_id": cb["id"], "is_primary": True})
+            check(f"{entry}：两边都有主、要求继续当主 → 200（而不是 500）", status, 200)
+            got = await _contact_state(cb["id"])
+            check(f"{entry}：目标客户最终恰好一个主，且就是刚改挂过去的",
+                  got["primary"], [ca_p["id"]])
+            check_true(f"{entry}：目标客户原来的主被降级（没凑成两个主）",
+                       cb_p["id"] not in got["primary"], str(got["primary"]))
+            check(f"{entry}：原客户那边不再有主",
+                  (await _contact_state(ca["id"]))["primary"], [])
+
+        await _move_case("change-customer", "1")
+        await _move_case("bind-customer", "2")
 
         # ---- 合并客户：两边的联系人都往目标并，主联系人不能跟着走 ----
         # 这一条是加"主联系人唯一"这条库约束时**顺手抓出来的真 bug**：

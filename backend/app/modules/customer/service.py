@@ -1114,6 +1114,49 @@ async def set_primary_contact(session: AsyncSession, contact: Contact) -> None:
     contact.is_primary = True
 
 
+async def move_contact_to_customer(
+    session: AsyncSession,
+    contact: Contact,
+    customer: Customer,
+    *,
+    is_primary: bool,
+) -> None:
+    """把联系人改挂到另一个客户 —— `bind-customer` 与 `change-customer` **共用这一条路径**。
+
+    ## 顺序：先锁客户、腾位，再写归属
+
+    ⚠️ 必须先把**两个客户行**按统一锁序锁上（`lock_customers_in_order`），
+    再把目标客户的主位腾出来，**最后**才动 `contact.customer_id`。
+
+    反过来（先改归属）会翻车：`take_primary_slot` 里那句 `select(...).with_for_update()`
+    会触发 autoflush，把"已经挂到目标客户、却还带着主标记"的这条先写下去 ——
+    目标客户本来就有主，两条主撞上部分唯一索引 `uq_contacts_primary_per_customer`，
+    接口直接 500。（第十批 10.4 复审复现的正是这一条。）
+
+    ## 不要求当主时
+
+    主标记**必须显式清掉**：换客户时主标记不能跟着走，否则新客户凭空多一个主、
+    老客户的主位空着。
+
+    ## 老客户的主位
+
+    这条人走了之后，老客户名下可能就没有主联系人了 —— 这是允许的
+    （"主联系人唯一"是**至多一个**，不是"必须有一个"），刻意不自动指认下一个。
+    """
+    from app.modules.contact_util import lock_customers_in_order, take_primary_slot
+
+    old_customer_id = contact.customer_id
+    # ① 两个客户按统一锁序先锁住（重复取同一把锁无害）
+    await lock_customers_in_order(session, [old_customer_id, customer.id])
+    # ② 要当主，就先把目标客户的主位腾出来（锁已取，这一步只取消别人的标记）
+    if is_primary:
+        await take_primary_slot(session, customer.id, exclude=contact.id)
+    # ③ 最后才写归属与主标记
+    contact.customer_id = customer.id
+    contact.is_primary = is_primary
+    await session.flush()
+
+
 __all__ = [
     "apply_data_scope",
     "build_list_stmt",
@@ -1123,6 +1166,7 @@ __all__ = [
     "claim_customer",
     "get_contact_or_404",
     "get_customer_or_404",
+    "move_contact_to_customer",
     "not_deleted",
     "owner_names",
     "serialize_contact",

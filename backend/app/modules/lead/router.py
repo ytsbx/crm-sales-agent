@@ -13,6 +13,7 @@ from app.modules.contact_util import (
     create_contact_for_customer,
     find_contact_in_customer,
     find_duplicate_customers,
+    lock_customer_row,
 )
 from app.modules.customer.model import Customer
 from app.modules.lead import service as svc
@@ -385,6 +386,14 @@ async def convert_lead(
         await session.flush()
 
     contact_id = None
+    if payload.customer_mode == "existing":
+        # 复用还是新建，必须在**同一把客户行锁**里判断并落库（第十批 10.2 复审）。
+        #
+        # 查重若留在锁外，"两个请求同时查到没有"之后各建一条，去重形同虚设。
+        # 锁住客户行（持有到本函数末尾 commit）之后，后到的那个请求会重新查一遍，
+        # 就能看见前一个刚建的那条、改为复用它。
+        # 新建客户的模式不用锁：那个客户是刚创建的，别人还看不见。
+        await lock_customer_row(session, customer.id)
     if payload.reuse_contact_id is not None:
         # 用户明确指定复用哪一条。只接受**已经挂在这个客户下**的 ——
         # 拿别人的联系人 id 过来复用，等于借转化做一次越权的改挂。

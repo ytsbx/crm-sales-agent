@@ -1,6 +1,7 @@
 """跨模块复用的联系人工具与客户查重。"""
 
 import re
+from collections.abc import Iterable
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -177,6 +178,32 @@ async def full_contact_customer_ids(
     }
 
 
+async def lock_customer_row(session: AsyncSession, customer_id: int | None) -> None:
+    """锁住客户行 —— **项目内取这把客户锁的唯一入口**。
+
+    主联系人位子、联系人复用这些判断都是**客户级**的，凡是"要占这个位子"或
+    "要按这个位子做判断"的动作都先经过它。谁都不许自己再写一份 `with_for_update`
+    （两处各写一份，早晚会在其中一处漏掉）。
+    """
+    if customer_id is None:
+        return
+    await session.execute(
+        select(Customer.id).where(Customer.id == customer_id).with_for_update()
+    )
+
+
+async def lock_customers_in_order(
+    session: AsyncSession, customer_ids: Iterable[int | None]
+) -> None:
+    """按 id 升序锁住这几个客户行（**全项目统一的锁序**）。
+
+    改绑联系人会同时碰到两个客户（原来的、目标）。两个方向相反的改绑并发跑时，
+    各自只锁"目标客户"就会互相等对方的行锁、甚至绕成环。按 id 升序取锁就没有这个环。
+    """
+    for cid in sorted({int(c) for c in customer_ids if c is not None}):
+        await lock_customer_row(session, cid)
+
+
 async def take_primary_slot(
     session: AsyncSession, customer_id: int | None, *, exclude: int | None = None
 ) -> None:
@@ -210,9 +237,7 @@ async def take_primary_slot(
     """
     if customer_id is None:
         return
-    await session.execute(
-        select(Customer.id).where(Customer.id == customer_id).with_for_update()
-    )
+    await lock_customer_row(session, customer_id)
     stmt = Contact.__table__.update().where(
         Contact.customer_id == customer_id,
         Contact.deleted_at.is_(None),
