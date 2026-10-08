@@ -340,7 +340,9 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 # 12. OpportunityItem
 
 - `GET /opportunities/{id}/items`
-- `POST /opportunities/{id}/items` / `PATCH /opportunity-items/{id}` / `POST /opportunities/{id}/items/batch`：需求明细的新增 / 编辑 / 整批替换，**三处同一套数值规则**（第十二批 12.5）：数量必须 **> 0**（允许小数，库里是 `Numeric(16,3)`）、目标价**不能为负**（不清楚就留空），违反一律参数错误（`40001`）；`sku_id` **先验存在且未删除**，查不到给 `404` 并说清哪一条（从前是撞外键的 `500`）。批量替换**先全量校验再执行** —— 一条不合法不许把原明细删掉。
+- `POST /opportunities/{id}/items` / `PATCH /opportunity-items/{id}` / `POST /opportunities/{id}/items/batch`：需求明细的新增 / 编辑 / 整批替换，**三处同一套数值规则**（第十二批 12.5）：数量必须 **> 0**、目标价**不能为负**（不清楚就留空）；**取值范围与小数位跟库列对齐**（数量 `Numeric(16,3)`、目标价 `Numeric(16,4)`，写法与订单明细 `OrderDraftLine` 同一份）—— 填一个超出范围的大数、或小数超过三位，都在**写入前**拒绝，并说明是哪一项、该填成什么样。从前这两类会一路走到库：太大撞 `numeric` 溢出报 **`500`「服务器内部错误」**（用户不知道是自己填大了）、小数超三位被库**静默四舍五入**（填 `1.23456` 存成 `1.235`，明细合计与用户以为的对不上）；`sku_id` **先验存在且未删除**，查不到给 `404` 并说清哪一条（从前是撞外键的 `500`）。批量替换**先全量校验再执行** —— 一条不合法不许把原明细删掉。
+  这三处**共用同一份入参**（`OpportunityItemCreate`），所以"新增拦得住、编辑放行"这类旁路不会再出现。
+  参数错误的提示**说人话**（见 §39）：形如「「数量」这个数太大，超出系统能记的范围」，不再是一句笼统的「参数校验失败」再挂一个英文 key。
 - `DELETE /opportunity-items/{id}`
 - `POST /opportunities/{id}/items/copy-from/{source_opportunity_id}`
 - `POST /opportunities/{id}/recommend-products`
@@ -1078,7 +1080,12 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 
 # 39. 错误码
 
-- 40001 参数错误
+- 40001 参数错误。**提示尽量说人话**（`app/core/errors.py` 的 `_VALIDATION_HINTS`）：
+  认得出的校验错误翻成含**中文字段名**的句子，如「「数量」这个数太大，超出系统能记的范围」
+  （数值超范围、小数位过多、内容太长/太短、必填缺失、格式不对这几类）；
+  认不出的类型仍回「参数校验失败」，此时前端会把出问题的字段名拼在后面。
+  字段中文名取自 `patch_schema.FIELD_LABELS` —— 全项目**只此一张**字段名表，
+  再建一张迟早分叉。
 - 40002 状态不允许（也用于**业务口径不允许**：`trade_mode` 是「只做国内」时
   传了非人民币的币种 —— 见 §41.17，判据只有一处，`app/core/trade_mode.py`）
 - 40003 必填业务字段缺失
