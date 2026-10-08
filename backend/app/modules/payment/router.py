@@ -15,6 +15,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.modules.file import service as file_service
 from app.modules.file import storage
 from app.modules.file.model import FileRecord
 from app.modules.order.model import SalesOrder
@@ -243,6 +244,11 @@ async def _generate_receivables(session, order, order_id, payload, request, user
             plan_name=names[index] if index < len(names) else f"第 {index + 1} 期",
             due_date=due_dates[index] if index < len(due_dates) else payload.first_due_date,
             amount=amounts[index],
+            # **必须显式继承订单币种**（第十一批 11.1）。不写这一行，它会落到列默认的
+            # CNY：美元订单按比例分出来的几期全成了人民币，金额看着对、代表的钱已经不同。
+            # 手工新增那条路（`_create_plan`）一直是这样写的，两条路的币种规则必须一致。
+            # 后面的回款登记是"跟着应收节点币种走"的，所以错在这里会一路错到回款。
+            currency=order.currency,
             status="pending",
             created_at=datetime.now(UTC),
         )
@@ -461,19 +467,30 @@ async def upload_payment_voucher(
         checksum=checksum,
         uploaded_by=user.id,
     )
-    session.add(voucher)
-    await session.flush()
-    record.voucher_file_id = voucher.id
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="attach_voucher",
-        business_type="payment",
-        business_id=record.id,
-        after={"voucher_file_id": voucher.id, "file_name": voucher.file_name, "size": size},
-        ip=client_ip(request),
-    )
-    await session.commit()
+    try:
+        session.add(voucher)
+        await session.flush()
+        record.voucher_file_id = voucher.id
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="attach_voucher",
+            business_type="payment",
+            business_id=record.id,
+            after={
+                "voucher_file_id": voucher.id,
+                "file_name": voucher.file_name,
+                "size": size,
+            },
+            ip=client_ip(request),
+        )
+        await session.commit()
+    except Exception:
+        # 登记失败时事务会回滚，但刚写上盘的那份凭证还在 —— 不清理就永远躺在
+        # 盘上，而且和"上传成功"的文件长得一模一样（第十一批 11.8）。
+        # 补偿与通用上传共用同一份逻辑，不在这里另写一套。
+        await file_service.discard_unregistered_upload(session, object_key)
+        raise
     return ok({"voucher_file_id": voucher.id, "voucher_file_name": voucher.file_name}, "凭证已上传")
 
 
@@ -484,18 +501,48 @@ async def delete_payment_voucher(
     user: CurrentUser = Depends(require_permission("payment:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """仅待确认回款可删除凭证；确认/驳回后保留审计凭据。"""
+    """删掉待确认回款的凭证：**解除这条回款的关联**，文件本体只在没人再用它时才删。
+
+    第十一批 11.2 修：这个入口原先直接 `session.delete(FileRecord)` + 删磁盘文件，
+    **一道保护都没过**（通用删除入口那三道：已签/生成的原件、多对象引用、打样依据）。
+    于是同一份文件先当回款凭证、又被关联成"合同已签文件"时，删凭证会让**已签合同
+    的原件连带消失**，合同还显示"已签署"、已签文件列表却空了。
+
+    现在判据统一走 `file.service.inspect_file_usage`：有受保护引用直接拒；
+    别处还在用的**只解绑、不删文件**；只有确实没人用了才把文件记录和磁盘文件一起删。
+    """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     if record.status != "pending":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "回款确认或驳回后不能删除凭证")
     if not record.voucher_file_id:
         raise AppError(ErrorCode.NOT_FOUND, "该回款还没有凭证", 404)
 
-    voucher = await session.get(FileRecord, record.voucher_file_id)
     old_file_id = record.voucher_file_id
+    # 文件行**带锁**取：检查与删除之间不能让别的入口（例如合同登记签署）把这份
+    # 文件挂过去 —— 那正是"检查时没有引用、真正删除前又被人关联"的来路。
+    voucher = (
+        await session.execute(
+            select(FileRecord).where(FileRecord.id == old_file_id).with_for_update()
+        )
+    ).scalars().first()
+
+    usage = await file_service.inspect_file_usage(
+        session, old_file_id, exclude_payment_id=payment_id
+    )
+    if usage.protected is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"这份文件同时是{usage.protected}，不能删除；"
+            "确需纠错请走对应的作废/修订流程，或先解除那一处关联",
+            422,
+        )
+
     object_key = voucher.object_key if voucher is not None else None
     record.voucher_file_id = None
-    if voucher is not None:
+    # 别处还在用（业务附件 / 合同生成稿 / 单据生成稿 / 打样依据 / 另一条回款的凭证）
+    # 时**只解绑**：删文件等于一次影响好几个业务对象。
+    file_removed = not usage.shared
+    if file_removed and voucher is not None:
         await session.delete(voucher)
     await write_audit(
         session,
@@ -503,13 +550,27 @@ async def delete_payment_voucher(
         action="remove_voucher",
         business_type="payment",
         business_id=record.id,
-        before={"voucher_file_id": old_file_id, "file_name": voucher.file_name if voucher else None},
+        before={
+            "voucher_file_id": old_file_id,
+            "file_name": voucher.file_name if voucher else None,
+            # 记清这次是"解绑"还是"连文件一起删"——事后翻账要分得出来
+            "file_removed": file_removed,
+            "still_used_by": usage.other_holders,
+        },
         ip=client_ip(request),
     )
     await session.commit()
-    if object_key is not None:
+    if file_removed and object_key is not None:
         storage.delete_object(object_key)
-    return ok(None, "凭证已删除")
+    if file_removed:
+        return ok(
+            {"detached_only": False, "file_deleted": True},
+            "凭证已删除（该文件没有其他引用，文件本体一并清除）",
+        )
+    return ok(
+        {"detached_only": True, "file_deleted": False},
+        "已解除这条回款的凭证关联；该文件仍被其他业务使用，未删除",
+    )
 
 
 @router.patch("/payments/{payment_id}")

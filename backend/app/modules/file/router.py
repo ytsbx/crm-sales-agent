@@ -19,13 +19,11 @@ from app.modules.file.access import (
     SUPPLEMENT_CATEGORY,
     SUPPLEMENT_LABEL,
     can_access_file,
-    file_protection_label,
     protection_label,
-    sample_basis_lock_label,
     sample_write_lock_label,
     visible_object,
 )
-from app.modules.file import access, storage
+from app.modules.file import access, service, storage
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.user.model import User
 
@@ -136,21 +134,9 @@ async def upload_file(
         # 登记失败（约束冲突 / 连接断开 / 审计写入报错）时，刚写上盘的那份文件
         # 没有任何记录指向它——不清理就永远堆在盘上，而且和"上传成功"的文件
         # 长得一模一样，事后谁也分不清哪份是垃圾。
-        # 补偿只按本次的 object_key 精确删，并且**先确认库里确实没有这条登记**
-        # 才删：否则可能把一条已经提交成功的记录变成"记录在、文件没了"。
-        try:
-            await session.rollback()
-            registered = (
-                await session.execute(
-                    select(FileRecord.id).where(FileRecord.object_key == object_key)
-                )
-            ).first()
-            if registered is None:
-                storage.delete_object(object_key)
-        except Exception:  # noqa: BLE001 —— 清理失败不该盖掉真正的登记错误
-            logger.warning(
-                "上传登记失败，且临时文件清理失败：%s", object_key, exc_info=True
-            )
+        # 补偿逻辑统一在 `file.service`：回款凭证那个专用上传入口共用同一份，
+        # 不再各写一遍（第十一批 11.8 —— 它原先就是漏了这段）。
+        await service.discard_unregistered_upload(session, object_key)
         raise
     return ok(serialize_file(record, user.name), "上传成功")
 
@@ -295,37 +281,46 @@ async def delete_file(
     # 删文件也是写操作：看不到的文件不能删（`can_access_file` 按关联的业务对象判可见性）
     if not await can_access_file(session, user, file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
-    record = await session.get(FileRecord, file_id)
+    # **锁住文件行再查引用**：与"给这个文件加引用"的入口（通用挂载 / 产品挂附件 /
+    # 合同登记签署 / 回款删凭证）用同一把锁。不加锁时，另一个事务可以在下面这段
+    # 检查跑完之后、真正删除之前把引用挂上来（第十一批 11.2 第 7 条）。
+    record = (
+        await session.execute(
+            select(FileRecord).where(FileRecord.id == file_id).with_for_update()
+        )
+    ).scalars().first()
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
     links = (
         await session.execute(select(BusinessFile).where(BusinessFile.file_id == file_id))
     ).scalars().all()
-    # ① 历史证据：已签署的原件不允许走通用删除。
-    #    否则一次误删就把"签的是哪一版"的唯一凭据抹掉了。
-    protected = await file_protection_label(session, file_id)
-    if protected is not None:
+    # ① 历史证据：已签署的原件、系统生成的原件、已锁定打样的制作依据，一律不许走通用删除。
+    #    否则一次误删就把"签的是哪一版 / 当时按哪份做的"的唯一凭据抹掉了。
+    # ② 别处还在引用（合同生成稿、单据生成稿、回款凭证、打样依据）：删文件影响它身上**所有**
+    #    引用，所以哪怕只剩一处也算有主，不该从这一头清掉。
+    #    这两档的判据统一在 `file.service.inspect_file_usage`（第十一批 11.2）——
+    #    原实现只看了 `business_files` 一张表，那五处**没有外键**的专用列一处都没查，
+    #    等于给"文件还被引用着"留了四个看不见的缺口。
+    usage = await service.inspect_file_usage(session, file_id)
+    if usage.protected is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"该文件是{protected}，不能删除；确需纠错请走作废等专门流程",
+            f"该文件是{usage.protected}，不能删除；确需纠错请走作废等专门流程",
             422,
         )
-    # ② 一个文件挂在多个业务对象上时，删它等于**一次影响全部对象**。
+    if usage.other_holders:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该文件还被「{'、'.join(usage.other_holders)}」引用着，"
+            "请先在那处解除关联，不要直接删除原件",
+            422,
+        )
+    # ③ 一个文件挂在多个业务对象上时，删它等于**一次影响全部对象**。
     #    这种情况先让使用者在对应位置解除关联，不要直接清原件。
     if len(links) > 1:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"该文件仍被 {len(links)} 个业务对象引用，请先解除不需要的关联，不要直接删除原件",
-            422,
-        )
-    # ③ 打样单的**制作依据**：单子已制作/寄出/签收时，那份文件就是"当时按它做的"
-    #    的凭证，删掉之后账就报不清了（2026-10-06 补）。原来只挡了 signed/generated
-    #    两类原件，图纸这类过程附件不在其中，是个后门。
-    basis_lock = await sample_basis_lock_label(session, file_id)
-    if basis_lock is not None:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"不能删除：{basis_lock}。它是对账时唯一的凭证；确需纠错请走作废/修订流程",
             422,
         )
     file_name = record.file_name
@@ -430,6 +425,9 @@ async def attach_file(
                 f"（category={SUPPLEMENT_CATEGORY}）",
                 422,
             )
+    # 给一个**已存在**的文件新增引用之前，先锁住它的行：与删除入口（通用删除、
+    # 回款删凭证）串行化，避免"查引用时还没有、真正删掉后才挂上来"的悬空引用。
+    await service.lock_file_row(session, file_id)
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)

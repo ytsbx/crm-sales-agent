@@ -725,6 +725,13 @@ async def sign_document(
     if doc.status == "void":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已作废的文档不能签署")
     await _ensure_signable_source(session, doc)
+    # 登记签署 = 给一份**已存在**的文件加 `signed` 引用。加引用之前先锁住文件行，
+    # 与删除入口（通用删除、回款删凭证）用同一把锁：否则财务那边正在删回款凭证时，
+    # 这边可以把同一份文件登记成签署件 → 出现指向已删文件的悬空引用
+    # （第十一批 11.2 第 7 条）。
+    from app.modules.file import service as file_service
+
+    await file_service.lock_file_row(session, file_id)
     record = await session.get(FileRecord, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在，请先通过 /files/upload 上传", 404)

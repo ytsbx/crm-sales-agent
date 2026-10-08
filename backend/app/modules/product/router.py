@@ -594,6 +594,12 @@ async def attach_product_file(
             ErrorCode.DATA_SCOPE_DENIED, "不能给该产品挂附件：你没有产品资料的维护权限", 403
         )
 
+    # 给一份**已存在**的文件新增引用之前先锁它的行：与删除入口（通用删除、
+    # 回款删凭证）串行化，避免"检查时没人引用、删掉后才挂上来"的悬空引用
+    # （第十一批 11.2 第 7 条）。
+    from app.modules.file import service as file_service
+
+    await file_service.lock_file_row(session, file_id)
     link = BusinessFile(
         business_type="product",
         business_id=product_id,
