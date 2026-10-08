@@ -275,7 +275,20 @@ async def delete_inquiry(
     session: AsyncSession = Depends(get_db),
 ):
     inquiry = await svc.get_visible_or_404(session, user, inquiry_id)
+    root_id = inquiry.root_id or inquiry.id
+    # 与修订抢同一把链级锁：一边删、一边修订错开跑，"当前版是谁"就会算错。
+    await session.execute(
+        select(CustomInquiry)
+        .where(CustomInquiry.id == root_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     inquiry.deleted_at = svc.now()
+    await session.flush()
+    # 删掉一版之后"当前有效版"可能换人：把整条链重新点一遍名（第十二批 12.6）。
+    # 删掉 V2 后 V1 就该拿掉"已被新版取代"标记、重新成为当前版 —— 否则会留下
+    # "V1 说自己被取代了，可取代它的 V2 已经删掉"这种对不上号的状态。
+    await svc.refresh_chain_current_state(session, root_id, stamp=svc.now())
     await write_audit(
         session,
         operator_id=user.id,
@@ -301,28 +314,48 @@ async def revise_inquiry(
     §3.3："客户改了三次要求，系统只留最新一版，看不出怎么变的"——这一把修的就是它。
     """
     old = await svc.get_visible_or_404(session, user, inquiry_id)
-    await session.execute(select(CustomInquiry).where(
-        CustomInquiry.id == (old.root_id or old.id)
-    ).with_for_update())
-    await session.refresh(old)
-
-    # 只能对**链条最新版**再修订：此前不校验，在 v1 上连点两次就生成两条 v2，
-    # 历史视图里同版并列，分不清哪条才是当前要求。最新版 = 链条里 version 最大者。
     root_id = old.root_id or old.id
-    latest_version = (
+    # 链级锁：锁住链条首版这一行，把同一条需求上的所有修订串成一条队（锁到 commit
+    # 才放）。后到的请求会一直等到锁释放，拿到锁后再重新读一遍、重新判断 ——
+    # 所以并发不会生成两个"下一版"（第十二批 12.6）。
+    await session.execute(
+        select(CustomInquiry)
+        .where(CustomInquiry.id == root_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    await session.refresh(old)
+    if old.deleted_at is not None:
+        # 等到锁的这段时间里，这一版可能已经被别人删了。
+        raise AppError(ErrorCode.NOT_FOUND, "这一版已被删除", 404)
+
+    chain = (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
+
+    # ① 能不能对这一版再修订 —— 看它是不是这条需求**当前有效的那一版**
+    #    （还活着的版本里编号最大的那个）。历史版只能看，要改请在当前版上改。
+    #    这里**只算活着的版本**：删掉 V2 之后，"活着的"里最大是 V1，V1 于是
+    #    重新成为当前版 —— 正好允许"以 V1 为基础生成 V3"。
+    max_active = (
         await session.execute(
-            svc.not_deleted(select(func.max(CustomInquiry.version))).where(
-                (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
-            )
+            svc.not_deleted(select(func.max(CustomInquiry.version))).where(chain)
         )
     ).scalar_one_or_none()
-    if latest_version is not None and (old.version or 1) < int(latest_version):
+    if max_active is not None and (old.version or 1) < int(max_active):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"只能对最新版（v{int(latest_version)}）再修订；当前这条是 v{old.version or 1}，"
-            f"版本只增不改，请到最新版上发起修订",
+            f"只能对当前版（v{int(max_active)}）再修订；当前这条是 v{old.version or 1}，"
+            f"版本只增不改，请到当前版上发起修订",
             409,
         )
+
+    # ② 新版本编几号 —— 取**整条链历史最大编号 + 1**，**把已删除的版本也算进来**。
+    #    这是 12.6 的关键：删掉 V2 之后，"2 号"在页面上看不见了，但在库里还占着
+    #    （唯一索引 uq_custom_inquiries_chain_version 不看删除标记）。若只按"活着的"
+    #    最大号 +1，就会又编出 2 号 —— 既撞唯一索引报 500，也等于复用了已删版本的号。
+    max_ever = (
+        await session.execute(select(func.max(CustomInquiry.version)).where(chain))
+    ).scalar_one_or_none()
+    next_version = int(max_ever or 0) + 1
 
     # 编号跟着**需求**走，不跟着版本走：v2 是同一需求的新一版，换号会让
     # 已发出的报价断在中间。历史数据没有 root 号时才补取一个（迁移前的行）。
@@ -362,9 +395,17 @@ async def revise_inquiry(
         # 或沿 root_id 找首版，两者都在（前者已随 extra 复制过来）。
         status="open",
         remark=payload.remark if payload.remark is not None else old.remark,
-        version=(old.version or 1) + 1,
+        # 版本号取"链内历史最大 + 1"（含已删除的），见上面 next_version 的说明。
+        version=next_version,
         root_id=old.root_id or old.id,
-        revision_note=payload.revision_note,
+        # 修订记录要能看出这一版从哪来（第十二批 12.6）：删掉 V2 之后以 V1 生成
+        # V3，只写"v1→v3"没人知道中间跳过的那版是怎么回事。用户自己填了说明就
+        # 保留他的话；没填就自动写上"以 V1 为基础生成 V3"。
+        revision_note=(
+            payload.revision_note
+            if (payload.revision_note or "").strip()
+            else f"以 V{old.version or 1} 为基础生成 V{next_version}"
+        ),
         created_by=user.id,
     )
     session.add(new_version)
@@ -377,8 +418,14 @@ async def revise_inquiry(
         action="revise",
         business_type="custom_inquiry",
         business_id=new_version.id,
-        after={"from_id": old.id, "version": new_version.version,
-               "revision_note": payload.revision_note},
+        after={
+            "from_id": old.id,
+            # 明确记下"从第几版来"（第十二批 12.6）：删掉 V2 后以 V1 生成 V3，
+            # 只看编号从 1 跳到 3 看不出中间那一版是怎么回事，记上基础版本才说得清。
+            "from_version": old.version or 1,
+            "version": new_version.version,
+            "revision_note": new_version.revision_note,
+        },
         ip=client_ip(request),
     )
     await session.commit()
@@ -404,7 +451,10 @@ async def inquiry_history(
     """
     current = await svc.get_visible_or_404(session, user, inquiry_id)
     root_id = current.root_id or current.id
-    stmt = svc.not_deleted(select(CustomInquiry)).where(
+    # **已删除的版本也要列出来**（第十二批 12.6）：删掉 V2 后若只显示 V1 与 V3，
+    # 用户会以为系统吃掉了一个号。列出来并标"已删除"（见 serialize 的 is_deleted /
+    # version_state_label），"为什么不复用 2 号"就一目了然。
+    stmt = select(CustomInquiry).where(
         (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
     )
     stmt = await svc.apply_scope(stmt, user, session)

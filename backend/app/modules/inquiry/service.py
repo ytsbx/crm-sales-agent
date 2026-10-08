@@ -144,18 +144,62 @@ def serialize(
         # 「已被新版取代」：取代是**版本属性**，不覆盖业务 status（见 model 注释）
         "superseded_at": inquiry.superseded_at,
         "is_superseded": inquiry.superseded_at is not None,
-        "version_state_label": "已被新版取代" if inquiry.superseded_at else "当前版",
+        # 三态，删除排最前（第十二批 12.6）：删掉的 V2 头上并没有"已被取代"
+        # 标记（删它的时候它还是当前版），不加这一层会被显示成"当前版"。
+        "version_state_label": (
+            "已删除"
+            if inquiry.deleted_at is not None
+            else ("已被新版取代" if inquiry.superseded_at else "当前版")
+        ),
         "converted_sku_id": inquiry.converted_sku_id,
         "remark": inquiry.remark,
         "created_by": inquiry.created_by,
         "creator_name": creator_name,
         "created_at": inquiry.created_at,
         "updated_at": inquiry.updated_at,
+        # 软删标记（第十二批 12.6）：历史链要把**已删除的版本**也列出来并标出来。
+        # 删掉 V2 之后页面上是 V1 → V3，中间少一版会让人以为系统吃了个号；
+        # 列出 V2 并标"已删除"，"为什么复用不了 2 号"才一眼说得清。
+        "deleted_at": inquiry.deleted_at,
+        "is_deleted": inquiry.deleted_at is not None,
     }
 
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+async def refresh_chain_current_state(
+    session: AsyncSession, root_id: int, *, stamp: datetime
+) -> None:
+    """删掉某一版之后，重新点名"当前有效版"（第十二批 12.6）。
+
+    一条需求的"当前版"= **还活着的版本里编号最大的那一个**：
+    - 它不该带"已被新版取代"标记；
+    - 其余活着的版本都是历史版，都该带上。
+
+    为什么删一版就得重算：删掉 V2 之后，V1 头上"已被新版取代"这句就成了
+    无主之词 —— 取代它的 V2 已经不在了，而"当前有效版是谁"也无从判断。
+    重算之后 V1 变回当前版，"以 V1 为基础生成 V3"才名正言顺。
+
+    只碰"活着的"行；已删除的版本原样保留（不恢复、不覆盖）。
+    """
+    rows = (
+        await session.execute(
+            not_deleted(select(CustomInquiry))
+            .where((CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id))
+            .order_by(CustomInquiry.version.asc())
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().all()
+    if not rows:
+        return
+    current = max(rows, key=lambda r: r.version or 1)
+    for row in rows:
+        if row is current:
+            row.superseded_at = None
+        elif row.superseded_at is None:
+            row.superseded_at = stamp
 
 
 async def generate_inquiry_no(session: AsyncSession) -> str:

@@ -24,6 +24,14 @@ check_agent_stream
 check_scheduler
 check_quote_center_acceptance
 check_custom_no_sku
+# 定制询价修订链（第十二批 12.6）：删掉某一版之后，仍能以更早的版本出新版 ——
+# 版本号取「链内历史最大 + 1」（**含已删除的版本**），所以删 V2 后是以 V1 生成 V3，
+# 而不是又编一个 2 号（旧写法会撞唯一索引报 500，且等于复用已删版本的号）；
+# V1 在删后回到「当前版」；历史链把已删除的版本也列出来并标「已删除」；
+# 修订说明自动注明「以 V1 为基础生成 V3」，操作日志记 from_version。
+# 用外部行锁确认并发请求**真的**卡在链级锁上（不是碰巧串行跑过去）。
+# ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会建询价、打并发请求）。
+check_inquiry_revision_chain
 check_sample_production
 check_sales_attribution
 check_duplicate_arbitration
