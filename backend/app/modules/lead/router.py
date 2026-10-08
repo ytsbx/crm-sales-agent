@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.contact_util import (
@@ -65,18 +65,28 @@ async def create_lead(
     session: AsyncSession = Depends(get_db),
 ):
     data = payload.model_dump()
-    if data.get("owner_id"):
-        # 指定负责人是**归属类动作**：不校验范围，业务员就能把线索直接挂到别人
-        # （甚至别的部门）名下。业务员是 self 范围，只能挂自己；主管可在本部门内分配。
-        from app.core.data_scope import ensure_in_scope
-
-        await ensure_in_scope(session, user, owner_id=data["owner_id"], label="负责人")
-        data["status"] = "assigned"
-    else:
-        data["status"] = "pending"
-    lead = Lead(**data, created_by=user.id)
+    # 指定负责人是**分配**动作，不是创建动作 —— 有"建线索"不等于有"分配线索"。
+    # 少了这扇门，业务员（有 create、无 assign）建线索时带一个 `owner_id`
+    # 就等于完成了变相分配：页面上的"分配线索"按钮他看不见，接口这条路却通着
+    # （第十批 10.3）。口径（2026-10-08 定）：有"分配线索"权限的人可以分给
+    # 任何人（含跨部门）——分配**不看数据范围**，所以这里不再用 `ensure_in_scope`。
+    owner_id = data.pop("owner_id", None)
+    if owner_id is not None:
+        ensure_permission(user, "lead:assign")
+    lead = Lead(**data, created_by=user.id, status="pending")
     session.add(lead)
     await session.flush()
+    if owner_id is not None:
+        # 复用分配服务：它自带"目标用户存在且在岗"的校验，并落一条分配历史。
+        # 原先这条路只判了数据范围、把 owner_id 原样写库——传一个不存在的人也能
+        # 落下去（另外四个分配入口都拦得住，只有这扇门漏着）。
+        await svc.assign_lead(
+            session,
+            lead,
+            to_user_id=owner_id,
+            operator_id=user.id,
+            reason="创建线索时指定负责人",
+        )
     await write_audit(
         session,
         operator_id=user.id,

@@ -27,13 +27,29 @@ class ScopeUser(Protocol):
     data_scope: str
 
 
-def department_subtree_ids_stmt(user: ScopeUser) -> Select:
-    """用户所在部门及其所有下级部门的 id（递归 CTE）。"""
-    base = select(Department.id).where(Department.id == user.department_id)
+def department_subtree_stmt(department_id: int | None) -> Select:
+    """某个部门及其**全部下级**的 id（递归 CTE）。
+
+    ⚠️ 递归那半句必须**装进 CTE 的定义里**（`subtree = subtree.union_all(...)`）。
+    原先写成 `select(subtree.c.id).union_all(...)`：CTE 定义里就只剩"起点部门"
+    这一条，递归那半句落到了外面那条 `UNION ALL` 上 —— 而外层只执行一次，
+    于是整棵树**只往下展开一层**，孙部门一律漏掉（第十批 10.9 修）。
+
+    这个错特别难自己冒出来：只用两层部门（甲部 → 子部）去测，"本部门及下级"
+    恰好就是这两个，看起来完全正确；**三层以上**才露破绽。所以套件里的部门树
+    必须是三层以上，两层等于没测。
+    """
+    base = select(Department.id).where(Department.id == department_id)
     subtree = base.cte("dept_subtree", recursive=True)
-    return select(subtree.c.id).union_all(
+    subtree = subtree.union_all(
         select(Department.id).join(subtree, Department.parent_id == subtree.c.id)
     )
+    return select(subtree.c.id)
+
+
+def department_subtree_ids_stmt(user: ScopeUser) -> Select:
+    """用户所在部门及其所有下级部门的 id（递归 CTE）。"""
+    return department_subtree_stmt(user.department_id)
 
 
 async def scoped_owner_ids(session: AsyncSession, user: ScopeUser) -> list[int] | None:
@@ -80,16 +96,14 @@ async def department_member_ids(session: AsyncSession, department_id: int) -> li
     为什么需要它：团队目标的计划、实绩、差额必须用**同一个成员集合**。
     原来团队目标行（`user_id` 为空）的实际值走的是"可见范围合计"，
     于是部门目标配上公司数字——达成率永远好看，也永远看不出部门自己做得怎么样
-    （第三批 §4.1.1）。与 `scoped_owner_ids` 共用同一套递归口径，
-    不在这里另写一份部门树展开。
+    （第三批 §4.1.1）。与 `scoped_owner_ids` 共用同一套递归口径
+    （`department_subtree_stmt`），不在这里另写一份部门树展开 —— 这里原先确实
+    又写了一份，于是修 10.9 时两处都得改，漏一处就前功尽弃。
     """
-    base = select(Department.id).where(Department.id == department_id)
-    subtree = base.cte("dept_subtree_members", recursive=True)
-    subtree_ids = select(subtree.c.id).union_all(
-        select(Department.id).join(subtree, Department.parent_id == subtree.c.id)
-    )
     rows = await session.execute(
-        select(User.id).where(User.department_id.in_(subtree_ids))
+        select(User.id).where(
+            User.department_id.in_(department_subtree_stmt(department_id))
+        )
     )
     return list(rows.scalars().all())
 

@@ -140,6 +140,17 @@
 - `POST /leads/export`
 - `POST /leads/batch-assign`
 
+### 线索的归属：建线索时"指定负责人"
+
+`POST /leads` 需要 `lead:create`。**带了 `owner_id` 时还要 `lead:assign`** ——
+"把这条线索挂到某人名下"是**分配**动作，不是录入动作。少了这道闸门，只有"建线索"
+权限的人就能借"新建"完成一次分配（页面上那个"分配线索"按钮他本来看不见）。
+
+口径（2026-10-08 第十批 10.3 定）：**分配不看数据范围** —— 有 `lead:assign` 的人可以
+把线索分给**任何人（含跨部门）**，不再按自己的部门/范围去卡目标。接收人必须
+**存在且在岗**（不存在 404、已停用 422），分配会写一条分配历史（`lead_assignments`）
+并把状态转成 `assigned`。不带 `owner_id` 则进线索池（状态 `pending`）。
+
 ### 线索转化
 
 `POST /leads/{id}/convert`。需要 `lead:convert`。
