@@ -111,10 +111,13 @@ SUPPLEMENT_CATEGORY = "supplement"
 SUPPLEMENT_LABEL = "后续补充资料"
 
 
-async def sample_write_lock_label(session: AsyncSession, business_id: int) -> str | None:
-    """打样单是否已**锁定附件写入**；锁定时返回人话原因，否则 None。
+def sample_write_lock_label_for(sample) -> str | None:
+    """从**已经加载好的**打样单对象判"附件是否已锁定"；锁定时返回人话原因。
 
-    触发条件（与"开修订版"的口径同源，见 sample/router.revise_sample）：
+    纯函数、不查库：列表装配时每条都算一次，逐条再 `session.get` 一遍是白花的
+    N 次查询（而单据本来就已经在内存里）。
+
+    触发条件（与"开修订版"的口径同源，见 `sample/router.revise_sample`）：
     已登记制作完成（`made_at` 非空），或状态已到寄样/签收。
 
     为什么需要这道锁（2026-10-06 修）：打样模块自己的写接口会检查历史版本，
@@ -122,9 +125,6 @@ async def sample_write_lock_label(session: AsyncSession, business_id: int) -> st
     图纸照样能从 `DELETE /business-files/{id}` 解绑。原件保护原来只覆盖
     `signed` / `generated` 两类，图纸不在其中，等于开着一个后门。
     """
-    from app.modules.sample.model import SampleRequest
-
-    sample = await session.get(SampleRequest, business_id)
     if sample is None:
         return None
     if sample.status in ("shipped", "signed"):
@@ -135,6 +135,17 @@ async def sample_write_lock_label(session: AsyncSession, business_id: int) -> st
     if sample.made_at is not None:
         return "打样单已登记制作完成"
     return None
+
+
+async def sample_write_lock_label(session: AsyncSession, business_id: int) -> str | None:
+    """同上，但按 id 取一次行（上传闸门那条路用它）。
+
+    ⚠️ 判断逻辑**只在 `sample_write_lock_label_for` 里**，这里只负责取行 ——
+    两处各写一份，迟早分叉出一扇绕过的门。
+    """
+    from app.modules.sample.model import SampleRequest
+
+    return sample_write_lock_label_for(await session.get(SampleRequest, business_id))
 
 
 async def sample_basis_lock_label(session: AsyncSession, file_id: int) -> str | None:

@@ -614,6 +614,39 @@ async def main():
         )
         check("拿别张打样单的图纸当依据被拒", status == 422, f"HTTP {status} {result}")
 
+        print("---- 8.5 「附件锁没锁」要由后端下发（前端附件区靠它）----")
+        # 2026-10-08 补打样附件区时加的。前端附件区要据此决定两件事：
+        # ① 要不要提示"现在传的会自动归到后续补充资料"；
+        # ② 上传时要不要**自动**带上 `category=supplement`。
+        # 判据在后端（`file/access.sample_write_lock_label_for`）；前端**不许**自己按
+        # made_at / status 推一遍 —— 推出来的那份迟早和后端分叉，而分叉的后果是
+        # 上传被 422 挡住、用户还不知道为什么。下面两条就是钉住"它真的下发了"。
+        locked_detail = api("GET", f"/samples/{lock_id}", token=zhangsan)
+        check("已制作的单子：详情说附件已锁定",
+              locked_detail.get("attachment_locked") is True,
+              locked_detail.get("attachment_lock"))
+        check("锁定原因说了是哪一步锁的（人话，直接能显示给用户）",
+              bool(locked_detail.get("attachment_lock")), locked_detail.get("attachment_lock"))
+        open_detail = api("GET", f"/samples/{stranger_id}", token=zhangsan)
+        check("还没制作的单子：详情说没锁",
+              open_detail.get("attachment_locked") is False, open_detail.get("attachment_lock"))
+        # 详情优先复用**列表**里那条对象（省一次请求），所以列表也得带 ——
+        # 只给详情不带列表的话，从列表点进来的详情会显示成"没锁"。
+        listed = api("GET", "/samples?page_size=200", token=zhangsan)
+        listed_row = next((r for r in (listed.get("items") or []) if r["id"] == lock_id), None)
+        # ⚠️ 本套件的 `check` 是"给条件"那一版（不是 `check(实际, 期望)`），别串。
+        check("列表里也带这两个字段（详情会复用它）",
+              listed_row is not None and "attachment_locked" in listed_row,
+              listed_row.get("attachment_locked") if listed_row else "没找到这条")
+
+        # 界面忘了自动带类别时，用户会撞在这个 422 上 —— 把它钉住，
+        # 免得以后有人把闸门放松成"锁定后随便传"。
+        status, result = upload(
+            zhangsan, "忘了带类别.png", business_type="sample", business_id=lock_id
+        )
+        check("锁定后**不带类别**上传被拒（界面必须自动带「后续补充资料」）",
+              status == 422, f"HTTP {status} {result}")
+
     finally:
         async with SessionLocal() as session:
             if order_ids:

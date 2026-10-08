@@ -373,6 +373,19 @@ async def audit_rows(action: str, business_type: str, business_id: int) -> list[
         )
 
 
+async def file_row(file_id: int) -> dict:
+    """读文件记录的两个关键字段：给人看的名字、和磁盘上的位置。
+
+    改名的断言要**同时**看这两个 —— 只动前者、后者一个字不变才叫"只改展示名"；
+    `object_key` 一动就意味着要搬文件，搬到一半失败会留下"记录指着不存在的路径"。
+    """
+    async with SessionLocal() as session:
+        record = await session.get(FileRecord, file_id)
+    if record is None:
+        return {}
+    return {"file_name": record.file_name, "object_key": record.object_key}
+
+
 async def count_links(file_id: int) -> int:
     async with SessionLocal() as session:
         return int(
@@ -605,6 +618,99 @@ async def main() -> int:
             after,
         )
     check("生成稿原件不能被通用删除", call("DELETE", f"/files/{generated}", token=admin)[0], 422)
+
+    # ---------------------------------------------------------------- 改名（2026-10-08）
+    print("\n=== 改名：只改展示名；合同原件不许改 ===")
+    rename_id = upload_id(
+        admin, f"{PREFIX}-rename-me.png", business_type="product", business_id=product_id
+    )
+    before_row = await file_row(rename_id)
+    check("准备条件：磁盘上真有这份文件", await file_exists_on_disk(rename_id), True)
+
+    status, body = call(
+        "PATCH", f"/files/{rename_id}", token=admin,
+        body={"file_name": "  ZX-6040 塑料周转箱 规格书.pdf  "},
+    )
+    check("普通附件改名 → 200", status, 200)
+    after_row = await file_row(rename_id)
+    check("名字改了（首尾空白顺手去掉）", after_row["file_name"], "ZX-6040 塑料周转箱 规格书.pdf")
+    check("磁盘位置一个字没动", after_row["object_key"], before_row["object_key"])
+    check("文件内容还在原处", await file_exists_on_disk(rename_id), True)
+    rows = await audit_rows("rename", "file", rename_id)
+    check("写了一条改名审计", len(rows), 1)
+    check_true(
+        "审计里记下了改之前的名字（只记新名字就查不出被改成了什么）",
+        bool(rows) and (rows[0].before_data or {}).get("file_name") == before_row["file_name"],
+        rows[0].before_data if rows else None,
+    )
+
+    check(
+        "改成同一个名字 → 200（幂等，不报错）",
+        call("PATCH", f"/files/{rename_id}", token=admin,
+             body={"file_name": "ZX-6040 塑料周转箱 规格书.pdf"})[0],
+        200,
+    )
+    check(
+        "名字没变就不写审计（点了保存却什么都没改，不该在流水里留一条）",
+        len(await audit_rows("rename", "file", rename_id)),
+        1,
+    )
+
+    for label, bad in (
+        ("空", ""),
+        ("全空白", "   "),
+        ("超过 255 字", "长" * 256),
+        ("带换行", "abc\ndef.pdf"),
+    ):
+        check(
+            f"名字{label} → 400",
+            call("PATCH", f"/files/{rename_id}", token=admin, body={"file_name": bad})[0],
+            400,
+        )
+    check(
+        "上面几次被拒之后，名字一个字没动",
+        (await file_row(rename_id))["file_name"],
+        "ZX-6040 塑料周转箱 规格书.pdf",
+    )
+
+    status, body = call(
+        "PATCH", f"/files/{generated}", token=admin, body={"file_name": "改个名试试.pdf"}
+    )
+    check("生成稿原件改名 → 422（与「不可删除」同一份判据）", status, 422)
+    check_true(
+        "拒绝原因说清它是原件",
+        "原件" in (body.get("message") or ""),
+        body.get("message"),
+    )
+    check(
+        "被拒之后原件的名字没动",
+        (await file_row(generated))["file_name"],
+        f"{PREFIX}-gen.pdf",
+    )
+
+    # 用 admin 传（quote_only 只有 file:view，传不了）—— 这份文件挂在**别人的报价**上，
+    # 正是下面"看不到这个对象就改不了它的附件名"要用的靶子。
+    quote_rename_id = upload_id(
+        admin, f"{PREFIX}-quote-rename.png", business_type="quote", business_id=quote_id
+    )
+    check_denied(
+        "只有 file:view 的人不能改名（与删除同一档权限）",
+        call("PATCH", f"/files/{quote_rename_id}", token=quote_only, body={"file_name": "偷改.pdf"})[0],
+    )
+    check(
+        "权限不足时名字没被动",
+        (await file_row(quote_rename_id))["file_name"],
+        f"{PREFIX}-quote-rename.png",
+    )
+    check_denied(
+        "看不到那个业务对象的人也不能改它的附件名",
+        call("PATCH", f"/files/{quote_rename_id}", token=limited, body={"file_name": "偷改2.pdf"})[0],
+    )
+    check(
+        "被拒之后名字依旧是原来的",
+        (await file_row(quote_rename_id))["file_name"],
+        f"{PREFIX}-quote-rename.png",
+    )
 
     await cleanup()
 

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Modal, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   deleteFile,
   downloadFile,
   fetchFilePreview,
   listBusinessFiles,
+  renameFile,
   uploadFile,
   type FileRow,
 } from '../../shared/api/file'
@@ -28,6 +29,19 @@ interface Props {
   businessType: string
   businessId: number
   category?: string
+  /**
+   * 要不要显示「分类」这一列，**默认不显示**。
+   *
+   * 为什么默认关：这个场景"有没有分类可填"决定它该不该出现。产品、商机、客户、
+   * 跟进这四处上传时**没有任何一步让用户选分类**，所以那一列过去永远是"-"，
+   * 看着像"漏填了"。字段本身没废 —— 合同的原件保护（已签原件/生成稿不许删）、
+   * 打样锁定后只许标「后续补充资料」，都靠它做判据，见后端
+   * `file/access.py` 的 `PROTECTED_CATEGORIES` / `SUPPLEMENT_CATEGORY`。
+   *
+   * 只有**真的在用分类**的场景才打开它（目前是打样的附件区：那里的分类要能一眼
+   * 看出"制作依据"和"事后补料"的区别）。
+   */
+  showCategory?: boolean
   enabled?: boolean
   /**
    * 上传/挂载要**目标模块自己的**写权限码，默认按文件中心（file:manage）。
@@ -41,6 +55,7 @@ export default function AttachmentPanel({
   businessType,
   businessId,
   category,
+  showCategory = false,
   enabled = true,
   writePermission = 'file:manage',
 }: Props) {
@@ -88,6 +103,21 @@ export default function AttachmentPanel({
     mutationFn: (fileId: number) => deleteFile(fileId),
     onSuccess: () => {
       Toast.success('附件已删除')
+      void refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // 改名（2026-10-08）：只改**展示名**（列表里显示、下载时落成本地名），磁盘不动。
+  // 失败时**不关弹窗、保留已输入的名字** —— 比如合同原件会被后端拒，
+  // 这时候把人好不容易打的字清掉最讨厌；原因原样显示（别猜，判据在后端）。
+  const [renameTarget, setRenameTarget] = useState<FileRow | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const renameMutation = useMutation({
+    mutationFn: () => renameFile(renameTarget!.id, renameValue.trim()),
+    onSuccess: () => {
+      Toast.success('文件名已修改')
+      setRenameTarget(null)
       void refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -157,7 +187,19 @@ export default function AttachmentPanel({
             width: 110,
             render: (size: number) => formatSize(size),
           },
-          { title: '分类', dataIndex: 'category', width: 110, render: (v: string | null) => v ?? '-' },
+          // 「分类」列只在**这个场景真的在用分类**时才出现（`showCategory`）。
+          // 四处现有调用都不打开它：那里上传时没有让用户选分类的地方，
+          // 这一列过去永远是"-"。留着只会让人以为"是我漏填了"。
+          ...(showCategory
+            ? [
+                {
+                  title: '分类',
+                  dataIndex: 'category',
+                  width: 110,
+                  render: (v: string | null) => v ?? '-',
+                },
+              ]
+            : []),
           { title: '上传人', dataIndex: 'uploader_name', width: 110, render: (v: string | null) => v ?? '-' },
           {
             title: '上传时间',
@@ -173,7 +215,7 @@ export default function AttachmentPanel({
           },
           {
             title: '操作',
-            width: 170,
+            width: 220,
             render: (_: unknown, record: FileRow) => (
               <div style={{ display: 'flex', gap: 10 }}>
                 {record.previewable && (
@@ -188,8 +230,22 @@ export default function AttachmentPanel({
                   下载
                 </a>
                 {can('file:manage') && (
+                  <a
+                    style={{ color: 'var(--crm-primary)' }}
+                    onClick={() => {
+                      setRenameValue(record.file_name)
+                      setRenameTarget(record)
+                    }}
+                  >
+                    改名
+                  </a>
+                )}
+                {can('file:manage') && (
                   <Popconfirm
                     title="删除后不可恢复，确认？"
+                    // 后端还有三道保护会拒绝（合同原件、别处还在引用、一个文件挂了多个
+                    // 对象），拒绝时会把原因说清楚——这里不必替它预判，也预判不准。
+                    description="如果它是合同原件、或还被别处引用着，系统会拒绝并说明原因。"
                     onConfirm={() => deleteMutation.mutate(record.id)}
                   >
                     <a style={{ color: 'var(--crm-error)' }}>删除</a>
@@ -205,6 +261,32 @@ export default function AttachmentPanel({
         pagination={false}
         empty="还没有附件"
       />
+
+      {/* 改名弹窗：只改展示名，磁盘上的文件不动 */}
+      <Modal
+        title="改文件名"
+        visible={renameTarget !== null}
+        onCancel={() => setRenameTarget(null)}
+        onOk={() => {
+          if (!renameValue.trim()) {
+            Toast.warning('文件名不能为空')
+            return
+          }
+          renameMutation.mutate()
+        }}
+        confirmLoading={renameMutation.isPending}
+        okText="保存"
+      >
+        <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>
+          改的是「这个文件在列表里显示的名字」和「别人下载时拿到的名字」；文件内容与存放位置都不变。
+        </div>
+        <Input
+          value={renameValue}
+          onChange={setRenameValue}
+          maxLength={255}
+          placeholder="例如：ZX-6040 塑料周转箱 规格书.pdf"
+        />
+      </Modal>
 
       {/* 预览弹窗：图片用 img，PDF / 文本用 iframe（浏览器原生渲染） */}
       <Modal

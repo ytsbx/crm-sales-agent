@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+# 附件写入的锁定判据只有一处（`file/access.py`），上传闸门与本处共用同一份
+from app.modules.file.access import sample_write_lock_label_for
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity
 from app.modules.product.model import Sku
@@ -411,25 +413,32 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
 
     payload = []
     for row in rows:
-        payload.append(
-            serialize_request(
-                row,
+        data = serialize_request(
+            row,
                 customer_name=customers.get(row.customer_id) if row.customer_id else None,
                 opportunity_title=(
                     opportunities.get(row.opportunity_id) if row.opportunity_id else None
                 ),
                 owner_name=owners.get(row.owner_id) if row.owner_id else None,
-                items=[
-                    serialize_item(item, skus.get(item.sku_id))
-                    for item in items_by_request.get(row.id, [])
-                ],
-                shipments=[
-                    serialize_shipment(shipment)
-                    for shipment in shipments_by_request.get(row.id, [])
-                ],
-                superseded_by=child_of.get(row.id),
-            )
+            items=[
+                serialize_item(item, skus.get(item.sku_id))
+                for item in items_by_request.get(row.id, [])
+            ],
+            shipments=[
+                serialize_shipment(shipment)
+                for shipment in shipments_by_request.get(row.id, [])
+            ],
+            superseded_by=child_of.get(row.id),
         )
+        # 「这张单子的附件还能不能上传」（2026-10-08）：
+        # 制作/寄出之后新附件只能标「后续补充资料」，界面据此决定上传时带什么类别。
+        # 判据是**纯函数**（`file/access.sample_write_lock_label_for`），单据本来就在
+        # 内存里，所以这里不额外查库；上传闸门用的是同一个函数，前端不必自己复刻一套
+        # （复刻出来的那份迟早和后端分叉）。
+        lock = sample_write_lock_label_for(row)
+        data["attachment_locked"] = lock is not None
+        data["attachment_lock"] = lock
+        payload.append(data)
     return payload
 
 

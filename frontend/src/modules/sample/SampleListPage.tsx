@@ -43,6 +43,7 @@ import {
 import { listBusinessFiles } from '../../shared/api/file'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import AttachmentPanel from '../common/AttachmentPanel'
 import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
@@ -1236,6 +1237,39 @@ export default function SampleListPage() {
                   )}
                 </div>
 
+                {/* 附件区（2026-10-08 补）。
+                    这里原本**没有上传入口**：而「登记制作完成」那个弹窗写着
+                    「请先在详情的附件区上传图纸/确认件」—— 指向的正是这块不存在的地方，
+                    于是「制作依据」永远只能选一个空列表，等于那个功能在界面上用不了。
+                    后端一直是完整的：能上传、能登记依据（连文件校验值一起存快照）、
+                    制作/寄出之后只许标「后续补充资料」。
+
+                    锁定之后上传的**自动**按「后续补充资料」归类，不用用户选 ——
+                    锁定与否由后端下发（`attachment_locked` / `attachment_lock`），
+                    前端不自己按 made_at / status 推一遍（推出来的那份迟早和后端分叉）。 */}
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>附件</div>
+                  {detail.attachment_locked && (
+                    <div
+                      style={{
+                        marginBottom: 8,
+                        fontSize: 12,
+                        color: 'var(--crm-warning)',
+                      }}
+                    >
+                      {detail.attachment_lock}：现在上传的附件会自动归到「后续补充资料」，
+                      和制作依据分开记 —— 事后补进来的资料不能和「当时照哪份做的」混在一起。
+                    </div>
+                  )}
+                  <AttachmentPanel
+                    businessType="sample"
+                    businessId={detail.id}
+                    writePermission="sample:manage"
+                    showCategory
+                    category={detail.attachment_locked ? 'supplement' : undefined}
+                  />
+                </div>
+
                 {/* 场景12：从这张打样申请出打样需求单，来源询价与本次差异随文件落快照 */}
                 <div>
                   <div style={{ fontWeight: 600, marginBottom: 8 }}>打样需求单</div>
@@ -1290,7 +1324,7 @@ export default function SampleListPage() {
             )}
             {!madeFilesQuery.isLoading && (madeFilesQuery.data ?? []).length === 0 && (
               <div style={{ fontSize: 12, color: 'var(--crm-warning)' }}>
-                这张单子上还没有附件。请先在详情的附件区上传图纸/确认件，再回来登记依据。
+                这张单子上还没有附件。请先在上面的「附件」区上传图纸/确认件，再回来登记依据。
               </div>
             )}
             <div style={{ display: 'grid', gap: 4 }}>

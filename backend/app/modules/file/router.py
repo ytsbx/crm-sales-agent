@@ -6,6 +6,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -269,6 +270,93 @@ async def preview_file(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+#: 文件名的长度上限，与 `FileRecord.file_name` 的列宽一致。
+#: 两处不一致时会出现"校验放行、落库被截断/报错"，所以写成一个常量。
+FILE_NAME_MAX = 255
+
+
+class FileRename(BaseModel):
+    """改文件名的入参。只收一个名字，多余的字段不认（`extra` 默认禁止）。"""
+
+    file_name: str
+
+
+@router.patch("/files/{file_id}")
+async def rename_file(
+    file_id: int,
+    payload: FileRename,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("file:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """改这份文件的**展示名**（2026-10-08）。
+
+    ## 为什么只改展示名
+
+    `files` 表里名字分两处：`file_name` 是给人看的（列表里显示、下载时落成本地文件名），
+    `object_key` 是磁盘上的存放位置。**改名绝不动 `object_key`** —— 动它就要搬文件，
+    搬运过程中任何一步失败都会留下"记录指着不存在的路径"（下载时才 404）。
+
+    ## 为什么合同那类原件不许改名
+
+    名字本身是线索：合同的生成稿叫「销售合同 xxx V1.pdf」，随手改成「…V2.pdf」之后，
+    台账上就对不上了——真出纠纷时"客户签的到底是哪一版"说不清。
+    所以这里**与"不可删除"共用同一份判据**（`file.service.inspect_file_usage` 的
+    `protected`）：不改名和不能删是同一类限制，原件只许走专门流程（作废 / 开修订版）。
+
+    ## 名字的校验（都在这里给中文原因，不靠框架的通用报错）
+
+    - 空、或去掉首尾空白后为空 → 400；
+    - 超过 `FILE_NAME_MAX` → 400（列宽上限）；
+    - **含控制字符（含换行/制表）→ 400**：这个名字会进 `Content-Disposition`
+      响应头，带换行的名字等于往响应头里注入一行。
+    """
+    if not await access.can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
+    record = await session.get(FileRecord, file_id)
+    if record is None:
+        raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+
+    name = (payload.file_name or "").strip()
+    if not name:
+        raise AppError(ErrorCode.PARAM_ERROR, "文件名不能是空的", 400)
+    if len(name) > FILE_NAME_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"文件名最多 {FILE_NAME_MAX} 个字，现在是 {len(name)}", 400
+        )
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise AppError(
+            ErrorCode.PARAM_ERROR, "文件名里不能有换行、制表这类控制字符", 400
+        )
+
+    usage = await service.inspect_file_usage(session, file_id)
+    if usage.protected is not None:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该文件是{usage.protected}，名字不能改——它记的就是「当时是哪一份」；"
+            "确需纠错请走作废等专门流程",
+            422,
+        )
+
+    before = record.file_name
+    if before == name:
+        # 名字没变就不写审计：一次"点了保存但什么都没改"不该在流水里留一条
+        return ok(serialize_file(record), "文件名没有变化")
+    record.file_name = name
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="rename",
+        business_type="file",
+        business_id=file_id,
+        before={"file_name": before},
+        after={"file_name": name},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(serialize_file(record), "文件名已修改")
 
 
 @router.delete("/files/{file_id}")

@@ -91,6 +91,17 @@ export interface SampleRequestRow {
   basis_files?: BasisFile[] | null
   /** 制作完成事件流水（含说明、时间、登记人） */
   made_events?: { key?: string; at?: string; note?: string | null; by?: number }[] | null
+  /**
+   * 附件是否已**锁定写入**（2026-10-08 补上附件区时加）。
+   *
+   * 已登记制作完成、或状态到了寄样/签收 → 锁定：之后上传的附件**只能**归为
+   * 「后续补充资料」，否则"制作依据"和"事后补料"就分不开了。
+   * 判据在后端（`file/access.sample_write_lock_label_for`），前端**别自己按
+   * made_at / status 推** —— 推出来的那份迟早和后端分叉。
+   */
+  attachment_locked?: boolean
+  /** 锁定原因（人话，如「打样单已登记制作完成」）；没锁定时为 null */
+  attachment_lock?: string | null
   // 客户确认与签收分开：签收是物流事实，确认是业务事实
   confirm_status: string
   confirm_status_label: string

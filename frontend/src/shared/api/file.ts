@@ -35,6 +35,21 @@ export function deleteFile(fileId: number) {
   return api.delete<null>(`/files/${fileId}`)
 }
 
+/**
+ * 改文件名（2026-10-08）。
+ *
+ * 改的是**展示名**：列表里显示的名字、下载时落成本地的名字。
+ * 磁盘上的存放位置不动 —— 所以改名字不会搬文件、不会产生"记录指着不存在的路径"。
+ *
+ * 两种情况会被后端拒（前端别自己猜，原样把原因显示出来就行）：
+ * - 合同那类**原件**（客户签回来的扫描件、系统生成的合同稿）不许改名 ——
+ *   名字本身是"当时是哪一份"的线索，改掉之后版本说不清；
+ * - 没有文件管理权、或这份文件不在你的可见范围内。
+ */
+export function renameFile(fileId: number, fileName: string) {
+  return api.patch<FileRow>(`/files/${fileId}`, { file_name: fileName })
+}
+
 export function unlinkBusinessFile(businessFileId: number) {
   return api.delete<null>(`/business-files/${businessFileId}`)
 }
