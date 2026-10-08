@@ -26,7 +26,14 @@ class CostCreate(BaseModel):
     remark: str | None = Field(default=None, max_length=255)
 
 
-class CostUpdate(BaseModel):
+class CostUpdate(PatchModel):
+    """改一条成本版本。
+
+    ⚠️ 继承 `PatchModel`（第十一批 11.9 复审）：它原来直接继承 `BaseModel`，
+    整类都不受"不许清空 / 长度上限"保护 —— 复审实测 `effective_from` 传 `null`
+    直接 500（`product_costs` 那一列非空）。判据现在按列定义自动读。
+    """
+
     model_config = ConfigDict(extra="ignore")
 
     purchase_cost: Decimal | None = Field(default=None, ge=0)
@@ -154,8 +161,8 @@ class LogisticsRateUpdate(PatchModel):
     "把目的地收窄"，要求整行传全，改错的风险更大（把没打算动的字段一起写回去）。
 
     **哪些不许被清空**（`provider` / `shipping_method` / `unit_price_per_kg` /
-    `min_charge` / `status`）登记在 `core/patch_schema.NOT_NULLABLE` —— 库里那几列
-    非空，显式传 `null` 从前会一路走到数据库才报 500。
+    `min_charge` / `status`）由 `core/patch_schema` 按 `logistics_rates` 的**列定义**
+    自动管 —— 那几列非空，显式传 `null` 从前会一路走到数据库才报 500。
 
     **哪些允许清空**：两个地区字段、`unit_price_per_volume`、两个时效、`remark`。
     尤其地区字段：**留空 = 不限**（匹配时视作通配），而写「全国」是一个**具体取值**——

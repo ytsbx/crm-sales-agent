@@ -733,7 +733,7 @@ async def update_logistics_rate(
     都只能"删掉重建"，而重建会换掉 id，审计里也断成两段，看不出是同一条费率的修改。
 
     `exclude_unset=True`：**没传的字段保持原值**，传 `null` 才是"清空"
-    （但库里非空的列不许清空，见 `LogisticsRateUpdate` 与 `NOT_NULLABLE`）。
+    （但库里非空的列不许清空 —— 判据在 `core/patch_schema`，按列定义自动读）。
     `status` 改成 `inactive` = **停用**：核价匹配只认启用中的费率
     （`logistics.rate_query`），所以"先停掉别再参与核价、数据留着"是可行做法，
     不必非得删。

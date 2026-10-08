@@ -49,14 +49,18 @@ import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
 _ = app.main  # 显式"用"一下：只 import 不带这一句，pyflakes 会当成未使用
 
+from datetime import UTC, datetime
+from decimal import Decimal
+
 from sqlalchemy import String, delete, select
 
 from app.core.audit import AuditLog
 from app.core.database import SessionLocal
 from app.modules.cases.model import SalesCase
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Contact, Customer
 from app.modules.inquiry.model import CustomInquiry
-from app.modules.product.model import Product
+from app.modules.pricing.model import PriceRule, ProductCost
+from app.modules.product.model import Product, Sku
 from app.modules.task.model import Task
 
 # 地址与库的防呆统一收在 _test_support（判据只留一处）
@@ -197,6 +201,53 @@ async def main():
         )
         check("客户备注传 null → 200（可选字段不受影响）", status, 200)
 
+        # ==================================================== 复审 11.9
+        print("\n=== 5. 库里**可空**的字段清空不被误拦（复审 11.9）===")
+        # 上一版连 required 也人工登记，于是把"库里可空"的字段当成了必填：客户行业/
+        # 来源/等级、联系人职务、SKU 名称、商机来源/风险等级、用户企微账号，传 null
+        # 一律白报 400 —— 用户想清空一个**允许清空**的字段，系统却说"不能为空"。
+        # 现在 required 直接从库列的 `nullable` 读，人工登记与真实列不可能再分叉。
+        status, res = call("POST", f"/customers/{customer['id']}/contacts", token=admin,
+                           body={"name": f"{MARKER}联系人", "mobile": "13700007001"})
+        check("夹具：联系人建出来了", status, 200)
+        contact_id = res["data"]["id"]
+
+        for field in ("domain", "source", "level"):
+            status, _ = call("PATCH", f"/customers/{customer['id']}", token=admin,
+                             body={field: None})
+            check(f"客户 {field} 传 null（库里可空）→ 放行", status, 200)
+        status, _ = call("PATCH", f"/contacts/{contact_id}", token=admin, body={"title": None})
+        check("联系人 title 传 null（库里可空）→ 放行", status, 200)
+
+        print("\n=== 6. 非字符串的真非空字段也不许清空（复审 11.9）===")
+        # 上一版只登记了名称、状态这些**字符串**，布尔 / 数值 / 日期整类漏掉：
+        # 联系人 is_primary、价格规则 min_qty、成本 effective_from 传 null 仍然 500。
+        async with SessionLocal() as s:
+            sku_id = (await s.execute(select(Sku.id).limit(1))).scalar_one()
+            _rule = PriceRule(sku_id=sku_id, min_qty=Decimal("0"), status="active")
+            _cost = ProductCost(sku_id=sku_id, purchase_cost=Decimal("10"),
+                                effective_from=datetime.now(UTC).date())
+            s.add_all([_rule, _cost])
+            await s.commit()
+            rule_id, cost_id = _rule.id, _cost.id
+
+        status, _ = call("PATCH", f"/contacts/{contact_id}", token=admin,
+                         body={"is_primary": None})
+        check("联系人 is_primary（布尔非空）传 null → 400", status, 400)
+        status, _ = call("PATCH", f"/price-rules/{rule_id}", token=admin, body={"min_qty": None})
+        check("价格规则 min_qty（数值非空）传 null → 400", status, 400)
+        status, _ = call("PATCH", f"/costs/{cost_id}", token=admin,
+                         body={"effective_from": None})
+        check("成本 effective_from（日期非空）传 null → 400", status, 400)
+
+        print("\n=== 7. 登记表与真实列定义的对账（复审 11.9）===")
+        # 老的"类名存在"检查**查不出字段级错误**（上一版客户行业被当必填、联系人
+        # is_primary 压根没登记，都是它放过去的）。现在字段判据全部来自列定义，
+        # 这一节守住"登记本身没写错"：表名/类名对得上、每类至少算得出一条规则。
+        from app.core.patch_schema import verify_patch_registry
+
+        check("登记表自检无问题（表名/类名/规则覆盖）", verify_patch_registry(), [])
+
     finally:
         print("\n=== 收尾清理 ===")
 
@@ -209,7 +260,16 @@ async def main():
                 print(f"  清理「{label}」失败（不影响其余）：{exc.__class__.__name__}")
 
         await _drop("产品", delete(Product).where(Product.name.like(f"{MARKER}%")))
+        # 联系人在客户**之前**删：`contacts.customer_id` 是外键，先删客户会撞它
+        await _drop("联系人", delete(Contact).where(Contact.name.like(f"{MARKER}%")))
         await _drop("客户", delete(Customer).where(Customer.name.like(f"{MARKER}%")))
+        for label, var, model in (
+            ("价格规则（复审新增）", "rule_id", PriceRule),
+            ("成本（复审新增）", "cost_id", ProductCost),
+        ):
+            _id = locals().get(var)
+            if _id:
+                await _drop(label, delete(model).where(model.id == _id))
         await _drop("任务", delete(Task).where(Task.title.like(f"{MARKER}%")))
         await _drop(
             "定制询价",
