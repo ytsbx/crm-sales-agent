@@ -83,21 +83,6 @@ def _serialize_loss_reason(row: LossReason) -> dict:
     }
 
 
-async def _assert_stage_unused(session: AsyncSession, stage_id: int) -> None:
-    used = (
-        await session.execute(
-            select(func.count(Opportunity.id)).where(
-                Opportunity.stage_id == stage_id, Opportunity.deleted_at.is_(None)
-            )
-        )
-    ).scalar_one()
-    if used:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"还有 {used} 个商机停在该阶段，先把它们推进或改阶段再删",
-        )
-
-
 @router.post("/opportunity-stages")
 async def create_stage(
     payload: StageCreate,
@@ -191,28 +176,46 @@ async def delete_stage(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """**停用**一个阶段（第十二批 12.4：这个入口不再做物理删除）。
+
+    从前这里是真删行，而"这个阶段还有人用吗"只看了**此刻**有没有商机停在上面 ——
+    商机一推进走，阶段就被删掉，可它的名字还留在那些商机的**阶段历史**里，
+    于是历史里的"从哪个阶段来 / 到哪个阶段去"变成空白，停留时长也无从解释。
+
+    现在改成停用：新业务不再选它（`get_first_stage` 只挑启用中的普通阶段），
+    历史里的名字照旧显示。成交/失单阶段仍不许动（状态机依赖它们）；
+    已经是停用的再点一次是幂等的。
+    """
     row = await session.get(OpportunityStage, stage_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
     if row.is_win or row.is_loss:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{row.name}」是成交/失单阶段，状态机依赖它，不能删除",
+            f"「{row.name}」是成交/失单阶段，状态机依赖它，不能停用",
+            422,
         )
-    await _assert_stage_unused(session, stage_id)
+    if row.status == "inactive":
+        return ok(svc.serialize_stage(row), f"「{row.name}」已经是停用状态")
+
     before = svc.serialize_stage(row)
-    await session.delete(row)
+    row.status = "inactive"
+    await session.flush()
     await write_audit(
         session,
         operator_id=user.id,
-        action="delete",
+        action="deactivate_stage",
         business_type="opportunity_stage",
         business_id=stage_id,
         before=before,
+        after=svc.serialize_stage(row),
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(None, "阶段已删除")
+    return ok(
+        svc.serialize_stage(row),
+        f"「{row.name}」已停用（新商机不再选它，历史记录里仍会显示这个名称）",
+    )
 
 
 @router.post("/opportunity-stages/reorder")
@@ -423,13 +426,14 @@ async def create_opportunity(
 
     data = payload.model_dump(exclude={"stage_id"})
     owner_id = data.pop("owner_id", None) or customer.owner_id or user.id
-    # 建商机时可以指定负责人：不校验范围，业务员就能把商机直接挂到别人
-    # （甚至别的部门）名下，绕过"归属类动作要主管"的口径。项目里没有
-    # opportunity:assign，统一用数据范围判定——业务员（self）只能挂自己，
-    # 主管在 department_and_sub 范围内可分配。与建单路径同一写法。
-    from app.core.data_scope import ensure_in_scope
-
-    await ensure_in_scope(session, user, owner_id=owner_id, label="负责人")
+    # 负责人只校验"存在且在职"（第十二批 12.8 已拍板）：有 opportunity:manage 的人
+    # 可以把商机交给**任意在职同事**，不受接收人的部门/数据范围限制 —— 与"复制商机"
+    # 「改派商机」用同一把尺子（那两处一直是 `assert_owner_active`）。从前这里按数据
+    # 范围判定，同一个动作三个入口三个答案：新建挂管理员 403、复制/改派却 200。
+    # 注意两件事照旧：① **客户可见性**仍要过（上面 `get_visible_customer`）——
+    # 允许跨部门分配，不等于能对看不见的客户建商机；② **继承来的负责人**（客户的
+    # 负责人）也要过同一关，免得"指定时查了、继承时把新业务交给已停用的人"。
+    await svc.assert_owner_active(session, owner_id)
     opportunity = Opportunity(
         **data,
         stage_id=stage.id,
@@ -658,17 +662,7 @@ async def opportunity_overview(
             # 无权限的板块名（quotes / orders / followups / tasks）
             "blocked": blocked,
             "stage_history": [
-                {
-                    "id": row.id,
-                    "from_stage": (
-                        stages[row.from_stage_id].name if row.from_stage_id in stages else None
-                    ),
-                    "to_stage": stages[row.to_stage_id].name if row.to_stage_id in stages else None,
-                    "remark": row.remark,
-                    "entered_at": row.entered_at,
-                    "duration_seconds": row.duration_seconds,
-                }
-                for row in stage_history
+                svc.serialize_stage_history_row(row, stages) for row in stage_history
             ],
             "items": items,
             "quotes": [
@@ -1079,20 +1073,7 @@ async def stage_history(
             .order_by(OpportunityStageHistory.id.desc())
         )
     ).scalars().all()
-    return ok(
-        [
-            {
-                "id": row.id,
-                "from_stage": stages[row.from_stage_id].name if row.from_stage_id in stages else None,
-                "to_stage": stages[row.to_stage_id].name if row.to_stage_id in stages else None,
-                "remark": row.remark,
-                "entered_at": row.entered_at,
-                "left_at": row.left_at,
-                "duration_seconds": row.duration_seconds,
-            }
-            for row in rows
-        ]
-    )
+    return ok([svc.serialize_stage_history_row(row, stages) for row in rows])
 
 
 @router.delete("/opportunities/{opportunity_id}")
@@ -1139,6 +1120,8 @@ async def create_item(
     session: AsyncSession = Depends(get_db),
 ):
     await svc.get_visible_opportunity(session, user, opportunity_id)
+    # SKU 先验存在（第十二批 12.5）：不验就是撞外键的 500，用户看不出哪条错了
+    await svc.ensure_skus_exist(session, [payload.sku_id])
     item = OpportunityItem(**payload.model_dump(), opportunity_id=opportunity_id)
     session.add(item)
     await session.flush()

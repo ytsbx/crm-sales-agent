@@ -59,8 +59,10 @@ class OpportunityConfirmWin(BaseModel):
 
 class OpportunityItemCreate(BaseModel):
     sku_id: int
-    quantity: float = 1
-    target_price: float | None = None
+    # 数量必须大于 0、目标价不能为负（第十二批 12.5）：从前 -5 / 0 / -10 都能一路写进库，
+    # 明细合计与后续核价会跟着算歪。允许小数（库里是 Numeric(16,3)，按单位留三位）。
+    quantity: float = Field(default=1, gt=0)
+    target_price: float | None = Field(default=None, ge=0)
     specification: str | None = None
     color: str | None = None
     package_requirement: str | None = None
@@ -72,8 +74,9 @@ class OpportunityItemCreate(BaseModel):
 class OpportunityItemUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    quantity: float | None = None
-    target_price: float | None = None
+    # 与新增同一套数值规则（12.5）：只校验**传了的**字段（不传就保持原值）
+    quantity: float | None = Field(default=None, gt=0)
+    target_price: float | None = Field(default=None, ge=0)
     specification: str | None = None
     color: str | None = None
     package_requirement: str | None = None

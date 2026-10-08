@@ -739,14 +739,19 @@ async def main() -> int:
                      {'customer_mode': 'existing', 'customer_id': cid})
     check_denied('把线索转化到别人的客户名下（会往人家客户里写联系人/商机）', status)
 
-    # ② 建线索 / 建商机时可以指定负责人：不校验范围，业务员就能把单子挂到别人名下。
+    # ② 建线索 / 建商机时可以指定负责人 —— 但两条路的**口径不同**（第十二批 12.8）：
+    #    · 线索：仍按数据范围，业务员只能挂自己；
+    #    · 商机：已拍板"有 opportunity:manage 就能交给**任意在职员工**"，与复制 / 改派
+    #      同一把尺子（从前这三处三个答案：新建按范围、复制改派只看在职）。
+    #    ⚠️ 允许跨部门分配**不等于**能对看不见的客户建商机：客户可见性仍由
+    #    `get_visible_customer` 把关 —— 上面那条"把线索转化到别人的客户名下"依旧 403。
     status, _ = call('POST', '/leads', outsider_token,
                      {'name': f'{PREFIX}越权线索-{stamp}', 'owner_id': owner.id})
     check('业务员建线索不能挂到别人名下', status, 403)
     status, _ = call('POST', '/opportunities', outsider_token,
                      {'customer_id': oc_cid, 'title': f'{PREFIX}越权商机-{stamp}',
                       'owner_id': owner.id})
-    check('业务员建商机不能挂到别人名下', status, 403)
+    check('业务员建商机可以把负责人指定为别人（12.8 新口径：任意在职员工）', status, 200)
 
     # ③ 合同生成幂等键：命中**别人**的 request_key 时，绝不能把那份合同交出来。
     #    路由层的范围校验只针对本次请求里的客户，管不到"被返回的那一份"。

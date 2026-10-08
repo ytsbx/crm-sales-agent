@@ -550,6 +550,90 @@ async def check_opportunity_win_entry_boundary() -> None:
         await session.commit()
 
 
+async def check_receivable_due_reminder() -> None:
+    """⑥ 应收到期提醒的"今天"必须按北京时间（第十二批 12.7）。
+
+    修复前这里用的是 `datetime.now(UTC).date()` —— 北京时间凌晨 0-8 点会比业务日早
+    一天，而**默认的自动任务调度正好是凌晨跑**：当天到期的提醒要等到第二天才发得出来。
+
+    "提前 0 天"这条规则最能暴露它：到期日就是今天时，凌晨那一扫必须命中。
+    """
+    from sqlalchemy import func
+
+    from app.modules.order.model import SalesOrder
+    from app.modules.payment.model import ReceivablePlan
+    from app.modules.settings import service as settings_service
+    from app.modules.settings.model import TaskRule
+    from app.modules.task.model import Task
+    from app.modules.user.model import User
+
+    async with SessionLocal() as session:
+        admin = (await session.execute(
+            select(User).where(User.username == "admin"))).scalar_one()
+        customer = Customer(name=f"{PREFIX}应收提醒客户", owner_id=admin.id, created_by=admin.id)
+        session.add(customer)
+        await session.flush()
+        order = SalesOrder(order_no=f"{PREFIX}SO-DUE", customer_id=customer.id,
+                           owner_id=admin.id, status="confirmed",
+                           total_amount=Decimal("100"), currency="CNY", created_by=admin.id)
+        session.add(order)
+        await session.flush()
+        session.add(ReceivablePlan(order_id=order.id, plan_name=f"{PREFIX}应收-元旦",
+                                   due_date=date(2026, 1, 1), amount=Decimal("100"),
+                                   status="pending", created_at=datetime.now(UTC)))
+        rule = TaskRule(code=f"{PREFIX}_due0", name=f"{PREFIX}到期当天提醒",
+                        trigger_type="receivable_due", trigger_config={"days": 0},
+                        action_config={"title": f"{PREFIX}应收到期"}, status="active")
+        session.add(rule)
+        await session.flush()
+
+        async def scan_and_count() -> int:
+            await settings_service.run_auto_tasks(session, operator_id=None, source="CHECK")
+            return int((await session.execute(
+                select(func.count(Task.id)).where(Task.source_rule_id == rule.id)
+            )).scalar_one())
+
+        @contextmanager
+        def frozen_both(instant):
+            """本节点专用：**同时**钉死 timebase 与 settings.service 两处的 datetime。
+
+            `frozen_business_clock` 只替 timebase —— 那是**修复后**代码读的地方。
+            而这一节要能真的验证"修复前"的错，就得把修复前读的那个名字
+            （`settings.service` 里 import 进来的 `datetime`）也一起冻上：
+            否则旧代码按真实时间跑，断言会"因为别的原因"红或绿 —— 白验（实测踩到）。
+            """
+            with frozen_business_clock(instant):
+                original = settings_service.datetime
+                settings_service.datetime = timebase.datetime
+                try:
+                    yield
+                finally:
+                    settings_service.datetime = original
+
+        try:
+            with frozen_both(beijing(2025, 12, 31, 23)):
+                n_before = await scan_and_count()
+            check("到期日前一天（北京 12-31 23:00）不提前发", n_before, 0)
+
+            with frozen_both(beijing(2026, 1, 1, 1)):
+                n_1am = await scan_and_count()
+            check("北京 01:00（UTC 还停在 12-31）也算「当天到期」→ 生成", n_1am, 1)
+
+            with frozen_both(beijing(2026, 1, 1, 9)):
+                n_9am = await scan_and_count()
+            check("同一天的白天再扫一次不会重复生成", n_9am, 1)
+        finally:
+            for sql in (
+                f"delete from tasks where source_rule_id = {rule.id}",
+                f"delete from task_rules where id = {rule.id}",
+                f"delete from receivable_plans where order_id = {order.id}",
+                f"delete from sales_orders where id = {order.id}",
+                f"delete from customers where id = {customer.id}",
+            ):
+                await session.execute(text(sql))
+            await session.commit()
+
+
 async def main() -> None:
     db_name = require_isolated_db()
     print(f"隔离库：{db_name}")
@@ -569,6 +653,9 @@ async def main() -> None:
 
     print("\n⑤ 商机两个成交入口的有效期判断")
     await check_opportunity_win_entry_boundary()
+
+    print("\n⑥ 应收到期提醒的「今天」")
+    await check_receivable_due_reminder()
 
     await engine.dispose()
 

@@ -128,6 +128,30 @@ def serialize_stage(stage: OpportunityStage) -> dict:
     }
 
 
+def serialize_stage_history_row(
+    row: "OpportunityStageHistory", stages: dict[int, OpportunityStage]
+) -> dict:
+    """阶段历史的一行（第十二批 12.4）。
+
+    `*_stage_missing`：这一步引用的阶段**现在不在配置里**（早年被物理删除留下的）。
+    按口径**不猜**一个名字补进去，但要如实说出来 —— 只给 `null` 的话前端只能显示空白，
+    看着像"系统把数据弄丢了"。新发生的不会再出现这种行：删除入口已改成停用。
+    """
+    from_stage = stages.get(row.from_stage_id) if row.from_stage_id else None
+    to_stage = stages.get(row.to_stage_id) if row.to_stage_id else None
+    return {
+        "id": row.id,
+        "from_stage": from_stage.name if from_stage else None,
+        "from_stage_missing": row.from_stage_id is not None and from_stage is None,
+        "to_stage": to_stage.name if to_stage else None,
+        "to_stage_missing": row.to_stage_id is not None and to_stage is None,
+        "remark": row.remark,
+        "entered_at": row.entered_at,
+        "left_at": row.left_at,
+        "duration_seconds": row.duration_seconds,
+    }
+
+
 def serialize_opportunity(
     opportunity: Opportunity,
     *,
@@ -554,6 +578,32 @@ async def clone_opportunity(
     return clone
 
 
+async def ensure_skus_exist(session: AsyncSession, sku_ids: list[int | None]) -> None:
+    """明细引用的 SKU 必须真实存在且未删除（第十二批 12.5）。
+
+    从前直接落库 → 撞外键 → 500「服务器内部错误」，用户看不出是哪一条错；
+    而批量替换又是"先删光再写"，一条坏 SKU 会让**原明细整批消失**、新的又没进去。
+    """
+    ids = {int(x) for x in sku_ids if x is not None}
+    if not ids:
+        return
+    found = set(
+        (
+            await session.execute(
+                select(Sku.id).where(Sku.id.in_(ids), Sku.deleted_at.is_(None))
+            )
+        ).scalars().all()
+    )
+    missing = sorted(ids - found)
+    if missing:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            f"SKU id={missing[0]} 不存在或已删除，请重新选一个；"
+            f"本次共 {len(missing)} 条明细的 SKU 查不到",
+            404,
+        )
+
+
 async def replace_items(
     session: AsyncSession, *, opportunity_id: int, items: list[dict]
 ) -> list[OpportunityItem]:
@@ -561,7 +611,11 @@ async def replace_items(
 
     与报价版本的 `items/batch` 保持同一语义：先清空再写入，
     这样界面上的"保存整版"是一个原子动作，不会留下半新半旧的明细。
+
+    ⚠️ 但"清空"之前必须**先把整批验完**（第十二批 12.5）：从前一条坏 SKU 会先删掉
+    全部原明细、再在外键上炸掉 —— 用户既丢了原数据、又没存上新数据。
     """
+    await ensure_skus_exist(session, [item.get("sku_id") for item in items])
     existing = (
         await session.execute(
             select(OpportunityItem).where(OpportunityItem.opportunity_id == opportunity_id)

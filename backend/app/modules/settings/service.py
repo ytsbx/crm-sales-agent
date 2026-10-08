@@ -1582,7 +1582,11 @@ async def run_auto_tasks(
         elif rule.trigger_type == "receivable_due":
             # 应收到期前 N 天 → 提醒负责人跟进回款
             # 已取消订单的应收不再派催收（整改审计点：取消订单必须全链路安静）
-            due_before = (now + timedelta(days=days_ahead)).date()
+            # "今天 + 提前 N 天"的"今天"必须是**业务日期（北京时间）**（第十二批 12.7）。
+            # 原来取的是 `now.date()`，而 now 是 UTC —— 北京时间凌晨 0-8 点会比业务日
+            # 早一天，而默认的自动任务调度正好是凌晨跑：当天到期的提醒要等到第二天
+            # 才发得出来。存储不变（due_date 本来就是 date 列），只换"今天"的取法。
+            due_before = today_business() + timedelta(days=days_ahead)
             rows = (
                 await session.execute(
                     select(ReceivablePlan, SalesOrder)
