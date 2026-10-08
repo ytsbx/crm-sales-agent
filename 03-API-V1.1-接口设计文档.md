@@ -320,7 +320,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 # 11. Opportunity
 
 - `GET /opportunities`
-- `POST /opportunities`
+- `POST /opportunities`：新建商机。需要 `opportunity:manage`。**负责人可以是任意在职员工**（第十二批 12.8 已拍板）：只校验"存在 + 在职"，不受接收人的部门或数据范围限制 —— 与「复制商机」「改派商机」同一把尺子（从前这里按数据范围判，同一个动作三个入口三个答案：新建挂管理员 403、复制/改派却 200）。指定的员工不存在 `404`、已停用 `422`。**客户可见性照旧**：允许跨部门分配 ≠ 能对看不见的客户建商机；从客户继承来的负责人也要过同一关。
 - `GET /opportunities/{id}`
 - `PATCH /opportunities/{id}`
 - `DELETE /opportunities/{id}`
@@ -340,9 +340,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 # 12. OpportunityItem
 
 - `GET /opportunities/{id}/items`
-- `POST /opportunities/{id}/items`
-- `POST /opportunities/{id}/items/batch`
-- `PATCH /opportunity-items/{id}`
+- `POST /opportunities/{id}/items` / `PATCH /opportunity-items/{id}` / `POST /opportunities/{id}/items/batch`：需求明细的新增 / 编辑 / 整批替换，**三处同一套数值规则**（第十二批 12.5）：数量必须 **> 0**（允许小数，库里是 `Numeric(16,3)`）、目标价**不能为负**（不清楚就留空），违反一律参数错误（`40001`）；`sku_id` **先验存在且未删除**，查不到给 `404` 并说清哪一条（从前是撞外键的 `500`）。批量替换**先全量校验再执行** —— 一条不合法不许把原明细删掉。
 - `DELETE /opportunity-items/{id}`
 - `POST /opportunities/{id}/items/copy-from/{source_opportunity_id}`
 - `POST /opportunities/{id}/recommend-products`
@@ -353,7 +351,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 
 - `GET /opportunity-stages`
 - `POST /opportunity-stages` / `PATCH /opportunity-stages/{id}`：新增与修改阶段。需要 `settings:manage`。**保存前先检查"存完之后整体还能不能被业务正确使用"**（第十二批 12.3）：**成交标记最多一个**、同一阶段不能既是成交又是失单 → 不合规 `422` 并说清原因（从前能存出两个成交阶段，之后一点"成交"就 500）；并发保存用阶段配置行锁串行化，两个管理员各查各的、提交后合成冲突配置这种情况被挡住。
-- `DELETE /opportunity-stages/{id}`
+- `DELETE /opportunity-stages/{id}`：**停用**阶段（第十二批 12.4 —— 这个入口不再做物理删除）。用过的阶段一删，它的名字还留在商机的阶段历史里，历史里的"从哪个阶段来、到哪个阶段去"就成了空白；现在改成停用：新商机不再选它（`get_first_stage` 只挑启用中的普通阶段），历史照旧显示这个名字。**成交 / 失单阶段仍不许动**（状态机依赖，`422`）；重复停用是幂等的。早年已被物理删掉留下的空洞**不猜名字**，但在阶段历史里用 `from_stage_missing` / `to_stage_missing` 如实标出。
 - `POST /opportunity-stages/reorder`
 - `GET /loss-reasons`
 - `POST /loss-reasons`
@@ -711,7 +709,7 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `PATCH /task-rules/{id}`
 - `DELETE /task-rules/{id}`
 
-- `POST /tasks/run-auto-rules`：手动执行与每日调度共用扫描服务。
+- `POST /tasks/run-auto-rules`：手动执行与每日调度共用扫描服务。**「应收到期」这条规则的"今天"按北京时间算**（第十二批 12.7）：判据是 `到期日 ≤ 业务日期 + 提前 N 天`。从前取的是 UTC 日期，北京时间凌晨 0-8 点会比业务日早一天——而**默认的自动任务调度正好在凌晨跑**，当天到期的提醒要等到第二天才发得出来。存储不变（`due_date` 本来就是 date 列）。
 
 **补建后续任务**（`POST /followups/{id}/create-next-task`）**复用普通建任务那一份关联校验**
 （`task/refs.normalize_task_refs`，2026-10-08 复审 11.6）：每个关联（客户/联系人/线索/
