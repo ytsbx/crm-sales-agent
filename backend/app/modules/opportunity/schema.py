@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 from app.core.patch_schema import PatchModel
@@ -59,10 +60,19 @@ class OpportunityConfirmWin(BaseModel):
 
 class OpportunityItemCreate(BaseModel):
     sku_id: int
-    # 数量必须大于 0、目标价不能为负（第十二批 12.5）：从前 -5 / 0 / -10 都能一路写进库，
-    # 明细合计与后续核价会跟着算歪。允许小数（库里是 Numeric(16,3)，按单位留三位）。
-    quantity: float = Field(default=1, gt=0)
-    target_price: float | None = Field(default=None, ge=0)
+    # 数值的取值范围与小数位要**跟库列对齐**（第 12.5 条那半句）：数量是
+    # `Numeric(16,3)`、目标价是 `Numeric(16,4)`，写法照抄订单明细
+    # （`order/schema.py` 的 `OrderDraftLine`）—— 项目里同一类字段只留这一种写法。
+    #
+    # 用 `Decimal` 而不是 `float`：`float` 只能挡住"大于零"，挡不住两件事 ——
+    # ① 填一个超出列能装的数（1e17）会一路走到库、撞出 **500**（用户看到
+    #    "服务器内部错误"，完全不知道是数太大）；② 小数超过三位时库会**静默
+    #    四舍五入**（填 1.23456、存成 1.235），用户看到的合计和填的对不上。
+    # 这两件都必须在**写入之前**拦下来，并说清是哪一项、该填成什么样。
+    quantity: Decimal = Field(default=Decimal(1), gt=0, max_digits=16, decimal_places=3)
+    target_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
     specification: str | None = None
     color: str | None = None
     package_requirement: str | None = None
@@ -74,9 +84,14 @@ class OpportunityItemCreate(BaseModel):
 class OpportunityItemUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    # 与新增同一套数值规则（12.5）：只校验**传了的**字段（不传就保持原值）
-    quantity: float | None = Field(default=None, gt=0)
-    target_price: float | None = Field(default=None, ge=0)
+    # 与新增同一套数值规则（12.5）：只校验**传了的**字段（不传就保持原值）。
+    # 这里也要跟新增一致 —— 否则"新增拦住、编辑放行"又是一条旁路。
+    quantity: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=3
+    )
+    target_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
     specification: str | None = None
     color: str | None = None
     package_requirement: str | None = None

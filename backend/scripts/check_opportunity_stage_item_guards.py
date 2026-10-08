@@ -265,6 +265,43 @@ def sec_12_5(admin):
     left = db("select count(*) from opportunity_items where opportunity_id = :i", {"i": oid})
     check("批量失败后原明细完整保留（没被先删光）", int(left[0][0]), 1)
 
+    # ---- 取值范围与小数位（2026-10-08 补：清单原文那半句「数值精度和范围要与
+    #      数据库字段一致，非法数值应在写入前被拒绝」）----
+    # 从前这两类会一路走到库：太大 → 撞 numeric 溢出报 **500**（用户只看到
+    # "服务器内部错误"，完全不知道是自己填大了）；小数超三位 → 被库**静默四舍五入**
+    # （填 1.23456、存成 1.235），用户看到的合计和自己填的对不上。
+    st, res = call("POST", f"/opportunities/{oid}/items", admin,
+                   {"sku_id": sku, "quantity": 1e17})
+    check("数量超出列能装的范围 → 400（不是 500）", st, 400)
+    check_true("提示说清是「太大」，不是笼统的「参数校验失败」",
+               "太大" in (res.get("message") or ""), res.get("message"))
+    check_true("提示里带的是中文字段名，不是英文 key",
+               "数量" in (res.get("message") or ""), res.get("message"))
+
+    st, res = call("POST", f"/opportunities/{oid}/items", admin,
+                   {"sku_id": sku, "quantity": 1.23456})
+    check("数量小数超过 3 位 → 400（不再悄悄四舍五入）", st, 400)
+    check_true("提示说清是「小数位太多」",
+               "小数" in (res.get("message") or ""), res.get("message"))
+
+    st, res = call("POST", f"/opportunities/{oid}/items", admin,
+                   {"sku_id": sku, "quantity": 1, "target_price": 1e20})
+    check("目标价超出列能装的范围 → 400（不是 500）", st, 400)
+
+    # 对照：合法小数照样存得住、且**原样**存下来（不是被改过的数）
+    st, res = call("POST", f"/opportunities/{oid}/items", admin,
+                   {"sku_id": sku, "quantity": 1.25})
+    check("对照：合法小数 1.25 → 200", st, 200)
+    new_id = (res.get("data") or {}).get("id")
+    saved = db("select quantity from opportunity_items where id = :i", {"i": new_id})
+    check("存进去就是填的那个数（没被改写）", str(saved[0][0]), "1.250")
+
+    st, _ = call("PATCH", f"/opportunity-items/{new_id}", admin, {"quantity": 1e17})
+    check("编辑入口也拦超范围（两个入口同一套）", st, 400)
+    st, _ = call("POST", f"/opportunities/{oid}/items/batch", admin,
+                 {"items": [{"sku_id": sku, "quantity": 1e17}]})
+    check("批量替换也拦超范围（三个入口同一套）", st, 400)
+
 
 # ---------------------------------------------------------------- 12.8
 def sec_12_8(admin, t_me):

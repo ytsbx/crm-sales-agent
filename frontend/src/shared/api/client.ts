@@ -67,6 +67,14 @@ function readableMessage(raw: unknown, code: number): string {
   return text
 }
 
+/**
+ * 后端"认不出具体原因"时回的那句固定文案（见 `backend/app/core/errors.py`）。
+ *
+ * 后端现在会把认得出的校验错误翻成一句人话（如「「数量」这个数太大，超出系统能记的
+ * 范围」）；只有认不出时才退回这个固定串。两种情况要分开处理，见下面拦截器。
+ */
+const GENERIC_VALIDATION_MESSAGE = '参数校验失败'
+
 http.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token
   if (token) {
@@ -82,10 +90,16 @@ http.interceptors.response.use(
     const body = error.response?.data
     const code: number = body?.code ?? status ?? 0
     const baseMessage: string = readableMessage(body?.message, code)
-    // 校验类错误把出问题的字段名一并带上：只显示「参数校验失败」等于什么都没说
+    // 后端只回一句笼统的「参数校验失败」时，把出问题的字段名一并带上 ——
+    // 只显示那句等于什么都没说。
+    // 但后端**认得出**的错误（数值超出范围、小数位过多、内容太长…）现在会直接
+    // 给一句含中文字段名的人话，这时就别再挂一个英文 key 在后面了
+    // （2026-10-08 要求：讲人话）。
     const invalidFields = pickInvalidFields(body)
     const message =
-      invalidFields.length > 0 ? `${baseMessage}：${invalidFields.join('、')}` : baseMessage
+      invalidFields.length > 0 && baseMessage === GENERIC_VALIDATION_MESSAGE
+        ? `${baseMessage}：${invalidFields.join('、')}`
+        : baseMessage
     if (status === 401 || code === 40101 || code === 40102) {
       useAuthStore.getState().clear()
       if (window.location.pathname !== '/login') {

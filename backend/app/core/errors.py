@@ -47,6 +47,81 @@ class AppError(Exception):
         super().__init__(message)
 
 
+#: pydantic 的错误类型 → 一句**给用户看**的人话（`ctx` 里带着约束值，能填进去）。
+#:
+#: 为什么需要（第十二批收尾）：从前这类错误一律回「参数校验失败」，前端再把字段名
+#: （英文 key）拼在后面 —— 用户看到的是「参数校验失败：quantity」。而其中两类
+#: 最要命的数值问题（数字太大、小数位太多）**在加约束之前根本走不到这里**，
+#: 是撞库报的 **500「服务器内部错误」**，用户完全不知道是自己填大了。
+#: 加完约束之后它们变成 400，但「参数校验失败」仍等于什么都没说。
+#:
+#: 只登记"用户真的会碰到、且英文原文看不懂"的那些；没登记的退回 pydantic 原文
+#: （英文），总比空着强。
+_VALIDATION_HINTS: dict[str, str] = {
+    "greater_than": "必须大于 {gt}",
+    "greater_than_equal": "不能小于 {ge}",
+    "less_than": "必须小于 {lt}",
+    "less_than_equal": "不能大于 {le}",
+    "decimal_max_digits": "这个数太大，超出系统能记的范围",
+    "decimal_max_places": "小数位太多（最多保留 {decimal_places} 位小数）",
+    "string_too_long": "内容太长（最多 {max_length} 个字）",
+    "string_too_short": "内容太短（至少 {min_length} 个字）",
+    "missing": "这一项是必填的",
+    "int_parsing": "这一项要填数字",
+    "decimal_parsing": "这一项要填数字",
+    "float_parsing": "这一项要填数字",
+    "date_parsing": "这一项要填日期",
+    "datetime_parsing": "这一项要填日期时间",
+    "bool_parsing": "这一项只能填「是」或「否」",
+}
+
+#: 位置前缀对使用者没意义，读的时候跳过。
+_LOCATION_PREFIXES = {"body", "query", "path", "header", "cookie"}
+
+
+def _field_label(field: str) -> str:
+    """给字段名配一个中文称呼。
+
+    复用 `patch_schema.FIELD_LABELS` —— 项目里**唯一**一张字段中文名表，
+    按"以 `.字段名` 结尾"匹配（那张表的键是「类名.字段名」）。
+    没登记的退回字段名本身：英文 key 也比一句笼统的话强。
+    """
+    if not field:
+        return ""
+    try:
+        from app.core.patch_schema import FIELD_LABELS
+    except Exception:  # 拿不到就退化成英文，不影响校验本身
+        return field
+    suffix = f".{field}"
+    for key, label in FIELD_LABELS.items():
+        if key.endswith(suffix):
+            return label
+    return field
+
+
+def _humanize(error: dict) -> str | None:
+    """把一条 pydantic 错误翻成「哪一项 + 怎么了」；认不出就返回 None。
+
+    不认识的类型不硬编 —— 宁可退回原文，也不要编一句可能不对的话。
+    """
+    template = _VALIDATION_HINTS.get(str(error.get("type")))
+    if not template:
+        return None
+    ctx = error.get("ctx") or {}
+    try:
+        reason = template.format(**ctx)
+    except (KeyError, IndexError):
+        reason = template
+    location = [str(part) for part in error.get("loc") or ()]
+    field = next(
+        (part for part in reversed(location)
+         if part not in _LOCATION_PREFIXES and not part.isdigit()),
+        "",
+    )
+    label = _field_label(field)
+    return f"「{label}」{reason}" if label else reason
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:
@@ -69,23 +144,30 @@ def register_exception_handlers(app: FastAPI) -> None:
 
         所以这里统一把错误明细转成"一定能序列化"的结构：
         input 用 str() 呈现，够定位问题，也不会再炸。
+
+        `message` 另外做一件事：**认得出的错误类型翻成一句人话**（见
+        `_VALIDATION_HINTS`），例如数量填了 1e17 会得到
+        「「数量」这个数太大，超出系统能记的范围」，而不是笼统的「参数校验失败」。
+        认不出的类型保持原样，前端会把字段名拼在后面 —— 旧行为不变。
         """
         details = [
             {
                 "type": error.get("type"),
                 "loc": [str(part) for part in error.get("loc", ())],
                 "msg": error.get("msg"),
+                "hint": _humanize(error),
                 "input": (
                     None if error.get("input") is None else str(error.get("input"))
                 ),
             }
             for error in exc.errors()
         ]
+        first_hint = next((item["hint"] for item in details if item["hint"]), None)
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "code": ErrorCode.PARAM_ERROR,
-                "message": "参数校验失败",
+                "message": first_hint or "参数校验失败",
                 "data": details,
             },
         )
