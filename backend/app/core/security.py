@@ -27,7 +27,19 @@ def verify_password(raw: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(subject: str | int, extra: dict[str, Any] | None = None) -> str:
+def create_access_token(
+    subject: str | int,
+    extra: dict[str, Any] | None = None,
+    *,
+    session_id: str,
+) -> str:
+    """签发访问令牌。
+
+    `session_id` 是**必填**的：令牌必须挂在一个服务端可吊销的登录会话上
+    （第十批 10.12）。把它做成关键字必填，是为了让"忘了带会话标识"这件事
+    在调用处就报错，而不是签出一张天生无法吊销的通行证 ——
+    鉴权侧会因为缺 `sid` 直接 401，那种失败要等到使用者登录不上才会被发现。
+    """
     now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": str(subject),
@@ -36,6 +48,8 @@ def create_access_token(subject: str | int, extra: dict[str, Any] | None = None)
         # 随机 jti：没有它，同一秒内签出的 token 完全相同，
         # /auth/refresh 会"续期了个寂寞"（新 token == 旧 token）
         "jti": uuid4().hex,
+        # 登录会话标识：鉴权与续期都拿它去查"这次登录还作不作数"
+        "sid": session_id,
     }
     if extra:
         payload.update(extra)

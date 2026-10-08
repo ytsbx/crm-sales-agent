@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.modules.approval import model as approval_model  # noqa: F401
 from app.modules.analytics import model as analytics_model  # noqa: F401
 from app.modules.agent import model as agent_model  # noqa: F401
+from app.modules.auth import model as auth_model  # noqa: F401  登录会话表
 from app.modules.customer import model as customer_model  # noqa: F401
 from app.modules.followup import model as followup_model  # noqa: F401
 from app.modules.inquiry import model as inquiry_model  # noqa: F401

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
 from app.core.security import hash_password
+from app.modules.auth.session import REASON_PASSWORD_CHANGE, revoke_user_sessions
 from app.modules.user.model import (
     Department,
     Permission,
@@ -237,6 +238,16 @@ async def update_user(session: AsyncSession, user: User, data: dict) -> User:
             setattr(user, field, value)
     if data.get("password"):
         user.password_hash = hash_password(data["password"])
+        # 改（或重置）密码 = 该账号的**全部旧凭据一次性作废**（第十批 10.12）。
+        #
+        # 与写哈希放在同一个事务里，由路由那一次 commit 一起落库：
+        # 要么"新密码生效 + 旧会话全废"，要么两件都没发生。中途绝不能出现
+        # "密码已经换了、别人的旧令牌还能进去"的窗口 —— 那正是重置密码
+        # 想解决的场景（账号疑似泄漏时改密码，就是要把旧钥匙全部作废）。
+        #
+        # 包含操作者自己：管理员改自己的密码，当前这次登录也会失效，
+        # 下一个请求就要重新登录。这是刻意的 —— "全部旧会话失效"没有例外。
+        await revoke_user_sessions(session, user.id, reason=REASON_PASSWORD_CHANGE)
     await session.flush()
     return user
 

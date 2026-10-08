@@ -1,6 +1,7 @@
 """Auth：登录 / 登出 / 当前用户 / 我的权限（对齐 03-API §2）。"""
 
 import logging
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
@@ -20,6 +21,13 @@ from app.core.security import (
     verify_password,
 )
 from app.modules.auth.schema import LoginRequest, WeComSsoCallback
+from app.modules.auth.session import (
+    REASON_LOGOUT,
+    SID_CLAIM,
+    load_active_session,
+    open_session,
+    revoke_session,
+)
 from app.modules.user.model import Department, User
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -68,7 +76,12 @@ async def login(
 
     rate_limit.reset(throttle_key)
 
-    token = create_access_token(user.id, {"name": user.name})
+    # 每次登录开一个**服务端会话**，令牌里带上它的标识（第十批 10.12）。
+    # 与审计同一次提交：不会出现"审计有登录、会话表却没有"的半成品。
+    login_session = await open_session(session, user.id)
+    token = create_access_token(
+        user.id, {"name": user.name}, session_id=login_session.sid
+    )
     await write_audit(
         session,
         operator_id=user.id,
@@ -112,6 +125,12 @@ async def refresh(
 
     用户必须仍然 active：停用后即使拿着有效 token 也不能续期，
     否则"停用账号"会被一个后台页面无限续命。
+
+    会话必须仍然有效（第十批 10.12）：**与普通鉴权用同一个判断**
+    （`load_active_session`）。登出过、或改过密码的令牌，
+    既不能访问接口，也不能拿来换新令牌 —— 否则"失效"只挡得住一半的路。
+
+    续期**不新建会话**：一次登录及其后续刷新属于同一会话，`sid` 原样带过去。
     """
     if credentials is None or not credentials.credentials:
         raise AppError(ErrorCode.UNAUTHORIZED, "未登录", 401)
@@ -128,7 +147,12 @@ async def refresh(
     if user is None or user.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
 
-    token = create_access_token(user.id, {"name": user.name})
+    login_session = await load_active_session(session, payload.get(SID_CLAIM), user_id)
+    login_session.last_refresh_at = datetime.now(UTC)
+
+    token = create_access_token(
+        user.id, {"name": user.name}, session_id=login_session.sid
+    )
     await write_audit(
         session,
         operator_id=user.id,
@@ -194,19 +218,29 @@ async def logout(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    """登出。
+    """登出：**作废本次登录的服务端会话**（第十批 10.12）。
 
-    JWT 是无状态的，服务端没有可吊销的会话，所以登出本身只由前端丢弃 token。
-    但登录有审计、登出没有会让"会话时长"这类排查缺一半信息，所以这里补一条，
-    与 login 对称。
+    此前这里只写一条审计 —— JWT 无状态、服务端没有可吊销的东西，
+    所谓"登出"其实只是前端把 token 丢掉：那份凭据在过期前（默认 12 小时）
+    照样能访问接口、照样能续期。泄漏出去就是一把收不回的钥匙。
+
+    现在把**这一行会话**改成 revoked：同一个 token 再来（普通接口或
+    `/auth/refresh`）一律 401，且**重启、多进程部署后依然如此** ——
+    判断只看数据库那一行。
+
+    只作废本次登录，不碰这个人的其它会话：手机退登不该把电脑上的
+    正在用的那一个也踢掉。
+
+    审计照旧写（会话时长、`session_revoked` 是否真的改动一并记下）。
     """
+    revoked = await revoke_session(session, user.sid, reason=REASON_LOGOUT)
     await write_audit(
         session,
         operator_id=user.id,
         action="logout",
         business_type="auth",
         business_id=user.id,
-        after={"username": user.username},
+        after={"username": user.username, "session_revoked": revoked},
         ip=client_ip(request),
     )
     await session.commit()

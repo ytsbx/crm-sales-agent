@@ -7,6 +7,7 @@ import GlobalSearch from './GlobalSearch'
 import NotificationBell from '../../modules/common/NotificationBell'
 import CopilotDrawer from '../../modules/common/CopilotDrawer'
 import { matchMenu, menuLabel, visibleMenuGroups } from '../menu'
+import { logout } from '../../shared/api/auth'
 import { useAuthStore } from '../../shared/store/auth'
 import { useTabsStore } from '../../shared/store/tabs'
 import { useCopilotStore } from '../../shared/store/copilot'
@@ -74,8 +75,16 @@ export default function AppLayout() {
   }, [location.pathname, currentMenu, detailLabel, openTab])
 
   const handleLogout = () => {
+    // 先取 token、再清状态：清完之后请求拦截器就取不到它了，
+    // 而"让服务端作废这次登录"恰恰要靠它（第十批 10.12）。
+    const token = useAuthStore.getState().token
     clear()
     useTabsStore.getState().closeAll()
+    // 服务端作废是**尽力而为**的：网络不通也不能把人卡在已登出的界面上，
+    // 所以不 await、不弹错。真发不出去时，那份凭据最迟在过期后自然失效。
+    if (token) {
+      void logout(token).catch(() => undefined)
+    }
     navigate('/login')
   }
 

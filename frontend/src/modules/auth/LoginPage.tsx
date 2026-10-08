@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Button, Input, Toast } from '@douyinfe/semi-ui'
 
 import { fetchMe, login } from '../../shared/api/auth'
-import { useAuthStore } from '../../shared/store/auth'
+import { currentAuthEpoch, useAuthStore } from '../../shared/store/auth'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -23,9 +23,15 @@ export default function LoginPage() {
     try {
       const result = await login(username.trim(), password)
       setAuth(result.access_token, null)
+      // 记住"这次登录属于哪一代"：下面这个取用户信息的请求如果回来晚了
+      // （人已经点了退出、或又登了一次），就不能再把用户写回去 ——
+      // 否则界面会自己回到登录态（第十批 10.12）。
+      const epoch = currentAuthEpoch()
       try {
         const me = await fetchMe()
-        setUser(me)
+        if (currentAuthEpoch() === epoch) {
+          setUser(me)
+        }
       } catch {
         // 用户信息拉取失败不阻塞登录
       }

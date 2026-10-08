@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.errors import AppError, ErrorCode
 from app.core.security import decode_access_token
+from app.modules.auth.session import SID_CLAIM, load_active_session
 from app.modules.user.model import User
 from app.modules.user.service import get_user_permission_codes, get_user_roles, resolve_data_scope
 
@@ -16,9 +17,24 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class CurrentUser:
-    """请求上下文中的当前用户，附带权限与数据范围。"""
+    """请求上下文中的当前用户，附带权限与数据范围。
 
-    def __init__(self, user: User, permissions: set[str], roles: list[str], data_scope: str):
+    `sid` 是这次请求所用令牌对应的登录会话标识（第十批 10.12），
+    登出接口靠它定位"要作废哪一次登录"。
+    **默认 None**：本项目里还有几处"内部构造的查看者"（通知、审批、企微同步
+    等拿某个用户当视角去判断可见性），它们不来自请求、也没有会话，
+    不该被迫编一个 sid 出来。
+    """
+
+    def __init__(
+        self,
+        user: User,
+        permissions: set[str],
+        roles: list[str],
+        data_scope: str,
+        *,
+        sid: str | None = None,
+    ):
         self.id = user.id
         self.name = user.name
         self.username = user.username
@@ -26,6 +42,7 @@ class CurrentUser:
         self.permissions = permissions
         self.roles = roles
         self.data_scope = data_scope
+        self.sid = sid
 
     def has(self, code: str) -> bool:
         return code in self.permissions
@@ -48,6 +65,12 @@ async def get_current_user(
     if user is None or user.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
 
+    # 凭据还必须对应一个**服务端仍然有效**的登录会话（第十批 10.12）。
+    # 少了这一步，登出与改密码都只影响前端本地状态：泄漏出去的旧令牌
+    # 在过期前依旧畅通 —— 这正是无状态 JWT 的经典缺口。
+    sid = payload.get(SID_CLAIM)
+    await load_active_session(session, sid, user_id)
+
     roles = await get_user_roles(session, user_id)
     permissions = await get_user_permission_codes(session, user_id)
     return CurrentUser(
@@ -55,6 +78,7 @@ async def get_current_user(
         permissions=permissions,
         roles=[r.code for r in roles],
         data_scope=resolve_data_scope(roles),
+        sid=sid,
     )
 
 

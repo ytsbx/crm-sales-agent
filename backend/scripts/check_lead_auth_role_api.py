@@ -30,6 +30,11 @@
 `/auth/refresh` 的价值在"过期了还能救"，所以必须验证**过期后的宽限期内仍能续期**，
 以及"停用的账号不能续期"（否则一个后台页面能把停用账号无限续命）。
 这两条用直接构造 JWT 的方式测，比等 12 小时现实。
+
+⚠️ 构造出来的令牌**必须带上真实会话的 `sid`**（第十批 10.12 起，鉴权与续期
+都要在 `login_sessions` 里查到那一行、且状态有效）。少了它会被判成
+"登录状态无效"，那是另一条规则 —— 会把"宽限期内能不能续期"这件事测歪。
+这里从真登录拿到的令牌里把 sid 读出来复用。
 """
 
 import asyncio
@@ -314,36 +319,53 @@ def main():
 
     print()
     print('=== 8. 过期/停用账号不能续期（直接构造 JWT 验证）===')
+    import base64
     import jwt as pyjwt
 
     sys.path.insert(0, '.')
     from app.core.config import settings as app_settings
 
-    def make_token(user_id, *, expired_minutes_ago=0):
+    def sid_of(token):
+        """取令牌里的登录会话标识（**只看载荷、不验签**：这里是要读它，不是信它）。"""
+        part = token.split('.')[1]
+        part += '=' * (-len(part) % 4)
+        return json.loads(base64.urlsafe_b64decode(part))['sid']
+
+    # ⚠️ 第十批 10.12 起，令牌必须挂在一个**服务端仍然有效**的登录会话上
+    # （鉴权与续期都查 `login_sessions` 里那一行）。所以这里"直接构造 JWT"
+    # 必须把**真实会话的 sid** 带上 —— 少一个 sid 会被判成"登录状态无效"，
+    # 那是另一条规则，会把"宽限期内能不能续期"这件事测歪。
+    admin_sid = sid_of(admin)
+    zs_sid = sid_of(zhangsan)
+
+    def make_token(user_id, sid, *, expired_minutes_ago=0):
         now = int(time.time())
         payload = {
             'sub': str(user_id),
             'iat': now - 3600,
             'exp': now - expired_minutes_ago * 60,
             'name': 'test',
+            'sid': sid,
         }
         return pyjwt.encode(payload, app_settings.jwt_secret,
                             algorithm=app_settings.jwt_algorithm)
 
     # 过期 5 分钟，在宽限期内 -> 应该能续
-    status, res = call('POST', '/auth/refresh', token=make_token(admin_id, expired_minutes_ago=5))
+    status, res = call('POST', '/auth/refresh',
+                       token=make_token(admin_id, admin_sid, expired_minutes_ago=5))
     check('过期 5 分钟内可续期', res.get('code'), 0)
 
     # 过期远超宽限期 -> 必须重新登录
-    status, res = call('POST', '/auth/refresh', token=make_token(admin_id, expired_minutes_ago=100000))
+    status, res = call('POST', '/auth/refresh',
+                       token=make_token(admin_id, admin_sid, expired_minutes_ago=100000))
     check('过期太久不能续期', res.get('code'), 40102)
 
     # 停用账号即使 token 有效也不能续
     call('POST', f'/users/{zs_id}/disable', token=admin)
-    status, res = call('POST', '/auth/refresh', token=make_token(zs_id))
+    status, res = call('POST', '/auth/refresh', token=make_token(zs_id, zs_sid))
     check('停用账号不能续期', res.get('code'), 40101)
     call('POST', f'/users/{zs_id}/enable', token=admin)
-    status, res = call('POST', '/auth/refresh', token=make_token(zs_id))
+    status, res = call('POST', '/auth/refresh', token=make_token(zs_id, zs_sid))
     check('重新启用后可续期', res.get('code'), 0)
 
     print()
