@@ -30,6 +30,7 @@ from app.modules.pricing.schema import (
     CustomerPriceUpdate,
     ExchangeRateCreate,
     LogisticsRateCreate,
+    LogisticsRateUpdate,
     PricePermissionCreate,
     PricePermissionCheck,
     PricePermissionUpdate,
@@ -716,6 +717,46 @@ async def create_logistics_rate(
     )
     await session.commit()
     return ok(svc.serialize_logistics_rate(rate), "运费费率已创建")
+
+
+@router.patch("/logistics/rates/{rate_id}")
+async def update_logistics_rate(
+    rate_id: int,
+    payload: LogisticsRateUpdate,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("price:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """修改运费费率（价格中心「运费费率」的「改」）。
+
+    为什么要有这一条：此前只有查 / 增 / 删 —— 承运方式写错、目的地漏填、单价填反，
+    都只能"删掉重建"，而重建会换掉 id，审计里也断成两段，看不出是同一条费率的修改。
+
+    `exclude_unset=True`：**没传的字段保持原值**，传 `null` 才是"清空"
+    （但库里非空的列不许清空，见 `LogisticsRateUpdate` 与 `NOT_NULLABLE`）。
+    `status` 改成 `inactive` = **停用**：核价匹配只认启用中的费率
+    （`logistics.rate_query`），所以"先停掉别再参与核价、数据留着"是可行做法，
+    不必非得删。
+    """
+    rate = await session.get(LogisticsRate, rate_id)
+    if rate is None:
+        raise AppError(ErrorCode.NOT_FOUND, "费率不存在", 404)
+    before = svc.serialize_logistics_rate(rate)
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(rate, field, value)
+    await session.flush()
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="update",
+        business_type="logistics_rate",
+        business_id=rate_id,
+        before=before,
+        after=svc.serialize_logistics_rate(rate),
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize_logistics_rate(rate), "运费费率已保存")
 
 
 @router.delete("/logistics/rates/{rate_id}")

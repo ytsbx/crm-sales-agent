@@ -270,6 +270,22 @@ export function createLogisticsRate(payload: Record<string, unknown>) {
   return api.post<LogisticsRateRow>('/logistics/rates', payload)
 }
 
+/**
+ * 修改运费费率（只传要改的字段，**不传的保持原值**）。
+ *
+ * 要注意两处与"新增"不同的地方：
+ * - 库里非空的列（承运方式 / 运输方式 / 公斤单价 / 最低收费 / 状态）**传 `null` 会被拒**；
+ * - 两个地区字段要"清空成不限"时，**必须显式传 `null`**（不传 = 保持原值，改不掉）。
+ */
+export function updateLogisticsRate(rateId: number, payload: Record<string, unknown>) {
+  return api.patch<LogisticsRateRow>(`/logistics/rates/${rateId}`, payload)
+}
+
+/** 删除运费费率。已发出的报价不受影响（运费当时已存进报价明细）。 */
+export function deleteLogisticsRate(rateId: number) {
+  return api.delete<null>(`/logistics/rates/${rateId}`)
+}
+
 // ---------------------------------------------------------------- 物流试算
 // 对应 03-API §19 的 6 个接口；页面在 modules/logistics/LogisticsPage.tsx
 

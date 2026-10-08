@@ -485,10 +485,35 @@ def main():
         })
 
     print('=== 9c. 核价运费接体积计费（复用物流模块实现）===')
-    # 先清掉历史遗留的测试费率（destination 也是 CHK 开头，会精确匹配干扰断言）
-    status, res = call('GET', '/logistics/rates?keyword=CHK', token=admin)
-    for old_rate in res['data'] or []:
-        call('DELETE', f"/logistics/rates/{old_rate['id']}", token=admin)
+
+    def all_rates() -> list[dict]:
+        return call('GET', '/logistics/rates', token=admin)[1].get('data') or []
+
+    def own_rates() -> list[dict]:
+        """**本套件自己建的**费率（其余是种子数据与别的套件留下的）。
+
+        ⚠️ `GET /logistics/rates` **签名里没有 keyword 参数** —— 传了也不生效，
+        它无条件返回**全部**费率。从前这里写的是
+        `call('GET', '/logistics/rates?keyword=CHK')` 然后把自己"以为筛出来的"
+        每一条都删掉，实际是**把整张费率表删空**（2026-10-08 实测）。
+        而且那句"清理测试费率"的断言写成"删后查不到了"就必然成立 —— 全删了当然
+        查不到，是**假绿**。所以：**在客户端按前缀筛**，并额外断言"别人的一条没动"。
+        """
+        return [
+            row for row in all_rates()
+            if str(row.get('provider') or '').startswith(f'CHK{RUN}')
+        ]
+
+    def drop_own_rates() -> None:
+        for row in own_rates():
+            call('DELETE', f"/logistics/rates/{row['id']}", token=admin)
+
+    # 先清掉自己上一轮留下的测试费率（destination 也是 CHK 开头，会精确匹配干扰断言）
+    drop_own_rates()
+    foreign_before = sorted(
+        row['id'] for row in all_rates()
+        if not str(row.get('provider') or '').startswith(f'CHK{RUN}')
+    )
     status, res = call('POST', '/logistics/rates', token=admin, body={
         'provider': f'CHK{RUN}物流', 'origin_region': '华东', 'destination_region': 'CHK华北测试区',
         'shipping_method': '陆运', 'unit_price_per_kg': 1, 'unit_price_per_volume': 200,
@@ -523,14 +548,18 @@ def main():
     # 恢复原箱规体积与箱规数量
     call('PATCH', f'/skus/{price_sku_id}', token=admin,
          body={'carton_volume': old_carton, 'carton_qty': old_carton_qty})
-    # 清理测试费率（按关键字兜底删，避免单 id 依赖）
-    status, res = call('GET', '/logistics/rates?keyword=CHK', token=admin)
-    deleted = len(res['data'] or [])
-    for old_rate in res['data'] or []:
-        call('DELETE', f"/logistics/rates/{old_rate['id']}", token=admin)
-    after_delete = call('GET', '/logistics/rates?keyword=CHK', token=admin)[1]
-    check_true('清理测试费率', deleted >= 1 and not (after_delete.get('data') or []),
-               f"删前 {deleted}，删后 {len(after_delete.get('data') or [])}")
+    # 清理测试费率：**按 provider 前缀只删自己的**，并钉住"别人的一条没动"。
+    # 单 id 依赖不可靠（失败路径下可能多建了几条），所以按范围删。
+    deleted = len(own_rates())
+    drop_own_rates()
+    check_true('清理测试费率（只删自己的）', deleted >= 1 and not own_rates(),
+               f"删前 {deleted} 条，删后 {len(own_rates())} 条")
+    # ⚠️ 这条才是真正的守卫：从前那种"按关键字兜底删"会把种子费率与别的套件的
+    # 费率一起删掉，而断言照样绿 —— 现在把"别人的"当成不变量钉住。
+    check('别人的费率一条没动', sorted(
+        row['id'] for row in all_rates()
+        if not str(row.get('provider') or '').startswith(f'CHK{RUN}')
+    ), foreign_before)
 
     print('=== 10. 权限门槛 ===')
     for label, method, path, body in [

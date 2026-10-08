@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from app.core.patch_schema import PatchModel
@@ -143,6 +144,34 @@ class LogisticsRateCreate(BaseModel):
     min_charge: Decimal = Decimal(0)
     eta_days: int | None = None
     eta_days_max: int | None = None
+    remark: str | None = None
+
+
+class LogisticsRateUpdate(PatchModel):
+    """运费费率的**部分更新**（价格中心「运费费率」的「改」）。
+
+    为什么是"部分更新"而不是让调用方传整行：这一页最常见的就是"只改一个单价"或
+    "把目的地收窄"，要求整行传全，改错的风险更大（把没打算动的字段一起写回去）。
+
+    **哪些不许被清空**（`provider` / `shipping_method` / `unit_price_per_kg` /
+    `min_charge` / `status`）登记在 `core/patch_schema.NOT_NULLABLE` —— 库里那几列
+    非空，显式传 `null` 从前会一路走到数据库才报 500。
+
+    **哪些允许清空**：两个地区字段、`unit_price_per_volume`、两个时效、`remark`。
+    尤其地区字段：**留空 = 不限**（匹配时视作通配），而写「全国」是一个**具体取值**——
+    两者在核价匹配里行为不同，别混。
+    """
+
+    provider: str | None = None
+    origin_region: str | None = None
+    destination_region: str | None = None
+    shipping_method: str | None = None
+    unit_price_per_kg: Decimal | None = Field(default=None, ge=0)
+    unit_price_per_volume: Decimal | None = Field(default=None, ge=0)
+    min_charge: Decimal | None = Field(default=None, ge=0)
+    eta_days: int | None = Field(default=None, ge=0)
+    eta_days_max: int | None = Field(default=None, ge=0)
+    status: Literal["active", "inactive"] | None = None
     remark: str | None = None
 
 

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { AutoComplete, Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
@@ -11,6 +11,7 @@ import {
   createLogisticsRate,
   createPriceRule,
   deleteCustomerPriceRule,
+  deleteLogisticsRate,
   disablePriceRule,
   listCosts,
   listCustomerPriceRules,
@@ -21,6 +22,7 @@ import {
   listPricingHistory,
   lookupPrice,
   savePricePermission,
+  updateLogisticsRate,
   type CostRecord,
   type CustomerPriceRow,
   type LogisticsRateRow,
@@ -45,6 +47,9 @@ const TABS = [
   { tab: '运费费率', itemKey: 'logistics' },
   { tab: '核价历史', itemKey: 'history' },
 ]
+
+/** 空值/次要信息统一用三级文字色（与项目其它页面一致）。 */
+const HINT = { color: 'var(--crm-text-3)' }
 
 /** 核价历史里会出现审计日志的 business_type（与后端 /pricing/history 的取值一致）。 */
 const HISTORY_TYPE_LABEL: Record<string, string> = {
@@ -362,14 +367,24 @@ export default function PriceCenterPage() {
   const [creatingQuickOpp, setCreatingQuickOpp] = useState(false)
   const [permissionTarget, setPermissionTarget] = useState<PricePermissionRow | null>(null)
   const [permissionForm, setPermissionForm] = useState({ minimum_margin: '0.15', can_approve: false })
+  // 运费费率：新增与修改**共用同一个弹窗**（`rateEditing` 为空 = 新增）。
+  // 表单值一律用字符串存（受控输入），提交时再转数字 —— 空串代表"没填"。
   const [rateVisible, setRateVisible] = useState(false)
-  const [rateForm, setRateForm] = useState({
+  const [rateEditing, setRateEditing] = useState<LogisticsRateRow | null>(null)
+  const emptyRateForm = {
     provider: '',
+    origin_region: '',
+    destination_region: '',
     shipping_method: '陆运',
     unit_price_per_kg: '',
+    unit_price_per_volume: '',
     min_charge: '',
     eta_days: '',
-  })
+    eta_days_max: '',
+    status: 'active' as 'active' | 'inactive',
+    remark: '',
+  }
+  const [rateForm, setRateForm] = useState(emptyRateForm)
   const [historySkuId, setHistorySkuId] = useState<number | undefined>()
   const [historyPage, setHistoryPage] = useState(1)
 
@@ -495,22 +510,92 @@ export default function PriceCenterPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const closeRateModal = () => {
+    setRateVisible(false)
+    setRateEditing(null)
+    setRateForm(emptyRateForm)
+  }
+
+  /** 打开费率弹窗：传行 = 改（预填），不传 = 新增。 */
+  const openRateModal = (row?: LogisticsRateRow) => {
+    setRateEditing(row ?? null)
+    setRateForm(
+      row
+        ? {
+            provider: row.provider,
+            origin_region: row.origin_region ?? '',
+            destination_region: row.destination_region ?? '',
+            shipping_method: row.shipping_method,
+            unit_price_per_kg: String(row.unit_price_per_kg ?? ''),
+            unit_price_per_volume:
+              row.unit_price_per_volume == null ? '' : String(row.unit_price_per_volume),
+            min_charge: String(row.min_charge ?? ''),
+            eta_days: row.eta_days == null ? '' : String(row.eta_days),
+            eta_days_max: row.eta_days_max == null ? '' : String(row.eta_days_max),
+            status: row.status === 'inactive' ? 'inactive' : 'active',
+            remark: row.remark ?? '',
+          }
+        : emptyRateForm,
+    )
+    setRateVisible(true)
+  }
+
   const rateMutation = useMutation({
-    mutationFn: () =>
-      createLogisticsRate({
-        provider: rateForm.provider,
-        shipping_method: rateForm.shipping_method,
+    mutationFn: () => {
+      // 两个地区字段**显式传 null**（不是不传）：不传 = "保持原值"，改不动。
+      // 留空 = 不限（匹配时视作通配）；写「全国」是一个**具体取值**，两者行为不同。
+      const payload = {
+        provider: rateForm.provider.trim(),
+        origin_region: rateForm.origin_region.trim() || null,
+        destination_region: rateForm.destination_region.trim() || null,
+        shipping_method: rateForm.shipping_method.trim() || '陆运',
         unit_price_per_kg: Number(rateForm.unit_price_per_kg || 0),
+        unit_price_per_volume: rateForm.unit_price_per_volume.trim()
+          ? Number(rateForm.unit_price_per_volume)
+          : null,
         min_charge: Number(rateForm.min_charge || 0),
-        eta_days: rateForm.eta_days ? Number(rateForm.eta_days) : null,
-      }),
+        eta_days: rateForm.eta_days.trim() ? Number(rateForm.eta_days) : null,
+        eta_days_max: rateForm.eta_days_max.trim() ? Number(rateForm.eta_days_max) : null,
+        status: rateForm.status,
+        remark: rateForm.remark.trim() || null,
+      }
+      return rateEditing
+        ? updateLogisticsRate(rateEditing.id, payload)
+        : createLogisticsRate(payload)
+    },
     onSuccess: () => {
-      Toast.success('运费费率已创建')
-      setRateVisible(false)
+      Toast.success(rateEditing ? '运费费率已保存' : '运费费率已创建')
+      closeRateModal()
       refreshAll()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const rateDeleteMutation = useMutation({
+    mutationFn: (rateId: number) => deleteLogisticsRate(rateId),
+    onSuccess: () => {
+      Toast.success('运费费率已删除')
+      refreshAll()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  /**
+   * 起运地 / 目的地 / 运输方式的候选项：**从现有费率里去重取**。
+   *
+   * 为什么要给候选：核价匹配是**字符串完全相等**（空 = 不限）。手写与真实取值
+   * 差一个字（"华东" vs "华东区"）就匹配不上，会掉到"列出全部费率"那一级 ——
+   * 于是最便宜的那条兜底费率胜出，运费被算少。所以既能从已有取值里选，
+   * 也允许现场输入新的（给候选而不是写死下拉，是因为第一条费率没有候选可选）。
+   */
+  const rateOptions = (field: 'origin_region' | 'destination_region' | 'shipping_method') =>
+    Array.from(
+      new Set(
+        (ratesQuery.data ?? [])
+          .map((row) => row[field])
+          .filter((value): value is string => Boolean(value && value.trim())),
+      ),
+    ).sort()
 
   const skuOptions = (skusQuery.data ?? []).map((sku) => ({
     value: sku.id,
@@ -1049,7 +1134,7 @@ export default function PriceCenterPage() {
                 </div>
                 <div style={{ flex: 1 }} />
                 {canManage && (
-                  <Button theme="solid" onClick={() => setRateVisible(true)}>
+                  <Button theme="solid" onClick={() => openRateModal()}>
                     新增运费费率
                   </Button>
                 )}
@@ -1057,21 +1142,82 @@ export default function PriceCenterPage() {
               <Table<LogisticsRateRow>
                 columns={[
                   { title: '承运方式', dataIndex: 'provider' },
-                  { title: '运输方式', dataIndex: 'shipping_method', width: 120 },
-                  { title: '目的地', dataIndex: 'destination_region', width: 160, render: (v: string | null) => v ?? '-' },
+                  // 两个地区字段：**空 = 不限**。这里把"不限"明确写出来，
+                  // 免得与"填了个具体地名"混为一谈（两者在核价匹配里行为不同）。
+                  {
+                    title: '起运地',
+                    dataIndex: 'origin_region',
+                    width: 100,
+                    render: (v: string | null) => (v ? v : <span style={HINT}>不限</span>),
+                  },
+                  {
+                    title: '目的地',
+                    dataIndex: 'destination_region',
+                    width: 100,
+                    render: (v: string | null) => (v ? v : <span style={HINT}>不限</span>),
+                  },
+                  { title: '运输方式', dataIndex: 'shipping_method', width: 100 },
                   {
                     title: '公斤单价',
                     dataIndex: 'unit_price_per_kg',
-                    width: 120,
+                    width: 100,
                     render: (value: number) => `¥${value}`,
+                  },
+                  {
+                    title: '体积单价',
+                    dataIndex: 'unit_price_per_volume',
+                    width: 100,
+                    render: (value: number | null) =>
+                      value == null ? <span style={HINT}>—</span> : `¥${value}/m³`,
                   },
                   {
                     title: '最低收费',
                     dataIndex: 'min_charge',
-                    width: 120,
+                    width: 100,
                     render: (value: number) => `¥${value}`,
                   },
-                  { title: '时效（天）', dataIndex: 'eta_days', width: 110, render: (v: number | null) => v ?? '-' },
+                  {
+                    title: '时效（天）',
+                    dataIndex: 'eta_days',
+                    width: 100,
+                    render: (v: number | null, record: LogisticsRateRow) =>
+                      v == null
+                        ? '-'
+                        : record.eta_days_max != null && record.eta_days_max !== v
+                          ? `${v}~${record.eta_days_max}`
+                          : String(v),
+                  },
+                  {
+                    title: '状态',
+                    dataIndex: 'status',
+                    width: 90,
+                    render: (v: string) =>
+                      v === 'inactive' ? (
+                        <Tag color="grey">已停用</Tag>
+                      ) : (
+                        <Tag color="green">启用中</Tag>
+                      ),
+                  },
+                  ...(canManage
+                    ? [
+                        {
+                          title: '操作',
+                          width: 130,
+                          render: (_: unknown, record: LogisticsRateRow) => (
+                            <div style={{ display: 'flex', gap: 12 }}>
+                              <a onClick={() => openRateModal(record)}>修改</a>
+                              <Popconfirm
+                                title={`删除费率「${record.provider}」？`}
+                                content="删掉之后核价不再用它估算运费。已发出的报价不受影响：运费当时已作为快照存进报价明细。"
+                                onConfirm={() => rateDeleteMutation.mutate(record.id)}
+                              >
+                                <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                              </Popconfirm>
+                            </div>
+                          ),
+                        },
+                      ]
+                    : []),
                 ]}
                 dataSource={ratesQuery.data ?? []}
                 loading={ratesQuery.isLoading}
@@ -1459,9 +1605,9 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
-        title="新增运费费率"
+        title={rateEditing ? `修改运费费率：${rateEditing.provider}` : '新增运费费率'}
         visible={rateVisible}
-        onCancel={() => setRateVisible(false)}
+        onCancel={closeRateModal}
         onOk={() => {
           if (!rateForm.provider.trim()) {
             Toast.warning('请填写承运方式')
@@ -1470,11 +1616,18 @@ export default function PriceCenterPage() {
           rateMutation.mutate()
         }}
         confirmLoading={rateMutation.isPending}
-        okText="创建"
+        okText={rateEditing ? '保存' : '创建'}
+        cancelText="取消"
+        style={{ maxWidth: 'calc(100vw - 48px)' }}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <FormLabel required>承运方式</FormLabel>
+            <FormLabel
+              required
+              hint="就是费率行里一个名字，试算页的承运商下拉由这张表去重得出"
+            >
+              承运方式
+            </FormLabel>
             <Input
               value={rateForm.provider}
               onChange={(value) => setRateForm({ ...rateForm, provider: value })}
@@ -1483,26 +1636,113 @@ export default function PriceCenterPage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>公斤单价（元）</div>
+              <FormLabel hint="留空 = 不限">起运地</FormLabel>
+              <AutoComplete
+                value={rateForm.origin_region}
+                onChange={(value) =>
+                  setRateForm({ ...rateForm, origin_region: String(value ?? '') })
+                }
+                data={rateOptions('origin_region')}
+                placeholder="留空 = 不限，例如：华东"
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <FormLabel hint="留空 = 不限；核价按完全相同的写法匹配">目的地</FormLabel>
+              <AutoComplete
+                value={rateForm.destination_region}
+                onChange={(value) =>
+                  setRateForm({ ...rateForm, destination_region: String(value ?? '') })
+                }
+                data={rateOptions('destination_region')}
+                placeholder="留空 = 不限，例如：华东"
+                style={{ width: '100%' }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <FormLabel hint="试算时按这个筛">运输方式</FormLabel>
+              <AutoComplete
+                value={rateForm.shipping_method}
+                onChange={(value) =>
+                  setRateForm({ ...rateForm, shipping_method: String(value ?? '') })
+                }
+                data={rateOptions('shipping_method')}
+                placeholder="例如：陆运 / 快递 / 专线"
+                style={{ width: '100%' }}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <FormLabel required hint="按重量计费">公斤单价（元/kg）</FormLabel>
               <Input
                 value={rateForm.unit_price_per_kg}
                 onChange={(value) => setRateForm({ ...rateForm, unit_price_per_kg: value })}
+                placeholder="例如：0.9"
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>最低收费（元）</div>
+              <FormLabel hint="留空 = 这家不按体积计费">体积单价（元/m³）</FormLabel>
+              <Input
+                value={rateForm.unit_price_per_volume}
+                onChange={(value) =>
+                  setRateForm({ ...rateForm, unit_price_per_volume: value })
+                }
+                placeholder="抛货要填，留空 = 不计体积"
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <FormLabel hint="算出来低于它就按它收">最低收费（元）</FormLabel>
               <Input
                 value={rateForm.min_charge}
                 onChange={(value) => setRateForm({ ...rateForm, min_charge: value })}
+                placeholder="例如：50"
               />
             </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>时效（天）</div>
+              <FormLabel>时效（起，天）</FormLabel>
               <Input
                 value={rateForm.eta_days}
                 onChange={(value) => setRateForm({ ...rateForm, eta_days: value })}
+                placeholder="例如：4"
               />
             </div>
+            <div style={{ flex: 1 }}>
+              <FormLabel hint="只填一个数就留空这里">时效（止，天）</FormLabel>
+              <Input
+                value={rateForm.eta_days_max}
+                onChange={(value) => setRateForm({ ...rateForm, eta_days_max: value })}
+                placeholder="例如：6"
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <FormLabel hint="停用后核价不再用它，数据留着">状态</FormLabel>
+              <Select
+                value={rateForm.status}
+                onChange={(value) =>
+                  setRateForm({ ...rateForm, status: value === 'inactive' ? 'inactive' : 'active' })
+                }
+                style={{ width: '100%' }}
+                optionList={[
+                  { label: '启用中', value: 'active' },
+                  { label: '已停用', value: 'inactive' },
+                ]}
+              />
+            </div>
+          </div>
+          <div>
+            <FormLabel hint="给自己看的备注，不参与计算">备注</FormLabel>
+            <Input
+              value={rateForm.remark}
+              onChange={(value) => setRateForm({ ...rateForm, remark: value })}
+              placeholder="例如：只走江浙沪，月结"
+            />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+            核价估算会在「匹配到的」费率里取最便宜的一条。起运地与目的地留空表示不限；
+            填了就得和试算时选的写法完全一致，否则会退化成「列出全部费率」，运费可能算少。
           </div>
         </div>
       </Modal>

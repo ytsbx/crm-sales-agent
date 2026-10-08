@@ -1262,8 +1262,31 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /pricing/sku-options`：给价格中心与核价页的下拉用——SKU + 所属产品名，一次取全。需要 `product:view`。**注意路径**：不要挂到 `/products/xxx` 下面，否则会被 `/products/{product_id}` 抢先匹配。
 - `PUT /price-permissions/{role_id}`：设置角色的价格权限（最小利润率、折扣上限等）。需要 `price:manage`。
 - `GET /logistics/rates`：运费费率列表。需要 `product:view`。
-- `POST /logistics/rates`：新增费率。需要 `price:manage`。
+  **没有 `keyword` 参数** —— 它无条件返回**全部**费率（传了也不生效）。想按名字筛就在
+  客户端筛：把它当"按关键字查"用会出事（曾经有个套件的"按关键字兜底清理"因此
+  把整张表删空，而断言照样绿 —— 见 `check_logistics_rate_admin` 里的守卫）。
+- `POST /logistics/rates`：新增费率。需要 `price:manage`。可传全部字段：
+  `provider` / `origin_region` / `destination_region` / `shipping_method` /
+  `unit_price_per_kg` / `unit_price_per_volume` / `min_charge` / `eta_days` /
+  `eta_days_max` / `remark`（一开始界面只收四个，配不出"这家到华东、按方计价"）。
+- `PATCH /logistics/rates/{rate_id}`：**修改**费率。需要 `price:manage`（2026-10-08 加）。
+  `exclude_unset` 语义：**没传的字段保持原值，传 `null` 才是"清空"**。
+  - **不许清空**：`provider` / `shipping_method` / `unit_price_per_kg` / `min_charge` /
+    `status`（库里非空）→ 传 null 是 **400（40001）**，不是 500；超长同样 400。
+  - **可以清空**：两个地区字段、`unit_price_per_volume`、两个时效、`remark`。
+  - ⚠️ **两个地区字段"留空 = 不限"**（匹配时视作通配），而写「全国」是一个**具体取值** ——
+    两者在核价匹配里行为不同，别混。
+  - `status` 改成 `inactive` = **停用**：匹配只认启用中的费率
+    （`logistics.rate_query`），所以"先停掉、数据留着"不必非得删。
+  - 不存在的 id → 404。改与删都写审计（`business_type='logistics_rate'`）。
 - `DELETE /logistics/rates/{rate_id}`：删除费率。需要 `price:manage`。（此前该端点不存在：配错费率删不掉，测试清理也一直空转。）
+- **费率匹配的命中级别要如实说出去**（2026-10-08）：`POST /logistics/calculate` 与
+  `/logistics/compare` 的返回里带 `match_level`（`0` 没给条件 / `1` 精确命中 /
+  `2~4` 放宽了起运地或目的地或运输方式 / `5` **兜底**＝列出全部启用费率）。
+  核价估算取"匹配到的方案里最便宜那条"，一旦放宽过，**最便宜那条可能根本不属于
+  这次要发的地方** —— 所以核价的 `warnings` 里会带上放宽的原因，兜底时另加一句
+  「这条运费来自兜底匹配，可能不准，请手工核对」。**认 `match_level` 这个数字，
+  别去匹配提示文字**（文案一改就悄悄失效）。
 
 ## 41.13 客户（customers，补充条目）
 

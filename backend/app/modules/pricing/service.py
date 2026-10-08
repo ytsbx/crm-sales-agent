@@ -646,6 +646,21 @@ async def estimate_logistics(
     for warning in prepared["warnings"]:
         if "体积" in warning or "单重" in warning:
             notes.append(warning)
+
+    # ⚠️ **匹配被放宽过就必须说出来**（2026-10-08 复审）。
+    #
+    # 估算取的是"匹配到的方案里最便宜的那条"。只要匹配降过级（第 2~5 级：目的地
+    # 或运输方式被放宽、甚至列出全部启用费率），**最便宜那条很可能根本不属于这次
+    # 要发的地方** —— 运费被算少、毛利被算高，本来该触发低价审批的报价就不触发了。
+    # 这是往漏钱的方向错，而从前界面上一点提示都没有（匹配环节的提示被这里丢掉了）。
+    #
+    # 认的是 `match_level` 这个**级别数字**，不是提示文字：文案改了也不会失效。
+    match_level = int(prepared.get("match_level") or 0)
+    if match_level >= 2:
+        notes.extend(prepared.get("match_warnings") or [])
+        if match_level >= 5:
+            notes.append("这条运费来自兜底匹配，可能不准，请手工核对")
+
     notes.append(
         f"已按{chosen['pricing_basis']}计价（{chosen['provider']} {chosen['shipping_method']}，"
         f"{chosen['eta_text'] or '时效未配'}）"
@@ -913,8 +928,15 @@ async def calculate_price(
 
     # PRD §16 的四条独立触发条件：低于保护价 / 低于本人授权价 / 折扣超权限 / 利润不足
     # 无成本时利润类三条（授权价/负利润/利润率）无从判定，自动停用（A06/D5）
+    # ⚠️ `check_price` 可能是 None：没传报价金额、又没有任何价格规则与成本时，
+    # 它就是 None（这个接口的 `quoted_price` 是**可选**的）。所以每条比较都要先判它。
+    # 2026-10-08 顺带修：第 950 行那条折扣判定漏了这道判空，于是"没成本 + 没价格规则
+    # + 有运费费率"时 `check_price < standard_price` 直接抛 TypeError → **500**
+    # （标价由运费算出、非空，正好把这一路引到崩溃）。带报价金额的老用例覆盖不到。
     below_protection = (
-        protection_price is not None and check_price < protection_price - Decimal("0.0001")
+        protection_price is not None
+        and check_price is not None
+        and check_price < protection_price - Decimal("0.0001")
     )
     below_authorized = bool(
         has_cost
@@ -933,7 +955,10 @@ async def calculate_price(
     # 没配上限（None）不参与判定——与最低利润率的"配了才生效"同口径。
     discount_pct = (
         (1 - check_price / standard_price) * 100
-        if standard_price and standard_price > 0 and check_price < standard_price
+        if standard_price
+        and standard_price > 0
+        and check_price is not None
+        and check_price < standard_price
         else ZERO
     )
     role_discount_limit = await resolve_discount_limit(session, role_codes or [])

@@ -209,16 +209,27 @@ async def match_rates(
     origin: str | None,
     destination: str | None,
     shipping_method: str | None,
-) -> tuple[list[LogisticsRate], list[str]]:
-    """按用户给了哪些条件，逐级放宽地匹配费率，返回 (费率列表, 提示)。
+) -> tuple[list[LogisticsRate], list[str], int]:
+    """按用户给了哪些条件，逐级放宽地匹配费率，返回 (费率列表, 提示, **命中级别**)。
 
     匹配各级的口径（这是关键，写错了就会出现"明明有华东费率却说没匹配到"）：
-      第 1 级（精确）：用户给的条件全部命中，且**不给条件时不做限制**
-      第 2 级（放宽）：用户给了目的地，但运输方式没命中 → 只按目的地收窄
-      第 3 级（兜底）：按用户给的条件收窄后仍为空 → 列出全部启用费率
+
+    | 级别 | 含义 | 提示 |
+    |---|---|---|
+    | 0 | 用户什么都没给 —— 全部启用费率，**不算降级** | 无 |
+    | 1 | 精确：给的条件全部命中 | 无 |
+    | 2 | 丢掉「起运地」 | 有 |
+    | 3 | 丢掉「目的地」，保留运输方式 | 有 |
+    | 4 | 只按「目的地」 | 有 |
+    | 5 | **兜底**：列出全部启用费率供对比 | 有 |
 
     每一级内部"某条件的匹配"定义为：费率的该字段 == 用户值，或该字段为空（表示不限）。
     这样填了目的地就会优先拿专属费率，而不会和"不限"的费率混成一个并集。
+
+    ⚠️ **级别要单独返回，别让调用方去认提示文字**（2026-10-08 复审）：核价估算取的是
+    "匹配到的方案里最便宜那条"，一旦级别 ≥ 2，最便宜那条很可能根本不属于这次要发的
+    地方 —— 运费被算少、毛利被算高，而界面上一点提示都没有。调用方（`prepare` /
+    `estimate_logistics`）据此决定要不要把"用的不是精确费率"如实讲出来。
     """
     warnings: list[str] = []
 
@@ -249,19 +260,20 @@ async def match_rates(
 
     # 第 0 级：用户什么都没给 —— 就是全部，不算"降级"，不该提示
     if not any([origin, destination, shipping_method]):
-        return await _fetch(use_origin=False, use_destination=False, use_method=False), warnings
+        rows = await _fetch(use_origin=False, use_destination=False, use_method=False)
+        return rows, warnings, 0
 
     # 第 1 级：能用的条件全用上
     rows = await _fetch(use_origin=True, use_destination=True, use_method=True)
     if rows:
-        return rows, warnings
+        return rows, warnings, 1
 
     # 第 2 级：丢掉"起运地"（业务往往只维护目的地与运输方式）
     if origin:
         rows = await _fetch(use_origin=False, use_destination=True, use_method=True)
         if rows:
             warnings.append(f"没有起运地「{origin}」的专属费率，已按目的地 + 运输方式匹配")
-            return rows, warnings
+            return rows, warnings, 2
 
     # 第 3 级：丢掉"目的地"，保留运输方式。
     # 顺序很重要：**目的地比运输方式更本质**，而且丢掉运输方式等于换了承运方式
@@ -273,7 +285,7 @@ async def match_rates(
             warnings.append(
                 f"没有发往「{destination}」的费率，已放宽为只看运输方式「{shipping_method}」"
             )
-            return rows, warnings
+            return rows, warnings, 3
 
     # 第 4 级：只按目的地（用户没指定运输方式，或该方式确实没有任何费率）
     if destination:
@@ -283,7 +295,7 @@ async def match_rates(
                 warnings.append(
                     f"没有运输方式「{shipping_method}」的费率，已放宽为只看目的地「{destination}」"
                 )
-            return rows, warnings
+            return rows, warnings, 4
 
     # 第 5 级：兜底 —— 列出全部启用费率供对比
     rows = await _fetch(use_origin=False, use_destination=False, use_method=False)
@@ -291,7 +303,7 @@ async def match_rates(
         warnings.append("没有匹配到目的地/运输方式的费率，已列出全部启用中的费率供对比")
     else:
         warnings.append("还没有维护任何运费费率，请先在价格中心配置")
-    return rows, warnings
+    return rows, warnings, 5
 
 
 def quote_rate(
@@ -358,7 +370,12 @@ async def prepare(
     volume_override: Decimal | None = None,
     weight_override: Decimal | None = None,
 ) -> dict:
-    """试算前的公共准备：校验 SKU、算计费重、匹配费率、出方案列表。"""
+    """试算前的公共准备：校验 SKU、算计费重、匹配费率、出方案列表。
+
+    返回值里除了 `options` / `warnings`（度量 + 匹配合在一起，给页面展示），
+    另有 `match_warnings`（**只含匹配环节的**）与 `match_level`（命中级别，见
+    `match_rates`）—— 核价估算要凭它判断"这次用的到底是不是精确匹配的费率"。
+    """
     sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
@@ -380,7 +397,7 @@ async def prepare(
         volume_override=volume_override,
         weight_override=weight_override,
     )
-    rates, warnings = await match_rates(
+    rates, warnings, match_level = await match_rates(
         session,
         origin=origin,
         destination=destination,
@@ -413,6 +430,11 @@ async def prepare(
         "measures": measures,
         "options": options,
         "warnings": measures["warnings"] + warnings,
+        # 【匹配环节单独一份】核价估算要**区别对待**这两类提示（2026-10-08 复审）：
+        # 度量类说的是"数据缺失、算不出"，匹配类说的是"用的不是你要的那条费率"。
+        # 合成一个数组分不开，所以这里再给一份 + 命中级别，调用方不必去认提示文字。
+        "match_warnings": warnings,
+        "match_level": match_level,
     }
 
 

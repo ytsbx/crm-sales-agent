@@ -180,6 +180,10 @@ async def calculate(
             "selected": selected,
             "quoted_id": quoted_id,
             "warnings": prepared["warnings"],
+            # 命中级别（见 `logistics.match_rates`）：1 = 精确命中，≥2 = 放宽过。
+            # 页面据此提示"这条可能不属于这次要发的地方"；核价估算也认它
+            # （别让调用方去认提示文字 —— 文案一改就悄悄失效）。
+            "match_level": prepared["match_level"],
         }
     )
 
@@ -216,6 +220,8 @@ async def compare(
             "cheapest_provider": cheapest,
             "fastest_provider": fastest,
             "warnings": prepared["warnings"],
+            # 与试算同口径：1 = 精确命中，≥2 = 放宽过（见 `logistics.match_rates`）
+            "match_level": prepared["match_level"],
         }
     )
 

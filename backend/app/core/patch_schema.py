@@ -67,6 +67,16 @@ NOT_NULLABLE: dict[str, dict[str, tuple[str, int | None]]] = {
     "PriceRuleUpdate": {"status": ("价格规则状态", 16)},
     "OrderDraftUpdate": {"currency": ("币种", 8)},
     "ReceivableUpdate": {"plan_name": ("应收节点名称", 64)},
+    # 运费费率（价格中心「运费费率」的「改」）。后两个是 Numeric 列，只查"不许清空"。
+    # ⚠️ `origin_region` / `destination_region` **刻意不在这里**：它们允许清空，
+    # 而且"留空 = 不限"是有意义的语义（写「全国」在匹配里是个**具体取值**，不是不限）。
+    "LogisticsRateUpdate": {
+        "provider": ("承运方式", 64),
+        "shipping_method": ("运输方式", 32),
+        "unit_price_per_kg": ("公斤单价", None),
+        "min_charge": ("最低收费", None),
+        "status": ("费率状态", 16),
+    },
 }
 
 
