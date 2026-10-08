@@ -26,23 +26,89 @@ def _number(value) -> float | None:
 
 
 async def get_first_stage(session: AsyncSession) -> OpportunityStage:
+    """取「启用中的**普通**阶段」里排序最靠前的那个，作为新商机的初始阶段。
+
+    必须排除成交/失单（第十二批 12.3）：否则管理员把成交阶段排到最前，
+    新建的商机一出生就停在「成交」上（状态却还写着「进行中」）。
+    """
     stage = (
         await session.execute(
             select(OpportunityStage)
-            .where(OpportunityStage.status == "active")
-            .order_by(OpportunityStage.sequence.asc())
+            .where(
+                OpportunityStage.status == "active",
+                OpportunityStage.is_win.is_(False),
+                OpportunityStage.is_loss.is_(False),
+            )
+            .order_by(OpportunityStage.sequence.asc(), OpportunityStage.id.asc())
             .limit(1)
         )
     ).scalar_one_or_none()
     if stage is None:
-        raise AppError(ErrorCode.SYSTEM_ERROR, "商机阶段未初始化，请先执行种子数据", 500)
+        raise AppError(
+            ErrorCode.SYSTEM_ERROR,
+            "没有可用的普通阶段（成交/失单不算初始阶段），请先在阶段配置里启用一个",
+            500,
+        )
     return stage
 
 
 async def get_won_stage(session: AsyncSession) -> OpportunityStage | None:
+    """取成交阶段。
+
+    配置侧保证只有一个（第十二批 12.3 在保存时拦重复标记）；这里再兜一层：
+    万一库里已有历史脏配置（两个成交标记），也只取第一个，不让业务入口抛 500。
+    """
     return (
-        await session.execute(select(OpportunityStage).where(OpportunityStage.is_win.is_(True)))
+        await session.execute(
+            select(OpportunityStage)
+            .where(OpportunityStage.is_win.is_(True))
+            .order_by(OpportunityStage.sequence.asc(), OpportunityStage.id.asc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
+
+
+async def lock_stages(session: AsyncSession) -> None:
+    """锁住阶段配置（整张小表）。保存阶段前调用，把并发配置串成一条队。
+
+    少了它，两个管理员各自"检查通过"、提交后合成一个冲突配置（第十二批 12.3）。
+    """
+    await session.execute(select(OpportunityStage.id).with_for_update())
+
+
+async def ensure_stage_config_ok(session: AsyncSession) -> None:
+    """保存阶段配置**之前**，确认"存完之后整体还能被业务正确使用"（第十二批 12.3）。
+
+    当前业务按**单一销售流程**运行：成交阶段必须明确且唯一 —— 取成交阶段的代码
+    只会用一个。若配置里出现两个"成交标记"的阶段，业务入口一找就找到两条直接
+    500，而管理员那边保存是"成功"的，最难查。
+
+    规则：
+    - 成交标记（`is_win`）**最多一个**；
+    - 同一个阶段**不能既是成交又是失单**。
+
+    并发：调用方必须先 `lock_stages()`，否则两个管理员各自检查都通过、
+    提交后仍会合成冲突。
+    """
+    rows = (
+        await session.execute(select(OpportunityStage).order_by(OpportunityStage.id.asc()))
+    ).scalars().all()
+    wins = [row for row in rows if row.is_win]
+    if len(wins) > 1:
+        names = "、".join(f"「{row.name}」" for row in wins)
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"只能有一个成交阶段，现在是 {len(wins)} 个（{names}）；"
+            f"请先取消多余的成交标记再保存",
+            422,
+        )
+    for row in rows:
+        if row.is_win and row.is_loss:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"阶段「{row.name}」不能同时是成交和失单",
+                422,
+            )
 
 
 async def stage_map(session: AsyncSession) -> dict[int, OpportunityStage]:
@@ -288,8 +354,22 @@ async def change_stage(
     to_stage: OpportunityStage,
     operator_id: int,
     remark: str | None = None,
+    allow_terminal: bool = False,
 ) -> None:
-    """切换阶段：先关闭当前停留记录，再开一条新的，保证停留时长可统计。"""
+    """切换阶段：先关闭当前停留记录，再开一条新的，保证停留时长可统计。
+
+    `allow_terminal=False`（默认）**不许**把阶段直接切到成交/失单上（第十二批 12.2）：
+    那两条路只能由正式出口走（成交要校验报价依据、建单权限并生成订单；失单要写
+    失单原因）。从前普通「推进阶段」能直达成交 —— 实测一条没有任何报价的商机
+    也能被推成「已成交」，整套成交校验形同虚设。
+    """
+    if (to_stage.is_win or to_stage.is_loss) and not allow_terminal:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{to_stage.name}」是成交/失单阶段，不能通过「推进阶段」直接切换；"
+            f"成交请用「确认成交」，失单请用「标记失单」",
+            422,
+        )
     now = datetime.now(UTC)
     current = (
         await session.execute(

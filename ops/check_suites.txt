@@ -85,6 +85,14 @@ check_task_scans
 check_quote_lifecycle
 check_demand_flow
 check_opportunity_links
+# 商机三道闸门（第十二批第一批 12.1 / 12.2 / 12.3）：① 概览里的报价/订单/任务/跟进
+# 按各自模块的权限与数据范围过滤（无权限给 null 并点名，不伪装成"没有数据"；
+# 数量与列表共用同一套过滤、过滤先于取最近几条）；② 普通「推进阶段」不得替代
+# 成交/失单，旧 `/win` 与 `/confirm-win` 共用同一套校验（含建单权限与转订单）、
+# 失单后不能越状态；③ 阶段配置保存前拒绝重复成交标记与"又成交又失单"，
+# 初始阶段排除终态与停用阶段。
+# ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会建账号/客户/报价，并真的成交建单）。
+check_opportunity_gates
 check_sample_sources
 check_order_drafts
 check_delivery_planning

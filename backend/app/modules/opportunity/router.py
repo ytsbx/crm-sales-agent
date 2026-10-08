@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -105,6 +106,8 @@ async def create_stage(
     session: AsyncSession = Depends(get_db),
 ):
     """新增阶段。不传 sequence 时排在最后。"""
+    # 先锁住阶段配置：并发保存的两个管理员在这里被串成一条队（第十二批 12.3）
+    await svc.lock_stages(session)
     # `Field(min_length=1)` 挡不住纯空白字符串（'   ' 长度是 3），
     # 而空编码阶段会让 stage_map、漏斗分组这些按 code 找阶段的地方悄悄失效。
     code = payload.code.strip()
@@ -132,6 +135,9 @@ async def create_stage(
     row = OpportunityStage(**data)
     session.add(row)
     await session.flush()
+    # 落库之前先看"存完之后整体还能不能用"（第十二批 12.3）：
+    # 两个成交标记 / 同一阶段又成交又失单，一律当场拒，别让它先存坏再让业务入口崩
+    await svc.ensure_stage_config_ok(session)
     await write_audit(
         session,
         operator_id=user.id,
@@ -153,13 +159,17 @@ async def update_stage(
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    row = await session.get(OpportunityStage, stage_id)
+    # 先锁住配置、再**重读**（扔掉内存里的旧副本）——第十二批 12.3：
+    # 不重读会拿着加锁前的旧值改成冲突配置。
+    await svc.lock_stages(session)
+    row = await session.get(OpportunityStage, stage_id, populate_existing=True)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "阶段不存在", 404)
     before = svc.serialize_stage(row)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(row, field, value)
     await session.flush()
+    await svc.ensure_stage_config_ok(session)
     await write_audit(
         session,
         operator_id=user.id,
@@ -502,15 +512,35 @@ async def opportunity_overview(
     stages = await svc.stage_map(session)
 
     from app.modules.followup.model import FollowUp
+    from app.modules.followup.visibility import system_source_filter
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote
     from app.modules.task.model import Task
 
-    async def count_of(model, **filters) -> int:
-        stmt = select(func.count(model.id))
-        for column, value in filters.items():
-            stmt = stmt.where(getattr(model, column) == value)
-        return int((await session.execute(stmt)).scalar_one())
+    # 商机可见**只**证明能看到这条商机（第十二批 12.1）。概览里的报价/订单/任务/跟进
+    # 要**分别**按各自模块的查看权限与数据范围过滤 —— 从前这里只按 opportunity_id 取数，
+    # 于是"只有商机权限"的账号也能从概览读到别人报价的单号与金额（实测 73123 完整返回），
+    # "本人范围"的业务员同样被穿透；而且"数量"连已删报价都算，与列表对不上。
+    def allowed(code: str) -> bool:
+        return "admin" in user.roles or user.has(code)
+
+    scope = await scoped_owner_ids(session, user)  # None = 全部可见
+    blocked: list[str] = []
+
+    async def scoped_stmt(model, *conds, need: str, block_key: str):
+        """按「模块权限 + 数据范围」过滤；无权限返回 None，并把板块名记进 `blocked`。"""
+        if not allowed(need):
+            blocked.append(block_key)
+            return None
+        stmt = select(model).where(*conds)
+        if scope is not None:
+            stmt = stmt.where(model.owner_id.in_(scope))
+        return stmt
+
+    async def count_of(stmt) -> int:
+        return int(
+            (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+        )
 
     items = await svc.list_items(session, opportunity_id)
     stage_history = (
@@ -521,45 +551,70 @@ async def opportunity_overview(
             .limit(10)
         )
     ).scalars().all()
-    quote_total = await count_of(Quote, opportunity_id=opportunity_id)
-    order_total = await count_of(SalesOrder, opportunity_id=opportunity_id)
-    followup_total = await count_of(FollowUp, opportunity_id=opportunity_id)
-    task_total = await count_of(Task, opportunity_id=opportunity_id)
-    open_task_total = int(
-        (
-            await session.execute(
-                select(func.count(Task.id)).where(
-                    Task.opportunity_id == opportunity_id,
-                    Task.status.in_(("pending", "doing")),
-                )
-            )
-        ).scalar_one()
-    )
 
-    followups = (
-        await session.execute(
-            select(FollowUp)
-            .where(FollowUp.opportunity_id == opportunity_id)
-            .order_by(FollowUp.id.desc())
-            .limit(5)
+    # ---- 报价：过滤**先于**取最近几条，数量与列表共用同一套条件（12.1）----
+    quote_stmt = await scoped_stmt(
+        Quote, Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None),
+        need="quote:view", block_key="quotes",
+    )
+    if quote_stmt is None:
+        quote_total, quotes = None, []
+    else:
+        quote_total = await count_of(quote_stmt)
+        quotes = (
+            await session.execute(quote_stmt.order_by(Quote.id.desc()).limit(5))
+        ).scalars().all()
+
+    # ---- 订单 ----
+    order_stmt = await scoped_stmt(
+        SalesOrder, SalesOrder.opportunity_id == opportunity_id,
+        need="order:view", block_key="orders",
+    )
+    if order_stmt is None:
+        order_total = None
+    else:
+        order_total = await count_of(order_stmt)
+
+    # ---- 跟进：还要过"系统过程记录"的可见性（来源单据得看得见）----
+    if not allowed("followup:view"):
+        blocked.append("followups")
+        followup_total, followups = None, []
+    else:
+        f_conds = [FollowUp.opportunity_id == opportunity_id,
+                   await system_source_filter(session, user)]
+        if scope is not None:
+            f_conds.append(FollowUp.owner_id.in_(scope))
+        followup_total = int(
+            (await session.execute(select(func.count(FollowUp.id)).where(*f_conds))).scalar_one()
         )
-    ).scalars().all()
-    tasks = (
-        await session.execute(
-            select(Task)
-            .where(Task.opportunity_id == opportunity_id)
-            .order_by(Task.id.desc())
-            .limit(5)
+        followups = (
+            await session.execute(
+                select(FollowUp).where(*f_conds).order_by(FollowUp.id.desc()).limit(5)
+            )
+        ).scalars().all()
+
+    # ---- 任务 ----
+    task_stmt = await scoped_stmt(
+        Task, Task.opportunity_id == opportunity_id, need="task:view", block_key="tasks",
+    )
+    if task_stmt is None:
+        task_total, open_task_total, tasks = None, None, []
+    else:
+        task_total = await count_of(task_stmt)
+        open_task_total = int(
+            (
+                await session.execute(
+                    select(func.count(Task.id)).where(
+                        Task.opportunity_id == opportunity_id,
+                        Task.status.in_(("pending", "doing")),
+                        *([Task.owner_id.in_(scope)] if scope is not None else []),
+                    )
+                )
+            ).scalar_one()
         )
-    ).scalars().all()
-    quotes = (
-        await session.execute(
-            select(Quote)
-            .where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None))
-            .order_by(Quote.id.desc())
-            .limit(5)
-        )
-    ).scalars().all()
+        tasks = (
+            await session.execute(task_stmt.order_by(Task.id.desc()).limit(5))
+        ).scalars().all()
 
     # 报价金额要看当前版本，得再查一次 quote_versions
     current_version_ids = {row.current_version_id for row in quotes if row.current_version_id}
@@ -591,6 +646,8 @@ async def opportunity_overview(
             "counts": {
                 "items": len(items),
                 "item_quantity": float(sum(item["quantity"] for item in items)),
+                # null = 这个板块**无权限查看**（第十二批 12.1）。前端据此显示
+                # 「无权限查看」，别把"无权限"显示成"没有数据"。
                 "quotes": quote_total,
                 "orders": order_total,
                 "followups": followup_total,
@@ -598,6 +655,8 @@ async def opportunity_overview(
                 "open_tasks": open_task_total,
                 "stage_changes": len(stage_history),
             },
+            # 无权限的板块名（quotes / orders / followups / tasks）
+            "blocked": blocked,
             "stage_history": [
                 {
                     "id": row.id,
@@ -729,69 +788,43 @@ async def win_opportunity(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    opportunity = await svc.get_visible_opportunity(session, user, opportunity_id, for_update=True)
-    if opportunity.status == "win":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该商机已经成交")
-    # 旧口子补校验：成交版本必须真实存在且属于此商机（此前任意 id 直接落库）
-    if payload.win_quote_version_id:
-        from app.modules.quote.model import Quote, QuoteVersion
-        from app.modules.quote.service import quote_is_expired
+    """标记成交（**旧兼容入口**）。
 
-        win_version = await session.get(QuoteVersion, payload.win_quote_version_id)
-        if win_version is None:
-            raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
-        win_quote = await session.get(Quote, win_version.quote_id)
-        if win_quote is None or win_quote.opportunity_id != opportunity.id:
-            raise AppError(ErrorCode.PARAM_ERROR, "该报价版本不属于此商机")
-        # 与 confirm-win 同一纪律：软删 / 未审批 / 已过期版本不能标成交
-        if win_quote.deleted_at is not None:
-            raise AppError(ErrorCode.PARAM_ERROR, "该报价单已删除，不能标成交")
-        if win_version.approval_status != "approved":
-            raise AppError(ErrorCode.APPROVAL_PENDING, "该报价版本未通过审批，不能成交", 422)
-        # 有效期按**业务日期（北京时间）**判 —— 与 confirm-win 用**同一个** helper，
-        # 不再各写一段 `now(UTC).date()`：北京时间凌晨（UTC 还停在前一天）时，
-        # 那个写法会把"有效期到昨天"的报价当成没过期、照样放行。
-        if quote_is_expired(win_quote.valid_until):
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                f"报价已过有效期（{win_quote.valid_until}），不能标成交",
-            )
-    stage = await svc.get_won_stage(session)
-    if stage is None:
-        raise AppError(ErrorCode.SYSTEM_ERROR, "未配置成交阶段", 500)
-
-    await svc.change_stage(
-        session, opportunity, to_stage=stage, operator_id=user.id, remark=payload.remark or "标记成交"
-    )
-    opportunity.status = "win"
-    opportunity.win_quote_version_id = payload.win_quote_version_id
-    await session.flush()
-    await write_audit(
-        session,
-        operator_id=user.id,
+    第十二批 12.2：这个口子从前"不传报价版本也能成交""失单之后还能改成成交"。
+    现在它**不再有自己的规则** —— 内部与 `/confirm-win` 走同一套业务服务
+    （报价归属与当前版本、已发送/已接受、审批、有效期、客户确认、建单权限、转订单）。
+    """
+    return await _confirm_win_core(
+        opportunity_id=opportunity_id,
+        win_quote_version_id=payload.win_quote_version_id,
+        delivery_date=None,
+        remark=payload.remark,
         action="win",
-        business_type="opportunity",
-        business_id=opportunity.id,
-        after={"quote_version_id": payload.win_quote_version_id},
-        ip=client_ip(request),
+        request=request,
+        user=user,
+        session=session,
     )
-    await session.commit()
-    return ok(svc.serialize_opportunity(opportunity, stage=stage), "商机已成交")
 
 
-@router.post("/opportunities/{opportunity_id}/confirm-win")
-async def confirm_win_and_create_order(
+async def _confirm_win_core(
+    *,
     opportunity_id: int,
-    payload: OpportunityConfirmWin,
+    win_quote_version_id: int | None,
+    delivery_date,
+    remark: str | None,
+    action: str,
     request: Request,
-    user: CurrentUser = Depends(require_permission("opportunity:manage")),
-    session: AsyncSession = Depends(get_db),
+    user: CurrentUser,
+    session: AsyncSession,
 ):
-    """确认成交并生成订单（方案 §5 / A13）。
+    """确认成交并生成订单 —— **两个成交入口的唯一实现**（第十二批 12.2）。
+
+    `/confirm-win`（正式）与 `/win`（旧兼容）都调这里。旧口子从前"不传报价版本
+    也能成交""失单后还能改成成交"，现在统一按同一口径：报价归属与当前版本、
+    已发送/已接受、审批、有效期、客户确认、建单权限、转订单。
 
     一个动作完成：校验成交版本 → 商机标记成交 → 版本转订单。
     幂等：商机已成交不重复改；版本已转过单直接返回已有订单（重试安全）。
-    需要同时具备 opportunity:manage 与 order:manage。
     """
     from app.modules.order import service as order_svc
     from app.modules.order.model import SalesOrder
@@ -805,10 +838,18 @@ async def confirm_win_and_create_order(
     opportunity = (await session.execute(select(Opportunity).where(Opportunity.id == opportunity.id)
                    .with_for_update().execution_options(populate_existing=True))).scalar_one()
     await svc.get_visible_opportunity(session, user, opportunity_id)
+    # 已失单的商机不能借任何一个成交入口"越过状态"（第十二批 12.2）：
+    # 失单要有明确的重新激活流程；否则失单原因与"已成交"会同时挂在这一行上。
+    if opportunity.status == "loss":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "该商机已失单，不能直接成交；请先「重新激活」再走成交",
+            422,
+        )
 
     # ---- 1. 定位成交版本：显式指定优先，否则取该商机下已发送/已接受的最新报价 ----
-    if payload.win_quote_version_id:
-        version = await session.get(QuoteVersion, payload.win_quote_version_id)
+    if win_quote_version_id:
+        version = await session.get(QuoteVersion, win_quote_version_id)
         if version is None:
             raise AppError(ErrorCode.NOT_FOUND, "报价版本不存在", 404)
     else:
@@ -871,7 +912,8 @@ async def confirm_win_and_create_order(
         if stage is None:
             raise AppError(ErrorCode.SYSTEM_ERROR, "未配置成交阶段", 500)
         await svc.change_stage(
-            session, opportunity, to_stage=stage, operator_id=user.id, remark="确认成交"
+            session, opportunity, to_stage=stage, operator_id=user.id,
+            remark="确认成交", allow_terminal=True,
         )
         opportunity.status = "win"
         opportunity.win_quote_version_id = version.id
@@ -884,8 +926,8 @@ async def confirm_win_and_create_order(
             session,
             version=version,
             user_id=user.id,
-            delivery_date=payload.delivery_date,
-            remark=payload.remark,
+            delivery_date=delivery_date,
+            remark=remark,
         )
     except AppError as exc:
         if exc.code != ErrorCode.DUPLICATE_CONVERT:
@@ -902,7 +944,7 @@ async def confirm_win_and_create_order(
     await write_audit(
         session,
         operator_id=user.id,
-        action="confirm_win",
+        action=action,
         business_type="opportunity",
         business_id=opportunity.id,
         after={
@@ -930,6 +972,30 @@ async def confirm_win_and_create_order(
             "already_ordered": already_ordered,
         },
         "已确认成交并生成订单" if not (already_won and already_ordered) else "该版本此前已成交建单，返回既有订单",
+    )
+
+
+@router.post("/opportunities/{opportunity_id}/confirm-win")
+async def confirm_win_and_create_order(
+    opportunity_id: int,
+    payload: OpportunityConfirmWin,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("opportunity:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """确认成交并生成订单（方案 §5 / A13）。
+
+    实现见 `_confirm_win_core` —— 自第十二批 12.2 起与旧入口 `/win` 共用同一套。
+    """
+    return await _confirm_win_core(
+        opportunity_id=opportunity_id,
+        win_quote_version_id=payload.win_quote_version_id,
+        delivery_date=payload.delivery_date,
+        remark=payload.remark,
+        action="confirm_win",
+        request=request,
+        user=user,
+        session=session,
     )
 
 

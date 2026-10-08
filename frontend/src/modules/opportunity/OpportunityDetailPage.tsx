@@ -652,7 +652,13 @@ export default function OpportunityDetailPage() {
             value={targetStage ?? undefined}
             onChange={(value) => setTargetStage(value as number)}
             optionList={(stagesQuery.data ?? [])
-              .filter((stage) => stage.id !== opportunity.stage_id)
+              // 成交 / 失单不能从「推进阶段」走（第十二批 12.2）：那两条路各有正式
+              // 入口 —— 确认成交要按报价版本校验并生成订单，标记失单要填失单原因。
+              // 这里**只是操作引导**，后端另有一道拦截，直接调接口同样过不去。
+              .filter(
+                (stage) =>
+                  stage.id !== opportunity.stage_id && !stage.is_win && !stage.is_loss,
+              )
               .map((stage) => ({ value: stage.id, label: stage.name }))}
             style={{ width: '100%' }}
           />

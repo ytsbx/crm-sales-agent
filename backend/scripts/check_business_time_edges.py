@@ -499,11 +499,23 @@ async def check_opportunity_win_entry_boundary() -> None:
         check("被拦之后商机没有被标成交", opp_blocked.status, "open")
 
         # ---- 方向二：有效期到"北京今天" → 按既有规则（截止日**含**当天）放行 ----
+        # ⚠️ 第十二批 12.2 起 `/win` 与 `/confirm-win` 是**同一套**流程：要定位有效
+        # 报价版本，并走"客户确认 → 标成交 → 转订单"。所以"走到底、商机变成已成交"
+        # 这一覆盖已搬到 `check_opportunity_gates`（那里连带验证建单）；
+        # 本套件只关心**有效期这一关**是否按北京时间放行 —— 写法与下面 confirm-win 对齐。
         version = await make_quote(opp_pass, date(2026, 1, 1))
         with frozen_business_clock(beijing(2026, 1, 1, 1)):
             message = await call_entry("win", opp_pass, version)
-        check("元旦凌晨｜有效期到今天 → 标记成交放行", message is None, True)
-        check("放行后商机状态确实变成已成交", opp_pass.status, "win")
+        check(
+            "元旦凌晨｜有效期到今天 → 标记成交不再被有效期拦下",
+            "已过有效期" not in (message or ""),
+            True,
+        )
+        check(
+            "标记成交停在的确实是下一道「接受」闸门",
+            bool(message) and "才能接受或拒绝" in (message or ""),
+            True,
+        )
 
         # confirm-win 的"放行"方向只验到**过了有效期这一关**为止：再往后它会真的
         # 接受报价并建单，那是别的套件的活。让它停在下一道「接受」闸门即可 ——
