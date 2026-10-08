@@ -53,6 +53,7 @@ from app.modules.order.model import SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.quote.model import Quote
 from app.modules.user.model import Department, Permission, Role, User, role_permissions, user_roles
+from scripts._test_support import align_id_sequences
 
 FAILURES: list[str] = []
 PREFIX = "CHKSCOPEAI"
@@ -130,7 +131,7 @@ FIXTURE_TABLES = (
 
 
 async def _align_sequences() -> None:
-    """把夹具会写入的表的 id 序列推到 `max(id)+1`。
+    """把夹具会写入的表的 id 序列**只向前**推到现有数据之后。
 
     为什么要这一步（真库上真实踩到）：套件里有一张"别人的订单"是按**显式 id**
     插的（`id = 业务员编号`，专门用来验"员工编号被当成订单编号"那个缺陷）。
@@ -140,16 +141,13 @@ async def _align_sequences() -> None:
     而且这个错**只在特定顺序下出现**：单独跑本套件没事，跟在别的套件后面跑就炸
     （别的套件也插过显式 id）。这类"顺序相关"的失败最难查，所以在建夹具前先对齐，
     比事后解释便宜得多。只推游标，不碰任何业务数据。
+
+    实现放在 `scripts/_test_support.align_id_sequences`（两个套件共用一份）：
+    那里取的是 `greatest(max(id)+1, 序列当前值+1)` 而**不只是** `max(id)+1`——
+    后者在"插了又删"的库里会把游标往回拨，让新行复用历史 id。
     """
     async with SessionLocal() as s:
-        for table in FIXTURE_TABLES:
-            await s.execute(
-                text(
-                    "select setval(pg_get_serial_sequence(:t, 'id'), "
-                    f"coalesce(max(id), 0) + 1, false) from {table}"
-                ),
-                {"t": table},
-            )
+        await align_id_sequences(s, FIXTURE_TABLES)
         await s.commit()
 
 

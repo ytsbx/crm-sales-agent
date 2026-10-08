@@ -160,6 +160,17 @@ async def cleanup() -> None:
             "delete from customer_price_rules where customer_id in " + cust,
             "delete from sales_orders where customer_id in " + cust,
             "delete from sample_requests where customer_id in " + cust,
+            # 客户合并留痕：本套件第 5 节拿 CHK6TH 客户真做过合并
+            # （`CHK6TH合并来源/合并目标`、`CHK6TH区间来源/区间目标`…），
+            # 合并接口会往 customer_merge_logs 写一行。
+            # ⚠️ 这张表**没有外键**指向 customers，删客户不会连带删掉它，也没有
+            # deleted_at 可以软删——不显式清，留痕就永久堆在库里，且引用的客户
+            # 已经不存在了。后果实测过：这种"孤儿留痕"会在下一轮回归里被
+            # 复用同一批 id 的新客户捞出来（见 scripts/_test_support.py 的说明），
+            # 让回收站套件的"最终有效客户"解析成 None——表现为
+            # 「约 2~4 次全量回归红 1 次、单独跑永不复现」。
+            "delete from customer_merge_logs where source_customer_id in " + cust
+            + " or target_customer_id in " + cust,
             "delete from customers where name like :p",
             "delete from user_roles where role_id in (select id from roles where code like :r)",
             "delete from role_permissions where role_id in "

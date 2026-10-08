@@ -99,6 +99,25 @@ CHECKS: list[tuple[str, str, str]] = [
         "from product_costs pc join skus s on s.id = pc.sku_id "
         "where s.sku_code like 'CHK%' limit 3",
     ),
+    # 客户合并留痕：这张表**没有外键**（source/target 是裸 id）、也没有 deleted_at，
+    # 套件漏清一次就永久留在库里。判据是"引用的客户已经不存在"——真实业务不会物理
+    # 删客户（直接删与合并都是软删，行还在、id 仍在），所以孤儿留痕必然是夹具残留。
+    # 为什么单列这一条：它自己**不出现在任何列表/统计里**（所以以前一直没被发现），
+    # 却会**污染下一轮回归**——新夹具复用同一个号之后，业务逻辑按 id 去捞留痕会捞到
+    # 上一轮这条别的客户，据此得出莫名其妙的结论。实测症状：回收站套件的
+    # "最终有效客户"被解析成 None，表现为「约 2~4 次全量回归红 1 次、单跑永不复现」。
+    (
+        "孤儿客户合并留痕",
+        "select count(*) from customer_merge_logs m where "
+        "not exists (select 1 from customers c where c.id = m.source_customer_id) "
+        "or not exists (select 1 from customers c where c.id = m.target_customer_id)",
+        "select m.id || '：' || m.source_customer_id || '→' || m.target_customer_id "
+        "|| '（' || coalesce(m.merge_snapshot->>'name', '无快照') || '）' "
+        "from customer_merge_logs m where "
+        "not exists (select 1 from customers c where c.id = m.source_customer_id) "
+        "or not exists (select 1 from customers c where c.id = m.target_customer_id) "
+        "limit 3",
+    ),
 ]
 
 

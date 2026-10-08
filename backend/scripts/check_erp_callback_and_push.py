@@ -43,6 +43,7 @@ from app.modules.erp.adapter import ErpError
 from app.modules.integration.model import ExternalMapping, IntegrationLog
 from app.modules.order.model import SalesOrder
 from app.modules.user.model import User
+from scripts._test_support import align_id_sequences
 
 #: 显式引用一次上面那个副作用导入：pyflakes 不会把"导入了但没用到"报成问题
 #: （`import app.main` 本身只为触发模型注册，不引用它静态检查必报未使用）。
@@ -189,25 +190,26 @@ async def _align_sequences(session) -> None:
     violates unique constraint "sales_orders_pkey"（Key (id)=(6) already exists）`。
     根因不是产品缺陷，而是**序列落后于数据**：只要有夹具（或 seed）用显式 id 插过行，
     PostgreSQL 的序列不会被推进，随后任何"交给自增"的插入都会拿到一个已被占用的 id
-    并撞主键。本套件造 9 张单 + 日志 + 映射，全都依赖自增，所以先把序列对齐：
-    `setval(seq, max(id)+1, false)` —— 既不改任何业务数据，也不和 seed 的 id 段抢
-    （它只是把游标推到现有数据之后）。
+    并撞主键。本套件造 9 张单 + 日志 + 映射，全都依赖自增，所以先把序列对齐。
+
+    具体怎么对齐（为什么是 `greatest(max(id)+1, 序列当前值+1)` 而不只是
+    `max(id)+1`）见 `scripts/_test_support.align_id_sequences` 的说明——
+    简言之：只写 `max(id)+1` 会在"插了又删"的库里把游标**往回拨**，让新行
+    复用一批历史 id，进而撞上无外键的老留痕。两个套件共用同一份实现，避免
+    各写各的、修了一处漏一处。
 
     只校准本套件真正会插入的表。一次性隔离库，用完即删。
     """
-    for table in (
-        "customers",
-        "sales_orders",
-        "order_status_history",
-        "integration_logs",
-        "external_mappings",
-    ):
-        await session.execute(
-            text(
-                f"select setval(pg_get_serial_sequence('{table}', 'id'), "
-                f"coalesce((select max(id) from {table}), 0) + 1, false)"
-            )
-        )
+    await align_id_sequences(
+        session,
+        (
+            "customers",
+            "sales_orders",
+            "order_status_history",
+            "integration_logs",
+            "external_mappings",
+        ),
+    )
 
 
 async def build_fixtures() -> None:

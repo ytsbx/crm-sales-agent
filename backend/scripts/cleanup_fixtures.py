@@ -12,6 +12,15 @@ CHK / CHKQC / CHKDEL / CHKBD 前缀。其中两个套件曾经漏清：
 于是残留越堆越多，实测可见客户里**大多数**是夹具，分析页的客户数、等级分布、
 业务员客户数都被它们带着跑。两处漏清已修，本脚本负责把历史存量收干净。
 
+## 还收一类"看不见的"残留：孤儿客户合并留痕
+
+`customer_merge_logs` 没有外键、也没有 `deleted_at`，套件漏清就永久留在库里
+（2026-10-08 实测：`check_sixth_round_fixes` 拿 CHK6TH 客户真做过合并，收尾只删了
+客户）。它不出现在任何列表或统计里，所以以前一直没人发现；危害是**跨轮污染**——
+新夹具复用同一个号之后，按 id 去捞留痕会捞到上一轮这条别的客户（详见
+`check_fixture_residue.py` 里那条同名检查项的说明）。判据用"引用的客户已不存在"，
+真实业务只软删客户、不会产生这种行。
+
 ## 为什么软删而不是物理删
 
 `customers` 被 12 张表用外键引用（商机、报价、订单、样品、合同、企微外部联系人…），
@@ -46,6 +55,22 @@ TARGETS = [
 
 #: 用户没有 deleted_at，改用停用（同样从"业务员表现"这类只统计在岗的视图里消失）
 USER_CONDITION = "username like 'chk%'"
+
+#: 孤儿客户合并留痕：`customer_merge_logs` 引用的客户**已经不存在**的行。
+#:
+#: 这张表没有外键、也没有 deleted_at，套件漏清一次就永久留在库里
+#: （2026-10-08 实测：`check_sixth_round_fixes` 拿 CHK6TH 客户真做过合并，
+#: 收尾却只删客户、不删留痕）。只能物理删——但它引用的客户都没了，
+#: 这行记录对任何人都没有意义。
+#:
+#: 为什么值得单独处理（它不只是"脏"）：它自己不出现在任何列表/统计里，
+#: 却会在下一轮回归里被**复用同一个号的**新客户捞出来。新客户明明没被合并过，
+#: 却按 id 查到上一轮的留痕，于是"最终有效客户"被解析成 None ——
+#: 表现为「约 2~4 次全量回归红 1 次、单跑永不复现」。
+ORPHAN_MERGE_CONDITION = (
+    "not exists (select 1 from customers c where c.id = m.source_customer_id) "
+    "or not exists (select 1 from customers c where c.id = m.target_customer_id)"
+)
 
 
 async def main(apply: bool) -> int:
@@ -91,9 +116,41 @@ async def main(apply: bool) -> int:
                 text(f"update users set status = 'disabled' where status = 'active' and {USER_CONDITION}")
             )
 
+        orphan_merges = (
+            await s.execute(
+                text(f"select count(*) from customer_merge_logs m where {ORPHAN_MERGE_CONDITION}")
+            )
+        ).scalar_one()
+        samples = [
+            row[0]
+            for row in (
+                await s.execute(
+                    text(
+                        "select m.id || '：' || m.source_customer_id || '→' "
+                        "|| m.target_customer_id || '（' "
+                        "|| coalesce(m.merge_snapshot->>'name', '无快照') || '）' "
+                        f"from customer_merge_logs m where {ORPHAN_MERGE_CONDITION} limit 3"
+                    )
+                )
+            ).all()
+        ]
+        print(
+            f"  合并留痕 孤儿 {orphan_merges:>4} 条" + (f"，样例：{samples}" if samples else "")
+        )
+        total += int(orphan_merges)
+        if apply and orphan_merges:
+            # 物理删：这张表没有 deleted_at，也没有恢复入口，软删无从谈起。
+            # 删的都是"引用的客户已不存在"的行，不会碰到任何真实合并历史。
+            await s.execute(
+                text(f"delete from customer_merge_logs m where {ORPHAN_MERGE_CONDITION}")
+            )
+
         if apply:
             await s.commit()
-            print(f"\n已处理 {total} 条（软删/停用，可回滚）")
+            print(
+                f"\n已处理 {total} 条（客户/商机/产品/SKU 软删、用户停用，均可回滚；"
+                "孤儿合并留痕物理删、不可回滚，但它引用的客户早已不存在）"
+            )
         else:
             print(f"\n干跑结束：共 {total} 条待处理。加 --apply 真正执行。")
     return 0
