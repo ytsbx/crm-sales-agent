@@ -417,12 +417,7 @@ async def create_opportunity(
     customer = await customer_service.get_visible_customer(session, user, payload.customer_id)
     await svc.validate_contact(session, customer_id=customer.id, contact_id=payload.primary_contact_id)
 
-    if payload.stage_id:
-        stage = await session.get(OpportunityStage, payload.stage_id)
-        if stage is None:
-            raise AppError(ErrorCode.NOT_FOUND, "商机阶段不存在", 404)
-    else:
-        stage = await svc.get_first_stage(session)
+    stage = await svc.get_initial_stage(session, payload.stage_id)
 
     data = payload.model_dump(exclude={"stage_id"})
     owner_id = data.pop("owner_id", None) or customer.owner_id or user.id
@@ -433,7 +428,7 @@ async def create_opportunity(
     # 注意两件事照旧：① **客户可见性**仍要过（上面 `get_visible_customer`）——
     # 允许跨部门分配，不等于能对看不见的客户建商机；② **继承来的负责人**（客户的
     # 负责人）也要过同一关，免得"指定时查了、继承时把新业务交给已停用的人"。
-    await svc.assert_owner_active(session, owner_id)
+    owner = await svc.assert_owner_active(session, owner_id)
     opportunity = Opportunity(
         **data,
         stage_id=stage.id,
@@ -465,7 +460,7 @@ async def create_opportunity(
     await session.commit()
     return ok(
         svc.serialize_opportunity(
-            opportunity, stage=stage, customer_name=customer.name, owner_name=user.name
+            opportunity, stage=stage, customer_name=customer.name, owner_name=owner.name if owner else None
         ),
         "商机已创建",
     )
@@ -516,7 +511,7 @@ async def opportunity_overview(
     stages = await svc.stage_map(session)
 
     from app.modules.followup.model import FollowUp
-    from app.modules.followup.visibility import system_source_filter
+    from app.modules.followup.visibility import followup_visibility_filter
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote
     from app.modules.task.model import Task
@@ -585,9 +580,7 @@ async def opportunity_overview(
         followup_total, followups = None, []
     else:
         f_conds = [FollowUp.opportunity_id == opportunity_id,
-                   await system_source_filter(session, user)]
-        if scope is not None:
-            f_conds.append(FollowUp.owner_id.in_(scope))
+                   await followup_visibility_filter(session, user)]
         followup_total = int(
             (await session.execute(select(func.count(FollowUp.id)).where(*f_conds))).scalar_one()
         )

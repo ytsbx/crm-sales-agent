@@ -70,6 +70,7 @@ PATCH_TABLES: dict[str, str] = {
     "LossReasonUpdate": "loss_reasons",
     "NumberingRuleUpdate": "numbering_rules",
     "OpportunityUpdate": "opportunities",
+    "OpportunityItemUpdate": "opportunity_items",
     "OrderDraftUpdate": "order_drafts",
     "PriceRuleUpdate": "price_rules",
     "ProductUpdate": "products",
@@ -112,8 +113,8 @@ FIELD_LABELS: dict[str, str] = {
     "StageUpdate.status": "阶段状态",
     "LossReasonUpdate.name": "失单原因",
     "LossReasonUpdate.status": "状态",
-    # 商机需求明细（新增/编辑/批量三个入口共用同一份入参）。
-    # 这两个类**不是** PatchModel（它们是新建用的完整入参），登记在这里只是因为
+    # 商机需求明细（新增、编辑、批量入口共用字段提示）。
+    # 新增类使用完整入参；编辑类复用 PatchModel 的非空列校验。登记在这里还因为
     # `core/errors.py` 会用这张表把校验错误翻成人话，而这张表是项目里**唯一**
     # 一张字段中文名表 —— 再建一张迟早会分叉。
     "OpportunityItemCreate.sku_id": "SKU",

@@ -321,18 +321,21 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 
 - `GET /opportunities`
 - `POST /opportunities`：新建商机。需要 `opportunity:manage`。**负责人可以是任意在职员工**（第十二批 12.8 已拍板）：只校验"存在 + 在职"，不受接收人的部门或数据范围限制 —— 与「复制商机」「改派商机」同一把尺子（从前这里按数据范围判，同一个动作三个入口三个答案：新建挂管理员 403、复制/改派却 200）。指定的员工不存在 `404`、已停用 `422`。**客户可见性照旧**：允许跨部门分配 ≠ 能对看不见的客户建商机；从客户继承来的负责人也要过同一关。
+  新建的默认阶段与显式 `stage_id` 均只允许启用中的普通阶段：不存在 `404`，停用或成交/失单阶段 `422`，拒绝时不创建商机、历史或成功审计。允许显式指定其他合法普通阶段。响应 `owner_name` 按最终负责人填写，创建人和审计操作者仍是当前用户。
 - `GET /opportunities/{id}`
 - `PATCH /opportunities/{id}`
 - `DELETE /opportunities/{id}`
 - `GET /opportunities/{id}/overview`：商机 360 概览。**商机可见只证明能看到这条商机**（第十二批 12.1）—— 概览里的报价 / 订单 / 任务 / 跟进**分别**按各自模块的查看权限与数据范围过滤：没权限的板块 `counts.xxx` 为 `null`、并在 `blocked` 里点名（前端显示「无权限查看」，**不能**把无权限伪装成"没有数据"）；有权限的只返回范围内的单据。数量与列表**共用同一套过滤**（含"排除已删报价"），且**过滤先于取最近几条**。跟进板块还要过「系统过程记录」的可见性（来源单据得看得见）。
+  概览跟进板块与跟进详情、列表共用关联对象的数据范围规则，记录人不同不影响正常协作可见性；系统记录仍须通过来源报价、订单等单据的模块权限和范围检查。数量和最近五条先过滤同一组可见条件再取数。
 - `GET /opportunities/{id}/timeline`
 - `GET /opportunities/{id}/stage-history`
 - `POST /opportunities/{id}/change-stage`：推进阶段。**只处理进行中的普通销售阶段**（第十二批 12.2）：目标阶段带成交/失单标记一律 `422`（成交走「确认成交」，失单走「标记失单」）—— 从前普通推进能直达成交，等于把整套成交校验绕过去（实测：一条没有任何报价的商机也能被推成"已成交"）。
+  普通推进的目标阶段必须启用；使用 `stage_id` 或 `stage_code` 指向停用阶段均 `422`，当前阶段、状态和阶段历史保持不变。详情下拉和看板推进均排除停用及终态目标；旧商机与历史继续显示原阶段名称。
 - `POST /opportunities/{id}/assign`
 - `POST /opportunities/{id}/win`：**旧兼容入口**。自第十二批 12.2 起它**不再有自己的规则**，内部与 `confirm-win` 走**同一套**业务服务（报价归属与当前版本、已发送/已接受、审批、有效期、客户确认、`order:manage`、转订单）—— 从前它"不传报价版本也能成交""失单之后还能改成成交"。
 - `POST /opportunities/{id}/lose`
 - `POST /opportunities/{id}/reopen`
-- `POST /opportunities/{id}/clone`
+- `POST /opportunities/{id}/clone`：先解析最终负责人（显式指定优先，否则继承来源），再检查存在且在职。不存在 `404`、停用 `422` 并提示重新选择；默认继承同样校验，拒绝时不创建商机、历史或复制明细。来源商机及目标客户可见性继续校验。
 - `GET /opportunities/funnel`
 
 ---
@@ -341,7 +344,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 
 - `GET /opportunities/{id}/items`
 - `POST /opportunities/{id}/items` / `PATCH /opportunity-items/{id}` / `POST /opportunities/{id}/items/batch`：需求明细的新增 / 编辑 / 整批替换，**三处同一套数值规则**（第十二批 12.5）：数量必须 **> 0**、目标价**不能为负**（不清楚就留空）；**取值范围与小数位跟库列对齐**（数量 `Numeric(16,3)`、目标价 `Numeric(16,4)`，写法与订单明细 `OrderDraftLine` 同一份）—— 填一个超出范围的大数、或小数超过三位，都在**写入前**拒绝，并说明是哪一项、该填成什么样。从前这两类会一路走到库：太大撞 `numeric` 溢出报 **`500`「服务器内部错误」**（用户不知道是自己填大了）、小数超三位被库**静默四舍五入**（填 `1.23456` 存成 `1.235`，明细合计与用户以为的对不上）；`sku_id` **先验存在且未删除**，查不到给 `404` 并说清哪一条（从前是撞外键的 `500`）。批量替换**先全量校验再执行** —— 一条不合法不许把原明细删掉。
-  这三处**共用同一份入参**（`OpportunityItemCreate`），所以"新增拦得住、编辑放行"这类旁路不会再出现。
+  新增与批量共用 `OpportunityItemCreate`；编辑使用 `OpportunityItemUpdate`，保留同一套 Decimal 范围/小数位约束，并复用公共 `PatchModel` 的非空列校验。编辑数量不传保持原值，显式 `quantity=null` 返回 `400` 和「数量不能为空」提示；目标价可空，`target_price=null` 清空，未传保持原值。失败请求不修改明细、不留下成功业务审计。
   参数错误的提示**说人话**（见 §39）：形如「「数量」这个数太大，超出系统能记的范围」，不再是一句笼统的「参数校验失败」再挂一个英文 key。
 - `DELETE /opportunity-items/{id}`
 - `POST /opportunities/{id}/items/copy-from/{source_opportunity_id}`

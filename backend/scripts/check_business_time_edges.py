@@ -37,6 +37,7 @@ import time as time_module
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from _test_support import require_isolated_db
 
 require_isolated_db()
@@ -298,11 +299,25 @@ def check_display_timezone_independent() -> None:
     original_tz = os.environ.get("TZ")
 
     def probe(tz: str) -> tuple[str, str]:
-        os.environ["TZ"] = tz
-        time_module.tzset()
+        if hasattr(time_module, "tzset"):
+            os.environ["TZ"] = tz
+            time_module.tzset()
+            value = instant
+        else:
+            # Windows 不提供 tzset。只模拟这条时间戳在无参 astimezone() 时的
+            # 宿主时区，不替换业务格式化函数；漏用显式业务时区仍会被 UTC 反例抓住。
+            server_zone = ZoneInfo(tz)
+
+            class ServerDatetime(datetime):
+                def astimezone(self, tz=None):
+                    return super().astimezone(server_zone if tz is None else tz)
+
+            value = ServerDatetime.fromtimestamp(instant.timestamp(), UTC)
+            check(f"无参时区探针对照（{tz}）", value.astimezone().strftime("%Y-%m-%d %H:%M"),
+                  instant.astimezone(server_zone).strftime("%Y-%m-%d %H:%M"))
         return (
-            targets_service._fmt_at(instant),
-            timeline_service._human_time(instant),
+            targets_service._fmt_at(value),
+            timeline_service._human_time(value),
         )
 
     try:
@@ -313,7 +328,8 @@ def check_display_timezone_independent() -> None:
             os.environ.pop("TZ", None)
         else:
             os.environ["TZ"] = original_tz
-        time_module.tzset()
+        if hasattr(time_module, "tzset"):
+            time_module.tzset()
 
     check("统计明细展示（服务器 TZ=UTC）", under_utc[0], expected)
     check("时间线展示（服务器 TZ=UTC）", under_utc[1], expected)
