@@ -86,7 +86,13 @@ async def _active_owner(session: AsyncSession, owner_id: int) -> User:
     return target
 
 
-def serialize(task: Task, owner_name: str | None = None, source_doc_no: str | None = None) -> dict:
+def serialize(
+    task: Task,
+    owner_name: str | None = None,
+    source_doc_no: str | None = None,
+    quote_no: str | None = None,
+    order_no: str | None = None,
+) -> dict:
     overdue = False
     if task.due_at and task.status in ("pending", "doing"):
         due = task.due_at if task.due_at.tzinfo else task.due_at.replace(tzinfo=UTC)
@@ -101,6 +107,10 @@ def serialize(task: Task, owner_name: str | None = None, source_doc_no: str | No
         "opportunity_id": task.opportunity_id,
         "quote_id": task.quote_id,
         "order_id": task.order_id,
+        # 关联单据的**编号**（第十一批 11.6 复审）：列表上要能显示"报价 BJ2026xxx"
+        # 而不是"#12"，否则用户还得自己去找是哪一份。
+        "quote_no": quote_no,
+        "order_no": order_no,
         "owner_id": task.owner_id,
         "owner_name": owner_name,
         "priority": task.priority,
@@ -170,7 +180,9 @@ async def list_tasks(
             await session.execute(select(User.id, User.name).where(User.id.in_(owner_ids)))
         ).all()
         names = {int(uid): name for uid, name in name_rows}
-    # 自动待办的来源单据号（目前只有月结协议一种）：批量取一次，别在序列化里逐条查
+    # 关联单据的编号，批量取一次（别在序列化里逐条查）。
+    # 第十一批 11.6 复审：原先只处理"自动待办 → 合同"这一种，报价、订单两类
+    # 在任务页上拿不到单号 —— 于是只能退化成"客户 #3"，看不出业务来源是哪一份。
     doc_nos: dict[int, str] = {}
     contract_ids = {
         row.source_business_id
@@ -189,11 +201,40 @@ async def list_tasks(
                 )
             ).all()
         )
+    # 报价 / 订单在任务表上有自己的列，单独查编号
+    quote_ids = {row.quote_id for row in rows if row.quote_id}
+    quote_nos: dict[int, str] = {}
+    if quote_ids:
+        from app.modules.quote.model import Quote
+
+        quote_nos = dict(
+            (
+                await session.execute(
+                    select(Quote.id, Quote.quote_no).where(Quote.id.in_(quote_ids))
+                )
+            ).all()
+        )
+    order_ids = {row.order_id for row in rows if row.order_id}
+    order_nos: dict[int, str] = {}
+    if order_ids:
+        from app.modules.order.model import SalesOrder
+
+        order_nos = dict(
+            (
+                await session.execute(
+                    select(SalesOrder.id, SalesOrder.order_no).where(
+                        SalesOrder.id.in_(order_ids)
+                    )
+                )
+            ).all()
+        )
     items = [
         serialize(
             row,
             names.get(row.owner_id) if row.owner_id else None,
             doc_nos.get(row.source_business_id) if row.source_business_id else None,
+            quote_no=quote_nos.get(row.quote_id) if row.quote_id else None,
+            order_no=order_nos.get(row.order_id) if row.order_id else None,
         )
         for row in rows
     ]

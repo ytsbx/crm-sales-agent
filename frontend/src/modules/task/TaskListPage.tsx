@@ -13,6 +13,49 @@ import FormLabel from '../../shared/components/FormLabel'
 
 const PRIORITY_COLOR: Record<string, TagTone> = { high: 'red', normal: 'blue', low: 'grey' }
 
+/**
+ * 任务的「关联」列显示哪一个：按「**最具体的那个**」排。
+ *
+ * 打样 > 报价 > 订单 > 合同 > 商机 > 客户 —— 越靠前越接近用户真正要打开的那份原件。
+ * 报价 / 订单走任务表自己的列（后端连编号一起给了）；打样 / 合同走 `source_business_*`
+ * （任务表没有它们的列）。跳转直接落到**详情**而不是列表页 —— 让人自己再找一遍
+ * 等于没做（第十一批 11.6 复审）。
+ */
+function primaryTaskLink(record: Task): { label: string; to: string } | null {
+  if (record.source_business_type === 'sample' && record.source_business_id) {
+    // 打样单没有独立编号字段，用 id（打样列表里也是显示「打样申请 #id」）
+    return {
+      label: `打样单 #${record.source_business_id}`,
+      to: `/samples/${record.source_business_id}`,
+    }
+  }
+  if (record.quote_id) {
+    return {
+      label: `报价 ${record.quote_no ?? `#${record.quote_id}`}`,
+      to: `/quotes/${record.quote_id}`,
+    }
+  }
+  if (record.order_id) {
+    return {
+      label: `订单 ${record.order_no ?? `#${record.order_id}`}`,
+      to: `/orders/${record.order_id}`,
+    }
+  }
+  if (record.source_business_type === 'contract' && record.source_business_id) {
+    return {
+      label: `月结协议 ${record.source_doc_no ?? `#${record.source_business_id}`}`,
+      to: '/documents',
+    }
+  }
+  if (record.opportunity_id) {
+    return { label: `商机 #${record.opportunity_id}`, to: `/opportunities/${record.opportunity_id}` }
+  }
+  if (record.customer_id) {
+    return { label: `客户 #${record.customer_id}`, to: `/customers/${record.customer_id}` }
+  }
+  return null
+}
+
 export default function TaskListPage() {
   const queryClient = useQueryClient()
   const [mine, setMine] = useState(true)
@@ -73,27 +116,18 @@ export default function TaskListPage() {
     { title: '任务', dataIndex: 'title' },
     {
       title: '关联',
-      width: 200,
+      width: 220,
       render: (_: unknown, record: Task) => {
-        // 自动待办优先显示**来源单据**（月结协议到期这类）。只写「客户 #3」的话，
-        // 用户还得自己猜这条提醒是哪份协议带出来的——审查第 7 条要的正是这一点。
-        if (record.source_business_type === 'contract') {
-          return (
-            <Link to="/documents" style={{ color: 'var(--crm-primary)' }}>
-              月结协议 {record.source_doc_no ?? `#${record.source_business_id}`}
-            </Link>
-          )
-        }
-        return record.opportunity_id ? (
-          <Link to={`/opportunities/${record.opportunity_id}`} style={{ color: 'var(--crm-primary)' }}>
-            商机 #{record.opportunity_id}
+        // 一张任务可能同时挂着客户、商机、报价、订单、打样、合同。这一列只显示
+        // **最具体的那一个**并直接跳过去；全铺出来会挤成六行，而用户要找的通常
+        // 就是那份原件（第十一批 11.6 复审：此前只认合同 + 商机 + 客户，
+        // 报价/订单/打样一律退化成「客户 #3」，看不出业务来源是哪一份）。
+        const link = primaryTaskLink(record)
+        if (!link) return '-'
+        return (
+          <Link to={link.to} style={{ color: 'var(--crm-primary)' }}>
+            {link.label}
           </Link>
-        ) : record.customer_id ? (
-          <Link to={`/customers/${record.customer_id}`} style={{ color: 'var(--crm-primary)' }}>
-            客户 #{record.customer_id}
-          </Link>
-        ) : (
-          '-'
         )
       },
     },

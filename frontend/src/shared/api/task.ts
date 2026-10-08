@@ -6,8 +6,14 @@ export interface Task {
   title: string
   task_type?: string | null
   customer_id?: number | null
+  contact_id?: number | null
   opportunity_id?: number | null
   lead_id?: number | null
+  /** 关联的报价单 / 订单。后端连**编号**一起下发，列表上直接显示「报价 BJ2026xxx」 */
+  quote_id?: number | null
+  quote_no?: string | null
+  order_id?: number | null
+  order_no?: string | null
   owner_id?: number | null
   owner_name?: string | null
   priority: string
@@ -16,7 +22,10 @@ export interface Task {
   status_label: string
   due_at?: string | null
   source: string
-  /** 自动待办的来源对象（目前只有合同：月结协议到期待办） */
+  /**
+   * 来源业务对象。任务表没有合同/打样的列，这两类走这里：
+   * 合同 = 月结协议到期待办；打样 = 从打样跟进补建任务时带的原打样单。
+   */
   source_business_type?: string | null
   source_business_id?: number | null
   /** 来源单据号（如月结协议编号），列表上直接显示给人看 */
