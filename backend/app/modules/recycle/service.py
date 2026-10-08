@@ -342,6 +342,8 @@ def serialize_recycle_customer(
     customer: Customer,
     *,
     owner_name: str | None = None,
+    original_owner_id: int | None = None,
+    original_owner_name: str | None = None,
     owner_pending: bool = False,
     merged_into: dict | None = None,
     final_target: dict | None = None,
@@ -351,9 +353,16 @@ def serialize_recycle_customer(
         "id": customer.id,
         "name": customer.name,
         "short_name": customer.short_name,
+        # 【当前负责人】成对下发。合并来源的负责人**在合并那一刻就被清空了**，
+        # 所以这里对合并来源必然是 (None, None) —— 想看的那个负责人见下面 original_*。
         "owner_id": customer.owner_id,
         "owner_name": owner_name,
-        # 合并来源的负责人取的是合并前快照；快照里没有的 → 待核实（只有管理员看得到）
+        # 【原负责人】也是成对下发：合并来源取"合并前那张快照"，直接删除的取当时字段。
+        # 从前只下发 `owner_name`（快照）+ `owner_id`（当前字段），两个字段说的不是
+        # 同一件事，前端拿到 (null, "张三") 这种组合只能猜。
+        "original_owner_id": original_owner_id,
+        "original_owner_name": original_owner_name,
+        # 快照里没留下负责人（老数据 / 快照缺失）→ 两个都是 null，这里置真。
         "owner_pending": owner_pending,
         "deleted_at": _iso(customer.deleted_at),
         "created_at": _iso(customer.created_at),
@@ -367,7 +376,111 @@ def serialize_recycle_customer(
 
 #: 合并链条最多追几层。合并是人工操作，实际 1~2 层就到底了；给足余量，
 #: 同时保证脏数据也不会把一次列表请求拖成无限循环（环路另有 visited 兜底）。
+#:
+#: ⚠️ **追满上限不等于"已经找到终点"**。早期实现直接把停下来的那个节点当成终点，
+#: 于是超过 20 层的链会把第 21 个中间客户报成"最终去向"，用户看到"目标已不存在"，
+#: 而真正的最终客户还好端端地在那儿。现在追满就标 `truncated`，界面说
+#: 「合并链过长，最终去向待核实」—— 宁可不给链接，也不给一个错的链接。
 _MERGE_CHAIN_MAX_HOPS = 20
+
+#: 链条的三种结局。
+CHAIN_OK = "ok"
+CHAIN_LOOP = "loop"
+CHAIN_TRUNCATED = "truncated"
+
+
+def _walk_chain(root: int, edges: dict[int, int], unexpanded: set[int]) -> tuple[int | None, str]:
+    """沿 `edges` 从 `root` 走到头，返回 `(终点 id, 结局)`。
+
+    - 有环 → `(None, CHAIN_LOOP)`
+    - 停在 `unexpanded`（这一层没让继续追，但它**确实还有下家**）→
+      `(None, CHAIN_TRUNCATED)`
+    - 正常走到底 → `(终点, CHAIN_OK)`
+    """
+    current = root
+    visited = {root}
+    while current in edges:
+        nxt = edges[current]
+        if nxt in visited:
+            return None, CHAIN_LOOP
+        visited.add(nxt)
+        current = nxt
+    if current in unexpanded:
+        # 能走到这儿说明这一层的出边还没查过、但它**确实还有下家** —— 链没到头，
+        # 既不能当终点，也不能说"链断了"，只能如实说一句"没追完"。
+        return None, CHAIN_TRUNCATED
+    return current, CHAIN_OK
+
+
+async def _sources_with_out_edges(
+    session: AsyncSession, candidates: set[int]
+) -> set[int]:
+    """这批客户里，**还有下家**的那些（即自己也是某条合并留痕的来源）。
+
+    只在追到上限时用一次：用来把「链正好到这儿就没了」和「链还没完，只是
+    没让追」分开 —— 不查这一步，正好卡在上限层数的链会被误报成"没追完"。
+    """
+    if not candidates:
+        return set()
+    rows = (
+        await session.execute(
+            select(CustomerMergeLog.source_customer_id)
+            .where(CustomerMergeLog.source_customer_id.in_(candidates))
+            .distinct()
+        )
+    ).scalars().all()
+    return {int(sid) for sid in rows}
+
+
+async def _resolve_merge_chain(
+    session: AsyncSession, roots: set[int]
+) -> dict[int, tuple[int | None, str]]:
+    """从"直接合并目标"出发，追到**链条终点**（不再被别人并走的那个客户）。
+
+    返回 `{起点 id: (终点 id, 结局)}`，结局取 `CHAIN_OK` / `CHAIN_LOOP` /
+    `CHAIN_TRUNCATED`；后两种终点为 None（不该下发链接）。
+
+    实现上**逐层批量查**（一次查一批来源的边），不是一条一条追 —— 后者在列表
+    页有几十条合并记录时就是几十次往返。环路保护有两条：`seen_sources` 挡住
+    已展开过的来源，逐条走链时再用 `visited` 兜一次。
+    """
+    if not roots:
+        return {}
+
+    edges: dict[int, int] = {}
+    seen_sources: set[int] = set()
+    #: 追到上限时"还没查过出边、且确实还有下家"的节点。它们的链**没到头** ——
+    #: 所以既不能当成终点，也不能当成"链断了"，只能如实说一句"没追完"。
+    unexpanded: set[int] = set()
+    frontier = set(roots)
+    for _ in range(_MERGE_CHAIN_MAX_HOPS):
+        frontier = {n for n in frontier if n not in seen_sources}
+        if not frontier:
+            break
+        seen_sources |= frontier
+        rows = (
+            await session.execute(
+                select(
+                    CustomerMergeLog.source_customer_id,
+                    CustomerMergeLog.target_customer_id,
+                )
+                .where(CustomerMergeLog.source_customer_id.in_(frontier))
+                # 升序遍历、后写覆盖前写 → 留下的是最新那条
+                .order_by(CustomerMergeLog.id.asc())
+            )
+        ).all()
+        for sid, tid in rows:
+            edges[int(sid)] = int(tid)
+        frontier = {int(tid) for _, tid in rows}
+    else:
+        # `for ... else`：只有在**没走到 break**（也就是跑满了上限）时才进来。
+        # 这一层的出边还没查，补一次"谁还有下家"：查完还是空的，说明链就到这儿
+        # 为止（照常给终点）；还有下家的才是真"没追完"。
+        unexpanded = await _sources_with_out_edges(
+            session, {n for n in frontier if n not in seen_sources}
+        )
+
+    return {root: _walk_chain(root, edges, unexpanded) for root in roots}
 
 
 def _latest_merge_log_subq():
@@ -419,59 +532,6 @@ def _visible_customer_predicate(merge_subq, owner_ids: list[int]):
     return or_(directly_deleted, merged_in_scope)
 
 
-async def _resolve_merge_chain(
-    session: AsyncSession, roots: set[int]
-) -> dict[int, tuple[int | None, bool]]:
-    """从"直接合并目标"出发，追到**链条终点**（不再被别人并走的那个客户）。
-
-    返回 `{起点 id: (终点 id, 是否成环)}`。成环时终点为 None。
-
-    实现上**逐层批量查**（一次查一批来源的边），不是一条一条追 —— 后者在列表
-    页有几十条合并记录时就是几十次往返。环路保护有两条：`seen_sources` 挡住
-    已展开过的来源，逐条走链时再用 `visited` 兜一次。
-    """
-    if not roots:
-        return {}
-
-    edges: dict[int, int] = {}
-    seen_sources: set[int] = set()
-    frontier = set(roots)
-    for _ in range(_MERGE_CHAIN_MAX_HOPS):
-        frontier = {n for n in frontier if n not in seen_sources}
-        if not frontier:
-            break
-        seen_sources |= frontier
-        rows = (
-            await session.execute(
-                select(
-                    CustomerMergeLog.source_customer_id,
-                    CustomerMergeLog.target_customer_id,
-                )
-                .where(CustomerMergeLog.source_customer_id.in_(frontier))
-                # 升序遍历、后写覆盖前写 → 留下的是最新那条
-                .order_by(CustomerMergeLog.id.asc())
-            )
-        ).all()
-        for sid, tid in rows:
-            edges[int(sid)] = int(tid)
-        frontier = {int(tid) for _, tid in rows}
-
-    out: dict[int, tuple[int | None, bool]] = {}
-    for root in roots:
-        current = root
-        visited = {root}
-        looped = False
-        while current in edges:
-            nxt = edges[current]
-            if nxt in visited:
-                looped = True
-                break
-            visited.add(nxt)
-            current = nxt
-        out[root] = (None if looped else current, looped)
-    return out
-
-
 async def _merge_refs(
     session: AsyncSession, user: CurrentUser, ids: set[int]
 ) -> dict[int, dict]:
@@ -483,6 +543,8 @@ async def _merge_refs(
     - `id` 只在"**在范围内且还活着**"时才给 —— 它是要拿去做跳转的，
       指向一个 404 的链接比不给更糟。
     - `state`：`ok`（可跳转）/ `forbidden`（不在数据范围）/ `gone`（已不存在或被删）。
+      另有 `loop` / `truncated` 两种，**不由本函数产生** —— 它们是"链没走通"，
+      判断在 `_resolve_merge_chain` 那边，由调用方写进 `final_target`。
     """
     if not ids:
         return {}
@@ -580,11 +642,16 @@ async def list_deleted_customers(
     # 去向：直接目标 + 链条终点，都要过权限，批量一次算完
     direct_targets = {int(log.target_customer_id) for log in merge_map.values()}
     chain = await _resolve_merge_chain(session, direct_targets)
-    finals = {fin for fin, looped in chain.values() if fin is not None and not looped}
+    # 只有**确实走到终点**的才拿来查引用；成环 / 追满上限的终点是 None，本来就不下发链接
+    finals = {
+        fin for fin, state in chain.values() if fin is not None and state == CHAIN_OK
+    }
     refs = await _merge_refs(session, user, direct_targets | finals)
 
-    owners = await customer_service.owner_names(
-        session, [original_owner.get(c.id) for c in rows]
+    # 当前负责人和原负责人可能不是同一个人（合并时负责人被清空过），一次把两批 id 都查了
+    owner_names = await customer_service.owner_names(
+        session,
+        [c.owner_id for c in rows] + [original_owner.get(c.id) for c in rows],
     )
     items = []
     for customer in rows:
@@ -594,21 +661,26 @@ async def list_deleted_customers(
         if log is not None:
             target_id = int(log.target_customer_id)
             merged_into = refs.get(target_id)
-            final_id, looped = chain.get(target_id, (None, False))
-            if looped:
+            final_id, state = chain.get(target_id, (None, CHAIN_OK))
+            if state != CHAIN_OK:
+                # 成环 / 追满上限都**不给链接** —— 给出去就是个错的链接，
+                # 只在文案上把这两种情况分开（见前端 MERGE_STATE_TEXT）。
                 final_target = {
                     "id": None,
                     "name": None,
                     "visible": False,
-                    "state": "loop",
+                    "state": state,
                 }
             elif final_id is not None and final_id != target_id:
                 # 只在与直接历史**不同**时才下发，省得前端重复渲染一层
                 final_target = refs.get(final_id)
+        original_id = original_owner.get(customer.id)
         items.append(
             serialize_recycle_customer(
                 customer,
-                owner_name=owners.get(original_owner.get(customer.id)),
+                owner_name=owner_names.get(customer.owner_id) if customer.owner_id else None,
+                original_owner_id=original_id,
+                original_owner_name=owner_names.get(original_id) if original_id else None,
                 owner_pending=customer.id in pending,
                 merged_into=merged_into,
                 final_target=final_target,

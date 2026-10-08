@@ -81,7 +81,11 @@ const MERGE_STATE_TEXT: Record<MergeRef['state'], string> = {
   forbidden: '合并目标无查看权限',
   gone: '合并目标已不存在',
   loop: '合并去向异常',
+  truncated: '合并链过长，最终去向待核实',
 }
+
+/** 链没走通的两种状态：没有可跳转的目标，说明文案本身已经是一句完整的话。 */
+const CHAIN_UNRESOLVED: ReadonlyArray<MergeRef['state']> = ['loop', 'truncated']
 
 function LeadsPanel() {
   const { can } = usePermissions()
@@ -336,7 +340,7 @@ function CustomersPanel() {
     { title: '简称', dataIndex: 'short_name', width: 140, render: (v: string | null) => v ?? '-' },
     {
       title: '原负责人',
-      dataIndex: 'owner_name',
+      dataIndex: 'original_owner_name',
       width: 110,
       // "待核实" ≠ "未分配"：前者是合并留痕里没记当时的负责人（只有管理员看得到），
       // 后者是这条客户本来就没有负责人。说成一样的会把人往错的方向带。
@@ -352,10 +356,13 @@ function CustomersPanel() {
         return (
           <div>
             <div>已并入 {renderTarget(merged)}</div>
-            {/* A→B→C：B 自己也被并走了。后端只在"最终去处与直接历史不同"时才下发 */}
+            {/* A→B→C：B 自己也被并走了。后端只在"最终去处与直接历史不同"时才下发。
+                链没走通（成环 / 超过追踪上限）时那句话本身已经说完了去向，不再拼"最终" */}
             {record.final_target ? (
               <div style={{ color: 'var(--crm-text-3)' }}>
-                最终 {renderTarget(record.final_target)}
+                {CHAIN_UNRESOLVED.includes(record.final_target.state)
+                  ? MERGE_STATE_TEXT[record.final_target.state]
+                  : <>最终 {renderTarget(record.final_target)}</>}
               </div>
             ) : null}
           </div>

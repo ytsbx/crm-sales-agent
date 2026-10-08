@@ -49,22 +49,36 @@ export interface RecycleSku {
  * 合并去向的引用。**不可见时 id 与 name 都是 null**（后端刻意不下发，避免泄露）。
  *
  * `id` 只在"在数据范围内、且这个客户还活着"时才给 —— 它是要拿去做跳转的，
- * 指向一个打不开的页面比不给更糟。
+ * 指向一个打不开的页面比不给更糟。`loop` / `truncated` 这两种状态下同样不给 id：
+ * 那时候连"终点是谁"都还没确定，给出去必然是个错的链接。
  */
 export interface MergeRef {
   id: number | null
   name: string | null
   visible: boolean
-  /** ok=可跳转 / forbidden=不在数据范围 / gone=已不存在或被删 / loop=链条异常 */
-  state: 'ok' | 'forbidden' | 'gone' | 'loop'
+  /**
+   * ok=可跳转 / forbidden=不在数据范围 / gone=已不存在或被删 /
+   * loop=合并链条成环 / truncated=链条比追踪上限还长，没追到底
+   */
+  state: 'ok' | 'forbidden' | 'gone' | 'loop' | 'truncated'
 }
 
 export interface RecycleCustomer {
   id: number
   name: string
   short_name: string | null
+  /**
+   * 客户**当前**的负责人。成对下发 —— 被合并掉的客户在合并那一刻负责人就清空了，
+   * 所以这里对合并来源必然是 (null, null)。想在回收站看负责人请看 `original_owner_*`。
+   */
   owner_id: number | null
   owner_name: string | null
+  /**
+   * **原**负责人：合并来源取"合并前那张快照"，直接删除的取当时字段。也是成对下发。
+   * 从前 `owner_id` 取当前字段、`owner_name` 取快照，两个字段说的不是同一件事。
+   */
+  original_owner_id: number | null
+  original_owner_name: string | null
   /**
    * 原负责人"待核实"：这是一条**合并来源**记录，但合并留痕里没留下当时的负责人，
    * 于是不知道该归谁看 —— 后端只把它给管理员。界面照实说明，别显示成"未分配"。

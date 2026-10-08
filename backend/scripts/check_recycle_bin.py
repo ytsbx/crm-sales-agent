@@ -16,6 +16,15 @@
   快照里没有负责人的只给管理员看并标"待核实"；
   合并**目标**单独鉴权（不在范围内时连名字都不下发）；
   A→B→C 要保留 A→B 的历史、同时给出最终 C 的入口。
+- **负责人字段成对下发**（2026-10-08 复审 RB05 补）：`owner_id/owner_name` 是客户**当前**
+  的负责人（合并来源被清空 → 两个都是 null），`original_owner_id/original_owner_name`
+  才是**原**负责人（合并前快照 / 直接删除的取当时字段）。从前只下发前者之一 + 后者之一，
+  两个字段说的不是同一件事。
+- **合并链的三种结局**（2026-10-08 复审 RB03 补）：追链有 20 层上限。
+  正常走到终点 → 给可点入口；成环 → `loop`；**追满上限还没到头 → `truncated`**，
+  界面说「合并链过长，最终去向待核实」。**关键是不能把停下来的那个中间客户当成终点**
+  —— 那会给用户一个"目标已不存在"的错误结论，而真正的最终客户还在。
+  边界也要钉住：正好追满上限的链**不算**没追完。
 - **并发**（2026-10-08 复审 RB03 补）：产品"正在被删"（事务已写未提交）时，
   恢复 SKU / 新增 SKU 都必须**等**产品行锁，不能读着旧状态抢先落库 —— 否则
   产品一提交就留下挂在已删产品下的有效 SKU。
@@ -233,6 +242,42 @@ async def seed_fixtures() -> dict:
         await s.flush()
         ids["product_e"] = product_e.id
 
+        # ---- 合并链的长度边界（2026-10-08 复审 RB03）----
+        # 追链上限取自后端那个常量本身，链长按它推 —— 谁改了上限，这里跟着走，
+        # 不会出现"上限改了、用例还在验旧层数"的假绿。
+        #   长链：比上限**多追一步**才到头 → 必须标"没追完"
+        #   边界链：正好**追满上限**就到底 → 必须照常给终点（这一条防误判）
+        # 链条之外的环由 `_add_reverse_merge_log` 手工补（合并接口自己造不出环）。
+        from app.modules.recycle.service import _MERGE_CHAIN_MAX_HOPS
+
+        ids["chain_hops"] = _MERGE_CHAIN_MAX_HOPS
+        long_nodes = _MERGE_CHAIN_MAX_HOPS + 3
+        cap_nodes = _MERGE_CHAIN_MAX_HOPS + 2
+        long_chain = [
+            Customer(name=f"{PREFIX}长链{n:02d}", owner_id=admin.id,
+                     status="active", pool_status="private")
+            for n in range(1, long_nodes + 1)
+        ]
+        cap_chain = [
+            Customer(name=f"{PREFIX}边界链{n:02d}", owner_id=admin.id,
+                     status="active", pool_status="private")
+            for n in range(1, cap_nodes + 1)
+        ]
+        cyc_a = Customer(name=f"{PREFIX}环A", owner_id=admin.id, status="active",
+                         pool_status="private")
+        cyc_b = Customer(name=f"{PREFIX}环B", owner_id=admin.id, status="active",
+                         pool_status="private")
+        s.add_all([*long_chain, *cap_chain, cyc_a, cyc_b])
+        await s.flush()
+        ids["long_chain"] = [c.id for c in long_chain]
+        ids["cap_chain"] = [c.id for c in cap_chain]
+        ids["cyc_a"] = cyc_a.id
+        ids["cyc_b"] = cyc_b.id
+        # 名字也带着走：断言里要拿它核对"终点是谁"，别在用例里现拼字符串
+        ids["long_second_name"] = long_chain[1].name
+        ids["long_tail_name"] = long_chain[-1].name
+        ids["cap_tail_name"] = cap_chain[-1].name
+
         await s.commit()
     return ids
 
@@ -277,8 +322,11 @@ async def assert_merged_customer_scope(ids: dict, admin: str, sales: str) -> Non
     status, body = call("GET", "/recycle-bin/customers?page_size=200", token=admin)
     check_true("管理员看得到（对照）", ids["cust_other_src"] in ids_of(body))
     row = row_of(body, ids["cust_other_src"]) or {}
-    # 合并会把来源的 owner_id 清空；显示必须回到**快照**里的那位，而不是"未分配"
-    check("原负责人取的是合并前的快照", row.get("owner_name"), "李四")
+    # 合并会把来源的 owner_id 清空；"原负责人"必须回到**快照**里的那位，而不是"未分配"
+    check("原负责人取的是合并前的快照", row.get("original_owner_name"), "李四")
+    check("原负责人的 id 也来自快照（成对下发）", row.get("original_owner_id"), ids["lisi"])
+    check("『当前负责人』确实已被清空，别跟它混着看", row.get("owner_id"), None)
+    check("『当前负责人』姓名同样为空", row.get("owner_name"), None)
     check_true("这条不是『待核实』", row.get("owner_pending") is False, repr(row.get("owner_pending")))
     check("去向指向合并目标", (row.get("merged_into") or {}).get("id"), ids["cust_other_tgt"])
 
@@ -300,7 +348,8 @@ async def assert_missing_snapshot_is_admin_only(ids: dict, admin: str, sales: st
     row = row_of(body, ids["cust_nosnap_src"])
     check_true("管理员仍能查到这条（不是无声消失）", row is not None)
     check("标成『待核实』", (row or {}).get("owner_pending"), True)
-    check("不再显示成『未分配』", (row or {}).get("owner_name"), None)
+    check("不再显示成『未分配』（原负责人没名字）", (row or {}).get("original_owner_name"), None)
+    check("原负责人 id 也为空（成对）", (row or {}).get("original_owner_id"), None)
 
 
 async def assert_target_needs_its_own_permission(ids: dict, admin: str, sales: str) -> None:
@@ -340,6 +389,121 @@ async def assert_merge_chain_resolves(ids: dict, admin: str, sales: str) -> None
     check("C 的名字", fin.get("name"), f"{PREFIX}链条C")
     status, _ = call("GET", f"/customers/{ids['cust_chain_c']}", token=sales)
     check_true("C 的详情能正常打开（给的是能用的入口）", status == 200, f"实际 {status}")
+
+
+async def _add_reverse_merge_log(source_id: int, target_id: int) -> None:
+    """手工补一条合并留痕，造出 A→B 且 B→A 的环。
+
+    走接口是造不出环的（来源合并完就被软删，不可能再当一次来源），所以这只能是
+    "脏数据" —— 但列表接口必须扛得住：既不无限循环，也不给一个错的链接。
+    """
+    async with SessionLocal() as s:
+        await s.execute(
+            text(
+                "insert into customer_merge_logs"
+                " (source_customer_id, target_customer_id, operator_id,"
+                "  merge_snapshot, moved, conflicts, reason, created_at)"
+                " values (:s, :t, null, null, null, null, :r, now())"
+            ),
+            {"s": source_id, "t": target_id, "r": "夹具：手工造环"},
+        )
+        await s.commit()
+
+
+async def _build_merge_chains(ids: dict, admin: str) -> None:
+    """把长链、边界链合并出来；环手工补一条反向留痕。"""
+    for chain in (ids["long_chain"], ids["cap_chain"]):
+        for source, target in zip(chain, chain[1:]):
+            await _merge(source, target, admin)
+    # 边界链的尾节点**直接删掉**（不是被合并）：用来分辨
+    # "终点已删（gone，给名字不给链接）"和"没追完（truncated）"这两种"没有链接"。
+    status, _ = call("DELETE", f"/customers/{ids['cap_chain'][-1]}", token=admin)
+    if status != 200:
+        raise SystemExit(f"删除边界链尾节点失败：HTTP {status}")
+    await _merge(ids["cyc_a"], ids["cyc_b"], admin)
+    await _add_reverse_merge_log(ids["cyc_b"], ids["cyc_a"])
+
+
+async def _customer_rows_by_id(
+    cust_ids: list[int], token: str, page_size: int
+) -> dict[int, dict]:
+    """**按同一种分页**把这几条记录一次找齐。
+
+    列表里还有本套件前面几节留下的夹具，目标行不一定在第一页 —— 所以必须翻页。
+    一次走完、把要的几条都收下，别为每条单独再翻一遍。
+    """
+    wanted = set(cust_ids)
+    found: dict[int, dict] = {}
+    for page in range(1, 81):
+        status, body = call(
+            "GET",
+            f"/recycle-bin/customers?page={page}&page_size={page_size}",
+            token=token,
+        )
+        if status != 200:
+            break
+        rows = items_of(body)
+        if not rows:
+            break
+        for row in rows:
+            if row.get("id") in wanted:
+                found[row["id"]] = row
+        if len(found) == len(wanted):
+            break
+    return found
+
+
+async def assert_merge_chain_over_cap(ids: dict, admin: str) -> None:
+    """RB03：链条追到上限还不到头时**不给链接**，更不能把中间客户当成终点。"""
+    hops = ids["chain_hops"]
+    head = ids["long_chain"][0]
+    cap_head = ids["cap_chain"][0]
+    print()
+    print(f"=== 17. 客户：合并链超过追踪上限（{hops} 层）→ 不给错链接 ===")
+
+    # 关键：**一页一行**。后端是"按当页要追的那些客户逐层批量展开"的，把整条链摆在
+    # 同一页上会一口气展开完，反而看不出上限 —— 真实场景里正是"这条链的其他客户
+    # 落在别的页上"才追不完，一页一行就是那个场景的确定版。
+    one = await _customer_rows_by_id([head, cap_head, ids["cyc_a"]], admin, 1)
+
+    # ---- 长链：从起点的"直接目标"起要追 21 跳，超出上限 ----
+    row = one.get(head)
+    check_true("长链起点在回收站里", row is not None)
+    check("直接历史照常给（并入了第 2 个）",
+          ((row or {}).get("merged_into") or {}).get("name"), ids["long_second_name"])
+    fin = (row or {}).get("final_target") or {}
+    # 从前这里会把"停下来的那个中间客户"当成终点发出去，用户看到"目标已不存在"
+    check("追不完 → 标成 truncated", fin.get("state"), "truncated")
+    check("追不完 → 不给 id（不给错的链接）", fin.get("id"), None)
+    check("追不完 → 不给名字（免得被当成确定的去向）", fin.get("name"), None)
+
+    # ---- 边界链：正好追满上限就到底，**不能**被当成"没追完" ----
+    # 这条同时盯着"追满上限后补的那一次探边"：少了它，正好卡上限的链会被误判成没追完。
+    row = one.get(cap_head)
+    check_true("边界链起点在回收站里", row is not None)
+    fin = (row or {}).get("final_target") or {}
+    check("正好追满上限也不算『没追完』", fin.get("state"), "gone")
+    check("终点就是链尾那个客户", fin.get("name"), ids["cap_tail_name"])
+    check("终点已被直接删除 → 不给 id", fin.get("id"), None)
+
+    # ---- 环：A↔B ----
+    row = one.get(ids["cyc_a"])
+    check_true("成环那条在回收站里", row is not None)
+    fin = (row or {}).get("final_target") or {}
+    check("成环 → 标成 loop", fin.get("state"), "loop")
+    check("成环不给 id", fin.get("id"), None)
+
+    # ---- 换个分页：展开范围会变（结论允许在"给得出"和"待核实"之间变），
+    #      但**永远不能把链条中间的某个客户说成最终去向** ----
+    for page_size in (200, 10):
+        found = await _customer_rows_by_id([head], admin, page_size)
+        fin = (found.get(head) or {}).get("final_target") or {}
+        check_true(
+            f"分页 {page_size}：终点要么是链尾、要么说『待核实』，不能是中间客户",
+            fin.get("id") in (None, ids["long_chain"][-1])
+            and fin.get("name") in (None, ids["long_tail_name"]),
+            repr(fin),
+        )
 
 
 def _call_later(method: str, path: str, *, token: str, body=None) -> tuple[threading.Thread, dict]:
@@ -584,6 +748,14 @@ async def main() -> int:
         check("它标出了并入了谁", merged_into.get("id"), ids["cust_tgt"])
         check_true("直接删的客户在回收站里", direct_row is not None)
         check("直接删的没有『并入了谁』", (direct_row or {}).get("merged_into"), None)
+        # 直接删除的没有"合并清空"这一步：两对负责人字段应该是同一套人
+        check("直接删的：原负责人就是当时那位（id）",
+              (direct_row or {}).get("original_owner_id"), ids["admin"])
+        check_true("直接删的：原负责人姓名不为空（不是『待核实』）",
+                   bool((direct_row or {}).get("original_owner_name")),
+                   repr((direct_row or {}).get("original_owner_name")))
+        check("直接删的：当前负责人没被清空（与合并来源不同）",
+              (direct_row or {}).get("owner_id"), ids["admin"])
 
         print()
         print("=== 9. 客户：只读 —— 没有恢复接口 ===")
@@ -600,6 +772,8 @@ async def main() -> int:
         await assert_missing_snapshot_is_admin_only(ids, admin, sales)
         await assert_target_needs_its_own_permission(ids, admin, sales)
         await assert_merge_chain_resolves(ids, admin, sales)
+        await _build_merge_chains(ids, admin)
+        await assert_merge_chain_over_cap(ids, admin)
         await assert_restore_sku_waits_for_product_lock(ids, admin)
         await assert_create_sku_waits_for_product_lock(ids, admin)
 
