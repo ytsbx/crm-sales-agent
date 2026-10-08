@@ -10,7 +10,7 @@
  * 每个分区的数据各自分页、各自刷新，互不干扰；没有权限的分区直接不显示。
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
@@ -27,6 +27,7 @@ import {
   restoreLead,
   restoreProduct,
   restoreSku,
+  type MergeRef,
   type RecycleCustomer,
   type RecycleLead,
   type RecycleProduct,
@@ -51,6 +52,37 @@ function usePageSize(initial = 10) {
   }
 }
 
+/**
+ * 把当前页钳到有效范围内。
+ *
+ * 为什么必须做：**恢复**会让总数变小。停在最后一页时恢复掉那页唯一的记录，
+ * 页码就会落到一个已经不存在的位置上 —— 界面显示"回收站里没有线索"，
+ * 右上角却又写着"共 10 条"，看着像数据坏了（实际只是页码没跟上）。
+ *
+ * 放在"数据刷新之后"做（依赖 total），而不是恢复成功那一刻：那一刻拿不到
+ * 新的总数。产品恢复会同时缩短产品、SKU 两张表的记录，所以两张表都要各自钳一次。
+ */
+function useClampPage(
+  total: number | undefined,
+  page: number,
+  pageSize: number,
+  setPage: (page: number) => void,
+) {
+  useEffect(() => {
+    if (total === undefined) return
+    const lastPage = Math.max(1, Math.ceil(total / pageSize))
+    if (page > lastPage) setPage(lastPage)
+  }, [total, page, pageSize, setPage])
+}
+
+/** 去向里"打不开的那些情况"该显示什么 —— 别让用户对着空白猜。 */
+const MERGE_STATE_TEXT: Record<MergeRef['state'], string> = {
+  ok: '—',
+  forbidden: '合并目标无查看权限',
+  gone: '合并目标已不存在',
+  loop: '合并去向异常',
+}
+
 function LeadsPanel() {
   const { can } = usePermissions()
   const queryClient = useQueryClient()
@@ -60,6 +92,8 @@ function LeadsPanel() {
     queryKey: ['recycle', 'leads', pager.page, pager.pageSize],
     queryFn: () => listRecycleLeads({ page: pager.page, page_size: pager.pageSize }),
   })
+  // 恢复会让总数变小，停在最后一页时要把页码拉回来（见 useClampPage）
+  useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
 
   const restoreMutation = useMutation({
     mutationFn: (id: number) => restoreLead(id),
@@ -135,6 +169,9 @@ function ProductsPanel() {
     queryKey: ['recycle', 'skus', skuPager.page, skuPager.pageSize],
     queryFn: () => listRecycleSkus({ page: skuPager.page, page_size: skuPager.pageSize }),
   })
+  // 产品恢复会**同时**缩短产品和 SKU 两张表的记录，两张表各自钳一次页码
+  useClampPage(productQuery.data?.total, productPager.page, productPager.pageSize, productPager.setPage)
+  useClampPage(skuQuery.data?.total, skuPager.page, skuPager.pageSize, skuPager.setPage)
 
   const invalidateAll = () => {
     void queryClient.invalidateQueries({ queryKey: ['recycle', 'products'] })
@@ -277,6 +314,22 @@ function CustomersPanel() {
     queryKey: ['recycle', 'customers', pager.page, pager.pageSize],
     queryFn: () => listRecycleCustomers({ page: pager.page, page_size: pager.pageSize }),
   })
+  useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
+
+  /**
+   * 渲染一个「去向」：能打开就给链接，打不开就说明为什么。
+   *
+   * `name` 可能为空 —— 目标客户不在数据范围内时后端**刻意不下发名字**，
+   * 这时候绝不能拿它拼一句"已并入 null"。同理 `id` 为空就不给链接，
+   * 免得用户点进一个 404 页面。
+   */
+  const renderTarget = (ref: MergeRef) => {
+    if (ref.id != null) {
+      return <a onClick={() => navigate(`/customers/${ref.id}`)}>{ref.name ?? `#${ref.id}`}</a>
+    }
+    if (ref.name) return <span>{ref.name}</span>
+    return <span style={{ color: 'var(--crm-text-3)' }}>{MERGE_STATE_TEXT[ref.state]}</span>
+  }
 
   const columns = [
     { title: '客户名称', dataIndex: 'name' },
@@ -285,22 +338,29 @@ function CustomersPanel() {
       title: '原负责人',
       dataIndex: 'owner_name',
       width: 110,
-      render: (v: string | null) => v ?? '未分配',
+      // "待核实" ≠ "未分配"：前者是合并留痕里没记当时的负责人（只有管理员看得到），
+      // 后者是这条客户本来就没有负责人。说成一样的会把人往错的方向带。
+      render: (v: string | null, record: RecycleCustomer) =>
+        record.owner_pending ? '待核实' : (v ?? '未分配'),
     },
     {
       title: '去向',
       dataIndex: 'merged_into',
-      width: 260,
-      render: (merged: RecycleCustomer['merged_into']) =>
-        merged ? (
-          // 只给"跳到合并后的客户"，不给恢复按钮 —— 客户这块主人定的是只做"看"
-          <span>
-            已并入{' '}
-            <a onClick={() => navigate(`/customers/${merged.id}`)}>{merged.name ?? `#${merged.id}`}</a>
-          </span>
-        ) : (
-          <Tag>直接删除</Tag>
-        ),
+      width: 280,
+      render: (merged: RecycleCustomer['merged_into'], record: RecycleCustomer) => {
+        if (!merged) return <Tag>直接删除</Tag>
+        return (
+          <div>
+            <div>已并入 {renderTarget(merged)}</div>
+            {/* A→B→C：B 自己也被并走了。后端只在"最终去处与直接历史不同"时才下发 */}
+            {record.final_target ? (
+              <div style={{ color: 'var(--crm-text-3)' }}>
+                最终 {renderTarget(record.final_target)}
+              </div>
+            ) : null}
+          </div>
+        )
+      },
     },
     { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
   ]

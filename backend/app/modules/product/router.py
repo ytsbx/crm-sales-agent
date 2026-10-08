@@ -136,7 +136,15 @@ async def delete_product(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    product = await svc.get_product_or_404(session, product_id)
+    """软删产品（连带软删它名下的 SKU）。
+
+    **先锁产品、再扫 SKU**（锁序见 `svc.lock_product`）。不加锁的话，
+    "正在删产品"与"同时恢复它名下的某个 SKU"会各看各的旧世界：
+    产品删掉了、SKU 却被恢复成有效，留下挂在已删产品下的孤儿。
+    """
+    product = await svc.lock_product(session, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     before = svc.serialize_product(product)
     await svc.delete_product(session, product)
     await write_audit(
@@ -161,21 +169,13 @@ async def restore_product(
 ):
     """从回收站恢复产品，连带把它下面被删的 SKU 一起捡回来。
 
-    取数**带行锁**：恢复要改 `deleted_at`、还要扫一遍它名下的 SKU 逐个恢复，
-    不加锁的话"正在恢复产品"与"同时去删它的 SKU"交叉，可能留下半截状态。
-    `populate_existing=True` 不能少 —— 本会话 `expire_on_commit=False`，
-    少了它拿回来的是内存里的旧值（`deleted_at` 已经被读过），行锁等于白加。
+    取数**带行锁**（`svc.lock_product`）：恢复要改 `deleted_at`、还要扫一遍它名下的
+    SKU 逐个恢复，不加锁的话"正在恢复产品"与"同时去删它的 SKU"交叉，可能留下半截状态。
+    锁序固定「先产品、后 SKU」，四个入口（删产品 / 恢复产品 / 恢复 SKU / 新建 SKU）共用。
 
     撞码的 SKU 单独跳过、在结果里报出来（见 `recycle.service.restore_product`）。
     """
-    row = (
-        await session.execute(
-            select(Product)
-            .where(Product.id == product_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalars().first()
+    row = await svc.lock_product(session, product_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
 
@@ -222,7 +222,15 @@ async def create_sku(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    product = await svc.get_product_or_404(session, product_id)
+    """新增 SKU。
+
+    **带产品行锁**：产品有效才允许挂 SKU，而"读一眼产品还在不在"和"真的插进去"
+    之间隔着一段时间 —— 期间产品可能正好被删掉（连它名下 SKU 一起软删），
+    插入就会落成挂在已删产品下的孤儿。锁住产品行，这两步就与产品删除串起来了。
+    """
+    product = await svc.lock_product(session, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     await svc.ensure_sku_code_unique(session, payload.sku_code)
     sku = Sku(**payload.model_dump(), product_id=product.id)
     session.add(sku)
@@ -371,8 +379,19 @@ async def restore_sku(
     已删产品下的孤儿 —— 产品列表里根本看不到它（口径见
     `recycle.service.restore_sku`）。这种情况直接让用户先恢复产品。
 
-    同样带行锁 + `populate_existing=True`（理由见 `restore_product`）。
+    ⚠️ **锁序：「先产品、后 SKU」**，与删除产品 / 恢复产品 / 新增 SKU 一致。
+    所以这里是"先只读一下 product_id（不加锁）→ 锁产品 → 再锁 SKU"，
+    而不是先锁 SKU 再补产品锁 —— 后者与"恢复产品"方向相反，两边同时进行时死锁。
+    锁住产品之后 SKU 还要**重新读一遍**（`populate_existing`），
+    否则拿到的可能是锁之前读进内存的旧值。
     """
+    product_id = (
+        await session.execute(select(Sku.product_id).where(Sku.id == sku_id))
+    ).scalar_one_or_none()
+    if product_id is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+
+    product = await svc.lock_product(session, int(product_id))
     row = (
         await session.execute(
             select(Sku)
@@ -384,7 +403,7 @@ async def restore_sku(
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
 
-    await recycle_svc.restore_sku(session, row)
+    await recycle_svc.restore_sku(session, row, product=product)
     await write_audit(
         session,
         operator_id=user.id,

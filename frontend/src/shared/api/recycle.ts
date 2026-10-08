@@ -45,16 +45,37 @@ export interface RecycleSku {
   created_at: string | null
 }
 
+/**
+ * 合并去向的引用。**不可见时 id 与 name 都是 null**（后端刻意不下发，避免泄露）。
+ *
+ * `id` 只在"在数据范围内、且这个客户还活着"时才给 —— 它是要拿去做跳转的，
+ * 指向一个打不开的页面比不给更糟。
+ */
+export interface MergeRef {
+  id: number | null
+  name: string | null
+  visible: boolean
+  /** ok=可跳转 / forbidden=不在数据范围 / gone=已不存在或被删 / loop=链条异常 */
+  state: 'ok' | 'forbidden' | 'gone' | 'loop'
+}
+
 export interface RecycleCustomer {
   id: number
   name: string
   short_name: string | null
   owner_id: number | null
   owner_name: string | null
+  /**
+   * 原负责人"待核实"：这是一条**合并来源**记录，但合并留痕里没留下当时的负责人，
+   * 于是不知道该归谁看 —— 后端只把它给管理员。界面照实说明，别显示成"未分配"。
+   */
+  owner_pending: boolean
   deleted_at: string | null
   created_at: string | null
-  /** 被合并掉的才有值：并进了哪个客户（拿它做跳转）。 */
-  merged_into: { id: number; name: string | null } | null
+  /** 直接合并历史：并进了哪个客户。 */
+  merged_into: MergeRef | null
+  /** 最终去处：A→B→C 时的 C。与 `merged_into` 相同时后端不下发（为 null）。 */
+  final_target: MergeRef | null
   merge_reason: string | null
 }
 

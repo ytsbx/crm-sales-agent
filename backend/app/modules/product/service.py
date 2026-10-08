@@ -100,12 +100,44 @@ async def ensure_sku_code_unique(
         raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {sku_code} 已存在", 409)
 
 
+async def lock_product(session: AsyncSession, product_id: int) -> Product | None:
+    """按**统一锁序**取产品行锁（「先产品、后 SKU」里的第一步）。返回 None 表示不存在。
+
+    为什么所有涉及产品的入口都得先走这里：产品删除、产品恢复、SKU 恢复、新增 SKU
+    这四件事都要"先看产品还在不在、再动它名下的 SKU"。恢复产品是
+    「锁产品 → 扫它名下的 SKU」，如果哪一处反过来「先锁 SKU 再拿产品锁」，
+    两边同时进行时就会互相等待 —— 典型的死锁。锁序只有一处，就不容易走反。
+
+    `populate_existing=True` 不能少：本项目会话是 `expire_on_commit=False`，
+    SQLAlchemy 默认**不用查询结果覆盖已加载对象**的属性。调用方若在同一个会话里
+    先读过这个产品，少了它拿回来的就是内存里的旧值（`deleted_at` 还是删之前的），
+    行锁等于白加 —— 并发下的表现就是"时对时错"。
+    """
+    return (
+        await session.execute(
+            select(Product)
+            .where(Product.id == product_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+
+
 async def delete_product(session: AsyncSession, product: Product) -> None:
+    """软删产品，并连同它名下还没删的 SKU 一起软删。
+
+    ⚠️ 调用方必须先 `lock_product`。这里扫 SKU 时也带行锁，理由同
+    `recycle.service.restore_product`：不加锁的话"正在删产品"与"同时恢复某个 SKU"
+    会各看各的旧世界，收尾时留下一个挂在已删产品下的有效 SKU。
+    """
     product.deleted_at = datetime.now(UTC)
     # 产品下的 SKU 一并软删除，避免出现挂在不存在的产品上的孤儿 SKU
     skus = (
         await session.execute(
-            select(Sku).where(Sku.product_id == product.id, Sku.deleted_at.is_(None))
+            select(Sku)
+            .where(Sku.product_id == product.id, Sku.deleted_at.is_(None))
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     now = datetime.now(UTC)

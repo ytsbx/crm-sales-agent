@@ -12,22 +12,30 @@
   不给恢复按钮 —— 合并怎么还原是 `customer/tags.py` 留痕快照的事，
   不在本模块做（主人 2026-10-07 口径：客户这块只做"看"）。
 
-## 两条容易踩的线
+## 三条容易踩的线
 
-1. **数据范围**。线索列表走线索的数据范围、客户列表走客户的数据范围
-   （两者都是"范围内 OR 无主"，与各自的正经列表**同一套口径**）。
+1. **数据范围**。线索列表走线索的数据范围、客户列表走客户的数据范围。
    产品 / SKU 是全局主数据，只看权限码。**不在这里重写范围判断** ——
    重写一份迟早和正经列表漂开。
 2. **客户被删只有两个来源**：`DELETE /customers/{id}`（直接删）与合并
-   （`merge_customers` 把来源客户置删）。合并那条同时把 `owner_id` 清空了，
-   所以它会落进"无主"那一档 —— 与客户列表里公海客户的处理完全一致。
+   （`merge_customers` 把来源客户置删）。**合并那条会把 `owner_id` 清空**
+   （`customer/tags.py` 的 `merge_customers`），于是它看着像"公海客户"。
+   若照搬客户列表"无主即公海、人人可见"的口径，被合并掉的客户就会全公司可见
+   —— 可它其实属于合并**前**的那位同事，而且还会把合并原因一起带出去。
+   所以合并来源改按 `merge_snapshot["owner_id"]`（合并前快照）判范围；
+   快照里没有负责人的（老数据）**只有数据范围 all 的管理员**能看到，前端标"待核实"。
+   直接删除的客户没有这条留痕，仍走老口径（含无主）。
+3. **合并去向**要单独判权限，且要能追到底。目标客户可能不在当前用户范围内
+   （此时连名字都不能给），也可能自己又被并走了一次（A→B→C，B 已经不存在）。
+   两者都不能让前端拿到一个点了会 404 的链接。
 """
 
 from __future__ import annotations
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.core.response import paginate
@@ -251,6 +259,10 @@ async def restore_product(session: AsyncSession, product: Product) -> dict:
 
     撞码怎么办：逐条先判 `sku_code_occupied`，被占的那条**跳过并报出来**，
     不让一次撞码把整批恢复搞崩。
+
+    ⚠️ **锁序**：调用方必须先锁住产品（见 `product.service.lock_product`），
+    这里再按「产品 → SKU」的顺序连 SKU 一起锁（`with_for_update`）。
+    SKU 不加锁的话，"正在恢复产品"与"同时有人删某个 SKU"会各看各的旧世界。
     """
     if product.deleted_at is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该产品没有被删除，无需恢复")
@@ -262,6 +274,8 @@ async def restore_product(session: AsyncSession, product: Product) -> dict:
             select(Sku)
             .where(Sku.product_id == product.id, Sku.deleted_at.is_not(None))
             .order_by(Sku.id.asc())
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
 
@@ -283,18 +297,30 @@ async def restore_product(session: AsyncSession, product: Product) -> dict:
     return {"restored_skus": restored, "skipped_skus": skipped}
 
 
-async def restore_sku(session: AsyncSession, sku: Sku) -> None:
+async def restore_sku(
+    session: AsyncSession, sku: Sku, *, product: Product | None
+) -> None:
     """单独恢复一个 SKU。
 
-    两类拦路：① 编码被别的 SKU 占着（当前库里不可能，见 `sku_code_occupied`）；
+    三类拦路：① 编码被别的 SKU 占着（当前库里不可能，见 `sku_code_occupied`）；
     ② 它挂着的产品**还在回收站里** —— 这时恢复出来的是"挂在已删产品下"的孤儿，
-    产品列表里根本看不到它。第二种直接让用户先恢复产品，比恢复完一脸懵强。
+    产品列表里根本看不到它。第二种直接让用户先恢复产品，比恢复完一脸懵强；
+    ③ 产品已不存在（脏数据）。
+
+    ⚠️ **锁序**：`product` 必须是调用方**已经加锁、并且重新读过**的那一行
+    （见 `product.service.lock_product`）。顺序固定「先产品、后 SKU」，
+    与 `delete_product` / `restore_product` 一致。**不许先锁 SKU 再来拿产品锁**
+    —— 那与"恢复产品"方向相反，两边同时进行时会互相等待、直接死锁。
+
+    这个参数从前是函数内部 `session.get(Product, ...)` 现查的。那样查有两个问题：
+    拿不到行锁（删产品的并发不会被挡住），以及拿到的是内存里的旧值。
     """
     if sku.deleted_at is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该 SKU 没有被删除，无需恢复")
 
-    product = await session.get(Product, sku.product_id)
-    if product is None or product.deleted_at is not None:
+    if product is None:
+        raise AppError(ErrorCode.NOT_FOUND, "该 SKU 所属的产品已不存在，无法恢复", 404)
+    if product.deleted_at is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             "该 SKU 所属的产品还在回收站里，请先恢复产品",
@@ -316,7 +342,9 @@ def serialize_recycle_customer(
     customer: Customer,
     *,
     owner_name: str | None = None,
+    owner_pending: bool = False,
     merged_into: dict | None = None,
+    final_target: dict | None = None,
     merge_reason: str | None = None,
 ) -> dict:
     return {
@@ -325,26 +353,205 @@ def serialize_recycle_customer(
         "short_name": customer.short_name,
         "owner_id": customer.owner_id,
         "owner_name": owner_name,
+        # 合并来源的负责人取的是合并前快照；快照里没有的 → 待核实（只有管理员看得到）
+        "owner_pending": owner_pending,
         "deleted_at": _iso(customer.deleted_at),
         "created_at": _iso(customer.created_at),
-        # 被合并掉的：给出"并进了谁"，前端拿它做跳转链接；直接删的这里是 null
+        # 【直接历史】被合并掉的：并进了谁。目标是**能打开**的才给 id，否则只给名字/状态
         "merged_into": merged_into,
+        # 【最终去处】A→B→C 时的 C。与直接历史相同时为 None（不重复下发）
+        "final_target": final_target,
         "merge_reason": merge_reason,
     }
+
+
+#: 合并链条最多追几层。合并是人工操作，实际 1~2 层就到底了；给足余量，
+#: 同时保证脏数据也不会把一次列表请求拖成无限循环（环路另有 visited 兜底）。
+_MERGE_CHAIN_MAX_HOPS = 20
+
+
+def _latest_merge_log_subq():
+    """每个来源客户的**最新一条**合并留痕（来源 → 目标 + 快照 + 原因）。
+
+    一个客户理论上只会当一次来源（合并完就被软删，不可能再被合并），
+    但按 `id` 取最新是防御性写法 —— 真出现重复留痕时口径仍是确定的。
+    """
+    latest = (
+        select(
+            CustomerMergeLog.source_customer_id.label("sid"),
+            func.max(CustomerMergeLog.id).label("log_id"),
+        )
+        .group_by(CustomerMergeLog.source_customer_id)
+        .subquery()
+    )
+    return (
+        select(
+            CustomerMergeLog.source_customer_id.label("sid"),
+            CustomerMergeLog.target_customer_id.label("target_id"),
+            CustomerMergeLog.reason.label("reason"),
+            CustomerMergeLog.merge_snapshot.label("snapshot"),
+        )
+        .join(latest, CustomerMergeLog.id == latest.c.log_id)
+        .subquery()
+    )
+
+
+def _visible_customer_predicate(merge_subq, owner_ids: list[int]):
+    """回收站语境下"这个客户该不该被当前用户看到"。
+
+    与客户列表口径**故意不同的一处**：合并来源的 `owner_id` 在合并时被清空了，
+    照搬"无主即公海"会让它人人可见（那正是从前的漏洞）。这里改按**合并前快照里的
+    负责人**判；快照里没有负责人的（老数据 / 快照缺失）**一律不放行**，
+    只有 `owner_ids is None`（数据范围 all 的管理员）才看得到，前端标"待核实"。
+    直接删除的客户没有这条留痕，仍走老口径（范围内 OR 无主）。
+
+    前提：`merge_subq` 已按 `Customer.id` 外连接进来（见各调用点）。
+    """
+    snapshot_owner = merge_subq.c.snapshot["owner_id"].as_integer()
+    is_merged = merge_subq.c.sid.is_not(None)
+    directly_deleted = and_(
+        is_merged.is_(False),
+        or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)),
+    )
+    merged_in_scope = and_(
+        is_merged, snapshot_owner.is_not(None), snapshot_owner.in_(owner_ids)
+    )
+    return or_(directly_deleted, merged_in_scope)
+
+
+async def _resolve_merge_chain(
+    session: AsyncSession, roots: set[int]
+) -> dict[int, tuple[int | None, bool]]:
+    """从"直接合并目标"出发，追到**链条终点**（不再被别人并走的那个客户）。
+
+    返回 `{起点 id: (终点 id, 是否成环)}`。成环时终点为 None。
+
+    实现上**逐层批量查**（一次查一批来源的边），不是一条一条追 —— 后者在列表
+    页有几十条合并记录时就是几十次往返。环路保护有两条：`seen_sources` 挡住
+    已展开过的来源，逐条走链时再用 `visited` 兜一次。
+    """
+    if not roots:
+        return {}
+
+    edges: dict[int, int] = {}
+    seen_sources: set[int] = set()
+    frontier = set(roots)
+    for _ in range(_MERGE_CHAIN_MAX_HOPS):
+        frontier = {n for n in frontier if n not in seen_sources}
+        if not frontier:
+            break
+        seen_sources |= frontier
+        rows = (
+            await session.execute(
+                select(
+                    CustomerMergeLog.source_customer_id,
+                    CustomerMergeLog.target_customer_id,
+                )
+                .where(CustomerMergeLog.source_customer_id.in_(frontier))
+                # 升序遍历、后写覆盖前写 → 留下的是最新那条
+                .order_by(CustomerMergeLog.id.asc())
+            )
+        ).all()
+        for sid, tid in rows:
+            edges[int(sid)] = int(tid)
+        frontier = {int(tid) for _, tid in rows}
+
+    out: dict[int, tuple[int | None, bool]] = {}
+    for root in roots:
+        current = root
+        visited = {root}
+        looped = False
+        while current in edges:
+            nxt = edges[current]
+            if nxt in visited:
+                looped = True
+                break
+            visited.add(nxt)
+            current = nxt
+        out[root] = (None if looped else current, looped)
+    return out
+
+
+async def _merge_refs(
+    session: AsyncSession, user: CurrentUser, ids: set[int]
+) -> dict[int, dict]:
+    """把一批客户 id 变成前端能安全渲染的「去向」。
+
+    返回 `{id: {"id", "name", "visible", "state"}}`：
+
+    - `visible=True` 时给 `name`；**不可见时 name 与 id 都是 None**（不泄露）。
+    - `id` 只在"**在范围内且还活着**"时才给 —— 它是要拿去做跳转的，
+      指向一个 404 的链接比不给更糟。
+    - `state`：`ok`（可跳转）/ `forbidden`（不在数据范围）/ `gone`（已不存在或被删）。
+    """
+    if not ids:
+        return {}
+
+    owner_ids = await scoped_owner_ids(session, user)
+    merge = _latest_merge_log_subq()
+    base = (
+        select(Customer.id, Customer.name, Customer.deleted_at)
+        .outerjoin(merge, merge.c.sid == Customer.id)
+        .where(Customer.id.in_(ids))
+    )
+    if owner_ids is not None:
+        base = base.where(_visible_customer_predicate(merge, owner_ids))
+    visible_rows = (await session.execute(base)).all()
+    visible = {
+        int(cid): (name, deleted_at is not None) for cid, name, deleted_at in visible_rows
+    }
+
+    # 存在但不可见（forbidden）跟"压根没这条"（gone）要分开 —— 后者是链断了，
+    # 前者只是没权限。这个查库只用于判断，**结果不外发**。
+    existing = set(
+        (
+            await session.execute(select(Customer.id).where(Customer.id.in_(ids)))
+        )
+        .scalars()
+        .all()
+    )
+
+    out: dict[int, dict] = {}
+    for cid in ids:
+        if cid in visible:
+            name, deleted = visible[cid]
+            out[cid] = {
+                "id": None if deleted else cid,
+                "name": name,
+                "visible": True,
+                "state": "gone" if deleted else "ok",
+            }
+        elif cid in existing:
+            out[cid] = {"id": None, "name": None, "visible": False, "state": "forbidden"}
+        else:
+            out[cid] = {"id": None, "name": None, "visible": False, "state": "gone"}
+    return out
 
 
 async def list_deleted_customers(
     session: AsyncSession, user: CurrentUser, page: int, page_size: int
 ) -> tuple[list[dict], int]:
-    stmt = select(Customer).where(Customer.deleted_at.is_not(None))
-    stmt = await customer_service.apply_data_scope(stmt, user, session)
+    """列出被软删的客户（只读）。
+
+    **权限过滤在分页之前**完成：合并来源按合并前快照判、直接删的按老口径判，
+    两者一起下到 SQL 的 WHERE 里 —— 否则总数会跟实际看得到的条数对不上。
+    """
+    owner_ids = await scoped_owner_ids(session, user)
+    merge = _latest_merge_log_subq()
+
+    stmt = (
+        select(Customer)
+        .outerjoin(merge, merge.c.sid == Customer.id)
+        .where(Customer.deleted_at.is_not(None))
+    )
+    if owner_ids is not None:
+        stmt = stmt.where(_visible_customer_predicate(merge, owner_ids))
     stmt = stmt.order_by(Customer.deleted_at.desc(), Customer.id.desc())
+
     rows, total = await paginate(session, stmt, page, page_size)
 
     ids = [c.id for c in rows]
     # 合并留痕：这些客户里哪些是"被合并掉的"、并到哪去了。
-    # 一个客户理论上只会是**一次**合并的来源（合并完就软删了，不可能再当来源），
-    # 按 id 倒序取最新一条即可。
     merge_map: dict[int, CustomerMergeLog] = {}
     if ids:
         logs = (
@@ -357,31 +564,54 @@ async def list_deleted_customers(
         for log in logs:
             merge_map.setdefault(log.source_customer_id, log)
 
-    target_names: dict[int, str] = {}
-    target_ids = list({log.target_customer_id for log in merge_map.values()})
-    if target_ids:
-        target_rows = (
-            await session.execute(
-                select(Customer.id, Customer.name).where(Customer.id.in_(target_ids))
-            )
-        ).all()
-        target_names = {int(cid): name for cid, name in target_rows}
+    # 原负责人：合并来源取"合并前快照"，直接删的取当前字段。快照里没有的记下来。
+    original_owner: dict[int, int | None] = {}
+    pending: set[int] = set()
+    for customer in rows:
+        log = merge_map.get(customer.id)
+        if log is None:
+            original_owner[customer.id] = customer.owner_id
+            continue
+        snapshot_owner = (log.merge_snapshot or {}).get("owner_id")
+        original_owner[customer.id] = snapshot_owner
+        if snapshot_owner is None:
+            pending.add(customer.id)
 
-    owners = await customer_service.owner_names(session, [c.owner_id for c in rows])
+    # 去向：直接目标 + 链条终点，都要过权限，批量一次算完
+    direct_targets = {int(log.target_customer_id) for log in merge_map.values()}
+    chain = await _resolve_merge_chain(session, direct_targets)
+    finals = {fin for fin, looped in chain.values() if fin is not None and not looped}
+    refs = await _merge_refs(session, user, direct_targets | finals)
+
+    owners = await customer_service.owner_names(
+        session, [original_owner.get(c.id) for c in rows]
+    )
     items = []
     for customer in rows:
         log = merge_map.get(customer.id)
         merged_into = None
+        final_target = None
         if log is not None:
-            merged_into = {
-                "id": log.target_customer_id,
-                "name": target_names.get(log.target_customer_id),
-            }
+            target_id = int(log.target_customer_id)
+            merged_into = refs.get(target_id)
+            final_id, looped = chain.get(target_id, (None, False))
+            if looped:
+                final_target = {
+                    "id": None,
+                    "name": None,
+                    "visible": False,
+                    "state": "loop",
+                }
+            elif final_id is not None and final_id != target_id:
+                # 只在与直接历史**不同**时才下发，省得前端重复渲染一层
+                final_target = refs.get(final_id)
         items.append(
             serialize_recycle_customer(
                 customer,
-                owner_name=owners.get(customer.owner_id),
+                owner_name=owners.get(original_owner.get(customer.id)),
+                owner_pending=customer.id in pending,
                 merged_into=merged_into,
+                final_target=final_target,
                 merge_reason=log.reason if log else None,
             )
         )
