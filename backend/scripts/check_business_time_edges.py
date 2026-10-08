@@ -581,6 +581,28 @@ async def check_receivable_due_reminder() -> None:
         session.add(ReceivablePlan(order_id=order.id, plan_name=f"{PREFIX}应收-元旦",
                                    due_date=date(2026, 1, 1), amount=Decimal("100"),
                                    status="pending", created_at=datetime.now(UTC)))
+
+        # 两笔"不该催"的应收（2026-10-08 补）：到期日一模一样，只有状态不同。
+        # 扫描的查询里本来就带着这两个条件，但从没人验过 —— 没有证据就只是"看着对"。
+        cancelled_order = SalesOrder(order_no=f"{PREFIX}SO-CANCELLED",
+                                     customer_id=customer.id, owner_id=admin.id,
+                                     status="cancelled", total_amount=Decimal("100"),
+                                     currency="CNY", created_by=admin.id)
+        settled_order = SalesOrder(order_no=f"{PREFIX}SO-SETTLED",
+                                   customer_id=customer.id, owner_id=admin.id,
+                                   status="confirmed", total_amount=Decimal("100"),
+                                   currency="CNY", created_by=admin.id)
+        session.add_all([cancelled_order, settled_order])
+        await session.flush()
+        session.add_all([
+            ReceivablePlan(order_id=cancelled_order.id, plan_name=f"{PREFIX}应收-订单已取消",
+                           due_date=date(2026, 1, 1), amount=Decimal("100"),
+                           status="pending", created_at=datetime.now(UTC)),
+            ReceivablePlan(order_id=settled_order.id, plan_name=f"{PREFIX}应收-已结清",
+                           due_date=date(2026, 1, 1), amount=Decimal("100"),
+                           status="paid", created_at=datetime.now(UTC)),
+        ])
+
         rule = TaskRule(code=f"{PREFIX}_due0", name=f"{PREFIX}到期当天提醒",
                         trigger_type="receivable_due", trigger_config={"days": 0},
                         action_config={"title": f"{PREFIX}应收到期"}, status="active")
@@ -622,12 +644,23 @@ async def check_receivable_due_reminder() -> None:
             with frozen_both(beijing(2026, 1, 1, 9)):
                 n_9am = await scan_and_count()
             check("同一天的白天再扫一次不会重复生成", n_9am, 1)
+
+            # 到期日、提前量都一样，只有状态不同 —— 这两笔一次都不该被催
+            for label, target in (("订单已取消", cancelled_order),
+                                  ("节点已结清", settled_order)):
+                hit = int((await session.execute(
+                    select(func.count(Task.id)).where(
+                        Task.source_rule_id == rule.id, Task.order_id == target.id
+                    )
+                )).scalar_one())
+                check(f"到期日相同但{label} → 不该生成催收", hit, 0)
         finally:
+            order_ids = f"{order.id}, {cancelled_order.id}, {settled_order.id}"
             for sql in (
                 f"delete from tasks where source_rule_id = {rule.id}",
                 f"delete from task_rules where id = {rule.id}",
-                f"delete from receivable_plans where order_id = {order.id}",
-                f"delete from sales_orders where id = {order.id}",
+                f"delete from receivable_plans where order_id in ({order_ids})",
+                f"delete from sales_orders where id in ({order_ids})",
                 f"delete from customers where id = {customer.id}",
             ):
                 await session.execute(text(sql))
