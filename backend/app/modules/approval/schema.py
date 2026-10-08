@@ -6,6 +6,8 @@
 """
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class ApprovalTransfer(BaseModel):
@@ -37,7 +39,7 @@ class ApprovalDefinitionCreate(BaseModel):
     config_json: dict | None = None
 
 
-class ApprovalDefinitionUpdate(BaseModel):
+class ApprovalDefinitionUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None

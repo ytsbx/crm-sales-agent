@@ -2,6 +2,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class CostCreate(BaseModel):
@@ -66,7 +68,7 @@ class PriceRuleCreate(BaseModel):
     remark: str | None = None
 
 
-class PriceRuleUpdate(BaseModel):
+class PriceRuleUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     customer_level: str | None = None

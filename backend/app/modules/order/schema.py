@@ -147,6 +147,8 @@ class ShipmentBatchShip(BaseModel):
 
 
 from uuid import UUID
+from app.core.patch_schema import PatchModel
+
 from app.modules.sample.schema import SampleSource
 
 
@@ -172,7 +174,7 @@ class OrderDraftCreate(SampleSource):
         return self
 
 
-class OrderDraftUpdate(BaseModel):
+class OrderDraftUpdate(PatchModel):
     revision: int = Field(gt=0)
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     items: list[OrderDraftLine] = Field(min_length=1, max_length=200)

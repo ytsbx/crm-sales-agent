@@ -309,7 +309,10 @@ def main():
     # 4.0 反向：被拒的更新**不**该误伤会话（防"先吊销、后校验"的顺序 bug）
     status, res = call('PATCH', f'/users/{uid}', token=admin_token,
                        body={'name': '', 'password': NEW_PASSWORD})
-    check('姓名为空 → 更新被拒', res.get('code'), 40003)
+    # 2026-10-08（第十一批 11.9）期望值改过一次：空串现在被**参数校验**拦在门口
+    # （40001 参数错误），不再走到路由层那句 40003「必填字段缺失」。
+    # 两者都是"拒绝 + 带中文提示"，本节要守的仍然是"被拒之后不误伤会话、不改口令"。
+    check('姓名为空 → 更新被拒（参数校验阶段拦下）', res.get('code'), 40001)
     check_true('被拒的更新没有误伤会话',
                asyncio.run(active_session_count(uid)) >= 2,
                str(asyncio.run(active_session_count(uid))))

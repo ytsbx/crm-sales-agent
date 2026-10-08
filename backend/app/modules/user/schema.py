@@ -3,6 +3,8 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 # 数据范围枚举，与 roles.data_scope 的取值一致（见 02-ER §3 的补充说明）
 DATA_SCOPES = ("self", "department", "department_and_sub", "all")
@@ -26,7 +28,7 @@ class UserCreate(BaseModel):
     """创建时可直接授权角色。"""
 
 
-class UserUpdate(BaseModel):
+class UserUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None
@@ -52,7 +54,7 @@ class DepartmentCreate(BaseModel):
     wecom_department_id: str | None = None
 
 
-class DepartmentUpdate(BaseModel):
+class DepartmentUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None
@@ -91,7 +93,7 @@ class RoleDataScopeUpdate(BaseModel):
     data_scope: DataScope
 
 
-class RoleUpdate(BaseModel):
+class RoleUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None

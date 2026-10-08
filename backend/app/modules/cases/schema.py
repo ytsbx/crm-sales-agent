@@ -1,6 +1,8 @@
 """案例接口请求体。"""
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class CaseEvidenceItem(BaseModel):
@@ -41,7 +43,7 @@ class CaseCreate(BaseModel):
     evidences: list[CaseEvidenceItem] = Field(default_factory=list)
 
 
-class CaseUpdate(BaseModel):
+class CaseUpdate(PatchModel):
     """作者在 draft/rejected 状态下修改；字段全可选，传了才改。"""
 
     title: str | None = Field(None, max_length=200)

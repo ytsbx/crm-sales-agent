@@ -4,6 +4,8 @@ from datetime import date
 
 from pydantic import BaseModel, Field
 
+from app.core.patch_schema import PatchModel
+
 from app.core import idempotency
 
 
@@ -21,7 +23,7 @@ class ReceivableCreate(BaseModel):
     remark: str | None = None
 
 
-class ReceivableUpdate(BaseModel):
+class ReceivableUpdate(PatchModel):
     """改应收节点：只改传进来的字段。"""
 
     plan_name: str | None = Field(default=None, min_length=1, max_length=64)

@@ -1,6 +1,8 @@
 from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class OpportunityCreate(BaseModel):
@@ -17,7 +19,7 @@ class OpportunityCreate(BaseModel):
     next_action: str | None = None
 
 
-class OpportunityUpdate(BaseModel):
+class OpportunityUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     title: str | None = None
@@ -149,7 +151,7 @@ class StageCreate(BaseModel):
     status: str = "active"
 
 
-class StageUpdate(BaseModel):
+class StageUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None
@@ -180,7 +182,7 @@ class LossReasonCreate(BaseModel):
     status: str = "active"
 
 
-class LossReasonUpdate(BaseModel):
+class LossReasonUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None

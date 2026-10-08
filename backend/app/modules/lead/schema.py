@@ -1,6 +1,8 @@
 from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class LeadCreate(BaseModel):
@@ -27,7 +29,7 @@ class LeadExportFilter(BaseModel):
     include_deleted: bool = False
 
 
-class LeadUpdate(BaseModel):
+class LeadUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None

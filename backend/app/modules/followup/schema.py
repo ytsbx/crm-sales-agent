@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.core.patch_schema import PatchModel
+
 
 ExemptionReason = Literal["customer_declined", "business_closed", "waiting_external"]
 EXEMPTION_LABELS = {"customer_declined": "客户明确拒绝", "business_closed": "业务已关闭", "waiting_external": "等待外部固定节点"}
@@ -55,7 +57,7 @@ class FollowUpCreate(BaseModel):
         return self
 
 
-class FollowUpUpdate(BaseModel):
+class FollowUpUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     content: str | None = Field(default=None, min_length=1)

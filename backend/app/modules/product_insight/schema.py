@@ -23,6 +23,8 @@
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from app.core.patch_schema import PatchModel
+
 
 
 def _strip_title(value: str | None) -> str | None:
@@ -58,7 +60,7 @@ class InsightCreate(BaseModel):
         return cleaned
 
 
-class InsightUpdate(BaseModel):
+class InsightUpdate(PatchModel):
     """更新：**传了就改（含传 null = 清空），没传就不动**。
 
     路由层必须用 `model_dump(exclude_unset=True)`，否则分不出"没传"和"传 null"。

@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 #: 任务状态**唯一的一份枚举**（第九批 §9.3）。
 #:
@@ -25,7 +27,7 @@ class TaskCreate(BaseModel):
     due_at: datetime | None = None
 
 
-class TaskUpdate(BaseModel):
+class TaskUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     title: str | None = None

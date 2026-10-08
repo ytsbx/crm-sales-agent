@@ -1,4 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.core.patch_schema import PatchModel
+
 
 
 class SettingInput(BaseModel):
@@ -16,7 +18,7 @@ class PublicPoolRuleInput(BaseModel):
     remark: str | None = None
 
 
-class PublicPoolRuleUpdate(BaseModel):
+class PublicPoolRuleUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     level: str | None = Field(default=None, min_length=1, max_length=8)
@@ -43,7 +45,7 @@ class TaskRuleInput(BaseModel):
     status: str | None = None
 
 
-class TaskRuleUpdate(BaseModel):
+class TaskRuleUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     code: str | None = Field(default=None, min_length=1, max_length=64)
@@ -76,7 +78,7 @@ class NumberingRuleCreate(BaseModel):
     remark: str | None = None
 
 
-class NumberingRuleUpdate(BaseModel):
+class NumberingRuleUpdate(PatchModel):
     """改编号规则。只传要改的字段。"""
 
     model_config = ConfigDict(extra="ignore")
@@ -107,7 +109,7 @@ class DictionaryItemCreate(BaseModel):
     remark: str | None = None
 
 
-class DictionaryItemUpdate(BaseModel):
+class DictionaryItemUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     label: str | None = None
@@ -132,7 +134,7 @@ class CustomerLevelCreate(BaseModel):
     remark: str | None = None
 
 
-class CustomerLevelUpdate(BaseModel):
+class CustomerLevelUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None

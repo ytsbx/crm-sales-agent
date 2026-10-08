@@ -3,6 +3,8 @@ from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class QuoteCreate(BaseModel):
@@ -75,7 +77,7 @@ class QuoteChargeInput(BaseModel):
     is_discount: bool = False
 
 
-class QuoteChargeUpdate(BaseModel):
+class QuoteChargeUpdate(PatchModel):
     """改一条附加费用（03-API §22）。只传要改的字段。"""
 
     model_config = ConfigDict(extra="ignore")

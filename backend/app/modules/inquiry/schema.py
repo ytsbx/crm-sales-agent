@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class CustomInquiryCreate(BaseModel):
@@ -15,7 +17,7 @@ class CustomInquiryCreate(BaseModel):
     remark: str | None = None
 
 
-class CustomInquiryUpdate(BaseModel):
+class CustomInquiryUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     title: str | None = Field(default=None, min_length=1, max_length=200)

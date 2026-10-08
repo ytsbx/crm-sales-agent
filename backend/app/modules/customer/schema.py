@@ -4,6 +4,8 @@ from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.core.patch_schema import PatchModel
+
 
 
 class CustomerCreate(BaseModel):
@@ -25,7 +27,7 @@ class CustomerCreate(BaseModel):
     request_key: str | None = Field(default=None, max_length=128)
 
 
-class CustomerUpdate(BaseModel):
+class CustomerUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None
@@ -121,7 +123,7 @@ class ContactCreate(BaseModel):
     remark: str | None = None
 
 
-class ContactUpdate(BaseModel):
+class ContactUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None

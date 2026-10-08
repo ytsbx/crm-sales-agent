@@ -3,6 +3,8 @@
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.patch_schema import PatchModel
+
 
 
 class ProductCreate(BaseModel):
@@ -14,7 +16,7 @@ class ProductCreate(BaseModel):
     knowledge: str | None = None
 
 
-class ProductUpdate(BaseModel):
+class ProductUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str | None = None
@@ -46,7 +48,7 @@ class SkuCreate(BaseModel):
     unit: str | None = "件"
 
 
-class SkuUpdate(BaseModel):
+class SkuUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     sku_code: str | None = None
