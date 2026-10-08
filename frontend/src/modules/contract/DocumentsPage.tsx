@@ -19,9 +19,9 @@ import { listCustomers } from '../../shared/api/customer'
 import { listOrders } from '../../shared/api/order'
 import { listQuoteVersions, listQuotes } from '../../shared/api/quote'
 import { downloadFile, listBusinessFiles, uploadFile } from '../../shared/api/file'
+import { downloadContractDoc } from '../../shared/download-contract'
 import {
   createContractTemplate,
-  downloadContractDocument,
   generateContractDocument,
   getContractDocument,
   listContractDocuments,
@@ -386,7 +386,9 @@ export default function DocumentsPage() {
                 width: 260,
                 render: (_: unknown, record: ContractDocument) => (
                   <span style={{ display: 'inline-flex', gap: 12, flexWrap: 'wrap' }}>
-                    <a onClick={() => void downloadContractDocument(record)}>下载生成稿</a>
+                    {/* 走共用封装：原件丢失 / 没权限 / 网络失败都要把话说出来，
+                        不能 `void` 掉一个会失败的 Promise（那样点了没反应） */}
+                    <a onClick={() => void downloadContractDoc(record)}>下载生成稿</a>
                     {/* 详情：抬头快照、依据、关系链、签署原件都收在这里。
                         签署原件**光看状态看不出来**，必须点进来才知道拿到的到底是哪一份。 */}
                     <a onClick={() => setDetailTarget(record)}>详情</a>

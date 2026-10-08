@@ -233,27 +233,55 @@ async def ensure_version_editable(version: QuoteVersion) -> None:
 async def resolve_exchange_rate(
     session: AsyncSession, currency: str | None
 ) -> tuple[Decimal | None, str | None]:
-    """取该币种对本币（CNY）的当前汇率，用于报价版本快照（02-ER §11）。
+    """取该币种对本币（CNY）的**当前已生效**汇率，用于报价版本快照（02-ER §11）。
 
     内贸（CNY/空）不需要汇率，直接返回 (None, None)。
     找不到汇率时返回 (None, 说明)，由调用方决定是报错还是提示——
     不静默按 1:1 处理，否则外贸报价会悄悄算错一个数量级。
+
+    ⚠️ **必须排除未来才生效的汇率**（第十一批 11.4）：汇率是时点数据，维护时
+    允许"提前录一条 2030 年生效的"。原实现只按 `effective_at` 倒序取最新一条，
+    于是那条 2030 年的会被**今天的报价**用上（实测：今天生效 7、2030 年 99，
+    报价快照存的是 99），而且来源会显示成那条未来记录 —— 报价当场就错了。
+    正确口径：在**报价时刻已经生效**的记录里取最新一条。
     """
     code = (currency or "CNY").upper()
     if code == "CNY":
         return None, None
+    now = datetime.now(UTC)
     row = (
         await session.execute(
             select(ExchangeRate)
             .where(
                 ExchangeRate.quote_currency == code,
                 ExchangeRate.base_currency == "CNY",
+                ExchangeRate.effective_at <= now,
             )
             .order_by(ExchangeRate.effective_at.desc(), ExchangeRate.id.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
     if row is None:
+        # 区分"一条都没有"与"只有未来才生效的"：后者要让人知道是**时间**没到，
+        # 而不是"没维护"——否则会去重复录一条，或者以为系统坏了。
+        pending = (
+            await session.execute(
+                select(ExchangeRate.effective_at)
+                .where(
+                    ExchangeRate.quote_currency == code,
+                    ExchangeRate.base_currency == "CNY",
+                    ExchangeRate.effective_at > now,
+                )
+                .order_by(ExchangeRate.effective_at.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if pending is not None:
+            return (
+                None,
+                f"币种 {code} 只有一条 {pending:%Y-%m-%d %H:%M} 才生效的汇率，"
+                "现在还没有生效的汇率；请维护一条当前生效的，或等它生效后再报价",
+            )
         return None, f"币种 {code} 没有维护汇率，请先在价格中心维护汇率后再报外币价"
     return row.rate, row.source or "手工维护"
 

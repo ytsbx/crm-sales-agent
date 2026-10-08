@@ -240,6 +240,7 @@ async def download_document(
     下载不等于已签，签了才算签。
     """
     import asyncio
+    import hashlib
 
     from fastapi import Response
 
@@ -254,16 +255,51 @@ async def download_document(
     source = "generated"
     if doc.generated_file_id:
         record = await session.get(FileRecord, doc.generated_file_id)
-        if record is not None:
+        missing: str | None = None
+        if record is None:
+            missing = "存档的文件记录已不存在"
+        else:
             try:
                 path = storage.absolute_path(record.object_key)
                 content = await asyncio.to_thread(path.read_bytes)
             except OSError:
-                # 落盘的文件被清理/搬走了：不抛 500，退回实时渲染，但审计里记明来源，
-                # 免得事后以为"下载的就是当初存档的那一份"。
+                missing = "存档文件已不在磁盘上"
+        # 校验值也要比：它是"这份原件没被换过"的唯一依据，光有文件不够
+        if content is not None and record is not None and record.checksum:
+            actual = hashlib.sha256(content).hexdigest()
+            if actual != record.checksum:
                 content = None
-    if content is None:
-        source = "regenerated" if doc.generated_file_id else "legacy_rendered"
+                missing = "存档文件与登记时的校验值不一致（内容被改动过）"
+        if content is None:
+            # **明确报错，不再静默重新渲染**（第十一批 11.3）。
+            # 原实现是"读不到就当场重新排一份给你、HTTP 200"——用户会以为自己拿到的
+            # 就是当初那份存档，台账上"同一编号永远同一份"这句承诺也就破了。
+            # 先把这次异常**单独提交**记进审计（报错会把事务回滚掉，不先落库就查不到），
+            # 便于事后从备份恢复。
+            await write_audit(
+                session,
+                operator_id=user.id,
+                action="download_original_missing",
+                business_type="contract",
+                business_id=doc.id,
+                after={
+                    "doc_no": doc.doc_no,
+                    "reason": missing,
+                    "generated_file_id": doc.generated_file_id,
+                },
+            )
+            await session.commit()
+            raise AppError(
+                ErrorCode.NOT_FOUND,
+                f"这份合同的存档原件不可用（{missing}）。"
+                "为免把重新生成的稿子当成原件，这里不再返回 PDF；请从备份恢复原件",
+                410,
+            )
+    else:
+        # 本批之前生成的旧记录**本来就没有存档**（当时还没落盘这一步）。
+        # 这类仍按历史数据渲染一份，但必须在文件名与响应头里标明它是**副本**，
+        # 不能让它看起来像原存档（11.3 第 4 条）。
+        source = "legacy_rendered"
         data = await svc.build_pdf_data(session, doc)
         # reportlab 渲染是同步 CPU 密集操作，丢线程池避免卡住事件循环（与报价 PDF 同）
         content = await asyncio.to_thread(render_contract_pdf, data)
@@ -280,10 +316,23 @@ async def download_document(
         after={"doc_no": doc.doc_no, "status": doc.status, "source": source},
     )
     await session.commit()
+    from urllib.parse import quote
+
+    filename = (
+        f"{doc.doc_no}（依据历史数据生成的副本）.pdf"
+        if source == "legacy_rendered"
+        else f"{doc.doc_no}.pdf"
+    )
     return Response(
         content=content,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{doc.doc_no}.pdf"'},
+        headers={
+            # `filename*` 走 RFC 5987 编码：副件的文件名带中文，直接塞进
+            # `filename=` 会乱码或被截断
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+            # 页面/调用方据此分辨拿到的是"当时的存档"还是"后来的副本"
+            "X-Contract-Source": source,
+        },
     )
 
 

@@ -18,11 +18,8 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Tag } from '@douyinfe/semi-ui'
 
-import {
-  downloadContractDocument,
-  listContractDocuments,
-  type ContractDocument,
-} from '../api/contract'
+import { listContractDocuments, type ContractDocument } from '../api/contract'
+import { downloadContractDoc } from '../download-contract'
 import { usePermissions } from '../hooks/permissions'
 import SectionCard from './SectionCard'
 
@@ -134,7 +131,7 @@ export default function ContractDocsPanel({
               </span>
             )}
             <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 12 }}>
-              <a onClick={() => void downloadContractDocument(doc)}>下载生成稿</a>
+              <a onClick={() => void downloadContractDoc(doc)}>下载生成稿</a>
             </span>
           </div>
         ))}
