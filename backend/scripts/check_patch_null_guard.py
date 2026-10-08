@@ -61,6 +61,7 @@ from app.modules.customer.model import Contact, Customer
 from app.modules.inquiry.model import CustomInquiry
 from app.modules.pricing.model import PriceRule, ProductCost
 from app.modules.product.model import Product, Sku
+from app.modules.settings.model import NumberingRule
 from app.modules.task.model import Task
 
 # 地址与库的防呆统一收在 _test_support（判据只留一处）
@@ -248,6 +249,69 @@ async def main():
 
         check("登记表自检无问题（表名/类名/规则覆盖）", verify_patch_registry(), [])
 
+        print("\n=== 8. 编号规则：前缀 / 日期格式允许清空（11.9 补修）===")
+        # 背景：`prefix` 留空 = 不带前缀、`date_format` 留空 = 不带日期，模型与取号逻辑
+        # 本来就支持。但公共校验按"列非空"一刀切，于是新建传 "" 能过、编辑传
+        # {"prefix": ""} 却报 400「编号前缀不能为空」—— 同一条规则两个入口两个答案。
+        # 修法是把「不许 null」与「必须有内容」拆成两条判据。
+        rule = api("POST", "/numbering-rules", {
+            "code": MARKER, "name": f"{MARKER}规则",
+            "prefix": "AB", "date_format": "%Y%m%d",
+        })
+        rule_id = rule["id"]
+
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"prefix": ""})
+        check("已有规则清空编号前缀 → 200", status, 200)
+        check("前缀确实存成了空串", await read_value(NumberingRule, rule_id, "prefix"), "")
+
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"date_format": ""})
+        check("已有规则清空日期格式 → 200", status, 200)
+        check("日期格式确实存成了空串",
+              await read_value(NumberingRule, rule_id, "date_format"), "")
+
+        # 「不许 null」这条照旧：库里那两列非空，传 null 仍是参数错误（不是 500）
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"prefix": None})
+        check("前缀传 null → 400", status, 400)
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"date_format": None})
+        check("日期格式传 null → 400", status, 400)
+        check("被拒之后前缀没有被改动",
+              await read_value(NumberingRule, rule_id, "prefix"), "")
+        check("被拒之后日期格式没有被改动",
+              await read_value(NumberingRule, rule_id, "date_format"), "")
+
+        # 对照：名称这类真正必填的文字，继续拦空串与纯空白
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"name": ""})
+        check("规则名称清空 → 400（名称仍必须有内容）", status, 400)
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"name": "   "})
+        check("规则名称传纯空白 → 400", status, 400)
+
+        # 不传的字段保持原值
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"name": f"{MARKER}改名"})
+        check("只改名称 → 200", status, 200)
+        check("前缀仍是空串（不传就保持原值）",
+              await read_value(NumberingRule, rule_id, "prefix"), "")
+        check("日期格式仍是空串（不传就保持原值）",
+              await read_value(NumberingRule, rule_id, "date_format"), "")
+
+        # 历史单号不被改写：编号规则无论怎么改，都不该回头去动**已有单据上的编号**。
+        # ⚠️ 不要写成"改 inquiry 那条规则" —— 编号规则表可能是空的（取号走默认值），
+        # 那条分支会静默跳过，看着全绿其实没验。这里改的是本套件自建的那条规则，
+        # 断言的不变量是"改规则 ≠ 改历史单据"，与规则表里有没有内容无关。
+        before_no = await read_value(CustomInquiry, inquiry["id"], "inquiry_no")
+        check("夹具询价确实有编号（这条断言才有意义）", bool(before_no), True)
+        status, _ = call("PATCH", f"/numbering-rules/{rule_id}", token=admin,
+                         body={"prefix": "ZZ", "date_format": "%Y"})
+        check("再把编号规则的前缀与日期都换掉 → 200", status, 200)
+        check("历史上已经生成过的单号不被改写",
+              await read_value(CustomInquiry, inquiry["id"], "inquiry_no"), before_no)
+
     finally:
         print("\n=== 收尾清理 ===")
 
@@ -276,6 +340,7 @@ async def main():
             delete(CustomInquiry).where(CustomInquiry.title.like(f"{MARKER}%")),
         )
         await _drop("案例", delete(SalesCase).where(SalesCase.title.like(f"{MARKER}%")))
+        await _drop("编号规则", delete(NumberingRule).where(NumberingRule.code == MARKER))
         # **按 id 再兜一次**：反向验证时字段可能被改成空白（"   "），
         # 那时按名称前缀就再也匹配不到了 —— 这类残渣只能靠 id 收（本轮实打实踩到：
         # 撤掉校验后"传空白"变成 200，名字真的被写成了三个空格）。

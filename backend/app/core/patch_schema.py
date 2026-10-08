@@ -31,6 +31,17 @@
 
 可空字段**也有长度上限**（`varchar(128)` 就是 128），不能因为"允许清空"就跳过长度检查；
 反过来，也不能为了查长度而禁止清空。两个判据各自独立。
+
+## "不许 null"与"不许空白"也是两件事（2026-10-08 补修）
+
+`nullable=False` 只说明**不能存 null**，推不出"业务上不能存空串"。编号规则就是反例：
+`prefix` 留空 = 不带前缀、`date_format` 留空 = 不带日期，取号逻辑本来就支持；可公共
+校验按列定义一刀切，于是"新建规则传 `""` 能过、编辑传 `{"prefix": ""}` 却报 400
+「编号前缀不能为空」"—— 同一条业务规则，两个入口两个答案。
+
+现在拆开：**不许 null** 看列定义（非空列照拦 null），**必须有内容** 看
+`BLANK_ALLOWED_FIELDS`（需要放行的字段登记在那里）。默认从严：漏登记最多是
+"少放行一个字段"，不会静默把校验放宽。
 """
 
 from typing import ClassVar
@@ -158,8 +169,26 @@ REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "CustomerLevelUpdate": frozenset({"name"}),
 }
 
-#: 规则三元组：`(中文名, 是否不许清空, 长度上限)`。
-Rule = tuple[str, bool, int | None]
+#: **允许存空字符串**的字段（写成 `类名.字段名`）。
+#:
+#: 第十一批 11.9 补修新增。数据库那一列 `nullable=False` 只说明**不能存 null**，
+#: 推不出"业务上不能存空串"—— 编号规则就是现成的例子：`prefix` 留空 = 不带前缀、
+#: `date_format` 留空 = 不带日期（模型注释与取号逻辑都是这个口径）。但公共校验
+#: 按列定义一刀切，于是"新建规则传 `""` 能过、编辑传 `{"prefix": ""}` 却报
+#: 400「编号前缀不能为空」"，同一条业务规则前后自相矛盾。
+#:
+#: 所以拆成两件事：**不许 null** 仍从列定义读（非空列照拦），
+#: **必须有内容** 改成这份独立规则 —— 默认跟着"非空列"走，需要放行的登记在这里。
+#: 默认从严：漏登记最多是"少放行一个字段"，不会静默把校验放宽。
+BLANK_ALLOWED_FIELDS: frozenset[str] = frozenset({
+    "NumberingRuleUpdate.prefix",
+    "NumberingRuleUpdate.date_format",
+})
+
+#: 规则四元组：`(中文名, 是否不许 null, 是否必须有内容, 长度上限)`。
+#: 第二、三项是**两件事**：`not_null` 看列定义；`need_content` 看
+#: `BLANK_ALLOWED_FIELDS`（非字符串字段的 `need_content` 不起作用）。
+Rule = tuple[str, bool, bool, int | None]
 
 
 def _rules_for(cls: type[BaseModel]) -> dict[str, Rule]:
@@ -167,7 +196,9 @@ def _rules_for(cls: type[BaseModel]) -> dict[str, Rule]:
 
     - **字段清单**：类自己的字段（`model_fields`）里，**在那张表里找得到同名列**的那些
       —— 不人工列一遍，所以"漏登记一个字段"这种事不会再发生；
-    - **是否不许清空**：看库列的 `nullable`（不是"看起来像必填"）；
+    - **是否不许 null**：看库列的 `nullable`（不是"看起来像必填"）；
+    - **是否必须有内容**：默认跟着上一条走（非空列要求有内容），
+      但 `BLANK_ALLOWED_FIELDS` 里登记的字段放行空串 —— 两件事分开，见该常量的说明；
     - **长度上限**：看库列的 `String(n)` / `varchar(n)`。
 
     表里没有同名列的字段（如案例的 `evidences`、草稿的 `items` 这类虚拟字段）
@@ -178,7 +209,7 @@ def _rules_for(cls: type[BaseModel]) -> dict[str, Rule]:
     if table_name is None:
         # 没有独立表：只按人工登记做"不许清空"，不查长度
         return {
-            field: (FIELD_LABELS.get(f"{name}.{field}", field), True, None)
+            field: (FIELD_LABELS.get(f"{name}.{field}", field), True, True, None)
             for field in REQUIRED_FIELDS.get(name, frozenset())
         }
     table = Base.metadata.tables.get(table_name)
@@ -190,9 +221,13 @@ def _rules_for(cls: type[BaseModel]) -> dict[str, Rule]:
         if column is None or column.primary_key:
             continue
         length = getattr(column.type, "length", None)
+        not_null = not column.nullable
         rules[field] = (
             FIELD_LABELS.get(f"{name}.{field}", field),
-            not column.nullable,
+            not_null,
+            # 「必须有内容」是**独立**判据（11.9 补修）：默认跟"不许 null"走，
+            # 登记为可空的字段（编号规则的前缀 / 日期格式）放行空串。
+            not_null and f"{name}.{field}" not in BLANK_ALLOWED_FIELDS,
             length if isinstance(length, int) else None,
         )
     return rules
@@ -214,20 +249,31 @@ class PatchModel(BaseModel):
     def _guard_blank_and_length(self):
         rules = dict(_rules_for(type(self)))
         for field, label in (self.REQUIRED_RULES or {}).items():
-            rules.setdefault(field, (label, True, None))
-        for field, (label, required, max_len) in rules.items():
+            rules.setdefault(field, (label, True, True, None))
+        for field, (label, not_null, need_content, max_len) in rules.items():
             # ① 没传 → 保持原值，放行（这是"部分更新"的本意）
             if field not in self.model_fields_set:
                 continue
             value = getattr(self, field, None)
-            # ② 传了 null / 空串 / 纯空白，而库里这一列非空 → 等于把必填项清空了
-            if required and (value is None or (isinstance(value, str) and not value.strip())):
+            # ② 传 null：库里非空就拒（原来会走到数据库才撞非空约束 → 500）；
+            #    可空字段传 null = 允许清空。
+            if value is None:
+                if not_null:
+                    raise ValueError(
+                        f"{label}不能为空。要改就给它一个非空值；不打算改这个字段就别传它"
+                    )
+                continue
+            # ③ 「必须有内容」与「不许 null」是**两件事**（11.9 补修）：名称、标题这类
+            #    真正必填的文字仍拦空串与纯空白；编号规则的前缀 / 日期格式允许 `""`
+            #    （留空 = 不带前缀 / 不带日期，模型与取号逻辑本来就这么定义）。
+            if need_content and isinstance(value, str) and not value.strip():
                 raise ValueError(
                     f"{label}不能为空。要改就给它一个非空值；不打算改这个字段就别传它"
                 )
-            # ③ 超长也在这里拦：越过它只会撞库列上限（"value too long for type
+            # ④ 超长也在这里拦：越过它只会撞库列上限（"value too long for type
             #    character varying(N)"），用户看到的同样是 500。
-            #    注意这一档**与"允许清空"无关** —— 可空字段照样有长度上限。
+            #    这一档**与上面两档都无关** —— 可空字段照样有长度上限，
+            #    允许留空的字段也照样有上限。
             if max_len is not None and isinstance(value, str) and len(value) > max_len:
                 raise ValueError(f"{label}最长 {max_len} 个字符（当前 {len(value)} 个）")
         return self
@@ -280,10 +326,20 @@ def verify_patch_registry() -> list[str]:
         if cls_name not in classes:
             problems.append(f"REQUIRED_FIELDS 登记了 {cls_name}，但代码里没有这个类")
 
+    # 5. 放行空白的那份登记也要对得上：写错一个字段名 = 该字段仍然被拦空白
+    #    （症状是"明明登记了还是报 400"），所以自查一条。
+    for key in BLANK_ALLOWED_FIELDS:
+        cls_name, _, field = key.partition(".")
+        if cls_name not in classes:
+            problems.append(f"BLANK_ALLOWED_FIELDS 登记了 {key}，但代码里没有 {cls_name}")
+        elif field not in classes[cls_name].model_fields:
+            problems.append(f"BLANK_ALLOWED_FIELDS 登记的 {key} 不在 {cls_name} 里")
+
     return sorted(problems)
 
 
 __all__ = [
+    "BLANK_ALLOWED_FIELDS",
     "FIELD_LABELS",
     "PATCH_TABLES",
     "REQUIRED_FIELDS",
