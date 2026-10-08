@@ -385,11 +385,11 @@ async def main():
         )
         check("挂上了「已发送」的报价 → 可以登记签署", status == 200, f"HTTP {status} {result}")
 
-        print("=== 7b. 合同钉的是「没发给客户的那一版」→ 不许登记签署（复审 10.8）===")
-        # 场景：一份报价改了两版，**发给客户的是 V2**，V1 从头到尾没出过门。
-        # 报价单本体的状态是「已发送」——这是对的，它确实发出去过，只不过发的是 V2。
-        # 但若合同是照着 V1 生成的，它依据的那一版客户从没见过：
-        # 只看报价单状态就会把这份合同放行，台账上留下一个假的依据。
+        print("=== 7b. 合同钉住的报价版本「发过、但已经不是当前版」→ 不许登记签署（复审 10.8）===")
+        # 场景（复审原样复现的那条）：一份报价出过两版、**两版都发给了客户**，
+        # 客户最终确认的是 V2（报价的 `current_version_id` 指着它）。若合同是照着
+        # **已被 V2 取代的 V1** 生成的，它依据的那一版已经不是现在的口径 ——
+        # 只问"那一版发过没有"会把它放行，台账上于是留下一个假依据。
         async with SessionLocal() as session:
             multi_quote = Quote(
                 quote_no=f"{MARKER}Q3",
@@ -401,33 +401,35 @@ async def main():
             )
             session.add(multi_quote)
             await session.flush()
-            never_sent = QuoteVersion(
+            superseded = QuoteVersion(
                 quote_id=multi_quote.id,
                 version_no=1,
                 total_amount=Decimal("100"),
                 currency="CNY",
                 approval_status="approved",
-                # sent_at / accepted_at 都留空：**这一版**没有出过门
+                # ⚠️ 这一版**发过**（sent_at 有值）—— 复审的反例正在这里：
+                # 旧夹具把它写成"从没发过"，恰好只覆盖了"没发过"那一半。
+                sent_at=datetime.now(UTC),
                 created_by=zhangsan_id,
                 created_at=datetime.now(UTC),
             )
-            really_sent = QuoteVersion(
+            current = QuoteVersion(
                 quote_id=multi_quote.id,
                 version_no=2,
                 total_amount=Decimal("200"),
                 currency="CNY",
                 approval_status="approved",
-                sent_at=datetime.now(UTC),  # 客户手里是这一版
+                sent_at=datetime.now(UTC),  # 客户手里、也是报价当前版的是这一版
                 created_by=zhangsan_id,
                 created_at=datetime.now(UTC),
             )
-            session.add_all([never_sent, really_sent])
+            session.add_all([superseded, current])
             await session.flush()
-            multi_quote.current_version_id = really_sent.id
+            multi_quote.current_version_id = current.id
             await session.commit()
             quote_ids.append(multi_quote.id)
             multi_quote_id = multi_quote.id
-            never_sent_id, really_sent_id = never_sent.id, really_sent.id
+            superseded_id, current_id = superseded.id, current.id
 
         stale_doc = api(
             "POST", "/contract-documents", token=zhangsan,
@@ -435,26 +437,26 @@ async def main():
                 "template_id": template["id"],
                 "customer_id": own.id,
                 "quote_id": multi_quote_id,
-                "quote_version_id": never_sent_id,
+                "quote_version_id": superseded_id,
             },
         )
         doc_ids.append(stale_doc["id"])
-        check("照「没发过的那一版」仍能先把合同备出来（拦在签署，不在生成）",
+        check("照「已被取代的那一版」仍能先把合同备出来（拦在签署，不在生成）",
               stale_doc["status"] == "draft", stale_doc["status"])
         check("台账上确实钉住了那一版（V1）",
-              stale_doc.get("quote_version_id") == never_sent_id,
+              stale_doc.get("quote_version_id") == superseded_id,
               stale_doc.get("quote_version_id"))
         status, result = call(
             "POST", f"/contract-documents/{stale_doc['id']}/sign",
             token=zhangsan, body={"file_id": fixture_file_id},
         )
-        check("钉住「从没发给过客户的那一版」→ 登记签署被拒（422）",
+        check("钉住「发过、但已经不是当前版」→ 登记签署被拒（422）",
               status == 422, f"HTTP {status} {result}")
-        check("拒绝理由说清是「那一版没发过」，不是笼统的「没有依据」",
-              "没有发给过客户" in json.dumps(result, ensure_ascii=False),
+        check("拒绝理由说清是「已经不是当前版本」，并指路先确认当前报价再重新生成",
+              "当前版本" in json.dumps(result, ensure_ascii=False),
               result.get("message"))
 
-        # 对照一：同一份报价，换成「客户看过的那一版」→ 照常能签。
+        # 对照一：同一份报价，换成**当前那一版** → 照常能签。
         # 没有这条对照，上面那条红了也分不清是修对了还是把这类合同全拦死了。
         fresh_doc = api(
             "POST", "/contract-documents", token=zhangsan,
@@ -462,7 +464,7 @@ async def main():
                 "template_id": template["id"],
                 "customer_id": own.id,
                 "quote_id": multi_quote_id,
-                "quote_version_id": really_sent_id,
+                "quote_version_id": current_id,
             },
         )
         doc_ids.append(fresh_doc["id"])
@@ -470,8 +472,68 @@ async def main():
             "POST", f"/contract-documents/{fresh_doc['id']}/sign",
             token=zhangsan, body={"file_id": fixture_file_id},
         )
-        check("钉住「客户看过的那一版」→ 照常能签（对照）",
+        check("钉住「当前版本」→ 照常能签（对照）",
               status == 200, f"HTTP {status} {result}")
+
+        # 第三条：是**当前版**、但**还没发给客户** → 也要拦，理由说"没发过"。
+        # 这条与上面那条各管一半：一个管"旧版"，一个管"新版还没出门"。
+        async with SessionLocal() as session:
+            un_quote = Quote(
+                quote_no=f"{MARKER}Q4",
+                customer_id=own.id,
+                owner_id=zhangsan_id,
+                status="sent",
+                created_by=zhangsan_id,
+                created_at=datetime.now(UTC),
+            )
+            session.add(un_quote)
+            await session.flush()
+            sent_old = QuoteVersion(
+                quote_id=un_quote.id,
+                version_no=1,
+                total_amount=Decimal("100"),
+                currency="CNY",
+                approval_status="approved",
+                sent_at=datetime.now(UTC),
+                created_by=zhangsan_id,
+                created_at=datetime.now(UTC),
+            )
+            unsent_current = QuoteVersion(
+                quote_id=un_quote.id,
+                version_no=2,
+                total_amount=Decimal("300"),
+                currency="CNY",
+                approval_status="approved",
+                # 已经是当前版了，但还没发出去 —— 客户没见过
+                created_by=zhangsan_id,
+                created_at=datetime.now(UTC),
+            )
+            session.add_all([sent_old, unsent_current])
+            await session.flush()
+            un_quote.current_version_id = unsent_current.id
+            await session.commit()
+            quote_ids.append(un_quote.id)
+            un_quote_id, unsent_current_id = un_quote.id, unsent_current.id
+
+        unsent_doc = api(
+            "POST", "/contract-documents", token=zhangsan,
+            body={
+                "template_id": template["id"],
+                "customer_id": own.id,
+                "quote_id": un_quote_id,
+                "quote_version_id": unsent_current_id,
+            },
+        )
+        doc_ids.append(unsent_doc["id"])
+        status, result = call(
+            "POST", f"/contract-documents/{unsent_doc['id']}/sign",
+            token=zhangsan, body={"file_id": fixture_file_id},
+        )
+        check("钉住「当前版、但还没发给客户」→ 登记签署被拒（422）",
+              status == 422, f"HTTP {status} {result}")
+        check("拒绝理由说清是「没有发给过客户」",
+              "没有发给过客户" in json.dumps(result, ensure_ascii=False),
+              result.get("message"))
 
         # 对照二：提前备合同、压根没钉版本 → 沿用老口径（整份报价是正式依据），
         # 报价单是"已发送"，放行。这条钉住"没有版本号时别误伤"。

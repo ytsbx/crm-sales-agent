@@ -667,12 +667,17 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
     （客户要求先把合同发过去、签了才下单）。但若一路签完字都没有依据，
     这份合同签的到底是什么、按哪个价，就没有出处了。
 
-    ⚠️ 挂了报价时还要多问一句（2026-10-08 复审 10.8）：「**合同钉住的那一版**
-    客户见过没有」。合同生成时会把当时那一版记在 `doc.quote_version_id` 上、
-    之后不再变（迁移 `d1f5b9c3e7a4` 的说明）。只看整份报价的状态是不够的 ——
-    报价为了发出 V2 把状态改成 `sent` 之后，一份钉在**从未发出的 V1** 上的合同
-    照样能签字，台账上于是留下一个假的依据：以后翻账的人会以为 V1 当时给客户看过。
-    钉住版本恰好是客户见过的那一版，是**已经成立**的老数据，不受影响。
+    ⚠️ 挂了报价时要连着问两句（2026-10-08 复审 10.8）：
+
+    ① 「**合同钉住的那一版**是不是报价的**当前版**」—— 报价可以出 V2/V3，客户
+       最终确认的是哪一版，看 `quote.current_version_id`。合同生成时会把当时那一版
+       记在 `doc.quote_version_id` 上、之后不再变；只问"那一版发过没有"挡不住
+       **发过的旧版**：报价发过 V2 之后，一份钉在**发过、但已被 V2 取代的 V1** 上的
+       合同照样能签字，台账上于是留下一个假依据 —— 翻账的人会以为 V1 是最终确认的那版。
+    ② 「那一版**客户见过**没有」（`sent_at` / `accepted_at`）—— 报价单状态是
+       "已发送"只说明**整份报价**出过门，不代表**这一版**出过门。
+
+    两句判据、以及对报价行的加锁都在这个函数里：判完到落库之间不许被并发换版改掉。
     """
     if doc.doc_type == "monthly":
         return
@@ -681,7 +686,16 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
         if order is not None and order.status != "cancelled":
             return
     if doc.quote_id is not None:
-        quote = await session.get(Quote, doc.quote_id)
+        # 锁住报价行再读（第十批 10.8 复审）：下面要拿"当前版本"当判据，
+        # 判完到落库之间不能被并发换版改掉 —— 否则"检查通过"只是判的那一瞬间成立。
+        quote = (
+            await session.execute(
+                select(Quote)
+                .where(Quote.id == doc.quote_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if (
             quote is not None
             and quote.deleted_at is None
@@ -691,18 +705,30 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
             if doc.quote_version_id is None:
                 return
             version = await session.get(QuoteVersion, doc.quote_version_id)
-            if (
-                version is not None
-                and version.quote_id == quote.id
-                and _version_was_seen_by_customer(version)
-            ):
-                return
-            raise AppError(
-                ErrorCode.STATUS_NOT_ALLOWED,
-                "这份合同依据的报价版本没有发给过客户（那份报价发出的是别的一版），"
-                "不能登记签署：请按客户看过的那一版重新生成一份合同",
-                422,
-            )
+            if version is None or version.quote_id != quote.id:
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "这份合同依据的报价版本不属于这份报价，不能登记签署："
+                    "请按客户看过的那一版重新生成一份合同",
+                    422,
+                )
+            # ① 依据的必须是**报价的当前版本**
+            if version.id != quote.current_version_id:
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "这份合同依据的报价版本已经不是当前版本（报价后来又出了/确认了新的"
+                    "一版），不能登记签署：请先确认当前报价，再按它重新生成一份合同",
+                    422,
+                )
+            # ② 当前版本还得是**客户见过**的那一版
+            if not _version_was_seen_by_customer(version):
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "这份合同依据的报价版本还没有发给过客户，不能登记签署："
+                    "请先把当前报价发给客户，再按它生成一份合同",
+                    422,
+                )
+            return
     raise AppError(
         ErrorCode.STATUS_NOT_ALLOWED,
         "登记签署前要先绑定正式依据：关联一张正式订单，或关联一份已发送/已接受的报价"
