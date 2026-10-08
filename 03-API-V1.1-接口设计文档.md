@@ -324,12 +324,12 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `GET /opportunities/{id}`
 - `PATCH /opportunities/{id}`
 - `DELETE /opportunities/{id}`
-- `GET /opportunities/{id}/overview`
+- `GET /opportunities/{id}/overview`：商机 360 概览。**商机可见只证明能看到这条商机**（第十二批 12.1）—— 概览里的报价 / 订单 / 任务 / 跟进**分别**按各自模块的查看权限与数据范围过滤：没权限的板块 `counts.xxx` 为 `null`、并在 `blocked` 里点名（前端显示「无权限查看」，**不能**把无权限伪装成"没有数据"）；有权限的只返回范围内的单据。数量与列表**共用同一套过滤**（含"排除已删报价"），且**过滤先于取最近几条**。跟进板块还要过「系统过程记录」的可见性（来源单据得看得见）。
 - `GET /opportunities/{id}/timeline`
 - `GET /opportunities/{id}/stage-history`
-- `POST /opportunities/{id}/change-stage`
+- `POST /opportunities/{id}/change-stage`：推进阶段。**只处理进行中的普通销售阶段**（第十二批 12.2）：目标阶段带成交/失单标记一律 `422`（成交走「确认成交」，失单走「标记失单」）—— 从前普通推进能直达成交，等于把整套成交校验绕过去（实测：一条没有任何报价的商机也能被推成"已成交"）。
 - `POST /opportunities/{id}/assign`
-- `POST /opportunities/{id}/win`
+- `POST /opportunities/{id}/win`：**旧兼容入口**。自第十二批 12.2 起它**不再有自己的规则**，内部与 `confirm-win` 走**同一套**业务服务（报价归属与当前版本、已发送/已接受、审批、有效期、客户确认、`order:manage`、转订单）—— 从前它"不传报价版本也能成交""失单之后还能改成成交"。
 - `POST /opportunities/{id}/lose`
 - `POST /opportunities/{id}/reopen`
 - `POST /opportunities/{id}/clone`
@@ -352,8 +352,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 # 13. Opportunity Stage / Loss Reason
 
 - `GET /opportunity-stages`
-- `POST /opportunity-stages`
-- `PATCH /opportunity-stages/{id}`
+- `POST /opportunity-stages` / `PATCH /opportunity-stages/{id}`：新增与修改阶段。需要 `settings:manage`。**保存前先检查"存完之后整体还能不能被业务正确使用"**（第十二批 12.3）：**成交标记最多一个**、同一阶段不能既是成交又是失单 → 不合规 `422` 并说清原因（从前能存出两个成交阶段，之后一点"成交"就 500）；并发保存用阶段配置行锁串行化，两个管理员各查各的、提交后合成冲突配置这种情况被挡住。
 - `DELETE /opportunity-stages/{id}`
 - `POST /opportunity-stages/reorder`
 - `GET /loss-reasons`
@@ -1468,7 +1467,7 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 
 ## 41.18 商机补充：确认成交（opportunities）
 
-- `POST /opportunities/{opportunity_id}/confirm-win`：确认成交并生成订单（方案 §5 / A13）。需要 `opportunity:manage`，**且需同时具备 `order:manage`**。一个动作完成：校验成交版本 → 商机标记成交 → 版本转订单。幂等：商机已成交不重复改；版本已转过单直接返回已有订单（重试安全）。
+- `POST /opportunities/{opportunity_id}/confirm-win`：确认成交并生成订单（方案 §5 / A13）。需要 `opportunity:manage`，**且需同时具备 `order:manage`**。一个动作完成：校验成交版本 → 商机标记成交 → 版本转订单。幂等：商机已成交不重复改；版本已转过单直接返回已有订单（重试安全）。自第十二批 12.2 起，**旧入口 `POST /opportunities/{id}/win` 与它共用这同一套实现**（不再保留一套宽松规则）。另：**已失单的商机不能借任何成交入口越过状态** —— 要先走「重新激活」，否则当前结果字段与历史记录会各说各话。
 
 ## 41.19 公海回收（public-pool，补充条目）
 
