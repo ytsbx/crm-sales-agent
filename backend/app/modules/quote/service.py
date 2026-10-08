@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import today_business
+from app.core.trade_mode import ensure_currency_allowed
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
 from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import Opportunity, OpportunityItem
@@ -355,6 +356,13 @@ async def create_quote(
     否则两处各写一遍，改价规则时必然漂移。
     调用方负责审计与 commit。
     """
+    # 业务口径闸（2026-10-08）：口径是「只做国内」时，报价币种只能是人民币。
+    # 放在最前面：这一步不看任何数据、只读一个配置，最便宜，也避免"先建了壳
+    # 才发现币种不允许"（报价建壳、明细、快照都在后面）。
+    # 复制报价走 `source_currency`（从源版本继承）也会经过这里 —— 那是刻意的：
+    # 口径变了之后，历史外币报价不该再复制出新的外币报价。
+    currency = await ensure_currency_allowed(session, currency, label="报价币种")
+
     # D8（已确认）：正式报价必须关联商机——成交端点挂在商机上（confirm-win），
     # 不挂商机的报价只能走 convert-to-order 旧路；漏斗/渠道归因/需求明细/价格来源
     # 快照也都依赖商机。只约束新建，历史数据不追溯。

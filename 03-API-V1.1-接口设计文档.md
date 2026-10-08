@@ -1021,7 +1021,8 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 # 39. 错误码
 
 - 40001 参数错误
-- 40002 状态不允许
+- 40002 状态不允许（也用于**业务口径不允许**：`trade_mode` 是「只做国内」时
+  传了非人民币的币种 —— 见 §41.17，判据只有一处，`app/core/trade_mode.py`）
 - 40003 必填业务字段缺失
 - 40101 未登录
 - 40102 Token 失效
@@ -1318,6 +1319,35 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /dashboard/trend`：趋势。需要 `customer:view`。
 - `GET /dashboard/activities`：动态。需要 `customer:view`。
 - `GET /dashboard/team`：PRD §4.2 主管工作台汇总。需要 `customer:view`。数据范围是 `self` 的用户会拿到 `is_team_view: false` 与**空指标**，而不是全员数据——团队指标只对 `department` 及以上开放。
+
+## 41.17 业务口径「只做国内」是一道真闸（2026-10-08）
+
+> 口径本身早就定了（`08-待领导确认清单`：2026-09-24，只做国内、币种固定人民币），
+> 但**此前只做了半截**：`trade_mode` 全项目只有两处被读（下发配置、核价页拿它藏
+> 输入框），**后端一处校验都没有**。于是页面看不到币种，`POST /quotes` 传
+> `currency=USD` 照样把美元写进库；订单草稿页那个币种框也压根不看开关。
+
+- **闸的位置**：`app/core/trade_mode.py` 的 `ensure_currency_allowed()`，
+  口径是 `domestic` 时非 CNY → **400 / `40002`**，提示里说清是口径造成的。
+- **三个写入点**（逐个入口确认过，不是按同类推的；登记在 `CURRENCY_GATE_SITES`，
+  套件 `check_trade_mode_gate` 用 AST 对账，漏一处回归报红）：
+  `quote/service.create_quote`（报价创建 —— 接口建单、复制报价、小助手工具都过它）、
+  `order/service.create_order`（手工建订单）、`order/drafts.update`（订单草稿改币种 ——
+  界面上唯一还能改币种的地方）。
+- **不在这道闸里的**：订单继承报价版本、回款继承应收节点、商机走列默认值
+  （这些是**继承**，源头已经拦住）；**成本**另有更严且与开关无关的一条
+  （`COST_CURRENCIES = {"CNY"}`）；**外部同步（ERP）不拦** —— 拒收会让整批同步
+  失败，它靠下面那条提醒兜底。
+- **改口径即可放开**：`PATCH /settings` 把 `trade_mode` 改成 `both`，同一请求立刻
+  通过，**不用改代码**。
+- **不做折算时也绝不静默**：含金额汇总的接口会带一个可选字段
+  `currency_warnings: string[]`（只有系统里真有外币、且还没折算时才出现），
+  内容是「存在非人民币金额，下列汇总未做折算」。
+  挂在 `analytics/router.py` 的 `_with_fx_note` 上，判据只有一处；**跟着数据范围走**
+  （别人名下的外币单不会给看不到的人弹提示）。只覆盖**返回对象**的接口 ——
+  `dashboard/trend`、`dashboard/risks`、`analytics/products`、`analytics/sales-users`、
+  `analytics/funnel` 回的是数组，装不下这句话，但它们在**已挂了提醒的页面**上，
+  提醒是页面级的，所以不挂不等于看不见（原因写在 `_with_fx_note` 的注释里）。
 
 ## 41.15 通知补投（notifications，补充条目）
 

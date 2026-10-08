@@ -5,7 +5,7 @@ import {
   IconComment,
   IconRefresh,
 } from '@douyinfe/semi-icons'
-import { Button, Checkbox, Tag, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Checkbox, Tag, Toast } from '@douyinfe/semi-ui'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
@@ -207,6 +207,21 @@ export default function WorkbenchPage() {
 
   return (
     <div className="page-container">
+      {/* 含外币、未折算的提醒（兜底）。
+          业务口径本是"只做国内、币种固定人民币"，服务层也加了闸，所以正常情况下
+          这块**根本不出现**。它是给"万一"准备的：外币金额与人民币直接相加得到的
+          数字是错的，但页面上看不出来 —— 宁可明说"可能不准"，也不静默出错数。
+          数据来自报表接口的 `currency_warnings`（见 shared/api/analytics.ts）。 */}
+      {(summaryQuery.data?.currency_warnings ?? []).map((note) => (
+        <div key={note} style={{ marginBottom: 14 }}>
+          <Banner
+            type="warning"
+            closeIcon={null}
+            description={note}
+            title="汇总里含外币金额"
+          />
+        </div>
+      ))}
       {/* 问候 */}
       <div
         className="wb-greeting"

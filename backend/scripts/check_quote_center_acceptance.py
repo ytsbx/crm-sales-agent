@@ -20,6 +20,9 @@ CHKQC SKU，并在清理时对本脚本自建的 SKU 真删价格规则。
 """
 
 import json
+
+# 外币夹具：造美元报价前要先把业务口径放开，跑完收回（见 scripts/_fx_scope.py）
+from _fx_scope import open_export, restore_domestic
 import os
 import sys
 import time
@@ -623,19 +626,25 @@ def main():
                       body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
         floor_cny_quote = res['data'].get('minimum_price_snapshot')
 
-        _, res = call('POST', '/quotes', token=zhangsan, body={
-            'customer_id': customers['A'], 'opportunity_id': opp_a05,
-            'currency': 'USD', 'exchange_rate': 7,
-        })
-        usd_quote, usd_version = res['data']['quote_id'], res['data']['version_id']
-        created_quotes.append(usd_quote)
-        _, res = call('POST', f'/quote-versions/{usd_version}/items', token=zhangsan,
-                      body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
-        floor_usd_quote = res['data'].get('minimum_price_snapshot')
-        record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
-               floor_cny_quote is not None and floor_cny_quote == floor_usd_quote,
-               f"人民币单={floor_cny_quote} 美元单={floor_usd_quote}"
-               f"（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）")
+        # 美元单：要先把业务口径放开（业务方也是先改口径、再报外币价）。
+        # `finally` 一定要收回：收不回去，后面所有套件都会以为可以写外币。
+        open_export(admin)
+        try:
+            _, res = call('POST', '/quotes', token=zhangsan, body={
+                'customer_id': customers['A'], 'opportunity_id': opp_a05,
+                'currency': 'USD', 'exchange_rate': 7,
+            })
+            usd_quote, usd_version = res['data']['quote_id'], res['data']['version_id']
+            created_quotes.append(usd_quote)
+            _, res = call('POST', f'/quote-versions/{usd_version}/items', token=zhangsan,
+                          body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
+            floor_usd_quote = res['data'].get('minimum_price_snapshot')
+            record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
+                   floor_cny_quote is not None and floor_cny_quote == floor_usd_quote,
+                   f"人民币单={floor_cny_quote} 美元单={floor_usd_quote}"
+                   f"（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）")
+        finally:
+            restore_domestic(admin)
 
         # ---------------- A18 长客户名仍能建报价（§8.7 快照列长度）----------------
         # 快照列曾经写死 `varchar(128)`，而客户名允许 200 —— 129 字的名字一建报价

@@ -62,6 +62,9 @@ if not os.environ.get("API_BASE"):
     )
 BASE = os.environ["API_BASE"].rstrip("/")
 
+# 外币夹具：造 EUR 报价前要先把业务口径放开，跑完收回（见 scripts/_fx_scope.py）
+from _fx_scope import open_export, restore_domestic
+
 MARKER = f"CHKDOC{int(time.time())}"
 FAILURES: list[str] = []
 
@@ -316,130 +319,136 @@ async def main():
             disposition,
         )
 
-        # ------------------------------------------------- 11.4 汇率生效时点
-        print("\n=== 4. 汇率：只取报价时刻已生效的那条 ===")
-        now = datetime.now(UTC)
-        live = api(
-            "POST",
-            "/exchange-rates",
-            {
-                "base_currency": "CNY",
-                "quote_currency": "EUR",
-                "rate": 7,
-                "source": f"{MARKER}当前生效",
-                "effective_at": (now - timedelta(days=1)).isoformat(),
-            },
-        )
-        rate_ids.append(live["id"])
-        future = api(
-            "POST",
-            "/exchange-rates",
-            {
-                "base_currency": "CNY",
-                "quote_currency": "EUR",
-                "rate": 99,
-                "source": f"{MARKER}未来生效",
-                "effective_at": "2030-01-01T00:00:00+00:00",
-            },
-        )
-        rate_ids.append(future["id"])
+        # 外汇数据要先把业务口径放开（业务方也是先改口径、再报外币价）。
+        # `finally` 一定要收回：收不回去，后面所有套件都会以为可以写外币。
+        open_export(admin)
+        try:
+            # ------------------------------------------------- 11.4 汇率生效时点
+            print("\n=== 4. 汇率：只取报价时刻已生效的那条 ===")
+            now = datetime.now(UTC)
+            live = api(
+                "POST",
+                "/exchange-rates",
+                {
+                    "base_currency": "CNY",
+                    "quote_currency": "EUR",
+                    "rate": 7,
+                    "source": f"{MARKER}当前生效",
+                    "effective_at": (now - timedelta(days=1)).isoformat(),
+                },
+            )
+            rate_ids.append(live["id"])
+            future = api(
+                "POST",
+                "/exchange-rates",
+                {
+                    "base_currency": "CNY",
+                    "quote_currency": "EUR",
+                    "rate": 99,
+                    "source": f"{MARKER}未来生效",
+                    "effective_at": "2030-01-01T00:00:00+00:00",
+                },
+            )
+            rate_ids.append(future["id"])
 
-        quote = api(
-            "POST",
-            "/quotes",
-            {"opportunity_id": opportunity_id, "customer_id": customer_id, "currency": "EUR"},
-        )
-        quote_ids.append(quote["quote_id"])
-        async with SessionLocal() as session:
-            version = (
-                await session.execute(
-                    select(QuoteVersion)
-                    .where(QuoteVersion.quote_id == quote["quote_id"])
-                    .order_by(QuoteVersion.id.desc())
-                    .limit(1)
-                )
-            ).scalars().first()
-            snapshot = version.exchange_rate_snapshot if version else None
-            source = version.exchange_rate_source if version else None
-        check(
-            "★报价快照取的是「当前已生效」那条的 7，**不是** 2030 年那条的 99",
-            snapshot is not None and Decimal(snapshot) == Decimal("7"),
-            f"snapshot={snapshot} source={source}",
-        )
-        check(
-            "接口响应里给前端看的快照也是 7（不是只在库里对）",
-            Decimal(str(quote.get("exchange_rate_snapshot"))) == Decimal("7"),
-            quote.get("exchange_rate_snapshot"),
-        )
-        check(
-            "来源也没指向那条未来记录",
-            source is not None and "未来生效" not in str(source),
-            source,
-        )
-
-        # 构造"只有未来汇率"：把该币种**当前已生效的每一条**都推到未来。
-        # 不能只动本套件建的那条 —— 库里可能还有别的套件 / 更早一次跑留下的同币种
-        # 已生效汇率（本轮实打实踩到：一条残留让"只剩未来"这个场景根本构造不出来，
-        # 报价照样 200）。原值记下来，用例结束恢复。
-        async with SessionLocal() as session:
-            pushed = [
-                (r.id, r.effective_at)
-                for r in (
+            quote = api(
+                "POST",
+                "/quotes",
+                {"opportunity_id": opportunity_id, "customer_id": customer_id, "currency": "EUR"},
+            )
+            quote_ids.append(quote["quote_id"])
+            async with SessionLocal() as session:
+                version = (
                     await session.execute(
-                        select(ExchangeRate).where(
-                            ExchangeRate.quote_currency == "EUR",
-                            ExchangeRate.effective_at <= datetime.now(UTC),
-                        )
+                        select(QuoteVersion)
+                        .where(QuoteVersion.quote_id == quote["quote_id"])
+                        .order_by(QuoteVersion.id.desc())
+                        .limit(1)
                     )
-                ).scalars().all()
-            ]
-            for rid, _at in pushed:
-                row = await session.get(ExchangeRate, rid)
-                if row is not None:
-                    row.effective_at = datetime(2032, 1, 1, tzinfo=UTC)
-            await session.commit()
-        status, res = call(
-            "POST",
-            "/quotes",
-            token=admin,
-            body={"opportunity_id": opportunity_id, "customer_id": customer_id, "currency": "EUR"},
-        )
-        check("★只剩未来汇率时 → 拒绝报价（不许提前使用）", status == 422, status)
-        check(
-            "理由说清是「还没有生效的汇率」",
-            "还没有生效的汇率" in str(res.get("message", "")),
-            res.get("message"),
-        )
+                ).scalars().first()
+                snapshot = version.exchange_rate_snapshot if version else None
+                source = version.exchange_rate_source if version else None
+            check(
+                "★报价快照取的是「当前已生效」那条的 7，**不是** 2030 年那条的 99",
+                snapshot is not None and Decimal(snapshot) == Decimal("7"),
+                f"snapshot={snapshot} source={source}",
+            )
+            check(
+                "接口响应里给前端看的快照也是 7（不是只在库里对）",
+                Decimal(str(quote.get("exchange_rate_snapshot"))) == Decimal("7"),
+                quote.get("exchange_rate_snapshot"),
+            )
+            check(
+                "来源也没指向那条未来记录",
+                source is not None and "未来生效" not in str(source),
+                source,
+            )
 
-        # 恢复原时间戳，并把本套件那条改成"过去生效"（过去也算已生效）
-        async with SessionLocal() as session:
-            for rid, at in pushed:
-                row = await session.get(ExchangeRate, rid)
-                if row is not None:
-                    row.effective_at = at
-            row = await session.get(ExchangeRate, live["id"])
-            row.effective_at = datetime.now(UTC) - timedelta(days=30)
-            await session.commit()
-        quote2 = api(
-            "POST",
-            "/quotes",
-            {"opportunity_id": opportunity_id, "customer_id": customer_id, "currency": "EUR"},
-        )
-        quote_ids.append(quote2["quote_id"])
-        async with SessionLocal() as session:
-            version2 = (
-                await session.execute(
-                    select(QuoteVersion)
-                    .where(QuoteVersion.quote_id == quote2["quote_id"])
-                    .order_by(QuoteVersion.id.desc())
-                    .limit(1)
-                )
-            ).scalars().first()
-        check(
-            "过去生效的汇率照常可用（没把「过去」误伤成「未来」）",
-            Decimal(version2.exchange_rate_snapshot) == Decimal("7"),
-            version2.exchange_rate_snapshot,
-        )
+            # 构造"只有未来汇率"：把该币种**当前已生效的每一条**都推到未来。
+            # 不能只动本套件建的那条 —— 库里可能还有别的套件 / 更早一次跑留下的同币种
+            # 已生效汇率（本轮实打实踩到：一条残留让"只剩未来"这个场景根本构造不出来，
+            # 报价照样 200）。原值记下来，用例结束恢复。
+            async with SessionLocal() as session:
+                pushed = [
+                    (r.id, r.effective_at)
+                    for r in (
+                        await session.execute(
+                            select(ExchangeRate).where(
+                                ExchangeRate.quote_currency == "EUR",
+                                ExchangeRate.effective_at <= datetime.now(UTC),
+                            )
+                        )
+                    ).scalars().all()
+                ]
+                for rid, _at in pushed:
+                    row = await session.get(ExchangeRate, rid)
+                    if row is not None:
+                        row.effective_at = datetime(2032, 1, 1, tzinfo=UTC)
+                await session.commit()
+            status, res = call(
+                "POST",
+                "/quotes",
+                token=admin,
+                body={"opportunity_id": opportunity_id, "customer_id": customer_id, "currency": "EUR"},
+            )
+            check("★只剩未来汇率时 → 拒绝报价（不许提前使用）", status == 422, status)
+            check(
+                "理由说清是「还没有生效的汇率」",
+                "还没有生效的汇率" in str(res.get("message", "")),
+                res.get("message"),
+            )
+
+            # 恢复原时间戳，并把本套件那条改成"过去生效"（过去也算已生效）
+            async with SessionLocal() as session:
+                for rid, at in pushed:
+                    row = await session.get(ExchangeRate, rid)
+                    if row is not None:
+                        row.effective_at = at
+                row = await session.get(ExchangeRate, live["id"])
+                row.effective_at = datetime.now(UTC) - timedelta(days=30)
+                await session.commit()
+            quote2 = api(
+                "POST",
+                "/quotes",
+                {"opportunity_id": opportunity_id, "customer_id": customer_id, "currency": "EUR"},
+            )
+            quote_ids.append(quote2["quote_id"])
+            async with SessionLocal() as session:
+                version2 = (
+                    await session.execute(
+                        select(QuoteVersion)
+                        .where(QuoteVersion.quote_id == quote2["quote_id"])
+                        .order_by(QuoteVersion.id.desc())
+                        .limit(1)
+                    )
+                ).scalars().first()
+            check(
+                "过去生效的汇率照常可用（没把「过去」误伤成「未来」）",
+                Decimal(version2.exchange_rate_snapshot) == Decimal("7"),
+                version2.exchange_rate_snapshot,
+            )
+        finally:
+            restore_domestic(admin)
 
     finally:
         print("\n=== 收尾清理 ===")

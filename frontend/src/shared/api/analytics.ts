@@ -1,7 +1,19 @@
 import { api } from './client'
 import type { PageResult } from '../types'
 
-export interface DashboardSummary {
+/**
+ * 含金额汇总的接口都会带这一句（只有系统里真有外币、且还没折算时才出现）。
+ *
+ * 业务口径是"只做国内、币种固定人民币"，服务层也加了闸，所以正常情况下这个
+ * 字段根本不会出现。它是**兜底**：万一有外币漏进来（历史数据、外部同步），
+ * 汇总处绝不能静默 —— 外币与人民币直接相加的数字是错的，页面上又看不出来。
+ * 后端见 `analytics/router.py` 的 `_with_fx_note`。
+ */
+export interface WithCurrencyWarnings {
+  currency_warnings?: string[]
+}
+
+export interface DashboardSummary extends WithCurrencyWarnings {
   todo_count: number
   overdue_task_count: number
   stale_customer_count: number
@@ -116,7 +128,7 @@ export interface SalesUserStat {
   received_amount: number
 }
 
-export interface ReceivableStats {
+export interface ReceivableStats extends WithCurrencyWarnings {
   plan_amount: number
   received_amount: number
   unreceived_amount: number
@@ -140,7 +152,7 @@ export interface OpportunityCycle {
   max_days: number | null
 }
 
-export interface OpportunityStats {
+export interface OpportunityStats extends WithCurrencyWarnings {
   won_count: number
   loss_count: number
   win_rate: number
@@ -292,7 +304,7 @@ export interface PricingStats {
   }[]
 }
 
-export interface PaymentStats {
+export interface PaymentStats extends WithCurrencyWarnings {
   plan_count: number
   overdue_node_count: number
   overdue_amount: number

@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.integration.model import ExternalMapping
 from app.modules.order.model import (
@@ -365,6 +366,11 @@ async def create_order(
     明细的 `unit_price` 直接落库（不比价、不套价格规则）：
     线下签约的成交价就是谈定的数字，系统不该替业务改。
     """
+    # 业务口径闸（2026-10-08）：口径是「只做国内」时，手工建单也只能是人民币。
+    # 只判**调用方传进来的**这个参数；从报价转订单那条路走的是 `version.currency`
+    # （继承），不经过这里 —— 源头在报价那一侧已经拦住了。
+    currency = await ensure_currency_allowed(session, currency, label="订单币种")
+
     from app.modules.product.model import Sku
 
     total = Decimal(0)

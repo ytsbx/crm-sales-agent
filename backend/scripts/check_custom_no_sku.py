@@ -27,6 +27,10 @@ import time
 import urllib.error
 import urllib.request
 
+# 外币夹具：造美元报价前要先把业务口径放开（业务方也是这么做的），跑完收回。
+# 见 scripts/_fx_scope.py 的说明 —— 收不回去会连累后面所有套件。
+from _fx_scope import open_export, restore_domestic
+
 BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
 FAILURES = []
 STAMP = str(int(time.time()))
@@ -310,31 +314,37 @@ async def main():
     # 报价一比永远不触发低价审批与绝对底价，页面毛利还虚高——**不报错的错最危险**。
     print()
     print('=== 3c. 外币定制行：成本按人民币、报价按币种 ===')
-    status, payload = call('POST', '/quotes', token=token, body={
-        'customer_id': customer_id, 'opportunity_id': opportunity_id,
-        'currency': 'USD', 'exchange_rate': 7,
-    })
-    check('建美元报价', status, 200)
-    fx_quote, fx_version = payload['data']['quote_id'], payload['data']['version_id']
-    ids['quotes'].append(fx_quote)
-    status, payload = call('POST', f'/quote-versions/{fx_version}/items', token=token, body={
-        'inquiry_id': inquiry_id, 'quantity': 10, 'unit_cost': 300, 'quoted_price': 10,
-    })
-    check('美元单定制行落库', status, 200)
-    fx_item = payload['data']
-    check('最低保护价按人民币存 300×(1+0.15)=345',
-          fx_item.get('minimum_price_snapshot'), 345.0)
-    # 下面两条是**能区分新旧实现**的断言，别改成"利润为负"这种两边都成立的弱断言：
-    #   旧实现 profit = 10 − 300 = −290（拿美元价直接减人民币成本）；
-    #   新实现 profit = 10 − 300/7 = −32.857（先把成本折成报价币种）。
-    # 只断言"为负"的话，改回去也照样绿——这正是这个 bug 一直没被发现的原因。
-    profit = float(fx_item.get('profit_snapshot') or 0)
-    check_true('利润按汇率折算（10 − 300/7 ≈ −32.86，而不是 −290）',
-               abs(profit - (-32.8571)) < 0.01, f"profit={profit}")
-    price_cny = 10 * 7
-    check_true('10 美元=70 人民币 < 345 → 触发低价审批',
-               fx_item.get('approval_required') is True and price_cny < 345,
-               f"approval_required={fx_item.get('approval_required')}")
+    # 外币数据要先把业务口径放开 —— 那正是业务方的做法（管理员改口径才报外币价）。
+    # 套件照做；`finally` 一定要收回，否则后面所有套件都会以为可以写外币。
+    open_export(token)
+    try:
+        status, payload = call('POST', '/quotes', token=token, body={
+            'customer_id': customer_id, 'opportunity_id': opportunity_id,
+            'currency': 'USD', 'exchange_rate': 7,
+        })
+        check('建美元报价', status, 200)
+        fx_quote, fx_version = payload['data']['quote_id'], payload['data']['version_id']
+        ids['quotes'].append(fx_quote)
+        status, payload = call('POST', f'/quote-versions/{fx_version}/items', token=token, body={
+            'inquiry_id': inquiry_id, 'quantity': 10, 'unit_cost': 300, 'quoted_price': 10,
+        })
+        check('美元单定制行落库', status, 200)
+        fx_item = payload['data']
+        check('最低保护价按人民币存 300×(1+0.15)=345',
+              fx_item.get('minimum_price_snapshot'), 345.0)
+        # 下面两条是**能区分新旧实现**的断言，别改成"利润为负"这种两边都成立的弱断言：
+        #   旧实现 profit = 10 − 300 = −290（拿美元价直接减人民币成本）；
+        #   新实现 profit = 10 − 300/7 = −32.857（先把成本折成报价币种）。
+        # 只断言"为负"的话，改回去也照样绿——这正是这个 bug 一直没被发现的原因。
+        profit = float(fx_item.get('profit_snapshot') or 0)
+        check_true('利润按汇率折算（10 − 300/7 ≈ −32.86，而不是 −290）',
+                   abs(profit - (-32.8571)) < 0.01, f"profit={profit}")
+        price_cny = 10 * 7
+        check_true('10 美元=70 人民币 < 345 → 触发低价审批',
+                   fx_item.get('approval_required') is True and price_cny < 345,
+                   f"approval_required={fx_item.get('approval_required')}")
+    finally:
+        restore_domestic(token)
 
     print()
     print('=== 4. 需求状态随报价推进 ===')

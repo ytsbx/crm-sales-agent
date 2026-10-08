@@ -7,6 +7,7 @@ import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
   createCost,
+  expireCost,
   createCustomerPriceRule,
   createLogisticsRate,
   createPriceRule,
@@ -449,6 +450,18 @@ export default function PriceCenterPage() {
     onSuccess: () => {
       Toast.success('成本已保存')
       setCostVisible(false)
+      refreshAll()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // 人工停用一条成本（第十一批 11.5）。这是个**会影响核价**的动作，所以带二次确认；
+  // 且不可撤销 —— 撤销按钮故意不做：成本是按日期分版本的，"改回来"的正确做法是
+  // 新增一条，而不是把历史抹掉。
+  const expireMutation = useMutation({
+    mutationFn: (costId: number) => expireCost(costId),
+    onSuccess: () => {
+      Toast.success('该成本已停用，当天起不再参与核价')
       refreshAll()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -918,6 +931,33 @@ export default function PriceCenterPage() {
                     },
                   },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
+                  {
+                    // 「失效」这个动作**只有接口、没有入口**了一段时间（第十一批 11.5
+                    // 的遗留）：后端能停用，界面上点不到，等于没有。这里补上。
+                    //
+                    // 只给「生效中」的行显示按钮：已停用的重复点虽然幂等（不改原时刻），
+                    // 但摆一个点了没反应的按钮，人会以为没生效、反复点。
+                    // 已自然到期（`effective_to` 有值）的行也不给 —— 它已经不参与核价了。
+                    title: '操作',
+                    width: 96,
+                    render: (_: unknown, record: CostRecord) => {
+                      const alreadyStopped = Boolean(record.stopped_at)
+                      const naturallyExpired = Boolean(record.effective_to)
+                      if (alreadyStopped || naturallyExpired) {
+                        return <span style={{ color: 'var(--semi-color-text-2)' }}>—</span>
+                      }
+                      if (!canManage) return <span style={{ color: 'var(--semi-color-text-2)' }}>—</span>
+                      return (
+                        <Popconfirm
+                          title="停用这条成本？"
+                          content="停用后当天起不再参与核价，且不能撤销；要改回来请新增一条成本。"
+                          onConfirm={() => expireMutation.mutate(record.id)}
+                        >
+                          <a>停用</a>
+                        </Popconfirm>
+                      )
+                    },
+                  },
                 ]}
                 dataSource={costsQuery.data ?? []}
                 loading={costsQuery.isLoading}

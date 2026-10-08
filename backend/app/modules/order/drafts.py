@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope
 from app.core.errors import AppError, ErrorCode
+from app.core.trade_mode import ensure_currency_allowed
 from app.modules.inquiry.model import CustomInquiry
 from app.modules.order.model import OrderDraft, OrderDraftItem
 from app.modules.order import service as order_service
@@ -112,8 +113,12 @@ async def update(session, user, draft_id, payload):
     for key, item in existing.items():
         if key not in ids:
             await session.delete(item)
+    # 业务口径闸（2026-10-08）：这一行是**界面上唯一还能改币种的地方**
+    # （草稿页那个输入框此前不看 trade_mode）。不传 = 不改，所以只在给了值时才判。
     if payload.currency is not None:
-        draft.currency = payload.currency
+        draft.currency = await ensure_currency_allowed(
+            session, payload.currency, label="订单币种"
+        )
     draft.delivery_date, draft.payment_terms, draft.remark = payload.delivery_date, payload.payment_terms, payload.remark
     draft.revision += 1
     await session.flush()

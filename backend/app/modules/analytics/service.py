@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+# 人民币这个字面量全项目只留一处（`core/trade_mode.py`），别在这里再写一遍
+from app.core.trade_mode import CNY
 from app.modules.approval.model import ApprovalInstance
 from app.modules.customer.model import Customer
 from app.modules.followup.model import FollowUp
@@ -107,6 +109,60 @@ def _sales_owner_col():
     coalesce 兜底：迁移前的历史订单已由迁移回填，这里防极端空值。
     """
     return func.coalesce(SalesOrder.sales_owner_id, SalesOrder.owner_id)
+
+
+#: 「含外币、未折算」的提醒语（2026-10-08 与主人确认的口径）。
+#:
+#: 业务口径本是"只做国内、币种固定人民币"（`trade_mode`），服务层也已经加了闸
+#: （`app/core/trade_mode.py`）。可闸只挡得住**新的写入**：历史数据、以及外部
+#: 同步（ERP 那侧拒收会让整批失败，所以不拦）都可能带来外币记录。
+#:
+#: 而汇总处把外币金额与人民币**直接相加**，得到的数字是错的，界面上又完全
+#: 看不出来 —— 属于"往漏钱方向错"。折算成人民币要先定汇率口径与换算时点
+#: （还没定，所以这一批不做折算），但**说出来**是现在就能做的：
+#: 最坏情况是"看得见的不准"，而不是静默的错数。
+CURRENCY_NOTE = (
+    "系统里存在非人民币的订单、回款或应收金额；下列汇总把它们与人民币直接相加、"
+    "未做折算，数字仅供参考"
+)
+
+
+async def currency_note(session: AsyncSession, user: CurrentUser) -> str | None:
+    """当前用户在数据范围内有没有外币金额需要点出来（没有则返回 None）。
+
+    ⚠️ **跟着数据范围走**：别人名下有美元单，不该给看不到它的人弹提示。
+    ⚠️ 四条 `LIMIT 1` 的存在性查询，命中即止 —— 本项目规模下够用；数据量再上
+    一个量级，应该改成在写入时维护一个标记，别再逐次扫表。
+    """
+    probes: list[tuple[Select, object]] = [
+        (
+            select(SalesOrder.id).where(SalesOrder.currency != CNY),
+            _sales_owner_col(),
+        ),
+        (
+            select(PaymentRecord.id)
+            .select_from(PaymentRecord)
+            .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
+            .where(PaymentRecord.currency != CNY),
+            _sales_owner_col(),
+        ),
+        (
+            select(ReceivablePlan.id)
+            .select_from(ReceivablePlan)
+            .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
+            .where(ReceivablePlan.currency != CNY),
+            _sales_owner_col(),
+        ),
+        (
+            select(Opportunity.id).where(Opportunity.currency != CNY),
+            Opportunity.owner_id,
+        ),
+    ]
+    for stmt, owner_col in probes:
+        scoped = await _scope_filter(stmt.limit(1), user, owner_col, session)
+        if (await session.execute(scoped)).first() is not None:
+            return CURRENCY_NOTE
+    return None
 
 
 async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:

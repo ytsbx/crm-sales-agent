@@ -47,6 +47,9 @@
 """
 
 import asyncio
+
+# 外币夹具：造美元订单前要先把业务口径放开，跑完收回（见 scripts/_fx_scope.py）
+from _fx_scope import open_export, restore_domestic
 import json
 import os
 import time
@@ -636,38 +639,44 @@ async def main() -> None:
 
         # ------------------------------------------------------------------
         print()
-        print("=== 9.9 客户概览按币种分组 ===")
-        # 客户 B 名下：一笔 USD 100、一笔 CNY 100 —— 合并相加会变成 200
-        call(
-            "POST", "/orders", admin,
-            body={
-                "customer_id": ids["customer_B"],
-                "currency": "USD",
-                "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
-            },
-        )
-        call(
-            "POST", "/orders", admin,
-            body={
-                "customer_id": ids["customer_B"],
-                "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
-            },
-        )
-        status, res = call("GET", f"/customers/{ids['customer_B']}/overview", admin)
-        amounts = res["data"]["counts"]["order_amounts"]
-        currencies = {row["currency"] for row in amounts}
-        check_true(
-            "两个币种分别列出（没有相加）",
-            {"CNY", "USD"} <= currencies,
-            str(amounts),
-        )
-        check_true(
-            "每个币种的金额各自独立",
-            all(row["amount"] == 100 for row in amounts if row["currency"] in ("CNY", "USD")),
-            str(amounts),
-        )
-        detail = res["data"]["orders"][0]
-        check_true("订单摘要带币种", "currency" in detail, str(detail))
+        # 这笔是美元单：要先把业务口径放开（业务方也是先改口径、再报外币价）。
+        # `finally` 一定要收回：收不回去，后面所有套件都会以为可以写外币。
+        open_export(admin)
+        try:
+            print("=== 9.9 客户概览按币种分组 ===")
+            # 客户 B 名下：一笔 USD 100、一笔 CNY 100 —— 合并相加会变成 200
+            call(
+                "POST", "/orders", admin,
+                body={
+                    "customer_id": ids["customer_B"],
+                    "currency": "USD",
+                    "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
+                },
+            )
+            call(
+                "POST", "/orders", admin,
+                body={
+                    "customer_id": ids["customer_B"],
+                    "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
+                },
+            )
+            status, res = call("GET", f"/customers/{ids['customer_B']}/overview", admin)
+            amounts = res["data"]["counts"]["order_amounts"]
+            currencies = {row["currency"] for row in amounts}
+            check_true(
+                "两个币种分别列出（没有相加）",
+                {"CNY", "USD"} <= currencies,
+                str(amounts),
+            )
+            check_true(
+                "每个币种的金额各自独立",
+                all(row["amount"] == 100 for row in amounts if row["currency"] in ("CNY", "USD")),
+                str(amounts),
+            )
+            detail = res["data"]["orders"][0]
+            check_true("订单摘要带币种", "currency" in detail, str(detail))
+        finally:
+            restore_domestic(admin)
     finally:
         await cleanup(ids)
 

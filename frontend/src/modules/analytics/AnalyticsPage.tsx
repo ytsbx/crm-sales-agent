@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
@@ -291,9 +291,28 @@ export default function AnalyticsPage() {
   const cycle = opportunity?.cycle
   const money = (value?: number) => `¥${Math.round(value ?? 0).toLocaleString('zh-CN')}`
 
+  // 含外币、未折算的提醒（兜底）。正常情况下永远为空 —— 业务口径是"只做国内、
+  // 币种固定人民币"，服务层也加了闸。它是给"万一"准备的：外币与人民币直接相加
+  // 得到的数字是错的，但页面上看不出来，宁可明说"可能不准"。
+  //
+  // 提醒是**页面级**的：只从"回对象"的那几个接口里取（应收/商机/回款），
+  // 本页另有几个接口回的是数组、装不下这句话（后端 `_with_fx_note` 的注释里
+  // 列了是哪几个），不影响整页提示。
+  const currencyWarnings = [
+    receivableQuery.data?.currency_warnings,
+    opportunityQuery.data?.currency_warnings,
+    paymentQuery.data?.currency_warnings,
+  ].find((notes) => (notes?.length ?? 0) > 0) ?? []
+
   return (
     <div className="page-container">
       <PageHeader title="数据分析" subtitle="数据从业务流程实时聚合，不做二次录入" />
+
+      {currencyWarnings.map((note) => (
+        <div key={note} style={{ marginBottom: 14 }}>
+          <Banner type="warning" closeIcon={null} description={note} title="汇总里含外币金额" />
+        </div>
+      ))}
 
       <KpiStrip
         items={[

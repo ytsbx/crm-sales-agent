@@ -295,5 +295,8 @@ check_patch_null_guard
 # 自建费率 + 一个带单重的 SKU（核价要用），跑完按前缀清干净。
 # ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会真建/改/删费率）。
 check_logistics_rate_admin
+# 「只做国内」这道口径闸 + 统计遇外币必须说出来。
+# ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会临时改 trade_mode、插外币订单）。
+check_trade_mode_gate
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

@@ -46,6 +46,19 @@ echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="
 PYTHONPATH=. .venv/bin/python -m pytest || FAILED+=("pytest")
 
 echo
+echo "== 1.8 复位业务口径（trade_mode）=="
+# 有套件要造外币数据，得临时把口径放开成「国内与出口都做」（那是业务方的真实
+# 做法，见 backend/scripts/_fx_scope.py），跑完自己收回。万一某个套件被硬杀、
+# 没来得及收，**后面所有套件都会以为可以写外币** —— 外币断言会莫名其妙地绿。
+# 这里统一兜底一次；本来就已经复位时它什么都不改（不产生多余审计）。
+if PYTHONPATH=. .venv/bin/python scripts/reset_trade_mode.py; then
+  echo "OK  业务口径=domestic"
+else
+  echo "FAIL 业务口径复位"
+  FAILED+=("reset_trade_mode")
+fi
+
+echo
 echo "== 2. 接口回归（顺序跑）=="
 while read -r suite; do
   case "$suite" in '' | '#'*) continue ;; esac

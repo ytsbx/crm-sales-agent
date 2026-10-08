@@ -225,6 +225,20 @@ export function createCost(skuId: number, payload: Record<string, unknown>) {
   return api.post<CostRecord>(`/skus/${skuId}/costs`, payload)
 }
 
+/**
+ * 人工停用一条成本（第十一批 11.5）。
+ *
+ * **点了当天立即退出核价**，且**不能撤销** —— 后端把「什么时候被人停用的」单独
+ * 记在一列里，取价时加一条"没被人工停用"的判据；`effective_to` 一个字不动，
+ * 免得把"人停用的"和"自然到期"混成一种。要改回来就再新增一条成本：
+ * 成本本来就是按日期分版本的，历史报价用的是它当时那份快照，不受影响。
+ *
+ * 重复点不会改原时刻（幂等），所以列表里给「已停用」的行不再显示按钮也没关系。
+ */
+export function expireCost(costId: number) {
+  return api.post<CostRecord>(`/costs/${costId}/expire`)
+}
+
 export function listPriceRules(query: { sku_id?: number; keyword?: string; page?: number; page_size?: number }) {
   return api.get<PageResult<PriceRuleRow>>('/price-rules', query)
 }

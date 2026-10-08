@@ -23,6 +23,40 @@ from app.modules.analytics import usage as usage_svc
 router = APIRouter(tags=["Analytics"])
 
 
+async def _with_fx_note(session: AsyncSession, user: CurrentUser, payload):
+    """含金额汇总的**对象形**返回补一句「含外币、未折算」的提醒（没有外币时原样返回）。
+
+    ## 为什么只给"对象形"的接口挂
+
+    这句话是给返回加一个 `currency_warnings` 键。**返回是数组的接口加不进去**
+    —— 除非把它改成 `{items: [...]}`，那会动到前端契约，不值当。
+
+    所以下列接口**故意不挂**（它们回的是数组）：
+    `dashboard/trend`、`dashboard/risks`、`analytics/products`、
+    `analytics/sales-users`、`analytics/funnel`。它们全都在**已经挂了提醒的
+    页面**上（工作台 / 分析页），而提醒是**页面级**的：同一页只要有一个对象形
+    接口带出来，整页就提示了。所以不挂不等于看不见。
+
+    ⚠️ **别把这几行当成漏了而顺手补上** —— 数组里加不进键，会把 `dict` 判断
+    变成永远不成立的空操作（静默失效，比不写还糟）。真需要覆盖它们时，
+    得先把返回改成对象。
+
+    ## 为什么放在路由层
+
+    放在路由层而不是每个服务函数里：这样"哪些接口带这句话"在一个文件里一眼
+    看得全。**认的是返回的形状，不是接口名像不像"统计"**。
+    """
+    if not isinstance(payload, dict):
+        raise TypeError(
+            f"_with_fx_note 只能包对象形的返回，收到 {type(payload).__name__}；"
+            "数组形返回挂不了提醒，见本函数注释里列的那几个接口"
+        )
+    note = await svc.currency_note(session, user)
+    if note:
+        payload["currency_warnings"] = [note]
+    return payload
+
+
 class TimingReport(BaseModel):
     """前端上报一次操作的耗时（场景18）。"""
 
@@ -390,9 +424,13 @@ async def sales_target_drilldown(
     合计与 `sales-targets` / `sales-targets/bases` 用同一套口径与筛选。
     """
     return ok(
-        await targets_svc.drilldown(
-            session, user, period=period, metric=metric,
-            user_id=user_id, department_id=department_id,
+        await _with_fx_note(
+            session,
+            user,
+            await targets_svc.drilldown(
+                session, user, period=period, metric=metric,
+                user_id=user_id, department_id=department_id,
+            ),
         )
     )
 
@@ -450,7 +488,7 @@ async def dashboard_summary(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    return ok(await svc.dashboard_summary(session, user))
+    return ok(await _with_fx_note(session, user, await svc.dashboard_summary(session, user)))
 
 
 @router.get("/dashboard/tasks")
@@ -466,6 +504,8 @@ async def dashboard_risks(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 返回是数组，挂不了「含外币未折算」那句话（见 _with_fx_note 的注释）；
+    # 同页的 /dashboard/summary 已带，整页照常提示
     return ok(await svc.risk_opportunities(session, user))
 
 
@@ -475,6 +515,7 @@ async def dashboard_trend(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 返回是数组，同上：提醒由 /dashboard/summary 带出来，工作台整页提示
     return ok(await svc.order_payment_trend(session, user, months))
 
 
@@ -497,7 +538,7 @@ async def dashboard_team(
     数据范围是 `self` 的用户会拿到 `is_team_view: false` 与空指标，
     而不是全员数据——团队指标只对 `department` 及以上开放。
     """
-    return ok(await svc.team_summary(session, user))
+    return ok(await _with_fx_note(session, user, await svc.team_summary(session, user)))
 
 
 @router.get("/analytics/opportunities")
@@ -505,7 +546,7 @@ async def analytics_opportunities(
     user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    return ok(await svc.opportunity_stats(session, user))
+    return ok(await _with_fx_note(session, user, await svc.opportunity_stats(session, user)))
 
 
 @router.get("/analytics/quotes")
@@ -530,6 +571,7 @@ async def analytics_products(
     user: CurrentUser = Depends(require_permission("product:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 返回是数组，挂不了提醒（见 _with_fx_note 的注释）
     return ok(await svc.product_stats(session, user, limit))
 
 
@@ -539,6 +581,7 @@ async def analytics_sales_users(
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 返回是数组，挂不了提醒（见 _with_fx_note 的注释）
     return ok(await svc.sales_user_stats(session, user, limit))
 
 
@@ -547,7 +590,7 @@ async def analytics_receivables(
     user: CurrentUser = Depends(require_permission("payment:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    return ok(await svc.receivable_stats(session, user))
+    return ok(await _with_fx_note(session, user, await svc.receivable_stats(session, user)))
 
 
 @router.get("/analytics/losses")
@@ -563,6 +606,7 @@ async def analytics_funnel(
     user: CurrentUser = Depends(require_permission("opportunity:view")),
     session: AsyncSession = Depends(get_db),
 ):
+    # 返回是数组，挂不了提醒（见 _with_fx_note 的注释）；这个接口前端暂时没用到
     return ok(await svc.funnel(session, user))
 
 
@@ -590,7 +634,7 @@ async def analytics_payments(
     session: AsyncSession = Depends(get_db),
 ):
     """回款分析：按期状态、逾期账龄分布、回款方式分布。"""
-    return ok(await svc.payment_stats(session, user))
+    return ok(await _with_fx_note(session, user, await svc.payment_stats(session, user)))
 
 
 @router.get("/analytics/delivery")

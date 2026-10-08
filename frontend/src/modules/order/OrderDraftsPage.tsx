@@ -9,6 +9,7 @@ import { confirmOrderDraft, generateOrderDraftDocument, getOrderDraft, listOrder
 import { listQuotes } from '../../shared/api/quote'
 import { downloadBizDoc, listBizDocs } from '../../shared/api/bizdoc'
 import { newRequestKey } from '../../shared/api/requestKey'
+import { getPublicConfig } from '../../shared/api/settings'
 
 export default function OrderDraftsPage() {
   const { id } = useParams()
@@ -16,6 +17,12 @@ export default function OrderDraftsPage() {
   const navigate = useNavigate()
   const client = useQueryClient()
   const { can } = usePermissions()
+  // 业务口径决定要不要出现「币种」（2026-10-08 与主人确认：只做国内时界面不出现
+  // 外贸字段）。这一行此前**不看这个开关** —— 全前端就剩这一个还能把币种改成外币的
+  // 地方，其他入口早就藏了。后端也补了同一道闸（见 app/core/trade_mode.py），
+  // 这里藏起来只是别让人白填一次再被拒。
+  const configQuery = useQuery({ queryKey: ['public-config'], queryFn: getPublicConfig })
+  const exportEnabled = (configQuery.data?.trade_mode ?? 'domestic') !== 'domestic'
   const query = useQuery({ queryKey: ['order-draft', draftId], queryFn: () => getOrderDraft(draftId), enabled: !!id, refetchOnWindowFocus: false, refetchOnReconnect: false })
   const [page, setPage] = useState(1)
   const list = useQuery({ queryKey: ['order-drafts', page], queryFn: () => listOrderDrafts({ page }), enabled: !id })
@@ -76,7 +83,7 @@ export default function OrderDraftsPage() {
         {(row.specification ?? '') !== (row.source_snapshot.specification ?? '') && <p>原规格：{row.source_snapshot.specification || '未记录'}</p>}
         <p>本次备注</p><TextArea value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />
       </div>)}
-      <p>币种</p><Input value={form.currency} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, currency: v.toUpperCase() }) }} />
+      {exportEnabled && (<><p>币种</p><Input value={form.currency} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, currency: v.toUpperCase() }) }} /></>)}
       <p>计划交期</p><DatePicker type="date" format="yyyy-MM-dd" showClear style={{ width: '100%' }} placeholder="选择计划交期" value={form.delivery_date ? new Date(form.delivery_date) : undefined} disabled={!editable} onChange={(_, v) => { setDirty(true); setForm({ ...form, delivery_date: (v as string) || '' }) }} />
       <p>付款条件</p><Input value={form.payment_terms} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, payment_terms: v }) }} />
       <p>备注</p><TextArea value={form.remark} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, remark: v }) }} />
