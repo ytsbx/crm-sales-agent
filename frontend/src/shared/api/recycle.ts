@@ -66,8 +66,11 @@ export interface RecycleSku extends DeletedByFields {
   /**
    * `direct` ＝ 有人单独删了这条 SKU；`with_product` ＝ 跟着它所属的产品一起被删。
    * 后者要让人看出"不是这条 SKU 被点名删掉" —— 恢复时也该去恢复产品。
+   *
+   * **为 `null` ＝ 判不出这条是怎么没的**（历史数据没留下可用的删除留痕）。
+   * 界面照实说「待核实」，不许硬安一个方式上去 —— 那等于编。
    */
-  removed_via: RemovedVia
+  removed_via: RemovedVia | null
   deleted_at: string | null
   created_at: string | null
 }

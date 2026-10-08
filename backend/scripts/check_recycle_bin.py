@@ -33,6 +33,12 @@
   客户要说清是**直接删除**还是**被合并移除**，并带上合并原因。
   **删 → 恢复 → 再删** 之后显示的是**本次**那个人，不是第一次那条旧留痕；
   留痕缺失时如实标「历史操作人待核实」，**不拿负责人顶替**。
+- **不许张冠李戴**（2026-10-08 复审 RB07 补）：判"这条 SKU 是怎么没的、谁删的"
+  必须**确认是同一次操作**。从前只比"哪条留痕的时间更近"，于是**一个月前**就删掉、
+  但没有自己删除记录的 SKU，会被算到**今天删产品的人**头上。
+  现在：随产品删也**各写一条 SKU 自己的**留痕（带 `via` 与当时的 `deleted_at`）；
+  判"是不是本次"优先比那个 `deleted_at`（精确），历史留痕才退回"同一笔事务"的
+  毫秒级贴近；拿不到、对不上就 `removed_via=null` + 待核实，**不猜**。
 - **权限**：能看列表 ≠ 能恢复。业务员（有 `*:view`）列表 200、恢复 403。
 
 跑法（需要后端在跑，且**不能用 8000**）：
@@ -45,6 +51,7 @@ import asyncio
 import os
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -96,13 +103,24 @@ async def cleanup() -> None:
             + " or target_customer_id in " + cust,
             "delete from contacts where customer_id in " + cust,
             "delete from customer_owner_history where customer_id in " + cust,
+            # ⚠️ 审计必须排在**删 skus / products 之前**：SKU / 产品的删除留痕是按
+            # `business_id` 反查的，源行删掉了就再也找不着它们（回收站正是靠这些
+            # 留痕判断"谁删的、怎么没的"，残下来的会被守门套件逮住）
+            "delete from audit_logs where business_type = 'sku' and business_id in "
+            "(select id from skus where sku_code like :p)",
+            "delete from audit_logs where business_type = 'product' and business_id in "
+            "(select id from products where name like :p)",
+            "delete from audit_logs where business_type = 'customer' and business_id in "
+            + cust,
+            "delete from audit_logs where business_type = 'lead' and business_id in "
+            "(select id from leads where name like :p)",
             "delete from customers where name like :p",
             "delete from skus where sku_code like :p",
             "delete from products where name like :p",
             "delete from lead_assignments where lead_id in "
             "(select id from leads where name like :p)",
             "delete from leads where name like :p",
-            # 回收站的删除/恢复都会写审计，内容里带着夹具名，按内容兜底清
+            # 内容里还带着夹具名的，兜底再扫一遍（删除/恢复/合并都会写）
             "delete from audit_logs where business_type in ('lead', 'product', 'sku', 'customer')"
             " and (coalesce(before_data::text, '') like :m or coalesce(after_data::text, '') like :m)",
         ):
@@ -686,7 +704,7 @@ async def assert_removed_by(ids: dict, admin: str) -> None:
                repr(row.get("deleted_by_name")))
     check("有留痕就不是「待核实」", row.get("deleted_by_pending"), False)
 
-    # ---- SKU：随产品删（这条 SKU 自己**没有**删除留痕，只能靠产品那条）----
+    # ---- SKU：随产品删 ----
     check("删掉产品（连带删它名下的 SKU）",
           call("DELETE", f"/products/{prod_with_id}", token=admin)[0], 200)
     row = sku_row(sku_with_id)
@@ -694,15 +712,21 @@ async def assert_removed_by(ids: dict, admin: str) -> None:
     check("给的是**删产品的那个人**（谁把它带走的）", row.get("deleted_by_id"), ids["admin"])
     check("有留痕就不是「待核实」", row.get("deleted_by_pending"), False)
     async with SessionLocal() as s:
-        own_trace = (
-            await s.execute(
-                text("select count(*) from audit_logs where business_type = 'sku'"
-                     " and business_id = :b and action = 'delete'"),
-                {"b": sku_with_id},
-            )
-        ).scalar_one()
-    check("前提成立：这条 SKU 自己一条删除留痕都没有（所以只能靠产品那条）",
-          int(own_trace), 0)
+        own_trace = [
+            r[0]
+            for r in (
+                await s.execute(
+                    text("select after_data from audit_logs where business_type = 'sku'"
+                         " and business_id = :b and action = 'delete'"),
+                    {"b": sku_with_id},
+                )
+            ).all()
+        ]
+    # RB07 之后：连坐删也**各写一条 SKU 自己的留痕**。从前只写产品那一条，
+    # 回收站只能拿"产品留痕的时间"去和 SKU 的删除时间比谁近 —— 那会张冠李戴。
+    check("这条 SKU 自己**有一条**删除留痕（RB07 补的）", len(own_trace), 1)
+    check("留痕里写明「随产品删」",
+          (own_trace[0] or {}).get("via") if own_trace else None, "product_delete")
 
     # ---- SKU：先单独删过、恢复过，再被产品连坐删 → 仍要说成"随产品删" ----
     # 这一条才真正考验判据：库里**既有它自己的旧留痕、又有产品那条**，
@@ -814,6 +838,135 @@ async def assert_removed_by(ids: dict, admin: str) -> None:
     check("这时候不给名字（不拿负责人顶替）", row.get("deleted_by_name"), None)
     check("负责人那一栏照旧有值 —— 两件事分开，不能互相顶替",
           row.get("owner_id"), ids["zhangsan"])
+
+
+async def assert_stale_sku_not_blamed(ids: dict, admin: str) -> None:
+    """RB07（2026-10-08 复审）：历史 SKU 的删除人**不许**被算到后来删产品的人头上。
+
+    ## 复审复现的那个错
+
+    一条 SKU 在**一个月前**就被删了、但没有留下自己的删除记录；今天管理员删掉了它
+    所属的产品（这次删产品**根本没碰它** —— 它早就是"已删"状态）。回收站却显示它是
+    "随产品删除"、删除人是**今天**这位管理员，还标成"无需核实"。
+    等于：今天删产品的人，白背了一个月前那笔账。
+
+    根因是判据只认"时间谁更近"：把 SKU 自己的留痕和它所属产品的留痕都当候选，
+    **没有"是不是同一次操作"这道判定**，差一个月也照认。
+
+    ## 现在的口径
+
+    - 「随产品删除」有 **SKU 自己的**留痕（`delete_product` 给每个被连坐删的 SKU
+      各写一条，带 `via=product_delete` 与当时的 `deleted_at`）；
+    - 判"是不是本次"优先比留痕里记下的 `deleted_at`（**精确**），历史留痕没记时才
+      退回到"同一笔事务"那种毫秒级贴近；
+    - 拿不到自己的留痕、或者对不上，一律 **`removed_via=None` + 待核实**，不猜。
+
+    下面五个场景逐条对应复审给的验收清单。
+    """
+    print()
+    print("=== 19. SKU 的删除人：不许张冠李戴（复审 RB07）===")
+
+    tag = uuid4().hex[:6]
+    now = datetime.now(UTC)
+    long_ago = now - timedelta(days=30)
+
+    def sku_row(rid: int) -> dict:
+        # ⚠️ `page_size` 上限是 200（`Query(20, ge=1, le=200)`）：写 300 会被 422 挡回，
+        # 拿到空 body、每条断言都变成"查不到"—— 那会是一片假红，白找半天。
+        _, body = call("GET", "/recycle-bin/skus?page_size=200", token=admin)
+        return row_of(body, rid) or {}
+
+    async def new_product_and_sku(suffix: str, *, deleted_at=None):
+        """建一个产品 + 一条 SKU（可选：直接置成"已删"，模拟历史数据）。"""
+        async with SessionLocal() as s:
+            from app.modules.product.model import Product, Sku
+
+            p = Product(name=f"{PREFIX}RB07{suffix}{tag}", created_by=ids["admin"])
+            s.add(p)
+            await s.flush()
+            sk = Sku(
+                product_id=p.id,
+                sku_code=f"{PREFIX}-{suffix}{tag}",
+                name=f"RB07{suffix}",
+                deleted_at=deleted_at,
+            )
+            s.add(sk)
+            await s.flush()
+            pid, sid = p.id, sk.id
+            await s.commit()
+        return pid, sid
+
+    # ---- 场景 1：早就删掉、没有自己的留痕，后来删产品 → 待核实，不许归给删产品的人
+    p1, sk1 = await new_product_and_sku("OLD", deleted_at=long_ago)
+    check(
+        "场景1：一个月前就删掉的 SKU（且没留下自己的删除记录），今天删它所属产品",
+        call("DELETE", f"/products/{p1}", token=admin)[0],
+        200,
+    )
+    row = sku_row(sk1)
+    check("场景1：删除方式判不出来 → 不给一个假答案", row.get("removed_via"), None)
+    check("场景1：**不许**归给今天删产品的人", row.get("deleted_by_id"), None)
+    check("场景1：如实标成「待核实」", row.get("deleted_by_pending"), True)
+
+    # ---- 场景 2：真正随产品删的 SKU → 给删产品的那个人
+    p2, sk2 = await new_product_and_sku("WITH")
+    check(
+        "场景2：删产品（这条 SKU 是活的，会被连坐）",
+        call("DELETE", f"/products/{p2}", token=admin)[0],
+        200,
+    )
+    row = sku_row(sk2)
+    check("场景2：说成「随产品删」", row.get("removed_via"), "with_product")
+    check("场景2：给的是**删产品的那个人**", row.get("deleted_by_id"), ids["admin"])
+    check("场景2：不算「待核实」", row.get("deleted_by_pending"), False)
+
+    # ---- 场景 3：单独删 → 恢复 → 随产品删 → 说"随产品删"（本次操作）
+    p3, sk3 = await new_product_and_sku("MIX")
+    check("场景3：先单独删一次", call("DELETE", f"/skus/{sk3}", token=admin)[0], 200)
+    check("场景3：恢复它", call("POST", f"/skus/{sk3}/restore", token=admin)[0], 200)
+    check("场景3：再删产品，它被连坐", call("DELETE", f"/products/{p3}", token=admin)[0], 200)
+    row = sku_row(sk3)
+    check(
+        "场景3：恢复过又被产品连坐删 → 说「随产品删」（没翻出上次那条旧留痕）",
+        row.get("removed_via"),
+        "with_product",
+    )
+    check("场景3：操作人仍是本次这位", row.get("deleted_by_id"), ids["admin"])
+
+    # ---- 场景 4：随产品删 → 恢复 → 单独删 → 说"单独删"（本次操作）
+    p4, sk4 = await new_product_and_sku("REV")
+    check("场景4：先删产品（它被连坐）", call("DELETE", f"/products/{p4}", token=admin)[0], 200)
+    check("场景4：恢复产品，SKU 一起回来",
+          call("POST", f"/products/{p4}/restore", token=admin)[0], 200)
+    check("场景4：再单独删这个 SKU", call("DELETE", f"/skus/{sk4}", token=admin)[0], 200)
+    row = sku_row(sk4)
+    check(
+        "场景4：产品恢复过、又单独删 → 说「单独删除」（没翻出产品那条旧留痕）",
+        row.get("removed_via"),
+        "direct",
+    )
+    check("场景4：操作人仍是本次这位", row.get("deleted_by_id"), ids["admin"])
+
+    # ---- 场景 5：只有一条**无关**的旧留痕 → 待核实，不许取旧人顶替
+    p5, sk5 = await new_product_and_sku("STALE", deleted_at=now)
+    async with SessionLocal() as s:
+        # 老格式的留痕：没记 `deleted_at`，而且时间在 30 天前 —— 与本次删除无关
+        await s.execute(
+            text(
+                "insert into audit_logs (operator_id, source, business_type, business_id,"
+                " action, after_data, created_at)"
+                " values (:op, 'WEB', 'sku', :b, 'delete', NULL, :at)"
+            ),
+            {"op": ids["lisi"], "b": sk5, "at": long_ago},
+        )
+        await s.commit()
+    row = sku_row(sk5)
+    check("场景5：库里只有一条无关旧留痕 → **不取那个人**顶替",
+          row.get("deleted_by_id"), None)
+    check_true("场景5：也不能把李四认成删它的人",
+               row.get("deleted_by_id") != ids["lisi"], repr(row))
+    check("场景5：删除方式同样判不出来", row.get("removed_via"), None)
+    check("场景5：如实标成「待核实」", row.get("deleted_by_pending"), True)
 
 
 async def main() -> int:
@@ -976,6 +1129,7 @@ async def main() -> int:
         await assert_restore_sku_waits_for_product_lock(ids, admin)
         await assert_create_sku_waits_for_product_lock(ids, admin)
         await assert_removed_by(ids, admin)
+        await assert_stale_sku_not_blamed(ids, admin)
 
     finally:
         await cleanup()

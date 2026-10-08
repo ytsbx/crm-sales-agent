@@ -123,12 +123,18 @@ async def lock_product(session: AsyncSession, product_id: int) -> Product | None
     ).scalars().first()
 
 
-async def delete_product(session: AsyncSession, product: Product) -> None:
-    """软删产品，并连同它名下还没删的 SKU 一起软删。
+async def delete_product(session: AsyncSession, product: Product) -> list[Sku]:
+    """软删产品，并连同它名下还没删的 SKU 一起软删。**返回这些被连坐删掉的 SKU**。
 
     ⚠️ 调用方必须先 `lock_product`。这里扫 SKU 时也带行锁，理由同
     `recycle.service.restore_product`：不加锁的话"正在删产品"与"同时恢复某个 SKU"
     会各看各的旧世界，收尾时留下一个挂在已删产品下的有效 SKU。
+
+    为什么要把"被删掉的那些 SKU"交出去：**这些 SKU 各自也需要一条删除留痕**
+    （由调用方写，见 `product.router.delete_product`）。从前只写产品那一条，
+    回收站要判断"某条 SKU 是不是被这次删产品带走的"，只能拿产品留痕的时间去和
+    SKU 自己的删除时间比谁近 —— 那会张冠李戴（回收站复审 RB07：一条一个月前
+    就删掉的 SKU，被算到今天删产品的人头上）。
     """
     product.deleted_at = datetime.now(UTC)
     # 产品下的 SKU 一并软删除，避免出现挂在不存在的产品上的孤儿 SKU
@@ -143,3 +149,4 @@ async def delete_product(session: AsyncSession, product: Product) -> None:
     now = datetime.now(UTC)
     for sku in skus:
         sku.deleted_at = now
+    return list(skus)

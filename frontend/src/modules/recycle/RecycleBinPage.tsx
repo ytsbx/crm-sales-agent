@@ -304,12 +304,15 @@ function ProductsPanel() {
       title: '删除方式',
       dataIndex: 'removed_via',
       width: 150,
-      render: (via: RemovedVia) =>
-        via === 'with_product' ? (
+      render: (via: RemovedVia | null) => {
+        // 判不出来就说"待核实"，不硬安一个方式（历史数据常是这样）
+        if (via === null) return <Tag>待核实</Tag>
+        return via === 'with_product' ? (
           <Tag color="orange">{SKU_REMOVED_TEXT[via]}</Tag>
         ) : (
           <Tag>{SKU_REMOVED_TEXT[via]}</Tag>
-        ),
+        )
+      },
     },
     { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
     {

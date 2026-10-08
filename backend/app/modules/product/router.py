@@ -141,12 +141,17 @@ async def delete_product(
     **先锁产品、再扫 SKU**（锁序见 `svc.lock_product`）。不加锁的话，
     "正在删产品"与"同时恢复它名下的某个 SKU"会各看各的旧世界：
     产品删掉了、SKU 却被恢复成有效，留下挂在已删产品下的孤儿。
+
+    留痕写**两处**：产品自己一条（这次删产品的动作），被连坐删掉的 SKU
+    **每个各一条**。少了 SKU 那几条，回收站要回答"这条 SKU 是怎么没的"
+    就只能拿产品那条留痕的时间去和 SKU 的删除时间比谁近 —— 一条几个月前
+    就删掉的 SKU 会因此被算到今天删产品的人头上（回收站复审 RB07）。
     """
     product = await svc.lock_product(session, product_id)
     if product is None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     before = svc.serialize_product(product)
-    await svc.delete_product(session, product)
+    cascaded = await svc.delete_product(session, product)
     await write_audit(
         session,
         operator_id=user.id,
@@ -156,6 +161,25 @@ async def delete_product(
         before=before,
         ip=client_ip(request),
     )
+    for sku in cascaded:
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="delete",
+            business_type="sku",
+            business_id=sku.id,
+            before={"sku_code": sku.sku_code, "product_id": product.id},
+            # `via` 说清"是随产品删的"，`deleted_at` 把当时那个值钉下来 ——
+            # 回收站据此**确认**这条留痕就是本次删除留下的（`_audit_is_this_deletion`），
+            # 不必再靠"时间谁最近"去猜。单独删 SKU 时写 `via=direct`（见 delete_sku），
+            # 两边合起来，SKU 的两种死法都有据可查。
+            after={
+                "via": "product_delete",
+                "product_id": product.id,
+                "deleted_at": sku.deleted_at.isoformat(),
+            },
+            ip=client_ip(request),
+        )
     await session.commit()
     return ok(None, "产品已删除")
 
@@ -360,6 +384,10 @@ async def delete_sku(
         business_type="sku",
         business_id=sku.id,
         before=before,
+        # `via=direct` 表明"这条 SKU 是被人单独删的"（随产品删的那几条写
+        # `via=product_delete`，见 delete_product）；`deleted_at` 把当时的值钉下来，
+        # 回收站据此确认这条留痕就是本次删除留下的，不用靠时间猜。
+        after={"via": "direct", "deleted_at": sku.deleted_at.isoformat()},
         ip=client_ip(request),
     )
     await session.commit()

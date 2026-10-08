@@ -78,13 +78,17 @@ REMOVED_WITH_PRODUCT = "with_product"
 
 async def _latest_delete_audits(
     session: AsyncSession, pairs: dict[str, list[int]]
-) -> dict[tuple[str, int], tuple[int | None, datetime]]:
-    """一批「业务类型 + 对象 id」→（操作人 id, 操作时刻），取**最新一条**删除留痕。
+) -> dict[tuple[str, int], tuple[int | None, datetime, dict | None]]:
+    """一批「业务类型 + 对象 id」→（操作人 id, 操作时刻, `after` 数据），取**最新一条**删除留痕。
 
     一次查询取回整页要的人 —— 别逐条去查，列表页 20 行就是 20 次往返。
 
     取**最新**一条是刻意的：「删掉 → 恢复 → 再删」之后要显示的是**本次**谁删的，
     不能翻出第一次那条旧留痕。`order_by(id.desc())` + `setdefault` 正好留下最新的。
+
+    `after` 数据一并取回：SKU 那边要靠它**确认**这条留痕是不是本次删除留下的
+    （新删除会把当时的 `deleted_at` 与来源 `via` 记进去，见 `_audit_is_this_deletion`），
+    别为这一点再查一趟库。
 
     ⚠️ 依赖 `audit_logs` 上 `(business_type, business_id)` 的索引（迁移 `a7c1e5b9d3f2`）。
     少了它，每次打开回收站都要把这本流水账从头翻一遍。
@@ -103,6 +107,7 @@ async def _latest_delete_audits(
                 AuditLog.business_id,
                 AuditLog.operator_id,
                 AuditLog.created_at,
+                AuditLog.after_data,
             )
             .where(
                 AuditLog.action == "delete",
@@ -116,14 +121,14 @@ async def _latest_delete_audits(
             .order_by(AuditLog.id.desc())
         )
     ).all()
-    out: dict[tuple[str, int], tuple[int | None, datetime]] = {}
-    for btype, bid, operator_id, created_at in rows:
-        out.setdefault((str(btype), int(bid)), (operator_id, created_at))
+    out: dict[tuple[str, int], tuple[int | None, datetime, dict | None]] = {}
+    for btype, bid, operator_id, created_at, after_data in rows:
+        out.setdefault((str(btype), int(bid)), (operator_id, created_at, after_data))
     return out
 
 
 def _delete_info(
-    audits: dict[tuple[str, int], tuple[int | None, datetime]],
+    audits: dict[tuple[str, int], tuple[int | None, datetime, dict | None]],
     btype: str,
     oid: int,
     names: dict[int, str],
@@ -135,30 +140,67 @@ def _delete_info(
     return hit[0], names.get(hit[0]), False
 
 
+#: 判定「这条留痕是不是**本次**删除留下的」时，给**历史留痕**留的时间容差。
+#:
+#: 只在留痕没记下当时的 `deleted_at` 时才用得上（新留痕会记，见下面第 ① 条）。
+#: 审计的 `created_at` 由**库**生成（PostgreSQL 的 `now()` 在同一事务内固定），
+#: SKU 的 `deleted_at` 由**应用**生成 —— 同一笔事务里两者相差只可能是毫秒级；
+#: 不同次操作至少隔着"人点一下"。60 秒足够区分，又不会被时钟微调误伤。
+SAME_OPERATION_TOLERANCE_SECONDS = 60
+
+
+def _audit_is_this_deletion(
+    deleted_at: datetime, hit: tuple[int | None, datetime, dict | None]
+) -> bool:
+    """这条留痕是不是**本次**删除留下的。
+
+    两条判据，优先用精确的那条：
+
+    ① 留痕里记了当时的 `deleted_at`（新删除都会记）→ 直接比那个值，**不用猜时间**；
+    ② 没记（历史留痕）→ 只认"同一笔事务"那种毫秒级贴近。
+
+    ⚠️ 这是 RB07 的要害。从前没有这道判定：只要有两张候选留痕，就挑与
+    `deleted_at` 时间**最贴近**的那条，哪怕差一个月也照认 —— 于是一条早就删掉、
+    只是没留下自己删除记录的 SKU，会被算到**今天删产品的人**头上。
+    """
+    recorded = (hit[2] or {}).get("deleted_at")
+    if isinstance(recorded, str):
+        try:
+            return abs((datetime.fromisoformat(recorded) - deleted_at).total_seconds()) <= 1
+        except ValueError:
+            return False
+    return (
+        abs((hit[1] - deleted_at).total_seconds()) <= SAME_OPERATION_TOLERANCE_SECONDS
+    )
+
+
 def _pick_sku_removal(
     deleted_at: datetime,
-    sku_hit: tuple[int | None, datetime] | None,
-    product_hit: tuple[int | None, datetime] | None,
-) -> tuple[str, tuple[int | None, datetime] | None, bool]:
-    """SKU 是**怎么**没掉的：挑与 `deleted_at` 时间上最贴近的那条留痕。
+    sku_hit: tuple[int | None, datetime, dict | None] | None,
+) -> tuple[str | None, tuple[int | None, datetime, dict | None] | None, bool]:
+    """SKU 是**怎么**没掉的、谁删的。
 
-    为什么不能简单看「SKU 有没有自己的删除留痕」：`删除 → 恢复 → 再删` 之后，
-    SKU 自己的**旧**留痕还在，而本次可能是跟着产品删的（或反过来）。两条候选
-    来自不同一次操作，只有**与 `deleted_at` 同一次**的那条才对得上时间。
-    审计和 `deleted_at` 是同一笔事务写下的，相差毫秒级；不同次操作则差得远。
+    ⚠️ **只看 SKU 自己的删除留痕**（回收站复审 RB07 修）。从前这里还会拿
+    「它所属产品的删除留痕」当候选，两条比谁的时间更近 —— 结果是：一条**一个月前**
+    就已经删掉、只是没留下自己删除记录的 SKU，会被算到**今天删产品的那个人**头上，
+    还标成"无需核实"。那是把两次毫不相干的操作硬拼在一起。
+
+    现在拿不到自己那条留痕、或者留痕与本次 `deleted_at` 对不上，就**如实说"待核实"**，
+    不猜：`(None, None, True)`。`removed_via` 同为 None —— 方式同样不确定，
+    界面照实提示，而不是硬安一个"单独删除"上去。
+
+    `删除 → 恢复 → 再删` 仍然正确：**两种来源现在都会各写一条 SKU 自己的留痕**
+    （单独删写 `via=direct`、随产品删写 `via=product_delete`，都带上当时的
+    `deleted_at`），本次那条对得上当前值，而 `_latest_delete_audits` 取的就是最新那条。
     """
-    candidates: list[tuple[float, str, tuple[int | None, datetime]]] = []
-    if sku_hit is not None:
-        candidates.append((abs((sku_hit[1] - deleted_at).total_seconds()), REMOVED_DIRECT, sku_hit))
-    if product_hit is not None:
-        candidates.append(
-            (abs((product_hit[1] - deleted_at).total_seconds()), REMOVED_WITH_PRODUCT, product_hit)
-        )
-    if not candidates:
-        return REMOVED_DIRECT, None, True
-    candidates.sort(key=lambda item: item[0])
-    _, via, hit = candidates[0]
-    return via, hit, False
+    if sku_hit is None or not _audit_is_this_deletion(deleted_at, sku_hit):
+        return None, None, True
+    via = (sku_hit[2] or {}).get("via")
+    return (
+        REMOVED_WITH_PRODUCT if via == "product_delete" else REMOVED_DIRECT,
+        sku_hit,
+        False,
+    )
 
 
 # ============================================================ 线索
@@ -217,7 +259,8 @@ async def list_deleted_leads(
     # 负责人和操作人可能不是同一个人，两批 id 一起取名（`owner_names` 就是
     # "按用户 id 取名字"，名字虽有 owner 二字，功能是通用的，不另写一份）
     owners = await customer_service.owner_names(
-        session, [r.owner_id for r in rows] + [op for op, _ in audits.values()]
+        session,
+        [r.owner_id for r in rows] + [op for op, _dt, _after in audits.values()],
     )
     items = []
     for row in rows:
@@ -327,7 +370,7 @@ async def list_deleted_products(
 
     audits = await _latest_delete_audits(session, {"product": product_ids})
     names = await customer_service.owner_names(
-        session, [op for op, _ in audits.values()]
+        session, [op for op, _dt, _after in audits.values()]
     )
     items = []
     for product in rows:
@@ -411,13 +454,13 @@ async def list_deleted_skus(
             .all()
         )
 
-    # 删除留痕有两处可能：SKU 自己那条（单独删）与它所属产品那条（连坐删）。
-    # 两条都要取回，再按"与 deleted_at 同一次"挑（见 `_pick_sku_removal`）。
+    # 只查 SKU **自己**的删除留痕。产品那条不再拿来做候选 —— 见 `_pick_sku_removal`
+    # 的说明：拿它来猜正是 RB07 那个"管理员今天删产品、背了一个月前那笔账"的来源。
+    # 「随产品删除」现在有 SKU 自己的留痕（`delete_product` 会给每个被连坐删的 SKU
+    # 写一条，带 `via=product_delete`），来源明确，不用绕。
     sku_audits = await _latest_delete_audits(session, {"sku": [r.id for r in rows]})
-    product_audits = await _latest_delete_audits(session, {"product": product_ids})
     names = await customer_service.owner_names(
-        session,
-        [op for op, _ in sku_audits.values()] + [op for op, _ in product_audits.values()],
+        session, [op for op, _dt, _after in sku_audits.values()]
     )
 
     items = []
@@ -425,7 +468,6 @@ async def list_deleted_skus(
         via, hit, pending = _pick_sku_removal(
             row.deleted_at,
             sku_audits.get(("sku", row.id)),
-            product_audits.get(("product", row.product_id)),
         )
         by_id = hit[0] if hit is not None else None
         items.append(
@@ -869,7 +911,7 @@ async def list_deleted_customers(
         session,
         [c.owner_id for c in rows]
         + [original_owner.get(c.id) for c in rows]
-        + [op for op, _ in audits.values()]
+        + [op for op, _dt, _after in audits.values()]
         + [log.operator_id for log in merge_map.values()],
     )
     items = []
