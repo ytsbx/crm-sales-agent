@@ -86,25 +86,55 @@ async def volumetric_ratio(session: AsyncSession) -> Decimal:
     )
 
 
-def sku_unit_volume(sku: Sku) -> tuple[Decimal | None, str | None]:
-    """单件体积（立方米）与其来源说明。
+def _volume_from_dimensions(sku: Sku) -> Decimal | None:
+    """按长宽高推算单件体积（m³）。按毫米记，mm³ → m³ 除以 1e9。
+
+    长宽高是**单件**尺寸，可以直接用（与下面的箱规体积不是一回事）。
+    """
+    if sku.length and sku.width and sku.height:
+        cubic_mm = sku.length * sku.width * sku.height
+        return (cubic_mm / Decimal("1000000000")).quantize(Decimal("0.000001"))
+    return None
+
+
+def sku_unit_volume(sku: Sku) -> tuple[Decimal | None, str | None, str | None]:
+    """单件体积（立方米）、来源说明、以及**算不出来时的原因**。
 
     两个来源，优先级如下：
     1. 箱规体积 ÷ 箱装数。SKU 上的 `carton_volume` 是**整箱**体积
        （种子里 0.144 m³ 对应 carton_qty=20），必须摊到单件，否则会放大 20 倍。
-    2. 长宽高推算。按毫米记，mm³ → m³ 除以 1e9。
+    2. 长宽高推算。
+
+    ⚠️ **箱规体积有、箱装数没有时，绝不能拿整箱体积当单件用**（第十批 10.7）。
+    那会按"一箱几件"的倍数放大（一箱 20 件就大 20 倍），而且**从结果里看不出来**：
+    体积重、运费一起虚高，只在一句轻描淡写的来源里提了一下，不算警告。
+    这种情况退回**长宽高**（那是可信的单件尺寸）；连长宽高也没有，
+    就如实说"算不出体积"并把原因交出去，让用户去补箱装数 —— 不猜。
     """
     if sku.carton_volume is not None and sku.carton_volume > 0:
         if sku.carton_qty and sku.carton_qty > 0:
             per_unit = (sku.carton_volume / Decimal(sku.carton_qty)).quantize(
                 Decimal("0.000001")
             )
-            return per_unit, f"箱规体积 {sku.carton_volume} m³ ÷ {sku.carton_qty} 件/箱"
-        return sku.carton_volume, "SKU 箱规体积（未填箱装数，按单件计）"
-    if sku.length and sku.width and sku.height:
-        cubic_mm = sku.length * sku.width * sku.height
-        return (cubic_mm / Decimal("1000000000")).quantize(Decimal("0.000001")), "SKU 长宽高推算"
-    return None, None
+            return (
+                per_unit,
+                f"箱规体积 {sku.carton_volume} m³ ÷ {sku.carton_qty} 件/箱",
+                None,
+            )
+        fallback = _volume_from_dimensions(sku)
+        if fallback is not None:
+            return fallback, "SKU 长宽高推算（箱规体积因缺箱装数未采用）", None
+        return (
+            None,
+            None,
+            f"该 SKU 填了箱规体积 {sku.carton_volume} m³，但没填「一箱装几件」，"
+            "摊不到单件；本次不采用这个数（按体积缺失处理）——"
+            "请补「一箱装几件」，或改填长宽高",
+        )
+    fallback = _volume_from_dimensions(sku)
+    if fallback is not None:
+        return fallback, "SKU 长宽高推算", None
+    return None, None, None
 
 
 async def compute_weight_and_volume(
@@ -123,11 +153,15 @@ async def compute_weight_and_volume(
         warnings.append("该 SKU 没有维护单重，无法计算实际重量")
         unit_weight = ZERO
 
-    unit_volume, volume_source = sku_unit_volume(sku)
+    unit_volume, volume_source, volume_problem = sku_unit_volume(sku)
     if volume_override is not None:
-        unit_volume, volume_source = volume_override, "本次指定"
+        unit_volume, volume_source, volume_problem = volume_override, "本次指定", None
     if unit_volume is None:
-        warnings.append("该 SKU 没有维护体积（箱规体积或长宽高），无法计算体积重")
+        # 把"为什么算不出"如实说出来：只报一句"没维护体积"，而它其实填了箱规、
+        # 只是缺箱装数，用户会去错的地方补数据（第十批 10.7）。
+        warnings.append(
+            volume_problem or "该 SKU 没有维护体积（箱规体积或长宽高），无法计算体积重"
+        )
         unit_volume = ZERO
 
     actual_weight = (unit_weight * quantity).quantize(Decimal("0.0001"))
@@ -328,8 +362,16 @@ async def prepare(
     sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    # 数量、以及两个"本次指定"的覆盖值都是**物理量**：负的会一路传下去，
+    # 展示出负的重量/体积，费用被最低收费托底（或算成 0）—— 看起来"算得出方案"，
+    # 实际是垃圾数据。数量早就有这道闸门，两个覆盖值是漏的（第十批 10.6）。
+    # 试算与多方案对比都走这里，所以一处就够。
     if quantity <= 0:
         raise AppError(ErrorCode.PARAM_ERROR, "数量必须大于 0", 422)
+    if weight_override is not None and weight_override <= 0:
+        raise AppError(ErrorCode.PARAM_ERROR, "单件重量必须大于 0", 422)
+    if volume_override is not None and volume_override <= 0:
+        raise AppError(ErrorCode.PARAM_ERROR, "单件体积必须大于 0", 422)
 
     measures = await compute_weight_and_volume(
         session,

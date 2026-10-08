@@ -32,12 +32,15 @@ class SkuCreate(BaseModel):
     specification: str | None = None
     color: str | None = None
     material: str | None = None
-    length: Decimal | None = None
-    width: Decimal | None = None
-    height: Decimal | None = None
-    weight: Decimal | None = None
-    carton_qty: int | None = None
-    carton_volume: Decimal | None = None
+    # 这几个是**物理量**，负数没有意义，而且会一路算进运费（第十批 10.6 顺带修：
+    # 试算侧挡住了手填的负数，但如果 SKU 上存着负重量，照样算出负结果）。
+    # 用 `ge=0`（只禁负数）：0 在现有代码里等价于"没填"，语义不变。
+    length: Decimal | None = Field(default=None, ge=0)
+    width: Decimal | None = Field(default=None, ge=0)
+    height: Decimal | None = Field(default=None, ge=0)
+    weight: Decimal | None = Field(default=None, ge=0)
+    carton_qty: int | None = Field(default=None, ge=0)
+    carton_volume: Decimal | None = Field(default=None, ge=0)
     moq: int | None = None
     package_type: str | None = None
     unit: str | None = "件"
@@ -51,12 +54,13 @@ class SkuUpdate(BaseModel):
     specification: str | None = None
     color: str | None = None
     material: str | None = None
-    length: Decimal | None = None
-    width: Decimal | None = None
-    height: Decimal | None = None
-    weight: Decimal | None = None
-    carton_qty: int | None = None
-    carton_volume: Decimal | None = None
+    # 同 SkuCreate：物理量不许为负（要清空请传 null，不要传 0/负数）
+    length: Decimal | None = Field(default=None, ge=0)
+    width: Decimal | None = Field(default=None, ge=0)
+    height: Decimal | None = Field(default=None, ge=0)
+    weight: Decimal | None = Field(default=None, ge=0)
+    carton_qty: int | None = Field(default=None, ge=0)
+    carton_volume: Decimal | None = Field(default=None, ge=0)
     moq: int | None = None
     package_type: str | None = None
     unit: str | None = None

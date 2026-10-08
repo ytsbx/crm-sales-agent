@@ -453,9 +453,22 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 - `GET /logistics/providers`
 - `GET /logistics/routes`
 - `POST /logistics/calculate`：试算；`save=true` 时把选中方案落成一条试算记录。**落库前校验"这条记录记在谁名下"**（2026-10-08 新增）：`customer_id` 要存在、未被删、且在本人数据范围内（403/404）；`opportunity_id` 要存在、未被删，且**属于所选客户**（404/422）。两者都不给＝纯比价，照常保存。判据与列表 `GET /logistics/quotes`、详情同一口径——从前只有落库这一处没判，能把自己的试算挂到同事的客户上（同事按客户筛就会看见一条不是他算的）。
-- `POST /logistics/compare`
+- `POST /logistics/compare`：多方案对比。与上面试算**走同一个入口**，所以下列校验同样适用。
 - `GET /logistics/quotes`
 - `GET /logistics/quotes/{id}`
+
+**入参的数值口径**（2026-10-08 第十批 10.6 / 10.7）：
+
+- **数量、单件重量、单件体积都必须大于 0**，否则 422。负数一路算下去会得到负的重量/体积、
+  费用被"最低收费"托底，看着像"算得出方案"，实际是垃圾数据。数量本来就有这道闸门，
+  两个"本次指定"的覆盖值（`weight_override` / `volume_override`）是漏的。
+- **箱规体积缺箱装数时不当单件用。** SKU 上的 `carton_volume` 是**一整箱**的体积，
+  要除以 `carton_qty` 才是单件。缺 `carton_qty` 时退回**长宽高推算**（那是单件尺寸），
+  来源里注明"箱规体积因缺箱装数未采用"；连长宽高也没有，`volume` 按 0（缺失）并在
+  `warnings` 里说清原因，**绝不拿整箱体积当单件**（否则按"一箱几件"的倍数虚高，
+  而且从结果里看不出来）。
+- SKU 维护侧同口径：`POST /products/{id}/skus` 与 `PATCH /skus/{id}` 的
+  重量、长宽高、箱规体积、箱装数都**不许为负**（怎么清空？传 `null`，不要传 0 或负数）。
 
 ---
 

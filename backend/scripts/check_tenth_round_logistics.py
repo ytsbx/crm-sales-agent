@@ -1,7 +1,15 @@
 #!/usr/bin/env python
-"""物流试算「记一条」时，那条记录记在谁名下（第十批复审 10.5）。
+"""物流试算：落库的归属校验（10.5）、负数输入（10.6）、缺箱装数时的体积口径（10.7）。
 
 **只在隔离库跑**：库名必须含 test，且推送开关全关、**必须显式给 API_BASE**。
+
+## 三条各守什么
+
+- **10.5（第 1–6 节）**：落库时那条记录记在谁名下。
+- **10.6（第 7、9 节）**：负数不许进试算（数量/单件重量/单件体积），
+  以及 SKU 维护侧的重量、长宽高、箱规也不许填负数（脏数据的来路）。
+- **10.7（第 8 节）**：箱规体积是**整箱**的，缺箱装数时绝不能当单件用
+  （会按"一箱几件"的倍数放大），退回长宽高，都没有就如实说"算不出"。
 
 ## 守的是什么
 
@@ -76,6 +84,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import app.main  # noqa: F401  保证所有模型都注册进 metadata
 
@@ -88,7 +97,7 @@ from app.core.database import SessionLocal
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.pricing.model import LogisticsQuote, LogisticsRate
-from app.modules.product.model import Sku
+from app.modules.product.model import Product, Sku
 from app.modules.user.model import User
 
 #: ⚠️ 必须**显式**给 API_BASE，不给就拒跑。
@@ -162,6 +171,9 @@ async def main():
     opportunity_ids: list[int] = []
     quote_ids: list[int] = []
     rate_ids: list[int] = []
+    #: 第 8 节为验"箱规缺箱装数"自建的 SKU（与产品），跑完删掉
+    probe_sku_ids: list[int] = []
+    probe_product_ids: list[int] = []
 
     #: 本条费率用的承运商名。清理要靠它把"真落了库、但没记上账"的试算记录也收掉
     #: （断言失败时就会出现这种记录），所以先给个默认值。
@@ -367,6 +379,132 @@ async def main():
             want.add(int(paired_id))
         check("按自己的客户筛，能筛到刚存的那几条", want <= got, sorted(got))
 
+        # ------------------------------------------- 7. 10.6 负数不许进试算
+        print("=== 7. 10.6 负数：数量 / 单件重量 / 单件体积一律拒 ===")
+        before = await quote_count()
+        for label, extra in (
+            ("数量为负（-5）", {"quantity": -5}),
+            ("数量为零", {"quantity": 0}),
+            ("单件重量为负（-2）", {"weight_override": -2}),
+            ("单件体积为负（-1.5）", {"volume_override": -1.5}),
+            ("单件重量为零", {"weight_override": 0}),
+            ("单件体积为零", {"volume_override": 0}),
+        ):
+            status, _ = calc(save=True, customer_id=my_customer_id, **extra)
+            check(f"{label} → 422", status == 422, f"HTTP {status}")
+        check("被拒的都没落库", await quote_count() == before, before)
+
+        status, _ = call(
+            "POST", "/logistics/compare", token=zhangsan,
+            body={"sku_id": sku_id, "quantity": 1, "weight_override": -2},
+        )
+        check("多方案对比走同一个入口，也拒负数 → 422", status == 422, f"HTTP {status}")
+
+        # ----------------------------- 8. 10.7 箱规缺箱装数，不许当单件用
+        print("=== 8. 10.7 缺箱装数：整箱体积不许当单件（退长宽高 / 如实说算不出）===")
+        async with SessionLocal() as session:
+            probe_product = Product(name=f"{MARKER}体积实验产品")
+            session.add(probe_product)
+            await session.flush()
+            probe_product_id = probe_product.id
+            full = Sku(
+                product_id=probe_product_id, sku_code=f"{MARKER}-FULL",
+                name="箱规+箱装数齐全", weight=Decimal(1),
+                carton_volume=Decimal("0.144"), carton_qty=20,
+            )
+            noqty_dim = Sku(
+                product_id=probe_product_id, sku_code=f"{MARKER}-NOQTY-DIM",
+                name="缺箱装数但有长宽高", weight=Decimal(1),
+                carton_volume=Decimal("0.144"),
+                length=Decimal(400), width=Decimal(300), height=Decimal(200),
+            )
+            noqty_nodim = Sku(
+                product_id=probe_product_id, sku_code=f"{MARKER}-NOQTY-NODIM",
+                name="缺箱装数也没长宽高", weight=Decimal(1),
+                carton_volume=Decimal("0.144"),
+            )
+            session.add_all([full, noqty_dim, noqty_nodim])
+            await session.flush()
+            # 接口是**另一个会话**，不提交它看不到（本项目实测踩过）
+            await session.commit()
+            probe_product_ids.append(probe_product_id)
+            probe_sku_ids += [full.id, noqty_dim.id, noqty_nodim.id]
+            skus = {"full": full.id, "noqty_dim": noqty_dim.id, "noqty_nodim": noqty_nodim.id}
+
+        def volume_of(sku_id: int) -> tuple[float, str | None, list[str]]:
+            _, res = call(
+                "POST", "/logistics/compare", token=zhangsan,
+                body={"sku_id": sku_id, "quantity": 1},
+            )
+            data = res.get("data") or {}
+            measures = data.get("measures") or {}
+            return (
+                float(measures.get("volume") or 0),
+                measures.get("volume_source"),
+                [str(w) for w in (data.get("warnings") or [])],
+            )
+
+        vol, source, _warns = volume_of(skus["full"])
+        check("箱规+箱装数齐全 → 摊到单件 0.144÷20=0.0072", round(vol, 6) == 0.0072, f"{vol}")
+        check("来源写明是「÷ 20 件/箱」", "20" in (source or ""), source)
+
+        vol, source, _warns = volume_of(skus["noqty_dim"])
+        check(
+            "缺箱装数但**有长宽高** → 退回长宽高（0.4×0.3×0.2=0.024）",
+            round(vol, 6) == 0.024,
+            f"{vol}",
+        )
+        check(
+            "来源注明「长宽高推算（箱规……未采用）」",
+            "长宽高" in (source or "") and "未采用" in (source or ""),
+            source,
+        )
+        check("**绝不**把整箱体积 0.144 当成单件", round(vol, 6) != 0.144, f"{vol}")
+
+        vol, _source, warns = volume_of(skus["noqty_nodim"])
+        check("缺箱装数、也没长宽高 → 体积按缺失（0），不当实数用", vol == 0.0, vol)
+        check(
+            "并且明确说清原因是「没填一箱装几件」",
+            any("一箱装几件" in w for w in warns),
+            warns,
+        )
+
+        # ------------------------- 9. 10.6 顺带：SKU 维护侧也不许填负数
+        print("=== 9. SKU 维护侧：重量 / 长宽高 / 箱规 不许为负 ===")
+        # 试算侧把手填的负数挡住了，但 SKU 上若存着负重量，照样算出负结果。
+        # 所以源头也要堵：这是脏数据的来路。
+        for idx, (label, extra) in enumerate(
+            (
+                ("重量为负", {"weight": -1}),
+                ("长度为负", {"length": -10}),
+                ("宽度为负", {"width": -10}),
+                ("高度为负", {"height": -10}),
+                ("箱规体积为负", {"carton_volume": -0.1}),
+                ("箱装数为负", {"carton_qty": -5}),
+            )
+        ):
+            status, _ = call(
+                "POST", f"/products/{probe_product_ids[0]}/skus", token=admin,
+                body={"sku_code": f"{MARKER}-NEG-{idx}", **extra},
+            )
+            check(f"新建 SKU：{label} → 400 参数校验失败", status == 400, f"HTTP {status}")
+
+        status, res = call(
+            "POST", f"/products/{probe_product_ids[0]}/skus", token=admin,
+            body={
+                "sku_code": f"{MARKER}-OK", "weight": 1,
+                "carton_volume": 0.1, "carton_qty": 10,
+            },
+        )
+        check("对照组：全正数 → 200 建得出来（没误伤）", status == 200, f"HTTP {status}")
+        if status == 200:
+            ok_sku_id = int(res["data"]["id"])
+            probe_sku_ids.append(ok_sku_id)
+            status, _ = call("PATCH", f"/skus/{ok_sku_id}", token=admin, body={"weight": -3})
+            check("改 SKU：重量为负 → 400", status == 400, f"HTTP {status}")
+            status, _ = call("PATCH", f"/skus/{ok_sku_id}", token=admin, body={"weight": 2})
+            check("改 SKU：正数照常 → 200", status == 200, f"HTTP {status}")
+
     finally:
         print("=== 清理 ===")
         async with SessionLocal() as session:
@@ -398,20 +536,30 @@ async def main():
                 await session.execute(delete(Customer).where(Customer.id.in_(customer_ids)))
             if rate_ids:
                 await session.execute(delete(LogisticsRate).where(LogisticsRate.id.in_(rate_ids)))
+            # 第 8/9 节的实验 SKU：按**编码前缀**范围删，不按"记过账的 id"删 ——
+            # 断言失败时（校验坏了、本该被拒的 SKU 真建了出来）那些不会进
+            # `probe_sku_ids`，只按 id 删就会漏。删完 SKU 再删产品（外键方向）。
+            await session.execute(delete(Sku).where(Sku.sku_code.like(f"{MARKER}%")))
+            if probe_product_ids:
+                await session.execute(
+                    delete(Product).where(Product.id.in_(probe_product_ids))
+                )
             # **必须显式提交**：`async with SessionLocal()` 退出只 close，
             # 没提交的事务整体回滚 —— 上面那些 delete 就全白写了。
             await session.commit()
         print(
             f"  已清：试算 {len(quote_ids)} 条、商机 {len(opportunity_ids)} 个、"
-            f"客户 {len(customer_ids)} 个、费率 {len(rate_ids)} 条"
+            f"客户 {len(customer_ids)} 个、费率 {len(rate_ids)} 条、"
+            f"体积实验 SKU {len(probe_sku_ids)} 个"
         )
 
     if FAILURES:
         print(f"\n失败 {len(FAILURES)} 项：{FAILURES}")
         raise SystemExit(1)
     print(
-        "\nOK 物流试算落库的客户归属校验（带自己客户 / 不带客户 / 同事客户 / "
-        "不存在 / 已删 / 商机对号与不对号）"
+        "\nOK 物流试算：落库归属校验（自己客户 / 不带客户 / 同事客户 / 不存在 / "
+        "已删 / 商机对号）+ 负数输入一律拒（试算侧与 SKU 维护侧）+ "
+        "缺箱装数时整箱体积不当单件用（退长宽高 / 如实说算不出）"
     )
 
 
