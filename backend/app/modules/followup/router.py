@@ -27,6 +27,7 @@ from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
 from app.modules.order.model import SalesOrder
 from app.modules.quote.model import Quote
+from app.modules.sample.model import SampleRequest
 from app.modules.task.model import Task
 from app.modules.user.model import User
 
@@ -237,17 +238,60 @@ async def create_next_task(
                     and task.owner_id == (payload.owner_id or followup.owner_id)
                     and task.task_type == payload.task_type and task.priority == payload.priority):
                 return ok({"task_id": task.id, "title": task.title, "owner_id": task.owner_id,
-                           "due_at": task.due_at, "followup_id": followup.id}, "后续任务已创建")
+                           "due_at": task.due_at, "followup_id": followup.id,
+                           "skipped_references": []}, "后续任务已创建")
             raise AppError(ErrorCode.VERSION_CONFLICT, "已有后续任务，请在待办中修改，或修改跟进计划", 409)
     owner_id = payload.owner_id if payload.owner_id is not None else followup.owner_id
-    if payload.owner_id is not None:
-        target = await session.get(User, payload.owner_id)
+    # 负责人校验**不分来源**（第十一批 11.7）：显式选的、从跟进继承来的走同一道闸门。
+    # 原实现只在"显式传了 owner_id"时才查 —— 而历史跟进的负责人早已停用时，
+    # 补建出来的任务会被分给一个停用账号：挂在没人管的账号下，谁都看不到、
+    # 也没人会处理。提示里要分清是"你选的那个人"还是"这条跟进原来的人"。
+    if owner_id is not None:
+        target = await session.get(User, owner_id)
         if target is None:
-            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={payload.owner_id} 不存在", 404)
+            raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
         if target.status != "active":
-            raise AppError(
-                ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用", 422
+            who = (
+                f"这条跟进的负责人「{target.name}」"
+                if payload.owner_id is None
+                else f"负责人「{target.name}」"
             )
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"{who}已停用，请选一位在职负责人再补建任务", 422
+            )
+
+    # 业务关联继承（第十一批 11.6）：任务表有 `quote_id` / `order_id` 两列，直接带上；
+    # **打样没有对应的列**，改用"来源业务对象"记（任务详情可据此跳转）。
+    #
+    # 每个关联都**当场复核**：对象还在、没被软删、且属于**同一个客户**。
+    # 不为了"复制字段"把一条越权或跨客户的脏关联带进新任务；对不上的就不继承，
+    # 并在返回里说明（原历史跟进一个字不动）。
+    skipped: list[str] = []
+    quote_id: int | None = None
+    if followup.quote_id is not None:
+        quote = await session.get(Quote, followup.quote_id)
+        if (
+            quote is not None
+            and quote.deleted_at is None
+            and quote.customer_id == followup.customer_id
+        ):
+            quote_id = quote.id
+        else:
+            skipped.append(f"报价 #{followup.quote_id}")
+    order_id: int | None = None
+    if followup.order_id is not None:
+        order = await session.get(SalesOrder, followup.order_id)
+        if order is not None and order.customer_id == followup.customer_id:
+            order_id = order.id
+        else:
+            skipped.append(f"订单 #{followup.order_id}")
+    sample_id: int | None = None
+    if followup.sample_id is not None:
+        sample = await session.get(SampleRequest, followup.sample_id)
+        if sample is not None and sample.customer_id == followup.customer_id:
+            sample_id = sample.id
+        else:
+            skipped.append(f"打样 #{followup.sample_id}")
 
     task = Task(
         title=payload.title or followup.next_action or f"跟进后续：{followup.content[:30]}",
@@ -257,10 +301,15 @@ async def create_next_task(
         contact_id=followup.contact_id,
         lead_id=followup.lead_id,
         opportunity_id=followup.opportunity_id,
+        quote_id=quote_id,
+        order_id=order_id,
         owner_id=owner_id,
         status="pending",
         due_at=payload.due_at,
         source="manual",
+        # 打样用"来源业务对象"承载（任务表没有 sample 列）
+        source_business_type="sample" if sample_id is not None else None,
+        source_business_id=sample_id,
     )
     session.add(task)
     await session.flush()
@@ -281,6 +330,11 @@ async def create_next_task(
         ip=client_ip(request),
     )
     await session.commit()
+    message = "后续任务已创建"
+    if skipped:
+        # "明确处理结果"（11.6 第 4 条）：哪些关联没带过来、为什么，要让人看得见，
+        # 而不是悄悄少几个字段。
+        message += "；以下关联已不存在或不属于这个客户，未继承：" + "、".join(skipped)
     return ok(
         {
             "task_id": task.id,
@@ -288,8 +342,10 @@ async def create_next_task(
             "owner_id": task.owner_id,
             "due_at": task.due_at,
             "followup_id": followup.id,
+            # 这次没继承成功的业务关联（人话列表），空列表表示全带上了
+            "skipped_references": skipped,
         },
-        "后续任务已创建",
+        message,
     )
 
 
