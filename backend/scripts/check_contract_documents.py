@@ -217,6 +217,10 @@ async def main():
                 currency="CNY",
                 payment_terms="月结30天",
                 approval_status="approved",
+                # 签署判据看的是「**这一版**客户见过没有」（版本自己的发送时间），
+                # 不是报价的状态 —— 只改 quote.status 造出来的"已发送"，
+                # 版本这边仍是"没发过"，会被如实拦下。这里如实补上。
+                sent_at=datetime.now(UTC),
                 created_by=zhangsan_id,
                 created_at=datetime.now(UTC),
             )
@@ -377,6 +381,111 @@ async def main():
             token=zhangsan, body={"file_id": fixture_file_id},
         )
         check("挂上了「已发送」的报价 → 可以登记签署", status == 200, f"HTTP {status} {result}")
+
+        print("=== 7b. 合同钉的是「没发给客户的那一版」→ 不许登记签署（复审 10.8）===")
+        # 场景：一份报价改了两版，**发给客户的是 V2**，V1 从头到尾没出过门。
+        # 报价单本体的状态是「已发送」——这是对的，它确实发出去过，只不过发的是 V2。
+        # 但若合同是照着 V1 生成的，它依据的那一版客户从没见过：
+        # 只看报价单状态就会把这份合同放行，台账上留下一个假的依据。
+        async with SessionLocal() as session:
+            multi_quote = Quote(
+                quote_no=f"{MARKER}Q3",
+                customer_id=own.id,
+                owner_id=zhangsan_id,
+                status="sent",
+                created_by=zhangsan_id,
+                created_at=datetime.now(UTC),
+            )
+            session.add(multi_quote)
+            await session.flush()
+            never_sent = QuoteVersion(
+                quote_id=multi_quote.id,
+                version_no=1,
+                total_amount=Decimal("100"),
+                currency="CNY",
+                approval_status="approved",
+                # sent_at / accepted_at 都留空：**这一版**没有出过门
+                created_by=zhangsan_id,
+                created_at=datetime.now(UTC),
+            )
+            really_sent = QuoteVersion(
+                quote_id=multi_quote.id,
+                version_no=2,
+                total_amount=Decimal("200"),
+                currency="CNY",
+                approval_status="approved",
+                sent_at=datetime.now(UTC),  # 客户手里是这一版
+                created_by=zhangsan_id,
+                created_at=datetime.now(UTC),
+            )
+            session.add_all([never_sent, really_sent])
+            await session.flush()
+            multi_quote.current_version_id = really_sent.id
+            await session.commit()
+            quote_ids.append(multi_quote.id)
+            multi_quote_id = multi_quote.id
+            never_sent_id, really_sent_id = never_sent.id, really_sent.id
+
+        stale_doc = api(
+            "POST", "/contract-documents", token=zhangsan,
+            body={
+                "template_id": template["id"],
+                "customer_id": own.id,
+                "quote_id": multi_quote_id,
+                "quote_version_id": never_sent_id,
+            },
+        )
+        doc_ids.append(stale_doc["id"])
+        check("照「没发过的那一版」仍能先把合同备出来（拦在签署，不在生成）",
+              stale_doc["status"] == "draft", stale_doc["status"])
+        check("台账上确实钉住了那一版（V1）",
+              stale_doc.get("quote_version_id") == never_sent_id,
+              stale_doc.get("quote_version_id"))
+        status, result = call(
+            "POST", f"/contract-documents/{stale_doc['id']}/sign",
+            token=zhangsan, body={"file_id": fixture_file_id},
+        )
+        check("钉住「从没发给过客户的那一版」→ 登记签署被拒（422）",
+              status == 422, f"HTTP {status} {result}")
+        check("拒绝理由说清是「那一版没发过」，不是笼统的「没有依据」",
+              "没有发给过客户" in json.dumps(result, ensure_ascii=False),
+              result.get("message"))
+
+        # 对照一：同一份报价，换成「客户看过的那一版」→ 照常能签。
+        # 没有这条对照，上面那条红了也分不清是修对了还是把这类合同全拦死了。
+        fresh_doc = api(
+            "POST", "/contract-documents", token=zhangsan,
+            body={
+                "template_id": template["id"],
+                "customer_id": own.id,
+                "quote_id": multi_quote_id,
+                "quote_version_id": really_sent_id,
+            },
+        )
+        doc_ids.append(fresh_doc["id"])
+        status, result = call(
+            "POST", f"/contract-documents/{fresh_doc['id']}/sign",
+            token=zhangsan, body={"file_id": fixture_file_id},
+        )
+        check("钉住「客户看过的那一版」→ 照常能签（对照）",
+              status == 200, f"HTTP {status} {result}")
+
+        # 对照二：提前备合同、压根没钉版本 → 沿用老口径（整份报价是正式依据），
+        # 报价单是"已发送"，放行。这条钉住"没有版本号时别误伤"。
+        loose_doc = api(
+            "POST", "/contract-documents", token=zhangsan,
+            body={"template_id": template["id"], "customer_id": own.id,
+                  "quote_id": multi_quote_id},
+        )
+        doc_ids.append(loose_doc["id"])
+        check("没钉版本的合同确实没有版本号", loose_doc.get("quote_version_id") is None,
+              loose_doc.get("quote_version_id"))
+        status, result = call(
+            "POST", f"/contract-documents/{loose_doc['id']}/sign",
+            token=zhangsan, body={"file_id": fixture_file_id},
+        )
+        check("没钉版本 → 沿用老口径可签（对照，证明没误伤这类合同）",
+              status == 200, f"HTTP {status} {result}")
 
         # 草稿状态的报价不算依据：客户手里还没见过这份报价
         async with SessionLocal() as session:

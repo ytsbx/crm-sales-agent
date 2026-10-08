@@ -399,7 +399,7 @@ GET `/customers/export` 将 `purpose` 与 `purpose_note` 放在 query。两种�
 
 - `GET /logistics/providers`
 - `GET /logistics/routes`
-- `POST /logistics/calculate`
+- `POST /logistics/calculate`：试算；`save=true` 时把选中方案落成一条试算记录。**落库前校验"这条记录记在谁名下"**（2026-10-08 新增）：`customer_id` 要存在、未被删、且在本人数据范围内（403/404）；`opportunity_id` 要存在、未被删，且**属于所选客户**（404/422）。两者都不给＝纯比价，照常保存。判据与列表 `GET /logistics/quotes`、详情同一口径——从前只有落库这一处没判，能把自己的试算挂到同事的客户上（同事按客户筛就会看见一条不是他算的）。
 - `POST /logistics/compare`
 - `GET /logistics/quotes`
 - `GET /logistics/quotes/{id}`
@@ -1036,7 +1036,7 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /contract-documents`：从模板生成草稿。需要 `order:manage`。入参含 `template_id`、`customer_id`、`quote_id`、**`quote_version_id`**（2026-10-06 新增：把合同钉死在**具体报价版本**上，报价后来出 V2 不影响已生成的这份）、`order_id`、`extra_fields`、`expiry_date`、`parent_id`（补充协议/续签指回原件）、`request_key`（幂等键，重试/连点只出一份）。生成时把**抬头（公司名/客户名/订单号/报价号）连同正文一起落快照**，并把 PDF 渲染一次落盘、记 sha256。
 - `GET /contract-documents/{doc_id}`：详情。需要 `order:view`。返回正文快照、生成时的缺项清单（`missing_fields`）、关系链（基于哪份 / 被哪几份补充或续签）、以及**签署原件清单 `signed_files`**（2026-10-06 新增）。
 - `GET /contract-documents/{doc_id}/download`：下载**生成稿**（§3.6）。需要 `order:view`。**返回生成时落盘的那一份**——客户后来改名、公司换抬头、报价出了 V2，都不会让已经发出去的那份跟着变；只有本批之前生成的老数据（没有 `generated_file_id`）才回落到实时渲染，且审计会记明是回落。签署原件不放这里，走签署件清单单独取。
-- `POST /contract-documents/{doc_id}/sign`：登记签署（上传客户签回的扫描件）。需要 `order:manage`。**闸门**：未签草稿可先备条款，但登记签署前必须挂上正式依据（正式订单，或**已发送/已接受**的报价；月结协议可只关联客户）——"允许提前备合同"口径，2026-10-05 定。
+- `POST /contract-documents/{doc_id}/sign`：登记签署（上传客户签回的扫描件）。需要 `order:manage`。**闸门**：未签草稿可先备条款，但登记签署前必须挂上正式依据（正式订单，或**已发送/已接受**的报价；月结协议可只关联客户）——"允许提前备合同"口径，2026-10-05 定。**挂了报价版本时还要多问一句**（2026-10-08 新增）：合同钉住的那一版（`quote_version_id`）**客户得见过**（该版本自己的 `sent_at` / `accepted_at` 非空），否则 422 并说清"那一版没发过"——报价为了发出 V2 把状态改成"已发送"之后，一份钉在**从未发出的 V1** 上的合同不能签字，否则台账上会留下一个假的依据。没钉版本的（提前备条款时可以不选）沿用老口径：看整份报价的状态。
 - `POST /contract-documents/{doc_id}/void`：作废。需要 `order:manage`。**已签合同的作废要求主管权限**，原因必填且不得为纯空白；原件保留（作废 ≠ 删档）。
 - `GET /contract-templates`：模板列表（按类型多版本并存）。需要 `order:view`。
 - `POST /contract-templates`：新增一版模板。需要 `settings:manage`。**不覆盖旧版**，已生成的文件仍指向它们当时用的那一版。`(doc_type, name, version)` 有唯一约束，并发建同名模板会拿保存点重试取下一个版本号。

@@ -376,6 +376,53 @@ async def prepare(
 
 # ------------------------------------------------------------------ 留痕
 
+async def _assert_saved_source_visible(
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    customer_id: int | None,
+    opportunity_id: int | None,
+) -> None:
+    """落库前校验"这条试算记在谁名下"。
+
+    试算本来就可以不带客户（纯比价），所以两个都不给就直接过。但**给了就要过得去**：
+    客户要存在、没被删、且在本人数据范围内；商机要存在、没被删，还要跟客户对得上。
+
+    从前这两件事一件都没做（`save_quote` 把传进来的 id 原样写库）。
+    三种后果都是**实测出来的**，不是推的（见 `check_tenth_round_logistics.py`）：
+
+    - 能把自己的试算挂到**别人的客户**上：接口 200、真落了库，那位同事按客户
+      筛试算时会看见一条不是他算的记录；
+    - 能挂到一个**根本不存在的客户编号**上：接口直接 **500** —— 客户 id 上有外键
+      （`logistics_quotes_customer_id_fkey`），数据库这一关确实挡住了，可用户看到的
+      是"服务器内部错误"，而不是"这个客户不存在"；
+    - 商机与客户**不对号**、商机**已删**、客户**已删**，也都能照常落下去，
+      留下一行自相矛盾、或指向一个已经删掉的对象的记录。
+
+    判范围统一走**客户**口径（`get_visible_customer`），与报价、需求、商机一致 ——
+    列表和详情早就这么判了，只有保存这一处漏着，两边口径本来就不该不一样。
+    """
+    if customer_id is None and opportunity_id is None:
+        return
+
+    from app.modules.customer import service as customer_service
+
+    if customer_id is not None:
+        await customer_service.get_visible_customer(session, user, customer_id)
+    if opportunity_id is not None:
+        from app.modules.opportunity.model import Opportunity
+
+        opportunity = await session.get(Opportunity, opportunity_id)
+        if opportunity is None or opportunity.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "商机不存在", 404)
+        if customer_id is not None and opportunity.customer_id != customer_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "所选商机不属于该客户", 422)
+        # 商机没有独立的范围口径，按它挂的那个客户判
+        await customer_service.get_visible_customer(
+            session, user, opportunity.customer_id
+        )
+
+
 async def save_quote(
     session: AsyncSession,
     *,
@@ -386,6 +433,9 @@ async def save_quote(
     opportunity_id: int | None = None,
 ) -> LogisticsQuote:
     """把选中的方案落成一条物流试算记录（02-ER §10）。"""
+    await _assert_saved_source_visible(
+        session, user, customer_id=customer_id, opportunity_id=opportunity_id
+    )
     measures = prepared["measures"]
     quote = LogisticsQuote(
         customer_id=customer_id,

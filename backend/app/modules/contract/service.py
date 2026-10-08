@@ -647,6 +647,16 @@ async def list_signed_files(session: AsyncSession, doc_id: int) -> list[dict]:
 _QUOTE_SIGNABLE_STATUSES = ("sent", "accepted")
 
 
+def _version_was_seen_by_customer(version: QuoteVersion) -> bool:
+    """这一版**客户那边真的见过**吗？
+
+    判据落在**版本**自己身上（发出去 / 被接受过的时间），不是报价的状态：
+    一份报价可能发过 V2，而合同依据的是从未发出的 V1 —— 只看报价状态就会把它放行。
+    「同一业务判据全项目只留一个出口」，签署与别处都走这里。
+    """
+    return version.sent_at is not None or version.accepted_at is not None
+
+
 async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) -> None:
     """「提前备合同」口径（业务方 2026-10-05 定）：条款可以先备，签署前必须有正式依据。
 
@@ -656,6 +666,13 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
     为什么卡在"登记签署"这一步、而不是"生成"：先备条款是真实业务需求
     （客户要求先把合同发过去、签了才下单）。但若一路签完字都没有依据，
     这份合同签的到底是什么、按哪个价，就没有出处了。
+
+    ⚠️ 挂了报价时还要多问一句（2026-10-08 复审 10.8）：「**合同钉住的那一版**
+    客户见过没有」。合同生成时会把当时那一版记在 `doc.quote_version_id` 上、
+    之后不再变（迁移 `d1f5b9c3e7a4` 的说明）。只看整份报价的状态是不够的 ——
+    报价为了发出 V2 把状态改成 `sent` 之后，一份钉在**从未发出的 V1** 上的合同
+    照样能签字，台账上于是留下一个假的依据：以后翻账的人会以为 V1 当时给客户看过。
+    钉住版本恰好是客户见过的那一版，是**已经成立**的老数据，不受影响。
     """
     if doc.doc_type == "monthly":
         return
@@ -670,7 +687,22 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
             and quote.deleted_at is None
             and quote.status in _QUOTE_SIGNABLE_STATUSES
         ):
-            return
+            # 没钉版本的（先备条款时可以不选）沿用老口径：整份报价是正式依据。
+            if doc.quote_version_id is None:
+                return
+            version = await session.get(QuoteVersion, doc.quote_version_id)
+            if (
+                version is not None
+                and version.quote_id == quote.id
+                and _version_was_seen_by_customer(version)
+            ):
+                return
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "这份合同依据的报价版本没有发给过客户（那份报价发出的是别的一版），"
+                "不能登记签署：请按客户看过的那一版重新生成一份合同",
+                422,
+            )
     raise AppError(
         ErrorCode.STATUS_NOT_ALLOWED,
         "登记签署前要先绑定正式依据：关联一张正式订单，或关联一份已发送/已接受的报价"
