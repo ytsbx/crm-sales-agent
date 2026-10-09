@@ -35,6 +35,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
+from app.core.timebase import business_day_start, to_business, today_business
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Contact
 from app.modules.user.model import User
@@ -646,11 +647,9 @@ async def ship_sample(
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
     svc.ensure_transition(sample.status, "shipped")
 
-    shipped_at = (
-        datetime.combine(payload.shipped_at, datetime.min.time(), tzinfo=UTC)
-        if payload.shipped_at
-        else svc.now()
-    )
+    # 日期口径与校验（审查 C3-04）：北京日历日 → UTC 瞬时；不能晚于今天
+    _assert_not_future(payload.shipped_at, "寄出日期")
+    shipped_at = _parse_business_date(payload.shipped_at) if payload.shipped_at else svc.now()
     shipment = SampleShipment(
         sample_request_id=sample.id,
         carrier=payload.carrier,
@@ -706,11 +705,10 @@ async def sign_sample(
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
     svc.ensure_transition(sample.status, "signed")
 
-    signed_at = (
-        datetime.combine(payload.signed_at, datetime.min.time(), tzinfo=UTC)
-        if payload.signed_at
-        else svc.now()
-    )
+    # 签收不能早于寄出（审查 C3-04）；只比前后顺序，保留历史补录能力
+    _assert_not_future(payload.signed_at, "签收日期")
+    signed_at = _parse_business_date(payload.signed_at) if payload.signed_at else svc.now()
+    _assert_not_before(signed_at, sample.shipped_at, "签收日期", "寄出日期")
     sample.status = "signed"
     sample.signed_at = signed_at
 
@@ -954,8 +952,15 @@ async def confirm_sample(
     decision = CONFIRM_ACCEPTED if payload.accepted else CONFIRM_REJECTED
     if sample.customer_confirmed_at and sample.confirm_status == decision and sample.confirm_remark == payload.remark and (payload.confirmed_at is None or payload.confirmed_at == sample.customer_confirmed_at):
         return ok(await svc.detail(session, sample), "客户确认记录没有变化")
+    # 客户确认不能早于签收（审查 C3-04）
+    confirmed_at = (
+        _parse_business_date(payload.confirmed_at) if payload.confirmed_at else datetime.now(UTC)
+    )
+    if payload.confirmed_at is not None:
+        _assert_not_future(payload.confirmed_at, "客户确认时间")
+    _assert_not_before(confirmed_at, sample.signed_at, "客户确认时间", "签收时间")
     sample.confirm_status = decision
-    sample.customer_confirmed_at = payload.confirmed_at or datetime.now(UTC)
+    sample.customer_confirmed_at = confirmed_at
     sample.confirm_remark = payload.remark
     if payload.remark:
         # 客户说的话留进反馈里：这是"为什么过/不过"的原始依据
@@ -1069,6 +1074,77 @@ async def add_sample_item(
     await session.commit()
     await notification_service.dispatch_pending(session)
     return ok(await svc.detail(session, sample), "明细已添加")
+
+
+def _parse_business_date(value) -> datetime:
+    """把"用户填的日期/时间"统一换算成 UTC 瞬时。
+
+    ⚠️ 这里修两件事（审查 C3-04）：
+
+    1. **口径**：用户填的是**北京日历日**。原写法
+       `datetime.combine(d, min.time(), tzinfo=UTC)` 把它当成 UTC 零点，
+       存进去的时刻比实际**早 8 小时**（北京 10-09 00:00 存成了 UTC 10-09 00:00
+       = 北京 10-09 08:00）。项目已有 `timebase.business_day_start`，
+       注释写明口径是"年/月/今天这些业务口径一律先换算到北京时间再看"，改用它。
+    2. **datetime 入参**（`confirmed_at`）也走同一套，naive 视为北京时间。
+
+    历史数据保持原样不动：只改"以后新填的"，不迁移已落库的（在途单据不该被改）。
+    """
+    if isinstance(value, datetime):
+        # naive datetime 按**项目既有口径视为 UTC**（与 `timebase.to_business` 一致），
+        # 不能当北京时间 —— 两处口径不一致会差 8 小时，是最难查的一类 bug。
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    # date（用户填的日历日）→ 该北京日的 00:00 对应 UTC 瞬时
+    return business_day_start(value.year, value.month, value.day)
+
+
+def _business_date(value):
+    """把 date / datetime 统一取成"北京日历日"，供比较用。
+
+    ⚠️ 必须统一：(`signed_at` 是 date，`confirmed_at` 是 datetime)。
+    我第一版直接 `value > today_business()`，datetime 与 date 比较会抛
+    `TypeError: can't compare datetime.datetime to datetime.date` —— 实测 500。
+    用户填的是哪一天，就按"北京那一天的日历日"比，不看具体时刻。
+    """
+    if isinstance(value, datetime):
+        # ⚠️ 用 `to_business` 而不是 `.date()`：项目口径是**naive datetime 视为 UTC**
+        # （见 `timebase.to_business` 的 `replace(tzinfo=UTC)`）。naive 直接取 .date()
+        # 会把"UTC 的 23:59"当成北京同一天，实际那是北京的次日 07:59。
+        return to_business(value).date()
+    return value
+
+
+def _assert_not_future(value, field: str) -> None:
+    """业务日期不能晚于**北京时间今天**（审查 C3-04 主人的口径：A+B）。
+
+    为什么要按北京时间：服务器跑在 UTC，比北京晚 8 小时。北京时间凌晨 0-8 点
+    提交"今天"，按 UTC 比会被判成未来、把正常操作拒掉。
+    """
+    # ⚠️ 括号不能省：写 `if value is None or x > y: raise` 会把 **None 也拒掉**
+    # （or 左边为真就直接 raise）—— 我第一版就是这么写的，实测"不填日期"被拒。
+    if value is not None and _business_date(value) > today_business():
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{field}不能晚于今天（{today_business().isoformat()}）",
+            422,
+        )
+
+
+def _assert_not_before(earlier, later, early_label: str, late_label: str) -> None:
+    """`early_label` 不能早于 `late_label`。
+
+    **保留历史补录能力**：只比前后顺序，不比"是不是今天"——
+    寄出 8/20、签收 9/1 这种全是过去的补录照常放行（主人明确要求）。
+    """
+    if earlier is None or later is None:
+        return
+    e, l = _business_date(earlier), _business_date(later)
+    if e < l:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{early_label}（{e.isoformat()}）不能早于{late_label}（{l.isoformat()}）",
+            422,
+        )
 
 
 async def _assert_active_owner(session: AsyncSession, owner_id: int | None, field: str) -> None:

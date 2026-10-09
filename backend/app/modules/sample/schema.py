@@ -187,7 +187,13 @@ class SampleShip(BaseModel):
 
     carrier: str | None = None
     tracking_no: str | None = None
-    shipping_fee: Decimal = Decimal(0)
+    # 运费：**非负 + 2 位小数**，与 `sample_fee` 同一套约束（审查 C3-03）。
+    #
+    # 改之前这一项毫无约束，实测提交 `-99` 会 200 并落库 `-99.00`；
+    # 提交 `12.345` 会被静默四舍五入成 `12.35`（用户填的数被悄悄改了）。
+    # 同一个费用类字段，`sample_fee` 是拦的（400「不能小于 0」「小数位太多」），
+    # 这里却放行 —— 两条路两个口径。现在对齐。
+    shipping_fee: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=2)
     shipped_at: date | None = None
 
 

@@ -12,8 +12,16 @@ class CustomInquiryCreate(BaseModel):
     customer_id: int | None = None
     contact_id: int | None = None
     opportunity_id: int | None = None
-    quantity: Decimal | None = None
-    target_price: Decimal | None = None
+    # 数值约束（审查 C3-05）：**与库列精度对齐**
+    #   quantity     numeric(16,3) → 必须 > 0、最多 3 位小数
+    #   target_price numeric(16,2) → 必须 >= 0、最多 2 位小数
+    #
+    # 改之前这一组毫无约束，实测：数量 -2 / 目标价 -10 都 200 并落库；
+    # 数量 **0.0001 会被静默存成 0.000**（正数变成零，比接受负数更阴 ——
+    # 报价/下单拿到 0 数量会算出 0 金额）；1.23456 被静默改成 1.235。
+    # 留空仍是"尚未确定"，语义不变（None 放行）。
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=3)
+    target_price: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=2)
     remark: str | None = None
 
 
@@ -24,8 +32,16 @@ class CustomInquiryUpdate(PatchModel):
     description: str | None = None
     customer_id: int | None = None
     contact_id: int | None = None
-    quantity: Decimal | None = None
-    target_price: Decimal | None = None
+    # 数值约束（审查 C3-05）：**与库列精度对齐**
+    #   quantity     numeric(16,3) → 必须 > 0、最多 3 位小数
+    #   target_price numeric(16,2) → 必须 >= 0、最多 2 位小数
+    #
+    # 改之前这一组毫无约束，实测：数量 -2 / 目标价 -10 都 200 并落库；
+    # 数量 **0.0001 会被静默存成 0.000**（正数变成零，比接受负数更阴 ——
+    # 报价/下单拿到 0 数量会算出 0 金额）；1.23456 被静默改成 1.235。
+    # 留空仍是"尚未确定"，语义不变（None 放行）。
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=3)
+    target_price: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=2)
     status: str | None = None
     remark: str | None = None
     opportunity_id: int | None = None
@@ -60,6 +76,14 @@ class CustomInquiryRevise(BaseModel):
     revision_note: str | None = Field(default=None, max_length=255)
     title: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
-    quantity: Decimal | None = None
-    target_price: Decimal | None = None
+    # 数值约束（审查 C3-05）：**与库列精度对齐**
+    #   quantity     numeric(16,3) → 必须 > 0、最多 3 位小数
+    #   target_price numeric(16,2) → 必须 >= 0、最多 2 位小数
+    #
+    # 改之前这一组毫无约束，实测：数量 -2 / 目标价 -10 都 200 并落库；
+    # 数量 **0.0001 会被静默存成 0.000**（正数变成零，比接受负数更阴 ——
+    # 报价/下单拿到 0 数量会算出 0 金额）；1.23456 被静默改成 1.235。
+    # 留空仍是"尚未确定"，语义不变（None 放行）。
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=3)
+    target_price: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=2)
     remark: str | None = None

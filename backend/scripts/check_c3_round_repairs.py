@@ -44,13 +44,44 @@ def call(method, path, token=None, body=None, timeout=90):
         return "TIMEOUT", {"message": str(exc)[:60]}
 
 
+#: 本地原生 PostgreSQL（crm_prod / crm_sales_agent 在 5432 上）。
+#: 容器 `crm-postgres`（5433）只有一次性测试库；它没起时不能硬走 docker。
+_PG = os.getenv("PSQL_BIN", "/opt/homebrew/opt/postgresql@15/bin/psql")
+_PG_PORT = os.getenv("PG_PORT", "5432")
+_USE_DOCKER: bool | None = None
+
+
+def _probe_docker() -> bool:
+    global _USE_DOCKER
+    if _USE_DOCKER is None:
+        r = subprocess.run(["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB,
+                            "-tAc", "select 1"], capture_output=True, text=True, timeout=30)
+        _USE_DOCKER = r.returncode == 0
+    return _USE_DOCKER
+
+
 def db(sql: str):
-    result = subprocess.run(
-        ["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB, "-tAc", sql],
-        capture_output=True, text=True,
-    )
+    """执行 SQL。**自动适配**：库在容器（5433）还是本机原生（5432）。
+
+    原来写死 `docker exec`，于是这个套件只能跑容器里的一次性库；
+    本机的 crm_prod / crm_sales_agent 一跑就报 database does not exist。
+    """
+    if _probe_docker():
+        result = subprocess.run(
+            ["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB, "-tAc", sql],
+            capture_output=True, text=True,
+        )
+        err = result.stderr
+    else:
+        env = dict(os.environ, PGPASSWORD=os.getenv("PGPASSWORD", "crm123456"))
+        result = subprocess.run(
+            [_PG, "-h", os.getenv("PG_HOST", "127.0.0.1"), "-p", _PG_PORT,
+             "-U", os.getenv("PG_USER", "crm"), "-d", DB, "-tAc", sql],
+            capture_output=True, text=True, env=env,
+        )
+        err = result.stderr
     if result.returncode != 0:
-        return "SQLERR:" + result.stderr.strip().split("\n")[-1][:70]
+        return "SQLERR:" + err.strip().split("\n")[-1][:70]
     return result.stdout.strip()
 
 
@@ -113,16 +144,11 @@ def sec_c306(admin: str) -> None:
     )
 
     # ④ 递归查询必须能出结果（成环时旧写法会超时）
-    recursive = subprocess.run(
-        ["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB, "-tAc",
-         f"set statement_timeout='3s'; with recursive s as ("
-         f"select id, 0 as depth from departments where id={a} "
-         f"union all select d.id, s.depth+1 from departments d join s on d.parent_id=s.id "
-         f"where s.depth < 64) select count(*) from s;"],
-        capture_output=True, text=True,
-    )
-    check_true("④ 递归查询未超时", recursive.returncode == 0,
-               "" if recursive.returncode == 0 else (recursive.stderr or "").strip()[-60:])
+    out4 = db(f"with recursive s as (select id, 0 as depth from departments where id={a} "
+              f"union all select d.id, s.depth+1 from departments d join s on d.parent_id=s.id "
+              f"where s.depth < 64) select count(*) from s")
+    check_true("④ 递归查询能出结果（不成环时不超时）", not out4.startswith("SQLERR"),
+               out4[:40])
 
     # ⑤ 部门树里能找到这两个部门（成环时它们会消失）
     _, tree = call("GET", "/departments/tree", admin)
@@ -133,16 +159,11 @@ def sec_c306(admin: str) -> None:
     # ⑥ 已有环的脏数据（绕过接口用 SQL 造）：查询侧必须能自己止住
     db(f"update departments set parent_id={b} where id={a}")
     db(f"update departments set parent_id={a} where id={b}")
-    dirty = subprocess.run(
-        ["docker","exec","crm-postgres","psql","-U","crm","-d",DB,"-tAc",
-         f"set statement_timeout='3s'; with recursive s as ("
-         f"select id, 0 as depth from departments where id={a} "
-         f"union all select d.id, s.depth+1 from departments d join s on d.parent_id=s.id "
-         f"where s.depth < 64) select count(*) from s;"],
-        capture_output=True, text=True,
-    )
+    out6 = db(f"with recursive s as (select id, 0 as depth from departments where id={a} "
+              f"union all select d.id, s.depth+1 from departments d join s on d.parent_id=s.id "
+              f"where s.depth < 64) select count(*) from s")
     check_true("⑥ 已有环时递归查询仍能返回（防环兜底生效）",
-               dirty.returncode == 0, (dirty.stdout or "").strip()[-20:])
+               not out6.startswith("SQLERR") and out6.isdigit(), out6[:20])
 
     db(f"update departments set parent_id=NULL where id in ({a},{b})")
     db(f"delete from departments where id in ({a},{b})")
@@ -252,6 +273,185 @@ def sec_c302(admin: str, worker_token: str) -> None:
         db(f"delete from customers where id={c}")
 
 
+# =====================================================================
+# C3-03：寄送运费必须非负、精度与库列一致
+# =====================================================================
+def sec_c303(admin: str) -> None:
+    """复现出来的反例：-99 与 -0.01 都 200 并落库；12.345 被静默改成 12.35。
+
+    同一个费用类字段 `sample_fee` 是拦的（400），`shipping_fee` 却放行 —— 两条路口径不一。
+    """
+    print("\n=== C3-03 寄送运费 ===")
+    sku = db("select id from skus order by id limit 1")
+    cust = db("select id from customers order by id limit 1")
+
+    def fresh() -> int | None:
+        _, r = call("POST", "/samples", admin, {
+            "customer_id": int(cust), "remark": f"{MARK}-运费",
+            "items": [{"sku_id": int(sku), "quantity": 1}]})
+        sid = (r.get("data") or {}).get("id")
+        if sid:
+            call("POST", f"/samples/{sid}/approve", admin, {})
+        return sid
+
+    def drop(sid):
+        if not sid:
+            return
+        db(f"delete from sample_items where sample_request_id={sid}")
+        db(f"delete from sample_shipments where sample_request_id={sid}")
+        db(f"delete from sample_requests where id={sid}")
+
+    # ①② 负数必须拒（从前 200 并落库）
+    for fee, label in ((-99, "-99"), (-0.01, "-0.01")):
+        sid = fresh()
+        code = call("POST", f"/samples/{sid}/ship", admin,
+                    {"shipping_fee": fee, "carrier": "顺丰"})[1].get("code")
+        check_true(f"① 运费 {label} 被拒（从前 200 并落库）", code != 0, f"code={code}")
+        saved = db("select count(*) from sample_shipments where sample_request_id=%d" % sid)
+        check("① 被拒后没落库", saved, "0")
+        drop(sid)
+
+    # ③④ 零运费与正常值必须放行
+    for fee, label in ((0, "零运费 0"), (12.34, "正常 12.34")):
+        sid = fresh()
+        code = call("POST", f"/samples/{sid}/ship", admin,
+                    {"shipping_fee": fee, "carrier": "顺丰"})[1].get("code")
+        check(f"② {label} 放行", code, 0)
+        got = db(f"select coalesce(shipping_fee::text,'N') from sample_shipments "
+                 f"where sample_request_id={sid} order by id desc limit 1")
+        check(f"② {label} 按填写的值落库", got, f"{fee:.2f}")
+        drop(sid)
+
+    # ⑤ 超精度必须拒（从前静默四舍五入成 12.35）
+    sid = fresh()
+    code = call("POST", f"/samples/{sid}/ship", admin,
+                {"shipping_fee": 12.345, "carrier": "顺丰"})[1].get("code")
+    check_true("③ 超精度 12.345 被拒（从前被静默改成 12.35）", code != 0, f"code={code}")
+    drop(sid)
+
+
+# =====================================================================
+# C3-04：打样时间不能倒序、不能填未来（保留历史补录）
+# =====================================================================
+def sec_c304(admin: str) -> None:
+    """复现出来的反例：寄出 10-09 / 签收 09-01 / 确认 08-01 全部 200，留下完整倒序时间线。"""
+    print("\n=== C3-04 打样时间顺序 ===")
+    sku = db("select id from skus order by id limit 1")
+    cust = db("select id from customers order by id limit 1")
+    today = db("select (now() at time zone 'Asia/Shanghai')::date")
+
+    def fresh(tag):
+        _, r = call("POST", "/samples", admin, {
+            "customer_id": int(cust), "remark": f"{MARK}-{tag}",
+            "items": [{"sku_id": int(sku), "quantity": 1}]})
+        sid = (r.get("data") or {}).get("id")
+        if sid:
+            call("POST", f"/samples/{sid}/approve", admin, {})
+        return sid
+
+    def drop(sid):
+        if not sid:
+            return
+        db(f"delete from sample_items where sample_request_id={sid}")
+        db(f"delete from sample_shipments where sample_request_id={sid}")
+        db(f"delete from sample_requests where id={sid}")
+
+    # ① 签收早于寄出（从前 200）
+    sid = fresh("倒序A")
+    call("POST", f"/samples/{sid}/ship", admin, {"shipping_fee": 0, "shipped_at": "2026-10-09"})
+    code = call("POST", f"/samples/{sid}/sign", admin, {"signed_at": "2026-09-01"})[1].get("code")
+    check_true("① 签收早于寄出被拒（从前 200）", code != 0, f"code={code}")
+    drop(sid)
+
+    # ② 确认早于签收（从前 200）
+    sid = fresh("倒序B")
+    call("POST", f"/samples/{sid}/ship", admin, {"shipping_fee": 0, "shipped_at": "2026-10-09"})
+    call("POST", f"/samples/{sid}/sign", admin, {"signed_at": "2026-10-09"})
+    code = call("POST", f"/samples/{sid}/confirm", admin,
+                {"accepted": True, "confirmed_at": "2026-08-01T10:00:00"})[1].get("code")
+    check_true("② 确认早于签收被拒（从前 200）", code != 0, f"code={code}")
+    drop(sid)
+
+    # ③ 历史补录必须放行（全是过去、顺序对）—— 主人明确要求保留
+    sid = fresh("历史补录")
+    c1 = call("POST", f"/samples/{sid}/ship", admin,
+              {"shipping_fee": 0, "shipped_at": "2026-08-20"})[1].get("code")
+    c2 = call("POST", f"/samples/{sid}/sign", admin, {"signed_at": "2026-09-01"})[1].get("code")
+    check("③ 历史补录放行：寄出 8/20", c1, 0)
+    check("③ 历史补录放行：签收 9/1", c2, 0)
+    drop(sid)
+
+    # ④ 未来日期必须拒（三个环节）
+    sid = fresh("未来寄出")
+    code = call("POST", f"/samples/{sid}/ship", admin,
+                {"shipping_fee": 0, "shipped_at": "2099-01-01"})[1].get("code")
+    check_true("④ 寄出填未来被拒", code != 0, f"code={code}")
+    drop(sid)
+    sid = fresh("未来签收")
+    call("POST", f"/samples/{sid}/ship", admin, {"shipping_fee": 0, "shipped_at": "2026-10-01"})
+    code = call("POST", f"/samples/{sid}/sign", admin, {"signed_at": "2099-01-01"})[1].get("code")
+    check_true("④ 签收填未来被拒", code != 0, f"code={code}")
+    drop(sid)
+
+    # ⑤ 边界：北京时间"今天"必须放行（服务器跑 UTC，按 UTC 比会误拒）
+    sid = fresh("今天")
+    c1 = call("POST", f"/samples/{sid}/ship", admin,
+              {"shipping_fee": 0, "shipped_at": today})[1].get("code")
+    c2 = call("POST", f"/samples/{sid}/sign", admin, {"signed_at": today})[1].get("code")
+    check(f"⑤ 寄出填北京时间今天放行（今天是 {today}）", c1, 0)
+    check("⑤ 签收填北京时间今天放行", c2, 0)
+    # ⑥ 换算口径：北京日 → 该日北京 00:00 对应的 UTC 瞬时
+    bj = db(f"select (shipped_at at time zone 'Asia/Shanghai')::date::text "
+            f"from sample_requests where id={sid}")
+    check("⑥ 落库后按北京时区还原 = 填的那一天（时区换算没偏 8 小时）", bj, today)
+    drop(sid)
+
+
+# =====================================================================
+# C3-05：定制询价的数值范围与精度
+# =====================================================================
+def sec_c305(admin: str) -> None:
+    """复现出来的反例：数量 -2 / 目标价 -10 都 200 落库；0.0001 被静默存成 0.000。"""
+    print("\n=== C3-05 定制询价数值 ===")
+    cust = db("select id from customers order by id limit 1")
+    db(f"delete from custom_inquiries where title like '{MARK}%'")
+
+    def mk(tag, **extra):
+        body = {"title": f"{MARK}-{tag}", "customer_id": int(cust)}
+        body.update(extra)
+        status, res = call("POST", "/custom-inquiries", admin, body)
+        data = res.get("data")
+        iid = data[0].get("id") if isinstance(data, list) and data else (data or {}).get("id")
+        return res.get("code"), iid
+
+    cases = [
+        ("① 数量 -2（从前 200 落库）", {"quantity": -2}, False),
+        ("① 目标价 -10（从前 200 落库）", {"target_price": -10}, False),
+        ("② 数量 0.0001（从前被静默存成 0.000）", {"quantity": 0.0001}, False),
+        ("② 数量 1.23456（从前被静默改成 1.235）", {"quantity": 1.23456}, False),
+        ("③ 数量 100 放行", {"quantity": 100}, True),
+        ("③ 目标价 0 放行", {"target_price": 0}, True),
+        ("③ 数量与目标价都不填（尚未确定）放行", {}, True),
+    ]
+    for label, body, should_pass in cases:
+        code, iid = mk(label[:12], **body)
+        if should_pass:
+            check(label, code, 0)
+        else:
+            check_true(label, code != 0, f"code={code}")
+        if iid:
+            db(f"delete from custom_inquiries where id={iid}")
+
+    # ④ 修改入口同一口径
+    code, iid = mk("修改用", quantity=5)
+    check("④ 前置：建一条合法询价", code, 0)
+    check_true("④ 修改入口也拒负数（从前 200 落库）",
+               call("PATCH", f"/custom-inquiries/{iid}", admin, {"quantity": -3})[1].get("code") != 0)
+    if iid:
+        db(f"delete from custom_inquiries where id={iid}")
+    db(f"delete from custom_inquiries where title like '{MARK}%'")
+
+
 def main() -> int:
     status, res = call("POST", "/auth/login", body={"username": "admin", "password": "admin123"})
     if res.get("code") != 0:
@@ -264,6 +464,9 @@ def main() -> int:
     sec_c306(admin)
     sec_c301(admin)
     sec_c302(admin, worker_token)
+    sec_c303(admin)
+    sec_c304(admin)
+    sec_c305(admin)
 
     print("\n" + "=" * 60)
     if failed:
