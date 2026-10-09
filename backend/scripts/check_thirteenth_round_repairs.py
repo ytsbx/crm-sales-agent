@@ -335,13 +335,30 @@ def n02_terminal_status(admin: str) -> None:
     plan_id = res["data"]["id"]
 
     # 已结清 -> 不许标逾期，也不许被重算退回待收
-    db_exec(f"update receivable_plans set status='paid' where id={plan_id}")
+    #
+    # ⚠️ 必须**真实收齐**，不能用 SQL 硬改状态（2026-10-09 修，C4-01 连带发现）。
+    # 原来写的是 `db_exec("update receivable_plans set status='paid' ...")` ——
+    # 一行 SQL 造出"已结清"，但这条应收**一分钱都没收**（amount 700、回款 0）。
+    # 那种假状态在 C4-01 之前"能过"，只是因为 `paid` 被 `recalc_plan` 整个跳过；
+    # C4-01 让 `paid` 也参与重算之后，它一算就变 `overdue` —— 而**这是对的**
+    # （没收钱 + 已过期）。所以这条用例原先**测不到真实场景**，只是被跳过逻辑掩盖了。
+    # 现在走正常业务路径收齐 700，再验"改备注不会把它算回去"。
+    status, _ = call("POST", "/payments", admin,
+                     {"receivable_plan_id": plan_id, "received_date": "2026-10-09",
+                      "received_amount": 700})
+    check("N02 前置：登记回款", status, 200)
+    payment_id = db("select id from payment_records order by id desc limit 1")
+    status, _ = call("POST", f"/payments/{payment_id}/confirm", admin, {})
+    check("N02 前置：确认回款", status, 200)
+    check("N02 前置：收齐后是 paid",
+          db(f"select status from receivable_plans where id={plan_id}"), "paid")
+
     status, res = call("POST", f"/receivables/{plan_id}/mark-overdue", admin, {})
     check("已结清标逾期被拒", status, UNPROCESSABLE)
     check("已结清状态仍是 paid", db(f"select status from receivable_plans where id={plan_id}"), "paid")
     status, _ = call("PATCH", f"/receivables/{plan_id}", admin, {"remark": "改备注"})
     check("已结清改备注放行", status, 200)
-    check("已结清改备注后仍是 paid",
+    check("已结清改备注后仍是 paid（真实收齐的那种）",
           db(f"select status from receivable_plans where id={plan_id}"), "paid")
 
     # 已取消 -> 改备注不许复活

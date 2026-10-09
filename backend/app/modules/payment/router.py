@@ -376,7 +376,12 @@ async def mark_overdue(
     谁后写都是基于最新事实（否则确认刚把节点算成 paid，这边一个旧状态覆盖回去）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
-    if plan.status in svc.TERMINAL_PLAN_STATUSES:
+    # ⚠️ 这里**不能用 `svc.TERMINAL_PLAN_STATUSES`**（C4-01 补修，2026-10-09）：
+    # 那个常量现在只剩 `cancelled`（`paid` 已移出，好让它参与"改金额后如实重算"）。
+    # 而"不许把已结清的节点标成逾期"是**本端点自己的**业务规则，与重算无关 ——
+    # 我第一版图省事复用了那个常量，结果把这个保护一起拆掉了（实测已结清的节点
+    # 能被标成逾期），是靠新增的断言 ⑥ 抓出来的。
+    if plan.status in ("paid", "cancelled"):
         # 文案与"只有待确认的回款可以操作"同一风格：先说清为什么不行，
         # 再说清当前是什么状态，让人知道该去看哪里。
         label = svc.PLAN_STATUS_LABEL.get(plan.status, plan.status)

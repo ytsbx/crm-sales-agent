@@ -14,12 +14,20 @@ from app.modules.user.model import User
 
 ZERO = Decimal(0)
 
-#: **终态**：不再参与"按已确认回款重算"的状态（N02，2026-10-09 修）。
-#:   - `cancelled`：随订单取消的节点。它不参与催收，也不该被重算"复活"。
-#:   - `paid`：已收齐的终态。本代码库里 `paid` **无法合法退回** ——
-#:     `PATCH /payments/{id}` 明确拒绝改已确认的回款（40002「已确认不能改」），
-#:     而重算只统计 `status=confirmed` 的回款；所以保护它不挡任何正当流转。
-TERMINAL_PLAN_STATUSES = frozenset({"paid", "cancelled"})
+#: **不许被"按已确认回款重算"覆盖**的状态。
+#:
+#: 这里**只有 `cancelled`**（N02 的修复点）：它随订单取消而来，不参与催收，
+#: 也不该被重算"复活"成待收/逾期。取消状态由订单状态驱动，不由回款金额驱动。
+#:
+#: ⚠️ `paid` **不在这里**（C4-01，2026-10-09 修）。原先它也在，前提是
+#: "`paid` 无法合法退回"—— 那个前提**是错的**：它只算了"改回款"这条路径
+#: （`PATCH /payments/{id}` 确实拒绝改已确认的回款），**漏了"改应收金额"**
+#: 这条：`PATCH /receivables/{id}` 允许改 `amount`，把应收从 100 改成 200 之后
+#: 已收仍是 100，节点就成了"**余额 100 却显示已结清**"——对账时说不清算没算完。
+#:
+#: 现在 `paid` 照常参与重算：金额被改大就如实退回 `partial`（状态说真话）。
+#: 要"不许结清后改金额"是另一种口径（会挡掉修正录错金额的正当需求），未采用。
+TERMINAL_PLAN_STATUSES = frozenset({"cancelled"})
 
 
 def ensure_payment_pending(record: PaymentRecord) -> None:
@@ -53,11 +61,15 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
 
     规则：全额收齐 → 已回款；收了一部分 → 部分回款；一分没收到且过期 → 已逾期。
 
-    **终态不被重算覆盖**（N02，2026-10-09 修）：`paid` 与 `cancelled` 直接跳过
-    （见 `TERMINAL_PLAN_STATUSES`）。从前这里没有任何保护，而
-    `PATCH /receivables/{id}` 结尾**无条件**调用本函数 —— 于是"只改一个备注"
-    就会把随订单取消的节点按"没收到钱 + 已过期"算回 `overdue`，取消状态
-    凭空消失；已收齐的节点也会被算回待收。
+    **`cancelled` 不被重算覆盖**（N02，2026-10-09 修）：见 `TERMINAL_PLAN_STATUSES`。
+    从前这里没有任何保护，而 `PATCH /receivables/{id}` 结尾**无条件**调用本函数 ——
+    于是"只改一个备注"就会把随订单取消的节点按"没收到钱 + 已过期"算回 `overdue`，
+    取消状态凭空消失。
+
+    **`paid` 会参与重算**（C4-01，2026-10-09 修）：金额被改大、或回款被作废之后，
+    它必须能如实退回 `partial` —— 否则会出现"余额大于零却显示已结清"。
+    退回的**只有** `partial`（确实收过钱），不会退回 `overdue`：
+    收过钱就不该被算成逾期，"已收齐的节点被算回待收"那条老毛病也不会回来。
 
     **调用方必须已经持有该节点的行锁**（`lock_plan`）：这里的汇总结果直接写回
     节点状态，不在锁内汇总就等于"读旧数、写覆盖"（两个 50 并发确认会留下
@@ -66,9 +78,11 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
     if plan.status in TERMINAL_PLAN_STATUSES:
         return
     received = await confirmed_amount(session, plan.id)
-    if received >= plan.amount and plan.amount > 0:
+    if received > 0 and received >= (plan.amount or ZERO):
         plan.status = "paid"
     elif received > 0:
+        # 收过钱（哪怕只收了一部分）就不算逾期 —— 金额被改大后退回这里，
+        # 而不是掉进下面的 overdue 分支。
         plan.status = "partial"
     else:
         today = today_business()
