@@ -39,6 +39,10 @@ RUN = str(int(time.time()))[-6:]
 #: 都抛 DataError、被外层 except 吞掉（日志里那句"（自动留痕清理跳过：…）"），
 #: 通知与跟进其实一条都没清过——清理代码看起来是生效的，实际从没执行。
 SCRIPT_STARTED_AT = datetime.now(UTC)
+#: 运费分离之前的默认交货条款。它在新口径下是**会对客户说错话**的值
+#: （产品单价已经不含运费了，还写"含运费"会让客户以为报价包了运费）。
+OLD_DELIVERY_TERMS = '含运费，送货上门'
+
 PREFIX = f'CHKQC{RUN}'
 EVIDENCE_PATH = '../产品报价中心验收核验.json'
 
@@ -60,6 +64,75 @@ def call(method, path, token=None, body=None):
             return e.code, json.loads(raw)
         except json.JSONDecodeError:
             return e.code, {'code': None, 'message': raw[:200]}
+
+
+def run_db_write(sql_text, params=None):
+    """执行一条**写** SQL（UPDATE/DELETE/INSERT）并提交，不取行。
+
+    与 `run_db` 分开是有原因的：`UPDATE ... ` 没有返回行，在它上面调 `.all()`
+    会抛 `ResourceClosedError`（我第一版就踩了，异常被线程吞掉才没炸出结论）。
+    """
+    import asyncio
+    import threading
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import settings
+
+    def worker():
+        async def go():
+            engine = create_async_engine(settings.database_url)
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(text(sql_text), params or {})
+            finally:
+                await engine.dispose()
+
+        asyncio.run(go())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+
+
+def run_db(sql_text, params=None):
+    """执行一条 SQL 并返回所有行（元组列表）。
+
+    刻意用**每次新建引擎 + 用完 dispose** 的写法：连接池绑在创建它的那个事件循环上，
+    本函数会被多次调用（每次 `asyncio.run` 都是新循环），不 dispose 第二次就会报
+    "attached to a different loop"（本套件末尾的清理留痕踩过同一个坑）。
+    """
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import settings
+
+    result: dict = {}
+
+    def worker():
+        # 必须开**独立线程 + 独立事件循环**：`main()` 是同步的但外层已在事件循环里，
+        # 直接 asyncio.run 会报 "cannot be called from a running event loop"
+        # （本套件其它地方也这么绕）。
+        async def go():
+            engine = create_async_engine(settings.database_url)
+            try:
+                async with engine.begin() as conn:
+                    rows = (await conn.execute(text(sql_text), params or {})).all()
+                    result['rows'] = [tuple(r) for r in rows]
+            finally:
+                await engine.dispose()
+
+        asyncio.run(go())
+
+    import threading
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    return result.get('rows', [])
 
 
 def login(username, password):
@@ -854,6 +927,106 @@ def main():
                note_ok, f"pricing_basis={basis}")
 
     finally:
+        # ---------------- A20 建立新版/复制报价/种子条款 三条反例（审查 2026-10-09）----------------
+        #
+        # ① 建立新版**不得降低公司保护价**：从前 `apply_current_basis_to_item` 用
+        #    `成本 × (1 + 最低利润率)` 覆盖底价，既写反了公式、又丢掉保护价 ——
+        #    实测成本 80、保护价 99、拟报价 95 时底价从 99 掉到 92，"不需要审批直接通过"。
+        # ② 复制报价**也要重算派生快照**：从前只修了"建立新版"这一条入口。
+        # ③ 默认交货条款只能有一份文案：种子脚本曾硬编码旧文案，全新库跑完种子
+        #    新建报价仍写"含运费，送货上门"。
+        print()
+        print('== A20 建立新版保底价 / 复制重算 / 默认交货条款 ==')
+        # ---- ① 保护价 ----
+        _, res = call('POST', '/price-rules', token=admin, body={
+            'sku_id': sku_id, 'customer_level': 'C', 'min_qty': 0,
+            'guide_price': 50, 'minimum_price': 99,
+            'remark': f'{PREFIX}-C级保护价',
+        })
+        c_rule_id = (res.get('data') or {}).get('id')
+        created_rules.append(c_rule_id) if c_rule_id else None
+        _, res_c = call('POST', '/customers', token=zhangsan, body={
+            'name': f'{PREFIX}-客户C', 'level': 'C', 'remark': '验收临时客户',
+        })
+        c_cust = (res_c.get('data') or {}).get('id')
+        _, res_o = call('POST', '/opportunities', token=admin, body={
+            'customer_id': c_cust, 'title': f'{PREFIX}-A20保护价商机'})
+        c_opp = (res_o.get('data') or {}).get('id')
+        _, res_q = call('POST', '/quotes', token=admin, body={
+            'customer_id': c_cust, 'opportunity_id': c_opp, 'currency': 'CNY'})
+        q_id, v_id = res_q['data']['quote_id'], res_q['data']['version_id']
+        # 拟报价 95 低于保护价 99 → 应当触发审批
+        call('POST', f'/quote-versions/{v_id}/items', token=admin, body={
+            'sku_id': sku_id, 'quantity': 100, 'quoted_price': 95})
+        _, res_v = call('GET', f'/quote-versions/{v_id}', token=admin)
+        src_item = res_v['data']['items'][0]
+        src_floor = src_item['minimum_price_snapshot']
+        _, res_nv = call('POST', f'/quotes/{q_id}/versions', token=admin, body={})
+        # 建新版的返回就是版本对象本身（主键字段是 `id`，没有 `version_id`）
+        new_v = (res_nv.get('data') or {}).get('id')
+        _, res_nv2 = call('GET', f'/quote-versions/{new_v}', token=admin)
+        new_item = res_nv2['data']['items'][0]
+        record('A20a', '建立新版不降低公司保护价（99 仍是 99）',
+               src_floor == new_item['minimum_price_snapshot'] == 99.0,
+               f'原版本底价={src_floor} 新版底价={new_item["minimum_price_snapshot"]}'
+               f'（保护价 99 = 该 SKU 的 C 级 minimum_price）')
+        record('A20b', '拟报价低于保护价时新版仍要求审批',
+               bool(new_item['approval_required']),
+               f'approval_required={new_item["approval_required"]}')
+
+        # ---- ② 复制报价重算派生快照 ----
+        # 把源明细的利润人为改回旧口径的 15（模拟存量旧数据），复制后必须是 20。
+        # 该 SKU 成本 = 40 + 5 = 45，单价 65 → 利润 20（与费用、运费无关）。
+        item_id = src_item['id']
+        run_db_write(f"update quote_items set profit_snapshot=15, "
+               f"profit_rate_snapshot=0.15 where id={item_id}")
+        _, res_o2 = call('POST', '/opportunities', token=admin, body={
+            'customer_id': c_cust, 'title': f'{PREFIX}-A20复制商机'})
+        opp2 = (res_o2.get('data') or {}).get('id')
+        _, res_q2 = call('POST', '/quotes', token=admin, body={
+            'customer_id': c_cust, 'opportunity_id': opp2, 'currency': 'CNY'})
+        q2, v2 = res_q2['data']['quote_id'], res_q2['data']['version_id']
+        call('POST', f'/quote-versions/{v2}/items', token=admin, body={
+            'sku_id': sku_id, 'quantity': 100, 'quoted_price': 65})
+        _, res_v2 = call('GET', f'/quote-versions/{v2}', token=admin)
+        it2 = res_v2['data']['items'][0]
+        run_db_write(f"update quote_items set profit_snapshot=15, "
+               f"profit_rate_snapshot=0.15 where id={it2['id']}")
+        _, res_cl = call('POST', f'/quotes/{q2}/clone', token=admin, body={
+            'customer_id': c_cust, 'opportunity_id': opp2, 'copy_items': True})
+        clone_q = (res_cl.get('data') or {}).get('quote_id')
+        rows = run_db("select profit_snapshot, quoted_price, cost_snapshot "
+                      "from quote_items where quote_version_id in "
+                      "(select id from quote_versions where quote_id=:q) "
+                      "order by id desc limit 1", {'q': clone_q}) if clone_q else []
+        if rows:
+            profit, price, cost = float(rows[0][0]), float(rows[0][1]), float(rows[0][2])
+            record('A20c', '复制报价按当前口径重算利润（15 → 20，不是照抄）',
+                   abs(profit - (price - cost)) < 0.001,
+                   f'副本利润={profit} 单价={price} 商品成本={cost}'
+                   f'（照抄旧值会是 15）')
+        else:
+            record('A20c', '复制报价按当前口径重算利润', False, '复制后取不到明细')
+
+        # ---- ③ 代码里的默认条款必须自洽 ----
+        #
+        # ⚠️ 别用 `'含运费' not in text` 来判：`'不含运费'` **包含** `'含运费'` 子串，
+        # 那样写恒为 False（我第一版就这么写错了）。要判的是**旧的坏文案**本身。
+        # 也刻意不断言"库值 == 代码常量"：那是要求"配置默认值不许被改动"，
+        # 而不是要求条款与新口径自洽，以后合法改文案就会假失败。
+        # 真正要守的不变量由**全新库**套件 `check_fresh_db_seed_terms.py` 验 ——
+        # 本套件跑的库是已有数据的库，它的值来自当年迁移写的历史行，
+        # 不代表初始化脚本的当前行为。
+        from app.modules.settings.service import DEFAULT_DELIVERY_TERMS
+        record('A20d', '代码里的默认条款不是旧文案「含运费，送货上门」',
+               OLD_DELIVERY_TERMS not in DEFAULT_DELIVERY_TERMS,
+               f'常量={DEFAULT_DELIVERY_TERMS!r}')
+        record('A20e', '默认条款与报价回落值同源（同一常量，不各写一份）',
+               DEFAULT_DELIVERY_TERMS
+               == __import__('app.modules.settings.service', fromlist=['x'])
+               .DEFAULT_SETTINGS['default_delivery_terms']['text'],
+               f'常量={DEFAULT_DELIVERY_TERMS!r}')
+
         cleanup()
         evidence['results'] = RESULTS
         failed = [r for r in RESULTS if not r['pass']]

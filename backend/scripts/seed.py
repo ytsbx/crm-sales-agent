@@ -31,6 +31,7 @@ from app.modules.pricing.model import (
     ProductCost,
 )
 from app.modules.task.model import Task
+from app.modules.settings import service as settings_service
 from app.modules.settings.model import PublicPoolRule, SystemSetting, TaskRule
 from app.modules.user.model import Department, Permission, Role, User, role_permissions, user_roles
 
@@ -1016,7 +1017,15 @@ async def seed() -> None:
         settings_defs = [
             ("quote_valid_days", {"days": 30}, "报价单默认有效期（天）"),
             ("default_payment_terms", {"text": "款到发货"}, "报价单默认付款条件"),
-            ("default_delivery_terms", {"text": "含运费，送货上门"}, "报价单默认交货条件"),
+            # ⚠️ 文案引用**同一个常量**，不要在这里手写（审查 2026-10-09）：
+            # 从前这里硬编码旧文案「含运费，送货上门」，与"产品单价不含运费"的
+            # 新口径直接冲突 —— 迁移只改了存量行，**全新库跑完种子仍是旧文案**，
+            # 新建报价就带着"含运费"发给客户。
+            (
+                "default_delivery_terms",
+                {"text": settings_service.DEFAULT_DELIVERY_TERMS},
+                "报价单默认交货条件",
+            ),
             ("company_name", {"text": "曼德拉（示例，请替换为公司全称）"}, "报价单抬头公司名"),
             ("default_target_margin", {"ratio": 0.3}, "无价格规则时的默认目标利润率（0.3=30%）"),
             ("default_min_margin", {"ratio": 0.15}, "角色未配价格权限时的最低利润率（0.15=15%）"),

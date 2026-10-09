@@ -49,6 +49,18 @@ from app.modules.user.model import User
 #
 # 约定：键名 → {字段名: 默认值}。数据库里有同名的 SystemSetting 记录时以数据库为准，
 # 所以业务想改数字不用改代码，改了立刻生效。
+#: 新报价的**默认交货条款**（2026-10-09「产品价格与运费分离」）。
+#:
+#: 全项目**只此一份**：`DEFAULT_SETTINGS` 与 `scripts/seed.py` 都引用它，
+#: `quote.service.create_quote` 的代码回退值也从 `DEFAULT_SETTINGS` 取。
+#: 从前这句话在四个地方各写了一遍（配置默认值、代码回退值、种子脚本、迁移），
+#: 改口径时漏掉了种子脚本 —— 全新库跑完种子，新建报价仍带旧文案
+#: 「含运费，送货上门」，与"产品单价不含运费"直接冲突（审查 2026-10-09 实测）。
+#:
+#: ⚠️ 只是**新报价的默认值**：历史版本的 `delivery_terms` 是快照，一个字不动。
+DEFAULT_DELIVERY_TERMS = "产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付。"
+
+
 DEFAULT_SETTINGS: dict[str, dict] = {
     # 报价
     "company_name": {"text": "示例公司（请替换为公司全称）"},
@@ -59,9 +71,7 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     # 新口径产品单价不含运费、运费单列并代收代付，继续用旧文案会让客户以为
     # 报价里已经包了运费 —— 属于会对客户说错话的默认值，必须换掉。
     # ⚠️ 这里只是**新报价的默认值**：历史版本的 `delivery_terms` 是快照，一个字不动。
-    "default_delivery_terms": {
-        "text": "产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付。"
-    },
+    "default_delivery_terms": {"text": DEFAULT_DELIVERY_TERMS},
     # 核价
     "default_target_margin": {"ratio": 0.30},
     "default_min_margin": {"ratio": 0.15},

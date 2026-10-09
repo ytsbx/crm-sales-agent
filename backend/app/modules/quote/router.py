@@ -678,6 +678,16 @@ async def clone_quote(
             session, source_id=source.current_version_id, target_version=new_version
         )
         await session.flush()
+        # 复制过来的快照是**按源报价口径**算的，而复制出的是新报价（当前口径）。
+        # 不重算就会照抄旧利润（审查实测：单价 100、成本 80，复制后利润仍是 15，
+        # 正确应为 20）。与 `service.create_version` 用**同一个**函数，
+        # 保证"建立新版"与"复制报价"两个入口口径一致 —— 上一版我只接了前者，
+        # 漏了这里（审查 2026-10-09 第二次指出）。
+        for copied in await svc.version_items(session, new_version.id):
+            await svc.apply_current_basis_to_item(
+                session, copied, new_version, user=user
+            )
+        await session.flush()
         await svc.recalc_version(session, new_version)
 
     await write_audit(

@@ -525,10 +525,10 @@ async def create_quote(
         session,
         "default_delivery_terms",
         "text",
-        # 代码回退值必须与 `settings.DEFAULT_SETTINGS` 里的配置默认值一致
-        # （2026-10-09 运费分离）：旧文案「含运费，送货上门」在运费单列代收代付的
-        # 口径下是错的，会让客户以为报价已包运费。
-        "产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付。",
+        # 代码回退值**直接取自配置默认值**，不手写第二遍：
+        # 从前这里是同一句话的副本，改口径时极易漏掉一处（种子脚本就漏过，
+        # 见 `settings_service.DEFAULT_DELIVERY_TERMS` 的说明）。
+        settings_service.DEFAULT_SETTINGS["default_delivery_terms"]["text"],
     )
 
     quote = Quote(
@@ -798,9 +798,8 @@ async def create_version(
     # （2026-10-09 统一后只有一套）。不重算就会留下"口径标着 A、数字是 B"的自相
     # 矛盾数据（审查实测：显示利润 15、按新口径应为 20）。只重算受口径影响的四列，
     # 售价与价格来源不动 —— 详见 `apply_current_basis_to_item` 的说明。
-    min_ratio = await _min_margin_ratio(session)
     for copied in await version_items(session, version.id):
-        apply_current_basis_to_item(copied, version, min_ratio=min_ratio)
+        await apply_current_basis_to_item(session, copied, version, user=user)
     await session.flush()
     await recalc_version(session, version)
     quote.current_version_id = version.id
@@ -1043,36 +1042,128 @@ async def _min_margin_ratio(session: AsyncSession) -> Decimal:
     )
 
 
-def apply_current_basis_to_item(item: QuoteItem, version: QuoteVersion, *, min_ratio: Decimal) -> None:
+async def apply_current_basis_to_item(
+    session: AsyncSession,
+    item: QuoteItem,
+    version: QuoteVersion,
+    *,
+    user,
+) -> None:
     """把**受核价口径影响**的派生快照按当前口径重算一遍（2026-10-09 缺陷③）。
 
-    为什么需要这个函数：建立新版 / 复制报价 / 改明细，这三条路都沿用上面的
-    `item.*` 快照值。口径统一之前，"口径已切、快照照抄"会留下自相矛盾的数据 ——
-    审查实测：旧口径版本建出的新版标着新口径，却仍显示旧口径的利润（15 而非 20）；
-    更明显的是**只改一句备注**，利润就从 15 变成 20（因为 `update_item` 会重算），
-    而产品价格、数量、成本一个字没动。同一份数据两种读数，审批与对客文件都会错。
+    为什么需要：建立新版 / 复制报价 / 改明细，这几条路都会沿用源明细的快照值。
+    口径切换时若照抄，会留下"口径标着 A、数字是 B"的自相矛盾数据
+    （审查实测：显示利润 15、按新口径应为 20）。
 
     **只动受口径影响的四列**，其余快照（售价、标准价、建议价、价格来源、
-    客户等级、主数据版本号……）原样保留 —— 不能重跑 `calculate_price`：
+    客户等级、主数据版本号……）原样保留 —— 刻意**不**重跑 `calculate_price`：
     它按**当前**价格规则与客户等级取值，复制一张旧报价时会顺手把售价改掉，
     那是另一种数据损坏。
 
-    受影响的四列与公式（与 `_build_custom_item_snapshot` / `pricing_service` 同源）：
-      - `minimum_price_snapshot` = 单件产品核价成本 × (1 + 最低利润率)，人民币、两位小数；
-      - `profit_snapshot`        = 报价单价 − 单件产品核价成本（折成报价币种）；
-      - `profit_rate_snapshot`   = 利润 ÷ 单价，六位小数；
-      - `profit_with_refund_snapshot` = 利润 + 退税快照（退税快照本身不动）。
+    ## 底价必须沿用核价引擎的公式（2026-10-09 审查 P1 修）
 
-    ⚠️ **已知局限**：底价在 `pricing_service` 里是 `max(利润率反推价, 保护价)`，
-    而快照**只存最后的底价、没存保护价那一侧**。所以这里算的是"利润率反推价"，
-    若原底价是被保护价顶住的（更高），重算会得到偏低的底价。选择这样做而不是
-    "用现价重跑一遍核价"，是因为前者只可能让底价偏保守、且不改动售价；
-    后者会连带改掉已经报给客户的单价。开发阶段的历史报价都是测试数据，
-    真要精确，在该报价上重新核价即可（会走完整的 `build_item_snapshot`）。
+    我上一版把底价写成 `成本 × (1 + 最低利润率)`，**两处都错**：
+
+    1. **公式反了**：引擎用的是 `成本 ÷ (1 − 最低利润率)`
+       （`pricing/service.py` 的 `floor_from_margin`），不是乘 `(1 + 率)`；
+    2. **丢了公司保护价**：引擎的底价是
+       `max(利润率反推价, 保护价)`，而保护价来自价格规则/客户特殊价的
+       `minimum_price`。我上一版完全没考虑它。
+
+    后果不是"数字难看"，而是**降低审批门槛**：审查实测产品成本 80、公司保护价 99、
+    拟报价 95 —— 原版本底价 99 会触发审批，我那个错误公式算出 92，
+    于是"不需要审批、直接通过"。低价就这么被放过去了。
+
+    所以这里**照抄引擎的取数与公式**（`resolve_min_margin` / `find_price_rule` /
+    `find_customer_price` 全部复用，不另写一套）：
+    底价 = `max(成本 ÷ (1 − 最低利润率), 保护价)`，人民币、两位小数。
+
+    ## 已知局限（与上面那个 bug 不是一回事）
+
+    保护价取的是**当前生效**的规则，不是快照当时那一版。规则后来被改过时，
+    这里会得到"按今天的规则"的底价。选择这样做，而不是"用现价重跑整条核价"，
+    是因为前者只动底价、不改售价；后者会连带改掉已经报给客户的单价。
     """
     price = item.quoted_price or ZERO
-    basis_cost = item_unit_product_cost(item, includes_freight=version_logistics_in_base_cost(version))
-    item.minimum_price_snapshot = (basis_cost * (1 + min_ratio)).quantize(Decimal("0.01"))
+    basis_cost = item_unit_product_cost(
+        item, includes_freight=version_logistics_in_base_cost(version)
+    )
+    # 最低利润率也走引擎那一个函数：它按**操作人的角色价格权限**取最宽松值，
+    # 角色没配时退回 default_min_margin —— 自己读设置会与核价结果不一致。
+    min_margin, _can_approve = await pricing_service.resolve_min_margin(
+        session, getattr(user, "roles", None) or []
+    )
+
+    # ---- 底价：**逐步照抄核价引擎的取数与公式** ----
+    #
+    # 引擎（`pricing_service.calculate_price`）的算法是：
+    #   resolved_level = 客户等级（客户没等级时为空）
+    #   rule = find_price_rule(customer_level=resolved_level)
+    #   若命中的等级规则**没有指导价** → 回退取一般规则（customer_level=None）
+    #   protection_price = max(rule.minimum_price, customer_rule.minimum_price)
+    #   floor_from_margin = 成本 ÷ (1 − 最低利润率)
+    #   floor_price = max(floor_from_margin, protection_price)
+    #
+    # ⚠️ 我上一版只写了 `find_price_rule(customer_level=None)` —— 那取的是**一般规则**，
+    # 而保护价通常挂在**等级规则**上，于是保护价永远取不到、底价掉到利润率反推价
+    # （实测：成本 80、保护价 99、拟报价 95 —— 原版本底价 99，新版算出 80，
+    #  审批门槛被降低）。所以这里连"等级规则没指导价才回退一般规则"这一步也要照做。
+    floor_from_margin = (
+        basis_cost / (Decimal(1) - min_margin) if min_margin < 1 else None
+    )
+    protection_candidates: list[Decimal] = []
+    if item.sku_id is not None:
+        quantity = item.quantity or ZERO
+        quote_row = await session.get(Quote, version.quote_id)
+        customer_id = quote_row.customer_id if quote_row else None
+        customer = await session.get(Customer, customer_id) if customer_id else None
+        resolved_level = customer.level if customer else None
+
+        rule = await pricing_service.find_price_rule(
+            session,
+            sku_id=item.sku_id,
+            quantity=quantity,
+            customer_level=resolved_level,
+        )
+        if (
+            resolved_level
+            and rule is not None
+            and rule.customer_level == resolved_level
+            and rule.guide_price is None
+        ):
+            general_rule = await pricing_service.find_price_rule(
+                session,
+                sku_id=item.sku_id,
+                quantity=quantity,
+                customer_level=None,
+            )
+            if general_rule is not None and general_rule.guide_price is not None:
+                rule = general_rule
+        customer_rule = (
+            await pricing_service.find_customer_price(
+                session,
+                customer_id=customer_id,
+                sku_id=item.sku_id,
+                quantity=quantity,
+            )
+            if customer_id
+            else None
+        )
+        protection_candidates = [
+            value
+            for value in [
+                rule.minimum_price if rule else None,
+                customer_rule.minimum_price if customer_rule else None,
+            ]
+            if value is not None
+        ]
+    protection_price = max(protection_candidates) if protection_candidates else None
+    floors = [v for v in (floor_from_margin, protection_price) if v is not None]
+    item.minimum_price_snapshot = (
+        max(floors).quantize(Decimal("0.01")) if floors else None
+    )
+
+    # ---- 利润：与报价同币种（人民币成本折过去再减）----
     fx = version.exchange_rate_snapshot
     foreign = (version.currency or "CNY").upper() != "CNY" and bool(fx) and fx > 0
     cost_in_quote = (basis_cost / fx) if foreign else basis_cost
