@@ -36,6 +36,8 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
+from app.modules.customer.model import Contact
+from app.modules.user.model import User
 from app.modules.file.model import BusinessFile, FileRecord
 from app.modules.followup import service as followup_service
 from app.modules.notification import service as notification_service
@@ -230,12 +232,19 @@ async def create_sample(
 
     # 负责人：传入 > 商机负责人 > 当前用户
     owner_id = payload.owner_id or (opportunity.owner_id if opportunity else None) or user.id
+    # 落库前校验关联完整性（审查 C3-02）：以前"不存在的负责人"要到 flush 才炸成 500，
+    # "已停用的负责人"更是直接 200 落库
+    await _assert_active_owner(session, owner_id, "负责人")
+    await _assert_contact_belongs(session, payload.contact_id, customer_id)
+    if payload.production_owner_id is not None:
+        await _assert_active_owner(session, payload.production_owner_id, "制作负责人")
 
     sample = SampleRequest(
         opportunity_id=payload.opportunity_id,
         customer_id=customer_id,
         contact_id=payload.contact_id,
         owner_id=owner_id,
+        production_owner_id=payload.production_owner_id,
         status="pending",
         remark=payload.remark,
         requested_at=svc.now(),
@@ -255,6 +264,13 @@ async def create_sample(
             item.remark,
             inquiry_id=item.inquiry_id,
             item_name=item.item_name,
+            # ⚠️ 这三项以前**没往下传**，于是"新建时带明细"的 craft/material/
+            # drawing_version 被静默丢弃（库内三项全 NULL），而"后续追加明细"
+            # 那条路是传的 —— 同一份数据两条路两个结果（审查 C3-01）。
+            # 打样制作依据（工艺/材质/图纸版本）就靠这三个字段，丢了车间没法干活。
+            craft=item.craft,
+            material=item.material,
+            drawing_version=item.drawing_version,
         )
 
     await session.flush()
@@ -308,6 +324,23 @@ async def update_sample(
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
     before = await svc.detail(session, sample)
     data = payload.model_dump(exclude_unset=True)
+    # ---- 落库前校验关联完整性（审查 C3-02）----
+    #
+    # 以前这里直接把传进来的值 setattr 上去，于是：
+    #   · `owner_id: null` → 200 落库，**原负责人立刻读不到这张单**
+    #     （服务端报「该样品申请没有负责人，无法判定可见范围，已拒绝访问」——
+    #      拦是拦住了，但入口没堵，单子就成了谁都进不去的孤儿）；
+    #   · 不存在的负责人 → flush 时外键炸成 **500**；
+    #   · 已停用的负责人 → 200 落库，单子挂在一个登不上系统的人名下；
+    #   · 别人家的联系人 → 200 落库，打样通知发给别家联系人。
+    # 这里把四种都变成明确的 4xx。
+    if "owner_id" in data:
+        await _assert_active_owner(session, data["owner_id"], "负责人")
+    if "production_owner_id" in data and data["production_owner_id"] is not None:
+        await _assert_active_owner(session, data["production_owner_id"], "制作负责人")
+    if "contact_id" in data:
+        await _assert_contact_belongs(session, data["contact_id"], sample.customer_id)
+
     # 生产打样资料（文档 §3.5）与联系人/负责人/备注走同一个"改了留痕"的入口：
     # 跟单在这里补资料，打样需求单出图时逐项带给车间。
     # 材质 / 工艺 / 图纸版本**不在这个列表里**：它们逐行不同，走明细接口
@@ -1036,6 +1069,41 @@ async def add_sample_item(
     await session.commit()
     await notification_service.dispatch_pending(session)
     return ok(await svc.detail(session, sample), "明细已添加")
+
+
+async def _assert_active_owner(session: AsyncSession, owner_id: int | None, field: str) -> None:
+    """负责人必须**存在且在岗**（审查 C3-02）。
+
+    实测过的后果：传不存在的 id → **500**（外键炸在 flush 时）；传已停用的人 → 200 落库，
+    于是这张单挂在一个登不上系统的人名下。两者都该是明确的 4xx。
+
+    与 `task._active_owner`、`customer` 的负责人校验同一口径。
+    """
+    if owner_id is None:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, f"{field}不能为空", 422)
+    target = await session.get(User, owner_id)
+    if target is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"{field} id={owner_id} 不存在", 404)
+    if target.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"{field}「{target.name}」已停用", 422)
+
+
+async def _assert_contact_belongs(session: AsyncSession, contact_id: int | None, customer_id: int | None) -> None:
+    """联系人必须**存在、且属于本申请的客户**（审查 C3-02）。
+
+    实测过：给甲客户的单挂乙客户的联系人 → 200 并落库，打样通知就会发给**别人家**的联系人。
+    """
+    if contact_id is None:
+        return
+    contact = await session.get(Contact, contact_id)
+    if contact is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"联系人 id={contact_id} 不存在", 404)
+    if contact.customer_id != customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"联系人「{contact.name}」不属于该客户（申请客户 id={customer_id}）",
+            422,
+        )
 
 
 async def _add_item(

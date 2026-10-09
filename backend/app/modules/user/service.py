@@ -517,10 +517,71 @@ async def create_department(session: AsyncSession, data: dict) -> Department:
     return dept
 
 
+#: 「部门树结构」保护的**全局事务锁**键（审查 C3-06）。
+#:
+#: 为什么要一把与具体部门无关的锁：互挂父子是**两个不同的部门**
+#: （A 挂到 B 下、同时 B 挂到 A 下），各自锁自己那一行谁也挡不住谁 ——
+#: 两边各自读到"对方还是我的下级"，于是防环检查**双双通过**，
+#: 一起写入就成环了。行锁在这里结构上就不够用（和「最后一位管理员」同一类问题）。
+#:
+#: 成环的后果实测过：递归 CTE 转不出来 → 受影响部门的人查客户直接挂死
+#: （3 秒语句超时）、成环的部门从部门树里消失。
+#:
+#: 用 `pg_advisory_xact_lock`：随事务提交/回滚自动释放，漏解锁也不会永久锁死。
+#: 这个数字没有业务含义，只要全项目一致且固定即可（同 `_ADMIN_GUARD_LOCK_KEY`）。
+_DEPARTMENT_TREE_LOCK_KEY = 7301002
+
+
+def _session_dialect(session: AsyncSession) -> str:
+    """当前会话连的是什么库（照 `pricing/service.py` 的同名辅助）。
+
+    只为"PostgreSQL 独有的能力在 SQLite 上跳过"服务 —— pytest 跑 SQLite，
+    不跳过会让整批单测报 `no such function: pg_advisory_xact_lock`。
+    """
+    try:
+        return session.get_bind().dialect.name
+    except Exception:
+        return ""
+
+
+async def _lock_department_tree(session: AsyncSession) -> None:
+    """取得「部门树结构」保护锁，并持有到本事务结束。
+
+    ⚠️ 拿锁之后**必须重读**要改的部门与目标父部门 —— 拿到的对象可能是
+    等锁之前读的旧值，拿旧值做防环检查等于没锁（审查 C3-06 就是这么成的环）。
+    """
+    if _session_dialect(session) != "postgresql":
+        # 只有 PostgreSQL 有这把锁；SQLite（pytest）下跳过，
+        # 与 `pricing.lock_sku_price_rules` 同一处理（否则单测全红）
+        return
+    await session.execute(select(func.pg_advisory_xact_lock(_DEPARTMENT_TREE_LOCK_KEY)))
+
+
 async def update_department(session: AsyncSession, dept: Department, data: dict) -> Department:
+    # ---- 先拿「部门树」锁，再重读、再防环（审查 C3-06）----
+    #
+    # 顺序不能反：`_assert_no_cycle` 是"读一遍树、判断有没有环"，它和后面的写入
+    # 之间没有任何保护。两个并发请求各自读完（都认为没问题）再各自写入 → 成环。
+    # 锁内重读之后，后到的那个请求看到的是**对方已经提交的**树形，
+    # 于是第二次能正确拒掉（顺序执行本来就是对的）。
+    await _lock_department_tree(session)
+
+    refreshed = (
+        await session.execute(
+            select(Department).where(Department.id == dept.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if refreshed is None:
+        raise AppError(ErrorCode.NOT_FOUND, "部门不存在", 404)
+    dept = refreshed
+
     new_parent = data.get("parent_id", dept.parent_id)
     if "parent_id" in data and data["parent_id"] is not None:
-        await get_department_or_404(session, data["parent_id"])
+        parent = await get_department_or_404(session, data["parent_id"])
+        # 父部门也要用锁后的最新值（它可能刚被别人挪走）
+        if parent is not None:
+            await session.refresh(parent)
     await _assert_no_cycle(session, dept.id, new_parent)
 
     if data.get("name"):

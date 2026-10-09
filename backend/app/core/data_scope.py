@@ -12,7 +12,7 @@
 
 from typing import Protocol
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, select, literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -39,10 +39,23 @@ def department_subtree_stmt(department_id: int | None) -> Select:
     恰好就是这两个，看起来完全正确；**三层以上**才露破绽。所以套件里的部门树
     必须是三层以上，两层等于没测。
     """
-    base = select(Department.id).where(Department.id == department_id)
+    # ⚠️ 递归深度上限 = **防环兜底**（审查 C3-06 的下半条）。
+    #
+    # 写入侧已经加了「部门树」事务锁，新环不会再产生；但**历史数据里可能已经有环**
+    # （比如锁上线之前造的），那时这条递归会一直转下去。实测过后果：
+    # 加 3 秒语句超时后直接超时，受影响部门的人查客户**请求挂死**。
+    # 所以查询侧也要能自己止住 —— 两道防线各管一半，缺一不可。
+    #
+    # 取 64 层：正常部门树远达不到，而真出现环时最多转 64 圈就停。
+    _MAX_DEPTH = 64
+    base = select(Department.id, literal(0).label("depth")).where(
+        Department.id == department_id
+    )
     subtree = base.cte("dept_subtree", recursive=True)
     subtree = subtree.union_all(
-        select(Department.id).join(subtree, Department.parent_id == subtree.c.id)
+        select(Department.id, subtree.c.depth + 1)
+        .join(subtree, Department.parent_id == subtree.c.id)
+        .where(subtree.c.depth < _MAX_DEPTH)
     )
     return select(subtree.c.id)
 

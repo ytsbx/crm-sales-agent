@@ -38,6 +38,13 @@ class SampleCreate(BaseModel):
     contact_id: int | None = None
     owner_id: int | None = None
     """默认取商机负责人，再退回当前用户。"""
+    production_owner_id: int | None = None
+    """制作负责人（跟单/车间）。**新建时也能指定**（审查 C3-02）。
+
+    从前只有 `SampleUpdate` 有这个字段，于是新建时传它被 pydantic 的
+    `extra="ignore"` 静默丢掉、模型上留着 NULL —— 调用方以为设好了。
+    这和 C3-01 是同一类毛病：**入参收了但没往下走**。
+    """
     remark: str | None = None
     items: list[SampleItemInput] = []
 
