@@ -1027,6 +1027,59 @@ def main():
                .DEFAULT_SETTINGS['default_delivery_terms']['text'],
                f'常量={DEFAULT_DELIVERY_TERMS!r}')
 
+        # ---------------- A21 底价「只紧不松」：建立新版绝不降低审批门槛 ----------------
+        #
+        # 保护价写在价格规则里、会被人改；报价里冻住的那份是**当年**的值。
+        # 两者不一致时口径已与主人对齐（2026-10-09）：取 `max(按今天算的, 原来那一版)`。
+        # 这条专门守"今天更低"的情形 —— 只按今天算的话底价会跟着降，
+        # 原本要审批的报价就变成免审批直接过（主人要我修的就是这一类）。
+        print()
+        print('== A21 底价只紧不松 ==')
+        for label, first_mp, second_mp in (
+            ('今天更高（99→130）', 99, 130),
+            ('今天更低（105→92，穿过反推价）', 105, 92),
+        ):
+            rows = run_db("select id from price_rules where customer_level='C' "
+                          "and status='active'")
+            for (rid,) in rows:
+                call('DELETE', f'/price-rules/{rid}', token=admin)
+            _, res = call('POST', '/price-rules', token=admin, body={
+                'sku_id': sku_id, 'customer_level': 'C', 'min_qty': 0,
+                'guide_price': 90, 'minimum_price': first_mp,
+            })
+            c_rule = (res.get('data') or {}).get('id')
+            if c_rule:
+                created_rules.append(c_rule)
+            _, res_o = call('POST', '/opportunities', token=admin, body={
+                'customer_id': c_cust, 'title': f'{PREFIX}-A21{first_mp}'})
+            opp = (res_o.get('data') or {}).get('id')
+            _, res_q = call('POST', '/quotes', token=admin, body={
+                'customer_id': c_cust, 'opportunity_id': opp, 'currency': 'CNY'})
+            q2, v2 = res_q['data']['quote_id'], res_q['data']['version_id']
+            call('POST', f'/quote-versions/{v2}/items', token=admin, body={
+                'sku_id': sku_id, 'quantity': 100, 'quoted_price': 95})
+            _, res_v = call('GET', f'/quote-versions/{v2}', token=admin)
+            floor_before = res_v['data']['items'][0]['minimum_price_snapshot']
+            # 改保护价：本项目口径是**停用旧的 + 新增一条**（不许原地改价）
+            for (rid,) in run_db("select id from price_rules where customer_level='C' "
+                                 "and status='active'"):
+                call('DELETE', f'/price-rules/{rid}', token=admin)
+            _, res = call('POST', '/price-rules', token=admin, body={
+                'sku_id': sku_id, 'customer_level': 'C', 'min_qty': 0,
+                'guide_price': 90, 'minimum_price': second_mp,
+            })
+            if (res.get('data') or {}).get('id'):
+                created_rules.append(res['data']['id'])
+            _, res_nv = call('POST', f'/quotes/{q2}/versions', token=admin, body={})
+            nv = (res_nv.get('data') or {}).get('id')
+            _, res_v2 = call('GET', f'/quote-versions/{nv}', token=admin)
+            floor_after = res_v2['data']['items'][0]['minimum_price_snapshot']
+            record(f'A21 {label}', f'建立新版不降低底价（{floor_before} → {floor_after}）',
+                   floor_after is not None and floor_before is not None
+                   and float(floor_after) >= float(floor_before),
+                   f'保护价 {first_mp} → {second_mp}，底价 {floor_before} → {floor_after}'
+                   + ('（若只按今天算会降到 94.12）' if second_mp < first_mp else ''))
+
         cleanup()
         evidence['results'] = RESULTS
         failed = [r for r in RESULTS if not r['pass']]

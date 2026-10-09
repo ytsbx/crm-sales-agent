@@ -1159,9 +1159,35 @@ async def apply_current_basis_to_item(
         ]
     protection_price = max(protection_candidates) if protection_candidates else None
     floors = [v for v in (floor_from_margin, protection_price) if v is not None]
-    item.minimum_price_snapshot = (
-        max(floors).quantize(Decimal("0.01")) if floors else None
-    )
+    fresh_floor = max(floors).quantize(Decimal("0.01")) if floors else None
+
+    # ---- 「只紧不松」：底价不得低于这条明细**原来那一版**（2026-10-09 与主人确认）----
+    #
+    # 保护价写在价格规则里，运营随时会改；而报价里冻住的那一份是**当年**的值。
+    # 两者不一致时取哪个，是个真实取舍（口径已与主人对齐：**只紧不松**）：
+    #
+    #   情形 A：保护价从 99 降到 92
+    #     · 只按今天的规则算 → 底价跟着降到 92 → 原来要审批的 95 元报价
+    #       **变成免审批直接过** —— 这就是主人要我修的那类"降低审批门槛"；
+    #     · 取 max(今天, 当年) → 仍是 99 → 门槛守住。
+    #   情形 B：保护价从 99 涨到 105
+    #     · max 取 105 → 门槛变严，守公司当前底线（这是应该的）。
+    #
+    # 所以这里用 `max(按今天算的, 原来那一版)`：**底价只会升或持平，绝不会降**。
+    # 代价：保护价降过之后，老报价仍按老底价卡着 —— 但它当初就是按那个底价批的，
+    # 这样反而自洽（"我批过的东西不该悄悄变便宜"）。
+    #
+    # 为什么拿 `item.minimum_price_snapshot` 当"当年那份"就够：
+    # 它本身已经是当年的 `max(成本反推, 保护价)`，所以再取一次 max 等价于
+    # `max(今天成本反推, 今天保护价, 当年成本反推, 当年保护价)` —— 语义正确且少查一次规则。
+    # 老数据该列为 NULL 时不参与比较（只按今天的算），不会凭空把底价抬起来。
+    previous_floor = item.minimum_price_snapshot
+    if previous_floor is not None and (
+        fresh_floor is None or previous_floor > fresh_floor
+    ):
+        item.minimum_price_snapshot = previous_floor
+    else:
+        item.minimum_price_snapshot = fresh_floor
 
     # ---- 利润：与报价同币种（人民币成本折过去再减）----
     fx = version.exchange_rate_snapshot
