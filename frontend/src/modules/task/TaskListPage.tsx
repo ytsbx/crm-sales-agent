@@ -114,7 +114,8 @@ export default function TaskListPage() {
   })
 
   const transferMutation = useMutation({
-    mutationFn: () => transferTask(transferTarget!.id, transferOwner!),
+    // 带上"用户看到的那一版"：并发时后端能判断出你看到的单子已经过期（审查 B2-03）
+    mutationFn: () => transferTask(transferTarget!.id, transferOwner!, transferTarget!.updated_at),
     onSuccess: (task) => {
       Toast.success(`已转交给「${task.owner_name ?? '新负责人'}」`)
       setTransferTarget(null)
@@ -148,7 +149,11 @@ export default function TaskListPage() {
   })
 
   const completeMutation = useMutation({
-    mutationFn: (id: number) => completeTask(id),
+    // 版本取**列表里这一行**的 `updated_at` —— 那正是用户点按钮时屏幕上那一版
+    mutationFn: (id: number) => {
+      const row = (query.data?.items ?? []).find((t) => t.id === id)
+      return completeTask(id, undefined, row?.updated_at)
+    },
     onSuccess: () => {
       Toast.success('任务已完成')
       void refresh()
@@ -157,7 +162,8 @@ export default function TaskListPage() {
   })
 
   const postponeMutation = useMutation({
-    mutationFn: () => postponeTask(postponeTarget!.id, postponeDue!.toISOString()),
+    mutationFn: () =>
+      postponeTask(postponeTarget!.id, postponeDue!.toISOString(), postponeTarget!.updated_at),
     onSuccess: () => {
       Toast.success('任务已延期')
       setPostponeTarget(null)

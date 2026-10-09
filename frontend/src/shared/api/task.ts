@@ -34,6 +34,8 @@ export interface Task {
   completed_at?: string | null
   completion_note?: string | null
   created_at: string
+  /** 这一行的**版本**（后端任何写入都会抬高）。提交动作时回传，做严格并发校验。 */
+  updated_at: string
 }
 
 export function listTasks(query: {
@@ -53,20 +55,42 @@ export function createTask(payload: Record<string, unknown>) {
   return api.post<Task>('/tasks', payload)
 }
 
-export function completeTask(id: number, note?: string) {
-  return api.post<Task>(`/tasks/${id}/complete`, { completion_note: note })
+/**
+ * 完成 / 取消 / 改期 / 改派 / 转交这五个动作都接受一个可选的 `expectedVersion`
+ * —— 就是**用户点按钮那一刻屏幕上那一版**（`task.updated_at`）。
+ *
+ * 为什么（审查 B2-03）：两个请求真正同时发起时，服务器只知道"你要完成"，
+ * 不知道你看到的单子长什么样，于是可能两个都成功（"已完成 + 负责人已换人"）。
+ * 带上它之后，服务器能判断"你看到的版本还是当前版本吗"，对不上就返回 409，
+ * 由界面提示"请刷新后重试"。
+ *
+ * **不传仍然可用**（后端兼容口径：没带就不做这层校验），所以老代码不会坏。
+ */
+export function completeTask(id: number, note?: string, expectedVersion?: string) {
+  return api.post<Task>(`/tasks/${id}/complete`, {
+    completion_note: note,
+    expected_updated_at: expectedVersion,
+  })
 }
 
-export function cancelTask(id: number) {
-  return api.post<Task>(`/tasks/${id}/cancel`)
+export function cancelTask(id: number, expectedVersion?: string) {
+  return api.post<Task>(`/tasks/${id}/cancel`, {
+    expected_updated_at: expectedVersion,
+  })
 }
 
-export function postponeTask(id: number, dueAt: string) {
-  return api.post<Task>(`/tasks/${id}/postpone`, { due_at: dueAt })
+export function postponeTask(id: number, dueAt: string, expectedVersion?: string) {
+  return api.post<Task>(`/tasks/${id}/postpone`, {
+    due_at: dueAt,
+    expected_updated_at: expectedVersion,
+  })
 }
 
-export function transferTask(id: number, ownerId: number) {
-  return api.post<Task>(`/tasks/${id}/transfer`, { owner_id: ownerId })
+export function transferTask(id: number, ownerId: number, expectedVersion?: string) {
+  return api.post<Task>(`/tasks/${id}/transfer`, {
+    owner_id: ownerId,
+    expected_updated_at: expectedVersion,
+  })
 }
 
 /** 批量完成的返回：成功与跳过的**清单**（含原因），与线索批量分配同一口径。 */

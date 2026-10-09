@@ -286,6 +286,71 @@ def sec_b203(admin: str) -> None:
     call("DELETE", f"/tasks/{tid}", admin)
 
 
+# ---------------------------------------------------------------- B2-03b
+def sec_b203b(admin: str) -> None:
+    """严格并发校验：客户端回传版本号时，过期版本必须被拒（审查 B2-03）。
+
+    这是唯一能拦住"两个请求**真正同时**发起"的一层：乐观锁用的是**本请求自己**
+    读到的 `updated_at`，并发下它可能已经是对方改完之后的版本，于是两边都成立。
+    客户端回传的是"用户点按钮那一刻屏幕上那一版"，对不上就 409。
+    """
+    print("\n=== B2-03b 版本号严格校验 ===")
+
+    # ① 响应里必须带 updated_at（客户端要拿它当版本号）
+    _, res = call("POST", "/tasks", admin, {"title": f"{MARKER}ver-A", "owner_id": 2})
+    tid = res["data"]["id"]
+    _, detail = call("GET", f"/tasks/{tid}", admin)
+    ver = (detail.get("data") or {}).get("updated_at")
+    check_true("① 任务响应里带 updated_at", bool(ver), f"updated_at={ver}")
+
+    # ② 带**最新**版本 → 成功
+    _, res = call("POST", f"/tasks/{tid}/complete", admin, {"expected_updated_at": ver})
+    check("② 带最新版本可以完成", res.get("code"), 0)
+    check("② 库里状态已变", db(f"select status from tasks where id={tid}")[0][0], "done")
+
+    # ③ 带**过期**版本 → 40902，且不改库
+    _, res = call("POST", "/tasks", admin, {"title": f"{MARKER}ver-B", "owner_id": 2})
+    t2 = res["data"]["id"]
+    old_ver = call("GET", f"/tasks/{t2}", admin)[1]["data"]["updated_at"]
+    call("POST", f"/tasks/{t2}/assign", admin, {"owner_id": 4})   # 先改一次，版本变了
+    _, res = call("POST", f"/tasks/{t2}/complete", admin, {"expected_updated_at": old_ver})
+    check("③ 过期版本被拒（40902）", res.get("code"), 40902)
+    check("③ 被拒后状态未被改动", db(f"select status from tasks where id={t2}")[0][0], "pending")
+    check_true("③ 提示说清要刷新", "刷新" in str(res.get("message") or ""),
+               str(res.get("message"))[:44])
+
+    # ④ 不带版本 → 兼容放行（老前端不坏）
+    _, res = call("POST", "/tasks", admin, {"title": f"{MARKER}ver-C", "owner_id": 2})
+    t3 = res["data"]["id"]
+    _, res = call("POST", f"/tasks/{t3}/complete", admin, {})
+    check("④ 不带版本仍可完成（兼容口径）", res.get("code"), 0)
+
+    # ⑤ 真正同时发起 + 都带同一版本 → 只允许一个成功
+    _, res = call("POST", "/tasks", admin, {"title": f"{MARKER}ver-D", "owner_id": 2})
+    t4 = res["data"]["id"]
+    same = call("GET", f"/tasks/{t4}", admin)[1]["data"]["updated_at"]
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fc = ex.submit(call, "POST", f"/tasks/{t4}/complete", admin,
+                       {"expected_updated_at": same})
+        fa = ex.submit(call, "POST", f"/tasks/{t4}/assign", admin,
+                       {"owner_id": 4, "expected_updated_at": same})
+        c1 = fc.result()[1].get("code")
+        c2 = fa.result()[1].get("code")
+    ok = sum(1 for c in (c1, c2) if c == 0)
+    check("⑤ 同时发起且都带同一版本时只成功一个", ok, 1)
+    # 被拒的那个**可能是两种码，都是正确的**，取决于谁先提交：
+    #   · 改派先提交 → 完成的版本条件不匹配 → **40902 版本冲突**；
+    #   · 完成先提交 → 改派被**终态守卫**拦下 → 40002「任务已完成，不能改派」。
+    #     这条其实信息量更大（直接告诉你为什么不能改），不必强求 40902。
+    # 要守的是"**不是 500、也不是两边都成功**"，而不是某个具体错误码。
+    check_true("⑤ 另一个是明确的拒绝（40902 版本冲突或 40002 终态），不是 500",
+               {c1, c2} in ({0, 40902}, {0, 40002}), f"codes=[{c1}, {c2}]")
+
+    for t in (tid, t2, t3, t4):
+        call("DELETE", f"/tasks/{t}", admin)
+    db(f"delete from tasks where title like '{MARKER}ver-%'")
+
+
 # ---------------------------------------------------------------- B2-04
 def sec_b204(admin: str) -> None:
     print("\n=== B2-04 清空补核联系时间必须恢复「未知」标记 ===")
@@ -366,6 +431,7 @@ def main() -> None:
     sec_b201(admin)
     sec_b202(admin)
     sec_b203(admin)
+    sec_b203b(admin)
     sec_b204(admin)
     sec_b205(admin)
     sec_b206(admin)

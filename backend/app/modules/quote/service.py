@@ -1084,6 +1084,8 @@ async def apply_current_basis_to_item(
     这里会得到"按今天的规则"的底价。选择这样做，而不是"用现价重跑整条核价"，
     是因为前者只动底价、不改售价；后者会连带改掉已经报给客户的单价。
     """
+    import logging as _lg
+    _lg.getLogger("probe").warning("RECALC item=%s sku=%s prev_floor=%s", item.id, item.sku_id, item.minimum_price_snapshot)
     price = item.quoted_price or ZERO
     basis_cost = item_unit_product_cost(
         item, includes_freight=version_logistics_in_base_cost(version)

@@ -20,6 +20,7 @@ from app.modules.task.schema import (
     TaskComplete,
     TaskCreate,
     TaskUpdate,
+    TaskVersioned,
 )
 from app.modules.user.model import User
 
@@ -78,6 +79,13 @@ FINAL_TASK_STATUSES = ("done", "cancelled")
 _NOT_NULL_LABELS = {"title": "标题", "priority": "优先级", "status": "状态"}
 
 
+def _as_utc(value):
+    """把时间归一到 UTC 再比，避免"同一时刻不同偏移"被当成版本冲突。"""
+    if value is None:
+        return None
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
 def _status_label(task: Task) -> str:
     return {"pending": "待处理", "doing": "进行中", "done": "已完成",
             "cancelled": "已取消"}.get(task.status, task.status)
@@ -102,6 +110,7 @@ def _ensure_not_final(task: Task, action: str) -> None:
 
 async def _guard_task_field(
     session: AsyncSession, task: Task, *, seen_updated_at, fields: dict, action: str,
+    expected_version=None,
 ) -> None:
     """"我读到的这一版还在"作为 UPDATE 的条件（审查 B2-03）。
 
@@ -135,17 +144,35 @@ async def _guard_task_field(
     ⚠️ 五个写入点都要用（完成 / 取消 / 改期 / 改派 / 转交）：只给其中一个加，
     另一个仍能凭旧快照写进去，绕过照样成立 —— 我前面两次就是这么漏过去的。
     """
+    # ⚠️ 客户端回传的版本要**直接进 WHERE**，而不是事后比（审查 B2-03）。
+    #
+    # 为什么：`seen_updated_at` 是本请求**读到**的版本，而并发下它可能已经是
+    # 对方改完之后的版本（A 先提交，B 随后才读到 → B 读到的就是 A 那一版）。
+    # 这时"事后比 client == seen"会成立，两边照样都成功 —— 实测偶发过。
+    # 把客户端版本放进 UPDATE 的条件里，判断与写入就是数据库里的**同一条语句**：
+    # A 先提交后 `updated_at` 已经变了，B 的 WHERE 不匹配 → 0 行 → 拒绝。
+    guard_version = _as_utc(expected_version) if expected_version is not None else seen_updated_at
     result = await session.execute(
         update(Task)
         .where(
             Task.id == task.id,
-            Task.updated_at == seen_updated_at,
+            Task.updated_at == guard_version,
             Task.status.notin_(FINAL_TASK_STATUSES),
         )
         .values(**fields)
     )
     if result.rowcount == 0:
         await session.refresh(task)
+        # 客户端带了版本 → 说明它看到的版本已经不是当前版本：报"版本冲突"，
+        # 文案直接告诉用户刷新重看（这一条是"严格并发校验"的对外表现）。
+        if expected_version is not None:
+            raise AppError(
+                ErrorCode.VERSION_CONFLICT,
+                "这张任务刚被改动过（可能有人在别处操作了同一张单），"
+                "请刷新后重试；本次操作未生效",
+                409,
+            )
+        # 老前端没带版本 → 退回原有的终态/被改过提示（兼容口径）
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"任务已被他人改动（当前：{_status_label(task)} / "
@@ -228,6 +255,9 @@ def serialize(
         "completed_at": task.completed_at,
         "completion_note": task.completion_note,
         "created_at": task.created_at,
+        #: 这一行的**版本**：任何写入都会把它抬高。客户端提交动作时回传它，
+        #: 服务器就能判断"你看到的还是当前版本吗"（审查 B2-03 的严格并发校验）。
+        "updated_at": task.updated_at,
     }
 
 
@@ -538,6 +568,7 @@ async def complete_task(
     seen = task.updated_at
     await _guard_task_field(
         session, task, seen_updated_at=seen, fields={"status": "done"}, action="完成",
+        expected_version=payload.expected_updated_at,
     )
     task.completed_at = datetime.now(UTC)
     task.completion_note = payload.completion_note
@@ -559,6 +590,7 @@ async def complete_task(
 async def cancel_task(
     task_id: int,
     request: Request,
+    payload: TaskVersioned | None = None,
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -567,6 +599,7 @@ async def cancel_task(
     await _guard_task_field(
         session, task, seen_updated_at=task.updated_at,
         fields={"status": "cancelled"}, action="取消",
+        expected_version=(payload.expected_updated_at if payload else None),
     )
     await session.flush()
     await _sync_next_followup(session, task)
@@ -623,6 +656,7 @@ async def assign_task(
     await _guard_task_field(
         session, task, seen_updated_at=task.updated_at,
         fields={"owner_id": payload.owner_id}, action="改派",
+        expected_version=payload.expected_updated_at,
     )
     task.owner_id = payload.owner_id
     await session.flush()
@@ -735,6 +769,7 @@ async def postpone_task(
     await _guard_task_field(
         session, task, seen_updated_at=task.updated_at,
         fields={"due_at": payload.due_at}, action="改期",
+        expected_version=payload.expected_updated_at,
     )
     task.due_at = payload.due_at
     await session.flush()
@@ -773,6 +808,7 @@ async def transfer_task(
     await _guard_task_field(
         session, task, seen_updated_at=task.updated_at,
         fields={"owner_id": target.id}, action="转交",
+        expected_version=payload.expected_updated_at,
     )
     task.owner_id = target.id
     await session.flush()
