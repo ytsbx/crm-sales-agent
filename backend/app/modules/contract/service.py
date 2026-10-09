@@ -1,5 +1,7 @@
 """合同模板填充与文档台账的业务逻辑（§3.6/场景14）。"""
 
+import hashlib
+import json
 import re
 from datetime import UTC, datetime, time, timedelta
 
@@ -40,6 +42,18 @@ MISSING_REASON_LABEL: dict[str, str] = {
 
 def _f(value) -> str:
     return "" if value is None else str(value)
+
+
+def _request_fingerprint(payload) -> str:
+    """合同生成幂等键对应的完整业务请求指纹。
+
+    只用 customer/template 会把同一把键换订单、报价版本或正文附加字段的
+    请求错误地回放成旧合同。指纹放进生成快照的内部字段，不新增迁移，且不
+    暴露给前端。
+    """
+    data = payload.model_dump(mode="json", exclude={"request_key"})
+    raw = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class _QuoteSource:
@@ -315,6 +329,7 @@ async def generate_document(
     不再新建——网络重试和连点两次都不该在台账上留下两份一模一样的草稿
     （两份还各有一个 doc_no，事后分不清哪份有效）。
     """
+    request_fingerprint = _request_fingerprint(payload)
     if payload.request_key:
         # 先拿 advisory lock 再查：连点 / 网络重发会让两个请求同时越过"查不到"这一句，
         # 后者 INSERT 时撞 request_key 唯一约束、被错误兜底成 500（而不是"返回原来那份"）。
@@ -345,10 +360,27 @@ async def generate_document(
             # 命中幂等键，但这一份不是本次要生成的那份：说明编号被复用/猜到了。
             # 直接返回它等于把**别人客户的合同快照**交给调用方——路由层的范围校验
             # 只针对本次请求里的客户，管不到被返回的这一份。键相同内容不同一律拒绝。
-            if (
+            stored_fingerprint = (replayed.filled_data or {}).get("_request_fingerprint")
+            if stored_fingerprint is not None and stored_fingerprint != request_fingerprint:
+                raise AppError(
+                    ErrorCode.PARAM_ERROR, "该请求编号已用于不同内容的合同，请换一个编号", 409
+                )
+            # 兼容升级前已存在的文档：旧行没有指纹，只能比较请求中明确
+            # 提供且模型上有对应快照的字段。可选字段未传时不能拿默认生成值
+            # 反推请求内容，否则旧的 ``title=None`` 会被误判为冲突。
+            legacy_mismatch = (
                 replayed.customer_id != payload.customer_id
                 or replayed.template_id != payload.template_id
-            ):
+                or (payload.order_id is not None and replayed.order_id != payload.order_id)
+                or (payload.quote_id is not None and replayed.quote_id != payload.quote_id)
+                or (
+                    payload.quote_version_id is not None
+                    and replayed.quote_version_id != payload.quote_version_id
+                )
+                or (payload.title is not None and replayed.title != payload.title)
+                or (payload.parent_id is not None and replayed.parent_id != payload.parent_id)
+            )
+            if stored_fingerprint is None and legacy_mismatch:
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "该请求编号已用于另一份合同，请换一个编号", 409
                 )
@@ -453,6 +485,7 @@ async def generate_document(
         # 事实——只在当时弹个提示、过后无据可查，等于没修。
         # 用 `_` 开头是跟项目里"内部键"的约定走，序列化时不会被当成业务字段。
         filled = {**filled, "_missing": missing}
+    filled = {**filled, "_request_fingerprint": request_fingerprint}
     # 抬头快照：下载历史原件时用**当时**的客户名 / 公司名 / 单号。
     # 不存的话，客户改名之后同一份合同再下载，正文还是老名字（走快照）、
     # 抬头却已经是新名字——同一编号两次下载内容不同，对外文件出这种事说不清。

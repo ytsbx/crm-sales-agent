@@ -929,6 +929,12 @@ async def ship_shipment_batch(
             )
         resolved[row.order_item_id] = qty
 
+    # 一张批次登记后必须代表真实发货；整批都是 0 只会制造一个“已发货”
+    # 状态和实际数量全为零的假事实。允许多明细批次中某一行明确为 0，
+    # 但至少要有一行实际发出正数。
+    if not any(qty > 0 for qty in resolved.values()):
+        raise AppError(ErrorCode.PARAM_ERROR, "整批实发量不能为 0，请填写实际发货数量", 422)
+
     for row in batch_items:
         row.shipped_qty = resolved[row.order_item_id]
 

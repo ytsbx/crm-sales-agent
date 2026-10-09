@@ -1,6 +1,7 @@
 """应收与回款入参。"""
 
 from datetime import date
+from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
@@ -19,7 +20,9 @@ class ReceivableCreate(BaseModel):
     order_id: int | None = None
     plan_name: str = Field(min_length=1, max_length=64)
     due_date: date
-    amount: float = Field(gt=0)
+    # 与 receivable_plans.amount Numeric(16,2) 对齐，超出两位小数直接拒绝，
+    # 不让数据库静默舍入。
+    amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
     remark: str | None = None
 
 
@@ -28,7 +31,7 @@ class ReceivableUpdate(PatchModel):
 
     plan_name: str | None = Field(default=None, min_length=1, max_length=64)
     due_date: date | None = None
-    amount: float | None = Field(default=None, gt=0)
+    amount: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=2)
     remark: str | None = None
 
 
@@ -48,7 +51,8 @@ class ReceivableGenerate(BaseModel):
 class PaymentCreate(BaseModel):
     receivable_plan_id: int | None = None
     received_date: date
-    received_amount: float = Field(gt=0)
+    # 与 payment_records.received_amount Numeric(16,2) 对齐。
+    received_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
     payment_method: str | None = None
     voucher_note: str | None = None
     #: 币种（第七批 7.9）：不传就**继承应收节点的币种**，绝不落到列默认的 CNY ——
@@ -76,7 +80,9 @@ class PaymentUpdate(PatchModel):
     """
 
     received_date: date | None = None
-    received_amount: float | None = Field(default=None, gt=0)
+    received_amount: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=2
+    )
     payment_method: str | None = None
     voucher_note: str | None = None
     #: 币种只在**与应收节点一致**时才接受；传 null 等于"按节点币种重新对齐"。

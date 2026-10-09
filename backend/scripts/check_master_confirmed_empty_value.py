@@ -325,7 +325,15 @@ async def main() -> None:
                 if res.get("code") != 0:
                     raise SystemExit(f"建报价失败：{res.get('message')}")
                 ids["quotes"].append(res["data"]["quote_id"])
-                return res["data"]["version_id"]
+                version_id = res["data"]["version_id"]
+                # 正式发送前必须显式确认物流费用；0 元代表确认无需收取运费。
+                status, charge = call(
+                    "POST", f"/quote-versions/{version_id}/charges", admin,
+                    body={"charge_type": "logistics", "description": "测试夹具零运费", "amount": 0},
+                )
+                if charge.get("code") != 0:
+                    raise SystemExit(f"填入夹具运费失败：{charge.get('message')}")
+                return version_id
 
             def add_item(version_id: int, sku_id: int, spec: str | None = None):
                 body: dict = {"sku_id": sku_id, "quantity": 1, "quoted_price": 100}

@@ -426,6 +426,16 @@ async def update_milestone(
     if row is None or row.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "里程碑不存在", 404)
     data = payload.model_dump(exclude_unset=True)
+    if "owner_id" in data and data["owner_id"] is not None:
+        owner = await session.get(User, data["owner_id"])
+        if owner is None:
+            raise AppError(ErrorCode.NOT_FOUND, f"责任人 id={data['owner_id']} 不存在", 404)
+        if owner.status != "active":
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"责任人「{owner.name}」已停用，请选择在职责任人",
+                422,
+            )
     # 动态批次节点（「第 N 批发货」）的计划日/实际日是**批次那一份事实的投影**，
     # 只能由批次的创建、交期变更、发货登记来改。这里放开就会两边各存一份日期：
     # 之后按期平移各走各的，越差越远；还会出现"节点显示已发货、批次仍待发"。
@@ -438,9 +448,18 @@ async def update_milestone(
                 "请在批次上调整计划或登记发货，不要单独改这个节点",
                 422,
             )
-    before = {"planned_date": str(row.planned_date), "actual_date": str(row.actual_date),
-              "skipped_at": str(row.skipped_at), "skip_reason": row.skip_reason,
-              "skipped_by": row.skipped_by}
+    before = {
+        "node": row.node,
+        "planned_date": str(row.planned_date),
+        "actual_date": str(row.actual_date),
+        "owner_id": row.owner_id,
+        "evidence": row.evidence,
+        "overdue_reason": row.overdue_reason,
+        "remark": row.remark,
+        "skipped_at": str(row.skipped_at),
+        "skip_reason": row.skip_reason,
+        "skipped_by": row.skipped_by,
+    }
     skipped = data.pop("skipped", None)
     if skipped is True:
         if row.actual_date or data.get("actual_date"):
@@ -472,8 +491,18 @@ async def update_milestone(
         # 审计统一记订单 id（replan 也是订单 id）：按订单查"跟单改动史"才查得全
         business_id=order.id,
         before=before,
-        after={"node": row.node, "planned_date": str(row.planned_date), "actual_date": str(row.actual_date),
-               "skipped_at": str(row.skipped_at), "skip_reason": row.skip_reason, "skipped_by": row.skipped_by},
+        after={
+            "node": row.node,
+            "planned_date": str(row.planned_date),
+            "actual_date": str(row.actual_date),
+            "owner_id": row.owner_id,
+            "evidence": row.evidence,
+            "overdue_reason": row.overdue_reason,
+            "remark": row.remark,
+            "skipped_at": str(row.skipped_at),
+            "skip_reason": row.skip_reason,
+            "skipped_by": row.skipped_by,
+        },
         ip=client_ip(request),
     )
     await session.commit()
