@@ -277,6 +277,16 @@ async function createSeedQuote(token, customerId) {
         headers,
         body: JSON.stringify([{ sku_id: skuId, quantity: 3000, quoted_price: 28 }]),
       })
+      // 运费分离（2026-10-09）：正式发送前必须已确认运费。
+      // 这条引子报价后面会被"标记已发送 / 提交审批"用到，所以一并补上，
+      // 否则发送会被 422 拦下、后面的界面断言跟着红。
+      await fetch(`${API_BASE}/api/v1/quote-versions/${versionId}/charges`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          charge_type: 'logistics', description: '冒烟夹具运费', amount: 30,
+        }),
+      })
     }
     return quoteId
   } catch {
@@ -331,6 +341,16 @@ async function createOrderIfEmpty(token, customerId) {
     await checkedJson(`/quote-versions/${versionId}/items/batch`, token, {
       method: 'POST',
       body: JSON.stringify([{ sku_id: skuId, quantity: 100, quoted_price: quotePrice }]),
+    })
+    // 运费分离（2026-10-09）：正式发送前必须已经确认运费金额
+    // （`quote.service.ensure_freight_confirmed`）。本脚本要验的是订单详情页，
+    // 不是运费 —— 所以在这里补一条**已确认**的运费，让流程能走到标记发送那一步。
+    // 必须在提交审批**之前**加：版本一旦提交审批就不可编辑。
+    await checkedJson(`/quote-versions/${versionId}/charges`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        charge_type: 'logistics', description: '冒烟夹具运费', amount: 30,
+      }),
     })
     const submitted = await checkedJson(`/quote-versions/${versionId}/submit-approval`, token, {
       method: 'POST',
@@ -1383,6 +1403,13 @@ async function main() {
     if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
       const inquiry = await checkedJson('/custom-inquiries', auth.token, { method: 'POST', body: JSON.stringify({ title: 'CHKUI订单准备', customer_id: customerId, quantity: 10000, description: '订单原规格' }) })
       const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, { method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }) })
+      // 运费分离（2026-10-09）：正式发送前必须已确认运费，所以这里补一条。
+      // 它会计入这一版的 `total_amount`（正式订单取的就是客户确认的报价版本总额），
+      // 因此下面"建立正式订单"那条断言的总金额也要跟着 +30。
+      await checkedJson(`/quote-versions/${quote.version_id}/charges`, auth.token, {
+        method: 'POST',
+        body: JSON.stringify({ charge_type: 'logistics', description: '冒烟夹具运费', amount: 30 }),
+      })
       INTERACTIONS.push({ name: '50-order-draft-flow', path: `/quotes/${quote.quote_id}`, clicks: [], expect: ['订单详情'], orderDraft: { ...quote, inquiryId: inquiry.id } })
     }
 
@@ -1473,7 +1500,10 @@ async function main() {
         if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
         if(!await waitForText(client,'订单详情')) throw new Error('核对一致后没有进入正式订单')
         const orders=await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`,auth.token)
-        if(orders.total!==1 || orders.items[0].total_amount!==200000) throw new Error('没有按确认报价建立一张正式订单')
+        // 200000 = 明细 10000 × 20；+30 = 上面补的那条已确认运费。
+        // 正式订单取的是**客户确认的报价版本**总额，而该口径里运费是单列计入应付的
+        // （「产品价格与运费分离」2026-10-09），所以这里必须是 200030 而不是 200000。
+        if(orders.total!==1 || orders.items[0].total_amount!==200030) throw new Error(`没有按确认报价建立一张正式订单（金额 ${orders.items[0]?.total_amount}）`)
         if(!await waitForText(client,'CHKUI订单准备')) throw new Error('定制正式订单没有显示需求名称')
         const formalShot=await client.send('Page.captureScreenshot',{format:'png'})
         writeFileSync(join(OUT_DIR,'51-order-draft-confirmed.png'),Buffer.from(formalShot.data,'base64'))
