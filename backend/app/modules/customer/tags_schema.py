@@ -1,14 +1,20 @@
 """客户标签与合并入参（03-API §7）。"""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class TagCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    #: `tags.name` 是 `String(64)`：入参侧先拦，避免撞数据库约束报 500
-    #: （空/纯空格仍由 `tags.normalize_tag_name` 统一判，好给一致的中文提示）
-    name: str = Field(max_length=64)
+    #: ⚠️ **不在这里写 `max_length`**（2026-10-09 修 P3 文案错）。
+    #:
+    #: 长度、去空格、非空三件事全部交给 `tags.normalize_tag_name` —— 它是标签名的
+    #: 唯一校验入口，文案是「标签名最多 64 个字符，当前 N 个」。
+    #: 从前这里也加了 `max_length=64`，于是 pydantic **抢先**拦下、走通用文案，
+    #: 而通用文案只能按字段名猜中文（`loc` 里没有模型名），任何一个叫 `name` 的字段
+    #: 都会显示成「产品名称」—— 实测提示写成「产品名称内容太长」，
+    #: 而接口根本没有产品名称这个入参。
+    name: str
     type: str = "custom"
     """标签分组，例如 行业 / 等级 / 渠道。"""
     sort_no: int = 0
@@ -17,8 +23,8 @@ class TagCreate(BaseModel):
 class TagUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    #: 同上：长度上限在入参侧拦一道（审查 B2-05）
-    name: str | None = Field(default=None, max_length=64)
+    #: 同上：长度校验交给 `tags.normalize_tag_name`，不在这里写 `max_length`
+    name: str | None = None
     type: str | None = None
     status: str | None = None
     sort_no: int | None = None

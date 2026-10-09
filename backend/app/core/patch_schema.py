@@ -97,6 +97,12 @@ FIELD_LABELS: dict[str, str] = {
     "SkuUpdate.sku_code": "SKU 编码",
     "SkuUpdate.name": "SKU 名称",
     "SkuUpdate.status": "SKU 状态",
+    # 客户标签（审查 P3：标签名超长时提示写成了「产品名称」—— 因为表里没有
+    # Tag 条目，模糊匹配命中了别的模型的 `name` 登记。补上本模型的登记。）
+    "TagCreate.name": "标签名称",
+    "TagUpdate.name": "标签名称",
+    "TagUpdate.type": "标签分组",
+    "TagUpdate.status": "标签状态",
     # 客户 / 联系人
     "CustomerUpdate.name": "客户名称",
     "CustomerUpdate.domain": "行业",

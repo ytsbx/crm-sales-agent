@@ -385,6 +385,24 @@ def sec_b205(admin: str) -> None:
     _, res = call("PATCH", f"/tags/{tid}", admin, {"name": "甲" * 65})
     check_true("65 字符被拒（从前 500）", res.get("code") != 0,
                f"code={res.get('code')} {str(res.get('message'))[:36]}")
+    # 文案必须说「标签名」而不是别的字段名：通用文案只能按字段名猜中文，
+    # 而 pydantic 的 loc 里**没有模型名**，任何一个叫 name 的字段都会猜成
+    # 「产品名称」（审查 P3 实测到「产品名称内容太长」）。
+    # 这里把长度校验交回 `normalize_tag_name`，所以文案是对的、且是 400。
+    check_true("超长提示说的是「标签名」而不是「产品名称」",
+               "标签名" in str(res.get("message") or "")
+               and "产品名称" not in str(res.get("message") or ""),
+               str(res.get("message"))[:40])
+
+    # 分组同理：`tags.type` 是 varchar(32)，超长从前直接 500（我修 name 文案时顺手发现）
+    _, res = call("PATCH", f"/tags/{tid}", admin, {"type": "x" * 40})
+    check_true("分组超 32 字符被拒（从前 500）", res.get("code") != 0,
+               f"code={res.get('code')} {str(res.get('message'))[:36]}")
+    check_true("分组超长提示说的是「标签分组」",
+               "标签分组" in str(res.get("message") or ""), str(res.get("message"))[:36])
+    _, res = call("PATCH", f"/tags/{tid}", admin, {"type": "y" * 32})
+    check("分组 32 字符仍可用（边界）", res.get("code"), 0)
+    _, res = call("PATCH", f"/tags/{tid}", admin, {"name": f"{MARKER}05标签"})
 
     _, res = call("PATCH", f"/tags/{tid}", admin, {"name": "乙" * 64})
     check("64 字符仍可用（边界）", res.get("code"), 0)

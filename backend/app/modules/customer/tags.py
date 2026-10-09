@@ -51,8 +51,9 @@ async def find_tag_by_name(session: AsyncSession, name: str) -> Tag | None:
     ).scalar_one_or_none()
 
 
-#: `tags.name` 是 `String(64)`，超了会撞数据库约束报 500
+#: 与库列一一对应（超了会撞约束报 500）：`name varchar(64)`、`type varchar(32)`
 TAG_NAME_MAX = 64
+TAG_TYPE_MAX = 32
 
 
 def normalize_tag_name(raw: str) -> str:
@@ -74,13 +75,32 @@ def normalize_tag_name(raw: str) -> str:
     return name
 
 
+def normalize_tag_type(raw: str | None) -> str:
+    """标签分组的**唯一**校验入口：去空格 → 非空（留空给默认）→ 长度。
+
+    与 `normalize_tag_name` 同一个道理，也是同一类缺陷的另一半：
+    `tags.type` 是 `varchar(32)`，超长会撞数据库约束 → **500**。
+    实测「标签分组 40 个字符」就是这样炸的（我修 name 的文案时顺手发现的）。
+    现在超长给 400 并说清上限。
+    """
+    value = (raw or "").strip()
+    if not value:
+        return "custom"
+    if len(value) > TAG_TYPE_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"标签分组最多 {TAG_TYPE_MAX} 个字符，当前 {len(value)} 个"
+        )
+    return value
+
+
 async def create_tag(
     session: AsyncSession, *, name: str, type_: str = "custom", sort_no: int = 0
 ) -> Tag:
     name = normalize_tag_name(name)
+    type_ = normalize_tag_type(type_)
     if await find_tag_by_name(session, name) is not None:
         raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409)
-    tag = Tag(name=name, type=type_ or "custom", status="active", sort_no=sort_no)
+    tag = Tag(name=name, type=type_, status="active", sort_no=sort_no)
     session.add(tag)
     await session.flush()
     return tag
@@ -96,7 +116,10 @@ async def update_tag(session: AsyncSession, tag: Tag, data: dict) -> Tag:
         if existing is not None and existing.id != tag.id:
             raise AppError(ErrorCode.DUPLICATE, f"标签「{new_name}」已存在", 409)
         tag.name = new_name
-    for field in ("type", "status", "sort_no"):
+    if "type" in data and data["type"] is not None:
+        # 长度同样交共用校验：`varchar(32)` 超了会 500（见 normalize_tag_type）
+        tag.type = normalize_tag_type(data["type"])
+    for field in ("status", "sort_no"):
         if field in data and data[field] is not None:
             setattr(tag, field, data[field])
     await session.flush()
