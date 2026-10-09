@@ -365,6 +365,118 @@ def sec_12_3(admin):
         check("新增普通阶段可用（前置）", st, 200)
 
 
+def sec_lose_flow(admin):
+    """失单流程两条口径 + 代建任务负责人姓名（2026-10-09 与主人确认）。
+
+    ① 已生成订单的商机不许直接标失单（先处理订单）；
+    ② 标失单要保留最后阶段、冻结停留时间、补一条失单历史；
+    ③ 代建任务的新建响应要显示**负责人**姓名，不是操作人（审查 N07）。
+    """
+    from sqlalchemy import text as _t
+
+    print("\n=== 失单流程：订单前置 / 历史记录 / 代建任务负责人 ===")
+
+    def hist(oid):
+        async def q(s):
+            return [
+                tuple(r)
+                for r in (
+                    await s.execute(_t(
+                        "select from_stage_id, to_stage_id, remark, "
+                        "left_at is null, duration_seconds "
+                        f"from opportunity_stage_history where opportunity_id={oid} "
+                        "order by id"))
+                ).all()
+            ]
+        return run(q)
+
+    def opp_row(oid):
+        async def q(s):
+            r = (
+                await s.execute(_t(
+                    f"select status, stage_id from opportunities where id={oid}"))
+            ).first()
+            return tuple(r) if r else None
+        return run(q)
+
+    # ---------- ① 有订单 → 不许失单 ----------
+    _, res = call("POST", "/opportunities", admin,
+                  {"customer_id": FIX["cust"], "title": f"{PREFIX}商机-有订单"})
+    oid = (res.get("data") or {}).get("id")
+    # 直接造一张未取消订单挂在它下面（走完整报价链路成本太高，这里验的是闸门本身）
+    async def mk_order(s):
+        await s.execute(_t(
+            "insert into sales_orders (order_no, customer_id, opportunity_id, owner_id, "
+            "total_amount, currency, status, created_by, created_at, updated_at) "
+            f"values ('{PREFIX}-LO-1', {FIX['cust']}, {oid}, 1, 100.00, 'CNY', "
+            "'pending', 1, now(), now())"))
+        await s.commit()
+    run(mk_order)
+
+    st, res = call("POST", f"/opportunities/{oid}/lose", admin,
+                   {"loss_reason_id": FIX["loss_reason"], "remark": "尝试失单"})
+    check("① 已生成订单的商机标失单被拒", st, 422)
+    check_true("① 拒绝理由点出订单号并指路",
+               "订单" in str(res.get("message") or "")
+               and f"{PREFIX}-LO-1" in str(res.get("message") or ""),
+               str(res.get("message"))[:80])
+    after = opp_row(oid)
+    check("① 被拒后状态与阶段都没变", (after[0], after[1]), ("open", after[1]))
+
+    # ---------- ② 取消订单后可以失单，且记了历史 ----------
+    async def cancel_order(s):
+        await s.execute(_t(
+            f"update sales_orders set status='cancelled' where opportunity_id={oid}"))
+        await s.commit()
+    run(cancel_order)
+    before_hist = len(hist(oid))
+    st, res = call("POST", f"/opportunities/{oid}/lose", admin,
+                   {"loss_reason_id": FIX["loss_reason"], "remark": "订单已处理"})
+    check("② 订单取消后可以标失单", st, 200)
+    after = opp_row(oid)
+    check("② 状态变 loss", after[0], "loss")
+    rows = hist(oid)
+    check_true("② 补了一条历史（阶段历史多一行）", len(rows) == before_hist + 1,
+               f"前置 {before_hist} → 现在 {len(rows)}")
+    marker = next((r for r in rows if r[2] and str(r[2]).startswith("失单")), None)
+    check_true("② 有失单标记行且 from == to（保留最后阶段）",
+               marker is not None and marker[0] == marker[1] and marker[0] is not None,
+               f"marker={marker}")
+    check_true("② 标记行与当前阶段一致（阶段没被改掉）",
+               marker is not None and marker[1] == after[1],
+               f"marker.to={marker[1] if marker else None} 当前阶段={after[1]}")
+    # 原阶段那条未关闭的历史行必须被关闭并冻结停留时间
+    creation = next((r for r in rows if r[2] and str(r[2]).startswith("创建")), None)
+    check_true("② 原阶段历史已关闭（left_at 非空、停留时间已冻结）",
+               creation is not None and creation[3] is False and creation[4] is not None,
+               f"left_at为空={creation[3] if creation else None} "
+               f"duration={creation[4] if creation else None}")
+
+    # ---------- ③ 代建任务的负责人姓名（N07）----------
+    async def find_other_owner(s):
+        # 找一个**不是 admin** 的在职用户，作为"被代建任务的人"
+        r = (
+            await s.execute(_t(
+                "select id, name from users where status='active' and id <> 1 "
+                "order by id limit 1"))
+        ).first()
+        return (r[0], r[1]) if r else (None, None)
+    other_id, other_name = run(find_other_owner)
+    if other_id:
+        st, res = call("POST", "/tasks", admin,
+                       {"title": f"{PREFIX}代建任务", "owner_id": other_id})
+        d = res.get("data") or {}
+        check("③ 代建任务创建成功", st, 200)
+        check("③ 新建响应的负责人姓名是被指派人（不是操作人）",
+              d.get("owner_name"), other_name)
+        _, det = call("GET", f"/tasks/{d.get('id')}", admin)
+        check("③ 详情与新建响应一致",
+              (det.get("data") or {}).get("owner_name"), d.get("owner_name"))
+        call("DELETE", f"/tasks/{d.get('id')}", admin)
+    else:
+        check_true("③ 找到可代建的其它在职用户", False, "没有第二个在职用户")
+
+
 def main():
     admin = login("admin", "admin123")
     cleanup()
@@ -375,6 +487,7 @@ def main():
         sec_12_1(t1, t2, admin)
         sec_12_2(admin)
         sec_12_3(admin)
+        sec_lose_flow(admin)
     finally:
         cleanup()
         print("\n夹具已清理")

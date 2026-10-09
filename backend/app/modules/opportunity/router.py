@@ -1001,6 +1001,85 @@ async def lose_opportunity(
     if reason is None:
         raise AppError(ErrorCode.NOT_FOUND, "失单原因不存在", 404)
 
+    # ---- 已成交且有订单时，必须先处理订单（2026-10-09 与主人确认）----
+    #
+    # 从前这里**完全不看订单**：商机成交后已生成订单（待生产），仍然可以直接标失单，
+    # 于是商机变成"失单"、订单却继续待生产、成交报价依据还留着 —— 三处状态互相矛盾，
+    # 事后没人说得清这单到底是成了还是没成。
+    #
+    # 口径：成交是**已发生的商业事实**，要撤回就得先把下游（订单）处理掉
+    # （取消订单），而不是让商机状态单方面翻脸。所以这里**拦住并指路**，
+    # 由人工决定订单怎么处理 —— 不自动替人取消订单，那会静默作废一张真单据。
+    #
+    # 只看**未取消**的订单：已取消的订单不构成阻碍（那正是"已经处理过了"）。
+    from app.modules.order.model import SalesOrder
+
+    live_orders = (
+        await session.execute(
+            select(SalesOrder.order_no)
+            .where(
+                SalesOrder.opportunity_id == opportunity_id,
+                SalesOrder.status != "cancelled",
+            )
+            .order_by(SalesOrder.id)
+        )
+    ).scalars().all()
+    if live_orders:
+        shown = "、".join(live_orders[:3])
+        more = f" 等 {len(live_orders)} 张" if len(live_orders) > 3 else ""
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该商机已生成订单（{shown}{more}），不能直接标失单；"
+            "请先在订单中心处理（取消）这些订单，再回来标失单",
+            422,
+        )
+
+    # ---- 保留最后阶段 + 冻结停留时间 + 补一条失单历史（2026-10-09 与主人确认）----
+    #
+    # 从前这里**什么都不记**：阶段不变、历史不加、原阶段那条历史的 `left_at`
+    # 一直是空 —— 于是"这单死之前卡在哪一步、卡了多久"永远查不出来，
+    # 失单原因分析也就只能看一个原因，看不到路径。
+    #
+    # 现在的口径：
+    #   - **阶段不动**（保留最后阶段，供"卡在哪个阶段丢得最多"这类归因）；
+    #   - 把当前这条未关闭的历史行**关闭**并冻结 `duration_seconds`；
+    #   - 补一条 `from = to = 当前阶段` 的历史行，remark 记失单原因，作为**失单标记**。
+    #
+    # 为什么 `from = to`：它不是"阶段推进"，而是"在这个阶段终止"。这样
+    #   - 漏斗按 `distinct to_stage_id` 统计到达过的阶段 → 不受影响；
+    #   - 成交周期只统计 `status='win'` 的商机 → 这些行只出现在失单商机上 → 不受影响；
+    #   - 想知道"在哪一步死的"直接读这条标记行即可。
+    # 需要算纯停留时长的读法请加 `duration_seconds is not null`（标记行的该列为空）。
+    now = datetime.now(UTC)
+    current_hist = (
+        await session.execute(
+            select(OpportunityStageHistory)
+            .where(
+                OpportunityStageHistory.opportunity_id == opportunity_id,
+                OpportunityStageHistory.left_at.is_(None),
+            )
+            .order_by(OpportunityStageHistory.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if current_hist is not None:
+        current_hist.left_at = now
+        entered = current_hist.entered_at
+        if entered.tzinfo is None:
+            entered = entered.replace(tzinfo=UTC)
+        current_hist.duration_seconds = int((now - entered).total_seconds())
+    if opportunity.stage_id is not None:
+        session.add(
+            OpportunityStageHistory(
+                opportunity_id=opportunity_id,
+                from_stage_id=opportunity.stage_id,
+                to_stage_id=opportunity.stage_id,
+                operator_id=user.id,
+                remark=f"失单（{reason.name}）",
+                entered_at=now,
+            )
+        )
+
     opportunity.status = "loss"
     opportunity.loss_reason_id = reason.id
     opportunity.loss_remark = payload.remark

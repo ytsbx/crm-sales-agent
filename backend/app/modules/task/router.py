@@ -321,7 +321,11 @@ async def create_task(
     await session.commit()
     # 业务已经落库，再投企微：投递失败不影响任务创建，失败原因记在通知行上
     await notification_service.dispatch_pending(session)
-    return ok(serialize(task, user.name), "任务已创建")
+    # 负责人姓名要取**最终负责人**（`task_owner`）的名字，不是操作人的（审查 N07）。
+    # 代建场景（管理员给张三建任务）下 `user.name` 是"系统管理员"、负责人是"张三"，
+    # 于是**新建响应**显示错误负责人，而详情却是对的 —— 同一张任务两个说法，
+    # 调用方拿新建响应渲染时会直接显示错人。
+    return ok(serialize(task, task_owner.name), "任务已创建")
 
 
 @router.patch("/tasks/{task_id}")
