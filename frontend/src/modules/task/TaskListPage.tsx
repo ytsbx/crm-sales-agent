@@ -6,7 +6,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { emptyText } from '../../shared/hooks/emptyText'
 import { Button, Checkbox, DatePicker, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
-import { completeTask, createTask, listTasks, postponeTask, type Task } from '../../shared/api/task'
+import {
+  batchCompleteTasks,
+  completeTask,
+  createTask,
+  listTasks,
+  postponeTask,
+  transferTask,
+  type Task,
+} from '../../shared/api/task'
+import { listUsers } from '../../shared/api/system'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
@@ -68,6 +77,11 @@ export default function TaskListPage() {
   const [form, setForm] = useState({ title: '', priority: 'normal', due_at: null as Date | null })
   const [postponeTarget, setPostponeTarget] = useState<Task | null>(null)
   const [postponeDue, setPostponeDue] = useState<Date | null>(null)
+  // 转交（审查 B2-06）：接口与 api 函数一直有，页面此前没有入口
+  const [transferTarget, setTransferTarget] = useState<Task | null>(null)
+  const [transferOwner, setTransferOwner] = useState<number | null>(null)
+  // 批量完成（审查 B2-06）：勾选 + 批量操作入口
+  const [selectedIds, setSelectedIds] = useState<number[]>([])
 
   const query = useQuery({
     queryKey: ['tasks', { mine, status, overdue, page, pageSize }],
@@ -75,6 +89,13 @@ export default function TaskListPage() {
   })
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['tasks'] })
+
+  // 转交目标只列**在职**人员：停用的人接不了任务（后端也会拦）
+  const usersQuery = useQuery({
+    queryKey: ['users', { status: 'active' }],
+    queryFn: () => listUsers({ status: 'active', page_size: 200 }),
+    enabled: transferTarget !== null,
+  })
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -87,6 +108,40 @@ export default function TaskListPage() {
       Toast.success('任务已创建')
       setCreateVisible(false)
       setForm({ title: '', priority: 'normal', due_at: null })
+      void refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const transferMutation = useMutation({
+    mutationFn: () => transferTask(transferTarget!.id, transferOwner!),
+    onSuccess: (task) => {
+      Toast.success(`已转交给「${task.owner_name ?? '新负责人'}」`)
+      setTransferTarget(null)
+      setTransferOwner(null)
+      void refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const batchCompleteMutation = useMutation({
+    mutationFn: () => batchCompleteTasks(selectedIds),
+    onSuccess: (result) => {
+      // 成功 / 跳过 / 原因都要说清，否则操作的人不知道哪几条没成（审查 B2-06 的要求）
+      const done = result.completed?.length ?? 0
+      const skipped = result.skipped ?? []
+      if (skipped.length === 0) {
+        Toast.success(`已完成 ${done} 条`)
+      } else {
+        const detail = skipped
+          .map((row) => `#${row.task_id} ${row.reason}`)
+          .slice(0, 3)
+          .join('；')
+        Toast.warning(
+          `已完成 ${done} 条，跳过 ${skipped.length} 条：${detail}${skipped.length > 3 ? ' …' : ''}`,
+        )
+      }
+      setSelectedIds([])
       void refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -113,6 +168,23 @@ export default function TaskListPage() {
   })
 
   const columns = [
+    {
+      title: '',
+      width: 44,
+      // 终态任务不能再批量完成，勾选框直接禁用（后端也会跳过并给原因）
+      render: (_: unknown, record: Task) => (
+        <Checkbox
+          checked={selectedIds.includes(record.id)}
+          disabled={record.status === 'done' || record.status === 'cancelled'}
+          onChange={(e) => {
+            const on = (e.target as HTMLInputElement).checked
+            setSelectedIds((prev) =>
+              on ? [...prev, record.id] : prev.filter((id) => id !== record.id),
+            )
+          }}
+        />
+      ),
+    },
     { title: '任务', dataIndex: 'title' },
     {
       title: '关联',
@@ -180,6 +252,16 @@ export default function TaskListPage() {
             >
               延期
             </a>
+            {/* 转交（审查 B2-06）：接口与 api 函数一直有，此前没有页面入口 */}
+            <a
+              style={{ color: 'var(--crm-primary)' }}
+              onClick={() => {
+                setTransferTarget(record)
+                setTransferOwner(null)
+              }}
+            >
+              转交
+            </a>
           </div>
         ),
     },
@@ -229,6 +311,14 @@ export default function TaskListPage() {
             只看逾期
           </Checkbox>
           <div style={{ flex: 1 }} />
+          {/* 批量完成（审查 B2-06）：勾选后一次性完成，成功/跳过与原因都要说清 */}
+          <Button
+            disabled={selectedIds.length === 0 || batchCompleteMutation.isPending}
+            loading={batchCompleteMutation.isPending}
+            onClick={() => batchCompleteMutation.mutate()}
+          >
+            批量完成{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
+          </Button>
           <Button theme="solid" onClick={() => setCreateVisible(true)}>
             新建任务
           </Button>
@@ -331,6 +421,45 @@ export default function TaskListPage() {
           onChange={(date) => setPostponeDue((date as Date) ?? null)}
           style={{ width: '100%' }}
         />
+      </Modal>
+
+      {/* 转交（审查 B2-06）：目标只列在职人员，停用的后端也会拦 */}
+      <Modal
+        title={`转交任务：${transferTarget?.title ?? ''}`}
+        visible={Boolean(transferTarget)}
+        onCancel={() => {
+          setTransferTarget(null)
+          setTransferOwner(null)
+        }}
+        onOk={() => {
+          if (!transferOwner) {
+            Toast.warning('请选择转交给谁')
+            return
+          }
+          transferMutation.mutate()
+        }}
+        confirmLoading={transferMutation.isPending}
+        okText="确认转交"
+      >
+        <FormLabel>转交给</FormLabel>
+        <Select
+          placeholder="选择在职同事"
+          value={transferOwner ?? undefined}
+          onChange={(value) => setTransferOwner((value as number) ?? null)}
+          loading={usersQuery.isLoading}
+          style={{ width: '100%' }}
+          filter
+        >
+          {(usersQuery.data?.items ?? []).map((user) => (
+            <Select.Option key={user.id} value={user.id} label={user.name}>
+              {user.name}
+              {user.department ? `（${user.department}）` : ''}
+            </Select.Option>
+          ))}
+        </Select>
+        <div style={{ marginTop: 8, color: 'var(--crm-text-secondary)', fontSize: 12 }}>
+          转交只改「谁来做」；这条任务原来是谁的、什么时候建的，审计里都留着。
+        </div>
       </Modal>
     </div>
   )

@@ -68,3 +68,20 @@ export function postponeTask(id: number, dueAt: string) {
 export function transferTask(id: number, ownerId: number) {
   return api.post<Task>(`/tasks/${id}/transfer`, { owner_id: ownerId })
 }
+
+/** 批量完成的返回：成功与跳过的**清单**（含原因），与线索批量分配同一口径。 */
+export interface BatchCompleteResult {
+  completed: number[]
+  skipped: { task_id: number; reason: string }[]
+}
+
+/**
+ * 批量完成任务（03-API §25）。后端一直有，页面此前没有入口（审查 B2-06）。
+ * 单条失败不影响其余：返回成功/跳过清单与原因。
+ */
+export function batchCompleteTasks(taskIds: number[], note?: string) {
+  return api.post<BatchCompleteResult>('/tasks/batch-complete', {
+    task_ids: taskIds,
+    completion_note: note,
+  })
+}
