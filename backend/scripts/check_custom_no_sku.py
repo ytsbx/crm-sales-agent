@@ -21,6 +21,7 @@
 
 import asyncio
 import json
+from decimal import Decimal
 import sys
 import time
 import urllib.error
@@ -144,6 +145,34 @@ async def _purge(s, ids):
         ), oi)
         await s.execute(text('delete from business_events where business_id = :o'), oi)
         await s.execute(text('delete from opportunities where id = :o'), oi)
+
+
+async def admin_min_margin() -> Decimal:
+    """取 admin 的**实际**最低利润率 —— 与 `pricing.resolve_min_margin` 同口径。
+
+    为什么不能写死 0.15：那是"角色没配价格权限"时的兜底值。管理员角色**通常配了**
+    （种子里是 0，意思是"不受限"），此时底价就等于成本。写死 15% 会让这套断言
+    在正常配置下失败 —— 而失败的原因不是代码错，是断言假设了一个不成立的配置。
+    """
+    from sqlalchemy import text
+
+    from app.core.database import SessionLocal
+
+    async with SessionLocal() as s:
+        v = (await s.execute(text(
+            "select coalesce(min(p.minimum_margin), "
+            "(select (value->>'ratio')::numeric from system_settings "
+            " where key='default_min_margin'), 0.15) "
+            "from price_permissions p join roles r on r.id = p.role_id "
+            "where r.code = 'admin' and p.status = 'active'"))).scalar_one()
+    return Decimal(str(v))
+
+
+def floor_of(cost: Decimal, margin: Decimal) -> float:
+    """底价 = 成本 ÷ (1 − 最低利润率)，与核价引擎同一公式。"""
+    if margin >= 1:
+        return float(cost)
+    return float((Decimal(cost) / (Decimal(1) - margin)).quantize(Decimal('0.01')))
 
 
 async def cleanup(ids):
@@ -287,8 +316,13 @@ async def main():
     check_true('报价快照落全（成本 8 / 毛利 3.5）',
                item.get('cost_snapshot') == 8.0 and item.get('profit_snapshot') == 3.5,
                f"cost={item.get('cost_snapshot')} profit={item.get('profit_snapshot')}")
-    check('最低保护价按最低毛利率推（成本 8×(1+0.15)=9.2）',
-          item.get('minimum_price_snapshot'), 9.2)
+    # 公式与核价引擎一致：**成本 ÷ (1 − 最低利润率)**，不是 成本 × (1 + 率)。
+    # 后者表达不出"最低利润率"这个下限（8×1.15=9.2 的利润率只有 13.04%，
+    # 而 8÷0.85=9.41 正好 15%）。2026-10-09 与主人确认统一时一并纠正。
+    _mm = await admin_min_margin()
+    _floor8 = floor_of(Decimal('8'), _mm)
+    check(f'最低保护价 = 成本 8 ÷ (1−{_mm}) = {_floor8}',
+          item.get('minimum_price_snapshot'), _floor8)
     check_true('高于保护价不触发审批', item.get('approval_required') is False,
                f"报价 11.5 > 9.2：{item.get('approval_required')}")
 
@@ -308,7 +342,7 @@ async def main():
         check('价格已改', row.get('quoted_price'), 12.0)
         check('需求编号没丢', row.get('inquiry_no'), inquiry['inquiry_no'])
         check('成本快照沿用', row.get('cost_snapshot'), 8.0)
-        check('最低保护价跟着重算', row.get('minimum_price_snapshot'), 9.2)
+        check('最低保护价跟着重算（同一公式）', row.get('minimum_price_snapshot'), _floor8)
 
     # ---- 3c. 外币定制行：成本人民币、报价按币种（静默放行过的那个 bug）----
     # 回归：审批把报价乘汇率折人民币，却把成本当人民币直接用。定制项原先按
@@ -332,8 +366,9 @@ async def main():
         })
         check('美元单定制行落库', status, 200)
         fx_item = payload['data']
-        check('最低保护价按人民币存 300×(1+0.15)=345',
-              fx_item.get('minimum_price_snapshot'), 345.0)
+        _floor300 = floor_of(Decimal('300'), _mm)
+        check(f'最低保护价按人民币存 300 ÷ (1−{_mm}) = {_floor300}',
+              fx_item.get('minimum_price_snapshot'), _floor300)
         # 下面两条是**能区分新旧实现**的断言，别改成"利润为负"这种两边都成立的弱断言：
         #   旧实现 profit = 10 − 300 = −290（拿美元价直接减人民币成本）；
         #   新实现 profit = 10 − 300/7 = −32.857（先把成本折成报价币种）。

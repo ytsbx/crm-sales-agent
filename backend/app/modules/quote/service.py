@@ -852,6 +852,7 @@ async def _build_custom_item_snapshot(
     session: AsyncSession,
     *,
     version: QuoteVersion,
+    role_codes: list[str],
     inquiry_id: int | None,
     item_name: str | None,
     quantity: Decimal,
@@ -908,12 +909,35 @@ async def _build_custom_item_snapshot(
     freight = Decimal(str(logistics_cost or 0))  # 人民币
     # 这一版的口径：新报价的运费不进成本基数；历史版本沿用含运费的老口径。
     basis_includes_freight = version_logistics_in_base_cost(version)
-    min_ratio = await _min_margin_ratio(session)
+    # ⚠️ 最低利润率必须与 SKU 路径、与审核引擎**同一个来源**（2026-10-09 与主人确认）。
+    #
+    # 从前这里读的是系统配置 `default_min_margin`，而"建立新版 / 复制报价"的重算
+    # 读的是**操作人角色权限**（`resolve_min_margin`）—— 同一个管理员、同一张定制
+    # 报价，换条路径就换一套算法：新建时底价 92（配置 15%），建新版变成 80（角色 0%）。
+    # 后果是**价格权限表里配的 0% 对新建报价不起作用、对建新版反而起作用**，
+    # 界面上看起来配好了、实际只在部分路径生效 —— 这不是设计选择，是漏改。
+    #
+    # "角色没配价格权限时退回系统配置"这层兜底在 `resolve_min_margin` 里已经有了，
+    # 所以统一之后并不会失去"没人配过就用 15%"的保护。
+    min_ratio, _can_approve = await pricing_service.resolve_min_margin(
+        session, role_codes or []
+    )
     # 保护价基础 = **商品成本**，不含运费（2026-10-09「产品价格与运费分离」）。
     # 定制项的成本是人工填的"商品成本"，运费同样由客户全额承担、公司代收代付，
     # 所以运费既不能抬高成本推高底价，也不能被当成利润。与 SKU 路径同一口径。
     basis_cost = (cost + freight) if basis_includes_freight else cost
-    minimum_price = (basis_cost * (1 + min_ratio)).quantize(Decimal("0.01"))  # 人民币
+    # ⚠️ 用**引擎那个公式**（成本 ÷ (1 − 最低利润率)），不是 成本 × (1 + 率)
+    # （2026-10-09 与主人确认"按角色权限统一"时一并纠正）。
+    #
+    # 乘法表达不出"最低利润率"这个下限：成本 80、率 15% 时它只给 92，
+    # 而 92 的利润率是 12/92 = **13.04%**，根本不到 15%；
+    # 除法给 94.12，利润率正好 15%。所以乘法那条**不是"另一种口径"，是算错**。
+    # 同一笔业务换条路径就换个数（新建 92 / 新版 94.12），根子就在这里。
+    minimum_price = (
+        (basis_cost / (Decimal(1) - min_ratio)).quantize(Decimal("0.01"))
+        if min_ratio < 1
+        else basis_cost.quantize(Decimal("0.01"))
+    )  # 人民币
     # 利润必须与报价同币种：外币单要先把人民币成本折过去再减，
     # 否则会算出"50 美元 − 350 人民币"这种假数字（与定价服务 cost_in_quote_currency 同口径）
     fx = version.exchange_rate_snapshot
@@ -1028,18 +1052,6 @@ def item_unit_product_cost(item: QuoteItem, *, includes_freight: bool) -> Decima
     if includes_freight:
         cost = cost + (item.logistics_cost_snapshot or ZERO)
     return cost
-
-
-async def _min_margin_ratio(session: AsyncSession) -> Decimal:
-    """系统配置的最低毛利率（`default_min_margin`，默认 0.15）。
-
-    抽成函数而不是各处现写：底价（成本 ×(1+最低毛利率)）在**定制项建快照**、
-    **按当前口径重算派生快照**两处都要用，两处取不同的默认值会让同一条报价
-    在不同路径下得到不同的底价。
-    """
-    return Decimal(
-        str(await settings_service.get_number(session, "default_min_margin", "ratio", 0.15))
-    )
 
 
 async def apply_current_basis_to_item(
@@ -1256,6 +1268,7 @@ async def build_item_snapshot(
         return await _build_custom_item_snapshot(
             session,
             version=version,
+            role_codes=role_codes,
             inquiry_id=inquiry_id,
             item_name=item_name,
             quantity=quantity,

@@ -1080,6 +1080,80 @@ def main():
                    f'保护价 {first_mp} → {second_mp}，底价 {floor_before} → {floor_after}'
                    + ('（若只按今天算会降到 94.12）' if second_mp < first_mp else ''))
 
+        # ---------------- A22 定制项保护价：四处路径同一个结论 ----------------
+        #
+        # 审查实测过：同一个账号、相同成本与售价，**新建**走系统配置（15% → 底价 92），
+        # **建立新版 / 复制**走操作人角色权限（0% → 底价 80），于是"换条路径就换一套
+        # 算法"——价格权限表里配的 0% 对新建不起作用、对建新版反而起作用。
+        # 主人拍板：**按角色权限统一**（含公式也统一成引擎那个 成本 ÷ (1 − 率)）。
+        print()
+        print('== A22 定制项保护价四处一致 ==')
+        # 定制项必须有需求编号（没有 SKU），走"需求 → 直接发起报价"这条官方路径
+        _, res = call('POST', '/custom-inquiries', token=admin, body={
+            'title': f'{PREFIX}-A22定制件', 'customer_id': c_cust, 'quantity': 1})
+        inq = (res.get('data') or {}).get('id')
+        _, res = call('POST', f'/custom-inquiries/{inq}/create-quote', token=admin, body={
+            'unit_cost': 80, 'quoted_price': 85, 'item_name': f'{PREFIX}-A22定制件'})
+        d = res.get('data') or {}
+        qid, v1 = d.get('quote_id'), d.get('version_id')
+        if not qid:
+            record('A22 前置：创建定制项报价', False, str(res.get('message'))[:60])
+        else:
+            def custom_floor(vid):
+                _, r = call('GET', f'/quote-versions/{vid}', token=admin)
+                it = r['data']['items'][0]
+                return it['minimum_price_snapshot'], it['approval_required']
+
+            f_new, a_new = custom_floor(v1)
+            # 改价（同一版本）
+            _, rv = call('GET', f'/quote-versions/{v1}', token=admin)
+            _iid = rv['data']['items'][0]['id']
+            call('PATCH', f'/quote-versions/{v1}/items/{_iid}', token=admin,
+                 body={'quoted_price': 86})
+            f_edit, a_edit = custom_floor(v1)
+            # 建立新版
+            _, rn = call('POST', f'/quotes/{qid}/versions', token=admin, body={})
+            f_ver, a_ver = custom_floor((rn.get('data') or {}).get('id'))
+            # 复制报价
+            _, rc = call('POST', f'/quotes/{qid}/clone', token=admin, body={
+                'customer_id': c_cust, 'copy_items': True})
+            _nq = (rc.get('data') or {}).get('quote_id')
+            _nv = run_db("select id from quote_versions where quote_id=:q "
+                         "order by id desc limit 1", {'q': _nq})[0][0] if _nq else None
+            f_copy, a_copy = custom_floor(_nv) if _nv else (None, None)
+
+            floors = {f_new, f_edit, f_ver, f_copy}
+            approvals = {a_new, a_edit, a_ver, a_copy}
+            record('A22 定制项四处底价一致',
+                   len(floors) == 1 and None not in floors,
+                   f'新建={f_new} 改价={f_edit} 新版={f_ver} 复制={f_copy}')
+            record('A22 定制项四处审批结论一致',
+                   len(approvals) == 1,
+                   f'新建={a_new} 改价={a_edit} 新版={a_ver} 复制={a_copy}')
+            # 与核价引擎同一套公式：底价 = 成本 ÷ (1 − 角色利润率)。
+            # 用实际角色利润率算期望值再比，避免写死某个数字（角色权限是配置项）。
+            _margin = run_db(
+                "select coalesce(min(p.minimum_margin), "
+                "(select (value->>'ratio')::numeric from system_settings "
+                " where key='default_min_margin'), 0.15) "
+                "from price_permissions p join roles r on r.id=p.role_id "
+                "where r.code='admin' and p.status='active'")[0][0]
+            _expected = round(80 / (1 - float(_margin)), 2)
+            record('A22 底价 = 成本 ÷ (1 − 角色利润率)（公式与引擎一致）',
+                   f_new is not None and abs(float(f_new) - _expected) < 0.02,
+                   f'角色利润率={_margin} 期望底价={_expected} 实际={f_new}'
+                   + '（若写成 成本×(1+率) 会偏小）')
+            # 收尾
+            for _vid in filter(None, [v1, (rn.get('data') or {}).get('id'), _nv]):
+                run_db("delete from quote_items where quote_version_id=:v", {'v': _vid})
+                run_db("delete from quote_charges where quote_version_id=:v", {'v': _vid})
+                run_db("delete from quote_versions where id=:v", {'v': _vid})
+            if _nq:
+                run_db("delete from quotes where id in (:a, :b)", {'a': qid, 'b': _nq})
+            else:
+                run_db("delete from quotes where id=:a", {'a': qid})
+            run_db("delete from custom_inquiries where id=:i", {'i': inq})
+
         cleanup()
         evidence['results'] = RESULTS
         failed = [r for r in RESULTS if not r['pass']]
