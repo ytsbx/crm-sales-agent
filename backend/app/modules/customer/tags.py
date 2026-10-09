@@ -51,12 +51,33 @@ async def find_tag_by_name(session: AsyncSession, name: str) -> Tag | None:
     ).scalar_one_or_none()
 
 
+#: `tags.name` 是 `String(64)`，超了会撞数据库约束报 500
+TAG_NAME_MAX = 64
+
+
+def normalize_tag_name(raw: str) -> str:
+    """标签名的**唯一**校验入口（审查 B2-05）：去空格 → 非空 → 长度。
+
+    从前新增与编辑各写一套，而且编辑那套只判"值非空"：
+      · 名称改成三个空格 → 200，落库成**空字符串**（`strip()` 之后没再判空）；
+      · 名称改成 65 个字符 → **500**（撞上 `tags.name` 的 `String(64)`）。
+    两处口径不一致、且非法输入报的是服务器错误，调用方看不出是自己填错了。
+    现在共用一个函数，非法输入一律 400 并说清原因。
+    """
+    name = (raw or "").strip()
+    if not name:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "标签名不能为空（空格也不算）")
+    if len(name) > TAG_NAME_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"标签名最多 {TAG_NAME_MAX} 个字符，当前 {len(name)} 个"
+        )
+    return name
+
+
 async def create_tag(
     session: AsyncSession, *, name: str, type_: str = "custom", sort_no: int = 0
 ) -> Tag:
-    name = name.strip()
-    if not name:
-        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "标签名不能为空")
+    name = normalize_tag_name(name)
     if await find_tag_by_name(session, name) is not None:
         raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409)
     tag = Tag(name=name, type=type_ or "custom", status="active", sort_no=sort_no)
@@ -66,8 +87,11 @@ async def create_tag(
 
 
 async def update_tag(session: AsyncSession, tag: Tag, data: dict) -> Tag:
-    if "name" in data and data["name"]:
-        new_name = data["name"].strip()
+    if "name" in data:
+        # ⚠️ 不能写成 `and data["name"]`：三个空格是 **truthy**，会通过这个判断，
+        # `strip()` 之后变成空字符串照样落库（审查 B2-05 实测）。
+        # 交共用校验处理"空/超长"，非法输入报 400 而不是 500。
+        new_name = normalize_tag_name(data["name"] or "")
         existing = await find_tag_by_name(session, new_name)
         if existing is not None and existing.id != tag.id:
             raise AppError(ErrorCode.DUPLICATE, f"标签「{new_name}」已存在", 409)

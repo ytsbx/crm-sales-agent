@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -30,15 +30,37 @@ STATUS_LABEL = {"pending": "待处理", "doing": "处理中", "done": "已完成
 
 
 async def _visible_task(
-    session: AsyncSession, user: CurrentUser, task_id: int
+    session: AsyncSession, user: CurrentUser, task_id: int, *, for_update: bool = False
 ) -> Task:
     """取任务并校验数据范围。
 
     任务列表按 `owner_id` 过滤，但改/完成/延期等单条操作此前只判断存在 ——
     实测别人可以改到王五的任务。任务没有"公海"概念，无负责人同样是异常数据，
     这里一并校验。
+
+    `for_update=True`（所有会改状态的端点都要传）：让后到的请求**等前一个提交完**
+    再读，于是它读到的是最新状态，终态检查才拦得住（审查 B2-03）。
+    注意这只解决"读到旧数据"，**挡不住"读完到写回之间状态被改掉"** ——
+    那一层由 `_guard_task_active` 的原子条件更新兜底。
     """
-    task = await session.get(Task, task_id)
+    if for_update:
+        # ⚠️ `populate_existing=True` 不能省（审查 B2-03 的关键一处）：
+        # 只加 `with_for_update()` **不会刷新已加载对象** —— 会话的 identity map 里
+        # 可能已经有这个 Task（本次请求早先读过，或同一会话里被改过），
+        # 于是"锁住了行"但 `task.owner_id` 之类的属性仍是**旧值**。
+        # 后果：守卫里 `expect_owner_id=task.owner_id` 拿到旧值，
+        # 而 SQL 条件 `owner_id = <旧值>` 被数据库按**当前值**求值，两者不一致时
+        # 守卫会误判通过。这条与 `pricing/router.py` 里修过的是同一个坑。
+        task = (
+            await session.execute(
+                select(Task)
+                .where(Task.id == task_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+    else:
+        task = await session.get(Task, task_id)
     if task is None:
         raise AppError(ErrorCode.NOT_FOUND, "任务不存在", 404)
     await ensure_in_scope(session, user, owner_id=task.owner_id, label="任务")
@@ -56,6 +78,11 @@ FINAL_TASK_STATUSES = ("done", "cancelled")
 _NOT_NULL_LABELS = {"title": "标题", "priority": "优先级", "status": "状态"}
 
 
+def _status_label(task: Task) -> str:
+    return {"pending": "待处理", "doing": "进行中", "done": "已完成",
+            "cancelled": "已取消"}.get(task.status, task.status)
+
+
 def _final_label(task: Task) -> str:
     return "完成" if task.status == "done" else "取消"
 
@@ -71,6 +98,78 @@ def _ensure_not_final(task: Task, action: str) -> None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, f"任务已{_final_label(task)}，不能{action}"
         )
+
+
+async def _guard_task_field(
+    session: AsyncSession, task: Task, *, seen_updated_at, fields: dict, action: str,
+) -> None:
+    """"我读到的这一版还在"作为 UPDATE 的条件（审查 B2-03）。
+
+    ## 为什么"只判终态"和"只锁行"都不够
+
+    `with_for_update()` 能让后到的请求**等前面提交完再读**，`populate_existing`
+    保证读到的是最新值。但实测**仍会两边都成功**，因为并发下有两种交错：
+
+    1. `assign` 先拿到锁并提交 → `complete` 随后读到的是 `owner_id=4, status=pending`
+       （已经是**别人改过之后**的状态），它"读到什么就基于什么"judge，
+       终态条件当然成立 → 两边都成功，最终"已完成 + 负责人已换人"；
+    2. `complete` 先提交 → `assign` 后读到 `done`，被终态条件拦住（这条是对的）。
+
+    第 1 种不是"丢更新"，而是**两边基于不同的状态各自成功** —— 从用户视角看，
+    "我把任务派给李四"和"我完成这张单"两件事都被执行了，而完成的人是以
+    "张三的单"为前提点的完成按钮。
+
+    ## 做法：乐观锁
+
+    读任务时记下 `updated_at`（任何写入都会把它抬高 —— 本项目的 `updated_at`
+    由 `onupdate` 自动维护，改状态、改负责人都会变），原子更新时要求
+    **它没变过**：
+
+        UPDATE tasks SET <字段>
+        WHERE id = ? AND updated_at = <我读到的那一版> AND status NOT IN (终态)
+
+    受影响行数为 0 → 说明在我读之后有人改过这一行 → 400 让人刷新后重试。
+    这样"先改派再完成"会被拦下（改派已经抬高了 `updated_at`），
+    而"顺序操作"（一个请求完全结束再发另一个）不受影响。
+
+    ⚠️ 五个写入点都要用（完成 / 取消 / 改期 / 改派 / 转交）：只给其中一个加，
+    另一个仍能凭旧快照写进去，绕过照样成立 —— 我前面两次就是这么漏过去的。
+    """
+    result = await session.execute(
+        update(Task)
+        .where(
+            Task.id == task.id,
+            Task.updated_at == seen_updated_at,
+            Task.status.notin_(FINAL_TASK_STATUSES),
+        )
+        .values(**fields)
+    )
+    if result.rowcount == 0:
+        await session.refresh(task)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"任务已被他人改动（当前：{_status_label(task)} / "
+            f"{_final_label(task) if task.status in FINAL_TASK_STATUSES else '进行中'}），"
+            f"请刷新后重试；本次{action}未生效",
+        )
+    await session.refresh(task)
+
+
+async def _reserialize_fresh(session: AsyncSession, task: Task, owner_name=None) -> dict:
+    """提交之后，用**从库里重新查出来的值**序列化响应（审查 B2-03）。
+
+    为什么 `refresh` 不够：并发下"完成"可能刚提交，而本请求的对象仍在会话的
+    identity map 里带着旧 `status`（`refresh` 在提交后的这种时序里实测仍会
+    回显旧值）。这里直接**新发一条查询**取当前行，彻底绕开对象缓存 ——
+    宁可如实回显"这张单已经被完成了"，也不能给一个与库内不一样的答案。
+    """
+    fresh = (
+        await session.execute(
+            select(Task).where(Task.id == task.id).execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    target = fresh if fresh is not None else task
+    return serialize(target, owner_name)
 
 
 async def _active_owner(session: AsyncSession, owner_id: int) -> User:
@@ -336,7 +435,7 @@ async def update_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await _visible_task(session, user, task_id)
+    task = await _visible_task(session, user, task_id, for_update=True)
     before = serialize(task)
     changes = payload.model_dump(exclude_unset=True)
 
@@ -428,12 +527,18 @@ async def complete_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await _visible_task(session, user, task_id)
+    task = await _visible_task(session, user, task_id, for_update=True)
     if task.status == "done":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "任务已完成")
     if task.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "任务已取消，不能标记为完成")
-    task.status = "done"
+    # 记下**读取那一刻**的状态，守卫要用它做条件（不能用内存里的值 ——
+    # 守卫执行前 SQLAlchemy 可能已把对象刷新过，两者会不一致，见守卫的说明）
+    # 乐观锁：记下读到的这一版（任何写入都会抬高 updated_at，见守卫的说明）
+    seen = task.updated_at
+    await _guard_task_field(
+        session, task, seen_updated_at=seen, fields={"status": "done"}, action="完成",
+    )
     task.completed_at = datetime.now(UTC)
     task.completion_note = payload.completion_note
     await session.flush()
@@ -457,9 +562,12 @@ async def cancel_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await _visible_task(session, user, task_id)
+    task = await _visible_task(session, user, task_id, for_update=True)
     _ensure_not_final(task, "取消")
-    task.status = "cancelled"
+    await _guard_task_field(
+        session, task, seen_updated_at=task.updated_at,
+        fields={"status": "cancelled"}, action="取消",
+    )
     await session.flush()
     await _sync_next_followup(session, task)
     await write_audit(
@@ -504,11 +612,18 @@ async def assign_task(
     只动 `owner_id`；已完成或已取消的任务不允许改派 ——
     改派一个已完成的任务只会让"谁做的"这件事变得说不清。
     """
-    task = await _visible_task(session, user, task_id)
+    task = await _visible_task(session, user, task_id, for_update=True)
     _ensure_not_final(task, "改派")
     target = await _active_owner(session, payload.owner_id)
 
     before_owner = task.owner_id
+    # ⚠️ 守卫必须**先于**内存赋值：`_visible_task` 里的语句会触发 SQLAlchemy
+    # 的 autoflush，若先把 `task.owner_id` 改了再调守卫，那次 autoflush 会抢在
+    # 条件更新之前把新值写进库 —— 守卫就失去意义了（我第一版就是这个顺序）。
+    await _guard_task_field(
+        session, task, seen_updated_at=task.updated_at,
+        fields={"owner_id": payload.owner_id}, action="改派",
+    )
     task.owner_id = payload.owner_id
     await session.flush()
 
@@ -533,8 +648,13 @@ async def assign_task(
         ip=client_ip(request),
     )
     await session.commit()
+    # ⚠️ 提交后必须 `refresh` 再序列化（审查 B2-03）：守卫只 UPDATE 了 `owner_id`，
+    # 内存对象的 `status` 还是读进来时的旧值。并发下"完成"可能已经提交，
+    # 于是响应回显 `pending`、库里却是 `done` —— 审查实测到的"改派响应与数据库不一致"。
+    # 宁可如实回显"这张单已经被完成了"，也不要给一个和库里不一样的答案。
+    payload_out = await _reserialize_fresh(session, task, target.name)
     await notification_service.dispatch_pending(session)
-    return ok(serialize(task, target.name), f"已指派给「{target.name}」")
+    return ok(payload_out, f"已指派给「{target.name}」")
 
 
 @router.post("/tasks/batch-complete")
@@ -560,7 +680,7 @@ async def batch_complete_tasks(
     now = datetime.now(UTC)
     for task_id in unique_ids:
         try:
-            task = await _visible_task(session, user, task_id)
+            task = await _visible_task(session, user, task_id, for_update=True)
         except AppError as error:
             skipped.append({"task_id": task_id, "reason": error.message})
             continue
@@ -608,10 +728,14 @@ async def postpone_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await _visible_task(session, user, task_id)
+    task = await _visible_task(session, user, task_id, for_update=True)
     if payload.due_at is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请给出新的截止时间")
     _ensure_not_final(task, "改期")
+    await _guard_task_field(
+        session, task, seen_updated_at=task.updated_at,
+        fields={"due_at": payload.due_at}, action="改期",
+    )
     task.due_at = payload.due_at
     await session.flush()
     # 改期就是改约定：客户上的「约定下次跟进时间」要跟着走（§2.3）
@@ -637,7 +761,7 @@ async def transfer_task(
     user: CurrentUser = Depends(require_permission("task:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    task = await _visible_task(session, user, task_id)
+    task = await _visible_task(session, user, task_id, for_update=True)
     if payload.owner_id is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请选择转交给谁")
     # 第九批 §9.3：转交原来的检查**比改派还松** —— 不判终态、不查用户是否存在、
@@ -645,6 +769,11 @@ async def transfer_task(
     _ensure_not_final(task, "转交")
     target = await _active_owner(session, payload.owner_id)
     before_owner = task.owner_id
+    # 守卫先于内存赋值（同上：避免 autoflush 抢先把新值写进库）
+    await _guard_task_field(
+        session, task, seen_updated_at=task.updated_at,
+        fields={"owner_id": target.id}, action="转交",
+    )
     task.owner_id = target.id
     await session.flush()
     if target.id != user.id:
@@ -668,5 +797,7 @@ async def transfer_task(
         ip=client_ip(request),
     )
     await session.commit()
+    # 同 `/assign`：提交后刷新，避免回显与库内不一致（审查 B2-03）
+    payload_out = await _reserialize_fresh(session, task, target.name)
     await notification_service.dispatch_pending(session)
-    return ok(serialize(task, target.name), f"已转交给「{target.name}」")
+    return ok(payload_out, f"已转交给「{target.name}」")

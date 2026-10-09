@@ -46,9 +46,26 @@ class ScheduleChangeCancel(BaseModel):
 
 
 class OrderItemInput(BaseModel):
+    """手工建单的明细行（03-API §27）。
+
+    ## 精度必须与库列一致（审查 B2-02）
+
+    `sales_order_items.quantity` 是 `Numeric(16,3)`、`unit_price` 是 `Numeric(16,4)`。
+    从前这两个字段**只有 `gt=0` / `ge=0`**，没有小数位约束，于是：
+      - 数量 `0.0001` → 接口 200，**落库被舍成 `0.000`**（等于零数量），货款却是 `0.02`；
+      - 数量 `1.23456` → 落库 `1.235`，货款按**未落库的原值**算成 `185.18`，
+        而"落库数量 × 单价" = `1.235 × 150` = `185.25` —— 同一张单两个数。
+    现在口径与报价明细（`QuoteItemInput`）统一：**数量三位小数、单价四位小数**，
+    超了直接报参数错误而不是静默舍入。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
     sku_id: int
-    quantity: Decimal = Field(gt=0)
-    unit_price: Decimal = Field(ge=0)
+    #: 与 `sales_order_items.quantity`（Numeric(16,3)）同一把尺子
+    quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
+    #: 与 `sales_order_items.unit_price`（Numeric(16,4)）同一把尺子
+    unit_price: Decimal = Field(ge=0, max_digits=16, decimal_places=4)
     specification: str | None = None
     remark: str | None = None
 

@@ -1,7 +1,7 @@
 """订单业务逻辑。"""
 
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -369,6 +369,28 @@ async def create_order_from_quote(
     return order
 
 
+#: `sales_order_items.quantity` 的列精度是 `Numeric(16,3)` —— 计算前先按它归一
+QUANTITY_SCALE = Decimal("0.001")
+
+
+def normalized_quantity(quantity: Decimal | None) -> Decimal:
+    """把数量按**库列精度**（三位小数）归一后再参与计价（审查 B2-02）。
+
+    为什么需要：`create_order` 从前拿**入参原值**算货款，而落库时数据库按
+    `Numeric(16,3)` 又舍了一次 —— 两个数对不上。实测：
+      - 数量 `1.23456`、单价 `150` → 落库数量 `1.235`，货款却算成 `185.18`；
+        "落库数量 × 单价" 应为 `185.25`。同一张单两个数，对账时必然扯皮。
+      - 数量 `0.0001` → 落库 `0.000`（零数量），货款却是 `0.02`。
+
+    入参侧已经拦住超过三位小数的数量（`OrderItemInput.decimal_places=3`），
+    这里的归一是**第二道保险**，同时保证"算货款用的数量"与"落库的数量"
+    逐位一致（与报价模块 `quote.service.normalized_quantity` 同一写法）。
+    """
+    if quantity is None:
+        return Decimal("0")
+    return Decimal(quantity).quantize(QUANTITY_SCALE, rounding=ROUND_HALF_UP)
+
+
 async def create_order(
     session: AsyncSession,
     *,
@@ -402,7 +424,10 @@ async def create_order(
         sku = await session.get(Sku, entry.sku_id)
         if sku is None or sku.deleted_at is not None:
             raise AppError(ErrorCode.NOT_FOUND, f"SKU id={entry.sku_id} 不存在", 404)
-        amount = (entry.quantity * entry.unit_price).quantize(Decimal("0.01"))
+        # 先归一再看金额：货款必须等于"**落库的那个数量** × 单价"，
+        # 否则接口报的金额与库里能算出来的金额对不上（审查 B2-02）。
+        quantity = normalized_quantity(entry.quantity)
+        amount = (quantity * entry.unit_price).quantize(Decimal("0.01"))
         total += amount
         rows.append(
             SalesOrderItem(
@@ -410,7 +435,7 @@ async def create_order(
                 sku_id=sku.id,
                 sku_snapshot=sku.name or sku.sku_code,
                 specification=entry.specification or sku.specification,
-                quantity=entry.quantity,
+                quantity=quantity,
                 unit_price=entry.unit_price,
                 amount=amount,
                 remark=entry.remark,

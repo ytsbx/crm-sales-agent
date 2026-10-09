@@ -301,7 +301,23 @@ async def update_order(
         )
     # 改的是「当前负责人」（谁跟进、谁看得见），**不动 sales_owner_id**：
     # 签单归属创建时写死，换人跟进不改变这张单的业绩算谁的（文档 :61）。
-    if data.get("owner_id") is not None:
+    #
+    # ⚠️ 这里必须用 `"owner_id" in data` 而不是 `data.get("owner_id") is not None`
+    # （审查 B2-01）。原来的写法只看"值非空"，于是：
+    #   - `{"owner_id": null}` 直接**跳过整个权限分支**，
+    #   - 而下面那个 `for field, value in data.items(): setattr(...)` 是无差别写入，
+    #     照样把 `owner_id` 置成 NULL —— **等于用"清空"绕过了 order:assign**。
+    # 实测：只有 order:manage 的账号改成别人 → 403（对），但传 null → 200 且负责人被清空。
+    if "owner_id" in data:
+        if data["owner_id"] is None:
+            # 订单**不允许没有负责人**：负责人是"谁跟进、谁看得见"的依据，
+            # 清空之后原负责人自己都查不到这张单，等于把单据丢进黑洞。
+            # 不打算换人就别传这个字段。
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "订单必须有人负责，不能清空；要换人请传新的 owner_id",
+                422,
+            )
         # 转移负责人需要**独立授权**（P1）：这是归属类动作，能把单子划到任何人名下。
         # 日常 order:manage 不该自带这个能力——否则"能改单"就等于"能抢单"。
         if not user.has("order:assign"):
@@ -318,6 +334,11 @@ async def update_order(
 
     for field, value in data.items():
         setattr(order, field, value)
+    # 兜底：任何路径都不许把已有订单的负责人留空（数据库列可空，靠代码守住）
+    if order.owner_id is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, "订单必须有人负责，不能清空负责人", 422
+        )
     await session.flush()
     await write_audit(
         session,

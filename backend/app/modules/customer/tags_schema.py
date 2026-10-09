@@ -1,12 +1,14 @@
 """客户标签与合并入参（03-API §7）。"""
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TagCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    name: str
+    #: `tags.name` 是 `String(64)`：入参侧先拦，避免撞数据库约束报 500
+    #: （空/纯空格仍由 `tags.normalize_tag_name` 统一判，好给一致的中文提示）
+    name: str = Field(max_length=64)
     type: str = "custom"
     """标签分组，例如 行业 / 等级 / 渠道。"""
     sort_no: int = 0
@@ -15,7 +17,8 @@ class TagCreate(BaseModel):
 class TagUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    name: str | None = None
+    #: 同上：长度上限在入参侧拦一道（审查 B2-05）
+    name: str | None = Field(default=None, max_length=64)
     type: str | None = None
     status: str | None = None
     sort_no: int | None = None

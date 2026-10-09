@@ -198,8 +198,20 @@ async def update_customer(
         setattr(customer, field, value)
     # 补核历史联系时间（第七批 7.5）：填了真实联系时间就说明"未知"不成立了，
     # 这个客户重新回到自动回收/冷落扫描的视野里。
-    if changes.get("last_followup_at") is not None:
-        customer.last_contact_unknown = False
+    #
+    # ⚠️ 必须用 `"last_followup_at" in changes` 判断"这个字段被显式传了"，
+    # 不能只看值非空（审查 B2-04）。原来的写法在 `{"last_followup_at": null}` 时
+    # 整个分支不执行，于是：
+    #   · 时间被清成 NULL（`setattr` 是无差别写入），
+    #   · 而 `last_contact_unknown` **仍是 False**（"我们知道他什么时候联系的"）。
+    # 结果这条客户既没有联系时间、又不被当成"未知"，回收扫描就退回用**建档时间**
+    # 当联系时间，把他错误地列进回收候选/预告里 —— 而正确标记为未知的对照客户
+    # 会进"待补核"名单，两者待遇相反。
+    #
+    # 口径：**时间被清空 == 又变成"不知道上次联系是什么时候"**，标记要跟着恢复，
+    # 让这条客户回到"待补核"名单，而不是被当成可回收对象。
+    if "last_followup_at" in changes:
+        customer.last_contact_unknown = changes["last_followup_at"] is None
     await session.flush()
     await write_audit(
         session,
