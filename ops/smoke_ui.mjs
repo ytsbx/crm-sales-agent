@@ -219,6 +219,29 @@ async function firstId(path, token) {
   return (await firstRecord(path, token))?.id ?? null
 }
 
+/**
+ * 给一版报价补一条**已确认**的运费（夹具公共步骤）。
+ *
+ * 为什么每个建报价的夹具都要调它（2026-10-09「产品价格与运费分离」）：
+ * 正式发送前有一道硬校验 `quote.service.ensure_freight_confirmed` ——
+ * 草稿允许没填运费，**正式发送必须已经确认具体金额**（空输入不等于已确认的
+ * 零运费）。本脚本多处夹具建完报价就点/调"标记已发送"，不补这一步会被 422
+ * 拦下，表现为"报价发送失败"，而真正的原因在运费上。
+ *
+ * ⚠️ 必须在**提交审批之前**调：版本一旦提交审批就不可编辑。
+ *
+ * 收口成一个函数是因为这条规则前后漏了三处（sampleSource / demandFlow /
+ * quoteLifecycle 各一处），每次都是"夹具没跟上行为变更"，不如只写一遍。
+ */
+async function ensureFixtureFreight(token, versionId, amount = 30) {
+  return checkedJson(`/quote-versions/${versionId}/charges`, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      charge_type: 'logistics', description: '冒烟夹具运费', amount,
+    }),
+  })
+}
+
 async function checkedJson(path, token, options = {}) {
   const response = await fetch(`${API_BASE}/api/v1${path}`, {
     ...options,
@@ -280,13 +303,7 @@ async function createSeedQuote(token, customerId) {
       // 运费分离（2026-10-09）：正式发送前必须已确认运费。
       // 这条引子报价后面会被"标记已发送 / 提交审批"用到，所以一并补上，
       // 否则发送会被 422 拦下、后面的界面断言跟着红。
-      await fetch(`${API_BASE}/api/v1/quote-versions/${versionId}/charges`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          charge_type: 'logistics', description: '冒烟夹具运费', amount: 30,
-        }),
-      })
+      await ensureFixtureFreight(token, versionId)
     }
     return quoteId
   } catch {
@@ -346,12 +363,7 @@ async function createOrderIfEmpty(token, customerId) {
     // （`quote.service.ensure_freight_confirmed`）。本脚本要验的是订单详情页，
     // 不是运费 —— 所以在这里补一条**已确认**的运费，让流程能走到标记发送那一步。
     // 必须在提交审批**之前**加：版本一旦提交审批就不可编辑。
-    await checkedJson(`/quote-versions/${versionId}/charges`, token, {
-      method: 'POST',
-      body: JSON.stringify({
-        charge_type: 'logistics', description: '冒烟夹具运费', amount: 30,
-      }),
-    })
+    await ensureFixtureFreight(token, versionId)
     const submitted = await checkedJson(`/quote-versions/${versionId}/submit-approval`, token, {
       method: 'POST',
       body: JSON.stringify({ reason: '仅用于本地 UI 冒烟' }),
@@ -1406,10 +1418,7 @@ async function main() {
       // 运费分离（2026-10-09）：正式发送前必须已确认运费，所以这里补一条。
       // 它会计入这一版的 `total_amount`（正式订单取的就是客户确认的报价版本总额），
       // 因此下面"建立正式订单"那条断言的总金额也要跟着 +30。
-      await checkedJson(`/quote-versions/${quote.version_id}/charges`, auth.token, {
-        method: 'POST',
-        body: JSON.stringify({ charge_type: 'logistics', description: '冒烟夹具运费', amount: 30 }),
-      })
+      await ensureFixtureFreight(auth.token, quote.version_id)
       INTERACTIONS.push({ name: '50-order-draft-flow', path: `/quotes/${quote.quote_id}`, clicks: [], expect: ['订单详情'], orderDraft: { ...quote, inquiryId: inquiry.id } })
     }
 
@@ -1666,6 +1675,10 @@ async function main() {
         })
         const afterDraft = await checkedJson(`/opportunities/${oid}`, auth.token)
         if (before.stage_id !== afterDraft.stage_id) throw new Error('生成报价草稿错误推进了阶段')
+        // 运费分离（2026-10-09）：下面要用界面点"标记已发送"，而正式发送前
+        // 必须已经确认运费。这个报价是刚用接口建的，补一条已确认的运费
+        // —— 必须在提交审批之前（版本提交后不可编辑）。
+        await ensureFixtureFreight(auth.token, quote.version_id)
         const approved = await checkedJson(`/quote-versions/${quote.version_id}/submit-approval`, auth.token, {
           method: 'POST', body: JSON.stringify({ reason: '虚构 UI 验收' }),
         })

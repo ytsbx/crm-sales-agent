@@ -670,6 +670,13 @@ async def clone_quote(
                 )
             )
             copied_items += 1
+        # 费用行也要整份抄过来（与 `service.create_version` 共用同一份实现）。
+        # 这条路径以前只抄明细不抄费用 —— 复制出来的新单货款对、**运费与折扣全丢**，
+        # 而缺运费的报价在正式发送时会被 `ensure_freight_confirmed` 拦下。
+        await session.flush()
+        await svc.copy_version_charges(
+            session, source_id=source.current_version_id, target_version=new_version
+        )
         await session.flush()
         await svc.recalc_version(session, new_version)
 

@@ -767,18 +767,7 @@ async def create_version(
                 remark=item.remark,
             )
         )
-    for charge in await version_charges(session, source.id):
-        session.add(
-            QuoteCharge(
-                quote_version_id=version.id,
-                charge_type=charge.charge_type,
-                description=charge.description,
-                amount=charge.amount,
-                currency=charge.currency,
-                is_discount=charge.is_discount,
-                sort_no=charge.sort_no,
-            )
-        )
+    await copy_version_charges(session, source_id=source.id, target_version=version)
     await session.flush()
     await recalc_version(session, version)
     quote.current_version_id = version.id
@@ -1375,6 +1364,43 @@ async def version_charges(session: AsyncSession, version_id: int) -> list[QuoteC
             )
         ).scalars().all()
     )
+
+
+async def copy_version_charges(
+    session: AsyncSession, *, source_id: int, target_version: QuoteVersion
+) -> int:
+    """把源版本的费用行整份抄到目标版本，返回复制条数。
+
+    **两个复制入口共用这一份**（`create_version` 与 `POST /quotes/{id}/clone`）。
+    以前只有前者抄了费用，后者只抄明细 —— 于是"复制报价"出来的新单
+    货款对、**运费与折扣全丢**，而且因为缺运费，正式发送还会被
+    `ensure_freight_confirmed` 拦下，用户看到的是"这单发不出去"
+    （`/tmp/verify_freight_rules.py` 的场景6 就是这么发现的）。
+
+    运费的**确认时刻一并带过来**：源版本的运费是业务按承运商确认过的实际金额
+    （口径：客户全额承担、公司原额代收代付），这个事实对同一笔生意的新版本
+    仍然成立。金额对金额、口径对口径地照抄，不重新猜。
+    要改金额就改，`mark_logistics_confirmed` 会重新打确认时刻。
+
+    ⚠️ 折扣原样带过来（库里是负数），与 `recalc_version` 的代数相加约定一致；
+    这里**不重新归一符号**，否则一个已经是负数的折扣会被翻成正数、把总额加上去。
+    """
+    copied = 0
+    for charge in await version_charges(session, source_id):
+        session.add(
+            QuoteCharge(
+                quote_version_id=target_version.id,
+                charge_type=charge.charge_type,
+                description=charge.description,
+                amount=charge.amount,
+                currency=charge.currency,
+                is_discount=charge.is_discount,
+                sort_no=charge.sort_no,
+                logistics_confirmed_at=charge.logistics_confirmed_at,
+            )
+        )
+        copied += 1
+    return copied
 
 
 async def version_items(session: AsyncSession, version_id: int) -> list[QuoteItem]:
