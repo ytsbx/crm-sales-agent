@@ -270,8 +270,22 @@ def _reject_in_place_price_change(rule: PriceRule, changes: dict) -> None:
     值没变一律放行 —— 否则"编辑数量区间"这种表单整份提交（顺带把价钱原样带回来）
     会被误拦，那就成了为了拦一种错制造另一种错。
 
-    None 与 0 视为同一个值：`serialize_price_rule` 用 `_f()` 把 NULL 归一成 0，
-    前端读回来再回传就是 0，不能因此判定为"改了价"。
+    ⚠️ **`None` 与 `0` 是两回事，必须分别比较**（2026-10-09 审查指出，我修的第一版
+    在这里错了）。它们的业务含义不同：
+
+      - `NULL` = **这条规则没维护这个价钱** → 取价继续往通用规则回退；
+      - `0`    = **明确就是零元** → 取价到此为止，客户拿到 0。
+
+    从前这里把两边都 `Decimal("0") if x is None else ...`，于是"原值 NULL、传 0"
+    被判成"没变"而放行 —— 接口返回 200，库里从 NULL 变成 0，**该客户查价从
+    回退价（如通用指导价 66）直接变成 0 元**，等于绕过了整套"不许原地改价"的保护。
+    实测复现：`guide_price=NULL` 的规则 `PATCH {"guide_price": 0}` → 200、
+    库内 `0.0000`。
+
+    当时的理由是"序列化会把 NULL 归一成 0，前端读回来再回传就是 0" ——
+    **这个说法本身是错的**：`serialize_price_rule` 用 `_f()` 序列化，
+    `_f(None)` 返回 `None`（实测 GET 回来仍是 `null`，不是 0）。
+    所以前端原样回传的是 `null`，本来就是"没变"，不需要靠合并这两种值来放行。
 
     报错要**点名哪些字段**并给出正确路径，不能只说"不允许"。
     """
@@ -281,9 +295,16 @@ def _reject_in_place_price_change(rule: PriceRule, changes: dict) -> None:
             continue
         incoming = changes[field]
         current = getattr(rule, field)
-        left = Decimal("0") if incoming is None else Decimal(str(incoming))
-        right = Decimal("0") if current is None else Decimal(str(current))
-        if left != right:
+        # ① 都是 NULL → 没变（`min()`/`getattr` 都可能给 None，正常放行）
+        if incoming is None and current is None:
+            continue
+        # ② 一边 NULL、一边有值 → **变了**。NULL↔0 正是要拦的那一类：
+        #    它会把"没维护 → 回退"改成"就是零元"，取价结果天差地别。
+        if (incoming is None) != (current is None):
+            changed.append(label)
+            continue
+        # ③ 都是数值 → 按数值比（`exclude_unset` 已保证"没传"不会走到这儿）
+        if Decimal(str(incoming)) != Decimal(str(current)):
             changed.append(label)
     if changed:
         raise AppError(

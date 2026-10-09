@@ -563,7 +563,7 @@ async def main():
         if not str(row.get('provider') or '').startswith(f'CHK{RUN}')
     ), foreign_before)
 
-    print('=== 9b. 价格规则 R04/R06/R07 反例 ===')
+    print('=== 9b. 价格规则 R01/R04/R05/R06/R07 反例 ===')
     # 三条都是审查 2026-10-09 独立复测挖到的（正常场景测不出来），逐条钉住。
     # 用的等级名带 RUN 前缀，收尾清理按"本用例 SKU"删除，不会留下常驻数据。
     # 等级用一个演示数据没占用的短值：`price_rules.customer_level` 是 varchar(8)，
@@ -626,6 +626,41 @@ async def main():
     check_true('R07 提示点名备注或长度',
                any(w in str(res.get('message')) for w in ('备注', 'remark', '太长', '最长')),
                str(res.get('message'))[:60])
+
+    # ---- R01：原指导价 NULL 时，PATCH 改成 0 必须被拒 ----
+    # 这是审查第二次复现挖到的：我修的第一版把 `None` 与 `0` 都归一成 0 再比，
+    # 于是"原值 NULL、传 0"被判成"没变"而放行。而两者业务含义不同 ——
+    # `NULL` = 这条规则没维护指导价（取价继续回退通用价），
+    # `0`    = 明确零元（取价到此为止），实测该客户查价从回退价直接变成 0。
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 70000, 'max_qty': 70999, 'guide_price': None,
+    })
+    check('R01 指导价可以留空（NULL = 未维护）', res.get('code'), 0)
+    r01_id = res['data']['id']
+    check('R01 留空后读回来仍是 NULL（序列化不把 NULL 变成 0）',
+          res['data'].get('guide_price'), None)
+
+    status, res = call('PATCH', f'/price-rules/{r01_id}', token=admin,
+                       body={'guide_price': 0})
+    check('R01 原值 NULL → 传 0 被拒（不能绕过价格锁定）', res.get('code'), 40001)
+    _, after = call('GET', f'/price-rules/{r01_id}', token=admin)
+    check('R01 被拒后库里仍是 NULL（回退语义没被改成零元）',
+          after['data'].get('guide_price'), None)
+
+    # 反向：NULL → 66 也是改价，同样要拦（别只堵 0 这一个值）
+    status, res = call('PATCH', f'/price-rules/{r01_id}', token=admin,
+                       body={'guide_price': 66})
+    check('R01 原值 NULL → 传 66 也被拒', res.get('code'), 40001)
+
+    # 合法操作不能被误拦：NULL 原样回传、只改区间、只改备注都要放行
+    for body, label in (
+        ({'guide_price': None}, 'NULL 原样回传'),
+        ({'min_qty': 70000, 'max_qty': 70998}, '只改数量上限'),
+        ({'remark': f'CHK{RUN} 只改备注'}, '只改备注'),
+    ):
+        status, res = call('PATCH', f'/price-rules/{r01_id}', token=admin, body=body)
+        check(f'R01 合法操作放行：{label}', res.get('code'), 0)
 
     # ---- R05：并发提交重叠区间，必须只成功一条 ----
     # 从前两个并发请求各自读到"没有冲突"（对方还没提交），各写一条 →
