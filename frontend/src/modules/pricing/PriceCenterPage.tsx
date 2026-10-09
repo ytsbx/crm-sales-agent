@@ -23,7 +23,9 @@ import {
   listPricingHistory,
   lookupPrice,
   savePricePermission,
+  updateCustomerPriceRule,
   updateLogisticsRate,
+  updatePriceRule,
   type CostRecord,
   type CustomerPriceRow,
   type LogisticsRateRow,
@@ -315,6 +317,37 @@ function historySummary(row: PricingHistoryRow): string {
 
 const money = (value?: number | null) => (value === null || value === undefined ? '-' : `¥${value}`)
 
+/**
+ * 价格规则 / 客户特殊价弹窗的**空表单**（模块级常量）。
+ *
+ * 放在组件外是为了两处共用同一份"空"：`useState` 的初值与"关闭后复位"
+ * 各写一份的话，加字段时必然漏一处 —— 漏的那处会在下次打开时残留上一次的值。
+ */
+const emptyRuleForm = {
+  sku_id: null as number | null,
+  customer_level: '',
+  min_qty: '0',
+  max_qty: '',
+  standard_price: '',
+  guide_price: '',
+  minimum_price: '',
+  target_margin: '',
+  effective_from: '',
+  effective_to: '',
+  remark: '',
+}
+const emptyCustomerPriceForm = {
+  customer_id: null as number | null,
+  sku_id: null as number | null,
+  min_qty: '0',
+  max_qty: '',
+  agreed_price: '',
+  minimum_price: '',
+  effective_from: '',
+  effective_to: '',
+  remark: '',
+}
+
 export default function PriceCenterPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -334,27 +367,14 @@ export default function PriceCenterPage() {
     effective_from: new Date().toISOString().slice(0, 10),
   })
   const [ruleVisible, setRuleVisible] = useState(false)
-  const [ruleForm, setRuleForm] = useState({
-    sku_id: null as number | null,
-    customer_level: '',
-    min_qty: '0',
-    standard_price: '',
-    guide_price: '',
-    minimum_price: '',
-    target_margin: '',
-    effective_from: '',
-    effective_to: '',
-  })
+  // 价格规则：新增与修改**共用同一个弹窗**（`ruleEditing` 为空 = 新增），
+  // 与下面运费费率同一范式，避免两套弹窗各自漂移。
+  const [ruleEditing, setRuleEditing] = useState<PriceRuleRow | null>(null)
+  const [ruleForm, setRuleForm] = useState(emptyRuleForm)
   const [customerPriceVisible, setCustomerPriceVisible] = useState(false)
-  const [customerPriceForm, setCustomerPriceForm] = useState({
-    customer_id: null as number | null,
-    sku_id: null as number | null,
-    min_qty: '0',
-    agreed_price: '',
-    minimum_price: '',
-    effective_from: '',
-    effective_to: '',
-  })
+  // 客户特殊价：同样新增与修改共用一个弹窗（`customerPriceEditing` 为空 = 新增）
+  const [customerPriceEditing, setCustomerPriceEditing] = useState<CustomerPriceRow | null>(null)
+  const [customerPriceForm, setCustomerPriceForm] = useState(emptyCustomerPriceForm)
 
   // 客户查价（产品报价中心 · 第一批）：选客户+SKU+数量 → 适用价与来源
   const [lookupCustomerId, setLookupCustomerId] = useState<number | undefined>()
@@ -467,43 +487,80 @@ export default function PriceCenterPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /**
+   * 价格规则：新增与修改共用（`ruleEditing` 非空即修改）。
+   *
+   * **改的时候只提交允许改的字段**（区间 / 有效期 / 客户等级 / 备注）：
+   * 价钱类字段一律不提交 —— 后端会明确拒绝并点名是哪个字段（400），
+   * 而口径上"改价钱"就该走「停用旧的 + 新增一条」，这样生效时序在单据上看得见。
+   * 弹窗里那几个价钱字段在修改态是**只读展示**，让人看得见当前价、也知道去哪改。
+   */
   const ruleMutation = useMutation({
-    mutationFn: () =>
-      createPriceRule({
+    mutationFn: () => {
+      if (ruleEditing) {
+        return updatePriceRule(ruleEditing.id, {
+          customer_level: ruleForm.customer_level || null,
+          min_qty: Number(ruleForm.min_qty || 0),
+          max_qty: ruleForm.max_qty === '' ? null : Number(ruleForm.max_qty),
+          effective_from: ruleForm.effective_from || null,
+          effective_to: ruleForm.effective_to || null,
+          remark: ruleForm.remark || null,
+        })
+      }
+      return createPriceRule({
         sku_id: ruleForm.sku_id,
         customer_level: ruleForm.customer_level || null,
         min_qty: Number(ruleForm.min_qty || 0),
+        max_qty: ruleForm.max_qty === '' ? null : Number(ruleForm.max_qty),
         standard_price: ruleForm.standard_price ? Number(ruleForm.standard_price) : null,
         guide_price: ruleForm.guide_price ? Number(ruleForm.guide_price) : null,
         minimum_price: ruleForm.minimum_price ? Number(ruleForm.minimum_price) : null,
         target_margin: ruleForm.target_margin ? Number(ruleForm.target_margin) : null,
         effective_from: ruleForm.effective_from || null,
         effective_to: ruleForm.effective_to || null,
-      }),
+        remark: ruleForm.remark || null,
+      })
+    },
     onSuccess: () => {
-      Toast.success('价格规则已创建')
-      setRuleVisible(false)
+      Toast.success(ruleEditing ? '价格规则已保存' : '价格规则已创建')
+      closeRuleModal()
       refreshAll()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /**
+   * 客户特殊价：新增与修改共用（`customerPriceEditing` 非空即修改）。
+   *
+   * 修改走 `PATCH /customer-price-rules/{id}` 原地改 —— 这正是它被设计出来的场景
+   * （客户谈定的价涨了两块），此前界面只给「删除」，改价要删了重录。
+   * `customer_id` / `sku_id` 不提交：后端明确不支持改归属（等于换一条规则）。
+   */
   const customerPriceMutation = useMutation({
-    mutationFn: () =>
-      createCustomerPriceRule({
-        customer_id: customerPriceForm.customer_id,
-        sku_id: customerPriceForm.sku_id,
+    mutationFn: () => {
+      const common = {
         min_qty: Number(customerPriceForm.min_qty || 0),
+        max_qty: customerPriceForm.max_qty === '' ? null : Number(customerPriceForm.max_qty),
         agreed_price: Number(customerPriceForm.agreed_price),
         minimum_price: customerPriceForm.minimum_price
           ? Number(customerPriceForm.minimum_price)
           : null,
         effective_from: customerPriceForm.effective_from || null,
         effective_to: customerPriceForm.effective_to || null,
-      }),
+        remark: customerPriceForm.remark || null,
+      }
+      if (customerPriceEditing) {
+        return updateCustomerPriceRule(customerPriceEditing.id, common)
+      }
+      return createCustomerPriceRule({
+        customer_id: customerPriceForm.customer_id,
+        sku_id: customerPriceForm.sku_id,
+        ...common,
+      })
+    },
     onSuccess: () => {
-      Toast.success('客户特殊价已创建')
-      setCustomerPriceVisible(false)
+      Toast.success(customerPriceEditing ? '客户特殊价已保存' : '客户特殊价已创建')
+      closeCustomerPriceModal()
       refreshAll()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -527,6 +584,61 @@ export default function PriceCenterPage() {
     setRateVisible(false)
     setRateEditing(null)
     setRateForm(emptyRateForm)
+  }
+
+  /** 价格规则弹窗：传行 = 改（预填可改字段），不传 = 新增。 */
+  const closeRuleModal = () => {
+    setRuleVisible(false)
+    setRuleEditing(null)
+    setRuleForm(emptyRuleForm)
+  }
+  const openRuleModal = (row?: PriceRuleRow) => {
+    setRuleEditing(row ?? null)
+    setRuleForm(
+      row
+        ? {
+            sku_id: row.sku_id,
+            customer_level: row.customer_level ?? '',
+            min_qty: String(row.min_qty ?? '0'),
+            max_qty: row.max_qty == null ? '' : String(row.max_qty),
+            // 价钱类字段在修改态是只读展示，这里照实填上当前值
+            standard_price: row.standard_price == null ? '' : String(row.standard_price),
+            guide_price: row.guide_price == null ? '' : String(row.guide_price),
+            minimum_price: row.minimum_price == null ? '' : String(row.minimum_price),
+            target_margin: row.target_margin == null ? '' : String(row.target_margin),
+            effective_from: row.effective_from ?? '',
+            effective_to: row.effective_to ?? '',
+            remark: row.remark ?? '',
+          }
+        : emptyRuleForm,
+    )
+    setRuleVisible(true)
+  }
+
+  /** 客户特殊价弹窗：传行 = 改（预填），不传 = 新增。 */
+  const closeCustomerPriceModal = () => {
+    setCustomerPriceVisible(false)
+    setCustomerPriceEditing(null)
+    setCustomerPriceForm(emptyCustomerPriceForm)
+  }
+  const openCustomerPriceModal = (row?: CustomerPriceRow) => {
+    setCustomerPriceEditing(row ?? null)
+    setCustomerPriceForm(
+      row
+        ? {
+            customer_id: row.customer_id,
+            sku_id: row.sku_id,
+            min_qty: String(row.min_qty ?? '0'),
+            max_qty: row.max_qty == null ? '' : String(row.max_qty),
+            agreed_price: String(row.agreed_price ?? ''),
+            minimum_price: row.minimum_price == null ? '' : String(row.minimum_price),
+            effective_from: row.effective_from ?? '',
+            effective_to: row.effective_to ?? '',
+            remark: row.remark ?? '',
+          }
+        : emptyCustomerPriceForm,
+    )
+    setCustomerPriceVisible(true)
   }
 
   /** 打开费率弹窗：传行 = 改（预填），不传 = 新增。 */
@@ -980,7 +1092,7 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/price-rules/import"
                       invalidateQueryKeys={['price-rules']}
                     />
-                    <Button theme="solid" onClick={() => setRuleVisible(true)}>
+                    <Button theme="solid" onClick={() => openRuleModal()}>
                       新增价格规则
                     </Button>
                   </>
@@ -1032,12 +1144,26 @@ export default function PriceCenterPage() {
                   },
                   {
                     title: '操作',
-                    width: 80,
+                    width: 120,
                     render: (_: unknown, record: PriceRuleRow) =>
-                      canManage && record.status === 'active' ? (
-                        <Popconfirm title="停用这条价格规则？" onConfirm={() => disablePriceRule(record.id).then(refreshAll)}>
-                          <a style={{ color: 'var(--crm-error)' }}>停用</a>
-                        </Popconfirm>
+                      canManage ? (
+                        <span style={{ display: 'inline-flex', gap: 10 }}>
+                          {/* 「编辑」只改"这条规则在什么条件下适用"（数量区间/有效期/
+                              客户等级/备注）；**价钱不在其中** —— 改价钱走
+                              「停用 + 新增」，这样生效时序在单据上看得见。
+                              后端也会拒绝改价并点名字段，不是只靠界面挡。 */}
+                          <a onClick={() => openRuleModal(record)}>编辑</a>
+                          {record.status === 'active' ? (
+                            <Popconfirm
+                              title="停用这条价格规则？"
+                              onConfirm={() => disablePriceRule(record.id).then(refreshAll)}
+                            >
+                              <a style={{ color: 'var(--crm-error)' }}>停用</a>
+                            </Popconfirm>
+                          ) : (
+                            <span style={{ color: 'var(--crm-text-3)' }}>已停用</span>
+                          )}
+                        </span>
                       ) : (
                         '-'
                       ),
@@ -1065,7 +1191,7 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/customer-price-rules/import"
                       invalidateQueryKeys={['customer-price-rules']}
                     />
-                    <Button theme="solid" onClick={() => setCustomerPriceVisible(true)}>
+                    <Button theme="solid" onClick={() => openCustomerPriceModal()}>
                       新增客户特殊价
                     </Button>
                   </>
@@ -1090,15 +1216,22 @@ export default function PriceCenterPage() {
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                   {
                     title: '操作',
-                    width: 80,
+                    width: 120,
                     render: (_: unknown, record: CustomerPriceRow) =>
                       canManage ? (
-                        <Popconfirm
-                          title="删除这条客户特殊价？"
-                          onConfirm={() => deleteCustomerPriceRule(record.id).then(refreshAll)}
-                        >
-                          <a style={{ color: 'var(--crm-error)' }}>删除</a>
-                        </Popconfirm>
+                        <span style={{ display: 'inline-flex', gap: 10 }}>
+                          {/* 客户特殊价**允许原地改约定价** —— 这正是它被设计出来的
+                              场景（客户谈定的价涨了两块）。后端 PATCH 一直就有，
+                              只是此前没有任何页面调过它，想改只能删了重录。
+                              归属（客户/SKU）不给改：那等于换一条规则。 */}
+                          <a onClick={() => openCustomerPriceModal(record)}>编辑</a>
+                          <Popconfirm
+                            title="删除这条客户特殊价？"
+                            onConfirm={() => deleteCustomerPriceRule(record.id).then(refreshAll)}
+                          >
+                            <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                          </Popconfirm>
+                        </span>
                       ) : (
                         '-'
                       ),
@@ -1408,20 +1541,39 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
-        title="新增价格规则"
+        title={ruleEditing ? `编辑价格规则 #${ruleEditing.id}` : '新增价格规则'}
         visible={ruleVisible}
         width={620}
-        onCancel={() => setRuleVisible(false)}
+        onCancel={closeRuleModal}
         onOk={() => {
-          if (!ruleForm.sku_id) {
+          if (!ruleEditing && !ruleForm.sku_id) {
             Toast.warning('请选择 SKU')
             return
           }
           ruleMutation.mutate()
         }}
         confirmLoading={ruleMutation.isPending}
-        okText="创建"
+        okText={ruleEditing ? '保存' : '创建'}
       >
+        {ruleEditing && (
+          <div
+            style={{
+              marginBottom: 12,
+              padding: '8px 10px',
+              fontSize: 12,
+              lineHeight: 1.7,
+              color: 'var(--crm-text-3)',
+              background: 'var(--crm-surface-high, #f6f7f9)',
+              borderRadius: 6,
+            }}
+          >
+            这里只改<strong>「这条规则在什么条件下适用」</strong>：数量区间、有效期、客户等级、备注。
+            <br />
+            <strong>价钱不能原地改</strong>（标准价 / 指导价 / 最低保护价 / 目标利润率）——
+            改价钱请「停用这条规则 + 新增一条」，这样"哪条从哪天起生效"在单据上看得见。
+            {ruleEditing.status === 'active' && '本条正在生效，保存后立即影响后续取价（草稿报价会提示价格已更新）。'}
+          </div>
+        )}
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>SKU</FormLabel>
@@ -1431,6 +1583,7 @@ export default function PriceCenterPage() {
               optionList={skuOptions}
               filter={optionMatcher}
               style={{ width: '100%' }}
+              disabled={Boolean(ruleEditing)}
             />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
@@ -1451,6 +1604,14 @@ export default function PriceCenterPage() {
                 onChange={(value) => setRuleForm({ ...ruleForm, min_qty: value })}
               />
             </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>数量上限（留空 = 不限）</div>
+              <Input
+                value={ruleForm.max_qty}
+                onChange={(value) => setRuleForm({ ...ruleForm, max_qty: value })}
+                placeholder="例如 999"
+              />
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
@@ -1458,6 +1619,7 @@ export default function PriceCenterPage() {
               <Input
                 value={ruleForm.standard_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, standard_price: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
             <div style={{ flex: 1 }}>
@@ -1465,6 +1627,7 @@ export default function PriceCenterPage() {
               <Input
                 value={ruleForm.guide_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, guide_price: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
           </div>
@@ -1474,6 +1637,7 @@ export default function PriceCenterPage() {
               <Input
                 value={ruleForm.minimum_price}
                 onChange={(value) => setRuleForm({ ...ruleForm, minimum_price: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
             <div style={{ flex: 1 }}>
@@ -1481,6 +1645,7 @@ export default function PriceCenterPage() {
               <Input
                 value={ruleForm.target_margin}
                 onChange={(value) => setRuleForm({ ...ruleForm, target_margin: value })}
+                disabled={Boolean(ruleEditing)}
               />
             </div>
           </div>
@@ -1514,23 +1679,58 @@ export default function PriceCenterPage() {
               />
             </div>
           </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>备注</div>
+            <Input
+              value={ruleForm.remark}
+              onChange={(value) => setRuleForm({ ...ruleForm, remark: value })}
+              placeholder="例如：2026 年度协议价"
+            />
+          </div>
         </div>
       </Modal>
 
       <Modal
-        title="新增客户特殊价"
+        title={customerPriceEditing ? '编辑客户特殊价' : '新增客户特殊价'}
         visible={customerPriceVisible}
-        onCancel={() => setCustomerPriceVisible(false)}
+        onCancel={closeCustomerPriceModal}
         onOk={() => {
-          if (!customerPriceForm.customer_id || !customerPriceForm.sku_id || !customerPriceForm.agreed_price) {
+          if (customerPriceEditing) {
+            // 改的时候只要求约定价还在（客户/SKU 不给改，不必再校验）
+            if (!customerPriceForm.agreed_price) {
+              Toast.warning('约定价必填')
+              return
+            }
+          } else if (
+            !customerPriceForm.customer_id ||
+            !customerPriceForm.sku_id ||
+            !customerPriceForm.agreed_price
+          ) {
             Toast.warning('客户、SKU、约定价都要填')
             return
           }
           customerPriceMutation.mutate()
         }}
         confirmLoading={customerPriceMutation.isPending}
-        okText="创建"
+        okText={customerPriceEditing ? '保存' : '创建'}
       >
+        {customerPriceEditing && (
+          <div
+            style={{
+              marginBottom: 12,
+              padding: '8px 10px',
+              fontSize: 12,
+              lineHeight: 1.7,
+              color: 'var(--crm-text-3)',
+              background: 'var(--crm-surface-high, #f6f7f9)',
+              borderRadius: 6,
+            }}
+          >
+            就地修改这条专属价（约定价、最低价、起订量、有效期、备注）。
+            <br />
+            <strong>客户与 SKU 不给改</strong>：改归属等于换一条规则，请删掉重录。
+          </div>
+        )}
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>客户</FormLabel>
@@ -1540,6 +1740,7 @@ export default function PriceCenterPage() {
               optionList={(customersQuery.data?.items ?? []).map((item) => ({ value: item.id, label: withCode(item.name, item.id) }))}
               filter={optionMatcher}
               style={{ width: '100%' }}
+              disabled={Boolean(customerPriceEditing)}
             />
           </div>
           <div>
@@ -1550,6 +1751,7 @@ export default function PriceCenterPage() {
               optionList={skuOptions}
               filter={optionMatcher}
               style={{ width: '100%' }}
+              disabled={Boolean(customerPriceEditing)}
             />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
@@ -1558,6 +1760,14 @@ export default function PriceCenterPage() {
               <Input
                 value={customerPriceForm.min_qty}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, min_qty: value })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>数量上限（留空 = 不限）</div>
+              <Input
+                value={customerPriceForm.max_qty}
+                onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, max_qty: value })}
+                placeholder="例如 999"
               />
             </div>
             <div style={{ flex: 1 }}>
@@ -1614,6 +1824,14 @@ export default function PriceCenterPage() {
                 }
               />
             </div>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>备注</div>
+            <Input
+              value={customerPriceForm.remark}
+              onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, remark: value })}
+              placeholder="例如：2026 年度协议价"
+            />
           </div>
         </div>
       </Modal>

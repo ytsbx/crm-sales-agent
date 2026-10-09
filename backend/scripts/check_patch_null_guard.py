@@ -225,19 +225,38 @@ async def main():
         # 联系人 is_primary、价格规则 min_qty、成本 effective_from 传 null 仍然 500。
         async with SessionLocal() as s:
             sku_id = (await s.execute(select(Sku.id).limit(1))).scalar_one()
-            _rule = PriceRule(sku_id=sku_id, min_qty=Decimal("0"), status="active")
+            # ⚠️ 夹具必须**不与演示/其它套件的规则重叠**（2026-10-09 踩到）：
+            # 原来写的是 `min_qty=0` 且不给 `customer_level`（= 全部等级），
+            # 而 `seed.py` 的演示规则恰好也是"全部等级、0 ~ 不限" ——
+            # ORM 直插绕过了创建时的冲突校验，于是这条夹具一出生就是重叠的；
+            # 一旦对它发起 PATCH，合并后校验立刻报 40901（区间重叠），
+            # 表现成"改备注被拒"。用一个专属等级 X 与实测区间避开所有已有规则。
+            _rule = PriceRule(sku_id=sku_id, customer_level="X",
+                              min_qty=Decimal("0"), max_qty=Decimal("999999"),
+                              status="active")
             _cost = ProductCost(sku_id=sku_id, purchase_cost=Decimal("10"),
                                 effective_from=datetime.now(UTC).date())
             s.add_all([_rule, _cost])
             await s.commit()
-            rule_id, cost_id = _rule.id, _cost.id
+            # ⚠️ 变量名**不能叫 rule_id / cost_id**：本套件后面还有一个
+            # 「编号规则」夹具也叫 `rule_id`，会把这里的值覆盖掉 ——
+            # 于是收尾清理删的是编号规则，价格规则与成本永远留着（实测踩到：
+            # 跑几轮后堆了 60+ 条规则，把区间占死，新夹具一建就"区间重叠"）。
+            price_rule_id, product_cost_id = _rule.id, _cost.id
 
         status, _ = call("PATCH", f"/contacts/{contact_id}", token=admin,
                          body={"is_primary": None})
         check("联系人 is_primary（布尔非空）传 null → 400", status, 400)
-        status, _ = call("PATCH", f"/price-rules/{rule_id}", token=admin, body={"min_qty": None})
+        status, _ = call("PATCH", f"/price-rules/{price_rule_id}", token=admin,
+                         body={"min_qty": None})
         check("价格规则 min_qty（数值非空）传 null → 400", status, 400)
-        status, _ = call("PATCH", f"/costs/{cost_id}", token=admin,
+        # 2026-10-09 补：价格规则的 PATCH 多了一道"不允许原地改价"的闸门
+        # （价钱类字段改了要停用+新增，后端 400 并点名）。这条守住"闸门只拦价钱，
+        # **不能把合法编辑一起挡住**"——只改备注必须照常放行。
+        status, _ = call("PATCH", f"/price-rules/{price_rule_id}", token=admin,
+                         body={"remark": "闸门不应拦备注"})
+        check("价格规则只改备注 → 放行（闸门不越界）", status, 200)
+        status, _ = call("PATCH", f"/costs/{product_cost_id}", token=admin,
                          body={"effective_from": None})
         check("成本 effective_from（日期非空）传 null → 400", status, 400)
 
@@ -327,13 +346,6 @@ async def main():
         # 联系人在客户**之前**删：`contacts.customer_id` 是外键，先删客户会撞它
         await _drop("联系人", delete(Contact).where(Contact.name.like(f"{MARKER}%")))
         await _drop("客户", delete(Customer).where(Customer.name.like(f"{MARKER}%")))
-        for label, var, model in (
-            ("价格规则（复审新增）", "rule_id", PriceRule),
-            ("成本（复审新增）", "cost_id", ProductCost),
-        ):
-            _id = locals().get(var)
-            if _id:
-                await _drop(label, delete(model).where(model.id == _id))
         await _drop("任务", delete(Task).where(Task.title.like(f"{MARKER}%")))
         await _drop(
             "定制询价",
@@ -344,6 +356,17 @@ async def main():
         # **按 id 再兜一次**：反向验证时字段可能被改成空白（"   "），
         # 那时按名称前缀就再也匹配不到了 —— 这类残渣只能靠 id 收（本轮实打实踩到：
         # 撤掉校验后"传空白"变成 200，名字真的被写成了三个空格）。
+        # ⚠️ 价格规则与成本**必须单独按 id 删**（2026-10-09 踩到）：
+        # 它们存的是**标量 id**，而下面那个 id 兜底循环用 `isinstance(row, dict)`
+        # 过滤，只认字典夹具 —— 标量一律被跳过（这是第一层问题）。
+        # 更隐蔽的是第二层：夹具原本把价格规则的 id 也叫 `rule_id`，与本套件
+        # 后面的「编号规则」夹具同名、被覆盖，于是删掉的是编号规则。
+        # 两个问题叠在一起的表现是"价格规则从来没被清掉"（实测：跑几轮后堆了
+        # 60+ 条规则，把区间占死，新夹具一建就"区间重叠"，原因极难看出来）。
+        await _drop("价格规则（复审新增）",
+                    delete(PriceRule).where(PriceRule.id == price_rule_id))
+        await _drop("成本（复审新增）",
+                    delete(ProductCost).where(ProductCost.id == product_cost_id))
         for label, model, var in (
             ("产品", Product, "product"),
             ("客户", Customer, "customer"),
