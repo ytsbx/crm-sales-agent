@@ -695,6 +695,34 @@ async def main():
                _mn is not None and (_mx is None or float(_mn) <= float(_mx)),
                f'最终 {_mn} ~ {_mx}')
 
+    # ---- R05c：**同一条客户特殊价**并发改下限/上限，不许落成倒置区间 ----
+    # 与 R05b 同型，但入口不同：我给价格规则补了"锁后重读"，**漏了客户特殊价这一处**
+    # （审查 2026-10-09 第二次指出）。实测原区间 0~10、并发改下限 9 / 上限 5 →
+    # 两个都 200、落库 `9~5`。所以两个入口都要有这条断言，防止再漏一个。
+    status, res = call('POST', '/customer-price-rules', token=admin, body={
+        'customer_id': 3, 'sku_id': 1,
+        'min_qty': 0, 'max_qty': 10, 'agreed_price': 55,
+    })
+    check('R05c 前置：建一条客户特殊价（区间 0~10）', res.get('code'), 0)
+    cp_race_id = (res.get('data') or {}).get('id')
+    with _TPE(max_workers=2) as _ex:
+        _futs = [
+            _ex.submit(lambda: call('PATCH', f'/customer-price-rules/{cp_race_id}',
+                                    token=admin, body={'min_qty': 9})),
+            _ex.submit(lambda: call('PATCH', f'/customer-price-rules/{cp_race_id}',
+                                    token=admin, body={'max_qty': 5})),
+        ]
+        _res3 = [f.result() for f in _futs]
+    _ok3 = sum(1 for _, r in _res3 if r.get('code') == 0)
+    _rows3 = call('GET', '/customer-price-rules?customer_id=3&page_size=200', token=admin)[1]['data']
+    _rows3 = _rows3.get('items') if isinstance(_rows3, dict) else _rows3
+    _row3 = next((x for x in _rows3 if x['id'] == cp_race_id), None)
+    check('R05c 同一条客户特殊价并发改区间只成功一条', _ok3, 1)
+    check_true('R05c 落库区间没有倒置（下限 <= 上限）',
+               _row3 is not None and float(_row3['min_qty']) <= float(_row3['max_qty']),
+               f"最终 {_row3 and _row3['min_qty']} ~ {_row3 and _row3['max_qty']}")
+    call('DELETE', f'/customer-price-rules/{cp_race_id}', token=admin)
+
     # ---- R07b：客户特殊价的约定价不许被"显式传 null"静默跳过 ----
     # 审查实测：前端把空格转成 null 提交 → 后端 `if changes.get(...) is not None`
     # 把它当成"这个字段不改"，返回 200「已保存」而价格一个字没动。

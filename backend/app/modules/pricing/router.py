@@ -654,6 +654,24 @@ async def update_customer_price_rule(
     # 同 SKU 串行（审查 R05），与价格规则共用同一把 SKU 锁；必须在改字段与
     # 读冲突之前拿，理由同 `update_price_rule`。
     await svc.lock_sku_price_rules(session, rule.sku_id)
+    # ⚠️ **拿到锁之后必须重读这条记录**（2026-10-09 审查指出）。
+    #
+    # 我给价格规则补了这一步，却**漏了这里** —— 同一个 bug 的第二个入口，
+    # 实测照样复现：原区间 `0~10`，并发分别改下限为 9、上限为 5，
+    # **两个都返回 200，最终落库 `9~5`（倒置区间）**。
+    # 原因与价格规则那处一模一样：上面那次 `session.get` 在**锁之前**，
+    # 后到的请求拿的是旧快照 —— 它把"下限 9 + 旧的 10"当成合并结果（校验当然过），
+    # 落库时又把旧的上限 10 覆盖成 5。
+    #
+    # `populate_existing=True` 是关键：用库里的当前值**刷新已加载对象**，
+    # 否则 `session.get` 拿回来的还是同一个内存对象、字段依旧是旧值。
+    rule = (
+        await session.execute(
+            select(CustomerPriceRule)
+            .where(CustomerPriceRule.id == rule_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
     before = svc.serialize_customer_price(rule)
     changes = payload.model_dump(exclude_unset=True)
 
