@@ -392,6 +392,18 @@ def _ranges_overlap(a_min, a_max, b_min, b_max) -> bool:
     return True
 
 
+def _session_dialect(session: AsyncSession) -> str:
+    """当前会话连的是什么库（用于跳过 PostgreSQL 专有语法）。
+
+    与 `bizdoc/service.py` 里的同名函数同一写法：单元测试用 SQLite，
+    而 advisory 锁是 PostgreSQL 专有函数。
+    """
+    try:
+        return session.get_bind().dialect.name
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 async def lock_sku_price_rules(session: AsyncSession, sku_id: int) -> None:
     """把**同一个 SKU** 上的价格规则写入串行化（审查 R05，2026-10-09 修）。
 
@@ -430,6 +442,14 @@ async def lock_sku_price_rules(session: AsyncSession, sku_id: int) -> None:
     **必须在读冲突之前**调用。放到写之前才拿锁等于没加：那两个请求都已经
     读完"没有冲突"了，再串行也改变不了各自已经做出的判断。
     """
+    # ⚠️ 方言守卫：`pg_advisory_xact_lock` 是 PostgreSQL 专有函数，
+    # SQLite（单元测试用的库）没有它，会直接报 "no such function"。
+    # 项目里 `bizdoc/service.py` 的同类锁也是这么守的。
+    # 非 PostgreSQL 时**静默跳过**：单元测试跑的是单线程，没有并发要防；
+    # 生产一定是 PostgreSQL，锁照常生效。
+    if _session_dialect(session) != "postgresql":
+        return
+
     digest = hashlib.sha256(f"pricing-sku:{sku_id}".encode()).digest()[:8]
     await session.execute(
         text("SELECT pg_advisory_xact_lock(:key)"),

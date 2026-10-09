@@ -120,6 +120,92 @@ def upload_csv(token, path, headers, rows):
     )
 
 
+def _run_sql(sql_text, params=None, *, fetch: str | None = None):
+    """在**独立线程 + 独立引擎**里跑一条 SQL，用完 dispose。
+
+    ⚠️ 不能用 `SessionLocal`：它的连接池**绑在创建它的那个事件循环**上，
+    而本套件的 `main()` 是同步的、被 `_driver` 的循环调用 —— 在另一个线程里
+    复用那个池会报 "attached to a different loop"（我第一版就这么踩的，
+    异常还被线程吞掉，只留下一堆看不懂的 traceback）。
+    """
+    import asyncio
+    import threading
+
+    from sqlalchemy import text as _t
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import settings
+
+    out: dict = {}
+
+    def worker():
+        async def go():
+            engine = create_async_engine(settings.database_url)
+            try:
+                async with engine.begin() as conn:
+                    res = await conn.execute(_t(sql_text), params or {})
+                    if fetch == "scalar":
+                        out["v"] = res.scalar_one()
+                    elif fetch == "count":
+                        out["v"] = int(res.scalar_one())
+            finally:
+                await engine.dispose()
+
+        asyncio.run(go())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    return out.get("v")
+
+
+def run_db_scalar(sql_text, params=None):
+    return _run_sql(sql_text, params, fetch="scalar")
+
+
+def run_db_count(sql_text, params=None):
+    return _run_sql(sql_text, params, fetch="count")
+
+
+def run_db_exec(sql_text, params=None):
+    return _run_sql(sql_text, params)
+
+
+def run_db_delete_holding_lock(table: str, row_id: int) -> None:
+    """在**另一个连接**里删除该行并持锁约 2 秒，用来复现"编辑等锁期间记录消失"。
+
+    必须真的持锁：只删不持锁的话，编辑请求会在删除提交**之后**才开始，
+    走的是"记录本来就不存在"的路径（404 也能过），验不出并发那一条。
+    """
+    import asyncio
+    import threading
+    import time
+
+    from sqlalchemy import text as _t
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import settings
+
+    def worker():
+        async def go():
+            engine = create_async_engine(settings.database_url)
+            try:
+                async with engine.connect() as conn:
+                    await conn.execute(_t(f"delete from {table} where id=:i"), {"i": row_id})
+                    # 故意不提交，先持锁一段时间
+                    await asyncio.sleep(2)
+                    await conn.commit()
+            finally:
+                await engine.dispose()
+
+        asyncio.run(go())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    time.sleep(0.4)   # 确保删除已持锁，编辑请求随后会等这把锁
+    return None
+
+
 async def clean(verbose=False):
     from sqlalchemy import text
 
@@ -753,6 +839,60 @@ async def main():
                            body={'agreed_price': 66})
         check('R07b 传正数仍可正常改价', res.get('code'), 0)
         call('DELETE', f'/customer-price-rules/{cp_id}', token=admin)
+
+    # ---- R08：导入也必须参与同一把 SKU 锁（审查 P1）----
+    # 从前导入只"查一遍冲突"而不拿锁：与页面新增并发时两边都查到"没有冲突"、
+    # 都插入，同一 SKU 同一区间留下**两条启用规则**（实测指导价 66 与 55 并存）。
+    # 两个导入入口都要验，只修一个等于没修。
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 400, 'max_qty': 410, 'guide_price': 41,
+    })
+    check('R08 前置：建一条 400~410 的规则', res.get('code'), 0)
+    _csv_rows = [
+        {'SKU编码': run_db_scalar(
+            "select sku_code from skus where id=:i", {'i': price_sku_id}),
+         '客户等级(留空=通用)': lvl,
+         '数量下限': '400', '数量上限(留空=不限)': '410', '指导价': '42'},
+    ]
+    # 先删掉前置规则，再让"导入"与"页面新增"并发抢同一区间
+    call('DELETE', f"/price-rules/{(res.get('data') or {}).get('id')}", token=admin)
+    with _TPE(max_workers=2) as _ex:
+        _futs = [
+            _ex.submit(lambda: call('POST', '/price-rules', token=admin, body={
+                'sku_id': price_sku_id, 'customer_level': lvl,
+                'min_qty': 400, 'max_qty': 410, 'guide_price': 41})),
+            _ex.submit(lambda: upload_csv(admin, '/price-rules/import', [
+                'SKU编码', '客户等级(留空=通用)', '数量下限', '数量上限(留空=不限)', '指导价'],
+                _csv_rows)),
+        ]
+        [f.result() for f in _futs]
+    _live = run_db_count(
+        "select count(*) from price_rules where sku_id=:s and customer_level=:l "
+        "and status='active' and min_qty=400", {'s': price_sku_id, 'l': lvl})
+    check('R08 导入与新增并发后只落一条启用规则', _live, 1)
+    # 收尾：把这批 400~410 的规则清掉（接口 DELETE 只置停用，会占着区间）
+    run_db_exec("delete from price_rules where sku_id=:s and customer_level=:l "
+                "and min_qty=400", {'s': price_sku_id, 'l': lvl})
+
+    # ---- R09：编辑与删除并发 → 404，不是 500（审查 P2）----
+    # 编辑请求读到记录后、在等锁期间记录被删：从前锁后重读用 `scalar_one()` 抛异常，
+    # 加上"建议锁不阻塞读行"，flush 时还会撞 `StaleDataError` → 500。
+    # 现在重读带**行锁**（等删除事务结束、按最新快照重算），取不到就给 404。
+    status, res = call('POST', '/customer-price-rules', token=admin, body={
+        'customer_id': 3, 'sku_id': 1,
+        'min_qty': 2400, 'max_qty': 2410, 'agreed_price': 55,
+    })
+    check('R09 前置：建一条客户特殊价', res.get('code'), 0)
+    _cp_id = (res.get('data') or {}).get('id')
+    # 用原生连接"先删并持锁"，再让编辑去等锁 —— 精确复现"编辑等锁期间记录消失"
+    run_db_delete_holding_lock("customer_price_rules", _cp_id)
+    status, res = call('PATCH', f'/customer-price-rules/{_cp_id}', token=admin,
+                       body={'agreed_price': 66})
+    check('R09 记录已被删时编辑返回 404（不是 500）', res.get('code'), 40401)
+    check_true('R09 提示说清是"刚被删除"', '删除' in str(res.get('message') or ''),
+               str(res.get('message'))[:50])
+    run_db_exec("delete from customer_price_rules where min_qty=2400", {})
 
     # ---- R05：并发提交重叠区间，必须只成功一条 ----
     # 从前两个并发请求各自读到"没有冲突"（对方还没提交），各写一条 →

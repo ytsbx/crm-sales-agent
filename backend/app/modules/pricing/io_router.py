@@ -103,6 +103,25 @@ async def price_rule_template(_: CurrentUser = Depends(require_permission("price
     )
 
 
+async def _lock_import_skus(session: AsyncSession, sku_map: dict) -> None:
+    """导入前把本批涉及的 SKU **全部**加锁（审查 P1：导入绕过了并发冲突保护）。
+
+    从前导入只调 `find_price_rule_conflict` / `find_customer_price_conflict` 查一遍，
+    而"查"和"写"之间没有锁 —— 与页面新增并发时，两边都查到"没有冲突"、
+    都插入，最终**同一 SKU 同一区间留下两条启用规则**（实测指导价 66 与 55 并存）。
+
+    两点讲究：
+    - **按 SKU id 升序**逐个加锁。多 SKU 的文件里，若两个导入按不同顺序拿锁，
+      互相等对方持有的锁就会死锁；统一升序可以避免。
+    - 一次事务内拿完全部锁再开始写入：本批所有行的冲突检查都在持锁状态下进行。
+
+    导入本来就是"整批一个事务"，所以用事务级 advisory lock（连接级会在结束时释放，
+    但事务级更精确：提交/回滚即释放）。
+    """
+    for sku_id in sorted({sku.id for sku in sku_map.values()}):
+        await svc.lock_sku_price_rules(session, sku_id)
+
+
 @router.post("/price-rules/import")
 async def import_price_rules(
     request: Request,
@@ -122,6 +141,9 @@ async def import_price_rules(
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
+    # ⚠️ 加锁必须在**任何冲突检查之前**（审查 P1）：否则与页面新增并发时，
+    # 两边都查到"没有冲突"、都插入，同一区间落两条启用规则。
+    await _lock_import_skus(session, sku_map)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
@@ -279,6 +301,8 @@ async def import_customer_prices(
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
+    # 同 `import_price_rules`：锁必须在冲突检查之前（审查 P1，两个入口都复现了）
+    await _lock_import_skus(session, sku_map)
     owner_ids = await scoped_owner_ids(session, user)
 
     for index, row in enumerate(rows, start=2):

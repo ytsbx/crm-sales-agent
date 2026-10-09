@@ -373,6 +373,80 @@ async def create_price_rule(
     return ok(svc.serialize_price_rule(rule, sku.sku_code), "价格规则已创建")
 
 
+async def _locked_price_rule(session: AsyncSession, rule_id: int) -> PriceRule:
+    """拿锁 → **重读** → 校验记录仍在（审查 P2：编辑与删除并发会 500）。
+
+    从前这里用 `scalar_one()`：编辑请求先读到记录、在等锁期间记录被**删除**，
+    锁后重读拿到 0 行，`scalar_one()` 直接抛 `NoResultFound` → **500**。
+    对使用者来说"我编辑的时候别人把它删了"应该是一句能看懂的话，不是服务器错误。
+
+    三步的顺序不能换：
+      1. 先读一次拿到 `sku_id`（不拿锁就没法知道该锁哪个 SKU）；
+      2. 拿 SKU 锁 —— 删除也走同一把锁，于是两边真正串行；
+      3. 锁后重读，**`scalar_one_or_none`**，为 None 说明记录已消失 → 404。
+    """
+    probe = await session.get(PriceRule, rule_id)
+    if probe is None:
+        raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    await svc.lock_sku_price_rules(session, probe.sku_id)
+    # ⚠️ 这里必须**同时加行锁**（`with_for_update`），只加建议锁不够 ——
+    # `pg_advisory_xact_lock` 不阻塞"读行"：删除事务还没提交时，重读照样能看到那一行，
+    # 于是以为记录还在、继续改，等到 flush 时行已被删 → `StaleDataError`
+    # （"expected to update 1 row(s); 0 were matched"）→ 500。实测时间线：
+    # 重读在 0.70s 就返回了（拿着那一行），而删除事务 3.04s 才提交。
+    #
+    # `with_for_update()` 会**等删除事务结束**，然后按最新已提交快照重新求值 WHERE：
+    # 行已消失 → 0 行 → 下面给 404，而不是 500。
+    rule = (
+        await session.execute(
+            select(PriceRule)
+            .where(PriceRule.id == rule_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if rule is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "这条价格规则刚刚被删除（可能有其他人同时在操作），请刷新后重试",
+            404,
+        )
+    return rule
+
+
+async def _locked_customer_price_rule(
+    session: AsyncSession, rule_id: int
+) -> CustomerPriceRule:
+    """同 `_locked_price_rule`，针对客户特殊价（审查 P2 的 500 就在这条路径上）。"""
+    probe = await session.get(CustomerPriceRule, rule_id)
+    if probe is None:
+        raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
+    await svc.lock_sku_price_rules(session, probe.sku_id)
+    # ⚠️ 这里必须**同时加行锁**（`with_for_update`），只加建议锁不够 ——
+    # `pg_advisory_xact_lock` 不阻塞"读行"：删除事务还没提交时，重读照样能看到那一行，
+    # 于是以为记录还在、继续改，等到 flush 时行已被删 → `StaleDataError`
+    # （"expected to update 1 row(s); 0 were matched"）→ 500。实测时间线：
+    # 重读在 0.70s 就返回了（拿着那一行），而删除事务 3.04s 才提交。
+    #
+    # `with_for_update()` 会**等删除事务结束**，然后按最新已提交快照重新求值 WHERE：
+    # 行已消失 → 0 行 → 下面给 404，而不是 500。
+    rule = (
+        await session.execute(
+            select(CustomerPriceRule)
+            .where(CustomerPriceRule.id == rule_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if rule is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "这条客户特殊价刚刚被删除（可能有其他人同时在操作），请刷新后重试",
+            404,
+        )
+    return rule
+
+
 @router.patch("/price-rules/{rule_id}")
 async def update_price_rule(
     rule_id: int,
@@ -394,30 +468,11 @@ async def update_price_rule(
 
     挡住而不是静默忽略：静默忽略会让人以为改成功了，那比报错危险得多。
     传"与当前值相同"的价钱不算改（允许幂等回传），否则表单整份提交会被误拦。
+
+    **拿锁与重读都收在 `_locked_price_rule` 里**：删除走同一把锁，
+    两边真正串行；记录在等锁期间被删时给 404 而不是 500（审查 P2）。
     """
-    rule = await session.get(PriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
-    # 同 SKU 串行（审查 R05）：必须在**改字段之前**拿锁。
-    await svc.lock_sku_price_rules(session, rule.sku_id)
-    # ⚠️ **拿到锁之后必须重读这条规则**（2026-10-09 审查指出，第二版修的时候漏了）。
-    #
-    # 上面那次 `session.get` 发生在**锁之前**，读到的可能是"别人刚改完但还没被我看到"
-    # 的旧快照（READ COMMITTED 下，已提交的行在同一事务里不会自动刷新到已加载的对象）。
-    # 不重读的后果实测过：原区间 `0~10`，两个请求并发分别改下限为 9、上限为 5 ——
-    # 两个都返回 200，最终落库 `9~5`（**倒置区间**）。原因是后到的那个用的是旧快照：
-    # 它把"下限 9 + 旧的 10"当成合并结果（校验当然通过），落库时又把旧的上限 10
-    # 覆盖成它要写的 5。
-    #
-    # `populate_existing=True` 是这里的关键：它会**用库里的当前值刷新已加载对象**，
-    # 否则拿到的还是同一个内存对象、字段依旧是旧值。
-    rule = (
-        await session.execute(
-            select(PriceRule)
-            .where(PriceRule.id == rule_id)
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one()
+    rule = await _locked_price_rule(session, rule_id)
     _reject_in_place_price_change(rule, payload.model_dump(exclude_unset=True))
     before = svc.serialize_price_rule(rule)
     for field, value in payload.model_dump(exclude_unset=True).items():
@@ -501,6 +556,10 @@ async def delete_price_rule(
     rule = await session.get(PriceRule, rule_id)
     if rule is None:
         raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    # 删除也要拿**同一把 SKU 锁**（审查 P2）：否则它能在"新增/修改/导入"的
+    # 冲突检查之后、写入之前把记录改掉，或者在"编辑等锁"期间把记录拿走，
+    # 让对方的锁后重读落空。串行化之后"删除与编辑并发"只有一个顺序成立。
+    await svc.lock_sku_price_rules(session, rule.sku_id)
     rule.status = "disabled"
     await write_audit(
         session,
@@ -646,32 +705,11 @@ async def update_customer_price_rule(
 
     部分更新：只改传进来的字段。不支持改 customer_id / sku_id ——
     那等于换一条规则，删除重建更清楚。
-    """
-    rule = await session.get(CustomerPriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
 
-    # 同 SKU 串行（审查 R05），与价格规则共用同一把 SKU 锁；必须在改字段与
-    # 读冲突之前拿，理由同 `update_price_rule`。
-    await svc.lock_sku_price_rules(session, rule.sku_id)
-    # ⚠️ **拿到锁之后必须重读这条记录**（2026-10-09 审查指出）。
-    #
-    # 我给价格规则补了这一步，却**漏了这里** —— 同一个 bug 的第二个入口，
-    # 实测照样复现：原区间 `0~10`，并发分别改下限为 9、上限为 5，
-    # **两个都返回 200，最终落库 `9~5`（倒置区间）**。
-    # 原因与价格规则那处一模一样：上面那次 `session.get` 在**锁之前**，
-    # 后到的请求拿的是旧快照 —— 它把"下限 9 + 旧的 10"当成合并结果（校验当然过），
-    # 落库时又把旧的上限 10 覆盖成 5。
-    #
-    # `populate_existing=True` 是关键：用库里的当前值**刷新已加载对象**，
-    # 否则 `session.get` 拿回来的还是同一个内存对象、字段依旧是旧值。
-    rule = (
-        await session.execute(
-            select(CustomerPriceRule)
-            .where(CustomerPriceRule.id == rule_id)
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one()
+    拿锁与重读收在 `_locked_customer_price_rule` 里：删除走同一把锁，
+    记录在等锁期间被删时给 **404** 而不是 500（审查 P2 实测过 `scalar_one()` 抛 500）。
+    """
+    rule = await _locked_customer_price_rule(session, rule_id)
     before = svc.serialize_customer_price(rule)
     changes = payload.model_dump(exclude_unset=True)
 
@@ -765,6 +803,8 @@ async def delete_customer_price_rule(
     rule = await session.get(CustomerPriceRule, rule_id)
     if rule is None:
         raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
+    # 同 `delete_price_rule`：删除参与同一套 SKU 锁（审查 P2）
+    await svc.lock_sku_price_rules(session, rule.sku_id)
     # 与新增 / 修改 / 列表**同一份判据**：这条规则属于哪个客户，那个客户就得在
     # 操作人的数据范围内。原来只查 price:manage —— "本人仅自己"范围的业务员拿 id
     # 就能删掉别人客户的专属价，删完那个客户后续报价改用通用价，等于悄悄改价。
