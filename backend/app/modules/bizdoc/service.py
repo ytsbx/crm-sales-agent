@@ -1038,19 +1038,75 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
         "subtotal_amount": version_row.subtotal_amount,
         "charge_amount": version_row.charge_amount,
         "discount_amount": version_row.discount_amount,
-        "charges": [
-            {
-                "label": c.description
-                or CHARGE_TYPE_LABEL.get(c.charge_type, c.charge_type),
-                "amount": c.amount,
-                "is_discount": bool(c.is_discount),
-            }
-            for c in charge_rows
-        ],
+        # 金额拆分（2026-10-09「产品价格与运费分离」）：运费要从"附加费用"里单列，
+        # 客户才能一眼看出"产品货款多少、运费多少"。这三个值**都已含在**
+        # `total_amount` 里 —— 下面 charges 只是把同一笔钱分行展示，
+        # 逐行相加正好等于合计，**不是**在合计之外又加一遍。
+        "logistics_amount": version_row.logistics_amount,
+        "other_charge_amount": version_row.other_charge_amount,
+        "pricing_basis": version_row.pricing_basis,
+        #: 产品单价的对外口径说明。运费分离之后，"单价是否含运费"必须在客户
+        #: 看得到的表上说清楚，否则客户按旧口径理解会以为运费已经包在价里。
+        "unit_price_note": "以上产品单价均不含运费",
+        "charges": _quote_doc_charge_lines(charge_rows),
         # 合计取版本行的 total_amount（版本生成时就定死了）
         "total_amount": version_row.total_amount,
         "sections": sections,
     }
+
+
+def _quote_doc_charge_lines(charge_rows: list) -> list[dict]:
+    """对客文件上的费用行：**运费单独一行、其余归入"其他费用"**。
+
+    只按**费用分类码**认运费（`is_logistics_charge`），不按说明文字里含"运费"
+    去猜 —— 说明是自由文本，写成什么都可能。
+
+    多条物流费用**按条累加**成一行（口径：允许多条时累加，不再另加整单运费），
+    其余非折扣费用合成一行"其他费用"，折扣各自单列（库里是负数）。
+    逐行相加仍等于 `charge_amount + discount_amount`，与合计自洽 ——
+    这里只是把同一笔钱**拆开显示**，不是在合计之外又加一遍。
+
+    值为 0 的行**不印**（运费为 0 的报价上多一行"运费 0.00"只是噪声；
+    真正要客户看清的是"运费具体多少钱"这件事，有运费时它一定在）。
+    """
+    from app.modules.quote.service import is_logistics_charge
+
+    discount_lines: list[dict] = []
+    logistics_total = Decimal(0)
+    logistics_desc: str | None = None
+    other_total = Decimal(0)
+    for charge in charge_rows:
+        if charge.is_discount:
+            discount_lines.append(
+                {
+                    "label": charge.description
+                    or CHARGE_TYPE_LABEL.get(charge.charge_type, charge.charge_type),
+                    "amount": charge.amount,
+                    "is_discount": True,
+                }
+            )
+        elif is_logistics_charge(charge):
+            logistics_total += charge.amount or Decimal(0)
+            logistics_desc = logistics_desc or charge.description
+        else:
+            other_total += charge.amount or Decimal(0)
+
+    # 运费用业务员写的说明（如"宁波到苏州运费"）优先，它比一个笼统的"运费"更能对上账；
+    # 没写说明才退回类型标签。这样既有明确的一行金额，又能看出这一趟运的是哪里。
+    head: list[dict] = []
+    if logistics_total:
+        head.append(
+            {
+                "label": logistics_desc or CHARGE_TYPE_LABEL.get("logistics", "运费"),
+                "amount": logistics_total,
+                "is_discount": False,
+            }
+        )
+    if other_total:
+        head.append(
+            {"label": "其他费用", "amount": other_total, "is_discount": False}
+        )
+    return head + discount_lines
 
 
 async def generate_quote_doc(
@@ -1151,6 +1207,14 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
             "subtotal_amount": built.get("subtotal_amount"),
             "charge_amount": built.get("charge_amount"),
             "discount_amount": built.get("discount_amount"),
+            # 运费单独一列（2026-10-09 运费分离）：Excel 上要能看出"运费多少、
+            # 其他费用多少"，而不是混在"附加费用"一个数里。两个值都已含在
+            # `total_amount` 里，只是拆分展示。
+            "logistics_amount": built.get("logistics_amount"),
+            "other_charge_amount": built.get("other_charge_amount"),
+            # 「以上产品单价均不含运费」这句要落进快照：文件一旦生成就冻结，
+            # 事后重出（下载存档原件）也还是当时那句话。
+            "unit_price_note": built.get("unit_price_note"),
             "charges": built.get("charges") or [],
             "body": body,
             "template": {"id": template.id, "name": template.name, "version": template.version},

@@ -453,8 +453,11 @@ def main():
         created_quotes.append(qid10)
         call('POST', f'/quote-versions/{vid10}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
+        # 折扣按接口契约传**正数**（`amount: ge=0`），后端负责归一成负数入库
+        # （`recalc_version` 直接代数相加，库里恒为负数）。字段名是 `description`——
+        # 原来写的 `charge_name` 不在 schema 里，会被静默忽略（说明一直是空的）。
         call('POST', f'/quote-versions/{vid10}/charges', token=zhangsan,
-             body={'charge_name': '整单优惠', 'amount': -700, 'is_discount': True})
+             body={'description': '整单优惠', 'amount': 700, 'is_discount': True})
         _, res = call('POST', f'/quote-versions/{vid10}/submit-approval', token=zhangsan, body={})
         whole_flagged = bool((res.get('data') or {}).get('approval_required'))
         _, res = call('POST', '/opportunities', token=zhangsan, body={
@@ -536,6 +539,11 @@ def main():
         created_quotes.append(qid13)
         call('POST', f'/quote-versions/{vid13}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
+        # 运费分离（2026-10-09）：正式发送前必须已确认运费金额，而且**必须在提交
+        # 审批之前填**（提交后版本不可编辑）。本用例验的是成交建单幂等，不是运费——
+        # 补一条已确认的运费让流程能走完。
+        call('POST', f'/quote-versions/{vid13}/charges', token=zhangsan,
+             body={'charge_type': 'logistics', 'description': '验收运费', 'amount': 300})
         call('POST', f'/quote-versions/{vid13}/submit-approval', token=zhangsan, body={})
         _, sent_res = call('POST', f'/quote-versions/{vid13}/mark-sent', token=zhangsan, body={})
         if sent_res.get('code') != 0:

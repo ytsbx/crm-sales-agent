@@ -435,6 +435,18 @@ async def main():
     # 插入直接违反约束——询价/报价/打样三环都通了，唯独转订单必炸。
     print()
     print('=== 9. 定制报价转订单（主路径最后一环）===')
+    # 运费分离（2026-10-09）：**运费必须在提交审批前填好**。
+    # 版本一旦提交审批就不可编辑（`ensure_version_editable`），所以顺序是
+    # "明细 + 运费 → 提交审批 → 正式发送"，这也正是真实业务顺序。
+    # 本套件验的是"定制件没有 SKU 也能走完主路径"，不是运费本身 ——
+    # 补一条**已确认**的运费（明确金额，不是空输入）让流程能走完。
+    freight_status, freight = call('POST', f'/quote-versions/{version_id}/charges',
+                                   token=token, body={
+                                       'charge_type': 'logistics',
+                                       'description': '夹具运费', 'amount': 20})
+    check('提交审批前补一条已确认运费', freight_status, 200)
+    if freight_status != 200:
+        print('     运费接口返回：', str(freight)[:200])
     status, payload = call('POST', '/approval-rules', token=token, body={
         'name': f'CHK定制免审-{STAMP}', 'kind': 'auto_pass', 'priority': 1,
         'conditions': [{'field': 'total_amount', 'op': 'lte', 'value': 999999999}],
@@ -446,7 +458,10 @@ async def main():
         call('PATCH', f'/approval-rules/{rule_id}/enabled', token=token,
              body={'enabled': True})
     call('POST', f'/quote-versions/{version_id}/submit-approval', token=token, body={})
-    call('POST', f'/quote-versions/{version_id}/mark-sent', token=token, body={})
+    status, sent = call('POST', f'/quote-versions/{version_id}/mark-sent', token=token, body={})
+    check('运费确认后能正式发送', sent.get('code'), 0)
+    if sent.get('code') != 0:
+        print('     发送接口返回：', str(sent)[:200])
     status, payload = call('POST', f'/opportunities/{opportunity_id}/confirm-win',
                            token=token, body={})
     check('定制报价能转订单（以前必炸）', payload.get('code'), 0)

@@ -246,6 +246,11 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
     summary_row = total_row + 2
     sheet.cell(row=summary_row, column=1, value="小计").font = bold
     sheet.cell(row=summary_row, column=money_column, value=_money(data.get("subtotal_amount")))
+    # 产品单价不含运费（2026-10-09 运费分离）：这句话要紧挨着"小计"印出来，
+    # 客户才会知道上面那一列单价里**没有**含运费、下面的运费是另算的。
+    # 历史版本（`unit_price_note` 为空）不印，保持老文件原样。
+    if _text(data.get("unit_price_note")).strip():
+        sheet.cell(row=summary_row, column=2, value=_text(data.get("unit_price_note")))
     summary_row += 1
     for charge in data.get("charges") or []:
         sheet.cell(row=summary_row, column=1, value=_text(charge.get("label")))
