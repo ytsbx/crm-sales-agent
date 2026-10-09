@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import Text, cast, select
+from sqlalchemy import Text, cast, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -553,13 +553,28 @@ async def delete_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    rule = await session.get(PriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
-    # 删除也要拿**同一把 SKU 锁**（审查 P2）：否则它能在"新增/修改/导入"的
-    # 冲突检查之后、写入之前把记录改掉，或者在"编辑等锁"期间把记录拿走，
-    # 让对方的锁后重读落空。串行化之后"删除与编辑并发"只有一个顺序成立。
-    await svc.lock_sku_price_rules(session, rule.sku_id)
+    # ⚠️ 必须走 `_locked_price_rule`（拿锁 **+ 锁后重读**），不能只拿锁
+    # （审查 P2 第二次指出这个入口）。只拿锁的后果实测过：
+    #   1. 规则原本 `disabled`，停用请求 `session.get` 读到它（内存里就是 disabled）；
+    #   2. 它在等锁期间，另一请求"恢复启用"拿到锁并提交（库内变 `active`）；
+    #   3. 停用请求继续，把内存对象再赋一次 `"disabled"` —— **同值赋值，
+    #      ORM 认为没有变化、不产生 UPDATE**，于是什么也没写；
+    #   4. 接口照样返回 200「价格规则已停用」，**而库里仍是 active**。
+    # 用户看到"停用成功"，规则却还在生效 —— 比报错危险得多。
+    rule = await _locked_price_rule(session, rule_id)
+    # ⚠️ 用**显式 UPDATE**，不靠 ORM 的变更检测（审查 P2 第二次指出这个入口）。
+    #
+    # 只拿锁不重读的旧写法实测过：规则原本 `disabled`，停用请求读到它之后在等锁期间
+    # 被"恢复启用"抢先提交（库内变 `active`），它继续时把内存对象**再赋一次同值**
+    # —— ORM 认为没变化、**根本不发 UPDATE**，接口照样回 200「价格规则已停用」，
+    # 而库里仍是 active。用户看到"停用成功"、规则却还在生效，比报错危险得多。
+    #
+    # 上面已经重读了（拿锁 + `populate_existing`），但这里再显式写一次语句：
+    # **幂等写**（delete 语义本来就幂等），且不再依赖"内存对象与库内是否一致"
+    # 这个隐含前提 —— 那一类缺陷从此整体消失。
+    await session.execute(
+        update(PriceRule).where(PriceRule.id == rule.id).values(status="disabled")
+    )
     rule.status = "disabled"
     await write_audit(
         session,
@@ -800,11 +815,11 @@ async def delete_customer_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    rule = await session.get(CustomerPriceRule, rule_id)
-    if rule is None:
-        raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
-    # 同 `delete_price_rule`：删除参与同一套 SKU 锁（审查 P2）
-    await svc.lock_sku_price_rules(session, rule.sku_id)
+    # 同 `delete_price_rule`：走 `_locked_customer_price_rule`（拿锁 + 锁后重读）。
+    # 这条是**硬删除**，ORM 一定会发 DELETE，所以上面那种"同值赋值被跳过"不会发生；
+    # 但同样要重读 —— 数据范围判断（`customer_id`）必须基于**锁后的最新记录**，
+    # 否则读到的可能是别人刚改过的旧归属。
+    rule = await _locked_customer_price_rule(session, rule_id)
     # 与新增 / 修改 / 列表**同一份判据**：这条规则属于哪个客户，那个客户就得在
     # 操作人的数据范围内。原来只查 price:manage —— "本人仅自己"范围的业务员拿 id
     # 就能删掉别人客户的专属价，删完那个客户后续报价改用通用价，等于悄悄改价。

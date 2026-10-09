@@ -171,6 +171,41 @@ def run_db_exec(sql_text, params=None):
     return _run_sql(sql_text, params)
 
 
+def run_db_update_holding_lock(table: str, row_id: int, values: dict) -> None:
+    """在**另一个连接**里改这一行并持锁约 2 秒，制造"请求读完 → 等锁"的窗口。
+
+    用于复现"读到旧状态 → 等锁期间别人改了 → 自己再赋同值被 ORM 吞掉"这类缺陷。
+    """
+    import asyncio
+    import threading
+    import time
+
+    from sqlalchemy import text as _t
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import settings
+
+    sets = ", ".join(f"{k}=:{k}" for k in values)
+    params = dict(values, _id=row_id)
+
+    def worker():
+        async def go():
+            engine = create_async_engine(settings.database_url)
+            try:
+                async with engine.connect() as conn:
+                    await conn.execute(_t(f"update {table} set {sets} where id=:_id"), params)
+                    await asyncio.sleep(2)   # 故意不提交，先持锁
+                    await conn.commit()
+            finally:
+                await engine.dispose()
+
+        asyncio.run(go())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    time.sleep(0.4)   # 确保已持锁，主请求随后会等这把锁
+
+
 def run_db_delete_holding_lock(table: str, row_id: int) -> None:
     """在**另一个连接**里删除该行并持锁约 2 秒，用来复现"编辑等锁期间记录消失"。
 
@@ -839,6 +874,29 @@ async def main():
                            body={'agreed_price': 66})
         check('R07b 传正数仍可正常改价', res.get('code'), 0)
         call('DELETE', f'/customer-price-rules/{cp_id}', token=admin)
+
+    # ---- R10：停用必须真的落库（锁后重读，别被"同值赋值"吞掉）----
+    # 审查实测：规则原本 disabled，停用请求读到它后在等锁期间被"恢复启用"抢先提交，
+    # 停用请求继续时把内存对象**再赋一次同值** —— ORM 认为没变化、不发 UPDATE，
+    # 接口照样回 200「价格规则已停用」，**而库里仍是 active**。
+    # 根因是 `delete_price_rule` 只拿锁、没走"锁后重读"。
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 600, 'max_qty': 610, 'guide_price': 60,
+    })
+    check('R10 前置：建一条规则', res.get('code'), 0)
+    r10_id = (res.get('data') or {}).get('id')
+    call('DELETE', f'/price-rules/{r10_id}', token=admin)
+    check('R10 前置：先停用它', run_db_scalar(
+        "select status from price_rules where id=:i", {'i': r10_id}), 'disabled')
+
+    # 制造"停用请求等锁、期间别人把它恢复启用"的窗口
+    run_db_update_holding_lock("price_rules", r10_id, {"status": "active"})
+    status, res = call('DELETE', f'/price-rules/{r10_id}', token=admin)
+    final = run_db_scalar("select status from price_rules where id=:i", {'i': r10_id})
+    check('R10 停用接口返回成功', res.get('code'), 0)
+    check('R10 库里**确实**变成 disabled（不是"回了成功却仍启用"）', final, 'disabled')
+    run_db_exec("delete from price_rules where id=:i", {'i': r10_id})
 
     # ---- R08：导入也必须参与同一把 SKU 锁（审查 P1）----
     # 从前导入只"查一遍冲突"而不拿锁：与页面新增并发时两边都查到"没有冲突"、
