@@ -1756,18 +1756,21 @@ export default function PriceCenterPage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>起订量</div>
+              <FormLabel>起订量</FormLabel>
               <Input
                 value={customerPriceForm.min_qty}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, min_qty: value })}
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>数量上限（留空 = 不限）</div>
+              {/* 四个格子并排、每个只有一百来像素宽：「留空 = 不限」这类说明一旦写进
+                  标签就会折行，折行后这一格的输入框被顶下去，整行参差不齐。
+                  所以标签只留字段名，说明挪进占位提示（placeholder）。 */}
+              <FormLabel>数量上限</FormLabel>
               <Input
                 value={customerPriceForm.max_qty}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, max_qty: value })}
-                placeholder="例如 999"
+                placeholder="留空 = 不限（如 999）"
               />
             </div>
             <div style={{ flex: 1 }}>
@@ -1778,7 +1781,7 @@ export default function PriceCenterPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>最低价</div>
+              <FormLabel>最低价</FormLabel>
               <Input
                 value={customerPriceForm.minimum_price}
                 onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, minimum_price: value })}
@@ -1787,13 +1790,13 @@ export default function PriceCenterPage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>生效起始日（留空 = 立即生效）</div>
+              <FormLabel>生效起始日</FormLabel>
               <DatePicker
                 type="date"
                 format="yyyy-MM-dd"
                 showClear
                 style={{ width: '100%' }}
-                placeholder="选择起始日"
+                placeholder="留空 = 立即生效"
                 value={
                   customerPriceForm.effective_from ? new Date(customerPriceForm.effective_from) : undefined
                 }
@@ -1806,13 +1809,13 @@ export default function PriceCenterPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>生效截止日（留空 = 长期有效）</div>
+              <FormLabel>生效截止日</FormLabel>
               <DatePicker
                 type="date"
                 format="yyyy-MM-dd"
                 showClear
                 style={{ width: '100%' }}
-                placeholder="选择截止日"
+                placeholder="留空 = 长期有效"
                 value={
                   customerPriceForm.effective_to ? new Date(customerPriceForm.effective_to) : undefined
                 }
@@ -1826,7 +1829,7 @@ export default function PriceCenterPage() {
             </div>
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>备注</div>
+            <FormLabel>备注</FormLabel>
             <Input
               value={customerPriceForm.remark}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, remark: value })}

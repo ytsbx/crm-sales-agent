@@ -40,10 +40,15 @@ QUOTE_STATUS_LABEL = {
 
 #: 产品核价口径（2026-10-09「产品价格与运费分离」）。
 #: 见 `QuoteVersion.pricing_basis` 上的说明。
+#:
+#: **2026-10-09 已统一为单一口径**：所有报价一律"产品单价不含运费、运费按已确认的
+#: 实际金额由公司代收代付"。`PRICING_BASIS_LEGACY` 不再被任何代码产生或写入
+#: （迁移 `b7d1f4a8c2e5` 已把存量行全部改成 `actual_pass_through`）。
+#: 保留这个常量与它的标签，只是为了"万一库里还留着历史值"时标签不至于显示成空白。
 PRICING_BASIS_LEGACY = "legacy"
 PRICING_BASIS_ACTUAL_PASS_THROUGH = "actual_pass_through"
 PRICING_BASIS_LABEL = {
-    PRICING_BASIS_LEGACY: "历史计算方式（成本含运费）",
+    PRICING_BASIS_LEGACY: "历史计算方式（成本含运费，已停用）",
     PRICING_BASIS_ACTUAL_PASS_THROUGH: "产品价不含运费，运费原额代收代付",
 }
 

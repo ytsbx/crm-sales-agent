@@ -168,37 +168,57 @@ async def build_context(
 
     foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
 
-    def to_cny(price: Decimal) -> Decimal:
-        return price * fx if foreign else price
+    def to_cny(amount: Decimal) -> Decimal:
+        """把**计价币种**的金额折成人民币。只用于报价侧的金额。"""
+        return amount * fx if foreign else amount
+
+    def cny_as_is(amount: Decimal) -> Decimal:
+        """人民币金额原样返回。
+
+        ⚠️ 成本类快照（`cost_snapshot` / `logistics_cost_snapshot`）**存的就是
+        人民币**（见 `build_item_snapshot`：`cost_snapshot=result["cost"]["goods_cost"]`，
+        从未折成计价币种）。从前这里对它们也套了 `to_cny`，外币单会把人民币成本
+        **再乘一次汇率** —— 成本凭空放大，毛利率被算成一个毫无意义的数
+        （2026-10-09 审查实测指出）。
+        """
+        return amount
 
     total_cny = float(to_cny(version.total_amount or Decimal(0)))
     prices = [to_cny(i.quoted_price) for i in items]
     # 产品核价成本逐版取口径（2026-10-09「产品价格与运费分离」）：
-    # 新报价的运费由客户全额承担、公司原额代收代付，**不进产品利润**；
-    # 历史版本仍含单件运费。判据只有 `item_unit_product_cost` 一份。
+    # 新报价的运费由客户全额承担、公司原额代收代付，**不进产品利润**。
+    # 判据只有 `item_unit_product_cost` 一份（统一口径后恒为"不含运费"）。
     includes_freight = quote_service.version_logistics_in_base_cost(version)
-    costs = [
-        to_cny(quote_service.item_unit_product_cost(i, includes_freight=includes_freight))
+    unit_costs = [
+        cny_as_is(quote_service.item_unit_product_cost(i, includes_freight=includes_freight))
         for i in items
     ]
-    total_price = sum(prices, Decimal(0))
-    total_cost = sum(costs, Decimal(0))
-    # 整单毛利率的收入侧同样要剔除运费 —— 运费是替客户转交给承运商的钱，
-    # 不是公司的收入。只剔一边会算出一个不真实的毛利率：
-    # 只剔成本 → 毛利率被抬高（该拦的拦不住）；只剔收入 → 被压低（误触审批）。
-    # 老口径不加这一减，行为与从前完全一致。
-    total_price_for_margin = total_price
-    if not includes_freight:
-        total_price_for_margin = total_price - to_cny(
-            version.logistics_amount or Decimal(0)
-        )
+    # ---- 整单毛利率：收入与成本**都必须按数量汇总**（2026-10-09 修）----
+    #
+    # 从前这里是 `sum(prices)` 与 `sum(costs)` —— 那是"**单价之和**"，却拿去减
+    # "**整单**运费"，两个量纲混着算。审查实测：单价 100、成本 80、数量 100、
+    # 运费 0 时毛利率 20%；只把运费改成 300，毛利率变成 **140%**
+    # （内部是 200−300=−100，再与 80 比）。依赖毛利率的免审与审批规则会误判。
+    #
+    # 现在：成本 = Σ(单件成本 × 数量)；收入 = 整单总额 − 代收运费。
+    # 用整单总额而不是 Σ(单价×数量)，是为了**保留折扣与其他费用**的处理
+    # （`total_amount = subtotal + charge + discount`，只减运费即可得到非运费收入）。
+    total_cost = sum(
+        (c * (i.quantity or Decimal(0)) for c, i in zip(unit_costs, items)), Decimal(0)
+    )
+    # 运费是替客户转交给承运商的钱，不是公司的收入 —— 收入侧同样要剔除，
+    # 否则"运费收得多"会被当成高毛利。
+    revenue_for_margin = to_cny(version.total_amount or Decimal(0)) - to_cny(
+        version.logistics_amount or Decimal(0)
+    )
     gross_margin = (
-        float((total_price_for_margin - total_cost) / total_price_for_margin * 100)
-        if total_price_for_margin
+        float((revenue_for_margin - total_cost) / revenue_for_margin * 100)
+        if revenue_for_margin
         else 0.0
     )
+    # 单件毛利率仍是"单件对单件"，不受上面的量纲修正影响
     item_margins = [
-        float((p - c) / p * 100) for p, c in zip(prices, costs) if p
+        float((p - c) / p * 100) for p, c in zip(prices, unit_costs) if p
     ]
     min_item_margin = min(item_margins) if item_margins else 0.0
 

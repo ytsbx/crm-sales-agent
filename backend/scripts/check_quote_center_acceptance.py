@@ -169,6 +169,48 @@ def confirm_sku_master(sku_id: int) -> None:
     asyncio.run(_run())
 
 
+def read_margin_ctx(version_id):
+    """从库里取审批引擎算出的综合毛利率（与规则判定同源）。
+
+    直接调 `approval.rules_engine.build_context`，而不是看接口回显 ——
+    验的就是"审批实际用的那个数"，接口换个地方算对了也没意义。
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.core.database import SessionLocal, engine
+    from app.modules.approval.rules_engine import build_context
+    from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
+
+    async def go():
+        # 连接池**绑在创建它的那个事件循环**上：本函数被调用多次（每次
+        # `asyncio.run` 一个新循环），用完必须 dispose，否则第二次就报
+        # "attached to a different loop"（该套件末尾的清理留痕踩过同一个坑）。
+        try:
+            return await _go()
+        finally:
+            await engine.dispose()
+
+    async def _go():
+        async with SessionLocal() as session:
+            version = (await session.execute(
+                select(QuoteVersion).where(QuoteVersion.id == version_id)
+            )).scalars().first()
+            if version is None:
+                return None
+            quote = (await session.execute(
+                select(Quote).where(Quote.id == version.quote_id)
+            )).scalars().first()
+            items = (await session.execute(
+                select(QuoteItem).where(QuoteItem.quote_version_id == version_id)
+            )).scalars().all()
+            return await build_context(session, quote=quote, version=version,
+                                       items=items, fx=None)
+
+    return asyncio.run(go())
+
+
 def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
@@ -710,6 +752,107 @@ def main():
             record('A18', f'{length} 字客户名能建出报价',
                    built, f'len={len(name)} code={res.get("code")} {res.get("message")}')
 
+        # ---------------- A19 运费分离返修的四条反例 ----------------
+        # 审查独立复测发现的四条（都发生在现有断言之外），逐条钉住：
+        # ① 审批毛利率把"单价之和"与"整单运费"混着减 → 只改运费就改变毛利率；
+        # ② 漏传运费金额被当成"已确认的零元"，还能正式发送；
+        # ③ 建立新版/复制时口径切了、派生快照照抄（只改备注利润就变）；
+        # ④ 历史口径的报价被强行加上"以上产品单价均不含运费"。
+        print('== A19 运费分离返修反例 ==')
+        _, res = call('POST', '/quotes', token=zhangsan, body={
+            'customer_id': customers['A'], 'opportunity_id': opp_a05,
+        })
+        fix19_quote = res['data']['quote_id']
+        fix19_version = res['data']['version_id']
+        created_quotes.append(fix19_quote)
+        _, res = call('POST', f'/quote-versions/{fix19_version}/items', token=zhangsan,
+                      body={'sku_id': sku_id, 'quantity': 100, 'quoted_price': 100})
+        fix19_item = res['data']['id']
+
+        # ---- ① 只改运费，审批用的综合毛利率必须不变 ----
+        # 从库里直接读上下文（与审批规则取值同源），避免"接口说的"与"审批算的"不一致
+        ctx_before = read_margin_ctx(fix19_version)
+        _, res = call('POST', f'/quote-versions/{fix19_version}/charges', token=zhangsan,
+                      body={'charge_type': 'logistics', 'description': 'A19 运费',
+                            'amount': 300})
+        charge19 = res['data']['id'] if res.get('code') == 0 else None
+        ctx_after = read_margin_ctx(fix19_version)
+        record('A19a', '只改运费：审批综合毛利率不变',
+               ctx_before is not None and ctx_after is not None
+               and ctx_before['gross_margin'] == ctx_after['gross_margin'],
+               f"运费 0→300：{ctx_before and ctx_before['gross_margin']}"
+               f" → {ctx_after and ctx_after['gross_margin']}")
+
+        # ---- ② 漏传运费金额：必须拒绝，且不落费用行、不写确认时刻 ----
+        _, res = call('POST', f'/quote-versions/{fix19_version}/charges', token=zhangsan,
+                      body={'charge_type': 'logistics', 'description': '没有提供金额'})
+        rejected19 = res.get('code') != 0
+        _, chs = call('GET', f'/quote-versions/{fix19_version}/charges', token=zhangsan)
+        chs = chs.get('data') or []          # 该端点返回扁平数组
+        zero_confirmed = [c for c in chs
+                          if c.get('amount') == 0 and c.get('logistics_confirmed_at')]
+        record('A19b', '漏传运费金额被拒，且不生成"已确认的零运费"',
+               rejected19 and not zero_confirmed,
+               f"code={res.get('code')} 被拒={rejected19} 零元已确认行={len(zero_confirmed)}")
+        # 正向对照：显式填 0 仍然合法，且算"已确认的零运费"
+        _, res = call('POST', f'/quote-versions/{fix19_version}/charges', token=zhangsan,
+                      body={'charge_type': 'logistics', 'description': '明确零运费',
+                            'amount': 0})
+        explicit_zero_ok = (res.get('code') == 0
+                            and res['data'].get('amount') == 0
+                            and res['data'].get('logistics_confirmed_at'))
+        record('A19c', '显式填写零元仍合法，并记为已确认的零运费',
+               bool(explicit_zero_ok),
+               f"code={res.get('code')} 确认时刻={bool(res['data'].get('logistics_confirmed_at'))}")
+        # 收掉这条运费（端点挂在 /quote-charges 下，不在版本路径下），
+        # 免得它改变同一报价上后续断言的形状
+        if charge19:
+            call('DELETE', f'/quote-charges/{charge19}', token=zhangsan)
+
+        # ---- ③ 只改备注：利润与成本快照一个字都不能动 ----
+        _, before19 = call('GET', f'/quote-versions/{fix19_version}', token=zhangsan)
+        item_before = next(i for i in before19['data']['items'] if i['id'] == fix19_item)
+        call('PATCH', f'/quote-items/{fix19_item}', token=zhangsan,
+             body={'remark': 'A19 只改备注'})
+        _, after19 = call('GET', f'/quote-versions/{fix19_version}', token=zhangsan)
+        item_after = next(i for i in after19['data']['items'] if i['id'] == fix19_item)
+        frozen = all(item_before[k] == item_after[k] for k in (
+            'profit_snapshot', 'profit_rate_snapshot', 'cost_snapshot',
+            'minimum_price_snapshot', 'quoted_price', 'quantity', 'recommended_price_snapshot',
+        ))
+        record('A19d', '只改备注不改变利润/成本/底价快照', frozen,
+               f"利润 {item_before['profit_snapshot']}→{item_after['profit_snapshot']}、"
+               f"成本 {item_before['cost_snapshot']}→{item_after['cost_snapshot']}")
+
+        # ---- ③b 建新版：派生快照按当前口径重算，售价不漂移 ----
+        _, res = call('POST', f'/quotes/{fix19_quote}/versions', token=zhangsan, body={})
+        new19 = res['data'].get('version_id') or res['data'].get('id')
+        _, nd = call('GET', f'/quote-versions/{new19}', token=zhangsan)
+        # 按**稳定快照字段**配对，不按位置：复制后的明细顺序虽然一致，但按位置
+        # 配对一旦上游改了顺序就会静默配错行，断言也就白写了。
+        def _same(a, b):
+            return (a.get('sku_code') == b.get('sku_code')
+                    and a.get('inquiry_no') == b.get('inquiry_no')
+                    and a.get('quoted_price') == b.get('quoted_price')
+                    and a.get('quantity') == b.get('quantity'))
+
+        nit = next((i for i in nd['data']['items'] if _same(i, item_after)), None)
+        expected_profit = round(nit['quoted_price'] - nit['cost_snapshot'], 4) if nit else None
+        basis_ok = (nit is not None
+                    and nit['quoted_price'] == item_after['quoted_price']
+                    and abs(round(nit['profit_snapshot'], 4) - expected_profit) < 0.001)
+        record('A19e', '建新版：售价不漂移、利润按当前口径重算',
+               basis_ok,
+               f"单价 {item_after['quoted_price']}→{nit and nit['quoted_price']}、"
+               f"利润 {nit and nit['profit_snapshot']}（期望 {expected_profit}）")
+
+        # ---- ④ 对客文案只在"单价不含运费"口径下出现 ----
+        _, det = call('GET', f'/quote-versions/{fix19_version}', token=zhangsan)
+        basis = (det['data'].get('version') or {}).get('pricing_basis')
+        note_ok = (basis == 'actual_pass_through')   # 统一口径后必须写
+        record('A19f', '对客口径说明与版本口径一致（统一后恒为"不含运费"）',
+               note_ok, f"pricing_basis={basis}")
+
     finally:
         cleanup()
         evidence['results'] = RESULTS
@@ -724,7 +867,7 @@ def main():
     if failed:
         print(f"FAILED 用例：{[r['case'] for r in failed]}")
         sys.exit(1)
-    print('A01–A18 全部通过')
+    print(f'A01–A19 全部通过（{len(RESULTS)} 条）')
 
 
 if __name__ == '__main__':

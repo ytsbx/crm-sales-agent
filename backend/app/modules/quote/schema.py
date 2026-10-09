@@ -105,11 +105,21 @@ class QuoteChargeInput(BaseModel):
     通过本接口填进来的物流费用视为**业务已确认的具体金额** ——
     "明确确认的零运费"（`amount=0`）也是合法输入，落库时打上确认时刻，
     与"压根没填"区分开（见 `QuoteCharge.logistics_confirmed_at`）。
+
+    ⚠️ **`amount` 必填**（2026-10-09 审查实测后修）：从前它写着
+    `default=Decimal(0)`，于是"漏传金额"与"明确填 0"在**入参层就变成同一个值**，
+    上面那句"与压根没填区分开"根本没有实现。实测漏传金额的运费请求：
+    返回成功、落库 `amount=0`、**还写上了确认时刻**，随后正式发送也放行 ——
+    空金额被当成了"已确认的零运费"，绕过"运费必须确认具体金额"。
+
+    现在：漏传 → 参数错误（400，点名字段），**端点体不执行，不落费用行也不写确认时刻**；
+    显式 `amount: 0` 仍然合法并照样打确认时刻 —— "明确的零运费"依然走得通。
     """
 
     charge_type: str = "other"
     description: str | None = None
-    amount: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=2)
+    #: 必填：漏传 = 参数错误。`ge=0` 允许"明确确认的零运费"。
+    amount: Decimal = Field(ge=0, max_digits=16, decimal_places=2)
     is_discount: bool = False
 
 

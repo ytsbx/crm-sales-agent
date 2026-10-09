@@ -995,6 +995,36 @@ async def update_item(
     if logistics is not None:
         item.logistics_cost_snapshot = logistics
 
+    # 只有**会影响价格/成本**的字段变了才重建快照（2026-10-09 缺陷③）。
+    #
+    # 从前这里无条件重建，于是"只改一句备注"也会把成本、底价、利润、建议价
+    # 全部按**当前主数据与当前口径**重算一遍 —— 审查实测：产品价格、数量、成本
+    # 一个字没动，利润却从 15 变成 20（因为旧快照是旧口径算的、重建按新口径算）。
+    # 报价明细的快照是**发出时的凭证**，不该被一次备注修改改写。
+    #
+    # 判据：`QuoteItemUpdate` 里只有 quantity / quoted_price / unit_cost /
+    # logistics_cost 四个字段影响价格与成本；remark 不影响。
+    # `exclude_unset` 保证"没传"与"传了同值"都不会误判成变化。
+    affects_pricing = any(
+        key in data for key in ("quantity", "quoted_price", "unit_cost", "logistics_cost")
+    )
+    if not affects_pricing:
+        if "remark" in data:
+            item.remark = data["remark"]
+        await session.flush()
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="update_item",
+            business_type="quote",
+            business_id=quote.id,
+            before={"item_id": item.id, "quoted_price": old_price, "remark_only": True},
+            after={"item_id": item.id, "quoted_price": float(item.quoted_price)},
+            ip=client_ip(request),
+        )
+        await session.commit()
+        return ok(svc.serialize_item(item), "已保存（只改了备注，价格与成本快照未重算）")
+
     # §8.14：主数据未确认只提示、不阻断（见 build_item_snapshot 的说明）
     unconfirmed_master: set[str] = set()
     rebuilt = await svc.build_item_snapshot(
@@ -1422,9 +1452,17 @@ async def download_pdf(
         "summary": svc.amount_summary(version),
         #: 产品单价的对外口径说明：运费分离后必须在客户看得到的文件上说清楚，
         #: 否则客户按"含运费"的旧口径理解，会以为运费已经包在单价里。
-        #: 历史版本也照印 —— 它描述的是**这一版**的单价口径，而历史版本的单价
-        #: 按口径本来就是不含运费的（那时的运费是"单件物流成本"、不是向客户的收费）。
-        "unit_price_note": "以上产品单价均不含运费",
+        #:
+        #: ⚠️ 只在本版**确实是**"单价不含运费"口径时才写（2026-10-09 修）。
+        #: 从前这里无条件写死，等于给历史版本硬加一句它当时并不成立的说明 ——
+        #: 审查实测出同一份 Excel 同时出现"交付条件：含运费，送货上门"与
+        #: "以上产品单价均不含运费"，自相矛盾，等于改写了已发文件的口径。
+        #: 口径判据只有 `version_logistics_in_base_cost` 一份（统一后恒为 False，
+        #: 即新口径；这里仍写成分支，将来若加回"运费进价"的计价方式不会再错）。
+        "unit_price_note": (
+            None if svc.version_logistics_in_base_cost(version)
+            else "以上产品单价均不含运费"
+        ),
         "payment_terms": version.payment_terms,
         "delivery_terms": version.delivery_terms,
         "remark": version.remark,

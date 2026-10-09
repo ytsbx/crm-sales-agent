@@ -158,6 +158,8 @@ FIELD_LABELS: dict[str, str] = {
     "PublicPoolRuleUpdate.level": "客户等级",
     # 报价 / 跟进 / 价格 / 订单草稿 / 应收 / 运费
     "QuoteChargeUpdate.charge_type": "费用类型",
+    "QuoteChargeInput.amount": "金额",
+    "QuoteChargeInput.charge_type": "费用类型",
     "QuoteItemInput.quantity": "数量",
     "QuoteItemInput.quoted_price": "报价单价",
     "QuoteItemInput.unit_cost": "核价成本",

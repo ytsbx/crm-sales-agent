@@ -1047,7 +1047,14 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
         "pricing_basis": version_row.pricing_basis,
         #: 产品单价的对外口径说明。运费分离之后，"单价是否含运费"必须在客户
         #: 看得到的表上说清楚，否则客户按旧口径理解会以为运费已经包在价里。
-        "unit_price_note": "以上产品单价均不含运费",
+        #:
+        #: ⚠️ 按本版口径决定写不写（2026-10-09 修）：口径**不是**"单价不含运费"时
+        #: 必须留空，绝不硬加这句 —— 否则历史文件被加上一句当时不成立的说明。
+        #: 与 `quote/router.py` 的 PDF 路径共用同一个判据函数，两处不会各说一套。
+        "unit_price_note": (
+            None if version_row.pricing_basis == "legacy"
+            else "以上产品单价均不含运费"
+        ),
         "charges": _quote_doc_charge_lines(charge_rows),
         # 合计取版本行的 total_amount（版本生成时就定死了）
         "total_amount": version_row.total_amount,

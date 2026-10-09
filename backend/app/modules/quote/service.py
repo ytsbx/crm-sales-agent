@@ -20,7 +20,6 @@ from app.modules.product.model import Product, Sku
 from app.modules.quote.model import (
     PRICING_BASIS_ACTUAL_PASS_THROUGH,
     PRICING_BASIS_LABEL,
-    PRICING_BASIS_LEGACY,
     QUOTE_STATUS_LABEL,
     Quote,
     QuoteCharge,
@@ -183,9 +182,12 @@ def amount_summary(version: QuoteVersion) -> dict:
         "discount_amount": _f(version.discount_amount),
         "total_amount": _f(version.total_amount),
         "currency": version.currency,
-        "pricing_basis": version.pricing_basis or PRICING_BASIS_LEGACY,
+        # 单一口径（2026-10-09 统一）：一律"产品价不含运费、运费代收代付"。
+        # 从前这里 `or PRICING_BASIS_LEGACY` 兜底，会把口径未知的行**当成含运费**，
+        # 与统一后的实际算法相反 —— 改为按新口径兜底，兜底值只影响标签、不影响取数。
+        "pricing_basis": version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH,
         "pricing_basis_label": PRICING_BASIS_LABEL.get(
-            version.pricing_basis or PRICING_BASIS_LEGACY, ""
+            version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH, ""
         ),
     }
 
@@ -204,11 +206,11 @@ def serialize_version(version: QuoteVersion, items_total_profit: Decimal | None 
         # 不要再加到总额上。恒等式：charge_amount == logistics + other_charge。
         "logistics_amount": _f(version.logistics_amount),
         "other_charge_amount": _f(version.other_charge_amount),
-        # 本版的产品核价口径。历史版本恒为 legacy（成本含运费），
-        # 新报价为 actual_pass_through（产品价不含运费、运费原额代收代付）。
-        "pricing_basis": version.pricing_basis or PRICING_BASIS_LEGACY,
+        # 本版的产品核价口径。**单一口径**（2026-10-09 统一）：
+        # actual_pass_through = 产品价不含运费、运费原额代收代付。不再有 legacy 分支。
+        "pricing_basis": version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH,
         "pricing_basis_label": PRICING_BASIS_LABEL.get(
-            version.pricing_basis or PRICING_BASIS_LEGACY, ""
+            version.pricing_basis or PRICING_BASIS_ACTUAL_PASS_THROUGH, ""
         ),
         "currency": version.currency,
         # §8.7：**本版**对客有效期的快照（PDF / BizDoc 读的是它，不是主单）。
@@ -792,6 +794,14 @@ async def create_version(
         )
     await copy_version_charges(session, source_id=source.id, target_version=version)
     await session.flush()
+    # 复制过来的明细快照是**按源版本口径**算的，而新版本已经切到当前口径
+    # （2026-10-09 统一后只有一套）。不重算就会留下"口径标着 A、数字是 B"的自相
+    # 矛盾数据（审查实测：显示利润 15、按新口径应为 20）。只重算受口径影响的四列，
+    # 售价与价格来源不动 —— 详见 `apply_current_basis_to_item` 的说明。
+    min_ratio = await _min_margin_ratio(session)
+    for copied in await version_items(session, version.id):
+        apply_current_basis_to_item(copied, version, min_ratio=min_ratio)
+    await session.flush()
     await recalc_version(session, version)
     quote.current_version_id = version.id
     quote.status = "draft"
@@ -899,9 +909,7 @@ async def _build_custom_item_snapshot(
     freight = Decimal(str(logistics_cost or 0))  # 人民币
     # 这一版的口径：新报价的运费不进成本基数；历史版本沿用含运费的老口径。
     basis_includes_freight = version_logistics_in_base_cost(version)
-    min_ratio = Decimal(
-        str(await settings_service.get_number(session, "default_min_margin", "ratio", 0.15))
-    )
+    min_ratio = await _min_margin_ratio(session)
     # 保护价基础 = **商品成本**，不含运费（2026-10-09「产品价格与运费分离」）。
     # 定制项的成本是人工填的"商品成本"，运费同样由客户全额承担、公司代收代付，
     # 所以运费既不能抬高成本推高底价，也不能被当成利润。与 SKU 路径同一口径。
@@ -982,19 +990,22 @@ def _pick_confirmed(confirmed: dict[str, str], field: str, fallback):
 
 
 def version_logistics_in_base_cost(version: QuoteVersion) -> bool:
-    """这一版的产品核价，运费要不要算进基础成本（2026-10-09 运费分离口径）。
+    """这一版的产品核价，运费要不要算进基础成本。
 
-    - `actual_pass_through`（新报价）：**不算**。产品单价不含运费，运费按实际金额
-      代收代付，公司不赚不赔 —— 所以运费不该抬高建议价、底价或利润。
-    - `legacy`（历史版本）：**算**。老版本的 `base_cost` 里本来就含运费，
-      回看/重算老版本必须沿用老口径，否则会得出与当时不同的建议价和底价，
-      等于把已经发给客户的口径改掉。
+    **2026-10-09 统一口径后恒为 `False`** —— 所有报价一律"产品单价不含运费、
+    运费按已确认的实际金额由公司代收代付"。从前这里按 `pricing_basis` 分两条路
+    （`legacy` 含运费 / `actual_pass_through` 不含），审查实测出四条缺陷，根因都是
+    "两套口径并存"：审批毛利率把"单价之和"与"整单运费"混着减、建新版时口径切了
+    快照照抄、对客文案不知道该不该写"不含运费"。
 
-    `None` 当 `legacy`：迁移把现有行回填成了 `legacy`，但万一有绕过迁移写入的行，
-    "当老口径"是更安全的一侧 —— 新版报价一律由 ORM 默认值显式落成
-    `actual_pass_through`，不会走到这里。
+    保留这个函数（而不是把调用点全删成常量）有两个原因：
+    ① 调用点集中在 8 处，留一个语义明确的名字比散落的 `False` 好读；
+    ② 将来若真要把"运费进产品价"作为**另一种可选计价方式**加回来，
+       改这一处即可，调用点不用动。
+
+    参数保留是为了调用点签名不变；`version` 现在不参与判断。
     """
-    return (version.pricing_basis or PRICING_BASIS_LEGACY) == PRICING_BASIS_LEGACY
+    return False
 
 
 def item_unit_product_cost(item: QuoteItem, *, includes_freight: bool) -> Decimal:
@@ -1018,6 +1029,59 @@ def item_unit_product_cost(item: QuoteItem, *, includes_freight: bool) -> Decima
     if includes_freight:
         cost = cost + (item.logistics_cost_snapshot or ZERO)
     return cost
+
+
+async def _min_margin_ratio(session: AsyncSession) -> Decimal:
+    """系统配置的最低毛利率（`default_min_margin`，默认 0.15）。
+
+    抽成函数而不是各处现写：底价（成本 ×(1+最低毛利率)）在**定制项建快照**、
+    **按当前口径重算派生快照**两处都要用，两处取不同的默认值会让同一条报价
+    在不同路径下得到不同的底价。
+    """
+    return Decimal(
+        str(await settings_service.get_number(session, "default_min_margin", "ratio", 0.15))
+    )
+
+
+def apply_current_basis_to_item(item: QuoteItem, version: QuoteVersion, *, min_ratio: Decimal) -> None:
+    """把**受核价口径影响**的派生快照按当前口径重算一遍（2026-10-09 缺陷③）。
+
+    为什么需要这个函数：建立新版 / 复制报价 / 改明细，这三条路都沿用上面的
+    `item.*` 快照值。口径统一之前，"口径已切、快照照抄"会留下自相矛盾的数据 ——
+    审查实测：旧口径版本建出的新版标着新口径，却仍显示旧口径的利润（15 而非 20）；
+    更明显的是**只改一句备注**，利润就从 15 变成 20（因为 `update_item` 会重算），
+    而产品价格、数量、成本一个字没动。同一份数据两种读数，审批与对客文件都会错。
+
+    **只动受口径影响的四列**，其余快照（售价、标准价、建议价、价格来源、
+    客户等级、主数据版本号……）原样保留 —— 不能重跑 `calculate_price`：
+    它按**当前**价格规则与客户等级取值，复制一张旧报价时会顺手把售价改掉，
+    那是另一种数据损坏。
+
+    受影响的四列与公式（与 `_build_custom_item_snapshot` / `pricing_service` 同源）：
+      - `minimum_price_snapshot` = 单件产品核价成本 × (1 + 最低利润率)，人民币、两位小数；
+      - `profit_snapshot`        = 报价单价 − 单件产品核价成本（折成报价币种）；
+      - `profit_rate_snapshot`   = 利润 ÷ 单价，六位小数；
+      - `profit_with_refund_snapshot` = 利润 + 退税快照（退税快照本身不动）。
+
+    ⚠️ **已知局限**：底价在 `pricing_service` 里是 `max(利润率反推价, 保护价)`，
+    而快照**只存最后的底价、没存保护价那一侧**。所以这里算的是"利润率反推价"，
+    若原底价是被保护价顶住的（更高），重算会得到偏低的底价。选择这样做而不是
+    "用现价重跑一遍核价"，是因为前者只可能让底价偏保守、且不改动售价；
+    后者会连带改掉已经报给客户的单价。开发阶段的历史报价都是测试数据，
+    真要精确，在该报价上重新核价即可（会走完整的 `build_item_snapshot`）。
+    """
+    price = item.quoted_price or ZERO
+    basis_cost = item_unit_product_cost(item, includes_freight=version_logistics_in_base_cost(version))
+    item.minimum_price_snapshot = (basis_cost * (1 + min_ratio)).quantize(Decimal("0.01"))
+    fx = version.exchange_rate_snapshot
+    foreign = (version.currency or "CNY").upper() != "CNY" and bool(fx) and fx > 0
+    cost_in_quote = (basis_cost / fx) if foreign else basis_cost
+    profit = price - cost_in_quote
+    item.profit_snapshot = profit
+    item.profit_rate_snapshot = (
+        (profit / price) if price else ZERO
+    ).quantize(Decimal("0.000001"))
+    item.profit_with_refund_snapshot = profit + (item.tax_refund_snapshot or ZERO)
 
 
 async def build_item_snapshot(

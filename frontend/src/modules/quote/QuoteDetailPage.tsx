@@ -441,8 +441,13 @@ export default function QuoteDetailPage() {
     },
     {
       // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
-      // 按旧口径（含运费）理解，列头不写就会各理解一套。
-      title: '实际报价（不含运费）',
+      // 按含运费的旧口径理解，列头不写就会各理解一套。
+      //
+      // ⚠️ 但**只在本版确实是"单价不含运费"口径时才写**（2026-10-09 修）：
+      // 从前这里硬编码，历史口径的报价也会显示"（不含运费）"，而那一版的单价
+      // 里其实是含运费的 —— 等于在界面上改写已发报价的口径。判据用后端返回的
+      // `pricing_basis`（版本上冻结的），不在前端猜。
+      title: legacyBasis ? '实际报价（含运费）' : '实际报价（不含运费）',
       dataIndex: 'quoted_price',
       width: 150,
       render: (value: number, record: QuoteItemRow) => (
@@ -810,11 +815,15 @@ export default function QuoteDetailPage() {
         <SectionCard title="金额汇总">
           <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
             {/* 口径说明（2026-10-09 运费分离）：产品单价不含运费，运费按已确认的
-                实际金额代收代付。写在汇总最上方，避免客户/业务员按旧口径理解。 */}
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
-              产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付
-              （公司不赚不赔，产品利润不受运费影响）。
-            </div>
+                实际金额代收代付。写在汇总最上方，避免客户/业务员按旧口径理解。
+                ⚠️ 同样只在"单价不含运费"口径下显示（见列头的说明）：历史口径的
+                单价里含运费，写这句话就是替它改口径。 */}
+            {!legacyBasis && (
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
+                产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付
+                （公司不赚不赔，产品利润不受运费影响）。
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--crm-text-3)' }}>产品货款</span>
               <span>¥{summary.goods_amount.toLocaleString('zh-CN')}</span>
