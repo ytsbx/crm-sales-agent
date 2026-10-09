@@ -9,10 +9,11 @@
 - 无价格权限 → 默认最低利润率 15%（与 07 计划的占位值一致）。
 """
 
+import hashlib
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -389,6 +390,51 @@ def _ranges_overlap(a_min, a_max, b_min, b_max) -> bool:
     if b_max is not None and a_min is not None and a_min > b_max:
         return False
     return True
+
+
+async def lock_sku_price_rules(session: AsyncSession, sku_id: int) -> None:
+    """把**同一个 SKU** 上的价格规则写入串行化（审查 R05，2026-10-09 修）。
+
+    ## 为什么必须加
+
+    价格规则的写路径是"**先查有没有区间冲突、再写**"。两个并发请求各自在
+    自己的事务里查——都查到"没有冲突"（对方的行还没提交），于是各写一条，
+    库里留下**两条区间重叠**的规则。实测复现：同时提交 `0~19` 与 `11~30`，
+    两条都返回 200 并落库。
+
+    重叠的后果不是报错，而是**取价静默二选一**：客户询价命中数量 15 时两条都
+    匹配，取哪条取决于数据库返回顺序，同一个客户同一数量今天报 100、明天报 110。
+    客户特殊价同理，而且更难看——同一个客户被报两个价。
+
+    ## 为什么用 advisory 事务锁，而不是行锁
+
+    行锁（`with_for_update`）要有一个"双方必争的行"。订单/应收那边锁的是
+    `sales_orders` / `receivable_plans` 的**主行**，天然存在；而价格规则是
+    **在某个 SKU 下新增/修改若干行**，没有这样一行可以锁 —— 新增时还没有行，
+    两条不同的规则行彼此也锁不到。所以用按 SKU 取的事务级 advisory 锁：
+    同一 SKU 的调用排队，事务结束（提交或回滚）自动释放，不需要手工解锁。
+
+    与项目里 `order/drafts.py`、`contract/service.py`、`bizdoc/service.py`
+    的写法保持一致（`sha256` 取前 8 字节 → 有符号 int64，避免负数溢出）。
+
+    ## 锁的是"这个 SKU"，不是"这张表"
+
+    不同 SKU 之间**互不阻塞**，各改各的；只有同一个 SKU 的并发写才排队，
+    后到的那个多等先到者提交（几十毫秒级）。因此价格规则与客户特殊价**共用
+    同一把 SKU 锁**：两者都会占用该 SKU 的数量区间，共用一把锁能保证判断
+    依据是最新的，也不会引入第二套锁序（本项目在锁序上踩过坑，见
+    `payment/service.lock_order` 的说明）。
+
+    ## 调用时机
+
+    **必须在读冲突之前**调用。放到写之前才拿锁等于没加：那两个请求都已经
+    读完"没有冲突"了，再串行也改变不了各自已经做出的判断。
+    """
+    digest = hashlib.sha256(f"pricing-sku:{sku_id}".encode()).digest()[:8]
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": int.from_bytes(digest, "big", signed=True)},
+    )
 
 
 async def find_price_rule_conflict(

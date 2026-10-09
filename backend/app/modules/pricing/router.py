@@ -315,6 +315,10 @@ async def create_price_rule(
     sku = await session.get(Sku, payload.sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    # **先拿这个 SKU 的写锁，再读冲突**（审查 R05）：顺序反过来的话，两个并发
+    # 请求都已经读完"没有冲突"了，再串行也改不了各自已经做出的判断 ——
+    # 实测那样会两条都落库、区间重叠。
+    await svc.lock_sku_price_rules(session, payload.sku_id)
     # 冲突检查（方案 §4.1）：同 SKU 同等级的数量区间与有效期都重叠时拒绝，
     # 宁可让人处理冲突资料，也不能让取价随机命中一条
     conflict = await svc.find_price_rule_conflict(
@@ -373,6 +377,11 @@ async def update_price_rule(
     rule = await session.get(PriceRule, rule_id)
     if rule is None:
         raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    # 同 SKU 串行（审查 R05）：必须在**改字段之前**拿锁 —— 锁后重新读一次冲突，
+    # 才看得到"刚才并发提交的那条"。注意 `rule` 是锁之前读的，所以下面
+    # `find_price_rule_conflict` 用的仍是它自己发起的查询（READ COMMITTED 下
+    # 新快照），能把先到者刚提交的行查出来。
+    await svc.lock_sku_price_rules(session, rule.sku_id)
     _reject_in_place_price_change(rule, payload.model_dump(exclude_unset=True))
     before = svc.serialize_price_rule(rule)
     for field, value in payload.model_dump(exclude_unset=True).items():
@@ -556,6 +565,10 @@ async def create_customer_price_rule(
     )
     rule = CustomerPriceRule(**payload.model_dump())
     # 冲突检查：同客户同 SKU 的数量/有效期重叠直接拒绝（方案 §4.1）
+    # 同一个 SKU 串行（审查 R05）：与价格规则**共用同一把 SKU 锁** ——
+    # 两者都要占用该 SKU 的数量区间，共用一把才能保证判断依据是最新的，
+    # 也不会引入第二套锁序。必须在读冲突之前拿。
+    await svc.lock_sku_price_rules(session, payload.sku_id)
     conflict = await svc.find_customer_price_conflict(
         session,
         customer_id=payload.customer_id,
@@ -602,6 +615,9 @@ async def update_customer_price_rule(
     if rule is None:
         raise AppError(ErrorCode.NOT_FOUND, "客户特殊价不存在", 404)
 
+    # 同 SKU 串行（审查 R05），与价格规则共用同一把 SKU 锁；必须在改字段与
+    # 读冲突之前拿，理由同 `update_price_rule`。
+    await svc.lock_sku_price_rules(session, rule.sku_id)
     before = svc.serialize_customer_price(rule)
     changes = payload.model_dump(exclude_unset=True)
 

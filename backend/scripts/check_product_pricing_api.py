@@ -627,6 +627,69 @@ async def main():
                any(w in str(res.get('message')) for w in ('备注', 'remark', '太长', '最长')),
                str(res.get('message'))[:60])
 
+    # ---- R05：并发提交重叠区间，必须只成功一条 ----
+    # 从前两个并发请求各自读到"没有冲突"（对方还没提交），各写一条 →
+    # 库里留下重叠区间 → 取价静默二选一。加了按 SKU 的 advisory 事务锁之后，
+    # 后到的那个在锁上等，等到时先到者已提交，重新查冲突就查得到。
+    # 用线程并发发两个请求；断言"恰好一条成功"——不管谁先拿到锁都成立，
+    # 所以不是靠时序碰运气。
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    from sqlalchemy import text as _t2
+
+    from app.core.database import SessionLocal as _SL2
+    async with _SL2() as _s:
+        await _s.execute(_t2("delete from price_rules where customer_level = 'Q'"))
+        await _s.commit()
+
+    def _post(body):
+        return call('POST', '/price-rules', token=admin, body=body)
+
+    with _TPE(max_workers=2) as _ex:
+        _futs = [
+            _ex.submit(_post, {'sku_id': price_sku_id, 'customer_level': lvl,
+                               'min_qty': 0, 'max_qty': 19, 'guide_price': 50}),
+            _ex.submit(_post, {'sku_id': price_sku_id, 'customer_level': lvl,
+                               'min_qty': 11, 'max_qty': 30, 'guide_price': 60}),
+        ]
+        _results = [f.result() for f in _futs]
+    _ok = sum(1 for _, r in _results if r.get('code') == 0)
+    _codes = [r.get('code') for _, r in _results]
+    check('R05 并发提交重叠区间只成功一条', _ok, 1)
+    check_true('R05 落败的那条是区间冲突（40901）而不是 500',
+               sorted(_codes)[0] == 0 and 40901 in _codes, f'codes={_codes}')
+
+    # 客户特殊价同一把锁：同客户同 SKU 并发也不能双双落库
+    # 取一个可见客户（该套件没有现成的客户变量，直接查一个）
+    _, _cr = call('GET', '/customers?page_size=1', token=admin)
+    _items = _cr['data'].get('items') if isinstance(_cr['data'], dict) else _cr['data']
+    _cust_id = _items[0]['id']
+
+    async with _SL2() as _s:
+        await _s.execute(
+            _t2(f"delete from customer_price_rules where customer_id = {_cust_id} "
+                f"and min_qty in (0, 11)"))
+        await _s.commit()
+
+    def _post_cp(body):
+        return call('POST', '/customer-price-rules', token=admin, body=body)
+
+    with _TPE(max_workers=2) as _ex:
+        _futs = [
+            _ex.submit(_post_cp, {'customer_id': _cust_id, 'sku_id': price_sku_id,
+                                  'min_qty': 0, 'max_qty': 19, 'agreed_price': 50}),
+            _ex.submit(_post_cp, {'customer_id': _cust_id, 'sku_id': price_sku_id,
+                                  'min_qty': 11, 'max_qty': 30, 'agreed_price': 60}),
+        ]
+        _results2 = [f.result() for f in _futs]
+    _ok2 = sum(1 for _, r in _results2 if r.get('code') == 0)
+    check('R05 客户特殊价并发也只成功一条', _ok2, 1)
+    async with _SL2() as _s:
+        await _s.execute(
+            _t2(f"delete from customer_price_rules where customer_id = {_cust_id} "
+                f"and min_qty in (0, 11)"))
+        await _s.commit()
+
     # 收尾：本块建的规则挂在**演示 SKU**（`CR-500-3`）上，而脚本末尾的
     # `clean()` 只删"本轮新建的 SKU"下的数据，删不到这些 —— 所以必须自己收。
     # 不收的后果实测过：下一轮 `1.000~1.235` 会被上一轮的同区间判成重叠（40901），
