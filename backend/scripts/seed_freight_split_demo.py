@@ -38,7 +38,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from app.core.database import SessionLocal
 from app.modules.customer.model import Customer
@@ -53,6 +54,7 @@ MARK = "运费分离演示"
 SKU_CODE = "DEMO2-FRT01"
 PRODUCT_NAME = "演示产品线·运费分离样例"
 CUSTOMER_NAME = "示例客户·运费分离演示"
+#: 商机标题前缀（只在**建**的时候用来起名；删除一律按客户 id，不按标题猜）
 OPP_TITLE_PREFIX = "运费分离演示"
 QUOTE_REMARK = f"{MARK}：产品价格与运费分离样例"
 
@@ -68,11 +70,229 @@ CASES = [
 ]
 
 
-async def _clean(session) -> None:
-    """撤销整条演示线：先删引用方，再删被引用方（外键是 NO ACTION）。"""
-    quote_ids = (
-        await session.execute(select(Quote.id).where(Quote.quote_no.like("DEMO2Q%")))
-    ).scalars().all()
+async def _sku_referenced_by_business(session, sku_ids: list[int]) -> str | None:
+    """演示 SKU 是否已被**业务单据**引用（订单明细、样品、试算、商机需求、专属价）。
+
+    被引用时**拒绝清理并说清是哪里**，而不是抛一个外键异常让人猜。
+    这里只查业务单据这一层；主数据配套表（字段权威、整版快照、外部身份）
+    是跟着 SKU 一起删的配套数据，不算"被业务引用"。
+    """
+    if not sku_ids:
+        return None
+    for table, label in (
+        ("sales_order_items", "订单明细"),
+        ("sample_items", "样品明细"),
+        ("logistics_quotes", "物流试算记录"),
+        ("opportunity_items", "商机需求明细"),
+        ("customer_price_rules", "客户专属价"),
+    ):
+        hit = (
+            await session.execute(
+                text(f"select count(*) from {table} where sku_id = any(:ids)"),
+                {"ids": sku_ids},
+            )
+        ).scalar_one()
+        if hit:
+            return f"{label}（{table}）还有 {hit} 条"
+    return None
+
+
+#: 递归清理时**刻意不动**的表。它们代表"演示数据已经变成别的模块的地盘"，
+#: 删它们会把这件事悄悄抹掉，而那是必须让人知道的信息：宁可报错，不可静默。
+#: 真要清，请走界面的删除入口（会留审计、走软删）。
+#:
+#: 注：`sales_orders` **不在**这里 —— 演示商机上的订单是这条演示线自己跑出来的
+#: 产物（转单验证），属于该清的范围，由"按客户子树"的递归覆盖。
+#: 而"删客户"那一步仍会被任何没被递归覆盖到的真实订单以外键挡住，不会误删。
+CLEAN_EXCLUDED_TABLES = {
+    "contract_documents",  # 已经出过合同
+    "sales_cases",         # 已经沉淀成案例
+    "order_drafts",        # 已有客户确认过的下单草稿
+}
+
+
+async def _pk_columns(session, table: str) -> list[str]:
+    """这张表的主键列（按列序号）。**不能假定叫 `id`** —— 关联表是联合主键。
+
+    例如 `customer_tags` 的主键是 `(customer_id, tag_id)`、`user_roles` 是
+    `(user_id, role_id)`。写死 `id` 会在这类表上直接报"列不存在"。
+    """
+    return list(
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT kcu.column_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                      ON kcu.constraint_name = tc.constraint_name
+                    WHERE tc.constraint_type = 'PRIMARY KEY'
+                      AND tc.table_schema = 'public'
+                      AND tc.table_name = :t
+                    ORDER BY kcu.ordinal_position
+                    """
+                ),
+                {"t": table},
+            )
+        ).scalars().all()
+    )
+
+
+async def _delete_rows(
+    session, *, table: str, pk_columns: list[str], rows: list[dict]
+) -> None:
+    """按主键条件删掉这些行（`OR` 串联的等值匹配，无注入面）。"""
+    if not rows:
+        return
+    clauses, params = [], {}
+    for index, row in enumerate(rows):
+        parts = []
+        for col in pk_columns:
+            key = f"p{index}_{col}"
+            parts.append(f"{col} = :{key}")
+            params[key] = row[col]
+        clauses.append("(" + " AND ".join(parts) + ")")
+    await session.execute(
+        text(f"DELETE FROM {table} WHERE " + " OR ".join(clauses)), params
+    )
+
+
+async def _delete_subtree(
+    session, *, table: str, pk_columns: list[str], rows: list[dict],
+    excluded: set[str] | None = None,
+) -> None:
+    """删掉 `rows` 指定的这些行**及其整棵子树**（**子先父后**，按外键目录递归）。
+
+    `rows` 是"行的定位条件"列表：每项形如 `{"id": 5}` 或
+    `{"customer_id": 3, "tag_id": 7}` —— 键是主键列名。
+
+    为什么按目录递归而不是手写一串表名：`customers` / `skus` / `opportunities`
+    的下游各有十几张表，手写清单漏一张就报一个外键错误、改一轮再跑一次
+    （实测就是这样耗掉的）。目录是数据库自己的事实，不会有版本漂移。
+
+    **两个坑都是实测踩过的，别改回去**：
+    1. 递归时要收集子表的**主键**，不能拿"命中行的外键值"当子表 id 用 ——
+       `opportunities.customer_id` 返回的是客户 id，拿它当商机 id 去匹配，
+       下一层永远命中 0 行，"子先父后"被绕过，接着撞
+       `opportunity_stage_history` 的外键；
+    2. 主键列名不能假定是 `id`（关联表是联合主键，见 `_pk_columns`）。
+
+    ⚠️ `CLEAN_EXCLUDED_TABLES` 里的表刻意绕开（见那组常量的说明）。
+    """
+    if not rows:
+        return
+    excluded = CLEAN_EXCLUDED_TABLES if excluded is None else excluded
+    children = (
+        await session.execute(
+            text(
+                """
+                SELECT tc.table_name, kcu.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                  ON kcu.constraint_name = tc.constraint_name
+                JOIN information_schema.constraint_column_usage ccu
+                  ON ccu.constraint_name = tc.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                  AND ccu.table_name = :parent
+                  AND tc.table_name <> :parent
+                """
+            ),
+            {"parent": table},
+        )
+    ).all()
+    for child_table, child_column in children:
+        if child_table in excluded:
+            continue
+        child_pks = await _pk_columns(session, child_table)
+        if not child_pks:
+            continue
+        # 父行的主键值 → 用来筛出子行（子表可能有多个外键指向同一父表，故去重）
+        parent_pk = pk_columns[0]
+        parent_values = list({row[parent_pk] for row in rows if parent_pk in row})
+        if not parent_values:
+            continue
+        child_rows = (
+            await session.execute(
+                text(
+                    f"SELECT DISTINCT {', '.join(child_pks)} FROM {child_table} "
+                    f"WHERE {child_column} = any(:v)"
+                ),
+                {"v": parent_values},
+            )
+        ).mappings().all()
+        if child_rows:
+            # 递归删子表的子树：条件换成**子表自己的主键**
+            await _delete_subtree(
+                session,
+                table=child_table,
+                pk_columns=child_pks,
+                rows=[dict(r) for r in child_rows],
+                excluded=excluded,
+            )
+    await _delete_rows(session, table=table, pk_columns=pk_columns, rows=rows)
+
+
+async def _clean(session, *, force: bool = False) -> None:
+    """撤销整条演示线（被别的模块引用时**拒绝并说清原因**，不静默删别人的数据）。
+
+    删除顺序按外键目录递归（子先父后），不手写表名清单 ——
+    `customers` 的下游有 16 张直接引用表、递归下去更多，
+    手写漏一张就报一个外键错误、改一轮再跑一次（实测就是这么耗掉的）。
+
+    `force=True` 时才连 `CLEAN_EXCLUDED_TABLES` 里那几张（合同/案例/下单草稿）
+    一起删 —— 这是**显式的重手**，只给一次性测试库用，默认绝不这么做。
+    """
+    try:
+        await _clean_locked(session, force=force)
+        await session.commit()
+    except (IntegrityError, ProgrammingError) as exc:
+        await session.rollback()
+        raise SystemExit(
+            "撤销未完成：演示数据已被其他模块的单据引用，脚本不替你删这些。\n"
+            f"  数据库报的约束是：{getattr(exc, 'orig', exc)}\n"
+            "  请先删掉引用它的单据（合同 / 案例 / 下单草稿等），再跑 --clean；\n"
+            "  或直接在界面上把演示客户/产品删掉（走系统自己的软删与审计）。"
+        ) from exc
+
+
+async def _clean_locked(session, *, force: bool = False) -> None:
+    """`_clean` 的实际内容（调用方负责提交与把外键错误翻成人话）。"""
+    excluded = set() if force else CLEAN_EXCLUDED_TABLES
+    quote_ids = list(
+        (
+            await session.execute(select(Quote.id).where(Quote.quote_no.like("DEMO2Q%")))
+        ).scalars().all()
+    )
+    # 客户以**本脚本造的报价**为锚：报价上的 customer_id 才是这个脚本真正用过的客户。
+    # 只按名字找会圈太宽 —— 冒烟脚本也会用同一个演示客户名建自己的数据，
+    # 按名字删会连别人的夹具一起清掉（实测踩到：一次圈进 24 个商机）。
+    customer_ids = set(
+        (
+            await session.execute(
+                select(Quote.customer_id).where(Quote.id.in_(quote_ids)).distinct()
+            )
+        ).scalars().all()
+    ) if quote_ids else set()
+    # 兜底：报价一张都没建成（比如建到一半失败）时，仍按名字回收那个空客户
+    for cid in (
+        await session.execute(select(Customer.id).where(Customer.name == CUSTOMER_NAME))
+    ).scalars().all():
+        customer_ids.add(cid)
+    customer_ids = sorted(customer_ids)
+    sku_ids = list(
+        (
+            await session.execute(select(Sku.id).where(Sku.sku_code == SKU_CODE))
+        ).scalars().all()
+    )
+
+    if sku_ids:
+        blocked = await _sku_referenced_by_business(session, sku_ids)
+        if blocked:
+            raise SystemExit(
+                f"演示 SKU {SKU_CODE} 已被业务单据引用（{blocked}），不能物理删除 —— "
+                "请先删掉那些单据，或改用手工软删。"
+            )
+
     if quote_ids:
         version_ids = (
             await session.execute(
@@ -90,23 +310,29 @@ async def _clean(session) -> None:
                 delete(QuoteVersion).where(QuoteVersion.id.in_(version_ids))
             )
         await session.execute(delete(Quote).where(Quote.id.in_(quote_ids)))
-    opp_ids = (
-        await session.execute(
-            select(Opportunity.id).where(Opportunity.title.like(f"{OPP_TITLE_PREFIX}%"))
+
+    # ---- 用递归清理把每个锚点的整棵子树删掉（子先父后，见 `_delete_subtree`）----
+    # 商机、报价、明细、费用、跟进、任务、联系人、专属价……全在这一步里，
+    # 不需要手写表名清单（手写漏一张就报一个外键错误，改一轮跑一次）。
+    if customer_ids:
+        await _delete_subtree(
+            session,
+            table="customers",
+            pk_columns=["id"],
+            rows=[{"id": cid} for cid in customer_ids],
+            excluded=excluded,
         )
-    ).scalars().all()
-    if opp_ids:
-        await session.execute(delete(Opportunity).where(Opportunity.id.in_(opp_ids)))
-    sku_ids = (
-        await session.execute(select(Sku.id).where(Sku.sku_code == SKU_CODE))
-    ).scalars().all()
+
     if sku_ids:
+        for table in ("sku_field_authorities", "sku_master_versions", "sku_identity_sources"):
+            await session.execute(
+                text(f"delete from {table} where sku_id = any(:ids)"), {"ids": sku_ids}
+            )
         await session.execute(delete(ProductCost).where(ProductCost.sku_id.in_(sku_ids)))
         await session.execute(delete(PriceRule).where(PriceRule.sku_id.in_(sku_ids)))
         await session.execute(delete(Sku).where(Sku.id.in_(sku_ids)))
+
     await session.execute(delete(Product).where(Product.name == PRODUCT_NAME))
-    await session.execute(delete(Customer).where(Customer.name == CUSTOMER_NAME))
-    await session.commit()
 
 
 def _report() -> None:
@@ -136,7 +362,7 @@ def _report() -> None:
 """.rstrip())
 
 
-async def main(mode: str) -> int:
+async def main(mode: str, *, force: bool = False) -> int:
     async with SessionLocal() as session:
         if mode == "dry":
             _report()
@@ -144,12 +370,22 @@ async def main(mode: str) -> int:
             return 0
 
         if mode == "clean":
-            await _clean(session)
-            print(f"已撤销「{MARK}」整条演示线。")
+            await _clean(session, force=force)
+            print(f"已撤销「{MARK}」整条演示线。" + ("（--force：连合同/案例/下单草稿一起删）" if force else ""))
             return 0
 
         # ---- apply：幂等，先清后建 ----
-        await _clean(session)
+        # 清不掉那些"被合同/案例/草稿引用"的旧数据时**不阻断写入**：
+        # 报价号是固定的 DEMO2Q0001..3，与其硬撞唯一约束，不如让"先清后建"
+        # 里的"建"照常完成 —— 旧数据留着并由下面如实说明。
+        reused: list[str] = []
+        try:
+            await _clean(session, force=force)
+        except SystemExit as exc:
+            reused = [line for line in str(exc).splitlines() if "约束" in line]
+            print("提示：上一次的演示数据没能完全清掉，本次将复用它的编号：")
+            for line in reused:
+                print("   ", line.strip())
 
         admin = (
             await session.execute(select(User).where(User.username == "admin"))
@@ -290,6 +526,8 @@ async def main(mode: str) -> int:
 
 
 if __name__ == "__main__":
-    flag = sys.argv[1] if len(sys.argv) > 1 else ""
+    args = [a for a in sys.argv[1:]]
+    force = "--force" in args
+    flag = next((a for a in args if a in ("--apply", "--clean")), "")
     mode = "apply" if flag == "--apply" else "clean" if flag == "--clean" else "dry"
-    sys.exit(asyncio.run(main(mode)))
+    sys.exit(asyncio.run(main(mode, force=force)))
