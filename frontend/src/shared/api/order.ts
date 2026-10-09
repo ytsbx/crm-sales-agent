@@ -16,6 +16,19 @@ export interface Order {
   sales_owner_name?: string | null
   currency: string
   total_amount: number
+  /**
+   * 订单金额组成（2026-10-09「产品价格与运费分离」）。
+   *
+   * ⚠️ 这几个值**已经含在** `total_amount` 里，只用于分项展示，
+   * 不要再相加到总额上。`null` = 历史订单没留存该口径，页面写"待核实"，
+   * **不要**回查报价拿今天的数来填。
+   */
+  goods_amount?: number | null
+  logistics_amount?: number | null
+  other_charge_amount?: number | null
+  discount_amount?: number | null
+  /** 转单时冻结的产品核价口径；null=历史订单（含运费的老口径） */
+  pricing_basis?: string | null
   received_amount: number
   unreceived_amount: number
   status: string

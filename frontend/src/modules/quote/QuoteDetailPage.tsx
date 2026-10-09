@@ -329,13 +329,34 @@ export default function QuoteDetailPage() {
   })
 
   const chargeMutation = useMutation({
-    mutationFn: () =>
-      addQuoteCharge(versionId!, {
+    mutationFn: () => {
+      const raw = chargeForm.amount.trim()
+      const isDiscount = chargeForm.charge_type === 'discount'
+      // ⚠️ 不能写 `Number(chargeForm.amount || 0)`：空串会被静默转成 0，
+      // 于是一条"还没填金额"的费用会以 **0 元**落库，而 0 元在运费上意味着
+      // "明确确认零运费"—— 空输入就被当成了已确认的零元。必须显式拦住。
+      if (!raw) {
+        throw new Error(
+          isDiscount
+            ? '请填写优惠金额（空输入不等于 0 元）'
+            : '请填写金额；确属零运费也要显式填 0，不能留空当作已确认',
+        )
+      }
+      const amount = Number(raw)
+      if (!Number.isFinite(amount) || amount < 0) {
+        throw new Error('金额必须是不小于 0 的有效数字')
+      }
+      if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
+        throw new Error('金额最多两位小数')
+      }
+      return addQuoteCharge(versionId!, {
         charge_type: chargeForm.charge_type,
         description: chargeForm.description,
-        amount: Number(chargeForm.amount || 0),
-        is_discount: chargeForm.charge_type === 'discount',
-      }),
+        amount,
+        // 折扣：前端传**正数**，后端负责归一成负数入库（库里恒为负数）
+        is_discount: isDiscount,
+      })
+    },
     onSuccess: () => {
       Toast.success('已添加附加费用')
       setChargeVisible(false)
@@ -351,6 +372,30 @@ export default function QuoteDetailPage() {
   if (!detail || !version || !quote) {
     return <div className="page-container">报价单不存在或无权查看</div>
   }
+
+  /**
+   * 这一版是不是**旧口径**（`base_cost` 含运费）。
+   *
+   * 2026-10-09「产品价格与运费分离」：新报价的产品单价不含运费、运费代收代付，
+   * 所以成本列不再加单件运费、单价要标"不含运费"。历史版本留在老口径上，
+   * 页面显示也必须跟着它自己的口径走 —— 否则会用今天的公式解释当时的数字。
+   *
+   * 判据取自后端返回的 `pricing_basis`（版本上冻结的），**不在前端猜**。
+   */
+  const legacyBasis = version.pricing_basis === 'legacy'
+  /** 后端算好的金额汇总；老后端没这个键时退回用 version 上的字段，保证不白屏 */
+  const summary = detail.summary ?? {
+    goods_amount: version.subtotal_amount,
+    logistics_amount: version.logistics_amount ?? 0,
+    other_charge_amount: version.other_charge_amount ?? 0,
+    charge_amount: version.charge_amount,
+    discount_amount: version.discount_amount,
+    total_amount: version.total_amount,
+    pricing_basis: version.pricing_basis,
+    pricing_basis_label: version.pricing_basis_label,
+  }
+  /** 运费未确认的人话原因（后端给）；有值就要一直显示 */
+  const freightUnconfirmed = detail.freight_unconfirmed_reason ?? null
 
   const itemColumns = [
     {
@@ -373,10 +418,14 @@ export default function QuoteDetailPage() {
     { title: '规格', dataIndex: 'specification', width: 180, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 90, render: (v: number) => v.toLocaleString('zh-CN') },
     {
-      title: '成本快照',
+      // 产品核价成本（2026-10-09 运费分离）：新口径下**就是商品成本**，
+      // 运费不参与产品定价与产品利润，所以这一格不再加 `logistics_cost_snapshot`。
+      // 历史版本（legacy）沿用老口径"商品成本 + 单件运费"，与当时的审批结论一致。
+      title: legacyBasis ? '成本快照（含运费）' : '商品成本',
       dataIndex: 'cost_snapshot',
-      width: 110,
-      render: (v: number, record: QuoteItemRow) => `¥${(v + record.logistics_cost_snapshot).toFixed(2)}`,
+      width: 130,
+      render: (v: number, record: QuoteItemRow) =>
+        `¥${(legacyBasis ? v + record.logistics_cost_snapshot : v).toFixed(2)}`,
     },
     {
       title: '建议价',
@@ -391,9 +440,11 @@ export default function QuoteDetailPage() {
       render: (v: number | null) => (v === null ? '-' : `¥${v.toFixed(2)}`),
     },
     {
-      title: '实际报价',
+      // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
+      // 按旧口径（含运费）理解，列头不写就会各理解一套。
+      title: '实际报价（不含运费）',
       dataIndex: 'quoted_price',
-      width: 120,
+      width: 150,
       render: (value: number, record: QuoteItemRow) => (
         <span style={{ fontWeight: 600, color: record.approval_required ? 'var(--crm-error)' : 'var(--crm-text)' }}>
           ¥{value}
@@ -649,6 +700,15 @@ export default function QuoteDetailPage() {
           </Tag>
         </div>
       )}
+      {/* 运费未确认要**持续显示**（与主数据未确认同一性质）：草稿允许没填运费，
+          但正式发送会被拦下 —— 等到点"标记已发送"才报错就太晚了。 */}
+      {freightUnconfirmed && (
+        <div style={{ marginBottom: 16 }}>
+          <Tag color="orange" size="large">
+            {freightUnconfirmed}
+          </Tag>
+        </div>
+      )}
 
       <SectionCard
         title="报价明细"
@@ -698,12 +758,33 @@ export default function QuoteDetailPage() {
           <Table<QuoteChargeRow>
             columns={[
               { title: '类型', dataIndex: 'type_label', width: 100 },
-              { title: '说明', dataIndex: 'description', render: (v: string | null) => v ?? '-' },
+              {
+                // 运费要能一眼看出"确认了没有"：金额 0 不等于已确认零运费，
+                // 空输入与明确零运费必须分得开（正式发送要求后者）。
+                title: '说明',
+                dataIndex: 'description',
+                render: (v: string | null, record: QuoteChargeRow) => (
+                  <span>
+                    {v ?? '-'}
+                    {record.is_logistics &&
+                      (record.logistics_confirmed_at ? (
+                        <Tag size="small" type="light" color="green" style={{ marginLeft: 6 }}>
+                          运费已确认
+                        </Tag>
+                      ) : (
+                        <Tag size="small" type="light" color="orange" style={{ marginLeft: 6 }}>
+                          待确认运费
+                        </Tag>
+                      ))}
+                  </span>
+                ),
+              },
               {
                 title: '金额',
                 dataIndex: 'amount',
                 width: 120,
-                render: (v: number) => `¥${v.toFixed(2)}`,
+                render: (v: number, record: QuoteChargeRow) =>
+                  record.is_logistics ? `¥${v.toFixed(2)}（代收代付）` : `¥${v.toFixed(2)}`,
               },
               {
                 title: '',
@@ -728,17 +809,29 @@ export default function QuoteDetailPage() {
 
         <SectionCard title="金额汇总">
           <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>商品小计</span>
-              <span>¥{version.subtotal_amount.toLocaleString('zh-CN')}</span>
+            {/* 口径说明（2026-10-09 运费分离）：产品单价不含运费，运费按已确认的
+                实际金额代收代付。写在汇总最上方，避免客户/业务员按旧口径理解。 */}
+            <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
+              产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付
+              （公司不赚不赔，产品利润不受运费影响）。
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>附加费用</span>
-              <span>¥{version.charge_amount.toFixed(2)}</span>
+              <span style={{ color: 'var(--crm-text-3)' }}>产品货款</span>
+              <span>¥{summary.goods_amount.toLocaleString('zh-CN')}</span>
+            </div>
+            {/* 运费从"附加费用"里**单独一行**列具体金额，不再混在一起让客户自己猜。
+                注意：下面这几行都**已经含在**应付合计里，只是拆分展示，不再相加。 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--crm-text-3)' }}>运费（代收代付）</span>
+              <span>¥{summary.logistics_amount.toFixed(2)}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>折扣</span>
-              <span>¥{version.discount_amount.toFixed(2)}</span>
+              <span style={{ color: 'var(--crm-text-3)' }}>其他费用</span>
+              <span>¥{summary.other_charge_amount.toFixed(2)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span style={{ color: 'var(--crm-text-3)' }}>优惠</span>
+              <span>¥{summary.discount_amount.toFixed(2)}</span>
             </div>
             <div
               style={{
@@ -750,8 +843,8 @@ export default function QuoteDetailPage() {
                 fontSize: 16,
               }}
             >
-              <span>合计金额</span>
-              <span style={{ color: 'var(--crm-primary)' }}>¥{version.total_amount.toLocaleString('zh-CN')}</span>
+              <span>应付合计</span>
+              <span style={{ color: 'var(--crm-primary)' }}>¥{summary.total_amount.toLocaleString('zh-CN')}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--crm-text-3)' }}>预计利润合计</span>
@@ -940,8 +1033,19 @@ export default function QuoteDetailPage() {
           <Input
             value={chargeForm.amount}
             onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
-            placeholder="金额（折扣直接填正数，系统自动扣减）"
+            placeholder={
+              chargeForm.charge_type === 'discount'
+                ? '优惠金额（填正数，系统自动扣减）'
+                : '金额；确属零运费请显式填 0，不要留空'
+            }
           />
+          {chargeForm.charge_type === 'logistics' && (
+            <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
+              运费的支出金额与向客户收取的金额<b>共用这一份数据</b>：客户全额承担、
+              公司原额代收代付，不赚不赔。填进来即视为已确认的实际运费；
+              <b>留空不等于零运费</b>——确实没有运费请显式填 0。
+            </div>
+          )}
         </div>
       </Modal>
 

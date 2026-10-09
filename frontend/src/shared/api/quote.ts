@@ -31,6 +31,18 @@ export interface QuoteVersion {
   charge_amount: number
   discount_amount: number
   total_amount: number
+  /**
+   * 金额拆分（2026-10-09「产品价格与运费分离」）。
+   *
+   * ⚠️ 这两个值**已经含在** `total_amount` 里了（`charge_amount` 也等于两者之和）。
+   * 页面只能拿它们做**分项展示**，绝对不要再加到总额上——那是重复计费。
+   * 恒等式：`charge_amount === logistics_amount + other_charge_amount`
+   */
+  logistics_amount: number
+  other_charge_amount: number
+  /** 本版产品核价口径：legacy（成本含运费）/ actual_pass_through（运费代收代付） */
+  pricing_basis: string
+  pricing_basis_label?: string
   payment_terms?: string | null
   delivery_terms?: string | null
   remark?: string | null
@@ -41,6 +53,26 @@ export interface QuoteVersion {
   accepted_at?: string | null
   declined_at?: string | null
   total_profit?: number | null
+}
+
+/**
+ * 金额汇总 —— **后端算好的那一份**（`quote.service.amount_summary`）。
+ *
+ * 页面优先用它，不要自己按明细再算一遍：页面、对客 Excel/PDF、订单、应收
+ * 必须共用同一份公式，两套公式迟早对不上，而这里对不上就是钱对不上。
+ */
+export interface QuoteAmountSummary {
+  goods_amount: number
+  /** 运费（代收代付）：向客户收取的金额，同时也是公司付给承运商的金额 */
+  logistics_amount: number
+  other_charge_amount: number
+  charge_amount: number
+  /** 优惠：**负数**（与库内约定一致） */
+  discount_amount: number
+  total_amount: number
+  currency?: string | null
+  pricing_basis: string
+  pricing_basis_label?: string
 }
 
 export interface QuoteItemRow {
@@ -78,6 +110,15 @@ export interface QuoteChargeRow {
   description?: string | null
   amount: number
   is_discount: boolean
+  /** 后端判定：这条费用是不是"向客户收取的运费"（只认分类码物流，不看说明文字） */
+  is_logistics?: boolean
+  /**
+   * 运费被业务确认的时刻。
+   *
+   * `null` = **尚未确认**。注意金额为 0 **不等于**已确认零运费：
+   * 空输入与"明确是零运费"必须分得开，正式发送要求后者。
+   */
+  logistics_confirmed_at?: string | null
 }
 
 export interface ApprovalRecordRow {
@@ -102,6 +143,13 @@ export type WithMasterWarnings<T> = T & { master_warnings?: string[] }
 
 export interface QuoteVersionDetail {
   version: QuoteVersion
+  /** 后端统一的金额汇总（货款/运费/其他费用/优惠/合计），页面直接用它 */
+  summary?: QuoteAmountSummary
+  /**
+   * 运费尚未确认时的人话原因（后端给）；`null`/缺省 = 已确认可以正式发送。
+   * 与 `master_warnings` 同一性质：要**持续显示**，不能只闪一次 Toast。
+   */
+  freight_unconfirmed_reason?: string | null
   quote: Quote | null
   items: QuoteItemRow[]
   charges: QuoteChargeRow[]

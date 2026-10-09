@@ -184,8 +184,16 @@ export default function PricingPage() {
               <Input value={quantity} onChange={setQuantity} />
             </div>
             <div>
-              <div style={{ marginBottom: 4 }}>单件运费（留空则按费率表自动估算）</div>
+              {/* 运费与产品核价分离（2026-10-09）：产品单价不含运费，运费由业务员
+                  按承运商确认的金额填写。所以这里的运费**只是参考估算**，
+                  不参与建议价/底价/利润的计算 —— 标签必须说清，否则用户会
+                  以为改运费能改出不同的建议价。 */}
+              <div style={{ marginBottom: 4 }}>单件运费参考估算（不参与产品核价）</div>
               <Input value={logisticsCost} onChange={setLogisticsCost} placeholder="例如 1.62" />
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
+                仅供参考：产品建议价、保护价与利润均按商品成本计算，不含运费。
+                正式报价的运费请在报价单里按已确认的实际金额填写。
+              </div>
             </div>
             <div>
               <div style={{ marginBottom: 4 }}>目标利润率（留空则用价格规则里的值）</div>
@@ -245,8 +253,11 @@ export default function PricingPage() {
               <Stat label="包装成本" value={money(result.cost.package_cost)} />
               <Stat label="加工成本" value={money(result.cost.processing_cost)} />
               <Stat label="商品成本小计" value={money(result.cost.goods_cost)} />
-              <Stat label="单件运费" value={money(result.cost.logistics_cost)} />
-              <Stat label="合计成本" value={money(result.cost.base_cost)} tone="primary" />
+              {/* 运费与产品核价分离（2026-10-09）：`base_cost` 现在**只含商品成本**，
+                  运费不进定价基数。这里如实标出两者的关系，避免用户看到
+                  "合计成本"跟商品成本一样而以为算错了。 */}
+              <Stat label="单件运费（参考估算，不计入核价）" value={money(result.cost.logistics_cost)} />
+              <Stat label="产品核价成本（不含运费）" value={money(result.cost.base_cost)} tone="primary" />
               {result.currency && result.currency !== 'CNY' && (
                 <>
                   <Stat label={`折${result.currency}成本`} value={result.cost_in_quote_currency?.toFixed(4) ?? '-'} />

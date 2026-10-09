@@ -714,6 +714,36 @@ export default function OrderDetailPage() {
             },
           ]}
         />
+        {/* 订单金额组成（2026-10-09「产品价格与运费分离」）：订单页要能解释
+            "这个总额是怎么来的"，不能只给一个数。运费是代收代付的钱 ——
+            客户全额承担、公司原额付给承运商，所以它既不是收入也不是成本。
+            ⚠️ 这几行都已含在订单金额里，只是拆分展示，不再相加。 */}
+        {order.goods_amount != null ? (
+          <div
+            style={{
+              marginTop: 12,
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 16,
+              fontSize: 13,
+              color: 'var(--crm-text-3)',
+            }}
+          >
+            <span>金额组成：</span>
+            <span>产品货款 {formatMoney(order.goods_amount, order.currency)}</span>
+            <span>+ 运费（代收代付） {formatMoney(order.logistics_amount ?? 0, order.currency)}</span>
+            <span>+ 其他费用 {formatMoney(order.other_charge_amount ?? 0, order.currency)}</span>
+            <span>+ 优惠 {formatMoney(order.discount_amount ?? 0, order.currency)}</span>
+            <span style={{ color: 'var(--crm-text)' }}>
+              = {formatMoney(order.total_amount, order.currency)}
+            </span>
+          </div>
+        ) : (
+          // 历史订单没有留存组成：如实说"待核实"，不回查报价拿今天的数冒充当时那一单
+          <div style={{ marginTop: 12, fontSize: 13, color: 'var(--crm-text-3)' }}>
+            金额组成：待核实（该订单转单时未留存货款/运费/其他费用的拆分）
+          </div>
+        )}
       </DetailHeader>
 
       <SectionCard>
