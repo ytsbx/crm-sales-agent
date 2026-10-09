@@ -179,6 +179,58 @@ async def clean():
         await s.commit()
 
 
+def assert_master_data_unconfirmed(sku_ids):
+    """前提自检：本套件要有**未确认主数据**的 SKU 才能验 §8.14 的提示（2026-10-09 补）。
+
+    这条断言从前**静默依赖库的初始状态**：它假设演示 SKU 的主数据还没确认过。
+    但 `scripts/confirm_sku_master.py` 与 `check_master_confirmed_empty_value.py`
+    都会确认它 —— 谁先跑，后面这个套件就失败，而报错只是"提示里没有'主数据提醒'"，
+    完全看不出是**库的状态被人改过**（我本人就在本会话踩了两次，排查了很久）。
+
+    所以把它变成**明确的前置条件**：一个未确认的 SKU 都没有时，直接说清原因与解法
+    （换一次性库），而不是让一条业务断言莫名其妙地红。
+    """
+    import threading
+
+    from app.core.config import settings
+
+    result: dict = {}
+
+    def _worker():
+        # 开**独立线程 + 独立事件循环**：`main()` 是同步的但外层已在事件循环里，
+        # 直接 asyncio.run 会报 "cannot be called from a running event loop"
+        # （本文件末尾的并发断言也是这么绕的）。
+        async def _inner():
+            import asyncpg
+
+            conn = await asyncpg.connect(settings.database_url.replace('+asyncpg', ''))
+            try:
+                result['fresh'] = await conn.fetchval(
+                    "select count(*) from skus s where s.id = any($1::bigint[]) "
+                    "and not exists (select 1 from sku_field_authorities a "
+                    "                where a.sku_id = s.id and a.status = 'confirmed')",
+                    list(sku_ids),
+                )
+            finally:
+                await conn.close()
+
+        asyncio.run(_inner())
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join()
+    fresh = result.get('fresh', 0)
+    if not fresh:
+        raise SystemExit(
+            "前提不满足：用来验 §8.14 的演示 SKU 主数据**全部已确认**，"
+            "「未确认时不阻断但提示」这条断言无从验证。\n"
+            "  原因通常是本库先跑过 confirm_sku_master.py / "
+            "check_master_confirmed_empty_value.py（它们会确认主数据）。\n"
+            "  解法：换一个全新的一次性库（migrate + seed）再跑本套件。"
+        )
+    return fresh
+
+
 def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
@@ -187,6 +239,8 @@ def main():
 
     status, res = call('GET', '/pricing/sku-options', token=admin)
     skus = [row['id'] for row in res['data'][:3]]
+    # 前提自检：至少有一个未确认主数据的 SKU，否则下面 §8.14 那条断言必然假失败
+    assert_master_data_unconfirmed(skus)
 
     def quick_opp(token, customer_id, title):
         """D8：报价必须挂商机——用例报价前先造一条快捷商机。"""
