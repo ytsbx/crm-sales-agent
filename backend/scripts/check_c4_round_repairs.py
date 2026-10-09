@@ -185,6 +185,61 @@ def sec_c401(admin: str) -> None:
     db("delete from sales_orders")
 
 
+# =====================================================================
+# C4-01 之外：报价可以挂已删除联系人 —— 放行但**必须显性提醒**
+# =====================================================================
+def sec_quote_deleted_contact(admin: str) -> None:
+    """口径（主人 2026-10-09 拍板）：**放行 + warnings 提醒**，不硬拦。
+
+    为什么不硬拦：联系人不只由人手工选，还会从**定制需求**自动带过来
+    （`inquiry.contact_id`）。那个人离职后被删，硬拦会让"从这条需求建报价"
+    这条正常业务卡死，出路只有把已删联系人重新加回来（留假数据）。
+    与"主数据未确认"同一口径：默认放行 + 如实提示，不静默。
+
+    这条断言守两件事：① 确实放行（别被谁改成硬拦）；② 提醒确实出现
+    （别变成"静默放行"）。
+    """
+    print("\n=== 报价挂已删除联系人：放行 + 提醒 ===")
+    db(f"delete from contacts where name like '{MARK}-联系人%'")
+    cust = db("select id from customers order by id limit 1")
+
+    # 造一个联系人并删掉
+    call("POST", f"/customers/{cust}/contacts", admin,
+         {"name": f"{MARK}-联系人甲", "mobile": "13900001111"})
+    ct = db("select id from contacts order by id desc limit 1")
+    call("DELETE", f"/contacts/{ct}", admin)
+    check_true("前置：联系人已软删除",
+               db(f"select deleted_at is not null from contacts where id={ct}") == "t")
+
+    # 建商机（报价必须挂商机）
+    call("POST", "/opportunities", admin,
+         {"title": f"{MARK}-商机", "customer_id": int(cust), "expected_amount": 100})
+    opp = db("select id from opportunities order by id desc limit 1")
+
+    # ① 带已删除联系人建报价 → 放行，且必须有提醒
+    _, res = call("POST", "/quotes", admin, {"opportunity_id": int(opp), "contact_id": int(ct)})
+    check("① 放行（不是硬拦）", res.get("code"), 0)
+    warns = (res.get("data") or {}).get("warnings") or []
+    check_true("① warnings 里说清联系人已被删除",
+               any("已被删除" in w for w in warns),
+               f"warnings={warns}")
+
+    # ② 对照：有效联系人不应出现这条提醒（别把提醒写成无条件的）
+    call("POST", f"/customers/{cust}/contacts", admin,
+         {"name": f"{MARK}-联系人乙", "mobile": "13900002222"})
+    ct2 = db("select id from contacts order by id desc limit 1")
+    _, res2 = call("POST", "/quotes", admin, {"opportunity_id": int(opp), "contact_id": int(ct2)})
+    check("② 有效联系人可以正常建报价", res2.get("code"), 0)
+    warns2 = (res2.get("data") or {}).get("warnings") or []
+    check_true("② 有效联系人没有这条提醒",
+               not any("已被删除" in w for w in warns2),
+               f"warnings={warns2}")
+
+    # 收尾
+    db(f"delete from contacts where name like '{MARK}-联系人%'")
+    db(f"delete from opportunities where title = '{MARK}-商机'")
+
+
 def main() -> int:
     status, res = call("POST", "/auth/login", body={"username": "admin", "password": "admin123"})
     if res.get("code") != 0:
@@ -193,6 +248,7 @@ def main() -> int:
     admin = res["data"]["access_token"]
 
     sec_c401(admin)
+    sec_quote_deleted_contact(admin)
 
     print("\n" + "=" * 60)
     if failed:

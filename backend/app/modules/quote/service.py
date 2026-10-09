@@ -501,6 +501,9 @@ async def create_quote(
         opportunity.primary_contact_id if opportunity else None
     )
     contact = None
+    #: 报价**之前**就该攒的提醒（`item_warnings` 要到明细循环那里才建，所以分开攒，
+    #: 最后一起返回）。
+    early_warnings: list[str] = []
     if resolved_contact_id is not None:
         contact = await session.get(Contact, resolved_contact_id)
         if contact is None:
@@ -511,6 +514,20 @@ async def create_quote(
             raise AppError(
                 ErrorCode.PARAM_ERROR,
                 f"联系人 id={resolved_contact_id} 不属于客户 id={customer_id}",
+            )
+        # 已删除的联系人：**放行但显性提醒**（主人 2026-10-09 拍板的口径）。
+        #
+        # 为什么不硬拦：联系人不只由人手工选，还会从**定制需求**自动带过来
+        # （`inquiry.contact_id`）。如果那个人离职后被删，硬拦会让"从这条需求建报价"
+        # 这条**正常业务**直接卡死，出路只有把已删联系人重新加回来（留假数据）。
+        # 而报价后面本来就要人工过一遍（填明细、改价、提交审批），多一条提醒不增加负担。
+        #
+        # 与"主数据未确认"同一口径：**默认放行 + 如实提示**，不静默。
+        # 界面已经会逐条弹 `warnings`（`QuoteListPage` 的 onSuccess）。
+        if contact.deleted_at is not None:
+            early_warnings.append(
+                f"联系人「{contact.name}」已被删除，请确认是否仍要发给这位；"
+                f"如已换人，请在报价上改选该客户的有效联系人"
             )
     contact_id = resolved_contact_id
 
@@ -675,7 +692,8 @@ async def create_quote(
         ),
         "item_count": len(await version_items(session, version.id)),
         "total_amount": float(version.total_amount),
-        "warnings": item_warnings,
+        # 先攒的（联系人已删除等）+ 明细循环里攒的，一起交出去
+        "warnings": early_warnings + item_warnings,
         # ORM 对象单独挂在下划线键下给路由用。
         # **不能混在要写审计/JSON 的字段里**：Agent 工具的返回值会直接进
         # audit_logs 的 JSON 列，带 ORM 对象会 "not JSON serializable"。
