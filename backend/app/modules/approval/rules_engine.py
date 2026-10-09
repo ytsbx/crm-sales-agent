@@ -162,6 +162,10 @@ async def build_context(
     fx: Decimal | None,
 ) -> dict:
     """把一张报价单翻译成条件求值可用的上下文（全部国内口径、人民币）。"""
+    # 函数内导入：`quote.service` 在提交审批时会 import 本模块，
+    # 模块级互相导入会成环。这里只要两个纯函数，没有初始化副作用。
+    from app.modules.quote import service as quote_service
+
     foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
 
     def to_cny(price: Decimal) -> Decimal:
@@ -169,10 +173,30 @@ async def build_context(
 
     total_cny = float(to_cny(version.total_amount or Decimal(0)))
     prices = [to_cny(i.quoted_price) for i in items]
-    costs = [(i.cost_snapshot or Decimal(0)) + (i.logistics_cost_snapshot or Decimal(0)) for i in items]
+    # 产品核价成本逐版取口径（2026-10-09「产品价格与运费分离」）：
+    # 新报价的运费由客户全额承担、公司原额代收代付，**不进产品利润**；
+    # 历史版本仍含单件运费。判据只有 `item_unit_product_cost` 一份。
+    includes_freight = quote_service.version_logistics_in_base_cost(version)
+    costs = [
+        to_cny(quote_service.item_unit_product_cost(i, includes_freight=includes_freight))
+        for i in items
+    ]
     total_price = sum(prices, Decimal(0))
     total_cost = sum(costs, Decimal(0))
-    gross_margin = float((total_price - total_cost) / total_price * 100) if total_price else 0.0
+    # 整单毛利率的收入侧同样要剔除运费 —— 运费是替客户转交给承运商的钱，
+    # 不是公司的收入。只剔一边会算出一个不真实的毛利率：
+    # 只剔成本 → 毛利率被抬高（该拦的拦不住）；只剔收入 → 被压低（误触审批）。
+    # 老口径不加这一减，行为与从前完全一致。
+    total_price_for_margin = total_price
+    if not includes_freight:
+        total_price_for_margin = total_price - to_cny(
+            version.logistics_amount or Decimal(0)
+        )
+    gross_margin = (
+        float((total_price_for_margin - total_cost) / total_price_for_margin * 100)
+        if total_price_for_margin
+        else 0.0
+    )
     item_margins = [
         float((p - c) / p * 100) for p, c in zip(prices, costs) if p
     ]

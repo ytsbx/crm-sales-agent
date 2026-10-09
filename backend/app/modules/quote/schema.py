@@ -71,20 +71,36 @@ class QuoteItemUpdate(BaseModel):
 
 
 class QuoteChargeInput(BaseModel):
+    """新增一条附加费用（含运费）。
+
+    金额口径（与 `QuoteChargeUpdate` 同一条尺子，**前端校验之外后端必须再校验一遍**）：
+    非负、有限、最多两位小数。运费就是 `charge_type="logistics"` 的这条费用
+    （2026-10-09：不另建一套运费金额，避免两套金额都被加进总额）。
+
+    通过本接口填进来的物流费用视为**业务已确认的具体金额** ——
+    "明确确认的零运费"（`amount=0`）也是合法输入，落库时打上确认时刻，
+    与"压根没填"区分开（见 `QuoteCharge.logistics_confirmed_at`）。
+    """
+
     charge_type: str = "other"
     description: str | None = None
-    amount: Decimal = Decimal(0)
+    amount: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=2)
     is_discount: bool = False
 
 
 class QuoteChargeUpdate(PatchModel):
-    """改一条附加费用（03-API §22）。只传要改的字段。"""
+    """改一条附加费用（03-API §22）。只传要改的字段。
+
+    金额校验与新增同一条尺子（非负、有限、两位小数）。**改了物流费用的金额，
+    确认时刻会重新打一次** —— 改的是"已确认的实际运费"这个事实本身，
+    拿改动前的确认时刻去背书改动后的金额是错的。
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     charge_type: str | None = None
     description: str | None = None
-    amount: Decimal | None = None
+    amount: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=2)
     is_discount: bool | None = None
     sort_no: int | None = None
 
