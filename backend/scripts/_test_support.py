@@ -52,10 +52,17 @@ from sqlalchemy import text
 
 __all__ = ["align_id_sequences", "require_api_base", "require_isolated_db"]
 
-#: 开发后端的端口：测试默认不许打
-DEV_PORTS = {8000}
-#: 正式库的库名：测试默认不许连
-DEV_DATABASES = {"crm_sales_agent"}
+#: 非一次性后端（**不该被测试打到**）：生产 8000 + 开发联调 8008
+DEV_PORTS = {8000, 8008}
+#: 非一次性库（**不该被测试连上**）：
+#:   crm_sales_agent  生产/领导用
+#:   crm_prod         开发联调用（5274 那套），**里面是给人看的演示数据**
+#:
+#: ⚠️ `crm_prod` 是后补的（2026-10-09）。在这之前它既不在黑名单、也不像一次性库
+#: （不带 `crm_iso`/`crm_check`/`crm_test` 前缀，也不以 `_test` 结尾），于是**被放行** ——
+#: 实测留下了 `Independent C3 audit ...` 这类审查夹具客户，混进了给领导/自己看的演示数据。
+#: 规则：**测试一律用一次性库**；演示库是给人看的，不是给脚本写删的。
+DEV_DATABASES = {"crm_sales_agent", "crm_prod"}
 #: 一次性库的命名规则（前缀或后缀命中其一即可）
 ISOLATED_DB_PREFIXES = ("crm_iso", "crm_check", "crm_test")
 ISOLATED_DB_SUFFIXES = ("_test",)

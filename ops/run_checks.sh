@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # 本地一键全量验证（与 CI 同一份清单）：静态检查 + 接口回归。
 # 套件清单来自 ops/check_suites.txt（唯一真源），CI 读的是同一个文件。
-# UI 冒烟默认跳过，加 --ui 一起跑（需要本机 Chrome/Edge + 前端 5173 在跑）。
+# UI 冒烟默认跳过，加 --ui 一起跑（需要本机 Chrome/Edge + 开发前端 5274 在跑）。
 #
 # ⚠️ 2026-10-08 起：下面这两样**必须显式给**，不给就拒绝跑：
-#     API_BASE      一次性隔离库后端的地址，**不能是 8000**（那是开发后端）
+#     API_BASE      一次性隔离库后端的地址，**不能是 8000（生产）或 8008（开发联调）**
 #     DATABASE_URL  一次性隔离库，库名以 crm_iso / crm_check / crm_test 开头，或 _test 结尾
 #   从前 API_BASE 默认就是 8000，而 backend/.env 里的 DATABASE_URL 指向开发库
 #   —— 于是"什么都不配直接跑"等于在正式库上跑测试，开发库里因此留下过测试角色、
@@ -12,7 +12,7 @@
 #   真要在开发环境上跑一次：加 ALLOW_DEV_TARGETS=1（明知故犯，会大声提醒）。
 #
 # 用法：
-#   API_BASE=http://127.0.0.1:8001/api/v1 \
+#   API_BASE=http://127.0.0.1:8009/api/v1 \
 #   DATABASE_URL=postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_test \
 #     bash ops/run_checks.sh          # 静态 + 接口回归
 #   ... --ui                          # 再加 UI 冒烟

@@ -50,8 +50,10 @@ CRM-Sales-Agent-V1.1/
 | 服务 | 本机实际 | 说明 |
 |---|---|---|
 | PostgreSQL | **127.0.0.1:5432**，库 `crm_sales_agent`，账号 `crm / crm123456` | 这台 Mac 上是原生安装 |
-| 后端 | `127.0.0.1:8000`（或 `0.0.0.0` 供局域网访问） | FastAPI，无 `--reload` |
-| 前端 | `5173` | Vite，`/api` 代理到 8000 |
+| 开发测试后端 | `127.0.0.1:8008` | FastAPI，使用独立开发数据库配置 `.env.development.local` |
+| 生产后端 | `127.0.0.1:8000` | 给领导使用，开发测试不重启此服务、不写其数据库 |
+| 开发前端 | `5274` | Vite，`/api` 代理到 8008；日常修改和界面检查使用此端口 |
+| 生产前端 | `5173` | 给领导使用的静态构建，`/api` 代理到 8000，按明确的发布指令更新 |
 
 `ops/docker-compose.yml` 提供一套**可选的**独立容器（PG 5433 + Redis 6381），
 用于"不想用本机数据库"或多人隔离的场景——**当前 .env 没用它**，要用的话把
@@ -63,35 +65,40 @@ CRM-Sales-Agent-V1.1/
 
 ```bash
 cd backend
-cp .env.example .env                      # 按本机情况改 DATABASE_URL
+cp .env.example .env.development.local    # 改 DATABASE_URL，指向独立开发库
 uv venv --python 3.12 .venv               # 或 python -m venv .venv
 uv pip install --python .venv/bin/python -r requirements.txt
+# 让迁移与种子使用同一份开发配置（不读取领导环境的数据库连接）
+set -a
+source .env.development.local
+set +a
 .venv/bin/python -m alembic upgrade head
 .venv/bin/python -m scripts.seed          # 角色权限、部门账号、示例客户/产品/价格
 .venv/bin/python -m scripts.seed_demo     # 可选：跑通报价→审批→订单→应收→回款，演示用
-PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --env-file .env.development.local --host 127.0.0.1 --port 8008
 ```
 
-Windows 把 `.venv/bin/` 换成 `.venv\Scripts\`。接口文档：<http://127.0.0.1:8000/docs>（仅 `DEBUG=true`）。
+`.env.development.local` 必须指定独立开发数据库；迁移、种子和接口回归也要显式指向开发库或一次性测试库。
+Windows 把 `.venv/bin/` 换成 `.venv\Scripts\`。开发接口文档：<http://127.0.0.1:8008/docs>（仅 `DEBUG=true`）。
 
 **改 Python 代码必须重启后端**（没有 `--reload`）。
 
 ### 前端
 
 ```bash
-cd frontend && pnpm install && pnpm dev     # http://127.0.0.1:5173
+cd frontend && pnpm install && pnpm dev     # http://127.0.0.1:5274
 ```
 
 ### 让局域网同事访问
 
 ```bash
 # 后端：--host 0.0.0.0
-PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --env-file .env.development.local --host 0.0.0.0 --port 8008
 ```
 
 `frontend/vite.config.ts` 已配 `host: true` + `allowedHosts: true`；
-`backend/.env` 的 `CORS_ORIGINS` 里加上 `http://<本机IP>:5173`。
-同事打开 `http://<本机IP>:5173` 即可（Vite 代理走服务端转发，后端不必暴露也能用界面）。
+开发联调打开 `http://<本机IP>:5274`（Vite 代理走服务端转发，后端不必暴露也能用界面）。
+给领导展示时使用生产端 `http://<本机IP>:5173`，该端口提供已经发布的静态构建。
 
 > ⚠️ 演示账号是弱口令（`admin123` / `123456`），局域网内任何人都能登进去改数据。
 > 只发必要账号，别发 admin。
@@ -109,7 +116,7 @@ PYTHONPATH=. .venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ```bash
 # 必须显式指定「一次性隔离库的后端 + 一次性库」——不给就拒跑（2026-10-08 起）：
-API_BASE=http://127.0.0.1:8001/api/v1 \
+API_BASE=http://127.0.0.1:8008/api/v1 \
 DATABASE_URL=postgresql+asyncpg://crm:***@127.0.0.1:5432/crm_iso_test \
   bash ops/run_checks.sh        # 静态检查 + pytest + 全部回归套件（与 CI 同清单）
 node ops/smoke_ui.mjs           # 28 页 + 4 交互逐页截图、抓控制台报错（不依赖 Playwright）
@@ -121,12 +128,29 @@ node ops/smoke_ui.mjs           # 28 页 + 4 交互逐页截图、抓控制台�
 > **不要在验收/演示环境随手跑。**
 >
 > 2026-10-08 起，套件与 `run_checks.sh` 都**必须先过防呆**：`API_BASE` 不许指向
-> 8000（开发后端）、`DATABASE_URL` 必须是一次性库（`crm_iso*` / `crm_check*` /
-> `crm_test*` 开头，或 `_test` 结尾），否则直接退出。判据只有一处：
-> `backend/scripts/_test_support.py`。真要在开发环境上临时跑一次，加
+> 8000（生产后端）或 8008（开发联调后端）、`DATABASE_URL` 必须是一次性库
+> （`crm_iso*` / `crm_check*` / `crm_test*` 开头，或 `_test` 结尾），否则直接退出。
+> 判据只有一处：`backend/scripts/_test_support.py`。真要在开发环境上临时跑一次，加
 > `ALLOW_DEV_TARGETS=1`（明知故犯，会大声提醒）。
 > 之前"不显式指定就直接跑"，等于在开发库上跑测试——开发库里因此留下过测试角色、
 > 测试账号和订单残渣。
+>
+> **2026-10-09 补：`crm_prod` 也列入禁止名单。**
+> 它在这之前**能通过防呆**（既不在黑名单、又不像一次性库），于是审查脚本直接打在
+> 它上面，留下了 `Independent C3 audit ...` 这类夹具客户，混进了给人看的演示数据。
+> 现在两个库都禁：`crm_sales_agent`（生产）、`crm_prod`（开发联调的演示库）。
+> **要跑测试就新建一个一次性库**（`crm_check_xxx`），跑完删掉：
+>
+> ```bash
+> createdb -h 127.0.0.1 -p 5432 -U crm crm_check_xxx    # 或用 psql 的 CREATE DATABASE
+> cd backend && PYTHONPATH=. DATABASE_URL=postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_check_xxx \
+>   .venv/bin/python -m alembic upgrade head && PYTHONPATH=. DATABASE_URL=... .venv/bin/python -m scripts.seed
+> # 起一个指向它的后端（如 8009），然后把 API_BASE/DATABASE_URL 指过去跑套件
+> ```
+>
+> 原因很直接：**演示库是给人看的，不是给脚本写删的。**
+> `scripts/check_*.py` 会清库、会留 `CHK*` 夹具、会把价格权限改成 5%——
+> 打在演示库上，界面里就会冒出测试数据，而且**只有跑测试的那个人知道怎么清**。
 
 ## 约定
 
