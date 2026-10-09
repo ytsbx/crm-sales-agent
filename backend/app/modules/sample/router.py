@@ -1165,15 +1165,34 @@ async def _assert_active_owner(session: AsyncSession, owner_id: int | None, fiel
 
 
 async def _assert_contact_belongs(session: AsyncSession, contact_id: int | None, customer_id: int | None) -> None:
-    """联系人必须**存在、且属于本申请的客户**（审查 C3-02）。
+    """联系人必须**未被删除、存在、且属于本申请的客户**（审查 C3-02）。
 
-    实测过：给甲客户的单挂乙客户的联系人 → 200 并落库，打样通知就会发给**别人家**的联系人。
+    实测过的两条反例：
+      1. 给甲客户的单挂乙客户的联系人 → 200 并落库，打样通知会发给**别人家**的联系人；
+      2. **已删除**的联系人 → 读它自己返回 404，但拿它的 id 建/改打样单却 200 并落库
+         （补修，漏在 `deleted_at` 上）。
+
+    ⚠️ 为什么第 2 条特别要防：联系人是**软删除**（`deleted_at` 置时间戳，
+    `delete_contact` 就是这么做的），而 `session.get()` **不走软删除过滤** ——
+    列表、详情那些走 `Contact.deleted_at.is_(None)` 的地方看不到它，
+    只有"按 id 直取"的这条校验看得到。于是形成一个**只有内行才知道的入口**：
+    界面上选不到这个联系人，但拿 id 就能挂上去，打样通知就会发给一个
+    "已经被删掉、本不该再联系"的人。
+
+    历史关联**保持原样不迁移**：以前挂上的联系人即使后来被删，那张单的联系人
+    仍然显示（那是当时的事实），这里只拦**新的**关联。
     """
     if contact_id is None:
         return
     contact = await session.get(Contact, contact_id)
     if contact is None:
         raise AppError(ErrorCode.NOT_FOUND, f"联系人 id={contact_id} 不存在", 404)
+    if contact.deleted_at is not None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"联系人「{contact.name}」已被删除，不能再关联到打样单；请从该客户的有效联系人里选",
+            422,
+        )
     if contact.customer_id != customer_id:
         raise AppError(
             ErrorCode.PARAM_ERROR,

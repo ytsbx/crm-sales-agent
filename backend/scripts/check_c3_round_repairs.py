@@ -274,6 +274,75 @@ def sec_c302(admin: str, worker_token: str) -> None:
 
 
 # =====================================================================
+# C3-02 补修：已删除的联系人不能再关联到打样单
+# =====================================================================
+def sec_c302b(admin: str) -> None:
+    """复现出来的反例：删掉联系人后读它返回 404，但拿它的 id 建/改打样单却 200 并落库。
+
+    根因是 `_assert_contact_belongs` 只查了"存在 + 客户归属"，漏了**软删除**：
+    `Contact` 是软删除（`deleted_at`），而 `session.get()` 不走软删除过滤 ——
+    列表/详情看不到它，只有这条"按 id 直取"的校验看得到，于是留了个后门。
+    """
+    print("\n=== C3-02补 已删除联系人不得再关联 ===")
+    sku = db("select id from skus order by id limit 1")
+    cust = db("select id from customers order by id limit 1")
+    db(f"delete from contacts where name like '{MARK}-软删%'")
+
+    # 造一个联系人并删掉
+    _, r = call("POST", f"/customers/{cust}/contacts", admin,
+                {"name": f"{MARK}-软删联系人", "mobile": "13900008888"})
+    ct = (r.get("data") or {}).get("id")
+    check_true("前置：建联系人", bool(ct), f"id={ct}")
+    call("DELETE", f"/contacts/{ct}", admin)
+    check_true("前置：联系人已软删除（deleted_at 有值）",
+               db(f"select deleted_at is not null from contacts where id={ct}") == "t")
+    # 对照：读它自己是 404
+    check("前置：读已删除联系人返回 404",
+          call("GET", f"/contacts/{ct}", admin)[1].get("code"), 40401)
+
+    def mk(tag, **extra):
+        body = {"customer_id": int(cust), "remark": f"{MARK}-{tag}",
+                "items": [{"sku_id": int(sku), "quantity": 1}]}
+        body.update(extra)
+        status, res = call("POST", "/samples", admin, body)
+        return res.get("code"), (res.get("data") or {}).get("id")
+
+    # ① 新建时关联已删除联系人 → 必须拒（从前 200 并落库）
+    code, sid = mk("软删新建", contact_id=int(ct))
+    check_true("① 新建关联已删除联系人被拒（从前 200）", code != 0, f"code={code}")
+    check_true("① 被拒后没落库", sid is None, f"id={sid}")
+
+    # ② 修改时关联已删除联系人 → 必须拒（从前 200 并落库）
+    code2, sid2 = mk("软删修改")
+    check("② 前置：建一张干净的单", code2, 0)
+    code3 = call("PATCH", f"/samples/{sid2}", admin, {"contact_id": int(ct)})[1].get("code")
+    check_true("② 修改关联已删除联系人被拒（从前 200）", code3 != 0, f"code={code3}")
+    check("② 库里没被改成那个联系人",
+          db(f"select coalesce(contact_id::text,'N') from sample_requests where id={sid2}"), "N")
+
+    # ③ 正例：有效联系人仍能正常关联（别把功能一起拦掉）
+    _, r3 = call("POST", f"/customers/{cust}/contacts", admin,
+                 {"name": f"{MARK}-有效联系人", "mobile": "13900007777"})
+    ct_ok = (r3.get("data") or {}).get("id")
+    code4, sid4 = mk("有效联系人", contact_id=int(ct_ok))
+    check("③ 有效联系人正常关联放行", code4, 0)
+    check("③ 有效联系人已落库",
+          db(f"select contact_id from sample_requests where id={sid4}"), str(ct_ok))
+
+    # ④ 边界：先关联、后删除 —— 历史关联保持原样（不迁移）
+    call("DELETE", f"/contacts/{ct_ok}", admin)
+    check("④ 联系人事后被删，原单的关联仍在（历史不迁移）",
+          db(f"select contact_id from sample_requests where id={sid4}"), str(ct_ok))
+
+    for s in (sid, sid2, sid4):
+        if s:
+            db(f"delete from sample_items where sample_request_id={s}")
+            db(f"delete from sample_requests where id={s}")
+    db(f"delete from contacts where id in ({ct}, {ct_ok})")
+    db(f"delete from contacts where name like '{MARK}-%'")
+
+
+# =====================================================================
 # C3-03：寄送运费必须非负、精度与库列一致
 # =====================================================================
 def sec_c303(admin: str) -> None:
@@ -464,6 +533,7 @@ def main() -> int:
     sec_c306(admin)
     sec_c301(admin)
     sec_c302(admin, worker_token)
+    sec_c302b(admin)
     sec_c303(admin)
     sec_c304(admin)
     sec_c305(admin)
