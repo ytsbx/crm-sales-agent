@@ -14,6 +14,7 @@ import {
   deleteCustomerPriceRule,
   deleteLogisticsRate,
   disablePriceRule,
+  restorePriceRule,
   listCosts,
   listCustomerPriceRules,
   listLogisticsRates,
@@ -348,6 +349,50 @@ const emptyCustomerPriceForm = {
   remark: '',
 }
 
+/**
+ * 把表单里的数字文本解析成提交值（2026-10-09 审查 R02）。
+ *
+ * 从前各处直接写 `Number(x)`，于是"填了字母"会**静默**变成 `NaN`，
+ * 而 `JSON.stringify` 又把 `NaN` 序列化成 `null` —— 后端把 `max_qty: null`
+ * 理解成"不限数量"。实测（真实浏览器）：数量上限 97000 改成 `abc` 点保存，
+ * 上限被清空成"不限"，**页面没有任何提示**，而且从此任何数量都命中这条价。
+ *
+ * 所以把三种情况分开：
+ *   - 空串 / 只有空白 → `null`（= 明确清空，这是合法操作）；
+ *   - 能解析成有限数字 → 数字；
+ *   - 其它（字母、`1abc`、`Infinity`…）→ `NaN`，调用方**必须**拦下来并提示，
+ *     绝不能当成 null 提交。
+ */
+function parseOptionalNumber(raw: string): number | null {
+  const text = String(raw ?? '').trim()
+  if (text === '') return null
+  const n = Number(text)
+  return Number.isFinite(n) ? n : NaN
+}
+
+/** 数量类字段：同上，另外限制最多 3 位小数（与库列 `Numeric(16,3)` 对齐）。
+ *
+ * 不在前端先拦的话，`1.2349` 会被数据库静默舍成 `1.235`，用户以为上限是 1.2349，
+ * 之后看到"区间重叠"也复现不出原因（审查 R04 的同一个坑）。
+ */
+function parseQuantity(raw: string): number | null {
+  const n = parseOptionalNumber(raw)
+  if (n === null || Number.isNaN(n)) return n
+  const decimals = (String(raw).split('.')[1] ?? '').length
+  return decimals > 3 ? NaN : n
+}
+
+/** 数字字段的中文名：解析失败时提示要点名是哪个字段（R02）。 */
+const NUMBER_FIELD_LABEL: Record<string, string> = {
+  min_qty: '数量下限',
+  max_qty: '数量上限',
+  standard_price: '标准价',
+  guide_price: '指导价',
+  minimum_price: '最低保护价',
+  target_margin: '目标利润率',
+  agreed_price: '约定价',
+}
+
 export default function PriceCenterPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -497,28 +542,41 @@ export default function PriceCenterPage() {
    */
   const ruleMutation = useMutation({
     mutationFn: () => {
+      // 解析 + 校验放一处（R02）：数字字段填了字母必须**当场拒绝**，
+      // 不能让它变成 null 提交出去（那等于把上限改成"不限"）。
+      const nums = {
+        min_qty: parseQuantity(ruleForm.min_qty),
+        max_qty: parseQuantity(ruleForm.max_qty),
+        standard_price: parseOptionalNumber(ruleForm.standard_price),
+        guide_price: parseOptionalNumber(ruleForm.guide_price),
+        minimum_price: parseOptionalNumber(ruleForm.minimum_price),
+        target_margin: parseOptionalNumber(ruleForm.target_margin),
+      }
+      const bad = Object.entries(nums).find(([, v]) => Number.isNaN(v))
+      if (bad) {
+        throw new Error(`${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}只能填数字（最多 3 位小数）`)
+      }
+      const common = {
+        min_qty: nums.min_qty ?? 0,
+        max_qty: nums.max_qty,
+        effective_from: ruleForm.effective_from || null,
+        effective_to: ruleForm.effective_to || null,
+        remark: ruleForm.remark || null,
+      }
       if (ruleEditing) {
         return updatePriceRule(ruleEditing.id, {
           customer_level: ruleForm.customer_level || null,
-          min_qty: Number(ruleForm.min_qty || 0),
-          max_qty: ruleForm.max_qty === '' ? null : Number(ruleForm.max_qty),
-          effective_from: ruleForm.effective_from || null,
-          effective_to: ruleForm.effective_to || null,
-          remark: ruleForm.remark || null,
+          ...common,
         })
       }
       return createPriceRule({
         sku_id: ruleForm.sku_id,
         customer_level: ruleForm.customer_level || null,
-        min_qty: Number(ruleForm.min_qty || 0),
-        max_qty: ruleForm.max_qty === '' ? null : Number(ruleForm.max_qty),
-        standard_price: ruleForm.standard_price ? Number(ruleForm.standard_price) : null,
-        guide_price: ruleForm.guide_price ? Number(ruleForm.guide_price) : null,
-        minimum_price: ruleForm.minimum_price ? Number(ruleForm.minimum_price) : null,
-        target_margin: ruleForm.target_margin ? Number(ruleForm.target_margin) : null,
-        effective_from: ruleForm.effective_from || null,
-        effective_to: ruleForm.effective_to || null,
-        remark: ruleForm.remark || null,
+        ...common,
+        standard_price: nums.standard_price,
+        guide_price: nums.guide_price,
+        minimum_price: nums.minimum_price,
+        target_margin: nums.target_margin,
       })
     },
     onSuccess: () => {
@@ -538,13 +596,22 @@ export default function PriceCenterPage() {
    */
   const customerPriceMutation = useMutation({
     mutationFn: () => {
+      // 同一把尺子（R02）：约定价必填且必须是数字，其余数字字段填字母要当场拒绝
+      const nums = {
+        min_qty: parseQuantity(customerPriceForm.min_qty),
+        max_qty: parseQuantity(customerPriceForm.max_qty),
+        agreed_price: parseOptionalNumber(customerPriceForm.agreed_price),
+        minimum_price: parseOptionalNumber(customerPriceForm.minimum_price),
+      }
+      const bad = Object.entries(nums).find(([, v]) => Number.isNaN(v))
+      if (bad) {
+        throw new Error(`${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}只能填数字（最多 3 位小数）`)
+      }
       const common = {
-        min_qty: Number(customerPriceForm.min_qty || 0),
-        max_qty: customerPriceForm.max_qty === '' ? null : Number(customerPriceForm.max_qty),
-        agreed_price: Number(customerPriceForm.agreed_price),
-        minimum_price: customerPriceForm.minimum_price
-          ? Number(customerPriceForm.minimum_price)
-          : null,
+        min_qty: nums.min_qty ?? 0,
+        max_qty: nums.max_qty,
+        agreed_price: nums.agreed_price,
+        minimum_price: nums.minimum_price,
         effective_from: customerPriceForm.effective_from || null,
         effective_to: customerPriceForm.effective_to || null,
         remark: customerPriceForm.remark || null,
@@ -1161,7 +1228,19 @@ export default function PriceCenterPage() {
                               <a style={{ color: 'var(--crm-error)' }}>停用</a>
                             </Popconfirm>
                           ) : (
-                            <span style={{ color: 'var(--crm-text-3)' }}>已停用</span>
+                            // 恢复启用（审查建议）：停用是软操作（只把 status 改成
+                            // disabled，行还在），所以可以恢复。带二次确认 ——
+                            // 恢复会让这条规则**重新参与取价**，且若与现有启用规则
+                            // 撞区间会被后端拒绝（40901），提示里说清这一点。
+                            <Popconfirm
+                              title="恢复启用这条价格规则？"
+                              content="恢复后它会重新参与取价；若与现有启用规则的数量区间重叠，后端会拒绝并保持停用。"
+                              onConfirm={() =>
+                                restorePriceRule(record.id).then(refreshAll)
+                              }
+                            >
+                              <a>恢复启用</a>
+                            </Popconfirm>
                           )}
                         </span>
                       ) : (

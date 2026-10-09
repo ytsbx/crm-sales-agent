@@ -393,17 +393,31 @@ async def update_price_rule(
     except AppError:
         await session.rollback()
         raise
-    # 改动后仍不能与其他规则重叠（排除自己）
-    conflict = await svc.find_price_rule_conflict(
-        session,
-        sku_id=rule.sku_id,
-        customer_level=rule.customer_level,
-        min_qty=rule.min_qty,
-        max_qty=rule.max_qty,
-        effective_from=rule.effective_from,
-        effective_to=rule.effective_to,
-        exclude_id=rule.id,
-    )
+    # 改动后仍不能与其他规则重叠（排除自己）——**但只在合并后规则仍是"启用"时才查**
+    # （2026-10-09 审查 R06）。
+    #
+    # 从前这里无条件查，于是出现一个反直觉的拒绝：一条**已经停用**的规则，
+    # 仅仅改一下备注就会被判"区间重叠，请调整数量或有效期"—— 而它根本不生效，
+    # 停用后那段区间早就被别人合法占用了。实测复现：
+    #   规则 A(50000-50999) 停用 → 在**同一区间**新建启用规则 B（放行，因为
+    #   `find_price_rule_conflict` 只看 active）→ 改 A 的备注 → 40901 被拒。
+    # 业务操作规范恰恰是"停用旧的、新增新的替代"，这条误拒直接挡住规范操作。
+    #
+    # 停用的规则不产生冲突（取价时命中不到它）；真正需要校验冲突的时机是
+    # **重新启用**（`status` 改回 active）—— 那时合并后的 `rule.status` 就是 active，
+    # 走下面这段，冲突照拦不误。
+    conflict = None
+    if rule.status == "active":
+        conflict = await svc.find_price_rule_conflict(
+            session,
+            sku_id=rule.sku_id,
+            customer_level=rule.customer_level,
+            min_qty=rule.min_qty,
+            max_qty=rule.max_qty,
+            effective_from=rule.effective_from,
+            effective_to=rule.effective_to,
+            exclude_id=rule.id,
+        )
     if conflict is not None:
         # ⚠️ 顺序要紧：**先把值读出来，再 rollback**。
         # `conflict` 是异步会话里的 ORM 对象，`rollback()` 会让它的属性**过期**；
@@ -625,17 +639,24 @@ async def update_customer_price_rule(
         await session.rollback()
         raise
 
-    # 改动后仍不能与其他规则重叠（排除自己）
-    conflict = await svc.find_customer_price_conflict(
-        session,
-        customer_id=rule.customer_id,
-        sku_id=rule.sku_id,
-        min_qty=rule.min_qty,
-        max_qty=rule.max_qty,
-        effective_from=rule.effective_from,
-        effective_to=rule.effective_to,
-        exclude_id=rule.id,
-    )
+    # 改动后仍不能与其他规则重叠（排除自己）——与 `update_price_rule` 同一判据：
+    # **只在合并后仍是"当前售价"（active）时才查**（2026-10-09 审查 R06 同类）。
+    # `historical` 是历史资料（A14），按定义不参与匹配与冲突检查，
+    # 那么"只改它的备注"也不该被判区间重叠。
+    # `find_customer_price_conflict` 内部已经只查 active 规则，这里再按状态分支，
+    # 是为了与价格规则保持同一条口径，也避免将来两条路各改一半。
+    conflict = None
+    if rule.status == "active":
+        conflict = await svc.find_customer_price_conflict(
+            session,
+            customer_id=rule.customer_id,
+            sku_id=rule.sku_id,
+            min_qty=rule.min_qty,
+            max_qty=rule.max_qty,
+            effective_from=rule.effective_from,
+            effective_to=rule.effective_to,
+            exclude_id=rule.id,
+        )
     if conflict is not None:
         # 同 `update_price_rule`：**先读值再 rollback**。rollback 会让 ORM 对象的
         # 属性过期，过期后访问属性会触发同步 lazy-load I/O → MissingGreenlet，

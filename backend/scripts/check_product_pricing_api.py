@@ -172,7 +172,7 @@ async def clean(verbose=False):
         await s.commit()
 
 
-def main():
+async def main():
     admin = login('admin', 'admin123')
     zhangsan = login('zhangsan', '123456')
 
@@ -563,6 +563,78 @@ def main():
         if not str(row.get('provider') or '').startswith(f'CHK{RUN}')
     ), foreign_before)
 
+    print('=== 9b. 价格规则 R04/R06/R07 反例 ===')
+    # 三条都是审查 2026-10-09 独立复测挖到的（正常场景测不出来），逐条钉住。
+    # 用的等级名带 RUN 前缀，收尾清理按"本用例 SKU"删除，不会留下常驻数据。
+    # 等级用一个演示数据没占用的短值：`price_rules.customer_level` 是 varchar(8)，
+    # 夹具不能拿 RUN 去拼长名字（会撞列长度 → 500，实测踩到）
+    lvl = 'Q'
+    # 开局先清自己的残留（本轮如果中途失败，下面这些规则会留在演示 SKU 上，
+    # 下一次跑的"正好 3 位小数放行"就会被上一轮的 1.000~1.235 判成区间重叠 ——
+    # 实测踩到：单独跑通过、连跑第二遍 40901）。清理只认 `customer_level='Q'`
+    # 这一个标记，不碰别的数据。
+    from sqlalchemy import text as _sql_text
+
+    from app.core.database import SessionLocal as _SessionLocal
+    # `main()` 已改成 async（它内部只用同步 HTTP，安全），所以这里直接 await —— 
+    # 套 asyncio.run 会报 "cannot be called from a running event loop"（实测踩到）。
+    async with _SessionLocal() as _s:
+        await _s.execute(_sql_text("delete from price_rules where customer_level = 'Q'"))
+        await _s.commit()
+
+    # ---- R04：数量小数位超 3 位必须被拒（从前静默舍入：1.2349 → 1.235）----
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 1, 'max_qty': 1.2349, 'guide_price': 50,
+    })
+    check('R04 数量上限超 3 位小数被拒', res.get('code'), 40001)
+    check_true('R04 提示点名"小数位"',
+               '小数位' in str(res.get('message')), str(res.get('message'))[:60])
+    # 正向对照：正好 3 位必须放行
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 1, 'max_qty': 1.235, 'guide_price': 50,
+    })
+    check('R04 正好 3 位小数放行', res.get('code'), 0)
+
+    # ---- R06：停用规则改备注不该被判区间重叠；重新启用遇冲突仍要拦 ----
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 50000, 'max_qty': 50999, 'guide_price': 60,
+    })
+    r06_a = res['data']['id']
+    call('DELETE', f'/price-rules/{r06_a}', token=admin)          # 停用（软删）
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 50000, 'max_qty': 50999, 'guide_price': 70,
+    })
+    check('R06 停用后同区间可新建启用规则', res.get('code'), 0)
+    status, res = call('PATCH', f'/price-rules/{r06_a}', token=admin,
+                       body={'remark': f'CHK{RUN} 只改停用规则的备注'})
+    check('R06 只改停用规则的备注被放行', res.get('code'), 0)
+    status, res = call('PATCH', f'/price-rules/{r06_a}', token=admin,
+                       body={'status': 'active'})
+    check('R06 重新启用遇冲突仍被拦', res.get('code'), 40901)
+
+    # ---- R07：备注超长必须 400 且点名，不能 500 ----
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 60000, 'max_qty': 60999, 'guide_price': 10,
+        'remark': '丙' * 300,
+    })
+    check('R07 价格规则备注超长 → 400（不是 500）', status, 400)
+    check_true('R07 提示点名备注或长度',
+               any(w in str(res.get('message')) for w in ('备注', 'remark', '太长', '最长')),
+               str(res.get('message'))[:60])
+
+    # 收尾：本块建的规则挂在**演示 SKU**（`CR-500-3`）上，而脚本末尾的
+    # `clean()` 只删"本轮新建的 SKU"下的数据，删不到这些 —— 所以必须自己收。
+    # 不收的后果实测过：下一轮 `1.000~1.235` 会被上一轮的同区间判成重叠（40901），
+    # 于是"单独跑通过、连跑第二遍失败"。
+    async with _SessionLocal() as _s:
+        await _s.execute(_sql_text("delete from price_rules where customer_level = 'Q'"))
+        await _s.commit()
+
     print('=== 10. 权限门槛 ===')
     for label, method, path, body in [
         ('产品导入', 'POST', '/products/import', None),
@@ -586,7 +658,7 @@ if __name__ == '__main__':
         await clean(verbose=True)
         print()
         try:
-            main()
+            await main()
         finally:
             print()
             print('=== 清库（跑后）===')

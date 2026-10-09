@@ -252,6 +252,20 @@ export function createPriceRule(payload: Record<string, unknown>) {
   return api.post<PriceRuleRow>('/price-rules', payload)
 }
 
+/**
+ * 恢复启用一条被停用的价格规则（2026-10-09 审查建议）。
+ *
+ * 后端本来就走 `PATCH /price-rules/{id}` 的 `status` 字段（**没有**单独的
+ * "启用"端点），所以这里只是把这条既有能力接到界面上：
+ * 误点「停用」之后可以自己恢复，不必再新增一条。
+ *
+ * 恢复时后端**仍会做区间冲突校验**：与某条启用规则撞了区间会被拒（40901），
+ * 状态保持停用 —— 这一点由后端保证，界面不自行判断。
+ */
+export function restorePriceRule(id: number) {
+  return api.patch<PriceRuleRow>(`/price-rules/${id}`, { status: 'active' })
+}
+
 export function disablePriceRule(id: number) {
   return api.delete<null>(`/price-rules/${id}`)
 }

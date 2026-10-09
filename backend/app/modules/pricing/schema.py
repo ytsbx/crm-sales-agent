@@ -64,24 +64,40 @@ class ExchangeRateCreate(BaseModel):
 
 class PriceRuleCreate(BaseModel):
     sku_id: int
-    customer_level: str | None = None
-    min_qty: Decimal = Decimal(0)
-    max_qty: Decimal | None = None
+    #: 与库列 `varchar(8)` 对齐（审查 R07 同类）：从前没有长度约束，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    customer_level: str | None = Field(default=None, max_length=8)
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     standard_price: Decimal | None = None
     guide_price: Decimal | None = None
     minimum_price: Decimal | None = None
     target_margin: Decimal | None = None
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class PriceRuleUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
-    customer_level: str | None = None
-    min_qty: Decimal | None = None
-    max_qty: Decimal | None = None
+    #: 与库列 `varchar(8)` 对齐（审查 R07 同类）：从前没有长度约束，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    customer_level: str | None = Field(default=None, max_length=8)
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     standard_price: Decimal | None = None
     guide_price: Decimal | None = None
     minimum_price: Decimal | None = None
@@ -89,19 +105,28 @@ class PriceRuleUpdate(PatchModel):
     status: str | None = None
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class CustomerPriceCreate(BaseModel):
     customer_id: int
     sku_id: int
-    min_qty: Decimal = Decimal(0)
-    max_qty: Decimal | None = None
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     agreed_price: Decimal
     minimum_price: Decimal | None = None
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class CustomerPriceUpdate(BaseModel):
@@ -113,13 +138,20 @@ class CustomerPriceUpdate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    min_qty: Decimal | None = None
-    max_qty: Decimal | None = None
+    #: 数量区间按 `price_rules.min_qty/max_qty` 的列精度（`Numeric(16,3)`）约束
+    #: （2026-10-09 审查 R04）：从前这两个字段**没有任何约束**，填 `1.2349` 会被
+    #: 数据库**静默舍成 1.235** —— 用户以为上限是 1.2349，实际是 1.235；
+    #: 更麻烦的是他自己也复现不出"为什么另一条规则说区间重叠"。
+    #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
+    min_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
+    max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     agreed_price: Decimal | None = None
     minimum_price: Decimal | None = None
     effective_from: date | None = None
     effective_to: date | None = None
-    remark: str | None = None
+    #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
+    #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class PricePermissionUpdate(BaseModel):

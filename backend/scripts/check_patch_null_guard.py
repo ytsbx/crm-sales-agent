@@ -223,6 +223,14 @@ async def main():
         print("\n=== 6. 非字符串的真非空字段也不许清空（复审 11.9）===")
         # 上一版只登记了名称、状态这些**字符串**，布尔 / 数值 / 日期整类漏掉：
         # 联系人 is_primary、价格规则 min_qty、成本 effective_from 传 null 仍然 500。
+        # ⚠️ **先初始化**，再建夹具（2026-10-09 审查 R03）：
+        # 这两个 id 从前只在 `await s.commit()` **成功之后**才赋值，而收尾清理
+        # 无条件引用它们 —— 只要建夹具的任何一步抛错（查 SKU、flush、commit…），
+        # `finally` 里就会先抛 `UnboundLocalError`，把**真正的报错盖掉**，
+        # 排查时只能看到一个跟根因无关的"局部变量未绑定"。
+        # 置 None 之后，清理时跳过即可（下面用 `if price_rule_id` 判断）。
+        price_rule_id: int | None = None
+        product_cost_id: int | None = None
         async with SessionLocal() as s:
             sku_id = (await s.execute(select(Sku.id).limit(1))).scalar_one()
             # ⚠️ 夹具必须**不与演示/其它套件的规则重叠**（2026-10-09 踩到）：
@@ -363,10 +371,14 @@ async def main():
         # 后面的「编号规则」夹具同名、被覆盖，于是删掉的是编号规则。
         # 两个问题叠在一起的表现是"价格规则从来没被清掉"（实测：跑几轮后堆了
         # 60+ 条规则，把区间占死，新夹具一建就"区间重叠"，原因极难看出来）。
-        await _drop("价格规则（复审新增）",
-                    delete(PriceRule).where(PriceRule.id == price_rule_id))
-        await _drop("成本（复审新增）",
-                    delete(ProductCost).where(ProductCost.id == product_cost_id))
+        # 夹具没建成功时 id 是 None：跳过而不是把 None 塞进 SQL
+        # （`id == None` 会生成 `IS NULL`，虽然删不到行，但语义是错的）
+        if price_rule_id is not None:
+            await _drop("价格规则（复审新增）",
+                        delete(PriceRule).where(PriceRule.id == price_rule_id))
+        if product_cost_id is not None:
+            await _drop("成本（复审新增）",
+                        delete(ProductCost).where(ProductCost.id == product_cost_id))
         for label, model, var in (
             ("产品", Product, "product"),
             ("客户", Customer, "customer"),
