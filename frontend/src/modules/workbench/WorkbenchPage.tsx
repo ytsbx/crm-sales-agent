@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   IconArrowUp,
@@ -5,10 +6,11 @@ import {
   IconComment,
   IconRefresh,
 } from '@douyinfe/semi-icons'
-import { Banner, Button, Checkbox, Tag, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Checkbox, SideSheet, Tag, Toast } from '@douyinfe/semi-ui'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
+  getStaleCustomers,
   getDashboardActivities,
   getDashboardRisks,
   getDashboardSummary,
@@ -108,6 +110,14 @@ export default function WorkbenchPage() {
     return due.toDateString() === today.toDateString()
   })
 
+  // 待跟进客户清单抽屉（审查指出：卡片只报数、看不到是哪几个）
+  const [staleOpen, setStaleOpen] = useState(false)
+  const staleQuery = useQuery({
+    queryKey: ['stale-customers'],
+    queryFn: getStaleCustomers,
+    enabled: staleOpen,
+  })
+
   const cards = [
     {
       label: '今日待办',
@@ -121,7 +131,10 @@ export default function WorkbenchPage() {
       value: String(summary?.stale_customer_count ?? '-'),
       footer: '30 天未联系',
       tone: (summary?.stale_customer_count ?? 0) > 0 ? 'chip-warning' : 'chip',
-      onClick: () => navigate('/customers'),
+      // ⚠️ 从前这里跳 `/customers`（不带任何筛选），而客户列表既没有「待跟进」
+      // 筛选项也没有「最近跟进」列 —— 报了警却看不到是哪几个（审查指出）。
+      // 现在直接打开清单抽屉，一步到位。
+      onClick: () => setStaleOpen(true),
     },
     {
       label: '进行中商机',
@@ -707,6 +720,73 @@ export default function WorkbenchPage() {
           </SectionCard>}
         </div>
       </div>
+
+      {/* 待跟进客户清单（审查指出：卡片只报数、点进去看不到是哪几个）。
+          口径与卡片数字**同源**（同一个 `/dashboard/stale-customers` 背后的条件），
+          所以不会出现"卡片说 2 个、这里列出 3 个"。 */}
+      <SideSheet
+        title={`待跟进客户${staleQuery.data ? `（${staleQuery.data.total} 个）` : ''}`}
+        visible={staleOpen}
+        onCancel={() => setStaleOpen(false)}
+        width={720}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>
+            口径：你可见的私海客户里，
+            <b>{staleQuery.data?.days ?? 30} 天</b>内没有人工跟进记录、或从未跟进过的。
+            系统留痕（样品申请、订单生成等）不算跟进。
+          </div>
+          {staleQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>正在加载…</div>}
+          {staleQuery.isError && (
+            <div style={{ color: 'var(--crm-danger, #d92c20)' }}>
+              加载失败：{(staleQuery.error as Error).message}
+            </div>
+          )}
+          {staleQuery.data && staleQuery.data.items.length === 0 && (
+            <div style={{ color: 'var(--crm-text-3)' }}>没有待跟进的客户，保持得很好。</div>
+          )}
+          {(staleQuery.data?.items ?? []).map((row) => (
+            <div
+              key={row.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '10px 12px',
+                border: '1px solid var(--crm-border, #f0f0f0)',
+                borderRadius: 6,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Link to={`/customers/${row.id}`} style={{ fontWeight: 500 }}>
+                    {row.name}
+                  </Link>
+                  {row.level && <Tag size="small">{row.level} 级</Tag>}
+                  <Tag size="small" color={row.days_since === null ? 'red' : 'orange'}>
+                    {row.days_since === null ? '从未跟进' : `${row.days_since} 天未联系`}
+                  </Tag>
+                </div>
+                <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
+                  负责人：{row.owner_name ?? '（无）'}
+                  {row.contact_name
+                    ? ` · 主联系人：${row.contact_name}${row.contact_phone ? `（${row.contact_phone}）` : ''}`
+                    : ''}
+                  {row.next_followup_at
+                    ? ` · 约定下次跟进：${String(row.next_followup_at).slice(0, 10)}`
+                    : ''}
+                </div>
+              </div>
+              {/* 直接跳到该客户的跟进页签，落地就能记录 */}
+              <Link to={`/customers/${row.id}?tab=followups`}>
+                <Button size="small" theme="solid">
+                  去记录跟进
+                </Button>
+              </Link>
+            </div>
+          ))}
+        </div>
+      </SideSheet>
     </div>
   )
 }

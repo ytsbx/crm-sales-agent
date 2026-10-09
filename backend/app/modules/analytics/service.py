@@ -165,6 +165,102 @@ async def currency_note(session: AsyncSession, user: CurrentUser) -> str | None:
     return None
 
 
+async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
+    """**待跟进客户清单**（审查指出：工作台报了数却看不到是哪几个）。
+
+    ## 为什么单独做一个接口，而不是给客户列表加筛选
+
+    口径必须与 `/dashboard/summary` 里那个 `stale_customer_count` **完全一致**，
+    否则会出现"卡片说 2 个、清单列出 3 个"这种更难查的问题。
+    所以这里直接复用同一段条件（同一个 `customer_stale_days` 设置、同一个
+    `_scope_filter` 数据范围），只是把 `count` 换成"把行拿出来"。
+
+    顺带把"最后跟进"的两种形态分开说清：
+      · `last_followup_at` 为空 → **从未跟进过**（`last_followup_at` 从没写过）；
+      · 有值但早于阈值 → 距今天数。
+    卡片上说"30 天未联系"其实包含这两种，清单里分开展示更有用。
+    """
+    from app.modules.settings import service as settings_service
+
+    days = int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
+    now = datetime.now(UTC)
+    stale_date = now - timedelta(days=days)
+
+    rows = (
+        await session.execute(
+            await _scope_filter(
+                select(Customer)
+                .where(
+                    Customer.deleted_at.is_(None),
+                    Customer.pool_status == "private",
+                    or_(
+                        Customer.last_followup_at.is_(None),
+                        Customer.last_followup_at < stale_date,
+                    ),
+                )
+                .order_by(Customer.last_followup_at.asc().nullsfirst(), Customer.id)
+                .limit(200),
+                user,
+                Customer.owner_id,
+                session,
+            )
+        )
+    ).scalars().all()
+
+    # 负责人姓名：清单上要能看出"这是谁家的客户"
+    owner_ids = {c.owner_id for c in rows if c.owner_id}
+    names: dict[int, str] = {}
+    if owner_ids:
+        names = {
+            uid: name
+            for uid, name in (
+                await session.execute(
+                    select(User.id, User.name).where(User.id.in_(owner_ids))
+                )
+            ).all()
+        }
+
+    # 主联系人（有就带上电话，清单上能直接照着打）
+    contacts: dict[int, tuple[str | None, str | None]] = {}
+    if rows:
+        from app.modules.customer.model import Contact
+
+        for cid, cname, cmobile, cphone in (
+            await session.execute(
+                select(Contact.customer_id, Contact.name, Contact.mobile, Contact.phone)
+                .where(
+                    Contact.customer_id.in_([c.id for c in rows]),
+                    Contact.is_primary.is_(True),
+                )
+            )
+        ).all():
+            contacts[cid] = (cname, cmobile or cphone)
+
+    items = []
+    for c in rows:
+        last = c.last_followup_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=UTC)
+        items.append(
+            {
+                "id": c.id,
+                "name": c.name,
+                "level": c.level,
+                "owner_id": c.owner_id,
+                "owner_name": names.get(c.owner_id) if c.owner_id else None,
+                "last_followup_at": last,
+                #: 距上次联系的**天数**；从未跟进过时为 None（前端显示"从未跟进"）
+                "days_since": (now - last).days if last else None,
+                "next_followup_at": c.next_followup_at,
+                # 电话在**联系人**上（Customer 没有 phone 列 —— 我第一版写错，
+                # 接口直接 500；这里取该客户的主联系人）
+                "contact_name": contacts.get(c.id, (None, None))[0],
+                "contact_phone": contacts.get(c.id, (None, None))[1],
+            }
+        )
+    return {"days": days, "total": len(items), "items": items}
+
+
 async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
     now = datetime.now(UTC)
     # "本月"按**业务时区**取（§9.10 复审）：原来用 UTC 月初，北京时间凌晨那 8 小时

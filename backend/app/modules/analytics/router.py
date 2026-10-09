@@ -499,6 +499,19 @@ async def dashboard_tasks(
     return ok(await svc.my_tasks(session, user))
 
 
+@router.get("/dashboard/stale-customers")
+async def dashboard_stale_customers(
+    user: CurrentUser = Depends(require_permission("customer:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """待跟进客户**清单**：与 `/dashboard/summary` 的 `stale_customer_count` 同口径。
+
+    工作台那个卡片此前只会报数、点进去跳到不带任何筛选的客户列表，
+    于是"报了警却不说哪里着火"（审查与主人确认后新增此接口）。
+    """
+    return ok(await svc.stale_customers(session, user))
+
+
 @router.get("/dashboard/risks")
 async def dashboard_risks(
     user: CurrentUser = Depends(require_permission("customer:view")),

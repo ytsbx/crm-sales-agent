@@ -202,6 +202,35 @@ export function getDashboardSummary() {
   return api.get<DashboardSummary>('/dashboard/summary')
 }
 
+/** 待跟进客户清单里的一行（与工作台那个卡片的数字**同口径**）。 */
+export interface StaleCustomer {
+  id: number
+  name: string
+  level: string | null
+  owner_id: number | null
+  owner_name: string | null
+  last_followup_at: string | null
+  /** 距上次联系的天数；**从未跟进过**时为 null（界面显示"从未跟进"） */
+  days_since: number | null
+  next_followup_at: string | null
+  contact_name: string | null
+  contact_phone: string | null
+}
+
+/**
+ * 待跟进客户清单。
+ *
+ * 为什么单独一个接口（审查 + 主人确认）：工作台那个「30 天未联系」的卡片此前
+ * 只报数、点进去跳到**不带任何筛选**的客户列表，而列表也没有「待跟进」筛选项
+ * 与「最近跟进」列 —— 报了警却看不到是哪几个。口径与 `/dashboard/summary` 的
+ * `stale_customer_count` 完全一致，避免"卡片说 2 个、清单列出 3 个"。
+ */
+export function getStaleCustomers() {
+  return api.get<{ days: number; total: number; items: StaleCustomer[] }>(
+    '/dashboard/stale-customers',
+  )
+}
+
 export function getDashboardTasks() {
   return api.get<DashboardTask[]>('/dashboard/tasks')
 }
