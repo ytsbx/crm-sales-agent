@@ -396,6 +396,34 @@ async def generate_document(
 
     if order is not None and quote is not None and order.quote_id not in (None, quote.id):
         raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)
+
+    # 订单与合同必须钉在**同一版**报价上（C4-02，2026-10-09 修）。
+    #
+    # 实测过的反例：订单依据 V1（100 元），生成合同时显式选 V2（999 元）——
+    # 原校验只比 `order.quote_id` 与 `quote.id`（**整份报价单**），不比版本，
+    # 于是合同照样生成，抬头里同时印着"订单号 SO-xxx"和"报价版本 V2"，
+    # **同一份合同上两个依据对不上**，而且签署闸门看到合同挂了订单就直接放行
+    # （见 `_ensure_signable_source`），能一路签下去 —— 对外文件签完收不回来。
+    #
+    # 口径（主人 2026-10-09 拍板 A）：**直接拦住**，不让人选不一致的版本。
+    # 为什么不放行+提醒：合同是要签字盖章的对外文件，靠"人看一眼提示"风险太高，
+    # 与报价那种"内部先看一眼再发"的场景不同。
+    # 不传版本的路径不受影响：上面那段"跟订单走"会自动带出订单依据的那一版。
+    if (
+        order is not None
+        and quote_version is not None
+        and order.quote_version_id is not None
+        and order.quote_version_id != quote_version.id
+    ):
+        order_version = await session.get(QuoteVersion, order.quote_version_id)
+        order_no = order_version.version_no if order_version is not None else order.quote_version_id
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"所选报价版本（第 {quote_version.version_no} 版）与订单依据的版本"
+            f"（第 {order_no} 版）不一致，不能生成合同："
+            f"请选订单依据的那一版，或先在订单上变更报价依据",
+            422,
+        )
     parent = None
     if payload.parent_id is not None:
         parent = await session.get(ContractDocument, payload.parent_id)
@@ -684,6 +712,22 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
     if doc.order_id is not None:
         order = await session.get(SalesOrder, doc.order_id)
         if order is not None and order.status != "cancelled":
+            # ⚠️ 挂订单**不等于"依据一定没问题"**（C4-02，2026-10-09 修）。
+            # 这里原先无条件 `return`，等于"只要合同挂了未取消的订单就跳过全部依据校验"——
+            # 于是生成阶段被放过的版本不一致（订单 V1 / 合同 V2）到签署阶段**再放一次**，
+            # 一路签完。现在：订单自己的依据与合同钉的版本对不上时，不放行。
+            # 订单也没记版本（手工建单）时维持老口径：有订单就算有依据。
+            if (
+                order.quote_version_id is not None
+                and doc.quote_version_id is not None
+                and order.quote_version_id != doc.quote_version_id
+            ):
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "这份合同依据的报价版本与关联订单的依据不一致，不能登记签署："
+                    "请按订单依据的那一版重新生成一份合同",
+                    422,
+                )
             return
     if doc.quote_id is not None:
         # 锁住报价行再读（第十批 10.8 复审）：下面要拿"当前版本"当判据，
