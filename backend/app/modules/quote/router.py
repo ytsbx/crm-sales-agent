@@ -670,6 +670,13 @@ async def clone_quote(
                 )
             )
             copied_items += 1
+        # 费用行也要整份抄过来（与 `service.create_version` 共用同一份实现）。
+        # 这条路径以前只抄明细不抄费用 —— 复制出来的新单货款对、**运费与折扣全丢**，
+        # 而缺运费的报价在正式发送时会被 `ensure_freight_confirmed` 拦下。
+        await session.flush()
+        await svc.copy_version_charges(
+            session, source_id=source.current_version_id, target_version=new_version
+        )
         await session.flush()
         await svc.recalc_version(session, new_version)
 
@@ -804,6 +811,10 @@ async def get_version(
     ctx = await _quote_context(session, [quote]) if quote else None
     body = {
         "version": svc.serialize_version(version, total_profit),
+            # 金额汇总由**后端**算好给前端（2026-10-09）：货款 / 运费 / 其他费用 /
+            # 优惠 / 应付合计。页面、对客文件、订单共用这一份公式，
+            # 不让前端再实现一套（两套公式迟早对不上，而这里对不上就是钱对不上）。
+            "summary": svc.amount_summary(version),
             "quote": (
                 svc.serialize_quote(
                     quote,
@@ -843,6 +854,9 @@ async def get_version(
     master_problems = await svc.master_confirmation_problems(
         session, version_id=version_id
     )
+    # 运费未确认同样要**持续可见**（2026-10-09）：草稿允许没填运费，
+    # 但页面上要一直提示"正式发送前得先确认运费"，而不是等发送被拒才知道。
+    body["freight_unconfirmed_reason"] = svc.quote_freight_unconfirmed_reason(charges)
     return ok(_with_master_warnings(body, set(master_problems)))
 
 
@@ -1101,6 +1115,10 @@ async def add_charge(
     # 自动取负——不强制的话，"折扣 500"会静默把总额加 500。
     if charge.is_discount and charge.amount > 0:
         charge.amount = -charge.amount
+    # 物流费用：通过接口填进来就是一次**显式确认**（含明确确认的零运费）。
+    # 不这么做的话，"amount=0" 就分不清是"没填"还是"确实是零运费"，
+    # 而正式发送必须要求后者才算已确认。
+    svc.mark_logistics_confirmed(charge)
     session.add(charge)
     await session.flush()
     await svc.recalc_version(session, version)
@@ -1398,6 +1416,15 @@ async def download_pdf(
         "charge_amount": float(version.charge_amount),
         "discount_amount": float(version.discount_amount),
         "total_amount": float(version.total_amount),
+        # 金额拆分（2026-10-09 运费分离）：对客 PDF 要把运费**单独列一行具体金额**，
+        # 不能混在"附加费用"里让客户自己猜。同时给出统一汇总块，
+        # 保证 PDF、页面、订单、应收四处口径一致。
+        "summary": svc.amount_summary(version),
+        #: 产品单价的对外口径说明：运费分离后必须在客户看得到的文件上说清楚，
+        #: 否则客户按"含运费"的旧口径理解，会以为运费已经包在单价里。
+        #: 历史版本也照印 —— 它描述的是**这一版**的单价口径，而历史版本的单价
+        #: 按口径本来就是不含运费的（那时的运费是"单件物流成本"、不是向客户的收费）。
+        "unit_price_note": "以上产品单价均不含运费",
         "payment_terms": version.payment_terms,
         "delivery_terms": version.delivery_terms,
         "remark": version.remark,
@@ -1549,6 +1576,9 @@ async def update_charge(
     # 与 add_charge 同一规则：折扣在库里恒为负数，改完再归一一次
     if charge.is_discount and charge.amount > 0:
         charge.amount = -charge.amount
+    # 保存即重新确认一次运费（含"从物流改成别的分类"→ 清空确认时刻）。
+    # 顺序不能挪到折扣归一之前：`is_logistics_charge` 要看最终的 is_discount。
+    svc.mark_logistics_confirmed(charge)
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(

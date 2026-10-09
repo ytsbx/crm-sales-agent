@@ -25,6 +25,29 @@ def _number(value) -> float | None:
     return None if value is None else float(value)
 
 
+def assert_regular_stage(stage: OpportunityStage) -> None:
+    """新建和普通推进只能使用启用中的普通阶段，写入历史前校验。"""
+    if stage.status != "active":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"阶段「{stage.name}」已停用，请选择启用中的普通阶段", 422)
+    if stage.is_win or stage.is_loss:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{stage.name}」是成交/失单阶段；成交请用「确认成交」，失单请用「标记失单」",
+            422,
+        )
+
+
+async def get_initial_stage(session: AsyncSession, stage_id: int | None = None) -> OpportunityStage:
+    if stage_id is None:
+        stage = await get_first_stage(session)
+    else:
+        stage = await session.get(OpportunityStage, stage_id)
+        if stage is None:
+            raise AppError(ErrorCode.NOT_FOUND, "商机阶段不存在", 404)
+    assert_regular_stage(stage)
+    return stage
+
+
 async def get_first_stage(session: AsyncSession) -> OpportunityStage:
     """取「启用中的**普通**阶段」里排序最靠前的那个，作为新商机的初始阶段。
 
@@ -387,13 +410,8 @@ async def change_stage(
     失单原因）。从前普通「推进阶段」能直达成交 —— 实测一条没有任何报价的商机
     也能被推成「已成交」，整套成交校验形同虚设。
     """
-    if (to_stage.is_win or to_stage.is_loss) and not allow_terminal:
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"「{to_stage.name}」是成交/失单阶段，不能通过「推进阶段」直接切换；"
-            f"成交请用「确认成交」，失单请用「标记失单」",
-            422,
-        )
+    if not allow_terminal:
+        assert_regular_stage(to_stage)
     now = datetime.now(UTC)
     current = (
         await session.execute(
@@ -489,7 +507,7 @@ async def assert_owner_active(session: AsyncSession, owner_id: int | None) -> Us
         raise AppError(ErrorCode.NOT_FOUND, f"负责人 id={owner_id} 不存在", 404)
     if owner.status != "active":
         raise AppError(
-            ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，不能作为商机负责人", 422
+            ErrorCode.PARAM_ERROR, f"负责人「{owner.name}」已停用，请重新选择在职负责人", 422
         )
     return owner
 
@@ -514,7 +532,8 @@ async def clone_opportunity(
       - 阶段回到初始阶段
     需求明细按 `copy_items` 决定是否一起复制。
     """
-    await assert_owner_active(session, owner_id)
+    final_owner_id = owner_id if owner_id is not None else source.owner_id
+    await assert_owner_active(session, final_owner_id)
     from app.modules.customer import service as customer_service
     target_customer_id = customer_id if customer_id is not None else source.customer_id
     await customer_service.get_visible_customer(session, user, target_customer_id)
@@ -531,7 +550,7 @@ async def clone_opportunity(
         stage_id=first_stage.id,
         currency=source.currency,
         expected_close_date=expected_close_date or source.expected_close_date,
-        owner_id=owner_id if owner_id is not None else source.owner_id,
+        owner_id=final_owner_id,
         competitor=source.competitor,
         risk_level=source.risk_level,
         next_action=source.next_action,

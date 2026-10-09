@@ -64,6 +64,12 @@ def _records(*, unit_snapshot: str | None = "套", currency: str = "USD"):
         charge_amount=Decimal("80"),
         discount_amount=Decimal("-20"),
         total_amount=Decimal("480"),
+        # 金额拆分（2026-10-09「产品价格与运费分离」）：版本上新增了运费/其他费用的
+        # 拆分列，出对客文件时读的就是它们。本夹具唯一一条非折扣费用是"运费 80"，
+        # 所以运费=80、其他费用=0 —— 与 charge_amount 自洽。
+        logistics_amount=Decimal("80"),
+        other_charge_amount=Decimal("0"),
+        pricing_basis="actual_pass_through",
     )
     item = SimpleNamespace(
         id=1,

@@ -139,12 +139,30 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
         story.append(charge_table)
         story.append(Spacer(1, 4 * mm))
 
-    total_rows = [
-        ["商品小计", f"¥{data.get('subtotal_amount', 0):.2f}"],
-        ["附加费用", f"¥{data.get('charge_amount', 0):.2f}"],
-        ["折扣", f"¥{data.get('discount_amount', 0):.2f}"],
-        ["合计金额", f"¥{data.get('total_amount', 0):.2f}"],
-    ]
+    # 合计区：货款 → 运费 → 其他费用 → 折扣 → 合计（2026-10-09 运费分离）。
+    # 运费**单独一列具体金额**，不再混在"附加费用"里让客户自己猜；
+    # 同时印一句"产品单价不含运费"，避免客户按旧口径以为运费已包在单价里。
+    # 这几行**只是把同一笔钱拆开显示**：`total_amount` 里已经含了费用与折扣，
+    # 逐行相加正好等于合计，**不再另加一遍**。
+    summary = data.get("summary") or {}
+    logistics = summary.get("logistics_amount")
+    other_charge = summary.get("other_charge_amount")
+    if logistics is None:
+        logistics = data.get("logistics_amount")
+    if other_charge is None:
+        other_charge = data.get("other_charge_amount")
+    total_rows = [["商品货款", f"¥{data.get('subtotal_amount', 0):.2f}"]]
+    if logistics is not None:
+        total_rows.append(["运费（代收代付）", f"¥{float(logistics):.2f}"])
+        total_rows.append(["其他费用", f"¥{float(other_charge or 0):.2f}"])
+    else:
+        # 历史文件没有拆分列：保持原来的"附加费用"一行，不改写老口径
+        total_rows.append(["附加费用", f"¥{data.get('charge_amount', 0):.2f}"])
+    total_rows.append(["折扣", f"¥{data.get('discount_amount', 0):.2f}"])
+    total_rows.append(["合计金额", f"¥{data.get('total_amount', 0):.2f}"])
+    unit_price_note = str(data.get("unit_price_note") or "").strip()
+    if unit_price_note:
+        total_rows.append([unit_price_note, ""])
     total_table = Table(total_rows, colWidths=[134 * mm, 40 * mm])
     total_table.setStyle(
         TableStyle(

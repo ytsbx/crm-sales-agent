@@ -32,6 +32,8 @@ export interface PriceRuleRow {
   target_margin?: number | null
   status: string
   effective_from?: string | null
+  /** 后端一直有返回（`serialize_price_rule`），此前类型漏了它 —— 编辑弹窗要回填 */
+  effective_to?: string | null
   remark?: string | null
 }
 
@@ -45,6 +47,9 @@ export interface CustomerPriceRow {
   max_qty?: number | null
   agreed_price: number
   minimum_price?: number | null
+  /** 后端一直有返回（`serialize_customer_price`），此前类型漏了 —— 编辑弹窗要回填 */
+  effective_from?: string | null
+  effective_to?: string | null
   remark?: string | null
 }
 
@@ -249,6 +254,20 @@ export function createPriceRule(payload: Record<string, unknown>) {
 
 export function disablePriceRule(id: number) {
   return api.delete<null>(`/price-rules/${id}`)
+}
+
+/**
+ * 改价格规则 —— 部分更新，只传要改的字段（API §16）。
+ *
+ * ⚠️ **能改与不能改是刻意的**（口径 2026-10-09 与主人确认）：
+ * - 能改：数量区间 / 有效期 / 客户等级 / 备注 / 状态 —— 即「这条规则在什么条件下适用」；
+ * - **不能改价钱**（标准价 / 指导价 / 最低保护价 / 目标利润率）：改价钱等于换了一套定价，
+ *   正确做法是「停用旧的 + 新增一条」，这样生效时序在单据上看得见。
+ *   后端会**明确拒绝并点名是哪个字段**（400），不是静默忽略 ——
+ *   所以传了不该传的字段会被拦下，别指望它被吞掉。
+ */
+export function updatePriceRule(id: number, payload: Record<string, unknown>) {
+  return api.patch<PriceRuleRow>(`/price-rules/${id}`, payload)
 }
 
 export function listCustomerPriceRules(query: { customer_id?: number; page?: number; page_size?: number }) {

@@ -59,6 +59,20 @@ def serialize_order(
         "sales_owner_id": order.sales_owner_id,
         "sales_owner_name": sales_owner_name,
         "total_amount": _f(order.total_amount),
+        # 金额组成（2026-10-09 运费分离）：订单页要能解释总额是怎么来的。
+        # 这四个值**已经含在** `total_amount` 里，只做拆分展示，不要再相加。
+        # 可空 = 历史订单没留存 → 前端写"待核实"，不回查报价拿今天的数来填。
+        "goods_amount": _f(order.goods_amount) if order.goods_amount is not None else None,
+        "logistics_amount": (
+            _f(order.logistics_amount) if order.logistics_amount is not None else None
+        ),
+        "other_charge_amount": (
+            _f(order.other_charge_amount) if order.other_charge_amount is not None else None
+        ),
+        "discount_amount": (
+            _f(order.discount_amount) if order.discount_amount is not None else None
+        ),
+        "pricing_basis": order.pricing_basis,
         "received_amount": _f(received),
         "unreceived_amount": _f((order.total_amount or Decimal(0)) - received),
         "currency": order.currency,
@@ -249,6 +263,15 @@ async def create_order_from_quote(
         # 签单归属此刻写死（文档 :61）：往后交接或手工改负责人，业绩都算这一个人
         sales_owner_id=quote.owner_id,
         total_amount=version.total_amount,
+        # 总额组成快照（2026-10-09 运费分离）：订单页要能解释总额是怎么来的，
+        # 而报价之后可能还会改 —— 所以在这里**冻结**一份，订单读自己的快照。
+        # 这四个值都已含在 total_amount 里（拆分展示用，不再相加）。
+        goods_amount=version.subtotal_amount,
+        logistics_amount=version.logistics_amount,
+        other_charge_amount=version.other_charge_amount,
+        discount_amount=version.discount_amount,
+        #: 口径随单冻结：历史订单为 NULL（当时是旧口径）。
+        pricing_basis=version.pricing_basis,
         currency=version.currency,
         status="pending",
         delivery_date=effective_delivery,
@@ -404,6 +427,13 @@ async def create_order(
         # 签单归属此刻写死（文档 :61）：往后交接或手工改负责人，业绩都算这一个人
         sales_owner_id=owner_id or user_id,
         total_amount=total,
+        # 手工创建的订单没有报价来源，全部金额就是产品货款本身 ——
+        # 拆分列如实填满（货款=总额、其余为 0），而不是留 NULL：
+        # 留空会让订单页把"手工单"显示成"金额组成待核实"，那是另一回事。
+        goods_amount=total,
+        logistics_amount=Decimal(0),
+        other_charge_amount=Decimal(0),
+        discount_amount=Decimal(0),
         currency=currency,
         status="pending",
         delivery_date=delivery_date,

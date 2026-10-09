@@ -18,6 +18,9 @@ from app.modules.pricing.model import ExchangeRate
 from app.modules.product import master as master_service
 from app.modules.product.model import Product, Sku
 from app.modules.quote.model import (
+    PRICING_BASIS_ACTUAL_PASS_THROUGH,
+    PRICING_BASIS_LABEL,
+    PRICING_BASIS_LEGACY,
     QUOTE_STATUS_LABEL,
     Quote,
     QuoteCharge,
@@ -28,6 +31,41 @@ from app.modules.settings import service as settings_service
 from app.modules.user.model import User
 
 ZERO = Decimal("0")
+
+#: 运费的**费用分类码**。向客户收取的运费就是这一条 `QuoteCharge`
+#: （2026-10-09 口径：不另建一套运费金额，避免两套金额都被加进总额）。
+CHARGE_TYPE_LOGISTICS = "logistics"
+
+
+def is_logistics_charge(charge: QuoteCharge) -> bool:
+    """这条费用是不是"向客户收取的运费"。
+
+    ⚠️ 只认分类码，**不按说明文字里含"运费"去识别**（口径明确要求）：
+    说明是自由文本，写成"宁波到苏州运费"或"物流费"都不该改变金额归属，
+    反过来把一句别的费用写成含"运费"的字样也不该被算成运费。
+    折扣行永远不算运费（`is_discount=True` 走折扣那一档，折扣在库里是负数）。
+    """
+    return (
+        not charge.is_discount
+        and (charge.charge_type or "").strip().lower() == CHARGE_TYPE_LOGISTICS
+    )
+
+
+def mark_logistics_confirmed(charge: QuoteCharge, *, at: datetime | None = None) -> None:
+    """把这条费用标成"运费已由业务确认"；不是物流费用则清空确认时刻。
+
+    口径（2026-10-09）：**草稿允许尚未填写运费，正式发送时必须已经确认具体金额**。
+    金额列本身分不出"没填"和"明确是零运费"（都是 0），所以另记一个确认时刻。
+
+    - 是物流费用 → 打上确认时刻。**每次经接口保存都重新打一次**：改的是
+      "已确认的实际运费"这个事实本身，拿改动前的时刻去背书改动后的金额是错的。
+    - 不是物流费用（含折扣、或从物流改成了别的分类）→ 清空。留着旧的确认时刻
+      会让一条**已经不是运费**的费用继续被当成"已确认的运费"，进而把正式发送放过去。
+    """
+    if is_logistics_charge(charge):
+        charge.logistics_confirmed_at = at or datetime.now(UTC)
+    else:
+        charge.logistics_confirmed_at = None
 
 
 def quote_is_expired(valid_until, *, today=None) -> bool:
@@ -88,6 +126,44 @@ def serialize_charge(charge: QuoteCharge) -> dict:
         "amount": _f(charge.amount),
         "is_discount": charge.is_discount,
         "sort_no": charge.sort_no,
+        "is_logistics": is_logistics_charge(charge),
+        # 运费是否已被业务确认（金额为 0 不等于"已确认零运费"）：
+        # 前端据此把"未填写"和"确认零运费"显示成两种状态。
+        "logistics_confirmed_at": (
+            charge.logistics_confirmed_at.isoformat()
+            if charge.logistics_confirmed_at
+            else None
+        ),
+    }
+
+
+def amount_summary(version: QuoteVersion) -> dict:
+    """金额汇总的**唯一一份公式**（页面、对客文件、订单共用，别在前端再算一遍）。
+
+    口径（2026-10-09 运费分离）：
+
+        产品货款   = Σ(产品单价 × 数量)          → `subtotal_amount`
+        运费       = 物流费用条目合计             → `logistics_amount`
+        其他费用   = 非物流、非折扣的费用合计      → `other_charge_amount`
+        优惠       = 折扣（**库里是负数**，保持这个约定）
+        应付合计   = 货款 + 运费 + 其他费用 + 优惠  → `total_amount`
+
+    ⚠️ `total_amount` **已经含**运费与其他费用，任何人都不许再把它加上一遍。
+    `charge_amount == logistics_amount + other_charge_amount` 是恒等式：
+    拆的是同一笔钱，不是又加了一笔。
+    """
+    return {
+        "goods_amount": _f(version.subtotal_amount),
+        "logistics_amount": _f(version.logistics_amount),
+        "other_charge_amount": _f(version.other_charge_amount),
+        "charge_amount": _f(version.charge_amount),
+        "discount_amount": _f(version.discount_amount),
+        "total_amount": _f(version.total_amount),
+        "currency": version.currency,
+        "pricing_basis": version.pricing_basis or PRICING_BASIS_LEGACY,
+        "pricing_basis_label": PRICING_BASIS_LABEL.get(
+            version.pricing_basis or PRICING_BASIS_LEGACY, ""
+        ),
     }
 
 
@@ -100,6 +176,17 @@ def serialize_version(version: QuoteVersion, items_total_profit: Decimal | None 
         "charge_amount": _f(version.charge_amount),
         "discount_amount": _f(version.discount_amount),
         "total_amount": _f(version.total_amount),
+        # 金额拆分（2026-10-09 运费分离）：运费从"附加费用"里单列出来。
+        # ⚠️ 这三列都**已经含在** `total_amount` 里了，前端只能拿来分项展示，
+        # 不要再加到总额上。恒等式：charge_amount == logistics + other_charge。
+        "logistics_amount": _f(version.logistics_amount),
+        "other_charge_amount": _f(version.other_charge_amount),
+        # 本版的产品核价口径。历史版本恒为 legacy（成本含运费），
+        # 新报价为 actual_pass_through（产品价不含运费、运费原额代收代付）。
+        "pricing_basis": version.pricing_basis or PRICING_BASIS_LEGACY,
+        "pricing_basis_label": PRICING_BASIS_LABEL.get(
+            version.pricing_basis or PRICING_BASIS_LEGACY, ""
+        ),
         "currency": version.currency,
         # §8.7：**本版**对客有效期的快照（PDF / BizDoc 读的是它，不是主单）。
         # 单独输出是必要的：主单的 `valid_until` 与它快照是两个字段，
@@ -410,7 +497,13 @@ async def create_quote(
         session, "default_payment_terms", "text", "款到发货"
     )
     default_delivery = await settings_service.get_text(
-        session, "default_delivery_terms", "text", "含运费，送货上门"
+        session,
+        "default_delivery_terms",
+        "text",
+        # 代码回退值必须与 `settings.DEFAULT_SETTINGS` 里的配置默认值一致
+        # （2026-10-09 运费分离）：旧文案「含运费，送货上门」在运费单列代收代付的
+        # 口径下是错的，会让客户以为报价已包运费。
+        "产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付。",
     )
 
     quote = Quote(
@@ -430,6 +523,9 @@ async def create_quote(
     version = QuoteVersion(
         quote_id=quote.id,
         version_no=1,
+        # 新报价一律用新口径：产品单价不含运费，运费按实际金额代收代付。
+        # 显式写出来而不是靠列默认值 —— 口径是业务决定，该在代码里看得见。
+        pricing_basis=PRICING_BASIS_ACTUAL_PASS_THROUGH,
         payment_terms=payment_terms or default_payment,
         delivery_terms=delivery_terms or default_delivery,
         # 抬头与有效期在这里**定格**（审查 2026-10-07 修）：出对客文件时不再实时读
@@ -602,6 +698,12 @@ async def create_version(
     version = QuoteVersion(
         quote_id=quote.id,
         version_no=latest.version_no + 1,
+        # 建立新版一律切到新口径（2026-10-09）。这里是**刻意的转换点**：
+        # 历史版本的单价里可能含运费，但那些版本留在 legacy 上不动；
+        # 新版本是重新核过价的，所以按新口径来。复制旧明细时若旧单价含义
+        # 无法确认，由调用方提示人工核实（`version_logistics_in_base_cost` 管口径，
+        # 不替业务判断历史金额的含义）。
+        pricing_basis=PRICING_BASIS_ACTUAL_PASS_THROUGH,
         currency=source.currency,
         payment_terms=source.payment_terms,
         delivery_terms=source.delivery_terms,
@@ -665,18 +767,7 @@ async def create_version(
                 remark=item.remark,
             )
         )
-    for charge in await version_charges(session, source.id):
-        session.add(
-            QuoteCharge(
-                quote_version_id=version.id,
-                charge_type=charge.charge_type,
-                description=charge.description,
-                amount=charge.amount,
-                currency=charge.currency,
-                is_discount=charge.is_discount,
-                sort_no=charge.sort_no,
-            )
-        )
+    await copy_version_charges(session, source_id=source.id, target_version=version)
     await session.flush()
     await recalc_version(session, version)
     quote.current_version_id = version.id
@@ -783,15 +874,21 @@ async def _build_custom_item_snapshot(
     price = Decimal(str(quoted_price))
     cost = Decimal(str(unit_cost))  # 人民币：与 SKU 路径、审批判定同一口径
     freight = Decimal(str(logistics_cost or 0))  # 人民币
+    # 这一版的口径：新报价的运费不进成本基数；历史版本沿用含运费的老口径。
+    basis_includes_freight = version_logistics_in_base_cost(version)
     min_ratio = Decimal(
         str(await settings_service.get_number(session, "default_min_margin", "ratio", 0.15))
     )
-    minimum_price = (cost * (1 + min_ratio)).quantize(Decimal("0.01"))  # 人民币
+    # 保护价基础 = **商品成本**，不含运费（2026-10-09「产品价格与运费分离」）。
+    # 定制项的成本是人工填的"商品成本"，运费同样由客户全额承担、公司代收代付，
+    # 所以运费既不能抬高成本推高底价，也不能被当成利润。与 SKU 路径同一口径。
+    basis_cost = (cost + freight) if basis_includes_freight else cost
+    minimum_price = (basis_cost * (1 + min_ratio)).quantize(Decimal("0.01"))  # 人民币
     # 利润必须与报价同币种：外币单要先把人民币成本折过去再减，
     # 否则会算出"50 美元 − 350 人民币"这种假数字（与定价服务 cost_in_quote_currency 同口径）
     fx = version.exchange_rate_snapshot
     foreign = (version.currency or "CNY").upper() != "CNY" and bool(fx) and fx > 0
-    cost_in_quote = ((cost + freight) / fx) if foreign else (cost + freight)
+    cost_in_quote = (basis_cost / fx) if foreign else basis_cost
     profit = price - cost_in_quote
     profit_rate = (profit / price) if price else ZERO
     # 比最低保护价同样要同币种：保护价是人民币，先把报价折过去
@@ -861,6 +958,45 @@ def _pick_confirmed(confirmed: dict[str, str], field: str, fallback):
     return fallback
 
 
+def version_logistics_in_base_cost(version: QuoteVersion) -> bool:
+    """这一版的产品核价，运费要不要算进基础成本（2026-10-09 运费分离口径）。
+
+    - `actual_pass_through`（新报价）：**不算**。产品单价不含运费，运费按实际金额
+      代收代付，公司不赚不赔 —— 所以运费不该抬高建议价、底价或利润。
+    - `legacy`（历史版本）：**算**。老版本的 `base_cost` 里本来就含运费，
+      回看/重算老版本必须沿用老口径，否则会得出与当时不同的建议价和底价，
+      等于把已经发给客户的口径改掉。
+
+    `None` 当 `legacy`：迁移把现有行回填成了 `legacy`，但万一有绕过迁移写入的行，
+    "当老口径"是更安全的一侧 —— 新版报价一律由 ORM 默认值显式落成
+    `actual_pass_through`，不会走到这里。
+    """
+    return (version.pricing_basis or PRICING_BASIS_LEGACY) == PRICING_BASIS_LEGACY
+
+
+def item_unit_product_cost(item: QuoteItem, *, includes_freight: bool) -> Decimal:
+    """一条明细的**单件产品核价成本**（审批判定、整单利润、摘要共用这一份）。
+
+    口径（2026-10-09「产品价格与运费分离」）：
+
+    - `includes_freight=False`（新报价）：只算 `cost_snapshot`（商品成本）。
+      运费由客户全额承担、公司代收代付，**不进产品利润**——拿它当成本会
+      把"运费收得多"变成"利润被吃掉"，进而误触低价审批；反过来也不能靠
+      高运费收入去抵消产品低价（口径明确禁止）。
+    - `includes_freight=True`（历史版本）：`cost_snapshot + logistics_cost_snapshot`。
+      老版本的 `logistics_cost_snapshot` 是"单件运费"、当时确实参与了产品定价，
+      回看/重算老版本必须沿用，否则会得出与当时不同的低价比对结论。
+
+    调用方一律用 `version_logistics_in_base_cost(version)` 传这个开关，
+    **不要在这个函数里自己去读 version** —— 审批引擎拿到的是明细列表 +
+    一个显式的 fx，它没有版本对象。
+    """
+    cost = item.cost_snapshot or ZERO
+    if includes_freight:
+        cost = cost + (item.logistics_cost_snapshot or ZERO)
+    return cost
+
+
 async def build_item_snapshot(
     session: AsyncSession,
     *,
@@ -891,8 +1027,16 @@ async def build_item_snapshot(
     成本口径（与 02-ER §11 的分层保持一致，别改坏）：
       cost_snapshot            = 商品成本（采购+生产+包装+加工）
       package_cost_snapshot    = 包装成本（是商品成本的组成部分，用于展示拆解，不重复计入）
-      logistics_cost_snapshot  = 单件运费（独立一层）
-    → 单件总成本 = cost_snapshot + logistics_cost_snapshot（审批判定用的就是这个）
+      logistics_cost_snapshot  = 单件运费（独立一层，**旧口径**的产物）
+
+    **产品核价成本怎么取，看这一版的口径**（2026-10-09「产品价格与运费分离」）：
+      - 新口径 `actual_pass_through`：= `cost_snapshot`（商品成本），运费不参与
+        产品定价与产品利润 —— 运费由客户全额承担、公司原额代收代付，不赚不赔；
+      - 旧口径 `legacy`：= `cost_snapshot + logistics_cost_snapshot`（当时运费
+        确实进了产品价，回看老版本必须沿用）。统一走 `item_unit_product_cost`。
+
+    所以 `logistics_cost_snapshot` 在新口径下**仍然照常落库**（保留这层信息、
+    也供历史口径回看），只是不再参与产品定价与利润计算。历史快照不批量清零。
 
     汇率与退税：按报价版本上快照的币种/汇率核价，并把结果一并落成快照，
     否则外贸报价会静默按人民币口径算（此前汇率快照字段一直没被写入）。
@@ -942,6 +1086,9 @@ async def build_item_snapshot(
         # A07：商机需求里的包装要求与目的地要传进核价，物流匹配才有依据
         package_type=package_type,
         country=country,
+        # 运费是否进产品核价基数 —— 由**这一版的口径**决定，不由全局开关决定。
+        # 新报价 False（运费代收代付，不抬高产品价与利润）；历史版本 True（老口径）。
+        logistics_in_base_cost=version_logistics_in_base_cost(version),
     )
     if quoted_price is not None:
         if Decimal(str(quoted_price)) <= 0:
@@ -1021,7 +1168,24 @@ async def build_item_snapshot(
 
 
 async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
-    """重算版本金额：小计、附加费用、折扣、总额。"""
+    """重算版本金额：货款、运费、其他费用、折扣、总额（以及运费确认状态）。
+
+    总额公式**没有变**（与订单侧同一口径）：
+
+        应付合计 = 货款 + 附加费用 + 折扣
+                 = 货款 + (运费 + 其他费用) + 折扣
+
+    这里额外落两个**拆分**列（`logistics_amount` / `other_charge_amount`），
+    只是为了让页面和文件能把运费从"附加费用"里单列出来。
+
+    ⚠️ 三条恒等式，改这个函数时不要破坏：
+      1. `charge_amount == logistics_amount + other_charge_amount`
+         （拆的是同一笔钱，不是又加了一笔）；
+      2. `total_amount` 里**已经含**运费 —— 任何地方都不要再把 `logistics_amount`
+         加到 `total_amount` 上，那是重复计费；
+      3. 运费与折扣互斥：`is_discount=True` 的费用无论分类码是什么都进折扣，
+         不参与运费汇总（折扣在库里是负数，保持这个约定）。
+    """
     items = (
         await session.execute(
             select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
@@ -1034,12 +1198,56 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
         )
     ).scalars().all()
     discount = sum((charge.amount for charge in charges if charge.is_discount), ZERO)
-    charge_amount = sum((charge.amount for charge in charges if not charge.is_discount), ZERO)
+    # 运费只按**分类码**认，不按说明文字里含"运费"去猜（口径明确要求：
+    # 一句写错的说明不该改变金额归属）。
+    logistics = sum(
+        (charge.amount for charge in charges if is_logistics_charge(charge)), ZERO
+    )
+    other_charge = sum(
+        (
+            charge.amount
+            for charge in charges
+            if not charge.is_discount and not is_logistics_charge(charge)
+        ),
+        ZERO,
+    )
+    charge_amount = logistics + other_charge
     version.subtotal_amount = subtotal.quantize(Decimal("0.01"))
     version.charge_amount = charge_amount.quantize(Decimal("0.01"))
+    version.logistics_amount = logistics.quantize(Decimal("0.01"))
+    version.other_charge_amount = other_charge.quantize(Decimal("0.01"))
     version.discount_amount = discount.quantize(Decimal("0.01"))
     # 统一定点舍入（方案 §5）：与订单侧 amount 口径一致，避免出现 3 位小数的总额
     version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"))
+
+
+def quote_freight_unconfirmed_reason(charges: list[QuoteCharge]) -> str | None:
+    """正式发送前，运费是否"还没有被确认"（返回人话原因；None = 已确认，可以发）。
+
+    口径（2026-10-09）：**草稿允许尚未填写运费，正式发送时必须已经确认具体金额**。
+    所以判据不能是"运费金额是不是 0" —— 明确确认的零运费是合法的，
+    而空输入不能被当成已确认的零元。
+
+    判据分两种情况，都只看"有没有被确认过"：
+
+    - **这一版还没有任何物流费用条目**：说明业务员压根没填 → 拦住，让他去填；
+      确实零运费就新增一条 0 元并确认，走下面那一种。
+    - **有物流费用条目**：每一条都必须确认过（`logistics_confirmed_at` 非空）。
+      只要有一条没确认，就拦住 —— 有条目不等于金额已经确认。
+    """
+    logistics = [c for c in charges if is_logistics_charge(c)]
+    if not logistics:
+        return "尚未填写运费：请在「附加费用」里以「物流」类型填写已确认的实际运费金额"
+    unconfirmed = [c for c in logistics if c.logistics_confirmed_at is None]
+    if unconfirmed:
+        names = "、".join(
+            (c.description or f"物流费用#{c.id}") for c in unconfirmed
+        )
+        return (
+            f"以下运费尚未确认具体金额：{names}。"
+            "请确认后再正式发送；确属零运费也要显式确认（不能把空输入当作已确认的 0 元）"
+        )
+    return None
 
 
 async def moq_warning(session: AsyncSession, sku_id: int | None, quantity: Decimal) -> str | None:
@@ -1124,6 +1332,75 @@ async def ensure_items_master_confirmed(session: AsyncSession, *, version_id: in
         + "。请先在这些 SKU 上确认主数据，再重新生成这版明细。",
         422,
     )
+
+
+async def ensure_freight_confirmed(session: AsyncSession, *, version_id: int) -> None:
+    """正式发送前的**硬校验**：运费必须已经确认具体金额（2026-10-09 口径）。
+
+    口径：**草稿允许尚未填写运费，正式发送时必须已经确认具体金额**。
+
+    为什么不能只看金额：`0` 同时代表"没填"和"明确是零运费"。空输入被默认当成
+    已确认的零元，客户文件上就会印出"运费 0.00"并声称"代收代付已确认" ——
+    实际运费一毛钱都还没确认，这是静默的错。所以判据是
+    `QuoteCharge.logistics_confirmed_at`（确认时刻），不是金额。
+
+    判据落在 `quote_freight_unconfirmed_reason` 一份上，与前端提示同源。
+    """
+    charges = await version_charges(session, version_id)
+    reason = quote_freight_unconfirmed_reason(charges)
+    if reason is None:
+        return
+    raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"{reason}。", 422)
+
+
+async def version_charges(session: AsyncSession, version_id: int) -> list[QuoteCharge]:
+    """这一版的所有附加费用（含折扣行），按排序号与 id 稳定排序。"""
+    return list(
+        (
+            await session.execute(
+                select(QuoteCharge)
+                .where(QuoteCharge.quote_version_id == version_id)
+                .order_by(QuoteCharge.sort_no.asc(), QuoteCharge.id.asc())
+            )
+        ).scalars().all()
+    )
+
+
+async def copy_version_charges(
+    session: AsyncSession, *, source_id: int, target_version: QuoteVersion
+) -> int:
+    """把源版本的费用行整份抄到目标版本，返回复制条数。
+
+    **两个复制入口共用这一份**（`create_version` 与 `POST /quotes/{id}/clone`）。
+    以前只有前者抄了费用，后者只抄明细 —— 于是"复制报价"出来的新单
+    货款对、**运费与折扣全丢**，而且因为缺运费，正式发送还会被
+    `ensure_freight_confirmed` 拦下，用户看到的是"这单发不出去"
+    （`/tmp/verify_freight_rules.py` 的场景6 就是这么发现的）。
+
+    运费的**确认时刻一并带过来**：源版本的运费是业务按承运商确认过的实际金额
+    （口径：客户全额承担、公司原额代收代付），这个事实对同一笔生意的新版本
+    仍然成立。金额对金额、口径对口径地照抄，不重新猜。
+    要改金额就改，`mark_logistics_confirmed` 会重新打确认时刻。
+
+    ⚠️ 折扣原样带过来（库里是负数），与 `recalc_version` 的代数相加约定一致；
+    这里**不重新归一符号**，否则一个已经是负数的折扣会被翻成正数、把总额加上去。
+    """
+    copied = 0
+    for charge in await version_charges(session, source_id):
+        session.add(
+            QuoteCharge(
+                quote_version_id=target_version.id,
+                charge_type=charge.charge_type,
+                description=charge.description,
+                amount=charge.amount,
+                currency=charge.currency,
+                is_discount=charge.is_discount,
+                sort_no=charge.sort_no,
+                logistics_confirmed_at=charge.logistics_confirmed_at,
+            )
+        )
+        copied += 1
+    return copied
 
 
 async def version_items(session: AsyncSession, version_id: int) -> list[QuoteItem]:
@@ -1268,18 +1545,6 @@ async def refresh_prices(
     return {"refreshed": refreshed, "skipped": skipped}
 
 
-async def version_charges(session: AsyncSession, version_id: int) -> list[QuoteCharge]:
-    return list(
-        (
-            await session.execute(
-                select(QuoteCharge)
-                .where(QuoteCharge.quote_version_id == version_id)
-                .order_by(QuoteCharge.sort_no.asc(), QuoteCharge.id.asc())
-            )
-        ).scalars().all()
-    )
-
-
 async def submit_for_approval(
     session: AsyncSession,
     *,
@@ -1306,6 +1571,9 @@ async def submit_for_approval(
     # 而 quoted_price 可能是外币。不折算就会拿 3.92 美元去比 25.44 人民币，必然误判需审批。
     fx = version.exchange_rate_snapshot
     foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
+    # 产品核价是否含运费，由**这一版的口径**决定（见 `item_unit_product_cost`）。
+    # 新报价：运费代收代付，不进产品成本与利润；历史版本：沿用含运费的老口径。
+    cost_includes_freight = version_logistics_in_base_cost(version)
 
     # ---- 绝对底价（D7 判定层）：命中即 422 硬拒，不生成任何可批的审批单 ----
     # 必须排在审批规则引擎（免审/极速通道）之前：auto_pass 不能把低于硬底的价放过去，
@@ -1322,7 +1590,7 @@ async def submit_for_approval(
         weighted_floor_total = ZERO
         total_qty = ZERO
         for item in items:
-            item_cost = item.cost_snapshot + item.logistics_cost_snapshot
+            item_cost = item_unit_product_cost(item, includes_freight=cost_includes_freight)
             if item_cost <= 0:
                 # 无成本记录：硬底无从计算，由保护价/利润判定兜住（A06 同口径）
                 continue
@@ -1365,7 +1633,7 @@ async def submit_for_approval(
 
     offending: list[dict] = []
     for item in items:
-        base_cost = item.cost_snapshot + item.logistics_cost_snapshot
+        base_cost = item_unit_product_cost(item, includes_freight=cost_includes_freight)
         price = item.quoted_price
         price_cny = (price * fx) if foreign else price
         if base_cost <= 0:
@@ -1417,18 +1685,39 @@ async def submit_for_approval(
     # A10（方案 §7.1）：整单有效金额判定。
     # 逐项全过 ≠ 整体能过：整单优惠（is_discount 附加费）摊下来后，
     # 整单利润率/加权均价可能已跌破授权——不能逐项检查后就直接放行。
+    #
+    # 运费分离口径（2026-10-09）：**收入与成本两边必须同时排除代收代付的运费**。
+    #   - 收入侧：应收总额里含运费，但那笔钱是替客户转交给承运商的，不是公司的收入；
+    #   - 成本侧：运费也不进产品成本。
+    # 只排除一边会算出一个假的利润率 —— 只排收入 → 利润率被压得极低（误触审批）；
+    # 只排成本 → 利润率被抬得极高（该拦的拦不住）。两边都不排 → 靠运费收入
+    # 抵消产品低价，正是口径明确禁止的。
+    #
+    # ⚠️ 老口径（legacy）版本**一个字不改**：那时运费本来就含在产品价里，
+    # 收入与成本的重心与今天不同，改了就成了改写历史结论。
     revenue = version.total_amount
     if revenue and revenue > 0:
         # 存在无成本明细时，整单利润率等于"拿 0 成本算出来的"，不可信——
         # 利润率维度跳过（D5），加权保护价是绝对口径仍生效
         any_missing_cost = any(
-            (item.cost_snapshot + item.logistics_cost_snapshot) <= 0 for item in items
+            item_unit_product_cost(item, includes_freight=cost_includes_freight) <= 0
+            for item in items
         )
         revenue_cny = (revenue * fx) if foreign else revenue
         cost_total = sum(
-            ((item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity for item in items),
+            (
+                item_unit_product_cost(item, includes_freight=cost_includes_freight)
+                * item.quantity
+                for item in items
+            ),
             ZERO,
         )
+        # 非运费口径：收入与成本一起把运费剔除（用**本版拆分列**，不重新猜分类）
+        if not cost_includes_freight:
+            logistics_cny = (
+                (version.logistics_amount * fx) if foreign else version.logistics_amount
+            ) or ZERO
+            revenue_cny = revenue_cny - logistics_cny
         total_qty = sum((item.quantity for item in items), ZERO)
         whole_margin = ((revenue_cny - cost_total) / revenue_cny) if revenue_cny else ZERO
         weighted_floor_hit = False
@@ -1705,13 +1994,14 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
         v_items = items_by_version.get(version.id, [])
         v_charges = charges_by_version.get(version.id, [])
         quantity = sum((item.quantity for item in v_items), ZERO)
-        # 单件总成本 = cost_snapshot（商品成本）+ logistics_cost_snapshot（单件运费），
-        # 这与 `build_item_snapshot` 里算 profit_snapshot 的口径以及
-        # `pricing` 的 base_cost = goods_cost + logistics 完全一致。
-        # 少加运费会让汇总毛利和明细的利润快照对不上。
+        # 单件产品核价成本：口径**逐版**取（新旧版本可以并存，见 `item_unit_product_cost`）。
+        # 新口径只算商品成本（运费代收代付，不进产品利润）；老版本仍含单件运费，
+        # 这样汇总毛利才与明细的 `profit_snapshot` 对得上 —— 两边的口径必须同源。
+        v_includes_freight = version_logistics_in_base_cost(version)
         cost_total = sum(
             (
-                (item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity
+                item_unit_product_cost(item, includes_freight=v_includes_freight)
+                * item.quantity
                 for item in v_items
             ),
             ZERO,

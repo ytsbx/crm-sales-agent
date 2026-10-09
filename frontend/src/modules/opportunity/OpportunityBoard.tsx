@@ -64,9 +64,11 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
 
   const move = async (row: Opportunity, direction: 1 | -1) => {
     const index = stages.findIndex((stage) => stage.id === row.stage_id)
-    const next = stages[index + direction]
+    // 保留停用阶段列以展示旧商机，推进目标只选择启用中的普通阶段。
+    const candidates = direction === 1 ? stages.slice(index + 1) : stages.slice(0, index).reverse()
+    const next = candidates.find((stage) => stage.status === 'active' && !stage.is_win && !stage.is_loss)
     if (!next) {
-      Toast.warning(direction === 1 ? '已经是最后一个阶段了' : '已经是第一个阶段了')
+      Toast.warning('这个方向没有可用的普通阶段')
       return
     }
     try {
@@ -118,6 +120,7 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontWeight: 600, fontSize: 13 }}>{stage.name}</span>
+                {stage.status !== 'active' && <Tag color="grey" size="small">已停用</Tag>}
                 {stage.is_win && (
                   <Tag color="green" size="small">
                     成交

@@ -5,6 +5,7 @@
  * 用法（必须明确指向本机服务与本机数据库，并关闭外部投递/调度）：
  *   node ops/smoke_ui.mjs
  *   SMOKE_ENABLE_FIXTURES=1 SMOKE_USER=admin SMOKE_OUT=/tmp/shots node ops/smoke_ui.mjs
+ *   SMOKE_ENABLE_FIXTURES=1 SMOKE_TWELFTH_ONLY=1 node ops/smoke_ui.mjs  # 仅第十二批界面反例
  *
  * 默认不写报价或订单。只有显式设置 SMOKE_ENABLE_FIXTURES=1 时，才会在**一次性测试库**
  * 中造测试报价和订单；这些业务夹具不会删除，因此不要对开发库或生产库开启此选项。
@@ -218,6 +219,29 @@ async function firstId(path, token) {
   return (await firstRecord(path, token))?.id ?? null
 }
 
+/**
+ * 给一版报价补一条**已确认**的运费（夹具公共步骤）。
+ *
+ * 为什么每个建报价的夹具都要调它（2026-10-09「产品价格与运费分离」）：
+ * 正式发送前有一道硬校验 `quote.service.ensure_freight_confirmed` ——
+ * 草稿允许没填运费，**正式发送必须已经确认具体金额**（空输入不等于已确认的
+ * 零运费）。本脚本多处夹具建完报价就点/调"标记已发送"，不补这一步会被 422
+ * 拦下，表现为"报价发送失败"，而真正的原因在运费上。
+ *
+ * ⚠️ 必须在**提交审批之前**调：版本一旦提交审批就不可编辑。
+ *
+ * 收口成一个函数是因为这条规则前后漏了三处（sampleSource / demandFlow /
+ * quoteLifecycle 各一处），每次都是"夹具没跟上行为变更"，不如只写一遍。
+ */
+async function ensureFixtureFreight(token, versionId, amount = 30) {
+  return checkedJson(`/quote-versions/${versionId}/charges`, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      charge_type: 'logistics', description: '冒烟夹具运费', amount,
+    }),
+  })
+}
+
 async function checkedJson(path, token, options = {}) {
   const response = await fetch(`${API_BASE}/api/v1${path}`, {
     ...options,
@@ -276,6 +300,10 @@ async function createSeedQuote(token, customerId) {
         headers,
         body: JSON.stringify([{ sku_id: skuId, quantity: 3000, quoted_price: 28 }]),
       })
+      // 运费分离（2026-10-09）：正式发送前必须已确认运费。
+      // 这条引子报价后面会被"标记已发送 / 提交审批"用到，所以一并补上，
+      // 否则发送会被 422 拦下、后面的界面断言跟着红。
+      await ensureFixtureFreight(token, versionId)
     }
     return quoteId
   } catch {
@@ -331,6 +359,11 @@ async function createOrderIfEmpty(token, customerId) {
       method: 'POST',
       body: JSON.stringify([{ sku_id: skuId, quantity: 100, quoted_price: quotePrice }]),
     })
+    // 运费分离（2026-10-09）：正式发送前必须已经确认运费金额
+    // （`quote.service.ensure_freight_confirmed`）。本脚本要验的是订单详情页，
+    // 不是运费 —— 所以在这里补一条**已确认**的运费，让流程能走到标记发送那一步。
+    // 必须在提交审批**之前**加：版本一旦提交审批就不可编辑。
+    await ensureFixtureFreight(token, versionId)
     const submitted = await checkedJson(`/quote-versions/${versionId}/submit-approval`, token, {
       method: 'POST',
       body: JSON.stringify({ reason: '仅用于本地 UI 冒烟' }),
@@ -406,8 +439,13 @@ async function clickByText(client, text, { tag = 'button' } = {}) {
     hit.click();
     return 'clicked';
   })()`
-  const result = await client.send('Runtime.evaluate', { expression, returnByValue: true })
-  return result.result.value
+  const deadline = Date.now() + 8000
+  do {
+    const result = await client.send('Runtime.evaluate', { expression, returnByValue: true })
+    if (result.result.value === 'clicked') return 'clicked'
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return 'not-found'
 }
 
 /**
@@ -449,6 +487,59 @@ async function waitForText(client, text, timeoutMs = 8000) {
     await sleep(250)
   }
   return false
+}
+
+/** 第十二批返修界面：只在显式允许的一次性库里造夹具。 */
+async function checkTwelfthRepairs(client, auth, problems) {
+  if (!FIXTURES_ENABLED) return
+  const previousProblems = problems.length
+  const prefix = `SMOKE12R-${Date.now()}`
+  const post = (path, body) => checkedJson(path, auth.token, {method: 'POST', body: JSON.stringify(body)})
+  const users = await checkedJson('/users?page_size=100', auth.token)
+  const owner = users.items.find((user) => user.username === 'zhangsan' && user.status === 'active')
+  if (!owner) throw new Error('第十二批 UI 验收缺在职业务员夹具')
+  const customer = await post('/customers', {name: `${prefix}客户`, owner_id: owner.id})
+  const stages = await checkedJson('/opportunity-stages', auth.token)
+  const sequence = Math.min(...stages.map((stage) => stage.sequence)) - 100
+  const source = await post('/opportunity-stages', {code: `${prefix}S`, name: `${prefix}起点`, sequence})
+  const disabled = await post('/opportunity-stages', {code: `${prefix}D`, name: `${prefix}停用`, sequence: sequence + 1})
+  const target = await post('/opportunity-stages', {code: `${prefix}T`, name: `${prefix}目标`, sequence: sequence + 2})
+  const opportunity = await post('/opportunities', {customer_id: customer.id, title: `${prefix}商机`, stage_id: source.id})
+  if (opportunity.owner_id !== owner.id || opportunity.owner_name !== owner.name) problems.push('12-R6 新建返回的继承负责人 ID/姓名不一致')
+  await checkedJson(`/opportunity-stages/${disabled.id}`, auth.token, {method: 'DELETE'})
+  await client.send('Page.navigate', {url: `${APP_BASE}/opportunities/${opportunity.id}`})
+  if (!await waitForText(client, `负责人：${owner.name}`)) problems.push('12-R6 详情负责人展示错误')
+  if (await clickByText(client, '推进阶段') !== 'clicked') throw new Error('12-R2 无法打开推进阶段弹窗')
+  if (!await waitForText(client, '选择目标阶段')) throw new Error('12-R2 推进阶段弹窗没有加载')
+  const opened = await client.send('Runtime.evaluate', {
+    expression: `(() => {const select=document.querySelector('.semi-modal .semi-select'); if (!select) return false; select.click(); return true})()`, returnByValue: true,
+  })
+  if (!opened.result.value) throw new Error('12-R2 找不到阶段选择控件')
+  await sleep(400)
+  const options = await client.send('Runtime.evaluate', {
+    expression: `Array.from(document.querySelectorAll('.semi-select-option')).map(option=>option.innerText.trim())`, returnByValue: true,
+  })
+  const forbidden = [disabled, ...stages.filter((stage) => stage.status !== 'active' || stage.is_win || stage.is_loss)]
+  if (!options.result.value.includes(target.name) || forbidden.some((stage) => options.result.value.includes(stage.name))) problems.push('12-R2 阶段下拉包含停用/终态目标，或遗漏合法目标')
+  let shot = await client.send('Page.captureScreenshot', {format: 'png'})
+  writeFileSync(join(OUT_DIR, '46-twelfth-stage-options.png'), Buffer.from(shot.data, 'base64'))
+  await client.send('Page.navigate', {url: `${APP_BASE}/opportunities?keyword=${encodeURIComponent(prefix)}`})
+  if (!await waitForText(client, opportunity.title)) throw new Error('12-R6 列表没有加载测试商机')
+  const row = await client.send('Runtime.evaluate', {
+    expression: `Array.from(document.querySelectorAll('tr')).find(row=>row.innerText.includes(${JSON.stringify(opportunity.title)}))?.innerText ?? ''`, returnByValue: true,
+  })
+  if (!row.result.value.includes(owner.name)) problems.push('12-R6 列表负责人展示错误')
+  if (await clickByText(client, '看板') !== 'clicked') throw new Error('12-R2 无法打开看板')
+  if (!await waitForText(client, '已停用')) problems.push('12-R2 看板未保留停用阶段标识')
+  const moved = await client.send('Runtime.evaluate', {
+    expression: `(() => {const title=Array.from(document.querySelectorAll('div')).find(el=>el.childElementCount===0 && el.innerText===${JSON.stringify(opportunity.title)}); const link=Array.from(title?.parentElement.querySelectorAll('a')??[]).find(el=>el.innerText.trim()==='推进 →'); if (!link) return false; link.click(); return true})()`, returnByValue: true,
+  })
+  if (!moved.result.value || !await waitForText(client, `已推进到「${target.name}」`)) problems.push('12-R2 看板推进未跳过停用阶段')
+  const saved = await checkedJson(`/opportunities/${opportunity.id}`, auth.token)
+  if (saved.stage_id !== target.id) problems.push('12-R2 看板推进没有落到合法普通阶段')
+  shot = await client.send('Page.captureScreenshot', {format: 'png'})
+  writeFileSync(join(OUT_DIR, '47-twelfth-board-owner.png'), Buffer.from(shot.data, 'base64'))
+  console.log(`${problems.length === previousProblems ? '✓' : '✗'} 第十二批 UI：阶段下拉、看板跳过停用阶段、负责人展示已验证`)
 }
 
 /** 往一个受控输入框里填值（Semi 受控组件：直接改 .value 不触发，得走原生 setter）。 */
@@ -798,21 +889,21 @@ async function checkLazyRegionNetworkRetry(client, problems) {
  * 再由脚本自己起的静态服务托管 —— 页面与模块同源，和线上更像。
  */
 async function checkLazyRegionProdBuild(client, problems) {
-  const viteBin = join(REPO_DIR, 'frontend', 'node_modules', '.bin', 'vite')
+  const viteBin = join(REPO_DIR, 'frontend', 'node_modules', 'vite', 'bin', 'vite.js')
   if (!existsSync(viteBin)) {
     problems.push('自测页生产构建：找不到 vite（前端依赖没装？）')
     return
   }
   const outDir = join(tmpdir(), 'crm-lazy-selftest-dist')
   rmSync(outDir, { recursive: true, force: true })
-  const built = spawnSync(viteBin, ['build', '--config', 'vite.selftest.config.ts'], {
+  const built = spawnSync(process.execPath, [viteBin, 'build', '--config', 'vite.selftest.config.ts'], {
     cwd: join(REPO_DIR, 'frontend'),
     env: { ...process.env, SELFTEST_OUT: outDir },
     encoding: 'utf8',
   })
   if (built.status !== 0) {
     problems.push(
-      `自测页生产构建失败：${(built.stderr || built.stdout || '').slice(-400)}`,
+      `自测页生产构建失败：${(built.error?.message || built.stderr || built.stdout || '').slice(-400)}`,
     )
     return
   }
@@ -885,7 +976,11 @@ function connect(wsUrl) {
           const id = nextId
           nextId += 1
           return new Promise((res, rej) => {
-            pending.set(id, { resolve: res, reject: rej })
+            const timer = setTimeout(() => {
+              pending.delete(id)
+              rej(new Error(`浏览器命令 ${method} 超过 30 秒未响应`))
+            }, 30000)
+            pending.set(id, { resolve: res, reject: rej, timer })
             socket.send(JSON.stringify({ id, method, params }))
           })
         },
@@ -901,7 +996,8 @@ function connect(wsUrl) {
     socket.addEventListener('message', (event) => {
       const message = JSON.parse(event.data)
       if (message.id && pending.has(message.id)) {
-        const { resolve: res, reject: rej } = pending.get(message.id)
+        const { resolve: res, reject: rej, timer } = pending.get(message.id)
+        clearTimeout(timer)
         pending.delete(message.id)
         if (message.error) rej(new Error(JSON.stringify(message.error)))
         else res(message.result)
@@ -1026,6 +1122,11 @@ async function main() {
       '--disable-gpu',
       '--no-first-run',
       '--no-default-browser-check',
+      // 验收浏览器不加载员工扩展、不同步账号，外部域名也不解析。
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-background-networking',
+      '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1, EXCLUDE [::1]',
       // CI 容器 /dev/shm 很小，Chrome 标签页会随机崩（白屏 + "Unable to
       // capture screenshot"），这两个是官方建议的容器稳定参数
       '--disable-dev-shm-usage',
@@ -1038,10 +1139,11 @@ async function main() {
   )
 
   const problems = [...setupProblems]
+  let client
   try {
     await waitForCdp()
     const target = await openTarget(`${APP_BASE}/login`)
-    const client = await connect(target.webSocketDebuggerUrl)
+    client = await connect(target.webSocketDebuggerUrl)
 
     client.on((message) => {
       if (message.method === 'Runtime.exceptionThrown') {
@@ -1078,15 +1180,27 @@ async function main() {
     // 这期间页面是空白的。先访问一次等它就绪，否则头几张截图会拍到白屏，
     // 看起来像"页面打不开"，其实是构建窗口期（Windows 上尤其明显）。
     await client.send('Page.navigate', { url: `${APP_BASE}/login` })
+    let frontendReady = false
     for (let i = 0; i < 120; i += 1) {
       const probe = await client.send('Runtime.evaluate', {
         expression: 'Boolean(document.querySelector("#root, #app")?.children.length)',
         returnByValue: true,
       })
-      if (probe.result.value) break
+      if (probe.result.value) {
+        frontendReady = true
+        break
+      }
       await sleep(500)
     }
+    if (!frontendReady) throw new Error('前端预览未在 60 秒内就绪')
     console.log('✓ 前端已就绪（依赖预构建完成）')
+    if (process.env.SMOKE_TWELFTH_ONLY === '1') {
+      if (!FIXTURES_ENABLED) throw new Error('第十二批 UI 反例必须显式开启隔离库夹具')
+      await checkTwelfthRepairs(client, auth, problems)
+      if (problems.length) throw new Error(problems.join('；'))
+      console.log('✓ 第十二批界面反例通过')
+      return
+    }
 
     // 预热二遍跑：逐页无断言过一遍，把懒加载路由块编译掉、把 vite 的
     // 依赖再优化（会触发整页自动刷新）全部提前耗尽。CI 冷环境上，
@@ -1114,7 +1228,7 @@ async function main() {
       for (let i = 0; i < 60; i += 1) {
         const probe = await client.send('Runtime.evaluate', {
           expression:
-            'Boolean(document.querySelector("#root, #app")?.children.length) && Boolean(document.querySelector(".page-container")?.innerText.trim().length)',
+            `Boolean(document.querySelector("#root, #app")?.children.length) && (document.querySelector(".page-container")?.innerText ?? "").includes(${JSON.stringify(page.expectText ?? '')}) && !/^(页面)?加载中/.test(document.querySelector(".page-container")?.innerText.trim() ?? "加载中")`,
           returnByValue: true,
         })
         if (probe.result.value) {
@@ -1301,6 +1415,10 @@ async function main() {
     if (FIXTURES_ENABLED && auth.user.roles.includes('admin')) {
       const inquiry = await checkedJson('/custom-inquiries', auth.token, { method: 'POST', body: JSON.stringify({ title: 'CHKUI订单准备', customer_id: customerId, quantity: 10000, description: '订单原规格' }) })
       const quote = await checkedJson(`/custom-inquiries/${inquiry.id}/create-quote`, auth.token, { method: 'POST', body: JSON.stringify({ unit_cost: 10, quoted_price: 20 }) })
+      // 运费分离（2026-10-09）：正式发送前必须已确认运费，所以这里补一条。
+      // 它会计入这一版的 `total_amount`（正式订单取的就是客户确认的报价版本总额），
+      // 因此下面"建立正式订单"那条断言的总金额也要跟着 +30。
+      await ensureFixtureFreight(auth.token, quote.version_id)
       INTERACTIONS.push({ name: '50-order-draft-flow', path: `/quotes/${quote.quote_id}`, clicks: [], expect: ['订单详情'], orderDraft: { ...quote, inquiryId: inquiry.id } })
     }
 
@@ -1313,8 +1431,7 @@ async function main() {
       let ok = false
       for (let i = 0; i < 60; i += 1) {
         const probe = await client.send('Runtime.evaluate', {
-          expression:
-            'Boolean(document.querySelector("#root, #app")?.children.length) && document.body.innerText.trim().length > 0',
+          expression: `location.pathname === ${JSON.stringify(item.path.split('?')[0])} && document.readyState === 'complete' && Boolean(document.querySelector("#root, #app")?.children.length) && document.body.innerText.trim().length > 0 && !document.body.innerText.includes('页面加载中')`,
           returnByValue: true,
         })
         if (probe.result.value) {
@@ -1392,7 +1509,10 @@ async function main() {
         if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
         if(!await waitForText(client,'订单详情')) throw new Error('核对一致后没有进入正式订单')
         const orders=await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`,auth.token)
-        if(orders.total!==1 || orders.items[0].total_amount!==200000) throw new Error('没有按确认报价建立一张正式订单')
+        // 200000 = 明细 10000 × 20；+30 = 上面补的那条已确认运费。
+        // 正式订单取的是**客户确认的报价版本**总额，而该口径里运费是单列计入应付的
+        // （「产品价格与运费分离」2026-10-09），所以这里必须是 200030 而不是 200000。
+        if(orders.total!==1 || orders.items[0].total_amount!==200030) throw new Error(`没有按确认报价建立一张正式订单（金额 ${orders.items[0]?.total_amount}）`)
         if(!await waitForText(client,'CHKUI订单准备')) throw new Error('定制正式订单没有显示需求名称')
         const formalShot=await client.send('Page.captureScreenshot',{format:'png'})
         writeFileSync(join(OUT_DIR,'51-order-draft-confirmed.png'),Buffer.from(formalShot.data,'base64'))
@@ -1523,7 +1643,12 @@ async function main() {
 
       if (item.demandFlow) {
         const oid = item.demandFlow.opportunityId
-        if (!await waitForText(client, '关联单据')) throw new Error('商机未显示关联单据入口')
+        if (!await waitForText(client, '关联单据')) {
+          const diag = await client.send('Runtime.evaluate', { expression: 'JSON.stringify({url:location.href,text:document.body.innerText})', returnByValue: true })
+          const shot = await client.send('Page.captureScreenshot', { format: 'png' })
+          writeFileSync(join(OUT_DIR, '44-demand-navigation-failure.png'), Buffer.from(shot.data, 'base64'))
+          throw new Error('商机未显示关联单据入口：' + diag.result.value)
+        }
         if (await clickByText(client, '关联单据', { tag: '[role="tab"]' }) !== 'clicked') throw new Error('无法切换关联单据')
         if (!await waitForText(client, '暂无关联定制询价')) throw new Error('单据页未加载')
         await clickByText(client, '记录定制询价')
@@ -1550,6 +1675,10 @@ async function main() {
         })
         const afterDraft = await checkedJson(`/opportunities/${oid}`, auth.token)
         if (before.stage_id !== afterDraft.stage_id) throw new Error('生成报价草稿错误推进了阶段')
+        // 运费分离（2026-10-09）：下面要用界面点"标记已发送"，而正式发送前
+        // 必须已经确认运费。这个报价是刚用接口建的，补一条已确认的运费
+        // —— 必须在提交审批之前（版本提交后不可编辑）。
+        await ensureFixtureFreight(auth.token, quote.version_id)
         const approved = await checkedJson(`/quote-versions/${quote.version_id}/submit-approval`, auth.token, {
           method: 'POST', body: JSON.stringify({ reason: '虚构 UI 验收' }),
         })
@@ -1844,6 +1973,8 @@ async function main() {
 
     }
 
+    await checkTwelfthRepairs(client, auth, problems)
+
     // 自测页：页面内「按需加载的一块」失败时不能把整页连表单一起顶掉（第九批复审 §9.11）
     await checkLazyRegionSelfTest(client, problems)
     // 同一块的**真实网络**失败与恢复：重试必须真的再发一次请求（不能只在开发服务里有效）
@@ -1857,8 +1988,12 @@ async function main() {
     } else {
       console.log('\n✓ 未发现控制台报错')
     }
-    client.close()
   } finally {
+    // 异常也必须关闭连接；Windows 浏览器启动器可能先退出，kill 启动器不等于关浏览器。
+    if (client) {
+      await Promise.race([client.send('Browser.close').catch(() => {}), sleep(1000)])
+      client.close()
+    }
     browser.kill()
     await sleep(300)
     // 清理临时 profile。这里失败**不能算测试失败**：

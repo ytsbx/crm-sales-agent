@@ -104,6 +104,12 @@ def _humanize(error: dict) -> str | None:
 
     不认识的类型不硬编 —— 宁可退回原文，也不要编一句可能不对的话。
     """
+    # schema 主动给出的业务提示（包括 PatchModel 的非空列提示）应直接展示。
+    # 不把原始入参拼进提示，且只接受验证器产生的 ValueError。
+    if error.get("type") == "value_error":
+        cause = (error.get("ctx") or {}).get("error")
+        if isinstance(cause, ValueError):
+            return str(cause) or None
     template = _VALIDATION_HINTS.get(str(error.get("type")))
     if not template:
         return None

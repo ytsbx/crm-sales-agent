@@ -65,6 +65,21 @@ class SalesOrder(Base, IdMixin, TimestampMixin):
     # 两列并存才同时满足"有人接"和"历史业绩不改写"。
     sales_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
+    #: 总额**组成**快照（2026-10-09「产品价格与运费分离」）。
+    #:
+    #: 订单页要能解释"这个总额是怎么来的"，不能只给一个数：
+    #:     应付合计 = 产品货款 + 运费 + 其他费用 + 优惠
+    #: 这四个值与 `total_amount` 在同一时刻从报价版本冻结下来，
+    #: **之后报价怎么改都不影响本单**（订单读自己的快照，不回查报价）。
+    #:
+    #: ⚠️ 它们都已经含在 `total_amount` 里，展示时只做拆分，不要再相加一次。
+    #: 可空：历史订单没有留存，展示时明确写"待核实"，不拿今天的数据回填冒充。
+    goods_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    logistics_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    other_charge_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    #: 转单时报价版本用的产品核价口径，随单冻结（历史订单为 NULL = 当时是旧口径）。
+    pricing_basis: Mapped[str | None] = mapped_column(String(32), nullable=True)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")
     status: Mapped[str] = mapped_column(String(24), default="pending")
     erp_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

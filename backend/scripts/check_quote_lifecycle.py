@@ -5,6 +5,7 @@
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from urllib.parse import urlparse
 from uuid import uuid4
 from unittest.mock import patch
@@ -27,7 +28,7 @@ from app.modules.opportunity.model import Opportunity, OpportunityStage, Opportu
 from app.modules.order.model import SalesOrder, SalesOrderItem, OrderStatusHistory, OrderMilestone
 from app.modules.payment.model import ReceivablePlan
 from app.modules.quote import service as qs, lifecycle
-from app.modules.quote.model import Quote, QuoteVersion, QuoteSendLog
+from app.modules.quote.model import Quote, QuoteVersion, QuoteSendLog, QuoteCharge
 from app.modules.quote.schema import SendRequest
 from app.modules.task.model import Task
 from app.modules.user.model import User
@@ -107,11 +108,20 @@ async def main():
                     version = QuoteVersion(quote_id=q.id, version_no=1, approval_status='approved',
                                            created_at=datetime.now(UTC), total_amount=100)
                     s.add(version); await s.flush(); vids.append(version.id)
+                    # 运费分离（2026-10-09）：正式发送前必须已经确认运费金额。
+                    # 本套件验的是状态闸门与并发，不是运费，所以夹具补一条**已确认**的运费，
+                    # 让发送能走到它真正要验的那一步（不是放宽闸门）。
+                    s.add(QuoteCharge(quote_version_id=version.id, charge_type='logistics',
+                                      description='夹具运费', amount=Decimal('10'),
+                                      logistics_confirmed_at=datetime.now(UTC)))
                     q.current_version_id = version.id
                     facts[label] = (q.id, version.id, customer.id, opp.id)
                     if label == 'stale':
                         next_v = QuoteVersion(quote_id=q.id, version_no=2, approval_status='approved', created_at=datetime.now(UTC))
                         s.add(next_v); await s.flush(); vids.append(next_v.id); q.current_version_id = next_v.id
+                        s.add(QuoteCharge(quote_version_id=next_v.id, charge_type='logistics',
+                                          description='夹具运费', amount=Decimal('10'),
+                                          logistics_confirmed_at=datetime.now(UTC)))
                 await s.commit()
 
             qid, vid, _, _ = facts['unsent']
@@ -252,6 +262,9 @@ async def main():
                         (OrderMilestone, OrderMilestone.order_id.in_(orders)),
                         (SalesOrder, SalesOrder.customer_id.in_(cids)),
                         (QuoteSendLog, QuoteSendLog.quote_version_id.in_(vids)),
+                        # 运费夹具（本套件新增的物流费用）先删：外键是 NO ACTION，
+                        # 不删会让 QuoteVersion 删不掉、夹具残留下来。
+                        (QuoteCharge, QuoteCharge.quote_version_id.in_(vids)),
                         (QuoteVersion, QuoteVersion.quote_id.in_(qids)), (Quote, Quote.id.in_(qids)),
                         (OpportunityStageHistory, OpportunityStageHistory.opportunity_id.in_(oids)),
                         (Opportunity, Opportunity.id.in_(oids)), (Customer, Customer.id.in_(cids)),

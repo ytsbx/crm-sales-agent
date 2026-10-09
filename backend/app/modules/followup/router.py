@@ -2,31 +2,26 @@
 
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
-from app.modules.customer.model import Customer
 from app.modules.followup.model import FollowUp
 from app.modules.followup.mutations import serialize, notify_manual_followup, create_manual_followup
 from app.modules.notification import service as notification_service
-from app.modules.followup.visibility import get_visible_followup, system_source_filter
+from app.modules.followup.visibility import get_visible_followup, followup_visibility_filter
 from app.modules.followup.schema import (
     FollowUpCreate,
     FollowUpNextTask,
     FollowUpUpdate,
     validate_plan,
 )
-from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
-from app.modules.order.model import SalesOrder
-from app.modules.quote.model import Quote
 from app.modules.task.model import Task
 from app.modules.user.model import User
 
@@ -51,7 +46,7 @@ async def list_followups(
     user: CurrentUser = Depends(require_permission("followup:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    stmt = select(FollowUp).where(await system_source_filter(session, user))
+    stmt = select(FollowUp).where(await followup_visibility_filter(session, user))
     if customer_id:
         stmt = stmt.where(FollowUp.customer_id == customer_id)
     if opportunity_id:
@@ -61,36 +56,6 @@ async def list_followups(
     if owner_id:
         stmt = stmt.where(FollowUp.owner_id == owner_id)
     stmt = stmt.order_by(FollowUp.id.desc())
-
-    # 数据范围：列表页此前**只看查询参数、从不撒网** —— 任何有 followup:view
-    # 的业务员加个 page_size=200 就能读全公司跟进内容（详情/删除/商机跟进列表
-    # 都补了校验，唯独最容易的这条主列表漏了）。这里与 _visible_followup 同一口径：
-    # 客户/线索允许无主（公海），商机/报价/订单必须有主且在范围内。
-    visible_owner_ids = await scoped_owner_ids(session, user)
-    if visible_owner_ids is not None:
-        customer_ids = select(Customer.id).where(
-            or_(
-                Customer.owner_id.in_(visible_owner_ids),
-                Customer.owner_id.is_(None),
-            )
-        )
-        lead_ids = select(Lead.id).where(
-            or_(Lead.owner_id.in_(visible_owner_ids), Lead.owner_id.is_(None))
-        )
-        opportunity_ids = select(Opportunity.id).where(
-            Opportunity.owner_id.in_(visible_owner_ids)
-        )
-        quote_ids = select(Quote.id).where(Quote.owner_id.in_(visible_owner_ids))
-        order_ids = select(SalesOrder.id).where(SalesOrder.owner_id.in_(visible_owner_ids))
-        stmt = stmt.where(
-            or_(
-                FollowUp.customer_id.in_(customer_ids),
-                FollowUp.lead_id.in_(lead_ids),
-                FollowUp.opportunity_id.in_(opportunity_ids),
-                FollowUp.quote_id.in_(quote_ids),
-                FollowUp.order_id.in_(order_ids),
-            )
-        )
 
     rows, total = await paginate(session, stmt, page, page_size)
     owner_ids = {row.owner_id for row in rows if row.owner_id}

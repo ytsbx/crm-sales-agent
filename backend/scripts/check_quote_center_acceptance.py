@@ -426,15 +426,44 @@ def main():
         print('== A09 价格变化快照 ==')
         _, res = call('GET', f'/quote-versions/{vid}', token=zhangsan)
         v1_price = res['data']['items'][0]['quoted_price']
+        # 改价的**正确路径**（2026-10-09 口径）：停用旧的 + 新增一条同区间的新价。
+        # 价格规则的 PATCH 明确不支持原地改价（后端会 400 并点名字段）——
+        # 改价钱等于换了一套定价，停用+新增才留下"哪条从哪天起生效"的时序。
+        # 换价后旧报价快照必须不变、草稿必须检出漂移：本用例验的正是这两件事。
         for rid in [r for r in rule_ids]:
             _, r = call('GET', f'/price-rules/{rid}', token=admin)
             if r['data'].get('customer_level') == 'A' and r['data'].get('guide_price') == 85.0:
-                call('PATCH', f"/price-rules/{rid}", token=admin, body={'guide_price': 95})
+                call('DELETE', f'/price-rules/{rid}', token=admin)
+                _, new_rule = call('POST', '/price-rules', token=admin, body={
+                    'sku_id': sku_id, 'customer_level': 'A', 'min_qty': 1, 'guide_price': 95,
+                })
+                if new_rule.get('code') == 0:
+                    rule_ids.append(new_rule['data']['id'])
         _, res = call('GET', f'/quote-versions/{vid}', token=zhangsan)
         unchanged = res['data']['items'][0]['quoted_price'] == v1_price
         _, res = call('GET', f'/quote-versions/{vid}/price-drift', token=zhangsan)
         drift = res['data']['any_drift']
         record('A09', '旧版本快照不变；草稿检出漂移可刷新', unchanged and drift, f'v1={v1_price} drift={drift}')
+
+        # 反向：**原地改价必须被拒**（口径 2026-10-09）。
+        # 这条断言是配套的"另一面"：走停用+新增可以，绕过它直接改价不行。
+        _, live = call('GET', '/price-rules?page_size=100', token=admin)
+        patch_target = next(
+            (r for r in live['data']['items']
+             if r.get('customer_level') == 'A' and r['id'] in rule_ids),
+            None,
+        )
+        if patch_target:
+            status, res = call('PATCH', f"/price-rules/{patch_target['id']}", token=admin,
+                               body={'guide_price': 77})
+            blocked = status == 400 and '不支持原地修改价格' in (res.get('message') or '')
+            # 只改区间则必须放行（闸门不能把合法编辑一起挡住）
+            status2, _ = call('PATCH', f"/price-rules/{patch_target['id']}", token=admin,
+                              body={'remark': 'A09 备注可改'})
+            record('A09b', '原地改价被拒（400 且点名）；只改备注放行',
+                   blocked and status2 == 200, f'blocked={blocked} remark_status={status2}')
+        else:
+            record('A09b', '原地改价被拒（400 且点名）；只改备注放行', False, '没找到 A 级规则')
 
         # ---------------- A10 整单优惠触发审批 ----------------
         print('== A10 整单审批 ==')
@@ -453,8 +482,11 @@ def main():
         created_quotes.append(qid10)
         call('POST', f'/quote-versions/{vid10}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
+        # 折扣按接口契约传**正数**（`amount: ge=0`），后端负责归一成负数入库
+        # （`recalc_version` 直接代数相加，库里恒为负数）。字段名是 `description`——
+        # 原来写的 `charge_name` 不在 schema 里，会被静默忽略（说明一直是空的）。
         call('POST', f'/quote-versions/{vid10}/charges', token=zhangsan,
-             body={'charge_name': '整单优惠', 'amount': -700, 'is_discount': True})
+             body={'description': '整单优惠', 'amount': 700, 'is_discount': True})
         _, res = call('POST', f'/quote-versions/{vid10}/submit-approval', token=zhangsan, body={})
         whole_flagged = bool((res.get('data') or {}).get('approval_required'))
         _, res = call('POST', '/opportunities', token=zhangsan, body={
@@ -536,6 +568,11 @@ def main():
         created_quotes.append(qid13)
         call('POST', f'/quote-versions/{vid13}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
+        # 运费分离（2026-10-09）：正式发送前必须已确认运费金额，而且**必须在提交
+        # 审批之前填**（提交后版本不可编辑）。本用例验的是成交建单幂等，不是运费——
+        # 补一条已确认的运费让流程能走完。
+        call('POST', f'/quote-versions/{vid13}/charges', token=zhangsan,
+             body={'charge_type': 'logistics', 'description': '验收运费', 'amount': 300})
         call('POST', f'/quote-versions/{vid13}/submit-approval', token=zhangsan, body={})
         _, sent_res = call('POST', f'/quote-versions/{vid13}/mark-sent', token=zhangsan, body={})
         if sent_res.get('code') != 0:

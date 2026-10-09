@@ -81,7 +81,7 @@ class OpportunityItemCreate(BaseModel):
     remark: str | None = None
 
 
-class OpportunityItemUpdate(BaseModel):
+class OpportunityItemUpdate(PatchModel):
     model_config = ConfigDict(extra="ignore")
 
     # 与新增同一套数值规则（12.5）：只校验**传了的**字段（不传就保持原值）。

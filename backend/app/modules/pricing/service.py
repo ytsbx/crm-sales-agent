@@ -692,6 +692,7 @@ async def calculate_price(
     package_type: str | None = None,
     shipping_method: str | None = None,
     payment_terms: str | None = None,
+    logistics_in_base_cost: bool = False,
 ) -> dict:
     """核价。
 
@@ -704,6 +705,21 @@ async def calculate_price(
     - `protection_price`：最低保护价，来自价格规则/客户特殊价，是「公司规定不能低于」；
     - `minimum_price`：当前用户授权底价，是「以你的权限不能低于」。
     审批判定两个都要看（PRD §16「低于业务员授权价」「低于保护价」是两条触发条件）。
+
+    **运费与产品价格分离（2026-10-09 业务口径，别改回去）**：
+    产品单价**不含运费**，运费单独列出、按实际金额**代收代付**（公司不赚不赔）。
+    所以 `base_cost`（产品建议价/授权底价/利润/利润率的基础）**只含商品成本**，
+    运费**不进**这个基数。
+
+    为什么这样定：公司把货款和运费一起向客户收，再把运费付给承运商，运费上
+    不存在差额、加价或补贴；产品核价与利润率本来就不该被运费抬高或压低。
+
+    推论（都是刻意的，不是漏算）：
+    - 改运费金额**不会**改变产品建议价、产品利润、产品底价；
+    - 核价**不需要**先配运费费率，缺费率也不阻碍产品核价；
+    - `logistics_in_base_cost=True` 只为**历史版本**保留：老版本的 `base_cost`
+      里是含运费的，回看/重算老版本时必须按老口径，否则等于改写已发出去的报价。
+      调用方从这里传入口径，见 `quote/service.build_item_snapshot`。
     """
     sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
@@ -785,6 +801,12 @@ async def calculate_price(
     if margin >= 1:
         raise AppError(ErrorCode.PARAM_ERROR, "目标利润率必须小于 100%")
 
+    # 物流试算在新口径下**不影响产品核价**（运费不进 base_cost、不进利润），
+    # 但它仍然是**参考估算**，要在核价结果里如实给出（`cost.logistics_cost`）——
+    # 业务员可能拿它去填报价的运费，所以"这次用的不是精确匹配的费率"这句提示
+    # 必须保留（`check_logistics_rate_admin` 守的就是它：估算算少了没人看得出来）。
+    # 口径（2026-10-09）：物流试算保留为**可选参考**，正式报价的运费由业务员按
+    # 承运商确认的金额填写；无费率、无固定承运商时照样能核价与报价。
     if logistics_cost is None:
         logistics_cost, logistics_warning = await estimate_logistics(
             session,
@@ -797,7 +819,10 @@ async def calculate_price(
             warnings.append(logistics_warning)
     logistics = logistics_cost or ZERO
 
-    base_cost = goods_cost + logistics
+    # 产品核价基础 = **商品成本**（采购+生产+包装+加工）。
+    # 运费按代收代付处理，不进产品定价基数 —— 见本函数 docstring 的
+    # 「运费与产品价格分离」。老版本回看时才用 logistics_in_base_cost=True。
+    base_cost = goods_cost + logistics if logistics_in_base_cost else goods_cost
     standard_price = (
         (rule.standard_price if rule else None) or (base_cost / (Decimal(1) - margin))
     )
@@ -1039,6 +1064,9 @@ async def calculate_price(
             "goods_cost": _f(goods_cost),
             "logistics_cost": _f(logistics),
             "base_cost": _f(base_cost),
+            #: 本次核价是否把运费算进了 base_cost。新口径恒为 False；
+            #: 只有回看历史版本才会是 True。给前端如实标注用，别拿它当开关。
+            "logistics_in_base_cost": logistics_in_base_cost,
             "source": "价格中心成本表（生效中）" if cost else "无成本记录",
         },
         "price_rule": serialize_price_rule(rule, sku.sku_code) if rule else None,

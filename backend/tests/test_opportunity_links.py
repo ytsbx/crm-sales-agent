@@ -9,6 +9,7 @@ from app.core.errors import AppError, ErrorCode
 from app.modules.customer.model import Contact
 from app.modules.opportunity import service
 from app.modules.opportunity.model import Opportunity, OpportunityStage
+from app.modules.user.model import User
 
 
 def test_contact_cannot_belong_to_another_customer():
@@ -30,7 +31,10 @@ def test_clone_preserves_contact_only_for_same_customer(customer_id, expected_co
         source = Opportunity(id=7, customer_id=1, primary_contact_id=9, title='虚构采购',
                              owner_id=77, stage_id=5, status='win')
         session = SimpleNamespace(
-            get=AsyncMock(return_value=Contact(id=9, customer_id=1, name='虚构联系人')),
+            get=AsyncMock(side_effect=lambda model, key: (
+                User(id=77, name='虚构负责人', status='active') if model is User
+                else Contact(id=9, customer_id=1, name='虚构联系人')
+            )),
             add=Mock(), flush=AsyncMock(),
         )
         user = SimpleNamespace(id=77)
@@ -43,7 +47,7 @@ def test_clone_preserves_contact_only_for_same_customer(customer_id, expected_co
         assert clone.status == 'open' and clone.stage_id == 1
         assert source.customer_id == 1 and source.primary_contact_id == 9 and source.status == 'win'
         if expected_contact_id is None:
-            session.get.assert_not_awaited()
+            session.get.assert_awaited_once_with(User, 77)
     asyncio.run(scenario())
 
 

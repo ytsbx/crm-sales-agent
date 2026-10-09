@@ -322,5 +322,7 @@ check_logistics_rate_admin
 # 「只做国内」这道口径闸 + 统计遇外币必须说出来。
 # ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会临时改 trade_mode、插外币订单）。
 check_trade_mode_gate
+# 第十二批六条返修的独立反例与正向对照。
+check_twelfth_round_repairs
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

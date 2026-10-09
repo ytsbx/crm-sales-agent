@@ -56,6 +56,7 @@ export interface Stage {
   sequence: number
   is_win: boolean
   is_loss: boolean
+  status: string
 }
 
 export interface LossReason {

@@ -54,7 +54,14 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "company_name": {"text": "示例公司（请替换为公司全称）"},
     "quote_valid_days": {"days": 30},
     "default_payment_terms": {"text": "款到发货"},
-    "default_delivery_terms": {"text": "含运费，送货上门"},
+    # 默认交货条款（2026-10-09「产品价格与运费分离」）。
+    # 原文案「含运费，送货上门」是**旧口径**的说法：那时运费含在产品单价里。
+    # 新口径产品单价不含运费、运费单列并代收代付，继续用旧文案会让客户以为
+    # 报价里已经包了运费 —— 属于会对客户说错话的默认值，必须换掉。
+    # ⚠️ 这里只是**新报价的默认值**：历史版本的 `delivery_terms` 是快照，一个字不动。
+    "default_delivery_terms": {
+        "text": "产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付。"
+    },
     # 核价
     "default_target_margin": {"ratio": 0.30},
     "default_min_margin": {"ratio": 0.15},

@@ -2,6 +2,7 @@
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from urllib.parse import urlparse
 from uuid import uuid4
 from sqlalchemy import String, delete, select, func
@@ -50,6 +51,10 @@ async def main():
             s.add(quote); await s.flush(); qids.append(quote.id); qid=quote.id
             version=QuoteVersion(quote_id=qid,version_no=1,approval_status='not_submitted',created_at=datetime.now(UTC),total_amount=300)
             s.add(version); await s.flush(); vid=version.id; quote.current_version_id=vid
+            # 运费分离（2026-10-09）：正式发送前必须已确认运费。本套件验的是订单草稿，
+            # 不是运费 —— 补一条**已确认**的运费让流程能走到它要验的那一步。
+            s.add(QuoteCharge(quote_version_id=vid,charge_type='logistics',description='夹具运费',
+                              amount=Decimal('20'),logistics_confirmed_at=datetime.now(UTC)))
             line_ids=[]
             for qty in (10,20):
                 line=QuoteItem(quote_version_id=vid,inquiry_id=iid,inquiry_no_snapshot=marker,sku_name_snapshot=marker,spec_snapshot='规格',quantity=qty,quoted_price=10,cost_snapshot=5)

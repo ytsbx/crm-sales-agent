@@ -253,6 +253,48 @@ def _reject_bad_price_rule(**values) -> None:
         raise AppError(ErrorCode.PARAM_ERROR, "；".join(errs.reasons), 400)
 
 
+#: 不允许在原地改的**价钱类**字段：改了就等于换了一套定价。
+#: 正确做法是停用旧的 + 新增一条（生效时序看得见），见 `update_price_rule`。
+_PRICE_FIELDS_ON_RULE = {
+    "standard_price": "标准价",
+    "guide_price": "指导价",
+    "minimum_price": "最低保护价",
+    "target_margin": "目标利润率",
+}
+
+
+def _reject_in_place_price_change(rule: PriceRule, changes: dict) -> None:
+    """挡住"原地改价钱"，但放行**值没变**的幂等回传。
+
+    `exclude_unset=True` 已经把"没传的字段"排除了，所以这里只看调用方真的传了的。
+    值没变一律放行 —— 否则"编辑数量区间"这种表单整份提交（顺带把价钱原样带回来）
+    会被误拦，那就成了为了拦一种错制造另一种错。
+
+    None 与 0 视为同一个值：`serialize_price_rule` 用 `_f()` 把 NULL 归一成 0，
+    前端读回来再回传就是 0，不能因此判定为"改了价"。
+
+    报错要**点名哪些字段**并给出正确路径，不能只说"不允许"。
+    """
+    changed = []
+    for field, label in _PRICE_FIELDS_ON_RULE.items():
+        if field not in changes:
+            continue
+        incoming = changes[field]
+        current = getattr(rule, field)
+        left = Decimal("0") if incoming is None else Decimal(str(incoming))
+        right = Decimal("0") if current is None else Decimal(str(current))
+        if left != right:
+            changed.append(label)
+    if changed:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"价格规则不支持原地修改价格（{'、'.join(changed)}）—— "
+            "改价钱请「停用这条规则 + 新增一条」，这样生效时序在单据上看得见；"
+            "本次可改的是数量区间、有效期、客户等级与备注",
+            400,
+        )
+
+
 @router.post("/price-rules")
 async def create_price_rule(
     payload: PriceRuleCreate,
@@ -314,9 +356,24 @@ async def update_price_rule(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    """改价格规则（03-API §16 PATCH）。
+
+    **允许改**：数量区间 / 有效期 / 备注 / 客户等级 / 状态 —— 这些是"这条规则
+    在什么条件下适用"，填错了就该能改回来。
+
+    **不允许原地改价钱**（标准价 / 指导价 / 最低保护价 / 目标利润率）：
+    改价钱等于换了一套定价，正确做法是**停用旧的 + 新增一条**，
+    这样"这条从哪天起不再生效、那条从哪天起生效"在单据上看得见；
+    原地改会让同一个 id 的金额随时间漂移，事后问"当时为什么是这个价"
+    只能翻审计日志。（口径 2026-10-09 与主人确认。）
+
+    挡住而不是静默忽略：静默忽略会让人以为改成功了，那比报错危险得多。
+    传"与当前值相同"的价钱不算改（允许幂等回传），否则表单整份提交会被误拦。
+    """
     rule = await session.get(PriceRule, rule_id)
     if rule is None:
         raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
+    _reject_in_place_price_change(rule, payload.model_dump(exclude_unset=True))
     before = svc.serialize_price_rule(rule)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(rule, field, value)
@@ -348,10 +405,17 @@ async def update_price_rule(
         exclude_id=rule.id,
     )
     if conflict is not None:
+        # ⚠️ 顺序要紧：**先把值读出来，再 rollback**。
+        # `conflict` 是异步会话里的 ORM 对象，`rollback()` 会让它的属性**过期**；
+        # 过期之后再访问属性会触发同步 lazy-load I/O → `MissingGreenlet`，
+        # 于是"区间重叠"这个本该是 40901 的业务拒绝变成 500（实测踩到）。
+        conflict_id = conflict.id
+        conflict_min = conflict.min_qty
+        conflict_max = conflict.max_qty
         await session.rollback()
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+            f"与现有规则 #{conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
         )
     await session.flush()
     await write_audit(
@@ -573,10 +637,16 @@ async def update_customer_price_rule(
         exclude_id=rule.id,
     )
     if conflict is not None:
+        # 同 `update_price_rule`：**先读值再 rollback**。rollback 会让 ORM 对象的
+        # 属性过期，过期后访问属性会触发同步 lazy-load I/O → MissingGreenlet，
+        # 把本该 40901 的"区间重叠"变成 500。
+        conflict_id = conflict.id
+        conflict_min = conflict.min_qty
+        conflict_max = conflict.max_qty
         await session.rollback()
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+            f"该客户此 SKU 已有规则 #{conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
         )
 
     await session.flush()
