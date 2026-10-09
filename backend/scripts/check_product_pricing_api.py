@@ -564,6 +564,9 @@ async def main():
     ), foreign_before)
 
     print('=== 9b. 价格规则 R01/R04/R05/R06/R07 反例 ===')
+    # 并发断言用：本块内多处需要（R05、R05b）
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
     # 三条都是审查 2026-10-09 独立复测挖到的（正常场景测不出来），逐条钉住。
     # 用的等级名带 RUN 前缀，收尾清理按"本用例 SKU"删除，不会留下常驻数据。
     # 等级用一个演示数据没占用的短值：`price_rules.customer_level` 是 varchar(8)，
@@ -662,14 +665,73 @@ async def main():
         status, res = call('PATCH', f'/price-rules/{r01_id}', token=admin, body=body)
         check(f'R01 合法操作放行：{label}', res.get('code'), 0)
 
+    # ---- R05b：**同一条规则**并发改下限/上限，不许落成倒置区间 ----
+    # 与 R05 不同：R05 是"两条新规则并发新增"，这里是"同一条规则被两个请求
+    # 同时改不同字段"。审查实测过：原区间 0~10，同时改下限为 9、上限为 5，
+    # **两个都 200、最终落库 9~5**（倒置）。根因是 `rule` 在**加锁之前**读入内存，
+    # 后到的请求拿旧快照算"合并结果"（9+旧的10 校验通过），落库时又把旧的 10 写成 5。
+    # 修法：拿到锁之后 `populate_existing` 重读该规则，用库里的**当前值**做合并校验。
+    # 区间用 100~110：本块前面 R04/R06/R07 已经占掉 1~1.235、50000~50999、
+    # 70000~70999，0~10 会与 1~1.235 重叠而被 40901 拒（实测踩到）
+    status, res = call('POST', '/price-rules', token=admin, body={
+        'sku_id': price_sku_id, 'customer_level': lvl,
+        'min_qty': 100, 'max_qty': 110, 'guide_price': 50,
+    })
+    check('R05b 前置：建一条区间 100~110 的规则', res.get('code'), 0)
+    r05b_id = (res.get('data') or {}).get('id')
+    with _TPE(max_workers=2) as _ex:
+        _futs = [
+            _ex.submit(lambda: call('PATCH', f'/price-rules/{r05b_id}', token=admin,
+                                    body={'min_qty': 109})),
+            _ex.submit(lambda: call('PATCH', f'/price-rules/{r05b_id}', token=admin,
+                                    body={'max_qty': 101})),
+        ]
+        _res2 = [f.result() for f in _futs]
+    _ok2 = sum(1 for _, r in _res2 if r.get('code') == 0)
+    _, after2 = call('GET', f'/price-rules/{r05b_id}', token=admin)
+    _mn, _mx = after2['data'].get('min_qty'), after2['data'].get('max_qty')
+    check('R05b 同一条规则并发改区间只成功一条', _ok2, 1)
+    check_true('R05b 落库区间没有倒置（下限 <= 上限）',
+               _mn is not None and (_mx is None or float(_mn) <= float(_mx)),
+               f'最终 {_mn} ~ {_mx}')
+
+    # ---- R07b：客户特殊价的约定价不许被"显式传 null"静默跳过 ----
+    # 审查实测：前端把空格转成 null 提交 → 后端 `if changes.get(...) is not None`
+    # 把它当成"这个字段不改"，返回 200「已保存」而价格一个字没动。
+    # 用**空闲的客户+SKU 组合**：演示数据里有的客户在该 SKU 上已有 3000~∞ 的规则，
+    # 直接建 2002~2998 会撞区间（实测踩到）。这里固定用 (客户 3, SKU 1)，
+    # 并用 2002~2998 这个只被自己占用的区间。
+    _cust2, _sku2 = 3, 1
+    status, res = call('POST', '/customer-price-rules', token=admin, body={
+        'customer_id': _cust2, 'sku_id': _sku2,
+        'min_qty': 2002, 'max_qty': 2998, 'agreed_price': 55,
+    })
+    check('R07b 前置：建一条约定价 55 的客户特殊价', res.get('code'), 0)
+    cp_id = (res.get('data') or {}).get('id')
+    if cp_id:
+        status, res = call('PATCH', f'/customer-price-rules/{cp_id}', token=admin,
+                           body={'agreed_price': None})
+        check('R07b 约定价显式传 null → 400（不是静默 200）', res.get('code'), 40001)
+        status, res = call('PATCH', f'/customer-price-rules/{cp_id}', token=admin,
+                           body={'agreed_price': 0})
+        check('R07b 约定价传 0 → 400（必填价钱必须为正）', res.get('code'), 40001)
+        _, _lst = call('GET', f'/customer-price-rules?customer_id={_cust2}&page_size=200',
+                       token=admin)
+        _rows = _lst['data'].get('items') if isinstance(_lst['data'], dict) else _lst['data']
+        _row = next((x for x in _rows if x['id'] == cp_id), None)
+        check('R07b 两次被拒后约定价未被改动', _row and float(_row['agreed_price']), 55.0)
+        # 正向对照：传正数仍可改
+        status, res = call('PATCH', f'/customer-price-rules/{cp_id}', token=admin,
+                           body={'agreed_price': 66})
+        check('R07b 传正数仍可正常改价', res.get('code'), 0)
+        call('DELETE', f'/customer-price-rules/{cp_id}', token=admin)
+
     # ---- R05：并发提交重叠区间，必须只成功一条 ----
     # 从前两个并发请求各自读到"没有冲突"（对方还没提交），各写一条 →
     # 库里留下重叠区间 → 取价静默二选一。加了按 SKU 的 advisory 事务锁之后，
     # 后到的那个在锁上等，等到时先到者已提交，重新查冲突就查得到。
     # 用线程并发发两个请求；断言"恰好一条成功"——不管谁先拿到锁都成立，
     # 所以不是靠时序碰运气。
-    from concurrent.futures import ThreadPoolExecutor as _TPE
-
     from sqlalchemy import text as _t2
 
     from app.core.database import SessionLocal as _SL2

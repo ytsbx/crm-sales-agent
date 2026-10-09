@@ -398,11 +398,26 @@ async def update_price_rule(
     rule = await session.get(PriceRule, rule_id)
     if rule is None:
         raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
-    # 同 SKU 串行（审查 R05）：必须在**改字段之前**拿锁 —— 锁后重新读一次冲突，
-    # 才看得到"刚才并发提交的那条"。注意 `rule` 是锁之前读的，所以下面
-    # `find_price_rule_conflict` 用的仍是它自己发起的查询（READ COMMITTED 下
-    # 新快照），能把先到者刚提交的行查出来。
+    # 同 SKU 串行（审查 R05）：必须在**改字段之前**拿锁。
     await svc.lock_sku_price_rules(session, rule.sku_id)
+    # ⚠️ **拿到锁之后必须重读这条规则**（2026-10-09 审查指出，第二版修的时候漏了）。
+    #
+    # 上面那次 `session.get` 发生在**锁之前**，读到的可能是"别人刚改完但还没被我看到"
+    # 的旧快照（READ COMMITTED 下，已提交的行在同一事务里不会自动刷新到已加载的对象）。
+    # 不重读的后果实测过：原区间 `0~10`，两个请求并发分别改下限为 9、上限为 5 ——
+    # 两个都返回 200，最终落库 `9~5`（**倒置区间**）。原因是后到的那个用的是旧快照：
+    # 它把"下限 9 + 旧的 10"当成合并结果（校验当然通过），落库时又把旧的上限 10
+    # 覆盖成它要写的 5。
+    #
+    # `populate_existing=True` 是这里的关键：它会**用库里的当前值刷新已加载对象**，
+    # 否则拿到的还是同一个内存对象、字段依旧是旧值。
+    rule = (
+        await session.execute(
+            select(PriceRule)
+            .where(PriceRule.id == rule_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
     _reject_in_place_price_change(rule, payload.model_dump(exclude_unset=True))
     before = svc.serialize_price_rule(rule)
     for field, value in payload.model_dump(exclude_unset=True).items():

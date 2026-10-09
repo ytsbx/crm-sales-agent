@@ -605,7 +605,7 @@ export default function PriceCenterPage() {
       }
       const bad = Object.entries(nums).find(([, v]) => Number.isNaN(v))
       if (bad) {
-        throw new Error(`${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}只能填数字（最多 3 位小数）`)
+        throw new Error(`${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}只能填数字`)
       }
       const common = {
         min_qty: nums.min_qty ?? 0,
@@ -1774,18 +1774,23 @@ export default function PriceCenterPage() {
         visible={customerPriceVisible}
         onCancel={closeCustomerPriceModal}
         onOk={() => {
+          // `!value` 挡不住**纯空白**：`" "` 在 JS 里是 truthy，会一路走到提交，
+          // 被 `parseOptionalNumber` 转成 `null`，于是后端把"显式传 null"当成
+          // "这个字段不改"、返回 200「已保存」，而价格一个字没动 ——
+          // 用户看到的是"保存成功但价格没变"（审查 2026-10-09 实测）。
+          // 所以这里先 trim 再判空，并且要求**正数**（约定价是"这个客户按多少钱买"，
+          // 0 元不成立，后端也已按 gt=0 收紧）。
+          const agreedRaw = String(customerPriceForm.agreed_price ?? '').trim()
+          const agreedNum = Number(agreedRaw)
+          const agreedOk = agreedRaw !== '' && Number.isFinite(agreedNum) && agreedNum > 0
           if (customerPriceEditing) {
             // 改的时候只要求约定价还在（客户/SKU 不给改，不必再校验）
-            if (!customerPriceForm.agreed_price) {
-              Toast.warning('约定价必填')
+            if (!agreedOk) {
+              Toast.warning('约定价必填，且必须是大于 0 的正数（最多 4 位小数）')
               return
             }
-          } else if (
-            !customerPriceForm.customer_id ||
-            !customerPriceForm.sku_id ||
-            !customerPriceForm.agreed_price
-          ) {
-            Toast.warning('客户、SKU、约定价都要填')
+          } else if (!customerPriceForm.customer_id || !customerPriceForm.sku_id || !agreedOk) {
+            Toast.warning('客户、SKU、约定价都要填（约定价必须是正数）')
             return
           }
           customerPriceMutation.mutate()

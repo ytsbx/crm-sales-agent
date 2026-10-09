@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.core.patch_schema import PatchModel
 
 
@@ -120,7 +120,7 @@ class CustomerPriceCreate(BaseModel):
     #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
     min_qty: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=3)
     max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
-    agreed_price: Decimal
+    agreed_price: Decimal = Field(gt=0, max_digits=16, decimal_places=4)
     minimum_price: Decimal | None = None
     effective_from: date | None = None
     effective_to: date | None = None
@@ -128,6 +128,24 @@ class CustomerPriceCreate(BaseModel):
     #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
     remark: str | None = Field(default=None, max_length=255)
 
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_agreed_price(cls, data):
+        """约定价是**必填的价钱**：显式传 null 要拒绝，不能静默当"不改"（审查 2026-10-09）。
+
+        从前更新端点用的是 `if changes.get("agreed_price") is not None:` ——
+        "显式传 null"因此被当成"这个字段不改"，接口还返回 200「已保存」，
+        而价格其实**一个字没动**。前端把空格转成 null 后提交，用户看到的就是
+        "保存成功但价格没变"。前端的校验会一起加，但后端不能只靠前端。
+
+        为什么不用 `Field(gt=0)` 顺带拦 null：那样报的是 Pydantic 的英文原生提示
+        （"Input should be a valid number"），不如这里直接说清"不能为空"。
+        `gt=0` 仍然保留，用来拦 0 与负数（约定价是"这个客户按多少钱买"，0 元不成立）。
+        """
+        if isinstance(data, dict) and "agreed_price" in data and data["agreed_price"] is None:
+            raise ValueError("约定价不能为空。要改就给它一个正数；不打算改这个字段就别传它")
+        return data
 
 class CustomerPriceUpdate(BaseModel):
     """改客户特殊价（03-API §15 PATCH /customer-price-rules/{id}）。
@@ -145,7 +163,7 @@ class CustomerPriceUpdate(BaseModel):
     #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
     min_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
-    agreed_price: Decimal | None = None
+    agreed_price: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=4)
     minimum_price: Decimal | None = None
     effective_from: date | None = None
     effective_to: date | None = None
@@ -153,6 +171,24 @@ class CustomerPriceUpdate(BaseModel):
     #: 超长会一路走到数据库撞 `value too long`，用户看到 500 而不是提示。
     remark: str | None = Field(default=None, max_length=255)
 
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_agreed_price(cls, data):
+        """约定价是**必填的价钱**：显式传 null 要拒绝，不能静默当"不改"（审查 2026-10-09）。
+
+        从前更新端点用的是 `if changes.get("agreed_price") is not None:` ——
+        "显式传 null"因此被当成"这个字段不改"，接口还返回 200「已保存」，
+        而价格其实**一个字没动**。前端把空格转成 null 后提交，用户看到的就是
+        "保存成功但价格没变"。前端的校验会一起加，但后端不能只靠前端。
+
+        为什么不用 `Field(gt=0)` 顺带拦 null：那样报的是 Pydantic 的英文原生提示
+        （"Input should be a valid number"），不如这里直接说清"不能为空"。
+        `gt=0` 仍然保留，用来拦 0 与负数（约定价是"这个客户按多少钱买"，0 元不成立）。
+        """
+        if isinstance(data, dict) and "agreed_price" in data and data["agreed_price"] is None:
+            raise ValueError("约定价不能为空。要改就给它一个正数；不打算改这个字段就别传它")
+        return data
 
 class PricePermissionUpdate(BaseModel):
     minimum_margin: Decimal = Field(default=Decimal("0.15"), ge=0, le=1)

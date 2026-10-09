@@ -111,6 +111,14 @@ async def read_value(model, row_id: int, field: str):
 async def main():
     admin = login("admin", "admin123")
 
+    # ⚠️ **必须在 `try` 之前初始化**（2026-10-09 审查第二次指出）。
+    # 上一版我把它们放在 `try` 内的"建夹具之前"，看着像修好了，其实**仍在 try 里** ——
+    # `try` 的第一条语句（`login` 之后的第一步）就抛错时，`finally` 里的收尾清理
+    # 照样会 `UnboundLocalError`，把真正的报错盖掉、并中断后续清理。
+    # 放进 `try` 之前的函数体，任何失败路径下 `finally` 都能安全引用它们。
+    price_rule_id: int | None = None
+    product_cost_id: int | None = None
+
     def api(method, path, body=None, expected=200):
         status, result = call(method, path, token=admin, body=body)
         assert status == expected, (method, path, status, result)
@@ -223,14 +231,6 @@ async def main():
         print("\n=== 6. 非字符串的真非空字段也不许清空（复审 11.9）===")
         # 上一版只登记了名称、状态这些**字符串**，布尔 / 数值 / 日期整类漏掉：
         # 联系人 is_primary、价格规则 min_qty、成本 effective_from 传 null 仍然 500。
-        # ⚠️ **先初始化**，再建夹具（2026-10-09 审查 R03）：
-        # 这两个 id 从前只在 `await s.commit()` **成功之后**才赋值，而收尾清理
-        # 无条件引用它们 —— 只要建夹具的任何一步抛错（查 SKU、flush、commit…），
-        # `finally` 里就会先抛 `UnboundLocalError`，把**真正的报错盖掉**，
-        # 排查时只能看到一个跟根因无关的"局部变量未绑定"。
-        # 置 None 之后，清理时跳过即可（下面用 `if price_rule_id` 判断）。
-        price_rule_id: int | None = None
-        product_cost_id: int | None = None
         async with SessionLocal() as s:
             sku_id = (await s.execute(select(Sku.id).limit(1))).scalar_one()
             # ⚠️ 夹具必须**不与演示/其它套件的规则重叠**（2026-10-09 踩到）：
