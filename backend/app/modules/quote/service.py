@@ -1,7 +1,7 @@
 """报价业务逻辑：编号、明细快照、金额汇总、审批判定。"""
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
@@ -35,6 +35,29 @@ ZERO = Decimal("0")
 #: 运费的**费用分类码**。向客户收取的运费就是这一条 `QuoteCharge`
 #: （2026-10-09 口径：不另建一套运费金额，避免两套金额都被加进总额）。
 CHARGE_TYPE_LOGISTICS = "logistics"
+
+#: 明细数量的列精度（`quote_items.quantity` 是 `Numeric(16, 3)`）。
+QUANTITY_SCALE = Decimal("0.001")
+
+
+def normalized_quantity(quantity: Decimal | None) -> Decimal:
+    """把数量按**库列精度**（三位小数）归一后再参与计算（N01，2026-10-09 修）。
+
+    为什么需要：`recalc_version` 的版本合计与 `serialize_item` 的明细金额，
+    从前算的**不是同一个数** —— 合计拿 Python 内存里未落库的原值，
+    明细拿读回来（已被列精度舍入过）的值。于是"数量 1.23456、单价 150"
+    会出现明细 185.25、合计 185.18：同一张单两个数。
+
+    入参侧已经拦住超过三位小数的数量（`QuoteItemInput.decimal_places=3`），
+    这里再归一一次是**第二道保险**：任何绕过 schema 的写入路径（脚本、导入、
+    将来新增的入口）都不会再造成"两个数对不上"。
+
+    用 `ROUND_HALF_UP` 与 PostgreSQL 的 `numeric` 舍入保持一致，
+    避免 Python 默认的银行家舍入（ROUND_HALF_EVEN）造成新的错位。
+    """
+    if quantity is None:
+        return ZERO
+    return Decimal(quantity).quantize(QUANTITY_SCALE, rounding=ROUND_HALF_UP)
 
 
 def is_logistics_charge(charge: QuoteCharge) -> bool:
@@ -1191,7 +1214,11 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
             select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
         )
     ).scalars().all()
-    subtotal = sum((item.quantity * item.quoted_price for item in items), ZERO)
+    # 数量按库列精度归一再求和：与 `serialize_item` 的明细金额取**同一个数**，
+    # 否则同一张单会出现"明细 185.25、合计 185.18"（N01）。
+    subtotal = sum(
+        (normalized_quantity(item.quantity) * item.quoted_price for item in items), ZERO
+    )
     charges = (
         await session.execute(
             select(QuoteCharge).where(QuoteCharge.quote_version_id == version.id)

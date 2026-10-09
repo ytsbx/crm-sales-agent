@@ -61,11 +61,18 @@ class PaymentCreate(BaseModel):
     request_key: str | None = Field(default=None, max_length=idempotency.MAX_KEY_LENGTH)
 
 
-class PaymentUpdate(BaseModel):
+class PaymentUpdate(PatchModel):
     """改回款登记：金额/日期/方式/凭证说明。
 
     改金额必须重算应收节点状态，否则"收齐了"还显示部分回款。
     已确认/已驳回的回款不允许改（财务结论不能事后改数）。
+
+    继承 `PatchModel`（N06，2026-10-09 修）：从前这里是 `BaseModel`，于是
+    `received_amount` / `received_date` 这两个**库列非空**的字段显式传 `null`
+    会一路走到数据库才撞非空约束，用户看到 **500「服务器内部错误」**——
+    而它其实只是一句"金额不能为空"（实测两个字段都 500）。
+    判据现场从 `payment_records` 的列定义读（见 `core/patch_schema.py`），
+    不人工再登记一遍"哪些字段非空"。
     """
 
     received_date: date | None = None

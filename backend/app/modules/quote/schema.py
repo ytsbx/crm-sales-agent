@@ -34,8 +34,12 @@ class QuoteVersionUpdate(BaseModel):
     valid_until: date | None = None
 
 
-class QuoteItemInput(BaseModel):
+class QuoteItemInput(PatchModel):
     """报价明细入参。两条路径（文档场景09）：
+
+    继承 `PatchModel` 是为了拿到项目统一的「必填字段不许传 null / 长度上限」
+    守卫（判据现场从列定义读，见 `core/patch_schema.py`）—— 与 `QuoteItemUpdate`
+    同一套尺子。**行为不变**：调用方是整份替换，本来就不依赖 `exclude_unset`。
 
     - **现货**：给 `sku_id`，`quoted_price` 留空则只采用已维护的客户价/指导价；
       没有有效售价时必须手工填写，不能把成本试算当成正式报价；
@@ -50,23 +54,44 @@ class QuoteItemInput(BaseModel):
     #: 定制项展示名，落快照；不填用需求标题
     item_name: str | None = None
     #: 定制项人工核价成本（元/件，不含运费）
-    unit_cost: Decimal | None = None
-    quantity: Decimal = Decimal(1)
-    quoted_price: Decimal | None = Field(default=None, gt=0)
+    unit_cost: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=4)
+    #: 数量与单价**必须跟库列对齐**（N01，2026-10-09 修）：
+    #: `quote_items.quantity` 是 `Numeric(16,3)`、`quoted_price` 是 `Numeric(16,4)`。
+    #: 从前这两个字段**一个约束都没有**，于是三件事都能发生：
+    #:   ① 数量填 `-1` 能保存，版本合计变成负数；
+    #:   ② 数量填 `0` 能保存；
+    #:   ③ 小数超过三位时**库静默四舍五入**（填 1.23456 → 存 1.235），
+    #:      而版本合计是拿**未舍入的原值**算的（185.18），明细金额又是拿
+    #:      **落库后的值**算的（185.25）—— 同一张单两个数，差 0.07。
+    #: 写法照抄项目里同一类字段的既有做法（`OpportunityItemCreate.quantity`、
+    #: `OrderDraftLine.quantity`），不另创一套。
+    quantity: Decimal = Field(default=Decimal(1), gt=0, max_digits=16, decimal_places=3)
+    quoted_price: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=4
+    )
     opportunity_item_id: int | None = None
     spec_snapshot: str | None = None
-    logistics_cost: Decimal | None = None
+    #: 0 是合法值（明确零运费），所以是 `ge=0` 不是 `gt=0`
+    logistics_cost: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=4)
     remark: str | None = None
 
 
-class QuoteItemUpdate(BaseModel):
+class QuoteItemUpdate(PatchModel):
+    """改一条报价明细：只改传进来的字段（`exclude_unset` 语义）。
+
+    数值约束与新增**同一套尺子**（N01）：新增拦住、编辑放行就是一条旁路 ——
+    编号规则那轮已经吃过这个教训（同一条业务规则两个入口两个答案）。
+    """
+
     model_config = ConfigDict(extra="ignore")
 
-    quantity: Decimal | None = None
-    quoted_price: Decimal | None = Field(default=None, gt=0)
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=3)
+    quoted_price: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=4
+    )
     #: 定制行的核价成本（人民币）。现货行的成本来自成本表，传了也不生效。
-    unit_cost: Decimal | None = None
-    logistics_cost: Decimal | None = None
+    unit_cost: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=4)
+    logistics_cost: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=4)
     remark: str | None = None
 
 

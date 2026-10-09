@@ -14,6 +14,13 @@ from app.modules.user.model import User
 
 ZERO = Decimal(0)
 
+#: **终态**：不再参与"按已确认回款重算"的状态（N02，2026-10-09 修）。
+#:   - `cancelled`：随订单取消的节点。它不参与催收，也不该被重算"复活"。
+#:   - `paid`：已收齐的终态。本代码库里 `paid` **无法合法退回** ——
+#:     `PATCH /payments/{id}` 明确拒绝改已确认的回款（40002「已确认不能改」），
+#:     而重算只统计 `status=confirmed` 的回款；所以保护它不挡任何正当流转。
+TERMINAL_PLAN_STATUSES = frozenset({"paid", "cancelled"})
+
 
 def ensure_payment_pending(record: PaymentRecord) -> None:
     """Only pending receipts may be edited, confirmed, or rejected."""
@@ -46,10 +53,18 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
 
     规则：全额收齐 → 已回款；收了一部分 → 部分回款；一分没收到且过期 → 已逾期。
 
+    **终态不被重算覆盖**（N02，2026-10-09 修）：`paid` 与 `cancelled` 直接跳过
+    （见 `TERMINAL_PLAN_STATUSES`）。从前这里没有任何保护，而
+    `PATCH /receivables/{id}` 结尾**无条件**调用本函数 —— 于是"只改一个备注"
+    就会把随订单取消的节点按"没收到钱 + 已过期"算回 `overdue`，取消状态
+    凭空消失；已收齐的节点也会被算回待收。
+
     **调用方必须已经持有该节点的行锁**（`lock_plan`）：这里的汇总结果直接写回
     节点状态，不在锁内汇总就等于"读旧数、写覆盖"（两个 50 并发确认会留下
     partial）。函数体内不再加锁，免得同一事务里重复取锁掩盖掉调用方的漏锁。
     """
+    if plan.status in TERMINAL_PLAN_STATUSES:
+        return
     received = await confirmed_amount(session, plan.id)
     if received >= plan.amount and plan.amount > 0:
         plan.status = "paid"
@@ -235,6 +250,27 @@ async def assert_order_visible(session: AsyncSession, user, order_id: int) -> No
 
     order = await session.get(SalesOrder, order_id)
     await ensure_in_scope(session, user, owner_id=order.owner_id if order else None, label="订单")
+
+
+async def assert_order_can_add_receivable(order: SalesOrder) -> None:
+    """取消的订单不允许再产生应收（N03，2026-10-09 修）。
+
+    从前三个入口（`POST /receivables`、`POST /orders/{id}/receivables`、
+    `POST /orders/{id}/receivables/generate`）都只校验"订单存在 + 在数据范围内"，
+    **没有一条看订单生命周期** —— 订单正式取消之后还能继续建应收，实测返回 200
+    并生成了一条有效逾期节点，于是已取消的订单又在催收队列里冒出来。
+
+    `assert_order_visible` 只管可见性（它的文档字符串就是这么写的），
+    生命周期是另一件事，所以单独一个函数、三个入口统一调用。
+
+    只拦 `cancelled`：别的状态（待生产、已发货……）建应收都是正常的。
+    """
+    if order.status == "cancelled":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "订单已取消，不能再新增应收节点；如确需继续收款，请先恢复订单",
+            422,
+        )
 
 
 async def get_visible_plan(

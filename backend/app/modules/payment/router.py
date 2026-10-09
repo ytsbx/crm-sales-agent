@@ -88,6 +88,8 @@ async def get_receivable(
 async def _create_plan(session, order_id, payload, request, user):
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+    # 取消的订单不许再产生应收（N03）：可见性之外还要看生命周期。
+    await svc.assert_order_can_add_receivable(order)
     # 与"按比例生成"共用同一把订单行锁（锁序见 svc.lock_order）：否则生成那边
     # "查无计划"的窗口里还能挤进一个手工节点，两边判断都不算错、结果却混着两套。
     if await svc.lock_order(session, order_id) is None:
@@ -148,6 +150,9 @@ async def generate_receivables(
     """
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
+    # 取消的订单不许再产生应收（N03）。放在幂等占位**之前**：注定失败的操作
+    # 不该占掉一把请求键，否则用户"改完再来"会撞上同键冲突。
+    await svc.assert_order_can_add_receivable(order)
 
     data = payload.model_dump()
     request_key = idempotency.request_key_from(request, data.pop("request_key", None))
@@ -362,10 +367,26 @@ async def mark_overdue(
 ):
     """把节点直接标成逾期。
 
+    **终态不许覆盖**（N02，2026-10-09 修）：已收齐（`paid`）与已取消
+    （`cancelled`）的节点，这个接口从前是**无条件**写 `status="overdue"` ——
+    实测把一条已结清的节点标成了逾期，财务结论被业务操作盖掉。
+    现在先判终态，明确报错并说清当前状态。
+
     同样要先锁节点：这是"覆盖状态"的写入，与并发确认的重算放在同一把锁下，
     谁后写都是基于最新事实（否则确认刚把节点算成 paid，这边一个旧状态覆盖回去）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
+    if plan.status in svc.TERMINAL_PLAN_STATUSES:
+        # 文案与"只有待确认的回款可以操作"同一风格：先说清为什么不行，
+        # 再说清当前是什么状态，让人知道该去看哪里。
+        label = svc.PLAN_STATUS_LABEL.get(plan.status, plan.status)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该应收节点已是「{label}」，不能再标为逾期"
+            + ("；已收齐的节点不能退回待收。" if plan.status == "paid"
+               else "；随订单取消的节点不再参与催收。"),
+            422,
+        )
     before_status = plan.status
     plan.status = "overdue"
     await session.flush()

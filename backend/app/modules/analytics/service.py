@@ -275,7 +275,16 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 .select_from(ReceivablePlan)
                 .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
                 .outerjoin(paid_sub, paid_sub.c.plan_id == ReceivablePlan.id)
-                .where(ReceivablePlan.status != "paid"),
+                # 待回款 = 还指望收得回来的钱，必须**两道都排除**（N04，2026-10-09 修）：
+                #   ① 节点本身已取消（随订单取消，或人工取消）；
+                #   ② 订单已取消（节点状态有可能还没同步过来，不能只信节点状态）。
+                # 从前只写 `status != "paid"` —— 而取消的节点状态是 `cancelled`、
+                # **不是 `paid`**，于是照样被算进待回款：实测取消一笔 4321 元的
+                # 应收后，应收模块减了、工作台一分没减。
+                .where(
+                    ReceivablePlan.status.notin_(("paid", "cancelled")),
+                    SalesOrder.status != "cancelled",
+                ),
                 user,
                 SalesOrder.owner_id,
                 session,
@@ -311,7 +320,26 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
 
     overdue_receivable = (
         await session.execute(
-            select(func.count(ReceivablePlan.id)).where(ReceivablePlan.status == "overdue")
+            # **必须走数据范围**（N05，2026-10-09 修）：这个查询从前是裸的
+            # `select(count(id)).where(status == "overdue")`，**没有 `_scope_filter`** ——
+            # 而紧挨着的 `pending_receivable` 是有的。实测张三在应收列表里只能看到
+            # 1 条逾期，工作台却报 3（全公司数）。
+            # 数据范围按**订单负责人**判：应收节点的可见性就等于订单的可见性
+            # （与 `payment/service.assert_order_visible` 同一口径），所以 join 订单、
+            # 过滤 `SalesOrder.owner_id`。取消的订单不再出现在逾期口径里，
+            # 与上面的待回款保持一致。
+            await _scope_filter(
+                select(func.count(ReceivablePlan.id))
+                .select_from(ReceivablePlan)
+                .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
+                .where(
+                    ReceivablePlan.status == "overdue",
+                    SalesOrder.status != "cancelled",
+                ),
+                user,
+                SalesOrder.owner_id,
+                session,
+            )
         )
     ).scalar_one()
 
