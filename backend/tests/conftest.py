@@ -101,7 +101,7 @@ def make_engine():
     from app.modules.customer.model import Contact, Customer
     from app.modules.lead.model import Lead
     from app.modules.opportunity.model import Opportunity, OpportunityStage
-    from app.modules.order.model import SalesOrder
+    from app.modules.order.model import OrderMilestone, SalesOrder
     from app.modules.payment.model import PaymentRecord, ReceivablePlan
     from app.modules.pricing.model import ExchangeRate
     from app.modules.quote.model import Quote, QuoteVersion
@@ -124,6 +124,10 @@ def make_engine():
             Quote,
             QuoteVersion,
             SalesOrder,
+            # issue #11（2026-10-10）：确认收款会同步「付定金/收款」跟单节点
+            # （`milestones.sync_payment_milestones`），它读 `order_milestones`。
+            # 少了这张表，回款路由的用例会炸 "no such table: order_milestones"。
+            OrderMilestone,
             ReceivablePlan,
             PaymentRecord,
             ExchangeRate,

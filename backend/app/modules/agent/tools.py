@@ -725,17 +725,55 @@ async def calculate_price(
     customer_id: int | None = None,
     quoted_price: float | None = None,
 ) -> dict:
+    # ⚠️ **先过一遍普通接口那一份入参校验**（issue #14）。
+    #
+    # 从前这里把模型给的参数**直接**传给 `pricing_service.calculate_price`，
+    # 于是同一个数字在两条路径上结果不同 —— 实测：
+    #   数量 0  → 工具**放行**（算出 0 元的"建议价"，看着像正常结果）
+    #   数量 -1 → 工具**放行**
+    #   数量 1.5 / 拟报价 100.0 → `Decimal × float` 抛 **TypeError**（冒成 500）
+    # 而普通接口 `/pricing/calculate` 对同样输入一律 40001「数量必须大于 0」。
+    #
+    # JSON Schema 与 Python 类型注解**都不能代替运行时校验**：
+    # schema 里写的是 `"type": "number"`，模型完全可能给 0、负数或小数。
+    # 复用 `PricingRequest` 才是"两条路径同一套边界"的唯一可靠做法 ——
+    # 以后接口那边加了新约束，工具自动跟上，不会再各写一遍。
+    from pydantic import ValidationError
+
+    from app.modules.pricing.schema import PricingRequest
+
+    try:
+        payload = PricingRequest(
+            sku_id=sku_id,
+            quantity=quantity,
+            customer_id=customer_id,
+            quoted_price=quoted_price,
+        )
+    except ValidationError as exc:
+        # Pydantic 的英文报错不能原样回给用户（Agent 会把这句话转述出去）
+        bad = (exc.errors() or [{}])[0]
+        field = str(bad.get("loc", ("",))[-1]) if bad.get("loc") else ""
+        label = {"quantity": "数量", "quoted_price": "拟报价", "sku_id": "SKU"}.get(
+            field, field or "入参"
+        )
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"核价入参不合法：{label} 需要"
+            + ("大于 0 的数字" if field in ("quantity", "quoted_price") else "合法的值"),
+            422,
+        ) from exc
+
     # 带客户核价时，客户必须在该用户数据范围内（A11：与普通界面同一纪律）
-    if customer_id is not None:
+    if payload.customer_id is not None:
         await _ensure_in_scope(
-            ctx, Customer.owner_id, Customer.id, customer_id, "客户", allow_unowned=True
+            ctx, Customer.owner_id, Customer.id, payload.customer_id, "客户", allow_unowned=True
         )
     result = await pricing_service.calculate_price(
         ctx.session,
-        sku_id=sku_id,
-        quantity=quantity,
-        customer_id=customer_id,
-        quoted_price=quoted_price,
+        sku_id=payload.sku_id,
+        quantity=payload.quantity,
+        customer_id=payload.customer_id,
+        quoted_price=payload.quoted_price,
         role_codes=ctx.user.roles,
     )
     data = {
