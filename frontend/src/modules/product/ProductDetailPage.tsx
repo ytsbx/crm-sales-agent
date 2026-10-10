@@ -68,6 +68,8 @@ const FIELD_STATUS_LABELS: Record<string, { text: string; color: 'grey' | 'orang
 /** SKU 表单用字符串保存，提交时再转数字——避免半成品输入被强转成 NaN。 */
 interface SkuForm {
   sku_code: string
+  /** SKU 名称：选填。规格是参数（60L 600×400×400mm），名称是给人看的一句话。 */
+  name: string
   specification: string
   color: string
   material: string
@@ -84,6 +86,7 @@ interface SkuForm {
 
 const EMPTY_SKU: SkuForm = {
   sku_code: '',
+  name: '',
   specification: '',
   color: '',
   material: '',
@@ -329,12 +332,23 @@ export default function ProductDetailPage() {
   const MASTER_MODAL_WIDTH = 1080
 
   const skuColumns = [
-    { title: 'SKU 编码', dataIndex: 'sku_code', width: 140 },
+    { title: 'SKU 编码', dataIndex: 'sku_code', width: 96, ellipsis: true },
+    {
+      // 单开一列（主人 2026-10-10："单开一列，不要横向滚动"）。
+      // 宽度是**算出来的**：原来 13 列合计 1595px，1600 窗口下可用只有 1294px，
+      // 即"正常窗口下本来就在横滚"。所以这一列的位置靠合并冗余列 + 压窄换出来
+      // （详见下面「规格·尺寸·重量」那一列的注释）。
+      title: 'SKU 名称',
+      dataIndex: 'name',
+      width: 150,
+      ellipsis: true,
+      render: (v: string | null) => v || '-',
+    },
     {
       // 图片就放在 SKU 列表这儿（主人 2026-10-10 口径）：直接看到图，
       // 点一下开图片墙（看全部 / 上传 / 删除）。不再单独开"产品图片"区块。
       title: '图片',
-      width: 80,
+      width: 66,
       render: (_: unknown, record: Sku) => (
         <SkuImageCell
           images={skuImages[record.id] ?? []}
@@ -343,35 +357,61 @@ export default function ProductDetailPage() {
         />
       ),
     },
-    { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
-    { title: '颜色', dataIndex: 'color', width: 90, render: (v: string | null) => v ?? '-' },
-    { title: '材质', dataIndex: 'material', width: 120, render: (v: string | null) => v ?? '-' },
+    // 原来这里是「规格」「尺寸」「重量」**三列**，合计 480px。
+    // 合并成一列省下 200px —— 这是给「SKU 名称」腾位置的主要来源。
+    // 合并**不丢信息**，而且内容本来就在重复：实测产品 4 的规格是
+    // `60L 600×400×400mm`，尺寸列又是 `600×400×400`，两列说的是同一件事。
+    // 现在「规格」显示原始规格文字，尺寸/重量作为次要信息跟在后面。
     {
-      title: '尺寸 (长×宽×高)',
-      width: 180,
-      render: (_: unknown, record: Sku) =>
-        record.length || record.width || record.height
-          ? `${record.length ?? '-'}×${record.width ?? '-'}×${record.height ?? '-'}`
-          : '-',
+      title: '规格 / 尺寸',
+      width: 178,
+      ellipsis: true,
+      render: (_: unknown, record: Sku) => {
+        const size =
+          record.length || record.width || record.height
+            ? `${record.length ?? '-'}×${record.width ?? '-'}×${record.height ?? '-'}`
+            : null
+        const weight = record.weight ? `${record.weight}kg` : null
+        const extra = [size, weight].filter(Boolean).join(' · ')
+        const spec = record.specification || ''
+        if (!spec && !extra) return '-'
+        return (
+          <span>
+            {spec || '-'}
+            {extra && (
+              <span style={{ color: 'var(--crm-text-3)', marginLeft: 6 }}>({extra})</span>
+            )}
+          </span>
+        )
+      },
     },
+    { title: '颜色', dataIndex: 'color', width: 56, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    { title: '材质', dataIndex: 'material', width: 66, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    { title: '起订量', dataIndex: 'moq', width: 64, render: (v: number | null) => v ?? '-' },
     {
-      title: '重量 (kg)',
-      dataIndex: 'weight',
-      width: 100,
-      render: (v: number | null) => v ?? '-',
+      // 原来「装箱数」单独一列（70px）。并进「包装」省一整列宽度，信息不丢：
+      // 两者本来就是一起看的（什么包装、一箱装几个）。装箱数为空时只显示包装方式。
+      title: '包装 / 箱装',
+      width: 110,
+      ellipsis: true,
+      render: (_: unknown, record: Sku) => {
+        const pack = record.package_type || ''
+        const per = record.carton_qty ? `${record.carton_qty}/箱` : ''
+        const text = [pack, per].filter(Boolean).join(' · ')
+        return text || '-'
+      },
     },
-    { title: '装箱数', dataIndex: 'carton_qty', width: 90, render: (v: number | null) => v ?? '-' },
-    { title: '起订量', dataIndex: 'moq', width: 90, render: (v: number | null) => v ?? '-' },
-    { title: '包装', dataIndex: 'package_type', width: 100, render: (v: string | null) => v ?? '-' },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      width: 64,
       render: (v: string) => (v === 'active' ? <Tag color="green">在售</Tag> : <Tag>停用</Tag>),
     },
     {
-      title: '主数据来源',
-      width: 130,
+      // 列头留空：内容本身就是"来源/待核实/差异"这个入口，
+      // 标题再写一遍"来源"是重复，还白占宽度。
+      title: '',
+      width: 120,
       render: (_: unknown, record: Sku) => (
         <a
           style={{ color: 'var(--crm-primary)' }}
@@ -387,8 +427,9 @@ export default function ProductDetailPage() {
     },
     {
       title: '操作',
-      // 从 130 放宽到 185：多了「图片」这一项（编辑 / 图片 / 删除）
-      width: 185,
+      // 130 → 185 是因为多了「图片」这一项；现在图片挂在缩略图格上，
+      // 操作列收到 145（编辑 / 删除）—— 这是让 1440 窗口不出现横滚的最后一刀。
+      width: 145,
       render: (_: unknown, record: Sku) =>
         canManage ? (
           <>
@@ -406,6 +447,7 @@ export default function ProductDetailPage() {
                 setEditingSku(record)
                 setSkuForm({
                   sku_code: record.sku_code,
+                  name: record.name ?? '',
                   specification: record.specification ?? '',
                   color: record.color ?? '',
                   material: record.material ?? '',
@@ -508,7 +550,9 @@ export default function ProductDetailPage() {
           rowKey="id"
           pagination={false}
           empty="还没有 SKU，先加一个"
-          scroll={{ x: 1280 }}
+          // 与上面各列 width **之和一致**（1123）。写大了会在 1440 窗口下多出 6px 横向滚动条
+          // ——列宽总和才是真实内容宽度，`scroll.x` 必须对齐它。
+          scroll={{ x: 1115 }}
         />
       </SectionCard>
 
@@ -622,6 +666,20 @@ export default function ProductDetailPage() {
                 placeholder="600×400×300mm"
               />
             </div>
+          </div>
+          <div>
+            {/* SKU 名称：**选填**（主人 2026-10-10）。后端与 CSV 一直支持它
+                （模型有 `name`、`SkuCreate`/`SkuUpdate` 都有），但界面从前没有输入框
+                —— 于是种子数据里 `LL-100L-WH` 的名字被错写成"60L"也没人发现。
+                它和「规格」不是一回事：规格是参数（60L 600×400×400mm），
+                名称是给人看的一句话（冷链保温箱 60L 白色）。 */}
+            <div style={{ marginBottom: 4 }}>SKU 名称（选填）</div>
+            <Input
+              value={skuForm.name}
+              onChange={(v) => setSkuForm({ ...skuForm, name: v })}
+              placeholder="例如：冷链保温箱 60L 白色"
+              maxLength={200}
+            />
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
