@@ -1200,14 +1200,19 @@ def main():
                    f'角色利润率={_margin} 期望底价={_expected} 实际={f_new}'
                    + '（若写成 成本×(1+率) 会偏小）')
             # 收尾
-            for _vid in filter(None, [v1, (rn.get('data') or {}).get('id'), _nv]):
-                run_db("delete from quote_items where quote_version_id=:v", {'v': _vid})
-                run_db("delete from quote_charges where quote_version_id=:v", {'v': _vid})
-                run_db("delete from quote_versions where id=:v", {'v': _vid})
-            if _nq:
-                run_db("delete from quotes where id in (:a, :b)", {'a': qid, 'b': _nq})
-            else:
-                run_db("delete from quotes where id=:a", {'a': qid})
+            # ⚠️ **按 quote_id 全量清，不要枚举版本 id**（2026-10-10 修）：
+            # 从前只删 `[v1, 新版, 复制版]` 这三个版本，而 `clone` 之后这条报价单
+            # 上还有别的版本 —— 它们名下的 `quote_items` 会挡住 `quote_versions`
+            # 的删除，`quote_versions` 又挡住 `quotes`。整条清理跑在后台线程里，
+            # 异常被吞掉，表现只是"报价没删掉"；然后**下一个套件**撞上这些残留
+            # 报价（例如新建版本时报 500），排查方向被彻底带偏。
+            for _q in filter(None, [qid, _nq]):
+                run_db("delete from quote_items where quote_version_id in "
+                       "(select id from quote_versions where quote_id=:q)", {'q': _q})
+                run_db("delete from quote_charges where quote_version_id in "
+                       "(select id from quote_versions where quote_id=:q)", {'q': _q})
+                run_db("delete from quote_versions where quote_id=:q", {'q': _q})
+                run_db("delete from quotes where id=:q", {'q': _q})
             run_db("delete from custom_inquiries where id=:i", {'i': inq})
 
         cleanup()

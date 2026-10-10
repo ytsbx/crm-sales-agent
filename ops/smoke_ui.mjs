@@ -59,8 +59,8 @@ function resolveBrowser() {
 }
 
 const EDGE_BIN = resolveBrowser()
-const APP_BASE = process.env.APP_BASE ?? 'http://localhost:5173'
-const API_BASE = process.env.API_BASE ?? 'http://127.0.0.1:8000'
+const APP_BASE = process.env.APP_BASE ?? 'http://localhost:5274'
+const API_BASE = process.env.API_BASE ?? 'http://127.0.0.1:8008'
 const USERNAME = process.env.SMOKE_USER ?? 'admin'
 const PASSWORD = process.env.SMOKE_PASSWORD ?? 'admin123'
 const CDP_PORT = Number(process.env.CDP_PORT ?? 9333)
@@ -377,10 +377,13 @@ async function createOrderIfEmpty(token, customerId) {
       method: 'POST', body: JSON.stringify({ channel: '本地验收', receiver: '虚构客户' }),
     })
     await checkedJson(`/quote-versions/${versionId}/accept`, token, { method: 'POST' })
-    const converted = await checkedJson(`/quote-versions/${versionId}/convert-to-order`, token, {
-      method: 'POST',
-      body: JSON.stringify({}),
-    })
+    // confirm=true：转订单会生成正式订单 + 全款应收，接口要求先确认（42206）。
+    // 冒烟脚本是"已确认后执行"的那一路，所以直接带上。
+    const converted = await checkedJson(
+      `/quote-versions/${versionId}/convert-to-order?confirm=true`,
+      token,
+      { method: 'POST', body: JSON.stringify({}) },
+    )
     if (!converted?.order_id) throw new Error('报价转订单没有返回订单 id')
     return { orderId: converted.order_id, quoteId, opportunityId }
   } catch (error) {
@@ -421,7 +424,10 @@ async function createTimelineFixture(token, customerId, skuId) {
   await post(`/samples/${sample.id}/made`, {})
   await post(`/samples/${sample.id}/ship`, { carrier: 'UI 测试物流', tracking_no: 'UI-SAMPLE' })
   await post(`/samples/${sample.id}/sign`, {})
-  await post(`/samples/${sample.id}/confirm`, { accepted: true, remark: '客户时间线 UI 验证' })
+  // confirm=true：登记客户确认结果是客户侧商务事实，接口要求先确认（42206）
+  await post(`/samples/${sample.id}/confirm?confirm=true`, {
+    accepted: true, remark: '客户时间线 UI 验证',
+  })
   return { orderId, sampleId: sample.id }
 }
 
@@ -695,7 +701,7 @@ async function startLazyModuleServer({ staticRoot = null } = {}) {
     const path = url.split('?')[0]
     state.requests.push({ method: request.method || 'GET', url })
     response.setHeader('Cache-Control', 'no-store')
-    // 开发服务那一轮页面在前端 dev server（5173），模块在这个服务上 → 跨域，
+    // 开发服务那一轮页面在前端 dev server（5274），模块在这个服务上 → 跨域，
     // 动态 import 与探测都需要放行
     response.setHeader('Access-Control-Allow-Origin', '*')
 
@@ -1571,7 +1577,9 @@ async function main() {
         const sourceShot = await client.send('Page.captureScreenshot', { format: 'png' })
         writeFileSync(join(OUT_DIR, '48-sample-source-quantities.png'), Buffer.from(sourceShot.data, 'base64'))
         await clickByText(client, '取消')
-        await checkedJson(`/quotes/${item.sampleSource.quote_id}/versions`, auth.token, { method: 'POST' })
+        // confirm=true：新建版本会切换当前版、把报价改回草稿并结束旧版待审批，
+        // 接口要求先确认（42206）。冒烟是"已确认后执行"的那一路。
+        await checkedJson(`/quotes/${item.sampleSource.quote_id}/versions?confirm=true`, auth.token, { method: 'POST' })
         await client.send('Page.navigate', { url: `${APP_BASE}/quotes/${item.sampleSource.quote_id}?version=${item.sampleSource.version_id}` })
         await waitForText(client, '按此版本申请打样')
         await clickByText(client, '按此版本申请打样')
