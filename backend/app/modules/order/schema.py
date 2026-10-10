@@ -107,7 +107,8 @@ class OrderStatusChange(BaseModel):
 
 class ShipmentBatchItemInput(BaseModel):
     order_item_id: int
-    planned_qty: Decimal = Field(gt=0)
+    # 与 order_shipment_batch_items.planned_qty Numeric(16,3) 对齐。
+    planned_qty: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
 
 
 class ShipmentBatchCreate(BaseModel):
@@ -133,7 +134,8 @@ class ShipmentBatchCreate(BaseModel):
 
 class ShipmentShipItem(BaseModel):
     order_item_id: int
-    shipped_qty: Decimal = Field(ge=0)
+    # 与 order_shipment_batch_items.shipped_qty Numeric(16,3) 对齐。
+    shipped_qty: Decimal = Field(ge=0, max_digits=16, decimal_places=3)
 
 
 class ShipmentBatchShip(BaseModel):

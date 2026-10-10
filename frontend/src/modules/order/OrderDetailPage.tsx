@@ -1097,7 +1097,7 @@ export default function OrderDetailPage() {
                   {
                     title: '本批明细',
                     render: (_: unknown, record: ShipmentBatchRow) =>
-                      record.items.map((item) => `${item.sku ?? item.order_item_id} ×${item.shipped_qty || item.planned_qty}`).join('；') || '-',
+                      record.items.map((item) => `${item.sku ?? item.order_item_id} ×${item.shipped_qty ?? item.planned_qty}`).join('；') || '-',
                   },
                   ...(can('order:manage')
                     ? [

@@ -21,7 +21,7 @@ from app.modules.notification.model import BusinessEvent, Notification
 from app.modules.opportunity.model import Opportunity, OpportunityStage, OpportunityStageHistory
 from app.modules.order.model import SalesOrder, SalesOrderItem, OrderStatusHistory, OrderMilestone
 from app.modules.payment.model import ReceivablePlan
-from app.modules.quote.model import Quote, QuoteVersion, QuoteItem, QuoteSendLog
+from app.modules.quote.model import Quote, QuoteVersion, QuoteItem, QuoteSendLog, QuoteCharge
 from app.modules.sample.model import SampleRequest, SampleItem
 from app.modules.task.model import Task
 from app.modules.user.model import User
@@ -71,6 +71,12 @@ async def main():
             version = QuoteVersion(quote_id=quote.id, version_no=1, approval_status='approved',
                                    created_at=datetime.now(UTC), total_amount=100)
             s.add(version); await s.flush(); vids.append(version.id)
+            # 当前业务口径：正式发送前必须有已确认的物流费用；0 元也要显式确认。
+            s.add(QuoteCharge(
+                quote_version_id=version.id, charge_type='logistics',
+                description='测试夹具零运费', amount=0,
+                logistics_confirmed_at=datetime.now(UTC),
+            ))
             quote.current_version_id = version.id
             await s.commit()
             return opp.id, version.id
@@ -150,6 +156,11 @@ async def main():
         async with SessionLocal() as s:
             v = await s.get(QuoteVersion, quote['version_id']); v.approval_status = 'approved'
             q = await s.get(Quote, quote['quote_id']); q.status = 'approved'
+            s.add(QuoteCharge(
+                quote_version_id=quote['version_id'], charge_type='logistics',
+                description='测试夹具零运费', amount=0,
+                logistics_confirmed_at=datetime.now(UTC),
+            ))
             await s.commit()
         assert await state(oid) == before
         request('POST', f"/quote-versions/{quote['version_id']}/mark-sent", {})
@@ -225,6 +236,7 @@ async def main():
                     (SampleItem, SampleItem.sample_request_id.in_(samples)),
                     (SampleRequest, SampleRequest.customer_id.in_(cids)),
                     (QuoteItem, QuoteItem.quote_version_id.in_(vids)),
+                    (QuoteCharge, QuoteCharge.quote_version_id.in_(vids)),
                     (QuoteSendLog, QuoteSendLog.quote_version_id.in_(vids)),
                     (QuoteVersion, QuoteVersion.quote_id.in_(qids)), (Quote, Quote.id.in_(qids)),
                     (CustomInquiry, CustomInquiry.id.in_(inquiries)),
