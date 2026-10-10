@@ -137,14 +137,18 @@ export default function ProductListPage() {
       <SectionCard>
         <div className="toolbar">
           <Input
-            placeholder="搜索产品名称 / 产品线 / 品牌"
+            // 支持 SKU 编码 / SKU 名称（2026-10-10）。业务员手里拿到的常常是
+            // `TP-1210-ST` 这种编码、或者「田字塑料托盘 1200×1000 黑色」这种 SKU 名，
+            // 从前只能搜产品名/产品线/品牌，拿编码搜是空结果。
+            // 文案一并写出来 —— 能搜什么不写清楚，等于没做。
+            placeholder="搜索产品名称 / SKU 编码 / SKU 名称 / 产品线 / 品牌"
             value={keywordInput}
             onChange={setKeywordInput}
             onEnterPress={() => {
               setKeyword(keywordInput.trim())
               setPage(1)
             }}
-            style={{ width: 260 }}
+            style={{ width: 340 }}
             showClear
           />
           <Button

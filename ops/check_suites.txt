@@ -324,6 +324,10 @@ check_logistics_rate_admin
 check_trade_mode_gate
 # 第十二批六条返修的独立反例与正向对照。
 check_twelfth_round_repairs
+# 产品中心：按 SKU 编码 / SKU 名称也能搜到产品（主人 2026-10-10 提的口径）。
+# 重点守两处容易改错的：① 不能被"一个产品下 N 个匹配 SKU"撑成重复行（join 会踩、exists 不会）；
+# ② 软删的 SKU 不算数。
+check_product_search_by_sku
 # 第三批六条返修（C3-01 / C3-02 / C3-06）的独立反例与正向对照。
 # 断言写的是**当时复现出来的那个反例**，退回去改坏了一定会红。
 # 库名只认 DATABASE_URL（与夹具同源），并过 require_isolated_db 防呆。

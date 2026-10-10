@@ -62,11 +62,34 @@ def build_product_stmt(
     stmt = select(Product).where(Product.deleted_at.is_(None))
     if keyword:
         like = f"%{keyword.strip()}%"
+        # SKU 的编码 / 名称也能搜到它所属的产品（2026-10-10 主人提的）。
+        #
+        # 为什么是这个场景：产品中心那页是**按产品**呈现的，但业务员手里拿到的
+        # 往往是 SKU 编码（`TP-1210-ST`）或 SKU 名（"田字塑料托盘 1200×1000 黑色"）。
+        # 从前只能搜产品名/产品线/品牌，拿编码搜是空结果 —— 明明库里有。
+        #
+        # ⚠️ 必须用 `exists` 子查询，**不能 join skus**：
+        # 一个产品下有 N 个 SKU 时 join 会把产品行复制 N 份，
+        # 于是"共几条"的分页总数和列表内容都会不对（同一个产品出现多次）。
+        # `exists` 只判断"有没有匹配的 SKU"，不改变行数。
+        #
+        # 软删的 SKU 不算（`deleted_at is null`）：它已经不在 SKU 列表里了，
+        # 拿它把产品搜出来会让人以为那个 SKU 还在。
+        matched_sku = (
+            select(Sku.id)
+            .where(
+                Sku.product_id == Product.id,
+                Sku.deleted_at.is_(None),
+                or_(Sku.sku_code.ilike(like), Sku.name.ilike(like)),
+            )
+            .exists()
+        )
         stmt = stmt.where(
             or_(
                 Product.name.ilike(like),
                 Product.product_line.ilike(like),
                 Product.brand.ilike(like),
+                matched_sku,
             )
         )
     if status:
