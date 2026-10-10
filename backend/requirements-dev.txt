@@ -1,2 +1,9 @@
 # 开发 / CI 用依赖（运行时不需要装；运行时下限清单见 requirements.txt）
 pytest>=8.0
+# 回归套件的同步 SQL 通道（`scripts/_db_helper.py`）。
+# 两个套件的断言散在同步代码里、又夹着 `async def`，用不了异步 engine
+# （asyncpg 的连接绑在首次使用的事件循环上，套件自己的 asyncio.run 会撞车）；
+# 从前靠 `subprocess` 调 psql，于是 macOS 路径写死、Ubuntu CI 上直接
+# FileNotFoundError。换成同步驱动后不再依赖任何外部命令。
+# 纯 wheel，不需要系统 libpq。
+psycopg2-binary>=2.9

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -71,45 +70,19 @@ def call(method, path, token=None, body=None, timeout=90):
         return "TIMEOUT", {"message": str(exc)[:60]}
 
 
-#: 本地原生 PostgreSQL（crm_prod / crm_sales_agent 在 5432 上）。
-#: 容器 `crm-postgres`（5433）只有一次性测试库；它没起时不能硬走 docker。
-_PG = os.getenv("PSQL_BIN", "/opt/homebrew/opt/postgresql@15/bin/psql")
-_PG_PORT = os.getenv("PG_PORT", "5432")
-_USE_DOCKER: bool | None = None
-
-
-def _probe_docker() -> bool:
-    global _USE_DOCKER
-    if _USE_DOCKER is None:
-        r = subprocess.run(["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB,
-                            "-tAc", "select 1"], capture_output=True, text=True, timeout=30)
-        _USE_DOCKER = r.returncode == 0
-    return _USE_DOCKER
-
-
-def db(sql: str):
-    """执行 SQL。**自动适配**：库在容器（5433）还是本机原生（5432）。
-
-    原来写死 `docker exec`，于是这个套件只能跑容器里的一次性库；
-    本机的 crm_prod / crm_sales_agent 一跑就报 database does not exist。
-    """
-    if _probe_docker():
-        result = subprocess.run(
-            ["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB, "-tAc", sql],
-            capture_output=True, text=True,
-        )
-        err = result.stderr
-    else:
-        env = dict(os.environ, PGPASSWORD=os.getenv("PGPASSWORD", "crm123456"))
-        result = subprocess.run(
-            [_PG, "-h", os.getenv("PG_HOST", "127.0.0.1"), "-p", _PG_PORT,
-             "-U", os.getenv("PG_USER", "crm"), "-d", DB, "-tAc", sql],
-            capture_output=True, text=True, env=env,
-        )
-        err = result.stderr
-    if result.returncode != 0:
-        return "SQLERR:" + err.strip().split("\n")[-1][:70]
-    return result.stdout.strip()
+# ---------------------------------------------------------------------------
+# 同步 SQL：用项目自己的引擎（`app.core.database`，吃 DATABASE_URL）。
+#
+# 从前这里用 `subprocess` 调 **psql**，有两个坑（2026-10-11 加入 CI 时实测踩到）：
+#   ① `PSQL_BIN` 默认写死 macOS 的 `/opt/homebrew/opt/postgresql@15/bin/psql`，
+#      Ubuntu（CI）上不存在 → `subprocess.run` 抛 FileNotFoundError；
+#      清单里另外 91 个套件**没有一个**依赖 psql，这是唯一的例外。
+#   ② psql 用 `-d DB`、夹具用 `DATABASE_URL` —— 两个库名真源，CI 只设后者，
+#      两边会指向不同的库。
+# 现在统一走 `scripts/_db_helper.py`：内部是异步引擎 + 专属事件循环线程，
+# 所以**同步代码和 async def 里都能直接调**，返回值仍是 `psql -tAc` 的形状。
+# ---------------------------------------------------------------------------
+from _db_helper import db  # noqa: E402
 
 
 def check(label, got, want):

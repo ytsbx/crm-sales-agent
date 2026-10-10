@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -55,10 +54,20 @@ DB = require_isolated_db()
 # `settings.database_url`。上面的 `DATABASE_URL` 已经设好（且与 `DB` 同源），
 # 所以夹具和 psql 断言必然打同一个库 —— 不再需要对第二块对齐代码。
 
-#: 本地原生 PostgreSQL（crm_prod / crm_sales_agent 在 5432 上）
-_PG = os.getenv("PSQL_BIN", "/opt/homebrew/opt/postgresql@15/bin/psql")
-_PG_PORT = os.getenv("PG_PORT", "5432")
-_USE_DOCKER: bool | None = None
+# ---------------------------------------------------------------------------
+# 同步 SQL：用项目自己的引擎（`app.core.database`，吃 DATABASE_URL）。
+#
+# 从前这里用 `subprocess` 调 **psql**，有两个坑（2026-10-11 加入 CI 时实测踩到）：
+#   ① `PSQL_BIN` 默认写死 macOS 的 `/opt/homebrew/opt/postgresql@15/bin/psql`，
+#      Ubuntu（CI）上不存在 → `subprocess.run` 抛 FileNotFoundError；
+#      清单里另外 91 个套件**没有一个**依赖 psql，这是唯一的例外。
+#   ② psql 用 `-d DB`、夹具用 `DATABASE_URL` —— 两个库名真源，CI 只设后者，
+#      两边会指向不同的库。
+# 现在统一走 `scripts/_db_helper.py`：内部是异步引擎 + 专属事件循环线程，
+# 所以**同步代码和 async def 里都能直接调**（本套件有 8 处在 async 里调），
+# 返回值仍是 `psql -tAc` 的形状。
+# ---------------------------------------------------------------------------
+from _db_helper import db  # noqa: E402
 
 passed = 0
 failed: list[str] = []
@@ -66,7 +75,9 @@ failed: list[str] = []
 
 def call(method, path, token=None, body=None, timeout=90):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(API + urllib.parse.quote(path, safe="/?&="), data=data, method=method)
+    req = urllib.request.Request(
+        API + urllib.parse.quote(path, safe="/?&="), data=data, method=method
+    )
     req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", "Bearer " + token)
@@ -75,32 +86,8 @@ def call(method, path, token=None, body=None, timeout=90):
             return resp.status, json.loads(resp.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read().decode() or "{}")
-    except Exception as exc:
+    except Exception as exc:  # 超时/连接失败也算一种结果
         return "TIMEOUT", {"message": str(exc)[:60]}
-
-
-def _probe_docker() -> bool:
-    global _USE_DOCKER
-    if _USE_DOCKER is None:
-        r = subprocess.run(["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB,
-                            "-tAc", "select 1"], capture_output=True, text=True, timeout=30)
-        _USE_DOCKER = r.returncode == 0
-    return _USE_DOCKER
-
-
-def db(sql: str):
-    """执行 SQL。**自动适配**：库在容器（5433）还是本机原生（5432）。"""
-    if _probe_docker():
-        r = subprocess.run(["docker", "exec", "crm-postgres", "psql", "-U", "crm", "-d", DB,
-                            "-tAc", sql], capture_output=True, text=True)
-    else:
-        env = dict(os.environ, PGPASSWORD=os.getenv("PGPASSWORD", "crm123456"))
-        r = subprocess.run([_PG, "-h", os.getenv("PG_HOST", "127.0.0.1"), "-p", _PG_PORT,
-                            "-U", os.getenv("PG_USER", "crm"), "-d", DB, "-tAc", sql],
-                           capture_output=True, text=True, env=env)
-    if r.returncode != 0:
-        return "SQLERR:" + r.stderr.strip().split("\n")[-1][:70]
-    return r.stdout.strip()
 
 
 def check(label, got, want):
