@@ -53,6 +53,25 @@ def check(label, got, want):
         print(f"  FAIL {label}: {got!r}（期望 {want!r}）")
 
 
+def check_api(label, res, want_code):
+    """断言接口的 `code`，**失败时把整个响应打出来**。
+
+    为什么单独一个（踩过）：CI 里 `create_version` 返回 50001（服务器内部错误），
+    而 `check()` 只打印 `50001` —— 到底是哪一步炸的、什么异常，日志里一个字都没有，
+    只能靠猜（白折腾了好几轮）。把 `res` 原样打出来，至少能看到 message；
+    再配合后端日志 tail，就能定位。
+    """
+    global passed
+    got = res.get("code")
+    if str(got) == str(want_code):
+        passed += 1
+        print(f"  OK   {label}: code={got}")
+    else:
+        failed.append(label)
+        print(f"  FAIL {label}: code={got}（期望 {want_code}）")
+        print(f"       完整响应：{res!r}"[:600])
+
+
 def check_true(label, ok, detail=""):
     global passed
     if ok:
@@ -174,7 +193,7 @@ def main() -> int:
                int(db(f"select count(*) from quote_items where quote_version_id={v1_id}")) > 0)
     versions_before = int(db(f"select count(*) from quote_versions where quote_id={qid}"))
     status, res = call("POST", f"/quotes/{qid}/versions", admin, {})
-    check("不带 confirm 被拒", res.get("code"), CONFIRM_CODE)
+    check_api("不带 confirm 被拒", res, CONFIRM_CODE)
     check("**没有执行**（版本数没变）",
           db(f"select count(*) from quote_versions where quote_id={qid}"), versions_before)
     msg = str(res.get("message"))
@@ -240,8 +259,9 @@ def main() -> int:
     check_true("夹具：确实有待审批的版本", pending_no not in ("", "0"), f"V{pending_no}")
     check("夹具：待审批的就是当前最新版 V{v2_no}".replace("{v2_no}", str(v2_no)),
           pending_no, v2_no)
+    print(f"  [诊断] 报价={qid} 待审批版本={pending_no}")
     status, res = call("POST", f"/quotes/{qid}/versions", admin, {})
-    check("不带 confirm 被拒", res.get("code"), CONFIRM_CODE)
+    check_api("不带 confirm 被拒", res, CONFIRM_CODE)
     msg = str(res.get("message"))
     check_true(f"文案**点名**会结束 V{pending_no} 的待审批",
                f"V{pending_no}" in msg and "待审批" in msg, msg[:130])
@@ -254,7 +274,7 @@ def main() -> int:
     rid = int(db("select id from approval_rules order by id limit 1"))
     published_before = db(f"select published_version_no from approval_rules where id={rid}")
     status, res = call("POST", f"/approval-rules/{rid}/publish", admin, {})
-    check("不带 confirm 被拒", res.get("code"), CONFIRM_CODE)
+    check_api("不带 confirm 被拒", res, CONFIRM_CODE)
     check("**没有执行**（发布版本号没变）",
           db(f"select published_version_no from approval_rules where id={rid}"), published_before)
     msg = str(res.get("message"))
@@ -268,7 +288,7 @@ def main() -> int:
     vid = int(db(f"select id from quote_versions where quote_id={qid} order by id desc limit 1"))
     orders_before = db(f"select count(*) from sales_orders where customer_id={cid}")
     status, res = call("POST", f"/quote-versions/{vid}/convert-to-order", admin, {})
-    check("不带 confirm 被拒", res.get("code"), CONFIRM_CODE)
+    check_api("不带 confirm 被拒", res, CONFIRM_CODE)
     check("**没有执行**（订单数没变）",
           db(f"select count(*) from sales_orders where customer_id={cid}"), orders_before)
     msg = str(res.get("message"))
@@ -283,7 +303,7 @@ def main() -> int:
     oid = int(db(f"select id from sales_orders where customer_id={cid} order by id desc limit 1"))
     pushed_before = db(f"select coalesce(erp_order_id,'') from sales_orders where id={oid}")
     status, res = call("POST", f"/orders/{oid}/sync-erp", admin, {})
-    check("不带 confirm 被拒", res.get("code"), CONFIRM_CODE)
+    check_api("不带 confirm 被拒", res, CONFIRM_CODE)
     check("**没有执行**（erp_order_id 没变）",
           db(f"select coalesce(erp_order_id,'') from sales_orders where id={oid}"), pushed_before)
     msg = str(res.get("message"))
@@ -300,7 +320,7 @@ def main() -> int:
         for accepted, label in ((True, "客户接受"), (False, "客户未通过")):
             status, res = call("POST", f"/samples/{sid}/confirm", admin,
                                {"accepted": accepted})
-            check(f"{label}：不带 confirm 被拒", res.get("code"), CONFIRM_CODE)
+            check_api(f"{label}：不带 confirm 被拒", res, CONFIRM_CODE)
             check(f"{label}：**没有执行**（确认结果仍是空）",
                   db(f"select coalesce(customer_confirmed_at::text,'') from sample_requests where id={sid}"),
                   "")
