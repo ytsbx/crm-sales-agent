@@ -116,6 +116,22 @@ class SkuAuthorityRequest(BaseModel):
     authority: str | None = Field(default=None, max_length=32)
 
 
+class SkuLocalConfirmRequest(BaseModel):
+    """**本地直接确认**主数据（不依赖差异记录）。
+
+    为什么要有它：本地自建的 SKU 既没有确认记录、也没有差异记录，
+    于是正式报价永久被拦（审查 2026-10-10 实测的 P1 流程阻断）。
+
+    `fields` 留空即默认名称/规格/单位（正式报价对客要印的那三个）。
+    `note` 是留痕用的说明。
+    """
+
+    sku_id: int
+    #: 留空 = QUOTE_DISPLAY_FIELDS（名称/规格/单位）
+    fields: list[str] | None = Field(default=None, max_length=16)
+    note: str | None = Field(default=None, max_length=500)
+
+
 class SkuMasterDiffConfirmRequest(BaseModel):
     """核定一条 SKU 主数据差异。
 

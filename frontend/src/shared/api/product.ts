@@ -160,6 +160,45 @@ export function getSkuMaster(skuId: number) {
   return api.get<SkuMasterOverview>(`/sku-master/skus/${skuId}`)
 }
 
+/** 本地直接确认的结果。 */
+export interface SkuLocalConfirmResult {
+  sku_id: number
+  sku_code: string
+  confirmed_fields: string[]
+  confirmed_labels: string[]
+  values: Record<string, unknown>
+  changed_fields: string[]
+  changed_labels: string[]
+  version_no: number | null
+  version_id: number | null
+  confirmed_by: number | null
+  confirmed_at: string | null
+  note: string | null
+  /** false = 值与已确认版本一致，**没有**新增快照（避免重复点确认垒版本）。 */
+  snapshot_created: boolean
+  message: string
+}
+
+/**
+ * **本地直接确认**主数据（不依赖差异记录）。
+ *
+ * 补的是这条链缺的那一段：本地自建的 SKU 既没有确认记录、也没有差异记录，
+ * 唯一的确认动作又挂在差异上 —— 于是正式报价永久被拦、无路可走。
+ * 「从外部导入一次」也不是可靠出口：来源值与本地一致时零差异，仍然没有入口。
+ *
+ * 确认的是**当前本地值**（与差异核定的「保留本地」同一口径），
+ * 记录操作人与时间并生成一版快照，供正式报价引用。
+ */
+export function confirmLocalSkuMaster(
+  skuId: number,
+  payload: { fields?: string[]; note?: string } = {},
+) {
+  return api.post<SkuLocalConfirmResult>(`/sku-master/skus/${skuId}/confirm-local`, {
+    sku_id: skuId,
+    ...payload,
+  })
+}
+
 /** 核定一条主数据差异。resolution 由后端按差异类型白名单校验。 */
 export function confirmSkuMasterDiff(diffId: number, payload: { resolution: string; note?: string }) {
   return api.post<{ applied_to_local: boolean; message: string }>(

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
+  confirmLocalSkuMaster,
   confirmSkuMasterDiff,
   createSku,
   deleteProduct,
@@ -107,6 +108,10 @@ const toNumber = (value: string): number | null => {
   const parsed = Number(trimmed)
   return Number.isFinite(parsed) ? parsed : null
 }
+
+/** 正式报价对客要印的三个字段，与后端 `master.QUOTE_DISPLAY_FIELDS` 对齐。 */
+const QUOTE_FIELD_NAMES: readonly string[] = ['name', 'specification', 'unit']
+const QUOTE_FIELD_LABELS = ['名称', '规格', '单位']
 
 export default function ProductDetailPage() {
   const params = useParams()
@@ -257,6 +262,39 @@ export default function ProductDetailPage() {
   const confirmDiffMutation = useMutation({
     mutationFn: ({ diffId, resolution, note }: { diffId: number; resolution: string; note?: string }) =>
       confirmSkuMasterDiff(diffId, { resolution, note }),
+    onSuccess: (data) => {
+      Toast.success(data.message)
+      void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
+      void queryClient.invalidateQueries({ queryKey: ['product-skus', productId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  /**
+   * 正式报价对客要印的三个字段（与后端 `QUOTE_DISPLAY_FIELDS` 对齐）。
+   *
+   * "确认过"的判据是 `confirmed_version > 0` —— 与后端闸门
+   * `require_confirmed_master` **同一个判据**，不是另写一套。
+   * 注意：值可以是空串（例如没有规格的产品），那是**合法的已确认值**，
+   * 所以判据是"确认版本号大于 0"，不是"值非空"。
+   */
+  const quoteFieldsMissingLabels = (masterQuery.data?.fields ?? [])
+    .filter((f) => QUOTE_FIELD_NAMES.includes(f.field_name) && !(f.confirmed_version > 0))
+    .map((f) => f.field_label)
+  // ⚠️ 必须是"**三个都**确认过"才算齐 —— 用 `.some()` 写成了"任一已确认"，
+  // 于是"只确认了名称、规格和单位还没确认"时按钮不显示，用户仍然卡住、
+  // 而这正是最容易出现也最难解释的半截状态（后端闸门要三个都齐）。
+  // 后端闸门也是"缺任何一个就拒"，两边判据必须一致。
+  const quoteFieldsConfirmed = masterQuery.data
+    ? QUOTE_FIELD_NAMES.every((name) =>
+        (masterQuery.data.fields ?? []).some(
+          (f) => f.field_name === name && f.confirmed_version > 0,
+        ),
+      )
+    : true
+
+  const confirmLocalMutation = useMutation({
+    mutationFn: (skuId: number) => confirmLocalSkuMaster(skuId, { note: '产品详情页本地核对确认' }),
     onSuccess: (data) => {
       Toast.success(data.message)
       void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
@@ -802,6 +840,49 @@ export default function ProductDetailPage() {
               pagination={false}
               scroll={{ x: MASTER_TABLE_WIDTH }}
             />
+            {/*
+              本地直接确认入口（审查 2026-10-10 实测的 P1 流程阻断）：
+              本地自建的 SKU 既没有确认记录、也没有差异记录，唯一的确认动作又挂在
+              差异上 —— 正式报价因此永久被拦、页面上却**没有任何按钮**可点。
+              「从外部导入一次」也不是可靠出口：来源值与本地一致时零差异，仍然没入口。
+              所以这里给一个不依赖差异的确认按钮：有权限的人核对后确认本地值。
+            */}
+            {can('product:manage') && !quoteFieldsConfirmed && (
+              <div
+                style={{
+                  border: '1px solid var(--semi-color-warning)',
+                  background: 'var(--semi-color-warning-light-default)',
+                  borderRadius: 6,
+                  padding: 12,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+                  正式报价只能引用**已确认**的主数据版本。这个 SKU 的
+                  {quoteFieldsMissingLabels.length > 0
+                    ? `「${quoteFieldsMissingLabels.join('、')}」还没有人工确认过`
+                    : '对客字段还没有人工确认过'}
+                  ，因此**无法正式发送**。
+                  核对无误后点下面的按钮确认（会记下操作人与时间，并冻结一版快照）。
+                </div>
+                <div>
+                  <Popconfirm
+                    title="确认本地主数据？"
+                    content={`将按当前本地值确认「${QUOTE_FIELD_LABELS.join('、')}」并生成一版快照。`}
+                    onConfirm={() => confirmLocalMutation.mutate(masterSku!.id)}
+                  >
+                    <Button
+                      theme="solid"
+                      type="warning"
+                      loading={confirmLocalMutation.isPending}
+                    >
+                      确认本地主数据（名称/规格/单位）
+                    </Button>
+                  </Popconfirm>
+                </div>
+              </div>
+            )}
             <div>
               <div style={{ marginBottom: 8, fontWeight: 500 }}>
                 待确认差异（{masterQuery.data.pending_diff_count}）

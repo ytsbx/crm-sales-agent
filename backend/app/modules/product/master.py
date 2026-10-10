@@ -1190,6 +1190,144 @@ def _validate_resolution(diff: IntegrationDiff, resolution: str, note: str | Non
         )
 
 
+async def confirm_local_master(
+    session: AsyncSession,
+    *,
+    sku_id: int,
+    fields: tuple[str, ...] = QUOTE_DISPLAY_FIELDS,
+    note: str | None = None,
+    operator_id: int | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """**本地直接确认**：有权限的人核对本地值后，一次确认这些字段并冻结一版快照。
+
+    为什么必须有这个入口（审查 2026-10-10 实测的 P1 流程阻断）：
+
+        - 本地新建 SKU **不会**产生确认记录、也不产生快照（实测 `SkuFieldAuthority`
+          0 条、`sku_master_versions` 0 版）；
+        - 唯一的确认动作挂在**差异记录**上（`confirm_sku_diff`），
+          而"登记权威归属"（`set_field_authority`）只写 `authority`、
+          **不碰 `confirmed_version`**；
+        - 于是本地自建的 SKU 没有可引用的已确认版本 →
+          正式发送时 `quoted_snapshot_problems` 返回
+          「（没有可引用的已确认主数据版本）」→ **正式报价被硬拦，且无路可走**。
+
+    ⚠️ "从外部导入一次"**不是**可靠出口：来源值与本地完全一致时不产生差异，
+    也就仍然没有可点的核定入口（实测 zero-diff）。
+
+    与 `confirm_sku_diff` 的 `RESOLUTION_KEEP_LOCAL` **同源同口径**：
+    确认的都是**当前本地值**（`local_value`），都锁 SKU 行、都冻结一版快照。
+
+    三个字段**一起确认**（主人 2026-10-10 拍板）：不允许出现"确认了名称、
+    规格还没确认"的半截状态 —— 那正是正式发送被拦时最难解释的情况。
+    但**值允许为空**：`""` 是合法的已确认值（例如没有规格的产品），
+    判据是"这个 key 有没有进快照"，不是"值非不非空" —— 与
+    `quoted_snapshot_problems` 的判据保持一致。
+    """
+    wanted = list(fields)
+    unknown = [f for f in wanted if f not in MASTER_FIELDS]
+    if unknown:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "不是 SKU 关键字段：" + "、".join(unknown),
+            422,
+        )
+    moment = now or _now()
+    # 锁 SKU 行：两个并发确认会同时算 version_no，靠行锁 + 唯一约束才能只出一版
+    #（与 `confirm_sku_diff` 同一手法）
+    sku = (
+        await session.execute(select(Sku).where(Sku.id == sku_id).with_for_update())
+    ).scalars().first()
+    if sku is None or sku.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU #{sku_id} 不存在", 404)
+
+    before = await _confirmed_values(session, sku_id=sku.id, fields=wanted)
+    # 逐个确认**当前本地值**（与 RESOLUTION_KEEP_LOCAL 同一件事）
+    for field in wanted:
+        await _confirm_field(
+            session,
+            sku=sku,
+            field_name=field,
+            value=local_value(sku, field),
+            operator_id=operator_id,
+            now=moment,
+        )
+    after = await _confirmed_values(session, sku_id=sku.id, fields=wanted)
+    changed = [f for f in wanted if before.get(f) != after.get(f)]
+    # ⚠️ **值没变就不再冻结一版**：重复点"确认"会一路垒出 V2/V3/V4 而内容完全一样，
+    # 版本列表越来越难看懂，而"正式报价用的哪一版"正是靠这个列表回答的。
+    # 与 `_maybe_snapshot` 不为空差异造版本的道理相同。
+    if not changed:
+        existing = await confirmed_master_version(session, sku.id)
+        return {
+            "sku_id": sku.id,
+            "sku_code": sku.sku_code,
+            "confirmed_fields": wanted,
+            "confirmed_labels": [MASTER_FIELDS[f] for f in wanted],
+            "values": after,
+            "changed_fields": [],
+            "changed_labels": [],
+            "version_no": (existing or {}).get("version_no"),
+            "version_id": (existing or {}).get("id"),
+            "confirmed_by": operator_id,
+            "confirmed_at": moment,
+            "note": note,
+            "snapshot_created": False,
+            "message": (
+                "主数据与已确认版本一致，无需重新确认"
+                + (
+                    f"（当前已确认版本：第 {(existing or {}).get('version_no')} 版）"
+                    if existing
+                    else ""
+                )
+            ),
+        }
+    version = await _snapshot_version(
+        session,
+        sku=sku,
+        operator_id=operator_id,
+        note=note or "本地直接确认",
+        diff_key=None,
+        now=moment,
+    )
+    return {
+        "sku_id": sku.id,
+        "sku_code": sku.sku_code,
+        "confirmed_fields": wanted,
+        "confirmed_labels": [MASTER_FIELDS[f] for f in wanted],
+        "values": after,
+        "changed_fields": changed,
+        "changed_labels": [MASTER_FIELDS[f] for f in changed],
+        "version_no": version.version_no,
+        "version_id": version.id,
+        "confirmed_by": operator_id,
+        "confirmed_at": moment,
+        "note": version.note,
+        "snapshot_created": True,
+        "message": (
+            "已确认主数据（"
+            + "、".join(MASTER_FIELDS[f] for f in wanted)
+            + f"）并冻结为第 {version.version_no} 版快照"
+        ),
+    }
+
+
+async def _confirmed_values(
+    session: AsyncSession, *, sku_id: int, fields: list[str]
+) -> dict[str, Any]:
+    """取这些字段**当前已确认**的值（只为对比"这次确认改了什么"）。"""
+    rows = (
+        await session.execute(
+            select(SkuFieldAuthority).where(
+                SkuFieldAuthority.sku_id == sku_id,
+                SkuFieldAuthority.field_name.in_(fields),
+                SkuFieldAuthority.confirmed_version > 0,
+            )
+        )
+    ).scalars().all()
+    return {row.field_name: row.confirmed_value for row in rows}
+
+
 async def confirm_sku_diff(
     session: AsyncSession,
     diff: IntegrationDiff,
@@ -1716,6 +1854,7 @@ __all__ = [
     "UNIT_FIELDS",
     "WRITING_RESOLUTIONS",
     "build_sku_diff_key",
+    "confirm_local_master",
     "confirm_sku_diff",
     "confirmed_master_version",
     # §8.14 复审补的：整版快照号 + "那一版够不够印给客户"的判据

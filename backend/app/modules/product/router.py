@@ -24,9 +24,10 @@ from app.modules.product.model import Product, Sku
 from app.modules.product.schema import (
     ProductCreate,
     ProductUpdate,
-    SkuCreate,
     SkuAuthorityRequest,
+    SkuCreate,
     SkuIngestRequest,
+    SkuLocalConfirmRequest,
     SkuMasterDiffConfirmRequest,
     SkuRenameRequest,
     SkuStandaloneCreate,
@@ -892,6 +893,51 @@ async def set_sku_field_authority(
         business_type="sku",
         business_id=payload.sku_id,
         after={"field_name": payload.field_name, "authority": payload.authority},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
+@router.post("/sku-master/skus/{sku_id}/confirm-local")
+async def confirm_local_sku_master(
+    sku_id: int,
+    payload: SkuLocalConfirmRequest,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("product:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """**本地直接确认**主数据：核对本地值后一次确认并冻结一版快照。
+
+    补的是这条链缺的那一段（审查 2026-10-10 实测的 P1 流程阻断）：
+    本地建 SKU 不产生确认记录与快照，唯一的确认动作又挂在**差异记录**上，
+    于是"零差异"的本地 SKU 没有可引用的已确认版本 → 正式发送被硬拦、无路可走。
+    "从外部导入一次"也不是可靠出口：来源值与本地一致时零差异，仍然没有入口。
+
+    确认的是**当前本地值**（与差异核定的"保留本地"同一口径），
+    记录操作人与时间并生成 `sku_master_versions` 快照，供正式报价引用。
+    """
+    if payload.sku_id != sku_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "路径里的 sku_id 与请求体不一致", 422)
+    result = await master_svc.confirm_local_master(
+        session,
+        sku_id=sku_id,
+        fields=tuple(payload.fields) if payload.fields else master_svc.QUOTE_DISPLAY_FIELDS,
+        note=payload.note,
+        operator_id=user.id,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="sku_master_confirm_local",
+        business_type="sku",
+        business_id=sku_id,
+        after={
+            "confirmed_fields": result["confirmed_fields"],
+            "values": result["values"],
+            "version_no": result["version_no"],
+            "note": payload.note,
+        },
         ip=client_ip(request),
     )
     await session.commit()
