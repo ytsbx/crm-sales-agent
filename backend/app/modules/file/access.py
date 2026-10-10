@@ -25,7 +25,7 @@ from app.modules.file.model import BusinessFile
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import Opportunity
 from app.modules.order.model import SalesOrder
-from app.modules.product.model import Product
+from app.modules.product.model import Product, Sku
 from app.modules.quote.model import Quote
 
 # business_type -> (模型, 用于数据范围过滤的负责人字段名)
@@ -58,6 +58,15 @@ BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
     "opportunity": ("opportunity:view", "opportunity:manage"),
     "quote": ("quote:view", "quote:manage"),
     "order": ("order:view", "order:manage"),
+    #: SKU 属于**产品模块**，所以权限码跟产品一致（2026-10-10 加，主人拍板 B 口径）。
+    #:
+    #: 为什么必须加：在此之前文件中心**不认识 `sku``**，于是给 SKU 上传图片一律
+    #: 被兜底拒成 403「它不在你的数据范围内…」—— 措辞像权限问题，真实原因是
+    #: "这个类型根本没登记"。而真实可售、客户真正要看图的是**具体型号**：
+    #:   `products` 是概念/系列（名称、产品线、品牌、描述，**没有物理属性**），
+    #:   `skus` 才是实物（编码、规格、颜色、材质、长宽高、重量、装箱数、MOQ）。
+    #: 图片只能挂在概念上、挂不到实物上，等于"同一系列各颜色共用一批图"。
+    "sku": ("product:view", "product:manage"),
     "product": ("product:view", "product:manage"),
     "sample": ("sample:view", "sample:manage"),
     "inquiry": ("quote:view", "quote:manage"),
@@ -82,7 +91,10 @@ BUSINESS_PERMISSIONS: dict[str, tuple[str, str | None]] = {
 #:   —— 三个测试（`tests/test_file_access_authorization.py`、
 #:      `scripts/check_attachment_business_auth.py`、`scripts/check_data_scope.py`），
 #:      它们原来钉的是旧口径。
-NO_OWNER_MODELS: dict[str, type] = {"product": Product}
+#: `sku` 与 `product` 同一档：产品资料全公司可见，附件跟随资料本身。
+#: 放进这里就走"只查存在性 + 未软删"那条分支（`Sku` 有 `deleted_at`，
+#: 已删型号与不存在同等待遇），不用另写可见性逻辑。
+NO_OWNER_MODELS: dict[str, type] = {"product": Product, "sku": Sku}
 
 #: 不可破坏的原件类别 → 人话标签（第一批返修 §3.1 要求"三条路径统一判断"）。
 #: - `signed`：已签合同的签署扫描件，是"签的是哪一版"的唯一证据；

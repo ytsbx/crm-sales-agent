@@ -374,6 +374,117 @@ def sec_c402(admin: str) -> None:
     db(f"delete from contacts where name like '{MARK}-%'")
 
 
+# =====================================================================
+# SKU 图片：文件中心原先不认识 `sku`，图片只能挂在"概念"上、挂不到"实物"上
+# =====================================================================
+def sec_sku_images(admin: str) -> None:
+    """产品与 SKU 两级都要图片（主人 2026-10-10 拍板 B 口径）。
+
+    修之前：文件中心的 `BUSINESS_PERMISSIONS` **没有 `sku`**，于是给 SKU 上传图片
+    走兜底拒成 403「它不在你的数据范围内，或你没有该模块的维护权限」—— 措辞像权限
+    问题，真实原因是"这个类型根本没登记"。
+
+    而真实可售、客户真正要看图的是**具体型号**：`products` 只是概念/系列
+    （名称、产品线、品牌、描述，**没有物理属性**），`skus` 才是实物
+    （编码、规格、颜色、材质、长宽高、重量、装箱数、MOQ）。
+    """
+    print("\n=== SKU 图片（两级图片）===")
+    sku = int(db("select id from skus order by id limit 1"))
+    # 清掉本套件可能留下的关联，避免断言互相干扰
+    db(f"delete from business_files where business_type='sku' and business_id={sku}")
+
+    # ① 上传（从前 403）
+    png = _tiny_png()
+    status, res = _upload(png, "sku", sku, admin)
+    check_true("① 给 SKU 上传图片（从前 403「不是有效的业务对象」）",
+               res.get("code") == 0, f"code={res.get('code')} {str(res.get('message'))[:40]}")
+    file_id = (res.get("data") or {}).get("id")
+
+    # ② 读列表
+    _, res2 = call("GET", f"/business/sku/{sku}/files", admin)
+    rows = res2.get("data") or []
+    check_true("② 能读到该 SKU 的附件列表", isinstance(rows, list) and len(rows) >= 1,
+               f"附件数={len(rows) if isinstance(rows, list) else rows}")
+    if isinstance(rows, list) and rows:
+        check("② 读到的就是刚传的图",
+              (rows[0].get("mime_type") or "").startswith("image/"),
+              True)
+
+    # ③ 不存在的 SKU 照样拒（不能因为"登记了 sku"就变成来者不拒）
+    _, res3 = _upload(png, "sku", 999999, admin)
+    check_true("③ 不存在的 SKU 仍被拒（没有放开成来者不拒）",
+               res3.get("code") != 0, f"code={res3.get('code')}")
+
+    # ④ 权限反例：zhangsan(salesperson) 有 file:manage + product:view，
+    #    但**没有 product:manage** —— 看得见图，不能传图。
+    #    这条守的是"附件跟随业务对象"的口径：上传是**写入**，要目标模块的写权限。
+    zs = login_as("zhangsan", "123456")
+    if zs:
+        _, res4 = _upload(png, "sku", sku, zs)
+        check_true("④ 有文件权但无产品写权限的人不能给 SKU 传图",
+                   res4.get("code") != 0, f"code={res4.get('code')}")
+        _, res5 = call("GET", f"/business/sku/{sku}/files", zs)
+        check("④ 但他看得见（读取只要 product:view）", res5.get("code"), 0)
+    else:
+        print("  --   zhangsan 登录失败，跳过权限反例")
+
+    # 收尾：把测试图删掉，别在库里留垃圾
+    if file_id:
+        call("DELETE", f"/files/{file_id}", admin)
+
+
+def _tiny_png() -> bytes:
+    """一张 1×1 的合法 PNG（不引第三方库，直接拼字节）。"""
+    import struct
+    import zlib
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    raw = b"\x00" + b"\xff\x00\x00"  # 一行，一个红色像素
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def login_as(username: str, password: str) -> str | None:
+    """登录另一个账号，拿它的 token（用来做权限反例）。"""
+    _, res = call("POST", "/auth/login", body={"username": username, "password": password})
+    return (res.get("data") or {}).get("access_token")
+
+
+def _upload(content: bytes, business_type: str, business_id: int, token: str, name: str = "chkc4.png"):
+    """按 multipart 上传一个文件（`urllib` 手写 body，不引 requests）。"""
+    boundary = "----CHKC4Boundary7d01"
+    parts: list[bytes] = []
+    for field, value in (("business_type", business_type), ("business_id", str(business_id))):
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"\r\n\r\n{value}\r\n'.encode()
+        )
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\n'
+        f"Content-Type: image/png\r\n\r\n".encode()
+        + content
+        + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+    req = urllib.request.Request(API + "/files/upload", data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return resp.status, json.loads(resp.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode() or "{}")
+    except Exception as exc:  # noqa: BLE001
+        return "ERR", {"message": str(exc)[:60]}
+
+
 def main() -> int:
     status, res = call("POST", "/auth/login", body={"username": "admin", "password": "admin123"})
     if res.get("code") != 0:
@@ -384,6 +495,7 @@ def main() -> int:
     sec_c401(admin)
     sec_quote_deleted_contact(admin)
     sec_c402(admin)
+    sec_sku_images(admin)
 
     print("\n" + "=" * 60)
     if failed:

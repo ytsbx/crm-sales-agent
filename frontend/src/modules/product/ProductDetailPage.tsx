@@ -22,7 +22,7 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import AttachmentPanel from '../common/AttachmentPanel'
-import ProductImageGallery from '../../shared/components/ProductImageGallery'
+import ImageGallery from '../../shared/components/ImageGallery'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
@@ -113,6 +113,10 @@ export default function ProductDetailPage() {
   const [editVisible, setEditVisible] = useState(false)
   const [productForm, setProductForm] = useState<ProductPayload>({ name: '' })
   const [skuVisible, setSkuVisible] = useState(false)
+  //: 正在给哪个 SKU 管图片（null = 弹窗关闭）。产品/SKU 两级都要图片，
+  //: 产品那一节常驻在页面里，SKU 这一级用弹窗——SKU 可能有很多行，
+  //: 每行都铺一块图片墙会把列表撑得没法看。
+  const [imageSku, setImageSku] = useState<Sku | null>(null)
   const [editingSku, setEditingSku] = useState<Sku | null>(null)
   const [skuForm, setSkuForm] = useState<SkuForm>(EMPTY_SKU)
   /** 正在看"来源/待核实/差异"的 SKU（null = 没打开面板）。 */
@@ -313,10 +317,19 @@ export default function ProductDetailPage() {
     },
     {
       title: '操作',
-      width: 130,
+      // 从 130 放宽到 185：多了「图片」这一项（编辑 / 图片 / 删除）
+      width: 185,
       render: (_: unknown, record: Sku) =>
         canManage ? (
           <>
+            {/* 看图不要求写权限：后端对读取只要 product:view，
+                所以这里对能进产品详情页的人一律显示（写权限由弹窗内的上传/删除按钮自己判）。 */}
+            <a
+              style={{ color: 'var(--crm-primary)', marginRight: 10 }}
+              onClick={() => setImageSku(record)}
+            >
+              图片
+            </a>
             <a
               style={{ color: 'var(--crm-primary)', marginRight: 10 }}
               onClick={() => {
@@ -433,7 +446,7 @@ export default function ProductDetailPage() {
           资料那边是通用附件表（图纸、规格书、回款凭证…），看的是文件名。
           混在一张表里既看不清图，也容易把"图片"和"资料"混为一谈。 */}
       <SectionCard title="产品图片">
-        <ProductImageGallery
+        <ImageGallery
           businessType="product"
           businessId={productId}
           writePermission="product:manage"
@@ -743,6 +756,24 @@ export default function ProductDetailPage() {
               ))}
             </div>
           </div>
+        )}
+      </Modal>
+      {/* SKU 图片弹窗：产品挂主图/系列图，SKU 挂各型号实拍图（2026-10-10 主人拍板 B）。
+          SKU 行可能很多，所以这一级用弹窗而不是常驻区块。 */}
+      <Modal
+        title={imageSku ? `图片：${imageSku.sku_code}` : '图片'}
+        visible={imageSku !== null}
+        onCancel={() => setImageSku(null)}
+        footer={null}
+        width={880}
+        bodyStyle={{ padding: 16 }}
+      >
+        {imageSku && (
+          <ImageGallery
+            businessType="sku"
+            businessId={imageSku.id}
+            writePermission="product:manage"
+          />
         )}
       </Modal>
     </div>
