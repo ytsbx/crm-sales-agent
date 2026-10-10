@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
+  linkMasterData,
   getQuoteMasterRefreshPreview,
   acceptQuote,
   addQuoteCharge,
@@ -251,9 +252,21 @@ export default function QuoteDetailPage() {
   })
 
   const refreshMutation = useMutation({
-    mutationFn: () => refreshPrices(version!.id),
-    onSuccess: (result) => {
-      Toast.success(`已刷新 ${result.refreshed} 条明细（手工价 ${result.skipped} 条未动）`)
+    // 方案二：一次动作做两件事 ——
+    //   ① 接主数据（**不依赖价格**，手工价/查不到价的明细也能接上）
+    //   ② 重新核价（把系统带价的明细刷到当前适用价）
+    // 顺序：先接主数据。它只动名称/规格/单位和版本号，不会因为查不到价而失败；
+    // 放在后面的话，②一旦抛错就会把①一起回滚，用户又回到"点了没反应"。
+    mutationFn: async () => {
+      const link = await linkMasterData(version!.id)
+      const price = await refreshPrices(version!.id)
+      return { link, price }
+    },
+    onSuccess: ({ link, price }) => {
+      Toast.success(link.message)
+      if (price.refreshed || price.skipped) {
+        Toast.info(`重新核价：${price.refreshed} 条已刷新、${price.skipped} 条未动（手工价）`)
+      }
       refresh()
       void queryClient.invalidateQueries({ queryKey: ['price-drift', version?.id] })
     },
@@ -685,7 +698,7 @@ export default function QuoteDetailPage() {
               下一步动作就在眼前，不用去别处找。 */}
           <div style={{ marginTop: 8 }}>
             <Button size="small" theme="solid" onClick={() => setMasterPreviewOpen(true)}>
-              刷新主数据（先看会变什么）
+              已确认？重新核价接入
             </Button>
           </div>
         </div>
@@ -698,7 +711,7 @@ export default function QuoteDetailPage() {
         这里如实说明并引导新建版本。
       */}
       <Modal
-        title="刷新主数据：会变什么"
+        title="接入主数据：会变什么"
         visible={masterPreviewOpen}
         footer={null}
         onCancel={() => setMasterPreviewOpen(false)}
@@ -756,8 +769,8 @@ export default function QuoteDetailPage() {
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <Button onClick={() => setMasterPreviewOpen(false)}>取消</Button>
               <Popconfirm
-                title="确认刷新？"
-                content="会把明细的名称/规格/单位换成上面显示的新值，并引用最新的已确认主数据版本。"
+                title="确认接入？"
+                content="会把明细的名称/规格/单位换成上面显示的新值、引用最新的已确认主数据版本；系统带价的明细同时刷到当前适用价（手工价不动）。"
                 onConfirm={() => {
                   refreshMutation.mutate()
                   setMasterPreviewOpen(false)

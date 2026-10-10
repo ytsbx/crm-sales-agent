@@ -329,6 +329,27 @@ export function getQuoteMasterRefreshPreview(versionId: number) {
   return api.get<QuoteMasterRefreshState>(`/quote-versions/${versionId}/master-refresh-preview`)
 }
 
+/**
+ * **一键修复：接入最新已确认主数据**（主人 2026-10-10 拍板的方案二）。
+ *
+ * 为什么要有这条**独立于价格**的路：黄条说"没有可引用的已确认主数据版本"，
+ * 用户去产品中心确认完回来点「刷新主数据」，**黄条还在** —— 因为刷新走的是
+ * 重新核价，而它在"手工定价"或"查不到价"时直接跳过整条明细。
+ * 于是「接主数据」被「查不到价」挡住了。
+ *
+ * 主数据版本号回答的是"这一行对着哪一版名称/规格/单位"，与卖多少钱无关，
+ * 所以这条接口**只重建对客三字段 + 钉版本号，价格/成本/利润一个字不动**。
+ */
+export function linkMasterData(versionId: number) {
+  return api.post<{
+    linked: number
+    already_linked: number
+    missing: { item_id: number; sku_code: string; missing_labels: string[] }[]
+    missing_count: number
+    message: string
+  }>(`/quote-versions/${versionId}/link-master`)
+}
+
 export function refreshPrices(versionId: number) {
   return api.post<{ refreshed: number; skipped: number }>(
     `/quote-versions/${versionId}/price-refresh`,

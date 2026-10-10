@@ -1348,7 +1348,12 @@ async def build_item_snapshot(
     product = await session.get(Product, sku.product_id)
 
     # §8.14 接线点。`resolve_confirmed_master` 与闸门版同源，只差"缺确认不抛错"。
-    master = await master_service.resolve_confirmed_master(session, sku_id)
+    # ⚠️ **显式传对客三字段**：默认是全部 13 个，会让"颜色/长宽高/起订量…"
+    # 也被算成"尚未确认"，从而提示用户一堆与报价无关的字段。
+    # 快照真正用的也只有这三个（见下面的 `_pick_confirmed`）。
+    master = await master_service.resolve_confirmed_master(
+        session, sku_id, list(master_service.QUOTE_DISPLAY_FIELDS)
+    )
     confirmed = master["values"]
     if unconfirmed_out is not None and master["unconfirmed"]:
         unconfirmed_out.add(
@@ -2572,3 +2577,107 @@ async def notify_expired_quotes(session: AsyncSession) -> int:
     for customer_id in sorted({quote.customer_id for quote, _ in rows}):
         await refresh_next_followup_at(session, customer_id)
     return created
+
+
+async def link_master_only(
+    session: AsyncSession, *, version: QuoteVersion
+) -> dict:
+    """只把明细**接到最新已确认主数据**上，**不碰价格**（方案二：一键修复）。
+
+    为什么必须有这条独立的路（2026-10-10 实测）：
+
+    黄条说的是"这条明细没有可引用的已确认主数据版本"，用户去产品中心确认完
+    回来点「刷新主数据」，**黄条还在** —— 因为刷新走的是 `refresh_prices`，
+    而它在下面两种情况直接跳过整条明细：
+
+        `item.price_source is None`        （手工定价的明细）
+        `lookup["status"] != "ok"`         （没有价格规则、规则被停用、查不到价）
+
+    于是**"接主数据"被"查不到价"挡住了**：明明确认了，却接不上。
+    这两件事本来就不该绑在一起 —— 主数据版本号回答的是"这一行对着哪一版
+    名称/规格/单位"，与"这一行卖多少钱"无关。
+
+    所以这里只做一件事：按**当前已确认主数据**重建对客三字段快照 + 钉上版本号，
+    价格、成本、利润快照**一个字不动**（不重算、不覆盖手工价）。
+
+    没有可引用的已确认版本时**明确报缺哪些字段**，而不是静默跳过 ——
+    静默跳过正是"点了没反应、黄条还在"的来源。
+    """
+    from app.modules.product import master as master_service
+
+    items = await version_items(session, version.id)
+    linked = 0
+    already = 0
+    missing: list[dict] = []
+    for item in items:
+        # 定制项没有 SKU 主数据（名称是人工填的），不属于这条路
+        if item.sku_id is None:
+            continue
+        # ⚠️ **必须显式传对客三字段**：`resolve_confirmed_master` 的默认是
+        # `MASTER_FIELDS`（全部 13 个）。不传就会把"颜色/材质/长宽高/起订量…"
+        # 也算成"缺确认"，报出"还缺 10 个字段"—— 而报价根本不用它们。
+        # 实测踩到：接主数据返回 linked=0、missing 列了 10 个无关字段。
+        master = await master_service.resolve_confirmed_master(
+            session, item.sku_id, list(master_service.QUOTE_DISPLAY_FIELDS)
+        )
+        values = master.get("values") or {}
+        unconfirmed = master.get("unconfirmed") or []
+        if unconfirmed:
+            missing.append(
+                {
+                    "item_id": item.id,
+                    "sku_code": item.sku_code_snapshot or f"SKU#{item.sku_id}",
+                    "missing_labels": master.get("unconfirmed_labels") or [],
+                }
+            )
+            continue
+        version_no = master.get("version_no")
+        if version_no is None:
+            missing.append(
+                {
+                    "item_id": item.id,
+                    "sku_code": item.sku_code_snapshot or f"SKU#{item.sku_id}",
+                    "missing_labels": ["（没有可引用的已确认主数据版本）"],
+                }
+            )
+            continue
+        if item.master_version_no == version_no and not _display_fields_drift(item, values):
+            already += 1
+            continue
+        # 只动这三列 + 版本号；价格/成本/利润一律不碰
+        for field in ("name", "specification", "unit"):
+            value = values.get(field)
+            if field == "name":
+                item.sku_name_snapshot = None if value is None else str(value)
+            elif field == "specification":
+                item.spec_snapshot = None if value is None else str(value)
+            else:
+                item.unit_snapshot = None if value is None else str(value)
+        item.master_version_no = version_no
+        linked += 1
+    await session.flush()
+    return {
+        "linked": linked,
+        "already_linked": already,
+        "missing": missing,
+        "missing_count": len(missing),
+        "message": (
+            f"已把 {linked} 条明细接到最新已确认主数据"
+            + (f"（{already} 条本来就已接上）" if already else "")
+            + (f"；{len(missing)} 条还缺确认，请先去产品中心确认" if missing else "")
+            + "。价格与成本快照未改动。"
+        ),
+    }
+
+
+def _display_fields_drift(item: QuoteItem, values: dict) -> bool:
+    """明细的对客三字段快照是否与目标已确认值不一致。"""
+    pairs = (
+        (item.sku_name_snapshot, values.get("name")),
+        (item.spec_snapshot, values.get("specification")),
+        (item.unit_snapshot, values.get("unit")),
+    )
+    return any(
+        ("" if cur is None else str(cur)) != ("" if want is None else str(want))
+        for cur, want in pairs
+    )

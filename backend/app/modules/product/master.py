@@ -1982,7 +1982,11 @@ async def quote_master_refresh_preview(
         if item.sku_id is None:
             # 定制项没有 SKU 主数据，跳过（它的名称是人工填的，不属于主数据口径）
             continue
-        master = await resolve_confirmed_master(session, item.sku_id)
+        # 与 `link_master_only` 同一份口径：报价只关心**对客三字段**，
+        # 不传会让"颜色/长宽高"这些无关字段也算成缺确认。
+        master = await resolve_confirmed_master(
+            session, item.sku_id, list(QUOTE_DISPLAY_FIELDS)
+        )
         confirmed = master.get("values") or {}
         # ⚠️ **从未引用过任何已确认版本**的明细（`master_version_no` 为空）必须说清楚。
         # 它生成时还没有可引用的快照，所以"明细当前值"未必等于任何已确认值 ——
@@ -2021,7 +2025,7 @@ async def quote_master_refresh_preview(
                 # 明细当前引用的主数据版本（空 = 生成时还没有可引用的已确认版本）
                 "master_version_no": item.master_version_no,
                 "never_referenced": item.master_version_no is None,
-                "confirmed_version_no": (master.get("version") or {}).get("version_no"),
+                "confirmed_version_no": master.get("version_no"),
                 "unconfirmed": master.get("unconfirmed") or [],
                 "unconfirmed_labels": master.get("unconfirmed_labels") or [],
                 "changes": fields,

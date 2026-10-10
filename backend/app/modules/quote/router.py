@@ -811,6 +811,49 @@ async def master_refresh_preview(
     return ok(preview)
 
 
+@router.post("/quote-versions/{version_id}/link-master")
+async def link_master(
+    version_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """一键修复：把明细接到**最新已确认主数据**上，**不碰价格**。
+
+    为什么要有这条独立的路（2026-10-10 实测）：黄条说"这条明细没有可引用的
+    已确认主数据版本"，用户去产品中心确认完回来点「刷新主数据」，**黄条还在** ——
+    因为刷新复用的是 `refresh_prices`，而它在"手工定价"或"查不到价"时
+    直接跳过整条明细。于是**"接主数据"被"查不到价"挡住了**。
+
+    这两件事本来就不该绑在一起：主数据版本号回答的是"这一行对着哪一版
+    名称/规格/单位"，与"这一行卖多少钱"无关。所以这里只重建对客三字段快照
+    + 钉版本号，价格/成本/利润一个字不动。
+
+    缺确认时**明确报缺什么**，不静默跳过 —— 静默跳过正是"点了没反应"的来源。
+    """
+    version = await svc.get_visible_version(session, user, version_id)
+    sent = version.sent_at is not None
+    submitted = version.approval_status in ("pending", "approved")
+    if sent or submitted:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "这一版已经发给客户或已提交审批，内容不能改 —— 请「新建版本」后再接入主数据",
+            422,
+        )
+    result = await svc.link_master_only(session, version=version)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="quote_link_master",
+        business_type="quote",
+        business_id=version.quote_id,
+        after=result,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(result, result["message"])
+
+
 @router.post("/quote-versions/{version_id}/price-refresh")
 async def price_refresh(
     version_id: int,
