@@ -22,6 +22,7 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import AttachmentPanel from '../common/AttachmentPanel'
+import ProductImageGallery from '../../shared/components/ProductImageGallery'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
@@ -427,7 +428,19 @@ export default function ProductDetailPage() {
         />
       </SectionCard>
 
-      {/* 产品资料/图片附件（方案 §7：产品图片接通；可上传图片/规格书，可预览） */}
+      {/* 产品图片（方案 §7）：以图为主，缩略图墙 + 点开看大图。
+          与下面的「产品资料与图片」分开：这里只收图片、看的是图本身；
+          资料那边是通用附件表（图纸、规格书、回款凭证…），看的是文件名。
+          混在一张表里既看不清图，也容易把"图片"和"资料"混为一谈。 */}
+      <SectionCard title="产品图片">
+        <ProductImageGallery
+          businessType="product"
+          businessId={productId}
+          writePermission="product:manage"
+        />
+      </SectionCard>
+
+      {/* 产品资料附件（方案 §7：可上传图片/规格书，可预览） */}
       <SectionCard title="产品资料与图片">
         {/* 产品附件的写入跟产品自己的写权限走（2026-10-07 口径），
             所以要把产品权限码传进去；不传就默认按文件中心，会与后端不一致。 */}
