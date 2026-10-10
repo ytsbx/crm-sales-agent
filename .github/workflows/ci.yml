@@ -168,17 +168,23 @@ jobs:
         env:
           POSTGRES_USER: crm
           POSTGRES_PASSWORD: crm123456
-          POSTGRES_DB: crm_sales_agent_smoke
+          POSTGRES_DB: crm_iso_smoke
           POSTGRES_INITDB_ARGS: "--encoding=UTF8"
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U crm -d crm_sales_agent_smoke"
+          --health-cmd "pg_isready -U crm -d crm_iso_smoke"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_sales_agent_smoke
+      # ⚠️ 库名必须能过 `backend/scripts/_test_support.py` 的防呆：以 crm_iso /
+      # crm_check / crm_test 开头，或以 _test 结尾。**原来这里叫
+      # `crm_sales_agent_smoke`** —— 它既不以那三个前缀开头、也不以 _test 结尾，
+      # 所以冒烟末尾的收尾清扫（`clean_test_run_leftovers.py`，它也调 require_isolated_db）
+      # 一直被拒跑 → 「✗ 收尾清扫失败」→ UI 冒烟 job 恒红（2026-10-10 修）。
+      # 光把 crm_sales_agent 加进 DEV_DATABASES 也救不了它：卡住它的是**前缀规则**。
+      DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_smoke
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
       DINGTALK_PUSH_OFF: "1"

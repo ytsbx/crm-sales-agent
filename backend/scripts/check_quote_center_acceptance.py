@@ -949,9 +949,17 @@ def main():
             'name': f'{PREFIX}-客户C', 'level': 'C', 'remark': '验收临时客户',
         })
         c_cust = (res_c.get('data') or {}).get('id')
+        # 登记进收尾清理清单（2026-10-10 修）。这一段的客户此前只存在局部变量里，
+        # 于是每跑一次就留一个「客户C」——与上面「客户C(无规则)」是同一个毛病。
+        if c_cust:
+            customers['C_A20'] = c_cust
         _, res_o = call('POST', '/opportunities', token=admin, body={
             'customer_id': c_cust, 'title': f'{PREFIX}-A20保护价商机'})
         c_opp = (res_o.get('data') or {}).get('id')
+        # 登记进收尾清理清单（2026-10-10 修）。此前这一段自建了商机却不登记，
+        # 每跑一次就留下「A20保护价商机」，被 check_fixture_residue 抓到。
+        # 与上面「客户C」那处是同一个毛病（那里已由前人补过登记）。
+        created_opps.append(c_opp)
         _, res_q = call('POST', '/quotes', token=admin, body={
             'customer_id': c_cust, 'opportunity_id': c_opp, 'currency': 'CNY'})
         q_id, v_id = res_q['data']['quote_id'], res_q['data']['version_id']
@@ -983,6 +991,7 @@ def main():
         _, res_o2 = call('POST', '/opportunities', token=admin, body={
             'customer_id': c_cust, 'title': f'{PREFIX}-A20复制商机'})
         opp2 = (res_o2.get('data') or {}).get('id')
+        created_opps.append(opp2)  # 同上：不登记就会留残留
         _, res_q2 = call('POST', '/quotes', token=admin, body={
             'customer_id': c_cust, 'opportunity_id': opp2, 'currency': 'CNY'})
         q2, v2 = res_q2['data']['quote_id'], res_q2['data']['version_id']
@@ -1053,6 +1062,7 @@ def main():
             _, res_o = call('POST', '/opportunities', token=admin, body={
                 'customer_id': c_cust, 'title': f'{PREFIX}-A21{first_mp}'})
             opp = (res_o.get('data') or {}).get('id')
+            created_opps.append(opp)  # 登记进清理清单（同 A20 那两处）
             _, res_q = call('POST', '/quotes', token=admin, body={
                 'customer_id': c_cust, 'opportunity_id': opp, 'currency': 'CNY'})
             q2, v2 = res_q['data']['quote_id'], res_q['data']['version_id']
@@ -1096,6 +1106,14 @@ def main():
             'unit_cost': 80, 'quoted_price': 85, 'item_name': f'{PREFIX}-A22定制件'})
         d = res.get('data') or {}
         qid, v1 = d.get('quote_id'), d.get('version_id')
+        # 这条路径会**顺带建一个同名商机**（需求 → 直接发起报价的官方路径），
+        # 并把它回记到需求上（`custom_inquiries.opportunity_id`）。此前没登记这个商机，
+        # 于是每跑一次就留一个「A22定制件」—— 实测被 check_fixture_residue 抓到。
+        # 直接读回记的 id，比按标题搜更可靠（不会因为重名或分页漏掉）。
+        _, res_inq = call('GET', f'/custom-inquiries/{inq}', token=admin)
+        auto_opp = (res_inq.get('data') or {}).get('opportunity_id')
+        if auto_opp:
+            created_opps.append(auto_opp)
         if not qid:
             record('A22 前置：创建定制项报价', False, str(res.get('message'))[:60])
         else:
