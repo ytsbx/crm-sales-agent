@@ -60,7 +60,10 @@ export default function SkuImageCell({ images, canWrite = false, onClick, size =
     return () => {
       cancelled = true
     }
-  }, [first?.id, first])
+    // ⚠️ 依赖里必须带上**张数**（2026-10-10 修）：只看 `first.id` 的话，
+    //    "给已有图的 SKU 再加一张"不会改变第一张的 id（新图排在最前时才会变），
+    //    于是缩略图不重取，表现为"传完图要手动刷浏览器"。
+  }, [first?.id, images.length, first])
 
   // 卸载时把最后一个 url 也收掉
   useEffect(

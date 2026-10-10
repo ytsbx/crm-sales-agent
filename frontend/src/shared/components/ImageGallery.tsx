@@ -1,5 +1,11 @@
 /**
- * 产品图片墙（方案 §7「产品图片接通」的缩略图形态）。
+ * 图片墙（方案 §7「产品图片接通」的缩略图形态）。
+ *
+ * **产品与 SKU 两级共用**（2026-10-10 主人拍板 B 口径）：
+ *   产品 = 概念/系列（名称、产品线、品牌、描述，没有物理属性）→ 挂**主图/系列图**；
+ *   SKU  = 真实可售的货（编码、规格、颜色、材质、长宽高…）→ 挂**各型号实拍图**。
+ * 所以组件本身不认识"产品"或"SKU"，只认 `businessType` + `businessId`，
+ * 叫 `ImageGallery` 而不是 `ProductImageGallery` —— 后者用在 SKU 上会误导。
  *
  * 为什么单独做一个组件，而不是继续用通用的 `AttachmentPanel`：
  * `AttachmentPanel` 是**通用附件**表——什么文件都收（图片/PDF/Excel…），
@@ -53,7 +59,7 @@ function humanSize(bytes: number | null | undefined): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
 }
 
-export default function ProductImageGallery({
+export default function ImageGallery({
   businessType,
   businessId,
   writePermission = 'product:manage',
@@ -82,10 +88,16 @@ export default function ProductImageGallery({
   const images = useMemo(() => (query.data ?? []).filter(isImage), [query.data])
   const imagesKey = useMemo(() => images.map((r) => r.id).join(','), [images])
 
-  const refresh = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: ['business-files', businessType, businessId] }),
-    [queryClient, businessType, businessId],
-  )
+  const refresh = useCallback(() => {
+    // 本组件自己的单条查询
+    void queryClient.invalidateQueries({ queryKey: ['business-files', businessType, businessId] })
+    // ⚠️ **还要失效批量查询**（2026-10-10 修）。
+    //    SKU 列表的缩略图走 `listBusinessFilesBatch`，它的 key 是
+    //    `['sku-images', "7,8"]` —— 与上面的 `['business-files','sku',7]` **完全不同的键**，
+    //    不失效它就会出现"传完图不刷新、要手动刷浏览器"（实测症状）。
+    //    这里按前缀失效，把当前业务类型下所有批量查询一起刷掉。
+    void queryClient.invalidateQueries({ queryKey: ['sku-images'] })
+  }, [queryClient, businessType, businessId])
 
   // 整批取缩略图。用 `cancelled` 挡住"取到一半列表变了"时把旧 url 写回去。
   useEffect(() => {

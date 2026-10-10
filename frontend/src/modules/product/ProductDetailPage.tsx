@@ -24,7 +24,8 @@ import DetailHeader from '../../shared/components/DetailHeader'
 import AttachmentPanel from '../common/AttachmentPanel'
 import ImageGallery from '../../shared/components/ImageGallery'
 import SkuImageCell from './SkuImageCell'
-import { listBusinessFilesBatch, type FileRow } from '../../shared/api/file'
+import PendingImagePicker from './PendingImagePicker'
+import { listBusinessFilesBatch, uploadFile, type FileRow } from '../../shared/api/file'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
@@ -119,6 +120,9 @@ export default function ProductDetailPage() {
   //: 产品那一节常驻在页面里，SKU 这一级用弹窗——SKU 可能有很多行，
   //: 每行都铺一块图片墙会把列表撑得没法看。
   const [imageSku, setImageSku] = useState<Sku | null>(null)
+  //: **新建 SKU 时暂存的图片**：此刻 SKU 还没有 id，没法直接挂，
+  //: 所以先把 File 留在内存里，点保存时"先建 SKU、拿到 id 再逐张上传"。
+  const [pendingImages, setPendingImages] = useState<File[]>([])
   const [editingSku, setEditingSku] = useState<Sku | null>(null)
   const [skuForm, setSkuForm] = useState<SkuForm>(EMPTY_SKU)
   /** 正在看"来源/待核实/差异"的 SKU（null = 没打开面板）。 */
@@ -172,14 +176,47 @@ export default function ProductDetailPage() {
   })
 
   const skuMutation = useMutation({
-    mutationFn: (payload: SkuPayload) =>
-      editingSku ? updateSku(editingSku.id, payload) : createSku(productId, payload),
-    onSuccess: () => {
-      Toast.success(editingSku ? 'SKU 已保存' : 'SKU 已创建')
+    mutationFn: async (payload: SkuPayload) => {
+      if (editingSku) {
+        // 编辑态不碰图片：SKU 已有 id，点列表里的图片格直接传，不必绕暂存
+        await updateSku(editingSku.id, payload)
+        return { skuId: editingSku.id, uploaded: 0, failed: [] as string[] }
+      }
+      const created = await createSku(productId, payload)
+      const skuId = (created as { id?: number })?.id
+      if (!skuId) {
+        throw new Error('SKU 已创建，但接口没返回 id，图片未能上传')
+      }
+      // 图片逐张上传。**一张失败不影响其它张**：把失败的名字收集起来，最后一起提示，
+      // 并把 SKU 建成的结果保住（不因为图片失败把它回滚成"没创建"）。
+      const failed: string[] = []
+      for (const file of pendingImages) {
+        try {
+          await uploadFile(file, { businessType: 'sku', businessId: skuId })
+        } catch {
+          failed.push(file.name)
+        }
+      }
+      return { skuId, uploaded: pendingImages.length - failed.length, failed }
+    },
+    onSuccess: (res) => {
+      if (editingSku) {
+        Toast.success('SKU 已保存')
+      } else if (res.failed.length > 0) {
+        Toast.warning(`SKU 已创建；有 ${res.failed.length} 张图片没传上（${res.failed.join('、')}），可在列表「图片」列补传`)
+      } else if (res.uploaded > 0) {
+        Toast.success(`SKU 已创建，${res.uploaded} 张图片已上传`)
+      } else {
+        Toast.success('SKU 已创建')
+      }
       setSkuVisible(false)
       setEditingSku(null)
       setSkuForm(EMPTY_SKU)
+      setPendingImages([])
       refresh()
+      // 新 SKU 的图片要立刻显示：批量查询的 key 里含 skuIds，列表刷新后
+      // key 变了会自然重取；这里再显式失效一次，避免时序上先渲染旧 key。
+      void queryClient.invalidateQueries({ queryKey: ['sku-images'] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -455,6 +492,7 @@ export default function ProductDetailPage() {
               onClick={() => {
                 setEditingSku(null)
                 setSkuForm(EMPTY_SKU)
+                setPendingImages([])
                 setSkuVisible(true)
               }}
             >
@@ -598,6 +636,20 @@ export default function ProductDetailPage() {
               />
             </div>
           </div>
+
+          {/* 图片（可选）：**只在新建时出现** —— 编辑态 SKU 已有 id，
+              点列表里的图片格直接传更直接，不必在这绕一层暂存。
+              这里只把 File 留在内存里，点保存时先建 SKU、拿到 id 再逐张上传。 */}
+          {!editingSku && (
+            <div>
+              <div style={{ marginBottom: 4 }}>图片（可选，保存时一并上传）</div>
+              <PendingImagePicker
+                files={pendingImages}
+                onChange={setPendingImages}
+                disabled={skuMutation.isPending}
+              />
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 12 }}>
             {(
               [
