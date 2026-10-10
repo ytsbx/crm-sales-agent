@@ -502,20 +502,45 @@ async def change_status(
     if order.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再变更状态")
     if new_status == "completed":
-        # 发货批次闸门（§3.5/场景13）：建了批次的订单，未发完不许整单完成——
-        # "首批发货不能把整单标为完成"。没建批次的订单沿用老行为（历史口径）。
+        # 「已完成」必须有**履约依据**：实发数量要盖住订单数量（issue #10）。
+        #
+        # ⚠️ 从前这里是 `if overview["batches"]:` —— **没建批次就整段跳过**，
+        # 于是"待生产、没有任何发货批次"的订单可以直接改成已完成
+        # （实测库内 status=completed 而 shipped=0、remaining=1）。
+        # 判据不能依赖"有没有建过批次"，否则绕过方式就是"什么都不建"。
         overview = await order_shipments(session, order)
-        if overview["batches"]:
-            short = [row for row in overview["items"] if Decimal(str(row["remaining"])) > 0]
-            if short:
-                detail = "；".join(
-                    f"{row['sku']} 还差 {row['remaining']}" for row in short[:5]
-                )
+        summary = overview["summary"]
+        shipped = Decimal(str(summary.get("shipped") or 0))
+        ordered = Decimal(str(summary.get("ordered") or 0))
+        if ordered > 0 and shipped < ordered:
+            if not overview["batches"]:
                 raise AppError(
                     ErrorCode.STATUS_NOT_ALLOWED,
-                    f"整单还有未发量，不能标记完成（{detail}）——"
-                    "请先登记发货批次或调整批次计划",
+                    f"这张订单还没有任何发货记录（订 {ordered}、实发 0），"
+                    "不能标记完成 —— 请先在「发货」里登记发货批次。"
+                    "确属历史补录的，请走补录入口并在备注里写明依据。",
                 )
+            detail = "；".join(
+                f"{row['sku']} 还差 {row['remaining']}"
+                for row in overview["items"]
+                if Decimal(str(row["remaining"])) > 0
+            )
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"整单还有未发量，不能标记完成（{detail}）——"
+                "请先登记发货批次或调整批次计划",
+            )
+    # 「已完成」是**履约事实的结论**，回退等于推翻它 —— 必须留理由（issue #10：
+    # 从前已完成改成"生产中"也一路放行，看板上的完成率可以被手工改来改去）。
+    # 这里只要求"说清为什么"，不额外发明审批流：理由进 `order_status_history`，
+    # 谁、什么时候、为什么都能查。
+    if order.status == "completed" and new_status != "completed":
+        if not (remark or "").strip():
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"「已完成」的订单回退为「{ORDER_STATUS_LABEL.get(new_status, new_status)}」"
+                "属于纠错动作，必须填写理由（会记入状态变更留痕）",
+            )
     session.add(
         OrderStatusHistory(
             order_id=order.id,

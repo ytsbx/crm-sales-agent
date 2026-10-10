@@ -328,6 +328,9 @@ check_twelfth_round_repairs
 # 重点守两处容易改错的：① 不能被"一个产品下 N 个匹配 SKU"撑成重复行（join 会踩、exists 不会）；
 # ② 软删的 SKU 不算数。
 check_product_search_by_sku
+# 订单「已完成」必须有履约依据 + 回退要留理由（issue #10）。
+# 守一处最容易改坏的边界：非完成态之间的正常流转不能被闸门误拦。
+check_order_completion_evidence
 # 停用/删除的 SKU 必须贯穿所有新业务入口（issue #7）：查价 / 加需求 / 报价 / 手工建单 / 核价。
 # 守一条最容易改坏的边界：**历史单据不受影响**（停用后已发的报价照常能打开）。
 check_sku_availability

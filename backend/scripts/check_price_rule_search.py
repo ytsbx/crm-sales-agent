@@ -91,7 +91,8 @@ def main() -> int:
         "select s.sku_code, coalesce(s.specification,''), p.name, count(r.id) "
         "from skus s join products p on p.id=s.product_id "
         "join price_rules r on r.sku_id=s.id "
-        "where s.deleted_at is null and s.specification is not null "
+        "where s.deleted_at is null and p.deleted_at is null "
+        "and s.specification is not null "
         "group by s.id, s.sku_code, s.specification, p.name "
         "having count(r.id) > 0 order by count(r.id) desc limit 1"
     )
@@ -156,7 +157,9 @@ def main() -> int:
     row2 = db(
         "select c.name, s.sku_code, p.name from customer_price_rules r "
         "join customers c on c.id=r.customer_id join skus s on s.id=r.sku_id "
-        "join products p on p.id=s.product_id limit 1"
+        "join products p on p.id=s.product_id "
+        "where c.deleted_at is null and s.deleted_at is null "
+        "and p.deleted_at is null limit 1"
     )
     if not row2 or "|" not in row2:
         print("  （库里没有客户特殊价，跳过）")
