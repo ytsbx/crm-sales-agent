@@ -324,5 +324,13 @@ check_logistics_rate_admin
 check_trade_mode_gate
 # 第十二批六条返修的独立反例与正向对照。
 check_twelfth_round_repairs
+# 第三批六条返修（C3-01 / C3-02 / C3-06）的独立反例与正向对照。
+# 断言写的是**当时复现出来的那个反例**，退回去改坏了一定会红。
+# 库名只认 DATABASE_URL（与夹具同源），并过 require_isolated_db 防呆。
+check_c3_round_repairs
+# 第四批八条返修（C4-01 … C4-08）的独立反例与正向对照。
+# 含两处"最容易被改回去"的边界：待发批次的数量语义（C4-05）、
+# 旧合同（无请求指纹）比较里"没传字段"与"显式传 null"的区别（C4-06）。
+check_c4_round_repairs
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

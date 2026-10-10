@@ -20,8 +20,35 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 API = os.getenv("API_BASE", "http://127.0.0.1:8007/api/v1")
-DB = os.getenv("DB_NAME", "crm_check_c3test")
 MARK = "CHKC3"
+
+# ---------------------------------------------------------------------------
+# 库名**只认 `DATABASE_URL` 这一个真源**（2026-10-10 修，为加入 CI 清单）。
+#
+# 从前这里读的是一个独立变量 `DB_NAME`，于是有**两个真源**：
+#   - 夹具走 `app.core.database`（吃 `DATABASE_URL`）→ 写到 A 库；
+#   - 本套件的 psql 子进程走 `DB`（吃 `DB_NAME`）→ 查 B 库。
+# CI 的后端 job **只设了 `DATABASE_URL`、没设 `DB_NAME`**，`DB` 就落到默认值
+# （一个开发库名）—— 断言会在**开发库**上查，而夹具写进隔离库：
+# 要么查不到（假红），要么去动开发库（更糟）。
+# 现在从 `DATABASE_URL` 里取出库名，两边必然一致；本地/CI/容器三种部署都成立。
+# ---------------------------------------------------------------------------
+if os.getenv("DATABASE_URL") is None:
+    os.environ["DATABASE_URL"] = (
+        f"postgresql+asyncpg://{os.getenv('PG_USER', 'crm')}:"
+        f"{os.getenv('PGPASSWORD', 'crm123456')}@"
+        f"{os.getenv('PG_HOST', '127.0.0.1')}:{os.getenv('PG_PORT', '5432')}/"
+        f"{os.getenv('DB_NAME', 'crm_check_c3test')}"
+    )
+
+import sys as _sys
+
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _test_support import require_isolated_db  # noqa: E402
+
+#: 与 `DATABASE_URL` 同源，**不再是第二个变量**（必须在上面 import 之前就位：
+#: `require_isolated_db` 要求"设置好 DATABASE_URL 之后、import app.* 之前"调用）。
+DB = require_isolated_db()
 
 passed = 0
 failed: list[str] = []

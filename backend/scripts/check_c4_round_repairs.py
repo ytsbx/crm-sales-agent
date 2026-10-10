@@ -3,8 +3,12 @@
 断言写的是**当时复现出来的那个反例**，不是"改完长什么样"——退回去改坏了一定会红。
 
 用法：
-    API_BASE=http://127.0.0.1:8010/api/v1 DB_NAME=crm_check_test_c4 \
+    API_BASE=http://127.0.0.1:8010/api/v1 \
+    DATABASE_URL=postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_check_test_c4 \
     PYTHONPATH=. .venv/bin/python scripts/check_c4_round_repairs.py
+
+库名**只认 `DATABASE_URL`**（与夹具同一个真源），并过 `require_isolated_db()` 防呆。
+CI 的后端 job 只设 `DATABASE_URL`，这里从前另读 `DB_NAME` → 会落到开发库默认值。
 """
 from __future__ import annotations
 
@@ -17,19 +21,39 @@ import urllib.parse
 import urllib.request
 
 API = os.getenv("API_BASE", "http://127.0.0.1:8010/api/v1")
-DB = os.getenv("DB_NAME", "crm_check_test_c4")
 MARK = "CHKC4"
 
-# 夹具（`_fixture_sku_master`）用 `app.core.database`，而它连的是**这个进程**的
-# `settings.database_url` —— 默认读 `backend/.env`（开发库），**不是断言库**。
-# 不摆平这一点，夹具会写错库（实测报 FK 违反：往 crm_sales_agent 里插 crm_check 的 sku_id）。
-# `DATABASE_URL` 优先级高于 env 文件（实测），所以这里显式对齐一次。
+# ---------------------------------------------------------------------------
+# 库名**只认 `DATABASE_URL` 这一个真源**（2026-10-10 修，为加入 CI 清单）。
+#
+# 从前这里读的是一个独立变量 `DB_NAME`，于是有**两个真源**：
+#   - 夹具走 `app.core.database`（吃 `DATABASE_URL`）→ 写到 A 库；
+#   - 本套件的 psql 子进程走 `DB`（吃 `DB_NAME`）→ 查 B 库。
+# CI 的后端 job **只设了 `DATABASE_URL`、没设 `DB_NAME`**，`DB` 就落到默认值
+# （一个开发库名）—— 断言会在**开发库**上查，而夹具写进隔离库：
+# 要么查不到（假红），要么去动开发库（更糟）。
+# 现在从 `DATABASE_URL` 里取出库名，两边必然一致；本地/CI/容器三种部署都成立。
+# ---------------------------------------------------------------------------
 if os.getenv("DATABASE_URL") is None:
     os.environ["DATABASE_URL"] = (
         f"postgresql+asyncpg://{os.getenv('PG_USER', 'crm')}:"
         f"{os.getenv('PGPASSWORD', 'crm123456')}@"
-        f"{os.getenv('PG_HOST', '127.0.0.1')}:{os.getenv('PG_PORT', '5432')}/{DB}"
+        f"{os.getenv('PG_HOST', '127.0.0.1')}:{os.getenv('PG_PORT', '5432')}/"
+        f"{os.getenv('DB_NAME', 'crm_check_test_c4')}"
     )
+
+import sys as _sys
+
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _test_support import require_isolated_db  # noqa: E402
+
+#: 与 `DATABASE_URL` 同源，**不再是第二个变量**（必须在上面 import 之前就位：
+#: `require_isolated_db` 要求"设置好 DATABASE_URL 之后、import app.* 之前"调用）。
+DB = require_isolated_db()
+
+# 夹具（`_fixture_sku_master`）用 `app.core.database`，连的是**这个进程**的
+# `settings.database_url`。上面的 `DATABASE_URL` 已经设好（且与 `DB` 同源），
+# 所以夹具和 psql 断言必然打同一个库 —— 不再需要对第二块对齐代码。
 
 #: 本地原生 PostgreSQL（crm_prod / crm_sales_agent 在 5432 上）
 _PG = os.getenv("PSQL_BIN", "/opt/homebrew/opt/postgresql@15/bin/psql")
@@ -422,6 +446,61 @@ def sec_c402(admin: str) -> None:
     db("delete from contract_templates where name = "
        f"'{MARK}-合同模板'")
     db(f"delete from contacts where name like '{MARK}-%'")
+    # C4-02 段自建的**客户与商机**也要收（2026-10-10 修，为加入 CI 清单）。
+    # 从前只清了合同/模板/联系人，客户与商机留在库里 —— 被 `check_fixture_residue`
+    # 抓到（实测残留：客户 'CHKC4-合同客户'、商机 'CHKC4-商机' 与 'CHKC4-合同商机'）。
+    # 这一段自建的**全部**夹具按依赖顺序清。
+    #
+    # ⚠️ 为什么必须**一次排全**：`db()` 遇到错误只返回 `SQLERR:` 前缀、**不抛异常**，
+    # 所以任何一条被外键挡回来都是**静默漏清** —— 套件自己报"全部通过"，
+    # 库里却留着东西，只有 `check_fixture_residue` 能发现。
+    # 实测就是被这里连挡了四次才收敛的（每一条都是真跑出来的报错）：
+    #   quotes_customer_id_fkey → sales_orders_customer_id_fkey
+    #   → receivable_plans_order_id_fkey → payment_records 那一层
+    #
+    # 依赖方向（照 information_schema 的 FK 图谱排的，不是猜的）：
+    #   合同（引 客户/订单/报价版本）→ 报价叶子/版本/报价单
+    #   → 回款记录 → 应收节点 → 订单叶子/批次/订单
+    #   → 商机叶子/商机 → 客户叶子 → 客户
+    _cust = f"(select id from customers where name like '{MARK}-%')"
+    _so = f"(select id from sales_orders where customer_id in {_cust})"
+    _rp = f"(select id from receivable_plans where order_id in {_so})"
+    _ver = (
+        "(select id from quote_versions where quote_id in "
+        f"(select id from quotes where customer_id in {_cust}))"
+    )
+    _opp = f"(select id from opportunities where title like '{MARK}-%')"
+    for sql in (
+        # 合同：同时引 客户 / 订单 / 报价版本，必须最先
+        f"delete from contract_documents where customer_id in {_cust}",
+        # 报价叶子 → 版本 → 报价单
+        f"delete from quote_charges where quote_version_id in {_ver}",
+        f"delete from quote_send_logs where quote_version_id in {_ver}",
+        f"delete from quote_items where quote_version_id in {_ver}",
+        f"delete from quote_versions where quote_id in (select id from quotes where customer_id in {_cust})",
+        f"delete from quotes where customer_id in {_cust}",
+        # 回款记录 → 应收节点 → 订单
+        f"delete from payment_records where receivable_plan_id in {_rp}",
+        f"delete from receivable_plans where order_id in {_so}",
+        f"delete from order_shipment_batch_items where batch_id in (select id from order_shipment_batches where order_id in {_so})",
+        f"delete from order_shipment_batches where order_id in {_so}",
+        f"delete from order_status_history where order_id in {_so}",
+        f"delete from order_milestones where order_id in {_so}",
+        f"delete from order_drafts where order_id in {_so}",
+        f"delete from sales_order_items where order_id in {_so}",
+        f"delete from sales_orders where customer_id in {_cust}",
+        # 商机叶子 → 商机
+        f"delete from opportunity_stage_history where opportunity_id in {_opp}",
+        f"delete from opportunity_items where opportunity_id in {_opp}",
+        f"delete from opportunities where title like '{MARK}-%'",
+        # 客户叶子 → 客户
+        f"delete from customer_price_rules where customer_id in {_cust}",
+        f"delete from customer_tags where customer_id in {_cust}",
+        f"delete from sales_cases where customer_id in {_cust}",
+        f"delete from contacts where customer_id in {_cust}",
+        f"delete from customers where name like '{MARK}-%'",
+    ):
+        db(sql)
 
 
 # =====================================================================
