@@ -438,11 +438,26 @@ async def generate_document(
                     echo.get(field) != requested.get(field) for field in submitted
                 )
             else:
-                comparable = [f for f in _ECHO_COMPARABLE if f not in _AUTO_FILLED_FIELDS]
+                # 连回显都没有的最老行（本轮修复之前生成的）：只能逐字段比，
+                # 但**跳过条件要收窄**——
+                #   只有"请求传空 **且** 这个字段会被生成逻辑自动补全"才跳过。
+                # 不能无条件跳过这三个字段（复核 2026-10-10 第三轮指出的：
+                # 从前那样写，同一把请求编号**明确换成另一个报价/版本/标题**也会
+                # 成功回放原合同 —— 实测 code=0，而修改前是 409）。
+                # 明确提交的**非空值**没有任何"自动补全"能解释，必须比。
+                def _legacy_field_differs(field: str) -> bool:
+                    if field not in submitted:
+                        return False  # 请求根本没提这个字段，不该拿去比
+                    incoming = getattr(payload, field)
+                    stored = getattr(replayed, field)
+                    if field in _AUTO_FILLED_FIELDS and incoming is None:
+                        # 传 null = 让后端补全，客户端**分不清**它与"不传"；
+                        # 补全后的值当然不等于 null，不能据此判冲突。
+                        return False
+                    return stored != incoming
+
                 legacy_mismatch = replayed.customer_id != payload.customer_id or replayed.template_id != payload.template_id or any(
-                    field in submitted
-                    and getattr(replayed, field) != getattr(payload, field)
-                    for field in comparable
+                    _legacy_field_differs(field) for field in _ECHO_COMPARABLE
                 )
             if stored_fingerprint is None and legacy_mismatch:
                 raise AppError(

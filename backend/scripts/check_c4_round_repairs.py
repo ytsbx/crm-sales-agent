@@ -816,6 +816,7 @@ def sec_c406_legacy_fingerprint(admin: str) -> None:
     # 指向"内容冲突"，看起来像业务缺陷、实际是夹具没清）。
     # 所以进这一段先把上一轮的残留按 key 前缀清掉。
     db(f"delete from contract_documents where request_key like '{MARK}-autofill-%'")
+    db(f"delete from contract_documents where request_key like '{MARK}-oldest-%'")
 
     # ⚠️ 夹具必须**自建且自洽**：以前这里用
     # `select id from sales_orders/quotes order by id desc limit 1` 去捡"最后一行"，
@@ -875,6 +876,75 @@ def sec_c406_legacy_fingerprint(admin: str) -> None:
     _, res = call("POST", "/contract-documents", admin, {**base6, "title": f"{MARK}-换标题"})
     check_true("⑥ 对照：真改标题仍拒", res.get("code") != 0, f"code={res.get('code')}")
 
+    # ⑦ 最老的行（无指纹、无回显）：跳过条件必须**收窄**
+    #
+    # 复核 2026-10-10 第三轮：上一版把 `quote_id`/`quote_version_id`/`title`
+    # **无条件跳过**，于是同一把请求编号**明确换成另一个报价/版本/标题**
+    # 也会成功回放原合同（实测 code=0，而修改前是 409）。
+    #
+    # 正确口径：只有"请求传空 **且** 该字段会被生成逻辑自动补全"才跳过；
+    # **明确提交的非空值**没有任何自动补全能解释，必须比。
+    def _oldest(tag: str, extra: dict | None = None):
+        """建一份合同，再把指纹与回显都去掉 —— 复刻本轮修复之前生成的最老行。"""
+        key = f"{MARK}-oldest-{tag}"
+        body = {"template_id": tid6, "customer_id": int(cid6),
+                "expiry_date": "2026-11-01", "request_key": key}
+        if extra:
+            body = {**body, **extra}
+        call("POST", "/contract-documents", admin, dict(body))
+        doc = int(db(f"select id from contract_documents where request_key='{key}' "
+                     f"and deleted_at is null"))
+        db("update contract_documents set filled_data = filled_data "
+           f"- '_request_fingerprint' - '_request_echo' where id={doc}")
+        return body, doc
+
+    # 另一个报价 + 版本（"换成另一个"要有得换）
+    call("POST", "/opportunities", admin,
+         {"title": f"{MARK}-第二商机", "customer_id": int(cid6), "expected_amount": 100})
+    opp7 = db(f"select id from opportunities where title='{MARK}-第二商机' order by id desc limit 1")
+    call("POST", "/quotes", admin, {"opportunity_id": int(opp7)})
+    qid7 = db(f"select id from quotes where opportunity_id={opp7} order by id desc limit 1")
+    vid7 = db(f"select id from quote_versions where quote_id={qid7} order by id limit 1")
+
+    # ⑦-a 自动补全的空值重试 → 回放
+    b7a, d7a = _oldest("A", {"order_id": int(oid6), "quote_id": None,
+                             "quote_version_id": None, "title": None})
+    _, res = call("POST", "/contract-documents", admin, dict(b7a))
+    d = res.get("data") or {}
+    check_true("⑦ 最老的行：空值让后端补全 → 重试仍回放",
+               res.get("code") == 0 and (d.get("id") == d7a or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
+    # ⑦-b 明确换成另一个报价 → 拒
+    b7b, d7b = _oldest("B", {"quote_id": int(qid6)})
+    _, res = call("POST", "/contract-documents", admin, {**b7b, "quote_id": int(qid7)})
+    check_true("⑦ 最老的行：明确换报价 → 拒", res.get("code") != 0, f"code={res.get('code')}")
+    _, res = call("POST", "/contract-documents", admin, dict(b7b))
+    d = res.get("data") or {}
+    check_true("⑦ 对照：原样重试仍回放",
+               res.get("code") == 0 and (d.get("id") == d7b or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
+    # ⑦-c 明确换成另一个版本 → 拒
+    b7c, d7c = _oldest("C", {"quote_id": int(qid6), "quote_version_id": int(vid6)})
+    _, res = call("POST", "/contract-documents", admin, {**b7c, "quote_version_id": int(vid7)})
+    check_true("⑦ 最老的行：明确换版本 → 拒", res.get("code") != 0, f"code={res.get('code')}")
+    _, res = call("POST", "/contract-documents", admin, dict(b7c))
+    d = res.get("data") or {}
+    check_true("⑦ 对照：原样重试仍回放",
+               res.get("code") == 0 and (d.get("id") == d7c or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
+    # ⑦-d 明确换成另一个标题 → 拒
+    b7d, d7d = _oldest("D", {"title": f"{MARK}-原标题"})
+    _, res = call("POST", "/contract-documents", admin, {**b7d, "title": f"{MARK}-换标题"})
+    check_true("⑦ 最老的行：明确换标题 → 拒", res.get("code") != 0, f"code={res.get('code')}")
+    _, res = call("POST", "/contract-documents", admin, dict(b7d))
+    d = res.get("data") or {}
+    check_true("⑦ 对照：原样重试仍回放",
+               res.get("code") == 0 and (d.get("id") == d7d or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
     # ④ 新合同（有指纹）：改日期同样要拒
     base4, did4 = mk("N1")
     check("④ 前置：新合同有指纹",
@@ -893,24 +963,49 @@ def sec_c406_legacy_fingerprint(admin: str) -> None:
     db(f"delete from contract_documents where request_key like '{MARK}-autofill-%'")
     db(f"delete from contract_documents where title like '{MARK}-%'")
     db(f"delete from contract_templates where name like '{MARK}-%'")
-    # ⑥ 那套客户/商机/报价/订单（挂在自建客户下）
-    _c6 = f"(select id from customers where name like '{MARK}-自动补全%')"
-    _o6 = f"(select id from opportunities where title like '{MARK}-自动补全%')"
-    db(f"delete from quote_charges where quote_version_id in (select id from quote_versions where quote_id in (select id from quotes where opportunity_id in {_o6}))")
-    db(f"delete from quote_items where quote_version_id in (select id from quote_versions where quote_id in (select id from quotes where opportunity_id in {_o6}))")
-    db(f"delete from quote_versions where quote_id in (select id from quotes where opportunity_id in {_o6})")
-    db(f"delete from quotes where opportunity_id in {_o6}")
-    db(f"delete from order_shipment_batch_items where batch_id in (select id from order_shipment_batches where order_id in (select id from sales_orders where customer_id in {_c6}))")
-    db(f"delete from order_shipment_batches where order_id in (select id from sales_orders where customer_id in {_c6})")
-    db(f"delete from order_status_history where order_id in (select id from sales_orders where customer_id in {_c6})")
-    db(f"delete from order_milestones where order_id in (select id from sales_orders where customer_id in {_c6})")
-    db(f"delete from sales_order_items where order_id in (select id from sales_orders where customer_id in {_c6})")
-    db(f"delete from sales_orders where customer_id in {_c6}")
-    db(f"delete from opportunity_stage_history where opportunity_id in {_o6}")
-    db(f"delete from opportunity_items where opportunity_id in {_o6}")
-    db(f"delete from opportunities where title like '{MARK}-自动补全%'")
-    db(f"delete from contacts where customer_id in {_c6}")
-    db(f"delete from customers where name like '{MARK}-自动补全%'")
+    # C4-02 / ⑥ / ⑦ 建的客户、商机、报价、订单都要收。
+    #
+    # ⚠️ **报价按 `customer_id` 清，不要按商机名**：`sec_c402` 的报价也挂在
+    # 同一个自建客户下，而它的商机名跟 ⑥⑦ 不一样 —— 只按商机名匹配会漏掉它，
+    # 报价仍引用客户、客户就删不掉，于是**又一次静默漏清**
+    # （实测被 `check_fixture_residue` 抓到残留客户）。
+    # 这个客户是这一段自建的，按 customer_id 清是安全且完备的。
+    _c6 = f"(select id from customers where name like '{MARK}-%')"
+    _o6 = f"(select id from opportunities where title like '{MARK}-%')"
+    _q6 = f"(select id from quotes where customer_id in {_c6})"
+    _v6 = f"(select id from quote_versions where quote_id in {_q6})"
+    _so6 = f"(select id from sales_orders where customer_id in {_c6})"
+    for _sql in (
+        # 合同引 客户/订单/报价版本，最先
+        f"delete from contract_documents where customer_id in {_c6}",
+        # 报价叶子 → 版本 → 报价单
+        f"delete from quote_charges where quote_version_id in {_v6}",
+        f"delete from quote_send_logs where quote_version_id in {_v6}",
+        f"delete from quote_items where quote_version_id in {_v6}",
+        f"delete from quote_versions where quote_id in {_q6}",
+        f"delete from quotes where customer_id in {_c6}",
+        # 订单
+        f"delete from payment_records where receivable_plan_id in (select id from receivable_plans where order_id in {_so6})",
+        f"delete from receivable_plans where order_id in {_so6}",
+        f"delete from order_shipment_batch_items where batch_id in (select id from order_shipment_batches where order_id in {_so6})",
+        f"delete from order_shipment_batches where order_id in {_so6}",
+        f"delete from order_status_history where order_id in {_so6}",
+        f"delete from order_milestones where order_id in {_so6}",
+        f"delete from order_drafts where order_id in {_so6}",
+        f"delete from sales_order_items where order_id in {_so6}",
+        f"delete from sales_orders where customer_id in {_c6}",
+        # 商机叶子 → 商机
+        f"delete from opportunity_stage_history where opportunity_id in {_o6}",
+        f"delete from opportunity_items where opportunity_id in {_o6}",
+        f"delete from opportunities where title like '{MARK}-%'",
+        # 客户叶子 → 客户
+        f"delete from customer_price_rules where customer_id in {_c6}",
+        f"delete from customer_tags where customer_id in {_c6}",
+        f"delete from sales_cases where customer_id in {_c6}",
+        f"delete from contacts where customer_id in {_c6}",
+        f"delete from customers where name like '{MARK}-%'",
+    ):
+        db(_sql)
 
 
 def main() -> int:
