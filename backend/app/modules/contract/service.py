@@ -379,6 +379,15 @@ async def generate_document(
                 )
                 or (payload.title is not None and replayed.title != payload.title)
                 or (payload.parent_id is not None and replayed.parent_id != payload.parent_id)
+                # 日期也要比（C4-06 补修，2026-10-10）。这两个字段**库里一直有**
+                # （`contract_documents.expiry_date` / `effective_date`），漏了它们会这样：
+                # 同一把请求编号、只把到期日从 11-01 改成 12-01 → 判不出差异 →
+                # **回放成旧合同**，返回的到期日还是 11-01。生效日同理。
+                or (payload.expiry_date is not None and replayed.expiry_date != payload.expiry_date)
+                or (
+                    payload.effective_date is not None
+                    and replayed.effective_date != payload.effective_date
+                )
             )
             if stored_fingerprint is None and legacy_mismatch:
                 raise AppError(

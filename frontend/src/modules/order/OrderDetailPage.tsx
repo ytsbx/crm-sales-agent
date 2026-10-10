@@ -1096,8 +1096,28 @@ export default function OrderDetailPage() {
                   },
                   {
                     title: '本批明细',
-                    render: (_: unknown, record: ShipmentBatchRow) =>
-                      record.items.map((item) => `${item.sku ?? item.order_item_id} ×${item.shipped_qty ?? item.planned_qty}`).join('；') || '-',
+                    // 按**批次状态**选数量（C4-05 补修，2026-10-10）：
+                    //
+                    // 原来写的是 `item.shipped_qty ?? item.planned_qty`。
+                    // 但 `shipped_qty` 后端**总是返回数字**（未发货时是 0），
+                    // 而 `??` 只对 null/undefined 兜底 —— **0 不触发回退**：
+                    //   待发批次  planned=10, shipped=0  → 显示「×0」❌（应为计划量 10）
+                    //   已发批次  planned=10, shipped=0  → 显示「×0」✅（这一行确实没发）
+                    // **同一个 0 在两种状态下意思完全相反**，所以判据只能是状态：
+                    //   已发货 → 实发量（保留那个 0，它是事实）；其余（待发/在途）→ 计划量。
+                    // 顺带把前缀写清是"计划"还是"实发"，免得两个数字看起来一样却含义不同。
+                    render: (_: unknown, record: ShipmentBatchRow) => {
+                      const shipped = record.status === 'shipped'
+                      return (
+                        record.items
+                          .map((item) => {
+                            const qty = shipped ? item.shipped_qty : item.planned_qty
+                            const tag = shipped ? '实发' : '计划'
+                            return `${item.sku ?? item.order_item_id} ${tag} ${qty}`
+                          })
+                          .join('；') || '-'
+                      )
+                    },
                   },
                   ...(can('order:manage')
                     ? [

@@ -555,6 +555,153 @@ def _upload(content: bytes, business_type: str, business_id: int, token: str, na
         return "ERR", {"message": str(exc)[:60]}
 
 
+# =====================================================================
+# C4-05：批次明细的数量必须"按批次状态"解读（前端据此显示）
+# =====================================================================
+def sec_c405_batch_qty(admin: str) -> None:
+    """`planned_qty` / `shipped_qty` 的语义随**批次状态**变，接口契约要守住。
+
+    起因（C4-05 复核）：前端原来写 `shipped_qty ?? planned_qty`。
+    `shipped_qty` 后端**总是返回数字**（未发货时是 0），而 `??` 只对 null/undefined
+    兜底 —— **0 不触发回退**：
+
+        待发批次  planned=10, shipped=0 → 显示「×0」❌（应为计划量 10）
+        已发批次  planned=10, shipped=0 → 显示「×0」✅（这一行确实没发）
+
+    **同一个 0 在两种状态下意思相反**，所以判据只能是 `batch.status`。
+    这条断言守的是接口那份契约（状态 + 两个数量都得在），前端按它选值。
+    """
+    print("\n=== C4-05 批次明细的数量语义 ===")
+    db("delete from order_shipment_batch_items")
+    db("delete from order_shipment_batches")
+    db("delete from sales_order_items")
+    db("delete from sales_orders")
+
+    call("POST", "/orders", admin, {
+        "customer_id": 1, "currency": "CNY",
+        "items": [{"sku_id": 1, "quantity": 10, "unit_price": 100},
+                  {"sku_id": 2, "quantity": 5, "unit_price": 100}]})
+    oid = db("select id from sales_orders order by id desc limit 1")
+    items = db(f"select string_agg(id::text, ',' order by id) from sales_order_items where order_id={oid}")
+    i1, i2 = (int(x) for x in str(items).split(","))
+
+    status, res = call("POST", f"/orders/{oid}/shipments", admin, {
+        "planned_date": "2026-11-01",
+        "items": [{"order_item_id": i1, "planned_qty": 10},
+                  {"order_item_id": i2, "planned_qty": 5}]})
+    check("建批次放行", res.get("code"), 0)
+    bid = db(f"select id from order_shipment_batches where order_id={oid} order by id desc limit 1")
+
+    def batch():
+        _, r = call("GET", f"/orders/{oid}/shipments", admin)
+        for b in ((r.get("data") or {}).get("batches") or []):
+            if b.get("id") == int(bid):
+                return b
+        return {}
+
+    # ① 待发批次：planned=10 / shipped=0 —— 前端必须按"计划量"读，不能显示 0
+    b = batch()
+    check("① 待发批次状态", b.get("status"), "planned")
+    it = next((x for x in (b.get("items") or []) if x.get("order_item_id") == i1), {})
+    check("① 待发批次 planned_qty（应显示这个）", it.get("planned_qty"), "10.0")
+    check("① 待发批次 shipped_qty 是 0（**不是 null** —— `??` 不会回退）",
+          it.get("shipped_qty"), "0.0")
+
+    # ② 已发货批次：一行零实发、一行正常实发 —— 零要保留（那是事实）
+    status, res = call("POST", f"/orders/{oid}/shipments/{bid}/ship", admin, {
+        "actual_ship_date": "2026-11-02",
+        "items": [{"order_item_id": i1, "shipped_qty": 0},
+                  {"order_item_id": i2, "shipped_qty": 5}]})
+    check("② 混合批次可发货（单行允许 0）", res.get("code"), 0)
+    b = batch()
+    check("② 已发货批次状态", b.get("status"), "shipped")
+    by_id = {x.get("order_item_id"): x for x in (b.get("items") or [])}
+    check("② 零实发那行：shipped_qty 仍是 0（不能回退成 10）", by_id.get(i1, {}).get("shipped_qty"), "0.0")
+    check("② 零实发那行的 planned_qty 原样保留（历史不美化）", by_id.get(i1, {}).get("planned_qty"), "10.0")
+    check("② 正常实发那行", by_id.get(i2, {}).get("shipped_qty"), "5.0")
+
+    db("delete from order_shipment_batch_items")
+    db("delete from order_shipment_batches")
+    db("delete from sales_order_items")
+    db("delete from sales_orders")
+
+
+# =====================================================================
+# C4-06：旧合同（无请求指纹）也要能比出日期差异
+# =====================================================================
+def sec_c406_legacy_fingerprint(admin: str) -> None:
+    """升级前的旧合同没有指纹，只能逐字段比 —— 此前**漏了到期日与生效日**。
+
+    后果（C4-06 复核）：同一把请求编号、只把到期日从 11-01 改成 12-01 →
+    判不出差异 → **回放成旧合同**，返回的到期日还是 11-01。生效日同理。
+
+    **阴性对照**：把日期比较撤掉重跑，① 会得到 code=0（回放）；恢复后是 40001。
+    所以这条断言确实钉住了修复，不是"改完长什么样"。
+    """
+    print("\n=== C4-06 旧合同（无指纹）的日期比较 ===")
+
+    def mk(tag):
+        call("POST", "/contract-templates", admin,
+             {"doc_type": "contract", "name": f"{MARK}-{tag}", "body": "客户 {{customer_name}}"})
+        tid = int(db("select id from contract_templates order by id desc limit 1"))
+        key = f"{MARK}-{tag}"
+        base = {"template_id": tid, "customer_id": 1, "title": f"{MARK}-{tag}",
+                "expiry_date": "2026-11-01", "effective_date": "2026-10-15", "request_key": key}
+        call("POST", "/contract-documents", admin, dict(base))
+        did = int(db(f"select id from contract_documents where request_key='{key}' and deleted_at is null"))
+        return base, did
+
+    def strip_fp(did) -> bool:
+        """去掉指纹，模拟升级前就存在的旧合同。返回是否真的去掉了。"""
+        db(f"update contract_documents set filled_data = filled_data - '_request_fingerprint' "
+           f"where id={did}")
+        return db(f"select (filled_data ? '_request_fingerprint')::text from contract_documents "
+                  f"where id={did}") == "false"
+
+    # ① 旧合同：只改到期日 → 拒
+    base, did = mk("L1")
+    check_true("① 前置：成功模拟出旧合同", strip_fp(did))
+    code = call("POST", "/contract-documents", admin, {**base, "expiry_date": "2026-12-01"})[1].get("code")
+    check_true("① 只改到期日被拒（从前回放成 11-01）", code != 0, f"code={code}")
+    check("① 原到期日未变", db(f"select expiry_date::text from contract_documents where id={did}"),
+          "2026-11-01")
+
+    # ② 旧合同：只改生效日 → 拒
+    base2, did2 = mk("L2")
+    check_true("② 前置：成功模拟出旧合同", strip_fp(did2))
+    code = call("POST", "/contract-documents", admin, {**base2, "effective_date": "2026-11-20"})[1].get("code")
+    check_true("② 只改生效日被拒", code != 0, f"code={code}")
+    check("② 原生效日未变", db(f"select effective_date::text from contract_documents where id={did2}"),
+          "2026-10-15")
+
+    # ③ 旧合同：内容完全相同 → 幂等命中（不能误伤）
+    base3, did3 = mk("L3")
+    check_true("③ 前置：成功模拟出旧合同", strip_fp(did3))
+    _, res = call("POST", "/contract-documents", admin, dict(base3))
+    d = res.get("data") or {}
+    check_true("③ 内容相同 → 幂等命中、不误伤",
+               res.get("code") == 0 and (d.get("id") == did3 or d.get("duplicated") is True),
+               f"code={res.get('code')} id={d.get('id')}")
+    check("③ 没多建一份",
+          db(f"select count(*) from contract_documents where request_key='{base3['request_key']}' "
+             f"and deleted_at is null"), "1")
+
+    # ④ 新合同（有指纹）：改日期同样要拒
+    base4, did4 = mk("N1")
+    check("④ 前置：新合同有指纹",
+          db(f"select (filled_data ? '_request_fingerprint')::text from contract_documents where id={did4}"),
+          "true")
+    code = call("POST", "/contract-documents", admin, {**base4, "expiry_date": "2026-12-01"})[1].get("code")
+    check_true("④ 改到期日被拒（指纹分支）", code != 0, f"code={code}")
+    _, res = call("POST", "/contract-documents", admin, dict(base4))
+    d = res.get("data") or {}
+    check_true("④ 相同内容仍幂等", res.get("code") == 0 and (d.get("id") == did4 or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
+    db(f"delete from contract_documents where title like '{MARK}-%'")
+    db(f"delete from contract_templates where name like '{MARK}-%'")
+
+
 def main() -> int:
     status, res = call("POST", "/auth/login", body={"username": "admin", "password": "admin123"})
     if res.get("code") != 0:
@@ -566,6 +713,8 @@ def main() -> int:
     sec_quote_deleted_contact(admin)
     sec_c402(admin)
     sec_sku_images(admin)
+    sec_c405_batch_qty(admin)
+    sec_c406_legacy_fingerprint(admin)
 
     print("\n" + "=" * 60)
     if failed:
