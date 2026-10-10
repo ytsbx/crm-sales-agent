@@ -13,7 +13,7 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import Select, case, func, or_, select
+from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
@@ -56,6 +56,19 @@ from app.modules.task.model import Task
 from app.modules.user.model import User
 
 ZERO = Decimal(0)
+
+
+def _customer_stale_clause(stale_date):
+    """只有跟进和业务进展两个时钟都过期时才算待跟进。"""
+    return and_(
+        or_(Customer.last_followup_at.is_(None), Customer.last_followup_at < stale_date),
+        or_(Customer.last_progress_at.is_(None), Customer.last_progress_at < stale_date),
+    )
+
+
+def _latest_customer_activity(customer: Customer):
+    """统一取最近一次有效跟进或业务进展。"""
+    return settings_service._last_active_at(customer)
 
 
 def _f(value) -> float:
@@ -180,10 +193,8 @@ async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
     所以这里直接复用同一段条件（同一个 `customer_stale_days` 设置、同一个
     `_scope_filter` 数据范围），只是把 `count` 换成"把行拿出来"。
 
-    顺带把"最后跟进"的两种形态分开说清：
-      · `last_followup_at` 为空 → **从未跟进过**（`last_followup_at` 从没写过）；
-      · 有值但早于阈值 → 距今天数。
-    卡片上说"30 天未联系"其实包含这两种，清单里分开展示更有用。
+    冷落判断同时看手工跟进和业务进展两个时钟：报价/打样/下单/回款等业务动作
+    也算有效活动，避免当天刚有业务进展的客户仍被列入待跟进清单。
     """
     from app.modules.settings import service as settings_service
 
@@ -198,10 +209,7 @@ async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
                 .where(
                     Customer.deleted_at.is_(None),
                     Customer.pool_status == "private",
-                    or_(
-                        Customer.last_followup_at.is_(None),
-                        Customer.last_followup_at < stale_date,
-                    ),
+                    _customer_stale_clause(stale_date),
                 )
                 .order_by(Customer.last_followup_at.asc().nullsfirst(), Customer.id)
                 .limit(200),
@@ -243,7 +251,7 @@ async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
 
     items = []
     for c in rows:
-        last = c.last_followup_at
+        last = _latest_customer_activity(c)
         if last is not None and last.tzinfo is None:
             last = last.replace(tzinfo=UTC)
         items.append(
@@ -253,8 +261,10 @@ async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
                 "level": c.level,
                 "owner_id": c.owner_id,
                 "owner_name": names.get(c.owner_id) if c.owner_id else None,
-                "last_followup_at": last,
-                #: 距上次联系的**天数**；从未跟进过时为 None（前端显示"从未跟进"）
+                "last_followup_at": c.last_followup_at,
+                "last_progress_at": c.last_progress_at,
+                "last_activity_at": last,
+                #: 距上次有效跟进或业务进展的**天数**；都没有时为 None
                 "days_since": (now - last).days if last else None,
                 "next_followup_at": c.next_followup_at,
                 # 电话在**联系人**上（Customer 没有 phone 列 —— 我第一版写错，
@@ -310,10 +320,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 select(func.count(Customer.id)).where(
                     Customer.deleted_at.is_(None),
                     Customer.pool_status == "private",
-                    or_(
-                        Customer.last_followup_at.is_(None),
-                        Customer.last_followup_at < stale_date,
-                    ),
+                    _customer_stale_clause(stale_date),
                 ),
                 user,
                 Customer.owner_id,
@@ -1005,7 +1012,7 @@ async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
     )
 
     # PRD §23「客户：活跃 / 沉睡」：口径由系统配置决定，不写死天数。
-    #   活跃 = 最近 N 天内有跟进；沉睡 = 超过 M 天没有跟进（且不是公海）
+    #   活跃 = 最近 N 天内有跟进或业务进展；沉睡 = 两个时钟都超过 M 天（且不是公海）
     active_days = int(await settings_service.get_number(session, "customer_active_days", "days", 30))
     dormant_days = int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
     active_cutoff = now - timedelta(days=active_days)
@@ -1014,10 +1021,7 @@ async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
     active_count = 0
     dormant_count = 0
     for customer in customers:
-        last = customer.last_followup_at
-        if last is None:
-            # 从没跟进过的客户按"创建时间"判断，否则刚建的客户会被直接算成沉睡
-            last = customer.created_at
+        last = _latest_customer_activity(customer)
         if last is None:
             continue
         if last.tzinfo is None:
@@ -2012,10 +2016,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
                     Customer.deleted_at.is_(None),
                     Customer.owner_id == member.id,
                     Customer.pool_status == "private",
-                    or_(
-                        Customer.last_followup_at.is_(None),
-                        Customer.last_followup_at < stale_date,
-                    ),
+                    _customer_stale_clause(stale_date),
                 )
             )
         ).scalar_one()

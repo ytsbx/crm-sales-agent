@@ -7,7 +7,7 @@
    保留两行** —— 同额同日的两笔真实回款不能被"金额+日期相同"这种猜测合并掉
    （这是本条最容易修过头的方向，所以它和幂等一起断言）。
 2. **币种**：从应收节点继承，不再落到列默认的 CNY；给了不一致的币种要拒绝。
-3. **锁的接线**：确认/改回款必须先锁共同应收节点再锁回款记录，且"汇总已确认
+3. **锁的接线**：涉及订单的回款写入必须按订单→应收节点→回款记录取锁，且"汇总已确认
    金额"的查询发生在拿到节点锁之后；生成计划必须先锁订单行再做"查无再插"；
    删/改节点也要在锁内做判断。
 
@@ -117,7 +117,7 @@ def quiet_notifications(monkeypatch):
 
 
 def make_request(request_key: str | None = None) -> Request:
-    """最小可用 Request：`client_ip` 读 x-forwarded-for / client.host。"""
+    """最小可用 Request：`client_ip` 读取 TCP 对端地址。"""
     headers = []
     if request_key is not None:
         headers.append((b"x-request-key", request_key.encode()))
@@ -377,7 +377,7 @@ async def test_plan_without_currency_is_refused_not_defaulted(pay_db, pay):
 
 @pytest.mark.anyio
 async def test_confirm_locks_shared_plan_before_payment_record(pay_db, pay, quiet_notifications):
-    """确认：先锁共同应收节点，再锁回款记录，最后才汇总。
+    """确认：先锁订单、再锁共同应收节点，再锁回款记录，最后才汇总。
 
     修前只有 `payment_records ... FOR UPDATE`：两个各 50 的并发确认锁不到彼此，
     各自读到"已确认 50"写成 partial。顺序错了同样危险 —— 先锁回款再锁节点，
@@ -392,12 +392,15 @@ async def test_confirm_locks_shared_plan_before_payment_record(pay_db, pay, quie
         first.id, PaymentAction(comment="核对通过"), make_request(), operator(), pay
     )
 
+    order_locks = lock_indexes(pay.statements, "sales_orders")
     plan_locks = lock_indexes(pay.statements, "receivable_plans")
     payment_locks = lock_indexes(pay.statements, "payment_records")
     sums = indexes(pay.statements, "sum(payment_records.received_amount)")
 
+    assert order_locks, "确认必须先锁所属订单"
     assert plan_locks, "确认必须先锁共同应收节点（修前完全没有这把锁）"
     assert payment_locks, "回款记录本身仍要锁"
+    assert order_locks[0] < plan_locks[0], "统一锁序：订单在应收节点之前"
     assert plan_locks[0] < payment_locks[0], "统一锁序：应收节点在回款记录之前"
     assert sums and sums[0] > plan_locks[0], "汇总必须在节点锁内发生，否则读旧数写覆盖"
 
@@ -503,7 +506,7 @@ async def test_generate_with_request_key_replays_instead_of_conflict(pay_db, pay
 
 @pytest.mark.anyio
 async def test_plan_writes_take_the_plan_lock(pay_db, pay):
-    """改节点、删节点都要在锁内判断：否则与"正在登记回款"互相踩。"""
+    """改节点、删节点都要按订单→节点在锁内判断：否则与回款登记互相踩。"""
     order = make_order(pay_db, total="100")
     plan = make_plan(pay_db, order, amount="100")
     spare = make_plan(pay_db, order, amount="1", name="另一期")
@@ -532,11 +535,11 @@ async def test_delete_receivable_refuses_when_payment_exists(pay_db, pay):
 
 
 @pytest.mark.anyio
-async def test_create_payment_locks_plan_before_insert(pay_db, pay):
-    """登记回款：先锁应收节点（防"回款挂到已删节点上"）。
+async def test_create_payment_locks_order_then_plan_before_insert(pay_db, pay):
+    """登记回款：按订单→应收节点顺序取锁（防取消并发死锁）。
 
     插入语句走 ORM flush、不经过 `Session.execute`，所以这里只断言"节点锁存在
-    且发生在任何回款读写之前"——同步 SQLite 认不出真并发，能钉的就是这道接线。
+    且排在订单锁之后"——同步 SQLite 认不出真并发，能钉的就是这道接线。
     """
     order = make_order(pay_db, total="100")
     plan = make_plan(pay_db, order, amount="100")
@@ -544,7 +547,9 @@ async def test_create_payment_locks_plan_before_insert(pay_db, pay):
 
     await create_payment(create_payload(plan), make_request(), operator(), pay)
 
+    order_locks = lock_indexes(pay.statements, "sales_orders")
     plan_locks = lock_indexes(pay.statements, "receivable_plans")
+    assert order_locks, "登记回款要先锁所属订单"
     assert plan_locks, "登记回款要先锁应收节点"
-    assert plan_locks == [0], f"节点锁必须是第一条语句，实际：{pay.statements}"
+    assert order_locks[0] < plan_locks[0], f"锁序必须是订单→节点，实际：{pay.statements}"
     assert pay_db.query(PaymentRecord).filter(PaymentRecord.receivable_plan_id == plan.id).count() == 1

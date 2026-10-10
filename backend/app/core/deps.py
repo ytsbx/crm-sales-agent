@@ -1,11 +1,13 @@
 """FastAPI 依赖：当前用户、权限校验、数据范围。"""
 
 from collections.abc import Awaitable, Callable
+from ipaddress import ip_address, ip_network
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.errors import AppError, ErrorCode
 from app.core.security import decode_access_token
@@ -117,7 +119,47 @@ def ensure_permission(user: CurrentUser, code: str) -> None:
 
 
 def client_ip(request: Request) -> str | None:
+    """取可信的客户端地址，避免任意请求头伪造来源 IP。
+
+    `X-Forwarded-For` 只有在 TCP 对端属于显式配置的可信代理时才会读取；
+    直接访问应用端口时，即使请求带了该请求头，也使用真实 TCP 对端地址。
+    """
+    peer = request.client.host if request.client else None
+    if not peer:
+        return None
+
     forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else None
+    if not forwarded or not _is_trusted_proxy(peer):
+        return peer
+
+    chain = [part.strip() for part in forwarded.split(",") if part.strip()]
+    if not chain:
+        return peer
+    # XFF 中每一项都必须是地址；遇到任意非法项就放弃整条头，避免把审计/限流
+    # 键建立在代理传来的任意字符串上。
+    try:
+        [ip_address(value) for value in chain]
+    except ValueError:
+        return peer
+
+    # 从离应用最近的代理向左走，跳过连续的可信代理；第一个非可信地址就是
+    # 客户端。单层代理时等价于取 XFF 最右项。
+    for value in reversed(chain):
+        if not _is_trusted_proxy(value):
+            return value
+    return chain[0]
+
+
+def _is_trusted_proxy(value: str) -> bool:
+    try:
+        address = ip_address(value)
+    except ValueError:
+        return False
+    for configured in settings.trusted_proxy_ip_list:
+        try:
+            if address in ip_network(configured, strict=False):
+                return True
+        except ValueError:
+            # 配置错误不能让请求处理变成 500；该项按未信任处理。
+            continue
+    return False

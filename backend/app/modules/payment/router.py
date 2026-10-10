@@ -627,7 +627,7 @@ async def update_payment(
     只有待确认（pending）的回款能改。确认/驳回都是财务给出的事实结论，
     事后改金额会让已对账的账目对不上。
 
-    取记录时带锁（`for_update=True`，内部按「应收节点 → 回款记录」的顺序取锁）：
+    取记录时带锁（`for_update=True`，内部按「订单 → 应收节点 → 回款记录」的顺序取锁）：
     改金额要重算节点状态，重算必须发生在节点锁内，否则与并发确认互相覆盖。
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
@@ -695,7 +695,7 @@ async def create_payment(
        所以同额同日的两笔真实回款不会被"金额 + 日期相同"这种猜测合并掉。
        不带键仍然照旧登记，但响应里点明这次没有幂等保护。
     2. **币种继承应收节点**：给不同币种直接拒绝（跨币种核销口径未定，不猜汇率）。
-    3. **先锁应收节点再插回款**（统一锁序的第一段）：与"删节点""确认回款"
+    3. **先锁订单、再锁应收节点再插回款**（统一锁序的第一段）：与"删节点""确认回款"
        并发时不会出现"回款挂到已删节点上"或读旧汇总写覆盖。
     """
     if not payload.receivable_plan_id:
@@ -799,13 +799,13 @@ async def confirm_payment(
     第七批 7.9：`get_visible_payment(..., for_update=True)` 内部按统一锁序
     先锁**共同应收节点**再锁回款记录。两个各 50 的并发确认锁的是两条不同的
     回款记录、锁不到彼此，只锁回款记录时双方都会读到"已确认 50"各写一次
-    partial；先锁共同节点后，后到的那个在锁上等，等到时先到者已提交，
+    partial；先锁订单、再锁共同节点后，后到的那个在锁上等，等到时先到者已提交，
     重算才看得到 100 → 节点 paid。
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     svc.ensure_payment_pending(record)
     # 订单/节点已取消就不该确认（C5-01）。放在这里而不是最后：被拒时**不能留下
-    # 半改的状态**。`get_visible_payment` 已按统一锁序拿到节点锁，这一步与它同序。
+    # 半改的状态**。`get_visible_payment` 已按统一锁序拿到订单与节点锁，这一步与它同序。
     # 没有节点（挂空）的回款不适用——那种本来就不参与节点重算。
     if record.receivable_plan_id:
         await svc.assert_plan_accepts_payment(

@@ -207,10 +207,10 @@ async def assert_plan_accepts_payment(
     建应收的三个入口调用），而取消订单的提示语还写着"回款未受影响" ——
     那句话把缺陷说成了设计意图。
 
-    **锁序**：调用方必须**已经持有节点行锁**（`get_visible_plan(for_update=True)` /
-    `lock_plan`）。这里再锁订单，方向是 `sales_orders → receivable_plans`，
-    **与项目统一锁序一致**，不会引入死锁。只有真要拒绝时才去锁订单，
-    正常路径不多付一次锁的代价。
+    **锁序**：调用方必须已经按 `sales_orders → receivable_plans` 取得订单和节点
+    行锁（`get_visible_plan(for_update=True)` / `get_visible_payment(..., for_update=True)`）。
+    这里不能再补锁订单：回款登记若先持有节点锁再来拿订单锁，会和订单取消的
+    `订单 → 节点` 顺序形成循环等待。订单锁由调用方统一取得后，这里只读取锁内事实。
     """
     if plan.status == "cancelled":
         raise AppError(
@@ -218,7 +218,7 @@ async def assert_plan_accepts_payment(
             f"该应收节点已随订单取消，不能再{action}；如确需继续收款，请先恢复订单",
             422,
         )
-    order = await lock_order(session, plan.order_id)
+    order = await session.get(SalesOrder, plan.order_id)
     if order is not None and order.status == "cancelled":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -228,7 +228,10 @@ async def assert_plan_accepts_payment(
 
 
 async def lock_plan(session: AsyncSession, plan_id: int) -> ReceivablePlan:
-    """按统一锁序锁住应收节点行；不存在抛 404。
+    """锁住应收节点行；涉及订单的调用方必须先锁订单。
+
+    `lock_order_and_plan` 是需要两把锁时的标准入口；本函数保留为已经持有
+    订单锁的路径（例如确认流程在同一事务内的再次刷新）使用。不存在抛 404。
 
     为什么确认/驳回必须锁它：两个各 50 的确认请求锁的是**两条不同的回款记录**，
     彼此锁不到；只锁回款记录时两边都会读到"已确认合计 50"，各写一次「部分回款」，
@@ -247,6 +250,28 @@ async def lock_plan(session: AsyncSession, plan_id: int) -> ReceivablePlan:
     if plan is None:
         raise AppError(ErrorCode.NOT_FOUND, "应收节点不存在", 404)
     return plan
+
+
+async def lock_order_and_plan(
+    session: AsyncSession, plan_id: int
+) -> tuple[SalesOrder, ReceivablePlan]:
+    """按统一顺序锁住订单和应收节点，返回两行的最新值。
+
+    先无锁读取节点只是为了得到所属订单 id；真正的写锁严格按订单、节点的
+    顺序取得。订单可能已被删除或节点可能在等待期间消失，均按不存在处理。
+    """
+    known = (
+        await session.execute(
+            select(ReceivablePlan).where(ReceivablePlan.id == plan_id)
+        )
+    ).scalar_one_or_none()
+    if known is None:
+        raise AppError(ErrorCode.NOT_FOUND, "应收节点不存在", 404)
+    order = await lock_order(session, known.order_id)
+    if order is None:
+        raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    plan = await lock_plan(session, plan_id)
+    return order, plan
 
 
 def resolve_payment_currency(plan: ReceivablePlan, requested: str | None) -> str:
@@ -343,16 +368,15 @@ async def assert_order_can_add_receivable(order: SalesOrder) -> None:
 async def get_visible_plan(
     session: AsyncSession, user, plan_id: int, *, for_update: bool = False
 ) -> ReceivablePlan:
-    """取节点并校验数据范围；`for_update=True` 时按统一锁序先锁住节点行。
+    """取节点并校验数据范围；`for_update=True` 时按统一锁序先锁订单、再锁节点。
 
     所有会写节点状态（含"改金额后重算"）的入口都必须走 `for_update=True`：
     重算必须在锁内发生，否则与并发确认互相覆盖（后写的那个用的是旧汇总）。
     """
-    plan = (
-        await lock_plan(session, plan_id)
-        if for_update
-        else await get_plan_or_404(session, plan_id)
-    )
+    if for_update:
+        _, plan = await lock_order_and_plan(session, plan_id)
+    else:
+        plan = await get_plan_or_404(session, plan_id)
     await assert_order_visible(session, user, plan.order_id)
     return plan
 
@@ -362,13 +386,26 @@ async def get_visible_payment(
 ) -> PaymentRecord:
     """取回款并校验数据范围；`for_update=True` 时按统一锁序加锁。
 
-    锁序固定为「应收节点 → 回款记录」：先读出它挂的节点（这一步不加锁，只为
-    知道该锁哪一行），锁住共同节点，再锁回款记录自己。反过来（先锁回款再锁节点）
-    会和"改计划金额"那条路径的加锁顺序相反，两边各持一把互相等就是死锁。
+    锁序固定为「订单 → 应收节点 → 回款记录」：先读出回款所属订单和节点（这一步
+    不加锁，只为知道该锁哪几行），锁订单、锁共同节点，再锁回款记录自己。所有会
+    同时碰订单与应收的路径都遵守这条顺序，避免与订单取消互相等待。
     """
     if for_update:
         # 不加锁地读一次，只为拿到 receivable_plan_id。
         known = await get_payment_or_404(session, payment_id)
+        # 回款路径也必须先锁订单：订单取消是「订单 → 节点」，登记/确认/修改/
+        # 凭证操作不能再走「节点 → 回款」后补订单，否则会形成死锁环。
+        # 订单归属以应收节点为准；正常数据里它与 payment_records.order_id 一致，
+        # 这样即使历史脏数据两列不一致，也不会因为先锁错订单而破坏全局锁序。
+        known_plan = (
+            await session.get(ReceivablePlan, known.receivable_plan_id)
+            if known.receivable_plan_id
+            else None
+        )
+        order_id = known_plan.order_id if known_plan is not None else known.order_id
+        order = await lock_order(session, order_id)
+        if order is None:
+            raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
         if known.receivable_plan_id:
             await lock_plan(session, known.receivable_plan_id)
         record = (

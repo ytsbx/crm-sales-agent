@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     #: 登录防爆破：滑动窗口内同一（用户名+IP）连续失败达到上限即锁定。
     login_max_attempts: int = 5
     login_lockout_window_minutes: int = 10
+    #: 只有来自这些反向代理网段的请求才允许使用 X-Forwarded-For。
+    #: 留空时一律使用 TCP 对端地址，避免客户端伪造来源头绕过登录限流。
+    trusted_proxy_ips: str = ""
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
@@ -136,6 +139,11 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]
+
+    @property
+    def trusted_proxy_ip_list(self) -> list[str]:
+        """返回配置的代理 IP/CIDR，空白和非法项交给调用方忽略。"""
+        return [x.strip() for x in self.trusted_proxy_ips.split(",") if x.strip()]
 
     @property
     def wecom_contact_ready(self) -> bool:

@@ -1432,8 +1432,16 @@ async def build_item_snapshot(
         cost_snapshot=Decimal(str(result["cost"]["goods_cost"])),
         package_cost_snapshot=Decimal(str(result["cost"]["package_cost"])),
         logistics_cost_snapshot=Decimal(str(result["cost"]["logistics_cost"] or 0)),
-        standard_price_snapshot=Decimal(str(result["standard_price"])),
-        recommended_price_snapshot=Decimal(str(result["recommended_price"])),
+        standard_price_snapshot=(
+            Decimal(str(result["standard_price"]))
+            if result.get("standard_price") is not None
+            else None
+        ),
+        recommended_price_snapshot=(
+            Decimal(str(result["recommended_price"]))
+            if result.get("recommended_price") is not None
+            else None
+        ),
         # 存**人民币**口径（result["minimum_price"] 在外币单上已折成计价币种，
         # 拿它落快照会让审批把 3.6 美元的保护价当成 3.6 人民币去比）
         minimum_price_snapshot=(

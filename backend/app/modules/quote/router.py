@@ -356,7 +356,7 @@ async def update_quote(
     金额、明细、费用属于**版本**，必须走版本接口 ——
     否则会出现"单据金额变了但版本快照没变"，历史报价再也对不上。
     """
-    quote = await svc.get_visible_quote(session, user, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id, for_update=True)
     before = svc.serialize_quote(quote)
     data = payload.model_dump(exclude_unset=True)
     if data.get("owner_id") is not None:
@@ -372,7 +372,7 @@ async def update_quote(
         # 可编辑的草稿版同步；已提交审批/已发送的版本按既定锁定规则**拒绝** ——
         # 不允许借"改一下主单"把已经对外的历史口径改掉。
         current_version = (
-            await session.get(QuoteVersion, quote.current_version_id)
+            await svc.get_visible_version(session, user, quote.current_version_id, for_update=True)
             if quote.current_version_id
             else None
         )
@@ -408,7 +408,7 @@ async def delete_quote(
     已转订单的报价不能删：订单与报价是追溯关系，删了报价会让订单
     失去来源。其余情况软删，历史版本与审计都保留。
     """
-    quote = await svc.get_visible_quote(session, user, quote_id)
+    quote = await svc.get_visible_quote(session, user, quote_id, for_update=True)
     order_id = (
         await session.execute(
             select(SalesOrder.id).where(SalesOrder.quote_id == quote.id)
@@ -834,7 +834,7 @@ async def link_master(
 
     缺确认时**明确报缺什么**，不静默跳过 —— 静默跳过正是"点了没反应"的来源。
     """
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     sent = version.sent_at is not None
     submitted = version.approval_status in ("pending", "approved")
     if sent or submitted:
@@ -865,7 +865,7 @@ async def price_refresh(
     session: AsyncSession = Depends(get_db),
 ):
     """把系统带价的明细刷新到当前适用价（仅草稿可刷；手工价明细不覆盖）。"""
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
 
@@ -1055,7 +1055,7 @@ async def update_version(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     data = payload.model_dump(exclude_unset=True)
     valid_until = data.pop("valid_until", None)
@@ -1097,7 +1097,7 @@ async def set_items(
     session: AsyncSession = Depends(get_db),
 ):
     """整版替换明细：报价明细按 SKU 逐条计算并落快照。"""
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
 
@@ -1170,7 +1170,7 @@ async def update_item(
     item = await session.get(QuoteItem, item_id)
     if item is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_visible_version(session, user, item.quote_version_id)
+    version = await svc.get_visible_version(session, user, item.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
 
@@ -1291,7 +1291,7 @@ async def delete_item(
     item = await session.get(QuoteItem, item_id)
     if item is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_visible_version(session, user, item.quote_version_id)
+    version = await svc.get_visible_version(session, user, item.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
     before = svc.serialize_item(item)
     await session.delete(item)
@@ -1319,7 +1319,7 @@ async def add_charge(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     charge = QuoteCharge(
         quote_version_id=version_id,
@@ -1365,7 +1365,7 @@ async def delete_charge(
     charge = await session.get(QuoteCharge, charge_id)
     if charge is None:
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
-    version = await svc.get_visible_version(session, user, charge.quote_version_id)
+    version = await svc.get_visible_version(session, user, charge.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
     before = svc.serialize_charge(charge)
     await session.delete(charge)
@@ -1601,6 +1601,12 @@ async def download_pdf(
 ):
     """生成并下载报价单 PDF。数据全部取快照，不回查当前价格。"""
     version = await svc.get_visible_version(session, user, version_id)
+    if version.approval_status != "approved":
+        raise AppError(
+            ErrorCode.APPROVAL_PENDING,
+            "报价未通过审批，不能生成正式报价 PDF",
+            422,
+        )
     quote = await svc.get_visible_quote(session, user, version.quote_id)
     ctx = await _quote_context(session, [quote])
     items = await svc.version_items(session, version_id)
@@ -1712,7 +1718,7 @@ async def add_version_item(
     与 `/items/batch` 的区别：batch 是整版替换（界面保存整版用），
     这个是单条追加 —— 逐条录需求时用得上。
     """
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
     await _ensure_inquiry_visible(session, user, payload.inquiry_id)
@@ -1797,7 +1803,7 @@ async def update_charge(
     charge = await session.get(QuoteCharge, charge_id)
     if charge is None:
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
-    version = await svc.get_visible_version(session, user, charge.quote_version_id)
+    version = await svc.get_visible_version(session, user, charge.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
 
     before = svc.serialize_charge(charge)
@@ -1839,7 +1845,7 @@ async def recalculate_version(
     已发送的版本也会重算（只算金额、不改报价内容），
     因为"算错了"本身就该能被纠正。
     """
-    version = await svc.get_visible_version(session, user, version_id)
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
     before = {
         "subtotal_amount": float(version.subtotal_amount),
         "charge_amount": float(version.charge_amount),
