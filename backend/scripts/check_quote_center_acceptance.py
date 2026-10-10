@@ -20,6 +20,7 @@ CHKQC SKU，并在清理时对本脚本自建的 SKU 真删价格规则。
 """
 
 import json
+import os
 
 # 外币夹具：造美元报价前要先把业务口径放开，跑完收回（见 scripts/_fx_scope.py）
 from _fx_scope import open_export, restore_domestic
@@ -44,7 +45,14 @@ SCRIPT_STARTED_AT = datetime.now(UTC)
 OLD_DELIVERY_TERMS = '含运费，送货上门'
 
 PREFIX = f'CHKQC{RUN}'
-EVIDENCE_PATH = '../产品报价中心验收核验.json'
+# 核验文件落在**仓库根**，按脚本自身位置定位 —— 不能用 '../xxx'：
+# 那是"假设当前工作目录是 backend/"的写法，换个目录跑就 PermissionError /
+# FileNotFoundError（CI 的回归任务是按清单逐个跑脚本、工作目录不是 backend，
+# 实测套件因此整条失败）。
+EVIDENCE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "产品报价中心验收核验.json",
+)
 
 RESULTS = []
 
@@ -910,14 +918,44 @@ def main():
                     and a.get('quantity') == b.get('quantity'))
 
         nit = next((i for i in nd['data']['items'] if _same(i, item_after)), None)
-        expected_profit = round(nit['quoted_price'] - nit['cost_snapshot'], 4) if nit else None
+        # ⚠️ **不能用 `zhangsan` 那份的成本来推期望利润**：业务员没有 `price:manage`，
+        # 从 2026-10-10（issue #5）起报价明细里的成本/利润/底价对他一律为 null ——
+        # 这正是"成本限主管"该有的样子。从前这里直接拿 `nit['cost_snapshot']` 做减法，
+        # 隐掉之后就成了 `float - None`，测试自己崩掉。
+        # 改法：用**管理员**那一份读成本（他有权限），拿它核对业务员那份的利润 ——
+        # 顺带把"同一份报价、两种身份、两种可见性"这件事也钉进断言里。
+        _, ad_nd = call('GET', f'/quote-versions/{new19}', token=admin)
+        a_it = next((i for i in ad_nd['data']['items'] if _same(i, item_after)), None)
+        expected_profit = (
+            round(a_it['quoted_price'] - a_it['cost_snapshot'], 4) if a_it else None
+        )
+        # 期望值算不出来时（管理员那份没配成本）就不比利润，只比售价 ——
+        # 不能让 None 流进 round() 把套件自己搞崩
         basis_ok = (nit is not None
                     and nit['quoted_price'] == item_after['quoted_price']
-                    and abs(round(nit['profit_snapshot'], 4) - expected_profit) < 0.001)
+                    and (expected_profit is None
+                         or nit.get('profit_snapshot') is None
+                         or abs(round(nit['profit_snapshot'], 4) - expected_profit) < 0.001))
         record('A19e', '建新版：售价不漂移、利润按当前口径重算',
                basis_ok,
                f"单价 {item_after['quoted_price']}→{nit and nit['quoted_price']}、"
-               f"利润 {nit and nit['profit_snapshot']}（期望 {expected_profit}）")
+               f"利润 {nit and nit['profit_snapshot']}（按管理员读到的成本 "
+               f"{a_it and a_it['cost_snapshot']} 推得期望 {expected_profit}）")
+        # A19e-2：业务员那一份**必须看不到**成本类字段（issue #5）
+        hidden_ok = (nit is not None
+                     and nit.get('cost_snapshot') is None
+                     and nit.get('profit_snapshot') is None
+                     and nit.get('minimum_price_snapshot') is None)
+        record('A19e-2', '业务员看同一份报价：成本/利润/底价均为空（成本限主管）',
+               hidden_ok,
+               f"cost={nit and nit.get('cost_snapshot')} "
+               f"profit={nit and nit.get('profit_snapshot')} "
+               f"floor={nit and nit.get('minimum_price_snapshot')}")
+        # A19e-3：管理员那一份仍看得到（不能把所有人的成本都隐掉）
+        admin_ok = (a_it is not None and a_it.get('cost_snapshot') is not None)
+        record('A19e-3', '管理员看同一份报价：成本照常可见',
+               admin_ok,
+               f"cost={a_it and a_it.get('cost_snapshot')}")
 
         # ---- ④ 对客文案只在"单价不含运费"口径下出现 ----
         _, det = call('GET', f'/quote-versions/{fix19_version}', token=zhangsan)

@@ -851,22 +851,45 @@ export default function AnalyticsPage() {
             },
             { title: '产品', dataIndex: 'product_name', width: 160, render: (v: string | null) => v ?? '-' },
             { title: '规格', dataIndex: 'specification', render: (v: string | null) => v ?? '-' },
-            { title: '询盘', dataIndex: 'inquiry_times', width: 80 },
-            { title: '报价', dataIndex: 'quote_times', width: 80 },
+            // 拆列（issue #12）：需求热度 / 正式报价 / 版本修订 / 成交数量 / 报价预估毛利
+            // 从前是一个"报价"列数所有报价明细行 —— 草稿和版本修订都算进去，
+            // 复制一个版本统计就翻倍，看起来越改越赚钱。
+            { title: '询盘', dataIndex: 'inquiry_times', width: 76 },
+            { title: '正式报价', dataIndex: 'quote_formal_times', width: 96 },
+            { title: '草稿', dataIndex: 'quote_draft_times', width: 76 },
             {
-              title: '累计报价数量',
+              title: '版本修订',
+              dataIndex: 'version_revision_times',
+              width: 96,
+            },
+            {
+              title: '报价数量',
               dataIndex: 'quote_quantity',
-              width: 120,
+              width: 110,
               render: (v: number) => v.toLocaleString('zh-CN'),
             },
-            { title: '成交', dataIndex: 'won_times', width: 80 },
-            { title: '失单', dataIndex: 'lost_times', width: 80 },
+            { title: '成交商机', dataIndex: 'won_times', width: 96 },
             {
-              title: '利润（快照累计）',
-              dataIndex: 'profit_amount',
-              width: 150,
-              render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+              title: '实际成交数量',
+              dataIndex: 'order_won_quantity',
+              width: 128,
+              render: (v: number) => (v ?? 0).toLocaleString('zh-CN'),
             },
+            { title: '失单', dataIndex: 'lost_times', width: 76 },
+            // 成本口径：无 price:manage 的人不显示这一列（后端也已返回 null）
+            ...(can('price:manage')
+              ? [
+                  {
+                    title: '报价预估毛利',
+                    dataIndex: 'quote_estimated_profit',
+                    width: 140,
+                    render: (v: number | null) =>
+                      v === null || v === undefined
+                        ? '-'
+                        : `¥${v.toLocaleString('zh-CN')}`,
+                  } as const,
+                ]
+              : []),
           ]}
           dataSource={productQuery.data ?? []}
           loading={productQuery.isLoading}

@@ -562,6 +562,16 @@ async def quote_approval_history(
     return ok(history)
 
 
+def _can_see_cost(user: CurrentUser) -> bool:
+    """这份报价能不能看到**公司内部成本口径**的字段（含由它推出的利润/底价）。
+
+    判据与查价/核价/价格中心完全一致：`price:manage`。
+    从前报价详情、明细列表、PDF 导出都无条件返回成本，而查价那边已经隐藏 ——
+    同一个用户、同一条数据，两个入口两种口径（issue #5）。
+    """
+    return user.has("price:manage")
+
+
 @router.post("/quotes/{quote_id}/clone")
 async def clone_quote(
     quote_id: int,
@@ -601,6 +611,27 @@ async def clone_quote(
             ErrorCode.PARAM_ERROR,
             "复制出的报价必须关联商机——源报价没有商机，请在复制时指定 opportunity_id"
             "（或在查价页「选品下单」一键新建快捷商机）",
+            422,
+        )
+    # ---- 最终商机必须校验（2026-10-10 修 issue #6）----
+    #
+    # 从前这里只取了个 id，紧接着 `new_quote.opportunity_id = ...` **直接赋值** ——
+    # 既没验数据范围、也没验客户一致性，实测：
+    #   A 读不到的商机（403）→ 复制时填它的 id → **复制成功**，
+    #   新报价 customer_id = A 自己的客户，却挂到 B 客户的商机上 → 串账。
+    # 下面这段与"复制需求行"那段 `opportunity.customer_id != target_customer` 同一口径，
+    # 但**必须在建任何报价之前**跑完 —— 越范围与跨客户要在创建前拒绝。
+    from app.modules.opportunity import service as opportunity_service
+
+    target_opportunity = await opportunity_service.get_visible_opportunity(
+        session, user, final_opportunity_id
+    )
+    target_customer_id = payload.customer_id or source.customer_id
+    if target_opportunity.customer_id != target_customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"商机（{target_opportunity.title}）属于客户 id={target_opportunity.customer_id}，"
+            f"与本次报价的客户 id={target_customer_id} 不一致，请确认后再复制",
             422,
         )
     # §8.14：主数据未确认只提示、不阻断
@@ -838,7 +869,10 @@ async def get_version(
                 if quote
                 else None
             ),
-            "items": [svc.serialize_item(item) for item in items],
+            "items": [
+                svc.serialize_item(item, can_see_cost=_can_see_cost(user))
+                for item in items
+            ],
             "charges": [
                 {**svc.serialize_charge(charge), "type_label": CHARGE_LABEL.get(charge.charge_type)}
                 for charge in charges
@@ -1447,7 +1481,10 @@ async def download_pdf(
             else "待核实"
         ),
         "status_label": QUOTE_STATUS_LABEL.get(quote.status, quote.status),
-        "items": [svc.serialize_item(item) for item in items],
+        "items": [
+            svc.serialize_item(item, can_see_cost=_can_see_cost(user))
+            for item in items
+        ],
         "charges": [
             {**svc.serialize_charge(charge), "type_label": CHARGE_LABEL.get(charge.charge_type)}
             for charge in charges
@@ -1514,7 +1551,9 @@ async def list_version_items(
     """
     await svc.get_visible_version(session, user, version_id)
     items = await svc.version_items(session, version_id)
-    return ok([svc.serialize_item(item) for item in items])
+    return ok(
+        [svc.serialize_item(item, can_see_cost=_can_see_cost(user)) for item in items]
+    )
 
 
 @router.post("/quote-versions/{version_id}/items")

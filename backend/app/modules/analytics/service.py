@@ -29,7 +29,12 @@ from app.modules.opportunity.model import LossReason, Opportunity, OpportunityIt
 from app.modules.opportunity.model import OpportunityStageHistory
 from app.modules.order.milestones import node_label
 from app.modules.order.model import ORDER_STATUS_LABEL
-from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
+from app.modules.order.model import (
+    OrderMilestone,
+    OrderShipmentBatch,
+    SalesOrder,
+    SalesOrderItem,
+)
 # 交期换算只有一份（第九批 §9.8）：订单详情、批次指标、这里共用
 from app.modules.order.schedule import suggested_ship_date
 # 业务时间基准（第九批 §9.10）：归月 / 归年 / "今天"都收在 core/timebase
@@ -1057,12 +1062,32 @@ async def customer_stats(session: AsyncSession, user: CurrentUser) -> dict:
 async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 10) -> list[dict]:
     """PRD §23「产品：询盘 / 报价 / 成交 / 失单 / 利润」。
 
-    口径说明（写在代码里，避免以后各算各的）：
-    - 询盘：该 SKU 出现在多少条**商机需求明细**里（客户问过这个产品）
-    - 报价：该 SKU 出现在多少条**报价明细**里
-    - 成交：该 SKU 出现在多少张**已成交商机**的需求明细里
-    - 失单：该 SKU 出现在多少张**已失单商机**的需求明细里
-    - 利润：该 SKU 在报价明细上的 `profit_snapshot × quantity` 累计（快照口径，历史不受改价影响）
+    ## 口径（写在代码里，避免以后各算各的）
+
+    **这几件事必须分开列，不能合成一个"报价次数"**（issue #12）：从前只有一个
+    `quote_times` = 该 SKU 在所有报价明细里的行数，不区分草稿/正式、不排除已删报价，
+    也不把同一报价的版本修订归一。实测后果：**只复制一个版本（不发送、不成交），
+    统计就从 12 次 / ¥105046 涨到 15 次 / ¥126060** —— 报价改得越多，
+    产品看起来越赚钱。
+
+    现在拆成：
+
+    - `inquiry_times`          需求热度：出现在多少条**商机需求明细**里
+    - `quote_draft_times`      草稿：明细落在**未发送**的报价版本里
+    - `quote_formal_times`     正式报价：明细落在**已提交审批或已发送**的版本里，
+                               并按**报价单去重**（同一报价的 V2/V3 修订不重复计数）
+    - `version_revision_times` 版本修订次数：这个 SKU 涉及多少个报价版本
+    - `quote_quantity`         报价数量（正式 + 草稿都算，看清"报了多少量"）
+    - `won_times` / `lost_times` 已成交 / 已失单商机的需求明细条数
+    - `order_won_quantity`     **实际成交数量**：来自 `sales_order_items`（订单事实，
+                               不是商机需求行）—— 这才是真卖出去的量
+    - `quote_estimated_profit` **报价预估毛利**：正式报价明细的
+                               `profit_snapshot × quantity` 累计。
+                               ⚠️ 名字里必须带"报价/预估"：它不是实际利润
+                               （未成交、未回款、成本未回流），叫「利润」会被当成真赚到的钱。
+                               无 `price:manage` 的操作人不返回（issue #5：知道报价和利润
+                               就能反推成本）。
+    - 已删除的报价整单排除（从前删除报价后统计仍留着那些数字）
     """
     # 询盘 / 成交 / 失单：都从商机需求明细出发，按商机状态分类
     inquiry_stmt = (
@@ -1087,25 +1112,78 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
         elif status == "loss":
             lost[sku_id] = lost.get(sku_id, 0) + int(count)
 
-    # 报价次数 / 报价数量 / 利润快照：从报价明细出发，按报价所属人过滤
-    quote_stmt = (
-        select(
-            QuoteItem.sku_id,
-            func.count(QuoteItem.id),
-            func.coalesce(func.sum(QuoteItem.quantity), 0),
-            func.coalesce(func.sum(QuoteItem.profit_snapshot * QuoteItem.quantity), 0),
-        )
-        .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
-        .join(Quote, Quote.id == QuoteVersion.quote_id)
-        .group_by(QuoteItem.sku_id)
+    # ---- 报价侧：正式 / 草稿 / 版本修订 / 预估毛利（issue #12 拆列）----
+    #
+    # 「正式」的判据：这一版**已经提交过审批或已经发出**（`submitted_at` / `sent_at`
+    # 任一非空）。只看 `approval_status` 不够——被驳回或撤回的版本也是"报出去过"的事实。
+    # ⚠️ 已删除的报价整单排除：从前没排除，删掉报价统计里还留着那些数字。
+    is_formal = or_(
+        QuoteVersion.submitted_at.is_not(None),
+        QuoteVersion.sent_at.is_not(None),
     )
     quote_rows = (
-        await session.execute(await _scope_filter(quote_stmt, user, Quote.owner_id, session))
+        await session.execute(
+            await _scope_filter(
+                select(
+                    QuoteItem.sku_id,
+                    Quote.id.label("quote_id"),
+                    QuoteVersion.id.label("version_id"),
+                    is_formal.label("is_formal"),
+                    QuoteItem.quantity,
+                    # 预估毛利只在正式版本上累计（草稿的报价还没对外，不该算进"报价毛利"）
+                    func.coalesce(QuoteItem.profit_snapshot * QuoteItem.quantity, 0).label(
+                        "profit"
+                    ),
+                )
+                .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
+                .join(Quote, Quote.id == QuoteVersion.quote_id)
+                .where(Quote.deleted_at.is_(None)),
+                user,
+                Quote.owner_id,
+                session,
+            )
+        )
     ).all()
-    quoted = {
-        sku_id: (int(count), _f(quantity), _f(profit))
-        for sku_id, count, quantity, profit in quote_rows
-    }
+    quoted: dict[int, dict] = {}
+    for sku_id, quote_id, version_id, formal, quantity, profit in quote_rows:
+        acc = quoted.setdefault(
+            sku_id,
+            {
+                "draft_times": 0,
+                "formal_times": 0,
+                "quantity": 0.0,
+                "versions": set(),
+                "formal_quotes": set(),
+                "profit": 0.0,
+            },
+        )
+        acc["versions"].add(version_id)
+        if formal:
+            acc["formal_times"] += 1
+            acc["formal_quotes"].add(quote_id)
+            acc["profit"] += float(profit or 0)
+        else:
+            acc["draft_times"] += 1
+        acc["quantity"] += float(quantity or 0)
+
+    # ---- 实际成交数量：来自订单事实（不是商机需求行）----
+    order_rows = (
+        await session.execute(
+            await _scope_filter(
+                select(
+                    SalesOrderItem.sku_id,
+                    func.coalesce(func.sum(SalesOrderItem.quantity), 0),
+                )
+                .join(SalesOrder, SalesOrder.id == SalesOrderItem.order_id)
+                .where(SalesOrderItem.sku_id.is_not(None))
+                .group_by(SalesOrderItem.sku_id),
+                user,
+                SalesOrder.owner_id,
+                session,
+            )
+        )
+    ).all()
+    order_won = {int(sku_id): _f(qty) for sku_id, qty in order_rows}
 
     sku_ids = set(inquiry) | set(quoted)
     if not sku_ids:
@@ -1120,25 +1198,42 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     ).all()
     meta = {row[0]: row[1:] for row in meta_rows}
 
+    # 成本口径字段按权限（与查价/报价详情同判据，issue #5）
+    can_see_cost = user.has("price:manage")
+    empty = {
+        "draft_times": 0, "formal_times": 0, "quantity": 0.0,
+        "versions": set(), "formal_quotes": set(), "profit": 0.0,
+    }
     items = []
     for sku_id in sku_ids:
         code, spec, product_name = meta.get(sku_id, (None, None, None))
-        count, quantity, profit = quoted.get(sku_id, (0, 0.0, 0.0))
+        acc = quoted.get(sku_id, empty)
         items.append(
             {
                 "sku_id": sku_id,
                 "sku_code": code,
                 "specification": spec,
                 "product_name": product_name,
+                # 需求热度（客户问过）
                 "inquiry_times": inquiry.get(sku_id, 0),
-                "quote_times": count,
-                "quote_quantity": quantity,
+                # 报价侧：草稿与正式分开；正式按**报价单**去重
+                "quote_draft_times": acc["draft_times"],
+                "quote_formal_times": len(acc["formal_quotes"]),
+                "version_revision_times": len(acc["versions"]),
+                "quote_quantity": round(acc["quantity"], 2),
+                # 成交（商机事实）与实际卖出的量（订单事实）
                 "won_times": won.get(sku_id, 0),
                 "lost_times": lost.get(sku_id, 0),
-                "profit_amount": round(profit, 2),
+                "order_won_quantity": order_won.get(sku_id, 0.0),
+                # 报价预估毛利 —— 不是实际利润。无权限者为 None
+                "quote_estimated_profit": (
+                    round(acc["profit"], 2) if can_see_cost else None
+                ),
             }
         )
-    items.sort(key=lambda x: (-x["quote_times"], -x["inquiry_times"]))
+    items.sort(
+        key=lambda x: (-x["quote_formal_times"], -x["quote_draft_times"], -x["inquiry_times"])
+    )
     return items[:limit]
 
 

@@ -110,13 +110,29 @@ export interface ProductStat {
   sku_name?: string | null
   specification?: string | null
   product_name?: string | null
-  /** PRD §23「询盘 / 报价 / 成交 / 失单 / 利润」 */
+  /** PRD §23「询盘 / 报价 / 成交 / 失单 / 利润」。
+   *
+   * ⚠️ 这几项**必须分开显示**，不能合成一个"报价次数"（issue #12）：
+   * 从前只有一个 `quote_times` = 所有报价明细的行数，不分草稿/正式、不排已删报价、
+   * 也不把同一报价的版本修订归一 —— 只复制一个版本，统计就凭空翻倍。
+   */
   inquiry_times: number
-  quote_times: number
+  /** 草稿：明细落在**未发送**的报价版本里 */
+  quote_draft_times: number
+  /** 正式报价：已提交审批或已发送，**按报价单去重**（V2/V3 修订不重复计数） */
+  quote_formal_times: number
+  /** 版本修订次数：这个 SKU 涉及多少个报价版本 */
+  version_revision_times: number
   quote_quantity: number
+  /** 成交（商机事实）：已成交商机的需求明细条数 */
   won_times: number
   lost_times: number
-  profit_amount: number
+  /** **实际成交数量**：来自订单明细（订单事实，不是商机需求行） */
+  order_won_quantity: number
+  /** **报价预估毛利**：正式报价明细的利润快照累计。
+   *  不是实际利润（未成交、未回款），所以名字里必须带"报价/预估"。
+   *  无 `price:manage` 权限时为 `null`（issue #5：知道报价和利润就能反推成本）。 */
+  quote_estimated_profit: number | null
 }
 
 export interface SalesUserStat {

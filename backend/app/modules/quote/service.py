@@ -106,8 +106,40 @@ def _f(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
 
-def serialize_item(item: QuoteItem) -> dict:
-    return {
+#: 报价明细里**属于公司内部成本口径**的字段：无 `price:manage` 的操作人不该拿到。
+#:
+#: 为什么连**利润**也要一起隐（issue #5）：报价 100、利润 80 就能反推出成本 20 ——
+#: 只隐成本等于没隐。底价快照同理（它是由成本推出来的）。
+#: 查价接口早已按 `price:manage` 隐藏成本，这里是让**所有读出口**与它同一口径。
+_COST_ONLY_ITEM_FIELDS = (
+    "cost_snapshot",
+    "package_cost_snapshot",
+    "logistics_cost_snapshot",
+    "standard_price_snapshot",
+    "recommended_price_snapshot",
+    "minimum_price_snapshot",
+    "profit_snapshot",
+    "profit_rate_snapshot",
+)
+
+#: `price_source` 取这个值时，说明这条明细的成本是**业务员自己填的人工核价成本**
+#: （定制项，`_build_custom_item_snapshot` 落的就是它）——那是操作人自己的输入，
+#: 不是公司内部成本，隐了就没法编辑定制项。主人 2026-10-10 拍板：这一种不隐。
+_SELF_ENTERED_COST_SOURCE = "custom_manual"
+
+
+def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
+    """一条报价明细。
+
+    `can_see_cost=False`（无 `price:manage`）时，**公司内部成本口径**的字段置空，
+    包含由成本推出的利润/底价（否则能反推成本）。
+    例外：`price_source='custom_manual'` 的人工核价成本是操作人自己的输入，照常返回。
+    """
+    # 无权限时默认全隐；`custom_manual` 只**放行成本本身**（业务员自己的输入），
+    # 利润/底价不跟着放行 —— 它们由成本推出，放行等于把成本又泄回去。
+    hide = not can_see_cost
+    own_cost_only = hide and (item.price_source or "") == _SELF_ENTERED_COST_SOURCE
+    data = {
         "id": item.id,
         "quote_version_id": item.quote_version_id,
         "opportunity_item_id": item.opportunity_item_id,
@@ -138,6 +170,17 @@ def serialize_item(item: QuoteItem) -> dict:
         "approval_reason": item.approval_reason,
         "remark": item.remark,
     }
+    if hide:
+        for field in _COST_ONLY_ITEM_FIELDS:
+            if own_cost_only and field == "cost_snapshot":
+                continue  # 业务员自己填的人工核价成本：照常回填，否则定制项没法编辑
+            data[field] = None
+        if own_cost_only:
+            # 包装/运费成本不是他的输入（系统按 SKU 算的），一并隐掉，
+            # 免得从"成本 120 里含包装 5"这种拆分再反推内部口径
+            data["package_cost_snapshot"] = None
+            data["logistics_cost_snapshot"] = None
+    return data
 
 
 def serialize_charge(charge: QuoteCharge) -> dict:

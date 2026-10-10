@@ -1,8 +1,11 @@
-"""GitHub issue 整改批次一（#3 金额口径 / #9 目标利润）的反例断言。
+"""GitHub issue 整改批次一（#3 / #5 / #6 / #9 / #12）的反例断言。
 
 对应 issue：
-  - #3 [P1] 报价金额、利润、审批和输入约束没有共用同一口径
-  - #9 [P1] 核价的"目标利润金额"没有真正约束建议价
+  - #3  [P1] 报价金额、利润、审批和输入约束没有共用同一口径
+  - #9  [P1] 核价的"目标利润金额"没有真正约束建议价
+  - #6  [P1] 复制报价能挂到不可见、不同客户的商机
+  - #5  [P1] 成本保密只覆盖部分入口，报价和产品分析仍泄露成本
+  - #12 [P1] 产品经营统计把报价草稿和版本修订重复累计
 
 断言写的是**当时复现出来的那个反例**，不是"改完长什么样"——退回去改坏了一定会红。
 
@@ -76,6 +79,13 @@ async def _db(sql: str, params: dict | None = None):
 
     async with SessionLocal() as s:
         return await s.execute(text(sql), params or {})
+
+
+async def _count_quotes() -> int:
+    from app.core.database import SessionLocal
+
+    async with SessionLocal() as s:
+        return int((await s.execute(text("select count(*) from quotes"))).scalar_one())
 
 
 def new_opportunity(admin: str, tag: str) -> int:
@@ -184,6 +194,13 @@ async def main() -> int:
     if not admin:
         print("  登录失败:", res)
         return 1
+    status, res = call("POST", "/auth/login", body={"username": "zhangsan", "password": "123456"})
+    zs = (res.get("data") or {}).get("access_token")
+    if not zs:
+        print("  业务员登录失败:", res)
+        return 1
+    status, res = call("GET", "/auth/me", zs)
+    zs_uid = (res.get("data") or {}).get("id")
     try:
         fixture(admin)
 
@@ -270,6 +287,134 @@ async def main() -> int:
                    any("达不到要求的单件利润" in w for w in (d.get("warnings") or [])),
                    str((d.get("warnings") or []))[:80])
 
+        print("\n=== #6 复制报价：最终商机必须先校验 ===")
+        # 别人的客户 + 商机（zhangsan 读不到）
+        call("POST", "/customers", admin, {"name": f"{MARK}-X-客户", "level": "C"})
+        status, res = call("GET", f"/customers?keyword={MARK}-X-客户&page=1&page_size=5", admin)
+        xc = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
+        call("POST", "/opportunities", admin,
+             {"title": f"{MARK}-X-商机", "customer_id": xc, "expected_amount": 100})
+        status, res = call("GET", f"/opportunities?keyword={MARK}-X-商机&page=1&page_size=5", admin)
+        xo = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
+
+        # zhangsan 自己的客户/商机/报价
+        call("POST", "/customers", zs, {"name": f"{MARK}-M-客户", "level": "C"})
+        status, res = call("GET", f"/customers?keyword={MARK}-M-客户&page=1&page_size=5", admin)
+        mc = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
+        await _db("update customers set owner_id=:o where id=:i", {"o": zs_uid, "i": int(mc)})
+        call("POST", "/opportunities", zs,
+             {"title": f"{MARK}-M-商机", "customer_id": mc, "expected_amount": 100})
+        status, res = call("GET", f"/opportunities?keyword={MARK}-M-商机&page=1&page_size=5", admin)
+        mo = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
+        await _db("update opportunities set owner_id=:o where id=:i", {"o": zs_uid, "i": int(mo)})
+        call("POST", "/quotes", zs, {"opportunity_id": mo})
+        status, res = call("GET", "/quotes?page=1&page_size=1", zs)
+        mq = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
+        await _db("commit")
+
+        status, res = call("GET", f"/opportunities/{xo}", zs)
+        check_true("先确认那条商机对业务员确实不可见",
+                   res.get("code") != 0, f"code={res.get('code')}")
+
+        before = await _count_quotes()
+        status, res = call("POST", f"/quotes/{mq}/clone", zs, {"opportunity_id": xo})
+        after = await _count_quotes()
+        check_true("复制到不可见商机 → 拒绝", res.get("code") != 0, f"code={res.get('code')}")
+        check("  且**没有创建任何报价**", after - before, 0)
+
+        # 可见但属于别的客户
+        call("POST", "/customers", zs, {"name": f"{MARK}-M2-客户", "level": "C"})
+        status, res = call("GET", f"/customers?keyword={MARK}-M2-客户&page=1&page_size=5", admin)
+        mc2 = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
+        await _db("update customers set owner_id=:o where id=:i", {"o": zs_uid, "i": int(mc2)})
+        call("POST", "/opportunities", zs,
+             {"title": f"{MARK}-M2-商机", "customer_id": mc2, "expected_amount": 100})
+        status, res = call("GET", f"/opportunities?keyword={MARK}-M2-商机&page=1&page_size=5", admin)
+        mo2 = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
+        await _db("update opportunities set owner_id=:o where id=:i", {"o": zs_uid, "i": int(mo2)})
+        await _db("commit")
+
+        before = await _count_quotes()
+        status, res = call("POST", f"/quotes/{mq}/clone", zs, {"opportunity_id": mo2})
+        after = await _count_quotes()
+        check_true("复制到不同客户的商机 → 拒绝", res.get("code") != 0, f"code={res.get('code')}")
+        check("  且**没有创建任何报价**", after - before, 0)
+
+        # 对照：复制到自己的商机应成功
+        before = await _count_quotes()
+        status, res = call("POST", f"/quotes/{mq}/clone", zs, {"opportunity_id": mo})
+        after = await _count_quotes()
+        check_true("对照：复制到自己的同一个商机 → 放行",
+                   res.get("code") == 0 and after - before == 1,
+                   f"code={res.get('code')} 新建={after - before}")
+
+        print("\n=== #5 成本可见性（报价详情与产品分析同一口径）===")
+        status, res = call("GET", f"/quote-versions/{vid}", admin)
+        it_admin = ((res.get("data") or {}).get("items") or [{}])[0]
+        status, res = call("GET", f"/quote-versions/{vid}", zs)
+        it_sales = ((res.get("data") or {}).get("items") or [{}])[0]
+        cost_fields = (
+            "cost_snapshot", "package_cost_snapshot", "logistics_cost_snapshot",
+            "minimum_price_snapshot", "profit_snapshot",
+        )
+        if it_admin.get("cost_snapshot") is not None:
+            check_true("有 price:manage 的管理员仍看得到成本",
+                       any(it_admin.get(f) is not None for f in cost_fields),
+                       str({f: it_admin.get(f) for f in cost_fields})[:70])
+        if it_sales:
+            leaked = {f: it_sales.get(f) for f in cost_fields if it_sales.get(f) is not None}
+            check_true("无 price:manage 的销售看不到成本类字段",
+                       not leaked, str(leaked)[:80])
+            check_true("  但报价本身仍可见（销售要用）",
+                       it_sales.get("quoted_price") is not None,
+                       f"quoted={it_sales.get('quoted_price')}")
+
+        status, res = call("GET", "/analytics/products?limit=20", admin)
+        rows_a = (res.get("data") or []) if isinstance(res.get("data"), list) else []
+        status, res = call("GET", "/analytics/products?limit=20", zs)
+        rows_s = (res.get("data") or []) if isinstance(res.get("data"), list) else []
+        if rows_a:
+            check_true("管理员拿得到报价预估毛利",
+                       any(r.get("quote_estimated_profit") is not None for r in rows_a),
+                       str([r.get("quote_estimated_profit") for r in rows_a[:3]]))
+        if rows_s:
+            check_true("销售拿到的是 null（不能反推成本）",
+                       all(r.get("quote_estimated_profit") is None for r in rows_s),
+                       str([r.get("quote_estimated_profit") for r in rows_s[:3]]))
+
+        print("\n=== #12 统计拆列：复制版本不能虚增正式报价与预估毛利 ===")
+        status, res = call("GET", "/analytics/products?limit=20", admin)
+        rows_a = (res.get("data") or []) if isinstance(res.get("data"), list) else []
+        target = next((r for r in rows_a if (r.get("version_revision_times") or 0) > 0), None)
+        if target is None:
+            print("  （没有可比的 SKU，跳过）")
+        else:
+            code = target.get("sku_code")
+            status, res = call("GET", "/quotes?page=1&page_size=20", admin)
+            qs = ((res.get("data") or {}).get("items") or [])
+            if qs:
+                call("POST", f"/quotes/{qs[0]['id']}/versions", admin, {})
+                status, res = call("GET", "/analytics/products?limit=20", admin)
+                after_rows = (res.get("data") or []) if isinstance(res.get("data"), list) else []
+                after = next((r for r in after_rows if r.get("sku_code") == code), {})
+                check("复制版本后「正式报价」次数不变",
+                      after.get("quote_formal_times"), target.get("quote_formal_times"))
+                check("复制版本后「报价预估毛利」不变",
+                      after.get("quote_estimated_profit"), target.get("quote_estimated_profit"))
+                check_true("「版本修订」如实增加（这正是要如实反映的）",
+                           (after.get("version_revision_times") or 0)
+                           >= (target.get("version_revision_times") or 0),
+                           f"{target.get('version_revision_times')} → "
+                           f"{after.get('version_revision_times')}")
+                for field in ("quote_draft_times", "quote_formal_times",
+                              "version_revision_times", "quote_estimated_profit",
+                              "order_won_quantity", "inquiry_times"):
+                    if field not in target:
+                        failed.append(f"#12 缺字段 {field}")
+                        print(f"  FAIL #12 缺字段 {field}")
+                else:
+                    check_true("拆列字段齐全（草稿/正式/版本修订/预估毛利/实际成交数量）", True)
+
         print("\n=== #9 对照：只给利润率时不受影响 ===")
         status, res = call("POST", "/pricing/calculate", admin,
                            {"sku_id": 1, "quantity": 1, "logistics_cost": 0, "target_margin": 0.3})
@@ -284,7 +429,7 @@ async def main() -> int:
     if failed:
         print(f"FAILED（{len(failed)}）: {failed}")
         return 1
-    print(f"issue 批次一（#3 / #9）：全部通过（{passed} 条）")
+    print(f"issue 批次一（#3/#5/#6/#9/#12）：全部通过（{passed} 条）")
     return 0
 
 
