@@ -22,7 +22,7 @@ const KEY_LABEL: Record<string, string> = {
   name: '名称',
   specification: '规格',
   unit: '单位',
-  moq: 'MOQ',
+  moq: '起订量',
   quantity: '数量',
   order_times: '成交次数',
   last_unit_price: '最近成交价',

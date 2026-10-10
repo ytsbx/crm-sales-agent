@@ -361,7 +361,7 @@ export default function ProductDetailPage() {
       render: (v: number | null) => v ?? '-',
     },
     { title: '装箱数', dataIndex: 'carton_qty', width: 90, render: (v: number | null) => v ?? '-' },
-    { title: 'MOQ', dataIndex: 'moq', width: 90, render: (v: number | null) => v ?? '-' },
+    { title: '起订量', dataIndex: 'moq', width: 90, render: (v: number | null) => v ?? '-' },
     { title: '包装', dataIndex: 'package_type', width: 100, render: (v: string | null) => v ?? '-' },
     {
       title: '状态',
@@ -674,7 +674,7 @@ export default function ProductDetailPage() {
                 ['weight', '单重 (kg)'],
                 ['carton_qty', '装箱数'],
                 ['carton_volume', '箱体积 (m³)'],
-                ['moq', 'MOQ'],
+                ['moq', '起订量（MOQ）'],
               ] as const
             ).map(([field, label]) => (
               <div style={{ flex: 1 }} key={field}>

@@ -286,6 +286,12 @@ def test_sku_int_columns_refuse_truncation():
     with pytest.raises(ValueError, match="不是合法整数"):
         sku_fields_from_row({"SKU编码": "SKU-1", "MOQ": "2.9"})
     assert sku_fields_from_row({"SKU编码": "SKU-1", "MOQ": "3"})["moq"] == 3
+    # 表头两种写法都收（2026-10-10 把模板/导出改成中文「起订量」）：
+    # 既有的旧表格写的是 `MOQ`，新模板写的是 `起订量`，读的时候都不能失败。
+    assert sku_fields_from_row({"SKU编码": "SKU-1", "起订量": "5"})["moq"] == 5
+    # 中文表头同样**不许截断**（2.9 抛错，不是悄悄变 2）
+    with pytest.raises(ValueError):
+        sku_fields_from_row({"SKU编码": "SKU-1", "起订量": "2.9"})
 
 
 def test_sku_numeric_columns_reject_nan_and_negative():

@@ -40,7 +40,7 @@ SKU_TEMPLATE_HEADERS = [
     "重量",
     "装箱数",
     "箱规体积",
-    "MOQ",
+    "起订量",
     "包装方式",
     "单位",
 ]
@@ -53,7 +53,7 @@ SKU_EXPORT_HEADERS = [
     "颜色",
     "材质",
     "单位",
-    "MOQ",
+    "起订量",
     "状态",
     "创建时间",
 ]
@@ -110,7 +110,7 @@ def _decimal(raw: str | None):
 def _int(raw: str | None):
     """整数列。**不做 `int(float(x))` 截断**。
 
-    原来 `int(float("2.9"))` = 2：装箱数、MOQ 这类字段被静默改小，
+    原来 `int(float("2.9"))` = 2：装箱数、起订量这类字段被静默改小，
     用户看到的和文件里的不一致，而且没有任何提示 —— 比直接报错难查得多。
     """
     from decimal import Decimal, InvalidOperation
@@ -177,9 +177,12 @@ def sku_fields_from_row(row: dict) -> dict:
     非法值一律抛 `ValueError`（带人话原因），由调用方决定记成哪一行的失败；
     **不做截断、不把非法值当空白**：静默改数比导入失败难查得多。
     """
-    moq = _int(row.get("MOQ"))
+    #: 表头兼容两种写法（2026-10-10 把模板/导出改成中文「起订量」）：
+    #: **已经导出去的表格里写的是 `MOQ`**，只认中文会让那些人一导入就失败。
+    #: 读的时候两种都收，新的写出去用中文。
+    moq = _int(row.get("起订量") if row.get("起订量") is not None else row.get("MOQ"))
     if moq is not None and moq < 0:
-        raise ValueError("MOQ 不能为负数")
+        raise ValueError("起订量不能为负数")
     carton_qty = _int(row.get("装箱数"))
     if carton_qty is not None and carton_qty < 0:
         raise ValueError("装箱数不能为负数")
