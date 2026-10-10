@@ -225,8 +225,8 @@ export default function ImageGallery({
         }}
       >
         <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-          产品图片单独放这里（jpg / png / webp / gif），单张不超过 {maxSizeMb} MB。
-          规格书、图纸等资料请放下面的「产品资料与图片」。
+          这里只收图片（jpg / png / webp / gif），单张不超过 {maxSizeMb} MB；
+          规格书、图纸等资料请到页面下方的「产品资料与图片」。
         </div>
         {canWrite && (
           <>
