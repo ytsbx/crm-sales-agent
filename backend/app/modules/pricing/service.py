@@ -914,14 +914,54 @@ async def calculate_price(
     if recommended is None:
         warnings.append("无成本也无已维护售价，无法给出建议价——请先维护成本或价格规则")
 
-    # 利润要求（绝对金额口径）：反推一个等效的目标利润率，便于统一走后面的算法
-    if target_profit_amount is not None and target_margin is None:
-        if recommended > 0 and target_profit_amount < recommended:
-            margin = (recommended - target_profit_amount) / recommended
-        else:
+    # ---- 利润要求：绝对金额口径（2026-10-10 修 issue #9）----
+    #
+    # 口径（审查指出、按"系统适用价 vs 达到目标所需的试算价"分开）：
+    #   目标利润金额 = 单件**利润**，不是单件售价。
+    #   固定成本口径下，达到它的**试算价 = 成本 + 目标利润**（成本 100、目标 80 → 180）。
+    #   这个试算价是**判定基准**，用来回答"当前适用价够不够"；
+    #   **不静默改写**当前适用价（recommended 仍按系统价格规则走）。
+    #
+    # 从前那段是反推一个"等效目标利润率"再塞回 margin，于是：
+    #   成本 100、要求利润 80 → 建议价 142.857、利润只有 42.857
+    #   （因为 142.857 是按"利润率 0.44"算出来的售价，不是"成本+80"），
+    #   而且只给一句 warning 说"已忽略该约束"——业务员以为达标了。
+    # 顺带修掉一个 500：`recommended` 可能是 None（无成本又无价格规则），
+    # `None < Decimal` 会抛 TypeError 冒成 500。
+    target_profit_price: Decimal | None = None
+    profit_target_met: bool | None = None
+    if target_profit_amount is not None:
+        if not has_cost:
+            # 没有成本，"成本 + 目标利润"无从计算 —— 如实说不可计算，不要 500
+            profit_target_met = None
             warnings.append(
-                f"要求的单件利润 ¥{target_profit_amount} 高于建议价，已忽略该约束"
+                f"要求单件利润 ¥{target_profit_amount}，但该 SKU 没有生效成本："
+                f"无法算出达标所需的试算价，请先维护成本"
             )
+        else:
+            target_profit_price = (base_cost + target_profit_amount).quantize(
+                Decimal("0.01")
+            )
+            if recommended is not None:
+                # 当前适用价能不能达到这次的利润目标
+                profit_target_met = (recommended - base_cost) >= target_profit_amount - Decimal(
+                    "0.0001"
+                )
+                if not profit_target_met:
+                    warnings.append(
+                        f"当前适用价 ¥{recommended:.2f} 达不到要求的单件利润 "
+                        f"¥{target_profit_amount}（实际 ¥{recommended - base_cost:.2f}）；"
+                        f"按成本 {base_cost:.2f} + 目标利润算，试算价应为 "
+                        f"¥{target_profit_price:.2f}"
+                    )
+            else:
+                # 没有已维护售价：把试算价作为建议价给出去（这就是"达到目标所需的价"）
+                recommended = target_profit_price
+                profit_target_met = True
+                warnings.append(
+                    f"该 SKU 无已维护售价，建议价按「成本 {base_cost:.2f} + 目标利润 "
+                    f"¥{target_profit_amount}」试算为 ¥{target_profit_price:.2f}"
+                )
 
     min_margin, can_approve = await resolve_min_margin(session, role_codes or [])
     # 授权底价由利润率反推——没有成本就没有授权底价（利润类判定同步停用）
@@ -1135,6 +1175,10 @@ async def calculate_price(
             "payment_terms": payment_terms,
             "target_margin": _f(target_margin),
             "target_profit_amount": _f(target_profit_amount),
+            #: 达到目标利润所需的**试算价**（成本 + 目标利润）。None = 没要求或算不出
+            "target_profit_price": _f(target_profit_price),
+            #: 当前适用价是否达到了这次的利润目标。None = 不可判定（无成本/无适用价）
+            "profit_target_met": profit_target_met,
         },
         "cost": {
             "purchase_cost": _f(purchase),

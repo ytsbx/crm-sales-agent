@@ -1851,7 +1851,9 @@ async def submit_for_approval(
         # 整单优惠摊到单价后的加权均价同样不得低于加权硬底
         if not hard_hits and total_qty:
             revenue_cny = (version.total_amount * fx) if foreign else version.total_amount
-            if revenue_cny and revenue_cny > 0:
+            # 总额非正已在上面硬拒；这里保留守卫只作防御（除零），
+            # 不再是"绕过校验"的入口。
+            if revenue_cny is not None and revenue_cny > 0:
                 avg_price = revenue_cny / total_qty
                 avg_floor = weighted_floor_total / total_qty
                 if avg_price < avg_floor - eps:
@@ -1922,6 +1924,28 @@ async def submit_for_approval(
         else:
             item.approval_required = False
             item.approval_reason = None
+
+    # ---- 整单金额必须为正（2026-10-10 修 issue #3）----
+    #
+    # ⚠️ 从前这里是 `if revenue and revenue > 0:` —— **总额为 0 或负数时整段跳过**，
+    # 于是整单优惠把应付打到 -66.29 元也照样 `approval_required=False` 直接批准
+    # （实测：明细 28.71、成本 20，优惠 95/100/150 → 总额 -66.29/-71.29/-121.29，
+    # 三次全部 `code=0 未超出权限，报价已通过`）。
+    # 业务上不存在"客户倒收钱"的报价，所以它跟"低于绝对底价"是同一类：
+    # **任何审批都不该放过**，因此在这里硬拒（422），不生成可批的审批单。
+    # 与下面硬底价那段同一个范式，出口文案也照它的写法给。
+    _total_for_check = (
+        (version.total_amount * fx) if foreign else version.total_amount
+    ) or ZERO
+    if _total_for_check <= 0:
+        raise AppError(
+            ErrorCode.PRICE_BELOW_HARD_FLOOR,
+            f"报价整单金额为 ¥{_total_for_check:.2f}，为零或负数，任何审批都无法通过，"
+            "已拒绝提交。请检查明细金额与整单优惠是否把总额打到了 0 以下；"
+            "合法出口：免费样品 / 清库存等特殊业务请走各自通道（另立零元单据），"
+            "不要在正常报价上用优惠把总额抵消掉。",
+            422,
+        )
 
     # A10（方案 §7.1）：整单有效金额判定。
     # 逐项全过 ≠ 整体能过：整单优惠（is_discount 附加费）摊下来后，
