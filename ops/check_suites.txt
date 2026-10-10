@@ -328,6 +328,9 @@ check_twelfth_round_repairs
 # 重点守两处容易改错的：① 不能被"一个产品下 N 个匹配 SKU"撑成重复行（join 会踩、exists 不会）；
 # ② 软删的 SKU 不算数。
 check_product_search_by_sku
+# 跟单节点不能脱离真实发货/回款而手填完成（issue #11）：`first_shipment`/`deposit`/`payment`
+# 由真实事实派生；人工节点（签约/产前样）可登记但标明「人工声明」。
+check_milestone_facts
 # 订单「已完成」必须有履约依据 + 回退要留理由（issue #10）。
 # 守一处最容易改坏的边界：非完成态之间的正常流转不能被闸门误拦。
 check_order_completion_evidence

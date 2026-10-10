@@ -823,6 +823,12 @@ async def confirm_payment(
         await svc.recalc_plan(session, plan)
     order = await session.get(SalesOrder, record.order_id)
     if order:
+        # 收款事实回流到跟单节点（issue #11）：「付定金」「收款」两个节点的实际日
+        # 由**已确认收款**派生，不能人工直填。这一笔确认之后立刻同步，
+        # 否则跟单页还停在"未完成"，与财务页对不上。
+        from app.modules.order import milestones as milestones_svc
+
+        await milestones_svc.sync_payment_milestones(session, order.id)
         from app.modules.followup.service import record_and_notify
 
         await record_and_notify(

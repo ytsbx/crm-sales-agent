@@ -11,6 +11,7 @@
 
 import logging
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -21,6 +22,7 @@ from app.core.errors import AppError, ErrorCode
 # 跟着宿主机时区走 —— 服务器换成 UTC 之后，北京时间凌晨的判定会差一天。
 from app.core.timebase import today_business
 from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
+from app.modules.payment.model import PaymentRecord, ReceivablePlan
 
 logger = logging.getLogger("crm.milestones")
 
@@ -189,8 +191,110 @@ async def ensure_batch_node(
     return node
 
 
-async def mark_batch_shipped(
-    session: AsyncSession, order_id: int, batch_no: int, actual_date: date | None
+#: 这些固定节点的实际日**由真实事实派生**，不接受人工直填（issue #11）。
+#:
+#: 审查实测的反例：普通销售把「首批发货」与「收款」的实际日期直接填上，
+#: 节点立刻显示完成，而同一张订单**实发数量仍是 0、已确认到账也是 0** ——
+#: 主管看到全绿，货和钱其实都没发生。
+#:
+#: 与动态批次节点同一条道理（那边早就堵了）：一件事只能有一个来源。
+DERIVED_NODES: dict[str, str] = {
+    "first_shipment": "取已发货批次里最早的实际发货日（在「发货」里登记）",
+    "deposit": "取已确认收款的日期（在「应收/回款」里确认收款）",
+    "payment": "取已确认收款的日期（在「应收/回款」里确认收款）",
+}
+
+#: 这几个节点没有对应的系统事实可派生，只能人工登记 —— 但登记后必须**标明是人工声明**，
+#: 不能和"已验证事实"混成同一类（审查原话：确需人工补录的节点标识"人工声明/待核实"）。
+MANUAL_NODES: tuple[str, ...] = (
+    "contract",
+    "pre_sample_sent",
+    "pre_sample_confirmed",
+)
+
+#: 人工登记时写进 `evidence` 的标记。前端据此显示「人工声明」而不是「已验证」。
+MANUAL_EVIDENCE_TAG = "[人工声明·待核实]"
+
+
+async def sync_payment_milestones(session: AsyncSession, order_id: int) -> None:
+    """把「付定金」「收款」两个节点接到**已确认收款**这份事实上（issue #11）。
+
+    口径（刻意保守，宁可不标完成也不假完成）：
+    - `deposit`：有任意一笔**已确认**收款 → 取最早那笔的到账日；
+    - `payment`：该订单下所有应收计划都收齐（且至少有一笔已确认）→ 取最晚那笔到账日。
+
+    "收齐"才标 `payment` 完成，是因为这个节点的语义就是"钱收完了"。
+    没确认到账就一律不动它，也不允许人工直填（见 `DERIVED_NODES`）。
+    """
+    rows = (
+        await session.execute(
+            select(OrderMilestone).where(
+                OrderMilestone.order_id == order_id,
+                OrderMilestone.node.in_(("deposit", "payment")),
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return
+    by_node = {row.node: row for row in rows}
+
+    confirmed = (
+        await session.execute(
+            select(
+                func.min(PaymentRecord.received_date),
+                func.max(PaymentRecord.received_date),
+                func.count(PaymentRecord.id),
+            ).where(
+                PaymentRecord.order_id == order_id,
+                PaymentRecord.status == "confirmed",
+                PaymentRecord.received_date.is_not(None),
+            )
+        )
+    ).one()
+    earliest, latest, count = confirmed
+    if not count or earliest is None:
+        return
+
+    deposit = by_node.get("deposit")
+    if deposit is not None and deposit.actual_date is None:
+        deposit.actual_date = earliest
+        _clear_skip(deposit)
+
+    # 收齐才标「收款」：应收总额 vs 已确认总额（都在库里算，不用前端传）
+    totals = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(ReceivablePlan.amount), 0),
+                func.coalesce(
+                    func.sum(
+                        select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
+                        .where(
+                            PaymentRecord.receivable_plan_id == ReceivablePlan.id,
+                            PaymentRecord.status == "confirmed",
+                        )
+                        .scalar_subquery()
+                    ),
+                    0,
+                ),
+            ).where(ReceivablePlan.order_id == order_id)
+        )
+    ).one()
+    planned, received = (Decimal(str(x or 0)) for x in totals)
+    payment = by_node.get("payment")
+    if payment is not None and planned > 0 and received >= planned:
+        payment.actual_date = latest if latest is not None else payment.actual_date
+        _clear_skip(payment)
+    await session.flush()
+
+
+def _clear_skip(row: OrderMilestone) -> None:
+    """事实发生了就把"跳过"清掉：跳过不等于实际完成，但现在它真的完成了。"""
+    row.skipped_at = None
+    row.skipped_by = None
+    row.skip_reason = None
+
+
+async def mark_batch_shipped(    session: AsyncSession, order_id: int, batch_no: int, actual_date: date | None
 ) -> None:
     """批次实发时登记实际日（第一批返修 §3.5）。
 

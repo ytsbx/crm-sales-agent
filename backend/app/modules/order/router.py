@@ -448,6 +448,25 @@ async def update_milestone(
                 "请在批次上调整计划或登记发货，不要单独改这个节点",
                 422,
             )
+    # 固定节点里也有几个是**真实事实的投影**（issue #11 实测的反例：
+    # 手填「首批发货」「收款」的实际日，节点显示完成，而同一张单实发 0、到账 0）。
+    # 与动态批次节点同一条道理：一件事只能有一个来源。计划日仍可调。
+    if row.node in milestones_svc.DERIVED_NODES and "actual_date" in data:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{milestones_svc.node_label(row.node)}」的实际日期不能直接填 —— "
+            f"{milestones_svc.DERIVED_NODES[row.node]}。"
+            "（计划日期仍可调整；确属历史补录请在备注里写明依据）",
+            422,
+        )
+    # 没有系统事实可派生的节点（签约、产前样）只能人工登记，
+    # 但登记后要**标明是人工声明**，不能与已验证事实混成同一类。
+    if (
+        row.node in milestones_svc.MANUAL_NODES
+        and data.get("actual_date") is not None
+        and "evidence" not in data
+    ):
+        data["evidence"] = milestones_svc.MANUAL_EVIDENCE_TAG
     before = {
         "node": row.node,
         "planned_date": str(row.planned_date),

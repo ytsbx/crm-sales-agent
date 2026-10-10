@@ -47,7 +47,20 @@ async def main():
         assert skipped['status'] == 'skipped' and skipped['skipped_by']
         req('PATCH', contract, {'actual_date': '2026-10-05'}, 422)
         deposit = base + f"/milestones/{nodes['deposit']['id']}"
-        req('PATCH', deposit, {'actual_date': '2026-10-01'})
+        # ⚠️ 这里从前直接 `PATCH {'actual_date': ...}` 把「付定金」标成已完成 ——
+        # issue #11（2026-10-10）之后，`deposit`/`payment`/`first_shipment` 的实际日
+        # **只能由真实事实派生**（已确认收款 / 已发货批次），人工直填一律 422。
+        # 下一行要验的是"**已实际完成的节点不能标为不适用**"，
+        # 所以这里必须让节点**真的完成**：走一遍真实的收款确认。
+        plan = req('POST', f'/orders/{oid}/receivables',
+                   {'plan_name': '定金', 'amount': 100, 'due_date': '2026-10-20'})['id']
+        pay = req('POST', '/payments',
+                  {'receivable_plan_id': plan, 'received_amount': 100,
+                   'received_date': '2026-10-01'})['id']
+        req('POST', f'/payments/{pay}/confirm', {})
+        nodes = {n['node']: n for n in req('GET', base + '/milestones')}
+        assert nodes['deposit']['actual_date'] == '2026-10-01', nodes['deposit']
+        deposit = base + f"/milestones/{nodes['deposit']['id']}"
         req('PATCH', deposit, {'skipped': True, 'skip_reason': '不要'}, 422)
         sample = base + f"/milestones/{nodes['pre_sample_sent']['id']}"
         req('PATCH', sample, {'planned_date': '2026-10-10'})

@@ -87,6 +87,13 @@ async def cleanup(order_id: int | None):
             "delete from order_shipment_batches where order_id = :o",
             "delete from order_status_history where order_id = :o",
             "delete from sales_order_items where order_id = :o",
+            # ⚠️ 回款/应收必须在订单之前删：`payment_records.order_id` 与
+            # `receivable_plans.order_id` 都指向 `sales_orders`。少了这两行会炸
+            # `update or delete on table "sales_orders" violates foreign key
+            # constraint "payment_records_order_id_fkey"` ——
+            # 实测：`check_delivery_planning` 改成走真实收款确认之后就撞上了。
+            "delete from payment_records where order_id = :o",
+            "delete from receivable_plans where order_id = :o",
             "delete from notifications where business_type = 'order' and business_id = :o",
             "delete from sales_orders where id = :o",
         ):
@@ -444,3 +451,23 @@ async def main() -> int:
 
 if __name__ == '__main__':
     sys.exit(asyncio.run(main()))
+
+
+def _dbg_skip(milestone_id: int) -> str:
+    """临时调试：读某个里程碑的 skipped_at。"""
+    import asyncio as _a
+
+    from sqlalchemy import text as _t
+
+    from app.core.database import SessionLocal as _S
+
+    async def _go():
+        async with _S() as s:
+            return (
+                await s.execute(
+                    _t("select coalesce(skipped_at::text,'NULL') from order_milestones where id=:i"),
+                    {"i": milestone_id},
+                )
+            ).scalar_one()
+
+    return _a.run(_go())
