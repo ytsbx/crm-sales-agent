@@ -695,6 +695,14 @@ def sec_c405_batch_qty(admin: str) -> None:
 # =====================================================================
 # C4-06：旧合同（无请求指纹）也要能比出日期差异
 # =====================================================================
+def _strip_fp(doc_id) -> bool:
+    """去掉请求指纹，模拟升级前就存在的旧合同。返回是否真的去掉了。"""
+    db(f"update contract_documents set filled_data = filled_data - '_request_fingerprint' "
+       f"where id={doc_id}")
+    return db(f"select (filled_data ? '_request_fingerprint')::text from contract_documents "
+              f"where id={doc_id}") == "false"
+
+
 def sec_c406_legacy_fingerprint(admin: str) -> None:
     """升级前的旧合同没有指纹，只能逐字段比 —— 此前**漏了到期日与生效日**。
 
@@ -717,12 +725,7 @@ def sec_c406_legacy_fingerprint(admin: str) -> None:
         did = int(db(f"select id from contract_documents where request_key='{key}' and deleted_at is null"))
         return base, did
 
-    def strip_fp(did) -> bool:
-        """去掉指纹，模拟升级前就存在的旧合同。返回是否真的去掉了。"""
-        db(f"update contract_documents set filled_data = filled_data - '_request_fingerprint' "
-           f"where id={did}")
-        return db(f"select (filled_data ? '_request_fingerprint')::text from contract_documents "
-                  f"where id={did}") == "false"
+    strip_fp = _strip_fp
 
     # ① 旧合同：只改到期日 → 拒
     base, did = mk("L1")
@@ -796,6 +799,82 @@ def sec_c406_legacy_fingerprint(admin: str) -> None:
                res.get("code") == 0 and (d.get("id") == did8 or d.get("duplicated") is True),
                f"code={res.get('code')}")
 
+    # ⑥ 自动补全字段不能被误判成冲突（复核 2026-10-10 第二轮抓到的回归）
+    #
+    # 反例：原请求**只选订单**，`quote_id` / `quote_version_id` 传 null ——
+    # 后端会由订单带出真实版本（`generate_document` 里那段"只选了订单、没指定版本：
+    # 跟订单走"）。`title` 传 null 也会生成「销售合同-客户名」默认标题。
+    # 于是**落库的是补全后的值**。旧合同只能拿请求现值比库里值，
+    # 内容完全相同的幂等重试就会 `None != 补全后的版本 id` → **409 误拦**（实测）。
+    #
+    # 客户端**分不清**"传 null 让后端补全"与"不传"，所以这两个请求必须同等对待。
+    # 修法：生成时把请求原值存进 `_request_echo`，比较走同一把尺子；
+    # 更早的行（连回显都没有）退化成"跳过会被自动补全的字段"。
+    # ⚠️ `contract_documents.request_key` 上有**唯一约束**，而 `MARK` 是固定前缀、
+    # 不随轮次变 —— 上一轮留下的同名键会让这一轮的插入**静默失败**，
+    # 随后按 request_key 查到的其实是**上一轮那份**（实测：跨轮误红，且报错
+    # 指向"内容冲突"，看起来像业务缺陷、实际是夹具没清）。
+    # 所以进这一段先把上一轮的残留按 key 前缀清掉。
+    db(f"delete from contract_documents where request_key like '{MARK}-autofill-%'")
+
+    # ⚠️ 夹具必须**自建且自洽**：以前这里用
+    # `select id from sales_orders/quotes order by id desc limit 1` 去捡"最后一行"，
+    # 结果捡到的是**别的段落留下的行** —— 库状态随运行轮次变化，第二轮就红了
+    # （实测：第一轮过、第二轮 409）。按 mark 精确取自己刚建的那一条。
+    # 自建客户 + 商机 + 报价（不用 seed 里的，避免依赖别的段落留没留数据）
+    call("POST", "/customers", admin, {"name": f"{MARK}-自动补全客户"})
+    cid6 = db(f"select id from customers where name = '{MARK}-自动补全客户' order by id desc limit 1")
+    call("POST", "/opportunities", admin,
+         {"title": f"{MARK}-自动补全商机", "customer_id": int(cid6), "expected_amount": 100})
+    opp6 = db(f"select id from opportunities where title = '{MARK}-自动补全商机' order by id desc limit 1")
+    call("POST", "/quotes", admin, {"opportunity_id": int(opp6)})
+    qid6 = db(f"select id from quotes where opportunity_id={opp6} order by id desc limit 1")
+    vid6 = db(f"select id from quote_versions where quote_id={qid6} order by id limit 1")
+    call("POST", "/orders", admin, {
+        "customer_id": int(cid6), "currency": "CNY",
+        "items": [{"sku_id": 1, "quantity": 1, "unit_price": 100}]})
+    oid6 = db(f"select id from sales_orders where customer_id={cid6} order by id desc limit 1")
+    # 让订单"从某个报价版本转来"（那正是自动补全的依据）。
+    # 两者必须指向**同一个报价**，否则生成时的自动补全与订单不一致。
+    db(f"update sales_orders set quote_id={qid6}, quote_version_id={vid6} where id={oid6}")
+    check("⑥ 前置：订单挂在自建报价上",
+          db(f"select quote_id::text from sales_orders where id={oid6}"), str(qid6))
+
+    call("POST", "/contract-templates", admin,
+         {"doc_type": "contract", "name": f"{MARK}-自动补全模板", "body": "客户 {{customer_name}}"})
+    tid6 = int(db("select id from contract_templates order by id desc limit 1"))
+
+    key6 = f"{MARK}-autofill-1"
+    base6 = {"template_id": tid6, "customer_id": int(cid6), "order_id": int(oid6),
+             "quote_id": None, "quote_version_id": None, "title": None, "request_key": key6}
+    call("POST", "/contract-documents", admin, dict(base6))
+    did6 = int(db(f"select id from contract_documents where request_key='{key6}' and deleted_at is null"))
+    check("⑥ 前置：报价/版本被自动补全",
+          db(f"select quote_version_id is not null from contract_documents where id={did6}"), "t")
+    check_true("⑥ 前置：已模拟旧合同（只去指纹，保留回显）", _strip_fp(did6))
+    _, res = call("POST", "/contract-documents", admin, dict(base6))
+    d = res.get("data") or {}
+    check_true("⑥ null 让后端补全 → 相同重试必须回放（从前 409）",
+               res.get("code") == 0 and (d.get("id") == did6 or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
+    # 更早的行：连回显都没有（本轮修复之前生成的）→ 跳过会被补全的字段
+    key7 = f"{MARK}-autofill-2"
+    base7 = {**base6, "request_key": key7}
+    call("POST", "/contract-documents", admin, dict(base7))
+    did7 = int(db(f"select id from contract_documents where request_key='{key7}' and deleted_at is null"))
+    db(f"update contract_documents set filled_data = filled_data - '_request_fingerprint' "
+       f"- '_request_echo' where id={did7}")
+    _, res = call("POST", "/contract-documents", admin, dict(base7))
+    d = res.get("data") or {}
+    check_true("⑥ 无指纹也无回显的最老行 → 仍不能误拦",
+               res.get("code") == 0 and (d.get("id") == did7 or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
+    # 对照：真实修改仍然要拒（修自动补全不能把真正的冲突也放过）
+    _, res = call("POST", "/contract-documents", admin, {**base6, "title": f"{MARK}-换标题"})
+    check_true("⑥ 对照：真改标题仍拒", res.get("code") != 0, f"code={res.get('code')}")
+
     # ④ 新合同（有指纹）：改日期同样要拒
     base4, did4 = mk("N1")
     check("④ 前置：新合同有指纹",
@@ -808,8 +887,30 @@ def sec_c406_legacy_fingerprint(admin: str) -> None:
     check_true("④ 相同内容仍幂等", res.get("code") == 0 and (d.get("id") == did4 or d.get("duplicated") is True),
                f"code={res.get('code')}")
 
+    # ⑥ 段自建的夹具：request_key 不体现在 title 上，**必须按 key 清**，
+    # 否则跨轮撞唯一约束（这一段的客户叫 `{MARK}-自动补全客户`，
+    # 而上面按 `title like` 的清理只覆盖合同标题）。
+    db(f"delete from contract_documents where request_key like '{MARK}-autofill-%'")
     db(f"delete from contract_documents where title like '{MARK}-%'")
     db(f"delete from contract_templates where name like '{MARK}-%'")
+    # ⑥ 那套客户/商机/报价/订单（挂在自建客户下）
+    _c6 = f"(select id from customers where name like '{MARK}-自动补全%')"
+    _o6 = f"(select id from opportunities where title like '{MARK}-自动补全%')"
+    db(f"delete from quote_charges where quote_version_id in (select id from quote_versions where quote_id in (select id from quotes where opportunity_id in {_o6}))")
+    db(f"delete from quote_items where quote_version_id in (select id from quote_versions where quote_id in (select id from quotes where opportunity_id in {_o6}))")
+    db(f"delete from quote_versions where quote_id in (select id from quotes where opportunity_id in {_o6})")
+    db(f"delete from quotes where opportunity_id in {_o6}")
+    db(f"delete from order_shipment_batch_items where batch_id in (select id from order_shipment_batches where order_id in (select id from sales_orders where customer_id in {_c6}))")
+    db(f"delete from order_shipment_batches where order_id in (select id from sales_orders where customer_id in {_c6})")
+    db(f"delete from order_status_history where order_id in (select id from sales_orders where customer_id in {_c6})")
+    db(f"delete from order_milestones where order_id in (select id from sales_orders where customer_id in {_c6})")
+    db(f"delete from sales_order_items where order_id in (select id from sales_orders where customer_id in {_c6})")
+    db(f"delete from sales_orders where customer_id in {_c6}")
+    db(f"delete from opportunity_stage_history where opportunity_id in {_o6}")
+    db(f"delete from opportunity_items where opportunity_id in {_o6}")
+    db(f"delete from opportunities where title like '{MARK}-自动补全%'")
+    db(f"delete from contacts where customer_id in {_c6}")
+    db(f"delete from customers where name like '{MARK}-自动补全%'")
 
 
 def main() -> int:

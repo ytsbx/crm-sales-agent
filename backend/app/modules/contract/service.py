@@ -56,6 +56,56 @@ def _request_fingerprint(payload) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+#: 生成时会被**后端改写**的请求字段。
+#:
+#: - `quote_id` / `quote_version_id`：只选订单时由 `order.quote_version_id` 带出，
+#:   也可以由版本反推报价单；
+#: - `title`：不传（或传 null）时生成「销售合同-客户名」这种默认标题。
+#:
+#: 旧合同拿请求现值比库里值时必须跳过这几个：客户端**无法区分**
+#: "传 null 让后端补全"与"不传"，补全后的值本来就不等于请求原值。
+_AUTO_FILLED_FIELDS = frozenset({"quote_id", "quote_version_id", "title"})
+
+#: 旧合同能逐字段比较的字段（模型上确实有对应快照列）。
+_ECHO_COMPARABLE = (
+    "order_id",
+    "quote_id",
+    "quote_version_id",
+    "title",
+    "expiry_date",
+    "effective_date",
+    "parent_id",
+)
+
+
+def _request_echo(payload) -> dict:
+    """客户端当初提交的原值（只留参与比较的字段），**JSON 可序列化**。
+
+    不带 `request_key`：它已经被幂等分支用掉了，且同一把键本来就是前提。
+
+    ⚠️ 必须走 `model_dump(mode="json")`：`filled_data` 是 JSON 列，
+    直接塞 `date` 对象会在 flush 时报
+    `TypeError: Object of type date is not JSON serializable`（实测 500）。
+    """
+    dumped = payload.model_dump(mode="json")
+    return {field: dumped[field] for field in _ECHO_COMPARABLE if field in payload.model_fields_set}
+
+
+def _request_values(payload) -> dict:
+    """参与比较时**请求侧**的取值：只含本次请求**明确提交过**的字段。
+
+    键集与 `_request_echo` 完全一致（两边都只收 `model_fields_set` 里的字段），
+    所以可以直接逐键比较，不会因为"一边有键一边没有"而误判。
+
+    ⚠️ 必须走 `model_dump(mode="json")`，不能用 `getattr(payload, field)`：
+    后者拿到的是 `date` 对象，而回显里存的是 `"2026-11-01"` 字符串 ——
+    **字符串永远不等于 date**，内容完全相同的重试会被误判成冲突
+    （比 500 更隐蔽：只在"日期非空"时出现）。
+    """
+    dumped = payload.model_dump(mode="json")
+    return {field: dumped.get(field) for field in _ECHO_COMPARABLE if field in payload.model_fields_set}
+
+
 class _QuoteSource:
     """模板里 `{{quote.x}}` 的解析代理：**先看选定的报价版本，再看报价单本身**。
 
@@ -365,40 +415,35 @@ async def generate_document(
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "该请求编号已用于不同内容的合同，请换一个编号", 409
                 )
-            # 兼容升级前已存在的文档：旧行没有指纹，只能比较**请求里明确提交过**的字段。
+            # 没有指纹的文档只能逐字段比。这里有**两个坑**，都不是靠直觉能对的：
             #
-            # ⚠️ 判据必须是 `model_fields_set`，**不是 `payload.x is not None`**（C4-06 补边界）。
-            # 这两件事完全不同：
-            #   - 字段**没出现在请求里** → 不该拿去比（可选字段不传时模型会给默认值 None，
-            #     拿默认值反推请求内容，会把旧的 `title=None` 误判成冲突）；
-            #   - 字段**显式传了 null** → 那是**一次真实的修改意图**，必须比。
-            # `is not None` 把两者混成一种，于是：
-            #   旧合同到期日 2026-11-01，同一把请求编号、显式传 `expiry_date: null`
-            #   → 比不出来 → **回放原合同**（实测返回 200「返回的是同一份」，到期日仍是 11-01）。
-            #   而新合同走指纹分支，同样输入**正确地返回 409** —— 两条分支口径不一致。
-            # 复核（2026-10-10）指出的就是这个空值边界。
+            # ❶ 判据是 `model_fields_set`，不是 `payload.x is not None`。
+            #    可选字段不传时模型给默认值 None，拿默认值反推请求内容会把
+            #    旧的 `title=None` 误判成冲突；而**显式传 null 是一次真实意图**，必须比。
+            #    （`is not None` 把两者混成一种：旧合同到期日 11-01、显式传
+            #    `expiry_date: null` 会被静默回放 —— 复核 2026-10-10 抓到的就是这条。）
             #
-            # 只列**模型上确实有快照列**、且"不传"与"传 null"语义不同的字段；
-            # `extra_fields`（默认 `{}`）与 `supersede_parent`（默认 False）是行为开关
-            # 而非快照列，不参与比较 —— 与修之前的口径保持一致。
-            _LEGACY_COMPARABLE = (
-                "order_id",
-                "quote_id",
-                "quote_version_id",
-                "title",
-                "expiry_date",
-                "effective_date",
-                "parent_id",
-            )
+            # ❷ **不能拿"补全后的值"当基准**：`quote_id` / `quote_version_id` 会由订单带出、
+            #    `title` 会生成默认值。客户端**分不清**"传 null 让后端补全"与"不传"，
+            #    所以拿请求里的 null 去比补全后的版本 id，**内容完全相同的幂等重试会 409**
+            #    （复核 2026-10-10 第二轮抓到的回归）。
+            #
+            # 优先用生成时存下的 `_request_echo`（客户端原值，同一把尺子）；
+            # 那之前生成的老行没有回显，只能退化成"跳过会被自动补全的字段"。
+            echo = (replayed.filled_data or {}).get("_request_echo")
             submitted = payload.model_fields_set
-            legacy_mismatch = (
-                replayed.customer_id != payload.customer_id
-                or replayed.template_id != payload.template_id
-                or any(
-                    field in submitted and getattr(replayed, field) != getattr(payload, field)
-                    for field in _LEGACY_COMPARABLE
+            if isinstance(echo, dict):
+                requested = _request_values(payload)
+                legacy_mismatch = replayed.customer_id != payload.customer_id or replayed.template_id != payload.template_id or any(
+                    echo.get(field) != requested.get(field) for field in submitted
                 )
-            )
+            else:
+                comparable = [f for f in _ECHO_COMPARABLE if f not in _AUTO_FILLED_FIELDS]
+                legacy_mismatch = replayed.customer_id != payload.customer_id or replayed.template_id != payload.template_id or any(
+                    field in submitted
+                    and getattr(replayed, field) != getattr(payload, field)
+                    for field in comparable
+                )
             if stored_fingerprint is None and legacy_mismatch:
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "该请求编号已用于另一份合同，请换一个编号", 409
@@ -505,6 +550,15 @@ async def generate_document(
         # 用 `_` 开头是跟项目里"内部键"的约定走，序列化时不会被当成业务字段。
         filled = {**filled, "_missing": missing}
     filled = {**filled, "_request_fingerprint": request_fingerprint}
+    # 请求回显：**存客户端当初提交的原值**（2026-10-10 修 C4-06 的自动补全边界）。
+    #
+    # 为什么需要它：`quote_id` / `quote_version_id` 会**由订单带出**、
+    # `title` 会生成默认值 —— 落库的是"补全后的值"。旧合同没有指纹，
+    # 只能"拿请求现值比库里值"，于是**内容完全相同的幂等重试会被误判成冲突**：
+    #   原请求只选订单、报价与版本传 null → 后端带出真实版本 → 重试时
+    #   `None != 补全后的版本 id` → 409（实测）。
+    # 把当初的请求原值存下来，比较就走**同一把尺子**，不再拿补全值当基准。
+    filled["_request_echo"] = _request_echo(payload)
     # 抬头快照：下载历史原件时用**当时**的客户名 / 公司名 / 单号。
     # 不存的话，客户改名之后同一份合同再下载，正文还是老名字（走快照）、
     # 抬头却已经是新名字——同一编号两次下载内容不同，对外文件出这种事说不清。
