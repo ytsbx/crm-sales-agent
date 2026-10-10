@@ -1153,19 +1153,50 @@ async def _confirm_field(
     value: Any,
     operator_id: int | None,
     now: datetime,
-) -> SkuFieldAuthority:
+    dedupe: bool = False,
+) -> tuple[SkuFieldAuthority, bool]:
+    """确认一个字段的值为**当前本地值**。返回 `(行, 这次是否真的变了)`。
+
+    `dedupe=True` 时，值没变就**不递增 `confirmed_version`、不改 `confirmed_at`、
+    不改 `confirmed_by`** —— "确认次数"与"确认时间"表达的是**确认值发生过变化**，
+    反复点同一件事不该把它们推着走（issue 建议第 3 条）。
+    逐字段独立确认也靠它：只把这次真的改了的字段算一次确认。
+
+    调用方（`confirm_sku_diff`）不传 `dedupe`，保持原行为：差异核定本身是
+    一次有依据的人工裁定，即使值恰好相同也是一次确认动作。
+    """
     row = await _authority_for(session, sku_id=sku.id, field_name=field_name)
     if row is None:
         row = SkuFieldAuthority(sku_id=sku.id, field_name=field_name)
         session.add(row)
         await session.flush()
-    row.confirmed_value = _json_value(value)
+    incoming = _json_value(value)
+    unchanged = (
+        dedupe
+        and (row.confirmed_version or 0) > 0
+        and _normalize_for_compare(row.confirmed_value) == _normalize_for_compare(incoming)
+    )
+    if unchanged:
+        return row, False
+    row.confirmed_value = incoming
     row.confirmed_version = (row.confirmed_version or 0) + 1
     row.confirmed_by = operator_id
     row.confirmed_at = now
     row.status = AUTH_CONFIRMED
     await session.flush()
-    return row
+    return row, True
+
+
+def _normalize_for_compare(value: Any) -> str:
+    """把确认值归一成可比较的字符串。
+
+    为什么不能直接比：`confirmed_value` 是 JSONB，`None` 与 `""` 都要能与
+    本地值如实对照；数字 `30` 与 `"30"` 在不同来源下含义相同，不该因为类型
+    差异被当成"变了"而多记一次确认。
+    """
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _validate_resolution(diff: IntegrationDiff, resolution: str, note: str | None) -> None:
@@ -1241,22 +1272,30 @@ async def confirm_local_master(
     if sku is None or sku.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, f"SKU #{sku_id} 不存在", 404)
 
-    before = await _confirmed_values(session, sku_id=sku.id, fields=wanted)
-    # 逐个确认**当前本地值**（与 RESOLUTION_KEEP_LOCAL 同一件事）
+    # 逐个确认**当前本地值**（与 RESOLUTION_KEEP_LOCAL 同一件事）。
+    # `dedupe=True`：值没变的字段不算一次新确认（逐字段独立确认，第 2/3 条）。
+    changed: list[str] = []
     for field in wanted:
-        await _confirm_field(
+        _row, did_change = await _confirm_field(
             session,
             sku=sku,
             field_name=field,
             value=local_value(sku, field),
             operator_id=operator_id,
             now=moment,
+            dedupe=True,
         )
+        if did_change:
+            changed.append(field)
     after = await _confirmed_values(session, sku_id=sku.id, fields=wanted)
-    changed = [f for f in wanted if before.get(f) != after.get(f)]
     # ⚠️ **值没变就不再冻结一版**：重复点"确认"会一路垒出 V2/V3/V4 而内容完全一样，
     # 版本列表越来越难看懂，而"正式报价用的哪一版"正是靠这个列表回答的。
     # 与 `_maybe_snapshot` 不为空差异造版本的道理相同。
+    #
+    # 但"有人又核对过一次"这件事**要留痕**（主人 2026-10-10 拍板）：
+    # 不改 `confirmed_at`/`confirmed_version`（那是"确认值变过"的记录），
+    # 而是在审计里写一条 `sku_master_recheck` —— 与 `sku_master_confirm_local`
+    # 分开，这样"确认过几次"与"核对过几次"两个问题都答得出来。
     if not changed:
         existing = await confirmed_master_version(session, sku.id)
         return {
@@ -1273,6 +1312,9 @@ async def confirm_local_master(
             "confirmed_at": moment,
             "note": note,
             "snapshot_created": False,
+            #: True = 这次只是"又核对了一遍"，没有改变任何确认值。
+            #: 调用方据此写 `sku_master_recheck` 审计（而不是 confirm 审计）。
+            "recheck": True,
             "message": (
                 "主数据与已确认版本一致，无需重新确认"
                 + (
@@ -1304,6 +1346,7 @@ async def confirm_local_master(
         "confirmed_at": moment,
         "note": version.note,
         "snapshot_created": True,
+        "recheck": False,
         "message": (
             "已确认主数据（"
             + "、".join(MASTER_FIELDS[f] for f in wanted)
@@ -1369,6 +1412,8 @@ async def confirm_sku_diff(
 
         if resolution == RESOLUTION_KEEP_LOCAL:
             if diff.field_name:
+                # 差异核定不传 `dedupe`：它本身是一次有依据的人工裁定，
+                # 即使值恰好与上一次相同，也算一次确认动作。
                 await _confirm_field(
                     session,
                     sku=sku,
@@ -1391,7 +1436,7 @@ async def confirm_sku_diff(
                     422,
                 )
             incoming = normalize_field_value(diff.field_name, diff.incoming_value)
-            row = await _confirm_field(
+            row, _changed = await _confirm_field(
                 session,
                 sku=sku,
                 field_name=diff.field_name,
@@ -1573,21 +1618,42 @@ async def sku_master_overview(session: AsyncSession, sku_id: int) -> dict:
     fields = []
     for field, label in MASTER_FIELDS.items():
         row = by_field.get(field)
+        local = local_value(sku, field)
+        confirmed = row.confirmed_value if row else None
+        has_confirmed = bool(row and (row.confirmed_version or 0) > 0)
+        # 「本地值已修改、尚未重新确认」：本地值与已确认值不一致（issue 建议第 4 条）。
+        # 判据用**字符串比较**并显式区分 None 与 ""：
+        #   - 从没确认过（has_confirmed=False）不算"已修改"，那是"未确认"；
+        #   - 确认值 `""`（合法的空规格）与本地 `None` 要不要算不一致？
+        #     算 —— 它们是不同的值，"确认了空、现在填了东西"必须提示。
+        _lv = "" if local is None else str(local)
+        _cv = "" if confirmed is None else str(confirmed)
+        differs = has_confirmed and (_lv != _cv)
         fields.append(
             {
                 "field_name": field,
                 "field_label": label,
-                "local_value": local_value(sku, field),
+                "local_value": local,
                 "source_system": row.source_system if row else None,
                 "source_verified": bool(row.source_verified) if row else False,
-                "source_status": ("已核实" if row and row.source_verified else "待核实"),
+                # 「本地字段已确认」与「外部来源已核实」是**两件事**（第 6 条）。
+                # 没有外部来源时显示「无外部来源」，不挂一个长期误导的「待核实」——
+                # 本地自建的 SKU 本来就没有外部来源，写「待核实」会让人以为
+                # "还差一步外部核对"，而它永远等不到。
+                "source_status": (
+                    "已核实"
+                    if (row and row.source_verified)
+                    else ("待核实" if (row and row.source_system) else "无外部来源")
+                ),
                 "external_identity": row.external_identity if row else None,
                 "source_updated_at": row.source_updated_at if row else None,
                 "source_value": row.source_value if row else None,
                 "authority": row.authority if row else None,
                 "authority_label": (row.authority if row and row.authority else "未拍板"),
                 "confirmed_version": row.confirmed_version if row else 0,
-                "confirmed_value": row.confirmed_value if row else None,
+                "confirmed_value": confirmed,
+                #: 本地值是否与已确认值不同 —— 前端据此提示「本地值已修改，尚未重新确认」
+                "local_differs_from_confirmed": differs,
                 "confirmed_at": row.confirmed_at if row else None,
                 "status": row.status if row else AUTH_UNVERIFIED,
             }
@@ -1855,6 +1921,7 @@ __all__ = [
     "WRITING_RESOLUTIONS",
     "build_sku_diff_key",
     "confirm_local_master",
+    "quote_master_refresh_preview",
     "confirm_sku_diff",
     "confirmed_master_version",
     # §8.14 复审补的：整版快照号 + "那一版够不够印给客户"的判据
@@ -1879,3 +1946,107 @@ __all__ = [
     "set_field_authority",
     "sku_master_overview",
 ]
+
+
+# ---------------------------------------------------------------- 报价刷新预览
+
+
+def _norm_text(value: Any) -> str:
+    return "" if value is None else str(value)
+
+
+async def quote_master_refresh_preview(
+    session: AsyncSession,
+    *,
+    version,  # QuoteVersion（不 import 以免循环依赖）
+    items: list,  # list[QuoteItem]
+) -> dict:
+    """报价草稿刷新主数据前**先给人看会变什么**（issue 建议第 5 条）。
+
+    为什么要有预览：刷新会把明细上的名称/规格/单位换成最新已确认快照，
+    而这三个字段是**印给客户**的。让人先看清"从什么变成什么"再确认，
+    比刷完再发现印错了便宜得多。
+
+    返回每条明细的逐字段变化 + 一个总的 `changed_count`。
+    只做读，不写任何东西 —— 真正的刷新走既有的 `/quote-versions/{id}/price-refresh`
+    （它已经在同一个事务里按已确认主数据重建快照）。
+
+    已发送的版本不给刷：报价发出去之后内容就是**对客承诺**，
+    改它等于改承诺。这条路只能新建版本（由调用方判断并提示）。
+    """
+    rows: list[dict] = []
+    changed_total = 0
+    never_referenced = 0
+    for item in items:
+        code = item.sku_code_snapshot or f"SKU#{item.sku_id}"
+        if item.sku_id is None:
+            # 定制项没有 SKU 主数据，跳过（它的名称是人工填的，不属于主数据口径）
+            continue
+        master = await resolve_confirmed_master(session, item.sku_id)
+        confirmed = master.get("values") or {}
+        # ⚠️ **从未引用过任何已确认版本**的明细（`master_version_no` 为空）必须说清楚。
+        # 它生成时还没有可引用的快照，所以"明细当前值"未必等于任何已确认值 ——
+        # 只按"明细值 vs 最新已确认值"比，会在两者恰好相同时报"无需刷新"，
+        # 而那正是最需要刷新的一条（刷新才会把版本号钉上去）。
+        # 实测踩到：明细的 name/spec/unit 快照全为空、master_version_no 为空，
+        # 预览却说"都引用最新、刷新不会改变内容" —— 误导。
+        if item.master_version_no is None:
+            never_referenced += 1
+        fields: list[dict] = []
+        for field in QUOTE_DISPLAY_FIELDS:
+            current = _norm_text(
+                {
+                    "name": item.sku_name_snapshot,
+                    "specification": item.spec_snapshot,
+                    "unit": getattr(item, "unit_snapshot", None),
+                }.get(field)
+            )
+            incoming = _norm_text(confirmed.get(field))
+            if current != incoming:
+                fields.append(
+                    {
+                        "field": field,
+                        "label": MASTER_FIELDS[field],
+                        "before": current or None,
+                        "after": incoming or None,
+                    }
+                )
+        if fields or item.master_version_no is None:
+            changed_total += 1
+        rows.append(
+            {
+                "item_id": item.id,
+                "sku_id": item.sku_id,
+                "sku_code": code,
+                # 明细当前引用的主数据版本（空 = 生成时还没有可引用的已确认版本）
+                "master_version_no": item.master_version_no,
+                "never_referenced": item.master_version_no is None,
+                "confirmed_version_no": (master.get("version") or {}).get("version_no"),
+                "unconfirmed": master.get("unconfirmed") or [],
+                "unconfirmed_labels": master.get("unconfirmed_labels") or [],
+                "changes": fields,
+            }
+        )
+    if not rows:
+        # 空版本（一条明细都没有）：不能让文案说"都已引用最新" ——
+        # 那听起来像"检查过了、没问题"，实际是"没什么可检查的"。
+        _msg = (
+            "这一版没有明细（没有 SKU 行），刷新不会改变任何内容"
+            if not items
+            else "这一版只有定制项，没有引用 SKU 主数据的明细"
+        )
+    elif changed_total:
+        _msg = f"{changed_total} 条明细会因刷新而改变"
+        if never_referenced:
+            _msg += f"（其中 {never_referenced} 条还没有引用过任何已确认版本）"
+    else:
+        _msg = "所有明细都已引用最新的已确认主数据，刷新不会改变内容"
+    return {
+        "items": rows,
+        "changed_count": changed_total,
+        "never_referenced_count": never_referenced,
+        "item_count": len(rows),
+        "display_fields": list(QUOTE_DISPLAY_FIELDS),
+        "display_field_labels": [MASTER_FIELDS[f] for f in QUOTE_DISPLAY_FIELDS],
+        "message": _msg,
+    }

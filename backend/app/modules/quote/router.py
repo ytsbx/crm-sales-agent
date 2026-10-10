@@ -770,6 +770,47 @@ async def price_drift(
     return ok(await svc.price_drift(session, version=version))
 
 
+@router.get("/quote-versions/{version_id}/master-refresh-preview")
+async def master_refresh_preview(
+    version_id: int,
+    user: CurrentUser = Depends(require_permission("quote:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """刷新主数据**之前**先看会变什么（issue 建议第 5 条）。
+
+    只读、不写。返回每条明细里名称/规格/单位的"从什么变成什么"，
+    由用户看过之后再决定是否真的刷新。
+
+    为什么先预览：这三个字段是**印给客户**的，刷新会直接改掉它们。
+    让人先看清再确认，比刷完发现印错了便宜得多。
+
+    ⚠️ **已发送的版本不给刷**：报价发出去之后内容就是对客承诺，
+    改它等于改承诺 —— 这条路只能新建版本。这里用一个显式字段
+    `refreshable` 告诉前端，而不是靠前端自己猜。
+    """
+    from app.modules.product import master as master_svc
+
+    version = await svc.get_visible_version(session, user, version_id)
+    items = await svc.version_items(session, version.id)
+    preview = await master_svc.quote_master_refresh_preview(
+        session, version=version, items=items
+    )
+    sent = version.sent_at is not None
+    submitted = version.approval_status in ("pending", "approved")
+    preview["sent"] = sent
+    preview["refreshable"] = not (sent or submitted)
+    if sent:
+        preview["blocked_reason"] = (
+            "这一版已经发给客户了，内容是对客承诺，不能刷新 —— "
+            "请「新建版本」后再刷新"
+        )
+    elif submitted:
+        preview["blocked_reason"] = (
+            "这一版已提交审批，不能直接刷新 —— 请「新建版本」后再刷新"
+        )
+    return ok(preview)
+
+
 @router.post("/quote-versions/{version_id}/price-refresh")
 async def price_refresh(
     version_id: int,

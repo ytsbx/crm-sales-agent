@@ -1807,7 +1807,17 @@ async def refresh_prices(
             quoted_price=new_price,
             logistics_cost=None,
             opportunity_item_id=item.opportunity_item_id,
-            spec_snapshot=item.spec_snapshot,
+            # ⚠️ **传 None**：让 `build_item_snapshot` 走 `_pick_confirmed` 取
+            # **当前已确认的规格**。从前传的是 `item.spec_snapshot`，于是刷新把
+            # `master_version_no` 钉到新版本、**规格快照却还是旧值** ——
+            # 明细声称引用 v4、显示的还是 v3 的规格，发送校验照样拦（实测：
+            # 「规格（明细用的是「999×888」，与所引用确认版本的「555×444」不一致）」）。
+            # 传 None 而不是空串：函数里的判据是 `spec_snapshot if spec_snapshot else ...`，
+            # 空串会落到同一分支，但 None 才是"没有外部指定"的准确表达。
+            # 刷新这个动作的语义就是"按**当前已确认主数据**重建这一行"，
+            # 而且执行前会先给人看变化预览（`master-refresh-preview`），
+            # 所以不存在"悄悄改掉用户手填值"的问题。
+            spec_snapshot=None,
             remark=item.remark,
             role_codes=user.roles,
             price_source=lookup["source"],
@@ -1818,9 +1828,9 @@ async def refresh_prices(
             "standard_price_snapshot", "recommended_price_snapshot", "minimum_price_snapshot",
             "profit_snapshot", "profit_rate_snapshot", "price_source",
             "customer_level_snapshot", "approval_required", "approval_reason",
-            # 单位快照一并刷新：刷新重建的是"当前条件下这一版的价格与单位"，
-            # 不带上它会让刚刷新过的版本行反而显示"待核实"
             "unit_snapshot",
+            # 对客三字段：刷新按已确认主数据重建（issue 建议第 5 条）
+            "sku_name_snapshot", "spec_snapshot",
             # §8.14：刷新会重新经过主数据解析，版本号也要跟着刷新后的口径走
             "master_version_no",
         ):

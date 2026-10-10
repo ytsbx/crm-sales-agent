@@ -929,13 +929,19 @@ async def confirm_local_sku_master(
     await write_audit(
         session,
         operator_id=user.id,
-        action="sku_master_confirm_local",
+        # 「又核对了一遍、但确认值没变」与「真的确认/改了值」分开记
+        # （主人 2026-10-10 拍板：不改确认时间，但要留核对痕迹）。
+        # 这样两个问题都答得出来："确认值变过几次"（看字段的 confirmed_version）
+        # 与"有人核对过几次"（看这两类审计的条数）。
+        action=("sku_master_recheck" if result.get("recheck") else "sku_master_confirm_local"),
         business_type="sku",
         business_id=sku_id,
         after={
             "confirmed_fields": result["confirmed_fields"],
+            "changed_fields": result.get("changed_fields") or [],
             "values": result["values"],
             "version_no": result["version_no"],
+            "snapshot_created": result.get("snapshot_created"),
             "note": payload.note,
         },
         ip=client_ip(request),

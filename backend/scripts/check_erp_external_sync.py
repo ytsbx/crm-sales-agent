@@ -536,7 +536,15 @@ async def check_sku_master_flow() -> None:
         check("差异类型是单位冲突", diffs[0]["diff_type"], "unit_conflict")
         overview = await m.sku_master_overview(s, IDS["sku"])
         unit = next(item for item in overview["fields"] if item["field_name"] == "unit")
-        check("来源显示待核实", unit["source_status"], "待核实")
+        # ⚠️ 这里原来是 `check("来源显示待核实", ..., "待核实")`。
+        # 2026-10-10 之后 `source_status` 有**三**种取值（主人拍板，issue 建议第 6 条）：
+        #   已核实     = 外部来源已核实
+        #   待核实     = **有**外部来源、但还没核实
+        #   无外部来源 = 压根没有外部来源（本地自建 SKU 就是这种）
+        # 从前只有前两种，"没有来源"也被写成"待核实"，让人以为还差一步外部核对，
+        # 而它永远等不到。下面这条走的是**真有来源**的路径，所以仍是"待核实"；
+        # 末尾另加一条守"无来源显示无外部来源"。
+        check("有外部来源但未核实 → 显示待核实", unit["source_status"], "待核实")
         check("权威归属未拍板", unit["authority_label"], "未拍板")
 
         # 确认"以本地为准" → 生成可回溯的版本（用户动作由路由/调用方提交）
@@ -586,8 +594,29 @@ async def check_http_endpoints(admin_token: str, owner_token: str) -> None:
     fields = ((res.get("data") or {}).get("fields")) or []
     check_true("总览覆盖关键字段", len(fields) >= 10, f"{len(fields)} 个字段")
     check_true(
-        "未核实的来源在接口上一律显示待核实",
-        all(item["source_status"] in ("待核实", "已核实") for item in fields),
+        "来源状态取值只有三种（不再把「没有来源」混进「待核实」）",
+        all(
+            item["source_status"] in ("待核实", "已核实", "无外部来源")
+            for item in fields
+        ),
+        str(sorted({item["source_status"] for item in fields})),
+    )
+    # 主人 2026-10-10 拍板（issue 建议第 6 条）：没有外部来源时显示「无外部来源」。
+    # 判据是"这个字段有没有 source_system"，与后端 `sku_master_overview` 同一份口径。
+    check_true(
+        "没有外部来源的字段显示「无外部来源」（不是长期误导的「待核实」）",
+        all(
+            (item["source_status"] == "无外部来源")
+            == (not item.get("source_system"))
+            for item in fields
+        ),
+        str(
+            [
+                (i["field_name"], i.get("source_system"), i["source_status"])
+                for i in fields
+                if (i["source_status"] == "无外部来源") != (not i.get("source_system"))
+            ]
+        ),
     )
 
     status, res = call(
