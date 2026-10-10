@@ -1,9 +1,10 @@
 """应收与回款入参。"""
 
+import math
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import field_validator, BaseModel, Field
 
 from app.core.patch_schema import PatchModel
 
@@ -39,6 +40,16 @@ class ReceivableGenerate(BaseModel):
     """按比例生成应收计划，例如 30% 定金 + 70% 尾款。"""
 
     ratios: list[float]
+    """各期比例，例如 [0.3, 0.7]，合计必须是 1。
+
+    ⚠️ `list[float]` **放得进 NaN / Infinity**（它们是合法 JSON 里合法写出来的
+    字面值 `NaN` / `Infinity`），下面必须显式挡掉：
+      - `abs(sum([nan]) - 1) > 0.0001` → **恒为 False**（任何与 NaN 的比较都是 False），
+        于是"比例之和必须等于 1"这道校验被**绕过**；
+      - 紧接着 `Decimal(str(nan))` = `Decimal('NaN')`，`any(r <= 0 ...)` 抛
+        `decimal.InvalidOperation` → 冒成 500（C5-08，2026-10-10 修）。
+    不在这里拦，就等于把一个 500 交给"看起来完全合法"的入参。
+    """
     first_due_date: date
     second_due_date: date | None = None
     first_name: str = "定金"
@@ -46,6 +57,18 @@ class ReceivableGenerate(BaseModel):
     #: 弱网重试的请求键（第七批 7.9）：双击"生成计划"带同一把键时，
     #: 第二次拿回第一次的结果，而不是撞"该订单已有应收计划"的报错。
     request_key: str | None = Field(default=None, max_length=idempotency.MAX_KEY_LENGTH)
+
+    @field_validator("ratios")
+    @classmethod
+    def _ratios_must_be_finite(cls, value: list[float]) -> list[float]:
+        """只收**有限数**（C5-08）。NaN/Infinity 一律当参数错误，不放它们往下走。"""
+        bad = [v for v in value if not math.isfinite(v)]
+        if bad:
+            raise ValueError(
+                f"每期比例必须是有限数（收到了 {', '.join(str(v) for v in bad)}）——"
+                f"NaN / Infinity 不是合法比例"
+            )
+        return value
 
 
 class PaymentCreate(BaseModel):

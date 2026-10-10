@@ -107,6 +107,18 @@ async def login(
     )
     await session.commit()
 
+    # ⚠️ 先把要返回给前端的标量**取出来**（C5-05，2026-10-10 修）。
+    #
+    # 为什么必须在这里取：下面那段附加扫描失败时会 `session.rollback()`，
+    # 而回滚会让 ORM 实例的**所有属性过期**。过期之后同步读 `user.name`
+    # 会触发一次懒加载 —— 在同步上下文里就是
+    # `MissingGreenlet: greenlet_spawn has not been called`。
+    # 实测症状：月结扫描一抛异常 → 登录代码回滚 → `_user_brief(user)` 炸 → **登录返回 500**。
+    # 一个"附加提醒"把"能不能登录"打挂了，与那段 try 注释里写的取舍正好相反。
+    # 取值放在 commit 之后（`user.id` 在 commit 时也会过期，只是同一个 session 里
+    # 属性还留着上次加载的值；显式取出来才是确定的）。
+    user_brief = _user_brief(user)
+
     # 月结协议到期提醒（口径已确认 2026-10-05）：**扫描挂在登录上**。
     # 原本它只挂在每日自动任务里，而 `SCHEDULER_ENABLED` 按约定一直关着（多实例安全），
     # 于是这条提醒永远不触发、需求等于没做。登录时只扫**这个人自己名下**的协议，
@@ -124,7 +136,8 @@ async def login(
         await session.rollback()
         logger.exception("登录时的月结到期扫描失败（不影响登录）")
 
-    return ok({"access_token": token, "token_type": "Bearer", "user": _user_brief(user)})
+    # 用上面取好的标量，**不再碰 user 对象**：它可能已被回滚整片过期。
+    return ok({"access_token": token, "token_type": "Bearer", "user": user_brief})
 
 
 @router.post("/refresh")

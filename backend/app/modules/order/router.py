@@ -884,7 +884,15 @@ async def cancel_order(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_order(order), "订单已取消（应收计划已同步取消，回款未受影响）")
+    # 文案里原来写着"**回款未受影响**"—— 那句话是错的，而且把缺陷说成了设计意图：
+    # 实际语义是「**已在途/已确认的回款不动**」（不删记录、不回退状态），
+    # 但取消之后**不能再新登记、也不能再确认**（C5-01，2026-10-10 修）。
+    # 两件事必须分开说，否则下一轮审查还会把它当"设计如此"放过。
+    return ok(
+        svc.serialize_order(order),
+        "订单已取消（应收计划已同步取消；已有的回款记录保留，"
+        "但不能再新登记或确认回款）",
+    )
 
 
 @router.post("/orders/{order_id}/sync-erp")

@@ -15,7 +15,39 @@ from app.core.config import settings
 from app.core.errors import ErrorCode, AppError
 
 
+#: bcrypt 的硬限制：**72 字节**（不是 72 个字符）。
+#:
+#: ⚠️ 这个上限**不随 bcrypt 版本变**，但行为变了：bcrypt < 4 会**静默截断**到 72 字节，
+#: bcrypt >= 4（本环境 5.0.0）直接抛 `ValueError`。实测：
+#:   72 个 ASCII  → 通过
+#:   73 个 ASCII  → ValueError
+#:   25 个中文（75 字节）→ ValueError（**字符数只有 25**，所以按"字符数"校验是错的）
+#: 从前入参只写了 `min_length=6`，于是"合法入参"能把创建/重置用户打成 500（C5-06）。
+#: **不静默截断**：截断会让"密码前 72 字节相同的两个不同密码"变成同一个密码，
+#: 那是安全问题，不是便利问题 —— 宁可明确报参数错。
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
+
+def password_too_long_bytes(raw: str) -> int | None:
+    """超长时返回实际字节数，否则 None。给入参校验用。"""
+    size = len(raw.encode("utf-8"))
+    return size if size > BCRYPT_MAX_PASSWORD_BYTES else None
+
+
 def hash_password(raw: str) -> str:
+    """哈希密码。
+
+    入参层已经拦了超长（`user/schema.py` 的校验器），这里再兜一道：
+    **别的地方漏校验时也给出人话错误，而不是让 bcrypt 的 ValueError 冒成 500**。
+    """
+    size = password_too_long_bytes(raw)
+    if size is not None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"密码过长（{size} 字节，最多 {BCRYPT_MAX_PASSWORD_BYTES} 字节；"
+            f"一个中文按 3 字节算）",
+            422,
+        )
     return bcrypt.hashpw(raw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 

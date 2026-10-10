@@ -167,11 +167,64 @@ async def lock_order(session: AsyncSession, order_id: int) -> SalesOrder | None:
     手工建节点（`_create_plan`）也走同一把锁：否则"生成"查无再插的窗口里还能
     挤进一个手工节点，两边的判断都不算错，结果却是混着的两套口径。
     """
+    # ⚠️ `populate_existing=True` 不能省（C5-02，2026-10-10 修）。
+    #
+    # 不加它时，若这个订单**已经在本 session 的 identity map 里**（调用方先
+    # `get_order_or_404` 查过一次就属于这种），`with_for_update()` 只锁行、
+    # 拿回来仍是**缓存里的旧值**。实测：
+    #   库内已改成 cancelled，裸 with_for_update 返回的对象 status 仍读作 pending；
+    #   加上 populate_existing 才刷新成 cancelled。
+    # 后果：`assert_order_can_add_receivable` 看到的是"取消之前"的状态，
+    # 于是"先读到 pending → 订单被并发取消 → 新增应收成功"这个窗口就成立了。
+    # 加锁的意义是"拿到锁之后看到最新事实"，不刷新就等于白锁。
     return (
         await session.execute(
-            select(SalesOrder).where(SalesOrder.id == order_id).with_for_update()
+            select(SalesOrder)
+            .where(SalesOrder.id == order_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
+
+
+async def assert_plan_accepts_payment(
+    session: AsyncSession, plan: ReceivablePlan, *, action: str = "登记回款"
+) -> None:
+    """这个应收节点还收不收钱（C5-01，2026-10-10 修）。
+
+    **两个判据都要看，缺一不可**：
+
+    1. **节点本身已取消**：`cancelled` 随订单取消而来（`payment/model.py` 的标签就是
+       "已取消（随订单）"），它不再参与催收。
+    2. **所属订单已取消**：这一条不能靠"节点是 cancelled"代替 —— 取消订单时
+       `order/router.py` **只把非 paid 的节点置为 cancelled**，已结清的节点保持
+       `paid` 不动。所以"订单已取消、节点还是 paid"是**真实可达**的状态。
+
+    **修的是什么**：实测订单与节点都已取消时，`POST /payments` 仍返回 200 并落库、
+    `POST /payments/{id}/confirm` 再返回 200 —— 最后形成"订单已取消、节点已取消、
+    回款已确认"三者互相矛盾的状态，账上多出一笔永远对不上的钱。
+    根因是这两个入口**都没看生命周期**（`assert_order_can_add_receivable` 只被
+    建应收的三个入口调用），而取消订单的提示语还写着"回款未受影响" ——
+    那句话把缺陷说成了设计意图。
+
+    **锁序**：调用方必须**已经持有节点行锁**（`get_visible_plan(for_update=True)` /
+    `lock_plan`）。这里再锁订单，方向是 `sales_orders → receivable_plans`，
+    **与项目统一锁序一致**，不会引入死锁。只有真要拒绝时才去锁订单，
+    正常路径不多付一次锁的代价。
+    """
+    if plan.status == "cancelled":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该应收节点已随订单取消，不能再{action}；如确需继续收款，请先恢复订单",
+            422,
+        )
+    order = await lock_order(session, plan.order_id)
+    if order is not None and order.status == "cancelled":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"订单已取消，不能再{action}；如确需继续收款，请先恢复订单",
+            422,
+        )
 
 
 async def lock_plan(session: AsyncSession, plan_id: int) -> ReceivablePlan:

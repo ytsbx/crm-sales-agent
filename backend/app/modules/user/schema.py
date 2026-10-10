@@ -2,7 +2,8 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.core.security import BCRYPT_MAX_PASSWORD_BYTES, password_too_long_bytes
 from app.core.patch_schema import PatchModel
 
 
@@ -20,6 +21,23 @@ class UserCreate(BaseModel):
     username: str
     password: str = Field(min_length=6)
     """密码至少 6 位；存库前会 bcrypt 哈希，接口永不回显。"""
+
+    @field_validator("password")
+    @classmethod
+    def _password_within_bcrypt(cls, value: str) -> str:
+        """上限按**字节**算，不是字符数（C5-06，2026-10-10 修）。
+
+        bcrypt 硬限制 72 字节：25 个中文只有 25 个字符，却是 75 字节 —— 按字符数
+        校验永远拦不住它。从前这里只写 `min_length=6`，于是 73 个 ASCII 或 25 个
+        中文这种"看起来合法"的入参会让 `bcrypt.hashpw` 抛 `ValueError` 冒成 500。
+        """
+        size = password_too_long_bytes(value)
+        if size is not None:
+            raise ValueError(
+                f"密码过长（{size} 字节，最多 {BCRYPT_MAX_PASSWORD_BYTES} 字节；"
+                f"一个中文按 3 字节算）"
+            )
+        return value
     mobile: str | None = None
     email: str | None = None
     department_id: int | None = None
@@ -38,6 +56,20 @@ class UserUpdate(PatchModel):
     wecom_userid: str | None = None
     password: str | None = Field(default=None, min_length=6)
     """传了才重置密码；不传保持原密码。"""
+
+    @field_validator("password")
+    @classmethod
+    def _password_within_bcrypt(cls, value: str | None) -> str | None:
+        """重置密码与创建同一口径（C5-06）：都是喂给 bcrypt，上限自然一样。"""
+        if value is None:
+            return None
+        size = password_too_long_bytes(value)
+        if size is not None:
+            raise ValueError(
+                f"密码过长（{size} 字节，最多 {BCRYPT_MAX_PASSWORD_BYTES} 字节；"
+                f"一个中文按 3 字节算）"
+            )
+        return value
 
 
 class UserRolesUpdate(BaseModel):

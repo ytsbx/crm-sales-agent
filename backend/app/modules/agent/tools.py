@@ -1075,6 +1075,26 @@ async def create_task(ctx: ToolContext, **kwargs) -> dict:
             parsed_due = datetime.fromisoformat(str(due_at).replace("Z", "+00:00"))
         except ValueError as exc:
             raise AppError(ErrorCode.PARAM_ERROR, f"时间格式不对：{due_at}") from exc
+    # 业务关联必须走**与普通建任务同一份**校验（C5-03，2026-10-10 修）。
+    #
+    # 此前这里直接 `Task(...)`，完全绕过 `normalize_task_refs`。实测同一个用户
+    # （张三，数据范围 self）用这个工具能建出：
+    #   - 关联**不存在**的客户/商机 id（返回 200，库里留下悬空引用）
+    #   - 关联**别人业务员**的客户（越权）
+    #   - 客户与商机**不是同一家**
+    # 而同一批输入走 `POST /tasks` 分别被拒为 404 / 403 / 403。
+    # AI 不该比人少一道关：它写的是同一张表、同一批字段。
+    #
+    # `normalize_task_refs` 只读写 `<kind>_id` 这几个键，所以把净化后的引用合并回
+    # payload 即可（其余字段保持工具自己的语义：title / due_at / priority / task_type）。
+    from app.modules.task.refs import normalize_task_refs
+
+    ref_keys = ("customer_id", "lead_id", "opportunity_id", "quote_id", "order_id", "sample_id")
+    refs = {k: payload[k] for k in ref_keys if payload.get(k) is not None}
+    if refs:
+        normalized, _ = await normalize_task_refs(ctx.session, ctx.user, refs, strict=True)
+        payload = {**payload, **{k: normalized.get(k) for k in ref_keys}}
+
     task = Task(
         title=payload["title"],
         task_type="agent",
@@ -1097,7 +1117,19 @@ async def create_task(ctx: ToolContext, **kwargs) -> dict:
         after={"title": task.title, "due_at": due_at},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {"task_id": task.id, "message": "任务已创建"}
 
 
@@ -1137,7 +1169,19 @@ async def update_opportunity_next_action(
         after={"next_action": next_action},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {"opportunity_id": opportunity.id, "next_action": next_action}
 
 
@@ -1185,7 +1229,19 @@ async def request_quote_approval(
         after={"approval_required": required, "source": "AGENT"},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {
         "approval_required": required,
         "approval_id": instance.id if instance else None,
@@ -1544,7 +1600,19 @@ async def create_quote_draft(
         after={**payload, "source": "AGENT"},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     payload["message"] = "报价草稿已生成（未发送、未提交审批）"
     return payload
 
@@ -1571,7 +1639,19 @@ async def create_quote_version(ctx: ToolContext, quote_id: int) -> dict:
         after={"version_id": version.id, "version_no": version.version_no, "source": "AGENT"},
         source="AGENT",
     )
-    await ctx.session.commit()
+    # 只 flush 不 commit（C5-04，2026-10-10 修）。
+    #
+    # 原来这里 `await ctx.session.commit()` —— 它会把 Gateway 在
+    # `execute_action` 里持有的**动作行锁提前释放**，而此刻动作状态还没改成
+    # `executed`。受控并发交错下两个请求都读到「待确认」，各自执行一次写动作
+    # （同一张确认卡建出两条任务）。工具成功后如果执行记录那一步再失败，
+    # 还多一个「业务已提交、动作未完成」的窗口。
+    #
+    # 现在业务数据、动作状态、审计、执行记录**由 Gateway 一次提交**：
+    # 要么全成、要么全不成。这也与项目既有约定一致 ——
+    # `write_audit` 的文档就写着「不 commit，由调用方的事务统一提交」，
+    # 这 5 个工具自己 commit 才是异类。
+    await ctx.session.flush()
     return {
         "quote_id": quote_id,
         "version_id": version.id,

@@ -88,12 +88,18 @@ async def get_receivable(
 async def _create_plan(session, order_id, payload, request, user):
     order = await get_order_or_404(session, order_id)
     await svc.assert_order_visible(session, user, order_id)
-    # 取消的订单不许再产生应收（N03）：可见性之外还要看生命周期。
-    await svc.assert_order_can_add_receivable(order)
     # 与"按比例生成"共用同一把订单行锁（锁序见 svc.lock_order）：否则生成那边
     # "查无计划"的窗口里还能挤进一个手工节点，两边判断都不算错、结果却混着两套。
     if await svc.lock_order(session, order_id) is None:
         raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    # ⚠️ 生命周期检查必须放在**拿锁之后**（C5-02，2026-10-10 修）。
+    #
+    # 原来它在 `lock_order` 之前：请求先读到订单 `pending`，随后订单被并发取消，
+    # 加锁这一步不会发现 —— 因为它查的是自己刚读到的那个（已过期的）对象，
+    # 于是新增应收照样成功，取消的订单上又长出一个催收节点。
+    # `lock_order` 现在带 `populate_existing`，会**就地把同一个实例刷新成最新值**，
+    # 所以这里重查一次 `order` 拿到的是锁内的事实。
+    await svc.assert_order_can_add_receivable(order)
     plan = ReceivablePlan(
         order_id=order_id,
         plan_name=payload.plan_name,
@@ -187,6 +193,15 @@ async def _generate_receivables(session, order, order_id, payload, request, user
     # 锁共同订单行（统一锁序的第一把）：见函数说明。
     if await svc.lock_order(session, order_id) is None:
         raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+    # ⚠️ 拿锁之后**再查一次生命周期**（C5-02，2026-10-10 修）。
+    #
+    # 调用方在进来之前已经查过一次，但那次是**锁外**的：请求读到订单 `pending`，
+    # 随后订单被并发取消 —— 那次检查看不出任何异常，而这个窗口里新增应收会成功。
+    # 保留锁外那次是有理由的（注释在调用方：注定失败的操作不该占掉一把请求键），
+    # 所以这里**再查一次**而不是把它挪下来。
+    # `lock_order` 带 `populate_existing`，会就地刷新同一个实例，所以此处读到的
+    # 是锁内的事实。
+    await svc.assert_order_can_add_receivable(order)
     # 比例校验**保持原样**（容差 0.0001）：实测浮点误差只有 1e-16 量级，够不到容差，
     # 不会误判；而比例微差的风险已由下面"最后一期补差额"兜住——就算有人把比例
     # 打成 99.99%，最后一期 = 总额 − 前面各期之和，合计仍然严格等于订单总额。
@@ -721,6 +736,9 @@ async def create_payment(
         plan = await svc.get_visible_plan(
             session, user, payload.receivable_plan_id, for_update=True
         )
+        # 订单/节点已取消就不该再收钱（C5-01）：从前这里没有生命周期校验，
+        # 实测订单与节点都已取消仍能登记回款 → 200 落库。
+        await svc.assert_plan_accepts_payment(session, plan)
         record = PaymentRecord(
             receivable_plan_id=plan.id,
             order_id=plan.order_id,
@@ -786,6 +804,15 @@ async def confirm_payment(
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     svc.ensure_payment_pending(record)
+    # 订单/节点已取消就不该确认（C5-01）。放在这里而不是最后：被拒时**不能留下
+    # 半改的状态**。`get_visible_payment` 已按统一锁序拿到节点锁，这一步与它同序。
+    # 没有节点（挂空）的回款不适用——那种本来就不参与节点重算。
+    if record.receivable_plan_id:
+        await svc.assert_plan_accepts_payment(
+            session,
+            await svc.lock_plan(session, record.receivable_plan_id),
+            action="确认回款",
+        )
     record.status = "confirmed"
     record.confirmed_by = user.id
     record.confirmed_at = datetime.now(UTC)
