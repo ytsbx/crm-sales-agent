@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
+import {
+  ConfirmRequiredModal,
+  isConfirmRequired,
+  confirmMessageOf,
+} from '../../shared/components/ConfirmRequiredModal'
 import { emptyText } from '../../shared/hooks/emptyText'
 import {
   Button,
@@ -436,14 +441,27 @@ export default function SampleListPage() {
   })
 
   // 客户确认与签收分开：客户收到样品 ≠ 客户接受（后端也会拦"未签收就确认"）
+  // 登记客户确认结果是**客户侧商务事实**，后端不带 confirm 返回 42206。
+  // 「客户接受」与「未通过」都走这道确认（主人 2026-10-10 拍板：两个都加）。
+  const [sampleGate, setSampleGate] = useState<{ message: string; accepted: boolean } | null>(
+    null,
+  )
+
   const confirmMutation = useMutation({
-    mutationFn: (accepted: boolean) => confirmSample(detailId!, accepted, confirmRemark),
-    onSuccess: (_row: SampleRequestRow, accepted: boolean) => {
-      Toast.success(accepted ? '已登记：客户接受' : '已登记：客户未通过')
+    mutationFn: ({ accepted, confirm }: { accepted: boolean; confirm: boolean }) =>
+      confirmSample(detailId!, accepted, confirmRemark, confirm),
+    onSuccess: (_row: SampleRequestRow, variables) => {
+      Toast.success(variables.accepted ? '已登记：客户接受' : '已登记：客户未通过')
       setConfirmRemark('')
       void refresh()
     },
-    onError,
+    onError: (error: Error, variables) => {
+      if (isConfirmRequired(error)) {
+        setSampleGate({ message: confirmMessageOf(error), accepted: variables.accepted })
+      } else {
+        onError(error)
+      }
+    },
   })
 
   const addItemMutation = useMutation({
@@ -540,6 +558,19 @@ export default function SampleListPage() {
 
   return (
     <div className="page-container">
+      <ConfirmRequiredModal
+        visible={sampleGate !== null}
+        message={sampleGate?.message ?? ''}
+        onCancel={() => setSampleGate(null)}
+        onConfirm={() => {
+          const accepted = sampleGate?.accepted
+          setSampleGate(null)
+          if (accepted !== undefined) {
+            confirmMutation.mutate({ accepted, confirm: true })
+          }
+        }}
+        confirmText="确认登记"
+      />
       <PageHeader
         title="样品管理"
         subtitle="样品申请、寄样、签收与反馈；样品进展会回写到商机的下一步动作"
@@ -1231,14 +1262,14 @@ export default function SampleListPage() {
                       <Button
                         type="primary"
                         loading={confirmMutation.isPending}
-                        onClick={() => confirmMutation.mutate(true)}
+                        onClick={() => confirmMutation.mutate({ accepted: true, confirm: false })}
                       >
                         客户接受
                       </Button>
                       <Button
                         type="danger"
                         loading={confirmMutation.isPending}
-                        onClick={() => confirmMutation.mutate(false)}
+                        onClick={() => confirmMutation.mutate({ accepted: false, confirm: false })}
                       >
                         未通过
                       </Button>

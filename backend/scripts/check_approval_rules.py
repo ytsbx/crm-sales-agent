@@ -209,13 +209,13 @@ async def main():
     status, res = call('PATCH', f'/approval-rules/{rule_id}/enabled', token=admin, body={'enabled': True})
     check('未发布不能启用', res.get('code'), 40002)
 
-    status, res = call('POST', f'/approval-rules/{rule_id}/publish', token=admin)
+    status, res = call('POST', f'/approval-rules/{rule_id}/publish?confirm=true', token=admin)
     check('发布 V1', res['data']['published_version_no'], 1)
     status, res = call('PATCH', f'/approval-rules/{rule_id}', token=admin, body={
         'name': f'CHK{RUN}测试规则', 'kind': 'auto_pass', 'priority': 98,
         'conditions': [{'field': 'gross_margin', 'op': 'gte', 'value': 20}]})
     check_true('改草稿后标记有变更', res['data']['has_draft_changes'] is True, '')
-    status, res = call('POST', f'/approval-rules/{rule_id}/publish', token=admin)
+    status, res = call('POST', f'/approval-rules/{rule_id}/publish?confirm=true', token=admin)
     check('发布 V2', res['data']['published_version_no'], 2)
     status, res = call('GET', f'/approval-rules/{rule_id}/versions', token=admin)
     check('版本历史两条', len(res['data']), 2)

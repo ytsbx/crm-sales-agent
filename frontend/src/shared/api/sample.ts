@@ -199,8 +199,13 @@ export function reviseSample(id: number, remark?: string) {
  *
  * 后端规则：**必须先签收**才能确认——客户收到样品才谈得上接受。
  */
-export function confirmSample(id: number, accepted: boolean, remark?: string) {
-  return api.post<SampleRequestRow>(`/samples/${id}/confirm`, {
+export function confirmSample(
+  id: number,
+  accepted: boolean,
+  remark?: string,
+  confirm = false,
+) {
+  return api.post<SampleRequestRow>(`/samples/${id}/confirm${confirm ? '?confirm=true' : ''}`, {
     accepted,
     remark: remark ?? null,
   })

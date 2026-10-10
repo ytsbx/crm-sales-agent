@@ -98,7 +98,9 @@ async def main():
             v=await s.get(QuoteVersion,vid); v.approval_status='approved'
             q=await s.get(Quote,qid); q.status='approved'; await s.commit()
         req('POST',f'/quote-versions/{vid}/mark-sent',{})
-        req('POST',f'/quote-versions/{vid}/convert-to-order',{},expected=422)
+        # ⚠️ 带 confirm 进来：这里要验的是**业务原因**（草稿未确认就转单），
+        # 不是"需要确认"那道拦（42206）。不带的话断言会因为错误的原因通过。
+        req('POST',f'/quote-versions/{vid}/convert-to-order?confirm=true',{},expected=422)
         req('POST',f'/quote-versions/{vid}/accept',{})
         req('POST',f'/order-drafts/{did}/confirm',{'revision':2,'quote_version_id':vid},expected=422)
         update['revision']=2; update['items'][0]['quantity']=10
@@ -124,7 +126,9 @@ async def main():
         req('POST',f"/order-drafts/{another['id']}/confirm",{'revision':1,'quote_version_id':vid},expected=404)
         async with SessionLocal() as s:
             customer=await s.get(Customer,cids[0]); customer.deleted_at=None; await s.commit()
-        v2=req('POST',f'/quotes/{qid}/versions')
+        # confirm 是**查询参数**（不是 body）：套件的 req() 只发 JSON body，
+        # 放 body 里到不了后端，会被 42206 拦住而看着像"没生效"。
+        v2=req('POST',f'/quotes/{qid}/versions?confirm=true')
         historical=req('GET',f'/order-drafts/source?quote_version_id={vid}')
         assert historical['source']['is_historical']
         old=req('POST','/order-drafts',{**body,'request_key':str(uuid4())})

@@ -88,6 +88,33 @@ def _fmt(value) -> str:
     return str(value)
 
 
+def describe_conditions(conditions: list[dict]) -> str:
+    """把条件数组写成**给用户看的一行中文**（发布确认弹窗用）。
+
+    为什么不能用 `_cond_detail_pretty`：那个函数要**求值结果**（`hit`/`actual`），
+    而发布确认时还没有具体报价可算 —— 用户要看的是"这条规则要求什么"，
+    不是"某一张单命中没有"。所以这里只渲染字段名 + 运算符 + 期望值。
+    """
+    if not conditions:
+        return ""
+    parts: list[str] = []
+    for cond in conditions:
+        field = cond.get("field")
+        meta = next((f for f in CONTEXT_FIELDS if f["field"] == field), None)
+        label = (meta or {}).get("label", field)
+        unit = (meta or {}).get("unit", "")
+        expected = cond.get("value")
+        if isinstance(expected, list):
+            expected_text = "、".join(str(x) for x in expected)
+        elif isinstance(expected, bool):
+            expected_text = "是" if expected else "否"
+        else:
+            expected_text = str(expected)
+        op = OPS_LABEL.get(cond.get("op", "gte"), cond.get("op", ""))
+        parts.append(f"{label} {op} {expected_text}{unit}")
+    return "，且 ".join(parts)
+
+
 def evaluate_conditions(conditions: list[dict], ctx: dict) -> tuple[bool, list[dict]]:
     """纯函数求值：单条规则内条件 AND。返回 (是否全中, 每条条件的命中明细)。
 

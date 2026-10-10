@@ -308,11 +308,37 @@ async def toggle_rule(
 async def publish_rule(
     rule_id: int,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("settings:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """把当前草稿发布成新版本：生成不可变快照，引擎从此按这一版求值。"""
+    """把当前草稿发布成新版本：生成不可变快照，引擎从此按这一版求值。
+
+    ⚠️ **必须先确认**（审查 2026-10-10）：发布之后**后续所有提交的报价审批
+    都按新规则算**，会直接改变"哪些报价要审批、走哪一级"。
+    所以先让用户看清这一版规则的关键条件再发。
+    """
     rule = await _get_rule(session, rule_id)
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        from app.modules.approval.rules_engine import describe_conditions
+
+        detail = "；".join(
+            [
+                f"规则「{rule.name}」（{rule.kind}，优先级 {rule.priority}、"
+                f"{'启用' if rule.enabled else '停用'}）",
+                "条件：" + (describe_conditions(rule.conditions or []) or "（无条件）"),
+                f"将发布为 V{rule.published_version_no + 1}，"
+                "**之后提交的报价审批按新规则计算**",
+                "已提交/已审批的历史报价不受影响",
+            ]
+        )
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(action="发布审批规则", detail=detail),
+            422,
+        )
     rule.conditions = rule.conditions or []
     _validate_payload(
         RulePayload(

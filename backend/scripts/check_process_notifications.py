@@ -177,7 +177,9 @@ async def main():
             request('POST', f'/samples/{sample_id}/sign', {})
             for _ in range(2): request('POST', f'/samples/{sample_id}/feedback', {'feedback': marker+'尺寸待调整'})
             for decision in [False, False, True]:
-                request('POST', f'/samples/{sample_id}/confirm', {'accepted': decision, 'remark': marker})
+                # 带 confirm（登记商务事实现在要先确认），这里要验的是跟进记录条数
+                request('POST', f'/samples/{sample_id}/confirm?confirm=true',
+                        {'accepted': decision, 'remark': marker})
             sample_rows = await rows(FollowUp, FollowUp.sample_id == sample_id)
             assert len(sample_rows) == 8, [f.content for f in sample_rows]
             assert all(f.owner_id == actor.id for f in sample_rows)

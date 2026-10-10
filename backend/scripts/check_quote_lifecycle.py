@@ -73,8 +73,16 @@ async def main():
                     customer.last_followup_at, customer.last_progress_at, customer.next_followup_at, counts)
 
     async def blocked(qid, vid, action, body=None, status=422, token=None):
+        # ⚠️ `convert-to-order` 加了"需要确认"那道拦之后，不带 confirm 会被
+        # 42206 先拦下 —— 那是**因为错误的原因通过**：本函数要验的是业务原因
+        # （未发送/已失效的报价不能转单）。所以这一条带 confirm 进去，
+        # 让它走到真正的业务校验。
+        suffix = '?confirm=true' if action == 'convert-to-order' else ''
         before = await snapshot(qid)
-        actual, result = call('POST', f'/quote-versions/{vid}/{action}', body=body, token=token or admin)
+        actual, result = call(
+            'POST', f'/quote-versions/{vid}/{action}{suffix}',
+            body=body, token=token or admin,
+        )
         assert actual == status, (action, actual, result)
         assert await snapshot(qid) == before, (action, '失败请求改变了业务事实')
 
@@ -177,7 +185,7 @@ async def main():
                 assert all(f.owner_id == actor.id and 'V1' in f.content for f in follows)
                 assert all(n.user_id == manager.id and '操作者：'+actor.name in n.content for n in notices)
                 assert accepted[3] == previous_contact and accepted[4] > previous_contact and accepted[5] is None
-            created = request('POST', f'/quotes/{qid}/versions')
+            created = request('POST', f'/quotes/{qid}/versions?confirm=true')
             vids.append(created['id'])
             draft = await snapshot(qid)
             request('POST', f'/quote-versions/{vid}/accept')

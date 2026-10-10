@@ -175,7 +175,7 @@ async def main():
         request('POST', '/samples', {'opportunity_id': other_oid,
             'items': [{'inquiry_id': revised['id'], 'quantity': 1}]}, expected=422)
         request('POST', f"/quote-versions/{quote['version_id']}/accept", {})
-        order = request('POST', f"/quote-versions/{quote['version_id']}/convert-to-order", {})
+        order = request('POST', f"/quote-versions/{quote['version_id']}/convert-to-order?confirm=true", {})
         # 列表按商机筛选；同客户其他需求的单据不能混入。
         inquiry_list = request('GET', f'/custom-inquiries?opportunity_id={oid}')['items']
         assert {row['id'] for row in inquiry_list} == set(inquiry_ids)

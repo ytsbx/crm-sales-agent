@@ -1,4 +1,9 @@
 import { useState, type ComponentProps } from 'react'
+import {
+  ConfirmRequiredModal,
+  isConfirmRequired,
+  confirmMessageOf,
+} from '../../shared/components/ConfirmRequiredModal'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -119,13 +124,30 @@ export default function RulesPanel() {
     },
   })
 
-  const publishMutation = useMutation({
-    mutationFn: (id: number) => publishApprovalRule(id),
+  // 发布审批规则需要先确认：发布之后**后续提交的报价审批都按新规则算**。
+  // 后端不带 confirm 会返回 42206，并把「会发布哪一版、条件是什么」写在文案里；
+  // 这里原样弹给用户，确认后带 confirm 重发。
+  const [publishGate, setPublishGate] = useState<{ message: string; ruleId: number } | null>(
+    null,
+  )
+
+  const publishMutation = useMutation<
+    ApprovalRuleRow,
+    Error,
+    { id: number; confirm: boolean }
+  >({
+    mutationFn: ({ id, confirm }) => publishApprovalRule(id, confirm),
     onSuccess: (data) => {
       Toast.success(`已发布 V${data.published_version_no}，对新提交的审批生效`)
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error, variables) => {
+      if (isConfirmRequired(error)) {
+        setPublishGate({ message: confirmMessageOf(error), ruleId: variables.id })
+      } else {
+        Toast.error(error.message)
+      }
+    },
   })
 
   const deleteMutation = useMutation({
@@ -204,7 +226,7 @@ export default function RulesPanel() {
           <a style={{ color: 'var(--crm-primary)' }} onClick={() => toEdit(row)}>
             编辑
           </a>
-          <a style={{ color: 'var(--crm-success)' }} onClick={() => publishMutation.mutate(row.id)}>
+          <a style={{ color: 'var(--crm-success)' }} onClick={() => publishMutation.mutate({ id: row.id, confirm: false })}>
             发布
           </a>
           <a style={{ color: 'var(--crm-text-2)' }} onClick={() => setVersionTarget(row)}>
@@ -233,6 +255,16 @@ export default function RulesPanel() {
 
   return (
     <>
+      <ConfirmRequiredModal
+        visible={publishGate !== null}
+        message={publishGate?.message ?? ''}
+        onCancel={() => setPublishGate(null)}
+        onConfirm={() => {
+          const ruleId = publishGate?.ruleId
+          setPublishGate(null)
+          if (ruleId !== undefined) publishMutation.mutate({ id: ruleId, confirm: true })
+        }}
+      />
       <SectionCard>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>

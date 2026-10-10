@@ -436,7 +436,8 @@ def sec_c304(admin: str) -> None:
     sid = fresh("倒序B")
     call("POST", f"/samples/{sid}/ship", admin, {"shipping_fee": 0, "shipped_at": "2026-10-09"})
     call("POST", f"/samples/{sid}/sign", admin, {"signed_at": "2026-10-09"})
-    code = call("POST", f"/samples/{sid}/confirm", admin,
+    # 带 confirm 进来：要验的是**业务原因**（确认早于签收），不是"需要确认"那道拦
+    code = call("POST", f"/samples/{sid}/confirm?confirm=true", admin,
                 {"accepted": True, "confirmed_at": "2026-08-01T10:00:00"})[1].get("code")
     check_true("② 确认早于签收被拒（从前 200）", code != 0, f"code={code}")
     drop(sid)

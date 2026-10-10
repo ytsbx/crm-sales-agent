@@ -288,7 +288,9 @@ async def main():
     check('没有制作/寄出事实的单子不给开修订版', status, 422)
 
     status, res = call(
-        'POST', f'/samples/{sample_id}/confirm', token=token, body={'accepted': True}
+        # 带 confirm：要验的是**业务原因**（还没签收），不是"需要确认"那道拦
+        'POST', f'/samples/{sample_id}/confirm?confirm=true', token=token,
+        body={'accepted': True}
     )
     check('还没签收就确认被拒', status, 422)
 
@@ -309,7 +311,7 @@ async def main():
     print('=== 4. 客户确认 ===')
     _, res = call(
         'POST',
-        f'/samples/{sample_id}/confirm',
+        f'/samples/{sample_id}/confirm?confirm=true',
         token=token,
         body={'accepted': True, 'remark': '客户确认可以做正式订单'},
     )

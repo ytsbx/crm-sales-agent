@@ -222,6 +222,7 @@ async def convert_to_order(
     version_id: int,
     payload: OrderFromQuote,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -233,6 +234,32 @@ async def convert_to_order(
     quote = await session.get(Quote, version.quote_id)
     if quote is not None:
         await ensure_in_scope(session, user, owner_id=quote.owner_id, label="报价单")
+
+    # ⚠️ **必须先确认**（审查 2026-10-10）：这个按钮点一下会**生成一张正式订单、
+    # 复制全部明细、并生成一条"全款"应收**（金额 = 该版总额）。订单是正式履约依据，
+    # 事后要改得走订单自己的流程（取消/改明细），所以先让用户看清来源版本与金额。
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        customer_name = None
+        if quote is not None:
+            customer = await session.get(Customer, quote.customer_id)
+            customer_name = customer.name if customer else None
+        detail = "；".join(
+            [
+                f"来源：{quote.quote_no if quote else ''} V{version.version_no}"
+                + (f"（客户 {customer_name}）" if customer_name else ""),
+                f"订单金额 ¥{version.total_amount}",
+                f"将生成一条「全款」应收 ¥{version.total_amount}",
+                "订单是正式履约依据，生成后要改需走订单自己的流程",
+            ]
+        )
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(action="转销售订单", detail=detail),
+            422,
+        )
+
     order = await svc.create_order_from_quote(
         session,
         version=version,
@@ -918,6 +945,7 @@ async def cancel_order(
 async def sync_erp(
     order_id: int,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -927,8 +955,40 @@ async def sync_erp(
     `erp` 模块：配置齐了就真推，没配就返回 50203 并说明缺哪个变量，
     两种情况都**不会**把订单标成已推送。
     实现见 `app/modules/erp/service.py`，调用方无感。
+
+    ⚠️ **必须先确认**（审查 2026-10-10）：这是**写进外部系统**的动作，
+    配置齐全时会真的在对方系统建单，本系统这边撤回不了。
+    所以先让用户核对订单号、客户与金额。
     """
     order = await svc.get_visible_order(session, user, order_id)
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        from app.modules.erp.adapter import get_adapter
+
+        # 目标系统的名字从适配器取（`label`），不写死在文案里 ——
+        # 换一家 ERP 只需实现适配器，这句话自动跟着变。
+        try:
+            target = get_adapter().label
+        except Exception:  # noqa: BLE001 — 取不到名字不该挡住确认这件事
+            target = "ERP/MES"
+        # ⚠️ `SalesOrder` **没有** `customer_name` 列（那是 `serialize_order` 现拼的），
+        # 客户名要自己查一次 —— 实测直接读 `order.customer_name` 会 500。
+        customer = await session.get(Customer, order.customer_id)
+        detail = "；".join(
+            [
+                f"将向 {target} 推送订单 {order.order_no}",
+                f"客户：{customer.name if customer is not None else order.customer_id}",
+                f"金额 ¥{order.total_amount}",
+                "已推送过" if order.erp_order_id else "尚未推送过",
+                "配置齐全时会真的在对方系统建单，本系统撤回不了",
+            ]
+        )
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(action="推送 ERP/MES", detail=detail),
+            422,
+        )
     try:
         result = await erp_service.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:

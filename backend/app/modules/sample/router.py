@@ -929,6 +929,7 @@ async def confirm_sample(
     sample_id: int,
     payload: SampleConfirm,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("sample:manage")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -937,8 +938,41 @@ async def confirm_sample(
     规则只有一条，但它是这条流程的重点：**必须先签收才能确认**。
     客户没收到样品就"确认接受"在业务上是假数据；签收是物流事实、
     确认是业务事实，分开记才答得了"这批样到底过没过"。
+
+    ⚠️ **必须先确认**（审查 2026-10-10）：这是**登记客户商务事实**
+    （客户接受 / 未通过），不是改一个自己的字段 —— 登记完会影响
+    这条打样单的后续判断。所以先让用户核对样品与结果再登记。
     """
     from datetime import UTC, datetime
+
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        from app.modules.customer.model import Customer
+
+        probe = await svc.get_visible_or_404(session, user, sample_id)
+        customer = (
+            await session.get(Customer, probe.customer_id) if probe.customer_id else None
+        )
+        result_label = "客户接受" if payload.accepted else "客户未通过"
+        parts = [
+            f"样品 #{probe.id}"
+            + (f"（客户 {customer.name}）" if customer is not None else ""),
+            f"将登记结果：{result_label}",
+        ]
+        remark = (payload.remark or "").strip()
+        if remark:
+            parts.append(f"反馈：{remark}")
+        elif not payload.accepted:
+            parts.append("未填反馈")
+        parts.append("这是客户侧商务事实，登记后影响这条打样单的后续判断")
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(
+                action=f"登记样品结果（{result_label}）", detail="；".join(parts)
+            ),
+            422,
+        )
 
     from app.modules.sample.model import CONFIRM_ACCEPTED, CONFIRM_REJECTED
 

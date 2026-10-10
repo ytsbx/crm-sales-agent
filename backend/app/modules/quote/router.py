@@ -895,14 +895,49 @@ async def compare_versions(
 async def create_version(
     quote_id: int,
     request: Request,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """新建版本：复制上一版全部明细与费用，旧版本原样保留、不可覆盖。
 
     复制逻辑在 `svc.create_version`，与 Agent 工具 `create_quote_version` 共用。
+
+    ⚠️ **必须先确认**（审查 2026-10-10）：这个按钮点一下不只是"多一份草稿"，
+    它还会**切换当前版本、把报价状态改回草稿、并自动结束旧版还在走的审批流程**，
+    而系统里**没有**"撤销新版本、恢复上述状态"的入口。所以不带 `confirm=True`
+    时这里直接拒，并把"点了会怎样"讲清楚 —— 前端拿它当确认弹窗的正文。
     """
     quote = await svc.get_visible_quote(session, user, quote_id)
+    if not confirm:
+        from app.core.confirmation import confirmation_message
+
+        latest = await svc.latest_version(session, quote_id=quote.id)
+        if latest is None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单没有版本", 404)
+        # ⚠️ **不要把最新版排除掉**：`close_superseded_approvals` 会结束
+        # 除新版本之外**所有**版本的待审批 —— 包括正在跑审批的最新版自己
+        # （"V2 审批中，我又做了 V3"正是最常见的场景）。
+        # 排除最新版的话，最该被点名的那一版反而不会出现在提示里（我踩过）。
+        pending = await svc.versions_with_pending_approval(session, quote_id=quote.id)
+        parts = [
+            f"将基于当前最新版 V{latest.version_no} 创建 V{latest.version_no + 1}，"
+            "并切换为当前草稿",
+            "报价状态会改回草稿",
+        ]
+        if pending:
+            parts.append(
+                "旧版 V"
+                + "、V".join(str(no) for _id, no in pending)
+                + " 的待审批流程将结束"
+            )
+        parts.append("历史资料保留，但**没有撤销入口**")
+        raise AppError(
+            ErrorCode.CONFIRM_REQUIRED,
+            confirmation_message(action="新建报价版本", detail="；".join(parts)),
+            422,
+        )
+
     version = await svc.create_version(session, quote=quote, user=user)
 
     await write_audit(

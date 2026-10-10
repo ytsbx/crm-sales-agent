@@ -336,7 +336,7 @@ def main():
 
     print()
     print('=== 4. 复制版本 ===')
-    status, res = call('POST', f'/quotes/{quote_id}/versions', token=admin)
+    status, res = call('POST', f'/quotes/{quote_id}/versions?confirm=true', token=admin)
     check('先建一版（用于验证 copy）', res.get('code'), 0)
     v2_id = res['data']['id']
 

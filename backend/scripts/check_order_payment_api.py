@@ -380,7 +380,7 @@ def main():
         ('GET /orders/{id}/receivables', 'GET', f'/orders/{order_id}/receivables', None),
         ('GET /orders/{id}/payments', 'GET', f'/orders/{order_id}/payments', None),
         ('POST /orders/{id}/refresh-status', 'POST', f'/orders/{order_id}/refresh-status', None),
-        ('POST /orders/{id}/sync-erp', 'POST', f'/orders/{order_id}/sync-erp', None),
+        ('POST /orders/{id}/sync-erp', 'POST', f'/orders/{order_id}/sync-erp?confirm=true', None),
         ('GET erp status', 'GET', f'/integrations/erp/orders/{order_id}/status', None),
         ('POST erp sync', 'POST', f'/integrations/erp/orders/{order_id}/sync', None),
         ('GET /receivables/{id}', 'GET', f'/receivables/{plan_id}', None),

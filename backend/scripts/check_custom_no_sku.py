@@ -489,7 +489,7 @@ async def main():
     })
     rule_id = payload['data']['id'] if payload.get('code') == 0 else None
     if rule_id:
-        call('POST', f'/approval-rules/{rule_id}/publish', token=token, body={})
+        call('POST', f'/approval-rules/{rule_id}/publish?confirm=true', token=token)
         call('PATCH', f'/approval-rules/{rule_id}/enabled', token=token,
              body={'enabled': True})
     call('POST', f'/quote-versions/{version_id}/submit-approval', token=token, body={})

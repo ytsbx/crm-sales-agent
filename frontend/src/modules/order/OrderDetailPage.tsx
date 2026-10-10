@@ -1,6 +1,11 @@
 import { useRef, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  ConfirmRequiredModal,
+  isConfirmRequired,
+  confirmMessageOf,
+} from '../../shared/components/ConfirmRequiredModal'
 import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 import FormLabel from '../../shared/components/FormLabel'
 import type { TagTone } from '../../shared/types'
@@ -506,8 +511,13 @@ export default function OrderDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  // 推送 ERP/MES 是**写外部系统**的动作（配置齐全时真的在对方系统建单，
+  // 本系统撤回不了）。后端不带 confirm 返回 42206 + 订单号/客户/金额说明，
+  // 这里弹出来，用户确认后带 confirm 重发。
+  const [erpGate, setErpGate] = useState('')
+
   const syncMutation = useMutation({
-    mutationFn: () => syncErp(orderId),
+    mutationFn: (confirm: boolean) => syncErp(orderId, confirm),
     onSuccess: (data) => {
       // already_synced 是幂等命中：订单早就推过了，不是失败
       if (data.already_synced) {
@@ -517,7 +527,10 @@ export default function OrderDetailPage() {
       }
       void queryClient.invalidateQueries({ queryKey: ['order', orderId] })
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      if (isConfirmRequired(error)) setErpGate(confirmMessageOf(error))
+      else Toast.error(error.message)
+    },
   })
 
   const statusSyncMutation = useMutation({
@@ -613,6 +626,16 @@ export default function OrderDetailPage() {
 
   return (
     <div className="page-container">
+      <ConfirmRequiredModal
+        visible={Boolean(erpGate)}
+        message={erpGate}
+        onCancel={() => setErpGate('')}
+        onConfirm={() => {
+          setErpGate('')
+          syncMutation.mutate(true)
+        }}
+        confirmText="确认推送"
+      />
       {/* 与客户/商机/报价详情页同排布：标题 + 标签一行，关键信息行在标题下方左对齐 */}
       <DetailHeader
         title={order.order_no}
@@ -672,7 +695,7 @@ export default function OrderDetailPage() {
                   </Button>
                 </>
               )}
-              <Button onClick={() => syncMutation.mutate()} loading={syncMutation.isPending}>
+              <Button onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
                 推送 ERP/MES
               </Button>
               <Button

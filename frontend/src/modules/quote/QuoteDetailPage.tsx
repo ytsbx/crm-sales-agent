@@ -2,6 +2,7 @@ import { useState } from 'react'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -23,6 +24,7 @@ import {
   updateQuoteItem,
   withdrawApproval,
   type QuoteChargeRow,
+  type QuoteVersion,
   type QuoteItemRow,
 } from '../../shared/api/quote'
 import { listCustomInquiries } from '../../shared/api/inquiry'
@@ -200,13 +202,29 @@ export default function QuoteDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const convertMutation = useMutation({
-    mutationFn: () => convertToOrder(versionId!),
+  // 转订单 / 新建版本都需要先确认：后端不带 confirm 会返回 42206 并给出说明，
+  // 这里把它弹出来，用户确认后**带 confirm 重发**（onSuccess 才会照常触发）。
+  const [gateMessage, setGateMessage] = useState('')
+  const [gateRetry, setGateRetry] = useState<(() => void) | null>(null)
+  const gate = (error: unknown, retry: () => unknown): boolean => {
+    if (!isConfirmRequired(error)) return false
+    setGateMessage(confirmMessageOf(error))
+    // 包一层：`retry` 的返回值是 MutationResult，而 state 存的是 `() => void`
+    setGateRetry(() => () => {
+      retry()
+    })
+    return true
+  }
+
+  const convertMutation = useMutation<{ order_id: number; order_no: string }, Error, boolean>({
+    mutationFn: (confirm) => convertToOrder(versionId!, {}, confirm),
     onSuccess: (data) => {
       Toast.success(`已生成订单 ${data.order_no}`)
       navigate(`/orders/${data.order_id}`)
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      if (!gate(error, () => convertMutation.mutate(true))) Toast.error(error.message)
+    },
   })
 
   const refresh = () => {
@@ -291,14 +309,16 @@ export default function QuoteDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const versionMutation = useMutation({
-    mutationFn: () => createQuoteVersion(quoteId),
+  const versionMutation = useMutation<QuoteVersion, Error, boolean>({
+    mutationFn: (confirm) => createQuoteVersion(quoteId, confirm),
     onSuccess: (created) => {
       Toast.success(`已创建 V${created.version_no}`)
       setSearchParams({ version: String(created.id) })
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      if (!gate(error, () => versionMutation.mutate(true))) Toast.error(error.message)
+    },
   })
 
   const submitMutation = useMutation({
@@ -597,7 +617,7 @@ export default function QuoteDetailPage() {
         {/* 报价动作多，按设计稿放在关键信息行下方单独一行，避免把信息行挤到换行 */}
         <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           {canManage && (
-            <Button onClick={() => versionMutation.mutate()} loading={versionMutation.isPending}>
+            <Button onClick={() => versionMutation.mutate(false)} loading={versionMutation.isPending}>
               新建版本
             </Button>
           )}
@@ -636,7 +656,7 @@ export default function QuoteDetailPage() {
           {can('order:manage') && isCurrentVersion && version.sent_at && version.accepted_at && quote.status === 'accepted' && (
             <Button
               theme="solid"
-              onClick={() => convertMutation.mutate()}
+              onClick={() => convertMutation.mutate(false)}
               loading={convertMutation.isPending}
             >
               转销售订单
@@ -710,6 +730,21 @@ export default function QuoteDetailPage() {
         比先看一眼贵得多。已发送/已审批的版本不给刷（内容是对客承诺），
         这里如实说明并引导新建版本。
       */}
+      <ConfirmRequiredModal
+        visible={Boolean(gateMessage)}
+        message={gateMessage}
+        onCancel={() => {
+          setGateMessage('')
+          setGateRetry(null)
+        }}
+        onConfirm={() => {
+          const retry = gateRetry
+          setGateMessage('')
+          setGateRetry(null)
+          retry?.()
+        }}
+      />
+
       <Modal
         title="接入主数据：会变什么"
         visible={masterPreviewOpen}

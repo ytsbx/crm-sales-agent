@@ -356,8 +356,18 @@ export function refreshPrices(versionId: number) {
   )
 }
 
-export function createQuoteVersion(quoteId: number) {
-  return api.post<QuoteVersion>(`/quotes/${quoteId}/versions`)
+/**
+ * 新建报价版本。
+ *
+ * ⚠️ 这个动作**不是「多一份草稿」**：它会切换当前版本、把报价状态改回草稿、
+ * 并自动结束旧版还在走的审批流程，而系统里没有撤销入口。
+ * 后端因此要求 `confirm=true`；不带会返回 42206 并给出「点了会怎样」的说明
+ * （由 `ConfirmRequiredModal` 展示给用户确认）。
+ */
+export function createQuoteVersion(quoteId: number, confirm = false) {
+  return api.post<QuoteVersion>(
+    `/quotes/${quoteId}/versions${confirm ? '?confirm=true' : ''}`,
+  )
 }
 
 /** 报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。 */

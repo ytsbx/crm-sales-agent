@@ -738,7 +738,7 @@ def main():
         })
         rule15 = res['data']['id'] if res.get('code') == 0 else None
         if rule15:
-            call('POST', f'/approval-rules/{rule15}/publish', token=admin, body={})
+            call('POST', f'/approval-rules/{rule15}/publish?confirm=true', token=admin)
             call('PATCH', f'/approval-rules/{rule15}/enabled', token=admin, body={'enabled': True})
         try:
             call('PATCH', '/settings', token=admin,
@@ -906,7 +906,7 @@ def main():
                f"成本 {item_before['cost_snapshot']}→{item_after['cost_snapshot']}")
 
         # ---- ③b 建新版：派生快照按当前口径重算，售价不漂移 ----
-        _, res = call('POST', f'/quotes/{fix19_quote}/versions', token=zhangsan, body={})
+        _, res = call('POST', f'/quotes/{fix19_quote}/versions?confirm=true', token=zhangsan)
         new19 = res['data'].get('version_id') or res['data'].get('id')
         _, nd = call('GET', f'/quote-versions/{new19}', token=zhangsan)
         # 按**稳定快照字段**配对，不按位置：复制后的明细顺序虽然一致，但按位置
@@ -1007,7 +1007,7 @@ def main():
         _, res_v = call('GET', f'/quote-versions/{v_id}', token=admin)
         src_item = res_v['data']['items'][0]
         src_floor = src_item['minimum_price_snapshot']
-        _, res_nv = call('POST', f'/quotes/{q_id}/versions', token=admin, body={})
+        _, res_nv = call('POST', f'/quotes/{q_id}/versions?confirm=true', token=admin)
         # 建新版的返回就是版本对象本身（主键字段是 `id`，没有 `version_id`）
         new_v = (res_nv.get('data') or {}).get('id')
         _, res_nv2 = call('GET', f'/quote-versions/{new_v}', token=admin)
@@ -1118,7 +1118,7 @@ def main():
             })
             if (res.get('data') or {}).get('id'):
                 created_rules.append(res['data']['id'])
-            _, res_nv = call('POST', f'/quotes/{q2}/versions', token=admin, body={})
+            _, res_nv = call('POST', f'/quotes/{q2}/versions?confirm=true', token=admin, body={})
             nv = (res_nv.get('data') or {}).get('id')
             _, res_v2 = call('GET', f'/quote-versions/{nv}', token=admin)
             floor_after = res_v2['data']['items'][0]['minimum_price_snapshot']
@@ -1168,7 +1168,7 @@ def main():
                  body={'quoted_price': 86})
             f_edit, a_edit = custom_floor(v1)
             # 建立新版
-            _, rn = call('POST', f'/quotes/{qid}/versions', token=admin, body={})
+            _, rn = call('POST', f'/quotes/{qid}/versions?confirm=true', token=admin, body={})
             f_ver, a_ver = custom_floor((rn.get('data') or {}).get('id'))
             # 复制报价
             _, rc = call('POST', f'/quotes/{qid}/clone', token=admin, body={

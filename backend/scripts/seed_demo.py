@@ -180,7 +180,7 @@ def main():
     else:
         print('商机已标记成交')
 
-    status, res = call('POST', f'/quote-versions/{version_id}/convert-to-order', token=admin, body={})
+    status, res = call('POST', f'/quote-versions/{version_id}/convert-to-order?confirm=true', token=admin, body={})
     if res.get('code') != 0:
         die('转订单', res)
     order_id = res['data']['order_id']

@@ -393,14 +393,14 @@ def sec_c402(admin: str) -> None:
             call("POST", f"/quote-versions/{v1}/accept", admin, {})
 
             # 成交转单：订单记下依据版本（**只有这条路会写 quote_version_id**）
-            status, res = call("POST", f"/quote-versions/{v1}/convert-to-order", admin, {})
+            status, res = call("POST", f"/quote-versions/{v1}/convert-to-order?confirm=true", admin, {})
             oid = db(f"select id from sales_orders where customer_id={cust} order by id desc limit 1")
             check("前置：成交转单成功", status, 200)
             order_version = db(f"select coalesce(quote_version_id::text,'N') from sales_orders where id={oid}")
             check("前置：订单记下了依据版本（=V1）", order_version, str(v1))
 
             # 报价再出一版 V2 —— 造出"订单依据 V1、报价已有 V2"的局面
-            call("POST", f"/quotes/{qid}/versions", admin, {})
+            call("POST", f"/quotes/{qid}/versions?confirm=true", admin, {})
             v2 = db(f"select id from quote_versions where quote_id={qid} order by id desc limit 1")
             check_true("前置：V2 与 V1 不同", v2 != v1, f"v1={v1} v2={v2}")
 

@@ -393,7 +393,7 @@ async def main() -> int:
             status, res = call("GET", "/quotes?page=1&page_size=20", admin)
             qs = ((res.get("data") or {}).get("items") or [])
             if qs:
-                call("POST", f"/quotes/{qs[0]['id']}/versions", admin, {})
+                call("POST", f"/quotes/{qs[0]['id']}/versions?confirm=true", admin, {})
                 status, res = call("GET", "/analytics/products?limit=20", admin)
                 after_rows = (res.get("data") or []) if isinstance(res.get("data"), list) else []
                 after = next((r for r in after_rows if r.get("sku_code") == code), {})

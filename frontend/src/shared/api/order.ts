@@ -134,9 +134,19 @@ export function getOrder(id: number) {
   return api.get<Order>(`/orders/${id}`)
 }
 
-export function convertToOrder(versionId: number, payload: Record<string, unknown> = {}) {
+/**
+ * 转销售订单。
+ *
+ * ⚠️ 点一下会**生成正式订单 + 复制全部明细 + 生成一条「全款」应收**，
+ * 订单是正式履约依据。后端要求 `confirm=true`（不带返回 42206 + 说明）。
+ */
+export function convertToOrder(
+  versionId: number,
+  payload: Record<string, unknown> = {},
+  confirm = false,
+) {
   return api.post<{ order_id: number; order_no: string }>(
-    `/quote-versions/${versionId}/convert-to-order`,
+    `/quote-versions/${versionId}/convert-to-order${confirm ? '?confirm=true' : ''}`,
     payload,
   )
 }
@@ -179,13 +189,19 @@ export function cancelOrder(orderId: number) {
   return api.post<Order>(`/orders/${orderId}/cancel`)
 }
 
-export function syncErp(orderId: number) {
+/**
+ * 推送 ERP/MES。
+ *
+ * ⚠️ 这是**写进外部系统**的动作：配置齐全时会真的在对方系统建单，本系统撤回不了。
+ * 后端要求 `confirm=true`（不带返回 42206 + 订单号/客户/金额说明）。
+ */
+export function syncErp(orderId: number, confirm = false) {
   return api.post<{
     pushed: boolean
     already_synced?: boolean
     erp_order_id?: string | null
     message?: string
-  }>(`/orders/${orderId}/sync-erp`)
+  }>(`/orders/${orderId}/sync-erp${confirm ? '?confirm=true' : ''}`)
 }
 
 /** 拉取并回写履约状态（API §27 POST /orders/{id}/refresh-status）。
