@@ -1167,7 +1167,23 @@ export default function PriceCenterPage() {
               </div>
               <Table<PriceRuleRow>
                 columns={[
-                  { title: 'SKU', dataIndex: 'sku_code', width: 140 },
+                  {
+                    title: 'SKU',
+                    dataIndex: 'sku_code',
+                    width: 200,
+                    // 编码在上、名称在下（与报价/订单明细同一口径）。
+                    // 后端 `serialize_price_rule` 现在会带 `sku_name` 回来。
+                    render: (v: string | null, record: PriceRuleRow) => (
+                      <div>
+                        <div>{v ?? '-'}</div>
+                        {record.sku_name && (
+                          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            {record.sku_name}
+                          </div>
+                        )}
+                      </div>
+                    ),
+                  },
                   {
                     title: '客户等级',
                     dataIndex: 'customer_level',
@@ -1279,7 +1295,21 @@ export default function PriceCenterPage() {
               <Table<CustomerPriceRow>
                 columns={[
                   { title: '客户', dataIndex: 'customer_name', width: 240, render: (v: string | null) => v ?? '-' },
-                  { title: 'SKU', dataIndex: 'sku_code', width: 140 },
+                  {
+                    title: 'SKU',
+                    dataIndex: 'sku_code',
+                    width: 200,
+                    render: (v: string | null, record: CustomerPriceRow) => (
+                      <div>
+                        <div>{v ?? '-'}</div>
+                        {record.sku_name && (
+                          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            {record.sku_name}
+                          </div>
+                        )}
+                      </div>
+                    ),
+                  },
                   {
                     title: '起订量',
                     dataIndex: 'min_qty',

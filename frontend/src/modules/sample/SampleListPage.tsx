@@ -530,7 +530,8 @@ export default function SampleListPage() {
 
   const skuOptions = (skusQuery.data ?? []).map((sku) => ({
     value: sku.id,
-    label: `${sku.sku_code}${sku.specification ? ` · ${sku.specification}` : ''}`,
+    // 下拉里带上 SKU 名称：只有 `编码 · 规格` 时，一个产品下几个 SKU 认不出区别
+    label: [sku.sku_code, sku.name, sku.specification].filter(Boolean).join(' · '),
   }))
   const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
     value: row.id,
@@ -792,15 +793,23 @@ export default function SampleListPage() {
                   {
                     title: 'SKU / 需求',
                     dataIndex: 'sku_code',
+                    // 编码在上、名称在下（同报价明细的口径）
                     render: (v: string | null, row: SampleRequestRow['items'][number]) => (
-                      <span>
-                        {v ?? '-'}
-                        {row.is_custom && (
-                          <Tag size="small" style={{ marginLeft: 6 }}>
-                            定制
-                          </Tag>
+                      <div>
+                        <div>
+                          {v ?? '-'}
+                          {row.is_custom && (
+                            <Tag size="small" style={{ marginLeft: 6 }}>
+                              定制
+                            </Tag>
+                          )}
+                        </div>
+                        {row.sku_name && (
+                          <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            {row.sku_name}
+                          </div>
                         )}
-                      </span>
+                      </div>
                     ),
                   },
                   { title: '原采购数量', dataIndex: 'original_quantity', width: 110, render: (v: number | null) => v == null ? '未记录' : v.toLocaleString('zh-CN') },

@@ -45,11 +45,23 @@ from app.modules.user.model import Role
 router = APIRouter(tags=["Pricing"])
 
 
-async def _sku_code_map(session: AsyncSession, sku_ids: list[int]) -> dict[int, str]:
+async def _sku_label_map(
+    session: AsyncSession, sku_ids: list[int]
+) -> dict[int, tuple[str | None, str | None]]:
+    """`{sku_id: (编码, 名称)}`。
+
+    原来只取编码（`_sku_code_map`）。价目/专属价两张表上满屏 `LL-100L-WH` 这种
+    编码，看的人认不出是哪个产品，所以把名称一起取回来（2026-10-10 修）。
+    **不额外多查一次库**：同一条 SELECT 多带一列而已。
+    """
     if not sku_ids:
         return {}
-    rows = (await session.execute(select(Sku.id, Sku.sku_code).where(Sku.id.in_(sku_ids)))).all()
-    return {int(sid): code for sid, code in rows}
+    rows = (
+        await session.execute(
+            select(Sku.id, Sku.sku_code, Sku.name).where(Sku.id.in_(sku_ids))
+        )
+    ).all()
+    return {int(sid): (code, name) for sid, code, name in rows}
 
 
 # ---------------------------------------------------------------- 成本
@@ -230,11 +242,16 @@ async def list_price_rules(
         stmt = stmt.where(Sku.sku_code.ilike(f"%{keyword.strip()}%"))
     stmt = stmt.order_by(PriceRule.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
-    codes = await _sku_code_map(session, [rule.sku_id for rule in rows])
+    labels = await _sku_label_map(session, [rule.sku_id for rule in rows])
     # 最低保护价按权限隐藏（与核价/查价同判据；`_` 用不上权限，这里要判）
     can_see_cost = user.has("price:manage")
     items = [
-        svc.serialize_price_rule(rule, codes.get(rule.sku_id), can_see_cost=can_see_cost)
+        svc.serialize_price_rule(
+            rule,
+            (labels.get(rule.sku_id) or (None, None))[0],
+            can_see_cost=can_see_cost,
+            sku_name=(labels.get(rule.sku_id) or (None, None))[1],
+        )
         for rule in rows
     ]
     return ok(page_data(items, total, page, page_size))
@@ -630,7 +647,7 @@ async def list_customer_price_rules(
             visible_customers = select(Customer.id).where(condition)
             stmt = stmt.where(CustomerPriceRule.customer_id.in_(visible_customers))
     rows, total = await paginate(session, stmt.order_by(CustomerPriceRule.id.desc()), page, page_size)
-    codes = await _sku_code_map(session, [rule.sku_id for rule in rows])
+    labels = await _sku_label_map(session, [rule.sku_id for rule in rows])
     customer_ids = {rule.customer_id for rule in rows}
     names: dict[int, str] = {}
     if customer_ids:
@@ -643,9 +660,10 @@ async def list_customer_price_rules(
     items = [
         svc.serialize_customer_price(
             rule,
-            codes.get(rule.sku_id),
+            (labels.get(rule.sku_id) or (None, None))[0],
             names.get(rule.customer_id),
             can_see_cost=user.has("price:manage"),
+            sku_name=(labels.get(rule.sku_id) or (None, None))[1],
         )
         for rule in rows
     ]
@@ -1715,6 +1733,11 @@ async def products_for_pricing(
             {
                 "id": sku.id,
                 "sku_code": sku.sku_code,
+                # SKU 名称（如"田字塑料托盘 1200×1000 黑色"）。与 product_name
+                # （产品名）不是一回事：一个产品下多个 SKU 靠它区分。
+                # 下拉选项满屏 `TP-1210-ST · 1200×1000×150mm 标准` 认不出是哪个
+                # （2026-10-10 修）。
+                "name": sku.name,
                 "specification": sku.specification,
                 "product_name": product_name,
                 "moq": sku.moq,
@@ -1864,13 +1887,13 @@ async def get_price_rule(
     row = await session.get(PriceRule, rule_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "价格规则不存在", 404)
-    codes = await _sku_code_map(session, [row.sku_id])
+    labels = await _sku_label_map(session, [row.sku_id])
+    code, name = labels.get(row.sku_id) or (None, None)
     # 单条也要按权限隐藏保护价（§7.3 复审：列表/指定查询/单条一个口径，
     # 否则"列表里看不到保护价，拿 id 单独查就看到了"）
+    # 名称同理：列表有、单条没有的话，点进去反而认不出是哪个 SKU。
     return ok(
-        svc.serialize_price_rule(
-            row, codes.get(row.sku_id), can_see_cost=user.has("price:manage")
-        )
+        svc.serialize_price_rule(row, code, can_see_cost=user.has("price:manage"), sku_name=name)
     )
 
 

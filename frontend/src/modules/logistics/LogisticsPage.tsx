@@ -249,7 +249,7 @@ export default function LogisticsPage() {
                     onChange={(value) => setSkuId(value as number)}
                     optionList={(skusQuery.data ?? []).map((sku) => ({
                       value: sku.id,
-                      label: `${sku.sku_code}${sku.specification ? ` · ${sku.specification}` : ''}`,
+                      label: [sku.sku_code, sku.name, sku.specification].filter(Boolean).join(' · '),
                     }))}
                   />
                 </div>

@@ -831,7 +831,24 @@ export default function AnalyticsPage() {
       <SectionCard title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）" style={{ marginTop: 16 }}>
         <Table<ProductStat>
           columns={[
-            { title: 'SKU', dataIndex: 'sku_code', width: 140 },
+            {
+              title: 'SKU',
+              dataIndex: 'sku_code',
+              width: 180,
+              // 原本只有编码。分析页每行是一个 SKU 的汇总，编码认不出是哪个产品；
+              // `product_name` 是**产品**名（如"田字塑料托盘 1200×1000"），
+              // 与 SKU 名（如"田字塑料托盘 1200×1000 黑色"）不是一回事，两个都要有。
+              render: (v: string | null, record: ProductStat) => (
+                <div>
+                  <div>{v ?? '-'}</div>
+                  {record.sku_name && (
+                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      {record.sku_name}
+                    </div>
+                  )}
+                </div>
+              ),
+            },
             { title: '产品', dataIndex: 'product_name', width: 160, render: (v: string | null) => v ?? '-' },
             { title: '规格', dataIndex: 'specification', render: (v: string | null) => v ?? '-' },
             { title: '询盘', dataIndex: 'inquiry_times', width: 80 },

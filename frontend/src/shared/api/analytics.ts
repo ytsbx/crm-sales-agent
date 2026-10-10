@@ -106,6 +106,8 @@ export interface CustomerStats {
 export interface ProductStat {
   sku_id?: number
   sku_code: string
+  /** SKU 名称（如"田字塑料托盘 1200×1000 黑色"）。与 `product_name`（产品名）不同层 */
+  sku_name?: string | null
   specification?: string | null
   product_name?: string | null
   /** PRD §23「询盘 / 报价 / 成交 / 失单 / 利润」 */

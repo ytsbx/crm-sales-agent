@@ -23,6 +23,8 @@ export interface PriceRuleRow {
   id: number
   sku_id: number
   sku_code?: string | null
+  /** SKU 名称：列表接口现在会返回（价目表上只有编码认不出是哪个产品） */
+  sku_name?: string | null
   customer_level?: string | null
   min_qty: number
   max_qty?: number | null
@@ -43,6 +45,8 @@ export interface CustomerPriceRow {
   customer_name?: string | null
   sku_id: number
   sku_code?: string | null
+  /** SKU 名称：列表接口现在会返回 */
+  sku_name?: string | null
   min_qty: number
   max_qty?: number | null
   agreed_price: number
@@ -167,6 +171,8 @@ export interface LogisticsRouteRow {
 export interface PricingSkuOption {
   id: number
   sku_code: string
+  /** SKU 名称。下拉选项用它区分同一产品下的不同 SKU（与 product_name 不同层） */
+  name?: string | null
   specification?: string | null
   product_name?: string | null
   moq?: number | null

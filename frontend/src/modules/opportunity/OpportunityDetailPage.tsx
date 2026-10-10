@@ -285,7 +285,20 @@ export default function OpportunityDetailPage() {
   if (!opportunity) return <div className="page-container">商机不存在或无权查看</div>
 
   const itemColumns = [
-    { title: 'SKU 编码', dataIndex: 'sku_code', width: 130 },
+    {
+      title: 'SKU',
+      dataIndex: 'sku_code',
+      width: 170,
+      // 编码 + 名称（口径与报价/订单明细一致）。接口已返回 `sku_name`。
+      render: (v: string | null, record: OpportunityItem) => (
+        <div>
+          <div>{v ?? '-'}</div>
+          {record.sku_name && (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{record.sku_name}</div>
+          )}
+        </div>
+      ),
+    },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '颜色', dataIndex: 'color', width: 90, render: (v: string | null) => v ?? '-' },
     {

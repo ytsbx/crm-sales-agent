@@ -63,12 +63,24 @@ def serialize_cost(cost: ProductCost, sku_code: str | None = None) -> dict:
 
 
 def serialize_price_rule(
-    rule: PriceRule, sku_code: str | None = None, *, can_see_cost: bool = True
+    rule: PriceRule,
+    sku_code: str | None = None,
+    *,
+    can_see_cost: bool = True,
+    sku_name: str | None = None,
 ) -> dict:
+    """价格规则。
+
+    `sku_name` 是**只读关键字参数**（默认 None）：只有"知道名字"的调用点才传，
+    其余（新建/编辑/审计前后的快照）保持原样 —— 那里本来就只有编码，
+    不值得为它们多查一次库。
+    """
     return {
         "id": rule.id,
         "sku_id": rule.sku_id,
         "sku_code": sku_code,
+        # 价目表上满屏 `LL-100L-WH` 这种编码认不出是哪个产品（2026-10-10 修）
+        "sku_name": sku_name,
         "customer_level": rule.customer_level,
         "min_qty": _f(rule.min_qty),
         "max_qty": _f(rule.max_qty),
@@ -87,7 +99,8 @@ def serialize_price_rule(
 
 def serialize_customer_price(rule: CustomerPriceRule, sku_code: str | None = None,
                              customer_name: str | None = None, *,
-                             can_see_cost: bool = True) -> dict:
+                             can_see_cost: bool = True,
+                             sku_name: str | None = None) -> dict:
     """客户专属价。
 
     §7.3 复审（第三轮）：此前只有核价/查价两个接口按 `price:manage` 隐藏保护价，
@@ -103,6 +116,7 @@ def serialize_customer_price(rule: CustomerPriceRule, sku_code: str | None = Non
         "customer_name": customer_name,
         "sku_id": rule.sku_id,
         "sku_code": sku_code,
+        "sku_name": sku_name,
         "min_qty": _f(rule.min_qty),
         "max_qty": _f(rule.max_qty),
         "agreed_price": _f(rule.agreed_price),
