@@ -437,6 +437,67 @@ async def delete_file(
     return ok(None, "文件已删除")
 
 
+@router.get("/business/{business_type}/files/batch")
+async def list_business_files_batch(
+    business_type: str,
+    business_ids: str,
+    user: CurrentUser = Depends(require_permission("file:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """一次拿多个业务对象的附件，返回 `{business_id: [附件…]}`（2026-10-10 加）。
+
+    **为什么需要它**：SKU 列表要在每行显示缩略图。若逐行调
+    `GET /business/sku/{id}/files`，一个产品有几个型号就发几个请求 —— 典型 N+1。
+
+    `business_ids` 是逗号分隔的 id 串（前端把当前页的 id 一次带上）。
+    可见性**逐个判**，与单条列表同一条规则（`visible_object`）：
+    看不见的对象直接不出现在返回里，而不是报错 —— 批量接口报错会让"其中一个
+    不可见"变成整个列表打不开。上限 500 个，防被当成枚举通道。
+    """
+    try:
+        ids = [int(x) for x in business_ids.split(",") if x.strip()]
+    except ValueError:
+        raise AppError(ErrorCode.PARAM_ERROR, "business_ids 必须是逗号分隔的数字", 422) from None
+    ids = list(dict.fromkeys(ids))  # 去重且保序
+    if not ids:
+        return ok({})
+    if len(ids) > 500:
+        raise AppError(ErrorCode.PARAM_ERROR, "一次最多查 500 个业务对象", 422)
+
+    visible = [
+        bid
+        for bid in ids
+        if await access.visible_object(
+            session, user, business_type=business_type, business_id=bid
+        )
+    ]
+    if not visible:
+        return ok({})
+    rows = (
+        await session.execute(
+            select(BusinessFile, FileRecord, User.name)
+            .join(FileRecord, FileRecord.id == BusinessFile.file_id)
+            .outerjoin(User, User.id == FileRecord.uploaded_by)
+            .where(
+                BusinessFile.business_type == business_type,
+                BusinessFile.business_id.in_(visible),
+            )
+            .order_by(BusinessFile.id.desc())
+        )
+    ).all()
+    grouped: dict[str, list[dict]] = {str(bid): [] for bid in visible}
+    for link, record, uploader in rows:
+        grouped.setdefault(str(link.business_id), []).append(
+            {
+                **serialize_file(record, uploader),
+                "business_file_id": link.id,
+                "category": link.category,
+                "remark": link.remark,
+            }
+        )
+    return ok(grouped)
+
+
 @router.get("/business/{business_type}/{business_id}/files")
 async def list_business_files(
     business_type: str,

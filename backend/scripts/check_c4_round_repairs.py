@@ -254,22 +254,58 @@ def sec_quote_deleted_contact(admin: str) -> None:
 # =====================================================================
 # C4-02：合同依据必须与订单依据**同一版**报价
 # =====================================================================
-async def _fixture_sku_master(sku_id: int) -> None:
-    """给 SKU 造"主数据已确认 + 整版快照"夹具，让报价能过"正式发送"闸门。
+async def _sku_master_fixture(sku_id: int, *, restore: dict | None = None) -> dict:
+    """进/出 SKU 主数据夹具，**同一个事件循环里完成**。
 
-    照抄 `check_eighth_round_leftovers.py` / `check_biz_doc_freeze.py` 的既有写法 ——
-    这张夹具表是项目里驱动转单的标准手段，不是我新发明的。
+    ⚠️ 不要把这个拆成多个 `asyncio.run()`：`app.core.database` 的 engine 在
+    第一次使用时把连接池绑到当时的事件循环，第二次 `asyncio.run()` 换了个循环，
+    实测报 `Future ... attached to a different loop`。所以进和出各只调一次。
+
+    - `restore=None` → **进入**：先记下原有状态并返回它，再写入"全部已确认"夹具
+      （报价要过"正式发送"闸门，必须有已确认的主数据 + 整版快照）；
+    - `restore=<快照>` → **恢复**：删掉本套件写的行，再把快照里的行原样插回。
+
+    **为什么必须恢复**：夹具把字段权威标成"已确认"，而 `check_quote_api` 有一条
+    断言依赖"主数据**未确认**时只提示不阻断"。我第一版漏了恢复，实测污染了同一个库
+    （`check_quote_api` 单独跑也红）。
     """
     import json as _json
+
     from sqlalchemy import text as _text
+
     from app.core.database import SessionLocal
     from app.modules.product.master import MASTER_FIELDS
 
-    values = {f: f"{MARK}-{f}" for f in MASTER_FIELDS}
-    values["name"] = f"{MARK} 测试品名"
-    values["specification"] = f"{MARK} 规格"
-    values["unit"] = "个"
     async with SessionLocal() as s:
+        if restore is not None:
+            await s.execute(_text(
+                "delete from sku_master_versions where sku_id = :sku and diff_key like :k"),
+                {"sku": sku_id, "k": f"{MARK}:%"})
+            await s.execute(_text("delete from sku_field_authorities where sku_id = :sku"),
+                            {"sku": sku_id})
+            for f in restore["fields"]:
+                await s.execute(_text(
+                    "insert into sku_field_authorities "
+                    "(sku_id, field_name, confirmed_version, confirmed_value, confirmed_by, "
+                    " status, source_verified, created_at, updated_at) "
+                    "values (:sku, :f, :v, cast(:val as jsonb), :by, :st, :sv, :ca, now())"),
+                    {"sku": sku_id, "f": f[0], "v": f[1], "val": f[2], "by": f[3],
+                     "st": f[4], "sv": f[5], "ca": f[6]})
+            await s.commit()
+            return {}
+
+        # —— 进入：快照 ——
+        fields = (await s.execute(_text(
+            "select field_name, confirmed_version, confirmed_value::text, confirmed_by, status, "
+            "       source_verified, created_at "
+            "from sku_field_authorities where sku_id = :sku"), {"sku": sku_id})).all()
+        before = {"fields": [tuple(r) for r in fields]}
+
+        # —— 写入夹具 ——
+        values = {f: f"{MARK}-{f}" for f in MASTER_FIELDS}
+        values["name"] = f"{MARK} 测试品名"
+        values["specification"] = f"{MARK} 规格"
+        values["unit"] = "个"
         for field in MASTER_FIELDS:
             await s.execute(_text(
                 "insert into sku_field_authorities "
@@ -292,6 +328,7 @@ async def _fixture_sku_master(sku_id: int) -> None:
              "src": _json.dumps({"note": MARK}), "note": f"{MARK} 第 1 版",
              "key": f"{MARK}:v1"})
         await s.commit()
+        return before
 
 
 def sec_c402(admin: str) -> None:
@@ -308,66 +345,79 @@ def sec_c402(admin: str) -> None:
     import asyncio
 
     sku = int(db("select id from skus order by id limit 1"))
-    asyncio.run(_fixture_sku_master(sku))
+    async def _run() -> None:
+        """**同一个事件循环**里"进夹具 → 跑完全部步骤 → 恢复"。
 
-    # 模板 + 客户 + 商机 + 报价
-    call("POST", "/contract-templates", admin,
-         {"doc_type": "contract", "name": f"{MARK}-合同模板",
-          "body": "金额 {{order_amount}} 客户 {{customer_name}}"})
-    tid = db("select id from contract_templates order by id desc limit 1")
-    call("POST", "/customers", admin, {"name": f"{MARK}-合同客户"})
-    cust = db("select id from customers order by id desc limit 1")
-    call("POST", "/opportunities", admin,
-         {"title": f"{MARK}-合同商机", "customer_id": int(cust), "expected_amount": 100})
-    opp = db("select id from opportunities order by id desc limit 1")
-    call("POST", "/quotes", admin, {"opportunity_id": int(opp)})
-    qid = db(f"select id from quotes where customer_id={cust} order by id desc limit 1")
-    v1 = db(f"select id from quote_versions where quote_id={qid} order by id limit 1")
+        为什么必须包在一起：`app.core.database` 的 engine 第一次使用时把连接池
+        绑到当时的事件循环；`asyncio.run()` 每调一次就新建一个循环，第二次必报
+        `Future ... attached to a different loop`（实测踩到）。
+        其他套件都是单个 `async def main()` 全程一个循环，这里照同一结构。
+        """
+        before = await _sku_master_fixture(sku)
+        try:
+            # 模板 + 客户 + 商机 + 报价
+            call("POST", "/contract-templates", admin,
+                 {"doc_type": "contract", "name": f"{MARK}-合同模板",
+                  "body": "金额 {{order_amount}} 客户 {{customer_name}}"})
+            tid = db("select id from contract_templates order by id desc limit 1")
+            call("POST", "/customers", admin, {"name": f"{MARK}-合同客户"})
+            cust = db("select id from customers order by id desc limit 1")
+            call("POST", "/opportunities", admin,
+                 {"title": f"{MARK}-合同商机", "customer_id": int(cust), "expected_amount": 100})
+            opp = db("select id from opportunities order by id desc limit 1")
+            call("POST", "/quotes", admin, {"opportunity_id": int(opp)})
+            qid = db(f"select id from quotes where customer_id={cust} order by id desc limit 1")
+            v1 = db(f"select id from quote_versions where quote_id={qid} order by id limit 1")
 
-    # 明细 + 运费（提交审批前必须填，提交后版本就锁了）
-    call("POST", f"/quote-versions/{v1}/items", admin,
-         {"sku_id": sku, "quantity": 1, "unit_price": 100})
-    call("POST", f"/quote-versions/{v1}/charges", admin,
-         {"charge_type": "logistics", "amount": 0})
-    call("POST", f"/quote-versions/{v1}/recalculate", admin, {})
+            # 明细 + 运费（提交审批前必须填，提交后版本就锁了）
+            call("POST", f"/quote-versions/{v1}/items", admin,
+                 {"sku_id": sku, "quantity": 1, "unit_price": 100})
+            call("POST", f"/quote-versions/{v1}/charges", admin,
+                 {"charge_type": "logistics", "amount": 0})
+            call("POST", f"/quote-versions/{v1}/recalculate", admin, {})
 
-    # 报价生命周期：审批 → 发送 → 客户接受
-    call("POST", f"/quote-versions/{v1}/submit-approval", admin, {})
-    call("POST", f"/quote-versions/{v1}/mark-sent", admin, {"channel": "email"})
-    call("POST", f"/quote-versions/{v1}/accept", admin, {})
+            # 报价生命周期：审批 → 发送 → 客户接受
+            call("POST", f"/quote-versions/{v1}/submit-approval", admin, {})
+            call("POST", f"/quote-versions/{v1}/mark-sent", admin, {"channel": "email"})
+            call("POST", f"/quote-versions/{v1}/accept", admin, {})
 
-    # 成交转单：订单记下依据版本（**只有这条路会写 quote_version_id**）
-    status, res = call("POST", f"/quote-versions/{v1}/convert-to-order", admin, {})
-    oid = db(f"select id from sales_orders where customer_id={cust} order by id desc limit 1")
-    check("前置：成交转单成功", status, 200)
-    order_version = db(f"select coalesce(quote_version_id::text,'N') from sales_orders where id={oid}")
-    check("前置：订单记下了依据版本（=V1）", order_version, str(v1))
+            # 成交转单：订单记下依据版本（**只有这条路会写 quote_version_id**）
+            status, res = call("POST", f"/quote-versions/{v1}/convert-to-order", admin, {})
+            oid = db(f"select id from sales_orders where customer_id={cust} order by id desc limit 1")
+            check("前置：成交转单成功", status, 200)
+            order_version = db(f"select coalesce(quote_version_id::text,'N') from sales_orders where id={oid}")
+            check("前置：订单记下了依据版本（=V1）", order_version, str(v1))
 
-    # 报价再出一版 V2 —— 造出"订单依据 V1、报价已有 V2"的局面
-    call("POST", f"/quotes/{qid}/versions", admin, {})
-    v2 = db(f"select id from quote_versions where quote_id={qid} order by id desc limit 1")
-    check_true("前置：V2 与 V1 不同", v2 != v1, f"v1={v1} v2={v2}")
+            # 报价再出一版 V2 —— 造出"订单依据 V1、报价已有 V2"的局面
+            call("POST", f"/quotes/{qid}/versions", admin, {})
+            v2 = db(f"select id from quote_versions where quote_id={qid} order by id desc limit 1")
+            check_true("前置：V2 与 V1 不同", v2 != v1, f"v1={v1} v2={v2}")
 
-    # ① 显式选 V2（与订单依据不一致）→ 必须拒
-    status, res = call("POST", "/contract-documents", admin, {
-        "template_id": int(tid), "customer_id": int(cust), "order_id": int(oid),
-        "quote_id": int(qid), "quote_version_id": int(v2), "title": f"{MARK}-冲突合同"})
-    check_true("① 依据与订单不一致被拒（从前 200 并生成）",
-               res.get("code") != 0, f"code={res.get('code')} {str(res.get('message'))[:56]}")
+            # ① 显式选 V2（与订单依据不一致）→ 必须拒
+            status, res = call("POST", "/contract-documents", admin, {
+                "template_id": int(tid), "customer_id": int(cust), "order_id": int(oid),
+                "quote_id": int(qid), "quote_version_id": int(v2), "title": f"{MARK}-冲突合同"})
+            check_true("① 依据与订单不一致被拒（从前 200 并生成）",
+                       res.get("code") != 0, f"code={res.get('code')} {str(res.get('message'))[:56]}")
 
-    # ② 对照：显式选订单依据的那一版 → 放行
-    status, res = call("POST", "/contract-documents", admin, {
-        "template_id": int(tid), "customer_id": int(cust), "order_id": int(oid),
-        "quote_id": int(qid), "quote_version_id": int(v1), "title": f"{MARK}-一致合同"})
-    check("② 选订单依据的那一版放行（没误伤）", res.get("code"), 0)
+            # ② 对照：显式选订单依据的那一版 → 放行
+            status, res = call("POST", "/contract-documents", admin, {
+                "template_id": int(tid), "customer_id": int(cust), "order_id": int(oid),
+                "quote_id": int(qid), "quote_version_id": int(v1), "title": f"{MARK}-一致合同"})
+            check("② 选订单依据的那一版放行（没误伤）", res.get("code"), 0)
 
-    # ③ 对照：不传版本（生成时"跟订单走"）→ 放行
-    status, res = call("POST", "/contract-documents", admin, {
-        "template_id": int(tid), "customer_id": int(cust), "order_id": int(oid),
-        "title": f"{MARK}-自动带版本"})
-    check("③ 不传版本时不误伤（自动跟随订单依据）", res.get("code"), 0)
+            # ③ 对照：不传版本（生成时"跟订单走"）→ 放行
+            status, res = call("POST", "/contract-documents", admin, {
+                "template_id": int(tid), "customer_id": int(cust), "order_id": int(oid),
+                "title": f"{MARK}-自动带版本"})
+            check("③ 不传版本时不误伤（自动跟随订单依据）", res.get("code"), 0)
 
-    # 收尾
+        finally:
+                # 必须恢复：夹具把主数据标成"已确认"，而 `check_quote_api` 有一条断言
+                # 依赖"主数据未确认时只提示不阻断"。我第一版漏了，实测污染了同一个库。
+                await _sku_master_fixture(sku, restore=before)
+
+    asyncio.run(_run())
     db(f"delete from contract_documents where title like '{MARK}-%'")
     db("delete from contract_templates where name = "
        f"'{MARK}-合同模板'")
@@ -427,6 +477,26 @@ def sec_sku_images(admin: str) -> None:
         check("④ 但他看得见（读取只要 product:view）", res5.get("code"), 0)
     else:
         print("  --   zhangsan 登录失败，跳过权限反例")
+
+    # ⑤ 批量接口（SKU 列表显示缩略图要靠它，逐行查就是 N+1）
+    skus = db("select string_agg(id::text, ',') from (select id from skus order by id limit 3) t")
+    _, resb = call("GET", f"/business/sku/files/batch?business_ids={skus}", admin)
+    grouped = resb.get("data") or {}
+    ids = [x for x in str(skus).split(",") if x]
+    check("⑤ 批量接口可用", resb.get("code"), 0)
+    check_true("⑤ 返回覆盖请求的每个对象（含空数组，不是只返回有附件的）",
+               isinstance(grouped, dict) and all(k in grouped for k in ids),
+               f"请求={ids} 返回={sorted(grouped.keys()) if isinstance(grouped, dict) else grouped}")
+    counts = {k: len(v or []) for k, v in (grouped or {}).items()}
+    check_true("⑤ 刚传的那张图出现在对应对象下",
+               any(n >= 1 for n in counts.values()),
+               f"各对象附件数={counts}")
+
+    # 参数校验：非数字要拒（否则会被当成枚举通道）
+    code_bad = call("GET", "/business/sku/files/batch?business_ids=abc", admin)[1].get("code")
+    check_true("⑤ 非数字 business_ids 被拒", code_bad != 0, f"code={code_bad}")
+    _, rese = call("GET", "/business/sku/files/batch?business_ids=", admin)
+    check("⑤ 空列表返回空对象（不是报错）", rese.get("code"), 0)
 
     # 收尾：把测试图删掉，别在库里留垃圾
     if file_id:

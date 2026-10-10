@@ -19,6 +19,22 @@ export function listBusinessFiles(businessType: string, businessId: number) {
   return api.get<FileRow[]>(`/business/${businessType}/${businessId}/files`)
 }
 
+/**
+ * 一次拿多个业务对象的附件，返回 `{ 业务id: [附件…] }`。
+ *
+ * 为什么需要它：SKU 列表每行要显示缩略图，逐行调 `listBusinessFiles` 就是 N+1 ——
+ * 一个产品有几个型号就发几个请求。批量接口把当前页的 id 一次带上。
+ *
+ * 后端**逐个判可见性**，看不见的对象不会出现在返回里（而不是整批报错）：
+ * 批量接口一报错，"其中一个不可见"就会变成整个列表打不开。
+ */
+export function listBusinessFilesBatch(businessType: string, businessIds: number[]) {
+  const ids = businessIds.join(',')
+  return api.get<Record<string, FileRow[]>>(
+    `/business/${businessType}/files/batch?business_ids=${encodeURIComponent(ids)}`,
+  )
+}
+
 export async function uploadFile(
   file: File,
   target: { businessType: string; businessId: number; category?: string },

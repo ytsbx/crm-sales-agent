@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
@@ -23,6 +23,8 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import AttachmentPanel from '../common/AttachmentPanel'
 import ImageGallery from '../../shared/components/ImageGallery'
+import SkuImageCell from './SkuImageCell'
+import { listBusinessFilesBatch, type FileRow } from '../../shared/api/file'
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
@@ -134,6 +136,24 @@ export default function ProductDetailPage() {
     queryFn: () => listProductSkus(productId),
     enabled: Number.isFinite(productId),
   })
+
+  // SKU 列表要显示缩略图。**用批量接口一次取**：逐行调就是 N+1，
+  // 一个产品有几个型号就发几个请求（见 `listBusinessFilesBatch` 的注释）。
+  const skuIds = (skuQuery.data ?? []).map((s) => s.id)
+  const skuImagesQuery = useQuery({
+    queryKey: ['sku-images', skuIds.join(',')],
+    queryFn: () => listBusinessFilesBatch('sku', skuIds),
+    enabled: skuIds.length > 0,
+  })
+  //: sku_id -> 图片附件（只留 mime 是 image/ 的；资料类不算"图片"）
+  const skuImages = useMemo(() => {
+    const out: Record<number, FileRow[]> = {}
+    for (const [key, rows] of Object.entries(skuImagesQuery.data ?? {})) {
+      const imgs = (rows ?? []).filter((r) => (r.mime_type ?? '').toLowerCase().startsWith('image/'))
+      if (imgs.length > 0) out[Number(key)] = imgs
+    }
+    return out
+  }, [skuImagesQuery.data])
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['product', productId] })
@@ -273,6 +293,19 @@ export default function ProductDetailPage() {
 
   const skuColumns = [
     { title: 'SKU 编码', dataIndex: 'sku_code', width: 140 },
+    {
+      // 图片就放在 SKU 列表这儿（主人 2026-10-10 口径）：直接看到图，
+      // 点一下开图片墙（看全部 / 上传 / 删除）。不再单独开"产品图片"区块。
+      title: '图片',
+      width: 80,
+      render: (_: unknown, record: Sku) => (
+        <SkuImageCell
+          images={skuImages[record.id] ?? []}
+          canWrite={canManage}
+          onClick={() => setImageSku(record)}
+        />
+      ),
+    },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '颜色', dataIndex: 'color', width: 90, render: (v: string | null) => v ?? '-' },
     { title: '材质', dataIndex: 'material', width: 120, render: (v: string | null) => v ?? '-' },
@@ -437,19 +470,7 @@ export default function ProductDetailPage() {
           rowKey="id"
           pagination={false}
           empty="还没有 SKU，先加一个"
-          scroll={{ x: 1200 }}
-        />
-      </SectionCard>
-
-      {/* 产品图片（方案 §7）：以图为主，缩略图墙 + 点开看大图。
-          与下面的「产品资料与图片」分开：这里只收图片、看的是图本身；
-          资料那边是通用附件表（图纸、规格书、回款凭证…），看的是文件名。
-          混在一张表里既看不清图，也容易把"图片"和"资料"混为一谈。 */}
-      <SectionCard title="产品图片">
-        <ImageGallery
-          businessType="product"
-          businessId={productId}
-          writePermission="product:manage"
+          scroll={{ x: 1280 }}
         />
       </SectionCard>
 
