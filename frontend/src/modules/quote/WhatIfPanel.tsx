@@ -121,19 +121,35 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
     {
       title: '方案',
       dataIndex: 'version_no',
-      width: 90,
-      render: (value: number, record: VersionComparisonRow) => (
-        <span>
-          <span style={{ fontWeight: record.version_id === versionId ? 700 : 500 }}>
-            V{value}
+      // 这一列要同时放「V3」和「当前」标记。原来写 90px：实测列里内容 64px、
+      // 内边距各 12px，`当前` 标签右边缘**只剩 18px 就到列边界**，看着像被挤出去
+      // （截图反馈：「v3 的位置被当前挤出去了」）。130px 之后两行都留得住。
+      //
+      // 另外用 `flex + gap` 而不是 `marginLeft`：间距由布局给，不靠手写魔法数字，
+      // 标签换字号/改文案时不会又贴上去。`nowrap` 保证它永远不折到第二行。
+      width: 130,
+      render: (value: number, record: VersionComparisonRow) => {
+        const isCurrent = record.version_id === versionId
+        return (
+          <span
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <span style={{ fontWeight: isCurrent ? 700 : 500 }}>V{value}</span>
+            {isCurrent && (
+              // `type="light"` 比默认实心填充轻一档：这里只是"标一下哪个是当前版"，
+              // 不需要抢过右边「状态」列那个真正的状态标签。
+              <Tag color="blue" size="small" type="light">
+                当前
+              </Tag>
+            )}
           </span>
-          {record.version_id === versionId && (
-            <Tag color="blue" size="small" style={{ marginLeft: 6 }}>
-              当前
-            </Tag>
-          )}
-        </span>
-      ),
+        )
+      },
     },
     {
       title: '状态',
