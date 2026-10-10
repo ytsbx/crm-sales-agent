@@ -598,29 +598,23 @@ async def clone_opportunity(
 
 
 async def ensure_skus_exist(session: AsyncSession, sku_ids: list[int | None]) -> None:
-    """明细引用的 SKU 必须真实存在且未删除（第十二批 12.5）。
+    """明细引用的 SKU 必须真实存在、未删除、**且未停用**（第十二批 12.5 + issue #7）。
 
     从前直接落库 → 撞外键 → 500「服务器内部错误」，用户看不出是哪一条错；
     而批量替换又是"先删光再写"，一条坏 SKU 会让**原明细整批消失**、新的又没进去。
+
+    issue #7 补的一条：这里原先只查 `deleted_at`，**不看 `status`** ——
+    于是停用的 SKU 照样能加进需求行、再一路流进报价与订单。停用与删除
+    对新业务是同一件事，判据统一收到 `product.service.require_available_sku` 一份上，
+    以后新加入口不会再各写一遍。
     """
     ids = {int(x) for x in sku_ids if x is not None}
     if not ids:
         return
-    found = set(
-        (
-            await session.execute(
-                select(Sku.id).where(Sku.id.in_(ids), Sku.deleted_at.is_(None))
-            )
-        ).scalars().all()
-    )
-    missing = sorted(ids - found)
-    if missing:
-        raise AppError(
-            ErrorCode.NOT_FOUND,
-            f"SKU id={missing[0]} 不存在或已删除，请重新选一个；"
-            f"本次共 {len(missing)} 条明细的 SKU 查不到",
-            404,
-        )
+    from app.modules.product.service import require_available_sku
+
+    for sku_id in sorted(ids):
+        await require_available_sku(session, sku_id)
 
 
 async def replace_items(

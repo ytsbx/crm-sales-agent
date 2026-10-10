@@ -563,6 +563,12 @@ async def lookup_applicable_price(
     - `include_customer_specific=False` 用于公海客户（无负责人）：专属价是
       协议价，只该让负责人看，数据范围放行不等于专属价放行。
     """
+    # 停用/删除的 SKU 不给有效价（issue #7 实测：停用后查价仍返回
+    # `status=ok` + 有效适用价，销售照拿它去报价）。
+    # 查价是**新业务**入口，所以这里直接拒；历史单据不经过这里。
+    from app.modules.product.service import require_available_sku
+
+    await require_available_sku(session, sku_id)
     level = (customer.level or "").strip() or None
 
     async def rule_payload(rule: PriceRule, source: str, note: str | None = None) -> dict:
@@ -801,9 +807,11 @@ async def calculate_price(
       里是含运费的，回看/重算老版本时必须按老口径，否则等于改写已发出去的报价。
       调用方从这里传入口径，见 `quote/service.build_item_snapshot`。
     """
-    sku = await session.get(Sku, sku_id)
-    if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    # 停用/删除的 SKU 不接新业务（issue #7：从前只判 `deleted_at`，
+    # 停用之后查价照样返回 status=ok 与有效适用价，"停售"对销售完全失效）。
+    from app.modules.product.service import require_available_sku
+
+    sku = await require_available_sku(session, sku_id)
 
     warnings: list[str] = []
     customer = await session.get(Customer, customer_id) if customer_id else None

@@ -173,3 +173,41 @@ async def delete_product(session: AsyncSession, product: Product) -> list[Sku]:
     for sku in skus:
         sku.deleted_at = now
     return list(skus)
+
+
+# ---------------------------------------------------------------- SKU 可用状态
+
+#: 「允许新业务」的状态白名单。**只有 active 能接新业务。**
+#:
+#: 为什么要有统一判据（issue #7 实测）：停用 SKU 之后，查价仍返回
+#: `status=ok` 与有效适用价、还能加进报价、手工建单也成功 ——
+#: "停售"这个操作对实际销售完全失效。四处入口各自只判 `deleted_at`、
+#: 谁都没看 `status`，所以修的时候必须**接到同一份判据上**，
+#: 否则下次新加一个入口又会漏。
+SKU_AVAILABLE_STATUSES = ("active",)
+
+
+def sku_blocked_reason(sku: Sku) -> str | None:
+    """这个 SKU 现在能不能接**新业务**；能则返回 None，不能则返回给用户看的原因。
+
+    只判"能不能接新业务"，**不管历史单据**：已经发出去的报价、已建的订单
+    引用的还是它，照常能打开、能看 —— 停用不该让历史记录变成打不开的空白。
+    """
+    if sku.deleted_at is not None:
+        return f"SKU {sku.sku_code} 已删除，不能用于新业务"
+    if (sku.status or "").strip().lower() not in SKU_AVAILABLE_STATUSES:
+        return f"SKU {sku.sku_code} 已停用，不能用于新业务（历史单据不受影响）"
+    return None
+
+
+async def require_available_sku(session: AsyncSession, sku_id: int) -> Sku:
+    """取 SKU 并校验"允许新业务"。查价 / 加入需求 / 报价 / 手工订单共用这一份。"""
+    sku = await session.get(Sku, sku_id)
+    if sku is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU id={sku_id} 不存在", 404)
+    reason = sku_blocked_reason(sku)
+    if reason is not None:
+        # 409：状态不允许，不是"找不到"。用户要能分清"这个 SKU 没了"
+        # 和"这个 SKU 停售了，换个在用型号"。
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, reason, 409)
+    return sku

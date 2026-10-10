@@ -1340,9 +1340,11 @@ async def build_item_snapshot(
             remark=remark,
             opportunity_item_id=opportunity_item_id,
         )
-    sku = await session.get(Sku, sku_id)
-    if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU {sku_id} 不存在", 404)
+    # 停用/删除的 SKU 不能进报价明细（issue #7：从前只判 `deleted_at`，
+    # 停用后仍能加进新报价）。
+    from app.modules.product.service import require_available_sku
+
+    sku = await require_available_sku(session, sku_id)
     product = await session.get(Product, sku.product_id)
 
     # §8.14 接线点。`resolve_confirmed_master` 与闸门版同源，只差"缺确认不抛错"。

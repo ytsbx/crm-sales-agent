@@ -328,6 +328,9 @@ check_twelfth_round_repairs
 # 重点守两处容易改错的：① 不能被"一个产品下 N 个匹配 SKU"撑成重复行（join 会踩、exists 不会）；
 # ② 软删的 SKU 不算数。
 check_product_search_by_sku
+# 停用/删除的 SKU 必须贯穿所有新业务入口（issue #7）：查价 / 加需求 / 报价 / 手工建单 / 核价。
+# 守一条最容易改坏的边界：**历史单据不受影响**（停用后已发的报价照常能打开）。
+check_sku_availability
 # 价格规则 / 客户特殊价的搜索与分页（主人："没有搜索功能，一旦很多就太乱了，根本找不到"）。
 # 从前前端写死 `{page:1, page_size:100}`：既搜不了，第 101 条以后也看不到。
 check_price_rule_search

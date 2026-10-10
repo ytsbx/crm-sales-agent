@@ -416,14 +416,14 @@ async def create_order(
     # （继承），不经过这里 —— 源头在报价那一侧已经拦住了。
     currency = await ensure_currency_allowed(session, currency, label="订单币种")
 
-    from app.modules.product.model import Sku
 
     total = Decimal(0)
     rows: list[SalesOrderItem] = []
+    from app.modules.product.service import require_available_sku
+
     for entry in items:
-        sku = await session.get(Sku, entry.sku_id)
-        if sku is None or sku.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, f"SKU id={entry.sku_id} 不存在", 404)
+        # 停用/删除的 SKU 不能手工建单（issue #7：从前只判 `deleted_at`）
+        sku = await require_available_sku(session, entry.sku_id)
         # 先归一再看金额：货款必须等于"**落库的那个数量** × 单价"，
         # 否则接口报的金额与库里能算出来的金额对不上（审查 B2-02）。
         quantity = normalized_quantity(entry.quantity)
