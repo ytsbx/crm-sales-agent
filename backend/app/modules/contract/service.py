@@ -365,28 +365,38 @@ async def generate_document(
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "该请求编号已用于不同内容的合同，请换一个编号", 409
                 )
-            # 兼容升级前已存在的文档：旧行没有指纹，只能比较请求中明确
-            # 提供且模型上有对应快照的字段。可选字段未传时不能拿默认生成值
-            # 反推请求内容，否则旧的 ``title=None`` 会被误判为冲突。
+            # 兼容升级前已存在的文档：旧行没有指纹，只能比较**请求里明确提交过**的字段。
+            #
+            # ⚠️ 判据必须是 `model_fields_set`，**不是 `payload.x is not None`**（C4-06 补边界）。
+            # 这两件事完全不同：
+            #   - 字段**没出现在请求里** → 不该拿去比（可选字段不传时模型会给默认值 None，
+            #     拿默认值反推请求内容，会把旧的 `title=None` 误判成冲突）；
+            #   - 字段**显式传了 null** → 那是**一次真实的修改意图**，必须比。
+            # `is not None` 把两者混成一种，于是：
+            #   旧合同到期日 2026-11-01，同一把请求编号、显式传 `expiry_date: null`
+            #   → 比不出来 → **回放原合同**（实测返回 200「返回的是同一份」，到期日仍是 11-01）。
+            #   而新合同走指纹分支，同样输入**正确地返回 409** —— 两条分支口径不一致。
+            # 复核（2026-10-10）指出的就是这个空值边界。
+            #
+            # 只列**模型上确实有快照列**、且"不传"与"传 null"语义不同的字段；
+            # `extra_fields`（默认 `{}`）与 `supersede_parent`（默认 False）是行为开关
+            # 而非快照列，不参与比较 —— 与修之前的口径保持一致。
+            _LEGACY_COMPARABLE = (
+                "order_id",
+                "quote_id",
+                "quote_version_id",
+                "title",
+                "expiry_date",
+                "effective_date",
+                "parent_id",
+            )
+            submitted = payload.model_fields_set
             legacy_mismatch = (
                 replayed.customer_id != payload.customer_id
                 or replayed.template_id != payload.template_id
-                or (payload.order_id is not None and replayed.order_id != payload.order_id)
-                or (payload.quote_id is not None and replayed.quote_id != payload.quote_id)
-                or (
-                    payload.quote_version_id is not None
-                    and replayed.quote_version_id != payload.quote_version_id
-                )
-                or (payload.title is not None and replayed.title != payload.title)
-                or (payload.parent_id is not None and replayed.parent_id != payload.parent_id)
-                # 日期也要比（C4-06 补修，2026-10-10）。这两个字段**库里一直有**
-                # （`contract_documents.expiry_date` / `effective_date`），漏了它们会这样：
-                # 同一把请求编号、只把到期日从 11-01 改成 12-01 → 判不出差异 →
-                # **回放成旧合同**，返回的到期日还是 11-01。生效日同理。
-                or (payload.expiry_date is not None and replayed.expiry_date != payload.expiry_date)
-                or (
-                    payload.effective_date is not None
-                    and replayed.effective_date != payload.effective_date
+                or any(
+                    field in submitted and getattr(replayed, field) != getattr(payload, field)
+                    for field in _LEGACY_COMPARABLE
                 )
             )
             if stored_fingerprint is None and legacy_mismatch:

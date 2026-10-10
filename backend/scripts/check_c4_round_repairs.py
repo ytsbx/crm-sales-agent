@@ -686,6 +686,50 @@ def sec_c406_legacy_fingerprint(admin: str) -> None:
           db(f"select count(*) from contract_documents where request_key='{base3['request_key']}' "
              f"and deleted_at is null"), "1")
 
+    # ⑤ 空值边界：显式把字段改成 null 也必须拒（C4-06 补边界，2026-10-10 复核指出）
+    #
+    # 反例（复核复现）：旧合同到期日 2026-11-01，同一把请求编号、显式传
+    # `expiry_date: null` → 从前**回放原合同**（200「返回的是同一份」），到期日仍是 11-01。
+    # 根因：判据写的是 `payload.expiry_date is not None`，把"**没传这个字段**"
+    # 和"**显式传了 null**"混成一件事。前者不该比（默认值反推请求内容会误判），
+    # 后者是**一次真实的修改意图**、必须比。改成 `model_fields_set` 后才分得开。
+    base5, did5 = mk("L5")
+    check_true("⑤ 前置：成功模拟出旧合同", strip_fp(did5))
+    code = call("POST", "/contract-documents", admin, {**base5, "expiry_date": None})[1].get("code")
+    check_true("⑤ 显式传 expiry_date=null 被拒（从前会回放）", code != 0, f"code={code}")
+    check("⑤ 原到期日未变", db(f"select expiry_date::text from contract_documents where id={did5}"),
+          "2026-11-01")
+
+    base6, did6 = mk("L6")
+    check_true("⑤ 前置：成功模拟出旧合同", strip_fp(did6))
+    code = call("POST", "/contract-documents", admin, {**base6, "effective_date": None})[1].get("code")
+    check_true("⑤ 显式传 effective_date=null 被拒", code != 0, f"code={code}")
+
+    # 对照①：不传这些字段的裸重放仍要幂等 —— 修空值边界不能把"没传"也判成冲突
+    base7, did7 = mk("L7")
+    check_true("⑤ 前置：成功模拟出旧合同", strip_fp(did7))
+    _, res = call("POST", "/contract-documents", admin, dict(base7))
+    d = res.get("data") or {}
+    check_true("⑤ 对照：完整重放仍幂等（没把「没传」误判成冲突）",
+               res.get("code") == 0 and (d.get("id") == did7 or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
+    # 对照②：原值本来就是 null + 显式传 null → 值相同，不该判冲突
+    call("POST", "/contract-templates", admin,
+         {"doc_type": "contract", "name": f"{MARK}-L8", "body": "客户 {{customer_name}}"})
+    tid8 = int(db("select id from contract_templates order by id desc limit 1"))
+    key8 = f"{MARK}-L8"
+    base8 = {"template_id": tid8, "customer_id": 1, "title": f"{MARK}-L8", "request_key": key8}
+    call("POST", "/contract-documents", admin, dict(base8))
+    did8 = int(db(f"select id from contract_documents where request_key='{key8}' and deleted_at is null"))
+    strip_fp(did8)
+    _, res = call("POST", "/contract-documents", admin,
+                  {**base8, "expiry_date": None, "effective_date": None})
+    d = res.get("data") or {}
+    check_true("⑤ 对照：原值本就是 null + 传 null → 回放（值相同不算冲突）",
+               res.get("code") == 0 and (d.get("id") == did8 or d.get("duplicated") is True),
+               f"code={res.get('code')}")
+
     # ④ 新合同（有指纹）：改日期同样要拒
     base4, did4 = mk("N1")
     check("④ 前置：新合同有指纹",
