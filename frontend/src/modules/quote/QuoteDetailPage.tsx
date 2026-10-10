@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
+  getQuoteMasterRefreshPreview,
   acceptQuote,
   addQuoteCharge,
   createQuoteVersion,
@@ -238,6 +239,15 @@ export default function QuoteDetailPage() {
     queryKey: ['price-drift', version?.id],
     queryFn: () => getPriceDrift(version!.id),
     enabled: Boolean(editable && version),
+  })
+
+  // 主数据刷新：**先看预览再确认**（issue 建议第 5 条）。
+  // 名称/规格/单位是印给客户的，刷新会改掉它们 —— 让人先看清"从什么变成什么"。
+  const [masterPreviewOpen, setMasterPreviewOpen] = useState(false)
+  const masterPreviewQuery = useQuery({
+    queryKey: ['quote-master-preview', version?.id],
+    queryFn: () => getQuoteMasterRefreshPreview(version!.id),
+    enabled: masterPreviewOpen && Boolean(version),
   })
 
   const refreshMutation = useMutation({
@@ -671,8 +681,100 @@ export default function QuoteDetailPage() {
           {(detail.master_warnings ?? []).map((warning) => (
             <div key={warning}>· {warning}</div>
           ))}
+          {/* 刷新入口就放在这条提示里：用户看到"不能用做正式报价"时，
+              下一步动作就在眼前，不用去别处找。 */}
+          <div style={{ marginTop: 8 }}>
+            <Button size="small" theme="solid" onClick={() => setMasterPreviewOpen(true)}>
+              刷新主数据（先看会变什么）
+            </Button>
+          </div>
         </div>
       )}
+
+      {/*
+        主数据刷新预览（issue 建议第 5 条）：**先看再刷**。
+        名称/规格/单位是印给客户的，刷新会改掉它们 —— 直接刷完再发现问题
+        比先看一眼贵得多。已发送/已审批的版本不给刷（内容是对客承诺），
+        这里如实说明并引导新建版本。
+      */}
+      <Modal
+        title="刷新主数据：会变什么"
+        visible={masterPreviewOpen}
+        footer={null}
+        onCancel={() => setMasterPreviewOpen(false)}
+        width={720}
+        style={{ maxWidth: 'calc(100vw - 48px)' }}
+      >
+        {masterPreviewQuery.isLoading && <div>正在比对…</div>}
+        {masterPreviewQuery.data && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ fontSize: 13, lineHeight: 1.8 }}>{masterPreviewQuery.data.message}</div>
+            {!masterPreviewQuery.data.refreshable && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: 6,
+                  background: 'var(--crm-warning-bg, #FFF7E6)',
+                  border: '1px solid var(--crm-warning-border, #FFD591)',
+                  fontSize: 13,
+                }}
+              >
+                {masterPreviewQuery.data.blocked_reason}
+              </div>
+            )}
+            {masterPreviewQuery.data.items
+              .filter((it) => it.changes.length > 0 || it.never_referenced)
+              .map((it) => (
+                <div
+                  key={it.item_id}
+                  style={{
+                    border: '1px solid var(--semi-color-border)',
+                    borderRadius: 6,
+                    padding: 10,
+                    display: 'grid',
+                    gap: 6,
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>{it.sku_code}</div>
+                  {it.never_referenced && (
+                    <div style={{ fontSize: 12, color: 'var(--semi-color-warning)' }}>
+                      这条明细还没有引用过任何已确认版本（刷新会引用最新已确认版本）
+                    </div>
+                  )}
+                  {it.changes.map((c) => (
+                    <div key={c.field} style={{ fontSize: 13 }}>
+                      {c.label}：{c.before ?? '（空）'} → <strong>{c.after ?? '（空）'}</strong>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            {masterPreviewQuery.data.changed_count === 0 && (
+              <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
+                没有需要变化的明细。
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <Button onClick={() => setMasterPreviewOpen(false)}>取消</Button>
+              <Popconfirm
+                title="确认刷新？"
+                content="会把明细的名称/规格/单位换成上面显示的新值，并引用最新的已确认主数据版本。"
+                onConfirm={() => {
+                  refreshMutation.mutate()
+                  setMasterPreviewOpen(false)
+                }}
+              >
+                <Button
+                  theme="solid"
+                  disabled={!masterPreviewQuery.data.refreshable}
+                  loading={refreshMutation.isPending}
+                >
+                  确认刷新
+                </Button>
+              </Popconfirm>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {version.approval_status === 'pending' && (
         <div style={{ marginBottom: 16 }}>

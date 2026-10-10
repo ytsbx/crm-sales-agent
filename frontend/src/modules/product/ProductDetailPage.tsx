@@ -1,7 +1,18 @@
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import {
+  Button,
+  Checkbox,
+  CheckboxGroup,
+  Input,
+  Modal,
+  Popconfirm,
+  Select,
+  Table,
+  Tag,
+  Toast,
+} from '@douyinfe/semi-ui'
 
 import {
   confirmLocalSkuMaster,
@@ -111,7 +122,22 @@ const toNumber = (value: string): number | null => {
 
 /** 正式报价对客要印的三个字段，与后端 `master.QUOTE_DISPLAY_FIELDS` 对齐。 */
 const QUOTE_FIELD_NAMES: readonly string[] = ['name', 'specification', 'unit']
-const QUOTE_FIELD_LABELS = ['名称', '规格', '单位']
+
+/**
+ * 参与**运费计算**的字段（主人 2026-10-10 要求标注影响面）。
+ *
+ * 为什么单独列出来：这几个字段确认与否不影响能不能发送，但会影响运费试算的
+ * 结果 —— 不标注的话，用户不知道该不该顺手确认它们。
+ * 与后端 `master.MASTER_FIELDS` 同一份口径，只挑与计费相关的。
+ */
+const FREIGHT_FIELD_NAMES: readonly string[] = [
+  'weight',
+  'length',
+  'width',
+  'height',
+  'carton_qty',
+  'carton_volume',
+]
 
 export default function ProductDetailPage() {
   const params = useParams()
@@ -135,6 +161,9 @@ export default function ProductDetailPage() {
   const [skuForm, setSkuForm] = useState<SkuForm>(EMPTY_SKU)
   /** 正在看"来源/待核实/差异"的 SKU（null = 没打开面板）。 */
   const [masterSku, setMasterSku] = useState<Sku | null>(null)
+  // 勾选要确认的字段：默认对客三字段（它们影响正式发送）。
+  // 每次打开弹窗都重置为默认，避免上一次的勾选残留造成误确认。
+  const [confirmFields, setConfirmFields] = useState<string[]>([...QUOTE_FIELD_NAMES])
   const [resolutions, setResolutions] = useState<Record<number, string>>({})
   const [notes, setNotes] = useState<Record<number, string>>({})
 
@@ -293,8 +322,15 @@ export default function ProductDetailPage() {
       )
     : true
 
+  // 本地改了、还没重新确认的字段（后端算好 `local_differs_from_confirmed`，
+  // 前端不自己比 —— 判据只写一处）
+  const changedSinceConfirm = (masterQuery.data?.fields ?? [])
+    .filter((f) => f.local_differs_from_confirmed)
+    .map((f) => f.field_label)
+
   const confirmLocalMutation = useMutation({
-    mutationFn: (skuId: number) => confirmLocalSkuMaster(skuId, { note: '产品详情页本地核对确认' }),
+    mutationFn: ({ skuId, fields }: { skuId: number; fields: string[] }) =>
+      confirmLocalSkuMaster(skuId, { fields, note: '产品详情页本地核对确认' }),
     onSuccess: (data) => {
       Toast.success(data.message)
       void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
@@ -313,7 +349,8 @@ export default function ProductDetailPage() {
    * 列宽合计必须 ≤ 弹窗内容区宽度（MASTER_MODAL_WIDTH 减去左右内边距）。
    * 原来合计 910px，而 920 宽的弹窗扣掉内边距只剩约 872px —— 表格放不下，
    * 最后一列「状态」被挤到可视区之外，表头也被压成两行。
-   * 现在按"表头文字宽 + 内边距"逐列量过，合计 870px，弹窗加宽后留有余量。
+   * 现在按"表头文字宽 + 内边距"逐列量过。**每次加列都要同步
+   * `MASTER_TABLE_WIDTH`**，否则最后一列会被挤出可视区（历史上踩过一次）。
    */
   const masterFieldColumns = [
     { title: '字段', dataIndex: 'field_label', width: 110, ellipsis: true },
@@ -332,8 +369,16 @@ export default function ProductDetailPage() {
     {
       title: '来源状态',
       width: 92,
+      // 三值：已核实 / 待核实（有来源但没核实）/ 无外部来源（本地自建）。
+      // 「无外部来源」从前被写成「待核实」，让人以为还差一步外部核对 —— 而它永远等不到。
       render: (_: unknown, record: SkuMasterField) =>
-        record.source_verified ? <Tag color="green">已核实</Tag> : <Tag>待核实</Tag>,
+        record.source_status === '已核实' ? (
+          <Tag color="green">已核实</Tag>
+        ) : record.source_status === '无外部来源' ? (
+          <Tag color="grey">无外部来源</Tag>
+        ) : (
+          <Tag color="orange">待核实</Tag>
+        ),
     },
     {
       title: '来源更新时间',
@@ -345,6 +390,26 @@ export default function ProductDetailPage() {
       title: '权威归属',
       width: 100,
       render: (_: unknown, record: SkuMasterField) => record.authority_label,
+    },
+    {
+      title: '上次确认值',
+      width: 130,
+      ellipsis: true,
+      render: (_: unknown, record: SkuMasterField) =>
+        record.confirmed_version > 0 ? (
+          <span
+            style={{
+              color: record.local_differs_from_confirmed
+                ? 'var(--semi-color-warning)'
+                : undefined,
+            }}
+          >
+            {record.confirmed_value ?? '（空）'}
+            {record.local_differs_from_confirmed && ' ← 本地已改'}
+          </span>
+        ) : (
+          '—'
+        ),
     },
     {
       title: '确认版本',
@@ -365,9 +430,11 @@ export default function ProductDetailPage() {
     },
   ]
   /** 表格列宽合计：与上面 8 列 widths 之和保持一致，改列宽时同步改这里。 */
-  const MASTER_TABLE_WIDTH = 870
+  // 2026-10-10 新增「上次确认值」列（130）→ 合计 1000。
+  // 每次改列都要同步这里，否则最后一列会被挤出可视区（历史上踩过）。
+  const MASTER_TABLE_WIDTH = 1000
   /** 弹窗外宽；窄屏（笔记本、分屏）由 maxWidth 兜住，不会顶出屏幕。 */
-  const MASTER_MODAL_WIDTH = 1080
+  const MASTER_MODAL_WIDTH = 1200
 
   const skuColumns = [
     { title: 'SKU 编码', dataIndex: 'sku_code', width: 96, ellipsis: true },
@@ -457,6 +524,9 @@ export default function ProductDetailPage() {
             setResolutions({})
             setNotes({})
             setMasterSku(record)
+            // 每次打开都重置为默认勾选（对客三字段）：
+            // 上一次的勾选残留会造成"以为只确认重量、结果把名称也确认了"这类误操作。
+            setConfirmFields([...QUOTE_FIELD_NAMES])
           }}
         >
           来源/待核实/差异
@@ -841,43 +911,116 @@ export default function ProductDetailPage() {
               scroll={{ x: MASTER_TABLE_WIDTH }}
             />
             {/*
-              本地直接确认入口（审查 2026-10-10 实测的 P1 流程阻断）：
-              本地自建的 SKU 既没有确认记录、也没有差异记录，唯一的确认动作又挂在
-              差异上 —— 正式报价因此永久被拦、页面上却**没有任何按钮**可点。
-              「从外部导入一次」也不是可靠出口：来源值与本地一致时零差异，仍然没入口。
-              所以这里给一个不依赖差异的确认按钮：有权限的人核对后确认本地值。
+              主数据确认入口（**常驻**，主人 2026-10-10 定稿）。
+
+              为什么常驻而不是"缺确认时才出现"：确认过之后还要能回来核对 ——
+              改了本地值要能看出"哪些和上次确认的不一样"、再确认一次；
+              只在对客三字段没确认时才显示按钮，等于确认完就把门关了。
+
+              三块内容按顺序：
+                ① 状态摘要：对客三字段齐不齐 / 有没有本地改了还没重新确认
+                ② 字段勾选：默认勾对客三字段，其余 10 个按需；标注影响面
+                ③ 确认按钮：按当前本地值确认并冻结快照
             */}
-            {can('product:manage') && !quoteFieldsConfirmed && (
+            {can('product:manage') && (
               <div
                 style={{
-                  border: '1px solid var(--semi-color-warning)',
-                  background: 'var(--semi-color-warning-light-default)',
+                  border: `1px solid ${
+                    !quoteFieldsConfirmed || changedSinceConfirm.length > 0
+                      ? 'var(--semi-color-warning)'
+                      : 'var(--semi-color-border)'
+                  }`,
+                  background:
+                    !quoteFieldsConfirmed || changedSinceConfirm.length > 0
+                      ? 'var(--semi-color-warning-light-default)'
+                      : 'var(--semi-color-fill-0)',
                   borderRadius: 6,
                   padding: 12,
                   display: 'grid',
-                  gap: 8,
+                  gap: 10,
                 }}
               >
                 <div style={{ fontSize: 13, lineHeight: 1.7 }}>
-                  正式报价只能引用**已确认**的主数据版本。这个 SKU 的
-                  {quoteFieldsMissingLabels.length > 0
-                    ? `「${quoteFieldsMissingLabels.join('、')}」还没有人工确认过`
-                    : '对客字段还没有人工确认过'}
-                  ，因此**无法正式发送**。
-                  核对无误后点下面的按钮确认（会记下操作人与时间，并冻结一版快照）。
+                  {!quoteFieldsConfirmed && (
+                    <div>
+                      正式报价只能引用<strong>已确认</strong>的主数据版本。这个 SKU 的
+                      {quoteFieldsMissingLabels.length > 0
+                        ? `「${quoteFieldsMissingLabels.join('、')}」还没有确认过`
+                        : '对客字段还没有确认过'}
+                      ，因此<strong>无法正式发送</strong>。
+                    </div>
+                  )}
+                  {changedSinceConfirm.length > 0 && (
+                    <div style={{ color: 'var(--semi-color-warning)' }}>
+                      <strong>本地值已修改，尚未重新确认</strong>：
+                      {changedSinceConfirm.join('、')}
+                      。改动<strong>不会</strong>自动成为已确认值，旧确认快照也照常保留 ——
+                      需要你核对后重新确认。
+                    </div>
+                  )}
+                  {quoteFieldsConfirmed && changedSinceConfirm.length === 0 && (
+                    <div style={{ color: 'var(--crm-text-2)' }}>
+                      对客三字段（名称/规格/单位）已确认，可以正式发送。
+                      本地值改动后这里会提示重新确认。
+                    </div>
+                  )}
                 </div>
+
+                <div>
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-2)', marginBottom: 6 }}>
+                    选择要确认的字段（按当前<strong>本地值</strong>确认；值没变的字段
+                    不会增加确认次数、也不会生成新快照）：
+                  </div>
+                  <CheckboxGroup
+                    value={confirmFields}
+                    onChange={(v) => setConfirmFields(v as string[])}
+                  >
+                    {masterQuery.data.fields.map((f) => (
+                      <Checkbox key={f.field_name} value={f.field_name}>
+                        <span style={{ fontSize: 13 }}>
+                          {f.field_label}
+                          {QUOTE_FIELD_NAMES.includes(f.field_name) && (
+                            <Tag size="small" color="red" style={{ marginLeft: 4 }}>
+                              影响正式发送
+                            </Tag>
+                          )}
+                          {FREIGHT_FIELD_NAMES.includes(f.field_name) && (
+                            <Tag size="small" color="blue" style={{ marginLeft: 4 }}>
+                              参与运费计算
+                            </Tag>
+                          )}
+                          {f.local_differs_from_confirmed && (
+                            <Tag size="small" color="orange" style={{ marginLeft: 4 }}>
+                              本地已改
+                            </Tag>
+                          )}
+                        </span>
+                      </Checkbox>
+                    ))}
+                  </CheckboxGroup>
+                </div>
+
                 <div>
                   <Popconfirm
                     title="确认本地主数据？"
-                    content={`将按当前本地值确认「${QUOTE_FIELD_LABELS.join('、')}」并生成一版快照。`}
-                    onConfirm={() => confirmLocalMutation.mutate(masterSku!.id)}
+                    content={
+                      confirmFields.length
+                        ? `将按当前本地值确认这 ${confirmFields.length} 个字段，并冻结一版快照。`
+                        : '请先勾选要确认的字段。'
+                    }
+                    onConfirm={() => {
+                      if (!confirmFields.length) {
+                        Toast.warning('请先勾选要确认的字段')
+                        return
+                      }
+                      confirmLocalMutation.mutate({
+                        skuId: masterSku!.id,
+                        fields: confirmFields,
+                      })
+                    }}
                   >
-                    <Button
-                      theme="solid"
-                      type="warning"
-                      loading={confirmLocalMutation.isPending}
-                    >
-                      确认本地主数据（名称/规格/单位）
+                    <Button theme="solid" type="warning" loading={confirmLocalMutation.isPending}>
+                      确认选中的 {confirmFields.length} 个字段
                     </Button>
                   </Popconfirm>
                 </div>

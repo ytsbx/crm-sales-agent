@@ -119,7 +119,12 @@ export interface SkuMasterField {
   local_value: string | number | null
   source_system: string | null
   source_verified: boolean
-  /** 后端算好的中文结论：未核实的来源一律是「待核实」。 */
+  /**
+   * 后端算好的中文结论，**三种取值**：
+   * `已核实`（外部来源已核实）/ `待核实`（**有**外部来源但未核实）/
+   * `无外部来源`（压根没有外部来源 —— 本地自建 SKU）。
+   * 「无外部来源」不再写成「待核实」：那会让人以为还差一步外部核对，而它永远等不到。
+   */
   source_status: string
   external_identity: string | null
   source_updated_at: string | null
@@ -128,8 +133,17 @@ export interface SkuMasterField {
   /** 空归属显示「未拍板」——不默认任一系统为主。 */
   authority_label: string
   confirmed_version: number
+  /** 上次确认的值。与 `local_value` 不同时说明"本地改了、还没重新确认" */
   confirmed_value: string | number | null
   confirmed_at: string | null
+  /**
+   * 本地值是否与已确认值不同。
+   *
+   * 显式区分两种状态：`false` + `confirmed_version === 0` 是**从没确认过**；
+   * `true` 是**确认过、后来本地又改了**（前端据此提示
+   * 「本地值已修改，尚未重新确认」）。
+   */
+  local_differs_from_confirmed: boolean
   status: string
 }
 
@@ -176,6 +190,11 @@ export interface SkuLocalConfirmResult {
   note: string | null
   /** false = 值与已确认版本一致，**没有**新增快照（避免重复点确认垒版本）。 */
   snapshot_created: boolean
+  /**
+   * true = 这次只是"又核对了一遍"，没有任何确认值发生变化。
+   * 此时**不动确认时间与次数**，只写一条 `sku_master_recheck` 审计。
+   */
+  recheck: boolean
   message: string
 }
 

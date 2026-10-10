@@ -297,6 +297,38 @@ export function getPriceDrift(versionId: number) {
 }
 
 /** 一键把系统带价的明细刷新到当前适用价（手工价不动） */
+/** 报价草稿刷新主数据前的预览：会变什么、能不能刷。 */
+export interface QuoteMasterRefreshPreview {
+  item_id: number
+  sku_id: number
+  sku_code: string
+  /** 明细当前引用的主数据版本（空 = 生成时还没有可引用的已确认版本） */
+  master_version_no: number | null
+  /** 从未引用过任何已确认版本 —— 它最需要刷新（刷新才会把版本号钉上去） */
+  never_referenced: boolean
+  confirmed_version_no: number | null
+  unconfirmed: string[]
+  unconfirmed_labels: string[]
+  changes: { field: string; label: string; before: string | null; after: string | null }[]
+}
+
+export interface QuoteMasterRefreshState {
+  items: QuoteMasterRefreshPreview[]
+  changed_count: number
+  never_referenced_count: number
+  item_count: number
+  display_field_labels: string[]
+  /** 已发送 / 已审批的版本为 false（内容是对客承诺，只能新建版本） */
+  refreshable: boolean
+  sent: boolean
+  blocked_reason?: string
+  message: string
+}
+
+export function getQuoteMasterRefreshPreview(versionId: number) {
+  return api.get<QuoteMasterRefreshState>(`/quote-versions/${versionId}/master-refresh-preview`)
+}
+
 export function refreshPrices(versionId: number) {
   return api.post<{ refreshed: number; skipped: number }>(
     `/quote-versions/${versionId}/price-refresh`,
