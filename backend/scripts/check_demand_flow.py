@@ -3,6 +3,7 @@ import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -147,15 +148,24 @@ async def main():
         quote = request('POST', f"/custom-inquiries/{revised['id']}/create-quote", {'unit_cost': 10, 'quoted_price': 20})
         qids.append(quote['quote_id']); vids.append(quote['version_id'])
         assert quote['opportunity_id'] == oid and await state(oid) == before
-        # 生成、下载文件不会制造正式发送事实或推进阶段。
+        # 未审批版本不能生成正式 PDF；审批通过后才允许下载，且下载不会制造正式
+        # 发送事实或推进阶段。
         pdf_request = Request(f"{BASE}/quote-versions/{quote['version_id']}/generate-pdf",
                               headers={'Authorization': f'Bearer {admin}'}, method='POST')
+        try:
+            urlopen(pdf_request, timeout=20)
+        except HTTPError as exc:
+            assert exc.code == 422, exc.code
+        else:
+            raise AssertionError('未审批版本不应生成正式 PDF')
+        async with SessionLocal() as s:
+            v = await s.get(QuoteVersion, quote['version_id']); v.approval_status = 'approved'
+            q = await s.get(Quote, quote['quote_id']); q.status = 'approved'
+            await s.commit()
         with urlopen(pdf_request, timeout=20) as response:
             assert response.status == 200 and response.read().startswith(b'%PDF')
         assert await state(oid) == before
         async with SessionLocal() as s:
-            v = await s.get(QuoteVersion, quote['version_id']); v.approval_status = 'approved'
-            q = await s.get(Quote, quote['quote_id']); q.status = 'approved'
             s.add(QuoteCharge(
                 quote_version_id=quote['version_id'], charge_type='logistics',
                 description='测试夹具零运费', amount=0,

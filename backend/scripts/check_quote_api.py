@@ -538,14 +538,28 @@ def main():
     print()
     print('=== 11. PDF（两个路径同一实现）===')
     status, res = call('GET', f'/quote-versions/{v2_id}/pdf', token=admin)
-    check('GET pdf', status, 200)
+    check('未审批版本 GET pdf 被拒', status, 422)
+    check('未审批版本错误码', res.get('code'), 42203)
     check_true(
-        '返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+        '未审批版本没有返回 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
     )
     status, res = call('POST', f'/quote-versions/{v2_id}/generate-pdf', token=admin)
-    check('POST generate-pdf', status, 200)
+    check('未审批版本 POST generate-pdf 被拒', status, 422)
+    check('未审批版本 POST 错误码', res.get('code'), 42203)
     check_true(
-        '同样返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+        '未审批版本 POST 没有返回 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+    )
+
+    # 上面验证安全闸门；这里用前面已经审批通过的当前版本验证正式 PDF 两条路径仍可用。
+    status, res = call('GET', f'/quote-versions/{version_id}/pdf', token=admin)
+    check('已审批版本 GET pdf', status, 200)
+    check_true(
+        '已审批版本返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+    )
+    status, res = call('POST', f'/quote-versions/{version_id}/generate-pdf', token=admin)
+    check('已审批版本 POST generate-pdf', status, 200)
+    check_true(
+        '已审批版本同样返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
     )
 
     print()
