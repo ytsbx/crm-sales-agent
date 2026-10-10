@@ -290,7 +290,13 @@ export function updatePriceRule(id: number, payload: Record<string, unknown>) {
   return api.patch<PriceRuleRow>(`/price-rules/${id}`, payload)
 }
 
-export function listCustomerPriceRules(query: { customer_id?: number; page?: number; page_size?: number }) {
+export function listCustomerPriceRules(query: {
+  customer_id?: number
+  /** 编码 / SKU 名称 / 规格 / 产品名 / 产品线 / 品牌 / 客户名 都能搜到 */
+  keyword?: string
+  page?: number
+  page_size?: number
+}) {
   return api.get<PageResult<CustomerPriceRow>>('/customer-price-rules', query)
 }
 

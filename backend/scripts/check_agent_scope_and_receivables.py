@@ -373,6 +373,17 @@ async def build_fixtures() -> None:
         # 别人的订单，id 故意设成 staff.id（旧实现按 `SalesOrder.id.in_(owner_ids)`
         # 过滤时会把它当"自己的"）。users/orders 各自自增、起点相近，所以
         # staff.id 必然小于新建订单的 id —— 这正是"员工编号 vs 订单编号"的错配形态。
+        # ⚠️ 下面这张按**显式 id** 插（`id = staff.id`，故意造"员工编号 vs 订单编号"
+        # 的错配形态）。显式 id 会跟**库里已存在的同 id 订单**撞主键 ——
+        # 实测：单独跑没事，跟在别的套件后面跑就报
+        # `duplicate key value violates unique constraint "sales_orders_pkey"`，
+        # 于是清单首轮必红、次轮又绿（最难查的那种顺序相关失败）。
+        # 先把同 id 的行清掉：这套件要的只是"存在一张 id 等于 staff.id 的别人的单"，
+        # 是哪来的并不重要，所以这里自愈比事后解释便宜。
+        await s.execute(
+            text("delete from sales_orders where id = :i"), {"i": int(staff.id)}
+        )
+        await s.flush()
         other = SalesOrder(
             id=staff.id,
             order_no=f"{PREFIX}SO-OTHER-{STAMP}",

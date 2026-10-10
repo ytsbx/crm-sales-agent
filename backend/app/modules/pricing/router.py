@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import Text, cast, select, update
+from sqlalchemy import Text, cast, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -239,7 +239,32 @@ async def list_price_rules(
     if sku_id:
         stmt = stmt.where(PriceRule.sku_id == sku_id)
     if keyword:
-        stmt = stmt.where(Sku.sku_code.ilike(f"%{keyword.strip()}%"))
+        # 搜索范围（2026-10-10 主人："价格规则那里没有搜索功能，一旦很多就太乱了"）：
+        # 编码 / SKU 名称 / 规格 / 所属产品名 **都要能搜到**。
+        # 只搜编码时，人记得住的是"田字塑料托盘"而不是"TP-1210-ST" ——
+        # 满屏编码认不出是哪个产品（与 `_sku_label_map` 把名称一起取回来同一个理由）。
+        like = f"%{keyword.strip()}%"
+        matched_product = (
+            select(Product.id)
+            .where(
+                Product.id == Sku.product_id,
+                Product.deleted_at.is_(None),
+                or_(
+                    Product.name.ilike(like),
+                    Product.product_line.ilike(like),
+                    Product.brand.ilike(like),
+                ),
+            )
+            .exists()
+        )
+        stmt = stmt.where(
+            or_(
+                Sku.sku_code.ilike(like),
+                Sku.name.ilike(like),
+                Sku.specification.ilike(like),
+                matched_product,
+            )
+        )
     stmt = stmt.order_by(PriceRule.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
     labels = await _sku_label_map(session, [rule.sku_id for rule in rows])
@@ -610,6 +635,7 @@ async def delete_price_rule(
 @router.get("/customer-price-rules")
 async def list_customer_price_rules(
     customer_id: int | None = None,
+    keyword: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("product:view")),
@@ -646,6 +672,38 @@ async def list_customer_price_rules(
         if condition is not None:
             visible_customers = select(Customer.id).where(condition)
             stmt = stmt.where(CustomerPriceRule.customer_id.in_(visible_customers))
+    if keyword:
+        # 搜索范围与价格规则同一份口径：编码 / SKU 名称 / 规格 / 产品名(+产品线/品牌) /
+        # 客户名 都要能搜到（2026-10-10 主人："价格规则那里没有搜索功能，一旦很多就太乱了"）。
+        # 专属价这张表同理：记不住编码，记得住"田字塑料托盘"和客户名。
+        like = f"%{keyword.strip()}%"
+        matched_sku = (
+            select(Sku.id)
+            .join(Product, Product.id == Sku.product_id)
+            .where(
+                Sku.id == CustomerPriceRule.sku_id,
+                Sku.deleted_at.is_(None),
+                Product.deleted_at.is_(None),
+                or_(
+                    Sku.sku_code.ilike(like),
+                    Sku.name.ilike(like),
+                    Sku.specification.ilike(like),
+                    Product.name.ilike(like),
+                    Product.product_line.ilike(like),
+                    Product.brand.ilike(like),
+                ),
+            )
+            .exists()
+        )
+        matched_customer = (
+            select(Customer.id)
+            .where(
+                Customer.id == CustomerPriceRule.customer_id,
+                Customer.name.ilike(like),
+            )
+            .exists()
+        )
+        stmt = stmt.where(or_(matched_sku, matched_customer))
     rows, total = await paginate(session, stmt.order_by(CustomerPriceRule.id.desc()), page, page_size)
     labels = await _sku_label_map(session, [rule.sku_id for rule in rows])
     customer_ids = {rule.customer_id for rule in rows}

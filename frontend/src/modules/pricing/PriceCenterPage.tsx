@@ -412,6 +412,15 @@ export default function PriceCenterPage() {
     effective_from: new Date().toISOString().slice(0, 10),
   })
   const [ruleVisible, setRuleVisible] = useState(false)
+  // 价格规则搜索与分页（2026-10-10 主人："没有搜索功能，一旦很多就太乱了"）。
+  // 从前写死 `{page:1, page_size:100}` —— 既搜不了，**第 101 条以后也根本看不到**。
+  const [ruleKeyword, setRuleKeyword] = useState('')
+  const [rulePage, setRulePage] = useState(1)
+  const [rulePageSize, setRulePageSize] = useState(20)
+  // 客户特殊价同一型问题：也写死 100 条、也没有搜索（同一次修掉）
+  const [cpKeyword, setCpKeyword] = useState('')
+  const [cpPage, setCpPage] = useState(1)
+  const [cpPageSize, setCpPageSize] = useState(20)
   // 价格规则：新增与修改**共用同一个弹窗**（`ruleEditing` 为空 = 新增），
   // 与下面运费费率同一范式，避免两套弹窗各自漂移。
   const [ruleEditing, setRuleEditing] = useState<PriceRuleRow | null>(null)
@@ -469,13 +478,27 @@ export default function PriceCenterPage() {
     enabled: Boolean(costSkuId),
   })
   const rulesQuery = useQuery({
-    queryKey: ['price-rules'],
-    queryFn: () => listPriceRules({ page: 1, page_size: 100 }),
+    // 关键词/页码进 queryKey：改了才重新请求，翻页不会把上一页的数据当这一页用
+    queryKey: ['price-rules', ruleKeyword, rulePage, rulePageSize],
+    queryFn: () =>
+      listPriceRules({
+        keyword: ruleKeyword.trim() || undefined,
+        page: rulePage,
+        page_size: rulePageSize,
+      }),
     enabled: activeKey === 'rules',
+    // 翻页时保留上一页内容，避免表格闪成空白（后端分页是真实的，数据量可能很大）
+    placeholderData: (prev) => prev,
   })
   const customerPricesQuery = useQuery({
-    queryKey: ['customer-price-rules'],
-    queryFn: () => listCustomerPriceRules({ page: 1, page_size: 100 }),
+    queryKey: ['customer-price-rules', cpKeyword, cpPage, cpPageSize],
+    queryFn: () =>
+      listCustomerPriceRules({
+        keyword: cpKeyword.trim() || undefined,
+        page: cpPage,
+        page_size: cpPageSize,
+      }),
+    placeholderData: (prev) => prev,
     enabled: activeKey === 'customer-prices',
   })
   const permissionsQuery = useQuery({
@@ -1150,6 +1173,17 @@ export default function PriceCenterPage() {
           {activeKey === 'rules' && (
             <>
               <div className="toolbar">
+                {/* 搜索：编码 / SKU 名称 / 规格 / 产品名 / 产品线 / 品牌都能搜到 */}
+                <Input
+                  placeholder="搜索 SKU 编码 / 名称 / 规格 / 产品名 / 产品线 / 品牌"
+                  value={ruleKeyword}
+                  onChange={(v) => {
+                    setRuleKeyword(v)
+                    setRulePage(1) // 换关键词必须回到第 1 页，否则会停在一个空页上
+                  }}
+                  style={{ width: 360 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 {canManage && (
                   <>
@@ -1267,8 +1301,25 @@ export default function PriceCenterPage() {
                 dataSource={rulesQuery.data?.items ?? []}
                 loading={rulesQuery.isLoading}
                 rowKey="id"
-                pagination={false}
-                empty="还没有价格规则"
+                // 服务端分页：从前 `pagination={false}` + 写死 100 条，
+                // 规则超过 100 条就再也翻不到（不是"看着乱"而已，是看不到）
+                pagination={{
+                  currentPage: rulePage,
+                  pageSize: rulePageSize,
+                  total: rulesQuery.data?.total ?? 0,
+                  showSizeChanger: true,
+                  pageSizeOpts: [20, 50, 100, 200],
+                  onPageChange: setRulePage,
+                  onPageSizeChange: (size: number) => {
+                    setRulePageSize(size)
+                    setRulePage(1)
+                  },
+                }}
+                empty={
+                  ruleKeyword.trim()
+                    ? `没有匹配「${ruleKeyword.trim()}」的价格规则`
+                    : '还没有价格规则'
+                }
                 scroll={{ x: 1100 }}
               />
             </>
@@ -1277,6 +1328,17 @@ export default function PriceCenterPage() {
           {activeKey === 'customer-prices' && (
             <>
               <div className="toolbar">
+                {/* 搜索：编码 / SKU 名称 / 规格 / 产品名 / 产品线 / 品牌 / 客户名 都能搜到 */}
+                <Input
+                  placeholder="搜索 SKU 编码 / 名称 / 规格 / 产品名 / 客户名"
+                  value={cpKeyword}
+                  onChange={(v) => {
+                    setCpKeyword(v)
+                    setCpPage(1)
+                  }}
+                  style={{ width: 360 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 {canManage && (
                   <>
@@ -1349,8 +1411,23 @@ export default function PriceCenterPage() {
                 dataSource={customerPricesQuery.data?.items ?? []}
                 loading={customerPricesQuery.isLoading}
                 rowKey="id"
-                pagination={false}
-                empty="还没有客户特殊价"
+                pagination={{
+                  currentPage: cpPage,
+                  pageSize: cpPageSize,
+                  total: customerPricesQuery.data?.total ?? 0,
+                  showSizeChanger: true,
+                  pageSizeOpts: [20, 50, 100, 200],
+                  onPageChange: setCpPage,
+                  onPageSizeChange: (size: number) => {
+                    setCpPageSize(size)
+                    setCpPage(1)
+                  },
+                }}
+                empty={
+                  cpKeyword.trim()
+                    ? `没有匹配「${cpKeyword.trim()}」的客户特殊价`
+                    : '还没有客户特殊价'
+                }
               />
             </>
           )}
