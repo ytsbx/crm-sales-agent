@@ -2681,3 +2681,50 @@ def _display_fields_drift(item: QuoteItem, values: dict) -> bool:
         ("" if cur is None else str(cur)) != ("" if want is None else str(want))
         for cur, want in pairs
     )
+
+
+async def latest_version(session: AsyncSession, *, quote_id: int) -> QuoteVersion | None:
+    """这份报价单的最新一版（"再来一版"默认复制它）。"""
+    return (
+        await session.execute(
+            select(QuoteVersion)
+            .where(QuoteVersion.quote_id == quote_id)
+            .order_by(QuoteVersion.version_no.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def versions_with_pending_approval(
+    session: AsyncSession, *, quote_id: int, exclude_version_id: int | None = None
+) -> list[tuple[int, int]]:
+    """这份报价单上**还在待审批**的版本，返回 `[(version_id, version_no), ...]`。
+
+    给"新建版本"的确认弹窗用：新建版本会 `close_superseded_approvals` ——
+    把旧版还在走的审批流程**自动结束**，而系统里没有撤销入口。
+    用户点之前必须知道"会结束哪几版的审批"，所以这里如实列出来。
+    """
+    from app.modules.approval.model import ApprovalInstance
+
+    # 用**子查询**而不是 JOIN：只是想问"哪些版本有 pending 实例"，
+    # 子查询更直白，也少一层跨模块的联结条件（CI 上这个端点曾 500，
+    # 换掉 JOIN 是让这段更简单、更不容易在别的方言/数据状态下出意外）。
+    pending_version_ids = (
+        select(ApprovalInstance.business_id)
+        .where(
+            ApprovalInstance.business_type == "quote_version",
+            ApprovalInstance.status == "pending",
+        )
+        .scalar_subquery()
+    )
+    stmt = (
+        select(QuoteVersion.id, QuoteVersion.version_no)
+        .where(
+            QuoteVersion.quote_id == quote_id,
+            QuoteVersion.id.in_(pending_version_ids),
+        )
+        .order_by(QuoteVersion.version_no)
+    )
+    if exclude_version_id is not None:
+        stmt = stmt.where(QuoteVersion.id != exclude_version_id)
+    return [(int(vid), int(no)) for vid, no in (await session.execute(stmt)).all()]

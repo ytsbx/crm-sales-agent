@@ -1,6 +1,7 @@
 """报价中心接口（对齐 03-API §20 ~ §22）。"""
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -47,6 +48,8 @@ from app.modules.quote.schema import (
     SubmitApprovalRequest,
 )
 from app.modules.user.model import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Quote"])
 
@@ -912,14 +915,35 @@ async def create_version(
     if not confirm:
         from app.core.confirmation import confirmation_message
 
-        latest = await svc.latest_version(session, quote_id=quote.id)
+        # ⚠️ 下面这段查库**只是为了把提示写具体**（"基于 V2 创建 V3""会结束 V2 的待审批"）。
+        # 它查不动时**不该**把用户挡在门外：确认这件事情本身照样要做，
+        # 只是文案退回通用版。从前这里直接冒泡 → 500「服务器内部错误」，
+        # 用户点了按钮只看到一句"稍后重试"，而这个动作其实完全没执行。
+        #
+        # 顺带把完整栈记进后端日志：CI 只 `tail -n 80 /tmp/backend.log`，
+        # 冒泡的 traceback 会被后面别的套件输出挤掉，等于没有现场（为此白查了好几轮）。
+        try:
+            latest = await svc.latest_version(session, quote_id=quote.id)
+            pending = await svc.versions_with_pending_approval(session, quote_id=quote.id)
+        except Exception:  # noqa: BLE001
+            logger.exception("组装新建版本确认文案失败，退回通用文案 quote_id=%s", quote_id)
+            raise AppError(
+                ErrorCode.CONFIRM_REQUIRED,
+                confirmation_message(
+                    action="新建报价版本",
+                    detail=(
+                        "会复制最新版、切换为当前草稿、把报价状态改回草稿，"
+                        "并结束旧版还在走的审批；历史资料保留，但**没有撤销入口**"
+                    ),
+                ),
+                422,
+            )
         if latest is None:
             raise AppError(ErrorCode.NOT_FOUND, "报价单没有版本", 404)
         # ⚠️ **不要把最新版排除掉**：`close_superseded_approvals` 会结束
         # 除新版本之外**所有**版本的待审批 —— 包括正在跑审批的最新版自己
         # （"V2 审批中，我又做了 V3"正是最常见的场景）。
         # 排除最新版的话，最该被点名的那一版反而不会出现在提示里（我踩过）。
-        pending = await svc.versions_with_pending_approval(session, quote_id=quote.id)
         parts = [
             f"将基于当前最新版 V{latest.version_no} 创建 V{latest.version_no + 1}，"
             "并切换为当前草稿",
