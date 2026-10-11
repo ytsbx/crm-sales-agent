@@ -4,7 +4,9 @@
 """
 
 from functools import lru_cache
+from secrets import token_urlsafe
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,11 +19,14 @@ class Settings(BaseSettings):
 
     app_name: str = "CRM-Sales-Agent"
     api_prefix: str = "/api/v1"
-    debug: bool = True
+    # 生产默认关闭调试；本地需要文档时显式设置 DEBUG=1。
+    debug: bool = False
 
     # 数据库。默认 PostgreSQL；改 MySQL 只需换这一行连接串。
     database_url: str = "postgresql+asyncpg://zhaorongkai@127.0.0.1:5432/crm_sales_agent"
-    jwt_secret: str = "dev-secret-please-change"
+    # 未提供环境变量时也使用不可预测的进程级密钥，避免公开默认值可伪造令牌。
+    # 正式部署仍应显式设置 JWT_SECRET，以便重启后保持已有会话有效。
+    jwt_secret: str = token_urlsafe(32)
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 720
     #: `/auth/refresh` 允许"已过期多久之内"仍然续期。过期太久就要求重新登录，
@@ -78,6 +83,19 @@ class Settings(BaseSettings):
     #: 生成一段叙述的超时（秒）。超时只让 commentary 变 None 并说明原因，
     #: **不影响**统计结果返回——等模型不该把页面卡死。
     agent_commentary_timeout: int = 30
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def validate_jwt_secret(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 32 or any(
+            marker in normalized.lower()
+            for marker in ("please-change", "dev-only", "local-dev", "replace-me")
+        ):
+            raise ValueError(
+                "JWT_SECRET 必须是至少 32 个字符的随机密钥，不能使用示例值"
+            )
+        return normalized
 
     # ---- 企业微信（PRD §8 / ER §6 / API §10）------------------------------
     # ---- 钉钉 OA 审批（文档 §11.3 :152 / 场景11）--------------------------

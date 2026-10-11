@@ -1296,9 +1296,13 @@ async def list_mappings(
 ) -> tuple[list[dict], int]:
     stmt: Select = select(ExternalObjectMapping)
     if owner_ids is not None:
-        # 待匹配的行没有本地归属，只有全量范围的人能看/能处理（同异常队列口径）。
+        # 只有订单映射能沿负责人判断范围。客户/SKU/履约明细的 internal_id
+        # 属于不同表，不能拿它和 SalesOrder.id 直接比较，否则会因数字碰巧相同而串数据。
         scoped_orders = select(SalesOrder.id).where(SalesOrder.owner_id.in_(owner_ids or [0]))
-        stmt = stmt.where(ExternalObjectMapping.internal_id.in_(scoped_orders))
+        stmt = stmt.where(
+            ExternalObjectMapping.object_type == OBJECT_ORDER,
+            ExternalObjectMapping.internal_id.in_(scoped_orders),
+        )
     if match_status:
         stmt = stmt.where(ExternalObjectMapping.match_status == match_status)
     if system_type:

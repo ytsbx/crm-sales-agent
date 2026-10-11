@@ -588,10 +588,28 @@ class JushuitanAdapter(ErpAdapter):
 
     async def fetch_order_status(self, external_id: str) -> dict[str, Any]:
         data = await self._call("/open/orders/query", {"o_id": external_id}, capability="read")
-        orders = ((data.get("data") or {}).get("orders")) or []
+        result = data.get("data")
+        if result is None:
+            result = {}
+        if not isinstance(result, dict):
+            raise ErpResultUnknown(
+                f"响应 data 不是对象结构（{type(result).__name__}），无法读取订单状态",
+                api="/open/orders/query",
+            )
+        orders = result.get("orders") or []
+        if not isinstance(orders, list):
+            raise ErpResultUnknown(
+                f"响应 data.orders 不是数组（{type(orders).__name__}），无法读取订单状态",
+                api="/open/orders/query",
+            )
         if not orders:
             return {"status": None, "shipped_at": None, "raw": data}
         first = orders[0]
+        if not isinstance(first, dict):
+            raise ErpResultUnknown(
+                "响应 data.orders 第一项不是对象，无法读取订单状态",
+                api="/open/orders/query",
+            )
         raw_status = str(first.get("status") or "")
         return {
             "status": self.STATUS_MAP.get(raw_status),

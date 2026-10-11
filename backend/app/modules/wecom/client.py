@@ -329,3 +329,11 @@ def get_client() -> WeComClient:
     if _client is None:
         _client = WeComClient()
     return _client
+
+
+async def reset_client() -> None:
+    """应用退出时关闭单例连接池，避免热重载/测试生命周期泄漏连接。"""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None

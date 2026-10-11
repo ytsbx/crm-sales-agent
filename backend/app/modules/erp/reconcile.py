@@ -43,6 +43,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Select, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -235,14 +236,34 @@ async def _upsert_diff(
         await session.execute(
             select(IntegrationDiff).where(
                 IntegrationDiff.diff_key == session_fields["diff_key"]
-            )
+            ).with_for_update()
         )
     ).scalars().first()
     if row is None:
-        row = IntegrationDiff(**session_fields, status=DIFF_OPEN)
-        session.add(row)
-        await session.flush()
-        return row, "created"
+        candidate = IntegrationDiff(**session_fields, status=DIFF_OPEN)
+        begin_nested = getattr(session, "begin_nested", None)
+        if begin_nested is None:
+            # 内存 SQLite 测试替身只提供最小 AsyncSession 接口；真实 AsyncSession
+            # 仍走下面的保存点来隔离唯一键竞争。
+            session.add(candidate)
+            await session.flush()
+            return candidate, "created"
+        try:
+            # 唯一键冲突只回滚这个保存点，保留外层对账事务，随后读取并复用赢家。
+            async with begin_nested():
+                session.add(candidate)
+                await session.flush()
+            return candidate, "created"
+        except IntegrityError:
+            row = (
+                await session.execute(
+                    select(IntegrationDiff)
+                    .where(IntegrationDiff.diff_key == session_fields["diff_key"])
+                    .with_for_update()
+                )
+            ).scalars().first()
+            if row is None:
+                raise
 
     changed = False
     for key in ("current_value", "incoming_value", "evidence", "period", "internal_id",
@@ -501,6 +522,7 @@ async def _find_local_order(
         await session.execute(
             select(ExternalObjectMapping).where(
                 ExternalObjectMapping.system_type == system_type,
+                ExternalObjectMapping.shop_id == order.shop_id,
                 ExternalObjectMapping.object_type == OBJECT_ORDER,
                 ExternalObjectMapping.external_id == (order.external_id or order.dedupe_key),
                 ExternalObjectMapping.internal_id.isnot(None),
@@ -542,12 +564,14 @@ async def run_reconciliation(
 
     run = (
         await session.execute(
-            select(ReconciliationRun).where(ReconciliationRun.run_key == run_key)
+            select(ReconciliationRun)
+            .where(ReconciliationRun.run_key == run_key)
+            .with_for_update()
         )
     ).scalars().first()
     reused = run is not None
     if run is None:
-        run = ReconciliationRun(
+        candidate = ReconciliationRun(
             run_key=run_key,
             system_type=system,
             shop_id=shop,
@@ -555,8 +579,27 @@ async def run_reconciliation(
             period_end=period_end,
             status="running",
         )
-        session.add(run)
-        await session.flush()
+        try:
+            begin_nested = getattr(session, "begin_nested", None)
+            if begin_nested is None:
+                session.add(candidate)
+                await session.flush()
+            else:
+                async with begin_nested():
+                    session.add(candidate)
+                    await session.flush()
+            run = candidate
+        except IntegrityError:
+            run = (
+                await session.execute(
+                    select(ReconciliationRun)
+                    .where(ReconciliationRun.run_key == run_key)
+                    .with_for_update()
+                )
+            ).scalars().first()
+            if run is None:
+                raise
+            reused = True
     run.status = "running"
     run.last_error = None
     run.started_at = moment
@@ -1017,6 +1060,7 @@ async def list_diffs(
     system_type: str | None = None,
     shop_id: str | None = None,
     period: str | None = None,
+    owner_ids: list[int] | None = None,
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
@@ -1033,6 +1077,15 @@ async def list_diffs(
         stmt = stmt.where(IntegrationDiff.shop_id == shop_id)
     if period:
         stmt = stmt.where(IntegrationDiff.period == period)
+    if owner_ids is not None:
+        # 差异表同时承载订单对账和 SKU 主数据差异；有限范围用户只可看
+        # 能定位到其订单的数据，无法定位归属的异常证据只给全量用户。
+        stmt = stmt.where(
+            IntegrationDiff.domain == DIFF_DOMAIN_ORDER,
+            IntegrationDiff.internal_id.in_(
+                select(SalesOrder.id).where(SalesOrder.owner_id.in_(owner_ids or [0]))
+            ),
+        )
     total = int(
         (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
     )
@@ -1150,8 +1203,41 @@ async def confirm_diff(
     （§8.13：外部售后事实未经核定不得直接覆盖本地回款；这里连核定完也不覆盖，
     覆盖要走已确认口径的财务流程）。原始回款仍完整保留。
     """
+    # PostgreSQL 下把差异行锁住，避免两个并发核定同时看到"尚无台账"而各自插入。
+    locked = (
+        await session.execute(
+            select(IntegrationDiff)
+            .where(IntegrationDiff.id == diff.id)
+            .with_for_update()
+        )
+    ).scalars().first()
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, f"差异 #{diff.id} 不存在", 404)
+    diff = locked
+
     resolution = (resolution or "").strip()
     _validate_resolution(diff, resolution, note)
+    if diff.status != DIFF_OPEN:
+        if diff.resolution != resolution:
+            raise AppError(
+                ErrorCode.DUPLICATE,
+                f"差异已按“{RESOLUTION_LABELS.get(diff.resolution or '', diff.resolution)}”核定，不能改成其他结论",
+                409,
+            )
+        existing = (
+            await session.execute(
+                select(FinancialAdjustment).where(
+                    FinancialAdjustment.source_diff_id == diff.id
+                )
+            )
+        ).scalars().first()
+        return {
+            "diff": serialize_diff(diff),
+            "financial_adjustment": serialize_financial_adjustment(existing),
+            "resolution_label": RESOLUTION_LABELS.get(resolution, resolution),
+            "applied_to_local": False,
+            "message": "该差异已经核定，已回放原核定结果",
+        }
     if diff.diff_type == DIFF_AFTERSALE_REVIEW and resolution == "manual":
         if financial_adjustment_type not in {"refund", "receivable_adjustment"}:
             raise AppError(

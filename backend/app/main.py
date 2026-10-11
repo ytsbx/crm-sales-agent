@@ -63,10 +63,20 @@ logging.basicConfig(
 async def lifespan(_: FastAPI):
     # 调度器要等事件循环就绪（AsyncIOScheduler 挂在应用自己的 loop 上）
     from app.core.scheduler import start_scheduler, stop_scheduler
+    from app.modules.erp.adapter import reset_adapters
+    from app.modules.wecom.client import reset_client
 
     start_scheduler()
-    yield
-    stop_scheduler()
+    try:
+        yield
+    finally:
+        try:
+            stop_scheduler()
+        finally:
+            try:
+                await reset_adapters()
+            finally:
+                await reset_client()
 
 
 app = FastAPI(
