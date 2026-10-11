@@ -185,6 +185,8 @@ jobs:
       # 一直被拒跑 → 「✗ 收尾清扫失败」→ UI 冒烟 job 恒红（2026-10-10 修）。
       # 光把 crm_sales_agent 加进 DEV_DATABASES 也救不了它：卡住它的是**前缀规则**。
       DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_smoke
+      # smoke_ui.mjs 会把 API_BASE 作为后端根地址；本 job 的后端监听 8000。
+      API_BASE: http://127.0.0.1:8000
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
       DINGTALK_PUSH_OFF: "1"
