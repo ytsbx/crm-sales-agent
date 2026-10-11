@@ -56,6 +56,7 @@ from app.modules.integration.model import (
     ExternalRecord,
     ExternalSourceRegistry,
     ExternalSyncWatermark,
+    FinancialAdjustment,
     IntegrationDiff,
     ReconciliationRun,
 )
@@ -83,6 +84,7 @@ NEW_TABLES = [
     ExternalSourceRegistry.__table__,
     ReconciliationRun.__table__,
     IntegrationDiff.__table__,
+    FinancialAdjustment.__table__,
     SkuIdentitySource.__table__,
     SkuFieldAuthority.__table__,
     SkuMasterVersion.__table__,

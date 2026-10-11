@@ -38,6 +38,7 @@ from app.modules.integration.model import (
     ExternalRecord,
     ExternalSourceRegistry,
     ExternalSyncWatermark,
+    FinancialAdjustment,
     IntegrationDiff,
     IntegrationLog,
     ReconciliationRun,
@@ -72,6 +73,7 @@ def _engine():
             ExternalSourceRegistry.__table__,
             ReconciliationRun.__table__,
             IntegrationDiff.__table__,
+            FinancialAdjustment.__table__,
             # 采集留痕写在既有的集成日志表里；推单映射表也一起建，
             # 免得"共用集成基础设施"的用例因为少一张表而失败。
             IntegrationLog.__table__,
@@ -631,7 +633,7 @@ def test_aftersale_fact_never_writes_local_payment_and_needs_manual_review():
             [
                 _order_record("EXT-O1", "CRM-O1"),
                 _order_item("EXT-O1", "1", "SKU-A", "10"),
-                _aftersale("AS-1", "EXT-O1", "return"),
+                _aftersale("AS-1", "EXT-O1", "return", amount="25.00", currency="CNY"),
                 _aftersale_item("AS-1", "1", "EXT-O1", "return", "2"),
             ]
         ]
@@ -684,6 +686,24 @@ def test_aftersale_fact_never_writes_local_payment_and_needs_manual_review():
     )
     assert outcome["applied_to_local"] is False
     assert "不会自动改本地回款" in outcome["message"]
+    adjustment = outcome["financial_adjustment"]
+    assert adjustment["adjustment_type"] == "refund"
+    assert adjustment["amount"] == "25.00"
+    assert adjustment["status"] == "pending"
+    assert len(asyncio.run(session.execute(select(FinancialAdjustment))).scalars().all()) == 1
+
+    # 同一差异重复确认只回放原调整，不重复建台账。
+    repeated = asyncio.run(
+        rec.confirm_diff(
+            session,
+            diff,
+            resolution="manual",
+            note="再次核对",
+            operator_id=9,
+        )
+    )
+    assert repeated["financial_adjustment"]["id"] == adjustment["id"]
+    assert len(asyncio.run(session.execute(select(FinancialAdjustment))).scalars().all()) == 1
 
 
 def test_unverified_adapter_never_calls_out_and_records_not_verified(monkeypatch):

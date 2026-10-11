@@ -43,7 +43,7 @@ import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -51,7 +51,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.errors import AppError, ErrorCode
-from app.core.response import ok, page_data
+from app.core.response import ok, page_data, paginate
 from app.modules.erp import collection as collect_svc
 from app.modules.erp import reconcile as recon_svc
 from app.modules.erp import service as svc
@@ -68,6 +68,7 @@ from app.modules.erp.schema import (
     StatusWebhookRequest,
 )
 from app.modules.integration.vocab import ALL_SHOPS, DIFF_DOMAIN_ORDER
+from app.modules.integration.model import FinancialAdjustment
 from app.modules.order import service as order_service
 from app.modules.order.model import SalesOrder
 
@@ -90,6 +91,46 @@ def _translate(error: Exception) -> AppError:
             return AppError(ErrorCode.ERP_SYNC_FAILED, str(error), status)
         return AppError(ErrorCode.ERP_SYNC_FAILED, str(error), 502)
     return AppError(ErrorCode.ERP_SYNC_FAILED, f"ERP/MES 同步失败：{error}", 502)
+
+
+@router.get("/integrations/erp/financial-adjustments")
+async def list_financial_adjustments(
+    order_id: int | None = None,
+    status: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    user: CurrentUser = Depends(require_permission("order:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """退款/应收调整台账；只读，原始回款记录不在此接口被改写。"""
+    stmt = select(FinancialAdjustment).outerjoin(
+        SalesOrder, SalesOrder.id == FinancialAdjustment.order_id
+    )
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        # 尚未匹配到本地订单的售后调整仍需进入待处理队列；一旦有订单归属，
+        # 则按订单负责人范围过滤，避免用 adjustment id 猜到别人的金额。
+        stmt = stmt.where(
+            or_(
+                FinancialAdjustment.order_id.is_(None),
+                SalesOrder.owner_id.in_(owner_ids),
+            )
+        )
+    if order_id is not None:
+        stmt = stmt.where(FinancialAdjustment.order_id == order_id)
+    if status:
+        stmt = stmt.where(FinancialAdjustment.status == status)
+    rows, total = await paginate(
+        session, stmt.order_by(FinancialAdjustment.id.desc()), page, page_size
+    )
+    return ok(
+        page_data(
+            [recon_svc.serialize_financial_adjustment(row) for row in rows],
+            total,
+            page,
+            page_size,
+        )
+    )
 
 
 def translate_erp_error(error: Exception) -> AppError:
@@ -616,8 +657,8 @@ async def confirm_reconcile_diff(
 ):
     """核定一条差异。
 
-    核定**只写差异行**：外部事实不会因为有人点了"以外部为准"就去改本地回款/应收/业绩
-    （退货退款的来源与时点口径用户还没拍板）。能定位到本地订单时还要过数据范围。
+    核定会更新差异行；售后人工核定另外生成待财务处理的退款/应收调整台账，
+    不覆盖原始回款，也不自动改本地应收/业绩。能定位到本地订单时还要过数据范围。
     """
     diff = await recon_svc.get_diff(session, diff_id)
     if diff.domain == DIFF_DOMAIN_ORDER and diff.internal_id is not None:
@@ -630,6 +671,8 @@ async def confirm_reconcile_diff(
         resolution=payload.resolution,
         note=payload.note,
         operator_id=user.id,
+        financial_adjustment_type=payload.financial_adjustment_type,
+        financial_adjustment_amount=payload.financial_adjustment_amount,
     )
     await write_audit(
         session,

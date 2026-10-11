@@ -448,6 +448,10 @@ def serialize_customer(
     contact_count: int = 0,
     tags: list[dict] | None = None,
     stage: str | None = None,
+    historical_order_count: int = 0,
+    recent_order_count: int = 0,
+    current_opportunity_count: int = 0,
+    activity_status: str = "unknown",
 ) -> dict:
     return {
         "id": customer.id,
@@ -468,6 +472,10 @@ def serialize_customer(
         # 领导六阶段（自动推导，stage.py）：了解/报价/打样/首单/返单/稳定复购
         "stage": stage,
         "stage_label": stage_module.STAGE_LABELS.get(stage) if stage else None,
+        "historical_order_count": historical_order_count,
+        "recent_order_count": recent_order_count,
+        "current_opportunity_count": current_opportunity_count,
+        "activity_status": activity_status,
         "contact_count": contact_count,
         # PRD §6.1：客户列表要能展示标签
         "tags": tags or [],

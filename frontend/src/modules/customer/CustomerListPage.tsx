@@ -308,6 +308,31 @@ export default function CustomerListPage() {
           '-'
         ),
     },
+    {
+      title: '当前商机',
+      dataIndex: 'current_opportunity_count',
+      width: 90,
+      render: (value: number | undefined) => value ?? 0,
+    },
+    {
+      title: '近12月项目',
+      dataIndex: 'recent_order_count',
+      width: 90,
+      render: (value: number | undefined) => value ?? 0,
+    },
+    {
+      title: '历史有效订单',
+      dataIndex: 'historical_order_count',
+      width: 105,
+      render: (value: number | undefined) => value ?? 0,
+    },
+    {
+      title: '活跃状态',
+      dataIndex: 'activity_status',
+      width: 90,
+      render: (value: string | undefined) =>
+        value === 'active' ? '活跃' : value === 'stale' ? '沉睡' : value === 'watch' ? '关注' : '待补核',
+    },
     { title: '地区', dataIndex: 'region', width: 100, render: (v: string | null) => v ?? '-' },
     {
       // PRD §6.1：客户列表要能直接看到标签

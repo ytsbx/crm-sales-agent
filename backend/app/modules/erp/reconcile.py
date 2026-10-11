@@ -15,8 +15,9 @@
    不双算不是靠人眼核对，而是有一个能自动报警的不变量。
 
 2. **财务与业绩继续用已确认口径**
-   本模块**只读**本地订单金额，只写差异队列；一行都不会写 `payment_records`、
-   `receivable_plans`、`order_status_history`、`sales_orders.status`。
+    本模块**只读**本地订单金额；售后核定前只写差异队列，核定后只新增一条待处理
+    财务调整台账，不写回或覆盖 `payment_records`、`receivable_plans`、
+    `order_status_history`、`sales_orders.status`。
    对外部售后事实尤其如此："退货/退款核定的来源与时点"用户还没拍板
    （交接说明 §0.3 第 5 条），所以它只能以 `aftersale_needs_review` 差异的形式
    挂在队列里等人核定，**绝不能**直接冲减本地回款。
@@ -49,6 +50,7 @@ from app.modules.erp.adapter import get_adapter
 from app.modules.integration.model import (
     ExternalObjectMapping,
     ExternalRecord,
+    FinancialAdjustment,
     IntegrationDiff,
     ReconciliationRun,
 )
@@ -936,6 +938,7 @@ async def run_reconciliation(
         values = {
             "kind": head.kind,
             "amount": None if head.amount is None else str(head.amount),
+            "currency": head.currency,
             "occurred_at": head.occurred_at.isoformat() if head.occurred_at else None,
         }
         _, outcome = await _upsert_diff(
@@ -1136,17 +1139,26 @@ async def confirm_diff(
     resolution: str,
     note: str | None,
     operator_id: int | None,
+    financial_adjustment_type: str = "refund",
+    financial_adjustment_amount: Decimal | None = None,
     now: datetime | None = None,
 ) -> dict:
     """带权限与审计地核定一条差异。
 
-    **这是唯一能让人工结论生效的入口**，它本身也只改差异行：
+    **这是唯一能让人工结论生效的入口**。售后人工核定会新增待处理调整台账：
     外部事实**不会**因为有人点了"以外部为准"就去改本地回款/应收/业绩
     （§8.13：外部售后事实未经核定不得直接覆盖本地回款；这里连核定完也不覆盖，
-    覆盖要走已确认口径的财务流程）。返回值里的 `applied_to_local` 就是这句实话。
+    覆盖要走已确认口径的财务流程）。原始回款仍完整保留。
     """
     resolution = (resolution or "").strip()
     _validate_resolution(diff, resolution, note)
+    if diff.diff_type == DIFF_AFTERSALE_REVIEW and resolution == "manual":
+        if financial_adjustment_type not in {"refund", "receivable_adjustment"}:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "售后调整类型只能是 refund（退款）或 receivable_adjustment（应收调整）",
+                422,
+            )
     moment = now or _now()
     diff.status = DIFF_IGNORED if resolution == "ignore" else DIFF_RESOLVED
     diff.resolution = resolution
@@ -1154,17 +1166,70 @@ async def confirm_diff(
     diff.resolved_by = operator_id
     diff.resolved_at = moment
     await session.flush()
+    adjustment = None
+    if diff.diff_type == DIFF_AFTERSALE_REVIEW and resolution == "manual":
+        existing = (
+            await session.execute(
+                select(FinancialAdjustment).where(
+                    FinancialAdjustment.source_diff_id == diff.id
+                )
+            )
+        ).scalars().first()
+        if existing is None:
+            incoming = diff.incoming_value if isinstance(diff.incoming_value, dict) else {}
+            raw_amount = financial_adjustment_amount
+            if raw_amount is None and incoming.get("amount") not in (None, ""):
+                try:
+                    raw_amount = Decimal(str(incoming["amount"]))
+                except (ArithmeticError, ValueError):
+                    raw_amount = None
+            adjustment = FinancialAdjustment(
+                source_diff_id=diff.id,
+                order_id=diff.internal_id,
+                adjustment_type=financial_adjustment_type,
+                amount=raw_amount,
+                currency=str(incoming.get("currency") or "CNY"),
+                status="pending",
+                reason=(note or "人工核定售后，待财务处理"),
+                created_by=operator_id,
+            )
+            session.add(adjustment)
+            await session.flush()
+        else:
+            adjustment = existing
     return {
         "diff": serialize_diff(diff),
+        "financial_adjustment": serialize_financial_adjustment(adjustment),
         "resolution_label": RESOLUTION_LABELS.get(resolution, resolution),
         # 对账差异一律不自动落地到本地财务数据；SKU 主数据差异的落地在 product/master.py
         # （那里有明确的字段白名单与版本快照）。
         "applied_to_local": False,
         "message": (
             f"已记录核定结论：{RESOLUTION_LABELS.get(resolution, resolution)}。"
-            "本次核定只改差异行，不会自动改本地回款/应收/业绩；"
-            "需要调整财务数据的按已确认口径的流程单独办理"
+            "本次核定保留原回款不变，并生成待财务处理的调整台账；"
+            "不会自动改本地回款/应收/业绩"
         ),
+    }
+
+
+def serialize_financial_adjustment(row: FinancialAdjustment | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "source_diff_id": row.source_diff_id,
+        "order_id": row.order_id,
+        "adjustment_type": row.adjustment_type,
+        "amount": (
+            None
+            if row.amount is None
+            else format(Decimal(row.amount).quantize(Decimal("0.01")), "f")
+        ),
+        "currency": row.currency,
+        "status": row.status,
+        "reason": row.reason,
+        "created_by": row.created_by,
+        "created_at": row.created_at,
     }
 
 
@@ -1178,6 +1243,7 @@ __all__ = [
     "build_evidence",
     "build_order_aggregates",
     "confirm_diff",
+    "serialize_financial_adjustment",
     "diff_evidence",
     "get_diff",
     "list_diffs",

@@ -412,3 +412,25 @@ class IntegrationDiff(Base, IdMixin, TimestampMixin):
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class FinancialAdjustment(Base, IdMixin, TimestampMixin):
+    """人工核定售后后的退款/应收调整台账。
+
+    只记录待财务处理的调整，不回写或覆盖原始回款；同一差异只能生成一条。
+    """
+
+    __tablename__ = "financial_adjustments"
+    __table_args__ = (
+        UniqueConstraint("source_diff_id", name="uq_financial_adjustments_source_diff"),
+        Index("ix_financial_adjustments_order_status", "order_id", "status"),
+    )
+
+    source_diff_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    adjustment_type: Mapped[str] = mapped_column(String(32))
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    reason: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

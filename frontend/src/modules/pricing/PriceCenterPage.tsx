@@ -1034,7 +1034,7 @@ export default function PriceCenterPage() {
                           {lookupResult.unit_price}
                         </span>
                         <span style={{ marginLeft: 6, color: 'var(--crm-text-3)' }}>
-                          {lookupResult.currency} / 件（数量 {lookupResult.quantity}）
+                          {lookupResult.currency} / {lookupResult.sku.unit ?? '件'}（数量 {lookupResult.quantity}）
                         </span>
                       </div>
                       <div style={{ display: 'flex', gap: 16 }}>

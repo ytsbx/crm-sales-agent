@@ -12,6 +12,7 @@ from app.modules.customer.stage import (
     STAGE_STABLE,
     STAGE_UNDERSTANDING,
     derive_stage,
+    repurchase_project_key,
 )
 
 
@@ -78,3 +79,8 @@ def test_stage_distribution_counts_all_stages_in_order():
         "understanding", "quote", "sample", "first_order", "repeat", "stable",
     ]
     assert [r["count"] for r in result] == [1, 1, 1, 1, 1, 2]
+
+
+def test_repurchase_project_key_deduplicates_split_orders_by_opportunity():
+    assert repurchase_project_key(42, 100) == repurchase_project_key(42, 101)
+    assert repurchase_project_key(None, 100) != repurchase_project_key(None, 101)
