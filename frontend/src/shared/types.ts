@@ -102,6 +102,13 @@ export interface Customer {
   /** 领导六阶段（自动推导：了解/报价/打样/首单/返单/稳定复购） */
   stage?: string | null
   stage_label?: string | null
+  /** 合作历史与最近 12 个月采购项目分开统计，取消订单不计入。 */
+  historical_order_count?: number
+  recent_order_count?: number
+  /** 当前仍开放的商机数量，不混入客户合作阶段。 */
+  current_opportunity_count?: number
+  /** active / watch / stale / unknown，由跟进和业务进展的最新时间共同判断。 */
+  activity_status?: string
   /** 客户标签（PRD §6.1 列表要展示标签） */
   tags?: { id: number; name: string; type: string; status: string }[]
   remark?: string | null

@@ -1,5 +1,7 @@
 """客户中心与联系人接口（对齐 03-API §7 / §8）。"""
 
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
+from app.core.timebase import now_business, to_business
 from app.modules.contact_util import create_contact_for_customer, take_primary_slot
 from app.modules.customer import service as svc
 from app.modules.customer import stage, tags as tag_svc
@@ -25,6 +28,7 @@ from app.modules.customer.schema import (
     CustomerUpdate,
     PoolRelease,
 )
+from app.modules.settings import service as settings_service
 
 router = APIRouter(tags=["Customer"])
 
@@ -59,6 +63,25 @@ async def list_customers(
     tag_map = await tag_svc.tags_of_customers(session, [c.id for c in rows])
     # 领导六阶段：算出来的字段（订单/打样/报价事实推导），不占人一分钟
     stage_map = await stage.stage_counts_map(session, [c.id for c in rows])
+    historical_orders = await stage.historical_order_counts_map(session, [c.id for c in rows])
+    current_opportunities = await stage.current_opportunity_counts_map(session, [c.id for c in rows])
+    now = now_business()
+    active_days = int(await settings_service.get_number(session, "customer_active_days", "days", 30))
+    stale_days = int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
+    active_cutoff = now - timedelta(days=active_days)
+    stale_cutoff = now - timedelta(days=stale_days)
+
+    def activity_status(customer: Customer) -> str:
+        facts = [value for value in (customer.last_followup_at, customer.last_progress_at) if value]
+        if not facts:
+            return "unknown"
+        latest = max(to_business(value) for value in facts)
+        if latest >= active_cutoff:
+            return "active"
+        if latest < stale_cutoff:
+            return "stale"
+        return "watch"
+
     items = [
         svc.serialize_customer(
             c,
@@ -66,6 +89,10 @@ async def list_customers(
             contact_count=counts.get(c.id, 0),
             tags=tag_map.get(c.id, []),
             stage=stage.derive_stage(*stage_map.get(c.id, (0, 0, 0))),
+            historical_order_count=historical_orders.get(c.id, 0),
+            recent_order_count=stage_map.get(c.id, (0, 0, 0))[0],
+            current_opportunity_count=current_opportunities.get(c.id, 0),
+            activity_status=activity_status(c),
         )
         for c in rows
     ]

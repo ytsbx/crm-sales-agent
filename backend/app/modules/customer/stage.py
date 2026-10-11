@@ -8,14 +8,20 @@
 
 事实口径：
 - 订单：status != cancelled（取消单不算成交）
+- 稳定复购：只看最近 12 个月；同一商机下拆成多张订单只算一个采购项目，
+  没有关联商机的订单才按订单本身计数
 - 打样：sample_requests.status != rejected（被驳回的打样不算推进）
 - 报价：未删除，且有正式发送/客户接受事实；草稿与内部审批不算对客报价
 
 六阶段从浅到深：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购。
 """
 
+from datetime import timedelta
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.timebase import now_business
 
 STAGE_UNDERSTANDING = "understanding"
 STAGE_QUOTE = "quote"
@@ -37,6 +43,16 @@ STAGE_LABELS: dict[str, str] = {
 #: 第 2 单算"返单"，第 3 单起算"稳定复购"——业务口径变了改这里
 REPEAT_ORDER_THRESHOLD = 2
 STABLE_ORDER_THRESHOLD = 3
+REPURCHASE_LOOKBACK_DAYS = 365
+
+
+def repurchase_project_key(opportunity_id: int | None, order_id: int) -> str:
+    """Return the stable key used to count one purchasing project once.
+
+    Split orders keep the same opportunity key; legacy orders without an
+    opportunity remain individually countable.
+    """
+    return f"opportunity:{opportunity_id}" if opportunity_id else f"order:{order_id}"
 
 
 def derive_stage(order_count: int, sample_count: int, quote_count: int) -> str:
@@ -70,16 +86,22 @@ async def stage_counts_map(
 
     counts: dict[int, list[int]] = {cid: [0, 0, 0] for cid in customer_ids}
 
+    # 不能直接 count(*)：同一采购项目可能拆成多张订单。优先用商机作为
+    # 项目标识；没有商机的历史订单才退回订单自身。时间窗口与客户阶段的
+    # “最近 12 个月”口径集中在这里，列表和分布统计共用。
     order_rows = await session.execute(
-        select(SalesOrder.customer_id, func.count())
+        select(SalesOrder.customer_id, SalesOrder.opportunity_id, SalesOrder.id)
         .where(
             SalesOrder.customer_id.in_(customer_ids),
             SalesOrder.status != "cancelled",
+            SalesOrder.created_at >= now_business() - timedelta(days=REPURCHASE_LOOKBACK_DAYS),
         )
-        .group_by(SalesOrder.customer_id)
     )
-    for cid, n in order_rows:
-        counts[cid][0] = int(n)
+    project_ids: dict[int, set[str]] = {cid: set() for cid in customer_ids}
+    for cid, opportunity_id, order_id in order_rows:
+        project_ids[cid].add(repurchase_project_key(opportunity_id, order_id))
+    for cid, projects in project_ids.items():
+        counts[cid][0] = len(projects)
 
     sample_rows = await session.execute(
         select(SampleRequest.customer_id, func.count())
@@ -107,6 +129,45 @@ async def stage_counts_map(
         counts[cid][2] = int(n)
 
     return {cid: (v[0], v[1], v[2]) for cid, v in counts.items()}
+
+
+async def historical_order_counts_map(
+    session: AsyncSession, customer_ids: list[int]
+) -> dict[int, int]:
+    """客户历史有效订单数，用来单独展示合作历史，不参与最近复购阶段。"""
+    if not customer_ids:
+        return {}
+    from app.modules.order.model import SalesOrder
+
+    rows = await session.execute(
+        select(SalesOrder.customer_id, func.count())
+        .where(
+            SalesOrder.customer_id.in_(customer_ids),
+            SalesOrder.status != "cancelled",
+        )
+        .group_by(SalesOrder.customer_id)
+    )
+    return {int(cid): int(count) for cid, count in rows}
+
+
+async def current_opportunity_counts_map(
+    session: AsyncSession, customer_ids: list[int]
+) -> dict[int, int]:
+    """当前开放商机数，单独展示，避免和客户合作阶段混成一个字段。"""
+    if not customer_ids:
+        return {}
+    from app.modules.opportunity.model import Opportunity
+
+    rows = await session.execute(
+        select(Opportunity.customer_id, func.count())
+        .where(
+            Opportunity.customer_id.in_(customer_ids),
+            Opportunity.status == "open",
+            Opportunity.deleted_at.is_(None),
+        )
+        .group_by(Opportunity.customer_id)
+    )
+    return {int(cid): int(count) for cid, count in rows}
 
 
 async def stage_distribution(
