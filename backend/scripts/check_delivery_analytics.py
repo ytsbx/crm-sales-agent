@@ -40,6 +40,7 @@ require_isolated_db()
 
 from app.core.database import SessionLocal
 from app.core.deps import CurrentUser
+from app.core.timebase import today_business
 from app.modules.user.model import User
 
 FAILURES = []
@@ -94,7 +95,9 @@ async def main():
     from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
 
     stamp = int(time.time())
-    today = datetime.now(UTC).date()
+    # 与被验收的 analytics.delivery_stats 共用业务日；不能用 UTC 日期，
+    # 否则 CI 在 UTC 跨日但业务时区尚未跨日时，风险天数会错一天。
+    today = today_business()
     now = datetime.now(UTC)
 
     await cleanup()
