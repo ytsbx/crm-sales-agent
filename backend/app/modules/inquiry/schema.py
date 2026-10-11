@@ -61,9 +61,14 @@ class CustomInquiryQuoteRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     #: 核价成本（元/件，不含运费）——必填，理由见 quote.service 的定制项分支
-    unit_cost: Decimal
-    quoted_price: Decimal
-    quantity: Decimal | None = None
+    # 与普通报价明细保持同一套库列精度与边界：成本非负、报价必须为正，
+    # 数量必须为正且最多三位小数。此前这个旁路没有约束，负成本会抬高
+    # 虚假的利润率，非正报价会把报价版本总额做成零/负数。
+    unit_cost: Decimal = Field(ge=0, max_digits=16, decimal_places=4)
+    quoted_price: Decimal = Field(gt=0, max_digits=16, decimal_places=4)
+    quantity: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=3
+    )
     item_name: str | None = None
     valid_until: date | None = None
 

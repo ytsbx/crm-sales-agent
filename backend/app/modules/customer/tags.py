@@ -13,6 +13,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
@@ -40,6 +41,21 @@ async def list_tags(session: AsyncSession, *, only_active: bool = False) -> list
 
 async def get_tag_or_404(session: AsyncSession, tag_id: int) -> Tag:
     tag = await session.get(Tag, tag_id)
+    if tag is None:
+        raise AppError(ErrorCode.NOT_FOUND, "标签不存在", 404)
+    return tag
+
+
+async def lock_tag_or_404(session: AsyncSession, tag_id: int) -> Tag:
+    """锁标签行，串行化改名/删除，避免删除等待期间继续写旧对象。"""
+    tag = (
+        await session.execute(
+            select(Tag)
+            .where(Tag.id == tag_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if tag is None:
         raise AppError(ErrorCode.NOT_FOUND, "标签不存在", 404)
     return tag
@@ -102,7 +118,11 @@ async def create_tag(
         raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409)
     tag = Tag(name=name, type=type_, status="active", sort_no=sort_no)
     session.add(tag)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"标签「{name}」已存在", 409) from exc
     return tag
 
 
@@ -122,7 +142,12 @@ async def update_tag(session: AsyncSession, tag: Tag, data: dict) -> Tag:
     for field in ("status", "sort_no"):
         if field in data and data[field] is not None:
             setattr(tag, field, data[field])
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        duplicate_name = tag.name
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"标签「{duplicate_name}」已存在", 409) from exc
     return tag
 
 
@@ -166,6 +191,15 @@ async def attach_tags(session: AsyncSession, customer_id: int, tag_ids: list[int
     """给客户打标签（已存在的跳过）。返回实际新增数量。"""
     if not tag_ids:
         return 0
+    unique_tag_ids = list(dict.fromkeys(tag_ids))
+    # 删除标签也会先锁标签行再清理关联；这里按 id 升序锁住本批标签，避免
+    # 删除与新增关联交错导致外键/主键 500，也避免多标签请求按不同顺序互等。
+    await session.execute(
+        select(Tag.id)
+        .where(Tag.id.in_(unique_tag_ids))
+        .order_by(Tag.id.asc())
+        .with_for_update()
+    )
     existing = set(
         (
             await session.execute(
@@ -177,16 +211,14 @@ async def attach_tags(session: AsyncSession, customer_id: int, tag_ids: list[int
     )
     # 校验标签都存在，避免打进不存在的 id
     found = set(
-        (
-            await session.execute(select(Tag.id).where(Tag.id.in_(tag_ids)))
-        ).scalars().all()
+        (await session.execute(select(Tag.id).where(Tag.id.in_(unique_tag_ids)))).scalars().all()
     )
-    missing = set(tag_ids) - found
+    missing = set(unique_tag_ids) - found
     if missing:
         raise AppError(ErrorCode.NOT_FOUND, f"标签不存在：{sorted(missing)}", 404)
 
     added = 0
-    for tag_id in dict.fromkeys(tag_ids):
+    for tag_id in unique_tag_ids:
         if tag_id not in existing:
             await session.execute(
                 customer_tags.insert().values(customer_id=customer_id, tag_id=tag_id)

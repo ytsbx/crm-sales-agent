@@ -965,9 +965,29 @@ async def _build_custom_item_snapshot(
             422,
         )
 
-    price = Decimal(str(quoted_price))
-    cost = Decimal(str(unit_cost))  # 人民币：与 SKU 路径、审批判定同一口径
-    freight = Decimal(str(logistics_cost or 0))  # 人民币
+    # 该函数也会被报价模块内部路径直接调用，不能只依赖 HTTP schema。
+    # 负成本会制造虚假高毛利，非正报价会把版本总额做成零/负数；
+    # 超出列精度则会在落库时被静默舍入，导致明细与版本合计不一致。
+    from pydantic import ValidationError
+
+    from app.modules.quote.schema import QuoteItemInput
+
+    try:
+        validated = QuoteItemInput(
+            quantity=quantity, quoted_price=quoted_price,
+            unit_cost=unit_cost, logistics_cost=logistics_cost,
+        )
+    except ValidationError:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "定制项数量和报价必须大于 0，成本和运费不能小于 0；"
+            "数量最多 3 位小数，单价最多 4 位小数，且不能超出系统可保存范围",
+            422,
+        ) from None
+    quantity = validated.quantity
+    price = validated.quoted_price
+    cost = validated.unit_cost  # 人民币：与 SKU 路径、审批判定同一口径
+    freight = validated.logistics_cost or ZERO  # 人民币
     # 这一版的口径：新报价的运费不进成本基数；历史版本沿用含运费的老口径。
     basis_includes_freight = version_logistics_in_base_cost(version)
     # ⚠️ 最低利润率必须与 SKU 路径、与审核引擎**同一个来源**（2026-10-09 与主人确认）。

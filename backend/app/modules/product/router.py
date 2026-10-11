@@ -10,6 +10,7 @@
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -111,7 +112,10 @@ async def update_product(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    product = await svc.get_product_or_404(session, product_id)
+    # 产品更新与软删/恢复共用产品行锁，避免更新在级联删除之后又把已删产品写活。
+    product = await svc.lock_product(session, product_id)
+    if product is None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     before = svc.serialize_product(product)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(product, field, value)
@@ -259,7 +263,11 @@ async def create_sku(
     await svc.ensure_sku_code_unique(session, payload.sku_code)
     sku = Sku(**payload.model_dump(), product_id=product.id)
     session.add(sku)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {payload.sku_code} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,
@@ -314,14 +322,23 @@ async def update_sku(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await svc.get_sku_or_404(session, sku_id)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     data = payload.model_dump(exclude_unset=True)
     if "sku_code" in data:
         await svc.ensure_sku_code_unique(session, data["sku_code"], exclude_id=sku.id)
     before = svc.serialize_sku(sku)
     for field, value in data.items():
         setattr(sku, field, value)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {data.get('sku_code')} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,
@@ -342,7 +359,12 @@ async def enable_sku(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await svc.get_sku_or_404(session, sku_id)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     sku.status = "active"
     await write_audit(
         session, operator_id=user.id, action="enable", business_type="sku", business_id=sku.id
@@ -357,7 +379,12 @@ async def disable_sku(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await svc.get_sku_or_404(session, sku_id)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     sku.status = "disabled"
     await write_audit(
         session, operator_id=user.id, action="disable", business_type="sku", business_id=sku.id
@@ -375,7 +402,12 @@ async def delete_sku(
 ):
     from datetime import UTC, datetime
 
-    sku = await svc.get_sku_or_404(session, sku_id)
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     before = svc.serialize_sku(sku)
     sku.deleted_at = datetime.now(UTC)
     await write_audit(
@@ -414,23 +446,10 @@ async def restore_sku(
     锁住产品之后 SKU 还要**重新读一遍**（`populate_existing`），
     否则拿到的可能是锁之前读进内存的旧值。
     """
-    product_id = (
-        await session.execute(select(Sku.product_id).where(Sku.id == sku_id))
-    ).scalar_one_or_none()
-    if product_id is None:
+    locked = await svc.lock_sku_with_product(session, sku_id)
+    if locked is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
-
-    product = await svc.lock_product(session, int(product_id))
-    row = (
-        await session.execute(
-            select(Sku)
-            .where(Sku.id == sku_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalars().first()
-    if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    row, product = locked
 
     await recycle_svc.restore_sku(session, row, product=product)
     await write_audit(
@@ -490,7 +509,11 @@ async def create_standalone_sku(
     data = payload.model_dump(exclude={"product_id"})
     sku = Sku(**data, product_id=product.id)
     session.add(sku)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {payload.sku_code} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,
@@ -607,6 +630,14 @@ async def attach_product_file(
     record = await file_service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, f"文件 id={file_id} 不存在", 404)
+    if not await visible_object(
+        session, user, business_type="product", business_id=product_id, write=True
+    ) or not await can_access_file(session, user, file_id):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能给该产品挂附件：产品或文件已不在你的可见范围内",
+            403,
+        )
     link = BusinessFile(
         business_type="product",
         business_id=product_id,

@@ -26,7 +26,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
-from app.modules.contact_util import find_duplicate_customers
+from app.modules.contact_util import find_duplicate_customers, lock_customer_row
 from app.modules.customer import service as svc
 from app.modules.customer import tags as tag_svc
 from app.modules.customer.model import Customer
@@ -85,7 +85,7 @@ async def update_tag(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    tag = await tag_svc.get_tag_or_404(session, tag_id)
+    tag = await tag_svc.lock_tag_or_404(session, tag_id)
     before = tag_svc.serialize_tag(tag)
     tag = await tag_svc.update_tag(session, tag, payload.model_dump(exclude_unset=True))
     await write_audit(
@@ -109,7 +109,7 @@ async def delete_tag(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    tag = await tag_svc.get_tag_or_404(session, tag_id)
+    tag = await tag_svc.lock_tag_or_404(session, tag_id)
     before = tag_svc.serialize_tag(tag)
     await tag_svc.delete_tag(session, tag)
     await write_audit(
@@ -273,6 +273,10 @@ async def attach_customer_tags(
     session: AsyncSession = Depends(get_db),
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
+    # 关联表主键是 (customer_id, tag_id)。先查再插若并发执行，两边都看不到
+    # 对方尚未提交的关联，后一个 INSERT 会撞主键并返回 500；客户行是这组
+    # 标签变更的共同锁，和联系人主位使用同一把锁。
+    await lock_customer_row(session, customer.id)
     added = await tag_svc.attach_tags(session, customer.id, payload.tag_ids)
     await write_audit(
         session,
@@ -296,6 +300,7 @@ async def detach_customer_tag(
     session: AsyncSession = Depends(get_db),
 ):
     customer = await svc.get_visible_customer(session, user, customer_id)
+    await lock_customer_row(session, customer.id)
     await tag_svc.detach_tag(session, customer.id, tag_id)
     await write_audit(
         session,
@@ -334,6 +339,7 @@ async def batch_tag(
         # 给别人客户打标签，`replace` 模式还会先摘掉该客户**全部**现有标签。
         # 与单个路径同口径（单客户走 get_visible_customer）。
         await svc.assert_customer_visible(session, user, customer)
+        await lock_customer_row(session, customer.id)
         if payload.mode == "remove":
             for tag_id in payload.tag_ids:
                 await tag_svc.detach_tag(session, customer.id, tag_id)

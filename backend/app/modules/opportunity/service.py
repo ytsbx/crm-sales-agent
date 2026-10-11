@@ -1,6 +1,7 @@
 """商机业务逻辑。"""
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -363,7 +364,7 @@ async def create_opportunity_from_lead(
     title: str,
     owner_id: int | None,
     created_by: int | None,
-    expected_amount: float | None = None,
+    expected_amount: Decimal | None = None,
     expected_close_date: date | None = None,
 ) -> Opportunity:
     stage = await get_first_stage(session)

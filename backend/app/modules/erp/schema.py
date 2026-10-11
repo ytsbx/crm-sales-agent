@@ -101,4 +101,6 @@ class DiffConfirmRequest(BaseModel):
     resolution: str = Field(min_length=1, max_length=32)
     note: str | None = Field(default=None, max_length=1000)
     financial_adjustment_type: str = Field(default="refund", max_length=32)
-    financial_adjustment_amount: Decimal | None = Field(default=None, ge=0)
+    financial_adjustment_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )

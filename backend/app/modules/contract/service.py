@@ -388,16 +388,23 @@ async def generate_document(
 
         from sqlalchemy import text as _text
 
-        await session.execute(
-            _text("SELECT pg_advisory_xact_lock(:key)"),
-            {
-                "key": int.from_bytes(
-                    hashlib.sha256(f"contract-doc:{payload.request_key}".encode()).digest()[:8],
-                    "big",
-                    signed=True,
-                )
-            },
-        )
+        # SQLite（内存测试/本地开发）没有 PostgreSQL advisory lock；请求键的
+        # 唯一约束仍负责兜底，生产 PostgreSQL 才启用事务锁来串行化重试。
+        try:
+            dialect = session.get_bind().dialect.name
+        except Exception:  # noqa: BLE001
+            dialect = ""
+        if dialect == "postgresql":
+            await session.execute(
+                _text("SELECT pg_advisory_xact_lock(:key)"),
+                {
+                    "key": int.from_bytes(
+                        hashlib.sha256(f"contract-doc:{payload.request_key}".encode()).digest()[:8],
+                        "big",
+                        signed=True,
+                    )
+                },
+            )
         replayed = (
             await session.execute(
                 select(ContractDocument).where(
@@ -477,8 +484,8 @@ async def generate_document(
     if order is not None and order.customer_id != customer.id:
         raise AppError(ErrorCode.PARAM_ERROR, "所选订单不属于该客户", 422)
     quote = await session.get(Quote, payload.quote_id) if payload.quote_id else None
-    if payload.quote_id and quote is None:
-        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在", 404)
+    if payload.quote_id and (quote is None or quote.deleted_at is not None):
+        raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
     if quote is not None and quote.customer_id != customer.id:
         raise AppError(ErrorCode.PARAM_ERROR, "所选报价不属于该客户", 422)
     # 报价版本：合同据此钉死金额与条款。不传也能生成（提前备合同的口径），
@@ -504,6 +511,8 @@ async def generate_document(
     # 由版本反推报价单：只给了版本号（或上面从订单带出来的）时把报价单补上
     if quote is None and quote_version is not None:
         quote = await session.get(Quote, quote_version.quote_id)
+        if quote is None or quote.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "报价单不存在或已删除", 404)
 
     if order is not None and quote is not None and order.quote_id not in (None, quote.id):
         raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)

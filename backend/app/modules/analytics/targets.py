@@ -733,8 +733,8 @@ async def upsert_target(
     period: str,
     user_id: int | None,
     new_customer_target: int,
-    sales_target: float,
-    repeat_customer_target: float = 0,
+    sales_target: Decimal,
+    repeat_customer_target: Decimal = Decimal(0),
     department_id: int | None = None,
     remark: str | None = None,
     expected_updated_at: datetime | None = None,
@@ -759,11 +759,7 @@ async def upsert_target(
             "个人目标与团队目标不能同时指定：要么给 user_id，要么给 department_id",
             422,
         )
-    if (
-        int(new_customer_target) < 0
-        or float(sales_target or 0) < 0
-        or float(repeat_customer_target or 0) < 0
-    ):
+    if int(new_customer_target) < 0 or sales_target < 0 or repeat_customer_target < 0:
         raise AppError(ErrorCode.PARAM_ERROR, "目标值不能为负", 422)
 
     stmt = select(SalesTarget).where(
@@ -805,8 +801,8 @@ async def upsert_target(
         )
         session.add(row)
     row.new_customer_target = int(new_customer_target)
-    row.sales_target = Decimal(str(sales_target or 0))
-    row.repeat_customer_target = Decimal(str(repeat_customer_target or 0))
+    row.sales_target = sales_target
+    row.repeat_customer_target = repeat_customer_target
     row.remark = remark
     row.updated_at = datetime.now(UTC)
     try:

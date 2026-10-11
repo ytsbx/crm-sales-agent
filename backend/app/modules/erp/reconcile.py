@@ -40,7 +40,9 @@ import hashlib
 import json
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field, TypeAdapter, ValidationError
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -84,6 +86,10 @@ from app.modules.order.model import SalesOrder
 
 #: 金额比较允许的误差（元）。用 Decimal 比，避免二进制浮点把 0.1 变成 0.1000000000000000055。
 AMOUNT_TOLERANCE = Decimal("0.01")
+
+_ADJUSTMENT_AMOUNT = TypeAdapter(
+    Annotated[Decimal, Field(ge=0, max_digits=16, decimal_places=2)]
+)
 
 #: 差异证据里每条原始报文最多留多少字符（超限只留开头并**明确标出被截断**）。
 EVIDENCE_MAX_CHARS = 2000
@@ -1265,10 +1271,19 @@ async def confirm_diff(
             incoming = diff.incoming_value if isinstance(diff.incoming_value, dict) else {}
             raw_amount = financial_adjustment_amount
             if raw_amount is None and incoming.get("amount") not in (None, ""):
+                raw_amount = incoming["amount"]
+            if raw_amount is not None:
                 try:
-                    raw_amount = Decimal(str(incoming["amount"]))
-                except (ArithmeticError, ValueError):
-                    raw_amount = None
+                    # 外部 JSON 和服务直调用都必须满足财务台账精度，
+                    # 12.3400 与 12.34 等价，不能仅按 Decimal 指数误拦。
+                    raw_amount = _ADJUSTMENT_AMOUNT.validate_python(raw_amount)
+                except ValidationError:
+                    raise AppError(
+                        ErrorCode.PARAM_ERROR,
+                        "外部售后金额超出财务台账精度（非负、最多两位小数且不超过 14 位整数），"
+                        "请人工填写调整金额后再核定",
+                        422,
+                    ) from None
             adjustment = FinancialAdjustment(
                 source_diff_id=diff.id,
                 order_id=diff.internal_id,

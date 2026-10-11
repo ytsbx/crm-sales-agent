@@ -1172,11 +1172,11 @@ def _assert_not_before(earlier, later, early_label: str, late_label: str) -> Non
     """
     if earlier is None or later is None:
         return
-    e, l = _business_date(earlier), _business_date(later)
-    if e < l:
+    e, later_date = _business_date(earlier), _business_date(later)
+    if e < later_date:
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"{early_label}（{e.isoformat()}）不能早于{late_label}（{l.isoformat()}）",
+            f"{early_label}（{e.isoformat()}）不能早于{late_label}（{later_date.isoformat()}）",
             422,
         )
 

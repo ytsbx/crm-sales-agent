@@ -1,8 +1,12 @@
 from datetime import date
 from typing import Literal
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+
+from app.core.patch_schema import PatchModel
+from app.modules.sample.schema import SampleSource
 
 
 class OrderFromQuote(BaseModel):
@@ -163,12 +167,6 @@ class ShipmentBatchShip(BaseModel):
         if len(set(ids)) != len(ids):
             raise ValueError("同一订单明细不能重复登记实发数量")
         return self
-
-
-from uuid import UUID
-from app.core.patch_schema import PatchModel
-
-from app.modules.sample.schema import SampleSource
 
 
 class OrderDraftLine(BaseModel):

@@ -13,7 +13,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
@@ -446,7 +446,7 @@ async def _assert_saved_source_visible(
     *,
     customer_id: int | None,
     opportunity_id: int | None,
-) -> None:
+) -> int | None:
     """落库前校验"这条试算记在谁名下"。
 
     试算本来就可以不带客户（纯比价），所以两个都不给就直接过。但**给了就要过得去**：
@@ -467,7 +467,7 @@ async def _assert_saved_source_visible(
     列表和详情早就这么判了，只有保存这一处漏着，两边口径本来就不该不一样。
     """
     if customer_id is None and opportunity_id is None:
-        return
+        return None
 
     from app.modules.customer import service as customer_service
 
@@ -485,6 +485,13 @@ async def _assert_saved_source_visible(
         await customer_service.get_visible_customer(
             session, user, opportunity.customer_id
         )
+        # 商机本身已经带出客户。必须把它归一化到试算记录上，否则只传
+        # opportunity_id 的记录会以 customer_id=NULL 落库，列表/详情会把它
+        # 当成“无客户临时试算”而对所有人可见。
+        if customer_id is None:
+            customer_id = opportunity.customer_id
+
+    return customer_id
 
 
 async def save_quote(
@@ -497,7 +504,7 @@ async def save_quote(
     opportunity_id: int | None = None,
 ) -> LogisticsQuote:
     """把选中的方案落成一条物流试算记录（02-ER §10）。"""
-    await _assert_saved_source_visible(
+    customer_id = await _assert_saved_source_visible(
         session, user, customer_id=customer_id, opportunity_id=opportunity_id
     )
     measures = prepared["measures"]
@@ -550,16 +557,26 @@ async def list_quotes(
         stmt = stmt.where(LogisticsQuote.customer_id == customer_id)
     if opportunity_id:
         stmt = stmt.where(LogisticsQuote.opportunity_id == opportunity_id)
-    # 数据范围：试算记录带 customer_id，按客户可见性收紧；没有客户的行（临时试算）人人可见
-    owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None:
-        from app.modules.customer.model import Customer
+    # 数据范围：试算记录带 customer_id，按客户可见性收紧；历史上只带
+    # opportunity_id 的行也必须按商机所属客户收紧，不能因为 customer_id=NULL
+    # 被当作临时试算放给所有人。管理员同样排除已软删的客户/商机，避免列表与
+    # 详情接口一边还能翻到、一边却返回“不存在”的口径分裂。
+    from app.modules.customer.model import Customer
+    from app.modules.opportunity.model import Opportunity
 
-        visible_customers = select(Customer.id).where(Customer.owner_id.in_(owner_ids))
-        stmt = stmt.where(
-            LogisticsQuote.customer_id.is_(None)
-            | LogisticsQuote.customer_id.in_(visible_customers)
-        )
+    owner_ids = await scoped_owner_ids(session, user)
+    customer_scope = [Customer.deleted_at.is_(None)]
+    if owner_ids is not None:
+        customer_scope.append(or_(Customer.owner_id.in_(owner_ids), Customer.owner_id.is_(None)))
+    visible_customers = select(Customer.id).where(*customer_scope)
+    visible_opportunities = select(Opportunity.id).where(
+        Opportunity.customer_id.in_(visible_customers),
+        Opportunity.deleted_at.is_(None),
+    )
+    stmt = stmt.where(
+        (LogisticsQuote.customer_id.is_(None) | LogisticsQuote.customer_id.in_(visible_customers))
+        & (LogisticsQuote.opportunity_id.is_(None) | LogisticsQuote.opportunity_id.in_(visible_opportunities))
+    )
     stmt = stmt.order_by(LogisticsQuote.id.desc())
     return await paginate(session, stmt, page, page_size)
 

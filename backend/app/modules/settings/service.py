@@ -1,14 +1,12 @@
 """规则执行：公海自动回收与自动任务生成。
 
 这两件事原本写死在代码里，现在改成读规则表执行——业务想调天数不用找我改代码。
-"""
-
-"""规则执行：公海自动回收与自动任务生成。
 
 另外这里集中放**所有可配置的业务参数**：代码里不再出现"魔法数字"，
 每个数字都有一个配置键，管理员在系统设置界面上就能改。
 """
 
+import math
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -355,8 +353,11 @@ async def get_number(
     value = await get_setting(session, key)
     raw = value.get(field)
     try:
-        return float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        number = float(raw)  # type: ignore[arg-type]
+        # JSON/数据库都可能保存 NaN 或 Infinity。它们不是可执行的业务参数：
+        # 传进 timedelta、Decimal 或分页/重试计算后会变成 500 或无穷等待。
+        return number if math.isfinite(number) else fallback
+    except (OverflowError, TypeError, ValueError):
         return fallback
 
 

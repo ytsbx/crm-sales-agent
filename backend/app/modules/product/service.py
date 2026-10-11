@@ -146,6 +146,36 @@ async def lock_product(session: AsyncSession, product_id: int) -> Product | None
     ).scalars().first()
 
 
+async def lock_sku_with_product(
+    session: AsyncSession, sku_id: int
+) -> tuple[Sku, Product] | None:
+    """按统一的「产品 → SKU」顺序锁住 SKU 及其所属产品。
+
+    SKU 的状态/删除写入口必须和产品级联删除、恢复保持同一锁序；只锁 SKU
+    会让产品删除（先产品后 SKU）产生循环等待，并允许 SKU 在产品已被删除时
+    被并发改回有效。
+    """
+    product_id = (
+        await session.execute(select(Sku.product_id).where(Sku.id == sku_id))
+    ).scalar_one_or_none()
+    if product_id is None:
+        return None
+    product = await lock_product(session, int(product_id))
+    if product is None:
+        return None
+    sku = (
+        await session.execute(
+            select(Sku)
+            .where(Sku.id == sku_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if sku is None:
+        return None
+    return sku, product
+
+
 async def delete_product(session: AsyncSession, product: Product) -> list[Sku]:
     """软删产品，并连同它名下还没删的 SKU 一起软删。**返回这些被连坐删掉的 SKU**。
 

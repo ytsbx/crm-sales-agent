@@ -73,8 +73,15 @@ async def create_from_source(session, user, payload, *, ip=None):
                             sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     # 同 key 串行化；不用外部锁，事务失败时一并释放。
     from sqlalchemy import text
-    await session.execute(text('SELECT pg_advisory_xact_lock(:key)'),
-                          {'key': int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], 'big', signed=True)})
+    # SQLite（内存测试/本地开发）没有 PostgreSQL advisory lock；幂等键仍由
+    # 唯一约束兜底，生产 PostgreSQL 才启用事务锁来串行化同 key 请求。
+    try:
+        dialect = session.get_bind().dialect.name
+    except Exception:  # noqa: BLE001
+        dialect = ""
+    if dialect == "postgresql":
+        await session.execute(text('SELECT pg_advisory_xact_lock(:key)'),
+                              {'key': int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], 'big', signed=True)})
     existing = (await session.execute(select(SampleRequest).where(SampleRequest.request_key == key))).scalar_one_or_none()
     if existing:
         if existing.created_by != user.id:
@@ -91,7 +98,8 @@ async def create_from_source(session, user, payload, *, ip=None):
                            contact_id=source['contact_id'], owner_id=source['owner_id'],
                            status='pending', requested_at=service.now(), created_at=service.now(), remark=payload.remark, source_context=source['source'],
                            request_key=key, request_hash=digest, created_by=user.id)
-    session.add(sample); await session.flush()
+    session.add(sample)
+    await session.flush()
     for selected in payload.items:
         original = available[selected.source_item_id]
         session.add(SampleItem(sample_request_id=sample.id, sku_id=original['sku_id'],

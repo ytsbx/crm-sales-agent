@@ -46,7 +46,9 @@ class InsightCreate(BaseModel):
     direction: str | None = None
     selling_points: str | None = None
     # 价格假设：负数没有意义，而且后续换算会把它当真实数据用
-    price_assumption: Decimal | None = Field(default=None, ge=0)
+    price_assumption: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     conclusion: str | None = None
     # 参考图 URL 列表（第五批 §6.1(6)：这个字段模型里一直有，但四个环节都没打通）
     images: list[str] | None = None
@@ -73,7 +75,9 @@ class InsightUpdate(PatchModel):
     target_customer: str | None = Field(default=None, max_length=128)
     direction: str | None = None
     selling_points: str | None = None
-    price_assumption: Decimal | None = Field(default=None, ge=0)
+    price_assumption: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     conclusion: str | None = None
     images: list[str] | None = None
     owner_id: int | None = None
@@ -122,7 +126,11 @@ class InsightConvert(BaseModel):
     customer_id: int | None = None
     opportunity_id: int | None = None
     contact_id: int | None = None
-    quantity: Decimal | None = Field(default=None, gt=0)
-    target_price: Decimal | None = Field(default=None, ge=0)
+    quantity: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=3
+    )
+    target_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     remark: str | None = Field(default=None, max_length=500)
     request_key: str | None = Field(default=None, max_length=64)

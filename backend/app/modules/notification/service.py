@@ -14,6 +14,7 @@
 """
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
@@ -70,15 +71,22 @@ async def retry_policy(session: AsyncSession) -> dict:
     value = await settings_service.get_setting(session, "notification_retry")
     default_max = len(DEFAULT_RETRY_BACKOFF_MINUTES)
     try:
-        max_attempts = max(1, int(value.get("max_attempts", default_max)))
-    except (TypeError, ValueError):
+        raw_max_attempts = value.get("max_attempts", default_max)
+        numeric_max_attempts = float(raw_max_attempts)
+        if not math.isfinite(numeric_max_attempts):
+            raise ValueError("通知最大重试次数必须是有限数")
+        max_attempts = max(1, int(raw_max_attempts))
+    except (OverflowError, TypeError, ValueError):
         max_attempts = default_max
     raw_backoff = value.get("backoff_minutes")
     if not isinstance(raw_backoff, list) or not raw_backoff:
         raw_backoff = list(DEFAULT_RETRY_BACKOFF_MINUTES)
     try:
-        backoff = [max(0.0, float(minutes)) for minutes in raw_backoff]
-    except (TypeError, ValueError):
+        parsed_backoff = [float(minutes) for minutes in raw_backoff]
+        if not all(math.isfinite(minutes) for minutes in parsed_backoff):
+            raise ValueError("通知重试间隔必须是有限数")
+        backoff = [max(0.0, minutes) for minutes in parsed_backoff]
+    except (OverflowError, TypeError, ValueError):
         backoff = list(DEFAULT_RETRY_BACKOFF_MINUTES)
     return {
         "enabled": bool(value.get("enabled", True)),
@@ -458,8 +466,11 @@ async def dispatch_pending(
     from app.core.database import SessionLocal
     from app.modules.wecom.client import WeComError, WeComNotConfigured, get_client
 
+    if only_ids is not None and not only_ids:
+        return {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0}
+
     async with SessionLocal() as own:
-        if not only_ids:
+        if only_ids is None:
             await materialize_business_notifications(own, limit=limit)
             await own.commit()
         policy = await retry_policy(own)
@@ -471,16 +482,27 @@ async def dispatch_pending(
         immediate = and_(
             Notification.wecom_status == "pending", Notification.level != LEVEL_DIGEST
         )
-        if only_ids:
-            stmt = stmt.where(Notification.id.in_(only_ids))
+        if only_ids is not None:
+            # 人工补投先把 failed/skipped 排成 pending，再独立开会话投递。
+            # 两步之间自动 worker 可能已发完；仅按 id 查会再次发送已 sent 的行。
+            stmt = stmt.where(
+                Notification.id.in_(only_ids), Notification.wecom_status == "pending"
+            )
         elif include_failed and policy["enabled"]:
             # 待投递 ∪ 到期可重试的失败行：重试要"到期"才捞，
             # 否则退避形同虚设、失败一次就立刻再打一次企微接口
             stmt = stmt.where(or_(immediate, retry_due_clause(policy, now)))
         else:
             stmt = stmt.where(immediate)
+        # 投递会话可能由多个 worker、调度器和人工补投同时触发；必须先锁住
+        # 待投递行，否则它们会同时把同一条消息发到企微。skip_locked 让其它
+        # worker 继续处理剩余消息，不会被一条慢的网络发送卡住。
         rows = (
-            await own.execute(stmt.order_by(Notification.id.asc()).limit(limit))
+            await own.execute(
+                stmt.order_by(Notification.id.asc())
+                .with_for_update(skip_locked=True)
+                .limit(limit)
+            )
         ).scalars().all()
         if not rows:
             return {"attempted": 0, "sent": 0, "skipped": 0, "failed": 0}
@@ -591,6 +613,7 @@ async def send_digest(
                     Notification.level == LEVEL_DIGEST,
                 )
                 .order_by(Notification.id.asc())
+                .with_for_update(skip_locked=True)
             )
         ).scalars().all()
         if not rows:
@@ -694,7 +717,11 @@ async def requeue_for_redispatch(
     if ids:
         stmt = stmt.where(Notification.id.in_(ids))
     rows = (
-        await session.execute(stmt.order_by(Notification.id.asc()).limit(limit))
+        await session.execute(
+            stmt.order_by(Notification.id.asc())
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+        )
     ).scalars().all()
     for row in rows:
         row.wecom_status = "pending"

@@ -494,9 +494,19 @@ async def change_status(
     operator_id: int | None,
     source: str = "WEB",
     remark: str | None = None,
+    allow_cancel: bool = False,
 ) -> None:
     if new_status not in ORDER_STATUS_LABEL:
         raise AppError(ErrorCode.PARAM_ERROR, f"未知的订单状态：{new_status}")
+    # 取消订单不是普通履约状态切换：它还要校验已确认回款、驳回待确认回款、
+    # 取消应收节点和未发货批次。ERP 回调/刷新以及普通状态接口只能走这里的
+    # 履约状态闸门，不能借 `status=cancelled` 绕过这些财务副作用。
+    if new_status == "cancelled" and not allow_cancel:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "取消订单必须走专用取消流程，以同步处理回款、应收计划和发货批次",
+            422,
+        )
     if order.status == new_status:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已经是该状态")
     if order.status == "cancelled":

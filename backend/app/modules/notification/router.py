@@ -148,9 +148,9 @@ async def redispatch_notification(
         raise AppError(ErrorCode.PARAM_ERROR, f"当前状态为「{label}」，不需要补投", 422)
 
     queued = await service.requeue_for_redispatch(session, ids=[row.id])
-    result = await service.dispatch_pending(session, only_ids={row.id})
-    if queued["requeued"]:
-        await session.refresh(row)
+    result = await service.dispatch_pending(session, only_ids=set(queued["ids"]))
+    # 可能已被自动 worker 或另一个补投请求处理，无论是否本次排队都重读结果。
+    await session.refresh(row)
 
     await write_audit(
         session,

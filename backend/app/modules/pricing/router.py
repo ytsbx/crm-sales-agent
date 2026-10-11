@@ -40,6 +40,7 @@ from app.modules.pricing.schema import (
     PricingRequest,
 )
 from app.modules.product.model import Product, Sku
+from app.modules.product import service as product_svc
 from app.modules.user.model import Role
 
 router = APIRouter(tags=["Pricing"])
@@ -77,6 +78,8 @@ async def list_costs(
     sku = await session.get(Sku, sku_id)
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    if sku.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除", 404)
     rows = (
         await session.execute(
             select(ProductCost)
@@ -95,9 +98,14 @@ async def create_cost(
     user: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    sku = await session.get(Sku, sku_id)
-    if sku is None:
+    # 写成本与产品级联删除共用「产品 → SKU」锁序；否则删除产品拿到产品锁后
+    # 仍可能在并发窗口里新增一条挂在已删 SKU 上的成本。
+    locked_sku = await product_svc.lock_sku_with_product(session, sku_id)
+    if locked_sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
+    sku, product = locked_sku
+    if sku.deleted_at is not None or product.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在或已删除", 404)
     # 与导入同一套校验（第七批 7.2/7.4：导入、预览、页面维护不能各校验一套，
     # 否则"页面拦得住、导入绕得过"永远修不干净）
     values = payload.model_dump()
@@ -1089,7 +1097,7 @@ async def _ensure_customer_visible(
     from app.core.data_scope import ensure_in_scope
 
     customer = await session.get(Customer, customer_id)
-    if customer is None:
+    if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
     await ensure_in_scope(
         session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
@@ -1199,7 +1207,7 @@ async def lookup_price(
     if sku is None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     customer = await session.get(Customer, customer_id)
-    if customer is None:
+    if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
     await ensure_in_scope(
         session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
@@ -1892,7 +1900,9 @@ async def create_exchange_rate(
 @router.get("/costs/{cost_id}")
 async def get_cost(
     cost_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    # 成本属于价格管理员的敏感数据；列表入口已用 price:manage，单条入口也必须
+    # 保持同一口径，否则普通产品查看权限拿到 cost_id 就能反查采购/生产成本。
+    _: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """单条成本记录（03-API §16）。"""
@@ -1905,7 +1915,8 @@ async def get_cost(
 @router.get("/skus/{sku_id}/cost-history")
 async def cost_history(
     sku_id: int,
-    _: CurrentUser = Depends(require_permission("product:view")),
+    # 历史记录同样包含完整成本，不能因是“历史”就降级为产品查看权限。
+    _: CurrentUser = Depends(require_permission("price:manage")),
     session: AsyncSession = Depends(get_db),
 ):
     """某 SKU 的成本变更历史。

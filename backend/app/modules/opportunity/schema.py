@@ -12,7 +12,10 @@ class OpportunityCreate(BaseModel):
     primary_contact_id: int | None = None
     source: str | None = None
     stage_id: int | None = None
-    expected_amount: float | None = None
+    # 与数据库 Numeric(16,2) 对齐；Decimal 的有限数校验会拒绝 NaN/Infinity。
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
     owner_id: int | None = None
     competitor: str | None = None
@@ -26,7 +29,9 @@ class OpportunityUpdate(PatchModel):
     title: str | None = None
     primary_contact_id: int | None = None
     source: str | None = None
-    expected_amount: float | None = None
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
     competitor: str | None = None
     risk_level: str | None = None

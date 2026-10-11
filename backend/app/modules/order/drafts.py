@@ -68,7 +68,14 @@ def require_editable(draft, revision):
 async def create(session, user, payload):
     digest = hashlib.sha256(json.dumps(payload.model_dump(mode='json', exclude={'request_key'}), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     key = str(payload.request_key)
-    await session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': int.from_bytes(hashlib.sha256(('order-draft:'+key).encode()).digest()[:8], 'big', signed=True)})
+    # SQLite（内存测试/本地开发）没有 PostgreSQL advisory lock；幂等键仍由
+    # 唯一约束兜底，生产 PostgreSQL 才启用事务锁来串行化同 key 请求。
+    try:
+        dialect = session.get_bind().dialect.name
+    except Exception:  # noqa: BLE001
+        dialect = ""
+    if dialect == "postgresql":
+        await session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': int.from_bytes(hashlib.sha256(('order-draft:'+key).encode()).digest()[:8], 'big', signed=True)})
     existing = (await session.execute(select(OrderDraft).where(OrderDraft.request_key == key))).scalar_one_or_none()
     if existing:
         await ensure_in_scope(session, user, owner_id=existing.owner_id, label='订单草稿')
@@ -84,7 +91,8 @@ async def create(session, user, payload):
     draft = OrderDraft(customer_id=data['customer_id'], opportunity_id=data['opportunity_id'], owner_id=data['owner_id'],
         source_context=data['source'], currency=data['currency'], payment_terms=payload.payment_terms if payload.payment_terms is not None else data['payment_terms'],
         delivery_date=payload.delivery_date, remark=payload.remark, request_key=key, request_hash=digest, created_by=user.id)
-    session.add(draft); await session.flush()
+    session.add(draft)
+    await session.flush()
     for selected in payload.items:
         original = available[selected.source_item_id]
         price = selected.unit_price if 'unit_price' in selected.model_fields_set else (Decimal(original['unit_price']) if original['unit_price'] is not None else None)

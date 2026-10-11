@@ -579,6 +579,7 @@ async def withdraw(
     if instance.applicant_id != user.id and "admin" not in user.roles:
         raise AppError(ErrorCode.FORBIDDEN, "只能撤回自己提交的审批", 403)
 
+    withdrawn_from_node = instance.current_node
     instance.status = "withdrawn"
     instance.finished_at = datetime.now(UTC)
     instance.current_node = None
@@ -594,7 +595,7 @@ async def withdraw(
     session.add(
         ApprovalRecord(
             approval_instance_id=instance.id,
-            node_code=instance.current_node,
+            node_code=withdrawn_from_node,
             approver_id=user.id,
             action="withdraw",
             comment=payload.comment or "申请人撤回",

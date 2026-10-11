@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 from app.core.patch_schema import PatchModel
@@ -66,7 +67,11 @@ class LeadConvert(BaseModel):
     """
     create_opportunity: bool = False
     opportunity_title: str | None = None
-    expected_amount: float | None = None
+    # 金额字段必须拒绝 NaN/Infinity，并与 opportunities.expected_amount
+    # 的 Numeric(16,2) 列保持同一精度；float 会把非有限值放进请求模型。
+    expected_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     expected_close_date: date | None = None
 
 

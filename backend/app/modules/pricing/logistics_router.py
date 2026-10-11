@@ -260,6 +260,16 @@ async def get_quote(
         from app.modules.customer import service as customer_service
 
         await customer_service.get_visible_customer(session, user, quote.customer_id)
+    elif getattr(quote, "opportunity_id", None):
+        # 兼容修复前只保存 opportunity_id 的历史行：不能把它当成无客户
+        # 临时试算放行，必须按商机所属客户重新校验范围。
+        from app.modules.opportunity.model import Opportunity
+        from app.modules.customer import service as customer_service
+
+        opportunity = await session.get(Opportunity, quote.opportunity_id)
+        if opportunity is None or opportunity.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "物流试算关联的商机不存在", 404)
+        await customer_service.get_visible_customer(session, user, opportunity.customer_id)
     return ok(svc.serialize_quote(quote))
 
 

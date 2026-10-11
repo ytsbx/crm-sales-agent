@@ -406,8 +406,9 @@ async def get_visible_payment(
         order = await lock_order(session, order_id)
         if order is None:
             raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+        locked_plan = None
         if known.receivable_plan_id:
-            await lock_plan(session, known.receivable_plan_id)
+            locked_plan = await lock_plan(session, known.receivable_plan_id)
         record = (
             await session.execute(
                 select(PaymentRecord)
@@ -418,6 +419,17 @@ async def get_visible_payment(
         ).scalar_one_or_none()
         if record is None:
             raise AppError(ErrorCode.NOT_FOUND, "回款记录不存在", 404)
+        # 这两列历史上没有外键约束，脏数据可能把回款挂到另一张订单的应收节点。
+        # 不能只按 order_id 做范围校验，否则确认/修改时会在另一订单节点上重算，
+        # 既可能越过数据范围，也会把两张订单的账混在一起。发现不一致直接冻结，
+        # 交给数据修复，不让业务入口继续扩大损害。
+        if record.receivable_plan_id:
+            if locked_plan is None or locked_plan.order_id != record.order_id:
+                raise AppError(
+                    ErrorCode.STATUS_NOT_ALLOWED,
+                    "回款与应收节点的订单归属不一致，已暂时冻结；请联系管理员修复数据",
+                    422,
+                )
     else:
         record = await get_payment_or_404(session, payment_id)
     await assert_order_visible(session, user, record.order_id)

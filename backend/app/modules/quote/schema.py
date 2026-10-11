@@ -17,7 +17,9 @@ class QuoteCreate(BaseModel):
     remark: str | None = None
     # 外贸口径（可选）：不填就是内贸，全人民币
     currency: str = "CNY"
-    exchange_rate: Decimal | None = None
+    exchange_rate: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=6
+    )
     """不填则自动取汇率表里该币种的当前汇率并落快照（02-ER §11）。"""
     #: 请求幂等键（第八批 8.15）：弱网/超时后的重试带同一把键，服务端只建一条报价。
     #: 不给也不报错（老客户端照常工作），但响应里会说明这次没有幂等保护。

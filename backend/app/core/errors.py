@@ -3,11 +3,10 @@
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 
 logger = logging.getLogger("crm.errors")
-
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class ErrorCode:

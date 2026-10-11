@@ -337,6 +337,9 @@ _ADMIN_GUARD_LOCK_KEY = 7301001
 
 async def _lock_admin_guard(session: AsyncSession) -> None:
     """取得「有效管理员人数」保护锁，并持有到本事务结束。"""
+    if _session_dialect(session) != "postgresql":
+        # SQLite（pytest）没有 advisory lock；测试库是单写者，跳过即可。
+        return
     await session.execute(select(func.pg_advisory_xact_lock(_ADMIN_GUARD_LOCK_KEY)))
 
 

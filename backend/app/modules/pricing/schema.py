@@ -17,10 +17,10 @@ class CostCreate(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    purchase_cost: Decimal | None = Field(default=None, ge=0)
-    production_cost: Decimal | None = Field(default=None, ge=0)
-    package_cost: Decimal | None = Field(default=None, ge=0)
-    processing_cost: Decimal | None = Field(default=None, ge=0)
+    purchase_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    production_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    package_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    processing_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
     effective_from: date
     effective_to: date | None = None
     remark: str | None = Field(default=None, max_length=255)
@@ -36,10 +36,10 @@ class CostUpdate(PatchModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    purchase_cost: Decimal | None = Field(default=None, ge=0)
-    production_cost: Decimal | None = Field(default=None, ge=0)
-    package_cost: Decimal | None = Field(default=None, ge=0)
-    processing_cost: Decimal | None = Field(default=None, ge=0)
+    purchase_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    production_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    package_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    processing_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=4)
     effective_from: date | None = None
     effective_to: date | None = None
     remark: str | None = Field(default=None, max_length=255)
@@ -57,7 +57,7 @@ class ExchangeRateCreate(BaseModel):
 
     base_currency: str = "CNY"
     quote_currency: str
-    rate: Decimal = Field(gt=0)
+    rate: Decimal = Field(gt=0, max_digits=16, decimal_places=6)
     source: str | None = None
     effective_at: datetime | None = None
 
@@ -74,10 +74,16 @@ class PriceRuleCreate(BaseModel):
     #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
     min_qty: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=3)
     max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
-    standard_price: Decimal | None = None
-    guide_price: Decimal | None = None
-    minimum_price: Decimal | None = None
-    target_margin: Decimal | None = None
+    standard_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    guide_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    target_margin: Decimal | None = Field(default=None, gt=0, le=1, max_digits=6, decimal_places=4)
     effective_from: date | None = None
     effective_to: date | None = None
     #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
@@ -98,10 +104,16 @@ class PriceRuleUpdate(PatchModel):
     #: 与报价明细（`QuoteItemInput`）同一把尺子，写法照抄，不另创一套。
     min_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
-    standard_price: Decimal | None = None
-    guide_price: Decimal | None = None
-    minimum_price: Decimal | None = None
-    target_margin: Decimal | None = None
+    standard_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    guide_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    target_margin: Decimal | None = Field(default=None, gt=0, le=1, max_digits=6, decimal_places=4)
     status: str | None = None
     effective_from: date | None = None
     effective_to: date | None = None
@@ -121,7 +133,9 @@ class CustomerPriceCreate(BaseModel):
     min_qty: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=3)
     max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     agreed_price: Decimal = Field(gt=0, max_digits=16, decimal_places=4)
-    minimum_price: Decimal | None = None
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
     effective_from: date | None = None
     effective_to: date | None = None
     #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
@@ -164,7 +178,9 @@ class CustomerPriceUpdate(BaseModel):
     min_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     max_qty: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=3)
     agreed_price: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=4)
-    minimum_price: Decimal | None = None
+    minimum_price: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
     effective_from: date | None = None
     effective_to: date | None = None
     #: 与库列 `varchar(255)` 对齐（审查 R07）：从前**没有长度约束**，
@@ -191,8 +207,8 @@ class CustomerPriceUpdate(BaseModel):
         return data
 
 class PricePermissionUpdate(BaseModel):
-    minimum_margin: Decimal = Field(default=Decimal("0.15"), ge=0, le=1)
-    discount_limit: Decimal | None = Field(default=None, ge=0, le=1)
+    minimum_margin: Decimal = Field(default=Decimal("0.15"), ge=0, le=1, max_digits=6, decimal_places=4)
+    discount_limit: Decimal | None = Field(default=None, ge=0, le=1, max_digits=6, decimal_places=4)
     can_approve: bool = False
     remark: str | None = None
 
@@ -212,13 +228,15 @@ class LogisticsRateCreate(BaseModel):
     origin_region: str | None = None
     destination_region: str | None = None
     shipping_method: str = "陆运"
-    unit_price_per_kg: Decimal = Decimal(1)
+    unit_price_per_kg: Decimal = Field(default=Decimal(1), ge=0, max_digits=10, decimal_places=4)
     """按重量计费的单价（元/kg）。"""
-    unit_price_per_volume: Decimal | None = None
+    unit_price_per_volume: Decimal | None = Field(
+        default=None, ge=0, max_digits=10, decimal_places=4
+    )
     """按体积计费的单价（元/m³）；为空表示这家不按体积计费。"""
-    min_charge: Decimal = Decimal(0)
-    eta_days: int | None = None
-    eta_days_max: int | None = None
+    min_charge: Decimal = Field(default=Decimal(0), ge=0, max_digits=10, decimal_places=2)
+    eta_days: int | None = Field(default=None, ge=0)
+    eta_days_max: int | None = Field(default=None, ge=0)
     remark: str | None = None
 
 
@@ -241,9 +259,13 @@ class LogisticsRateUpdate(PatchModel):
     origin_region: str | None = None
     destination_region: str | None = None
     shipping_method: str | None = None
-    unit_price_per_kg: Decimal | None = Field(default=None, ge=0)
-    unit_price_per_volume: Decimal | None = Field(default=None, ge=0)
-    min_charge: Decimal | None = Field(default=None, ge=0)
+    unit_price_per_kg: Decimal | None = Field(
+        default=None, ge=0, max_digits=10, decimal_places=4
+    )
+    unit_price_per_volume: Decimal | None = Field(
+        default=None, ge=0, max_digits=10, decimal_places=4
+    )
+    min_charge: Decimal | None = Field(default=None, ge=0, max_digits=10, decimal_places=2)
     eta_days: int | None = Field(default=None, ge=0)
     eta_days_max: int | None = Field(default=None, ge=0)
     status: Literal["active", "inactive"] | None = None
@@ -254,14 +276,22 @@ class PricingRequest(BaseModel):
     sku_id: int
     # 数量必须为正：此前没有约束，quantity=0 会一路算出 0 元的"建议价"，
     # 界面上看起来像正常的核价结果，实际是无意义数据。
-    quantity: Decimal = Field(default=Decimal(1), gt=0)
+    quantity: Decimal = Field(default=Decimal(1), gt=0, max_digits=16, decimal_places=3)
     customer_id: int | None = None
-    logistics_cost: Decimal | None = Field(default=None, ge=0)
-    target_margin: Decimal | None = Field(default=None, gt=0, le=1)
+    logistics_cost: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=4
+    )
+    target_margin: Decimal | None = Field(
+        default=None, gt=0, le=1, max_digits=6, decimal_places=4
+    )
     """利润要求（比率口径）。与 target_profit_amount 二选一，同时给时以比率优先。"""
-    target_profit_amount: Decimal | None = None
+    target_profit_amount: Decimal | None = Field(
+        default=None, ge=0, max_digits=16, decimal_places=2
+    )
     """利润要求（绝对金额口径，单件）：PRD §13「利润要求」允许按金额提要求。"""
-    quoted_price: Decimal | None = Field(default=None, gt=0)
+    quoted_price: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=4
+    )
     """quoted_price 有值时，接口会顺带判断这个报价是否需要审批。"""
 
     # PRD §13 核价输入：客户等级 / 国家 / 包装 / 物流方式 / 付款方式
@@ -278,7 +308,9 @@ class PricingRequest(BaseModel):
 
     # 外贸口径（可选）：不填就是内贸，全人民币、无退税
     currency: str = "CNY"
-    exchange_rate: Decimal | None = None
+    exchange_rate: Decimal | None = Field(
+        default=None, gt=0, max_digits=16, decimal_places=6
+    )
     tax_refund_rate: Decimal | None = None
 
 

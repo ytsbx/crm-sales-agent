@@ -1,5 +1,6 @@
 """应收与回款接口（对齐 03-API §29 / §30）。"""
 
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -33,6 +34,7 @@ from app.modules.payment.schema import (
 )
 
 router = APIRouter(tags=["Payment"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/receivables")
@@ -602,7 +604,17 @@ async def delete_payment_voucher(
     )
     await session.commit()
     if file_removed and object_key is not None:
-        storage.delete_object(object_key)
+        # 数据库删除已提交。磁盘清理失败只能留下孤儿文件，不能把已成功的
+        # 删除返回成 500，否则客户端重试时只会得到“凭证不存在”。
+        try:
+            storage.delete_object(object_key)
+        except Exception:  # noqa: BLE001 —— 与通用文件删除保持相同的提交后清理语义
+            logger.warning(
+                "回款凭证 %s 已从库中删除，但磁盘原件清理失败：%s",
+                old_file_id,
+                object_key,
+                exc_info=True,
+            )
     if file_removed:
         return ok(
             {"detached_only": False, "file_deleted": True},
@@ -804,6 +816,11 @@ async def confirm_payment(
     """
     record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
     svc.ensure_payment_pending(record)
+    # 历史回款允许不挂应收节点，但它仍归属订单，不能绕过订单取消状态。
+    # get_visible_payment 已锁订单并刷新，这里检查的是锁内最新状态。
+    order = await session.get(SalesOrder, record.order_id)
+    if order is not None and order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再确认回款", 422)
     # 订单/节点已取消就不该确认（C5-01）。放在这里而不是最后：被拒时**不能留下
     # 半改的状态**。`get_visible_payment` 已按统一锁序拿到订单与节点锁，这一步与它同序。
     # 没有节点（挂空）的回款不适用——那种本来就不参与节点重算。
@@ -821,7 +838,6 @@ async def confirm_payment(
         # 事务内的同一把锁，不额外阻塞，只为让"锁内重算"在调用点可见。
         plan = await svc.lock_plan(session, record.receivable_plan_id)
         await svc.recalc_plan(session, plan)
-    order = await session.get(SalesOrder, record.order_id)
     if order:
         # 收款事实回流到跟单节点（issue #11）：「付定金」「收款」两个节点的实际日
         # 由**已确认收款**派生，不能人工直填。这一笔确认之后立刻同步，

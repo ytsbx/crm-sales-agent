@@ -1095,8 +1095,11 @@ async def get_visible_contact(
     if contact.customer_id is None:
         return contact
     customer = await session.get(Customer, contact.customer_id)
-    if customer is not None:
-        await assert_customer_visible(session, user, customer)
+    # 客户软删后其联系人仍保留，供恢复客户时一并恢复业务关系；但正常联系人
+    # 详情/写入口不能借 contact_id 绕过客户回收站继续查看或修改这些资料。
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "联系人所属客户不存在", 404)
+    await assert_customer_visible(session, user, customer)
     return contact
 
 

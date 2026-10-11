@@ -315,9 +315,13 @@ async def rename_file(
     """
     if not await access.can_access_file(session, user, file_id):
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
-    record = await session.get(FileRecord, file_id)
+    # 可见性检查之后文件仍可能被并发删除；与所有会改变文件引用的入口一样，
+    # 先锁文件行并重读，避免拿着旧对象改名。
+    record = await service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    if not await access.can_access_file(session, user, file_id):
+        raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该文件不在你的可见范围内", 403)
 
     name = (payload.file_name or "").strip()
     if not name:
@@ -582,6 +586,26 @@ async def attach_file(
     record = await service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    # 文件锁等待期间目标对象或数据范围可能变化；挂载前再确认一次授权，
+    # 避免把加锁前的可见性当成最终结论。
+    if not await visible_object(
+        session, user, business_type=business_type, business_id=business_id, write=True
+    ) or not await can_access_file(session, user, file_id):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能给该业务对象挂附件：目标或文件已不在你的可见范围内",
+            403,
+        )
+    if business_type == "sample":
+        lock = await sample_write_lock_label(session, business_id)
+        if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"{lock}，不能再往上挂制作依据类的附件。"
+                f"事后补进来的资料请把类别选成「{SUPPLEMENT_LABEL}」"
+                f"（category={SUPPLEMENT_CATEGORY}）",
+                422,
+            )
     link = BusinessFile(
         business_type=business_type,
         business_id=business_id,
@@ -621,6 +645,32 @@ async def unlink_file(
     #    「能拆掉它挂在别人业务对象上的关联」；
     # ③ 而且"看得见"也不等于"能改"：解绑要该模块的**写入权**（write=True），
     #    否则只有查看权的人能悄悄摘掉别人单据上的凭证关联。
+    if not await visible_object(
+        session, user,
+        business_type=link.business_type, business_id=link.business_id, write=True,
+    ):
+        raise AppError(
+            ErrorCode.DATA_SCOPE_DENIED,
+            "不能解绑该附件：它所在的业务对象不在你的数据范围内，或你没有该模块的维护权限",
+            403,
+        )
+    # 文件删除、回款凭证删除、产品/合同挂载都以文件行作为并发闸门。
+    # 解绑也必须先拿同一把锁：否则删除流程查完引用后，解绑才提交，
+    # 删除仍可能把文件记录清掉，留下指向不存在文件的 BusinessFile。
+    if await service.lock_file_row(session, link.file_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
+    # 等待文件锁后重新读取关联；另一个解绑请求可能已经提交删除了它。
+    link = (
+        await session.execute(
+            select(BusinessFile)
+            .where(BusinessFile.id == business_file_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        raise AppError(ErrorCode.NOT_FOUND, "关联不存在", 404)
+    # 负责人/对象状态可能在等待文件锁期间发生变化，范围判断也必须针对锁后
+    # 重新读到的关联再做一次，不能把加锁前的授权当成最终结论。
     if not await visible_object(
         session, user,
         business_type=link.business_type, business_id=link.business_id, write=True,

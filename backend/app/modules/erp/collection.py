@@ -46,7 +46,9 @@ import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field, TypeAdapter, ValidationError
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -146,6 +148,26 @@ def _as_decimal(value: Any) -> Decimal | None:
         return Decimal(text)
     except (InvalidOperation, ValueError):
         return None
+
+
+_EXTERNAL_NUMBER = TypeAdapter(Annotated[Decimal, Field(max_digits=18, decimal_places=4)])
+
+
+def _external_decimal(value: Any, *, field: str, position: int) -> Decimal | None:
+    """校验外部 Numeric(18,4) 字段，避免坏数字拖垮整批采集。"""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        # 与维护接口使用同一套 Decimal 精度规则，末尾零不增加实际小数位。
+        parsed = _EXTERNAL_NUMBER.validate_python(_as_decimal(value))
+    except ValidationError:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"采集返回的第 {position} 条 {field} 不是可存储的有限数字："
+            "要求不超过 14 位整数且最多 4 位小数",
+            422,
+        ) from None
+    return parsed
 
 
 def _as_datetime(value: Any) -> datetime | None:
@@ -287,8 +309,12 @@ def normalize_item(item: dict, *, object_type: str, position: int) -> dict:
         "line_key": line_key,
         "external_id": external_id,
         "external_code": external_code,
-        "quantity": _as_decimal(item.get("quantity")),
-        "amount": _as_decimal(item.get("amount")),
+        "quantity": _external_decimal(
+            item.get("quantity"), field="quantity", position=position
+        ),
+        "amount": _external_decimal(
+            item.get("amount"), field="amount", position=position
+        ),
         "currency": _text(item.get("currency")),
         "occurred_at": _as_datetime(item.get("occurred_at")),
         "external_updated_at": _as_datetime(item.get("external_updated_at")),

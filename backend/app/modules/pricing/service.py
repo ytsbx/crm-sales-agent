@@ -270,6 +270,27 @@ def check_effective_period(
         )
 
 
+def _check_numeric_storage(errs, label: str, value: Decimal | None, *, precision: int, scale: int) -> None:
+    """维护接口与 CSV 导入都要拒绝数据库无法原样保存的数值。"""
+    if value is None:
+        return
+    if not value.is_finite():
+        errs.add(f"{label}必须是有限数字")
+        return
+    digits = list(value.as_tuple().digits)
+    exponent = value.as_tuple().exponent
+    # 末尾零不增加实际精度，1.23000 与 1.23 应获得同样的结果。
+    while digits and digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    if not digits:
+        return
+    if max(-exponent, 0) > scale:
+        errs.add(f"{label}最多保留 {scale} 位小数")
+    if max(len(digits) + exponent, 0) > precision - scale:
+        errs.add(f"{label}整数部分最多 {precision - scale} 位")
+
+
 def check_price_rule_values(
     errs,
     *,
@@ -307,16 +328,25 @@ def check_price_rule_values(
         ("最低保护价", minimum_price),
         ("约定价", agreed_price),
     ):
+        _check_numeric_storage(
+            errs, label, value, precision=16, scale=3 if label in ("数量下限", "数量上限") else 4
+        )
+        if value is not None and not value.is_finite():
+            continue
         if value is not None and value < 0:
             errs.add(f"{label}不能为负数（收到 {value}）")
-    if min_qty is not None and max_qty is not None and min_qty > max_qty:
+    if (
+        min_qty is not None and min_qty.is_finite()
+        and max_qty is not None and max_qty.is_finite() and min_qty > max_qty
+    ):
         errs.add(f"数量下限（{min_qty}）不能大于数量上限（{max_qty}）")
     # 刻意**不**校验"最低价不得高于约定价"（2026-10-07 决定）：保护价高于约定价在业务上
     # 是合法的 —— 它表示"这个客户的价一开始就低于保护线、每单都要走审批"，
     # 而 `check_approval_rules` 正是用这个配置来构造"破保护价进审批"的场景。
     # 审查要求补的是**数值与区间**（负数 / 倒置区间 / 倒置有效期 / 利润率口径），
     # 不是把业务上能成立的组合也一并堵掉。
-    if target_margin is not None and not (Decimal(0) < target_margin <= Decimal(1)):
+    _check_numeric_storage(errs, "目标利润率", target_margin, precision=6, scale=4)
+    if target_margin is not None and target_margin.is_finite() and not (Decimal(0) < target_margin <= Decimal(1)):
         errs.add(
             "目标利润率是比率口径：30% 请填 0.30"
             f"（取值应大于 0 且不超过 1，收到 {target_margin}）"

@@ -862,18 +862,20 @@ async def cancel_order(
     ).scalars().all()
     plan_ids = [plan.id for plan in plans]
 
-    confirmed = 0
-    if plan_ids:
-        confirmed = (
-            await session.execute(
-                select(func.count())
-                .select_from(PaymentRecord)
-                .where(
-                    PaymentRecord.receivable_plan_id.in_(plan_ids),
-                    PaymentRecord.status == "confirmed",
-                )
+    # 以订单 id 为准统计回款。`receivable_plan_id` 是可空的：历史上存在未挂
+    # 应收节点的回款，而确认入口也仍允许这类记录完成确认。只按 plan_ids
+    # 查会漏掉它们，导致“已有已确认回款”的订单被取消，账上留下订单已取消、
+    # 钱却已确认的矛盾状态。
+    confirmed = (
+        await session.execute(
+            select(func.count())
+            .select_from(PaymentRecord)
+            .where(
+                PaymentRecord.order_id == order.id,
+                PaymentRecord.status == "confirmed",
             )
-        ).scalar_one()
+        )
+    ).scalar_one()
     if confirmed:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -882,26 +884,29 @@ async def cancel_order(
         )
 
     # 待确认回款随订单驳回
-    if plan_ids:
-        pending_payments = (
-            await session.execute(
-                select(PaymentRecord).where(
-                    PaymentRecord.receivable_plan_id.in_(plan_ids),
-                    PaymentRecord.status == "pending",
-                )
+    pending_payments = (
+        await session.execute(
+            select(PaymentRecord).where(
+                PaymentRecord.order_id == order.id,
+                PaymentRecord.status == "pending",
             )
-        ).scalars().all()
+        )
+    ).scalars().all()
+    if pending_payments:
         for payment in pending_payments:
             payment.status = "rejected"
             payment.voucher_note = "订单取消，随单驳回" + (
                 f"（原备注：{payment.voucher_note}）" if payment.voucher_note else ""
             )
+    if plan_ids:
         # 未回清的应收计划置为已取消
         for plan in plans:
             if plan.status != "paid":
                 plan.status = "cancelled"
 
-    await svc.change_status(session, order, new_status="cancelled", operator_id=user.id)
+    await svc.change_status(
+        session, order, new_status="cancelled", operator_id=user.id, allow_cancel=True
+    )
     # 未发货的批次随单取消；已发货批次是既成事实，保留原状
     planned_batches = (
         await session.execute(
@@ -922,7 +927,7 @@ async def cancel_order(
         before={"status": before_status},
         after={
             "status": "cancelled",
-            "rejected_pending_payments": len(pending_payments) if plan_ids else 0,
+            "rejected_pending_payments": len(pending_payments),
             "cancelled_receivable_plans": sum(1 for p in plans if p.status == "cancelled"),
             "opportunity_id": order.opportunity_id,
             "note": "商机成交状态未自动回退，如需撤销请人工评估",
