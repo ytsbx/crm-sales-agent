@@ -432,6 +432,7 @@ export default function PriceCenterPage() {
 
   // 客户查价（产品报价中心 · 第一批）：选客户+SKU+数量 → 适用价与来源
   const [lookupCustomerId, setLookupCustomerId] = useState<number | undefined>()
+  const [lookupCustomerKeyword, setLookupCustomerKeyword] = useState('')
   const [lookupSkuId, setLookupSkuId] = useState<number | undefined>()
   const [lookupQty, setLookupQty] = useState('1')
   const [lookupResult, setLookupResult] = useState<PriceLookupResult | null>(null)
@@ -469,8 +470,15 @@ export default function PriceCenterPage() {
     queryFn: () => listOpportunities({ status: 'open', page: 1, page_size: 100 }),
   })
   const customersQuery = useQuery({
-    queryKey: ['customers-for-select'],
-    queryFn: () => listCustomers({ page: 1, page_size: 100 }),
+    // 客户选择器必须服务端搜索；只取前 100 条会让合法客户在第 101 条后
+    // 永远无法从价格中心发起查价（Issue #19）。
+    queryKey: ['customers-for-select', lookupCustomerKeyword],
+    queryFn: () =>
+      listCustomers({
+        keyword: lookupCustomerKeyword.trim() || undefined,
+        page: 1,
+        page_size: 100,
+      }),
   })
   const costsQuery = useQuery({
     queryKey: ['costs', costSkuId],
@@ -844,6 +852,9 @@ export default function PriceCenterPage() {
                   placeholder="选择客户"
                   value={lookupCustomerId}
                   onChange={(value) => setLookupCustomerId(value as number)}
+                  remote
+                  loading={customersQuery.isFetching}
+                  onSearch={setLookupCustomerKeyword}
                   optionList={(customersQuery.data?.items ?? []).map((item) => ({
                     value: item.id,
                     label: withCode(`${item.name}${item.level ? `（${item.level} 级）` : ''}`, item.id),
