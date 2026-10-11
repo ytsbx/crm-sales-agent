@@ -187,6 +187,8 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_iso_smoke
       # smoke_ui.mjs 会把 API_BASE 作为后端根地址；本 job 的后端监听 8000。
       API_BASE: http://127.0.0.1:8000
+      # Vite dev server 在本 job 监听 5173；冒烟脚本的默认开发端口是 5274。
+      APP_BASE: http://127.0.0.1:5173
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
       DINGTALK_PUSH_OFF: "1"
