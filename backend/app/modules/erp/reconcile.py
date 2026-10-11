@@ -1220,7 +1220,11 @@ def serialize_financial_adjustment(row: FinancialAdjustment | None) -> dict | No
         "source_diff_id": row.source_diff_id,
         "order_id": row.order_id,
         "adjustment_type": row.adjustment_type,
-        "amount": None if row.amount is None else str(row.amount),
+        "amount": (
+            None
+            if row.amount is None
+            else format(Decimal(row.amount).quantize(Decimal("0.01")), "f")
+        ),
         "currency": row.currency,
         "status": row.status,
         "reason": row.reason,
