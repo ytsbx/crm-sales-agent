@@ -483,7 +483,7 @@ export interface PriceLookupResult {
   effective_to?: string | null
   fallback_note?: string | null
   customer: { id: number; name: string; level?: string | null }
-  sku: { id: number; sku_code: string; name?: string | null }
+  sku: { id: number; sku_code: string; name?: string | null; unit?: string | null }
   quantity: number
   can_see_cost?: boolean
   cost?: number | null
