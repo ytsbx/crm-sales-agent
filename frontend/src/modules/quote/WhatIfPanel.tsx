@@ -19,9 +19,10 @@ import SectionCard from '../../shared/components/SectionCard'
  *  2. 边际测算——拖动价格滑杆，按**本版快照成本**实时算利润额与利润率，
  *     同时显示授权底价 / 盈亏平衡价 / 建议价三条基准线。
  *
- * 口径说明：拖动时的成本用本版明细的加权平均单件成本
- * （`cost_snapshot` 商品成本 + `logistics_cost_snapshot` 单件运费，与核价的
- * base_cost 及明细里的 profit_snapshot 同口径）；数量按"调整比例同比缩放"估算；
+ * 口径说明：拖动时的成本用本版明细的加权平均商品成本
+ * （`cost_snapshot`，运费由公司承担且与对客报价分开，不进入产品利润）；
+ * 只调整价格时保持本版数量不变，
+ * 不用价格比例臆测客户会增减采购量；数量若需测算应作为独立假设输入；
  * 授权底价与保护价来自核价接口的实时结果。
  */
 
@@ -75,14 +76,13 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
   // 本版数量与成本基线（拖动滑杆时用它做实时估算）
   //
   // 成本口径坑：`cost_snapshot` 只是**商品成本**，单件总成本还要加
-  // `logistics_cost_snapshot`（这正是 build_item_snapshot 里算 profit_snapshot 的口径，
-  // 也是 pricing 的 base_cost = goods_cost + logistics）。少加运费，
-  // 汇总毛利就会和明细表里逐条显示的利润对不上。这里优先用接口给的单件口径。
+  // 新报价的产品利润只使用商品成本，运费单列且不进入对客报价利润。
+  // 这里优先用接口给的单件口径，回退计算也必须遵守同一规则。
   const baseline = useMemo(() => {
     const quantity = items.reduce((sum, item) => sum + item.quantity, 0)
     const amountTotal = items.reduce((sum, item) => sum + item.quantity * item.quoted_price, 0)
     const costTotal = items.reduce(
-      (sum, item) => sum + (item.cost_snapshot + item.logistics_cost_snapshot) * item.quantity,
+      (sum, item) => sum + item.cost_snapshot * item.quantity,
       0,
     )
     const unitCost =
@@ -93,8 +93,9 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
   }, [items, currentVersion])
 
   const basePrice = targetPrice ?? Number(baseline.unitPrice.toFixed(2))
-  const ratio = baseline.unitPrice > 0 ? basePrice / baseline.unitPrice : 0
-  const estimateQuantity = baseline.quantity * ratio
+  // 价格和数量是两个独立的情景假设。只拖动价格时固定本版数量，
+  // 避免“涨价就自动增加销量”的未经验证推断（Issue #21）。
+  const estimateQuantity = baseline.quantity
 
   const projected = useMemo(() => {
     const unitProfit = basePrice - baseline.unitCost
@@ -304,7 +305,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)', gap: 20 }}>
             <div>
               <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 6 }}>
-                成交均价（拖动调整整版价格，同比缩放数量）
+                成交均价（拖动调整整版价格，数量保持本版数量）
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div style={{ flex: 1 }}>
@@ -360,7 +361,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
               <div style={{ display: 'grid', gap: 6, marginTop: 14, fontSize: 12.5 }}>
                 {(
                   [
-                    ['本版单件总成本（含运费）', breakEven],
+                    ['本版单件商品成本（不含运费）', breakEven],
                     ['授权底价（整版加权）', authorizedFloor],
                     ['标准价（整版加权）', standardPrice],
                     ['建议价（整版加权）', recommended],
@@ -461,7 +462,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                 ]}
                 dataSource={scenarios.map((price, index) => {
                   const effective = price ?? 0
-                  const quantity = baseline.quantity * (baseline.unitPrice > 0 ? effective / baseline.unitPrice : 0)
+                  const quantity = baseline.quantity
                   const amount = effective * quantity
                   const profit = (effective - baseline.unitCost) * quantity
                   return {
