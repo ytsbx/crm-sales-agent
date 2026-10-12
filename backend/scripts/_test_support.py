@@ -184,3 +184,29 @@ async def align_id_sequences(session, tables) -> None:
             ),
             {"t": table},
         )
+
+
+def confirm_freight_before_submit(call, token: str, version_id: int, amount: str = "0"):
+    """提交审批**之前**先把运费确认掉（2026-10-12 口径：运费闸前置到这一环）。
+
+    ## 为什么套件都要走这一步
+
+    从前"确认运费"只在「标记已发送」那一刻硬校验，而版本一提交审批就锁死、
+    费用入口只对草稿开放 —— 报批时没填运费的单一律死锁（发送时才发现，
+    撤回又只对「审批中」有效），只能新建版本重走审批。闸门提前之后，
+    **正规流程变成"先确认运费、再提交审批"**，所以套件也要照这个顺序走。
+
+    ⚠️ **别把这个助手当成"绕过校验"**：它不是改库、不是关开关，
+    而是照真实业务的顺序多做一个正当动作（0 元运费也要显式填 0）。
+    运费闸本身有没有生效，由 `check_freight_deadlock.py` 专测。
+
+    用法（把原来的提交调用换成它）：
+
+        status, res = confirm_freight_before_submit(call, token, version_id)
+    """
+    return call(
+        "POST",
+        f"/quote-versions/{version_id}/charges",
+        token,
+        {"charge_type": "logistics", "description": "实际运费（套件夹具）", "amount": amount},
+    )

@@ -40,7 +40,7 @@ import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '客户查价', itemKey: 'lookup' },
@@ -115,6 +115,14 @@ const HISTORY_FIELD_LABEL: Record<string, string> = {
   calculation: '计算口径',
   item_count: '明细条数',
   count: '条数',
+  // 这两个是"接主数据 / 重新核价"两个动作的内部计数：老记录里没有 message 时
+  // 会走到逐字段比对，那时至少得是个中文词，不能把 skipped/refreshed 直接印出来
+  skipped: '跳过条数',
+  refreshed: '更新条数',
+  linked: '已接上条数',
+  already_linked: '本来就已接上',
+  missing_count: '还缺确认的条数',
+  missing: '还缺确认的明细',
 }
 
 /** 金额类字段：显示时带上 ¥，否则「20」看不出是钱还是件。 */
@@ -158,6 +166,57 @@ const SKIP_FIELDS = new Set([
   'version_id',
   'converted_inquiry_id',
 ])
+
+/**
+ * 动作名 → 中文。**唯一来源**，「动作」那一列与「变更内容」的兜底都用它。
+ *
+ * 为什么必须集中一处（主人 2026-10-12 反馈）：以前「动作」列只映射了
+ * `create / update / delete` 三个，其余的**原样把后端动作名印出来** ——
+ * 界面上就出现了 `price_refresh`「quote_link_master」「set_items」这种代码词，
+ * 非技术同事根本不知道发生了什么。而 `historySummary` 里其实已经认得这些动作、
+ * 也翻成了中文，两处各写一份必然走散（这一列就是走散的那一份）。
+ */
+const ACTION_LABEL: Record<string, string> = {
+  create: '新增',
+  update: '修改',
+  delete: '删除',
+  add_item: '新增明细',
+  delete_item: '删除明细',
+  update_item: '修改明细',
+  set_items: '整批替换明细',
+  price_refresh: '按最新价重算',
+  refresh_prices: '按最新价重算',
+  quote_link_master: '接入主数据',
+  clone: '复制版本',
+  copy_version: '复制版本',
+  create_version: '新建版本',
+  update_version: '修改版本',
+  update_charge: '修改附加费用',
+  submit_approval: '提交审批',
+  withdraw_approval: '撤回审批',
+  supersede_approval: '审批被替代',
+  auto_pass: '自动通过',
+  mark_sent: '标记已发送',
+  send_email: '发送邮件',
+  accept: '客户接受',
+  decline: '客户拒绝',
+  reject: '客户拒绝',
+  import: '批量导入',
+  recalculate: '重新核价',
+  expire: '过期',
+  // 价格规则停用（`pricing/router.py` 写的 business_type=price_rule）。
+  // 这条是**用静态检查扫出来的第二个同类漏网**（2026-10-12）：
+  // 页面没有这个分支，「动作」列就会原样印出 `disable`。
+  disable: '停用',
+  enable: '启用',
+  withdraw: '撤回',
+}
+
+/** 动作名的中文（认不出就退回原值，至少不空白）。 */
+function actionLabel(action: string | null | undefined): string {
+  if (!action) return '-'
+  return ACTION_LABEL[action] ?? action
+}
 
 /** 英文枚举值 → 中文。快照里存的是 `approved` 这种值，直接上屏是机器话。 */
 const VALUE_LABEL: Record<string, string> = {
@@ -208,6 +267,11 @@ function fmtField(key: string, value: unknown): string {
     if (key === 'target_margin') return `${(value * 100).toFixed(1)}%`
     return value.toLocaleString('zh-CN')
   }
+  // 审计快照里有些字段是**对象/数组**（例如"还缺确认的明细"）。
+  // 直接 String() 会印出 `[object Object]` —— 那不是"看不懂"，那是**明显是机器坏了**，
+  // 主人 2026-10-12 截的图里就有这一条。这种值一律不往屏幕上放：
+  // 列为空的话上层会跳过它，至少有中文名的字段还能说清楚发生了什么。
+  if (typeof value === 'object') return ''
   return String(value)
 }
 
@@ -239,6 +303,36 @@ function summaryOfSnapshot(
 function historySummary(row: PricingHistoryRow): string {
   const before = (row.before ?? {}) as Record<string, unknown>
   const after = (row.after ?? {}) as Record<string, unknown>
+
+  /**
+   * 后端**已经把结果写成一句话**时，直接用它，不要再拿字段名去比对。
+   *
+   * 为什么（主人 2026-10-12 反馈）：「价格中心」那页上全是
+   * `skipped: 空 → 1; refreshed: 空 → 0`、`linked: 空 → 0; message: 空 → 已把 0 条…`
+   * 甚至 `missing: 空 → [object Object]` —— 非技术同事根本不知道在看什么。
+   * 根因有两个，一个在这边、一个在后端：
+   *   ① 动作名对不上：后端写的是 `price_refresh`，这页判的是 `refresh_prices`，
+   *      于是掉进"逐字段比对"的兜底分支，把 `skipped`/`refreshed` 这种内部计数
+   *      当成"变更字段"印出来；
+   *   ② `quote_link_master` 这页**根本没有分支**，同理掉进兜底，
+   *      把 `missing`（一个对象数组）拼成 `[object Object]` 上屏。
+   * 这两个动作的 `after` 里都带着后端写好的 `message`（本来就是给人看的中文句子），
+   * 所以最省事也最准的做法是：**认得这两个动作，就把那句话端出来**。
+   * （同时保留下面的专用分支做兜底：老记录里可能没有 message 字段。）
+   */
+  const backendMessage = typeof after.message === 'string' ? after.message.trim() : ''
+  if (row.action === 'price_refresh') {
+    const refreshed = after.refreshed ?? 0
+    const skipped = after.skipped ?? 0
+    return backendMessage
+      || `按最新价重算：更新了 ${refreshed} 条明细、跳过 ${skipped} 条（手工定价的不覆盖）`
+  }
+  if (row.action === 'quote_link_master') {
+    const linked = after.linked ?? 0
+    const missing = after.missing_count ?? 0
+    return backendMessage
+      || `接入主数据：已接上 ${linked} 条${missing ? `、还有 ${missing} 条缺确认` : ''}`
+  }
 
   // 这些动作只记了一两个字段，按动作单独说清楚，比逐字段比对准确得多
   if (row.action === 'import') {
@@ -274,7 +368,8 @@ function historySummary(row: PricingHistoryRow): string {
     return n === null || n === undefined ? '明细整批替换' : `明细整批替换为 ${n} 条`
   }
   if (row.action === 'refresh_prices') {
-    return `按最新价重算：刷新 ${after.refreshed ?? 0} 条、跳过 ${after.skipped ?? 0} 条`
+    // 历史记录里这个动作还有过 `refresh_prices` 这个名字，措辞与上面保持一致
+    return `按最新价重算：更新了 ${after.refreshed ?? 0} 条明细、跳过 ${after.skipped ?? 0} 条（手工定价的不覆盖）`
   }
   if (row.action === 'update_item') {
     const oldPrice = before.quoted_price
@@ -295,15 +390,32 @@ function historySummary(row: PricingHistoryRow): string {
   // 修改：只列真正变了的字段
   const changed: string[] = []
   const keys = [...new Set([...Object.keys(after), ...Object.keys(before)])]
+  const isBlank = (value: unknown) =>
+    value === null || value === undefined || value === '' ||
+    (typeof value === 'object' && Object.keys(value as object).length === 0)
+  const label = (key: string) => HISTORY_FIELD_LABEL[key] ?? key
   for (const key of keys) {
     // 技术字段（内部编号、时间戳）一律不展示：用户看不懂，还会挤掉有用信息
     if (SKIP_FIELDS.has(key)) continue
     const oldValue = before[key]
     const newValue = after[key]
     if (String(oldValue ?? '') === String(newValue ?? '')) continue
-    changed.push(
-      `${HISTORY_FIELD_LABEL[key] ?? key}：${fmtField(key, oldValue)} → ${fmtField(key, newValue)}`,
-    )
+    const oldText = fmtField(key, oldValue)
+    const newText = fmtField(key, newValue)
+    // 值本身是对象/数组的字段直接跳过：`fmtField` 对这类返回空串，
+    // 拼出来就是「还缺确认的明细：空 → 」（半截话，不如不说）。这些动作
+    // 上面已经有专用分支用中文把结果说清了。
+    if (oldText === '' || newText === '') continue
+    // 只有一边有值：`空 → 1` 这种"从无到有"不是**变更**，是这次动作**算出来的结果**，
+    // 说成「跳过条数 1」就够了。以前一律写成「空 → 1」，非技术同事会以为
+    // "原来跳过条数是空的、现在变成 1 了"，压根不知道这是本次的统计。
+    if (isBlank(oldValue)) {
+      changed.push(`${label(key)} ${newText}`)
+    } else if (isBlank(newValue)) {
+      changed.push(`${label(key)} 清空（原 ${oldText}）`)
+    } else {
+      changed.push(`${label(key)}：${oldText} → ${newText}`)
+    }
     if (changed.length >= 4) {
       changed.push('…')
       break
@@ -855,10 +967,11 @@ export default function PriceCenterPage() {
                   remote
                   loading={customersQuery.isFetching}
                   onSearch={setLookupCustomerKeyword}
-                  optionList={(customersQuery.data?.items ?? []).map((item) => ({
-                    value: item.id,
-                    label: withCode(`${item.name}${item.level ? `（${item.level} 级）` : ''}`, item.id),
-                  }))}
+                  optionList={optionsWithCodeOnDuplicate(
+                    customersQuery.data?.items ?? [],
+                    (item) => `${item.name}${item.level ? `（${item.level} 级）` : ''}`,
+                    (item) => item.id,
+                  )}
                   filter={optionMatcher}
                   style={{ width: 280 }}
                 />
@@ -937,10 +1050,11 @@ export default function PriceCenterPage() {
                     placeholder="选择要加入的商机（可选）"
                     value={lookupOppId}
                     onChange={(value) => setLookupOppId(value as number)}
-                    optionList={(lookupOppQuery.data?.items ?? []).map((item) => ({
-                      value: item.id,
-                      label: withCode(`${item.title ?? '商机'}（${item.customer_name ?? ''}）`, item.id),
-                    }))}
+                    optionList={optionsWithCodeOnDuplicate(
+                      lookupOppQuery.data?.items ?? [],
+                      (item) => `${item.title ?? '商机'}（${item.customer_name ?? ''}）`,
+                      (item) => item.id,
+                    )}
                     filter={optionMatcher}
                     style={{ width: 320 }}
                   />
@@ -1655,16 +1769,17 @@ export default function PriceCenterPage() {
                         <span style={{ color: 'var(--crm-text-3)' }}>
                           {(HISTORY_TYPE_LABEL[record.business_type ?? ''] ??
                             record.business_type) ?? '-'}
-                          {record.business_id != null ? ` #${record.business_id}` : ''}
+                          {record.business_id != null ? ` 编号 ${record.business_id}` : ''}
                         </span>
                       ),
                   },
                   {
                     title: '动作',
                     dataIndex: 'action',
-                    width: 90,
-                    render: (v: string) =>
-                      ({ create: '新增', update: '修改', delete: '删除' })[v] ?? v,
+                    width: 120,
+                    // 用与「变更内容」同一份映射（以前这里只认三个动作，
+                    // 其余的原样印代码词 —— 主人截图上那串 `price_refresh` 就是它）
+                    render: (v: string) => actionLabel(v),
                   },
                   {
                     title: '变更内容',
@@ -1738,7 +1853,7 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
-        title={ruleEditing ? `编辑价格规则 #${ruleEditing.id}` : '新增价格规则'}
+        title={ruleEditing ? `编辑价格规则编号 ${ruleEditing.id}` : '新增价格规则'}
         visible={ruleVisible}
         width={620}
         onCancel={closeRuleModal}
@@ -1939,7 +2054,11 @@ export default function PriceCenterPage() {
             <Select
               value={customerPriceForm.customer_id ?? undefined}
               onChange={(value) => setCustomerPriceForm({ ...customerPriceForm, customer_id: value as number })}
-              optionList={(customersQuery.data?.items ?? []).map((item) => ({ value: item.id, label: withCode(item.name, item.id) }))}
+              optionList={optionsWithCodeOnDuplicate(
+                customersQuery.data?.items ?? [],
+                (item) => item.name,
+                (item) => item.id,
+              )}
               filter={optionMatcher}
               style={{ width: '100%' }}
               disabled={Boolean(customerPriceEditing)}

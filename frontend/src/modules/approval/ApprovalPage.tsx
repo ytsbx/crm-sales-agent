@@ -115,10 +115,9 @@ export default function ApprovalPage() {
         if (!offending.length) return '-'
         return (
           <div style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>
-            {offending.map((item) => (
-              <div key={item.sku_code}>
-                {item.sku_code}：报 ¥{item.quoted_price}，最低 ¥{item.minimum_price}，
-                利润率 {(item.profit_rate * 100).toFixed(2)}%
+            {offending.map((item, index) => (
+              <div key={`${item.sku_code}:${index}`}>
+                {item.sku_code}：{item.reason ?? `报 ¥${item.quoted_price ?? '-'}，最低 ¥${item.minimum_price ?? '-'}，利润率 ${item.profit_rate == null ? '未评估' : `${(item.profit_rate * 100).toFixed(2)}%`}`}
               </div>
             ))}
           </div>

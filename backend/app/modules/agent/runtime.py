@@ -718,7 +718,9 @@ async def execute_action(
     ctx = ToolContext(session=session, user=user, agent_session_id=action.session_id, action_id=action.id)
     started = datetime.now(UTC)
     try:
-        result = await spec.handler(ctx, **(action.proposed_payload or {}))
+        # 工具失败只回滚业务副作用，保留外层动作行锁与失败记录的事务。
+        async with session.begin_nested():
+            result = await spec.handler(ctx, **(action.proposed_payload or {}))
     except AppError as exc:
         action.status = "failed"
         action.result = {"error": exc.message}
@@ -820,7 +822,8 @@ async def retry_tool_call(
     started = datetime.now(UTC)
     payload = execution_row.input_payload or {}
     try:
-        result = await spec.handler(ctx, **payload)
+        async with session.begin_nested():
+            result = await spec.handler(ctx, **payload)
     except AppError as exc:
         await _record_execution(
             session,

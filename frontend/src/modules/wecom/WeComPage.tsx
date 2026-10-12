@@ -148,7 +148,16 @@ export default function WeComPage() {
   const bindMutation = useMutation({
     mutationFn: (customerId: number) => bindUnboundContact(activeId!, { customer_id: customerId }),
     onSuccess: (result) => {
-      Toast.success(`已关联到客户「${result.customer_name}」`)
+      // 改挂（原来挂在别的客户上）时把**历史去向**一起说清楚（主人 2026-10-12 定：
+      // 跨客户改挂合法、不拦，但跟进记录留在原客户那儿，必须讲明白）。
+      if (result.rebound_from_customer_id) {
+        Toast.info(
+          `已把该联系人改挂到「${result.customer_name}」；他在原来那家的 `
+          + `${result.stayed_followup_count ?? 0} 条跟进记录仍留在原客户那里（不会跟着走）`,
+        )
+      } else {
+        Toast.success(`已关联到客户「${result.customer_name}」`)
+      }
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),

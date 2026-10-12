@@ -1,0 +1,180 @@
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 3692 modules transformed.
+
+(!) outDir /tmp/crm_fix_dist is not inside project root and will not be emptied.
+Use --emptyOutDir to override.
+
+rendering chunks...
+computing gzip size...
+../../../../../tmp/crm_fix_dist/index.html                                  0.93 kB │ gzip:   0.44 kB
+../../../../../tmp/crm_fix_dist/assets/empty-zIgf3u9W.css                   0.87 kB │ gzip:   0.31 kB
+../../../../../tmp/crm_fix_dist/assets/popconfirm-Ft_MemP2.css              1.77 kB │ gzip:   0.59 kB
+../../../../../tmp/crm_fix_dist/assets/banner-CKDlAiML.css                  1.95 kB │ gzip:   0.42 kB
+../../../../../tmp/crm_fix_dist/assets/PriceCenterPage-CNKS6ijw.css         2.12 kB │ gzip:   0.72 kB
+../../../../../tmp/crm_fix_dist/assets/modal-CQuqASw0.css                   4.21 kB │ gzip:   1.16 kB
+../../../../../tmp/crm_fix_dist/assets/QuoteDetailPage-DVPaE7-P.css         4.93 kB │ gzip:   1.10 kB
+../../../../../tmp/crm_fix_dist/assets/sideSheet-D7t3KjF7.css               5.29 kB │ gzip:   1.07 kB
+../../../../../tmp/crm_fix_dist/assets/LoginPage-Dh3Ku9HV.css               6.76 kB │ gzip:   2.02 kB
+../../../../../tmp/crm_fix_dist/assets/switch-DRvx9TM3.css                  7.61 kB │ gzip:   1.20 kB
+../../../../../tmp/crm_fix_dist/assets/checkbox-01exSO2B.css                9.16 kB │ gzip:   1.37 kB
+../../../../../tmp/crm_fix_dist/assets/textarea-js6_tOtw.css                9.33 kB │ gzip:   1.61 kB
+../../../../../tmp/crm_fix_dist/assets/tabs-D2qu0Ihn.css                   24.29 kB │ gzip:   2.62 kB
+../../../../../tmp/crm_fix_dist/assets/tag-CaTr5Dq0.css                    47.45 kB │ gzip:   5.75 kB
+../../../../../tmp/crm_fix_dist/assets/es-BxgYS7vK.css                     49.83 kB │ gzip:   7.84 kB
+../../../../../tmp/crm_fix_dist/assets/table-B0ZANSlr.css                  52.73 kB │ gzip:   6.36 kB
+../../../../../tmp/crm_fix_dist/assets/datePicker-B0WZD-wM.css             55.16 kB │ gzip:   5.60 kB
+../../../../../tmp/crm_fix_dist/assets/index-BxmqASdD.css                 672.56 kB │ gzip:  78.38 kB
+../../../../../tmp/crm_fix_dist/assets/emptyText-C6fWDul6.js                0.07 kB │ gzip:   0.08 kB
+../../../../../tmp/crm_fix_dist/assets/isPromise-pngGmYYz.js                0.10 kB │ gzip:   0.09 kB
+../../../../../tmp/crm_fix_dist/assets/money-fltTnucr.js                    0.18 kB │ gzip:   0.18 kB
+../../../../../tmp/crm_fix_dist/assets/followup-BA3skoqC.js                 0.27 kB │ gzip:   0.17 kB
+../../../../../tmp/crm_fix_dist/assets/otherOption-DW0Q4VmM.js              0.30 kB │ gzip:   0.24 kB
+../../../../../tmp/crm_fix_dist/assets/FormLabel-B9qjbRYd.js                0.36 kB │ gzip:   0.25 kB
+../../../../../tmp/crm_fix_dist/assets/requestKey-HUbUhDJJ.js               0.41 kB │ gzip:   0.28 kB
+../../../../../tmp/crm_fix_dist/assets/permissions-D6mZ9Q17.js              0.41 kB │ gzip:   0.31 kB
+../../../../../tmp/crm_fix_dist/assets/SectionCard-DZ9LRC7R.js              0.43 kB │ gzip:   0.30 kB
+../../../../../tmp/crm_fix_dist/assets/PageHeader-3mEfEt2y.js               0.53 kB │ gzip:   0.31 kB
+../../../../../tmp/crm_fix_dist/assets/inquiry-Bkrbbq49.js                  0.57 kB │ gzip:   0.23 kB
+../../../../../tmp/crm_fix_dist/assets/optionMatch-1jhCZ5lZ.js              0.59 kB │ gzip:   0.36 kB
+../../../../../tmp/crm_fix_dist/assets/task-y8jV3BqQ.js                     0.60 kB │ gzip:   0.26 kB
+../../../../../tmp/crm_fix_dist/assets/ConfirmRequiredModal-50td5MaL.js     0.67 kB │ gzip:   0.47 kB
+../../../../../tmp/crm_fix_dist/assets/DetailHeader-C4HLZQWO.js             0.69 kB │ gzip:   0.34 kB
+../../../../../tmp/crm_fix_dist/assets/file-BYuN-eKu.js                     0.71 kB │ gzip:   0.35 kB
+../../../../../tmp/crm_fix_dist/assets/download-contract-hYM6WPsN.js        0.74 kB │ gzip:   0.35 kB
+../../../../../tmp/crm_fix_dist/assets/opportunity-BpsnMGV2.js              0.79 kB │ gzip:   0.28 kB
+../../../../../tmp/crm_fix_dist/assets/bizdoc-k9mEnnXs.js                   0.81 kB │ gzip:   0.44 kB
+../../../../../tmp/crm_fix_dist/assets/system-BWYYpsMk.js                   0.84 kB │ gzip:   0.29 kB
+../../../../../tmp/crm_fix_dist/assets/product-CkiYOR_f.js                  0.86 kB │ gzip:   0.30 kB
+../../../../../tmp/crm_fix_dist/assets/KpiStrip-DvDv-pKV.js                 0.97 kB │ gzip:   0.47 kB
+../../../../../tmp/crm_fix_dist/assets/settings-Bx2Nk1zi.js                 1.02 kB │ gzip:   0.39 kB
+../../../../../tmp/crm_fix_dist/assets/IconCalendar-CcL_LvrH.js             1.02 kB │ gzip:   0.46 kB
+../../../../../tmp/crm_fix_dist/assets/sample-C9zWZfh8.js                   1.17 kB │ gzip:   0.42 kB
+../../../../../tmp/crm_fix_dist/assets/PaymentVoucherControl-Cx1AlacS.js    1.55 kB │ gzip:   0.86 kB
+../../../../../tmp/crm_fix_dist/assets/pricing-ZAAAjRuq.js                  1.66 kB │ gzip:   0.48 kB
+../../../../../tmp/crm_fix_dist/assets/quote-CHujLN6r.js                    1.73 kB │ gzip:   0.54 kB
+../../../../../tmp/crm_fix_dist/assets/customer-DgcVKxhy.js                 1.76 kB │ gzip:   0.57 kB
+../../../../../tmp/crm_fix_dist/assets/Timeline-CXgeU6WA.js                 2.23 kB │ gzip:   1.14 kB
+../../../../../tmp/crm_fix_dist/assets/empty-DNEifVq2.js                    2.26 kB │ gzip:   1.08 kB
+../../../../../tmp/crm_fix_dist/assets/AgentInsight-D4zFEcCo.js             2.57 kB │ gzip:   1.35 kB
+../../../../../tmp/crm_fix_dist/assets/ContractDocsPanel-mSEvYYxu.js        2.65 kB │ gzip:   1.36 kB
+../../../../../tmp/crm_fix_dist/assets/order-g006opNj.js                    2.87 kB │ gzip:   0.82 kB
+../../../../../tmp/crm_fix_dist/assets/banner-BSUnCb22.js                   2.95 kB │ gzip:   1.22 kB
+../../../../../tmp/crm_fix_dist/assets/BizDocPanel-CZEAxkfw.js              3.53 kB │ gzip:   1.83 kB
+../../../../../tmp/crm_fix_dist/assets/DecisionMakerCard-Bd8xEPCg.js        3.61 kB │ gzip:   1.63 kB
+../../../../../tmp/crm_fix_dist/assets/checkbox-D8ZLtSMq.js                 3.66 kB │ gzip:   1.41 kB
+../../../../../tmp/crm_fix_dist/assets/FollowUpModal-YRZ1FcpV.js            4.03 kB │ gzip:   1.91 kB
+../../../../../tmp/crm_fix_dist/assets/DuplicateCasePage-DG0x7HhS.js        4.43 kB │ gzip:   2.14 kB
+../../../../../tmp/crm_fix_dist/assets/SampleFromSourceModal-DoEpJb4D.js    4.55 kB │ gzip:   2.08 kB
+../../../../../tmp/crm_fix_dist/assets/switch-Co1--NIH.js                   4.81 kB │ gzip:   1.79 kB
+../../../../../tmp/crm_fix_dist/assets/QuoteListPage-CA5e7EfI.js            4.85 kB │ gzip:   2.33 kB
+../../../../../tmp/crm_fix_dist/assets/AttachmentPanel-B7zXXleB.js          5.00 kB │ gzip:   2.55 kB
+../../../../../tmp/crm_fix_dist/assets/ProductListPage-CgsPEqz4.js          6.60 kB │ gzip:   2.74 kB
+../../../../../tmp/crm_fix_dist/assets/popconfirm-60A_hu3i.js               6.78 kB │ gzip:   2.26 kB
+../../../../../tmp/crm_fix_dist/assets/TaskListPage-blyXKmrO.js             7.96 kB │ gzip:   3.24 kB
+../../../../../tmp/crm_fix_dist/assets/OrderDraftsPage-0n_vxGo4.js          8.12 kB │ gzip:   3.45 kB
+../../../../../tmp/crm_fix_dist/assets/AgentPage-BT2IDpcQ.js                8.53 kB │ gzip:   3.34 kB
+../../../../../tmp/crm_fix_dist/assets/sideSheet-JdZaPXlY.js                9.30 kB │ gzip:   3.04 kB
+../../../../../tmp/crm_fix_dist/assets/LogisticsPage-CUmDLg1L.js            9.32 kB │ gzip:   3.24 kB
+../../../../../tmp/crm_fix_dist/assets/checkbox-Dr3F1LXV.js                 9.54 kB │ gzip:   3.13 kB
+../../../../../tmp/crm_fix_dist/assets/LoginPage-B1AJEslw.js               10.45 kB │ gzip:   3.35 kB
+../../../../../tmp/crm_fix_dist/assets/OpportunityListPage-DrqbPHQp.js     10.76 kB │ gzip:   3.86 kB
+../../../../../tmp/crm_fix_dist/assets/OrderListPage-DGBLXF10.js           11.33 kB │ gzip:   3.96 kB
+../../../../../tmp/crm_fix_dist/assets/RecycleBinPage-CYB1o895.js          11.88 kB │ gzip:   4.14 kB
+../../../../../tmp/crm_fix_dist/assets/PricingPage-C_RFwiC6.js             11.98 kB │ gzip:   4.52 kB
+../../../../../tmp/crm_fix_dist/assets/client-DKX4-ok7.js                  13.15 kB │ gzip:   5.36 kB
+../../../../../tmp/crm_fix_dist/assets/CustomerListPage-D_T7SuH6.js        15.13 kB │ gzip:   5.68 kB
+../../../../../tmp/crm_fix_dist/assets/LeadListPage-ychQ4eIf.js            15.15 kB │ gzip:   5.44 kB
+../../../../../tmp/crm_fix_dist/assets/ProductInsightsPage-CKhsT147.js     15.62 kB │ gzip:   5.45 kB
+../../../../../tmp/crm_fix_dist/assets/textarea-CW4Zo5gA.js                16.91 kB │ gzip:   5.06 kB
+../../../../../tmp/crm_fix_dist/assets/ApprovalPage-CDqe0A1P.js            18.88 kB │ gzip:   6.48 kB
+../../../../../tmp/crm_fix_dist/assets/DocumentsPage-BaN9AjMz.js           19.23 kB │ gzip:   6.79 kB
+../../../../../tmp/crm_fix_dist/assets/CasesPage-WrsmgHQb.js               20.16 kB │ gzip:   6.81 kB
+../../../../../tmp/crm_fix_dist/assets/WeComPage-D6801crQ.js               20.19 kB │ gzip:   6.76 kB
+../../../../../tmp/crm_fix_dist/assets/KnowledgePage-DZquaijW.js           20.57 kB │ gzip:   7.08 kB
+../../../../../tmp/crm_fix_dist/assets/WorkbenchPage-nrllhsWG.js           21.36 kB │ gzip:   6.18 kB
+../../../../../tmp/crm_fix_dist/assets/tabs-B5Cevv5l.js                    21.54 kB │ gzip:   6.39 kB
+../../../../../tmp/crm_fix_dist/assets/modal-nKA5INqK.js                   22.38 kB │ gzip:   6.62 kB
+../../../../../tmp/crm_fix_dist/assets/CustomerDetailPage-xvmF-FwD.js      23.90 kB │ gzip:   7.71 kB
+../../../../../tmp/crm_fix_dist/assets/OpportunityDetailPage-BPHHPibt.js   24.11 kB │ gzip:   7.14 kB
+../../../../../tmp/crm_fix_dist/assets/SampleListPage-BEcpfIjl.js          26.81 kB │ gzip:   8.42 kB
+../../../../../tmp/crm_fix_dist/assets/ProductDetailPage-CJVwa98f.js       28.77 kB │ gzip:   8.97 kB
+../../../../../tmp/crm_fix_dist/assets/AnalyticsPage-hM92kdfX.js           30.47 kB │ gzip:   9.47 kB
+../../../../../tmp/crm_fix_dist/assets/OrderDetailPage-CCmwG5r7.js         36.70 kB │ gzip:  10.95 kB
+../../../../../tmp/crm_fix_dist/assets/SettingsPage-kt9alihY.js            41.65 kB │ gzip:  11.91 kB
+../../../../../tmp/crm_fix_dist/assets/axios-blwvYGGR.js                   50.66 kB │ gzip:  19.00 kB
+../../../../../tmp/crm_fix_dist/assets/es-DT4E7Qmc.js                      55.75 kB │ gzip:  17.69 kB
+../../../../../tmp/crm_fix_dist/assets/QuoteDetailPage-BiHZfkvh.js         58.42 kB │ gzip:  17.51 kB
+../../../../../tmp/crm_fix_dist/assets/PriceCenterPage-CtZK1M_m.js         62.59 kB │ gzip:  18.32 kB
+../../../../../tmp/crm_fix_dist/assets/tag-BhQv-DYM.js                    126.08 kB │ gzip:  39.06 kB
+../../../../../tmp/crm_fix_dist/assets/datePicker-Dm5cxR3v.js             223.68 kB │ gzip:  54.89 kB
+../../../../../tmp/crm_fix_dist/assets/table-C-iLNO18.js                  279.13 kB │ gzip:  75.05 kB
+../../../../../tmp/crm_fix_dist/assets/index-BqDoN6sa.js                  417.26 kB │ gzip: 129.05 kB
+../../../../../tmp/crm_fix_dist/assets/options-D4AjyO1O.js                580.31 kB │ gzip: 197.40 kB
+
+[plugin builtin:vite-reporter] 
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/resolve-evaluate-options.js" may not be preserved when bundling.
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/resolve-evaluate-options.js:48:1 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m48 │[0m ''
+ [38;5;240m   │[0m ─┬  
+ [38;5;240m   │[0m  ╰── module level directive may not be preserved
+ [38;5;240m   │[0m 
+ [38;5;240m   │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m────╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-is-declaration.js" may not be preserved when bundling.
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-is-declaration.js:11:1 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m11 │[0m ''
+ [38;5;240m   │[0m ─┬  
+ [38;5;240m   │[0m  ╰── module level directive may not be preserved
+ [38;5;240m   │[0m 
+ [38;5;240m   │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m────╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-create.js" may not be preserved when bundling.
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/@mdx-js+mdx@3.1.1/node_modules/@mdx-js/mdx/lib/util/estree-util-create.js:6:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m6 │[0m ''
+ [38;5;240m  │[0m ─┬  
+ [38;5;240m  │[0m  ╰── module level directive may not be preserved
+ [38;5;240m  │[0m 
+ [38;5;240m  │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m───╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/text.js" may not be preserved when bundling.
+   [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/text.js:9:1 [38;5;246m][0m
+   [38;5;246m│[0m
+ [38;5;246m9 │[0m ''
+ [38;5;240m  │[0m ─┬  
+ [38;5;240m  │[0m  ╰── module level directive may not be preserved
+ [38;5;240m  │[0m 
+ [38;5;240m  │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m───╯[0m
+
+[33m[MODULE_LEVEL_DIRECTIVE] [0mThe semantics of the module level directive "" in "node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/comment.js" may not be preserved when bundling.
+    [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/hast-util-to-estree@3.1.3/node_modules/hast-util-to-estree/lib/handlers/comment.js:12:1 [38;5;246m][0m
+    [38;5;246m│[0m
+ [38;5;246m12 │[0m ''
+ [38;5;240m   │[0m ─┬  
+ [38;5;240m   │[0m  ╰── module level directive may not be preserved
+ [38;5;240m   │[0m 
+ [38;5;240m   │[0m [38;5;115mHelp[0m: For more information, see https://rolldown.rs/in-depth/directives#other-directives
+[38;5;246m────╯[0m
+
+[33m[EVAL] [0mUse of direct `eval` function is strongly discouraged as it poses security risks and may cause issues with minification.
+       [38;5;246m╭[0m[38;5;246m─[0m[38;5;246m[[0m node_modules/.pnpm/lottie-web@5.13.0/node_modules/lottie-web/build/player/lottie.js:14422:33 [38;5;246m][0m
+       [38;5;246m│[0m
+ [38;5;246m14422 │[0m [38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249m [0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249mr[0m[38;5;249m [0m[38;5;249me[0m[38;5;249mx[0m[38;5;249mp[0m[38;5;249mr[0m[38;5;249me[0m[38;5;249ms[0m[38;5;249ms[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m_[0m[38;5;249mf[0m[38;5;249mu[0m[38;5;249mn[0m[38;5;249mc[0m[38;5;249mt[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m [0m[38;5;249m=[0m[38;5;249m [0meval[38;5;249m([0m[38;5;249m'[0m[38;5;249m[[0m[38;5;249mf[0m[38;5;249mu[0m[38;5;249mn[0m[38;5;249mc[0m[38;5;249mt[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m [0m[38;5;249m_[0m[38;5;249me[0m[38;5;249mx[0m[38;5;249mp[0m[38;5;249mr[0m[38;5;249me[0m[38;5;249ms[0m[38;5;249ms[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m_[0m[38;5;249mf[0m[38;5;249mu[0m[38;5;249mn[0m[38;5;249mc[0m[38;5;249mt[0m[38;5;249mi[0m[38;5;249mo[0m[38;5;249mn[0m[38;5;249m([0m[38;5;249m)[0m[38;5;249m{[0m[38;5;249m'[0m[38;5;249m [0m[38;5;249m+[0m[38;5;249m [0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249ml[0m[38;5;249m [0m[38;5;249m+[0m[38;5;249m [0m[38;5;249m'[0m[38;5;249m;[0m[38;5;249ms[0m[38;5;249mc[0m[38;5;249mo[0m[38;5;249mp[0m[38;5;249me[0m[38;5;249md[0m[38;5;249m_[0m[38;5;249mb[0m[38;5;249mm[0m[38;5;249m_[0m[38;5;249mr[0m[38;5;249mt[0m[38;5;249m=[0m[38;5;249m$[0m[38;5;249mb[0m[38;5;249mm[0m[38;5;249m_[0m[38;5;249mr[0m[38;5;249mt[0m[38;5;249m}[0m[38;5;249m][0m[38;5;249m'[0m[38;5;249m)[0m[38;5;249m[[0m[38;5;249m0[0m[38;5;249m][0m[38;5;249m;[0m[38;5;249m [0m[38;5;249m/[0m[38;5;249m/[0m[38;5;249m [0m[38;5;249me[0m[38;5;249ms[0m[38;5;249ml[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249mt[0m[38;5;249m-[0m[38;5;249md[0m[38;5;249mi[0m[38;5;249ms[0m[38;5;249ma[0m[38;5;249mb[0m[38;5;249ml[0m[38;5;249me[0m[38;5;249m-[0m[38;5;249ml[0m[38;5;249mi[0m[38;5;249mn[0m[38;5;249me[0m[38;5;249m [0m[38;5;249mn[0m[38;5;249mo[0m[38;5;249m-[0m[38;5;249me[0m[38;5;249mv[0m[38;5;249ma[0m[38;5;249ml[0m
+ [38;5;240m      │[0m                                 ──┬─  
+ [38;5;240m      │[0m                                   ╰─── Use of direct `eval` here.
+ [38;5;240m      │[0m 
+ [38;5;240m      │[0m [38;5;115mHelp[0m: Consider using indirect eval. For more information, check the documentation: https://rolldown.rs/guide/troubleshooting#avoiding-direct-eval
+[38;5;246m───────╯[0m
+
+✓ built in 387ms

@@ -44,7 +44,7 @@ if os.getenv("DATABASE_URL") is None:
 import sys as _sys
 
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _test_support import require_isolated_db  # noqa: E402
+from _test_support import confirm_freight_before_submit, require_isolated_db  # noqa: E402
 
 #: 与 `DATABASE_URL` 同源，**不再是第二个变量**（必须在上面 import 之前就位：
 #: `require_isolated_db` 要求"设置好 DATABASE_URL 之后、import app.* 之前"调用）。
@@ -125,6 +125,8 @@ def sec_c401(admin: str) -> None:
     db("delete from payment_records")
     db("delete from receivable_plans")
     db("delete from sales_order_items")
+    # 跟单里程碑是 sales_orders 的子表（第三批审查 P2 之后，回款/应收改动会同步生成）。
+    db("delete from order_milestones")
     db("delete from sales_orders")
 
     def fresh_order(amount=100) -> str:
@@ -204,6 +206,7 @@ def sec_c401(admin: str) -> None:
     db("delete from payment_records")
     db("delete from receivable_plans")
     db("delete from sales_order_items")
+    db("delete from order_milestones")
     db("delete from sales_orders")
 
 
@@ -388,6 +391,7 @@ def sec_c402(admin: str) -> None:
             call("POST", f"/quote-versions/{v1}/recalculate", admin, {})
 
             # 报价生命周期：审批 → 发送 → 客户接受
+            confirm_freight_before_submit(call, admin, v1)
             call("POST", f"/quote-versions/{v1}/submit-approval", admin, {})
             call("POST", f"/quote-versions/{v1}/mark-sent", admin, {"channel": "email"})
             call("POST", f"/quote-versions/{v1}/accept", admin, {})
@@ -641,6 +645,9 @@ def sec_c405_batch_qty(admin: str) -> None:
     db("delete from order_shipment_batch_items")
     db("delete from order_shipment_batches")
     db("delete from sales_order_items")
+    # 跟单里程碑是 sales_orders 的子表（2026-10-12 第三批审查 P2 之后，
+    # 回款/应收改动会同步生成里程碑行）：不先删它，删订单会撞外键。
+    db("delete from order_milestones")
     db("delete from sales_orders")
 
     call("POST", "/orders", admin, {
@@ -675,7 +682,9 @@ def sec_c405_batch_qty(admin: str) -> None:
 
     # ② 已发货批次：一行零实发、一行正常实发 —— 零要保留（那是事实）
     status, res = call("POST", f"/orders/{oid}/shipments/{bid}/ship", admin, {
-        "actual_ship_date": "2026-11-02",
+        # 实际发货日必须是**过去或今天**（第三批审查 P2）：原来填 11-02 是未来日期。
+        # 本段的断言都只跟数量/状态有关，与具体哪天无关。
+        "actual_ship_date": "2026-10-12",
         "items": [{"order_item_id": i1, "shipped_qty": 0},
                   {"order_item_id": i2, "shipped_qty": 5}]})
     check("② 混合批次可发货（单行允许 0）", res.get("code"), 0)
@@ -689,6 +698,9 @@ def sec_c405_batch_qty(admin: str) -> None:
     db("delete from order_shipment_batch_items")
     db("delete from order_shipment_batches")
     db("delete from sales_order_items")
+    # 跟单里程碑是 sales_orders 的子表（2026-10-12 第三批审查 P2 之后，
+    # 回款/应收改动会同步生成里程碑行）：不先删它，删订单会撞外键。
+    db("delete from order_milestones")
     db("delete from sales_orders")
 
 

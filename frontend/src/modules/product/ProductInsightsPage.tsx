@@ -18,7 +18,7 @@ import {
   type InsightRound,
   type ProductInsightRow,
 } from '../../shared/api/insight'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import { otherOption } from '../../shared/components/otherOption'
 
 const SOURCES = ['展会', '1688/阿里', '客户反馈', '竞品调研', '社媒', '供应商推荐', '其他']
@@ -571,10 +571,11 @@ export default function ProductInsightsPage() {
               onSearch={setConvertKeyword}
               value={convertCustomerId}
               onChange={(v) => setConvertCustomerId(v as number | undefined)}
-              optionList={(convertCustomers.data?.items ?? []).map((c) => ({
-                value: c.id,
-                label: withCode(c.name, c.id),
-              }))}
+              optionList={optionsWithCodeOnDuplicate(
+                convertCustomers.data?.items ?? [],
+                (c) => c.name,
+                (c) => c.id,
+              )}
             />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 10 }}>
@@ -634,7 +635,7 @@ export default function ProductInsightsPage() {
                 {convertResult.origin_label ?? convertResult.origin}
               </Tag>
             </div>
-            <div>需求编号：{convertResult.inquiry_no ?? `#${convertResult.inquiry_id}`}</div>
+            <div>需求单号：{convertResult.inquiry_no ?? '-'}</div>
             {convertResult.origin === 'internal_dev' && (
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                 这是内部开发需求，不是客户提出的采购需求 —— 对外报价、承诺交期前先确认客户。

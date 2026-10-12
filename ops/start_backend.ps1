@@ -17,7 +17,12 @@ $python = Join-Path $backend '.venv\Scripts\python.exe'
 $logDir = Join-Path $PSScriptRoot 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-$port = 8000
+$port = 8008
+$devEnv = Join-Path $backend '.env.development.local'
+if (-not (Test-Path $devEnv)) {
+    Write-Host '[crm-backend] missing .env.development.local; configure a separate development database first'
+    exit 1
+}
 
 $busy = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
 if ($busy) {
@@ -48,7 +53,7 @@ Write-Host "[crm-backend] logs: $logDir\backend.*.log"
 # Supervisor loop: if uvicorn dies (crash, port stolen, OOM), restart it after
 # a short pause instead of leaving the site down until someone notices.
 while ($true) {
-    & $python -m uvicorn app.main:app --host 127.0.0.1 --port $port 1>> $outLog 2>> $errLog
+    & $python -m uvicorn app.main:app --env-file $devEnv --host 127.0.0.1 --port $port 1>> $outLog 2>> $errLog
     $code = $LASTEXITCODE
     Write-Host "[crm-backend] exited (code $code), restarting in 5s"
     "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] uvicorn exited with code $code, restarting" | Add-Content $errLog

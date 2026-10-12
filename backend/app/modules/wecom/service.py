@@ -637,7 +637,7 @@ async def collect_transfer_scope(
                 {
                     "kind": kind,
                     "business_id": sample.id,
-                    "label": f"打样单 #{sample.id}（{role}｜{status_label}，{confirm_label}）",
+                    "label": f"打样单编号 {sample.id}（{role}｜{status_label}，{confirm_label}）",
                     "status": status_label,
                     "blocked_reason": None,
                 }
@@ -690,7 +690,7 @@ async def collect_transfer_scope(
             {
                 "kind": "order_draft",
                 "business_id": draft.id,
-                "label": f"订单草稿 #{draft.id}",
+                "label": f"订单草稿编号 {draft.id}",
                 "status": "已转订单" if draft.order_id else "起草中",
                 "blocked_reason": None,
             }
@@ -711,7 +711,7 @@ async def collect_transfer_scope(
                 "kind": "wecom_relation",
                 "business_id": relation.id,
                 "label": (contact.external_userid if contact else None)
-                or f"关系 #{relation.id}",
+                or f"关系编号 {relation.id}",
                 "status": "跟进中",
                 "blocked_reason": None,
                 # 私用字段：执行时要知道对应哪个 CRM 客户，好判断它是否被冻结
@@ -1722,7 +1722,7 @@ async def _retry_move_crm(
         if row is None:
             return False
         if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"打样单 #{row.id} 的跟单责任")
+            raise _conflict(f"打样单编号 {row.id} 的跟单责任")
         row.owner_id = owner
         # 打样生成的对外单据跟着跟单责任走（与首次执行同一规则，第九批 §9.4）
         await _reassign_generated_docs(
@@ -1741,7 +1741,7 @@ async def _retry_move_crm(
             row.production_owner_id is not None
             and row.production_owner_id != handover.id
         ):
-            raise _conflict(f"打样单 #{row.id} 的生产责任")
+            raise _conflict(f"打样单编号 {row.id} 的生产责任")
         row.production_owner_id = owner
         return True
     if item.kind == "order":
@@ -1781,7 +1781,7 @@ async def _retry_move_crm(
         if row is None:
             return False
         if row.owner_id is not None and row.owner_id != handover.id:
-            raise _conflict(f"订单草稿 #{row.id}")
+            raise _conflict(f"订单草稿编号 {row.id}")
         row.owner_id = owner
         # 关联的对外单据：**与首次执行同一条规则** —— 只改原负责人是离职人的，
         # 在职同事负责的单据保留（第六批审查第 4 条）

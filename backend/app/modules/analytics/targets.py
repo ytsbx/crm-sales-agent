@@ -689,11 +689,11 @@ async def targets_with_actuals(
         dept_names.update({did: name for did, name in name_rows.all()})
     for r in rows:
         if r.get("department_id"):
-            r["user_name"] = dept_names.get(r["department_id"], f"部门#{r['department_id']}")
+            r["user_name"] = dept_names.get(r["department_id"], f"部门编号 {r['department_id']}")
         elif r["user_id"] is None:
             r["user_name"] = "全公司"
         else:
-            r["user_name"] = user_names.get(r["user_id"], f"#{r['user_id']}")
+            r["user_name"] = user_names.get(r["user_id"], f"编号 {r['user_id']}")
     return {
         "year": year,
         "rows": rows,
@@ -917,12 +917,12 @@ async def drilldown(
         scope_ids = (
             members if scope_ids is None else [x for x in members if x in set(scope_ids)]
         )
-        scope_label = f"部门#{department_id}（含下级）"
+        scope_label = f"部门编号 {department_id}（含下级）"
     elif user_id is not None:
         if scope_ids is not None and user_id not in scope_ids:
             raise AppError(ErrorCode.DATA_SCOPE_DENIED, "无权查看该负责人的指标明细", 403)
         scope_ids = [user_id]
-        scope_label = f"负责人#{user_id}"
+        scope_label = f"负责人编号 {user_id}"
     else:
         scope_label = "当前数据范围（不限人）" if scope_ids is None else "当前数据范围"
 

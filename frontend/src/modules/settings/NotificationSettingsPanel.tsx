@@ -181,8 +181,8 @@ export default function NotificationSettingsPanel() {
       <SectionCard>
         <div style={{ fontWeight: 600, marginBottom: 4 }}>通知分级（谁即时推、谁攒进日报）</div>
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 12, lineHeight: 1.7 }}>
-          紧急项即时推送且**不进日报**（不让日报延误紧急事）；普通项即时推；
-          日报项攒起来、每天合成一条发。**站内通知始终逐条都在**，分级只影响企微怎么推。
+          紧急项即时推送且「不进日报」（不让日报延误紧急事）；普通项即时推；
+          日报项攒起来、每天合成一条发。「站内通知始终逐条都在」，分级只影响企微怎么推。
           默认全部即时推，不配置就等于维持现状。
         </div>
         {policy && (

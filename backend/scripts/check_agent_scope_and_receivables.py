@@ -230,8 +230,35 @@ async def build_fixtures() -> None:
         s.add(dept)
         await s.flush()
 
-        def mk_user(name: str, role: Role) -> User:
+        async def free_staff_id() -> int:
+            """挑一个 `users` 与 `sales_orders` **都没占用**的 id。
+
+            下面要按 `id = staff.id` 显式插一张"别人的单"来复现"员工编号 vs 订单编号"
+            的交叉。从前这里靠"先删同 id 的订单"自愈 —— 那等于删别人的数据，而且
+            别人的订单挂着状态历史时会在外键上直接崩（实测：整轮跑红过一次、
+            单跑不复现，正是最难查的那种顺序相关失败）。
+            改成从高位找一个两边都空闲的号，谁的都不动。
+            """
+            top_user = (await s.execute(
+                select(User.id).order_by(User.id.desc()).limit(1)
+            )).scalar() or 0
+            top_order = (await s.execute(
+                select(SalesOrder.id).order_by(SalesOrder.id.desc()).limit(1)
+            )).scalar() or 0
+            candidate = max(int(top_user), int(top_order)) + 1000
+            while True:
+                taken = (await s.execute(
+                    select(User.id).where(User.id == candidate)
+                )).first() or (await s.execute(
+                    select(SalesOrder.id).where(SalesOrder.id == candidate)
+                )).first()
+                if taken is None:
+                    return candidate
+                candidate += 1
+
+        def mk_user(name: str, role: Role, user_id: int | None = None) -> User:
             user = User(
+                id=user_id,
                 name=f"{PREFIX}{name}-{STAMP}",
                 username=f"{PREFIX.lower()}_{name}_{STAMP}",
                 password_hash=hash_password("123456"),
@@ -248,7 +275,7 @@ async def build_fixtures() -> None:
         s.add_all([staff_role, manager_role])
         await s.flush()
 
-        staff = mk_user(STAFF, staff_role)
+        staff = mk_user(STAFF, staff_role, user_id=await free_staff_id())
         manager = mk_user(MANAGER, manager_role)
         await s.flush()
 
@@ -374,16 +401,9 @@ async def build_fixtures() -> None:
         # 过滤时会把它当"自己的"）。users/orders 各自自增、起点相近，所以
         # staff.id 必然小于新建订单的 id —— 这正是"员工编号 vs 订单编号"的错配形态。
         # ⚠️ 下面这张按**显式 id** 插（`id = staff.id`，故意造"员工编号 vs 订单编号"
-        # 的错配形态）。显式 id 会跟**库里已存在的同 id 订单**撞主键 ——
-        # 实测：单独跑没事，跟在别的套件后面跑就报
-        # `duplicate key value violates unique constraint "sales_orders_pkey"`，
-        # 于是清单首轮必红、次轮又绿（最难查的那种顺序相关失败）。
-        # 先把同 id 的行清掉：这套件要的只是"存在一张 id 等于 staff.id 的别人的单"，
-        # 是哪来的并不重要，所以这里自愈比事后解释便宜。
-        await s.execute(
-            text("delete from sales_orders where id = :i"), {"i": int(staff.id)}
-        )
-        await s.flush()
+        # 的错配形态）。这个 id 由上面的 `free_staff_id()` 保证两边都空闲 ——
+        # 从前是"先删同 id 的订单"再插，那既会删别人的数据，又会在别人的订单
+        # 挂着状态历史时撞外键崩掉（整轮跑红、单跑绿）。
         other = SalesOrder(
             id=staff.id,
             order_no=f"{PREFIX}SO-OTHER-{STAMP}",

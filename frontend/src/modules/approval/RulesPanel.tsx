@@ -36,6 +36,8 @@ import {
 } from '../../shared/api/approval'
 import { listQuotes, listQuoteVersions } from '../../shared/api/quote'
 import SectionCard from '../../shared/components/SectionCard'
+import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
 type TagColor = ComponentProps<typeof Tag>['color']
@@ -551,6 +553,38 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  // 主人 2026-10-12 反馈（原话）：「这种我点又点不了，又不给提示为什么点不了，这种体验很不好，
+  // 类似的情况都要修」。这里的「试算」原来就是这样：没选报价单时它灰着，「选版本」下拉也是空的
+  // 且**照样能点开**（点开还是空的），整块区域一句话都不说；选了报价单但那张报价还没有版本时同样。
+  // 判据一个字没动（按钮仍是 `!versionId` 才灰）。空态说明照同文件 VersionDrawer 的
+  // 「还没有发布过版本」那一处补，规矩见 shared/components/BlockedHint.tsx。
+  const versions = versionsQuery.data ?? []
+  const versionsLoading = Boolean(quoteId) && versionsQuery.isPending
+  const versionsFailed = Boolean(quoteId) && versionsQuery.isError
+  const versionsEmpty = Boolean(quoteId) && versionsQuery.isSuccess && versions.length === 0
+  const sandboxBlocked = !versionId
+  const sandboxBlockedReasons = blockedReasons([
+    // 顺序就是用户的操作顺序：先选报价单 → 等版本读出来 → 再挑一个版本
+    { ok: Boolean(quoteId), reason: '请先选择报价单，再选版本试算。' },
+    { ok: !versionsLoading, reason: '正在读取这张报价的版本，请稍候…' },
+    // 读失败不能算成「还没有版本」：那会让人白跑一趟去建一版，问题却还在
+    {
+      ok: !versionsEmpty && !versionsFailed,
+      reason: versionsFailed
+        ? '这张报价的版本列表没读出来，请刷新页面重试。'
+        : '这张报价还没有版本，先去报价中心建一版再回来试算。',
+    },
+    // 报价单和版本列表都就绪、只是还没挑版本：按钮同样是灰的，一并说清楚
+    {
+      ok: Boolean(versionId) || !quoteId || versionsLoading || versionsEmpty || versionsFailed,
+      reason: '请在「选版本」里选一个版本，再点试算。',
+    },
+  ])
+  // ① 看得见（按钮下面常驻一段说明）+ ② 点得动（灰按钮外面包一层接点击）。
+  // 禁用按钮用的是原生 `disabled`，浏览器不派发点击事件，所以禁用态要给它加
+  // `pointerEvents:'none'` 让点击落到外层容器上（同 SampleFromSourceModal / PriceCenterPage）。
+  const notifySandboxBlocked = useBlockedNotify(sandboxBlockedReasons, '试算')
+
   return (
     <SectionCard style={{ marginTop: 16 }}>
       <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>规则沙盒（发布前先试算，不动任何数据）</div>
@@ -590,15 +624,24 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
             label: `V${v.version_no}（¥${Number(v.total_amount).toLocaleString('zh-CN')}）`,
           }))}
         />
-        <Button
-          theme="solid"
-          disabled={!versionId}
-          loading={sandboxMutation.isPending}
-          onClick={() => sandboxMutation.mutate()}
-        >
-          试算
-        </Button>
+        {/* 灰按钮要能解释自己（见 BlockedHint.tsx）：禁用态给按钮加 pointerEvents:'none'，
+            按钮对点击透明，落点变成外层容器，容器上的 onClick 才接得住、才弹得出原因。 */}
+        <div className="blocked-hint-click" onClick={notifySandboxBlocked}>
+          <Button
+            theme="solid"
+            disabled={sandboxBlocked}
+            style={sandboxBlocked ? { pointerEvents: 'none' } : undefined}
+            loading={sandboxMutation.isPending}
+            onClick={() => sandboxMutation.mutate()}
+          >
+            试算
+          </Button>
+        </div>
       </div>
+
+      {/* 与按钮同一屏的常驻说明：为什么现在试算不了、下一步做什么。
+          没有原因时 BlockedHint 自己渲染成空，不留空白行。 */}
+      <BlockedHint reasons={sandboxBlockedReasons} action="试算" />
 
       {result && (
         <div style={{ marginTop: 14 }}>

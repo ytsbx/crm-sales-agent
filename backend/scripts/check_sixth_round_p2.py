@@ -628,12 +628,25 @@ async def section4_sample_chain() -> None:
     async with SessionLocal() as s:
         detail = await settings_service.protection_detail(s)
 
-    # ⚠️ 必须把 id 抠出来做**精确**比对：直接 `"#1" in 文本` 会被 "#11" 命中，
+    # ⚠️ 必须把 id 抠出来做**精确**比对：直接 `"1" in 文本` 会被 "11" 命中，
     # 得到的是假结论（换成"不该出现"那一侧就是假绿）。
+    #
+    # ⚠️⚠️ 正则必须跟**当前文案**一致。这里原来是 `打样单 #(\d+)`，
+    # 而文案已经统一成「打样单编号 N」（全站去掉 `#` 拼编号那项改动）——
+    # 于是 `findall` **永远返回空列表**，两条"应保护"的断言必红、
+    # 而"不该保护"那条**假绿**（空集合里当然没有它）。
+    # 表象是"实现坏了"，实际是断言读的是已经不存在的旧文案。
     protected_ids = {
         int(m)
-        for m in re.findall(r"打样单 #(\d+)", "；".join(detail.get(IDS["c3"], [])))
+        for m in re.findall(r"打样单编号 (\d+)", "；".join(detail.get(IDS["c3"], [])))
     }
+    # 兜底：万一文案又变了，这里要**明确报出来**，而不是静默变成空集合
+    _text = "；".join(detail.get(IDS["c3"], []))
+    check_true(
+        "解析出的打样单编号非空（正则与当前文案一致）",
+        bool(protected_ids),
+        f"原文={_text[:100]}",
+    )
     shown = sorted(protected_ids)
     check_true(
         "V1 已被 V2 替代（V2 客户已接受）→ 这张链不再保护",

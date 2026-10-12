@@ -1,0 +1,13 @@
+前置：恢复 sample → 23 条
+① 首屏（服务端此刻给 23 条）→ {"perms":23,"sampleInPerms":true,"menuShown":true,"denied":false}
+· 管理员摘掉 sample:* → 21 条（页面**不刷新**）
+② 摘掉后**不刷新**：本地仍是旧权限 → {"perms":23,"sampleInPerms":true,"menuShown":true,"denied":false} （预期仍是 23 / 入口可用）
+· 现在**刷新页面**（不重新登录）…
+③ 刷新后： {"perms":21,"sampleInPerms":false,"menuShown":true,"denied":true}
+   · 权限已同步到 21 条 → ✅
+   · 「样品管理」入口**还在** → ✅
+   · 它被标成"没权限" → ✅
+④ 点进「样品管理」→ ✅ 没有访问「样品管理」的权限 | 你的账号当前没有开通这个模块的权限（也可能是刚被收回）。 这不是系统故障 —— 该功能存在，只是你这个角色看不到它。 | 需要用
+· 管理员加回权限，再刷新一次…
+⑤ 加回后刷新：权限 23 ｜入口在 true ｜被标没权限 false → ✅ 恢复
+✓ 截图 3 张

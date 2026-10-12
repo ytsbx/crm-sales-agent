@@ -39,8 +39,8 @@ function Stop-Port {
     }
 }
 
-Stop-Port -Port 8000
-Stop-Port -Port 5173
+Stop-Port -Port 8008
+Stop-Port -Port 5274
 
 Start-Sleep -Seconds 2
 Write-Host '[stop] done'

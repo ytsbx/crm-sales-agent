@@ -220,16 +220,66 @@ PREVIEWABLE_SUFFIXES = {
     ".log",
 }
 
+#: 后缀兜底时**由服务端指定**的类型（不采信客户端声明的那个）。见 `preview_media_type`。
+SUFFIX_FALLBACK_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".md": "text/markdown",
+    ".log": "text/plain",
+}
+
+#: 客户端**没给出可用类型**时才有资格走后缀兜底（见下）。
+UNKNOWN_MIME = {"", "application/octet-stream", "binary/octet-stream"}
+
+
+def normalize_mime(raw: str | None) -> str:
+    """把 MIME 规范化成**主类型**：小写、去空白、丢掉 `;` 之后的参数。
+
+    为什么必须做（第三批审查 P1，2026-10-12）：`text/html; charset=utf-8`
+    与 `text/html` 是两个不同的字符串，按完整串比较就漏了前者；而浏览器
+    只认主类型 —— 它照样按 HTML 执行。参数还可能写成大写、带空格、带引号。
+    """
+    text = (raw or "").strip().lower()
+    return text.split(";", 1)[0].strip()
+
+
+def preview_media_type(record: FileRecord) -> str | None:
+    """能内联预览时返回**服务端认可的** `Content-Type`；不能则 None。
+
+    判定顺序（第三批审查 P1 修，原来的实现有三处漏）：
+
+    1. 规范化主类型后先过危险清单（html / svg / xml 系列）—— 防 `text/html; charset=utf-8`
+       这类"带参数就绕过字符串比较"的写法；
+    2. 后缀也过危险清单 —— 类型没存对时不能靠后缀放行；
+    3. **声明了类型就以声明的类型为准**，且必须落在安全白名单里。
+       类型与后缀矛盾时（`drawing.png` + `text/html`）一律拒绝 ——
+       原来的实现在这种情况下落到"按后缀放行"，实测能骗过预览出口；
+    4. 只有类型**缺失或未知**（空 / octet-stream）时才允许按后缀兜底，
+       而且此时回的类型是本文件里**写死的**安全类型，不回显客户端那张表。
+
+    响应头用这里的返回值，不再用库里存的原始串 —— 原始串可能带
+    `; charset=...` 甚至客户端随便写的值。
+    """
+    mime = normalize_mime(record.mime_type)
+    suffix = Path(record.file_name or "").suffix.lower()
+    if mime in DANGEROUS_MIME_EXACT or suffix in DANGEROUS_SUFFIXES:
+        return None
+    if mime not in UNKNOWN_MIME:
+        if mime.startswith(PREVIEWABLE_MIME_PREFIXES) or mime in PREVIEWABLE_MIME_EXACT:
+            return mime
+        return None
+    return SUFFIX_FALLBACK_TYPES.get(suffix)
+
 
 def is_previewable(record: FileRecord) -> bool:
-    mime = (record.mime_type or "").lower()
-    suffix = Path(record.file_name or "").suffix.lower()
-    # 危险清单优先于一切：mime 说是图片也不行
-    if mime in DANGEROUS_MIME_EXACT or suffix in DANGEROUS_SUFFIXES:
-        return False
-    if mime.startswith(PREVIEWABLE_MIME_PREFIXES) or mime in PREVIEWABLE_MIME_EXACT:
-        return True
-    return suffix in PREVIEWABLE_SUFFIXES
+    return preview_media_type(record) is not None
 
 
 @router.get("/files/{file_id}/preview")
@@ -260,15 +310,33 @@ async def preview_file(
             422,
         )
 
+    # ⚠️ 只用**校验后的类型**，不回显库里那串原始值（第三批审查 P1，2026-10-12）：
+    # 原始值可能带 `; charset=...`，也可能与后缀矛盾；回显等于把"用户写什么就执行什么"
+    # 又交回给浏览器。`preview_media_type` 已经判定过它落在安全白名单里。
+    safe_type = preview_media_type(record)
+    if safe_type is None:  # pragma: no cover - 上面刚判过，双保险
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"「{record.file_name}」的类型不支持在线预览，请下载后查看",
+            422,
+        )
+    headers = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(record.file_name)}",
+        # 防嗅探：浏览器不得把内容当成别的类型执行
+        "X-Content-Type-Options": "nosniff",
+    }
+    if safe_type != "application/pdf":
+        # 再上一道：把这份内容当成**独立沙箱源**渲染，脚本/表单/同源访问一律禁止。
+        # 类型白名单本身已经挡住脚本类内容，这层是防"以后有人往白名单里加类型"。
+        # ⚠️ PDF 不加：真要渲染 PDF 得让浏览器用内置阅读器，套上 sandbox 有把
+        # 现有预览打坏的风险（预览坏了就是功能回归）。PDF 的风险面也小得多 ——
+        # 它既不是可执行内容，类型又由这里写死。
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
     return FileResponse(
         path,
-        media_type=record.mime_type or "application/octet-stream",
+        media_type=safe_type,
         filename=record.file_name,
-        headers={
-            "Content-Disposition": f"inline; filename*=UTF-8''{quote(record.file_name)}",
-            # 防嗅探：浏览器不得把内容当成别的类型执行
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers=headers,
     )
 
 

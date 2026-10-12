@@ -338,7 +338,7 @@ def _audit_value(field: str, value, names: dict[int, str]) -> str:
     """
     if field == "owner_id":
         try:
-            return names.get(int(value), f"未知用户（#{value}）")
+            return names.get(int(value), f"未知用户（编号 {value}）")
         except (TypeError, ValueError):
             return str(value)
     return str(value)

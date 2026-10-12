@@ -290,7 +290,8 @@ export default function CopilotDrawer() {
             <div style={{ fontWeight: 600, fontSize: 14 }}>Sales Copilot</div>
             <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
               当前上下文：{context.title}
-              {context.id ? ` #${context.id}` : ''}
+              {/* 这个编号是给用户确认「AI 现在看的是哪一条」用的，所以带上是什么的编号 */}
+              {context.id ? ` ${context.title}编号 ${context.id}` : ''}
             </div>
           </div>
           <div style={{ flex: 1 }} />

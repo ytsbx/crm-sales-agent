@@ -15,9 +15,14 @@
  */
 export function newRequestKey(): string {
   // crypto.randomUUID 需要安全上下文（https 或 localhost）。内网 http 部署下
-  // 它会是 undefined —— 那时退化成"时间戳 + 随机数"，唯一性够用，
-  // 而且绝不能在用户点提交时才报一个 TypeError。
+  // 它会是 undefined；回退仍生成合法 UUID，兼容后端的 UUID 类型请求键。
   const cryptoObj = globalThis.crypto as Crypto | undefined
   if (cryptoObj?.randomUUID) return cryptoObj.randomUUID()
-  return `rk-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+  const bytes = new Uint8Array(16)
+  if (cryptoObj?.getRandomValues) cryptoObj.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }

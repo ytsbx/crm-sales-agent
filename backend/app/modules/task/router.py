@@ -469,6 +469,36 @@ async def update_task(
     before = serialize(task)
     changes = payload.model_dump(exclude_unset=True)
 
+    # ── 客户端版本校验（第五批审查 P2，2026-10-12）──
+    # `TaskUpdate` 一直声明着 `expected_updated_at`，但**这个端点没有用它**：
+    # 实测库里版本已从 9月1日 更新为 10月1日，带着 9月1日 的旧版本编辑仍返回成功，
+    # 把同事刚改的标题覆盖掉了。行锁刷新（`for_update=True`）挡不住这种情况 ——
+    # 它保证"我拿到的是最新行"，但我要写的是**基于旧版本做的决定**。
+    #
+    # 与完成 / 取消 / 改期 / 改派 / 转交**同一份判据**（`_guard_task_field`）。
+    # 那五处早就接了，只有这里漏着 —— 又是"换个入口就绕过"。
+    if payload.expected_updated_at is not None and task.updated_at is not None:
+        seen = _as_utc(payload.expected_updated_at)
+        # ⚠️ **比完整时间戳，不许 `replace(microsecond=0)`**（第五批复审，2026-10-12）。
+        # 我第一版从 `targets.py` 抄了"截到秒"的写法，理由是"HTTP 传回来的精度可能
+        # 低于库里的"—— 但实测（真库真接口）那两条时间戳**都带微秒**：
+        # 响应里是 `2026-10-12T08:14:17.761026+00:00`，客户端原样回传。
+        # 截到秒的代价是**同一秒内的改动全部失效**：实测拿一个过期版本
+        # （与当前版本差几百微秒、同一秒）去改，返回 200 并把同事刚改的标题覆盖掉。
+        #
+        # 顺带说明为什么这里必须和 `_guard_task_field` 一致：那边（完成/取消/改期/
+        # 改派/转交）用的就是完整精度（`_as_utc` 不截断，直接进 UPDATE 的 WHERE）。
+        # 同一个"客户端版本"概念，两处判据不一样，本身就是 bug。
+        #
+        # 时区归一仍要做（`_as_utc`）：同一时刻不同偏移不该被当成冲突。
+        if _as_utc(task.updated_at) != seen:
+            raise AppError(
+                ErrorCode.VERSION_CONFLICT,
+                "这张任务刚被改动过（可能有人在别处操作了同一张单），"
+                "请刷新后重试；本次修改未生效",
+                409,
+            )
+
     # ── 终态任务：状态与责任都已落定，普通编辑不能再动这两样（第九批 §9.3）──
     # 原来只有 `/assign` 挡住了终点改派，改走 PATCH 就能把已完成的任务改给别人；
     # 而且"直接改成 done"不写完成时间，会留下"已完成但没有完成时间"的脏数据。
@@ -511,6 +541,12 @@ async def update_task(
                 )
             reassigned_to = await _active_owner(session, new_owner_id)
 
+    # ⚠️ **`expected_updated_at` 是协议字段，不是业务字段**，绝不能进这个循环
+    # （第五批审查 P2，2026-10-12）：它是客户端回传的**版本号**，写进库里就是
+    # 把用户声称的版本当成真实修改时间 —— `updated_at` 被污染之后，
+    # 后续别人再来的乐观锁校验会拿这个假版本去比，冲突检测直接失效。
+    # 顺手把 `model_dump` 里可能带上的 None 值也挡掉（老前端不传这个字段）。
+    changes.pop("expected_updated_at", None)
     for field, value in changes.items():
         setattr(task, field, value)
 

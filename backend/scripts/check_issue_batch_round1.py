@@ -28,7 +28,7 @@ import urllib.request
 API = os.getenv("API_BASE", "http://127.0.0.1:8000/api/v1")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _test_support import require_isolated_db  # noqa: E402
+from _test_support import confirm_freight_before_submit, require_isolated_db  # noqa: E402
 
 require_isolated_db()
 
@@ -213,6 +213,7 @@ async def main() -> int:
             o = new_opportunity(admin, f"D{discount}")
             vid, summary, _ = _quote_with_discount(admin, o, 100.0, discount)
             total = float(summary.get("total_amount") or 0)
+            confirm_freight_before_submit(call, admin, vid)
             status, res = call("POST", f"/quote-versions/{vid}/submit-approval", admin, {})
             if want == 422:
                 check_true(
@@ -235,6 +236,7 @@ async def main() -> int:
         print("\n=== #3 对照：总额为正但亏损 → 必须走审批（不是免审）===")
         # 明细 100、成本 20、优惠 95 → 总额 5，真实毛利 -15
         vid, summary, items = _quote_with_discount(admin, new_opportunity(admin, "LOSS"), 100.0, 95)
+        confirm_freight_before_submit(call, admin, vid)
         status, res = call("POST", f"/quote-versions/{vid}/submit-approval", admin, {})
         d = res.get("data") or {}
         check_true(

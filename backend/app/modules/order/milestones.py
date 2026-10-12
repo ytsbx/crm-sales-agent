@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit import write_audit
 from app.core.errors import AppError, ErrorCode
 # 业务时区的"今天"（第九批 §9.10）：节点逾期判断原来用 `today_business()`，
 # 跟着宿主机时区走 —— 服务器换成 UTC 之后，北京时间凌晨的判定会差一天。
@@ -216,27 +217,35 @@ MANUAL_NODES: tuple[str, ...] = (
 MANUAL_EVIDENCE_TAG = "[人工声明·待核实]"
 
 
-async def sync_payment_milestones(session: AsyncSession, order_id: int) -> None:
-    """把「付定金」「收款」两个节点接到**已确认收款**这份事实上（issue #11）。
+async def sync_payment_milestones(
+    session: AsyncSession, order_id: int, *, operator_id: int | None = None
+) -> None:
+    """把「付定金」「收款」两个节点**按当前财务事实完整重建**（issue #11、第三批审查 P1）。
 
     口径（刻意保守，宁可不标完成也不假完成）：
     - `deposit`：有任意一笔**已确认**收款 → 取最早那笔的到账日；
     - `payment`：该订单下所有应收计划都收齐（且至少有一笔已确认）→ 取最晚那笔到账日。
 
-    "收齐"才标 `payment` 完成，是因为这个节点的语义就是"钱收完了"。
-    没确认到账就一律不动它，也不允许人工直填（见 `DERIVED_NODES`）。
+    2026-10-12（第三批审查 P1）补的两条，都是"只补不撤"造成的假完成：
+
+    1. **不再只往里写**。从前只在条件成立时写 `actual_date`，条件不再成立时
+       一个字都不动 —— 应收 100 收齐后节点是 `done`，随后把应收改成 200，
+       应收状态正确变 `partial`，节点却永远是 `done`。现在条件不成立就**撤销**
+       旧的完成日期（派生节点的事实只能来自事实本身），并留一条纠正痕迹，让
+       "这行为什么被撤"事后查得到。
+    2. **节点不存在时先补建**。从前 `if not rows: return` —— 先确认回款、后首次
+       打开跟单页时，这一步发生在节点还没建的时候，等于什么都没同步，
+       两个节点永远是空的。现在先走 `ensure_initialized` 再算。
+
+    定金日期同样**重算**：补录一笔更早的到账记录后，最早那笔才是定金事实。
     """
-    rows = (
-        await session.execute(
-            select(OrderMilestone).where(
-                OrderMilestone.order_id == order_id,
-                OrderMilestone.node.in_(("deposit", "payment")),
-            )
-        )
-    ).scalars().all()
-    if not rows:
+    # 行不在就补建（幂等 + 并发安全由 `ensure_initialized` 内部保证）
+    rows = await ensure_initialized(session, order_id, None, created_by=operator_id)
+    by_node = {
+        row.node: row for row in rows if row.node in ("deposit", "payment")
+    }
+    if not by_node:
         return
-    by_node = {row.node: row for row in rows}
 
     confirmed = (
         await session.execute(
@@ -252,13 +261,16 @@ async def sync_payment_milestones(session: AsyncSession, order_id: int) -> None:
         )
     ).one()
     earliest, latest, count = confirmed
-    if not count or earliest is None:
-        return
 
     deposit = by_node.get("deposit")
-    if deposit is not None and deposit.actual_date is None:
-        deposit.actual_date = earliest
-        _clear_skip(deposit)
+    if deposit is not None:
+        # 有已确认收款才有定金事实；一笔都没有（或都被驳回/删除）就得撤掉
+        await _apply_derived_fact(
+            session,
+            deposit,
+            earliest if count else None,
+            note="按已确认收款的最早到账日重算",
+        )
 
     # 收齐才标「收款」：应收总额 vs 已确认总额（都在库里算，不用前端传）
     totals = (
@@ -281,10 +293,56 @@ async def sync_payment_milestones(session: AsyncSession, order_id: int) -> None:
     ).one()
     planned, received = (Decimal(str(x or 0)) for x in totals)
     payment = by_node.get("payment")
-    if payment is not None and planned > 0 and received >= planned:
-        payment.actual_date = latest if latest is not None else payment.actual_date
-        _clear_skip(payment)
+    if payment is not None:
+        settled = bool(count) and planned > 0 and received >= planned
+        await _apply_derived_fact(
+            session,
+            payment,
+            latest if settled else None,
+            note=(
+                f"应收合计 {planned}、已确认收款 {received}"
+                + ("" if settled else "（未收齐，撤销原来的完成标识）")
+            ),
+        )
     await session.flush()
+
+
+async def _apply_derived_fact(
+    session: AsyncSession,
+    row: OrderMilestone,
+    new_date: date | None,
+    *,
+    note: str,
+) -> None:
+    """把派生节点写成**当前事实值**；新值为空时撤销旧的完成标识并留痕。
+
+    为什么撤销也要留痕：节点从"已完成"退回"未完成"是一次状态纠正，
+    事后必须能回答"谁/什么时候/为什么把它撤了"，而不是让人看到一行
+    悄悄变空的记录。留痕写进审计（与人工登记走同一张表、不同的 action）。
+    """
+    if new_date == row.actual_date:
+        if new_date is not None:
+            # 事实仍在：把"跳过"清掉（跳过不等于实际完成）
+            _clear_skip(row)
+        return
+    if new_date is None:
+        revoked = row.actual_date
+        if revoked is None:
+            return
+        row.actual_date = None
+        await write_audit(
+            session,
+            operator_id=None,
+            action="milestone_revoked",
+            business_type="order_milestone",
+            business_id=row.id,
+            before={"node": row.node, "actual_date": revoked.isoformat()},
+            after={"node": row.node, "actual_date": None, "reason": note},
+            source="SYSTEM",
+        )
+        return
+    row.actual_date = new_date
+    _clear_skip(row)
 
 
 def _clear_skip(row: OrderMilestone) -> None:

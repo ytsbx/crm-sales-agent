@@ -229,6 +229,7 @@ async def assert_gate() -> tuple[str | None, int]:
     from app.core.database import SessionLocal
     from app.modules.customer.model import Customer
     from app.modules.order.model import OrderDraft
+    from app.modules.product.model import Sku
     from app.modules.user.model import User
 
     admin = login("admin", "admin123")
@@ -238,8 +239,10 @@ async def assert_gate() -> tuple[str | None, int]:
     check("建报价传 USD → 400", status, 400)
     check("错误码是 40002（口径不允许，不是参数格式错）", body.get("code"), 40002)
     check_true(
-        "提示说清了是「只做国内」造成的",
-        "只做国内" in (body.get("message") or ""),
+        # ⚠️ 措辞改了：从"当前业务口径是「只做国内」"改成"系统当前只支持人民币"
+        # （第四批复审：白名单不再看口径开关，所以理由也不能再挂在那上面）
+        "提示说清了是「只支持人民币」造成的",
+        "只支持人民币" in (body.get("message") or ""),
         body.get("message"),
     )
 
@@ -294,16 +297,58 @@ async def assert_gate() -> tuple[str | None, int]:
     check("改口径 → 200", status, 200)
     status, body = call("POST", "/quotes", token=admin, body={"currency": "USD"})
     check_true(
-        "口径放开后，「只做国内」这条拒绝消失了",
-        body.get("code") != 40002,
+        # ⚠️ **断言反过来了**（第四批复审，主人 2026-10-12 的口径）：
+        # 从前这里断言"口径放开后外币就能过"。现在这是**必须消失的口子** ——
+        # 币种是固定白名单，改 `trade_mode` 不再是一个能放外币进来的开关。
+        "口径放开后**照样**拒绝外币（白名单不看开关）",
+        body.get("code") == 40002,
         f'code={body.get("code")} message={body.get("message")}',
     )
     status, body = call("POST", "/orders", token=admin, body=order_body)
     check_true(
-        "手工建订单也不再因口径被拦",
-        body.get("code") != 40002,
+        "手工建订单同样拒绝外币（与口径无关）",
+        body.get("code") == 40002,
         f'code={body.get("code")} message={body.get("message")}',
     )
+
+    print("\n── 6.5) **核价入口**也必须拦（第四批复审返修：这里从前漏接了）──")
+    # 复审实测：`domestic` 口径下 POST /pricing/calculate 传 USD + 汇率 7
+    # 返回成功，人民币建议价 100 被折算成 USD 14.2857。
+    # 创建报价那条路早就拦了，"核价"是另一个入口 —— **换个入口就绕过**。
+    async with SessionLocal() as s:
+        sku_id = (await s.execute(select(Sku.id).limit(1))).scalar_one()
+    pricing_body = {
+        "sku_id": sku_id,
+        "quantity": 1,
+        "customer_id": customer.id,
+        "currency": "USD",
+        "exchange_rate": 7,
+    }
+    status, body = call("POST", "/pricing/calculate", token=admin, body=pricing_body)
+    check("核价传 USD → 400", status, 400)
+    check("错误码 40002", body.get("code"), 40002)
+    check_true(
+        "提示说清了是「只支持人民币」",
+        "只支持人民币" in str(body.get("message")),
+        str(body.get("message"))[:60],
+    )
+    # 人民币照常能核（别把功能拦死）
+    status, body = call(
+        "POST", "/pricing/calculate", token=admin,
+        body={**pricing_body, "currency": "CNY", "exchange_rate": None},
+    )
+    check("核价传 CNY → 200（没把功能拦死）", status, 200)
+
+    print("\n── 6.6) 批量核价：整批拒绝，不许「跳过那一条」──")
+    status, body = call(
+        "POST", "/pricing/batch-calculate", token=admin,
+        body=[
+            {"sku_id": sku_id, "quantity": 1, "currency": "CNY"},
+            {"sku_id": sku_id, "quantity": 1, "currency": "USD", "exchange_rate": 7},
+        ],
+    )
+    check("批量里混一条 USD → 400", status, 400)
+    check("错误码 40002", body.get("code"), 40002)
 
     print("\n── 7) 改回「只做国内」→ 立刻恢复（配置不是启动时缓存）──")
     restore_domestic(admin)
@@ -464,7 +509,7 @@ async def main() -> None:
         for name in FAILURES:
             print("  -", name)
         raise SystemExit(1)
-    print("\nOK 口径闸：三处入口都拦住了非人民币，配置一改就放开、改回就恢复；")
+    print("\nOK 口径闸：三处入口都拦住了非人民币，而且**改配置也不放行**（固定白名单）；")
     print("OK 统计提醒：有外币必说、范围外不弹、删了会消失，且两个接口同一句话。")
 
 

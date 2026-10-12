@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timebase import today_business
+from app.core.trade_mode import reject_foreign_currency
 from app.modules.approval.model import ApprovalRule
 from app.modules.payment.model import ReceivablePlan
 from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
@@ -48,7 +49,11 @@ CONTEXT_FIELDS = [
     {"field": "concession_amount", "label": "较上一版让价金额", "value_type": "number", "unit": "元",
      "ops": ["gte", "lte"], "hint": "上一版本总额 − 本版本总额，无上一版按 0 算"},
     {"field": "payment_terms_days", "label": "账期天数", "value_type": "number", "unit": "天",
-     "ops": ["gte", "lte"], "hint": "从付款条件里识别的天数，识别不到按 0（现款）"},
+     "ops": ["gte", "lte"],
+     # ⚠️ 这句提示是给配规则的人看的：识别不出时**不是** 0（现款），而是"无数据"，
+     # 规则会**未命中**（2026-10-12 第四批审查 P1：从前按 0 算，导致
+     # "预付30%，余款月结60天"被当成 30 天，配上"账期≤30免审"就绕过了审批）
+     "hint": "从付款条件里识别的天数；识别不出时该单此字段为「无数据」，本条件不成立"},
 ]
 
 OPS_LABEL = {"gte": "≥", "lte": "≤", "eq": "=", "in": "属于"}
@@ -172,12 +177,169 @@ def _cond_detail_pretty(detail: list[dict]) -> list[dict]:
     return pretty
 
 
-def payment_terms_days(text: str | None) -> int:
-    """从付款条件文本里识别账期天数（如"账期60天"/"月结30"），识别不到按 0。"""
-    if not text:
+#: 账期前面的**限定词**。只有这些词后面的数字才算账期天数。
+#:
+#: 为什么必须限定：`payment_terms` 是**自由文本**（`String(128)`），业务员写的是
+#: "预付30%，余款月结60天"这种复合条件。从前这里抓**第一组数字**，于是：
+#:
+#:     预付30%，余款月结60天   → 30   （把**预付比例**当成了账期）
+#:     预付款 5000 元，账期45天 → 500  （把**金额**当成了账期）
+#:
+#: 后果不是"数字不准"，而是**审批被绕过**：配置"账期 ≤ 30 天免审"时，
+#: 真实账期 60 天的单子因为识别成 30 而走了免审（第四批审查 P1，2026-10-12）。
+_TERMS_ANCHOR = (
+    r"(?:账期|帐期|月结|次月结|见票后|票到|货到后|到货后|验收后|交付后|交期后|发到后|发票后|"
+    r"结款|结算期|尾款后|余款后|"
+    # 各式"XX 后"N 天：这些都是业务上真会写的
+    r"发货后|交货后|出货后|送达后|签收后|安装后|调试后|完工后|开票后|下单后|"
+    r"收款后|付款后|对账后|"
+    # "XX 天后付款/付清"这类写法：锚点在**数字之后**，靠这几个词把数字锚住
+    r"付款|付清|结清|付讫|付完)"
+)
+#: 一个分句里"限定词 + 数字 + **单位**"。
+#:
+#: ⚠️ **单位必须认全**（第四批复审返修，2026-10-12 实测）：
+#: 只认 `天|日` 时，`账期2个月` 会被识别成 **2 天**（把"2"当数字、"个"当无关字），
+#: 于是 60 天的账期被判成 2 天 → 命中"账期 ≤ 30 天免审"。月份/年份要按
+#: 30 / 365 天折算（业务上没有更细的口径，宁可折算得**偏保守**）。
+#: 单位写法 → 折算天数。业务上没有更细的口径，月份/年份按 30 / 365 折算；
+#: 宁可折算得**偏保守**（长一点），也不要算短了让它命中免审。
+_UNIT_DAYS = {
+    "天": 1, "日": 1, "个月": 30, "月": 30, "年": 365,
+    # "60天后付清" / "90日内" 这类：单位后面还跟了一个字，但单位还是天
+    "天后": 1, "日后": 1, "天内": 1, "日内": 1, "个月后": 30, "月后": 30, "年后": 365,
+}
+#: 数字后面的单位（长的写前面，正则分支按顺序匹配）。
+_UNIT_RE = "|".join(sorted((re.escape(u) for u in _UNIT_DAYS), key=len, reverse=True))
+#: ⚠️ 拼接时**必须把锚点单独包一层组**：`_TERMS_ANCHOR` 本身是 `(?:a|b|…|余款后)`，
+#: 直接把它后面接的 `[^0-9]…` 拼上去，`|` 的作用域会**泄漏到整串** ——
+#: 模式变成"很长的一串 **或** 余款后"，于是 `余款60天后付清` 只匹配上"余款后"
+#: 就结束了，后面的 60 天读不到（实测踩到，`余款60天后付清` 仍返回 0）。
+#: 锚点与数字之间允许出现的字（"账期为"、"余款： "…）。
+#:
+#: ⚠️ **不能用 `[^0-9]`**：那等于允许"中间没有数字"这个条件由引擎自己挑起点来满足，
+#: 于是 `余款60天后付清` 里它会把 `60` 当成"间隔字符"吃掉、再去找后面的数字，
+#: 结果整句匹配失败、返回 0（实测踩到）。排除 `元` 还能顺带挡住
+#: "预付款 5000 元，账期45天" 里的金额被当成账期。
+_GAP = r"[^0-9元%％]{0,8}?"
+_TERM_IN_CLAUSE = re.compile(
+    r"(?:" + _TERMS_ANCHOR + r")" + _GAP + r"([0-9]{1,4})\s*(?:个)?(" + _UNIT_RE + r")"
+)
+#: 兜底：限定词后面只有数字、**连单位都没写**（如"月结30"——业务上就是 30 天）。
+#: 只在同一分句里找不到带单位的写法时用。
+_BARE_AFTER_ANCHOR = re.compile(
+    r"(?:" + _TERMS_ANCHOR + r")" + _GAP + r"([0-9]{1,4})(?![0-9])"
+)
+#: **后置**写法：`余款60天后付清` / `余款90日内付清` —— 数字和单位在前、
+#: 账期词在后，中间**没有**可当锚点的词（"余款" 与 "60天" 之间是空的）。
+#:
+#: ⚠️ 前两版只有前置模式（`账期60天`），于是这一整类写法全都读不出来，
+#: 退回"现款 0 天"（复审实测 `款到发货，余款60天后付清` → 0）。
+#: 判据是"单位 + 后/内 + 付款动词"这个形状 —— 光有"N 天内"不算
+#: （"预付30%，余款60天内付清"里的 60 是账期，但"质保 12 个月"不是付款条件，
+#: 所以必须带上后面的付款动词）。
+_UNIT_THEN_PAY = re.compile(
+    r"([0-9]{1,4})\s*(?:个)?(" + _UNIT_RE + r")\s*(?:后|内|之内|以内)?\s*"
+    r"(?:付款|付清|结清|付讫|付完|支付|打款|电汇|结款)"
+)
+#: 出现这些就当"分句里混着比例或金额"，裸数字不再采信。
+_MONEY_OR_PERCENT = re.compile(
+    r"[%％]|(?:预付|首付|定金|订金|货款|金额|元|万元|人民币|RMB|CNY)"
+)
+#: 明确表示没有账期的写法（现款/款到发货这类）。
+_NO_TERMS = re.compile(
+    r"(?:款到发货|货到付款|现款|现结|款到|预付全款|全款到账|一手交钱|现款现货|当面结清)"
+)
+_NO_TERMS_PREFIX = re.compile(
+    r"(?:款到发货|货到付款|现款|现结|款到即发|款到|预付全款|全款到账|一手交钱)"
+    r"[^0-9]{0,6}$"
+)
+#: 分句分隔符。**先分句再解析**是这份实现的关键：不分句的话，"余款60天后付清"
+#: 里的 60 要跨过逗号才能找到限定词，而跨分句匹配又会把别的分句的数字吞进来。
+_CLAUSE_SPLIT = re.compile(r"[，,。；;、\n]+")
+
+
+def payment_terms_days(text: str | None) -> int | None:
+    """从付款条件文本里识别**最长**账期天数；读不出来返回 `None`（未知）。
+
+    返回 `None` 与返回 `0` 的差别是**安全性**差别，不是文案差别：
+
+    - `0` = "现款、没有账期"，这是一个**事实**，可以据此匹配"账期 ≤ 30 天免审"；
+    - `None` = "这段话里读不出账期"，**不能**当成现款去免审。
+
+    规则引擎对 `None` 的处理本来就是安全的（`evaluate_conditions`：
+    "该单此字段为空，视为未命中"），所以返回 None 等于"这条规则不成立"，
+    单子照常走人工审批 —— 宁可多审一单，也不要因为读不准而放过。
+
+    ## 三轮返修下来的四条规矩（每一条都有实测反例，别简化掉）
+
+    1. **先找账期、再判现款**。一份付款条件可以同时有现款部分和账期部分
+       （预付/首付是现款，余款是账期），局部出现"款到"不代表整份是现款：
+       `预付30%，余款到货后60天` 从前被判成 **0**（"余款到货"里的"款到"被误伤）。
+    2. **单位要认全**：`账期2个月` 从前被判成 **2 天**（只认 `天|日`）。
+    3. **每个分句都要看，取最长**：`账期30天，尾款验收后90天` 从前只取第一处 **30**，
+       而真实信用期是 90 天 —— 取短了就会错误免审。
+    4. **同一分句里同时出现现款词与明确账期时，返回未知**：
+       这种条款自相矛盾（"款到发货"又"账期 60 天"），谁也没法替业务判断哪个为准，
+       交人工审批比猜一个数字安全。
+    """
+    if text is None:
+        return None
+    s = str(text).strip()
+    if not s:
+        return None
+
+    found: list[int] = []
+    unknown = False
+    cash_clause = False
+
+    for raw_clause in _CLAUSE_SPLIT.split(s):
+        clause = raw_clause.strip()
+        if not clause:
+            continue
+
+        # ① 这一分句里的账期：优先"限定词 + 数字 + 单位"
+        days: list[int] = []
+        for value, unit in _TERM_IN_CLAUSE.findall(clause):
+            days.append(int(value) * _UNIT_DAYS[unit])
+        # 后置写法：`余款60天后付清`（数字在前、账期词在后）
+        for value, unit in _UNIT_THEN_PAY.findall(clause):
+            days.append(int(value) * _UNIT_DAYS[unit])
+        if not days:
+            # 兜底：限定词后只有数字、没写单位（"月结30" —— 业务上就是 30 天）。
+            #
+            # ⚠️ **同一分句里混着比例/金额时，裸数字一律不采信。**
+            # 这道护栏不是多余的：`预付款 5000 元` 里的"预付款"含锚点词"付款"、
+            # 而"5000"正好落在锚点后面，于是裸数字路径会把它当成 **5000 天账期**。
+            #
+            # 提醒后来人（也是提醒我自己）：我一度以为这道护栏够不到、把它拆了，
+            # 理由是"撤掉它单测全绿"。实际是**我的反向验证挑错了输入**
+            # （拿 `余款30` 试，而它走的是别的分支），拆完立刻在
+            # `预付款 5000 元，账期45天` 上返回 5000 —— 原始反例复活。
+            # **"撤掉不变红"有时是测试没覆盖，不是代码没用。**
+            if not _MONEY_OR_PERCENT.search(clause):
+                days = [int(v) for v in _BARE_AFTER_ANCHOR.findall(clause)]
+
+        is_cash = bool(_NO_TERMS.fullmatch(clause) or _NO_TERMS_PREFIX.match(clause))
+        if days and is_cash:
+            # ④ 自相矛盾的分句：不猜
+            unknown = True
+            continue
+        if days:
+            found.extend(days)
+            continue
+        if is_cash:
+            cash_clause = True
+
+    if found:
+        # ③ 取**最长**信用期。多个账期条款时，"能拖多久"取决于最长的那条。
+        return max(found)
+    if unknown:
+        return None
+    if cash_clause:
+        # ② 整份文本里没有任何账期，且明确说了现款 —— 这是事实，是 0 天
         return 0
-    match = re.search(r"(\d{1,3})\s*天?", str(text))
-    return int(match.group(1)) if match else 0
+    return None
 
 
 async def build_context(
@@ -238,16 +400,35 @@ async def build_context(
     revenue_for_margin = to_cny(version.total_amount or Decimal(0)) - to_cny(
         version.logistics_amount or Decimal(0)
     )
-    gross_margin = (
-        float((revenue_for_margin - total_cost) / revenue_for_margin * 100)
-        if revenue_for_margin
-        else 0.0
-    )
-    # 单件毛利率仍是"单件对单件"，不受上面的量纲修正影响
-    item_margins = [
-        float((p - c) / p * 100) for p, c in zip(prices, unit_costs) if p
-    ]
-    min_item_margin = min(item_margins) if item_margins else 0.0
+    # ---- 不可计算的毛利率必须是 None，不能是 0 或一个假数字（第二轮审查 P1，2026-10-12）----
+    #
+    # 判据与提交审批里的 `any_missing_cost` **同一份**（A06「无成本不造假」）：
+    # 单件产品成本 ≤ 0 就是"没有成本记录"。两处必须同口径 —— 一边当"没成本"、
+    # 一边当"成本 0"，就会出现下面这两种实测过的误判：
+    #
+    #   ① 缺成本、报价 50、保护价 60：成本按 0 算 → 毛利率 **100%**
+    #      → 命中"毛利 ≥ 30% 免审"规则，直接自动批准；
+    #   ② 产品收入 −100、成本 100：`(-100−100) / −100` = **+200%**
+    #      （分母为负把符号翻正）→ 同样命中免审规则。
+    #
+    # 两种都是"算不出来却算出了一个好看的数字"。所以这里返回 None，
+    # 由 `evaluate_conditions` 判为**未命中**（它已有"该单此字段为空，视为未命中"
+    # 这条分支）：免审拿不到这个字段，就只能走正常审批；
+    # 与利润无关的条件（金额、客户等级、逾期、账期）不受影响，硬拒规则也照旧生效。
+    any_missing_cost = any(cost <= 0 for cost in unit_costs)
+    if any_missing_cost or revenue_for_margin <= 0:
+        gross_margin = None
+    else:
+        gross_margin = float((revenue_for_margin - total_cost) / revenue_for_margin * 100)
+    # 单件毛利率仍是"单件对单件"，不受上面的量纲修正影响。
+    # 同样地：单价非正、成本缺失的行算不出毛利率，此时整列给 None
+    # （0 会被 `lte` 类型的规则当成"毛利率 0%"而误命中）。
+    if any_missing_cost or any(p <= 0 for p in prices) or not items:
+        min_item_margin = None
+    else:
+        min_item_margin = min(
+            float((p - c) / p * 100) for p, c in zip(prices, unit_costs)
+        )
 
     customer_id = quote.customer_id
 
@@ -262,6 +443,23 @@ async def build_context(
             .limit(1)
         )
     ).scalars().first()
+    # 「较上一版让价金额」的单位是**元**（见 CONTEXT_FIELDS），所以两个版本的
+    # 总额都必须是人民币才能相减。从前这里是裸的
+    # `prev.total_amount - version.total_amount` —— 外币单上相减出来的是
+    # **外币差额**，却被当成人民币去匹配"让价 ≤ 1000 元走极速通道"这类阈值：
+    #
+    #     USD 10000 → USD 9000，汇率 7：真实让价 人民币 7000，
+    #     这里算出来 1000 → 命中"≤1000"，本该人工审的单子走了极速通道
+    #     （第四批审查 P1，2026-10-12）。
+    #
+    # 主人 2026-10-12 定的口径是**不做折算**：「只会在国内，没有外币这个东西…
+    # 有人用外币就给他报错」。所以这里见到外币直接拒，而不是乘个汇率糊过去 ——
+    # 折算要定汇率来源与时点，那是另一件没定的事；在定下来之前，
+    # 报错比算一个看着像真的数安全。
+    reject_foreign_currency(
+        version.currency, prev_version.currency if prev_version else None,
+        label="报价版本总额",
+    )
     concession = 0.0
     if prev_version is not None:
         concession = max(
@@ -283,8 +481,13 @@ async def build_context(
 
     return {
         "total_amount": total_cny,
-        "gross_margin": round(gross_margin, 2),
-        "min_item_margin": round(min_item_margin, 2),
+        # None = 不可计算（缺成本 / 产品收入非正 / 没有明细）。**不要**把它折成 0：
+        # `evaluate_conditions` 对 None 的判据是"未命中"，折成 0 就变成"毛利率 0%"，
+        # 那正是本轮要修的两类误判（缺成本当 100%、负收入当 200%）的另一面。
+        "gross_margin": round(gross_margin, 2) if gross_margin is not None else None,
+        "min_item_margin": (
+            round(min_item_margin, 2) if min_item_margin is not None else None
+        ),
         "customer_level": (customer_row.level if customer_row else None) or "",
         "customer_has_overdue": overdue_exists is not None,
         "concession_amount": concession,

@@ -115,7 +115,7 @@ export default function DuplicateCasePage() {
               dataIndex: 'customer_name',
               width: 200,
               render: (v: string | null, r: DuplicateCase) => (
-                <Link to={`/customers/${r.customer_id}`}>{v ?? `#${r.customer_id}`}</Link>
+                <Link to={`/customers/${r.customer_id}`}>{v ?? `编号 ${r.customer_id}`}</Link>
               ),
             },
             {
@@ -123,7 +123,7 @@ export default function DuplicateCasePage() {
               dataIndex: 'candidate_name',
               width: 200,
               render: (v: string | null, r: DuplicateCase) => (
-                <Link to={`/customers/${r.candidate_id}`}>{v ?? `#${r.candidate_id}`}</Link>
+                <Link to={`/customers/${r.candidate_id}`}>{v ?? `编号 ${r.candidate_id}`}</Link>
               ),
             },
             {

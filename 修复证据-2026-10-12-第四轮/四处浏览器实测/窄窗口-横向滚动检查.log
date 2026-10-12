@@ -1,0 +1,8 @@
+✓ 1440px /customers 横向滚动=false（scrollWidth=1440 clientWidth=1440）灰字右边界=1073 卡片右边界=1440 行高/20≈2 「导出…」
+✓ 1440px /products 横向滚动=false（scrollWidth=1440 clientWidth=1440）灰字右边界=1397 卡片右边界=1440 行高/20≈2 「产品与 SKU 的模板下…」
+✓ 1280px /customers 横向滚动=false（scrollWidth=1280 clientWidth=1280）灰字右边界=1237 卡片右边界=1280 行高/20≈2 「导出…」
+✓ 1280px /products 横向滚动=false（scrollWidth=1280 clientWidth=1280）灰字右边界=1237 卡片右边界=1280 行高/20≈2 「产品与 SKU 的模板下…」
+✓ 1024px /customers 横向滚动=false（scrollWidth=1024 clientWidth=1024）灰字右边界=401 卡片右边界=1024 行高/20≈2 「导出…」
+✓ 1024px /products 横向滚动=false（scrollWidth=1024 clientWidth=1024）灰字右边界=643 卡片右边界=1024 行高/20≈2 「产品与 SKU 的模板下…」
+✓ 820px /customers 横向滚动=false（scrollWidth=820 clientWidth=820）灰字右边界=777 卡片右边界=820 行高/20≈2 「导出…」
+✓ 820px /products 横向滚动=false（scrollWidth=820 clientWidth=820）灰字右边界=643 卡片右边界=820 行高/20≈2 「产品与 SKU 的模板下…」

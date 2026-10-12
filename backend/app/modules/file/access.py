@@ -249,17 +249,19 @@ async def visible_object(
             return False
     # 合同文档不存负责人快照：可见性实时跟客户**当前**负责人走（场景14——
     # 换负责人后新负责人按权限查看历史原件，原负责人按数据范围失去访问）
+    #
+    # ⚠️ 归属链**与合同详情同源**（第三批审查 P2，2026-10-12）：客户当前负责人 →
+    # 订单负责人 → 创建人。从前这里只看客户当前负责人，于是客户被回收进公海
+    # （负责人清空）时，详情页点得开、**签署原件却下不了** —— 同一份合同两个答案。
+    # 判据只有一份，落在 `contract/visibility.py`。
     if business_type == "contract":
         from app.modules.contract.model import ContractDocument
+        from app.modules.contract.visibility import contract_in_scope
 
         doc = await session.get(ContractDocument, business_id)
         if doc is None or doc.deleted_at is not None:
             return False
-        customer = await session.get(Customer, doc.customer_id)
-        if customer is None:
-            return False
-        owner_ids = await scoped_owner_ids(session, user)
-        return owner_ids is None or customer.owner_id in owner_ids
+        return await contract_in_scope(session, user, doc)
     # 询价 / 打样 / 订单草稿：复用它们自己的可见性入口。
     # 没有这一段的后果是**上传和挂载都直接被拒**——钉钉 OA 要求先有询价图纸，
     # 而标准附件入口挂不上 `inquiry`，那条流程从入口就断了。

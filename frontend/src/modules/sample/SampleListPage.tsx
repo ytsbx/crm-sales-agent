@@ -53,6 +53,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
 import { optionMatcher } from '../../shared/components/optionMatch'
+import { blockedToastText } from '../../shared/components/blocked-hint-reasons'
 
 /** 样品（PRD §19 / 03-API §26）。 */
 
@@ -176,6 +177,15 @@ export default function SampleListPage() {
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
   const [newItem, setNewItem] = useState<ItemDraft>({ mode: 'sku', quantity: '1' })
+  // 「添加」灰着的时候点一下要有反应（主人 2026-10-12 的规矩，见 BlockedHint）。
+  // 用函数而不是当场算数组：判据要跟按钮的 disabled 完全一致，且这里不能调 hook。
+  const notifyAddBlocked = () => {
+    if (!draftReady(newItem)) {
+      Toast.warning(blockedToastText([
+        newItem.mode === 'custom' ? '请先选择一个定制需求编号，再点「添加」。' : '请先选择一个 SKU，再点「添加」。',
+      ], '添加明细'))
+    }
+  }
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
   // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，在明细行上改（见 itemEdit）。
@@ -553,7 +563,7 @@ export default function SampleListPage() {
   }))
   const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
     value: row.id,
-    label: `${row.inquiry_no ?? `#${row.id}`} · ${row.title}`,
+    label: `${row.inquiry_no ?? `编号 ${row.id}`} · ${row.title}`,
   }))
 
   return (
@@ -680,7 +690,7 @@ export default function SampleListPage() {
                 ...(customersQuery.data?.items ?? []).map((customer) => [customer.id, { value: customer.id, label: customer.name }] as const),
                 ...(selectedOpportunityQuery.data ? [[selectedOpportunityQuery.data.customer_id, {
                   value: selectedOpportunityQuery.data.customer_id,
-                  label: selectedOpportunityQuery.data.customer_name ?? `客户 #${selectedOpportunityQuery.data.customer_id}`,
+                  label: selectedOpportunityQuery.data.customer_name ?? `客户编号 ${selectedOpportunityQuery.data.customer_id}`,
                 }] as const] : []),
               ]).values())}
             />
@@ -780,7 +790,7 @@ export default function SampleListPage() {
 
       {/* 详情与流转 */}
       <SideSheet
-        title={detail ? `样品申请 #${detail.id}` : '样品申请'}
+        title={detail ? `样品申请编号 ${detail.id}` : '样品申请'}
         visible={detailId !== null}
         onCancel={closeDetail}
         width={760}
@@ -922,13 +932,24 @@ export default function SampleListPage() {
                     value={newItem.quantity}
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}
                   />
-                  <Button
-                    disabled={!draftReady(newItem)}
-                    loading={addItemMutation.isPending}
-                    onClick={() => addItemMutation.mutate()}
-                  >
-                    添加
-                  </Button>
+                  <div className="blocked-hint-click" onClick={notifyAddBlocked}>
+                    <Button
+                      disabled={!draftReady(newItem)}
+                      loading={addItemMutation.isPending}
+                      style={!draftReady(newItem) ? { pointerEvents: 'none', cursor: 'not-allowed' } : undefined}
+                      onClick={() => addItemMutation.mutate()}
+                    >
+                      添加
+                    </Button>
+                  </div>
+                  {/* 灰按钮要能解释自己（主人 2026-10-12：「点又点不了，又不给提示
+                      为什么点不了」）：这里的判据只有一个 —— 上面那个下拉还没选东西，
+                      但下拉本身没有报错态，看着就像"填完了却加不进去"。 */}
+                  {!draftReady(newItem) && (
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      先在上面选{newItem.mode === 'custom' ? '一个定制需求编号' : '一个 SKU'}，再点「添加」
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -1184,7 +1205,7 @@ export default function SampleListPage() {
                         ) : (
                           detail.basis_files.map((file: BasisFile) => (
                             <div key={file.file_id} style={{ marginLeft: 8 }}>
-                              · {file.file_name || `文件 #${file.file_id}`}
+                              · {file.file_name || `文件编号 ${file.file_id}`}
                               <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
                                 （第 {file.sample_version ?? 1} 版依据，校验值{' '}
                                 {file.checksum ? `${file.checksum.slice(0, 12)}…` : '未记录'}）
@@ -1207,7 +1228,7 @@ export default function SampleListPage() {
                       <div>
                         版本：第 {detail.version ?? 1} 版
                         {detail.superseded_by
-                          ? `（已被新修订版 #${detail.superseded_by} 取代，只读）`
+                          ? `（已被新修订版编号 ${detail.superseded_by} 取代，只读）`
                           : ''}
                       </div>
                     </div>

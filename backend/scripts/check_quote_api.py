@@ -30,7 +30,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from _test_support import require_api_base, require_isolated_db
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -441,6 +441,16 @@ def main():
         token=lisi,
         body=[{'sku_id': skus[0], 'quantity': 100, 'quoted_price': 1}],
     )
+    # ⚠️ 提交审批前要先确认运费（2026-10-12 口径：运费闸前置到这一环）。
+    # 从前这里直接提交——那时审批**不校验运费**，而版本一提交就锁死、
+    # 费用入口只对草稿开放，于是"报批时还没问准运费"的单子必然死锁
+    # （发送时才发现缺运费，撤回也救不了）。闸门提前之后，流程是：
+    # 先确认运费（哪怕是 0 元）→ 再提交审批。
+    status, res = call(
+        'POST', f'/quote-versions/{lisi_version_id}/charges', token=lisi,
+        body={'charge_type': 'logistics', 'description': '实际运费', 'amount': '0'},
+    )
+    check('提交审批前先确认运费（0 元也要显式填）', res.get('code'), 0)
     status, res = call(
         'POST', f'/quote-versions/{lisi_version_id}/submit-approval', token=lisi, body={}
     )
@@ -481,6 +491,8 @@ def main():
     # §4 已复制到 V3；历史 V1 不能再借审批改变整张报价状态。
     # 发送登记与失效用当前版走真实流程，历史版本仍用于上述快照/复制回归。
     version_id = source_version_id
+    # 同样先确认运费再提交（闸门已前置，见上面那处的说明）
+    confirm_freight_before_submit(call, admin, version_id)
     status, res = call('POST', f'/quote-versions/{version_id}/submit-approval', token=admin, body={})
     check('当前版本通过审批', res.get('code'), 0)
     check('当前版本审批状态', (res.get('data') or {}).get('version', {}).get('approval_status'), 'approved')
@@ -550,16 +562,17 @@ def main():
         '未审批版本 POST 没有返回 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
     )
 
-    # 上面验证安全闸门；这里用前面已经审批通过的当前版本验证正式 PDF 两条路径仍可用。
+    # 审批不能代替主数据和实际运费确认；此夹具尚未确认，两个出口均须拒绝。
+    # 已确认版本的正向对照在 check_audit_risk_repairs 中覆盖。
     status, res = call('GET', f'/quote-versions/{version_id}/pdf', token=admin)
-    check('已审批版本 GET pdf', status, 200)
+    check('已审批但未确认主数据 GET pdf 被拒', status, 422)
     check_true(
-        '已审批版本返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+        '未确认版本没有返回正式 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
     )
     status, res = call('POST', f'/quote-versions/{version_id}/generate-pdf', token=admin)
-    check('已审批版本 POST generate-pdf', status, 200)
+    check('已审批但未确认主数据 POST generate-pdf 被拒', status, 422)
     check_true(
-        '已审批版本同样返回 PDF', res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
+        '别名同样没有返回正式 PDF', not res.get('_ctype', '').startswith('application/pdf'), str(res.get('_ctype'))
     )
 
     print()

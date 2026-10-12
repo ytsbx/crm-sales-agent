@@ -1,9 +1,12 @@
 """合同模板填充与文档台账的业务逻辑（§3.6/场景14）。"""
 
+import asyncio
 import hashlib
 import json
 import re
 from datetime import UTC, datetime, time, timedelta
+
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -559,6 +562,47 @@ async def generate_document(
                 "只有月结协议才有「替代旧协议」这个动作；销售合同的衍生件请用补充协议",
                 422,
             )
+        # ---- 月结续签：生效日**必填**（第三批审查 P2，2026-10-12）----
+        #
+        # schema 注释与模型都写着"续签时必填"，代码却一直允许空值：只记到期日
+        # 处理不了「提前签、未来才生效」——那种情况下旧协议还得继续适用一段，
+        # 没有生效日就分不清"新版什么时候开始管事"。
+        #
+        # 位置很关键：必须在**生成正文、取号、以及取消旧协议待办之前**。
+        # 放在后面的话，校验失败时号已经取走了、旧协议的待办也已经被取消 ——
+        # 用户看到报错，库里却已经动过一半。
+        if parent.doc_type == "monthly":
+            if payload.effective_date is None:
+                raise AppError(
+                    ErrorCode.REQUIRED_FIELD_MISSING,
+                    "月结协议续签必须填写**生效日**：协议什么时候开始适用，"
+                    "决定旧协议还要继续适用到哪一天。请补上生效日再生成。",
+                    422,
+                )
+            if (
+                payload.expiry_date is not None
+                and payload.effective_date > payload.expiry_date
+            ):
+                raise AppError(
+                    ErrorCode.PARAM_ERROR,
+                    f"生效日（{payload.effective_date}）不能晚于到期日"
+                    f"（{payload.expiry_date}）—— 一份协议不可能到期之后才生效。",
+                    422,
+                )
+
+    # 生效日与到期日的先后关系对**所有**合同都成立（普通合同草稿只是允许不填，
+    # 不等于允许填成一个逻辑上不可能的组合）。同样放在生成与取号之前。
+    if (
+        payload.effective_date is not None
+        and payload.expiry_date is not None
+        and payload.effective_date > payload.expiry_date
+    ):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"生效日（{payload.effective_date}）不能晚于到期日（{payload.expiry_date}）"
+            "—— 一份协议不可能到期之后才生效。",
+            422,
+        )
 
     content, filled, missing = render_template(
         template.body,
@@ -738,28 +782,185 @@ async def attach_generated_pdf(
     # reportlab 是同步 CPU 活，丢线程池，别卡住事件循环（与下载路径一致）
     pdf_bytes = await asyncio.to_thread(render_contract_pdf, data)
     object_key, size, checksum = await storage.save_bytes(pdf_bytes, ".pdf")
-    record = FileRecord(
-        storage_provider=settings.storage_provider,
-        object_key=object_key,
-        file_name=f"{doc.doc_no}.pdf",
-        mime_type="application/pdf",
-        size=size,
-        checksum=checksum,
-        uploaded_by=user_id,
-    )
-    session.add(record)
-    await session.flush()
-    session.add(
-        BusinessFile(
-            business_type="contract",
-            business_id=doc.id,
-            file_id=record.id,
-            category="generated",
+    # 从落盘这一刻起就登记：外层（router）提交成功后要注销它
+    remember_pending_object(session, object_key)
+    # ⚠️ 从这里往下的任何一步失败，**盘上这个 PDF 就是孤儿**（第四批审查 P2）：
+    # 文件已经落盘，但登记文件 / 登记附件 / 回填 `generated_file_id` / 外层提交
+    # 任一环节出错，数据库整个回滚（合同与文件记录都没了），盘上的对象却留着 ——
+    # 实测"数据库 0 条、存储替身里 PDF 仍在、删除补偿调用 0 次"。
+    # 一份合同重试几次就攒几个没人认领的 PDF，既占空间又让"哪份是正式件"说不清。
+    #
+    # 所以：记住本次的 `object_key`，失败时**精确删掉这一次**的对象。
+    # 只删自己刚写的那一个键 —— 不做"按前缀扫一遍"那种清理，那会误删别的东西。
+    try:
+        record = FileRecord(
+            storage_provider=settings.storage_provider,
+            object_key=object_key,
+            file_name=f"{doc.doc_no}.pdf",
+            mime_type="application/pdf",
+            size=size,
+            checksum=checksum,
+            uploaded_by=user_id,
         )
-    )
-    doc.generated_file_id = record.id
-    await session.flush()
+        session.add(record)
+        await session.flush()
+        session.add(
+            BusinessFile(
+                business_type="contract",
+                business_id=doc.id,
+                file_id=record.id,
+                category="generated",
+            )
+        )
+        doc.generated_file_id = record.id
+        await session.flush()
+    except Exception:
+        # 这一层兜的是"本函数内部失败"（flush 撞约束、附件登记失败…）。
+        # 事务这时还没提交，数据库那边的回滚由调用方/会话负责；
+        # 这里只负责把**已经落盘**的 PDF 清掉，别让它变成孤儿。
+        #
+        # `storage.delete_object` 是同步文件操作且失败不抛（见 storage 实现），
+        # 所以放进异常路径不会出现"清理又抛错、把原始错误盖掉"的情况。
+        storage.delete_object(object_key)
+        raise
     return record.id
+
+
+#: 会话级"已落盘、尚未提交"的对象键登记表。
+#:
+#: 为什么需要：`attach_generated_pdf` 落盘 PDF 之后，**外层还有事要做**
+#: （写时间线、写审计、`session.commit()`）。那些步骤失败时事务回滚，
+#: 数据库里什么都不剩，而盘上的 PDF 已经在了 —— 第四批审查 P2 实测
+#: "数据库 0 条、存储里 PDF 仍在、删除补偿 0 次"。
+#:
+#: 这里只做一件事：把"本次落盘、还没提交"的键挂到 session 上，
+#: 提交成功后**注销**（那时它就是正式件了，不能删），
+#: 提交失败才由调用方精确删掉。按 session 存而不是全局存，避免并发请求互相误删。
+#:
+#: ⚠️ 用 `id(session)` 当键、值用 `WeakSet` 无关紧要，这里用普通 dict +
+#: 显式注销：请求级 session 生命周期短，漏一两个键不会长大。
+logger = logging.getLogger(__name__)
+
+_PENDING_OBJECTS: dict[int, set[str]] = {}
+
+
+def remember_pending_object(session: AsyncSession, object_key: str) -> None:
+    """登记"这个对象已落盘、随事务提交才作数"。"""
+    _PENDING_OBJECTS.setdefault(id(session), set()).add(object_key)
+
+
+def take_pending_objects(session: AsyncSession) -> list[str]:
+    """取走该会话待决的对象键（取走即清空，避免重复删除）。"""
+    return sorted(_PENDING_OBJECTS.pop(id(session), set()))
+
+
+async def _cancel_safe(coro, *, label: str, _retries: int = 2):
+    """跑一段清理逻辑，**即使被取消也要跑完**（第四批复审 P2，2026-10-12）。
+
+    ## 为什么必须单独处理 `CancelledError`
+
+    `asyncio.CancelledError` 继承的是 `BaseException`，**不是** `Exception` ——
+    所以 `except Exception:` 那种写法**捕不到取消**，取消一来清理就半途而废。
+    复审实测（PDF 保存后、审计等待处注入取消）：
+
+        合同 0 条、文件记录 0 条，**存储仍有 1 份 PDF**，**待清理登记仍有 1 条**
+
+    两条后果分开看：孤儿 PDF 只是占空间；而**登记留在会话上**更麻烦 ——
+    那个会话之后一旦再走清理，会把一个早已没人管的键当成待删对象。
+
+    ## 做法
+
+    `asyncio.shield` 让这段清理**不被当前的取消打断**，但外层仍会收到取消 ——
+    "先清干净、再继续抛取消"，取消语义一点没变。
+    被再取消一次（shield 只挡一层）时重试，最多 `_retries` 次；
+    仍然失败就放弃清理并记日志 —— **清理失败绝不能盖过取消本身**，
+    否则调用方（可能是 FastAPI 的取消处理）会看到一个莫名其妙的异常。
+    """
+    for attempt in range(_retries + 1):
+        try:
+            return await asyncio.shield(coro)
+        except asyncio.CancelledError:
+            if attempt >= _retries:
+                logger.warning("%s：清理被连续取消，放弃（登记已注销，对象成为孤儿）", label)
+                return None
+            logger.info("%s：清理期间又被取消，重试第 %d 次", label, attempt + 1)
+        except Exception:  # noqa: BLE001 —— 清理的失败不许盖过原来的错误/取消
+            logger.exception("%s：清理失败（保留对象，避免误删）", label)
+            return None
+    return None
+
+
+async def cleanup_pending_objects(session: AsyncSession) -> int:
+    """**安全清理**：本次落盘、但没能提交的对象，逐个核查后再删。
+
+    返回真正删掉几个。
+
+    ## 为什么要核查，不能直接删（第四批复审 P1，2026-10-12）
+
+    我上一版是 `except Exception: for key in take_pending_objects(): delete_object(key)` ——
+    看着很合理，实际有**数据丢失**风险：
+
+        `session.commit()` 抛异常 **不等于** 事务没提交。
+        提交成功但"回执"丢了（网络断、连接被掐）时，数据库里**合同和文件记录都在**，
+        而异常照抛 → 于是把**已经入库的原件 PDF 删掉了**。
+        结果：合同记录 1 条、文件记录 1 条，下载 404。
+
+    这比原来那个"留下孤儿 PDF"严重得多：孤儿只是浪费空间，
+    删掉原件是**把用户的东西弄丢了**。
+
+    ## 判据
+
+    先 `rollback()`（把会话从失败事务里摘出来，之后才能查库），
+    再按 `object_key` 查 `file_records`：
+
+    - **查得到** → 这一笔已经提交，它是正式件，**保留**；
+    - **查不到** → 确实没提交，删掉。
+    """
+    from sqlalchemy import select
+
+    from app.modules.file.model import FileRecord
+    from app.modules.file import storage
+
+    # ⚠️ **先把登记取出来**（`take_pending_objects` 一取就清空）：
+    # 万一后面被取消，登记也不会留在会话上被反复当成待清理对象。
+    keys = take_pending_objects(session)
+    if not keys:
+        return 0
+    # 会话还在失败事务里的话，任何查询都会报 "current transaction is aborted"
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001 —— 回滚本身失败就当作查不到，但下面仍要复查
+        pass
+
+    deleted = 0
+    for key in keys:
+        try:
+            row = (
+                await session.execute(
+                    select(FileRecord.id)
+                    .where(FileRecord.object_key == key)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars().first()
+        except asyncio.CancelledError:
+            # 取消也要把剩下的键处理完（见 `_cancel_safe` 的说明）：
+            # 核查**没有结论**就绝不删 —— 宁可留孤儿。
+            logger.warning("合同 PDF 清理：核查 %s 时被取消，保留该对象", key)
+            continue
+        except Exception:  # noqa: BLE001 —— **核查不了就不删**：宁可留孤儿，不能删原件
+            logger.warning("合同 PDF 清理：核查 %s 失败，保留该对象", key)
+            continue
+        if row is not None:
+            logger.info("合同 PDF 清理：%s 已入库（提交成功了），保留", key)
+            continue
+        try:
+            storage.delete_object(key)
+        except asyncio.CancelledError:
+            # 删除本身是同步调用，正常不会被取消；真被取消就当没删成（留着孤儿）
+            logger.warning("合同 PDF 清理：删除 %s 时被取消", key)
+            continue
+        deleted += 1
+    return deleted
 
 
 async def list_signed_files(session: AsyncSession, doc_id: int) -> list[dict]:
@@ -1131,6 +1332,30 @@ async def cancel_auto_tasks(session: AsyncSession, doc_id: int) -> int:
     return len(rows)
 
 
+def is_superseded(doc: "ContractDocument") -> bool:
+    """这份协议是否已经被续签**替代**（续签时勾了「替代旧协议」）。"""
+    return bool((doc.filled_data or {}).get("_superseded_by"))
+
+
+def should_remind(doc: "ContractDocument") -> bool:
+    """这份协议现在**还应不应该**产生到期提醒 —— 全项目唯一判据。
+
+    为什么必须抽出来（第三批审查 P2，2026-10-12）：替代旧协议这个动作只结束
+    **当时已经存在**的待办（`cancel_auto_tasks`），而旧协议仍保留 `signed`。
+    如果替代发生在提醒窗口**之前**，当时没有任何待办可结束 —— 等日期进入窗口，
+    扫描只看状态和到期日，就会给一份"明确已被替代"的旧协议凭空建出提醒。
+
+    所以"要不要提醒"必须同时看**替代标记**：扫描建提醒、以及以后任何新增的
+    提醒入口都走这里，避免又出现"这条路径忘了看标记"。
+    """
+    return (
+        doc.doc_type == "monthly"
+        and doc.status == "signed"
+        and doc.deleted_at is None
+        and not is_superseded(doc)
+    )
+
+
 async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None = None) -> int:
     """月结协议到期前提醒负责人（§3.6），返回本轮新建条数。
 
@@ -1183,6 +1408,11 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
     for doc, owner_id_of_doc, customer_name in rows:
         owner = owner_id_of_doc
         if owner is None:
+            continue
+        # 已被续签替代的旧协议**不再提醒**（第三批审查 P2，2026-10-12）：
+        # 替代动作发生在提醒窗口之前时，当时没有待办可结束，只靠 SQL 条件
+        # 会在进入窗口后凭空建出一条提醒。判据只有 `should_remind` 一份。
+        if not should_remind(doc):
             continue
         source_key = _monthly_remind_key(doc.id, doc.expiry_date)
         existing = (

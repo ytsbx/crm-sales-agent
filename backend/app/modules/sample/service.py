@@ -263,7 +263,7 @@ async def get_visible_or_404(
         if child is not None:
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
-                f"这是第 {request.version} 版，已被新修订版（#{child}）取代、不能再改。"
+                f"这是第 {request.version} 版，已被新修订版（编号 {child}）取代、不能再改。"
                 "制作与寄送事实已按当时资料冻结保留；要继续改请在新版本上操作",
                 422,
             )
@@ -485,7 +485,7 @@ async def record_opportunity_touch(
     if opportunity is None or opportunity.deleted_at is not None:
         return
     label = SAMPLE_STATUS_LABEL.get(request.status, request.status)
-    opportunity.next_action = f"样品（#{request.id}）{action}：当前{label}"
+    opportunity.next_action = f"样品（编号 {request.id}）{action}：当前{label}"
 
 
 def now() -> datetime:

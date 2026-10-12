@@ -1,20 +1,37 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Input, Toast } from '@douyinfe/semi-ui'
+import { Toast } from '@douyinfe/semi-ui'
+import {
+  IconArrowRight,
+  IconArrowUpRight,
+  IconBox,
+  IconEyeClosedStroked,
+  IconEyeOpenedStroked,
+  IconFile,
+  IconLoading,
+  IconLockStroked,
+  IconShieldStroked,
+  IconUserGroup,
+  IconUserStroked,
+} from '@douyinfe/semi-icons'
 
 import { fetchMe, login } from '../../shared/api/auth'
 import { currentAuthEpoch, useAuthStore } from '../../shared/store/auth'
+import './login.css'
 
 export default function LoginPage() {
   const navigate = useNavigate()
   const setAuth = useAuthStore((state) => state.setAuth)
   const setUser = useAuthStore((state) => state.setUser)
 
-  const [username, setUsername] = useState('zhangsan')
-  const [password, setPassword] = useState('123456')
+  // 账号由管理员分配，登录页不预填凭据。
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
 
   const handleLogin = async () => {
+    if (loading) return
     if (!username.trim() || !password) {
       Toast.warning('请输入用户名和密码')
       return
@@ -44,35 +61,109 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="login-page">
-      <div className="login-card">
-        <div className="login-title">报价驱动型销售 CRM</div>
-        <div className="login-hint">
-          演示账号：admin / admin123（管理员）
-          <br />
-          zhangsan / 123456（业务员）　lisi / 123456（主管）
+    <div className="crm-login">
+      <aside className="crm-login-story" aria-label="销售协作平台">
+        <div className="crm-login-brand">
+          <span className="crm-login-brand-mark" aria-hidden="true"><span /><span /></span>
+          <span>销售协作平台<small>SALES CRM</small></span>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <Input
-            size="large"
-            placeholder="用户名"
-            value={username}
-            onChange={setUsername}
-            onEnterPress={handleLogin}
-          />
-          <Input
-            size="large"
-            mode="password"
-            placeholder="密码"
-            value={password}
-            onChange={setPassword}
-            onEnterPress={handleLogin}
-          />
-          <Button theme="solid" size="large" loading={loading} onClick={handleLogin} block>
-            登录
-          </Button>
+
+        <div className="crm-login-message">
+          <div className="crm-login-eyebrow"><span aria-hidden="true" />从线索，到长期合作</div>
+          <h1>每一次跟进，<br />都有下一步。</h1>
+          <p>让客户、报价与订单彼此连接，<br />把精力留给真正重要的合作。</p>
         </div>
-      </div>
+
+        <div className="crm-login-art" aria-hidden="true">
+          <div className="crm-login-orbit" />
+          <div className="crm-login-orbit crm-login-orbit-outer" />
+          <div className="crm-login-orb" />
+          <div className="crm-login-flow crm-login-flow-customer">
+            <span className="crm-login-flow-icon"><IconUserGroup /></span>
+            <span><small>建立连接</small><strong>客户</strong></span>
+            <span className="crm-login-flow-dot" />
+          </div>
+          <div className="crm-login-flow crm-login-flow-quote">
+            <span className="crm-login-flow-icon"><IconFile /></span>
+            <span><small>把需求变成方案</small><strong>报价</strong></span>
+            <IconArrowUpRight />
+          </div>
+          <div className="crm-login-flow crm-login-flow-order">
+            <span className="crm-login-flow-icon"><IconBox /></span>
+            <span><small>让合作向前一步</small><strong>订单</strong></span>
+          </div>
+        </div>
+
+        <div className="crm-login-story-footer">
+          <span>连接业务的每一步</span><span>客户 · 商机 · 报价 · 订单</span>
+        </div>
+      </aside>
+
+      <main className="crm-login-main">
+        <span className="crm-login-workspace">团队工作空间</span>
+        <div className="crm-login-content">
+          <div className="crm-login-welcome">欢迎回来</div>
+          <h2>登录你的工作台</h2>
+          <p className="crm-login-description">从这里，继续今天的业务。</p>
+
+          <form
+            className="crm-login-form"
+            aria-label="账号登录"
+            aria-busy={loading}
+            noValidate
+            onSubmit={(event) => { event.preventDefault(); void handleLogin() }}
+          >
+            <label htmlFor="crm-login-username">用户名</label>
+            <div className="crm-login-input">
+              <IconUserStroked aria-hidden="true" />
+              <input
+                id="crm-login-username"
+                name="username"
+                autoComplete="username"
+                placeholder="请输入用户名"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                disabled={loading}
+                required
+              />
+            </div>
+
+            <label htmlFor="crm-login-password">密码</label>
+            <div className="crm-login-input">
+              <IconLockStroked aria-hidden="true" />
+              <input
+                id="crm-login-password"
+                name="password"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                placeholder="请输入密码"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={loading}
+                required
+              />
+              <button
+                className="crm-login-password-toggle"
+                type="button"
+                aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword((current) => !current)}
+              >
+                {showPassword ? <IconEyeClosedStroked /> : <IconEyeOpenedStroked />}
+              </button>
+            </div>
+
+            <button className="crm-login-submit" type="submit" disabled={loading}>
+              {loading && <IconLoading className="crm-login-spinner" aria-hidden="true" />}
+              <span>{loading ? '正在登录…' : '进入工作台'}</span>
+              {!loading && <IconArrowRight aria-hidden="true" />}
+            </button>
+          </form>
+
+          <p className="crm-login-admin-note"><IconShieldStroked aria-hidden="true" />账号由管理员统一分配</p>
+        </div>
+        <span className="crm-login-footer">销售协作平台 · SALES CRM</span>
+      </main>
     </div>
   )
 }

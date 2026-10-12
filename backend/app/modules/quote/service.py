@@ -8,8 +8,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.core.timebase import today_business
-from app.core.trade_mode import ensure_currency_allowed
+from app.core.trade_mode import CNY, ensure_currency_allowed
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
 from app.modules.customer.model import Contact, Customer
 from app.modules.opportunity.model import Opportunity, OpportunityItem
@@ -71,6 +72,76 @@ def is_logistics_charge(charge: QuoteCharge) -> bool:
         not charge.is_discount
         and (charge.charge_type or "").strip().lower() == CHARGE_TYPE_LOGISTICS
     )
+
+
+async def ensure_charge_change_allowed(
+    version: QuoteVersion, *, before: QuoteCharge | None, after: QuoteCharge | None
+) -> None:
+    """改附加费用的闸：锁版之后**只放行运费**（主人 2026-10-12 拍板，方案 A+B）。
+
+    ## 要解决的那个死胡同
+
+    运费是在「附加费用」里加的，而这个入口**只在草稿开放**；正式发送又硬性要求
+    运费已确认。于是"报批时还没问准运费"的单子被两道闸夹住：
+
+        提交审批 →（审批**不校验运费**）→ 通过 → 版本锁死 → 发送时才发现缺运费
+        → 撤回也救不了（撤回只对「审批中」有效）
+
+    唯一的出路是"新建版本 + 补运费 + 重走一遍审批"，而新建版本会把
+    `approval_status` 重置成 `not_submitted` —— 一次重批就这么来的。
+
+    ## 为什么锁版之后可以放行运费（判据，别顺手放宽）
+
+    - **运费是代收代付**，不进产品价与利润：新报价口径下 `item_unit_product_cost`
+      取 `includes_freight=False`，底价与利润率判定**只用商品成本**；
+    - 审批分档用的是 `total_amount`（含运费），而**批的时候运费还是 0**
+      （这正是卡住的原因），所以档位本来就是按"不含运费"定的 ——
+      事后补运费**不会**追溯改变已定的档位，**不需要重审**（已确认口径）；
+    - 补完之后旧版仍能走「标记已发送 → 客户接受 → 转订单」，
+      所以这一放行真的能把死胡同解开，而不是让人再绕一圈。
+
+    ⚠️ **只放行运费**：折扣/税费/服务费在锁版后仍然一律拒绝。那些属于"批过的
+    总额能被事后改动"，会让审批白做 —— 它们没有"代收代付、不进产品价"这个性质。
+    判据必须同时看**改之前**和**改之后**：把一条运费改成"服务费"同样被拒。
+
+    ## 和"标记已发送"的先后
+
+    已发送（`sent_at` 有值）时，改动意味着"客户手里那份文件和你系统里的不一致"，
+    所以放行成功后**必须重新登记一次发送**（把 `sent_at` 清掉），否则台账上是
+    "发过一版、内容是旧的"。前端会说明这一点。
+    """
+    # ⚠️ **没锁版就直接放行**（`ensure_version_editable` 的判据，保持一处口径）：
+    # 草稿态什么都能改，这道闸只管锁版之后的例外。少了这一句会把草稿也拦下 ——
+    # 我第一版就漏了，实测"草稿态加折扣"被拒（消息还是"已提交审批或已发送"，
+    # 而那个版本其实是 `not_submitted`，排查时很误导）。
+    if not (version.approval_status in ("pending", "approved") or version.sent_at is not None):
+        return
+    if not (before is None or is_logistics_charge(before)):
+        raise AppError(
+            ErrorCode.QUOTE_VERSION_LOCKED,
+            "该版本已提交审批或已发送，只有「物流」类附加费用可以补填或修改"
+            "（运费代收代付、不进产品价，补齐不需要重新审批）；"
+            "其他费用与折扣要改动请新建版本。",
+            422,
+        )
+    if not (after is None or is_logistics_charge(after)):
+        raise AppError(
+            ErrorCode.QUOTE_VERSION_LOCKED,
+            "该版本已提交审批或已发送，附加费用不能再改成别的分类（只有运费能补填）——"
+            "改分类等于把批过的总额换成另一种费用，那是一笔新的钱，请新建版本。",
+            422,
+        )
+    # ⚠️ **两条校验都过了才动状态**（这一行必须在两个 `raise` 之后）。
+    #
+    # 我第一版把清空写在校验**之前**，于是**一次被拒绝的改动也会把 `sent_at` 清掉** ——
+    # 函数虽然抛了异常，但对象上的改动已经落在会话里，随后照样 flush 进库。
+    # 实测后果：一个"想改服务费、被正确拒绝"的请求，把这条报价变成"没发送过"，
+    # 前端从"登记再次发送"退回"标记已发送"，而客户手里明明有那份文件。
+    # **校验失败时不许留下任何副作用** —— 顺序就是这条规则本身。
+    if version.sent_at is not None:
+        # 见 docstring 最后一段：客户手里那份文件已经印了旧的运费，
+        # 改完必须重新登记发送，不能留着"已发送"的状态。
+        version.sent_at = None
 
 
 def mark_logistics_confirmed(charge: QuoteCharge, *, at: datetime | None = None) -> None:
@@ -163,7 +234,7 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         # §8.14：这条明细按哪一版 SKU 主数据算的（空＝当时还没有确认记录）
         "master_version_no": item.master_version_no,
         "quoted_price": _f(item.quoted_price),
-        "amount": _f(item.quantity * item.quoted_price),
+        "amount": _f(line_amount(item.quantity, item.quoted_price)),
         "profit_snapshot": _f(item.profit_snapshot),
         "profit_rate_snapshot": _f(item.profit_rate_snapshot),
         "approval_required": item.approval_required,
@@ -386,6 +457,44 @@ async def ensure_version_editable(version: QuoteVersion) -> None:
         )
 
 
+async def reload_locked_child(
+    session: AsyncSession,
+    model,
+    row_id: int,
+    *,
+    version_id: int,
+    label: str,
+):
+    """抢到版本锁之后，**强制重读**这一条子行（明细 / 附加费用）。
+
+    为什么要单独一个函数（第二轮审查 P1，2026-10-12）：
+
+    端点必须按 id 读一次子行才知道它属于哪个版本，而那一读发生在**锁之前**
+    （锁的粒度是"报价单 + 版本"）。两次读之间另一个会话完全可能已经改掉这条子行
+    —— 典型场景是一条 +100 的费用被并发的第一个请求改成了 −100 的优惠，
+    第二个请求只改说明、沿用自己手里的旧对象重算，于是
+
+        货款 1000 + 旧值 100 = 1100（正确应为 900）
+
+    会话是 `expire_on_commit=False` 的，锁后普通重查会命中身份映射里的旧实例，
+    什么也刷新不了；`recalc_version` 的 SELECT 也一样拿旧值（同样不刷新）。
+    所以**必须** `populate_existing=True`。
+
+    子行在等待锁期间被删掉、或不再属于这一版时按"不存在"处理（404），
+    不能让调用方拿着一条已经不属于这里的记录继续写。
+    """
+    row = (
+        await session.execute(
+            select(model)
+            .where(model.id == row_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
+    if row is None or getattr(row, "quote_version_id", None) != version_id:
+        raise AppError(ErrorCode.NOT_FOUND, f"{label}不存在", 404)
+    return row
+
+
 async def resolve_exchange_rate(
     session: AsyncSession, currency: str | None
 ) -> tuple[Decimal | None, str | None]:
@@ -438,7 +547,15 @@ async def resolve_exchange_rate(
                 f"币种 {code} 只有一条 {pending:%Y-%m-%d %H:%M} 才生效的汇率，"
                 "现在还没有生效的汇率；请维护一条当前生效的，或等它生效后再报价",
             )
-        return None, f"币种 {code} 没有维护汇率，请先在价格中心维护汇率后再报外币价"
+        # ⚠️ 这句从前是"请先在价格中心维护汇率后再报外币价" ——
+        # 而价格中心**没有汇率页**（后端有接口、前端 0 引用），等于把用户
+        # 指到一个不存在的界面。主人 2026-10-12 定稿：汇率不做、外币一律拒绝，
+        # 所以这里如实说"本系统不做外币"，并给出走得通的出路。
+        return None, (
+            f"币种 {code} 没有汇率记录，而本系统**不做外币业务**"
+            f"（没有汇率维护入口，也不打算做）。请把币种改回人民币（CNY）"
+            f"重新报价；这一版如果本来就是人民币，请检查是不是被误改成了 {code}。"
+        )
     return row.rate, row.source or "手工维护"
 
 
@@ -532,6 +649,25 @@ async def create_quote(
     if opportunity is not None:
         from app.modules.opportunity import service as opportunity_service
         opportunity = await opportunity_service.get_visible_opportunity(session, user, opportunity.id)
+        # 客户以**商机**为准（成交端点挂在商机上，漏斗/归因也按商机算）。
+        #
+        # ⚠️ 但请求里若同时给了 customer_id，那它必须跟商机一致 —— 不一致就是
+        # **调用方填错了**（前端选了 A 客户却挂着 B 的商机，或 Agent 工具参数串了）。
+        # 以前这里是**静默覆盖**：请求里的 customer_id 被无声丢掉，报价按商机建出来，
+        # 界面上看不出任何异常，直到有人发现"这单怎么记在另一家头上"。
+        # 主人 2026-10-12 定的口径：不一致就拒，并说清怎么办（与"联系人不属于客户"
+        # 同一套写法）。
+        #
+        # 核对说明：这一条**不是**在堵"能把 A 的商机挂进 B 的报价" —— 那种情况
+        # 本来就发生不了（客户跟着商机走）。它堵的是**参数互相矛盾还被当成成功**。
+        if customer_id is not None and customer_id != opportunity.customer_id:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"这次请求里的客户（id={customer_id}）与所选商机「{opportunity.title}」"
+                f"所属的客户（id={opportunity.customer_id}）不是同一家 —— 报价的客户"
+                "以商机为准，请改选本客户的商机，或确认客户后再提交（两个参数必须一致）。",
+                422,
+            )
         customer_id = opportunity.customer_id
 
     # 客户/联系人必须存在。放在 service 而不是路由：Agent 工具
@@ -790,7 +926,19 @@ async def create_version(
         # 无法确认，由调用方提示人工核实（`version_logistics_in_base_cost` 管口径，
         # 不替业务判断历史金额的含义）。
         pricing_basis=PRICING_BASIS_ACTUAL_PASS_THROUGH,
-        currency=source.currency,
+        # ⚠️ **新版本一律人民币**，哪怕源版本是历史外币单（主人 2026-10-12 口径：
+        # 「汇率不要管，完全不用做，谁用外币直接拒绝」）。
+        #
+        # 从前这里是 `source.currency`：历史 USD 单点「新建版本」时，
+        # 系统会拿 USD 去找汇率，找不到就抛
+        # 「币种 USD 没有维护汇率，请先在价格中心维护汇率后再报外币价」——
+        # 而价格中心**没有汇率页**（`GET/POST /exchange-rates` 前端 0 引用），
+        # 那句指路指向一个不存在的界面。实测：**新建版本是历史外币单唯一的出路**，
+        # 于是这条路被一句错话堵死。
+        #
+        # 落成人民币才是对的：口径已定"不做外币"，新版本来就该按人民币重新报价；
+        # 历史那份外币原件一个字不动，照旧看得到。
+        currency=CNY,
         payment_terms=source.payment_terms,
         delivery_terms=source.delivery_terms,
         customer_name_snapshot=customer.name if customer else None,
@@ -855,6 +1003,23 @@ async def create_version(
         )
     await copy_version_charges(session, source_id=source.id, target_version=version)
     await session.flush()
+
+    # ---- 币种与汇率快照必须**先**落定，再重算利润（第二轮审查 P2，2026-10-12）----
+    #
+    # 从前这个 `apply_exchange_rate_snapshot` 排在最后（recalc 之后），于是复制出来的
+    # 外币版本在重算利润时 `version.exchange_rate_snapshot` 还是空的：
+    # `apply_current_basis_to_item` 拿不到汇率，把外币单价当人民币算 ——
+    # 人民币成本 70、售价 USD 20、汇率 7 的正确利润是 USD 10（50%），
+    # 实际却算出 −50 / −250%。快照一旦写错，后面所有展示与审批判定都跟着错。
+    #
+    # 顺序：先确定币种 + 汇率（拿不到汇率就直接 422，事务回滚不留半成品）
+    # → 再重算受口径影响的派生列 → 最后重算汇总。售价与来源版本一个字不动。
+    rate_warning = await apply_exchange_rate_snapshot(
+        session, version, currency=CNY, explicit_rate=None
+    )
+    if rate_warning:
+        raise AppError(ErrorCode.PARAM_ERROR, rate_warning, 422)
+
     # 复制过来的明细快照是**按源版本口径**算的，而新版本已经切到当前口径
     # （2026-10-09 统一后只有一套）。不重算就会留下"口径标着 A、数字是 B"的自相
     # 矛盾数据（审查实测：显示利润 15、按新口径应为 20）。只重算受口径影响的四列，
@@ -866,13 +1031,6 @@ async def create_version(
     quote.current_version_id = version.id
     quote.status = "draft"
     await close_superseded_approvals(session, quote=quote, new_version=version, user=user)
-
-    # 版本沿用报价的币种；汇率按「本版本创建时点」重新取快照。
-    rate_warning = await apply_exchange_rate_snapshot(
-        session, version, currency=source.currency, explicit_rate=None
-    )
-    if rate_warning:
-        raise AppError(ErrorCode.PARAM_ERROR, rate_warning, 422)
     return version
 
 
@@ -952,6 +1110,29 @@ async def _build_custom_item_snapshot(
     inquiry = await session.get(CustomInquiry, inquiry_id)
     if inquiry is None or inquiry.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, f"定制需求 id={inquiry_id} 不存在", 404)
+    # 需求与报价**必须是同一个客户**（2026-10-12 主人提问核实）。
+    #
+    # 核实结果：此前**没有任何一处**判这件事 —— 这里只判"需求存在"，
+    # 路由层的 `_ensure_inquiry_visible` 只判"需求在我数据范围内"。
+    # 于是同一个人手里的两个客户可以互相挂（A 的需求挂进 B 的报价），
+    # 实测接口返回 0，并把需求编号/标题落进**快照**、跟着对客文件流出去。
+    #
+    # 判据落在**这里**（而不是各路由各判一次）是因为这是唯一的创建入口：
+    # 单条追加与整版替换两条路都经过它；而编辑明细走 `QuoteItemUpdate`，
+    # 那个入参里**根本没有 inquiry_id**（改不了挂哪条需求），
+    # 所以"建的时候判"就等于"全生命周期判"，也不会把历史脏数据变成改不动的死行。
+    #
+    # 顺带把"需求自己没挂客户"（customer_id 为空）也挡了：那种需求挂给谁都不算对。
+    version_customer_id = await session.scalar(
+        select(Quote.customer_id).where(Quote.id == version.quote_id)
+    )
+    if inquiry.customer_id != version_customer_id:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"定制需求「{inquiry.inquiry_no or inquiry.id}」属于别的客户，不能挂进这张报价。"
+            "请选择本客户的需求；如果确实要给这个客户做，请先为该客户建一条定制需求。",
+            422,
+        )
     if quoted_price is None:
         raise AppError(
             ErrorCode.PARAM_ERROR,
@@ -1503,17 +1684,25 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
     """
     items = (
         await session.execute(
-            select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
+            select(QuoteItem)
+            .where(QuoteItem.quote_version_id == version.id)
+            # 汇总必须按**库里的事实**算（第二轮审查 P1，2026-10-12）：
+            # 会话不刷新身份映射，普通重查会拿旧对象算合计（实测把 −100 的优惠
+            # 当 +100 算，货款 1000 得出 1100）。调用方都在 recalc 之前 flush，
+            # 所以这里强制重读不会丢掉未落库的改动。
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     # 数量按库列精度归一再求和：与 `serialize_item` 的明细金额取**同一个数**，
     # 否则同一张单会出现"明细 185.25、合计 185.18"（N01）。
     subtotal = sum(
-        (normalized_quantity(item.quantity) * item.quoted_price for item in items), ZERO
+        (line_amount(item.quantity, item.quoted_price) for item in items), ZERO
     )
     charges = (
         await session.execute(
-            select(QuoteCharge).where(QuoteCharge.quote_version_id == version.id)
+            select(QuoteCharge)
+            .where(QuoteCharge.quote_version_id == version.id)
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     discount = sum((charge.amount for charge in charges if charge.is_discount), ZERO)
@@ -1560,7 +1749,7 @@ def quote_freight_unconfirmed_reason(charges: list[QuoteCharge]) -> str | None:
     unconfirmed = [c for c in logistics if c.logistics_confirmed_at is None]
     if unconfirmed:
         names = "、".join(
-            (c.description or f"物流费用#{c.id}") for c in unconfirmed
+            (c.description or f"物流费用编号 {c.id}") for c in unconfirmed
         )
         return (
             f"以下运费尚未确认具体金额：{names}。"
@@ -1627,7 +1816,7 @@ async def master_confirmation_problems(
         blank = [m for m in missing if "（" not in m]
         drifted = [m for m in missing if "（" in m]
         parts = ([f"缺 {'、'.join(blank)}"] if blank else []) + drifted
-        problems.append(f"{code or f'SKU#{sku_id}'}：" + "；".join(parts))
+        problems.append(f"{code or f'SKU编号 {sku_id}'}：" + "；".join(parts))
     return problems
 
 
@@ -1894,12 +2083,48 @@ async def submit_for_approval(
     items = await version_items(session, version.id)
     if not items:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "报价单没有任何明细，不能提交")
+    # ⚠️ **运费闸提前到提交审批**（主人 2026-10-12 拍板，方案 A）。
+    #
+    # 从前这里对运费零要求，而「附加费用」入口在版本锁死之后一律拒绝 ——
+    # 两道闸错开一拍，于是"报批时还没问准运费"的单子必然死锁：
+    #
+    #     提交审批（不查运费）→ 通过 → 版本锁死 → 发送时才发现缺运费
+    #     → 撤回也救不了（撤回只对「审批中」有效）→ 只能新建版本重走审批
+    #
+    # 现在提前到这一环：**要么先确认运费再报批，要么批完用"只补运费"那条路**。
+    # 报关口径：运费代收代付、不进产品价（`version_logistics_in_base_cost` 恒 False），
+    # 所以"确认运费"是所有报价都要做的最后一步，与有没有超权限无关。
+    await ensure_freight_confirmed(session, version_id=version.id)
 
     min_margin, can_approve = await pricing_service.resolve_min_margin(session, user_roles)
+    discount_limit = await pricing_service.resolve_discount_limit(session, user_roles)
+    discount_limit_pct = (
+        Decimal(str(discount_limit)) * 100 if discount_limit is not None else None
+    )
     # 审批判定统一在**人民币口径**下做：成本快照与 minimum_price_snapshot 都是人民币存的，
     # 而 quoted_price 可能是外币。不折算就会拿 3.92 美元去比 25.44 人民币，必然误判需审批。
     fx = version.exchange_rate_snapshot
     foreign = (version.currency or "CNY").upper() != "CNY" and fx and fx > 0
+    # ---- 审批分档也要用**人民币**金额（第二轮审查 P2，2026-10-12）----
+    #
+    # `version.total_amount` 是**计价币种**的金额。外币报价直接拿它比档位，
+    # 会按原币数字选层级：USD 10000（折人民币 70000）会被落进"≤50000 主管"
+    # 那一档 —— 金额判定全对、授权层级整个错了。
+    # 折算只认**这一版快照里的汇率**（与上面所有金额判定同一个 fx），
+    # 缺汇率时不猜（按 1:1 顶上去等于把美元当人民币报批）。
+    currency_code = (version.currency or "CNY").upper()
+    if currency_code != "CNY" and not (fx and fx > 0):
+        raise AppError(
+            ErrorCode.REQUIRED_FIELD_MISSING,
+            f"该版本币种是 {currency_code}，但没有汇率快照，无法折算人民币金额来确定审批档位。"
+            "请先在版本上补汇率（或新建版本重新取汇率），再提交审批。",
+            422,
+        )
+    total_amount_cny = (
+        float((version.total_amount or 0) * fx)
+        if currency_code != "CNY"
+        else float(version.total_amount or 0)
+    )
     # 产品核价是否含运费，由**这一版的口径**决定（见 `item_unit_product_cost`）。
     # 新报价：运费代收代付，不进产品成本与利润；历史版本：沿用含运费的老口径。
     cost_includes_freight = version_logistics_in_base_cost(version)
@@ -1939,9 +2164,10 @@ async def submit_for_approval(
         # 整单优惠摊到单价后的加权均价同样不得低于加权硬底
         if not hard_hits and total_qty:
             revenue_cny = (version.total_amount * fx) if foreign else version.total_amount
-            # 总额非正已在上面硬拒；这里保留守卫只作防御（除零），
-            # 不再是"绕过校验"的入口。
-            if revenue_cny is not None and revenue_cny > 0:
+            if not cost_includes_freight:
+                revenue_cny -= (version.logistics_amount * fx) if foreign else version.logistics_amount
+            # 零/负产品收入也必须硬拒；代收运费不能抵消优惠后的产品亏损。
+            if revenue_cny is not None:
                 avg_price = revenue_cny / total_qty
                 avg_floor = weighted_floor_total / total_qty
                 if avg_price < avg_floor - eps:
@@ -2012,6 +2238,37 @@ async def submit_for_approval(
         else:
             item.approval_required = False
             item.approval_reason = None
+
+    # 成本缺失时折扣限制仍有效；所有明细都按申请人的当前角色重新判定。
+    if discount_limit_pct is not None:
+        for item in items:
+            discount_pct = pricing_service.discount_percentage(
+                item.quoted_price, item.standard_price_snapshot
+            )
+            if discount_pct <= discount_limit_pct:
+                continue
+            item.approval_required = True
+            discount_reason = (
+                f"折扣 {discount_pct:.2f}% 超过角色上限 {discount_limit_pct:.2f}%"
+            )
+            item.approval_reason = "；".join(
+                part for part in (item.approval_reason, discount_reason) if part
+            )
+            offending.append({"sku_code": item.sku_code_snapshot, "reason": discount_reason})
+        # 整单优惠也不得绕过折扣限制。没有标准价的定制项不假定标准价。
+        if all(item.standard_price_snapshot is not None and item.standard_price_snapshot > 0 for item in items):
+            standard_total = sum(
+                (line_amount(item.quantity, item.standard_price_snapshot) for item in items), ZERO
+            )
+            discount_pct = pricing_service.discount_percentage(
+                version.subtotal_amount + version.discount_amount, standard_total
+            )
+            if discount_pct > discount_limit_pct:
+                offending.append({"sku_code": "整单（优惠后）", "reason":
+                    f"整单折扣 {discount_pct:.2f}% 超过角色上限 {discount_limit_pct:.2f}%"})
+        elif version.discount_amount < 0:
+            offending.append({"sku_code": "整单（优惠后）", "reason":
+                "包含无标准价明细，无法核对整单优惠是否超出角色折扣上限，需审批"})
 
     # ---- 整单金额必须为正（2026-10-10 修 issue #3）----
     #
@@ -2157,7 +2414,11 @@ async def submit_for_approval(
                     "version_no": version.version_no,
                     "reason": reason,
                     "offending": offending,
-                    "total_amount": float(version.total_amount or 0),
+                    # 免审留痕同样按人民币口径（与下面那条审批单同一份取数）
+                    "total_amount": total_amount_cny,
+                    "original_amount": float(version.total_amount or 0),
+                    "currency": currency_code,
+                    "exchange_rate": float(fx) if currency_code != "CNY" and fx else None,
                     "auto_passed": True,
                     "rule_trace": rule_trace,
                 },
@@ -2185,8 +2446,10 @@ async def submit_for_approval(
             }
 
     # 审批分级：按报价总额决定走到哪一级，并记录这一级谁有权批（快照，避免中途改配置影响在途审批）
+    # ⚠️ 分档用的人民币金额来自上面 `total_amount_cny`（外币按下单版本快照汇率折算）：
+    # 拿原币数字比档位，USD 10000 会落进"≤50000"的主管档（第二轮审查 P2，2026-10-12）。
     levels = await settings_service.get_list(session, "approval_levels")
-    amount = float(version.total_amount or 0)
+    amount = total_amount_cny
     node = None
     if force_first_level and levels:
         node = levels[0]  # 极速通道：一律落到第一级（主管）
@@ -2208,7 +2471,13 @@ async def submit_for_approval(
         "reason": reason,
         "offending": offending,
         "authorized_min_margin": float(min_margin),
+        # 分档金额（人民币）与原币金额分开留痕：审批人要能看出"客户那张单上是多少钱"，
+        # 也要能复算"为什么走到这一级"（第二轮审查 P2，2026-10-12）
         "total_amount": amount,
+        "tier_amount_cny": amount,
+        "original_amount": float(version.total_amount or 0),
+        "currency": currency_code,
+        "exchange_rate": float(fx) if currency_code != "CNY" and fx else None,
         "node_label": node_label,
         "node_role_codes": node_roles,
     }
@@ -2359,7 +2628,7 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
             ),
             ZERO,
         )
-        amount_total = sum((item.quantity * item.quoted_price for item in v_items), ZERO)
+        amount_total = sum((line_amount(item.quantity, item.quoted_price) for item in v_items), ZERO)
         # 毛利按明细的利润快照汇总，保证与报价明细表里逐条显示的数字完全对得上
         profit_total = sum((item.profit_snapshot * item.quantity for item in v_items), ZERO)
         if not v_items:
@@ -2654,7 +2923,7 @@ async def link_master_only(
             missing.append(
                 {
                     "item_id": item.id,
-                    "sku_code": item.sku_code_snapshot or f"SKU#{item.sku_id}",
+                    "sku_code": item.sku_code_snapshot or f"SKU编号 {item.sku_id}",
                     "missing_labels": master.get("unconfirmed_labels") or [],
                 }
             )
@@ -2664,7 +2933,7 @@ async def link_master_only(
             missing.append(
                 {
                     "item_id": item.id,
-                    "sku_code": item.sku_code_snapshot or f"SKU#{item.sku_id}",
+                    "sku_code": item.sku_code_snapshot or f"SKU编号 {item.sku_id}",
                     "missing_labels": ["（没有可引用的已确认主数据版本）"],
                 }
             )

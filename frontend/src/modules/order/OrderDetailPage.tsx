@@ -8,6 +8,8 @@ import {
 } from '../../shared/components/ConfirmRequiredModal'
 import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 import FormLabel from '../../shared/components/FormLabel'
+import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import type { TagTone } from '../../shared/types'
 
 import {
@@ -534,8 +536,7 @@ export default function OrderDetailPage() {
   })
 
   const statusSyncMutation = useMutation({
-    mutationFn: () => refreshStatus(orderId),
-    onSuccess: (data) => {
+    mutationFn: () => refreshStatus(orderId),    onSuccess: (data) => {
       if (data.changed) {
         Toast.success(`履约状态已更新为「${data.status_label}」`)
       } else {
@@ -561,6 +562,33 @@ export default function OrderDetailPage() {
   })
 
   const order = orderQuery.data
+
+  /** 「同步履约状态」点不动时说的话（见按钮处的注释）。 */
+  const notifyStatusSyncBlocked = useBlockedNotify(
+    order?.erp_order_id
+      ? []
+      : ['本单还没有 ERP/MES 单号，无法同步履约状态。请先点「推送 ERP/MES」，等对方回单号后再点这里。'],
+    '同步履约状态',
+  )
+
+  /**
+   * 「交期与跟单计划」里「预览受影响面」的受阻原因。
+   *
+   * 与「从来源建立订单草稿」完全同型：7 个数字框（运输天数 + 6 个节点提前天数）
+   * 只要有一个被清空就变成 NaN → 按钮直接灰掉，而**不说是哪一个**；客户要求日期
+   * 取自订单的计划交期，那是个可空列 —— 历史订单没排过期，弹窗一打开按钮就是灰的，
+   * 而按钮在 720px 弹窗的页脚、出问题的字段在正文里，视线根本扫不到。
+   * 所以这里逐项点名，写完贴在页脚正上方。
+   */
+  const planOffsetLabels: Record<string, string> = { contract: '签订合同', deposit: '付定金', pre_sample_sent: '产前样发出', pre_sample_confirmed: '产前样确认', first_shipment: '首批发货', payment: '收款' }
+  const scheduleBlocked = [
+    { ok: Boolean(scheduleForm.new_delivery_date), reason: '请先填「客户要求日期」（本单原来没有计划交期，所以这里是空的）。' },
+    { ok: scheduleForm.delivery_kind !== 'arrival' || Number.isFinite(scheduleForm.transit_days), reason: '请填「预计运输天数」（客户要求的是到货日，必须知道路上几天）。' },
+    { ok: Object.values(scheduleForm.plan_offsets).every((v) => Number.isFinite(v)), reason: '下面这些「提前天数」不能空着：' + Object.entries(scheduleForm.plan_offsets).filter(([, v]) => !Number.isFinite(v)).map(([key]) => planOffsetLabels[key] ?? key).join('、') + '（可以填 0，但不能空）。' },
+  ]
+  const scheduleBlockedReasons = blockedReasons(scheduleBlocked)
+  const notifyScheduleBlocked = useBlockedNotify(scheduleBlockedReasons, '预览受影响面')
+
   if (orderQuery.isLoading) return <div className="page-container">加载中…</div>
   if (!order) return <div className="page-container">订单不存在或无权查看</div>
 
@@ -698,13 +726,24 @@ export default function OrderDetailPage() {
               <Button onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
                 推送 ERP/MES
               </Button>
-              <Button
-                onClick={() => statusSyncMutation.mutate()}
-                loading={statusSyncMutation.isPending}
-                disabled={!order.erp_order_id}
-              >
-                同步履约状态
-              </Button>
+              {/* 灰按钮要能解释自己（主人 2026-10-12：「点又点不了，又不给提示为什么
+                  点不了」）：`erp_order_id` 是推送 ERP/MES 之后由对方回填的，没回填
+                  之前这个键点不动，而界面上原来一个字都没说。 */}
+              <div className="blocked-hint-click" onClick={notifyStatusSyncBlocked}>
+                <Button
+                  onClick={() => statusSyncMutation.mutate()}
+                  loading={statusSyncMutation.isPending}
+                  disabled={!order.erp_order_id}
+                  style={order.erp_order_id ? undefined : { pointerEvents: 'none' }}
+                >
+                  同步履约状态
+                </Button>
+              </div>
+              {!order.erp_order_id && (
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  本单还没有 ERP/MES 单号：先点左边「推送 ERP/MES」，等对方回单号后才能同步状态
+                </span>
+              )}
               <Button onClick={() => repurchaseMutation.mutate()} loading={repurchaseMutation.isPending}>
                 复购开新商机
               </Button>
@@ -1031,13 +1070,13 @@ export default function OrderDetailPage() {
                     title: '责任人',
                     dataIndex: 'owner_id',
                     width: 100,
-                    render: (v: number | null, record: OrderMilestoneRow) =>
+                    render: (v: number | null) =>
+                      // 查不到人就显示 `-`：内部编号在这里帮不上忙 —— 用户不认识
+                      // 那个号，也没法拿它去找人（下单人是去用户列表里找人）
                       v
-                        ? (milestoneUsersQuery.data?.items ?? []).find((u) => u.id === v)?.name ??
-                          `#${v}`
-                        : record.owner_id
-                          ? `#${record.owner_id}`
-                          : '-',
+                        ? ((milestoneUsersQuery.data?.items ?? []).find((u) => u.id === v)
+                            ?.name ?? '-')
+                        : '-',
                   },
                   {
                     title: '逾期原因',
@@ -1224,7 +1263,13 @@ export default function OrderDetailPage() {
             <div style={{ marginBottom: 4 }}>实际发货日期</div>
             <DatePicker
               type="date"
-              disabled={milestoneForm.skipped}
+              // 这里原来写的是 `disabled={milestoneForm.skipped}` —— **拿错了变量**：
+              // milestoneForm 是「登记里程碑」那个弹窗的状态，用户在那边勾过一次
+              // 「不适用，跳过此节点」之后就一直是 true（关掉里程碑弹窗时不清），
+              // 于是这个「实际发货日期」在本单后续所有批次里都点不动，而用户完全
+              // 不可能联想到是另一个弹窗之前的操作（主人 2026-10-12：「点又点不了，
+              // 又不给提示为什么点不了」）。实际发货日期本来就允许留空（空值落库为
+              // null），所以直接放开，是正确的行为而不是放宽口径。
               format="yyyy-MM-dd"
               style={{ width: '100%' }}
               value={shipForm.date}
@@ -1250,23 +1295,33 @@ export default function OrderDetailPage() {
         onCancel={() => setScheduleVisible(false)}
         width={720}
         footer={
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button onClick={() => setScheduleVisible(false)}>取消</Button>
-            <Button
-              loading={schedulePreviewMutation.isPending}
-              disabled={!scheduleForm.new_delivery_date || !Number.isFinite(scheduleForm.transit_days) || Object.values(scheduleForm.plan_offsets).some((v) => !Number.isFinite(v))}
-              onClick={() => schedulePreviewMutation.mutate()}
-            >
-              预览受影响面
-            </Button>
-            <Button
-              theme="solid"
-              loading={createScheduleMutation.isPending}
-              disabled={!schedulePreview}
-              onClick={() => createScheduleMutation.mutate()}
-            >
-              提交待确认计划
-            </Button>
+          <div>
+            {/* 页脚正上方写清「预览受影响面」为什么点不动（7 个数字框 + 客户要求
+                日期，逐项点名）——不写的话用户只看到一个灰按钮，不知道差在哪。 */}
+            <div onClick={notifyScheduleBlocked}>
+              <BlockedHint reasons={scheduleBlockedReasons} action="预览受影响面" />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <Button onClick={() => setScheduleVisible(false)}>取消</Button>
+              <div className="blocked-hint-click" onClick={notifyScheduleBlocked}>
+                <Button
+                  loading={schedulePreviewMutation.isPending}
+                  disabled={scheduleBlockedReasons.length > 0}
+                  style={scheduleBlockedReasons.length > 0 ? { pointerEvents: 'none' } : undefined}
+                  onClick={() => schedulePreviewMutation.mutate()}
+                >
+                  预览受影响面
+                </Button>
+              </div>
+              <Button
+                theme="solid"
+                loading={createScheduleMutation.isPending}
+                disabled={!schedulePreview}
+                onClick={() => createScheduleMutation.mutate()}
+              >
+                提交待确认计划
+              </Button>
+            </div>
           </div>
         }
       >

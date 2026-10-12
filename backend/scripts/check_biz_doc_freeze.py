@@ -257,6 +257,10 @@ async def main():
             charge_amount=Decimal("80.00"),
             discount_amount=Decimal("-30.00"),
             total_amount=Decimal("900.00"),
+            # 2026-10-12（第二轮审查 P1）：对客 Excel 文件与正式 PDF 同口径 ——
+            # 未通过审批的版本只能落**草稿**。本套件验的是正式件的内容冻结与存档，
+            # 夹具落成"已审批"（补夹具，不放宽闸门；闸门由 check_round2_risk_repairs 覆盖）。
+            approval_status="approved",
             created_at=now,
         )
         s.add(version)
@@ -286,6 +290,9 @@ async def main():
                 amount=Decimal("80.00"),
                 is_discount=False,
                 sort_no=1,
+                # 2026-10-12（第二轮审查 P1）：正式件要求运费已确认具体金额
+                # （`logistics_confirmed_at`；0 元也要显式确认）
+                logistics_confirmed_at=now,
             )
         )
         s.add(
@@ -327,11 +334,11 @@ async def main():
         check("小数数量如实", str(snapshot["items"][0]["quantity"]), "7.5")
         check_true("没有未留存项", frozen["gaps"] == [], f"{frozen['gaps']}")
 
-        # 金额口径：明细 = 数量×单价；小计 + 费用 + 优惠 = 合计
+        # 金额口径：明细按分舍入，小计 + 费用 + 优惠 = 合计。
         item_amount = Decimal(str(snapshot["items"][0]["amount"]))
         check_true(
-            "明细金额 = 数量 × 单价（版本快照）",
-            item_amount == Decimal("7.5") * Decimal("113.3333"),
+            "明细金额 = 数量 × 单价后按分舍入（版本快照）",
+            item_amount == Decimal("850.00"),
             f"{item_amount}",
         )
         charge_sum = sum(Decimal(str(row["amount"])) for row in snapshot["charges"])

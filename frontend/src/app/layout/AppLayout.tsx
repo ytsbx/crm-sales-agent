@@ -6,9 +6,10 @@ import TabBar from './TabBar'
 import GlobalSearch from './GlobalSearch'
 import NotificationBell from '../../modules/common/NotificationBell'
 import CopilotDrawer from '../../modules/common/CopilotDrawer'
-import { matchMenu, menuLabel, visibleMenuGroups } from '../menu'
+import { hasPermission, matchMenu, menuLabel, visibleMenuGroups } from '../menu'
 import { logout } from '../../shared/api/auth'
 import { useAuthStore } from '../../shared/store/auth'
+import { useCurrentUserSync } from '../../shared/hooks/useCurrentUserSync'
 import { useTabsStore } from '../../shared/store/tabs'
 import { useCopilotStore } from '../../shared/store/copilot'
 
@@ -41,8 +42,13 @@ export default function AppLayout() {
     localStorage.setItem('sider-collapsed', siderCollapsed ? '1' : '0')
   }, [siderCollapsed])
 
+  // 权限**跟着服务器走**：启动拉一次 + 每 60 秒一次（主人 2026-10-12 拍板）。
+  // 从前只在登录时抄一次，于是管理员改权限后在线的人刷新也没用。
+  useCurrentUserSync()
   const currentMenu = matchMenu(location.pathname)
-  // 左侧菜单按当前用户权限过滤：财务不再看到线索/商机等入口，admin 直通全量
+  // 左侧菜单**不再按权限过滤**（主人 2026-10-12 拍板选 A）：
+  // 入口留着，点进去由 RoutePermissionGuard 说明"该功能存在、只是你没权限"。
+  // 从前直接隐藏入口，用户分不清"没权限"和"没做这个功能"。
   const menuGroups = visibleMenuGroups(user)
   const detailMatch = location.pathname.match(
     /^\/(customers|products|opportunities|quotes|orders|order-drafts)\/\d+$/,
@@ -137,12 +143,21 @@ export default function AppLayout() {
               const active = currentMenu?.key === item.key
               // 同一个入口对不同身份可能该叫不同名字（主管看到的是「公海回收复核」）
               const label = menuLabel(item, user)
+              // 没权限的入口**照常可点**（点进去由 RoutePermissionGuard 说明原因），
+              // 只做一点视觉区分；`title` 让悬停时就知道是怎么回事 ——
+              // 但不改变"点得动"这件事，否则又回到"点了没反应"。
+              const denied = !hasPermission(user, item.permission)
+              const hint = denied ? `${label}（当前角色没有权限，点开有说明）` : label
               return (
                 <Link
                   key={item.key}
                   to={item.path}
-                  className={active ? 'nav-link active' : 'nav-link'}
-                  title={siderCollapsed ? label : undefined}
+                  className={[
+                    'nav-link',
+                    active ? 'active' : '',
+                    denied ? 'nav-link-denied' : '',
+                  ].filter(Boolean).join(' ')}
+                  title={siderCollapsed || denied ? hint : undefined}
                 >
                   <span className="nav-icon">
                     <Icon />

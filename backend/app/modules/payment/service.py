@@ -187,6 +187,47 @@ async def lock_order(session: AsyncSession, order_id: int) -> SalesOrder | None:
     ).scalar_one_or_none()
 
 
+def assert_received_date_not_future(received_date, *, action: str = "登记回款") -> None:
+    """实收日期不能在未来（第四批审查 P1，2026-10-12 实测复现）。
+
+    ## 为什么这是 P1
+
+    从前登记 / 修改 / 确认三处**都没有**校验实收日期。实测：今天 10 月 12 日、
+    到账日填 10 月 22 日，走完真实的登记 + 确认之后，回款是 `confirmed`、
+    应收节点是 `paid`，**付定金/收款两个跟单节点都标成完成**。
+
+    两个后果，都不是"显示不好看"：
+
+    1. **钱还没到就算收齐** —— 订单页显示"款已收齐"，看的人据此不再催款；
+    2. **按确认时间统计的本月回款提前计入** —— 报表里这个月的回款多了一笔
+       实际还没发生的钱（外部对账时对不上）。
+
+    ## 口径
+
+    判据是"实收日期 ≤ 业务今天"（`today_business()`，与全站同一份业务日期，
+    不是 UTC 日期 —— 用 UTC 会在北京时间早上 8 点前把"今天"判成未来）。
+    确需预登记未来款项时，那属于**应收计划**要表达的"预期"，
+    不该记成"已经收到的钱"。
+
+    ## 为什么三处都要调（含确认入口）
+
+    确认入口也必须查：库里**存量**可能有异常的未来日期待确认记录（本次修复前
+    登记的），只在登记处加校验拦不住它们；而且确认才是"这笔钱成立"的那一步。
+    校验必须放在改状态、重算应收、生成通知**之前** —— 被拒时不能留下半改的状态。
+    """
+    if received_date is None:
+        return
+    today = today_business()
+    if received_date > today:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{action}失败：实收日期 {received_date:%Y-%m-%d} 在未来（今天是 {today:%Y-%m-%d}）。"
+            "「已收到」记的是**已经到账**的钱，日期不能晚于今天；"
+            "预期将来收款请登记到应收计划（到期日）上，不要记成已收款",
+            422,
+        )
+
+
 async def assert_plan_accepts_payment(
     session: AsyncSession, plan: ReceivablePlan, *, action: str = "登记回款"
 ) -> None:
@@ -289,7 +330,7 @@ def resolve_payment_currency(plan: ReceivablePlan, requested: str | None) -> str
     if not source:
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"应收节点 #{plan.id} 没有币种，无法判定这笔回款的币种；请先补齐节点币种再登记",
+            f"应收节点编号 {plan.id} 没有币种，无法判定这笔回款的币种；请先补齐节点币种再登记",
             422,
         )
     if requested is None or not requested.strip():
@@ -298,7 +339,7 @@ def resolve_payment_currency(plan: ReceivablePlan, requested: str | None) -> str
     if asked != source:
         raise AppError(
             ErrorCode.PARAM_ERROR,
-            f"回款币种 {asked} 与应收节点 #{plan.id} 的币种 {source} 不一致："
+            f"回款币种 {asked} 与应收节点编号 {plan.id} 的币种 {source} 不一致："
             "跨币种核销规则未确认，暂不支持（不按汇率折算、也不改记成节点币种）；"
             "请按节点币种登记，或先换汇后按节点币种录入",
             422,

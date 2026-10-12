@@ -1167,12 +1167,18 @@ async def update_item(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    item = await session.get(QuoteItem, item_id)
-    if item is None:
+    probe = await session.get(QuoteItem, item_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_visible_version(session, user, item.quote_version_id, for_update=True)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
+    # 锁内**强制重读**这条明细（第二轮审查 P1，2026-10-12）：上面那次读发生在锁之前，
+    # 等待锁的这段时间里并发的另一个请求可能已经改过它；沿用旧对象会让下面的
+    # 校验、快照重建和重算全部基于过期值。
+    item = await svc.reload_locked_child(
+        session, QuoteItem, item_id, version_id=version.id, label="报价明细"
+    )
 
     data = payload.model_dump(exclude_unset=True)
     quantity = data.get("quantity", item.quantity)
@@ -1288,11 +1294,15 @@ async def delete_item(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    item = await session.get(QuoteItem, item_id)
-    if item is None:
+    probe = await session.get(QuoteItem, item_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "报价明细不存在", 404)
-    version = await svc.get_visible_version(session, user, item.quote_version_id, for_update=True)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
     await svc.ensure_version_editable(version)
+    # 同上：审计里的 `before` 必须是**锁内的真实值**，否则留痕记的是别人改之前的数字
+    item = await svc.reload_locked_child(
+        session, QuoteItem, item_id, version_id=version.id, label="报价明细"
+    )
     before = svc.serialize_item(item)
     await session.delete(item)
     await session.flush()
@@ -1320,7 +1330,11 @@ async def add_charge(
     session: AsyncSession = Depends(get_db),
 ):
     version = await svc.get_visible_version(session, user, version_id, for_update=True)
-    await svc.ensure_version_editable(version)
+    # ⚠️ 锁版之后**只放行运费**（主人 2026-10-12 拍板，方案 A+B）：
+    # 从前这里一律拒绝，于是"报批时还没问准运费"的单子被死锁
+    # （审批不校验运费 → 通过 → 版本锁死 → 发送时才发现缺运费 → 撤回也救不了）。
+    # 判据与理由见 `svc.ensure_charge_change_allowed` —— 先把费用对象造出来、
+    # 再拿它当"改之后"的样子去校验，这样分类判断只有一份。
     charge = QuoteCharge(
         quote_version_id=version_id,
         charge_type=payload.charge_type,
@@ -1336,6 +1350,9 @@ async def add_charge(
     # 不这么做的话，"amount=0" 就分不清是"没填"还是"确实是零运费"，
     # 而正式发送必须要求后者才算已确认。
     svc.mark_logistics_confirmed(charge)
+    # 校验要在 `mark_logistics_confirmed` **之后**：`is_logistics_charge` 看的是
+    # 最终的 is_discount 与分类码，顺序反了会把折扣行误判成运费。
+    await svc.ensure_charge_change_allowed(version, before=None, after=charge)
     session.add(charge)
     await session.flush()
     await svc.recalc_version(session, version)
@@ -1362,11 +1379,16 @@ async def delete_charge(
     user: CurrentUser = Depends(require_permission("quote:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    charge = await session.get(QuoteCharge, charge_id)
-    if charge is None:
+    probe = await session.get(QuoteCharge, charge_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
-    version = await svc.get_visible_version(session, user, charge.quote_version_id, for_update=True)
-    await svc.ensure_version_editable(version)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
+    # 同 add_charge：不调 `ensure_version_editable`，改由下面那道闸判（见它的说明）
+    charge = await svc.reload_locked_child(
+        session, QuoteCharge, charge_id, version_id=version.id, label="附加费用"
+    )
+    # 锁版之后**删掉运费**是放行的（补错了要能撤），删别的费用照样拒绝。
+    await svc.ensure_charge_change_allowed(version, before=charge, after=None)
     before = svc.serialize_charge(charge)
     await session.delete(charge)
     await session.flush()
@@ -1607,6 +1629,8 @@ async def download_pdf(
             "报价未通过审批，不能生成正式报价 PDF",
             422,
         )
+    await svc.ensure_items_master_confirmed(session, version_id=version_id)
+    await svc.ensure_freight_confirmed(session, version_id=version_id)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
     ctx = await _quote_context(session, [quote])
     items = await svc.version_items(session, version_id)
@@ -1799,14 +1823,25 @@ async def update_charge(
 
     金额变了必须重算版本汇总 —— 否则"合计金额"与附加费用对不上，
     报价单上两个数字自相矛盾。已发送的版本不允许改（与明细同一规则）。
+
+    ⚠️ 锁内必须**重读**这条费用（第二轮审查 P1，2026-10-12）：端点先按 id 读一次
+    才知道它属于哪个版本，那一读在锁之前。等锁期间并发请求可能已把这条 +100 的
+    其他费用改成 −100 的优惠；沿用旧对象重算会把合计算成"货款 + 旧值"
+    （实测：货款 1000、优惠 −100 → 合计 1100，正确 900）。
     """
-    charge = await session.get(QuoteCharge, charge_id)
-    if charge is None:
+    probe = await session.get(QuoteCharge, charge_id)
+    if probe is None:
         raise AppError(ErrorCode.NOT_FOUND, "附加费用不存在", 404)
-    version = await svc.get_visible_version(session, user, charge.quote_version_id, for_update=True)
-    await svc.ensure_version_editable(version)
+    version = await svc.get_visible_version(session, user, probe.quote_version_id, for_update=True)
+    # 同 add_charge：不调 `ensure_version_editable`（它一律拒绝），改由下面那道闸判
+    charge = await svc.reload_locked_child(
+        session, QuoteCharge, charge_id, version_id=version.id, label="附加费用"
+    )
 
     before = svc.serialize_charge(charge)
+    # 「改之前」是不是运费：**必须在赋值之前**取下来。
+    # 校验要看前后两边（把运费改成服务费同样要拒），而赋值之后就拿不到旧分类了。
+    was_logistics = svc.is_logistics_charge(charge)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(charge, field, value)
     # 与 add_charge 同一规则：折扣在库里恒为负数，改完再归一一次
@@ -1815,6 +1850,10 @@ async def update_charge(
     # 保存即重新确认一次运费（含"从物流改成别的分类"→ 清空确认时刻）。
     # 顺序不能挪到折扣归一之前：`is_logistics_charge` 要看最终的 is_discount。
     svc.mark_logistics_confirmed(charge)
+    # 锁版之后只有"前后都是运费"的改动放行（含改金额、改说明）。
+    await svc.ensure_charge_change_allowed(
+        version, before=(charge if was_logistics else None), after=charge
+    )
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(

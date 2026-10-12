@@ -13,7 +13,7 @@ from app.core.deps import CurrentUser, client_ip, ensure_permission, require_per
 from app.core.errors import ErrorCode, AppError
 from app.core.response import ok, page_data, paginate
 from app.core.timebase import now_business, to_business
-from app.modules.contact_util import create_contact_for_customer, take_primary_slot
+from app.modules.contact_util import create_contact_for_customer, is_masked_contact_value, take_primary_slot
 from app.modules.customer import service as svc
 from app.modules.customer import stage, tags as tag_svc
 from app.modules.customer.model import Contact, Customer
@@ -892,7 +892,25 @@ async def update_contact(
         # 要占主位：先腾位再写库（理由同新建那条接口）。
         # `exclude=自己`：这条联系人可能本来就是主，腾位时别把它一起刷掉。
         await take_primary_slot(session, contact.customer_id, exclude=contact.id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    # 脱敏值不许回写（2026-10-12 第四轮）。
+    #
+    # 起因：对外响应是按权限脱敏的（`138****8000`），而这条接口的入参从来没挡过
+    # 脱敏形状的值。以前前端没有编辑入口，这条路走不到；现在加了编辑，
+    # "打开编辑框（号码是星号）→ 只改职位 → 保存"就会把**真实号码覆盖成星号串**，
+    # 而且审计里的 before 也已经是个星号，事后查不回来。
+    #
+    # 所以：收到脱敏形状的值就明确拒绝，并把"为什么"写给用户（不静默忽略 ——
+    # 静默忽略等于让人以为改成功了）。要改号码就得有看完整号码的权限。
+    for field in ("mobile", "phone", "email", "wechat"):
+        if field in fields and is_masked_contact_value(field, fields[field]):
+            raise AppError(
+                ErrorCode.FORBIDDEN,
+                "这条联系人的联系方式对你是脱敏的（显示为星号），不能把星号保存回去。"
+                "请让有权限的人修改，或请管理员为你开通「客户联系方式完整查看」权限后重试。",
+                403,
+            )
+    for field, value in fields.items():
         setattr(contact, field, value)
     await session.flush()
     if contact.is_primary:
@@ -1092,6 +1110,8 @@ async def bind_contact_customer(
     contact = await svc.get_visible_contact(session, user, contact_id)
     customer = await svc.get_visible_customer(session, user, payload.customer_id)
     before = svc.serialize_contact(contact)
+    #: 改挂（本来挂在别的客户上）与首次绑定要说不同的话 —— 见下面的返回文案
+    previous_customer_id = contact.customer_id
     # 改挂统一走这一条路径：先锁两个客户、腾出目标客户的主位，**最后**才写归属。
     # 顺序反过来会在"腾位"那次查询上触发 autoflush，把"已挂新客户、还带着主标记"
     # 的这条先写下去，撞唯一索引报 500（第十批 10.4 复审）。
@@ -1109,10 +1129,45 @@ async def bind_contact_customer(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(
-        await svc.serialize_contact_masked(session, user, contact),
-        f"已关联到客户「{customer.name}」",
-    )
+    # 返回文案要把**历史去向**说清楚（主人 2026-10-12 定的口径：联系人跳槽、录错了
+    # 要纠正都是真事，所以跨客户改挂**合法、不拦**；但必须讲明白一件事）：
+    #
+    # **跟进记录挂的是客户，不是联系人** —— `followups.customer_id` 记的是当时
+    # 沟通的那一家，客户详情页也是按 `customer_id` 查跟进的。所以联系人改挂之后，
+    # 他过去在**原来那家**名下的跟进/沟通记录仍然留在原客户那里，不会跟过来。
+    # 不说清楚的话，改挂的人会以为"历史一起搬走了"，回头在新客户页上找不到，
+    # 只会怀疑系统把数据弄丢了。
+    is_rebound = bool(previous_customer_id) and previous_customer_id != customer.id
+    payload_out = await svc.serialize_contact_masked(session, user, contact)
+    if is_rebound:
+        # FollowUp 在本文件里是**函数内局部导入**的（见跟进列表那处），这里照做，
+        # 免得在模块顶部多引一个模块级依赖
+        from sqlalchemy import func
+
+        from app.modules.followup.model import FollowUp
+
+        # 留几条跟进在原来那家？—— 给出**真实条数**，别只说"有些记录"
+        stayed = await session.scalar(
+            select(func.count()).select_from(FollowUp).where(
+                FollowUp.customer_id == previous_customer_id,
+                FollowUp.contact_id == contact.id,
+            )
+        )
+        message = (
+            f"已把联系人「{contact.name}」改挂到客户「{customer.name}」。"
+            f"注意：他过去在原来那家的 {int(stayed or 0)} 条跟进记录仍留在原客户那里"
+            "（跟进是挂在客户上的，不会跟着联系人走）；需要留痕的话，请在新客户下补一条说明。"
+        )
+        # ⚠️ `message` 前端**收不到**（`client.ts` 的成功分支只返回 `body.data`），
+        # 所以关键信息必须同时放进 data 里，界面才能照着提示。
+        payload_out = {
+            **payload_out,
+            'rebound_from_customer_id': previous_customer_id,
+            'stayed_followup_count': int(stayed or 0),
+        }
+    else:
+        message = f"已关联到客户「{customer.name}」"
+    return ok(payload_out, message)
 
 
 @router.post("/contacts/{contact_id}/change-customer")

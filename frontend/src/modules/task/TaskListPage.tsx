@@ -34,33 +34,34 @@ function primaryTaskLink(record: Task): { label: string; to: string } | null {
   if (record.source_business_type === 'sample' && record.source_business_id) {
     // 打样单没有独立编号字段，用 id（打样列表里也是显示「打样申请 #id」）
     return {
-      label: `打样单 #${record.source_business_id}`,
+      label: `打样单编号 ${record.source_business_id}`,
       to: `/samples/${record.source_business_id}`,
     }
   }
   if (record.quote_id) {
     return {
-      label: `报价 ${record.quote_no ?? `#${record.quote_id}`}`,
+      // 报价一定有单号（`quote_no` 非空），所以**没有**退回内部编号的分支
+      label: `报价 ${record.quote_no}`,
       to: `/quotes/${record.quote_id}`,
     }
   }
   if (record.order_id) {
     return {
-      label: `订单 ${record.order_no ?? `#${record.order_id}`}`,
+      label: `订单 ${record.order_no}`,
       to: `/orders/${record.order_id}`,
     }
   }
   if (record.source_business_type === 'contract' && record.source_business_id) {
     return {
-      label: `月结协议 ${record.source_doc_no ?? `#${record.source_business_id}`}`,
+      label: `月结协议 ${record.source_doc_no}`,
       to: '/documents',
     }
   }
   if (record.opportunity_id) {
-    return { label: `商机 #${record.opportunity_id}`, to: `/opportunities/${record.opportunity_id}` }
+    return { label: `商机编号 ${record.opportunity_id}`, to: `/opportunities/${record.opportunity_id}` }
   }
   if (record.customer_id) {
-    return { label: `客户 #${record.customer_id}`, to: `/customers/${record.customer_id}` }
+    return { label: `客户编号 ${record.customer_id}`, to: `/customers/${record.customer_id}` }
   }
   return null
 }
@@ -135,7 +136,7 @@ export default function TaskListPage() {
         Toast.success(`已完成 ${done} 条`)
       } else {
         const detail = skipped
-          .map((row) => `#${row.task_id} ${row.reason}`)
+          .map((row) => `编号 ${row.task_id} ${row.reason}`)
           .slice(0, 3)
           .join('；')
         Toast.warning(

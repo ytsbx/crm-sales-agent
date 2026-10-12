@@ -43,6 +43,7 @@ import {
 import { reportOperationTiming } from '../../shared/api/analytics'
 import { newRequestKey } from '../../shared/api/requestKey'
 import FormLabel from '../../shared/components/FormLabel'
+import { useBlockedNotify } from '../../shared/components/BlockedHint'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
 type TagColor = ComponentProps<typeof Tag>['color']
@@ -359,6 +360,15 @@ export default function KnowledgePage() {
     setQuoteTarget(row)
   }
 
+  // 「关联商机」没选客户时是灰的，判据照旧（`disabled={!form.customer_id}`，没动）。
+  // 灰控件点不动、又不说为什么，正是主人 2026-10-12 说的那类毛病，所以这条下面
+  // 常驻一行灰字；灰着的时候点它还会弹同一句话（看得见 + 点得动，见 BlockedHint.tsx）。
+  // ⚠️ 灰着的 Semi Select 要加 pointerEvents:'none'：点击否则落在它内部的 input 上，
+  // 而被禁用的表单控件**根本不派发事件**，外层容器的 onClick 收不到。
+  const notifyOpportunityBlocked = useBlockedNotify(
+    form.customer_id ? [] : ['先选客户，才能关联该客户的商机'],
+  )
+
   const columns = [
     {
       title: '需求',
@@ -459,6 +469,19 @@ export default function KnowledgePage() {
         if (record.status !== 'archived') {
           moreActions.push({ key: 'archived', label: '归档', onClick: () => changeStatus(record, 'archived') })
         }
+        // 菜单项会因为**权限**和**单据状态**默默消失（上面那几个 if）。用户明明记得
+        // 这里有「申请打样」，换个人或换个状态就没了，界面上一个字都不说 —— 主人
+        // 2026-10-12：「点又点不了，又不给提示为什么点不了，类似的情况都要修」。
+        // 所以把"缺的这一项为什么缺"写进菜单末尾（灰色小字、不可点，见下面渲染）。
+        // ⚠️ 只是解释：上面哪些项出现、哪些不出现的判据一个字没动。
+        const statusLabel = STATUS_OPTIONS.find((item) => item.value === record.status)?.label ?? record.status
+        const moreMissing: string[] = []
+        if (!can('order:manage')) moreMissing.push('缺少「订单管理」权限，不能建订单草稿')
+        if (!can('sample:manage')) moreMissing.push('缺少「打样管理」权限，不能申请打样')
+        if (!((record.version ?? 1) > 1)) moreMissing.push('这一条还是第 1 版，修订过之后才会有「历史」')
+        if (record.status === 'developing') moreMissing.push(`当前状态是「${statusLabel}」，不用再转开发中`)
+        if (record.status === 'converted') moreMissing.push(`当前状态是「${statusLabel}」，不能转开发中`)
+        if (record.status === 'archived') moreMissing.push(`当前状态是「${statusLabel}」，不能再归档`)
         return (
           <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <a onClick={() => openEdit(record)}>编辑</a>
@@ -478,6 +501,28 @@ export default function KnowledgePage() {
                       {action.label}
                     </Dropdown.Item>
                   ))}
+                  {/* 缺项说明：故意**不套 Dropdown.Item、也不给 onClick** —— 它不是
+                      一个能按的动作，只是一段灰字，免得用户点了以为要发生什么。
+                      菜单里没有缺项时整段不出现。 */}
+                  {moreMissing.length > 0 && (
+                    <li
+                      style={{
+                        listStyle: 'none',
+                        maxWidth: 240,
+                        marginTop: 4,
+                        padding: '6px 12px 4px',
+                        borderTop: '1px solid var(--crm-outline)',
+                        fontSize: 12,
+                        lineHeight: 1.7,
+                        whiteSpace: 'normal',
+                        color: 'var(--crm-text-3)',
+                      }}
+                    >
+                      {moreMissing.map((text) => (
+                        <div key={text}>{text}</div>
+                      ))}
+                    </li>
+                  )}
                 </Dropdown.Menu>
               }
             >
@@ -498,7 +543,7 @@ export default function KnowledgePage() {
 
       <SectionCard>
         {opportunityFilter && <div style={{ marginBottom: 12 }}>
-          当前商机：{linkedOpportunity.data?.title ?? linkedOpportunity.error?.message ?? `#${opportunityFilter}`} ·
+          当前商机：{linkedOpportunity.data?.title ?? linkedOpportunity.error?.message ?? `商机编号 ${opportunityFilter}`} ·
           <Button theme="borderless" onClick={() => { setSearchParams({}); setPage(1) }}>查看全部询价</Button>
           <Link to={`/opportunities/${opportunityFilter}`}>返回商机</Link>
         </div>}
@@ -606,7 +651,7 @@ export default function KnowledgePage() {
                 ...(customersQuery.data?.items ?? []).map((item) => [item.id, { value: item.id, label: item.name }] as const),
                 ...(selectedOpportunity.data ? [[selectedOpportunity.data.customer_id, {
                   value: selectedOpportunity.data.customer_id,
-                  label: selectedOpportunity.data.customer_name ?? `客户 #${selectedOpportunity.data.customer_id}`,
+                  label: selectedOpportunity.data.customer_name ?? `客户编号 ${selectedOpportunity.data.customer_id}`,
                 }] as const] : []),
               ]).values())}
               filter={optionMatcher}
@@ -617,13 +662,26 @@ export default function KnowledgePage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>关联商机（本次采购需求）</div>
-            <Select value={form.opportunity_id ?? undefined} disabled={!form.customer_id}
-              onChange={(value) => setForm({ ...form, opportunity_id: (value as number) ?? null })}
-              optionList={Array.from(new Map([
-                ...(opportunitiesQuery.data?.items ?? []),
-                ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
-              ].map((item) => [item.id, item])).values()).map((item) => ({ value: item.id, label: item.title }))}
-              filter showClear style={{ width: '100%' }} placeholder="选择该客户的商机，避免重复创建" />
+            {/* 客户没选时这个框是灰的（判据没动）。灰着的时候外面包一层接点击：
+                点它就弹一句「先选客户，才能关联该客户的商机」，而不是毫无反应。 */}
+            <div className="blocked-hint-click" onClick={notifyOpportunityBlocked} style={{ display: 'block' }}>
+              <Select value={form.opportunity_id ?? undefined} disabled={!form.customer_id}
+                onChange={(value) => setForm({ ...form, opportunity_id: (value as number) ?? null })}
+                optionList={Array.from(new Map([
+                  ...(opportunitiesQuery.data?.items ?? []),
+                  ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
+                ].map((item) => [item.id, item])).values()).map((item) => ({ value: item.id, label: item.title }))}
+                filter showClear
+                style={{ width: '100%', ...(form.customer_id ? null : { pointerEvents: 'none' }) }}
+                placeholder="选择该客户的商机，避免重复创建" />
+            </div>
+            {/* 常驻灰字：为什么灰、下一步先做哪一步。上面的客户框就在正上方，
+                所以只说"先选客户"，不重复怎么选。 */}
+            {!form.customer_id && (
+              <div style={{ marginTop: 4, fontSize: 12, lineHeight: 1.7, color: 'var(--crm-text-3)' }}>
+                先选客户，才能关联该客户的商机
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>

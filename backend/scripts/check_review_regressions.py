@@ -227,6 +227,8 @@ async def cleanup() -> None:
             ("delete from opportunities where title like :p", {"p": f"{PREFIX}%"}),
             ("delete from sales_order_items where order_id in (select id from sales_orders where order_no like :p)", {"p": f"{PREFIX}%"}),
             ("delete from order_status_history where order_id in (select id from sales_orders where order_no like :p)", {"p": f"{PREFIX}%"}),
+            # 跟单里程碑是 sales_orders 的子表（第三批审查 P2 之后，回款/应收改动会同步生成）。
+            ("delete from order_milestones where order_id in (select id from sales_orders where order_no like :p)", {"p": f"{PREFIX}%"}),
             ("delete from sales_orders where order_no like :p", {"p": f"{PREFIX}%"}),
             ("delete from product_costs where sku_id in (select id from skus where sku_code like :p)", {"p": f"{PREFIX}%"}),
             ("delete from price_rules where sku_id in (select id from skus where sku_code like :p)", {"p": f"{PREFIX}%"}),

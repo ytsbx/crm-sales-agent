@@ -192,7 +192,7 @@ class OrderMilestone(Base, IdMixin):
         UniqueConstraint("order_id", "node", name="uq_order_milestones_order_node"),
     )
 
-    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
+    order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id", ondelete="CASCADE"))
     node: Mapped[str] = mapped_column(String(32))
     planned_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_date: Mapped[date | None] = mapped_column(Date, nullable=True)

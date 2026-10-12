@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 from app.core.audit import write_audit
 from app.core.data_scope import ensure_in_scope
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.inquiry.model import CustomInquiry
 from app.modules.order.model import OrderDraft, OrderDraftItem
@@ -199,14 +200,14 @@ async def generate_document(session, user, draft_id, request_key=None):
         rows = await items(session, draft_id)
         current = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.name,
                     'spec': i.specification, 'quantity': i.quantity, 'unit_price': i.unit_price,
-                    'amount': i.quantity*i.unit_price if i.unit_price is not None else None, 'remark': i.remark} for i in rows]
+                    'amount': line_amount(i.quantity, i.unit_price) if i.unit_price is not None else None, 'remark': i.remark} for i in rows]
         original = [{'source_item_id': i.source_snapshot['source_item_id'], 'name': i.source_snapshot['name'],
                      'spec': i.source_snapshot.get('specification'), 'quantity': i.source_snapshot.get('original_quantity'),
                      'remark': i.source_snapshot.get('remark'), 'unit_price': i.source_snapshot.get('unit_price')} for i in rows]
         built = {'order_draft_id': draft.id, 'customer_id': draft.customer_id,
             'customer': await session.get(Customer, draft.customer_id), 'owner_id': draft.owner_id,
             'source': draft.source_context, 'items': current, 'diffs': docs._diff_lines(current, original, 'source_item_id'),
-            'title_suffix': f'#{draft.id}', 'sections': [
+            'title_suffix': f'编号 {draft.id}', 'sections': [
                 {'label': '单据性质', 'value': '订单草稿，仅供核对准备，不代表正式下单或生产指令'},
                 {'label': '草稿修订', 'value': str(draft.revision)},
                 {'label': '币种', 'value': draft.currency},

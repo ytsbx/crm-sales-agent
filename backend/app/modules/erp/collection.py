@@ -1280,7 +1280,7 @@ async def list_records(
 async def get_record(session: AsyncSession, record_id: int) -> ExternalRecord:
     row = await session.get(ExternalRecord, record_id)
     if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"原始事实 #{record_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"原始事实编号 {record_id} 不存在", 404)
     return row
 
 
@@ -1305,7 +1305,7 @@ async def record_is_visible(
 async def get_mapping(session: AsyncSession, mapping_id: int) -> ExternalObjectMapping:
     row = await session.get(ExternalObjectMapping, mapping_id)
     if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"外部对象映射 #{mapping_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"外部对象映射编号 {mapping_id} 不存在", 404)
     return row
 
 
@@ -1411,7 +1411,7 @@ async def assign_mapping(
     mapping.internal_id = int(internal_id)
     mapping.match_status = MATCH_MATCHED
     mapping.match_basis = "manual"
-    mapping.match_note = note or f"人工指定本地对象 #{internal_id}"
+    mapping.match_note = note or f"人工指定本地对象编号 {internal_id}"
     mapping.matched_at = moment
     mapping.matched_by = operator_id
     await session.flush()

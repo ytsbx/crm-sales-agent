@@ -1108,7 +1108,7 @@ async def list_diffs(
 async def get_diff(session: AsyncSession, diff_id: int) -> IntegrationDiff:
     row = await session.get(IntegrationDiff, diff_id)
     if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"差异 #{diff_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"差异编号 {diff_id} 不存在", 404)
     return row
 
 
@@ -1215,10 +1215,11 @@ async def confirm_diff(
             select(IntegrationDiff)
             .where(IntegrationDiff.id == diff.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalars().first()
     if locked is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"差异 #{diff.id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"差异编号 {diff.id} 不存在", 404)
     diff = locked
 
     resolution = (resolution or "").strip()

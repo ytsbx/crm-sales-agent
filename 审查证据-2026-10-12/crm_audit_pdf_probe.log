@@ -1,0 +1,2 @@
+PDF_FREIGHT_GATE 40002
+PDF_BYPASS {'approval_status': 'approved', 'unconfirmed_master': 1, 'pdf_status': 200, 'pdf_bytes': 3927, 'freight': '0.00'}

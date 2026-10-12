@@ -30,7 +30,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from _test_support import require_api_base, require_isolated_db
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -136,6 +136,18 @@ async def clean(verbose=False):
                  "(select id from quote_versions where quote_id in "
                  f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
         ('报价明细', "delete from quote_items where quote_version_id in "
+                 "(select id from quote_versions where quote_id in "
+                 f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
+        # ⚠️ 发送记录与附加费用都要**先删**：前者指向版本（本套件有发送步骤），
+        # 后者是本套件新增的"确认运费"夹具 —— 两者都有外键指向版本。
+        ('发送记录', "delete from quote_send_logs where quote_version_id in "
+                 "(select id from quote_versions where quote_id in "
+                 f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
+        # 附加费用同上
+        # 再提交审批，而 quote_charges.quote_version_id 有外键指向版本 ——
+        # 少了这一段，删版本会撞 quote_charges_quote_version_id_fkey（实测）。
+        # 这类「夹具多插了一张表就得同步清理」的连带，是套件最容易漏的地方。
+        ('附加费用', "delete from quote_charges where quote_version_id in "
                  "(select id from quote_versions where quote_id in "
                  f"(select id from quotes where customer_id in (select id from customers where name like 'CHK{RUN}%')))"),
         ('报价版本', "delete from quote_versions where quote_id in "
@@ -302,6 +314,7 @@ async def main():
     check_true('单 C 建好（大额高毛利）', quote_c is not None, str(res_c)[:120])
 
     def submit_and_fetch(version_id, reason):
+        confirm_freight_before_submit(call, zhangsan, version_id)
         status, res = call('POST', f'/quote-versions/{version_id}/submit-approval',
                            token=zhangsan, body={'reason': reason})
         return res

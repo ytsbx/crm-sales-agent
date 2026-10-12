@@ -1343,7 +1343,7 @@ export default function AnalyticsPage() {
             {
               title: '单据',
               dataIndex: 'label',
-              render: (v: string | null | undefined, r) => v ?? `#${r?.id ?? ''}`,
+              render: (v: string | null | undefined, r) => v ?? `编号 ${r?.id ?? ''}`,
             },
             {
               title: '类型',

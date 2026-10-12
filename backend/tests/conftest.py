@@ -91,6 +91,29 @@ class SyncSessionAsAsync:
     async def refresh(self, obj):
         self._session.refresh(obj)
 
+    def begin_nested(self):
+        """SAVEPOINT。
+
+        `order/milestones.ensure_initialized` 用它在**并发造行**时兜唯一约束
+        （撞了就回滚到保存点，外层事务不受污染），回款确认链会在同一事务里
+        走到它。真实 `AsyncSession.begin_nested()` 是异步上下文管理器，
+        这里把同步的 `SessionTransaction` 包一层，语义保持一致。
+        """
+        return _SyncCtxAsAsync(self._session.begin_nested())
+
+
+class _SyncCtxAsAsync:
+    """把同步的上下文管理器包成异步的（只给替身用）。"""
+
+    def __init__(self, ctx):
+        self._ctx = ctx
+
+    async def __aenter__(self):
+        return self._ctx.__enter__()
+
+    async def __aexit__(self, *exc):
+        return self._ctx.__exit__(*exc)
+
 
 def make_engine():
     """建一个建好业务表的内存 SQLite 引擎（每调用一次就是一个全新库）。"""

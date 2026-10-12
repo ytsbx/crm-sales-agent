@@ -33,7 +33,7 @@ import { listOrders } from '../../shared/api/order'
 import { listSamples } from '../../shared/api/sample'
 import { listCustomers } from '../../shared/api/customer'
 import { getCustomerTimeline } from '../../shared/api/followup'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 const STAGES = ['understanding', 'quote', 'sample', 'first_order', 'repeat', 'stable']
 /** 证据类别 → 详情页的跳转路径（点开原单核对）。 */
@@ -576,7 +576,11 @@ export default function CasesPage() {
                   sample_id: undefined,
                 })
               }
-              optionList={(customersQuery.data?.items ?? []).map((c) => ({ value: c.id, label: withCode(c.name, c.id) }))}
+              optionList={optionsWithCodeOnDuplicate(
+                customersQuery.data?.items ?? [],
+                (c) => c.name,
+                (c) => c.id,
+              )}
             />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 10 }}>
@@ -638,7 +642,7 @@ export default function CasesPage() {
                       <Tag size="small" color="blue">
                         {item.kind_label}
                       </Tag>
-                      <span style={{ flex: 1 }}>{item.label || `#${item.business_id}`}</span>
+                      <span style={{ flex: 1 }}>{item.label}</span>
                       <a
                         style={{ color: 'var(--crm-danger, #d45)' }}
                         onClick={() =>
@@ -682,7 +686,7 @@ export default function CasesPage() {
                       })),
                       ...(samplesQuery.data?.items ?? []).map((sp) => ({
                         value: `sample:${sp.id}`,
-                        label: `打样 #${sp.id} · ${sp.status_label ?? sp.status}`,
+                        label: `打样单编号 ${sp.id} · ${sp.status_label ?? sp.status}`,
                       })),
                     ]}
                   />
@@ -899,7 +903,7 @@ export default function CasesPage() {
                     key={`${item.kind}:${item.business_id}`}
                     to={EVIDENCE_PATH[item.kind] ? `${EVIDENCE_PATH[item.kind]}${item.business_id}` : '#'}
                   >
-                    {item.label || `${item.kind_label} #${item.business_id}`}
+                    {item.label || `${item.kind_label}（暂无编号）`}
                     <span style={{ color: 'var(--crm-text-3)' }}> · {item.kind_label}</span>
                   </Link>
                 ))}

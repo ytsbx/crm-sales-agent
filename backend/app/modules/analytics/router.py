@@ -297,14 +297,20 @@ async def freeze_sales_actuals(
             403,
         )
     _ensure_past_period(period)
-    values = await _collect_period_actuals(session, user, period)
-    if not values:
-        raise AppError(
-            ErrorCode.NOT_FOUND, f"{period} 没有任何目标或实绩，没有可结的数", 404
-        )
-    # 明细与汇总**同一次**写入（返工单第 4 条）：只冻汇总的话，
-    # 结账之后一张退货单就会让"点开明细"比"合计"少一笔，用户不知道该信哪个。
-    items = await _collect_period_items(session, user, period)
+    # ⚠️ **汇总与明细必须在同一个快照里读**（第五批审查 P1，2026-10-12）：
+    # 它们是两条独立查询，默认隔离级别下会看到**两个快照** —— 期间被别的会话
+    # 取消一张订单，就会存出"汇总 100、明细 0 条"这种永久对不上的账。
+    # 所以走 `consistent_snapshot`：一条独立连接（第一句就能设隔离级别）、
+    # REPEATABLE READ、并在同一条连接上持这一期的期间锁。
+    async with target_actuals.consistent_snapshot(period) as snap:
+        values = await _collect_period_actuals(snap, user, period)
+        if not values:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"{period} 没有任何目标或实绩，没有可结的数", 404
+            )
+        # 明细与汇总**同一次**写入（返工单第 4 条）：只冻汇总的话，
+        # 结账之后一张退货单就会让"点开明细"比"合计"少一笔，用户不知道该信哪个。
+        items = await _collect_period_items(snap, user, period)
     written = await target_actuals.freeze_period(
         session,
         period=period,
@@ -364,10 +370,12 @@ async def refreeze_sales_actuals(
     before = await target_actuals.frozen_for(session, period)
     if not before:
         raise AppError(ErrorCode.NOT_FOUND, f"{period} 还没结过账，请先结账", 404)
-    values = await _collect_period_actuals(session, user, period)
-    # 明细跟着一起重出（返工单第 4 条）：只换汇总不换明细，等于把
-    # "刚重算的合计"和"上一版的明细"摆在同一页上，比不重算还乱。
-    items = await _collect_period_items(session, user, period)
+    # 与结账同一条口径：汇总与明细在**同一个一致快照**里读（第五批审查 P1）
+    async with target_actuals.consistent_snapshot(period) as snap:
+        values = await _collect_period_actuals(snap, user, period)
+        # 明细跟着一起重出（返工单第 4 条）：只换汇总不换明细，等于把
+        # "刚重算的合计"和"上一版的明细"摆在同一页上，比不重算还乱。
+        items = await _collect_period_items(snap, user, period)
     written = await target_actuals.freeze_period(
         session,
         period=period,

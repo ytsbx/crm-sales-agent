@@ -1,5 +1,7 @@
 """合同/月结协议接口：模板维护（管理）、生成/签署/作废与台账（销售/主管）。"""
 
+import logging
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,6 +73,9 @@ async def list_documents(
     return ok(page_data(items, total, page, page_size))
 
 
+logger = logging.getLogger(__name__)
+
+
 @router.post("/contract-documents")
 async def generate_document(
     payload: DocumentCreate,
@@ -115,41 +120,70 @@ async def generate_document(
             svc.serialize_document(doc, customer_name=customer.name),
             "这份合同刚才已经生成过了，返回的是同一份",
         )
-    # 生成即把 PDF 渲染一次落盘（带 sha256）。之后无论客户改几次名，
-    # 下载拿到的都是这一份——同一编号两次下载内容不同是对外文件的硬伤。
-    await svc.attach_generated_pdf(session, doc, user_id=user.id)
-    # 补充协议 / 续签是**一次真实的业务动作**，要进客户时间线；
-    # 普通草稿生成不记——草稿不代表签约（审查第 9 条明确要求）。
-    if doc.parent_id:
-        parent_doc = await svc.get_doc_or_404(session, doc.parent_id)
-        supersedes = (doc.filled_data or {}).get("_supersedes") or {}
-        label = "月结协议续签" if doc.doc_type == "monthly" else "新增补充协议"
-        extra = ""
-        if supersedes:
-            extra = f"；已替代原协议 {supersedes.get('doc_no')}"
-            if supersedes.get("cancelled_tasks"):
-                extra += f"，同时结束了 {supersedes['cancelled_tasks']} 条在办提醒"
-        await _record_contract_event(
+    # ⚠️ **从"PDF 落盘"到"提交成功"整段都要能清理**（第四批复审 P1，2026-10-12）。
+    #
+    # 我上一版只把 `session.commit()` 那一步放进了 try，于是**写审计失败**这条路
+    # 漏了：PDF 已落盘、数据库回滚、孤儿 PDF 留着（故障注入实测：合同 0 条、
+    # 文件记录 0 条、PDF 仍在、删除调用 0 次）。
+    #
+    # 所以 try 从**落盘之前**就开始，覆盖中间的每一次 await。
+    # 清理一律走 `svc.cleanup_pending_objects()` —— 它**先核查数据库再删**，
+    # 因为"commit 抛异常"不等于"没提交"（见那个函数的说明）。
+    try:
+        # 生成即把 PDF 渲染一次落盘（带 sha256）。之后无论客户改几次名，
+        # 下载拿到的都是这一份——同一编号两次下载内容不同是对外文件的硬伤。
+        await svc.attach_generated_pdf(session, doc, user_id=user.id)
+        # 补充协议 / 续签是**一次真实的业务动作**，要进客户时间线；
+        # 普通草稿生成不记——草稿不代表签约（审查第 9 条明确要求）。
+        if doc.parent_id:
+            parent_doc = await svc.get_doc_or_404(session, doc.parent_id)
+            supersedes = (doc.filled_data or {}).get("_supersedes") or {}
+            label = "月结协议续签" if doc.doc_type == "monthly" else "新增补充协议"
+            extra = ""
+            if supersedes:
+                extra = f"；已替代原协议 {supersedes.get('doc_no')}"
+                if supersedes.get("cancelled_tasks"):
+                    extra += f"，同时结束了 {supersedes['cancelled_tasks']} 条在办提醒"
+            await _record_contract_event(
+                session,
+                doc,
+                user=user,
+                action="amend",
+                title=label,
+                content=f"{label} {doc.doc_no}，基于 {parent_doc.doc_no}{extra}",
+            )
+        await write_audit(
             session,
-            doc,
-            user=user,
-            action="amend",
-            title=label,
-            content=f"{label} {doc.doc_no}，基于 {parent_doc.doc_no}{extra}",
+            operator_id=user.id,
+            action="generate",
+            business_type="contract",
+            business_id=doc.id,
+            after={"doc_no": doc.doc_no, "template_id": doc.template_id,
+                   "customer_id": doc.customer_id, "order_id": doc.order_id,
+                   "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
+                   "generated_file_id": doc.generated_file_id},
+            ip=client_ip(request),
         )
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="generate",
-        business_type="contract",
-        business_id=doc.id,
-        after={"doc_no": doc.doc_no, "template_id": doc.template_id,
-               "customer_id": doc.customer_id, "order_id": doc.order_id,
-               "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
-               "generated_file_id": doc.generated_file_id},
-        ip=client_ip(request),
-    )
-    await session.commit()
+        await session.commit()
+    except BaseException:  # noqa: BLE001
+        # ⚠️ 捕 **`BaseException`**，不是 `Exception`（第四批复审 P2，2026-10-12）。
+        #
+        # `asyncio.CancelledError` 继承 `BaseException` —— 写 `except Exception`
+        # **捕不到取消**：客户端断开、请求超时、服务优雅停机都会取消这个协程，
+        # 于是清理被跳过。复审实测（PDF 落盘后、写审计处注入取消）：
+        # 合同 0 条、文件记录 0 条，**存储仍有 1 份 PDF、待清理登记仍有 1 条**。
+        #
+        # 清理走 `_cancel_safe`：用 `asyncio.shield` 让这段**扛住取消跑完**，
+        # 然后再把取消原样抛出去 —— 取消语义不变，只是"先收拾干净再走"。
+        # 核查仍然照旧：查得到就保留（已提交的原件不许删），查不到才删。
+        await svc._cancel_safe(
+            svc.cleanup_pending_objects(session), label="合同 PDF 清理"
+        )
+        raise
+    # 成功路径：**注销登记**。不清的话，本请求会话上会一直挂着"待删"的键 ——
+    # 会话被复用（同一个请求里后面还有别的逻辑）时，那些键可能被当成待清理对象。
+    svc.take_pending_objects(session)
+
     result = svc.serialize_document(doc, customer_name=customer.name)
     missing = result.get("missing_fields") or {}
     if missing:
@@ -429,18 +463,13 @@ async def _record_contract_event(
 
 
 async def _ensure_doc_in_scope(session: AsyncSession, user, doc) -> None:
-    from app.modules.customer.model import Customer
+    """详情/生成稿/签署附件**共用**的归属判据（第三批审查 P2，2026-10-12）。
 
-    customer = await session.get(Customer, doc.customer_id)
-    owner_id = customer.owner_id if customer else None
-    # 客户可能被"超期未跟进自动回收"进公海、或被合并而清空负责人。合同本身是已签
-    # 事实，不能因为客户进了公海就**谁都点不开**（口径 A）：有订单就跟订单负责人，
-    # 没订单就跟当初创建这份合同的人。都没有才落回"无归属默认拒绝"。
-    if owner_id is None and doc.order_id:
-        from app.modules.order.model import SalesOrder
+    规则只留一份，落在 `contract/visibility.py`：客户当前负责人 → 订单负责人
+    → 创建人。抽出来的原因：附件走的是通用文件入口，那边原来只认客户当前
+    负责人，于是"客户进公海、负责人清空"时详情能看、原件下不了。
+    """
+    from app.modules.contract.visibility import contract_scope_owner_id
 
-        order = await session.get(SalesOrder, doc.order_id)
-        owner_id = order.owner_id if order else None
-    if owner_id is None:
-        owner_id = doc.created_by
+    owner_id = await contract_scope_owner_id(session, doc)
     await ensure_in_scope(session, user, owner_id=owner_id, label="合同文档")

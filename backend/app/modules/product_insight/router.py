@@ -727,7 +727,7 @@ async def convert_insight(
         status="open",
         origin=origin,
         source_insight_id=row.id,
-        remark=data.remark or f"由新品洞察 #{row.id} 转入",
+        remark=data.remark or f"由新品洞察编号 {row.id} 转入",
         created_by=user.id,
     )
     session.add(inquiry)

@@ -1,0 +1,2 @@
+AGENT_ERROR 40002 SKU AUDIT_f4a0ac9c919ef99f58 已停用，不能用于新业务（历史单据不受影响）
+AGENT_PARTIAL_COMMIT {'action_status': 'failed', 'persisted_quotes': 1, 'quote_has_version': True}

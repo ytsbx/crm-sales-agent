@@ -27,6 +27,8 @@ import {
   type QuoteVersion,
   type QuoteItemRow,
 } from '../../shared/api/quote'
+import { listContacts } from '../../shared/api/customer'
+import { useAuthStore } from '../../shared/store/auth'
 import { listCustomInquiries } from '../../shared/api/inquiry'
 import { listSkusForPricing } from '../../shared/api/pricing'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -34,12 +36,20 @@ import type { TagTone } from '../../shared/types'
 import { convertToOrder } from '../../shared/api/order'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import BlockedHint from '../../shared/components/BlockedHint'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
+import QuoteSendLogsPanel from './QuoteSendLogsPanel'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import WhatIfPanel from './WhatIfPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import { optionMatcher } from '../../shared/components/optionMatch'
 import { otherOption } from '../../shared/components/otherOption'
+import {
+  orderedChannels,
+  rememberChannel,
+  rememberedChannel,
+  sendLogsQueryKey,
+} from './sendChannel'
 
 const STATUS_TONE: Record<string, TagTone> = {
   draft: 'grey',
@@ -51,6 +61,14 @@ const STATUS_TONE: Record<string, TagTone> = {
   approval_rejected: 'red',
 }
 
+/**
+ * 收件人下拉里"不用联系人、手动填"这一项的哨兵值。
+ *
+ * 用一个不可能等于真实姓名的串（`\u0000` 开头）而不是「其他」两个字：
+ * 客户真的有个联系人叫"其他"时，选人不会被误判成"手动填写"。
+ */
+const MANUAL_RECEIVER = '\u0000manual'
+
 const CHARGE_TYPES = [
   { value: 'logistics', label: '物流' },
   { value: 'packaging', label: '包装' },
@@ -59,18 +77,6 @@ const CHARGE_TYPES = [
   { value: 'discount', label: '折扣' },
   { value: 'other', label: '其他' },
 ]
-
-/**
- * 报价的发送渠道。
- *
- * 这里的值是**中文本身**（后端 `channel` 也是自由文本），所以选中「其他」后
- * 用户写的内容可以直接存回这个字段。
- *
- * ⚠️ 上面的 `CHARGE_TYPES` 不一样：它的值是 `logistics` 这类**分类码**，
- * 后端拿它查 `CHARGE_LABEL` 生成中文标签，所以费用类型那处**不能**照这个套路改
- * （把"运费补贴"写进 charge_type，这条费用就脱离了原有分类）。
- */
-const SEND_CHANNELS = ['邮件', '企业微信', '微信', '其他']
 
 /**
  * 批量录入的一行草稿。现货给 sku_id；定制件给 inquiry_id + 成本 + 报价
@@ -92,6 +98,7 @@ export default function QuoteDetailPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const currentUser = useAuthStore((state) => state.user)
   const { can } = usePermissions()
   const canManage = can('quote:manage')
 
@@ -102,7 +109,14 @@ export default function QuoteDetailPage() {
   })
 
   const requestedVersionId = searchParams.get('version') ? Number(searchParams.get('version')) : null
-  const versionId = requestedVersionId ?? versionsQuery.data?.[0]?.id
+  /**
+   * 这份报价的**所有**版本 id。
+   *
+   * 面板与"登记成功后失效缓存"必须用**同一个数组** —— 失效的键是按这个列表拼的，
+   * 两处算法不一致（一处过滤、一处不过滤）就又会失效不到。
+   */
+  const allVersionIds = (versionsQuery.data ?? []).map((item) => item.id)
+  const versionId = requestedVersionId ?? allVersionIds[0]
 
   const detailQuery = useQuery({
     queryKey: ['quote-version', versionId],
@@ -117,15 +131,39 @@ export default function QuoteDetailPage() {
   const [chargeVisible, setChargeVisible] = useState(false)
   const [chargeForm, setChargeForm] = useState({ charge_type: 'logistics', description: '', amount: '' })
   const [sendVisible, setSendVisible] = useState(false)
-  const [sendForm, setSendForm] = useState({ channel: '邮件', receiver: '', request_key: '' })
+  /**
+   * 发送渠道默认值：**这个人上次用过的那个**（主人 2026-10-12 拍板）。
+   *
+   * 原来写死 `'邮件'`，于是"我连着 20 单都走企业微信"的人每单都要重选一次 ——
+   * 默认值在教用户做错事。这里先读本地记忆，没有才用兜底值。
+   */
+  const [sendForm, setSendForm] = useState(() => ({
+    channel: rememberedChannel(currentUser?.id),
+    receiver: '',
+    request_key: '',
+  }))
+  /** 收件人留空时的提示（必填，但点确认才提示，别一打开就红一片）。 */
+  const [sendTouched, setSendTouched] = useState(false)
+  /**
+   * 收件人是不是"手动填写"这一支。
+   *
+   * ⚠️ **用显式状态，不要从值反推**。我第一版按"值不在联系人列表里"来判，
+   * 结果**刚打开弹窗就露出一个空输入框**（那时的值就是空的、也不在任何列表里）——
+   * 看起来像"默认要你手填"。显式状态才能区分"还没选"和"选了手动填写"。
+   */
+  const [manualReceiver, setManualReceiver] = useState(false)
 
   // 发送渠道的「其他」：选中后多一个输入框写具体渠道（不填就保持「其他」），
-  // 写的内容直接存进 channel。
+  // 写的内容直接存进 channel。选中即记住 —— 下次开这个弹窗就是它。
   const channelOption = otherOption({
-    options: SEND_CHANNELS,
+    options: orderedChannels(currentUser?.id),
     value: sendForm.channel,
-    onChange: (v) => setSendForm({ ...sendForm, channel: v }),
+    onChange: (v) => {
+      rememberChannel(currentUser?.id, v)
+      setSendForm({ ...sendForm, channel: v })
+    },
   })
+
   const [declineVisible, setDeclineVisible] = useState(false)
   const [declineReason, setDeclineReason] = useState('')
   const [submitVisible, setSubmitVisible] = useState(false)
@@ -139,10 +177,24 @@ export default function QuoteDetailPage() {
     queryFn: listSkusForPricing,
     enabled: itemsVisible,
   })
+  /**
+   * 可选定制需求：**只列这张报价所属客户的需求**（2026-10-12 主人提问核实）。
+   *
+   * 核实结果：这里原来拉的是 `listCustomInquiries({ page, page_size })`，
+   * 把**全部客户**的需求都铺进下拉 —— 而需求列表接口本来就支持 `customer_id`
+   * （`inquiry/router.py` 有那个参数），是这里没传。于是界面上能把 A 客户的需求
+   * 选进 B 客户的报价，落库后需求编号/标题还会进快照、跟着对客文件流出去。
+   * 后端已同步补上"需求与报价必须同一客户"的判据（`quote/service._build_custom_item_snapshot`），
+   * 这里把下拉也收窄 —— 两层一起，界面上就不该出现选得动的错误选项。
+   *
+   * `customer_id` 还没读到时不发请求（enabled 里判），避免先拉一份"全部客户"的
+   * 列表闪一下再换。
+   */
+  const quoteCustomerId = detailQuery.data?.quote?.customer_id
   const inquiriesQuery = useQuery({
-    queryKey: ['inquiries-for-quote'],
-    queryFn: () => listCustomInquiries({ page: 1, page_size: 100 }),
-    enabled: itemsVisible,
+    queryKey: ['inquiries-for-quote', quoteCustomerId],
+    queryFn: () => listCustomInquiries({ customer_id: quoteCustomerId, page: 1, page_size: 100 }),
+    enabled: itemsVisible && Boolean(quoteCustomerId),
   })
 
   const patchRow = (index: number, patch: Partial<ItemDraftRow>) => {
@@ -248,10 +300,60 @@ export default function QuoteDetailPage() {
   const detail = detailQuery.data
   const version = detail?.version
   const quote = detail?.quote
+  /**
+   * 收件人下拉：这个客户的联系人（后端已按权限脱敏，姓名/职位不受影响）。
+   *
+   * ⚠️ 这两个查询必须放在 `quote` / `versionId` 声明**之后** —— 放前面会
+   * "use before declaration"（我第一版就放错了位置，tsc 直接报出来）。
+   */
+  const contactsQuery = useQuery({
+    queryKey: ['customer-contacts', quote?.customer_id],
+    queryFn: () => listContacts(quote!.customer_id),
+    enabled: sendVisible && Boolean(quote?.customer_id),
+  })
+
+  /**
+   * 收件人下拉的选项：这个客户的联系人。
+   *
+   * 值是**姓名**：后端 `receiver` 是 `String(128)` 的自由文本，存姓名既能对上人，
+   * 又不会把脱敏过的手机号/企微号（带星号）写进库 —— 那种值一旦落库就永久残了，
+   * 而且审计里看起来像真号码。
+   */
+  const contactOptions = (contactsQuery.data ?? []).map((contact) => ({
+    value: contact.name,
+    label: [contact.name, contact.title].filter(Boolean).join(' · '),
+  }))
+
   const isCurrentVersion = Boolean(version && quote?.current_version_id === version.id)
   const editable = isCurrentVersion && version?.approval_status === 'not_submitted' && !version?.sent_at
+  /**
+   * 锁版之后能不能**补/改运费**（主人 2026-10-12 拍板，方案 A+B）。
+   *
+   * 后端的判据是 `ensure_charge_change_allowed`：只有「物流」类费用放行。
+   * 前端这里只是把入口露出来 —— 真正的拒绝在后端。
+   */
+  const canEditFreightOnly = Boolean(
+    canManage && isCurrentVersion && version
+    && (version.approval_status === 'approved' || version.sent_at),
+  )
   const canRespond = isCurrentVersion && quote?.status === 'sent' && Boolean(version?.sent_at)
     && version?.approval_status === 'approved' && !version.accepted_at && !version.declined_at
+
+  // 动作消失也要给理由（主人 2026-10-12 原话：「这种我点又点不了，又不给提示为什么点不了，
+  // 这种体验很不好，类似的情况都要修」）。「提交审批 / 批量录入 / 添加费用」三个入口都挂在
+  // `canManage && editable` 上（判据见上面 `const editable`）：切到历史版本、版本已发送、审批通过之后
+  // 它们**整块不渲染**，页面上一个字都不说 —— 用户只看到按钮没了。
+  // pending / rejected 那两种情形页面上已有 Tag 说明（该版本正在审批中 / 审批未通过），
+  // 这里只补没人说的这几种，能不能改的判据一个字没动。理由块见 shared/components/BlockedHint.tsx。
+  const versionEditBlockedReason = !version || !canManage
+    ? ''
+    : !isCurrentVersion
+      ? `这是历史版本（V${version.version_no}），历史版本不能再提交审批、录入明细或加费用；要改动请切到当前版本，或新建一版。`
+      : version.sent_at
+        ? '该版本已经发送给客户，不能再改；需要改动请新建一版。'
+        : version.approval_status === 'approved'
+          ? '该版本已审批通过，明细和费用不能再改；需要改动请新建一版。'
+          : ''
 
   // A09 后半：草稿版本检测"价格已有更新"（系统带价的明细与当前适用价比对）
   const driftQuery = useQuery({
@@ -344,12 +446,29 @@ export default function QuoteDetailPage() {
   const sendMutation = useMutation({
     mutationFn: () => markSent(versionId!, sendForm),
     onSuccess: () => {
-      Toast.success('已标记为已发送')
+      Toast.success(`已登记：通过${sendForm.channel}发给${sendForm.receiver}`)
+      rememberChannel(currentUser?.id, sendForm.channel)
       setSendVisible(false)
+      setSendTouched(false)
       refresh()
+      // 刚登记的那条要立刻出现在下面的发送记录里
+      void queryClient.invalidateQueries({
+        // 键从这里取，别在页面里再写一遍字面量 —— 两个键对不上就永远失效不到
+        queryKey: sendLogsQueryKey(allVersionIds),
+      })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  /** 确认登记：收件人必填（留空的话事后无从查证发给了谁）。 */
+  function submitSend() {
+    setSendTouched(true)
+    if (!sendForm.receiver.trim()) {
+      Toast.error('请填写发给了谁（可从客户联系人里选，也可以手填）')
+      return
+    }
+    sendMutation.mutate()
+  }
 
   const acceptMutation = useMutation({
     mutationFn: () => acceptQuote(versionId!),
@@ -575,7 +694,7 @@ export default function QuoteDetailPage() {
   }))
   const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
     value: row.id,
-    label: `${row.inquiry_no ?? `#${row.id}`} · ${row.title}`,
+    label: `${row.inquiry_no} · ${row.title}`,
   }))
 
   return (
@@ -690,6 +809,13 @@ export default function QuoteDetailPage() {
             </Button>
           ))}
         </div>
+
+        {/* 版本页签下面正是「按钮突然全没了」发生的地方：切到历史版本、或这一版已经发送/审批通过时，
+            提交审批、批量录入、添加费用都会整块消失（判据 `canManage && editable`）。
+            常驻一行说明它们为什么不在这儿、下一步该怎么做（规矩见 shared/components/BlockedHint.tsx）。 */}
+        {versionEditBlockedReason && (
+          <BlockedHint reasons={[versionEditBlockedReason]} action="改这一版报价" />
+        )}
       </DetailHeader>
 
       {/* §8.14 复审：主数据未确认要**常驻显示** —— 不是一闪而过的 Toast。
@@ -750,21 +876,22 @@ export default function QuoteDetailPage() {
         visible={masterPreviewOpen}
         footer={null}
         onCancel={() => setMasterPreviewOpen(false)}
-        width={720}
+        width={640}
         style={{ maxWidth: 'calc(100vw - 48px)' }}
       >
         {masterPreviewQuery.isLoading && <div>正在比对…</div>}
         {masterPreviewQuery.data && (
-          <div style={{ display: 'grid', gap: 12 }}>
-            <div style={{ fontSize: 13, lineHeight: 1.8 }}>{masterPreviewQuery.data.message}</div>
+          <div style={{ display: 'grid', gap: 16, paddingBottom: 20 }}>
+            <div style={{ fontSize: 14, lineHeight: 1.8 }}>{masterPreviewQuery.data.message}</div>
             {!masterPreviewQuery.data.refreshable && (
               <div
                 style={{
-                  padding: '10px 14px',
-                  borderRadius: 6,
+                  padding: '12px 16px',
+                  borderRadius: 'var(--crm-radius)',
                   background: 'var(--crm-warning-bg, #FFF7E6)',
                   border: '1px solid var(--crm-warning-border, #FFD591)',
                   fontSize: 13,
+                  lineHeight: 1.7,
                 }}
               >
                 {masterPreviewQuery.data.blocked_reason}
@@ -777,23 +904,51 @@ export default function QuoteDetailPage() {
                   key={it.item_id}
                   style={{
                     border: '1px solid var(--semi-color-border)',
-                    borderRadius: 6,
-                    padding: 10,
+                    borderRadius: 'var(--crm-radius)',
+                    padding: '16px 20px',
                     display: 'grid',
-                    gap: 6,
+                    gap: 12,
+                    background: 'var(--crm-surface)',
                   }}
                 >
-                  <div style={{ fontWeight: 600 }}>{it.sku_code}</div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{it.sku_code}</div>
                   {it.never_referenced && (
-                    <div style={{ fontSize: 12, color: 'var(--semi-color-warning)' }}>
+                    <div
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: 'var(--crm-radius-sm)',
+                        background: 'var(--crm-warning-bg, #FFF7E6)',
+                        fontSize: 12,
+                        lineHeight: 1.7,
+                        color: 'var(--semi-color-warning)',
+                      }}
+                    >
                       这条明细还没有引用过任何已确认版本（刷新会引用最新已确认版本）
                     </div>
                   )}
-                  {it.changes.map((c) => (
-                    <div key={c.field} style={{ fontSize: 13 }}>
-                      {c.label}：{c.before ?? '（空）'} → <strong>{c.after ?? '（空）'}</strong>
+                  {it.changes.length > 0 && (
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      {it.changes.map((c) => (
+                        <div
+                          key={c.field}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'baseline',
+                            gap: 12,
+                            fontSize: 13,
+                            lineHeight: 1.7,
+                          }}
+                        >
+                          <span style={{ flex: '0 0 64px', color: 'var(--crm-text-2)' }}>
+                            {c.label}
+                          </span>
+                          <span style={{ color: 'var(--crm-text-3)' }}>{c.before ?? '（空）'}</span>
+                          <span style={{ color: 'var(--crm-text-3)' }}>→</span>
+                          <span style={{ fontWeight: 600 }}>{c.after ?? '（空）'}</span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
               ))}
             {masterPreviewQuery.data.changed_count === 0 && (
@@ -801,7 +956,7 @@ export default function QuoteDetailPage() {
                 没有需要变化的明细。
               </div>
             )}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 4 }}>
               <Button onClick={() => setMasterPreviewOpen(false)}>取消</Button>
               <Popconfirm
                 title="确认接入？"
@@ -913,9 +1068,20 @@ export default function QuoteDetailPage() {
           title="附加费用"
           extra={
             canManage &&
-            editable && (
-              <Button size="small" onClick={() => setChargeVisible(true)}>
-                添加费用
+            (editable || canEditFreightOnly) && (
+              // ⚠️ 锁版之后这个入口**照旧露出来**，只改说法（2026-10-12）：
+              // 从前它挂在 `editable` 上，于是一旦版本锁死入口就整块消失，
+              // 而"补运费"恰恰是锁版之后唯一还允许、也常常必须做的事 ——
+              // 藏掉它，用户就只能新建版本重走审批（那个死胡同）。
+              <Button
+                size="small"
+                onClick={() => {
+                  // 锁版之后只可能填运费，直接预选上 —— 别让人先选一次分类
+                  if (!editable) setChargeForm((form) => ({ ...form, charge_type: 'logistics' }))
+                  setChargeVisible(true)
+                }}
+              >
+                {editable ? '添加费用' : '补填运费'}
               </Button>
             )
           }
@@ -1112,14 +1278,23 @@ export default function QuoteDetailPage() {
                 ]}
               />
               {row.mode === 'custom' ? (
-                <Select
-                  style={{ width: 240 }}
-                  placeholder="选择定制需求"
-                  filter={optionMatcher}
-                  value={row.inquiry_id}
-                  onChange={(value) => patchRow(index, { inquiry_id: value as number })}
-                  optionList={inquiryOptions}
-                />
+                <>
+                  <Select
+                    style={{ width: 240 }}
+                    placeholder={inquiryOptions.length > 0 ? '选择定制需求' : '本客户还没有定制需求'}
+                    filter={optionMatcher}
+                    value={row.inquiry_id}
+                    onChange={(value) => patchRow(index, { inquiry_id: value as number })}
+                    optionList={inquiryOptions}
+                  />
+                  {/* 下拉只列**本客户**的需求（2026-10-12 主人提问核实）：空的时候要说清
+                      是"这个客户还没有需求"，而不是让用户以为系统里没数据、或者去别处找。 */}
+                  {inquiryOptions.length === 0 && (
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)', alignSelf: 'center' }}>
+                      这个客户还没有定制需求：请先到「定制需求」里为「{quote.customer_name ?? '本客户'}」记录一条，再回来报价
+                    </span>
+                  )}
+                </>
               ) : (
                 <Select
                   style={{ width: 240 }}
@@ -1180,18 +1355,34 @@ export default function QuoteDetailPage() {
       </Modal>
 
       <Modal
-        title="添加附加费用"
+        title={editable ? '添加附加费用' : '补填运费'}
         visible={chargeVisible}
         onCancel={() => setChargeVisible(false)}
         onOk={() => chargeMutation.mutate()}
         confirmLoading={chargeMutation.isPending}
-        okText="添加"
+        okText={editable ? '添加' : '保存运费'}
       >
         <div style={{ display: 'grid', gap: 12 }}>
+          {/* 锁版之后只允许运费（后端 `ensure_charge_change_allowed` 也是这个判据）：
+              这里把选项直接收敛成一项，而不是让用户选完再被拒 —— 少一次白填。
+              顺带说明**为什么只有它**、以及补完之后还要做什么。 */}
+          {!editable && (
+            <div className="send-context">
+              <div className="send-context-line">
+                这一版已经{version?.sent_at ? '发送给客户' : '审批通过'}，只有「物流」类费用还能补填。
+              </div>
+              <div className="send-context-hint">
+                运费是代收代付、不进产品价，所以补它「不需要重新走审批」；
+                其他费用与折扣要改动，请新建版本。
+                {version?.sent_at ? '另外：补完运费这一版的「已发送」会被清掉，需要重新登记一次发送。' : ''}
+              </div>
+            </div>
+          )}
           <Select
             value={chargeForm.charge_type}
             onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
-            optionList={CHARGE_TYPES}
+            optionList={editable ? CHARGE_TYPES : CHARGE_TYPES.filter((item) => item.value === 'logistics')}
+            disabled={!editable}
             style={{ width: '100%' }}
           />
           <Input
@@ -1222,11 +1413,37 @@ export default function QuoteDetailPage() {
         title="提交审批"
         visible={submitVisible}
         onCancel={() => setSubmitVisible(false)}
-        onOk={() => submitMutation.mutate()}
+        onOk={() => {
+          // 运费没确认时**不让提交**（后端也会拒，这里先说清为什么）。
+          // 判据与后端同一份：`freightUnconfirmed` 来自 detail.freight_unconfirmed_reason。
+          if (freightUnconfirmed) {
+            Toast.error(freightUnconfirmed)
+            return
+          }
+          submitMutation.mutate()
+        }}
         confirmLoading={submitMutation.isPending}
         okText="提交"
+        okButtonProps={{ disabled: Boolean(freightUnconfirmed) }}
       >
         <div style={{ display: 'grid', gap: 12 }}>
+          {/* ⚠️ 运费闸**前置到提交审批**（2026-10-12）。从前它只在"标记已发送"那一刻
+              才拦，而那时版本已经审批通过、费用入口锁死、撤回也救不了 ——
+              用户只能新建版本重走一遍审批。现在报批前就说清楚。 */}
+          {freightUnconfirmed && (
+            <div className="send-context" style={{ borderLeft: '3px solid var(--crm-warning)' }}>
+              <div className="send-context-line">
+                <Tag size="small" type="light" color="orange" style={{ marginRight: 6 }}>
+                  待补运费
+                </Tag>
+                先补上运费，再提交审批
+              </div>
+              <div className="send-context-hint">
+                {freightUnconfirmed} 原因是：版本一旦提交审批就会被锁定，
+                那时再发现缺运费就只能新建版本、重走一遍审批 —— 所以这一步要前置。
+              </div>
+            </div>
+          )}
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
             提交后系统会按你的价格权限逐条检查：全部在权限内则直接通过，否则转给主管审批。
           </div>
@@ -1250,35 +1467,116 @@ export default function QuoteDetailPage() {
           placeholder="填写客户实际拒绝原因（可不填）" />
       </Modal>
 
+      {/* 「标记已发送」（2026-10-12 主人反馈"可模糊"后重做）。
+          原来只有一个渠道下拉 + 一个自由文本输入框，**没有任何一句话说清这是在登记什么**：
+          发给客户还是发给主管、登记完会发生什么、系统到底发没发出去 —— 全靠猜。 */}
       <Modal
-        title="标记已发送"
+        title={version?.sent_at ? '登记再次发送' : '标记已发送'}
         visible={sendVisible}
-        onCancel={() => setSendVisible(false)}
-        onOk={() => sendMutation.mutate()}
+        onCancel={() => {
+          setSendVisible(false)
+          setSendTouched(false)
+        }}
+        onOk={submitSend}
         confirmLoading={sendMutation.isPending}
-        okText="确认已实际发送"
+        okText="确认：我已经发给客户了"
+        width={520}
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <Select
-            value={channelOption.selectValue}
-            onChange={channelOption.onSelect}
-            optionList={SEND_CHANNELS.map((value) => ({ value, label: value }))}
-            style={{ width: '100%' }}
-          />
-          {channelOption.showInput && (
-            <Input
-              value={channelOption.inputValue}
-              onChange={channelOption.onInput}
-              placeholder="请说明是什么渠道（可不填）"
+        <div style={{ display: 'grid', gap: 14 }}>
+          {/* ① 先说是哪一份、发给谁 —— 原来的弹窗连报价单号都不显示 */}
+          <div className="send-context">
+            <div className="send-context-line">
+              报价单 <strong>{quote?.quote_no}</strong>
+              <Tag size="small" style={{ marginLeft: 6 }}>V{version?.version_no}</Tag>
+            </div>
+            <div className="send-context-line">
+              这是「已发给客户」的记录：
+              <strong>{quote?.customer_name || '（未取到客户名）'}</strong>
+            </div>
+            <div className="send-context-hint">
+              系统不会替你发送文件 —— 请先用「下载 PDF」或企业微信把报价发给客户，
+              再回来登记这次发送。登记后这一版会锁定（不能再改），商机会推进到「已报价」。
+            </div>
+          </div>
+
+          {/* ② 渠道：默认是这个人上次用过的，不是写死的邮件 */}
+          <div>
+            <div className="send-field-label">通过什么发给客户的</div>
+            <Select
+              value={channelOption.selectValue}
+              onChange={channelOption.onSelect}
+              optionList={orderedChannels(currentUser?.id).map((value) => ({ value, label: value }))}
+              style={{ width: '100%' }}
             />
-          )}
-          <Input
-            value={sendForm.receiver}
-            onChange={(value) => setSendForm({ ...sendForm, receiver: value })}
-            placeholder="发给谁，例如：李经理 / wang@example.com"
-          />
+            {channelOption.showInput && (
+              <Input
+                value={channelOption.inputValue}
+                onChange={channelOption.onInput}
+                placeholder="请说明是什么渠道（可不填）"
+                style={{ marginTop: 8 }}
+              />
+            )}
+          </div>
+
+          {/* ③ 收件人：必填 + 从客户联系人里选（原来可留空，事后无从查证） */}
+          <div>
+            <div className="send-field-label">
+              发给了谁 <span style={{ color: 'var(--crm-danger, #f5222d)' }}>*</span>
+            </div>
+            <Select
+              value={
+                // 三态：没选 → 占位；选了手动填写 → 显示那一项；选了联系人 → 显示联系人
+                manualReceiver ? MANUAL_RECEIVER : (sendForm.receiver || undefined)
+              }
+              onChange={(picked) => {
+                const next = String(picked ?? '')
+                setSendTouched(true)
+                const manual = next === MANUAL_RECEIVER
+                setManualReceiver(manual)
+                setSendForm({
+                  ...sendForm,
+                  // 切到「手动填写」时先清空：留着一个联系人姓名会让人以为已经填好了
+                  receiver: manual ? '' : next,
+                })
+              }}
+              optionList={[
+                ...contactOptions,
+                { value: MANUAL_RECEIVER, label: '其他（手动填写）' },
+              ]}
+              style={{ width: '100%' }}
+              placeholder="选这个客户的联系人"
+            />
+            {manualReceiver && (
+              <Input
+                value={sendForm.receiver}
+                onChange={(value) => {
+                  setSendTouched(true)
+                  setSendForm({ ...sendForm, receiver: value })
+                }}
+                placeholder="填姓名或称呼，例如：李经理"
+                style={{ marginTop: 8 }}
+                validateStatus={sendTouched && !sendForm.receiver.trim() ? 'error' : 'default'}
+              />
+            )}
+            {sendTouched && !sendForm.receiver.trim() && (
+              <div className="send-field-error">
+                必须填"发给了谁" —— 这条记录是将来对账"到底发出去没有"的依据。
+              </div>
+            )}
+            {contactOptions.length === 0 && (
+              <div className="send-field-hint">
+                这个客户还没有登记联系人，直接手填姓名也可以。
+              </div>
+            )}
+          </div>
         </div>
       </Modal>
+
+      {/* 这份报价**发过给谁**（主人 2026-10-12：登记完就再也看不到自己登记了什么）。
+          与合同一样按整单看：V1 发给客户、现在走到 V3，那份发送事实仍要看得见。 */}
+      <SectionCard title="发送记录" style={{ marginTop: 16 }}>
+        <QuoteSendLogsPanel versionIds={allVersionIds} />
+      </SectionCard>
 
       {/* 这份报价签了什么：合同会钉死"依据的是哪一版"，所以按报价单整单筛，
           不是只看当前版本 —— 早期按 V1 签、现在报价走到 V3，那份合同仍要看得见 */}

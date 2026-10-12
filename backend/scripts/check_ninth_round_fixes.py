@@ -47,10 +47,12 @@
 """
 
 import asyncio
+from datetime import UTC, datetime
 
-# 外币夹具：造美元订单前要先把业务口径放开，跑完收回（见 scripts/_fx_scope.py）
-from _fx_scope import open_export, restore_domestic
+# 外币夹具：**直接造历史数据**（不再放开口径 —— 币种是固定白名单，改配置也不放行）。
+# 判据都是"历史外币数据的读取路径要有定义行为"，见各节里的说明。
 import json
+from decimal import Decimal
 import os
 import time
 import urllib.error
@@ -252,6 +254,35 @@ async def cleanup(ids: dict) -> None:
         await s.commit()
 
 
+async def seed_foreign_order(*, customer_id: int, owner_id: int, currency: str,
+                             amount) -> int:
+    """造一笔**历史**外币订单（金额直接给总额），返回订单 id。
+
+    ⚠️ 走 `SalesOrder` 模型而不是 raw SQL：列名/默认值跟着模型走，
+    模型加列时这里不会悄悄漏字段（这个套件早期用 raw SQL 撞过 NOT NULL）。
+    """
+    import uuid as _uuid
+
+    from app.core.database import SessionLocal
+    from app.modules.order.model import SalesOrder
+
+    async with SessionLocal() as session:
+        order = SalesOrder(
+            order_no=f'CHK9USD{_uuid.uuid4().hex[:6]}',
+            customer_id=customer_id,
+            owner_id=owner_id,
+            sales_owner_id=owner_id,
+            currency=currency,
+            status='pending',
+            total_amount=amount,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        session.add(order)
+        await session.commit()
+        return int(order.id)
+
+
 async def main() -> None:
     host = urlparse(BASE).hostname
     assert host in ("127.0.0.1", "localhost"), f"只能在本地跑，当前 {BASE}"
@@ -384,7 +415,9 @@ async def main() -> None:
 
         status, res = call(
             "POST", f"/orders/{order}/shipments/{batch1}/ship", admin,
-            body={"actual_ship_date": "2026-10-17", "items": [{"order_item_id": item_id, "shipped_qty": 6}]},
+            # 实际发货日必须是**过去或今天**（第三批审查 P2）：原来填 10-17 是未来日期，
+            # 现在会被拒。改填今天（10-12），数量相关的断言不受影响。
+            body={"actual_ship_date": "2026-10-12", "items": [{"order_item_id": item_id, "shipped_qty": 6}]},
         )
         check("实发 6 件", res.get("code"), 0)
 
@@ -616,8 +649,10 @@ async def main() -> None:
         async with SessionLocal() as s:
             await s.execute(
                 text(
+                    # 交期前移到 10-15（建议发货日 = 10-08），这样"实际 10-11 发"
+                    # 仍然是**晚发**：下面那条偏差断言保住了"晚"这个分支。
                     "update sales_orders set delivery_kind = 'arrival', transit_days = 7, "
-                    "delivery_date = '2026-10-20' where id = :i"
+                    "delivery_date = '2026-10-15' where id = :i"
                 ),
                 {"i": paid_order},
             )
@@ -630,56 +665,68 @@ async def main() -> None:
         paid_batch = res["data"]["batch_id"]
         status, res = call(
             "POST", f"/orders/{paid_order}/shipments/{paid_batch}/ship", admin,
-            body={"actual_ship_date": "2026-10-17",
+            body={"actual_ship_date": "2026-10-11",
                   "items": [{"order_item_id": paid_item, "shipped_qty": 4}]},
         )
         check("这张单一次发完", res.get("code"), 0)
         status, res = call("GET", f"/orders/{paid_order}/shipments", admin)
         summary = res["data"]["summary"]
         check("整单已发完", summary["all_shipped"], True)
-        # 建议发货日 = 10-20 − 7 = 10-13；实际 10-17 发 → 晚 4 天（这时才给数字）
-        check("发完之后才给最终偏差：+4", summary["last_batch_vs_delivery_days"], 4)
+        # 建议发货日 = 10-15 − 7 = 10-08；实际 10-11 发 → 晚 3 天（这时才给数字）
+        check("发完之后才给最终偏差：+3", summary["last_batch_vs_delivery_days"], 3)
 
         # ------------------------------------------------------------------
         print()
-        # 这笔是美元单：要先把业务口径放开（业务方也是先改口径、再报外币价）。
-        # `finally` 一定要收回：收不回去，后面所有套件都会以为可以写外币。
-        open_export(admin)
-        try:
-            print("=== 9.9 客户概览按币种分组 ===")
-            # 客户 B 名下：一笔 USD 100、一笔 CNY 100 —— 合并相加会变成 200
-            call(
-                "POST", "/orders", admin,
-                body={
-                    "customer_id": ids["customer_B"],
-                    "currency": "USD",
-                    "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
-                },
-            )
-            call(
-                "POST", "/orders", admin,
-                body={
-                    "customer_id": ids["customer_B"],
-                    "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
-                },
-            )
-            status, res = call("GET", f"/customers/{ids['customer_B']}/overview", admin)
-            amounts = res["data"]["counts"]["order_amounts"]
-            currencies = {row["currency"] for row in amounts}
-            check_true(
-                "两个币种分别列出（没有相加）",
-                {"CNY", "USD"} <= currencies,
-                str(amounts),
-            )
-            check_true(
-                "每个币种的金额各自独立",
-                all(row["amount"] == 100 for row in amounts if row["currency"] in ("CNY", "USD")),
-                str(amounts),
-            )
-            detail = res["data"]["orders"][0]
-            check_true("订单摘要带币种", "currency" in detail, str(detail))
-        finally:
-            restore_domestic(admin)
+        # ⚠️ **接口已经建不出外币订单了**（币种固定白名单，第四批复审 + 主人
+        # 2026-10-12 口径）。从前这里靠 `open_export()` 临时放开口径 —— 那条路
+        # **故意**堵死。所以改成：① 断言接口确实拒绝；② **直接造一笔历史美元单**。
+        #
+        # 判据一个字没改：客户概览必须**按币种分别列出、不许相加**。
+        # 历史外币数据只可能来自"口径曾经放开时建的"或 ERP 同步进来的，
+        # **读取路径要有定义行为** —— 不能因为入口堵了就把这条验证丢掉。
+        print("=== 9.9 客户概览按币种分组 ===")
+        status, res = call(
+            "POST", "/orders", token=admin,
+            body={
+                "customer_id": ids["customer_B"],
+                "currency": "USD",
+                "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
+            },
+        )
+        check_true(
+            "走接口建外币订单已被白名单拒绝（40002）",
+            res.get("code") == 40002,
+            f"code={res.get('code')} {str(res.get('message'))[:50]}",
+        )
+
+        # 客户 B 名下：历史 USD 100（直接造）+ CNY 100（走接口）
+        await seed_foreign_order(
+            customer_id=ids["customer_B"], owner_id=1, currency="USD",
+            amount=Decimal("100"),
+        )
+        call(
+            "POST", "/orders", admin,
+            body={
+                "customer_id": ids["customer_B"],
+                "items": [{"sku_id": ids["sku"], "quantity": 1, "unit_price": 100}],
+            },
+        )
+        status, res = call("GET", f"/customers/{ids['customer_B']}/overview", admin)
+        amounts = res["data"]["counts"]["order_amounts"]
+        currencies = {row["currency"] for row in amounts}
+        check_true(
+            "两个币种分别列出（没有相加）",
+            {"CNY", "USD"} <= currencies,
+            str(amounts),
+        )
+        check_true(
+            "每个币种的金额各自独立",
+            all(row["amount"] == 100 for row in amounts if row["currency"] in ("CNY", "USD")),
+            str(amounts),
+        )
+        detail = res["data"]["orders"][0]
+        check_true("订单摘要带币种", "currency" in detail, str(detail))
+
     finally:
         await cleanup(ids)
 

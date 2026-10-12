@@ -33,6 +33,12 @@ from app.modules.user.model import Role
 ZERO = Decimal("0")
 
 
+def discount_percentage(price: Decimal | None, standard_price: Decimal | None) -> Decimal:
+    if price is None or standard_price is None or standard_price <= 0 or price >= standard_price:
+        return ZERO
+    return (Decimal(1) - price / standard_price) * 100
+
+
 def _f(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
@@ -1065,7 +1071,8 @@ async def calculate_price(
     #: 而下面外贸分支会把 floor_price 折成计价币种——所以先留一份原值出去。
     floor_price_cny = floor_price
     if is_foreign and fx:
-        convert = lambda value: (value / fx).quantize(Decimal("0.0001"))  # noqa: E731
+        def convert(value: Decimal | None) -> Decimal | None:
+            return None if value is None else (value / fx).quantize(Decimal("0.0001"))
         standard_price = convert(standard_price)
         recommended = convert(recommended)
         floor_price = convert(floor_price)
@@ -1136,14 +1143,7 @@ async def calculate_price(
     # 折扣上限（price_permissions.discount_limit，此前只存不用）：
     # 折扣 = 1 - 报价/标准价；角色配了上限且折扣超出 → 需审批。
     # 没配上限（None）不参与判定——与最低利润率的"配了才生效"同口径。
-    discount_pct = (
-        (1 - check_price / standard_price) * 100
-        if standard_price
-        and standard_price > 0
-        and check_price is not None
-        and check_price < standard_price
-        else ZERO
-    )
+    discount_pct = discount_percentage(check_price, standard_price)
     role_discount_limit = await resolve_discount_limit(session, role_codes or [])
     # 库里存的是 0-1 比例（0.3 = 最多让 30%），与百分数口径换算后比较
     discount_exceeded = (

@@ -683,7 +683,7 @@ async def check_readiness_state_and_scope() -> None:
         check("配置齐全也不显示已接通", admin_view["connected"], False)
         check("配置齐全的接入状态是已配置未验证", admin_view["state"], "configured_unverified")
         check("写入能力未验收", admin_view["capabilities"]["write"]["verified"], False)
-        check_true("开发环境显式标模拟", admin_view["simulated"] is True)
+        check("模拟标记与运行环境一致", admin_view["simulated"], settings.debug)
         check("管理员看到全量订单数", admin_view["counts"]["orders"], total_orders)
         check_true("管理员拿到配置明细", "missing" in admin_view.get("diagnostics", {}))
         check("普通查看者只看到自己范围内的订单数", owner_view["counts"]["orders"], own_orders)
@@ -725,8 +725,17 @@ async def check_http_endpoints(admin_token: str, owner_token: str) -> None:
     )
 
     # 未配置时按订单 id 推送：必须 422 且**不**把订单标成已推送
+    #
+    # ⚠️ 2026-10-12（第二轮审查 P2）：三个推单入口统一要求 `confirm=true`。
+    # 不带确认时会先被 42206 拦下 —— 状态码同样是 422，但那是"确认闸门"、
+    # **不是**"未配置"。不带参数这条用例就会变成假绿（验的东西悄悄换了），
+    # 所以这里显式带上确认，让 422 真的来自"未配置"这条路径。
     order_id = IDS["orders"]["http"]
     status, res = call("POST", f"/integrations/erp/orders/{order_id}/sync", owner_token)
+    check("不带确认时被确认闸门拦下", res.get("code"), 42206)
+    status, res = call(
+        "POST", f"/integrations/erp/orders/{order_id}/sync?confirm=true", owner_token
+    )
     check("未配置时推送返回 422", status, 422)
     async with SessionLocal() as s:
         row = await s.get(SalesOrder, order_id)

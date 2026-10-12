@@ -489,7 +489,7 @@ function CustomersPanel() {
    */
   const renderTarget = (ref: MergeRef) => {
     if (ref.id != null) {
-      return <a onClick={() => navigate(`/customers/${ref.id}`)}>{ref.name ?? `#${ref.id}`}</a>
+      return <a onClick={() => navigate(`/customers/${ref.id}`)}>{ref.name ?? `客户编号 ${ref.id}`}</a>
     }
     if (ref.name) return <span>{ref.name}</span>
     return <span style={{ color: 'var(--crm-text-3)' }}>{MERGE_STATE_TEXT[ref.state]}</span>

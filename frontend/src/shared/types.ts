@@ -134,4 +134,12 @@ export interface Contact {
   is_primary: boolean
   remark?: string | null
   created_at: string
+  /**
+   * 后端对**联系方式**做了脱敏（第八批 8.2）：`mobile / phone / email / wechat`
+   * 里带星号，说明当前账号没有"看完整号码"的权限。
+   *
+   * 界面必须据此**锁住那几个输入框**：不然"打开编辑框 → 只改职位 → 保存"
+   * 会把星号写回库里，真实号码就永久丢了（后端也会拒，但那属于兜底，不该走到）。
+   */
+  contact_masked?: boolean
 }

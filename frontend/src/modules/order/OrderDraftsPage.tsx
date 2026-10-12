@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, InputNumber, Popconfirm, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import BlockedHint from '../../shared/components/BlockedHint'
+import { blockedToastText } from '../../shared/components/blocked-hint-reasons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import { confirmOrderDraft, generateOrderDraftDocument, getOrderDraft, listOrderDrafts, updateOrderDraft, type OrderDraft, type OrderDraftLine } from '../../shared/api/order'
 import { listQuotes } from '../../shared/api/quote'
@@ -61,6 +63,31 @@ export default function OrderDraftsPage() {
     },
     onSuccess: () => { docRequestKey.current = null; void docs.refetch(); Toast.success('草稿需求单已生成') }, onError: error })
   const busy = save.isPending || confirm.isPending || generate.isPending
+  // 几个灰按钮各自的原因（点一下要弹得出话，见 BlockedHint）。
+  // ⚠️ 必须在下面那些早退 return **之前**定义：`useBlockedNotify` 是 hook，
+  // 条件调用会被 react-hooks 规则拦下（实测报 rules-of-hooks 错误）。
+  // 所以这里传的是**函数**而不是当场算好的数组——原因在渲染时才取，
+  // 依赖的是同一个 `dirty` / `can` 判据，跟按钮的 disabled 完全一致。
+  const notifySaveBlocked = () => {
+    if (!dirty && !busy && query.data?.status === 'draft' && can('order:manage')) {
+      Toast.warning(blockedToastText(['草稿没有改动，不需要保存。'], '保存草稿'))
+    }
+  }
+  const notifyGenerateBlocked = () => {
+    if (dirty) Toast.warning(blockedToastText(['草稿有新改动：请先点上面那张卡里的「保存草稿」，再生成需求单。'], '生成草稿需求单'))
+  }
+  const notifyConfirmBlocked = () => {
+    const reason = busy
+      ? '上一次操作还在进行中，稍等一下再下单。'
+      : dirty
+        ? '草稿有未保存的改动：请先保存草稿，再核对后下单。'
+        : !versionId
+          ? '请先选择一张客户已确认的报价，作为下单依据。'
+          : !can('order:manage')
+            ? '你的账号没有「订单管理」权限，不能正式下单。'
+            : ''
+    if (reason) Toast.warning(blockedToastText([reason], '正式下单'))
+  }
   function patch(index: number, change: Partial<OrderDraftLine>) { if (Object.entries(change).every(([key, value]) => rows[index]?.[key as keyof OrderDraftLine] === value)) return; setDirty(true); setRows(old => old.map((row, i) => i === index ? { ...row, ...change } : row)) }
   if (!id) return <div className="page-container"><PageHeader title="订单草稿" subtitle="提前准备资料，不进入生产、应收或成交统计" extra={<Link to="/orders">返回订单中心</Link>} />
     {list.error && <p>{list.error.message}</p>}
@@ -73,7 +100,7 @@ export default function OrderDraftsPage() {
   if (!query.data) return <div className="page-container">{query.error?.message ?? '读取草稿中…'}</div>
   const draft = query.data
   const editable = draft.status === 'draft' && can('order:manage') && !busy
-  return <div className="page-container"><PageHeader title={`订单草稿 #${draft.id}`} subtitle="草稿不代表客户已下单，不进入生产、不生成应收、不计成交" extra={<Link to="/order-drafts">全部草稿</Link>} />
+  return <div className="page-container"><PageHeader title="订单草稿" subtitle="草稿不代表客户已下单，不进入生产、不生成应收、不计成交" extra={<Link to="/order-drafts">全部草稿</Link>} />
     <SectionCard title="来源与本次明细"><p>来源：{draft.source_context.no} V{draft.source_context.version} · 草稿修订 {draft.revision} · 币种 {draft.currency}</p>
       {rows.map((row, index) => <div key={row.id} style={{ borderTop: '1px solid var(--crm-border)', padding: '12px 0' }}>
         <b>{row.name}</b><p>原采购数量：{row.source_snapshot.original_quantity == null ? '未记录' : Number(row.source_snapshot.original_quantity).toLocaleString('zh-CN')}</p>
@@ -87,16 +114,46 @@ export default function OrderDraftsPage() {
       <p>计划交期</p><DatePicker type="date" format="yyyy-MM-dd" showClear style={{ width: '100%' }} placeholder="选择计划交期" value={form.delivery_date ? new Date(form.delivery_date) : undefined} disabled={!editable} onChange={(_, v) => { setDirty(true); setForm({ ...form, delivery_date: (v as string) || '' }) }} />
       <p>付款条件</p><Input value={form.payment_terms} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, payment_terms: v }) }} />
       <p>备注</p><TextArea value={form.remark} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, remark: v }) }} />
-      {draft.status === 'draft' && can('order:manage') && <Button style={{ marginTop: 12 }} loading={save.isPending} disabled={!editable || !dirty} onClick={() => save.mutate()}>保存草稿</Button>}
+      {/* 全页表单是灰的时候必须说清为什么（主人 2026-10-12：「点又点不了，又不给
+          提示为什么点不了」）。这里只有一个判据 `editable`，三种原因分开写。 */}
+      <BlockedHint blocked={[
+        { ok: !busy, reason: '上一次操作还在进行中，稍等一下再改。' },
+        { ok: draft.status === 'draft', reason: '这份草稿已经转成正式订单，草稿内容不能再改。' },
+        { ok: can('order:manage'), reason: '你的账号没有「订单管理」权限，只能查看；需要修改请让有权限的同事来改，或请管理员开通。' },
+      ]} action="修改草稿和保存" />
+      {draft.status === 'draft' && can('order:manage') && <div className="blocked-hint-click" style={{ marginTop: 12 }} onClick={notifySaveBlocked}>
+        <Button loading={save.isPending} disabled={!editable || !dirty}
+          style={!editable || !dirty ? { pointerEvents: 'none', cursor: 'not-allowed' } : undefined}
+          onClick={() => save.mutate()}>保存草稿</Button>
+      </div>}
+      {draft.status === 'draft' && can('order:manage') && !dirty && (
+        <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--crm-text-3)' }}>没有改动，不需要保存</span>
+      )}
     </SectionCard>
     <SectionCard title="草稿需求单" style={{ marginTop: 16 }}><p>生成文件会保存当时的草稿和差异；以后修改不会覆盖旧文件。</p>
-      {can('order:manage') && <Button disabled={busy || dirty} loading={generate.isPending} onClick={() => generate.mutate()}>生成草稿需求单</Button>}
+      {can('order:manage') && <div className="blocked-hint-click" onClick={notifyGenerateBlocked}>
+        <Button disabled={busy || dirty} loading={generate.isPending}
+          style={busy || dirty ? { pointerEvents: 'none', cursor: 'not-allowed' } : undefined}
+          onClick={() => generate.mutate()}>生成草稿需求单</Button>
+      </div>}
+      {/* 原来这句提示在**下面那张卡**里，而这个按钮在这张卡 —— 用户看着灰按钮，
+          原因写在别处（主人 2026-10-12 的原话就是「不给提示为什么点不了」）。 */}
+      {can('order:manage') && dirty && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--crm-text-3)' }}>草稿有新改动，请先点上面那张卡里的「保存草稿」，再生成需求单（需求单会存下当时的草稿和差异）。</div>}
       {(docs.data ?? []).map(doc => <p key={doc.id}>{doc.doc_no} V{doc.version} · <a onClick={() => downloadBizDoc(doc)}>下载 PDF</a></p>)}
     </SectionCard>
     <SectionCard title="确认正式下单" style={{ marginTop: 16 }}>
       {draft.order_id ? <Link to={`/orders/${draft.order_id}`}>查看正式订单 #{draft.order_id}</Link> : <>
         <p>请选择同一客户、同一商机需求中客户已接受的报价。草稿须与该版本的全部明细、价格和付款条件一致；有改动请先修订报价并取得客户确认。</p>
         <Select placeholder="选择客户已确认报价" style={{ width: 360 }} value={versionId} disabled={busy || !can('order:manage')} optionList={(quotes.data?.items ?? []).filter(q => q.current_version_id).map(q => ({ value: q.current_version_id!, label: q.quote_no }))} onChange={v => setVersionId(Number(v))} />
+        {/* 两个独立原因都会让这个下拉**静默空白**、让下面的确认键永久变灰：
+            ① 权限不足（连查询都不发，`quotes` 是 enabled 的）；② 这张客户+商机下
+            还没有「客户已接受」的报价。原来两种情况界面一个字都不说。 */}
+        <BlockedHint blocked={[
+          { ok: can('quote:view'), reason: '你的账号没有「报价查看」权限，读不到客户已确认的报价；请联系报价负责人或管理员。' },
+          { ok: !quotes.isSuccess || (quotes.data?.items ?? []).length > 0, reason: '这张客户/商机下还没有「客户已接受」的报价 —— 请先在报价中心让客户确认一版报价，再回来正式下单。' },
+          { ok: Boolean(versionId), reason: '请先在上面的下拉里选择一张客户已确认的报价，作为下单依据。' },
+          { ok: !dirty, reason: '草稿有未保存的改动：请先保存草稿，再核对后下单。' },
+        ]} action="正式下单" />
         {/* 正式下单会真的建订单、进入履约，且不能一键撤回，必须二次确认
             （主人 2026-10-06 定的范围里明确包含「正式下单」）。 */}
         <Popconfirm
@@ -104,11 +161,15 @@ export default function OrderDraftsPage() {
           content="确认后会按这份草稿生成正式订单并进入履约流程，请再核对一遍明细与付款条件。"
           onConfirm={() => confirm.mutate()}
         >
-          <Button theme="solid" style={{ marginLeft: 12 }} disabled={busy || dirty || !versionId || !can('order:manage')} loading={confirm.isPending}>确认正式下单</Button>
+          <div className="blocked-hint-click" style={{ marginLeft: 12 }} onClick={notifyConfirmBlocked}>
+            <Button theme="solid" disabled={busy || dirty || !versionId || !can('order:manage')} loading={confirm.isPending}
+              style={busy || dirty || !versionId || !can('order:manage') ? { pointerEvents: 'none', cursor: 'not-allowed' } : undefined}>
+              确认正式下单
+            </Button>
+          </div>
         </Popconfirm>
         {quotes.error && <p>{quotes.error.message}</p>}
         {versionId && <p><Link to={`/quotes/${quotes.data?.items.find(q => q.current_version_id === versionId)?.id}?version=${versionId}`}>查看选定报价明细</Link></p>}
-        {dirty && <p>请先保存草稿，再核对并下单。</p>}
       </>}
     </SectionCard>
   </div>

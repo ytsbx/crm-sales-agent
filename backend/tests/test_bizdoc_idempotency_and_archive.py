@@ -245,6 +245,10 @@ def _fixture(session):
         charge_amount=Decimal("80"),
         discount_amount=Decimal("-20"),
         total_amount=Decimal("480"),
+        # 2026-10-12（第二轮审查 P1）：Excel 对客文件与正式 PDF 同口径 ——
+        # **未通过审批的版本只能落草稿**。本文件的用例测的是正式件的幂等与存档，
+        # 夹具落成"已审批"；闸门本身由 check_round2_risk_repairs 覆盖。
+        approval_status="approved",
         created_at=datetime.now(UTC),
     )
     session.add(version)
@@ -273,6 +277,8 @@ def _fixture(session):
             amount=Decimal("80"),
             is_discount=False,
             sort_no=1,
+            # 2026-10-12（第二轮审查 P1）：正式件要求运费已确认具体金额
+            logistics_confirmed_at=datetime.now(UTC),
         )
     )
     session.add(

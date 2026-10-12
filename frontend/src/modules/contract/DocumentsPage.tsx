@@ -15,6 +15,8 @@ import {
 } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
+import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import { listCustomers } from '../../shared/api/customer'
 import { listOrders } from '../../shared/api/order'
 import { listQuoteVersions, listQuotes } from '../../shared/api/quote'
@@ -33,7 +35,7 @@ import {
   type ContractSignedFile,
   type ContractTemplate,
 } from '../../shared/api/contract'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -327,6 +329,41 @@ export default function DocumentsPage() {
   const selectedSignFile = (signFilesQuery.data ?? []).find((row) => row.id === signFileId)
   const documents = documentsQuery.data?.items ?? []
 
+  // 主人 2026-10-12 反馈（原话）：「这种我点又点不了，又不给提示为什么点不了，这种体验很不好，
+  // 类似的情况都要修」。共用件与两条规矩见 shared/components/BlockedHint.tsx。
+  //
+  // 这一页有三处「灰着/消失且一个字都不说」，判据**一个字都没动**，只补说明：
+  //   ① 登记签署：角色有「订单管理」但没有「文件管理」时上传键是灰的 —— 传不上文件就选不出
+  //      签署件，确认键（`!signFileId || signUploading`）跟着一起灰；合同此前没挂过文件时
+  //      连「从已上传的文件里选」那个下拉都不渲染（本文件 signFilesQuery 那段），
+  //      于是整个弹窗没有任何可点的东西，也没说为什么。
+  //   ② 从模板生成：没有「订单管理」权限时按钮不渲染，而列表空态的文案却让人去点它。
+  //   ③ 作废：已签合同只有复核人（主管）能作废，非复核人连入口都看不到。
+  const canUploadSignFile = can('file:manage')
+  const noFileManageReason =
+    '你没有「文件管理」权限，无法上传签署件；请让有该权限的同事上传，或请管理员为你开通后重试。'
+  const signBlocked = [
+    // 已经选到签署件时不再说权限：这时确认键是**能点**的（从已上传的文件里选一份照样能登记），
+    // 说了就变成「明明能签却告诉我还不能」的假话。只有选不出文件时这条才是真原因。
+    { ok: canUploadSignFile || Boolean(signFileId), reason: noFileManageReason },
+    // 上传中确认键也是灰的：这时说「请先选择或上传签署件」是句假话（文件正在传），要分开说
+    { ok: !signUploading, reason: '签署件正在上传，等上传完成后再确认签署。' },
+    { ok: Boolean(signFileId) || signUploading, reason: '请先选择或上传要登记的签署件。' },
+  ]
+  const signBlockedReasons = blockedReasons(signBlocked)
+  // ① 看得见（弹窗底部常驻）+ ② 点得动。确认键在弹窗 footer（portal）里，外面包一层收不到点击，
+  // 所以照 SampleFromSourceModal 的做法把**那段说明**做成点击落点；上传键就在正文里，
+  // 能直接包一层 —— 灰着的时候点它自己也会弹一句同样的话。
+  const notifySignBlocked = useBlockedNotify(signBlockedReasons, '登记签署')
+  const notifyUploadBlocked = useBlockedNotify(
+    canUploadSignFile ? [] : [noFileManageReason],
+    // 起头写「上传」而不是「上传签署件」：这句后面紧跟着的原因里已经有「无法上传签署件」了
+    '上传',
+  )
+  const voidNeedsReviewerReason =
+    '已签合同的作废需要复核人（主管）操作；请联系主管处理，或请管理员为你开通复核权限后重试。'
+  const notifyVoidBlocked = useBlockedNotify([voidNeedsReviewerReason], '作废')
+
   return (
     <div style={{ padding: 20, maxWidth: 1200, margin: '0 auto' }}>
       <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={[
@@ -400,10 +437,13 @@ export default function DocumentsPage() {
                     {canManage && record.status !== 'void' && (
                       <a onClick={() => openGenerateModal(record)}>补充/续签</a>
                     )}
-                    {/* 已签合同的作废要主管：不是主管就不给入口，省得点完吃一个 403 */}
+                    {/* 已签合同的作废要复核人（主管）：以前不是复核人时这个入口**整个消失**，
+                        用户只看到「作废」不见了，不知道为什么、也不知道该找谁 —— 正是主人
+                        2026-10-12 说的那一类。现在灰着并写明原因，点一下还会弹同一句话
+                        （见 BlockedHint.tsx）；能不能作废的判据一个字没动。 */}
                     {canManage &&
                       record.status !== 'void' &&
-                      (record.status !== 'signed' || isReviewer) && (
+                      (record.status !== 'signed' || isReviewer ? (
                         <a
                           style={{ color: 'var(--crm-danger, #d45)' }}
                           onClick={() => {
@@ -413,7 +453,18 @@ export default function DocumentsPage() {
                         >
                           作废
                         </a>
-                      )}
+                      ) : (
+                        <span
+                          className="blocked-hint-click"
+                          style={{ gap: 6, cursor: 'not-allowed' }}
+                          onClick={notifyVoidBlocked}
+                        >
+                          <span style={{ color: 'var(--crm-text-3)', pointerEvents: 'none' }}>作废</span>
+                          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            需复核人（主管）操作
+                          </span>
+                        </span>
+                      ))}
                   </span>
                 ),
               },
@@ -427,7 +478,13 @@ export default function DocumentsPage() {
               total: documentsQuery.data?.total ?? 0,
               onPageChange: setDocPage,
             }}
-            empty="还没有合同文档——点「从模板生成」"
+            // 空态文案要跟「从模板生成」按钮的显隐对上：没有「订单管理」权限时按钮根本不渲染，
+            // 再让人去点它就是把人指到一个不存在的入口上（主人 2026-10-12：「又不给提示为什么点不了」）
+            empty={
+              canManage
+                ? '还没有合同文档——点「从模板生成」'
+                : '还没有合同文档。生成合同文档需要「订单管理」权限，请联系管理员或合同负责人。'
+            }
           />
         </SectionCard>
       )}
@@ -570,10 +627,11 @@ export default function DocumentsPage() {
                   quote_version_id: undefined,
                 })
               }
-              optionList={(customersQuery.data?.items ?? []).map((c) => ({
-                value: c.id,
-                label: withCode(c.name, c.id),
-              }))}
+              optionList={optionsWithCodeOnDuplicate(
+                customersQuery.data?.items ?? [],
+                (c) => c.name,
+                (c) => c.id,
+              )}
             />
           </div>
           <div>
@@ -700,20 +758,28 @@ export default function DocumentsPage() {
           </div>
           {generateParent && (
             <div>
-              <div style={{ marginBottom: 4 }}>协议生效日（续签建议填写）</div>
+              <div style={{ marginBottom: 4 }}>
+                {generateParent.doc_type === 'monthly'
+                  ? '协议生效日（续签必填）'
+                  : '协议生效日（补充协议可选）'}
+              </div>
               <DatePicker
                 type="date"
                 format="yyyy-MM-dd"
                 showClear
                 style={{ width: '100%' }}
-                placeholder="选择生效日（可留空）"
+                placeholder={
+                  generateParent.doc_type === 'monthly' ? '选择生效日' : '选择生效日（可留空）'
+                }
                 value={generateForm.effective_date ? new Date(generateForm.effective_date) : undefined}
                 onChange={(_, dateStr) =>
                   setGenerateForm({ ...generateForm, effective_date: (dateStr as string) || '' })
                 }
               />
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-                只记到期日处理不了"提前签、未来才生效"——那种情况下旧协议还得继续适用一段。
+                {generateParent.doc_type === 'monthly'
+                  ? '月结续签必须填：协议什么时候开始适用，决定旧协议还要继续适用到哪一天。'
+                  : '只记到期日处理不了「提前签、未来才生效」——那种情况下旧协议还得继续适用一段。'}
               </div>
             </div>
           )}
@@ -726,7 +792,7 @@ export default function DocumentsPage() {
               <div>
                 <div>替代原协议 {generateParent.doc_no}</div>
                 <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                  勾上才会结束原协议的在办提醒。原协议本身**不改状态、不动作废**（那是另一回事）。
+                  勾上才会结束原协议的在办提醒。原协议本身「不改状态、不动作废」（那是另一回事）。
                   提前续签、新协议还没生效时别勾——否则还在适用的旧协议就没人管了。
                 </div>
               </div>
@@ -751,13 +817,19 @@ export default function DocumentsPage() {
             上传签署扫描件（或从已上传的文件里选一份）。签署件与草稿在台账上分开可见。
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <Button
-              loading={signUploading}
-              disabled={!can('file:manage')}
-              onClick={() => signFileInput.current?.click()}
-            >
-              上传签署件
-            </Button>
+            {/* 灰按钮要能解释自己（见 BlockedHint.tsx）：禁用态给按钮加 pointerEvents:'none'，
+                按钮对点击透明，落点变成外层容器，容器上的 onClick 才接得住、才弹得出原因。
+                可用态不加这个样式，按钮自己处理点击（冒泡上来的那次由 notifyUploadBlocked 挡掉）。 */}
+            <div className="blocked-hint-click" onClick={notifyUploadBlocked}>
+              <Button
+                loading={signUploading}
+                disabled={!canUploadSignFile}
+                style={canUploadSignFile ? undefined : { pointerEvents: 'none' }}
+                onClick={() => signFileInput.current?.click()}
+              >
+                上传签署件
+              </Button>
+            </div>
             <input
               ref={signFileInput}
               type="file"
@@ -770,7 +842,7 @@ export default function DocumentsPage() {
             />
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
               {signFileId
-                ? `已选：${selectedSignFile?.file_name ?? `文件 #${signFileId}`}`
+                ? `已选：${selectedSignFile?.file_name ?? '已选文件'}`
                 : '尚未选择文件'}
             </span>
           </div>
@@ -784,6 +856,20 @@ export default function DocumentsPage() {
                 label: row.file_name,
               }))}
             />
+          )}
+          {/* 弹窗底部（页脚正上方）：确认键灰着的时候，原因必须在同一屏里看得见 ——
+              上面那个「从已上传的文件里选」下拉在没有文件时根本不渲染，用户可能一眼看不到任何出路。
+              这段文字本身也是「点得动」的落点：灰按钮不吃点击，用户自然会点在它旁边这行字上
+              （确认键在弹窗 footer 里，包一层收不到点击，做法同 SampleFromSourceModal）。 */}
+          {signBlockedReasons.length > 0 && (
+            <div
+              data-blocked-click="1"
+              className="blocked-hint-click"
+              style={{ display: 'block' }}
+              onClick={notifySignBlocked}
+            >
+              <BlockedHint reasons={signBlockedReasons} action="登记签署" />
+            </div>
           )}
         </div>
       </Modal>

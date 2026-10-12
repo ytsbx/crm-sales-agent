@@ -115,7 +115,19 @@ export function bindUnboundContact(
   contactId: number,
   payload: { customer_id: number; is_primary?: boolean | null },
 ) {
-  return api.post<{ contact_id: number; customer_id: number; customer_name: string }>(
+  return api.post<{
+    contact_id: number
+    customer_id: number
+    customer_name: string
+    /**
+     * 改挂（本来挂在别的客户上）时会带上这两项 —— 见 `Contact` 的说明与
+     * `customer/router.py` 的 bind-customer：**跟进记录挂的是客户，不是联系人**，
+     * 所以改挂之后过去的跟进仍留在原客户那里。界面必须把这件事说出来，
+     * 否则改挂的人会以为历史一起搬走了、回头找不到就怀疑丢数据。
+     */
+    rebound_from_customer_id?: number
+    stayed_followup_count?: number
+  }>(
     `/integrations/wecom/unbound-contacts/${contactId}/bind-customer`,
     payload,
   )

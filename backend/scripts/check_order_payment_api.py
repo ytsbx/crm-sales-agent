@@ -382,7 +382,9 @@ def main():
         ('POST /orders/{id}/refresh-status', 'POST', f'/orders/{order_id}/refresh-status', None),
         ('POST /orders/{id}/sync-erp', 'POST', f'/orders/{order_id}/sync-erp?confirm=true', None),
         ('GET erp status', 'GET', f'/integrations/erp/orders/{order_id}/status', None),
-        ('POST erp sync', 'POST', f'/integrations/erp/orders/{order_id}/sync', None),
+        # 2026-10-12（第二轮审查 P2）：推单入口统一要 confirm=true。这里验的是
+        # **数据范围**（先判范围、后判确认），带上确认参数才是在验范围本身。
+        ('POST erp sync', 'POST', f'/integrations/erp/orders/{order_id}/sync?confirm=true', None),
         ('GET /receivables/{id}', 'GET', f'/receivables/{plan_id}', None),
         ('PATCH /receivables/{id}', 'PATCH', f'/receivables/{plan_id}', {'amount': 1}),
         ('DELETE /receivables/{id}', 'DELETE', f'/receivables/{plan2_id}', None),

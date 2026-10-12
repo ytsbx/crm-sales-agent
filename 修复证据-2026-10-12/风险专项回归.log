@@ -1,0 +1,7 @@
+OK discount limits: missing cost, current role, FX, boundary, whole-order discount and audited published exemptions
+OK hard floor: positive, zero and negative goods revenue excludes pass-through freight
+OK FX optional prices and quote/order/document/receivable line amounts; old mismatches rejected
+OK both PDF routes: unconfirmed master/freight blocked, confirmed zero freight allowed
+OK Agent failed writes rollback, failure trace persists, successful actions execute once
+OK stale reconciliation confirmation rejected; same decision replays original evidence
+全部通过

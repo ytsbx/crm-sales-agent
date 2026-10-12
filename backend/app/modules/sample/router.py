@@ -290,7 +290,7 @@ async def create_sample(
         customer_id=sample.customer_id,
         owner_id=sample.owner_id,
         title="打样申请已创建",
-        content=f"样品申请 #{sample.id} 已创建（{len(payload.items)} 条明细）",
+        content=f"样品申请编号 {sample.id} 已创建（{len(payload.items)} 条明细）",
         business_type="sample",
         business_id=sample.id,
         opportunity_id=sample.opportunity_id,
@@ -397,7 +397,7 @@ async def update_sample(
             session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
             title="打样单重新提交审批" if was_rejected else "打样单退回待审批",
             content=(
-                f"打样 #{sample.id} 的资料被修改（{'、'.join(locked)}），"
+                f"打样编号 {sample.id} 的资料被修改（{'、'.join(locked)}），"
                 + ("该单已重新提交至「待审批」" if was_rejected else "该单已退回「待审批」")
                 + "，需要重新审批后才能投产"
             ),
@@ -408,7 +408,7 @@ async def update_sample(
     else:
         await followup_service.record_and_notify(
             session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-            title="打样资料已修改", content=f"打样 #{sample.id} 已修改资料字段：{'、'.join(changed)}",
+            title="打样资料已修改", content=f"打样编号 {sample.id} 已修改资料字段：{'、'.join(changed)}",
             business_type="sample", business_id=sample.id, sample_id=sample.id,
             opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:update:{sample.id}:{uuid4().hex}",
         )
@@ -457,7 +457,7 @@ async def approve_sample(
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="打样审批结果", content=f"打样 #{sample.id} 已{'批准' if payload.approved else '拒绝'}" + (f"；原因：{payload.reject_reason}" if not payload.approved else ""),
+        title="打样审批结果", content=f"打样编号 {sample.id} 已{'批准' if payload.approved else '拒绝'}" + (f"；原因：{payload.reject_reason}" if not payload.approved else ""),
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:approve:{sample.id}:r{sample.review_round}",
     )
@@ -521,7 +521,7 @@ async def resubmit_sample(
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
         title="打样单重新提交审批",
-        content=f"打样 #{sample.id} 已原样重新提交至「待审批」，等待审批",
+        content=f"打样编号 {sample.id} 已原样重新提交至「待审批」，等待审批",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id,
         event_key=f"sample:resubmit:{sample.id}:r{sample.review_round}",
@@ -624,7 +624,7 @@ async def revise_sample(
         session, customer_id=child.customer_id, owner_id=child.owner_id,
         operator_id=user.id,
         title="打样单开了新修订版",
-        content=f"打样 #{parent.id}（第 {parent.version or 1} 版）已开第 "
+        content=f"打样编号 {parent.id}（第 {parent.version or 1} 版）已开第 "
                 f"{child.version} 版待审批；原版制作/寄送事实冻结保留",
         business_type="sample", business_id=child.id, sample_id=child.id,
         opportunity_id=child.opportunity_id, exclude_user_id=user.id,
@@ -732,7 +732,7 @@ async def sign_sample(
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="样品已签收", content=f"打样 #{sample.id} 已签收，签收时间 {_event_time(sample.signed_at)}",
+        title="样品已签收", content=f"打样编号 {sample.id} 已签收，签收时间 {_event_time(sample.signed_at)}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:sign:{sample.id}",
     )
@@ -772,7 +772,7 @@ async def feedback_sample(
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="客户样品反馈", content=f"打样 #{sample.id} 客户反馈：{sample.feedback}",
+        title="客户样品反馈", content=f"打样编号 {sample.id} 客户反馈：{sample.feedback}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:feedback:{sample.id}:{uuid4().hex}",
     )
@@ -915,7 +915,7 @@ async def register_sample_made(
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="样品制作完成", content=f"打样 #{sample.id} 制作完成，完成时间 {_event_time(sample.made_at)}",
+        title="样品制作完成", content=f"打样编号 {sample.id} 制作完成，完成时间 {_event_time(sample.made_at)}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:made:{sample.id}:{event_key}",
     )
@@ -956,7 +956,7 @@ async def confirm_sample(
         )
         result_label = "客户接受" if payload.accepted else "客户未通过"
         parts = [
-            f"样品 #{probe.id}"
+            f"样品编号 {probe.id}"
             + (f"（客户 {customer.name}）" if customer is not None else ""),
             f"将登记结果：{result_label}",
         ]
@@ -1018,7 +1018,7 @@ async def confirm_sample(
     )
     await followup_service.record_and_notify(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
-        title="客户确认样品结果", content=f"打样 #{sample.id} 客户确认：{'接受' if payload.accepted else '未通过'}；{payload.remark or '无补充说明'}",
+        title="客户确认样品结果", content=f"打样编号 {sample.id} 客户确认：{'接受' if payload.accepted else '未通过'}；{payload.remark or '无补充说明'}",
         business_type="sample", business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, exclude_user_id=user.id, event_key=f"sample:confirm:{sample.id}:{uuid4().hex}",
     )
@@ -1094,7 +1094,7 @@ async def add_sample_item(
             else ("打样单退回待审批" if reopened else "打样明细已添加")
         ),
         content=(
-            f"打样 #{sample.id} 新增明细 #{item.id}，数量 {item.quantity}"
+            f"打样编号 {sample.id} 新增明细编号 {item.id}，数量 {item.quantity}"
             + (
                 "；该单已重新提交至「待审批」"
                 if (reopened and was_rejected)
@@ -1363,7 +1363,7 @@ async def update_sample_item(
         session, customer_id=sample.customer_id, owner_id=sample.owner_id, operator_id=user.id,
         title="打样单退回待审批" if reopened else "打样车间依据已修改",
         content=(
-            f"打样 #{sample.id} 明细 #{item.id} 的车间依据已修改（{'、'.join(changed)}）"
+            f"打样编号 {sample.id} 明细编号 {item.id} 的车间依据已修改（{'、'.join(changed)}）"
             + ("；该单已退回「待审批」，需要重新审批后才能投产" if reopened else "")
         ),
         business_type="sample", business_id=sample.id, sample_id=sample.id,

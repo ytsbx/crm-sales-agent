@@ -329,7 +329,7 @@ def serialize_version(row: SkuMasterVersion) -> dict:
 async def get_sku_or_404(session: AsyncSession, sku_id: int) -> Sku:
     sku = await session.get(Sku, sku_id)
     if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU #{sku_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {sku_id} 不存在", 404)
     return sku
 
 
@@ -1270,7 +1270,7 @@ async def confirm_local_master(
         await session.execute(select(Sku).where(Sku.id == sku_id).with_for_update())
     ).scalars().first()
     if sku is None or sku.deleted_at is not None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU #{sku_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {sku_id} 不存在", 404)
 
     # 逐个确认**当前本地值**（与 RESOLUTION_KEEP_LOCAL 同一件事）。
     # `dedupe=True`：值没变的字段不算一次新确认（逐字段独立确认，第 2/3 条）。
@@ -1408,7 +1408,7 @@ async def confirm_sku_diff(
             )
         ).scalars().first()
         if sku is None:
-            raise AppError(ErrorCode.NOT_FOUND, f"SKU #{diff.internal_id} 不存在", 404)
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {diff.internal_id} 不存在", 404)
 
         if resolution == RESOLUTION_KEEP_LOCAL:
             if diff.field_name:
@@ -1465,7 +1465,7 @@ async def confirm_sku_diff(
             if clash is not None:
                 raise AppError(
                     ErrorCode.DUPLICATE,
-                    f"编码 {new_code} 已被 SKU #{clash.id} 占用：先合并/改名，不要覆盖",
+                    f"编码 {new_code} 已被 SKU 编号 {clash.id} 占用：先合并/改名，不要覆盖",
                     409,
                 )
             old_code = sku.sku_code
@@ -1597,7 +1597,7 @@ async def list_identity_sources(
 async def get_identity_source(session: AsyncSession, source_id: int) -> SkuIdentitySource:
     row = await session.get(SkuIdentitySource, source_id)
     if row is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU 外部身份 #{source_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 外部身份编号 {source_id} 不存在", 404)
     return row
 
 
@@ -1978,7 +1978,7 @@ async def quote_master_refresh_preview(
     changed_total = 0
     never_referenced = 0
     for item in items:
-        code = item.sku_code_snapshot or f"SKU#{item.sku_id}"
+        code = item.sku_code_snapshot or f"SKU编号 {item.sku_id}"
         if item.sku_id is None:
             # 定制项没有 SKU 主数据，跳过（它的名称是人工填的，不属于主数据口径）
             continue

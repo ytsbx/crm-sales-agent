@@ -40,9 +40,27 @@ CNY = "CNY"
 #: 口径值：只做国内。
 DOMESTIC = "domestic"
 
-#: 拒绝时的固定说法。放在常量里是为了让测试能钉住"原因说清了"，
-#: 而不是各处自己编一句、改一处漏一处。
-DOMESTIC_ONLY_HINT = "要用外币报价，得先请管理员把业务口径改成「国内与出口都做」"
+#: 口径值：国内与出口都做。
+#:
+#: ⚠️ 这个取值**目前没有任何代码会放行外币**（见 `ensure_currency_allowed`：
+#: 固定只允许 CNY）。它留着是为了将来真要做出口时有个明确的落点 ——
+#: 那时要补的是"汇率来源、换算时点、快照口径"这套东西，不是把白名单改回去。
+EXPORT = "export"
+
+
+#: 外币记录被当成人民币用时用的固定说法（主人 2026-10-12 定的口径，原话：
+#: 「只会在国内，没有外币这个东西，不要考虑这个，只要确保不会有人可以用外币
+#: 这个东西钻空子就行，有人用外币就给他报错」）。
+#:
+#: 所以这条路上**不做折算、不做兼容**：见到非人民币就拒，并说清该找谁、该改什么。
+FOREIGN_NOT_SUPPORTED = (
+    "系统当前只支持人民币（CNY）：这条记录上的外币金额不会被折算，"
+    "也无法参与审批与统计。请把币种改回人民币。"
+    # ⚠️ 这句从前是"先请管理员把业务口径改成「国内与出口都做」"——
+    # 币种改成固定白名单之后，**改配置也不放行**了，那句话会把用户指到一条
+    # 走不通的路上（复审实测在核价入口看到的正是这句）。
+    "（这不是改配置能放开的：当前系统不做外币业务）"
+)
 
 
 async def is_domestic_only(session: AsyncSession) -> bool:
@@ -57,22 +75,67 @@ async def is_domestic_only(session: AsyncSession) -> bool:
 async def ensure_currency_allowed(
     session: AsyncSession, currency: str | None, *, label: str = "币种"
 ) -> str:
-    """口径是「只做国内」时，非人民币一律拒绝；返回规范化后的币种码。
+    """**只允许人民币（CNY）**；返回规范化后的币种码。
 
     空值/不传一律当作人民币（列默认值就是 CNY），不在这里报"必填"——
     那是别的判据的事。
+
+    ## ⚠️ 从"看口径开关"改成"固定白名单"（第四批复审，2026-10-12）
+
+    原来这里会先读 `trade_mode`：口径是 `domestic` 才拒外币，是 `export` 就放行。
+    主人的口径已经明确了（原话）：
+
+        「只会在国内，没有外币这个东西，不要考虑这个，只要确保不会有人可以用
+          外币这个东西钻空子就行，有人用外币就给他报错」
+
+    所以**不管 `trade_mode` 配成什么，非人民币一律拒**。留着那个分支等于留了一个
+    口子：管理员把口径改成 `export`（甚至只是因为历史配置里就是 `export`），
+    外币金额就能进库，然后一路参与人民币口径的审批与统计 —— 这正是
+    "钻空子"。审批上下文那边已经单独拒了一道（`reject_foreign_currency`），
+    但入口必须是第一道闸。
+
+    `session` 参数**保留**：调用点很多，而且将来真要做出口时仍需要它去读口径。
+    现在它不参与判断。
     """
     code = (currency or CNY).strip().upper() or CNY
     if code == CNY:
         return code
-    if await is_domestic_only(session):
-        raise AppError(
-            ErrorCode.STATUS_NOT_ALLOWED,
-            f"当前业务口径是「只做国内」，{label}只能用人民币（CNY），"
-            f"收到「{code}」。{DOMESTIC_ONLY_HINT}",
-            400,
-        )
-    return code
+    raise AppError(
+        ErrorCode.STATUS_NOT_ALLOWED,
+        f"{label}只能用人民币（CNY），收到「{code}」。{FOREIGN_NOT_SUPPORTED}",
+        400,
+    )
+
+
+def reject_foreign_currency(*currencies: str | None, label: str = "金额") -> None:
+    """**只要出现外币就拒**（不做折算）。
+
+    与 `ensure_currency_allowed` 的分工：
+
+    - `ensure_currency_allowed` 拦在**入口**：只拦"调用方新指定的币种"，
+      而且它认口径开关（口径是 export 时放行）；
+    - 本函数用在**下游**（审批规则、统计汇总、差额计算），不管口径开关是什么 ——
+      只要手里这条数据的币种不是人民币，就说明它是**外币记录**，
+      而外币**从来没有被折算过**，拿它去算人民币口径的东西一定是错的。
+      这时候宁可报错让人来处置，也不要算出一个看着像真的数。
+
+    为什么下游还要再拦一道：口径开关只拦入口。**历史数据**里本来就可能已经有
+    外币记录（口径曾经是 `export` 时建的，或 ERP 同步进来的 —— 外部同步刻意不拦），
+    下游若只认"入口已经拦过了"，这些记录就会悄悄按人民币参与计算。
+    """
+    for currency in currencies:
+        code = (currency or CNY).strip().upper() or CNY
+        if code != CNY:
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"{label}的币种是「{code}」，{FOREIGN_NOT_SUPPORTED}",
+                400,
+            )
+
+
+def is_foreign(*currencies: str | None) -> bool:
+    """这批币种里有没有外币（判断用，不抛错）。"""
+    return any(((c or CNY).strip().upper() or CNY) != CNY for c in currencies)
 
 
 #: 必须调用这道闸的入口（文件 → 函数名）。

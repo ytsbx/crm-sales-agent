@@ -49,7 +49,7 @@ if [[ ! -f "$SUITES_FILE" ]]; then
 fi
 
 echo "== 0.1 后端可达性 =="
-if ! curl -sf --noproxy '*' -o /dev/null "$API_ORIGIN/docs"; then
+if ! .venv/bin/python scripts/wait_backend.py "$API_ORIGIN" --attempts 1; then
   echo "后端没在 $API_ORIGIN 运行。先把这个隔离后端起起来："
   echo "  cd backend && DATABASE_URL=<一次性库> PYTHONPATH=. .venv/bin/uvicorn \\"
   echo "      app.main:app --host 127.0.0.1 --port 8001"
@@ -69,10 +69,12 @@ PYTHONPATH=. .venv/bin/python -m pytest || FAILED+=("pytest")
 
 echo
 echo "== 1.8 复位业务口径（trade_mode）=="
-# 有套件要造外币数据，得临时把口径放开成「国内与出口都做」（那是业务方的真实
-# 做法，见 backend/scripts/_fx_scope.py），跑完自己收回。万一某个套件被硬杀、
-# 没来得及收，**后面所有套件都会以为可以写外币** —— 外币断言会莫名其妙地绿。
-# 这里统一兜底一次；本来就已经复位时它什么都不改（不产生多余审计）。
+# ⚠️ 这段是**历史兜底**：从前有套件要造外币数据，会临时把口径放开成
+# 「国内与出口都做」（`backend/scripts/_fx_scope.py`），跑完自己收回。
+# 现在币种是**固定白名单**（第四批复审 + 主人 2026-10-12 口径：
+# 「有人用外币就给他报错」），改口径也**不再放行外币**，所以没有套件需要放开了。
+# 兜底动作保留：万一库里留着 `export` 的历史配置，复位它仍然是对的
+#（配置与"能不能写外币"已经解耦，但配置本身该是 domestic）。
 if PYTHONPATH=. .venv/bin/python scripts/reset_trade_mode.py; then
   echo "OK  业务口径=domestic"
 else

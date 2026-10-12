@@ -6,6 +6,7 @@
 
 from io import BytesIO
 from typing import Any
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -14,6 +15,8 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+from app.core.money import format_unit_price
 
 CN_FONT = "STSong-Light"
 
@@ -52,7 +55,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     if data.get("company_name"):
         story.append(
             Paragraph(
-                str(data["company_name"]),
+                escape(str(data["company_name"])),
                 ParagraphStyle(
                     "CNCompany", parent=normal, fontSize=11, leading=16, alignment=1
                 ),
@@ -63,14 +66,14 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     story.append(Spacer(1, 6 * mm))
 
     meta_rows = [
-        [Paragraph(f"报价单号：{data.get('quote_no', '-')}", head),
-         Paragraph(f"版本：V{data.get('version_no', 1)}", head)],
-        [Paragraph(f"客户：{data.get('customer_name') or '-'}", head),
-         Paragraph(f"有效期至：{data.get('valid_until') or '-'}", head)],
-        [Paragraph(f"商机：{data.get('opportunity_title') or '-'}", head),
-         Paragraph(f"负责人：{data.get('owner_name') or '-'}", head)],
-        [Paragraph(f"报价日期：{data.get('quote_date') or '-'}", head),
-         Paragraph(f"状态：{data.get('status_label') or '-'}", head)],
+        [Paragraph(escape(f"报价单号：{data.get('quote_no', '-')}"), head),
+         Paragraph(escape(f"版本：V{data.get('version_no', 1)}"), head)],
+        [Paragraph(escape(f"客户：{data.get('customer_name') or '-'}"), head),
+         Paragraph(escape(f"有效期至：{data.get('valid_until') or '-'}"), head)],
+        [Paragraph(escape(f"商机：{data.get('opportunity_title') or '-'}"), head),
+         Paragraph(escape(f"负责人：{data.get('owner_name') or '-'}"), head)],
+        [Paragraph(escape(f"报价日期：{data.get('quote_date') or '-'}"), head),
+         Paragraph(escape(f"状态：{data.get('status_label') or '-'}"), head)],
     ]
     meta_table = Table(meta_rows, colWidths=[87 * mm, 87 * mm])
     meta_table.setStyle(
@@ -93,7 +96,10 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
                 item.get("sku_code") or "-",
                 item.get("specification") or "-",
                 f"{item.get('quantity', 0):g}",
-                f"{item.get('quoted_price', 0):.2f}",
+                # 单价保留实际成交精度、末尾不补零（第二轮审查 P2，2026-10-12）：
+                # 截成两位会让"单价 × 数量"对不上金额那一栏
+                # （33.3333 × 1000 印成 33.33 × 1000 = 33330.00，而金额是 33333.30）
+                format_unit_price(item.get("quoted_price", 0)),
                 f"{item.get('amount', 0):.2f}",
             ]
         )
@@ -190,7 +196,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     if data.get("remark"):
         terms.append(f"备注：{data['remark']}")
     for line in terms:
-        story.append(Paragraph(line, normal))
+        story.append(Paragraph(escape(line), normal))
 
     story.append(Spacer(1, 8 * mm))
     story.append(

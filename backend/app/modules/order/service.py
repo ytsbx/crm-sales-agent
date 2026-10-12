@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.integration.model import ExternalMapping
@@ -253,6 +254,19 @@ async def create_order_from_quote(
             )
         ).scalar_one_or_none()
 
+    items = (
+        await session.execute(
+            select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
+        )
+    ).scalars().all()
+    goods_amount = sum((line_amount(item.quantity, item.quoted_price) for item in items), Decimal(0))
+    if goods_amount != version.subtotal_amount:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "报价货款与逐行金额合计不一致，请新建版本重新核对金额并取得客户确认后再下单",
+            422,
+        )
+
     order = SalesOrder(
         order_no=await generate_order_no(session),
         customer_id=quote.customer_id,
@@ -292,11 +306,6 @@ async def create_order_from_quote(
             409,
         )
 
-    items = (
-        await session.execute(
-            select(QuoteItem).where(QuoteItem.quote_version_id == version.id)
-        )
-    ).scalars().all()
     for item in items:
         session.add(
             SalesOrderItem(
@@ -318,7 +327,7 @@ async def create_order_from_quote(
                 specification=item.spec_snapshot,
                 quantity=item.quantity,
                 unit_price=item.quoted_price,
-                amount=(item.quantity * item.quoted_price).quantize(Decimal("0.01")),
+                amount=line_amount(item.quantity, item.quoted_price),
                 remark=item.remark,
             )
         )
@@ -427,7 +436,7 @@ async def create_order(
         # 先归一再看金额：货款必须等于"**落库的那个数量** × 单价"，
         # 否则接口报的金额与库里能算出来的金额对不上（审查 B2-02）。
         quantity = normalized_quantity(entry.quantity)
-        amount = (quantity * entry.unit_price).quantize(Decimal("0.01"))
+        amount = line_amount(quantity, entry.unit_price)
         total += amount
         rows.append(
             SalesOrderItem(
@@ -522,6 +531,23 @@ async def change_status(
         summary = overview["summary"]
         shipped = Decimal(str(summary.get("shipped") or 0))
         ordered = Decimal(str(summary.get("ordered") or 0))
+        # 履约凭据里不许有**未来日期**（第三批审查 P2，2026-10-12）：
+        # 登记那一关已经不许填未来发货日，但历史数据（或别的写入口）可能已经留下，
+        # 这里再挡一道，否则"未来才发出去的货"能当成完成的依据。
+        future = [
+            row for row in overview["batches"]
+            if row.get("actual_ship_date") is not None
+            and row["actual_ship_date"] > today_business()
+        ]
+        if future:
+            detail = "、".join(
+                f"第 {row['batch_no']} 批（{row['actual_ship_date']}）" for row in future
+            )
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                f"有发货批次的实发日期在未来（{detail}），不能作为履约凭据，"
+                "订单不能标记完成。请先把这些批次的实发日期改回真实发生的那天。",
+            )
         if ordered > 0 and shipped < ordered:
             if not overview["batches"]:
                 raise AppError(
@@ -579,7 +605,7 @@ def _sku_label(item: SalesOrderItem) -> str:
     return (
         item.sku_snapshot
         or item.inquiry_no_snapshot
-        or (f"SKU#{item.sku_id}" if item.sku_id else f"明细#{item.id}")
+        or (f"SKU编号 {item.sku_id}" if item.sku_id else f"明细编号 {item.id}")
     )
 
 
@@ -909,6 +935,24 @@ async def ship_shipment_batch(
     if batch.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该批次已取消")
 
+    # ---- 实际发货日不得晚于**业务今天**（第三批审查 P2，2026-10-12）----
+    #
+    # 从前这一行是直接写的（`batch.actual_ship_date = payload.actual_ship_date or 今天`），
+    # 于是填一个"十天以后"的日期：批次立刻算已发货、整单随后能标已完成 ——
+    # 一个还没发生的日期被当成履约证据，发货统计与交付准时率全跟着它走。
+    #
+    # 校验必须放在**改数量与改状态之前**：否则拦下来时 `shipped_qty` 已经被写过，
+    # 留下一半的脏数量（与第九批 §9.7 同一个道理）。
+    ship_date = payload.actual_ship_date or today_business()
+    if ship_date > today_business():
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"实际发货日（{ship_date}）不能晚于今天（{today_business()}）："
+            "还没发生的日期不是发货事实。要提前排产请填「计划发货日」；"
+            "确已发货、只是日期填错了，请按真实发生的那天补录。",
+            422,
+        )
+
     batch_items = (
         await session.execute(
             select(OrderShipmentBatchItem).where(
@@ -974,7 +1018,8 @@ async def ship_shipment_batch(
         row.shipped_qty = resolved[row.order_item_id]
 
     batch.status = "shipped"
-    batch.actual_ship_date = payload.actual_ship_date or today_business()
+    # 用上面校验过的那个日期（不再在这里重新算一遍：两处各算一次必然会漂）
+    batch.actual_ship_date = ship_date
     batch.logistics_company = payload.logistics_company
     batch.tracking_no = payload.tracking_no
     # 逾期原因是"归因"，不是装饰：晚发了就把为什么晚记在这一批上，

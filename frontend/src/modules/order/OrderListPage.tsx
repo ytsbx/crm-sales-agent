@@ -26,7 +26,7 @@ import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 // 金额一律带**实际币种**（第九批 §9.9）：列表以前写死 `¥`，
 // 有外币订单时显示的就是错的数字。
 import { formatMoney } from '../../shared/components/money'
@@ -447,10 +447,11 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                 placeholder="选择客户"
                 value={createForm.customer_id ?? undefined}
                 onChange={(value) => setCreateForm({ ...createForm, customer_id: value as number })}
-                optionList={(createCustomersQuery.data?.items ?? []).map((item) => ({
-                  value: item.id,
-                  label: withCode(item.name, item.id),
-                }))}
+                optionList={optionsWithCodeOnDuplicate(
+                  createCustomersQuery.data?.items ?? [],
+                  (item) => item.name,
+                  (item) => item.id,
+                )}
                 filter={optionMatcher}
                 style={{ width: '100%' }}
               />

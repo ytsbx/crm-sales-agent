@@ -91,11 +91,7 @@ jobs:
       - name: 启动后端（8001）
         run: |
           PYTHONPATH=. nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 > /tmp/backend.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -s -o /dev/null http://127.0.0.1:8001/docs && break
-            sleep 1
-          done
-          curl -sf -o /dev/null http://127.0.0.1:8001/docs || { tail -n 40 /tmp/backend.log; exit 1; }
+          python scripts/wait_backend.py http://127.0.0.1:8001 || { tail -n 40 /tmp/backend.log; exit 1; }
           echo "backend ready"
 
       - name: 静态检查（pyflakes / 模型列 / 权限码）
@@ -189,6 +185,7 @@ jobs:
       API_BASE: http://127.0.0.1:8000
       # Vite dev server 在本 job 监听 5173；冒烟脚本的默认开发端口是 5274。
       APP_BASE: http://127.0.0.1:5173
+      VITE_API_PROXY_TARGET: http://127.0.0.1:8000
       JWT_SECRET: ci-only-secret-key-at-least-32-bytes!
       DEEPSEEK_API_KEY: ""
       DINGTALK_PUSH_OFF: "1"
@@ -225,11 +222,7 @@ jobs:
           PYTHONPATH=. python -m alembic upgrade head
           PYTHONPATH=. python scripts/seed.py
           PYTHONPATH=. nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/backend.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -s -o /dev/null http://127.0.0.1:8000/docs && break
-            sleep 1
-          done
-          curl -sf -o /dev/null http://127.0.0.1:8000/docs || { tail -n 40 /tmp/backend.log; exit 1; }
+          python scripts/wait_backend.py http://127.0.0.1:8000 || { tail -n 40 /tmp/backend.log; exit 1; }
           echo "backend ready"
 
       - name: 前端：类型检查 + 构建（白屏根因防线，解析错误在这里先红）
@@ -237,11 +230,51 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+          # 两个纯逻辑单测：不需要浏览器，也不引测试框架（Node 自带 node:test）。
+          # blocked_hint 那条守的是「灰按钮必须说得出为什么」（主人 2026-10-12）。
+          node --test ../ops/request_key.test.mjs
+          node --test ../ops/blocked_hint.test.mjs
+          # 静态检查：含禁用控件的页面必须接了共用件，或在例外清单里写明理由。
+          # 单测只测共享件算得对不对，**测不到"页面忘了接"**（这一轮的毛病正是忘了接）。
+          python3 ../ops/check_disabled_hint.py
+          # 静态检查：核价历史里会出现的每个审计动作，界面上必须有中文名。
+          # 后端加了动作而前端没跟 → 屏幕上会印出 skipped/[object Object] 这类机器话，
+          # 而且**不报错、不失败**，只能靠人去看那一页（主人 2026-10-12 就是这么发现的）。
+          python3 ../ops/check_action_labels.py
+          # 静态检查：审计页三层中文名（对象/动作/字段）+ 生成物是否最新。
+          # 这些漏法**不报错、不失败**，只在那一页上难看（主人 2026-10-12 亲自发现）。
+          python3 ../ops/check_audit_labels.py
+          # 静态检查：角色弹窗的权限分组是否覆盖后端所有权限模块。
+          # 漏了会让某个模块的新权限掉进「其他权限」（主人 2026-10-12：
+          # 「要找具体的权限要翻半天」——分组的意义就是不用翻）。
+          python3 ../ops/check_permission_groups.py
+          # 静态检查：用户可见文案里不许再用 `#` 拼编号（主人 2026-10-12：
+          # 「报价单 #8。这个 # 啥意思」——统一成「报价单编号 8」）。
+          python3 ../ops/check_hash_ids.py
+          # 静态检查：会写跟单节点的写接口必须持有订单锁。
+          # 漏了会把"未收齐"写成"收款完成"（第三批复审遗留 P1，真库已复现）；
+          # 真库版脚本是 scripts/check_milestone_lock_race.py（CI 上跑这条离线的）。
+          python3 ../ops/check_milestone_lock.py
+          # 静态检查：用户可见文案里不许出现 Markdown 的 `**`。
+          # 缘起：主人 2026-10-12 看到弹窗里印着「这是**发给客户**的记录」——
+          # React 不认 Markdown，`**` 会原样显示。这种错 tsc 全绿、只有人眼看得到，
+          # 而我自己在同一个弹窗里就犯了两次。
+          python3 ../ops/check_ui_text_no_markdown.py
+          # 静态检查：测试脚本"抠产品文案"的正则不许和文案脱钩。
+          # 缘起：全站把 `打样单 #N` 改成「打样单编号 N」之后，
+          # check_sixth_round_p2 的正则永远匹配空集合 —— 两条断言必红、
+          # 一条假绿，而表象是"实现坏了"（我查了半天，还建了 git 基线对比）。
+          python3 ../ops/check_copy_coupled_assertions.py
+          # 静态检查：算金额的上下文必须拒外币（主人 2026-10-12 口径：
+          # 「没有外币这个东西…有人用外币就给他报错」）。
+          # 单测只能证明闸函数本身好使，证明不了"它被接在这条计算上"——
+          # 反向验证时撤掉调用，单测照样全绿（实测踩过）。
+          python3 ../ops/check_foreign_currency_rejected.py
 
       - name: 前端：启动 dev server
         working-directory: frontend
         run: |
-          nohup pnpm exec vite --host 127.0.0.1 > /tmp/frontend.log 2>&1 &
+          nohup pnpm exec vite --host 127.0.0.1 --port 5173 > /tmp/frontend.log 2>&1 &
           for i in $(seq 1 40); do
             curl -s -o /dev/null http://localhost:5173/ && break
             sleep 1

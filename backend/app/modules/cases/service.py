@@ -424,7 +424,7 @@ async def validate_evidences(
         if key in seen:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"{CASE_EVIDENCE_KINDS[kind]} #{business_id} 重复挂了两次",
+                f"{CASE_EVIDENCE_KINDS[kind]} 编号 {business_id} 重复挂了两次",
                 422,
             )
         seen.add(key)
@@ -432,7 +432,7 @@ async def validate_evidences(
         if getattr(record, "customer_id", None) != customer_id:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"{CASE_EVIDENCE_KINDS[kind]} #{business_id} 不属于本案例的客户，"
+                f"{CASE_EVIDENCE_KINDS[kind]} 编号 {business_id} 不属于本案例的客户，"
                 f"不能作为证据挂上来",
                 422,
             )
@@ -500,7 +500,7 @@ async def validate_evidence(
         if actual_customer.get(name) != customer_id:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                f"{label} #{value} 不属于本案例的客户，不能作为证据挂上来",
+                f"{label} 编号 {value} 不属于本案例的客户，不能作为证据挂上来",
                 422,
             )
 

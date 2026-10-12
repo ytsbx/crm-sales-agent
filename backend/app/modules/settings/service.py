@@ -509,7 +509,7 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
         label = SAMPLE_STATUS_LABEL.get(status, status)
         if confirm:
             label = f"{label} / {CONFIRM_STATUS_LABEL.get(confirm, confirm)}"
-        add(cid, _protection_reason("在途打样", f"打样单 #{sample_id}（{label}）"))
+        add(cid, _protection_reason("在途打样", f"打样单编号 {sample_id}（{label}）"))
 
     return out
 
@@ -1370,7 +1370,7 @@ async def restore_candidate(
             customer_id=customer.id,
             old_owner_id=None,
             new_owner_id=row.owner_id,
-            reason=f"恢复公海回收（候选 #{row.id}）",
+            reason=f"恢复公海回收（候选编号 {row.id}）",
             operator_id=operator_id,
             created_at=now,
         )

@@ -1,0 +1,68 @@
+夹具前缀：CHK31791779922
+=== 1. 附件预览的类型判定 ===
+  OK   text/html; charset=utf-8 + drawing.png → 拒绝：previewable=False, type=None
+  OK   text/html + drawing.png → 拒绝：previewable=False, type=None
+  OK   TEXT/HTML;charset=UTF-8 + drawing.png → 拒绝：previewable=False, type=None
+  OK   image/svg+xml + logo.png → 拒绝：previewable=False, type=None
+  OK   image/png + logo.svg → 拒绝：previewable=False, type=None
+  OK   image/png + photo.png → 可预览：previewable=True, type='image/png'
+  OK   image/png; charset=binary + photo.png → 可预览：previewable=True, type='image/png'
+  OK   application/pdf + 合同.pdf → 可预览：previewable=True, type='application/pdf'
+  OK   text/plain + 说明.txt → 可预览：previewable=True, type='text/plain'
+  OK   application/octet-stream + 未知.txt → 可预览：previewable=True, type='text/plain'
+  OK   （空） + 无名.png → 可预览：previewable=True, type='image/png'
+  OK   application/x-msdownload + payload.png → 拒绝：previewable=False, type=None
+  OK   text/xml + 清单.xml → 拒绝：previewable=False, type=None
+=== 2. 跟单节点按财务事实重建 ===
+  OK   节点已按需补建
+  OK   收齐后「收款」实际日: datetime.date(2026, 10, 1)（期望 datetime.date(2026, 10, 1)）
+  OK   「付定金」实际日: datetime.date(2026, 10, 1)（期望 datetime.date(2026, 10, 1)）
+  OK   应收改大后应收状态: 'partial'（期望 'partial'）
+  OK   应收改大后「收款」节点实际日被撤销: None（期望 None）
+  OK   撤销留了纠正痕迹：1 条
+  OK   补录更早回款后定金日重算: datetime.date(2026, 9, 5)（期望 datetime.date(2026, 9, 5)）
+  OK   多收之后「收款」节点重新完成: datetime.date(2026, 10, 1)（期望 datetime.date(2026, 10, 1)）
+  OK   回款确认时还没有节点: 0（期望 0）
+  OK   首次同步就把两个节点补上
+  OK   补建后「付定金」实际日: datetime.date(2026, 10, 2)（期望 datetime.date(2026, 10, 2)）
+  OK   补建后「收款」实际日: datetime.date(2026, 10, 2)（期望 datetime.date(2026, 10, 2)）
+=== 3. 未来发货日被拒 ===
+  OK   未来发货日被拒：实际发货日（2026-10-22）不能晚于今天（2026-10-12）：还没发生的日期不是发货事实。要提前排产请填「计划发货日」；确已发货、只是日期填错了，请按真实发生的那天补录。
+  OK   拒绝码是参数类: 40001（期望 40001）
+  OK   被拒后批次状态没变: 'planned'（期望 'planned'）
+  OK   被拒后没有写实际发货日: None（期望 None）
+  OK   被拒后本批实发数量没被改动: Decimal('10.000')（期望 Decimal('10')）
+  OK   未来凭据不能标完成：有发货批次的实发日期在未来（第 1 批（2026-10-15）），不能作为履约凭据，订单不能标记完成。请先把这些批次的实发日期改回真实发生的那天。
+  OK   完成闸门码: 40002（期望 40002）
+=== 4. 公海客户的合同附件 ===
+  OK   归属判据回退到订单负责人: 11（期望 11）
+  OK   合同详情可见性通过（回退到订单负责人）
+  OK   同一份合同的附件也能访问（同判据）
+  OK   无订单负责人时回退到创建人: 11（期望 11）
+  OK   创建人自己能打开
+=== 5. 复制与复购的 SKU 可用性 ===
+  OK   复制商机被整次拒绝：以下商品当前不能用于新业务，本次操作已整单取消（没有写入任何数据）：SKU CHK31791779922504eabb9 已停用，不能用于新业务（历史单据不受影响）
+  OK   拒绝码: 40002（期望 40002）
+  OK   错误里点名了不可用 SKU：以下商品当前不能用于新业务，本次操作已整单取消（没有写入任何数据）：SKU CHK31791779922504eabb9 已停用，不能用于新业务（历史单据不受影响）
+  OK   没有留下新商机: 0（期望 0）
+  OK   复购的判据同样拒绝停用 SKU：以下商品当前不能用于新业务，本次操作已整单取消（没有写入任何数据）：SKU CHK31791779922504eabb9 已停用，不能用于新业务（历史单据不受影响）
+  OK   产品被停用的 SKU 也被拒：以下商品当前不能用于新业务，本次操作已整单取消（没有写入任何数据）：产品「CHK317917799227fc64c8e」已停用，不能用于新业务（历史单据不受影响）
+  OK   可用 SKU 正常放行：CHK31791779922290ebc56
+=== 6. 被替代的月结协议不再提醒 ===
+  OK   窗口外时不产生提醒（替代就发生在这时候）: 0（期望 0）
+  OK   替代标记被识别
+  OK   被替代的协议不应再提醒
+  OK   未被替代的协议仍应提醒
+  OK   新协议建了提醒：created=0
+  OK   进入窗口后，被替代的旧协议**没有**建提醒：tasks=[(57, 'pending')]
+=== 7. 月结续签的生效日必填 ===
+  OK   缺生效日被拒：月结协议续签必须填写**生效日**：协议什么时候开始适用，决定旧协议还要继续适用到哪一天。请补上生效日再生成。
+  OK   拒绝码=必填缺失: 40003（期望 40003）
+  OK   失败发生在**取号之前**: 0（期望 0）
+  OK   没有生成新文档: 0（期望 0）
+  OK   旧协议的待办没有被取消: 'pending'（期望 'pending'）
+  OK   旧协议没有被打上替代标记: False（期望 False）
+  OK   生效日晚于到期日被拒：生效日（2026-12-11）不能晚于到期日（2026-11-11）—— 一份协议不可能到期之后才生效。
+  OK   拒绝码=参数类: 40001（期望 40001）
+
+全部探针通过。

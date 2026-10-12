@@ -66,7 +66,7 @@ export default function PendingImagePicker({
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
         <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-          可以先选好图片，**点保存时一并上传**（单张不超过 {maxSizeMb} MB）。
+          可以先选好图片，「点保存时一并上传」（单张不超过 {maxSizeMb} MB）。
           保存后也能在列表的「图片」列随时补。
         </div>
         <>

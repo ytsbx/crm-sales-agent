@@ -11,6 +11,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { Product } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import { useBlockedNotify } from '../../shared/components/BlockedHint'
 
 const EMPTY_FORM: ProductPayload = {
   name: '',
@@ -19,6 +20,20 @@ const EMPTY_FORM: ProductPayload = {
   brand: '',
   description: '',
 }
+
+/**
+ * 业务员（SALES，没有 `product:manage`）在产品中心看到的那句话。
+ *
+ * 为什么要有这句：模板下载 / 导入 / 导出整组都挂在 `product:manage` 上，
+ * 从前的写法是**整组不渲染** —— 业务员看到工具栏右侧一片空白，界面上一个字都不说，
+ * 只会以为"产品模板、导入导出这些功能还没做"（主人 2026-10-12：「点又点不了，
+ * 又不给提示为什么点不了，类似的情况都要修」）。
+ *
+ * 同一权限也把着「新建产品」，所以一并写进来：只说一半，用户还得再猜一次。
+ * ⚠️ 权限判据没有动，仍然只有 `can('product:manage')` 才渲染那组控件。
+ */
+const PRODUCT_MANAGE_PERMISSION_REASON =
+  '产品与 SKU 的模板下载、导入、导出需要「产品管理」权限；请联系管理员开通或由产品负责人操作。「新建产品」同样需要这个权限。'
 
 interface ImportResult {
   created_count: number
@@ -31,6 +46,13 @@ export default function ProductListPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+  // 没有「产品管理」权限时，工具栏上那组模板/导入导出**不渲染**（判据照旧，没动），
+  // 但要有一行灰字说清它们为什么不在、找谁能开；点这行灰字会弹一句同样的话
+  // （看得见 + 点得动，见 shared/components/BlockedHint.tsx）。
+  const canManageProduct = can('product:manage')
+  const notifyManageBlocked = useBlockedNotify(
+    canManageProduct ? [] : [PRODUCT_MANAGE_PERMISSION_REASON],
+  )
 
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -160,6 +182,23 @@ export default function ProductListPage() {
             查询
           </Button>
           <div style={{ flex: 1 }} />
+          {/* 下面那组「产品模板 / SKU模板 / 导出 / 批量导入」整组都要「产品管理」权限
+              （后端 io_router 也按同一个权限把守）。没有权限的角色从前是**什么都看不到、
+              也什么都不知道** —— 这里补一句常驻灰字：缺哪个权限、找谁开、或者请谁代做。
+              为什么不做成一排灰按钮：这一组是四个控件加一个下拉（导入产品/导入SKU），
+              全灰着会把工具栏挤成两行，反而盖住真正能用的「查询」；一句话说得清的事
+              不必占五个控件的位置。灰字本身可点，点了弹同一句话（点得动）。
+              ⚠️ 判据没动：那组控件仍然只有 can('product:manage') 才渲染。 */}
+          {!can('product:manage') && (
+            <div
+              data-blocked-click="1"
+              className="blocked-hint-click"
+              onClick={notifyManageBlocked}
+              style={{ display: 'block', maxWidth: 380, fontSize: 12, lineHeight: 1.7, color: 'var(--crm-text-3)' }}
+            >
+              {PRODUCT_MANAGE_PERMISSION_REASON}
+            </div>
+          )}
           {can('product:manage') && (
             <>
               <Button onClick={() => downloadCsv('/api/v1/products/import-template', '产品导入模板.csv')}>

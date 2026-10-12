@@ -103,6 +103,26 @@ def mask_contact_fields(payload: dict) -> dict:
     return masked
 
 
+def is_masked_contact_value(field: str, value: str | None) -> bool:
+    """这个值是不是**脱敏后的形状**（而不是用户真的这么填）。
+
+    为什么要有这个判据（2026-10-12，第四轮）：脱敏是对外响应口径，可是
+    `PATCH /contacts/{id}` 的入参**从来没挡过它** —— 对无权看完整号码的人是
+    "读出来是 `138****8000`、改个职位再保存"，那条 UPDATE 会把
+    **真实号码覆盖成星号串**，而且不可逆（审计里 before 也已经是星号）。
+    前端补上编辑入口之后这条路第一次真的会被走到，所以在这里兜一道。
+
+    判据故意**简单**：这几个字段里出现 `*` 就认定是脱敏形状 ——
+    手机号、座机、邮箱、微信号里 `*` 本来就不是合法字符，真人不会这么填；
+    而星号的具体形状（`138****8000` / `12*34` / `z***@x.com` / `ab***`）
+    由 `_mask_digits` 的档位决定，将来改档位也不会让这条判据失效
+    （**不要**在这里复刻打码规则：两处规则一定会走散）。
+    """
+    if field not in _MASKED_FIELDS:
+        return False
+    return "*" in (value or "")
+
+
 async def can_view_full_contact(
     session: AsyncSession,
     user,

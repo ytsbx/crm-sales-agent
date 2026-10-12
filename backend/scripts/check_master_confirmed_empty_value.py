@@ -48,7 +48,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
-from _test_support import require_api_base, require_isolated_db
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -350,7 +350,13 @@ async def main() -> None:
                 return rows[0] if rows else {}
 
             def approve_and_send(version_id: int):
-                """提交审批 → 标记发送。返回发送那一步的响应（dict）。"""
+                """提交审批 → 标记发送。返回发送那一步的响应（dict）。
+
+                ⚠️ 提交前先确认运费：运费闸已前置到提交审批（2026-10-12）。
+                本函数测的是"主数据未确认时发送被拦"，与运费是两道**独立**的闸 ——
+                不先过掉运费那道，就会拦在错误的闸上、看起来像主数据那条没生效。
+                """
+                confirm_freight_before_submit(call, admin, version_id)
                 call("POST", f"/quote-versions/{version_id}/submit-approval", admin, body={})
                 _, res = call(
                     "POST",

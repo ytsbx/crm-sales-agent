@@ -113,7 +113,7 @@ async def create_from_source(session, user, payload, *, ip=None):
                       business_id=sample.id, after={'source': source['source'], 'item_count': len(payload.items)}, ip=ip)
     await record_and_notify(session, customer_id=sample.customer_id, owner_id=sample.owner_id,
         operator_id=user.id, exclude_user_id=user.id, title='打样申请已创建',
-        content=f"样品申请 #{sample.id} 来源 {source['source']['no'] or ''} V{source['source']['version']}（{len(payload.items)} 条明细）",
+        content=f"样品申请编号 {sample.id} 来源 {source['source']['no'] or ''} V{source['source']['version']}（{len(payload.items)} 条明细）",
         business_type='sample', business_id=sample.id, sample_id=sample.id,
         opportunity_id=sample.opportunity_id, event_key=f'sample:create:{sample.id}')
     await customer_service.touch_progress(session, sample.customer_id)

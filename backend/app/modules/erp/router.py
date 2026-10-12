@@ -157,7 +157,7 @@ async def _ensure_mapping_target_scope(
     if object_type == "customer":
         target = await session.get(Customer, internal_id)
         if target is None or target.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, f"客户 #{internal_id} 不存在", 404)
+            raise AppError(ErrorCode.NOT_FOUND, f"客户编号 {internal_id} 不存在", 404)
         await ensure_in_scope(
             session, user, owner_id=target.owner_id, label="客户", allow_unowned=True
         )
@@ -166,7 +166,7 @@ async def _ensure_mapping_target_scope(
     if object_type == "sku":
         target = await session.get(Sku, internal_id)
         if target is None or target.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, f"SKU #{internal_id} 不存在", 404)
+            raise AppError(ErrorCode.NOT_FOUND, f"SKU 编号 {internal_id} 不存在", 404)
         # SKU 没有负责人字段，有限数据范围无法可靠判断归属；宁可拒绝，
         # 也不能让 order:manage 用户跨范围修改主数据映射。
         if await scoped_owner_ids(session, user) is not None:
@@ -188,7 +188,7 @@ async def _ensure_mapping_target_scope(
         raise AppError(ErrorCode.PARAM_ERROR, f"不支持人工映射对象类型：{object_type}", 422)
 
     if order is None:
-        raise AppError(ErrorCode.NOT_FOUND, f"订单/订单明细 #{internal_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"订单/订单明细编号 {internal_id} 不存在", 404)
     if mapping.parent_key:
         parent = (
             await session.execute(
@@ -236,10 +236,17 @@ async def erp_readiness(
 @router.post("/integrations/erp/orders")
 async def push_by_order_no(
     payload: OrderPushRequest,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """按 CRM 订单号推送。给外部系统或批量脚本调用，等价于 /orders/{id}/sync。"""
+    """按 CRM 订单号推送。给外部系统或批量脚本调用，等价于 /orders/{id}/sync。
+
+    第二轮审查 P2（2026-10-12）：这个入口以前不检查 `confirm`，与订单页那个
+    入口共用同一个写服务，等于留了一条绕过确认的后门。现在三个推单入口都过
+    `svc.ensure_push_confirmed`，契约（`confirm=true`）、文案与 42206 完全一致。
+    调用方（外部脚本/批量任务）带上 `?confirm=true` 即可，行为不变、只是多一步确认。
+    """
     if not payload.order_no:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "order_no 必填", 422)
     order = (
@@ -251,6 +258,7 @@ async def push_by_order_no(
         raise AppError(ErrorCode.NOT_FOUND, f"订单 {payload.order_no} 不存在", 404)
     # 按单号推送也要过数据范围，否则知道单号就能推别人的订单
     await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
+    await svc.ensure_push_confirmed(session, order=order, confirm=confirm)
     try:
         result = await svc.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -272,11 +280,17 @@ async def push_by_order_no(
 @router.post("/integrations/erp/orders/{order_id}/sync")
 async def sync_order(
     order_id: int,
+    confirm: bool = False,
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """把订单推送到 ERP/MES（幂等：推过的直接返回，不重复建单）。"""
+    """把订单推送到 ERP/MES（幂等：推过的直接返回，不重复建单）。
+
+    第二轮审查 P2（2026-10-12）：与 `/orders/{id}/sync-erp` 走同一个写服务，
+    所以也必须先确认；确认判据、文案与 42206 由 `ensure_push_confirmed` 统一。
+    """
     order = await order_service.get_visible_order(session, user, order_id)
+    await svc.ensure_push_confirmed(session, order=order, confirm=confirm)
     try:
         result = await svc.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:

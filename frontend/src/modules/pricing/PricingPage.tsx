@@ -20,7 +20,7 @@ import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/ag
 import { usePermissions } from '../../shared/hooks/permissions'
 import AgentInsight from '../../shared/components/AgentInsight'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'primary' | 'danger' | 'muted' }) {
   const color = tone === 'primary' ? 'var(--crm-primary)' : tone === 'danger' ? 'var(--crm-error)' : 'var(--crm-text)'
@@ -156,10 +156,11 @@ export default function PricingPage() {
                 placeholder="选择客户（可空，仅影响客户等级价与一客一价）"
                 value={customerId}
                 onChange={(value) => setCustomerId(value as number | undefined)}
-                optionList={(customersQuery.data?.items ?? []).map((item) => ({
-                  value: item.id,
-                  label: withCode(`${item.name}（${item.level ?? '-'} 级）`, item.id),
-                }))}
+                optionList={optionsWithCodeOnDuplicate(
+                  customersQuery.data?.items ?? [],
+                  (item) => `${item.name}（${item.level ?? '-'} 级）`,
+                  (item) => item.id,
+                )}
                 filter={optionMatcher}
                 showClear
                 style={{ width: '100%' }}

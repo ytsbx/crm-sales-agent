@@ -110,7 +110,7 @@ async def normalize_task_refs(
                 # 走到这里只可能是"不存在"那一档（范围拒绝已在 _check 里抛掉了）
                 raise AppError(ErrorCode.NOT_FOUND, f"{label} id={obj_id} 不存在", 404)
             data[f"{kind}_id"] = None
-            skipped.append(f"{label} #{obj_id}（{why}）")
+            skipped.append(f"{label} 编号 {obj_id}（{why}）")
             continue
         if kind == "customer":
             customer_id = int(obj_id)
@@ -124,7 +124,7 @@ async def normalize_task_refs(
                         422,
                     )
                 data[f"{kind}_id"] = None
-                skipped.append(f"{label} #{obj_id}（不属于同一个客户）")
+                skipped.append(f"{label} 编号 {obj_id}（不属于同一个客户）")
                 continue
             customer_id = int(linked)
 
@@ -137,7 +137,7 @@ async def normalize_task_refs(
             if strict:
                 raise AppError(ErrorCode.NOT_FOUND, f"联系人 id={contact_id} 不存在", 404)
             data["contact_id"] = None
-            skipped.append(f"联系人 #{contact_id}（已不存在或已被删除）")
+            skipped.append(f"联系人编号 {contact_id}（已不存在或已被删除）")
         elif customer_id is None:
             customer_id = contact.customer_id
         elif contact.customer_id != customer_id:
@@ -148,7 +148,7 @@ async def normalize_task_refs(
                     422,
                 )
             data["contact_id"] = None
-            skipped.append(f"联系人 #{contact_id}（不属于同一个客户）")
+            skipped.append(f"联系人编号 {contact_id}（不属于同一个客户）")
 
     # 最终确定的客户再过一次范围校验：它可能是**推断**来的（来自单据或联系人），
     # 推断不该成为绕过数据范围的通道。

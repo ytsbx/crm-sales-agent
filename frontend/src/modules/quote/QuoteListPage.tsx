@@ -12,7 +12,7 @@ import { createQuote, listQuotes, type Quote } from '../../shared/api/quote'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 const STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
@@ -244,10 +244,11 @@ export default function QuoteListPage() {
           placeholder="选择商机"
           value={opportunityId ?? undefined}
           onChange={(value) => setOpportunityId(value as number)}
-          optionList={(opportunitiesQuery.data?.items ?? []).map((item) => ({
-            value: item.id,
-            label: withCode(`${item.title}（${item.customer_name ?? ''}）`, item.id),
-          }))}
+          optionList={optionsWithCodeOnDuplicate(
+            opportunitiesQuery.data?.items ?? [],
+            (item) => `${item.title}（${item.customer_name ?? ''}）`,
+            (item) => item.id,
+          )}
           filter={optionMatcher}
           loading={opportunitiesQuery.isLoading}
           style={{ width: '100%' }}

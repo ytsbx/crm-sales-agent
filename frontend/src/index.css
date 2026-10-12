@@ -619,9 +619,17 @@ a:not([href]) {
 }
 
 .tab-chip.active {
-  background: var(--crm-surface);
+  /* 选中页签：淡蓝底 + 顶部一条主色线，和未选中的灰白页签拉开差距 */
+  background: #e8f0fc;
+  background: color-mix(in srgb, var(--crm-primary) 9%, #ffffff);
   color: var(--crm-primary);
   font-weight: 600;
+  box-shadow: inset 0 2px 0 var(--crm-primary);
+}
+
+.tab-chip.active .tab-close {
+  color: var(--crm-primary);
+  opacity: 0.65;
 }
 
 .tab-close {
@@ -793,6 +801,52 @@ a:not([href]) {
   font-weight: 400;
 }
 
+/* 「为什么这个按钮点不了」的说明块（用法见 shared/components/BlockedHint.tsx）。
+   主人 2026-10-12 反馈：「点又点不了，又不给提示为什么点不了」。灰按钮旁边
+   必须有这句话，样式只有这一处 —— 页面里不要再手写一份。
+
+   用 warning 令牌而不是 error：这不是出错了，是「还差一步」；
+   用 error 色会让人以为系统坏了。 */
+.blocked-hint {
+  margin-top: 12px;
+  padding: 8px 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-warning-soft);
+  color: var(--crm-warning);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.blocked-hint-lead {
+  font-weight: 600;
+}
+
+.blocked-hint-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+/* 套在「会变灰的按钮」外面的容器（用法见 shared/components/BlockedHint.tsx
+   的 useBlockedNotify）。
+
+   为什么必须有这一层：组件库的禁用按钮用的是**原生 `disabled` 属性**，
+   浏览器对原生禁用控件根本不派发点击事件 —— 光在按钮外面套一层收不到点击。
+   所以禁用态下按钮还要加 `pointerEvents:'none'`（对点击透明），点击的落点
+   才落在这个容器上，容器上的 onClick 才接得住、才弹得出「为什么点不了」。
+   这两件事是配套的，只写一半等于没写（判例见 PriceCenterPage.tsx:880 的注释）。
+
+   光标也放在这里，页面不用自己写：可点态是手型，灰着的时候是禁止符 ——
+   鼠标移上去就能预感到「这里现在按不动」。 */
+.blocked-hint-click {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.blocked-hint-click:has(> .semi-button-disabled) {
+  cursor: not-allowed;
+}
+
 .progress-track {
   height: 8px;
   border-radius: 4px;
@@ -804,36 +858,6 @@ a:not([href]) {
   height: 100%;
   border-radius: 4px;
   background: var(--crm-primary);
-}
-
-/* 登录页 */
-.login-page {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(140deg, #eef2ff 0%, var(--crm-bg) 55%, #eef6ff 100%);
-}
-
-.login-card {
-  width: 380px;
-  background: var(--crm-surface);
-  border-radius: var(--crm-radius);
-  padding: 32px;
-  box-shadow: 0 12px 40px rgba(16, 24, 40, 0.1);
-}
-
-.login-title {
-  font-size: 20px;
-  font-weight: 650;
-  margin-bottom: 6px;
-}
-
-.login-hint {
-  color: var(--crm-text-3);
-  font-size: 12px;
-  margin-bottom: 24px;
-  line-height: 1.7;
 }
 
 /* 表格：统一成设计稿里的轻边框风格 */
@@ -1203,4 +1227,198 @@ table:not(.semi-table) td {
   .notice-panel {
     width: 300px;
   }
+}
+
+/* ---------------------------------------------------------------- 权限选择器
+ *
+ * 主人 2026-10-12：「权限这里太乱了…要找具体的权限要翻半天」。
+ * 三件事靠样式兜住：
+ *  ① **自带滚动**：权限再多也不会把弹窗顶长（说明和按钮永远在视野里）；
+ *  ② **两列网格**：23 个权限从"五行标签"压到"一屏能扫完"；
+ *  ③ **模块名比权限名更显眼**：先看见「报价」，再看见「维护报价」。
+ * 命名沿用项目习惯（`--crm-*` 变量，不写死颜色）。
+ */
+.permission-picker {
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface);
+}
+
+.permission-picker-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--crm-border);
+}
+.permission-picker-bar .semi-input-wrapper { flex: 1; }
+.permission-picker-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--crm-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 固定高度 + 滚动：弹窗高度不再随权限数量变化 */
+.permission-picker-body {
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px 10px 10px;
+}
+
+.permission-picker-empty {
+  padding: 18px 4px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+  text-align: center;
+}
+
+.permission-picker-section + .permission-picker-section { margin-top: 10px; }
+.permission-picker-section-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 4px 0 6px;
+  background: var(--crm-surface);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--crm-text-3);
+  letter-spacing: 0.02em;
+}
+
+.permission-picker-group { margin-bottom: 8px; }
+.permission-picker-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.permission-picker-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text-1);
+}
+.permission-picker-group-count {
+  font-size: 11px;
+  color: var(--crm-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.permission-picker-link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--crm-primary);
+  cursor: pointer;
+}
+.permission-picker-link:hover { text-decoration: underline; }
+
+/* 两列：一屏扫完，不用滚 */
+.permission-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 12px;
+}
+.permission-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 4px;
+  border-radius: var(--crm-radius-sm);
+  cursor: pointer;
+}
+.permission-picker-row:hover { background: var(--crm-surface-low); }
+.permission-picker-name {
+  font-size: 13px;
+  color: var(--crm-text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.permission-picker-code {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--crm-text-3);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------- 权限不足的入口
+ *
+ * 主人 2026-10-12 拍板选 A：菜单入口**留着**，点进去把原因说明白 ——
+ * 隐藏入口会让人分不清"我没这个权限"和"系统没这个功能"。
+ *
+ * 这两个类只负责"看得出来"和"说得清楚"，**不负责拦人**：
+ * 拦截永远在后端（`require_permission`），点得动是刻意的。
+ */
+.nav-link-denied { opacity: 0.55; }
+.nav-link-denied:hover { opacity: 0.8; }
+
+.permission-denied {
+  max-width: 560px;
+  margin: 48px auto;
+  padding: 24px 28px;
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius);
+  background: var(--crm-surface);
+}
+.permission-denied-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--crm-text-1);
+  margin-bottom: 12px;
+}
+.permission-denied-body {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--crm-text-2);
+}
+.permission-denied-hint {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--crm-text-3);
+}
+.permission-denied-actions { display: flex; gap: 10px; }
+
+/* ------------------------------------------------ 「标记已发送」弹窗（2026-10-12）
+ *
+ * 主人反馈原话：「标记已发送这一块，可模糊，对业务流程不熟悉的话都不知道是
+ * 发送给客户还是给自己的 leader」。所以弹窗第一屏先回答"这是哪一份、发给谁"，
+ * 再让用户选渠道和收件人 —— 顺序本身就是在解释业务。
+ */
+.send-context {
+  padding: 10px 12px;
+  border-radius: var(--crm-radius);
+  background: var(--crm-surface-high);
+  display: grid;
+  gap: 4px;
+}
+.send-context-line {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--crm-text-1);
+}
+.send-context-hint {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--crm-text-3);
+}
+.send-field-label {
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--crm-text-2);
+}
+.send-field-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+.send-field-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--crm-danger, #f5222d);
 }

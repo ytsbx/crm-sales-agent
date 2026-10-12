@@ -23,6 +23,14 @@ import {
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
 import { listAuditLogs, type AuditLogRow } from '../../shared/api/analytics'
 import PageHeader from '../../shared/components/PageHeader'
+import PermissionPicker from '../../shared/components/PermissionPicker'
+import {
+  auditActionLabel,
+  auditChangeSummary,
+  auditHiddenFieldCount,
+  auditTypeLabel,
+  ENUM_LABEL,
+} from '../../shared/audit-labels'
 import {
   batchDecideRecycleCandidates,
   decideRecycleCandidate,
@@ -48,7 +56,6 @@ import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/
 import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher } from '../../shared/components/optionMatch'
 
 const TABS = [
   { tab: '用户', itemKey: 'users' },
@@ -682,7 +689,7 @@ export default function SettingsPage() {
       dataIndex: 'parent_id',
       width: 140,
       render: (v: number | null) =>
-        v ? (deptOptions.find((d) => d.value === v)?.label ?? `#${v}`) : '顶级',
+        v ? (deptOptions.find((d) => d.value === v)?.label ?? `部门编号 ${v}`) : '顶级',
     },
     {
       title: '状态',
@@ -930,27 +937,71 @@ export default function SettingsPage() {
                   render: (v: string | null) => v ?? '系统',
                 },
                 {
+                  // 对象：以前这里印的是**数据库表名**（`sku_identity_source #12`），
+                  // 现在翻成中文；编号保留着，查库时还要用（主人 2026-10-12：
+                  // 「审计日志也说一堆不是人话」）
                   title: '对象',
                   width: 200,
                   render: (_: unknown, record: AuditLogRow) =>
                     record.business_type
-                      ? `${record.business_type} #${record.business_id ?? '-'}`
+                      ? `${auditTypeLabel(record.business_type)}${
+                          record.business_id != null ? ` 编号 ${record.business_id}` : ''
+                        }`
                       : '-',
                 },
-                { title: '动作', dataIndex: 'action', width: 130 },
-                { title: '来源', dataIndex: 'source', width: 110 },
                 {
+                  title: '动作',
+                  dataIndex: 'action',
+                  width: 140,
+                  render: (v: string) => auditActionLabel(v),
+                },
+                {
+                  title: '来源',
+                  dataIndex: 'source',
+                  width: 110,
+                  render: (v: string | null) => (v ? (ENUM_LABEL[v] ?? v) : '-'),
+                },
+                {
+                  // 变更内容：以前直接 `JSON.stringify(after_data)` —— 屏幕上是一坨
+                  // `{"quote_no":"Q2026…","status":"draft",…}`。现在翻成人话；
+                  // 翻不出来的字段**不硬凑英文名**，而是给一个"看原始数据"的入口 ——
+                  // 这一页是**合规取证**用的（仅管理员），摘要给人看，原文不能丢。
                   title: '变更内容',
                   render: (_: unknown, record: AuditLogRow) => {
-                    const text = record.after_data
-                      ? JSON.stringify(record.after_data)
-                      : record.before_data
-                        ? JSON.stringify(record.before_data)
-                        : '-'
+                    const summary = auditChangeSummary(record)
+                    const hidden = auditHiddenFieldCount(record)
+                    const raw = record.after_data ?? record.before_data
                     return (
-                      <span style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>
-                        {text.length > 90 ? `${text.slice(0, 90)}…` : text}
-                      </span>
+                      <div style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>
+                        {summary ?? (
+                          <span style={{ color: 'var(--crm-text-3)' }}>
+                            这条记录没有可读的字段变化
+                          </span>
+                        )}
+                        {hidden > 0 && (
+                          <details style={{ marginTop: 2 }}>
+                            <summary
+                              style={{ cursor: 'pointer', color: 'var(--crm-text-3)' }}
+                            >
+                              还有 {hidden} 处技术细节（原始数据）
+                            </summary>
+                            <pre
+                              style={{
+                                maxHeight: 220,
+                                overflow: 'auto',
+                                margin: '4px 0 0',
+                                padding: 8,
+                                background: 'var(--crm-surface-low)',
+                                borderRadius: 'var(--crm-radius-sm)',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-all',
+                              }}
+                            >
+                              {raw ? JSON.stringify(raw, null, 2) : '-'}
+                            </pre>
+                          </details>
+                        )}
+                      </div>
                     )
                   },
                 },
@@ -1271,7 +1322,7 @@ export default function SettingsPage() {
                       dataIndex: 'customer_name',
                       render: (v: string | null, r: RecycleCandidateRow) => (
                         <span>
-                          {v ?? `#${r.customer_id}`}
+                          {v ?? `客户编号 ${r.customer_id}`}
                           <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 6 }}>
                             {r.level ? `${r.level} 级` : ''}
                             {r.rule_days ? ` · 超 ${r.rule_days} 天未跟进` : ''}
@@ -1638,22 +1689,20 @@ export default function SettingsPage() {
             />
           </div>
           <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              权限（已选 {roleForm.permission_codes.length} 项）
-            </div>
-            <Select
-              multiple
-              filter={optionMatcher}
-              style={{ width: '100%' }}
-              placeholder="搜索并选择权限"
-              value={roleForm.permission_codes}
+            <FormLabel style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>权限</FormLabel>
+            {/* 按业务条线分组的多选（主人 2026-10-12：「太乱了…要找具体的权限要翻半天」）。
+                原来是一个 `Select multiple`，业务员那条角色 23 个标签铺满五行、还得点「∨」
+                展开；现在按模块成组、整组可勾、顶部可搜，并且自带滚动不撑长弹窗。 */}
+            <PermissionPicker
               loading={permissionsQuery.isLoading}
-              onChange={(value) =>
-                setRoleForm({ ...roleForm, permission_codes: (value as string[]) ?? [] })
-              }
-              optionList={(permissionsQuery.data ?? []).map((perm) => ({
-                value: perm.code,
-                label: `${perm.name}（${perm.code}）`,
+              value={roleForm.permission_codes}
+              onChange={(codes) => setRoleForm({ ...roleForm, permission_codes: codes })}
+              options={(permissionsQuery.data ?? []).map((perm) => ({
+                code: perm.code,
+                name: perm.name,
+                // `resource` 在接口里可空；空的归到"其他"，**不丢权限**
+                resource: perm.resource ?? 'other',
+                action: perm.action ?? '',
               }))}
             />
           </div>

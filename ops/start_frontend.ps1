@@ -15,7 +15,7 @@ $frontend = Join-Path $root 'frontend'
 $logDir = Join-Path $PSScriptRoot 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
-$port = 5173
+$port = 5274
 
 $busy = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
 if ($busy) {

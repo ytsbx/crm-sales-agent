@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Checkbox, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
   attachCustomerTags,
@@ -9,6 +9,7 @@ import {
   createContact,
   deduplicateContacts,
   deduplicateCustomers,
+  deleteContact,
   detachCustomerTag,
   getCustomer,
   getCustomerMergePreview,
@@ -17,7 +18,9 @@ import {
   mergeCustomers,
   openDuplicateCases,
   releaseCustomerToPool,
+  setPrimaryContact,
   transferCustomer,
+  updateContact,
   updateCustomer,
   type ContactDuplicateMatch,
   type CustomerPayload,
@@ -40,6 +43,7 @@ import Timeline from '../common/Timeline'
 import AttachmentPanel from '../common/AttachmentPanel'
 import DecisionMakerCard from '../common/DecisionMakerCard'
 import FormLabel from '../../shared/components/FormLabel'
+import BlockedHint from '../../shared/components/BlockedHint'
 // 金额一律带**实际币种**（第九批 §9.9）：这几张表原来都写死 `¥`，
 // 同一客户同时有 CNY / USD 订单时，旁边那张表显示的就是错的。
 import { formatMoney } from '../../shared/components/money'
@@ -74,6 +78,8 @@ export default function CustomerDetailPage() {
   const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'overview')
   const [contactModal, setContactModal] = useState(false)
   const [contactForm, setContactForm] = useState<Partial<Contact>>({ name: '', is_primary: false })
+  /** 正在编辑的联系人；null = 新建。标题与提交目标都按它切换。 */
+  const [contactEditing, setContactEditing] = useState<Contact | null>(null)
   // 新建联系人时的查重结果；null = 还没查过
   const [contactDupes, setContactDupes] = useState<ContactDuplicateMatch[] | null>(null)
   const [editModal, setEditModal] = useState(false)
@@ -139,6 +145,47 @@ export default function CustomerDetailPage() {
       setContactDupes(null)
       void queryClient.invalidateQueries({ queryKey: ['contacts', customerId] })
       void queryClient.invalidateQueries({ queryKey: ['customer', customerId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  /**
+   * 改联系人。
+   *
+   * ⚠️ **脱敏字段不提交**：对没有"看完整号码"权限的人，列表里拿到的就是
+   * `138****8000` 这种星号形状（响应上的 `contact_masked`）。以前前端根本没有
+   * 编辑入口，这条路走不到；现在有了，如果不加判断，"只改个职位"就会把星号存回去，
+   * **真实号码永久丢失**。所以这里按 masked 把 mobile/phone/email/wechat 挑掉，
+   * 界面上那几个框也是锁住的。后端另有一道兜底（收到星号形状直接 403 并说明）。
+   */
+  const contactEditMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: Partial<Contact> }) => updateContact(id, payload),
+    onSuccess: () => {
+      Toast.success('联系人已保存')
+      setContactModal(false)
+      void queryClient.invalidateQueries({ queryKey: ['contacts', customerId] })
+      void queryClient.invalidateQueries({ queryKey: ['customer', customerId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const contactDeleteMutation = useMutation({
+    mutationFn: (contactId: number) => deleteContact(contactId),
+    onSuccess: () => {
+      Toast.success('联系人已删除')
+      void queryClient.invalidateQueries({ queryKey: ['contacts', customerId] })
+      void queryClient.invalidateQueries({ queryKey: ['customer', customerId] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const contactPrimaryMutation = useMutation({
+    mutationFn: (contactId: number) => setPrimaryContact(contactId),
+    onSuccess: () => {
+      Toast.success('已设为主联系人')
+      void queryClient.invalidateQueries({ queryKey: ['contacts', customerId] })
+      // 核心决策人卡片也按主联系人/职位排序，一起刷
+      void queryClient.invalidateQueries({ queryKey: ['contacts-decision', customerId] })
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -338,16 +385,72 @@ export default function CustomerDetailPage() {
     return <div className="page-container">客户不存在或无权查看</div>
   }
 
+  const canEditContact = can('customer:update')
   const contactColumns = [
-    { title: '姓名', dataIndex: 'name', width: 120 },
-    { title: '职位', dataIndex: 'title', width: 140, render: (v: string | null) => v ?? '-' },
-    { title: '手机', dataIndex: 'mobile', width: 150, render: (v: string | null) => v ?? '-' },
+    {
+      title: '姓名',
+      dataIndex: 'name',
+      width: 140,
+      render: (v: string, row: Contact) => (
+        <>
+          {v}
+          {/* 主联系人一眼可见：决策人卡片、简称、后续对外沟通都以它为准 */}
+          {row.is_primary && <Tag color="green" size="small" style={{ marginLeft: 6 }}>主</Tag>}
+        </>
+      ),
+    },
+    { title: '职位', dataIndex: 'title', width: 130, render: (v: string | null) => v ?? '-' },
+    // 脱敏时**照原样显示**（星号）并给一句话，别让用户以为库里存的就是星号
+    {
+      title: '手机',
+      dataIndex: 'mobile',
+      width: 150,
+      render: (v: string | null, row: Contact) => (
+        <span title={row.contact_masked ? '你对这条联系人的联系方式没有完整查看权限' : undefined}>
+          {v ?? '-'}
+        </span>
+      ),
+    },
     { title: '邮箱', dataIndex: 'email', render: (v: string | null) => v ?? '-' },
     {
-      title: '主要联系人',
-      dataIndex: 'is_primary',
-      width: 110,
-      render: (v: boolean) => (v ? <Tag color="green">是</Tag> : '-'),
+      title: '操作',
+      width: 170,
+      render: (_: unknown, row: Contact) =>
+        canEditContact ? (
+          <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center' }}>
+            {!row.is_primary && (
+              <a onClick={() => contactPrimaryMutation.mutate(row.id)}>设为主联系人</a>
+            )}
+            <a
+              onClick={() => {
+                setContactEditing(row)
+                // 脱敏时不把星号塞进输入框：那几个框会显示"（无权限查看）"并锁住
+                setContactForm({
+                  name: row.name,
+                  title: row.title ?? '',
+                  department: row.department ?? '',
+                  mobile: row.contact_masked ? '' : (row.mobile ?? ''),
+                  phone: row.contact_masked ? '' : (row.phone ?? ''),
+                  email: row.contact_masked ? '' : (row.email ?? ''),
+                  wechat: row.contact_masked ? '' : (row.wechat ?? ''),
+                  is_primary: row.is_primary,
+                  remark: row.remark ?? '',
+                })
+                setContactDupes(null)
+                setContactModal(true)
+              }}
+            >
+              编辑
+            </a>
+            <Popconfirm
+              title="删除这个联系人？"
+              content="删除后不再出现在列表与决策人卡片里；历史跟进记录会保留。"
+              onConfirm={() => contactDeleteMutation.mutate(row.id)}
+            >
+              <a style={{ color: 'var(--crm-error)' }}>删除</a>
+            </Popconfirm>
+          </span>
+        ) : null,
     },
   ]
 
@@ -561,6 +664,7 @@ export default function CustomerDetailPage() {
                   <Button
                     theme="solid"
                     onClick={() => {
+                      setContactEditing(null)
                       setContactForm({ name: '', is_primary: false })
                       setContactDupes(null)
                       setContactModal(true)
@@ -576,6 +680,9 @@ export default function CustomerDetailPage() {
                   rowKey="id"
                   pagination={false}
                   empty="还没有联系人"
+                  // 行上带出联系人 id：UI 取证脚本要能**精确定位某一行**去点
+                  // 编辑/删除（按"第一条"或按姓名找会误伤别人的数据，实测踩过）
+                  onRow={(row) => ({ 'data-contact-id': String((row as Contact).id) })}
                 />
               </div>
               {/* 核心决策人卡片（设计稿客户详情右栏）：窄屏时整块落到下方 */}
@@ -764,19 +871,37 @@ export default function CustomerDetailPage() {
         </SectionCard>
       )}
 
+      {/* 新建 / 编辑共用一个弹窗：字段完全一样，分成两个弹窗只会让两边慢慢走散 */}
       <Modal
-        title="新建联系人"
+        title={contactEditing ? `编辑联系人${contactEditing.name ? `：${contactEditing.name}` : ''}` : '新建联系人'}
         visible={contactModal}
-        onCancel={() => setContactModal(false)}
+        onCancel={() => {
+          setContactModal(false)
+          setContactEditing(null)
+        }}
         onOk={() => {
           if (!contactForm.name?.trim()) {
             Toast.warning('联系人姓名必填')
             return
           }
-          contactMutation.mutate(contactForm)
+          // 脱敏字段（星号）绝不提交：提交了会把真实号码覆盖成星号串。
+          // 编辑时按 masked 挑掉这几个键；新建时本来就没有脱敏一说。
+          const masked = Boolean(contactEditing?.contact_masked)
+          const payload: Partial<Contact> = masked
+            ? {
+                name: contactForm.name,
+                title: contactForm.title ?? null,
+                department: contactForm.department ?? null,
+                is_primary: contactForm.is_primary,
+                remark: contactForm.remark ?? null,
+              }
+            : contactForm
+          if (contactEditing) contactEditMutation.mutate({ id: contactEditing.id, payload })
+          else contactMutation.mutate(payload)
         }}
-        confirmLoading={contactMutation.isPending}
+        confirmLoading={contactMutation.isPending || contactEditMutation.isPending}
         okText="保存"
+        width={640}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
@@ -796,20 +921,86 @@ export default function CustomerDetailPage() {
               />
             </div>
             <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>部门</div>
+              <Input
+                value={contactForm.department ?? ''}
+                onChange={(value) => setContactForm({ ...contactForm, department: value })}
+                placeholder="采购部"
+              />
+            </div>
+          </div>
+          {/* 联系方式整块：脱敏时**锁住并说明**，而不是显示星号让人以为库里就是星号 */}
+          {contactEditing?.contact_masked && (
+            <BlockedHint reasons={[
+              '你对这条联系人的手机、座机、邮箱、微信号没有完整查看权限（显示为星号），所以这里不能改，也不会把这几个字段提交上去。',
+              '要改联系方式：请让客户负责人本人操作，或请管理员为你开通「客户联系方式完整查看」权限后重试。',
+            ]} action="修改联系方式" />
+          )}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>手机</div>
               <Input
                 value={contactForm.mobile ?? ''}
+                disabled={Boolean(contactEditing?.contact_masked)}
+                placeholder={contactEditing?.contact_masked ? '（无权限查看，不可修改）' : undefined}
                 onChange={(value) => setContactForm({ ...contactForm, mobile: value })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>座机</div>
+              <Input
+                value={contactForm.phone ?? ''}
+                disabled={Boolean(contactEditing?.contact_masked)}
+                placeholder={contactEditing?.contact_masked ? '（无权限查看，不可修改）' : '0571-88888888'}
+                onChange={(value) => setContactForm({ ...contactForm, phone: value })}
+              />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>邮箱</div>
+              <Input
+                value={contactForm.email ?? ''}
+                disabled={Boolean(contactEditing?.contact_masked)}
+                placeholder={contactEditing?.contact_masked ? '（无权限查看，不可修改）' : undefined}
+                onChange={(value) => setContactForm({ ...contactForm, email: value })}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ marginBottom: 4 }}>微信号</div>
+              <Input
+                value={contactForm.wechat ?? ''}
+                disabled={Boolean(contactEditing?.contact_masked)}
+                placeholder={contactEditing?.contact_masked ? '（无权限查看，不可修改）' : undefined}
+                onChange={(value) => setContactForm({ ...contactForm, wechat: value })}
               />
             </div>
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>邮箱</div>
-            <Input
-              value={contactForm.email ?? ''}
-              onChange={(value) => setContactForm({ ...contactForm, email: value })}
+            <div style={{ marginBottom: 4 }}>备注</div>
+            <TextArea
+              rows={2}
+              value={contactForm.remark ?? ''}
+              onChange={(value) => setContactForm({ ...contactForm, remark: value })}
+              placeholder="例如：只有上午在、只认邮件沟通…"
             />
           </div>
+          {/* 主联系人：以前这个勾选框**根本不存在**，表单固定传 false，
+              于是"谁拍板"只能靠职位关键词猜。后端一直支持，这里补上。 */}
+          <div>
+            <Checkbox
+              checked={Boolean(contactForm.is_primary)}
+              onChange={(e) => setContactForm({ ...contactForm, is_primary: Boolean(e.target.checked) })}
+            >
+              设为主联系人
+            </Checkbox>
+            <div className="label-hint" style={{ marginLeft: 0 }}>
+              一个客户只能有一个主联系人，勾上之后原来那位会自动取消；核心决策人卡片会优先显示它。
+            </div>
+          </div>
+          {/* 查重只在**新建**时有意义：编辑自己时查重会把这条本身查出来。
+              所以整块（标题行 + 结果）都跟着 `!contactEditing` 走。 */}
+          {!contactEditing && (
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
               <span style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>疑似重复检查</span>
@@ -848,6 +1039,7 @@ export default function CustomerDetailPage() {
                 </div>
               ))}
           </div>
+          )}
         </div>
       </Modal>
 

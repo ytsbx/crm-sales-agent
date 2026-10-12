@@ -410,11 +410,59 @@ async def _resolve_existing_push(
             _unknown_push_message(
                 order,
                 adapter,
-                f"库里还有一条未了结的请求记录（#{inflight.id}，状态 {inflight.status}）",
+                f"库里还有一条未了结的请求记录（编号 {inflight.id}，状态 {inflight.status}）",
             ),
             api="push_order",
         )
     return None
+
+
+async def ensure_push_confirmed(
+    session: AsyncSession, *, order: SalesOrder, confirm: bool
+) -> None:
+    """推送 ERP/MES 前的**统一确认闸门**（第二轮审查 P2，2026-10-12）。
+
+    为什么必须三个入口共用这一份：推单是**写进外部系统**的动作，配置齐全时
+    真的会在对方系统建单，本系统这边撤回不了。系统里共有三个推单入口：
+
+        POST /orders/{order_id}/sync-erp                （订单详情页的按钮）
+        POST /integrations/erp/orders                   （按 CRM 订单号）
+        POST /integrations/erp/orders/{order_id}/sync   （按订单 id）
+
+    从前只有第一个检查 `confirm`，另两个直接调同一个写服务 —— 任何知道这两个
+    路径的调用方都能绕开确认。现在三个入口都先过这里：文案、错误码（42206）
+    与拒绝行为完全一致，前端也只需要维护一套弹窗文案。
+
+    确认弹窗要能回答"点了会发生什么"，所以 `detail` 写清单号、客户、金额、
+    是否已推过，以及"撤回不了"这件事。
+    """
+    if confirm:
+        return
+    from app.core.confirmation import confirmation_message
+
+    # 目标系统的名字从适配器取（`label`），不写死在文案里 ——
+    # 换一家 ERP 只需实现适配器，这句话自动跟着变。
+    try:
+        target = get_adapter().label
+    except Exception:  # noqa: BLE001 — 取不到名字不该挡住确认这件事
+        target = "ERP/MES"
+    # ⚠️ `SalesOrder` **没有** `customer_name` 列（那是 `serialize_order` 现拼的），
+    # 客户名要自己查一次 —— 实测直接读 `order.customer_name` 会 500。
+    customer = await session.get(Customer, order.customer_id)
+    detail = "；".join(
+        [
+            f"将向 {target} 推送订单 {order.order_no}",
+            f"客户：{customer.name if customer is not None else order.customer_id}",
+            f"金额 ¥{order.total_amount}",
+            "已推送过" if order.erp_order_id else "尚未推送过",
+            "配置齐全时会真的在对方系统建单，本系统撤回不了",
+        ]
+    )
+    raise AppError(
+        ErrorCode.CONFIRM_REQUIRED,
+        confirmation_message(action="推送 ERP/MES", detail=detail),
+        422,
+    )
 
 
 async def push_order(
@@ -438,6 +486,24 @@ async def push_order(
     if resolved is not None:
         await session.commit()
         return resolved
+
+    # ---- 已取消的订单不能再向外部建单（第二轮审查 P1，2026-10-12）----
+    #
+    # 必须排在 `_resolve_existing_push` **之后**：那一步是"本地底账已经有答案"
+    # 的只读回放（已推过 / 用映射补主表 / 上次结果未知），取消订单仍然可以看、
+    # 可以对齐，只是不许**再发起一次新的外部建单**。
+    #
+    # 位置也不能被换到上面去：`_lock_order` 带 `populate_existing`，这里的
+    # `order.status` 才是锁内的事实；端点拿到的是锁外的对象（实测：替身适配器
+    # 里 cancelled 订单照样进了推单调用、返回 pushed=True 并登记了外部单号）。
+    if order.status == "cancelled":
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"订单 {order.order_no} 已取消，不能再向 {adapter.label} 推送建单。"
+            "如果对方系统里确实已经存在这张单，请用「对账/核定」入口登记外部单号，"
+            "而不是重新推送。",
+            400,
+        )
 
     payload = await build_order_payload(session, order)
     log_id = await _persist_push_request(adapter=adapter, order=order, payload=payload)
@@ -699,6 +765,30 @@ async def refresh_status(
 
     log.status = LOG_STATUS_SUCCESS
     log.response_data = {"processing_status": "fetched", "raw_status": result.get("raw_status")}
+
+    # ---- 外部结果到手后，写状态之前必须**重新加锁 + 强制刷新**（第二轮审查 P1，2026-10-12）----
+    #
+    # 上面那次读发生在调外部系统**之前**。对方响应慢的这段时间里，本系统完全可能
+    # 已经取消了这张订单；沿用旧对象去 `change_status`，生命周期判据读的是旧状态
+    # （`order.status == "cancelled"` 那一关根本看不到取消），于是"已取消"被写回
+    # "已发货"，而应收计划还停在取消状态 —— 一张单两个事实。
+    #
+    # `_lock_order` 会 `SELECT ... FOR UPDATE` 并 `populate_existing`，
+    # 返回的就是**锁内的最新行**：这里改用刷新后的对象做判断与写入。
+    # 行已经不在（被清掉）时按"状态未变更"处理，原因写进日志与返回值，
+    # 拉取类接口不因此 500。
+    refreshed = await _lock_order(session, order.id)
+    if refreshed is None:
+        log.error_message = "拉取结果到达时订单已不存在，未写状态"
+        return {
+            "status": None,
+            "status_label": None,
+            "changed": False,
+            "blocked_reason": "拉取结果到达时订单已不存在，未写状态",
+            "raw_status": result.get("raw_status"),
+            "shipped_at": result.get("shipped_at"),
+        }
+    order = refreshed
 
     new_status = result.get("status")
     changed = False
@@ -1050,6 +1140,33 @@ async def apply_status_webhook(
         }
 
     log.business_id = order.id
+    # 写状态之前**重新加锁 + 强制刷新**（第二轮审查 P1，2026-10-12）：
+    # 回调处理器是在自己这次请求里读到的订单，而"读"到"写"之间别的会话
+    # 完全可能刚把它取消（用户点了取消并提交）。用旧对象判断，生命周期闸门
+    # 看不到取消，`cancelled` 会被回写成履约状态。与手动刷新那条路径**共用**
+    # `_lock_order` 这一个口径，避免两处各写一套、迟早漂移。
+    refreshed = await _lock_order(session, order.id)
+    if refreshed is None:
+        # 行没了（被删）：不强改状态，如实留痕
+        log.status = LOG_STATUS_UNMATCHED
+        log.error_message = "事件到达时订单已不存在，未写履约状态"
+        log.response_data = {
+            "event_key": event_key,
+            "processing_status": EVENT_UNMATCHED,
+            "matched": False,
+            "changed": False,
+            "order_no": order_no,
+            "erp_order_id": erp_order_id,
+        }
+        await session.commit()
+        return {
+            "matched": False,
+            "changed": False,
+            "unmatched": True,
+            "event_key": event_key,
+            "message": "事件到达时订单已不存在，未写履约状态",
+        }
+    order = refreshed
     new_status = adapter.STATUS_MAP.get(raw_status) if hasattr(adapter, "STATUS_MAP") else None
     changed = False
     if new_status and new_status in VALID_STATUS and new_status != order.status:

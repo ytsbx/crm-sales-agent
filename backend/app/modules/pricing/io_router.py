@@ -206,7 +206,7 @@ async def import_price_rules(
                     if conflict is not None:
                         # 业务性拒绝不是异常：直接记行失败，不要走 savepoint 的异常通道
                         raise RowRejected(
-                            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-"
+                            f"与现有规则编号 {conflict.id}（数量 {conflict.min_qty}-"
                             f"{conflict.max_qty or '∞'}、等级 {conflict.customer_level or '通用'}）"
                             "重叠，请先处理"
                         )
@@ -408,7 +408,7 @@ async def import_customer_prices(
                     )
                     if conflict is not None:
                         raise RowRejected(
-                            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-"
+                            f"该客户此 SKU 已有规则编号 {conflict.id}（数量 {conflict.min_qty}-"
                             f"{conflict.max_qty or '∞'}）重叠，请先处理"
                         )
                 rule = CustomerPriceRule(
@@ -589,13 +589,13 @@ async def import_costs(
                     if changed:
                         report.updated_row(
                             index, code, id=existing.id, changed=True,
-                            reason=f"已更新同日成本版本 #{existing.id}",
+                            reason=f"已更新同日成本版本编号 {existing.id}",
                             baseline=baseline,
                         )
                     else:
                         report.skipped_row(
                             index, code,
-                            f"同日成本版本 #{existing.id} 与本次内容一致，未改动",
+                            f"同日成本版本编号 {existing.id} 与本次内容一致，未改动",
                         )
                     continue
 

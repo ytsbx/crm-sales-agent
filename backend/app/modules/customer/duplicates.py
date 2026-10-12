@@ -305,7 +305,7 @@ async def resolve_case(
                     actor,
                     customer,
                     owner_id,
-                    f"撞单裁定 #{case.id}（{DECISION_LABEL[decision]}）",
+                    f"撞单裁定编号 {case.id}（{DECISION_LABEL[decision]}）",
                 )
             elif customer.pool_status != "private":
                 # 归属本来就是这个人，但客户还在公海状态：把状态掰回来

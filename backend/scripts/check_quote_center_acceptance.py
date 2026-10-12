@@ -22,14 +22,14 @@ CHKQC SKU，并在清理时对本脚本自建的 SKU 真删价格规则。
 import json
 import os
 
-# 外币夹具：造美元报价前要先把业务口径放开，跑完收回（见 scripts/_fx_scope.py）
-from _fx_scope import open_export, restore_domestic
+# 外币夹具：**直接造历史数据**（不再放开口径 —— 币种是固定白名单，改配置也不放行）。
+# 判据都是"历史外币数据的读取路径要有定义行为"，见各节里的说明。
 import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
-from _test_support import require_api_base, require_isolated_db
+from _test_support import confirm_freight_before_submit, require_api_base, require_isolated_db
 
 require_isolated_db()
 
@@ -146,6 +146,89 @@ def run_db(sql_text, params=None):
 def login(username, password):
     _, res = call('POST', '/auth/login', body={'username': username, 'password': password})
     return res['data']['access_token']
+
+
+def seed_foreign_quote_item(customer_id: int, opportunity_id: int, sku_id: int,
+                            currency: str, quoted_price, owner_id: int):
+    """同步包装：本套件的 `main()` 是同步的，不能 `await`。
+
+    ⚠️ 必须**用完 `engine.dispose()`**：连接池绑在创建它的那个事件循环上，
+    而这个套件多次开新循环（`run_db` / `read_margin_ctx` 都这么干），
+    不 dispose 的话下一次调用就报 "attached to a different loop"
+    （我第一版漏了这句，A16 已经 PASS 了却在 `read_margin_ctx` 上炸了）。
+    """
+    import asyncio
+
+    from app.core.database import engine
+
+    async def go():
+        try:
+            return await _seed_foreign_quote_item(
+                customer_id, opportunity_id, sku_id, currency, quoted_price, owner_id
+            )
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(go())
+
+
+async def _seed_foreign_quote_item(customer_id: int, opportunity_id: int, sku_id: int,
+                                   currency: str, quoted_price, owner_id: int):
+    """造一条**历史**外币报价明细，返回 (报价 id, 版本 id, 保护价快照)。
+
+    ⚠️ 为什么不再走接口：币种已经是固定白名单（第四批复审 + 主人 2026-10-12 口径），
+    `POST /quotes` 传 USD 会被拒 40002 —— 从前那句"先把业务口径放开"已经不管用了。
+
+    但这条用例**要守的判据仍然成立**：外币单的人民币底价快照必须与人民币单一致
+    （`build_item_snapshot` 存的是 `minimum_price_cny`；拿折算后的美元值落快照，
+    审批会把 3.6 美元的保护价当成 3.6 人民币去比）。历史外币数据只可能来自
+    "口径曾经放开时建的"或 ERP 同步进来的，**读取路径要有定义行为**，
+    所以这里改成直接造数据 + **调用产品函数**（不是自己塞一个值）。
+    """
+    import uuid as _uuid
+    from decimal import Decimal as _Decimal
+
+    from app.core.database import SessionLocal
+    from app.modules.quote import service as quote_service
+    from app.modules.quote.model import Quote, QuoteVersion
+
+    async with SessionLocal() as session:
+        quote = Quote(
+            quote_no=f'{PREFIX}USD{_uuid.uuid4().hex[:6]}',
+            customer_id=customer_id,
+            opportunity_id=opportunity_id,
+            owner_id=owner_id,
+            status='draft',
+        )
+        session.add(quote)
+        await session.flush()
+        version = QuoteVersion(
+            quote_id=quote.id,
+            version_no=1,
+            currency=currency,
+            subtotal_amount=_Decimal('0'),
+            total_amount=_Decimal('0'),
+            approval_status='not_submitted',
+            created_at=datetime.now(UTC),
+        )
+        session.add(version)
+        await session.flush()
+        # 走产品函数算快照（外币单要按人民币口径存，见它的注释）
+        item = await quote_service.build_item_snapshot(
+            session,
+            version=version,
+            sku_id=sku_id,
+            quantity=_Decimal('1'),
+            customer_id=customer_id,
+            quoted_price=_Decimal(str(quoted_price)),
+            logistics_cost=None,
+            opportunity_item_id=None,
+            spec_snapshot=None,
+            remark=None,
+            role_codes=['salesperson'],
+        )
+        await session.commit()
+        return int(quote.id), int(version.id), item.minimum_price_snapshot
 
 
 def record(case, title, passed, detail=''):
@@ -610,6 +693,7 @@ def main():
         # 原来写的 `charge_name` 不在 schema 里，会被静默忽略（说明一直是空的）。
         call('POST', f'/quote-versions/{vid10}/charges', token=zhangsan,
              body={'description': '整单优惠', 'amount': 700, 'is_discount': True})
+        confirm_freight_before_submit(call, zhangsan, vid10)
         _, res = call('POST', f'/quote-versions/{vid10}/submit-approval', token=zhangsan, body={})
         whole_flagged = bool((res.get('data') or {}).get('approval_required'))
         _, res = call('POST', '/opportunities', token=zhangsan, body={
@@ -623,6 +707,7 @@ def main():
         created_quotes.append(res2['data']['quote_id'])
         call('POST', f"/quote-versions/{res2['data']['version_id']}/items/batch", token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 10, 'quoted_price': 85}])
+        confirm_freight_before_submit(call, zhangsan, res2['data']['version_id'])
         _, res3 = call('POST', f"/quote-versions/{res2['data']['version_id']}/submit-approval", token=zhangsan, body={})
         no_discount_pass = not bool((res3.get('data') or {}).get('approval_required'))
         record('A10', '无商机被拒(D8)；整单优惠触发审批，无优惠放行',
@@ -672,6 +757,7 @@ def main():
         created_quotes.append(qid17)
         call('POST', f'/quote-versions/{vid17}/items/batch', token=zhangsan,
              body=[{'sku_id': sku_id, 'quantity': 1, 'quoted_price': 85}])
+        confirm_freight_before_submit(call, zhangsan, vid17)
         call('POST', f'/quote-versions/{vid17}/submit-approval', token=zhangsan, body={})
         _, res = call('POST', f'/quote-versions/{vid17}/mark-sent', token=zhangsan, body={})
         record('A17', '未确认主数据：草稿可建，正式发送被拦',
@@ -696,6 +782,7 @@ def main():
         # 补一条已确认的运费让流程能走完。
         call('POST', f'/quote-versions/{vid13}/charges', token=zhangsan,
              body={'charge_type': 'logistics', 'description': '验收运费', 'amount': 300})
+        confirm_freight_before_submit(call, zhangsan, vid13)
         call('POST', f'/quote-versions/{vid13}/submit-approval', token=zhangsan, body={})
         _, sent_res = call('POST', f'/quote-versions/{vid13}/mark-sent', token=zhangsan, body={})
         if sent_res.get('code') != 0:
@@ -757,6 +844,9 @@ def main():
             item15 = vres['data']['items'][0]
             call('PATCH', f"/quote-items/{item15['id']}", token=zhangsan,
                  body={'quoted_price': round(base_cost_15 * 0.5, 2)})
+            # 提交前先确认运费（闸门已前置）。**放在两次提交之前**：
+            # A15 是"先硬拒、再关掉硬底重提"，两次都要过运费那道闸。
+            confirm_freight_before_submit(call, zhangsan, vid15)
             _, res = call('POST', f'/quote-versions/{vid15}/submit-approval', token=zhangsan, body={})
             hard_rejected = res['code'] == 42205 and '绝对底价' in res['message']
             # 关闭硬底后同一版本可正常提交（证明拦截来自硬底本身）
@@ -788,25 +878,33 @@ def main():
                       body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
         floor_cny_quote = res['data'].get('minimum_price_snapshot')
 
-        # 美元单：要先把业务口径放开（业务方也是先改口径、再报外币价）。
-        # `finally` 一定要收回：收不回去，后面所有套件都会以为可以写外币。
-        open_export(admin)
+        # 美元单：币种已是固定白名单，**接口建不出来了**（第四批复审返修）。
+        # 改成直接造历史数据 + 走产品函数算快照，判据不变：
+        # 外币单的人民币底价快照必须与人民币单一致（按人民币存）。
+        print('== A16 外币单的保护价快照与人民币单一致 ==')
+        _, res = call('POST', '/quotes', token=zhangsan, body={
+            'customer_id': customers['A'], 'opportunity_id': opp_a05, 'currency': 'USD',
+        })
+        record('A16-前置', '走接口建外币报价已被白名单拒绝（40002）',
+               res.get('code') == 40002, f"code={res.get('code')} {str(res.get('message'))[:40]}")
+
         try:
-            _, res = call('POST', '/quotes', token=zhangsan, body={
-                'customer_id': customers['A'], 'opportunity_id': opp_a05,
-                'currency': 'USD', 'exchange_rate': 7,
-            })
-            usd_quote, usd_version = res['data']['quote_id'], res['data']['version_id']
+            usd_quote, usd_version, floor_usd_quote = seed_foreign_quote_item(
+                customers['A'], opp_a05, sku_id, 'USD', 20, 1,
+            )
             created_quotes.append(usd_quote)
-            _, res = call('POST', f'/quote-versions/{usd_version}/items', token=zhangsan,
-                          body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
-            floor_usd_quote = res['data'].get('minimum_price_snapshot')
-            record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
-                   floor_cny_quote is not None and floor_cny_quote == floor_usd_quote,
-                   f"人民币单={floor_cny_quote} 美元单={floor_usd_quote}"
-                   f"（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）")
-        finally:
-            restore_domestic(admin)
+        except Exception as exc:  # noqa: BLE001 —— 夹具失败要说出来，别静默跳过
+            record('A16', '外币单的保护价快照与人民币单一致（按人民币存）', False,
+                   f'造历史外币明细失败：{type(exc).__name__}: {str(exc)[:120]}')
+            floor_usd_quote = None
+        # ⚠️ 比较前对齐到 4 位小数：接口路径返回的是 quantize 过的 `52.9412`，
+        # 而 `build_item_snapshot` 直接算出来的是 `52.94117647058823` ——
+        # 两者**本来就是同一个数**，只是精度不同（我第一版直接比，假红了一次）。
+        _q = lambda v: None if v is None else round(float(v), 4)  # noqa: E731
+        record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
+               floor_cny_quote is not None and _q(floor_cny_quote) == _q(floor_usd_quote),
+               f'人民币单={floor_cny_quote} 外币单={floor_usd_quote}'
+               f'（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）')
 
         # ---------------- A18 长客户名仍能建报价（§8.7 快照列长度）----------------
         # 快照列曾经写死 `varchar(128)`，而客户名允许 200 —— 129 字的名字一建报价

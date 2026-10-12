@@ -117,6 +117,11 @@ async def _create_plan(session, order_id, payload, request, user):
     # 刚插入的行只有本事务看得见（别的会话连行都选不到），不需要再取节点锁。
     await svc.recalc_plan(session, plan)
     await session.flush()
+    # 多了一期应收 → "收齐"这个前提变了，跟单节点要跟着重算
+    # （第三批审查 P1：已收齐的订单再加一期，收款节点必须退回未完成）
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(session, order_id, operator_id=user.id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -164,6 +169,13 @@ async def generate_receivables(
 
     data = payload.model_dump()
     request_key = idempotency.request_key_from(request, data.pop("request_key", None))
+    # ---- 幂等指纹必须含**路径里的 order_id**（第二轮审查 P1，2026-10-12）----
+    #
+    # 原来指纹只算 body（比例、期数、日期），而 order_id 在**路径**上。于是
+    # "订单 1 用某把键生成过"之后，对订单 2 用同一把键、同样参数提交时指纹完全
+    # 相同 → 直接回放订单 1 的那份结果：**订单 2 一个计划都没生成，却提示成功**。
+    # 把 order_id 并进指纹后，同键换订单会走"同键不同内容"的 409 冲突，说得清楚。
+    fingerprint = {**data, "order_id": order_id}
     reservation = None
     if request_key:
         reservation = await idempotency.reserve(
@@ -171,10 +183,16 @@ async def generate_receivables(
             user_id=user.id,
             action="receivable:generate",
             request_key=request_key,
-            payload=data,
+            payload=fingerprint,
             result_type="receivable_plan",
         )
         if reservation.should_replay:
+            # 回放前还要**复验那份结果确实是这张订单的**（存在性 + 归属）：
+            # 加指纹之前的旧记录、以及"结果 id 指向别的单"这类异常，都不能当成功返回。
+            # 数据范围由上面 `assert_order_visible` 对本次 order_id 的校验兜住。
+            await _assert_replay_belongs_to_order(
+                session, order_id=order_id, plan_id=reservation.replay_id
+            )
             return ok(
                 reservation.replay_payload,
                 "这次生成此前已成功过，已返回原计划（没有重复生成）",
@@ -189,6 +207,26 @@ async def generate_receivables(
         if reservation is not None:
             await idempotency.release(session, reservation)
         raise
+
+
+async def _assert_replay_belongs_to_order(
+    session: AsyncSession, *, order_id: int, plan_id: int | None
+) -> None:
+    """回放幂等结果前的复验：那份结果必须**存在**且**属于本次请求的订单**。
+
+    为什么不能只靠指纹：指纹是"这次提交"与"上次提交"比对的依据，而它说明不了
+    *上次那份结果到底建在哪张单上*。加 order_id 进指纹之前留下的记录、以及
+    `result_id` 指错对象这类脏数据，都只能在这里拦。比对不上就明确报冲突，
+    绝不把它当成"你已经成功过了"返回（那是让用户以为订单 2 有应收、实际没有）。
+    """
+    plan = await session.get(ReceivablePlan, plan_id) if plan_id else None
+    if plan is None or plan.order_id != order_id:
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "这把请求键此前的结果不属于本订单（可能是同一把键用在了别的订单上），"
+            "已拒绝回放。请刷新页面重新打开表单后再提交",
+            409,
+        )
 
 
 async def _generate_receivables(session, order, order_id, payload, request, user, reservation):
@@ -277,6 +315,10 @@ async def _generate_receivables(session, order, order_id, payload, request, user
         session.add(plan)
         await session.flush()
         created.append(plan)
+    # 新增整套应收 → 跟单节点按新的事实重算（同上，第三批审查 P1）
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(session, order_id, operator_id=user.id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -310,6 +352,11 @@ async def update_receivable(
 
     取节点时必须带锁（`for_update=True`）：改金额要重算节点状态，重算不在锁内
     就是"读旧汇总、写覆盖"——与并发确认撞上时，后写的那个把 paid 改回 partial。
+
+    ⚠️ 改完还要**同步跟单节点**（第三批审查 P1，2026-10-12）：把应收从 100 改成 200
+    之后，已确认回款仍是 100，应收状态正确变 `partial`，而「收款」节点却继续显示
+    已完成 —— 一份订单两个说法。同步与这次改动在同一把订单锁、同一个事务内
+    （`get_visible_plan(for_update=True)` 内部已按"订单 → 节点"锁序取锁）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     before = await svc.serialize_plan(session, plan)
@@ -324,6 +371,11 @@ async def update_receivable(
         plan.remark = changes["remark"]
     await svc.recalc_plan(session, plan)
     await session.flush()
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(
+        session, plan.order_id, operator_id=user.id
+    )
     await write_audit(
         session,
         operator_id=user.id,
@@ -351,6 +403,9 @@ async def delete_receivable(
     正好在给这个节点登记回款，两边各自读到"没有/节点还在"，结果回款挂在一个
     已被删掉的节点上（孤儿账）。锁上之后两种顺序都安全：先登记的先插、删除方
     看得到；先删的删完，登记方拿到锁后重查节点已不存在 → 404。
+
+    删掉一个节点会让"应收合计"变小（删到"已确认收款 ≥ 应收"时「收款」节点该完成），
+    所以删完要在**同一个事务**里同步跟单节点（第三批审查 P1，2026-10-12）。
     """
     plan = await svc.get_visible_plan(session, user, plan_id, for_update=True)
     paid = (
@@ -360,8 +415,14 @@ async def delete_receivable(
     ).first()
     if paid:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该应收节点已有回款记录，不能删除")
+    order_id = plan.order_id
     before = await svc.serialize_plan(session, plan)
     await session.delete(plan)
+    # 先 flush：同步要算的"应收合计"必须已经不含这一行
+    await session.flush()
+    from app.modules.order import milestones as milestones_svc
+
+    await milestones_svc.sync_payment_milestones(session, order_id, operator_id=user.id)
     await write_audit(
         session,
         operator_id=user.id,
@@ -657,6 +718,11 @@ async def update_payment(
     )
     before = await svc.serialize_payment(session, record)
     changes = payload.model_dump(exclude_unset=True)
+    # 实收日期不能在未来（第四批审查 P1）：放在赋值之前，被拒时不留半改状态。
+    # 这里判的是"改完之后的日期"—— 传了就用新值，没传就维持原值（原值也可能
+    # 是修复前登记的异常未来日期，顺手也拦住）。
+    if "received_date" in changes:
+        svc.assert_received_date_not_future(changes["received_date"], action="修改回款")
     if "received_amount" in changes:
         record.received_amount = Decimal(str(changes["received_amount"]))
     if "received_date" in changes:
@@ -751,6 +817,8 @@ async def create_payment(
         # 订单/节点已取消就不该再收钱（C5-01）：从前这里没有生命周期校验，
         # 实测订单与节点都已取消仍能登记回款 → 200 落库。
         await svc.assert_plan_accepts_payment(session, plan)
+        # 实收日期不能在未来（第四批审查 P1）：放在建记录之前，被拒时不留半改状态
+        svc.assert_received_date_not_future(payload.received_date)
         record = PaymentRecord(
             receivable_plan_id=plan.id,
             order_id=plan.order_id,
@@ -830,6 +898,9 @@ async def confirm_payment(
             await svc.lock_plan(session, record.receivable_plan_id),
             action="确认回款",
         )
+    # 实收日期不能在未来（第四批审查 P1）：**锁内**再查一次，拦住修复前登记的
+    # 存量异常记录 —— 只在登记处加校验挡不住它们。放在改状态之前。
+    svc.assert_received_date_not_future(record.received_date, action="确认回款")
     record.status = "confirmed"
     record.confirmed_by = user.id
     record.confirmed_at = datetime.now(UTC)
@@ -850,7 +921,7 @@ async def confirm_payment(
         await record_and_notify(
             session, customer_id=order.customer_id, operator_id=user.id, owner_id=order.owner_id,
             title="财务确认回款",
-            content=f"订单 {order.order_no} 的回款 #{record.id} 已由财务确认，"
+            content=f"订单 {order.order_no} 的回款编号 {record.id} 已由财务确认，"
                     f"收款日期 {record.received_date}；金额与凭证请在原单查看",
             business_type="payment", business_id=record.id, order_id=order.id,
             event_key=f"payment:confirm:{record.id}",

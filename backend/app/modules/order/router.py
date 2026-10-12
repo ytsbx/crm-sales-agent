@@ -405,12 +405,36 @@ async def list_milestones(
     user: CurrentUser = Depends(require_permission("order:view")),
     session: AsyncSession = Depends(get_db),
 ):
-    """跟单里程碑（领导模块⑤）：首次访问建立六个空计划节点；计划必须经责任人确认。"""
-    order = await svc.get_visible_order(session, user, order_id)
+    """跟单里程碑（领导模块⑤）：首次访问建立六个空计划节点；计划必须经责任人确认。
+
+    ⚠️ 建完节点要**立刻按财务事实同步一次**（第三批审查 P1，2026-10-12）：
+    先确认回款、后首次打开这一页时，节点是这次才建出来的，而回款确认那一刻
+    还没有节点可同步 —— 不在这里补一次，两个收款节点会永远空着。
+
+    ⚠️ **取订单必须带锁**（第三批复审遗留 P1，2026-10-12 真库复现）：
+    这个 GET 会**写库**（建节点 + 按财务事实同步），而它读的"应收合计 / 已确认收款"
+    是财务那边随时会改的事实。不加锁就是典型的"读旧汇总、写覆盖"：
+
+        T1 页面 GET   : 读订单(不加锁) → 建节点 → 汇总 = 应收100/已收100
+        T2 财务改应收 : 取订单锁 → 应收改 200 → 节点转 partial → 提交
+        T1 页面 GET   : 拿旧汇总判定"已收齐" → 把「收款」节点写成完成 → 提交
+        终态：应收 200、已收 100，**收款节点却是完成** —— 钱没到齐却说收齐了
+
+    最后一句尤其危险：订单页会显示"款已收齐"，看的人据此**不再催款**。
+    财务那条路（`get_visible_plan(for_update=True)`）本来就按"订单 → 节点"取锁，
+    所以 GET 只要取同一把订单锁就能排进同一条队列；**锁序也一致**（都是先订单）。
+    复现与修复的验证：`scripts/check_milestone_lock_race.py`（真库两会话）。
+    """
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     rows = await milestones_svc.ensure_initialized(
         session, order.id, order.delivery_date, created_by=user.id
     )
+    await milestones_svc.sync_payment_milestones(
+        session, order.id, operator_id=user.id
+    )
     await session.commit()  # 初始化行要落库，否则下次访问会重复初始化
+    # 说明：同步改的就是上面这批行对象（会话是 expire_on_commit=False，
+    # 提交后属性仍在内存里，值与库一致），所以下面直接序列化它们，不用再查一遍。
     today = today_business()
     items = [
         {
@@ -675,7 +699,7 @@ async def confirm_schedule_change(
     await followup_service.record_and_notify(
         session, customer_id=order.customer_id, operator_id=user.id, owner_id=order.owner_id,
         title="确认交期变更",
-        content=f"订单 {order.order_no} 交期变更 #{row.id} 已确认："
+        content=f"订单 {order.order_no} 交期变更编号 {row.id} 已确认："
                 f"客户要求日期 {applied.get('old_delivery_date') or '未设置'} → {row.new_delivery_date}"
                 f"；类型：{'到货日' if order.delivery_kind == 'arrival' else '发货日'}"
                 f"；运输 {order.transit_days} 天；计划发货日 {applied.get('new_shipment_date')}"
@@ -966,34 +990,10 @@ async def sync_erp(
     所以先让用户核对订单号、客户与金额。
     """
     order = await svc.get_visible_order(session, user, order_id)
-    if not confirm:
-        from app.core.confirmation import confirmation_message
-
-        from app.modules.erp.adapter import get_adapter
-
-        # 目标系统的名字从适配器取（`label`），不写死在文案里 ——
-        # 换一家 ERP 只需实现适配器，这句话自动跟着变。
-        try:
-            target = get_adapter().label
-        except Exception:  # noqa: BLE001 — 取不到名字不该挡住确认这件事
-            target = "ERP/MES"
-        # ⚠️ `SalesOrder` **没有** `customer_name` 列（那是 `serialize_order` 现拼的），
-        # 客户名要自己查一次 —— 实测直接读 `order.customer_name` 会 500。
-        customer = await session.get(Customer, order.customer_id)
-        detail = "；".join(
-            [
-                f"将向 {target} 推送订单 {order.order_no}",
-                f"客户：{customer.name if customer is not None else order.customer_id}",
-                f"金额 ¥{order.total_amount}",
-                "已推送过" if order.erp_order_id else "尚未推送过",
-                "配置齐全时会真的在对方系统建单，本系统撤回不了",
-            ]
-        )
-        raise AppError(
-            ErrorCode.CONFIRM_REQUIRED,
-            confirmation_message(action="推送 ERP/MES", detail=detail),
-            422,
-        )
+    # 确认判据与文案**三个推单入口共用一份**（第二轮审查 P2，2026-10-12）：
+    # 这里原来是就地写的一段，另两个入口（`/integrations/erp/orders` 与其 sync）
+    # 完全没检查，知道路径就能绕过确认直接写进外部系统。
+    await erp_service.ensure_push_confirmed(session, order=order, confirm=confirm)
     try:
         result = await erp_service.push_order(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:
@@ -1019,8 +1019,26 @@ async def repurchase(
     user: CurrentUser = Depends(require_permission("opportunity:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    """复购：以老订单的明细为基础，直接开一个新商机（不重建客户）。"""
+    """复购：以老订单的明细为基础，直接开一个新商机（不重建客户）。
+
+    ⚠️ 开商机之前先验一遍明细里的 SKU 还能不能用（第三批审查 P2，2026-10-12）：
+    这条路径原来直接插需求行，停用/删除的 SKU 照样被带进新商机（实测可用性检查
+    调用次数为 0），要到核价/报价才被拦住。放在**创建商机之前**，失败就整次不写。
+    """
     order = await svc.get_visible_order(session, user, order_id)
+    order_items = list(
+        (
+            await session.execute(
+                select(SalesOrderItem).where(SalesOrderItem.order_id == order.id)
+            )
+        ).scalars().all()
+    )
+    from app.modules.product.service import ensure_skus_for_new_business
+
+    # 定制件（无 SKU）本来就会跳过，这里只把"有 SKU 的行"送进判据
+    await ensure_skus_for_new_business(
+        session, [item.sku_id for item in order_items if item.sku_id is not None]
+    )
     stage = await get_first_stage(session)
     opportunity = Opportunity(
         customer_id=order.customer_id,
@@ -1043,11 +1061,7 @@ async def repurchase(
             entered_at=datetime.now(UTC),
         )
     )
-    items = (
-        await session.execute(
-            select(SalesOrderItem).where(SalesOrderItem.order_id == order.id)
-        )
-    ).scalars().all()
+    items = order_items  # 上面已经查过并验过可用性，不再查第二遍
     copied_items = 0
     skipped_custom = 0
     for item in items:

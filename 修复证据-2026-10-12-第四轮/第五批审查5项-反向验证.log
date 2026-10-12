@@ -1,0 +1,17 @@
+=== 反向验证（撤掉修复 → 对应断言必须变红）===
+① 撤掉期间锁（顺带撤掉先锁再查的顺序） → exit=1
+② 撤掉一致快照（端点改回请求会话）      → exit=1
+③ 撤掉体积精度（换回提前舍入）          → exit=1
+④ 撤掉任务版本校验                      → exit=1
+⑤ 费率专属优先（P2-5）单独验：同承运商专属压制通用 = True
+
+还原后四个文件与备份 SHA256 逐字节一致：
+  ✅ app/modules/analytics/target_actuals.py
+  ✅ app/modules/analytics/router.py
+  ✅ app/modules/pricing/logistics.py
+  ✅ app/modules/task/router.py
+
+=== 写这个脚本时踩的坑（都记在代码注释里）===
+· 手写 INSERT 一路撞非空/列名（opportunities.stage_id、sales_targets.sales_target）
+· 清理另起 asyncio.run → attached to a different loop
+· 第一版把 SET TRANSACTION 设在请求会话上 → 接口 500（依赖注入早就查过库了）

@@ -49,7 +49,7 @@ async def main():
             s.add(inquiry); await s.flush(); iid=inquiry.id
             quote=Quote(quote_no=marker,customer_id=customer.id,opportunity_id=opp.id,owner_id=uid,status='draft',valid_until=(datetime.now(UTC)+timedelta(days=7)).date())
             s.add(quote); await s.flush(); qids.append(quote.id); qid=quote.id
-            version=QuoteVersion(quote_id=qid,version_no=1,approval_status='not_submitted',created_at=datetime.now(UTC),total_amount=300)
+            version=QuoteVersion(quote_id=qid,version_no=1,approval_status='not_submitted',created_at=datetime.now(UTC),subtotal_amount=300,total_amount=300)
             s.add(version); await s.flush(); vid=version.id; quote.current_version_id=vid
             # 运费分离（2026-10-09）：正式发送前必须已确认运费。本套件验的是订单草稿，
             # 不是运费 —— 补一条**已确认**的运费让流程能走到它要验的那一步。

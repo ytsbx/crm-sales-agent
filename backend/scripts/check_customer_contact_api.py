@@ -1181,6 +1181,147 @@ async def main():
     check_true('客户归属未被改动', res['data']['customer_id'] == zs_customer_id,
                str(res['data']['customer_id']))
 
+    print()
+    print('=== 15. 联系人改/删/设主 + 脱敏值不许回写（2026-10-12 第四轮）===')
+    # 起因：客户详情页以前**只有**新建联系人的入口 —— 后端早就支持
+    # PATCH/DELETE/set-primary 与 部门/座机/微信/备注/主联系人，前端一个都没接。
+    # 补前端入口时发现一个真会丢数据的坑：对外响应是按权限脱敏的
+    # （`138****8000`），而 PATCH 的入参从来没挡过脱敏形状的值 ——
+    # "打开编辑框（号码是星号）→ 只改职位 → 保存"会把真实号码覆盖成星号串。
+    status, res = call('POST', '/customers', token=admin, body={
+        'name': f'CHK{RUN}联系人编辑客户',
+    })
+    check('造一个用于联系人改删的客户', res.get('code'), 0)
+    edit_customer_id = res['data']['id']
+    CREATED_CUSTOMER_IDS.append(edit_customer_id)
+
+    status, res = call('POST', f'/customers/{edit_customer_id}/contacts', token=admin, body={
+        'name': f'CHK{RUN}甲联系人',
+        'title': '采购经理',
+        'mobile': '13812348000',
+        'phone': '021-88889999',
+        'email': 'buyer@example.com',
+        'wechat': 'buyer_wx',
+        'department': '采购部',
+        'remark': '只有上午在',
+    })
+    check('建联系人（带全部新字段）', res.get('code'), 0)
+    contact_a = res['data']['id']
+    check('部门存下了', res['data'].get('department'), '采购部')
+    check('座机存下了', res['data'].get('phone'), '021-88889999')
+    check('微信存下了', res['data'].get('wechat'), 'buyer_wx')
+    check('备注存下了', res['data'].get('remark'), '只有上午在')
+    check('默认不是主联系人', res['data'].get('is_primary'), False)
+
+    # —— 脱敏值回写必须被拒，且真实号码不能被改动 ——
+    status, res = call('PATCH', f'/contacts/{contact_a}', token=admin,
+                       body={'title': '采购总监', 'mobile': '138****8000'})
+    check('拿星号回写手机号被拒', res.get('code'), 40301)
+    check_true('拒绝理由说清了「脱敏」和怎么办',
+               '脱敏' in str(res.get('message', '')) and '权限' in str(res.get('message', '')),
+               str(res.get('message'))[:80])
+
+    status, res = call('GET', f'/customers/{edit_customer_id}/contacts', token=admin)
+    row = next(r for r in res['data'] if r['id'] == contact_a)
+    check('真实手机号没有被覆盖', row.get('mobile'), '13812348000')
+    check('被拒时职位也没被改（整次不生效）', row.get('title'), '采购经理')
+
+    # 同一批里带星号的邮箱/微信/座机也要挡
+    for field, value in (('email', 'b***@example.com'), ('wechat', 'bu***'), ('phone', '021****9999')):
+        status, res = call('PATCH', f'/contacts/{contact_a}', token=admin, body={field: value})
+        check(f'拿星号回写 {field} 被拒', res.get('code'), 40301)
+    # 正常值当然要能改
+    status, res = call('PATCH', f'/contacts/{contact_a}', token=admin,
+                       body={'title': '采购总监', 'mobile': '13900001111'})
+    check('正常值能改', res.get('code'), 0)
+    check('改动生效', res['data'].get('mobile'), '13900001111')
+
+    # —— 设为主联系人 ——
+    status, res = call('POST', f'/customers/{edit_customer_id}/contacts', token=admin, body={
+        'name': f'CHK{RUN}乙联系人', 'title': '技术员', 'mobile': '13700002222',
+    })
+    check('建第二个联系人', res.get('code'), 0)
+    contact_b = res['data']['id']
+
+    status, res = call('POST', f'/contacts/{contact_a}/set-primary', token=admin, body={})
+    check('设甲为主联系人', res.get('code'), 0)
+    check('甲是主了', res['data'].get('is_primary'), True)
+    status, res = call('POST', f'/contacts/{contact_b}/set-primary', token=admin, body={})
+    check('改设乙为主联系人', res.get('code'), 0)
+    status, res = call('GET', f'/customers/{edit_customer_id}/contacts', token=admin)
+    primaries = [r['id'] for r in res['data'] if r.get('is_primary')]
+    check('同时只有一个主联系人', primaries, [contact_b])
+
+    # —— 新建时直接勾主联系人（前端新加的勾选框走的就是这个字段）——
+    status, res = call('POST', f'/customers/{edit_customer_id}/contacts', token=admin, body={
+        'name': f'CHK{RUN}丙联系人', 'is_primary': True,
+    })
+    check('新建时直接设为主', res.get('code'), 0)
+    check('新建时直接占住主位', res['data'].get('is_primary'), True)
+    contact_c = res['data']['id']
+    status, res = call('GET', f'/customers/{edit_customer_id}/contacts', token=admin)
+    primaries = [r['id'] for r in res['data'] if r.get('is_primary')]
+    # 按**新建时返回的 id**断言，不要按列表顺序猜（列表排序不是契约）
+    check('主位只有一个且交给了丙（乙被自动取消）', primaries, [contact_c])
+
+    # —— 删除 ——
+    status, res = call('DELETE', f'/contacts/{contact_b}', token=admin)
+    check('删联系人', res.get('code'), 0)
+    status, res = call('GET', f'/customers/{edit_customer_id}/contacts', token=admin)
+    check_true('删掉的不再出现', all(r['id'] != contact_b for r in res['data']),
+               str([r['id'] for r in res['data']]))
+
+    # —— 无权限的人不能改（前端会把入口藏起来，但接口必须自己也挡）——
+    status, res = call('PATCH', f'/contacts/{contact_a}', token=zhangsan, body={'title': '越权改'})
+    check_denied('业务员改别人的联系人被拒', res.get('code'))
+
+    print()
+    print('=== 15.1 跨客户改挂联系人（主人 2026-10-12 定：**合法**，不拦）===')
+    # 口径：联系人跳槽、录错了要纠正，都是真事，所以允许改挂。
+    # 但必须讲明白一件事：**跟进记录挂的是客户，不是联系人** —— 改挂之后，
+    # 他过去在原来那家的跟进仍留在原客户那里。这一段就是把这句话钉成断言。
+    status, res = call('POST', '/customers', token=admin, body={'name': f'CHK{RUN}改挂目标客户'})
+    check('造改挂的目标客户', res.get('code'), 0)
+    target_customer = res['data']['id']
+    CREATED_CUSTOMER_IDS.append(target_customer)
+
+    # 先在原客户名下记两条跟进（挂在这个联系人上）
+    for i in (1, 2):
+        status, res = call('POST', '/followups', token=admin, body={
+            'customer_id': edit_customer_id, 'contact_id': contact_a,
+            'followup_type': '电话', 'content': f'CHK{RUN}改挂前第{i}次沟通',
+            'next_action': '下周再联系', 'create_task': True,
+            'task_due_at': '2026-10-20T10:00:00+08:00',
+        })
+        check(f'原客户名下记第 {i} 条跟进', res.get('code'), 0)
+
+    status, res = call('POST', f'/contacts/{contact_a}/bind-customer', token=admin,
+                       body={'customer_id': target_customer})
+    check('跨客户改挂被允许（合法业务）', res.get('code'), 0)
+    check('联系人已挂到目标客户', res['data'].get('customer_id'), target_customer)
+    check('返回里带上了"从哪家改挂过来"', res['data'].get('rebound_from_customer_id'),
+          edit_customer_id)
+    check('返回里带上了"留在原客户那儿的跟进条数"',
+          res['data'].get('stayed_followup_count'), 2)
+
+    status, res = call('GET', f'/followups?customer_id={edit_customer_id}&page=1&page_size=50',
+                       token=admin)
+    stayed = [r for r in res['data']['items'] if f'CHK{RUN}改挂前' in (r.get('content') or '')]
+    check('那 2 条跟进仍留在**原客户**名下', len(stayed), 2)
+
+    status, res = call('GET', f'/followups?customer_id={target_customer}&page=1&page_size=50',
+                       token=admin)
+    moved = [r for r in res['data']['items'] if f'CHK{RUN}改挂前' in (r.get('content') or '')]
+    check('目标客户名下**没有**跟过来（与提示文案一致）', len(moved), 0)
+
+    # "本来没有客户"的联系人现在建不出来（`customer_id` 是必填）—— 也就是说
+    # bind-customer 的"首次绑定"分支今天**走不到**（新建的联系人必然已经挂在某家）。
+    # 这里把这件事钉住：不是"跳过没测"，而是**确认这个分支当前不可达**。
+    status, res = call('POST', '/contacts', token=admin, body={
+        'name': f'CHK{RUN}无客户联系人',
+    })
+    check('裸建"无客户"联系人被拒（所以首次绑定分支不可达）', res.get('code'), 40001)
+
 
 if __name__ == '__main__':
     async def _driver():

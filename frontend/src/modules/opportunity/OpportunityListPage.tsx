@@ -18,7 +18,7 @@ import type { TagTone } from '../../shared/types'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
-import { optionMatcher, withCode } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -296,10 +296,11 @@ export default function OpportunityListPage() {
               placeholder="选择客户"
               value={form.customer_id ?? undefined}
               onChange={(value) => setForm({ ...form, customer_id: value as number })}
-              optionList={(customersQuery.data?.items ?? []).map((item) => ({
-                value: item.id,
-                label: withCode(item.name, item.id),
-              }))}
+              optionList={optionsWithCodeOnDuplicate(
+                customersQuery.data?.items ?? [],
+                (item) => item.name,
+                (item) => item.id,
+              )}
               loading={customersQuery.isLoading}
               filter={optionMatcher}
               style={{ width: '100%' }}

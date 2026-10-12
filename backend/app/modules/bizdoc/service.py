@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.modules.bizdoc import tokens as token_rules
 from app.modules.bizdoc.model import (
     ARCHIVE_ARCHIVED,
@@ -944,7 +945,7 @@ async def build_quote_doc(session: AsyncSession, quote_version_id: int) -> dict:
                     "display": UNIT_PENDING,
                 }
             )
-        amount = (row.quoted_price or 0) * (row.quantity or 0)
+        amount = line_amount(row.quantity or Decimal(0), row.quoted_price or Decimal(0))
         items.append(
             {
                 "name": name,
@@ -1137,6 +1138,16 @@ async def generate_quote_doc(
     - 落成**草稿**（`allow_draft=True` → `status=draft`、标题带【草稿】、
       列表里有标识、不进正式台账），并把"缺什么"写进文件快照，页面上能解释。
 
+    第二轮审查 P1（2026-10-12）补上另外**两道**与正式 PDF 同源的闸门：
+
+    - 审批：未提交 / 待审批 / 已拒绝的版本不能出有效对客文件；
+    - 运费：`logistics_confirmed_at` 缺一不可，没确认过运费就发出去的文件上
+      会印着"运费 0.00"，而实际一毛钱都没确认（2026-10-09 口径）。
+
+    三道闸门都走"**不拒绝、落草稿 + 写清原因**"：Excel 这条路的定位是
+    "内部准备用"，草稿形态天然不可当有效件使用；真正不该存在的是
+    "没过闸却长的和正式件一样"的 active 文件。
+
     历史归档的读取不受影响：这里只管**新生成**的文件。
     """
     from app.modules.quote import service as quote_service
@@ -1151,13 +1162,28 @@ async def generate_quote_doc(
     )
     template = await current_template(session, "quote_sheet", template_id)
 
+    reasons: list[str] = []
+    if version_row.approval_status != "approved":
+        reasons.append(
+            "报价未通过审批（当前状态："
+            + {
+                "pending": "待审批",
+                "rejected": "已拒绝",
+                "draft": "尚未提交审批",
+            }.get(version_row.approval_status or "", version_row.approval_status or "未知")
+            + "）"
+        )
     master_problems = await quote_service.master_confirmation_problems(
         session, version_id=quote_version_id
     )
-    draft_reason = None
     if master_problems:
-        # **只标草稿原因，不动 `allow_draft`** —— 后者会把模板闸门一起关掉
-        draft_reason = "主数据未确认：" + "；".join(master_problems)
+        reasons.append("主数据未确认：" + "；".join(master_problems))
+    charges = await quote_service.version_charges(session, quote_version_id)
+    freight_reason = quote_service.quote_freight_unconfirmed_reason(charges)
+    if freight_reason:
+        reasons.append(freight_reason)
+    # **只标草稿原因，不动 `allow_draft`** —— 后者会把模板闸门一起关掉
+    draft_reason = "；".join(reasons) if reasons else None
     return await _persist(
         session,
         built=built,

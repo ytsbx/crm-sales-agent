@@ -236,7 +236,7 @@ export interface ApprovalRow {
     quote_no?: string
     version_no?: number
     reason?: string
-    offending?: Array<{ sku_code: string; quoted_price: number; minimum_price: number; profit_rate: number }>
+    offending?: Array<{ sku_code: string; quoted_price?: number | null; minimum_price?: number | null; profit_rate?: number | null; reason?: string }>
     authorized_min_margin?: number
     co_sign?: { label?: string; role_codes?: string[]; status?: string } | null
     auto_passed?: boolean
@@ -425,6 +425,27 @@ export function withdrawApproval(versionId: number) {
 
 export function markSent(versionId: number, payload: { channel: string; receiver?: string; request_key?: string }) {
   return api.post<QuoteVersion>(`/quote-versions/${versionId}/mark-sent`, payload)
+}
+
+/** 一条发送记录（谁、什么渠道、发给了谁、什么时候）。 */
+export interface QuoteSendLogRow {
+  id: number
+  channel: string
+  receiver: string | null
+  status: string
+  sent_at: string
+}
+
+/**
+ * 这份报价版本**发过给谁**。
+ *
+ * ⚠️ 接口一直都在（后端 `GET /quote-versions/{id}/send-logs`，还专门做了数据范围校验
+ * ——发送记录里有收件人，不校验就能看到别人把报价发给了谁），但**前端一直没有入口**：
+ * 用户登记完"标记已发送"之后，界面上再也看不到自己登记过什么，"发给谁"这件事
+ * 变成了不可核对的黑盒（主人 2026-10-12 反馈：连"是发给客户还是发给主管"都看不出来）。
+ */
+export function getSendLogs(versionId: number) {
+  return api.get<QuoteSendLogRow[]>(`/quote-versions/${versionId}/send-logs`)
 }
 
 export function acceptQuote(versionId: number) {

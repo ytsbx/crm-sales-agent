@@ -21,6 +21,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from app.core.money import format_unit_price
+
 THIN = Side(style="thin", color="D9DDE3")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 HEAD_FILL = PatternFill("solid", fgColor="F0F2F5")
@@ -47,12 +49,41 @@ ITEM_COLUMN_GROUPS: list[tuple[str, list[tuple[str, int, str]]]] = [
 ]
 
 
-def _text(value: Any) -> str:
-    return "" if value is None else str(value)
-
-
 def _flat_columns() -> list[tuple[str, int, str]]:
     return [column for _group, columns in ITEM_COLUMN_GROUPS for column in columns]
+
+
+def _text(value: Any) -> str:
+    """任何值 → 单元格文本。None 变空串，其余 `str()`。
+
+    只做展示转换，**不负责数据类型**：写进单元格要一律走 `_put_text`，
+    否则以 `=` 开头的用户文本会被 openpyxl 当成公式。
+    """
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _put_text(sheet, *, row: int | None = None, column: int | None = None, ref: str | None = None, value: Any):
+    """把**用户可见文本**写进单元格，并强制按字符串类型保存。
+
+    为什么必须强制（第二轮审查 P2，2026-10-12）：openpyxl 对以 `=` 开头的字符串
+    会写 `t="f"`（公式），Excel 打开时真的会去求值；客户名、公司名、产品文本、
+    规格、备注、模板正文这些都是**外部输入**，一旦有人填 `=1+1`，
+    表格里就出现一个公式；更复杂的表达式还可能变成外部引用（`=HYPERLINK`）。
+
+    这里不做"加个前导单引号"那种改内容的做法 —— 那会让单元格里显示出一个引号。
+    直接把 `data_type` 定为 `s`（实测回读 `t="s"`、值原样），
+    金额与数量仍按数值/文本各自的口径走（见 `_cell_text`）。
+    """
+    text = _text(value)
+    if ref is not None:
+        cell = sheet[ref]
+        cell.value = text
+    else:
+        cell = sheet.cell(row=row, column=column, value=text)
+    cell.data_type = "s"
+    return cell
 
 
 def _frozen(data: dict[str, Any]) -> dict[str, Any]:
@@ -67,18 +98,25 @@ def _frozen_item_units(data: dict[str, Any]) -> list[str]:
 
 
 def _cell_text(key: str, value: Any) -> str:
-    """明细单元格的展示口径：金额保留两位（对客表格要能直接加），其余原样。
+    """明细单元格的展示口径。
 
-    数量不做四舍五入：`Numeric(16,3)` 的 12.5 必须印成 12.5，
-    印成 12.50 或 13 都会让客户拿计算器复核时对不上。
+    - **金额**保留两位（对客表格要能直接加）；
+    - **单价**保留实际成交精度、末尾不补零（第二轮审查 P2，2026-10-12）：
+      单价截成两位会让"单价 × 数量"对不上金额那一栏（33.3333 × 1000 印成
+      33.33 × 1000 = 33330.00，而金额是 33333.30）。格式器只有
+      `core.money.format_unit_price` 一份；
+    - **数量**不做四舍五入：`Numeric(16,3)` 的 12.5 必须印成 12.5，
+      印成 12.50 或 13 都会让客户拿计算器复核时对不上。
     """
     if value is None:
         return ""
-    if key in ("unit_price", "amount"):
+    if key == "amount":
         try:
             return f"{float(value):,.2f}"
         except (TypeError, ValueError):
             return _text(value)
+    if key == "unit_price":
+        return format_unit_price(value)
     return _text(value)
 
 
@@ -133,8 +171,10 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
     bold = Font(bold=True)
     title_font = Font(bold=True, size=15)
 
-    sheet["A1"] = _text(data.get("company_name")) or "本公司"
-    sheet["A2"] = _text(data.get("title"))
+    # 用户可见文本一律走 `_put_text`（强制字符串）：公司名是配置项、标题来自模板，
+    # 都可能以 `=` 开头而被 Excel 当公式执行
+    _put_text(sheet, ref="A1", value=_text(data.get("company_name")) or "本公司")
+    _put_text(sheet, ref="A2", value=_text(data.get("title")))
     sheet["A2"].font = title_font
     # 元信息落在明细表上方，客户一眼能看到单号与版本——对账全靠这两个
     meta = [
@@ -158,49 +198,49 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
         )
     row = 4
     for left_label, left_value, right_label, right_value in meta:
-        sheet.cell(row=row, column=1, value=left_label).font = bold
-        sheet.cell(row=row, column=2, value=left_value)
-        sheet.cell(row=row, column=3, value=right_label).font = bold
-        sheet.cell(row=row, column=4, value=right_value)
+        _put_text(sheet, row=row, column=1, value=left_label).font = bold
+        _put_text(sheet, row=row, column=2, value=left_value)
+        _put_text(sheet, row=row, column=3, value=right_label).font = bold
+        _put_text(sheet, row=row, column=4, value=right_value)
         row += 1
 
     # 草稿（模板变量未解析）：纸面上就写明它不是正式对外文件，
     # 免得被当成已发出的报价单继续用
     if data.get("is_draft"):
         issues = data.get("token_issues") or []
-        sheet.cell(row=row, column=1, value="草稿（非正式对外文件）").font = Font(
+        _put_text(sheet, row=row, column=1, value="草稿（非正式对外文件）").font = Font(
             bold=True, color="C0392B"
         )
         detail = "模板变量未解析，本表仅供内部核对；" + (
             "；".join(_text(i.get("message") or i.get("token")) for i in issues)
             or "请修正模板或来源资料后重新生成"
         )
-        sheet.cell(row=row, column=2, value=detail)
+        _put_text(sheet, row=row, column=2, value=detail)
         row += 1
 
     # 副本标记（第八批 §8.10）：这一份是现在按快照重出的，不是生成时存档的字节。
     # 不写明白，"重建副本 / 状态副本"就会被当成当初发出去的原件。
     if data.get("copy_notice"):
-        sheet.cell(row=row, column=1, value=f"【{data['copy_notice']}】").font = Font(
-            bold=True, color="C0392B"
-        )
+        _put_text(
+            sheet, row=row, column=1, value=f"【{data['copy_notice']}】"
+        ).font = Font(bold=True, color="C0392B")
         row += 1
 
     # 条款区放在明细上方：币种、有效期、付款/交付条件是客户先看的东西
     terms = _terms(data)
     row += 1
-    sheet.cell(row=row, column=1, value="币种与条款").font = bold
+    _put_text(sheet, row=row, column=1, value="币种与条款").font = bold
     row += 1
     for label, value in terms["rows"]:
-        sheet.cell(row=row, column=1, value=label).font = bold
-        sheet.cell(row=row, column=2, value=value)
+        _put_text(sheet, row=row, column=1, value=label).font = bold
+        _put_text(sheet, row=row, column=2, value=value)
         row += 1
 
     header_row = row + 1
     column_index = 1
     for group, group_columns in ITEM_COLUMN_GROUPS:
         if len(group_columns) > 1:
-            sheet.cell(row=header_row - 1, column=column_index, value=group).font = bold
+            _put_text(sheet, row=header_row - 1, column=column_index, value=group).font = bold
         for label, _width, _key in group_columns:
             cell = sheet.cell(row=header_row, column=column_index, value=label)
             cell.font = bold
@@ -230,10 +270,14 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
             cell = sheet.cell(
                 row=header_row + offset, column=idx, value=_cell_text(key, value)
             )
+            # 单价/金额是文本形式的数字，其余（产品名、规格、单位、备注）
+            # 都是用户文本 —— 一律钉成字符串，防止 `=` 开头被当成公式
+            if key not in ("unit_price", "amount"):
+                cell.data_type = "s"
             cell.border = BORDER
         total_row = header_row + offset
     if not items:
-        sheet.cell(row=header_row + 1, column=1, value="（无明细）")
+        _put_text(sheet, row=header_row + 1, column=1, value="（无明细）")
         total_row = header_row + 1
 
     # 金额区：小计 → 各项附加费 → 优惠 → 合计，逐行列全。
@@ -244,19 +288,20 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
         return "" if value is None else f"{float(value):,.2f}"
 
     summary_row = total_row + 2
-    sheet.cell(row=summary_row, column=1, value="小计").font = bold
+    _put_text(sheet, row=summary_row, column=1, value="小计").font = bold
     sheet.cell(row=summary_row, column=money_column, value=_money(data.get("subtotal_amount")))
     # 产品单价不含运费（2026-10-09 运费分离）：这句话要紧挨着"小计"印出来，
     # 客户才会知道上面那一列单价里**没有**含运费、下面的运费是另算的。
     # 历史版本（`unit_price_note` 为空）不印，保持老文件原样。
     if _text(data.get("unit_price_note")).strip():
-        sheet.cell(row=summary_row, column=2, value=_text(data.get("unit_price_note")))
+        _put_text(sheet, row=summary_row, column=2, value=data.get("unit_price_note"))
     summary_row += 1
     for charge in data.get("charges") or []:
-        sheet.cell(row=summary_row, column=1, value=_text(charge.get("label")))
+        # 费用名称是业务员手写的（"宁波到苏州运费"这种），一律按字符串写
+        _put_text(sheet, row=summary_row, column=1, value=charge.get("label"))
         sheet.cell(row=summary_row, column=money_column, value=_money(charge.get("amount")))
         summary_row += 1
-    sheet.cell(row=summary_row, column=1, value="合计").font = bold
+    _put_text(sheet, row=summary_row, column=1, value="合计").font = bold
     total_cell = sheet.cell(
         row=summary_row, column=money_column, value=_money(data.get("total_amount"))
     )
@@ -266,20 +311,21 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
     for section in data.get("sections") or []:
         if not _text(section.get("value")).strip():
             continue
-        sheet.cell(row=row, column=1, value=_text(section.get("label"))).font = bold
-        sheet.cell(row=row, column=2, value=_text(section.get("value")))
+        _put_text(sheet, row=row, column=1, value=section.get("label")).font = bold
+        _put_text(sheet, row=row, column=2, value=section.get("value"))
         row += 1
 
     body = _text(data.get("body")).strip()
     if body:
-        sheet.cell(row=row + 1, column=1, value="说明").font = bold
+        _put_text(sheet, row=row + 1, column=1, value="说明").font = bold
         for line in body.splitlines():
             if line.strip():
                 row += 1
-                sheet.cell(row=row, column=1, value=line.strip())
+                _put_text(sheet, row=row, column=1, value=line.strip())
 
     if data.get("content_sha256"):
-        sheet.cell(
+        _put_text(
+            sheet,
             row=row + 2,
             column=1,
             value=f"内容校验值（SHA-256）：{data['content_sha256']}",

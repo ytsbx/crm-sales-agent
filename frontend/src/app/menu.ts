@@ -147,7 +147,7 @@ export function matchMenu(pathname: string): MenuItem | undefined {
 }
 
 /** 与后端 require_permission 的判定对齐：admin 直通，数组权限任一命中即可。 */
-function hasPermission(
+export function hasPermission(
   user: { roles: string[]; permissions?: string[] } | null,
   permission?: string | string[],
 ): boolean {
@@ -159,13 +159,27 @@ function hasPermission(
   return needed.some((code) => granted.includes(code))
 }
 
-/** 菜单按当前用户权限过滤后的分组（权限不足的入口直接不显示）。 */
-export function visibleMenuGroups(
-  user: { roles: string[]; permissions?: string[] } | null,
-): MenuGroup[] {
+/**
+ * 菜单分组（**不再按权限过滤**，主人 2026-10-12 拍板）。
+ *
+ * ## 为什么改了
+ *
+ * 从前这里 `filter(hasPermission)` —— 权限不足的入口**整个不显示**。
+ * 于是"管理员把某个角色的权限收回"之后，那个人看到的菜单里那一项**消失了**，
+ * 他分不清是「我没有这个权限」还是「系统没有这个功能」。
+ *
+ * 主人选的是：**入口留着**，点进去由 `RoutePermissionGuard` 把原因说明白
+ * （"该功能存在，只是你这个角色看不到它"）。判断仍然用同一份 `hasPermission`。
+ *
+ * ⚠️ `ready: false` 的项照旧不显示 —— 那是"功能还没做"，与权限无关，
+ * 两件事不能混：一个该说"你没权限"，一个本就该说"还没做"。
+ */
+export function visibleMenuGroups(_user: { roles: string[]; permissions?: string[] } | null): MenuGroup[] {
+  // 参数保留：调用方还在传，而且将来要按"新功能标记"之类做区分时还会用到。
+  // 现在不参与过滤，所以显式写成 `_user`，免得读者以为这里在按权限筛。
   return MENU_GROUPS.map((group) => ({
     ...group,
-    items: group.items.filter((item) => item.ready && hasPermission(user, item.permission)),
+    items: group.items.filter((item) => item.ready),
   })).filter((group) => group.items.length > 0)
 }
 

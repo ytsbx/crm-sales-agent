@@ -13,6 +13,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import RowErrors
 from app.core.response import ok, page_data, paginate
+from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
 from app.modules.pricing.model import (
@@ -404,7 +405,7 @@ async def create_price_rule(
     if conflict is not None:
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"与现有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
+            f"与现有规则编号 {conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}、"
             f"有效期 {conflict.effective_from or '∞'} ~ {conflict.effective_to or '∞'}）区间重叠，请调整数量或有效期",
         )
     rule = PriceRule(**payload.model_dump(), status="active")
@@ -579,7 +580,7 @@ async def update_price_rule(
         await session.rollback()
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"与现有规则 #{conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
+            f"与现有规则编号 {conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
         )
     await session.flush()
     await write_audit(
@@ -775,7 +776,7 @@ async def create_customer_price_rule(
     if conflict is not None:
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"该客户此 SKU 已有规则 #{conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
+            f"该客户此 SKU 已有规则编号 {conflict.id}（数量 {conflict.min_qty}-{conflict.max_qty or '∞'}）区间重叠，请调整数量或有效期",
         )
     session.add(rule)
     await session.flush()
@@ -874,7 +875,7 @@ async def update_customer_price_rule(
         await session.rollback()
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"该客户此 SKU 已有规则 #{conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
+            f"该客户此 SKU 已有规则编号 {conflict_id}（数量 {conflict_min}-{conflict_max or '∞'}）区间重叠，请调整数量或有效期",
         )
 
     await session.flush()
@@ -1274,6 +1275,18 @@ async def calculate(
 ):
     await _ensure_customer_visible(session, user, payload.customer_id)
     await _guard_level_override(session, user, customer_id=payload.customer_id, requested_level=payload.customer_level)
+    # 币种固定白名单（第四批复审返修，2026-10-12）。
+    #
+    # 创建报价的入口早就拦了，**核价这个入口漏着** —— 复审实测：
+    # `domestic` 口径下传 `USD` + 汇率 7，接口照样成功，人民币建议价 100
+    # 被折算成 `USD 14.2857` 返回。折算本身没算错，错在"系统根本不该有外币"
+    # 这件事被绕过了一次。
+    #
+    # 为什么拦在**端点**而不是 `svc.calculate_price` 里：那个函数还有一条
+    # "按报价版本重算"的调用方（`quote/service.py`），历史外币版本要靠它算得出数
+    # （那种数据只可能来自口径曾经放开时建的、或 ERP 同步进来的）。
+    # 拦在函数里会把历史数据的读取路径一起堵死 —— 那是另一码事。
+    await ensure_currency_allowed(session, payload.currency)
     result = await svc.calculate_price(
         session,
         sku_id=payload.sku_id,
@@ -1306,6 +1319,9 @@ async def batch_calculate(
     for item in items:
         await _ensure_customer_visible(session, user, item.customer_id)
         await _guard_level_override(session, user, customer_id=item.customer_id, requested_level=item.customer_level)
+        # 同一条白名单。**整批拒绝**而不是"跳过那一条"：核价结果是要拿去报价的，
+        # 悄悄少算一条比直接报错更难发现（用户会以为那一行只是没数据）。
+        await ensure_currency_allowed(session, item.currency)
         results.append(
             _sanitize_pricing_result(
                 await svc.calculate_price(

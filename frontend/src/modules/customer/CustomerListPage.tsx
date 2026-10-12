@@ -26,6 +26,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { Customer } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 
 type Scope = 'mine' | 'pool' | 'all'
 
@@ -54,6 +55,18 @@ const CUSTOMER_EXPORT_PURPOSES: Array<{ value: CustomerExportPurpose; label: str
   { value: 'historical_migration', label: '历史数据迁移' },
   { value: 'other', label: '其他' },
 ]
+
+/**
+ * 没有「客户导出」权限时给用户看的那句话。
+ *
+ * 为什么要有这句：`customer:export` 是**独立权限**，与其他查看权限分开，
+ * 而四种内置角色一个都没有它。从前的写法是「没权限就整个按钮不渲染」，
+ * 用户看到的是**工具栏上根本没有导出**，只会得出"这个功能没做"的结论 ——
+ * 主人 2026-10-12 的原话就是「点又点不了，又不给提示为什么点不了，类似的情况都要修」。
+ * 权限本身没有放松（判据仍是同一个 `can('customer:export')`），只是把"为什么没有"说出来。
+ */
+const CUSTOMER_EXPORT_PERMISSION_REASON =
+  '导出需要单独授权，请联系管理员开通「客户导出」权限。'
 
 // 领导六阶段（自动推导，非人工填写）：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购
 type TagColor = ComponentProps<typeof Tag>['color']
@@ -113,6 +126,22 @@ export default function CustomerListPage() {
   const [exportPurpose, setExportPurpose] = useState<CustomerExportPurpose | undefined>()
   const [exportPurposeNote, setExportPurposeNote] = useState('')
   const [exporting, setExporting] = useState(false)
+
+  // 「导出」这一路的两处说明，共用同一个判据（判据本身没动，只是把原因写出来）：
+  //   ① 工具栏上的导出按钮：没权限时灰着，旁边一行灰字；
+  //   ② 导出弹窗的确认键：没选用途 / 选了「其他」没填说明时灰着，弹窗底部列出缺什么。
+  // 两条规矩见 shared/components/BlockedHint.tsx：看得见（常驻灰字）+ 点得动（点了有反应）。
+  const canExport = can('customer:export')
+  const exportBlockedReasons = [
+    ...(!exportPurpose ? ['请选择导出用途。'] : []),
+    // 用途选「其他」时后端要求写清具体用途（schema 里有最小长度校验），
+    // 只把「其他」两个字交上去会被拒 —— 先说清楚，别让人白点一次。
+    ...(exportPurpose === 'other' && !exportPurposeNote.trim()
+      ? ['选择「其他」时必须填写导出用途说明。']
+      : []),
+  ]
+  const notifyExportBlocked = useBlockedNotify(canExport ? [] : [CUSTOMER_EXPORT_PERMISSION_REASON])
+  const notifyExportPurposeBlocked = useBlockedNotify(exportBlockedReasons, '导出')
 
   const tokenHeader = () => {
     const token = JSON.parse(localStorage.getItem('crm-auth') ?? '{}')?.state?.token
@@ -428,9 +457,34 @@ export default function CustomerListPage() {
             下载模板
           </Button>
           {/* 按当前筛选导出（POST /customers/export）：列表页筛出什么就导出什么，
-              数据范围后端强制；导出是独立权限（customer:export），与查看分开 */}
-          {can('customer:export') && (
-            <Button onClick={() => setExportModalOpen(true)}>导出</Button>
+              数据范围后端强制；导出是独立权限（customer:export），与查看分开。
+              按钮改成**常驻但灰着**：从前没这个权限的角色（四种内置角色都没有）看到的是
+              "工具栏上根本没有导出"，只会以为功能没做。灰着的同时旁边有一行灰字说清
+              缺哪个权限、找谁开，点按钮或点那行字都会弹同一句话（文案同源，见
+              blocked-hint-reasons.ts 的 blockedToastText）。
+              ⚠️ 判据没放松：disabled 里仍然是同一个 can('customer:export')，
+              灰着时按钮加 pointerEvents:'none' 是为了让点击落到外层容器上（原生禁用
+              控件不派发点击事件，光包一层收不到 —— 判例见 PriceCenterPage.tsx:880）。 */}
+          <div className="blocked-hint-click" onClick={notifyExportBlocked}>
+            <Button
+              disabled={!canExport}
+              style={canExport ? undefined : { pointerEvents: 'none' }}
+              onClick={() => setExportModalOpen(true)}
+            >
+              导出
+            </Button>
+          </div>
+          {!canExport && (
+            // flexShrink: 0 + 够宽的 maxWidth —— 这行字不许被工具栏挤成两行（实测第一版
+            // 挤成了「…开通「客户导出」权 / 限。」，一句话被劈成两截）；挤不下就整行换到下一行。
+            <div
+              data-blocked-click="1"
+              className="blocked-hint-click"
+              onClick={notifyExportBlocked}
+              style={{ display: 'block', maxWidth: 340, flexShrink: 0, fontSize: 12, lineHeight: 1.7, color: 'var(--crm-text-3)' }}
+            >
+              {CUSTOMER_EXPORT_PERMISSION_REASON}
+            </div>
           )}
           <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
             批量导入
@@ -555,6 +609,17 @@ export default function CustomerListPage() {
               onChange={setExportPurposeNote}
             />
           )}
+          {/* 确认键灰着的时候，原因必须在同一屏里看得见（从前打开就没有理由地灰着）。
+              这段说明自己也是「点得动」的落点：点它会弹一句同样的原因 —— 弹窗 footer 在
+              portal 里，包住确认键那层收不到点击（同 SampleFromSourceModal 的处理）。 */}
+          <div
+            data-blocked-click="1"
+            className="blocked-hint-click"
+            onClick={notifyExportPurposeBlocked}
+            style={{ display: 'block' }}
+          >
+            <BlockedHint reasons={exportBlockedReasons} action="导出" style={{ marginTop: 0 }} />
+          </div>
         </div>
       </Modal>
 

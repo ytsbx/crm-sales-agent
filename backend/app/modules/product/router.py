@@ -992,7 +992,7 @@ async def confirm_sku_master_diff(
     """核定一条 SKU 主数据差异：**唯一**能改 SKU 关键字段的入口，改动留版本快照。"""
     diff = await session.get(IntegrationDiff, diff_id)
     if diff is None or diff.domain != "sku_master":
-        raise AppError(ErrorCode.NOT_FOUND, f"SKU 主数据差异 #{diff_id} 不存在", 404)
+        raise AppError(ErrorCode.NOT_FOUND, f"SKU 主数据差异编号 {diff_id} 不存在", 404)
     result = await master_svc.confirm_sku_diff(
         session,
         diff,

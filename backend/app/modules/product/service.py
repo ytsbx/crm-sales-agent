@@ -241,3 +241,61 @@ async def require_available_sku(session: AsyncSession, sku_id: int) -> Sku:
         # 和"这个 SKU 停售了，换个在用型号"。
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, reason, 409)
     return sku
+
+
+def product_blocked_reason(product: Product | None) -> str | None:
+    """所属产品还能不能接新业务；能则 None。判据与 SKU 那条**并列且同源**。"""
+    if product is None:
+        return "所属产品不存在，不能用于新业务"
+    if product.deleted_at is not None:
+        return f"产品「{product.name}」已删除，不能用于新业务"
+    if (product.status or "").strip().lower() not in SKU_AVAILABLE_STATUSES:
+        return f"产品「{product.name}」已停用，不能用于新业务（历史单据不受影响）"
+    return None
+
+
+async def require_sku_for_new_business(session: AsyncSession, sku_id: int) -> Sku:
+    """**新业务入口的完整判据**：SKU 可用 **且** 所属产品可用。
+
+    与 `require_available_sku` 的关系（第三批审查 P2，2026-10-12）：
+
+    - 后者只判 SKU 自身（`deleted_at` / `status`），是查价、报价明细、手工订单
+      一直用的口径；
+    - **产品停用/删除从来没有任何入口判过** —— 一个停用产品下的在用 SKU 照样能被
+      加进新需求，等于停用没生效。
+    - 这里在它的基础上补判产品，供"整批写入"的新业务入口（复制商机、订单复购）使用。
+
+    ⚠️ 是否把产品这一条**并入全项目统一判据**要单独决定：并进 `require_available_sku`
+    会连带拦住"历史报价再来一版 / 刷新价格"这类既有业务的续做（`build_item_snapshot`
+    也被那些路径调用），属于口径变更，不在这里顺手改。
+    """
+    sku = await require_available_sku(session, sku_id)
+    product = await session.get(Product, sku.product_id)
+    reason = product_blocked_reason(product)
+    if reason is not None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, reason, 409)
+    return sku
+
+
+async def ensure_skus_for_new_business(
+    session: AsyncSession, sku_ids: list[int | None]
+) -> None:
+    """整批判定，**把所有不可用项一次点全**再拒绝。
+
+    为什么不是"遇到第一个就抛"：复制商机 / 订单复购都是"一次写一批"的动作，
+    逐个报错会让人改一个跑一次、再撞下一个（一批 20 行要跑 20 遍）。
+    判据仍然只有 `require_sku_for_new_business` 一份，这里只负责收集与措辞。
+    """
+    problems: list[str] = []
+    for sku_id in sorted({int(x) for x in sku_ids if x is not None}):
+        try:
+            await require_sku_for_new_business(session, sku_id)
+        except AppError as error:
+            problems.append(error.message)
+    if problems:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "以下商品当前不能用于新业务，本次操作已整单取消（没有写入任何数据）："
+            + "；".join(problems),
+            409,
+        )

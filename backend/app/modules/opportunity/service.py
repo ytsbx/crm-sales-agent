@@ -532,6 +532,12 @@ async def clone_opportunity(
       - expected_amount（金额随数量与价格变，让业务重新确认）
       - 阶段回到初始阶段
     需求明细按 `copy_items` 决定是否一起复制。
+
+    ⚠️ 复制需求前要**先验一遍 SKU 可用性**（第三批审查 P2，2026-10-12）：
+    普通新增需求会验，这条复制路径原来是直接插行 —— 实测可用性检查调用次数为 0，
+    停用 SKU 的编号照样写进新商机，等到核价/报价才被拦住，而那时新流程里
+    已经躺着一条无效需求。校验放在**创建商机之前**：失败就整次不写，
+    不留下"商机建了、明细没进去"的半成品。历史来源单据一个字不动。
     """
     final_owner_id = owner_id if owner_id is not None else source.owner_id
     await assert_owner_active(session, final_owner_id)
@@ -541,6 +547,23 @@ async def clone_opportunity(
     # 换客户复制只复制需求内容，原客户的联系人不能跟着新业务走。
     contact_id = source.primary_contact_id if target_customer_id == source.customer_id else None
     await validate_contact(session, customer_id=target_customer_id, contact_id=contact_id)
+
+    source_items: list[OpportunityItem] = []
+    if copy_items:
+        source_items = list(
+            (
+                await session.execute(
+                    select(OpportunityItem).where(
+                        OpportunityItem.opportunity_id == source.id
+                    )
+                )
+            ).scalars().all()
+        )
+        from app.modules.product.service import ensure_skus_for_new_business
+
+        await ensure_skus_for_new_business(
+            session, [item.sku_id for item in source_items]
+        )
 
     first_stage = await get_first_stage(session)
     clone = Opportunity(
@@ -567,18 +590,14 @@ async def clone_opportunity(
             from_stage_id=None,
             to_stage_id=first_stage.id,
             operator_id=user.id,
-            remark=f"由商机 #{source.id} 复制而来",
+            remark=f"由商机编号 {source.id} 复制而来",
             entered_at=datetime.now(UTC),
         )
     )
 
     if copy_items:
-        rows = (
-            await session.execute(
-                select(OpportunityItem).where(OpportunityItem.opportunity_id == source.id)
-            )
-        ).scalars().all()
-        for item in rows:
+        # 上面已经按这批明细验过可用性（并已查出 `source_items`），这里直接落库
+        for item in source_items:
             session.add(
                 OpportunityItem(
                     opportunity_id=clone.id,

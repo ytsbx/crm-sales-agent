@@ -110,7 +110,7 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
         </div>
         <Table<Quote> rowKey="id" loading={quotes.isLoading} dataSource={quotes.data?.items ?? []}
           empty={emptyText(quotes, '暂无关联报价')} pagination={pagination('quotes', quotes.data?.total ?? 0)} columns={[
-            { title: '报价编号', render: (_: unknown, row: Quote) => <Link to={`/quotes/${row.id}`}>{row.quote_no}</Link> },
+            { title: '报价单号', render: (_: unknown, row: Quote) => <Link to={`/quotes/${row.id}`}>{row.quote_no}</Link> },
             { title: '当前版本', render: (_: unknown, row: Quote) => row.current_version_no ? `V${row.current_version_no}` : '-' },
             { title: '状态', dataIndex: 'status_label' },
           ]} />
@@ -132,7 +132,7 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
       <div className="toolbar"><strong>订单</strong></div>
       <Table<Order> rowKey="id" loading={orders.isLoading} dataSource={orders.data?.items ?? []}
         empty={emptyText(orders, '暂无关联订单')} pagination={pagination('orders', orders.data?.total ?? 0)} columns={[
-          { title: '订单编号', render: (_: unknown, row: Order) => <Link to={`/orders/${row.id}`}>{row.order_no}</Link> },
+          { title: '订单单号', render: (_: unknown, row: Order) => <Link to={`/orders/${row.id}`}>{row.order_no}</Link> },
           { title: '状态', dataIndex: 'status_label' },
           { title: '金额', render: (_: unknown, row: Order) => row.total_amount.toLocaleString('zh-CN') },
         ]} />

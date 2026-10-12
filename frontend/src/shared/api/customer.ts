@@ -168,6 +168,28 @@ export function createContact(customerId: number, payload: Partial<Contact>) {
   return api.post<Contact>(`/customers/${customerId}/contacts`, payload)
 }
 
+/**
+ * 改联系人（03-API §8 `PATCH /contacts/{id}`）。
+ *
+ * ⚠️ **脱敏字段不要往这里放**：对没有完整查看权限的人，后端回的号码是
+ * `138****8000` 这种星号形状（响应上有 `contact_masked: true`）。把星号原样
+ * 保存回去会把真实号码覆盖掉 —— 后端现在会拒并说明原因，但界面本来就不该发，
+ * 所以编辑框在脱敏时把那几个字段锁住、并且**根本不提交**它们。
+ */
+export function updateContact(contactId: number, payload: Partial<Contact>) {
+  return api.patch<Contact>(`/contacts/${contactId}`, payload)
+}
+
+/** 删联系人（软删）。同一客户的主联系人被删后主位自然空出。 */
+export function deleteContact(contactId: number) {
+  return api.delete<null>(`/contacts/${contactId}`)
+}
+
+/** 设为主联系人（同一客户下只能有一个，后端会把其余的清掉）。 */
+export function setPrimaryContact(contactId: number) {
+  return api.post<Contact>(`/contacts/${contactId}/set-primary`)
+}
+
 export function transferCustomer(customerId: number, payload: { owner_id: number | null; reason?: string }) {
   return api.post<CustomerTransferResult>(`/customers/${customerId}/transfer`, payload)
 }
