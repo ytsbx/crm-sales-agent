@@ -2103,7 +2103,18 @@ async function main() {
             expression: 'window.location.pathname', returnByValue: true,
           })
           if (!opened || location.result.value !== item.sourcePath) {
-            problems.push('客户时间线：原单链接没有打开对应单据')
+            // 失败时把**现场**打出来：不打印就只能靠猜（我在这里猜错过一次 ——
+            // 以为是分页把事件挤走了，实际链接就在本页、点击也发生了）。
+            const diag = await client.send('Runtime.evaluate', {
+              expression: `JSON.stringify({
+                expectPath: ${JSON.stringify(item.sourcePath)},
+                nowPath: window.location.pathname,
+                expectText: ${JSON.stringify(item.sourceText ?? '订单明细')},
+                bodyHead: document.body.innerText.slice(0, 120).replace(/\n+/g, ' | '),
+                anchors: Array.from(document.querySelectorAll('a')).map((a) => a.getAttribute('href')).filter((h) => h && h.startsWith('/orders')).slice(0, 5),
+              })`, returnByValue: true,
+            })
+            problems.push(`客户时间线：原单链接没有打开对应单据 —— ${diag.result.value}`)
           }
         } else if (!item.sourceFallback) {
           problems.push(`客户时间线：本页找不到 ${item.sourcePath} 的「查看原单」链接（且这条没登记翻页兜底）`)
