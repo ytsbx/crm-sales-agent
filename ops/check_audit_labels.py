@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -70,6 +71,53 @@ def field_label_keys() -> set[str]:
     return {k.split('.', 1)[1] if '.' in k else k for k in keys}
 
 
+def _python_with_backend_deps() -> str | None:
+    """挑一个**真的能 import sqlalchemy** 的解释器来跑生成器。
+
+    ## 为什么不能写死路径（2026-10-12 CI 实测炸了两次）
+
+    原先写死 `.venv/bin/python`：
+    - **CI 上直接 `FileNotFoundError`** —— runner 用的是 setup-python 装的系统解释器，
+      `backend/.venv` 根本不存在。而且它是在"UI 冒烟"那个 job 里红的，
+      本地全绿、CI 全红，最容易怀疑错方向（我第一轮就怀疑错了）。
+
+    改成"用 `sys.executable`"又踩了第二个坑：这个检查**要在两个环境里都能跑** ——
+    CI 的 frontend job（`python3` 装过后端依赖）和本地随手 `python3 ops/xxx.py`
+    （那个 python3 通常**没装**依赖）。只看 `sys.executable` 时后者直接
+    `ModuleNotFoundError: No module named 'sqlalchemy'`。
+
+    所以按候选顺序**实际探测**谁能 import sqlalchemy，挑第一个能用的：
+    这样两边都不用改调用方式，也不会因为"换了台机器"就红。
+    """
+    candidates = [
+        sys.executable,                                   # 当前解释器（CI 就是它）
+        str(BACKEND / '.venv' / 'bin' / 'python'),        # 本地开发虚拟环境
+        str(BACKEND / '.venv' / 'Scripts' / 'python.exe'),  # Windows
+        'python3',
+        'python',
+    ]
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate != sys.executable and not (
+            os.path.isabs(candidate) and os.path.exists(candidate)
+        ) and os.path.isabs(candidate):
+            continue  # 候选是绝对路径但文件不存在
+        try:
+            probe = subprocess.run(
+                [candidate, '-c', 'import sqlalchemy'],
+                cwd=BACKEND, capture_output=True, text=True, timeout=60,
+                env={**os.environ, 'PYTHONPATH': '.'},
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if probe.returncode == 0:
+            return candidate
+    return None
+
+
 def main() -> int:
     problems: list[str] = []
 
@@ -109,17 +157,35 @@ def main() -> int:
 
     # 生成物是否最新：重跑生成器，看文件有没有变化
     before = GENERATED_TS.read_text(encoding='utf-8')
-    result = subprocess.run(
-        ['.venv/bin/python', 'scripts/gen_audit_field_labels.py'],
-        cwd=BACKEND, capture_output=True, text=True,
-        env={'PATH': '/usr/bin:/bin', 'PYTHONPATH': '.'},
-    )
-    if result.returncode != 0:
+    # ⚠️ **不许写死 `.venv/bin/python`**（2026-10-12 CI 实测炸过）：
+    # 那是 macOS 本地虚拟环境的相对路径，GitHub runner 上根本没这个文件 ——
+    # 报 `FileNotFoundError: [Errno 2] No such file or directory: '.venv/bin/python'`，
+    # 而且是在"UI 冒烟"这个**看起来跟它无关**的 job 里红的（本地全绿、CI 全红，
+    # 最容易怀疑错方向）。用 `sys.executable`：谁在跑这个检查，就用谁的解释器 ——
+    # 本地是 `.venv/bin/python`，CI 是 `python3`，两边都对。
+    interpreter = _python_with_backend_deps()
+    if interpreter is None:
+        problems.append(
+            '找不到"装了后端依赖"的解释器来重跑生成器 —— '
+            '无法核对 `audit-field-labels.ts` 是否最新。'
+            '本地请用 `backend/.venv/bin/python ops/check_audit_labels.py` 跑这个检查；'
+            'CI 请确认跑静态检查那一步的解释器装过后端 requirements。'
+        )
+        result = None
+    else:
+        # 继承当前环境、只**追加** PYTHONPATH：把 env 剥成干净字典会让子进程
+        # 找不到依赖（实测 `ModuleNotFoundError: sqlalchemy`）。
+        result = subprocess.run(
+            [interpreter, 'scripts/gen_audit_field_labels.py'],
+            cwd=BACKEND, capture_output=True, text=True,
+            env={**os.environ, 'PYTHONPATH': '.'},
+        )
+    if result is not None and result.returncode != 0:
         problems.append(
             '生成器跑失败（`gen_audit_field_labels.py`），无法核对产物：\n    '
             + (result.stderr or '').strip().splitlines()[-1] if result.stderr else '未知错误'
         )
-    else:
+    elif result is not None:
         after = GENERATED_TS.read_text(encoding='utf-8')
         if after != before:
             problems.append(

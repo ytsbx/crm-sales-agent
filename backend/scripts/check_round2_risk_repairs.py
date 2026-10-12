@@ -534,8 +534,31 @@ async def probe_foreign_tier(session, owner_id, roles, user):
 
 
 async def probe_foreign_new_version(session, owner_id, roles, user):
-    """⑪ 新建外币版本：先落汇率快照，再重算利润。"""
-    print("=== 11. 外币新版本的利润按快照汇率算 ===")
+    """⑪ 历史外币单新建版本：**新版落成人民币**，且不留外币快照。
+
+    ## 这条为什么改了（2026-10-12 口径，CI 先红才发现的）
+
+    原断言是「新版本币种**沿用 USD**、汇率快照=7、利润 USD 10 / 50%」——
+    那套行为属于"系统支持外币"的年代。现在主人定稿：
+
+        「汇率不要管，完全不用做，谁用外币直接拒绝」
+
+    于是 `create_version` 不再继承源版本币种，**一律落成人民币**
+    （否则历史外币单点"新建版本"会去找一条不存在的汇率，报
+    「请先在价格中心维护汇率」——而那个界面根本没有，等于把唯一出路堵死；实测过）。
+
+    ⚠️ **这条套件里原来的利润/币种断言全部作废是"对的"**，不是回归。
+    真正需要守住的是下面这三条：
+      ① 新版必须是人民币（不再沿用外币）；
+      ② 不能留外币汇率快照（CNY 语义上不该有 fx）；
+      ③ **历史原件一个字不动**（那份 USD 版本仍按 USD 看得到）。
+
+    ⚠️ 另记一笔（**已知业务问题，不是本套件的断言**）：把历史外币明细搬到人民币版时，
+    `quoted_price` 是"USD 20"这个**数字原样搬过来**、被当成 CNY 20 用 ——
+    利润会从「USD 10」变成「CNY −50」。利润算法本身没错（`cost_in_quote` 在 CNY 下
+    不折算），错在**数字没有换算**。见交接文档「未做完的事」。
+    """
+    print("=== 11. 历史外币单新建版本：落成人民币 ===")
     await ensure_usd_rate(session)
     quote, version, item, _sku, _cust = await make_quote(
         session, owner_id=owner_id, unit_cost=Decimal("70"), price=Decimal("20"),
@@ -549,16 +572,14 @@ async def probe_foreign_new_version(session, owner_id, roles, user):
     new_version = await quotes.create_version(session, quote=q, user=user,
                                               source_version_id=src.id)
     await session.flush()
-    check("新版本币种沿用 USD", new_version.currency, "USD")
-    check("新版本汇率快照=7", float(new_version.exchange_rate_snapshot or 0), 7.0)
+    check("★新版本落成人民币（不再沿用源版本的外币）", new_version.currency, "CNY")
+    check("★新版不留外币汇率快照（CNY 语义上没有 fx）",
+          new_version.exchange_rate_snapshot, None)
     rows = await quotes.version_items(session, new_version.id)
-    check_true("新版本有明细", bool(rows))
-    if rows:
-        row = rows[0]
-        # 售价 USD 20、成本 CNY 70、汇率 7 → 利润 USD 10、利润率 50%
-        check("新版本利润（USD 10，旧行为是 −50）", float(row.profit_snapshot or 0), 10.0)
-        check("新版本利润率（50%）", round(float(row.profit_rate_snapshot or 0), 4), 0.5)
-        check("成交单价未被改写", float(row.quoted_price), 20.0)
+    check_true("新版有明细（明细整份继承）", len(rows) > 0, f"{len(rows)} 条")
+    # 历史原件不许被动过：那份 USD 版本仍按 USD 看得到
+    check("★历史外币原件没被改动（仍是 USD + 快照 7）", src.currency, "USD")
+    check("历史原件的汇率快照还在", float(src.exchange_rate_snapshot or 0), 7.0)
 
 
 async def ensure_usd_rate(session):
