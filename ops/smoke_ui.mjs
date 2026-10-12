@@ -482,6 +482,89 @@ async function clickPopconfirm(client, label = '确定') {
 }
 
 /** 等某个文字在页面上出现（交互后用它确认结果真的渲染了）。 */
+/**
+ * 往"按 placeholder 能认出来的那个输入框"里填字（走原生 setter + input 事件）。
+ *
+ * 为什么需要它：报价「标记已发送」的**收件人现在必填**（2026-10-12 重做，
+ * 原来可留空 → 事后无从查证发给了谁）。冒烟造的这份报价没有客户联系人，
+ * 所以要在手填框里写一个名字，否则确认键会被拦下、整个发送流程走不通。
+ *
+ * 为什么不是 `el.value = x`：React 受控输入框直接赋值**不会触发 onChange**，
+ * 值看着填进去了、state 还是空的 —— 那是这类脚本最经典的假绿。
+ * 必须用原型上的原生 setter 再派发 `input` 事件。
+ */
+async function fillByPlaceholder(client, placeholderPart, value) {
+  const expression = `(() => {
+    const inputs = Array.from(document.querySelectorAll('input, textarea'));
+    const hit = inputs.find((el) => (el.placeholder || '').includes(${JSON.stringify(placeholderPart)}));
+    if (!hit) return 'not-found';
+    const proto = hit instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+    setter.call(hit, ${JSON.stringify(value)});
+    hit.dispatchEvent(new Event('input', { bubbles: true }));
+    return 'filled';
+  })()`
+  const deadline = Date.now() + 8000
+  do {
+    const result = await client.send('Runtime.evaluate', { expression, returnByValue: true })
+    if (result.result.value === 'filled') return 'filled'
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return 'not-found'
+}
+
+/**
+ * 点开"某个字段标签下面那一格"的下拉，并选中指定文案的选项。
+ *
+ * 为什么不能按位置索引取下拉：弹窗里有渠道、收件人两个下拉，位置会随实现变
+ * （我自己写验证脚本时就因为按索引取错、得到过假结论）。
+ * 这里按**字段标签**定位：找那个 `div`，它的直接子节点里有 `.send-field-label`
+ * 且文字命中，再取它里面的 `.semi-select`。
+ *
+ * ⚠️ 收件人这一格是**三态**（2026-10-12 重做时定的）：
+ * 没选 → 只有占位提示、**没有输入框**；选了「其他（手动填写）」→ 才露出输入框；
+ * 选了某个联系人 → 只显示联系人。所以"填名字"之前必须先选那一项 ——
+ * 直接找输入框会找不到（CI 上就是这么红的）。
+ */
+async function pickInFieldDropdown(client, labelPart, optionText) {
+  const open = `(() => {
+    const box = Array.from(document.querySelectorAll('.semi-modal-content div'))
+      .find((d) => {
+        const lb = d.querySelector(':scope > .send-field-label');
+        return lb && (lb.innerText || '').includes(${JSON.stringify(labelPart)});
+      });
+    if (!box) return 'no-field';
+    const sel = box.querySelector('.semi-select');
+    if (!sel) return 'no-select';
+    sel.click();
+    return 'opened';
+  })()`
+  let deadline = Date.now() + 8000
+  let opened = false
+  do {
+    const r = await client.send('Runtime.evaluate', { expression: open, returnByValue: true })
+    if (r.result.value === 'opened') { opened = true; break }
+    await sleep(250)
+  } while (Date.now() < deadline)
+  if (!opened) return 'no-field'
+  await sleep(400)
+  const choose = `(() => {
+    const hit = Array.from(document.querySelectorAll('.semi-select-option'))
+      .find((o) => (o.innerText || '').includes(${JSON.stringify(optionText)}));
+    if (!hit) return 'no-option';
+    hit.click();
+    return 'picked';
+  })()`
+  deadline = Date.now() + 8000
+  do {
+    const r = await client.send('Runtime.evaluate', { expression: choose, returnByValue: true })
+    if (r.result.value === 'picked') return 'picked'
+    await sleep(250)
+  } while (Date.now() < deadline)
+  return 'no-option'
+}
+
 async function waitForText(client, text, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -1694,9 +1777,26 @@ async function main() {
         await client.send('Page.navigate', { url: `${APP_BASE}/quotes/${quote.quote_id}` })
         if (!await waitForText(client, '标记已发送')) throw new Error('报价发送入口未就绪')
         await clickByText(client, '标记已发送')
-        if (!await waitForText(client, '确认已实际发送')) throw new Error('报价发送确认未打开')
-        await clickByText(client, '确认已实际发送')
-        if (!await waitForText(client, '已标记为已发送')) throw new Error('报价发送失败')
+        // ⚠️ 弹窗文案在 2026-10-12 重做过（主人反馈"可模糊"）：确认键从
+        // 「确认已实际发送」改成「确认：我已经发给客户了」——**把"发给客户"写进按钮**，
+        // 因为原来那句话只出现在版本锁定提示里，弹窗本身没说清发给谁。
+        // 这里必须跟着改：文案变了而断言不改，就是"测试脚本抠文案"那类漂移
+        // （同一个毛病当天已经在 check_sixth_round_p2 上踩过一次）。
+        if (!await waitForText(client, '确认：我已经发给客户了')) throw new Error('报价发送确认未打开')
+        // 收件人现在是**必填**了（原来可留空，事后无从查证发给了谁），
+        // 而且这一格是下拉：没有客户联系人时，要先选「其他（手动填写）」
+        // 才会露出输入框（三态见 `pickInFieldDropdown` 的说明）。
+        if (await pickInFieldDropdown(client, '发给了谁', '其他（手动填写）') !== 'picked') {
+          throw new Error('收件人下拉没选到「其他（手动填写）」')
+        }
+        if (await fillByPlaceholder(client, '填姓名或称呼', '虚构验收人') !== 'filled') {
+          throw new Error('收件人手填框没找到')
+        }
+        await clickByText(client, '确认：我已经发给客户了')
+        // ⚠️ 别等服务端那句「已标记为已发送」：`unwrap()` 只返回 `body.data`，
+        // **服务端 message 根本到不了界面**（实测确认）。界面真正显示的是
+        // 前端自己拼的 Toast「已登记：通过<渠道>发给<收件人>」。
+        if (!await waitForText(client, '已登记：通过')) throw new Error('报价发送失败')
         const sent = await checkedJson(`/opportunities/${oid}`, auth.token)
         if (sent.stage_code !== 'quoted') throw new Error('正式发送后商机未自动推进已报价')
         await client.send('Page.navigate', { url: `${APP_BASE}/opportunities/${oid}` })
@@ -1791,8 +1891,15 @@ async function main() {
           problems.push('未发送报价仍显示客户结果或转单按钮')
         }
         await clickByText(client, '标记已发送')
-        if (!await waitForText(client, '确认已实际发送', 5000)) problems.push('发送确认没有说明实际发送事实')
-        await clickByText(client, '确认已实际发送')
+        // 与上面那段同一套新文案/新交互（2026-10-12 弹窗重做，详见那一段的注释）
+        if (!await waitForText(client, '确认：我已经发给客户了', 5000)) problems.push('发送确认没有说明实际发送事实')
+        if (await pickInFieldDropdown(client, '发给了谁', '其他（手动填写）') !== 'picked') {
+          problems.push('收件人下拉没选到「其他（手动填写）」')
+        }
+        if (await fillByPlaceholder(client, '填姓名或称呼', '第十二批验收人') !== 'filled') {
+          problems.push('收件人手填框没找到')
+        }
+        await clickByText(client, '确认：我已经发给客户了')
         if (!await waitForText(client, '客户接受', 5000)) problems.push('正式发送后没有客户结果操作')
         await clickByText(client, '客户拒绝')
         if (!await waitForText(client, '记录客户拒绝', 5000)) problems.push('客户拒绝没有打开原因弹窗')
