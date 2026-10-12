@@ -2105,16 +2105,24 @@ async function main() {
           if (!opened || location.result.value !== item.sourcePath) {
             // 失败时把**现场**打出来：不打印就只能靠猜（我在这里猜错过一次 ——
             // 以为是分页把事件挤走了，实际链接就在本页、点击也发生了）。
+            // ⚠️ 这里**不要用正则**：模板字面量会把 `\n` 解释成**真实换行**，
+            // `replace(/\n+/g, …)` 到浏览器里就成了跨行的非法正则
+            // （`SyntaxError: Invalid regular expression: missing /`），
+            // 整个诊断返回 undefined —— 连"打印现场"都失败，只能再猜一轮。
+            // 用 split/join 拼换行，绕开转义地狱。
             const diag = await client.send('Runtime.evaluate', {
               expression: `JSON.stringify({
                 expectPath: ${JSON.stringify(item.sourcePath)},
                 nowPath: window.location.pathname,
                 expectText: ${JSON.stringify(item.sourceText ?? '订单明细')},
-                bodyHead: document.body.innerText.slice(0, 120).replace(/\n+/g, ' | '),
-                anchors: Array.from(document.querySelectorAll('a')).map((a) => a.getAttribute('href')).filter((h) => h && h.startsWith('/orders')).slice(0, 5),
+                bodyHead: document.body.innerText.slice(0, 160).split(String.fromCharCode(10)).join(' | '),
+                orderLinks: Array.from(document.querySelectorAll('a')).map((a) => a.getAttribute('href')).filter((h) => h && h.indexOf('/orders') === 0).slice(0, 5),
               })`, returnByValue: true,
             })
-            problems.push(`客户时间线：原单链接没有打开对应单据 —— ${diag.result.value}`)
+            const diagText = diag.result?.exceptionDetails
+              ? `诊断也失败了：${diag.result.exceptionDetails.exception?.description ?? '未知'}`
+              : String(diag.result?.value)
+            problems.push(`客户时间线：原单链接没有打开对应单据 —— ${diagText}`)
           }
         } else if (!item.sourceFallback) {
           problems.push(`客户时间线：本页找不到 ${item.sourcePath} 的「查看原单」链接（且这条没登记翻页兜底）`)
