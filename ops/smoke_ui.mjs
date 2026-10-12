@@ -1433,7 +1433,12 @@ async function main() {
     if (timelineFixture) INTERACTIONS.push({
       name: '35-customer-sample-source', path: `/customers/${customerId}?tab=logs`, clicks: [],
       expect: ['制作完成', '已签收', '客户确认：接受', '查看原单'], expectAll: true,
-      sourcePath: `/samples/${timelineFixture.sampleId}`, sourceText: `样品申请 #${timelineFixture.sampleId}`,
+      sourcePath: `/samples/${timelineFixture.sampleId}`,
+      // ⚠️ 文案跟界面走：详情弹窗标题是「**样品申请编号** 1」（全站去 `#` 拼编号
+      // 之后改的），原来这里等的是 `样品申请 #1` —— 永远匹配不上。
+      // 这类"文案改了、断言没跟"当天已经踩到第三次（`打样单 #`、发送弹窗按钮、
+      // 这里），凡是要匹配界面文字的断言，改文案时都必须一起搜一遍。
+      sourceText: `样品申请编号`,
       sourceFallback: true,  // 同上：不假设它一定在第 1 页
     })
 
