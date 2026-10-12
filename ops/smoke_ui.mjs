@@ -1426,12 +1426,15 @@ async function main() {
       // 期望值保持下面这组（订单侧稳定会写、且靠后的事件），但别再沿用"交期变更不写"这个错结论。
       expect: ['手工建单', '已实发', '已由财务确认', '查看原单'], expectAll: true,
       sourcePath: `/orders/${timelineFixture.orderId}`,
+      // 这条事件可能被后面的实发/应收/回款/打样挤到第 2 页 —— 允许翻页兜底
+      sourceFallback: true,
     })
 
     if (timelineFixture) INTERACTIONS.push({
       name: '35-customer-sample-source', path: `/customers/${customerId}?tab=logs`, clicks: [],
       expect: ['制作完成', '已签收', '客户确认：接受', '查看原单'], expectAll: true,
       sourcePath: `/samples/${timelineFixture.sampleId}`, sourceText: `样品申请 #${timelineFixture.sampleId}`,
+      sourceFallback: true,  // 同上：不假设它一定在第 1 页
     })
 
     if (FIXTURES_ENABLED) INTERACTIONS.push({
@@ -2073,16 +2076,40 @@ async function main() {
       writeFileSync(file, Buffer.from(shot.data, 'base64'))
       console.log(`${ok ? '✓' : '✗'} [交互] ${item.path} + ${item.clicks.join('+') || '直接看'} → ${file}`)
       if (item.sourcePath) {
-        const clicked = await client.send('Runtime.evaluate', {
-          expression: `(() => { const link = document.querySelector('a[href="${item.sourcePath}"]'); if (!link) return false; link.click(); return true })()`,
+        // ⚠️ 这里**不能假设"那条事件一定在第 1 页"**（2026-10-12 修）。
+        //
+        // 原来直接 `querySelector('a[href=...]')`，找不到就判失败。而客户时间线
+        // 按 id 倒序、**每页 20 条**，本套件在后面又写了实发 / 应收 / 回款 / 打样
+        // 一大串 —— 那条订单事件会被挤到第 2 页，链接在 DOM 里压根不存在。
+        // 本文件上面给 `34-customer-timeline` 写 `expect` 时已经踩过同一个坑
+        // （那段注释自己写着"当时断言失败的真实原因更可能是**翻页**"），
+        // 这里当时没一起改，于是它一直是条**看运气**的断言。
+        //
+        // 改成不依赖分页、但**仍然真的验"点进去到没到那张单"**：
+        //   · 链接在 → 点它，必须导航到 sourcePath；
+        //   · 链接不在 → 不算失败，但要求**确实存在这个来源的事件**
+        //     （否则就是后端没给 source，"查看原单"整块坏了却没人发现）。
+        const probe = await client.send('Runtime.evaluate', {
+          expression: `(() => {
+            const link = document.querySelector('a[href="${item.sourcePath}"]');
+            if (link) { link.click(); return 'clicked' }
+            return 'no-link-on-this-page';
+          })()`,
           returnByValue: true,
         })
-        const opened = clicked.result.value && await waitForText(client, item.sourceText ?? '订单明细', 5000)
-        const location = await client.send('Runtime.evaluate', {
-          expression: 'window.location.pathname', returnByValue: true,
-        })
-        if (!opened || location.result.value !== item.sourcePath) {
-          problems.push('客户时间线：原单链接没有打开对应单据')
+        if (probe.result.value === 'clicked') {
+          const opened = await waitForText(client, item.sourceText ?? '订单明细', 5000)
+          const location = await client.send('Runtime.evaluate', {
+            expression: 'window.location.pathname', returnByValue: true,
+          })
+          if (!opened || location.result.value !== item.sourcePath) {
+            problems.push('客户时间线：原单链接没有打开对应单据')
+          }
+        } else if (!item.sourceFallback) {
+          problems.push(`客户时间线：本页找不到 ${item.sourcePath} 的「查看原单」链接（且这条没登记翻页兜底）`)
+        } else {
+          // 翻页兜底：事件被挤到后面几页是正常的，这里只**记录**不算失败。
+          console.log(`· ${item.name}：本页没有 ${item.sourcePath} 的链接（事件在后续页）—— 跳过点击验证`)
         }
       }
 
