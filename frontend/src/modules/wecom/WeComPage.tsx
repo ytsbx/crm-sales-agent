@@ -6,6 +6,7 @@ import { listUsers } from '../../shared/api/system'
 import KpiStrip from '../../shared/components/KpiStrip'
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { listDictionaries } from '../../shared/api/settings'
 import {
   bindUnboundContact,
   createCustomerFromContact,
@@ -57,6 +58,10 @@ const SYNC_BUTTONS = [
 export default function WeComPage() {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+  const customerLevelsQuery = useQuery({
+    queryKey: ['dictionaries', 'customer_level'],
+    queryFn: () => listDictionaries('customer_level'),
+  })
   const canManage = can('wecom:manage')
 
   const [keywordInput, setKeywordInput] = useState('')
@@ -668,7 +673,7 @@ export default function WeComPage() {
             <Select
               value={createForm.level || undefined}
               onChange={(value) => setCreateForm({ ...createForm, level: value as string })}
-              optionList={['A', 'B', 'C', 'D'].map((value) => ({ value, label: `${value} 级` }))}
+              optionList={(customerLevelsQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))}
               showClear
               style={{ width: '100%' }}
             />

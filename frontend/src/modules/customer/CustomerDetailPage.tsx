@@ -26,6 +26,7 @@ import {
   type CustomerPayload,
 } from '../../shared/api/customer'
 import { listUsers } from '../../shared/api/system'
+import { listDictionaries } from '../../shared/api/settings'
 import { getCustomerTimeline, listFollowups, type FollowUp } from '../../shared/api/followup'
 import { listOpportunities, type Opportunity } from '../../shared/api/opportunity'
 import { listOrders, type Order } from '../../shared/api/order'
@@ -128,6 +129,10 @@ export default function CustomerDetailPage() {
     queryKey: ['customer', customerId],
     queryFn: () => getCustomer(customerId),
     enabled: Number.isFinite(customerId),
+  })
+  const customerLevelsQuery = useQuery({
+    queryKey: ['dictionaries', 'customer_level'],
+    queryFn: () => listDictionaries('customer_level'),
   })
 
   const contactsQuery = useQuery({
@@ -1075,7 +1080,10 @@ export default function CustomerDetailPage() {
               <Select
                 value={editForm.level ?? undefined}
                 onChange={(v) => setEditForm({ ...editForm, level: v as string })}
-                optionList={['A', 'B', 'C', 'D'].map((value) => ({ value, label: `${value} 级` }))}
+                optionList={(customerLevelsQuery.data ?? []).map((item) => ({
+                  value: item.code,
+                  label: item.label,
+                }))}
                 style={{ width: '100%' }}
               />
             </div>

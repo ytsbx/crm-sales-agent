@@ -35,6 +35,9 @@ import {
   batchDecideRecycleCandidates,
   decideRecycleCandidate,
   listPublicPoolRules,
+  listDictionaries,
+  createDictionary,
+  updateDictionary,
   listRecycleCandidates,
   listSettings,
   listTaskRules,
@@ -49,19 +52,22 @@ import {
   type RecycleStatus,
   type SystemSettingRow,
   type TaskRuleRow,
+  type DictionaryItemRow,
 } from '../../shared/api/settings'
-import { Button, Input, Modal, Popconfirm, Select, Switch, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Switch, TextArea, Toast } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import { settingDescription, settingLabel } from '../../shared/setting-labels'
 
 const TABS = [
   { tab: '用户', itemKey: 'users' },
   { tab: '角色与数据范围', itemKey: 'roles' },
   { tab: '部门', itemKey: 'departments' },
   { tab: '客户标签', itemKey: 'tags' },
+  { tab: '数据字典', itemKey: 'dictionaries' },
   { tab: '通知', itemKey: 'notifications' },
   { tab: '审计日志', itemKey: 'audit' },
   { tab: '业务规则', itemKey: 'rules' },
@@ -140,6 +146,14 @@ export default function SettingsPage() {
     queryKey: ['system-settings'],
     queryFn: listSettings,
     enabled: isAdmin && activeKey === 'rules',
+  })
+  const dictionariesQuery = useQuery({
+    queryKey: ['settings-dictionaries'],
+    queryFn: () => listDictionaries(undefined, false),
+    enabled: isAdmin && activeKey === 'dictionaries',
+  })
+  const [dictionaryForm, setDictionaryForm] = useState({
+    type: 'customer_level', code: '', label: '', sort_no: '0', remark: '',
   })
   // 恢复权限要从权限表里挑，不能让人手敲：敲错一个字母，界面上看起来"设好了"，
   // 实际谁都恢复不了（后端也会拒，但不如直接给选项清楚）
@@ -237,6 +251,84 @@ export default function SettingsPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+  const dictionaryMutation = useMutation({
+    mutationFn: () => createDictionary({
+      type: dictionaryForm.type,
+      code: dictionaryForm.code.trim(),
+      label: dictionaryForm.label.trim(),
+      sort_no: Number(dictionaryForm.sort_no) || 0,
+      remark: dictionaryForm.remark.trim() || undefined,
+    }),
+    onSuccess: () => {
+      Toast.success('字典项已创建')
+      setDictionaryForm((current) => ({ ...current, code: '', label: '', remark: '' }))
+      void queryClient.invalidateQueries({ queryKey: ['settings-dictionaries'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const dictionaryUpdateMutation = useMutation({
+    mutationFn: ({ id, changes }: { id: number; changes: Parameters<typeof updateDictionary>[1] }) => updateDictionary(id, changes),
+    onSuccess: () => {
+      Toast.success('字典项状态已保存')
+      void queryClient.invalidateQueries({ queryKey: ['settings-dictionaries'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const renderSettingValue = (record: SystemSettingRow) => {
+    const raw = record.value ?? {}
+    if (record.key === 'approval_levels' && Array.isArray(raw.levels)) {
+      const levels = raw.levels as Array<Record<string, unknown>>
+      return (
+        <div style={{ display: 'grid', gap: 8, minWidth: 360 }}>
+          <Table
+            size="small"
+            pagination={false}
+            rowKey="node"
+            dataSource={levels}
+            columns={[
+              { title: '级别', dataIndex: 'label', render: (value: unknown) => String(value ?? '-') },
+              { title: '金额上限', dataIndex: 'max_amount', render: (value: unknown) => value == null ? '不限' : String(value) },
+              {
+                title: '可审批角色',
+                dataIndex: 'role_codes',
+                render: (value: unknown) => Array.isArray(value) ? value.join('、') : '-',
+              },
+            ]}
+          />
+          <TextArea
+            defaultValue={JSON.stringify(raw, null, 2)}
+            rows={3}
+            placeholder="按 JSON 格式编辑审批分级"
+            onBlur={(event) => {
+              const next = event.target.value.trim()
+              if (!next || next === JSON.stringify(raw, null, 2)) return
+              try {
+                const parsed = JSON.parse(next) as Record<string, unknown>
+                if (!Array.isArray(parsed.levels)) throw new Error('levels 必须是数组')
+                settingMutation.mutate({ key: record.key, value: parsed })
+              } catch {
+                Toast.error('报价审批分级必须是有效的 JSON，且包含 levels 数组')
+              }
+            }}
+          />
+        </div>
+      )
+    }
+    const first = Object.values(raw)[0]
+    const key = Object.keys(raw)[0] ?? 'text'
+    return (
+      <Input
+        defaultValue={first === undefined ? '' : String(first)}
+        style={{ width: 260 }}
+        onBlur={(event) => {
+          const next = (event.target as HTMLInputElement).value
+          if (next === String(first ?? '')) return
+          settingMutation.mutate({ key: record.key, value: { [key]: next } })
+        }}
+      />
+    )
+  }
 
   const recycleMutation = useMutation({
     mutationFn: runPublicPoolRecycle,
@@ -920,6 +1012,93 @@ export default function SettingsPage() {
               />
             </>
           )}
+          {activeKey === 'dictionaries' && (
+            <>
+              <div style={{ color: 'var(--crm-text-2)', fontSize: 13, marginBottom: 12 }}>
+                客户等级和产品分类从这里维护；业务表单只允许选择启用的选项，历史数据不会被自动改写。
+              </div>
+              <div className="toolbar">
+                <Select
+                  style={{ width: 150 }}
+                  value={dictionaryForm.type}
+                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, type: String(value) })}
+                  optionList={[
+                    { value: 'customer_level', label: '客户等级' },
+                    { value: 'product_category', label: '产品分类' },
+                  ]}
+                />
+                <Input
+                  style={{ width: 150 }}
+                  placeholder="编码，如 A"
+                  value={dictionaryForm.code}
+                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, code: value })}
+                />
+                <Input
+                  style={{ width: 180 }}
+                  placeholder="显示名称"
+                  value={dictionaryForm.label}
+                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, label: value })}
+                />
+                <Input
+                  style={{ width: 100 }}
+                  placeholder="排序"
+                  value={dictionaryForm.sort_no}
+                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, sort_no: value })}
+                />
+                <Button
+                  theme="solid"
+                  loading={dictionaryMutation.isPending}
+                  disabled={!dictionaryForm.code.trim() || !dictionaryForm.label.trim()}
+                  onClick={() => dictionaryMutation.mutate()}
+                >
+                  新建字典项
+                </Button>
+              </div>
+              <Table<DictionaryItemRow>
+                columns={[
+                  { title: '类型', dataIndex: 'type', width: 140, render: (value: string) => value === 'customer_level' ? '客户等级' : value === 'product_category' ? '产品分类' : value },
+                  { title: '编码', dataIndex: 'code', width: 140 },
+                  { title: '名称', dataIndex: 'label' },
+                  { title: '排序', dataIndex: 'sort_no', width: 80 },
+                  {
+                    title: '状态', dataIndex: 'enabled', width: 100,
+                    render: (value: boolean) => <Tag color={value ? 'green' : 'grey'}>{value ? '启用' : '停用'}</Tag>,
+                  },
+                  {
+                    title: '操作', width: 120,
+                    render: (_: unknown, record: DictionaryItemRow) => (
+                      <span style={{ display: 'inline-flex', gap: 6 }}>
+                        <Button
+                          theme="borderless"
+                          size="small"
+                          loading={dictionaryUpdateMutation.isPending}
+                          onClick={() => {
+                            const label = window.prompt('修改显示名称', record.label)?.trim()
+                            if (label) dictionaryUpdateMutation.mutate({ id: record.id, changes: { label } })
+                          }}
+                        >
+                          编辑
+                        </Button>
+                        <Button
+                          theme="borderless"
+                          size="small"
+                          loading={dictionaryUpdateMutation.isPending}
+                          onClick={() => dictionaryUpdateMutation.mutate({ id: record.id, changes: { enabled: !record.enabled } })}
+                        >
+                          {record.enabled ? '停用' : '启用'}
+                        </Button>
+                      </span>
+                    ),
+                  },
+                ]}
+                dataSource={dictionariesQuery.data ?? []}
+                loading={dictionariesQuery.isLoading}
+                rowKey="id"
+                pagination={false}
+                empty="还没有数据字典项"
+              />
+            </>
+          )}
           {activeKey === 'notifications' && <NotificationSettingsPanel />}
           {activeKey === 'audit' && (
             <Table<AuditLogRow>
@@ -1512,27 +1691,25 @@ export default function SettingsPage() {
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>系统配置</div>
                 <Table<SystemSettingRow>
                   columns={[
-                    { title: '配置项', dataIndex: 'key', width: 240 },
-                    { title: '说明', dataIndex: 'description', width: 260, render: (v: string | null) => v ?? '-' },
                     {
-                      title: '值',
-                      render: (_: unknown, record: SystemSettingRow) => {
-                        const raw = record.value ?? {}
-                        const first = Object.values(raw)[0]
-                        return (
-                          <Input
-                            defaultValue={first === undefined ? '' : String(first)}
-                            style={{ width: 260 }}
-                            onBlur={(event) => {
-                              const next = (event.target as HTMLInputElement).value
-                              if (next === String(first ?? '')) return
-                              const key = Object.keys(raw)[0] ?? 'text'
-                              settingMutation.mutate({ key: record.key, value: { [key]: next } })
-                            }}
-                          />
-                        )
-                      },
+                      title: '配置项',
+                      dataIndex: 'key',
+                      width: 240,
+                      render: (key: string) => (
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{settingLabel(key)}</div>
+                          <div style={{ color: 'var(--crm-text-3)', fontSize: 11 }}>内部标识：{key}</div>
+                        </div>
+                      ),
                     },
+                    {
+                      title: '说明',
+                      width: 280,
+                      render: (_: unknown, record: SystemSettingRow) => (
+                        <span>{settingDescription(record.key, record.description)}</span>
+                      ),
+                    },
+                    { title: '值', render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record) },
                   ]}
                   dataSource={settingsQuery.data ?? []}
                   loading={settingsQuery.isLoading}

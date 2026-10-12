@@ -41,6 +41,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import { listDictionaries } from '../../shared/api/settings'
 
 const TABS = [
   { tab: '客户查价', itemKey: 'lookup' },
@@ -509,6 +510,10 @@ export default function PriceCenterPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { can } = usePermissions()
+  const customerLevelsQuery = useQuery({
+    queryKey: ['dictionaries', 'customer_level'],
+    queryFn: () => listDictionaries('customer_level'),
+  })
   const canManage = can('price:manage')
 
   // 默认落在「客户查价」：这是价格中心最高频的入口，
@@ -1904,7 +1909,7 @@ export default function PriceCenterPage() {
               <Select
                 value={ruleForm.customer_level || undefined}
                 onChange={(value) => setRuleForm({ ...ruleForm, customer_level: (value as string) ?? '' })}
-                optionList={['A', 'B', 'C', 'D'].map((value) => ({ value, label: `${value} 级` }))}
+                optionList={(customerLevelsQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))}
                 showClear
                 style={{ width: '100%' }}
               />

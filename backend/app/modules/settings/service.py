@@ -32,6 +32,7 @@ from app.modules.sample.model import (
     SampleRequest,
 )
 from app.modules.settings.model import (
+    DictionaryItem,
     RECYCLE_OPEN_STATUSES,
     RECYCLE_STATUS_LABEL,
     PublicPoolRecycleCandidate,
@@ -332,6 +333,34 @@ async def get_list(session: AsyncSession, key: str, field: str = "levels") -> li
     value = await get_setting(session, key)
     raw = value.get(field)
     return raw if isinstance(raw, list) else []
+
+
+async def ensure_dictionary_value(
+    session: AsyncSession,
+    *,
+    type: str,
+    code: str | None,
+    field_label: str,
+) -> None:
+    """校验业务字段引用的是启用中的受控字典项。"""
+    if code is None or not str(code).strip():
+        return
+    value = str(code).strip()
+    row = (
+        await session.execute(
+            select(DictionaryItem).where(
+                DictionaryItem.type == type,
+                DictionaryItem.code == value,
+                DictionaryItem.enabled.is_(True),
+            )
+        )
+    ).scalars().first()
+    if row is None:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{field_label}“{value}”不在启用中的数据字典里，请先在系统设置维护",
+            400,
+        )
 
 
 async def get_setting(session: AsyncSession, key: str) -> dict:

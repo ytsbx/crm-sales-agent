@@ -129,6 +129,9 @@ async def create_customer(
     from app.core import idempotency
 
     data = payload.model_dump()
+    await settings_service.ensure_dictionary_value(
+        session, type="customer_level", code=data.get("level"), field_label="客户等级"
+    )
     request_key = idempotency.request_key_from(request, data.pop("request_key", None))
 
     reservation = None
@@ -221,6 +224,10 @@ async def update_customer(
     customer = await svc.get_visible_customer(session, user, customer_id)
     before = svc.serialize_customer(customer)
     changes = payload.model_dump(exclude_unset=True)
+    if "level" in changes:
+        await settings_service.ensure_dictionary_value(
+            session, type="customer_level", code=changes.get("level"), field_label="客户等级"
+        )
     for field, value in changes.items():
         setattr(customer, field, value)
     # 补核历史联系时间（第七批 7.5）：填了真实联系时间就说明"未知"不成立了，

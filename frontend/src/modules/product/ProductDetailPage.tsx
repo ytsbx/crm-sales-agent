@@ -23,12 +23,18 @@ import {
   enableSku,
   getProduct,
   getSkuMaster,
+  listSkuIdentitySources,
+  replaySkuIdentity,
+  renameSkuIdentity,
+  stopSkuIdentity,
+  setSkuFieldAuthority,
   listProductSkus,
   updateProduct,
   updateSku,
   type ProductPayload,
   type SkuMasterDiff,
   type SkuMasterField,
+  type SkuIdentitySource,
   type SkuPayload,
 } from '../../shared/api/product'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -41,6 +47,7 @@ import { listBusinessFilesBatch, uploadFile, type FileRow } from '../../shared/a
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
+import { listDictionaries } from '../../shared/api/settings'
 
 /**
  * 主数据差异的中文口径与核定结论。
@@ -177,6 +184,10 @@ export default function ProductDetailPage() {
     queryFn: () => listProductSkus(productId),
     enabled: Number.isFinite(productId),
   })
+  const categoriesQuery = useQuery({
+    queryKey: ['dictionaries', 'product_category'],
+    queryFn: () => listDictionaries('product_category'),
+  })
 
   // SKU 列表要显示缩略图。**用批量接口一次取**：逐行调就是 N+1，
   // 一个产品有几个型号就发几个请求（见 `listBusinessFilesBatch` 的注释）。
@@ -287,6 +298,37 @@ export default function ProductDetailPage() {
     queryFn: () => getSkuMaster(masterSku!.id),
     enabled: masterSku !== null,
   })
+  const identityQuery = useQuery({
+    queryKey: ['sku-identities', masterSku?.id],
+    queryFn: () => listSkuIdentitySources(masterSku!.id),
+    enabled: masterSku !== null,
+  })
+  const identityActionMutation = useMutation({
+    mutationFn: async ({ action, source }: { action: 'replay' | 'rename' | 'stop'; source: SkuIdentitySource }) => {
+      if (action === 'replay') return replaySkuIdentity(source.id)
+      if (action === 'rename') {
+        const next = window.prompt('请输入来源的新编码', source.external_code)?.trim()
+        if (!next) throw new Error('未填写新编码')
+        return renameSkuIdentity(source.id, next)
+      }
+      return stopSkuIdentity(source.id, window.prompt('停用说明（可选）') ?? undefined)
+    },
+    onSuccess: () => {
+      Toast.success('来源台账已更新')
+      void queryClient.invalidateQueries({ queryKey: ['sku-identities', masterSku?.id] })
+      void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const authorityMutation = useMutation({
+    mutationFn: ({ fieldName, authority }: { fieldName: string; authority: string | null }) =>
+      setSkuFieldAuthority({ sku_id: masterSku!.id, field_name: fieldName, authority }),
+    onSuccess: () => {
+      Toast.success('字段权威归属已保存')
+      void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   const confirmDiffMutation = useMutation({
     mutationFn: ({ diffId, resolution, note }: { diffId: number; resolution: string; note?: string }) =>
@@ -388,8 +430,24 @@ export default function ProductDetailPage() {
     },
     {
       title: '权威归属',
-      width: 100,
-      render: (_: unknown, record: SkuMasterField) => record.authority_label,
+      width: 150,
+      render: (_: unknown, record: SkuMasterField) => (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          <span>{record.authority_label}</span>
+          {canManage && (
+            <Button
+              size="small"
+              theme="borderless"
+              onClick={() => {
+                const next = window.prompt('填写权威来源（留空表示未拍板）', record.authority ?? record.source_system ?? '')
+                if (next !== null) authorityMutation.mutate({ fieldName: record.field_name, authority: next.trim() || null })
+              }}
+            >
+              设置
+            </Button>
+          )}
+        </span>
+      ),
     },
     {
       title: '上次确认值',
@@ -704,9 +762,12 @@ export default function ProductDetailPage() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>分类</div>
-              <Input
-                value={productForm.category ?? ''}
-                onChange={(v) => setProductForm({ ...productForm, category: v })}
+              <Select
+                value={productForm.category || undefined}
+                onChange={(v) => setProductForm({ ...productForm, category: String(v) })}
+                optionList={(categoriesQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))}
+                placeholder="选择产品分类"
+                style={{ width: '100%' }}
               />
             </div>
           </div>
@@ -902,6 +963,42 @@ export default function ProductDetailPage() {
                 <li key={note}>{note}</li>
               ))}
             </ul>
+            <div>
+              <div style={{ fontWeight: 500, marginBottom: 8 }}>外部来源台账</div>
+              <Table<SkuIdentitySource>
+                size="small"
+                pagination={false}
+                loading={identityQuery.isLoading}
+                dataSource={identityQuery.data?.items ?? []}
+                rowKey="id"
+                columns={[
+                  { title: '来源系统', dataIndex: 'system_type', width: 110 },
+                  { title: '外部编码', dataIndex: 'external_code', width: 150 },
+                  { title: '外部名称', dataIndex: 'external_name', width: 150, render: (v: string | null) => v ?? '—' },
+                  {
+                    title: '状态', dataIndex: 'match_status', width: 100,
+                    render: (v: string) => ({ matched: '已匹配', pending: '待匹配', conflict: '有冲突', renamed: '已改码', stopped: '已停用' }[v] ?? v),
+                  },
+                  {
+                    title: '操作', width: 220,
+                    render: (_: unknown, source: SkuIdentitySource) => (
+                      <span style={{ display: 'inline-flex', gap: 8 }}>
+                        {source.match_status === 'pending' && (
+                          <Button size="small" theme="borderless" onClick={() => identityActionMutation.mutate({ action: 'replay', source })}>重放匹配</Button>
+                        )}
+                        {source.match_status !== 'stopped' && (
+                          <>
+                            <Button size="small" theme="borderless" onClick={() => identityActionMutation.mutate({ action: 'rename', source })}>登记改码</Button>
+                            <Button size="small" theme="borderless" type="danger" onClick={() => identityActionMutation.mutate({ action: 'stop', source })}>标记停用</Button>
+                          </>
+                        )}
+                      </span>
+                    ),
+                  },
+                ]}
+                empty="暂无外部来源记录"
+              />
+            </div>
             <Table<SkuMasterField>
               columns={masterFieldColumns}
               dataSource={masterQuery.data.fields}

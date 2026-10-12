@@ -15,7 +15,6 @@ import {
   type PricingScenario,
   type PricingSimulationResult,
 } from '../../shared/api/pricing'
-import { getPublicConfig } from '../../shared/api/settings'
 import { agentPricingAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 import { usePermissions } from '../../shared/hooks/permissions'
 import AgentInsight from '../../shared/components/AgentInsight'
@@ -48,20 +47,12 @@ export default function PricingPage() {
   const [quotedPrice, setQuotedPrice] = useState(
     paramNumber('quoted_price') !== undefined ? String(paramNumber('quoted_price')) : '',
   )
-  // 外贸口径：默认人民币；只有选了外币，汇率与退税率才出现
-  const [currency, setCurrency] = useState('CNY')
-  const [exchangeRate, setExchangeRate] = useState('')
-  const [taxRefundRate, setTaxRefundRate] = useState('')
 
   const customersQuery = useQuery({
     queryKey: ['customers-for-select'],
     queryFn: () => listCustomers({ page: 1, page_size: 100 }),
   })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
-  // 贸易模式决定要不要显示外贸相关输入：国内模式下整块都不出现
-  const configQuery = useQuery({ queryKey: ['public-config'], queryFn: getPublicConfig })
-  const exportEnabled = (configQuery.data?.trade_mode ?? 'domestic') !== 'domestic'
-
   const quantityNumber = Number(quantity)
   const payload = {
     sku_id: skuId,
@@ -70,10 +61,6 @@ export default function PricingPage() {
     logistics_cost: logisticsCost.trim() ? Number(logisticsCost) : null,
     target_margin: targetMargin.trim() ? Number(targetMargin) : null,
     quoted_price: quotedPrice.trim() ? Number(quotedPrice) : null,
-    // 国内模式下一律按人民币口径核价，不往外传币种与退税
-    currency: exportEnabled ? currency : 'CNY',
-    exchange_rate: exportEnabled && exchangeRate.trim() ? Number(exchangeRate) : null,
-    tax_refund_rate: exportEnabled && taxRefundRate.trim() ? Number(taxRefundRate) : null,
   }
 
   const resultQuery = useQuery({
@@ -208,40 +195,9 @@ export default function PricingPage() {
                 「权限校验」要判断的也是这个价，空着点不动
               </div>
             </div>
-            {exportEnabled && (
-              <div>
-                <div style={{ marginBottom: 4 }}>报价币种</div>
-                <Select
-                  value={currency}
-                  onChange={(value) => setCurrency(value as string)}
-                  optionList={['CNY', 'USD', 'EUR'].map((code) => ({
-                    value: code,
-                    label: code === 'CNY' ? 'CNY 人民币' : `${code} 外币`,
-                  }))}
-                  style={{ width: '100%' }}
-                />
-              </div>
-            )}
-            {exportEnabled && currency !== 'CNY' && (
-              <>
-                <div>
-                  <div style={{ marginBottom: 4 }}>汇率（1 {currency} 兑人民币）</div>
-                  <Input
-                    value={exchangeRate}
-                    onChange={setExchangeRate}
-                    placeholder="例如 7.2"
-                  />
-                </div>
-                <div>
-                  <div style={{ marginBottom: 4 }}>出口退税率（没有就留空）</div>
-                  <Input
-                    value={taxRefundRate}
-                    onChange={setTaxRefundRate}
-                    placeholder="例如 0.13"
-                  />
-                </div>
-              </>
-            )}
+            <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+              本系统只做国内业务，核价统一使用人民币（CNY）。
+            </div>
           </div>
         </SectionCard>
 

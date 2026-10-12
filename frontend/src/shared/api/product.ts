@@ -160,6 +160,23 @@ export interface SkuMasterDiff {
   evidence: Record<string, unknown> | null
 }
 
+export interface SkuIdentitySource {
+  id: number
+  sku_id: number | null
+  system_type: string
+  shop_id: string | null
+  external_code: string
+  external_name: string | null
+  match_status: string
+  match_basis: string | null
+  superseded_by_code: string | null
+  source_updated_at: string | null
+  first_seen_at: string | null
+  last_seen_at: string | null
+  note: string | null
+  has_pending_payload: boolean
+}
+
 export interface SkuMasterOverview {
   sku_id: number
   sku_code: string
@@ -172,6 +189,28 @@ export interface SkuMasterOverview {
 
 export function getSkuMaster(skuId: number) {
   return api.get<SkuMasterOverview>(`/sku-master/skus/${skuId}`)
+}
+
+export function listSkuIdentitySources(skuId: number) {
+  return api.get<PageResult<SkuIdentitySource>>('/sku-master/identities', {
+    sku_id: skuId, page: 1, page_size: 50,
+  })
+}
+
+export function replaySkuIdentity(sourceId: number) {
+  return api.post(`/sku-master/identities/${sourceId}/replay`)
+}
+
+export function renameSkuIdentity(sourceId: number, newExternalCode: string) {
+  return api.post(`/sku-master/identities/${sourceId}/rename`, { new_external_code: newExternalCode })
+}
+
+export function stopSkuIdentity(sourceId: number, note?: string) {
+  return api.post(`/sku-master/identities/${sourceId}/stop`, { note })
+}
+
+export function setSkuFieldAuthority(payload: { sku_id: number; field_name: string; authority?: string | null }) {
+  return api.post('/sku-master/authority', payload)
 }
 
 /** 本地直接确认的结果。 */

@@ -16,6 +16,38 @@ export interface SystemSettingRow {
   is_default?: boolean
 }
 
+export interface DictionaryItemRow {
+  id: number
+  type: string
+  code: string
+  label: string
+  sort_no: number
+  enabled: boolean
+  remark?: string | null
+}
+
+export function listDictionaries(type?: string, enabledOnly = true) {
+  return api.get<DictionaryItemRow[]>('/dictionaries', {
+    ...(type ? { type } : {}),
+    enabled_only: enabledOnly,
+  })
+}
+
+export function createDictionary(payload: {
+  type: string
+  code: string
+  label: string
+  sort_no?: number
+  enabled?: boolean
+  remark?: string
+}) {
+  return api.post<DictionaryItemRow>('/dictionaries', payload)
+}
+
+export function updateDictionary(id: number, payload: Partial<Pick<DictionaryItemRow, 'label' | 'sort_no' | 'enabled' | 'remark'>>) {
+  return api.patch<DictionaryItemRow>(`/dictionaries/${id}`, payload)
+}
+
 export interface PublicPoolRuleRow {
   id: number
   level: string

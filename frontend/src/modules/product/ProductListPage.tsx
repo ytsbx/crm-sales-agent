@@ -12,6 +12,7 @@ import type { Product } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
+import { listDictionaries } from '../../shared/api/settings'
 
 const EMPTY_FORM: ProductPayload = {
   name: '',
@@ -60,6 +61,10 @@ export default function ProductListPage() {
   const [pageSize, setPageSize] = useState(10)
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<ProductPayload>(EMPTY_FORM)
+  const categoriesQuery = useQuery({
+    queryKey: ['dictionaries', 'product_category'],
+    queryFn: () => listDictionaries('product_category'),
+  })
 
   // 批量导入/导出（产品报价中心 · 第一批：资料库整理入口）
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -293,10 +298,12 @@ export default function ProductListPage() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>分类</div>
-              <Input
-                value={form.category ?? ''}
-                onChange={(v) => setForm({ ...form, category: v })}
-                placeholder="物流器具"
+              <Select
+                value={form.category || undefined}
+                onChange={(v) => setForm({ ...form, category: String(v) })}
+                optionList={(categoriesQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))}
+                placeholder="选择产品分类"
+                style={{ width: '100%' }}
               />
             </div>
           </div>
