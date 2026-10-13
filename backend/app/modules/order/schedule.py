@@ -235,10 +235,26 @@ async def confirm_change(
     user: CurrentUser,
     remark: str | None,
 ) -> OrderScheduleChange:
-    """责任人确认后才真正改动：订单交期、节点计划日、批次计划日。"""
+    """责任人确认后才真正改动：订单交期、节点计划日、批次计划日。
+
+    ## 授权判据必须在**锁内**重判（第十批审查 ⑤，2026-10-13）
+
+    原来路由是"无锁读订单 → 判可见性/责任人 → 调这里"。看起来没问题，
+    但**判据与生效之间可以插进一次"转移负责人"**：真并发实测（6 轮 5 中）
+    旧负责人的确认请求先过检查、先拿到订单锁，主管的转移随后提交 ——
+    旧负责人照样把交期改掉了，事后看是"一个已经不管这张单的人改了交期"。
+
+    现在：先在锁内**重判数据范围**（`ensure_in_scope`，与
+    `order.service.get_visible_order` 同一把尺子），再往下改。
+    可见性变了就当场 403，绝不落到写操作上。
+    """
     # 行锁：两个人同时点"确认"时，第二个必须等第一个提交完再读状态，
     # 否则两边都读到 pending、都往下走，计划日被写两遍。
     order = await lock_order(session, order)
+    # ⚠️ 锁内重判范围 —— 这一行就是上面那段说的修法。挪到写操作**之前**。
+    from app.core.data_scope import ensure_in_scope
+
+    await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
     locked = (
         await session.execute(
             select(OrderScheduleChange)

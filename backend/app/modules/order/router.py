@@ -691,13 +691,30 @@ async def confirm_schedule_change(
     from app.modules.order import schedule as schedule_svc
     from app.modules.order.model import OrderScheduleChange
 
-    order = await svc.get_visible_order(session, user, order_id)
-    row = await session.get(OrderScheduleChange, change_id)
+    # ⚠️ **先锁订单行、再判可见性与资格**（第十批审查 ⑤，2026-10-13）。
+    #
+    # 原来这里是无锁读（`get_visible_order` 不取锁）+ 无锁 `session.get(变更单)`：
+    # 旧负责人先过权限检查、随后在订单锁上等待；主管用真实接口转移负责人并提交；
+    # 旧请求拿到锁后**不再重查范围**，照样确认成功并改掉交期。
+    #
+    # 与里程碑那条同一手法（`GET /milestones` 用 `for_update=True`）：
+    # 锁住并**刷新**订单，后面的"还在我的范围内吗 / 我还是责任人吗"都基于锁内最新事实。
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
+    row = (
+        await session.execute(
+            select(OrderScheduleChange)
+            .where(OrderScheduleChange.id == change_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if row is None or row.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
     # 「责任人确认」要真的是责任人：只查 order:manage + 可见性的话，
     # 任何能改订单的同事都能替别人确认，这个动作就成了摆设。
     # 例外是主管（order:assign 是归属类独立授权）：交接/离职后需要有人收口。
+    #
+    # ⚠️ 这段必须在**锁内**读：`order` 此刻已刷新，且 `row` 也是锁内最新值，
+    # 否则"转移之后旧负责人仍能确认"这个洞就还在。
     if row.owner_id and user.id != row.owner_id and not user.has("order:assign"):
         raise AppError(
             ErrorCode.FORBIDDEN,

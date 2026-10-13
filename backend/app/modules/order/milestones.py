@@ -23,7 +23,7 @@ from app.core.errors import AppError, ErrorCode
 # 跟着宿主机时区走 —— 服务器换成 UTC 之后，北京时间凌晨的判定会差一天。
 from app.core.timebase import today_business
 from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
-from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.payment.model import PaymentAllocation, PaymentRecord, ReceivablePlan
 
 logger = logging.getLogger("crm.milestones")
 
@@ -283,23 +283,77 @@ async def sync_payment_milestones(
     #
     # 口径（与报告一致）：逐期算"这一期收够了没有"，
     # 多收的钱走明确的分配/核销流程转到别期，**不在这里自动抵消**。
-    per_plan = (
+    # ⚠️ "已收"读的是**分配额**（`payment_allocations`），不是
+    # `payment_records.receivable_plan_id`（第十批主人 2026-10-13 拍板）。
+    #
+    # 那个列是"登记时选的那一期"（用户意图）；分配表才是"这笔钱实际覆盖了哪些期"。
+    # 两者只在**不超收**时一致 —— 一笔 200 挂在一期应收 100 上时，按前者会把 200
+    # 全算给一期（二期永远显示未收），按后者才是 100 归一期、100 抵二期。
+    # ⚠️ 逐期"已收"**必须调 `payment.confirmed_amount`**，不要在这里再写一份
+    # 聚合 SQL（我第一版就是这么写的，结果漏了那边的"无分配行回款"兜底，
+    # 同一个数在财务页对、在跟单节点上不对 —— 两份实现必然漂移）。
+    # ⚠️ **懒平衡**：这张单有已确认回款、却一条分配都没有时，先补一次平衡
+    # （第十批 2026-10-13）。
+    #
+    # 什么时候会这样：历史补数/测试夹具**直接插 `payment_records`**，没走
+    # "确认回款"那条路（那条路会分配）。不补的话，按分配表汇总会把已经收到的钱
+    # 算成没收 —— 于是"明明收齐了却显示未收"，比改造前更难查（实测
+    # `check_round3_risk_repairs` 就是这么红的）。
+    #
+    # 正常流程不会走到这里：确认回款时就分配好了，`not exists` 不成立，零开销。
+    # 判据不是"有没有分配"，而是"**已确认收到的钱是不是都分配出去了**"：
+    #   · 夹具/历史补数直接插回款 → 一条分配都没有 → 要平衡（实测踩到）；
+    #   · 应收被改大后，原来分配的额度不够覆盖收到的钱 → **也要再平衡**
+    #     （`check_round3_risk_repairs` 的第二段就是这个情形：
+    #      期1 从 100 改大到 200，期2 那笔 1000 的钱得重新按到期日铺一遍）。
+    # 正常流程下"已分配 == 已确认"，这里不成立、零开销。
+    allocation_state = (
         await session.execute(
             select(
-                ReceivablePlan.id,
-                ReceivablePlan.amount,
                 func.coalesce(
-                    select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
+                    select(func.sum(PaymentAllocation.amount))
+                    .join(PaymentRecord, PaymentRecord.id == PaymentAllocation.payment_id)
+                    .where(PaymentRecord.order_id == order_id)
+                    .scalar_subquery(),
+                    0,
+                ),
+                func.coalesce(
+                    select(func.sum(PaymentRecord.received_amount))
                     .where(
-                        PaymentRecord.receivable_plan_id == ReceivablePlan.id,
+                        PaymentRecord.order_id == order_id,
                         PaymentRecord.status == "confirmed",
                     )
                     .scalar_subquery(),
                     0,
                 ),
-            ).where(ReceivablePlan.order_id == order_id)
+            )
+        )
+    ).one()
+    allocated_total = Decimal(str(allocation_state[0] or 0))
+    received_total = Decimal(str(allocation_state[1] or 0))
+    if received_total > 0 and allocated_total < received_total:
+        from app.modules.payment import service as payment_service
+
+        await payment_service.rebalance_order_allocations(
+            session, order_id, operator_id=operator_id
+        )
+
+    plan_rows = (
+        await session.execute(
+            select(ReceivablePlan.id, ReceivablePlan.amount)
+            .where(
+                ReceivablePlan.order_id == order_id,
+                ReceivablePlan.status != "cancelled",
+            )
+            .order_by(ReceivablePlan.id.asc())
         )
     ).all()
+    from app.modules.payment import service as payment_service
+
+    per_plan = [
+        (plan_id, amount, await payment_service.confirmed_amount(session, plan_id))
+        for plan_id, amount in plan_rows
+    ]
     planned = sum((Decimal(str(row[1] or 0)) for row in per_plan), Decimal(0))
     received = sum((Decimal(str(row[2] or 0)) for row in per_plan), Decimal(0))
     unsettled = [
@@ -319,6 +373,13 @@ async def sync_payment_milestones(
                 for index, (_plan_id, plan_amount, paid) in enumerate(unsettled)
             )
             note += f"（还有 {len(unsettled)} 期未结清：{short}）"
+            # 主动提示"可能是回款挂错了期"（第十批主人选的方案1）：
+            # 有人把整笔钱登记到某一期时，别的期就会显示未收 —— 这是最常见的成因，
+            # 说清它，用户才知道该去「调整回款分配」，而不是以为客户没付钱。
+            if received > planned - sum(
+                (plan_amount - paid) for _pid, plan_amount, paid in unsettled
+            ) or received >= planned:
+                note += "；可能是回款登记的期与实际到账期不一致，请核对后调整回款分配"
         else:
             note += "（还没有已确认收款，撤销原来的完成标识）"
         await _apply_derived_fact(session, payment, latest if settled else None, note=note)

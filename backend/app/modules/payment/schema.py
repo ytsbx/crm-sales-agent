@@ -36,6 +36,40 @@ class ReceivableUpdate(PatchModel):
     remark: str | None = None
 
 
+class PaymentAllocationItem(BaseModel):
+    """一条分配：这笔回款分给哪一期、多少。"""
+
+    plan_id: int
+    # 与 `payment_allocations.amount` 同精度（Numeric(16,2)）。
+    # `gt=0`：要清掉某期的分配请**不传这一期**（整份替换式提交），
+    # 传 0 会让"这条分配到底存不存在"变得含糊。
+    amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
+
+
+class PaymentAllocationUpdate(BaseModel):
+    """人工调整一笔回款的分配（第十批主人 2026-10-13 定的口径）。
+
+    主人原话（选方案1）："系统不能擅自调整已经登记的收款归属，必须由有权限的
+    人员确认后才能调整" + "调整时要保留完整的操作审计记录"。
+
+    所以这个接口是**整份替换**：传进来的就是这笔回款的全部分配。
+    没传的期 = 不分配。这样"原归属 → 新归属"在审计里是一条清晰的对照，
+    而不是一串增删改。
+    """
+
+    allocations: list[PaymentAllocationItem] = Field(default_factory=list, max_length=50)
+    reason: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _no_duplicate_plans(self):
+        seen = set()
+        for item in self.allocations:
+            if item.plan_id in seen:
+                raise ValueError(f"同一期只能有一条分配（期 id={item.plan_id} 传了两次）")
+            seen.add(item.plan_id)
+        return self
+
+
 class ReceivableGenerate(BaseModel):
     """按比例生成应收计划，例如 30% 定金 + 70% 尾款。"""
 
