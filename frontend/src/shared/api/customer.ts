@@ -20,6 +20,15 @@ export interface CustomerPayload {
   source?: string | null
   level?: string | null
   remark?: string | null
+  /**
+   * 负责人。**可以不填**（主人 2026-10-13：「为啥只能谁创建谁是负责人，不能指定吗，
+   * 没有指定再是自己」）—— 不填 / 传 null 时后端归创建人自己
+   * （`customer/service.create_customer`）。要建给别人就在这里指定。
+   *
+   * ⚠️ 这个字段原来**没在前端类型里**，所以界面即使想传也传不出去，
+   * 看起来就像"只能谁建归谁"。
+   */
+  owner_id?: number | null
   /** 请求幂等键（第八批 8.15）：同一份表单的多次提交必须用同一把键 */
   request_key?: string
 }

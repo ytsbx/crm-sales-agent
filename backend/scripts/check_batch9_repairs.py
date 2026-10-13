@@ -299,6 +299,40 @@ def main() -> int:  # noqa: C901
         check_true("★不同结论 → 拒绝（核定是一次性结论）", 400 <= status < 500,
                    f"HTTP {status} {str(res.get('message'))[:70]}")
 
+    # ------------------------------------------------------------------ ⑨
+    print("\n=== ⑨ 客户负责人：可指定；不指定才归创建人 ===")
+    # 主人 2026-10-13：「为啥只能谁创建谁是负责人，不能指定吗，没有指定再是自己」
+    # 后端一直支持（`CustomerCreate.owner_id` + "为空才归创建人"），
+    # 缺的是前端入口与类型字段；另外顺手补了"指定的人必须存在且在岗"的校验。
+    status, res = call("POST", "/customers", admin, {"name": f"{MARK}-不指定负责人", "level": "C"})
+    check_true("不指定负责人 → 创建成功", res.get("code") == 0, str(res.get("message"))[:40])
+    if res.get("code") == 0:
+        owner_id = (res.get("data") or {}).get("owner_id")
+        _, me = call("GET", "/auth/me", admin)
+        my_id = (me.get("data") or {}).get("id")
+        check("★不指定时归创建人自己", owner_id, my_id)
+
+    # 找一个**别人**（不是当前登录的 admin）来指定
+    _, users = call("GET", "/users?page=1&page_size=20", admin)
+    others = [
+        u for u in ((users.get("data") or {}).get("items") or [])
+        if u.get("id") != 1 and u.get("status") == "active"
+    ]
+    if not others:
+        check_true("⑨ 指定负责人：找得到可指派的同事", False, "没有其他在岗用户")
+    else:
+        target = others[0]
+        status, res = call("POST", "/customers", admin,
+                           {"name": f"{MARK}-指定负责人", "level": "C", "owner_id": target["id"]})
+        check_true("指定别人 → 创建成功", res.get("code") == 0, str(res.get("message"))[:40])
+        if res.get("code") == 0:
+            check("★指定谁就记在谁名下", (res.get("data") or {}).get("owner_id"), target["id"])
+
+    status, res = call("POST", "/customers", admin,
+                       {"name": f"{MARK}-不存在负责人", "level": "C", "owner_id": 999999})
+    check_true("★指定不存在的负责人 → 4xx（不是外键 500）", 400 <= status < 500,
+               f"HTTP {status} {str(res.get('message'))[:60]}")
+
     # ------------------------------------------------------------------ ⑥
     print("\n=== ⑥ 三期以上一次提交成型（不再留占位名/第一期日期）===")
     made6 = accept_quote(admin, admin, finance, "1000", "P6")

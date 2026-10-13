@@ -611,6 +611,23 @@ async def create_customer(
     payload = dict(payload)
     if payload.get("owner_id") is None:
         payload["owner_id"] = user.id
+    else:
+        # 指定了负责人就要**存在且在岗**（与打样/任务的负责人校验同一口径）。
+        #
+        # 原来这里对传入的 owner_id 一个校验都没有：
+        #   · 不存在的 id → 撞外键 → **500**（用户只看到"服务器内部错误"）；
+        #   · 已停用的人 → 200 落库，客户挂在一个登不上系统的人名下。
+        # 之前前端没有"指定负责人"的入口，所以这条很少被走到；现在加了入口
+        # （主人 2026-10-13：「不能指定吗，没有指定再是自己」），必须先堵上。
+        target = await session.get(User, payload["owner_id"])
+        if target is None:
+            raise AppError(
+                ErrorCode.NOT_FOUND, f"负责人 id={payload['owner_id']} 不存在", 404
+            )
+        if target.status != "active":
+            raise AppError(
+                ErrorCode.PARAM_ERROR, f"负责人「{target.name}」已停用，不能指派", 422
+            )
     customer = Customer(**payload, created_by=user.id)
     session.add(customer)
     await session.flush()

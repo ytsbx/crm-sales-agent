@@ -87,6 +87,8 @@ const EMPTY_FORM: CustomerPayload = {
   source: '手工录入',
   level: 'C',
   remark: '',
+  // 不选负责人 = 归创建人自己（后端 `create_customer` 的口径）
+  owner_id: null,
 }
 
 export default function CustomerListPage() {
@@ -173,6 +175,15 @@ export default function CustomerListPage() {
     queryKey: ['assignable-users'],
     queryFn: () => listUsers({ page: 1, page_size: 100 }),
     enabled: batchTransferOpen,
+  })
+  // ⚠️ 新建客户弹窗里的"负责人"选择器要**自己拉一次**用户列表。
+  // 上面那个 `usersQuery` 被 `enabled: batchTransferOpen` 门控着（只有批量转移
+  // 弹窗打开才请求），直接复用它的话，新建客户弹窗里这个下拉**永远是"暂无数据"**
+  // —— 我第一版就是这么写的，截图一眼看出来（三个下拉全空）。
+  const ownerOptionsQuery = useQuery({
+    queryKey: ['assignable-users', 'for-create'],
+    queryFn: () => listUsers({ page: 1, page_size: 100 }),
+    enabled: modalVisible,
   })
 
   const refreshList = () => {
@@ -766,11 +777,28 @@ export default function CustomerListPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>客户名称</FormLabel>
-            {/* 归属口径要写明（主人 2026-10-13：「创建客户是谁创建谁就是主要负责人吗」）。
-                后端 `create_customer`：没指定负责人就归**创建人**自己，并写审计；
-                要让给别人或放进公海，走列表里的「转移负责人 / 放入公海」。 */}
-            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
-              新建后这位客户默认归「你」负责（可随时用「转移负责人」改；放进公海请用「放入公海」）。
+            {/* 归属：**可以指定**（主人 2026-10-13：「为啥只能谁创建谁是负责人，
+                不能指定吗，没有指定再是自己」）。后端一直支持（`CustomerCreate.owner_id`
+                + `create_customer` 里"为空才归创建人"），缺的只是这个入口 + 前端类型字段。 */}
+            <div style={{ marginTop: 12 }}>
+              <FormLabel hint="不选就归你自己，之后也能转移">负责人</FormLabel>
+              <Select
+                className="owner-picker"
+                style={{ width: '100%' }}
+                placeholder="不选 = 归你自己"
+                showClear
+                value={form.owner_id ?? undefined}
+                onChange={(value) => setForm({ ...form, owner_id: (value as number) ?? null })}
+                loading={ownerOptionsQuery.isLoading}
+                optionList={(ownerOptionsQuery.data?.items ?? []).map((item) => ({
+                  value: item.id,
+                  label: `${item.name}（${item.department ?? '未分配部门'}）`,
+                }))}
+              />
+              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。
+                放进公海请创建后用列表里的「放入公海」。
+              </div>
             </div>
             <Input
               value={form.name}
