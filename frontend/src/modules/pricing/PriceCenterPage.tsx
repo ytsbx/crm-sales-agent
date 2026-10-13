@@ -219,14 +219,28 @@ function actionLabel(action: string | null | undefined): string {
   return ACTION_LABEL[action] ?? action
 }
 
-/** 英文枚举值 → 中文。快照里存的是 `approved` 这种值，直接上屏是机器话。 */
+/**
+ * 英文枚举值 → 中文。快照里存的是 `approved` 这种值，直接上屏是机器话。
+ *
+ * ⚠️ **这张表只服务核价历史**，而历史快照里的 `status` 是**报价单状态**
+ * （`QUOTE_STATUS_LABEL`：draft / pending_approval / approved / approval_rejected /
+ * sent / accepted / declined / expired），**不是版本审批状态**
+ * （not_submitted / pending / approved / rejected —— 那是另一套枚举）。
+ *
+ * 2026-10-13 逐值核对时发现两处混了：
+ *   · `pending: '审批中'` —— 报价状态里根本没有 `pending` 这个值，
+ *     这条映射只会把**别的**含义的 pending 误译成"审批中"；
+ *   · `rejected: '未通过'` —— 与 WhatIf 面板的「审批未通过」不一致，
+ *     也没说清"什么没通过"。
+ * 两条都删了。`approved` 两套枚举同名同义（都是"已通过"），保留。
+ * 另补上漏掉的 `expired`（报价过期后历史行会原样印出 `expired`）。
+ * 这几条由 `ops/check_enum_labels.py` 守着。
+ */
 const VALUE_LABEL: Record<string, string> = {
   approved: '已通过',
-  rejected: '未通过',
-  pending: '审批中',
-  not_submitted: '未提交',
   approval_rejected: '审批未通过',
   pending_approval: '待审批',
+  expired: '已失效',
   draft: '草稿',
   sent: '已发送',
   accepted: '已接受',
