@@ -1,5 +1,6 @@
 """应收与回款接口（对齐 03-API §29 / §30）。"""
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -593,6 +594,12 @@ async def upload_payment_voucher(
         # 登记失败时事务会回滚，但刚写上盘的那份凭证还在 —— 不清理就永远躺在
         # 盘上，而且和"上传成功"的文件长得一模一样（第十一批 11.8）。
         # 补偿与通用上传共用同一份逻辑，不在这里另写一套。
+        await file_service.discard_unregistered_upload(session, object_key)
+        raise
+    except asyncio.CancelledError:
+        # 请求被取消同样要补偿（第七批 P2-9）：`CancelledError` 是 BaseException，
+        # 上面 `except Exception` 捕不到 —— 客户端断开时这份凭证会留在盘上
+        # 而库里没有记录。与通用上传入口同一个漏、同一套修法。
         await file_service.discard_unregistered_upload(session, object_key)
         raise
     return ok({"voucher_file_id": voucher.id, "voucher_file_name": voucher.file_name}, "凭证已上传")

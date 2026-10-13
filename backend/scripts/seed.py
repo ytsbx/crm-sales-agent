@@ -786,9 +786,21 @@ async def seed() -> None:
                         sku_id=sku.id,
                         purchase_cost=Decimal(purchase),
                         package_cost=Decimal(package),
+                        # ⚠️ 生产/加工成本**显式写 0**，不是留空（2026-10-13 第七批 P1-1）。
+                        #
+                        # 演示数据里这两个值本来就没维护，留空（NULL）等于告诉系统
+                        # "这项还没填" —— 而不完整的成本算不出可信毛利：核价会警告
+                        # 并停用由成本反推的价格，审批侧也会要求人工看一眼。
+                        # 结果是**演示库里每一张报价单都走不完流程**（实测：
+                        # 报价发不出去、转单 40002）。
+                        #
+                        # 口径：演示数据是"这套成本就是这些"，缺的两项按 0 计，
+                        # 属于**已填**；真要表达"还没维护"，才留空。
+                        production_cost=Decimal(0),
+                        processing_cost=Decimal(0),
                         effective_from=date(today.year, 1, 1),
                         currency="CNY",
-                        remark="演示占位成本，待业务确认后替换",
+                        remark="演示占位成本（生产/加工按 0 计），待业务确认后替换",
                         created_by=user_map["admin"].id,
                     )
                 )

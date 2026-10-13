@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.core.patch_schema import PatchModel
 
 
@@ -321,7 +321,15 @@ class PricePermissionCheck(PricingRequest):
     不问"这个价能不能报"，光核算价没意义。
     """
 
-    quoted_price: Decimal = Field(gt=0)
+    # ⚠️ 约束必须与普通核价的 `quoted_price` **逐项一致**（第七批 P2-10）：
+    # 原先是裸的 `Field(gt=0)`，少了 max_digits/decimal_places。
+    # 实测：`{"quoted_price": "1e1000"}`（**字符串**形态）能过校验 ——
+    # Pydantic 允许 Decimal 从字符串构造，`finite_number` 不拦 `Decimal('1E+1000')`，
+    # 于是它一路算到 JSON 序列化才炸：`ValueError: Out of range float values are
+    # not JSON compliant: inf` → **500**。加上位数限制后，入口直接 422。
+    # （浮点形态 `1e1000` 本来就变成 inf、会被 finite_number 拦掉，
+    #  漏的正是字符串这条。）
+    quoted_price: Decimal = Field(gt=0, max_digits=16, decimal_places=4)
 
 
 class PricingSimulation(BaseModel):
@@ -336,5 +344,30 @@ class PricingSimulation(BaseModel):
     """
 
     base: PricingRequest
-    candidates: list[Decimal] = Field(default_factory=list)
-    margins: list[Decimal] = Field(default_factory=list)
+    # `list[Decimal]` 上的字段级约束管不到**每个元素**（Pydantic v2 不支持
+    # 逐项 max_digits），所以这里用校验器逐项过一遍 —— 与 `quoted_price`
+    # 同一套限制（第七批 P2-10）。实测漏法：`{"candidates": ["1e1000"]}`
+    # → 算成 inf → JSON 序列化 500。
+    candidates: list[Decimal] = Field(default_factory=list, max_length=50)
+    margins: list[Decimal] = Field(default_factory=list, max_length=50)
+
+    @field_validator("candidates", "margins")
+    @classmethod
+    def _each_amount_must_fit_money(cls, values: list[Decimal]) -> list[Decimal]:
+        for value in values:
+            if value is None:
+                continue
+            if not value.is_finite():
+                raise ValueError("候选价/利润率必须是有限数值")
+            digits = len(value.as_tuple().digits)
+            exponent = value.as_tuple().exponent
+            # 与 Numeric(16,4) 对齐：整数位 + 小数位不超过 16，小数不超过 4 位。
+            # 负 exponent 才是小数位（Decimal('1E+30') 的 exponent 是 +30）。
+            integer_digits = max(digits + exponent, 0) if exponent < 0 else digits + exponent
+            fraction_digits = -exponent if exponent < 0 else 0
+            if integer_digits + fraction_digits > 16 or fraction_digits > 4:
+                raise ValueError(
+                    f"金额最多 16 位（含 4 位小数），收到 {value} —— "
+                    "请检查是不是多打了几个 0"
+                )
+        return values

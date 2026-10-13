@@ -271,8 +271,14 @@ async def main():
     from datetime import UTC as _UTC
     from datetime import datetime as _datetime
 
+    # ⚠️ **四项都要填**（第七批 P1-1）。原来只填 `purchase_cost`，其余三项为 NULL：
+    # 成本"合计"仍按 0 计入（看着是 10），但那属于**不完整成本** —— 现在
+    # 不完整的成本算不出可信毛利（`gross_margin=None`），"低毛利强制财务会签"
+    # 这类**基于毛利**的规则就命中不了，本套件随之变红。
+    # 本套件要验的是毛利规则本身，所以夹具给一份**完整**成本（显式 0 也算填）。
     status, res = call('POST', f'/skus/{sku_id}/costs', token=admin, body={
-        'purchase_cost': 10, 'effective_from': str(_datetime.now(_UTC).date()),
+        'purchase_cost': 10, 'production_cost': 0, 'package_cost': 0,
+        'processing_cost': 0, 'effective_from': str(_datetime.now(_UTC).date()),
         'remark': f'CHK{RUN}成本'})
     check('给测试 SKU 建成本', res.get('code'), 0)
 

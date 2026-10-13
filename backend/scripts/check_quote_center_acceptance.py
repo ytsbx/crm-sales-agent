@@ -400,7 +400,11 @@ def main():
     # 这条 SKU 必须**带成本**：除 A06 外的用例都靠它算建议价/最低价
     # （A06 要的是"无成本"SKU，它自己另建一个 -NC）。
     _, res = call('POST', f'/skus/{sku_id}/costs', token=admin, body={
-        'purchase_cost': 40, 'package_cost': 5, 'effective_from': '2026-01-01',
+        # 四项填全（第七批 P1-1）：本套件验的是报价中心验收流程，
+        # 不该被"成本不完整"这条闸拦住（原来只填采购与包装 → 报价需要审批 →
+        # "整单优惠…无优惠放行"这类断言变红）。
+        'purchase_cost': 40, 'production_cost': 0, 'package_cost': 5,
+        'processing_cost': 0, 'effective_from': '2026-01-01',
         'remark': '验收临时成本',
     })
     if res.get('code') != 0:

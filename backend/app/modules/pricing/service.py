@@ -187,9 +187,40 @@ async def get_effective_cost(
             or_(ProductCost.effective_to.is_(None), ProductCost.effective_to >= today),
         )
         .order_by(ProductCost.effective_from.desc(), ProductCost.id.desc())
-        .limit(1)
     )
-    return (await session.execute(stmt)).scalar_one_or_none()
+    rows = list((await session.execute(stmt)).scalars().all())
+    if not rows:
+        return None
+    # 歧义必须显式报错，**不能静默挑一条**（第七批 P1-2）。
+    #
+    # 同日可以存在多条（`effective_from` 上没有唯一约束）。从前这里是
+    # `order_by(...).limit(1)` + `scalar_one_or_none()`：同日两条不会报错，
+    # 靠 id 排序悄悄取最新那条 —— 而**导入**那条路用的是没有排序的 `.first()`，
+    # 于是"导入报告更新成功、核价却仍按另一条算"：导入改了 id 小的那条，
+    # 核价读 id 大的那条，用户看到成本没变，还以为是自己填错了。
+    #
+    # 为什么不悄悄统一成"都取 id 最大"：两套规则一旦有一处再漂移，问题会以
+    # "金额对不上"的形式复发，而且没人能一眼看出是成本版本选错。
+    # 报错把选择权交回给人，并给出具体行号。
+    # ⚠️ **只有"生效日相同"才是歧义**（我第一版判错了）：
+    # 成本可以有多条不同生效日的记录同时处于"生效中"（都没有截止日），
+    # 那是**合法**的历史版本链，排序已给出唯一答案（生效日最新、同日再比 id）。
+    # 我第一版在"多条命中"时就报错，把这种正常数据也拦了 ——
+    # 实测：种子里 sku=1 有 2026-01-01 与 2026-10-07 两条，全套件因此连环变红
+    # （`check_approval_rules`、`check_business_time_edges` 等 9 个）。
+    # 真正无法裁决的只有"同一天两条"。
+    top_day = rows[0].effective_from
+    same_day = [row for row in rows if row.effective_from == top_day]
+    if len(same_day) > 1:
+        ids = "、".join(str(row.id) for row in same_day)
+        raise AppError(
+            ErrorCode.DUPLICATE,
+            f"该 SKU 在 {top_day.isoformat()} 有 {len(same_day)} 条成本版本"
+            f"（成本编号 {ids}），无法确定用哪一条核价。"
+            "请先在价格中心把多余的那条停用或删除，再重新核价",
+            409,
+        )
+    return rows[0]
 
 
 async def find_price_rule(
@@ -856,6 +887,15 @@ async def calculate_price(
 
     cost = await get_effective_cost(session, sku_id)
     has_cost = cost is not None
+    # 成本"可不可信"（第七批 P1-1）：不只是"有没有成本行"，还要看四项填全没有。
+    #
+    # `goods_cost` 把 NULL 当 0 合计 —— 只填采购 10、其余三项为空时，它是一个
+    # 看上去完全正常的正数。拿它**反推价格**（保护价/授权底价/绝对底价/
+    # 成本+利润的试算价）会得出偏低的底线，低于保护价的报价因此被自动放行。
+    #
+    # 所以：金额照常显示（价格中心要看得到"现在维护的是多少"、缺哪几项），
+    # 但**凡是"由成本反推出来的价格"一律不给**，并如实说明原因。
+    cost_trustworthy = has_cost and bool(cost.is_complete)
     if cost is None:
         # A06/D5：没有成本就谈不上利润——宁可"利润不可计算"，
         # 也不能拿 0 成本算出 100% 的假毛利
@@ -872,9 +912,14 @@ async def calculate_price(
     # 算出来的毛利率看起来正常，实际是"少算了成本"的高估。第七批 7.4。
     missing_cost_items = cost.missing_components if cost else []
     if missing_cost_items:
+        # 一条话说完"缺什么 + 后果 + 怎么办"（原来只说了"合计按 0 计入、
+        # 毛利率偏高"，没说清**哪些价格因此不给了** —— 用户看到成本 10、
+        # 底价却是空，只会以为系统坏了）。
         warnings.append(
             "该 SKU 的生效成本不完整（缺：" + "、".join(missing_cost_items)
-            + "），合计按 0 计入，毛利率会偏高，请补齐成本后再据此定价"
+            + "）：合计按 0 计入，毛利率会偏高；且凡是由成本反推的价格一律不给"
+            "（保护价、授权底价、绝对底价，以及按成本加目标利润的试算价），"
+            "毛利类审批判定同步停用。补齐这四项后自动恢复"
         )
 
     if package_type and package_type != (sku.package_type or None):
@@ -975,7 +1020,7 @@ async def calculate_price(
     target_profit_price: Decimal | None = None
     profit_target_met: bool | None = None
     if target_profit_amount is not None:
-        if not has_cost:
+        if not cost_trustworthy:
             # 没有成本，"成本 + 目标利润"无从计算 —— 如实说不可计算，不要 500
             profit_target_met = None
             warnings.append(
@@ -1011,7 +1056,7 @@ async def calculate_price(
     # 授权底价由利润率反推——没有成本就没有授权底价（利润类判定同步停用）
     floor_from_margin = (
         base_cost / (Decimal(1) - min_margin)
-        if has_cost and min_margin < 1
+        if cost_trustworthy and min_margin < 1
         else None
     )
 
@@ -1039,7 +1084,7 @@ async def calculate_price(
     # 与保护价的区别：保护价低过 → 触发审批（可被批准）；绝对底价低过 → 硬拒绝。
     hard_floor_mode = await settings_service.get_text(session, "hard_floor", "mode", "off")
     hard_floor_price = None
-    if has_cost and hard_floor_mode in ("cost", "cost_markup"):
+    if cost_trustworthy and hard_floor_mode in ("cost", "cost_markup"):
         markup = Decimal(
             str(await settings_service.get_number(session, "hard_floor", "markup_ratio", 0.0))
         )
@@ -1100,6 +1145,23 @@ async def calculate_price(
 
     # ---- 出口退税（可选）：内贸退税额恒为 0 ----
     refund_rate = tax_refund_rate
+    # ⚠️ **国内请求不许有退税**（第七批 P2-6）。
+    #
+    # 出口退税是"出口才有"的收益，而本系统只做境内人民币业务。原来这里只在
+    # `refund_rate is None` 时才去读设置里的默认退税率，**显式传进来的非零退税率
+    # 一律照用** —— 审查实测：CNY、成本 10、报价 100，传退税率 30%，
+    # 系统凭空造出 3 元退税，把利润从 90 抬到 93，还给出了 `profit_with_refund`。
+    #
+    # 主人口径：没有外币、不做汇率、更不存在"国内业务的出口退税"。
+    # 与其靠"默认值是 0"，不如在国内路径上直接拒绝非零值 ——
+    # 默认值可以被配置改掉，而这个判断不会。
+    if not is_foreign and refund_rate:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "国内业务（人民币）不存在出口退税，不能传入退税率；"
+            "请去掉退税率后重新核价",
+            422,
+        )
     if refund_rate is None and is_foreign:
         refund_rate = Decimal(
             str(await settings_service.get_number(session, "export_tax_refund_rate", "ratio", 0.0))
@@ -1151,8 +1213,52 @@ async def calculate_price(
         and discount_pct > Decimal(str(role_discount_limit)) * 100
     )
 
+    # ⚠️ **成本不完整时，不能拿"由成本推出来的底价"当免审依据**（第七批 P1-1）。
+    #
+    # 上面五个触发器里，保护价是**明确口径**（价格规则/客户特殊价里写死的数），
+    # 其余四个（授权底价、负利润、低毛利）都是**拿成本推出来的**。
+    # `has_cost` 只问"有没有成本行"：成本只填了一项时它仍然为真，推出的底价
+    # 看着完全正常 —— 于是报价 100 远高于"按 10 元成本推的底价"，
+    # `approval_required=False` 直接放行，连审批规则的毛利判据都没进去。
+    #
+    # 口径（**刻意收窄**，我第一版写成"成本不完整一律要审批"，把正常链路也堵了：
+    # 实测 9 个套件变红，例如"草稿能建、正式发送被拦 42203"）：
+    #   · 没有明确保护价（或报价**低于**它）→ 唯一的把关就是成本口径，
+    #     成本不完整等于没把关 → **必须人工审批**；
+    #   · 有明确保护价且报价不低于它 → 这道明确闸已经生效，
+    #     不因为成本不完整额外拦（否则每个成本没填全的 SKU 都寸步难行）。
+    # ⚠️ 只在**没有明确保护价**时才由这一项兜底（第七批 P1-1，第二次收窄）。
+    #
+    # 推理过程（我在这儿来回改了三次，把结论写清楚免得后来人再绕）：
+    #   · 报价**低于**明确保护价时，`below_protection` 本来就已经让它进审批了
+    #     （上面那一项），根本轮不到"自动批准"——所以报告场景里真正危险的是
+    #     **没有保护价**那种：唯一把关就是成本推出来的底价，而成本不完整时
+    #     那个底价偏低，报价轻松越过 → `approval_required=False` → 直接放行。
+    #   · 有明确保护价、报价也不低于它时，再加一道"成本不完整也要审"属于
+    #     **重复把关**，代价却是把演示库里每一个成本没填全的 SKU 全部堵死 ——
+    #     实测 9 个套件变红（"草稿能建、正式发送被拦 42203"、
+    #     转单 40002 报价未通过审批），正常业务全走不动。
+    # 只针对**"有成本行、但四项没填全"**（第七批 P1-1）。
+    #
+    # ⚠️ 与"**完全没有成本**"是两件不同的事，别合并：
+    #   · 完全没有成本 → 本来就有另一条成熟判据（A06/D5：利润不可计算、
+    #     保护价照旧生效），报价**高于保护价**时放行是既有口径，不在这里拦；
+    #   · 有成本但缺项 → 这才是报告那条：合计把 NULL 当 0，算出一个看着正常的
+    #     成本、进而算出虚高毛利，容易被当成"利润很好"直接放行。
+    # 我上一版把两者都算进 `cost_floor_unreliable`，于是演示库里
+    # "还没维护成本的本地 SKU"也一律要审批（实测 `check_master_confirmed_empty_value`
+    # 的"②这版报价能正式发送"变红）。
+    # ⚠️ 而且这条明细得**真的带了成本**（`goods_cost > 0`）：成本记录存在但四项
+    # 都是 0 时，"缺项"没有实际意义（0 就是全部），不该因此把单子拦下来。
+    cost_incomplete = has_cost and not cost.is_complete and goods_cost > 0
+    cost_floor_unreliable = cost_incomplete
     approval_required = bool(
-        below_protection or below_authorized or below_profit or below_margin or discount_exceeded
+        below_protection
+        or below_authorized
+        or below_profit
+        or below_margin
+        or discount_exceeded
+        or cost_floor_unreliable
     )
 
     # 绝对底价触发器：不算进 approval_required（它根本不是"需审批"，是"不可批"），
@@ -1229,6 +1335,13 @@ async def calculate_price(
             #: 本次核价是否把运费算进了 base_cost。新口径恒为 False；
             #: 只有回看历史版本才会是 True。给前端如实标注用，别拿它当开关。
             "logistics_in_base_cost": logistics_in_base_cost,
+            #: 产品成本四项**是否填全**（第七批 P1-1）。四项里有 NULL 就是 False。
+            #: 为什么要单独给这个键：`goods_cost` 把 NULL 当 0 合计，"只填了一项"
+            #: 看上去是个正常的正数，谁也算不出它不完整 —— 报价快照要把这个判断
+            #: 一起存下来，审批侧才不至于拿虚高毛利去免审。
+            #: 无成本记录时给 False（本来就谈不上完整，且下游已有"无成本"分支）。
+            "cost_complete": bool(cost.is_complete) if cost else False,
+            "cost_missing_items": list(cost.missing_components) if cost else [],
             "source": "价格中心成本表（生效中）" if cost else "无成本记录",
         },
         "price_rule": serialize_price_rule(rule, sku.sku_code) if rule else None,

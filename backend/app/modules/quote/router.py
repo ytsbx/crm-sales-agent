@@ -891,7 +891,13 @@ async def compare_versions(
 ):
     """报价多方案对比（What-if）：逐版本汇总 + 与上一版的差异明细。"""
     await svc.get_visible_quote(session, user, quote_id)
-    return ok(await svc.version_comparison(session, quote_id))
+    payload = await svc.version_comparison(session, quote_id)
+    # 成本与毛利只给价格管理员（第七批 P1-4）：本接口只要求 quote:view，
+    # 不裁剪的话普通销售能直接读到完整成本、单位成本、利润与毛利率，
+    # 与核价接口的脱敏口径不一致。
+    if not user.has("price:manage"):
+        svc.strip_comparison_cost(payload)
+    return ok(payload)
 
 
 @router.post("/quotes/{quote_id}/versions")

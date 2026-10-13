@@ -557,7 +557,25 @@ async def import_costs(
                         .with_for_update()
                         .execution_options(populate_existing=True)
                     )
-                ).scalars().first()
+                # ⚠️ **不许 `.first()` 静默挑一条**（第七批 P1-2）。
+                #
+                # 同日允许存在多条（`effective_from` 无唯一约束）。原来这里
+                # 没有 order_by，`.first()` 取到哪条由数据库返回顺序决定 ——
+                # 实测：同日已有 70 和 100 两条时导入 200，系统报"更新成功"，
+                # 却改了较早那条，而核价按另一条算，**成本实际仍是 100**。
+                # 用户看到"更新成功但没生效"，只会怀疑自己。
+                #
+                # 口径（主人 2026-10-13 确认）：**遇歧义直接报错**，不猜。
+                ).scalars().all()
+                if len(existing) > 1:
+                    ids = "、".join(str(row.id) for row in existing)
+                    raise RowRejected(
+                        f"该 SKU 在同一天已有 {len(existing)} 条成本版本（编号 {ids}），"
+                        "导入无法确定该更新哪一条。请先在价格中心把多余的那条停用或删除，"
+                        "再重新导入 —— 系统不会替你猜（猜错会出现"
+                        "「导入说更新成功、核价却用另一条」的情况）"
+                    )
+                existing = existing[0] if existing else None
                 if existing is not None:
                     # 原值指纹必须在**动它之前**算：确认导入时再算一次比对，
                     # 就能发现"预览之后别人改过这一行"（审查 2026-10-07 第二轮实测：

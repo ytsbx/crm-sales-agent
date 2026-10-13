@@ -809,6 +809,17 @@ async def register_sample_made(
     # 现在：带 request_key 就用它；不带则按 (完成时间, 说明) **精确**算一个键。
     # 说明只要不同就是一次**新事件**，照常追加、照常通知。
     made_at = payload.made_at or sample.made_at or datetime.now(UTC)
+    # 日期闸（第七批 P2-8）：制作完成是**已发生的事实**，不能填未来。
+    #
+    # 同一个文件里，寄出（`shipped_at`）、签收（`signed_at`）、客户确认
+    # （`confirmed_at`）三处本来就都有 `_assert_not_future` —— 唯独"制作完成"
+    # 这一处漏了。实测：填 30 天后的完成时间，接口照常 200 保存，
+    # 于是留痕里出现"未来的既成事实"，后面按时间轴做的逾期与周期统计全被带偏。
+    _assert_not_future(made_at, "制作完成时间")
+    # 顺序闸：已有寄出/签收事实时，制作必须在它们**之前或当天**（做完了才能寄）。
+    # 复用那三处同一套 `_assert_not_before`，不另写比较（免得时区口径漂移）。
+    _assert_not_before(made_at, sample.shipped_at, "制作完成时间", "寄出日期")
+    _assert_not_before(made_at, sample.signed_at, "制作完成时间", "签收日期")
     note = (payload.remark or "").strip()
     event_key = payload.request_key or _fingerprint(made_at.isoformat(), note)
     events = list(sample.made_events or [])

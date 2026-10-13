@@ -152,6 +152,9 @@ async def cleanup() -> None:
             f"delete from opportunity_items where opportunity_id in {opps}",
             f"delete from opportunities where title like '{MARK}%'",
             f"delete from contacts where customer_id in {custs}",
+            # 本套件为 #9 显式建过一份完整成本（第七批 P1-1 之后必需），
+            # 按 remark 清掉 —— 少了这条，`check_fixture_residue` 会报残留。
+            f"delete from product_costs where remark like '{MARK}%'",
             f"delete from customers where name like '{MARK}%'",
             f"delete from skus where sku_code like '{MARK}%'",
             f"delete from products where name like '{MARK}%'",
@@ -246,6 +249,17 @@ async def main() -> int:
         )
 
         print("\n=== #9 目标利润金额 ===")
+        # 本用例要验的是"试算价 = 成本 + 目标利润"，前提是**成本可信**。
+        # 种子里 SKU 1 的成本只填了采购与包装两项（NULL 项会被按 0 合计），
+        # 属于**不完整成本** —— 第七批 P1-1 之后不完整成本不再给出
+        # "按成本加目标利润"的试算价（那个数会骗人），本用例会因此拿不到值。
+        # 所以这里显式建一份四项齐全的成本（显式 0 也算填）。
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+        call("POST", f"/skus/1/costs", admin,
+             {"purchase_cost": 10, "production_cost": 0, "package_cost": 0,
+              "processing_cost": 0, "effective_from": str(_dt.now(_UTC).date()),
+              "remark": f"{MARK}完整性夹具"})
         status, res = call("POST", "/pricing/calculate", admin,
                            {"sku_id": 1, "quantity": 1, "logistics_cost": 0,
                             "target_profit_amount": 80})

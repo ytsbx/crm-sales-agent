@@ -1,5 +1,6 @@
 """文件中心接口（对齐 03-API §31）。"""
 
+import asyncio
 import logging
 from pathlib import Path
 from urllib.parse import quote
@@ -137,6 +138,20 @@ async def upload_file(
         # 长得一模一样，事后谁也分不清哪份是垃圾。
         # 补偿逻辑统一在 `file.service`：回款凭证那个专用上传入口共用同一份，
         # 不再各写一遍（第十一批 11.8 —— 它原先就是漏了这段）。
+        await service.discard_unregistered_upload(session, object_key)
+        raise
+    except asyncio.CancelledError:
+        # ⚠️ **请求被取消也要补偿**（第七批 P2-9）。
+        #
+        # `CancelledError` 继承自 `BaseException`，上面那个 `except Exception`
+        # **捕不到它**。客户端断开 / 网关超时 / 服务停机会在
+        # "文件已写盘、数据库登记还没提交"这一刻把请求取消，于是补偿不执行，
+        # 盘上留下一份**没有任何记录指向**的文件（审查实测：记录 0 条、文件在盘上）。
+        #
+        # 复用的 `discard_unregistered_upload` 自身是安全的，它先 `rollback()`
+        # 再确认"库里确实没有这个 object_key 的登记"才删 —— 所以
+        # **登记已经提交成功**的情况（取消发生在提交之后）不会被误删。
+        # 删之后**必须把取消重新抛出**：吞掉它等于把"取消"变成"成功"。
         await service.discard_unregistered_upload(session, object_key)
         raise
     return ok(serialize_file(record, user.name), "上传成功")

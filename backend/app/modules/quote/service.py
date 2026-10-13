@@ -1293,6 +1293,44 @@ def version_logistics_in_base_cost(version: QuoteVersion) -> bool:
     return False
 
 
+def item_cost_is_incomplete(item: QuoteItem) -> bool:
+    """这条明细的成本是不是**"有记录、但缺项"**（第七批 P1-1）。
+
+    与 `not item_cost_is_complete(item)` 的差别很关键，别混用：
+
+    - **完全没有成本记录**（`cost_snapshot` 为 0/NULL）→ 返回 False。
+      那是"还没维护成本"的正常状态，有另一条成熟判据管它
+      （A06/D5：利润不可计算、保护价照旧生效）。若把它也算成"不完整"，
+      演示库里"本地新建、还没维护成本的 SKU"会一律要求审批 ——
+      实测 `check_master_confirmed_empty_value` 与
+      `check_quote_center_acceptance` 就是这么变红的。
+    - **有成本快照、但成本记录四项没填全** → 返回 True。这才是报告那条：
+      合计把 NULL 当 0，算出一个看着正常的成本与虚高毛利。
+    - **历史明细**（快照标记 NULL）→ 回退到旧的"成本≤0"口径，行为不变。
+    """
+    if (item.cost_snapshot or ZERO) <= 0:
+        return False
+    return not item_cost_is_complete(item)
+
+
+def item_cost_is_complete(item: QuoteItem) -> bool:
+    """这条明细的成本快照**可不可信**（第七批 P1-1）。
+
+    审批的毛利判据必须问这一句，而不是只看金额：
+
+    - `cost_complete_snapshot is False` → 不完整。生成快照时产品成本四项里有
+      NULL，`goods_cost` 把 NULL 当 0 合计 —— "只填了采购 10、其余没填"
+      会算出正常的成本 10 与虚高的毛利率，正是审查实测那条免审放行。
+    - `True` → 四项填全（显式 0 也算填），照常算毛利。
+    - `None` → **历史明细**（本列 2026-10-13 上线前生成）。刻意回退到
+      "成本 ≤ 0 才算缺失"的老判据：老单当时四项填没填全已无法回溯，
+      若一律当不完整，等于把历史上所有老报价的毛利免审全部作废。
+    """
+    if item.cost_complete_snapshot is None:
+        return (item.cost_snapshot or ZERO) > 0
+    return bool(item.cost_complete_snapshot)
+
+
 def item_unit_product_cost(item: QuoteItem, *, includes_freight: bool) -> Decimal:
     """一条明细的**单件产品核价成本**（审批判定、整单利润、摘要共用这一份）。
 
@@ -1631,6 +1669,9 @@ async def build_item_snapshot(
         master_version_no=master["version_no"] or None,
         quantity=quantity,
         cost_snapshot=Decimal(str(result["cost"]["goods_cost"])),
+        # 完整性随快照一起存（第七批 P1-1）：审批读的是快照，不是活成本行；
+        # 不落这一列，"只填了一项成本"在审批侧就无法与"成本完整"区分。
+        cost_complete_snapshot=result["cost"].get("cost_complete"),
         package_cost_snapshot=Decimal(str(result["cost"]["package_cost"])),
         logistics_cost_snapshot=Decimal(str(result["cost"]["logistics_cost"] or 0)),
         standard_price_snapshot=(
@@ -2193,6 +2234,40 @@ async def submit_for_approval(
         base_cost = item_unit_product_cost(item, includes_freight=cost_includes_freight)
         price = item.quoted_price
         price_cny = (price * fx) if foreign else price
+        # ⚠️ **成本不完整、且这条明细没有保护价可依据 → 必须审批**
+        # （第七批 P1-1 的最后一块）。
+        #
+        # 这一段是"提交审批时按快照**重判**一遍"——它会覆盖核价时得出的
+        # `item.approval_required`。核价引擎那边已经把"成本不完整"算进去了，
+        # 但**这里重判时没看完整性**，于是又被改回 False：实测
+        # "只填采购成本 10 + 报价 100"提交后仍然是
+        # `approval_required=False 未超出权限，报价已通过`。
+        #
+        # 判据与核价引擎的 `cost_floor_unreliable` **逐字对齐**（只多一个
+        # "没有保护价"的条件）——上一版我写成"不完整一律要审批"，
+        # 结果演示库里每个成本没填全的 SKU 全部被堵（报价发不出去、
+        # 转单 40002），因为**种子成本本身只填了采购与包装两项**。
+        # 有两道口径时（保护价 + 成本）不该让残缺的那道把整条路拦死；
+        # 只有一道时（没有保护价）才必须补人工。
+        # 判据见 `item_cost_is_incomplete`：只管"有成本快照、但记录缺项"，
+        # "完全没有成本"交给下面 `base_cost <= 0` 那条成熟分支（保护价仍生效）。
+        if item_cost_is_incomplete(item):
+            item.approval_required = True
+            item.approval_reason = (
+                "该明细的成本不完整（成本记录里有未填写的项），"
+                "且这条明细没有保护价可依据 —— 按残缺成本算出的毛利不可信，"
+                "需要人工审批；补齐成本四项后自动恢复"
+            )
+            offending.append(
+                {
+                    "sku_code": item.sku_code_snapshot,
+                    "quoted_price": float(price),
+                    "quoted_price_cny": float(price_cny),
+                    "minimum_price": None,
+                    "profit_rate": None,
+                }
+            )
+            continue
         if base_cost <= 0:
             # A06/D5：成本快照为 0 说明"没有成本记录"而不是"成本为零"。
             # 利润类判定（授权底价/负利润/利润率）全部无从谈起，停用；
@@ -2565,12 +2640,46 @@ async def opportunity_items(session: AsyncSession, opportunity_id: int) -> list[
     )
 
 
+#: 版本对比里**由成本派生**的字段（第七批 P1-4）。没有 `price:manage` 的人
+#: 拿到它们就等于拿到了成本：`unit_cost` 直接是单位成本；`margin` 配合报价
+#: 也能反推；`unit_floor` / `unit_standard` 在无价格规则时正是"成本 ÷ (1−利润率)"。
+_COMPARISON_COST_FIELDS = (
+    "cost_total",
+    "profit_total",
+    "margin",
+    "avg_cost",
+    "unit_cost",
+    "unit_profit",
+    "unit_floor",
+    "unit_standard",
+)
+
+
+def strip_comparison_cost(payload: dict) -> dict:
+    """把版本对比里的成本派生字段清空（**就地**改，返回同一个 dict）。
+
+    与 `serialize_item(can_see_cost=False)` 同一口径：普通销售能看
+    "两个方案报价差多少、数量差多少"，但看不出成本与毛利。
+    `diffs`（逐项差异）只涉及报价字段，本来就不含成本，不在这里处理。
+    """
+    for row in payload.get("versions", []):
+        for key in _COMPARISON_COST_FIELDS:
+            if key in row:
+                row[key] = None
+    return payload
+
+
 async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
     """报价多方案对比（PRD §15.2 + UI 设计稿 What-if A/B/C）。
 
     逐版本汇总「数量 / SKU 数 / 报价总额 / 成本 / 毛利 / 综合毛利率 / 均价」，
     并与**上一版**做逐项差异，让业务看清"改了什么导致利润变化"。
     全部基于版本内已落库的快照字段，不重算、不读当前价——历史版本必须可复现。
+
+    ⚠️ **成本类的字段由调用方按权限裁剪**（第七批 P1-4）：本函数照常算全，
+    路由层对没有 `price:manage` 的人调 `strip_comparison_cost`。
+    从前这个接口只要求 `quote:view`，普通销售能直接读到完整成本、单位成本、
+    利润与毛利率 —— 与核价接口的脱敏口径不一致，等于留了条后门。
     """
     versions = list(
         (

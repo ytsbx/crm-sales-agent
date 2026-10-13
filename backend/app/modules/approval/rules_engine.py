@@ -446,7 +446,16 @@ async def build_context(
     # 由 `evaluate_conditions` 判为**未命中**（它已有"该单此字段为空，视为未命中"
     # 这条分支）：免审拿不到这个字段，就只能走正常审批；
     # 与利润无关的条件（金额、客户等级、逾期、账期）不受影响，硬拒规则也照旧生效。
-    any_missing_cost = any(cost <= 0 for cost in unit_costs)
+    # 成本"缺失"有两层（第七批 P1-1）：
+    #   ① 金额 ≤ 0（原有的"没成本"）；
+    #   ② 快照标了**不完整** —— 四项成本里有 NULL，`goods_cost` 把 NULL 当 0 合计，
+    #      于是"只填采购 10、其余未填"看起来是个正常的成本 10。
+    #      审查实测：报价 100、保护价 120、只填采购成本 10 → 毛利率 90% →
+    #      命中"毛利≥30% 免审" → **低于保护价的报价被自动批准**。
+    # 两者都必须让毛利变成"未知"（None），由 `evaluate_conditions` 判未命中。
+    any_missing_cost = any(cost <= 0 for cost in unit_costs) or any(
+        not quote_service.item_cost_is_complete(i) for i in items
+    )
     if any_missing_cost or revenue_for_margin <= 0:
         gross_margin = None
     else:

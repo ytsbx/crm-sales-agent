@@ -1041,8 +1041,39 @@ async def _ensure_signable_source(session: AsyncSession, doc: ContractDocument) 
     if doc.doc_type == "monthly":
         return
     if doc.order_id is not None:
-        order = await session.get(SalesOrder, doc.order_id)
-        if order is not None and order.status != "cancelled":
+        # ⚠️ **锁住订单行再判状态**（第七批 P1-3）。
+        #
+        # 原来是 `session.get(SalesOrder, ...)` —— 不加锁的读。审查用受控交错复现：
+        # 签署这边先读到"订单有效"，另一请求把订单取消并**提交**，签署再继续
+        # 锁文件、落库，最后订单已取消、合同却已签署，**签署时间还晚于取消时间**。
+        #
+        # 加锁顺序（刻意选的，不是随手放的）：本函数由 `sign_document` 调用，
+        # 调用前后已有的锁是 **合同文档行（router 里 for_update）→ 文件行**。
+        # 这里插在文档锁之后、文件锁之前，整体顺序是
+        # **订单 → 合同文档 → 文件**里"文档先于订单"的反例吗？不是：
+        # 取消订单那条路（`order/router.py` 的 `get_visible_order(for_update=True)`）
+        # **只锁订单、从不锁合同文档**，所以两边不存在"我持文档等订单、你持订单等文档"
+        # 的环。将来若让取消去动合同，这个顺序必须重新审一遍。
+        #
+        # 锁后必须**重新读状态**：identity map 里可能已有旧对象，
+        # 不加 `populate_existing` 就会拿着锁比对旧值（项目里踩过同样的坑）。
+        order = (
+            await session.execute(
+                select(SalesOrder)
+                .where(SalesOrder.id == doc.order_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if order is not None and order.status == "cancelled":
+            # 拿到锁才发现订单已取消 —— 与"依据不一致"同一个口径：不放行。
+            raise AppError(
+                ErrorCode.STATUS_NOT_ALLOWED,
+                "这份合同关联的订单已被取消，不能登记签署："
+                "订单取消后合同不再有履约依据，如仍需签署请按现行依据重新生成一份",
+                422,
+            )
+        if order is not None:
             # ⚠️ 挂订单**不等于"依据一定没问题"**（C4-02，2026-10-09 修）。
             # 这里原先无条件 `return`，等于"只要合同挂了未取消的订单就跳过全部依据校验"——
             # 于是生成阶段被放过的版本不一致（订单 V1 / 合同 V2）到签署阶段**再放一次**，

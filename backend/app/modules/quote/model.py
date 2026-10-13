@@ -169,6 +169,14 @@ class QuoteItem(Base, IdMixin):
     master_version_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 3), default=1)
     cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
+    #: 生成快照时，产品成本四项是否**填全**（NULL 项 = 不完整）。
+    #:
+    #: `cost_snapshot` 是 NOT NULL default 0，"没成本/成本不全"与"成本真是 0"
+    #: 落库后长得一样 —— 少了这一列，审批就会把"只填了一项成本"当成完整成本，
+    #: 算出虚高的毛利率、命中免审（第七批 P1-1 实测：低于保护价却被自动批准）。
+    #:
+    #: `None` = 本列上线（2026-10-13）之前的历史明细，判据回退到旧的"成本≤0 视为缺失"。
+    cost_complete_snapshot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     package_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     logistics_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     standard_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True)

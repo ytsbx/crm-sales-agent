@@ -920,6 +920,39 @@ async def cancel_order(
             422,
         )
 
+    # 已签合同 = 已经对外生效的履约依据（第七批 P1-3）。
+    #
+    # 取消订单**完全不动合同**：合同不会跟着作废、也不会被删除，于是"订单已取消、
+    # 合同仍已签署"会一直挂在台账上。审查用受控交错复现了这个终态：签署先读到
+    # 订单有效，取消后提交，签署再落库 —— 签署时间甚至晚于取消时间。
+    #
+    # 两层修法缺一不可：
+    #   ① 本闸：已签合同 → 直接拒绝取消（这一层管"签完之后"）；
+    #   ② 签署路径锁订单行（`contract/service._ensure_signable_source`）——
+    #      那一层管"正在签"：取消必须在签署事务结束后才能拿到订单锁。
+    # 只在签署侧加锁、不在取消侧加闸，会得到"锁等到了、签也签完了、取消照做"，
+    # 终态依旧是订单取消 + 合同已签（我按这条顺序实测过，确实还复现）。
+    from app.modules.contract.model import ContractDocument
+
+    signed_contracts = (
+        await session.execute(
+            select(func.count())
+            .select_from(ContractDocument)
+            .where(
+                ContractDocument.order_id == order.id,
+                ContractDocument.status == "signed",
+            )
+        )
+    ).scalar_one()
+    if signed_contracts:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"该订单有 {signed_contracts} 份已签署的合同，不能直接取消："
+            "合同是对外生效的履约依据，取消订单不会让它失效。"
+            "请先在合同台账把这些合同作废（说明原因）或另出补充协议，再取消订单",
+            422,
+        )
+
     # 待确认回款随订单驳回
     pending_payments = (
         await session.execute(

@@ -1181,6 +1181,18 @@ def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
             if key != "source":
                 cost[key] = None
         result["cost"]["source"] = "成本与保护价仅价格管理员可见"
+    # `inputs` 里也藏着成本派生值（第七批 P1-4）：`target_profit_price` 是
+    # 「成本 + 目标利润」，销售给一个"目标利润 1 元"就能拿它减 1 反推出成本。
+    # 原来的脱敏只扫了顶层键，漏掉整个 inputs 子字典。
+    inputs = result.get("inputs")
+    if isinstance(inputs, dict):
+        for key in ("target_profit_price", "target_profit_amount"):
+            if key in inputs:
+                inputs[key] = None
+        # `base_cost` 本身若被带出来，同样直接是成本
+        for key in ("base_cost", "cost", "unit_cost"):
+            if key in inputs:
+                inputs[key] = None
     for rule_key in ("price_rule", "customer_price_rule"):
         rule = result.get(rule_key)
         if isinstance(rule, dict):
@@ -1376,7 +1388,10 @@ async def check_price_permission(
         target_profit_amount=payload.target_profit_amount,
         quoted_price=payload.quoted_price,
         role_codes=user.roles,
-        currency=payload.currency,
+        # 币种走固定白名单（第七批 P2-5）：这个入口从前**没接** —— 实测传 USD + 汇率 7
+        # 照样成功，还返回 `allowed=true`，等于"外币能不能报"这件事在这个入口被绕过。
+        # 用返回的**规范化**值（不是原样透传）：`cny ` 这类带空格的写法也会被归一到 CNY。
+        currency=await ensure_currency_allowed(session, payload.currency),
         exchange_rate=payload.exchange_rate,
         tax_refund_rate=payload.tax_refund_rate,
         customer_level=payload.customer_level,
@@ -1458,7 +1473,8 @@ async def simulate_pricing(
         target_margin=base.target_margin,
         target_profit_amount=base.target_profit_amount,
         role_codes=user.roles,
-        currency=base.currency,
+        # 同上（第七批 P2-5）：simulate 从前也没接白名单，实测 USD + 汇率 7 成功返回。
+        currency=await ensure_currency_allowed(session, base.currency),
         exchange_rate=base.exchange_rate,
         tax_refund_rate=base.tax_refund_rate,
         customer_level=base.customer_level,
@@ -1471,15 +1487,31 @@ async def simulate_pricing(
     # 先算一次不带报价的基准，拿到建议价/保护价等锚点
     baseline = await svc.calculate_price(session, quoted_price=None, **common)
 
+    blocked_reason: str | None = None
     candidates = [c for c in payload.candidates if c and c > 0]
-    if not candidates and payload.margins:
+    # ⚠️ **"按利润率反推候选价"这条路，对没有 price:manage 的人关掉**（第七批 P1-4）。
+    #
+    # 它算的是 `价 = 成本 / (1 − 利润率)`：销售给一个利润率 50%，
+    # 拿到候选价 140，除以 (1−50%) 就还原出成本 70 —— 等于把成本送出去了。
+    # 显式传成交价（`candidates`）的那条路**保留**：那是"我想报这个价，
+    # 帮我看看赚不赚、要不要审批"的正当用法，且用户本来就知道自己传了什么。
+    margin_derived = bool(payload.margins) and not candidates
+    blocked_margin_simulation = margin_derived and not user.has("price:manage")
+    if margin_derived and user.has("price:manage"):
         cost = Decimal(str(baseline["cost_in_quote_currency"] or 0))
         for margin in payload.margins:
             if margin is None or margin <= 0 or margin >= 1:
                 continue
             # 价 = 成本 / (1 - 利润率)
             candidates.append((cost / (Decimal(1) - Decimal(str(margin)))).quantize(quantize))
-    if not candidates:
+    if blocked_margin_simulation:
+        # 明确回"算不了 + 为什么"，而不是给一个空列表让人猜（主人反复提过的口径：
+        # 点不了 / 出不来结果都必须说明原因）。
+        blocked_reason = (
+            "按利润率反推候选价需要成本，只有价格管理员能用；"
+            "你仍可以直接传想报的成交价（candidates），系统会算出它赚不赚、要不要审批"
+        )
+    if not candidates and not blocked_margin_simulation:
         # 三个关键点位：建议价、最低可自主定价、公司保护价
         for anchor in (
             baseline["recommended_price"],
@@ -1539,6 +1571,11 @@ async def simulate_pricing(
             "sku": baseline["sku"],
             "quantity": baseline["quantity"],
             "currency": baseline["currency"],
+            # ⚠️ 这几项**逐个**取自 `baseline` —— 而 baseline 已被
+            # `_sanitize_pricing_result` 就地改成脱敏后的值（第七批 P1-4）。
+            # 从前这里是在脱敏**之前**抄的，等于把成本又原样放回返回体，
+            # 而且 `candidates` 由 `margins` + 成本算出（价 = 成本/(1−利润率)），
+            # 拿到候选价就能反推成本。现在一律从脱敏后的 baseline 取。
             "cost_in_quote_currency": baseline["cost_in_quote_currency"],
             "standard_price": baseline["standard_price"],
             "recommended_price": baseline["recommended_price"],
@@ -1546,6 +1583,9 @@ async def simulate_pricing(
             "minimum_price": baseline["minimum_price"],
             "protection_price": baseline["protection_price"],
             "scenarios": rows,
+            #: 有值 = "这次模拟算不了，原因是……"。空 = 正常出结果。
+            #: 前端照它显示一句中文，别让用户对着空列表猜。
+            "blocked_reason": blocked_reason,
         }
     )
 
