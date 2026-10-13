@@ -1,7 +1,7 @@
 第四批最后两项与第六批五项：验证结果摘录
 
 全量离线测试：
-520 passed in 2.92s
+525 passed in 3.28s
 
 一次性PostgreSQL验证：
 PASS PostgreSQL: 人民币规范化、首单窗口归类、逾期余额与计数
