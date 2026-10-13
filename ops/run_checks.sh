@@ -80,6 +80,8 @@ for _check in "$SCRIPT_DIR"/check_*.py; do
 done
 node --test "$SCRIPT_DIR/request_key.test.mjs" >/dev/null 2>&1 && echo "OK  request_key.test.mjs" || FAILED+=("request_key.test.mjs")
 node --test "$SCRIPT_DIR/blocked_hint.test.mjs" >/dev/null 2>&1 && echo "OK  blocked_hint.test.mjs" || FAILED+=("blocked_hint.test.mjs")
+# 报价「这一步还差什么」清单的判据单测（2026-10-13 待办区）
+node --test "$SCRIPT_DIR/quote_todo.test.mjs" >/dev/null 2>&1 && echo "OK  quote_todo.test.mjs" || FAILED+=("quote_todo.test.mjs")
 
 echo
 echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="

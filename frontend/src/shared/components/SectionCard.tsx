@@ -6,14 +6,17 @@ export default function SectionCard({
   extra,
   children,
   style,
+  id,
 }: {
   title?: ReactNode
   extra?: ReactNode
   children: ReactNode
   style?: CSSProperties
+  /** 页内锚点：待办区之类的地方要能 `scrollIntoView` 定位到这一块 */
+  id?: string
 }) {
   return (
-    <div className="card-block" style={style}>
+    <div className="card-block" id={id} style={style}>
       {(title || extra) && (
         <div
           style={{

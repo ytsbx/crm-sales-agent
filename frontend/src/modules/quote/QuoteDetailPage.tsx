@@ -4,6 +4,13 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import {
+  STAGE_LABEL,
+  currentStage,
+  quoteTodos,
+  stageProgress,
+  type QuoteTodo,
+} from '../../shared/quote-todo'
 import ReceivablePlanPicker, {
   defaultPlanRows,
   isPlanValid,
@@ -581,6 +588,22 @@ export default function QuoteDetailPage() {
   /** 运费未确认的人话原因（后端给）；有值就要一直显示 */
   const freightUnconfirmed = detail.freight_unconfirmed_reason ?? null
 
+  // 「这一步还差什么」的清单（判据在 shared/quote-todo.ts，单一真源）
+  const quoteTodoList = quoteTodos({
+    masterWarnings: detail?.master_warnings,
+    freightUnconfirmedReason: freightUnconfirmed,
+    approvalStatus: version?.approval_status,
+    sentAt: version?.sent_at,
+    acceptedAt: version?.accepted_at,
+    declinedAt: version?.declined_at,
+    converted: quote?.status === 'converted',
+  })
+  // 有没有"必须处理完才能往下走"的项（主数据/费用）——决定标签用橙色还是蓝色
+  const quoteTodosBlocked = quoteTodoList.some(
+    (todo) => todo.stage === 'master' || todo.stage === 'cost',
+  )
+
+
   const itemColumns = [
     {
       title: 'SKU / 需求',
@@ -878,6 +901,71 @@ export default function QuoteDetailPage() {
       )}
 
       {/*
+        「这一步还差什么」（2026-10-13 主人：把阻塞原因收成一个待办区）。
+        判据全部来自 `shared/quote-todo.ts`（单一真源），页面只负责渲染与跳转 ——
+        别在这里自己判一遍，否则两处会说法不一。
+      */}
+      {quoteTodoList.length > 0 && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '12px 16px',
+            borderRadius: 6,
+            background: 'var(--crm-surface, #fff)',
+            border: '1px solid var(--crm-border, #E5E6EB)',
+            fontSize: 13,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <span style={{ fontWeight: 600 }}>现在这一步</span>
+            <Tag color={quoteTodosBlocked ? 'orange' : 'blue'} size="small">
+              {currentStage(quoteTodoList) ? STAGE_LABEL[currentStage(quoteTodoList)!] : ''}
+            </Tag>
+            {stageProgress(currentStage(quoteTodoList)) && (
+              <span style={{ color: 'var(--crm-text-3)' }}>
+                第 {stageProgress(currentStage(quoteTodoList))!.step} 步 / 共{' '}
+                {stageProgress(currentStage(quoteTodoList))!.total} 步
+              </span>
+            )}
+          </div>
+          {quoteTodoList.map((todo: QuoteTodo, index: number) => (
+            <div
+              key={todo.key}
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+                padding: '4px 0',
+                color: index === 0 ? 'var(--crm-text-1)' : 'var(--crm-text-3)',
+              }}
+            >
+              <span style={{ flexShrink: 0 }}>{index === 0 ? '·' : '·'}</span>
+              <span style={{ flex: 1 }}>{todo.reason}</span>
+              {/* 能点的必须给去处：只说明"差什么"而不给入口，等于把问题换个地方放着 */}
+              {todo.anchor && (
+                <a
+                  style={{ flexShrink: 0, color: 'var(--crm-primary)' }}
+                  onClick={() => {
+                    document.getElementById(todo.anchor as string)?.scrollIntoView({
+                      behavior: 'smooth',
+                      block: 'center',
+                    })
+                  }}
+                >
+                  去处理
+                </a>
+              )}
+              {todo.action && index === 0 && (
+                <span style={{ flexShrink: 0, color: 'var(--crm-text-3)' }}>
+                  下一步：{todo.action}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/*
         主数据刷新预览（issue 建议第 5 条）：**先看再刷**。
         名称/规格/单位是印给客户的，刷新会改掉它们 —— 直接刷完再发现问题
         比先看一眼贵得多。已发送/已审批的版本不给刷（内容是对客承诺），
@@ -1110,6 +1198,7 @@ export default function QuoteDetailPage() {
       )}
 
       <SectionCard
+        id="quote-items"
         title="报价明细"
         style={{ marginBottom: 16 }}
         extra={
@@ -1144,6 +1233,7 @@ export default function QuoteDetailPage() {
       {/* 两张卡里各有一张表，列宽不能写死 1fr（会被表的固有宽度顶住、整页横向滚动） */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
         <SectionCard
+          id="quote-charges"
           title="附加费用"
           extra={
             canManage &&
