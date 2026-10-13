@@ -137,8 +137,11 @@ export function getOrder(id: number) {
 /**
  * 转销售订单。
  *
- * ⚠️ 点一下会**生成正式订单 + 复制全部明细 + 生成一条「全款」应收**，
+ * ⚠️ 点一下会**生成正式订单 + 复制全部明细 + 建应收计划**，
  * 订单是正式履约依据。后端要求 `confirm=true`（不带返回 42206 + 说明）。
+ *
+ * 应收计划由 `payload.receivable_plan` 决定（2026-10-13 改动三）：
+ * **不传 = 一条「全款」**（老行为）；传 `{ratios, due_dates, names}` 就按期数建。
  */
 export function convertToOrder(
   versionId: number,

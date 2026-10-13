@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 from app.core.patch_schema import PatchModel
+from app.modules.order.schema import ReceivablePlanIn
 
 
 
@@ -61,6 +62,9 @@ class OpportunityConfirmWin(BaseModel):
     win_quote_version_id: int | None = None
     delivery_date: date | None = None
     remark: str | None = None
+    #: 收款计划（2026-10-13 改动三）：不传 = 一条「全款」。
+    #: 类型与报价转单**共用同一个模型**，免得两处判据漂移。
+    receivable_plan: ReceivablePlanIn | None = None
 
 
 class OpportunityItemCreate(BaseModel):

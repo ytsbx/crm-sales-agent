@@ -245,12 +245,24 @@ async def convert_to_order(
         if quote is not None:
             customer = await session.get(Customer, quote.customer_id)
             customer_name = customer.name if customer else None
+        # 收款计划：不传 = 一条「全款」；传了 = 按期数说清（主人 2026-10-13：
+        # 转单时能直接选收款方式，所以确认文案必须跟着说清"会建几条应收什么钱"）
+        plan = payload.receivable_plan
+        if plan is None or not plan.ratios:
+            plan_text = f"将生成一条「全款」应收 ¥{version.total_amount}"
+        else:
+            names = plan.names or []
+            parts = []
+            for index, ratio in enumerate(plan.ratios):
+                label = names[index] if index < len(names) and str(names[index]).strip() else f"第 {index + 1} 期"
+                parts.append(f"{label} {round(ratio * 100, 2)}%")
+            plan_text = f"将按你选的分期生成 {len(plan.ratios)} 条应收：{'、'.join(parts)}"
         detail = "；".join(
             [
                 f"来源：{quote.quote_no if quote else ''} V{version.version_no}"
                 + (f"（客户 {customer_name}）" if customer_name else ""),
                 f"订单金额 ¥{version.total_amount}",
-                f"将生成一条「全款」应收 ¥{version.total_amount}",
+                plan_text,
                 "订单是正式履约依据，生成后要改需走订单自己的流程",
             ]
         )
@@ -266,6 +278,7 @@ async def convert_to_order(
         user_id=user.id,
         delivery_date=payload.delivery_date,
         remark=payload.remark,
+        receivable_plan=payload.receivable_plan,
     )
     await write_audit(
         session,

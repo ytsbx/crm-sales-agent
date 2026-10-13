@@ -189,6 +189,7 @@ async def create_order_from_quote(
     user_id: int,
     delivery_date: date | None = None,
     remark: str | None = None,
+    receivable_plan=None,
 ) -> SalesOrder:
     """报价版本转销售订单：必须已通过审批；同一版本只能转一次（幂等）。"""
     from app.modules.quote.model import Quote
@@ -342,20 +343,53 @@ async def create_order_from_quote(
             created_at=datetime.now(UTC),
         )
     )
-    # 订单→应收（方案 §6）：转单即生成一条全款应收计划，避免"建单靠记性建应收"；
-    # 需要拆定金/尾款时在订单详情页删除后按比例重生成
-    session.add(
-        ReceivablePlan(
-            order_id=order.id,
-            plan_name="全款",
-            due_date=effective_delivery or (today + timedelta(days=30)),
-            amount=version.total_amount.quantize(Decimal("0.01")),
-            currency=version.currency,
-            status="pending",
-            remark="转单自动生成，可在订单详情调整或拆分",
-            created_at=datetime.now(UTC),
+    # 订单→应收（方案 §6）：转单即生成应收计划，避免"建单靠记性建应收"。
+    #
+    # 2026-10-13 起支持在转单时**直接选收款方式**（主人：改动三）：
+    #   · 不传 `receivable_plan` → 一条「全款」（沿用老行为，向后兼容）；
+    #   · 传了 → 按比例分多期，名称/到期日按下标对齐，缺的回落。
+    # 金额算法与 `POST /orders/{id}/receivables/generate` **同一口径**：
+    # 前期四舍五入到分、**末期补差额**，所以各期之和严格等于订单总额。
+    default_due = effective_delivery or (today + timedelta(days=30))
+    total_amount = version.total_amount.quantize(Decimal("0.01"))
+    if receivable_plan is None or not getattr(receivable_plan, "ratios", None):
+        session.add(
+            ReceivablePlan(
+                order_id=order.id,
+                plan_name="全款",
+                due_date=default_due,
+                amount=total_amount,
+                currency=version.currency,
+                status="pending",
+                remark="转单自动生成，可在订单详情调整或拆分",
+                created_at=datetime.now(UTC),
+            )
         )
-    )
+    else:
+        ratios = [Decimal(str(r)) for r in receivable_plan.ratios]
+        due_dates = list(receivable_plan.due_dates or [])
+        names = list(receivable_plan.names or [])
+        amounts: list[Decimal] = []
+        for index, ratio in enumerate(ratios):
+            if index == len(ratios) - 1:
+                # 末期补差额：合计严格等于订单总额（不靠"比例打得刚好"）
+                amounts.append(total_amount - sum(amounts, Decimal("0")))
+            else:
+                amounts.append((total_amount * ratio).quantize(Decimal("0.01")))
+        for index in range(len(ratios)):
+            session.add(
+                ReceivablePlan(
+                    order_id=order.id,
+                    plan_name=(names[index] if index < len(names) and str(names[index]).strip()
+                               else f"第 {index + 1} 期"),
+                    due_date=(due_dates[index] if index < len(due_dates) else default_due),
+                    amount=amounts[index],
+                    currency=version.currency,
+                    status="pending",
+                    remark="转单时按收款方式生成，可在订单详情调整",
+                    created_at=datetime.now(UTC),
+                )
+            )
     # 领导六阶段口径"过程记录"：转单即下单事实，自动留痕 + 推业务主管
     # （confirm-win 与 convert-to-order 两条路都汇到这里）
     from app.modules.followup import service as followup_service

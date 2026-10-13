@@ -6,12 +6,57 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from app.core.patch_schema import PatchModel
+from app.modules.payment.schema import ReceivableGenerate
 from app.modules.sample.schema import SampleSource
+
+
+class ReceivablePlanIn(BaseModel):
+    """转单时一起定下的收款计划（2026-10-13 加）。
+
+    **不传 = 一条「全款」**（沿用转单自动建全款的老行为，向后兼容）。
+    传了就是按比例分期：`ratios` 合计必须为 1、每期 > 0、最多 24 期 ——
+    与 `POST /orders/{id}/receivables/generate` **同一套判据**，
+    所以校验参数（`ReceivableGenerate`）直接复用它，避免两处各写一遍漂移。
+
+    `due_dates` / `names` 与 `ratios` **按下标对齐**；缺的位置分别回落到
+    订单交期、以及「第 N 期」。后端不需要知道"定金/尾款"这类业务命名。
+    """
+
+    ratios: list[float]
+    due_dates: list[date] | None = None
+    names: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _check(self):
+        # 复用生成接口的**字段级**校验（NaN/Infinity），再自己补两条：
+        # ⚠️ `ReceivableGenerate` 的校验器只管"是不是有限数"，
+        # **"合计必须=1、每期>0、≤24 期"是在它的 service 里做的**（实测踩到：
+        # 只构造模型时 `[0.9, 0.2]` 能过）。转单要在**参数阶段**就拒掉，
+        # 否则等于先建了订单壳、再在生成应收时才炸。
+        ReceivableGenerate(ratios=self.ratios, first_due_date=date.today())
+        if not self.ratios:
+            raise ValueError("至少要有一期比例")
+        if abs(sum(self.ratios) - 1) > 0.0001:
+            raise ValueError(f"各期比例之和必须等于 1（当前 {sum(self.ratios)}）")
+        if any(r <= 0 for r in self.ratios):
+            raise ValueError("每期比例必须大于 0")
+        if len(self.ratios) > 24:
+            raise ValueError(f"分期期数过多（{len(self.ratios)} 期，最多 24 期）")
+        if self.due_dates is not None and len(self.due_dates) != len(self.ratios):
+            raise ValueError("每期都要有一个到期日（due_dates 与 ratios 个数要一致）")
+        if self.names is not None:
+            if len(self.names) != len(self.ratios):
+                raise ValueError("每期都要有一个名称（names 与 ratios 个数要一致）")
+            if any(not str(n).strip() for n in self.names):
+                raise ValueError("每期名称不能为空")
+        return self
 
 
 class OrderFromQuote(BaseModel):
     delivery_date: date | None = None
     remark: str | None = None
+    #: 收款计划：不传 = 一条「全款」。详见 `ReceivablePlanIn`。
+    receivable_plan: ReceivablePlanIn | None = None
 
 
 class MilestoneUpdate(BaseModel):

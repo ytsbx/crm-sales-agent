@@ -3,6 +3,14 @@ import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
+import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import ReceivablePlanPicker, {
+  defaultPlanRows,
+  isPlanValid,
+  planBlockedReasons,
+  toPlanPayload,
+  type ReceivablePlanRow,
+} from '../../shared/components/ReceivablePlanPicker'
 import { Button, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -36,7 +44,6 @@ import type { TagTone } from '../../shared/types'
 import { convertToOrder } from '../../shared/api/order'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
-import BlockedHint from '../../shared/components/BlockedHint'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import QuoteSendLogsPanel from './QuoteSendLogsPanel'
 import BizDocPanel from '../../shared/components/BizDocPanel'
@@ -268,8 +275,23 @@ export default function QuoteDetailPage() {
     return true
   }
 
+  /**
+   * 转单弹窗（2026-10-13 改动三）：转单时**直接选收款方式**。
+   *
+   * 从前这里是"后端要求确认（42206）→ 弹一个只有确定/取消的信息框"，
+   * 应收写死一条「全款」；想拆定金/尾款得转完单再去订单页删了重建。
+   * 现在把收款计划放进这个弹窗，默认仍是全款（不动老习惯）。
+   */
+  const [convertVisible, setConvertVisible] = useState(false)
+  const [planMode, setPlanMode] = useState<'full' | 'installments'>('full')
+  const [planRows, setPlanRows] = useState<ReceivablePlanRow[]>(defaultPlanRows)
+  // 灰键必须说得出为什么（项目口径）：判据与组件内部同源
+  const planBlocked = planBlockedReasons(planMode, planRows)
+  const notifyPlanBlocked = useBlockedNotify(planBlocked, '生成订单')
+
   const convertMutation = useMutation<{ order_id: number; order_no: string }, Error, boolean>({
-    mutationFn: (confirm) => convertToOrder(versionId!, {}, confirm),
+    mutationFn: (confirm) =>
+      convertToOrder(versionId!, { receivable_plan: toPlanPayload(planMode, planRows) }, confirm),
     onSuccess: (data) => {
       Toast.success(`已生成订单 ${data.order_no}`)
       navigate(`/orders/${data.order_id}`)
@@ -775,7 +797,12 @@ export default function QuoteDetailPage() {
           {can('order:manage') && isCurrentVersion && version.sent_at && version.accepted_at && quote.status === 'accepted' && (
             <Button
               theme="solid"
-              onClick={() => convertMutation.mutate(false)}
+              onClick={() => {
+                // 每次打开都回到默认：全款 + 默认两行（定金 30% / 尾款 70%）
+                setPlanMode('full')
+                setPlanRows(defaultPlanRows())
+                setConvertVisible(true)
+              }}
               loading={convertMutation.isPending}
             >
               转销售订单
@@ -856,6 +883,58 @@ export default function QuoteDetailPage() {
         比先看一眼贵得多。已发送/已审批的版本不给刷（内容是对客承诺），
         这里如实说明并引导新建版本。
       */}
+      {/*
+        转单确认 + 收款方式（2026-10-13 改动三）。
+        `gateMessage` 那条路保留：后端返回 42206 时（例如别的入口触发）仍会弹它。
+      */}
+      <Modal
+        title="转销售订单"
+        visible={convertVisible}
+        onCancel={() => setConvertVisible(false)}
+        onOk={() => convertMutation.mutate(true)}
+        confirmLoading={convertMutation.isPending}
+        okText="生成订单"
+        okButtonProps={{ disabled: !isPlanValid(planMode, planRows) }}
+        width={620}
+        footer={
+          <div>
+            <div onClick={notifyPlanBlocked}>
+              <BlockedHint reasons={planBlocked} action="生成订单" />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <Button onClick={() => setConvertVisible(false)}>取消</Button>
+              <div className="blocked-hint-click" onClick={notifyPlanBlocked}>
+                <Button
+                  theme="solid"
+                  loading={convertMutation.isPending}
+                  disabled={!isPlanValid(planMode, planRows)}
+                  style={!isPlanValid(planMode, planRows) ? { pointerEvents: 'none' } : undefined}
+                  onClick={() => convertMutation.mutate(true)}
+                >
+                  生成订单
+                </Button>
+              </div>
+            </div>
+          </div>
+        }
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+            将把本报价版本转为销售订单（金额 ¥
+            {Number(version?.total_amount ?? 0).toLocaleString('zh-CN')}
+            ），并「复制全部明细」。订单是正式履约依据，生成后要改需走订单自己的流程。
+          </div>
+          <ReceivablePlanPicker
+            totalAmount={Number(version?.total_amount ?? 0)}
+            currency="CNY"  /* 口径：系统只做人民币（版本上没有 currency 字段，别猜） */
+            mode={planMode}
+            onModeChange={setPlanMode}
+            rows={planRows}
+            onRowsChange={setPlanRows}
+          />
+        </div>
+      </Modal>
+
       <ConfirmRequiredModal
         visible={Boolean(gateMessage)}
         message={gateMessage}

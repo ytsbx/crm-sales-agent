@@ -786,6 +786,7 @@ async def win_opportunity(
         win_quote_version_id=payload.win_quote_version_id,
         delivery_date=None,
         remark=payload.remark,
+        receivable_plan=getattr(payload, "receivable_plan", None),
         action="win",
         request=request,
         user=user,
@@ -800,6 +801,8 @@ async def _confirm_win_core(
     delivery_date,
     remark: str | None,
     action: str,
+    #: 收款计划（2026-10-13）：不传 = 一条「全款」。详见 OrderFromQuote。
+    receivable_plan=None,
     request: Request,
     user: CurrentUser,
     session: AsyncSession,
@@ -915,6 +918,7 @@ async def _confirm_win_core(
             user_id=user.id,
             delivery_date=delivery_date,
             remark=remark,
+            receivable_plan=receivable_plan,
         )
     except AppError as exc:
         if exc.code != ErrorCode.DUPLICATE_CONVERT:
@@ -978,6 +982,7 @@ async def confirm_win_and_create_order(
         opportunity_id=opportunity_id,
         win_quote_version_id=payload.win_quote_version_id,
         delivery_date=payload.delivery_date,
+        receivable_plan=getattr(payload, "receivable_plan", None),
         remark=payload.remark,
         action="confirm_win",
         request=request,

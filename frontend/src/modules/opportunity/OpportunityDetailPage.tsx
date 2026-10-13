@@ -32,6 +32,14 @@ import { listSkus } from '../../shared/api/product'
 import { completeTask, createTask, listTasks, type Task } from '../../shared/api/task'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import ReceivablePlanPicker, {
+  defaultPlanRows,
+  isPlanValid,
+  planBlockedReasons,
+  toPlanPayload,
+  type ReceivablePlanRow,
+} from '../../shared/components/ReceivablePlanPicker'
 import SectionCard from '../../shared/components/SectionCard'
 import AgentInsight from '../../shared/components/AgentInsight'
 import {
@@ -174,6 +182,19 @@ export default function OpportunityDetailPage() {
   })
 
   // 确认成交并生成订单（方案 §5 / A13）：替代"标记成交后再去报价页转单"的两步操作
+  /**
+   * 成交并建单弹窗（2026-10-13 改动三）：成交那一刻就能选收款方式。
+   *
+   * ⚠️ 这里**不给金额预览**：成交转的是"最新已发送/已接受的报价版本"（后端挑），
+   * 前端此刻不知道是哪一份、金额多少；拿「预计金额」凑会误导用户。
+   * 所以金额那部分交给转单时按报价版本算（页面上也如实说明了）。
+   */
+  const [confirmWinVisible, setConfirmWinVisible] = useState(false)
+  const [planMode, setPlanMode] = useState<'full' | 'installments'>('full')
+  const [planRows, setPlanRows] = useState<ReceivablePlanRow[]>(defaultPlanRows)
+  const planBlocked = planBlockedReasons(planMode, planRows)
+  const notifyPlanBlocked = useBlockedNotify(planBlocked, '确认成交并建单')
+
   const confirmWinMutation = useMutation({
     mutationFn: () => {
       // 模块⑤：交期自动带入——取需求明细里最早的非空交期，
@@ -185,6 +206,7 @@ export default function OpportunityDetailPage() {
       return confirmWin(opportunityId, {
         delivery_date: dates[0] ?? null,
         remark: '在商机详情页确认成交',
+        receivable_plan: toPlanPayload(planMode, planRows) ?? undefined,
       })
     },
     onSuccess: (data) => {
@@ -440,15 +462,17 @@ export default function OpportunityDetailPage() {
                 <Button onClick={() => setTaskVisible(true)}>新建任务</Button>
                 {opportunity.status === 'open' && (
                   <>
-                    <Popconfirm
-                      title="确认成交并生成订单？"
-                      content="将把该商机最新已发送/已接受的报价版本转为销售订单，此前已建单则直接返回原订单"
-                      onConfirm={() => confirmWinMutation.mutate()}
+                    <Button
+                      theme="solid"
+                      loading={confirmWinMutation.isPending}
+                      onClick={() => {
+                        setPlanMode('full')
+                        setPlanRows(defaultPlanRows())
+                        setConfirmWinVisible(true)
+                      }}
                     >
-                      <Button theme="solid" loading={confirmWinMutation.isPending}>
-                        确认成交并建单
-                      </Button>
-                    </Popconfirm>
+                      确认成交并建单
+                    </Button>
                     <Button type="danger" onClick={() => setLoseVisible(true)}>
                       标记失单
                     </Button>
@@ -680,6 +704,51 @@ export default function OpportunityDetailPage() {
             value={stageRemark}
             onChange={setStageRemark}
             placeholder="推进说明（可不填）"
+          />
+        </div>
+      </Modal>
+
+      <Modal
+        title="确认成交并生成订单"
+        visible={confirmWinVisible}
+        onCancel={() => setConfirmWinVisible(false)}
+        onOk={() => confirmWinMutation.mutate()}
+        confirmLoading={confirmWinMutation.isPending}
+        okText="确认成交并建单"
+        okButtonProps={{ disabled: !isPlanValid(planMode, planRows) }}
+        width={620}
+        footer={
+          <div>
+            <div onClick={notifyPlanBlocked}>
+              <BlockedHint reasons={planBlocked} action="确认成交并建单" />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <Button onClick={() => setConfirmWinVisible(false)}>取消</Button>
+              <div className="blocked-hint-click" onClick={notifyPlanBlocked}>
+                <Button
+                  theme="solid"
+                  loading={confirmWinMutation.isPending}
+                  disabled={!isPlanValid(planMode, planRows)}
+                  style={!isPlanValid(planMode, planRows) ? { pointerEvents: 'none' } : undefined}
+                  onClick={() => confirmWinMutation.mutate()}
+                >
+                  确认成交并建单
+                </Button>
+              </div>
+            </div>
+          </div>
+        }
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
+            将把该商机最新已发送/已接受的报价版本转为销售订单，并复制全部明细；
+            此前已建单则直接返回原订单（不会重复建）。
+          </div>
+          <ReceivablePlanPicker
+            mode={planMode}
+            onModeChange={setPlanMode}
+            rows={planRows}
+            onRowsChange={setPlanRows}
           />
         </div>
       </Modal>
