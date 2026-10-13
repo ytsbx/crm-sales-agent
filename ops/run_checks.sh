@@ -64,6 +64,24 @@ PYTHONPATH=. .venv/bin/python scripts/check_model_attrs.py  >/dev/null && echo "
 PYTHONPATH=. .venv/bin/python scripts/check_permissions.py >/dev/null && echo "OK  权限码"   || FAILED+=("check_permissions")
 
 echo
+echo "== 1.1 前端侧静态检查（ops/check_*.py，与 CI 用同一批）=="
+# ⚠️ 这一段是 2026-10-13 补的：这些检查此前**只有 CI 在跑**，本地一键脚本一条都不跑
+# —— 于是"本地全绿、推上去 CI 红"成了常态（当天就因此连吃了两次）。
+# 从 `frontend/` 目录跑，与 CI 的 working-directory 一致（脚本里有相对路径推断）。
+for _check in "$SCRIPT_DIR"/check_*.py; do
+  _name="$(basename "$_check")"
+  if (cd "$SCRIPT_DIR/../frontend" && python3 "$_check" >/dev/null 2>&1); then
+    echo "OK  $_name"
+  else
+    echo "FAIL $_name"
+    (cd "$SCRIPT_DIR/../frontend" && python3 "$_check" 2>&1 | tail -4 | sed 's/^/      /')
+    FAILED+=("$_name")
+  fi
+done
+node --test "$SCRIPT_DIR/request_key.test.mjs" >/dev/null 2>&1 && echo "OK  request_key.test.mjs" || FAILED+=("request_key.test.mjs")
+node --test "$SCRIPT_DIR/blocked_hint.test.mjs" >/dev/null 2>&1 && echo "OK  blocked_hint.test.mjs" || FAILED+=("blocked_hint.test.mjs")
+
+echo
 echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="
 PYTHONPATH=. .venv/bin/python -m pytest || FAILED+=("pytest")
 

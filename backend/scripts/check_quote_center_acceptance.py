@@ -1304,14 +1304,34 @@ def main():
             # 的删除，`quote_versions` 又挡住 `quotes`。整条清理跑在后台线程里，
             # 异常被吞掉，表现只是"报价没删掉"；然后**下一个套件**撞上这些残留
             # 报价（例如新建版本时报 500），排查方向被彻底带偏。
+            # ⚠️ **写语句必须用 `run_db_write`，不能用 `run_db`**（2026-10-13 修）。
+            #
+            # `run_db` 是**取行**的（末尾 `result.all()`），对 DELETE 会抛
+            # `ResourceClosedError: This result object does not return rows`。
+            # 而清理跑在后台线程里、异常被吞 —— 表现就是"以为删了、其实一条没删"，
+            # 然后下一条 `delete from quote_versions` 撞上
+            # `quote_items_quote_version_id_fkey`（本套件实测复现过），
+            # 残留继续连累后面的套件。
+            #
+            # 这个坑本文件里早就写过（见 `run_db_write` 的文档字符串："我第一版就踩了"），
+            # 但这段收尾是后来（8aa695c）补的，补的时候用错了函数。
+            #
+            # 删的顺序有依赖，别调换：报价明细 / 附加费用 / 发送记录（都指向版本）
+            # → 版本 → 报价单。`quote_send_logs` 是 2026-10-12 加运费闸之后才出现的
+            # 引用，漏了它同样会撞 FK。
             for _q in filter(None, [qid, _nq]):
-                run_db("delete from quote_items where quote_version_id in "
-                       "(select id from quote_versions where quote_id=:q)", {'q': _q})
-                run_db("delete from quote_charges where quote_version_id in "
-                       "(select id from quote_versions where quote_id=:q)", {'q': _q})
-                run_db("delete from quote_versions where quote_id=:q", {'q': _q})
-                run_db("delete from quotes where id=:q", {'q': _q})
-            run_db("delete from custom_inquiries where id=:i", {'i': inq})
+                for _sql in (
+                    "delete from quote_items where quote_version_id in "
+                    "(select id from quote_versions where quote_id=:q)",
+                    "delete from quote_charges where quote_version_id in "
+                    "(select id from quote_versions where quote_id=:q)",
+                    "delete from quote_send_logs where quote_version_id in "
+                    "(select id from quote_versions where quote_id=:q)",
+                    "delete from quote_versions where quote_id=:q",
+                    "delete from quotes where id=:q",
+                ):
+                    run_db_write(_sql, {'q': _q})
+            run_db_write("delete from custom_inquiries where id=:i", {'i': inq})
 
         cleanup()
         evidence['results'] = RESULTS

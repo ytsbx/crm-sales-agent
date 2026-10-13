@@ -114,7 +114,7 @@ def _fields(sku: int, token: str) -> dict:
 
 
 def _make_sku(admin: str, code: str, **attrs) -> int:
-    call("POST", "/products", admin, {"name": f"{MARK}-{code}", "product_line": "x", "category": "包装"})
+    call("POST", "/products", admin, {"name": f"{MARK}-{code}", "product_line": "x", "category": "物流器具"})
     pid = db(f"select id from products where name='{MARK}-{code}' order by id desc limit 1")
     body = {"sku_code": f"{MARK}-{code}", "name": "本地件", "specification": "100×200", "unit": "个"}
     body.update(attrs)

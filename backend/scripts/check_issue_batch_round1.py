@@ -250,7 +250,7 @@ async def main() -> int:
                            {"sku_id": 1, "quantity": 1, "logistics_cost": 0,
                             "target_profit_amount": 80})
         # 无成本场景另建 SKU
-        call("POST", "/products", admin, {"name": f"{MARK}-产品", "product_line": "x", "category": "包装"})
+        call("POST", "/products", admin, {"name": f"{MARK}-产品", "product_line": "x", "category": "物流器具"})
         status, res = call("GET", f"/products?keyword={MARK}-产品", admin)
         pid = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
         if pid:

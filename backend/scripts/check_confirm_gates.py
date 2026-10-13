@@ -334,7 +334,7 @@ def main() -> int:
     # 用**全新 SKU**：上面那个 `sku` 已经挂了规则，再建会撞唯一约束 40901 ——
     # 那是"重复"，不是"需要确认"，会把这条对照验成假绿。
     call("POST", "/products", admin,
-         {"name": f"{MARK}-对照产品", "product_line": "x", "category": "包装"})
+         {"name": f"{MARK}-对照产品", "product_line": "x", "category": "物流器具"})
     pid2 = int(db(f"select id from products where name='{MARK}-对照产品' order by id desc limit 1"))
     call("POST", f"/products/{pid2}/skus", admin,
          {"sku_code": f"{MARK}-NC", "name": "对照件", "specification": "1×1", "unit": "个"})

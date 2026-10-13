@@ -124,7 +124,7 @@ def _warnings(admin: str, vid: int) -> list[str]:
 
 def _make_sku(admin: str, code: str) -> int:
     call("POST", "/products", admin,
-         {"name": f"{MARK}-{code}", "product_line": "x", "category": "包装"})
+         {"name": f"{MARK}-{code}", "product_line": "x", "category": "物流器具"})
     pid = db(f"select id from products where name='{MARK}-{code}' order by id desc limit 1")
     call("POST", f"/products/{pid}/skus", admin,
          {"sku_code": f"{MARK}-{code}", "name": "本地件", "specification": "100×200", "unit": "个"})

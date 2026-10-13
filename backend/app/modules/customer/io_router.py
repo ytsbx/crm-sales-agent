@@ -17,6 +17,7 @@ from app.modules.customer import io as io_util
 from app.modules.customer import service as svc
 from app.modules.customer.model import Customer
 from app.modules.customer.schema import CustomerExportFilter, CustomerExportPurpose
+from app.modules.settings import service as settings_service
 from app.modules.user.model import User
 
 router = APIRouter(tags=["Customer"])
@@ -303,6 +304,30 @@ async def import_customers(
         last_contact, date_error = io_util.parse_date_checked(row.get("最后联系日期"))
         if date_error:
             errs.add(date_error)
+
+        # ⚠️ **导入必须走和单个新建同一道字典校验**（2026-10-13 补）。
+        #
+        # 前一版只在 `POST /customers` 与 `PATCH /customers/{id}` 里调了
+        # `ensure_dictionary_value`，而导入这条路是直接
+        # `level=(row.get("客户等级") or "").strip() or None` 落库 ——
+        # 两条路两把尺子：管理员把某个等级停用之后，一份 CSV 照样能把它写回去。
+        # **受控字典只在单个入口生效，就等于没生效**（留个 Excel 后门就行）。
+        #
+        # 这里并进 `errs`（本文件的既有风格：坏数据进失败清单、说清原因，
+        # 不算程序错），而不是抛异常。
+        # 判据**复用** `ensure_dictionary_value`，不在这里手写一遍查询：
+        # 同一个规则写两处，早晚一处改了另一处没改（这个项目已经因为
+        # "两把尺子"栽过好几次）。它抛的文案本身就指路"去系统设置维护"，
+        # 直接拿来用；只是这里要的是"进失败清单"而不是"整个请求失败"，
+        # 所以 catch 下来并进 `errs`。
+        raw_level = (row.get("客户等级") or "").strip()
+        if raw_level:
+            try:
+                await settings_service.ensure_dictionary_value(
+                    session, type="customer_level", code=raw_level, field_label="客户等级"
+                )
+            except AppError as exc:
+                errs.add(exc.message)
 
         owner_id, owner_error, owner_info = await io_util.resolve_owner_checked(
             session, row.get("负责人登录名"), user.id

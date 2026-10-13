@@ -140,7 +140,7 @@ async def main() -> int:
     try:
         await cleanup()
         print("\n=== 本地建一个 SKU（复现链条的起点）===")
-        call("POST", "/products", admin, {"name": f"{MARK}-产品", "product_line": "x", "category": "包装"})
+        call("POST", "/products", admin, {"name": f"{MARK}-产品", "product_line": "x", "category": "物流器具"})
         status, res = call("GET", f"/products?keyword={MARK}-产品&page=1&page_size=5", admin)
         pid = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
         status, res = call(
@@ -224,7 +224,7 @@ async def main() -> int:
         )
 
         print("\n=== ⑧ 空规格是合法的已确认值（不能当成缺字段）===")
-        call("POST", "/products", admin, {"name": f"{MARK}-无规格", "product_line": "x", "category": "包装"})
+        call("POST", "/products", admin, {"name": f"{MARK}-无规格", "product_line": "x", "category": "物流器具"})
         status, res = call("GET", f"/products?keyword={MARK}-无规格&page=1&page_size=5", admin)
         pid2 = ((res.get("data") or {}).get("items") or [{}])[0].get("id")
         call("POST", f"/products/{pid2}/skus", admin,

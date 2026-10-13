@@ -229,10 +229,31 @@ async def check_foreign_concession_rejected(admin: str) -> None:
         from app.core.database import SessionLocal
         from app.modules.quote.model import QuoteVersion
 
+        # ⚠️ **自己建一张报价单，不要 `select(...).limit(1)` 借库里的第一条**
+        # （2026-10-13 修）。
+        #
+        # 原来是"抓库里任意一条版本所在的报价单"，再让 admin 拿去 sandbox。
+        # 这在**干净库 + 全套件顺序跑**时是碰运气的：第一条版本很可能属于别人
+        # （实测第一条 `owner_id=2` = 张三），而 admin 的数据范围看不到它，
+        # `GET /approval-rules/sandbox` 直接 404「报价单不存在」——
+        # 断言于是报"外币版本没有被拒"，其实**外币那段代码根本没被走到**。
+        # 它之前是绿的，只因为跑到它时库里第一条恰好可见；清单里插进新套件、
+        # 顺序一变就露出来了（单独复跑也复现）。
+        #
+        # 借别人的数据来验自己的功能，本身就是错的：造一张自己可见的单，
+        # 结论才不依赖"谁先跑"。
+        _, res = call('POST', '/customers', token=admin, body={'name': f'{RUN}外币客户'})
+        customer = res['data']['id']
+        _, res = call('POST', '/opportunities', token=admin, body={
+            'title': f'{RUN}外币商机', 'customer_id': customer,
+        })
+        opportunity = res['data']['id']
+        _, res = call('POST', '/quotes', token=admin, body={
+            'customer_id': customer, 'opportunity_id': opportunity, 'currency': 'CNY',
+        })
+        quote_id = res['data']['quote_id']
+
         async with SessionLocal() as session:
-            quote_id = (await session.execute(
-                select(QuoteVersion.quote_id).limit(1)
-            )).scalars().first()
             # 版本号用**当前最大 +1**，而不是写死 98/99：
             # 上一次跑到一半失败会留下 98/99，写死就撞 `uq_quote_versions_quote_version`
             # （实测撞过一次，整节变成"抛异常"而不是给结论）

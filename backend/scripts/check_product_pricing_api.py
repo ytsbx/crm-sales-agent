@@ -305,9 +305,9 @@ async def main():
 
     headers = ['产品名称', '产品线', '分类', '品牌', '描述']
     rows = [
-        [f'CHK{RUN}产品甲', '纸箱', '包装', '宏远', '测试用'],
-        [f'CHK{RUN}产品乙', '纸箱', '包装', '宏远', ''],
-        [f'CHK{RUN}产品甲', '纸箱', '包装', '宏远', '重复的'],
+        [f'CHK{RUN}产品甲', '纸箱', '物流器具', '宏远', '测试用'],
+        [f'CHK{RUN}产品乙', '纸箱', '物流器具', '宏远', ''],
+        [f'CHK{RUN}产品甲', '纸箱', '物流器具', '宏远', '重复的'],
     ]
     status, res = upload_csv(admin, '/products/import', headers, rows)
     check('导入产品', res.get('code'), 0)

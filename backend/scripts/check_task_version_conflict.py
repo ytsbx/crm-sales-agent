@@ -205,11 +205,36 @@ async def main() -> None:
     print(f'  · 库里版本挪到 {moved}')
     _, cur = call('GET', f'/tasks/{task_id}', token=admin)
     now_version = cur['data']['updated_at']
-    stale_same_second = shift_micros(now_version, -800)
+    # ⚠️ **位移要自适应，不能写死 -800 微秒**（2026-10-13 修）。
+    #
+    # 写死 -800 时，只要当前时间戳的微秒部分 < 800（也就是"刚刚跨秒"那一下），
+    # 挪完就掉到上一秒 —— 于是"构造成立"这条断言在**秒边界上随机翻车**。
+    # 实测：`…25.339505` → 挪 -800 → `…24.339505`，跨秒，红了。
+    # 而它红的时候，真正要验的那条（同秒旧版本必须 409）**是过的** ——
+    # 一条 flaky 的构造断言，把一条正常的用例拖成了红。
+    #
+    # 现在：按当前微秒**取能同秒的最大位移**（至少 1 微秒，最多 999999），
+    # 既保证落在同一秒，又保证确实"更旧"。
+    micros = int(re.match(r'^.*\.(\d{6})', now_version).group(1))
+    delta = -min(800, micros) if micros else 0
+    if delta == 0:
+        # 微秒正好是 0：此刻当秒刚开始，往前挪必然跨秒。
+        # 不去碰时间戳（碰了就跨秒、构造不成立），改为**重新取一次**当前版本，
+        # 等它落到秒中段再构造。
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            _, cur = call('GET', f'/tasks/{task_id}', token=admin)
+            now_version = cur['data']['updated_at']
+            micros = int(re.match(r'^.*\.(\d{6})', now_version).group(1))
+            if micros:
+                delta = -min(800, micros)
+                break
+    stale_same_second = shift_micros(now_version, delta)
     print(f'  · 当前版本 = {now_version}')
-    print(f'  · 同秒旧版本 = {stale_same_second}（只差 800 微秒）')
-    check_true('两个版本确实在同一秒（构造成立）',
-               now_version.split('.')[1][:2] == stale_same_second.split('.')[1][:2],
+    print(f'  · 同秒旧版本 = {stale_same_second}（只差 {abs(delta)} 微秒）')
+    check_true('构造成立：同秒、且确实更旧',
+               now_version.split('.')[1][:2] == stale_same_second.split('.')[1][:2]
+               and stale_same_second < now_version,
                f'{now_version} vs {stale_same_second}')
 
     status, res = call('PATCH', f'/tasks/{task_id}', token=admin,
