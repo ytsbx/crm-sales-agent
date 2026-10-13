@@ -128,7 +128,7 @@ def make_engine():
     from app.modules.lead.model import Lead
     from app.modules.opportunity.model import Opportunity, OpportunityStage
     from app.modules.order.model import OrderMilestone, SalesOrder
-    from app.modules.payment.model import PaymentRecord, ReceivablePlan
+    from app.modules.payment.model import PaymentAllocation, PaymentRecord, ReceivablePlan
     from app.modules.pricing.model import ExchangeRate
     from app.modules.quote.model import Quote, QuoteVersion
     from app.modules.user.model import Department, User
@@ -156,6 +156,9 @@ def make_engine():
             OrderMilestone,
             ReceivablePlan,
             PaymentRecord,
+            # 第十批（2026-10-13）：确认回款会写「回款分配」，跟单节点也读它。
+            # 少了这张表，回款/跟单相关用例会炸 "no such table: payment_allocations"。
+            PaymentAllocation,
             ExchangeRate,
             # 通用请求幂等（第七批 7.9 回款登记 / 8.15 各模块重复提交）：
             # 走 router 的用例需要这张表，缺了会直接 "no such table: request_keys"。
