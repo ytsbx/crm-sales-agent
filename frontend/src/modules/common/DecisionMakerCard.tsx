@@ -69,7 +69,7 @@ export default function DecisionMakerCard({
       {contactsQuery.isLoading ? (
         <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
       ) : contacts.length === 0 ? (
-        <Empty description="该客户还没有联系人" style={{ padding: '12px 0' }} />
+        <Empty description="该客户还没有登记联系人（这里只会出现客户单位的人）" style={{ padding: '12px 0' }} />
       ) : (
         <>
           {/* 最关键的一位单独放大，设计稿里的「核心决策人」就是这一块 */}

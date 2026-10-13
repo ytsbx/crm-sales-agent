@@ -766,6 +766,12 @@ export default function CustomerListPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>客户名称</FormLabel>
+            {/* 归属口径要写明（主人 2026-10-13：「创建客户是谁创建谁就是主要负责人吗」）。
+                后端 `create_customer`：没指定负责人就归**创建人**自己，并写审计；
+                要让给别人或放进公海，走列表里的「转移负责人 / 放入公海」。 */}
+            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              新建后这位客户默认归「你」负责（可随时用「转移负责人」改；放进公海请用「放入公海」）。
+            </div>
             <Input
               value={form.name}
               onChange={(value) => {

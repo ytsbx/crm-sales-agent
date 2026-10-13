@@ -665,6 +665,15 @@ export default function CustomerDetailPage() {
             <div className="detail-split">
               <div className="split-main">
                 <div className="toolbar">
+                  {/* 说清"这是谁的联系人"（主人 2026-10-13：「我都不知道是填自己公司的
+                      联系人还是填客户那边的联系人」）。
+                      事实依据：`contacts.customer_id → customers` 是外键，
+                      库里还有"一个客户最多一个主联系人"的约束，
+                      决策人卡片叫「客户决策关系图」—— 这里记的是**客户单位的人**。
+                      自己公司的人在这套系统里是账号（users），不走这张表。 */}
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginRight: 12 }}>
+                    这里记的是「客户单位」的联系人（对方公司的采购、技术、老板等），不是你同事
+                  </div>
                   <div style={{ flex: 1 }} />
                   <Button
                     theme="solid"
@@ -684,7 +693,7 @@ export default function CustomerDetailPage() {
                   loading={contactsQuery.isLoading}
                   rowKey="id"
                   pagination={false}
-                  empty="还没有联系人"
+                  empty="这家客户还没有登记联系人（加的是对方公司的人）"
                   // 行上带出联系人 id：UI 取证脚本要能**精确定位某一行**去点
                   // 编辑/删除（按"第一条"或按姓名找会误伤别人的数据，实测踩过）
                   onRow={(row) => ({ 'data-contact-id': String((row as Contact).id) })}
@@ -878,7 +887,11 @@ export default function CustomerDetailPage() {
 
       {/* 新建 / 编辑共用一个弹窗：字段完全一样，分成两个弹窗只会让两边慢慢走散 */}
       <Modal
-        title={contactEditing ? `编辑联系人${contactEditing.name ? `：${contactEditing.name}` : ''}` : '新建联系人'}
+        title={
+          contactEditing
+            ? `编辑联系人${contactEditing.name ? `：${contactEditing.name}` : ''}`
+            : '新建联系人（客户单位的人）'
+        }
         visible={contactModal}
         onCancel={() => {
           setContactModal(false)
@@ -922,7 +935,7 @@ export default function CustomerDetailPage() {
               <Input
                 value={contactForm.title ?? ''}
                 onChange={(value) => setContactForm({ ...contactForm, title: value })}
-                placeholder="采购经理"
+                placeholder="客户那边的职位，例如：采购经理"
               />
             </div>
             <div style={{ flex: 1 }}>
