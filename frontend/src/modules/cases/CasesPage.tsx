@@ -757,11 +757,20 @@ export default function CasesPage() {
             <FormLabel>客户目标</FormLabel>
             <TextArea rows={2} value={form.goal} onChange={(v) => setForm({ ...form, goal: v })} />
           </div>
-          {/* 下面两项**刻意不标红星**：存草稿时后端根本不要求它们，
-              只有「提交审核」才要求两者至少填一项（cases/service.py 的 submit_case）。
-              标成必填就是假的 —— 用 hint 把真实规则讲出来。 */}
+          {/* 下面两项**不打实心红星**：存草稿时后端根本不要求它们，只有「提交审核」
+              才要求两者至少填一项（cases/service.py 的 submit_case）—— 按
+              `03-API` 设计文档的口径是**二选一，不是各自必填**，打实心星就是撒谎
+              （2026-10-06 因此把星号去掉过）。
+              但只留灰字又不显眼（主人 2026-10-13 截图：「这个必填的怎么没有标注 * 号」），
+              所以用 `conditionallyRequired`：**空心灰星**代表"有条件下必填"，
+              条件由 hint 讲清。 */}
           <div>
-            <FormLabel hint="与「可复用做法」至少填一项（提交审核时校验）">关键动作</FormLabel>
+            <FormLabel
+              conditionallyRequired
+              hint="提交审核时，与「可复用做法」至少填一项（存草稿不要求）"
+            >
+              关键动作
+            </FormLabel>
             <TextArea rows={2} value={form.key_actions} onChange={(v) => setForm({ ...form, key_actions: v })} />
           </div>
           <div>
@@ -777,7 +786,12 @@ export default function CasesPage() {
             <TextArea rows={2} value={form.result} onChange={(v) => setForm({ ...form, result: v })} />
           </div>
           <div>
-            <FormLabel hint="与「关键动作」至少填一项">可复用做法</FormLabel>
+            <FormLabel
+              conditionallyRequired
+              hint="提交审核时，与「关键动作」至少填一项（存草稿不要求）"
+            >
+              可复用做法
+            </FormLabel>
             <TextArea rows={2} value={form.lessons} onChange={(v) => setForm({ ...form, lessons: v })} />
           </div>
         </div>

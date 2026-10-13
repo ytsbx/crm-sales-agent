@@ -16,12 +16,32 @@ import type { CSSProperties, ReactNode } from 'react'
 export default function FormLabel({
   children,
   required,
+  conditionallyRequired,
   hint,
   style,
 }: {
   children: ReactNode
   /** 必填：在标签后跟一个红色星号 */
   required?: boolean
+  /**
+   * **条件必填**：在标签后跟一个灰色空心星 `*`，并且**必须同时给 `hint`**
+   * 说明"什么条件下必填"。
+   *
+   * ## 为什么要有这一档（主人 2026-10-13 截图反馈）
+   *
+   * 案例库的「关键动作 / 可复用做法」是**二选一**（提交审核时至少填一项），
+   * 存草稿时两项都不要求。所以：
+   *   · 打**实心红星**是撒谎 —— 看起来两项都必填、而且存草稿就要填
+   *     （2026-10-06 就是因此把星号去掉的）；
+   *   · 但只留一行灰色小字，规则**不显眼** —— 主人扫一眼的结论就是
+   *     "必填的怎么没标星号"。
+   *
+   * 所以给第三档：**空心灰星**代表"有条件下必填"，比纯文字显眼、
+   * 又不会被误读成"现在就必填"。空心 vs 实心的区别写在 `index.css`
+   * 的 `.required-mark-conditional`，并在标签后用 `hint` 把条件讲出来
+   * （`ops/check_form_required_marks.py` 会强制"标了就必须有 hint"）。
+   */
+  conditionallyRequired?: boolean
   /**
    * 灰色小字说明，跟在标签（和星号）后面。
    *
@@ -40,6 +60,13 @@ export default function FormLabel({
         // aria-hidden：读屏器念一声「星号」对使用者没有帮助，必填最终由
         // 表单校验兜底。这里只是给人看的视觉提示，不假装是无障碍标记。
         <span className="required-mark" aria-hidden="true">
+          *
+        </span>
+      )}
+      {!required && conditionallyRequired && (
+        // 空心灰星：有条件下必填。空心是为了与"现在就必填"的实心红星区分开，
+        // 具体条件由旁边的 hint 说清（标了星却不给 hint 会被静态检查拦下）。
+        <span className="required-mark-conditional" aria-hidden="true">
           *
         </span>
       )}

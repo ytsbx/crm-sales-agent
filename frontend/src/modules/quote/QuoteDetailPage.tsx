@@ -2,6 +2,7 @@ import { cloneElement, useState, type ReactElement } from 'react'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import FormLabel from '../../shared/components/FormLabel'
 import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import {
@@ -1884,9 +1885,13 @@ export default function QuoteDetailPage() {
 
           {/* ③ 收件人：必填 + 从客户联系人里选（原来可留空，事后无从查证） */}
           <div>
-            <div className="send-field-label">
-              发给了谁 <span style={{ color: 'var(--crm-danger, #f5222d)' }}>*</span>
-            </div>
+            {/* 用共用件标必填，不要手写星号：全站必填标记只有 `.required-mark`
+                一个来源（手写的星号 CSS 选不中、颜色也不随主题走 —— 这是
+                `FormLabel` 存在的理由）。这里原来手写了一个红 `*`，
+                `ops/check_form_required_marks.py` 顺手扫出来的。 */}
+            <FormLabel required style={{ marginBottom: 4 }}>
+              发给了谁
+            </FormLabel>
             <Select
               value={
                 // 三态：没选 → 占位；选了手动填写 → 显示那一项；选了联系人 → 显示联系人

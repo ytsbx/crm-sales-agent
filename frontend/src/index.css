@@ -794,6 +794,26 @@ a:not([href]) {
 /* 标签旁的灰色说明（用法见 FormLabel 的 hint）。
    给「星号说不清」的规则用，例如案例库「关键动作 / 可复用做法」
    提交审核时二者至少填一项——标星号会是假的。 */
+/* 条件必填的标记（用法见 FormLabel 的 conditionallyRequired）。
+
+   与实心红星 `.required-mark` 的区别必须**一眼看得出来**，否则用户会把
+   "提交时才要求"误读成"现在就必填"：
+     · 实心红 = 现在就必须填；
+     · 空心灰 = 有条件下必填，条件由旁边的 hint 说明。
+
+   2026-10-13 主人截图反馈「这个必填的怎么没有标注 * 号」——
+   那一处是"二选一"（关键动作 / 可复用做法），当初**故意**不标星
+   （标了就是假的），但只留灰字又不显眼。这一档就是补那个缺口。 */
+.required-mark-conditional {
+  margin-left: 3px;
+  font-weight: 600;
+  /* 空心：用描边而不是填充，与实心红星区分。
+     描边 1.2px 是量过之后定的：1px 在 14px 字号下偏细，扫一眼容易漏
+     （实测尺寸 6×17、颜色 rgba(0,0,0,0)、描边 1px rgb(114,118,135)）。 */
+  -webkit-text-stroke: 1.2px var(--crm-text-2, #4e5969);
+  color: transparent;
+}
+
 .label-hint {
   margin-left: 6px;
   color: var(--crm-text-3);
@@ -1100,6 +1120,8 @@ table:not(.semi-table) td {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
+  /* 左右两栏之间的缝：不留的话，左边工具条按钮会顶到右侧卡片标题上（2026-10-13 实测） */
+  gap: 24px;
 }
 .detail-split > .split-main {
   flex: 1 1 360px;
