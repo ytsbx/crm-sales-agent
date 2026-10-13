@@ -444,6 +444,7 @@ async def get_or_create_cursor(
             ExternalSyncWatermark.object_type == object_type,
         )
         .with_for_update()
+        .execution_options(populate_existing=True)
     )
     row = (await session.execute(stmt)).scalars().first()
     if row is not None:
@@ -472,12 +473,17 @@ async def _claim_cursor(
     *,
     now: datetime,
     lease_seconds: int = LEASE_SECONDS,
-) -> None:
+) -> str:
     """抢采集租约。别人还在跑就明确拒绝，而不是"一起跑、水位互相踩"。"""
+    expires = cursor.lease_expires_at
+    if expires is not None and expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     if (
         cursor.status == CURSOR_RUNNING
         and cursor.lease_expires_at is not None
-        and cursor.lease_expires_at > now
+        and expires > now
     ):
         raise AppError(
             ErrorCode.DUPLICATE,
@@ -492,7 +498,28 @@ async def _claim_cursor(
     cursor.status = CURSOR_RUNNING
     cursor.last_started_at = now
     cursor.lease_expires_at = now + timedelta(seconds=lease_seconds)
+    # 已有列在 running 时承载唯一占用令牌，结束后仍保存本轮批次号。
+    token = uuid.uuid4().hex
+    cursor.last_batch_id = token
     await session.commit()
+    return token
+
+
+async def _lock_owned_cursor(
+    session: AsyncSession, cursor_id: int, token: str, *, lease_seconds: int
+) -> ExternalSyncWatermark:
+    row = (await session.execute(
+        select(ExternalSyncWatermark).where(ExternalSyncWatermark.id == cursor_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if row is None or row.status != CURSOR_RUNNING or row.last_batch_id != token:
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "本次采集租约已被其他请求接管，旧请求已停止写入；请查看最新采集结果",
+            409,
+        )
+    row.lease_expires_at = _now() + timedelta(seconds=lease_seconds)
+    return row
 
 
 def serialize_cursor(row: ExternalSyncWatermark) -> dict:
@@ -943,7 +970,8 @@ async def collect_once(
     cursor = await get_or_create_cursor(
         session, system_type=system_type, shop_id=shop, object_type=object_type
     )
-    await _claim_cursor(session, cursor, now=moment, lease_seconds=lease_seconds)
+    lease_token = await _claim_cursor(session, cursor, now=moment, lease_seconds=lease_seconds)
+    cursor_id = cursor.id
 
     source_kind = f"collect_{object_type}"
     summary: dict[str, Any] = {
@@ -973,6 +1001,10 @@ async def collect_once(
                 shop_id=shop,
                 cursor=cursor_token,
                 page_size=page_size,
+            )
+            # 外部调用期间租约可能已被接管。持锁校验后才写一页事实与断点。
+            cursor = await _lock_owned_cursor(
+                session, cursor_id, lease_token, lease_seconds=lease_seconds
             )
             items = list(getattr(page, "items", None) or [])
             for position, raw in enumerate(items, start=1):
@@ -1017,9 +1049,7 @@ async def collect_once(
                 )
                 if mapping.match_status != MATCH_MATCHED:
                     summary["pending_mappings"] += 1
-            # **先落库、再推进断点**：顺序反了就会漏页。
-            await session.commit()
-
+            # 页内事实与断点在同一事务提交，不能留下已写事实但水位未推进的窗口。
             summary["pages"] += 1
             water = _text(getattr(page, "watermark", None))
             if water:
@@ -1035,6 +1065,9 @@ async def collect_once(
             await session.commit()
             break
 
+        cursor = await _lock_owned_cursor(
+            session, cursor_id, lease_token, lease_seconds=lease_seconds
+        )
         cursor.status = CURSOR_IDLE
         cursor.last_error = None
         cursor.last_finished_at = _now()
@@ -1062,30 +1095,33 @@ async def collect_once(
         return summary
     except ErpNotConfigured as error:
         await _fail_quietly(
-            session, cursor, status=CURSOR_NOT_CONFIGURED, error=error,
+            session, cursor_id, status=CURSOR_NOT_CONFIGURED, error=error,
             provider=getattr(adapter, "label", system_type), object_type=object_type,
             shop_id=shop, page_size=page_size, summary=summary,
+            lease_token=lease_token,
         )
         raise
     except ErpNotVerified as error:
         await _fail_quietly(
-            session, cursor, status=CURSOR_NOT_VERIFIED, error=error,
+            session, cursor_id, status=CURSOR_NOT_VERIFIED, error=error,
             provider=getattr(adapter, "label", system_type), object_type=object_type,
             shop_id=shop, page_size=page_size, summary=summary,
+            lease_token=lease_token,
         )
         raise
     except Exception as error:  # noqa: BLE001 —— 任何异常都要留下可续拉的断点
         await _fail_quietly(
-            session, cursor, status=CURSOR_FAILED, error=error,
+            session, cursor_id, status=CURSOR_FAILED, error=error,
             provider=getattr(adapter, "label", system_type), object_type=object_type,
             shop_id=shop, page_size=page_size, summary=summary,
+            lease_token=lease_token,
         )
         raise
 
 
 async def _fail_quietly(
     session: AsyncSession,
-    cursor: ExternalSyncWatermark,
+    cursor_id: int,
     *,
     status: str,
     error: Exception,
@@ -1094,6 +1130,7 @@ async def _fail_quietly(
     shop_id: str,
     page_size: int,
     summary: dict | None = None,
+    lease_token: str | None = None,
 ) -> None:
     """失败/未接通时把真实结论落库（**先落盘再抛**，路由回滚也抹不掉）。
 
@@ -1103,12 +1140,18 @@ async def _fail_quietly(
     而落盘失败只说明库有问题（那时调用栈已经指向库了）。
     """
     try:
-        cursor.status = status
-        cursor.last_error = _clip(f"{type(error).__name__}: {error}")
-        cursor.last_finished_at = _now()
-        cursor.lease_expires_at = None
-        if status == CURSOR_FAILED:
-            cursor.retry_count = (cursor.retry_count or 0) + 1
+        await session.rollback()
+        cursor = (await session.execute(
+            select(ExternalSyncWatermark).where(ExternalSyncWatermark.id == cursor_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if cursor is not None and cursor.status == CURSOR_RUNNING and cursor.last_batch_id == lease_token:
+            cursor.status = status
+            cursor.last_error = _clip(f"{type(error).__name__}: {error}")
+            cursor.last_finished_at = _now()
+            cursor.lease_expires_at = None
+            if status == CURSOR_FAILED:
+                cursor.retry_count = (cursor.retry_count or 0) + 1
         await _write_collect_log(
             session,
             provider=provider,

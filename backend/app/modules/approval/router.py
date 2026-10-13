@@ -310,6 +310,9 @@ async def approve(
                 )
             )
             instance.current_node = "co_sign"
+            # 指派只属于当前节点，业务审批的转交不能限制下一阶段会签。
+            summary.pop("current_assignee_id", None)
+            summary.pop("current_assignee_name", None)
             summary["co_sign"] = {**co_sign, "status": "pending"}
             instance.summary = summary
             await session.flush()
@@ -543,7 +546,7 @@ async def transfer(
         title="有审批单转交给你处理",
         content=f"{summary.get('quote_no') or ''} {summary.get('reason') or ''}".strip(),
         business_type="quote",
-        business_id=instance.business_id,
+        business_id=(await session.get(QuoteVersion, instance.business_id)).quote_id,
     )
     await write_audit(
         session,

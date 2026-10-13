@@ -242,9 +242,29 @@ async def _upsert_diff(
         await session.execute(
             select(IntegrationDiff).where(
                 IntegrationDiff.diff_key == session_fields["diff_key"]
-            ).with_for_update()
+            ).with_for_update().execution_options(populate_existing=True)
         )
     ).scalars().first()
+    if row is not None and row.status != DIFF_OPEN:
+        # 已核定的金额与证据属于历史结论。新事实另开差异，旧结论不背书新金额。
+        compared = ("current_value", "incoming_value", "internal_id")
+        if all(getattr(row, key) == session_fields.get(key) for key in compared):
+            return row, "unchanged"
+        fingerprint = json.dumps(
+            {key: session_fields.get(key) for key in compared},
+            sort_keys=True, ensure_ascii=False, default=str,
+        )
+        session_fields = {**session_fields, "diff_key": (
+            session_fields["diff_key"] + "-v-"
+            + hashlib.sha256(fingerprint.encode()).hexdigest()[:24]
+        )}
+        row = (await session.execute(
+            select(IntegrationDiff).where(
+                IntegrationDiff.diff_key == session_fields["diff_key"]
+            ).with_for_update().execution_options(populate_existing=True)
+        )).scalars().first()
+        if row is not None and row.status != DIFF_OPEN:
+            return row, "unchanged"
     if row is None:
         candidate = IntegrationDiff(**session_fields, status=DIFF_OPEN)
         begin_nested = getattr(session, "begin_nested", None)
@@ -272,6 +292,8 @@ async def _upsert_diff(
                 raise
 
     changed = False
+    if row.status != DIFF_OPEN:
+        return row, "unchanged"
     for key in ("current_value", "incoming_value", "evidence", "period", "internal_id",
                 "external_id", "field_name", "object_type", "shop_id"):
         if key in session_fields and getattr(row, key) != session_fields[key]:
@@ -396,7 +418,10 @@ async def load_period_facts(
                 )
             ).scalars().all()
         )
-    head_by_key = {row.dedupe_key: row for row in heads}
+    head_by_key = {
+        (row.system_type, row.shop_id, row.object_type, row.dedupe_key): row
+        for row in heads
+    }
 
     lines: list[ExternalRecord] = []
     # 归属条件**按需拼**，不用"哨兵值"占位。
@@ -407,7 +432,7 @@ async def load_period_facts(
     if order_keys:
         attribution.append(ExternalRecord.order_key.in_(order_keys))
     if head_by_key:
-        attribution.append(ExternalRecord.parent_key.in_(list(head_by_key)))
+        attribution.append(ExternalRecord.parent_key.in_([row.dedupe_key for row in heads]))
     if attribution:
         lines = list(
             (
@@ -449,7 +474,7 @@ async def load_period_facts(
     }
 
 
-def _attribute_order_key(line: ExternalRecord, head_by_key: dict[str, ExternalRecord]) -> str | None:
+def _attribute_order_key(line: ExternalRecord, head_by_key: dict) -> str | None:
     """一行事实最终属于哪张订单。
 
     优先用行上的 `order_key`（合单时同一发货单的行分属不同订单，只有行上说得清）；
@@ -457,13 +482,19 @@ def _attribute_order_key(line: ExternalRecord, head_by_key: dict[str, ExternalRe
     """
     if line.order_key:
         return line.order_key
-    head = head_by_key.get(line.parent_key or "")
+    if line.object_type == OBJECT_ORDER_ITEM:
+        return line.parent_key
+    parent_type = {
+        OBJECT_SHIPMENT_ITEM: OBJECT_SHIPMENT,
+        OBJECT_AFTERSALE_ITEM: OBJECT_AFTERSALE,
+    }.get(line.object_type)
+    head = head_by_key.get((line.system_type, line.shop_id, parent_type, line.parent_key or ""))
     if head is None:
         return None
     return head.order_key or head.parent_key or head.dedupe_key
 
 
-def build_order_aggregates(facts: dict) -> dict[str, dict]:
+def build_order_aggregates(facts: dict) -> dict[tuple[str, str, str], dict]:
     """把外部事实聚合成"每张订单、每个货"的数量表（**不双算的那一步**）。
 
     聚合键是**我方 SKU 编码**，不是对方的行号。为什么：行号在订单、发货单、售后单
@@ -473,21 +504,22 @@ def build_order_aggregates(facts: dict) -> dict[str, dict]:
 
     没有 SKU 编码的行（对方没给）退回用行键/稳定键做桶，**不会被丢掉**。
     """
-    aggregates: dict[str, dict] = {}
+    aggregates: dict[tuple[str, str, str], dict] = {}
     for order in facts["orders"]:
-        aggregates[order.dedupe_key] = {
+        aggregates[(order.system_type, order.shop_id, order.dedupe_key)] = {
             "order": order,
             "lines": {},
         }
     head_by_key = facts["head_by_key"]
     for line in facts["lines"]:
         order_key = _attribute_order_key(line, head_by_key)
-        if order_key is None or order_key not in aggregates:
+        identity = (line.system_type, line.shop_id, order_key)
+        if order_key is None or identity not in aggregates:
             # 归属不到本期的订单（跨期发货是正常业务）：本期不聚合它，
             # 免得把上一期的订单量算进这一期。
             continue
         line_key = line.external_code or line.line_key or line.dedupe_key
-        bucket = aggregates[order_key]["lines"].setdefault(
+        bucket = aggregates[identity]["lines"].setdefault(
             line_key,
             {
                 "ordered": Decimal(0),
@@ -644,8 +676,9 @@ async def run_reconciliation(
         counts[f"diffs_{outcome}"] += 1
 
     # ---- ① 逐张外部订单：匹配本地订单、比金额、查超发/超退 ----------------
-    for order_key, bucket in aggregates.items():
+    for order_identity, bucket in aggregates.items():
         order: ExternalRecord = bucket["order"]
+        order_key = order_identity[2]
         local = await _find_local_order(session, system_type=system, order=order)
         ordered_qty = sum((line["ordered"] for line in bucket["lines"].values()), Decimal(0))
         shipped_qty = sum((line["shipped"] for line in bucket["lines"].values()), Decimal(0))
@@ -814,12 +847,20 @@ async def run_reconciliation(
     if shop != ALL_SHOPS:
         mapping_stmt = mapping_stmt.where(ExternalObjectMapping.shop_id == shop)
     mappings = (await session.execute(mapping_stmt)).scalars().all()
-    seen_external = {order.external_id for order in facts["orders"] if order.external_id}
+    seen_external = {(order.shop_id, order.external_id) for order in facts["orders"] if order.external_id}
     for mapping in mappings:
-        if not mapping.external_id or mapping.external_id in seen_external:
+        if not mapping.external_id or (mapping.shop_id, mapping.external_id) in seen_external:
             continue
         local = await session.get(SalesOrder, mapping.internal_id)
         if local is None:
+            continue
+        # 外部事实以订单发生期分组；不能把所有历史映射与本期事实相减。
+        created = local.created_at
+        if created is None:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        if not start <= created < end:
             continue
         counts["missing_external"] += 1
         values = {"order_no": local.order_no, "external_id": mapping.external_id}
@@ -983,7 +1024,21 @@ async def run_reconciliation(
         counts["aftersale_pending_review"] += 1
         # 只带这张售后单**自己的**明细行：按订单把发货行也捞进来会让证据看起来
         # 像"售后改了发货量"，反而不好理解。
-        detail_rows = [line for line in facts["lines"] if line.parent_key == head.dedupe_key]
+        detail_rows = [line for line in facts["lines"] if (
+            line.system_type == head.system_type and line.shop_id == head.shop_id
+            and line.object_type == OBJECT_AFTERSALE_ITEM and line.parent_key == head.dedupe_key
+        )]
+        order_keys = {line.order_key for line in detail_rows if line.order_key}
+        if head.order_key or head.parent_key:
+            order_keys.add(head.order_key or head.parent_key)
+        local_ids = set()
+        for key in order_keys:
+            bucket = aggregates.get((head.system_type, head.shop_id, key))
+            if bucket is not None:
+                local = await _find_local_order(session, system_type=system, order=bucket["order"])
+                if local is not None:
+                    local_ids.add(local.id)
+        local_order_id = next(iter(local_ids)) if len(order_keys) == 1 and len(local_ids) == 1 else None
         values = {
             "kind": head.kind,
             "amount": None if head.amount is None else str(head.amount),
@@ -1007,7 +1062,7 @@ async def run_reconciliation(
                 "shop_id": head.shop_id,
                 "object_type": OBJECT_AFTERSALE,
                 "external_id": head.external_id,
-                "internal_id": None,
+                "internal_id": local_order_id,
                 "diff_type": DIFF_AFTERSALE_REVIEW,
                 "period": label,
                 "current_value": None,

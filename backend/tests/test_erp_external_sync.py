@@ -405,13 +405,13 @@ def test_split_and_merge_are_not_double_counted():
 
     # 聚合键是**我方 SKU 编码**：行号在不同单据里各是各的编号，
     # 按行号聚合会把退货行与订单行算成两行，反而造出假差异。
-    o1 = aggregates["EXT-O1"]["lines"]["SKU-A"]
+    o1 = aggregates[(ADAPTER_SYSTEM, "SHOP-A", "EXT-O1")]["lines"]["SKU-A"]
     assert o1["ordered"] == Decimal(10)
     assert o1["shipped"] == Decimal(10), "拆单的两批货要相加，且各算一次"
     assert o1["returned"] == Decimal(2)
     assert o1["exchanged"] == Decimal(3), "换货单独计，不能混进退货"
 
-    o2 = aggregates["EXT-O2"]["lines"]["SKU-C"]
+    o2 = aggregates[(ADAPTER_SYSTEM, "SHOP-A", "EXT-O2")]["lines"]["SKU-C"]
     assert o2["shipped"] == Decimal(3), "合单里属于 O2 的行只算到 O2 头上"
     assert o1["shipped"] != Decimal(20), "同一批货被算两遍就会变成 20"
 

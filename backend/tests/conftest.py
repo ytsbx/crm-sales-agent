@@ -88,6 +88,9 @@ class SyncSessionAsAsync:
     async def commit(self):
         self._session.commit()
 
+    async def rollback(self):
+        self._session.rollback()
+
     async def refresh(self, obj):
         self._session.refresh(obj)
 

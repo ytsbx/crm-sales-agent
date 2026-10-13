@@ -15,6 +15,14 @@ def approval_denial(
     summary = instance.summary or {}
     co_sign = summary.get("co_sign")
     admin = "admin" in user.roles
+    assignee_id = summary.get("current_assignee_id")
+    if check_assignee and assignee_id and not admin:
+        try:
+            assigned_to_me = int(assignee_id) == user.id
+        except (TypeError, ValueError):
+            return "当前审批处理人配置无效，请联系管理员"
+        if not assigned_to_me:
+            return f"该审批已转交给「{summary.get('current_assignee_name', '他人')}」处理"
     if instance.current_node == "co_sign" and co_sign:
         allowed = list(co_sign.get("role_codes") or [])
         if not admin and not (set(user.roles) & set(allowed)):
@@ -28,14 +36,6 @@ def approval_denial(
     allowed_roles = summary.get("node_role_codes") or []
     if allowed_roles and not admin and not (set(user.roles) & set(allowed_roles)):
         return f"该审批需要「{summary.get('node_label', '上级')}」处理，你的角色无权批准"
-    assignee_id = summary.get("current_assignee_id")
-    if check_assignee and assignee_id and not admin:
-        try:
-            assigned_to_me = int(assignee_id) == user.id
-        except (TypeError, ValueError):
-            return "当前审批处理人配置无效，请联系管理员"
-        if not assigned_to_me:
-            return f"该审批已转交给「{summary.get('current_assignee_name', '他人')}」处理"
     if instance.applicant_id == user.id and not admin:
         return "不能审批自己提交的报价"
     return None
