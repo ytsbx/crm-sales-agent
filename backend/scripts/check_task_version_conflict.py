@@ -215,25 +215,45 @@ async def main() -> None:
     #
     # 现在：按当前微秒**取能同秒的最大位移**（至少 1 微秒，最多 999999），
     # 既保证落在同一秒，又保证确实"更旧"。
-    micros = int(re.match(r'^.*\.(\d{6})', now_version).group(1))
-    delta = -min(800, micros) if micros else 0
+    def _delta_same_second(ts: str, want: int = 800) -> int:
+        """算一个"挪完之后**仍在同一秒**"的位移（负数）。
+
+        ⚠️ 判据不是"微秒部分 ≥ want"，而是 **`micros - abs(delta)` 后仍 ≥ 0**。
+        我第一版就是拿 `min(want, micros)` 卡，看着对，其实是错的：
+        `micros=980768`（即 `.980768` 秒）时 `980768 - 800 = 979968`，
+        **数值没变成负数、但已经落回上一秒了**（秒边界在 .000000）。
+        于是那句 `stale < now` 的字符串比较判它"不更旧"，构造断言随机翻车
+        （实测 1/3 通过）。真正的边界是"跨过整秒"，不是"微秒下溢"。
+        """
+        micros = int(re.match(r"^.*\.(\d{6})", ts).group(1))
+        if micros <= 1:
+            return 0  # 秒刚开始，往前挪必然跨秒
+        return -min(want, micros - 1)
+
+    delta = _delta_same_second(now_version)
     if delta == 0:
-        # 微秒正好是 0：此刻当秒刚开始，往前挪必然跨秒。
-        # 不去碰时间戳（碰了就跨秒、构造不成立），改为**重新取一次**当前版本，
+        # 微秒接近 0：此刻当秒刚开始，往前挪必然跨秒。
+        # 不改时间戳（改了就跨秒、构造不成立），改为**重新取一次**，
         # 等它落到秒中段再构造。
-        for _ in range(20):
-            await asyncio.sleep(0.05)
+        for _ in range(40):
+            await asyncio.sleep(0.02)
             _, cur = call('GET', f'/tasks/{task_id}', token=admin)
             now_version = cur['data']['updated_at']
-            micros = int(re.match(r'^.*\.(\d{6})', now_version).group(1))
-            if micros:
-                delta = -min(800, micros)
+            delta = _delta_same_second(now_version)
+            if delta:
                 break
     stale_same_second = shift_micros(now_version, delta)
     print(f'  · 当前版本 = {now_version}')
     print(f'  · 同秒旧版本 = {stale_same_second}（只差 {abs(delta)} 微秒）')
+    # ⚠️ "同秒"的判据是**比较到秒的整串**，不是小数部分的前两位。
+    # 我第一版写 `split('.')[1][:2]`，取的是毫秒的前两位（`42` vs `41`），
+    # 看着像"秒"其实是小数 —— 于是明明同秒也会判 False，构造断言继续随机翻车
+    # （实测 11/12，剩下那 1 次就是这么来的）。
+    def _second_of(ts: str) -> str:
+        return ts.split('.')[0]
+
     check_true('构造成立：同秒、且确实更旧',
-               now_version.split('.')[1][:2] == stale_same_second.split('.')[1][:2]
+               _second_of(now_version) == _second_of(stale_same_second)
                and stale_same_second < now_version,
                f'{now_version} vs {stale_same_second}')
 

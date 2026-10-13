@@ -240,6 +240,7 @@ async def freeze_period(
     replace: bool = False,
     note: str | None = None,
     items: list[dict] | None = None,
+    before: dict | None = None,
 ) -> dict:
     """把算好的实绩落成快照，返回 `{"written": 写入行数, "removed": 清除的陈旧行数, "items": 明细条数}`。
 
@@ -257,12 +258,17 @@ async def freeze_period(
     **明细跟着汇总一起冻**（返工单第 4 条）：`items` 是构成这批汇总值的单据清单，
     与汇总同一次写入、一起替换。只冻汇总的话，结账后一张退货单会让
     "点开明细"比"合计"少一笔，用户没法判断该信哪个。
+
+    `before` 若提供，在期间锁内填入实际被替换的旧值，供同事务审计使用。
     """
     # ⚠️ **先取期间锁，再查是否已结账**（第五批审查 P1，2026-10-12）。
     # 顺序反过来就是"查完到写之前有一段没锁的窗口"：两个普通结账请求会双双越过
     # 下面这道检查、后写的把先写的覆盖掉 —— 而结账的全部意义就是"这一期以后不再变"。
     await lock_period(session, period)
     existing = await frozen_for(session, period)
+    if before is not None:
+        before.clear()
+        before.update(existing)
     if existing and not replace:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

@@ -367,8 +367,7 @@ async def refreeze_sales_actuals(
     if user.data_scope != "all":
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "重算历史实绩需要全公司范围的权限", 403)
     _ensure_past_period(period)
-    before = await target_actuals.frozen_for(session, period)
-    if not before:
+    if not await target_actuals.is_frozen(session, period):
         raise AppError(ErrorCode.NOT_FOUND, f"{period} 还没结过账，请先结账", 404)
     # 与结账同一条口径：汇总与明细在**同一个一致快照**里读（第五批审查 P1）
     async with target_actuals.consistent_snapshot(period) as snap:
@@ -376,6 +375,7 @@ async def refreeze_sales_actuals(
         # 明细跟着一起重出（返工单第 4 条）：只换汇总不换明细，等于把
         # "刚重算的合计"和"上一版的明细"摆在同一页上，比不重算还乱。
         items = await _collect_period_items(snap, user, period)
+    before = {}
     written = await target_actuals.freeze_period(
         session,
         period=period,
@@ -385,6 +385,7 @@ async def refreeze_sales_actuals(
         replace=True,
         note=reason,
         items=items,
+        before=before,
     )
     await write_audit(
         session,

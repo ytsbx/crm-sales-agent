@@ -1286,7 +1286,7 @@ async def calculate(
     # "按报价版本重算"的调用方（`quote/service.py`），历史外币版本要靠它算得出数
     # （那种数据只可能来自口径曾经放开时建的、或 ERP 同步进来的）。
     # 拦在函数里会把历史数据的读取路径一起堵死 —— 那是另一码事。
-    await ensure_currency_allowed(session, payload.currency)
+    currency = await ensure_currency_allowed(session, payload.currency)
     result = await svc.calculate_price(
         session,
         sku_id=payload.sku_id,
@@ -1297,7 +1297,7 @@ async def calculate(
         target_profit_amount=payload.target_profit_amount,
         quoted_price=payload.quoted_price,
         role_codes=user.roles,
-        currency=payload.currency,
+        currency=currency,
         exchange_rate=payload.exchange_rate,
         tax_refund_rate=payload.tax_refund_rate,
         customer_level=payload.customer_level,
@@ -1321,7 +1321,7 @@ async def batch_calculate(
         await _guard_level_override(session, user, customer_id=item.customer_id, requested_level=item.customer_level)
         # 同一条白名单。**整批拒绝**而不是"跳过那一条"：核价结果是要拿去报价的，
         # 悄悄少算一条比直接报错更难发现（用户会以为那一行只是没数据）。
-        await ensure_currency_allowed(session, item.currency)
+        currency = await ensure_currency_allowed(session, item.currency)
         results.append(
             _sanitize_pricing_result(
                 await svc.calculate_price(
@@ -1334,7 +1334,7 @@ async def batch_calculate(
                     target_profit_amount=item.target_profit_amount,
                     quoted_price=item.quoted_price,
                     role_codes=user.roles,
-                    currency=item.currency,
+                    currency=currency,
                     exchange_rate=item.exchange_rate,
                     tax_refund_rate=item.tax_refund_rate,
                     customer_level=item.customer_level,

@@ -26,9 +26,10 @@
 但同一页内的计划/实绩/差额必须同源（§4.1.3 的原缺陷就是混用）。
 """
 
+import hashlib
 from datetime import UTC, datetime
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -113,39 +114,46 @@ async def _build_basis(
     于是同一行里出现"归属一月、首次成交日期显示三月"的自相矛盾。
     """
     year_start, next_start = year_bounds(year)
-    veterans = (
-        await session.execute(
-            select(distinct(SalesOrder.customer_id)).where(
-                SalesOrder.status != "cancelled",
-                SalesOrder.customer_id.is_not(None),
-                SalesOrder.created_at < year_start,
-            )
-        )
-    ).scalars().all()
-    # 每客户最早的那张非取消订单。**连订单 id 一起取** —— 以后要能回答
-    # "这个客户的首单到底是哪一张"。`DISTINCT ON (customer_id)` 配
-    # `ORDER BY customer_id, created_at, id` ＝ 每组取最早的一条。
+    # 两个集合都从同一条首单查询派生，避免查询之间取消订单造成双重归类。
+    first_orders = select(
+        SalesOrder.customer_id,
+        SalesOrder.created_at,
+        SalesOrder.id,
+        func.row_number().over(
+            partition_by=SalesOrder.customer_id,
+            order_by=(SalesOrder.created_at, SalesOrder.id),
+        ).label("position"),
+    ).where(
+        SalesOrder.status != "cancelled",
+        SalesOrder.customer_id.is_not(None),
+        SalesOrder.created_at.is_not(None),
+    ).subquery()
     first_deal_rows = (
         await session.execute(
-            select(SalesOrder.customer_id, SalesOrder.created_at, SalesOrder.id)
-            .where(SalesOrder.status != "cancelled", SalesOrder.customer_id.is_not(None))
-            .order_by(SalesOrder.customer_id, SalesOrder.created_at, SalesOrder.id)
-            .distinct(SalesOrder.customer_id)
+            select(first_orders.c.customer_id, first_orders.c.created_at, first_orders.c.id)
+            .where(first_orders.c.position == 1)
         )
     ).all()
+    veterans: list[int] = []
     first_deal_month: dict[int, str] = {}
     first_deal_detail: dict[int, dict] = {}
     for customer_id, at, order_id in first_deal_rows:
-        if at is None or not (year_start <= at < next_start):
+        if at is None:
             continue
+        at = at.astimezone(UTC) if at.tzinfo else at.replace(tzinfo=UTC)
         cid = int(customer_id)
+        if at < year_start:
+            veterans.append(cid)
+            continue
+        if at >= next_start:
+            continue
         # 归月用业务时区（§9.10 复审）：`at.year/at.month` 读的是 **UTC** 年月，
         # 北京时间 2026-01-01 01:00 的首单（UTC 2025-12-31 17:00）会被写成 "2025-12"。
         # 归年过滤用的是 `year_bounds`（业务时区），于是出现"选进了 2026 年、
         # 归属月却是 2025-12" —— 该客户在 2026 年的下钻明细里会彻底查不到。
         first_deal_month[cid] = month_key(at)
         first_deal_detail[cid] = {"at": at.isoformat(), "order_id": int(order_id)}
-    return [int(x) for x in veterans], first_deal_month, first_deal_detail
+    return veterans, first_deal_month, first_deal_detail
 
 
 def _detail_of_snapshot(snapshot: BasisSnapshot) -> dict[int, dict]:
@@ -228,6 +236,36 @@ async def new_customer_rows(
     ]
 
 
+async def _store_basis(
+    session: AsyncSession, year: int, *, replace: bool = False,
+    operator_id: int | None = None,
+) -> BasisSnapshot:
+    """保存基准但不提交；人工重算的审计由调用方在同一事务中保存。"""
+    # 首次冻结还没有行可锁，按年份互斥，覆盖惰性冻结与人工重算两条路径。
+    bind = getattr(session, "get_bind", lambda: None)()
+    if bind is not None and bind.dialect.name == "postgresql":
+        key = int.from_bytes(hashlib.sha256(f"basis-year:{year}".encode()).digest()[:8], "big", signed=True)
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    row = (await session.execute(
+        select(BasisSnapshot).where(BasisSnapshot.year == year)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
+    if row is not None and not replace:
+        return row
+    veteran_ids, first_deal_month, first_deal_detail = await _build_basis(session, year)
+    if row is None:
+        row = BasisSnapshot(year=year)
+        session.add(row)
+    row.veteran_customer_ids = veteran_ids
+    row.first_deal_month = {str(k): v for k, v in first_deal_month.items()}
+    row.first_deal_detail = {str(k): v for k, v in first_deal_detail.items()}
+    row.metric_basis_version = BASIS_VERSION
+    row.computed_at = datetime.now(UTC)
+    row.computed_by = operator_id
+    await session.flush()
+    return row
+
+
 async def _freeze_basis(
     year: int, *, replace: bool = False, operator_id: int | None = None
 ) -> BasisSnapshot:
@@ -240,34 +278,8 @@ async def _freeze_basis(
     from app.core.database import SessionLocal
 
     async with SessionLocal() as own:
-        veteran_ids, first_deal_month, first_deal_detail = await _build_basis(own, year)
-        month_payload = {str(k): v for k, v in first_deal_month.items()}
-        # 日期与来源订单跟月份**在同一个事务里一起落**（R07）：分开写就有机会
-        # 一半成功一半失败，留下"有月份没日期"的残档。
-        detail_payload = {str(k): v for k, v in first_deal_detail.items()}
-        row = await own.get(BasisSnapshot, year)
-        if row is None:
-            row = BasisSnapshot(
-                year=year,
-                veteran_customer_ids=veteran_ids,
-                first_deal_month=month_payload,
-                first_deal_detail=detail_payload,
-                metric_basis_version=BASIS_VERSION,
-                computed_at=datetime.now(UTC),
-                computed_by=operator_id,
-            )
-            own.add(row)
-        elif not replace:
-            # 别人已经冻好了：直接用，别覆盖（冻结的意义就是不被后来的重算改写）
-            return row
-        else:
-            row.veteran_customer_ids = veteran_ids
-            row.first_deal_month = month_payload
-            row.first_deal_detail = detail_payload
-            row.metric_basis_version = BASIS_VERSION
-            row.computed_at = datetime.now(UTC)
-            row.computed_by = operator_id
         try:
+            row = await _store_basis(own, year, replace=replace, operator_id=operator_id)
             await own.commit()
         except IntegrityError:
             await own.rollback()
@@ -303,9 +315,12 @@ async def basis_for(
             "version": BASIS_VERSION,
             "note": "当年数据仍在产生，不冻结；跨年后首次读取时自动冻结",
         }
-    snapshot = None if refreeze else await session.get(BasisSnapshot, year)
-    if snapshot is None:
-        snapshot = await _freeze_basis(year, replace=refreeze, operator_id=operator_id)
+    if refreeze:
+        snapshot = await _store_basis(session, year, replace=True, operator_id=operator_id)
+    else:
+        snapshot = await session.get(BasisSnapshot, year)
+        if snapshot is None:
+            snapshot = await _freeze_basis(year, operator_id=operator_id)
     return (
         [int(x) for x in (snapshot.veteran_customer_ids or [])],
         {int(k): v for k, v in (snapshot.first_deal_month or {}).items()},

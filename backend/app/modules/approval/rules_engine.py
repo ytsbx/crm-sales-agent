@@ -228,7 +228,7 @@ _TERM_IN_CLAUSE = re.compile(
 #: 兜底：限定词后面只有数字、**连单位都没写**（如"月结30"——业务上就是 30 天）。
 #: 只在同一分句里找不到带单位的写法时用。
 _BARE_AFTER_ANCHOR = re.compile(
-    r"(?:" + _TERMS_ANCHOR + r")" + _GAP + r"([0-9]{1,4})(?![0-9])"
+    r"(?:" + _TERMS_ANCHOR + r")" + _GAP + r"([0-9]{1,4})\s*$"
 )
 #: **后置**写法：`余款60天后付清` / `余款90日内付清` —— 数字和单位在前、
 #: 账期词在后，中间**没有**可当锚点的词（"余款" 与 "60天" 之间是空的）。
@@ -292,10 +292,32 @@ def payment_terms_days(text: str | None) -> int | None:
     found: list[int] = []
     unknown = False
     cash_clause = False
+    monthly_descriptor = False
 
     for raw_clause in _CLAUSE_SPLIT.split(s):
         clause = raw_clause.strip()
         if not clause:
+            continue
+
+        # 这一分句是不是"账期条款"（含锚点词）。后面几处都要用，所以在这里算一次。
+        payment_clause = bool(re.search(_TERMS_ANCHOR + r"|余款|尾款", clause))
+
+        # ① 明说"还没定"的写法：`另议`/`待定`/`未定`/`协商`。
+        #    ⚠️ **不要求同一分句里有锚点词**（2026-10-13 修）：真实写法是
+        #    `账期60天，另议` —— 分成两句，第二句只有"另议"、没有锚点。
+        #    原来把它和锚点写成"与"条件，于是这几个词**从来没被拦住过**，
+        #    一律走"取最长账期"返回 60，恰好是把"还在谈"当成"已定 60 天"。
+        if re.search(r"另议|待定|未定|协商", clause):
+            unknown = True
+            continue
+
+        # ② 本系统读不准的单位（小数、周/星期/季度/工作日/小时）：
+        #    只在这个分句确实是账期条款时才当未知，避免误伤普通描述。
+        if payment_clause and re.search(
+            r"[0-9]+\s*[.．]\s*[0-9]+|[0-9]+\s*(?:个)?(?:周|星期|季度|工作日|小时)",
+            clause,
+        ):
+            unknown = True
             continue
 
         # ① 这一分句里的账期：优先"限定词 + 数字 + 单位"
@@ -330,11 +352,20 @@ def payment_terms_days(text: str | None) -> int | None:
             continue
         if is_cash:
             cash_clause = True
+        elif payment_clause and not _MONEY_OR_PERCENT.search(clause):
+            if clause in ("月结", "次月结"):
+                # 已有明确天数时允许付款方式说明；单独出现不能证明是现款。
+                monthly_descriptor = True
+            else:
+                # 中文时长或按其他约定支付同样未知，不能靠“没有阿拉伯数字”放行。
+                unknown = True
 
+    if unknown:
+        return None
     if found:
         # ③ 取**最长**信用期。多个账期条款时，"能拖多久"取决于最长的那条。
         return max(found)
-    if unknown:
+    if monthly_descriptor:
         return None
     if cash_clause:
         # ② 整份文本里没有任何账期，且明确说了现款 —— 这是事实，是 0 天

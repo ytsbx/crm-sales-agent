@@ -775,15 +775,17 @@ async def upsert_target(
         if department_id is not None
         else SalesTarget.department_id.is_(None)
     )
-    row = (await session.execute(stmt.with_for_update())).scalars().first()
+    row = (await session.execute(
+        stmt.with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
     before = target_snapshot(row)
 
     if row is not None and expected_updated_at is not None:
         current = row.updated_at or row.created_at
-        # 比到秒：HTTP 传回来的时间戳精度可能低于库里的微秒
-        if current is not None and current.replace(microsecond=0) != expected_updated_at.replace(
-            microsecond=0
-        ):
+        def utc(value):
+            return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+        if current is not None and utc(current) != utc(expected_updated_at):
             raise AppError(
                 ErrorCode.VERSION_CONFLICT,
                 "这条目标刚被别人改过，请刷新后重新编辑（不要覆盖别人的改动）",

@@ -1303,6 +1303,28 @@ async def sales_user_stats(
     ]
 
 
+async def _plan_balances(session: AsyncSession, plans: list[ReceivablePlan]) -> dict[int, Decimal]:
+    """按节点扣除已确认回款，供应收汇总和账龄页共用。"""
+    if not plans:
+        return {}
+    rows = (await session.execute(
+        select(PaymentRecord.receivable_plan_id, func.sum(PaymentRecord.received_amount))
+        .where(
+            PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
+            PaymentRecord.status == "confirmed",
+        ).group_by(PaymentRecord.receivable_plan_id)
+    )).all()
+    received = {pid: Decimal(amount) for pid, amount in rows}
+    return {
+        p.id: max(Decimal(p.amount or ZERO) - received.get(p.id, ZERO), ZERO)
+        for p in plans if p.status != "cancelled"
+    }
+
+
+def _plan_overdue(plan: ReceivablePlan, balance: Decimal, today: date) -> bool:
+    return plan.status != "cancelled" and balance > ZERO and plan.due_date is not None and plan.due_date < today
+
+
 async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
     """应收与回款汇总——**责任口径**页：计划、实收、未回款全部按当前负责人。
 
@@ -1345,11 +1367,13 @@ async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
     by_status: dict[str, int] = {}
     for plan in plans:
         by_status[plan.status] = by_status.get(plan.status, 0) + 1
+    balances = await _plan_balances(session, plans)
+    today = today_business()
     return {
         "plan_amount": _f(plan_amount),
         "received_amount": _f(received),
         "unreceived_amount": _f(plan_amount - Decimal(received)),
-        "overdue_count": by_status.get("overdue", 0),
+        "overdue_count": sum(_plan_overdue(p, balances.get(p.id, ZERO), today) for p in plans),
         "by_status": [
             {"name": PLAN_LABEL.get(k, k), "value": v} for k, v in by_status.items()
         ],
@@ -1509,9 +1533,11 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
 
     today = today_business()
     buckets = {"未到期": 0, "1-30 天": 0, "31-60 天": 0, "61-90 天": 0, "90 天以上": 0}
-    overdue_amount = 0.0
+    balances = await _plan_balances(session, plans)
+    overdue_amount = ZERO
     for plan in plans:
-        if plan.status in ("paid", "cancelled"):
+        balance = balances.get(plan.id, ZERO)
+        if balance <= ZERO:
             continue
         if plan.due_date is None:
             continue
@@ -1519,7 +1545,7 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
         if overdue_days <= 0:
             buckets["未到期"] += 1
             continue
-        overdue_amount += float(plan.amount)
+        overdue_amount += balance
         if overdue_days <= 30:
             buckets["1-30 天"] += 1
         elif overdue_days <= 60:
@@ -1545,7 +1571,7 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
     return {
         "plan_count": len(plans),
         "overdue_node_count": sum(v for k, v in buckets.items() if k != "未到期"),
-        "overdue_amount": round(overdue_amount, 2),
+        "overdue_amount": _f(overdue_amount.quantize(Decimal("0.01"))),
         "aging": [{"name": k, "value": v} for k, v in buckets.items()],
         "by_payment_method": [
             {"name": method or "未填写", "value": _f(amount)} for method, amount in method_rows
