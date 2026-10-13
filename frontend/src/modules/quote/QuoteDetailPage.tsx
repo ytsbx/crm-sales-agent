@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useState, type ReactElement } from 'react'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import {
+  SECONDARY_ACTIONS,
   STAGE_LABEL,
   currentStage,
+  quoteActions,
   quoteTodos,
   stageProgress,
   type QuoteTodo,
@@ -18,7 +20,7 @@ import ReceivablePlanPicker, {
   toPlanPayload,
   type ReceivablePlanRow,
 } from '../../shared/components/ReceivablePlanPicker'
-import { Button, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, Dropdown, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
   linkMasterData,
@@ -778,63 +780,246 @@ export default function QuoteDetailPage() {
           </>
         }
       >
-        {/* 报价动作多，按设计稿放在关键信息行下方单独一行，避免把信息行挤到换行 */}
-        <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          {canManage && (
-            <Button onClick={() => versionMutation.mutate(false)} loading={versionMutation.isPending}>
-              新建版本
-            </Button>
-          )}
-          {canManage && editable && (
-            <Button theme="solid" onClick={() => setSubmitVisible(true)}>
-              提交审批
-            </Button>
-          )}
-          {canManage && isCurrentVersion && version.approval_status === 'pending' && (
-            <Button onClick={() => withdrawMutation.mutate()}>撤回审批</Button>
-          )}
-          {canManage && isCurrentVersion && version.approval_status === 'approved'
-            && (quote.status === 'approved' || quote.status === 'sent') && (
-            <Button theme="solid" onClick={() => {
-              setSendForm({ ...sendForm, request_key: Array.from(crypto.getRandomValues(new Uint8Array(16)), (v) => v.toString(16).padStart(2, '0')).join('') })
-              setSendVisible(true)
-            }}>
-              {version.sent_at ? '登记再次发送' : '标记已发送'}
-            </Button>
-          )}
-          {canManage && canRespond && (
-            <>
-              {/* 客户接受是不可逆的商务事实（后续转订单的前置条件），点一下生效太轻 */}
-              <Popconfirm
-                title="登记客户已接受这份报价？"
-                content="登记后这份报价进入「已接受」，是转销售订单的前置条件。"
-                onConfirm={() => acceptMutation.mutate()}
-              >
-                <Button loading={acceptMutation.isPending}>客户接受</Button>
-              </Popconfirm>
-              <Button type="danger" onClick={() => setDeclineVisible(true)}>
-                客户拒绝
-              </Button>
-            </>
-          )}
-          {can('order:manage') && isCurrentVersion && version.sent_at && version.accepted_at && quote.status === 'accepted' && (
-            <Button
-              theme="solid"
-              onClick={() => {
-                // 每次打开都回到默认：全款 + 默认两行（定金 30% / 尾款 70%）
-                setPlanMode('full')
-                setPlanRows(defaultPlanRows())
-                setConvertVisible(true)
-              }}
-              loading={convertMutation.isPending}
-            >
-              转销售订单
-            </Button>
-          )}
-          <Button onClick={() => downloadQuotePdf(version.id, `${quote.quote_no}-V${version.version_no}.pdf`)}>
-            下载 PDF
-          </Button>
-        </div>
+        {/*
+          动作分层（2026-10-13，主人：**每个阶段突出一个主要动作**，
+          "新建版本、下载、历史操作"放到次要位置）。
+
+          判据来自 `shared/quote-todo.ts` 的 `quoteActions(当前阶段)` —— 与上面
+          待办区**同源**，所以不会出现"待办说去发送、最显眼的却是新建版本"。
+
+          ⚠️ 分组靠**遍历顺序**，不是每个按钮自己写 `primary/secondary` 注释：
+          我第一版就是给每个 Button 手加注释，结果 `登记再次发送` 与 `标记已发送`
+          被分到两组、按钮出现了两次。现在按 `actionLabel` 的顺序归组，
+          谁来改都只动一个地方。
+        */}
+        {(() => {
+          const stage = currentStage(quoteTodoList)
+          const { primary, secondary } = quoteActions(stage)
+
+          // 每个动作的"能不能露"（判据一个字没动，仍是原来那些）
+          const conditions: Record<string, boolean> = {
+            '新建版本': Boolean(canManage),
+            '提交审批': Boolean(canManage && editable),
+            '撤回审批': Boolean(canManage && isCurrentVersion && version.approval_status === 'pending'),
+            '标记已发送': Boolean(
+              canManage && isCurrentVersion && version.approval_status === 'approved'
+              && (quote.status === 'approved' || quote.status === 'sent'),
+            ),
+            '登记再次发送': Boolean(
+              canManage && isCurrentVersion && version.approval_status === 'approved'
+              && (quote.status === 'approved' || quote.status === 'sent'),
+            ),
+            '客户接受': Boolean(canManage && canRespond),
+            '客户拒绝': Boolean(canManage && canRespond),
+            '转销售订单': Boolean(
+              can('order:manage') && isCurrentVersion && version.sent_at && version.accepted_at
+              && quote.status === 'accepted',
+            ),
+            '下载 PDF': Boolean(version),
+            // ⚠️ 这里只放**原本就在这一行里**的动作。「批量录入」「添加费用」
+            // 分别在「报价明细」「附加费用」两个区块内（我第一版把它们搬上来，
+            // 等于同一个入口出现两次），所以**不列在这里**。
+            '一键刷新到最新适用价': Boolean(driftQuery.data?.items?.some((it) => it.drift)),
+          }
+
+          // 页面上的动作（顺序即渲染顺序）。不在表里的（例如弹窗内部按钮）不参与分层。
+          const actions: { label: string; element: ReactElement }[] = [
+            {
+              label: '新建版本',
+              element: (
+                <Button onClick={() => versionMutation.mutate(false)} loading={versionMutation.isPending}>
+                  新建版本
+                </Button>
+              ),
+            },
+            {
+              label: '提交审批',
+              element: (
+                <Button theme="solid" onClick={() => setSubmitVisible(true)}>
+                  提交审批
+                </Button>
+              ),
+            },
+            {
+              label: '撤回审批',
+              element: <Button onClick={() => withdrawMutation.mutate()}>撤回审批</Button>,
+            },
+            {
+              label: '标记已发送',
+              element: (
+                <Button
+                  theme="solid"
+                  onClick={() => {
+                    setSendForm({
+                      ...sendForm,
+                      request_key: Array.from(
+                        crypto.getRandomValues(new Uint8Array(16)),
+                        (v) => v.toString(16).padStart(2, '0'),
+                      ).join(''),
+                    })
+                    setSendVisible(true)
+                  }}
+                >
+                  标记已发送
+                </Button>
+              ),
+            },
+            {
+              // 同阶段里的第二次发送（补发/重发）
+              label: '登记再次发送',
+              element: (
+                <Button
+                  theme="solid"
+                  onClick={() => {
+                    setSendForm({
+                      ...sendForm,
+                      request_key: Array.from(
+                        crypto.getRandomValues(new Uint8Array(16)),
+                        (v) => v.toString(16).padStart(2, '0'),
+                      ).join(''),
+                    })
+                    setSendVisible(true)
+                  }}
+                >
+                  登记再次发送
+                </Button>
+              ),
+            },
+            {
+              // 客户接受不可逆（转订单的前置），点一下生效太轻
+              label: '客户接受',
+              element: (
+                <Popconfirm
+                  title="登记客户已接受这份报价？"
+                  content="登记后这份报价进入「已接受」，是转销售订单的前置条件。"
+                  onConfirm={() => acceptMutation.mutate()}
+                >
+                  <Button loading={acceptMutation.isPending}>客户接受</Button>
+                </Popconfirm>
+              ),
+            },
+            {
+              label: '客户拒绝',
+              element: (
+                <Button type="danger" onClick={() => setDeclineVisible(true)}>
+                  客户拒绝
+                </Button>
+              ),
+            },
+            {
+              label: '转销售订单',
+              element: (
+                <Button
+                  theme="solid"
+                  loading={convertMutation.isPending}
+                  onClick={() => {
+                    // 每次打开都回到默认：全款 + 默认两行（定金 30% / 尾款 70%）
+                    setPlanMode('full')
+                    setPlanRows(defaultPlanRows())
+                    setConvertVisible(true)
+                  }}
+                >
+                  转销售订单
+                </Button>
+              ),
+            },
+            {
+              label: '下载 PDF',
+              element: (
+                <Button
+                  onClick={() => downloadQuotePdf(version.id, `${quote.quote_no}-V${version.version_no}.pdf`)}
+                >
+                  下载 PDF
+                </Button>
+              ),
+            },
+            {
+              // 原文案与判据照抄（它在"价格有漂移"那条提示里，动作是直接刷新）
+              label: '一键刷新到最新适用价',
+              element: (
+                <Button loading={refreshMutation.isPending} onClick={() => refreshMutation.mutate()}>
+                  一键刷新到最新适用价
+                </Button>
+              ),
+            },
+          ]
+
+          const visible = actions.filter((action) => conditions[action.label] !== false)
+          const byLabel = new Map(visible.map((action) => [action.label, action]))
+
+          const rendered: ReactElement[] = []
+          const used = new Set<string>()
+          const take = (label: string): ReactElement | null => {
+            // `标记已发送` / `登记再次发送` 是同一个位置的两副文案：
+            // 发送过就显示"登记再次发送"，否则"标记已发送"
+            if (label === '登记再次发送' && !byLabel.has('登记再次发送')) return null
+            const item = byLabel.get(label)
+            if (!item || used.has(label)) return null
+            used.add(label)
+            return item.element
+          }
+
+          const primaryLabel = primary
+            ? (primary.handler === 'markSent' && version.sent_at ? '登记再次发送' : primary.label)
+            : null
+          if (primaryLabel) {
+            const element = take(primaryLabel)
+            if (element) rendered.push(element)
+          }
+          for (const item of secondary) {
+            const element = take(item.label)
+            if (element) rendered.push(element)
+          }
+          // 阶段相关的危险动作（客户拒绝）跟在次要动作后面，不放进折叠区
+          if (conditions['客户拒绝'] && stage === 'sent') {
+            const element = take('客户拒绝')
+            if (element) rendered.push(element)
+          }
+
+          // 折叠区：与当前阶段推进无关的低频入口
+          const moreOrder = [...SECONDARY_ACTIONS]
+          const more = moreOrder
+            .filter((label) => byLabel.has(label) && !used.has(label))
+            .map((label) => byLabel.get(label) as { label: string; element: ReactElement })
+          // 想收但这一刻不能用的：列成灰字说明，**不是一个能按的动作**
+          const moreMissing = moreOrder.filter((label) => !byLabel.has(label) && conditions[label] === false)
+
+          return (
+            <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {rendered}
+              {more.length > 0 && (
+                <Dropdown
+                  trigger="click"
+                  position="bottomRight"
+                  render={
+                    <Dropdown.Menu>
+                      {more.map((action) => (
+                        <Dropdown.Item key={action.label}>{action.element}</Dropdown.Item>
+                      ))}
+                      {/* 缺项说明照 `KnowledgePage` 的写法：不套 Item、不给 onClick */}
+                      {moreMissing.length > 0 && (
+                        <li
+                          style={{
+                            listStyle: 'none',
+                            padding: '6px 12px',
+                            fontSize: 12,
+                            color: 'var(--crm-text-3)',
+                            maxWidth: 260,
+                            whiteSpace: 'normal',
+                          }}
+                        >
+                          {moreMissing.join('、')}：当前版本/状态不可用（原因见页面上的提示）
+                        </li>
+                      )}
+                    </Dropdown.Menu>
+                  }
+                >
+                  <Button>更多操作</Button>
+                </Dropdown>
+              )}
+            </div>
+          )
+        })()}
 
         <div
           style={{

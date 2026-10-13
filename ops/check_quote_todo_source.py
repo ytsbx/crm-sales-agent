@@ -299,6 +299,34 @@ for name, label in RENDERED_GATES:
             " —— 闸门可能只算不显示：清单会一直提示它，用户却看不到那行说明"
         )
 
+# ---------------------------------------------------------------- ⑦ 主动作不许被收进折叠区
+
+#: 每个阶段的主动作（与 `shared/quote-todo.ts` 的 `ACTIONS_BY_STAGE` 同源）。
+#: 它们必须在页面上**直接可见**，不能被塞进"更多操作"—— 那正是这次要修的毛病
+#: （"用户每一步都要自己判断现在该点哪个"）。
+PRIMARY_ACTIONS = (
+    '提交审批',
+    '撤回审批',
+    '标记已发送',
+    '登记再次发送',
+    '转销售订单',
+    '客户接受',
+)
+todo_text_for_actions = TODO_SRC.read_text(encoding="utf-8")
+# "更多操作"折叠区的内容：从 `SECONDARY_ACTIONS` 定义里取
+secondary_block = re.search(
+    r"export const SECONDARY_ACTIONS = \[(.*?)\] as const", todo_text_for_actions, re.S
+)
+secondary_labels = (
+    set(re.findall(r"'([^']+)'", secondary_block.group(1))) if secondary_block else set()
+)
+for label in PRIMARY_ACTIONS:
+    if label in secondary_labels:
+        fail(
+            f"「{label}」是某个阶段的**主动作**，却被列进了 SECONDARY_ACTIONS（折叠区）—— "
+            "主动作必须直接可见，收起来用户又要自己找"
+        )
+
 print()
 if failures:
     print(f"✗ 发现 {len(failures)} 处问题：")

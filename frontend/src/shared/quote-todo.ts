@@ -239,3 +239,63 @@ export function stageProgress(stage: QuoteStage | null): { step: number; total: 
   if (index < 0) return null
   return { step: index + 1, total: STAGE_ORDER.length }
 }
+
+/**
+ * 主/次动作的划分（2026-10-13，报价页样板的**后半：按钮分层**）。
+ *
+ * 主人原话：「每个阶段突出一个主要动作……'新建版本、下载、历史操作'等放到次要位置」。
+ *
+ * ## 为什么放在这个文件里
+ *
+ * "现在该做什么"与"该突出哪个按钮"**必须是同一份判据** —— 分开写迟早会漂移成
+ * "待办区说去发送、页面上最显眼的是新建版本"。所以主动作直接由阶段推出，
+ * 页面只消费结论，不自己再判一遍（`ops/check_quote_todo_source.py` 会核对）。
+ *
+ * ## 界面文案与动作的对应
+ *
+ * - `label` 是**页面按钮上真实显示的文案**（检查脚本会拿它比对页面）；
+ * - `handler` 是页面上的动作标识（页面据此把按钮接到自己的处理函数/弹窗上）；
+ *   `handler: null` 表示这个阶段没有页面级主动作（例如明细还没准备好，
+ *   该去处理的是"确认主数据"，而不是顶部某个按钮）。
+ */
+export interface QuoteActions {
+  /** 页面上最显眼的那个按钮；null = 这一阶段的主动作不在顶部（见待办项的 anchor） */
+  primary: { label: string; handler: string } | null
+  /** 与当前阶段强相关、需要一直看得见的次要动作 */
+  secondary: readonly { label: string; handler: string }[]
+}
+
+const ACTIONS_BY_STAGE: Record<QuoteStage, QuoteActions> = {
+  master: { primary: null, secondary: [] },
+  cost: { primary: null, secondary: [] },
+  draft: { primary: { label: '提交审批', handler: 'submit' }, secondary: [] },
+  approving: { primary: { label: '撤回审批', handler: 'withdraw' }, secondary: [] },
+  rejected: { primary: { label: '新建版本', handler: 'newVersion' }, secondary: [] },
+  approved: { primary: { label: '标记已发送', handler: 'markSent' }, secondary: [] },
+  // 已发送之后还能再发一次（补发/重发），这是同阶段里的第二次动作
+  sent: {
+    primary: { label: '登记再次发送', handler: 'markSent' },
+    secondary: [{ label: '客户接受', handler: 'accept' }],
+  },
+  accepted: { primary: { label: '转销售订单', handler: 'convert' }, secondary: [] },
+  declined: { primary: { label: '新建版本', handler: 'newVersion' }, secondary: [] },
+  converted: { primary: null, secondary: [] },
+}
+
+/** 取当前阶段的主/次动作。没有待办（终态或数据未就绪）时返回空。 */
+export function quoteActions(stage: QuoteStage | null): QuoteActions {
+  if (!stage) return { primary: null, secondary: [] }
+  return ACTIONS_BY_STAGE[stage] ?? { primary: null, secondary: [] }
+}
+
+/**
+ * "更多操作"里收起来的东西（与阶段无关，低频或与当前推进无关）。
+ *
+ * ⚠️ 收起来**不等于藏起来**：这些入口在折叠区里仍然可点，且理由照旧由
+ * `BlockedHint` 说明（项目口径：能点就点得动，点不动就说清为什么）。
+ */
+export const SECONDARY_ACTIONS = [
+  '新建版本',
+  '下载 PDF',
+  '一键刷新到最新适用价',
+] as const
