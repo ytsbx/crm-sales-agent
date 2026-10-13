@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react'
+import { cloneElement, useState, type ReactElement } from 'react'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -956,7 +956,10 @@ export default function QuoteDetailPage() {
             const item = byLabel.get(label)
             if (!item || used.has(label)) return null
             used.add(label)
-            return item.element
+            // ⚠️ 这些元素是**放进数组**渲染的，必须有 key ——
+            // 少了它会报 "Each child in a list should have a unique key prop"，
+            // CI 的 UI 冒烟把控制台报错当失败（我第一版就漏了）。
+            return cloneElement(item.element, { key: label })
           }
 
           const primaryLabel = primary
@@ -994,7 +997,9 @@ export default function QuoteDetailPage() {
                   render={
                     <Dropdown.Menu>
                       {more.map((action) => (
-                        <Dropdown.Item key={action.label}>{action.element}</Dropdown.Item>
+                        <Dropdown.Item key={action.label}>
+                          {cloneElement(action.element, { key: action.label })}
+                        </Dropdown.Item>
                       ))}
                       {/* 缺项说明照 `KnowledgePage` 的写法：不套 Item、不给 onClick */}
                       {moreMissing.length > 0 && (

@@ -123,7 +123,10 @@ export default function NotificationBell() {
           size="small"
           density="compact"
           placeholder={['开始日期', '结束日期']}
-          value={dateRange}
+          // Semi 的 DatePicker 不接受 null，要 undefined；项目里通行写法是 `?? undefined`
+          // （本文件 45/46 行也是这个写法）。上一版的 `dateRange` 是 `[Date,Date] | null`，
+          // tsc 报 TS2322 且 `tsc -b` 整条失败 → 前端构建挂、CI 红。
+          value={dateRange ?? undefined}
           onChange={(value) => setDateRange((value as [Date, Date]) ?? null)}
           style={{ width: 220 }}
         />
