@@ -62,9 +62,16 @@ export default function NotificationBell() {
   const redispatchMutation = useMutation({
     mutationFn: (id: number) => redispatchNotification(id),
     onSuccess: (data) => {
-      Toast[data.sent ? 'success' : 'warning'](
-        data.sent ? '已补投' : '仍未投出，请看失败原因',
-      )
+      // ⚠️ **别把后端的原因丢掉**（2026-10-13 修）。后端返回的是
+      // `仍未能投出：推送已临时关闭（WECOM_PUSH_OFF）` —— 一句话就说清了
+      // "为什么还是没出去"；而这里原来只用了 `data.sent`，弹一句
+      // 「仍未投出，请看失败原因」，等于让用户自己去翻（主人今天的困惑就是这么来的）。
+      // 现在直接把原因显示出来，用户不用再找。
+      if (data.sent) {
+        Toast.success('已补投')
+      } else {
+        Toast.warning(`仍未投出：${data.wecom_error ?? '原因未记录'}`)
+      }
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -123,23 +130,46 @@ export default function NotificationBell() {
               </Tag>
             )}
             {item.can_redispatch && (
-              <a
-                style={{ color: 'var(--crm-primary)' }}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  redispatchMutation.mutate(item.id)
-                }}
-              >
-                补投
-              </a>
+              <>
+                <a
+                  style={{ color: 'var(--crm-primary)' }}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    redispatchMutation.mutate(item.id)
+                  }}
+                >
+                  补投
+                </a>
+                {/* 入口**留着**（主人定的口径：不许"点了没反应也不说为什么"），
+                    但把"这次点了会不会有用"讲在明处：
+                    卡在配置上的（推送开着没、绑没绑企微）点了也是同一结果。 */}
+                {item.redispatch_hint && (
+                  <span style={{ color: 'var(--crm-text-3)', fontSize: 11 }}>
+                    （{item.redispatch_hint}）
+                  </span>
+                )}
+              </>
             )}
           </div>
-          {item.wecom_status === 'failed' && (
-            <div style={{ color: 'var(--crm-error, #ba1a1a)', fontSize: 11, marginTop: 2 }}>
-              {item.wecom_error || '投递失败'}
-              {item.wecom_next_retry_at
-                ? `（${new Date(item.wecom_next_retry_at).toLocaleTimeString('zh-CN')} 自动重试，已试 ${item.wecom_attempts ?? 0} 次）`
-                : `（已试 ${item.wecom_attempts ?? 0} 次，不再自动重试，可点补投）`}
+          {/*
+            ⚠️ 原因**两种状态都要显示**（2026-10-13 修）：原来只在 failed 时渲染，
+            于是「未投递」那一行看不出任何原因 —— 而"未投递"恰恰是最需要解释的
+            （用户会以为"没投递"就是还没发，其实很多时候是**永远不会发**）。
+            颜色区分：失败是红（真出错了），未投递是灰（环境/配置所致，不是错误）。
+          */}
+          {(item.wecom_status === 'failed' || item.wecom_status === 'skipped') && (
+            <div
+              style={{
+                color: item.wecom_status === 'failed' ? 'var(--crm-error, #ba1a1a)' : 'var(--crm-text-3)',
+                fontSize: 11,
+                marginTop: 2,
+              }}
+            >
+              {item.wecom_error || (item.wecom_status === 'failed' ? '投递失败' : '未投递')}
+              {item.wecom_status === 'failed' &&
+                (item.wecom_next_retry_at
+                  ? `（${new Date(item.wecom_next_retry_at).toLocaleTimeString('zh-CN')} 自动重试，已试 ${item.wecom_attempts ?? 0} 次）`
+                  : `（已试 ${item.wecom_attempts ?? 0} 次，不再自动重试）`)}
             </div>
           )}
         </div>

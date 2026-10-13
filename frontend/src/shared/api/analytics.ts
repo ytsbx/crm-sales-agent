@@ -200,6 +200,12 @@ export interface NotificationRow {
   wecom_next_retry_at?: string | null
   /** 失败 / 未投递的可人工补投。 */
   can_redispatch?: boolean
+  /**
+   * 补投"有没有用"的提示：非空表示**卡住的是环境配置**（推送开关关着、
+   * 没绑企微、没配企微应用），再点多少次都是同一结果 —— 界面把它显示在
+   * 补投入口旁边，用户就不用"点一下才知道没用"。
+   */
+  redispatch_hint?: string | null
 }
 
 export interface AuditLogRow {
