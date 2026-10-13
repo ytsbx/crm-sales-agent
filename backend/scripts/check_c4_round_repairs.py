@@ -179,13 +179,29 @@ def sec_c401(admin: str) -> None:
     else:
         print(f"  --   订单取消未连带节点取消（当前 {st(pid2)}），跳过 N02 断言")
 
-    # ④ 边界：收过一部分 + 已过期 → partial 而不是 overdue
+    # ④ 边界：收过一部分 + 已过期 → **overdue**（不是 partial）
+    #
+    # ⚠️ 口径变更（2026-10-13 主人拍板）：从前这里是 partial ——
+    #    "收过一部分就不算逾期"意味着**付 1 元就能把逾期藏起来**，
+    #    对账时那条欠款不再出现在逾期清单里。
+    #    现在改为：**到期了还没收齐（余额 > 0）就是逾期**，收了多少不影响。
+    #    断言随之改成 overdue —— 这就是"退回旧写法会变红"的那面镜子。
     oid3 = fresh_order(1000)
     pid3 = add_plan(oid3, 1000)
     db(f"update receivable_plans set due_date='2026-01-01' where id={pid3}")
     pay(pid3, 300)
     call("PATCH", f"/receivables/{pid3}", admin, {"remark": "触发重算"})
-    check("④ 收过 300/1000 且已过期 → partial（不是 overdue）", st(pid3), "partial")
+    check("④ 收过 300/1000 且已过期 → overdue（到期没收齐就是逾期）",
+          st(pid3), "overdue")
+
+    # ④-b 反面对照：partial 没被弄丢 —— 收过一部分、但**还没到期**仍是 partial
+    #      （少了这一条，④ 改成 overdue 后可能掩盖"partial 永远不再出现"的回归）
+    oid3b = fresh_order(1000)
+    pid3b = add_plan(oid3b, 1000)
+    db(f"update receivable_plans set due_date='2099-01-01' where id={pid3b}")
+    pay(pid3b, 300)
+    call("PATCH", f"/receivables/{pid3b}", admin, {"remark": "触发重算"})
+    check("④-b 收过 300/1000 且未到期 → 仍是 partial", st(pid3b), "partial")
 
     # ⑤ 边界：零回款 + 未过期 → pending
     oid4 = fresh_order(100)
