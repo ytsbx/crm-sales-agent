@@ -246,6 +246,10 @@ jobs:
           python3 ../ops/check_audit_labels.py
           # 系统配置不能把后端内部 key 直接当成用户可见名称。
           python3 ../ops/check_setting_labels.py
+          # AI 分析的信封字段必须有中文名。兜底是「没映射就印英文原词」，
+          # 后端加字段就必然漏一次给用户看（主人 2026-10-13 看到
+          # `overdue_count 0`/`open_amount ¥501` 才发现的）。
+          python3 ../ops/check_agent_analysis_labels.py
           # 静态检查：角色弹窗的权限分组是否覆盖后端所有权限模块。
           # 漏了会让某个模块的新权限掉进「其他权限」（主人 2026-10-12：
           # 「要找具体的权限要翻半天」——分组的意义就是不用翻）。

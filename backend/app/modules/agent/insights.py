@@ -262,7 +262,9 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
             f"「{concentration['customer_name']}」一家，单一客户风险偏高"
         )
     if not overdue and open_amount > 0:
-        insights.append(f"暂逾期记录，未收合计 {_f(open_amount)} 元")
+                # ⚠️ 这句原来是「暂逾期记录，未收合计 …」—— 少一个「无」字，
+        # 读起来像"暂时逾期了"，意思正好反了（主人 2026-10-13 看界面时发现的）。
+        insights.append(f"暂无逾期记录，未收合计 {_f(open_amount)} 元")
 
     return {
         "scope": {"order_id": order_id},

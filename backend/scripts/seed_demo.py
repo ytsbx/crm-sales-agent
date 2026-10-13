@@ -19,7 +19,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8000/api/v1')
+# 默认灌 8008（crm_prod 演示库）。⚠️ 千万别对着 8000（crm_sales_agent，领导看的库）
+# 跑——2026-10-13 就因为默认值是 8000，演示客户进了领导库，只能手工整条删掉。
+# 真要灌别的库，用环境变量显式指定：API_BASE=http://127.0.0.1:8000/api/v1
+BASE = os.environ.get('API_BASE', 'http://127.0.0.1:8008/api/v1')
 DEMO_CUSTOMER_NAME = '示例客户·青岛海川机械（演示）'
 
 
