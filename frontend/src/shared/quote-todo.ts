@@ -299,3 +299,59 @@ export const SECONDARY_ACTIONS = [
   '下载 PDF',
   '一键刷新到最新适用价',
 ] as const
+
+/**
+ * 按比例拆分期金额 —— **与后端 `payment/service.split_amounts` 同一套算法**
+ * （2026-10-13 第九批问题 ⑤）。
+ *
+ * ## 为什么不再用 `Math.round`
+ *
+ * 前端原来写的是 `Math.round(total * ratio * 100) / 100`：JavaScript 浮点，
+ * 恰好半分时**向上**；后端是 Python `Decimal`，默认 `ROUND_HALF_EVEN`
+ * （半分进偶数）。于是同一份输入两边结果相反：
+ *
+ *     0.05 元分两期 → 前端显示 0.03 / 0.02，后端落库 0.02 / 0.03
+ *
+ * 用户确认的金额与保存的金额不是一回事 —— 这是必须修的。
+ *
+ * ## 怎么保证一致
+ *
+ * 全部在**整数分**上算，并且显式实现"半分进偶数"：
+ *   1. `total * ratio` 先取到分的 100 倍（`×10000`）再判断；
+ *   2. 余数恰好 5000（即半分）时，往**偶数**那一侧进（4.5 分 → 4 分，5.5 分 → 6 分）；
+ *   3. **末期补差额**，保证各期之和严格等于总额；
+ *   4. 出现不大于 0 的期 → 返回 `null`，由调用方拦住提交（后端同样会 422）。
+ *
+ * `ops/quote_todo.test.mjs` 里用**同一批用例**盯着这个函数与后端一致。
+ */
+export function splitAmountsLikeBackend(
+  total: number,
+  ratios: readonly number[],
+): number[] | null {
+  if (!ratios.length || !Number.isFinite(total)) return null
+  // 半分进偶数（banker's rounding），直接把"分"取整。
+  //
+  // ⚠️ 我第一版把它写成"把分的万分之一取整到分"（外面又乘了 10000），
+  // 结果所有金额都被缩小 100 倍，`0.05` 分两期直接返回 null。
+  // 单位必须清楚：**入参就是分**（不是元的万分之一）。
+  const roundHalfEvenToCent = (cents: number): number => {
+    const sign = cents < 0 ? -1 : 1
+    const abs = Math.abs(cents)
+    const floor = Math.floor(abs)
+    const remainder = abs - floor
+    if (remainder > 0.5) return sign * (floor + 1)
+    if (remainder < 0.5) return sign * floor
+    return sign * (floor % 2 === 0 ? floor : floor + 1)
+  }
+  const totalCents = Math.round(total * 100)
+  const cents: number[] = []
+  for (let index = 0; index < ratios.length; index += 1) {
+    if (index === ratios.length - 1) {
+      cents.push(totalCents - cents.reduce((sum, item) => sum + item, 0))
+    } else {
+      cents.push(roundHalfEvenToCent(total * ratios[index] * 100))
+    }
+  }
+  if (cents.some((item) => item <= 0)) return null
+  return cents.map((item) => item / 100)
+}

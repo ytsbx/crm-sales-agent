@@ -82,6 +82,8 @@ node --test "$SCRIPT_DIR/request_key.test.mjs" >/dev/null 2>&1 && echo "OK  requ
 node --test "$SCRIPT_DIR/blocked_hint.test.mjs" >/dev/null 2>&1 && echo "OK  blocked_hint.test.mjs" || FAILED+=("blocked_hint.test.mjs")
 # 报价「这一步还差什么」清单的判据单测（2026-10-13 待办区）
 node --test "$SCRIPT_DIR/quote_todo.test.mjs" >/dev/null 2>&1 && echo "OK  quote_todo.test.mjs" || FAILED+=("quote_todo.test.mjs")
+# 日历日期转换（第九批问题 ②：UTC 截日会退一天）
+node --test "$SCRIPT_DIR/calendar_day.test.mjs" >/dev/null 2>&1 && echo "OK  calendar_day.test.mjs" || FAILED+=("calendar_day.test.mjs")
 
 echo
 echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="

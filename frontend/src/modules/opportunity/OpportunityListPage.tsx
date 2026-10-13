@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { calendarDay } from '../../shared/calendar-day'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -79,7 +80,7 @@ export default function OpportunityListPage() {
         title: form.title,
         expected_amount: form.expected_amount ? Number(form.expected_amount) : null,
         expected_close_date: form.expected_close_date
-          ? form.expected_close_date.toISOString().slice(0, 10)
+          ? calendarDay(form.expected_close_date)
           : null,
         competitor: form.competitor || null,
         next_action: form.next_action || null,

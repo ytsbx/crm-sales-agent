@@ -32,6 +32,7 @@ import { listSkus } from '../../shared/api/product'
 import { completeTask, createTask, listTasks, type Task } from '../../shared/api/task'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
+import { calendarDay } from '../../shared/calendar-day'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import ReceivablePlanPicker, {
   defaultPlanRows,
@@ -241,7 +242,7 @@ export default function OpportunityDetailPage() {
         color: itemForm.color || null,
         package_requirement: itemForm.package_requirement || null,
         delivery_date: itemForm.delivery_date
-          ? itemForm.delivery_date.toISOString().slice(0, 10)
+          ? calendarDay(itemForm.delivery_date)
           : null,
         destination: itemForm.destination || null,
         remark: itemForm.remark || null,

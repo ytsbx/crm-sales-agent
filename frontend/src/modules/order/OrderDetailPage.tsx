@@ -18,7 +18,6 @@ import {
   changeOrderStatus,
   confirmPayment,
   deleteReceivable,
-  updateReceivable,
   createOrderShipment,
   createPayment,
   generateReceivables,
@@ -65,6 +64,7 @@ import { formatMoney } from '../../shared/components/money'
 const PAYMENT_METHODS = ['银行转账', '承兑汇票', '现金', '支票', '其他']
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
+import { calendarDay, calendarDayOrToday } from '../../shared/calendar-day'
 
 /**
  * 整单交期结论（§9.8 复审）。
@@ -417,38 +417,30 @@ export default function OrderDetailPage() {
 
   const generateMutation = useMutation({
     mutationFn: async () => {
-      const dueOf = (row: { due: Date | null }) => (row.due ?? new Date()).toISOString().slice(0, 10)
-      // 后端 POST 只有"第一期/第二期"两个名称与日期槽位（1～2 期走它最干净：
-      // 单次请求、原子、审计只一条）。第 3 期起先按占位生成，
-      // 生成完再用 PATCH /receivables/{id} 逐条补上真名字与真到期日 ——
-      // 3 期以上**不用改后端**（已用真接口验过：名称/日期都能改、合计不变）。
+      const dueOf = (row: { due: Date | null }) => calendarDayOrToday(row.due)
+      // **整份计划一次提交**（第九批问题 ⑥）。
+      //
+      // 从前是"先 POST 生成（后端只有前两期的名称/日期槽位）→ 再逐条 PATCH
+      // 补第 3 期起"。中途任何一条被拒，就会留下**占位名 + 第一期日期**的
+      // 半成品，而重试又撞"该订单已有应收计划，请先删除再重新生成" ——
+      // 用户卡在中间没有出路。
+      //
+      // 现在 `POST /receivables/generate` 支持按期的 `names` / `due_dates`
+      // （长度与 ratios 对齐），由后端在**同一个事务**里校验并落库：
+      // 要么整份成功，要么整份回滚，不会留下半成品。
       const created = await generateReceivables(orderId, {
         ratios: generateRows.map((row) => (row.percent ?? 0) / 100),
         first_due_date: dueOf(generateRows[0]),
-        second_due_date: generateRows[1] ? dueOf(generateRows[1]) : undefined,
-        first_name: generateRows[0]?.name || '首期',
-        second_name: generateRows[1]?.name || '第二期',
+        names: generateRows.map((row, index) => row.name.trim() || `第 ${index + 1} 期`),
+        due_dates: generateRows.map((row) => dueOf(row)),
         request_key: newRequestKey(),
       })
-      if (generateRows.length > 2) {
-        const extra = generateRows.slice(2)
-        for (let index = 0; index < extra.length; index += 1) {
-          const target = created[index + 2]
-          if (!target) continue
-          await updateReceivable(target.id, {
-            plan_name: extra[index].name || `第 ${index + 3} 期`,
-            due_date: dueOf(extra[index]),
-          })
-        }
-      }
-      return { count: generateRows.length }
+      return { count: created.length }
     },
     onSuccess: ({ count }) => {
       // 提示别再写死"30% 定金 + 70% 尾款"：期数跟着实际走
       Toast.success(
-        count > 2
-          ? `已生成 ${count} 期应收计划（第 3 期起的名称与到期日已按你填的写入）`
-          : `已生成 ${count} 期应收计划`,
+        count > 2 ? `已生成 ${count} 期应收计划` : `已生成 ${count} 期应收计划`,
       )
       setGenerateVisible(false)
       refresh()
@@ -535,7 +527,7 @@ export default function OrderDetailPage() {
   const shipShipmentMutation = useMutation({
     mutationFn: (batchId: number) =>
       shipOrderShipment(orderId, batchId, {
-        actual_ship_date: shipForm.date ? shipForm.date.toISOString().slice(0, 10) : null,
+        actual_ship_date: calendarDay(shipForm.date),
         logistics_company: shipForm.company || null,
         tracking_no: shipForm.tracking || null,
         // 缺省按计划量全发；后端校验累计不超订购量

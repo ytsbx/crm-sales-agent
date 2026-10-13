@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
+from app.modules.quote.service import MONEY_MAX
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.integration.model import ExternalMapping
@@ -369,13 +370,14 @@ async def create_order_from_quote(
         ratios = [Decimal(str(r)) for r in receivable_plan.ratios]
         due_dates = list(receivable_plan.due_dates or [])
         names = list(receivable_plan.names or [])
-        amounts: list[Decimal] = []
-        for index, ratio in enumerate(ratios):
-            if index == len(ratios) - 1:
-                # 末期补差额：合计严格等于订单总额（不靠"比例打得刚好"）
-                amounts.append(total_amount - sum(amounts, Decimal("0")))
-            else:
-                amounts.append((total_amount * ratio).quantize(Decimal("0.01")))
+        # 金额拆法与"有没有非正数期"的校验**复用后建应收计划那一处**
+        # （第九批问题 ①）。这里原来自己算了一遍、**漏了非正数校验**：
+        # 实测 0.03 元分 5×20% 会生成 `0.01、0.01、0.01、0.01、−0.01`，
+        # 负数额的应收会让财务核销与催收都对不上。
+        # 抛错时整个转单事务回滚（本函数由路由的事务包裹）。
+        from app.modules.payment import service as payment_service
+
+        amounts = payment_service.split_amounts(total_amount, ratios)
         for index in range(len(ratios)):
             session.add(
                 ReceivablePlan(
@@ -471,6 +473,16 @@ async def create_order(
         # 否则接口报的金额与库里能算出来的金额对不上（审查 B2-02）。
         quantity = normalized_quantity(entry.quantity)
         amount = line_amount(quantity, entry.unit_price)
+        # 金额范围（第九批问题 ⑧）：数量与单价各自有 `max_digits` 约束，
+        # 但**乘出来的金额**可能越界，落库时是 `numeric field overflow` → 500。
+        # 与报价明细同一个上限（`quote.service.MONEY_MAX`），报错也说得清是哪一行。
+        if abs(amount) > MONEY_MAX:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"明细 {sku.sku_code or sku.name} 的金额 {amount} 超出可保存范围"
+                f"（最大 {MONEY_MAX}）：请检查数量与单价是不是多打了几位",
+                422,
+            )
         total += amount
         rows.append(
             SalesOrderItem(

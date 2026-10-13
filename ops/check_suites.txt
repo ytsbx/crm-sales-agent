@@ -459,5 +459,9 @@ check_convert_with_payment_plan
 check_batch7_repairs
 # P1-3 的并发交错那一半：必须受控交错才验得出来，单独一套
 check_contract_sign_lock
+# 第九批 8 项（2026-10-13）：分期负数 / 日期退一天 / 差异改判 / 数值约束 /
+# 预览与落库不一致 / 三期以上半成品 / 名称超长 / 金额溢出。
+# 每组都带**正向对照**（只验"该拒的拒了"会把闸门写太宽也变绿）。
+check_batch9_repairs
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue

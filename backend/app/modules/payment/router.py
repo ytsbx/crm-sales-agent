@@ -147,6 +147,37 @@ async def create_order_receivable(
     return await _create_plan(session, order_id, payload, request, user)
 
 
+@router.post("/orders/{order_id}/receivables/preview")
+async def preview_receivables(
+    order_id: int,
+    payload: ReceivableGenerate,
+    user: CurrentUser = Depends(require_permission("payment:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """**预览**按比例分期的各期金额，不落库（第九批问题 ⑤）。
+
+    为什么要有这个接口：前端原来自己用 JavaScript 浮点 + `Math.round` 算预览，
+    而后端用 `Decimal`（默认 `ROUND_HALF_EVEN`）。**同一份输入两边结果不同**：
+    `0.05` 元分两期，前端显示 `0.03 / 0.02`、后端落库 `0.02 / 0.03` ——
+    用户确认的金额与保存的金额不是一回事。
+
+    现在预览与落库**都走 `svc.split_amounts`**，用户看到什么就存什么。
+    不合法（分出不大于 0 的期）时同样返回 422，让前端在提交前就能说清原因。
+    """
+    # 取订单用本文件既有的入口（不是自己拼 `get_visible_order`；
+    # 我第一版写了个不存在的 `_f` 与错误的取单方式，pyflakes 当场报出来了）
+    order = await get_order_or_404(session, order_id)
+    ratios = [Decimal(str(r)) for r in payload.ratios]
+    amounts = svc.split_amounts(order.total_amount, ratios)
+    return ok(
+        {
+            "total_amount": svc._f(order.total_amount),
+            "currency": order.currency,
+            "amounts": [svc._f(amount) for amount in amounts],
+        }
+    )
+
+
 @router.post("/orders/{order_id}/receivables/generate")
 async def generate_receivables(
     order_id: int,
@@ -273,30 +304,26 @@ async def _generate_receivables(session, order, order_id, payload, request, user
     if existing:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该订单已有应收计划，请先删除再重新生成")
 
-    due_dates = [payload.first_due_date, payload.second_due_date or payload.first_due_date]
-    names = [payload.first_name, payload.second_name]
+    due_dates = (
+        list(payload.due_dates)
+        if payload.due_dates
+        else [payload.first_due_date, payload.second_due_date or payload.first_due_date]
+    )
+    # 名称/到期日的取法（第九批问题 ⑥）：
+    #   · 给了整份 `names` / `due_dates`（按期对齐）→ 直接用，一次请求成型；
+    #   · 只给前两个槽位（老写法）→ 用 `first_*` / `second_*`；
+    #   · 都没给 → 「第 N 期」+ 第一期日期。
+    # 三期以上从前只能"先生成、再逐条 PATCH"，中途失败就会留下占位名与
+    # 第一期日期、且重试撞"已有应收计划"。现在整份一次落库（同一事务）。
+    names = list(payload.names) if payload.names else [payload.first_name, payload.second_name]
     # 各期金额：前面按比例算，**最后一期用"总额 − 前面各期之和"**。
     # 每期独立四舍五入会让合计不等于总额（订单 0.05 元按 50%/50% 得
     # 0.02 + 0.02 = 0.04，少一分）；差额补在最后一期，合计严格等于订单总额。
     total = Decimal(order.total_amount)
-    amounts: list[Decimal] = []
-    for index, ratio in enumerate(ratios):
-        if index == len(ratios) - 1:
-            amounts.append(total - sum(amounts, Decimal(0)))
-        else:
-            amounts.append((total * ratio).quantize(Decimal("0.01")))
-
-    # 末期兜底之后**必须回头检查有没有非正数期**：前面各期各自四舍五入，
-    # 金额极小时它们之和可能已经超过总额，末期就成了负数
-    # （0.03 元按 5×20% 分：前四期各 0.01，末期 −0.01）。负数的应收期会让
-    # 财务核销和催收都对不上，宁可明确拒绝并要求调整期数/比例。
-    if any(amount <= 0 for amount in amounts):
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            f"订单总额 {total} 按当前比例分 {len(ratios)} 期会分出不大于 0 的期"
-            f"（{'、'.join(str(a) for a in amounts)}）。请减少期数或调整比例",
-            422,
-        )
+    # 拆金额与"有没有非正数期"的校验**都在 `svc.split_amounts` 一处**
+    # （第九批问题 ①：原来这里写了一遍带校验的，转单那边又写了一遍漏了校验的，
+    #  于是转单能生成负数额应收）
+    amounts = svc.split_amounts(total, ratios)
 
     created = []
     for index, ratio in enumerate(ratios):

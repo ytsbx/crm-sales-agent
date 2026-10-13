@@ -41,13 +41,14 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
+from app.modules.product.field_rules import parse_numeric_field
 from app.modules.integration.model import IntegrationDiff
 from app.modules.integration.vocab import (
     ALL_SHOPS,
@@ -208,24 +209,14 @@ def normalize_field_value(field: str, value: Any) -> Any:
         return None
     if field in _TEXT_FIELDS:
         return str(value).strip() or None
-    if field in _INT_FIELDS:
-        try:
-            return int(Decimal(str(value)))
-        except (InvalidOperation, ValueError, TypeError) as error:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"字段 {field}（{MASTER_FIELDS[field]}）需要一个整数，收到 {value!r}",
-                422,
-            ) from error
-    if field in _DECIMAL_FIELDS:
-        try:
-            return Decimal(str(value))
-        except (InvalidOperation, ValueError, TypeError) as error:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"字段 {field}（{MASTER_FIELDS[field]}）需要一个数字，收到 {value!r}",
-                422,
-            ) from error
+    # 数值字段的约束**与常规 SKU 接口共用一份**（第九批问题 ④）。
+    #
+    # 原来这里只做类型转换：`int(Decimal("1.9"))` 静默截断成 1、`-5` 直接放行、
+    # `1e30` 撞库列范围变 500。而 `SkuCreate/SkuUpdate` 那边**本来就有**
+    # `ge=0` / `max_digits` / `decimal_places` —— 核定这条路绕过了它。
+    # 现在两边都读 `field_rules.NUMERIC_RULES`，不再各写一份。
+    if field in _INT_FIELDS or field in _DECIMAL_FIELDS:
+        return parse_numeric_field(field, value, where="主数据核定")
     raise AppError(
         ErrorCode.PARAM_ERROR,
         f"字段 {field} 不在 SKU 关键字段白名单里（{'、'.join(MASTER_FIELDS)}）："
@@ -1387,6 +1378,38 @@ async def confirm_sku_diff(
     """
     resolution = (resolution or "").strip()
     _validate_resolution(diff, resolution, note)
+
+    # ⚠️ **已核定的差异不许改判、也不许重复落库**（第九批问题 ③）。
+    #
+    # 原来这里没有任何"已经核定过"的判据，于是同一差异能被反复核定：
+    # 实测 keep_local → take_external → take_external 三次都成功，
+    # 主数据版本一路长到 v4，而"核定"在业务上是一次性结论。
+    #
+    # 口径（两种请求分开对待，与主人"弱网重试不能变成重复动作"的一贯要求一致）：
+    #   · **同一个结论**再来 → 幂等回放（不报错、不改库、不再生成版本）。
+    #     弱网下客户端重试很常见，不该因此报错。
+    #   · **不同结论**再来 → 拒绝，并说清原来的结论是什么。
+    if diff.resolved_at is not None:
+        if (diff.resolution or "") == resolution:
+            # 返回体**照成功分支的形状**给（diff / resolution_label /
+            # applied_to_local / detail / version / message）—— 我第一版自己编了几个
+            # 字段名（`resolution_note` 之类），模型上并没有这些列。
+            return {
+                "diff": serialize_sku_diff(diff),
+                "resolution_label": RESOLUTION_LABELS.get(diff.resolution, diff.resolution),
+                "applied_to_local": False,
+                "detail": {},
+                "version": None,
+                "replayed": True,
+                "message": "这条差异此前已用同一结论核定过，本次为重复提交（未再次改动主数据）",
+            }
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"这条差异已经核定过了（结论："
+            f"{RESOLUTION_LABELS.get(diff.resolution or '', diff.resolution or '')}），"
+            "不能改判：核定是一次性结论，要改请让外部来源重新报值生成新差异",
+            422,
+        )
     moment = now or _now()
     applied = False
     version: SkuMasterVersion | None = None

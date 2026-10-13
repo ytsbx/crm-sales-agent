@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Button, DatePicker, Input, InputNumber, Radio } from '@douyinfe/semi-ui'
 
 import BlockedHint from './BlockedHint'
+import { splitAmountsLikeBackend } from '../quote-todo'
+import { calendarDayOrToday } from '../calendar-day'
 
 /**
  * 转单时的「收款计划」选择件（2026-10-13 改动三）。
@@ -45,7 +47,9 @@ export interface ReceivablePlanPayload {
   names: string[]
 }
 
-const iso = (value: Date | null) => (value ?? new Date()).toISOString().slice(0, 10)
+// 日历日期用共用的按当地年月日取（第九批问题 2）：原来这里的 UTC 截日
+// 会把当地零点的日期算成前一天。
+const iso = (value: Date | null) => calendarDayOrToday(value)
 
 export const defaultPlanRows = (): ReceivablePlanRow[] => [
   { name: '定金', percent: 30, due: new Date() },
@@ -75,6 +79,7 @@ export function toPlanPayload(
 export function planBlockedReasons(
   mode: 'full' | 'installments',
   rows: ReceivablePlanRow[],
+  totalAmount?: number,
 ): string[] {
   if (mode === 'full') return []
   const reasons: string[] = []
@@ -88,16 +93,39 @@ export function planBlockedReasons(
     if (!row.due) reasons.push(`第 ${index + 1} 期还没选到期日`)
     if ((row.percent ?? 0) <= 0) reasons.push(`第 ${index + 1} 期的比例要大于 0`)
   })
+  if (
+    reasons.length === 0
+    && typeof totalAmount === 'number'
+    && Number.isFinite(totalAmount)
+    && splitAmountsLikeBackend(totalAmount, rows.map((row) => (row.percent ?? 0) / 100)) === null
+  ) {
+    // 金额太小：前面各期四舍五入到分之后，末期会变成 0 或负数
+    reasons.push(
+      `订单总额 ${totalAmount} 按当前比例分 ${rows.length} 期会分出不大于 0 的期，`
+      + '请减少期数或调整比例',
+    )
+  }
   return reasons
 }
 
 /** 这一刻的计划能不能提交。调用方用它把确认键一起禁掉（灰键必须说得出为什么）。 */
-export function isPlanValid(mode: 'full' | 'installments', rows: ReceivablePlanRow[]): boolean {
+export function isPlanValid(
+  mode: 'full' | 'installments',
+  rows: ReceivablePlanRow[],
+  totalAmount?: number,
+): boolean {
   if (mode === 'full') return true
   if (rows.length === 0) return false
   const ratioSum = rows.reduce((sum, row) => sum + (row.percent ?? 0), 0)
   if (Math.abs(ratioSum - 100) >= 0.01) return false
-  return rows.every((row) => row.name.trim() && row.due && (row.percent ?? 0) > 0)
+  if (!rows.every((row) => row.name.trim() && row.due && (row.percent ?? 0) > 0)) return false
+  // 金额太小时会分出"不大于 0 的期"（后端同样会 422）：
+  // 与其让用户点了再报错，不如在这里就拦住并说明（第九批问题 ①⑤）
+  if (typeof totalAmount === 'number' && Number.isFinite(totalAmount)) {
+    const split = splitAmountsLikeBackend(totalAmount, rows.map((row) => (row.percent ?? 0) / 100))
+    if (split === null) return false
+  }
+  return true
 }
 
 export default function ReceivablePlanPicker({
@@ -133,16 +161,19 @@ export default function ReceivablePlanPicker({
   const ratioSum = rows.reduce((sum, row) => sum + (row.percent ?? 0), 0)
   const ratioOk = Math.abs(ratioSum - 100) < 0.01
   const hasTotal = typeof totalAmount === 'number' && Number.isFinite(totalAmount)
-  const amounts: number[] = []
-  if (hasTotal) {
-    rows.forEach((row, index) => {
-      if (index === rows.length - 1) {
-        amounts.push(Math.round((totalAmount! - amounts.reduce((a, b) => a + b, 0)) * 100) / 100)
-      } else {
-        amounts.push(Math.round(totalAmount! * ((row.percent ?? 0) / 100) * 100) / 100)
-      }
-    })
-  }
+  // ⚠️ 预览金额**与后端同一套算法**（第九批问题 ⑤）。
+  // 原来这里用 `Math.round`（JavaScript 浮点、半分向上），后端用
+  // `Decimal`（默认 ROUND_HALF_EVEN）：`0.05` 分两期，页面显示 `0.03 / 0.02`、
+  // 后端落库 `0.02 / 0.03` —— 用户确认的和存下去的不是一回事。
+  // 现在统一走 `splitAmountsLikeBackend`，`ops/quote_todo.test.mjs` 用同一批
+  // 用例盯着它与后端一致。
+  const split = hasTotal
+    ? splitAmountsLikeBackend(
+        totalAmount!,
+        rows.map((row) => (row.percent ?? 0) / 100),
+      )
+    : null
+  const amounts: number[] = split ?? rows.map(() => 0)
 
   const update = (index: number, patch: Partial<ReceivablePlanRow>) => {
     const next = [...rows]

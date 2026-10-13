@@ -385,6 +385,48 @@ async def assert_order_visible(session: AsyncSession, user, order_id: int) -> No
     await ensure_in_scope(session, user, owner_id=order.owner_id if order else None, label="订单")
 
 
+def split_amounts(total: Decimal, ratios: list[Decimal]) -> list[Decimal]:
+    """按比例把订单总额拆成各期金额。**唯一的拆法**（第九批问题 ①）。
+
+    规则（与前端预览、与后建应收计划必须完全一致）：
+
+    - 前面各期 `total × ratio` **四舍五入到分**；
+    - **末期补差额**（`总额 − 前面之和`），保证各期之和严格等于总额；
+    - 补完**回头检查有没有非正数期**：金额极小时前面各期各自进位，之和可能
+      已经超过总额，末期就成了负数（`0.03` 元按 5×20% 分 →
+      `0.01、0.01、0.01、0.01、−0.01`）。负数应收会让财务核销与催收都对不上，
+      所以**明确拒绝**，要求减少期数或调整比例。
+
+    ## 为什么必须抽成一处
+
+    这套算法原来在 `payment/router.py`（后建应收计划）里写了一遍**并且带了
+    非正数校验**，而 `order/service.py`（转单时按计划建应收）里**又写了一遍、
+    却漏了那道校验** —— 于是转单能生成负数额应收，后建却不行。
+    两份实现必然漂移，所以合成这一处。
+
+    ⚠️ 舍入用 Python `Decimal` 的默认模式（`ROUND_HALF_EVEN`）。前端预览是
+    JavaScript 的 `Math.round`（半分向上），两者在"恰好半分"的金额上会给出
+    不同结果（`0.05` 分两期：JS 给 `0.03/0.02`，这里给 `0.02/0.03`）。
+    所以**前端不要自己算预览**，一律用后端返回的结果（见 `preview_split`）。
+    """
+    if not ratios:
+        raise AppError(ErrorCode.PARAM_ERROR, "至少要有一期比例", 422)
+    amounts: list[Decimal] = []
+    for index, ratio in enumerate(ratios):
+        if index == len(ratios) - 1:
+            amounts.append(total - sum(amounts, Decimal(0)))
+        else:
+            amounts.append((total * ratio).quantize(Decimal("0.01")))
+    if any(amount <= 0 for amount in amounts):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"订单总额 {total} 按当前比例分 {len(ratios)} 期会分出不大于 0 的期"
+            f"（{'、'.join(str(a) for a in amounts)}）。请减少期数或调整比例",
+            422,
+        )
+    return amounts
+
+
 async def assert_order_can_add_receivable(order: SalesOrder) -> None:
     """取消的订单不允许再产生应收（N03，2026-10-09 修）。
 

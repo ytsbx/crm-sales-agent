@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AutoComplete, Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
+import { calendarDayOrToday } from '../../shared/calendar-day'
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
@@ -540,7 +541,7 @@ export default function PriceCenterPage() {
     package_cost: '',
     production_cost: '',
     processing_cost: '',
-    effective_from: new Date().toISOString().slice(0, 10),
+    effective_from: calendarDayOrToday(new Date()),
   })
   const [ruleVisible, setRuleVisible] = useState(false)
   // 价格规则搜索与分页（2026-10-10 主人："没有搜索功能，一旦很多就太乱了"）。

@@ -24,6 +24,9 @@ class ReceivablePlanIn(BaseModel):
 
     ratios: list[float]
     due_dates: list[date] | None = None
+    #: 每期名称。**上限与库列 `receivable_plans.plan_name` 一致（64）**：
+    #: 少了它，65 字会一路走到 INSERT 才撞 `value too long for character varying(64)`
+    #: → 500（第九批问题 ⑦）。生成接口那边同样有 64 的限制，两处口径一致。
     names: list[str] | None = None
 
     @model_validator(mode="after")
@@ -49,6 +52,12 @@ class ReceivablePlanIn(BaseModel):
                 raise ValueError("每期都要有一个名称（names 与 ratios 个数要一致）")
             if any(not str(n).strip() for n in self.names):
                 raise ValueError("每期名称不能为空")
+            too_long = [str(n) for n in self.names if len(str(n)) > 64]
+            if too_long:
+                raise ValueError(
+                    f"每期名称最多 64 个字（与数据库列一致），收到 {len(too_long[0])} 字："
+                    f"{too_long[0][:20]}…"
+                )
         return self
 
 

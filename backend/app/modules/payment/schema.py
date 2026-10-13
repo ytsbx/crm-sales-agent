@@ -4,7 +4,7 @@ import math
 from datetime import date
 from decimal import Decimal
 
-from pydantic import field_validator, BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.core.patch_schema import PatchModel
 
@@ -52,8 +52,29 @@ class ReceivableGenerate(BaseModel):
     """
     first_due_date: date
     second_due_date: date | None = None
-    first_name: str = "定金"
-    second_name: str = "尾款"
+    #: ⚠️ 每期名称与库列 `receivable_plans.plan_name` 一致：`String(64)`。
+    #: 少了这个上限，前端传 65 字会撞数据库 → **500**（第九批问题 ⑦）。
+    first_name: str = Field(default="定金", max_length=64)
+    second_name: str = Field(default="尾款", max_length=64)
+    #: **整份计划一次提交**（第九批问题 ⑥）：给全了就不用"先生成、再逐条 PATCH"。
+    #: 与 `ratios` 按下标对齐；不给则回落（到期日 → `first_due_date`、
+    #: 名称 → 「第 N 期」）。两项都给时必须与 `ratios` 等长。
+    due_dates: list[date] | None = None
+    names: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _full_plan_lengths(self):
+        if self.due_dates is not None and len(self.due_dates) != len(self.ratios):
+            raise ValueError("每期都要有一个到期日（due_dates 与 ratios 个数要一致）")
+        if self.names is not None:
+            if len(self.names) != len(self.ratios):
+                raise ValueError("每期都要有一个名称（names 与 ratios 个数要一致）")
+            for name in self.names:
+                if not str(name).strip():
+                    raise ValueError("每期名称不能为空")
+                if len(str(name)) > 64:
+                    raise ValueError("每期名称最多 64 个字（与数据库列一致）")
+        return self
     #: 弱网重试的请求键（第七批 7.9）：双击"生成计划"带同一把键时，
     #: 第二次拿回第一次的结果，而不是撞"该订单已有应收计划"的报错。
     request_key: str | None = Field(default=None, max_length=idempotency.MAX_KEY_LENGTH)

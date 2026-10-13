@@ -1297,6 +1297,28 @@ def version_logistics_in_base_cost(version: QuoteVersion) -> bool:
     return False
 
 
+#: 金额列统一是 `Numeric(16,2)`：整数位 14、小数 2 位。
+#: 超过它 PostgreSQL 直接抛 `numeric field overflow` → 500（第九批问题 ⑧）。
+#: 逐行金额与整单合计**都要查**：数量与单价各自合法，乘出来仍可能越界
+#: （`100000000 × 1000000 = 1e14` 就出界了）。
+MONEY_MAX = Decimal("99999999999999.99")
+
+
+def _assert_money_in_range(amount: Decimal, *, label: str) -> None:
+    """金额（逐行或合计）必须能存进 `Numeric(16,2)`，否则给**明确参数错误**。
+
+    不查的后果是数据库报错冒成 500，用户只看到"服务器内部错误"，
+    既不知道是哪一行、也不知道该改什么。
+    """
+    if amount is not None and abs(amount) > MONEY_MAX:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label} 超出可保存范围（最大 {MONEY_MAX}，当前 {amount}）："
+            "请检查数量与单价是不是多打了几位",
+            422,
+        )
+
+
 def item_cost_is_incomplete(item: QuoteItem) -> bool:
     """有成本依据但缺项必须人工审批；金额为零也不能代表没有记录。
 
@@ -1735,9 +1757,16 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
     ).scalars().all()
     # 数量按库列精度归一再求和：与 `serialize_item` 的明细金额取**同一个数**，
     # 否则同一张单会出现"明细 185.25、合计 185.18"（N01）。
-    subtotal = sum(
-        (line_amount(item.quantity, item.quoted_price) for item in items), ZERO
-    )
+    # 逐行金额先各自查范围（第九批问题 ⑧）：数量与单价**各自**都有
+    # `max_digits=16` 约束，但乘出来的金额可能越界。
+    line_amounts = [line_amount(item.quantity, item.quoted_price) for item in items]
+    for item, amount in zip(items, line_amounts):
+        _assert_money_in_range(
+            amount,
+            label=f"明细 {item.sku_code_snapshot or item.sku_name_snapshot or item.id} 的金额",
+        )
+    subtotal = sum(line_amounts, ZERO)
+    _assert_money_in_range(subtotal, label="货款合计")
     charges = (
         await session.execute(
             select(QuoteCharge)
@@ -1766,6 +1795,7 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
     version.other_charge_amount = other_charge.quantize(Decimal("0.01"))
     version.discount_amount = discount.quantize(Decimal("0.01"))
     # 统一定点舍入（方案 §5）：与订单侧 amount 口径一致，避免出现 3 位小数的总额
+    _assert_money_in_range(subtotal + charge_amount + discount, label="订单总额")
     version.total_amount = (subtotal + charge_amount + discount).quantize(Decimal("0.01"))
 
 

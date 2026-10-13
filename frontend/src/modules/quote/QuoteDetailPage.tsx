@@ -294,9 +294,6 @@ export default function QuoteDetailPage() {
   const [convertVisible, setConvertVisible] = useState(false)
   const [planMode, setPlanMode] = useState<'full' | 'installments'>('full')
   const [planRows, setPlanRows] = useState<ReceivablePlanRow[]>(defaultPlanRows)
-  // 灰键必须说得出为什么（项目口径）：判据与组件内部同源
-  const planBlocked = planBlockedReasons(planMode, planRows)
-  const notifyPlanBlocked = useBlockedNotify(planBlocked, '生成订单')
 
   const convertMutation = useMutation<{ order_id: number; order_no: string }, Error, boolean>({
     mutationFn: (confirm) =>
@@ -589,6 +586,14 @@ export default function QuoteDetailPage() {
   }
   /** 运费未确认的人话原因（后端给）；有值就要一直显示 */
   const freightUnconfirmed = detail.freight_unconfirmed_reason ?? null
+
+  // 总额传进去：金额太小时「分不出正数期」要在弹窗里就拦住并说明（第九批 ①⑤）
+  const planTotal = Number(version?.total_amount ?? 0)
+  // 灰键必须说得出为什么（项目口径）：判据与组件内部同源。
+  // ⚠️ 它依赖 `planTotal`，所以和它一起放在 `version` 之后 ——
+  // 我第一版留在上面，tsc 直接报"used before its declaration"。
+  const planBlocked = planBlockedReasons(planMode, planRows, planTotal)
+  const notifyPlanBlocked = useBlockedNotify(planBlocked, '生成订单')
 
   // 「这一步还差什么」的清单（判据在 shared/quote-todo.ts，单一真源）
   const quoteTodoList = quoteTodos({
@@ -1172,7 +1177,7 @@ export default function QuoteDetailPage() {
         onOk={() => convertMutation.mutate(true)}
         confirmLoading={convertMutation.isPending}
         okText="生成订单"
-        okButtonProps={{ disabled: !isPlanValid(planMode, planRows) }}
+        okButtonProps={{ disabled: !isPlanValid(planMode, planRows, planTotal) }}
         width={620}
         footer={
           <div>
@@ -1185,8 +1190,8 @@ export default function QuoteDetailPage() {
                 <Button
                   theme="solid"
                   loading={convertMutation.isPending}
-                  disabled={!isPlanValid(planMode, planRows)}
-                  style={!isPlanValid(planMode, planRows) ? { pointerEvents: 'none' } : undefined}
+                  disabled={!isPlanValid(planMode, planRows, planTotal)}
+                  style={!isPlanValid(planMode, planRows, planTotal) ? { pointerEvents: 'none' } : undefined}
                   onClick={() => convertMutation.mutate(true)}
                 >
                   生成订单
