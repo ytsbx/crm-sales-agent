@@ -588,6 +588,15 @@ export default function OrderDetailPage() {
   ]
   const scheduleBlockedReasons = blockedReasons(scheduleBlocked)
   const notifyScheduleBlocked = useBlockedNotify(scheduleBlockedReasons, '预览受影响面')
+  // ⚠️ 「提交待确认计划」的禁用**不是"填错了"**，而是"还没走完上一步"：
+  // 提交前必须先生成预览（`disabled={!schedulePreview}`），否则用户只看到一个
+  // 灰按钮、不知道卡在哪（主人 2026-10-13 就是卡在这里："不知道怎么进行下去"）。
+  // 所以这条与 `scheduleBlocked` 分开写 —— 两者的"下一步该做什么"完全不同：
+  // 一个是"把表填完整"，一个是"先点旁边的预览"。
+  const submitBlockedReasons = schedulePreview
+    ? []
+    : ['顺序要求：先点上一步的「预览受影响面」，看到影响面之后才能提交。']
+  const notifySubmitBlocked = useBlockedNotify(submitBlockedReasons, '提交待确认计划')
 
   if (orderQuery.isLoading) return <div className="page-container">加载中…</div>
   if (!order) return <div className="page-container">订单不存在或无权查看</div>
@@ -1301,6 +1310,9 @@ export default function OrderDetailPage() {
             <div onClick={notifyScheduleBlocked}>
               <BlockedHint reasons={scheduleBlockedReasons} action="预览受影响面" />
             </div>
+            <div onClick={notifySubmitBlocked}>
+              <BlockedHint reasons={submitBlockedReasons} action="提交待确认计划" />
+            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
               <Button onClick={() => setScheduleVisible(false)}>取消</Button>
               <div className="blocked-hint-click" onClick={notifyScheduleBlocked}>
@@ -1313,14 +1325,17 @@ export default function OrderDetailPage() {
                   预览受影响面
                 </Button>
               </div>
-              <Button
-                theme="solid"
-                loading={createScheduleMutation.isPending}
-                disabled={!schedulePreview}
-                onClick={() => createScheduleMutation.mutate()}
-              >
-                提交待确认计划
-              </Button>
+              <div className="blocked-hint-click" onClick={notifySubmitBlocked}>
+                <Button
+                  theme="solid"
+                  loading={createScheduleMutation.isPending}
+                  disabled={!schedulePreview}
+                  style={!schedulePreview ? { pointerEvents: 'none' } : undefined}
+                  onClick={() => createScheduleMutation.mutate()}
+                >
+                  提交待确认计划
+                </Button>
+              </div>
             </div>
           </div>
         }
