@@ -146,14 +146,29 @@ export function matchMenu(pathname: string): MenuItem | undefined {
   return MENUS.find((item) => pathname === item.path || pathname.startsWith(`${item.path}/`))
 }
 
-/** 与后端 require_permission 的判定对齐：admin 直通，数组权限任一命中即可。 */
+/**
+ * 与后端 require_permission 的判定对齐：admin 直通，数组权限任一命中即可。
+ *
+ * ⚠️ **入参的字段一律当"可能没有"处理**（2026-10-13）：
+ * 登录态是**持久化**的（`crm-auth`），旧版本留下的那份数据会被新版代码直接读出来用。
+ * 前一版这里写 `user.roles.includes('admin')`，而登录接口 `_user_brief` 只返回
+ * `{id, name, username}`（没有 roles）——两者一叠加，只要本地存的是那份不完整的 user，
+ * **整个 AppLayout（每一页）都会崩**，界面上出现的是 React 的英文报错和调用栈
+ * （`Cannot read properties of undefined (reading 'includes')` + `at hasPermission`），
+ * 排查脚本实测复现过。
+ *
+ * TypeScript 的类型标注（`roles: string[]`）**拦不住运行时**：数据是从 localStorage
+ * 读出来的 JSON，类型只是"我以为的形状"。所以这里用局部变量 + `?? []` 兜底，
+ * 缺字段就按"没有这个权限"处理（与 `!user` 同一口径：宁可少给权限，不可崩页面）。
+ */
 export function hasPermission(
-  user: { roles: string[]; permissions?: string[] } | null,
+  user: { roles?: string[]; permissions?: string[] } | null | undefined,
   permission?: string | string[],
 ): boolean {
   if (!permission) return true
   if (!user) return false
-  if (user.roles.includes('admin')) return true
+  const roles = user.roles ?? []
+  if (roles.includes('admin')) return true
   const granted = user.permissions ?? []
   const needed = Array.isArray(permission) ? permission : [permission]
   return needed.some((code) => granted.includes(code))

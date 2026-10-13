@@ -254,6 +254,10 @@ jobs:
           # 交期节点、审批状态、价格历史字段与报价状态。写法都是 `MAP[v] ?? v`，
           # 后端加一个枚举值界面就悄悄多一句英文。
           python3 ../ops/check_enum_labels.py
+          # 登录态是 localStorage 持久化的，旧版本的旧数据会被新版直接读出来用：
+          # 把 user 的字段当成"一定存在"会让**每一页**崩成 React 的英文报错
+          # （实测：`user.roles.includes` + 登录接口只返回 {id,name,username}）。
+          python3 ../ops/check_persisted_user_shape.py
           # 静态检查：角色弹窗的权限分组是否覆盖后端所有权限模块。
           # 漏了会让某个模块的新权限掉进「其他权限」（主人 2026-10-12：
           # 「要找具体的权限要翻半天」——分组的意义就是不用翻）。
