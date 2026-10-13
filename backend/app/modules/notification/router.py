@@ -1,6 +1,6 @@
 """通知接口（03-API §32 通知 + §33 通知设置）。"""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select, update
@@ -95,14 +95,29 @@ def serialize(row: Notification) -> dict:
 @router.get("/notifications")
 async def list_notifications(
     unread_only: bool = False,
+    date_from: date | None = Query(None, description="按通知日期过滤：起始日（含）"),
+    date_to: date | None = Query(None, description="按通知日期过滤：截止日（含）"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
+    # 日期顺序在入口就拦：from 晚于 to 是明显的手误，返回空列表只会让人以为"那天没通知"
+    if date_from and date_to and date_from > date_to:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "起始日期不能晚于截止日期，请调换后再筛",
+            422,
+        )
     stmt = select(Notification).where(Notification.user_id == user.id, await process_notification_filter(session, user))
     if unread_only:
         stmt = stmt.where(Notification.read_at.is_(None))
+    # 按日期过滤用库端 date(created_at)：通知量会一直累积（无清理机制），
+    # 把过滤下到 SQL 才不会随历史增长变慢；口径与界面展示的"通知日期"一致
+    if date_from is not None:
+        stmt = stmt.where(func.date(Notification.created_at) >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(func.date(Notification.created_at) <= date_to)
     rows, total = await paginate(session, stmt.order_by(Notification.id.desc()), page, page_size)
     return ok(page_data([serialize(row) for row in rows], total, page, page_size))
 

@@ -445,8 +445,18 @@ export function getDeliveryStats(riskLimit = 20) {
   return api.get<DeliveryStats>('/analytics/delivery', { risk_limit: riskLimit })
 }
 
-export function listNotifications(unreadOnly = false) {
-  return api.get<PageResult<NotificationRow>>('/notifications', { unread_only: unreadOnly, page_size: 50 })
+/** 通知列表：支持只看未读 + 日期范围（2026-10-13 加，通知只进不出，不筛很快翻不动） */
+export function listNotifications(
+  unreadOnly = false,
+  dateFrom?: string,
+  dateTo?: string,
+) {
+  return api.get<PageResult<NotificationRow>>('/notifications', {
+    unread_only: unreadOnly,
+    date_from: dateFrom,
+    date_to: dateTo,
+    page_size: 50,
+  })
 }
 
 export function getUnreadCount() {

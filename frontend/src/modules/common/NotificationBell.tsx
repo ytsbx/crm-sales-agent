@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Popover, Tag, Toast } from '@douyinfe/semi-ui'
+import { DatePicker, Popover, Switch, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   getUnreadCount,
@@ -32,6 +32,19 @@ export default function NotificationBell() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
+  // 过滤条件（2026-10-13 加）：通知只进不出、面板一次只显 50 条，
+  // 没有筛选的话"找上周那条"只能一条条翻
+  const [unreadOnly, setUnreadOnly] = useState(false)
+  const [dateRange, setDateRange] = useState<[Date, Date] | null>(null)
+  const fmtDay = (d: Date) => {
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    return `${y}-${m}-${day}`
+  }
+  const dateFrom = dateRange ? fmtDay(dateRange[0]) : undefined
+  const dateTo = dateRange ? fmtDay(dateRange[1]) : undefined
+  const filtersActive = unreadOnly || Boolean(dateRange)
 
   const countQuery = useQuery({
     queryKey: ['notifications-unread'],
@@ -39,8 +52,8 @@ export default function NotificationBell() {
     refetchInterval: 60_000,
   })
   const listQuery = useQuery({
-    queryKey: ['notifications'],
-    queryFn: () => listNotifications(false),
+    queryKey: ['notifications', unreadOnly, dateFrom, dateTo],
+    queryFn: () => listNotifications(unreadOnly, dateFrom, dateTo),
     enabled: open,
   })
 
@@ -87,6 +100,44 @@ export default function NotificationBell() {
         <a style={{ color: 'var(--crm-primary)', fontSize: 13 }} onClick={() => readAllMutation.mutate()}>
           全部已读
         </a>
+      </div>
+      {/* 过滤行：只看未读 + 日期范围。改任何一个，列表立刻按新条件重查 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          flexWrap: 'wrap',
+          padding: '8px 8px 6px',
+          borderBottom: '1px solid var(--crm-surface-high)',
+          fontSize: 12,
+          color: 'var(--crm-text-2)',
+        }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+          只看未读
+          <Switch size="small" checked={unreadOnly} onChange={setUnreadOnly} />
+        </span>
+        <DatePicker
+          type="dateRange"
+          size="small"
+          density="compact"
+          placeholder={['开始日期', '结束日期']}
+          value={dateRange}
+          onChange={(value) => setDateRange((value as [Date, Date]) ?? null)}
+          style={{ width: 220 }}
+        />
+        {filtersActive && (
+          <a
+            style={{ color: 'var(--crm-text-3)', marginLeft: 'auto' }}
+            onClick={() => {
+              setUnreadOnly(false)
+              setDateRange(null)
+            }}
+          >
+            清除
+          </a>
+        )}
       </div>
       {items.length === 0 && <div className="notice-empty">暂无通知</div>}
       {items.map((item: NotificationRow) => (
