@@ -256,6 +256,16 @@ export function getReceivable(id: number) {
   return api.get<Receivable>(`/receivables/${id}`)
 }
 
+/**
+ * 删应收节点（API §29 DELETE /receivables/{id}）。
+ *
+ * 后端带锁、并拦"已有回款记录"的节点（会返回 400 并说清原因）；
+ * 删完会在同一个事务里同步「收款」跟单节点。
+ */
+export function deleteReceivable(id: number) {
+  return api.delete(`/receivables/${id}`)
+}
+
 /** 改应收节点 —— 部分更新，只传要改的字段（API §29 PATCH /receivables/{id}）。 */
 export function updateReceivable(id: number, payload: Record<string, unknown>) {
   return api.patch<Receivable>(`/receivables/${id}`, payload)

@@ -17,6 +17,8 @@ import {
   cancelOrderShipment,
   changeOrderStatus,
   confirmPayment,
+  deleteReceivable,
+  updateReceivable,
   createOrderShipment,
   createPayment,
   generateReceivables,
@@ -178,7 +180,18 @@ export default function OrderDetailPage() {
   //: （见下面「取消订单」那个 Modal）。
   const [cancelVisible, setCancelVisible] = useState(false)
   const [generateVisible, setGenerateVisible] = useState(false)
-  const [generateDates, setGenerateDates] = useState<{ first?: Date; second?: Date }>({})
+  /**
+   * 生成应收计划的"行"（2026-10-13 改：从写死 30/70 两期改成可编辑）。
+   *
+   * 每行：节点名 + 比例(%) + 到期日。默认仍是两行（定金 30% / 尾款 70%），
+   * 不动老习惯；比例用百分数存（界面上是"30"而不是"0.3"），提交时再除 100。
+   */
+  const [generateRows, setGenerateRows] = useState<{ name: string; percent: number | null; due: Date | null }[]>(
+    () => [
+      { name: '定金', percent: 30, due: new Date() },
+      { name: '尾款', percent: 70, due: new Date() },
+    ],
+  )
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
 
@@ -403,16 +416,40 @@ export default function OrderDetailPage() {
   })
 
   const generateMutation = useMutation({
-    mutationFn: () =>
-      generateReceivables(orderId, {
-        ratios: [0.3, 0.7],
-        first_due_date: (generateDates.first ?? new Date()).toISOString().slice(0, 10),
-        second_due_date: (generateDates.second ?? new Date()).toISOString().slice(0, 10),
-        first_name: '定金',
-        second_name: '尾款',
-      }),
-    onSuccess: () => {
-      Toast.success('已生成 30% 定金 + 70% 尾款')
+    mutationFn: async () => {
+      const dueOf = (row: { due: Date | null }) => (row.due ?? new Date()).toISOString().slice(0, 10)
+      // 后端 POST 只有"第一期/第二期"两个名称与日期槽位（1～2 期走它最干净：
+      // 单次请求、原子、审计只一条）。第 3 期起先按占位生成，
+      // 生成完再用 PATCH /receivables/{id} 逐条补上真名字与真到期日 ——
+      // 3 期以上**不用改后端**（已用真接口验过：名称/日期都能改、合计不变）。
+      const created = await generateReceivables(orderId, {
+        ratios: generateRows.map((row) => (row.percent ?? 0) / 100),
+        first_due_date: dueOf(generateRows[0]),
+        second_due_date: generateRows[1] ? dueOf(generateRows[1]) : undefined,
+        first_name: generateRows[0]?.name || '首期',
+        second_name: generateRows[1]?.name || '第二期',
+        request_key: newRequestKey(),
+      })
+      if (generateRows.length > 2) {
+        const extra = generateRows.slice(2)
+        for (let index = 0; index < extra.length; index += 1) {
+          const target = created[index + 2]
+          if (!target) continue
+          await updateReceivable(target.id, {
+            plan_name: extra[index].name || `第 ${index + 3} 期`,
+            due_date: dueOf(extra[index]),
+          })
+        }
+      }
+      return { count: generateRows.length }
+    },
+    onSuccess: ({ count }) => {
+      // 提示别再写死"30% 定金 + 70% 尾款"：期数跟着实际走
+      Toast.success(
+        count > 2
+          ? `已生成 ${count} 期应收计划（第 3 期起的名称与到期日已按你填的写入）`
+          : `已生成 ${count} 期应收计划`,
+      )
       setGenerateVisible(false)
       refresh()
     },
@@ -448,6 +485,17 @@ export default function OrderDetailPage() {
     mutationFn: (id: number) => confirmPayment(id, '财务核对通过'),
     onSuccess: () => {
       Toast.success('回款已确认')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  // 删应收节点（2026-10-13）：解开"自动生成的全款删不掉 → 生成按钮不出现 → 分期进不去"。
+  // 后端带锁、并拦"已有回款记录"的节点；前端把这类节点的入口先藏起来（点了必然失败的东西不该给）。
+  const deleteReceivableMutation = useMutation({
+    mutationFn: (id: number) => deleteReceivable(id),
+    onSuccess: () => {
+      Toast.success('应收节点已删除；跟单节点会按剩余应收自动同步')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -637,27 +685,46 @@ export default function OrderDetailPage() {
     },
     {
       title: '操作',
-      width: 110,
-      render: (_: unknown, record: Receivable) =>
-        record.status !== 'paid' && (canManage || canPayment) ? (
-          <a
-            style={{ color: 'var(--crm-primary)' }}
-            onClick={() => {
-              setPaymentTarget(record)
-              setPaymentForm({
-                amount: String(record.remaining_amount),
-                date: new Date(),
-                method: '银行转账',
-              })
-              // 打开表单就定下这一笔的请求键；中途提交失败重试仍用它。
-              paymentKeyRef.current = newRequestKey()
-            }}
-          >
-            登记回款
-          </a>
-        ) : (
-          '-'
-        ),
+      width: 150,
+      render: (_: unknown, record: Receivable) => {
+        const canRegister = record.status !== 'paid' && (canManage || canPayment)
+        // 有没有回款：后端删的时候会硬拦（400「该应收节点已有回款记录」），
+        // 前端把入口先藏起来。判据用**后端返回的已收金额**（财务确认过的口径），
+        // 不是前端自己算的。
+        const hasPayment = Number(record.received_amount ?? 0) > 0
+        const canDelete = canPayment && !hasPayment
+        if (!canRegister && !canDelete) return '-'
+        return (
+          <div style={{ display: 'flex', gap: 10 }}>
+            {canRegister && (
+              <a
+                style={{ color: 'var(--crm-primary)' }}
+                onClick={() => {
+                  setPaymentTarget(record)
+                  setPaymentForm({
+                    amount: String(record.remaining_amount),
+                    date: new Date(),
+                    method: '银行转账',
+                  })
+                  // 打开表单就定下这一笔的请求键；中途提交失败重试仍用它。
+                  paymentKeyRef.current = newRequestKey()
+                }}
+              >
+                登记回款
+              </a>
+            )}
+            {canDelete && (
+              <Popconfirm
+                title={`删除「${record.plan_name ?? '这一期'}」这个应收节点？`}
+                content="删除后这期应收消失、订单应收合计随之变小，「收款」跟单节点会按剩余应收自动同步。已经收过款的节点不能删。"
+                onConfirm={() => deleteReceivableMutation.mutate(record.id)}
+              >
+                <a style={{ color: 'var(--crm-error, #ba1a1a)' }}>删除</a>
+              </Popconfirm>
+            )}
+          </div>
+        )
+      },
     },
   ]
 
@@ -865,7 +932,17 @@ export default function OrderDetailPage() {
                 </div>
                 <div style={{ flex: 1 }} />
                 {canPayment && !(receivablesQuery.data ?? []).length && (
-                  <Button theme="solid" onClick={() => setGenerateVisible(true)}>
+                  <Button
+                    theme="solid"
+                    onClick={() => {
+                      // 每次打开都回到默认两行（定金 30% / 尾款 70%），不留上次的残状态
+                      setGenerateRows([
+                        { name: '定金', percent: 30, due: new Date() },
+                        { name: '尾款', percent: 70, due: new Date() },
+                      ])
+                      setGenerateVisible(true)
+                    }}
+                  >
                     生成应收计划
                   </Button>
                 )}
@@ -1631,28 +1708,133 @@ export default function OrderDetailPage() {
         onOk={() => generateMutation.mutate()}
         confirmLoading={generateMutation.isPending}
         okText="生成"
+        okButtonProps={{
+          // 不合规就不让点，并且**在弹窗里说清差什么**（灰按钮不解释是主人反复提过的毛病）
+          disabled:
+            Math.abs(generateRows.reduce((sum, row) => sum + (row.percent ?? 0), 0) - 100) >= 0.01 ||
+            generateRows.some((row) => !row.name.trim() || !row.due || (row.percent ?? 0) <= 0),
+        }}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            按订单金额 30% 定金 + 70% 尾款生成两个应收节点（合计{' '}
-            {formatMoney(order.total_amount, order.currency)}）
+            按订单金额 {formatMoney(order.total_amount, order.currency)} 分几期收。每期填「节点名 / 比例 /
+            到期日」，比例合计必须正好 100%。
           </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>定金到期日</div>
-            <DatePicker
-              value={generateDates.first}
-              onChange={(date) => setGenerateDates({ ...generateDates, first: date as Date })}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>尾款到期日</div>
-            <DatePicker
-              value={generateDates.second}
-              onChange={(date) => setGenerateDates({ ...generateDates, second: date as Date })}
-              style={{ width: '100%' }}
-            />
-          </div>
+          {(() => {
+            // 禁用按钮必须说得出为什么（主人反复提过的口径）：判据与 okButtonProps 一致
+            const reasons: string[] = []
+            const sum = generateRows.reduce((acc, row) => acc + (row.percent ?? 0), 0)
+            if (Math.abs(sum - 100) >= 0.01) reasons.push(`比例合计现在是 ${sum}%，必须是 100%`)
+            generateRows.forEach((row, index) => {
+              if (!row.name.trim()) reasons.push(`第 ${index + 1} 期还没填节点名`)
+              if (!row.due) reasons.push(`第 ${index + 1} 期还没选到期日`)
+              if ((row.percent ?? 0) <= 0) reasons.push(`第 ${index + 1} 期的比例要大于 0`)
+            })
+            return reasons.length ? (
+              <div style={{ color: 'var(--crm-error, #ba1a1a)', fontSize: 12 }}>
+                还不能生成，原因：{reasons.join('；')}
+              </div>
+            ) : null
+          })()}
+          {(() => {
+            const ratioSum = generateRows.reduce((sum, row) => sum + (row.percent ?? 0), 0)
+            const ratioOk = Math.abs(ratioSum - 100) < 0.01
+            const total = Number(order.total_amount ?? 0)
+            // 每期金额预览**与后端同一口径**：前面各期四舍五入到分、最后一期补差额，
+            // 各期之和严格等于订单总额（否则用户自己加一遍会以为差了一分钱）。
+            const amounts: number[] = []
+            generateRows.forEach((row, index) => {
+              if (index === generateRows.length - 1) {
+                amounts.push(Math.round((total - amounts.reduce((a, b) => a + b, 0)) * 100) / 100)
+              } else {
+                amounts.push(Math.round(total * ((row.percent ?? 0) / 100) * 100) / 100)
+              }
+            })
+            const update = (index: number, patch: Partial<{ name: string; percent: number | null; due: Date | null }>) => {
+              const next = [...generateRows]
+              next[index] = { ...next[index], ...patch }
+              setGenerateRows(next)
+            }
+            return (
+              <>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', gap: 8, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    <div style={{ width: 150 }}>节点名</div>
+                    <div style={{ width: 110 }}>比例（%）</div>
+                    <div style={{ flex: 1 }}>到期日</div>
+                    <div style={{ width: 110, textAlign: 'right' }}>金额</div>
+                    <div style={{ width: 48 }} />
+                  </div>
+                  {generateRows.map((row, index) => (
+                    <div key={index} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <Input
+                        style={{ width: 150 }}
+                        value={row.name}
+                        placeholder={`第 ${index + 1} 期`}
+                        onChange={(value) => update(index, { name: value })}
+                      />
+                      <InputNumber
+                        style={{ width: 110 }}
+                        value={row.percent ?? undefined}
+                        min={0}
+                        max={100}
+                        precision={2}
+                        placeholder="如 30"
+                        onChange={(value) => update(index, { percent: typeof value === 'number' ? value : null })}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <DatePicker
+                          style={{ width: '100%' }}
+                          value={row.due ?? undefined}
+                          onChange={(date) => update(index, { due: (date as Date) ?? null })}
+                        />
+                      </div>
+                      <div style={{ width: 110, textAlign: 'right' }}>
+                        {formatMoney(amounts[index], order.currency)}
+                      </div>
+                      <div style={{ width: 48, textAlign: 'right' }}>
+                        {generateRows.length > 1 && (
+                          <a
+                            style={{ color: 'var(--crm-text-3)' }}
+                            onClick={() => setGenerateRows(generateRows.filter((_, i) => i !== index))}
+                          >
+                            删掉
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                  <Button
+                    size="small"
+                    disabled={generateRows.length >= 24}
+                    onClick={() =>
+                      setGenerateRows([
+                        ...generateRows,
+                        { name: `第 ${generateRows.length + 1} 期`, percent: null, due: new Date() },
+                      ])
+                    }
+                  >
+                    再加一期
+                  </Button>
+                  <span
+                    style={{
+                      fontSize: 13,
+                      color: ratioOk ? 'var(--crm-text-2)' : 'var(--crm-error, #ba1a1a)',
+                    }}
+                  >
+                    合计比例 {ratioSum}%{ratioOk ? '' : '（必须正好 100% 才能生成）'}
+                  </span>
+                  {generateRows.length > 2 && (
+                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                      第 3 期起：先生成、再按你填的名称与到期日逐条补齐
+                    </span>
+                  )}
+                </div>
+              </>
+            )
+          })()}
         </div>
       </Modal>
 
