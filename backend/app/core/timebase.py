@@ -25,7 +25,7 @@
 一个模块而不是散在各处的原因。
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import literal_column
@@ -72,6 +72,22 @@ def month_key(value: datetime | None) -> str | None:
 def business_day_start(year: int, month: int = 1, day: int = 1) -> datetime:
     """业务时区某天 00:00 对应的 **UTC 瞬时**（可以直接和库里的列比较）。"""
     return datetime(year, month, day, tzinfo=BUSINESS_TZ).astimezone(UTC)
+
+
+def business_day_end(day: date, *, at: time = time(23, 59)) -> datetime:
+    """业务时区某天 `at`（默认 23:59）对应的 **UTC 瞬时**。
+
+    与 `business_day_start` 配对，专治这类写法（第十批审查 ⑧，2026-10-13）：
+
+        datetime.combine(某日, time(23, 59), tzinfo=UTC)   # ❌ 把北京时间当 UTC
+
+    后果是"当天 23:59 截止"实际变成**次日 07:59**（早了 8 小时，还跨了一天）。
+    月结续签任务就是这么晚 8 小时的（协议 10-13 到期 → 截止显示 10-14 07:59），
+    等于白送半天宽限。
+
+    另注：默认 23:59（而非 23:59:59）是沿用既有口径 —— 待办截止的展示只到分钟。
+    """
+    return datetime.combine(day, at, tzinfo=BUSINESS_TZ).astimezone(UTC)
 
 
 def year_bounds(year: int) -> tuple[datetime, datetime]:

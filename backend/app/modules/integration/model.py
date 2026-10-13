@@ -51,6 +51,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -417,16 +418,38 @@ class IntegrationDiff(Base, IdMixin, TimestampMixin):
 class FinancialAdjustment(Base, IdMixin, TimestampMixin):
     """人工核定售后后的退款/应收调整台账。
 
-    只记录待财务处理的调整，不回写或覆盖原始回款；同一差异只能生成一条。
+    只记录待财务处理的调整，不回写或覆盖原始回款。
+
+    ## 去重按「稳定业务身份」，不是按差异（第十批审查 ①，2026-10-13）
+
+    原来只有 `uq_financial_adjustments_source_diff`（按差异 ID 唯一）。而差异指纹
+    `build_diff_key` **把金额与期间也算进去** —— 同一笔外部退款"先核定 100、再更正
+    为 200"会生成**两条不同的差异**，于是各自生成一条待处理台账：100 + 200 = 300，
+    凭空多出一笔待处理退款。
+
+    差异记录保留历史是对的（要能回答"改过什么"），但**台账不能按差异版本各记一笔**。
+    所以再加 `source_key`：由「系统 + 店铺 + 对象类型 + 来源单」组成，**不含金额与期间**，
+    同来源同一笔调整只允许有一条未处理的；已处理过的再加才走新记录（差额）。
     """
 
     __tablename__ = "financial_adjustments"
     __table_args__ = (
         UniqueConstraint("source_diff_id", name="uq_financial_adjustments_source_diff"),
+        # 部分唯一索引：只管**未处理**的行 —— 已处理的（pending 之外）不占位，
+        # 所以"处理完又来一次更正"能正常新增一条差额台账。
+        Index(
+            "uq_financial_adjustments_source_pending",
+            "source_key",
+            unique=True,
+            postgresql_where=text("status = 'pending' AND source_key IS NOT NULL"),
+        ),
         Index("ix_financial_adjustments_order_status", "order_id", "status"),
     )
 
     source_diff_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: 稳定业务身份（见类文档）。历史行可为 NULL —— 那时没有这个口径，
+    #: 部分唯一索引把 NULL 排除在外，不影响老数据。
+    source_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
     order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     adjustment_type: Mapped[str] = mapped_column(String(32))
     amount: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
@@ -48,6 +48,7 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timebase import business_day_start
 from app.core.errors import AppError, ErrorCode
 from app.modules.erp.adapter import get_adapter
 from app.modules.integration.model import (
@@ -127,7 +128,27 @@ def _now() -> datetime:
 
 
 def _period_bounds(period_start: date, period_end: date) -> tuple[datetime, datetime]:
-    """把左闭右开的日期期间转成时间边界（UTC 零点）。"""
+    """把左闭右开的日期期间转成时间边界（**北京日历日**的 00:00 对应 UTC 瞬时）。
+
+    ## 为什么不是 UTC 零点（第十批审查 ⑥，2026-10-13）
+
+    用户选的"9 月"是**北京日历**的 9 月。原来写的是
+    `datetime.combine(period_start, time.min, tzinfo=UTC)` —— 把它当成 UTC 零点，
+    于是边界落在北京时间的**早上 8 点**，实测：
+
+      · 北京 **9-01 01:00** 的订单（UTC 8-31 17:00）→ 被漏出 9 月；
+      · 北京 **10-01 01:00** 的订单（UTC 9-30 17:00）→ 被算进 9 月。
+
+    也就是说每个月初那 8 小时的单子会归错月份。项目对这类口径早有统一规定
+    （`sample/router.py` 里同一处 C3-04 就是改这个），一律走
+    `timebase.business_day_start`："年/月/今天这些业务口径先换算到北京时间再看"。
+
+    ## 历史结果不追改
+
+    已经跑过的对账批次是按旧口径算的，**不静默改写**（在途单据与已出的报表
+    不该被悄悄换掉）。要复核历史批次请走有记录的人工流程：重跑一次对账即可
+    得到新口径结果，两次结果都留在批次记录里。
+    """
     if period_end <= period_start:
         raise AppError(
             ErrorCode.PARAM_ERROR,
@@ -135,14 +156,44 @@ def _period_bounds(period_start: date, period_end: date) -> tuple[datetime, date
             422,
         )
     return (
-        datetime.combine(period_start, time.min, tzinfo=UTC),
-        datetime.combine(period_end, time.min, tzinfo=UTC),
+        business_day_start(period_start.year, period_start.month, period_start.day),
+        business_day_start(period_end.year, period_end.month, period_end.day),
     )
 
 
 def period_label(period_start: date, period_end: date) -> str:
     """期间标签，用于差异的 period 列与 diff_key（不能只靠自增号）。"""
     return f"{period_start.isoformat()}~{period_end.isoformat()}"
+
+
+def build_adjustment_source_key(
+    *,
+    domain: str,
+    system_type: str,
+    shop_id: str | None,
+    object_type: str | None,
+    subject: str | None,
+) -> str:
+    """售后调整台账的**稳定业务身份**（第十批审查 ①，2026-10-13）。
+
+    与 `build_diff_key` 的关键区别：**不含 `values`（金额）与 `period`**。
+
+    为什么必须另做一个键：`build_diff_key` 把金额算进指纹是**差异队列**的正确
+    设计（值变了要出新的一条，否则"上次已核定"会吞掉新问题），但台账照着它去重
+    就会"每更正一次金额就多一笔全额待处理退款"。实测同一退款先核 100、再更正
+    200，生成两条 pending（100 + 200 = 300）。
+
+    所以：**差异保留版本历史，台账按业务身份唯一**。
+    """
+    payload = {
+        "domain": domain,
+        "system_type": system_type,
+        "shop_id": shop_id or "",
+        "object_type": object_type or "",
+        "subject": subject or "",
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
 def build_diff_key(
@@ -1340,17 +1391,57 @@ async def confirm_diff(
                         "请人工填写调整金额后再核定",
                         422,
                     ) from None
-            adjustment = FinancialAdjustment(
-                source_diff_id=diff.id,
-                order_id=diff.internal_id,
-                adjustment_type=financial_adjustment_type,
-                amount=raw_amount,
-                currency=str(incoming.get("currency") or "CNY"),
-                status="pending",
-                reason=(note or "人工核定售后，待财务处理"),
-                created_by=operator_id,
+            # ⚠️ 先按**稳定业务身份**找未处理的那一条（第十批审查 ①，2026-10-13）。
+            #
+            # 只按 `source_diff_id` 去重是不够的：更正金额会生成**新差异**，
+            # 于是同一笔退款被记两次（实测 100 + 200 = 300 待处理）。
+            # 口径：
+            #   · 同一来源**还没处理** → **更新那一条**的金额，并在说明里留更正痕迹
+            #     （不新增：财务只需要看到"这笔该退多少"，而不是两条各退一次）；
+            #   · 同来源**已经处理过** → 不占位（部分唯一索引只管 pending），
+            #     这里走新增 —— 那是真正的差额，需要财务单独处理。
+            source_key = build_adjustment_source_key(
+                domain=diff.domain,
+                system_type=diff.system_type,
+                shop_id=diff.shop_id,
+                object_type=diff.object_type,
+                # ⚠️ subject 用**差异行上的稳定字段**，别去解析 diff_key ——
+                # 那是 sha1 哈希，切不出原文（我第一版写了 .split("|")，是错的）。
+                # external_id 是外部单据号，不会因为金额更正而变。
+                subject=diff.external_id,
             )
-            session.add(adjustment)
+            pending_same_source = (
+                await session.execute(
+                    select(FinancialAdjustment).where(
+                        FinancialAdjustment.source_key == source_key,
+                        FinancialAdjustment.status == "pending",
+                    ).limit(1)
+                )
+            ).scalars().first()
+            if pending_same_source is not None:
+                previous_amount = pending_same_source.amount
+                pending_same_source.amount = raw_amount
+                pending_same_source.source_diff_id = diff.id
+                pending_same_source.adjustment_type = financial_adjustment_type
+                pending_same_source.reason = (
+                    f"{note or '人工核定售后，待财务处理'}"
+                    f"（同一来源的更正：{previous_amount} → {raw_amount}，"
+                    "未重复计入待处理金额）"
+                )
+                adjustment = pending_same_source
+            else:
+                adjustment = FinancialAdjustment(
+                    source_diff_id=diff.id,
+                    source_key=source_key,
+                    order_id=diff.internal_id,
+                    adjustment_type=financial_adjustment_type,
+                    amount=raw_amount,
+                    currency=str(incoming.get("currency") or "CNY"),
+                    status="pending",
+                    reason=(note or "人工核定售后，待财务处理"),
+                    created_by=operator_id,
+                )
+                session.add(adjustment)
             await session.flush()
         else:
             adjustment = existing

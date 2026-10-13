@@ -164,9 +164,19 @@ async def preview_receivables(
     现在预览与落库**都走 `svc.split_amounts`**，用户看到什么就存什么。
     不合法（分出不大于 0 的期）时同样返回 422，让前端在提交前就能说清原因。
     """
+    # ⚠️ **数据范围必须先查**（第十批审查 ④，2026-10-13）。
+    #
+    # 这个预览接口是第九批加的，当时只调了 `get_order_or_404`（只判"存不存在"），
+    # 漏了范围校验 —— 实测：只有 `payment:manage`、数据范围只有自己的账号，
+    # 预览别人的订单能拿到总额 9876.54 元与各期金额；同一个账号调**正式生成**
+    # 却被正确拒绝（那条路有 `assert_order_visible`）。
+    #
+    # 预览也是"把别人订单的金额读出来"，性质和详情一样，必须同一道闸门。
+    await svc.assert_order_visible(session, user, order_id)
     # 取订单用本文件既有的入口（不是自己拼 `get_visible_order`；
     # 我第一版写了个不存在的 `_f` 与错误的取单方式，pyflakes 当场报出来了）
     order = await get_order_or_404(session, order_id)
+    await svc.assert_order_visible(session, user, order_id)
     ratios = [Decimal(str(r)) for r in payload.ratios]
     amounts = svc.split_amounts(order.total_amount, ratios)
     return ok(

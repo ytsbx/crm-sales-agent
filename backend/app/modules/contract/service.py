@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, timedelta
 
 import logging
 
@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
-from app.core.timebase import today_business
+from app.core.timebase import business_day_end, today_business
 from app.core.response import paginate
 from app.modules.contract.model import (
     DOC_STATUS_LABEL,
@@ -1464,7 +1464,13 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
                 # 截止时间取**协议到期日**，不是"此刻"。
                 # 用创建时刻会让这条待办一出生就带「已逾期」（due < now 立刻成立），
                 # 负责人看到的是"刚提醒我就已经迟了"，像系统出错。
-                due_at=datetime.combine(doc.expiry_date, time(23, 59), tzinfo=UTC),
+                #
+                # ⚠️ 「到期日 23:59」是**北京时间**的 23:59，必须先按业务时区构造
+                # 再转 UTC（第十批审查 ⑧，2026-10-13）。
+                # 原来写的是 `tzinfo=UTC` —— 把北京时间当成了 UTC，实际上早了 8 小时，
+                # 任务截止显示成**次日 07:59**（协议 10-13 到期 → 10-14 07:59），
+                # 相当于白送半天宽限，还跨了一天。
+                due_at=business_day_end(doc.expiry_date),
                 source="system",
                 source_rule_id=None,
                 source_business_type="contract",

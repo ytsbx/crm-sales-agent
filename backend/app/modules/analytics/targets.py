@@ -335,13 +335,22 @@ async def targets_with_actuals(
         )
     )
     # ---- 发货（展示口径，不进差额）：按**实际发货批次 × 行实发数量**分摊（§4.1.4）----
+    # ⚠️ 发货金额**按批取、不在 SQL 里先加**（第十批审查 ⑨，2026-10-13）。
+    #
+    # 原来这里是 `func.sum(批内数量 × 单价)` 再按月分组：等于"**先加后舍入**"。
+    # 而下钻明细是按批分组、每批 `round(..., 2)` —— "**先舍入后加**"。
+    # 两者在单价带半分时必然对不上，实测（订单 0.05 元、两件各 0.025、分两批）：
+    # 汇总 0.05，明细每批 0.03，下钻合计 0.06，差额一分。
+    #
+    # 口径统一到项目既有的 `money.line_amount`（逐行先到分，再相加），
+    # 所以汇总改为"取每批金额 → 逐批舍入 → 按月相加"，与明细**同一来源**，
+    # 明细之和必然等于汇总。
     shipped_stmt = (
         select(
             func.extract("month", OrderShipmentBatch.actual_ship_date),
             sales_owner,
-            func.coalesce(
-                func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
-            ),
+            OrderShipmentBatch.id,
+            func.coalesce(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price, 0),
         )
         .select_from(OrderShipmentBatch)
         .join(
@@ -357,7 +366,11 @@ async def targets_with_actuals(
             SalesOrder.status != "cancelled",
         )
         .group_by(
-            func.extract("month", OrderShipmentBatch.actual_ship_date), sales_owner
+            func.extract("month", OrderShipmentBatch.actual_ship_date),
+            sales_owner,
+            OrderShipmentBatch.id,
+            OrderShipmentBatchItem.shipped_qty,
+            SalesOrderItem.unit_price,
         )
     )
     if owner_ids is not None:
@@ -378,9 +391,11 @@ async def targets_with_actuals(
     )
 
     shipped_actual: dict[tuple[str, int | None], float] = {}
-    for m, owner_id, total in (await session.execute(shipped_stmt)).all():
+    for m, owner_id, _batch_id, batch_amount in (await session.execute(shipped_stmt)).all():
         key = (f"{year}-{int(m):02d}", owner_id)
-        shipped_actual[key] = shipped_actual.get(key, 0.0) + float(total or 0)
+        # 逐批舍入到分（与 `_row` 的 round 同口径），再加到月度合计。
+        # 这样"明细之和 = 汇总"，不会出现"下钻合计比汇总多一分"。
+        shipped_actual[key] = shipped_actual.get(key, 0.0) + round(float(batch_amount or 0), 2)
 
     # 复购（老客净额）：口径定义在 target_bases 里那一处，这里只按 (月份, 人) 取数。
     # 以前 repeat_customer_target 只存不算——目标页看不到它，等于设了没人管。

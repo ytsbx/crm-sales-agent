@@ -2,7 +2,7 @@
 
 import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 
-import { useAuthStore } from '../store/auth'
+import { currentAuthEpoch, useAuthStore } from '../store/auth'
 import type { Envelope } from '../types'
 
 export class ApiError extends Error {
@@ -75,11 +75,41 @@ function readableMessage(raw: unknown, code: number): string {
  */
 const GENERIC_VALIDATION_MESSAGE = '参数校验失败'
 
+/**
+ * 这次 401 是否属于**当前**登录态？（第十批审查 ⑩）
+ *
+ * `sentAt` 是请求发出时代次（拦截器写在 config 上），`now` 是此刻的代次。
+ * 不相等 = 这个请求是**上一次登录**发出去的，它的 401 不该清掉现在的登录态
+ * —— 否则"账号 A 的慢请求迟到 → 把刚登录的账号 B 踢下线"。
+ *
+ * 抽成独立函数是为了能单测（`ops/auth_epoch_401.test.mjs`）：
+ * 拦截器里那段要跑真 axios，测不动；判据本身是纯逻辑。
+ *
+ * `sentAt === undefined`（老代码没记、或非 axios 来源）按"属于当前"处理 ——
+ * 与修之前的行为一致，宁可多清一次也不要漏清（漏清会让用户卡在一个
+ * 永远 401 的界面上，那更糟）。
+ */
+export function belongsToCurrentLogin(sentAt: number | undefined, now: number): boolean {
+  return sentAt === undefined || sentAt === now
+}
+
 http.interceptors.request.use((config) => {
   const token = useAuthStore.getState().token
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // 记下"这次请求是拿谁的登录态发出去的"（第十批审查 ⑩，2026-10-13）。
+  //
+  // 为什么必须记：401 处理原来是无条件清登录态的。于是
+  //   账号 A 发请求 → A 退出 → B 登录 → A 那个请求这时才回 401
+  // 会把**刚登录的 B 踢下线**，还连带清掉 B 的查询缓存
+  // （弱网/慢接口下很容易撞上，用户感受是"刚登录就被弹出去"）。
+  //
+  // 判据用**代次**而不是 token 字符串：`setAuth`/`clear` 都会给代次加一
+  // （见 `store/auth.ts` 的说明），所以"代次变了"精确等于"登录态换过了"，
+  // 比比较 token 更不容易被"同一 token 重新登录"之类的边界绕过去。
+  // 挂在 config 上随请求走，宿主不认这个字段、不影响发包。
+  ;(config as { authEpochAtSend?: number }).authEpochAtSend = currentAuthEpoch()
   return config
 })
 
@@ -101,10 +131,17 @@ http.interceptors.response.use(
         ? `${baseMessage}：${invalidFields.join('、')}`
         : baseMessage
     if (status === 401 || code === 40101 || code === 40102) {
-      useAuthStore.getState().clear()
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+      // ⚠️ 只有"这次失败属于**当前**登录态"时才清（第十批审查 ⑩）。
+      // 迟到的 401（旧账号发出的请求）不能把新登录的账号踢下线。
+      const sentAt = (error.config as { authEpochAtSend?: number } | undefined)?.authEpochAtSend
+      if (belongsToCurrentLogin(sentAt, currentAuthEpoch())) {
+        useAuthStore.getState().clear()
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login'
+        }
       }
+      // 不属于当前登录态：只把这次的错误抛给调用方，不动登录态、不跳转。
+      // （调用方本来就会把这条请求的错误显示/忽略掉，与"当前用户被踢出"是两件事。）
     }
     return Promise.reject(new ApiError(message, code))
   },

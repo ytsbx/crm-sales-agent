@@ -272,38 +272,56 @@ async def sync_payment_milestones(
             note="按已确认收款的最早到账日重算",
         )
 
-    # 收齐才标「收款」：应收总额 vs 已确认总额（都在库里算，不用前端传）
-    totals = (
+    # 收齐才标「收款」：**逐期**核对（都在库里算，不用前端传）。
+    #
+    # ## 为什么不能只比总额（第十批审查 ②，2026-10-13）
+    #
+    # 原来写的是 `received >= planned`（应收总额 vs 已确认总额）。实测：
+    # 两期各应收 100 元，把真实回款 200 元**全部挂到第一期**并确认 ——
+    # 总额相等，于是「收款」节点判定完成，可第二期一分钱没收到。
+    # 节点是"这批货的钱收齐了"的业务事实，一期多收**不能**替另一期结清。
+    #
+    # 口径（与报告一致）：逐期算"这一期收够了没有"，
+    # 多收的钱走明确的分配/核销流程转到别期，**不在这里自动抵消**。
+    per_plan = (
         await session.execute(
             select(
-                func.coalesce(func.sum(ReceivablePlan.amount), 0),
+                ReceivablePlan.id,
+                ReceivablePlan.amount,
                 func.coalesce(
-                    func.sum(
-                        select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
-                        .where(
-                            PaymentRecord.receivable_plan_id == ReceivablePlan.id,
-                            PaymentRecord.status == "confirmed",
-                        )
-                        .scalar_subquery()
-                    ),
+                    select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
+                    .where(
+                        PaymentRecord.receivable_plan_id == ReceivablePlan.id,
+                        PaymentRecord.status == "confirmed",
+                    )
+                    .scalar_subquery(),
                     0,
                 ),
             ).where(ReceivablePlan.order_id == order_id)
         )
-    ).one()
-    planned, received = (Decimal(str(x or 0)) for x in totals)
+    ).all()
+    planned = sum((Decimal(str(row[1] or 0)) for row in per_plan), Decimal(0))
+    received = sum((Decimal(str(row[2] or 0)) for row in per_plan), Decimal(0))
+    unsettled = [
+        (row[0], Decimal(str(row[1] or 0)), Decimal(str(row[2] or 0)))
+        for row in per_plan
+        if Decimal(str(row[2] or 0)) < Decimal(str(row[1] or 0))
+    ]
     payment = by_node.get("payment")
     if payment is not None:
-        settled = bool(count) and planned > 0 and received >= planned
-        await _apply_derived_fact(
-            session,
-            payment,
-            latest if settled else None,
-            note=(
-                f"应收合计 {planned}、已确认收款 {received}"
-                + ("" if settled else "（未收齐，撤销原来的完成标识）")
-            ),
-        )
+        settled = bool(count) and planned > 0 and not unsettled
+        note = f"应收合计 {planned}、已确认收款 {received}"
+        if settled:
+            note += "（每一期都已结清）"
+        elif unsettled:
+            short = "、".join(
+                f"第{index + 1}期差 {plan_amount - paid}"
+                for index, (_plan_id, plan_amount, paid) in enumerate(unsettled)
+            )
+            note += f"（还有 {len(unsettled)} 期未结清：{short}）"
+        else:
+            note += "（还没有已确认收款，撤销原来的完成标识）"
+        await _apply_derived_fact(session, payment, latest if settled else None, note=note)
     await session.flush()
 
 

@@ -203,7 +203,17 @@ async def sandbox(
     fired: int | None = None
     for rule in rules:
         matched, detail = rules_engine.evaluate_conditions(rule.conditions or [], ctx)
-        if matched and fired is None:
+        # ⚠️ **只有启用且已发布的规则才算"会被执行"**（第十批审查 ⑪，2026-10-13）。
+        #
+        # 实际提交走的是 `rules_engine.load_active_rules`：
+        # `enabled.is_(True) AND published_version_no > 0`。
+        # 这里原来只看"条件命中"，于是：一条**已停用**的高优先免审规则会让沙盒
+        # 显示"免审，无需人工审批"，而实际提交却进主管审批 —— 沙盒把人骗了。
+        #
+        # 停用/未发布的规则继续**展示条件试算**（沙盒的本来用途，含未发布的启用草稿），
+        # 只是不能当"已执行的规则"。
+        executable = bool(rule.enabled) and int(rule.published_version_no or 0) > 0
+        if matched and fired is None and executable:
             fired = rule.id
         results.append(
             {
@@ -214,19 +224,47 @@ async def sandbox(
                 "enabled": rule.enabled,
                 "published_version_no": rule.published_version_no,
                 "matched": matched,
+                "executable": executable,
                 "fired": fired == rule.id,
                 "effect": rules_engine.effect_summary(rule.kind, rule.action) if matched else None,
                 "conditions_detail": rules_engine._cond_detail_pretty(detail),
             }
         )
+    # ⚠️ **按权限脱敏**（第十批审查 ③，2026-10-13）。
+    #
+    # 这个返回里有 `gross_margin` / `min_item_margin`（由成本推出）与
+    # `total_amount`（售价）。只给 `quote:view`、没有 `price:manage` 的人
+    # 拿到这两个就能反推成本：实测售价 100、毛利率 80% → 成本 20。
+    # `conditions_detail` 里的 `actual` 同样是毛利率的实际值，一起擦。
+    #
+    # 报告点名的四类泄漏都要处理，只删一个字段没用；这里覆盖 ①②，
+    # ③（成本派生底价）在报价侧由 `quote.service.strip_comparison_cost` 管，
+    # ④（文字原因）见下面 `strip_cost_reason`。
+    # 用项目既有的判权限 API（），别自己去翻属性名
+    can_see_cost = user.has("price:manage")
+    safe_ctx = rules_engine.strip_cost_context(ctx, can_see_cost=can_see_cost)
+    safe_results = results
+    if not can_see_cost:
+        safe_results = [
+            {
+                **r,
+                "conditions_detail": [
+                    ({**row, "actual": None, "actual_label": "无权限查看"}
+                     if row.get("field") in rules_engine.COST_SENSITIVE_SET else row)
+                    for row in (r.get("conditions_detail") or [])
+                ],
+            }
+            for r in results
+        ]
     return ok(
         {
-            "context": ctx,
+            "context": safe_ctx,
             "context_fields": rules_engine.CONTEXT_FIELDS,
-            "rules": results,
+            "cost_fields_hidden": not can_see_cost,
+            "rules": safe_results,
             "fired_rule_id": fired,
             "fired_effect": next(
-                (r["effect"] for r in results if r["fired"]), None
+                (r["effect"] for r in safe_results if r["fired"]), None
             ),
         }
     )

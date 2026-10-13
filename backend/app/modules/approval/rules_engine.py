@@ -38,10 +38,16 @@ from app.modules.order.model import SalesOrder
 CONTEXT_FIELDS = [
     {"field": "total_amount", "label": "报价总金额", "value_type": "number", "unit": "元",
      "ops": ["gte", "lte"], "hint": "人民币口径，外币按快照汇率折算"},
+    #: ⚠️ `cost_sensitive=True` = **由成本推出的字段**（第十批审查 ③，2026-10-13）。
+    #: 没有 `price:manage` 的人拿到它就能反推成本：
+    #: 售价 100、毛利率 80% → 成本 20。所有读出口（沙盒、审批详情）必须按权限
+    #: 置空，见 `strip_cost_context`。
     {"field": "gross_margin", "label": "综合毛利率", "value_type": "number", "unit": "%",
-     "ops": ["gte", "lte"], "hint": "整单（含运费）的加权毛利率"},
+     "ops": ["gte", "lte"], "cost_sensitive": True,
+     "hint": "整单（含运费）的加权毛利率"},
     {"field": "min_item_margin", "label": "最低明细毛利率", "value_type": "number", "unit": "%",
-     "ops": ["gte", "lte"], "hint": "所有明细里最差一行的毛利率"},
+     "ops": ["gte", "lte"], "cost_sensitive": True,
+     "hint": "所有明细里最差一行的毛利率"},
     {"field": "customer_level", "label": "客户等级", "value_type": "string", "unit": "",
      "ops": ["in", "eq"], "hint": "客户档案上的等级（A/B/C/D）"},
     {"field": "customer_has_overdue", "label": "客户有逾期应收", "value_type": "bool", "unit": "",
@@ -540,6 +546,71 @@ async def build_context(
         # **宿主机时区**走，同一套规则在 UTC 机器和北京机器上会显示不同的"今天"。
         "_today": today_business().isoformat(),
     }
+
+
+#: 由成本推出的上下文键（从 `CONTEXT_FIELDS` 的 `cost_sensitive` 标记派生，
+#: 保证"注册表里标了就会脱敏"，不会出现"加了新字段忘了加进脱敏名单"）。
+COST_SENSITIVE_FIELDS: tuple[str, ...] = tuple(
+    f["field"] for f in CONTEXT_FIELDS if f.get("cost_sensitive")
+)
+
+#: 规则条件里涉及这些字段时，命中详情里的**实际值**也要一并隐去
+#: （它同样是"由成本推出的数"，留着等于没脱敏）。
+COST_SENSITIVE_SET = frozenset(COST_SENSITIVE_FIELDS)
+
+#: 脱敏后这些字段显示成什么。**置空而不是删键**：
+#: 规则求值与前端渲染都按固定键集工作，删键会让前端显示成"字段不存在"，
+#: 看起来像规则配置坏了；`None` 的既有语义就是"无数据/未命中"。
+COST_HIDDEN = None
+
+
+def strip_cost_context(ctx: dict, *, can_see_cost: bool) -> dict:
+    """按权限抹掉上下文里**由成本推出**的字段（返回副本，不改原对象）。
+
+    ## 为什么必须有（第十批审查 ③）
+
+    实测：只有 `quote:view`、没有 `price:manage` 的账号调规则沙盒，能拿到
+    `gross_margin = 80.0`；他手上又有售价（`total_amount` 就在同一个返回里），
+    于是成本 = 售价 ×(1−毛利率) 直接算出来。审批详情那条出口同理
+    （返回 `profit_rate` 与含"利润率 80.00%"的文字原因）。
+
+    报告点名的四类泄漏，逐条核过实际出口（2026-10-13）：
+      ① 结构化字段（`gross_margin` / `min_item_margin`）—— **确认泄漏**，这里擦掉；
+      ② 规则条件回显（`conditions_detail` 里的 `actual`）—— **确认泄漏**，这里擦掉；
+      ③ 成本派生底价 —— 沙盒**不返回**底价；报价侧由
+         `quote.service.strip_comparison_cost` / `serialize_item(can_see_cost=False)` 管；
+      ④ 文字原因 —— 实测审批 `summary` 与 `approval_reason` 里只有**折扣**与
+         "低于最低保护价"（保护价本身是允许看的授权门槛），**没有**利润率百分数，
+         所以这一条没有需要改的出口（不是我漏了）。
+         （我第一版注释里写了 `strip_cost_reason`，那是我编的函数名，已删。）
+
+    ## 为什么返回副本
+
+    原始上下文仍是审批依据（规则求值已经用它跑完了），
+    只把**给这个人看的那份**擦掉；审计与后续审批拿到的还是原值。
+    """
+    if can_see_cost:
+        return ctx
+    stripped = dict(ctx)
+    for name in COST_SENSITIVE_FIELDS:
+        if name in stripped:
+            stripped[name] = COST_HIDDEN
+    # 条件命中详情里的实际值：命中成本敏感字段时把 actual 抹掉（保留规则与阈值，
+    # 否则沙盒"哪条规则命中"这个用途就废了）。
+    for key in list(stripped):
+        if not key.endswith("_detail"):
+            continue
+        rows = stripped.get(key)
+        if not isinstance(rows, list):
+            continue
+        cleaned = []
+        for row in rows:
+            if isinstance(row, dict) and row.get("field") in COST_SENSITIVE_SET:
+                row = {**row, "actual": None, "actual_label": "无权限查看"}
+            cleaned.append(row)
+        stripped[key] = cleaned
+    stripped["_cost_hidden"] = True
+    return stripped
 
 
 async def load_active_rules(session: AsyncSession) -> list[tuple[ApprovalRule, dict]]:
