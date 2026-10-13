@@ -1889,7 +1889,7 @@ export default function QuoteDetailPage() {
                 一个来源（手写的星号 CSS 选不中、颜色也不随主题走 —— 这是
                 `FormLabel` 存在的理由）。这里原来手写了一个红 `*`，
                 `ops/check_form_required_marks.py` 顺手扫出来的。 */}
-            <FormLabel required style={{ marginBottom: 4 }}>
+            <FormLabel required className="send-field-label" style={{ marginBottom: 4 }}>
               发给了谁
             </FormLabel>
             <Select

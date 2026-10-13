@@ -531,8 +531,17 @@ async function pickInFieldDropdown(client, labelPart, optionText) {
   const open = `(() => {
     const box = Array.from(document.querySelectorAll('.semi-modal-content div'))
       .find((d) => {
+        // ⚠️ 标签有两种写法，都要认（2026-10-13）：
+        //   · 老写法：手写的 div，class 是 send-field-label；
+        //   · 新写法：共用件 FormLabel，class 透传成同一个 send-field-label。
+        // 只认第一种时，把标签换成共用件就会让这条断言红 —— 而红的表象是
+        // "收件人下拉没选到「其他（手动填写）」"，看着像弹窗坏了，其实是判据太窄。
+        // （这段在模板字符串里，注释里千万别写反引号 —— 会把模板提前闭合，
+        //   我第一版就是这么写的，node --check 直接报 Unexpected identifier。）
         const lb = d.querySelector(':scope > .send-field-label');
-        return lb && (lb.innerText || '').includes(${JSON.stringify(labelPart)});
+        if (!lb) return false;
+        // 直接文本要含（子元素里的星号/hint 不算干扰）
+        return (lb.innerText || '').includes(${JSON.stringify(labelPart)});
       });
     if (!box) return 'no-field';
     const sel = box.querySelector('.semi-select');

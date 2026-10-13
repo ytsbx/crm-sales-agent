@@ -19,6 +19,7 @@ export default function FormLabel({
   conditionallyRequired,
   hint,
   style,
+  className,
 }: {
   children: ReactNode
   /** 必填：在标签后跟一个红色星号 */
@@ -52,9 +53,15 @@ export default function FormLabel({
   hint?: string
   /** 个别地方标签的字号/颜色本来就不同（如设置页用小号次要色），从这里覆盖 */
   style?: CSSProperties
+  /**
+   * 沿用调用方的类名。给"本来就有自己的标签类"的地方用
+   * （如报价发送弹窗的 `send-field-label`）—— 换成 FormLabel 时不丢那套样式，
+   * 也不至于让既有测试的 DOM 判据失效。
+   */
+  className?: string
 }) {
   return (
-    <div style={{ marginBottom: 4, ...style }}>
+    <div className={className} style={{ marginBottom: 4, ...style }}>
       {children}
       {required && (
         // aria-hidden：读屏器念一声「星号」对使用者没有帮助，必填最终由
