@@ -258,6 +258,8 @@ FIELD_LABELS: dict[str, str] = {
     "unit_snapshot": "单位快照",
     "master_version_no": "引用的主数据版本",
     "cost_snapshot": "成本快照",
+    "cost_complete_snapshot": "成本完整性快照",
+    "cost_present_snapshot": "成本记录存在快照",
     "package_cost_snapshot": "包装成本快照",
     "logistics_cost_snapshot": "运费快照",
     "standard_price_snapshot": "标准价快照",

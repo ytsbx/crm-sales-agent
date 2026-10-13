@@ -1,0 +1,225 @@
+=== 后端全量测试 ===
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 38%]
+........................................................................ [ 51%]
+........................................................................ [ 64%]
+........................................................................ [ 77%]
+........................................................................ [ 90%]
+........................................................                 [100%]
+560 passed in 3.91s
+
+=== PostgreSQL 迁移、真实入口交错、反向验证 ===
+CREATE DATABASE
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> aaab3b453150, init schema: org, auth, customer
+INFO  [alembic.runtime.migration] Running upgrade aaab3b453150 -> 921b187030c3, product and sku
+INFO  [alembic.runtime.migration] Running upgrade 921b187030c3 -> 013b6a76200a, lead opportunity followup task
+INFO  [alembic.runtime.migration] Running upgrade 013b6a76200a -> cc71067e3f6c, pricing: cost price rule permission logistics
+INFO  [alembic.runtime.migration] Running upgrade cc71067e3f6c -> ec20812a556d, quote approval pdf
+INFO  [alembic.runtime.migration] Running upgrade ec20812a556d -> 25e2fd95da23, order receivable payment integration
+INFO  [alembic.runtime.migration] Running upgrade 25e2fd95da23 -> 5a08335c196c, notifications
+INFO  [alembic.runtime.migration] Running upgrade 5a08335c196c -> ac56888d214f, files and rules
+INFO  [alembic.runtime.migration] Running upgrade ac56888d214f -> b740afe4d078, agent
+INFO  [alembic.runtime.migration] Running upgrade b740afe4d078 -> a4034e4ebed1, exchange rate and export fields
+INFO  [alembic.runtime.migration] Running upgrade a4034e4ebed1 -> c8f1a2d4e7b9, logistics: quote trial calculation
+INFO  [alembic.runtime.migration] Running upgrade c8f1a2d4e7b9 -> d4a7b1c9e2f3, sample: request / item / shipment
+INFO  [alembic.runtime.migration] Running upgrade d4a7b1c9e2f3 -> e9b3c5d7f1a2, customer tags and merge logs
+INFO  [alembic.runtime.migration] Running upgrade e9b3c5d7f1a2 -> f2c8d4e6a1b3, agent_executions: record caller identity snapshot
+INFO  [alembic.runtime.migration] Running upgrade f2c8d4e6a1b3 -> b7d1e4f8c2a9, wecom integration tables
+INFO  [alembic.runtime.migration] Running upgrade b7d1e4f8c2a9 -> 4a9c2e6b8d1f, fix JSON columns that were left as json instead of jsonb
+INFO  [alembic.runtime.migration] Running upgrade 4a9c2e6b8d1f -> 6e2b8d4f1c37, notifications: record delivery channel and wecom push result
+INFO  [alembic.runtime.migration] Running upgrade 6e2b8d4f1c37 -> 8f3c1a7e5b92, numbering rules and atomic sequences
+INFO  [alembic.runtime.migration] Running upgrade 8f3c1a7e5b92 -> 2d6f9b4c8e15, dictionary items for controlled vocabularies
+INFO  [alembic.runtime.migration] Running upgrade 2d6f9b4c8e15 -> a5c8e2f7b9d1, approval rules engine (设计稿 _6 的国内业务版)
+INFO  [alembic.runtime.migration] Running upgrade a5c8e2f7b9d1 -> b3e7a9c1d4f6, quote_versions 加 (quote_id, version_no) 唯一约束
+INFO  [alembic.runtime.migration] Running upgrade b3e7a9c1d4f6 -> d7f2b9c4e6a8, 产品报价中心：快照与历史价标识
+INFO  [alembic.runtime.migration] Running upgrade d7f2b9c4e6a8 -> b8f4a6d2c0e9, 定制询价库（领导模块③：产品知识库 · 定制询价类）
+INFO  [alembic.runtime.migration] Running upgrade b8f4a6d2c0e9 -> c3e7f1a9b5d2, 目标管理（领导模块⑧）：sales_targets 表
+INFO  [alembic.runtime.migration] Running upgrade c3e7f1a9b5d2 -> d6a2c4f8e1b3, 跟单里程碑（领导模块⑤）：order_milestones 表
+INFO  [alembic.runtime.migration] Running upgrade d6a2c4f8e1b3 -> e1c9b7d3a5f4, 跟单里程碑加固：并发唯一约束 + 逾期提醒凭证 + 初始化留痕
+INFO  [alembic.runtime.migration] Running upgrade e1c9b7d3a5f4 -> b3e7f1a9c5d2, 冷落时钟口径 + 导出闸门（CRM 完整实现方案 §2.3/§11.2/场景19）
+INFO  [alembic.runtime.migration] Running upgrade b3e7f1a9c5d2 -> c4e8a2f6b9d1, 发货批次模型（CRM 完整实现方案 §3.5 / 验收场景13）
+INFO  [alembic.runtime.migration] Running upgrade c4e8a2f6b9d1 -> d6f0b3e8a1c4, 业务事件表（CRM 完整实现方案 §四 / 验收场景04）
+INFO  [alembic.runtime.migration] Running upgrade d6f0b3e8a1c4 -> e9a4c6f2b7d3, 合同模板与文档台账（CRM 完整实现方案 §3.6 / 场景14）。
+INFO  [alembic.runtime.migration] Running upgrade e9a4c6f2b7d3 -> f1b3d5e7a9c2, 案例库（CRM 完整实现方案 §3.7 / 场景15）。
+INFO  [alembic.runtime.migration] Running upgrade f1b3d5e7a9c2 -> a2c4e6f8b1d3, 定制询价修订链（CRM 完整实现方案 §3.3 / §四"需求及修订"）。
+INFO  [alembic.runtime.migration] Running upgrade a2c4e6f8b1d3 -> b5d7f9a1c3e6, 新品洞察（CRM 完整实现方案 §3.3 第三类）。
+INFO  [alembic.runtime.migration] Running upgrade b5d7f9a1c3e6 -> c6a1e8d4f2b7, 通知投递失败可重试（CRM 完整实现方案 §六/场景04 通知可靠性）
+INFO  [alembic.runtime.migration] Running upgrade c6a1e8d4f2b7 -> d7b2f5a8c1e4, 定制无 SKU 通路：需求编号 + 报价/打样明细可为定制项（CRM 完整实现方案 场景09）
+INFO  [alembic.runtime.migration] Running upgrade d7b2f5a8c1e4 -> e8c3a6b9d2f5, 订单签单负责人：业绩归属与当前负责人分离（文档 §3.8 / :61）
+INFO  [alembic.runtime.migration] Running upgrade e8c3a6b9d2f5 -> c9e2f4a8b1d6, 对外单据模板与生成文件（文档 §四「对外模板及生成文件」/ §3.5 / 场景12）
+INFO  [alembic.runtime.migration] Running upgrade c9e2f4a8b1d6 -> d1a7c3e9b5f2, 通知分级与日报投递（文档 §11.4 验收 24）
+INFO  [alembic.runtime.migration] Running upgrade d1a7c3e9b5f2 -> e3b8d1f6a2c7, 打样生产侧资料与客户确认（文档 §3.5）
+INFO  [alembic.runtime.migration] Running upgrade e3b8d1f6a2c7 -> f5c1a9d3e7b4, 撞单裁定单（文档 §11.4 验收 20：历史客户导入与现有客户撞单）
+INFO  [alembic.runtime.migration] Running upgrade f5c1a9d3e7b4 -> a7d3e9c1f5b8, 目标管理补两维：团队与老客户增长（文档 §六 :121 / 场景17）
+INFO  [alembic.runtime.migration] Running upgrade a7d3e9c1f5b8 -> b2e6f8a4c1d9, OA 实例关联（文档 §四 :137 / 场景11）
+INFO  [alembic.runtime.migration] Running upgrade b2e6f8a4c1d9 -> c4f8a2e6d1b7, OA 实例的唯一约束从"业务键"改到"幂等键"（文档 :43 vs §11.3 :152）
+INFO  [alembic.runtime.migration] Running upgrade c4f8a2e6d1b7 -> d7a1c5e9b3f4, 定制询价的"对接报价员"（文档 §11.3 :152 / 场景11）
+INFO  [alembic.runtime.migration] Running upgrade d7a1c5e9b3f4 -> e1f4b8d2c6a9, 集成日志区分「类型」与「厂商名」（P2 修复）
+INFO  [alembic.runtime.migration] Running upgrade e1f4b8d2c6a9 -> a7d2e4f6b8c0, 操作耗时埋点（文档 §六「评价操作是否省时」/ 场景18）
+INFO  [alembic.runtime.migration] Running upgrade a7d2e4f6b8c0 -> b8e3f5a7c9d1, 里程碑补"责任人 / 来源证据 / 逾期原因"，发货批次补"逾期原因"
+INFO  [alembic.runtime.migration] Running upgrade b8e3f5a7c9d1 -> c9f4a6b8d0e2, 交期变更单：展示受影响节点及批次 + 责任人确认 + 保留前后版本（方案 :105）
+INFO  [alembic.runtime.migration] Running upgrade c9f4a6b8d0e2 -> d0a5b7c9e1f3, 发货批次补"逾期提醒过"的凭证（方案 :105 / 场景13）
+INFO  [alembic.runtime.migration] Running upgrade d0a5b7c9e1f3 -> e1a3c5b7d9f2, 订单明细支持无 SKU 的定制件（场景09 主路径的最后一环）
+INFO  [alembic.runtime.migration] Running upgrade e1a3c5b7d9f2 -> f2b4d6c8e0a3, 同一订单只允许一张待确认的交期变更单（部分唯一索引）
+INFO  [alembic.runtime.migration] Running upgrade f2b4d6c8e0a3 -> a3c5e7b9d1f4, 交期变更单的作废字段 + 钉钉的"本次尝试时间"
+INFO  [alembic.runtime.migration] Running upgrade a3c5e7b9d1f4 -> b7e4c1a9f2d6, 数据迁移：给销售主管角色补 order:assign（交期变更代确认）
+INFO  [alembic.runtime.migration] Running upgrade b7e4c1a9f2d6 -> c1f6a8d3e5b7, 把 4a9c2e6b8d1f 之后新建的 JSON 列也改回 JSONB
+INFO  [alembic.runtime.migration] Running upgrade c1f6a8d3e5b7 -> d2a7b9c4e6f8, 定制询价：加「已被新版取代」标记 + 同链条版本号唯一
+INFO  [alembic.runtime.migration] Running upgrade d2a7b9c4e6f8 -> e5c1a7b3d9f4, 数据迁移：回填种子用户的部门（老库漂移）
+INFO  [alembic.runtime.migration] Running upgrade e5c1a7b3d9f4 -> f7d2b8c4e1a6, 加宽 quote_items.price_source 到 32
+INFO  [alembic.runtime.migration] Running upgrade f7d2b8c4e1a6 -> a9e1c4b7d2f6, 客户过程的打样来源及持久主管通知待办。
+INFO  [alembic.runtime.migration] Running upgrade a9e1c4b7d2f6 -> b3f62d8e91a4, 人工跟进计划、免填原因和请求去重。
+INFO  [alembic.runtime.migration] Running upgrade b3f62d8e91a4 -> c7a1e5d9b3f2, 打样来源版本、采购数量快照及创建重试去重。
+INFO  [alembic.runtime.migration] Running upgrade c7a1e5d9b3f2 -> d8b2f6a0c4e3, 独立订单草稿与正式订单明细来源。
+INFO  [alembic.runtime.migration] Running upgrade d8b2f6a0c4e3 -> e9c3a7b1d5f4, 交期类型、运输天数、确认的倒排参数及节点跳过记录。
+INFO  [alembic.runtime.migration] Running upgrade e9c3a7b1d5f4 -> f4d8b2e6a1c9, 打样费用改为可空：空着 = 未填，与「免费 0 元」区分开。
+INFO  [alembic.runtime.migration] Running upgrade f4d8b2e6a1c9 -> a2c6e8f4b1d7, 材质 / 工艺 / 图纸版本从打样单头挪到明细行。
+INFO  [alembic.runtime.migration] Running upgrade a2c6e8f4b1d7 -> b5d1f7c3e9a2, 合同模板加 (类型, 名称, 版本) 唯一约束。
+INFO  [alembic.runtime.migration] Running upgrade b5d1f7c3e9a2 -> c7e3a9f5b2d8, 合同文档加生成请求的幂等键（防网络重试生成重复草稿）。
+INFO  [alembic.runtime.migration] Running upgrade c7e3a9f5b2d8 -> d1f5b9c3e7a4, 合同钉死报价版本 + 生成稿落盘（外部审查第二批 阶段 B）。
+INFO  [alembic.runtime.migration] Running upgrade d1f5b9c3e7a4 -> e2a6c0d4f8b3, 任务加来源业务对象 + 合同加协议生效日（外部审查第二批 阶段 C）。
+INFO  [alembic.runtime.migration] Running upgrade e2a6c0d4f8b3 -> b6e2a8c4d1f7, 默认下单模板里无法解析的占位符被原样印到对外 PDF。
+INFO  [alembic.runtime.migration] Running upgrade b6e2a8c4d1f7 -> c8f4a2e6b9d3, 打样"制作完成"改成结构化事件（第一批返修 §3.4）。
+INFO  [alembic.runtime.migration] Running upgrade c8f4a2e6b9d3 -> d2a6c8f4b1e7, 打样审批加轮次（第一批返修 §3.2）。
+INFO  [alembic.runtime.migration] Running upgrade d2a6c8f4b1e7 -> e4b8d2f6a1c9, 打样单加修订版与修订关系（第一批返修 §3.3，口径已确认 A）。
+INFO  [alembic.runtime.migration] Running upgrade e4b8d2f6a1c9 -> f6c2e8a4b1d9, 销售目标加约束：期间标准化、非负、人/部门互斥、作用域唯一（第三批 §4.1.2 / §4.1.6）。
+INFO  [alembic.runtime.migration] Running upgrade f6c2e8a4b1d9 -> a8d4f0c2e6b1, 口径基准快照表：老客池与首次成交日按年冻结（第三批 §4.1.5）。
+INFO  [alembic.runtime.migration] Running upgrade a8d4f0c2e6b1 -> b2e6f8a4c0d3, 案例加修订版、修订关系与审核历史（第四批 §5.1.5，口径已确认=修订稿）。
+INFO  [alembic.runtime.migration] Running upgrade b2e6f8a4c0d3 -> a3f7c1e5b9d2, 新品洞察：评审轮次与内容冻结 + 转换落地为「内部开发需求」（第五批 §6.1）。
+INFO  [alembic.runtime.migration] Running upgrade a3f7c1e5b9d2 -> c9d3e7b1f5a4, 期间实绩快照：结账后金额不再随订单状态变（第三批 §4.1.5 后半）。
+INFO  [alembic.runtime.migration] Running upgrade c9d3e7b1f5a4 -> d4f8b2c6a1e9, 打样：制作依据快照（2026-10-06，第一批返修遗留项）。
+INFO  [alembic.runtime.migration] Running upgrade d4f8b2c6a1e9 -> e7b3f1a5c9d2, 实绩快照的明细条目：结账时连「是哪几张单」一起冻（返工单第 4 条）。
+INFO  [alembic.runtime.migration] Running upgrade e7b3f1a5c9d2 -> f8d2b6a4c1e7, 撞单裁定：未决案件唯一 + 裁定前后归属（返工单 6.5）。
+INFO  [alembic.runtime.migration] Running upgrade f8d2b6a4c1e7 -> a4b8c2d6e0f1, 公海回收候选（预告）表（返工单 6.3）。
+INFO  [alembic.runtime.migration] Running upgrade a4b8c2d6e0f1 -> b5c9d3e7f1a2, 交接逐项结果表 + 合并冲突留痕列（返工单 6.6 / 6.7 / 6.8）。
+INFO  [alembic.runtime.migration] Running upgrade b5c9d3e7f1a2 -> c6d0e4f8a2b3, 第四轮返工：洞察逐轮留痕表 + 案例版本唯一约束（P1-4 / P1-5）。
+INFO  [alembic.runtime.migration] Running upgrade c6d0e4f8a2b3 -> d7e1f5a9b3c4, 案例证据多条 + 客户类型检索（第四轮返工 P2-8）。
+INFO  [alembic.runtime.migration] Running upgrade d7e1f5a9b3c4 -> c9e5b3a7f1d4, 回收候选：等待期快照与提前执行标记（返修单第六批 8 / 追加口径 1）。
+INFO  [alembic.runtime.migration] Running upgrade c9e5b3a7f1d4 -> e1b4d8a2c6f0, 口径基准快照：首次成交的日期与来源订单跟月份一起冻（返修 R07）。
+INFO  [alembic.runtime.migration] Running upgrade e1b4d8a2c6f0 -> a1c2e3f4b5d6, SKU 成本四项改为可空：「未提供」与「明确为 0」必须分得开（第七批 7.4）。
+INFO  [alembic.runtime.migration] Running upgrade a1c2e3f4b5d6 -> b2d3f4a5c6e7, 客户「最近有效联系时间未知」标记（第七批 7.5，口径经用户 2026-10-06 确认）。
+INFO  [alembic.runtime.migration] Running upgrade b2d3f4a5c6e7 -> c3e4f5a6b7d8, 报价明细冻结计价单位：`quote_items.unit_snapshot`（第八批 8.7）。
+INFO  [alembic.runtime.migration] Running upgrade c3e4f5a6b7d8 -> d4f5a6b7c8e9, 请求幂等表 `request_keys`（第八批 8.15，供 7.9 / 8.9 复用）。
+INFO  [alembic.runtime.migration] Running upgrade d4f5a6b7c8e9 -> e6a7b8c9d0e1, OA 结果未知的原子核定状态（第七批 7.8）。
+INFO  [alembic.runtime.migration] Running upgrade e6a7b8c9d0e1 -> f7b8c9d0e1a2, 外部映射的唯一性（第八批 8.11）。
+INFO  [alembic.runtime.migration] Running upgrade f7b8c9d0e1a2 -> a8b9c0d1e2f3, 业务文件：来源身份键 + 原件字节存档（第八批 8.9 / 8.10）。
+INFO  [alembic.runtime.migration] Running upgrade a8b9c0d1e2f3 -> b9c0d1e2f3a4, 外部只读采集/对账 与 SKU 主数据权威（第八批 8.13 / 8.14）：9 张全新表。
+INFO  [alembic.runtime.migration] Running upgrade b9c0d1e2f3a4 -> c1d2e3f4a5b6, 报价版本补三个抬头快照：客户名 / 联系人 / 有效期（第八批 §8.7 返修）。
+INFO  [alembic.runtime.migration] Running upgrade c1d2e3f4a5b6 -> d2e3f4a5b6c7, 报价明细记录所用的 SKU 主数据版本号（第八批 §8.14 返修）。
+INFO  [alembic.runtime.migration] Running upgrade d2e3f4a5b6c7 -> e3f4a5b6c7d8, 扩大报价版本的客户名快照列：128 → 200（第八批 §8.7 返修第二轮）。
+INFO  [alembic.runtime.migration] Running upgrade e3f4a5b6c7d8 -> f4a5b6c7d8e9, 同一订单的发货批次号唯一（第九批 §9.6 返修）。
+INFO  [alembic.runtime.migration] Running upgrade f4a5b6c7d8e9 -> b8e2d4f6a1c3, 登录会话表（第十批 10.12）。
+INFO  [alembic.runtime.migration] Running upgrade b8e2d4f6a1c3 -> a7c1e5b9d3f2, 审计日志按业务对象反查的索引（回收站复审：接出「谁删除、谁合并」）。
+INFO  [alembic.runtime.migration] Running upgrade a7c1e5b9d3f2 -> c3f8a1d6e9b4, 一个客户最多一个主联系人（第十批 10.4）。
+INFO  [alembic.runtime.migration] Running upgrade c3f8a1d6e9b4 -> d9b4e2f7a1c8, 给 product_costs 加 stopped_at：人工停用的成本立即退出核价（第十一批 11.5）。
+INFO  [alembic.runtime.migration] Running upgrade d9b4e2f7a1c8 -> e4a7c1b9f2d6, 报价「产品价格与运费分离」：版本级计算口径 + 金额拆分 + 运费确认时刻。
+INFO  [alembic.runtime.migration] Running upgrade e4a7c1b9f2d6 -> f5b8d2c4a7e1, 订单金额组成快照：货款 / 运费 / 其他费用 / 优惠 / 核价口径。
+INFO  [alembic.runtime.migration] Running upgrade f5b8d2c4a7e1 -> a6c9e3d5b8f2, 交货条款默认文案跟着运费口径一起改（2026-10-09「产品价格与运费分离」）。
+INFO  [alembic.runtime.migration] Running upgrade a6c9e3d5b8f2 -> b7d1f4a8c2e5, 统一产品核价口径：所有报价都是「单价不含运费」。
+INFO  [alembic.runtime.migration] Running upgrade b7d1f4a8c2e5 -> c9e3f5b7d1a8, 失单原因的「MOQ」改成中文「起订量」
+INFO  [alembic.runtime.migration] Running upgrade c9e3f5b7d1a8 -> d0f4a8c2e6b1, 人工核定售后后的退款/应收调整台账。
+INFO  [alembic.runtime.migration] Running upgrade d0f4a8c2e6b1 -> 8c6d39b1a7c8, order_milestones 外键级联删除
+INFO  [alembic.runtime.migration] Running upgrade 8c6d39b1a7c8 -> 4b7e2a9c5f31, 产品分类字典与示例产品对齐
+INFO  [alembic.runtime.migration] Running upgrade 4b7e2a9c5f31 -> 9c1f7a2b4d83, 报价明细增加"成本完整性"快照标记
+INFO  [alembic.runtime.migration] Running upgrade 9c1f7a2b4d83 -> a31d6b7c902e, 保存成本记录是否存在，区分零元缺项与无成本记录。历史快照不回填。
+PASS 实际路由：签署持锁 → 取消等待 → 已签闸拒绝取消
+PASS 实际路由：签完再取消被拒绝
+PASS 实际路由：未签订单正常取消；取消后签署拒绝且无签署附件
+DROP DATABASE
+PASS actual contract regression detects removal of guard
+PASS actual contract regression detects removal of lock
+CLEANED isolated database crm_check_test_batch7_return_c986031146fe
+
+=== 成本五个修复点反向验证（预期失败被检测） ===
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___________________ test_cost_states_submit[partial-0-True] ____________________
+tests/test_batch7_cost_lifecycle.py:79: in test_cost_states_submit
+    assert needs is required
+E   assert False is True
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345
+  /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/backend/.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345: PytestAssertRewriteWarning: Module already imported so cannot be rewritten; anyio
+    self._mark_plugins_for_rewrite(hook, disable_autoload)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_batch7_cost_lifecycle.py::test_cost_states_submit[partial-0-True]
+PASS mutation detected: zero
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______________ test_copy_retains_snapshot_state[False-version] ________________
+tests/test_batch7_cost_lifecycle.py:99: in test_copy_retains_snapshot_state
+    assert copied.cost_complete_snapshot is flag
+E   assert None is False
+E    +  where None = <app.modules.quote.model.QuoteItem object at 0x10deaa3f0>.cost_complete_snapshot
+------------------------------ Captured log call -------------------------------
+WARNING  probe:service.py:1396 RECALC item=2 sku=1 prev_floor=None
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345
+  /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/backend/.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345: PytestAssertRewriteWarning: Module already imported so cannot be rewritten; anyio
+    self._mark_plugins_for_rewrite(hook, disable_autoload)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_batch7_cost_lifecycle.py::test_copy_retains_snapshot_state[False-version]
+PASS mutation detected: version
+F                                                                        [100%]
+=================================== FAILURES ===================================
+________________ test_copy_retains_snapshot_state[False-clone] _________________
+tests/test_batch7_cost_lifecycle.py:99: in test_copy_retains_snapshot_state
+    assert copied.cost_complete_snapshot is flag
+E   assert None is False
+E    +  where None = <app.modules.quote.model.QuoteItem object at 0x10bebb200>.cost_complete_snapshot
+------------------------------ Captured log call -------------------------------
+WARNING  probe:service.py:1396 RECALC item=2 sku=1 prev_floor=None
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345
+  /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/backend/.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345: PytestAssertRewriteWarning: Module already imported so cannot be rewritten; anyio
+    self._mark_plugins_for_rewrite(hook, disable_autoload)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_batch7_cost_lifecycle.py::test_copy_retains_snapshot_state[False-clone]
+PASS mutation detected: clone
+F                                                                        [100%]
+=================================== FAILURES ===================================
+____________ test_rebuild_replaces_complete_cost_with_partial[edit] ____________
+tests/test_batch7_cost_lifecycle.py:121: in test_rebuild_replaces_complete_cost_with_partial
+    assert item.cost_complete_snapshot is False and item.cost_present_snapshot is True
+E   assert (True is False)
+E    +  where True = <app.modules.quote.model.QuoteItem object at 0x10c40c920>.cost_complete_snapshot
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345
+  /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/backend/.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345: PytestAssertRewriteWarning: Module already imported so cannot be rewritten; anyio
+    self._mark_plugins_for_rewrite(hook, disable_autoload)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_batch7_cost_lifecycle.py::test_rebuild_replaces_complete_cost_with_partial[edit]
+PASS mutation detected: edit
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__________ test_rebuild_replaces_complete_cost_with_partial[refresh] ___________
+tests/test_batch7_cost_lifecycle.py:121: in test_rebuild_replaces_complete_cost_with_partial
+    assert item.cost_complete_snapshot is False and item.cost_present_snapshot is True
+E   assert (True is False)
+E    +  where True = <app.modules.quote.model.QuoteItem object at 0x109d9ef60>.cost_complete_snapshot
+=============================== warnings summary ===============================
+.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345
+  /Users/zhaorongkai/Desktop/CRM-Sales-Agent-V1.1/backend/.venv/lib/python3.12/site-packages/_pytest/config/__init__.py:1345: PytestAssertRewriteWarning: Module already imported so cannot be rewritten; anyio
+    self._mark_plugins_for_rewrite(hook, disable_autoload)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_batch7_cost_lifecycle.py::test_rebuild_replaces_complete_cost_with_partial[refresh]
+PASS mutation detected: refresh
+
+=== 前端类型检查 ===
+npx tsc --noEmit：退出码 0
+
+=== 静态检查 ===
+ops/check_*.py：14 道全部退出码 0；git diff --check：退出码 0

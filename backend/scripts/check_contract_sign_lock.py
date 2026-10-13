@@ -1,139 +1,161 @@
 #!/usr/bin/env python3
-"""P1-3：合同签署与订单取消的并发交错（第七批）。
+"""第七批合同交错回归：必须调用真实签署/取消入口，仅用于一次性隔离库。
 
-用法（一次性隔离库；库名要含 test）：
-    DATABASE_URL=postgresql+asyncpg://crm:crm123456@127.0.0.1:5432/crm_check_test_signlock \
-    PYTHONPATH=. .venv/bin/python scripts/check_contract_sign_lock.py
-
-终态判据：**订单已取消 + 合同已签署**是非法终态。
-
-为什么要专门一个套件：这一条**必须用受控交错**才验得出来，
-普通的单请求用例怎么点都是"先签后取消"或"先取消后签"，都是合法顺序。
-审查用交错复现的正是"签署读到订单有效 → 另一个请求取消并提交 → 签署继续落库"。
-
-两层修法都在这里被验到（缺一层就会复现）：
-  ① 签署路径锁订单行 → 取消必须等签署事务结束；
-  ② 取消侧加"已签合同"闸 → 拿到锁后发现合同已签，直接拒绝取消。
-只做①会得到"锁等到了、签也签完了、取消照做"，终态依旧非法（实测复现过）。
-
-
-两条路径都要验：
-  ① 并发交错（签署中取消）：取消必须等签署事务结束，且取消侧有闸拦住
-  ② 签完之后再取消：应被闸直接拒绝
+先在隔离库运行 Alembic upgrade head，再设置 DATABASE_URL / PYTHONPATH=.
+执行本脚本。异常、错误响应、没有真正签成或取消都导致非零退出。
+用 PostgreSQL 锁等待事件证明取消确实在等待签署持有的订单锁。
 """
-import asyncio, os, sys, time
-sys.path.insert(0, '.')
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import _test_support  # noqa: E402
-
-DB_NAME = _test_support.require_isolated_db()
-
+import asyncio
+import os
+import sys
+from datetime import UTC, datetime
 from decimal import Decimal
-import app.modules.user.model  # noqa
-import app.modules.auth.model  # noqa
-import app.modules.product.model  # noqa
-T0 = time.monotonic()
-def ts(m): print(f'    [{time.monotonic()-T0:5.2f}s] {m}', flush=True)
+from uuid import uuid4
 
-async def make_fixture(tag):
-    from datetime import datetime, UTC
-    from app.core.database import SessionLocal
-    from app.modules.customer.model import Customer
-    from app.modules.order.model import SalesOrder
-    from app.modules.contract.model import ContractDocument, ContractTemplate
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _test_support
+_test_support.require_isolated_db()
+
+from sqlalchemy import select, text
+from starlette.requests import Request
+from app.core.database import SessionLocal, engine
+from app.core.deps import CurrentUser
+from app.core.errors import AppError
+from app.modules.user.model import User
+from app.modules.customer.model import Customer
+from app.modules.order.model import SalesOrder
+from app.modules.contract.model import ContractDocument, ContractTemplate
+from app.modules.file.model import BusinessFile, FileRecord
+from app.modules.file import service as file_service
+from app.modules.contract import router as contract_router
+from app.modules.contract.schema import DocumentSign
+from app.modules.order import router as order_router
+
+REQUEST = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
+
+async def fixture(user, tag):
+    tag = f"P13-{tag}-{uuid4().hex[:10]}"
     async with SessionLocal() as s:
-        c = Customer(name=f"P13-{tag}", owner_id=1, level="C", status="active",
-                     pool_status="private", created_at=datetime.now(UTC), updated_at=datetime.now(UTC))
+        c = Customer(name=tag, owner_id=user.id, level="C", status="active", pool_status="private")
         s.add(c); await s.flush()
-        o = SalesOrder(order_no=f"P13-{tag}", customer_id=c.id, owner_id=1,
-                       total_amount=Decimal("100"), currency="CNY", status="pending",
-                       created_at=datetime.now(UTC))
-        s.add(o); await s.flush()
-        tpl = ContractTemplate(doc_type="sales", name=f"模板{tag}", body="正文",
-                               enabled=True, created_at=datetime.now(UTC))
-        s.add(tpl); await s.flush()
-        doc = ContractDocument(doc_no=f"DOC-{tag}", doc_type="sales", title=f"合同{tag}",
-                               customer_id=c.id, order_id=o.id, template_id=tpl.id,
-                               content_snapshot="正文", status="draft", created_at=datetime.now(UTC))
+        order = SalesOrder(order_no=tag, customer_id=c.id, owner_id=user.id,
+                           total_amount=Decimal(100), currency="CNY", status="pending",
+                           created_at=datetime.now(UTC))
+        tpl = ContractTemplate(doc_type="contract", name=tag, body="正文", enabled=True,
+                               created_at=datetime.now(UTC))
+        scan = FileRecord(object_key=f"isolated-test/{tag}.pdf", file_name=f"{tag}.pdf",
+                          mime_type="application/pdf", size=5, uploaded_by=user.id)
+        s.add_all([order, tpl, scan]); await s.flush()
+        doc = ContractDocument(doc_no=tag, doc_type="contract", title=tag, customer_id=c.id,
+                               order_id=order.id, template_id=tpl.id, content_snapshot="正文",
+                               status="draft", created_at=datetime.now(UTC))
         s.add(doc); await s.commit()
-        return o.id, doc.id
+        return order.id, doc.id, scan.id
 
-async def cancel_side(oid, delay):
-    """走真实的取消接口函数（不是裸 SQL）——判据必须是产品行为。"""
-    from app.core.database import SessionLocal
-    from app.core.errors import AppError
-    from app.modules.order.model import SalesOrder
-    from sqlalchemy import select
-    await asyncio.sleep(delay)
+async def sign(user, did, fid):
     async with SessionLocal() as s:
-        ts("取消侧：开始")
-        order = (await s.execute(select(SalesOrder).where(SalesOrder.id == oid)
-                                 .with_for_update().execution_options(populate_existing=True))).scalar_one()
         try:
-            # 直接复用接口里那段闸的判据（避免重写一遍查询）
-            from sqlalchemy import func
-            from app.modules.contract.model import ContractDocument
-            n = (await s.execute(select(func.count()).select_from(ContractDocument).where(
-                ContractDocument.order_id == oid, ContractDocument.status == "signed"))).scalar_one()
-            if n:
-                raise AppError(0, f"该订单有 {n} 份已签署的合同，不能直接取消", 422)
-            order.status = "cancelled"
-            await s.commit()
-            ts("取消侧：已提交取消")
-            return "已取消"
-        except AppError as e:
+            response = await contract_router.sign_document(did, DocumentSign(file_id=fid), REQUEST, user, s)
+            assert response["data"]["status"] == "signed", response
+        except BaseException:
             await s.rollback()
-            ts(f"取消侧：被拒 → {e.message[:36]}")
-            return "被拒"
+            raise
+
+async def cancel(user, oid, pid_ready=None):
+    async with SessionLocal() as s:
+        if pid_ready is not None:
+            pid_ready.set_result(await s.scalar(text("select pg_backend_pid()")))
+        try:
+            response = await order_router.cancel_order(oid, REQUEST, user, s)
+            assert response["data"]["status"] == "cancelled", response
+        except BaseException:
+            await s.rollback()
+            raise
+
+async def expect_rejection(coro, message):
+    try:
+        await coro
+    except AppError as exc:
+        assert message in exc.message, exc.message
+    else:
+        raise AssertionError(f"实际业务入口未拦截：{message}")
+
+async def terminal(oid, did, order_status, doc_status, signed_files):
+    async with SessionLocal() as s:
+        assert (await s.get(SalesOrder, oid)).status == order_status
+        assert (await s.get(ContractDocument, did)).status == doc_status
+        refs = (await s.scalars(select(BusinessFile).where(
+            BusinessFile.business_type == "contract", BusinessFile.business_id == did,
+            BusinessFile.category == "signed"))).all()
+        assert len(refs) == signed_files
 
 async def main():
-    from app.core.database import SessionLocal
-    from app.modules.order.model import SalesOrder
-    from app.modules.contract.model import ContractDocument
-    from app.modules.contract import service as contract_svc
-    from app.core.errors import AppError
-
-    print("=== ① 并发交错：签署进行中时取消 ===")
-    oid, did = await make_fixture("并发")
-
-    async def signer():
-        async with SessionLocal() as s:
-            doc = await s.get(ContractDocument, did, with_for_update=True)
-            try:
-                await contract_svc._ensure_signable_source(s, doc)
-                ts("签署侧：依据检查通过（已持有订单行锁）")
-            except AppError as e:
-                ts(f"签署侧：被拒 → {e.message[:36]}")
-                return "被拒"
-            await asyncio.sleep(1.0)
-            doc.status = "signed"
-            await s.commit()
-            ts("签署侧：已提交签署")
-            return "已签"
-
-    r = await asyncio.gather(signer(), cancel_side(oid, 0.3), return_exceptions=True)
-    for x in r: print("   →", x if isinstance(x, str) else f"异常:{x}")
     async with SessionLocal() as s:
-        o = await s.get(SalesOrder, oid); d = await s.get(ContractDocument, did)
-        print(f"   终态：订单={o.status} 合同={d.status}")
-        bad1 = o.status == "cancelled" and d.status == "signed"
-        print("   " + ("❌ 非法终态" if bad1 else "✅ 没有非法终态"))
+        row = User(name="合同交错回归", username=f"sign-lock-{uuid4().hex}", password_hash="test-only")
+        s.add(row); await s.commit()
+        user = CurrentUser(row, {"order:manage", "order:view", "customer:view", "file:view"},
+                           ["admin"], "all")
 
-    print()
-    print("=== ② 签完之后再取消（闸应直接拦住）===")
-    oid2, did2 = await make_fixture("签后")
-    async with SessionLocal() as s:
-        doc = await s.get(ContractDocument, did2, with_for_update=True)
-        await contract_svc._ensure_signable_source(s, doc)
-        doc.status = "signed"
-        await s.commit()
-    res = await cancel_side(oid2, 0)
-    async with SessionLocal() as s:
-        o2 = await s.get(SalesOrder, oid2)
-        print(f"   终态：订单={o2.status}  取消结果={res}")
-        bad2 = o2.status == "cancelled"
-        print("   " + ("❌ 已签合同的订单还能取消" if bad2 else "✅ 已被拦住"))
-    return 1 if (bad1 or bad2) else 0
+    oid, did, fid = await fixture(user, "交错")
+    reached, release = asyncio.Event(), asyncio.Event()
+    original_lock = file_service.lock_file_row
 
-sys.exit(asyncio.run(main()))
+    async def pause_after_source_lock(session, file_id):
+        record = await original_lock(session, file_id)
+        if file_id == fid:
+            reached.set()
+            await asyncio.wait_for(release.wait(), timeout=15)
+        return record
+
+    file_service.lock_file_row = pause_after_source_lock
+    signer = asyncio.create_task(sign(user, did, fid))
+    canceller = None
+    try:
+        await asyncio.wait_for(reached.wait(), timeout=10)
+        pid_ready = asyncio.get_running_loop().create_future()
+        canceller = asyncio.create_task(cancel(user, oid, pid_ready))
+        pid = await asyncio.wait_for(pid_ready, timeout=10)
+        # 不靠睡多久推断是否拿锁；观察实际 PostgreSQL 会话的锁等待。
+        deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            assert not canceller.done(), "取消未等待签署事务的订单锁"
+            async with SessionLocal() as observer:
+                wait_type = await observer.scalar(text(
+                    "select wait_event_type from pg_stat_activity where pid=:pid"), {"pid": pid})
+            if wait_type == "Lock":
+                break
+            assert asyncio.get_running_loop().time() < deadline, "未观察到订单锁等待"
+            await asyncio.sleep(0.02)
+        release.set()
+        await asyncio.wait_for(signer, timeout=10)
+        await asyncio.wait_for(expect_rejection(canceller, "已签署"), timeout=10)
+        await terminal(oid, did, "pending", "signed", 1)
+        print("PASS 实际路由：签署持锁 → 取消等待 → 已签闸拒绝取消")
+    finally:
+        release.set()
+        file_service.lock_file_row = original_lock
+        tasks = [task for task in (signer, canceller) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    await expect_rejection(cancel(user, oid), "已签署")
+    await terminal(oid, did, "pending", "signed", 1)
+    print("PASS 实际路由：签完再取消被拒绝")
+
+    oid2, did2, fid2 = await fixture(user, "先取消")
+    await cancel(user, oid2)
+    await terminal(oid2, did2, "cancelled", "draft", 0)
+    await expect_rejection(sign(user, did2, fid2), "已被取消")
+    await terminal(oid2, did2, "cancelled", "draft", 0)
+    print("PASS 实际路由：未签订单正常取消；取消后签署拒绝且无签署附件")
+
+if __name__ == "__main__":
+    async def run():
+        try:
+            await main()
+        finally:
+            await engine.dispose()
+    asyncio.run(run())

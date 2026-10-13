@@ -177,6 +177,8 @@ class QuoteItem(Base, IdMixin):
     #:
     #: `None` = 本列上线（2026-10-13）之前的历史明细，判据回退到旧的"成本≤0 视为缺失"。
     cost_complete_snapshot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    #: 是否存在成本依据；False=无记录，True=有记录（包含零元缺项），NULL=历史未知。
+    cost_present_snapshot: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     package_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     logistics_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(16, 4), default=0)
     standard_price_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(16, 4), nullable=True)

@@ -984,6 +984,8 @@ async def create_version(
                 master_version_no=item.master_version_no,
                 quantity=item.quantity,
                 cost_snapshot=item.cost_snapshot,
+                cost_complete_snapshot=item.cost_complete_snapshot,
+                cost_present_snapshot=item.cost_present_snapshot,
                 package_cost_snapshot=item.package_cost_snapshot,
                 logistics_cost_snapshot=item.logistics_cost_snapshot,
                 standard_price_snapshot=item.standard_price_snapshot,
@@ -1228,6 +1230,8 @@ async def _build_custom_item_snapshot(
         spec_snapshot=spec_snapshot or inquiry.description,
         quantity=quantity,
         cost_snapshot=cost,
+        cost_present_snapshot=True,
+        cost_complete_snapshot=True,
         package_cost_snapshot=ZERO,
         logistics_cost_snapshot=freight,
         standard_price_snapshot=None,
@@ -1294,23 +1298,16 @@ def version_logistics_in_base_cost(version: QuoteVersion) -> bool:
 
 
 def item_cost_is_incomplete(item: QuoteItem) -> bool:
-    """这条明细的成本是不是**"有记录、但缺项"**（第七批 P1-1）。
+    """有成本依据但缺项必须人工审批；金额为零也不能代表没有记录。
 
-    与 `not item_cost_is_complete(item)` 的差别很关键，别混用：
-
-    - **完全没有成本记录**（`cost_snapshot` 为 0/NULL）→ 返回 False。
-      那是"还没维护成本"的正常状态，有另一条成熟判据管它
-      （A06/D5：利润不可计算、保护价照旧生效）。若把它也算成"不完整"，
-      演示库里"本地新建、还没维护成本的 SKU"会一律要求审批 ——
-      实测 `check_master_confirmed_empty_value` 与
-      `check_quote_center_acceptance` 就是这么变红的。
-    - **有成本快照、但成本记录四项没填全** → 返回 True。这才是报告那条：
-      合计把 NULL 当 0，算出一个看着正常的成本与虚高毛利。
-    - **历史明细**（快照标记 NULL）→ 回退到旧的"成本≤0"口径，行为不变。
+    成本完整性为 NULL 的历史快照继续走旧判据。已标记不完整、但未保存
+    是否有记录的过渡快照不能凭零金额免审；重建后才能明确区分无记录。
     """
-    if (item.cost_snapshot or ZERO) <= 0:
+    if item.cost_present_snapshot is False:
         return False
-    return not item_cost_is_complete(item)
+    if item.cost_present_snapshot is True:
+        return item.cost_complete_snapshot is False
+    return item.cost_complete_snapshot is False
 
 
 def item_cost_is_complete(item: QuoteItem) -> bool:
@@ -1423,7 +1420,8 @@ async def apply_current_basis_to_item(
     # （实测：成本 80、保护价 99、拟报价 95 —— 原版本底价 99，新版算出 80，
     #  审批门槛被降低）。所以这里连"等级规则没指导价才回退一般规则"这一步也要照做。
     floor_from_margin = (
-        basis_cost / (Decimal(1) - min_margin) if min_margin < 1 else None
+        basis_cost / (Decimal(1) - min_margin)
+        if item_cost_is_complete(item) and min_margin < 1 else None
     )
     protection_candidates: list[Decimal] = []
     if item.sku_id is not None:
@@ -1672,6 +1670,7 @@ async def build_item_snapshot(
         # 完整性随快照一起存（第七批 P1-1）：审批读的是快照，不是活成本行；
         # 不落这一列，"只填了一项成本"在审批侧就无法与"成本完整"区分。
         cost_complete_snapshot=result["cost"].get("cost_complete"),
+        cost_present_snapshot=result["has_cost"],
         package_cost_snapshot=Decimal(str(result["cost"]["package_cost"])),
         logistics_cost_snapshot=Decimal(str(result["cost"]["logistics_cost"] or 0)),
         standard_price_snapshot=(
@@ -2087,7 +2086,8 @@ async def refresh_prices(
             customer_level_snapshot=(customer.level or "").strip() or None if customer else None,
         )
         for field in (
-            "quantity", "quoted_price", "cost_snapshot", "logistics_cost_snapshot",
+            "quantity", "quoted_price", "cost_snapshot", "cost_complete_snapshot",
+            "cost_present_snapshot", "logistics_cost_snapshot",
             "standard_price_snapshot", "recommended_price_snapshot", "minimum_price_snapshot",
             "profit_snapshot", "profit_rate_snapshot", "price_source",
             "customer_level_snapshot", "approval_required", "approval_reason",
@@ -2243,19 +2243,12 @@ async def submit_for_approval(
         # "只填采购成本 10 + 报价 100"提交后仍然是
         # `approval_required=False 未超出权限，报价已通过`。
         #
-        # 判据与核价引擎的 `cost_floor_unreliable` **逐字对齐**（只多一个
-        # "没有保护价"的条件）——上一版我写成"不完整一律要审批"，
-        # 结果演示库里每个成本没填全的 SKU 全部被堵（报价发不出去、
-        # 转单 40002），因为**种子成本本身只填了采购与包装两项**。
-        # 有两道口径时（保护价 + 成本）不该让残缺的那道把整条路拦死；
-        # 只有一道时（没有保护价）才必须补人工。
-        # 判据见 `item_cost_is_incomplete`：只管"有成本快照、但记录缺项"，
-        # "完全没有成本"交给下面 `base_cost <= 0` 那条成熟分支（保护价仍生效）。
+        # 有记录但缺项必须人工审批（包含合计为零）；无记录继续走保护价判据。
         if item_cost_is_incomplete(item):
             item.approval_required = True
             item.approval_reason = (
                 "该明细的成本不完整（成本记录里有未填写的项），"
-                "且这条明细没有保护价可依据 —— 按残缺成本算出的毛利不可信，"
+                "按残缺成本算出的毛利不可信，"
                 "需要人工审批；补齐成本四项后自动恢复"
             )
             offending.append(
@@ -2472,7 +2465,11 @@ async def submit_for_approval(
     if decision is not None:
         rule_trace = decision.trace()
         rule_trace["effect"] = rules_engine.effect_summary(decision.kind, decision.action)
-        if decision.kind == "auto_pass":
+        incomplete_cost = any(item_cost_is_incomplete(i) for i in items)
+        if decision.kind == "auto_pass" and incomplete_cost:
+            rule_trace["blocked_reason"] = "成本记录缺项，必须人工审批"
+            rule_trace["effect"] = "免审未执行：成本记录缺项，转人工审批"
+        if decision.kind == "auto_pass" and not incomplete_cost:
             version.approval_status = "approved"
             version.approved_at = datetime.now(UTC)
             quote.status = "approved"
