@@ -4,7 +4,9 @@
 阶段历史、负责人变更合并后按时间倒序返回，避免出现「两份真相」。
 """
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,31 +39,19 @@ BUSINESS_LABEL = {
     "sku": "SKU",
 }
 
-ACTION_LABEL = {
-    "create": "创建",
-    "update": "修改",
-    "delete": "删除",
-    "transfer": "转移负责人",
-    "assign": "分配",
-    "claim": "领取",
-    "release": "释放回池",
-    "release_to_pool": "放入公海",
-    "discard": "废弃",
-    "convert": "线索转化",
-    "change_stage": "推进阶段",
-    "win": "标记成交",
-    "lose": "标记失单",
-    "reopen": "重新激活",
-    "enable": "启用",
-    "disable": "停用",
-    "create_item": "添加需求明细",
-    "update_item": "修改需求明细",
-    "delete_item": "删除需求明细",
-    "complete": "完成",
-    "cancel": "取消",
-    "postpone": "延期",
-    "login": "登录",
-}
+#: 动作中文名 —— **读共用那一份**（`app/core/audit_action_labels.json`）。
+#:
+#: 这里原来自己维护了一张 23 条的短表，而后端实际用到 **154 个动作**：
+#: 表里没有的就被 `.get(action, action)` **原样印出英文码**（主人 2026-10-13 截图：
+#: 「客户：merge」「客户：open_customer_duplicate_cases」）。
+#:
+#: 更糟的是前端审计页**另有一份 156 条的表**，两份各自漂移 —— 同一个动作在
+#: "日志"和"审计"两个页面显示不同词。现在合成一份 JSON，两边都读它：
+#:   · 后端：本模块（时间线标题）；
+#:   · 前端：`shared/audit-labels.ts`。
+#: 以后加动作只改 JSON 一处，`ops/check_audit_labels.py` 会盯着"两边一致"。
+_ACTION_LABELS_PATH = Path(__file__).resolve().parents[2] / "core" / "audit_action_labels.json"
+ACTION_LABEL: dict[str, str] = json.loads(_ACTION_LABELS_PATH.read_text(encoding="utf-8"))
 
 #: 审计里这几个键以前是**原样摆给用户看的**（渲染出来长 `owner_id：2`、
 #: `remark：没有备注`），等于把内部字段名和内部编号亮在了时间线上。
