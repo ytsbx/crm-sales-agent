@@ -188,6 +188,8 @@ async def create_change(
     plan_offsets: dict | None = None,
 ) -> OrderScheduleChange:
     order = await lock_order(session, order)
+    if order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再创建或确认交期变更", 422)
     affected = await preview(session, order, new_delivery_date, delivery_kind=delivery_kind,
                              transit_days=transit_days, plan_offsets=plan_offsets)
     if not affected["nodes"] and not affected["batches"] and affected["planning"]["before"] == affected["planning"]["after"]:
@@ -252,6 +254,8 @@ async def confirm_change(
     # 行锁：两个人同时点"确认"时，第二个必须等第一个提交完再读状态，
     # 否则两边都读到 pending、都往下走，计划日被写两遍。
     order = await lock_order(session, order)
+    if order.status == "cancelled":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单已取消，不能再创建或确认交期变更", 422)
     # ⚠️ 锁内重判**两道**判据，都挪到写操作**之前**：
     #
     #   ① 数据范围（`ensure_in_scope`）—— 我第一版只补了这一道；

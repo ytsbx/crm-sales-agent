@@ -44,7 +44,7 @@ from typing import Annotated, Any
 
 from pydantic import Field, TypeAdapter, ValidationError
 
-from sqlalchemy import Select, and_, func, or_, select, tuple_
+from sqlalchemy import Select, and_, func, or_, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1343,6 +1343,19 @@ def _validate_resolution(diff: IntegrationDiff, resolution: str, note: str | Non
         )
 
 
+async def _lock_adjustment_source(session: AsyncSession, source_key: str) -> None:
+    """同来源跨差异核定串行；尚不存在的台账行无法靠 FOR UPDATE 锁住。"""
+    try:
+        dialect = session.get_bind().dialect.name
+    except AttributeError:
+        dialect = ""
+    if dialect == "postgresql":
+        key = int.from_bytes(hashlib.sha256(
+            ("financial-adjustment:" + source_key).encode()
+        ).digest()[:8], "big", signed=True)
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+
+
 async def confirm_diff(
     session: AsyncSession,
     diff: IntegrationDiff,
@@ -1407,6 +1420,13 @@ async def confirm_diff(
                 "售后调整类型只能是 refund（退款）或 receivable_adjustment（应收调整）",
                 422,
             )
+        source_key = build_adjustment_source_key(
+            domain=diff.domain, system_type=diff.system_type, shop_id=diff.shop_id,
+            object_type=diff.object_type, subject=diff.external_id,
+        )
+        # 锁序：当前差异 → 来源事务锁 → 台账。各核定只持有自己的差异行，
+        # 来源锁覆盖“没有台账”的空隙，第二个事务等提交后才能读到首笔台账。
+        await _lock_adjustment_source(session, source_key)
     moment = now or _now()
     diff.status = DIFF_IGNORED if resolution == "ignore" else DIFF_RESOLVED
     diff.resolution = resolution
@@ -1449,16 +1469,6 @@ async def confirm_diff(
             #     （不新增：财务只需要看到"这笔该退多少"，而不是两条各退一次）；
             #   · 同来源**已经处理过** → 不占位（部分唯一索引只管 pending），
             #     这里走新增 —— 那是真正的差额，需要财务单独处理。
-            source_key = build_adjustment_source_key(
-                domain=diff.domain,
-                system_type=diff.system_type,
-                shop_id=diff.shop_id,
-                object_type=diff.object_type,
-                # ⚠️ subject 用**差异行上的稳定字段**，别去解析 diff_key ——
-                # 那是 sha1 哈希，切不出原文（我第一版写了 .split("|")，是错的）。
-                # external_id 是外部单据号，不会因为金额更正而变。
-                subject=diff.external_id,
-            )
             pending_same_source = (
                 await session.execute(
                     select(FinancialAdjustment).where(

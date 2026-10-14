@@ -4,11 +4,11 @@ import asyncio
 import hashlib
 import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -273,7 +273,8 @@ def serialize_document(
         "quote_version_no": header.get("quote_version_no"),
         "template_id": doc.template_id,
         "content_snapshot": doc.content_snapshot,
-        "filled_data": doc.filled_data,
+        "filled_data": ({key: value for key, value in filled.items()
+                         if key != "_supersession_task_states"} if doc.filled_data is not None else None),
         "missing_fields": missing,
         # 抬头快照（生成时的公司名/客户名/单号）：详情页据此说明"当时是以谁的名义出的"
         "header_snapshot": header or None,
@@ -661,25 +662,9 @@ async def generate_document(
     session.add(doc)
     await session.flush()
 
-    # 续签替代旧协议（业务口径 2026-10-05「精细」）：**勾了才动**。
-    # 不勾就什么都不做——提前续签、旧协议还在适用期是很常见的情况，
-    # 一登记就把旧协议掐掉会让还在生效的协议没人管。
+    # 2026-10-14 用户确认：草稿只记录替代意图；已签署且到生效日才停止旧提醒。
     if payload.supersede_parent and parent is not None:
-        cancelled = await cancel_auto_tasks(session, parent.id)
-        doc.filled_data = {
-            **filled,
-            "_supersedes": {
-                "id": parent.id,
-                "doc_no": parent.doc_no,
-                "cancelled_tasks": cancelled,
-            },
-        }
-        # 旧协议上留痕，但**不改状态、不动作废**（那是另一回事，要主管点头）：
-        # 只让后人能回答"这份协议为什么不再提醒了"。
-        parent.filled_data = {
-            **(parent.filled_data or {}),
-            "_superseded_by": {"id": doc.id, "doc_no": doc.doc_no},
-        }
+        doc.filled_data = {**filled, "_supersedes": {"id": parent.id, "doc_no": parent.doc_no}}
         await session.flush()
 
     return doc, False
@@ -696,14 +681,21 @@ async def get_doc_or_404(
     事后说不清哪张才算数。行锁让后来者读到已改的状态，被既有的状态检查挡掉。
     """
     if for_update:
-        doc = (
-            await session.execute(
-                select(ContractDocument)
-                .where(ContractDocument.id == doc_id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        ).scalar_one_or_none()
+        ancestors = []
+        current_id = doc_id
+        while current_id is not None:
+            if current_id in ancestors:
+                raise AppError(ErrorCode.PARAM_ERROR, "合同关系链存在循环，请联系管理员修复", 409)
+            ancestors.append(current_id)
+            current_id = (await session.execute(
+                select(ContractDocument.parent_id).where(ContractDocument.id == current_id)
+            )).scalar_one_or_none()
+        locked = (await session.execute(
+            select(ContractDocument).where(ContractDocument.id.in_(ancestors))
+            .order_by(ContractDocument.id).with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalars().all()
+        doc = next((row for row in locked if row.id == doc_id), None)
     else:
         doc = await session.get(ContractDocument, doc_id)
     if doc is None or doc.deleted_at is not None:
@@ -1152,11 +1144,14 @@ async def sign_document(
     """
     from app.modules.file.model import BusinessFile
 
+    doc = await get_doc_or_404(session, doc.id, for_update=True)
     if doc.status == "signed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该文档已登记签署")
     if doc.status == "void":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已作废的文档不能签署")
     await _ensure_signable_source(session, doc)
+    if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes") and doc.effective_date is None:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "替代旧月结协议前必须填写生效日，请按完整信息重新生成续签协议", 422)
     # 登记签署 = 给一份**已存在**的文件加 `signed` 引用。加引用之前先锁住文件行，
     # 与删除入口（通用删除、回款删凭证）用同一把锁：否则财务那边正在删回款凭证时，
     # 这边可以把同一份文件登记成签署件 → 出现指向已删文件的悬空引用
@@ -1200,6 +1195,9 @@ async def sign_document(
     if note:
         doc.filled_data = {**(doc.filled_data or {}), "sign_note": note}
     await session.flush()
+    if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes"):
+        await refresh_supersession(session, doc.parent_id)
+
 
 
 async def void_document(session: AsyncSession, doc: ContractDocument, *, reason: str) -> int:
@@ -1208,12 +1206,15 @@ async def void_document(session: AsyncSession, doc: ContractDocument, *, reason:
     作废之后就不该再提醒了——否则负责人会收到"某某协议即将到期"的待办，
     点进去发现那份协议早就作废了（审查第 7 条）。
     """
+    doc = await get_doc_or_404(session, doc.id, for_update=True)
     if doc.status == "void":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "文档已经是作废状态")
     doc.status = "void"
     doc.void_reason = reason
     cancelled = await cancel_auto_tasks(session, doc.id)
     await session.flush()
+    if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes"):
+        await refresh_supersession(session, doc.parent_id)
     return cancelled
 
 
@@ -1363,6 +1364,80 @@ async def cancel_auto_tasks(session: AsyncSession, doc_id: int) -> int:
     return len(rows)
 
 
+_SUPERSESSION_TASK_NOTE = "[月结续签自动取消]"
+
+
+async def refresh_supersession(session: AsyncSession, parent_id: int, *, today=None) -> bool:
+    """根据已签署、生效的替代协议同步旧协议与提醒；只恢复本函数明确取消的任务。
+
+    调用方签署/作废先按祖先→子文档加锁；扫描先按文档 id 顺序加锁。
+    子文档状态变更都须先持有父锁，因此这里只读子状态，不倒序锁子文档。
+    """
+    from app.modules.task.model import Task
+
+    parent = (await session.execute(
+        select(ContractDocument).where(ContractDocument.id == parent_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    if parent is None or parent.doc_type != "monthly":
+        return False
+    today = today or today_business()
+    data = dict(parent.filled_data or {})
+    previous = data.get("_superseded_by") or {}
+    # 兼容旧标记，但用目标文档的真实状态和日期复核，草稿/作废不能继续停旧提醒。
+    try:
+        previous_id = int(previous.get("id"))
+    except (TypeError, ValueError):
+        previous_id = None
+    candidates = (await session.execute(
+        select(ContractDocument).where(or_(ContractDocument.parent_id == parent_id,
+                                          ContractDocument.id == previous_id))
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    eligible = []
+    for child in candidates:
+        intent = (child.filled_data or {}).get("_supersedes") or {}
+        is_replacement = intent.get("id") == parent_id or child.id == previous_id
+        if (is_replacement and child.id != parent_id and child.customer_id == parent.customer_id
+                and child.doc_type == "monthly" and child.status == "signed" and child.deleted_at is None
+                and child.effective_date is not None and child.effective_date <= today):
+            eligible.append(child)
+    winner = max(eligible, key=lambda row: (row.effective_date or date.min, row.id), default=None)
+    states = list(data.get("_supersession_task_states") or [])
+    if winner is not None:
+        data["_superseded_by"] = {"id": winner.id, "doc_no": winner.doc_no,
+            "effective_date": winner.effective_date.isoformat() if winner.effective_date else None}
+        tasks = (await session.execute(select(Task).where(
+            Task.source_business_type == "contract", Task.source_business_id == parent_id,
+            Task.status.in_(("pending", "doing")),
+        ).order_by(Task.id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+        for task in tasks:
+            states.append({"id": task.id, "status": task.status, "completion_note": task.completion_note})
+            task.status = "cancelled"
+            task.completion_note = _SUPERSESSION_TASK_NOTE
+        if states:
+            data["_supersession_task_states"] = states
+    else:
+        data.pop("_superseded_by", None)
+        # 不重开人工取消/已完成的任务；旧算法没留下取消来源的历史任务也不猜。
+        if states and parent.status == "signed" and parent.deleted_at is None:
+            tasks = (await session.execute(select(Task).where(
+                Task.id.in_([row["id"] for row in states]),
+                Task.source_business_type == "contract", Task.source_business_id == parent_id,
+            ).order_by(Task.id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+            by_id = {row.id: row for row in tasks}
+            for state in states:
+                task = by_id.get(state["id"])
+                if task and task.status == "cancelled" and task.completion_note == _SUPERSESSION_TASK_NOTE:
+                    task.status = state["status"]
+                    task.completion_note = state["completion_note"]
+        data.pop("_supersession_task_states", None)
+    if data != (parent.filled_data or {}):
+        parent.filled_data = data
+    await session.flush()
+    return winner is not None
+
+
 def is_superseded(doc: "ContractDocument") -> bool:
     """这份协议是否已经被续签**替代**（续签时勾了「替代旧协议」）。"""
     return bool((doc.filled_data or {}).get("_superseded_by"))
@@ -1450,6 +1525,7 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
             select(ContractDocument, Customer.owner_id, Customer.name)
             .join(Customer, Customer.id == ContractDocument.customer_id)
             .where(*conditions)
+            .order_by(ContractDocument.id)
             .with_for_update(of=ContractDocument)
             .execution_options(populate_existing=True)
         )
@@ -1462,6 +1538,7 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
         # 已被续签替代的旧协议**不再提醒**（第三批审查 P2，2026-10-12）：
         # 替代动作发生在提醒窗口之前时，当时没有待办可结束，只靠 SQL 条件
         # 会在进入窗口后凭空建出一条提醒。判据只有 `should_remind` 一份。
+        await refresh_supersession(session, doc.id, today=today)
         if not should_remind(doc):
             continue
         source_key = _monthly_remind_key(doc.id, doc.expiry_date)

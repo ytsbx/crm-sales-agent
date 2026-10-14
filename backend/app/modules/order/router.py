@@ -982,8 +982,13 @@ async def cancel_order(
     if pending_payments:
         for payment in pending_payments:
             payment.status = "rejected"
-            payment.voucher_note = "订单取消，随单驳回" + (
-                f"（原备注：{payment.voucher_note}）" if payment.voucher_note else ""
+            # 凭证说明是原登记事实，取消原因另写审计；拼接会超过 String(255)
+            # 并使合法的 255 字凭证在取消时撞库，也会覆盖原始财务说明。
+            await write_audit(
+                session, operator_id=user.id, action="reject", business_type="payment",
+                business_id=payment.id, before={"status": "pending"},
+                after={"status": "rejected", "comment": "订单取消，随单驳回"},
+                ip=client_ip(request),
             )
     if plan_ids:
         # 未回清的应收计划置为已取消
@@ -1005,6 +1010,25 @@ async def cancel_order(
     ).scalars().all()
     for batch in planned_batches:
         batch.status = "cancelled"
+    from app.modules.order.model import OrderScheduleChange
+
+    pending_changes = (await session.execute(
+        select(OrderScheduleChange).where(
+            OrderScheduleChange.order_id == order.id, OrderScheduleChange.status == "pending"
+        ).order_by(OrderScheduleChange.id).with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    for change in pending_changes:
+        change.status = "cancelled"
+        change.cancel_reason = "订单取消，随单作废未生效的交期变更"
+        change.cancelled_by = user.id
+        change.cancelled_at = datetime.now(UTC)
+        await write_audit(
+            session, operator_id=user.id, action="cancel_schedule_change", business_type="order",
+            business_id=order.id, before={"change_id": change.id, "status": "pending"},
+            after={"change_id": change.id, "status": "cancelled", "reason": change.cancel_reason},
+            ip=client_ip(request),
+        )
     await write_audit(
         session,
         operator_id=user.id,
