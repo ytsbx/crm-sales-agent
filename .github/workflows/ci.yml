@@ -107,45 +107,19 @@ jobs:
         # ⚠️ 为什么要这一步（2026-10-14 复盘：CI 连红十几次，全是同一类）
         #
         # 这个仓库经常有**多个会话同时改**。反复出现的病程是：
-        #   **登记项与其对应物被拆到不同提交里** ——
-        #   有人往 `ops/check_suites.txt` / 本文件加了一行、或先写了断言，
-        #   而脚本/测试文件/实现还在他工作区；另一个人提交时把登记项一起带上主干
-        #   → CI 跑分支上的一切 → **所有人的 CI 红**，而且红在下游
-        #   （"找不到脚本/文件"、"旧负责人仍能删除客户"），
-        #   指向的是受害者，不是那个漏提交的人。
+        # **登记项与其对应物被拆到不同的提交里** ——
+        # 有人往 ops/check_suites.txt 或本文件加了一行、或先写了断言，
+        # 而脚本/测试文件/实现还在他工作区；另一个人提交时把登记项一起带上主干
+        # → CI 跑分支上的一切 → **所有人的 CI 红**，且红在下游
+        # （"找不到脚本/文件"、"旧负责人仍能删除客户"），指向受害者而不是漏提交的人。
         #
-        # 这一步把这类问题**前置**到第一个 job 的第一步，并**逐个点名**缺哪个文件，
-        # 于是"红"直接告诉你去补什么，而不是让人一条条套件翻日志。
-        run: |
-          set -uo pipefail
-          missing=""
-          while read -r suite; do
-            case "$suite" in '' | '#'*) continue ;; esac
-            if [ ! -f "backend/scripts/${suite}.py" ]; then
-              missing="${missing}\n  · 套件清单 ops/check_suites.txt 登记了 ${suite}，但 backend/scripts/${suite}.py 不在仓库里"
-            fi
-          done < ops/check_suites.txt
-          # 前端单测：ci.yml 里 `node --test ../ops/xxx.test.mjs` 提到的文件
-          while read -r file; do
-            [ -z "$file" ] && continue
-            if [ ! -f "ops/${file}" ]; then
-              missing="${missing}\n  · ci.yml 登记了前端单测 ops/${file}，但文件不在仓库里"
-            fi
-          # ⚠️ 先**剥掉注释**再抓：我第一版直接 grep 整个文件，把自己注释里举的
-          # 例子（`node --test ../ops/xxx.test.mjs`）也当成了登记项 → 自检假红。
-          done <<< "$(sed 's/#.*//' .github/workflows/ci.yml | grep -oE 'ops/[A-Za-z0-9_.-]+\.test\.mjs' | sed 's|^ops/||' | sort -u)"
-          # run_checks.sh 里登记的单测同样要存在
-          while read -r file; do
-            [ -z "$file" ] && continue
-            if [ ! -f "ops/${file}" ]; then
-              missing="${missing}\n  · ops/run_checks.sh 登记了 ops/${file}，但文件不在仓库里"
-            fi
-          done <<< "$(sed 's/#.*//' ops/run_checks.sh | grep -oE '\$SCRIPT_DIR/[A-Za-z0-9_.-]+\.test\.mjs' | sed 's|^\$SCRIPT_DIR/||' | sort -u)"
-          if [ -n "$missing" ]; then
-            printf "::error::登记项缺文件（多半是有人加了登记行、对应的脚本/测试还没提交）%b\n" "$missing"
-            exit 1
-          fi
-          echo "登记项自检通过：清单与单测文件都在仓库里"
+        # ⚠️ 判定写在 `backend/scripts/check_registered_files.py` 里，**不要塞回 bash**：
+        # 我第一版就是写成这里的一段 bash（`while read` + 嵌套 `$(grep … | sed …)`），
+        # 本地与干净检出都过、**CI 上却红且不打印缺哪个文件** —— 嵌套命令替换 +
+        # sed 转义在不同 shell 下行为不同，是最难查的一类红。
+        # 现在它是个能离线跑、能自己测的脚本（`--list` 只列不判失败）。
+        working-directory: backend
+        run: PYTHONPATH=. python scripts/check_registered_files.py
 
       - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
         # 三处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：
