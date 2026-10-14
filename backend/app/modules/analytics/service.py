@@ -1925,6 +1925,35 @@ async def delivery_stats(
 TEAM_SCOPES = {"department", "department_and_sub", "all"}
 
 
+def _won_this_month_cte(month_start):
+    """「本月成交」的**唯一判据**：本月**进入赢单阶段**的商机。
+
+    ⚠️ 不能用 `Opportunity.updated_at`：它由 TimestampMixin 的 `onupdate` 在任何一次
+    编辑时刷新，回答的是"最后一次被改动的时间"。用它会把 8 月成交、10 月被改一次
+    跟进的单算进 10 月，也会让本月成交的单在次月被编辑后**滚出**当月统计
+    （2026-10-14 审查）。`Opportunity` 没有 `won_at` 列，正确来源是阶段历史
+    `entered_at` —— 与 `opportunity_cycle`（用 max(entered_at)）同一份数据。
+
+    抽成一处的原因：`team_summary` 的团队合计与成员明细各写了一遍同样的条件，
+    口径必然漂移（这正是"同一个判据铺了 N 处只改 M 处"的老毛病）。
+    """
+    win_stage_ids = select(OpportunityStage.id).where(OpportunityStage.is_win.is_(True))
+    return (
+        select(Opportunity.id)
+        .join(
+            OpportunityStageHistory,
+            OpportunityStageHistory.opportunity_id == Opportunity.id,
+        )
+        .where(
+            Opportunity.deleted_at.is_(None),
+            Opportunity.status == "win",
+            OpportunityStageHistory.to_stage_id.in_(win_stage_ids),
+            OpportunityStageHistory.entered_at >= month_start,
+        )
+        .distinct()
+    )
+
+
 async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     """主管工作台汇总。
 
@@ -1995,17 +2024,24 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     ).scalar_one()
 
     # 团队成交情况（本月）
+    #
+    # ⚠️ 「本月**成交**」的判据必须是"**进入赢单阶段的时间**"
+    # （`opportunity_stage_history.entered_at`），**不能**用 `Opportunity.updated_at`：
+    # `updated_at` 由 TimestampMixin 的 `onupdate` 在任何一次编辑时刷新，它回答的是
+    # "最后一次被改动的时间"。用它的后果（2026-10-14 审查）：
+    #   · 8 月成交的单在 10 月被改一次跟进/需求明细，就被算进 **10 月**的成交；
+    #   · 本月成交的单次月被编辑，就**滚出**当月统计。
+    # 这两个数字是考核口径（前端渲染成"本月团队成交"计数与成交额）。
+    # `Opportunity` 没有 `won_at` 列，正确来源就是阶段历史 —— 与
+    # `opportunity_cycle`（:896 用 max(entered_at)）同一份数据。
+    won_ids = _won_this_month_cte(month_start)
     won_count, won_amount = (
         await session.execute(
             scoped(
                 select(
                     func.count(Opportunity.id),
                     func.coalesce(func.sum(Opportunity.expected_amount), 0),
-                ).where(
-                    Opportunity.deleted_at.is_(None),
-                    Opportunity.status == "win",
-                    Opportunity.updated_at >= month_start,
-                ),
+                ).where(Opportunity.id.in_(won_ids)),
                 Opportunity.owner_id,
             )
         )
@@ -2037,9 +2073,7 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
             await session.execute(
                 select(func.coalesce(func.sum(Opportunity.expected_amount), 0)).where(
                     Opportunity.owner_id == member.id,
-                    Opportunity.deleted_at.is_(None),
-                    Opportunity.status == "win",
-                    Opportunity.updated_at >= month_start,
+                    Opportunity.id.in_(won_ids),
                 )
             )
         ).scalar_one()
