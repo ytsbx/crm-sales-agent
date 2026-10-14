@@ -1624,9 +1624,18 @@ async def pricing_history(
     if sku_id is not None:
         stmt = _filter_history_by_sku(stmt, AuditLog, sku_id)
     if customer_id is not None:
+        # ⚠️ **不能用 `.astext`**（2026-10-14 审查修，实测 HTTP 500）。
+        # `AuditLog.after_data` 的类型是 `core/base.py` 的
+        # `JSONType = JSON().with_variant(JSONB(), "postgresql")` —— `with_variant`
+        # 只换**方言实现**，比较器仍是通用 `JSON` 的，而 `.astext` 只存在于原生
+        # `JSONB` 的比较器上。于是这行在**构造语句时**就抛
+        # `AttributeError: ... has no attribute 'astext'`（还没连库），
+        # 被全局兜底成 500 —— 任何带 `customer_id` 的调用必崩。
+        # 同文件 `_filter_history_by_sku` 的注释早就写明"走的是项目自己的 JSONType，
+        # 所以没有 `.astext`"，只有这一行漏改；这里与它统一用 cast 走文本匹配。
         stmt = stmt.where(
             (AuditLog.business_type == "customer_price_rule")
-            & AuditLog.after_data["customer_id"].astext == str(customer_id)
+            & cast(AuditLog.after_data, Text).like(f'%"customer_id": {int(customer_id)}%')
         )
     rows, total = await paginate(session, stmt.order_by(AuditLog.id.desc()), page, page_size)
 

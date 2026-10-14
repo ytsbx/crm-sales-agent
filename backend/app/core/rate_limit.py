@@ -29,9 +29,20 @@ def remaining_lock_seconds(
     window = window_minutes * 60
     now = time.monotonic()
     with _lock:
+        # ⚠️ `max_attempts <= 0` / `window_minutes <= 0` 必须**短路返回**
+        # （2026-10-14 审查修）。原判据是 `len(times) >= max_attempts`：把
+        # `LOGIN_MAX_ATTEMPTS=0` 当"关掉锁定"是很自然的运维动作，但那时**空列表**
+        # 也满足条件，紧接着 `times[0]` 直接 IndexError —— 而这行是**登录的第一步**
+        # （在取账号锁、校验密码之前），于是**所有登录请求**（含正确密码）都 500，
+        # 登录入口整体不可用。`window_minutes <= 0` 同理：窗口恒空 → 判据永不成立
+        # → 防爆破**静默失效**。实测：
+        # `remaining_lock_seconds('u|1.2.3.4', max_attempts=0, window_minutes=10)`
+        # → IndexError: list index out of range。
+        if max_attempts <= 0 or window_minutes <= 0:
+            return 0
         times = _prune(_failures.get(key, []), now, window)
         _failures[key] = times
-        if len(times) >= max_attempts:
+        if times and len(times) >= max_attempts:
             return max(1, int(window - (now - times[0])))
         return 0
 
