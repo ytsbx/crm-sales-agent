@@ -650,6 +650,7 @@ async def ship_sample(
     # 日期口径与校验（审查 C3-04）：北京日历日 → UTC 瞬时；不能晚于今天
     _assert_not_future(payload.shipped_at, "寄出日期")
     shipped_at = _parse_business_date(payload.shipped_at) if payload.shipped_at else svc.now()
+    _assert_not_before(shipped_at, sample.made_at, "寄出日期", "制作完成时间")
     shipment = SampleShipment(
         sample_request_id=sample.id,
         carrier=payload.carrier,
@@ -818,8 +819,8 @@ async def register_sample_made(
     _assert_not_future(made_at, "制作完成时间")
     # 顺序闸：已有寄出/签收事实时，制作必须在它们**之前或当天**（做完了才能寄）。
     # 复用那三处同一套 `_assert_not_before`，不另写比较（免得时区口径漂移）。
-    _assert_not_before(made_at, sample.shipped_at, "制作完成时间", "寄出日期")
-    _assert_not_before(made_at, sample.signed_at, "制作完成时间", "签收日期")
+    _assert_not_before(sample.shipped_at, made_at, "寄出日期", "制作完成时间")
+    _assert_not_before(sample.signed_at, made_at, "签收日期", "制作完成时间")
     note = (payload.remark or "").strip()
     event_key = payload.request_key or _fingerprint(made_at.isoformat(), note)
     events = list(sample.made_events or [])

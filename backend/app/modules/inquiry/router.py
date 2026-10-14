@@ -213,6 +213,9 @@ async def update_inquiry(
         CustomInquiry.id == (inquiry.root_id or inquiry.id)
     ).with_for_update())
     await session.refresh(inquiry)
+    if inquiry.deleted_at is not None:
+        raise AppError(ErrorCode.NOT_FOUND, "这一版已被删除", 404)
+    await svc.get_visible_or_404(session, user, inquiry_id)
     data = payload.model_dump(exclude_unset=True)
     if "status" in data and data["status"] is not None:
         svc.ensure_status(data["status"])

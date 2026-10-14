@@ -53,6 +53,18 @@ def serialize_file(record: FileRecord, uploader: str | None = None) -> dict:
     }
 
 
+async def _lock_sample_attachment(session, user, business_type, business_id):
+    """制作登记与附件修改共用单据锁；必须在文件锁之前取得。"""
+    if business_type != "sample":
+        return
+    from app.modules.sample.model import SampleRequest
+    from app.modules.sample import service as sample_service
+
+    (await session.execute(select(SampleRequest).where(SampleRequest.id == business_id)
+                           .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    await sample_service.get_visible_or_404(session, user, business_id)
+
+
 @router.post("/files/upload")
 async def upload_file(
     request: Request,
@@ -79,6 +91,7 @@ async def upload_file(
     # 制作依据（图纸、规格书）必须在制作当时就指定好，事后混进来的资料
     # 不能和依据混为一谈——见 access.sample_write_lock_label。
     if business_type == "sample" and business_id is not None:
+        await _lock_sample_attachment(session, user, business_type, business_id)
         lock = await sample_write_lock_label(session, business_id)
         if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
             raise AppError(
@@ -652,6 +665,7 @@ async def attach_file(
     # ③ 打样锁：已制作/寄出后，挂上来的只能是「后续补充资料」。
     #    与上传接口同一条判据，避免"上传被拦、改用挂载绕过去"。
     if business_type == "sample":
+        await _lock_sample_attachment(session, user, business_type, business_id)
         lock = await sample_write_lock_label(session, business_id)
         if lock is not None and (category or "").strip() != SUPPLEMENT_CATEGORY:
             raise AppError(
@@ -740,6 +754,7 @@ async def unlink_file(
     # 文件删除、回款凭证删除、产品/合同挂载都以文件行作为并发闸门。
     # 解绑也必须先拿同一把锁：否则删除流程查完引用后，解绑才提交，
     # 删除仍可能把文件记录清掉，留下指向不存在文件的 BusinessFile。
+    await _lock_sample_attachment(session, user, link.business_type, link.business_id)
     if await service.lock_file_row(session, link.file_id) is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
     # 等待文件锁后重新读取关联；另一个解绑请求可能已经提交删除了它。

@@ -14,6 +14,7 @@ from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.notification import service as notification_service
 from app.modules.task.model import Task
+from app.modules.task.locking import lock_customers, lock_task_customers
 from app.modules.task.schema import (
     TaskAssign,
     TaskBatchComplete,
@@ -31,7 +32,8 @@ STATUS_LABEL = {"pending": "待处理", "doing": "处理中", "done": "已完成
 
 
 async def _visible_task(
-    session: AsyncSession, user: CurrentUser, task_id: int, *, for_update: bool = False
+    session: AsyncSession, user: CurrentUser, task_id: int, *, for_update: bool = False,
+    _parents: dict | None = None,
 ) -> Task:
     """取任务并校验数据范围。
 
@@ -45,6 +47,7 @@ async def _visible_task(
     那一层由 `_guard_task_active` 的原子条件更新兜底。
     """
     if for_update:
+        parents = _parents if _parents is not None else await lock_task_customers(session, [task_id])
         # ⚠️ `populate_existing=True` 不能省（审查 B2-03 的关键一处）：
         # 只加 `with_for_update()` **不会刷新已加载对象** —— 会话的 identity map 里
         # 可能已经有这个 Task（本次请求早先读过，或同一会话里被改过），
@@ -60,6 +63,8 @@ async def _visible_task(
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
+        if task is not None and task.customer_id != parents.get(task_id):
+            raise AppError(ErrorCode.VERSION_CONFLICT, "任务关联客户刚被改变，请刷新后重试", 409)
     else:
         task = await session.get(Task, task_id)
     if task is None:
@@ -420,6 +425,8 @@ async def create_task(
     from app.modules.task.refs import normalize_task_refs
 
     data, _ = await normalize_task_refs(session, user, data, strict=True)
+    await lock_customers(session, [data.get("customer_id")])
+    data, _ = await normalize_task_refs(session, user, data, strict=True)
 
     # 联系人归属、单据与客户的一致性、以及"推断出来的客户"的兜底范围校验，
     # 都在上面那次 `normalize_task_refs` 里做完了 —— 不再在这里重复一套。
@@ -743,6 +750,10 @@ async def batch_complete_tasks(
     if not payload.task_ids:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "task_ids 不能为空", 422)
     unique_ids = list(dict.fromkeys(payload.task_ids))
+    # 一次预锁全部客户与任务，避免两批任务按不同顺序获取跨客户的锁。
+    parents = await lock_task_customers(session, unique_ids)
+    await session.execute(select(Task).where(Task.id.in_(unique_ids)).order_by(Task.id)
+                          .with_for_update().execution_options(populate_existing=True))
 
     completed: list[int] = []
     skipped: list[dict] = []
@@ -750,7 +761,9 @@ async def batch_complete_tasks(
     now = datetime.now(UTC)
     for task_id in unique_ids:
         try:
-            task = await _visible_task(session, user, task_id, for_update=True)
+            task = await _visible_task(session, user, task_id, for_update=True, _parents=parents)
+            if task.customer_id != parents.get(task_id):
+                raise AppError(ErrorCode.VERSION_CONFLICT, "任务关联客户刚被改变，请刷新后重试", 409)
         except AppError as error:
             skipped.append({"task_id": task_id, "reason": error.message})
             continue

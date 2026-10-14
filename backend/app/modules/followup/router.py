@@ -23,16 +23,25 @@ from app.modules.followup.schema import (
 )
 from app.modules.opportunity.model import Opportunity
 from app.modules.task.model import Task
+from app.modules.task.locking import lock_customers
 from app.modules.user.model import User
 
 router = APIRouter(tags=["FollowUp"])
 
 
 async def _visible_followup(
-    session: AsyncSession, user: CurrentUser, followup_id: int
+    session: AsyncSession, user: CurrentUser, followup_id: int, *, for_update=False
 ) -> FollowUp:
     """取跟进记录并校验与附件共用的数据范围。"""
-    return await get_visible_followup(session, user, followup_id)
+    row = await get_visible_followup(session, user, followup_id)
+    if for_update:
+        parent = row.customer_id
+        await lock_customers(session, [parent])
+        await session.refresh(row, with_for_update=True)
+        if row.customer_id != parent:
+            raise AppError(ErrorCode.VERSION_CONFLICT, "跟进关联客户刚被改变，请刷新后重试", 409)
+        row = await get_visible_followup(session, user, followup_id)
+    return row
 
 
 @router.get("/followups")
@@ -91,7 +100,7 @@ async def update_followup(
     user: CurrentUser = Depends(require_permission("followup:create")),
     session: AsyncSession = Depends(get_db),
 ):
-    followup = await _visible_followup(session, user, followup_id)
+    followup = await _visible_followup(session, user, followup_id, for_update=True)
     if followup.followup_type == "系统":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "系统过程记录不可编辑，请在原单执行业务操作", 422)
     await session.refresh(followup, with_for_update=True)
@@ -192,9 +201,7 @@ async def create_next_task(
     不用再手填一遍 —— 这也是这个接口存在的意义。
     负责人默认记跟进的本人；显式指定时校验存在且在职。
     """
-    followup = await _visible_followup(session, user, followup_id)
-
-    await session.refresh(followup, with_for_update=True)
+    followup = await _visible_followup(session, user, followup_id, for_update=True)
     if followup.next_task_id:
         task = await session.get(Task, followup.next_task_id)
         if task:
