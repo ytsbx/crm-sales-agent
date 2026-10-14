@@ -258,6 +258,29 @@ _COST_ONLY_ITEM_FIELDS = (
     "profit_rate_snapshot",
 )
 
+#: `approval_reason` 里出现这些词，说明它**带了底价/成本推导出来的数字**，无 `price:manage`
+#: 时必须整句换成"报价超出价格权限，需要审批"。
+#
+# ⚠️ 2026-10-14 审查修：这里原来只有 ("最低允许价", "利润率", "毛利率")，
+# 而**同一个函数里写出来的文案还有两种说法**：
+#   - 定制项那条写的是「低于**最低保护价** ¥120.00（成本 ¥…×(1+…))」—— 不含上面任一词，
+#     于是**底价与成本原样下发**给只有 `quote:view` 的销售；
+#     实测：`定制项报价 ¥100.00（折人民币）低于最低保护价 ¥120.00（含定制项保护价）`
+#     在 hide=True 时**没有**被脱敏。
+#   - 普通那条 `报价 … 低于最低允许价 ¥…，利润率 …%` 之所以看着"没事"，是因为它
+#     **恰好**还含"利润率"三个字撞上了 —— 判据并没真正生效，改一个字就会漏。
+# 所以判据不能靠"记得把这几个词抄全"，而是**把底价类说法都列进来**。
+# 判据只有这一处；将来新增文案若带 ¥ 数字，都应含下列任一词（或在 `check_output_criteria`
+# 里被点名）。
+_FLOOR_TERMS = (
+    "最低允许价",
+    "最低保护价",
+    "保护价",
+    "成本价",
+    "利润率",
+    "毛利率",
+)
+
 #: `price_source` 取这个值时，说明这条明细的成本是**业务员自己填的人工核价成本**
 #: （定制项，`_build_custom_item_snapshot` 落的就是它）——那是操作人自己的输入，
 #: 不是公司内部成本，隐了就没法编辑定制项。主人 2026-10-10 拍板：这一种不隐。
@@ -305,7 +328,7 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         "approval_required": item.approval_required,
         "approval_reason": (
             "报价超出价格权限，需要审批" if hide and item.approval_reason
-            and any(term in item.approval_reason for term in ("最低允许价", "利润率", "毛利率"))
+            and any(term in item.approval_reason for term in _FLOOR_TERMS)
             else item.approval_reason
         ),
         "remark": item.remark,

@@ -23,9 +23,35 @@ NAME_SUFFIXES = (
 
 
 def normalize_name(name: str | None) -> str:
+    """公司名归一化：去空白 + **只削结尾的企业后缀** + 转小写。
+
+    ⚠️ **必须只削结尾**（2026-10-14 审查修，实测复现）。
+
+    原来写的是 `text.replace(suffix, "")` —— `str.replace` 删的是**字符串里任意位置**
+    的该子串，而 `NAME_SUFFIXES` 里有 `厂`、`公司`、`集团` 这类单字/短词。
+    于是它们出现在名称**中间**时也被吃掉，两家**完全不同的公司**归一成同一个串，
+    拿到 `weight_name_exact`（默认 60 分，阈值 50 → **单独就能触发**）：
+
+        上海厂务贸易有限公司  → 上海务贸易
+        上海务贸易有限公司    → 上海务贸易     ← 判成"企业名称一致"，60 分
+        三厂劳务 / 三劳务                        ← 同样 60 分
+
+    后果是业务会据此把两家公司当同一家（导入客户时开待撞单裁定、合并时选错档案）。
+    而"宁波宏远包装制品厂"与"宁波宏远包装制品有限公司"**本来就该判同义** ——
+    区别只在于：后者是真正的后缀，前者是名字里的一个字。
+
+    实现：从**结尾**按"最长优先"反复削（`NAME_SUFFIXES` 已是长→短排列），
+    且削到只剩 1 个字符就停（避免"厂"这类名字被削成空串）。
+    """
     text = (name or "").strip().replace(" ", "").replace("　", "")
-    for suffix in NAME_SUFFIXES:
-        text = text.replace(suffix, "")
+    changed = True
+    while changed and len(text) > 1:
+        changed = False
+        for suffix in NAME_SUFFIXES:
+            if len(text) > len(suffix) and text.endswith(suffix):
+                text = text[: -len(suffix)]
+                changed = True
+                break
     return text.lower()
 
 

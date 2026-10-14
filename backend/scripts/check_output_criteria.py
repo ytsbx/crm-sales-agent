@@ -120,11 +120,54 @@ RULES = (
 )
 
 
+#: `approval_reason` 里出现这些词，说明这句话**带了底价/成本推导出来的数字**。
+#: 判据的另一半在 `quote/service.py` 的 `_FLOOR_TERMS`（脱敏时按它整句替换）——
+#: 两处必须同源，否则"写了带金额的理由、却不含这些词"就会把底价原样下发。
+FLOOR_TERMS = ("最低允许价", "最低保护价", "保护价", "成本价", "利润率", "毛利率")
+
+#: 抓 `approval_reason = ( ... )` 这一段（可跨行），看里面有没有 ¥ 金额
+APPROVAL_REASON_BLOCK = re.compile(
+    r"approval_reason\s*=\s*\(?((?:[^\n]*\n){0,4}?\s*[^\n]*)", re.M
+)
+
+
+def check_approval_reason_terms(text: str, rel: str) -> list[str]:
+    """带金额的 `approval_reason` 必须含 `FLOOR_TERMS` 里的词。
+
+    ## 为什么单列一条（2026-10-14 审查修）
+
+    `serialize_item` 对无 `price:manage` 的调用方会把 `approval_reason`
+    整句换成"报价超出价格权限，需要审批"，**判据是这句话里有没有底价类词**。
+    原来的词表只有 ("最低允许价", "利润率", "毛利率")，而定制品那条文案写的是
+    「低于**最低保护价** ¥120.00（成本 ¥…）」—— 一个都不含，
+    于是**底价与成本原样下发**（实测复现）。
+    普通那条看着没事，是因为它恰好还写了"利润率"撞上了 —— 判据并没生效。
+
+    所以：**新增带金额的理由，必须含下列任一词**，否则这条检查会红。
+    """
+    out: list[str] = []
+    for m in APPROVAL_REASON_BLOCK.finditer(text):
+        block = m.group(1)
+        if "¥" not in block:
+            continue
+        if any(t in block for t in FLOOR_TERMS):
+            continue
+        line = text[: m.start()].count("\n") + 1
+        out.append(
+            f"  ✗ [审批理由带金额但不含底价类词] {rel}:{line} "
+            f"（这句话不会被脱敏，底价会原样下发给无 price:manage 的人）"
+        )
+    return out
+
+
 def main() -> int:
     findings: list[str] = []
     scanned = 0
     for path in sorted(APP.rglob("*.py")):
         text = path.read_text(encoding="utf-8")
+        rel = path.relative_to(APP.parent)
+        # 文件级判据：带金额的 approval_reason 必须含底价类词
+        findings.extend(check_approval_reason_terms(text, str(rel)))
         for name, line, body in functions(text):
             scanned += 1
             for label, trigger, gates, _desc in RULES:
@@ -132,7 +175,6 @@ def main() -> int:
                     continue
                 if any(gate in body for gate in gates):
                     continue
-                rel = path.relative_to(APP.parent)
                 if (str(rel), name) in EXCEPTIONS:
                     continue
                 findings.append(f"  ✗ [{label}] {rel}:{line} {name}()")
