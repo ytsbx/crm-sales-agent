@@ -95,3 +95,43 @@ export function resolveOaInstance(oaId: number, payload: OaResolvePayload) {
 export function syncOaApprovals() {
   return api.post<{ checked: number; changed: number; disabled?: boolean; message?: string }>('/dingtalk/oa-sync')
 }
+
+/**
+ * 同步成员 —— 把 CRM 账号和钉钉通讯录里的人对上（写账号上的「钉钉编号」）。
+ *
+ * 这是**钉钉登录的地基**：钉钉只会告诉系统"这是某某的钉钉号"，它不知道这人在
+ * CRM 里是什么角色；对上之后系统才认得出"进来的这个人是哪一位"。
+ *
+ * 服务端**不建账号**：钉钉里有人、CRM 里没账号的，只会出现在 `unmatched` 里，
+ * 由管理员去建。已经绑好的也不会被改绑（改绑等于换掉一个人的登录身份）。
+ */
+export function syncDingTalkUsers() {
+  return api.post<DingTalkSyncResult>('/dingtalk/sync-users')
+}
+
+/** 对不上的一条。`reason` 是机器判据，`reason_label` 是直接能显示的说明。 */
+export interface DingTalkUnmatched {
+  name: string
+  mobile: string
+  reason: 'no_account' | 'ambiguous_mobile' | 'ambiguous_name'
+  reason_label: string
+}
+
+export interface DingTalkSyncResult {
+  /**
+   * 推送总闸关着。此时**一次请求都没发出去**，下面的数字全是 0，
+   * 原因在 `message` 里 —— 界面必须把它和"钉钉里确实没人"区分开。
+   */
+  disabled: boolean
+  message?: string
+  /** 钉钉通讯录里一共多少人 */
+  total: number
+  /** 本次新绑上的 */
+  bound: number
+  /** 本次开始前就已经绑好的 */
+  already_bound: number
+  /** 对不上的（要管理员去处理，不是错误） */
+  unmatched: DingTalkUnmatched[]
+  /** CRM 里还没绑钉钉的在用账号（这些人暂时登不了钉钉） */
+  unbound_crm: { id: number; name: string; username: string }[]
+}

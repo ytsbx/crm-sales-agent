@@ -98,6 +98,10 @@ def serialize_user(user: User, *, department_name: str | None = None, roles: lis
         "department_id": user.department_id,
         "department": department_name,
         "wecom_userid": user.wecom_userid,
+        # 钉钉身份：**列表页要靠它显示「已绑定 / 未绑定」**。
+        # 不下发的话前端那一列永远是空的（而后端其实绑好了），
+        # 这种"数据在库里、界面看不见"最难排查。
+        "dingtalk_userid": user.dingtalk_userid,
         "status": user.status,
         "roles": roles or [],
         "created_at": user.created_at.isoformat() if user.created_at else None,

@@ -40,6 +40,15 @@ class User(Base, IdMixin, TimestampMixin):
         BigInteger, ForeignKey("departments.id"), nullable=True
     )
     wecom_userid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: 钉钉 userid（企业内部应用的成员编号）。有值 = 这个人可以用钉钉登录。
+    #:
+    #: 为什么与 wecom_userid 并列而不是另建映射表（2026-10-14）：绑定关系
+    #: **只需要「一个人 ↔ 一个编号」**这一件事，没有企微那种"外部联系人待归一"
+    #: 的中间态，所以不必为它开一张表。多余的中间表只会多一处要维护的一致性。
+    #:
+    #: 长度给 128：钉钉 userid 官方口径"最长 64 字符"，但手机号格式的 userid
+    #: 会带上企业后缀，实际见过更长的（与 wecom_users.wecom_userid 取同一长度）。
+    dingtalk_userid: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
 
 

@@ -52,6 +52,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'delete': '删除',
   'delete_item': '删除明细',
   'detach': '解除挂载',
+  'dingtalk_sync_users': '钉钉同步成员',
   'disable': '停用',
   'discard': '废弃',
   'download': '下载',

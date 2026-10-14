@@ -22,6 +22,10 @@ check_approval_rules
 check_approval_inbox
 check_agent_stream
 check_scheduler
+# 钉钉人员绑定（直连库、不依赖网络）：验的是"把账号和钉钉成员对上的规矩"——
+# 手机号优先、姓名唯一才认、重名不猜、已绑不改绑、绝不自动建账号。
+# 用替身通讯录，所以不会真的去打扰钉钉那边的人。
+check_dingtalk_user_bind
 check_quote_center_acceptance
 check_custom_no_sku
 # 定制询价修订链（第十二批 12.6）：删掉某一版之后，仍能以更早的版本出新版 ——

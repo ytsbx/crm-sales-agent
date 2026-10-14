@@ -381,6 +381,64 @@ class DingTalkClient:
             )
         return list((data.get("result") or {}).get("dept_id_list") or [])
 
+    # ---- 通讯录（拉全公司的人，给"钉钉号 ↔ CRM 账号"对上用）----------------
+    #
+    # 钉钉**没有**"给我全公司的人"这一个接口，只能从根部门（id = 1）开始
+    # 逐层取子部门、再取每个部门的成员，自己去重 —— 同一个人可以在多个部门里出现。
+    # 去重与遍历放在 service 层（那是业务动作），这里只提供两个原子能力。
+
+    async def list_sub_departments(self, dept_id: int) -> list[dict[str, Any]]:
+        """列某个部门下的**直接**子部门（根部门 id 固定为 1）。
+
+        参数名是 `dept_id`（下划线），结果在 `result` 里 —— 与 `topapi/v2/user/list`
+        同一套写法（这组旧版接口用的是这个形制，别按新版的 `deptId` 写）。
+        """
+        self._require()
+        token = await self.access_token()
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                "https://oapi.dingtalk.com/topapi/v2/department/listsub",
+                params={"access_token": token},
+                json={"dept_id": dept_id},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("errcode"):
+            raise DingTalkError(
+                data.get("errmsg") or "department/listsub 失败",
+                api="topapi/v2/department/listsub",
+                http_status=resp.status_code,
+            )
+        return list(data.get("result") or [])
+
+    async def list_department_users(
+        self, dept_id: int, *, cursor: int = 0, size: int = 100
+    ) -> dict[str, Any]:
+        """列某个部门的**直接**成员，返回原样的 `result`（要按 cursor 翻页）。
+
+        返回 `{list: [...], has_more: bool, next_cursor: int}`，每个人的字段里
+        有 `userid` / `name` / `mobile` / `unionid`（`mobile` 需要有通讯录手机号权限）。
+
+        翻页的收尾判据是 **`has_more`**，不是"返回条数 < size"：钉钉最后一页
+        也可能给满 100 条并把 `has_more` 置 false，按条数判会多要一次空页。
+        `size` 上限 100，传大了接口会拒。
+        """
+        self._require()
+        token = await self.access_token()
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                "https://oapi.dingtalk.com/topapi/v2/user/list",
+                params={"access_token": token},
+                json={"dept_id": dept_id, "cursor": cursor, "size": size},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("errcode"):
+            raise DingTalkError(
+                data.get("errmsg") or "user/list 失败",
+                api="topapi/v2/user/list",
+                http_status=resp.status_code,
+            )
+        return dict(data.get("result") or {})
+
 
 _client: DingTalkClient | None = None
 

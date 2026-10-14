@@ -51,7 +51,9 @@ from app.modules.dingtalk.client import (
     OUTCOME_NOT_SENT,
     OUTCOME_REJECTED,
     OUTCOME_UNKNOWN,
+    DingTalkDisabled,
     DingTalkError,
+    DingTalkNotConfigured,
     classify_outcome,
     get_client,
 )
@@ -62,6 +64,7 @@ from app.modules.dingtalk.model import (
     OaInstance,
     allowed_actions,
 )
+from app.modules.user.model import User
 
 #: 停在 `submitting` / 核定占用超过这个时长，就认为那次尝试已经死了
 #: （进程被杀、机器重启、调用方再也没回来），允许重新发起或重新占用。
@@ -905,4 +908,237 @@ def serialize(row: OaInstance) -> dict:
         "last_attempt_at": (
             row.last_attempt_at.isoformat() if row.last_attempt_at else None
         ),
+    }
+
+
+# ====================================================== 人员绑定（钉钉登录用）==
+#
+# 目的：把「钉钉成员」和「CRM 账号」对上，结果写进 `users.dingtalk_userid`。
+# 有了这一列，以后从钉钉扫码 / 工作台免登进来的人，系统才知道他是**谁**。
+#
+# 三条纪律（与 `wecom/service.py::sync_users` 是**同一套**，不是另写一份）：
+#
+# 1. **绝不自动建账号。** 建账号要定角色与数据范围，那是人的决定，不能是同步的
+#    副作用。钉钉里有人、CRM 里没账号 → 列出来让管理员去建，本次一个都不建。
+# 2. **匹配顺序：已绑定 → 手机号 → 姓名。** 手机号在前，因为它唯一性强；
+#    姓名只做兜底，且**只有唯一命中才算**——重名时宁可留给人工判，也不猜。
+# 3. **已绑定的不覆盖。** 一个人已经绑了钉钉号，后续同步不因手机号变了就改绑：
+#    改绑等于把别人的登录身份换掉，那必须由管理员在界面上明确操作。
+#
+# ⚠️ 与企微那套的差别只有"数据从哪来"：企微是先落一张 `wecom_users` 映射表、
+# 人再慢慢归一；钉钉这里**不留中间表**——点一次按钮当场对完，对不上的直接列给
+# 管理员看。绑定的全部内容就是"一个人 ↔ 一个编号"，不需要中间态。
+
+#: 对不上的原因。**分开报**，不能笼统说一句"未匹配"——
+#: 「CRM 里没这个账号」和「重名判不了」要做的事完全不同（前者去建号，后者去核人）。
+BIND_REASON_LABEL: dict[str, str] = {
+    "no_account": "CRM 里没有能对上的账号",
+    "ambiguous_mobile": "手机号在系统里对到了多个账号",
+    "ambiguous_name": "姓名重复，无法判断是哪一位",
+}
+
+
+def _norm_mobile(value: Any) -> str:
+    """手机号比对口径：只留数字。
+
+    钉钉给的是 `13800000000`，人工在 CRM 里可能填成 `138 0000 0000`。
+    不归一化就会冒出"明明是同一个人却说对不上"。
+
+    **只去非数字字符，不剥区号**：`+86` 前缀在两边不一致时，宁可对不上留给人工，
+    也不能把 `8613800000000` 猜成同一个人——猜错就是把两个人绑串了，
+    而绑串的后果是"张三用李四的身份登录"。
+    """
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _norm_name(value: Any) -> str:
+    return str(value or "").strip()
+
+
+async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
+    """拉全公司成员：从根部门（id=1）广度优先走完部门树，再按 userid 去重。
+
+    为什么要自己走树：钉钉**没有**"全公司成员"这一个接口，只有"某部门的直属成员"，
+    而一个人可以同时挂在多个部门下 —— 不去重的话他会以多个身份出现，
+    匹配阶段自己和自己撞（第一次绑上了，第二次又把它判成"已占用"）。
+    """
+    members: dict[str, dict[str, Any]] = {}
+    pending: list[int] = [1]
+    seen: set[int] = set()
+    while pending:
+        dept_id = pending.pop(0)
+        if dept_id in seen:
+            continue
+        seen.add(dept_id)
+
+        for sub in await api.list_sub_departments(dept_id):
+            try:
+                sub_id = int(sub.get("dept_id"))
+            except (TypeError, ValueError):
+                # 少 dept_id 的节点没法继续往下走，跳过；
+                # 不为一个坏节点中断整棵树（否则全公司的人都拉不到）
+                continue
+            if sub_id not in seen:
+                pending.append(sub_id)
+
+        cursor = 0
+        while True:
+            page = await api.list_department_users(dept_id, cursor=cursor)
+            for item in page.get("list") or []:
+                uid = str(item.get("userid") or "")
+                if uid and uid not in members:
+                    members[uid] = item
+            if not page.get("has_more"):
+                break
+            next_cursor = page.get("next_cursor")
+            # 反复给同一个 cursor 会死循环（接口异常时的兜底），宁可少拉一页
+            if next_cursor in (None, cursor):
+                break
+            cursor = int(next_cursor)
+    return list(members.values())
+
+
+async def sync_users(session: AsyncSession) -> dict:
+    """把 CRM 账号与钉钉成员对上，写 `users.dingtalk_userid`。**不建账号。**
+
+    判据顺序见本段开头三条纪律。返回里把"对不上的"和"还没绑的"分开列出来：
+    前者要管理员去处理，后者只是提示"这个人还进不来"。
+    """
+    # 总闸关着就**别去拉**，也说清楚"这一步没真的做"——
+    # 与 `sync_pending_instances` 同一口径（不抛错、不假装成功）。
+    if app_settings.dingtalk_push_off:
+        return {
+            "disabled": True,
+            "message": DINGTALK_DISABLED_MESSAGE,
+            "total": 0,
+            "bound": 0,
+            "already_bound": 0,
+            "unmatched": [],
+            "unbound_crm": [],
+        }
+
+    api = get_client()
+    try:
+        members = await fetch_all_members(api)
+    except DingTalkDisabled:
+        return {
+            "disabled": True,
+            "message": DINGTALK_DISABLED_MESSAGE,
+            "total": 0,
+            "bound": 0,
+            "already_bound": 0,
+            "unmatched": [],
+            "unbound_crm": [],
+        }
+    except DingTalkNotConfigured as exc:
+        # 缺凭据是"服务端没配好"，不是对方的错 → 503，并把缺哪一项说清楚
+        raise AppError(ErrorCode.EXTERNAL_ERROR, str(exc), 503) from exc
+    except DingTalkError as exc:
+        raise AppError(
+            ErrorCode.EXTERNAL_ERROR, f"读取钉钉通讯录失败：{exc}", 502
+        ) from exc
+
+    crm_users = list((await session.execute(select(User))).scalars().all())
+
+    bound: dict[str, User] = {}
+    free_by_mobile: dict[str, list[User]] = {}
+    free_by_name: dict[str, list[User]] = {}
+    for row in crm_users:
+        if row.dingtalk_userid:
+            bound[str(row.dingtalk_userid)] = row
+            continue
+        mobile = _norm_mobile(row.mobile)
+        if mobile:
+            free_by_mobile.setdefault(mobile, []).append(row)
+        name = _norm_name(row.name)
+        if name:
+            free_by_name.setdefault(name, []).append(row)
+
+    newly_bound = 0
+    already_bound = 0
+    unmatched: list[dict[str, Any]] = []
+
+    def _bind(target: User, dingtalk_userid: str) -> None:
+        nonlocal newly_bound
+        target.dingtalk_userid = dingtalk_userid
+        bound[dingtalk_userid] = target
+        # 立刻从"待匹配"里摘掉：同一次同步内，一个人只能被绑一次，
+        # 否则后面同一个姓名的成员会把它当成候选再次命中。
+        mobile = _norm_mobile(target.mobile)
+        if mobile and target in free_by_mobile.get(mobile, []):
+            free_by_mobile[mobile].remove(target)
+        name = _norm_name(target.name)
+        if name and target in free_by_name.get(name, []):
+            free_by_name[name].remove(target)
+        newly_bound += 1
+
+    for member in members:
+        dingtalk_userid = str(member.get("userid") or "")
+        if not dingtalk_userid:
+            continue
+        if dingtalk_userid in bound:
+            # 这个钉钉号已经有主了：**保持不动**（含本次刚绑的，见纪律 1）
+            already_bound += 1
+            continue
+
+        name = _norm_name(member.get("name"))
+        mobile = _norm_mobile(member.get("mobile"))
+        display_mobile = str(member.get("mobile") or "")
+
+        candidates = free_by_mobile.get(mobile, []) if mobile else []
+        if len(candidates) == 1:
+            _bind(candidates[0], dingtalk_userid)
+            continue
+        if len(candidates) > 1:
+            unmatched.append(
+                {
+                    "name": name,
+                    "mobile": display_mobile,
+                    "reason": "ambiguous_mobile",
+                    "reason_label": BIND_REASON_LABEL["ambiguous_mobile"],
+                }
+            )
+            continue
+
+        candidates = free_by_name.get(name, []) if name else []
+        if len(candidates) == 1:
+            _bind(candidates[0], dingtalk_userid)
+            continue
+        if len(candidates) > 1:
+            unmatched.append(
+                {
+                    "name": name,
+                    "mobile": display_mobile,
+                    "reason": "ambiguous_name",
+                    "reason_label": BIND_REASON_LABEL["ambiguous_name"],
+                }
+            )
+            continue
+
+        unmatched.append(
+            {
+                "name": name,
+                "mobile": display_mobile,
+                "reason": "no_account",
+                "reason_label": BIND_REASON_LABEL["no_account"],
+            }
+        )
+
+    await session.flush()
+
+    # 还没绑上钉钉的 CRM 账号：不是错误，但管理员要知道"还有谁进不来"。
+    # 只列**在用**的账号——停用的人绑不绑都不影响登录。
+    unbound_crm = [
+        {"id": row.id, "name": row.name, "username": row.username}
+        for row in crm_users
+        if not row.dingtalk_userid and row.status == "active"
+    ]
+
+    return {
+        "disabled": False,
+        "total": len(members),
+        "bound": newly_bound,
+        "already_bound": already_bound,
+        "unmatched": unmatched,
+        "unbound_crm": unbound_crm,
     }

@@ -384,3 +384,48 @@ async def trigger_oa_sync(
     result = await svc.sync_pending_instances(session, limit=50)
     await session.commit()
     return ok(result, result.get("message") or f"已检查 {result['checked']} 条，状态变更 {result['changed']} 条")
+
+
+@router.post("/dingtalk/sync-users")
+async def sync_dingtalk_users(
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """把 CRM 账号与钉钉成员对上（写 `users.dingtalk_userid`）——**钉钉登录靠它认人**。
+
+    钉钉只会告诉系统"这是某某的钉钉编号"，它不知道这人在 CRM 里是什么角色。
+    这一步就是把两边的人对上，对上了以后才谈得上登录。
+
+    **不做的事**：不建账号（建账号要定角色与数据范围，那是人的决定）。
+    钉钉里有人、CRM 里没账号的，只列出来让管理员去建。
+    已绑好的不会被改绑 —— 改绑等于换掉一个人的登录身份。
+
+    权限与 `/dingtalk/oa-sync` 一致（`settings:manage`）：这是管理员动作，
+    而且界面就挂在系统设置里。
+    """
+    result = await svc.sync_users(session)
+    if result.get("disabled"):
+        # 总闸（DINGTALK_PUSH_OFF）关着：**没去拉通讯录**，也没有数据要提交。
+        # 如实回报，不假装成功——否则界面上会显示"同步完成 0 人"，
+        # 让人以为是"钉钉里没人"，实际是一次请求都没发。
+        return ok(result, result.get("message"))
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="dingtalk_sync_users",
+        business_type="integration",
+        after={
+            "total": result["total"],
+            "bound": result["bound"],
+            "already_bound": result["already_bound"],
+            "unmatched": len(result["unmatched"]),
+        },
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(
+        result,
+        f"钉钉通讯录 {result['total']} 人：本次绑定 {result['bound']} 人，"
+        f"原已绑定 {result['already_bound']} 人，未对上 {len(result['unmatched'])} 人",
+    )

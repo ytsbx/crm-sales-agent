@@ -22,6 +22,7 @@ import {
 } from '../../shared/api/system'
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
 import { listAuditLogs, type AuditLogRow } from '../../shared/api/analytics'
+import { syncDingTalkUsers, type DingTalkSyncResult, type DingTalkUnmatched } from '../../shared/api/dingtalk'
 import PageHeader from '../../shared/components/PageHeader'
 import PermissionPicker from '../../shared/components/PermissionPicker'
 import {
@@ -441,6 +442,10 @@ export default function SettingsPage() {
   })
 
   // ---- 用户 / 角色 / 部门 的增删改（03-API §3 / §4 / §5） ----
+  // 钉钉同步的结果要**逐条看得见**（谁没对上、谁还没绑），所以用弹窗而不是一句话提示：
+  // 对不上的人是要管理员去处理的，一闪而过的提示等于没给。
+  const [dtSyncVisible, setDtSyncVisible] = useState(false)
+  const [dtSyncResult, setDtSyncResult] = useState<DingTalkSyncResult | null>(null)
   const [userModal, setUserModal] = useState(false)
   const [userEditTarget, setUserEditTarget] = useState<SystemUser | null>(null)
   const [userForm, setUserForm] = useState<{
@@ -479,7 +484,11 @@ export default function SettingsPage() {
     enabled: roleModal,
   })
 
-  const refreshUsers = () => void queryClient.invalidateQueries({ queryKey: ['settings-users'] })
+  // 列表刷新统一走这里：**先取消在途请求再失效**，否则旧请求晚回来会把新数据盖掉。
+  const refreshUsers = () => {
+    void queryClient.cancelQueries({ queryKey: ['settings-users'] })
+    void queryClient.invalidateQueries({ queryKey: ['settings-users'] })
+  }
   const refreshRoles = () => {
     void queryClient.invalidateQueries({ queryKey: ['settings-roles'] })
     void queryClient.invalidateQueries({ queryKey: ['assignable-users'] })
@@ -524,6 +533,25 @@ export default function SettingsPage() {
     onSuccess: (_data, variables) => {
       Toast.success(variables.enable ? '账号已启用' : '账号已停用')
       refreshUsers()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  /**
+   * 同步钉钉人员：把账号和钉钉通讯录里的人对上。
+   *
+   * 结果**不看 `disabled` 就当成功**：总闸关着时后端一次请求都没发，
+   * 数字全是 0 —— 那和"钉钉里确实没人"是两回事，提示语必须分开。
+   */
+  const dtSyncMutation = useMutation({
+    mutationFn: syncDingTalkUsers,
+    onSuccess: (result) => {
+      setDtSyncResult(result)
+      setDtSyncVisible(true)
+      if (!result.disabled) {
+        // 绑定了要立刻反映到列表上（刷新走"先取消再失效"，避免拿到在途的旧结果）
+        refreshUsers()
+      }
     },
     onError: (error: Error) => Toast.error(error.message),
   })
@@ -645,6 +673,21 @@ export default function SettingsPage() {
         ),
     },
     { title: '手机', dataIndex: 'mobile', width: 140, render: (v: string | null) => v ?? '-' },
+    {
+      // 钉钉：**有值才能用钉钉登录**。列上只显示"绑没绑"，编号放进 title 里
+      // （管理员平时不需要看那串号，要排查时鼠标一停就能看见）。
+      title: '钉钉',
+      dataIndex: 'dingtalk_userid',
+      width: 110,
+      render: (v: string | null) =>
+        v ? (
+          <span title={v}>
+            <Tag color="green">已绑定</Tag>
+          </span>
+        ) : (
+          <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
+        ),
+    },
     {
       title: '状态',
       dataIndex: 'status',
@@ -828,6 +871,12 @@ export default function SettingsPage() {
             <>
               <div className="toolbar">
                 <div style={{ flex: 1 }} />
+                <Button
+                  onClick={() => dtSyncMutation.mutate()}
+                  loading={dtSyncMutation.isPending}
+                >
+                  同步钉钉人员
+                </Button>
                 <Button
                   theme="solid"
                   onClick={() => {
@@ -1743,6 +1792,69 @@ export default function SettingsPage() {
           )}
         </div>
       </SectionCard>
+
+      {/* 钉钉人员同步的结果：对不上的人必须逐条看得见，否则等于没报 */}
+      <Modal
+        title="钉钉人员同步"
+        visible={dtSyncVisible}
+        onCancel={() => setDtSyncVisible(false)}
+        footer={
+          <Button theme="solid" onClick={() => setDtSyncVisible(false)}>
+            知道了
+          </Button>
+        }
+        width={720}
+      >
+        {dtSyncResult?.disabled ? (
+          <>
+            <p>本次没有读取钉钉通讯录，一个人都没动。</p>
+            <p style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>{dtSyncResult.message}</p>
+          </>
+        ) : (
+          <>
+            <p>
+              钉钉通讯录共 {dtSyncResult?.total ?? 0} 人：本次绑定 {dtSyncResult?.bound ?? 0} 人，
+              之前已绑定 {dtSyncResult?.already_bound ?? 0} 人。
+            </p>
+
+            {(dtSyncResult?.unmatched ?? []).length > 0 ? (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 500, marginBottom: 6 }}>
+                  没对上的人（{(dtSyncResult?.unmatched ?? []).length} 个，要你去处理）
+                </div>
+                <Table<DingTalkUnmatched>
+                  columns={[
+                    { title: '姓名', dataIndex: 'name', width: 120 },
+                    { title: '手机', dataIndex: 'mobile', width: 150 },
+                    { title: '原因', dataIndex: 'reason_label' },
+                  ]}
+                  dataSource={dtSyncResult?.unmatched ?? []}
+                  rowKey={(row?: DingTalkUnmatched) => `${row?.name ?? ''}|${row?.mobile ?? ''}`}
+                  pagination={false}
+                  size="small"
+                />
+              </div>
+            ) : (
+              <p style={{ color: 'var(--crm-text-3)' }}>钉钉那边的人全都对上了。</p>
+            )}
+
+            {(dtSyncResult?.unbound_crm ?? []).length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontWeight: 500, marginBottom: 6 }}>
+                  账号还没绑钉钉的（{(dtSyncResult?.unbound_crm ?? []).length} 个，这些人暂时登不了）
+                </div>
+                <div style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.8 }}>
+                  {(dtSyncResult?.unbound_crm ?? []).map((row) => (
+                    <div key={row.id}>
+                      {row.name}（{row.username}）
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </Modal>
 
       {/* 用户新增/编辑 */}
       <Modal
