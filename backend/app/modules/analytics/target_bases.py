@@ -522,7 +522,11 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
 
 
 async def repeat_net_by_owner(
-    session: AsyncSession, user: CurrentUser, year: int
+    session: AsyncSession,
+    user: CurrentUser,
+    year: int,
+    *,
+    company_wide: bool = False,
 ) -> dict[int | None, dict[str, float]]:
     """老客净额，按「签单归属人」拆开的版本（键：负责人 id → 月份 → 金额）。
 
@@ -552,7 +556,10 @@ async def repeat_net_by_owner(
         )
         .group_by(business_month(SalesOrder.created_at), sales_owner)
     )
-    if owner_ids is not None:
+    #: `company_wide=True` 时不按查看者范围收窄 —— 只给**全公司目标行**用。
+    #: 那一行的实绩必须是公司口径，否则非管理员看到的是"公司目标 vs 我自己"
+    #: （2026-10-14 实测：同一行，张三 0、管理员 580）。
+    if owner_ids is not None and not company_wide:
         stmt = stmt.where(sales_owner.in_(owner_ids or [0]))
 
     out: dict[int | None, dict[str, float]] = {}

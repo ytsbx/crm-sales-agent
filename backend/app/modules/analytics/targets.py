@@ -261,10 +261,31 @@ async def targets_with_actuals(
         sales_stmt = sales_stmt.where(sales_owner.in_(owner_ids or [0]))
         customer_stmt = customer_stmt.where(Customer.owner_id.in_(owner_ids or [0]))
 
+    #: 全公司目标行（`user_id`/`department_id` 都为空）必须用**全量**口径取数，
+    #: 不能拿下面那份"按查看者数据范围收窄过"的字典求和 —— 否则非管理员看到的是
+    #: "公司目标 vs 我自己"（2026-10-14 实测：同一行，张三实绩 0、管理员 580）。
+    #: `owner_ids is None`（data_scope=all）时两者本就相同，只有非 all 才需要这一份。
+    company_only = owner_ids is not None
+    company_stmts: dict[str, object] = {}
+    if company_only:
+        company_stmts["sales"] = sales_stmt
+        company_stmts["customer"] = customer_stmt
+
     sales_actual: dict[tuple[str, int | None], float] = {}
     for m, owner_id, total in (await session.execute(sales_stmt)).all():
         key = (f"{year}-{int(m):02d}", owner_id)
         sales_actual[key] = sales_actual.get(key, 0.0) + float(total or 0)
+    #: 全公司目标行的签单口径（未按查看者范围收窄）。
+    company_sales_actual: dict[tuple[str, int | None], float] = {}
+    if company_only:
+        for m, owner_id, total in (
+            await session.execute(company_stmts["sales"])  # type: ignore[arg-type]
+        ).all():
+            key = (f"{year}-{int(m):02d}", owner_id)
+            company_sales_actual[key] = company_sales_actual.get(key, 0.0) + float(total or 0)
+    else:
+        # `data_scope=all`（管理员/财务）本就看不到收窄，收窄后的那份就是全量。
+        company_sales_actual = sales_actual
 
     # ---- 新客：**两条口径，考核只认其中一条**（返工单：新客口径，P1）----
     #
@@ -290,6 +311,23 @@ async def targets_with_actuals(
             continue
         key = (period, owner_id)
         new_customer_actual[key] = new_customer_actual.get(key, 0) + 1
+    #: 全公司目标行的新客两条口径（未按查看者范围收窄）。
+    company_new_customer_created: dict[tuple[str, int | None], int] = {}
+    company_new_customer_actual: dict[tuple[str, int | None], int] = {}
+    if company_only:
+        for m, owner_id, n in (
+            await session.execute(company_stmts["customer"])  # type: ignore[arg-type]
+        ).all():
+            key = (f"{year}-{int(m):02d}", owner_id)
+            company_new_customer_created[key] = company_new_customer_created.get(key, 0) + int(n)
+        for period, owner_id, _cid, _name, _at in await target_bases.new_customer_rows(
+            session, year
+        ):
+            key = (period, owner_id)
+            company_new_customer_actual[key] = company_new_customer_actual.get(key, 0) + 1
+    else:
+        company_new_customer_created = new_customer_created
+        company_new_customer_actual = new_customer_actual
 
     # ---- 回款（**考核主口径**，已确认 2026-10-05）----
     # 归月依据 = **财务确认时间**（`confirmed_at`），不是到账日（返工单第 2 条）：
@@ -373,6 +411,13 @@ async def targets_with_actuals(
             SalesOrderItem.unit_price,
         )
     )
+    # ⚠️ 捕获必须发生在**收窄之前**：`company_stmts[...]` 要的是未收窄的语句。
+    # 我第一版把这段写在收窄之后，于是 `received` 被覆盖成了收窄版 ——
+    # 全公司行的回款/发货实绩仍是"我自己的数"（而签单口径已修好，两个口径不一致，
+    # 比原来更难查）。捕获点统一放在这里，只此一处。
+    if company_only:
+        company_stmts["received"] = received_stmt
+        company_stmts["shipped"] = shipped_stmt
     if owner_ids is not None:
         received_stmt = received_stmt.where(sales_owner.in_(owner_ids or [0]))
         shipped_stmt = shipped_stmt.where(sales_owner.in_(owner_ids or [0]))
@@ -385,6 +430,26 @@ async def targets_with_actuals(
         key = (f"{year}-{int(m):02d}", owner_id)
         received_actual[key] = received_actual.get(key, 0.0) + float(total or 0)
 
+    #: 全公司目标行的回款口径（未按查看者范围收窄）。
+    company_received_actual: dict[tuple[str, int | None], float] = {}
+    if company_only:
+        for m, owner_id, total in (
+            await session.execute(company_stmts["received"])  # type: ignore[arg-type]
+        ).all():
+            key = (f"{year}-{int(m):02d}", owner_id)
+            company_received_actual[key] = company_received_actual.get(key, 0.0) + float(total or 0)
+    else:
+        company_received_actual = received_actual
+    company_shipped_actual: dict[tuple[str, int | None], float] = {}
+    if company_only:
+        for m, owner_id, _batch_id, batch_amount in (
+            await session.execute(company_stmts["shipped"])  # type: ignore[arg-type]
+        ).all():
+            key = (f"{year}-{int(m):02d}", owner_id)
+            company_shipped_actual[key] = company_shipped_actual.get(key, 0.0) + round(
+                float(batch_amount or 0), 2
+            )
+
     # 本年度「已确认但缺确认时间」的笔数（只提示，不进金额）
     missing_confirmed_count = int(
         (await session.execute(missing_confirmed_stmt)).scalar_one() or 0
@@ -396,10 +461,18 @@ async def targets_with_actuals(
         # 逐批舍入到分（与 `_row` 的 round 同口径），再加到月度合计。
         # 这样"明细之和 = 汇总"，不会出现"下钻合计比汇总多一分"。
         shipped_actual[key] = shipped_actual.get(key, 0.0) + round(float(batch_amount or 0), 2)
+    if not company_only:
+        company_shipped_actual = shipped_actual
 
     # 复购（老客净额）：口径定义在 target_bases 里那一处，这里只按 (月份, 人) 取数。
     # 以前 repeat_customer_target 只存不算——目标页看不到它，等于设了没人管。
     repeat_by_owner = await target_bases.repeat_net_by_owner(session, user, year)
+    #: 全公司目标行的复购口径（未按查看者范围收窄）。
+    company_repeat_by_owner = (
+        await target_bases.repeat_net_by_owner(session, user, year, company_wide=True)
+        if company_only
+        else repeat_by_owner
+    )
 
     # ---- 团队目标的成员集合（第三批 §4.1.1）----
     # 团队目标行（user_id 为空、department_id 有值）的**计划/实绩/差额必须同源**：
@@ -430,7 +503,9 @@ async def targets_with_actuals(
                 sum(v.get(key, 0.0) for oid, v in repeat_by_owner.items() if oid in members), 2
             )
         if owner_id is None:
-            return round(sum(bucket.get(key, 0.0) for bucket in repeat_by_owner.values()), 2)
+            # 全公司行（department_id 也为空）用**全量**复购；团队行已在上面按成员加总。
+            source = company_repeat_by_owner if department_id is None else repeat_by_owner
+            return round(sum(bucket.get(key, 0.0) for bucket in source.values()), 2)
         return round(repeat_by_owner.get(owner_id, {}).get(key, 0.0), 2)
 
     def _sort_key(key: tuple[str, int | None]) -> tuple[str, int]:
@@ -454,11 +529,20 @@ async def targets_with_actuals(
         这里**只看实时值**；已结账期间的存档值在下面的统一后处理里覆盖
         （那边一处收口，三个地方各写一遍必然漂移——第一版就漏了"补零行"那条路）。
         """
-        def pick(source: dict, restrict_to: set[int] | None) -> float:
+        #: 全公司行：`user_id` 与 `department_id` **都**为空 —— 它必须用全量口径。
+        #: ⚠️ 不能与"团队行"（department_id 有值）混在一个分支里：以前两者都走
+        #: `target_user_id is None` 这条路，对**已按查看者范围收窄**的字典求和，
+        #: 于是非管理员看到的是"公司目标 vs 我自己"（实测：张三 0、管理员 580）。
+        company_row = target_user_id is None and department_id is None
+
+        def pick(source: dict, restrict_to: set[int] | None, company_source=None) -> float:
             if restrict_to is not None:
                 return sum(
                     v for (m, o), v in source.items() if m == month and o in restrict_to
                 )
+            if company_row:
+                full = source if company_source is None else company_source
+                return sum(v for (m, _o), v in full.items() if m == month)
             if target_user_id is None:
                 return sum(v for (m, _o), v in source.items() if m == month)
             return source.get((month, target_user_id), 0.0)
@@ -473,11 +557,11 @@ async def targets_with_actuals(
                 int(pick(new_customer_created, members)),
             )
         return (
-            pick(sales_actual, None),
-            pick(received_actual, None),
-            pick(shipped_actual, None),
-            int(pick(new_customer_actual, None)),
-            int(pick(new_customer_created, None)),
+            pick(sales_actual, None, company_sales_actual),
+            pick(received_actual, None, company_received_actual),
+            pick(shipped_actual, None, company_shipped_actual),
+            int(pick(new_customer_actual, None, company_new_customer_actual)),
+            int(pick(new_customer_created, None, company_new_customer_created)),
         )
 
     rows: list[dict] = []
