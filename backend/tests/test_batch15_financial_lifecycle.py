@@ -156,6 +156,26 @@ def test_legacy_replacement_without_effective_date_does_not_stop_old_reminder(db
     assert not contract.is_superseded(parent)
 
 
+def test_void_new_agreement_does_not_reopen_expired_old_reminder(db):
+    s,*_=db;parent=document(db);task=reminder(db,parent)
+    child=document(db,parent=parent,status='draft');sign(db,child)
+    parent.expiry_date=today_business()-timedelta(days=1);run(s.flush())
+    run(contract.void_document(s,child,reason='新协议撤销'))
+    assert task.status=='cancelled'
+
+
+@pytest.mark.parametrize('kind',['missing_parent','wrong_template'])
+def test_invalid_replacement_selection_is_rejected_before_generation(db,kind):
+    s,user,c,t=db;parent=document(db)
+    if kind=='wrong_template':t.doc_type='contract';run(s.flush())
+    with pytest.raises(AppError,match='月结协议'):
+        run(contract.generate_document(s,user_id=user.id,payload=DocumentCreate(
+            template_id=t.id,customer_id=c.id,supersede_parent=True,
+            parent_id=None if kind=='missing_parent' else parent.id,
+            effective_date=today_business(),expiry_date=today_business()+timedelta(days=365))))
+    assert len(run(s.execute(select(ContractDocument))).scalars().all())==1
+
+
 def order(db,status='pending'):
     s,u,c,t=db
     o=SalesOrder(order_no='SO-'+uuid4().hex[:8],customer_id=c.id,owner_id=u.id,status=status,

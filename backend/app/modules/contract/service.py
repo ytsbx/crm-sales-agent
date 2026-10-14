@@ -550,6 +550,8 @@ async def generate_document(
             422,
         )
     parent = None
+    if payload.supersede_parent and payload.parent_id is None:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "替代旧协议必须选择要替代的月结协议", 422)
     if payload.parent_id is not None:
         parent = await session.get(ContractDocument, payload.parent_id)
         if parent is None or parent.deleted_at is not None:
@@ -558,10 +560,10 @@ async def generate_document(
             raise AppError(ErrorCode.PARAM_ERROR, "被补充的合同文档不属于该客户", 422)
         # 「替代旧协议」只对月结协议有意义：销售合同之间的衍生件是**补充协议**，
         # 不存在"替代"——两份合同可以同时有效，靠条款说明相互关系。
-        if payload.supersede_parent and parent.doc_type != "monthly":
+        if payload.supersede_parent and (parent.doc_type != "monthly" or template.doc_type != "monthly"):
             raise AppError(
                 ErrorCode.PARAM_ERROR,
-                "只有月结协议才有「替代旧协议」这个动作；销售合同的衍生件请用补充协议",
+                "替代旧协议只能在两份月结协议之间进行，请选择月结协议模板；销售合同请用补充协议",
                 422,
             )
         # ---- 月结续签：生效日**必填**（第三批审查 P2，2026-10-12）----
@@ -1464,7 +1466,8 @@ async def refresh_supersession(session: AsyncSession, parent_id: int, *, today=N
     else:
         data.pop("_superseded_by", None)
         # 不重开人工取消/已完成的任务；旧算法没留下取消来源的历史任务也不猜。
-        if states and parent.status == "signed" and parent.deleted_at is None:
+        if (states and parent.status == "signed" and parent.deleted_at is None
+                and (parent.expiry_date is None or parent.expiry_date >= today)):
             tasks = (await session.execute(select(Task).where(
                 Task.id.in_([row["id"] for row in states]),
                 Task.source_business_type == "contract", Task.source_business_id == parent_id,
