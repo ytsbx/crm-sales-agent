@@ -43,3 +43,28 @@ export function refreshToken() {
 export function wecomSsoLogin(payload: { wecom_userid: string; state?: string }) {
   return api.post<LoginResult>('/auth/sso/wecom/callback', payload)
 }
+
+/**
+ * 钉钉扫码登录·第一步：拿授权地址，然后由调用方 `window.location.href = url`。
+ *
+ * 为什么不让后端直接 302：登录页要自己控制"什么时候跳"（先禁掉按钮、显示
+ * 正在跳转），而且接口在浏览器里被直接打开时也不该发生跳转这种副作用。
+ *
+ * ⚠️ 后端**没就绪**（凭据缺 / 外部调用总闸关着）时会直接抛 `ApiError`，
+ * 说明都写在 message 里 —— 照抄给用户看即可，别自己编一句笼统的
+ * 「登录失败」（那样用户不知道该找谁）。
+ */
+export function dingtalkAuthorize() {
+  return api.get<{ authorize_url: string }>('/auth/dingtalk/authorize')
+}
+
+/**
+ * 钉钉扫码登录·第三步：用回调带回来的一次性 `ticket` 换正式令牌。
+ *
+ * 为什么要多这一步：回调是浏览器重定向（GET），令牌若直接挂在 URL 上会进
+ * 浏览器历史、也进服务器访问日志。所以后端只落一个 60 秒的一次性凭据，
+ * 这里用 POST 换成令牌（走请求体，不进 URL）。
+ */
+export function dingtalkExchange(ticket: string) {
+  return api.post<LoginResult>('/auth/dingtalk/exchange', { ticket })
+}

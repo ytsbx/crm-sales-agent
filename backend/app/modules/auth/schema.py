@@ -26,3 +26,15 @@ class WeComSsoCallback(BaseModel):
     code: str | None = Field(default=None, max_length=512)
     #: 企微侧回传的 state：接通后必须做一次性校验（防伪造与重放），不能只记审计
     state: str | None = Field(default=None, max_length=512)
+
+
+class DingTalkExchange(BaseModel):
+    """钉钉扫码登录第三步：用一次性 ticket 换令牌。
+
+    为什么要有这一步、而不是回调时直接把令牌交给前端：回调是**浏览器重定向**
+    （GET），令牌只能挂在 URL 上——那会进浏览器历史、也会进服务器访问日志。
+    所以回调只落一个 60 秒的一次性 ticket，前端再用 POST 把它换成令牌
+    （走请求体，不进 URL）。ticket 用过即废、过期即废。
+    """
+
+    ticket: str = Field(min_length=1, max_length=128)
