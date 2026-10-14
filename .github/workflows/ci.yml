@@ -125,20 +125,24 @@ jobs:
           failed=""
           while read -r suite; do
             case "$suite" in '' | '#'*) continue ;; esac
-            if [ ! -f "scripts/$suite.py" ]; then
+            if [ ! -f "scripts/${suite}.py" ]; then
               # ⚠️ 这条最容易出现在**多人同时改仓库**的时候（2026-10-14 实测踩到）：
               # 有人往 `ops/check_suites.txt` 加了一行、脚本却还没提交；而另一个人
               # 提交时整文件 `git add ops/check_suites.txt`，把那一行一起带上了主干
-              # → CI 找不到脚本、红，且表象是"清单里的套件找不到脚本"，
-              # 最容易怀疑错方向（会去查 runner 环境，其实是文件没提交）。
-              # 处置：确认脚本是否在别人工作区里；在的话补交（跑通再交）。
-              echo "::error::清单里的套件找不到脚本：scripts/$suite.py —— 多半是有人加了清单行但脚本还没提交（共享文件整文件 add 时被带进来）。请确认脚本是否在别人工作区，跑通后补交。"
-              failed="$failed $suite"
+              # → CI 找不到脚本、红。
+              #
+              # ⚠️⚠️ 文案里的变量**必须用 `${}` 定界**：我第一版写的是
+              # `"scripts/$suite.py"` —— bash 会把它当成变量名 `suite.py` 展开，
+              # 在 `set -u` 下直接报 unbound variable，**整个跑套件的循环当场崩掉**
+              # （于是 CI 红的表象是"清单里的套件找不到脚本"，而其实一条套件都没跑）。
+              # 我为了这条 CI 提示反而让 CI 更坏了 —— 记在这里别再犯。
+              echo "::error::清单里的套件找不到脚本：scripts/${suite}.py —— 多半是有人加了清单行但脚本还没提交（共享文件整文件 add 时被带进来）。请确认脚本是否在别人工作区，跑通后补交。"
+              failed="$failed ${suite}"
               continue
             fi
             echo "::group::=== $suite ==="
             out="$(mktemp)"
-            if PYTHONPATH=. python -u "scripts/$suite.py" 2>&1 | tee "$out"; then
+            if PYTHONPATH=. python -u "scripts/${suite}.py" 2>&1 | tee "$out"; then
               echo "OK  $suite"
             else
               echo "::error::套件失败：$suite"
@@ -240,6 +244,7 @@ jobs:
           # blocked_hint 那条守的是「灰按钮必须说得出为什么」（主人 2026-10-12）。
           node --test ../ops/request_key.test.mjs
           node --test ../ops/blocked_hint.test.mjs
+          node --test ../ops/payment_allocation.test.mjs
           # 静态检查：含禁用控件的页面必须接了共用件，或在例外清单里写明理由。
           # 单测只测共享件算得对不对，**测不到"页面忘了接"**（这一轮的毛病正是忘了接）。
           python3 ../ops/check_disabled_hint.py
