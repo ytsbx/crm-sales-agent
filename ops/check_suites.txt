@@ -516,3 +516,6 @@ check_batch14_order_safety
 # 原来 `standard_price = rule.standard_price or 成本反推价` —— 规则里写 0 会返回
 # 28.57；`margin` 那条 `or` 串还会把 0/负数漏过，且下界从无守卫。
 check_price_fallback_zero
+
+# 第十五批：来源核定并发、订单取消与月结替代生效链路
+check_batch15_financial_lifecycle

@@ -43,14 +43,13 @@ from _test_support import require_api_base, require_isolated_db
 
 require_isolated_db()
 
-import app.main  # noqa: F401  保证所有模型都注册进 metadata
+__import__("app.main")  # 保证所有模型都注册进 metadata
 from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.modules.customer.model import Customer
 from app.modules.order.model import OrderShipmentBatch, SalesOrder
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
-from app.modules.user.model import User
 
 FAILURES: list[str] = []
 BASE = require_api_base()
@@ -310,7 +309,13 @@ async def section2_rules(token: str) -> None:
                 {"i": IDS["payment_pending"]},
             )
         ).scalar_one()
-    check_true("驳回原因写在凭证备注里", "订单取消" in (note or ""), (note or "")[:80])
+    check("原始凭证备注完整保留", note, f"{PREFIX}客户转账凭证已上传")
+    async with SessionLocal() as s:
+        audit = (await s.execute(text(
+            "select after_data from audit_logs where business_type='payment' "
+            "and business_id=:i and action='reject' order by id desc limit 1"
+        ), {"i": IDS["payment_pending"]})).scalar_one_or_none()
+    check_true("随单驳回原因留在审计", bool(audit) and audit.get("comment") == "订单取消，随单驳回", audit)
 
     # ④ 计划中的批次 → 随单取消
     status, _ = call("POST", f"/orders/{IDS['o_batch']}/cancel", token)
