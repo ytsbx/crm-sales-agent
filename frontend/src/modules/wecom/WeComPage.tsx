@@ -797,6 +797,12 @@ export default function WeComPage() {
                 }
               />
             )}
+              {/* 清单可能不完整时的提示（例如离职人没绑企微 → 企微客户关系列不出来）。
+                  与「本次冻结」（blocked_reason）语义不同：那些是**确定不交接**，
+                  这些是"你得先处理某事，否则这次会漏"（2026-10-14 审查新增）。 */}
+              {(transferPreview.warnings || []).map((text) => (
+                <Banner key={text} type="warning" closeIcon={null} description={text} />
+              ))}
             <div style={{ maxHeight: 320, overflow: 'auto', display: 'grid', gap: 8 }}>
               {transferPreview.sections.map((section) => (
                 <div

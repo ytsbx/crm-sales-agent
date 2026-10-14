@@ -182,6 +182,11 @@ export interface WeComTransferPreview {
   total: number
   /** 这次交接动不了的项（撞单争议冻结） */
   blocked: WeComTransferScopeItem[]
+    /**
+     * 清单**可能不完整**的提示（与 `blocked` 不同：那些是确定不交接，这些是"先处理某事"）。
+     * 目前只有一条：离职人没绑企业微信 → 企微侧的客户关系列不出来、也不会随本次交接转移。
+     */
+    warnings?: string[]
   sample_count: number
   note: string
 }

@@ -25,6 +25,9 @@
 "成功 0 条"。静默成功会让运营以为企微里真的没人，这是最坏的失败方式。
 """
 
+import hashlib
+import time
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +47,10 @@ from app.modules.wecom.schema import (
     IgnoreContactRequest,
     TransferRequest,
 )
+
+#: 回调时间戳允许的最大偏差（秒）。企微官方建议 5 分钟；超出即视为重放/过期报文。
+#: 没有它时，一份抓到的合法报文可以无限重放（每次都落一条同步任务）。
+WECOM_CALLBACK_MAX_SKEW_SECONDS = 300
 
 router = APIRouter(tags=["WeCom"])
 
@@ -518,6 +525,18 @@ async def receive_wecom_event(
         encrypt = wecom_callback.parse_event(body).get("Encrypt", "")
         if not encrypt:
             raise wecom_callback.WeComCallbackError("回调报文里没有 Encrypt 字段")
+        # ⚠️ 时间戳时效（2026-10-14 审查）：原来 `timestamp` 只参与签名计算、
+        # **从不校验时效**，又不按事件去重 —— 抓到一份合法报文就能**无限重放**，
+        # 每次都插一条 `wecom_sync_jobs`（企微自身的重试还会放大这件事）。
+        # 企微标准防护是"拒绝 5 分钟以外的 timestamp"，这里照做。
+        try:
+            ts = int(timestamp)
+        except (TypeError, ValueError):
+            raise wecom_callback.WeComCallbackError("回调 timestamp 不是整数") from None
+        if abs(int(time.time()) - ts) > WECOM_CALLBACK_MAX_SKEW_SECONDS:
+            raise wecom_callback.WeComCallbackError(
+                f"回调已过期（timestamp 与本机相差超过 {WECOM_CALLBACK_MAX_SKEW_SECONDS} 秒），拒绝重放"
+            )
         wecom_callback.verify_signature(
             signature=msg_signature, timestamp=timestamp, nonce=nonce, encrypt=str(encrypt)
         )
@@ -525,12 +544,27 @@ async def receive_wecom_event(
     except wecom_callback.WeComCallbackError as error:
         raise AppError(ErrorCode.WECOM_SYNC_FAILED, str(error), 400) from error
 
+    # 按**密文指纹**去重：同一份报文（哪怕时间戳还在窗口内）只记一次。
+    # 指纹取密文的 sha256 前 32 位 —— 不存原文（密文含业务内容，没必要留在库里）。
+    fingerprint = hashlib.sha256(str(encrypt).encode("utf-8")).hexdigest()[:32]
+    already = (
+        await session.execute(
+            select(WeComSyncJob.id)
+            .where(WeComSyncJob.job_type == "external_contact")
+            .where(WeComSyncJob.detail["fingerprint"].astext == fingerprint)
+            .limit(1)
+        )
+    ).scalars().first()
+    if already is not None:
+        # 重复投递：按企微要求回 success（否则它会一直重试），但**不再落新任务**。
+        return Response(content="success", media_type="text/plain")
+
     job = WeComSyncJob(
         job_type="external_contact",
         status="success",
         success_count=1,
         fail_count=0,
-        detail={"source": "event_callback", "event": event},
+        detail={"source": "event_callback", "event": event, "fingerprint": fingerprint},
     )
     session.add(job)
     await session.commit()

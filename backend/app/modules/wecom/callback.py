@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import secrets
 import struct
 from typing import Any
 from xml.etree import ElementTree
@@ -52,7 +53,10 @@ def verify_signature(*, signature: str, timestamp: str, nonce: str, encrypt: str
         nonce=nonce,
         encrypt=encrypt,
     )
-    if expected != signature:
+    # 用**常量时间**比较（2026-10-14 审查）：`!=` 会在第一个不同的字符处短路返回，
+    # 理论上可据响应时间逐字节猜签名。同仓库 `erp/router.py:831` 早已用
+    # `secrets.compare_digest`，这里与之统一（成本一行）。
+    if not secrets.compare_digest(expected, signature or ""):
         raise WeComCallbackError("回调签名校验失败：token 或参数不对")
 
 

@@ -277,17 +277,27 @@ async def sync_follow_relations(session: AsyncSession, *, user: CurrentUser) -> 
     success = 0
     fail = 0
     errors: list[str] = []
+    #: 本轮**确实拉到**的 (联系人, 成员) 对。用来把"企微侧已经删掉的关系"标失效 ——
+    #: 见下面 `stale` 那段：原实现只 upsert、从不删除也不标失效，于是企微里删掉的
+    #: 跟进关系在 CRM 里永远是 `active`，还会被离职交接清单捞出来发起转接
+    #: （2026-10-14 审查）。`model.py` 的注释早就写了 `deleted 已删除`，但全模块
+    #: 从未写入过它。
+    seen: set[tuple[int, str]] = set()
+    #: 有拉取失败的成员，本轮**不能**据此判"谁被删了"（失败≠不存在）。
+    contacts_failed: set[int] = set()
     for contact in contacts:
         try:
             follow_users = await api.get_follow_users(contact.external_userid)
         except Exception as error:  # 单条失败不影响整批
             fail += 1
+            contacts_failed.add(contact.id)
             errors.append(f"{contact.external_userid}: {str(error)[:80]}")
             continue
         for item in follow_users:
             wecom_userid = str(item.get("userid") or "")
             if not wecom_userid:
                 continue
+            seen.add((contact.id, wecom_userid))
             row = existing.get((contact.id, wecom_userid))
             if row is None:
                 row = WeComFollowRelationship(
@@ -301,14 +311,32 @@ async def sync_follow_relations(session: AsyncSession, *, user: CurrentUser) -> 
             row.state = item.get("state")
             row.tags_json = item.get("tags") or None
             row.last_sync_at = now
+            # 企微侧又出现了（或被重新加上）→ 恢复 active
+            if row.status == "deleted":
+                row.status = "active"
             success += 1
+
+    # 全量重扫：本轮**没拉到**的关系在企微侧已不存在。两条例外必须排除，
+    # 否则会把还在的关系误标成删除：
+    #   · 该联系人本轮拉取失败的（失败 ≠ 不存在）；
+    #   · 整批请求失败（fail 且一条都没成功）时不做任何判定。
+    stale = 0
+    if success or not fail:
+        for (contact_id, wecom_userid), row in existing.items():
+            if contact_id in contacts_failed:
+                continue
+            if (contact_id, wecom_userid) in seen:
+                continue
+            if row.status == "active":
+                row.status = "deleted"
+                stale += 1
 
     finish_job(
         job,
         success=success,
         fail=fail,
         error="；".join(errors[:5]) if errors else None,
-        detail={"total": len(contacts)},
+        detail={"total": len(contacts), "marked_deleted": stale},
     )
     return job
 
@@ -522,7 +550,11 @@ async def ignore_contact(
 
 
 async def collect_transfer_scope(
-    session: AsyncSession, *, handover: User, takeover: User
+    session: AsyncSession,
+    *,
+    handover: User,
+    takeover: User,
+    warnings: list[str] | None = None,
 ) -> dict[str, list[dict]]:
     """盘点离职人名下**要交接的东西**，按类别返回逐项清单。
 
@@ -535,6 +567,8 @@ async def collect_transfer_scope(
       - `blocked_reason` **不能交接**的原因（能交接则为空）。
     """
     scope: dict[str, list[dict]] = {kind: [] for kind in TRANSFER_KIND_LABEL}
+    #: 本函数产生的提示（当前只有"离职人没绑企微"一条）；调用方传了列表就并进去。
+    local_warnings: list[str] = [] if warnings is None else warnings
 
     # ---- 客户：撞单争议未结案的先标出来，它会被冻结，企微那边也不发转接 ----
     customers = (
@@ -697,6 +731,18 @@ async def collect_transfer_scope(
         )
 
     # ---- 企微客户关系 ----
+    #
+    # ⚠️ 未绑定企微时**必须明说**，不能让查询退化成 `== ""` 静默查空（2026-10-14 审查）。
+    # 原写法是 `wecom_userid == (handover.wecom_userid or "")`：离职人没绑企微时，
+    # 这个条件查不到任何行**且不报错** —— 交接流程会认为"这个人没有企微客户要转"，
+    # 于是企微侧的客户关系根本没被转移，而界面上看起来一切正常。
+    # 现实数据里这很常见：`crm_prod` 11 个用户中有 10 个没绑。
+    # 同文件另一处（约 1901 行）有正确写法：`if not owner.wecom_userid: return`。
+    if not handover.wecom_userid:
+        local_warnings.append(
+            f"「{handover.name}」还没有绑定企业微信账号，"
+            "无法列出企微客户关系（企微侧的客户不会随本次交接转移，请先绑定再交接）"
+        )
     for relation in (
         await session.execute(
             select(WeComFollowRelationship).where(
@@ -802,12 +848,17 @@ async def preview_transfer(
     返回里 `blocked` 是"这次交接动不了"的项（撞单争议冻结），
     `totals` 是各类别的条数。看清单和执行拿到的是同一份数据。
     """
+    #: 交接清单的**提示**（不是错误）：例如离职人没绑企微，导致企微客户关系列不出来。
+    #: 与 `blocked`（不能交接）语义不同 —— 这些是"清单可能不完整，请先处理"。
+    warnings: list[str] = []
     handover = await session.get(User, handover_user_id)
     takeover = await session.get(User, takeover_user_id)
     if handover is None or takeover is None:
         raise AppError(ErrorCode.NOT_FOUND, "交接人或接管人不存在", 404)
 
-    scope = await collect_transfer_scope(session, handover=handover, takeover=takeover)
+    scope = await collect_transfer_scope(
+        session, handover=handover, takeover=takeover, warnings=warnings
+    )
     sections = []
     totals: dict[str, int] = {}
     blocked: list[dict] = []
@@ -826,6 +877,7 @@ async def preview_transfer(
         "takeover": {"id": takeover.id, "name": takeover.name},
         "sections": sections,
         "totals": totals,
+        "warnings": warnings,
         "total": sum(totals.values()),
         "blocked": blocked,
         # 打样单以前不在清单里，界面上要能看出这次包含了多少
