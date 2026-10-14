@@ -406,7 +406,9 @@ async def sync_dingtalk_users(
     """
     result = await svc.sync_users(session)
     if result.get("disabled"):
-        # 总闸（DINGTALK_PUSH_OFF）关着：**没去拉通讯录**，也没有数据要提交。
+        # 登录闸（DINGTALK_LOGIN_OFF）关着：**没去拉通讯录**，也没有数据要提交。
+        # ⚠️ 判的是**登录闸**而不是审批总闸（2026-10-14）：这一步做的是"把人对上"，
+        # 本身就是为了让员工能扫码进来 —— 只开登录时它必须能用。
         # 如实回报，不假装成功——否则界面上会显示"同步完成 0 人"，
         # 让人以为是"钉钉里没人"，实际是一次请求都没发。
         return ok(result, result.get("message"))

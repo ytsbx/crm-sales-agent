@@ -51,6 +51,7 @@ from app.core.errors import AppError, ErrorCode
 from app.modules.dingtalk.client import (
     DingTalkUnknownOutcome,
     DINGTALK_DISABLED_MESSAGE,
+    DINGTALK_LOGIN_DISABLED_MESSAGE,
     OUTCOME_NOT_SENT,
     OUTCOME_REJECTED,
     OUTCOME_UNKNOWN,
@@ -1007,12 +1008,14 @@ async def sync_users(session: AsyncSession) -> dict:
     判据顺序见本段开头三条纪律。返回里把"对不上的"和"还没绑的"分开列出来：
     前者要管理员去处理，后者只是提示"这个人还进不来"。
     """
-    # 总闸关着就**别去拉**，也说清楚"这一步没真的做"——
-    # 与 `sync_pending_instances` 同一口径（不抛错、不假装成功）。
-    if app_settings.dingtalk_push_off:
+    # ⚠️ 判的是**登录闸**，不是审批总闸（2026-10-14 主人拍板）。
+    # 这一步做的是"把人跟钉钉号对上"，本身就是**为了让员工能扫码进来** ——
+    # 属于登录那一组；与审批那种"系统主动发出去"不是一回事。
+    # 所以「只开登录、不开放审批」时，人员同步照样能跑。
+    if app_settings.dingtalk_login_off:
         return {
             "disabled": True,
-            "message": DINGTALK_DISABLED_MESSAGE,
+            "message": DINGTALK_LOGIN_DISABLED_MESSAGE,
             "total": 0,
             "bound": 0,
             "already_bound": 0,
@@ -1023,10 +1026,12 @@ async def sync_users(session: AsyncSession) -> dict:
     api = get_client()
     try:
         members = await fetch_all_members(api)
-    except DingTalkDisabled:
+    except DingTalkDisabled as exc:
+        # 走到这里说明闸是在**取通讯录的过程中**才关掉的（比如刚被人关掉）。
+        # 用异常自己那句话：它认得清是哪把闸，别硬套审批总闸的文案。
         return {
             "disabled": True,
-            "message": DINGTALK_DISABLED_MESSAGE,
+            "message": str(exc),
             "total": 0,
             "bound": 0,
             "already_bound": 0,

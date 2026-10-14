@@ -12,7 +12,9 @@
 4. **不自动建账号**：钉钉里有人、CRM 里没账号 → 只列出来，数据库里人数不变；
 5. **已绑定的不被改绑**（改绑等于换掉一个人的登录身份）；
 6. **部门树去重**：同一个人挂在两个部门下，只算一次；
-7. **总闸关着时一次请求都不发**（不是"发出去被拒"，是压根没发）。
+7. **登录闸关着时一次请求都不发**（不是"发出去被拒"，是压根没发）。
+   （2026-10-14 起，这一步判的是登录闸 `DINGTALK_LOGIN_OFF` 而不是审批总闸
+   —— 它属于"登录那一组"。）
 
 ## 为什么用替身
 
@@ -50,7 +52,7 @@ class FakeDingTalk:
     def __init__(self, departments, members_by_dept):
         self._departments = departments
         self._members = members_by_dept
-        #: 记下每次被问到什么 —— 验"总闸关着时一次都没发"要靠它
+        #: 记下每次被问到什么 —— 验"登录闸关着时一次都没发"要靠它
         self.calls = []
 
     async def list_sub_departments(self, dept_id):
@@ -87,7 +89,9 @@ async def main():
 
     await cleanup()
     baseline_total = 0
-    original_push_off = app_settings.dingtalk_push_off
+    # 成员同步现在挂**登录闸**（2026-10-14 从审批总闸拆出来）：它做的是
+    # "把人跟钉钉号对上"，属于登录的前置步骤。所以下面控制放行/拦截的是这一把。
+    original_login_off = app_settings.dingtalk_login_off
 
     print()
     print('=== 1. 造夹具 ===')
@@ -141,8 +145,8 @@ async def main():
     )
 
     print()
-    print('=== 2. 同步（替身通讯录，放行总闸）===')
-    app_settings.dingtalk_push_off = False
+    print('=== 2. 同步（替身通讯录，放行登录闸）===')
+    app_settings.dingtalk_login_off = False
     with patch.object(dt_service, 'get_client', return_value=fake):
         async with SessionLocal() as s:
             result = await dt_service.sync_users(s)
@@ -185,8 +189,8 @@ async def main():
     check('用户总数没变（**没有自动建账号**）', after_total, baseline_total)
 
     print()
-    print('=== 4. 总闸关着时：一次请求都不发 ===')
-    app_settings.dingtalk_push_off = True
+    print('=== 4. 登录闸关着时：一次请求都不发 ===')
+    app_settings.dingtalk_login_off = True
     calls_before = len(fake.calls)
     with patch.object(dt_service, 'get_client', return_value=fake):
         async with SessionLocal() as s:
@@ -195,7 +199,7 @@ async def main():
     check('没有发起任何外部调用', len(fake.calls), calls_before)
     check('返回的人数都是 0（不假装成功）', blocked['total'], 0)
 
-    app_settings.dingtalk_push_off = original_push_off
+    app_settings.dingtalk_login_off = original_login_off
     await cleanup()
 
     print()

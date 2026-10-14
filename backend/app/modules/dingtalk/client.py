@@ -431,9 +431,12 @@ class DingTalkClient:
 
         参数名是 `dept_id`（下划线），结果在 `result` 里 —— 与 `topapi/v2/user/list`
         同一套写法（这组旧版接口用的是这个形制，别按新版的 `deptId` 写）。
+
+        **挂登录闸**（2026-10-14）：它服务的是"把人和钉钉号对上"，
+        而那是登录的前置步骤 —— 所以「只开登录、不开放审批」时它要能用。
         """
-        self._require()
-        token = await self.access_token()
+        self._require_login()
+        token = await self.access_token(for_login=True)
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.post(
                 "https://oapi.dingtalk.com/topapi/v2/department/listsub",
@@ -460,9 +463,11 @@ class DingTalkClient:
         翻页的收尾判据是 **`has_more`**，不是"返回条数 < size"：钉钉最后一页
         也可能给满 100 条并把 `has_more` 置 false，按条数判会多要一次空页。
         `size` 上限 100，传大了接口会拒。
+
+        **挂登录闸**（同日，理由同 `list_sub_departments`）。
         """
-        self._require()
-        token = await self.access_token()
+        self._require_login()
+        token = await self.access_token(for_login=True)
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.post(
                 "https://oapi.dingtalk.com/topapi/v2/user/list",

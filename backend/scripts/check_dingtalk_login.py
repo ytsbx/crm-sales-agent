@@ -161,6 +161,34 @@ async def main():
                     'DINGTALK_LOGIN_OFF' in str(exc),
                     str(exc),
                 )
+
+            print('1c) 成员同步归登录闸（只开登录时也能把人拉下来）')
+            # 闸门层面：登录闸开着时，登录这一组不该被审批总闸牵连。
+            app_settings.dingtalk_login_off = False
+            app_settings.dingtalk_push_off = True  # 审批总闸仍关着
+            try:
+                api._require_login()
+                check_true('总闸关但登录闸开：登录这组放行', True)
+            except DingTalkDisabled as exc:
+                check_true('总闸关但登录闸开：不该被拦', False, str(exc))
+
+            # 服务层：登录闸关着时，同步如实回报 disabled（**根本没去拉通讯录**）。
+            app_settings.dingtalk_login_off = True
+            async with SessionLocal() as s:
+                res = await dt_service.sync_users(s)
+            check('登录闸关着 → 同步回报 disabled', res.get('disabled'), True)
+            check('且不假装成功（人数为 0）', res.get('total'), 0)
+
+            # 拉通讯录那一步也挂登录闸：闸关着时连请求都不该发出去。
+            try:
+                await api.list_department_users(1)
+                check_true('闸关着时拉成员应被拦', False, '居然没抛异常')
+            except DingTalkDisabled as exc:
+                check_true(
+                    '闸关着时拉成员被拦（登录闸）',
+                    'DINGTALK_LOGIN_OFF' in str(exc),
+                    str(exc),
+                )
         finally:
             (
                 app_settings.dingtalk_app_key,
