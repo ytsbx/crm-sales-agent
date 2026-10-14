@@ -512,3 +512,7 @@ check_notification_retry_e2e
 
 # 第十四批：订单改派锁内重判 + Numeric(16,3) 实发尾数真库回归
 check_batch14_order_safety
+# 算价的**回退链**：明确填写的 0 不能被当成"没填"（2026-10-14 审查第 21 条）。
+# 原来 `standard_price = rule.standard_price or 成本反推价` —— 规则里写 0 会返回
+# 28.57；`margin` 那条 `or` 串还会把 0/负数漏过，且下界从无守卫。
+check_price_fallback_zero

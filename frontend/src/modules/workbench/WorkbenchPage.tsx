@@ -96,8 +96,14 @@ export default function WorkbenchPage() {
   const team = teamQuery.data
   const isTeamView = Boolean(team?.is_team_view)
   const tasks = tasksQuery.data ?? []
-  const funnel = (funnelQuery.data ?? []).filter((row) => row.count > 0 || row.sequence <= 6)
+  // ⚠️ 不再按 `count > 0` 过滤（2026-10-14 审查修）：`GET /opportunities/funnel`
+  // 返回的是**全部阶段**（含 count=0 的档），把后面的空档滤掉会让下面
+  // `{index + 1}.` 的**序号断档**（1./2./4.），而且「占在谈」的分母
+  // （所有在谈商机）也会算错。空档显示 0 就是事实。
+  const funnel = funnelQuery.data ?? []
   const maxFunnel = Math.max(...funnel.map((row) => row.count), 1)
+  //: 所有在谈商机数 = 各阶段存量之和（funnel 本身就是 `status == "open"` 的存量分布）
+  const funnelTotal = funnel.reduce((sum, row) => sum + row.count, 0)
   const trend = trendQuery.data ?? []
   const activities = activitiesQuery.data ?? []
   const opportunities = opportunitiesQuery.data?.items ?? []
@@ -404,15 +410,27 @@ export default function WorkbenchPage() {
       <div className="wb-tri-grid">
         <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
-            <span className="card-title">全链路销售转化漏斗</span>
+            {/* 标题原本是「全链路销售转化漏斗」，但画的是**存量分布** ——
+                叫"转化漏斗"会让人以为每档是转化来的（2026-10-14 审查修）。
+                要看累计转化率请去分析页（那边用 `reached_count`）。 */}
+            <span className="card-title">各阶段在谈商机分布</span>
             <Link to="/analytics" style={{ fontSize: 12, color: 'var(--crm-primary)' }}>
               查看分析
             </Link>
           </div>
           <div style={{ display: 'grid', gap: 14 }}>
             {funnel.map((row, index) => {
-              const prev = index > 0 ? funnel[index - 1].count : null
-              const rate = prev && prev > 0 ? Math.round((row.count / prev) * 100) : null
+              // ⚠️ 这里原来是「转化 {rate}%」，用**相邻两档存量相除**算出来的
+              // （2026-10-14 审查修）。但 `/opportunities/funnel` 是
+              // `status == "open"` 的**当前阶段存量分布**，不是"到达过该阶段"的
+              // 累计量 —— 存量之比没有转化含义，后一档比前一档多时会显示
+              // 「转化 267%」这种不可能的数。真正的累计口径后端另有
+              // `stage_conversion[].reached_count` + `conversion_from_previous`
+              // （分析页就是这么画的，charts/options.ts 的注释也写明
+              // "存量分布用漏斗画会误导"）。
+              // 这里只改**口径与文案**（不动数据源）：报「占在谈 X%」，与"存量分布"
+              // 这个事实一致，也不会出现大于 100% 的数。
+              const rate = funnelTotal > 0 ? Math.round((row.count / funnelTotal) * 100) : null
               return (
                 <div key={row.stage_id}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
@@ -421,7 +439,7 @@ export default function WorkbenchPage() {
                     </span>
                     <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       {rate !== null && (
-                        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>转化 {rate}%</span>
+                        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>占在谈 {rate}%</span>
                       )}
                       <span style={{ fontWeight: 600 }}>{row.count}</span>
                     </span>

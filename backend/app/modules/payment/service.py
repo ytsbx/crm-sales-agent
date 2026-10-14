@@ -415,6 +415,27 @@ async def refresh_overdue_plans(session: AsyncSession) -> int:
 async def serialize_plan(session: AsyncSession, plan: ReceivablePlan) -> dict:
     received = await confirmed_amount(session, plan.id)
     order = await session.get(SalesOrder, plan.order_id)
+    #: 这一期**有没有任何回款行**（不论状态：待确认、已确认、已驳回都算）——
+    #: 给前端判断"能不能删这一期"用（2026-10-14 审查补）。
+    #:
+    #: 为什么不复用 `received_amount`：那个只统计**已确认**的分配，而删除闸门
+    #: （`router.delete_receivable`）判的是"该 plan_id 下有没有任何 PaymentRecord /
+    #: PaymentAllocation **行**"、**不带 status 过滤**。于是"登记了一笔但财务还没确认"
+    #: 或"财务驳回了那笔"时，前端按 `received_amount == 0` 显示「删除」，
+    #: 点下去必然 422 —— 一处填错的回款被驳回后，这一期在界面上永远删不掉，
+    #: 却一直显示能删。把后端的真实判据如实暴露出来，前端才可能与它一致。
+    has_payment_record = bool(
+        (
+            await session.execute(
+                select(PaymentRecord.id).where(PaymentRecord.receivable_plan_id == plan.id).limit(1)
+            )
+        ).first()
+        or (
+            await session.execute(
+                select(PaymentAllocation.id).where(PaymentAllocation.plan_id == plan.id).limit(1)
+            )
+        ).first()
+    )
     balance = (plan.amount or ZERO) - received
     # 显示状态按**口径现算**（2026-10-13）：存储的状态列是缓存，写路径与每日
     # 定时任务都会刷它；但"时间自己走过"（到期日到了）不会触发任何写，
@@ -437,6 +458,8 @@ async def serialize_plan(session: AsyncSession, plan: ReceivablePlan) -> dict:
         "amount_exact": str(plan.amount),
         "received_amount_exact": str(received),
         "received_amount": _f(received),
+        #: 见函数开头的说明：**任何**回款行都算，与删除闸门同一判据
+        "has_payment_record": has_payment_record,
         "remaining_amount": _f(balance),
         "currency": plan.currency,
         "status": status,
