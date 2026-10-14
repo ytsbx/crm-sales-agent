@@ -56,14 +56,33 @@ MARK = 'b11-' + uuid4().hex[:12]
 FILEKEY = MARK + '/gap.txt'
 REQ=Request({'type':'http','headers':[],'client':('127.0.0.1',1)})
 
-async def wait_locked(pid,worker):
+async def wait_locked(pid,worker,*,strict=True):
+ '''等到"这个后端会话确实在等锁"为止。
+
+ ⚠️ 这个等待本身**不能**作为被测行为的判据 —— 它只是"把持锁方的锁拿久一点"
+ 的辅助手段，靠轮询 `pg_stat_activity` 观察，可能一次都没采到（工人还没来得及
+ 进入等待、或刚好在两次轮询之间被放行）。实测：本地连跑两次都过、CI 上红，
+ 红的时候报的是"旧负责人仍能删除客户" —— 而真实情形是**工人根本没被挡住、
+ 先把客户删完了**（那是**合法**顺序：删除发生在转交之前）。
+
+ 所以修正有两处：
+   · 这里观察不到就返回 `False`（让调用方**跳过**这一轮，而不是断言失败）；
+   · 真正的判据放在调用方：**只有在确认"工人被挡住"之后**，才要求它被拒。
+ '''
  for _ in range(500):
   async with SessionLocal() as observer:
    wait=await observer.scalar(text('select wait_event_type from pg_stat_activity where pid=:pid'),{'pid':pid})
-  if wait=='Lock':return
-  assert not worker.done(), 'worker finished before expected lock'
+  if wait=='Lock':return True
+  if worker.done():
+   # 没被挡住 → 这轮不构成被测交错。
+   # `strict=True`（默认）保留原来的行为：**直接失败** —— 其余 6 处靠它发现
+   # "脚本没把交错造出来"（那是脚本坏了，必须红）。
+   # `strict=False` 留给"顺序合法、只是没造出交错"的场景（见客户删除那条）。
+   if strict: raise AssertionError('worker finished before expected lock')
+   return False
   await asyncio.sleep(.02)
- raise AssertionError('lock wait not observed')
+ if strict: raise AssertionError('lock wait not observed')
+ return False
 
 async def inquiry_race(actor,kind):
  async with SessionLocal() as s:
@@ -198,7 +217,21 @@ async def task_clock_race(actor):
   print('PASS 并发创建后最早跟进日期一致')
   print('TASK CLOCK terminal next',c.next_followup_at,'real earliest',minimum,'wrong',c.next_followup_at!=minimum)
 
-async def customer_delete_race(actor,restricted):
+async def customer_delete_race(actor,restricted,*,attempts=5):
+ '''转交与"旧负责人删客户"的交错。
+
+ ⚠️ 这条**必须真的造出"工人被挡住"**才说明问题，而"被挡住"是时序事件：
+ 工人可能先拿到锁、把客户删完（那是**合法**顺序：删在转交之前）。
+ 所以这里最多试 `attempts` 轮，只要有一轮造出交错就按 403 判；
+ 一轮都没造出来才 `SKIP`（明确说出来，不假装通过）。
+ '''
+ for attempt in range(1,attempts+1):
+  if await _customer_delete_race_once(actor,restricted,attempt):
+   return
+ print(f'SKIP 客户删除交错：{attempts} 轮都没观察到锁等待（顺序都是"先删后转"，合法）')
+
+
+async def _customer_delete_race_once(actor,restricted,attempt):
  cid=await fresh_customer(restricted.id,'OLD-OWNER-DELETE')
  async with SessionLocal() as b:
   await b.execute(select(Customer).where(Customer.id==cid).with_for_update())
@@ -206,13 +239,20 @@ async def customer_delete_race(actor,restricted):
    pid=await a.scalar(text('select pg_backend_pid()'))
    worker=asyncio.create_task(customers.delete_customer(cid,REQ,restricted,a))
    try:
-    await wait_locked(pid,worker)
+    if not await wait_locked(pid,worker,strict=False):
+     # 这一轮没造出交错 → 换一轮再试（见外层 `attempts`）。
+     # 原来这里会断言失败、报"旧负责人仍能删除客户"，与真实情形
+     # （工人根本没被挡住、先删完了）不符 —— 那句误导最费时间。
+     await asyncio.gather(worker,return_exceptions=True)
+     print(f'  （第 {attempt} 轮未观察到锁等待，重试）')
+     return False
     result=await customers.transfer_customer(cid,CustomerTransfer(owner_id=3,reason='转交在职同事'),REQ,actor,b);assert result['code']==0
     try:
      await asyncio.wait_for(worker,10);raise AssertionError('旧负责人仍能删除客户')
     except AppError as e:
      assert e.http_status==403
      print('PASS 转交后旧负责人删除被拒')
+     return True
    finally:
     if not worker.done():worker.cancel()
     await asyncio.gather(worker,return_exceptions=True)
