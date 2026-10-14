@@ -1365,6 +1365,16 @@ async def add_charge(
     # 校验要在 `mark_logistics_confirmed` **之后**：`is_logistics_charge` 看的是
     # 最终的 is_discount 与分类码，顺序反了会把折扣行误判成运费。
     await svc.ensure_charge_change_allowed(version, before=None, after=charge)
+    # 一个版本只能有一条运费：多条会被 `recalc_version` **静默累加**进总额
+    # （演示库里那张"订单 501 / 报价 581"就是这么来的，见
+    # `svc.ensure_single_logistics_charge` 的说明）。
+    #
+    # ⚠️ 必须在 `session.add` **之前**调：add 之后再查询会触发 autoflush，
+    # 刚建的这条会出现在结果里，闸门把自己挡住 —— 每次新增都误判"已经有一条"。
+    if svc.is_logistics_charge(charge):
+        await svc.ensure_single_logistics_charge(
+            session, version_id=version.id, keep_id=None
+        )
     session.add(charge)
     await session.flush()
     await svc.recalc_version(session, version)
@@ -1866,6 +1876,13 @@ async def update_charge(
     await svc.ensure_charge_change_allowed(
         version, before=(charge if was_logistics else None), after=charge
     )
+    # 只有"原本不是运费、现在改成运费"才可能把条数顶成 2 —— 在一条运费上改金额或
+    # 改说明不算（`keep_id` 把这条自己排除掉了）。判据与新增共用同一个 helper，
+    # 不在这里另写一遍"数一数有几条"。
+    if svc.is_logistics_charge(charge) and not was_logistics:
+        await svc.ensure_single_logistics_charge(
+            session, version_id=version.id, keep_id=charge.id
+        )
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(
