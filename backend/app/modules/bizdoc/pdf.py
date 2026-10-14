@@ -167,13 +167,20 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
     # 草稿（第八批 §8.8）：模板变量没解析出来时只允许出草稿，纸面上必须写明
     # "这不是正式对外文件"，否则一份缺条款的 PDF 会被当成正式件发出去。
     if data.get("is_draft"):
+        # ⚠️ 优先印**快照里记下的真实原因**（2026-10-14 审查修）。
+        # 原来不管什么原因都写死"模板变量未解析"，而草稿有两条来源：
+        # ① 模板变量未解析；② 调用方标的原因（报价未过审批 / 主数据未确认 /
+        # 运费未确认）—— 情形②时 `token_issues` 是空的，纸面上的原因与事实不符。
         issues = data.get("token_issues") or []
-        detail = "；".join(
-            _text(issue.get("message") or issue.get("token")) for issue in issues
-        ) or "模板变量未解析"
+        reason = _text(data.get("draft_reason")).strip()
+        if issues:
+            detail = "；".join(
+                _text(issue.get("message") or issue.get("token")) for issue in issues
+            )
+            reason = f"{reason}（模板变量未解析：{detail}）" if reason else f"模板变量未解析：{detail}"
         flow.append(
             Paragraph(
-                _esc("【草稿】本文件不是正式对外文件：模板变量未解析。" + detail),
+                _esc("【草稿】本文件不是正式对外文件：" + (reason or "原因见生成记录")),
                 style["draft"],
             )
         )
@@ -261,7 +268,15 @@ def render_biz_doc_pdf(data: dict[str, Any]) -> bytes:
     for section in data.get("sections") or []:
         if not _text(section.get("value")).strip():
             continue
-        flow.append(Paragraph(_text(section.get("label")), style["section"]))
+        # ⚠️ label 也必须转义（2026-10-14 审查修）：reportlab 的 Paragraph 按 **XML**
+        # 解析，而这行的 label 里拼了 `item_name`（样品明细的自由文本，String(200)、
+        # 无字符过滤）。下一行的 value 一直走 `_esc`，只有 label 漏了 ——
+        # 于是 `item_name` 里含 `</b>`/`<b>`/`<super>` 这类标签形状的串时，
+        # 渲染抛 `ValueError: Parse error`，`POST /biz-docs/sample-request`
+        # 在 `_archive_original` 渲染那一刻 **500**（整笔回滚），
+        # 同一份历史件用 `mode=original` 重建下载也同样炸。
+        # 实测（reportlab）：未转义 → ValueError；`_esc` 之后 → 正常出图。
+        flow.append(Paragraph(_esc(section.get("label")), style["section"]))
         flow.append(Paragraph(_esc(section.get("value")), style["body"]))
 
     body = _text(data.get("body")).strip()

@@ -206,48 +206,67 @@ async def generate_sample_request_doc(
     要再出一份（哪怕内容一模一样）就换一把新键 —— 不能按内容去重，
     那会把"同一批货再出一份给工厂"这种合法需求永久挡掉。
     """
-    key = request_key_from(request, payload.request_key)
-    doc, replayed = await svc.run_idempotent_generation(
-        session,
-        user_id=user.id,
-        action="bizdoc:sample_request",
-        request_key=key,
-        payload=_generate_fingerprint(
-            doc_type="sample_request",
-            sample_request_id=payload.sample_request_id,
-            template_id=payload.template_id,
-            extra_fields=payload.extra_fields,
-        ),
-        generate=lambda: svc.generate_sample_request_doc(
+    # ⚠️ 从「落盘原件」到「提交」这一整段必须包起来（2026-10-14 审查修）。
+    #
+    # `_archive_original` 在事务内就把 PDF/xlsx **写盘**了，而删除补偿原来只在
+    # `commit_doc_generation` 的 commit 失败分支里 —— 可这之后还有
+    # `idempotency.complete(...)` 的 flush 与这里的 `write_audit`：
+    # 连接抖动、客户端断开导致的取消、优雅停机都会让事务回滚，
+    # 而**盘上那份对象没人删**（盘上有、库里没有）。
+    # `get_db` 只捕 `Exception`，取消（`CancelledError` 继承 `BaseException`）
+    # 连回滚都不走它的分支 —— 所以这里必须自己兜到 `BaseException`。
+    #
+    # 清理走 `cleanup_pending_objects`：**先 rollback、再按 object_key 查库**，
+    # 查得到就说明其实已提交（提交成功但回执丢了），**保留不删** ——
+    # 直接删会把用户的原件弄丢（`contract/service.py` 记着这次教训）。
+    # 再用 `_cancel_safe` 的 shield 手法保证「被取消也清得完」。
+    try:
+        key = request_key_from(request, payload.request_key)
+        doc, replayed = await svc.run_idempotent_generation(
             session,
-            sample_request_id=payload.sample_request_id,
-            user=user,
-            template_id=payload.template_id,
-            extra_fields=payload.extra_fields,
-        ),
-    )
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="generate_replay" if replayed else "generate",
-        business_type="biz_doc",
-        business_id=doc.id,
-        after={
-            "doc_no": doc.doc_no,
-            "doc_type": doc.doc_type,
-            "version": doc.version,
-            "source_no": doc.source_no,
-            "sample_request_id": doc.sample_request_id,
-            "replayed": replayed,
-        },
-        ip=client_ip(request),
-    )
-    await svc.commit_doc_generation(session, doc)
-    return ok(
-        _generate_payload(doc, key),
-        _generate_message("打样需求单", doc, replayed, key),
-    )
-
+            user_id=user.id,
+            action="bizdoc:sample_request",
+            request_key=key,
+            payload=_generate_fingerprint(
+                doc_type="sample_request",
+                sample_request_id=payload.sample_request_id,
+                template_id=payload.template_id,
+                extra_fields=payload.extra_fields,
+            ),
+            generate=lambda: svc.generate_sample_request_doc(
+                session,
+                sample_request_id=payload.sample_request_id,
+                user=user,
+                template_id=payload.template_id,
+                extra_fields=payload.extra_fields,
+            ),
+        )
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="generate_replay" if replayed else "generate",
+            business_type="biz_doc",
+            business_id=doc.id,
+            after={
+                "doc_no": doc.doc_no,
+                "doc_type": doc.doc_type,
+                "version": doc.version,
+                "source_no": doc.source_no,
+                "sample_request_id": doc.sample_request_id,
+                "replayed": replayed,
+            },
+            ip=client_ip(request),
+        )
+        await svc.commit_doc_generation(session, doc)
+        return ok(
+            _generate_payload(doc, key),
+            _generate_message("打样需求单", doc, replayed, key),
+        )
+    except BaseException:  # noqa: BLE001 —— 取消是 BaseException，必须兜住
+        await svc._cancel_safe(
+            svc.cleanup_pending_objects(session), label="生成文件落盘清理"
+        )
+        raise
 
 @router.post("/biz-docs/order")
 async def generate_order_sheet_doc(
@@ -261,54 +280,73 @@ async def generate_order_sheet_doc(
     幂等口径同打样单（§8.9）；`allow_draft` 是 §8.8 的草稿闸门，与幂等互不影响
     （是否允许草稿也进请求指纹：同一把键不能一次要正式件、一次要草稿）。
     """
-    key = request_key_from(request, payload.request_key)
-    doc, replayed = await svc.run_idempotent_generation(
-        session,
-        user_id=user.id,
-        action="bizdoc:order_sheet",
-        request_key=key,
-        payload=_generate_fingerprint(
-            doc_type="order_sheet",
-            order_id=payload.order_id,
-            template_id=payload.template_id,
-            extra_fields=payload.extra_fields,
-            allow_draft=payload.allow_draft,
-        ),
-        generate=lambda: svc.generate_order_sheet_doc(
+    # ⚠️ 从「落盘原件」到「提交」这一整段必须包起来（2026-10-14 审查修）。
+    #
+    # `_archive_original` 在事务内就把 PDF/xlsx **写盘**了，而删除补偿原来只在
+    # `commit_doc_generation` 的 commit 失败分支里 —— 可这之后还有
+    # `idempotency.complete(...)` 的 flush 与这里的 `write_audit`：
+    # 连接抖动、客户端断开导致的取消、优雅停机都会让事务回滚，
+    # 而**盘上那份对象没人删**（盘上有、库里没有）。
+    # `get_db` 只捕 `Exception`，取消（`CancelledError` 继承 `BaseException`）
+    # 连回滚都不走它的分支 —— 所以这里必须自己兜到 `BaseException`。
+    #
+    # 清理走 `cleanup_pending_objects`：**先 rollback、再按 object_key 查库**，
+    # 查得到就说明其实已提交（提交成功但回执丢了），**保留不删** ——
+    # 直接删会把用户的原件弄丢（`contract/service.py` 记着这次教训）。
+    # 再用 `_cancel_safe` 的 shield 手法保证「被取消也清得完」。
+    try:
+        key = request_key_from(request, payload.request_key)
+        doc, replayed = await svc.run_idempotent_generation(
             session,
-            order_id=payload.order_id,
-            user=user,
-            template_id=payload.template_id,
-            extra_fields=payload.extra_fields,
-            allow_draft=payload.allow_draft,
-        ),
-    )
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="generate_replay" if replayed else "generate",
-        business_type="biz_doc",
-        business_id=doc.id,
-        after={
-            "doc_no": doc.doc_no,
-            "doc_type": doc.doc_type,
-            "version": doc.version,
-            "status": doc.status,
-            "source_no": doc.source_no,
-            "order_id": doc.order_id,
-            "replayed": replayed,
-        },
-        ip=client_ip(request),
-    )
-    await svc.commit_doc_generation(session, doc)
-    if replayed:
-        message = _generate_message("下单文件", doc, True, key)
-    elif doc.status == "draft":
-        message = "已生成下单文件草稿（模板变量未解析，非正式对外文件）" + _no_key_hint(key)
-    else:
-        message = _generate_message("下单文件", doc, False, key)
-    return ok(_generate_payload(doc, key), message)
-
+            user_id=user.id,
+            action="bizdoc:order_sheet",
+            request_key=key,
+            payload=_generate_fingerprint(
+                doc_type="order_sheet",
+                order_id=payload.order_id,
+                template_id=payload.template_id,
+                extra_fields=payload.extra_fields,
+                allow_draft=payload.allow_draft,
+            ),
+            generate=lambda: svc.generate_order_sheet_doc(
+                session,
+                order_id=payload.order_id,
+                user=user,
+                template_id=payload.template_id,
+                extra_fields=payload.extra_fields,
+                allow_draft=payload.allow_draft,
+            ),
+        )
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="generate_replay" if replayed else "generate",
+            business_type="biz_doc",
+            business_id=doc.id,
+            after={
+                "doc_no": doc.doc_no,
+                "doc_type": doc.doc_type,
+                "version": doc.version,
+                "status": doc.status,
+                "source_no": doc.source_no,
+                "order_id": doc.order_id,
+                "replayed": replayed,
+            },
+            ip=client_ip(request),
+        )
+        await svc.commit_doc_generation(session, doc)
+        if replayed:
+            message = _generate_message("下单文件", doc, True, key)
+        elif doc.status == "draft":
+            message = "已生成下单文件草稿（模板变量未解析，非正式对外文件）" + _no_key_hint(key)
+        else:
+            message = _generate_message("下单文件", doc, False, key)
+        return ok(_generate_payload(doc, key), message)
+    except BaseException:  # noqa: BLE001 —— 取消是 BaseException，必须兜住
+        await svc._cancel_safe(
+            svc.cleanup_pending_objects(session), label="生成文件落盘清理"
+        )
+        raise
 
 @router.post("/biz-docs/quote")
 async def generate_quote_doc(
@@ -322,48 +360,67 @@ async def generate_quote_doc(
     幂等口径同打样单（§8.9）：报价单最容易双击——生成失败提示与网络超时后
     用户会再点一次，没有幂等键就会多出一份 V2，客户手里两张表还长得一样。
     """
-    key = request_key_from(request, payload.request_key)
-    doc, replayed = await svc.run_idempotent_generation(
-        session,
-        user_id=user.id,
-        action="bizdoc:quote_sheet",
-        request_key=key,
-        payload=_generate_fingerprint(
-            doc_type="quote_sheet",
-            quote_version_id=payload.quote_version_id,
-            template_id=payload.template_id,
-            extra_fields=payload.extra_fields,
-        ),
-        generate=lambda: svc.generate_quote_doc(
+    # ⚠️ 从「落盘原件」到「提交」这一整段必须包起来（2026-10-14 审查修）。
+    #
+    # `_archive_original` 在事务内就把 PDF/xlsx **写盘**了，而删除补偿原来只在
+    # `commit_doc_generation` 的 commit 失败分支里 —— 可这之后还有
+    # `idempotency.complete(...)` 的 flush 与这里的 `write_audit`：
+    # 连接抖动、客户端断开导致的取消、优雅停机都会让事务回滚，
+    # 而**盘上那份对象没人删**（盘上有、库里没有）。
+    # `get_db` 只捕 `Exception`，取消（`CancelledError` 继承 `BaseException`）
+    # 连回滚都不走它的分支 —— 所以这里必须自己兜到 `BaseException`。
+    #
+    # 清理走 `cleanup_pending_objects`：**先 rollback、再按 object_key 查库**，
+    # 查得到就说明其实已提交（提交成功但回执丢了），**保留不删** ——
+    # 直接删会把用户的原件弄丢（`contract/service.py` 记着这次教训）。
+    # 再用 `_cancel_safe` 的 shield 手法保证「被取消也清得完」。
+    try:
+        key = request_key_from(request, payload.request_key)
+        doc, replayed = await svc.run_idempotent_generation(
             session,
-            quote_version_id=payload.quote_version_id,
-            user=user,
-            template_id=payload.template_id,
-            extra_fields=payload.extra_fields,
-        ),
-    )
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="generate_replay" if replayed else "generate",
-        business_type="biz_doc",
-        business_id=doc.id,
-        after={
-            "doc_no": doc.doc_no,
-            "doc_type": doc.doc_type,
-            "version": doc.version,
-            "source_no": doc.source_no,
-            "source_version": doc.source_version,
-            "replayed": replayed,
-        },
-        ip=client_ip(request),
-    )
-    await svc.commit_doc_generation(session, doc)
-    return ok(
-        _generate_payload(doc, key),
-        _generate_message("对客报价单", doc, replayed, key),
-    )
-
+            user_id=user.id,
+            action="bizdoc:quote_sheet",
+            request_key=key,
+            payload=_generate_fingerprint(
+                doc_type="quote_sheet",
+                quote_version_id=payload.quote_version_id,
+                template_id=payload.template_id,
+                extra_fields=payload.extra_fields,
+            ),
+            generate=lambda: svc.generate_quote_doc(
+                session,
+                quote_version_id=payload.quote_version_id,
+                user=user,
+                template_id=payload.template_id,
+                extra_fields=payload.extra_fields,
+            ),
+        )
+        await write_audit(
+            session,
+            operator_id=user.id,
+            action="generate_replay" if replayed else "generate",
+            business_type="biz_doc",
+            business_id=doc.id,
+            after={
+                "doc_no": doc.doc_no,
+                "doc_type": doc.doc_type,
+                "version": doc.version,
+                "source_no": doc.source_no,
+                "source_version": doc.source_version,
+                "replayed": replayed,
+            },
+            ip=client_ip(request),
+        )
+        await svc.commit_doc_generation(session, doc)
+        return ok(
+            _generate_payload(doc, key),
+            _generate_message("对客报价单", doc, replayed, key),
+        )
+    except BaseException:  # noqa: BLE001 —— 取消是 BaseException，必须兜住
+        await svc._cancel_safe(
+            svc.cleanup_pending_objects(session), label="生成文件落盘清理"
+        )
+        raise
 
 def _generate_fingerprint(**fields) -> dict:
     """幂等键的**内容指纹**（§8.9）：同一把键换了来源/模板/附加字段就是另一件事。

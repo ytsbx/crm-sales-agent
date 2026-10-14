@@ -96,6 +96,12 @@ EXCEPTIONS: dict[tuple[str, str], str] = {
         "撞单查重要求**按完整手机号比对** —— 脱敏了就查不出重复。"
         "结果只给有 `customer:merge` 权限的人，且返回体里带 `masked` 标记。"
     ),
+    ("app/modules/bizdoc/service.py", "preview_template_body"): (
+        "模板预览的**示例值**（`示例联系人` / `000-00000000` / `contact@example.com`），"
+        "不是任何真实数据 —— 2026-10-14 补 `contact` 来源时加进去的，"
+        "为的是让 `{{contact.*}}` 在预览里不被误报成「来源不可用」"
+        "（生成期它由 `_persist` 按 `built['contact_id']` 提供）。"
+    ),
     ("app/modules/quote/service.py", "build_item_snapshot"): (
         "这是**落库**不是出口：把 `minimum_price_cny`（人民币口径）冻结进快照，"
         "审批要按它判定。快照字段对无 `price:manage` 者的隐藏发生在 "
