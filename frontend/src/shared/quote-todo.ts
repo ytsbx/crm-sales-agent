@@ -316,42 +316,47 @@ export const SECONDARY_ACTIONS = [
  *
  * ## 怎么保证一致
  *
- * 全部在**整数分**上算，并且显式实现"半分进偶数"：
- *   1. `total * ratio` 先取到分的 100 倍（`×10000`）再判断；
- *   2. 余数恰好 5000（即半分）时，往**偶数**那一侧进（4.5 分 → 4 分，5.5 分 → 6 分）；
- *   3. **末期补差额**，保证各期之和严格等于总额；
- *   4. 出现不大于 0 的期 → 返回 `null`，由调用方拦住提交（后端同样会 422）。
- *
- * `ops/quote_todo.test.mjs` 里用**同一批用例**盯着这个函数与后端一致。
+ * 按 JSON 实际发送的十进制字符串转成 BigInt 系数与小数位，再做半分进偶数。
+ * 不能先用浮点乘法：0.05 × 0.7 × 100 会变成 3.4999999999999996，
+ * 把应当进位的 3.5 分算成 3 分。末期仍补差额，非正数期拒绝。
  */
 export function splitAmountsLikeBackend(
   total: number,
   ratios: readonly number[],
 ): number[] | null {
-  if (!ratios.length || !Number.isFinite(total)) return null
-  // 半分进偶数（banker's rounding），直接把"分"取整。
-  //
-  // ⚠️ 我第一版把它写成"把分的万分之一取整到分"（外面又乘了 10000），
-  // 结果所有金额都被缩小 100 倍，`0.05` 分两期直接返回 null。
-  // 单位必须清楚：**入参就是分**（不是元的万分之一）。
-  const roundHalfEvenToCent = (cents: number): number => {
-    const sign = cents < 0 ? -1 : 1
-    const abs = Math.abs(cents)
-    const floor = Math.floor(abs)
-    const remainder = abs - floor
-    if (remainder > 0.5) return sign * (floor + 1)
-    if (remainder < 0.5) return sign * floor
-    return sign * (floor % 2 === 0 ? floor : floor + 1)
-  }
-  const totalCents = Math.round(total * 100)
-  const cents: number[] = []
-  for (let index = 0; index < ratios.length; index += 1) {
-    if (index === ratios.length - 1) {
-      cents.push(totalCents - cents.reduce((sum, item) => sum + item, 0))
-    } else {
-      cents.push(roundHalfEvenToCent(total * ratios[index] * 100))
+  if (!ratios.length || !Number.isFinite(total) || total <= 0
+    || ratios.some((ratio) => !Number.isFinite(ratio) || ratio <= 0)) return null
+
+  // Number.toString 与 JSON 中的十进制数一致，对应后端 Decimal(str(value))。
+  const decimalParts = (value: number): { coefficient: bigint; scale: number } => {
+    const [mantissa, exponent = '0'] = value.toString().toLowerCase().split('e')
+    const [integer, fraction = ''] = mantissa.split('.')
+    return {
+      coefficient: BigInt(integer + fraction),
+      scale: fraction.length - Number(exponent),
     }
   }
-  if (cents.some((item) => item <= 0)) return null
-  return cents.map((item) => item / 100)
+  const toCents = (coefficient: bigint, scale: number): bigint => {
+    const centScale = scale - 2
+    if (centScale <= 0) return coefficient * (10n ** BigInt(-centScale))
+    const divisor = 10n ** BigInt(centScale)
+    const whole = coefficient / divisor
+    const remainder = coefficient % divisor
+    return whole + (remainder * 2n > divisor
+      || (remainder * 2n === divisor && whole % 2n !== 0n) ? 1n : 0n)
+  }
+  const amount = decimalParts(total)
+  const totalCents = toCents(amount.coefficient, amount.scale)
+  const cents: bigint[] = []
+  let allocated = 0n
+  for (let index = 0; index < ratios.length; index += 1) {
+    const ratio = decimalParts(ratios[index])
+    const part = index === ratios.length - 1
+      ? totalCents - allocated
+      : toCents(amount.coefficient * ratio.coefficient, amount.scale + ratio.scale)
+    cents.push(part)
+    allocated += part
+  }
+  if (cents.some((item) => item <= 0n)) return null
+  return cents.map((item) => Number(item) / 100)
 }

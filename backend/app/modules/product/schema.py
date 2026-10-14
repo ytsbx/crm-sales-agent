@@ -41,7 +41,7 @@ def _num_field(name: str) -> FieldInfo:
 def _int_field(name: str) -> FieldInfo:
     """同上，整数物理量（装箱数 / 起订量）。"""
     rule = NUMERIC_RULES[name]
-    return Field(default=None, ge=rule.minimum)
+    return Field(default=None, ge=rule.minimum, le=10 ** rule.max_digits - 1)
 
 class SkuCreate(BaseModel):
     sku_code: str = Field(min_length=1, max_length=64)

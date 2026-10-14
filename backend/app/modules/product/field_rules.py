@@ -103,8 +103,9 @@ def parse_numeric_field(field: str, value: Any, *, where: str) -> Decimal | int 
                 "系统不会替你四舍五入 —— 请改成整数再提交",
                 422,
             )
-        digits = len(number.to_integral_value().as_tuple().digits)
-        if digits > rule.max_digits:
+        # 正指数也占整数位：1E+30 的系数只有一个数字，但实际是 31 位整数。
+        # 先比较范围，再转 int，避免超大科学计数法绕过校验。
+        if number >= Decimal(10) ** rule.max_digits:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
                 f"{where}：{rule.label}（{field}）超出可保存范围（最多 {rule.max_digits} 位），"
@@ -112,12 +113,16 @@ def parse_numeric_field(field: str, value: Any, *, where: str) -> Decimal | int 
                 422,
             )
         return int(number)
+    # Numeric(p,s) 固定只有 p-s 个整数位，不能借用没填的小数位。
+    # 尾随零不改变精度：7.7700 与 7.77 应接受同一结论。
+    digits = list(number.as_tuple().digits)
     exponent = number.as_tuple().exponent
-    fraction_digits = -exponent if exponent < 0 else 0
-    integer_digits = max(len(number.as_tuple().digits) + exponent, 0) if exponent < 0 else (
-        len(number.as_tuple().digits) + exponent
-    )
-    if fraction_digits > rule.decimal_places or integer_digits + fraction_digits > rule.max_digits:
+    while digits and digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    fraction_digits = max(-exponent, 0) if digits else 0
+    if (fraction_digits > rule.decimal_places
+            or number >= Decimal(10) ** (rule.max_digits - rule.decimal_places)):
         raise AppError(
             ErrorCode.PARAM_ERROR,
             f"{where}：{rule.label}（{field}）最多 {rule.max_digits} 位（含 "

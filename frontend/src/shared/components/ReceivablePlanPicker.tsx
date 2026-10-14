@@ -182,7 +182,7 @@ export default function ReceivablePlanPicker({
   }
 
   // 与调用方显示的"为什么不能提交"同源（见 `planBlockedReasons`）
-  const reasons = planBlockedReasons(mode, rows)
+  const reasons = planBlockedReasons(mode, rows, totalAmount)
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
