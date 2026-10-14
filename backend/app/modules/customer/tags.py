@@ -756,11 +756,20 @@ async def merge_customers(
     #    目标原来就有主的话**什么都别做**：那位才是主人，并过来的保持非主。
     #    （从前这里写的是"有主就降级并过来的"，那句判断本身没错，错在它跑在
     #    改挂之后 —— 降级是补的，索引早在改挂那一步就拦下来了。）
+    # ⚠️ 判据必须带 `deleted_at IS NULL`（2026-10-14 审查修）：
+    # 全项目的"主位"口径就是 `is_primary AND deleted_at IS NULL`
+    # —— 部分唯一索引 `uq_contacts_primary_per_customer` 的 WHERE 条件如此，
+    # `contact_util.take_primary_slot` / `has_primary` 也都这么写；
+    # 而删除联系人只置 `deleted_at`、**不清 `is_primary`**。
+    # 不带这句时：目标客户原来那个主联系人被软删过（很常见）→ 计数仍是 1
+    # → 不再从并过来的联系人里顶一个，合并后目标客户**一个"活的"主联系人
+    # 都没有**，与本段注释"合并完目标名下不该突然变得一个主联系人都没有"相反。
     has_own_primary = (
         await session.execute(
             select(func.count(Contact.id)).where(
                 Contact.customer_id == target.id,
                 Contact.is_primary.is_(True),
+                Contact.deleted_at.is_(None),
             )
         )
     ).scalar_one()
