@@ -81,6 +81,14 @@ def model_ready() -> bool:
 
 
 def _client():
+    """新建一个 OpenAI 客户端。
+
+    ⚠️ 调用方**必须** `await client.close()`（见 `_close_client`）——
+    `AsyncOpenAI` 内部持有独立的 `httpx.AsyncClient` 连接池，**不会**随对
+    象被回收而关闭底层连接。原先 `run_turn_events` 每轮新建一个却从不关闭，
+    长跑进程里未释放的连接/TLS 会话会按调用次数累积（2026-10-14 审查）。
+    同项目其它外部 HTTP 客户端（`dingtalk/client.py`）都是显式关闭的写法。
+    """
     from openai import AsyncOpenAI
 
     return AsyncOpenAI(
@@ -88,6 +96,14 @@ def _client():
         base_url=settings.deepseek_base_url,
         timeout=60,
     )
+
+
+async def _close_client(client) -> None:
+    """尽力关闭客户端；**绝不**因为关闭失败而盖掉原本的异常。"""
+    try:
+        await client.close()
+    except Exception:  # noqa: BLE001 —— 关闭失败不该影响这一轮对话的结果
+        pass
 
 
 async def _history(session: AsyncSession, session_id: int, limit: int = 16) -> list[dict]:
@@ -523,6 +539,10 @@ async def run_turn_events(
                 agent_session.title = text[:20]
             await session.commit()
         raise
+    finally:
+        # 无论正常结束、异常还是用户断线（GeneratorExit），都要关掉模型客户端。
+        # `AsyncOpenAI` 自带 httpx 连接池，不关就会按对话轮次累积（2026-10-14 审查）。
+        await _close_client(client)
 
 
 async def run_turn(

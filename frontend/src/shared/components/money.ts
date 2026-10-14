@@ -23,12 +23,21 @@ export function formatMoney(
   currency?: string | null,
 ): string {
   if (value === null || value === undefined) return '-'
+  // 非有限数（NaN / Infinity）不能原样 toLocaleString —— 会渲染成字面量
+  // 「NaN」「∞」贴到金额位置，是最不该出现的东西（2026-10-14 审查）。
+  // 宁可显示 '-' 让人一眼看出这个数是坏的，也不要装作有个数。
+  if (typeof value === 'number' && !Number.isFinite(value)) return '-'
   let text: string
   if (typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value)) {
     const [whole, fraction] = value.split('.')
     text = BigInt(whole).toLocaleString('zh-CN') + (fraction === undefined ? '' : `.${fraction}`)
-  } else {
+  } else if (typeof value === 'number') {
     text = value.toLocaleString('zh-CN')
+  } else {
+    // 字符串里可能是 'abc'、'NaN'、'1e5' 这类非纯数字写法；非有限就显示 '-'。
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return '-'
+    text = numeric.toLocaleString('zh-CN')
   }
   const prefix = currencyPrefix(currency)
   return prefix ? `${prefix}${text}` : `${text}（币种待核实）`

@@ -791,10 +791,21 @@ async def calculate_price(
         "below_hard_floor": result["approval_triggers"].get("below_hard_floor", False),
         "warnings": result["warnings"],
     }
-    # A11：Agent 与普通界面同一套脱敏——成本/保护价/利润只给价格管理员
-    if not ctx.user.has("price:manage"):
-        for key in ("base_cost", "minimum_price", "profit", "profit_rate"):
-            data[key] = None
+    # A11：Agent 与普通界面**同一套**脱敏 —— 直接复用 pricing 模块的实现，
+    # **不要在这里再维护一份清单**（2026-10-14 审查）。
+    #
+    # 原来这里手写了一份 `("base_cost", "minimum_price", "profit", "profit_rate")`，
+    # 而 `pricing/router.py::_sanitize_pricing_result` 的清单更长：还包含
+    # `standard_price` 与 `authorized_min_margin`（后者能与建议价反推成本区间），
+    # 以及 `hard_floor_price` / `profit_with_refund` 等。两份清单必然漂移 ——
+    # 那个函数的注释本身就警告过"写第二份迟早会漏字段"。
+    from app.modules.pricing.router import _sanitize_pricing_result
+
+    before = {k: data.get(k) for k in ("base_cost", "minimum_price", "profit", "profit_rate")}
+    data = _sanitize_pricing_result(data, ctx.user)
+    if not ctx.user.has("price:manage") and any(
+        before.get(k) is not None for k in before
+    ):
         data["warnings"] = [*data["warnings"], "成本、保护价与利润仅价格管理员可见"]
     return data
 

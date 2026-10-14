@@ -930,7 +930,18 @@ async def opportunity_cycle(session: AsyncSession, user: CurrentUser) -> dict:
 
 async def quote_stats(session: AsyncSession, user: CurrentUser) -> dict:
     quotes = (
-        await session.execute(await _scope_filter(select(Quote), user, Quote.owner_id, session))
+        # ⚠️ 必须排除**软删**的报价（2026-10-14 审查）：原实现只做了数据范围过滤，
+        # 于是已删除的报价及其版本仍计入 quote_count / average_versions /
+        # accept_rate / approval_rate / average_discount 的分子分母。
+        # 同模块的 `product_stats` 明确写了"已删除的报价整单排除"，两处口径本就该一致。
+        await session.execute(
+            await _scope_filter(
+                select(Quote).where(Quote.deleted_at.is_(None)),
+                user,
+                Quote.owner_id,
+                session,
+            )
+        )
     ).scalars().all()
     quote_ids = [quote.id for quote in quotes]
     if not quote_ids:

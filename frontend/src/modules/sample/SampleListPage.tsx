@@ -325,11 +325,26 @@ export default function SampleListPage() {
 
   const shipMutation = useMutation({
     mutationFn: () =>
-      shipSample(detailId!, {
-        carrier: shipForm.carrier.trim() || null,
-        tracking_no: shipForm.tracking_no.trim() || null,
-        shipping_fee: shipForm.shipping_fee.trim() ? Number(shipForm.shipping_fee) : 0,
-      }),
+      // ⚠️ 运费必须**先校验再提交**（2026-10-14 审查）：原来直接 `Number(...)`，
+      // 输入 `abc` 得到 `NaN`，经 axios/JSON.stringify 变成 `null` 打到
+      // `shipping_fee: Decimal = Field(default=0, ge=0, ...)`（**非 Optional**），
+      // 用户只会看到「参数校验失败：shipping_fee」，不知道该怎么改。
+      // 与同文件 `saveProdMutation`（打样费用）同一口径，别再写第三个版本。
+      shipSample(detailId!, (() => {
+        const raw = shipForm.shipping_fee.trim()
+        const fee = raw === '' ? 0 : Number(raw)
+        if (!Number.isFinite(fee) || fee < 0) {
+          throw new Error('运费要填一个不小于 0 的数字（留空按 0 算）')
+        }
+        if (raw !== '' && !/^\d+(\.\d{1,2})?$/.test(raw)) {
+          throw new Error('运费最多两位小数')
+        }
+        return {
+          carrier: shipForm.carrier.trim() || null,
+          tracking_no: shipForm.tracking_no.trim() || null,
+          shipping_fee: fee,
+        }
+      })()),
     onSuccess: () => {
       Toast.success('已登记寄样')
       setShipForm({ carrier: '', tracking_no: '', shipping_fee: '' })

@@ -29,6 +29,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from app.core.config import settings
+from app.modules.agent.runtime import _close_client
 
 logger = logging.getLogger("crm.agent.commentary")
 
@@ -172,6 +173,10 @@ async def build_commentary(topic: str, facts: dict) -> tuple[str | None, str | N
     except Exception as exc:  # 模型侧的失败一律降级，不能拖垮统计结果
         logger.warning("AI 叙述生成失败（topic=%s）：%s", topic, exc)
         return None, f"AI 叙述生成失败：{str(exc)[:120]}（本地统计结果不受影响）"
+    finally:
+        # 关掉模型客户端：`AsyncOpenAI` 自带 httpx 连接池，不关会按调用次数累积
+        # （2026-10-14 审查，与 runtime.py 同一问题）。
+        await _close_client(client)
 
     text = (response.choices[0].message.content or "").strip()
     if not text:

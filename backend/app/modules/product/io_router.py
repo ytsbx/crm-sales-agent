@@ -144,15 +144,27 @@ async def import_products(
 
         try:
             async with row_savepoint(session):
-                duplicate = (
+                # `order_by(id)` 让"同名多行时返回哪个"确定下来（产品名**没有唯一约束**）；
+                # 并且同名多于一条时说清数量 —— 原来随便挑一条报 id，用户看不出还有别的
+                # （2026-10-14 审查）。
+                dup_rows = (
                     await session.execute(
                         select(Product)
                         .where(Product.name == name, Product.deleted_at.is_(None))
-                        .limit(1)
+                        .order_by(Product.id.asc())
                     )
-                ).scalars().first()
+                ).scalars().all()
+                duplicate = dup_rows[0] if dup_rows else None
                 if duplicate is not None:
-                    raise RowSkipped(f"同名产品已存在（id={duplicate.id}）")
+                    more = (
+                        f"，共 {len(dup_rows)} 个同名产品（id: "
+                        + "、".join(str(r.id) for r in dup_rows[:5])
+                        + ("…" if len(dup_rows) > 5 else "")
+                        + "）"
+                        if len(dup_rows) > 1
+                        else ""
+                    )
+                    raise RowSkipped(f"同名产品已存在（id={duplicate.id}）{more}")
                 # ⚠️ **导入必须走和单个新建同一道字典校验**（2026-10-13 补）。
                 #
                 # 前一版只在 `POST /products`（单个新建/编辑）里调了
