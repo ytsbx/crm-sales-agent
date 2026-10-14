@@ -129,6 +129,9 @@ jobs:
           PYTHONPATH=. python scripts/check_soft_delete_filters.py
           # 统计/仪表盘有没有套数据范围（详情有范围、统计漏了 —— 数字对不上没人查代码）。
           PYTHONPATH=. python scripts/check_stats_data_scope.py
+          # 查询里引用的模型有没有对应的 JOIN（没 join 会变成**笛卡尔积**：行数放大、
+          # 分页与 total 全错，而且不报错 —— 2026-10-14 我就是在 contract 台账上踩的）。
+          PYTHONPATH=. python scripts/check_query_joins.py
 
       - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
         # 三处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：
