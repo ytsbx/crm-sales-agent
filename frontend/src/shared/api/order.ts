@@ -107,6 +107,23 @@ export interface Payment {
   created_at: string
   /** 币种（第九批 §9.9）：回款跟着订单币种，不能写死人民币 */
   currency?: string | null
+  /**
+   * 这笔钱**实际分到哪几期、各多少**（第十批，主人 2026-10-13 拍板）。
+   *
+   * ⚠️ 它与 `receivable_plan_id`（**登记时选的那一期**）不是一回事：
+   * 超收时多出来的部分会按到期日自动抵到后续期，两者就不一致了。
+   * 列表上"登记的期"与这里的分配合起来看，才知道这笔钱到底冲了哪几期。
+   */
+  allocations?: PaymentAllocationRow[]
+}
+
+export interface PaymentAllocationRow {
+  plan_id: number
+  plan_name: string
+  due_date?: string | null
+  amount: number
+  /** `auto` = 确认时按到期日自动分；`manual` = 人工调整过 */
+  source: string
 }
 
 export interface FinanceSummary {
@@ -298,6 +315,23 @@ export function listReceivables(query: { status?: string; page?: number; page_si
 
 export function listPayments(query: { status?: string; page?: number; page_size?: number }) {
   return api.get<PageResult<Payment>>('/payments', query)
+}
+
+/**
+ * 人工调整一笔回款的分配（第十批主人定的口径）。
+ *
+ * **整份替换**：传进去的就是这笔回款的全部分配，没传的期即不分配 ——
+ * 这样后端审计里"原归属 → 新归属"是一条清晰对照，而不是一串增删改。
+ * 金额合计不得超过回款金额（后端会 422）。
+ */
+export function updatePaymentAllocations(
+  paymentId: number,
+  payload: { allocations: Array<{ plan_id: number; amount: string }>; reason: string },
+) {
+  return api.put<{ allocations: PaymentAllocationRow[]; reason: string }>(
+    `/payments/${paymentId}/allocations`,
+    payload,
+  )
 }
 
 export function createPayment(payload: Record<string, unknown>) {

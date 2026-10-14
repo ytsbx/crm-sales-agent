@@ -77,9 +77,15 @@ async def confirmed_amount(session: AsyncSession, plan_id: int) -> Decimal:
             )
         )
     ).scalar_one()
-    # ⚠️ **兜底**：没有任何分配行的已确认回款，仍按 `receivable_plan_id` 计入。
+    # ⚠️ **兜底**：**从未有过任何分配**的已确认回款，仍按 `receivable_plan_id` 计入。
     #
-    # 为什么需要（2026-10-13 加）：
+    # 判据是"这笔回款**在整个系统里**一条分配都没有"，不是"对**这一期**没有分配"
+    # —— 后者会漏一个大洞（2026-10-13 实测踩到）：
+    #   人工把 200 全改分给二期之后，一期就没有分配行了；若按"对这一期没分配"
+    #   去兜底，这 200 又被算回一期 → **一期凭空显示已收 200**（双计），
+    #   而它其实一分钱都没分到。
+    #
+    # 为什么还需要兜底（2026-10-13 加）：
     #   · 迁移只回填了**当时已存在**的已确认回款；之后若有代码路径/人工补数
     #     插入"有回款、无分配"的行（实测：有 15 个既有测试脚本与部分历史数据
     #     就是这种形状），按分配表汇总会把这些钱**算成没收**，
@@ -92,6 +98,7 @@ async def confirmed_amount(session: AsyncSession, plan_id: int) -> Decimal:
             select(func.coalesce(func.sum(PaymentRecord.received_amount), 0)).where(
                 PaymentRecord.receivable_plan_id == plan_id,
                 PaymentRecord.status == "confirmed",
+                # "这笔回款一条分配都没有"（而不是"对这一期没有"）
                 ~select(PaymentAllocation.id)
                 .where(PaymentAllocation.payment_id == PaymentRecord.id)
                 .exists(),
@@ -439,6 +446,14 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         "confirmed_by_name": confirmer.name if confirmer else None,
         "confirmed_at": record.confirmed_at,
         "created_at": record.created_at,
+        #: 这笔钱**实际分到哪几期、各多少**（第十批）；未确认时为空。
+        #: 带上它，前端"调整分配"弹窗就不用再发一次请求，而且列表上能一眼看出
+        #: "登记的期"与"实际分的期"是否一致（超收时两者会不同）。
+        "allocations": (
+            await serialize_allocations(session, record.id)
+            if record.status == "confirmed"
+            else []
+        ),
     }
 
 

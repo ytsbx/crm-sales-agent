@@ -7,6 +7,7 @@ import {
   confirmMessageOf,
 } from '../../shared/components/ConfirmRequiredModal'
 import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import AllocationAdjustModal from './AllocationAdjustModal'
 import FormLabel from '../../shared/components/FormLabel'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
@@ -193,6 +194,8 @@ export default function OrderDetailPage() {
     ],
   )
   const [paymentTarget, setPaymentTarget] = useState<Receivable | null>(null)
+  //: 「调整回款分配」弹窗要调的那笔回款（第十批）。null = 关着。
+  const [allocationPayment, setAllocationPayment] = useState<Payment | null>(null)
   const [paymentForm, setPaymentForm] = useState({ amount: '', date: new Date(), method: '银行转账' })
 
   // 收款方式的「其他」：选中后多一个输入框写具体方式（不填就保持「其他」）。
@@ -987,18 +990,31 @@ export default function OrderDetailPage() {
                 {
                   title: '操作',
                   width: 90,
-                  render: (_: unknown, record: Payment) =>
-                    record.status === 'pending' && canPayment ? (
-                      <Popconfirm
-                        title="确认收到这笔回款？"
-                        content="确认后会记入回款并影响业绩口径，请核对金额后再点。"
-                        onConfirm={() => confirmMutation.mutate(record.id)}
-                      >
-                        <a style={{ color: 'var(--crm-success)' }}>确认</a>
-                      </Popconfirm>
-                    ) : (
-                      '-'
-                    ),
+                  render: (_: unknown, record: Payment) => (
+                    <div style={{ display: 'flex', gap: 10 }}>
+                      {record.status === 'pending' && canPayment && (
+                        <Popconfirm
+                          title="确认收到这笔回款？"
+                          content="确认后会记入回款并影响业绩口径，请核对金额后再点。"
+                          onConfirm={() => confirmMutation.mutate(record.id)}
+                        >
+                          <a style={{ color: 'var(--crm-success)' }}>确认</a>
+                        </Popconfirm>
+                      )}
+                      {record.status === 'confirmed' && canPayment && (
+                        // 只有已确认的回款才谈得上"这笔钱分到哪几期"。
+                        // 列表上把**实际分配**也带出来（超收时与登记的期不同），
+                        // 所以入口旁边直接写出"分了 N 期"，不用点开才知道。
+                        <a onClick={() => setAllocationPayment(record)}>
+                          调整分配
+                          {(record.allocations?.length ?? 0) > 1
+                            ? `（${record.allocations!.length} 期）`
+                            : ''}
+                        </a>
+                      )}
+                      {record.status !== 'pending' && record.status !== 'confirmed' && '-'}
+                    </div>
+                  ),
                 },
               ]}
               dataSource={paymentsQuery.data ?? []}
@@ -1829,6 +1845,24 @@ export default function OrderDetailPage() {
           })()}
         </div>
       </Modal>
+
+      {/* 调整回款分配（第十批）：整份替换式提交，原因会进审计 */}
+      <AllocationAdjustModal
+        // ⚠️ `key` 让"每打开一次就是一次全新挂载"：弹窗内部的编辑状态用惰性初值，
+        // 不必在 effect 里 setState（那会多跑一轮渲染，且触发
+        // react-hooks/set-state-in-effect）。换一笔回款也会重建，不会串数据。
+        key={allocationPayment?.id ?? 'none'}
+        visible={allocationPayment !== null}
+        payment={allocationPayment}
+        plans={receivablesQuery.data ?? []}
+        currency={order?.currency}
+        canEdit={canPayment}
+        onClose={() => setAllocationPayment(null)}
+        onSaved={() => {
+          paymentsQuery.refetch()
+          receivablesQuery.refetch()
+        }}
+      />
 
       <Modal
         title={`登记回款：${paymentTarget?.plan_name ?? ''}`}

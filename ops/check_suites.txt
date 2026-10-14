@@ -464,6 +464,7 @@ check_contract_sign_lock
 # 另含 ⑨ 客户负责人可指定（主人 2026-10-13 追问后补的前端入口 + 后端校验）。
 # 每组都带**正向对照**（只验"该拒的拒了"会把闸门写太宽也变绿）。
 check_batch9_repairs
+check_batch11_repairs
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue
 
@@ -484,3 +485,10 @@ check_contract_scan_race
 # 因为差异指纹把金额算进哈希、更正必然出新差异，只按 source_diff_id 去重就绕过去了。
 # 这条走真链路：写外部事实 → run_reconciliation 出差异 → confirm_diff 核定 → 复核台账。
 check_refund_correction
+
+# 回款分配的算法与「已收」口径（第十批回款分配）：
+# 超收按到期日抵后续期、每期必须实际分到钱才算完成、人工结论不被自动分配覆盖，
+# 以及一条实测踩过的判据坑 —— 「已收」读分配表时的兜底必须按**整笔回款**判
+# （按这一期没有分配判会让被挪走的那一期凭空显示已收，双计）。
+# 那个洞是浏览器端到端验证时才暴露的，固化成 ③ 段。
+check_allocation_rules
