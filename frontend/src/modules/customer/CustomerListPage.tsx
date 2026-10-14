@@ -547,9 +547,19 @@ export default function CustomerListPage() {
             }}
           >
             <span style={{ fontWeight: 600 }}>已选 {selectedIds.length} 个客户</span>
-            <Button size="small" onClick={() => setBatchTagOpen(true)}>
-              批量打标签
-            </Button>
+            {/* ⚠️ 必须与后端同码（2026-10-14 审查修）。
+                后端 `POST /customers/batch-tag` 要 `customer:update`
+                （`customer/tags_router.py`），而这里原来**没有任何判据** ——
+                紧邻的「批量转移负责人」判了 `customer:assign`，只有这个漏了。
+                内置的**财务**角色权限是 [customer:view, quote:view, order:view,
+                payment:view, payment:manage, order:manage]，**没有 `customer:update`**，
+                于是财务勾完客户、选好标签、点确认才吃 403 —— 正是本文件
+                :98 注释自己反对的"点了才吃 403"。 */}
+            {can('customer:update') && (
+              <Button size="small" onClick={() => setBatchTagOpen(true)}>
+                批量打标签
+              </Button>
+            )}
             {can('customer:assign') && (
               <Button size="small" onClick={() => setBatchTransferOpen(true)}>
                 批量转移负责人

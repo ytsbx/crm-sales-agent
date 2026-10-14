@@ -21,10 +21,43 @@
 """
 
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.core.patch_schema import PatchModel
 
+
+
+#: 参考图允许的协议。**只放行 http/https**（2026-10-14 审查修）。
+#:
+#: 为什么必须在**后端**也拦：`images` 是自由文本（一行一个地址），
+#: 前端把它渲染成 `<a href={url}>`，而 **浏览器不会拦 href 的协议** ——
+#: 存进 `javascript:…` 后，任何人点一下链接，脚本就在 CRM **自己的源**下执行
+#: （能读登录态、能以受害者身份发请求）。前端已加渲染侧过滤，
+#: 但接口与导入都能绕过前端，所以入口也要拒。项目此前修过一处同类
+#: 存储型注入（`faddf9c`），这是同一类：用户可控字符串进了 URL 位置。
+_SAFE_URL_SCHEMES = ("http", "https")
+
+
+def _reject_unsafe_urls(values: list[str] | None) -> list[str] | None:
+    """参考图里的每一条都必须是 http/https 绝对地址，否则整体拒绝并点名。"""
+    if values is None:
+        return None
+    bad: list[str] = []
+    for raw in values:
+        text = (raw or "").strip()
+        if not text:
+            continue
+        parsed = urlsplit(text)
+        if parsed.scheme.lower() not in _SAFE_URL_SCHEMES or not parsed.netloc:
+            bad.append(text[:60])
+    if bad:
+        raise ValueError(
+            "参考图只能是 http:// 或 https:// 开头的完整地址，这几条不合法："
+            + "、".join(bad[:3])
+            + (f" 等 {len(bad)} 条" if len(bad) > 3 else "")
+        )
+    return values
 
 
 def _strip_title(value: str | None) -> str | None:
@@ -52,6 +85,11 @@ class InsightCreate(BaseModel):
     conclusion: str | None = None
     # 参考图 URL 列表（第五批 §6.1(6)：这个字段模型里一直有，但四个环节都没打通）
     images: list[str] | None = None
+
+    @field_validator("images")
+    @classmethod
+    def _check_images(cls, value: list[str] | None) -> list[str] | None:
+        return _reject_unsafe_urls(value)
     owner_id: int | None = None
 
     @field_validator("title")
@@ -80,6 +118,11 @@ class InsightUpdate(PatchModel):
     )
     conclusion: str | None = None
     images: list[str] | None = None
+
+    @field_validator("images")
+    @classmethod
+    def _check_images(cls, value: list[str] | None) -> list[str] | None:
+        return _reject_unsafe_urls(value)
     owner_id: int | None = None
 
     @field_validator("title")

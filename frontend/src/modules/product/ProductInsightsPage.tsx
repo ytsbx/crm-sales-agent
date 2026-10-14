@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
+import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
@@ -42,13 +43,28 @@ const EMPTY_FORM = {
   images: '',
 }
 
-/** 参考图：一行一个 URL → 数组。空行去掉，避免存一堆空串。 */
+/**
+ * 参考图：一行一个 URL → 数组。空行去掉，避免存一堆空串。
+ *
+ * ⚠️ 顺带校验协议（2026-10-14 审查修）：只收 `http/https`。
+ * 这里是**录入侧**的闸（给出可读提示），渲染侧还会再判一次
+ * （`safeExternalUrls`）—— 两道都要，因为历史数据与导入数据绕不过录入侧。
+ */
 function parseImages(text: string): string[] | null {
   const list = text
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
   return list.length ? list : null
+}
+
+/** 返回不合法的那些行（给用户点名），空数组 = 全合法。 */
+function invalidImageUrls(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !isSafeExternalUrl(line))
 }
 
 /**
@@ -142,6 +158,16 @@ export default function ProductInsightsPage() {
 
   const saveMutation = useMutation({
     mutationFn: () => {
+      // ⚠️ 参考图先过协议闸（2026-10-14 审查修）：不合法的地址**不提交**，
+      // 并点名是哪几行 —— 存进去再靠渲染侧挡，等于把坏数据留在库里
+      // （历史数据/导入数据都绕不过渲染侧，但录入侧该拦的要拦）。
+      const badImages = invalidImageUrls(form.images)
+      if (badImages.length) {
+        throw new Error(
+          `参考图只能是 http/https 开头的地址，这几行不合法：${badImages.slice(0, 3).join('、')}` +
+            (badImages.length > 3 ? ` 等 ${badImages.length} 行` : ''),
+        )
+      }
       // 空字符串一律发 null：`''` 与"没填"在业务上是同一件事，
       // 存进去以后按空串渲染会出现"填过但看不出内容"的行。
       // **传 null 才能真正清空**（§6.2：更新里原来用 `if value is not None` 判断，
@@ -306,7 +332,14 @@ export default function ProductInsightsPage() {
                   {record.images && record.images.length > 0 && (
                     <div style={{ fontSize: 12, display: 'inline-flex', gap: 6 }}>
                       参考图：
-                      {record.images.slice(0, 3).map((url, i) => (
+                      {/* ⚠️ 必须过滤协议（2026-10-14 审查修）。
+                          `images` 的来源是自由文本 TextArea（一行一个地址），
+                          后端 `images: list[str]` 也不校验协议 —— 存进
+                          `javascript:…` 后，**React 不会拦 `href` 的协议**，
+                          任何人点一下「1」就在 CRM 同源下执行脚本。
+                          这里只把 http/https 渲染成链接；不合法的**不渲染成 <a>**
+                          （退化成纯文本标记），而不是"渲染了再拦点击"。 */}
+                      {safeExternalUrls(record.images).slice(0, 3).map((url, i) => (
                         <a key={url} href={url} target="_blank" rel="noreferrer">
                           {i + 1}
                         </a>

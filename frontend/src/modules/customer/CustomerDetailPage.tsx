@@ -675,17 +675,26 @@ export default function CustomerDetailPage() {
                     这里记的是「客户单位」的联系人（对方公司的采购、技术、老板等），不是你同事
                   </div>
                   <div style={{ flex: 1 }} />
-                  <Button
-                    theme="solid"
-                    onClick={() => {
-                      setContactEditing(null)
-                      setContactForm({ name: '', is_primary: false })
-                      setContactDupes(null)
-                      setContactModal(true)
-                    }}
-                  >
-                    新建联系人
-                  </Button>
+                  {/* ⚠️ 与后端同码（2026-10-14 审查修）：创建联系人是
+                      `require_permission("customer:update")`（customer/router.py），
+                      而同文件的行内「编辑 / 删除」本来就判了 `canEditContact`，
+                      **只有"新建"漏了** —— 财务这类只有 `customer:view` 的账号
+                      填完一屏才吃 403。
+                      另外这也把「按已填内容查重」那个入口关在了权限内
+                      （查重会回显数据范围内联系人的信息）。 */}
+                  {canEditContact && (
+                    <Button
+                      theme="solid"
+                      onClick={() => {
+                        setContactEditing(null)
+                        setContactForm({ name: '', is_primary: false })
+                        setContactDupes(null)
+                        setContactModal(true)
+                      }}
+                    >
+                      新建联系人
+                    </Button>
+                  )}
                 </div>
                 <Table<Contact>
                   columns={contactColumns}
