@@ -418,7 +418,12 @@ async def validate_evidences(
     }
     seen: set[tuple[str, int]] = set()
     for item in valid:
-        kind = str(item["kind"])
+        # ⚠️ 必须与上面**第一遍校验**用同一个取值（2026-10-14 审查修）。
+        # 校验那遍是 `str(raw_kind or "").strip()`，而这里原来用**原值** ——
+        # 于是 `" quote"`（或 `"quote "`）能过校验，却在 `loaders[kind]` 上
+        # 抛未捕获的 `KeyError` → **HTTP 500**（本该是 422 说"类型不认识"）。
+        # 同一个值两处两种形态，是这一类的典型分叉。
+        kind = str(item.get("kind") or "").strip()
         business_id = int(item["business_id"])
         key = (kind, business_id)
         if key in seen:
@@ -428,7 +433,16 @@ async def validate_evidences(
                 422,
             )
         seen.add(key)
-        record = await loaders[kind](session, user, business_id)
+        loader = loaders.get(kind)
+        if loader is None:
+            # 第二道兜底：万一将来又出现"校验与派发不一致"，
+            # 也应当是明确的参数错误，而不是 500。
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                f"证据类型「{kind}」不认识，只能从这几类里选："
+                + "、".join(sorted(CASE_EVIDENCE_KINDS)),
+            )
+        record = await loader(session, user, business_id)
         if getattr(record, "customer_id", None) != customer_id:
             raise AppError(
                 ErrorCode.PARAM_ERROR,

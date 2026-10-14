@@ -225,13 +225,37 @@ class DingTalkClient:
         """查审批实例状态与结果（回写用；没有回调时靠轮询它）。"""
         self._require()
         token = await self.access_token()
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.get(
-                f"{settings.dingtalk_base_url}/v1.0/workflow/processInstances",
-                params={"processInstanceId": instance_id},
-                headers={"x-acs-dingtalk-access-token": token},
-            )
-        data = resp.json() if resp.content else {}
+        # ⚠️ 读路径也要把 httpx 的异常**包成我们自己的异常**（2026-10-14 审查修），
+        # 与上面写路径（`create_process_instance`）同一手法。
+        #
+        # 原来这里裸着：`httpx.TimeoutException / ConnectError`（不是 `DingTalkError`）
+        # 与 `resp.json()` 的 `JSONDecodeError` 会直接穿透调用方
+        # `sync_pending_instances` 的 `except DingTalkError` ——
+        # 后果是**一条超时打断整批**（后面几十条不再轮询），而且本轮的改动
+        # 只在循环末尾才 flush/commit，异常路径事务回滚 →
+        # **前面已取回的状态全部丢失**；手工触发的 `/dingtalk/oa-sync` 还会 500。
+        # 这与该函数自己的承诺（"单条查失败不影响其他单，记在行上，下一轮还会再试"）
+        # 直接矛盾，也与 `classify_outcome` 的口径不一致（它把 `httpx.HTTPError`
+        # 明确归为"结果未知"）。
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.get(
+                    f"{settings.dingtalk_base_url}/v1.0/workflow/processInstances",
+                    params={"processInstanceId": instance_id},
+                    headers={"x-acs-dingtalk-access-token": token},
+                )
+        except httpx.HTTPError as exc:
+            # 请求已经发出去了，只是没等到响应 —— 状态未知，不能当成"失败"
+            raise DingTalkUnknownOutcome(
+                f"查询审批实例时外部请求没有得到响应（{type(exc).__name__}）：{exc}"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            # 响应体读不出来（网关错误页 / WAF 拦截页）：同样属于"结果未知"
+            raise DingTalkUnknownOutcome(
+                "查询审批实例后响应无法解析，无法确认审批结果"
+            ) from exc
         if resp.status_code != 200:
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
