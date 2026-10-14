@@ -659,6 +659,92 @@ class PatchModel(BaseModel):
         return self
 
 
+#: Create 类名 → 表名时后缀要去掉的部分。
+_CREATE_SUFFIXES = ("Create", "Input", "Add", "Request", "In", "New")
+
+
+def _create_table_for(cls: type[BaseModel]) -> str | None:
+    """给**创建类**猜它对应的表名（`PatchModel` 有 `PATCH_TABLES` 人工登记，
+    创建类没有 —— 用类名推导，推不出来就跳过校验）。
+
+    推导规则：去掉 `Create`/`Input`/`Add`/`Request`/`In`/`New` 后缀后，
+    与表名做**唯一匹配**（`customers` / `tasks` / `skus` …）。
+    只在恰好命中一张表时才返回 —— 有歧义就宁可不校验，绝不猜错表
+    （猜错会把别的表的列宽当成本类的上限，属于"误伤"）。
+    """
+    # ⚠️ **沿 MRO 逐级试**（2026-10-14 修，我第一版只试了自己的类名）：
+    # `SkuStandaloneCreate` 去后缀得到 `skustandalone`，推不出 `skus`，
+    # 于是长校验**整个不生效** —— 实测 `POST /skus` 传 17 字的 `unit`
+    # 一路写到 INSERT 才撞 `varying(16)` 报 500。
+    # 而它继承的 `SkuCreate` 能推出 `skus`，所以按继承链往上找就对了。
+    for klass in cls.__mro__:
+        if klass is object or not issubclass(klass, BaseModel):
+            continue
+        base = klass.__name__
+        for suffix in _CREATE_SUFFIXES:
+            if base.endswith(suffix) and len(base) > len(suffix):
+                base = base[: -len(suffix)]
+                break
+        lowered = base.lower()
+        candidates = {
+            name
+            for name in Base.metadata.tables
+            if name == lowered
+            or name.lower() == lowered
+            or name.lower().rstrip("s") == lowered.rstrip("s")
+        }
+        if len(candidates) == 1:
+            return candidates.pop()
+        # 多个候选 = 有歧义 → 继续往上试父类；都没有就返回 None（宁可不校验也不猜错表）
+    return None
+
+
+class CreateModel(BaseModel):
+    """**创建**入参的公共基类：只做"长度上限"这一件事。
+
+    ## 为什么需要它（2026-10-14 审查）
+
+    `PatchModel` 的长度判据是**现场从库列定义读**的（`String(n)` 的 n），
+    所以更新入口天然不会漏。但**创建类一直是裸 `BaseModel`** ——
+    同一张表、同一个字段，PATCH 会给人话 400，POST 却一路走到 INSERT
+    撞 `value too long for type character varying(n)`，被兜底成
+    **500「服务器内部错误」**，用户完全不知道是自己填长了。
+
+    这不是个别漏项：全仓扫下来有 **40 处**（customer / lead / product /
+    user / settings / task / followup / opportunity / order 都有），
+    逐个手写 `max_length` 是打地鼠，且明天新增的创建类照样会漏。
+    所以做成基类：**继承它就有长度保护**，判据与 `PatchModel` 同源（都读列定义）。
+
+    ## 与 `PatchModel` 的差别（刻意只做一半）
+    - **不做"不许 null / 必须有内容"**：创建类的必填性由 schema 自己声明
+      （`Field(min_length=...)` 或非 Optional），行为不变，避免动到既有 422 文案；
+    - **只拦长度**，且只在能唯一确定表时生效（见 `_create_table_for`）。
+    """
+
+    @model_validator(mode="after")
+    def _guard_length(self):
+        table_name = _create_table_for(type(self))
+        if table_name is None:
+            return self
+        table = Base.metadata.tables.get(table_name)
+        if table is None:
+            return self
+        for field in type(self).model_fields:
+            column = table.columns.get(field)
+            if column is None:
+                continue
+            max_len = getattr(column.type, "length", None)
+            if not isinstance(max_len, int):
+                continue
+            value = getattr(self, field, None)
+            if isinstance(value, str) and len(value) > max_len:
+                label = FIELD_LABELS.get(f"{type(self).__name__}.{field}", field)
+                raise ValueError(
+                    f"{label}最长 {max_len} 个字符（当前 {len(value)} 个）"
+                )
+        return self
+
+
 def verify_patch_registry() -> list[str]:
     """自查登记表，返回问题清单（给测试 / 启动自检用，不在请求路径上）。
 

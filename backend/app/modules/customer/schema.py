@@ -4,11 +4,11 @@ from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 
-class CustomerCreate(BaseModel):
+class CustomerCreate(CreateModel):
     name: str = Field(min_length=1, max_length=200, description="客户名称")
     #: 与 `customers.short_name` 的 `String(100)` 对齐 —— 不写上限会撞库列报 500
     #: （2026-10-14 审查补。同项目 `PatchModel` 是从列定义现读 length 的，Create 类漏了）
@@ -124,7 +124,7 @@ class CustomerExportFilter(BaseModel):
         return self
 
 
-class ContactCreate(BaseModel):
+class ContactCreate(CreateModel):
     name: str = Field(min_length=1, max_length=64)
     title: str | None = None
     department: str | None = None

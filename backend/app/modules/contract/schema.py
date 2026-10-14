@@ -3,9 +3,10 @@
 from datetime import date
 
 from pydantic import BaseModel, Field, field_validator
+from app.core.patch_schema import CreateModel
 
 
-class TemplateCreate(BaseModel):
+class TemplateCreate(CreateModel):
     """新增模板=新增版本：同名同类型自动 version+1，旧版本保留。"""
 
     doc_type: str = "contract"  # contract / monthly

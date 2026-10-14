@@ -7,6 +7,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.textfit import fit_column
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
 from app.core.timebase import today_business
@@ -1280,7 +1281,16 @@ async def _build_custom_item_snapshot(
         # 快照占住 SKU 的位置：对客文件上要能看出这是哪条定制需求
         sku_code_snapshot=inquiry.inquiry_no or f"XQ{inquiry.id:04d}",
         sku_name_snapshot=item_name or inquiry.title,
-        spec_snapshot=spec_snapshot or inquiry.description,
+        # ⚠️ 必须收进 `String(200)`（2026-10-14 审查修，PG 上必现 500）。
+        # `custom_inquiries.description` 是 **Text 且入参无长度上限**
+        # （需求描述本来就是一整段自由文本），而 `quote_items.spec_snapshot`
+        # 只有 `String(200)` —— 实测一段 360 字的描述直接写进去会撞
+        # `value too long for type character varying(200)`，被全局兜底成
+        # **500「服务器内部错误」**，用户既不知道是哪一行也不知道该改什么；
+        # 而这不是"用户往报价里填超长"，是**从需求带过来的**，用户无从规避。
+        # （SQLite 单测不校验 varchar 长度，所以 CI 不会红。）
+        # 截断留 `…`（看得出来被截过），与合同标题同一处理手法。
+        spec_snapshot=fit_column(spec_snapshot or inquiry.description, 200),
         quantity=quantity,
         cost_snapshot=cost,
         cost_present_snapshot=True,

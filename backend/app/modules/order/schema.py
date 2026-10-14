@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 from app.modules.payment.schema import ReceivableGenerate
 from app.modules.sample.schema import SampleSource
 
@@ -68,7 +68,7 @@ class OrderFromQuote(BaseModel):
     receivable_plan: ReceivablePlanIn | None = None
 
 
-class MilestoneUpdate(BaseModel):
+class MilestoneUpdate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     skipped: bool | None = None
@@ -128,7 +128,7 @@ class OrderItemInput(BaseModel):
     remark: str | None = None
 
 
-class OrderCreate(BaseModel):
+class OrderCreate(CreateModel):
     """手工建订单（03-API §27）。
 
     PRD §20 说明订单正常来自"成交"环节（报价版本转订单），

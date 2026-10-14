@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.core.security import BCRYPT_MAX_PASSWORD_BYTES, password_too_long_bytes
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 # 数据范围枚举，与 roles.data_scope 的取值一致（见 02-ER §3 的补充说明）
@@ -14,7 +14,7 @@ DATA_SCOPES = ("self", "department", "department_and_sub", "all")
 DataScope = Literal["self", "department", "department_and_sub", "all"]
 
 
-class UserCreate(BaseModel):
+class UserCreate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str
@@ -78,7 +78,7 @@ class UserRolesUpdate(BaseModel):
     role_ids: list[int]
 
 
-class DepartmentCreate(BaseModel):
+class DepartmentCreate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     name: str
@@ -95,7 +95,7 @@ class DepartmentUpdate(PatchModel):
     status: str | None = None
 
 
-class RoleCreate(BaseModel):
+class RoleCreate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     code: str

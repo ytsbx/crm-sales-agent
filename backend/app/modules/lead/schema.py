@@ -2,11 +2,11 @@ from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 
-class LeadCreate(BaseModel):
+class LeadCreate(CreateModel):
     name: str = Field(min_length=1, max_length=200)
     company_name: str | None = None
     contact_name: str | None = None
