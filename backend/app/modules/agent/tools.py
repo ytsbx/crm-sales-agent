@@ -1372,18 +1372,18 @@ async def get_contact(ctx: ToolContext, contact_id: int) -> dict:
         "客户",
         allow_unowned=True,
     )
-    return {
-        "id": contact.id,
-        "name": contact.name,
-        "customer_id": contact.customer_id,
-        "title": contact.title,
-        "department": contact.department,
-        "mobile": contact.mobile,
-        "phone": contact.phone,
-        "email": contact.email,
-        "wechat": contact.wechat,
-        "is_primary": contact.is_primary,
-    }
+    # ⚠️ **必须走统一脱敏口径**，不能手写字典把 `mobile/phone/email/wechat` 原样吐出去。
+    #
+    # `customer_service.serialize_contacts_masked` 的 docstring 点名了五个入口必须共用
+    # 同一份规则：「联系人列表、详情、搜索、**AI 工具**、导出」—— 这个工具正是那个
+    # "AI 工具"入口，之前漏了它，于是：
+    #   · 只有 `customer:view` 的人先从列表拿到联系人 id（列表返回的是脱敏值，但带 id），
+    #     再让 Agent 调 get_contact → 拿到完整手机号/微信；
+    #   · 更严重的是工具结果会作为 `role=tool` 消息**原样发给外部大模型**；
+    #   · `customer:contact_full` 这道显式授权因此形同虚设。
+    from app.modules.customer.service import serialize_contact_masked
+
+    return await serialize_contact_masked(ctx.session, ctx.user, contact)
 
 
 @tool(
