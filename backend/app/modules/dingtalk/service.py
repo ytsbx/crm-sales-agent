@@ -46,6 +46,7 @@ from app.core.deps import CurrentUser
 from app.core.config import settings as app_settings
 from app.core.errors import AppError, ErrorCode
 from app.modules.dingtalk.client import (
+    DingTalkUnknownOutcome,
     DINGTALK_DISABLED_MESSAGE,
     OUTCOME_NOT_SENT,
     OUTCOME_REJECTED,
@@ -806,8 +807,17 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
     for row in rows:
         try:
             data = await client.get_process_instance(row.instance_id or "")
-        except DingTalkError as exc:
-            # 单条查失败不影响其他单：记在行上，下一轮还会再试
+        except (DingTalkError, DingTalkUnknownOutcome) as exc:
+            # 单条查失败不影响其他单：记在行上，下一轮还会再试。
+            #
+            # ⚠️ **两类都要捕**（2026-10-14 审查修）：
+            # `DingTalkError` = 对方明确答复了（4xx/业务错）；
+            # `DingTalkUnknownOutcome` = 请求发出去了但读不出结果（超时/连接断/响应不可解析）。
+            # 两者**不是父子关系**（`classify_outcome` 靠这个区别决定"能不能重试"），
+            # 而这里原来只捕前者 —— 于是一条超时就会打断整批（后面几十条不再轮询），
+            # 且本轮改动要到循环末尾才落库，异常路径事务回滚 →
+            # **前面已取回的状态全部丢失**，手工触发还会 500。
+            # 这与本函数的承诺（"单条查失败不影响其他单"）直接矛盾。
             row.error = str(exc)[:500]
             continue
         raw_status = str(data.get("status") or "").upper()

@@ -288,15 +288,23 @@ async def retry_failed_notifications(
 
 
 def _settings_payload(value: dict, *, wecom_ready: bool, agent_configured: bool) -> dict:
-    events = value.get("wecom_events") or {}
+    from app.modules.notification import service as notify_service
+
     return {
         "inapp_enabled": bool(value.get("inapp_enabled", True)),
         "wecom_enabled": bool(value.get("wecom_enabled", False)),
         "wecom_events": {
-            "approval": bool(events.get("approval", True)),
-            "task": bool(events.get("task", True)),
-            "payment": bool(events.get("payment", True)),
-            "followup": bool(events.get("followup", True)),
+            # ⚠️ 这四行原来各写了一遍 `bool(events.get(k, True))`，默认值是 **True**，
+            # 而投递侧（`service.wecom_event_enabled`）是 `events.get(k, False)` ——
+            # 同一个"键缺失算不算开"两处相反：库里缺 `followup` 时（升级前写入的行
+            # 就是这个形状）面板显示"开"、实际一条都不推，界面上看不出来
+            # （2026-10-14 审查修）。现在统一调投递侧那个函数，不可能再分叉。
+            # 判据直接交给投递侧那个函数（它自己会取 `value["wecom_events"]`），
+            # 入参就是这个设置对象本身。
+            **{
+                k: notify_service.wecom_event_enabled(value, k)
+                for k in notify_service.WECOM_EVENT_TYPES
+            },
         },
         # 给界面看的就绪度：企微渠道开着但后面对接没配好时要能提示
         "wecom_ready": wecom_ready,

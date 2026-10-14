@@ -133,7 +133,20 @@ async def channel_settings(session: AsyncSession) -> dict:
     return await settings_service.get_setting(session, "notification_channels")
 
 
-def _wecom_enabled(settings: dict, type_: str) -> bool:
+def wecom_event_enabled(settings: dict, type_: str) -> bool:
+    """某一类通知**是否走企微** —— 全项目只此一处判据（展示侧也调它）。
+
+    ⚠️ 2026-10-14 审查修：原来展示侧（`notification/router.py` 的设置面板）
+    自己又写了一遍 `bool(events.get(k, True))`，而这里是 `events.get(type_, False)` ——
+    **同一个"键缺失算不算开"给了相反默认值**。库里 `wecom_events` 缺 `followup`
+    （升级前写入的行就是这个形状：`DEFAULT_SETTINGS` 当时只有 approval/task/payment）时，
+    面板显示"业务过程通知＝开"，投递侧却判为关 → 该类通知**永远不发企微**，
+    界面上还看不出来（站内还在，所以更难发现）。
+    现在展示侧改为调用本函数，两处不可能再分叉。
+
+    默认取 `False` 的理由：漏配一个新事件类型时应当"先不发、等显式开启"，
+    而不是悄悄开始往企微推消息。
+    """
     if not settings.get("wecom_enabled"):
         return False
     events = settings.get("wecom_events") or {}
@@ -206,7 +219,7 @@ async def notify(
             policy = await level_policy(session)
         level = resolve_level(policy, type_)
 
-    to_wecom = _wecom_enabled(settings, type_)
+    to_wecom = wecom_event_enabled(settings, type_)
     inapp_enabled = bool(settings.get("inapp_enabled", True))
     # 企微开着但站内关着时，站内那一行仍然要写：它是投递记录本身，
     # 否则"发过没有"就无处可查。
@@ -233,15 +246,28 @@ async def approver_user_ids(session: AsyncSession, permission_code: str) -> list
 
     只算**启用中**的角色：角色停用后就不该再往它的人身上推审批通知，
     否则"停用角色"等于没停（第十批 10.10）。
+
+    ⚠️ **账号也必须是在职的**（2026-10-14 审查修）。原来只判了 `Role.status`，
+    漏了 `User.status` —— 而同一个文件里的 `notify_roles` 是**两个都判**的
+    （`.where(Role.code.in_(...), Role.status == ROLE_ACTIVE, User.status == "active")`）。
+    判据只铺开了一半，后果是实打实的：停用账号时**既不清 `wecom_userid`、
+    也不摘角色**，所以离职/停用的人仍满足这条 SQL，持续收到审批类**企微**消息
+    （含报价金额、客户名）。这些行 `business_event_id is None`，
+    `_check_process_recipients` 只复查有事件的行、拦不住；通知中心里他们看不到，
+    运营也发现不了"还在发"。
     """
     stmt = (
         select(user_roles.c.user_id)
+        # 多这一跳只为拿到 `User.status`（下面 where 里要用）
+        .join(User, User.id == user_roles.c.user_id)
         .join(Role, Role.id == user_roles.c.role_id)
         .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
         .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
         .where(
             (Permission.code == permission_code) | (Role.code == "admin"),
             Role.status == ROLE_ACTIVE,
+            # 与 `notify_roles` 同源：停用/离职账号不再收审批通知
+            User.status == "active",
         )
         .distinct()
     )
