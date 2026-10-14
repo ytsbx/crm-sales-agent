@@ -19,6 +19,7 @@
 CHKQC SKU，并在清理时对本脚本自建的 SKU 真删价格规则。
 """
 
+import asyncio
 import json
 import os
 
@@ -229,6 +230,43 @@ async def _seed_foreign_quote_item(customer_id: int, opportunity_id: int, sku_id
         )
         await session.commit()
         return int(quote.id), int(version.id), item.minimum_price_snapshot
+
+
+async def _seed_foreign_compare(customer_id: int, opportunity_id: int, sku_id: int,
+                               quoted_price: str) -> tuple:
+    """用**同一份入参**分别建 CNY 与 USD 两个版本，返回两次落下的保护价快照。
+
+    为什么不走接口（2026-10-14 查证后改成这样）：
+    `minimum_price_snapshot` 属于 `_COST_ONLY_ITEM_FIELDS`
+    （`quote/service.py:191`），**对没有 `price:manage` 的人本就该隐藏**
+    —— 底价由成本推出。所以"用业务员身份从接口读这个字段"永远是 `None`，
+    那是正确行为，拿它做断言必然假红（实测：库里存 `52.9412`、接口返回 `None`）。
+
+    这里直读产品函数 `build_item_snapshot`，测的正是这条要防的回归：
+    **快照不得随计价币种变**（被汇率缩小的话，USD 那次会得到一个小得多的数）。
+    两个版本走同一份入参：同客户、同 SKU、同数量、同报价。
+
+    ⚠️ 用完必须 `engine.dispose()`：连接池**绑在创建它的那个事件循环**上，
+    本函数由 `asyncio.run` 调用（每次一个新循环），不 dispose 的话，
+    套件后面任何再用同一个池的地方都会报 "attached to a different loop"
+    —— 我第一版就漏了这句，把后面几条打断了（与文件里 `read_margin_ctx`
+    注释里记的是同一个坑）。
+    """
+    from app.core.database import engine
+
+    async def go():
+        try:
+            cny = await _seed_foreign_quote_item(
+                customer_id, opportunity_id, sku_id, "CNY", quoted_price, 2,
+            )
+            usd = await _seed_foreign_quote_item(
+                customer_id, opportunity_id, sku_id, "USD", quoted_price, 2,
+            )
+            return cny[2], usd[2]
+        finally:
+            await engine.dispose()
+
+    return await go()
 
 
 def record(case, title, passed, detail=''):
@@ -869,94 +907,52 @@ def main():
 
         # ---------------- A16 外币单：保护价快照不得被汇率缩小 ----------------
         print('== A16 外币单的保护价快照 ==')
-        # 回归：minimum_price_snapshot 一度被折成**计价币种**（美元单上 80 人民币的
-        # 保护价存成 11.43），而审批判定按人民币读它——于是低于保护价的美元报价
-        # 静默放行。判据用"同一 SKU 的人民币单与美元单，保护价必须相等"：
-        # 保护价是人民币口径的公司政策，不该随报价币种变。
-        _, res = call('POST', '/quotes', token=zhangsan, body={
-            'customer_id': customers['A'], 'opportunity_id': opp_a05,
-        })
-        cny_quote, cny_version = res['data']['quote_id'], res['data']['version_id']
-        created_quotes.append(cny_quote)
-        # ⚠️ 两个必须一起改对，否则这条会**永远报红**（2026-10-14 查明）：
-        #   ① 加明细要打 `/items/batch`（`POST /quote-versions/{id}/items` 确实存在，
-        #      但它的 payload 是 `{"items": [...]}`；写成单个对象会被 schema 拒）；
-        #   ② 那个接口返回的是**整个版本**（`serialize_version`），
-        #      明细在 `data["items"][0]`，不是 `data["minimum_price_snapshot"]`。
-        #   原写法把 404/422 的响应体当成成功响应去 `.get()`，恒得 None ——
-        #   于是"人民币单 None vs 外币单 52.94"这条断言**必然失败**，
-        #   和产品缺陷无关（产品库里存的是正确的人民币值 23.53）。
-        # 这个接口的 body 是**裸列表**（`items: list[QuoteItemInput]`），不是 `{items: [...]}`
-        status, res = call('POST', f'/quote-versions/{cny_version}/items/batch', token=zhangsan,
-                           body=[{'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20}])
-        assert status == 200, f'加明细失败：HTTP {status} {str(res)[:120]}'
-        # ③ batch 的返回是**版本对象本身**（serialize_version 不含明细），
-        #    所以要再取一次版本详情 —— 只有那个出口把明细放在 data["items"]。
-        dstatus, detail = call('GET', f'/quote-versions/{cny_version}', token=zhangsan)
-        assert dstatus == 200, f'取版本详情失败：HTTP {dstatus} {str(detail)[:120]}'
-        _items = (detail['data'].get('items') or [])
-        floor_cny_quote = (_items[0].get('minimum_price_snapshot') if _items else None)
+        # 回归要防的是：`minimum_price_snapshot` 一度被折成**计价币种**
+        # （美元单上 80 人民币的保护价存成 11.43），而审批判定按人民币读它
+        # —— 于是低于保护价的美元报价被静默放行。
+        #
+        # ⚠️ 这条 2026-10-14 之前**一直红**，但查证后**不是产品缺陷**，根因有两层：
+        #   ① 原写法打错接口（`/items` 传单对象）又读错层级
+        #      （明细在 GET 版本详情的 `data["items"][0]`），于是"人民币单"永远是 None
+        #      —— 连 404 的响应体都被当成成功响应 `.get()` 了；
+        #   ② 更要紧的一层：**`minimum_price_snapshot` 属于
+        #      `_COST_ONLY_ITEM_FIELDS`（quote/service.py:191），对没有
+        #      `price:manage` 的人**本就该隐藏**（底价是由成本推出的）。
+        #      所以张三（salesperson）从任何**接口**读它都会是 `None` —— 那是**正确行为**，
+        #      继续用张三 + 接口去断言这个字段，永远是假红。
+        #      （实测：库里那条 CNY 明细存的是 `52.9412`，接口返回 `None`。）
+        #
+        # 改法：**直读产品函数**——用同一份入参（同客户/同 SKU/同数量/同报价）
+        # 分别以 CNY 与 USD 两个 QuoteVersion 调 `build_item_snapshot`，
+        # 断言两次的 `minimum_price_snapshot` 相等。这直接测的就是那条回归
+        # （快照不得随币种变），既不受接口层脱敏影响，也不依赖夹具去配保护价规则。
+        try:
+            _cid = customers['A']
+            # 本脚本的 main() 是同步的（沿用仓库既有风格：需要异步时用 asyncio.run），
+            # 与 `run_db` 同一个手法。
+            floor_cny_quote, floor_usd_quote = asyncio.run(
+                _seed_foreign_compare(_cid, opp_a05, sku_id, '20')
+            )
+            print(f'    · A16 直读产品函数：CNY={floor_cny_quote} USD={floor_usd_quote}')
+        except Exception as exc:  # noqa: BLE001 —— 夹具失败要说出来，别静默跳过
+            record('A16', '外币单的保护价快照与人民币单一致（按人民币存）', False,
+                   f'直读产品函数失败：{type(exc).__name__}: {str(exc)[:140]}')
+            floor_cny_quote = floor_usd_quote = None
 
-        # 美元单：币种已是固定白名单，**接口建不出来了**（第四批复审返修）。
-        # 改成直接造历史数据 + 走产品函数算快照，判据不变：
-        # 外币单的人民币底价快照必须与人民币单一致（按人民币存）。
-        print('== A16 外币单的保护价快照与人民币单一致 ==')
+        # 外币单走接口已经建不出来了（币种是固定白名单），这条前置单独验一次
         _, res = call('POST', '/quotes', token=zhangsan, body={
             'customer_id': customers['A'], 'opportunity_id': opp_a05, 'currency': 'USD',
         })
         record('A16-前置', '走接口建外币报价已被白名单拒绝（40002）',
                res.get('code') == 40002, f"code={res.get('code')} {str(res.get('message'))[:40]}")
 
-        try:
-            usd_quote, usd_version, floor_usd_quote = seed_foreign_quote_item(
-                customers['A'], opp_a05, sku_id, 'USD', 20, 1,
-            )
-            created_quotes.append(usd_quote)
-        except Exception as exc:  # noqa: BLE001 —— 夹具失败要说出来，别静默跳过
-            record('A16', '外币单的保护价快照与人民币单一致（按人民币存）', False,
-                   f'造历史外币明细失败：{type(exc).__name__}: {str(exc)[:120]}')
-            floor_usd_quote = None
-        # ⚠️ 比较前对齐到 4 位小数：接口路径返回的是 quantize 过的 `52.9412`，
-        # 而 `build_item_snapshot` 直接算出来的是 `52.94117647058823` ——
-        # 两者**本来就是同一个数**，只是精度不同（我第一版直接比，假红了一次）。
+        # ⚠️ 比较前对齐到 4 位小数：`build_item_snapshot` 落的是 quantize 前的原值，
+        # 两条路径精度写法可能不同（我第一版直接比，假红过一次）。
         _q = lambda v: None if v is None else round(float(v), 4)  # noqa: E731
         record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
-        # ══════════════════════════════════════════════════════════════════════
-        # 接手说明（2026-10-14，我没修完就停手了，**不要以为这条已经修好**）
-        #
-        # 已确证的事实（都用真库/真接口验过）：
-        #   · `POST /pricing/calculate`（张三，无 price:manage）返回
-        #     `minimum_price_cny = 23.53`（**未脱敏的人民币口径底价**，
-        #     正是 `build_item_snapshot` 落快照用的那个字段，见 quote/service.py:1715）；
-        #   · 同一测试更早的库里，CNY 明细的 `minimum_price_snapshot` 存的是
-        #     `23.5294`（有值、且是人民币口径）——所以**产品路径是好的**；
-        #   · 因此本断言里的 `人民币单=None` 不是产品缺陷，而是**这条测试的夹具/读取
-        #     仍有问题**（我已修掉两处：打错接口 + 读错层级，见上面注释）。
-        #
-        # 我停手的原因：在这条测试自身的问题上已花掉过多时间，且继续试错的
-        # 边际收益很低。**下一个人的两条路**：
-        #   (a) 先给夹具配一条**保护价规则**（现在的用例没配，价格中心对
-        #       "无规则"的处理会让某些路径返回 None），再走接口加明细、
-        #       GET 版本详情读快照，断言 `is not None`；
-        #   (b) 或者更省事：把这条改成**纯产品函数对比**——用同一份入参
-        #       （同客户/同 SKU/同数量）分别以 CNY 与 USD 两个 QuoteVersion
-        #       调 `build_item_snapshot`，断言两次的 `minimum_price_snapshot` 相等。
-        #       这直接测的就是这条要防的回归（外币单的快照被汇率缩小），
-        #       不依赖接口层的夹具，也不受"有没有保护价规则"影响。
-        # ══════════════════════════════════════════════════════════════════════
-               # ⚠️ 判据是"两者一致"，`同为 None` 也算一致 —— 那正是"不随币种变"的含义。
-               # 这条 2026-10-14 之前**一直红**，原因不是产品缺陷，而是两处：
-               #   ① 测试打错接口（`/items` 传单对象）又读错层级（明细在 `data["items"][0]`），
-               #      于是"人民币单"永远是 None（连 404 的响应体都被当数据读了）；
-               #   ② 判据原写成 `floor_cny_quote is not None and ...`，等于**要求人民币单必须有
-               #      保护价** —— 可本用例的 SKU/客户/数量没有命中价格规则，快照本来就是 None
-               #      （库里其它明细是 99~130，说明有规则时会正常落值）。把"本来没有保护价"
-               #      判成缺陷是假红。
-               # 真正的回归点没变：**外币单的快照不得被汇率缩小**（被折成美元时 52.94 会变成
-               # 7.56 之类），所以两者必须相等、或同为 None。
-               _q(floor_cny_quote) == _q(floor_usd_quote),
-               f'人民币单={floor_cny_quote} 外币单={floor_usd_quote}'
-               f'（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）')
+               floor_cny_quote is not None and _q(floor_cny_quote) == _q(floor_usd_quote),
+               f'CNY={floor_cny_quote} USD={floor_usd_quote}'
+               f'（若被折成美元应变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)} 之类）')
 
         # ---------------- A18 长客户名仍能建报价（§8.7 快照列长度）----------------
         # 快照列曾经写死 `varchar(128)`，而客户名允许 200 —— 129 字的名字一建报价
