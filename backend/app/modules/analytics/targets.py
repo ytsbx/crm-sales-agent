@@ -255,21 +255,22 @@ async def targets_with_actuals(
         )
         .group_by(customer_month, Customer.owner_id)
     )
+    #: 全公司目标行（`user_id`/`department_id` 都为空）必须用**全量**口径取数。
+    #: ⚠️ 捕获必须在这一行**之前**完成：下面那句 `sales_stmt.where(...)` 会就地收窄
+    #: 之后再捕获，拿到的就是收窄版 —— 全公司行会继续显示"我自己的数"。
+    #: 这个次序我踩过两次（签单与回款各一次），所以集中在这里只写一份。
+    company_only = owner_ids is not None
+    company_stmts: dict[str, object] = {}
+    if company_only:
+        company_stmts["sales"] = sales_stmt
+        company_stmts["customer"] = customer_stmt
+
     if owner_ids is not None:
         # 销售额看"本范围的人签的单"，所以按签单归属过滤（与上面的分组同一列）；
         # 新客户仍是客户维度，按当前负责人
         sales_stmt = sales_stmt.where(sales_owner.in_(owner_ids or [0]))
         customer_stmt = customer_stmt.where(Customer.owner_id.in_(owner_ids or [0]))
 
-    #: 全公司目标行（`user_id`/`department_id` 都为空）必须用**全量**口径取数，
-    #: 不能拿下面那份"按查看者数据范围收窄过"的字典求和 —— 否则非管理员看到的是
-    #: "公司目标 vs 我自己"（2026-10-14 实测：同一行，张三实绩 0、管理员 580）。
-    #: `owner_ids is None`（data_scope=all）时两者本就相同，只有非 all 才需要这一份。
-    company_only = owner_ids is not None
-    company_stmts: dict[str, object] = {}
-    if company_only:
-        company_stmts["sales"] = sales_stmt
-        company_stmts["customer"] = customer_stmt
 
     sales_actual: dict[tuple[str, int | None], float] = {}
     for m, owner_id, total in (await session.execute(sales_stmt)).all():
