@@ -52,15 +52,10 @@
 }
 
 .crm-login-brand-mark {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 29px;
-  height: 30px;
-  transform: skewY(-16deg);
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
 }
-.crm-login-brand-mark span { width: 10px; height: 24px; border-radius: 3px; background: #b9d4ff; }
-.crm-login-brand-mark span:last-child { height: 17px; opacity: .5; }
 
 .crm-login-message { margin-top: clamp(56px, 8vh, 100px); }
 .crm-login-eyebrow { display: flex; align-items: center; gap: 8px; color: #afccfa; font-size: 12px; letter-spacing: 1px; }
