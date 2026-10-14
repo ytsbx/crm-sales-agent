@@ -344,9 +344,22 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).one()
 
+    # ⚠️ 必须按数据范围收窄（2026-10-14 审查）：原来这里是**裸的 count**，
+    # 于是 data_scope=self 的业务员在工作台看到**全公司**待审批数（卡片 footer 还写着
+    # "需要你处理"，点进去却只列出自己的）—— 数字与列表两个口径。
+    # 同一函数里紧邻的逾期应收就是同类缺陷修过的（走 `_scope_filter`），
+    # `team_summary.pending_approval` 也已按 `applicant_id` 收窄 —— 只有这里漏了。
+    # 口径与 team_summary 同源：**本期提交的**（applicant_id），不是"报价归谁"。
     pending_approval = (
         await session.execute(
-            select(func.count(ApprovalInstance.id)).where(ApprovalInstance.status == "pending")
+            await _scope_filter(
+                select(func.count(ApprovalInstance.id)).where(
+                    ApprovalInstance.status == "pending"
+                ),
+                user,
+                ApprovalInstance.applicant_id,
+                session,
+            )
         )
     ).scalar_one()
 
