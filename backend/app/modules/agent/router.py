@@ -378,12 +378,12 @@ async def retry_execution(
             "成功的工具调用不能重试（会造成重复写入）",
         )
 
-    if not runtime.model_ready():
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            "Agent 未配置模型（DEEPSEEK_API_KEY 为空），无法重试",
-            422,
-        )
+    # ⚠️ 这里**不再**要求 `model_ready()`（2026-10-14 审查修）。
+    # `runtime.retry_tool_call` 只做一件事：拿原来的入参再调一次 `spec.handler(ctx, ...)`
+    # —— 全程**不碰模型**（不建客户端、不发 chat.completions）。而没配
+    # `DEEPSEEK_API_KEY` 的部署本身是被支持的（此时 Agent 对话不可用，
+    # 但工具与页面都在）。原来那道门让"重试"按钮在这种部署里**永久 422**，
+    # 而它想防的"模型没配"与这次操作毫无关系。
 
     result = await runtime.retry_tool_call(
         session, execution_row=row, user=user, agent_session=agent_session

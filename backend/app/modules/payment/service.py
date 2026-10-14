@@ -371,7 +371,16 @@ async def recalc_plan(session: AsyncSession, plan: ReceivablePlan) -> None:
         return
     received = await confirmed_amount(session, plan.id)
     amount = plan.amount or ZERO
-    if received > 0 and received >= amount:
+    # ⚠️ 判据只看**余额**，不看"收过钱没有"（2026-10-14 审查补）。
+    # 原来是 `received > 0 and received >= amount`：`amount == 0` 且没收过钱的节点
+    # 余额本来就是 0（`is_plan_overdue` 用 `balance > 0` 也判它不逾期），
+    # 却因为 `received > 0` 不成立而落到最后的 `pending` —— 一个**余额为 0、
+    # 永远催不出款**的节点长期显示"待回款"，而 `sync_payment_milestones` 按
+    # `paid < amount` 判它"不欠"，同一份事实两个说法。
+    # 可达性：`split_amounts` 对"非正数期"**直接拒绝**（实测 `total=0` 报错），
+    # 所以正常路径建不出 0 元期；这里是**补完状态机**，免得将来有人从别的路
+    # 建出 0 元期时留下一个永远待回款的行。
+    if received >= amount:
         plan.status = "paid"
     elif is_plan_overdue(
         status=plan.status, balance=amount - received, due_date=plan.due_date, today=today_business()

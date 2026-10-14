@@ -295,9 +295,18 @@ async def download_document(
         else:
             try:
                 path = storage.absolute_path(record.object_key)
-                content = await asyncio.to_thread(path.read_bytes)
-            except OSError:
-                missing = "存档文件已不在磁盘上"
+            except AppError:
+                # ⚠️ `absolute_path` 对非法 object_key（目录穿越形状）抛的是 `AppError`，
+                # 而它**不是** `OSError` —— 原来这个 except 只捕 OSError，于是那种情况
+                # 会一路冒成 500，**绕过了下面那条"存档不可用 + 单独记审计 + 410"**的
+                # 既定出口（2026-10-14 审查修）。object_key 正常只有系统写入，
+                # 所以这不是可达的常见路径，但让两种"读不到"走同一个出口才对。
+                missing = "存档文件的路径不合法（无法定位原件）"
+            else:
+                try:
+                    content = await asyncio.to_thread(path.read_bytes)
+                except OSError:
+                    missing = "存档文件已不在磁盘上"
         # 校验值也要比：它是"这份原件没被换过"的唯一依据，光有文件不够
         if content is not None and record is not None and record.checksum:
             actual = hashlib.sha256(content).hexdigest()
