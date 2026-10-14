@@ -61,6 +61,11 @@ async def refresh_next_followup_at(
     if not customer_id:
         return
     from app.modules.task.model import Task
+    from app.modules.contact_util import lock_customer_row
+
+    # 必须在锁内汇总，不能先算日期再等待 UPDATE 锁，否则会写回旧汇总。
+    # 修改既有任务的调用方必须先客户、后任务取锁（task/locking.py）。
+    await lock_customer_row(session, customer_id)
 
     due = (
         await session.execute(
@@ -582,10 +587,16 @@ async def get_customer_or_404(session: AsyncSession, customer_id: int) -> Custom
 
 
 async def get_visible_customer(
-    session: AsyncSession, user: CurrentUser, customer_id: int
+    session: AsyncSession, user: CurrentUser, customer_id: int, *, for_update: bool = False
 ) -> Customer:
     """取客户并校验数据范围。读接口统一用这个，别再单独用 get_customer_or_404。"""
-    customer = await get_customer_or_404(session, customer_id)
+    if for_update:
+        customer = (await session.execute(select(Customer).where(Customer.id == customer_id)
+                    .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        if customer is None or customer.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+    else:
+        customer = await get_customer_or_404(session, customer_id)
     await assert_customer_visible(session, user, customer)
     return customer
 

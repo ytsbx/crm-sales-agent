@@ -221,7 +221,7 @@ async def update_customer(
     user: CurrentUser = Depends(require_permission("customer:update")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_visible_customer(session, user, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     before = svc.serialize_customer(customer)
     changes = payload.model_dump(exclude_unset=True)
     if "level" in changes:
@@ -268,7 +268,7 @@ async def delete_customer(
     user: CurrentUser = Depends(require_permission("customer:delete")),
     session: AsyncSession = Depends(get_db),
 ):
-    customer = await svc.get_visible_customer(session, user, customer_id)
+    customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
     before = svc.serialize_customer(customer)
     await svc.delete_customer(session, customer)
     await write_audit(

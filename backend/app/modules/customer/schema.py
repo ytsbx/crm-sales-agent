@@ -1,9 +1,9 @@
 """客户与联系人的入参结构。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 from app.core.patch_schema import PatchModel
 
 
@@ -47,6 +47,15 @@ class CustomerUpdate(PatchModel):
     #: 导入时没提供联系日期的老客户被标成"联系时间未知"，不参与自动回收；
     #: 业务核对出真实时间后填这里，标记随之清掉、重新回到回收视野。
     last_followup_at: datetime | None = None
+
+    @field_validator("last_followup_at")
+    @classmethod
+    def past_contact(cls, value):
+        if value is not None:
+            value = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+            if value > datetime.now(UTC):
+                raise ValueError("最近联系时间不能在未来；未来联系请登记跟进任务")
+        return value
 
 
 class CustomerTransfer(BaseModel):
