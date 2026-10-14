@@ -249,6 +249,33 @@ def _strict_int(raw: object, label: str, low: int, high: int) -> int:
     return number
 
 
+def _strict_amount(raw: object, label: str) -> None:
+    """金额门槛的严格校验：非负、最多两位小数。**只核对，不改值**。
+
+    为什么不能直接 `float(raw)` 了事：那样「1e5」也能过（=100000）、
+    「-50000」取绝对值也能过 —— 而这是**决定这张报价该找谁批的钱的门槛**，
+    含糊的值不该落库。
+
+    界面上那个输入框已经拦了一道，这里是**不管从哪个入口写进来都拦得住**
+    的那一道（2026-10-14 主人拍板要的兜底）。
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        # 先挡布尔：bool 是 int 的子类，不挡的话 True 会当成 1 收下
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}必须是数字（最多两位小数），收到的不是：{raw!r}",
+            422,
+        )
+    text = str(raw).strip()
+    if not re.fullmatch(r"\d+(\.\d{1,2})?", text):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}要填数字（最多两位小数，例如 50000 或 50000.00），不限就留空；"
+            f"收到的是：{raw!r}",
+            422,
+        )
+
+
 async def validate_setting_value(
     session: AsyncSession, key: str, value: dict | None
 ) -> None:
@@ -277,6 +304,43 @@ async def validate_setting_value(
             raise AppError(
                 ErrorCode.PARAM_ERROR, f"权限码「{code}」不在系统权限表里，请核对", 422
             )
+
+    if key == "approval_levels":
+        # 报价审批分级：决定"这张报价该找谁批"。这份配置坏掉**不会报错**，
+        # 只会默默算错、找错人，所以必须在进库前就看住（2026-10-14 主人拍板）。
+        levels = (value or {}).get("levels")
+        if not isinstance(levels, list) or not levels:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "报价审批分级至少要留一档，否则报价提交时找不到该找谁批",
+                422,
+            )
+        for index, item in enumerate(levels, start=1):
+            if not isinstance(item, dict):
+                raise AppError(
+                    ErrorCode.PARAM_ERROR, f"第 {index} 档不是一条有效配置", 422
+                )
+            role_codes = item.get("role_codes")
+            if role_codes is not None and not isinstance(role_codes, list):
+                raise AppError(
+                    ErrorCode.PARAM_ERROR,
+                    f"第 {index} 档的「可审批角色」必须是一组角色码，"
+                    f"收到的不是：{role_codes!r}",
+                    422,
+                )
+            raw = item.get("max_amount")
+            if raw is None or (isinstance(raw, str) and not raw.strip()):
+                # 留空 = 不限。它只能出现在最后一档：中间留空之后，后面那些档
+                # 永远轮不到 —— 配的时候看不出来，报价一到就全落进中间那一档。
+                if index != len(levels):
+                    raise AppError(
+                        ErrorCode.PARAM_ERROR,
+                        f"第 {index} 档的金额上限是空的（不限）。「不限」只能放在最后一档，"
+                        "否则后面那些档永远轮不到。",
+                        422,
+                    )
+                continue
+            _strict_amount(raw, f"第 {index} 档的金额上限")
 
 
 async def recompute_open_candidates(
