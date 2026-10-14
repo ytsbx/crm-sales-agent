@@ -612,6 +612,28 @@ SOURCE_LABELS = {
 }
 
 
+def customer_specific_allowed(customer) -> bool:
+    """这个客户参不参与**专属价（协议价）**匹配。
+
+    ## 判据只此一处（2026-10-14 审查修）
+
+    专属价是**协议价**："数据范围放行只代表这个客户你能看，不代表他的协议价你能看"。
+    项目已确认的口径是 **公海客户（`owner_id IS NULL`）不参与专属价匹配**。
+
+    这条判据原来在调用方**各写一份**（`pricing/router.py` 的查价接口、
+    `quote/service.py` 的机会项带价），而另外两个出口漏了 ——
+    `price_drift`（草稿"价格已更新"检测）与 `refresh_prices`（一键刷新）
+    用的是默认值 `True`，于是**公海客户的报价会被写进专属价**，
+    与同模块的口径自相矛盾。**实测**：客户置为公海、专属价 88.00，
+    默认路径查到 `来源=customer_specific 单价=88.0`，而显式关闭时是
+    `来源=level 单价=26.68`。
+
+    现在改成"默认由本函数按客户推导"，调用方不传就自动是对的；
+    要覆盖（例如管理员刻意要看协议价）可以显式传 `include_customer_specific=`。
+    """
+    return getattr(customer, "owner_id", None) is not None
+
+
 async def lookup_applicable_price(
     session: AsyncSession,
     *,
@@ -619,7 +641,7 @@ async def lookup_applicable_price(
     sku_id: int,
     quantity: Decimal,
     on_date: date | None = None,
-    include_customer_specific: bool = True,
+    include_customer_specific: bool | None = None,
 ) -> dict:
     """统一查价（方案 §4：只回答「卖多少、依据是什么」）。
 
@@ -627,9 +649,11 @@ async def lookup_applicable_price(
     - 等级价存在但没维护指导价 → 回退通用价并**明确标注**（D4 已确认）；
     - 都没有 → `status=pending`（待定价），不做成本推算兜底（D4/D5）；
     - 成本/最低保护价由路由层按 `price:manage` 权限决定是否附加，这里不输出；
-    - `include_customer_specific=False` 用于公海客户（无负责人）：专属价是
-      协议价，只该让负责人看，数据范围放行不等于专属价放行。
+    - `include_customer_specific` **不传就按客户自动判**（公海客户不参与专属价，
+      见 `customer_specific_allowed`）；显式传 `True/False` 可覆盖。
     """
+    if include_customer_specific is None:
+        include_customer_specific = customer_specific_allowed(customer)
     # 停用/删除的 SKU 不给有效价（issue #7 实测：停用后查价仍返回
     # `status=ok` + 有效适用价，销售照拿它去报价）。
     # 查价是**新业务**入口，所以这里直接拒；历史单据不经过这里。

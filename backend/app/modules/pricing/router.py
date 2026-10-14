@@ -1226,14 +1226,15 @@ async def lookup_price(
         session, user, owner_id=customer.owner_id, label="客户", allow_unowned=True
     )
 
-    # 公海客户（无负责人）不参与专属价匹配：协议价只对负责人可见，
-    # 数据范围放行只代表"这个客户你能看"，不代表"他的协议价你能看"
     result = await svc.lookup_applicable_price(
         session,
         customer=customer,
         sku_id=sku_id,
         quantity=quantity,
-        include_customer_specific=customer.owner_id is not None,
+        # 公海客户不参与专属价：判据已收进
+        # `pricing_service.customer_specific_allowed`（**全项目只此一处**）——
+        # 不传即按客户自动判。原来这里与查价路由各写一份，
+        # 于是 `price_drift` / `refresh_prices` 两个出口漏了（见该函数说明）。
     )
     result.update(
         {

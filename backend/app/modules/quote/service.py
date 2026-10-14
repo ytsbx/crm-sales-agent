@@ -904,9 +904,10 @@ async def create_quote(
                 customer=customer_obj,
                 sku_id=opp_item.sku_id,
                 quantity=opp_item.quantity,
-                # 公海客户（无负责人）不参与专属价匹配——与查价路由同一纪律，
-                # 协议价只对负责人可见，此前这里漏传导致公海也能吃到专属价
-                include_customer_specific=customer_obj.owner_id is not None,
+                # 公海客户不参与专属价：判据已收进
+                # `pricing_service.customer_specific_allowed`（**全项目只此一处**）——
+                # 不传即按客户自动判。原来这里与查价路由各写一份，
+                # 于是 `price_drift` / `refresh_prices` 两个出口漏了（见该函数说明）。
             )
             if lookup["status"] == "ok" and lookup["unit_price"] is not None:
                 quoted_price, _ = convert_cny_to(
