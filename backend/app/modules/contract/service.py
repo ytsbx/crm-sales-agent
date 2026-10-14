@@ -1252,6 +1252,13 @@ async def list_documents(
     stmt = (
         select(ContractDocument)
         .join(Customer, Customer.id == ContractDocument.customer_id)
+        # ⚠️ `SalesOrder` 必须 **outerjoin**（2026-10-14 修，我第一版漏了）：
+        # 下面的范围判据要用 `SalesOrder.owner_id`（与 `visibility.py` 的三级回退
+        # 对齐），而这里原来只 join 了 `Customer` —— 少了这个 join 时 SQLAlchemy
+        # 会把 `sales_orders` 加进 FROM 变成**笛卡尔积**，行数被放大、
+        # 分页与 `total` 全错（CI 上 `check_contract_documents` 四条断言同时红，
+        # 就是我先漏了这个 join）。`outerjoin` 而非 `join`：合同可以没有来源订单。
+        .outerjoin(SalesOrder, SalesOrder.id == ContractDocument.order_id)
         .where(ContractDocument.deleted_at.is_(None))
     )
     if customer_id:
