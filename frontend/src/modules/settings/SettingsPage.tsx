@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Table, Tabs, Tag } from '@douyinfe/semi-ui'
@@ -54,7 +54,7 @@ import {
   type TaskRuleRow,
   type DictionaryItemRow,
 } from '../../shared/api/settings'
-import { Button, Input, Modal, Popconfirm, Select, Switch, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Switch, Toast } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
@@ -278,41 +278,20 @@ export default function SettingsPage() {
   const renderSettingValue = (record: SystemSettingRow) => {
     const raw = record.value ?? {}
     if (record.key === 'approval_levels' && Array.isArray(raw.levels)) {
-      const levels = raw.levels as Array<Record<string, unknown>>
+      // 审批分档改成"就地编辑表格"（2026-10-14 主人拍板）。
+      // 旧写法是一张只读小表格 + 一个让你**手写整段 JSON** 的输入框：
+      // 同一份数据画两遍，想改还得自己数括号和引号，错一个字符整条不生效，
+      // 而且只弹一句提示、写的东西还不退回去。现在表格本身可改。
+      //
+      // key 挂在数据上：保存成功后 /settings 回来新数据 → 组件重建、显示服务器
+      // 真值；用户正在编辑时 props 不变、不重建，免得把没提交的改动冲掉。
       return (
-        <div style={{ display: 'grid', gap: 8, minWidth: 360 }}>
-          <Table
-            size="small"
-            pagination={false}
-            rowKey="node"
-            dataSource={levels}
-            columns={[
-              { title: '级别', dataIndex: 'label', render: (value: unknown) => String(value ?? '-') },
-              { title: '金额上限', dataIndex: 'max_amount', render: (value: unknown) => value == null ? '不限' : String(value) },
-              {
-                title: '可审批角色',
-                dataIndex: 'role_codes',
-                render: (value: unknown) => Array.isArray(value) ? value.join('、') : '-',
-              },
-            ]}
-          />
-          <TextArea
-            defaultValue={JSON.stringify(raw, null, 2)}
-            rows={3}
-            placeholder="按 JSON 格式编辑审批分级"
-            onBlur={(event) => {
-              const next = event.target.value.trim()
-              if (!next || next === JSON.stringify(raw, null, 2)) return
-              try {
-                const parsed = JSON.parse(next) as Record<string, unknown>
-                if (!Array.isArray(parsed.levels)) throw new Error('levels 必须是数组')
-                settingMutation.mutate({ key: record.key, value: parsed })
-              } catch {
-                Toast.error('报价审批分级必须是有效的 JSON，且包含 levels 数组')
-              }
-            }}
-          />
-        </div>
+        <ApprovalLevelsEditor
+          key={JSON.stringify(raw)}
+          levels={raw.levels as Array<Record<string, unknown>>}
+          saving={settingMutation.isPending}
+          onSave={(levels) => settingMutation.mutate({ key: record.key, value: { levels } })}
+        />
       )
     }
     const first = Object.values(raw)[0]
@@ -1992,6 +1971,239 @@ export default function SettingsPage() {
           </div>
         )}
       </Modal>
+    </div>
+  )
+}
+
+/**
+ * 「报价审批分级」的就地编辑器（2026-10-14 主人拍板，替掉原来那个裸 JSON 输入框）。
+ *
+ * 后端把这份配置读成**一个数组**，然后从上往下找第一个「金额上限为空 或
+ * 报价没超上限」的档（`quote/service.py`）。所以这里有三条不能想当然的规矩：
+ *
+ * 1. **表格顺序就是判定顺序**，它不是一组可以随便排的无序档位；
+ * 2. **「不限」只能出现在最后一档** —— 中间留空一个，它后面的档永远轮不到，
+ *    配的时候看不出来，报价一到就全落到中间那一档；
+ * 3. 真正决定「谁能批」的只有角色码这一列（`approval/access.py` 拿它跟登录
+ *    用户的角色求交集）；`node` 只是写进审批留痕的代号，界面上不给人看 ——
+ *    老行沿用原值，新行补一个没被占用的。
+ *
+ * 另外：**角色留空 ≠ 没人能批，而是「谁有报价审批权限谁都能批」** ——
+ * 后端那句判断是「配了角色才校验」，空数组等于不校验。这条得写在界面上，
+ * 不然删空一个角色会以为只是"暂时没人管"。
+ */
+type ApprovalLevelDraft = {
+  node: string
+  label: string
+  /**
+   * 金额上限的**原始输入文本**，留空 = 不限。
+   * 存文本而不是数字：存数字的话，输入 50000 的过程会被逐字符解析，
+   * 5 → 50 → 500 一路跳，光标也不听话。
+   */
+  maxText: string
+  roleCodes: string[]
+}
+
+/** 每档里字段名的小字样式。宽度固定，「第 1 档」「第 2 档」的输入框左边才对得齐。 */
+const LEVEL_FIELD_LABEL: CSSProperties = {
+  width: 56,
+  flexShrink: 0,
+  fontSize: 12,
+  color: 'var(--crm-text-3)',
+}
+
+/**
+ * 金额上限的**唯一合法写法**：非负数字，最多两位小数。
+ *
+ * 留空不在这里判 —— 空串另有含义（= 不限），由调用方单独处理。
+ *
+ * 为什么非要有这条：只判「能不能转成数字」是不够的 —— `Number('1e5')`
+ * 就是 100000，是合法数字，一路过关。而用户敲「5万」的时候心里想的是五万，
+ * 任何"帮他把非法字符删掉"的做法都只会把值改错（见下面 onChange 的注释）。
+ * 所以这里**只认这一种写法**，别的当场拒绝。
+ */
+const AMOUNT_TEXT_PATTERN = /^\d+(\.\d{1,2})?$/
+
+function toApprovalDrafts(levels: Array<Record<string, unknown>>): ApprovalLevelDraft[] {
+  return levels.map((item, index) => ({
+    node: String(item.node ?? `level_${index + 1}`),
+    label: String(item.label ?? ''),
+    maxText: item.max_amount == null ? '' : String(item.max_amount),
+    roleCodes: Array.isArray(item.role_codes) ? (item.role_codes as unknown[]).map(String) : [],
+  }))
+}
+
+function ApprovalLevelsEditor({
+  levels,
+  saving,
+  onSave,
+}: {
+  levels: Array<Record<string, unknown>>
+  saving: boolean
+  onSave: (levels: Array<Record<string, unknown>>) => void
+}) {
+  // 只在挂载时读一次 props：用户编辑期间父组件的 props 不会变（见上面 renderSettingValue
+  // 里的 key 说明），所以不需要 effect 去同步 —— 同步反而会把没提交的改动冲掉。
+  const [drafts, setDrafts] = useState<ApprovalLevelDraft[]>(() => toApprovalDrafts(levels))
+  const rolesQuery = useQuery({ queryKey: ['system-roles'], queryFn: listRoles })
+
+  // 角色下拉的候选：角色表里的中文名，再加上「配置里出现过、角色表里却没有」的
+  // 孤儿码 —— 角色被删掉或改了码之后老配置会留下这种，直接吞掉的话用户在下拉里
+  // 看不到它、保存时还可能被顺手抹掉。照原样列出来并标注。
+  const roleOptions: Array<{ value: string; label: string }> = []
+  const seenRoles = new Set<string>()
+  for (const role of rolesQuery.data ?? []) {
+    if (seenRoles.has(role.code)) continue
+    seenRoles.add(role.code)
+    roleOptions.push({ value: role.code, label: role.name })
+  }
+  for (const draft of drafts) {
+    for (const code of draft.roleCodes) {
+      if (seenRoles.has(code)) continue
+      seenRoles.add(code)
+      roleOptions.push({ value: code, label: `${code}（角色表里已经没有这个角色）` })
+    }
+  }
+
+  const patch = (index: number, next: Partial<ApprovalLevelDraft>) =>
+    setDrafts((rows) => rows.map((row, i) => (i === index ? { ...row, ...next } : row)))
+
+  const addRow = () => {
+    // 新行的内部代号取一个还没被占用的，避免和上面某行撞上（撞了会让留痕对不上）
+    const used = new Set(drafts.map((row) => row.node))
+    let seq = 1
+    while (used.has(`level_${seq}`)) seq += 1
+    setDrafts((rows) => [...rows, { node: `level_${seq}`, label: '', maxText: '', roleCodes: [] }])
+  }
+
+  const removeRow = (index: number) => setDrafts((rows) => rows.filter((_, i) => i !== index))
+
+  const submit = () => {
+    if (drafts.length === 0) {
+      Toast.warning('至少要留一档，否则报价提交时找不到该找谁批')
+      return
+    }
+    const next: Array<Record<string, unknown>> = []
+    for (let i = 0; i < drafts.length; i += 1) {
+      const row = drafts[i]
+      const label = row.label.trim()
+      if (!label) {
+        Toast.warning(`第 ${i + 1} 档还没填级别名称`)
+        return
+      }
+      const text = row.maxText.trim()
+      if (text === '') {
+        if (i < drafts.length - 1) {
+          Toast.warning(`「不限」只能放在最后一档：第 ${i + 1} 档留空之后，后面那些档永远轮不到`)
+          return
+        }
+        next.push({ node: row.node, label, max_amount: null, role_codes: row.roleCodes })
+        continue
+      }
+      // 格式严校。**不能只判「是不是数字」**：`Number('1e5')` 也是合法数字
+      // （=100000），照样能混进来；更要紧的是别学以前那样先把非法字符删掉再判 ——
+      // 那是把用户填错的值悄悄改成另一个"看起来对"的值，比直接报错危险得多。
+      // 拒绝时把原值回显出来，用户才知道是哪一格、填了什么被挡下了。
+      if (!AMOUNT_TEXT_PATTERN.test(text)) {
+        Toast.warning(
+          `第 ${i + 1} 档的「金额上限」填的是「${text}」，不是有效金额：` +
+            '请填数字（最多两位小数，例如 50000 或 50000.00）；不限就留空。',
+        )
+        return
+      }
+      // 正则已保证是合法数字串，这里不会再是 NaN
+      const parsed = Number(text)
+      next.push({ node: row.node, label, max_amount: parsed, role_codes: row.roleCodes })
+    }
+    onSave(next)
+  }
+
+  return (
+    // width 写死 310，不是 minWidth：这一列是"内容多宽、列就多宽"的自动布局，
+    // 内层内容会按自身固有宽度把「值」列往外撑。实测不管住它，「值」列会涨到
+    // 462px，加上前两列就把整张配置表顶出内容区、横向滚起来，最右边的操作
+    // 直接被推出视口点不到。收在 310 之后这一列约 342px，三列合计约 1002px，
+    // 正好落在内容区内（改前是 1052px，要横滚 50px 才看得到右边缘）。
+    //
+    // 为什么不是一行四列的表格：被前两列挤完之后这一列只剩 340 出头，再扣掉
+    // 单元格左右内边距，并排的输入框每个只有 50~60px，连 50000 都显示不全、
+    // 「删除」两个字会被压成上下两行。所以每档改成一个小块、字段分两行排。
+    <div style={{ display: 'grid', gap: 8, width: 310 }}>
+      {drafts.map((row, index) => (
+        <div
+          key={row.node}
+          style={{
+            border: '1px solid var(--crm-surface-high)',
+            borderRadius: 'var(--crm-radius)',
+            padding: '8px 10px',
+            display: 'grid',
+            gap: 6,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>第 {index + 1} 档</span>
+            <a onClick={() => removeRow(index)}>删除</a>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={LEVEL_FIELD_LABEL}>级别</span>
+            {/* 级别名是中文字、比数字长，所以宽度按 1.3 : 1 分 —— 平分会把
+                「销售主管」裁掉一个字 */}
+            <Input
+              size="small"
+              style={{ flex: 1.3 }}
+              value={row.label}
+              placeholder="级别名"
+              onChange={(value) => patch(index, { label: value })}
+            />
+            <span style={LEVEL_FIELD_LABEL}>金额上限</span>
+            <Input
+              size="small"
+              style={{ flex: 1 }}
+              value={row.maxText}
+              placeholder="不限"
+              // ⚠️ 原样收下用户敲的每一个字符，**不许在这里删字符**（2026-10-14 修）。
+              // 以前写的是 `value.replace(/[^\d.]/g, '')`，本意是防呆，实际是静默篡改：
+              // 「5万」被洗成「5」、「1e5」被洗成「15」、「-50000」被洗成「50000」，
+              // 洗完全都变成合法数字串，保存时那道校验再也拦不住 —— 用户看到的
+              // 和最终存进库的不是一个值，而且**全程没有任何提示**。
+              // 现在非法就保持非法、当场标红，由用户自己改对。
+              onChange={(value) => patch(index, { maxText: value })}
+              validateStatus={
+                row.maxText.trim() !== '' && !AMOUNT_TEXT_PATTERN.test(row.maxText.trim())
+                  ? 'error'
+                  : 'default'
+              }
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={LEVEL_FIELD_LABEL}>角色</span>
+            <Select
+              multiple
+              size="small"
+              style={{ flex: 1 }}
+              value={row.roleCodes}
+              placeholder="留空不限"
+              maxTagCount={1}
+              optionList={roleOptions}
+              onChange={(value) =>
+                patch(index, { roleCodes: ((value as Array<string | number>) ?? []).map(String) })
+              }
+            />
+          </div>
+        </div>
+      ))}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Button size="small" onClick={addRow}>
+          增加一档
+        </Button>
+        <Button size="small" theme="solid" loading={saving} onClick={submit}>
+          保存
+        </Button>
+      </div>
+      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.6 }}>
+        从上往下比金额，所以「不限」只能放最后一档（上限留空即不限）。角色留空不是「没人能批」，
+        而是有报价审批权限的人都能批。
+      </div>
     </div>
   )
 }
