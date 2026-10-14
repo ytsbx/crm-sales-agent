@@ -6,11 +6,11 @@ from pydantic.fields import FieldInfo
 
 from app.modules.product.field_rules import NUMERIC_RULES
 from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 
-class ProductCreate(BaseModel):
+class ProductCreate(CreateModel):
     name: str = Field(min_length=1, max_length=200)
     product_line: str | None = None
     category: str | None = None
@@ -43,7 +43,7 @@ def _int_field(name: str) -> FieldInfo:
     rule = NUMERIC_RULES[name]
     return Field(default=None, ge=rule.minimum, le=10 ** rule.max_digits - 1)
 
-class SkuCreate(BaseModel):
+class SkuCreate(CreateModel):
     sku_code: str = Field(min_length=1, max_length=64)
     name: str | None = None
     specification: str | None = None

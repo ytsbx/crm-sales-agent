@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 #: 任务状态**唯一的一份枚举**（第九批 §9.3）。
@@ -13,7 +13,7 @@ from app.core.patch_schema import PatchModel
 TASK_STATUSES = ("pending", "doing", "done", "cancelled")
 
 
-class TaskCreate(BaseModel):
+class TaskCreate(CreateModel):
     title: str = Field(min_length=1, max_length=200)
     task_type: str | None = None
     customer_id: int | None = None

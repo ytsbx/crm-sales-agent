@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 from app.modules.order.schema import ReceivablePlanIn
 
 
@@ -165,7 +165,7 @@ class RecommendProductsRequest(BaseModel):
     keyword: str | None = None
 
 
-class StageCreate(BaseModel):
+class StageCreate(CreateModel):
     """新增阶段（03-API §13）。"""
 
     model_config = ConfigDict(extra="ignore")

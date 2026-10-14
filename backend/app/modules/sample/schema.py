@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.core.patch_schema import CreateModel
 
 
 class SampleItemInput(BaseModel):
@@ -101,7 +102,7 @@ class SampleFromSource(SampleSource):
         return self
 
 
-class SampleUpdate(BaseModel):
+class SampleUpdate(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     contact_id: int | None = None

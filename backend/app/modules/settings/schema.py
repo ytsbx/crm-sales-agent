@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from app.core.patch_schema import PatchModel
+from app.core.patch_schema import CreateModel, PatchModel
 
 
 
@@ -9,7 +9,7 @@ class SettingInput(BaseModel):
     description: str | None = None
 
 
-class PublicPoolRuleInput(BaseModel):
+class PublicPoolRuleInput(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     level: str
@@ -34,7 +34,7 @@ class PublicPoolRuleUpdate(PatchModel):
         return value
 
 
-class TaskRuleInput(BaseModel):
+class TaskRuleInput(CreateModel):
     model_config = ConfigDict(extra="ignore")
 
     code: str
@@ -63,7 +63,7 @@ class TaskRuleUpdate(PatchModel):
         return value
 
 
-class NumberingRuleCreate(BaseModel):
+class NumberingRuleCreate(CreateModel):
     """新建编号规则（03-API §36）。"""
 
     model_config = ConfigDict(extra="ignore")
