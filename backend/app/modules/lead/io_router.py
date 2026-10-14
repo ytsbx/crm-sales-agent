@@ -9,7 +9,7 @@ import hashlib
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
-from sqlalchemy import or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -137,6 +137,9 @@ async def import_leads(
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["线索名称"], label="文件")
     report = ImportReport("lead", len(rows))
+    #: 「同公司但联系人不同」这类**提示**（放行但要让用户知道），最后附到该行的 note 上。
+    #: 用行号做键，避免与 RowSkipped 的语义混在一起（那是"没进来"，这是"进来了但有情况"）。
+    company_hints: dict[int, str] = {}
 
     for index, row in enumerate(rows, start=2):  # 第 1 行是表头
         name = (row.get("线索名称") or "").strip()
@@ -151,22 +154,58 @@ async def import_leads(
 
         try:
             async with row_savepoint(session):
-                conditions = []
-                if company:
-                    conditions.append(Lead.company_name == company)
+                # ⚠️ 判重分两级，**不能把两个条件 OR 起来一起当"重复"**（2026-10-14 审查）：
+                # 原来写的是 `or_(company_name == X, mobile == Y)`，于是
+                # 「同一家公司要录 3 个联系人（张总/李总/采购）」时**只有第一行进得来**，
+                # 后两行全被当成"已存在同名公司"跳过 —— 而用户的原意恰恰是有多个联系人。
+                # 现在：
+                #   · 手机号相同 → **强判重**（几乎必然是同一个人的重复录入），提示写明撞的是哪一项；
+                #   · 仅公司名相同而手机号不同 → **放行**，但记一条提示让用户自己判断
+                #     （宁可多进一条让人删，也不要静默丢数据）。
                 if mobile:
-                    conditions.append(Lead.mobile == mobile)
-                if conditions:
-                    duplicate = (
+                    dup_mobile = (
                         await session.execute(
-                            select(Lead).where(
-                                Lead.deleted_at.is_(None), or_(*conditions)
-                            ).limit(1)
+                            select(Lead)
+                            .where(Lead.deleted_at.is_(None), Lead.mobile == mobile)
+                            .order_by(Lead.id.asc())
+                            .limit(1)
                         )
                     ).scalars().first()
-                    if duplicate is not None:
+                    if dup_mobile is not None:
                         raise RowSkipped(
-                            f"已存在同名公司或同号线索（id={duplicate.id}）"
+                            f"手机号「{mobile}」已存在（{dup_mobile.name or '未命名'}，"
+                            f"id={dup_mobile.id}）"
+                        )
+                if company:
+                    dup_company = (
+                        await session.execute(
+                            select(Lead)
+                            .where(
+                                Lead.deleted_at.is_(None),
+                                Lead.company_name == company,
+                                # 同公司同联系人姓名 = 同一行重复录，直接跳过
+                                Lead.contact_name == ((row.get("联系人") or "").strip() or None),
+                            )
+                            .order_by(Lead.id.asc())
+                            .limit(1)
+                        )
+                    ).scalars().first()
+                    if dup_company is not None:
+                        raise RowSkipped(
+                            f"「{company}」的同一联系人已存在（id={dup_company.id}）"
+                        )
+                    # 同公司但联系人不同：**放行**，只提示
+                    same_company = (
+                        await session.execute(
+                            select(func.count(Lead.id)).where(
+                                Lead.deleted_at.is_(None), Lead.company_name == company
+                            )
+                        )
+                    ).scalar_one()
+                    if same_company:
+                        company_hints[index] = (
+                            f"「{company}」已有 {int(same_company)} 条线索，"
+                            "本次按新联系人导入（请确认是否同一家）"
                         )
 
                 owner_login = (row.get("负责人登录名") or "").strip()
@@ -193,7 +232,9 @@ async def import_leads(
                     await svc.assign_lead(session, lead, to_user_id=owner_id, operator_id=user.id,
                                           reason="导入线索时指定负责人")
                 lead_id = lead.id
-            report.created_row(index, name, id=lead_id)
+            report.created_row(
+                index, name, id=lead_id, note=company_hints.get(index)
+            )
         except RowSkipped as skipped:
             report.skipped_row(index, name, str(skipped))
         except Exception as exc:  # 单行失败不影响其它行
