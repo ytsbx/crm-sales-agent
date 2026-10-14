@@ -365,7 +365,7 @@ export default function DocumentsPage() {
   const notifyVoidBlocked = useBlockedNotify([voidNeedsReviewerReason], '作废')
 
   return (
-    <div style={{ padding: 20, maxWidth: 1200, margin: '0 auto' }}>
+    <div className="page-container">
       <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={[
         { tab: '文档台账', itemKey: 'documents' },
         { tab: '合同模板', itemKey: 'templates' },
@@ -471,6 +471,7 @@ export default function DocumentsPage() {
                 ),
               },
             ]}
+            scroll={{ x: 'max(100%, 1400px)' }}
             dataSource={documents}
             loading={documentsQuery.isLoading}
             rowKey="id"
@@ -521,6 +522,7 @@ export default function DocumentsPage() {
                   record.body.length > 60 ? `${record.body.slice(0, 60)}…` : record.body,
               },
             ]}
+            scroll={{ x: 'max(100%, 800px)' }}
             dataSource={templates}
             loading={templatesQuery.isLoading}
             rowKey="id"
