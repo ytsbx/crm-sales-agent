@@ -18,7 +18,7 @@ from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
-from app.core.timebase import today_business
+from app.core.timebase import to_business, today_business
 from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
@@ -709,9 +709,13 @@ async def _notify_recycle_candidate(
     from app.modules.notification.model import Notification
     from app.modules.notification.service import channel_settings, notify
 
-    due_text = candidate.due_at.strftime("%Y-%m-%d") if candidate.due_at else "—"
+    # ⚠️ 必须走 `to_business`（2026-10-14）：`candidate.due_at` 是 UTC 瞬时，
+    # 直接 `strftime` 印出来的是 **UTC 日历日** —— 北京时间 00:00–08:00 的通知会
+    # 写前一天。这两行曾在 `b1ebe8f` 修好，`a008b0e`（公海回收口径收窄）基于
+    # 更早的版本改这个函数时又带了回来，`check_output_criteria` 抓到了。
+    due_text = to_business(candidate.due_at).strftime("%Y-%m-%d") if candidate.due_at else "—"
     active = candidate.last_active_at
-    active_text = active.strftime("%Y-%m-%d") if active else "无记录"
+    active_text = to_business(active).strftime("%Y-%m-%d") if active else "无记录"
     reason = (
         f"{candidate.level or ''} 级客户超过 {candidate.rule_days} 天未跟进"
         if candidate.rule_days
