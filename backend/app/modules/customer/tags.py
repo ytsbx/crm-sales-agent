@@ -258,6 +258,14 @@ MERGE_TARGETS: list[tuple[str, str, str]] = [
     ("app.modules.sample.model", "SampleRequest", "打样单"),
     ("app.modules.order.model", "OrderDraft", "订单草稿"),
     ("app.modules.contract.model", "ContractDocument", "合同"),
+    # ⚠️ 补登记（2026-10-14 审查）。本清单上面的判据是**本文件自己写的**：
+    # 「凡是带 `customer_id` 的业务表都要在这里登记。漏登记一项，合并就是
+    # "看起来成功了、其实留了一半"」——而 `BizDoc` 有 `customer_id`、
+    # 有 `ix_biz_docs_customer` 索引、`bizdoc/service.list_docs(customer_id=...)`
+    # 就按它过滤，却没登记。漏了它，把 A 合并进 B 之后，A 名下的打样需求单 /
+    # 下单文件 / 对客报价单一律仍挂在 A 上，而 A 已软删、`owner_id` 被清空
+    # —— `GET /biz-docs?customer_id=B` 查不到这批对外文件，B 的档案里永远补不齐。
+    ("app.modules.bizdoc.model", "BizDoc", "生成文件"),
     ("app.modules.cases.model", "SalesCase", "销售案例"),
     ("app.modules.pricing.model", "LogisticsQuote", "物流报价"),
     # 专属价格要跟着走，但**有冲突时不能随便走**：两边同一个 SKU 定了不同的价，
