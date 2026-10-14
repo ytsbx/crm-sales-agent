@@ -124,7 +124,7 @@ class OrderItemInput(BaseModel):
     quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
     #: 与 `sales_order_items.unit_price`（Numeric(16,4)）同一把尺子
     unit_price: Decimal = Field(ge=0, max_digits=16, decimal_places=4)
-    specification: str | None = None
+    specification: str | None = Field(default=None, max_length=200)
     remark: str | None = None
 
 
@@ -143,7 +143,7 @@ class OrderCreate(BaseModel):
     owner_id: int | None = None
     currency: str = "CNY"
     delivery_date: date | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     remark: str | None = None
 
 
@@ -153,7 +153,7 @@ class OrderUpdate(BaseModel):
     delivery_date: date | None = None
     remark: str | None = None
     owner_id: int | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
 
 
 class OrderStatusChange(BaseModel):
@@ -172,7 +172,7 @@ class ShipmentBatchItemInput(BaseModel):
 class ShipmentBatchCreate(BaseModel):
     planned_date: date | None = None
     overdue_reason: str | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
     items: list[ShipmentBatchItemInput] = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -205,7 +205,7 @@ class ShipmentBatchShip(BaseModel):
     #: 晚了就填原因（"因为分批/因为生产/因为客户改期"）——
     #: 系统能算出"晚几天"，算不出"为什么"，归因必须有人填
     overdue_reason: str | None = None
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
     items: list[ShipmentShipItem] | None = None
 
     @model_validator(mode="after")
@@ -227,7 +227,7 @@ class OrderDraftLine(BaseModel):
     source_item_id: int = Field(gt=0)
     quantity: Decimal = Field(gt=0, max_digits=16, decimal_places=3)
     unit_price: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=4)
-    specification: str | None = None
+    specification: str | None = Field(default=None, max_length=200)
     remark: str | None = None
 
 
@@ -235,7 +235,7 @@ class OrderDraftCreate(SampleSource):
     request_key: UUID
     items: list[OrderDraftLine] = Field(min_length=1, max_length=200)
     delivery_date: date | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     remark: str | None = None
 
     @model_validator(mode='after')
@@ -250,7 +250,7 @@ class OrderDraftUpdate(PatchModel):
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     items: list[OrderDraftLine] = Field(min_length=1, max_length=200)
     delivery_date: date | None = None
-    payment_terms: str | None = None
+    payment_terms: str | None = Field(default=None, max_length=128)
     remark: str | None = None
 
 

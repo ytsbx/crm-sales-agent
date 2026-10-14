@@ -324,7 +324,7 @@ async def update_order(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     before = svc.serialize_order(order)
 
     data = payload.model_dump(exclude_unset=True)
@@ -482,7 +482,7 @@ async def update_milestone(
     session: AsyncSession = Depends(get_db),
 ):
     """登记实际日期 / 调整计划日期 / 备注（exclude_unset：不传的字段不动）。"""
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     from app.modules.order.schedule import lock_order
     await lock_order(session, order)
     row = (await session.execute(select(OrderMilestone).where(OrderMilestone.id == milestone_id)
@@ -636,7 +636,7 @@ async def create_schedule_change(
     """生成交期变更单（待责任人确认）。**未确认前不动任何计划日期。**"""
     from app.modules.order import schedule as schedule_svc
 
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     row = await schedule_svc.create_change(
         session, order, user=user,
         new_delivery_date=payload.new_delivery_date, reason=payload.reason,
@@ -765,7 +765,7 @@ async def cancel_schedule_change(
     from app.modules.order import schedule as schedule_svc
     from app.modules.order.model import OrderScheduleChange
 
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     row = await session.get(OrderScheduleChange, change_id)
     if row is None or row.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
@@ -1052,7 +1052,7 @@ async def sync_erp(
     配置齐全时会真的在对方系统建单，本系统这边撤回不了。
     所以先让用户核对订单号、客户与金额。
     """
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     # 确认判据与文案**三个推单入口共用一份**（第二轮审查 P2，2026-10-12）：
     # 这里原来是就地写的一段，另两个入口（`/integrations/erp/orders` 与其 sync）
     # 完全没检查，知道路径就能绕过确认直接写进外部系统。
@@ -1223,7 +1223,7 @@ async def create_shipment(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     if order.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再排发货批次")
     batch = await svc.create_shipment_batch(session, order, payload=payload, user_id=user.id)
@@ -1251,7 +1251,7 @@ async def ship_batch(
     session: AsyncSession = Depends(get_db),
 ):
     """登记实发。只推进订单到"已发货"——整单完成由未发量闸门把关（场景13）。"""
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     batch = await session.get(OrderShipmentBatch, batch_id)
     if batch is None:
         raise AppError(ErrorCode.NOT_FOUND, "发货批次不存在", 404)
@@ -1284,7 +1284,7 @@ async def delete_shipment(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    order = await svc.get_visible_order(session, user, order_id)
+    order = await svc.get_visible_order(session, user, order_id, for_update=True)
     batch = await session.get(OrderShipmentBatch, batch_id)
     if batch is None or batch.order_id != order.id:
         raise AppError(ErrorCode.NOT_FOUND, "发货批次不存在", 404)

@@ -10,7 +10,7 @@
 """
 
 import logging
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -23,6 +23,7 @@ from app.core.errors import AppError, ErrorCode
 # 跟着宿主机时区走 —— 服务器换成 UTC 之后，北京时间凌晨的判定会差一天。
 from app.core.timebase import today_business
 from app.modules.order.model import OrderMilestone, OrderShipmentBatch, SalesOrder
+from app.modules.order.dates import shift_date
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 
 logger = logging.getLogger("crm.milestones")
@@ -77,7 +78,7 @@ def default_plan(delivery_date: date | None) -> dict[str, date | None]:
     if delivery_date is None:
         return {key: None for key, _label, _offset in MILESTONE_NODES}
     return {
-        key: delivery_date - timedelta(days=offset)
+        key: shift_date(delivery_date, -offset)
         for key, _label, offset in MILESTONE_NODES
     }
 

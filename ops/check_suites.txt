@@ -509,3 +509,6 @@ check_cross_entity_scope
 # 2026-10-14 实跑 24 条通过。与 `check_notification_retry` 分工：那个测重试计数与
 # 退避，这个测"重试之后到底发出去了没有"。
 check_notification_retry_e2e
+
+# 第十四批：订单改派锁内重判 + Numeric(16,3) 实发尾数真库回归
+check_batch14_order_safety

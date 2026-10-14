@@ -252,6 +252,7 @@ async def push_by_order_no(
     order = (
         await session.execute(
             select(SalesOrder).where(SalesOrder.order_no == payload.order_no.strip())
+            .with_for_update().execution_options(populate_existing=True)
         )
     ).scalars().first()
     if order is None:
@@ -289,7 +290,7 @@ async def sync_order(
     第二轮审查 P2（2026-10-12）：与 `/orders/{id}/sync-erp` 走同一个写服务，
     所以也必须先确认；确认判据、文案与 42206 由 `ensure_push_confirmed` 统一。
     """
-    order = await order_service.get_visible_order(session, user, order_id)
+    order = await order_service.get_visible_order(session, user, order_id, for_update=True)
     await svc.ensure_push_confirmed(session, order=order, confirm=confirm)
     try:
         result = await svc.push_order(session, order=order, operator_id=user.id)
@@ -323,7 +324,7 @@ async def reconcile_order(
     （聚水潭 / 企业 erp-bridge 的资料还没拿到），猜一个查询端点比不做更危险。
     登记之后订单变成"已同步"，遗留的 sending/unknown 记录一并了结。
     """
-    order = await order_service.get_visible_order(session, user, order_id)
+    order = await order_service.get_visible_order(session, user, order_id, for_update=True)
     try:
         result = await svc.reconcile_push(
             session, order=order, external_id=payload.external_id, operator_id=user.id
@@ -351,7 +352,7 @@ async def order_status(
     session: AsyncSession = Depends(get_db),
 ):
     """拉取履约状态并回写（写入 order_status_history，source=ERP）。"""
-    order = await order_service.get_visible_order(session, user, order_id)
+    order = await order_service.get_visible_order(session, user, order_id, for_update=True)
     try:
         result = await svc.refresh_status(session, order=order, operator_id=user.id)
     except (ErpNotConfigured, ErpError) as error:

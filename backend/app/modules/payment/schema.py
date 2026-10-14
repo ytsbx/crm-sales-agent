@@ -24,7 +24,7 @@ class ReceivableCreate(BaseModel):
     # 与 receivable_plans.amount Numeric(16,2) 对齐，超出两位小数直接拒绝，
     # 不让数据库静默舍入。
     amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class ReceivableUpdate(PatchModel):
@@ -33,7 +33,7 @@ class ReceivableUpdate(PatchModel):
     plan_name: str | None = Field(default=None, min_length=1, max_length=64)
     due_date: date | None = None
     amount: Decimal | None = Field(default=None, gt=0, max_digits=16, decimal_places=2)
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
 
 
 class PaymentAllocationItem(BaseModel):
@@ -131,8 +131,8 @@ class PaymentCreate(BaseModel):
     received_date: date
     # 与 payment_records.received_amount Numeric(16,2) 对齐。
     received_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
-    payment_method: str | None = None
-    voucher_note: str | None = None
+    payment_method: str | None = Field(default=None, max_length=32)
+    voucher_note: str | None = Field(default=None, max_length=255)
     #: 币种（第七批 7.9）：不传就**继承应收节点的币种**，绝不落到列默认的 CNY ——
     #: 美元节点上的回款被记成人民币，汇总时按 1:1 相减，账错了还看不出来。
     #: 传了且与节点不一致 → 明确拒绝（跨币种核销口径未定，不猜汇率）。
@@ -161,8 +161,8 @@ class PaymentUpdate(PatchModel):
     received_amount: Decimal | None = Field(
         default=None, gt=0, max_digits=16, decimal_places=2
     )
-    payment_method: str | None = None
-    voucher_note: str | None = None
+    payment_method: str | None = Field(default=None, max_length=32)
+    voucher_note: str | None = Field(default=None, max_length=255)
     #: 币种只在**与应收节点一致**时才接受；传 null 等于"按节点币种重新对齐"。
     currency: str | None = Field(default=None, max_length=8)
 

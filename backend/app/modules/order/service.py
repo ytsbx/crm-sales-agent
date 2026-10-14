@@ -575,8 +575,7 @@ async def change_status(
         # 判据不能依赖"有没有建过批次"，否则绕过方式就是"什么都不建"。
         overview = await order_shipments(session, order)
         summary = overview["summary"]
-        shipped = Decimal(str(summary.get("shipped") or 0))
-        ordered = Decimal(str(summary.get("ordered") or 0))
+        ordered = Decimal(summary["ordered_exact"])
         # 履约凭据里不许有**未来日期**（第三批审查 P2，2026-10-12）：
         # 登记那一关已经不许填未来发货日，但历史数据（或别的写入口）可能已经留下，
         # 这里再挡一道，否则"未来才发出去的货"能当成完成的依据。
@@ -594,7 +593,7 @@ async def change_status(
                 f"有发货批次的实发日期在未来（{detail}），不能作为履约凭据，"
                 "订单不能标记完成。请先把这些批次的实发日期改回真实发生的那天。",
             )
-        if ordered > 0 and shipped < ordered:
+        if ordered > 0 and not summary["all_shipped"]:
             if not overview["batches"]:
                 raise AppError(
                     ErrorCode.STATUS_NOT_ALLOWED,
@@ -605,7 +604,7 @@ async def change_status(
             detail = "；".join(
                 f"{row['sku']} 还差 {row['remaining']}"
                 for row in overview["items"]
-                if Decimal(str(row["remaining"])) > 0
+                if Decimal(row["remaining_exact"]) > 0
             )
             raise AppError(
                 ErrorCode.STATUS_NOT_ALLOWED,
@@ -742,11 +741,13 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
         else:
             entry["planned"] += _d(row.planned_qty)
     for entry in agg.values():
-        entry["ordered"] = _f(entry["ordered"])
-        entry["planned"] = _f(entry["planned"])
-        entry["shipped"] = _f(entry["shipped"])
-        entry["remaining"] = _f(max(_d(entry["ordered"]) - _d(entry["shipped"]), Decimal(0)))
-        entry["unplanned"] = _f(max(_d(entry["ordered"]) - _d(entry["planned"]), Decimal(0)))
+        # 库内数量是 Numeric(16,3)。先转 float 再相减会吞掉 0.001 尾数，
+        # 导致剩余货排不进批次，甚至未发完便能标记完成。
+        entry["remaining"] = max(entry["ordered"] - entry["shipped"], Decimal(0))
+        entry["unplanned"] = max(entry["ordered"] - entry["planned"], Decimal(0))
+        for field in ("ordered", "planned", "shipped", "remaining", "unplanned"):
+            entry[field + "_exact"] = format(entry[field], "f")
+            entry[field] = _f(entry[field])
 
     batch_by_id = {batch.id: batch for batch in batches}
     # "今天"取业务时区（第九批 §9.10）：下面算"未发批次已经逾期几天"要用它，
@@ -795,7 +796,7 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
     # §9.8 复审的坑：订购 10、已发 6、剩 4 件**根本没排新批次**时
     # `pending_batch_count` 是 0 —— 拿它当"发完了"会提前下最终结论。
     settled = bool(agg) and all(
-        _d(v["ordered"]) - _d(v["shipped"]) <= 0 for v in agg.values()
+        Decimal(v["ordered_exact"]) - Decimal(v["shipped_exact"]) <= 0 for v in agg.values()
     )
 
     # 「最后一批 vs 交期」的两个输入（第九批 §9.8）：
@@ -818,10 +819,14 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
         "batches": serialized_batches,
         "batch_by_id": batch_by_id,
         "summary": {
-            "ordered": _f(sum(_d(v["ordered"]) for v in agg.values())),
-            "planned": _f(sum(_d(v["planned"]) for v in agg.values())),
-            "shipped": _f(sum(_d(v["shipped"]) for v in agg.values())),
-            "remaining": _f(sum(_d(v["remaining"]) for v in agg.values())),
+            "ordered": _f(sum(Decimal(v["ordered_exact"]) for v in agg.values())),
+            "ordered_exact": format(sum((Decimal(v["ordered_exact"]) for v in agg.values()), Decimal(0)), "f"),
+            "planned": _f(sum(Decimal(v["planned_exact"]) for v in agg.values())),
+            "planned_exact": format(sum((Decimal(v["planned_exact"]) for v in agg.values()), Decimal(0)), "f"),
+            "shipped": _f(sum(Decimal(v["shipped_exact"]) for v in agg.values())),
+            "shipped_exact": format(sum((Decimal(v["shipped_exact"]) for v in agg.values()), Decimal(0)), "f"),
+            "remaining": _f(sum(Decimal(v["remaining_exact"]) for v in agg.values())),
+            "remaining_exact": format(sum((Decimal(v["remaining_exact"]) for v in agg.values()), Decimal(0)), "f"),
             "all_shipped": settled,
             # 分批口径的汇总：场景13 要能回答"是不是分批拖了交期"
             "batch_count": len(serialized_batches),
@@ -888,7 +893,7 @@ async def create_shipment_batch(
         ).scalars().all()
     }
     overview = await order_shipments(session, order)
-    unplanned = {row["order_item_id"]: _d(row["unplanned"]) for row in overview["items"]}
+    unplanned = {row["order_item_id"]: Decimal(row["unplanned_exact"]) for row in overview["items"]}
 
     # 先把整张计划**全部校验完**再落库（第九批 §9.7）：中途报错时不留半张批次。
     for row in payload.items:
@@ -1011,10 +1016,10 @@ async def ship_shipment_batch(
 
     overview = await order_shipments(session, order)
     shipped_before = {
-        row["order_item_id"]: _d(row["shipped"]) for row in overview["items"]
+        row["order_item_id"]: Decimal(row["shipped_exact"]) for row in overview["items"]
     }
     ordered = {
-        row["order_item_id"]: _d(row["ordered"]) for row in overview["items"]
+        row["order_item_id"]: Decimal(row["ordered_exact"]) for row in overview["items"]
     }
     ship_inputs = (
         {row.order_item_id: _d(row.shipped_qty) for row in payload.items}

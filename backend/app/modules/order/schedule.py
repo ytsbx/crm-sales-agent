@@ -12,7 +12,7 @@
    留着它当时的对比；这比"只记最后一次"更能回答"客户问我们什么时候答应的"。
 """
 
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.modules.order import milestones as milestones_svc
+from app.modules.order.dates import shift_date
 from app.modules.order.model import (
     OrderMilestone,
     OrderScheduleChange,
@@ -109,7 +110,7 @@ def suggested_ship_date(
     if delivery_date is None or not delivery_kind:
         return None
     if delivery_kind == "arrival":
-        return delivery_date - timedelta(days=transit_days or 0)
+        return shift_date(delivery_date, -(transit_days or 0))
     return delivery_date
 
 
@@ -147,9 +148,9 @@ async def preview(session: AsyncSession, order: SalesOrder, new_delivery_date: d
             continue
         offset = offsets.get(row.node)
         if offset is not None and (delta is None or old_offsets.get(row.node) != offset or row.planned_date is None):
-            new_planned = new_ship - timedelta(days=offset)
+            new_planned = shift_date(new_ship, -offset)
         elif row.planned_date is not None and delta is not None:
-            new_planned = row.planned_date + timedelta(days=delta)
+            new_planned = shift_date(row.planned_date, delta)
         else:
             continue  # 未排期的动态批次不猜日期
         if new_planned != row.planned_date:
@@ -160,12 +161,12 @@ async def preview(session: AsyncSession, order: SalesOrder, new_delivery_date: d
     for key, label, _ in milestones_svc.MILESTONE_NODES:
         if key not in have:
             affected_nodes.append({"node": key, "label": label, "before": None,
-                                   "after": (new_ship - timedelta(days=offsets[key])).isoformat()})
+                                   "after": (shift_date(new_ship, -offsets[key])).isoformat()})
     affected_batches = []
     for batch in await _batches(session, order.id):
         if batch.planned_date is None or delta is None:
             continue
-        new_planned = batch.planned_date + timedelta(days=delta)
+        new_planned = shift_date(batch.planned_date, delta)
         if new_planned != batch.planned_date:
             affected_batches.append({"batch_id": batch.id, "batch_no": batch.batch_no,
                                     "before": batch.planned_date.isoformat(), "after": new_planned.isoformat()})
