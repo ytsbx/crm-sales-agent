@@ -24,6 +24,7 @@ PRD 把「公海」明确为一项能力：放入公海 / 领取 / 分配 / 自�
 公海路径就成了"本人范围也能改走别人私有客户"的旁路。
 """
 
+from app.modules.customer.levels import level_filter
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,7 +68,7 @@ async def list_public_customers(
         like = f"%{keyword.strip()}%"
         stmt = stmt.where(Customer.name.ilike(like) | Customer.short_name.ilike(like))
     if level:
-        stmt = stmt.where(Customer.level == level)
+        stmt = stmt.where(level_filter(Customer.level, level))
     if region:
         stmt = stmt.where(Customer.region == region)
 

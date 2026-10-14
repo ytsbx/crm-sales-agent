@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.customer.levels import level_filter
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
@@ -128,7 +129,7 @@ def build_list_stmt(
             )
         )
     if level:
-        stmt = stmt.where(Customer.level == level)
+        stmt = stmt.where(level_filter(Customer.level, level))
     if status:
         stmt = stmt.where(Customer.status == status)
     if source:

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.core.patch_schema import CreateModel, PatchModel
 
 
@@ -141,3 +141,18 @@ class CustomerLevelUpdate(PatchModel):
     sort_no: int | None = None
     enabled: bool | None = None
     remark: str | None = None
+
+
+class UnratedRulesInput(BaseModel):
+    reminder_days: int | None = Field(default=None, gt=0, le=36500)
+    reminder_enabled: bool = False
+    recycle_days: int | None = Field(default=None, gt=0, le=36500)
+    recycle_enabled: bool = False
+
+    @model_validator(mode="after")
+    def enabled_needs_days(self):
+        if self.reminder_enabled and self.reminder_days is None:
+            raise ValueError("开启未分级跟进提醒前请填写天数")
+        if self.recycle_enabled and self.recycle_days is None:
+            raise ValueError("开启未分级公海回收前请填写天数")
+        return self

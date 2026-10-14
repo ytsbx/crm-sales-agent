@@ -1,3 +1,5 @@
+import UnratedRulesPanel from './UnratedRulesPanel'
+import { customerLevelLabel } from '../../shared/customer-level'
 import { useState, type CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -1229,6 +1231,7 @@ export default function SettingsPage() {
           )}
           {activeKey === 'rules' && (
             <div style={{ display: 'grid', gap: 20 }}>
+              {isAdmin && <UnratedRulesPanel />}
               {/* ⚠️ 下面这三块（公海回收规则 / 自动任务规则 / 系统配置）都是**管理员**的活儿：
                   改规则、调参数、跑扫描，后端一律要 `settings:manage`。
                   主管只有 `customer:pool_review`，看到这些控件也点不动（会吃 403），
@@ -1245,7 +1248,7 @@ export default function SettingsPage() {
                 </div>
                 <Table<PublicPoolRuleRow>
                   columns={[
-                    { title: '客户等级', dataIndex: 'level', width: 110, render: (v: string) => `${v} 级` },
+                    { title: '客户等级', dataIndex: 'level', width: 110, render: (v: string) => customerLevelLabel(v) },
                     {
                       title: '未跟进天数',
                       dataIndex: 'days',
@@ -1283,7 +1286,7 @@ export default function SettingsPage() {
                     },
                     { title: '说明', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                   ]}
-                  dataSource={poolRulesQuery.data ?? []}
+                  dataSource={(poolRulesQuery.data ?? []).filter((row) => row.level !== 'UNRATED')}
                   loading={poolRulesQuery.isLoading}
                   rowKey="id"
                   pagination={false}
@@ -1706,7 +1709,7 @@ export default function SettingsPage() {
                       render: (v: string) => (v === 'active' ? '启用' : '停用'),
                     },
                   ]}
-                  dataSource={taskRulesQuery.data ?? []}
+                  dataSource={(taskRulesQuery.data ?? []).filter((row) => row.code !== 'customer_unrated_silent')}
                   loading={taskRulesQuery.isLoading}
                   rowKey="id"
                   pagination={false}

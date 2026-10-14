@@ -29,6 +29,7 @@ from app.modules.settings.schema import (
     DictionaryItemUpdate,
     NumberingRuleCreate,
     NumberingRuleUpdate,
+    UnratedRulesInput,
     PublicPoolRuleInput,
     PublicPoolRuleUpdate,
     SettingInput,
@@ -881,3 +882,51 @@ async def update_customer_level(
     )
     await session.commit()
     return ok(serialize_dictionary(row), "已保存")
+
+
+@router.post("/customer-levels/unrated/rules")
+async def save_unrated_rules(
+    payload: "UnratedRulesInput",
+    request: Request,
+    user: CurrentUser = Depends(require_permission("settings:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """未配置就不开启；管理员显式保存后才建立未分级专用规则。"""
+    await svc.lock_task_scan(session)
+    pool = (await session.execute(select(PublicPoolRule).where(PublicPoolRule.level == "UNRATED")
+                .with_for_update().execution_options(populate_existing=True))).scalars().first()
+    task = (await session.execute(select(TaskRule).where(TaskRule.code == "customer_unrated_silent")
+                .with_for_update().execution_options(populate_existing=True))).scalars().first()
+    if pool is not None or payload.recycle_days is not None:
+        before = serialize_pool_rule(pool) if pool else None
+        if pool is None:
+            pool = PublicPoolRule(level="UNRATED", days=payload.recycle_days,
+                                  enabled=False, remark="未分级客户独立回收规则")
+            session.add(pool)
+        if payload.recycle_days is not None:
+            pool.days = payload.recycle_days
+        pool.enabled = payload.recycle_enabled
+        await session.flush()
+        await write_audit(session, operator_id=user.id, action="update" if before else "create",
+                          business_type="public_pool_rule", business_id=pool.id, before=before,
+                          after=serialize_pool_rule(pool), ip=client_ip(request))
+    if task is not None or payload.reminder_days is not None:
+        before = serialize_task_rule(task) if task else None
+        if task is None:
+            task = TaskRule(code="customer_unrated_silent", name="未分级客户久未联系提醒",
+                            trigger_type="customer_silent", status="inactive")
+            session.add(task)
+        config = dict(task.trigger_config or {})
+        if payload.reminder_days is not None:
+            config["days"] = payload.reminder_days
+        config["levels"] = ["UNRATED"]
+        task.trigger_config = config
+        task.action_config = {"title": "未分级客户久未联系，请跟进并了解客户后评级", "type": "followup"}
+        task.status = "active" if payload.reminder_enabled else "inactive"
+        await session.flush()
+        await write_audit(session, operator_id=user.id, action="update" if before else "create",
+                          business_type="task_rule", business_id=task.id, before=before,
+                          after=serialize_task_rule(task), ip=client_ip(request))
+    await session.commit()
+    return ok({"reminder": serialize_task_rule(task) if task else None,
+               "recycle": serialize_pool_rule(pool) if pool else None}, "未分级规则已保存")

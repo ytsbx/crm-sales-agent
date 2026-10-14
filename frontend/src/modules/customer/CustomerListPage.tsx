@@ -1,3 +1,4 @@
+import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
 import { useRef, useState, type ComponentProps } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
@@ -37,6 +38,7 @@ const SCOPE_OPTIONS = [
 ]
 
 const LEVEL_OPTIONS = [
+  UNRATED_OPTION,
   { value: 'A', label: 'A 级' },
   { value: 'B', label: 'B 级' },
   { value: 'C', label: 'C 级' },
@@ -85,7 +87,7 @@ const EMPTY_FORM: CustomerPayload = {
   region: '',
   address: '',
   source: '手工录入',
-  level: 'C',
+  level: null,
   remark: '',
   // 不选负责人 = 归创建人自己（后端 `create_customer` 的口径）
   owner_id: null,
@@ -333,7 +335,7 @@ export default function CustomerListPage() {
         value ? (
           <Tag color={value === 'A' ? 'green' : value === 'B' ? 'blue' : 'grey'}>{value}</Tag>
         ) : (
-          '-'
+          <Tag color="grey">未分级</Tag>
         ),
     },
     {
@@ -867,8 +869,8 @@ export default function CustomerListPage() {
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>客户等级</div>
               <Select
-                value={form.level ?? undefined}
-                onChange={(value) => setForm({ ...form, level: value as string })}
+                value={customerLevelValue(form.level)}
+                onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
                 optionList={LEVEL_OPTIONS}
                 style={{ width: '100%' }}
               />
