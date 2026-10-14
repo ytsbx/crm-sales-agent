@@ -111,12 +111,22 @@ class Settings(BaseSettings):
     # 而且不会丢消息（这轮没查到下轮还会查）。询价审批本身要几小时到几天，
     # 几分钟延迟无影响。
     scheduler_oa_sync_minutes: int = 3
-    #: 钉钉外部调用总闸。**默认 True = 关**：阻止全部钉钉请求，
-    #: 包括 token、人员/部门/模板查询、图片上传、审批发起/重发及状态同步。
+    #: 钉钉外部调用总闸（**只管"系统主动发起"的那一类**）。**默认 True = 关**：
+    #: 阻止 token、人员/部门/模板查询、图片上传、审批发起/重发及状态同步。
     #: 关闭时"发起审批"只在 CRM 记一行 skipped 并写明原因——
     #: **不是失败、更不是成功**，联调和演示都能看出"这一步没真的发出去"。
     #: 要真发必须显式设 DINGTALK_PUSH_OFF=0，并且只对测试用的本人账号发。
+    #:
+    #: ⚠️ **扫码登录不归它管**（2026-10-14 拆开）：登录是**用户自己主动**要把自己
+    #: 放进来，与"系统主动去打扰钉钉 / 打扰同事"（审批通知、通讯录同步）性质不同 ——
+    #: 总闸是为后者设的（开发期别误触达真实用户），登录不该被它连坐。
+    #: 登录看自己那一把 `dingtalk_login_off`。两把闸**互相独立**。
     dingtalk_push_off: bool = True
+    #: 扫码登录闸。**默认 True = 关**：关闭时登录接口当场说明"暂不可用"，
+    #: 不会把用户送到钉钉页面、扫完码才报错。
+    #: 要真登必须显式设 DINGTALK_LOGIN_OFF=0。与总闸互不影响：
+    #: 可以「只开登录、不开放审批」（PUSH_OFF=1 + LOGIN_OFF=0）。
+    dingtalk_login_off: bool = True
 
     # 全部留空即为"未配置"状态：同步接口会明确返回"还没配置凭据"，
     # 而不是静默假装成功。拿到 corp id / secret 后填这里即可，代码不用改。
@@ -156,16 +166,16 @@ class Settings(BaseSettings):
 
     @property
     def dingtalk_login_ready(self) -> bool:
-        """「钉钉扫码登录」能不能用：凭据齐 **且** 外部调用总闸开着。
+        """「钉钉扫码登录」能不能用：凭据齐 **且** 登录自己那把闸开着。
 
-        总闸（`dingtalk_push_off`）关着时扫码**必然**失败——服务端换不了身份。
-        所以把它算进"就绪"判据里，让接口当场给一句明确说明，
-        而不是把用户送到钉钉、扫完码回来才报错。
+        **只看登录闸（`dingtalk_login_off`），不看审批总闸**（2026-10-14 拆开）：
+        两件事性质不同 —— 登录是用户自己要把自己放进来，总闸管的是
+        "系统主动去打扰钉钉 / 同事"。拆开之后可以「只开登录、不开放审批」。
         """
         return bool(
             self.dingtalk_app_key
             and self.dingtalk_app_secret
-            and not self.dingtalk_push_off
+            and not self.dingtalk_login_off
         )
 
     @property

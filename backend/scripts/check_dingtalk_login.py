@@ -110,19 +110,64 @@ async def main():
 
     await cleanup()
     try:
-        print('1) 就绪判据：未配置 / 总闸关着时不许自称可用')
-        saved = (app_settings.dingtalk_app_key, app_settings.dingtalk_push_off)
+        print('1) 就绪判据：只看登录自己那把闸（与审批总闸互不影响）')
+        saved = (
+            app_settings.dingtalk_app_key,
+            app_settings.dingtalk_app_secret,
+            app_settings.dingtalk_push_off,
+            app_settings.dingtalk_login_off,
+        )
         try:
             app_settings.dingtalk_app_key = ''
             check('凭据缺失 → 未就绪', app_settings.dingtalk_login_ready, False)
+
             app_settings.dingtalk_app_key = 'k'
             app_settings.dingtalk_app_secret = 's'
+            app_settings.dingtalk_login_off = True
+            check('凭据齐但登录闸关着 → 未就绪', app_settings.dingtalk_login_ready, False)
+
+            app_settings.dingtalk_login_off = False
+            check('凭据齐且登录闸开 → 就绪', app_settings.dingtalk_login_ready, True)
+
+            # ⭐ 这条是「只开登录、不开放审批」的核心：
+            # 审批总闸关着，登录照样就绪。
             app_settings.dingtalk_push_off = True
-            check('凭据齐但总闸关着 → 仍未就绪', app_settings.dingtalk_login_ready, False)
+            check(
+                '审批总闸关着也照样就绪（只开登录）',
+                app_settings.dingtalk_login_ready,
+                True,
+            )
+            # 反过来：总闸开着但登录闸关着 → 仍不许登录。
             app_settings.dingtalk_push_off = False
-            check('凭据齐且总闸开 → 就绪', app_settings.dingtalk_login_ready, True)
+            app_settings.dingtalk_login_off = True
+            check(
+                '审批总闸开着但登录闸关着 → 仍不许登录',
+                app_settings.dingtalk_login_ready,
+                False,
+            )
+
+            print('1b) 闸门真的拦得住（不只改了就绪判据）')
+            from app.modules.dingtalk.client import DingTalkClient, DingTalkDisabled
+
+            api = DingTalkClient()
+            app_settings.dingtalk_login_off = True
+            app_settings.dingtalk_push_off = True  # 故意两把都关
+            try:
+                await api.exchange_user_token('whatever')
+                check_true('登录闸关着时换令牌应被拦', False, '居然没抛异常')
+            except DingTalkDisabled as exc:
+                check_true(
+                    '登录闸关着时换令牌被拦，且报的是登录闸',
+                    'DINGTALK_LOGIN_OFF' in str(exc),
+                    str(exc),
+                )
         finally:
-            app_settings.dingtalk_app_key, app_settings.dingtalk_push_off = saved
+            (
+                app_settings.dingtalk_app_key,
+                app_settings.dingtalk_app_secret,
+                app_settings.dingtalk_push_off,
+                app_settings.dingtalk_login_off,
+            ) = saved
 
         print('2) 换取身份：正常的链路能对出人')
         ok_id = await add_user('ok', dingtalk_userid='dtlogin_ok')

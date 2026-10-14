@@ -31,12 +31,22 @@ _TOKEN_SKEW_SECONDS = 300
 
 DINGTALK_DISABLED_MESSAGE = "钉钉外部调用已关闭（DINGTALK_PUSH_OFF），开发阶段未执行外部请求"
 
+#: 扫码登录自己的闸。**与审批总闸是两件事**（2026-10-14 拆开）：
+#: 登录是用户自己要把自己放进来，总闸管的是"系统主动去打扰钉钉/同事"。
+DINGTALK_LOGIN_DISABLED_MESSAGE = (
+    "钉钉扫码登录已关闭（DINGTALK_LOGIN_OFF），开发阶段未开放"
+)
+
 
 class DingTalkDisabled(RuntimeError):
-    """开发总闸关闭：在获取 token 或创建 HTTP 客户端前拦截。"""
+    """某个外部调用闸门关着：在获取 token 或创建 HTTP 客户端前拦截。
 
-    def __init__(self) -> None:
-        super().__init__(DINGTALK_DISABLED_MESSAGE)
+    默认说的是审批总闸那句话；**扫码登录**有自己的闸，抛它自己那句
+    （见 `_require_login`）—— 两件事分属不同开关，报错也该各说各的。
+    """
+
+    def __init__(self, message: str = DINGTALK_DISABLED_MESSAGE) -> None:
+        super().__init__(message)
 
 
 class DingTalkError(RuntimeError):
@@ -133,9 +143,37 @@ class DingTalkClient:
         if not settings.dingtalk_app_secret:
             raise DingTalkNotConfigured("DINGTALK_APP_SECRET")
 
-    async def access_token(self) -> str:
-        """企业内部应用 access_token，带进程内缓存。"""
-        self._require()
+    def _require_login(self) -> None:
+        """扫码登录的就绪判据：**只看登录自己那把闸**，不看审批总闸。
+
+        两把闸为什么必须是两把（2026-10-14 拆开）：
+        `dingtalk_push_off` 的用意是"开发期别让**系统**主动去打扰钉钉/同事"
+        （审批发起、通讯录同步、通知推送）。而扫码登录是**用户自己**要把自己
+        放进来 —— 让用户登录这件事，和让系统替他建单/发通知，是两种动作。
+        共用一把闸的后果就是"想开登录，就得连审批一起打开"。
+
+        凭据的两项检查与 `_require` 一致：闸开着但没配 AppKey，照样得明确报出来。
+        """
+        if settings.dingtalk_login_off:
+            raise DingTalkDisabled(DINGTALK_LOGIN_DISABLED_MESSAGE)
+        if not settings.dingtalk_app_key:
+            raise DingTalkNotConfigured("DINGTALK_APP_KEY")
+        if not settings.dingtalk_app_secret:
+            raise DingTalkNotConfigured("DINGTALK_APP_SECRET")
+
+    async def access_token(self, *, for_login: bool = False) -> str:
+        """企业内部应用 access_token，带进程内缓存。
+
+        `for_login=True`：走**登录那条链路**（扫码登录要把 unionId 换成 userid，
+        需要企业内部令牌），此时查**登录自己那把闸**，而不是审批总闸。
+
+        闸的检查放在缓存判断**之前**：闸一关，缓存里的旧令牌也照样不给 ——
+        否则"关了闸还会因为缓存而发出请求"，与关闸的用意正好相反。
+        """
+        if for_login:
+            self._require_login()
+        else:
+            self._require()
         now = time.monotonic()
         if self._token and now < self._token_expires_at:
             return self._token
@@ -478,7 +516,7 @@ class DingTalkClient:
         拿去调通讯录/审批会被拒（那些要用企业内部令牌）。
         授权码**只能用一次**，重复换会失败——本身即一道防重放。
         """
-        self._require()
+        self._require_login()
         async with httpx.AsyncClient(timeout=15) as http:
             resp = await http.post(
                 f"{settings.dingtalk_base_url}/v1.0/oauth2/userAccessToken",
@@ -504,6 +542,7 @@ class DingTalkClient:
         ⚠️ 这里**只有 unionId**，没有 userid、也没有手机号——扫码登录拿不到企业信息，
         这是钉钉的设计（见官方"扫码登录第三方网站"）。要 userid 得再换一次。
         """
+        self._require_login()
         async with httpx.AsyncClient(timeout=15) as http:
             resp = await http.get(
                 f"{settings.dingtalk_base_url}/v1.0/contact/users/me",
@@ -524,8 +563,8 @@ class DingTalkClient:
         查不到返回 None（如 33002「查无此人」）——那是"这人不在企业通讯录里"，
         不是"系统坏了"，由调用方翻成人话，而不是瞎猜一个 userid。
         """
-        self._require()
-        token = await self.access_token()
+        self._require_login()
+        token = await self.access_token(for_login=True)
         async with httpx.AsyncClient(timeout=15) as http:
             resp = await http.post(
                 "https://oapi.dingtalk.com/topapi/user/getbyunionid",
