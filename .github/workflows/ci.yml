@@ -294,6 +294,12 @@ jobs:
           python3 ../ops/check_audit_labels.py
           # 系统配置不能把后端内部 key 直接当成用户可见名称。
           python3 ../ops/check_setting_labels.py
+          # 静态检查：**不许靠切 ISO 串显示时间**。
+          # 后端下发的是带 UTC 偏移的瞬时，`.slice(0,10)` 等于按 UTC 显示：
+          # 差 8 小时，跨零点**整个日期差一天**，而"约定下次跟进/签署时间/
+          # 发送时间"正是用户据以行动的字段（2026-10-14 审查一次抓到 13 处，
+          # 且同一页里常常两种口径并存）。
+          python3 ../ops/check_frontend_utc_dates.py
           # AI 分析的信封字段必须有中文名。兜底是「没映射就印英文原词」，
           # 后端加字段就必然漏一次给用户看（主人 2026-10-13 看到
           # `overdue_count 0`/`open_amount ¥501` 才发现的）。

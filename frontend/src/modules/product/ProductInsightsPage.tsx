@@ -348,7 +348,8 @@ export default function ProductInsightsPage() {
                       style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
                       title={record.review_note}
                     >
-                      意见：{record.review_note.slice(0, 10)}
+                      {/* ⚠️ 原来是切 ISO 串（UTC 取日） */}
+                      意见：{new Date(record.review_note).toLocaleDateString('zh-CN')}
                       {record.review_note.length > 10 ? '…' : ''}
                     </div>
                   )}
