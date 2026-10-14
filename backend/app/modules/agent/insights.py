@@ -20,7 +20,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
@@ -87,6 +87,40 @@ def _is_overdue(due_at, today) -> bool:
     if due_at is None:
         return False
     return to_business(due_at).date() < today
+
+
+async def _visible_open_opportunities(
+    session: AsyncSession, user, *, customer_id: int
+) -> int | None:
+    """某客户名下**当前用户看得见**的进行中商机数。
+
+    与 `_visible_open_tasks` 对称，为什么需要它（2026-10-14 审查）：
+    `followup_suggestion` 与客户摘要两处都在统计"这个客户还有几个商机在谈"，
+    但**既没判 `opportunity:view`、也没按数据范围收窄** —— 而紧邻的任务计数
+    （`_visible_open_tasks`）两道都有，注释还写着"原来这里不按负责人过滤，
+    于是 14 天没跟进的建议里会混进别人负责的逾期任务"。
+
+    触发面（实测过的路径）：`data_scope=self` 的用户对**公海客户**
+    （`owner_id` 为空，任何有 `customer:view` 的人都能打开）调
+    `/agent/followup-suggestion`，就能读到**别人负责**的进行中商机条数，
+    并把它写进建议文案、随 payload 一起送给大模型；没有 `opportunity:view`
+    的账号同样能拿到这个数。
+
+    返回 `None` 表示**没有 `opportunity:view` 权限**（"看不到" ≠ "一条都没有"）。
+    """
+    if not ("admin" in getattr(user, "roles", []) or user.has("opportunity:view")):
+        return None
+
+    stmt = select(func.count(Opportunity.id)).where(
+        Opportunity.customer_id == customer_id,
+        Opportunity.status == "open",
+        Opportunity.deleted_at.is_(None),
+    )
+    owner_ids = await scoped_owner_ids(session, user)
+    if owner_ids is not None:
+        # 与 `_visible_open_tasks` 同口径：`[]` 用恒假条件，不用 `in_([])`。
+        stmt = stmt.where(Opportunity.owner_id.in_(owner_ids) if owner_ids else false())
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def _visible_open_tasks(
@@ -427,16 +461,10 @@ async def followup_suggestion(
         # 只算**自己范围内**的待办（§9.1 复审）：原来这里不按负责人过滤，
         # 于是"14 天没跟进"的建议里会混进别人负责的逾期任务。
         open_tasks = await _visible_open_tasks(session, user, customer_id=customer_id) or []
-        open_opportunities = int(
-            (
-                await session.execute(
-                    select(func.count(Opportunity.id)).where(
-                        Opportunity.customer_id == customer_id,
-                        Opportunity.status == "open",
-                        Opportunity.deleted_at.is_(None),
-                    )
-                )
-            ).scalar_one()
+        # ⚠️ 必须判权限 + 按数据范围收窄（与上面那行任务计数同一口径）：
+        # 原来这里是裸 count，公海客户的商机条数会漏给范围外的人。
+        open_opportunities = (
+            await _visible_open_opportunities(session, user, customer_id=customer_id) or 0
         )
         target = {"type": "customer", "id": customer.id, "name": customer.name}
     else:
