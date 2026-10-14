@@ -1428,11 +1428,30 @@ async def notify_expiring_monthly(session: AsyncSession, *, owner_id: int | None
     ]
     if owner_id is not None:
         conditions.append(Customer.owner_id == owner_id)
+    # ⚠️ **锁住这些协议行再建任务**（第十批审查 ⑦，2026-10-13）。
+    #
+    # 原来这里是普通查询（无锁）。实测的竞态：
+    #   扫描读到协议有效 → 准备建续签任务；
+    #   另一事务**作废**该协议并提交（作废侧走 `get_doc_or_404(..., for_update=True)`，
+    #   它锁的是*行*，但扫描不持锁，所以两边不互相等）；
+    #   扫描随后提交 → 终态是"协议已 void、续签任务仍 pending"。
+    # 作废侧靠 `cancel_auto_tasks` 取消任务，可它**看不到扫描尚未提交**的那条，
+    # 于是留下一条没人管的待办（还会在到期前反复提醒一个已作废的协议）。
+    #
+    # 修法与报告一致：**扫描生成任务前锁住并刷新协议，在锁内重新判断是否要提醒**。
+    # 锁与作废/续签替代共用同一把（都是对 `contract_documents` 行 `FOR UPDATE`），
+    # 锁序也一致（单表单行，无嵌套）。
+    #
+    # 为什么整批 `FOR UPDATE` 而不是逐条：候选集由"30 天内到期"限定，
+    # 正常是十几条；逐条锁会让"锁定顺序"依赖遍历顺序，反而更容易与作废侧交叉等待。
+    # 拿锁后用 `populate_existing` 刷新，`should_remind(doc)` 判的就是**锁内最新**状态。
     rows = (
         await session.execute(
             select(ContractDocument, Customer.owner_id, Customer.name)
             .join(Customer, Customer.id == ContractDocument.customer_id)
             .where(*conditions)
+            .with_for_update(of=ContractDocument)
+            .execution_options(populate_existing=True)
         )
     ).all()
     created = 0
