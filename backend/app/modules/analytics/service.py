@@ -713,11 +713,11 @@ async def risk_opportunities(
             await settings_service.get_number(session, "opportunity_risk_days", "days", 7)
         )
     )
-    stale = datetime.now(UTC) - timedelta(
-        days=int(
-            await settings_service.get_number(session, "opportunity_stale_days", "days", 14)
-        )
+    #: 念给用户看的"多久没更新"就用这个数（`risk_reason` 里引用），别再写死 14
+    stale_days = int(
+        await settings_service.get_number(session, "opportunity_stale_days", "days", 14)
     )
+    stale = datetime.now(UTC) - timedelta(days=stale_days)
     stmt = await _scope_filter(
         select(Opportunity, OpportunityStage.name, Customer.name)
         .join(OpportunityStage, OpportunityStage.id == Opportunity.stage_id)
@@ -753,10 +753,14 @@ async def risk_opportunities(
             if opp.expected_close_date
             else None,
             "stale": bool(opp.updated_at and opp.updated_at < stale),
+            # ⚠️ 阈值必须**念出实际用的那个数**（2026-10-14 审查修）：原来写死
+            # "超过 14 天没有更新"，而阈值来自可配的 `opportunity_stale_days`
+            # （默认 14，管理员能改）。调成 7 天之后，10 天没更新的商机会被标成
+            # "超过 14 天" —— 文案与事实不符，用户按它判断紧急程度会被误导。
             "risk_reason": (
                 "预计成交日临近"
                 if opp.expected_close_date and opp.expected_close_date <= soon
-                else "超过 14 天没有更新"
+                else f"超过 {stale_days} 天没有更新"
             ),
         }
         for opp, stage_name, customer_name in rows
@@ -911,7 +915,17 @@ async def opportunity_cycle(session: AsyncSession, user: CurrentUser) -> dict:
         durations.append(days)
 
     if not durations:
-        return {"won_with_history": 0, "average_days": None, "min_days": None, "max_days": None}
+        # ⚠️ 键必须与非空分支**完全一致**（2026-10-14 审查修）：原来少了 `median_days`，
+        # 于是接口形状随"有没有样本"变 —— 前端 TS 把它声明成可选所以现在不炸，
+        # 但任何按类型直接读 `cycle["median_days"]` 的调用方会 `KeyError`。
+        # 空样本给 `None` 而不是 0：0 天会被读成"当天就成交"。
+        return {
+            "won_with_history": 0,
+            "average_days": None,
+            "median_days": None,
+            "min_days": None,
+            "max_days": None,
+        }
 
     durations.sort()
     mid = len(durations) // 2

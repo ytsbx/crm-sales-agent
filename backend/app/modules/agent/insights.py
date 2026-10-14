@@ -743,9 +743,18 @@ async def quote_draft(
     lines: list[dict] = []
     warnings: list[str] = []
 
-    for item in items:
+    for index, item in enumerate(items, start=1):
         if item.sku_id is None:
-            warnings.append(f"需求「{item.sku_id or '未指定 SKU'}」没有对应 SKU，跳过")
+            # ⚠️ 文案必须给出**能定位到那一行**的信息（2026-10-14 审查修）。
+            # 原来写的是 `item.sku_id or '未指定 SKU'` —— 而这条分支的前提就是
+            # `sku_id is None`，所以占位符**永远命中**，输出恒为
+            # "需求「未指定 SKU」没有对应 SKU"，等于什么都没说；
+            # 有用的需求名（`specification`）反而丢了。
+            # 这里用行序号（唯一一定存在的信息），再把规格带上。
+            where = f"第 {index} 条需求"
+            if (item.specification or "").strip():
+                where += f"（{item.specification.strip()}）"
+            warnings.append(f"{where}没有对应 SKU，已跳过核价")
             continue
         result = await pricing_service.calculate_price(
             session,
