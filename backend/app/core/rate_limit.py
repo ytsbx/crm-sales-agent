@@ -54,6 +54,10 @@ def register_failure(
 
     第 N 次失败的这一刻立即生效。
     """
+    # 与 remaining_lock_seconds 保持同一口径：0 或负数表示关闭这项限流，
+    # 不能在这里仍然把第一次失败算成“达到 0 次上限”并返回 429。
+    if max_attempts <= 0 or window_minutes <= 0:
+        return 0
     window = window_minutes * 60
     now = time.monotonic()
     with _lock:

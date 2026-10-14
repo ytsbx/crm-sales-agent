@@ -14,6 +14,7 @@ import io
 
 from fastapi import UploadFile
 
+from app.core.config import settings
 from app.core.errors import AppError, ErrorCode
 
 #: 导入时依次尝试的编码。utf-8-sig 放最前，因为带 BOM 的文件用 utf-8 解会多出 \ufeff。
@@ -83,8 +84,24 @@ async def parse_csv_upload(
 
     返回 `csv.DictReader` 的行列表，调用方按中文表头取值。
     """
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     return parse_csv_bytes(raw, required_headers=required_headers, label=label)
+
+
+async def read_upload_bytes(file: UploadFile) -> bytes:
+    """分块读取导入文件，并在读入内存前执行统一大小上限。"""
+    limit = settings.max_upload_mb * 1024 * 1024
+    if file.size is not None and file.size > limit:
+        raise AppError(ErrorCode.PARAM_ERROR, f"文件超过 {settings.max_upload_mb} MB 限制", 422)
+
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > limit:
+            raise AppError(ErrorCode.PARAM_ERROR, f"文件超过 {settings.max_upload_mb} MB 限制", 422)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def parse_csv_bytes(
@@ -151,4 +168,5 @@ __all__ = [
     "decode_upload",
     "parse_csv_bytes",
     "parse_csv_upload",
+    "read_upload_bytes",
 ]

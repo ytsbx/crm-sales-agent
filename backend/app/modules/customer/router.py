@@ -132,6 +132,11 @@ async def create_customer(
     await settings_service.ensure_dictionary_value(
         session, type="customer_level", code=data.get("level"), field_label="客户等级"
     )
+    # 指定其他负责人属于**分配**动作，不是创建动作：只有 customer:create 的用户
+    # 不能借新建接口把客户直接挂到任意同事名下。未指定负责人时仍由服务层归创建人，
+    # 与前端“不选 = 归自己”的口径一致。
+    if data.get("owner_id") is not None:
+        ensure_permission(user, "customer:assign")
     request_key = idempotency.request_key_from(request, data.pop("request_key", None))
 
     reservation = None

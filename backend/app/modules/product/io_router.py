@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFil
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.csvio import csv_bytes, parse_csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError
@@ -121,7 +121,7 @@ async def import_products(
     - 失败清单全量返回（防爆上限见 settings.import_max_error_rows），
       同一行的多个问题算一行失败。
     """
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["产品名称"], label="文件")
     report = ImportReport("product", len(rows))
@@ -363,7 +363,7 @@ async def import_skus(
     不取锁时，"确认产品还在"与"插入 SKU"之间产品可能被删，落下孤儿 SKU；
     而取锁顺序不统一时，两份产品顺序相反的文件同时导入会互相等（死锁）。
     """
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["SKU编码", "产品名称"], label="文件")
     report = ImportReport("sku", len(rows))
