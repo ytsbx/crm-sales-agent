@@ -66,6 +66,7 @@ const PAYMENT_METHODS = ['银行转账', '承兑汇票', '现金', '支票', '�
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { calendarDay, calendarDayOrToday } from '../../shared/calendar-day'
+import { splitAmountsLikeBackend } from '../../shared/quote-todo'
 
 /**
  * 整单交期结论（§9.8 复审）。
@@ -1758,17 +1759,20 @@ export default function OrderDetailPage() {
           {(() => {
             const ratioSum = generateRows.reduce((sum, row) => sum + (row.percent ?? 0), 0)
             const ratioOk = Math.abs(ratioSum - 100) < 0.01
-            const total = Number(order.total_amount ?? 0)
-            // 每期金额预览**与后端同一口径**：前面各期四舍五入到分、最后一期补差额，
-            // 各期之和严格等于订单总额（否则用户自己加一遍会以为差了一分钱）。
-            const amounts: number[] = []
-            generateRows.forEach((row, index) => {
-              if (index === generateRows.length - 1) {
-                amounts.push(Math.round((total - amounts.reduce((a, b) => a + b, 0)) * 100) / 100)
-              } else {
-                amounts.push(Math.round(total * ((row.percent ?? 0) / 100) * 100) / 100)
-              }
-            })
+            // ⚠️ 每期金额预览**必须复用后端口径**（2026-10-14 审查修）：
+            // 原实现自己用 `Math.round` 算，而 `Math.round` 在**恰好半分**时向上，
+            // 后端 `payment_service.split_amounts` 用的是 `Decimal` 的 ROUND_HALF_EVEN ——
+            // 两者在「0.05 分两期」这类金额上会给出不同结果（前端 0.03/0.02、后端 0.02/0.03），
+            // 而这里原来的注释还写着"与后端同一口径"。后端 docstring 早就点名了这个坑并要求
+            // "前端不要自己算预览"（它提到的 `preview_split` 其实**从未实现**，所以只能复用共享件）。
+            // `splitAmountsLikeBackend` 就是那份复刻：bigint 整数运算 + 显式 half-even，
+            // 且**非正数期返回 null** —— 与后端"明确拒绝"那条校验一致。
+            const split = splitAmountsLikeBackend(
+              Number(order.total_amount ?? 0),
+              generateRows.map((row) => (row.percent ?? 0) / 100),
+            )
+            const amounts: number[] = split ?? generateRows.map(() => 0)
+            const amountInvalid = split === null && generateRows.length > 0
             const update = (index: number, patch: Partial<{ name: string; percent: number | null; due: Date | null }>) => {
               const next = [...generateRows]
               next[index] = { ...next[index], ...patch }
@@ -1845,6 +1849,14 @@ export default function OrderDetailPage() {
                   >
                     合计比例 {ratioSum}%{ratioOk ? '' : '（必须正好 100% 才能生成）'}
                   </span>
+                  {/* 与后端 `split_amounts` 的"明确拒绝非正数期"对应：金额极小时
+                      前面各期各自进位、之和可能超过总额，末期就成了 0 或负数。 */}
+                  {amountInvalid && (
+                    <span style={{ fontSize: 12, color: 'var(--crm-error, #ba1a1a)' }}>
+                      按当前比例与期数拆不出正数金额（金额太小时末期会被挤成 0 或负数），
+                      请减少期数或调整比例
+                    </span>
+                  )}
                   {generateRows.length > 2 && (
                     <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       第 3 期起：先生成、再按你填的名称与到期日逐条补齐
