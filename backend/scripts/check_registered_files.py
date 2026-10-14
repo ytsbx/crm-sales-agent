@@ -79,6 +79,28 @@ def registered_frontend_tests() -> list[str]:
     return sorted(found)
 
 
+def referenced_frontend_sources() -> list[tuple[str, str]]:
+    """前端单测里 `readFileSync(new URL('../frontend/src/…'))` 引用的源文件。
+
+    ## 为什么要查这条（2026-10-14，我自己刚犯过）
+
+    我提交了 `ops/payment_allocation.test.mjs`（它会读
+    `frontend/src/shared/payment-allocation.ts`），**那个模块没提交** ——
+    本地因为它在我工作区里所以是绿的，CI 上直接
+    `ENOENT: no such file or directory`。
+
+    与"清单登记了套件但脚本没提交"是**同一个病**：登记/引用方进来了，
+    被引用方没进来。既然要防，就把引用关系也一起查。
+    """
+    found: list[tuple[str, str]] = []
+    pattern = re.compile(r"new URL\('(\.\./frontend/src/[^']+)'")
+    for test_file in sorted((REPO / "ops").glob("*.test.mjs")):
+        text = test_file.read_text(encoding="utf-8")
+        for rel in pattern.findall(text):
+            found.append((test_file.name, rel))
+    return found
+
+
 def main() -> int:
     list_only = "--list" in sys.argv
     missing: list[str] = []
@@ -101,7 +123,19 @@ def main() -> int:
                 "但文件不在仓库里"
             )
 
-    print(f"登记项自检：套件 {len(suites)} 条、前端单测 {len(tests)} 个")
+    referenced = referenced_frontend_sources()
+    for test_name, rel in referenced:
+        target = (REPO / "ops" / rel).resolve()
+        if not target.exists():
+            missing.append(
+                f"{test_name} 引用了 {rel.replace('../frontend/', 'frontend/')}，"
+                "但那个源文件不在仓库里"
+            )
+
+    print(
+        f"登记项自检：套件 {len(suites)} 条、前端单测 {len(tests)} 个、"
+        f"单测引用的前端源文件 {len(referenced)} 处"
+    )
     if not missing:
         print("✓ 登记项都有对应文件")
         return 0
