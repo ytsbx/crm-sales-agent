@@ -47,6 +47,38 @@ COST_CURRENCIES = {"CNY"}
 REMARK_MAX = 255
 
 
+#: 「历史标记」列的表头（两个导入共用同一份模板口径）。
+_HISTORICAL_HEADER = "历史标记(填1=历史资料)"
+#: 判为"是历史资料"的写法
+_HISTORICAL_TRUE = {"1", "是", "y", "yes", "true", "t", "历史", "历史资料"}
+#: 判为"不是"的写法（空值也算"不是"）
+_HISTORICAL_FALSE = {"", "0", "否", "n", "no", "false", "f", "-", "—", "当前", "现行"}
+
+
+def _parse_historical(raw: object) -> bool | None:
+    """把「历史标记」列解析成 True/False；**认不出的写法返回 None**（由调用方报行失败）。
+
+    ⚠️ 2026-10-14 审查修。原判据是"**非空即真**"：只要这一格有字，
+    就当成"是历史资料"。而表头写的是"填1=历史资料" ——
+    用户按常见习惯填 `0` / `否` / `N` / `false` / `-` 想表达"不是"，
+    却全部被判成历史资料，规则落成 `status='historical'`。
+
+    后果是**静默失效**：`find_price_rule` / `find_customer_price` 只认 `active`，
+    这条价**永远不参与取价**；同时 `historical` 还会跳过区间冲突检查，
+    连"和现有规则重叠"的提示都不给。导入报告只说"已新增 1 条"，
+    用户不会知道自己的价没生效（实测：填 `0`/`否`/`N`/`no`/`false`/`-` 全中招）。
+
+    现在按白名单解析：认识的写法给明确 True/False，**认不出的报行失败**（不猜）。
+    """
+    text = str(raw or "").strip().lower()
+    if text in _HISTORICAL_TRUE:
+        return True
+    if text in _HISTORICAL_FALSE:
+        return False
+    return None
+
+
+
 async def _sku_map_by_code(session: AsyncSession, codes: set[str]) -> dict[str, Sku]:
     """按编码取 SKU。**已删除的一律不返回**。
 
@@ -188,7 +220,15 @@ async def import_price_rules(
             continue
         sku = sku_map[code]
 
-        historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+        historical = _parse_historical(row.get(_HISTORICAL_HEADER))
+        if historical is None:
+            report.failed_row(
+                index,
+                "historical_flag_invalid",
+                "「历史标记」只认 1/是/y/yes/true 或 0/否/n/no/false（留空=不是）；"
+                f"收到的是「{row.get(_HISTORICAL_HEADER)!r}」",
+            )
+            continue
         rule_status = "historical" if historical else "active"
         try:
             async with row_savepoint(session):
@@ -227,7 +267,13 @@ async def import_price_rules(
                 session.add(rule)
                 await session.flush()
                 rule_id = rule.id
-            report.created_row(index, code, id=rule_id, sku_code=code)
+            report.created_row(
+                index, code, id=rule_id, sku_code=code,
+                # 把**实际落成的状态**回传：用户填了"历史标记"却看不出结果时，
+                # 只能靠"这条价怎么不生效"去猜（2026-10-14 审查修）
+                status=rule_status,
+                status_label="历史资料（不参与取价）" if rule_status == "historical" else "当前有效",
+            )
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:  # 单行失败不影响其它行
@@ -392,7 +438,15 @@ async def import_customer_prices(
                 )
                 continue
 
-        historical = (row.get("历史标记(填1=历史资料)") or "").strip()
+        historical = _parse_historical(row.get(_HISTORICAL_HEADER))
+        if historical is None:
+            report.failed_row(
+                index,
+                "historical_flag_invalid",
+                "「历史标记」只认 1/是/y/yes/true 或 0/否/n/no/false（留空=不是）；"
+                f"收到的是「{row.get(_HISTORICAL_HEADER)!r}」",
+            )
+            continue
         rule_status = "historical" if historical else "active"
         try:
             async with row_savepoint(session):
@@ -426,7 +480,13 @@ async def import_customer_prices(
                 session.add(rule)
                 await session.flush()
                 rule_id = rule.id
-            report.created_row(index, code, id=rule_id, sku_code=code)
+            report.created_row(
+                index, code, id=rule_id, sku_code=code,
+                # 把**实际落成的状态**回传：用户填了"历史标记"却看不出结果时，
+                # 只能靠"这条价怎么不生效"去猜（2026-10-14 审查修）
+                status=rule_status,
+                status_label="历史资料（不参与取价）" if rule_status == "historical" else "当前有效",
+            )
         except RowRejected as rejected:
             report.failed_row(index, code, str(rejected))
         except Exception as exc:
