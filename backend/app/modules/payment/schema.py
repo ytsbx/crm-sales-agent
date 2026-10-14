@@ -131,7 +131,10 @@ class PaymentCreate(BaseModel):
     received_date: date
     # 与 payment_records.received_amount Numeric(16,2) 对齐。
     received_amount: Decimal = Field(gt=0, max_digits=16, decimal_places=2)
-    payment_method: str | None = None
+    #: 与 `payment_records.payment_method` 的 `String(32)` 对齐（2026-10-14 审查补）。
+    #: 原来没有长度约束：前端「收款方式」选「其他」可以填任意长度，超 32 字符会
+    #: **撞库列报 500**（而不是告诉用户太长了）。同项目其它自由文本字段都是这个写法。
+    payment_method: str | None = Field(default=None, max_length=32)
     voucher_note: str | None = None
     #: 币种（第七批 7.9）：不传就**继承应收节点的币种**，绝不落到列默认的 CNY ——
     #: 美元节点上的回款被记成人民币，汇总时按 1:1 相减，账错了还看不出来。
@@ -161,7 +164,10 @@ class PaymentUpdate(PatchModel):
     received_amount: Decimal | None = Field(
         default=None, gt=0, max_digits=16, decimal_places=2
     )
-    payment_method: str | None = None
+    #: 与 `payment_records.payment_method` 的 `String(32)` 对齐（2026-10-14 审查补）。
+    #: 原来没有长度约束：前端「收款方式」选「其他」可以填任意长度，超 32 字符会
+    #: **撞库列报 500**（而不是告诉用户太长了）。同项目其它自由文本字段都是这个写法。
+    payment_method: str | None = Field(default=None, max_length=32)
     voucher_note: str | None = None
     #: 币种只在**与应收节点一致**时才接受；传 null 等于"按节点币种重新对齐"。
     currency: str | None = Field(default=None, max_length=8)

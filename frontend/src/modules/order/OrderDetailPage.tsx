@@ -67,6 +67,7 @@ import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { calendarDay, calendarDayOrToday } from '../../shared/calendar-day'
 import { splitAmountsLikeBackend } from '../../shared/quote-todo'
+import { planBlockedReasons } from '../../shared/components/ReceivablePlanPicker'
 
 /**
  * 整单交期结论（§9.8 复审）。
@@ -459,7 +460,15 @@ export default function OrderDetailPage() {
       if (!paymentKeyRef.current) paymentKeyRef.current = newRequestKey()
       return createPayment({
         receivable_plan_id: paymentTarget!.id,
-        received_date: paymentForm.date.toISOString().slice(0, 10),
+        // ⚠️ 必须用共享件，不能 `toISOString().slice(0,10)`（2026-10-14 审查修）。
+        // 那个写法转的是 **UTC**，而日历上点的是**当地那一天**：北京（UTC+8）
+        // 选 10 月 1 日、这个 Date 又是当地时间零点（Semi 的 DatePicker 内部
+        // `startOfDay` 就是这么归一的）→ 截出来是 **09-30，整整早一天**。
+        // `shared/calendar-day.ts` 的注释就是为这件事写的，且**本文件第 68 行
+        // 早就 import 了 `calendarDay`** —— 只有这一处漏用（同文件其它日期都走了它）。
+        // 后果不小：收款日期、回款归月/对账、账期与逾期判定全错一天，
+        // 而界面只显示"回款已登记"，看不出来。
+        received_date: calendarDay(paymentForm.date),
         received_amount: Number(paymentForm.amount),
         payment_method: paymentForm.method,
         request_key: paymentKeyRef.current,
@@ -683,13 +692,43 @@ export default function OrderDetailPage() {
       title: '操作',
       width: 150,
       render: (_: unknown, record: Receivable) => {
-        const canRegister = record.status !== 'paid' && (canManage || canPayment)
-        // 有没有回款：后端删的时候会硬拦（400「该应收节点已有回款记录」），
-        // 前端把入口先藏起来。判据用**后端返回的已收金额**（财务确认过的口径），
-        // 不是前端自己算的。
-        const hasPayment = Number(record.received_amount ?? 0) > 0
+        // ⚠️ 「登记回款」还要看**生命周期**（2026-10-14 审查修）：
+        // 订单取消时后端只把**非 paid** 的节点置 `cancelled`
+        // （`order/router.py` 的 cancel_order），而这些行仍以「已取消（随订单）」
+        // 渲染，`status !== 'paid'` 成立 —— 于是入口照旧露出，点开填完必得 422
+        // 「该应收节点已随订单取消，不能再登记回款」（`assert_plan_accepts_payment`）。
+        // 同文件对"取消是终态、失败入口不给"已经处理过（隐藏「更新履约状态/取消订单」），
+        // 这一列漏了。
+        const planCancelled = record.status === 'cancelled' || order.status === 'cancelled'
+        const canRegister =
+          record.status !== 'paid' && !planCancelled && (canManage || canPayment)
+        // ⚠️ 「删除」的判据必须是**后端的真实闸门**（2026-10-14 审查修）：
+        // 删除时后端判的是"该期下有没有**任何**回款行"（待确认/已驳回都算，
+        // 不带 status 过滤），而原来前端用的是 `received_amount > 0`
+        // —— 那只统计**已确认**的分配。于是"登记了一笔但财务还没确认"或
+        // "财务驳回了那笔"时，界面显示能删、点下去必然 422。
+        // 现在后端把真实判据作为 `has_payment_record` 返回，两边同一把尺子。
+        const hasPayment = Boolean(record.has_payment_record)
         const canDelete = canPayment && !hasPayment
-        if (!canRegister && !canDelete) return '-'
+        // 点不了就得说清为什么（主人反复提过的口径）：一个都不给时不留空白，
+        // 而是给出原因，别让用户对着空操作列猜。
+        if (!canRegister && !canDelete) {
+          if (planCancelled) {
+            return (
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                订单已取消，这一期不再收款或删除
+              </span>
+            )
+          }
+          if (hasPayment) {
+            return (
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                该期已有回款记录（含待确认/已驳回），请先处理回款
+              </span>
+            )
+          }
+          return '-'
+        }
         return (
           <div style={{ display: 'flex', gap: 10 }}>
             {canRegister && (
@@ -1729,10 +1768,12 @@ export default function OrderDetailPage() {
         confirmLoading={generateMutation.isPending}
         okText="生成"
         okButtonProps={{
-          // 不合规就不让点，并且**在弹窗里说清差什么**（灰按钮不解释是主人反复提过的毛病）
-          disabled:
-            Math.abs(generateRows.reduce((sum, row) => sum + (row.percent ?? 0), 0) - 100) >= 0.01 ||
-            generateRows.some((row) => !row.name.trim() || !row.due || (row.percent ?? 0) <= 0),
+          // 判据**只此一处**（2026-10-14 审查修）：调用共用件的 `planBlockedReasons`，
+          // 别在这里再手写一份。原来这份只复刻了后端 `ReceivablePlanIn` 的
+          // 比例/名称/日期三条，**漏了 `split_amounts` 那条"非正数期直接拒绝"**
+          // （金额极小时，前面各期各自进位、末期会变成 0 或负数）——
+          // 于是页脚一边红字写"拆不出正数金额"，一边「生成」键还是亮的，点下去 422。
+          disabled: planBlockedReasons('installments', generateRows, Number(order.total_amount ?? 0)).length > 0,
         }}
       >
         <div style={{ display: 'grid', gap: 12 }}>
@@ -1741,15 +1782,15 @@ export default function OrderDetailPage() {
             到期日」，比例合计必须正好 100%。
           </div>
           {(() => {
-            // 禁用按钮必须说得出为什么（主人反复提过的口径）：判据与 okButtonProps 一致
-            const reasons: string[] = []
-            const sum = generateRows.reduce((acc, row) => acc + (row.percent ?? 0), 0)
-            if (Math.abs(sum - 100) >= 0.01) reasons.push(`比例合计现在是 ${sum}%，必须是 100%`)
-            generateRows.forEach((row, index) => {
-              if (!row.name.trim()) reasons.push(`第 ${index + 1} 期还没填节点名`)
-              if (!row.due) reasons.push(`第 ${index + 1} 期还没选到期日`)
-              if ((row.percent ?? 0) <= 0) reasons.push(`第 ${index + 1} 期的比例要大于 0`)
-            })
+            // 禁用按钮必须说得出为什么（主人反复提过的口径）——
+            // 判据与 `okButtonProps` **同一份**（共用件的 `planBlockedReasons`），
+            // 所以"按钮为什么灰"与"这里写的为什么"永远一致（2026-10-14 审查修）。
+            // 它比原来那份多一条"拆不出正数金额"，正好补上那个漏掉的判据。
+            const reasons = planBlockedReasons(
+              'installments',
+              generateRows,
+              Number(order.total_amount ?? 0),
+            )
             return reasons.length ? (
               <div style={{ color: 'var(--crm-error, #ba1a1a)', fontSize: 12 }}>
                 还不能生成，原因：{reasons.join('；')}

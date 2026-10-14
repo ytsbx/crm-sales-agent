@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
-from app.modules.quote.service import MONEY_MAX
+from app.modules.quote.service import _assert_money_in_range
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
 from app.modules.integration.model import ExternalMapping
@@ -475,15 +475,20 @@ async def create_order(
         amount = line_amount(quantity, entry.unit_price)
         # 金额范围（第九批问题 ⑧）：数量与单价各自有 `max_digits` 约束，
         # 但**乘出来的金额**可能越界，落库时是 `numeric field overflow` → 500。
-        # 与报价明细同一个上限（`quote.service.MONEY_MAX`），报错也说得清是哪一行。
-        if abs(amount) > MONEY_MAX:
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"明细 {sku.sku_code or sku.name} 的金额 {amount} 超出可保存范围"
-                f"（最大 {MONEY_MAX}）：请检查数量与单价是不是多打了几位",
-                422,
-            )
+        # 复用报价侧那一个助手（它连报错文案都已经写好），别在这里再手写一份 ——
+        # 两份判据必然漂移，而"同一判据铺 N 处只改 M 处"正是本项目最高频的病程。
+        _assert_money_in_range(amount, label=f"明细 {sku.sku_code or sku.name} 的金额")
         total += amount
+        # ⚠️ **整单合计也要查**（2026-10-14 审查修）。原来只查逐行：
+        # `quantity`（`max_digits=16, decimal_places=3`）与 `unit_price`
+        # （`decimal_places=4`）各自合法时，单行可以到 5e13 —— 单行不越界，
+        # 但**两行合计 1e14 就超过 `Numeric(16,2)` 的上限**（99999999999999.99），
+        # INSERT 抛 `numeric field overflow`，用户只看到"服务器内部错误"。
+        # 实测（两个明细各 1e7 × 5e6）：HTTP 500 + NumericValueOutOfRangeError。
+        # 报价侧对"逐行 + 整单合计"都查（`quote/service.py` 里那句
+        # `_assert_money_in_range(subtotal + charge_amount + discount, label="订单总额")`），
+        # 订单这条路漏了合计这道 —— 现在补上，`items` 也没有条数上限，合计是唯一能兜住的地方。
+        _assert_money_in_range(total, label="订单总额")
         rows.append(
             SalesOrderItem(
                 order_id=0,  # flush 后回填

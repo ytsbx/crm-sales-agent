@@ -48,6 +48,7 @@ from app.core.timebase import (
     today_business,
 )
 from app.modules.payment import service as payment_service
+from app.modules.payment.service import is_plan_overdue
 from app.modules.payment.model import PLAN_STATUS_LABEL as PLAN_LABEL
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.product.model import Product, Sku
@@ -1200,7 +1201,15 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
                     func.coalesce(func.sum(SalesOrderItem.quantity), 0),
                 )
                 .join(SalesOrder, SalesOrder.id == SalesOrderItem.order_id)
-                .where(SalesOrderItem.sku_id.is_not(None))
+                # ⚠️ 排除**已取消**订单（2026-10-14 审查修）：取消只把订单状态改成
+                # `cancelled`、**不删明细**，所以取消单的行一直躺在 `sales_order_items` 里。
+                # 同模块另外 15 处统计（签单额、交期、应收、回款…）一律"取消单不计"，
+                # 只有这一处漏了 —— 于是 `order_won_quantity`（注释自称"这才是真卖出去的量"）
+                # 虚高，与同页"成交（商机事实）"以及订单页的数字互相矛盾。
+                .where(
+                    SalesOrderItem.sku_id.is_not(None),
+                    SalesOrder.status != "cancelled",
+                )
                 .group_by(SalesOrderItem.sku_id),
                 user,
                 SalesOrder.owner_id,
@@ -1283,7 +1292,12 @@ async def sales_user_stats(
         select(func.count(Opportunity.id))
         .where(Opportunity.owner_id == User.id, Opportunity.deleted_at.is_(None))
         .scalar_subquery(),
-        select(func.count(Quote.id)).where(Quote.owner_id == User.id).scalar_subquery(),
+        # ⚠️ 报价这一列原来漏了 `deleted_at`（2026-10-14 审查修）：同一个 stmt 里
+        # `customer_count` / `opportunity_count` 都带了，只有它没带 —— 人员榜的
+        # "报价数"于是把已删除的报价算成业绩过程量。
+        select(func.count(Quote.id))
+        .where(Quote.owner_id == User.id, Quote.deleted_at.is_(None))
+        .scalar_subquery(),
         # 签单额按**签单归属**（不是当前负责人）：销售离职交接后，
         # 他谈下来的单子仍算他的成绩（文档 :61「交接后保留历史业绩归属」）
         select(func.coalesce(func.sum(SalesOrder.total_amount), 0))
@@ -1341,7 +1355,6 @@ def _plan_overdue(plan: ReceivablePlan, balance: Decimal, today: date) -> bool:
     "到期日已过且没收齐即逾期"（收过部分款也算），改口径只改 `is_plan_overdue` 一处。
     本函数保留只是为了让既有调用点少改动。
     """
-    from app.modules.payment.service import is_plan_overdue
 
     return is_plan_overdue(
         status=plan.status, balance=balance, due_date=plan.due_date, today=today
@@ -1559,12 +1572,29 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
             continue
         if plan.due_date is None:
             continue
-        overdue_days = (today - plan.due_date).days
-        if overdue_days <= 0:
+        # ⚠️ 逾期判定走**全项目唯一判据**（2026-10-14 审查修）。
+        #
+        # 原实现只按"到期日已过"分档，**完全忽略 `status == "overdue"`**：
+        # 而 `POST /receivables/{id}/mark-overdue` 允许把**未到期**的节点人工标成
+        # 逾期（只挡 `paid`/`cancelled`）。于是同一个节点：应收列表、工作台
+        # `overdue_receivable_count`、`/analytics/receivables` 都算逾期，
+        # **只有这里算"未到期"** —— 账龄页的 `overdue_node_count` /
+        # `overdue_amount` 少一笔。`is_plan_overdue` 的 docstring 自己写着
+        # "改口径时**只改这一处**"。
+        #
+        # 分档仍按 `due_date` 算天数（账龄本来就要天数），但"算不算逾期"用统一判据。
+        if not is_plan_overdue(
+            status=plan.status, balance=balance, due_date=plan.due_date, today=today
+        ):
             buckets["未到期"] += 1
             continue
         overdue_amount += balance
-        if overdue_days <= 30:
+        overdue_days = (today - plan.due_date).days if plan.due_date else 0
+        if plan.due_date is None or overdue_days <= 0:
+            # 人工标了逾期、但没有到期日（或到期日还没到）——
+            # 计入逾期金额，但不属于任何账龄区间（区间是按天数定义的）
+            pass
+        elif overdue_days <= 30:
             buckets["1-30 天"] += 1
         elif overdue_days <= 60:
             buckets["31-60 天"] += 1

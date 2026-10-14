@@ -83,6 +83,15 @@ export interface Receivable {
   received_amount_exact?: string
   received_amount: number
   remaining_amount: number
+  /**
+   * 这一期**有没有任何回款行**（待确认 / 已确认 / 已驳回都算）。
+   *
+   * 与 `received_amount` 不是一回事：那个只统计**已确认**的分配。
+   * 后端删除这一期时判的是"有没有任何回款行"，所以前端判断「能不能删」
+   * 必须用这个字段，否则「登记了但没确认」或「被驳回」时会显示能删、
+   * 点下去必然 422（2026-10-14 审查修）。
+   */
+  has_payment_record?: boolean
   status: string
   status_label: string
   remark?: string | null

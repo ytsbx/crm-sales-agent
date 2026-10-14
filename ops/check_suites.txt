@@ -509,3 +509,8 @@ check_cross_entity_scope
 # 2026-10-14 实跑 24 条通过。与 `check_notification_retry` 分工：那个测重试计数与
 # 退避，这个测"重试之后到底发出去了没有"。
 check_notification_retry_e2e
+
+# 算价的**回退链**：明确填写的 0 不能被当成"没填"（2026-10-14 审查第 21 条）。
+# 原来 `standard_price = rule.standard_price or 成本反推价` —— 规则里写 0 会返回
+# 28.57；`margin` 那条 `or` 串还会把 0/负数漏过，且下界从无守卫。
+check_price_fallback_zero
