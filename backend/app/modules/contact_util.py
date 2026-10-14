@@ -603,6 +603,33 @@ async def find_duplicate_contacts(
                 }
             )
 
+    # ⚠️ **联系方式要脱敏**（2026-10-14 审查修）。
+    #
+    # 这个出口原来把 `contact.mobile` / `contact.email` 原样放进响应，
+    # 完全没过 `mask_contact_fields` —— 于是它成了脱敏口径的**第六个出口**：
+    # `can_view_full_contact` 的注释写着“联系人列表、详情、搜索、AI 工具、导出
+    # 是五个入口，各写一份必然有一份忘了脱敏 —— 而『忘掉的那一份』就是泄漏面”，
+    # 而查重这一份就是漏掉的那个。
+    #
+    # 触发面不小：任何只有 `customer:view` 的人（含 self 范围的业务员）
+    # 在客户详情 → 联系人 → 新建联系人 → 「按已填内容查重」里输一个姓，
+    # `name_key in actual` 即命中（阈值 50），就能拿到数据范围内联系人的**完整手机号**，
+    # 而同一个人在联系人列表里显示的是 `138****8000`。
+    #
+    # 判据与其它出口**同一处**：`full_contact_customer_ids` 返回 `None` = 不受限
+    # （管理员 / 全量范围 / 显式授权 `customer:contact_full`）；
+    # 否则只有“负责人本人与其主管团队”的客户例外。
+    # `customer_id` 为空的联系人（线索转化中间态）按**脱敏**处理 ——
+    # 与 `full_contact_customer_ids` 的既有判据一致（无负责人的客户没有豁免档）。
+    full_ids = await full_contact_customer_ids(
+        session, user, {int(c.customer_id) for c in visible if c.customer_id}
+    )
+    if full_ids is not None:
+        for item in scored:
+            cid = item.get("customer_id")
+            if cid is None or int(cid) not in full_ids:
+                item.update(mask_contact_fields(item))
+
     scored.sort(key=lambda item: -item["score"])
     return scored[:limit]
 

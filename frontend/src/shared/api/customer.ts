@@ -140,6 +140,15 @@ export interface ContactDuplicateMatch {
   is_primary: boolean
   score: number
   reasons: string[]
+  /**
+   * 联系方式是否被脱敏（2026-10-14 审查修）。
+   *
+   * 查重接口原来把 `mobile` / `email` **原样**返回，成了脱敏口径漏掉的第六个出口
+   * （后端已改：走同一份 `full_contact_customer_ids` 判据）。
+   * 这里带着标记，界面据此**只给"为什么判它疑似"的证据、不回显号码** ——
+   * 知道"手机号一致"是有用的，看到号码本身不是。
+   */
+  contact_masked?: boolean
 }
 
 export function listCustomers(query: CustomerQuery) {

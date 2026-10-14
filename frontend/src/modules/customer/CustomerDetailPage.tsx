@@ -1056,7 +1056,10 @@ export default function CustomerDetailPage() {
                       }}
                     >
                       相似度 {match.score}%：{match.name}
-                      {match.mobile ? ` · ${match.mobile}` : ''}
+                      {/* 脱敏时不回显号码：只保留「手机号一致」这类证据。
+                          知道"为什么判它疑似"是有用的，看到号码本身不是
+                          （2026-10-14 审查修）。 */}
+                      {match.mobile && !match.contact_masked ? ` · ${match.mobile}` : ''}
                       {match.reasons.length ? `（${match.reasons.join('、')}）` : ''}
                     </div>
                   ))}
