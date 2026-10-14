@@ -155,6 +155,20 @@ class Settings(BaseSettings):
     erp_webhook_secret: str = ""
 
     @property
+    def dingtalk_login_ready(self) -> bool:
+        """「钉钉扫码登录」能不能用：凭据齐 **且** 外部调用总闸开着。
+
+        总闸（`dingtalk_push_off`）关着时扫码**必然**失败——服务端换不了身份。
+        所以把它算进"就绪"判据里，让接口当场给一句明确说明，
+        而不是把用户送到钉钉、扫完码回来才报错。
+        """
+        return bool(
+            self.dingtalk_app_key
+            and self.dingtalk_app_secret
+            and not self.dingtalk_push_off
+        )
+
+    @property
     def cors_origin_list(self) -> list[str]:
         return [x.strip() for x in self.cors_origins.split(",") if x.strip()]
 

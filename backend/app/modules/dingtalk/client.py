@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -438,6 +439,103 @@ class DingTalkClient:
                 http_status=resp.status_code,
             )
         return dict(data.get("result") or {})
+
+    # ---- 扫码登录（"用钉钉扫一下就能进系统"）--------------------------------
+    #
+    # 与上面那些"以**企业**身份去操作钉钉"的能力不同，扫码登录是"以**用户**身份
+    # 问钉钉：正在扫码的这个人是谁"。三步：授权码 → 用户级令牌 → 用户信息（unionId），
+    # 最后再拿 unionId 换 userid（系统里绑定的是 userid）。
+    #
+    # 为什么最后一步要绕回**旧版**接口：新版 OAuth2 只给 unionId，没有 userid，
+    # 而 `users.dingtalk_userid` 存的、通讯录同步用的都是 userid，必须换。
+    #
+    # 铁律（照 `auth/router.py::wecom_sso_callback` 的教训）：**身份只能由服务端
+    # 用 code 换取**，请求体里自报的 userid/unionid 一律不认。
+
+    def build_login_url(self, *, redirect_uri: str, state: str) -> str:
+        """拼「钉钉扫码登录」的授权地址（**纯拼字符串，不发任何外部请求**）。
+
+        故意**不**走 `_require()`：这一步只是把用户送到钉钉页面，真正的对外调用
+        发生在用户扫完码之后（`exchange_user_token`）。闸门关着也允许先送过去，
+        用户到那边会看到明确失败原因，比"按钮点了没反应"强。
+        """
+        query = urlencode(
+            {
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "client_id": settings.dingtalk_app_key,
+                "scope": "openid",
+                "state": state,
+                "prompt": "consent",
+            }
+        )
+        return f"https://login.dingtalk.com/oauth2/auth?{query}"
+
+    async def exchange_user_token(self, code: str) -> str:
+        """用一次性的登录授权码换**用户级**访问令牌。
+
+        `grantType` 固定 `authorization_code`。换回来的令牌只能代表"这个人"，
+        拿去调通讯录/审批会被拒（那些要用企业内部令牌）。
+        授权码**只能用一次**，重复换会失败——本身即一道防重放。
+        """
+        self._require()
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                f"{settings.dingtalk_base_url}/v1.0/oauth2/userAccessToken",
+                json={
+                    "clientId": settings.dingtalk_app_key,
+                    "clientSecret": settings.dingtalk_app_secret,
+                    "code": code,
+                    "grantType": "authorization_code",
+                },
+            )
+        data = resp.json() if resp.content else {}
+        if resp.status_code != 200 or not data.get("accessToken"):
+            raise DingTalkError(
+                data.get("message") or resp.text[:200],
+                api="oauth2/userAccessToken",
+                http_status=resp.status_code,
+            )
+        return str(data["accessToken"])
+
+    async def get_login_userinfo(self, user_access_token: str) -> dict[str, Any]:
+        """用用户级令牌取「本人是谁」（返回 unionId / nick / avatarUrl 等）。
+
+        ⚠️ 这里**只有 unionId**，没有 userid、也没有手机号——扫码登录拿不到企业信息，
+        这是钉钉的设计（见官方"扫码登录第三方网站"）。要 userid 得再换一次。
+        """
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.get(
+                f"{settings.dingtalk_base_url}/v1.0/contact/users/me",
+                headers={"x-acs-dingtalk-access-token": user_access_token},
+            )
+        data = resp.json() if resp.content else {}
+        if resp.status_code != 200 or not data.get("unionId"):
+            raise DingTalkError(
+                data.get("message") or resp.text[:200],
+                api="contact/users/me",
+                http_status=resp.status_code,
+            )
+        return data
+
+    async def userid_by_unionid(self, unionid: str) -> str | None:
+        """unionId → userid（旧版接口，新版没有等价能力）。
+
+        查不到返回 None（如 33002「查无此人」）——那是"这人不在企业通讯录里"，
+        不是"系统坏了"，由调用方翻成人话，而不是瞎猜一个 userid。
+        """
+        self._require()
+        token = await self.access_token()
+        async with httpx.AsyncClient(timeout=15) as http:
+            resp = await http.post(
+                "https://oapi.dingtalk.com/topapi/user/getbyunionid",
+                params={"access_token": token},
+                json={"unionid": unionid},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("errcode"):
+            return None
+        return (data.get("result") or {}).get("userid") or None
 
 
 _client: DingTalkClient | None = None

@@ -35,6 +35,9 @@
 只认调用方给的字段映射，映射从模板字段清单来（见 21-交接说明-2026-10-04.md §7.1 的待外部输入）。
 """
 
+import secrets
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -1142,3 +1145,138 @@ async def sync_users(session: AsyncSession) -> dict:
         "unmatched": unmatched,
         "unbound_crm": unbound_crm,
     }
+
+
+# ---- 扫码登录 -------------------------------------------------------------
+#
+# 两样**短期信物**，寿命都是几十秒：
+#
+# - `state`：发起扫码时生成，回调时校验并**消费**。防的是"别人换个 code 把回调
+#   塞给你"——只有我们自己发出去过的 state 才认。
+# - `ticket`：回调处理完之后，把**已经签好的令牌**装进去，交给前端那一步用。
+#   走 URL 的绝不能是令牌本身（会进浏览器历史、会进服务器访问日志），
+#   所以用一层一次性信物过渡，60 秒内不来换就作废。
+#
+# 为什么放进程内、不加表：本项目部署口径是**单实例**（与 `core/rate_limit.py`
+# 同一理由），而这两样只活几十秒。为它们建表 + 加迁移，换来的不过是"重启后
+# 正在扫码的人不用重来"，不划算。将来真上多实例，整体换 Redis 即可，
+# 下面四个函数的签名不用变。
+#
+# ⚠️ 与会话有效性（`auth/session.py::load_active_session`）**不是一回事**：
+# 那个决定"一把令牌还能不能用"，必须只存库、绝不能有内存缓存；
+# 这里的 state/ticket 只是"两步之间的一次性信物"，用完即弃。
+
+LOGIN_STATE_TTL_SECONDS = 300
+LOGIN_TICKET_TTL_SECONDS = 60
+
+_short_lock = threading.Lock()
+#: state -> 过期时刻（monotonic 秒）
+_login_states: dict[str, float] = {}
+#: ticket -> (已签发的令牌, 过期时刻)
+_login_tickets: dict[str, tuple[str, float]] = {}
+
+
+def _sweep_states(now: float) -> None:
+    for k in [k for k, exp in _login_states.items() if exp <= now]:
+        _login_states.pop(k, None)
+
+
+def _sweep_tickets(now: float) -> None:
+    for k in [k for k, (_, exp) in _login_tickets.items() if exp <= now]:
+        _login_tickets.pop(k, None)
+
+
+def issue_login_state() -> str:
+    """发起一次扫码登录：生成并记住一个一次性 state。"""
+    now = time.monotonic()
+    state = secrets.token_urlsafe(24)
+    with _short_lock:
+        _sweep_states(now)
+        _login_states[state] = now + LOGIN_STATE_TTL_SECONDS
+    return state
+
+
+def consume_login_state(state: str | None) -> bool:
+    """校验并**消费** state：用过一次即作废（防重放）。"""
+    if not state:
+        return False
+    now = time.monotonic()
+    with _short_lock:
+        expires = _login_states.pop(state, None)
+        _sweep_states(now)
+    return expires is not None and expires > now
+
+
+def issue_login_ticket(token: str) -> str:
+    """把一张**已经签好的令牌**装进一次性 ticket，交给前端换走。"""
+    now = time.monotonic()
+    ticket = secrets.token_urlsafe(32)
+    with _short_lock:
+        _sweep_tickets(now)
+        _login_tickets[ticket] = (token, now + LOGIN_TICKET_TTL_SECONDS)
+    return ticket
+
+
+def consume_login_ticket(ticket: str | None) -> str | None:
+    """取走 ticket 里的令牌；用过 / 过期 / 不认识一律返回 None。"""
+    if not ticket:
+        return None
+    now = time.monotonic()
+    with _short_lock:
+        item = _login_tickets.pop(ticket, None)
+        _sweep_tickets(now)
+    if item is None:
+        return None
+    token, expires = item
+    return token if expires > now else None
+
+
+#: 扫码登录被拒的原因 → 给人看的说明。**拒绝理由要分开报**：
+#: "钉钉那边出错了"和"你这个人进不来"是两件事，混成一句"登录失败"让人无从下手。
+LOGIN_REASON_LABEL: dict[str, str] = {
+    "not_in_contact": "这个钉钉账号不在企业通讯录里，请联系管理员把你加进部门",
+    "not_bound": "这个钉钉账号还没和系统账号绑定，请管理员先在「系统设置」里点一次「同步钉钉人员」",
+    "disabled": "这个账号已停用，请联系管理员",
+    "ambiguous": "这个钉钉账号对上了多个系统账号，请联系管理员处理",
+    "no_unionid": "钉钉没有返回这个人的身份标识，请重试或联系管理员",
+}
+
+
+async def resolve_login_user(
+    session: AsyncSession, *, code: str
+) -> tuple[User | None, str]:
+    """用一次性授权码换出 CRM 用户，返回 `(user, reason)`。
+
+    `reason == "ok"` 时 user 一定有值；否则 user 为 None，reason 是
+    `LOGIN_REASON_LABEL` 里的键。外部调用本身失败会直接抛 `DingTalkError`，
+    由接口层翻成"钉钉那边出错了"——与"这个人进不来"分开报。
+
+    链路：code → 用户级令牌 → unionId → userid → `users.dingtalk_userid`。
+    **身份只由服务端换**，调用方给什么都不信。
+    """
+    api = get_client()
+    user_token = await api.exchange_user_token(code)
+    info = await api.get_login_userinfo(user_token)
+    unionid = str(info.get("unionId") or "").strip()
+    if not unionid:
+        return None, "no_unionid"
+
+    userid = await api.userid_by_unionid(unionid)
+    if not userid:
+        return None, "not_in_contact"
+
+    # 一个钉钉号只该对上一个人；真出现多条，宁可明确拒绝也不"取第一个"
+    # （取第一个 = 把别人的账号登进来，与 `sync_users` 的"重名一律不猜"同一条纪律）。
+    rows = (
+        (await session.execute(select(User).where(User.dingtalk_userid == userid).limit(2)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return None, "not_bound"
+    if len(rows) > 1:
+        return None, "ambiguous"
+    user = rows[0]
+    if user.status != "active":
+        return None, "disabled"
+    return user, "ok"
