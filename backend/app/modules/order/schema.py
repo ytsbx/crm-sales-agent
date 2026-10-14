@@ -200,8 +200,8 @@ class ShipmentBatchShip(BaseModel):
     """登记实发。items 缺省 = 本批计划量全发；给出时逐明细覆盖。"""
 
     actual_ship_date: date | None = None
-    logistics_company: str | None = None
-    tracking_no: str | None = None
+    logistics_company: str | None = Field(default=None, max_length=64)
+    tracking_no: str | None = Field(default=None, max_length=64)
     #: 晚了就填原因（"因为分批/因为生产/因为客户改期"）——
     #: 系统能算出"晚几天"，算不出"为什么"，归因必须有人填
     overdue_reason: str | None = None

@@ -162,18 +162,16 @@ async def lock_lead(session: AsyncSession, user, lead_id: int) -> Lead:
 async def resolve_owner(
     session: AsyncSession, username: str | None, default_user_id: int
 ) -> int:
-    """线索导入用：负责人按登录名匹配，匹配不上就用当前操作人。
-
-    与客户导入同一口径（customer/io.py 的 resolve_owner），
-    故意不共用实现是因为客户那份签名里没有 session 之外的依赖，
-    合并反而要为一个参数抽公共层；两处都只有 5 行。
-    """
+    """空登录名默认当前人；显式登录名必须存在且在岗，不能静默改归属。"""
     if not username or not username.strip():
         return default_user_id
-    row = (
-        await session.execute(select(User).where(User.username == username.strip()))
-    ).scalar_one_or_none()
-    return row.id if row else default_user_id
+    username = username.strip()
+    row = (await session.execute(select(User).where(User.username == username))).scalar_one_or_none()
+    if row is None:
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人登录名「{username}」不存在", 422)
+    if row.status != "active":
+        raise AppError(ErrorCode.PARAM_ERROR, f"负责人登录名「{username}」已停用，不能接收线索", 422)
+    return row.id
 
 
 async def owner_names(session: AsyncSession, owner_ids: list[int]) -> dict[int, str]:

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.csvio import csv_bytes, parse_csv_bytes
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import (
     ImportReport,
@@ -169,9 +169,10 @@ async def import_leads(
                             f"已存在同名公司或同号线索（id={duplicate.id}）"
                         )
 
-                owner_id = await svc.resolve_owner(
-                    session, row.get("负责人登录名"), user.id
-                )
+                owner_login = (row.get("负责人登录名") or "").strip()
+                if owner_login:
+                    ensure_permission(user, "lead:assign")
+                owner_id = await svc.resolve_owner(session, owner_login, user.id)
                 lead = Lead(
                     name=name,
                     company_name=company,
@@ -183,11 +184,14 @@ async def import_leads(
                     remark=(row.get("备注") or "").strip() or None,
                     country="中国",
                     status="pending",
-                    owner_id=owner_id,
+                    owner_id=None if owner_login else owner_id,
                     created_by=user.id,
                 )
                 session.add(lead)
                 await session.flush()
+                if owner_login:
+                    await svc.assign_lead(session, lead, to_user_id=owner_id, operator_id=user.id,
+                                          reason="导入线索时指定负责人")
                 lead_id = lead.id
             report.created_row(index, name, id=lead_id)
         except RowSkipped as skipped:

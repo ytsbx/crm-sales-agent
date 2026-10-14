@@ -14,6 +14,7 @@ from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
 from app.modules.approval.access import approval_denial
+from app.modules.approval.rules_engine import strip_approval_summary
 from app.modules.approval.schema import (
     ApprovalDefinitionCreate,
     ApprovalDefinitionUpdate,
@@ -70,7 +71,7 @@ async def _context(session: AsyncSession, instances: list[ApprovalInstance]) -> 
     return {"versions": versions, "quotes": quotes, "customers": customers, "users": users}
 
 
-def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = False) -> dict:
+def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = False, can_see_cost: bool = False) -> dict:
     version = ctx["versions"].get(instance.business_id)
     quote = ctx["quotes"].get(version.quote_id) if version else None
     return {
@@ -84,7 +85,7 @@ def _serialize(instance: ApprovalInstance, ctx: dict, *, can_approve: bool = Fal
         "current_node": instance.current_node,
         "applicant_id": instance.applicant_id,
         "applicant_name": ctx["users"].get(instance.applicant_id) if instance.applicant_id else None,
-        "summary": instance.summary,
+        "summary": strip_approval_summary(instance.summary, can_see_cost=can_see_cost),
         "created_at": instance.created_at,
         "finished_at": instance.finished_at,
         "quote_id": quote.id if quote else None,
@@ -149,7 +150,7 @@ async def list_approvals(
         rows, total = await paginate(session, stmt, page, page_size)
     ctx = await _context(session, rows)
     return ok(page_data([
-        _serialize(row, ctx, can_approve=row.status == "pending" and approval_denial(
+        _serialize(row, ctx, can_see_cost=user.has("price:manage"), can_approve=row.status == "pending" and approval_denial(
             user, row, price_can_approve=price_can_approve
         ) is None)
         for row in rows
@@ -178,7 +179,7 @@ async def get_approval(
     ).all()
     return ok(
         {
-            **_serialize(instance, ctx, can_approve=instance.status == "pending" and approval_denial(
+            **_serialize(instance, ctx, can_see_cost=user.has("price:manage"), can_approve=instance.status == "pending" and approval_denial(
                 user, instance, price_can_approve=price_can_approve
             ) is None),
             "records": [

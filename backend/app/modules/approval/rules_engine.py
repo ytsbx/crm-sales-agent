@@ -589,10 +589,10 @@ def strip_cost_context(ctx: dict, *, can_see_cost: bool) -> dict:
       ② 规则条件回显（`conditions_detail` 里的 `actual`）—— **确认泄漏**，这里擦掉；
       ③ 成本派生底价 —— 沙盒**不返回**底价；报价侧由
          `quote.service.strip_comparison_cost` / `serialize_item(can_see_cost=False)` 管；
-      ④ 文字原因 —— 实测审批 `summary` 与 `approval_reason` 里只有**折扣**与
-         "低于最低保护价"（保护价本身是允许看的授权门槛），**没有**利润率百分数，
-         所以这一条没有需要改的出口（不是我漏了）。
-         （我第一版注释里写了 `strip_cost_reason`，那是我编的函数名，已删。）
+      ④ 文字原因 —— 提交审批重判会写实际利润率和最低允许价。
+         审批 summary 由 `strip_approval_summary` 裁剪；报价明细的文字原因
+         与结构化成本一起由 `serialize_item(can_see_cost=False)` 隐藏。
+         命中条件的 actual / actual_label 同样敏感，不能只清 context。
 
     ## 为什么返回副本
 
@@ -608,7 +608,7 @@ def strip_cost_context(ctx: dict, *, can_see_cost: bool) -> dict:
     # 条件命中详情里的实际值：命中成本敏感字段时把 actual 抹掉（保留规则与阈值，
     # 否则沙盒"哪条规则命中"这个用途就废了）。
     for key in list(stripped):
-        if not key.endswith("_detail"):
+        if not key.endswith("_detail") and key != "matched_conditions":
             continue
         rows = stripped.get(key)
         if not isinstance(rows, list):
@@ -621,6 +621,25 @@ def strip_cost_context(ctx: dict, *, can_see_cost: bool) -> dict:
         stripped[key] = cleaned
     stripped["_cost_hidden"] = True
     return stripped
+
+
+def strip_approval_summary(summary: dict | None, *, can_see_cost: bool) -> dict | None:
+    """Hide cost-derived approval evidence in a copy; retain the stored decision facts."""
+    if summary is None or can_see_cost:
+        return summary
+    from copy import deepcopy
+    safe = deepcopy(summary)
+    for row in safe.get("offending") or []:
+        if isinstance(row, dict):
+            for sensitive_name in ("minimum_price", "profit_rate"):
+                if sensitive_name in row:
+                    row[sensitive_name] = None
+    trace = safe.get("rule_trace")
+    if isinstance(trace, dict):
+        safe["rule_trace"] = strip_cost_context(trace, can_see_cost=False)
+        if isinstance(trace.get("context"), dict):
+            safe["rule_trace"]["context"] = strip_cost_context(trace["context"], can_see_cost=False)
+    return safe
 
 
 async def load_active_rules(session: AsyncSession) -> list[tuple[ApprovalRule, dict]]:

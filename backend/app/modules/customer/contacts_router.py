@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.deps import CurrentUser, require_permission
+from app.core.deps import CurrentUser, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.contact_util import find_duplicate_contacts
@@ -86,11 +86,14 @@ async def contact_followups(
     （"跟王经理通了电话"），按联系人看才有意义。
     """
     from app.modules.followup.model import FollowUp
+    from app.modules.followup.visibility import followup_visibility_filter
+
+    ensure_permission(user, "followup:view")
 
     await svc.get_visible_contact(session, user, contact_id)
     stmt = (
         select(FollowUp)
-        .where(FollowUp.contact_id == contact_id)
+        .where(FollowUp.contact_id == contact_id, await followup_visibility_filter(session, user))
         .order_by(FollowUp.id.desc())
     )
     rows, total = await paginate(session, stmt, page, page_size)

@@ -238,7 +238,11 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         "profit_snapshot": _f(item.profit_snapshot),
         "profit_rate_snapshot": _f(item.profit_rate_snapshot),
         "approval_required": item.approval_required,
-        "approval_reason": item.approval_reason,
+        "approval_reason": (
+            "报价超出价格权限，需要审批" if hide and item.approval_reason
+            and any(term in item.approval_reason for term in ("最低允许价", "利润率", "毛利率"))
+            else item.approval_reason
+        ),
         "remark": item.remark,
     }
     if hide:
@@ -2846,12 +2850,31 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
 
     diffs: list[dict] = []
     for previous, current in zip(rows, rows[1:], strict=False):
-        prev_items = {item.sku_id: item for item in items_by_version.get(previous["version_id"], [])}
-        curr_items = {item.sku_id: item for item in items_by_version.get(current["version_id"], [])}
+        # No NULL/int sorting and no collapse of custom or repeated-SKU lines.
+        # Stable source ids match cloned versions; repeated source lines are paired
+        # in their preserved id/order sequence, rather than overwritten in a dict.
+        def index_items(version_id):
+            result, occurrences = {}, {}
+            for item in items_by_version.get(version_id, []):
+                if item.sku_id is not None:
+                    identity = ("sku", item.sku_id)
+                elif item.inquiry_id is not None:
+                    identity = ("custom", item.inquiry_id)
+                elif item.opportunity_item_id is not None:
+                    identity = ("opportunity_item", item.opportunity_item_id)
+                else:
+                    identity = ("unlinked_custom", item.id)
+                nth = occurrences.get(identity, 0)
+                occurrences[identity] = nth + 1
+                result[(*identity, nth)] = item
+            return result
+        prev_items = index_items(previous["version_id"])
+        curr_items = index_items(current["version_id"])
         changes: list[dict] = []
-        for sku_id in sorted(set(prev_items) | set(curr_items)):
-            before = prev_items.get(sku_id)
-            after = curr_items.get(sku_id)
+        for identity in sorted(set(prev_items) | set(curr_items)):
+            before = prev_items.get(identity)
+            after = curr_items.get(identity)
+            sku_id = (after or before).sku_id
             if before is None:
                 changes.append(
                     {

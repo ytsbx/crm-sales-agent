@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError, ErrorCode
-from app.core.timebase import business_day_end, today_business
+from app.core.timebase import business_day_end, today_business, to_business
 from app.core.response import paginate
 from app.modules.contract.model import (
     DOC_STATUS_LABEL,
@@ -749,7 +749,7 @@ async def build_pdf_data(session: AsyncSession, doc: ContractDocument) -> dict:
         "doc_type_label": DOC_TYPE_LABEL.get(doc.doc_type, doc.doc_type),
         "status_label": DOC_STATUS_LABEL.get(doc.status, doc.status),
         "customer_name": customer_name,
-        "created_date": doc.created_at.strftime("%Y-%m-%d") if doc.created_at else None,
+        "created_date": to_business(doc.created_at).strftime("%Y-%m-%d") if doc.created_at else None,
         "order_no": order_no,
         "quote_no": quote_no,
         "quote_version_no": header.get("quote_version_no"),

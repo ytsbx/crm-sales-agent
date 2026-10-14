@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.approval.rules_engine import strip_approval_summary
 from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
@@ -555,7 +556,7 @@ async def quote_approval_history(
                     "id": instance.id,
                     "status": instance.status,
                     "current_node": instance.current_node,
-                    "summary": instance.summary,
+                    "summary": strip_approval_summary(instance.summary, can_see_cost=_can_see_cost(user)),
                     "created_at": instance.created_at,
                     "finished_at": instance.finished_at,
                     "records": records,
@@ -1034,7 +1035,7 @@ async def get_version(
                     "status": instance.status,
                     "current_node": instance.current_node,
                     "applicant_id": instance.applicant_id,
-                    "summary": instance.summary,
+                    "summary": strip_approval_summary(instance.summary, can_see_cost=_can_see_cost(user)),
                     "created_at": instance.created_at,
                     "finished_at": instance.finished_at,
                     "records": records,
@@ -1224,7 +1225,7 @@ async def update_item(
             ip=client_ip(request),
         )
         await session.commit()
-        return ok(svc.serialize_item(item), "已保存（只改了备注，价格与成本快照未重算）")
+        return ok(svc.serialize_item(item, can_see_cost=_can_see_cost(user)), "已保存（只改了备注，价格与成本快照未重算）")
 
     # §8.14：主数据未确认只提示、不阻断（见 build_item_snapshot 的说明）
     unconfirmed_master: set[str] = set()
@@ -1293,7 +1294,7 @@ async def update_item(
             + "（本次按本地值报价）"
         )
     return ok(
-        _with_master_warnings(svc.serialize_item(item), unconfirmed_master), message
+        _with_master_warnings(svc.serialize_item(item, can_see_cost=_can_see_cost(user)), unconfirmed_master), message
     )
 
 
@@ -1800,7 +1801,7 @@ async def add_version_item(
             + "（本次按本地值报价）"
         )
     return ok(
-        _with_master_warnings(svc.serialize_item(item), unconfirmed_master), message
+        _with_master_warnings(svc.serialize_item(item, can_see_cost=_can_see_cost(user)), unconfirmed_master), message
     )
 
 
