@@ -84,6 +84,7 @@ node --test "$SCRIPT_DIR/blocked_hint.test.mjs" >/dev/null 2>&1 && echo "OK  blo
 node --test "$SCRIPT_DIR/quote_todo.test.mjs" >/dev/null 2>&1 && echo "OK  quote_todo.test.mjs" || FAILED+=("quote_todo.test.mjs")
 # 日历日期转换（第九批问题 ②：UTC 截日会退一天）
 node --test "$SCRIPT_DIR/calendar_day.test.mjs" >/dev/null 2>&1 && echo "OK  calendar_day.test.mjs" || FAILED+=("calendar_day.test.mjs")
+node --test "$SCRIPT_DIR/payment_allocation.test.mjs" >/dev/null 2>&1 && echo "OK  payment_allocation.test.mjs" || FAILED+=("payment_allocation.test.mjs")
 
 echo
 echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="

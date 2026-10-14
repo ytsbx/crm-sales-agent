@@ -271,6 +271,8 @@ test('分期金额：与后端 split_amounts 同一套算法（半分进偶数 +
   // 这些**期望值**是拿后端 `payment/service.split_amounts` 逐例跑出来的
   // （第九批问题 ⑤：修之前前端 `Math.round` 给 0.03/0.02，后端给 0.02/0.03）
   assert.deepEqual(splitAmountsLikeBackend(0.05, [0.5, 0.5]), [0.02, 0.03])
+  // 原来的浮点乘法把 3.5 分算成 3.4999999999999996，误判为向下舍入。
+  assert.deepEqual(splitAmountsLikeBackend(0.05, [0.7, 0.3]), [0.04, 0.01])
   assert.deepEqual(splitAmountsLikeBackend(100, [0.3, 0.7]), [30, 70])
   assert.deepEqual(splitAmountsLikeBackend(10080, [0.2, 0.3, 0.5]), [2016, 3024, 5040])
   assert.deepEqual(splitAmountsLikeBackend(0.06, [0.5, 0.5]), [0.03, 0.03])
@@ -288,6 +290,9 @@ test('分期金额：分出不大于 0 的期时返回 null（前后端都会拦
   assert.equal(splitAmountsLikeBackend(0.03, [0.2, 0.2, 0.2, 0.2, 0.2]), null)
   assert.equal(splitAmountsLikeBackend(0, [0.5, 0.5]), null)
   assert.equal(splitAmountsLikeBackend(100, []), null)
+  assert.equal(splitAmountsLikeBackend(100, [NaN, 0.5]), null)
+  assert.equal(splitAmountsLikeBackend(100, [Infinity, 0.5]), null)
+  assert.equal(splitAmountsLikeBackend(100, [-0.5, 1.5]), null)
 })
 
 test('分期金额：各期之和严格等于总额（不允许差一分钱）', () => {

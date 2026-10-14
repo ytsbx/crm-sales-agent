@@ -492,3 +492,6 @@ check_refund_correction
 # （按这一期没有分配判会让被挪走的那一期凭空显示已收，双计）。
 # 那个洞是浏览器端到端验证时才暴露的，固化成 ③ 段。
 check_allocation_rules
+
+# 第十二批：完整分配消费链、人工空/部分分配、真实并发与精确金额
+check_batch12_allocation_chain
