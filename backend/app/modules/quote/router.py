@@ -1004,7 +1004,20 @@ async def get_version(
     quote = await session.get(Quote, version.quote_id)
     ctx = await _quote_context(session, [quote]) if quote else None
     body = {
-        "version": svc.serialize_version(version, total_profit),
+        # ⚠️ 整单利润**也要按权限裁剪**（2026-10-14 审查修，实测泄露）。
+        #
+        # 同一份响应里逐条明细走 `serialize_item(can_see_cost=_can_see_cost(user))`，
+        # 无 `price:manage` 时 `_COST_ONLY_ITEM_FIELDS` 把 `profit_snapshot` /
+        # `minimum_price_snapshot` 全置 None；但这里把**整单** `Σ(单件利润×数量)`
+        # 无条件下发 —— 实测：张三（无 `price:manage`）看自己建的报价，
+        # 明细 `profit_snapshot=None`，而 `version.total_profit=48000`，
+        # 配上同样可见的 `subtotal_amount=60000` 就能直接反推成本 12000。
+        # 这正是 `_COST_ONLY_ITEM_FIELDS` 的注释要防的"只隐成本等于没隐"。
+        # 同模块另两个出口本来就有这道闸：`strip_comparison_cost`（版本对比）
+        # 与 `serialize_item`（明细），只有这里漏了。
+        "version": svc.serialize_version(
+            version, total_profit if _can_see_cost(user) else None
+        ),
             # 金额汇总由**后端**算好给前端（2026-10-09）：货款 / 运费 / 其他费用 /
             # 优惠 / 应付合计。页面、对客文件、订单共用这一份公式，
             # 不让前端再实现一套（两套公式迟早对不上，而这里对不上就是钱对不上）。
