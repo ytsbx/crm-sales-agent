@@ -151,10 +151,18 @@ def build_fixtures(admin: str) -> None:
     FIX["cust"] = res["data"]["id"]
     _, res = call("GET", "/pricing/sku-options", admin)
     FIX["sku"] = res["data"][0]["id"]
-    _, res = call("GET", "/opportunities?page_size=1", admin)
-    items = res["data"]["items"]
-    FIX["opp"] = items[0]["id"] if items else None
-    print(f"  夹具：客户 {FIX['cust']}、SKU {FIX['sku']}")
+    # ⚠️ 必须给**这个新客户**建一个商机（2026-10-14 修）：
+    # 原来这里是 `GET /opportunities?page_size=1` 随手取第一条 —— 那是**别的客户**的商机，
+    # 于是 `new_quote()` 每次都撞产品的归属闸：
+    #   「这次请求里的客户（id=12）与所选商机「…」所属的客户（id=1）不是同一家」
+    # 脚本因此长期跑不起来（而它没登记进 CI，所以一直没人发现）。
+    _, res = call("POST", "/opportunities", admin, {
+        "customer_id": FIX["cust"], "title": f"{MARKER}商机",
+    })
+    if res.get("code") != 0:
+        raise SystemExit(f"建商机失败：{res.get('message')}")
+    FIX["opp"] = res["data"]["id"]
+    print(f"  夹具：客户 {FIX['cust']}、SKU {FIX['sku']}、商机 {FIX['opp']}")
 
 
 def new_quote(admin: str) -> int:
