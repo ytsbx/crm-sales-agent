@@ -126,7 +126,13 @@ jobs:
           while read -r suite; do
             case "$suite" in '' | '#'*) continue ;; esac
             if [ ! -f "scripts/$suite.py" ]; then
-              echo "::error::清单里的套件找不到脚本：scripts/$suite.py"
+              # ⚠️ 这条最容易出现在**多人同时改仓库**的时候（2026-10-14 实测踩到）：
+              # 有人往 `ops/check_suites.txt` 加了一行、脚本却还没提交；而另一个人
+              # 提交时整文件 `git add ops/check_suites.txt`，把那一行一起带上了主干
+              # → CI 找不到脚本、红，且表象是"清单里的套件找不到脚本"，
+              # 最容易怀疑错方向（会去查 runner 环境，其实是文件没提交）。
+              # 处置：确认脚本是否在别人工作区里；在的话补交（跑通再交）。
+              echo "::error::清单里的套件找不到脚本：scripts/$suite.py —— 多半是有人加了清单行但脚本还没提交（共享文件整文件 add 时被带进来）。请确认脚本是否在别人工作区，跑通后补交。"
               failed="$failed $suite"
               continue
             fi
