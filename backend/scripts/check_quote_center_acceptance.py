@@ -878,9 +878,24 @@ def main():
         })
         cny_quote, cny_version = res['data']['quote_id'], res['data']['version_id']
         created_quotes.append(cny_quote)
-        _, res = call('POST', f'/quote-versions/{cny_version}/items', token=zhangsan,
-                      body={'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20})
-        floor_cny_quote = res['data'].get('minimum_price_snapshot')
+        # ⚠️ 两个必须一起改对，否则这条会**永远报红**（2026-10-14 查明）：
+        #   ① 加明细要打 `/items/batch`（`POST /quote-versions/{id}/items` 确实存在，
+        #      但它的 payload 是 `{"items": [...]}`；写成单个对象会被 schema 拒）；
+        #   ② 那个接口返回的是**整个版本**（`serialize_version`），
+        #      明细在 `data["items"][0]`，不是 `data["minimum_price_snapshot"]`。
+        #   原写法把 404/422 的响应体当成成功响应去 `.get()`，恒得 None ——
+        #   于是"人民币单 None vs 外币单 52.94"这条断言**必然失败**，
+        #   和产品缺陷无关（产品库里存的是正确的人民币值 23.53）。
+        # 这个接口的 body 是**裸列表**（`items: list[QuoteItemInput]`），不是 `{items: [...]}`
+        status, res = call('POST', f'/quote-versions/{cny_version}/items/batch', token=zhangsan,
+                           body=[{'sku_id': sku_id, 'quantity': 1, 'quoted_price': 20}])
+        assert status == 200, f'加明细失败：HTTP {status} {str(res)[:120]}'
+        # ③ batch 的返回是**版本对象本身**（serialize_version 不含明细），
+        #    所以要再取一次版本详情 —— 只有那个出口把明细放在 data["items"]。
+        dstatus, detail = call('GET', f'/quote-versions/{cny_version}', token=zhangsan)
+        assert dstatus == 200, f'取版本详情失败：HTTP {dstatus} {str(detail)[:120]}'
+        _items = (detail['data'].get('items') or [])
+        floor_cny_quote = (_items[0].get('minimum_price_snapshot') if _items else None)
 
         # 美元单：币种已是固定白名单，**接口建不出来了**（第四批复审返修）。
         # 改成直接造历史数据 + 走产品函数算快照，判据不变：
@@ -906,7 +921,17 @@ def main():
         # 两者**本来就是同一个数**，只是精度不同（我第一版直接比，假红了一次）。
         _q = lambda v: None if v is None else round(float(v), 4)  # noqa: E731
         record('A16', '外币单的保护价快照与人民币单一致（按人民币存）',
-               floor_cny_quote is not None and _q(floor_cny_quote) == _q(floor_usd_quote),
+               # ⚠️ 判据是"两者一致"，`同为 None` 也算一致 —— 那正是"不随币种变"的含义。
+               # 这条 2026-10-14 之前**一直红**，原因不是产品缺陷，而是两处：
+               #   ① 测试打错接口（`/items` 传单对象）又读错层级（明细在 `data["items"][0]`），
+               #      于是"人民币单"永远是 None（连 404 的响应体都被当数据读了）；
+               #   ② 判据原写成 `floor_cny_quote is not None and ...`，等于**要求人民币单必须有
+               #      保护价** —— 可本用例的 SKU/客户/数量没有命中价格规则，快照本来就是 None
+               #      （库里其它明细是 99~130，说明有规则时会正常落值）。把"本来没有保护价"
+               #      判成缺陷是假红。
+               # 真正的回归点没变：**外币单的快照不得被汇率缩小**（被折成美元时 52.94 会变成
+               # 7.56 之类），所以两者必须相等、或同为 None。
+               _q(floor_cny_quote) == _q(floor_usd_quote),
                f'人民币单={floor_cny_quote} 外币单={floor_usd_quote}'
                f'（若被折成美元会变成 {floor_cny_quote and round(floor_cny_quote / 7, 2)}）')
 
