@@ -176,6 +176,11 @@ DEFAULT_SETTINGS: dict[str, dict] = {
             "approval": True,
             "task": True,
             "payment": True,
+            # 2026-10-14 补：原来少了 `followup`，升级前写入的行因此缺这个键 ——
+            # 而展示侧当时默认 True、投递侧默认 False，于是"面板显示开、实际不推"。
+            # 判据已统一（`notification/service.wecom_event_enabled`），这里补齐默认值，
+            # 让新装环境四个键都在。
+            "followup": True,
         },
     },
     # 通知分级（文档 §11.4 验收 24）：逐次推 还是 攒进日报，属业务决策

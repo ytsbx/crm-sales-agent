@@ -464,8 +464,31 @@ async def _record_contract_event(
         owner_id=customer.owner_id if customer else None,
         title=title,
         content=content,
-        business_type="contract",
-        business_id=doc.id,
+        # ⚠️ **必须传 `customer`，不能传 `contract`**（2026-10-14 审查修）。
+        #
+        # 这两个值会被 `record_and_notify` 原样当成通知的 `source_type/source_id`，
+        # 而通知侧靠 `source_type` 做两件事：
+        #   ① `notification/service.py` 的 `models` 字典里取来源对象 —— 里面只有
+        #      customer/lead/opportunity/quote/order/sample，**没有 contract**
+        #      → `source=None` → 每个收件人都被 `continue`，`count=0`，
+        #      而事件仍被标 `notification_processed_at`；
+        #   ② 收件人权限判据 `viewer.has(f"{source_type}:view")` —— 全仓**没有
+        #      `contract:view` 这个权限码**（合同用的是 order:view / order:manage），
+        #      所以把 contract 加进字典也照样全被刷掉。
+        #
+        # 后果：合同签署/作废/续签的"推业务主管"**完全失效且无声无息** ——
+        # 业务留痕已先写入，客户时间线看着一切正常，也不会进
+        # `delivery_failure_summary` 的 business_pending。
+        #
+        # 走 `customer` 这条已有通路是对的：客户一定存在、`customer:view` 是真实权限、
+        # 数据范围判据（含公海 `owner_id IS NULL`）自动生效，且通知中心可见性与
+        # 生成侧共用同一份 `process_notification_filter`。
+        # `event_key` 仍用 `contract:{action}:{doc.id}`，幂等不受影响。
+        #
+        # 注意：本文件另外 5 处 `business_type="contract"` 是 `write_audit` 的参数，
+        # 那是**审计**的 business_type（按 doc.id 记流水），语义正确，**不要一起改**。
+        business_type="customer",
+        business_id=doc.customer_id,
         operator_id=user.id,
         event_key=f"contract:{action}:{doc.id}",
     )
