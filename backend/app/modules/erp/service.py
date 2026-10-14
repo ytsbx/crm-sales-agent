@@ -25,6 +25,8 @@
     补上映射后重放同一事件即可恢复；
   - 同一事件重放不再写历史与日志。
 """
+from app.core.timebase import to_business
+
 
 import hashlib
 import json
@@ -164,7 +166,7 @@ async def build_order_payload(session: AsyncSession, order: SalesOrder) -> dict:
         "so_id": order.order_no,
         "idempotency_key": order.order_no,
         "shop_id": None,
-        "order_date": order.created_at.strftime("%Y-%m-%d %H:%M:%S") if order.created_at else None,
+        "order_date": to_business(order.created_at).strftime("%Y-%m-%d %H:%M:%S") if order.created_at else None,
         "pay_amount": float(order.total_amount),
         "currency": order.currency,
         "receiver_name": None,

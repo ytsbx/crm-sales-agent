@@ -49,6 +49,7 @@ from app.modules.quote.schema import (
     SubmitApprovalRequest,
 )
 from app.modules.user.model import User
+from app.core.timebase import to_business
 
 logger = logging.getLogger(__name__)
 
@@ -1654,7 +1655,7 @@ async def download_pdf(
         "customer_name": version.customer_name_snapshot or "待核实",
         "opportunity_title": ctx["titles"].get(quote.opportunity_id) if quote.opportunity_id else None,
         "owner_name": ctx["owners"].get(quote.owner_id) if quote.owner_id else user.name,
-        "quote_date": version.created_at.strftime("%Y-%m-%d"),
+        "quote_date": to_business(version.created_at).strftime("%Y-%m-%d"),
         # §8.7：对客口径一律取**这一版冻结的快照**，不回查当前客户资料 / 主单。
         # 原来这里读的是 `ctx["customers"]`（当前客户名）和 `quote.valid_until`
         # （主单当前有效期），于是同一个 V1：BizDoc 印的是旧名、PDF 印的是新名。

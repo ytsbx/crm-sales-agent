@@ -119,7 +119,12 @@ jobs:
         # sed 转义在不同 shell 下行为不同，是最难查的一类红。
         # 现在它是个能离线跑、能自己测的脚本（`--list` 只列不判失败）。
         working-directory: backend
-        run: PYTHONPATH=. python scripts/check_registered_files.py
+        run: |
+          PYTHONPATH=. python scripts/check_registered_files.py
+          # 「同一判据有没有在所有出口铺开」—— 2026-10-14 加。这一轮审查报的 20 条里
+          # **至少 8 条**是这个病程（脱敏/范围/软删/日期 在 N 个出口只铺了 M 个），
+          # 而且正确写法常在同一个文件甚至相邻一行。判据成文后就该由 CI 守，不靠人工审。
+          PYTHONPATH=. python scripts/check_output_criteria.py
 
       - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
         # 三处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：

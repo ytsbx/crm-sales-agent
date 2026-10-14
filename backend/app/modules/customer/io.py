@@ -19,6 +19,7 @@ from fastapi import UploadFile
 from sqlalchemy import select
 
 from app.core.csvio import parse_csv_upload
+from app.core.timebase import to_business
 from app.modules.customer.model import Customer
 from app.modules.user.model import User
 
@@ -98,8 +99,8 @@ def customer_export_row(customer: Customer, owner_name: str | None) -> list:
         owner_name or "",
         customer.status,
         "公海" if customer.pool_status == "public" else "私海",
-        customer.last_followup_at.strftime("%Y-%m-%d") if customer.last_followup_at else "",
-        customer.created_at.strftime("%Y-%m-%d") if customer.created_at else "",
+        to_business(customer.last_followup_at).strftime("%Y-%m-%d") if customer.last_followup_at else "",
+        to_business(customer.created_at).strftime("%Y-%m-%d") if customer.created_at else "",
     ]
 
 

@@ -5,6 +5,7 @@
 线索本来就是粗筛出来的名单，用客户的相似度阈值会把大量真实新线索挡在门外。
 """
 
+from app.core.timebase import to_business
 from app.modules.lead.service import STATUS_LABEL
 
 TEMPLATE_HEADERS = [
@@ -45,6 +46,6 @@ def lead_export_row(lead, owner_name: str | None) -> list:
         lead.source or "",
         STATUS_LABEL.get(lead.status, lead.status),
         owner_name or "",
-        lead.last_followup_at.strftime("%Y-%m-%d") if lead.last_followup_at else "",
-        lead.created_at.strftime("%Y-%m-%d") if lead.created_at else "",
+        to_business(lead.last_followup_at).strftime("%Y-%m-%d") if lead.last_followup_at else "",
+        to_business(lead.created_at).strftime("%Y-%m-%d") if lead.created_at else "",
     ]

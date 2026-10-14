@@ -18,7 +18,7 @@ from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
-from app.core.timebase import today_business
+from app.core.timebase import to_business, today_business
 from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
@@ -691,9 +691,9 @@ async def _notify_recycle_candidate(
     from app.modules.notification.model import Notification
     from app.modules.notification.service import channel_settings, notify
 
-    due_text = candidate.due_at.strftime("%Y-%m-%d") if candidate.due_at else "—"
+    due_text = to_business(candidate.due_at).strftime("%Y-%m-%d") if candidate.due_at else "—"
     active = candidate.last_active_at
-    active_text = active.strftime("%Y-%m-%d") if active else "无记录"
+    active_text = to_business(active).strftime("%Y-%m-%d") if active else "无记录"
     reason = (
         f"{candidate.level or ''} 级客户超过 {candidate.rule_days} 天未跟进"
         if candidate.rule_days

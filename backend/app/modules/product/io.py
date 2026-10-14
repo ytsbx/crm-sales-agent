@@ -7,6 +7,8 @@
   自动建会把"型号录错"变成一堆重复产品，比导入失败难收拾得多。
 - SKU 的 `sku_code` 全局唯一，导入时按它查重。
 """
+from app.core.timebase import to_business
+
 
 PRODUCT_TEMPLATE_HEADERS = [
     "产品名称",
@@ -67,7 +69,7 @@ def product_export_row(product, sku_count: int) -> list:
         product.brand or "",
         product.status,
         sku_count,
-        product.created_at.strftime("%Y-%m-%d") if product.created_at else "",
+        to_business(product.created_at).strftime("%Y-%m-%d") if product.created_at else "",
     ]
 
 
@@ -82,7 +84,7 @@ def sku_export_row(sku, product_name: str | None) -> list:
         sku.unit or "",
         sku.moq if sku.moq is not None else "",
         sku.status,
-        sku.created_at.strftime("%Y-%m-%d") if sku.created_at else "",
+        to_business(sku.created_at).strftime("%Y-%m-%d") if sku.created_at else "",
     ]
 
 
