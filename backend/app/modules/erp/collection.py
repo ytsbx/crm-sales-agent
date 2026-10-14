@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import json_safe
 from app.core.errors import AppError, ErrorCode
+from app.core.trade_mode import CNY, reject_foreign_currency
 from app.modules.customer.model import Customer
 from app.modules.erp.adapter import (
     ErpNotConfigured,
@@ -254,6 +255,8 @@ def normalize_item(item: dict, *, object_type: str, position: int) -> dict:
             422,
         )
 
+    currency = (_text(item.get("currency")) or CNY).upper()
+    reject_foreign_currency(currency, label=f"采集第 {position} 条")
     external_id = _text(item.get("external_id"))
     external_code = _text(item.get("external_code"))
     parent_key = _text(item.get("parent_key"))
@@ -315,7 +318,7 @@ def normalize_item(item: dict, *, object_type: str, position: int) -> dict:
         "amount": _external_decimal(
             item.get("amount"), field="amount", position=position
         ),
-        "currency": _text(item.get("currency")),
+        "currency": currency,
         "occurred_at": _as_datetime(item.get("occurred_at")),
         "external_updated_at": _as_datetime(item.get("external_updated_at")),
         # payload 必须能进 JSON 列：对方给的可能是 datetime/Decimal（JSON 序列化
