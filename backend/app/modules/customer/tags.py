@@ -258,6 +258,14 @@ MERGE_TARGETS: list[tuple[str, str, str]] = [
     ("app.modules.sample.model", "SampleRequest", "打样单"),
     ("app.modules.order.model", "OrderDraft", "订单草稿"),
     ("app.modules.contract.model", "ContractDocument", "合同"),
+    # ⚠️ 补登记（2026-10-14 审查）。本清单上面的判据是**本文件自己写的**：
+    # 「凡是带 `customer_id` 的业务表都要在这里登记。漏登记一项，合并就是
+    # "看起来成功了、其实留了一半"」——而 `BizDoc` 有 `customer_id`、
+    # 有 `ix_biz_docs_customer` 索引、`bizdoc/service.list_docs(customer_id=...)`
+    # 就按它过滤，却没登记。漏了它，把 A 合并进 B 之后，A 名下的打样需求单 /
+    # 下单文件 / 对客报价单一律仍挂在 A 上，而 A 已软删、`owner_id` 被清空
+    # —— `GET /biz-docs?customer_id=B` 查不到这批对外文件，B 的档案里永远补不齐。
+    ("app.modules.bizdoc.model", "BizDoc", "生成文件"),
     ("app.modules.cases.model", "SalesCase", "销售案例"),
     ("app.modules.pricing.model", "LogisticsQuote", "物流报价"),
     # 专属价格要跟着走，但**有冲突时不能随便走**：两边同一个 SKU 定了不同的价，
@@ -542,6 +550,23 @@ async def merge_preview(
             "合并不可逆：来源客户会被软删，上列关联全部改挂到目标客户。"
             "历史报价、合同签署文件、打样图纸与确认记录的内容不会改写，"
             "只是档案归属换到目标客户。"
+            + (
+                # ⚠️ 归属口径要说清（2026-10-14 审查）：合并**只改 `customer_id`**，
+                # 单据的负责人一个都不动。而 `customer/documents.py` 里定的是
+                # "客户的负责人从 A 换成 B 时，把原本挂在 A 名下的**这个客户的**单据
+                # 一起改成 B"——两个客户负责人不同时，合并后 B 打开客户，
+                # 「报价 / 订单」标签页可能仍然是空的（那些标签页按**单据自己的负责人**
+                # 过滤），用户会以为合并把数据弄丢了。
+                # 这里不擅自改单据归属（那等于替别人做交接决定），但**必须提前说清**。
+                (
+                    f"注意：来源客户的负责人（id={source.owner_id}）与目标客户"
+                    f"（id={target.owner_id}）**不是同一个人** —— 合并不会改单据负责人，"
+                    "所以原来记在来源负责人名下的报价 / 订单，合并后仍需他本人（或主管"
+                    "）才能看到；要让新负责人接手，请另外走一次「转移负责人」。"
+                    if source.owner_id != target.owner_id
+                    else ""
+                )
+            )
         ),
     }
 
@@ -739,11 +764,20 @@ async def merge_customers(
     #    目标原来就有主的话**什么都别做**：那位才是主人，并过来的保持非主。
     #    （从前这里写的是"有主就降级并过来的"，那句判断本身没错，错在它跑在
     #    改挂之后 —— 降级是补的，索引早在改挂那一步就拦下来了。）
+    # ⚠️ 判据必须带 `deleted_at IS NULL`（2026-10-14 审查修）：
+    # 全项目的"主位"口径就是 `is_primary AND deleted_at IS NULL`
+    # —— 部分唯一索引 `uq_contacts_primary_per_customer` 的 WHERE 条件如此，
+    # `contact_util.take_primary_slot` / `has_primary` 也都这么写；
+    # 而删除联系人只置 `deleted_at`、**不清 `is_primary`**。
+    # 不带这句时：目标客户原来那个主联系人被软删过（很常见）→ 计数仍是 1
+    # → 不再从并过来的联系人里顶一个，合并后目标客户**一个"活的"主联系人
+    # 都没有**，与本段注释"合并完目标名下不该突然变得一个主联系人都没有"相反。
     has_own_primary = (
         await session.execute(
             select(func.count(Contact.id)).where(
                 Contact.customer_id == target.id,
                 Contact.is_primary.is_(True),
+                Contact.deleted_at.is_(None),
             )
         )
     ).scalar_one()

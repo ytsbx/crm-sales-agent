@@ -956,19 +956,29 @@ async def calculate_price(
         else None
     )
 
-    margin = (
-        target_margin
-        or (rule.target_margin if rule and rule.target_margin is not None else None)
-        or Decimal(
+    # ⚠️ 逐级判 `is not None`，**不能用 `or` 串**（2026-10-14 审查修）：
+    # `0 or X` 得到的是 X —— 于是"把目标利润率显式设成 0"会被静默换成规则值或
+    # 系统默认值，用户看到的价格与预期不符却没有任何提示。
+    # `margin >= 1` 只挡上界；**下界（0、负数）从来没有守卫**，而系统设置
+    # `default_target_margin` 是自由文本写进来的（`settings/service.py::
+    # validate_setting_value` 只校验两个"天数"键），负数真能落到这里。
+    # 本函数的契约是 `(0, 1)`，就照契约把下界也挡住 —— 与接口入参的
+    # `Field(gt=0, le=1)`（`pricing/schema.py:86/116/284`）同一把尺子。
+    margin = target_margin
+    if margin is None and rule is not None:
+        margin = rule.target_margin
+    if margin is None:
+        margin = Decimal(
             str(
                 await settings_service.get_number(
                     session, "default_target_margin", "ratio", 0.30
                 )
             )
         )
-    )
     if margin >= 1:
         raise AppError(ErrorCode.PARAM_ERROR, "目标利润率必须小于 100%")
+    if margin <= 0:
+        raise AppError(ErrorCode.PARAM_ERROR, "目标利润率必须大于 0")
 
     # 物流试算在新口径下**不影响产品核价**（运费不进 base_cost、不进利润），
     # 但它仍然是**参考估算**，要在核价结果里如实给出（`cost.logistics_cost`）——
@@ -992,14 +1002,21 @@ async def calculate_price(
     # 运费按代收代付处理，不进产品定价基数 —— 见本函数 docstring 的
     # 「运费与产品价格分离」。老版本回看时才用 logistics_in_base_cost=True。
     base_cost = goods_cost + logistics if logistics_in_base_cost else goods_cost
-    standard_price = (
-        (rule.standard_price if rule else None) or (base_cost / (Decimal(1) - margin))
-    )
-    recommended = (
-        (customer_rule.agreed_price if customer_rule else None)
-        or (rule.guide_price if rule and rule.guide_price else None)
-        or (base_cost / (Decimal(1) - margin) if has_cost else None)
-    )
+    # ⚠️ `standard_price` 允许为 **0**（`pricing/schema.py:77` 的约束是 `ge=0`）——
+    # 用 `or` 回退会把"我就是要标准价 0"当成"没填"，静默改成按成本反推的值。
+    # 实测（2026-10-14）：规则里写 `standard_price=0` 时返回 `28.57`
+    # （成本 ÷ (1−利润率)），与规则里写的数不一致。判"有没有填"只能看 `is None`。
+    standard_price = rule.standard_price if rule else None
+    if standard_price is None:
+        standard_price = base_cost / (Decimal(1) - margin)
+    # 同样逐级判 `is not None`：`agreed_price` 是 `gt=0`（不能为 0），
+    # 但 `guide_price` / `standard_price` 是 `ge=0` —— 把"协议价/指导价 0 元"
+    # 当没填，会让客户专属价或规则里明确写的 0 被成本反推价顶掉。
+    recommended = customer_rule.agreed_price if customer_rule else None
+    if recommended is None and rule is not None:
+        recommended = rule.guide_price
+    if recommended is None and has_cost:
+        recommended = base_cost / (Decimal(1) - margin)
     if recommended is None:
         warnings.append("无成本也无已维护售价，无法给出建议价——请先维护成本或价格规则")
 

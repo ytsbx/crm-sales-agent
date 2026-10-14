@@ -53,6 +53,12 @@ async def run_public_pool_recycle_job() -> None:
 async def run_auto_tasks_job() -> None:
     """每天定时：按自动任务规则生成跟进任务（同一对象不会重复生成）。"""
     async with SessionLocal() as session:
+        # 先把"时间自己走过"导致的应收逾期状态刷新一遍（2026-10-13）：
+        # 逾期与否取决于今天，而 recalc_plan 只在有人写节点/确认回款时被调用；
+        # 不每天刷一次，9 月到期、10 月没人碰的节点会一直显示"待收/部分回款"。
+        from app.modules.payment import service as payment_service
+
+        refreshed = await payment_service.refresh_overdue_plans(session)
         result = await settings_service.run_auto_tasks(
             session, operator_id=None, source="SCHEDULER"
         )
@@ -73,14 +79,16 @@ async def run_auto_tasks_job() -> None:
             session, operator_id=None, source="SCHEDULER", action="run_followup_deadlines",
             business_type="task_rule", business_id=None,
             after={"expired_quotes_count": expired_quotes, "due_followups_count": due_followups,
-                   "monthly_expiring_count": expired},
+                   "monthly_expiring_count": expired,
+                   "overdue_plans_refreshed": refreshed},
         )
         await session.commit()
         from app.modules.notification import service as notification_service
         await notification_service.dispatch_pending(session)
     logger.info(
-        "定时自动任务完成：生成 %s 条任务（其中 %s 个客户因\"已约定下次跟进\"豁免），"
+        "定时自动任务完成：刷新逾期应收 %s 个节点，生成 %s 条任务（其中 %s 个客户因\"已约定下次跟进\"豁免），"
         "月结到期提醒 %s 条，报价到期提醒 %s 条，约定跟进到期提醒 %s 条",
+        refreshed,
         result.get("created_count"),
         result.get("agreed_skipped_count"),
         expired,

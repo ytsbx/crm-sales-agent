@@ -408,6 +408,19 @@ export function addQuoteCharge(versionId: number, payload: Record<string, unknow
   return api.post<QuoteChargeRow>(`/quote-versions/${versionId}/charges`, payload)
 }
 
+/**
+ * 改一条附加费用（03-API §22）。只传要改的字段。
+ *
+ * 锁版（已提交审批 / 已发送）之后**只有运费**能改 —— 判据在后端
+ * `quote/service.py::ensure_charge_change_allowed`，前端只管把入口露出来。
+ *
+ * 后端一直有这个端点，是前端从来没接过（从前只能"删了再加"）——
+ * 而"再加"会把两条运费**累加**进总额，2026-10-14 修的正是这个坑。
+ */
+export function updateQuoteCharge(chargeId: number, payload: Record<string, unknown>) {
+  return api.patch<QuoteChargeRow>(`/quote-charges/${chargeId}`, payload)
+}
+
 export function deleteQuoteCharge(chargeId: number) {
   return api.delete<null>(`/quote-charges/${chargeId}`)
 }

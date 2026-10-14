@@ -71,6 +71,17 @@ const TOOLTIP_BASE = {
  *
  * 一张图里混着"12 单"和"86%"是常态，共用一个格式化函数必然有一个是错的。
  */
+/** 把文本里的 HTML 元字符换成实体 —— 图表 tooltip 走 innerHTML，不转义就是注入。 */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+
 function tooltipFor(
   tokens: ReturnType<typeof chartTokens>,
   formats: FormatMap,
@@ -89,9 +100,17 @@ function tooltipFor(
         const shown = (picked ?? fallback)(Number(item.value ?? 0))
         const label = item.seriesName ? `${item.seriesName}　` : ''
         const share = item.percent != null ? `（${item.percent}%）` : ''
-        return `${item.marker ?? ''}${label}${shown}${share}`
+        // ⚠️ 轴标签/系列名可能来自**用户自由文本**，必须转义后再拼 HTML
+        // （2026-10-14 审查修）。ECharts 自定义 formatter 的返回值默认按
+        // `renderMode: 'html'` 用 innerHTML 渲染、**不做转义**；而「回款方式」的
+        // 「其他」就是自由文本（`otherOption.ts` 的 onInput →
+        // `PaymentRecord.payment_method`），分析接口原样返回
+        // （`analytics/service.py` 的 `{"name": method}`）当 donut 的 name。
+        // 业务员填 `<img src=x onerror=…>`（28 字符，塞得进 String(32)）→
+        // 财务确认 → 有分析页权限的人悬浮那一瓣即执行：**存储型脚本注入**。
+        return `${item.marker ?? ''}${escapeHtml(label)}${shown}${escapeHtml(share)}`
       })
-      return [head, ...rows].filter(Boolean).join('<br/>')
+      return [escapeHtml(head), ...rows].filter(Boolean).join('<br/>')
     },
   }
 }

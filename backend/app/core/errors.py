@@ -19,6 +19,9 @@ class ErrorCode:
     DATA_SCOPE_DENIED = 40302
     PRICE_PERMISSION_DENIED = 40303
     NOT_FOUND = 40401
+    #: 路径对但方法不对（405）。以前这种情况会被兜底成 `NOT_FOUND`，
+    #: 于是 HTTP 状态 405 与响应里的 `code` 自相矛盾（2026-10-14 审查修）。
+    METHOD_NOT_ALLOWED = 40501
     DUPLICATE = 40901
     VERSION_CONFLICT = 40902
     DUPLICATE_CONVERT = 40903
@@ -226,12 +229,30 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
-        code = ErrorCode.UNAUTHORIZED if exc.status_code == 401 else ErrorCode.NOT_FOUND
-        if exc.status_code == 403:
-            code = ErrorCode.FORBIDDEN
-        elif exc.status_code >= 500:
-            code = ErrorCode.SYSTEM_ERROR
+        # ⚠️ 必须**逐个状态码**映射（2026-10-14 审查修）。原来是
+        # `401 → UNAUTHORIZED，否则 → NOT_FOUND` 的两分支 + 403/5xx 两个特例 ——
+        # 于是 405（方法不允许）、429（限流）这些都会被贴上 `40401 资源不存在`：
+        # **HTTP 状态说 405、响应体里的 code 说"不存在"**，前端按 code 分支就会走错路
+        # （比如把"这个接口不支持 POST"当成"数据被删了"）。
+        # 实测（真实 app）：`PUT /api/v1/customers` → 405 + `code: 40401`。
+        code = {
+            401: ErrorCode.UNAUTHORIZED,
+            403: ErrorCode.FORBIDDEN,
+            404: ErrorCode.NOT_FOUND,
+            405: ErrorCode.METHOD_NOT_ALLOWED,
+            429: ErrorCode.RATE_LIMITED,
+        }.get(exc.status_code)
+        if code is None:
+            code = ErrorCode.SYSTEM_ERROR if exc.status_code >= 500 else ErrorCode.PARAM_ERROR
+        # 404/405 是路由级的，Starlette 给的 detail 是英文（"Not Found" /
+        # "Method Not Allowed"）—— 直接透出去会让用户看到英文。业务侧自己的
+        # AppError 不受影响（它走另一个 handler，message 一直是中文）。
+        message = str(exc.detail)
+        if exc.status_code == 404 and message.strip().lower() == "not found":
+            message = "接口或数据不存在"
+        elif exc.status_code == 405 and message.strip().lower() == "method not allowed":
+            message = "这个地址不支持该请求方法"
         return JSONResponse(
             status_code=exc.status_code,
-            content={"code": code, "message": str(exc.detail), "data": None},
+            content={"code": code, "message": message, "data": None},
         )

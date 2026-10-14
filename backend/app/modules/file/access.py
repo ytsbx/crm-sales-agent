@@ -14,7 +14,7 @@
 挂载/解绑同理，要目标模块的**写入权**。判据集中在下面的 `BUSINESS_PERMISSIONS`。
 """
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
@@ -300,7 +300,30 @@ async def visible_object(
         # （销售订单没有 deleted_at，所以要用 getattr 取，别写死。）
         stmt = stmt.where(deleted_at.is_(None))
     if owner_ids is not None:
-        stmt = stmt.where(getattr(model, owner_field).in_(owner_ids))
+        # ⚠️ **公海对象（`owner_id IS NULL`）必须放行**（2026-10-14 审查修，实测复现）。
+        #
+        # 原来只写 `.in_(owner_ids)`，而 SQL 里 `NULL IN (...)` **恒不成立** ——
+        # 于是客户被"超期未跟进"自动回收进公海（`owner_id` 清空）、或线索还没分配时：
+        #   `GET /customers/{id}` → 200（客户模块自己的口径是"公海对所有有
+        #   customer:view 的人可见 —— 这正是公海的意义"）
+        #   `GET /business/customer/{id}/files` → **403**
+        #   `GET /files/{id}/download` → **403**
+        # 同一对象两个答案。实测：客户 200、附件列表与下载都 403「该业务对象不在你的
+        # 数据范围内」。附件（营业执照、图纸、凭证）于是对**所有** self/department
+        # 范围的人永久不可读。
+        #
+        # 判据与各模块同源：`customer/service.py` 的 `if customer.owner_id is None: return`
+        # 与 `lead/service.py` 的 `or_(Lead.owner_id.in_(owner_ids), Lead.owner_id.is_(None))`。
+        # 同一文件上面那一段（合同）已经因为同一个坑修过一次 —— 客户/线索这两条
+        # 分支当时没跟上。只对**真正按负责人划分**的模型加 NULL 分支；
+        # 其它模型保持原样（它们的 `owner_id` 语义不同，不该被这条推广误放）。
+        owner_column = getattr(model, owner_field)
+        if owner_field == "owner_id" and model.__name__ in ("Customer", "Lead"):
+            stmt = stmt.where(
+                or_(owner_column.in_(owner_ids), owner_column.is_(None))
+            )
+        else:
+            stmt = stmt.where(owner_column.in_(owner_ids))
     return (await session.execute(stmt)).first() is not None
 
 

@@ -215,7 +215,7 @@ async def main():
                                         .order_by(AuditLog.id.desc()).limit(1))).scalar_one()
                 deadline_audit_id = audit.id
                 assert audit.source == 'SCHEDULER' and audit.operator_id is None
-                assert set(audit.after_data) == {'expired_quotes_count', 'due_followups_count', 'monthly_expiring_count'}
+                assert set(audit.after_data) == {'expired_quotes_count', 'due_followups_count', 'monthly_expiring_count', 'overdue_plans_refreshed'}
             print('OK 自动扫描：发送后联系、最新发送、按报价去重、已成单/删除过滤、逾期应收、三个时钟、坏规则隔离、并发、正式阶段与执行留痕')
         finally:
             async with SessionLocal() as s:

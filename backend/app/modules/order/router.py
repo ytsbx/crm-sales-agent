@@ -132,6 +132,15 @@ async def create_order(
     # 自己身上，等于把别人的客户资源搬进自己名下。
     customer = await session.get(Customer, payload.customer_id)
     await ensure_in_scope(session, user, owner_id=customer.owner_id, label="客户")
+    # ⚠️ 负责人也要过范围闸（2026-10-14 审查修）。同一个函数里 `customer_id` /
+    # `opportunity_id` / `quote_id` 三处都有 `ensure_in_scope`，**唯独 `owner_id`
+    # 只过了 `ensure_refs`**（那只判"存在且未软删"，不看数据范围）——
+    # 于是 `department*` 范围的主管能把订单挂到**范围外**的人名下：订单从此对
+    # 那个范围可见，而**创建者自己反而看不到**（列表走 `scoped_owner_ids`，
+    # 详情走 `ensure_in_scope` 会 403）。"同一判据在 N 处只铺了 M 处"的典型。
+    # `owner_id` 为空时不必判（落库会走 `owner_id or user_id`，即创建者自己）。
+    if payload.owner_id is not None:
+        await ensure_in_scope(session, user, owner_id=payload.owner_id, label="负责人")
     if payload.opportunity_id:
         opportunity = await session.get(Opportunity, payload.opportunity_id)
         await ensure_in_scope(session, user, owner_id=opportunity.owner_id, label="商机")

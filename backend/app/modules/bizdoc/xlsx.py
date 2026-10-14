@@ -211,10 +211,18 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
         _put_text(sheet, row=row, column=1, value="草稿（非正式对外文件）").font = Font(
             bold=True, color="C0392B"
         )
-        detail = "模板变量未解析，本表仅供内部核对；" + (
-            "；".join(_text(i.get("message") or i.get("token")) for i in issues)
-            or "请修正模板或来源资料后重新生成"
-        )
+        # ⚠️ 优先印**快照里记下的真实原因**（2026-10-14 审查修）：草稿有两条来源
+        # （模板变量未解析 / 调用方标的原因：报价未过审批、主数据未确认、运费未确认），
+        # 而这里原来写死"模板变量未解析"，情形②时与事实不符，事后也看不出为什么是草稿。
+        issues_text = "；".join(_text(i.get("message") or i.get("token")) for i in issues)
+        reason = _text(data.get("draft_reason")).strip()
+        if issues_text:
+            reason = (
+                f"{reason}（模板变量未解析：{issues_text}）"
+                if reason
+                else f"模板变量未解析：{issues_text}"
+            )
+        detail = (reason or "原因见生成记录") + "；本表仅供内部核对"
         _put_text(sheet, row=row, column=2, value=detail)
         row += 1
 
@@ -308,13 +316,14 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
     total_cell.font = bold
 
     row = summary_row + 1
-    for section in data.get("sections") or []:
-        if not _text(section.get("value")).strip():
-            continue
-        _put_text(sheet, row=row, column=1, value=section.get("label")).font = bold
-        _put_text(sheet, row=row, column=2, value=section.get("value"))
-        row += 1
-
+    # ⚠️ 这一段**不再渲染**（2026-10-14 审查修）：`data["sections"]` 的内容
+    # 与上面 `_terms(data)` 那一段**完全同源**（都取 `frozen["terms"]` 与
+    # `frozen["header"]`）—— 实测渲染出来 A10:B16 与 A24:B30 逐行重复
+    # （币种 / 有效期至 / 付款条件 / 交付条件 / 贸易条款 / 客户 / 联系人各印两遍，
+    # 第 5-6 行还有第三次客户与联系人）。客户拿到的报价表上同一组条款出现两次。
+    # `sections` 是 `frozen` 出现之前的旧渲染路径残留；术语区（"币种与条款"）
+    # 在明细上方，位置也更合理。
+    # 快照里仍然保留 `sections`（PDF 版式用它，且历史件要能重现）。
     body = _text(data.get("body")).strip()
     if body:
         _put_text(sheet, row=row + 1, column=1, value="说明").font = bold

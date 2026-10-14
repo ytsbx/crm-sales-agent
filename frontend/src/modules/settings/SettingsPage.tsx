@@ -60,7 +60,7 @@ import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/
 import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
-import { settingDescription, settingLabel } from '../../shared/setting-labels'
+import { settingDescription, settingLabel, settingNote } from '../../shared/setting-labels'
 
 const TABS = [
   { tab: '用户', itemKey: 'users' },
@@ -1519,13 +1519,24 @@ export default function SettingsPage() {
                           {
                             title: '保护事项',
                             dataIndex: 'protection',
-                            render: (list: string[]) =>
+                            render: (list: string[], r: RecycleCandidateRow) =>
                               (list ?? []).length === 0 ? (
                                 <span style={{ color: 'var(--crm-text-3)' }}>无</span>
                               ) : (
-                                <span style={{ color: 'var(--crm-caution, #b26a00)' }}>
-                                  {(list ?? []).join('；')}
-                                </span>
+                                <>
+                                  {/* 有保护却仍被提名 = 保护已过最长有效期（后端下发标记）。
+                                      单独点出来，主管复核时重点看，别当成"没保护"。 */}
+                                  {r.protection_overridden && (
+                                    <div style={{ marginBottom: 4 }}>
+                                      <Tag color="orange" size="small">
+                                        有履约事项仍被提名，请重点看
+                                      </Tag>
+                                    </div>
+                                  )}
+                                  <span style={{ color: 'var(--crm-caution, #b26a00)' }}>
+                                    {(list ?? []).join('；')}
+                                  </span>
+                                </>
                               ),
                           },
                           {
@@ -1674,19 +1685,43 @@ export default function SettingsPage() {
                       title: '配置项',
                       dataIndex: 'key',
                       width: 240,
-                      render: (key: string) => (
-                        <div>
-                          <div style={{ fontWeight: 600 }}>{settingLabel(key)}</div>
-                          <div style={{ color: 'var(--crm-text-3)', fontSize: 11 }}>内部标识：{key}</div>
-                        </div>
-                      ),
+                      // 只显示中文名。原来中文名下面还挂着一行灰色小字「内部标识：hard_floor」，
+                      // 那是给排查问题/对文档用的开发术语，摆在每一行下面 99% 的时候是噪音。
+                      // 主人 2026-10-14 决定删掉；要查标识看《09-业务参数配置说明》。
+                      render: (key: string) => <div style={{ fontWeight: 600 }}>{settingLabel(key)}</div>,
                     },
                     {
                       title: '说明',
-                      width: 280,
-                      render: (_: unknown, record: SystemSettingRow) => (
-                        <span>{settingDescription(record.key, record.description)}</span>
-                      ),
+                      width: 420,
+                      render: (_: unknown, record: SystemSettingRow) => {
+                        // 一批配置**默认就取最保守的值**（关着 / 0 / 留空），
+                        // 因为底价口径、体积重系数、钉钉模板号这些属于业务口径，
+                        // 开发不替业务拍板。它们光看说明跟"坏了"一样，
+                        // 所以这里单独挂一条"当前为什么看不出效果"（文案单点在
+                        // `setting-labels.ts` 的 SETTING_NOTES，只登记这类项）。
+                        const note = settingNote(record.key)
+                        return (
+                          <div>
+                            <span>{settingDescription(record.key, record.description)}</span>
+                            {note && (
+                              <div style={{ marginTop: 4 }}>
+                                <Tag color="orange" size="small">
+                                  {note.tag}
+                                </Tag>
+                                <span
+                                  style={{
+                                    color: 'var(--crm-text-2)',
+                                    fontSize: 12,
+                                    marginLeft: 6,
+                                  }}
+                                >
+                                  {note.text}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      },
                     },
                     { title: '值', render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record) },
                   ]}

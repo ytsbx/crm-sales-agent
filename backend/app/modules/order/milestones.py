@@ -429,6 +429,20 @@ async def mark_batch_shipped(    session: AsyncSession, order_id: int, batch_no:
     ).scalar_one()
     if earliest is None:
         return
+    # ⚠️ **行不在就补建**（2026-10-14 审查修）。
+    #
+    # `order_milestones` 的固定六节点只由三处创建：`GET /orders/{id}/milestones`、
+    # 交期变更确认、`sync_payment_milestones`。而前端跟单页签是**懒加载**
+    # （`OrderDetailPage.tsx` 里 `enabled: activeKey === "milestones"`）——
+    # 用户在「发货批次」页签建批次、登记实发时，节点行**还不存在**。
+    # 于是下面 `if first is not None` 静默落空：跟单页永远显示"未发货"，
+    # 而库里明明有 `status="shipped"` 的批次；`first_shipment` 又是交付准时率
+    # 与交期分析的同一来源，会连带算错。
+    #
+    # 同一课在回款那边已经补过（`sync_payment_milestones` 的注释：
+    # "从前 `if not rows: return` —— 等于什么都没同步。现在先走
+    # `ensure_initialized` 再算"）—— 发货这边当时漏了。
+    await ensure_initialized(session, order_id, None, created_by=None)
     first = (
         await session.execute(
             select(OrderMilestone).where(

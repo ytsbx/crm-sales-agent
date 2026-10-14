@@ -132,9 +132,26 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const validItems = createForm.items.filter(
-    (item) => item.sku_id && Number(item.quantity) > 0 && Number(item.unit_price) >= 0,
-  )
+  // ⚠️ 单价**不能留空**（2026-10-14 审查修）。原来判据是
+  // `Number(item.unit_price) >= 0`，而 `EMPTY_ITEM.unit_price = ''` 且
+  // **`Number('') === 0`**（`0 >= 0` 成立）—— 于是"选了 SKU、填了数量、
+  // 忘了填单价"也满足"完整明细"，提交时 `Number('')` 变成 0，
+  // 订单就以 **¥0 明细**建单（金额由后端按明细算，后端 `unit_price` 允许 `ge=0`），
+  // 订单金额与后续应收计划一起错，而界面**一句提示都没有**。
+  // 同一个坑项目里已经踩过并写明（`QuoteDetailPage.tsx` 的
+  // 「不能写 `Number(x || 0)`：空串会被静默转成 0」），这里照那个口径拦。
+  const itemIssue = (item: (typeof createForm.items)[number]): string | null => {
+    if (!item.sku_id) return '未选 SKU'
+    const quantity = item.quantity.trim()
+    if (quantity === '') return '数量留空'
+    if (!Number.isFinite(Number(quantity)) || Number(quantity) <= 0) return '数量要大于 0'
+    const price = item.unit_price.trim()
+    // 空串必须单独拦：`Number('')` 是 0，不能靠数值判断发现"没填"
+    if (price === '') return '单价留空（确属 0 元请显式填 0）'
+    if (!Number.isFinite(Number(price)) || Number(price) < 0) return '单价要是不小于 0 的数字'
+    return null
+  }
+  const validItems = createForm.items.filter((item) => itemIssue(item) === null)
   const createMutation = useMutation({
     mutationFn: () =>
       createOrder({
@@ -171,7 +188,18 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       return
     }
     if (!validItems.length) {
-      Toast.warning('至少要有一条完整明细（SKU、数量、单价）')
+      // 说清**是哪一行、差什么** —— "至少要有一条完整明细"这种话用户没法照着改
+      const reasons = createForm.items
+        .map((item, index) => {
+          const issue = itemIssue(item)
+          return issue ? `第 ${index + 1} 行：${issue}` : null
+        })
+        .filter(Boolean)
+      Toast.warning(
+        reasons.length
+          ? `明细还没填完 —— ${reasons.join('；')}`
+          : '至少要有一条完整明细（SKU、数量、单价）',
+      )
       return
     }
     createMutation.mutate()

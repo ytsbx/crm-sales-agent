@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Card, Popconfirm, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Card, Popconfirm, Tag, Toast, Tooltip } from '@douyinfe/semi-ui'
 
 import {
   confirmAgentAction,
@@ -289,17 +289,29 @@ export default function AgentPage() {
         </div>
         <div style={{ marginTop: 8, display: 'grid', gap: 4 }}>
           {(toolsQuery.data ?? []).map((tool) => (
-            <div key={tool.name} style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
-              <Tag color={RISK_TONE[tool.risk_level] ?? 'grey'} size="small">
-                {tool.risk_level}
-              </Tag>
-              <span style={{ color: 'var(--crm-text)' }}>{tool.label}</span>
-            </div>
+            // 悬停看这个工具具体能干什么。`description` 是后端随 `/agent/tools`
+            // 一起下发的「给用户看的中文说明」（和给模型看的函数名不是一回事），
+            // 以前前端拿到了却没展示，底下还写了一句"鼠标停上去可以看到具体能力"，
+            // 等于承诺了个没做的功能 —— 2026-10-14 补上。
+            <Tooltip key={tool.name} content={tool.description} position="right">
+              {/* cursor: default —— 这行是普通文字，浏览器默认给 I 形文本光标，
+                  鼠标划过去像在编辑框里，看着像坏了。改成箭头。 */}
+              <div
+                style={{
+                  fontSize: 12,
+                  display: 'flex',
+                  gap: 6,
+                  alignItems: 'center',
+                  cursor: 'default',
+                }}
+              >
+                <Tag color={RISK_TONE[tool.risk_level] ?? 'grey'} size="small">
+                  {tool.risk_level}
+                </Tag>
+                <span style={{ color: 'var(--crm-text)' }}>{tool.label}</span>
+              </div>
+            </Tooltip>
           ))}
-        </div>
-        <div style={{ marginTop: 8, color: 'var(--crm-text-3)', fontSize: 11, lineHeight: 1.6 }}>
-          鼠标停上去可以看到具体能力；函数名（如 search_customers）是系统内部标识，
-          界面上不用管它。
         </div>
       </SectionCard>
 

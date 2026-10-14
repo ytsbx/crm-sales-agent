@@ -27,6 +27,11 @@ export const SETTING_LABELS: Record<string, { label: string; description: string
   export_tax_refund_rate: { label: '出口退税率', description: '历史出口数据使用的默认退税率。' },
   pool_recycle_notice_days: { label: '公海回收预告期', description: '客户进入待复核前的预告天数。' },
   pool_recycle_defer_days: { label: '公海回收暂缓期', description: '主管暂缓回收后再次可复核前的等待天数。' },
+  pool_recycle_max_protect_days: {
+    label: '履约保护最长有效期',
+    description:
+      '有在途报价/订单/打样/未结应收的客户，保护最多持续这么多天；超过仍无活跃就照常提名（0 表示不设上限）。',
+  },
   pool_recycle_restore_permission: { label: '公海回收恢复权限', description: '允许把已回收客户恢复的权限。' },
   notification_channels: { label: '通知渠道', description: '站内通知和企业微信通知的开关与适用类型。' },
   notification_levels: { label: '通知分级', description: '不同通知类型采用即时发送或日报汇总。' },
@@ -39,4 +44,61 @@ export function settingLabel(key: string): string {
 
 export function settingDescription(key: string, fallback?: string | null): string {
   return SETTING_LABELS[key]?.description ?? fallback ?? '暂无说明'
+}
+
+/**
+ * 「这一项当前为什么看不出效果」——按配置项逐项说清，给设置页展示。
+ *
+ * 为什么需要（主人 2026-10-13）：设置列表里有一批配置**默认就取最保守的值**
+ * （关着 / 0 / 留空）。原因是底价怎么定、体积重系数给多少、走哪个钉钉模板
+ * 这类东西属于**业务口径**，开发不该替业务拍板 —— 所以做成开关，等业务给数。
+ * 但它们的界面表现跟"坏了"一模一样，管理员会反复来问。
+ *
+ * ⚠️ 只登记**当前不生效、或还要外部条件**的那几项。正常生效的不要在这里编话，
+ * 否则又变成"给对的东西贴错标签"。
+ *
+ * ⚠️ 文案里不要出现星号（项目约定：下发前端的字符串用「」强调）。
+ */
+export const SETTING_NOTES: Record<string, { tag: string; text: string }> = {
+  hard_floor: {
+    tag: '默认关闭',
+    text: '底价口径还没定，这条规则暂不生效（低于底价不会直接拒绝）；定了改成「按成本」或「成本加成」即生效。',
+  },
+  logistics_volumetric_ratio: {
+    tag: '默认关闭',
+    text: '0 表示不按体积折算，计费重只取实际重量；拿到业务口径后填上系数即生效。',
+  },
+  export_tax_refund_rate: {
+    tag: '当前用不上',
+    text: '只在出口业务核价时参与计算；当前核价只支持人民币，所以这项现在算不出效果。',
+  },
+  trade_mode: {
+    tag: '历史配置',
+    text: '保留历史贸易模式设置；当前核价只支持人民币，这项只在订单草稿页影响出口相关字段的显隐。',
+  },
+  dingtalk_oa: {
+    tag: '待配置',
+    text: '审批模板编号还是空的；业务定了用哪个钉钉模板后填上即生效，不用改代码。',
+  },
+  notification_channels: {
+    tag: '企微默认关闭',
+    text: '站内通知始终发送；企业微信要先在服务端把企微对接配好再打开，否则每次投递都会失败。',
+  },
+  notification_levels: {
+    tag: '默认不分级',
+    text: '还没有配置分级，所有通知都是即时推送；要让某类通知攒进日报，在这里配。',
+  },
+  pool_recycle_notice_days: {
+    tag: '开发默认值',
+    text: '7 天是开发默认值，不是已经确认的业务规则；改完立刻对新提名的候选生效（已在跑的候选不受影响）。',
+  },
+  pool_recycle_defer_days: {
+    tag: '开发默认值',
+    text: '30 天是开发默认值，不是已经确认的业务规则；口径定了改这里即可。',
+  },
+}
+
+/** 这一项当前为什么看不出效果；没有话要说时返回 null（不编说明）。 */
+export function settingNote(key: string): { tag: string; text: string } | null {
+  return SETTING_NOTES[key] ?? null
 }
