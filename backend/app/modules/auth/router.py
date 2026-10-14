@@ -278,7 +278,7 @@ def _dingtalk_redirect_uri(request: Request) -> str:
 #: 里的键，这里只补"流程本身"的三种情况 —— 两边合成一张表，前端不用再维护一份。
 _CALLBACK_FLOW_ERROR: dict[str, str] = {
     "state": "这次登录凭据已失效（页面停留过久或重复提交），请重新扫码",
-    "disabled_gate": "钉钉外部调用总闸关着，扫码登录暂不可用",
+    "disabled_gate": "钉钉扫码登录的闸关着，暂不可用，请联系管理员",
     "external": "和钉钉通讯时出错了，请稍后重试或改用账号密码登录",
 }
 
@@ -293,7 +293,7 @@ async def dingtalk_authorize(request: Request):
     """
     if not settings.dingtalk_login_ready:
         reason = (
-            "外部调用总闸关着（DINGTALK_PUSH_OFF=1）"
+            "登录闸关着（DINGTALK_LOGIN_OFF=1）"
             if (settings.dingtalk_app_key and settings.dingtalk_app_secret)
             else "钉钉应用凭据未配置（缺 DINGTALK_APP_KEY / DINGTALK_APP_SECRET）"
         )
