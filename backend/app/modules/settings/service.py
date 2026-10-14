@@ -215,12 +215,90 @@ DEFAULT_SETTINGS: dict[str, dict] = {
 #:
 #: 为什么必须挡在入口：预告期写成 -3 天，候选的到期时间会直接算成"过去"，
 #: 于是扫描一提名就立刻可回收；而这类错值往往要到半夜定时任务里才现形。
-SETTING_NUMBER_RULES: dict[str, tuple[str, int, int, str]] = {
-    # key: (字段名, 下限, 上限, 中文名)
-    "pool_recycle_notice_days": ("days", 0, 365, "回收预告期"),
-    "pool_recycle_defer_days": ("days", 0, 365, "主管暂缓等待期"),
-    "pool_recycle_max_protect_days": ("days", 0, 365, "履约保护最长有效期"),
+#: 数值类配置的校验规则：**(key, field) → (下限含义, 下限, 上限, 中文名)**。
+#:
+#: ⚠️ 键必须是 `(key, field)` 而不是 `key`（2026-10-14 修我自己的第一版）：
+#: 一个 key 可以有**多个**数值字段（`export` 就有 limit / alert_rows /
+#: alert_window_hours 三个），而**前端只提交被改的那一个**
+#: （`SettingsPage` 写的是 `{[key]: next}`，落库是整对象替换）。
+#: 我第一版按 key 索引，于是"只改 limit"时会拿 `alert_rows=None` 去校验 →
+#: **正常值也被拒**（实测 `export.limit=5000` 报"导出告警行数必须是整数天"）。
+#: 改成按字段索引后，**只校验本次真传了的字段**。
+#:
+#: 为什么要这张表（2026-10-14 审查）：这些配置读侧一直用 `get_number`，
+#: 而 `get_number` **只防 NaN/Inf/类型错，不查上下界** —— 写成负数/0 会被
+#: 原样拿去做业务且**不报错**。实测过的后果：
+#:   · `quote_valid_days = -30` → 新建报价 `valid_until = 今天-30`，**一出生就过期**；
+#:     同时履约保护里 `Quote.valid_until >= today` 不再成立 → 客户被错误回收；
+#:   · `customer_active_days / customer_stale_days = 0` → 两个 cutoff 反转，
+#:     全公司客户被判"沉睡/活跃"；
+#:   · `export.limit = 0` → 所有导出报 413「超过单次上限 0」。
+SETTING_NUMBER_RULES: dict[tuple[str, str], tuple[int, int, str]] = {
+    # (key, field): (下限, 上限, 中文名)
+    ("pool_recycle_notice_days", "days"): (0, 365, "回收预告期"),
+    ("pool_recycle_defer_days", "days"): (0, 365, "主管暂缓等待期"),
+    ("pool_recycle_max_protect_days", "days"): (0, 365, "履约保护最长有效期"),
+    ("quote_valid_days", "days"): (1, 365, "报价有效期"),
+    ("customer_active_days", "days"): (1, 3650, "客户活跃期"),
+    ("customer_stale_days", "days"): (1, 3650, "客户沉睡期"),
+    ("opportunity_risk_days", "days"): (1, 3650, "商机风险预警期"),
+    ("opportunity_stale_days", "days"): (1, 3650, "商机停滞预警期"),
+    ("contract", "monthly_remind_days"): (1, 365, "合同月结提醒提前天数"),
+    ("export", "limit"): (1, 1_000_000, "单次导出行数上限"),
+    ("export", "alert_rows"): (1, 10_000_000, "导出告警行数"),
+    ("export", "alert_window_hours"): (1, 720, "导出告警统计窗口"),
+    ("logistics_volumetric_ratio", "number"): (100, 100_000, "体积重换算系数"),
 }
+
+#: 比率类配置：**(key, field) → 中文名**。值是 0–1 之间的小数。
+#: 此前**完全没有范围校验**（上一轮审查的已知项），与天数类同一个洞：
+#: 写成 1.5 或 -0.2 会被当"授权利润率/折扣上限"用，审批门槛跟着一起歪
+#: （写大了=不拦，写负了=什么都拦）。
+SETTING_RATIO_RULES: dict[tuple[str, str], str] = {
+    ("default_min_margin", "ratio"): "默认最低毛利率",
+    ("default_target_margin", "ratio"): "默认目标毛利率",
+    ("price_range_ratio", "ratio"): "建议价区间比例",
+    ("hard_floor", "markup_ratio"): "硬底价加成比例",
+    ("export_tax_refund_rate", "ratio"): "出口退税率",
+}
+
+
+def _validate_number_settings(session_key: str, value: object) -> None:
+    """校验**本次传了的**数值/比率字段（没传的字段保持原值，不校验）。"""
+    payload = value if isinstance(value, dict) else {}
+    for (key, field), (low, high, label) in SETTING_NUMBER_RULES.items():
+        if key != session_key or field not in payload:
+            continue
+        _strict_int(payload.get(field), label, low, high)
+    for (key, field), label in SETTING_RATIO_RULES.items():
+        if key != session_key or field not in payload:
+            continue
+        _strict_ratio(payload.get(field), label)
+
+
+def _strict_ratio(raw: object, label: str) -> float:
+    """把比率配置严格读成 0–1 的小数（与 `_strict_int` 同一套口径）。"""
+    if isinstance(raw, bool):
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"{label}必须是 0–1 之间的小数，不能填真/假", 422
+        )
+    try:
+        number = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{label}必须是 0–1 之间的小数，收到的不是数字：{raw!r}",
+            422,
+        ) from None
+    if not math.isfinite(number):
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"{label}必须是有限数字（不能是 NaN/Infinity）", 422
+        )
+    if number < 0 or number > 1:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"{label}须在 0–1 之间（当前 {number}）", 422
+        )
+    return number
 
 
 def _strict_int(raw: object, label: str, low: int, high: int) -> int:
@@ -292,11 +370,10 @@ async def validate_setting_value(
     session: AsyncSession, key: str, value: dict | None
 ) -> None:
     """保存配置前的合法性校验。不合法直接 422，不让坏值落库。"""
-    rule = SETTING_NUMBER_RULES.get(key)
-    if rule is not None:
-        field, low, high, label = rule
-        _strict_int((value or {}).get(field), label, low, high)
-        return
+    # 数值/比率类：只校验**本次真传了的**字段（没传的保持原值）。
+    # 原来的 `return` 已去掉 —— 同一个 key 可能既有数值字段又有别的要求
+    # （`pool_recycle_restore_permission` 只有 text 字段，不受影响）。
+    _validate_number_settings(key, value)
 
     if key == "pool_recycle_restore_permission":
         from app.modules.user.model import Permission

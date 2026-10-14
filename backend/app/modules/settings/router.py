@@ -154,12 +154,24 @@ async def upsert_setting(
     # 校验放行 "13" 这种数字串，但直接存会把字符串写进 JSONB —— 于是
     # "保存值 / 展示值 / 执行值"三者形态不一致（执行时 int("13") 没问题，
     # 但下次读出来是字符串，别处一比较就出岔子）。这里统一成整数走到底。
+    # ⚠️ 规则表的键是 `(key, field)` 而不是 `key`（2026-10-14 修）：
+    # 一个 key 可以有多个数值字段（`export` 三个），而前端只提交被改的那一个。
+    # 判定"这个 key 有没有数值字段"必须按 key 扫一遍，不能 `key in 表`。
     stored_value = payload.value
     days: int | None = None
-    if payload.key in svc.SETTING_NUMBER_RULES:
-        field, low, high, label = svc.SETTING_NUMBER_RULES[payload.key]
-        days = svc._strict_int((payload.value or {}).get(field), label, low, high)
-        stored_value = {**(payload.value or {}), field: days}
+    for (key, field), (low, high, label) in svc.SETTING_NUMBER_RULES.items():
+        if key != payload.key:
+            continue
+        raw = (payload.value or {}).get(field)
+        if raw is None:
+            # 本次没传这个字段（前端只提交被改的那个）→ 保持原值，不归一化
+            continue
+        number = svc._strict_int(raw, label, low, high)
+        if field == "days":
+            # 「预告期 / 暂缓期」这类**单个 days 字段**的天数配置：
+            # 落库归一化成整数，并把新天数交给下面的候选重算
+            days = number
+        stored_value = {**(stored_value or {}), field: number}
 
     if row is None:
         row = SystemSetting(key=payload.key, description=payload.description)
