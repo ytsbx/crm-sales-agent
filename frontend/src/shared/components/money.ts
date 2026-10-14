@@ -19,11 +19,17 @@ export function currencyPrefix(currency?: string | null): string {
 
 /** 单笔金额：`¥1,000` / `USD 1,000` / `1,000（币种待核实）`；空值给 `-`。 */
 export function formatMoney(
-  value: number | null | undefined,
+  value: number | string | null | undefined,
   currency?: string | null,
 ): string {
   if (value === null || value === undefined) return '-'
-  const text = value.toLocaleString('zh-CN')
+  let text: string
+  if (typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value)) {
+    const [whole, fraction] = value.split('.')
+    text = BigInt(whole).toLocaleString('zh-CN') + (fraction === undefined ? '' : `.${fraction}`)
+  } else {
+    text = value.toLocaleString('zh-CN')
+  }
   const prefix = currencyPrefix(currency)
   return prefix ? `${prefix}${text}` : `${text}（币种待核实）`
 }

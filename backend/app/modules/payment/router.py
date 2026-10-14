@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import and_, delete, func, not_, or_, select
+from sqlalchemy import delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import idempotency
@@ -17,7 +17,6 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
-from app.core.timebase import today_business
 from app.modules.file import service as file_service
 from app.modules.file import storage
 from app.modules.file.model import FileRecord
@@ -65,26 +64,17 @@ async def list_receivables(
         # - 部分回款 = 收过一部分 **且还没到期**。
         # 不这样做的话，"到期了但今天还没刷新状态"的节点会躲过逾期筛选，
         # 与工作台/审批条件的口径对不上（那正是"两套账"的来源）。
-        received_sq = (
-            select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
-            .where(
-                PaymentRecord.receivable_plan_id == ReceivablePlan.id,
-                PaymentRecord.status == "confirmed",
-            )
-            .scalar_subquery()
-        )
-        overdue_cond = and_(
-            ReceivablePlan.status != "cancelled",
-            ReceivablePlan.due_date.is_not(None),
-            ReceivablePlan.due_date < today_business(),
-            ReceivablePlan.amount > received_sq,
-        )
+        received_sq = func.coalesce(svc.plan_received_expression(), 0)
+        overdue_cond = svc.plan_overdue_expression()
+        active = ReceivablePlan.status != "cancelled"
         if status == "overdue":
-            # 口径现算的逾期 **或** 人工登记过逾期的（`mark-overdue` 允许把
-            # 还没到期的节点直接标逾期，那是人的结论，不能被现算口径吞掉）
-            stmt = stmt.where(or_(overdue_cond, ReceivablePlan.status == "overdue"))
+            stmt = stmt.where(overdue_cond)
         elif status == "partial":
-            stmt = stmt.where(ReceivablePlan.status == "partial", not_(overdue_cond))
+            stmt = stmt.where(active, received_sq > 0, received_sq < ReceivablePlan.amount, not_(overdue_cond))
+        elif status == "paid":
+            stmt = stmt.where(active, received_sq > 0, received_sq >= ReceivablePlan.amount)
+        elif status == "pending":
+            stmt = stmt.where(active, received_sq <= 0, not_(overdue_cond))
         else:
             stmt = stmt.where(ReceivablePlan.status == status)
     if order_id:
@@ -500,8 +490,10 @@ async def delete_receivable(
             select(PaymentRecord.id).where(PaymentRecord.receivable_plan_id == plan_id)
         )
     ).first()
-    if paid:
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该应收节点已有回款记录，不能删除")
+    allocated = (await session.execute(select(PaymentAllocation.id).where(
+        PaymentAllocation.plan_id == plan_id).limit(1))).first()
+    if paid or allocated:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该应收节点已有回款记录或收款分配，不能删除；请先核对并调整回款分配", 422)
     order_id = plan.order_id
     before = await svc.serialize_plan(session, plan)
     await session.delete(plan)
@@ -855,6 +847,8 @@ async def update_payment_allocations(
                 )
 
     before = await svc.serialize_allocations(session, record.id)
+    before_mode = record.allocation_mode
+    record.allocation_mode = "manual"
     # 整份替换：删掉这笔回款的全部旧分配，按新的一份重建（都标 manual）
     await session.execute(
         delete(PaymentAllocation).where(PaymentAllocation.payment_id == record.id)
@@ -877,7 +871,7 @@ async def update_payment_allocations(
 
     # 重算受影响各期的状态（原来分到的期 + 现在分到的期，都可能变化）
     affected = {row["plan_id"] for row in before} | {row["plan_id"] for row in after}
-    for plan_id in affected:
+    for plan_id in sorted(affected):
         plan = await svc.lock_plan(session, plan_id)
         if plan is not None:
             await svc.recalc_plan(session, plan)
@@ -888,8 +882,8 @@ async def update_payment_allocations(
         action="update_allocations",
         business_type="payment",
         business_id=record.id,
-        before={"allocations": before, "reason": None},
-        after={"allocations": after, "reason": payload.reason},
+        before={"allocations": before, "allocation_mode": before_mode, "reason": None},
+        after={"allocations": after, "allocation_mode": "manual", "reason": payload.reason},
         ip=client_ip(request),
     )
     if order is not None:
@@ -1224,14 +1218,23 @@ async def plan_payments(
     session: AsyncSession = Depends(get_db),
 ):
     await svc.get_visible_plan(session, user, plan_id)
+    effective = svc.effective_allocations()
     rows = (
         await session.execute(
             select(PaymentRecord)
-            .where(PaymentRecord.receivable_plan_id == plan_id)
+            .where(or_(PaymentRecord.receivable_plan_id == plan_id,
+                       PaymentRecord.id.in_(select(effective.c.payment_id).where(effective.c.plan_id == plan_id))))
             .order_by(PaymentRecord.received_date.asc())
         )
     ).scalars().all()
-    return ok([await svc.serialize_payment(session, row) for row in rows])
+    items = []
+    for row in rows:
+        item = await svc.serialize_payment(session, row)
+        amount = sum((Decimal(a["amount_exact"]) for a in item["allocations"] if a["plan_id"] == plan_id), Decimal(0))
+        item["plan_allocated_amount"] = float(amount)
+        item["plan_allocated_amount_exact"] = str(amount)
+        items.append(item)
+    return ok(items)
 
 
 @router.get("/orders/{order_id}/finance-summary")

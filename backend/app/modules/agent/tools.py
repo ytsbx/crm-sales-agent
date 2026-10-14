@@ -903,6 +903,11 @@ async def _receivables_by_currency(
         key = _currency_of(code)
         received_amount[key] = received_amount.get(key, Decimal(0)) + Decimal(total or 0)
 
+    from app.modules.payment import service as payment_service
+    effective = payment_service.effective_allocations()
+    allocated_rows = (await ctx.session.execute(select(effective.c.currency, func.sum(effective.c.amount))
+        .where(effective.c.order_id.in_(order_ids)).group_by(effective.c.currency))).all()
+    allocated_by_currency = {_currency_of(code): Decimal(amount) for code, amount in allocated_rows}
     for code in sorted(set(plan_amount) | set(received_amount)):
         planned = plan_amount.get(code, Decimal(0))
         got = received_amount.get(code, Decimal(0))
@@ -911,6 +916,8 @@ async def _receivables_by_currency(
             "plan_count": plan_count.get(code, 0),
             "plan_amount": float(round(planned, 2)),
             "received_amount": float(round(got, 2)),
+            "allocated_amount": float(round(allocated_by_currency.get(code, Decimal(0)), 2)),
+            "unallocated_amount": float(round(max(got - allocated_by_currency.get(code, Decimal(0)), Decimal(0)), 2)),
             "unreceived_amount": float(round(planned - got, 2)),
         }
     return groups, list(plans)
@@ -982,23 +989,15 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
     groups, plans = await _receivables_by_currency(ctx, order_ids)
 
     # 逐节点未收金额：已确认回款要按**节点的**币种抵消，不能跨币种相减
-    received_by_plan: dict[int, Decimal] = {}
-    if plans:
-        rows = (
-            await ctx.session.execute(
-                select(
-                    PaymentRecord.receivable_plan_id,
-                    func.coalesce(func.sum(PaymentRecord.received_amount), 0),
-                )
-                .where(
-                    PaymentRecord.status == "confirmed",
-                    PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
-                )
-                .group_by(PaymentRecord.receivable_plan_id)
-            )
-        ).all()
-        received_by_plan = {int(pid): Decimal(total or 0) for pid, total in rows}
+    received_by_plan = await payment_service.confirmed_amounts(ctx.session, [p.id for p in plans])
+    # 逾期列表走**全项目唯一判据**（payment 侧 is_plan_overdue）：
+    # 旧实现按 `plan.status == "overdue"` 筛，而状态列可能因"时间自己走过、
+    # 没人写库"而不准（收过部分款+过期的那类尤其容易漏）。
+    # 2026-10-13 主人拍板：到期未收齐即逾期。
+    from app.modules.payment.service import is_plan_overdue
+    from app.core.timebase import today_business
 
+    _today = today_business()
     overdue = [
         {
             "order_id": plan.order_id,
@@ -1010,7 +1009,12 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
             ),
         }
         for plan in plans
-        if plan.status == "overdue"
+        if is_plan_overdue(
+            status=plan.status,
+            balance=Decimal(plan.amount or 0) - received_by_plan.get(plan.id, Decimal(0)),
+            due_date=plan.due_date,
+            today=_today,
+        )
     ]
 
     # 单币种时补一组顶层标量，方便模型直接引用与既有调用方复用；
@@ -1030,6 +1034,8 @@ async def get_receivables_summary(ctx: ToolContext, order_id: int | None = None)
                 "plan_count": only["plan_count"],
                 "plan_amount": only["plan_amount"],
                 "received_amount": only["received_amount"],
+                "allocated_amount": only["allocated_amount"],
+                "unallocated_amount": only["unallocated_amount"],
                 "unreceived_amount": only["unreceived_amount"],
             }
         )

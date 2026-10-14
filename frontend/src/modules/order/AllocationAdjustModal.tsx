@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react'
-import { Button, InputNumber, Modal, Select, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, TextArea, Toast } from '@douyinfe/semi-ui'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { updatePaymentAllocations, type Payment, type Receivable } from '../../shared/api/order'
+import { fillPaymentByDueDate, paymentCents, paymentMoney } from '../../shared/payment-allocation'
 import { formatMoney } from '../../shared/components/money'
 import BlockedHint from '../../shared/components/BlockedHint'
 import FormLabel from '../../shared/components/FormLabel'
@@ -57,7 +58,7 @@ export default function AllocationAdjustModal({
 function initialAmounts(payment: Payment | null): Record<number, string> {
   const initial: Record<number, string> = {}
   for (const row of payment?.allocations ?? []) {
-    initial[row.plan_id] = String(row.amount)
+    initial[row.plan_id] = row.amount_exact ?? String(row.amount)
   }
   return initial
 }
@@ -74,21 +75,20 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
   const [amounts, setAmounts] = useState<Record<number, string>>(() => initialAmounts(payment))
   const [reason, setReason] = useState('')
 
-  const total = useMemo(
-    () =>
-      Object.values(amounts).reduce((sum, value) => {
-        const parsed = Number(value)
-        return sum + (Number.isFinite(parsed) && parsed > 0 ? parsed : 0)
-      }, 0),
-    [amounts],
-  )
-  const received = payment?.received_amount ?? 0
-  const over = total > received + 0.0001
-  const diff = Number((received - total).toFixed(2))
-
+  const parsed = useMemo(() => {
+    try {
+      return { total: Object.values(amounts).reduce((sum, value) => sum + (value.trim() ? paymentCents(value) : 0n), 0n), valid: true }
+    } catch { return { total: 0n, valid: false } }
+  }, [amounts])
+  const total = paymentMoney(parsed.total)
+  const received = payment?.received_amount_exact ?? String(payment?.received_amount ?? 0)
+  const receivedCents = paymentCents(received)
+  const over = parsed.total > receivedCents
+  const diff = paymentMoney(over ? 0n : receivedCents - parsed.total)
   /** 拦提交的原因（灰键必须说得出为什么 —— 项目口径） */
   const blockedReasons = useMemo(() => {
     const reasons: string[] = []
+    if (!parsed.valid) reasons.push('分配金额必须是非负数，最多两位小数')
     if (!canEdit) reasons.push('只有持有「回款管理」权限的人才能调整分配')
     if (!payment || payment.status !== 'confirmed') {
       reasons.push('只有已确认的回款才谈得上分配；这笔还在待确认')
@@ -101,7 +101,7 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
     }
     if (!reason.trim()) reasons.push('要填一句调整原因（它会写进审计，事后要能回答为什么这么分）')
     return reasons
-  }, [canEdit, payment, over, total, received, currency, reason])
+  }, [canEdit, payment, over, total, received, currency, reason, parsed.valid])
 
   /**
    * 「按当前应收自动铺一遍」：按到期日从早到晚填各期空缺 ——
@@ -109,22 +109,7 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
    * 这样人按一下就能得到"系统会给的分法"，再在上面微调。
    */
   const fillByDueDate = () => {
-    let rest = received
-    const next: Record<number, string> = {}
-    const ordered = [...plans].sort((a, b) => {
-      const da = a.due_date ?? ''
-      const db = b.due_date ?? ''
-      return da === db ? a.id - b.id : da < db ? -1 : 1
-    })
-    for (const plan of ordered) {
-      if (rest <= 0) break
-      const need = Math.max(0, Number(plan.amount ?? 0) - Number(plan.received_amount ?? 0))
-      const take = Math.min(need, rest)
-      if (take > 0) {
-        next[plan.id] = String(Number(take.toFixed(2)))
-        rest = Number((rest - take).toFixed(2))
-      }
-    }
+    const { amounts: next, unallocated: rest } = fillPaymentByDueDate(received, plans, payment?.allocations ?? [])
     setAmounts(next)
     if (rest > 0) {
       Toast.info(
@@ -138,8 +123,8 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
     mutationFn: () =>
       updatePaymentAllocations(payment!.id, {
         allocations: Object.entries(amounts)
-          .map(([planId, value]) => ({ plan_id: Number(planId), amount: String(Number(value)) }))
-          .filter((row) => Number(row.amount) > 0),
+          .map(([planId, value]) => ({ plan_id: Number(planId), amount: value.trim() }))
+          .filter((row) => row.amount && paymentCents(row.amount) > 0n),
         reason: reason.trim(),
       }),
     onSuccess: () => {
@@ -147,6 +132,9 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
       queryClient.invalidateQueries({ queryKey: ['order-payments'] })
       queryClient.invalidateQueries({ queryKey: ['order-receivables'] })
       queryClient.invalidateQueries({ queryKey: ['order-milestones'] })
+      queryClient.invalidateQueries({ queryKey: ['order-finance'] })
+      queryClient.invalidateQueries({ queryKey: ['an-receivables'] })
+      queryClient.invalidateQueries({ queryKey: ['an-payments'] })
       onSaved()
       onClose()
     },
@@ -192,7 +180,7 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
         {plans.length === 0 ? (
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>本单还没有应收计划</div>
         ) : (
-          plans.map((plan) => {
+          plans.filter(plan => plan.status !== 'cancelled').map((plan) => {
             const current = (payment?.allocations ?? []).find((row) => row.plan_id === plan.id)
             return (
               <div
@@ -207,30 +195,18 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    应收 {formatMoney(plan.amount, plan.currency)}
+                    应收 {formatMoney(plan.amount_exact ?? plan.amount, plan.currency)}
                     {' · '}
-                    已分 {formatMoney(plan.received_amount, plan.currency)}
+                    已分 {formatMoney(plan.received_amount_exact ?? plan.received_amount, plan.currency)}
                     {plan.due_date ? ` · 到期 ${plan.due_date}` : ''}
                   </div>
                 </div>
-                <InputNumber
+                <Input
                   style={{ width: 160 }}
-                  min={0}
-                  precision={2}
                   disabled={!canEdit}
-                  value={amounts[plan.id] === undefined ? undefined : Number(amounts[plan.id])}
+                  value={amounts[plan.id] ?? ''}
                   placeholder="不分配"
-                  onChange={(value) =>
-                    setAmounts((prev) => {
-                      const next = { ...prev }
-                      if (value === undefined || value === null || Number(value) === 0) {
-                        delete next[plan.id]
-                      } else {
-                        next[plan.id] = String(value)
-                      }
-                      return next
-                    })
-                  }
+                  onChange={(value) => setAmounts(prev => ({ ...prev, [plan.id]: value }))}
                 />
               </div>
             )
@@ -253,14 +229,14 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
           分配合计 <b>{formatMoney(total, currency)}</b> / 这笔回款{' '}
           {formatMoney(received, currency)}
         </span>
-        {diff > 0 && !over && (
+        {parsed.total < receivedCents && !over && (
           <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             还有 {formatMoney(diff, currency)} 没有分到任何一期（会挂「待分配」）
           </span>
         )}
         {over && (
           <span style={{ fontSize: 12, color: 'var(--crm-error)' }}>
-            超出 {formatMoney(Number((total - received).toFixed(2)), currency)}
+            超出 {formatMoney(paymentMoney(parsed.total - receivedCents), currency)}
           </span>
         )}
       </div>

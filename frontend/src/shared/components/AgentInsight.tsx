@@ -61,7 +61,10 @@ const KEY_LABEL: Record<string, string> = {
   // —— 回款风险 summary（主人看到的那四个）——
   overdue_count: '逾期条数',
   overdue_amount: '逾期金额',
-  open_amount: '未收金额',
+  open_amount: '应收期未结金额',
+  received_amount: '实际到账金额',
+  allocated_amount: '已分配金额',
+  unallocated_amount: '已到账待分配金额',
   upcoming_count: '待到期条数',
 }
 

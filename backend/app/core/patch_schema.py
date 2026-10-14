@@ -534,6 +534,11 @@ FIELD_LABELS: dict[str, str] = {
     "images": "图片",
     "received_date": "收款日期",
     "received_amount": "回款金额",
+    "allocation_mode": "回款分配方式",
+    "allocations": "回款分配明细",
+    "allocated_amount": "已分配金额",
+    "unallocated_amount": "已到账待分配金额",
+    "amount_exact": "精确分配金额",
     "payment_method": "收款方式",
     "voucher_note": "凭证说明",
 }

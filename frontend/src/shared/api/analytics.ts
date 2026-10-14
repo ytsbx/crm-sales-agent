@@ -147,6 +147,9 @@ export interface SalesUserStat {
 }
 
 export interface ReceivableStats extends WithCurrencyWarnings {
+  allocated_amount: number
+  unallocated_amount: number
+  unsettled_plan_amount: number
   plan_amount: number
   received_amount: number
   unreceived_amount: number

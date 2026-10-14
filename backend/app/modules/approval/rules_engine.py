@@ -30,6 +30,7 @@ from app.core.timebase import today_business
 from app.core.trade_mode import reject_foreign_currency
 from app.modules.approval.model import ApprovalRule
 from app.modules.payment.model import ReceivablePlan
+from app.modules.payment import service as payment_service
 from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
 from app.modules.order.model import SalesOrder
 
@@ -512,11 +513,20 @@ async def build_context(
             0.0, float((prev_version.total_amount or 0) - (version.total_amount or 0))
         )
 
+    # 「客户有逾期应收」条件（2026-10-13 口径统一）：
+    # 判定按**余额 + 到期日**，不再只看节点状态列 —— 状态列可能因"时间自己走过、
+    # 没人写库"而不准，而"收过部分款 + 已过期"这类正是要被抓出来的风险
+    # （改前它显示"部分回款"、条件不命中，大额未收就被放过）。
+    # 与 payment/analytics/AI 共用同一口径（payment.service.is_plan_overdue）。
     overdue_exists = (
         await session.execute(
             select(ReceivablePlan.id)
             .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
-            .where(SalesOrder.customer_id == customer_id, ReceivablePlan.status == "overdue")
+            .where(
+                SalesOrder.customer_id == customer_id,
+                SalesOrder.status != "cancelled",
+                payment_service.plan_overdue_expression(),
+            )
             .limit(1)
         )
     ).scalar_one_or_none()

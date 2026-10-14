@@ -395,7 +395,7 @@ async def test_confirm_locks_shared_plan_before_payment_record(pay_db, pay, quie
     order_locks = lock_indexes(pay.statements, "sales_orders")
     plan_locks = lock_indexes(pay.statements, "receivable_plans")
     payment_locks = lock_indexes(pay.statements, "payment_records")
-    sums = indexes(pay.statements, "sum(payment_records.received_amount)")
+    sums = indexes(pay.statements, "sum(effective_payment_allocations.amount)")
 
     assert order_locks, "确认必须先锁所属订单"
     assert plan_locks, "确认必须先锁共同应收节点（修前完全没有这把锁）"
@@ -457,7 +457,7 @@ async def test_update_payment_amount_recalcs_inside_plan_lock(pay_db, pay):
 
     plan_locks = lock_indexes(pay.statements, "receivable_plans")
     payment_locks = lock_indexes(pay.statements, "payment_records")
-    sums = indexes(pay.statements, "sum(payment_records.received_amount)")
+    sums = indexes(pay.statements, "sum(effective_payment_allocations.amount)")
     assert plan_locks and payment_locks
     assert plan_locks[0] < payment_locks[0]
     assert sums and sums[0] > plan_locks[0]

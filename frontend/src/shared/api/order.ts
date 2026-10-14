@@ -79,6 +79,8 @@ export interface Receivable {
   plan_name: string
   due_date: string
   amount: number
+  amount_exact?: string
+  received_amount_exact?: string
   received_amount: number
   remaining_amount: number
   status: string
@@ -95,6 +97,9 @@ export interface Payment {
   receivable_plan_id?: number | null
   plan_name?: string | null
   received_date: string
+  received_amount_exact?: string
+  allocated_amount_exact?: string
+  unallocated_amount_exact?: string
   received_amount: number
   payment_method?: string | null
   voucher_note?: string | null
@@ -114,6 +119,11 @@ export interface Payment {
    * 超收时多出来的部分会按到期日自动抵到后续期，两者就不一致了。
    * 列表上"登记的期"与这里的分配合起来看，才知道这笔钱到底冲了哪几期。
    */
+  allocated_amount?: number
+  unallocated_amount?: number
+  allocation_mode?: string
+  /** 整笔到账金额仍是 received_amount；此字段是当前查询期的分配金额。 */
+  plan_allocated_amount?: number
   allocations?: PaymentAllocationRow[]
 }
 
@@ -121,6 +131,7 @@ export interface PaymentAllocationRow {
   plan_id: number
   plan_name: string
   due_date?: string | null
+  amount_exact?: string
   amount: number
   /** `auto` = 确认时按到期日自动分；`manual` = 人工调整过 */
   source: string
@@ -130,6 +141,9 @@ export interface FinanceSummary {
   order_amount: number
   planned_amount: number
   received_amount: number
+  allocated_amount: number
+  unallocated_amount: number
+  unsettled_plan_amount: number
   pending_confirm_amount: number
   unreceived_amount: number
   plan_count: number

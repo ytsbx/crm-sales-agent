@@ -237,12 +237,15 @@ async def probe_milestones(session, owner_id: int, user):
     )
     session.add(early_plan)
     await session.flush()
-    session.add(PaymentRecord(
+    early_receipt = PaymentRecord(
         order_id=order.id, receivable_plan_id=early_plan.id, received_date=date(2026, 9, 5),
         received_amount=Decimal("1000"), currency="CNY", status="confirmed",
         confirmed_at=datetime.now(UTC), created_at=datetime.now(UTC),
-    ))
+    )
+    session.add(early_receipt)
     await session.flush()
+    # 确认入口明确分配；同步节点只读，不再懒改回款归属。
+    await payment_service.allocate_payment(session, early_receipt, operator_id=user.id)
     await milestones_svc.sync_payment_milestones(session, order.id)
     await session.flush()
     check("补录更早回款后定金日重算", nodes["deposit"].actual_date, date(2026, 9, 5))

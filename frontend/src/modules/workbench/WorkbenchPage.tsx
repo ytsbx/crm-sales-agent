@@ -160,7 +160,7 @@ export default function WorkbenchPage() {
     {
       label: '本月回款金额',
       value: money(summary?.month_received_amount),
-      footer: `待回款 ${money(summary?.pending_receivable_amount)}`,
+      footer: `应收期未结 ${money(summary?.pending_receivable_amount)}（含已到账待分配）`,
       tone: 'chip',
       onClick: () => navigate('/receivables'),
     },

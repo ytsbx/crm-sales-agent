@@ -111,6 +111,9 @@ class PaymentRecord(Base, IdMixin):
 
     receivable_plan_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     order_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("sales_orders.id"))
+    # legacy：历史隐含归属；auto：系统分配；manual：完整人工决定（包括空分配）。
+    # 必须独立于分配行保存，否则“人工清空”和“从未分配”无法区分。
+    allocation_mode: Mapped[str] = mapped_column(String(16), default="legacy", server_default="legacy")
     received_date: Mapped[date] = mapped_column(Date)
     received_amount: Mapped[Decimal] = mapped_column(Numeric(16, 2), default=0)
     currency: Mapped[str] = mapped_column(String(8), default="CNY")

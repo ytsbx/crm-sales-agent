@@ -453,12 +453,17 @@ export default function AnalyticsPage() {
           {
             label: '应收合计',
             value: money(receivable?.plan_amount),
-            hint: `已收 ${money(receivable?.received_amount)}`,
+            hint: `实际到账 ${money(receivable?.received_amount)} · 已分配 ${money(receivable?.allocated_amount)}`,
           },
           {
-            label: '未回款',
+            label: '尚未到账',
             value: money(receivable?.unreceived_amount),
             hint: `逾期节点 ${receivable?.overdue_count ?? 0}`,
+          },
+          {
+            label: '已到账待分配',
+            value: money(receivable?.unallocated_amount),
+            hint: `应收期未结 ${money(receivable?.unsettled_plan_amount)}，请先核对分配再催款`,
           },
           {
             label: '线索转化率',

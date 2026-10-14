@@ -51,61 +51,91 @@ def _f(value: Decimal | None) -> float | None:
     return None if value is None else float(value)
 
 
-async def confirmed_amount(session: AsyncSession, plan_id: int) -> Decimal:
-    """某一期**实际分配到的**已确认金额（第十批主人 2026-10-13 定的口径）。
+def effective_allocations():
+    """唯一按期金额来源：有效已确认分配 + 尚未初始化的历史隐含归属。
 
-    ## 为什么不再按 `payment_records.receivable_plan_id` 汇总
-
-    那个列是"登记时选的那一期"（用户意图），不是"这笔钱实际覆盖了哪些期"。
-    两者只在**不超收**时一致。主人定的口径要求"每一期必须实际分配的金额达到
-    该期应收金额才能算完成"，所以汇总必须读**分配表**：
-
-      · 一条 200 的回款挂在一期应收 100 上 → 只有 100 属于这一期，
-        另外 100 按到期日自动抵到后续期（`allocate_payment`）；
-      · 读 `receivable_plan_id` 会把 200 全算给一期，二期永远显示未收
-        （这正是改造前的实测现象）。
-
-    ⚠️ 返回的是**已确认**回款的分配额；未确认（pending/rejected）的钱不算已收。
+    只读；manual 空分配与 auto 待分配均不回退到登记期。历史兜底只用于
+    legacy 且整笔没有分配行的回款，并验证订单归属，防双计和跨订单混账。
     """
+    from sqlalchemy import union_all
     allocated = (
-        await session.execute(
-            select(func.coalesce(func.sum(PaymentAllocation.amount), 0))
-            .join(PaymentRecord, PaymentRecord.id == PaymentAllocation.payment_id)
-            .where(
-                PaymentAllocation.plan_id == plan_id,
-                PaymentRecord.status == "confirmed",
-            )
-        )
-    ).scalar_one()
-    # ⚠️ **兜底**：**从未有过任何分配**的已确认回款，仍按 `receivable_plan_id` 计入。
-    #
-    # 判据是"这笔回款**在整个系统里**一条分配都没有"，不是"对**这一期**没有分配"
-    # —— 后者会漏一个大洞（2026-10-13 实测踩到）：
-    #   人工把 200 全改分给二期之后，一期就没有分配行了；若按"对这一期没分配"
-    #   去兜底，这 200 又被算回一期 → **一期凭空显示已收 200**（双计），
-    #   而它其实一分钱都没分到。
-    #
-    # 为什么还需要兜底（2026-10-13 加）：
-    #   · 迁移只回填了**当时已存在**的已确认回款；之后若有代码路径/人工补数
-    #     插入"有回款、无分配"的行（实测：有 15 个既有测试脚本与部分历史数据
-    #     就是这种形状），按分配表汇总会把这些钱**算成没收**，
-    #     于是"明明收齐了却显示未收"——比改造前的毛病更难查；
-    #   · 兜底只认"**完全没有**分配行的回款"：已经分配过的回款不再按
-    #     `receivable_plan_id` 计一次，避免**双计**（一笔 200 分成 100+100 时，
-    #     若两边都算，一期会显示 200）。
-    unallocated = (
-        await session.execute(
-            select(func.coalesce(func.sum(PaymentRecord.received_amount), 0)).where(
-                PaymentRecord.receivable_plan_id == plan_id,
-                PaymentRecord.status == "confirmed",
-                # "这笔回款一条分配都没有"（而不是"对这一期没有"）
-                ~select(PaymentAllocation.id)
-                .where(PaymentAllocation.payment_id == PaymentRecord.id)
-                .exists(),
-            )
-        )
-    ).scalar_one()
-    return Decimal(allocated) + Decimal(unallocated)
+        select(PaymentAllocation.payment_id.label("payment_id"),
+               PaymentAllocation.plan_id.label("plan_id"),
+               PaymentRecord.order_id.label("order_id"),
+               PaymentRecord.currency.label("currency"), PaymentAllocation.amount.label("amount"))
+        .join(PaymentRecord, PaymentRecord.id == PaymentAllocation.payment_id)
+        .join(ReceivablePlan, ReceivablePlan.id == PaymentAllocation.plan_id)
+        .where(PaymentRecord.status == "confirmed", ReceivablePlan.order_id == PaymentRecord.order_id)
+    )
+    legacy = (
+        select(PaymentRecord.id.label("payment_id"), ReceivablePlan.id.label("plan_id"),
+               PaymentRecord.order_id.label("order_id"), PaymentRecord.currency.label("currency"),
+               PaymentRecord.received_amount.label("amount"))
+        .join(ReceivablePlan, ReceivablePlan.id == PaymentRecord.receivable_plan_id)
+        .where(PaymentRecord.status == "confirmed", PaymentRecord.allocation_mode == "legacy",
+               ReceivablePlan.order_id == PaymentRecord.order_id,
+               ~select(PaymentAllocation.id).where(PaymentAllocation.payment_id == PaymentRecord.id).exists())
+    )
+    return union_all(allocated, legacy).subquery("effective_payment_allocations")
+
+
+def plan_received_totals():
+    effective = effective_allocations()
+    return (select(effective.c.plan_id, func.sum(effective.c.amount).label("paid"))
+            .group_by(effective.c.plan_id).subquery())
+
+
+def plan_received_expression():
+    totals = plan_received_totals()
+    return (select(func.coalesce(totals.c.paid, 0)).where(totals.c.plan_id == ReceivablePlan.id)
+            .correlate(ReceivablePlan).scalar_subquery())
+
+
+def plan_overdue_expression():
+    from sqlalchemy import and_, or_
+    return and_(ReceivablePlan.status != "cancelled", ReceivablePlan.due_date.is_not(None),
+                ReceivablePlan.amount > func.coalesce(plan_received_expression(), 0),
+                or_(ReceivablePlan.status == "overdue", ReceivablePlan.due_date < today_business()))
+
+
+async def confirmed_amounts(session, plan_ids):
+    ids = list(plan_ids)
+    if not ids:
+        return {}
+    totals = plan_received_totals()
+    rows = (await session.execute(select(totals.c.plan_id, totals.c.paid)
+                                  .where(totals.c.plan_id.in_(ids)))).all()
+    return {pid: Decimal(amount) for pid, amount in rows}
+
+
+async def confirmed_amount(session: AsyncSession, plan_id: int) -> Decimal:
+    return (await confirmed_amounts(session, [plan_id])).get(plan_id, ZERO)
+
+
+async def allocation_totals(session, order_ids):
+    """Actual receipts / effective allocations / unallocated cash; one row per order.
+
+    Per-receipt unallocated cash is floored at zero, so an overallocated historical
+    receipt cannot hide another receipt's unallocated cash.
+    """
+    ids = list(order_ids)
+    if not ids:
+        return {}
+    effective = effective_allocations()
+    sums = (select(effective.c.payment_id, func.sum(effective.c.amount).label("amount"))
+            .group_by(effective.c.payment_id).subquery())
+    rows = (await session.execute(select(PaymentRecord.order_id, PaymentRecord.received_amount,
+                                        func.coalesce(sums.c.amount, 0))
+            .outerjoin(sums, sums.c.payment_id == PaymentRecord.id)
+            .where(PaymentRecord.order_id.in_(ids), PaymentRecord.status == "confirmed"))).all()
+    result = {}
+    for oid, cash, allocated in rows:
+        value = result.setdefault(oid, {"received_amount": ZERO, "allocated_amount": ZERO, "unallocated_amount": ZERO})
+        cash, allocated = Decimal(cash), Decimal(allocated)
+        value["received_amount"] += cash
+        value["allocated_amount"] += allocated
+        value["unallocated_amount"] += max(cash - allocated, ZERO)
+    return result
 
 
 async def serialize_allocations(session: AsyncSession, payment_id: int) -> list[dict]:
@@ -114,24 +144,16 @@ async def serialize_allocations(session: AsyncSession, payment_id: int) -> list[
     带 `plan_name` / `due_date`：审计里光有 `plan_id` 说不清"原来算在哪一期"，
     而主人明确要求审计要能回答**原归属期数 → 新归属期数**。
     """
-    rows = (
-        await session.execute(
-            select(PaymentAllocation, ReceivablePlan)
-            .join(ReceivablePlan, ReceivablePlan.id == PaymentAllocation.plan_id)
-            .where(PaymentAllocation.payment_id == payment_id)
-            .order_by(ReceivablePlan.due_date.asc(), ReceivablePlan.id.asc())
-        )
-    ).all()
-    return [
-        {
-            "plan_id": allocation.plan_id,
-            "plan_name": plan.plan_name,
-            "due_date": plan.due_date.isoformat() if plan.due_date else None,
-            "amount": _f(allocation.amount),
-            "source": allocation.source,
-        }
-        for allocation, plan in rows
-    ]
+    effective = effective_allocations()
+    rows = (await session.execute(select(effective.c.plan_id, ReceivablePlan.plan_name,
+                 ReceivablePlan.due_date, effective.c.amount, PaymentAllocation.source)
+        .join(ReceivablePlan, ReceivablePlan.id == effective.c.plan_id)
+        .outerjoin(PaymentAllocation, (PaymentAllocation.payment_id == effective.c.payment_id)
+                   & (PaymentAllocation.plan_id == effective.c.plan_id))
+        .where(effective.c.payment_id == payment_id)
+        .order_by(ReceivablePlan.due_date, ReceivablePlan.id))).all()
+    return [{"plan_id": pid, "plan_name": name, "due_date": due.isoformat() if due else None,
+             "amount": _f(amount), "amount_exact": str(amount), "source": source or "legacy"} for pid, name, due, amount, source in rows]
 
 
 async def _plan_allocated(session: AsyncSession, plan_id: int) -> Decimal:
@@ -147,8 +169,8 @@ async def allocate_payment(
     ## 规则（主人 2026-10-13 拍板）
 
     1. 一笔银行流水仍然只有一行 `payment_records` —— 超出的部分**不拆记录**；
-    2. 先补**人工**分配（`source='manual'`）：人定过的归属系统不许改
-       （主人：「不能擅自调整已经登记的收款归属」）；
+    2. **完整人工决定**（包括空分配）保持原样：人定过的归属系统不许改
+       （主人：「不能擅自调整已经登记的收款归属」），其余金额保留待分配；
     3. 剩下的额度按**到期日从早到晚**填各期的空缺
        （该期应收 − 已分配额），填满一期再下一期；
     4. 全部应收都填满后仍有余额 → **不分配**（挂"待分配"）。
@@ -160,15 +182,30 @@ async def allocate_payment(
     重复确认、或先确认后被别的回款改变分布，都会得到一致结果。
     人工分配始终保留，且优先级高于自动。
     """
+    if record.status != "confirmed":
+        return ZERO
+    if record.allocation_mode == "manual":
+        return Decimal((await session.execute(select(func.coalesce(func.sum(PaymentAllocation.amount), 0))
+            .where(PaymentAllocation.payment_id == record.id))).scalar_one())
+    # 历史已有人工行也按完整决定保护（兼容迁移前数据）。
     # ① 保留人工分配，清掉旧的自动分配（重算）
+    # ⚠️ 先按统一锁序取这几行的行锁，再读改写（见文件开头那张锁序表）。
+    # 这些行本来就要被重写（先删 auto 再插新的），不取锁的话
+    # "两笔并发重算同一个订单"会互相覆盖。
     manual_rows = (
         await session.execute(
-            select(PaymentAllocation).where(
+            select(PaymentAllocation)
+            .where(
                 PaymentAllocation.payment_id == record.id,
                 PaymentAllocation.source == "manual",
             )
+            .with_for_update()
         )
     ).scalars().all()
+    if manual_rows:
+        record.allocation_mode = "manual"
+        return sum((Decimal(row.amount) for row in manual_rows), ZERO)
+    record.allocation_mode = "auto"
     await session.execute(
         delete(PaymentAllocation).where(
             PaymentAllocation.payment_id == record.id,
@@ -249,7 +286,7 @@ async def rebalance_order_allocations(
     额度，后登记的往后排 —— 与"先到账先冲抵"的直觉一致，且结果确定（不依赖
     数据库返回顺序）。
 
-    人工调过分配的回款：其人工部分原样保留，剩余额度仍参与自动平衡。
+    人工调过分配的回款整笔保持原样，剩余额度保持待分配。
     """
     records = (
         await session.execute(
@@ -271,15 +308,11 @@ async def _auto_allocated_excluding(
     session: AsyncSession, plan_id: int, exclude_payment_id: int
 ) -> Decimal:
     """某一期**除这笔回款之外**已分配到的确认金额（用于算"还差多少"）。"""
+    effective = effective_allocations()
     total = (
         await session.execute(
-            select(func.coalesce(func.sum(PaymentAllocation.amount), 0))
-            .join(PaymentRecord, PaymentRecord.id == PaymentAllocation.payment_id)
-            .where(
-                PaymentAllocation.plan_id == plan_id,
-                PaymentAllocation.payment_id != exclude_payment_id,
-                PaymentRecord.status == "confirmed",
-            )
+            select(func.coalesce(func.sum(effective.c.amount), 0))
+            .where(effective.c.plan_id == plan_id, effective.c.payment_id != exclude_payment_id)
         )
     ).scalar_one()
     return Decimal(total)
@@ -294,7 +327,7 @@ def is_plan_overdue(
     - 到期日已过、且**没有收齐**（余额 > 0）→ 逾期。**收过一部分也算**
       （改前"付了 1 元就不算逾期"会把大额未收货款藏住，主人点名要改）；
     - 已取消（`cancelled`）不算逾期 —— 它是终态，不参与催收；
-    - 没有到期日（理论上建节点必填，防脏数据）不算逾期；
+    - 人工标记的逾期也须仍有余额；没有到期日不算逾期；
     - 收齐了（余额 ≤ 0）不算逾期。
 
     改口径时**只改这一处**：报表、AI、审批规则全部引用它，
@@ -304,7 +337,7 @@ def is_plan_overdue(
         status != "cancelled"
         and due_date is not None
         and balance > ZERO
-        and due_date < today
+        and (status == "overdue" or due_date < today)
     )
 
 
@@ -362,27 +395,21 @@ async def refresh_overdue_plans(session: AsyncSession) -> int:
     只扫到期日已过、状态未终态、且金额大于已确认回款的行 —— 一条 SQL 捞出来，
     不受数据量增长影响。
     """
-    received_sq = (
-        select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
-        .where(
-            PaymentRecord.receivable_plan_id == ReceivablePlan.id,
-            PaymentRecord.status == "confirmed",
-        )
-        .scalar_subquery()
-    )
-    plans = (
-        await session.execute(
-            select(ReceivablePlan).where(
-                ReceivablePlan.status.in_(("pending", "partial")),
-                ReceivablePlan.due_date.is_not(None),
-                ReceivablePlan.due_date < today_business(),
-                ReceivablePlan.amount > received_sq,
-            )
-        )
-    ).scalars().all()
-    for plan in plans:
-        await recalc_plan(session, plan)
-    return len(plans)
+    order_ids = (await session.execute(select(ReceivablePlan.order_id).where(
+        plan_overdue_expression()).distinct().order_by(ReceivablePlan.order_id))).scalars().all()
+    changed = 0
+    for oid in order_ids:
+        order = await lock_order(session, oid)
+        if order is None or order.status == "cancelled":
+            continue
+        plans = (await session.execute(select(ReceivablePlan).where(
+            ReceivablePlan.order_id == oid, ReceivablePlan.status != "cancelled")
+            .order_by(ReceivablePlan.id).with_for_update().execution_options(populate_existing=True))).scalars().all()
+        for plan in plans:
+            before = plan.status
+            await recalc_plan(session, plan)
+            changed += plan.status != before
+    return changed
 
 
 async def serialize_plan(session: AsyncSession, plan: ReceivablePlan) -> dict:
@@ -407,6 +434,8 @@ async def serialize_plan(session: AsyncSession, plan: ReceivablePlan) -> dict:
         "plan_name": plan.plan_name,
         "due_date": plan.due_date,
         "amount": _f(plan.amount),
+        "amount_exact": str(plan.amount),
+        "received_amount_exact": str(received),
         "received_amount": _f(received),
         "remaining_amount": _f(balance),
         "currency": plan.currency,
@@ -427,6 +456,10 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         await session.get(FileRecord, record.voucher_file_id) if record.voucher_file_id else None
     )
     confirmer = await session.get(User, record.confirmed_by) if record.confirmed_by else None
+    allocations = await serialize_allocations(session, record.id) if record.status == "confirmed" else []
+    effective = effective_allocations()
+    allocated = Decimal((await session.execute(select(func.coalesce(func.sum(effective.c.amount), 0))
+        .where(effective.c.payment_id == record.id))).scalar_one())
     return {
         "id": record.id,
         "order_id": record.order_id,
@@ -435,6 +468,12 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         "plan_name": plan.plan_name if plan else None,
         "received_date": record.received_date,
         "received_amount": _f(record.received_amount),
+        "received_amount_exact": str(record.received_amount),
+        "allocated_amount_exact": str(allocated),
+        "unallocated_amount_exact": str(max((record.received_amount or ZERO) - allocated, ZERO)) if record.status == "confirmed" else "0.00",
+        "allocated_amount": _f(allocated),
+        "unallocated_amount": _f(max((record.received_amount or ZERO) - allocated, ZERO)) if record.status == "confirmed" else 0.0,
+        "allocation_mode": record.allocation_mode,
         "currency": record.currency,
         "payment_method": record.payment_method,
         "voucher_note": record.voucher_note,
@@ -449,11 +488,7 @@ async def serialize_payment(session: AsyncSession, record: PaymentRecord) -> dic
         #: 这笔钱**实际分到哪几期、各多少**（第十批）；未确认时为空。
         #: 带上它，前端"调整分配"弹窗就不用再发一次请求，而且列表上能一眼看出
         #: "登记的期"与"实际分的期"是否一致（超收时两者会不同）。
-        "allocations": (
-            await serialize_allocations(session, record.id)
-            if record.status == "confirmed"
-            else []
-        ),
+        "allocations": allocations,
     }
 
 
@@ -467,9 +502,16 @@ async def get_plan_or_404(session: AsyncSession, plan_id: int) -> ReceivablePlan
 # ---------------------------------------------------------------------------
 # 锁（第七批 7.9）
 #
-# 统一锁序：**sales_orders → receivable_plans → payment_records**。
+# 统一锁序：**sales_orders → receivable_plans → payment_records → payment_allocations**。
 # 会同时碰多张表的写入路径一律按这个顺序取行锁，任何两笔事务都不会互相
 # 持锁等待，也就不可能成环。谁要加新锁，先看这里再决定放在哪一段。
+#
+# ⚠️ `payment_allocations`（第十批新增）排在**最后**：它是"这笔回款怎么分"的明细，
+# 只会由"已经锁住订单与节点"的路径改写（确认回款、人工调整分配、应收改额后的重算），
+# 所以放末尾既符合现有顺序，也不需要改动既有路径的取锁次序。
+# `allocate_payment` 会**先取这些行的锁再改**（不是直接 UPDATE）——
+# 直接 UPDATE 也会拿行锁，但那样"读—改—写"之间没有串行化点，
+# 两笔并发重算可能互相覆盖。
 # ---------------------------------------------------------------------------
 async def lock_order(session: AsyncSession, order_id: int) -> SalesOrder | None:
     """按统一锁序锁住订单行；不存在返回 None（由调用方决定报什么错）。
@@ -860,26 +902,15 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
     # 逾期计数按**余额**算（收过部分款+过期也算），与 `is_plan_overdue` 同一口径。
     # 状态列也可能过期没刷新（时间自己走过），所以这里不依赖 status == "overdue"。
     today = today_business()
-    balances: dict[int, Decimal] = {}
-    if plans:
-        rows = (
-            await session.execute(
-                select(
-                    PaymentRecord.receivable_plan_id,
-                    func.coalesce(func.sum(PaymentRecord.received_amount), 0),
-                )
-                .where(
-                    PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
-                    PaymentRecord.status == "confirmed",
-                )
-                .group_by(PaymentRecord.receivable_plan_id)
-            )
-        ).all()
-        balances = {int(pid): Decimal(total) for pid, total in rows}
+    balances = await confirmed_amounts(session, [p.id for p in plans])
+    totals = (await allocation_totals(session, [order_id])).get(order_id, {})
     total = order.total_amount if order else ZERO
     return {
         "order_amount": _f(total),
-        "planned_amount": _f(sum((p.amount for p in plans), ZERO)),
+        "planned_amount": _f(sum((p.amount for p in plans if p.status != "cancelled"), ZERO)),
+        "allocated_amount": _f(totals.get("allocated_amount", ZERO)),
+        "unallocated_amount": _f(totals.get("unallocated_amount", ZERO)),
+        "unsettled_plan_amount": _f(sum((max(p.amount - balances.get(p.id, ZERO), ZERO) for p in plans if p.status != "cancelled"), ZERO)),
         "received_amount": _f(Decimal(received)),
         "pending_confirm_amount": _f(Decimal(pending_confirm)),
         "unreceived_amount": _f((total or ZERO) - Decimal(received)),
@@ -888,8 +919,7 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
             [
                 p
                 for p in plans
-                if p.status == "overdue"
-                or is_plan_overdue(
+                if is_plan_overdue(
                     status=p.status,
                     balance=(p.amount or ZERO) - balances.get(p.id, ZERO),
                     due_date=p.due_date,

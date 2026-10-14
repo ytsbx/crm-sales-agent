@@ -22,7 +22,7 @@ from app.core.timebase import today_business
 from app.modules.customer import duplicates
 from app.modules.customer.model import Customer, CustomerOwnerHistory
 from app.modules.order.model import ORDER_STATUS_LABEL, SalesOrder
-from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.payment.model import ReceivablePlan
 from app.modules.quote.model import QUOTE_STATUS_LABEL, Quote, QuoteVersion
 from app.modules.sample.model import (
     CONFIRM_ACCEPTED,
@@ -1755,18 +1755,12 @@ async def notify_due_followups(session: AsyncSession) -> int:
 
 async def confirmed_not_paid_count(session: AsyncSession) -> int:
     """给设置页用的小指标：已确认回款但节点还没结清的条数。"""
-    rows = (
-        await session.execute(
-            select(PaymentRecord.receivable_plan_id).where(PaymentRecord.status == "confirmed").distinct()
-        )
-    ).scalars().all()
-    if not rows:
-        return 0
-    plans = (
-        await session.execute(
-            select(ReceivablePlan.id).where(
-                ReceivablePlan.id.in_([int(x) for x in rows if x]), ReceivablePlan.status != "paid"
-            )
-        )
-    ).scalars().all()
-    return len(plans)
+    from decimal import Decimal
+    from app.modules.payment import service as payment_service
+    effective = payment_service.effective_allocations()
+    plans = (await session.execute(select(ReceivablePlan)
+        .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
+        .where(ReceivablePlan.id.in_(select(effective.c.plan_id)),
+               ReceivablePlan.status != "cancelled", SalesOrder.status != "cancelled"))).scalars().all()
+    amounts = await payment_service.confirmed_amounts(session, [p.id for p in plans])
+    return sum(amounts.get(p.id, Decimal(0)) < p.amount for p in plans)

@@ -827,14 +827,23 @@ export default function OrderDetailPage() {
           items={[
             { label: '订单金额', value: formatMoney(order.total_amount, order.currency) },
             {
-              label: '已回款（财务已确认）',
+              label: '实际到账（财务已确认）',
               value: formatMoney(order.received_amount, order.currency),
               tone: 'success',
             },
             {
-              label: '待回款',
+              label: '尚未到账',
               value: formatMoney(order.unreceived_amount, order.currency),
               tone: order.unreceived_amount > 0 ? 'warning' : 'default',
+            },
+            {
+              label: '已分配到应收期',
+              value: formatMoney(summary?.allocated_amount ?? 0, order.currency),
+            },
+            {
+              label: '已到账待分配',
+              value: formatMoney(summary?.unallocated_amount ?? 0, order.currency),
+              tone: (summary?.unallocated_amount ?? 0) > 0 ? 'warning' : 'default',
             },
             {
               label: '待确认回款',
@@ -958,7 +967,9 @@ export default function OrderDetailPage() {
               columns={[
                 { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
                 { title: '收款日期', dataIndex: 'received_date', width: 130 },
-                { title: '金额', dataIndex: 'received_amount', width: 130, render: (v: number, r: Payment) => formatMoney(v, r.currency ?? order.currency) },
+                { title: '整笔到账', dataIndex: 'received_amount', width: 130, render: (v: number, r: Payment) => formatMoney(v, r.currency ?? order.currency) },
+                { title: '已分配', dataIndex: 'allocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(v, r.currency ?? order.currency) : '-' },
+                { title: '待分配', dataIndex: 'unallocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(v, r.currency ?? order.currency) : '-' },
                 { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',

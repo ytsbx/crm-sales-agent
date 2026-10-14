@@ -29,7 +29,8 @@ from app.core.timebase import today_business, to_business
 from app.modules.customer.model import Customer
 from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.order.model import SalesOrder
-from app.modules.payment.model import PaymentRecord, ReceivablePlan
+from app.modules.payment import service as payment_service
+from app.modules.payment.model import ReceivablePlan
 from app.modules.task.model import Task
 from app.modules.user.model import User
 
@@ -149,8 +150,8 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
     today = today_business()
     visible = await _visible_order_ids(session, user)
 
-    stmt = select(ReceivablePlan).where(
-        ReceivablePlan.status.in_(("pending", "partial", "overdue"))
+    stmt = select(ReceivablePlan).join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id).where(
+        ReceivablePlan.status != "cancelled", SalesOrder.status != "cancelled"
     )
     if order_id is not None:
         order = await session.get(SalesOrder, order_id)
@@ -163,27 +164,22 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
 
     plans = (await session.execute(stmt)).scalars().all()
 
-    received_map: dict[int, Decimal] = {}
-    if plans:
-        rows = (
-            await session.execute(
-                select(
-                    PaymentRecord.receivable_plan_id,
-                    func.coalesce(func.sum(PaymentRecord.received_amount), 0),
-                )
-                .where(
-                    PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
-                    PaymentRecord.status == "confirmed",
-                )
-                .group_by(PaymentRecord.receivable_plan_id)
-            )
-        ).all()
-        received_map = {int(pid): Decimal(total) for pid, total in rows}
-
+    received_map = await payment_service.confirmed_amounts(session, [p.id for p in plans])
+    orders_stmt = select(SalesOrder.id).where(SalesOrder.status != "cancelled")
+    if order_id is not None:
+        orders_stmt = orders_stmt.where(SalesOrder.id == order_id)
+    elif visible is not None:
+        orders_stmt = orders_stmt.where(SalesOrder.id.in_(visible))
+    order_ids = (await session.execute(orders_stmt)).scalars().all()
+    cash = await payment_service.allocation_totals(session, order_ids)
     overdue: list[dict] = []
     upcoming: list[dict] = []
     overdue_amount = ZERO
     open_amount = ZERO
+
+    # 逾期判定走全项目唯一判据（2026-10-13 口径：到期未收齐即逾期，
+    # 收过部分款也算）—— 与报表、审批条件同一份逻辑
+    from app.modules.payment.service import is_plan_overdue
 
     for plan in plans:
         received = received_map.get(plan.id, ZERO)
@@ -200,7 +196,11 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
             "received_amount": _f(received),
             "remaining_amount": _f(remaining),
         }
-        if plan.due_date < today:
+        # 逾期判定走全项目唯一判据（2026-10-13 口径：到期未收齐即逾期，
+        # 收过部分款也算）—— 与报表、审批条件同一份逻辑
+        if is_plan_overdue(
+            status=plan.status, balance=remaining, due_date=plan.due_date, today=today
+        ):
             item["overdue_days"] = (today - plan.due_date).days
             overdue_amount += remaining
             overdue.append(item)
@@ -249,6 +249,7 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
                     "ratio": round(float(top_amount / open_amount), 4),
                 }
 
+    unallocated_cash = sum((t["unallocated_amount"] for t in cash.values()), ZERO)
     level = "high" if overdue_amount > 0 else ("medium" if open_amount > 0 else "low")
     insights: list[str] = []
     if overdue:
@@ -258,14 +259,16 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
         )
     if concentration and concentration["ratio"] >= 0.5:
         insights.append(
-            f"未收金额的 {concentration['ratio'] * 100:.0f}% 集中在"
+            f"应收期未结金额的 {concentration['ratio'] * 100:.0f}% 集中在"
             f"「{concentration['customer_name']}」一家，单一客户风险偏高"
         )
     if not overdue and open_amount > 0:
                 # ⚠️ 这句原来是「暂逾期记录，未收合计 …」—— 少一个「无」字，
         # 读起来像"暂时逾期了"，意思正好反了（主人 2026-10-13 看界面时发现的）。
-        insights.append(f"暂无逾期记录，未收合计 {_f(open_amount)} 元")
+        insights.append(f"暂无逾期记录，应收期未结合计 {_f(open_amount)} 元")
 
+    if unallocated_cash > 0:
+        insights.append(f"已有 {_f(unallocated_cash)} 元确认到账但待分配；节点未结清不代表客户尚未付款，请先核对分配再催款")
     return {
         "scope": {"order_id": order_id},
         "level": level,
@@ -274,6 +277,9 @@ async def receivable_risk(session: AsyncSession, user, *, order_id: int | None =
             "overdue_count": len(overdue),
             "overdue_amount": _f(overdue_amount),
             "open_amount": _f(open_amount),
+            "received_amount": _f(sum((t["received_amount"] for t in cash.values()), ZERO)),
+            "allocated_amount": _f(sum((t["allocated_amount"] for t in cash.values()), ZERO)),
+            "unallocated_amount": _f(sum((t["unallocated_amount"] for t in cash.values()), ZERO)),
             "upcoming_count": len(upcoming),
         },
         "overdue": overdue,

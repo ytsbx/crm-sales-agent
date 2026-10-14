@@ -47,6 +47,7 @@ from app.core.timebase import (
     to_business,
     today_business,
 )
+from app.modules.payment import service as payment_service
 from app.modules.payment.model import PLAN_STATUS_LABEL as PLAN_LABEL
 from app.modules.payment.model import PaymentRecord, ReceivablePlan
 from app.modules.product.model import Product, Sku
@@ -363,21 +364,13 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
     ).scalar_one()
 
     # 待回款 = 未结清节点的（应收金额 − 财务已确认回款）
-    paid_sub = (
-        select(
-            PaymentRecord.receivable_plan_id.label("plan_id"),
-            func.coalesce(func.sum(PaymentRecord.received_amount), 0).label("paid"),
-        )
-        .where(PaymentRecord.status == "confirmed")
-        .group_by(PaymentRecord.receivable_plan_id)
-        .subquery()
-    )
+    paid_sub = payment_service.plan_received_totals()
     pending_receivable = (
         await session.execute(
             await _scope_filter(
                 select(
                     func.coalesce(
-                        func.sum(ReceivablePlan.amount - func.coalesce(paid_sub.c.paid, 0)), 0
+                        func.sum(case((ReceivablePlan.amount > func.coalesce(paid_sub.c.paid, 0), ReceivablePlan.amount - func.coalesce(paid_sub.c.paid, 0)), else_=0)), 0
                     )
                 )
                 .select_from(ReceivablePlan)
@@ -390,7 +383,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 # **不是 `paid`**，于是照样被算进待回款：实测取消一笔 4321 元的
                 # 应收后，应收模块减了、工作台一分没减。
                 .where(
-                    ReceivablePlan.status.notin_(("paid", "cancelled")),
+                    ReceivablePlan.status != "cancelled",
                     SalesOrder.status != "cancelled",
                 ),
                 user,
@@ -426,6 +419,10 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).scalar_one()
 
+    # 逾期口径（2026-10-13 主人拍板统一）：**到期日已过且没收齐**即逾期，
+    # 收过部分款也算。从前这里比的是 `status == "overdue"`，而状态列既会被
+    # "收过 1 元"挡住（旧口径），也可能因"时间自己走过、没人写库"而过期没刷新
+    # —— 按余额 + 到期日现算才是唯一可靠的判据。
     overdue_receivable = (
         await session.execute(
             # **必须走数据范围**（N05，2026-10-09 修）：这个查询从前是裸的
@@ -441,7 +438,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 .select_from(ReceivablePlan)
                 .join(SalesOrder, SalesOrder.id == ReceivablePlan.order_id)
                 .where(
-                    ReceivablePlan.status == "overdue",
+                    payment_service.plan_overdue_expression(),
                     SalesOrder.status != "cancelled",
                 ),
                 user,
@@ -1307,22 +1304,24 @@ async def _plan_balances(session: AsyncSession, plans: list[ReceivablePlan]) -> 
     """按节点扣除已确认回款，供应收汇总和账龄页共用。"""
     if not plans:
         return {}
-    rows = (await session.execute(
-        select(PaymentRecord.receivable_plan_id, func.sum(PaymentRecord.received_amount))
-        .where(
-            PaymentRecord.receivable_plan_id.in_([p.id for p in plans]),
-            PaymentRecord.status == "confirmed",
-        ).group_by(PaymentRecord.receivable_plan_id)
-    )).all()
-    received = {pid: Decimal(amount) for pid, amount in rows}
-    return {
-        p.id: max(Decimal(p.amount or ZERO) - received.get(p.id, ZERO), ZERO)
-        for p in plans if p.status != "cancelled"
-    }
+    received = await payment_service.confirmed_amounts(session, [p.id for p in plans])
+    return {p.id: max(Decimal(p.amount or ZERO) - received.get(p.id, ZERO), ZERO)
+            for p in plans if p.status != "cancelled"}
+
 
 
 def _plan_overdue(plan: ReceivablePlan, balance: Decimal, today: date) -> bool:
-    return plan.status != "cancelled" and balance > ZERO and plan.due_date is not None and plan.due_date < today
+    """应收节点是否逾期 —— 委托给**全项目唯一判据**（payment 模块）。
+
+    ⚠️ 别再在这里写第二份公式：2026-10-13 主人拍板把口径统一成
+    "到期日已过且没收齐即逾期"（收过部分款也算），改口径只改 `is_plan_overdue` 一处。
+    本函数保留只是为了让既有调用点少改动。
+    """
+    from app.modules.payment.service import is_plan_overdue
+
+    return is_plan_overdue(
+        status=plan.status, balance=balance, due_date=plan.due_date, today=today
+    )
 
 
 async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
@@ -1350,29 +1349,24 @@ async def receivable_stats(session: AsyncSession, user: CurrentUser) -> dict:
             )
         )
     ).scalars().all()
-    received = (
-        await session.execute(
-            await _scope_filter(
-                select(func.coalesce(func.sum(PaymentRecord.received_amount), 0))
-                .select_from(PaymentRecord)
-                .join(SalesOrder, SalesOrder.id == PaymentRecord.order_id)
-                .where(PaymentRecord.status == "confirmed"),
-                user,
-                SalesOrder.owner_id,
-                session,
-            )
-        )
-    ).scalar_one()
-    plan_amount = sum((plan.amount for plan in plans), ZERO)
+    plan_amount = sum((plan.amount for plan in plans if plan.status != "cancelled"), ZERO)
     by_status: dict[str, int] = {}
     for plan in plans:
         by_status[plan.status] = by_status.get(plan.status, 0) + 1
+    order_ids = (await session.execute(await _scope_filter(select(SalesOrder.id).where(
+        SalesOrder.status != "cancelled"), user, SalesOrder.owner_id, session))).scalars().all()
+    cash = await payment_service.allocation_totals(session, order_ids)
+    allocated = sum((t["allocated_amount"] for t in cash.values()), ZERO)
+    unallocated = sum((t["unallocated_amount"] for t in cash.values()), ZERO)
     balances = await _plan_balances(session, plans)
     today = today_business()
     return {
         "plan_amount": _f(plan_amount),
-        "received_amount": _f(received),
-        "unreceived_amount": _f(plan_amount - Decimal(received)),
+        "received_amount": _f(sum((t["received_amount"] for t in cash.values()), ZERO)),
+        "allocated_amount": _f(allocated),
+        "unallocated_amount": _f(unallocated),
+        "unsettled_plan_amount": _f(sum(balances.values(), ZERO)),
+        "unreceived_amount": _f(plan_amount - sum((t["received_amount"] for t in cash.values()), ZERO)),
         "overdue_count": sum(_plan_overdue(p, balances.get(p.id, ZERO), today) for p in plans),
         "by_status": [
             {"name": PLAN_LABEL.get(k, k), "value": v} for k, v in by_status.items()
