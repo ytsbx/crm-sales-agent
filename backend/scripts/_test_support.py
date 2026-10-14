@@ -62,6 +62,15 @@ DEV_PORTS = {8000, 8008}
 #: （不带 `crm_iso`/`crm_check`/`crm_test` 前缀，也不以 `_test` 结尾），于是**被放行** ——
 #: 实测留下了 `Independent C3 audit ...` 这类审查夹具客户，混进了给领导/自己看的演示数据。
 #: 规则：**测试一律用一次性库**；演示库是给人看的，不是给脚本写删的。
+#: 绝不能被**探针/测试**写入的库。
+#:
+#: ⚠️ 主人 2026-10-14 明确过："5173 那个是给 leader 用的，所有改动先对 5274 弄，
+#: 不要往 5173 丢垃圾数据"。对应关系：
+#:   · **5173** = 生产静态服务 + 后端 8000 → 库 `crm_sales_agent`（leader 在用）；
+#:   · **5274** = 开发服务（vite） + 后端 8008 → 库 `crm_prod`（随便造）。
+#: 所以"验收/探针"一律打 5274（或一次性隔离库），**不要打 5173**。
+#: 我自己就在 5173 上造过两条"上线核对-分配"客户，直到主人指出才清掉 ——
+#: 这个名单就是防那件事再发生。
 DEV_DATABASES = {"crm_sales_agent", "crm_prod"}
 #: 一次性库的命名规则（前缀或后缀命中其一即可）
 ISOLATED_DB_PREFIXES = ("crm_iso", "crm_check", "crm_test")
@@ -130,7 +139,9 @@ def require_isolated_db() -> str:
             _warn_escape_hatch(f"DATABASE_URL 指的是开发库 {name}")
             return name
         raise SystemExit(
-            f"拒绝执行：DATABASE_URL 指向开发库 {name}。\n"
+            f"拒绝执行：DATABASE_URL 指向**不能给测试用的库** {name}。\n"
+            f"  · crm_sales_agent 是 5173（给 leader 用的那套）的库，只读不写；\n"
+            f"  · crm_prod 是 5274（开发）的库，要造数据请用它，或建一次性隔离库。\n"
             f"  要临时验一次，设 {ALLOW_ENV}=1。"
         )
     if not (name.startswith(ISOLATED_DB_PREFIXES) or name.endswith(ISOLATED_DB_SUFFIXES)):
