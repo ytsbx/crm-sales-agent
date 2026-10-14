@@ -39,6 +39,7 @@ import {
   refreshPrices,
   setQuoteVersionItems,
   submitApproval,
+  updateQuoteCharge,
   updateQuoteItem,
   withdrawApproval,
   type QuoteChargeRow,
@@ -96,6 +97,31 @@ const CHARGE_TYPES = [
 ]
 
 /**
+ * 附加费用金额的输入校验 —— **新增与修改共用这一份**（别各写一遍）。
+ *
+ * ⚠️ 不能写 `Number(raw || 0)`：空串会被静默转成 0，而 0 元在运费上意味着
+ * "明确确认零运费"，于是一条"还没填金额"的费用会以 0 元落库、还被当成已确认，
+ * 正式发送也放行。所以空输入必须显式拦住。
+ */
+function parseChargeAmount(raw: string, isDiscount: boolean): number {
+  if (!raw) {
+    throw new Error(
+      isDiscount
+        ? '请填写优惠金额（空输入不等于 0 元）'
+        : '请填写金额；确属零运费也要显式填 0，不能留空当作已确认',
+    )
+  }
+  const amount = Number(raw)
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error('金额必须是不小于 0 的有效数字')
+  }
+  if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
+    throw new Error('金额最多两位小数')
+  }
+  return amount
+}
+
+/**
  * 批量录入的一行草稿。现货给 sku_id；定制件给 inquiry_id + 成本 + 报价
  * （定制件没有 SKU，也就没有价格规则可用，成本和报价必须人工给）。
  */
@@ -147,6 +173,16 @@ export default function QuoteDetailPage() {
   const [newPrice, setNewPrice] = useState('')
   const [chargeVisible, setChargeVisible] = useState(false)
   const [chargeForm, setChargeForm] = useState({ charge_type: 'logistics', description: '', amount: '' })
+  /**
+   * 正在改的那条费用（`null` = 没在改）。
+   *
+   * 为什么要单独一个：锁版之后「附加费用」里只有运费还能动，而从前那一列整个挂在
+   * `editable` 上 —— 已审批通过的版本连「改」「删」都看不到，只剩「补填运费」一个
+   * 按钮。用户想录真实运费就**只能再加一条**，而多条运费会被 `recalc_version`
+   * 累加进总额（2026-10-14 那张「订单 501 / 报价 581」就是这么来的）。
+   */
+  const [editCharge, setEditCharge] = useState<QuoteChargeRow | null>(null)
+  const [editChargeForm, setEditChargeForm] = useState({ description: '', amount: '' })
   const [sendVisible, setSendVisible] = useState(false)
   /**
    * 发送渠道默认值：**这个人上次用过的那个**（主人 2026-10-12 拍板）。
@@ -367,6 +403,14 @@ export default function QuoteDetailPage() {
   )
   const canRespond = isCurrentVersion && quote?.status === 'sent' && Boolean(version?.sent_at)
     && version?.approval_status === 'approved' && !version.accepted_at && !version.declined_at
+  /**
+   * 这一版**已经有的那条运费**（没有就是 `undefined`）。
+   *
+   * 后端 `ensure_single_logistics_charge` 只允许一个版本有一条运费 —— 多条会被
+   * 静默累加进总额。这里拿它把「补填运费」提前挡住并**说清去哪改**，
+   * 而不是让用户填完一整个弹窗再吃一个拒绝。
+   */
+  const existingFreight = (detail?.charges ?? []).find((item) => item.is_logistics)
 
   // 动作消失也要给理由（主人 2026-10-12 原话：「这种我点又点不了，又不给提示为什么点不了，
   // 这种体验很不好，类似的情况都要修」）。「提交审批 / 批量录入 / 添加费用」三个入口都挂在
@@ -379,9 +423,9 @@ export default function QuoteDetailPage() {
     : !isCurrentVersion
       ? `这是历史版本（V${version.version_no}），历史版本不能再提交审批、录入明细或加费用；要改动请切到当前版本，或新建一版。`
       : version.sent_at
-        ? '该版本已经发送给客户，不能再改；需要改动请新建一版。'
+        ? '该版本已经发送给客户，明细和费用不能再改（运费例外，可以补或改）；需要改动请新建一版。'
         : version.approval_status === 'approved'
-          ? '该版本已审批通过，明细和费用不能再改；需要改动请新建一版。'
+          ? '该版本已审批通过，明细和费用不能再改（运费例外，可以补或改）；需要改动请新建一版。'
           : ''
 
   // A09 后半：草稿版本检测"价格已有更新"（系统带价的明细与当前适用价比对）
@@ -521,25 +565,8 @@ export default function QuoteDetailPage() {
 
   const chargeMutation = useMutation({
     mutationFn: () => {
-      const raw = chargeForm.amount.trim()
       const isDiscount = chargeForm.charge_type === 'discount'
-      // ⚠️ 不能写 `Number(chargeForm.amount || 0)`：空串会被静默转成 0，
-      // 于是一条"还没填金额"的费用会以 **0 元**落库，而 0 元在运费上意味着
-      // "明确确认零运费"—— 空输入就被当成了已确认的零元。必须显式拦住。
-      if (!raw) {
-        throw new Error(
-          isDiscount
-            ? '请填写优惠金额（空输入不等于 0 元）'
-            : '请填写金额；确属零运费也要显式填 0，不能留空当作已确认',
-        )
-      }
-      const amount = Number(raw)
-      if (!Number.isFinite(amount) || amount < 0) {
-        throw new Error('金额必须是不小于 0 的有效数字')
-      }
-      if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
-        throw new Error('金额最多两位小数')
-      }
+      const amount = parseChargeAmount(chargeForm.amount.trim(), isDiscount)
       return addQuoteCharge(versionId!, {
         charge_type: chargeForm.charge_type,
         description: chargeForm.description,
@@ -556,6 +583,44 @@ export default function QuoteDetailPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  /**
+   * 改一条已有的费用（后端 `PATCH /quote-charges/{id}`）。
+   *
+   * 只传说明与金额：分类码在锁版之后不能改（后端 `ensure_charge_change_allowed`
+   * 会拒），而在草稿态想改分类，直接删了重加更直白 —— 所以这里不暴露分类下拉。
+   */
+  const updateChargeMutation = useMutation({
+    mutationFn: () => {
+      if (!editCharge) throw new Error('没有选中要修改的费用')
+      const amount = parseChargeAmount(editChargeForm.amount.trim(), editCharge.is_discount)
+      return updateQuoteCharge(editCharge.id, {
+        description: editChargeForm.description,
+        amount,
+      })
+    },
+    onSuccess: () => {
+      Toast.success('已保存并重算合计')
+      setEditCharge(null)
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  /**
+   * 打开「改这条费用」的弹窗。
+   *
+   * 折扣在库里恒为**负数**（`recalc_version` 直接代数相加），而界面上一直让用户
+   * 填正数、由后端归一 —— 回填时要把符号转回来，否则编辑框里是 `-50`，
+   * 一点保存就被"金额最多两位小数"拦下（看着像校验坏了）。
+   */
+  const openChargeEditor = (record: QuoteChargeRow) => {
+    setEditCharge(record)
+    setEditChargeForm({
+      description: record.description ?? '',
+      amount: String(record.is_discount ? Math.abs(record.amount) : record.amount),
+    })
+  }
 
   if (versionsQuery.isLoading || detailQuery.isLoading) {
     return <div className="page-container">加载中…</div>
@@ -1483,17 +1548,31 @@ export default function QuoteDetailPage() {
                   record.is_logistics ? `¥${v.toFixed(2)}（代收代付）` : `¥${v.toFixed(2)}`,
               },
               {
+                // 锁版之后这一列**照旧露出运费的那两个动作**（2026-10-14 修）。
+                //
+                // 后端一直允许"改运费 / 删运费"（`ensure_charge_change_allowed`
+                // 只要改前改后都是运费就放行），而从前这一列整个挂在 `editable` 上：
+                // 版本一审批通过就只剩「补填运费」，用户想录真实运费**只能再加一条**，
+                // 多条运费会被累加进总额 —— 那张「订单 501 / 报价 581」就是这么来的。
+                // 判据与「补填运费」按钮同源（`canEditFreightOnly`），没另立一套。
                 title: '',
-                width: 70,
-                render: (_: unknown, record: QuoteChargeRow) =>
-                  canManage && editable ? (
-                    <Popconfirm
-                      title="删除这条费用？"
-                      onConfirm={() => deleteQuoteCharge(record.id).then(refresh)}
-                    >
-                      <a style={{ color: 'var(--crm-error)' }}>删除</a>
-                    </Popconfirm>
-                  ) : null,
+                width: 96,
+                render: (_: unknown, record: QuoteChargeRow) => {
+                  if (!canManage) return null
+                  const touchable = editable || (Boolean(record.is_logistics) && canEditFreightOnly)
+                  if (!touchable) return null
+                  return (
+                    <span style={{ display: 'inline-flex', gap: 10 }}>
+                      <a onClick={() => openChargeEditor(record)}>改</a>
+                      <Popconfirm
+                        title="删除这条费用？"
+                        onConfirm={() => deleteQuoteCharge(record.id).then(refresh)}
+                      >
+                        <a style={{ color: 'var(--crm-error)' }}>删除</a>
+                      </Popconfirm>
+                    </span>
+                  )
+                },
               },
             ]}
             dataSource={detail.charges}
@@ -1726,12 +1805,29 @@ export default function QuoteDetailPage() {
         onOk={() => chargeMutation.mutate()}
         confirmLoading={chargeMutation.isPending}
         okText={editable ? '添加' : '保存运费'}
+        // 已经有一条运费时**不给提交**（后端也会按同一条判据拒），先把去处说清楚
+        okButtonProps={{ disabled: !editable && Boolean(existingFreight) }}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           {/* 锁版之后只允许运费（后端 `ensure_charge_change_allowed` 也是这个判据）：
               这里把选项直接收敛成一项，而不是让用户选完再被拒 —— 少一次白填。
               顺带说明**为什么只有它**、以及补完之后还要做什么。 */}
-          {!editable && (
+          {!editable && (existingFreight ? (
+            // 已经有一条了：说清"不该再加"，并指出"去哪里改" —— 这一支正是
+            // 2026-10-14 那张「订单 501 / 报价 581」踩的坑：当时没有这一支，
+            // 用户只能再加一条，两条被累加进总额。
+            <div className="send-context">
+              <div className="send-context-line">
+                这一版已经有一条运费 ¥{existingFreight.amount.toFixed(2)}
+                {existingFreight.description ? `（说明：${existingFreight.description}）` : '（没有写说明）'}
+                ，不能再新增第二条。
+              </div>
+              <div className="send-context-hint">
+                一个版本只能有一条运费 —— 两条会各自累加进总额，看起来像「多收了一笔」。
+                请到上面的「附加费用」里点那一条的「改」修正金额；补错了可以点「删除」。
+              </div>
+            </div>
+          ) : (
             <div className="send-context">
               <div className="send-context-line">
                 这一版已经{version?.sent_at ? '发送给客户' : '审批通过'}，只有「物流」类费用还能补填。
@@ -1742,7 +1838,7 @@ export default function QuoteDetailPage() {
                 {version?.sent_at ? '另外：补完运费这一版的「已发送」会被清掉，需要重新登记一次发送。' : ''}
               </div>
             </div>
-          )}
+          ))}
           <Select
             value={chargeForm.charge_type}
             onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
@@ -1754,6 +1850,7 @@ export default function QuoteDetailPage() {
             value={chargeForm.description}
             onChange={(value) => setChargeForm({ ...chargeForm, description: value })}
             placeholder="说明，例如：宁波到苏州运费"
+            disabled={!editable && Boolean(existingFreight)}
           />
           <Input
             value={chargeForm.amount}
@@ -1763,6 +1860,7 @@ export default function QuoteDetailPage() {
                 ? '优惠金额（填正数，系统自动扣减）'
                 : '金额；确属零运费请显式填 0，不要留空'
             }
+            disabled={!editable && Boolean(existingFreight)}
           />
           {chargeForm.charge_type === 'logistics' && (
             <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
@@ -1771,6 +1869,48 @@ export default function QuoteDetailPage() {
               <b>留空不等于零运费</b>——确实没有运费请显式填 0。
             </div>
           )}
+        </div>
+      </Modal>
+
+      {/* 改一条已有费用（2026-10-14 新增入口）。
+          后端 `PATCH /quote-charges/{id}` 一直存在，只是前端从来没接过 ——
+          于是"运费填错了"在锁版之后只能"再加一条"，而多条会被累加进总额。
+          这里**只暴露说明与金额**：分类码锁版后不能改（后端会拒），草稿态想换分类
+          直接删了重加更直白，给它一个下拉反而像支持切换分类。 */}
+      <Modal
+        title={editCharge?.is_logistics ? '改这条运费' : '改这条费用'}
+        visible={Boolean(editCharge)}
+        onCancel={() => setEditCharge(null)}
+        onOk={() => updateChargeMutation.mutate()}
+        confirmLoading={updateChargeMutation.isPending}
+        okText="保存"
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          {editCharge?.is_logistics && (
+            <div className="send-context">
+              <div className="send-context-line">
+                运费的支出与向客户收取的金额<b>共用这一份数据</b>：客户全额承担、公司原额代收代付。
+              </div>
+              <div className="send-context-hint">
+                保存即视为「已确认的实际运费」；金额留空不等于零运费，确实没有请显式填 0。
+                {version?.sent_at ? '另外：改完这一版的「已发送」会被清掉，需要重新登记一次发送。' : ''}
+              </div>
+            </div>
+          )}
+          <Input
+            value={editChargeForm.description}
+            onChange={(value) => setEditChargeForm({ ...editChargeForm, description: value })}
+            placeholder="说明，例如：宁波到苏州运费"
+          />
+          <Input
+            value={editChargeForm.amount}
+            onChange={(value) => setEditChargeForm({ ...editChargeForm, amount: value })}
+            placeholder={
+              editCharge?.is_discount
+                ? '优惠金额（填正数，系统自动扣减）'
+                : '金额；确属零运费请显式填 0，不要留空'
+            }
+          />
         </div>
       </Modal>
 

@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -142,6 +142,55 @@ async def ensure_charge_change_allowed(
         # 见 docstring 最后一段：客户手里那份文件已经印了旧的运费，
         # 改完必须重新登记发送，不能留着"已发送"的状态。
         version.sent_at = None
+
+
+async def ensure_single_logistics_charge(
+    session: AsyncSession, *, version_id: int, keep_id: int | None
+) -> None:
+    """一个版本**最多一条运费** —— 多出来的那条会被静默累加进总额，必须在写入前拦住。
+
+    ## 为什么要这道闸（2026-10-14 从演示库的一张真单据上查出来的）
+
+    报价 V3 先被随手填了一条 **1 元**运费（没写说明），隔天要录真实运费时，
+    那一版已经审批通过 —— 界面上只有「补填运费」一个入口（没有"改"、也看不到"删"），
+    于是业务员**又加了一条 80 元**。汇总公式把**所有** `logistics` 条目相加
+    （见 `recalc_version`），版本总额于是变成 货款 500 + 1 + 80 = 581，
+    而实际运费只有 80 —— 多算 1 元；两条还并排躺在「附加费用」里，看不出哪条是废的。
+    更早转出的订单冻住的是 1 元那一版，于是「订单 501 / 报价 581」两个数一起出现。
+
+    这不是"改错了"，是**没有一道闸阻止重复录入**、界面又只给了"加"这一个动作。
+
+    ## 判据（只留这一份，别在路由里各写一遍）
+
+    同一版本里，**非折扣**的 `logistics` 条目最多一条。要改金额请改那一条
+    （`PATCH /quote-charges/{id}`），不要再新增。
+
+    - `keep_id`：**正在变更的那一条**（新增传 `None`）—— 它自己不算"已经有一条"。
+      这样"改运费"不会被自己挡住；而库里历史遗留的两条（演示库那单就是），
+      仍然可以逐条改掉、删掉，修复路径不会被这道闸堵死。
+    - 认的是**分类码**，与 `is_logistics_charge` 同一口径：说明文字里写"运费"不算数。
+    - SQL 里做同样的归一（`lower(trim(...))`）：`charge_type` 可空，NULL 不参与匹配。
+    """
+    stmt = (
+        select(QuoteCharge.id, QuoteCharge.amount, QuoteCharge.description)
+        .where(QuoteCharge.quote_version_id == version_id)
+        .where(QuoteCharge.is_discount.is_(False))
+        .where(func.lower(func.trim(QuoteCharge.charge_type)) == CHARGE_TYPE_LOGISTICS)
+    )
+    if keep_id is not None:
+        stmt = stmt.where(QuoteCharge.id != keep_id)
+    rows = (await session.execute(stmt)).all()
+    if not rows:
+        return
+    existing = rows[0]
+    where = f"（说明：{existing.description}）" if existing.description else ""
+    raise AppError(
+        ErrorCode.DUPLICATE,
+        f"这个报价版本已经有一条运费 ¥{existing.amount:.2f}{where}。"
+        "一个版本只能有一条运费 —— 请直接改那一条，不要再新增。"
+        "多条运费会各自累加进总额，看起来像「多收了一笔」。",
+        409,
+    )
 
 
 def mark_logistics_confirmed(charge: QuoteCharge, *, at: datetime | None = None) -> None:

@@ -342,11 +342,30 @@ def main() -> None:
     check('改运费金额 → 放行（并重新确认）', res.get('code'), 0)
     check('改完仍是已确认', freight_reason(admin, qid_b, vid_b), None)
 
-    # ③ 删运费 —— 放行（补错了要能撤）
+    # ③ 再加一条运费 —— **拒**（一个版本只能有一条）
+    #
+    # ⚠️ **断言过期非回归**（2026-10-14）：这一段从前是「再加一条 10 元 → 放行」，
+    # 当时拿它给下面"删运费"那一步准备一条可删的行。新增的闸
+    # （`quote/service.py::ensure_single_logistics_charge`）不允许第二条运费了 ——
+    # 多条会被 `recalc_version` **静默累加**进总额（演示库那张"订单 501 / 报价 581"
+    # 就是这么来的）。所以把夹具改成：先断言新增被拒，**再删那条真的运费**；
+    # 测的仍是同一件事（放行"删运费"），只是不再依赖重复录入。
     status, res = add_freight(admin, vid_b, '10')
-    extra_freight = res['data']['id']
-    status, res = call('DELETE', f'/quote-charges/{extra_freight}', token=admin)
-    check('删掉补错的运费 → 放行', res.get('code'), 0)
+    check('★同一版本再加第二条运费 → 拒（会被累加进总额）', res.get('code'), 40901)
+    _dup = version_state(admin, qid_b, vid_b)
+    check('被拒之后运费合计没被动过（仍只有那一条 95）',
+          _dup.get('logistics_amount'), 95.0)
+
+    # ③b 删运费 —— 放行（补错了要能撤）
+    status, res = call('DELETE', f'/quote-charges/{freight_id}', token=admin)
+    check('删掉运费 → 放行', res.get('code'), 0)
+    # 删完这一版又"没有运费"了：发送闸要重新合上，随后再补回来
+    check('删完之后发送闸重新合上（这一版又没确认运费了）',
+          freight_reason(admin, qid_b, vid_b) is not None, True)
+    status, res = add_freight(admin, vid_b, '95')
+    check('把运费补回来（后面的段落要用）', res.get('code'), 0)
+    freight_id = res['data']['id']
+    check('补回来之后发送闸又开了', freight_reason(admin, qid_b, vid_b), None)
 
     # ---------------- 反面：只放行运费，不能变成"锁版后随便改"
     print()
