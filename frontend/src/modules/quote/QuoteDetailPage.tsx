@@ -1489,7 +1489,7 @@ export default function QuoteDetailPage() {
           dataSource={detail.items}
           rowKey="id"
           pagination={false}
-          scroll={{ x: 1300 }}
+          scroll={{ x: 'max(100%, 1300px)' }}
           empty="没有明细"
         />
       </SectionCard>

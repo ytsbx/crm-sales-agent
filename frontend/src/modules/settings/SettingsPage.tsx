@@ -1175,7 +1175,7 @@ export default function SettingsPage() {
               rowKey="id"
               pagination={false}
               empty="还没有审计记录"
-              scroll={{ x: 1200 }}
+              scroll={{ x: 'max(100%, 1200px)' }}
             />
           )}
           {activeKey === 'rules' && (
