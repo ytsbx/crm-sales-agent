@@ -27,6 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
+from app.core.timebase import to_business
 from app.core.deps import CurrentUser
 from app.core.errors import AppError, ErrorCode
 from app.core.money import line_amount
@@ -1224,8 +1225,17 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
             "customer_id": built.get("customer_id"),
             # 抬头优先取**按版本冻结**的那一份：历史文件（没有 frozen 块）才回退到
             # 生成时抄下的 customer_name，两者都不会去回查当前客户资料
-            "customer_name": (frozen.get("header") or {}).get("customer_name")
-            or (customer.name if customer else None),
+            # ⚠️ 回退判据是"**没有 frozen 块**"，不是"frozen 里那个值为空"（2026-10-14 审查）：
+            # 原来写的是 `or (customer.name ...)`，于是"有 frozen 块、但
+            # `customer_name_snapshot` 本就是 None"（版本建于该列上线之前）也会回查**当前**
+            # 客户资料 —— 纸面抬头印改名后的新名字，而同一页条款区（由 `_frozen_header`
+            # 记进 gaps）印「未留存」。同一份对外文件自相矛盾，正是 §8.7 要消灭的现象。
+            # 紧邻的 `contact_name`（下一行）没有实时回退，是正确的写法。
+            "customer_name": (
+                (frozen.get("header") or {}).get("customer_name")
+                if frozen
+                else (customer.name if customer else None)
+            ),
             "contact_id": built.get("contact_id"),
             "contact_name": (frozen.get("header") or {}).get("contact_name"),
             "items": built.get("items") or [],
@@ -1351,6 +1361,13 @@ async def _persist(
         from app.modules.order.model import SalesOrder
 
         sources["order"] = await session.get(SalesOrder, built["order_id"])
+    # 联系人来源：打样指令单要印"客户联系人 / 电话"（19-打样指令单字段清单）。
+    # 电话在 `contacts` 表上而不是 `customers` 上 —— 之前白名单里挂的是
+    # `customer.phone`，那个字段在 Customer 上不存在，于是"存得下、生不成"。
+    if built.get("contact_id"):
+        from app.modules.customer.model import Contact
+
+        sources["contact"] = await session.get(Contact, built["contact_id"])
     body, unresolved = token_rules.resolve_tokens(template.body, sources, extra)
     leftover = token_rules.find_unresolved_syntax(body)
     if leftover:
@@ -1762,7 +1779,11 @@ async def doc_pdf_data(
         "title": doc.title,
         "doc_no": doc.doc_no,
         "version": doc.version,
-        "created_date": doc.created_at.strftime("%Y-%m-%d") if doc.created_at else None,
+        # 业务日（北京时间），不是 UTC 日历日：`created_at` 存的是 UTC 瞬时，
+        # 直接 strftime 会让北京时间 00:00–08:00 生成的文件印**前一天**的日期，
+        # 而同一份文件里的 `{{today}}` 走 `today_business()`（业务时区）——
+        # 同一张纸上两个日期。合同模块（contract/service.py）已改，这里漏了。
+        "created_date": to_business(doc.created_at).strftime("%Y-%m-%d") if doc.created_at else None,
         "status_label": DOC_STATUS_LABEL.get(doc.status, doc.status),
         "customer_name": snapshot.get("customer_name"),
         # 联系人同样只认快照里冻结的那一份（历史文件没有就是 None）
