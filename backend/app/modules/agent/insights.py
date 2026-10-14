@@ -728,6 +728,19 @@ async def quote_draft(
             role_codes=user.roles,
         )
         price = result["recommended_price"]
+        # ⚠️ **算钱用未脱敏的值，返回用脱敏后的值** —— 顺序不能反：
+        # `_sanitize_pricing_result` 在"没有价格规则来源"时会把 `recommended_price`
+        # 也置空（该函数自己的注释：无规则时 standard/recommended = cost/(1-margin)，
+        # 能反推成本）。所以先取出 price 算金额，再脱敏。
+        #
+        # 为什么这里必须脱敏（2026-10-14 审查）：本函数逐行返回
+        # standard_price / minimum_price / protection_price，而同文件的
+        # `pricing_analysis`（:643）已经调了 `_sanitize_pricing_result`，
+        # `/pricing/*` 四个出口也都调了 —— 只有这一处漏着，且这些数还会整份进
+        # commentary 提示词，等于再用自然语言把底价念一遍。
+        from app.modules.pricing.router import _sanitize_pricing_result
+
+        result = _sanitize_pricing_result(result, user)
         # quantity 是 Decimal，recommended_price 经 _f 变成了 float ——
         # 直接相乘会 TypeError，先统一成 Decimal 再算钱。
         quantity = item.quantity or Decimal(0)
