@@ -26,6 +26,8 @@ from sqlalchemy import Select, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import asyncio
+from app.core.textfit import fit_column
 from app.core.data_scope import ensure_in_scope, scoped_owner_ids
 from app.core.timebase import to_business
 from app.core.deps import CurrentUser
@@ -1237,7 +1239,12 @@ def _snapshot_for_storage(built: dict, body: str, template: BizDocTemplate) -> d
                 else (customer.name if customer else None)
             ),
             "contact_id": built.get("contact_id"),
-            "contact_name": (frozen.get("header") or {}).get("contact_name"),
+            # 报价单走 frozen（按版本冻结的抬头）；打样单 / 下单文件没有 frozen，
+            # 用生成时抄下的 `built["contact_name"]`（见 `_persist` 里写回的那处）
+            "contact_name": (
+                (frozen.get("header") or {}).get("contact_name")
+                or built.get("contact_name")
+            ),
             "items": built.get("items") or [],
             "diffs": built.get("diffs") or [],
             "sections": built.get("sections") or [],
@@ -1367,7 +1374,17 @@ async def _persist(
     if built.get("contact_id"):
         from app.modules.customer.model import Contact
 
-        sources["contact"] = await session.get(Contact, built["contact_id"])
+        contact_row = await session.get(Contact, built["contact_id"])
+        sources["contact"] = contact_row
+        # ⚠️ 把名字写回 `built`，好让快照**冻结**它（2026-10-14 审查修）。
+        # 原来只有 `contact_id` 进了快照、`contact_name` 只从 `frozen` 里取，
+        # 而 `frozen` 只有**报价单**（`build_quote_doc`）才产出 —— 于是打样需求单 /
+        # 下单文件纸面上的「联系人」永远是 "-"（`pdf.py` 印 `_text(...) or "-"`），
+        # 看起来像"这个客户没有联系人"，而 tokens 那边专门为打样指令单加了
+        # `contact` 来源、字段清单也要求印客户联系人/电话：结构化抬头这一路没接上。
+        # 生成时冻结、**不实时回查**（与 customer_name 同一口径）。
+        if contact_row is not None:
+            built["contact_name"] = contact_row.name
     body, unresolved = token_rules.resolve_tokens(template.body, sources, extra)
     leftover = token_rules.find_unresolved_syntax(body)
     if leftover:
@@ -1402,14 +1419,19 @@ async def _persist(
         snapshot["token_issues"] = unresolved
         snapshot["draft"] = True
     title_label = "订单草稿需求单" if built.get("order_draft_id") else DOC_TYPE_LABEL[doc_type]
+    # ⚠️ 标题必须收进 `String(200)`（2026-10-14 审查修）：`title_suffix` 就是
+    # 客户名（本身允许 200 字），再加 `类型-` 前缀与 `【草稿】` 必然越界 ——
+    # 长名客户生成文件会撞 `value too long for type character varying(200)` → **500**。
+    # 前缀保留（它是有语义的标记），只截客户名那一段，截断留 `…` 看得出来。
+    _title_prefix = ("【草稿】" if as_draft else "") + f"{title_label}-"
     doc = BizDoc(
         doc_no=doc_no,
         doc_type=doc_type,
-        title=(
-            f"【草稿】{title_label}-{built.get('title_suffix') or ''}".rstrip("-")
-            if as_draft
-            else f"{title_label}-{built.get('title_suffix') or ''}".rstrip("-")
-        ),
+        title=fit_column(
+            built.get("title_suffix") or "",
+            200,
+            prefix=_title_prefix,
+        ).rstrip("-"),
         version=version,
         parent_id=parent_id,
         # 草稿不是正式对外文件：状态栏/列表一眼能看出来，且不允许当有效件下载使用
@@ -1502,7 +1524,91 @@ async def _archive_original(
     # 给路由层留的补偿线索：本请求最终 commit 失败时按它删掉这个对象。
     # 故意不做成数据库列——它只是"本次事务还没提交"的临时记号。
     doc._archived_object_key = object_key  # type: ignore[attr-defined]
+    remember_pending_object(session, object_key)
     await session.flush()
+
+
+#: 会话 id → 本次落盘、还没提交的对象键（与 contract 的同一套思路）。
+#: 用 `id(session)` 当键是因为一次请求一个会话，且这里只做"尽力清理"，
+#: 不承担跨请求的持久化职责。
+_PENDING_OBJECTS: dict[int, set[str]] = {}
+
+
+def remember_pending_object(session: AsyncSession, object_key: str) -> None:
+    """登记"这个对象已落盘、随事务提交才作数"。"""
+    _PENDING_OBJECTS.setdefault(id(session), set()).add(object_key)
+
+
+def take_pending_objects(session: AsyncSession) -> list[str]:
+    """取走该会话待决的对象键（取走即清空，避免重复删除）。"""
+    return sorted(_PENDING_OBJECTS.pop(id(session), set()))
+
+
+async def cleanup_pending_objects(session: AsyncSession) -> int:
+    """**安全清理**：本次落盘、但没能提交的对象，逐个核查后再删。
+
+    判据照搬 `contract/service.py::cleanup_pending_objects`（那边的注释记着
+    一次真实教训）：`session.commit()` 抛异常 **不等于**事务没提交 ——
+    提交成功但回执丢了（网络断、连接被掐）时库里**单据和文件记录都在**，
+    异常照抛。所以**不能直接删**：
+
+      - 先 `rollback()` 把会话从失败事务里摘出来（之后才能查库）；
+      - 按 `object_key` 查 `file_records`：**查得到 = 已提交，保留**；
+      - **查不到 = 确实没提交，删掉**。
+
+    孤儿只是占空间，**删掉原件是把用户的东西弄丢了**，所以宁可留。
+    """
+    from app.modules.file import storage
+    from app.modules.file.model import FileRecord
+
+    keys = take_pending_objects(session)
+    if not keys:
+        return 0
+    try:
+        await session.rollback()
+    except Exception:  # noqa: BLE001 —— 回滚失败也要继续尝试核查
+        logger.warning("bizdoc 落盘清理：rollback 失败，跳过核查直接保留对象")
+        return 0
+    removed = 0
+    for key in keys:
+        try:
+            exists = (
+                await session.execute(
+                    select(FileRecord.id).where(FileRecord.object_key == key).limit(1)
+                )
+            ).first()
+        except Exception:  # noqa: BLE001 —— 查不出来就当"已提交"，保留
+            logger.warning("bizdoc 落盘清理：核查 %s 失败，保留该对象", key)
+            continue
+        if exists is not None:
+            continue  # 已提交，是正式件
+        try:
+            storage.delete_object(key)
+            removed += 1
+        except Exception:  # noqa: BLE001 —— 删除失败不该盖过原来的异常
+            logger.warning("bizdoc 落盘清理：删除 %s 失败（保留对象）", key)
+    return removed
+
+
+async def _cancel_safe(coro, *, label: str, _retries: int = 2):
+    """跑一段清理逻辑，**即使被取消也要跑完**（与 contract 同源的做法）。
+
+    `asyncio.CancelledError` 继承 `BaseException`、**不是** `Exception` ——
+    `except Exception:` 捕不到取消，取消一来清理就半途而废。
+    `asyncio.shield` 让清理不被当前取消打断，但外层仍会收到取消
+    （"先清干净、再继续抛取消"，取消语义不变）。
+    """
+    for attempt in range(_retries + 1):
+        try:
+            return await asyncio.shield(coro)
+        except asyncio.CancelledError:
+            if attempt >= _retries:
+                logger.warning("%s：清理被连续取消，放弃（对象成为孤儿）", label)
+                return None
+        except Exception:  # noqa: BLE001 —— 清理失败不许盖过原来的错误/取消
+            logger.exception("%s：清理失败（保留对象，避免误删）", label)
+            return None
+    return None
 
 
 async def commit_doc_generation(session: AsyncSession, doc: BizDoc) -> None:
@@ -1520,7 +1626,11 @@ async def commit_doc_generation(session: AsyncSession, doc: BizDoc) -> None:
         key = getattr(doc, "_archived_object_key", None)
         if key:
             storage.delete_object(key)
+        # 已经精确删过这一次的对象，把登记一并清掉（免得后面再"核查"一遍）
+        take_pending_objects(session)
         raise
+    # 提交成功 → 注销登记：这些对象已经是正式件，不许再进清理流程
+    take_pending_objects(session)
 
 
 def _issue_summary(issues: list[dict]) -> str:
@@ -1558,6 +1668,19 @@ def preview_template_body(body: str, extra_fields: dict[str, str] | None = None)
             "level": "A",
             "phone": "000-00000000",
             "address": "示例地址",
+        },
+        # ⚠️ `contact` 必须给示例值（2026-10-14 审查修）：它是 tokens.py 白名单里的
+        # 合法来源（打样指令单要印"客户联系人/电话"），`_persist` 也会按
+        # `built["contact_id"]` 提供它。但预览的示例数据里没有这个键 ——
+        # 于是 `{{contact.name}}` / `{{contact.phone}}` 被报成「来源不可用」，
+        # 模板作者按提示去"修"一个**本来正确**的变量，或以为打样单印不出联系人。
+        # 生成期与预览期必须是同一套口径。字段与 tokens.py 的白名单逐一对齐。
+        "contact": {
+            "name": "示例联系人",
+            "phone": "000-00000000",
+            "mobile": "13000000000",
+            "email": "contact@example.com",
+            "title": "采购经理",
         },
         "order": {
             "order_no": "示例订单号",
@@ -1689,6 +1812,13 @@ def serialize_doc(doc: BizDoc) -> dict:
         "diff_count": len(snapshot.get("diffs") or []),
         # 草稿与"哪些变量没解析"要能被列表/详情直接读到：用户得知道该改什么
         "is_draft": doc.status == "draft",
+        #: 草稿的**真实原因**（2026-10-14 审查补）。快照里本来就存了它
+        #: （`_persist` 里 `snapshot["draft_reason"] = draft_reason`），但两个渲染器
+        #: 都拿不到，于是**不管什么原因**都印"模板变量未解析" —— 而 `draft_reason`
+        #: 有两条来源：① 模板变量未解析；② 调用方标的原因（报价未过审批 /
+        #: 主数据未确认 / 运费未确认）。情形②时 `token_issues` 是空的，
+        #: 印出来的原因与事实不符，事后也没法从文件上看出到底为什么是草稿。
+        "draft_reason": snapshot.get("draft_reason"),
         "token_issues": snapshot.get("token_issues") or [],
         # 按版本冻结时没留存下来的栏位（币种/单位/条款/抬头），列表上给出个数，
         # 打开文件能看到逐条"未留存/待核实"
@@ -1797,6 +1927,13 @@ async def doc_pdf_data(
         "frozen": frozen,
         # 草稿标记：草稿文件必须在纸面上就写明"不是正式对外文件"
         "is_draft": doc.status == "draft",
+        #: 草稿的**真实原因**（2026-10-14 审查补）。快照里本来就存了它
+        #: （`_persist` 里 `snapshot["draft_reason"] = draft_reason`），但两个渲染器
+        #: 都拿不到，于是**不管什么原因**都印"模板变量未解析" —— 而 `draft_reason`
+        #: 有两条来源：① 模板变量未解析；② 调用方标的原因（报价未过审批 /
+        #: 主数据未确认 / 运费未确认）。情形②时 `token_issues` 是空的，
+        #: 印出来的原因与事实不符，事后也没法从文件上看出到底为什么是草稿。
+        "draft_reason": snapshot.get("draft_reason"),
         "token_issues": snapshot.get("token_issues") or [],
         "body": snapshot.get("body") or "",
         "subtotal_amount": snapshot.get("subtotal_amount"),

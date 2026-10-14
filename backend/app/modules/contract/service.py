@@ -8,10 +8,11 @@ from datetime import UTC, datetime, timedelta
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.textfit import fit_column
 from app.core.errors import AppError, ErrorCode
 from app.core.timebase import business_day_end, today_business, to_business
 from app.core.response import paginate
@@ -640,8 +641,17 @@ async def generate_document(
             session, "contract", model=ContractDocument, column=ContractDocument.doc_no
         ),
         doc_type=template.doc_type,
-        title=payload.title
-        or f"{DOC_TYPE_LABEL.get(template.doc_type, template.doc_type)}-{customer.name}",
+        # ⚠️ 标题必须收进 `String(200)`（2026-10-14 审查修）：默认标题是
+        # `f"{类型}-{客户名}"`，而**客户名本身允许 200 字**（`customer/schema.py`），
+        # 加个"销售合同-"前缀就 204 —— 用户给长名客户生成合同必撞
+        # `value too long for type character varying(200)` → **500**。
+        # `payload.title` 原来也没上限，显式传 201+ 字同样炸（schema 已补 `max_length`）。
+        # 这里用共享助手截断（截断留 `…`，看得出来被截过），不改用户填的原值。
+        title=fit_column(
+            payload.title or customer.name,
+            200,
+            prefix="" if payload.title else f"{DOC_TYPE_LABEL.get(template.doc_type, template.doc_type)}-",
+        ),
         customer_id=customer.id,
         order_id=payload.order_id,
         # 存**解析后**的报价与版本：上面从订单自动带出来的那一份也要落库，
@@ -1253,7 +1263,34 @@ async def list_documents(
     if status:
         stmt = stmt.where(ContractDocument.status == status)
     if owner_ids is not None:
-        stmt = stmt.where(Customer.owner_id.in_(owner_ids))
+        # ⚠️ 台账的范围判据必须与 `visibility.py::contract_scope_owner_id` **等价**
+        # （2026-10-14 审查修）。原来这里写的是裸 `Customer.owner_id.in_(owner_ids)`
+        # —— 客户负责人为 NULL 时 `IN (...)` **恒不成立**，于是那份合同对**所有**
+        # 非全量范围的人从台账里消失；而详情 / 生成稿下载 / 签署原件下载走的是
+        # "客户负责人 → 订单负责人 → 创建人"三级回退，**同一份合同照样打得开**。
+        # 触发很常见：客户被"超期未跟进自动回收"进公海时 `owner_id` 被置 NULL
+        # （`settings/service.py` 的回收），而合同不会跟着消失。
+        # 结果就是业务在台账里找不到自己客户已签的合同（以为丢了），
+        # 却能从订单页/客户页点开同一份 —— 正是 `visibility.py` 开头要消灭的
+        # "同一份合同两个答案"，它自己的注释也写着"不能因为客户进公海就谁都点不开"。
+        # 这里用 COALESCE 把三级回退表达成**同一条 SQL**，与 Python 判据逐级对齐。
+        # 用 `or_` 逐级表达（而不是 `COALESCE(...) IN (...)`）：三级归属全为空的
+        # 合同在 `COALESCE` 写法下结果是 NULL，`NULL IN (...)` 仍不成立；
+        # 逐级 `or_` 更直白，也和 `visibility.py` 的 if 链一一对应。
+        stmt = stmt.where(
+            or_(
+                Customer.owner_id.in_(owner_ids),
+                and_(
+                    Customer.owner_id.is_(None),
+                    SalesOrder.owner_id.in_(owner_ids),
+                ),
+                and_(
+                    Customer.owner_id.is_(None),
+                    SalesOrder.owner_id.is_(None),
+                    ContractDocument.created_by.in_(owner_ids),
+                ),
+            )
+        )
     docs, total = await paginate(
         session, stmt.order_by(ContractDocument.created_at.desc()), page, page_size
     )

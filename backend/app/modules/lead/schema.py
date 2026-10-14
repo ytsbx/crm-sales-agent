@@ -46,11 +46,18 @@ class LeadUpdate(PatchModel):
 
 class LeadAssign(BaseModel):
     owner_id: int | None = None
-    reason: str | None = None
+    #: 直接写进 `lead_assignments.reason`（`String(255)`）——原来**没有任何上限**，
+    #: 超长会撞列宽报 500（2026-10-14 审查修）。
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class LeadDiscard(BaseModel):
-    reason: str = Field(min_length=1, max_length=255)
+    # ⚠️ 上限是 **252**，不是 255（2026-10-14 审查修）：`service.mark_discarded`
+    # 会把它拼成 `f"废弃：{reason}"` 再写进 `lead_assignments.reason`
+    # （`String(255)`），255 + 3 字前缀 = 258 直接**撞列宽报 500**
+    # （PostgreSQL 的 `value too long for type character varying(255)`；
+    # SQLite 单测不校验长度，所以测不出来）。
+    reason: str = Field(min_length=1, max_length=252)
 
 
 class LeadConvert(BaseModel):

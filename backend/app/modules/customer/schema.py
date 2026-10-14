@@ -10,7 +10,9 @@ from app.core.patch_schema import PatchModel
 
 class CustomerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200, description="客户名称")
-    short_name: str | None = None
+    #: 与 `customers.short_name` 的 `String(100)` 对齐 —— 不写上限会撞库列报 500
+    #: （2026-10-14 审查补。同项目 `PatchModel` 是从列定义现读 length 的，Create 类漏了）
+    short_name: str | None = Field(default=None, max_length=100)
     customer_type: str | None = "企业"
     country: str | None = "中国"
     region: str | None = None
@@ -60,7 +62,8 @@ class CustomerUpdate(PatchModel):
 
 class CustomerTransfer(BaseModel):
     owner_id: int | None = None
-    reason: str | None = None
+    #: 直接写进 `customer_owner_history.reason`（`String(255)`）—— 超长撞列宽 500
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class CustomerRestore(BaseModel):
@@ -85,7 +88,8 @@ class PoolRelease(BaseModel):
     这时才放行，并把保护事项与原因一起写进审计（返工单 6.3）。
     """
 
-    reason: str | None = None
+    #: 同样写进 `customer_owner_history.reason`（`String(255)`）
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class CustomerExportPurpose(str, Enum):
@@ -124,10 +128,12 @@ class ContactCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     title: str | None = None
     department: str | None = None
-    mobile: str | None = None
-    phone: str | None = None
-    email: str | None = None
-    wechat: str | None = None
+    # 这四个按 `contacts` 的列宽给上限（2026-10-14 审查补）：
+    # mobile/phone `String(32)`、email `String(128)`、wechat `String(64)`
+    mobile: str | None = Field(default=None, max_length=32)
+    phone: str | None = Field(default=None, max_length=32)
+    email: str | None = Field(default=None, max_length=128)
+    wechat: str | None = Field(default=None, max_length=64)
     is_primary: bool = False
     remark: str | None = None
 

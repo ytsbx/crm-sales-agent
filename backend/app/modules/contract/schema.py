@@ -25,6 +25,9 @@ class DocumentCreate(BaseModel):
     # 不传也能生成（提前备合同），但不传就没有金额——登记签署前必须补上正式依据。
     # 只传 order_id 时，后端会按订单依据的那一版自动带出来。
     quote_version_id: int | None = None
+    #: 与 `contract_documents.title` 的 `String(200)` 对齐（2026-10-14 审查补）：
+    #: 原来完全不限长，传 201+ 字必撞列宽报 500（服务端拼的默认标题也会超，
+    #: 那条由 `service.generate_document` 用 `fit_column` 收进列宽）。
     title: str | None = Field(default=None, max_length=200)
     extra_fields: dict[str, str] = Field(default_factory=dict)
     expiry_date: date | None = None
