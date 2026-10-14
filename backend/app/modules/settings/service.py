@@ -154,6 +154,12 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     #:
     #: ⚠️ **30 天同样是开发默认值**，同上：口径未定，界面上标明。
     "pool_recycle_defer_days": {"days": 30},
+    #: 履约保护的**最长有效期**（天，2026-10-13 主人拍板）：
+    #: 从最后活跃算起超过这么多天仍无动静，即便有在途报价/订单/打样/未结应收，
+    #: 保护也不再豁免提名 —— 防止"挂一张在途订单长期占位不跟进"。
+    #: 提名后主管复核那道闸仍在（批准时重新检查保护，有保护必须填例外原因）。
+    #: 0 = 不设上限（旧行为：有保护就永不提名）。
+    "pool_recycle_max_protect_days": {"days": 90},
     #: 恢复操作需要哪个权限码。做成配置而不是写死角色：
     #: "谁能把回收掉的客户还回去"是管理口径，不同公司不一样。
     #: 默认 `customer:assign` —— 销售主管有这个权限，普通业务员没有。
@@ -208,6 +214,7 @@ SETTING_NUMBER_RULES: dict[str, tuple[str, int, int, str]] = {
     # key: (字段名, 下限, 上限, 中文名)
     "pool_recycle_notice_days": ("days", 0, 365, "回收预告期"),
     "pool_recycle_defer_days": ("days", 0, 365, "主管暂缓等待期"),
+    "pool_recycle_max_protect_days": ("days", 0, 365, "履约保护最长有效期"),
 }
 
 
@@ -526,27 +533,38 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
         add(cid, _protection_reason("有效报价", f"{quote_no}（{QUOTE_STATUS_LABEL.get(status, status)}，有效期至 {valid_until}）"))
 
     # ---- 在途订单 ----
+    #
+    # ⚠️ 口径变更（2026-10-13 主人拍板）：**已签收（`delivered`）不再算"在途"**。
+    # 从前 `delivered` 也在保护里，于是"货都到客户手里了、就是不点完成"能
+    # 永远保护一个不跟进的客户；主人点名要收窄。真正还没结束的是钱
+    # （由下面的"未结应收"保护），货已经交付就不该再顶一遍。
     for cid, order_no, status in (
         await session.execute(
             select(SalesOrder.customer_id, SalesOrder.order_no, SalesOrder.status).where(
-                SalesOrder.status.in_(("pending", "in_production", "shipped", "delivered"))
+                SalesOrder.status.in_(("pending", "in_production", "shipped"))
             )
         )
     ).all():
         add(cid, _protection_reason("在途订单", f"{order_no}（{ORDER_STATUS_LABEL.get(status, status)}）"))
 
-    # ---- 未结应收 ----
-    for cid, order_no in (
+    # ---- 未结应收：**只看还没到期的** ----
+    #
+    # ⚠️ 口径变更（2026-10-13 主人拍板）：**已经逾期的应收不再保护**。
+    # 从前只要节点没取消就保护，与"收不回来也不跟进"长期互相掩护；
+    # 到期还没收齐本身就是不跟进的证据，不该再当免死金牌。
+    # 到期日按**日期**比（不信状态列：时间自己走过时状态可能没刷新）。
+    for cid, order_no, due_date in (
         await session.execute(
-            select(SalesOrder.customer_id, SalesOrder.order_no)
+            select(SalesOrder.customer_id, SalesOrder.order_no, ReceivablePlan.due_date)
             .join(ReceivablePlan, ReceivablePlan.order_id == SalesOrder.id)
             .where(
                 ReceivablePlan.status.in_(("pending", "partial", "overdue")),
+                ReceivablePlan.due_date >= today,
                 SalesOrder.status != "cancelled",
             )
         )
     ).all():
-        add(cid, _protection_reason("未结应收", f"{order_no} 尚有节点未收完"))
+        add(cid, _protection_reason("未结应收", f"{order_no} 尚有节点未收完（到期 {due_date}）"))
 
     # ---- 打样：**客户明确确认接受之后，这张单不再保护**（已确认口径，返工单 6.4）----
     #
@@ -691,6 +709,10 @@ async def _notify_recycle_candidate(
     from app.modules.notification.model import Notification
     from app.modules.notification.service import channel_settings, notify
 
+    # ⚠️ 必须走 `to_business`（2026-10-14）：`candidate.due_at` 是 UTC 瞬时，
+    # 直接 `strftime` 印出来的是 **UTC 日历日** —— 北京时间 00:00–08:00 的通知会
+    # 写前一天。这两行曾在 `b1ebe8f` 修好，`a008b0e`（公海回收口径收窄）基于
+    # 更早的版本改这个函数时又带了回来，`check_output_criteria` 抓到了。
     due_text = to_business(candidate.due_at).strftime("%Y-%m-%d") if candidate.due_at else "—"
     active = candidate.last_active_at
     active_text = to_business(active).strftime("%Y-%m-%d") if active else "无记录"
@@ -799,6 +821,12 @@ async def run_public_pool_recycle(
     ).scalars().all()
     now = datetime.now(UTC)
     notice_days = int(await get_number(session, "pool_recycle_notice_days", "days", 7))
+    #: 保护的最长有效期（天，2026-10-13 主人拍板）：从最后活跃算起超过这么多天
+    #: 仍无动静，履约保护不再豁免提名 —— 防止"挂着一张在途订单就长期占位不跟进"。
+    #: 0 = 不设上限（回到旧行为）。
+    max_protect_days = int(
+        await get_number(session, "pool_recycle_max_protect_days", "days", 90)
+    )
     due_at = now + timedelta(days=notice_days)
     protection = await protection_detail(session)
 
@@ -806,6 +834,9 @@ async def run_public_pool_recycle(
     protected_skipped: list[dict] = []
     #: 撞单争议中、被冻结自动改派的客户（文档 §11.5 :279）
     disputed_skipped: list[dict] = []
+    #: 有履约保护、但保护已过最长有效期仍被提名的客户（2026-10-13 新增）：
+    #: 名单上单独列出，主管复核时重点看
+    protection_overridden: list[dict] = []
     #: **最近联系时间未知**的历史导入客户（第七批 7.5，用户 2026-10-06 确认口径）：
     #: 先标记未知，补核后才进自动回收候选。这类客户不参与本轮扫描，
     #: 但要单独列出来 —— 名单上"看不见"才最危险，主管得知道有多少条等着补核。
@@ -856,17 +887,36 @@ async def run_public_pool_recycle(
             if last >= cutoff:
                 continue
             if customer.id in protection:
-                # 场景21：超期但仍在履约（有效报价/在途订单/打样/应收）→
-                # 按政策豁免本轮。**保护原因一并记下**，主管要看得到是哪张单拦住的
-                protected_skipped.append(
-                    {
-                        "customer_id": customer.id,
-                        "name": customer.name,
-                        "level": rule.level,
-                        "reasons": protection[customer.id],
-                    }
-                )
-                continue
+                # 保护**不是无限期**（2026-10-13 主人拍板）：从最后活跃算起超过
+                # `pool_recycle_max_protect_days` 天仍然没动静的，保护失效、照常提名，
+                # 名单上带出原因让主管重点看（"有在途订单仍被提名"）。
+                # 主管复核那道闸还在：批准时 `decide_candidate` 会重新检查保护，
+                # 有保护必须填例外原因才放行 —— 所以"照样提名"不等于"随便收走"。
+                # 配 0 = 不设上限（回到"有保护就永不提名"的旧行为）。
+                if max_protect_days > 0 and (now - last) >= timedelta(days=max_protect_days):
+                    protection_overridden.append(
+                        {
+                            "customer_id": customer.id,
+                            "name": customer.name,
+                            "level": rule.level,
+                            "idle_days": (now - last).days,
+                            "max_protect_days": max_protect_days,
+                            "reasons": protection[customer.id],
+                        }
+                    )
+                    # 不 continue：往下走正常提名
+                else:
+                    # 场景21：超期但仍在履约（有效报价/在途订单/打样/应收）→
+                    # 按政策豁免本轮。**保护原因一并记下**，主管要看得到是哪张单拦住的
+                    protected_skipped.append(
+                        {
+                            "customer_id": customer.id,
+                            "name": customer.name,
+                            "level": rule.level,
+                            "reasons": protection[customer.id],
+                        }
+                    )
+                    continue
             # 撞单争议未结案 → 冻结自动改派（文档 §11.5 :279）
             if await duplicates.is_disputed(session, customer.id):
                 disputed_skipped.append(
@@ -918,6 +968,9 @@ async def run_public_pool_recycle(
                     "level": rule.level,
                     "rule_days": rule.days,
                     "last_active_at": last.isoformat(),
+                    #: 这份提名是"保护已过最长有效期、仍被提名"（2026-10-13）：
+                    #: 非空说明有在途报价/订单/打样/应收，主管复核重点看
+                    "protection_reasons": protection.get(customer.id, []),
                 }
             )
 
@@ -934,6 +987,9 @@ async def run_public_pool_recycle(
             "nominated": nominated[:100],
             "protected_count": len(protected_skipped),
             "protected": protected_skipped[:100],
+            #: 保护过期被硬提名的（2026-10-13）：主管复核要重点看这批
+            "protection_overridden_count": len(protection_overridden),
+            "protection_overridden": protection_overridden[:100],
             "disputed_count": len(disputed_skipped),
             "disputed": disputed_skipped[:100],
             "unknown_contact_count": len(unknown_contact_skipped),
@@ -949,6 +1005,10 @@ async def run_public_pool_recycle(
         "candidates": nominated,
         "protected_count": len(protected_skipped),
         "protected": protected_skipped[:100],
+        #: 有履约保护、但保护已过最长有效期仍被提名的客户（2026-10-13）：
+        #: 名单上单独列出——"有在途订单仍被提名，请主管重点看"
+        "protection_overridden_count": len(protection_overridden),
+        "protection_overridden": protection_overridden[:100],
         "disputed_count": len(disputed_skipped),
         "disputed": disputed_skipped[:100],
         #: 联系时间未知、待补核的历史客户：这批不参与自动回收
@@ -1030,6 +1090,18 @@ def serialize_candidate(
         "last_progress_at": row.last_progress_at.isoformat() if row.last_progress_at else None,
         "last_active_at": row.last_active_at.isoformat() if row.last_active_at else None,
         "protection": row.protection_snapshot or [],
+        #: **这条是不是「破例提名」**（2026-10-13 主人拍板的最长保护期）：
+        #: 有履约保护、但从最后活跃算起已超过 `pool_recycle_max_protect_days`
+        #: 天没动静 → 照样提名。复核名单上要单独点出来让主管重点看。
+        #:
+        #: 判据写**这里**、前端只渲染（不复刻判据）：正常提名路径上，有保护的
+        #: 客户根本生成不了候选（会被 `protected_skipped` 拦掉、`continue`），
+        #: 所以复核阶段快照里还有保护事项，就只可能是"保护失效照提"。
+        #: 范围收在**待复核 / 已暂缓**：主管一旦批准执行，这份快照会被
+        #: "例外执行的理由"重写（`decide_candidate` 里 `protection_snapshot = reasons`），
+        #: 含义已经变了，不能再挂"破例提名"的牌子。
+        "protection_overridden": bool(row.protection_snapshot)
+        and row.status in ("pending", "deferred"),
         "status": row.status,
         "status_label": RECYCLE_STATUS_LABEL.get(row.status, row.status),
         "notice_at": row.notice_at.isoformat() if row.notice_at else None,

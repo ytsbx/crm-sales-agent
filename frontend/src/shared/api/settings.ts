@@ -121,6 +121,13 @@ export interface RecycleCandidateRow {
   last_active_at?: string | null
   /** 提名那一刻的履约保护明细；批准执行前还会再算一次 */
   protection: string[]
+  /**
+   * **是不是「破例提名」**：有履约保护、但保护已过最长有效期（
+   * `pool_recycle_max_protect_days` 天没活跃）仍被提名。
+   * 复核名单上要单独点出来：「有履约事项仍被提名，请重点看」。
+   * 判据由后端下发（`serialize_candidate`），前端只渲染。
+   */
+  protection_overridden?: boolean
   status: string
   status_label: string
   notice_at?: string | null
