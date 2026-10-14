@@ -3,6 +3,13 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AutoComplete, Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
+import {
+  NUMBER_FIELD_LABEL,
+  invalidNumberMessage,
+  parseOptionalNumber,
+  parseQuantity,
+  requiredNumberOrThrow,
+} from '../../shared/number-input'
 import { calendarDayOrToday } from '../../shared/calendar-day'
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
@@ -477,50 +484,6 @@ const emptyCustomerPriceForm = {
   remark: '',
 }
 
-/**
- * 把表单里的数字文本解析成提交值（2026-10-09 审查 R02）。
- *
- * 从前各处直接写 `Number(x)`，于是"填了字母"会**静默**变成 `NaN`，
- * 而 `JSON.stringify` 又把 `NaN` 序列化成 `null` —— 后端把 `max_qty: null`
- * 理解成"不限数量"。实测（真实浏览器）：数量上限 97000 改成 `abc` 点保存，
- * 上限被清空成"不限"，**页面没有任何提示**，而且从此任何数量都命中这条价。
- *
- * 所以把三种情况分开：
- *   - 空串 / 只有空白 → `null`（= 明确清空，这是合法操作）；
- *   - 能解析成有限数字 → 数字；
- *   - 其它（字母、`1abc`、`Infinity`…）→ `NaN`，调用方**必须**拦下来并提示，
- *     绝不能当成 null 提交。
- */
-function parseOptionalNumber(raw: string): number | null {
-  const text = String(raw ?? '').trim()
-  if (text === '') return null
-  const n = Number(text)
-  return Number.isFinite(n) ? n : NaN
-}
-
-/** 数量类字段：同上，另外限制最多 3 位小数（与库列 `Numeric(16,3)` 对齐）。
- *
- * 不在前端先拦的话，`1.2349` 会被数据库静默舍成 `1.235`，用户以为上限是 1.2349，
- * 之后看到"区间重叠"也复现不出原因（审查 R04 的同一个坑）。
- */
-function parseQuantity(raw: string): number | null {
-  const n = parseOptionalNumber(raw)
-  if (n === null || Number.isNaN(n)) return n
-  const decimals = (String(raw).split('.')[1] ?? '').length
-  return decimals > 3 ? NaN : n
-}
-
-/** 数字字段的中文名：解析失败时提示要点名是哪个字段（R02）。 */
-const NUMBER_FIELD_LABEL: Record<string, string> = {
-  min_qty: '数量下限',
-  max_qty: '数量上限',
-  standard_price: '标准价',
-  guide_price: '指导价',
-  minimum_price: '最低保护价',
-  target_margin: '目标利润率',
-  agreed_price: '约定价',
-}
-
 export default function PriceCenterPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -667,14 +630,24 @@ export default function PriceCenterPage() {
   }
 
   const costMutation = useMutation({
-    mutationFn: () =>
-      createCost(costSkuId!, {
-        purchase_cost: Number(costForm.purchase_cost || 0),
-        package_cost: Number(costForm.package_cost || 0),
-        production_cost: Number(costForm.production_cost || 0),
-        processing_cost: Number(costForm.processing_cost || 0),
+    mutationFn: () => {
+      // 不能写 Number(x || 0)（2026-10-14 审查修）：字母是 truthy，
+      // `|| 0` 不起作用 → NaN → JSON.stringify 变成 null →
+      // 后端当"没提供这个字段"，用户填的成本被静默丢掉，界面还回"已保存"。
+      // 核价随后按更低的成本算：毛利虚高、本该触发的低价审批不触发。
+      const costs = {
+        purchase_cost: parseOptionalNumber(costForm.purchase_cost),
+        package_cost: parseOptionalNumber(costForm.package_cost),
+        production_cost: parseOptionalNumber(costForm.production_cost),
+        processing_cost: parseOptionalNumber(costForm.processing_cost),
+      }
+      const bad = invalidNumberMessage(costs, '只能填数字（最多 2 位小数）')
+      if (bad) throw new Error(bad)
+      return createCost(costSkuId!, {
+        ...costs,
         effective_from: costForm.effective_from,
-      }),
+      })
+    },
     onSuccess: () => {
       Toast.success('成本已保存')
       setCostVisible(false)
@@ -797,11 +770,17 @@ export default function PriceCenterPage() {
   })
 
   const permissionMutation = useMutation({
-    mutationFn: () =>
-      savePricePermission(permissionTarget!.role_id, {
-        minimum_margin: Number(permissionForm.minimum_margin || 0),
+    mutationFn: () => {
+      // 同上：填字母会静默变成 0% 门槛 → 审批条件被悄悄放宽
+      const margin = parseOptionalNumber(permissionForm.minimum_margin)
+      if (typeof margin === 'number' && Number.isNaN(margin)) {
+        throw new Error('最低利润率只能填数字')
+      }
+      return savePricePermission(permissionTarget!.role_id, {
+        minimum_margin: margin ?? 0,
         can_approve: permissionForm.can_approve,
-      }),
+      })
+    },
     onSuccess: () => {
       Toast.success('价格权限已保存')
       setPermissionTarget(null)
@@ -904,13 +883,15 @@ export default function PriceCenterPage() {
         origin_region: rateForm.origin_region.trim() || null,
         destination_region: rateForm.destination_region.trim() || null,
         shipping_method: rateForm.shipping_method.trim() || '陆运',
-        unit_price_per_kg: Number(rateForm.unit_price_per_kg || 0),
+        // 公斤单价是必填：原来 Number('' || 0) = 0，清空后保存会静默建一条 0 元/kg
+        // 的费率，所有走这条线路的运费都算成 0（2026-10-14 审查修）。
+        unit_price_per_kg: requiredNumberOrThrow(rateForm.unit_price_per_kg, '公斤单价'),
         unit_price_per_volume: rateForm.unit_price_per_volume.trim()
-          ? Number(rateForm.unit_price_per_volume)
+          ? parseOptionalNumber(rateForm.unit_price_per_volume)
           : null,
-        min_charge: Number(rateForm.min_charge || 0),
-        eta_days: rateForm.eta_days.trim() ? Number(rateForm.eta_days) : null,
-        eta_days_max: rateForm.eta_days_max.trim() ? Number(rateForm.eta_days_max) : null,
+        min_charge: requiredNumberOrThrow(rateForm.min_charge, '最低收费'),
+        eta_days: rateForm.eta_days.trim() ? parseOptionalNumber(rateForm.eta_days) : null,
+        eta_days_max: rateForm.eta_days_max.trim() ? parseOptionalNumber(rateForm.eta_days_max) : null,
         status: rateForm.status,
         remark: rateForm.remark.trim() || null,
       }

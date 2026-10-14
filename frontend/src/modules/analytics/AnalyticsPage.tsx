@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
+import { parseOptionalNumber } from '../../shared/number-input'
 import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
@@ -170,6 +171,19 @@ function NoData() {
   return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
 }
 
+/** 目标值：空串当 0（目标可以不填），坏输入**抛错点名**（不给静默清空的机会）。
+ *
+ * 原来写 `Number(x || 0)`：字母是 truthy，`|| 0` 不起作用 → NaN →
+ * `JSON.stringify` 变 null → 后端当"没提供这个字段"，目标被悄悄清空。
+ */
+function targetNumber(raw: unknown, label: string): number {
+  const n = parseOptionalNumber(raw)
+  if (typeof n === 'number' && Number.isNaN(n)) {
+    throw new Error(`${label}只能填数字`)
+  }
+  return n ?? 0
+}
+
 export default function AnalyticsPage() {
   const { can } = usePermissions()
   const canSetTarget = can('settings:manage')
@@ -235,9 +249,12 @@ export default function AnalyticsPage() {
         // 否则后端会按"人 + 部门"两个条件去找同一行，谁都匹配不上
         user_id: targetForm.department_id ? null : (targetForm.user_id ?? null),
         department_id: targetForm.department_id ?? null,
-        new_customer_target: Number(targetForm.new_customer_target || 0),
-        sales_target: Number(targetForm.sales_target || 0),
-        repeat_customer_target: Number(targetForm.repeat_customer_target || 0),
+        // 不能写 `Number(x || 0)`（2026-10-14 审查修）：字母是 truthy，
+        // `|| 0` 不起作用 → NaN → JSON null → 后端当"没提供"，
+        // **目标被悄悄清空**，达成率从此显示成"未设目标"。
+        new_customer_target: targetNumber(targetForm.new_customer_target, '新客目标'),
+        sales_target: targetNumber(targetForm.sales_target, '销售额目标'),
+        repeat_customer_target: targetNumber(targetForm.repeat_customer_target, '复购目标'),
       }),
     onSuccess: () => {
       Toast.success('目标已保存')

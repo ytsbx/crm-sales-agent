@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { parseOptionalNumber } from '../../shared/number-input'
 import { calendarDay } from '../../shared/calendar-day'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
@@ -78,7 +79,14 @@ export default function OpportunityListPage() {
       createOpportunity({
         customer_id: form.customer_id,
         title: form.title,
-        expected_amount: form.expected_amount ? Number(form.expected_amount) : null,
+        // 同类：字母会被静默变成 null（= 清空金额）
+        expected_amount: (() => {
+          const v = parseOptionalNumber(form.expected_amount)
+          if (typeof v === 'number' && Number.isNaN(v)) {
+            throw new Error('预计金额只能填数字')
+          }
+          return v
+        })(),
         expected_close_date: form.expected_close_date
           ? calendarDay(form.expected_close_date)
           : null,

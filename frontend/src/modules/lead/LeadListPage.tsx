@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { parseOptionalNumber } from '../../shared/number-input'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -188,7 +189,16 @@ export default function LeadListPage() {
         create_contact: true,
         create_opportunity: createOpportunity,
         opportunity_title: createOpportunity ? opportunityTitle || null : null,
-        expected_amount: expectedAmount ? Number(expectedAmount) : null,
+        // 不能直接 Number(x)：填「约5万」→ NaN → JSON null → 商机建出来但
+        // 预计金额为空，用户只看到「线索已转化」，漏斗金额从此少一笔
+        // （2026-10-14 审查修）。
+        expected_amount: (() => {
+          const v = parseOptionalNumber(expectedAmount)
+          if (typeof v === 'number' && Number.isNaN(v)) {
+            throw new Error('预计金额只能填数字（不要写单位）')
+          }
+          return v
+        })(),
         expected_close_date: createOpportunity && expectedCloseDate
           ? `${expectedCloseDate.getFullYear()}-${String(expectedCloseDate.getMonth() + 1).padStart(2, '0')}-${String(expectedCloseDate.getDate()).padStart(2, '0')}`
           : null,

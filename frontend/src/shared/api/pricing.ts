@@ -201,7 +201,7 @@ export interface PricingResult {
   target_margin: number
   standard_price: number
   recommended_price: number
-  recommended_range: [number, number]
+  recommended_range: [number, number] | null
   /** 公司口径的最低价（保护价）：低于它必须走审批，与下面的授权底价分开看。 */
   protection_price?: number | null
   /** 当前用户权限内的底价。 */
@@ -399,7 +399,7 @@ export interface PricePermissionVerdict {
   authorized_min_margin: number | null
   standard_price: number | null
   recommended_price: number | null
-  recommended_range: [number | null, number | null]
+  recommended_range: [number | null, number | null] | null
   profit: number | null
   profit_rate: number | null
   cost_in_quote_currency: number | null
@@ -423,7 +423,7 @@ export interface PricingSimulationResult {
   cost_in_quote_currency: number | null
   standard_price: number | null
   recommended_price: number | null
-  recommended_range: [number | null, number | null]
+  recommended_range: [number | null, number | null] | null
   minimum_price: number | null
   protection_price: number | null
   scenarios: PricingScenario[]

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
+import { parseOptionalNumber } from '../../shared/number-input'
 import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
@@ -178,7 +179,16 @@ export default function ProductInsightsPage() {
         target_customer: form.target_customer || null,
         direction: form.direction || null,
         selling_points: form.selling_points || null,
-        price_assumption: form.price_assumption ? Number(form.price_assumption) : null,
+        // 不能直接 Number(x)：填「8.5元」→ NaN → JSON null，而 null 在这条
+        // 接口上等于「用户明确清空」—— 两者分不清，输入被静默丢掉
+        // （2026-10-14 审查修）。坏输入一律拦下并点名。
+        price_assumption: (() => {
+          const v = parseOptionalNumber(form.price_assumption)
+          if (typeof v === 'number' && Number.isNaN(v)) {
+            throw new Error('价格假设只能填数字')
+          }
+          return v
+        })(),
         conclusion: form.conclusion || null,
         images: parseImages(form.images),
       }
@@ -263,8 +273,17 @@ export default function ProductInsightsPage() {
     mutationFn: () =>
       convertProductInsight(convertTarget!.id, {
         customer_id: convertCustomerId ?? null,
-        quantity: convertForm.quantity ? Number(convertForm.quantity) : null,
-        target_price: convertForm.target_price ? Number(convertForm.target_price) : null,
+        // 同上：字母会被静默变成 null，转需求后数量为空
+        quantity: (() => {
+          const v = parseOptionalNumber(convertForm.quantity)
+          if (typeof v === 'number' && Number.isNaN(v)) throw new Error('数量只能填数字')
+          return v
+        })(),
+        target_price: (() => {
+          const v = parseOptionalNumber(convertForm.target_price)
+          if (typeof v === 'number' && Number.isNaN(v)) throw new Error('目标价只能填数字')
+          return v
+        })(),
         remark: convertForm.remark || null,
         request_key: convertKey,
       }),

@@ -237,9 +237,19 @@ export default function PricingPage() {
                   标准价只作让价幅度的对比参照，不作为对外报价口径 */}
               <Stat label="标准价（对比参考）" value={money(result.standard_price)} />
               <Stat label="建议报价" value={money(result.recommended_price)} tone="primary" />
+              {/* ⚠️ 必须判整体为 null（2026-10-14 审查修）。
+                  后端 `_sanitize_pricing_result` 对无 `price:manage` 的调用方，
+                  在"没有规则来源"时是把**整个键**置 null（不是把元素置 null），
+                  而类型原来写的是 `[number, number]` —— 于是 `null[0]` 抛 TypeError，
+                  整页被错误边界替换成"这个页面没能加载出来"。
+                  触发面不小：只有标准价、或新 SKU 还没指导价（建议价按成本推）都会命中。 */}
               <Stat
                 label="建议区间"
-                value={`${money(result.recommended_range[0])} ~ ${money(result.recommended_range[1])}`}
+                value={
+                  result.recommended_range
+                    ? `${money(result.recommended_range[0])} ~ ${money(result.recommended_range[1])}`
+                    : '-'
+                }
               />
               <Stat label="最低允许价" value={money(result.minimum_price)} />
               <Stat label="当前报价" value={money(result.quoted_price)} />

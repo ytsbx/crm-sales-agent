@@ -16,6 +16,7 @@ import {
 } from '@douyinfe/semi-ui'
 
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
+import { parseOptionalNumber } from '../../shared/number-input'
 import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
@@ -613,8 +614,11 @@ export default function KnowledgePage() {
             description: form.description.trim() || null,
             customer_id: form.customer_id ?? null,
             opportunity_id: form.opportunity_id ?? null,
-            quantity: form.quantity.trim() ? Number(form.quantity) : null,
-            target_price: form.target_price.trim() ? Number(form.target_price) : null,
+            // 同类：字母会被静默变成 null，转单后数量/目标价为空
+            quantity: form.quantity.trim() ? parseOptionalNumber(form.quantity) : null,
+            target_price: form.target_price.trim()
+              ? parseOptionalNumber(form.target_price)
+              : null,
             remark: form.remark.trim() || null,
             status: editing ? (form.status ?? editing.status) : undefined,
           })
