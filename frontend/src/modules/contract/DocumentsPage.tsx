@@ -400,7 +400,9 @@ export default function DocumentsPage() {
                 ),
               },
               { title: '到期日', dataIndex: 'expiry_date', width: 110, render: (v: string | null) => v ?? '-' },
-              { title: '签署时间', dataIndex: 'signed_at', width: 130, render: (v: string | null) => (v ? v.slice(0, 10) : '-') },
+              // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
+              // 北京时间凌晨签的会显示成前一天。
+              { title: '签署时间', dataIndex: 'signed_at', width: 130, render: (v: string | null) => (v ? new Date(v).toLocaleDateString('zh-CN') : '-') },
               {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
@@ -960,7 +962,7 @@ export default function DocumentsPage() {
                     )}
                     <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       {Math.max(1, Math.round(row.size / 1024))} KB
-                      {row.attached_at ? ` · 登记于 ${row.attached_at.slice(0, 10)}` : ''}
+                      {row.attached_at ? ` · 登记于 ${new Date(row.attached_at).toLocaleDateString('zh-CN')}` : ''}
                     </span>
                   </div>
                 ))

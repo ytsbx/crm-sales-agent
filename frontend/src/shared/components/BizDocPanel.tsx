@@ -182,7 +182,10 @@ export default function BizDocPanel({
             title: '生成时间',
             dataIndex: 'created_at',
             width: 170,
-            render: (v: string | null) => (v ? v.slice(0, 19).replace('T', ' ') : '-'),
+            // ⚠️ 原来是 `v.slice(0,19).replace('T',' ')` —— 切 ISO 串等于按 **UTC** 显示。
+            // `doc.created_at` 存的是 UTC 瞬时（本项目自己为生成文件印日期修过同类问题），
+            // 北京时间 11:00 生成的文件会显示成 03:00。
+            render: (v: string | null) => (v ? new Date(v).toLocaleString('zh-CN') : '-'),
           },
           {
             title: '操作',

@@ -726,7 +726,7 @@ export default function CasesPage() {
                       style={{ display: 'flex', alignItems: 'center', gap: 8 }}
                     >
                       <span style={{ color: 'var(--crm-text-3)' }}>
-                        {event.at?.slice(0, 10)}
+                        {event.at ? new Date(event.at).toLocaleDateString('zh-CN') : ''}
                       </span>
                       <span style={{ flex: 1 }}>{event.title}</span>
                       {event.source ? (
@@ -966,7 +966,7 @@ export default function CasesPage() {
                           {round.reviewer_name || '—'}
                         </span>
                         <span style={{ color: 'var(--crm-text-3)' }}>
-                          {round.reviewed_at ? round.reviewed_at.slice(0, 16).replace('T', ' ') : ''}
+                          {round.reviewed_at ? new Date(round.reviewed_at).toLocaleString('zh-CN') : ''}
                         </span>
                       </div>
                       {round.note && (

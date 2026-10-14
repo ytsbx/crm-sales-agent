@@ -1178,7 +1178,7 @@ export default function OrderDetailPage() {
                       {row.confirmed_at && (
                         <div style={{ marginTop: 2, color: 'var(--crm-text-3)' }}>
                           由 {row.confirmed_by_name ?? row.confirmed_by} 于{' '}
-                          {row.confirmed_at.slice(0, 16).replace('T', ' ')} 确认
+                          {new Date(row.confirmed_at).toLocaleString('zh-CN')} 确认
                           {row.confirm_remark ? `（${row.confirm_remark}）` : ''}
                         </div>
                       )}

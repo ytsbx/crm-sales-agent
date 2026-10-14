@@ -45,6 +45,9 @@ EXEMPT: dict[str, str] = {
     "modules/auth/LoginPage.tsx": "只有提交中的瞬时禁用，按钮自带 loading",
     # 分页/翻页：标准语义，灰=到头了，无需解释
     "modules/wecom/WeComPage.tsx": "只有分页上一页/下一页的瞬时禁用",
+    # 工作台：勾选完成待办时禁用该勾选框，只在**这一次请求飞行中**；
+    # 旁边紧挨着任务标题与优先级，且状态一变就重取（2026-10-14 修"失败无提示"）
+    "modules/workbench/WorkbenchPage.tsx": "只有提交完成待办时的瞬时禁用，紧挨着任务行",
     # 图表/看板类：禁用来自视图切换，切换按钮紧挨着
     "modules/opportunity/OpportunityListPage.tsx": "状态筛选随表格/看板视图联动，切换器紧挨着",
     "modules/analytics/AnalyticsPage.tsx": "期间选择随结账模式联动，弹窗顶部已有说明块",

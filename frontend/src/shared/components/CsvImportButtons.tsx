@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+
+import { calendarDay } from '../calendar-day'
 import { Button, Modal, Table, Toast } from '@douyinfe/semi-ui'
 
 /**
@@ -106,7 +108,10 @@ export default function CsvImportButtons({
     const blobUrl = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = blobUrl
-    link.download = `导入失败清单-${new Date().toISOString().slice(0, 10)}.csv`
+    // ⚠️ 不能用 `toISOString().slice(0,10)`：那是 **UTC 日历日**，
+    // 北京时间 00:00–07:59 导出的文件名会带上前一天
+    // （`calendar-day.ts` 的文件头就是为这个坑写的）。按当地年月日取。
+    link.download = `导入失败清单-${calendarDay(new Date()) ?? ''}.csv`
     document.body.appendChild(link)
     link.click()
     link.remove()

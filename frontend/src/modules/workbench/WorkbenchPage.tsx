@@ -71,6 +71,9 @@ function TrendChart({ data }: { data: TrendRow[] }) {
 }
 
 export default function WorkbenchPage() {
+  /** 正在提交"完成"的任务 id：用于禁用勾选框，防连点重复请求 */
+  const [completingId, setCompletingId] = useState<number | null>(null)
+
   const navigate = useNavigate()
   const user = useAuthStore((state) => state.user)
   const openCopilot = useCopilotStore((state) => state.openWith)
@@ -551,12 +554,39 @@ export default function WorkbenchPage() {
                 }}
               >
                 <Checkbox
+                  // ⚠️ 勾选完成待办必须**受控 + 兜错**（2026-10-14 审查修）。
+                  //
+                  // 原来三处都不对：
+                  //   ① 没有 `checked`：Semi 自己把勾打上，请求失败也不会退回
+                  //      → 界面显示"已完成"而库里没变；
+                  //   ② `onChange` 是 async 且**无 try/catch** ——
+                  //      `completeTask` 抛错（403 / 404 / 后端乐观锁
+                  //      `rowcount==0` 的 409「请刷新后重试」/ 弱网）只会变成
+                  //      unhandled rejection，**一个字都不给用户**；
+                  //   ③ 后端返回非 0 code 时是 `ApiError`，同样无人接。
+                  // 后果：用户以为办完了，实际没办；再点一次仍然静默失败。
+                  // 现在：失败弹人话 + 无论成败都重取（成功更新列表、失败让勾回到
+                  // 真实状态）；请求期间禁用，防连点。
+                  //
+                  // `checked={false}` 是刻意的：这块列表是"今日待办"，
+                  // 提交中不该先显示成已完成（乐观勾选正是原来那个 bug 的形态）；
+                  // 提交后 `refetch` 会让这一行按服务端的真实状态重新渲染。
+                  checked={false}
+                  disabled={completingId === task.id}
                   onChange={async () => {
-                    const { completeTask } = await import('../../shared/api/task')
-                    await completeTask(task.id)
-                    Toast.success('任务已完成')
-                    void tasksQuery.refetch()
-                    void summaryQuery.refetch()
+                    setCompletingId(task.id)
+                    try {
+                      const { completeTask } = await import('../../shared/api/task')
+                      await completeTask(task.id)
+                      Toast.success('任务已完成')
+                    } catch (error) {
+                      Toast.error((error as Error).message || '完成失败，请重试')
+                    } finally {
+                      setCompletingId(null)
+                      // 无论成败都重取：成功要更新列表，失败要让勾回到真实状态
+                      void tasksQuery.refetch()
+                      void summaryQuery.refetch()
+                    }
                   }}
                 />
                 <div style={{ minWidth: 0, flex: 1 }}>
@@ -791,7 +821,7 @@ export default function WorkbenchPage() {
                     ? ` · 主联系人：${row.contact_name}${row.contact_phone ? `（${row.contact_phone}）` : ''}`
                     : ''}
                   {row.next_followup_at
-                    ? ` · 约定下次跟进：${String(row.next_followup_at).slice(0, 10)}`
+                    ? ` · 约定下次跟进：${new Date(row.next_followup_at).toLocaleDateString('zh-CN')}`
                     : ''}
                 </div>
               </div>
