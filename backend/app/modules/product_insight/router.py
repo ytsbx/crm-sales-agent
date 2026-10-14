@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -305,7 +305,19 @@ async def _get_visible(
     if _can_review(user):
         return row
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None and row.owner_id not in owner_ids:
+    # ⚠️ **无负责人的洞察按"公海"放行**（2026-10-14 审查修）。
+    #
+    # 原判据是 `row.owner_id not in owner_ids` —— 而 `owner_id` 可空
+    # （`InsightUpdate.owner_id` 允许传 `null` = 清空，`_assert_assignee`
+    # 对 None 直接放行）。一旦被清空：`None not in [...]` **恒为真** →
+    # 详情 403、列表里也不出现（`owner_id.in_(...)` 对 NULL 恒不成立），
+    # 操作人**自己**随后既看不到也改不了这条记录，想改回负责人也没有入口，
+    # 只能请全量范围的管理员救。
+    #
+    # 与项目其它模块口径一致：`pricing/service.py` 把 `owner_id IS NULL`
+    # 当公海对范围内所有人放行；客户模块同理（"公海对所有有 customer:view
+    # 的人可见 —— 这正是公海的意义"）。
+    if owner_ids is not None and row.owner_id is not None and row.owner_id not in owner_ids:
         # 同上：数据范围之外是 403，不是 400
         raise AppError(ErrorCode.FORBIDDEN, "不在你的数据范围内", 403)
     return row
@@ -329,7 +341,19 @@ async def _get_writable(
     """
     row = await _get_visible(session, user, insight_id, for_update=for_update)
     owner_ids = await scoped_owner_ids(session, user)
-    if owner_ids is not None and row.owner_id not in owner_ids:
+    # ⚠️ **无负责人的洞察按"公海"放行**（2026-10-14 审查修）。
+    #
+    # 原判据是 `row.owner_id not in owner_ids` —— 而 `owner_id` 可空
+    # （`InsightUpdate.owner_id` 允许传 `null` = 清空，`_assert_assignee`
+    # 对 None 直接放行）。一旦被清空：`None not in [...]` **恒为真** →
+    # 详情 403、列表里也不出现（`owner_id.in_(...)` 对 NULL 恒不成立），
+    # 操作人**自己**随后既看不到也改不了这条记录，想改回负责人也没有入口，
+    # 只能请全量范围的管理员救。
+    #
+    # 与项目其它模块口径一致：`pricing/service.py` 把 `owner_id IS NULL`
+    # 当公海对范围内所有人放行；客户模块同理（"公海对所有有 customer:view
+    # 的人可见 —— 这正是公海的意义"）。
+    if owner_ids is not None and row.owner_id is not None and row.owner_id not in owner_ids:
         raise AppError(
             ErrorCode.FORBIDDEN,
             "这条洞察的负责人不在你的数据范围内，不能修改"
@@ -356,7 +380,11 @@ async def list_insights(
     owner_ids = await scoped_owner_ids(session, user)
     # 评审人看全部（待评审的那些不是他的，但他必须看得到）；其他人仍按数据范围。
     if owner_ids is not None and not _can_review(user):
-        stmt = stmt.where(ProductInsight.owner_id.in_(owner_ids))
+        # 同口径：范围内的 + **无负责人的**（公海）。少了后半个条件，
+        # 被清空负责人的洞察会从所有人的列表里消失（NULL IN (...) 恒不成立）。
+        stmt = stmt.where(
+            or_(ProductInsight.owner_id.in_(owner_ids), ProductInsight.owner_id.is_(None))
+        )
     stmt = stmt.order_by(ProductInsight.id.desc())
     rows, total = await paginate(session, stmt, page, page_size)
     names = await _owner_names(session, rows)
