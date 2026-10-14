@@ -61,14 +61,25 @@ def normalized_quantity(quantity: Decimal | None) -> Decimal:
     return Decimal(quantity).quantize(QUANTITY_SCALE, rounding=ROUND_HALF_UP)
 
 
-def is_logistics_charge(charge: QuoteCharge) -> bool:
+def is_logistics_charge(charge: "QuoteCharge | dict | None") -> bool:
     """这条费用是不是"向客户收取的运费"。
 
     ⚠️ 只认分类码，**不按说明文字里含"运费"去识别**（口径明确要求）：
     说明是自由文本，写成"宁波到苏州运费"或"物流费"都不该改变金额归属，
     反过来把一句别的费用写成含"运费"的字样也不该被算成运费。
     折扣行永远不算运费（`is_discount=True` 走折扣那一档，折扣在库里是负数）。
+
+    入参既接受 ORM 对象，也接受 `serialize_charge` 出来的**快照 dict**
+    （2026-10-14 加）：改费用时"改之前"的样子只有快照还留着 ——
+    原来把**同一个已被 setattr 改过**的对象当 before 传进来，判据形同虚设。
     """
+    if charge is None:
+        return False
+    if isinstance(charge, dict):
+        return bool(
+            not charge.get("is_discount")
+            and (charge.get("charge_type") or "").strip().lower() == CHARGE_TYPE_LOGISTICS
+        )
     return (
         not charge.is_discount
         and (charge.charge_type or "").strip().lower() == CHARGE_TYPE_LOGISTICS
@@ -76,7 +87,7 @@ def is_logistics_charge(charge: QuoteCharge) -> bool:
 
 
 async def ensure_charge_change_allowed(
-    version: QuoteVersion, *, before: QuoteCharge | None, after: QuoteCharge | None
+    version: QuoteVersion, *, before: "QuoteCharge | dict | None", after: "QuoteCharge | dict | None"
 ) -> None:
     """改附加费用的闸：锁版之后**只放行运费**（主人 2026-10-12 拍板，方案 A+B）。
 
@@ -104,6 +115,10 @@ async def ensure_charge_change_allowed(
     ⚠️ **只放行运费**：折扣/税费/服务费在锁版后仍然一律拒绝。那些属于"批过的
     总额能被事后改动"，会让审批白做 —— 它们没有"代收代付、不进产品价"这个性质。
     判据必须同时看**改之前**和**改之后**：把一条运费改成"服务费"同样被拒。
+    ⚠️ **`before` 必须是"改之前"的样子**（2026-10-14 审查修）。
+    调用方原来把**同一个已经被 `setattr` 改过**的对象当 before 传进来，
+    于是第一道校验恒真、成了死判据 —— 表面上"两边都看了"，实际只看了一边。
+    现在允许传 `serialize_charge` 的快照 dict，调用方在赋值前取一份即可。
 
     ## 和"标记已发送"的先后
 

@@ -1886,8 +1886,13 @@ async def update_charge(
     # 顺序不能挪到折扣归一之前：`is_logistics_charge` 要看最终的 is_discount。
     svc.mark_logistics_confirmed(charge)
     # 锁版之后只有"前后都是运费"的改动放行（含改金额、改说明）。
+    # ⚠️ `before` 用**改之前的快照**，不能传 `charge` 本身（2026-10-14 审查修）。
+    # 上面那个 `setattr` 循环已经把 `charge` 改成新样子了，再把它当 before 传进去，
+    # 第一道校验就恒真、成了**死判据** —— 表面上"改前改后都看了"，实际只看了一边
+    # （`was_logistics` 为真才传，而传的对象又恰好还是 logistics，永远为真）。
+    # 现在传上面取好的 before 快照，after 也给快照，两边口径一致。
     await svc.ensure_charge_change_allowed(
-        version, before=(charge if was_logistics else None), after=charge
+        version, before=before, after=svc.serialize_charge(charge)
     )
     # 只有"原本不是运费、现在改成运费"才可能把条数顶成 2 —— 在一条运费上改金额或
     # 改说明不算（`keep_id` 把这条自己排除掉了）。判据与新增共用同一个 helper，
