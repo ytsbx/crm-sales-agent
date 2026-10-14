@@ -978,6 +978,14 @@ def main():
                rejected19 and not zero_confirmed,
                f"code={res.get('code')} 被拒={rejected19} 零元已确认行={len(zero_confirmed)}")
         # 正向对照：显式填 0 仍然合法，且算"已确认的零运费"
+        #
+        # ⚠️ **断言过期非回归**（2026-10-14）：这一段从前在**同一个版本**上直接再补
+        # 一条零运费（300 与 0 两条并存）。新增的闸「一个版本只能有一条运费」
+        # （`quote/service.py::ensure_single_logistics_charge`）会拒掉第二条 ——
+        # 多条会被 `recalc_version` 静默累加进总额。所以改成**先把 300 那条收掉、
+        # 再填 0**：验的还是"显式 0 元合法且记为已确认"，与这道闸无关。
+        if charge19:
+            call('DELETE', f'/quote-charges/{charge19}', token=zhangsan)
         _, res = call('POST', f'/quote-versions/{fix19_version}/charges', token=zhangsan,
                       body={'charge_type': 'logistics', 'description': '明确零运费',
                             'amount': 0})
@@ -987,10 +995,10 @@ def main():
         record('A19c', '显式填写零元仍合法，并记为已确认的零运费',
                bool(explicit_zero_ok),
                f"code={res.get('code')} 确认时刻={bool(res['data'].get('logistics_confirmed_at'))}")
-        # 收掉这条运费（端点挂在 /quote-charges 下，不在版本路径下），
+        # 收掉这条零运费（端点挂在 /quote-charges 下，不在版本路径下），
         # 免得它改变同一报价上后续断言的形状
-        if charge19:
-            call('DELETE', f'/quote-charges/{charge19}', token=zhangsan)
+        if res.get('code') == 0 and res.get('data'):
+            call('DELETE', f"/quote-charges/{res['data']['id']}", token=zhangsan)
 
         # ---- ③ 只改备注：利润与成本快照一个字都不能动 ----
         _, before19 = call('GET', f'/quote-versions/{fix19_version}', token=zhangsan)
