@@ -251,7 +251,15 @@ async def confirm_change(
     # 行锁：两个人同时点"确认"时，第二个必须等第一个提交完再读状态，
     # 否则两边都读到 pending、都往下走，计划日被写两遍。
     order = await lock_order(session, order)
-    # ⚠️ 锁内重判范围 —— 这一行就是上面那段说的修法。挪到写操作**之前**。
+    # ⚠️ 锁内重判**两道**判据，都挪到写操作**之前**：
+    #
+    #   ① 数据范围（`ensure_in_scope`）—— 我第一版只补了这一道；
+    #   ② **变更单的责任人资格** —— 第二道不能少：主管理论上数据范围是 `all`，
+    #      光看范围他永远过得去，于是"转交之后旧责任人仍然确认成功"
+    #      （真库实测：顺序场景下就复现了，不必并发）。
+    #      路由里那道同样的检查是在**无锁**对象上做的，转交一提交就过期了。
+    #
+    # 两道判据都读锁内的 `order` / `change`，所以拿到锁之后看到的是最新事实。
     from app.core.data_scope import ensure_in_scope
 
     await ensure_in_scope(session, user, owner_id=order.owner_id, label="订单")
@@ -266,6 +274,20 @@ async def confirm_change(
     if locked is None:
         raise AppError(ErrorCode.NOT_FOUND, "交期变更单不存在", 404)
     change = locked
+    # ② 资格重判：确认人必须是**变更单上记的责任人**（或持有 order:assign 的主管）。
+    #    与路由里那条同一口径，区别是这里读的是**锁内刷新后**的变更单 ——
+    #    转交一提交，路由那次无锁检查就作废了，只有这里判得住。
+    if (
+        change.owner_id
+        and user.id != change.owner_id
+        and not user.has("order:assign")
+    ):
+        raise AppError(
+            ErrorCode.FORBIDDEN,
+            "该交期变更单应由责任人确认（当前记录的责任人不是您，可能刚被转交）；"
+            "若已交接，请让有「转移订单负责人」权限的主管确认",
+            403,
+        )
     if change.status != "pending":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

@@ -466,3 +466,9 @@ check_contract_sign_lock
 check_batch9_repairs
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue
+
+# 交期确认与负责人转移的锁/资格（第十批审查 ⑤，2026-10-13）：
+# 「旧负责人过了权限检查、卡在订单锁上，主管在锁内把负责人改掉并提交，
+#   旧请求拿到锁后照样确认成功」——用 NOWAIT 确定性判定 + 真并发交错，
+# 并反向验证过（两道判据一起撤掉时第 ④ 段立刻变红）。
+check_schedule_confirm_race
