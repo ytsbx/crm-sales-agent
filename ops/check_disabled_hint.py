@@ -68,6 +68,12 @@ EXEMPT: dict[str, str] = {
     # 保存按钮多一条 `pools.isError || tasks.isError`，而**紧挨着下面就写着**
     # 「规则加载失败，请刷新后重试。」（`role="alert"`）—— 原因就在控件旁边。
     "modules/settings/UnratedRulesPanel.tsx": "保存按钮的禁用旁边就是「规则加载失败，请刷新后重试」，其余为瞬时禁用",
+    # 打样钉钉流程弹窗（2026-10-15 补登记）：禁用只有两种来源，且**都在旁边写着** ——
+    # ① `mutate.isPending`：提交中的瞬时禁用，提交按钮自带 loading；
+    # ② `submitted`（已提交后锁定）：弹窗里列着已提交的审批记录，
+    #    底部按钮已变成「重试原申请」，并另给「修改后重新提交」的入口 ——
+    #    用户点不动时，屏幕上就有"已经提交过了"这件事。
+    "modules/sample/SampleDingTalkModal.tsx": "已提交后锁定（记录就列在弹窗里，按钮已改为「重试原申请」）或提交中的瞬时禁用",
     # 任务列表：状态列与「（已选 N）」就在旁边
     "modules/task/TaskListPage.tsx": "状态列/已选计数就在控件旁",
     # 样品列表：勾选与数量框本身就是原因（本轮已按同一规则叙述）
