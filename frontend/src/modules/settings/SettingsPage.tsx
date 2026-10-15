@@ -507,7 +507,7 @@ export default function SettingsPage() {
         department_id: userForm.department_id ?? null,
       }
       if (userEditTarget) {
-        // 编辑时不传 username（登录名不可改），密码留空表示不改
+        // 用户管理不修改登录名；本人可在个人设置修改。密码留空不重置。
         if (userForm.password) payload.password = userForm.password
         return updateUser(userEditTarget.id, payload)
       }
@@ -1887,7 +1887,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              登录名<span className="required-mark" aria-hidden="true">*</span>{userEditTarget ? '（不可修改）' : ''}
+              登录名<span className="required-mark" aria-hidden="true">*</span>{userEditTarget ? '（由本人在个人设置修改）' : ''}
             </div>
             <Input
               value={userForm.username}
@@ -1897,14 +1897,20 @@ export default function SettingsPage() {
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              密码 {userEditTarget ? '（留空表示不修改）' : '*'}
+              {userEditTarget ? '管理员重置密码（留空不重置）' : '初始密码 *'}
             </div>
             <Input
               mode="password"
               value={userForm.password}
               onChange={(value) => setUserForm({ ...userForm, password: value })}
               placeholder="至少 6 位"
+              autoComplete="new-password"
             />
+            {userEditTarget && (
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 6 }}>
+                为当前选中的用户设置新密码，无需原密码。修改自己的密码也可从右上角头像进入「个人设置」。
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
