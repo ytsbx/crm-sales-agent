@@ -520,8 +520,19 @@ export function retryFailedNotifications(limit = 200) {
 }
 
 export function listAuditLogs(query: {
+  /**
+   * 关键字：**中文也认**（后端把界面上显示的中文反查回库里的英文码，
+   * 2026-10-15）。所以输「定制需求」和输 `custom_inquiry` 都能搜到；
+   * 另外还认**操作人姓名**和**对象编号**（`#12` 或 `12`）。
+   */
+  keyword?: string
   business_type?: string
   action?: string
+  /** 操作人（后端原来就支持，前端一直没用） */
+  operator_id?: number
+  /** 时间范围（ISO 字符串，后端按 created_at 过滤） */
+  start?: string
+  end?: string
   page?: number
   page_size?: number
 }) {
