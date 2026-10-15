@@ -94,6 +94,7 @@ export default function KnowledgePage() {
   const rawOpportunityId = Number(searchParams.get('opportunity_id'))
   const opportunityFilter = Number.isSafeInteger(rawOpportunityId) && rawOpportunityId > 0 ? rawOpportunityId : undefined
   const { can } = usePermissions()
+  const [photoTarget, setPhotoTarget] = useState<CustomInquiryRow | null>(null)
   const [submitTarget, setSubmitTarget] = useState<CustomInquiryRow | null>(null)
   const [submitFields, setSubmitFields] = useState<Record<string, string>>({})
   const [submitResubmit, setSubmitResubmit] = useState(false)
@@ -258,11 +259,17 @@ export default function KnowledgePage() {
   const saveMutation = useMutation({
     mutationFn: (payload: CustomInquiryPayload) =>
       editing ? updateCustomInquiry(editing.id, payload) : createCustomInquiry(payload),
-    onSuccess: () => {
-      Toast.success(editing ? '已保存' : '定制询价已记录')
-      setEditVisible(false)
-      setEditing(null)
-      setForm(EMPTY_FORM)
+    onSuccess: (row) => {
+      if (editing) {
+        Toast.success('已保存')
+        setEditVisible(false)
+        setEditing(null)
+        setForm(EMPTY_FORM)
+      } else {
+        // 附件挂到已保存的真实需求；切换编辑，避免重复保存创建多条需求。
+        Toast.success('基本信息已保存，现在可以上传照片')
+        setEditing(row)
+      }
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -498,6 +505,7 @@ export default function KnowledgePage() {
         if (record.status === 'archived') moreMissing.push(`当前状态是「${statusLabel}」，不能再归档`)
         return (
           <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            {can('quote:manage') && <a onClick={() => setPhotoTarget(record)}>上传照片</a>}
             <a onClick={() => openEdit(record)}>编辑</a>
             <a onClick={() => openRevise(record)}>修订</a>
             {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
@@ -613,10 +621,17 @@ export default function KnowledgePage() {
 
       {draftSourceId != null && <SampleFromSourceModal mode="order" source={{ inquiry_id: draftSourceId }} onClose={() => setDraftSourceId(null)} />}
       {sampleSourceId != null && <SampleFromSourceModal source={{ inquiry_id: sampleSourceId }} onClose={() => setSampleSourceId(null)} />}
+      <Modal title="询价照片与附件" visible={Boolean(photoTarget)} width={720}
+        bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
+        onCancel={() => setPhotoTarget(null)} footer={<Button onClick={() => setPhotoTarget(null)}>完成</Button>}>
+        <div style={{ marginBottom: 12 }}>{photoTarget?.title}：上传的照片会用于这条询价的钉钉审批。</div>
+        {photoTarget && <AttachmentPanel businessType="inquiry" businessId={photoTarget.id} writePermission="quote:manage" />}
+      </Modal>
       <Modal
         title="提交询价到钉钉OA"
         visible={Boolean(submitTarget)}
         width={720}
+        bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
         onCancel={() => { if (!submitMutation.isPending) setSubmitTarget(null) }}
         okText="确认提交到钉钉"
         confirmLoading={submitMutation.isPending}
@@ -638,6 +653,12 @@ export default function KnowledgePage() {
           {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>{submissionOptions.error.message}</div>}
           {submissionOptions.data && !submissionOptions.data.configured && <div>尚未配置钉钉询价模板，请联系管理员。</div>}
           {submissionOptions.data && !submissionOptions.data.enabled && <div>钉钉询价提交暂未开启，请联系管理员。</div>}
+          {submitTarget && submissionOptions.data && <div>
+            <FormLabel required={submissionOptions.data.image_required}>产品参考图片与附件</FormLabel>
+            <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>上传真实产品参考图片后再提交；审批结果可在「审批记录」查看，系统会定期从钉钉同步。</div>
+            <AttachmentPanel businessType={submissionOptions.data.file_business_type} businessId={submitTarget.id}
+              writePermission="quote:manage" />
+          </div>}
           {submissionOptions.data?.quote_owner_required && <div>
             <FormLabel required>对接报价员</FormLabel>
             <Select style={{ width: '100%' }} placeholder="选择钉钉对接报价员"
@@ -664,12 +685,7 @@ export default function KnowledgePage() {
                 onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value }))} />
             )}
           </div>)}
-          {submitTarget && submissionOptions.data && <div>
-            <FormLabel required={submissionOptions.data.image_required}>产品参考图片与附件</FormLabel>
-            <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>上传真实产品参考图片后再提交；审批结果可在「审批记录」查看，系统会定期从钉钉同步。</div>
-            <AttachmentPanel businessType={submissionOptions.data.file_business_type} businessId={submitTarget.id}
-              writePermission="quote:manage" />
-          </div>}
+
         </div>
       </Modal>
 
@@ -697,11 +713,17 @@ export default function KnowledgePage() {
           })
         }}
         confirmLoading={saveMutation.isPending}
-        okText="保存"
+        okText={editing ? "保存" : "保存并上传照片"}
         cancelText="取消"
         width={560}
+        bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
       >
         <div style={{ display: 'grid', gap: 12 }}>
+          <div>
+            <FormLabel>产品参考照片与附件</FormLabel>
+            {editing ? <AttachmentPanel businessType="inquiry" businessId={editing.id} writePermission="quote:manage" />
+              : <div style={{ color: 'var(--crm-text-3)' }}>先填写下方基本信息，点击「保存并上传照片」，这里就会出现上传按钮。保存不会发起钉钉审批。</div>}
+          </div>
           <div>
             <FormLabel required>需求标题</FormLabel>
             <Input
