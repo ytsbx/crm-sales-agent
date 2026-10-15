@@ -54,7 +54,7 @@ import AttachmentPanel from '../common/AttachmentPanel'
 import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import { blockedToastText } from '../../shared/components/blocked-hint-reasons'
 
 /** 样品（PRD §19 / 03-API §26）。 */
@@ -268,7 +268,11 @@ export default function SampleListPage() {
   })
   const opportunitiesQuery = useQuery({
     queryKey: ['opportunities-for-select'],
-    queryFn: () => listOpportunities({ page: 1, page_size: 100 }),
+    // 只列「进行中」的商机：已失单 / 已成交的不该再拿来开新的样品申请。
+    // 项目里其它选商机的地方都带这道过滤（报价中心、报价列表、商机看板、工作台
+    // 都是 `status: 'open'`），只有这里原先漏了 —— 于是已失单的商机也会出现在下拉里，
+    // 跟同名的进行中商机长得一模一样（主人 2026-10-15 截图问「为什么两个一样的」）。
+    queryFn: () => listOpportunities({ status: 'open', page: 1, page_size: 100 }),
     enabled: createVisible,
   })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
@@ -726,13 +730,18 @@ export default function SampleListPage() {
                   ?? (selectedOpportunityQuery.data?.id === id ? selectedOpportunityQuery.data : undefined)
                 setForm({ ...form, opportunity_id: id, customer_id: opp?.customer_id ?? form.customer_id })
               }}
-              optionList={Array.from(new Map([
-                ...(opportunitiesQuery.data?.items ?? []),
-                ...(selectedOpportunityQuery.data ? [selectedOpportunityQuery.data] : []),
-              ].map((opp) => [opp.id, opp])).values()).map((opp) => ({
-                value: opp.id,
-                label: `${opp.title}${opp.customer_name ? ` · ${opp.customer_name}` : ''}`,
-              }))}
+              optionList={optionsWithCodeOnDuplicate(
+                Array.from(new Map([
+                  ...(opportunitiesQuery.data?.items ?? []),
+                  ...(selectedOpportunityQuery.data ? [selectedOpportunityQuery.data] : []),
+                ].map((opp) => [opp.id, opp])).values()),
+                // 显示文案是「商机名 · 客户名」：同一个客户底下有同名商机时，
+                // 两条会渲染成一模一样的文字，选哪条全靠猜。
+                // 按项目规矩来 —— **撞车才补「编号 N」**（不撞车的仍然只显示文案，
+                // 也不影响按编号搜：搜索走 optionMatcher，编号挂在 value 上）。
+                (opp) => `${opp.title}${opp.customer_name ? ` · ${opp.customer_name}` : ''}`,
+                (opp) => opp.id,
+              )}
             />
           </div>
           <div>

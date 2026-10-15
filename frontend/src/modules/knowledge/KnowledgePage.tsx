@@ -45,7 +45,7 @@ import { reportOperationTiming } from '../../shared/api/analytics'
 import { newRequestKey } from '../../shared/api/requestKey'
 import FormLabel from '../../shared/components/FormLabel'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 const STATUS_TONE: Record<string, TagColor> = {
@@ -238,7 +238,11 @@ export default function KnowledgePage() {
   })
   const opportunitiesQuery = useQuery({
     queryKey: ['opportunities-for-inquiry', form.customer_id],
-    queryFn: () => listOpportunities({ customer_id: form.customer_id ?? undefined, page_size: 100 }),
+    // 只列「进行中」的商机（理由同「新建样品申请」：已失单/已成交的不该再作为
+    // 「本次采购需求」的关联对象，其它选商机的地方也都带这道过滤）。
+    queryFn: () => listOpportunities({
+      customer_id: form.customer_id ?? undefined, status: 'open', page_size: 100,
+    }),
     enabled: editVisible && Boolean(form.customer_id),
   })
   const selectedOpportunity = useQuery({
@@ -671,10 +675,16 @@ export default function KnowledgePage() {
             <div className="blocked-hint-click" onClick={notifyOpportunityBlocked} style={{ display: 'block' }}>
               <Select value={form.opportunity_id ?? undefined} disabled={!form.customer_id}
                 onChange={(value) => setForm({ ...form, opportunity_id: (value as number) ?? null })}
-                optionList={Array.from(new Map([
-                  ...(opportunitiesQuery.data?.items ?? []),
-                  ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
-                ].map((item) => [item.id, item])).values()).map((item) => ({ value: item.id, label: item.title }))}
+                optionList={optionsWithCodeOnDuplicate(
+                  Array.from(new Map([
+                    ...(opportunitiesQuery.data?.items ?? []),
+                    ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
+                  ].map((item) => [item.id, item])).values()),
+                  // 显示文案就是商机名：同一客户底下同名商机必然撞车，
+                  // 按项目规矩撞车才补「编号 N」。
+                  (item) => item.title,
+                  (item) => item.id,
+                )}
                 filter showClear
                 style={{ width: '100%', ...(form.customer_id ? null : { pointerEvents: 'none' }) }}
                 placeholder="选择该客户的商机，避免重复创建" />
