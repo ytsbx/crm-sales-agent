@@ -14,8 +14,11 @@ import {
   Tag,
   TextArea,
   Toast,
+  Upload,
 } from '@douyinfe/semi-ui'
 
+import type { FileItem } from '@douyinfe/semi-ui/lib/es/upload/interface'
+import { uploadFile } from '../../shared/api/file'
 import AttachmentPanel from '../common/AttachmentPanel'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { parseOptionalNumber } from '../../shared/number-input'
@@ -111,6 +114,8 @@ export default function KnowledgePage() {
   const [editVisible, setEditVisible] = useState(false)
   const [editing, setEditing] = useState<CustomInquiryRow | null>(null)
   const [form, setForm] = useState<InquiryForm>(EMPTY_FORM)
+  const [pendingPhotos, setPendingPhotos] = useState<FileItem[]>([])
+  const savedInquiry = useRef<CustomInquiryRow | null>(null)
   // 修订（§3.3）：客户改了要求 → 新增一版并留说明，旧版保留
   const [reviseTarget, setReviseTarget] = useState<CustomInquiryRow | null>(null)
   const [reviseForm, setReviseForm] = useState({
@@ -257,19 +262,32 @@ export default function KnowledgePage() {
   }
 
   const saveMutation = useMutation({
-    mutationFn: (payload: CustomInquiryPayload) =>
-      editing ? updateCustomInquiry(editing.id, payload) : createCustomInquiry(payload),
-    onSuccess: (row) => {
-      if (editing) {
-        Toast.success('已保存')
-        setEditVisible(false)
-        setEditing(null)
-        setForm(EMPTY_FORM)
-      } else {
-        // 附件挂到已保存的真实需求；切换编辑，避免重复保存创建多条需求。
-        Toast.success('基本信息已保存，现在可以上传照片')
-        setEditing(row)
+    mutationFn: async (payload: CustomInquiryPayload) => {
+      const existing = editing ?? savedInquiry.current
+      const row = existing ? await updateCustomInquiry(existing.id, payload) : await createCustomInquiry(payload)
+      // 创建成功即记住真实 ID；照片失败后重试只能更新这条需求，不能再创建一条。
+      savedInquiry.current = row
+      setEditing(row)
+      refresh()
+      for (const photo of pendingPhotos) {
+        if (!photo.fileInstance) throw new Error('照片内容已失效，请移除后重新选择')
+        try {
+          await uploadFile(photo.fileInstance, { businessType: 'inquiry', businessId: row.id })
+        } catch (error) {
+          throw new Error(`询价已保存，照片尚未全部上传：${error instanceof Error ? error.message : '上传失败'}。请在当前窗口重试保存。`)
+        }
+        setPendingPhotos((current) => current.filter((item) => item.uid !== photo.uid))
+        void queryClient.invalidateQueries({ queryKey: ['business-files', 'inquiry', row.id] })
       }
+      return row
+    },
+    onSuccess: () => {
+      Toast.success('询价及所选照片已保存')
+      setEditVisible(false)
+      setEditing(null)
+      savedInquiry.current = null
+      setPendingPhotos([])
+      setForm(EMPTY_FORM)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -311,6 +329,8 @@ export default function KnowledgePage() {
   })
 
   const openCreate = () => {
+    savedInquiry.current = null
+    setPendingPhotos([])
     setEditing(null)
     setForm(opportunityFilter && linkedOpportunity.data ? {
       ...EMPTY_FORM, customer_id: linkedOpportunity.data.customer_id, opportunity_id: opportunityFilter,
@@ -319,6 +339,8 @@ export default function KnowledgePage() {
   }
 
   const openEdit = (row: CustomInquiryRow) => {
+    savedInquiry.current = null
+    setPendingPhotos([])
     setEditing(row)
     setForm({
       title: row.title,
@@ -692,7 +714,8 @@ export default function KnowledgePage() {
       <Modal
         title={editing ? '编辑定制询价' : '记录定制询价'}
         visible={editVisible}
-        onCancel={() => setEditVisible(false)}
+        onCancel={() => { if (!saveMutation.isPending) setEditVisible(false) }}
+        cancelButtonProps={{ disabled: saveMutation.isPending }}
         onOk={() => {
           if (!form.title.trim()) {
             Toast.warning('需求标题必填')
@@ -713,7 +736,8 @@ export default function KnowledgePage() {
           })
         }}
         confirmLoading={saveMutation.isPending}
-        okText={editing ? "保存" : "保存并上传照片"}
+        okText="保存"
+        okButtonProps={{ disabled: saveMutation.isPending }}
         cancelText="取消"
         width={560}
         bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
@@ -721,8 +745,18 @@ export default function KnowledgePage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel>产品参考照片与附件</FormLabel>
-            {editing ? <AttachmentPanel businessType="inquiry" businessId={editing.id} writePermission="quote:manage" />
-              : <div style={{ color: 'var(--crm-text-3)' }}>先填写下方基本信息，点击「保存并上传照片」，这里就会出现上传按钮。保存不会发起钉钉审批。</div>}
+            {(!editing || pendingPhotos.length > 0) && <>
+              <Upload action="" uploadTrigger="custom" multiple accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
+                maxSize={20 * 1024} onSizeError={() => Toast.warning('单张照片不能超过 20 MB')}
+                fileList={pendingPhotos} disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}
+                onChange={({ fileList }) => setPendingPhotos(fileList)}
+                onAcceptInvalid={() => Toast.warning('请选择 JPG、PNG、GIF、WebP 或 BMP 图片')}
+                prompt="选好照片后点击下方「保存」，与询价一起保存；不会发起钉钉审批。">
+                <Button theme="solid" disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}>选择照片（可多选）</Button>
+              </Upload>
+              {(!can('file:manage') || !can('quote:manage')) && <div>上传照片需要文件管理和报价管理权限，请联系管理员。</div>}
+            </>}
+            {editing && <AttachmentPanel businessType="inquiry" businessId={editing.id} writePermission="quote:manage" />}
           </div>
           <div>
             <FormLabel required>需求标题</FormLabel>
