@@ -68,3 +68,7 @@ export function dingtalkAuthorize() {
 export function dingtalkExchange(ticket: string) {
   return api.post<LoginResult>('/auth/dingtalk/exchange', { ticket })
 }
+
+export function updatePersonalAccount(payload: { username: string; current_password: string; new_password?: string }) {
+  return api.patch<{ username: string; require_relogin: boolean }>('/auth/account', payload)
+}

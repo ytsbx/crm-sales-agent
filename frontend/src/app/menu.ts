@@ -126,15 +126,9 @@ export const MENU_GROUPS: MenuGroup[] = [
         key: 'settings',
         path: '/settings',
         label: '系统设置',
-        // 销售主管拿的是 `customer:pool_review`（公海回收复核），**不是**
-        // `settings:manage`。原来这条只认 settings:manage，于是主管**常规菜单里
-        // 根本没有入口**，只能靠回收预告的通知链接撞进去（返修单 R12）。
-        // 现在两种权限任一命中都给入口，且**不给他系统设置权限本身**；
-        // 没有 settings:manage 时菜单改名 —— 他进去本来就只看得到复核那一块。
-        altLabel: { when: 'customer:pool_review', label: '公海回收复核' },
+        // 所有登录人可进个人账号；管理和回收复核页签仍按权限开放。
         icon: IconSetting,
         ready: true,
-        permission: ['settings:manage', 'customer:pool_review'],
       },
     ],
   },

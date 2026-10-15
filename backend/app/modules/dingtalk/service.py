@@ -36,7 +36,6 @@
 """
 
 import secrets
-import hashlib
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -1324,20 +1323,22 @@ async def _signup_login_user(session: AsyncSession, *, userid: str, member: dict
         return None, "ambiguous"
     if bound:
         return (bound[0], "ok") if bound[0].status == "active" else (None, "disabled")
-    # 姓名或企业手机号命中任意已有账号（包括停用/绑定其他身份的）都不另建。
-    # 不自动认领已有角色，也不通过新账号绕过原账号的停用状态。
-    if any(_norm_name(u.name) == name or (mobile and _norm_mobile(u.mobile) == mobile) for u in users):
+    # 同名未绑定账号、停用账号和手机号冲突交管理员处理，不自动认领角色。
+    # 已绑定且启用的同名同事是另一个身份，允许建号，由登录名编号区分。
+    if any((_norm_name(u.name) == name and (not u.dingtalk_userid or u.status != "active"))
+           or (mobile and _norm_mobile(u.mobile) == mobile) for u in users):
         return None, "not_bound"
     role = (await session.execute(select(Role).where(Role.code == "salesperson")
                 .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
     if role is None or role.status != "active" or role.data_scope != "self":
         return None, "role_unavailable"
-    username = "dt_" + hashlib.sha256(userid.encode()).hexdigest()[:48]
+    from app.modules.user.usernames import allocate_username
+    username = await allocate_username(session, name)
     if any(u.username == username for u in users):
         return None, "not_bound"
-    # 随机不可知密码；不发放通用初始密码。以后由管理员决定是否重置密码登录。
+    # 用户明确指定：姓名全拼登录名、初始密码 123456，首次进入告知本人。
     user = User(username=username, name=name, mobile=mobile or None,
-                password_hash=hash_password(secrets.token_urlsafe(32)), status="active",
+                password_hash=hash_password("123456"), initial_password_pending=True, status="active",
                 dingtalk_userid=userid, department_id=None)
     try:
         async with session.begin_nested():

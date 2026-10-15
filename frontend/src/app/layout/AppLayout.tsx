@@ -1,3 +1,4 @@
+import { Button, Modal } from '@douyinfe/semi-ui'
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { IconIndentLeft, IconIndentRight } from '@douyinfe/semi-icons'
@@ -29,6 +30,7 @@ export default function AppLayout() {
   const location = useLocation()
   const user = useAuthStore((state) => state.user)
   const clear = useAuthStore((state) => state.clear)
+  const [credentialsDismissed, setCredentialsDismissed] = useState<number | null>(null)
   const openTab = useTabsStore((state) => state.openTab)
   const openCopilot = useCopilotStore((state) => state.openWith)
   // 移动端（场景23）：侧边栏变成抽屉，顶栏汉堡键开合
@@ -222,6 +224,14 @@ export default function AppLayout() {
 
       {/* 全局 Copilot 抽屉：任何页面都能拉开，自动带上当前页面的业务上下文 */}
       <CopilotDrawer />
+      <Modal title="你的登录账号已生成" visible={Boolean(user?.initial_password_pending && credentialsDismissed !== user.id)}
+        onCancel={() => setCredentialsDismissed(user?.id ?? null)}
+        footer={<><Button onClick={() => setCredentialsDismissed(user?.id ?? null)}>我知道了</Button>
+          <Button theme="solid" onClick={() => { setCredentialsDismissed(user?.id ?? null); navigate('/settings?tab=profile') }}>去修改账号密码</Button></>}>
+        <p>登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username}</strong></p>
+        <p>初始密码：<strong>123456</strong></p>
+        <p>以后可使用账号密码或钉钉扫码登录；在「系统设置 → 个人账号」可以自行修改。</p>
+      </Modal>
     </div>
   )
 }

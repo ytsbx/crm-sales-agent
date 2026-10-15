@@ -48,8 +48,8 @@ def test_new_staff_gets_only_salesperson(db):
     user,reason=login(db)
     assert reason=='ok' and user.name=='新员工' and user.status=='active'
     assert user.dingtalk_userid=='staff-1' and user.department_id is None
-    assert user.username.startswith('dt_') and len(user.username)<=64
-    assert not verify_password('123456',user.password_hash)
+    assert user.username == 'xinyuangong' and user.initial_password_pending
+    assert verify_password('123456',user.password_hash)
     assert run(s.execute(select(user_roles.c.role_id).where(user_roles.c.user_id==user.id))).scalars().all()==[role.id]
     assert run(s.execute(select(AuditLog))).scalar_one().after_data['data_scope']=='self'
     assert fake.profile_calls==1
@@ -172,3 +172,12 @@ def test_contact_lookup_handles_upstream_response(monkeypatch,mode):
     if mode=='ok': assert run(client.get_login_contact_user('staff-1'))['name']=='员工'
     else:
         with pytest.raises(module.DingTalkError): run(client.get_login_contact_user('staff-1'))
+
+
+def test_bound_namesake_gets_numbered_username(db):
+    s,_,_=db
+    s.add(User(name='新员工',username='xinyuangong',password_hash='x',status='active',dingtalk_userid='different-person',mobile='13900000000'))
+    run(s.flush())
+    user,reason=login(db)
+    assert reason=='ok' and user.username=='xinyuangong2' and user.initial_password_pending
+    assert verify_password('123456',user.password_hash)

@@ -1,3 +1,4 @@
+import PersonalAccountPanel from './PersonalAccountPanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
 import { customerLevelLabel } from '../../shared/customer-level'
 import { useState, type CSSProperties } from 'react'
@@ -89,15 +90,11 @@ export default function SettingsPage() {
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, can } = usePermissions()
-  // 公海回收复核走**独立业务权限** `customer:pool_review`（第六批审查第 7 条）：
-  // 销售主管要能批准/驳回/暂缓本团队的回收候选，但不该因此拿到整个系统设置页
-  // （用户、角色、部门这些是管理员的东西）。所以非管理员只放行
-  //「业务规则」这一个页签，进来后也默认停在这一页。
+  // 个人账号向全部登录人开放；管理与公海复核仍分别按权限开放。
   const canReviewPool = can('customer:pool_review')
-  const visibleTabs = isAdmin ? TABS : TABS.filter((item) => item.itemKey === 'rules')
-  const [activeKey, setActiveKey] = useState(
-    searchParams.get('tab') ?? (isAdmin ? 'users' : 'rules')
-  )
+  const visibleTabs = [{ tab: '个人账号', itemKey: 'profile' }, ...(isAdmin ? TABS : canReviewPool ? TABS.filter((item) => item.itemKey === 'rules') : [])]
+  const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
+    ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
 
   const usersQuery = useQuery({
     queryKey: ['settings-users'],
@@ -175,7 +172,7 @@ export default function SettingsPage() {
   const tagsQuery = useQuery({
     queryKey: ['settings-tags'],
     queryFn: () => listTags(false),
-    enabled: activeKey === 'tags',
+    enabled: isAdmin && activeKey === 'tags',
   })
   const [tagForm, setTagForm] = useState<{ name: string; type: string }>({ name: '', type: 'custom' })
   const [tagEditTarget, setTagEditTarget] = useState<TagRow | null>(null)
@@ -622,15 +619,6 @@ export default function SettingsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  if (!isAdmin && !canReviewPool) {
-    return (
-      <div className="page-container">
-        <PageHeader title="系统设置" />
-        <div className="placeholder-box">只有管理员可以查看用户、角色和部门配置。</div>
-      </div>
-    )
-  }
-
   const deptOptions = (deptsQuery.data ?? []).map((dept) => ({
     value: dept.id,
     label: dept.name,
@@ -851,11 +839,11 @@ export default function SettingsPage() {
       <PageHeader
         // 非管理员看到的只有「业务规则」里的公海回收复核（返修单 R12）：
         // 标题跟着换，否则主管会以为自己拿到了整个系统设置
-        title={isAdmin ? '系统设置' : '公海回收复核'}
+        title="系统设置"
         subtitle={
           isAdmin
             ? '用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改'
-            : '复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定'
+            : '修改自己的登录名和密码；管理功能按角色权限开放'
         }
       />
       <SectionCard>
@@ -863,13 +851,13 @@ export default function SettingsPage() {
           type="line"
           activeKey={activeKey}
           onChange={(key) => {
-            setActiveKey(key)
             setSearchParams({ tab: key })
           }}
           tabList={visibleTabs}
         />
         <div style={{ marginTop: 16 }}>
-          {activeKey === 'users' && (
+          {activeKey === 'profile' && <PersonalAccountPanel />}
+          {activeKey === 'users' && isAdmin && (
             <>
               <div className="toolbar">
                 <div style={{ flex: 1 }} />

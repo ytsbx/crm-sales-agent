@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class LoginRequest(BaseModel):
@@ -38,3 +38,17 @@ class DingTalkExchange(BaseModel):
     """
 
     ticket: str = Field(min_length=1, max_length=128)
+
+
+class PersonalAccountUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_]*$")
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str | None = Field(default=None, min_length=6, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_length(cls, value):
+        if value is not None and len(value.encode("utf-8")) > 72:
+            raise ValueError("密码最多 72 个字节")
+        return value
