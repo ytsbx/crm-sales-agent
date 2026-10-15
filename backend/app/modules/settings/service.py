@@ -211,6 +211,8 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     "dingtalk_oa": {
         "process_code": "",
         "field_map": {},
+        # 可选：把询价完整摘要写入钉钉多行文本控件；附件仍单独走 OA 附件控件。
+        "content_component": "",
         # 谁发起：owner = 需求负责人对应的人；不填则用当前操作者
         "originator_source": "operator",
     },

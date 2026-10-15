@@ -146,7 +146,7 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     sample=await service.get_visible_or_404(session,user,sample_id,for_update=True,allow_external_flow=True)
     meta=metadata(sample)
     previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample') if payload.mode=='standalone' else None
-    open_new_round=bool(payload.resubmit and previous is not None and previous.status=='rejected')
+    open_new_round=bool(payload.resubmit and previous is not None and previous.status in ('rejected','withdrawn'))
     retry=False
     if meta.get('submitted'):
         if payload.mode!=meta.get('mode') or payload.source_oa_id!=meta.get('source_oa_id'):

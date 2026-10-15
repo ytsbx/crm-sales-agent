@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import { api } from '../../shared/api/client'
-import { type OaApprovalInstance } from '../../shared/api/dingtalk'
+import { type OaApprovalInstance, withdrawOaInstance } from '../../shared/api/dingtalk'
 import { approvalProgress } from '../knowledge/approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 
@@ -39,11 +39,18 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
       void query.refetch();void client.invalidateQueries({queryKey:['samples']});void client.invalidateQueries({queryKey:['sample',sampleId]})
     },onError:(error:Error)=>Toast.error(error.message),
   })
+  const withdraw=useMutation({
+    mutationFn:(oaId:number)=>withdrawOaInstance(oaId),
+    onSuccess:()=>{Toast.success('已撤回钉钉打样审批');void query.refetch()},
+    onError:(error:Error)=>Toast.error(error.message),
+  })
   return <Modal visible title="打样钉钉流程" width={900} bodyStyle={{maxHeight:'70vh',overflowY:'auto'}}
     onCancel={()=>{if(!mutate.isPending)onClose()}}
     footer={<div style={{display:'flex',justifyContent:'flex-end',gap:10}}>
       <Button disabled={mutate.isPending} onClick={onClose}>关闭</Button>
       {submitted && query.data?.records[0]?.status==='rejected' && <Button disabled={mutate.isPending} onClick={()=>setEdited({...draft,resubmit:true})}>修改后重新提交</Button>}
+      {submitted && draft.mode==='standalone' && query.data?.records[0]?.status==='pending' && query.data.records[0].instance_id &&
+        <Button type="danger" disabled={mutate.isPending||withdraw.isPending} onClick={()=>Modal.confirm({title:'撤回钉钉打样审批？',content:'只对仍在审批中的钉钉流程生效。',onOk:()=>withdraw.mutate(query.data!.records[0].id)})}>撤回钉钉审批</Button>}
       {/* ⚠️ 这两个按钮**刻意不用** `disabled={!query.data}`（2026-10-15 修）：
           读不到模板时按钮会变灰，而用户看不出"连保存草稿都不行" —— 界面只有一个字
           都不说的灰按钮。改成**可点 + 如实报错**：后端对"模板未配置 / 推送关闭"

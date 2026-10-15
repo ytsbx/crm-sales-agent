@@ -4,7 +4,7 @@
 所以换模板不用改代码——这正是"业务定了走钉钉"之后还需要的那一步。
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 
 from fastapi import APIRouter, Depends, Request
@@ -114,6 +114,20 @@ async def start_inquiry_approval(
         value = getter(inquiry)
         if value not in (None, ""):
             field_map[component_id] = value
+    content_component = (cfg or {}).get("content_component")
+    if content_component:
+        field_map[str(content_component)] = "\n".join(
+            f"{label}：{value}"
+            for label, value in (
+                ("询价编号", inquiry.inquiry_no),
+                ("产品名称", inquiry.title),
+                ("需求说明", inquiry.description),
+                ("数量", inquiry.quantity),
+                ("目标价", inquiry.target_price),
+                ("版本", inquiry.version),
+            )
+            if value not in (None, "")
+        )
     supplemental_fields = await _submission_fields(cfg or {})
     supplied = payload.extra_fields or {}
     attachment_field = next((f for f in supplemental_fields if f["type"] == "DDAttachment"), None)
@@ -465,6 +479,53 @@ async def resolve_oa_instance(
         )
     await session.commit()
     return ok(svc.serialize(row), "已处理")
+
+
+@router.post("/oa-instances/{oa_id}/withdraw")
+async def withdraw_oa_instance(
+    oa_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """撤回仍在钉钉流转中的询价/打样审批。审批完成后不能从 CRM 撤回。"""
+    from app.core.config import settings as app_settings
+    from app.modules.dingtalk.client import get_client
+    from app.modules.sample import service as sample_service
+    from app.modules.inquiry import service as inquiry_service
+    from app.modules.user.model import User
+
+    row = await session.get(OaInstance, oa_id, with_for_update=True)
+    if row is None or row.oa_type not in ("inquiry", "sample"):
+        raise AppError(ErrorCode.NOT_FOUND, "询价或打样审批记录不存在", 404)
+    if row.oa_type == "inquiry":
+        await inquiry_service.get_visible_or_404(session, user, row.inquiry_id)
+    else:
+        await sample_service.get_visible_or_404(session, user, row.inquiry_id, allow_external_flow=True)
+    if row.status != "pending" or not row.instance_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前审批状态为「{row.status}」，不能撤回", 422)
+    if app_settings.dingtalk_push_off:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法发送撤回请求", 422)
+    account = await session.get(User, user.id)
+    ding_user_id = (account.dingtalk_userid if account else None) or await get_client().search_user_id_by_name(user.name)
+    if not ding_user_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，无法撤回", 422)
+    await get_client().terminate_process_instance(
+        instance_id=row.instance_id,
+        operating_user_id=ding_user_id,
+        remark="CRM 撤回钉钉审批",
+    )
+    row.status = "withdrawn"
+    row.result = {**(row.result or {}), "crm_withdrawn": True, "withdrawn_by": ding_user_id}
+    row.synced_at = datetime.now(UTC)
+    row.updated_at = datetime.now(UTC)
+    await write_audit(
+        session, operator_id=user.id, action="withdraw_oa_instance", business_type="oa_instance",
+        business_id=row.id, after={"oa_type": row.oa_type, "instance_id": row.instance_id, "status": row.status},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize(row), "已撤回钉钉审批")
 
 
 @router.get("/inquiries/{inquiry_id}/oa-approvals")
