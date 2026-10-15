@@ -40,6 +40,7 @@ class CurrentUser:
         self.id = user.id
         self.name = user.name
         self.username = user.username
+        self.initial_password_pending = bool(getattr(user, "initial_password_pending", False))
         self.department_id = user.department_id
         self.permissions = permissions
         self.roles = roles

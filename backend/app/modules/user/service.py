@@ -205,7 +205,9 @@ async def create_user(session: AsyncSession, data: dict) -> User:
     username = (data.get("username") or "").strip()
     if not username:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "登录名不能为空")
-    if await find_user_by_username(session, username) is not None:
+    from app.modules.user.usernames import lock_usernames
+    await lock_usernames(session)
+    if (await session.execute(select(User.id).where(func.lower(User.username) == username.lower()))).first() is not None:
         raise AppError(ErrorCode.DUPLICATE, f"登录名「{username}」已被占用", 409)
     await _validate_department(session, data.get("department_id"))
     roles = await _validate_roles(session, data.get("role_ids") or [])
@@ -260,6 +262,7 @@ async def update_user(session: AsyncSession, user: User, data: dict) -> User:
         # 改密码跑在前 → 登录拿到锁时读到的已经是新哈希，旧密码直接不认。
         await lock_user_row(session, user.id)
         user.password_hash = hash_password(data["password"])
+        user.initial_password_pending = False
         # 改（或重置）密码 = 该账号的**全部旧凭据一次性作废**（第十批 10.12）。
         #
         # 与写哈希放在同一个事务里，由路由那一次 commit 一起落库：

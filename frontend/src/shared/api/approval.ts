@@ -143,3 +143,7 @@ export function listApprovalRuleVersions(id: number) {
 export function runApprovalSandbox(quoteVersionId: number) {
   return api.post<SandboxResult>('/approval-rules/sandbox', { quote_version_id: quoteVersionId })
 }
+
+export function listApprovalTransferCandidates(id: number) {
+  return api.get<Array<{ id: number; name: string }>>(`/approvals/${id}/transfer-candidates`)
+}

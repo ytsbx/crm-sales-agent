@@ -53,6 +53,7 @@
 - `POST /auth/refresh`
 - `GET /auth/me`
 - `GET /auth/permissions`
+- `PATCH /auth/account`
 - `POST /auth/sso/wecom/callback`
 
 ## 2.1 登录会话与失效（第十批 10.12）
@@ -77,6 +78,40 @@
    永远吊销不了的凭据。升级后需要重新登录一次。
 2. **`logout` 之后不能再用同一令牌调 `logout`**：它此时已不是有效凭据，返回
    `40101`。前端清本地状态、跳登录页不受影响。
+
+## 2.2 个人设置：我的权限与自助改账号
+
+看自己的资料、改自己的登录名和密码、知道自己有哪些权限 —— 这些**不该是管理员的
+专利**，所以下面两个接口的门槛只有"已登录"，不看任何权限码。
+
+### `GET /auth/permissions`
+
+返回 `{ permissions, roles, permission_names }`。
+
+`permissions` / `roles` 是原有的两个字段（老调用方照读不误）；`permission_names`
+是**新加的**中文名映射（加字段，不改结构）。之所以中文名必须由服务端在这里拼好：
+权限目录接口 `GET /users/permissions` 要求「账号与权限」管理权限，普通人调不动 ——
+而"看看我自己有哪些权限"不该依赖管理权限。
+
+只解析**这个人自己持有**的那些权限码，不下发整个权限目录。
+
+### `PATCH /auth/account`
+
+入参 `{ username, current_password, new_password? }`，返回
+`{ username, require_relogin }`。
+
+- **只改当前登录者自己**：不接收用户 id、角色和数据范围（`extra="forbid"`，
+  多传字段直接拒绝）。想改别人的账号走 `PATCH /users/{id}`（要「账号与权限」管理权限）。
+- `username` 须以小写字母开头，只能含小写字母、数字、下划线，最长 64 位；
+  与其它账号重名（不区分大小写）返回 `409`「登录名已被占用」。
+- `new_password` 留空表示**不改密码**。给了就校验长度：至少 6 位、且不超过
+  bcrypt 的 72 字节上限（按**字节**算 —— 25 个中文只有 25 个字符却是 75 字节，
+  按字符数拦不住它）。
+- `current_password` 不对返回 `40001`；连续失败到上限按登录那套限流拒绝（防爆破）。
+- 真的改动了才落库，并把该账号**全部**旧会话一次性作废（含操作者自己这一次），
+  返回 `require_relogin = true`。没改动时返回 `false`，**不作废任何会话**。
+- 写一条 `action = update` 的审计（`before` / `after` 记登录名与"密码是否改过"，
+  **不记密码本身**），与业务同事务。
 
 ---
 

@@ -49,6 +49,7 @@ import {
   type ShipmentOverview,
 } from '../../shared/api/order'
 import { listUsers } from '../../shared/api/system'
+import { optionMatcher } from '../../shared/components/optionMatch'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
@@ -1629,6 +1630,7 @@ export default function OrderDetailPage() {
               style={{ width: '100%' }}
               value={milestoneForm.owner_id ?? undefined}
               placeholder="选一个具体的人（逾期时催他）"
+              filter={optionMatcher}
               onChange={(value) =>
                 setMilestoneForm({ ...milestoneForm, owner_id: (value as number) ?? null })
               }

@@ -4,7 +4,7 @@
 本实现把数据范围挂在角色上（self / department / department_and_sub / all）。
 """
 
-from sqlalchemy import BigInteger, ForeignKey, String, Table, Column
+from sqlalchemy import Boolean, false, BigInteger, ForeignKey, String, Table, Column
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.base import Base, IdMixin, TimestampMixin
@@ -34,6 +34,7 @@ class User(Base, IdMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(64))
     username: Mapped[str] = mapped_column(String(64), unique=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    initial_password_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     mobile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     email: Mapped[str | None] = mapped_column(String(128), nullable=True)
     department_id: Mapped[int | None] = mapped_column(

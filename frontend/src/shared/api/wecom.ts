@@ -266,3 +266,22 @@ export function listWeComSyncJobs(query: {
 }) {
   return api.get<PageResult<WeComSyncJob>>('/integrations/wecom/sync-jobs', query)
 }
+
+
+export interface WeComCustomerImportPreview {
+  digest: string
+  pending_contacts: number
+  import_contacts: number
+  new_company_customers: number
+  new_personal_customers: number
+  existing_customer_contacts: number
+  new_unassigned_customers: number
+  held_contacts: number
+  held_reasons: Record<string, number>
+}
+export function previewWeComCustomerImport() {
+  return api.get<WeComCustomerImportPreview>('/integrations/wecom/customer-import/preview')
+}
+export function importWeComCustomers(digest: string) {
+  return api.post<WeComCustomerImportPreview & { job_id: number }>('/integrations/wecom/customer-import', { digest })
+}

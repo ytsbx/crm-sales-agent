@@ -1,3 +1,4 @@
+import { Button, Dropdown, Modal } from '@douyinfe/semi-ui'
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { IconIndentLeft, IconIndentRight } from '@douyinfe/semi-icons'
@@ -29,6 +30,7 @@ export default function AppLayout() {
   const location = useLocation()
   const user = useAuthStore((state) => state.user)
   const clear = useAuthStore((state) => state.clear)
+  const [credentialsDismissed, setCredentialsDismissed] = useState<number | null>(null)
   const openTab = useTabsStore((state) => state.openTab)
   const openCopilot = useCopilotStore((state) => state.openWith)
   // 移动端（场景23）：侧边栏变成抽屉，顶栏汉堡键开合
@@ -200,14 +202,35 @@ export default function AppLayout() {
           </button>
           <NotificationBell />
           <div className="header-user">
-            <div className="header-avatar">{user?.name?.slice(0, 1) ?? '?'}</div>
-            <div className="header-user-meta" style={{ lineHeight: 1.25 }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{user?.name ?? '未登录'}</div>
-              <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
-                {user?.department ?? '未分配部门'} ·{' '}
-                {(user?.roles ?? []).map((role) => ROLE_LABEL[role] ?? role).join(' / ') || '无角色'}
+            {/* 头像这一块做成可点的下拉：以前它只是一张不会动的图，
+                改密码 / 看权限全靠自己知道深链。现在「个人设置」就在手边。
+                手机上顶栏的「退出」链接是收起来的（CSS），这个下拉就成了
+                唯一的登出入口 —— 所以菜单里也要有退出。 */}
+            <Dropdown
+              trigger="click"
+              position="bottomRight"
+              render={
+                <Dropdown.Menu>
+                  <Dropdown.Item onClick={() => navigate('/settings?tab=profile')}>
+                    个人设置
+                  </Dropdown.Item>
+                  <Dropdown.Item onClick={handleLogout}>退出登录</Dropdown.Item>
+                </Dropdown.Menu>
+              }
+            >
+              <div className="header-user-trigger" title="个人设置与退出">
+                <div className="header-avatar">{user?.name?.slice(0, 1) ?? '?'}</div>
+                <div className="header-user-meta" style={{ lineHeight: 1.25 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{user?.name ?? '未登录'}</div>
+                  <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+                    {user?.department ?? '未分配部门'} ·{' '}
+                    {(user?.roles ?? [])
+                      .map((role) => ROLE_LABEL[role] ?? role)
+                      .join(' / ') || '无角色'}
+                  </div>
+                </div>
               </div>
-            </div>
+            </Dropdown>
             <a className="header-logout" onClick={handleLogout} style={{ fontSize: 12, color: 'var(--crm-primary)', cursor: 'pointer' }}>
               退出
             </a>
@@ -222,6 +245,14 @@ export default function AppLayout() {
 
       {/* 全局 Copilot 抽屉：任何页面都能拉开，自动带上当前页面的业务上下文 */}
       <CopilotDrawer />
+      <Modal title="你的登录账号已生成" visible={Boolean(user?.initial_password_pending && credentialsDismissed !== user?.id)}
+        onCancel={() => setCredentialsDismissed(user?.id ?? null)}
+        footer={<><Button onClick={() => setCredentialsDismissed(user?.id ?? null)}>我知道了</Button>
+          <Button theme="solid" onClick={() => { setCredentialsDismissed(user?.id ?? null); navigate('/settings?tab=profile') }}>去修改账号密码</Button></>}>
+        <p>登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username}</strong></p>
+        <p>初始密码：<strong>123456</strong></p>
+        <p>以后可使用账号密码或钉钉扫码登录；在「我的」里可以自行修改（点头像也能进）。</p>
+      </Modal>
     </div>
   )
 }

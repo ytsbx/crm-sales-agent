@@ -27,6 +27,7 @@ import {
   type CustomerPayload,
 } from '../../shared/api/customer'
 import { listUsers } from '../../shared/api/system'
+import { optionMatcher } from '../../shared/components/optionMatch'
 import { listDictionaries } from '../../shared/api/settings'
 import { getCustomerTimeline, listFollowups, type FollowUp } from '../../shared/api/followup'
 import { listOpportunities, type Opportunity } from '../../shared/api/opportunity'
@@ -1184,6 +1185,7 @@ export default function CustomerDetailPage() {
           placeholder="选择新的负责人"
           value={transferTo ?? undefined}
           onChange={(value) => setTransferTo(value as number)}
+          filter={optionMatcher}
           optionList={(usersQuery.data?.items ?? []).map((item) => ({
             value: item.id,
             label: `${item.name}（${item.department ?? '未分配部门'}）`,

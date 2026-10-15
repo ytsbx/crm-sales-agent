@@ -4,6 +4,8 @@ from app.core.deps import CurrentUser
 from app.modules.approval.model import ApprovalInstance
 
 
+FINANCE_APPROVE_PERMISSION = "quote:finance_approve"
+
 def approval_denial(
     user: CurrentUser, instance: ApprovalInstance, *, price_can_approve: bool,
     check_assignee: bool = True,
@@ -24,9 +26,9 @@ def approval_denial(
         if not assigned_to_me:
             return f"该审批已转交给「{summary.get('current_assignee_name', '他人')}」处理"
     if instance.current_node == "co_sign" and co_sign:
-        allowed = list(co_sign.get("role_codes") or [])
-        if not admin and not (set(user.roles) & set(allowed)):
-            return f"该审批处于「{co_sign.get('label', '会签')}」节点，需要 {'、'.join(allowed)} 处理"
+        # 历史快照的 role_codes 仅保留作记录，不再参与会签授权。
+        if not admin and not user.has(FINANCE_APPROVE_PERMISSION):
+            return f"该审批处于「{co_sign.get('label', '会签')}」节点，需要财务会签权限"
         if instance.applicant_id == user.id and not admin:
             return "不能审批自己提交的报价"
         return None

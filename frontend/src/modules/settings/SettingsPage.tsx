@@ -1,3 +1,5 @@
+import PersonalAccountPanel from './PersonalAccountPanel'
+import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
 import { customerLevelLabel } from '../../shared/customer-level'
 import { useState, type CSSProperties } from 'react'
@@ -89,21 +91,46 @@ export default function SettingsPage() {
   // 支持深链：/settings?tab=rules
   const [searchParams, setSearchParams] = useSearchParams()
   const { isAdmin, can } = usePermissions()
-  // 公海回收复核走**独立业务权限** `customer:pool_review`（第六批审查第 7 条）：
-  // 销售主管要能批准/驳回/暂缓本团队的回收候选，但不该因此拿到整个系统设置页
-  // （用户、角色、部门这些是管理员的东西）。所以非管理员只放行
-  //「业务规则」这一个页签，进来后也默认停在这一页。
+  // 个人账号向全部登录人开放；管理与公海复核仍分别按权限开放。
   const canReviewPool = can('customer:pool_review')
-  const visibleTabs = isAdmin ? TABS : TABS.filter((item) => item.itemKey === 'rules')
-  const [activeKey, setActiveKey] = useState(
-    searchParams.get('tab') ?? (isAdmin ? 'users' : 'rules')
-  )
+  // 第一个页签改叫「我的」而不是「个人账号」：它现在不只有登录名/密码，
+  // 还挂着「我的信息」和「我的权限」—— 叫「个人账号」的话，想看自己有哪些
+  // 权限的人根本不会往这里点。
+  const visibleTabs = [{ tab: '我的', itemKey: 'profile' }, ...(isAdmin ? TABS : canReviewPool ? TABS.filter((item) => item.itemKey === 'rules') : [])]
+  const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
+    ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
 
+  // 用户列表：搜索与筛选（后端 `GET /users` 本来就支持 keyword / status /
+  // department_id / 分页，从前前端一个都没接 —— 只能靠肉眼在一屏里找人，
+  // 而且**超过 50 人后面的人根本显示不出来**（没有翻页，静默截断）。
+  //
+  // 关键字分成两个状态：`userKeywordInput` 是输入框里的字、`userKeyword`
+  // 是**已经提交给服务端**的那个（回车或点「查询」才更新）—— 否则每敲一个字
+  // 就发一次请求，人还没打完列表已经翻腾好几轮了。
+  const [userKeywordInput, setUserKeywordInput] = useState('')
+  const [userKeyword, setUserKeyword] = useState('')
+  const [userStatus, setUserStatus] = useState<string>('')
+  const [userDeptId, setUserDeptId] = useState<number | undefined>(undefined)
+  const [userPage, setUserPage] = useState(1)
+  const USER_PAGE_SIZE = 20
+  // 任一条件变了都要回到第一页：翻到第 3 页再改条件，"第 3 页"多半已经不存在了
+  const resetUserPage = () => setUserPage(1)
   const usersQuery = useQuery({
-    queryKey: ['settings-users'],
-    queryFn: () => listUsers({ page: 1, page_size: 50 }),
+    queryKey: ['settings-users', userKeyword, userStatus, userDeptId, userPage],
+    queryFn: () =>
+      listUsers({
+        keyword: userKeyword || undefined,
+        status: userStatus || undefined,
+        department_id: userDeptId,
+        page: userPage,
+        page_size: USER_PAGE_SIZE,
+      }),
     enabled: isAdmin,
   })
+  // 角色 / 部门：这两个接口一次就把全部数据返回了（角色就几个、部门通常也就几十个），
+  // 后端没有搜索参数 —— 在页面上本地筛就够了，不必为它去改后端。
+  const [roleKeyword, setRoleKeyword] = useState('')
+  const [deptKeyword, setDeptKeyword] = useState('')
   const rolesQuery = useQuery({ queryKey: ['settings-roles'], queryFn: listRoles, enabled: isAdmin })
   const deptsQuery = useQuery({
     queryKey: ['settings-departments'],
@@ -175,7 +202,7 @@ export default function SettingsPage() {
   const tagsQuery = useQuery({
     queryKey: ['settings-tags'],
     queryFn: () => listTags(false),
-    enabled: activeKey === 'tags',
+    enabled: isAdmin && activeKey === 'tags',
   })
   const [tagForm, setTagForm] = useState<{ name: string; type: string }>({ name: '', type: 'custom' })
   const [tagEditTarget, setTagEditTarget] = useState<TagRow | null>(null)
@@ -506,7 +533,7 @@ export default function SettingsPage() {
         department_id: userForm.department_id ?? null,
       }
       if (userEditTarget) {
-        // 编辑时不传 username（登录名不可改），密码留空表示不改
+        // 用户管理不修改登录名；本人可在个人设置修改。密码留空不重置。
         if (userForm.password) payload.password = userForm.password
         return updateUser(userEditTarget.id, payload)
       }
@@ -622,15 +649,6 @@ export default function SettingsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  if (!isAdmin && !canReviewPool) {
-    return (
-      <div className="page-container">
-        <PageHeader title="系统设置" />
-        <div className="placeholder-box">只有管理员可以查看用户、角色和部门配置。</div>
-      </div>
-    )
-  }
-
   const deptOptions = (deptsQuery.data ?? []).map((dept) => ({
     value: dept.id,
     label: dept.name,
@@ -639,6 +657,20 @@ export default function SettingsPage() {
     value: role.id,
     label: `${role.name}（${role.code}）`,
   }))
+  // 角色 / 部门的本地筛选：接口一次返回全部，没必要为它去改后端。
+  // 关键字同时匹配"看得见的名"和"机器用的码"—— 管理员手里拿到的可能是
+  // `sales_manager` 这种码，也可能是「销售主管」这个名，只匹配一边会搜不到。
+  const roleKey = roleKeyword.trim().toLowerCase()
+  const filteredRoles = (rolesQuery.data ?? []).filter(
+    (role) =>
+      !roleKey ||
+      role.name.toLowerCase().includes(roleKey) ||
+      role.code.toLowerCase().includes(roleKey),
+  )
+  const deptKey = deptKeyword.trim().toLowerCase()
+  const filteredDepts = (deptsQuery.data ?? []).filter(
+    (dept) => !deptKey || dept.name.toLowerCase().includes(deptKey),
+  )
   const scopeOptions = [
     { value: 'self', label: '仅本人' },
     { value: 'department', label: '本部门' },
@@ -849,13 +881,23 @@ export default function SettingsPage() {
   return (
     <div className="page-container">
       <PageHeader
-        // 非管理员看到的只有「业务规则」里的公海回收复核（返修单 R12）：
-        // 标题跟着换，否则主管会以为自己拿到了整个系统设置
-        title={isAdmin ? '系统设置' : '公海回收复核'}
+        // 标题跟着**当前页签**走，不能一律写「系统设置」（返修单 R12 的口径）：
+        // 主管只有公海回收复核权，他翻到那一页时标题必须写「公海回收复核」，
+        // 否则他会以为自己拿到了整个系统设置、跑去点用户和角色。
+        // 翻到「我的」时同理 —— 那是他自己的东西，不叫「系统设置」。
+        title={
+          isAdmin
+            ? '系统设置'
+            : activeKey === 'rules'
+              ? '公海回收复核'
+              : '我的'
+        }
         subtitle={
           isAdmin
             ? '用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改'
-            : '复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定'
+            : activeKey === 'rules'
+              ? '复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定'
+              : '改自己的登录名和密码，看自己的资料与权限'
         }
       />
       <SectionCard>
@@ -863,15 +905,71 @@ export default function SettingsPage() {
           type="line"
           activeKey={activeKey}
           onChange={(key) => {
-            setActiveKey(key)
             setSearchParams({ tab: key })
           }}
           tabList={visibleTabs}
         />
         <div style={{ marginTop: 16 }}>
-          {activeKey === 'users' && (
+          {activeKey === 'profile' && (
+            <div style={{ display: 'grid', gap: 16 }}>
+              {/* 先给"能改的"（登录名 / 密码），再给"只能看的"（资料 / 权限）：
+                  进来是想改东西的人不用先滚过一屏只读信息。 */}
+              <PersonalAccountPanel />
+              <PersonalProfilePanel />
+            </div>
+          )}
+          {activeKey === 'users' && isAdmin && (
             <>
               <div className="toolbar">
+                {/* 能搜什么要写在占位符上：不写清楚，等于没做。
+                    后端按「姓名或登录名」模糊查（`User.name.ilike | User.username.ilike`）。 */}
+                <Input
+                  placeholder="搜索姓名 / 登录名"
+                  value={userKeywordInput}
+                  onChange={setUserKeywordInput}
+                  onEnterPress={() => {
+                    setUserKeyword(userKeywordInput.trim())
+                    resetUserPage()
+                  }}
+                  style={{ width: 220 }}
+                  showClear
+                />
+                <Button
+                  onClick={() => {
+                    setUserKeyword(userKeywordInput.trim())
+                    resetUserPage()
+                  }}
+                >
+                  查询
+                </Button>
+                <Select
+                  placeholder="全部状态"
+                  value={userStatus || undefined}
+                  onChange={(value) => {
+                    setUserStatus((value as string) ?? '')
+                    resetUserPage()
+                  }}
+                  style={{ width: 120 }}
+                  showClear
+                  optionList={[
+                    { value: 'active', label: '启用' },
+                    { value: 'disabled', label: '停用' },
+                  ]}
+                />
+                <Select
+                  placeholder="全部部门"
+                  value={userDeptId}
+                  onChange={(value) => {
+                    setUserDeptId(value as number | undefined)
+                    resetUserPage()
+                  }}
+                  style={{ width: 160 }}
+                  showClear
+                  optionList={deptOptions.map((item) => ({
+                    value: item.value as number,
+                    label: item.label as string,
+                  }))}
+                />
                 <div style={{ flex: 1 }} />
                 <Button
                   onClick={() => dtSyncMutation.mutate()}
@@ -902,13 +1000,31 @@ export default function SettingsPage() {
                 dataSource={usersQuery.data?.items ?? []}
                 loading={usersQuery.isLoading}
                 rowKey="id"
-                pagination={false}
+                empty={
+                  userKeyword || userStatus || userDeptId
+                    ? '没有符合条件的用户，试试放宽筛选条件'
+                    : '还没有用户'
+                }
+                pagination={{
+                  currentPage: userPage,
+                  pageSize: USER_PAGE_SIZE,
+                  total: usersQuery.data?.total ?? 0,
+                  onPageChange: setUserPage,
+                }}
               />
             </>
           )}
           {activeKey === 'roles' && (
             <>
               <div className="toolbar">
+                {/* 本地筛就够：角色接口一次返回全部，通常也就几个到十几个。 */}
+                <Input
+                  placeholder="搜索角色码 / 角色名"
+                  value={roleKeyword}
+                  onChange={setRoleKeyword}
+                  style={{ width: 220 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 <Button
                   theme="solid"
@@ -930,9 +1046,10 @@ export default function SettingsPage() {
               </div>
               <Table<SystemRole>
                 columns={roleColumns}
-                dataSource={rolesQuery.data ?? []}
+                dataSource={filteredRoles}
                 loading={rolesQuery.isLoading}
                 rowKey="id"
+                empty={roleKeyword ? '没有匹配的角色' : '还没有角色'}
                 pagination={false}
               />
             </>
@@ -940,6 +1057,14 @@ export default function SettingsPage() {
           {activeKey === 'departments' && (
             <>
               <div className="toolbar">
+                {/* 同上：部门接口一次返回全部，本地筛即可。 */}
+                <Input
+                  placeholder="搜索部门名称"
+                  value={deptKeyword}
+                  onChange={setDeptKeyword}
+                  style={{ width: 220 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 <Button
                   theme="solid"
@@ -954,9 +1079,10 @@ export default function SettingsPage() {
               </div>
               <Table<SystemDepartment>
                 columns={deptColumns}
-                dataSource={deptsQuery.data ?? []}
+                dataSource={filteredDepts}
                 loading={deptsQuery.isLoading}
                 rowKey="id"
+                empty={deptKeyword ? '没有匹配的部门' : '还没有部门'}
                 pagination={false}
               />
             </>
@@ -1878,7 +2004,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              登录名<span className="required-mark" aria-hidden="true">*</span>{userEditTarget ? '（不可修改）' : ''}
+              登录名<span className="required-mark" aria-hidden="true">*</span>{userEditTarget ? '（由本人在个人设置修改）' : ''}
             </div>
             <Input
               value={userForm.username}
@@ -1888,14 +2014,20 @@ export default function SettingsPage() {
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              密码 {userEditTarget ? '（留空表示不修改）' : '*'}
+              {userEditTarget ? '管理员重置密码（留空不重置）' : '初始密码 *'}
             </div>
             <Input
               mode="password"
               value={userForm.password}
               onChange={(value) => setUserForm({ ...userForm, password: value })}
               placeholder="至少 6 位"
+              autoComplete="new-password"
             />
+            {userEditTarget && (
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 6 }}>
+                为当前选中的用户设置新密码，无需原密码。修改自己的密码也可从右上角头像进入「个人设置」。
+              </div>
+            )}
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>

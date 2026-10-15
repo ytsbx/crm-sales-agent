@@ -473,6 +473,10 @@ check_contract_sign_lock
 # 每组都带**正向对照**（只验"该拒的拒了"会把闸门写太宽也变绿）。
 check_batch9_repairs
 check_batch11_repairs
+# 「我的权限」：三种身份都要拿得到中文名，且只下发自己持有的那部分
+check_personal_permissions_api
+# 「找个人」：关键字只认姓名/登录名、状态与部门能叠加、翻页真的换人
+check_user_list_filters
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue
 
@@ -527,3 +531,15 @@ check_price_fallback_zero
 
 # 第十五批：来源核定并发、订单取消与月结替代生效链路
 check_batch15_financial_lifecycle
+
+# 企业员工首次钉钉登录默认业务员：并发与原子回滚
+check_dingtalk_signup
+
+# 个人账号设置：密码登录、会话吊销与并发重名
+check_personal_account
+
+# 独立会签权限：通知/待办/转交/否决/撤权一致性
+check_cosign_permission
+
+# 企微批量客户建档：PG并发幂等及手工关联互斥
+check_wecom_customer_import

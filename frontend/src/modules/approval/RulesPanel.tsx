@@ -61,7 +61,6 @@ interface DraftState {
   priority: number
   description: string
   conditions: RuleCondition[]
-  coSignRoles: string
   coSignLabel: string
 }
 
@@ -71,7 +70,6 @@ const emptyDraft = (): DraftState => ({
   priority: 100,
   description: '',
   conditions: [{ field: 'gross_margin', op: 'gte', value: 25 }],
-  coSignRoles: 'finance',
   coSignLabel: '财务会签',
 })
 
@@ -98,9 +96,7 @@ export default function RulesPanel() {
         action:
           draft.kind === 'exception_route'
             ? {
-                add_node_role_codes: draft.coSignRoles
-                  .split(/[,，\s]+/)
-                  .filter(Boolean),
+                add_node_permission: 'quote:finance_approve',
                 add_node_label: draft.coSignLabel || '财务会签',
                 veto: true,
               }
@@ -250,7 +246,6 @@ export default function RulesPanel() {
       priority: row.priority,
       description: row.description ?? '',
       conditions: (row.conditions ?? []).map((c) => ({ ...c })),
-      coSignRoles: String((row.action?.add_node_role_codes as string[]) ?? ['finance']).replace(/[\[\]'"]/g, ''),
       coSignLabel: String(row.action?.add_node_label ?? '财务会签'),
     })
   }
@@ -451,12 +446,8 @@ export default function RulesPanel() {
             {editing.kind === 'exception_route' && (
               <div style={{ display: 'flex', gap: 12 }}>
                 <div style={{ flex: 1 }}>
-                  <div style={labelStyle}>会签角色（角色编码，逗号分隔）</div>
-                  <Input
-                    value={editing.coSignRoles}
-                    onChange={(v) => setEditing({ ...editing, coSignRoles: v })}
-                    placeholder="finance"
-                  />
+                  <div style={labelStyle}>会签资格</div>
+                  <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>拥有「财务会签」权限即可，不限制角色。授权在「系统设置 → 角色与数据范围」维护。</div>
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={labelStyle}>会签节点名称</div>

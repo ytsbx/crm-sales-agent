@@ -210,7 +210,7 @@ async def main():
 
     async with SessionLocal() as s:
         s.add(Role(id=1, code="finance", name="财务", data_scope="all"))
-        for pid, code in ((1, "quote:view"), (2, "quote:approve")):
+        for pid, code in ((1, "quote:view"), (2, "quote:finance_approve")):
             s.add(Permission(id=pid, code=code, name=code))
         await s.flush()
         await s.execute(user_roles.insert().values(user_id=3, role_id=1))
@@ -225,7 +225,7 @@ async def main():
         await s.flush()
         s.add(ApprovalInstance(id=1, definition_id=1, business_type="quote_version", business_id=10, applicant_id=1, status="pending", current_node="co_sign", summary={"co_sign": {"status": "pending", "role_codes": ["finance"]}}))
         await s.commit()
-    actor = lambda uid: SimpleNamespace(id=uid, name=f"财务{uid}", data_scope="all", department_id=None, roles=["finance"], has=lambda code: code in {"quote:view", "quote:approve"})
+    actor = lambda uid: SimpleNamespace(id=uid, name=f"财务{uid}", data_scope="all", department_id=None, roles=["finance"], has=lambda code: code in {"quote:view", "quote:finance_approve"})
     request = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
     notify = AsyncMock()
     with patch.object(approval.notification_service, "notify", notify), patch.object(approval.notification_service, "dispatch_pending", AsyncMock()):

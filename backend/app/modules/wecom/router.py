@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, require_permission, ensure_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.wecom import callback as wecom_callback
@@ -43,6 +43,7 @@ from app.modules.wecom.client import WeComError, WeComNotConfigured
 from app.modules.wecom.model import WeComSyncJob
 from app.modules.wecom.schema import (
     BindCustomerRequest,
+    ImportCustomersRequest,
     CreateCustomerRequest,
     IgnoreContactRequest,
     TransferRequest,
@@ -144,11 +145,14 @@ async def sync_external_contacts(
         action="wecom_sync_external_contacts",
         business_type="integration",
         business_id=job.id,
-        after={"success": job.success_count},
+        after={"success": job.success_count, "fail": job.fail_count},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_job(job), f"外部联系人同步完成，成功 {job.success_count} 条")
+    message = f"外部联系人同步完成，成功 {job.success_count} 条"
+    if job.fail_count:
+        message += f"；{job.fail_count} 个成员未完整同步，请查看同步记录后重试"
+    return ok(svc.serialize_job(job), message)
 
 
 @router.post("/integrations/wecom/sync-follow-relations")
@@ -171,7 +175,10 @@ async def sync_follow_relations(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_job(job), f"跟进关系同步完成，成功 {job.success_count} 条")
+    message = f"跟进关系同步完成，成功 {job.success_count} 条"
+    if job.fail_count:
+        message += f"；{job.fail_count} 个客户同步失败，原有跟进关系保留，请重试"
+    return ok(svc.serialize_job(job), message)
 
 
 @router.get("/integrations/wecom/unbound-contacts")
@@ -588,3 +595,28 @@ async def receive_wecom_event(
     await session.commit()
     # 企微要求回 "success"，否则会重试
     return Response(content="success", media_type="text/plain")
+
+
+@router.get("/integrations/wecom/customer-import/preview")
+async def preview_customer_import(
+    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.wecom.customer_import import preview_import
+    ensure_permission(user, "customer:create")
+    ensure_permission(user, "customer:assign")
+    return ok(await preview_import(session))
+
+
+@router.post("/integrations/wecom/customer-import")
+async def import_customers(
+    payload: ImportCustomersRequest,
+    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.wecom.customer_import import execute_import
+    ensure_permission(user, "customer:create")
+    ensure_permission(user, "customer:assign")
+    result = await execute_import(session, digest=payload.digest, operator_id=user.id)
+    await session.commit()
+    return ok(result, f"已导入 {result['import_contacts']} 条联系人，待确认 {result['held_contacts']} 条")

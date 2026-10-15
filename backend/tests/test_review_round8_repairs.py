@@ -76,7 +76,7 @@ async def test_transferred_cosign_rejects_sender_and_notification_uses_quote(mon
         for uid in (2, 3):
             raw.add(User(id=uid, name=f"财务{uid}", username=f"u{uid}", password_hash="x"))
         raw.add(Role(id=1, code="finance", name="财务", data_scope="all"))
-        for pid, code in ((1, "quote:view"), (2, "quote:approve")):
+        for pid, code in ((1, "quote:view"), (2, "quote:finance_approve")):
             raw.add(Permission(id=pid, code=code, name=code))
         raw.flush()
         raw.execute(user_roles.insert().values(user_id=3, role_id=1))
@@ -97,8 +97,8 @@ async def test_transferred_cosign_rejects_sender_and_notification_uses_quote(mon
         raw.add(instance)
         raw.commit()
         session = SyncSessionAsAsync(raw)
-        sender = make_user(2, permissions=("quote:view", "quote:approve"), roles=("finance",), data_scope="all")
-        recipient = make_user(3, permissions=("quote:view", "quote:approve"), roles=("finance",), data_scope="all")
+        sender = make_user(2, permissions=("quote:view", "quote:finance_approve"), roles=("finance",), data_scope="all")
+        recipient = make_user(3, permissions=("quote:view", "quote:finance_approve"), roles=("finance",), data_scope="all")
         notify = AsyncMock()
         monkeypatch.setattr(approval.notification_service, "notify", notify)
         monkeypatch.setattr(approval.notification_service, "dispatch_pending", AsyncMock())
@@ -128,11 +128,11 @@ async def test_node_transition_discards_previous_assignee(monkeypatch):
         raw.add(instance)
         raw.commit()
         monkeypatch.setattr(approval.pricing_service, "resolve_min_margin", AsyncMock(return_value=(Decimal(".15"), True)))
-        monkeypatch.setattr(approval, "_user_ids_by_roles", AsyncMock(return_value=[]))
+        monkeypatch.setattr(approval, "_co_sign_recipient_ids", AsyncMock(return_value=[]))
         monkeypatch.setattr(approval.notification_service, "dispatch_pending", AsyncMock())
         await approval.approve(1, REQUEST, make_user(2, permissions=("quote:approve",), roles=("sales_manager",), data_scope="all"), SyncSessionAsAsync(raw))
         assert "current_assignee_id" not in instance.summary
-        assert approval_denial(make_user(3, roles=("finance",)), instance, price_can_approve=False) is None
+        assert approval_denial(make_user(3, permissions=("quote:finance_approve",), roles=("finance",)), instance, price_can_approve=False) is None
 
 
 @pytest.mark.anyio

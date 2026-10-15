@@ -54,6 +54,14 @@ _TOKEN_TTL = 7200 - 300
 _token_cache: dict[str, tuple[str, float]] = {}
 
 
+class ExternalContactBatch(list[dict[str, Any]]):
+    """兼容列表调用方，并携带未能完整拉取的成员错误。"""
+
+    def __init__(self, rows: list[dict[str, Any]], errors: list[str]) -> None:
+        super().__init__(rows)
+        self.errors = errors
+
+
 class WeComClient:
     """企微 API 客户端。凭据从全局配置读，不把密钥散落在调用点。"""
 
@@ -184,14 +192,36 @@ class WeComClient:
         return payload.get("external_contact", {}) or {}
 
     async def get_follow_users(self, external_userid: str) -> list[dict[str, Any]]:
-        """谁加了这个人（跟进关系）。"""
+        """客户详情里的跟进人；get_follow_user_list 只返回企业成员 ID。
+
+        必须完整取完分页再返回。任一页失败或游标异常均抛错，避免服务层把
+        未取到的后续页当成已删除的跟进关系。
+        """
         token = await self.access_token(external=True)
-        payload = await self._call(
-            "externalcontact/get_follow_user_list",
-            params={"external_userid": external_userid},
-            access_token=token,
-        )
-        return list(payload.get("follow_user", []))
+        results: dict[str, dict[str, Any]] = {}
+        cursor = ""
+        seen_cursors: set[str] = set()
+        for _ in range(max(1, settings.wecom_sync_max_pages)):
+            params = {"external_userid": external_userid}
+            if cursor:
+                params["cursor"] = cursor
+            payload = await self._call(
+                "externalcontact/get", params=params, access_token=token,
+            )
+            rows = payload.get("follow_user")
+            if not isinstance(rows, list) or any(
+                not isinstance(row, dict) or not row.get("userid") for row in rows
+            ):
+                raise WeComError(-1, "客户跟进人响应格式异常，本次不更新关系", "externalcontact/get")
+            for row in rows:
+                results[str(row["userid"])] = row
+            cursor = str(payload.get("next_cursor") or "")
+            if not cursor:
+                return list(results.values())
+            if cursor in seen_cursors:
+                raise WeComError(-1, "客户跟进人分页游标重复，本次不更新关系", "externalcontact/get")
+            seen_cursors.add(cursor)
+        raise WeComError(-1, "客户跟进人分页超过安全上限，本次不更新关系", "externalcontact/get")
 
     async def get_follow_user_ids(self) -> list[str]:
         """有客户联系权限的内部跟进成员清单（不含任何客户数据）。"""
@@ -229,24 +259,26 @@ class WeComClient:
                             external_userid = contact.get("external_userid")
                             if not external_userid or str(external_userid) in seen:
                                 continue
-                            seen.add(str(external_userid))
                             # list 接口只给 external_userid 和少量字段，详情要单独拉
                             detail = await self.get_external_contact(str(external_userid))
                             merged = {**contact, **detail}
                             merged.setdefault("follow_user", row.get("follow_info") or {})
                             results.append(merged)
+                            seen.add(str(external_userid))
                     else:
                         for raw_id in payload.get("external_userid") or []:
                             external_userid = str(raw_id or "")
                             if not external_userid or external_userid in seen:
                                 continue
-                            seen.add(external_userid)
                             detail = await self.get_external_contact(external_userid)
                             merged = {**detail, "external_userid": external_userid}
                             results.append(merged)
+                            seen.add(external_userid)
                     cursor = str(payload.get("next_cursor") or "")
                     if not cursor:
                         break
+                else:
+                    raise WeComError(-1, "客户列表分页超过安全上限", "externalcontact/list")
             except WeComError as error:
                 # 84061（成员未开通客户联系）等单个成员的配置问题：跳过该成员
                 # 继续同步其他人，不让一个人把整轮同步炸掉
@@ -255,7 +287,7 @@ class WeComClient:
         if not results and member_errors:
             # 一个成员都没拉到时把失败原因抛出去，让同步任务如实记录"为什么是 0"
             raise last_error  # type: ignore[misc]
-        return results
+        return ExternalContactBatch(results, member_errors)
 
     # ---- 离职继承（PRD §8.4）---------------------------------------------
 

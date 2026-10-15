@@ -73,6 +73,10 @@ class FakeDingTalkLogin:
         self.calls.append(('byunionid', unionid))
         return self._userid
 
+    async def get_login_contact_user(self, userid):
+        # 旧账号尚未绑定的用例，管理员必须先处理，不能自动另建。
+        return {'userid': userid, 'name': 'unbound', 'mobile': ''}
+
 
 PREFIX = '__dtlogin_'
 
@@ -225,7 +229,8 @@ async def main():
                 _, r2 = await dt_service.resolve_login_user(s, code='c')
             check('没 unionId', r2, 'no_unionid')
 
-            # 通讯录里有、CRM 里没绑
+            # 通讯录里有、已有 CRM 账号尚未绑定
+            await add_user('unbound')
             with patch.object(
                 dt_service,
                 'get_client',

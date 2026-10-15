@@ -37,6 +37,7 @@ export interface LoginResult {
 }
 
 export interface CurrentUser {
+  initial_password_pending?: boolean
   id: number
   name: string
   username: string

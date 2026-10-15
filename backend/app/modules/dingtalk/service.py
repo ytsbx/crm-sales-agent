@@ -42,7 +42,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,7 +69,7 @@ from app.modules.dingtalk.model import (
     OaInstance,
     allowed_actions,
 )
-from app.modules.user.model import User
+from app.modules.user.model import User, Role, user_roles
 
 #: 停在 `submitting` / 核定占用超过这个时长，就认为那次尝试已经死了
 #: （进程被杀、机器重启、调用方再也没回来），允许重新发起或重新占用。
@@ -923,8 +923,8 @@ def serialize(row: OaInstance) -> dict:
 #
 # 三条纪律（与 `wecom/service.py::sync_users` 是**同一套**，不是另写一份）：
 #
-# 1. **绝不自动建账号。** 建账号要定角色与数据范围，那是人的决定，不能是同步的
-#    副作用。钉钉里有人、CRM 里没账号 → 列出来让管理员去建，本次一个都不建。
+# 1. **通讯录同步只绑定、不建账号。** 首次登录可为全新员工建业务员账号；
+#    同步本身不创建账号，已有未绑定账号仍交管理员明确绑定。
 # 2. **匹配顺序：已绑定 → 手机号 → 姓名。** 手机号在前，因为它唯一性强；
 #    姓名只做兜底，且**只有唯一命中才算**——重名时宁可留给人工判，也不猜。
 # 3. **已绑定的不覆盖。** 一个人已经绑了钉钉号，后续同步不因手机号变了就改绑：
@@ -937,7 +937,7 @@ def serialize(row: OaInstance) -> dict:
 #: 对不上的原因。**分开报**，不能笼统说一句"未匹配"——
 #: 「CRM 里没这个账号」和「重名判不了」要做的事完全不同（前者去建号，后者去核人）。
 BIND_REASON_LABEL: dict[str, str] = {
-    "no_account": "CRM 里没有能对上的账号",
+    "no_account": "尚无 CRM 账号，全新员工首次钉钉登录会自动建为业务员",
     "ambiguous_mobile": "手机号在系统里对到了多个账号",
     "ambiguous_name": "姓名重复，无法判断是哪一位",
 }
@@ -1055,6 +1055,7 @@ async def sync_users(session: AsyncSession) -> dict:
             502,
         ) from exc
 
+    await _lock_login_binding(session)
     crm_users = list((await session.execute(select(User))).scalars().all())
 
     bound: dict[str, User] = {}
@@ -1253,6 +1254,8 @@ LOGIN_REASON_LABEL: dict[str, str] = {
     "disabled": "这个账号已停用，请联系管理员",
     "ambiguous": "这个钉钉账号对上了多个系统账号，请联系管理员处理",
     "no_unionid": "钉钉没有返回这个人的身份标识，请重试或联系管理员",
+    "role_unavailable": "默认业务员角色未启用或数据范围不是本人，请管理员检查角色设置",
+    "invalid_profile": "企业通讯录身份资料不完整，请管理员核对姓名和成员编号",
 }
 
 
@@ -1287,10 +1290,74 @@ async def resolve_login_user(
         .all()
     )
     if not rows:
-        return None, "not_bound"
+        # 已有账号由管理员绑定，不根据扫码昵称自动认领。企业资料只用来
+        # 排除已有账号/冲突，以及给真正的新员工建立最低默认角色。
+        member = await api.get_login_contact_user(userid)
+        if str(member.get("userid") or "").strip() != str(userid):
+            return None, "invalid_profile"
+        if member.get("unionid") and str(member["unionid"]) != unionid:
+            return None, "invalid_profile"
+        return await _signup_login_user(session, userid=str(userid), member=member)
     if len(rows) > 1:
         return None, "ambiguous"
     user = rows[0]
     if user.status != "active":
         return None, "disabled"
+    return user, "ok"
+
+
+async def _lock_login_binding(session: AsyncSession) -> None:
+    """首次建号与管理员通讯录绑定互斥，避免同一个钉钉号并发造两个人。"""
+    try:
+        dialect = session.get_bind().dialect.name
+    except AttributeError:  # 内存数据库测试适配器
+        dialect = ""
+    if dialect == "postgresql":
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended('crm:dingtalk-binding', 0))"))
+
+
+async def _signup_login_user(session: AsyncSession, *, userid: str, member: dict) -> tuple[User | None, str]:
+    from app.core.audit import write_audit
+    from app.core.security import hash_password
+
+    name = _norm_name(member.get("name"))
+    mobile = _norm_mobile(member.get("mobile"))
+    if not name or len(name) > 64 or len(userid) > 128 or (mobile and len(mobile) > 32):
+        return None, "invalid_profile"
+    await _lock_login_binding(session)
+    # 网络请求期间可能已被其他扫码/同步绑定。拿锁后重新读取，不靠旧快照。
+    users = list((await session.execute(select(User).execution_options(populate_existing=True))).scalars())
+    bound = [u for u in users if str(u.dingtalk_userid or "") == userid]
+    if len(bound) > 1:
+        return None, "ambiguous"
+    if bound:
+        return (bound[0], "ok") if bound[0].status == "active" else (None, "disabled")
+    # 同名未绑定账号、停用账号和手机号冲突交管理员处理，不自动认领角色。
+    # 已绑定且启用的同名同事是另一个身份，允许建号，由登录名编号区分。
+    if any((_norm_name(u.name) == name and (not u.dingtalk_userid or u.status != "active"))
+           or (mobile and _norm_mobile(u.mobile) == mobile) for u in users):
+        return None, "not_bound"
+    role = (await session.execute(select(Role).where(Role.code == "salesperson")
+                .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if role is None or role.status != "active" or role.data_scope != "self":
+        return None, "role_unavailable"
+    from app.modules.user.usernames import allocate_username
+    username = await allocate_username(session, name)
+    if any(u.username == username for u in users):
+        return None, "not_bound"
+    # 用户明确指定：姓名全拼登录名、初始密码 123456，首次进入告知本人。
+    user = User(username=username, name=name, mobile=mobile or None,
+                password_hash=hash_password("123456"), initial_password_pending=True, status="active",
+                dingtalk_userid=userid, department_id=None)
+    try:
+        async with session.begin_nested():
+            session.add(user)
+            await session.flush()
+            await session.execute(user_roles.insert().values(user_id=user.id, role_id=role.id))
+    except IntegrityError:
+        # 管理员也能建同名登录名，唯一冲突应拒绝本次建号而非冒成 500。
+        return None, "not_bound"
+    await write_audit(session, operator_id=user.id, action="create", business_type="user", business_id=user.id,
+                      after={"username": user.username, "name": user.name, "roles": [role.code],
+                             "data_scope": "self", "source": "钉钉首次登录自动建号"})
     return user, "ok"

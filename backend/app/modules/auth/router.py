@@ -7,7 +7,8 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -22,7 +23,7 @@ from app.core.security import (
     decode_access_token_allow_expired,
     verify_password,
 )
-from app.modules.auth.schema import DingTalkExchange, LoginRequest, WeComSsoCallback
+from app.modules.auth.schema import DingTalkExchange, LoginRequest, WeComSsoCallback, PersonalAccountUpdate
 from app.modules.auth.session import (
     REASON_LOGOUT,
     SID_CLAIM,
@@ -32,6 +33,7 @@ from app.modules.auth.session import (
 )
 from app.modules.dingtalk import service as dingtalk_service
 from app.modules.dingtalk.client import DingTalkDisabled, DingTalkError
+from app.modules.user import service as user_service
 from app.modules.user.model import Department, User
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -441,6 +443,7 @@ async def me(
             "id": user.id,
             "name": user.name,
             "username": user.username,
+            "initial_password_pending": user.initial_password_pending,
             "department": dept_name,
             "roles": user.roles,
             "data_scope": user.data_scope,
@@ -450,9 +453,85 @@ async def me(
 
 
 @router.get("/permissions")
-async def my_permissions(user: CurrentUser = Depends(get_current_user)):
-    return ok({"permissions": sorted(user.permissions), "roles": user.roles})
+async def my_permissions(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """我的权限，连同每个权限的中文名一起下发。
+
+    为什么中文名必须由服务端在这里拼好：权限目录接口（`GET /users/permissions`）
+    要求「账号与权限」管理权限，普通人根本调不动 —— 而"看看我自己有哪些权限"
+    不该依赖管理权限。这里只解析**这个人自己持有的**那些权限码，
+    不会把整个权限目录泄露出去。
+
+    `permissions` / `roles` 两个字段保持原样（老调用方照读不误），
+    中文名是新加的 `permission_names`：加字段，不改结构。
+    """
+    catalog = await user_service.list_permissions(session)
+    names = {p.code: p.name for p in catalog}
+    owned = sorted(user.permissions)
+    return ok(
+        {
+            "permissions": owned,
+            "roles": user.roles,
+            "permission_names": {code: names.get(code) or code for code in owned},
+        }
+    )
 
 
 def _user_brief(user: User) -> dict:
     return {"id": user.id, "name": user.name, "username": user.username}
+
+
+@router.patch("/account")
+async def update_personal_account(
+    payload: PersonalAccountUpdate,
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """只修改当前登录人；不接收用户 ID、角色或数据范围。"""
+    from app.core.security import hash_password
+    from app.modules.user.service import lock_user_row
+    from app.modules.user.usernames import lock_usernames
+    from app.modules.auth.session import REASON_PASSWORD_CHANGE, revoke_user_sessions
+    throttle_key = f"account-change:{user.id}|{client_ip(request) or 'unknown'}"
+    if rate_limit.remaining_lock_seconds(throttle_key, max_attempts=settings.login_max_attempts,
+                                         window_minutes=settings.login_lockout_window_minutes):
+        raise AppError(ErrorCode.RATE_LIMITED, "当前密码错误次数过多，请稍后重试", 429)
+    await lock_usernames(session)
+    await lock_user_row(session, user.id)
+    target = (await session.execute(select(User).where(User.id == user.id)
+                    .execution_options(populate_existing=True))).scalar_one()
+    if user.sid:
+        await load_active_session(session, user.sid, user.id)
+    if target.status != "active":
+        raise AppError(ErrorCode.FORBIDDEN, "账号已停用", 403)
+    if not verify_password(payload.current_password, target.password_hash):
+        rate_limit.register_failure(throttle_key, max_attempts=settings.login_max_attempts,
+                                    window_minutes=settings.login_lockout_window_minutes)
+        raise AppError(ErrorCode.PARAM_ERROR, "当前密码不正确", 400)
+    rate_limit.reset(throttle_key)
+    clash = (await session.execute(select(User.id).where(
+        func.lower(User.username) == payload.username.lower(), User.id != user.id))).first()
+    if clash:
+        raise AppError(ErrorCode.DUPLICATE, "登录名已被占用，请换一个", 409)
+    before = {"username": target.username}
+    changed = target.username != payload.username or payload.new_password is not None
+    if not changed:
+        return ok({"username": target.username, "require_relogin": False}, "账号没有变化")
+    try:
+        async with session.begin_nested():
+            target.username = payload.username
+            if payload.new_password is not None:
+                target.password_hash = hash_password(payload.new_password)
+                target.initial_password_pending = False
+            await session.flush()
+    except IntegrityError as exc:
+        raise AppError(ErrorCode.DUPLICATE, "登录名已被占用，请换一个", 409) from exc
+    await revoke_user_sessions(session, user.id, reason=REASON_PASSWORD_CHANGE)
+    await write_audit(session, operator_id=user.id, action="update", business_type="user", business_id=user.id,
+                      before=before, after={"username": target.username, "password_changed": payload.new_password is not None},
+                      ip=client_ip(request))
+    await session.commit()
+    return ok({"username": target.username, "require_relogin": True}, "账号已保存，请重新登录")

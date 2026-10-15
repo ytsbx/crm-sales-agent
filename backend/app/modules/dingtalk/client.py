@@ -700,6 +700,26 @@ class DingTalkClient:
         return (data.get("result") or {}).get("userid") or None
 
 
+    async def get_login_contact_user(self, user_id: str) -> dict[str, Any]:
+        """登录用企业成员详情；只走登录开关，与 OA 审批开关独立。"""
+        self._require_login()
+        token = await self.access_token(for_login=True)
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(
+                    "https://oapi.dingtalk.com/topapi/v2/user/get",
+                    params={"access_token": token}, json={"userid": user_id},
+                )
+            data = resp.json() if resp.content else {}
+        except (httpx.HTTPError, ValueError) as exc:
+            raise DingTalkError("读取企业成员详情失败，请重试", api="topapi/v2/user/get") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("result", {}), dict):
+            raise DingTalkError("企业成员详情响应格式无效", api="topapi/v2/user/get")
+        if resp.status_code != 200 or data.get("errcode"):
+            raise DingTalkError(data.get("errmsg") or "读取企业成员详情失败",
+                                api="topapi/v2/user/get", http_status=resp.status_code)
+        return dict(data.get("result") or {})
+
 _client: DingTalkClient | None = None
 
 

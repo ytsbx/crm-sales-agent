@@ -447,6 +447,7 @@ FIELD_LABELS: dict[str, str] = {
     "uploaded_by": "上传人",
     # 用户 / 角色 / 部门
     "username": "登录名",
+    "initial_password_pending": "初始密码待修改",
     "wecom_userid": "企微账号",
     "department_id": "所属部门",
     "data_scope": "数据范围",
