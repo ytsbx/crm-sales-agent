@@ -46,7 +46,7 @@ const LEVEL_OPTIONS = [
   { value: 'D', label: 'D 级' },
 ]
 
-const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入'].map(
+const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入', '其他'].map(
   (value) => ({ value, label: value }),
 )
 
@@ -114,6 +114,7 @@ export default function CustomerListPage() {
 
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<CustomerPayload>(EMPTY_FORM)
+  const [otherSource, setOtherSource] = useState('')
   // 批量导入导出
   const fileInputRef = useRef<HTMLInputElement>(null)
   // 本次「新建客户」表单的幂等键：打开表单时生成，成功后清空（第八批 8.15）
@@ -282,6 +283,7 @@ export default function CustomerListPage() {
       Toast.success(`客户「${customer.name}」已创建`)
       setModalVisible(false)
       setForm(EMPTY_FORM)
+      setOtherSource('')
       // 这次表单已经用掉了这把键，下一次新建要换新的
       createRequestKeyRef.current = ''
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
@@ -785,7 +787,10 @@ export default function CustomerListPage() {
             Toast.warning('客户名称必填')
             return
           }
-          createMutation.mutate(form)
+          createMutation.mutate({
+            ...form,
+            source: form.source === '其他' ? (otherSource.trim() || '其他') : form.source,
+          })
         }}
         confirmLoading={createMutation.isPending}
         okText="创建"
@@ -892,6 +897,16 @@ export default function CustomerListPage() {
               optionList={SOURCE_OPTIONS}
               style={{ width: '100%' }}
             />
+            {form.source === '其他' && (
+              <Input
+                aria-label="其他客户来源"
+                value={otherSource}
+                onChange={setOtherSource}
+                maxLength={32}
+                placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
+                style={{ marginTop: 8 }}
+              />
+            )}
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>详细地址</div>
