@@ -146,6 +146,7 @@ async def withdraw_dingtalk_contract_approval(
 ):
     """撤回仍在钉钉流转中的合同审批；已完成的审批不能从 CRM 撤回。"""
     from app.core.config import settings as app_settings
+    from app.modules.dingtalk import service as dingtalk_service
     from app.modules.dingtalk.client import get_client
     from app.modules.dingtalk.model import OaInstance
     from app.modules.user.model import User

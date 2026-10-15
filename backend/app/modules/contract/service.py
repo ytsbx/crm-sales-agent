@@ -1216,6 +1216,7 @@ async def sign_document(
         .where(
             Task.source_business_type == "contract",
             Task.source_business_id == doc.id,
+            Task.source_key == f"contract:signed-upload:{doc.id}",
             Task.status.in_(("pending", "doing")),
         )
         .values(status="done", completed_at=datetime.now(UTC), completion_note="已上传并登记客户回签文件")
