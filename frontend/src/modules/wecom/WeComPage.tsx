@@ -334,7 +334,7 @@ export default function WeComPage() {
     <div className="page-container">
       <PageHeader
         title="企业微信"
-        subtitle="外部联系人同步、待确认客户确认、离职继承"
+        subtitle="外部联系人同步、客户建档确认、离职继承"
         extra={
           canManage && (
             <>
@@ -404,7 +404,7 @@ export default function WeComPage() {
       <div className="split-multi" style={{ gap: 16 }}>
         {/* 左：待处理外部联系人 */}
         <SectionCard>
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>待处理联系人</div>
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>待确认客户</div>
           <Input
             placeholder="搜索昵称或企业名"
             value={keywordInput}
@@ -417,7 +417,7 @@ export default function WeComPage() {
             style={{ marginBottom: 10 }}
           />
           {rows.length === 0 ? (
-            <Empty description={listQuery.isLoading ? '加载中…' : '没有待确认客户联系人'} />
+            <Empty description={listQuery.isLoading ? '加载中…' : '没有待确认客户'} />
           ) : (
             <div style={{ display: 'grid', gap: 6 }}>
               {rows.map((row) => (
@@ -470,7 +470,7 @@ export default function WeComPage() {
         {/* 中：企业微信详情 */}
         <SectionCard>
           {!active ? (
-            <Empty description="左侧选一条待确认客户联系人" />
+            <Empty description="请在左侧选择一条待确认客户" />
           ) : (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
