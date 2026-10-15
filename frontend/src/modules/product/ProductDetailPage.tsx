@@ -47,7 +47,6 @@ import { listBusinessFilesBatch, uploadFile, type FileRow } from '../../shared/a
 import SectionCard from '../../shared/components/SectionCard'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
-import { listDictionaries } from '../../shared/api/settings'
 
 /**
  * 主数据差异的中文口径与核定结论。
@@ -183,10 +182,6 @@ export default function ProductDetailPage() {
     queryKey: ['product-skus', productId],
     queryFn: () => listProductSkus(productId),
     enabled: Number.isFinite(productId),
-  })
-  const categoriesQuery = useQuery({
-    queryKey: ['dictionaries', 'product_category'],
-    queryFn: () => listDictionaries('product_category'),
   })
 
   // SKU 列表要显示缩略图。**用批量接口一次取**：逐行调就是 N+1，
@@ -762,12 +757,11 @@ export default function ProductDetailPage() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>分类</div>
-              <Select
-                value={productForm.category || undefined}
-                onChange={(v) => setProductForm({ ...productForm, category: String(v) })}
-                optionList={(categoriesQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))}
-                placeholder="选择产品分类"
-                style={{ width: '100%' }}
+              <Input
+                value={productForm.category ?? ''}
+                onChange={(v) => setProductForm({ ...productForm, category: v })}
+                placeholder="自行填写产品分类"
+                maxLength={64}
               />
             </div>
           </div>

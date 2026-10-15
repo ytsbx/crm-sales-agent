@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
-from app.core.errors import AppError
 from app.core.importing import (
     ImportReport,
     RowErrors,
@@ -26,7 +25,6 @@ from app.core.importing import (
 from app.modules.product import io as io_util
 from app.modules.product import service as svc
 from app.modules.product.model import Product, Sku
-from app.modules.settings import service as settings_service
 
 router = APIRouter(tags=["Product"])
 
@@ -165,28 +163,7 @@ async def import_products(
                         else ""
                     )
                     raise RowSkipped(f"同名产品已存在（id={duplicate.id}）{more}")
-                # ⚠️ **导入必须走和单个新建同一道字典校验**（2026-10-13 补）。
-                #
-                # 前一版只在 `POST /products`（单个新建/编辑）里调了
-                # `ensure_dictionary_value`，导入这条路直接 `Product(**fields)` 落库 ——
-                # 实测：单个新建传「分类=纸箱」被 400 拒，而同一份值的 CSV 导入
-                # **200 成功、库里真写进了字典外的分类**。两把尺子量同一件事，
-                # 等于"受控字典"只是单个入口的摆设。
-                #
-                # 这里用 `RowSkipped` 而不是让它冒成 `failed_row`：
-                # "分类不在字典里"是**数据问题**、不是程序错，跳过并让用户在
-                # 失败清单里看到原因，与"同名产品已存在"同一类处理。
-                # 报错文案由 `ensure_dictionary_value` 给（它已经会说
-                # 去系统设置维护），不在这里重写一遍免得两处漂移。
-                try:
-                    await settings_service.ensure_dictionary_value(
-                        session,
-                        type="product_category",
-                        code=(fields or {}).get("category"),
-                        field_label="产品分类",
-                    )
-                except AppError as exc:
-                    raise RowSkipped(exc.message) from exc
+                # 产品分类由用户自由填写，列宽校验仍由导入字段校验统一处理。
                 product = Product(
                     name=name,
                     status="active",
