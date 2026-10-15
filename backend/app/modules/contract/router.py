@@ -30,6 +30,8 @@ async def start_dingtalk_contract_approval(
 ):
     """发起合同签署 OA；审批过程在钉钉完成，CRM 只同步状态与过程快照。"""
     from app.modules.customer.model import Customer
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import QuoteVersion
     from app.modules.dingtalk import service as dingtalk_service
     from app.modules.dingtalk.client import get_client
     from app.core.config import settings as app_settings
@@ -57,12 +59,39 @@ async def start_dingtalk_contract_approval(
             raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，请先绑定钉钉账号", 422)
     customer = await session.get(Customer, doc.customer_id)
     header = (doc.filled_data or {}).get("_header") or {}
+    order = await session.get(SalesOrder, doc.order_id) if doc.order_id else None
+    quote_version = await session.get(QuoteVersion, doc.quote_version_id) if doc.quote_version_id else None
+    amount = (getattr(quote_version, "total_amount", None) if quote_version else None) or (getattr(order, "total_amount", None) if order else None)
+    description = "\n".join(
+        item for item in [
+            f"客户：{customer.name}" if customer else "",
+            f"合同编号：{doc.doc_no}",
+            f"订单：{header.get('order_no')}" if header.get("order_no") else "",
+            f"报价：{header.get('quote_no')}" if header.get("quote_no") else "",
+            "合同正文：",
+            doc.content_snapshot,
+        ] if item
+    )
     source_values = {
         "doc_no": doc.doc_no,
         "title": doc.title,
         "customer_name": customer.name if customer else "",
         "order_no": header.get("order_no") or "",
         "quote_no": header.get("quote_no") or "",
+        "start_type": "上传文件发起",
+        "number_rule_type": "手动填写",
+        "contract_number": doc.doc_no,
+        "amount_type": "收入" if amount not in (None, "") else "无金额",
+        "amount": str(amount or 0),
+        "term_type": "固定期限" if doc.expiry_date else "无固定期限",
+        "period_start": doc.effective_date.isoformat() if doc.effective_date else "",
+        "period_end": doc.expiry_date.isoformat() if doc.expiry_date else "",
+        "sign_mode": "纸质签署",
+        "description": description,
+        "biz_id": doc.doc_no,
+        "operation_status": "待签署",
+        "performance_status": "未开始",
+        "sign_note": "由 CRM 发起，审批过程在钉钉完成",
     }
     mapping = cfg.get("field_map") or {}
     field_map = {
