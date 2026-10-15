@@ -100,11 +100,37 @@ export default function SettingsPage() {
   const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
     ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
 
+  // 用户列表：搜索与筛选（后端 `GET /users` 本来就支持 keyword / status /
+  // department_id / 分页，从前前端一个都没接 —— 只能靠肉眼在一屏里找人，
+  // 而且**超过 50 人后面的人根本显示不出来**（没有翻页，静默截断）。
+  //
+  // 关键字分成两个状态：`userKeywordInput` 是输入框里的字、`userKeyword`
+  // 是**已经提交给服务端**的那个（回车或点「查询」才更新）—— 否则每敲一个字
+  // 就发一次请求，人还没打完列表已经翻腾好几轮了。
+  const [userKeywordInput, setUserKeywordInput] = useState('')
+  const [userKeyword, setUserKeyword] = useState('')
+  const [userStatus, setUserStatus] = useState<string>('')
+  const [userDeptId, setUserDeptId] = useState<number | undefined>(undefined)
+  const [userPage, setUserPage] = useState(1)
+  const USER_PAGE_SIZE = 20
+  // 任一条件变了都要回到第一页：翻到第 3 页再改条件，"第 3 页"多半已经不存在了
+  const resetUserPage = () => setUserPage(1)
   const usersQuery = useQuery({
-    queryKey: ['settings-users'],
-    queryFn: () => listUsers({ page: 1, page_size: 50 }),
+    queryKey: ['settings-users', userKeyword, userStatus, userDeptId, userPage],
+    queryFn: () =>
+      listUsers({
+        keyword: userKeyword || undefined,
+        status: userStatus || undefined,
+        department_id: userDeptId,
+        page: userPage,
+        page_size: USER_PAGE_SIZE,
+      }),
     enabled: isAdmin,
   })
+  // 角色 / 部门：这两个接口一次就把全部数据返回了（角色就几个、部门通常也就几十个），
+  // 后端没有搜索参数 —— 在页面上本地筛就够了，不必为它去改后端。
+  const [roleKeyword, setRoleKeyword] = useState('')
+  const [deptKeyword, setDeptKeyword] = useState('')
   const rolesQuery = useQuery({ queryKey: ['settings-roles'], queryFn: listRoles, enabled: isAdmin })
   const deptsQuery = useQuery({
     queryKey: ['settings-departments'],
@@ -631,6 +657,20 @@ export default function SettingsPage() {
     value: role.id,
     label: `${role.name}（${role.code}）`,
   }))
+  // 角色 / 部门的本地筛选：接口一次返回全部，没必要为它去改后端。
+  // 关键字同时匹配"看得见的名"和"机器用的码"—— 管理员手里拿到的可能是
+  // `sales_manager` 这种码，也可能是「销售主管」这个名，只匹配一边会搜不到。
+  const roleKey = roleKeyword.trim().toLowerCase()
+  const filteredRoles = (rolesQuery.data ?? []).filter(
+    (role) =>
+      !roleKey ||
+      role.name.toLowerCase().includes(roleKey) ||
+      role.code.toLowerCase().includes(roleKey),
+  )
+  const deptKey = deptKeyword.trim().toLowerCase()
+  const filteredDepts = (deptsQuery.data ?? []).filter(
+    (dept) => !deptKey || dept.name.toLowerCase().includes(deptKey),
+  )
   const scopeOptions = [
     { value: 'self', label: '仅本人' },
     { value: 'department', label: '本部门' },
@@ -881,6 +921,55 @@ export default function SettingsPage() {
           {activeKey === 'users' && isAdmin && (
             <>
               <div className="toolbar">
+                {/* 能搜什么要写在占位符上：不写清楚，等于没做。
+                    后端按「姓名或登录名」模糊查（`User.name.ilike | User.username.ilike`）。 */}
+                <Input
+                  placeholder="搜索姓名 / 登录名"
+                  value={userKeywordInput}
+                  onChange={setUserKeywordInput}
+                  onEnterPress={() => {
+                    setUserKeyword(userKeywordInput.trim())
+                    resetUserPage()
+                  }}
+                  style={{ width: 220 }}
+                  showClear
+                />
+                <Button
+                  onClick={() => {
+                    setUserKeyword(userKeywordInput.trim())
+                    resetUserPage()
+                  }}
+                >
+                  查询
+                </Button>
+                <Select
+                  placeholder="全部状态"
+                  value={userStatus || undefined}
+                  onChange={(value) => {
+                    setUserStatus((value as string) ?? '')
+                    resetUserPage()
+                  }}
+                  style={{ width: 120 }}
+                  showClear
+                  optionList={[
+                    { value: 'active', label: '启用' },
+                    { value: 'disabled', label: '停用' },
+                  ]}
+                />
+                <Select
+                  placeholder="全部部门"
+                  value={userDeptId}
+                  onChange={(value) => {
+                    setUserDeptId(value as number | undefined)
+                    resetUserPage()
+                  }}
+                  style={{ width: 160 }}
+                  showClear
+                  optionList={deptOptions.map((item) => ({
+                    value: item.value as number,
+                    label: item.label as string,
+                  }))}
+                />
                 <div style={{ flex: 1 }} />
                 <Button
                   onClick={() => dtSyncMutation.mutate()}
@@ -911,13 +1000,31 @@ export default function SettingsPage() {
                 dataSource={usersQuery.data?.items ?? []}
                 loading={usersQuery.isLoading}
                 rowKey="id"
-                pagination={false}
+                empty={
+                  userKeyword || userStatus || userDeptId
+                    ? '没有符合条件的用户，试试放宽筛选条件'
+                    : '还没有用户'
+                }
+                pagination={{
+                  currentPage: userPage,
+                  pageSize: USER_PAGE_SIZE,
+                  total: usersQuery.data?.total ?? 0,
+                  onPageChange: setUserPage,
+                }}
               />
             </>
           )}
           {activeKey === 'roles' && (
             <>
               <div className="toolbar">
+                {/* 本地筛就够：角色接口一次返回全部，通常也就几个到十几个。 */}
+                <Input
+                  placeholder="搜索角色码 / 角色名"
+                  value={roleKeyword}
+                  onChange={setRoleKeyword}
+                  style={{ width: 220 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 <Button
                   theme="solid"
@@ -939,9 +1046,10 @@ export default function SettingsPage() {
               </div>
               <Table<SystemRole>
                 columns={roleColumns}
-                dataSource={rolesQuery.data ?? []}
+                dataSource={filteredRoles}
                 loading={rolesQuery.isLoading}
                 rowKey="id"
+                empty={roleKeyword ? '没有匹配的角色' : '还没有角色'}
                 pagination={false}
               />
             </>
@@ -949,6 +1057,14 @@ export default function SettingsPage() {
           {activeKey === 'departments' && (
             <>
               <div className="toolbar">
+                {/* 同上：部门接口一次返回全部，本地筛即可。 */}
+                <Input
+                  placeholder="搜索部门名称"
+                  value={deptKeyword}
+                  onChange={setDeptKeyword}
+                  style={{ width: 220 }}
+                  showClear
+                />
                 <div style={{ flex: 1 }} />
                 <Button
                   theme="solid"
@@ -963,9 +1079,10 @@ export default function SettingsPage() {
               </div>
               <Table<SystemDepartment>
                 columns={deptColumns}
-                dataSource={deptsQuery.data ?? []}
+                dataSource={filteredDepts}
                 loading={deptsQuery.isLoading}
                 rowKey="id"
+                empty={deptKeyword ? '没有匹配的部门' : '还没有部门'}
                 pagination={false}
               />
             </>

@@ -475,6 +475,8 @@ check_batch9_repairs
 check_batch11_repairs
 # 「我的权限」：三种身份都要拿得到中文名，且只下发自己持有的那部分
 check_personal_permissions_api
+# 「找个人」：关键字只认姓名/登录名、状态与部门能叠加、翻页真的换人
+check_user_list_filters
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue
 
