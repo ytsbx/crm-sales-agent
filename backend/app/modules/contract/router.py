@@ -1,8 +1,12 @@
 """合同/月结协议接口：模板维护（管理）、生成/签署/作废与台账（销售/主管）。"""
 
 import logging
+import json
+import httpx
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -15,6 +19,186 @@ from app.modules.contract import service as svc
 from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid, TemplateCreate
 
 router = APIRouter(tags=["Contract"])
+
+
+@router.post("/contract-documents/{doc_id}/dingtalk-oa")
+async def start_dingtalk_contract_approval(
+    doc_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """发起合同签署 OA；审批过程在钉钉完成，CRM 只同步状态与过程快照。"""
+    from app.modules.customer.model import Customer
+    from app.modules.dingtalk import service as dingtalk_service
+    from app.modules.dingtalk.client import get_client
+    from app.core.config import settings as app_settings
+    from app.modules.settings import service as settings_service
+    from app.modules.user.model import User
+
+    doc = await svc.get_doc_or_404(session, doc_id)
+    await _ensure_doc_in_scope(session, user, doc)
+    if doc.status != "draft":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有待签合同可以发起钉钉签署申请", 422)
+    if (doc.filled_data or {}).get("_source_type") != "customer_drafted":
+        raise AppError(ErrorCode.PARAM_ERROR, "只有客户起草的合同需要发起钉钉签署申请", 422)
+    cfg = await settings_service.get_setting(session, "dingtalk_contract_oa") or {}
+    process_code = str(cfg.get("process_code") or "")
+    if not process_code:
+        raise AppError(ErrorCode.PARAM_ERROR, "尚未配置合同签署钉钉审批模板（dingtalk_contract_oa.process_code）", 422)
+    account = await session.get(User, user.id)
+    if account is None or account.status != "active":
+        raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
+    if app_settings.dingtalk_push_off:
+        ding_user_id = ""
+    else:
+        ding_user_id = account.dingtalk_userid or await get_client().search_user_id_by_name(user.name)
+        if not ding_user_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，请先绑定钉钉账号", 422)
+    customer = await session.get(Customer, doc.customer_id)
+    header = (doc.filled_data or {}).get("_header") or {}
+    source_values = {
+        "doc_no": doc.doc_no,
+        "title": doc.title,
+        "customer_name": customer.name if customer else "",
+        "order_no": header.get("order_no") or "",
+        "quote_no": header.get("quote_no") or "",
+    }
+    mapping = cfg.get("field_map") or {}
+    field_map = {
+        str(mapping[key]): value
+        for key, value in source_values.items()
+        if mapping.get(key) and value not in (None, "")
+    }
+    originator_component = cfg.get("originator_component")
+    if originator_component:
+        field_map[str(originator_component)] = ding_user_id or f"（待查询：{user.name}的钉钉编号）"
+    dept_component = cfg.get("dept_component")
+    if dept_component:
+        if app_settings.dingtalk_push_off:
+            field_map[str(dept_component)] = "（待查询：钉钉部门编号）"
+        else:
+            dept_ids = await get_client().get_user_dept_ids(ding_user_id)
+            if not dept_ids:
+                raise AppError(ErrorCode.PARAM_ERROR, "钉钉未返回你的提报部门，请先核对员工部门资料", 422)
+            field_map[str(dept_component)] = dept_ids[0]
+    # 正文同时写入多行控件（便于直接在 OA 里阅读），并可上传生成 PDF 作为完整附件，
+    # 避免长合同受 OA 文本控件长度限制而被截断。
+    content_component = cfg.get("content_component")
+    if content_component:
+        field_map[str(content_component)] = doc.content_snapshot
+    attachment_component = cfg.get("attachment_component")
+    if attachment_component:
+        if app_settings.dingtalk_push_off:
+            field_map[str(attachment_component)] = "（待上传：合同生成 PDF）"
+        else:
+            from app.modules.dingtalk.attachments import upload_approval_attachment
+            from app.modules.file.model import FileRecord
+            from app.modules.file.storage import absolute_path
+            from app.modules.dingtalk.client import DingTalkError
+            if not doc.generated_file_id:
+                raise AppError(ErrorCode.PARAM_ERROR, "合同生成稿尚未落盘，暂不能上传到钉钉", 422)
+            record = await session.get(FileRecord, doc.generated_file_id)
+            path = absolute_path(record.object_key) if record else None
+            if record is None or path is None or not path.is_file():
+                raise AppError(ErrorCode.PARAM_ERROR, "合同生成 PDF 不存在，请重新生成合同", 422)
+            try:
+                attachment = await upload_approval_attachment(
+                    get_client(), user_id=ding_user_id, filename=record.file_name, content=path.read_bytes()
+                )
+            except (DingTalkError, httpx.HTTPError, OSError, ValueError) as exc:
+                raise AppError(ErrorCode.PARAM_ERROR, "合同 PDF 未成功上传到钉钉，本次尚未发起审批", 422) from exc
+            field_map[str(attachment_component)] = json.dumps([attachment], ensure_ascii=False)
+    row = await dingtalk_service.create_inquiry_instance(
+        session,
+        user=user,
+        inquiry_id=doc.id,
+        inquiry_version=1,
+        customer_id=doc.customer_id,
+        process_code=process_code,
+        originator_user_id=ding_user_id,
+        field_map=field_map,
+        oa_type="contract",
+    )
+    doc.filled_data = {
+        **(doc.filled_data or {}),
+        "_dingtalk_oa": {"oa_instance_id": row.id, "status": row.status},
+    }
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="start_contract_oa",
+        business_type="contract",
+        business_id=doc.id,
+        after={"oa_instance_id": row.id, "status": row.status, "process_code": process_code},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(dingtalk_service.serialize(row), row.error or "已发起钉钉合同签署申请")
+
+
+@router.post("/contract-documents/{doc_id}/dingtalk-oa-withdraw")
+async def withdraw_dingtalk_contract_approval(
+    doc_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """撤回仍在钉钉流转中的合同审批；已完成的审批不能从 CRM 撤回。"""
+    from app.core.config import settings as app_settings
+    from app.modules.dingtalk.client import get_client
+    from app.modules.dingtalk.model import OaInstance
+    from app.modules.user.model import User
+
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
+    await _ensure_doc_in_scope(session, user, doc)
+    row = (
+        await session.execute(
+            select(OaInstance)
+            .where(OaInstance.inquiry_id == doc.id, OaInstance.oa_type == "contract")
+            .order_by(OaInstance.submit_round.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalars().first()
+    if row is None or not row.instance_id:
+        raise AppError(ErrorCode.NOT_FOUND, "这份合同还没有可撤回的钉钉审批", 404)
+    if row.status != "pending":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前钉钉审批状态为「{row.status}」，不能撤回", 422)
+    if app_settings.dingtalk_push_off:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法向钉钉发送撤回请求", 422)
+    account = await session.get(User, user.id)
+    ding_user_id = (account.dingtalk_userid if account else None) or await get_client().search_user_id_by_name(user.name)
+    if not ding_user_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，无法撤回", 422)
+    await get_client().terminate_process_instance(
+        instance_id=row.instance_id,
+        operating_user_id=ding_user_id,
+        remark="CRM 撤回合同签署申请",
+    )
+    row.status = "withdrawn"
+    row.result = {**(row.result or {}), "crm_withdrawn": True, "withdrawn_by": ding_user_id}
+    row.synced_at = datetime.now(UTC)
+    row.updated_at = datetime.now(UTC)
+    doc.filled_data = {
+        **(doc.filled_data or {}),
+        "_dingtalk_oa": {
+            **((doc.filled_data or {}).get("_dingtalk_oa") or {}),
+            "status": "withdrawn",
+            "withdrawn_by": user.id,
+        },
+    }
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="withdraw_contract_oa",
+        business_type="contract",
+        business_id=doc.id,
+        after={"oa_instance_id": row.id, "instance_id": row.instance_id, "status": row.status},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(dingtalk_service.serialize(row), "已向钉钉发起撤回，审批单已撤回")
 
 
 @router.get("/contract-templates")
@@ -120,6 +304,26 @@ async def generate_document(
             svc.serialize_document(doc, customer_name=customer.name),
             "这份合同刚才已经生成过了，返回的是同一份",
         )
+    if payload.source_type == "customer_drafted":
+        # 唯一键保证重试不会重复创建“上传客户回签文件”待办。
+        from app.modules.task.model import Task
+        owner_id = customer.owner_id or user.id
+        exists = await session.execute(
+            select(Task.id).where(Task.source_key == f"contract:signed-upload:{doc.id}").limit(1)
+        )
+        if exists.scalar_one_or_none() is None:
+            session.add(Task(
+                title=f"上传客户回签合同：{doc.doc_no}",
+                task_type="contract_signed_upload",
+                customer_id=doc.customer_id,
+                owner_id=owner_id,
+                priority="high",
+                status="pending",
+                source="system",
+                source_business_type="contract",
+                source_business_id=doc.id,
+                source_key=f"contract:signed-upload:{doc.id}",
+            ))
     # ⚠️ **从"PDF 落盘"到"提交成功"整段都要能清理**（第四批复审 P1，2026-10-12）。
     #
     # 我上一版只把 `session.commit()` 那一步放进了 try，于是**写审计失败**这条路

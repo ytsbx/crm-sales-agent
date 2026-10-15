@@ -78,6 +78,14 @@ export interface ContractDocument {
   amendments?: ContractAmendment[]
   signed_at: string | null
   void_reason: string | null
+  source_type?: 'crm_template' | 'customer_drafted'
+  dingtalk_oa?: {
+    oa_instance_id?: number
+    instance_id?: string | null
+    status?: string
+    synced_at?: string | null
+    result?: Record<string, unknown> | null
+  } | null
   created_at: string
 }
 
@@ -126,8 +134,17 @@ export function generateContractDocument(payload: {
   supersede_parent?: boolean
   /** 幂等键：同一张弹窗里的重复提交带同一个值，后端据此返回原来那份，而不是再建一份。 */
   request_key?: string
+  source_type?: 'crm_template' | 'customer_drafted'
 }) {
   return api.post<ContractDocument>('/contract-documents', payload)
+}
+
+export function startContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa`, {})
+}
+
+export function withdrawContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa-withdraw`, {})
 }
 
 export function getContractDocument(docId: number) {

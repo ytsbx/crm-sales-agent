@@ -30,6 +30,8 @@ import {
   listContractDocuments,
   listContractTemplates,
   signContractDocument,
+  startContractDingTalkApproval,
+  withdrawContractDingTalkApproval,
   voidContractDocument,
   type ContractDocument,
   type ContractAmendment,
@@ -131,6 +133,7 @@ export default function DocumentsPage() {
     // 模板空白项的值：键就是模板里 {{extra.名称}} 的名称。
     // 之所以不再是一个手写的「名称=内容」文本框，见 parseExtraFields 的注释。
     extraValues: {} as Record<string, string>,
+    source_type: 'crm_template' as 'crm_template' | 'customer_drafted',
   })
   // 当前选中的模板，以及**它要求补充哪几项**（字段名直接从模板正文解析）。
   // 界面上只让用户填值，不再让他自己写 `名称=内容`（见 parseExtraFields）。
@@ -191,6 +194,7 @@ export default function DocumentsPage() {
         parent_id: generateParent?.id ?? null,
         supersede_parent: supersedeParent,
         request_key: generateRequestKey || undefined,
+        source_type: generateForm.source_type,
       })
     },
     onSuccess: (doc) => {
@@ -211,13 +215,36 @@ export default function DocumentsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const dingtalkMutation = useMutation({
+    mutationFn: (docId: number) => startContractDingTalkApproval(docId),
+    onSuccess: (row) => {
+      const status = String((row as { status?: unknown }).status ?? 'pending')
+      Toast.success(status === 'skipped' ? '已记录待发起状态' : '已发起钉钉合同签署申请')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const withdrawDingtalkMutation = useMutation({
+    mutationFn: (docId: number) => withdrawContractDingTalkApproval(docId),
+    onSuccess: () => {
+      Toast.success('已撤回钉钉合同签署申请')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const openGenerateModal = (parent: ContractDocument | null) => {
     setGenerateParent(parent)
     // 每次打开都把上一次的续签选项清掉：勾选状态跟着弹窗走，不该跨次留存
     setSupersedeParent(false)
     // 空白项的值也一起清掉：上一次填的"付款方式"是上一份合同的约定，
     // 留到这一次很容易被顺手带进新合同
-    setGenerateForm((prev) => ({ ...prev, effective_date: '', extraValues: {} }))
+    setGenerateForm((prev) => ({
+      ...prev,
+      effective_date: '',
+      extraValues: {},
+      source_type: 'crm_template',
+    }))
     // 每次打开换一个新键：这一次生成对应这一张弹窗，重试才认得出是同一件事
     setGenerateRequestKey(
       typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`,
@@ -430,6 +457,28 @@ export default function DocumentsPage() {
                     {canManage && record.status === 'draft' && (
                       <a onClick={() => openSignModal(record)}>登记签署</a>
                     )}
+                    {canManage && record.status === 'draft' && record.source_type === 'customer_drafted' && (
+                      record.dingtalk_oa?.status === 'pending' ? (
+                        <>
+                          <a onClick={() => setDetailTarget(record)}>查看钉钉审批</a>
+                          <a
+                            onClick={() =>
+                              Modal.confirm({
+                                title: '撤回钉钉合同签署申请？',
+                                content: '撤回只对仍在审批中的钉钉流程生效，已完成的审批不能撤回。',
+                                onOk: () => withdrawDingtalkMutation.mutate(record.id),
+                              })
+                            }
+                          >
+                            撤回钉钉审批
+                          </a>
+                        </>
+                      ) : (
+                        <a onClick={() => dingtalkMutation.mutate(record.id)} style={{ opacity: dingtalkMutation.isPending ? 0.6 : 1 }}>
+                          提交钉钉签署
+                        </a>
+                      )
+                    )}
                     {/* 补充协议 / 续签：从原文档发起，新文档带 parent_id 指回来。
                         原件不动，旧版永远查得到。 */}
                     {canManage && record.status !== 'void' && (
@@ -633,6 +682,19 @@ export default function DocumentsPage() {
                 (c) => c.id,
               )}
             />
+          </div>
+          <div>
+            <Checkbox
+              checked={generateForm.source_type === 'customer_drafted'}
+              onChange={(e) =>
+                setGenerateForm({
+                  ...generateForm,
+                  source_type: e.target.checked ? 'customer_drafted' : 'crm_template',
+                })
+              }
+            >
+              客户起草合同（提交钉钉签署申请，并生成“上传回签件”待办）
+            </Checkbox>
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
@@ -964,6 +1026,33 @@ export default function DocumentsPage() {
                 ))
               )}
             </div>
+            {detail.dingtalk_oa && (
+              <div>
+                <div style={DETAIL_LABEL}>钉钉合同签署审批</div>
+                <div style={DETAIL_VALUE}>
+                  {detail.dingtalk_oa.status === 'approved'
+                    ? '钉钉审批已通过，等待上传客户回签文件'
+                    : detail.dingtalk_oa.status === 'rejected'
+                      ? '钉钉审批已驳回，请查看钉钉处理意见'
+                      : detail.dingtalk_oa.status === 'withdrawn'
+                        ? '钉钉审批已撤回'
+                        : `钉钉审批：${detail.dingtalk_oa.status ?? '处理中'}`}
+                  {detail.dingtalk_oa.synced_at
+                    ? ` · 最近同步 ${new Date(detail.dingtalk_oa.synced_at).toLocaleString('zh-CN')}`
+                    : ''}
+                </div>
+                {detail.dingtalk_oa.result && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    {Array.isArray((detail.dingtalk_oa.result.payload as { tasks?: unknown[] } | undefined)?.tasks)
+                      ? `节点 ${((detail.dingtalk_oa.result.payload as { tasks: unknown[] }).tasks).length} 个`
+                      : null}
+                    {Array.isArray((detail.dingtalk_oa.result.payload as { operationRecords?: unknown[] } | undefined)?.operationRecords)
+                      ? ` · 操作记录 ${((detail.dingtalk_oa.result.payload as { operationRecords: unknown[] }).operationRecords).length} 条`
+                      : null}
+                  </div>
+                )}
+              </div>
+            )}
             {Object.keys(detail.missing_fields ?? {}).length > 0 && (
               <div>
                 <div style={DETAIL_LABEL}>生成时没填上的地方（正文里留着占位符）</div>

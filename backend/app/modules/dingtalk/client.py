@@ -328,6 +328,39 @@ class DingTalkClient:
             raise DingTalkError("响应里没有审批内容", api="workflow/processInstances:get")
         return inner
 
+    async def terminate_process_instance(
+        self, *, instance_id: str, operating_user_id: str, remark: str
+    ) -> dict[str, Any]:
+        """撤回当前发起人尚未完成的审批实例。"""
+        self._require()
+        token = await self.access_token()
+        body = {
+            "processInstanceId": instance_id,
+            "isSystem": False,
+            "remark": remark,
+            "operatingUserId": operating_user_id,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/workflow/processInstances/terminate",
+                    json=body,
+                    headers={"x-acs-dingtalk-access-token": token},
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkUnknownOutcome(f"撤回审批时外部请求没有得到响应：{exc}") from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkUnknownOutcome("撤回审批后响应无法解析，无法确认撤回结果") from exc
+        if resp.status_code != 200 or data.get("success") is False or data.get("result") is False:
+            raise DingTalkError(
+                data.get("message") or data.get("errmsg") or resp.text[:200],
+                api="workflow/processInstances/terminate",
+                http_status=resp.status_code,
+            )
+        return data
+
     async def get_process_schema(self, process_code: str) -> dict[str, Any]:
         """拉某个模板的完整表单结构（含每个控件的 componentId）。
 

@@ -32,6 +32,7 @@ from app.core.base import Base, IdMixin, JSONType
 OA_TYPE_LABEL = {
     "inquiry": "定制询价",
     "sample": "打样申请",
+    "contract": "合同签署申请",
 }
 
 #: 实例状态。与钉钉的状态词翻译过来，CRM 侧口径固定，避免各处 if 判断漂移。

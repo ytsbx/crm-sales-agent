@@ -200,6 +200,14 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     # （不是中文名——名字对不上钉钉不报错，只把那格留空，"免重复录入"会静默失效）。
     # 例：{"process_code": "PROC-XXXX", "field_map": {"title": "TextField_XXXX", "quantity": "NumberField_XXXX"}}
     "dingtalk_sample_oa": {"process_code": ""},
+    # 客户起草合同的钉钉签署审批。线上只填真实模板编号和控件映射。
+    "dingtalk_contract_oa": {
+        "process_code": "",
+        "field_map": {},
+        # 可选：把完整正文放进多行文本控件；附件控件建议同时配置，保证长正文不被截断。
+        "content_component": "",
+        "attachment_component": "",
+    },
     "dingtalk_oa": {
         "process_code": "",
         "field_map": {},

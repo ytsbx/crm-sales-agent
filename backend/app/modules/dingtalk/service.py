@@ -830,9 +830,13 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
             row.updated_at = datetime.now(UTC)
             continue
         linked_sample = None
+        linked_contract = None
         if row.oa_type == 'sample':
             from app.modules.sample.model import SampleRequest
             linked_sample = await session.get(SampleRequest, row.inquiry_id, with_for_update=True)
+        elif row.oa_type == 'contract':
+            from app.modules.contract.model import ContractDocument
+            linked_contract = await session.get(ContractDocument, row.inquiry_id, with_for_update=True)
         row.error = None
         raw_status = str(data.get("status") or "").upper()
         # 审批**走完**之后，通过还是驳回要看 `result`（agree / refuse）——
@@ -860,6 +864,19 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
                 linked_sample.status=new_status
                 linked_sample.approved_at=datetime.now(UTC)
                 linked_sample.reject_reason='钉钉打样审批已拒绝，处理意见见钉钉审批记录' if new_status=='rejected' else None
+        if linked_contract is not None and linked_contract.deleted_at is None:
+            old_meta = (linked_contract.filled_data or {}).get('_dingtalk_oa') or {}
+            linked_contract.filled_data = {
+                **(linked_contract.filled_data or {}),
+                '_dingtalk_oa': {
+                    **old_meta,
+                    'oa_instance_id': row.id,
+                    'instance_id': row.instance_id,
+                    'status': row.status,
+                    'synced_at': row.synced_at.isoformat() if row.synced_at else None,
+                    'result': row.result,
+                },
+            }
 
     await session.flush()
     return {"checked": len(rows), "changed": changed}
