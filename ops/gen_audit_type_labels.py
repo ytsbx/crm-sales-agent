@@ -63,16 +63,16 @@ def main() -> int:
 
     if check_only:
         if not BACKEND_JSON.exists():
-            print(f"✗ 后端缺 {BACKEND_JSON.name}，先跑一次生成")
+            print(f"[ERROR] 后端缺 {BACKEND_JSON.name}，先跑一次生成")
             return 1
         if BACKEND_JSON.read_text(encoding="utf-8") != content:
-            print(f"✗ {BACKEND_JSON.name} 不是最新的（前端改了中文名？跑一次生成脚本）")
+            print(f"[ERROR] {BACKEND_JSON.name} 不是最新的（前端改了中文名？跑一次生成脚本）")
             return 1
-        print(f"✓ 审计对象类型中文名是最新的（{len(labels)} 条）")
+        print(f"[OK] 审计对象类型中文名是最新的（{len(labels)} 条）")
         return 0
 
     BACKEND_JSON.write_text(content, encoding="utf-8")
-    print(f"✓ 已生成 {BACKEND_JSON.relative_to(ROOT)}（{len(labels)} 条，来源：前端 {VAR_NAME}）")
+    print(f"[OK] 已生成 {BACKEND_JSON.relative_to(ROOT)}（{len(labels)} 条，来源：前端 {VAR_NAME}）")
     return 0
 
 
