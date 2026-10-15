@@ -554,8 +554,21 @@ async def inquiry_submission_options(
 ):
     """仅准备CRM提交界面，不创建审批、不上传钉钉、不触发通知。"""
     from app.modules.inquiry.service import get_visible_or_404
-    from app.modules.settings.service import get_setting
     inquiry = await get_visible_or_404(session, user, inquiry_id)
+    return await _submission_options(session, inquiry.oa_quote_user_id)
+
+
+@router.get("/inquiries/oa-submission-options")
+async def new_inquiry_submission_options(
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """新建表单只读模板；不创建需求、审批或附件。"""
+    return await _submission_options(session)
+
+
+async def _submission_options(session, selected_quote_owner=None):
+    from app.modules.settings.service import get_setting
     cfg = await get_setting(session, "dingtalk_oa") or {}
     owners = [{"user_id": str(item["user_id"]), "name": str(item.get("name") or "报价员")}
               for item in cfg.get("quote_owners", []) if isinstance(item, dict) and item.get("user_id")]
@@ -564,7 +577,7 @@ async def inquiry_submission_options(
         "enabled": not app_settings.dingtalk_push_off,
         "quote_owner_required": bool(cfg.get("quote_owner_component")),
         "quote_owners": owners,
-        "selected_quote_owner": inquiry.oa_quote_user_id,
+        "selected_quote_owner": selected_quote_owner,
         "image_required": bool(cfg.get("image_component")),
         "file_business_type": cfg.get("inquiry_file_business_type") or "inquiry",
         "fields": await _submission_fields(cfg),

@@ -1,8 +1,14 @@
 import { api } from './client'
 import type { PageResult } from '../types'
 
+export interface InquiryOaDraft {
+  fields: Record<string, string>
+  quote_owner_user_id?: string | null
+  attachment_file_ids: number[]
+}
 export interface CustomInquiryRow {
   id: number
+  extra?: { oa_draft?: InquiryOaDraft | null; [key: string]: unknown } | null
   /** 需求编号（场景09）：报价/打样明细引用它溯源，同一条需求的各版本共用一个号 */
   inquiry_no?: string | null
   title: string
@@ -31,6 +37,7 @@ export interface CustomInquiryRow {
 }
 
 export interface CustomInquiryPayload {
+  oa_draft?: InquiryOaDraft
   title: string
   description?: string | null
   customer_id?: number | null

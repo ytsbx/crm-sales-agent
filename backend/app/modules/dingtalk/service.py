@@ -803,7 +803,7 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
         await session.execute(
             select(OaInstance)
             .where(OaInstance.status == "pending", OaInstance.instance_id.is_not(None))
-            .order_by(OaInstance.id.asc())
+            .order_by(OaInstance.updated_at.asc().nullsfirst(), OaInstance.id.asc())
             .limit(limit)
         )
     ).scalars().all()
@@ -827,7 +827,9 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
             # **前面已取回的状态全部丢失**，手工触发还会 500。
             # 这与本函数的承诺（"单条查失败不影响其他单"）直接矛盾。
             row.error = str(exc)[:500]
+            row.updated_at = datetime.now(UTC)
             continue
+        row.error = None
         raw_status = str(data.get("status") or "").upper()
         # 审批**走完**之后，通过还是驳回要看 `result`（agree / refuse）——
         # 只看 status 的话 COMPLETED 会被一律记成"已通过"，

@@ -1,12 +1,21 @@
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PositiveInt
 from app.core.patch_schema import PatchModel
 
 
 
+class InquiryOaDraft(BaseModel):
+    """只保存发起表单草稿，不授权发送、不接受发起人/部门冒用。提交时重新校验。"""
+    model_config = ConfigDict(extra="forbid")
+    fields: dict[str, str] = Field(default_factory=dict, max_length=50)
+    quote_owner_user_id: str | None = Field(default=None, max_length=64)
+    attachment_file_ids: list[PositiveInt] = Field(default_factory=list, max_length=10)
+
+
 class CustomInquiryCreate(BaseModel):
+    oa_draft: InquiryOaDraft | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str | None = None
     customer_id: int | None = None
@@ -26,6 +35,7 @@ class CustomInquiryCreate(BaseModel):
 
 
 class CustomInquiryUpdate(PatchModel):
+    oa_draft: InquiryOaDraft | None = None
     model_config = ConfigDict(extra="ignore")
 
     title: str | None = Field(default=None, min_length=1, max_length=200)

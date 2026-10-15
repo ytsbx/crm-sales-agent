@@ -123,6 +123,7 @@ async def create_inquiry(
         remark=payload.remark,
         status="open",
         created_by=user.id,
+        extra={"oa_draft": payload.oa_draft.model_dump()} if payload.oa_draft else None,
     )
     session.add(inquiry)
     await session.flush()
@@ -234,6 +235,9 @@ async def update_inquiry(
 
     chain_data = {k: v for k, v in data.items() if k in CHAIN_FIELDS}
     version_data = {k: v for k, v in data.items() if k not in CHAIN_FIELDS}
+    if "oa_draft" in version_data:
+        draft = version_data.pop("oa_draft")
+        version_data["extra"] = {**(inquiry.extra or {}), "oa_draft": draft}
     if version_data and inquiry.superseded_at is not None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

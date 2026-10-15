@@ -150,6 +150,6 @@ export interface InquirySubmissionOptions {
   file_business_type: string
   fields: Array<{ id: string; label: string; type: string; required: boolean; options: string[] }>
 }
-export function getInquirySubmissionOptions(inquiryId: number) {
-  return api.get<InquirySubmissionOptions>(`/inquiries/${inquiryId}/oa-submission`)
+export function getInquirySubmissionOptions(inquiryId?: number) {
+  return api.get<InquirySubmissionOptions>(inquiryId ? `/inquiries/${inquiryId}/oa-submission` : '/inquiries/oa-submission-options')
 }
