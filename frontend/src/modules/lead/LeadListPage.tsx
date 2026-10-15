@@ -34,6 +34,7 @@ import {
   type Lead,
 } from '../../shared/api/lead'
 import { listUsers } from '../../shared/api/system'
+import { optionMatcher } from '../../shared/components/optionMatch'
 import FollowUpModal from '../common/FollowUpModal'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
@@ -446,6 +447,7 @@ export default function LeadListPage() {
           placeholder="选择负责人"
           value={assignTo ?? undefined}
           onChange={(value) => setAssignTo(value as number)}
+          filter={optionMatcher}
           optionList={(usersQuery.data?.items ?? []).map((item) => ({
             value: item.id,
             label: `${item.name}（${item.department ?? '未分配部门'}）`,

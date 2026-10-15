@@ -21,6 +21,7 @@ import {
   type CustomerPayload,
 } from '../../shared/api/customer'
 import { listUsers } from '../../shared/api/system'
+import { optionMatcher } from '../../shared/components/optionMatch'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -764,6 +765,7 @@ export default function CustomerListPage() {
           value={batchOwnerId ?? undefined}
           onChange={(value) => setBatchOwnerId((value as number) ?? null)}
           loading={usersQuery.isLoading}
+          filter={optionMatcher}
           optionList={(usersQuery.data?.items ?? []).map((item) => ({
             value: item.id,
             label: `${item.name}（${item.department ?? '未分配部门'}）`,
@@ -806,6 +808,7 @@ export default function CustomerListPage() {
                 value={form.owner_id ?? undefined}
                 onChange={(value) => setForm({ ...form, owner_id: (value as number) ?? null })}
                 loading={ownerOptionsQuery.isLoading}
+                filter={optionMatcher}
                 optionList={(ownerOptionsQuery.data?.items ?? []).map((item) => ({
                   value: item.id,
                   label: `${item.name}（${item.department ?? '未分配部门'}）`,
