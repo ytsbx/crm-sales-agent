@@ -44,14 +44,34 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
     footer={<div style={{display:'flex',justifyContent:'flex-end',gap:10}}>
       <Button disabled={mutate.isPending} onClick={onClose}>关闭</Button>
       {submitted && query.data?.records[0]?.status==='rejected' && <Button disabled={mutate.isPending} onClick={()=>setEdited({...draft,resubmit:true})}>修改后重新提交</Button>}
-      {!submitted&&<Button loading={mutate.isPending} disabled={!query.data} onClick={()=>mutate.mutate(false)}>保存草稿</Button>}
-      {(!submitted||query.data?.records[0]?.allowed_actions?.includes('retry'))&&<Button theme="solid" loading={mutate.isPending} disabled={!query.data} onClick={()=>mutate.mutate(true)}>
+      {/* ⚠️ 这两个按钮**刻意不用** `disabled={!query.data}`（2026-10-15 修）：
+          读不到模板时按钮会变灰，而用户看不出"连保存草稿都不行" —— 界面只有一个字
+          都不说的灰按钮。改成**可点 + 如实报错**：后端对"模板未配置 / 推送关闭"
+          有明确 4xx（`dingtalk.py:168`），点下去会看到原因；
+          网络失败时 `mutate` 的 onError 也会弹出来。
+          比"灰着不说为什么"好：**点得动才知道为什么**。 */}
+      {!submitted&&<Button loading={mutate.isPending} onClick={()=>mutate.mutate(false)}>保存草稿</Button>}
+      {(!submitted||query.data?.records[0]?.allowed_actions?.includes('retry'))&&<Button theme="solid" loading={mutate.isPending} onClick={()=>mutate.mutate(true)}>
         {submitted?'重试原申请':draft.mode==='inquiry'?'关联原询价（不发新单）':'提交打样到钉钉'}
       </Button>}
     </div>}>
-    {query.isError&&<div style={{color:'var(--crm-error)'}}>{query.error.message}</div>}
+    {/* 请求失败：**必须说清后果**。原来只印一句 `query.error.message`，
+        用户看到红的但不知道"下面这些格子和按钮全都不能用、也不能保存"，
+        只会反复点那几个灰按钮。 */}
+    {query.isError&&<div style={{color:'var(--crm-error)'}}>
+      {`${query.error.message}。下面的流程配置读不出来，此时不能保存草稿、也不能提交；请点「重试」或关掉重开。`}
+    </div>}
     <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr)',gap:12}}>
       <div>生产部在钉钉处理，CRM每约3分钟同步结果和过程。保存草稿不会发出审批。</div>
+      {/* 后端 template() 对"未配置/推送关闭"给出 `configured=false` 或 `enabled=false`；
+          它的 message（「独立打样模板未配置…」「钉钉推送未开启」）就在下面的红字里。
+          这里补一句原因，免得那句业务话被当成又一条技术错误。 */}
+      {!query.isError && query.data && (!query.data.configured || !query.data.enabled) &&
+        <div style={{color:'var(--crm-hint, var(--crm-text-3))'}}>
+          {query.data.configured
+            ? '钉钉推送当前是关闭的，独立发起会失败；可以保存草稿。'
+            : '独立打样审批模板还没配置，独立发起会失败；「沿用原询价流程」仍可用。'}
+        </div>}
       <Select value={draft.mode} disabled={submitted||mutate.isPending} style={{width:'100%'}}
         optionList={[{value:'standalone',label:'单独发起打样审批'},{value:'inquiry',label:'沿用原询价流程（不另发审批）'}]}
         onChange={value=>setEdited({...draft,mode:value as Draft['mode'],source_oa_id:null})}/>

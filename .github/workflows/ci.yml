@@ -274,6 +274,7 @@ jobs:
           # blocked_hint 那条守的是「灰按钮必须说得出为什么」（主人 2026-10-12）。
           node --test ../ops/request_key.test.mjs
           node --test ../ops/blocked_hint.test.mjs
+          node --test ../ops/guarded_button.test.mjs
           node --test ../ops/payment_allocation.test.mjs
           # 静态检查：含禁用控件的页面必须接了共用件，或在例外清单里写明理由。
           # 单测只测共享件算得对不对，**测不到"页面忘了接"**（这一轮的毛病正是忘了接）。

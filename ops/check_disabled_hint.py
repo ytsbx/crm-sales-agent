@@ -32,7 +32,13 @@ REPO = Path(__file__).resolve().parent.parent
 SRC = REPO / "frontend" / "src"
 
 # 用了共用件就算"意识到要解释"
-SHARED = ("BlockedHint", "useBlockedNotify", "blockedToastText")
+#
+# `GuardedButton`（2026-10-15 加）是 `BlockedHint` 的**包装版**：一个标签同时做到
+# "禁用时旁边常驻一行说明"与"点一下弹提示"，页面不用再手写那八行。
+# 所以用了它的文件**自动算已覆盖** —— 这是把"事后补登记例外"变成
+# "一开始就写对"的关键一步（补例外的路子治不了根：新人写新页面照样漏，
+# 2026-10-15 一轮就补了三个文件）。
+SHARED = ("BlockedHint", "useGuardedButton", "GuardedButton", "useBlockedNotify", "blockedToastText")
 
 # 判据：这些写法说明这个文件里有"可能变灰"的控件
 DISABLED_PATTERNS = (re.compile(r"\bdisabled=\{"), re.compile(r"okButtonProps"))
@@ -73,7 +79,10 @@ EXEMPT: dict[str, str] = {
     # ② `submitted`（已提交后锁定）：弹窗里列着已提交的审批记录，
     #    底部按钮已变成「重试原申请」，并另给「修改后重新提交」的入口 ——
     #    用户点不动时，屏幕上就有"已经提交过了"这件事。
-    "modules/sample/SampleDingTalkModal.tsx": "已提交后锁定（记录就列在弹窗里，按钮已改为「重试原申请」）或提交中的瞬时禁用",
+    # 2026-10-15 已修：保存草稿/提交按钮原来写 `disabled={!query.data}`（读不到就变灰、
+    # 界面一个字不说），改成可点 + 如实报错；请求失败时也补了"此时不能保存也不能提交"。
+    # 剩下的是：已提交后锁定（记录列在弹窗里，按钮已改为「重试原申请」）与提交中的瞬时禁用。
+    "modules/sample/SampleDingTalkModal.tsx": "已提交后锁定（记录就列在弹窗里）或提交中的瞬时禁用；原来的灰按钮已改为可点+报错",
     # 任务列表：状态列与「（已选 N）」就在旁边
     "modules/task/TaskListPage.tsx": "状态列/已选计数就在控件旁",
     # 样品列表：勾选与数量框本身就是原因（本轮已按同一规则叙述）
