@@ -53,7 +53,13 @@ Create Date: 2026-10-15
 from alembic import op
 
 revision = "a3c9e5f7b2d1"
-down_revision = "d8a2f6c1b4e9"
+# ⚠️ 接在**当前主干 head** 之后，不要改回 `d8a2f6c1b4e9`：
+# 两条线并行时各自加了迁移，`d8a2f6c1b4e9` 已被 `c35e9a2b7d14`
+# （独立财务会签权限）接走 —— 沿用旧的 down_revision 会让 alembic 出现
+# **两个 head**，`alembic upgrade head` 直接报
+# "Multiple head revisions are present"，部署时才发现就晚了。
+# 本迁移只给 `sample_requests` 加列，与其它迁移无先后依赖。
+down_revision = "c35e9a2b7d14"
 branch_labels = None
 depends_on = None
 
