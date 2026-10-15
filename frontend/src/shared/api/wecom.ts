@@ -24,6 +24,7 @@ export interface WeComReadiness {
 
 export interface WeComFollower {
   wecom_userid: string
+  name?: string | null
   add_time?: string | null
   add_way?: string | null
   remark?: string | null

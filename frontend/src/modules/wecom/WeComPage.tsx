@@ -507,10 +507,6 @@ export default function WeComPage() {
                   <span>{active.type === '2' ? '企业微信用户' : '微信用户'}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <span style={{ color: 'var(--crm-text-3)', minWidth: 84 }}>external_userid</span>
-                  <span style={{ wordBreak: 'break-all' }}>{active.external_userid}</span>
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
                   <span style={{ color: 'var(--crm-text-3)', minWidth: 84 }}>同步时间</span>
                   <span>
                     {active.last_sync_at
@@ -536,7 +532,7 @@ export default function WeComPage() {
                         <Tag size="small" color={follower.status === 'active' ? 'blue' : 'grey'}>
                           {follower.status === 'active' ? '跟进中' : follower.status}
                         </Tag>
-                        <span>{follower.wecom_userid}</span>
+                        <span>{follower.name || '姓名待同步'}</span>
                         <span style={{ color: 'var(--crm-text-3)', marginLeft: 'auto' }}>
                           {follower.add_time
                             ? new Date(follower.add_time).toLocaleDateString('zh-CN')
