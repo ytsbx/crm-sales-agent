@@ -72,3 +72,17 @@ export function dingtalkExchange(ticket: string) {
 export function updatePersonalAccount(payload: { username: string; current_password: string; new_password?: string }) {
   return api.patch<{ username: string; require_relogin: boolean }>('/auth/account', payload)
 }
+
+/**
+ * 我的权限（含中文名）。
+ *
+ * 为什么不前端拿权限码去查权限目录：目录接口要求「账号与权限」管理权限，
+ * 普通人调不动。所以中文名由服务端在 `/auth/permissions` 里一起下发。
+ */
+export function fetchMyPermissions() {
+  return api.get<{
+    permissions: string[]
+    roles: string[]
+    permission_names: Record<string, string>
+  }>('/auth/permissions')
+}

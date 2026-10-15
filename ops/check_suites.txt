@@ -473,6 +473,8 @@ check_contract_sign_lock
 # 每组都带**正向对照**（只验"该拒的拒了"会把闸门写太宽也变绿）。
 check_batch9_repairs
 check_batch11_repairs
+# 「我的权限」：三种身份都要拿得到中文名，且只下发自己持有的那部分
+check_personal_permissions_api
 # 守门必须放最后：它断言"前面所有套件跑完没留下可见夹具"
 check_fixture_residue
 

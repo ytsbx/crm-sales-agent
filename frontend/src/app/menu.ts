@@ -49,6 +49,14 @@ export interface MenuItem {
    * `when` 命中且没有主权限时，用 `label` 显示（返修单 R12）。
    */
   altLabel?: { when: string; label: string }
+  /**
+   * 既没有主权限、也没命中 `altLabel` 的**普通成员**看到的名字。
+   *
+   * 例：`/settings` 对谁都开着（每个人都要能改自己的密码、看自己的权限），
+   * 但普通业务员进去只看得到「我的」那一页 —— 菜单上写「系统设置」会让他
+   * 以为点错了地方（他会去找用户、角色，结果一个都没有）。
+   */
+  plainLabel?: string
 }
 
 export interface MenuGroup {
@@ -126,7 +134,19 @@ export const MENU_GROUPS: MenuGroup[] = [
         key: 'settings',
         path: '/settings',
         label: '系统设置',
-        // 所有登录人可进个人账号；管理和回收复核页签仍按权限开放。
+        // 这个入口对**所有人**开：每个人都要能改自己的密码、看自己的权限。
+        // 但不同身份进去看到的东西完全不同，所以菜单名要跟着身份换（否则
+        // 主管会以为自己拿到了整个系统设置、业务员会以为自己点错了地方）。
+        //
+        // 销售主管拿的是 `customer:pool_review`（公海回收复核），**不是**
+        // `settings:manage`。原来这条只认 settings:manage，于是主管**常规菜单里
+        // 根本没有入口**，只能靠回收预告的通知链接撞进去（返修单 R12）。
+        // 现在两种权限任一命中都给入口，且**不给他系统设置权限本身**；
+        // 没有 settings:manage 时菜单改名 —— 他进去本来就只看得到复核那一块。
+        permission: ['settings:manage', 'customer:pool_review'],
+        altLabel: { when: 'customer:pool_review', label: '公海回收复核' },
+        // 两种权限都没有的普通成员：进去只有「我的」那一页。
+        plainLabel: '我的',
         icon: IconSetting,
         ready: true,
       },
@@ -203,10 +223,12 @@ export function menuLabel(
   item: MenuItem,
   user: { roles: string[]; permissions?: string[] } | null,
 ): string {
+  const primary = Array.isArray(item.permission) ? item.permission[0] : item.permission
+  // 有主权限 → 就是本名（管理员看到的是「系统设置」）。
+  if (primary && hasPermission(user, primary)) return item.label
+  // 没有主权限：先按 altLabel 改名（返修单 R12：主管看到的是「公海回收复核」）……
   const alt = item.altLabel
-  if (alt) {
-    const primary = Array.isArray(item.permission) ? item.permission[0] : item.permission
-    if (!hasPermission(user, primary) && hasPermission(user, alt.when)) return alt.label
-  }
-  return item.label
+  if (alt && hasPermission(user, alt.when)) return alt.label
+  // ……都没命中，说明这是个什么管理权限都没有的普通成员，用他看得懂的那个名字。
+  return item.plainLabel ?? item.label
 }

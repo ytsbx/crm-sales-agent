@@ -33,6 +33,7 @@ from app.modules.auth.session import (
 )
 from app.modules.dingtalk import service as dingtalk_service
 from app.modules.dingtalk.client import DingTalkDisabled, DingTalkError
+from app.modules.user import service as user_service
 from app.modules.user.model import Department, User
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -452,8 +453,30 @@ async def me(
 
 
 @router.get("/permissions")
-async def my_permissions(user: CurrentUser = Depends(get_current_user)):
-    return ok({"permissions": sorted(user.permissions), "roles": user.roles})
+async def my_permissions(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """我的权限，连同每个权限的中文名一起下发。
+
+    为什么中文名必须由服务端在这里拼好：权限目录接口（`GET /users/permissions`）
+    要求「账号与权限」管理权限，普通人根本调不动 —— 而"看看我自己有哪些权限"
+    不该依赖管理权限。这里只解析**这个人自己持有的**那些权限码，
+    不会把整个权限目录泄露出去。
+
+    `permissions` / `roles` 两个字段保持原样（老调用方照读不误），
+    中文名是新加的 `permission_names`：加字段，不改结构。
+    """
+    catalog = await user_service.list_permissions(session)
+    names = {p.code: p.name for p in catalog}
+    owned = sorted(user.permissions)
+    return ok(
+        {
+            "permissions": owned,
+            "roles": user.roles,
+            "permission_names": {code: names.get(code) or code for code in owned},
+        }
+    )
 
 
 def _user_brief(user: User) -> dict:

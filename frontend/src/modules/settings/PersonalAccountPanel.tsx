@@ -36,7 +36,7 @@ export default function PersonalAccountPanel() {
     mutation.mutate({ username: name, current_password: currentPassword, ...(password ? { new_password: password } : {}) })
   }
   return <div style={{ maxWidth: 560, display: 'grid', gap: 16 }}>
-    {user?.initial_password_pending && <Banner type="info" description={<>你的登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user.username}</strong>，初始密码：<strong>123456</strong>。可在下方自行修改。</>} />}
+    {user?.initial_password_pending && <Banner type="info" description={<>你的登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username}</strong>，初始密码：<strong>123456</strong>。可在下方自行修改。</>} />}
     <div><FormLabel required>登录名</FormLabel><Input aria-label="个人登录名" value={username ?? user?.username ?? ''} onChange={setUsername} disabled={mutation.isPending} /></div>
     <div><FormLabel required>当前密码</FormLabel><Input aria-label="当前密码" mode="password" autoComplete="current-password" value={currentPassword} onChange={setCurrentPassword} disabled={mutation.isPending} /></div>
     <div><div style={{ marginBottom: 6 }}>新密码（留空则不修改）</div><Input aria-label="新密码" mode="password" autoComplete="new-password" value={password} onChange={setPassword} disabled={mutation.isPending} /></div>

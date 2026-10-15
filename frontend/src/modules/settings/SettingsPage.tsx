@@ -1,4 +1,5 @@
 import PersonalAccountPanel from './PersonalAccountPanel'
+import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
 import { customerLevelLabel } from '../../shared/customer-level'
 import { useState, type CSSProperties } from 'react'
@@ -92,7 +93,10 @@ export default function SettingsPage() {
   const { isAdmin, can } = usePermissions()
   // 个人账号向全部登录人开放；管理与公海复核仍分别按权限开放。
   const canReviewPool = can('customer:pool_review')
-  const visibleTabs = [{ tab: '个人账号', itemKey: 'profile' }, ...(isAdmin ? TABS : canReviewPool ? TABS.filter((item) => item.itemKey === 'rules') : [])]
+  // 第一个页签改叫「我的」而不是「个人账号」：它现在不只有登录名/密码，
+  // 还挂着「我的信息」和「我的权限」—— 叫「个人账号」的话，想看自己有哪些
+  // 权限的人根本不会往这里点。
+  const visibleTabs = [{ tab: '我的', itemKey: 'profile' }, ...(isAdmin ? TABS : canReviewPool ? TABS.filter((item) => item.itemKey === 'rules') : [])]
   const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
     ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
 
@@ -837,13 +841,23 @@ export default function SettingsPage() {
   return (
     <div className="page-container">
       <PageHeader
-        // 非管理员看到的只有「业务规则」里的公海回收复核（返修单 R12）：
-        // 标题跟着换，否则主管会以为自己拿到了整个系统设置
-        title="系统设置"
+        // 标题跟着**当前页签**走，不能一律写「系统设置」（返修单 R12 的口径）：
+        // 主管只有公海回收复核权，他翻到那一页时标题必须写「公海回收复核」，
+        // 否则他会以为自己拿到了整个系统设置、跑去点用户和角色。
+        // 翻到「我的」时同理 —— 那是他自己的东西，不叫「系统设置」。
+        title={
+          isAdmin
+            ? '系统设置'
+            : activeKey === 'rules'
+              ? '公海回收复核'
+              : '我的'
+        }
         subtitle={
           isAdmin
             ? '用户、角色、部门可在此维护；业务规则、自动任务与系统配置可直接修改'
-            : '修改自己的登录名和密码；管理功能按角色权限开放'
+            : activeKey === 'rules'
+              ? '复核本团队客户的回收候选：批准 / 驳回 / 暂缓。看得见哪些候选由你的数据范围决定'
+              : '改自己的登录名和密码，看自己的资料与权限'
         }
       />
       <SectionCard>
@@ -856,7 +870,14 @@ export default function SettingsPage() {
           tabList={visibleTabs}
         />
         <div style={{ marginTop: 16 }}>
-          {activeKey === 'profile' && <PersonalAccountPanel />}
+          {activeKey === 'profile' && (
+            <div style={{ display: 'grid', gap: 16 }}>
+              {/* 先给"能改的"（登录名 / 密码），再给"只能看的"（资料 / 权限）：
+                  进来是想改东西的人不用先滚过一屏只读信息。 */}
+              <PersonalAccountPanel />
+              <PersonalProfilePanel />
+            </div>
+          )}
           {activeKey === 'users' && isAdmin && (
             <>
               <div className="toolbar">
