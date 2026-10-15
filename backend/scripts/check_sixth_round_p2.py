@@ -234,9 +234,18 @@ async def build_fixtures() -> None:
             last_followup_at=datetime.now(UTC),  # 活跃 → 不会被提名
         )
         # 暂缓场景专用（不能和上面两个客户共用：同一客户同时只允许一张未结候选）
+        #
+        # ⚠️ 等级必须是 "Z"（2026-10-15 修）：这条夹具是用来命中下面那条
+        # **等级 Z、1 天未跟进**的规则的，而扫描器造候选时写的是
+        # `level=rule.level`（`settings/service.py:1073`）—— 所以真实的候选
+        # 一定与客户当前等级一致。原来这里写 "Y"、而 385 行那条候选写 "Z"，
+        # 自相矛盾：2026-10-15 加了"批准前校验等级快照还成立"
+        # （`d0f7957`，`settings/service.py:1498`）之后，这条夹具就先撞上
+        # 409「等级依据已失效」，于是**测不到本来要测的"暂缓期拦截"**。
+        # 夹具应当是扫描器真会造出来的那种数据，而不是手写的任意值。
         c4 = Customer(
             name=f"{PREFIX}暂缓客户-{STAMP}", owner_id=sales_a.id,
-            pool_status="private", created_by=sales_a.id, level="Y",
+            pool_status="private", created_by=sales_a.id, level="Z",
             last_followup_at=datetime.now(UTC),
         )
         s.add_all([c1, c2, c3, c4])

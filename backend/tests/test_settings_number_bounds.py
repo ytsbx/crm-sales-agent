@@ -117,7 +117,53 @@ def test_partial_update_only_checks_the_field_that_was_sent(key, value):
 def test_untouched_key_is_not_validated():
     """别的 key 的坏值不该影响本次保存（判据必须按 key 过滤）。"""
     _validate_number_settings('some_other_key', {'days': -999})
-    _validate_number_settings('export', {})  # 空对象：什么都没改
+
+
+# ------------------------------------------------- 空值/缺字段必须被拒
+#
+# ⚠️ 这一段是 2026-10-15 补的，起因是 **CI 一直在红**：
+# `scripts/check_pool_wait_and_settings.py:378`「缺字段 → 被拒」实测拿到 **200**。
+#
+# 病程：2026-10-14 为了支持"局部更新"，把数值校验改成"只校验本次真传了的字段"
+# （前端只提交被改的那一个字段，不能拿没传的去校验）。方向没错，
+# **但顺手把两种真错误也放行了**：
+#   · `{}`            —— 一个字段都没传；
+#   · `{'days': None}` —— 字段名在、值是 null。
+# 旧代码会因为 `None < low` 比较报错而拒掉它们；改完就静默 200 落库了。
+#
+# 更值得记的是**为什么没被单测拦住**：`test_untouched_key_is_not_validated`
+# 里正好有一行 `_validate_number_settings('export', {})  # 空对象：什么都没改`
+# —— **把 bug 写成了期望**。所以这个坑单测看不见，只有接口回归套件抓到了。
+# 教训：断言写"这样应该能过"时，先问一句"这个输入在业务上真的合法吗"。
+
+
+def test_empty_value_is_rejected():
+    """一个字段都没传 → 拒（不是"局部更新"，是"没有可用数据"）。"""
+    assert _rejects('pool_recycle_notice_days', {}) is True
+    assert _rejects('export', {}) is True
+    assert _rejects('quote_valid_days', {}) is True
+
+
+def test_null_field_value_is_rejected():
+    """字段名给了、值是 null → 拒。
+
+    否则"清空某个配置"会**静默无效**（用户以为清掉了，其实原值还在）。
+    """
+    assert _rejects('pool_recycle_notice_days', {'days': None}) is True
+    assert _rejects('export', {'limit': None}) is True
+
+
+def test_non_dict_value_is_rejected():
+    """`[]` / 字符串 / 数字都不该被当成配置值收下。"""
+    for bad in ([], ['days'], 'days', 3, True):
+        assert _rejects('pool_recycle_notice_days', bad) is True, bad
+
+
+def test_keys_without_rules_are_not_touched():
+    """**没有数值规则的 key 不受这一条影响**（各有各的形状，不在这里一刀切）。"""
+    # 这些 key 不该因为"空对象/不是字典"被这条规则拦（它们由各自的校验管）
+    _validate_number_settings('notification_channels', {})
+    _validate_number_settings('approval_levels', {'levels': []})
 
 
 def test_rules_cover_every_field_read_by_get_number():

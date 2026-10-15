@@ -266,16 +266,68 @@ SETTING_RATIO_RULES: dict[tuple[str, str], str] = {
 
 
 def _validate_number_settings(session_key: str, value: object) -> None:
-    """校验**本次传了的**数值/比率字段（没传的字段保持原值，不校验）。"""
-    payload = value if isinstance(value, dict) else {}
+    """校验本次传了的数值/比率字段；**同时挡住"什么都没传"与"字段是 null"**。
+
+    ## 为什么"只校验传了的字段"还不够（2026-10-15 修，CI 一直红在这）
+
+    这条规则是为了**局部更新**才放宽的：前端只提交被改的那一个字段
+    （`SettingsPage` 写的是 `{[key]: next}`），所以不能拿没传的字段去校验
+    —— 那会把"只改 `export.limit`"判成 `alert_rows` 不合法（我在 2026-10-14 踩过）。
+
+    但同一条规则**顺手把两种真错误也放行了**：
+
+      · `{"value": {}}`      —— **一个字段都没传**。这不是"局部更新"，
+        是"这次没有可用数据"，应当拒；旧代码会因为 `None < low` 比较报错而拒掉它。
+      · `{"days": null}`     —— 字段名在、值是 null。旧代码同样会拒。
+
+    实测（`scripts/check_pool_wait_and_settings.py:378`
+    「缺字段 → 被拒」）：这两种都返回 **200**，坏值落库。
+
+    ## 现在怎么判
+
+    1. **不是字典** → 拒（`[]` / `"x"` / `3` 都不该被当成配置值）；
+    2. **空字典** → 拒（"一个字段都没传"）；
+    3. **本次传了的字段，值是 null** → 拒（字段名都给了，就不该是空）；
+    4. 声明了规则的字段，照旧做上下界/整数/比率校验。
+
+    第 2、3 条**只针对有规则的 key**（`SETTING_NUMBER_RULES` /
+    `SETTING_RATIO_RULES`）—— 其它 key（如 `notification_channels` 这种复合对象）
+    各有各的形状，不在这里一刀切。
+    """
+    # 这个 key 有没有数值类规则
+    has_rules = any(k == session_key for (k, _f) in SETTING_NUMBER_RULES) or any(
+        k == session_key for (k, _f) in SETTING_RATIO_RULES
+    )
+    if not has_rules:
+        return
+
+    if not isinstance(value, dict) or not value:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "配置值不能为空：至少要提供一项要修改的字段",
+            422,
+        )
+
+    # 校验声明了规则的字段
     for (key, field), (low, high, label) in SETTING_NUMBER_RULES.items():
-        if key != session_key or field not in payload:
+        if key != session_key or field not in value:
             continue
-        _strict_int(payload.get(field), label, low, high)
+        _strict_int(value.get(field), label, low, high)
     for (key, field), label in SETTING_RATIO_RULES.items():
-        if key != session_key or field not in payload:
+        if key != session_key or field not in value:
             continue
-        _strict_ratio(payload.get(field), label)
+        _strict_ratio(value.get(field), label)
+
+    # 传了名字但值是 null 的字段一律拒（包括那些暂时没有规则的字段）：
+    # "字段在 → 值必须有效"，把 null 当"保持原值"会让清空操作**静默无效**
+    # （用户以为清掉了，其实原值还在）。
+    blank = [field for field, raw in value.items() if raw is None]
+    if blank:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"这些字段不能为空：{'、'.join(sorted(blank))}",
+            422,
+        )
 
 
 def _strict_ratio(raw: object, label: str) -> float:
