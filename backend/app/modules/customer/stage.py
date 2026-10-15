@@ -108,6 +108,8 @@ async def stage_counts_map(
         .where(
             SampleRequest.customer_id.in_(customer_ids),
             SampleRequest.status != "rejected",
+            # 已软删的不算数（2026-10-15 加软删）：那张单已经被当作没建过
+            SampleRequest.deleted_at.is_(None),
         )
         .group_by(SampleRequest.customer_id)
     )

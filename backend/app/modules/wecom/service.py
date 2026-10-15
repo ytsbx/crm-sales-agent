@@ -671,6 +671,8 @@ async def collect_transfer_scope(
         await session.execute(
             select(SampleRequest).where(
                 SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
+                # 已软删的不算"接手人的活"（2026-10-15）：单子已经被当作没建过
+                SampleRequest.deleted_at.is_(None),
                 or_(
                     SampleRequest.owner_id == handover.id,
                     SampleRequest.production_owner_id == handover.id,

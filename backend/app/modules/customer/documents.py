@@ -189,6 +189,9 @@ async def reassign_customer_documents(
         SampleRequest,
         SampleRequest.customer_id == customer_id,
         SampleRequest.owner_id == from_owner_id,
+        # 已软删的不跟着交接（2026-10-15）：它已经不在任何人的待办里，
+        # 搬过去只会让"交接了 N 张打样单"这个数字虚高。
+        SampleRequest.deleted_at.is_(None),
         owner_id=to_owner_id,
     )
     await move(
@@ -196,6 +199,7 @@ async def reassign_customer_documents(
         SampleRequest,
         SampleRequest.customer_id == customer_id,
         SampleRequest.production_owner_id == from_owner_id,
+        SampleRequest.deleted_at.is_(None),
         production_owner_id=to_owner_id,
     )
 

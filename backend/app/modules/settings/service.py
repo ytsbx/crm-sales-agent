@@ -696,6 +696,9 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
         SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
         # 客户已明确接受的：**这张单到此为止**
         SampleRequest.confirm_status.is_distinct_from(SAMPLE_CONFIRM_ACCEPTED),
+        # 已软删的同样"到此为止"（2026-10-15）：单子都被当作没建过了，
+        # 还拿它拦着公海回收说不通 —— 那样"删了"反而保护得更牢。
+        SampleRequest.deleted_at.is_(None),
     )
     if superseded_ids:
         sample_stmt = sample_stmt.where(SampleRequest.id.not_in(superseded_ids))

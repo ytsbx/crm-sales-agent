@@ -51,6 +51,19 @@ SAMPLE_TRANSITIONS: dict[str, set[str]] = {
 #: 责任仍然要有人接。
 SAMPLE_OPEN_STATUSES: tuple[str, ...] = ("pending", "approved", "shipped", "signed")
 
+#: 允许**软删**的状态（2026-10-15 补）。
+#:
+#: 打样单是留痕单据（审批轮次、车间依据、图纸版本都挂在它上面），所以不是谁都能删。
+#: 只有还没走流程的两种能删：
+#:   - `pending`  刚建出来 / 被驳回后重报，还没批；
+#:   - `rejected` 审批驳回了，跟单决定"就此作罢"（见上面那条注释：驳回单不算未完成打样）。
+#: `approved` / `shipped` / `signed` **一律拒绝**：它们已经进了生产 / 寄样环节，
+#: 删掉会让审批留痕与实际做出来的东西对不上（与「已转订单的报价不能删」同一个道理）。
+#:
+#: 判据**只在这一处**：路由按它把关，列表按它给前端下发 `can_delete` ——
+#: 前端不要自己再拼一份"什么状态能删"，那份迟早和后端分叉。
+SAMPLE_DELETABLE_STATUSES: tuple[str, ...] = ("pending", "rejected")
+
 #: 客户确认状态（文档 §3.5：「客户收到样品不等于样品被接受」）。
 #:
 #: 签收（signed）是物流事实，客户确认才是业务事实——把两者混在一个字段里，
@@ -216,6 +229,19 @@ class SampleRequest(Base, IdMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+
+    # ---- 软删（2026-10-15）----
+    # 这个模块**原来刻意不做软删**（理由见 `service.py` 里那两处注释：打样单是留痕单据）。
+    # 但用起来有个死角 —— 误建的、或者刚建就发现选错客户的单子**一点办法都没有**，
+    # 只能永远挂在列表里（主人 2026-10-15：「样品管理没有删除吗，就一直待在那？」）。
+    #
+    # 补上删除，但**收了闸**：只有还没走流程的（`pending` / `rejected`）能删；
+    # 已批准 / 已寄出 / 已签收的不给删 —— 那几张连着审批轮次、车间依据和图纸，
+    # 删掉等于把追溯链弄断（与「已转订单的报价不能删」是同一个道理）。
+    #
+    # **软删，不是物理删**：行还在、审计还在；列表默认看不见，需要时按「已删除」
+    # 筛出来还能恢复（对齐客户回收站的做法）。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SampleItem(Base, IdMixin):

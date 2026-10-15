@@ -1,6 +1,6 @@
 """样品接口（03-API §26、PRD §19）。
 
-12 个接口：
+14 个接口：
   GET    /samples                 列表
   POST   /samples                 新建申请
   GET    /samples/{id}            详情
@@ -13,12 +13,18 @@
   GET    /samples/{id}/items      明细列表
   POST   /samples/{id}/items      加明细
   PATCH  /samples/{id}/items/{iid} 改明细的车间依据（材质/工艺/图纸版本）
+  DELETE /samples/{id}            软删（只允许还没走流程的）
+  POST   /samples/{id}/restore    恢复一张被软删的
 
-最后两个不在文档 §26 里，都是口径落地时必需的写入口：
+后四个不在文档 §26 里，都是口径落地时必需的写入口：
   - PATCH .../items/{iid}：「材质 / 工艺 / 图纸版本逐行不同」——没有它，
     明细上这三项建完就再也不能改；
   - POST .../resubmit：「驳回不是终态」——没有它，认为驳回理由不成立的跟单
     只能去改个无关字段"骗"系统回到待审批，那条审计留痕是假的。
+  - DELETE / restore（2026-10-15）：这个模块**原来刻意不做软删**（打样单要留痕），
+    结果误建的单子永远清不掉（主人：「样品管理没有删除吗，就一直待在那？」）。
+    补的是「软删 + 收闸」——只允许 `pending` / `rejected` 删，已批准之后的拒绝，
+    判据见 `model.SAMPLE_DELETABLE_STATUSES`。
 """
 
 from datetime import UTC, datetime
@@ -50,7 +56,13 @@ from app.modules.notification import service as notification_service
 from app.modules.opportunity import service as opportunity_service
 from app.modules.product.model import Sku
 from app.modules.sample import service as svc
-from app.modules.sample.model import SAMPLE_STATUS_LABEL, SampleItem, SampleRequest, SampleShipment
+from app.modules.sample.model import (
+    SAMPLE_DELETABLE_STATUSES,
+    SAMPLE_STATUS_LABEL,
+    SampleItem,
+    SampleRequest,
+    SampleShipment,
+)
 from app.modules.sample.schema import (
     SampleApprove,
     SampleConfirm,
@@ -185,6 +197,9 @@ async def list_samples(
     include_history: bool = Query(
         False, description="是否包含被新修订版取代的历史版本（默认只看当前版本）"
     ),
+    include_deleted: bool = Query(
+        False, description="只看已软删的（默认只看没删的）"
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("sample:view")),
@@ -196,6 +211,7 @@ async def list_samples(
         customer_id=customer_id,
         opportunity_id=opportunity_id,
         owner_id=owner_id,
+        include_deleted=include_deleted,
     )
     if not include_history:
         # 默认只列**当前版本**：开过修订版的单子（§3.3）否则会在列表里出现两份，
@@ -210,6 +226,78 @@ async def list_samples(
     rows, total = await paginate(session, stmt.order_by(SampleRequest.id.desc()), page, page_size)
 
     return ok(page_data(await svc.list_payload(session, rows), total, page, page_size))
+
+
+@router.delete("/samples/{sample_id}")
+async def delete_sample(
+    sample_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """软删一张样品申请（2026-10-15 补，03-API §26 之外的写入口）。
+
+    只允许**还没走流程**的（`SAMPLE_DELETABLE_STATUSES`）：刚建出来的，
+    或者被驳回后决定就此作罢的。已批准 / 已寄出 / 已签收的**拒绝** ——
+    那几张连着审批留痕与车间依据，删掉会对不上账。
+
+    **软删、不是物理删**：行、审计、附件、审批轮次全留着（`deleted_at` 只是打个标记），
+    列表默认看不见；需要时按「已删除」筛出来还能恢复。
+    """
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    if sample.status not in SAMPLE_DELETABLE_STATUSES:
+        label = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            f"这张打样单已经是「{label}」，不能删除 —— 它连着审批留痕与车间依据，"
+            "删掉会对不上账。只有误建的、还没批的单子能删",
+            400,
+        )
+    before = await svc.detail(session, sample)
+    sample.deleted_at = datetime.now(UTC)
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="delete",
+        business_type="sample",
+        business_id=sample.id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "样品申请已删除（需要的话可在「已删除」里恢复）")
+
+
+@router.post("/samples/{sample_id}/restore")
+async def restore_sample(
+    sample_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("sample:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """恢复一张被软删的样品申请（2026-10-15 补）。
+
+    与删除**共用同一把钥匙**（`sample:manage`）：谁有样品管理权限谁就能捡回来，
+    不为它单开权限码 —— 客户的恢复也是复用 `customer:delete` 这个既有码。
+    """
+    sample = await svc.get_visible_or_404(
+        session, user, sample_id, for_update=True, allow_deleted=True
+    )
+    if sample.deleted_at is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这张单没有被删除，不需要恢复", 400)
+    before = await svc.detail(session, sample)
+    sample.deleted_at = None
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="restore",
+        business_type="sample",
+        business_id=sample.id,
+        before=before,
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(None, "样品申请已恢复")
 
 
 @router.post("/samples")

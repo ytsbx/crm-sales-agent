@@ -14,6 +14,7 @@ import {
   DatePicker,
   Input,
   Modal,
+  Popconfirm,
   Select,
   SideSheet,
   Table,
@@ -32,12 +33,14 @@ import {
   approveSample,
   confirmSample,
   createSample,
+  deleteSample,
   exportSampleApplicationForm,
   feedbackSample,
   getSample,
   listSamples,
   madeSample,
   resubmitSample,
+  restoreSample,
   reviseSample,
   shipSample,
   signSample,
@@ -67,12 +70,22 @@ const STATUS_COLOR: Record<string, TagTone> = {
   signed: 'green',
 }
 
+/**
+ * 「已删除」这个筛选项**不是一个真的状态值**（状态里没有"已删除"）：
+ * 选中它时不传 `status`，改传 `include_deleted=true`，由后端按
+ * `deleted_at IS NOT NULL` 过滤出被软删的那些（2026-10-15 加软删时补）。
+ *
+ * 用一个一眼认得出的哨兵值，别拿 `'deleted'` 冒充状态 —— 那会和真状态混起来。
+ */
+const DELETED_STATUS_OPTION = '__deleted__'
+
 const STATUS_OPTIONS = [
   { value: 'pending', label: '待审批' },
   { value: 'approved', label: '已批准' },
   { value: 'rejected', label: '已拒绝' },
   { value: 'shipped', label: '已寄样' },
   { value: 'signed', label: '已签收' },
+  { value: DELETED_STATUS_OPTION, label: '已删除' },
 ]
 
 /**
@@ -226,11 +239,14 @@ export default function SampleListPage() {
   } | null>(null)
   const [confirmRemark, setConfirmRemark] = useState('')
 
+  // 选了「已删除」就换一套参数：走 `include_deleted`，而不是拿它当状态传给后端
+  const deletedOnly = status === DELETED_STATUS_OPTION
   const query = useQuery({
     queryKey: ['samples', { status, keyword, page, pageSize }],
     queryFn: () =>
       listSamples({
-        status,
+        status: deletedOnly ? undefined : status,
+        include_deleted: deletedOnly || undefined,
         keyword: keyword.trim() || undefined,
         page,
         page_size: pageSize,
@@ -288,6 +304,26 @@ export default function SampleListPage() {
     return queryClient.invalidateQueries({ queryKey: ['samples'] })
   }
   const onError = (error: Error) => Toast.error(error.message)
+
+  // 软删 / 恢复（2026-10-15）。两个动作都会改动列表，成功后统一 refresh 一遍：
+  // 删掉的那条要从列表里消失，「已删除」里恢复的那条要回到正常列表。
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteSample(id),
+    onSuccess: () => {
+      Toast.success('样品申请已删除，可在「已删除」里恢复')
+      void refresh()
+    },
+    onError,
+  })
+
+  const restoreMutation = useMutation({
+    mutationFn: (id: number) => restoreSample(id),
+    onSuccess: () => {
+      Toast.success('样品申请已恢复')
+      void refresh()
+    },
+    onError,
+  })
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -605,19 +641,50 @@ export default function SampleListPage() {
     { title: '申请时间', dataIndex: 'requested_at', width: 170, render: fmt },
     {
       title: '操作',
-      width: 90,
-      render: (_: unknown, record: SampleRequestRow) => (
-        <Button
-          theme="borderless"
-          size="small"
-          onClick={() => {
-            setDetailId(record.id)
-            navigate(`/samples/${record.id}`)
-          }}
-        >
-          详情
-        </Button>
-      ),
+      width: 140,
+      render: (_: unknown, record: SampleRequestRow) => {
+        // 已删除的行只给「恢复」：后端对已删的单子查详情一律 404，
+        // 摆一个「详情」也是死的，点了只会报错。
+        if (record.is_deleted) {
+          // 恢复要走 `sample:manage`（与删除共用同一把钥匙），没权限就不摆按钮
+          return canManage ? (
+            <Popconfirm
+              title="恢复这张打样单？恢复后会重新出现在列表里。"
+              onConfirm={() => restoreMutation.mutate(record.id)}
+            >
+              <Button theme="borderless" size="small">
+                恢复
+              </Button>
+            </Popconfirm>
+          ) : null
+        }
+        return (
+          <>
+            <Button
+              theme="borderless"
+              size="small"
+              onClick={() => {
+                setDetailId(record.id)
+                navigate(`/samples/${record.id}`)
+              }}
+            >
+              详情
+            </Button>
+            {/* 能不能删由后端下发（`can_delete`）：只有还没走流程的（待审批 / 已驳回）
+                才给「删除」—— 已批准之后的单子连着审批留痕与车间依据。判据别在前端再写一份。 */}
+            {canManage && record.can_delete && (
+              <Popconfirm
+                title="删除后这张打样单不在列表里显示，可在「已删除」里恢复。"
+                onConfirm={() => deleteMutation.mutate(record.id)}
+              >
+                <Button theme="borderless" size="small" type="danger">
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </>
+        )
+      },
     },
   ]
 

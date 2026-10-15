@@ -16,6 +16,7 @@ from app.modules.opportunity.model import Opportunity
 from app.modules.product.model import Sku
 from app.modules.sample.model import (
     CONFIRM_STATUS_LABEL,
+    SAMPLE_DELETABLE_STATUSES,
     SAMPLE_STATUS_LABEL,
     SAMPLE_TRANSITIONS,
     SampleItem,
@@ -197,6 +198,10 @@ def serialize_request(
         "confirm_remark": request.confirm_remark,
         "created_by": request.created_by,
         "created_at": request.created_at.isoformat() if request.created_at else None,
+        # 软删（2026-10-15）：只下发布尔 + 时间给前端决定"显示删除还是恢复"，
+        # 不让前端自己解析或猜状态。
+        "is_deleted": request.deleted_at is not None,
+        "deleted_at": request.deleted_at.isoformat() if request.deleted_at else None,
         "items": items or [],
         "shipments": shipments or [],
     }
@@ -225,8 +230,17 @@ def build_list_stmt(
     customer_id: int | None = None,
     opportunity_id: int | None = None,
     owner_id: int | None = None,
+    include_deleted: bool = False,
 ) -> Select:
     stmt = base_query()
+    # 软删（2026-10-15）：默认只看**没删的**；`include_deleted=True` 时**只看删了的**。
+    # 刻意不做成"连删的一起列"—— 那样「已删除」筛出来的列表还是混着没删的，
+    # 跟不筛没区别，这个筛选项就白设了（客户回收站也是"只看被删的"这个口径）。
+    stmt = stmt.where(
+        SampleRequest.deleted_at.is_not(None)
+        if include_deleted
+        else SampleRequest.deleted_at.is_(None)
+    )
     if status:
         stmt = stmt.where(SampleRequest.status == status)
     if customer_id:
@@ -249,15 +263,27 @@ def build_list_stmt(
     return stmt
 
 
-async def get_or_404(session: AsyncSession, sample_id: int) -> SampleRequest:
+async def get_or_404(
+    session: AsyncSession, sample_id: int, *, include_deleted: bool = False
+) -> SampleRequest:
+    """取样品申请（默认不含已软删的）。
+
+    `include_deleted=True` **只给「恢复」用**：恢复得先把那条已删的记录取出来；
+    其余所有入口一律看不见已删的单子 —— 否则「删了」等于没删。
+    """
     request = await session.get(SampleRequest, sample_id)
-    if request is None:
+    if request is None or (request.deleted_at is not None and not include_deleted):
         raise AppError(ErrorCode.NOT_FOUND, "样品申请不存在", 404)
     return request
 
 
 async def get_visible_or_404(
-    session: AsyncSession, user: CurrentUser, sample_id: int, *, for_update: bool = False
+    session: AsyncSession,
+    user: CurrentUser,
+    sample_id: int,
+    *,
+    for_update: bool = False,
+    allow_deleted: bool = False,
 ) -> SampleRequest:
     """取样品申请并校验数据范围（列表按 owner_id 过滤，单条此前没校验）。
 
@@ -265,20 +291,33 @@ async def get_visible_or_404(
     已经被新修订版取代、不能再动"的判断也放在这里——**一处把关胜过每个入口各写一遍**
     （第一批返修 §3.3 要求的正是"统一判断"，各写一遍迟早漏一个）。
     读接口（`for_update=False`）不受影响：历史版本永远查得到、对得上。
+
+    `allow_deleted=True` **只给「恢复」用**（2026-10-15 补软删时加的）：
+    已软删的单子对其它所有入口都应当**不存在** —— 写入口更要挡住，否则
+    "删掉的单子还能被改、被审批"，软删就是个摆设。
     """
     from app.core.data_scope import ensure_in_scope
 
     if for_update:
-        request = (await session.execute(select(SampleRequest).where(SampleRequest.id == sample_id)
-                   .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+        where = [SampleRequest.id == sample_id]
+        if not allow_deleted:
+            where.append(SampleRequest.deleted_at.is_(None))
+        request = (
+            await session.execute(
+                select(SampleRequest)
+                .where(*where)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if request is None:
             raise AppError(ErrorCode.NOT_FOUND, "样品申请不存在", 404)
     else:
-        request = await get_or_404(session, sample_id)
+        request = await get_or_404(session, sample_id, include_deleted=allow_deleted)
     await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
     if for_update:
-        # 注意：sample_requests **没有** deleted_at（这个模块不做软删），
-        # 别照其它模块的习惯加 `deleted_at.is_(None)`——那是运行期 AttributeError。
+        # 已被新修订版取代的那一版不能再改（读接口不受限：历史版本永远查得到）。
+        # 软删的过滤在上面那段 where 里已经做过，这里不重复。
         child = (
             await session.execute(
                 select(SampleRequest.id)
@@ -428,7 +467,8 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
     # 界面上要标出来。批量一次查询，别在循环里逐条问。
     child_of: dict[int, int] = {}
     if ids:
-        # 同样注意：sample_requests 没有 deleted_at（本模块不做软删）
+        # 这里**故意不加**软删过滤：`parent_id` 查的是"这一版被哪一版取代了"，
+        # 是既成事实 —— 新版本后来即便被删，也不该让"旧版曾被取代"这件事消失。
         for child_id, parent_id in (
             await session.execute(
                 select(SampleRequest.id, SampleRequest.parent_id)
@@ -464,6 +504,10 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
         lock = sample_write_lock_label_for(row)
         data["attachment_locked"] = lock is not None
         data["attachment_lock"] = lock
+        # 「这张单现在能不能删」（2026-10-15 加软删）：判据只在后端写一遍
+        # （`model.SAMPLE_DELETABLE_STATUSES`），这里下发一个布尔，前端据此决定
+        # 显示「删除」还是「恢复」—— 前端不要自己复刻一份状态清单。
+        data["can_delete"] = row.deleted_at is None and row.status in SAMPLE_DELETABLE_STATUSES
         payload.append(data)
     return payload
 
