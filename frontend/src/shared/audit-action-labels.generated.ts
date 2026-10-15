@@ -160,6 +160,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'wecom_bind_customer': '企微联系人关联客户',
   'wecom_create_customer': '企微建客户',
   'wecom_ignore_contact': '企微忽略该联系人',
+  'wecom_import_customers': '企微客户批量建档',
   'wecom_sync_departments': '企微同步部门',
   'wecom_sync_external_contacts': '企微同步外部联系人',
   'wecom_sync_follow_relations': '企微同步跟进关系',

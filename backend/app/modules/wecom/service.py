@@ -474,7 +474,10 @@ async def bind_customer(
     is_primary: bool | None = None,
 ) -> dict:
     """把企微外部联系人关联到已有客户：建一条 CRM Contact 并回填关联。"""
-    row = await session.get(WeComExternalContact, contact_id)
+    row = (await session.execute(
+        select(WeComExternalContact).where(WeComExternalContact.id == contact_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "企业微信联系人不存在", 404)
     if row.crm_contact_id:
@@ -505,7 +508,10 @@ async def create_customer_from_contact(
     payload: dict,
 ) -> dict:
     """给待归一联系人建新客户，并顺手把这名联系人挂上去。"""
-    row = await session.get(WeComExternalContact, contact_id)
+    row = (await session.execute(
+        select(WeComExternalContact).where(WeComExternalContact.id == contact_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "企业微信联系人不存在", 404)
     if row.crm_contact_id:
@@ -537,7 +543,10 @@ async def ignore_contact(
     session: AsyncSession, *, user: CurrentUser, contact_id: int, reason: str | None = None
 ) -> WeComExternalContact:
     """暂不处理：留在库里但不再出现在待归一列表（PRD §8.3 的第三个出口）。"""
-    row = await session.get(WeComExternalContact, contact_id)
+    row = (await session.execute(
+        select(WeComExternalContact).where(WeComExternalContact.id == contact_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )).scalars().first()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "企业微信联系人不存在", 404)
     row.normalize_status = "ignored"

@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, require_permission, ensure_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.wecom import callback as wecom_callback
@@ -43,6 +43,7 @@ from app.modules.wecom.client import WeComError, WeComNotConfigured
 from app.modules.wecom.model import WeComSyncJob
 from app.modules.wecom.schema import (
     BindCustomerRequest,
+    ImportCustomersRequest,
     CreateCustomerRequest,
     IgnoreContactRequest,
     TransferRequest,
@@ -594,3 +595,28 @@ async def receive_wecom_event(
     await session.commit()
     # 企微要求回 "success"，否则会重试
     return Response(content="success", media_type="text/plain")
+
+
+@router.get("/integrations/wecom/customer-import/preview")
+async def preview_customer_import(
+    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.wecom.customer_import import preview_import
+    ensure_permission(user, "customer:create")
+    ensure_permission(user, "customer:assign")
+    return ok(await preview_import(session))
+
+
+@router.post("/integrations/wecom/customer-import")
+async def import_customers(
+    payload: ImportCustomersRequest,
+    user: CurrentUser = Depends(require_permission("wecom:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    from app.modules.wecom.customer_import import execute_import
+    ensure_permission(user, "customer:create")
+    ensure_permission(user, "customer:assign")
+    result = await execute_import(session, digest=payload.digest, operator_id=user.id)
+    await session.commit()
+    return ok(result, f"已导入 {result['import_contacts']} 条联系人，待确认 {result['held_contacts']} 条")

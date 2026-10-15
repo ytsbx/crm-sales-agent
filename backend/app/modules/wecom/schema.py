@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BindCustomerRequest(BaseModel):
@@ -39,3 +39,8 @@ class TransferRequest(BaseModel):
     没列到的项全部交给 `takeover_user_id`。
     这样"某个客户本来就该归另一位同事"不用再单独操作一次。
     """
+
+
+class ImportCustomersRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    digest: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")

@@ -9,6 +9,9 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import { listDictionaries } from '../../shared/api/settings'
 import {
   bindUnboundContact,
+  previewWeComCustomerImport,
+  importWeComCustomers,
+  type WeComCustomerImportPreview,
   createCustomerFromContact,
   getUnboundCandidates,
   getWeComReadiness,
@@ -34,7 +37,7 @@ import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
 /**
- * 企业微信待归一页面（04-UI §5，布局照设计稿：左待处理 / 中企微详情 / 右候选客户）。
+ * 企业微信待确认客户页面（04-UI §5，布局照设计稿：左待处理 / 中企微详情 / 右候选客户）。
  *
  * 这个页面的核心是**人工确认**：PRD §6.3 与总设计文档 §5.2 都明确要求
  * "企微外部联系人不等于 CRM 客户"，所以候选只做排序提示，
@@ -64,6 +67,7 @@ export default function WeComPage() {
   })
   const canManage = can('wecom:manage')
 
+  const [importPreview, setImportPreview] = useState<WeComCustomerImportPreview | null>(null)
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
@@ -150,6 +154,21 @@ export default function WeComPage() {
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const importPreviewMutation = useMutation({
+    mutationFn: previewWeComCustomerImport,
+    onSuccess: setImportPreview,
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const importCustomersMutation = useMutation({
+    mutationFn: importWeComCustomers,
+    onSuccess: (result) => {
+      Toast.success(`已将 ${result.import_contacts} 条联系人导入客户中心，${result.held_contacts} 条保留待确认`)
+      setImportPreview(null)
+      refresh()
+    },
+    onError: (error: Error) => { Toast.error(error.message); setImportPreview(null) },
   })
 
   const bindMutation = useMutation({
@@ -315,10 +334,15 @@ export default function WeComPage() {
     <div className="page-container">
       <PageHeader
         title="企业微信"
-        subtitle="外部联系人同步、待归一确认、离职继承"
+        subtitle="外部联系人同步、待确认客户确认、离职继承"
         extra={
           canManage && (
             <>
+              {can('customer:create') && can('customer:assign') && (
+                <Button theme="solid" loading={importPreviewMutation.isPending}
+                  disabled={syncMutation.isPending || importCustomersMutation.isPending}
+                  onClick={() => importPreviewMutation.mutate()}>导入客户中心</Button>
+              )}
               <Button onClick={() => setTransferVisible(true)}>离职继承</Button>
               {SYNC_BUTTONS.map((item) => (
                 <Button
@@ -351,7 +375,7 @@ export default function WeComPage() {
         type="info"
         closeIcon={null}
         style={{ marginBottom: 12 }}
-        description="导入步骤：同步外部联系人 → 同步跟进关系 → 在下方逐条关联已有客户或新建客户。同步不会自动新建客户或更改客户负责人。同步部门和成员另需通讯录配置；客户导入不需要开启消息回调或消息推送。"
+        description="导入步骤：同步外部联系人和跟进关系 → 绑定原跟进员工的CRM账号 → 点击「导入客户中心」预览确认。有公司全称的按公司建档，无公司信息的按个人建档；负责人未匹配、公司简称或同名冲突的保留待确认，不进入公海。"
       />
 
       <KpiStrip
@@ -367,7 +391,7 @@ export default function WeComPage() {
             hint: '企微侧同步到的总数',
           },
           { label: '跟进关系', value: readiness?.counts.follow_relations ?? '-', hint: '谁加了谁' },
-          { label: '待归一', value: readiness?.counts.unbound_contacts ?? '-', hint: '需要人工确认' },
+          { label: '待确认客户', value: readiness?.counts.unbound_contacts ?? '-', hint: '需要人工确认' },
           {
             label: '未建账号',
             value: readiness?.counts.unmatched_users ?? '-',
@@ -393,7 +417,7 @@ export default function WeComPage() {
             style={{ marginBottom: 10 }}
           />
           {rows.length === 0 ? (
-            <Empty description={listQuery.isLoading ? '加载中…' : '没有待归一联系人'} />
+            <Empty description={listQuery.isLoading ? '加载中…' : '没有待确认客户联系人'} />
           ) : (
             <div style={{ display: 'grid', gap: 6 }}>
               {rows.map((row) => (
@@ -446,7 +470,7 @@ export default function WeComPage() {
         {/* 中：企业微信详情 */}
         <SectionCard>
           {!active ? (
-            <Empty description="左侧选一条待归一联系人" />
+            <Empty description="左侧选一条待确认客户联系人" />
           ) : (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
@@ -689,6 +713,23 @@ export default function WeComPage() {
             创建后这条企微联系人会作为该客户的联系人挂上，来源记为「企业微信」。
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        title="确认导入客户中心"
+        visible={Boolean(importPreview)}
+        onCancel={() => { if (!importCustomersMutation.isPending) setImportPreview(null) }}
+        onOk={() => { if (importPreview) importCustomersMutation.mutate(importPreview.digest) }}
+        okText="确认导入"
+        okButtonProps={{ disabled: !importPreview?.import_contacts }}
+        confirmLoading={importCustomersMutation.isPending}
+      >
+        {importPreview && <div style={{ display: 'grid', gap: 12 }}>
+          <div>可导入 {importPreview.import_contacts} 条联系人；新建公司客户 {importPreview.new_company_customers} 个、个人客户 {importPreview.new_personal_customers} 个；关联已有客户的联系人 {importPreview.existing_customer_contacts} 条。</div>
+          <div>客户默认未分级，按已绑定的原跟进人分配；不会改变已有客户的负责人。</div>
+          <div>保留待确认 {importPreview.held_contacts} 条：</div>
+          {Object.entries(importPreview.held_reasons).map(([reason, count]) => <div key={reason}>{reason}：{count} 条</div>)}
+        </div>}
       </Modal>
 
       <Modal

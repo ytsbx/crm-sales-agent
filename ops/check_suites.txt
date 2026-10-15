@@ -540,3 +540,6 @@ check_personal_account
 
 # 独立会签权限：通知/待办/转交/否决/撤权一致性
 check_cosign_permission
+
+# 企微批量客户建档：PG并发幂等及手工关联互斥
+check_wecom_customer_import

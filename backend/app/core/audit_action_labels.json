@@ -158,5 +158,6 @@
   "wecom_transfer_retry": "企微交接重试",
   "win": "标记成交",
   "withdraw": "撤回",
-  "withdraw_approval": "撤回审批"
+  "withdraw_approval": "撤回审批",
+  "wecom_import_customers": "企微客户批量建档"
 }
