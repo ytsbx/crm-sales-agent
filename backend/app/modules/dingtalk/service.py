@@ -38,6 +38,7 @@
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -65,6 +66,7 @@ from app.modules.dingtalk.client import (
 from app.modules.dingtalk.model import (
     OA_ACTION_LABEL,
     OA_STATUS_LABEL,
+    OA_TYPE_LABEL,
     RESOLVE_STATE_LABEL,
     OaInstance,
     allowed_actions,
@@ -642,27 +644,81 @@ async def resolve_reviewed_instance(
         raise
 
 
-async def _verify_instance_source(
-    session: AsyncSession, row: OaInstance, payload: dict
-) -> None:
-    """核实"这张钉钉单确实是这条需求发起的那一张"（7.8）。
+@dataclass(frozen=True)
+class BusinessKey:
+    """一条 OA 记录指向的业务对象。
 
-    为什么要核实：`instance_id` 是人手输进来的字符串。不核实就采纳，等于让一个
-    字符串决定"哪张审批单的结果回到哪条需求"——输错一位就认了别人的单，
-    而后续轮询/回调会把那张单的审批结果写进这条需求（价格、交期都可能跟着变），
-    同时真正属于这条需求的那张单变成没人管的挂单。
-
-    **fail-closed**：模板、发起人、来源需求三项里任何一项拿不到或对不上都拒绝采纳。
-    真实的字段名（`processCode` / `originatorUserId` / `businessId`）需要与钉钉联调
-    确认后才能收紧，所以在拿不到字段时只能拒绝——**默认放行**才是这里最危险的做法。
+    `oa_instances.inquiry_id` 这一列**是复用的**：询价存需求 id、打样存打样单 id、
+    合同存合同文档 id。读取侧一律按 `oa_type` 分派，不能假定它是需求
+    —— 早先核定（认领/重发/作废）只认"需求"，于是合同与打样那两种单在
+    "结果待人工核对"时没有任何出口，而认领时的来源核对还会拿错表的主键去比。
     """
+
+    label: str          # 给人看的对象名，出现在报错与日志里
+    accepted_ids: set[str]   # 钉钉单上的 businessId 可能是这几个值中的任意一个
+    display: str        # 报错里用的"是哪一条"描述（编号或 id）
+
+
+async def resolve_business_key(session: AsyncSession, row: OaInstance) -> BusinessKey:
+    """按 `oa_type` 把 `inquiry_id` 解释成真正的业务对象。
+
+    带上"对象自己的编号"（需求编号 / 合同编号）一起作为可接受的 businessId：
+    钉钉模板里填的可能是编号而不是数据库主键，两种都得认，否则合法认领会被拒。
+    """
+    if row.oa_type == "contract":
+        from app.modules.contract.model import ContractDocument
+
+        doc = await session.get(ContractDocument, row.inquiry_id)
+        accepted = {str(row.inquiry_id)}
+        if doc is not None and getattr(doc, "doc_no", None):
+            accepted.add(str(doc.doc_no))
+        return BusinessKey(
+            label="合同",
+            accepted_ids=accepted,
+            display=(doc.doc_no if doc is not None else f"合同 {row.inquiry_id}"),
+        )
+    if row.oa_type == "sample":
+        from app.modules.sample.model import SAMPLE_STATUS_LABEL, SampleRequest
+
+        sample = await session.get(SampleRequest, row.inquiry_id)
+        state = SAMPLE_STATUS_LABEL.get(getattr(sample, "status", None), None)
+        return BusinessKey(
+            label="打样单",
+            accepted_ids={str(row.inquiry_id)},
+            display=f"打样单编号 {row.inquiry_id}" + (f"（{state}）" if state else ""),
+        )
     from app.modules.inquiry.model import CustomInquiry
 
     inquiry = await session.get(CustomInquiry, row.inquiry_id)
     inquiry_no = getattr(inquiry, "inquiry_no", None)
-    accepted_business = {str(row.inquiry_id)}
+    accepted = {str(row.inquiry_id)}
     if inquiry_no:
-        accepted_business.add(str(inquiry_no))
+        accepted.add(str(inquiry_no))
+    return BusinessKey(
+        label="需求",
+        accepted_ids=accepted,
+        display=f"需求 {row.inquiry_id}（编号 {inquiry_no or '—'}）",
+    )
+
+
+async def _verify_instance_source(
+    session: AsyncSession, row: OaInstance, payload: dict
+) -> None:
+    """核实"这张钉钉单确实是这一条业务记录发起的那一张"（7.8）。
+
+    为什么要核实：`instance_id` 是人手输进来的字符串。不核实就采纳，等于让一个
+    字符串决定"哪张审批单的结果回到哪条记录"——输错一位就认了别人的单，
+    而后续轮询/回调会把那张单的审批结果写进这条记录（价格、交期都可能跟着变），
+    同时真正属于这条记录的那张单变成没人管的挂单。
+
+    **fail-closed**：模板、发起人、来源对象三项里任何一项拿不到或对不上都拒绝采纳。
+    真实的字段名（`processCode` / `originatorUserId` / `businessId`）需要与钉钉联调
+    确认后才能收紧，所以在拿不到字段时只能拒绝——**默认放行**才是这里最危险的做法。
+
+    ⚠️ 来源对象按 `oa_type` 解析（2026-10-16）：这一列对合同/打样存的是另一张表的
+    主键，直接当需求查会拿别人的编号去比对，合法认领永远过不了。
+    """
+    business = await resolve_business_key(session, row)
 
     problems: list[str] = []
 
@@ -688,11 +744,11 @@ async def _verify_instance_source(
 
     got_business = str(payload.get("businessId") or payload.get("business_id") or "").strip()
     if not got_business:
-        problems.append("响应里没有来源需求编号 businessId，无法确认这张单属于哪条需求")
-    elif got_business not in accepted_business:
+        problems.append(f"响应里没有来源{business.label}编号 businessId，无法确认这张单属于哪一条{business.label}")
+    elif got_business not in business.accepted_ids:
         problems.append(
-            f"来源需求对不上：钉钉这张单是 {got_business}，这条记录是需求 "
-            f"{row.inquiry_id}（编号 {inquiry_no or '—'}）"
+            f"来源{business.label}对不上：钉钉这张单是 {got_business}，这条记录是 "
+            f"{business.display}"
         )
 
     if problems:
@@ -728,7 +784,8 @@ async def _adopt_instance(
     if taken is not None:
         raise AppError(
             ErrorCode.DUPLICATE,
-            f"审批单 {instance_id} 已经关联到需求 {taken.inquiry_id} 的第 "
+            f"审批单 {instance_id} 已经关联到"
+            f"{OA_TYPE_LABEL.get(taken.oa_type, taken.oa_type)} {taken.inquiry_id} 的第 "
             f"{taken.submit_round} 轮审批记录，同一个钉钉单不能被两条记录同时认领",
             409,
         )
@@ -877,9 +934,83 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
                     'result': row.result,
                 },
             }
+            # 审批**真的走到终态**时，提醒负责人去追客户回签，并把那张
+            # 「上传客户回签合同」待办的截止日往前推（客户起草合同，2026-10-16）。
+            #
+            # 为什么必须有这一段：待办是**生成合同那一刻**就建好的，此后任凭审批
+            # 通过、客户一直不回签，它都不会再响一声 —— 而这一刻才是真正该去追的
+            # 时点（合同刚获批、客户手上还没盖章）。原先只有"登记回签件自动完成"
+            # 和"作废取消"两个时点，中间全程静默。
+            #
+            # 去重靠**上面那句** `new_status != row.status`：只有状态真的从
+            # pending 翻到终态的那一次才进得来（`changed` 也是同一个判据），
+            # 所以每份合同每个终态只提醒一次，轮询反复回写同一状态不会重复推送。
+            if new_status in ('approved', 'rejected'):
+                await _notify_contract_review_outcome(session, linked_contract, new_status)
 
     await session.flush()
     return {"checked": len(rows), "changed": changed}
+
+
+async def _notify_contract_review_outcome(
+    session: AsyncSession, doc, new_status: str
+) -> None:
+    """合同审批出结果后提醒负责人，并刷新回签待办的截止日。
+
+    ❗ 只负责**提醒**，不改合同状态：合同要等客户盖章的回签件登记上来才算签成
+    （`contract/service.sign_document`），审批通过只是"可以寄给客户签了"。
+    所以这里既不把 doc 置成 signed，也不结束待办 —— 待办的结束仍归登记签署那一步。
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.core.timebase import business_day_end, today_business
+    from app.modules.settings import service as settings_service
+    from app.modules.task.model import Task
+
+    task = (
+        await session.execute(
+            select(Task).where(
+                Task.source_business_type == 'contract',
+                Task.source_business_id == doc.id,
+                Task.source_key == f'contract:signed-upload:{doc.id}',
+                Task.status.in_(('pending', 'doing')),
+            ).limit(1)
+        )
+    ).scalars().first()
+    if task is None:
+        return
+
+    approver_label = '已通过' if new_status == 'approved' else '已被驳回'
+    if new_status == 'approved':
+        # 截止日按配置的天数往前推（默认 7 天），并且**必须走业务时区**：
+        # 直接 `datetime.combine(day, time(23,59), tzinfo=UTC)` 会把北京时间
+        # 当成 UTC，截止时刻早 8 小时还跨一天（`timebase.business_day_end` 的说明）。
+        days = int(
+            await settings_service.get_number(session, 'contract', 'countersign_days', 7)
+        )
+        task.due_at = business_day_end(today_business() + timedelta(days=days))
+        task.priority = 'high'
+    content = (
+        f'合同 {doc.doc_no} 的钉钉签署审批{approver_label}。'
+        + (
+            '请跟进客户盖章并登记回签文件，登记后这条待办会自动完成。'
+            if new_status == 'approved'
+            else '请到钉钉查看处理意见；要重新发起请回到合同台账。'
+        )
+    )
+    from app.modules.notification import service as notification_service
+
+    await notification_service.notify(
+        session,
+        user_id=task.owner_id,
+        type_='system',
+        title=f'合同 {doc.doc_no} 的钉钉审批{approver_label}',
+        content=content,
+        business_type='contract',
+        business_id=doc.id,
+    )
 
 
 async def first_image_attachment(

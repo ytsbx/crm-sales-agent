@@ -39,6 +39,12 @@ import {
   type ContractTemplate,
 } from '../../shared/api/contract'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import {
+  AdoptOaInstanceModal,
+  ResolveOaActions,
+} from '../../shared/components/ResolveOaActions'
+import { newRequestKey } from '../../shared/api/requestKey'
+import type { OaApprovalInstance } from '../../shared/api/dingtalk'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -217,9 +223,17 @@ export default function DocumentsPage() {
 
   const dingtalkMutation = useMutation({
     mutationFn: (docId: number) => startContractDingTalkApproval(docId),
+    // **按服务端给的结果分支，不再一律报成功**（2026-10-16 修）：
+    // 驳回/撤回/已通过/结果未明这几种状态下再点一次，"提交钉钉签署"其实
+    // 一个请求都不会发出去（后端原样返回旧行），而这里原先固定弹绿色的
+    // "已发起钉钉合同签署申请"。措辞与颜色都由后端的 result.level 决定。
     onSuccess: (row) => {
-      const status = String((row as { status?: unknown }).status ?? 'pending')
-      Toast.success(status === 'skipped' ? '已记录待发起状态' : '已发起钉钉合同签署申请')
+      const result = (row as { result?: { level?: unknown; message?: unknown } }).result
+      const level = typeof result?.level === 'string' ? result.level : 'success'
+      const message = typeof result?.message === 'string' ? result.message : ''
+      if (level === 'success') Toast.success(message || '已发起钉钉合同签署申请')
+      else if (level === 'warning') Toast.warning(message || '本次没有发起新的钉钉审批')
+      else Toast.error(message || '本次没有发起钉钉审批')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -326,6 +340,9 @@ export default function DocumentsPage() {
   // 单独拿它当"看签署原件"的入口也是这个道理：只给一个「下载」，
   // 用户会以为拿到的是签回来的那一份，实际是我们自己生成的稿子，事后对账就会扯皮。
   const [detailTarget, setDetailTarget] = useState<ContractDocument | null>(null)
+  // 认领弹窗（"结果待人工核对"时的三个出口之一）
+  const [adoptTarget, setAdoptTarget] = useState<OaApprovalInstance | null>(null)
+  const [adoptKey, setAdoptKey] = useState<string | null>(null)
   const detailQuery = useQuery({
     queryKey: ['contract-detail', detailTarget?.id],
     queryFn: () => getContractDocument(detailTarget!.id),
@@ -1051,6 +1068,23 @@ export default function DocumentsPage() {
                       : null}
                   </div>
                 )}
+                {/* 「结果待人工核对」的三个出口。按钮由服务端给的 allowed_actions
+                    决定：一条超时的发起可能已经在钉钉建了单，自动重发会多出一张，
+                    所以只能人来核对后选认领 / 重发 / 作废。合同这条链原先一个
+                    按钮都没有，超时后这份合同彻底卡死。 */}
+                {detail.dingtalk_oa_row && (
+                  <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
+                    <ResolveOaActions
+                      row={detail.dingtalk_oa_row}
+                      invalidateKeys={[['contract-detail', detailTarget?.id]]}
+                      onAdopt={(target) => {
+                        setAdoptTarget(target)
+                        setAdoptKey(newRequestKey())
+                      }}
+                      onDone={() => void detailQuery.refetch()}
+                    />
+                  </div>
+                )}
               </div>
             )}
             {Object.keys(detail.missing_fields ?? {}).length > 0 && (
@@ -1066,6 +1100,15 @@ export default function DocumentsPage() {
           </div>
         )}
       </Modal>
+      <AdoptOaInstanceModal
+        target={adoptTarget}
+        requestKey={adoptKey}
+        invalidateKeys={[['contract-detail', detailTarget?.id], ['contract-documents', docPage]]}
+        onClose={() => {
+          setAdoptTarget(null)
+          setAdoptKey(null)
+        }}
+      />
     </div>
   )
 }

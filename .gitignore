@@ -49,6 +49,12 @@ __pycache__/
 *.zip
 .workbuddy/
 
+# 本地跑测试用的临时根目录（沙箱下 pytest 的默认临时目录不可用，见交接说明）
+backend/.pytest-work/
+backend/.pytest-tmp/
+# Windows 文件权限诊断留下的报告与备份（不属于代码）
+.acl-recovery/
+
 # 冒烟测试截图（每次跑都会重新生成）
 .smoke-shots/
 npm-cache/

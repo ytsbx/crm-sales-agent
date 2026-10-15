@@ -17,8 +17,80 @@ from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.contract import service as svc
 from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid, TemplateCreate
+from app.modules.dingtalk import service as dingtalk_service
+from app.modules.dingtalk.model import OaInstance, allowed_actions
 
 router = APIRouter(tags=["Contract"])
+
+
+def _contract_oa_resubmit(previous) -> bool:
+    """本次提交是否该**换一轮重提**（在钉钉里另建一张新单）。
+
+    口径与共享状态机同一份（`dingtalk/model.py` 的 `OA_STATUS_ACTIONS`）：
+    `rejected` / `withdrawn` 明确结束、钉钉那边没有活单，重提是安全的；
+    `pending`（可能正有一张活单）、`approved`（流程已走完）、`needs_review`
+    （结果未知，可能已建单）一律不重提——各自要走的出口见 allowed_actions。
+    """
+    if previous is None:
+        return False
+    return "resubmit" in allowed_actions(previous.status, previous.resolve_state)
+
+
+def _contract_oa_result(row, *, fresh: bool) -> dict[str, str]:
+    """把 OA 行的真实状态翻成"这次到底发生了什么"，直接下发给前端。
+
+    为什么不能一律报成功（2026-10-16 修）：`rejected` / `withdrawn` / `approved` /
+    `needs_review` 这几种状态再点一次"提交钉钉签署"，`create_inquiry_instance`
+    会**原样返回旧行、一个请求都不发**，而旧行的 `error` 是空的 —— 于是界面
+    弹绿色的"已发起钉钉合同签署申请"，而钉钉那边什么都没有，用户以为发出去了。
+
+    `level` 决定界面用哪种颜色：`success` 真的发出了；`warning` 是"状态本身如此、
+    刷新后重试即可"（已通过 / 驳回 / 已撤回）；`error` 是"需要人去钉钉核对或
+    重试也发不出去"。前端不能靠 status 自己猜，否则又是一份会分叉的口径。
+    """
+    if row.status == "pending" and row.instance_id:
+        return {
+            "level": "success",
+            "message": "已发起钉钉合同签署申请" if fresh else "已重新发起钉钉合同签署申请",
+        }
+    if row.status == "approved":
+        return {
+            "level": "warning",
+            "message": "这份合同的钉钉审批已经通过，无需再次发起；请上传客户回签文件",
+        }
+    if row.status == "rejected":
+        return {
+            "level": "warning",
+            "message": (
+                "上一次钉钉审批已被驳回，本次没有重新发起；"
+                "请刷新台账后重试（会按新的一轮重提），或作废后重新生成合同"
+            ),
+        }
+    if row.status == "withdrawn":
+        return {
+            "level": "warning",
+            "message": (
+                "上一次钉钉审批已撤回，本次没有重新发起；"
+                "请刷新台账后重试（会按新的一轮重提）"
+            ),
+        }
+    if row.status == "needs_review":
+        return {
+            "level": "error",
+            "message": (
+                "上一次发起的结果不明（钉钉那边可能已经建了审批单），本次不能自动重发；"
+                "请先到钉钉按合同编号核对，再联系管理员处理"
+            ),
+        }
+    if row.status == "submitting":
+        return {
+            "level": "error",
+            "message": "这条审批正在发起中，请稍后刷新查看，不要重复点击",
+        }
+    return {
+        "level": "error",
+        "message": row.error or "本次没有向钉钉发起新的审批，请查看审批状态",
+    }
 
 
 @router.post("/contract-documents/{doc_id}/dingtalk-oa")
@@ -32,7 +104,6 @@ async def start_dingtalk_contract_approval(
     from app.modules.customer.model import Customer
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import QuoteVersion
-    from app.modules.dingtalk import service as dingtalk_service
     from app.modules.dingtalk.client import get_client
     from app.core.config import settings as app_settings
     from app.modules.settings import service as settings_service
@@ -48,6 +119,14 @@ async def start_dingtalk_contract_approval(
     process_code = str(cfg.get("process_code") or "")
     if not process_code:
         raise AppError(ErrorCode.PARAM_ERROR, "尚未配置合同签署钉钉审批模板（dingtalk_contract_oa.process_code）", 422)
+    # 这一份合同在本模板上的历史轮次，用来决定"换一轮重提"还是原样返回。
+    # **必须读在附件上传之前**：附件上传是真实的外部写操作，而"同轮重复点击"
+    # 与"终态再点一次"这两种情况下 `create_inquiry_instance` 不会发起审批 ——
+    # 先判定就不会白往钉盘传一份 PDF、留下没人认领的孤儿文件。
+    previous = await dingtalk_service.get_by_business_key(
+        session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract"
+    )
+    resubmit = _contract_oa_resubmit(previous)
     account = await session.get(User, user.id)
     if account is None or account.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
@@ -148,10 +227,23 @@ async def start_dingtalk_contract_approval(
         originator_user_id=ding_user_id,
         field_map=field_map,
         oa_type="contract",
+        resubmit=resubmit,
     )
+    # **展开合并，不能整体替换**（2026-10-16 修）：轮询回写进 `_dingtalk_oa` 的是
+    # `oa_instance_id / instance_id / status / synced_at / result` 五个键，
+    # 而轮询只捞 `status == "pending"` 的行。原先这里只写两个键，于是审批**结束后**
+    # 再点一次"提交钉钉签署"（前端在终态下正好显示这个按钮），就会把节点、处理时间、
+    # 意见和最终结果**永久抹掉**（终态行再也不会被轮询回来）——
+    # 文档要的"过程和结果同步到合同详情"在这份合同上就此失效。
+    previous_oa = (doc.filled_data or {}).get("_dingtalk_oa") or {}
     doc.filled_data = {
         **(doc.filled_data or {}),
-        "_dingtalk_oa": {"oa_instance_id": row.id, "status": row.status},
+        "_dingtalk_oa": {
+            **previous_oa,
+            "oa_instance_id": row.id,
+            "instance_id": row.instance_id,
+            "status": row.status,
+        },
     }
     await write_audit(
         session,
@@ -159,11 +251,21 @@ async def start_dingtalk_contract_approval(
         action="start_contract_oa",
         business_type="contract",
         business_id=doc.id,
-        after={"oa_instance_id": row.id, "status": row.status, "process_code": process_code},
+        after={
+            "oa_instance_id": row.id,
+            "status": row.status,
+            "process_code": process_code,
+            "resubmit": resubmit,
+            "submit_round": row.submit_round,
+        },
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(dingtalk_service.serialize(row), row.error or "已发起钉钉合同签署申请")
+    # 返回值同时带上 OA 行、这次到底发生了什么的说明、以及该用什么颜色 ——
+    # 客户端的 `unwrap()` 只取 `data`、会丢掉响应 message（见 shared/api/client.ts），
+    # 所以"真实结果"必须走 data，不能只写在 message 里。
+    outcome = _contract_oa_result(row, fresh=not resubmit)
+    return ok({**dingtalk_service.serialize(row), "result": outcome}, outcome["message"])
 
 
 @router.post("/contract-documents/{doc_id}/dingtalk-oa-withdraw")
@@ -450,6 +552,20 @@ async def get_document(
     # 签署原件清单：已签状态下前端要有"看签回来的那一份"的入口。
     # 不给的话，用户点「下载」拿到的是生成稿，却以为拿的是签署件。
     result["signed_files"] = await svc.list_signed_files(session, doc.id)
+    # **OA 行的活数据**（2026-10-16 加）：`filled_data._dingtalk_oa` 只是快照，
+    # 里面没有行 id、也没有 `allowed_actions` —— 而"结果待人工核对"时的
+    # 认领/重发/作废三个按钮**必须**按服务端给的动作清单渲染（前端自己判状态
+    # 就是重复建实例的入口）。这里把最新一轮整行给出，口径与合同详情一致。
+    latest_oa = (
+        await session.execute(
+            select(OaInstance)
+            .where(OaInstance.inquiry_id == doc.id, OaInstance.oa_type == "contract")
+            .order_by(OaInstance.submit_round.desc(), OaInstance.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if latest_oa is not None:
+        result["dingtalk_oa_row"] = dingtalk_service.serialize(latest_oa)
     return ok(result)
 
 

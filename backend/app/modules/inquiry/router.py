@@ -223,11 +223,35 @@ async def update_inquiry(
     # 改归属同样要过数据范围：不然先把需求建在自己客户上、再 PATCH 客户/商机编号，
     # 一样能把别人的客户与商机挂进来（创建路径的校验挡不住这一步）
     if any(field in data for field in ("customer_id", "opportunity_id", "contact_id")):
-        data["customer_id"] = await svc.validate_links(
-            session, user, customer_id=data.get("customer_id", inquiry.customer_id),
-            opportunity_id=data.get("opportunity_id", inquiry.opportunity_id),
-            contact_id=data.get("contact_id", inquiry.contact_id),
+        # ⚠️ **必须用校验函数的返回值，不能回读请求里的原值**（2026-10-16 修）：
+        # `validate_links` 会从商机推导出**权威的** customer_id 并 return 它，
+        # 而这里原先写 `data.get("customer_id", …)` —— 请求显式带
+        # `customer_id: null` 时 `model_dump(exclude_unset=True)` 会保留这个 null，
+        # 于是推导出来的正确客户被覆盖成 None：需求存下"商机属于客户 B、
+        # customer_id 为 NULL"。而 NULL 客户会落进 apply_scope 的
+        # "无客户 ⇒ 同事可见"分支，一条本只该归 A 负责人的需求变成全公司可见。
+        # 下面那句"指定了商机却给不出客户"的拦截保留：正常商机一定有客户，
+        # 拿不到说明商机数据本身不完整，宁可明确报错也不静默存 NULL。
+        existing_customer = (
+            data["customer_id"] if "customer_id" in data else inquiry.customer_id
         )
+        existing_opportunity = (
+            data["opportunity_id"] if "opportunity_id" in data else inquiry.opportunity_id
+        )
+        existing_contact = (
+            data["contact_id"] if "contact_id" in data else inquiry.contact_id
+        )
+        validated_customer = await svc.validate_links(
+            session, user, customer_id=existing_customer,
+            opportunity_id=existing_opportunity, contact_id=existing_contact,
+        )
+        if existing_opportunity is not None and validated_customer is None:
+            raise AppError(
+                ErrorCode.PARAM_ERROR,
+                "关联商机必须同时有客户；这个商机没有客户归属，请先补全商机资料或改选商机",
+                422,
+            )
+        data["customer_id"] = validated_customer
     # 字段归属（口径 2026-10-04）：链级字段（客户/联系人/商机/对接报价员）对整条
     # 需求生效，写到链条每一版；版本级字段（标题/描述/数量/目标价/状态/备注）只许
     # 改当前版——历史版本已被新版取代，直接改它等于"悄悄改历史"，要改请走修订。

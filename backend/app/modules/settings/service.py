@@ -256,6 +256,11 @@ SETTING_NUMBER_RULES: dict[tuple[str, str], tuple[int, int, str]] = {
     ("opportunity_risk_days", "days"): (1, 3650, "商机风险预警期"),
     ("opportunity_stale_days", "days"): (1, 3650, "商机停滞预警期"),
     ("contract", "monthly_remind_days"): (1, 365, "合同月结提醒提前天数"),
+    # 客户起草合同：钉钉审批通过后，给「上传客户回签合同」待办留几天去追客户盖章。
+    # 它只影响待办截止日与推送，不影响任何单据状态；代码默认 7 天（见
+    # dingtalk/service._notify_contract_review_outcome），属**开发默认值**，
+    # 业务定了之后改这里即生效，不用改代码。
+    ("contract", "countersign_days"): (1, 365, "客户回签跟进天数"),
     ("export", "limit"): (1, 1_000_000, "单次导出行数上限"),
     ("export", "alert_rows"): (1, 10_000_000, "导出告警行数"),
     ("export", "alert_window_hours"): (1, 720, "导出告警统计窗口"),

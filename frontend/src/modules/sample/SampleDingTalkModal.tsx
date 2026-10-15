@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import { api } from '../../shared/api/client'
 import { type OaApprovalInstance, withdrawOaInstance } from '../../shared/api/dingtalk'
+import { newRequestKey } from '../../shared/api/requestKey'
+import { AdoptOaInstanceModal, ResolveOaActions } from '../../shared/components/ResolveOaActions'
 import { approvalProgress } from '../knowledge/approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 
@@ -17,6 +19,9 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   const client=useQueryClient()
   const query=useQuery({queryKey:['sample-dingtalk',sampleId],queryFn:()=>api.get<Options>(`/samples/${sampleId}/dingtalk`),refetchInterval:30000})
   const [edited,setEdited]=useState<Draft | null>(null)
+  // 认领弹窗的目标与"同一次核定"的请求键（键由打开弹窗时生成，弹窗里的重试复用它）
+  const [adoptTarget,setAdoptTarget]=useState<OaApprovalInstance | null>(null)
+  const [adoptKey,setAdoptKey]=useState<string | null>(null)
   const draft=edited ?? {mode:query.data?.draft.mode ?? 'standalone',source_oa_id:query.data?.draft.source_oa_id,fields:query.data?.draft.fields ?? {}, resubmit:query.data?.draft.resubmit ?? false}
   const submitted=Boolean(query.data?.draft.submitted) && !edited?.resubmit
   const mutate=useMutation({
@@ -116,8 +121,18 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         <Table dataSource={approvalProgress(row.result).map((r,index)=>({...r,key:index}))} rowKey="key" pagination={false} scroll={{x:700}}
           columns={[{title:'处理人',dataIndex:'person',width:180},{title:'节点/操作',dataIndex:'node',width:150},{title:'状态',dataIndex:'status',width:130},
             {title:'时间',dataIndex:'time',width:180,render:time},{title:'处理意见',dataIndex:'remark'}]}/>
+        {/* 「结果待人工核对」的三个出口（认领/重发/作废）。按钮由服务端的
+            allowed_actions 决定 —— 打样这条链原先一个都没有，超时后单据彻底卡死。 */}
+        <div style={{marginTop:8,display:'flex',gap:12}}>
+          <ResolveOaActions row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]}
+            onAdopt={target=>{setAdoptTarget(target);setAdoptKey(newRequestKey())}}
+            onDone={()=>void query.refetch()}/>
+        </div>
       </div>)}
       {query.data&&!query.data.records.length&&<div>{submitted?'尚未返回可查看的审批记录，请核对原钉钉单或稍后刷新。':'尚未提交或关联钉钉审批。'}</div>}
+      <AdoptOaInstanceModal target={adoptTarget} requestKey={adoptKey}
+        invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]}
+        onClose={()=>{setAdoptTarget(null);setAdoptKey(null)}}/>
     </div>
   </Modal>
 }
