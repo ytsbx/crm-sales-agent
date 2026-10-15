@@ -145,6 +145,7 @@ async def build_commentary(topic: str, facts: dict) -> tuple[str | None, str | N
     if not settings.deepseek_api_key:
         return None, NOT_CONFIGURED_NOTE
 
+    client = None
     try:
         from openai import AsyncOpenAI
 
@@ -178,7 +179,11 @@ async def build_commentary(topic: str, facts: dict) -> tuple[str | None, str | N
         # （2026-10-14 审查，与 runtime.py 同一问题）。
         await _close_client(client)
 
-    text = (response.choices[0].message.content or "").strip()
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return None, "模型没有返回叙述内容（本地统计结果不受影响）"
+    message = getattr(choices[0], "message", None)
+    text = str(getattr(message, "content", None) or "").strip()
     if not text:
         return None, "模型没有返回叙述内容（本地统计结果不受影响）"
     return text, None

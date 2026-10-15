@@ -52,15 +52,10 @@
 }
 
 .crm-login-brand-mark {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 29px;
-  height: 30px;
-  transform: skewY(-16deg);
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
 }
-.crm-login-brand-mark span { width: 10px; height: 24px; border-radius: 3px; background: #b9d4ff; }
-.crm-login-brand-mark span:last-child { height: 17px; opacity: .5; }
 
 .crm-login-message { margin-top: clamp(56px, 8vh, 100px); }
 .crm-login-eyebrow { display: flex; align-items: center; gap: 8px; color: #afccfa; font-size: 12px; letter-spacing: 1px; }
@@ -106,6 +101,14 @@
 .crm-login button:focus-visible { outline: 2px solid var(--login-blue); outline-offset: 4px; }
 .crm-login-admin-note { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 27px; color: var(--login-muted); font-size: 12px; line-height: 1.6; }
 .crm-login-admin-note .semi-icon { font-size: 14px; }
+
+/* 钉钉扫码登录：与账号密码并列的第二种进门方式，用分隔线表明是"另一条路" */
+.crm-login-divider { display: flex; align-items: center; gap: 12px; margin-top: 30px; color: #93a5bd; font-size: 12px; }
+.crm-login-divider::before, .crm-login-divider::after { content: ""; flex: 1; height: 1px; background: var(--login-line); }
+.crm-login-dingtalk { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; height: 50px; margin-top: 20px; padding: 0 16px; border: 1px solid var(--login-line); border-radius: 9px; background: #fff; color: var(--login-ink); font-size: 15px; font-weight: 500; letter-spacing: .3px; cursor: pointer; transition: border-color .2s, box-shadow .2s, background .2s; }
+.crm-login-dingtalk:hover:not(:disabled) { border-color: var(--login-blue); background: #f6f9ff; }
+.crm-login-dingtalk:disabled { opacity: .75; cursor: wait; }
+.crm-login-dingtalk-icon { width: 19px; height: 19px; flex-shrink: 0; fill: none; stroke: var(--login-blue); stroke-width: 1.6; stroke-linecap: round; }
 .crm-login-footer { color: var(--login-muted); font-size: 11px; letter-spacing: .4px; }
 .crm-login-spinner { animation: crm-login-spin .9s linear infinite; }
 @keyframes crm-login-spin { to { transform: rotate(360deg); } }

@@ -718,7 +718,7 @@ export default function ProductDetailPage() {
           empty="还没有 SKU，先加一个"
           // 与上面各列 width **之和一致**（1123）。写大了会在 1440 窗口下多出 6px 横向滚动条
           // ——列宽总和才是真实内容宽度，`scroll.x` 必须对齐它。
-          scroll={{ x: 1115 }}
+          scroll={{ x: 'max(100%, 1115px)' }}
         />
       </SectionCard>
 
@@ -1005,7 +1005,7 @@ export default function ProductDetailPage() {
               rowKey="field_name"
               size="small"
               pagination={false}
-              scroll={{ x: MASTER_TABLE_WIDTH }}
+              scroll={{ x: `max(100%, ${MASTER_TABLE_WIDTH}px)` }}
             />
             {/*
               主数据确认入口（**常驻**，主人 2026-10-10 定稿）。

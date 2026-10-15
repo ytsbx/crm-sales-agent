@@ -117,9 +117,9 @@ export default function AppLayout() {
           ×
         </button>
         <div className="sider-brand">
-          <div className="sider-logo">S</div>
+          <img className="sider-logo" src="/tianchu-logo.svg" alt="" />
           <div className="sider-brand-text">
-            <div className="sider-brand-name">Sales CRM</div>
+            <div className="sider-brand-name">天初CRM</div>
             <div className="sider-brand-sub">企业协同工作平台</div>
           </div>
           {/* 折叠开关固定在品牌行右侧：侧栏本身是滚动容器，

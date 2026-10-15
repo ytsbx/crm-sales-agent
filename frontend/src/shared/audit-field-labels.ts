@@ -379,5 +379,5 @@ export const AUDIT_TYPE_FIELDS: Record<string, readonly string[]> = {
   sku_identity_source: ['sku_id', 'system_type', 'shop_id', 'external_code', 'external_name', 'match_status', 'match_basis', 'superseded_by_code', 'source_payload', 'source_updated_at', 'first_seen_at', 'last_seen_at', 'note', 'id', 'created_at', 'updated_at'],
   tag: ['name', 'type', 'status', 'sort_no', 'id', 'created_at', 'updated_at'],
   task: ['title', 'task_type', 'customer_id', 'contact_id', 'lead_id', 'opportunity_id', 'quote_id', 'order_id', 'owner_id', 'priority', 'status', 'due_at', 'source', 'source_rule_id', 'source_business_type', 'source_business_id', 'source_key', 'completed_at', 'completion_note', 'id', 'created_at', 'updated_at'],
-  user: ['name', 'username', 'password_hash', 'mobile', 'email', 'department_id', 'wecom_userid', 'status', 'id', 'created_at', 'updated_at'],
+  user: ['name', 'username', 'password_hash', 'mobile', 'email', 'department_id', 'wecom_userid', 'dingtalk_userid', 'status', 'id', 'created_at', 'updated_at'],
 }

@@ -375,7 +375,7 @@ async def convert_lead(
             country=lead.country or "中国",
             region=lead.region,
             source=lead.source or "其他渠道",
-            level="C",
+            level=None,
             status="active",
             pool_status="private" if lead.owner_id else "public",
             owner_id=lead.owner_id,

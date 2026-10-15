@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -30,12 +31,22 @@ _TOKEN_SKEW_SECONDS = 300
 
 DINGTALK_DISABLED_MESSAGE = "钉钉外部调用已关闭（DINGTALK_PUSH_OFF），开发阶段未执行外部请求"
 
+#: 扫码登录自己的闸。**与审批总闸是两件事**（2026-10-14 拆开）：
+#: 登录是用户自己要把自己放进来，总闸管的是"系统主动去打扰钉钉/同事"。
+DINGTALK_LOGIN_DISABLED_MESSAGE = (
+    "钉钉扫码登录已关闭（DINGTALK_LOGIN_OFF），开发阶段未开放"
+)
+
 
 class DingTalkDisabled(RuntimeError):
-    """开发总闸关闭：在获取 token 或创建 HTTP 客户端前拦截。"""
+    """某个外部调用闸门关着：在获取 token 或创建 HTTP 客户端前拦截。
 
-    def __init__(self) -> None:
-        super().__init__(DINGTALK_DISABLED_MESSAGE)
+    默认说的是审批总闸那句话；**扫码登录**有自己的闸，抛它自己那句
+    （见 `_require_login`）—— 两件事分属不同开关，报错也该各说各的。
+    """
+
+    def __init__(self, message: str = DINGTALK_DISABLED_MESSAGE) -> None:
+        super().__init__(message)
 
 
 class DingTalkError(RuntimeError):
@@ -132,21 +143,67 @@ class DingTalkClient:
         if not settings.dingtalk_app_secret:
             raise DingTalkNotConfigured("DINGTALK_APP_SECRET")
 
-    async def access_token(self) -> str:
-        """企业内部应用 access_token，带进程内缓存。"""
-        self._require()
+    def _require_login(self) -> None:
+        """扫码登录的就绪判据：**只看登录自己那把闸**，不看审批总闸。
+
+        两把闸为什么必须是两把（2026-10-14 拆开）：
+        `dingtalk_push_off` 的用意是"开发期别让**系统**主动去打扰钉钉/同事"
+        （审批发起、通讯录同步、通知推送）。而扫码登录是**用户自己**要把自己
+        放进来 —— 让用户登录这件事，和让系统替他建单/发通知，是两种动作。
+        共用一把闸的后果就是"想开登录，就得连审批一起打开"。
+
+        凭据的两项检查与 `_require` 一致：闸开着但没配 AppKey，照样得明确报出来。
+        """
+        if settings.dingtalk_login_off:
+            raise DingTalkDisabled(DINGTALK_LOGIN_DISABLED_MESSAGE)
+        if not settings.dingtalk_app_key:
+            raise DingTalkNotConfigured("DINGTALK_APP_KEY")
+        if not settings.dingtalk_app_secret:
+            raise DingTalkNotConfigured("DINGTALK_APP_SECRET")
+
+    async def access_token(self, *, for_login: bool = False) -> str:
+        """企业内部应用 access_token，带进程内缓存。
+
+        `for_login=True`：走**登录那条链路**（扫码登录要把 unionId 换成 userid，
+        需要企业内部令牌），此时查**登录自己那把闸**，而不是审批总闸。
+
+        闸的检查放在缓存判断**之前**：闸一关，缓存里的旧令牌也照样不给 ——
+        否则"关了闸还会因为缓存而发出请求"，与关闸的用意正好相反。
+        """
+        if for_login:
+            self._require_login()
+        else:
+            self._require()
         now = time.monotonic()
         if self._token and now < self._token_expires_at:
             return self._token
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.post(
-                f"{settings.dingtalk_base_url}/v1.0/oauth2/accessToken",
-                json={
-                    "appKey": settings.dingtalk_app_key,
-                    "appSecret": settings.dingtalk_app_secret,
-                },
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/oauth2/accessToken",
+                    json={
+                        "appKey": settings.dingtalk_app_key,
+                        "appSecret": settings.dingtalk_app_secret,
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"获取 access_token 失败：{exc}", api="oauth2/accessToken"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "获取 access_token 的响应不是合法 JSON",
+                api="oauth2/accessToken",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"access_token 响应结构错误：{type(data).__name__}",
+                api="oauth2/accessToken",
+                http_status=resp.status_code,
             )
-        data = resp.json() if resp.content else {}
         if resp.status_code != 200 or not data.get("accessToken"):
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
@@ -342,25 +399,71 @@ class DingTalkClient:
         """
         self._require()
         token = await self.access_token()
-        async with httpx.AsyncClient(timeout=20) as http:
-            resp = await http.post(
-                f"{settings.dingtalk_base_url}/v1.0/contact/users/search",
-                headers={"x-acs-dingtalk-access-token": token},
-                json={"queryWord": name, "offset": 0, "size": 20},
+        try:
+            async with httpx.AsyncClient(timeout=20) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/contact/users/search",
+                    headers={"x-acs-dingtalk-access-token": token},
+                    json={"queryWord": name, "offset": 0, "size": 20},
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"查询钉钉成员失败：{exc}", api="contact/users/search"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "钉钉成员搜索响应不是合法 JSON",
+                api="contact/users/search",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"钉钉成员搜索响应结构错误：{type(data).__name__}",
+                api="contact/users/search",
+                http_status=resp.status_code,
             )
-        data = resp.json() if resp.content else {}
         if resp.status_code != 200:
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
                 api="contact/users/search",
                 http_status=resp.status_code,
             )
-        users = data.get("list") or []
-        # 精确匹配优先：搜"子木"可能带回一串包含这两个字的人
-        for uid in users:
-            if users and len(users) == 1:
-                return str(uid)
-        return str(users[0]) if users else None
+        # 该接口返回的是用户对象列表（通常在 `list`，部分网关会包在
+        # `result.list`），不是 userid 字符串列表。原来直接 `str(user)` 会把
+        # 整个字典写进审批表单，例如 `{'userid': 'u1', 'name': '张三'}`，
+        # 钉钉随后无法识别这个发起人。
+        raw_result = data.get("result")
+        if isinstance(raw_result, list):
+            users = raw_result
+        else:
+            result = raw_result if isinstance(raw_result, dict) else data
+            users = result.get("list") or []
+        if not isinstance(users, list):
+            return None
+
+        requested = name.strip()
+        candidates: list[tuple[str, str | None]] = []
+        for user in users:
+            if isinstance(user, str):
+                userid = user.strip()
+                user_name = None
+            elif isinstance(user, dict):
+                userid = str(user.get("userid") or user.get("userId") or "").strip()
+                user_name = str(user.get("name") or "").strip() or None
+            else:
+                continue
+            if userid:
+                candidates.append((userid, user_name))
+
+        # 精确匹配优先：搜“子木”可能带回一串包含这两个字的人。
+        for userid, user_name in candidates:
+            if user_name == requested:
+                return userid
+        # 响应只有 userid、没有姓名时，多个候选不能擅自挑第一个；调用方应让
+        # 管理员补充绑定，否则可能把审批单记到同名同事名下。
+        return candidates[0][0] if len(candidates) == 1 else None
 
     async def get_user_dept_ids(self, user_id: str) -> list[int]:
         """取某人的部门编号列表（「提报部门」控件要的是部门编号，不是部门名）。"""
@@ -380,6 +483,221 @@ class DingTalkClient:
                 http_status=resp.status_code,
             )
         return list((data.get("result") or {}).get("dept_id_list") or [])
+
+    # ---- 通讯录（拉全公司的人，给"钉钉号 ↔ CRM 账号"对上用）----------------
+    #
+    # 钉钉**没有**"给我全公司的人"这一个接口，只能从根部门（id = 1）开始
+    # 逐层取子部门、再取每个部门的成员，自己去重 —— 同一个人可以在多个部门里出现。
+    # 去重与遍历放在 service 层（那是业务动作），这里只提供两个原子能力。
+
+    async def list_sub_departments(self, dept_id: int) -> list[dict[str, Any]]:
+        """列某个部门下的**直接**子部门（根部门 id 固定为 1）。
+
+        参数名是 `dept_id`（下划线），结果在 `result` 里 —— 与 `topapi/v2/user/list`
+        同一套写法（这组旧版接口用的是这个形制，别按新版的 `deptId` 写）。
+
+        **挂登录闸**（2026-10-14）：它服务的是"把人和钉钉号对上"，
+        而那是登录的前置步骤 —— 所以「只开登录、不开放审批」时它要能用。
+        """
+        self._require_login()
+        token = await self.access_token(for_login=True)
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                "https://oapi.dingtalk.com/topapi/v2/department/listsub",
+                params={"access_token": token},
+                json={"dept_id": dept_id},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("errcode"):
+            raise DingTalkError(
+                data.get("errmsg") or "department/listsub 失败",
+                api="topapi/v2/department/listsub",
+                http_status=resp.status_code,
+            )
+        return list(data.get("result") or [])
+
+    async def list_department_users(
+        self, dept_id: int, *, cursor: int = 0, size: int = 100
+    ) -> dict[str, Any]:
+        """列某个部门的**直接**成员，返回原样的 `result`（要按 cursor 翻页）。
+
+        返回 `{list: [...], has_more: bool, next_cursor: int}`，每个人的字段里
+        有 `userid` / `name` / `mobile` / `unionid`（`mobile` 需要有通讯录手机号权限）。
+
+        翻页的收尾判据是 **`has_more`**，不是"返回条数 < size"：钉钉最后一页
+        也可能给满 100 条并把 `has_more` 置 false，按条数判会多要一次空页。
+        `size` 上限 100，传大了接口会拒。
+
+        **挂登录闸**（同日，理由同 `list_sub_departments`）。
+        """
+        self._require_login()
+        token = await self.access_token(for_login=True)
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.post(
+                "https://oapi.dingtalk.com/topapi/v2/user/list",
+                params={"access_token": token},
+                json={"dept_id": dept_id, "cursor": cursor, "size": size},
+            )
+        data = resp.json() if resp.content else {}
+        if data.get("errcode"):
+            raise DingTalkError(
+                data.get("errmsg") or "user/list 失败",
+                api="topapi/v2/user/list",
+                http_status=resp.status_code,
+            )
+        return dict(data.get("result") or {})
+
+    # ---- 扫码登录（"用钉钉扫一下就能进系统"）--------------------------------
+    #
+    # 与上面那些"以**企业**身份去操作钉钉"的能力不同，扫码登录是"以**用户**身份
+    # 问钉钉：正在扫码的这个人是谁"。三步：授权码 → 用户级令牌 → 用户信息（unionId），
+    # 最后再拿 unionId 换 userid（系统里绑定的是 userid）。
+    #
+    # 为什么最后一步要绕回**旧版**接口：新版 OAuth2 只给 unionId，没有 userid，
+    # 而 `users.dingtalk_userid` 存的、通讯录同步用的都是 userid，必须换。
+    #
+    # 铁律（照 `auth/router.py::wecom_sso_callback` 的教训）：**身份只能由服务端
+    # 用 code 换取**，请求体里自报的 userid/unionid 一律不认。
+
+    def build_login_url(self, *, redirect_uri: str, state: str) -> str:
+        """拼「钉钉扫码登录」的授权地址（**纯拼字符串，不发任何外部请求**）。
+
+        故意**不**走 `_require()`：这一步只是把用户送到钉钉页面，真正的对外调用
+        发生在用户扫完码之后（`exchange_user_token`）。闸门关着也允许先送过去，
+        用户到那边会看到明确失败原因，比"按钮点了没反应"强。
+        """
+        query = urlencode(
+            {
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "client_id": settings.dingtalk_app_key,
+                "scope": "openid",
+                "state": state,
+                "prompt": "consent",
+            }
+        )
+        return f"https://login.dingtalk.com/oauth2/auth?{query}"
+
+    async def exchange_user_token(self, code: str) -> str:
+        """用一次性的登录授权码换**用户级**访问令牌。
+
+        `grantType` 固定 `authorization_code`。换回来的令牌只能代表"这个人"，
+        拿去调通讯录/审批会被拒（那些要用企业内部令牌）。
+        授权码**只能用一次**，重复换会失败——本身即一道防重放。
+        """
+        self._require_login()
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/oauth2/userAccessToken",
+                    json={
+                        "clientId": settings.dingtalk_app_key,
+                        "clientSecret": settings.dingtalk_app_secret,
+                        "code": code,
+                        "grantType": "authorization_code",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"换取用户令牌失败：{exc}", api="oauth2/userAccessToken"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "用户令牌响应不是合法 JSON",
+                api="oauth2/userAccessToken",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"用户令牌响应结构错误：{type(data).__name__}",
+                api="oauth2/userAccessToken",
+                http_status=resp.status_code,
+            )
+        if resp.status_code != 200 or not data.get("accessToken"):
+            raise DingTalkError(
+                data.get("message") or resp.text[:200],
+                api="oauth2/userAccessToken",
+                http_status=resp.status_code,
+            )
+        return str(data["accessToken"])
+
+    async def get_login_userinfo(self, user_access_token: str) -> dict[str, Any]:
+        """用用户级令牌取「本人是谁」（返回 unionId / nick / avatarUrl 等）。
+
+        ⚠️ 这里**只有 unionId**，没有 userid、也没有手机号——扫码登录拿不到企业信息，
+        这是钉钉的设计（见官方"扫码登录第三方网站"）。要 userid 得再换一次。
+        """
+        self._require_login()
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.get(
+                    f"{settings.dingtalk_base_url}/v1.0/contact/users/me",
+                    headers={"x-acs-dingtalk-access-token": user_access_token},
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"读取钉钉用户信息失败：{exc}", api="contact/users/me"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "钉钉用户信息响应不是合法 JSON",
+                api="contact/users/me",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"钉钉用户信息响应结构错误：{type(data).__name__}",
+                api="contact/users/me",
+                http_status=resp.status_code,
+            )
+        if resp.status_code != 200 or not data.get("unionId"):
+            raise DingTalkError(
+                data.get("message") or resp.text[:200],
+                api="contact/users/me",
+                http_status=resp.status_code,
+            )
+        return data
+
+    async def userid_by_unionid(self, unionid: str) -> str | None:
+        """unionId → userid（旧版接口，新版没有等价能力）。
+
+        查不到返回 None（如 33002「查无此人」）——那是"这人不在企业通讯录里"，
+        不是"系统坏了"，由调用方翻成人话，而不是瞎猜一个 userid。
+        """
+        self._require_login()
+        token = await self.access_token(for_login=True)
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(
+                    "https://oapi.dingtalk.com/topapi/user/getbyunionid",
+                    params={"access_token": token},
+                    json={"unionid": unionid},
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"查询钉钉成员失败：{exc}", api="topapi/user/getbyunionid"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "钉钉成员查询响应不是合法 JSON",
+                api="topapi/user/getbyunionid",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"钉钉成员查询响应结构错误：{type(data).__name__}",
+                api="topapi/user/getbyunionid",
+                http_status=resp.status_code,
+            )
+        if data.get("errcode"):
+            return None
+        return (data.get("result") or {}).get("userid") or None
 
 
 _client: DingTalkClient | None = None

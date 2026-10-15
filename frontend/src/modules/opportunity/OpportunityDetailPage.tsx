@@ -551,7 +551,7 @@ export default function OpportunityDetailPage() {
                 rowKey="id"
                 pagination={false}
                 empty="还没有需求明细"
-                scroll={{ x: 1200 }}
+                scroll={{ x: 'max(100%, 1200px)' }}
               />
             </>
           )}

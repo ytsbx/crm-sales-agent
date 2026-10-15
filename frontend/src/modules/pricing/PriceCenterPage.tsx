@@ -1446,7 +1446,7 @@ export default function PriceCenterPage() {
                     ? `没有匹配「${ruleKeyword.trim()}」的价格规则`
                     : '还没有价格规则'
                 }
-                scroll={{ x: 1100 }}
+                scroll={{ x: 'max(100%, 1100px)' }}
               />
             </>
           )}

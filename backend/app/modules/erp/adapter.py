@@ -660,9 +660,18 @@ def get_adapter(provider: str | None = None) -> ErpAdapter:
 
 async def reset_adapters() -> None:
     """关闭已建连接（应用退出时调用）。"""
-    for adapter in _INSTANCES.values():
-        await adapter.aclose()
+    first_error: BaseException | None = None
+    # 关闭一个连接池失败不应跳过其它适配器；否则热重载时会把剩余连接
+    # 留在旧事件循环里。先完成全部清理，再把首个异常交给应用生命周期记录。
+    for adapter in list(_INSTANCES.values()):
+        try:
+            await adapter.aclose()
+        except Exception as error:  # noqa: BLE001 - 继续关闭其它适配器
+            if first_error is None:
+                first_error = error
     _INSTANCES.clear()
+    if first_error is not None:
+        raise first_error
 
 
 __all__ = [

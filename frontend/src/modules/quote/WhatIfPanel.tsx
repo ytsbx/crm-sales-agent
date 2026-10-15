@@ -239,7 +239,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
           size="small"
           loading={comparisonQuery.isLoading}
           empty="还没有版本"
-          scroll={{ x: 1000 }}
+          scroll={{ x: 'max(100%, 1000px)' }}
         />
 
         {(comparisonQuery.data?.diffs ?? []).length > 0 && (

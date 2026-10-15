@@ -334,7 +334,7 @@ export default function CasesPage() {
   })
 
   return (
-    <div style={{ padding: 20, maxWidth: 1200, margin: '0 auto' }}>
+    <div className="page-container">
       <SectionCard>
         <div className="toolbar" style={{ marginBottom: 10 }}>
           <Input

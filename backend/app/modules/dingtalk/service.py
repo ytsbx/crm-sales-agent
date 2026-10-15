@@ -35,9 +35,13 @@
 只认调用方给的字段映射，映射从模板字段清单来（见 21-交接说明-2026-10-04.md §7.1 的待外部输入）。
 """
 
+import secrets
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,10 +52,13 @@ from app.core.errors import AppError, ErrorCode
 from app.modules.dingtalk.client import (
     DingTalkUnknownOutcome,
     DINGTALK_DISABLED_MESSAGE,
+    DINGTALK_LOGIN_DISABLED_MESSAGE,
     OUTCOME_NOT_SENT,
     OUTCOME_REJECTED,
     OUTCOME_UNKNOWN,
+    DingTalkDisabled,
     DingTalkError,
+    DingTalkNotConfigured,
     classify_outcome,
     get_client,
 )
@@ -62,6 +69,7 @@ from app.modules.dingtalk.model import (
     OaInstance,
     allowed_actions,
 )
+from app.modules.user.model import User
 
 #: 停在 `submitting` / 核定占用超过这个时长，就认为那次尝试已经死了
 #: （进程被杀、机器重启、调用方再也没回来），允许重新发起或重新占用。
@@ -906,3 +914,383 @@ def serialize(row: OaInstance) -> dict:
             row.last_attempt_at.isoformat() if row.last_attempt_at else None
         ),
     }
+
+
+# ====================================================== 人员绑定（钉钉登录用）==
+#
+# 目的：把「钉钉成员」和「CRM 账号」对上，结果写进 `users.dingtalk_userid`。
+# 有了这一列，以后从钉钉扫码 / 工作台免登进来的人，系统才知道他是**谁**。
+#
+# 三条纪律（与 `wecom/service.py::sync_users` 是**同一套**，不是另写一份）：
+#
+# 1. **绝不自动建账号。** 建账号要定角色与数据范围，那是人的决定，不能是同步的
+#    副作用。钉钉里有人、CRM 里没账号 → 列出来让管理员去建，本次一个都不建。
+# 2. **匹配顺序：已绑定 → 手机号 → 姓名。** 手机号在前，因为它唯一性强；
+#    姓名只做兜底，且**只有唯一命中才算**——重名时宁可留给人工判，也不猜。
+# 3. **已绑定的不覆盖。** 一个人已经绑了钉钉号，后续同步不因手机号变了就改绑：
+#    改绑等于把别人的登录身份换掉，那必须由管理员在界面上明确操作。
+#
+# ⚠️ 与企微那套的差别只有"数据从哪来"：企微是先落一张 `wecom_users` 映射表、
+# 人再慢慢归一；钉钉这里**不留中间表**——点一次按钮当场对完，对不上的直接列给
+# 管理员看。绑定的全部内容就是"一个人 ↔ 一个编号"，不需要中间态。
+
+#: 对不上的原因。**分开报**，不能笼统说一句"未匹配"——
+#: 「CRM 里没这个账号」和「重名判不了」要做的事完全不同（前者去建号，后者去核人）。
+BIND_REASON_LABEL: dict[str, str] = {
+    "no_account": "CRM 里没有能对上的账号",
+    "ambiguous_mobile": "手机号在系统里对到了多个账号",
+    "ambiguous_name": "姓名重复，无法判断是哪一位",
+}
+
+
+def _norm_mobile(value: Any) -> str:
+    """手机号比对口径：只留数字。
+
+    钉钉给的是 `13800000000`，人工在 CRM 里可能填成 `138 0000 0000`。
+    不归一化就会冒出"明明是同一个人却说对不上"。
+
+    **只去非数字字符，不剥区号**：`+86` 前缀在两边不一致时，宁可对不上留给人工，
+    也不能把 `8613800000000` 猜成同一个人——猜错就是把两个人绑串了，
+    而绑串的后果是"张三用李四的身份登录"。
+    """
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _norm_name(value: Any) -> str:
+    return str(value or "").strip()
+
+
+async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
+    """拉全公司成员：从根部门（id=1）广度优先走完部门树，再按 userid 去重。
+
+    为什么要自己走树：钉钉**没有**"全公司成员"这一个接口，只有"某部门的直属成员"，
+    而一个人可以同时挂在多个部门下 —— 不去重的话他会以多个身份出现，
+    匹配阶段自己和自己撞（第一次绑上了，第二次又把它判成"已占用"）。
+    """
+    members: dict[str, dict[str, Any]] = {}
+    pending: list[int] = [1]
+    seen: set[int] = set()
+    while pending:
+        dept_id = pending.pop(0)
+        if dept_id in seen:
+            continue
+        seen.add(dept_id)
+
+        for sub in await api.list_sub_departments(dept_id):
+            try:
+                sub_id = int(sub.get("dept_id"))
+            except (TypeError, ValueError):
+                # 少 dept_id 的节点没法继续往下走，跳过；
+                # 不为一个坏节点中断整棵树（否则全公司的人都拉不到）
+                continue
+            if sub_id not in seen:
+                pending.append(sub_id)
+
+        cursor = 0
+        while True:
+            page = await api.list_department_users(dept_id, cursor=cursor)
+            for item in page.get("list") or []:
+                uid = str(item.get("userid") or "")
+                if uid and uid not in members:
+                    members[uid] = item
+            if not page.get("has_more"):
+                break
+            next_cursor = page.get("next_cursor")
+            # 反复给同一个 cursor 会死循环（接口异常时的兜底），宁可少拉一页
+            if next_cursor in (None, cursor):
+                break
+            cursor = int(next_cursor)
+    return list(members.values())
+
+
+async def sync_users(session: AsyncSession) -> dict:
+    """把 CRM 账号与钉钉成员对上，写 `users.dingtalk_userid`。**不建账号。**
+
+    判据顺序见本段开头三条纪律。返回里把"对不上的"和"还没绑的"分开列出来：
+    前者要管理员去处理，后者只是提示"这个人还进不来"。
+    """
+    # ⚠️ 判的是**登录闸**，不是审批总闸（2026-10-14 主人拍板）。
+    # 这一步做的是"把人跟钉钉号对上"，本身就是**为了让员工能扫码进来** ——
+    # 属于登录那一组；与审批那种"系统主动发出去"不是一回事。
+    # 所以「只开登录、不开放审批」时，人员同步照样能跑。
+    if app_settings.dingtalk_login_off:
+        return {
+            "disabled": True,
+            "message": DINGTALK_LOGIN_DISABLED_MESSAGE,
+            "total": 0,
+            "bound": 0,
+            "already_bound": 0,
+            "unmatched": [],
+            "unbound_crm": [],
+        }
+
+    api = get_client()
+    try:
+        members = await fetch_all_members(api)
+    except DingTalkDisabled as exc:
+        # 走到这里说明闸是在**取通讯录的过程中**才关掉的（比如刚被人关掉）。
+        # 用异常自己那句话：它认得清是哪把闸，别硬套审批总闸的文案。
+        return {
+            "disabled": True,
+            "message": str(exc),
+            "total": 0,
+            "bound": 0,
+            "already_bound": 0,
+            "unmatched": [],
+            "unbound_crm": [],
+        }
+    except DingTalkNotConfigured as exc:
+        # 缺凭据是"服务端没配好"，不是对方的错 → 503，并把缺哪一项说清楚
+        raise AppError(ErrorCode.EXTERNAL_ERROR, str(exc), 503) from exc
+    except DingTalkError as exc:
+        raise AppError(
+            ErrorCode.EXTERNAL_ERROR, f"读取钉钉通讯录失败：{exc}", 502
+        ) from exc
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+        # 通讯录分页是外部响应边界；网络中断、非 JSON 或结构异常都应翻译成
+        # 可重试的外部错误，不能让设置页直接收到 500。
+        raise AppError(
+            ErrorCode.EXTERNAL_ERROR,
+            f"读取钉钉通讯录失败（{type(exc).__name__}）：{exc}",
+            502,
+        ) from exc
+
+    crm_users = list((await session.execute(select(User))).scalars().all())
+
+    bound: dict[str, User] = {}
+    free_by_mobile: dict[str, list[User]] = {}
+    free_by_name: dict[str, list[User]] = {}
+    for row in crm_users:
+        if row.dingtalk_userid:
+            bound[str(row.dingtalk_userid)] = row
+            continue
+        mobile = _norm_mobile(row.mobile)
+        if mobile:
+            free_by_mobile.setdefault(mobile, []).append(row)
+        name = _norm_name(row.name)
+        if name:
+            free_by_name.setdefault(name, []).append(row)
+
+    newly_bound = 0
+    already_bound = 0
+    unmatched: list[dict[str, Any]] = []
+
+    def _bind(target: User, dingtalk_userid: str) -> None:
+        nonlocal newly_bound
+        target.dingtalk_userid = dingtalk_userid
+        bound[dingtalk_userid] = target
+        # 立刻从"待匹配"里摘掉：同一次同步内，一个人只能被绑一次，
+        # 否则后面同一个姓名的成员会把它当成候选再次命中。
+        mobile = _norm_mobile(target.mobile)
+        if mobile and target in free_by_mobile.get(mobile, []):
+            free_by_mobile[mobile].remove(target)
+        name = _norm_name(target.name)
+        if name and target in free_by_name.get(name, []):
+            free_by_name[name].remove(target)
+        newly_bound += 1
+
+    for member in members:
+        dingtalk_userid = str(member.get("userid") or "")
+        if not dingtalk_userid:
+            continue
+        if dingtalk_userid in bound:
+            # 这个钉钉号已经有主了：**保持不动**（含本次刚绑的，见纪律 1）
+            already_bound += 1
+            continue
+
+        name = _norm_name(member.get("name"))
+        mobile = _norm_mobile(member.get("mobile"))
+        display_mobile = str(member.get("mobile") or "")
+
+        candidates = free_by_mobile.get(mobile, []) if mobile else []
+        if len(candidates) == 1:
+            _bind(candidates[0], dingtalk_userid)
+            continue
+        if len(candidates) > 1:
+            unmatched.append(
+                {
+                    "name": name,
+                    "mobile": display_mobile,
+                    "reason": "ambiguous_mobile",
+                    "reason_label": BIND_REASON_LABEL["ambiguous_mobile"],
+                }
+            )
+            continue
+
+        candidates = free_by_name.get(name, []) if name else []
+        if len(candidates) == 1:
+            _bind(candidates[0], dingtalk_userid)
+            continue
+        if len(candidates) > 1:
+            unmatched.append(
+                {
+                    "name": name,
+                    "mobile": display_mobile,
+                    "reason": "ambiguous_name",
+                    "reason_label": BIND_REASON_LABEL["ambiguous_name"],
+                }
+            )
+            continue
+
+        unmatched.append(
+            {
+                "name": name,
+                "mobile": display_mobile,
+                "reason": "no_account",
+                "reason_label": BIND_REASON_LABEL["no_account"],
+            }
+        )
+
+    await session.flush()
+
+    # 还没绑上钉钉的 CRM 账号：不是错误，但管理员要知道"还有谁进不来"。
+    # 只列**在用**的账号——停用的人绑不绑都不影响登录。
+    unbound_crm = [
+        {"id": row.id, "name": row.name, "username": row.username}
+        for row in crm_users
+        if not row.dingtalk_userid and row.status == "active"
+    ]
+
+    return {
+        "disabled": False,
+        "total": len(members),
+        "bound": newly_bound,
+        "already_bound": already_bound,
+        "unmatched": unmatched,
+        "unbound_crm": unbound_crm,
+    }
+
+
+# ---- 扫码登录 -------------------------------------------------------------
+#
+# 两样**短期信物**，寿命都是几十秒：
+#
+# - `state`：发起扫码时生成，回调时校验并**消费**。防的是"别人换个 code 把回调
+#   塞给你"——只有我们自己发出去过的 state 才认。
+# - `ticket`：回调处理完之后，把**已经签好的令牌**装进去，交给前端那一步用。
+#   走 URL 的绝不能是令牌本身（会进浏览器历史、会进服务器访问日志），
+#   所以用一层一次性信物过渡，60 秒内不来换就作废。
+#
+# 为什么放进程内、不加表：本项目部署口径是**单实例**（与 `core/rate_limit.py`
+# 同一理由），而这两样只活几十秒。为它们建表 + 加迁移，换来的不过是"重启后
+# 正在扫码的人不用重来"，不划算。将来真上多实例，整体换 Redis 即可，
+# 下面四个函数的签名不用变。
+#
+# ⚠️ 与会话有效性（`auth/session.py::load_active_session`）**不是一回事**：
+# 那个决定"一把令牌还能不能用"，必须只存库、绝不能有内存缓存；
+# 这里的 state/ticket 只是"两步之间的一次性信物"，用完即弃。
+
+LOGIN_STATE_TTL_SECONDS = 300
+LOGIN_TICKET_TTL_SECONDS = 60
+
+_short_lock = threading.Lock()
+#: state -> 过期时刻（monotonic 秒）
+_login_states: dict[str, float] = {}
+#: ticket -> (已签发的令牌, 过期时刻)
+_login_tickets: dict[str, tuple[str, float]] = {}
+
+
+def _sweep_states(now: float) -> None:
+    for k in [k for k, exp in _login_states.items() if exp <= now]:
+        _login_states.pop(k, None)
+
+
+def _sweep_tickets(now: float) -> None:
+    for k in [k for k, (_, exp) in _login_tickets.items() if exp <= now]:
+        _login_tickets.pop(k, None)
+
+
+def issue_login_state() -> str:
+    """发起一次扫码登录：生成并记住一个一次性 state。"""
+    now = time.monotonic()
+    state = secrets.token_urlsafe(24)
+    with _short_lock:
+        _sweep_states(now)
+        _login_states[state] = now + LOGIN_STATE_TTL_SECONDS
+    return state
+
+
+def consume_login_state(state: str | None) -> bool:
+    """校验并**消费** state：用过一次即作废（防重放）。"""
+    if not state:
+        return False
+    now = time.monotonic()
+    with _short_lock:
+        expires = _login_states.pop(state, None)
+        _sweep_states(now)
+    return expires is not None and expires > now
+
+
+def issue_login_ticket(token: str) -> str:
+    """把一张**已经签好的令牌**装进一次性 ticket，交给前端换走。"""
+    now = time.monotonic()
+    ticket = secrets.token_urlsafe(32)
+    with _short_lock:
+        _sweep_tickets(now)
+        _login_tickets[ticket] = (token, now + LOGIN_TICKET_TTL_SECONDS)
+    return ticket
+
+
+def consume_login_ticket(ticket: str | None) -> str | None:
+    """取走 ticket 里的令牌；用过 / 过期 / 不认识一律返回 None。"""
+    if not ticket:
+        return None
+    now = time.monotonic()
+    with _short_lock:
+        item = _login_tickets.pop(ticket, None)
+        _sweep_tickets(now)
+    if item is None:
+        return None
+    token, expires = item
+    return token if expires > now else None
+
+
+#: 扫码登录被拒的原因 → 给人看的说明。**拒绝理由要分开报**：
+#: "钉钉那边出错了"和"你这个人进不来"是两件事，混成一句"登录失败"让人无从下手。
+LOGIN_REASON_LABEL: dict[str, str] = {
+    "not_in_contact": "这个钉钉账号不在企业通讯录里，请联系管理员把你加进部门",
+    "not_bound": "这个钉钉账号还没和系统账号绑定，请管理员先在「系统设置」里点一次「同步钉钉人员」",
+    "disabled": "这个账号已停用，请联系管理员",
+    "ambiguous": "这个钉钉账号对上了多个系统账号，请联系管理员处理",
+    "no_unionid": "钉钉没有返回这个人的身份标识，请重试或联系管理员",
+}
+
+
+async def resolve_login_user(
+    session: AsyncSession, *, code: str
+) -> tuple[User | None, str]:
+    """用一次性授权码换出 CRM 用户，返回 `(user, reason)`。
+
+    `reason == "ok"` 时 user 一定有值；否则 user 为 None，reason 是
+    `LOGIN_REASON_LABEL` 里的键。外部调用本身失败会直接抛 `DingTalkError`，
+    由接口层翻成"钉钉那边出错了"——与"这个人进不来"分开报。
+
+    链路：code → 用户级令牌 → unionId → userid → `users.dingtalk_userid`。
+    **身份只由服务端换**，调用方给什么都不信。
+    """
+    api = get_client()
+    user_token = await api.exchange_user_token(code)
+    info = await api.get_login_userinfo(user_token)
+    unionid = str(info.get("unionId") or "").strip()
+    if not unionid:
+        return None, "no_unionid"
+
+    userid = await api.userid_by_unionid(unionid)
+    if not userid:
+        return None, "not_in_contact"
+
+    # 一个钉钉号只该对上一个人；真出现多条，宁可明确拒绝也不"取第一个"
+    # （取第一个 = 把别人的账号登进来，与 `sync_users` 的"重名一律不猜"同一条纪律）。
+    rows = (
+        (await session.execute(select(User).where(User.dingtalk_userid == userid).limit(2)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return None, "not_bound"
+    if len(rows) > 1:
+        return None, "ambiguous"
+    user = rows[0]
+    if user.status != "active":
+        return None, "disabled"
+    return user, "ok"

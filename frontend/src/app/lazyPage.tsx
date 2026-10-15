@@ -1,3 +1,4 @@
+import { Spin } from '@douyinfe/semi-ui'
 import { Component, createElement, lazy, Suspense, useEffect, useRef, type ComponentType, type ReactNode } from 'react'
 
 /**
@@ -152,7 +153,12 @@ export function lazyPage<P extends object>(
     const loadedRef = useRef(false)
     return (
       <PageBoundary loadedRef={loadedRef}>
-        <Suspense fallback={<div className="page-container">页面加载中…</div>}>
+        <Suspense fallback={
+          <div className="page-container" role="status" aria-label="页面加载中"
+            style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 240 }}>
+            <Spin size="large" tip="页面加载中…" />
+          </div>
+        }>
           <MarkLoaded loadedRef={loadedRef}>{createElement(Page, props)}</MarkLoaded>
         </Suspense>
       </PageBoundary>

@@ -220,7 +220,7 @@ export default function ApprovalPage() {
                 onPageChange: setPage,
               }}
               empty={emptyText(query, '没有待处理的审批')}
-              scroll={{ x: 1300 }}
+              scroll={{ x: 'max(100%, 1440px)' }}
             />
           </div>
         )}

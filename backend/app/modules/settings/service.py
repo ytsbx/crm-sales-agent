@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.customer.levels import level_filter, level_label, level_code
 from app.core.audit import write_audit
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
@@ -799,7 +800,7 @@ async def _notify_recycle_candidate(
     active = candidate.last_active_at
     active_text = to_business(active).strftime("%Y-%m-%d") if active else "无记录"
     reason = (
-        f"{candidate.level or ''} 级客户超过 {candidate.rule_days} 天未跟进"
+        f"{level_label(candidate.level)}客户超过 {candidate.rule_days} 天未跟进"
         if candidate.rule_days
         else "长期未跟进"
     )
@@ -944,7 +945,7 @@ async def run_public_pool_recycle(
             Customer.deleted_at.is_(None),
             Customer.pool_status == "private",
             Customer.owner_id.is_not(None),
-            Customer.level == rule.level,
+            level_filter(Customer.level, rule.level),
         )
         rows = (await session.execute(stmt)).scalars().all()
         for customer in rows:
@@ -1438,6 +1439,13 @@ async def decide_candidate(
             409,
         )
 
+    if level_code(customer.level) != level_code(row.level):
+        raise AppError(
+            ErrorCode.VERSION_CONFLICT,
+            "客户等级已调整，这条回收提名的等级依据已失效，请驳回后重新扫描",
+            409,
+        )
+
     # **等待期校验**（返修单第六批第 8 条）：预告期 / 暂缓期没满就不该收。
     # 这是"等待期限真正执行"那一条的直接落点 —— 此前 due_at / deferred_until
     # 只是存着好看。
@@ -1500,7 +1508,7 @@ async def decide_candidate(
             old_owner_id=customer.owner_id,
             new_owner_id=None,
             reason=(
-                f"{row.level or ''} 级客户超过 {row.rule_days} 天未跟进，"
+                f"{level_label(row.level)}客户超过 {row.rule_days} 天未跟进，"
                 f"经主管复核回收"
                 + ("（例外：仍有履约保护，理由见候选记录）" if exception else "")
                 + ("（提前回收：未满预告/暂缓等待期，理由见候选记录）" if early else "")
@@ -1790,7 +1798,7 @@ async def run_auto_tasks(
                         Customer.deleted_at.is_(None),
                         Customer.pool_status == "private",
                         Customer.owner_id.is_not(None),
-                        Customer.level.in_(levels),
+                        level_filter(Customer.level, levels),
                     )
                 )
             ).scalars().all()

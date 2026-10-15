@@ -1087,7 +1087,7 @@ export default function AnalyticsPage() {
           {canSetTarget && <Button theme="solid" onClick={() => openTargetModal()}>设定目标</Button>}
         </div>
         <Table<SalesTargetRow>
-          scroll={{ x: 2060 }}
+          scroll={{ x: 'max(100%, 2060px)' }}
           columns={[
             {
               title: '月份',

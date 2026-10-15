@@ -51,6 +51,7 @@ from app.modules.wecom.schema import (
 #: 回调时间戳允许的最大偏差（秒）。企微官方建议 5 分钟；超出即视为重放/过期报文。
 #: 没有它时，一份抓到的合法报文可以无限重放（每次都落一条同步任务）。
 WECOM_CALLBACK_MAX_SKEW_SECONDS = 300
+WECOM_CALLBACK_MAX_BODY_BYTES = 1024 * 1024
 
 router = APIRouter(tags=["WeCom"])
 
@@ -520,7 +521,24 @@ async def receive_wecom_event(
     等事件触发只拉那一个人）留给拿到凭据、能联调时再做——现在没有真实回调，
     写增量逻辑无法验证，等于凭空猜。
     """
-    body = (await request.body()).decode("utf-8")
+    raw_length = request.headers.get("content-length")
+    try:
+        if raw_length is not None and int(raw_length) > WECOM_CALLBACK_MAX_BODY_BYTES:
+            raise AppError(ErrorCode.PARAM_ERROR, "企微回调报文超过 1 MB 限制", 413)
+    except ValueError:
+        raise AppError(ErrorCode.PARAM_ERROR, "企微回调 Content-Length 无效", 400) from None
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > WECOM_CALLBACK_MAX_BODY_BYTES:
+            raise AppError(ErrorCode.PARAM_ERROR, "企微回调报文超过 1 MB 限制", 413)
+        chunks.append(chunk)
+    try:
+        body = b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError:
+        raise AppError(ErrorCode.PARAM_ERROR, "企微回调报文不是有效 UTF-8", 400) from None
     try:
         encrypt = wecom_callback.parse_event(body).get("Encrypt", "")
         if not encrypt:

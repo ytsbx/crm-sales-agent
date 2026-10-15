@@ -1,3 +1,4 @@
+import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
 import { useRef, useState, type ComponentProps } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
@@ -37,6 +38,7 @@ const SCOPE_OPTIONS = [
 ]
 
 const LEVEL_OPTIONS = [
+  UNRATED_OPTION,
   { value: 'A', label: 'A 级' },
   { value: 'B', label: 'B 级' },
   { value: 'C', label: 'C 级' },
@@ -85,7 +87,7 @@ const EMPTY_FORM: CustomerPayload = {
   region: '',
   address: '',
   source: '手工录入',
-  level: 'C',
+  level: null,
   remark: '',
   // 不选负责人 = 归创建人自己（后端 `create_customer` 的口径）
   owner_id: null,
@@ -183,7 +185,7 @@ export default function CustomerListPage() {
   const ownerOptionsQuery = useQuery({
     queryKey: ['assignable-users', 'for-create'],
     queryFn: () => listUsers({ page: 1, page_size: 100 }),
-    enabled: modalVisible,
+    enabled: modalVisible && can('customer:assign'),
   })
 
   const refreshList = () => {
@@ -333,7 +335,7 @@ export default function CustomerListPage() {
         value ? (
           <Tag color={value === 'A' ? 'green' : value === 'B' ? 'blue' : 'grey'}>{value}</Tag>
         ) : (
-          '-'
+          <Tag color="grey">未分级</Tag>
         ),
     },
     {
@@ -505,6 +507,9 @@ export default function CustomerListPage() {
             onClick={() => {
               // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
               createRequestKeyRef.current = newRequestKey()
+              if (!can('customer:assign')) {
+                setForm((current) => ({ ...current, owner_id: null }))
+              }
               setModalVisible(true)
             }}
           >
@@ -797,6 +802,7 @@ export default function CustomerListPage() {
                 style={{ width: '100%' }}
                 placeholder="不选 = 归你自己"
                 showClear
+                disabled={!can('customer:assign')}
                 value={form.owner_id ?? undefined}
                 onChange={(value) => setForm({ ...form, owner_id: (value as number) ?? null })}
                 loading={ownerOptionsQuery.isLoading}
@@ -806,8 +812,9 @@ export default function CustomerListPage() {
                 }))}
               />
               <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
-                不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。
-                放进公海请创建后用列表里的「放入公海」。
+                {can('customer:assign')
+                  ? '不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。放进公海请创建后用列表里的「放入公海」。'
+                  : '你没有客户分配权限，新客户会归到「你」名下；如需指定其他负责人，请联系管理员。'}
               </div>
             </div>
             <Input
@@ -867,8 +874,8 @@ export default function CustomerListPage() {
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>客户等级</div>
               <Select
-                value={form.level ?? undefined}
-                onChange={(value) => setForm({ ...form, level: value as string })}
+                value={customerLevelValue(form.level)}
+                onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
                 optionList={LEVEL_OPTIONS}
                 style={{ width: '100%' }}
               />

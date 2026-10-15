@@ -70,3 +70,68 @@ def test_closed_sync_explicitly_reports_not_executed(monkeypatch):
     assert result['checked'] == result['changed'] == 0
     assert result['disabled'] is True
     assert '开发阶段未执行' in result['message']
+
+
+def test_search_user_id_extracts_userid_from_dingtalk_user_objects(monkeypatch):
+    """姓名搜索返回对象时，审批必须拿到 userid，而不是对象的 repr。"""
+
+    class Response:
+        status_code = 200
+        content = b"{}"
+        text = ""
+
+        def json(self):
+            return {
+                "list": [
+                    {"userid": "u-other", "name": "张三（华东）"},
+                    {"userid": "u-target", "name": "张三"},
+                ]
+            }
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(settings, 'dingtalk_push_off', False)
+    monkeypatch.setattr(settings, 'dingtalk_app_key', 'FAKE-KEY')
+    monkeypatch.setattr(settings, 'dingtalk_app_secret', 'FAKE-SECRET')
+    monkeypatch.setattr(client_module.httpx, 'AsyncClient', lambda **_kwargs: Client())
+    client = client_module.DingTalkClient()
+    monkeypatch.setattr(client, 'access_token', lambda: asyncio.sleep(0, result='TOKEN'))
+
+    assert asyncio.run(client.search_user_id_by_name('张三')) == 'u-target'
+
+
+def test_search_user_id_accepts_wrapped_result_and_string_users(monkeypatch):
+    class Response:
+        status_code = 200
+        content = b"{}"
+        text = ""
+
+        def json(self):
+            return {"result": {"list": ["u-only"]}}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(settings, 'dingtalk_push_off', False)
+    monkeypatch.setattr(settings, 'dingtalk_app_key', 'FAKE-KEY')
+    monkeypatch.setattr(settings, 'dingtalk_app_secret', 'FAKE-SECRET')
+    monkeypatch.setattr(client_module.httpx, 'AsyncClient', lambda **_kwargs: Client())
+    client = client_module.DingTalkClient()
+    monkeypatch.setattr(client, 'access_token', lambda: asyncio.sleep(0, result='TOKEN'))
+
+    assert asyncio.run(client.search_user_id_by_name('任意')) == 'u-only'

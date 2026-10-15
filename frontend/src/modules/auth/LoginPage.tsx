@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Toast } from '@douyinfe/semi-ui'
 import {
   IconArrowRight,
@@ -15,7 +15,7 @@ import {
   IconUserStroked,
 } from '@douyinfe/semi-icons'
 
-import { fetchMe, login } from '../../shared/api/auth'
+import { dingtalkAuthorize, dingtalkExchange, fetchMe, login } from '../../shared/api/auth'
 import { currentAuthEpoch, useAuthStore } from '../../shared/store/auth'
 import './login.css'
 
@@ -29,6 +29,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
+  // 钉钉扫码：跳转前、换票中，都让按钮进 loading 态
+  const [dingtalkLoading, setDingtalkLoading] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  // 回调只处理一次：换票是**一次性**的，重复跑必然失败，
+  // 还会把刚拿到的登录态顶掉。
+  const handledCallback = useRef(false)
 
   const handleLogin = async () => {
     if (loading) return
@@ -60,12 +66,68 @@ export default function LoginPage() {
     }
   }
 
+  const handleDingTalk = async () => {
+    if (loading || dingtalkLoading) return
+    setDingtalkLoading(true)
+    try {
+      const { authorize_url } = await dingtalkAuthorize()
+      // 跳走之后本页就不在了，不需要收尾 loading
+      window.location.href = authorize_url
+    } catch (error) {
+      Toast.error(error instanceof Error ? error.message : '钉钉登录暂不可用')
+      setDingtalkLoading(false)
+    }
+  }
+
+  // 接住从钉钉跳回来的结果：成功带 `dingtalk_ticket`，失败带 `dingtalk_error`。
+  // 两者都要**立刻从地址栏清掉**：票据是一次性的，留着刷新一次就白跑一趟；
+  // 错误则是"说一次就够"，跟着地址栏会反复弹。
+  useEffect(() => {
+    if (handledCallback.current) return
+    const error = searchParams.get('dingtalk_error')
+    const ticket = searchParams.get('dingtalk_ticket')
+
+    if (error) {
+      handledCallback.current = true
+      Toast.error(error)
+      setSearchParams({}, { replace: true })
+      return
+    }
+    if (!ticket) return
+
+    handledCallback.current = true
+    void (async () => {
+      setDingtalkLoading(true)
+      try {
+        const result = await dingtalkExchange(ticket)
+        setAuth(result.access_token, null)
+        // 与密码登录同一条纪律：写回用户信息前先比一次「登录代」，
+        // 期间人若已登出 / 又登了一次，就不能再把用户写回去。
+        const epoch = currentAuthEpoch()
+        try {
+          const me = await fetchMe()
+          if (currentAuthEpoch() === epoch) {
+            setUser(me)
+          }
+        } catch {
+          // 用户信息拉取失败不阻塞登录
+        }
+        setSearchParams({}, { replace: true })
+        navigate('/workbench')
+      } catch (err) {
+        Toast.error(err instanceof Error ? err.message : '钉钉登录失败')
+        setSearchParams({}, { replace: true })
+        setDingtalkLoading(false)
+      }
+    })()
+  }, [searchParams, setSearchParams, setAuth, setUser, navigate])
+
   return (
     <div className="crm-login">
       <aside className="crm-login-story" aria-label="销售协作平台">
         <div className="crm-login-brand">
-          <span className="crm-login-brand-mark" aria-hidden="true"><span /><span /></span>
-          <span>销售协作平台<small>SALES CRM</small></span>
+          <img className="crm-login-brand-mark" src="/tianchu-logo.svg" alt="" />
+          <span>天初CRM<small>企业协同工作平台</small></span>
         </div>
 
         <div className="crm-login-message">
@@ -159,6 +221,29 @@ export default function LoginPage() {
               {!loading && <IconArrowRight aria-hidden="true" />}
             </button>
           </form>
+
+          <div className="crm-login-divider"><span>或</span></div>
+
+          <button
+            className="crm-login-dingtalk"
+            type="button"
+            onClick={() => void handleDingTalk()}
+            disabled={loading || dingtalkLoading}
+          >
+            {dingtalkLoading
+              ? <IconLoading className="crm-login-spinner" aria-hidden="true" />
+              : (
+                <svg className="crm-login-dingtalk-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3.5 8.5v-3a2 2 0 0 1 2-2h3" />
+                  <path d="M15.5 3.5h3a2 2 0 0 1 2 2v3" />
+                  <path d="M20.5 15.5v3a2 2 0 0 1-2 2h-3" />
+                  <path d="M8.5 20.5h-3a2 2 0 0 1-2-2v-3" />
+                  <rect x="7.5" y="7.5" width="3.2" height="3.2" rx="1" />
+                  <rect x="13.3" y="13.3" width="3.2" height="3.2" rx="1" />
+                </svg>
+              )}
+            <span>{dingtalkLoading ? '正在前往钉钉…' : '用钉钉扫码登录'}</span>
+          </button>
 
           <p className="crm-login-admin-note"><IconShieldStroked aria-hidden="true" />账号由管理员统一分配</p>
         </div>

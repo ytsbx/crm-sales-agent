@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFil
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.csvio import csv_bytes, parse_csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.importing import (
@@ -164,7 +164,7 @@ async def import_price_rules(
     session: AsyncSession = Depends(get_db),
 ):
     """批量导入价格规则。同 SKU 同等级且区间重叠的行判失败（与界面维护同一规则）。"""
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(
         raw, required_headers=["SKU编码", "指导价"], label="文件"
@@ -340,7 +340,7 @@ async def import_customer_prices(
     """
     from app.core.data_scope import scoped_owner_ids
 
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["SKU编码", "约定价"], label="文件")
     report = ImportReport("customer_price_rule", len(rows))
@@ -548,7 +548,7 @@ async def import_costs(
     - 更新同日已有版本时，空白 = **保留旧值**；
     - 币种只接受人民币（用户 2026-10-06 确认），外币成本本轮不支持。
     """
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(
         raw, required_headers=["SKU编码", "生效起始日(YYYY-MM-DD)"], label="文件"

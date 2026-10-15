@@ -370,6 +370,7 @@ a:not([href]) {
 }
 
 .sider-logo {
+  flex-shrink: 0;
   width: 30px;
   height: 30px;
   border-radius: var(--crm-radius-sm);

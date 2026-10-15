@@ -1,3 +1,4 @@
+import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevelLabel } from '../../shared/customer-level'
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -83,6 +84,8 @@ export default function CustomerDetailPage() {
   const [contactEditing, setContactEditing] = useState<Contact | null>(null)
   // 新建联系人时的查重结果；null = 还没查过
   const [contactDupes, setContactDupes] = useState<ContactDuplicateMatch[] | null>(null)
+  const [ratingModal, setRatingModal] = useState(false)
+  const [rating, setRating] = useState<string>(UNRATED_OPTION.value)
   const [editModal, setEditModal] = useState(false)
   const [editForm, setEditForm] = useState<CustomerPayload>({ name: '' })
   const [transferModal, setTransferModal] = useState(false)
@@ -229,6 +232,16 @@ export default function CustomerDetailPage() {
     onSuccess: () => {
       Toast.success('客户资料已保存')
       setEditModal(false)
+      invalidateCustomer()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const ratingMutation = useMutation({
+    mutationFn: () => updateCustomer(customerId, { level: customerLevelPayload(rating) }),
+    onSuccess: () => {
+      Toast.success('客户评级已保存')
+      setRatingModal(false)
       invalidateCustomer()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -466,11 +479,9 @@ export default function CustomerDetailPage() {
         title={customer.name}
         tags={
           <>
-            {customer.level && (
-              <Tag color={customer.level === 'A' ? 'green' : customer.level === 'B' ? 'blue' : 'grey'}>
-                {customer.level} 级客户
-              </Tag>
-            )}
+            <Tag color={customer.level === 'A' ? 'green' : customer.level === 'B' ? 'blue' : 'grey'}>
+              {customerLevelLabel(customer.level)}
+            </Tag>
             <Tag color={customer.pool_status === 'public' ? 'orange' : 'blue'}>
               {customer.pool_status === 'public' ? '公海' : '私海'}
             </Tag>
@@ -496,13 +507,18 @@ export default function CustomerDetailPage() {
                     region: customer.region ?? '',
                     address: customer.address ?? '',
                     source: customer.source ?? '',
-                    level: customer.level ?? '',
+                    level: customer.level ?? null,
                     remark: customer.remark ?? '',
                   })
                   setEditModal(true)
                 }}
               >
                 编辑客户
+              </Button>
+            )}
+            {can('customer:update') && (
+              <Button onClick={() => { setRating(customerLevelValue(customer.level)); setRatingModal(true) }}>
+                {customer.level ? '重新评级' : '评定等级'}
               </Button>
             )}
             {can('followup:create') && (
@@ -1073,6 +1089,13 @@ export default function CustomerDetailPage() {
         </div>
       </Modal>
 
+      <Modal title="客户评级" visible={ratingModal} onCancel={() => setRatingModal(false)}
+        onOk={() => ratingMutation.mutate()} confirmLoading={ratingMutation.isPending}>
+        <div style={{ marginBottom: 12 }}>了解客户后再评级；也可以恢复为未分级。评级会影响后续等级定价和管理规则。</div>
+        <Select value={rating} onChange={(value) => setRating(String(value))} style={{ width: '100%' }}
+          optionList={[UNRATED_OPTION, ...(customerLevelsQuery.data ?? []).map((item) => ({ value: item.code, label: item.label }))]} />
+      </Modal>
+
       <Modal
         title="编辑客户"
         visible={editModal}
@@ -1103,12 +1126,12 @@ export default function CustomerDetailPage() {
             <div style={{ flex: 1 }}>
               <div style={{ marginBottom: 4 }}>客户等级</div>
               <Select
-                value={editForm.level ?? undefined}
-                onChange={(v) => setEditForm({ ...editForm, level: v as string })}
-                optionList={(customerLevelsQuery.data ?? []).map((item) => ({
+                value={customerLevelValue(editForm.level)}
+                onChange={(v) => setEditForm({ ...editForm, level: customerLevelPayload(v) })}
+                optionList={[UNRATED_OPTION, ...(customerLevelsQuery.data ?? []).map((item) => ({
                   value: item.code,
                   label: item.label,
-                }))}
+                }))]}
                 style={{ width: '100%' }}
               />
             </div>
