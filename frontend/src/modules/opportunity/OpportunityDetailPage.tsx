@@ -33,10 +33,9 @@ import { completeTask, createTask, listTasks, type Task } from '../../shared/api
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
 import { calendarDay } from '../../shared/calendar-day'
-import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
 import ReceivablePlanPicker, {
   defaultPlanRows,
-  isPlanValid,
   planBlockedReasons,
   toPlanPayload,
   type ReceivablePlanRow,
@@ -194,7 +193,10 @@ export default function OpportunityDetailPage() {
   const [planMode, setPlanMode] = useState<'full' | 'installments'>('full')
   const [planRows, setPlanRows] = useState<ReceivablePlanRow[]>(defaultPlanRows)
   const planBlocked = planBlockedReasons(planMode, planRows)
-  const notifyPlanBlocked = useBlockedNotify(planBlocked, '确认成交并建单')
+  // 「能不能点」与「为什么不能点」必须是**同一个判据**（`planBlocked` 非空即被挡）。
+  // 原来 `!isPlanValid(...)` 在这里重复算了三次，三次一旦不同步就会出现
+  // 「按钮能点但右边写着不能点」这种自相矛盾的界面。
+  const planNotReady = planBlocked.length > 0
 
   const confirmWinMutation = useMutation({
     mutationFn: () => {
@@ -716,26 +718,26 @@ export default function OpportunityDetailPage() {
         onOk={() => confirmWinMutation.mutate()}
         confirmLoading={confirmWinMutation.isPending}
         okText="确认成交并建单"
-        okButtonProps={{ disabled: !isPlanValid(planMode, planRows) }}
+        okButtonProps={{ disabled: planNotReady }}
         width={620}
         footer={
           <div>
-            <div onClick={notifyPlanBlocked}>
-              <BlockedHint reasons={planBlocked} action="确认成交并建单" />
-            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
               <Button onClick={() => setConfirmWinVisible(false)}>取消</Button>
-              <div className="blocked-hint-click" onClick={notifyPlanBlocked}>
-                <Button
-                  theme="solid"
-                  loading={confirmWinMutation.isPending}
-                  disabled={!isPlanValid(planMode, planRows)}
-                  style={!isPlanValid(planMode, planRows) ? { pointerEvents: 'none' } : undefined}
-                  onClick={() => confirmWinMutation.mutate()}
-                >
-                  确认成交并建单
-                </Button>
-              </div>
+              {/* 2026-10-15 改成共用件：这一处原来是八行手写（两层 div +
+                  `pointerEvents: 'none'` + CSS 类名 + 单独一块 BlockedHint），
+                  而新页面照抄时总漏（一轮补了三个文件）。`GuardedButton` 把
+                  「旁边常驻灰字」与「点一下弹提示」都包在里面了。 */}
+              <GuardedButton
+                theme="solid"
+                loading={confirmWinMutation.isPending}
+                disabled={planNotReady}
+                blockedReasons={planBlocked}
+                action="确认成交并建单"
+                onClick={() => confirmWinMutation.mutate()}
+              >
+                确认成交并建单
+              </GuardedButton>
             </div>
           </div>
         }
