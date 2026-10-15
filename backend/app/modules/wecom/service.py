@@ -256,7 +256,11 @@ async def sync_external_contacts(session: AsyncSession, *, user: CurrentUser) ->
         row.raw_data = item
         success += 1
 
-    finish_job(job, success=success, fail=0, detail={"total": len(contacts)})
+    errors = getattr(contacts, "errors", [])
+    finish_job(
+        job, success=success, fail=len(errors),
+        detail={"total": len(contacts), "failed_members": len(errors), "errors": errors},
+    )
     return job
 
 

@@ -141,9 +141,11 @@ export default function WeComPage() {
   }
 
   const syncMutation = useMutation({
-    mutationFn: (run: () => Promise<unknown>) => run(),
-    onSuccess: () => {
-      Toast.success('同步完成')
+    mutationFn: (run: () => Promise<WeComSyncJob>) => run(),
+    onSuccess: (job) => {
+      if (job.status === 'partial' || job.fail_count > 0) {
+        Toast.warning(`同步未全部完成：成功 ${job.success_count} 项，失败 ${job.fail_count} 项，请查看同步记录`)
+      } else Toast.success(`同步完成，成功 ${job.success_count} 项`)
       // 同步结果里带"哪些人 CRM 没有账号"，直接说清楚，别只报成功条数
       refresh()
     },
@@ -305,8 +307,8 @@ export default function WeComPage() {
   const configured = readiness?.configured
   const missing = configured
     ? Object.entries(configured)
-        .filter(([, value]) => !value)
-        .map(([key]) => key)
+        .filter(([key, value]) => ['corp_id', 'external_contact_secret'].includes(key) && !value)
+        .map(([key]) => key === 'corp_id' ? '企业ID' : '客户联系Secret')
     : []
 
   return (
@@ -339,13 +341,18 @@ export default function WeComPage() {
           style={{ marginBottom: 12 }}
           description={
             <span>
-              企业微信还没配置齐全（缺：{missing.join('、')}）。同步接口会明确报错而不是假装成功；
-              请在 <code>backend/.env</code> 里补 <code>WECOM_CORP_ID</code> 等配置后重启后端。
-              未配置期间，「待归一」的数据为空是正常的，页面与接口本身可以直接联调。
+              客户导入还缺少：{missing.join('、')}，请联系管理员完成配置后重试。
             </span>
           }
         />
       )}
+
+      <Banner
+        type="info"
+        closeIcon={null}
+        style={{ marginBottom: 12 }}
+        description="导入步骤：同步外部联系人 → 同步跟进关系 → 在下方逐条关联已有客户或新建客户。同步不会自动新建客户或更改客户负责人。同步部门和成员另需通讯录配置；客户导入不需要开启消息回调或消息推送。"
+      />
 
       <KpiStrip
         items={[

@@ -144,11 +144,14 @@ async def sync_external_contacts(
         action="wecom_sync_external_contacts",
         business_type="integration",
         business_id=job.id,
-        after={"success": job.success_count},
+        after={"success": job.success_count, "fail": job.fail_count},
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_job(job), f"外部联系人同步完成，成功 {job.success_count} 条")
+    message = f"外部联系人同步完成，成功 {job.success_count} 条"
+    if job.fail_count:
+        message += f"；{job.fail_count} 个成员未完整同步，请查看同步记录后重试"
+    return ok(svc.serialize_job(job), message)
 
 
 @router.post("/integrations/wecom/sync-follow-relations")
@@ -171,7 +174,10 @@ async def sync_follow_relations(
         ip=client_ip(request),
     )
     await session.commit()
-    return ok(svc.serialize_job(job), f"跟进关系同步完成，成功 {job.success_count} 条")
+    message = f"跟进关系同步完成，成功 {job.success_count} 条"
+    if job.fail_count:
+        message += f"；{job.fail_count} 个客户同步失败，原有跟进关系保留，请重试"
+    return ok(svc.serialize_job(job), message)
 
 
 @router.get("/integrations/wecom/unbound-contacts")
