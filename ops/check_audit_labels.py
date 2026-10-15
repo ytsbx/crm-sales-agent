@@ -192,6 +192,9 @@ GENERATED_ACTION_TS = (
     REPO / 'frontend' / 'src' / 'shared' / 'audit-action-labels.generated.ts'
 )
 
+#: 对象类型中文名（后端按中文搜审计用；真源是前端 `audit-labels.ts`）
+TYPE_LABELS_JSON = BACKEND / 'app' / 'core' / 'audit_type_labels.json'
+
 
 def action_labels_source() -> dict[str, str]:
     """动作中文名的**真源**（后端 JSON）。后端时间线直接读它拼标题。"""
@@ -307,6 +310,29 @@ def main() -> int:
                 '`frontend/src/shared/audit-action-labels.generated.ts` 不是最新的 —— '
                 '请重跑 `python backend/scripts/gen_audit_action_labels.py` 并提交产物'
             )
+
+    # ②d 对象类型中文名生成物是否最新（真源 = 前端 TS → 后端 JSON）
+    #
+    # 这份 JSON 是给**后端按中文搜审计**用的（2026-10-15：主人提「没有搜索功能」，
+    # 而后端原来只能搜英文码，用户打「定制需求」永远搜不到）。
+    # 真源是前端那张给人看的表，所以比对方式是**重跑生成器看有没有变化**。
+    # 该生成器只用标准库，不需要后端依赖，所以直接用 sys.executable 跑。
+    before_type_json = TYPE_LABELS_JSON.read_text(encoding='utf-8') if TYPE_LABELS_JSON.exists() else ''
+    result3 = subprocess.run(
+        [sys.executable, 'ops/gen_audit_type_labels.py'],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    if result3.returncode != 0:
+        problems.append(
+            '生成器跑失败（`ops/gen_audit_type_labels.py`）：\n    '
+            + (result3.stderr or '').strip().splitlines()[-1]
+        )
+    elif (TYPE_LABELS_JSON.read_text(encoding='utf-8') if TYPE_LABELS_JSON.exists() else '') != before_type_json:
+        problems.append(
+            '`backend/app/core/audit_type_labels.json` 不是最新的 —— '
+            '前端 `audit-labels.ts` 里的中文名改了？'
+            '请重跑 `python3 ops/gen_audit_type_labels.py` 并提交产物'
+        )
 
     print(f'核对：对象类型 {len(types)} 个（已译 {len(types & type_labels)}）、'
           f'动作 {len(actions)} 个（已译 {len(actions & action_labels)}）、'

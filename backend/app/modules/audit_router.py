@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import AuditLog
+from app.core.audit_search import action_codes, business_type_codes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -41,10 +42,37 @@ async def list_audit_logs(
     if end:
         stmt = stmt.where(AuditLog.created_at <= end)
     if keyword:
-        like = f"%{keyword.strip()}%"
-        stmt = stmt.where(
-            AuditLog.action.ilike(like) | AuditLog.business_type.ilike(like)
-        )
+        # 搜中文也要搜得到（2026-10-15，主人「没有搜索功能」）：
+        # 界面上显示的是中文（「定制需求」「修改状态」），库里存的是英文码
+        # （`custom_inquiry`、`update_status`）—— 原来只 `ilike` 这两个码字段，
+        # 于是用户打中文**一个都搜不到**。这里先把中文反查成码，再一起搜。
+        #
+        # 同时补上**操作人姓名**：查"某某人干了什么"是最常见的用法之一，
+        # 而原来只在码字段里找，按人名搜同样是空的。
+        #
+        # 编号也认（`#12` 或 `12`）：取证时经常是"这条记录被谁改过"，
+        # 手上只有编号。纯数字才当编号，避免"2026"这种把结果搞脏。
+        text = keyword.strip()
+        like = f"%{text}%"
+        type_codes = business_type_codes(text)
+        act_codes = action_codes(text)
+
+        conditions = [
+            AuditLog.action.ilike(like),
+            AuditLog.business_type.ilike(like),
+            User.name.ilike(like),
+        ]
+        if type_codes:
+            conditions.append(AuditLog.business_type.in_(type_codes))
+        if act_codes:
+            conditions.append(AuditLog.action.in_(act_codes))
+        digits = text.lstrip("#")
+        if digits.isdigit() and len(digits) <= 18:
+            conditions.append(AuditLog.business_id == int(digits))
+
+        from sqlalchemy import or_
+
+        stmt = stmt.where(or_(*conditions))
 
     count_stmt = stmt.order_by(None)
     from sqlalchemy import func

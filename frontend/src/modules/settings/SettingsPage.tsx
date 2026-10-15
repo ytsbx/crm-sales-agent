@@ -25,17 +25,9 @@ import {
   updateUser,
 } from '../../shared/api/system'
 import { createTag, deleteTag, listTags, updateTag, type TagRow } from '../../shared/api/customer'
-import { listAuditLogs, type AuditLogRow } from '../../shared/api/analytics'
 import { syncDingTalkUsers, type DingTalkSyncResult, type DingTalkUnmatched } from '../../shared/api/dingtalk'
 import PageHeader from '../../shared/components/PageHeader'
 import PermissionPicker from '../../shared/components/PermissionPicker'
-import {
-  auditActionLabel,
-  auditChangeSummary,
-  auditHiddenFieldCount,
-  auditTypeLabel,
-  ENUM_LABEL,
-} from '../../shared/audit-labels'
 import {
   batchDecideRecycleCandidates,
   decideRecycleCandidate,
@@ -62,6 +54,7 @@ import {
 import { Button, Input, Modal, Popconfirm, Select, Switch, Toast } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
+import AuditLogPanel from './AuditLogPanel'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
@@ -136,11 +129,6 @@ export default function SettingsPage() {
     queryKey: ['settings-departments'],
     queryFn: listDepartments,
     enabled: isAdmin,
-  })
-  const auditQuery = useQuery({
-    queryKey: ['audit-logs', activeKey],
-    queryFn: () => listAuditLogs({ page: 1, page_size: 50 }),
-    enabled: isAdmin && activeKey === 'audit',
   })
   const queryClient = useQueryClient()
   const poolRulesQuery = useQuery({
@@ -1257,103 +1245,11 @@ export default function SettingsPage() {
           )}
           {activeKey === 'notifications' && <NotificationSettingsPanel />}
           {activeKey === 'audit' && (
-            <Table<AuditLogRow>
-              columns={[
-                {
-                  title: '时间',
-                  dataIndex: 'created_at',
-                  width: 190,
-                  render: (v: string) => new Date(v).toLocaleString('zh-CN'),
-                },
-                {
-                  title: '操作人',
-                  dataIndex: 'operator_name',
-                  width: 110,
-                  render: (v: string | null) => v ?? '系统',
-                },
-                {
-                  // 对象：以前这里印的是**数据库表名**（`sku_identity_source #12`），
-                  // 现在翻成中文；编号保留着，查库时还要用（主人 2026-10-12：
-                  // 「审计日志也说一堆不是人话」）
-                  title: '对象',
-                  width: 200,
-                  render: (_: unknown, record: AuditLogRow) =>
-                    record.business_type
-                      ? `${auditTypeLabel(record.business_type)}${
-                          record.business_id != null ? ` 编号 ${record.business_id}` : ''
-                        }`
-                      : '-',
-                },
-                {
-                  title: '动作',
-                  dataIndex: 'action',
-                  width: 140,
-                  render: (v: string) => auditActionLabel(v),
-                },
-                {
-                  title: '来源',
-                  dataIndex: 'source',
-                  width: 110,
-                  render: (v: string | null) => (v ? (ENUM_LABEL[v] ?? v) : '-'),
-                },
-                {
-                  // 变更内容：以前直接 `JSON.stringify(after_data)` —— 屏幕上是一坨
-                  // `{"quote_no":"Q2026…","status":"draft",…}`。现在翻成人话；
-                  // 翻不出来的字段**不硬凑英文名**，而是给一个"看原始数据"的入口 ——
-                  // 这一页是**合规取证**用的（仅管理员），摘要给人看，原文不能丢。
-                  title: '变更内容',
-                  render: (_: unknown, record: AuditLogRow) => {
-                    const summary = auditChangeSummary(record)
-                    const hidden = auditHiddenFieldCount(record)
-                    const raw = record.after_data ?? record.before_data
-                    return (
-                      <div style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>
-                        {summary ?? (
-                          <span style={{ color: 'var(--crm-text-3)' }}>
-                            这条记录没有可读的字段变化
-                          </span>
-                        )}
-                        {hidden > 0 && (
-                          <details style={{ marginTop: 2 }}>
-                            <summary
-                              style={{ cursor: 'pointer', color: 'var(--crm-text-3)' }}
-                            >
-                              还有 {hidden} 处技术细节（原始数据）
-                            </summary>
-                            <pre
-                              style={{
-                                maxHeight: 220,
-                                overflow: 'auto',
-                                margin: '4px 0 0',
-                                padding: 8,
-                                background: 'var(--crm-surface-low)',
-                                borderRadius: 'var(--crm-radius-sm)',
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-all',
-                              }}
-                            >
-                              {raw ? JSON.stringify(raw, null, 2) : '-'}
-                            </pre>
-                          </details>
-                        )}
-                      </div>
-                    )
-                  },
-                },
-                {
-                  title: 'IP',
-                  dataIndex: 'ip',
-                  width: 130,
-                  render: (v: string | null) => v ?? '-',
-                },
-              ]}
-              dataSource={auditQuery.data?.items ?? []}
-              loading={auditQuery.isLoading}
-              rowKey="id"
-              pagination={false}
-              empty="还没有审计记录"
-              scroll={{ x: 'max(100%, 1200px)' }}
-            />
+            /* 审计日志：搜索 / 筛选 / 分页 + 变更明细（2026-10-15）。
+               原来这里是一个写死 `{page:1, page_size:50}`、`pagination={false}` 的表格 ——
+               **只能看最近 50 条、没有搜索、没有筛选**，所以主人说"太乱了"。
+               后端一直支持那六个筛选参数，是页面没接。 */
+            <AuditLogPanel active={activeKey === 'audit'} />
           )}
           {activeKey === 'rules' && (
             <div style={{ display: 'grid', gap: 20 }}>
