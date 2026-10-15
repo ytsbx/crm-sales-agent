@@ -4,8 +4,11 @@
 所以换模板不用改代码——这正是"业务定了走钉钉"之后还需要的那一步。
 """
 
+from datetime import datetime
+import json
+
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,10 +35,45 @@ INQUIRY_FIELDS = {
 }
 
 
+# 现有公司询价模板发起页的补充字段。只取这五项；后续生产节点字段不让销售代填。
+SUBMISSION_FIELD_LABELS = {
+    "报价员负责范围", "期望回复时间", "是否提供样品",
+    "客户名称、联系人、联系方式", "产品型号及规格",
+}
+
+
+async def _submission_fields(cfg: dict) -> list[dict]:
+    from app.modules.dingtalk.client import get_client
+    if not cfg.get("process_code") or app_settings.dingtalk_push_off:
+        return []
+    schema = await get_client().get_process_schema(cfg["process_code"])
+    content = schema.get("schemaContent") or {}
+    if isinstance(content, str):
+        content = json.loads(content)
+    fields = []
+    for item in content.get("items", []):
+        props = item.get("props") or {}
+        if props.get("label") not in SUBMISSION_FIELD_LABELS or not props.get("id"):
+            continue
+        kind = item.get("componentName")
+        if kind not in ("TextField", "TextareaField", "DDDateField", "DDSelectField"):
+            raise AppError(ErrorCode.PARAM_ERROR, "询价模板控件已变化，请联系管理员核对", 422)
+        options = []
+        for option in props.get("options", []):
+            parsed = json.loads(option) if isinstance(option, str) and option.startswith("{") else option
+            value = parsed.get("value") if isinstance(parsed, dict) else parsed
+            if value is not None:
+                options.append(str(value))
+        fields.append({"id": props["id"], "label": props["label"], "type": kind,
+                       "required": bool(props.get("required")), "options": options})
+    return fields
+
+
 class StartApproval(BaseModel):
     """发起询价审批。`resubmit=True` 用于**驳回后重提**（建新一轮，见 service 注释）。"""
 
     resubmit: bool = False
+    quote_owner_user_id: str | None = Field(default=None, min_length=1, max_length=64)
     extra_fields: dict[str, str] | None = None
 
 
@@ -75,24 +113,52 @@ async def start_inquiry_approval(
         value = getter(inquiry)
         if value not in (None, ""):
             field_map[component_id] = value
+    supplemental_fields = await _submission_fields(cfg or {})
+    supplied = payload.extra_fields or {}
+    for field in supplemental_fields:
+        value = str(supplied.get(field["id"], "")).strip()
+        if field["required"] and not value:
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, f"请填写{field['label']}", 422)
+        if value and field["options"] and value not in field["options"]:
+            raise AppError(ErrorCode.PARAM_ERROR, f"{field['label']}选项无效，请重新选择", 422)
+        if value and field["type"] == "DDDateField":
+            try:
+                datetime.strptime(value, "%Y-%m-%d %H:%M")
+            except ValueError as error:
+                raise AppError(ErrorCode.PARAM_ERROR, "期望回复时间格式无效，请重新选择", 422) from error
+    # 业务补充字段不能覆盖发起人、部门、报价员或图片等系统生成字段。
+    protected = {v for v in (cfg or {}).get("field_map", {}).values() if v}
+    protected.update(v for v in ((cfg or {}).get("originator_component"), (cfg or {}).get("dept_component"),
+                                (cfg or {}).get("quote_owner_component"), (cfg or {}).get("image_component")) if v)
+    if protected.intersection(supplied):
+        raise AppError(ErrorCode.PARAM_ERROR, "补充资料不能覆盖系统自动填写字段", 422)
     # 钉钉那格是必填的**联系人**控件，只能在这几位里选（编号从钉钉通讯录拿的）；
     # 销售在 CRM 里选好的那位直接带过去
     quote_component = (cfg or {}).get("quote_owner_component")
     if quote_component:
-        if not inquiry.oa_quote_user_id:
+        quote_owner = payload.quote_owner_user_id or inquiry.oa_quote_user_id
+        if payload.quote_owner_user_id:
+            allowed_owners = {str(item.get("user_id")) for item in (cfg or {}).get("quote_owners", []) if isinstance(item, dict) and item.get("user_id")}
+            if quote_owner not in allowed_owners:
+                raise AppError(ErrorCode.PARAM_ERROR, "请选择当前配置中的对接报价员", 422)
+        if not quote_owner:
             raise AppError(
                 ErrorCode.REQUIRED_FIELD_MISSING,
                 "钉钉要求先指定「对接报价员」，请在需求上选好再发起",
                 422,
             )
-        field_map[quote_component] = inquiry.oa_quote_user_id
+        field_map[quote_component] = quote_owner
     # 提报人和发起人必须用同一个真实钉钉编号。关闭总闸时仅记待查询字段，
     # 不查通讯录，不用 CRM 主键冒充钉钉身份；今后真发前会重新查询并生成表单。
     from app.modules.dingtalk.client import get_client
 
     ding_user_id = ""
     if not app_settings.dingtalk_push_off:
-        ding_user_id = await get_client().search_user_id_by_name(user.name)
+        from app.modules.user.model import User
+        account = await session.get(User, user.id)
+        if account is None or account.status != "active":
+            raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
+        ding_user_id = account.dingtalk_userid or await get_client().search_user_id_by_name(user.name)
         if not ding_user_id:
             raise AppError(
                 ErrorCode.PARAM_ERROR,
@@ -431,3 +497,28 @@ async def sync_dingtalk_users(
         f"钉钉通讯录 {result['total']} 人：本次绑定 {result['bound']} 人，"
         f"原已绑定 {result['already_bound']} 人，未对上 {len(result['unmatched'])} 人",
     )
+
+
+@router.get("/inquiries/{inquiry_id}/oa-submission")
+async def inquiry_submission_options(
+    inquiry_id: int,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """仅准备CRM提交界面，不创建审批、不上传钉钉、不触发通知。"""
+    from app.modules.inquiry.service import get_visible_or_404
+    from app.modules.settings.service import get_setting
+    inquiry = await get_visible_or_404(session, user, inquiry_id)
+    cfg = await get_setting(session, "dingtalk_oa") or {}
+    owners = [{"user_id": str(item["user_id"]), "name": str(item.get("name") or "报价员")}
+              for item in cfg.get("quote_owners", []) if isinstance(item, dict) and item.get("user_id")]
+    return ok({
+        "configured": bool(cfg.get("process_code")),
+        "enabled": not app_settings.dingtalk_push_off,
+        "quote_owner_required": bool(cfg.get("quote_owner_component")),
+        "quote_owners": owners,
+        "selected_quote_owner": inquiry.oa_quote_user_id,
+        "image_required": bool(cfg.get("image_component")),
+        "file_business_type": cfg.get("inquiry_file_business_type") or "inquiry",
+        "fields": await _submission_fields(cfg),
+    })

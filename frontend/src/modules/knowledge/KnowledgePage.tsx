@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
   Dropdown,
+  DatePicker,
   Input,
   InputNumber,
   Modal,
@@ -15,6 +16,7 @@ import {
   Toast,
 } from '@douyinfe/semi-ui'
 
+import AttachmentPanel from '../common/AttachmentPanel'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { parseOptionalNumber } from '../../shared/number-input'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -37,6 +39,7 @@ import { listCustomers } from '../../shared/api/customer'
 import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
   listInquiryApprovals,
+  getInquirySubmissionOptions,
   resolveOaInstance,
   startInquiryApproval,
   type OaApprovalInstance,
@@ -91,6 +94,10 @@ export default function KnowledgePage() {
   const rawOpportunityId = Number(searchParams.get('opportunity_id'))
   const opportunityFilter = Number.isSafeInteger(rawOpportunityId) && rawOpportunityId > 0 ? rawOpportunityId : undefined
   const { can } = usePermissions()
+  const [submitTarget, setSubmitTarget] = useState<CustomInquiryRow | null>(null)
+  const [submitFields, setSubmitFields] = useState<Record<string, string>>({})
+  const [submitResubmit, setSubmitResubmit] = useState(false)
+  const [submitQuoteOwner, setSubmitQuoteOwner] = useState<string | undefined>()
   const [draftSourceId, setDraftSourceId] = useState<number | null>(null)
   const [sampleSourceId, setSampleSourceId] = useState<number | null>(null)
   const [statusFilter, setStatusFilter] = useState<string | undefined>()
@@ -163,17 +170,6 @@ export default function KnowledgePage() {
       setAdoptTarget(null)
       setAdoptInstanceId('')
       resolveKeyRef.current = null
-      void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
-  // 重提/重试共用「发起审批」接口：两轮之间是"另建一张单"，同一轮内是"再发一次"，
-  // 到底允许哪一个由服务端的 allowed_actions 决定（见下面审批记录表的按钮）
-  const approvalMutation = useMutation({
-    mutationFn: ({ inquiryId, resubmit }: { inquiryId: number; resubmit: boolean }) =>
-      startInquiryApproval(inquiryId, resubmit),
-    onSuccess: (row) => {
-      Toast.success(`钉钉审批：${row.status_label}（第 ${row.submit_round ?? 1} 轮）`)
       void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -336,20 +332,33 @@ export default function KnowledgePage() {
       .catch((error: Error) => Toast.error(error.message))
   }
 
-  /** 场景11：从需求发起钉钉询价审批。
-   *  注意这不是"随便试试"——真发起会通知审批人（真人）。
-   *  后端有推送总闸，关着时只会记一条"未发起"，不会打扰任何人。 */
-  const startApproval = async (row: CustomInquiryRow) => {
-    try {
-      const result = await startInquiryApproval(row.id)
-      if (result.status === 'skipped') {
-        Toast.info(`未发起：${result.error ?? '推送已关闭'}`)
-      } else {
-        Toast.success(`钉钉审批：${result.status_label}`)
-      }
-    } catch (error) {
-      Toast.error((error as Error).message)
-    }
+  const submissionOptions = useQuery({
+    queryKey: ['inquiry-oa-submission', submitTarget?.id],
+    queryFn: () => getInquirySubmissionOptions(submitTarget!.id),
+    enabled: Boolean(submitTarget),
+  })
+  const submitMutation = useMutation({
+    mutationFn: ({ inquiryId, quoteOwner, resubmit, fields }: { inquiryId: number; quoteOwner?: string; resubmit: boolean; fields: Record<string, string> }) =>
+      startInquiryApproval(inquiryId, resubmit, quoteOwner, fields),
+    onSuccess: (result) => {
+      if (result.status === 'pending' && result.instance_id) {
+        Toast.success('询价已提交到钉钉OA，后续由生产部在钉钉处理')
+      } else if (['needs_review', 'submitting'].includes(result.status)) {
+        Toast.warning('提交结果尚未确定，请查看审批记录并核对钉钉，不要重复提交')
+      } else if (['skipped', 'not_sent', 'failed'].includes(result.status)) {
+        Toast.warning(`尚未提交成功：${result.error || result.status_label}`)
+      } else Toast.info(`当前钉钉审批状态：${result.status_label}，请查看审批记录`)
+      setApprovalTarget(submitTarget)
+      setSubmitTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const startApproval = (row: CustomInquiryRow, resubmit = false) => {
+    setSubmitResubmit(resubmit)
+    setSubmitFields({})
+    setSubmitQuoteOwner(undefined)
+    setSubmitTarget(row)
   }
 
   /** 场景09：定制件没有 SKU，报价中心选不到它，这里给一条"填两个数就成单"的出口。
@@ -462,7 +471,7 @@ export default function KnowledgePage() {
         if (can('sample:manage')) {
           moreActions.push({ key: 'sample', label: '申请打样', onClick: () => setSampleSourceId(record.id) })
         }
-        moreActions.push({ key: 'oa-start', label: '发起审批', onClick: () => { void startApproval(record) } })
+        if (can('quote:manage')) moreActions.push({ key: 'oa-start', label: '提交询价到钉钉', onClick: () => startApproval(record) })
         // 历次审批 + "结果不明"的人工处理入口（认领/重发/作废）
         moreActions.push({ key: 'oa-log', label: '审批记录', onClick: () => setApprovalTarget(record) })
         if ((record.version ?? 1) > 1) {
@@ -604,6 +613,66 @@ export default function KnowledgePage() {
 
       {draftSourceId != null && <SampleFromSourceModal mode="order" source={{ inquiry_id: draftSourceId }} onClose={() => setDraftSourceId(null)} />}
       {sampleSourceId != null && <SampleFromSourceModal source={{ inquiry_id: sampleSourceId }} onClose={() => setSampleSourceId(null)} />}
+      <Modal
+        title="提交询价到钉钉OA"
+        visible={Boolean(submitTarget)}
+        width={720}
+        onCancel={() => { if (!submitMutation.isPending) setSubmitTarget(null) }}
+        okText="确认提交到钉钉"
+        confirmLoading={submitMutation.isPending}
+        okButtonProps={{ disabled: submissionOptions.isPending || submissionOptions.isError || !submissionOptions.data?.configured || !submissionOptions.data?.enabled }}
+        onOk={() => {
+          if (!submitTarget || !submissionOptions.data) return
+          const quoteOwner = submitQuoteOwner ?? submissionOptions.data.selected_quote_owner ?? undefined
+          if (submissionOptions.data.quote_owner_required && !quoteOwner) { Toast.warning('请选择对接报价员'); return }
+          const missing = submissionOptions.data.fields.find((field) => field.required && !submitFields[field.id]?.trim())
+          if (missing) { Toast.warning(`请填写${missing.label}`); return }
+          submitMutation.mutate({ inquiryId: submitTarget.id, quoteOwner, resubmit: submitResubmit, fields: submitFields })
+        }}
+      >
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div>业务员在CRM提交，生产部在钉钉接收并处理。确认提交后才会发起审批，无需在钉钉重复填单。</div>
+          <div><strong>{submitTarget?.title}</strong>（第 {submitTarget?.version ?? 1} 版）</div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>{submitTarget?.description || '尚未填写需求描述'}</div>
+          <div>数量：{submitTarget?.quantity ?? '未填写'}；客户：{submitTarget?.customer_name || '未关联'}</div>
+          {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>{submissionOptions.error.message}</div>}
+          {submissionOptions.data && !submissionOptions.data.configured && <div>尚未配置钉钉询价模板，请联系管理员。</div>}
+          {submissionOptions.data && !submissionOptions.data.enabled && <div>钉钉询价提交暂未开启，请联系管理员。</div>}
+          {submissionOptions.data?.quote_owner_required && <div>
+            <FormLabel required>对接报价员</FormLabel>
+            <Select style={{ width: '100%' }} placeholder="选择钉钉对接报价员"
+              disabled={submitMutation.isPending}
+              value={submitQuoteOwner ?? submissionOptions.data.selected_quote_owner ?? undefined}
+              onChange={(value) => setSubmitQuoteOwner(value as string)}
+              optionList={submissionOptions.data.quote_owners.map((item) => ({ value: item.user_id, label: item.name }))}
+            />
+          </div>}
+          {submissionOptions.data?.fields.map((field) => <div key={field.id}>
+            <FormLabel required={field.required}>{field.label}</FormLabel>
+            {field.type === 'DDSelectField' ? (
+              <Select style={{ width: '100%' }} placeholder="请选择" disabled={submitMutation.isPending}
+                value={submitFields[field.id] || undefined}
+                optionList={field.options.map((value) => ({ value, label: value }))}
+                onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value as string }))} />
+            ) : field.type === 'DDDateField' ? (
+              <DatePicker type="dateTime" format="yyyy-MM-dd HH:mm" style={{ width: '100%' }}
+                disabled={submitMutation.isPending} placeholder="请选择期望回复时间" showClear
+                onChange={(_, value) => setSubmitFields((current) => ({ ...current, [field.id]: (value as string) || '' }))} />
+            ) : (
+              <TextArea value={submitFields[field.id] || ''} rows={2} disabled={submitMutation.isPending}
+                placeholder={`填写${field.label}`}
+                onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value }))} />
+            )}
+          </div>)}
+          {submitTarget && submissionOptions.data && <div>
+            <FormLabel required={submissionOptions.data.image_required}>产品参考图片与附件</FormLabel>
+            <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>上传真实产品参考图片后再提交；审批结果可在「审批记录」查看，系统会定期从钉钉同步。</div>
+            <AttachmentPanel businessType={submissionOptions.data.file_business_type} businessId={submitTarget.id}
+              writePermission="quote:manage" />
+          </div>}
+        </div>
+      </Modal>
+
       <Modal
         title={editing ? '编辑定制询价' : '记录定制询价'}
         visible={editVisible}
@@ -921,9 +990,12 @@ export default function KnowledgePage() {
                       key="resubmit"
                       title="驳回后重提？"
                       content="会向钉钉「新建一轮」审批（旧轮次保留在记录里）。"
-                      onConfirm={() =>
-                        approvalMutation.mutate({ inquiryId: row.inquiry_id, resubmit: true })
-                      }
+                      onConfirm={() => {
+                        if (!approvalTarget) return
+                        const target = approvalTarget
+                        setApprovalTarget(null)
+                        startApproval(target, true)
+                      }}
                     >
                       <a>驳回后重提</a>
                     </Popconfirm>,
@@ -935,9 +1007,12 @@ export default function KnowledgePage() {
                       key="retry"
                       title="重新发起？"
                       content="沿用同一轮、同一请求号再发一次（外部确认没建单时才适用）。"
-                      onConfirm={() =>
-                        approvalMutation.mutate({ inquiryId: row.inquiry_id, resubmit: false })
-                      }
+                      onConfirm={() => {
+                        if (!approvalTarget) return
+                        const target = approvalTarget
+                        setApprovalTarget(null)
+                        startApproval(target, false)
+                      }}
                     >
                       <a>重新发起</a>
                     </Popconfirm>,
