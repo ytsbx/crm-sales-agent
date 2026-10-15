@@ -1,3 +1,4 @@
+import FormLabel from '../../shared/components/FormLabel'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -1225,31 +1226,40 @@ export default function SampleListPage() {
                         value={prodForm.purpose}
                         onChange={(v) => setProdForm({ ...prodForm, purpose: v })}
                       />
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <DatePicker
-                          type="date"
-                          format="yyyy-MM-dd"
-                          showClear
-                          style={{ flex: 1 }}
-                          placeholder="选择目标完成日"
-                          value={
-                            prodForm.target_completion_date
-                              ? new Date(prodForm.target_completion_date)
-                              : undefined
-                          }
-                          onChange={(_, dateStr) =>
-                            setProdForm({
-                              ...prodForm,
-                              target_completion_date: (dateStr as string) || '',
-                            })
-                          }
-                        />
-                        <Input
-                          style={{ width: 120 }}
-                          placeholder="费用（留空=未填）"
-                          value={prodForm.sample_fee}
-                          onChange={(v) => setProdForm({ ...prodForm, sample_fee: v })}
-                        />
+                      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <FormLabel>目标完成日</FormLabel>
+                          <DatePicker
+                            type="date"
+                            format="yyyy-MM-dd"
+                            showClear
+                            style={{ width: '100%' }}
+                            placeholder="选择日期"
+                            value={
+                              prodForm.target_completion_date
+                                ? new Date(prodForm.target_completion_date)
+                                : undefined
+                            }
+                            onChange={(_, dateStr) =>
+                              setProdForm({
+                                ...prodForm,
+                                target_completion_date: (dateStr as string) || '',
+                              })
+                            }
+                          />
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <FormLabel>打样费用（元）</FormLabel>
+                          <Input
+                            style={{ width: '100%' }}
+                            placeholder="请输入金额"
+                            value={prodForm.sample_fee}
+                            onChange={(v) => setProdForm({ ...prodForm, sample_fee: v })}
+                          />
+                          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            留空表示未填；免费请填 0
+                          </div>
+                        </div>
                       </div>
                       <TextArea
                         placeholder="验收标准"
