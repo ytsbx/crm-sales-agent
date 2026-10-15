@@ -35,6 +35,7 @@ export const SETTING_LABELS: Record<string, { label: string; description: string
   pool_recycle_restore_permission: { label: '公海回收恢复权限', description: '允许把已回收客户恢复的权限。' },
   notification_channels: { label: '通知渠道', description: '站内通知和企业微信通知的开关与适用类型。' },
   notification_levels: { label: '通知分级', description: '不同通知类型采用即时发送或日报汇总。' },
+  dingtalk_sample_oa: { label: '钉钉独立打样审批', description: '独立打样审批模板编号；沿用原询价时不发新单。' },
   dingtalk_oa: { label: '钉钉审批配置', description: '钉钉审批模板、字段映射和发起人来源。' },
 }
 

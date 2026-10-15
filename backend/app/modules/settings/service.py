@@ -199,6 +199,7 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     # 只改这里就能跑。字段映射的 key 必须是钉钉控件的 **componentId**
     # （不是中文名——名字对不上钉钉不报错，只把那格留空，"免重复录入"会静默失效）。
     # 例：{"process_code": "PROC-XXXX", "field_map": {"title": "TextField_XXXX", "quantity": "NumberField_XXXX"}}
+    "dingtalk_sample_oa": {"process_code": ""},
     "dingtalk_oa": {
         "process_code": "",
         "field_map": {},

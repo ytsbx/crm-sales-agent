@@ -1,3 +1,4 @@
+import SampleDingTalkModal from './SampleDingTalkModal'
 import FormLabel from '../../shared/components/FormLabel'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -157,6 +158,7 @@ export default function SampleListPage() {
     queryKey: ['opportunity', createOpportunityId],
     queryFn: () => getOpportunity(createOpportunityId!), enabled: Boolean(createOpportunityId) && canManage,
   })
+  const [oaTarget, setOaTarget] = useState<number | null>(null)
   const [createVisible, setCreateVisible] = useState(false)
   /** 打样申请的计时起点（场景18 操作耗时埋点） */
   const createStartedAt = useRef<number | null>(null)
@@ -328,6 +330,7 @@ export default function SampleListPage() {
   const createMutation = useMutation({
     mutationFn: () =>
       createSample({
+        use_dingtalk: true,
         opportunity_id: form.opportunity_id ?? null,
         customer_id: form.customer_id ?? null,
         remark: form.remark.trim() || null,
@@ -354,7 +357,8 @@ export default function SampleListPage() {
           }).catch(() => undefined)
         }
       }
-      Toast.success('样品申请已创建')
+      Toast.success('打样草稿已创建，请选择钉钉流程并补充申请资料')
+      setOaTarget(created.id)
       setCreateVisible(false)
       setForm({ remark: '', items: [{ mode: 'sku', quantity: '1' }] })
       void refresh()
@@ -698,8 +702,16 @@ export default function SampleListPage() {
     label: `${row.inquiry_no ?? `编号 ${row.id}`} · ${row.title}`,
   }))
 
+  useEffect(() => {
+    if (detail && searchParams.get('oa') === '1') {
+      setOaTarget(detail.id)
+      setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('oa'); return next }, { replace: true })
+    }
+  }, [detail, searchParams, setSearchParams])
+
   return (
     <div className="page-container">
+      {oaTarget != null && <SampleDingTalkModal key={oaTarget} sampleId={oaTarget} onClose={() => { setOaTarget(null); void refresh() }} />}
       <ConfirmRequiredModal
         visible={sampleGate !== null}
         message={sampleGate?.message ?? ''}
@@ -779,7 +791,7 @@ export default function SampleListPage() {
         onCancel={() => setCreateVisible(false)}
         onOk={() => createMutation.mutate()}
         confirmLoading={createMutation.isPending}
-        okText="创建"
+        okText="保存草稿并填写钉钉申请"
         width={560}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1117,12 +1129,13 @@ export default function SampleListPage() {
               </div>
             )}
 
-            {canManage && (
+            {canManage && <Button theme="solid" onClick={() => setOaTarget(detail.id)}>钉钉打样申请 / 查看进度</Button>}
+            {canManage && !((detail.source_context as unknown as { dingtalk_oa?: { submitted?: boolean } } | null)?.dingtalk_oa?.submitted) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——
                     主管改判（上次驳错了）、跟单原样重提（认为驳回理由不成立）。
                     这两条是不同角色在办事，缺哪条都会卡住那一半人。 */}
-                {(detail.status === 'pending' || detail.status === 'rejected') && (
+                {(detail.status === 'pending' || detail.status === 'rejected') && !((detail.source_context as unknown as Record<string, unknown> | null)?.dingtalk_oa) && (
                   <>
                     {detail.status === 'pending' && (
                       <Input

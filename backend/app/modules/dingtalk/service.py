@@ -829,6 +829,10 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
             row.error = str(exc)[:500]
             row.updated_at = datetime.now(UTC)
             continue
+        linked_sample = None
+        if row.oa_type == 'sample':
+            from app.modules.sample.model import SampleRequest
+            linked_sample = await session.get(SampleRequest, row.inquiry_id, with_for_update=True)
         row.error = None
         raw_status = str(data.get("status") or "").upper()
         # 审批**走完**之后，通过还是驳回要看 `result`（agree / refuse）——
@@ -850,6 +854,13 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
         if new_status and new_status != row.status:
             row.status = new_status
             changed += 1
+        if linked_sample is not None and linked_sample.deleted_at is None and int(linked_sample.version or 1)==row.inquiry_version:
+            meta=(linked_sample.source_context or {}).get('dingtalk_oa') or {}
+            if meta.get('mode')=='standalone' and meta.get('submitted') and linked_sample.status=='pending' and new_status in ('approved','rejected'):
+                linked_sample.status=new_status
+                linked_sample.approved_at=datetime.now(UTC)
+                linked_sample.reject_reason='钉钉打样审批已拒绝，处理意见见钉钉审批记录' if new_status=='rejected' else None
+
     await session.flush()
     return {"checked": len(rows), "changed": changed}
 

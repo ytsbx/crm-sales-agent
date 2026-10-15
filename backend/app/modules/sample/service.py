@@ -132,7 +132,7 @@ def serialize_request(
         # 审批轮次（§3.2）：驳回后重提 / 已批准后改车间依据会自增。
         # 界面据此显示"第 N 轮"，也让"被驳回过几次"数得出来。
         "review_round": request.review_round or 1,
-        "status_label": SAMPLE_STATUS_LABEL.get(request.status, request.status),
+        "status_label": ("打样草稿" if (request.source_context or {}).get("dingtalk_oa") and not (request.source_context or {})["dingtalk_oa"].get("submitted") else SAMPLE_STATUS_LABEL.get(request.status, request.status)),
         "remark": request.remark,
         "reject_reason": request.reject_reason,
         "requested_at": request.requested_at.isoformat() if request.requested_at else None,
@@ -284,6 +284,7 @@ async def get_visible_or_404(
     *,
     for_update: bool = False,
     allow_deleted: bool = False,
+    allow_external_flow: bool = False,
 ) -> SampleRequest:
     """取样品申请并校验数据范围（列表按 owner_id 过滤，单条此前没校验）。
 
@@ -315,6 +316,9 @@ async def get_visible_or_404(
     else:
         request = await get_or_404(session, sample_id, include_deleted=allow_deleted)
     await ensure_in_scope(session, user, owner_id=request.owner_id, label="样品申请")
+    if for_update and not allow_external_flow:
+        from app.modules.sample.dingtalk import ensure_editable
+        ensure_editable(request)
     if for_update:
         # 已被新修订版取代的那一版不能再改（读接口不受限：历史版本永远查得到）。
         # 软删的过滤在上面那段 where 里已经做过，这里不重复。
@@ -507,7 +511,7 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
         # 「这张单现在能不能删」（2026-10-15 加软删）：判据只在后端写一遍
         # （`model.SAMPLE_DELETABLE_STATUSES`），这里下发一个布尔，前端据此决定
         # 显示「删除」还是「恢复」—— 前端不要自己复刻一份状态清单。
-        data["can_delete"] = row.deleted_at is None and row.status in SAMPLE_DELETABLE_STATUSES
+        data["can_delete"] = row.deleted_at is None and not ((row.source_context or {}).get("dingtalk_oa") or {}).get("submitted") and row.status in SAMPLE_DELETABLE_STATUSES
         payload.append(data)
     return payload
 

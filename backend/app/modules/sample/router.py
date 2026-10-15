@@ -245,6 +245,8 @@ async def delete_sample(
     列表默认看不见；需要时按「已删除」筛出来还能恢复。
     """
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.sample.dingtalk import ensure_editable
+    ensure_editable(sample)
     if sample.status not in SAMPLE_DELETABLE_STATUSES:
         label = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
         raise AppError(
@@ -334,6 +336,7 @@ async def create_sample(
         await _assert_active_owner(session, payload.production_owner_id, "制作负责人")
 
     sample = SampleRequest(
+        source_context={"dingtalk_oa":{"mode":"standalone","fields":{}}} if payload.use_dingtalk else None,
         opportunity_id=payload.opportunity_id,
         customer_id=customer_id,
         contact_id=payload.contact_id,
@@ -377,21 +380,22 @@ async def create_sample(
         after=await svc.detail(session, sample),
         ip=client_ip(request),
     )
-    # 领导六阶段口径"过程记录"：打样动作自动写跟进并推送业务主管
-    await followup_service.record_and_notify(
-        session,
-        customer_id=sample.customer_id,
-        owner_id=sample.owner_id,
-        title="打样申请已创建",
-        content=f"样品申请编号 {sample.id} 已创建（{len(payload.items)} 条明细）",
-        business_type="sample",
-        business_id=sample.id,
-        opportunity_id=sample.opportunity_id,
-        sample_id=sample.id,
-        operator_id=user.id,
-        exclude_user_id=user.id,
-        event_key=f"sample:create:{sample.id}",
-    )
+    if not payload.use_dingtalk:
+        # 领导六阶段口径"过程记录"：打样动作自动写跟进并推送业务主管
+        await followup_service.record_and_notify(
+            session,
+            customer_id=sample.customer_id,
+            owner_id=sample.owner_id,
+            title="打样申请已创建",
+            content=f"样品申请编号 {sample.id} 已创建（{len(payload.items)} 条明细）",
+            business_type="sample",
+            business_id=sample.id,
+            opportunity_id=sample.opportunity_id,
+            sample_id=sample.id,
+            operator_id=user.id,
+            exclude_user_id=user.id,
+            event_key=f"sample:create:{sample.id}",
+        )
     await session.commit()
     await notification_service.dispatch_pending(session)
     return ok(await svc.detail(session, sample), "样品申请已创建")
@@ -472,6 +476,8 @@ async def update_sample(
     session: AsyncSession = Depends(get_db),
 ):
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.sample.dingtalk import ensure_editable
+    ensure_editable(sample)
     before = await svc.detail(session, sample)
     data = payload.model_dump(exclude_unset=True)
     # ---- 落库前校验关联完整性（审查 C3-02）----
@@ -597,6 +603,8 @@ async def approve_sample(
 ):
     """审批样品申请：批准或拒绝（PRD §19 的「样品申请」环节）。"""
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.sample.dingtalk import ensure_local_review
+    ensure_local_review(sample)
     target = "approved" if payload.approved else "rejected"
     svc.ensure_transition(sample.status, target)
 
@@ -654,6 +662,8 @@ async def resubmit_sample(
     资料一字不动、`reject_reason` 也保留 —— 主管重审时要知道上一轮为什么被打回。
     """
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.sample.dingtalk import ensure_local_review
+    ensure_local_review(sample)
     request_key = payload.request_key if payload else None
     if (request_key and sample.status == "pending"
             and sample.review_request_key == request_key):
@@ -1510,6 +1520,8 @@ async def update_sample_item(
     而"哪一档能改"是业务口径，只该有一个出处。
     """
     sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    from app.modules.sample.dingtalk import ensure_editable
+    ensure_editable(sample)
     item = await _get_item_or_404(session, sample_id, item_id)
 
     before = svc.serialize_item(item)

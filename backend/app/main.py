@@ -44,6 +44,7 @@ from app.modules.public_pool.router import router as public_pool_router
 from app.modules.quote.router import router as quote_router
 from app.modules.recycle.router import router as recycle_router
 from app.modules.sample.router import router as sample_router
+from app.modules.sample.dingtalk import router as sample_dingtalk_router
 from app.modules.task.router import router as task_router
 from app.modules.timeline.router import router as timeline_router
 from app.modules.user.router import router as user_router
@@ -133,6 +134,7 @@ app.include_router(quote_router, prefix=settings.api_prefix)
 # 不会和任何 /xxx/{id} 动态路由抢匹配。
 app.include_router(recycle_router, prefix=settings.api_prefix)
 app.include_router(sample_router, prefix=settings.api_prefix)
+app.include_router(sample_dingtalk_router, prefix=settings.api_prefix)
 app.include_router(approval_router, prefix=settings.api_prefix)
 app.include_router(approval_rules_router, prefix=settings.api_prefix)  # 规则接口自带静态/动态顺序，见 rules_router 模块注释
 app.include_router(order_router, prefix=settings.api_prefix)

@@ -367,6 +367,8 @@ async def resolve_oa_instance(
     from app.modules.inquiry import service as inquiry_service
 
     row = await session.get(OaInstance, oa_id)
+    if row is not None and row.oa_type != "inquiry":
+        raise AppError(ErrorCode.NOT_FOUND, "询价审批记录不存在", 404)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "审批记录不存在", 404)
     # 数据范围跟需求走：能对别人的需求发起审批的人，同样需要能处理它的异常
@@ -479,7 +481,7 @@ async def list_inquiry_approvals(
     rows = (
         await session.execute(
             select(OaInstance)
-            .where(OaInstance.inquiry_id == inquiry_id)
+            .where(OaInstance.inquiry_id == inquiry_id, OaInstance.oa_type == "inquiry")
             .order_by(OaInstance.submit_round.desc())
         )
     ).scalars().all()

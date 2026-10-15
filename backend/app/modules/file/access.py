@@ -139,6 +139,8 @@ def sample_write_lock_label_for(sample) -> str | None:
     """
     if sample is None:
         return None
+    if ((getattr(sample,"source_context",None) or {}).get("dingtalk_oa") or {}).get("submitted"):
+        return "打样申请已提交或关联钉钉，制作资料已经冻结"
     if sample.status in ("shipped", "signed"):
         from app.modules.sample.model import SAMPLE_STATUS_LABEL
 

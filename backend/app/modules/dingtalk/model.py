@@ -31,6 +31,7 @@ from app.core.base import Base, IdMixin, JSONType
 #: OA 类型。目前只有询价；将来开发评审、变更审批都复用这张表，所以类型要可扩展。
 OA_TYPE_LABEL = {
     "inquiry": "定制询价",
+    "sample": "打样申请",
 }
 
 #: 实例状态。与钉钉的状态词翻译过来，CRM 侧口径固定，避免各处 if 判断漂移。

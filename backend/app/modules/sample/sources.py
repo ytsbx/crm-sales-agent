@@ -69,7 +69,9 @@ async def load_source(session, user, *, quote_version_id=None, inquiry_id=None):
 
 async def create_from_source(session, user, payload, *, ip=None):
     key = str(payload.request_key)
-    digest = hashlib.sha256(json.dumps(payload.model_dump(mode='json', exclude={'request_key'}),
+    content = payload.model_dump(mode='json', exclude={'request_key'})
+    if not content.get('use_dingtalk'):content.pop('use_dingtalk',None)  # 兼容旧请求摘要。
+    digest = hashlib.sha256(json.dumps(content,
                             sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     # 同 key 串行化；不用外部锁，事务失败时一并释放。
     from sqlalchemy import text
@@ -96,7 +98,7 @@ async def create_from_source(session, user, payload, *, ip=None):
         raise AppError(ErrorCode.PARAM_ERROR, '所选明细不属于该来源版本', 422)
     sample = SampleRequest(customer_id=source['customer_id'], opportunity_id=source['opportunity_id'],
                            contact_id=source['contact_id'], owner_id=source['owner_id'],
-                           status='pending', requested_at=service.now(), created_at=service.now(), remark=payload.remark, source_context=source['source'],
+                           status='pending', requested_at=service.now(), created_at=service.now(), remark=payload.remark, source_context={**source['source'], **({'dingtalk_oa':{'mode':'standalone','fields':{}}} if payload.use_dingtalk else {})},
                            request_key=key, request_hash=digest, created_by=user.id)
     session.add(sample)
     await session.flush()
@@ -111,10 +113,11 @@ async def create_from_source(session, user, payload, *, ip=None):
     await session.flush()
     await write_audit(session, operator_id=user.id, action='create', business_type='sample',
                       business_id=sample.id, after={'source': source['source'], 'item_count': len(payload.items)}, ip=ip)
-    await record_and_notify(session, customer_id=sample.customer_id, owner_id=sample.owner_id,
-        operator_id=user.id, exclude_user_id=user.id, title='打样申请已创建',
-        content=f"样品申请编号 {sample.id} 来源 {source['source']['no'] or ''} V{source['source']['version']}（{len(payload.items)} 条明细）",
-        business_type='sample', business_id=sample.id, sample_id=sample.id,
-        opportunity_id=sample.opportunity_id, event_key=f'sample:create:{sample.id}')
+    if not payload.use_dingtalk:
+        await record_and_notify(session, customer_id=sample.customer_id, owner_id=sample.owner_id,
+            operator_id=user.id, exclude_user_id=user.id, title='打样申请已创建',
+            content=f"样品申请编号 {sample.id} 来源 {source['source']['no'] or ''} V{source['source']['version']}（{len(payload.items)} 条明细）",
+            business_type='sample', business_id=sample.id, sample_id=sample.id,
+            opportunity_id=sample.opportunity_id, event_key=f'sample:create:{sample.id}')
     await customer_service.touch_progress(session, sample.customer_id)
     return sample, False

@@ -41,7 +41,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
     }])))
   }, [query.data, mode])
   const mutation = useMutation<{ id: number }, Error, void>({
-    mutationFn: () => (mode === 'order' ? createOrderDraft : createSampleFromSource)({ ...source, request_key: requestKey.current,
+    mutationFn: () => (mode === 'order' ? createOrderDraft : createSampleFromSource)({ ...source, ...(mode === 'sample' ? { use_dingtalk: true } : {}), request_key: requestKey.current,
       items: (query.data?.items ?? []).filter(row => drafts[row.source_item_id]?.selected).map(row => {
         const draft = drafts[row.source_item_id]
         return { source_item_id: row.source_item_id, quantity: draft.quantity,
@@ -55,7 +55,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
       void client.invalidateQueries({ queryKey: [mode === 'order' ? 'order-drafts' : 'samples'] })
       void client.invalidateQueries({ queryKey: ['opportunity-records'] })
       Toast.success(mode === 'order' ? '订单草稿已创建' : '打样申请已创建')
-      onClose(); navigate(mode === 'order' ? `/order-drafts/${row.id}` : `/samples/${row.id}`)
+      onClose(); navigate(mode === 'order' ? `/order-drafts/${row.id}` : `/samples/${row.id}?oa=1`)
     },
     onError: error => Toast.error((error as Error).message),
     onSettled: () => { sending.current = false },
