@@ -266,7 +266,12 @@ def _external_base(request: Request) -> str:
     所以即便 Host 被伪造，也换不来一个能用的回调地址。
     """
     host = request.headers.get("host") or request.url.netloc
-    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    # 只接受浏览器可用的 HTTP 方案；直接把请求头拼进重定向地址会让异常代理头
+    # 生成 `javascript:` 等危险 Location。Host 的部署白名单仍由反向代理负责。
+    proto = forwarded_proto if forwarded_proto in {"http", "https"} else request.url.scheme
+    if proto not in {"http", "https"}:
+        proto = "http"
     return f"{proto}://{host}"
 
 

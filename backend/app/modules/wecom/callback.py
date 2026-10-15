@@ -61,19 +61,26 @@ def verify_signature(*, signature: str, timestamp: str, nonce: str, encrypt: str
 
 
 def _unpad(data: bytes) -> bytes:
+    """严格校验企微使用的 PKCS#7 填充。"""
+    if not data:
+        raise WeComCallbackError("回调密文为空")
     pad = data[-1]
-    if pad < 1 or pad > 32:
-        pad = 0
-    return data[:-pad] if pad else data
+    if pad < 1 or pad > AES.block_size or len(data) < pad or data[-pad:] != bytes([pad]) * pad:
+        raise WeComCallbackError("回调消息填充无效")
+    return data[:-pad]
 
 
 def decrypt(encrypt: str) -> str:
     """解密并校验 receiveid，返回明文（XML 字符串）。"""
     key = _aes_key()
     try:
-        raw = base64.b64decode(encrypt)
+        raw = base64.b64decode(encrypt, validate=True)
+        if not raw or len(raw) % AES.block_size:
+            raise WeComCallbackError("回调密文长度无效")
         cipher = AES.new(key, AES.MODE_CBC, key[:16])
         plain = _unpad(cipher.decrypt(raw))
+    except WeComCallbackError:
+        raise
     except Exception as error:  # 解密失败的原因对排查很关键，别吞掉
         raise WeComCallbackError(f"回调消息解密失败：{error}") from error
 
@@ -81,6 +88,8 @@ def decrypt(encrypt: str) -> str:
     if len(plain) < 20:
         raise WeComCallbackError("回调消息长度异常")
     msg_len = struct.unpack("!I", plain[16:20])[0]
+    if 20 + msg_len > len(plain):
+        raise WeComCallbackError("回调消息长度字段越界")
     message = plain[20 : 20 + msg_len].decode("utf-8")
     receiveid = plain[20 + msg_len :].decode("utf-8")
     if settings.wecom_corp_id and receiveid != settings.wecom_corp_id:

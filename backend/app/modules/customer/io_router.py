@@ -7,9 +7,9 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.csvio import csv_bytes, parse_csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import ImportReport, RowErrors, finalize, row_savepoint
 from app.modules.contact_util import find_duplicate_customers
@@ -279,7 +279,7 @@ async def import_customers(
     """
     from app.core.data_scope import scoped_owner_ids
 
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["客户名称"], label="文件")
     report = ImportReport("customer", len(rows))
@@ -329,6 +329,12 @@ async def import_customers(
             except AppError as exc:
                 errs.add(exc.message)
 
+        owner_login = (row.get("负责人登录名") or "").strip()
+        # 导入文件里明确指定负责人属于分配动作；空白才按导入人归属。
+        # 否则只有 customer:create 的账号可以借 Excel 入口绕过 customer:assign，
+        # 与单个新建、线索导入的权限口径不一致。
+        if owner_login:
+            ensure_permission(user, "customer:assign")
         owner_id, owner_error, owner_info = await io_util.resolve_owner_checked(
             session, row.get("负责人登录名"), user.id
         )
