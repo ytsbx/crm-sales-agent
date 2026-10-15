@@ -59,7 +59,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
-import { blockedToastText } from '../../shared/components/blocked-hint-reasons'
+import GuardedButton from '../../shared/components/GuardedButton'
 
 /** 样品（PRD §19 / 03-API §26）。 */
 
@@ -194,15 +194,6 @@ export default function SampleListPage() {
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
   const [newItem, setNewItem] = useState<ItemDraft>({ mode: 'sku', quantity: '1' })
-  // 「添加」灰着的时候点一下要有反应（主人 2026-10-12 的规矩，见 BlockedHint）。
-  // 用函数而不是当场算数组：判据要跟按钮的 disabled 完全一致，且这里不能调 hook。
-  const notifyAddBlocked = () => {
-    if (!draftReady(newItem)) {
-      Toast.warning(blockedToastText([
-        newItem.mode === 'custom' ? '请先选择一个定制需求编号，再点「添加」。' : '请先选择一个 SKU，再点「添加」。',
-      ], '添加明细'))
-    }
-  }
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
   // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，在明细行上改（见 itemEdit）。
@@ -1081,24 +1072,15 @@ export default function SampleListPage() {
                     value={newItem.quantity}
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}
                   />
-                  <div className="blocked-hint-click" onClick={notifyAddBlocked}>
-                    <Button
-                      disabled={!draftReady(newItem)}
-                      loading={addItemMutation.isPending}
-                      style={!draftReady(newItem) ? { pointerEvents: 'none', cursor: 'not-allowed' } : undefined}
-                      onClick={() => addItemMutation.mutate()}
-                    >
-                      添加
-                    </Button>
-                  </div>
-                  {/* 灰按钮要能解释自己（主人 2026-10-12：「点又点不了，又不给提示
-                      为什么点不了」）：这里的判据只有一个 —— 上面那个下拉还没选东西，
-                      但下拉本身没有报错态，看着就像"填完了却加不进去"。 */}
-                  {!draftReady(newItem) && (
-                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                      先在上面选{newItem.mode === 'custom' ? '一个定制需求编号' : '一个 SKU'}，再点「添加」
-                    </span>
-                  )}
+                  <GuardedButton
+  disabled={!draftReady(newItem)}
+  blockedReasons={[newItem.mode === 'custom' ? '请先选择一个定制需求编号，再点「添加」。' : '请先选择一个 SKU，再点「添加」。']}
+  action="添加明细"
+  loading={addItemMutation.isPending}
+  onClick={() => addItemMutation.mutate()}
+>
+  添加
+</GuardedButton>
                 </div>
               )}
             </div>

@@ -36,7 +36,7 @@ import {
 } from '../../shared/api/approval'
 import { listQuotes, listQuoteVersions } from '../../shared/api/quote'
 import SectionCard from '../../shared/components/SectionCard'
-import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
 import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
@@ -574,7 +574,6 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
   // ① 看得见（按钮下面常驻一段说明）+ ② 点得动（灰按钮外面包一层接点击）。
   // 禁用按钮用的是原生 `disabled`，浏览器不派发点击事件，所以禁用态要给它加
   // `pointerEvents:'none'` 让点击落到外层容器上（同 SampleFromSourceModal / PriceCenterPage）。
-  const notifySandboxBlocked = useBlockedNotify(sandboxBlockedReasons, '试算')
 
   return (
     <SectionCard style={{ marginTop: 16 }}>
@@ -617,22 +616,17 @@ function SandboxPanel({ fields: _fields }: { fields: ConditionFieldMeta[] }) {
         />
         {/* 灰按钮要能解释自己（见 BlockedHint.tsx）：禁用态给按钮加 pointerEvents:'none'，
             按钮对点击透明，落点变成外层容器，容器上的 onClick 才接得住、才弹得出原因。 */}
-        <div className="blocked-hint-click" onClick={notifySandboxBlocked}>
-          <Button
-            theme="solid"
-            disabled={sandboxBlocked}
-            style={sandboxBlocked ? { pointerEvents: 'none' } : undefined}
-            loading={sandboxMutation.isPending}
-            onClick={() => sandboxMutation.mutate()}
-          >
-            试算
-          </Button>
-        </div>
+        <GuardedButton
+          theme="solid"
+          disabled={sandboxBlocked}
+          blockedReasons={sandboxBlockedReasons}
+          action="试算"
+          loading={sandboxMutation.isPending}
+          onClick={() => sandboxMutation.mutate()}
+        >
+          试算
+        </GuardedButton>
       </div>
-
-      {/* 与按钮同一屏的常驻说明：为什么现在试算不了、下一步做什么。
-          没有原因时 BlockedHint 自己渲染成空，不留空白行。 */}
-      <BlockedHint reasons={sandboxBlockedReasons} action="试算" />
 
       {result && (
         <div style={{ marginTop: 14 }}>

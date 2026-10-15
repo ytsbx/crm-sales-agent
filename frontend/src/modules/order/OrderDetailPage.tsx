@@ -9,7 +9,7 @@ import {
 import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 import AllocationAdjustModal from './AllocationAdjustModal'
 import FormLabel from '../../shared/components/FormLabel'
-import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
 import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import type { TagTone } from '../../shared/types'
 
@@ -617,13 +617,12 @@ export default function OrderDetailPage() {
 
   const order = orderQuery.data
 
-  /** 「同步履约状态」点不动时说的话（见按钮处的注释）。 */
-  const notifyStatusSyncBlocked = useBlockedNotify(
-    order?.erp_order_id
-      ? []
-      : ['本单还没有 ERP/MES 单号，无法同步履约状态。请先点「推送 ERP/MES」，等对方回单号后再点这里。'],
-    '同步履约状态',
-  )
+  /** 「同步履约状态」点不动时说的话（见按钮处的注释）。
+   *  ⚠️ 必须与 `disabled` 同源：`erp_order_id` 有值 → 空数组（既不禁用也不解释）；
+   *  没有值 → 一句话。这就是 `GuardedButton` 要的形状。 */
+  const statusSyncReasons = order?.erp_order_id
+    ? []
+    : ['本单还没有 ERP/MES 单号，无法同步履约状态。请先点「推送 ERP/MES」，等对方回单号后再点这里。']
 
   /**
    * 「交期与跟单计划」里「预览受影响面」的受阻原因。
@@ -641,7 +640,6 @@ export default function OrderDetailPage() {
     { ok: Object.values(scheduleForm.plan_offsets).every((v) => Number.isFinite(v)), reason: '下面这些「提前天数」不能空着：' + Object.entries(scheduleForm.plan_offsets).filter(([, v]) => !Number.isFinite(v)).map(([key]) => planOffsetLabels[key] ?? key).join('、') + '（可以填 0，但不能空）。' },
   ]
   const scheduleBlockedReasons = blockedReasons(scheduleBlocked)
-  const notifyScheduleBlocked = useBlockedNotify(scheduleBlockedReasons, '预览受影响面')
   // ⚠️ 「提交待确认计划」的禁用**不是"填错了"**，而是"还没走完上一步"：
   // 提交前必须先生成预览（`disabled={!schedulePreview}`），否则用户只看到一个
   // 灰按钮、不知道卡在哪（主人 2026-10-13 就是卡在这里："不知道怎么进行下去"）。
@@ -650,7 +648,6 @@ export default function OrderDetailPage() {
   const submitBlockedReasons = schedulePreview
     ? []
     : ['顺序要求：先点上一步的「预览受影响面」，看到影响面之后才能提交。']
-  const notifySubmitBlocked = useBlockedNotify(submitBlockedReasons, '提交待确认计划')
 
   if (orderQuery.isLoading) return <div className="page-container">加载中…</div>
   if (!order) return <div className="page-container">订单不存在或无权查看</div>
@@ -841,16 +838,15 @@ export default function OrderDetailPage() {
               {/* 灰按钮要能解释自己（主人 2026-10-12：「点又点不了，又不给提示为什么
                   点不了」）：`erp_order_id` 是推送 ERP/MES 之后由对方回填的，没回填
                   之前这个键点不动，而界面上原来一个字都没说。 */}
-              <div className="blocked-hint-click" onClick={notifyStatusSyncBlocked}>
-                <Button
-                  onClick={() => statusSyncMutation.mutate()}
-                  loading={statusSyncMutation.isPending}
-                  disabled={!order.erp_order_id}
-                  style={order.erp_order_id ? undefined : { pointerEvents: 'none' }}
-                >
-                  同步履约状态
-                </Button>
-              </div>
+              <GuardedButton
+                onClick={() => statusSyncMutation.mutate()}
+                loading={statusSyncMutation.isPending}
+                disabled={!order.erp_order_id}
+                blockedReasons={statusSyncReasons}
+                action="同步履约状态"
+              >
+                同步履约状态
+              </GuardedButton>
               {!order.erp_order_id && (
                 <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                   本单还没有 ERP/MES 单号：先点左边「推送 ERP/MES」，等对方回单号后才能同步状态
@@ -1444,35 +1440,27 @@ export default function OrderDetailPage() {
           <div>
             {/* 页脚正上方写清「预览受影响面」为什么点不动（7 个数字框 + 客户要求
                 日期，逐项点名）——不写的话用户只看到一个灰按钮，不知道差在哪。 */}
-            <div onClick={notifyScheduleBlocked}>
-              <BlockedHint reasons={scheduleBlockedReasons} action="预览受影响面" />
-            </div>
-            <div onClick={notifySubmitBlocked}>
-              <BlockedHint reasons={submitBlockedReasons} action="提交待确认计划" />
-            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
               <Button onClick={() => setScheduleVisible(false)}>取消</Button>
-              <div className="blocked-hint-click" onClick={notifyScheduleBlocked}>
-                <Button
+              <GuardedButton
                   loading={schedulePreviewMutation.isPending}
                   disabled={scheduleBlockedReasons.length > 0}
-                  style={scheduleBlockedReasons.length > 0 ? { pointerEvents: 'none' } : undefined}
+                  blockedReasons={scheduleBlockedReasons}
+                  action="预览受影响面"
                   onClick={() => schedulePreviewMutation.mutate()}
                 >
                   预览受影响面
-                </Button>
-              </div>
-              <div className="blocked-hint-click" onClick={notifySubmitBlocked}>
-                <Button
+                </GuardedButton>
+              <GuardedButton
                   theme="solid"
                   loading={createScheduleMutation.isPending}
-                  disabled={!schedulePreview}
-                  style={!schedulePreview ? { pointerEvents: 'none' } : undefined}
+                  disabled={submitBlockedReasons.length > 0}
+                  blockedReasons={submitBlockedReasons}
+                  action="提交待确认计划"
                   onClick={() => createScheduleMutation.mutate()}
                 >
                   提交待确认计划
-                </Button>
-              </div>
+                </GuardedButton>
             </div>
           </div>
         }
