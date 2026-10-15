@@ -998,6 +998,15 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `POST /customer-levels`
 - `PATCH /customer-levels/{id}`
 
+> **2026-10-15：字典现在只服务「客户等级」了。** `product_category`（产品分类）已退役 ——
+> 产品分类改成在产品页**直接填写**（最多 64 字，后端不再校验"必须命中字典成员"），
+> 字典里那几条记录也一并清掉了（迁移 `c2f5a8d1e4b7`）。
+> 因此 `GET /dictionaries` 现在只会返回 `customer_level` 一类；前端「系统设置 → 数据字典」
+> 页的类型下拉也只剩「客户等级」。
+> **`/dictionaries`、`/customer-levels` 这组接口本身保留、路径不变** —— 后端对 `type`
+> **没有白名单**（`DictionaryItemCreate.type` 是自由字符串），以后要再加受控词表
+> （来源 / 行业等）照样走它，只是前端下拉要同步加一项。
+
 ---
 
 # 37. Sales Agent
