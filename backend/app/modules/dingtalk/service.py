@@ -42,7 +42,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -871,6 +871,7 @@ async def first_image_attachment(
             .where(
                 BusinessFile.business_type == business_type,
                 BusinessFile.business_id == business_id,
+                or_(BusinessFile.category.is_(None), BusinessFile.category != "oa_attachment"),
             )
             .order_by(BusinessFile.id.asc())
         )

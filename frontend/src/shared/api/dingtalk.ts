@@ -74,11 +74,12 @@ export function listInquiryApprovals(inquiryId: number) {
  * 而 `failed` / `not_sent` / `skipped` 会**同轮重新发起**（外部确定没建单，重试安全）。
  * 待审批、已通过、结果未知时后端会拒绝重提（`allowed_actions` 里没有 `resubmit`）。
  */
-export function startInquiryApproval(inquiryId: number, resubmit = false, quoteOwnerUserId?: string, extraFields?: Record<string, string>) {
+export function startInquiryApproval(inquiryId: number, resubmit = false, quoteOwnerUserId?: string, extraFields?: Record<string, string>, attachmentFileIds?: number[]) {
   return api.post<OaApprovalInstance>(`/inquiries/${inquiryId}/oa-approval`, {
     resubmit,
     ...(quoteOwnerUserId ? { quote_owner_user_id: quoteOwnerUserId } : {}),
     ...(extraFields ? { extra_fields: extraFields } : {}),
+    ...(attachmentFileIds ? { attachment_file_ids: attachmentFileIds } : {}),
   })
 }
 

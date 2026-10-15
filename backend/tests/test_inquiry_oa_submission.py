@@ -127,3 +127,63 @@ async def test_extra_fields_cannot_impersonate_initiator(setup):
     with pytest.raises(AppError):
         await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter',extra_fields={'originator-component':'other-person'}),request(),user,session)
     create.assert_not_awaited()
+
+@pytest.mark.anyio
+async def test_optional_fields_are_offered_and_optional(setup):
+    inquiry,cfg,session,user,client,create=setup
+    client.get_process_schema.return_value={'schemaContent':{'items':[
+        {'componentName':'TextField','props':{'id':'delivery','label':'大货交付时间','required':False}},
+        {'componentName':'TextareaField','props':{'id':'note','label':'特别说明','required':False}},
+        {'componentName':'DDAttachment','props':{'id':'attachment','label':'附件','required':False}}]}}
+    result=await routes.inquiry_submission_options(7,user=user,session=session)
+    assert [f['label'] for f in result['data']['fields']]==['大货交付时间','特别说明','附件']
+    await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter'),request(),user,session)
+    assert 'delivery' not in create.await_args.kwargs['field_map']
+    await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter',extra_fields={'delivery':'确认样品后20天','note':'防水包装'}),request(),user,session)
+    assert create.await_args.kwargs['field_map']['delivery']=='确认样品后20天'
+    assert create.await_args.kwargs['field_map']['note']=='防水包装'
+
+@pytest.mark.anyio
+async def test_attachment_scope_and_payload(setup,monkeypatch,tmp_path):
+    import json
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from app.modules.file.model import FileRecord,BusinessFile
+    from app.core import deps
+    from app.modules.dingtalk import attachments
+    inquiry,cfg,session,user,client,create=setup
+    client.get_process_schema.return_value={'schemaContent':{'items':[
+        {'componentName':'DDAttachment','props':{'id':'DDAttachment_test','label':'附件','required':False}}]}}
+    engine=create_engine('sqlite://')
+    FileRecord.__table__.create(engine);BusinessFile.__table__.create(engine)
+    with Session(engine) as sync:
+        sync.add_all([FileRecord(id=1,file_name='own.pdf',object_key='own.pdf',size=3),FileRecord(id=2,file_name='other.pdf',object_key='other.pdf',size=3),BusinessFile(id=1,business_type='inquiry',business_id=7,file_id=1),BusinessFile(id=2,business_type='inquiry',business_id=8,file_id=2)])
+        sync.commit()
+        session.execute=AsyncMock(side_effect=lambda stmt:sync.execute(stmt))
+        monkeypatch.setattr(deps,'ensure_permission',lambda *_:None)
+        monkeypatch.setattr(routes.app_settings,'file_root',str(tmp_path))
+        (tmp_path/'own.pdf').write_bytes(b'abc')
+        uploaded=AsyncMock(return_value={'spaceId':'123','fileId':'file-own','fileName':'own.pdf','fileSize':3,'fileType':'pdf'})
+        monkeypatch.setattr(attachments,'upload_approval_attachment',uploaded)
+        with pytest.raises(AppError):await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter',attachment_file_ids=[2]),request(),user,session)
+        uploaded.assert_not_awaited();create.assert_not_awaited()
+        await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter',attachment_file_ids=[1,1]),request(),user,session)
+        uploaded.assert_awaited_once()
+        value=create.await_args.kwargs['field_map']['DDAttachment_test']
+        assert isinstance(value,str) and json.loads(value)[0]['fileId']=='file-own'
+        create.reset_mock()
+        with pytest.raises(AppError):await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter',extra_fields={'DDAttachment_test':'forged'}),request(),user,session)
+        create.assert_not_awaited()
+    engine.dispose()
+
+@pytest.mark.anyio
+async def test_missing_department_stops_before_approval(setup):
+    inquiry,cfg,session,user,client,create=setup
+    cfg['dept_component']='dept-component'
+    client.get_user_dept_ids.return_value=[]
+    with pytest.raises(AppError,match='提报部门'):
+        await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter'),request(),user,session)
+    create.assert_not_awaited()
+    client.get_user_dept_ids.return_value=[10]
+    await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter'),request(),user,session)
+    assert create.await_args.kwargs['field_map']['dept-component']==10

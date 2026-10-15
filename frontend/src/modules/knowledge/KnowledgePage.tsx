@@ -18,7 +18,7 @@ import {
 } from '@douyinfe/semi-ui'
 
 import type { FileItem } from '@douyinfe/semi-ui/lib/es/upload/interface'
-import { uploadFile } from '../../shared/api/file'
+import { listBusinessFiles, uploadFile } from '../../shared/api/file'
 import AttachmentPanel from '../common/AttachmentPanel'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { parseOptionalNumber } from '../../shared/number-input'
@@ -97,8 +97,10 @@ export default function KnowledgePage() {
   const rawOpportunityId = Number(searchParams.get('opportunity_id'))
   const opportunityFilter = Number.isSafeInteger(rawOpportunityId) && rawOpportunityId > 0 ? rawOpportunityId : undefined
   const { can } = usePermissions()
+  const [moreTargetId, setMoreTargetId] = useState<number | null>(null)
   const [photoTarget, setPhotoTarget] = useState<CustomInquiryRow | null>(null)
   const [submitTarget, setSubmitTarget] = useState<CustomInquiryRow | null>(null)
+  const [submitAttachments, setSubmitAttachments] = useState<number[]>([])
   const [submitFields, setSubmitFields] = useState<Record<string, string>>({})
   const [submitResubmit, setSubmitResubmit] = useState(false)
   const [submitQuoteOwner, setSubmitQuoteOwner] = useState<string | undefined>()
@@ -366,9 +368,14 @@ export default function KnowledgePage() {
     queryFn: () => getInquirySubmissionOptions(submitTarget!.id),
     enabled: Boolean(submitTarget),
   })
+  const submissionFiles = useQuery({
+    queryKey: ['business-files', submissionOptions.data?.file_business_type || 'inquiry', submitTarget?.id],
+    queryFn: () => listBusinessFiles(submissionOptions.data?.file_business_type || 'inquiry', submitTarget!.id),
+    enabled: Boolean(submitTarget) && can('file:view'),
+  })
   const submitMutation = useMutation({
     mutationFn: ({ inquiryId, quoteOwner, resubmit, fields }: { inquiryId: number; quoteOwner?: string; resubmit: boolean; fields: Record<string, string> }) =>
-      startInquiryApproval(inquiryId, resubmit, quoteOwner, fields),
+      startInquiryApproval(inquiryId, resubmit, quoteOwner, fields, submitAttachments),
     onSuccess: (result) => {
       if (result.status === 'pending' && result.instance_id) {
         Toast.success('询价已提交到钉钉OA，后续由生产部在钉钉处理')
@@ -386,6 +393,7 @@ export default function KnowledgePage() {
   const startApproval = (row: CustomInquiryRow, resubmit = false) => {
     setSubmitResubmit(resubmit)
     setSubmitFields({})
+    setSubmitAttachments([])
     setSubmitQuoteOwner(undefined)
     setSubmitTarget(row)
   }
@@ -414,7 +422,7 @@ export default function KnowledgePage() {
 
   const columns = [
     {
-      title: '需求',
+      title: '产品名称',
       dataIndex: 'title',
       render: (text: string, record: CustomInquiryRow) => (
         <div>
@@ -538,10 +546,12 @@ export default function KnowledgePage() {
             <Dropdown
               trigger="click"
               position="bottomRight"
+              visible={moreTargetId === record.id}
+              onVisibleChange={(visible) => setMoreTargetId(visible ? record.id : null)}
               render={
                 <Dropdown.Menu>
                   {moreActions.map((action) => (
-                    <Dropdown.Item key={action.key} onClick={action.onClick}>
+                    <Dropdown.Item key={action.key} onClick={() => { setMoreTargetId(null); action.onClick() }}>
                       {action.label}
                     </Dropdown.Item>
                   ))}
@@ -599,7 +609,7 @@ export default function KnowledgePage() {
           ))}
           <div style={{ flex: 1 }} />
           <Input
-            placeholder="搜索需求标题"
+            placeholder="搜索产品名称"
             value={keywordInput}
             onChange={setKeywordInput}
             onEnterPress={() => {
@@ -647,7 +657,7 @@ export default function KnowledgePage() {
         bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
         onCancel={() => setPhotoTarget(null)} footer={<Button onClick={() => setPhotoTarget(null)}>完成</Button>}>
         <div style={{ marginBottom: 12 }}>{photoTarget?.title}：上传的照片会用于这条询价的钉钉审批。</div>
-        {photoTarget && <AttachmentPanel businessType="inquiry" businessId={photoTarget.id} writePermission="quote:manage" />}
+        {photoTarget && <AttachmentPanel businessType="inquiry" businessId={photoTarget.id} writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />}
       </Modal>
       <Modal
         title="提交询价到钉钉OA"
@@ -662,12 +672,12 @@ export default function KnowledgePage() {
           if (!submitTarget || !submissionOptions.data) return
           const quoteOwner = submitQuoteOwner ?? submissionOptions.data.selected_quote_owner ?? undefined
           if (submissionOptions.data.quote_owner_required && !quoteOwner) { Toast.warning('请选择对接报价员'); return }
-          const missing = submissionOptions.data.fields.find((field) => field.required && !submitFields[field.id]?.trim())
+          const missing = submissionOptions.data.fields.find((field) => field.required && (field.type === 'DDAttachment' ? !submitAttachments.length : !submitFields[field.id]?.trim()))
           if (missing) { Toast.warning(`请填写${missing.label}`); return }
           submitMutation.mutate({ inquiryId: submitTarget.id, quoteOwner, resubmit: submitResubmit, fields: submitFields })
         }}
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div>业务员在CRM提交，生产部在钉钉接收并处理。确认提交后才会发起审批，无需在钉钉重复填单。</div>
           <div><strong>{submitTarget?.title}</strong>（第 {submitTarget?.version ?? 1} 版）</div>
           <div style={{ whiteSpace: 'pre-wrap' }}>{submitTarget?.description || '尚未填写需求描述'}</div>
@@ -676,10 +686,10 @@ export default function KnowledgePage() {
           {submissionOptions.data && !submissionOptions.data.configured && <div>尚未配置钉钉询价模板，请联系管理员。</div>}
           {submissionOptions.data && !submissionOptions.data.enabled && <div>钉钉询价提交暂未开启，请联系管理员。</div>}
           {submitTarget && submissionOptions.data && <div>
-            <FormLabel required={submissionOptions.data.image_required}>产品参考图片与附件</FormLabel>
+            <FormLabel required={submissionOptions.data.image_required}>产品参考图片</FormLabel>
             <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>上传真实产品参考图片后再提交；审批结果可在「审批记录」查看，系统会定期从钉钉同步。</div>
             <AttachmentPanel businessType={submissionOptions.data.file_business_type} businessId={submitTarget.id}
-              writePermission="quote:manage" />
+              writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />
           </div>}
           {submissionOptions.data?.quote_owner_required && <div>
             <FormLabel required>对接报价员</FormLabel>
@@ -692,7 +702,22 @@ export default function KnowledgePage() {
           </div>}
           {submissionOptions.data?.fields.map((field) => <div key={field.id}>
             <FormLabel required={field.required}>{field.label}</FormLabel>
-            {field.type === 'DDSelectField' ? (
+            {field.type === 'DDAttachment' ? (
+              <>
+                <div style={{ marginBottom: 8 }}>选填，可上传图纸、PDF、表格等文件；与上方产品参考照片分别提交。</div>
+                <AttachmentPanel businessType={submissionOptions.data!.file_business_type} businessId={submitTarget!.id}
+                  category="oa_attachment" onlyCategory="oa_attachment" writePermission="quote:manage" />
+                <Select multiple style={{ width: '100%' }} placeholder="选择本次要提交到钉钉的附件（最多10个）"
+                  value={submitAttachments} disabled={submitMutation.isPending} maxTagCount={3}
+                  optionList={(submissionFiles.data ?? []).filter((file) => file.category === 'oa_attachment').map((file) => ({ value: file.id, label: file.file_name }))}
+                  onChange={(value) => {
+                    const ids = value as number[]
+                    if (ids.length > 10) { Toast.warning('单次最多提交10个附件'); return }
+                    setSubmitAttachments(ids)
+                  }} />
+                {submissionFiles.isError && <div style={{ color: 'var(--crm-error)' }}>附件列表读取失败，请重试。</div>}
+              </>
+            ) : field.type === 'DDSelectField' ? (
               <Select style={{ width: '100%' }} placeholder="请选择" disabled={submitMutation.isPending}
                 value={submitFields[field.id] || undefined}
                 optionList={field.options.map((value) => ({ value, label: value }))}
@@ -718,7 +743,7 @@ export default function KnowledgePage() {
         cancelButtonProps={{ disabled: saveMutation.isPending }}
         onOk={() => {
           if (!form.title.trim()) {
-            Toast.warning('需求标题必填')
+            Toast.warning('产品名称必填')
             return
           }
           saveMutation.mutate({
@@ -742,9 +767,9 @@ export default function KnowledgePage() {
         width={560}
         bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div>
-            <FormLabel>产品参考照片与附件</FormLabel>
+            <FormLabel>产品参考照片</FormLabel>
             {(!editing || pendingPhotos.length > 0) && <>
               <Upload action="" uploadTrigger="custom" multiple accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
                 maxSize={20 * 1024} onSizeError={() => Toast.warning('单张照片不能超过 20 MB')}
@@ -756,10 +781,10 @@ export default function KnowledgePage() {
               </Upload>
               {(!can('file:manage') || !can('quote:manage')) && <div>上传照片需要文件管理和报价管理权限，请联系管理员。</div>}
             </>}
-            {editing && <AttachmentPanel businessType="inquiry" businessId={editing.id} writePermission="quote:manage" />}
+            {editing && <AttachmentPanel businessType="inquiry" businessId={editing.id} writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />}
           </div>
           <div>
-            <FormLabel required>需求标题</FormLabel>
+            <FormLabel required>产品名称</FormLabel>
             <Input
               value={form.title}
               onChange={(value) => setForm({ ...form, title: value })}
@@ -862,7 +887,7 @@ export default function KnowledgePage() {
         okText="生成新版"
         cancelText="取消"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             修订会新增一版（旧版原样保留，可在「历史」里对照），新一版回到「待评估」
           </div>
@@ -1140,7 +1165,7 @@ export default function KnowledgePage() {
         okText="生成报价"
         width={520}
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             {quoteTarget?.customer_name
               ? `客户：${quoteTarget.customer_name}`
