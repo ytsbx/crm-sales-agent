@@ -74,9 +74,12 @@ export function listInquiryApprovals(inquiryId: number) {
  * 而 `failed` / `not_sent` / `skipped` 会**同轮重新发起**（外部确定没建单，重试安全）。
  * 待审批、已通过、结果未知时后端会拒绝重提（`allowed_actions` 里没有 `resubmit`）。
  */
-export function startInquiryApproval(inquiryId: number, resubmit = false) {
+export function startInquiryApproval(inquiryId: number, resubmit = false, quoteOwnerUserId?: string, extraFields?: Record<string, string>, attachmentFileIds?: number[]) {
   return api.post<OaApprovalInstance>(`/inquiries/${inquiryId}/oa-approval`, {
     resubmit,
+    ...(quoteOwnerUserId ? { quote_owner_user_id: quoteOwnerUserId } : {}),
+    ...(extraFields ? { extra_fields: extraFields } : {}),
+    ...(attachmentFileIds ? { attachment_file_ids: attachmentFileIds } : {}),
   })
 }
 
@@ -134,4 +137,19 @@ export interface DingTalkSyncResult {
   unmatched: DingTalkUnmatched[]
   /** CRM 里还没绑钉钉的在用账号（这些人暂时登不了钉钉） */
   unbound_crm: { id: number; name: string; username: string }[]
+}
+
+
+export interface InquirySubmissionOptions {
+  configured: boolean
+  enabled: boolean
+  quote_owner_required: boolean
+  quote_owners: Array<{ user_id: string; name: string }>
+  selected_quote_owner?: string | null
+  image_required: boolean
+  file_business_type: string
+  fields: Array<{ id: string; label: string; type: string; required: boolean; options: string[] }>
+}
+export function getInquirySubmissionOptions(inquiryId?: number) {
+  return api.get<InquirySubmissionOptions>(inquiryId ? `/inquiries/${inquiryId}/oa-submission` : '/inquiries/oa-submission-options')
 }

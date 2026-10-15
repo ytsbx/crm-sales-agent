@@ -93,6 +93,10 @@ class FakeClient:
         self.dept_lookup_for = None
         self.last_kwargs: dict = {}
 
+    async def get_process_schema(self, process_code: str) -> dict:
+        # 本套件只验证发起报文；补充字段验证另见 test_inquiry_oa_submission。
+        return {"schemaContent": {"items": []}}
+
     async def search_user_id_by_name(self, name: str) -> str | None:
         self.searched_name = name
         return DING_USER_ID

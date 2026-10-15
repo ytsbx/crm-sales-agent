@@ -199,6 +199,7 @@ DEFAULT_SETTINGS: dict[str, dict] = {
     # 只改这里就能跑。字段映射的 key 必须是钉钉控件的 **componentId**
     # （不是中文名——名字对不上钉钉不报错，只把那格留空，"免重复录入"会静默失效）。
     # 例：{"process_code": "PROC-XXXX", "field_map": {"title": "TextField_XXXX", "quantity": "NumberField_XXXX"}}
+    "dingtalk_sample_oa": {"process_code": ""},
     "dingtalk_oa": {
         "process_code": "",
         "field_map": {},
@@ -696,6 +697,9 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
         SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
         # 客户已明确接受的：**这张单到此为止**
         SampleRequest.confirm_status.is_distinct_from(SAMPLE_CONFIRM_ACCEPTED),
+        # 已软删的同样"到此为止"（2026-10-15）：单子都被当作没建过了，
+        # 还拿它拦着公海回收说不通 —— 那样"删了"反而保护得更牢。
+        SampleRequest.deleted_at.is_(None),
     )
     if superseded_ids:
         sample_stmt = sample_stmt.where(SampleRequest.id.not_in(superseded_ids))

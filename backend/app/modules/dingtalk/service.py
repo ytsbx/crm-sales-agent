@@ -42,7 +42,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -803,7 +803,7 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
         await session.execute(
             select(OaInstance)
             .where(OaInstance.status == "pending", OaInstance.instance_id.is_not(None))
-            .order_by(OaInstance.id.asc())
+            .order_by(OaInstance.updated_at.asc().nullsfirst(), OaInstance.id.asc())
             .limit(limit)
         )
     ).scalars().all()
@@ -827,7 +827,13 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
             # **前面已取回的状态全部丢失**，手工触发还会 500。
             # 这与本函数的承诺（"单条查失败不影响其他单"）直接矛盾。
             row.error = str(exc)[:500]
+            row.updated_at = datetime.now(UTC)
             continue
+        linked_sample = None
+        if row.oa_type == 'sample':
+            from app.modules.sample.model import SampleRequest
+            linked_sample = await session.get(SampleRequest, row.inquiry_id, with_for_update=True)
+        row.error = None
         raw_status = str(data.get("status") or "").upper()
         # 审批**走完**之后，通过还是驳回要看 `result`（agree / refuse）——
         # 只看 status 的话 COMPLETED 会被一律记成"已通过"，
@@ -848,6 +854,13 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
         if new_status and new_status != row.status:
             row.status = new_status
             changed += 1
+        if linked_sample is not None and linked_sample.deleted_at is None and int(linked_sample.version or 1)==row.inquiry_version:
+            meta=(linked_sample.source_context or {}).get('dingtalk_oa') or {}
+            if meta.get('mode')=='standalone' and meta.get('submitted') and linked_sample.status=='pending' and new_status in ('approved','rejected'):
+                linked_sample.status=new_status
+                linked_sample.approved_at=datetime.now(UTC)
+                linked_sample.reject_reason='钉钉打样审批已拒绝，处理意见见钉钉审批记录' if new_status=='rejected' else None
+
     await session.flush()
     return {"checked": len(rows), "changed": changed}
 
@@ -871,6 +884,7 @@ async def first_image_attachment(
             .where(
                 BusinessFile.business_type == business_type,
                 BusinessFile.business_id == business_id,
+                or_(BusinessFile.category.is_(None), BusinessFile.category != "oa_attachment"),
             )
             .order_by(BusinessFile.id.asc())
         )

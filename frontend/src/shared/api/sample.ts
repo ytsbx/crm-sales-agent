@@ -130,6 +130,20 @@ export interface SampleRequestRow {
   customer_confirmed_at?: string | null
   confirm_remark?: string | null
   created_at?: string | null
+  /**
+   * 软删（2026-10-15）：这一条是不是已经被删掉、正躺在「已删除」里。
+   * 操作列据此在「详情」和「恢复」之间切换 —— 已删的单子后端查详情一律 404。
+   */
+  is_deleted?: boolean
+  deleted_at?: string | null
+  /**
+   * 这张单现在能不能删。
+   *
+   * 判据在后端（`sample/model.SAMPLE_DELETABLE_STATUSES`：只有待审批 / 已驳回能删），
+   * 由列表接口下发 —— 前端**别自己按 status 拼一份**，那份迟早和后端分叉
+   * （与 `attachment_locked` 是同一个道理）。
+   */
+  can_delete?: boolean
   items: SampleItem[]
   shipments: SampleShipment[]
 }
@@ -140,6 +154,8 @@ export function listSamples(query: {
   customer_id?: number
   opportunity_id?: number
   owner_id?: number
+  /** 只看已软删的（「已删除」那个筛选项用）；不传 = 只看没删的 */
+  include_deleted?: boolean
   page?: number
   page_size?: number
 }) {
@@ -156,6 +172,22 @@ export function createSample(payload: Record<string, unknown>) {
 
 export function updateSample(id: number, payload: Record<string, unknown>) {
   return api.patch<SampleRequestRow>(`/samples/${id}`, payload)
+}
+
+/**
+ * 软删一张样品申请（2026-10-15 补）。
+ *
+ * 只允许**还没走流程**的（待审批 / 已驳回）：已批准 / 已寄出 / 已签收的，
+ * 后端会回 400 并说清原因 —— 那几张连着审批留痕与车间依据。
+ * 删掉的是标记不是数据：行、审计、附件都留着，需要时可在「已删除」里恢复。
+ */
+export function deleteSample(id: number) {
+  return api.delete<null>(`/samples/${id}`)
+}
+
+/** 把一张被软删的样品申请捡回来（与删除共用 `sample:manage` 权限）。 */
+export function restoreSample(id: number) {
+  return api.post<null>(`/samples/${id}/restore`)
 }
 
 /** 导出**填好的**《打样申请单》Excel（钉钉「定制打样审批」那份单子）。
@@ -283,6 +315,7 @@ export function getSampleSource(source: SampleSourceRef) {
   return api.get<SampleSourcePreview>('/samples/source', source as Record<string, number>)
 }
 export function createSampleFromSource(payload: SampleSourceRef & {
+  use_dingtalk?: boolean
   request_key: string; items: { source_item_id: number; quantity: number; specification?: string; remark?: string }[]
 }) {
   return api.post<SampleRequestRow>('/samples/from-source', payload)

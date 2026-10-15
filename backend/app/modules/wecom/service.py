@@ -383,11 +383,24 @@ async def unbound_contacts(
             )
         )
     ).scalars().all() if contact_ids else []
+    # 展示姓名与账号绑定分开：尚未开通CRM的员工也能显示企微通讯录姓名。
+    follower_ids = {item.wecom_userid for item in follows}
+    names = {}
+    if follower_ids:
+        crm_names = (await session.execute(
+            select(User.wecom_userid, User.name).where(User.wecom_userid.in_(follower_ids))
+        )).all()
+        names.update({uid: name.strip() for uid, name in crm_names if name and name.strip()})
+        directory_names = (await session.execute(
+            select(WeComUser.wecom_userid, WeComUser.name).where(WeComUser.wecom_userid.in_(follower_ids))
+        )).all()
+        names.update({uid: name.strip() for uid, name in directory_names if name and name.strip()})
     follow_index: dict[int, list[dict]] = {}
     for item in follows:
         follow_index.setdefault(item.external_contact_id, []).append(
             {
                 "wecom_userid": item.wecom_userid,
+                "name": names.get(item.wecom_userid),
                 "add_time": item.add_time,
                 "add_way": item.add_way,
                 "remark": item.remark,
@@ -658,6 +671,8 @@ async def collect_transfer_scope(
         await session.execute(
             select(SampleRequest).where(
                 SampleRequest.status.in_(SAMPLE_OPEN_STATUSES),
+                # 已软删的不算"接手人的活"（2026-10-15）：单子已经被当作没建过
+                SampleRequest.deleted_at.is_(None),
                 or_(
                     SampleRequest.owner_id == handover.id,
                     SampleRequest.production_owner_id == handover.id,

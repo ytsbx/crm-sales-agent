@@ -41,6 +41,12 @@ check_custom_no_sku
 # ⚠️ 它**必须显式传 API_BASE**：不给就拒跑（会建询价、打并发请求）。
 check_inquiry_revision_chain
 check_sample_production
+# 打样单软删与恢复（2026-10-15 补，03-API §41.17）：只让"还没走流程的"删
+# （pending / rejected），删完对其它入口一律等于不存在（详情、编辑、审批、寄出
+# 全 404）；已批准 / 已寄出 / 已签收拒绝（400）；「已删除」筛选里只有已删的；
+# 恢复用同一把钥匙（sample:manage），删除与恢复各留一条审计。
+# 紧跟 check_sample_production：同属打样这一类，一起跑便于排查。
+check_sample_soft_delete
 check_sales_attribution
 check_duplicate_arbitration
 check_sales_targets

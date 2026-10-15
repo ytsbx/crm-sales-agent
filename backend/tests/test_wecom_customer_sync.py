@@ -106,3 +106,27 @@ async def test_partial_results_recorded_and_failed_followers_preserved(monkeypat
         assert second.fail_count == 1
         assert relation.status == 'active'
     engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_follower_names_resolve_without_creating_or_binding_accounts():
+    from app.modules.wecom.model import WeComUser
+    from app.modules.user.model import User
+    engine=make_engine()
+    for model in (WeComExternalContact,WeComFollowRelationship,WeComUser):
+        model.__table__.create(engine)
+    with Session(engine) as raw:
+        raw.add(WeComExternalContact(id=1,external_userid='external-internal-id',name='客户',normalize_status='pending'))
+        raw.add(User(id=1,name='CRM姓名',username='existing-name',password_hash='!',wecom_userid='bound'))
+        raw.add(WeComUser(wecom_userid='unbound',name='李浩轩'))
+        raw.add(WeComUser(wecom_userid='bound',name='企微原姓名'))
+        for i,uid in enumerate(('unbound','bound','unknown'),1):
+            raw.add(WeComFollowRelationship(external_contact_id=1,wecom_userid=uid,status='active'))
+        raw.flush()
+        rows,total=await service.unbound_contacts(SyncSessionAsAsync(raw),keyword=None,page=1,page_size=20)
+        assert total==1
+        followers={item['wecom_userid']:item['name'] for item in rows[0]['followers']}
+        assert followers=={'unbound':'李浩轩','bound':'企微原姓名','unknown':None}
+        assert raw.query(User).count()==1
+        assert raw.query(WeComUser).filter_by(wecom_userid='unbound').one().user_id is None
+    engine.dispose()

@@ -36,7 +36,6 @@ from app.modules.product.schema import (
     SkuUpdate,
 )
 from app.modules.recycle import service as recycle_svc
-from app.modules.settings import service as settings_service
 
 router = APIRouter(tags=["Product"])
 
@@ -78,9 +77,6 @@ async def create_product(
     user: CurrentUser = Depends(require_permission("product:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    await settings_service.ensure_dictionary_value(
-        session, type="product_category", code=payload.category, field_label="产品分类"
-    )
     product = Product(**payload.model_dump(), created_by=user.id)
     session.add(product)
     await session.flush()
@@ -122,10 +118,6 @@ async def update_product(
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
     before = svc.serialize_product(product)
     changes = payload.model_dump(exclude_unset=True)
-    if "category" in changes:
-        await settings_service.ensure_dictionary_value(
-            session, type="product_category", code=changes.get("category"), field_label="产品分类"
-        )
     for field, value in changes.items():
         setattr(product, field, value)
     await session.flush()

@@ -1,3 +1,5 @@
+import SampleDingTalkModal from './SampleDingTalkModal'
+import FormLabel from '../../shared/components/FormLabel'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -13,6 +15,7 @@ import {
   DatePicker,
   Input,
   Modal,
+  Popconfirm,
   Select,
   SideSheet,
   Table,
@@ -31,12 +34,14 @@ import {
   approveSample,
   confirmSample,
   createSample,
+  deleteSample,
   exportSampleApplicationForm,
   feedbackSample,
   getSample,
   listSamples,
   madeSample,
   resubmitSample,
+  restoreSample,
   reviseSample,
   shipSample,
   signSample,
@@ -53,7 +58,7 @@ import AttachmentPanel from '../common/AttachmentPanel'
 import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import { blockedToastText } from '../../shared/components/blocked-hint-reasons'
 
 /** 样品（PRD §19 / 03-API §26）。 */
@@ -66,12 +71,22 @@ const STATUS_COLOR: Record<string, TagTone> = {
   signed: 'green',
 }
 
+/**
+ * 「已删除」这个筛选项**不是一个真的状态值**（状态里没有"已删除"）：
+ * 选中它时不传 `status`，改传 `include_deleted=true`，由后端按
+ * `deleted_at IS NOT NULL` 过滤出被软删的那些（2026-10-15 加软删时补）。
+ *
+ * 用一个一眼认得出的哨兵值，别拿 `'deleted'` 冒充状态 —— 那会和真状态混起来。
+ */
+const DELETED_STATUS_OPTION = '__deleted__'
+
 const STATUS_OPTIONS = [
   { value: 'pending', label: '待审批' },
   { value: 'approved', label: '已批准' },
   { value: 'rejected', label: '已拒绝' },
   { value: 'shipped', label: '已寄样' },
   { value: 'signed', label: '已签收' },
+  { value: DELETED_STATUS_OPTION, label: '已删除' },
 ]
 
 /**
@@ -143,6 +158,7 @@ export default function SampleListPage() {
     queryKey: ['opportunity', createOpportunityId],
     queryFn: () => getOpportunity(createOpportunityId!), enabled: Boolean(createOpportunityId) && canManage,
   })
+  const [oaTarget, setOaTarget] = useState<number | null>(null)
   const [createVisible, setCreateVisible] = useState(false)
   /** 打样申请的计时起点（场景18 操作耗时埋点） */
   const createStartedAt = useRef<number | null>(null)
@@ -225,11 +241,14 @@ export default function SampleListPage() {
   } | null>(null)
   const [confirmRemark, setConfirmRemark] = useState('')
 
+  // 选了「已删除」就换一套参数：走 `include_deleted`，而不是拿它当状态传给后端
+  const deletedOnly = status === DELETED_STATUS_OPTION
   const query = useQuery({
     queryKey: ['samples', { status, keyword, page, pageSize }],
     queryFn: () =>
       listSamples({
-        status,
+        status: deletedOnly ? undefined : status,
+        include_deleted: deletedOnly || undefined,
         keyword: keyword.trim() || undefined,
         page,
         page_size: pageSize,
@@ -267,7 +286,11 @@ export default function SampleListPage() {
   })
   const opportunitiesQuery = useQuery({
     queryKey: ['opportunities-for-select'],
-    queryFn: () => listOpportunities({ page: 1, page_size: 100 }),
+    // 只列「进行中」的商机：已失单 / 已成交的不该再拿来开新的样品申请。
+    // 项目里其它选商机的地方都带这道过滤（报价中心、报价列表、商机看板、工作台
+    // 都是 `status: 'open'`），只有这里原先漏了 —— 于是已失单的商机也会出现在下拉里，
+    // 跟同名的进行中商机长得一模一样（主人 2026-10-15 截图问「为什么两个一样的」）。
+    queryFn: () => listOpportunities({ status: 'open', page: 1, page_size: 100 }),
     enabled: createVisible,
   })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
@@ -284,9 +307,30 @@ export default function SampleListPage() {
   }
   const onError = (error: Error) => Toast.error(error.message)
 
+  // 软删 / 恢复（2026-10-15）。两个动作都会改动列表，成功后统一 refresh 一遍：
+  // 删掉的那条要从列表里消失，「已删除」里恢复的那条要回到正常列表。
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteSample(id),
+    onSuccess: () => {
+      Toast.success('样品申请已删除，可在「已删除」里恢复')
+      void refresh()
+    },
+    onError,
+  })
+
+  const restoreMutation = useMutation({
+    mutationFn: (id: number) => restoreSample(id),
+    onSuccess: () => {
+      Toast.success('样品申请已恢复')
+      void refresh()
+    },
+    onError,
+  })
+
   const createMutation = useMutation({
     mutationFn: () =>
       createSample({
+        use_dingtalk: true,
         opportunity_id: form.opportunity_id ?? null,
         customer_id: form.customer_id ?? null,
         remark: form.remark.trim() || null,
@@ -313,7 +357,8 @@ export default function SampleListPage() {
           }).catch(() => undefined)
         }
       }
-      Toast.success('样品申请已创建')
+      Toast.success('打样草稿已创建，请选择钉钉流程并补充申请资料')
+      setOaTarget(created.id)
       setCreateVisible(false)
       setForm({ remark: '', items: [{ mode: 'sku', quantity: '1' }] })
       void refresh()
@@ -600,19 +645,50 @@ export default function SampleListPage() {
     { title: '申请时间', dataIndex: 'requested_at', width: 170, render: fmt },
     {
       title: '操作',
-      width: 90,
-      render: (_: unknown, record: SampleRequestRow) => (
-        <Button
-          theme="borderless"
-          size="small"
-          onClick={() => {
-            setDetailId(record.id)
-            navigate(`/samples/${record.id}`)
-          }}
-        >
-          详情
-        </Button>
-      ),
+      width: 140,
+      render: (_: unknown, record: SampleRequestRow) => {
+        // 已删除的行只给「恢复」：后端对已删的单子查详情一律 404，
+        // 摆一个「详情」也是死的，点了只会报错。
+        if (record.is_deleted) {
+          // 恢复要走 `sample:manage`（与删除共用同一把钥匙），没权限就不摆按钮
+          return canManage ? (
+            <Popconfirm
+              title="恢复这张打样单？恢复后会重新出现在列表里。"
+              onConfirm={() => restoreMutation.mutate(record.id)}
+            >
+              <Button theme="borderless" size="small">
+                恢复
+              </Button>
+            </Popconfirm>
+          ) : null
+        }
+        return (
+          <>
+            <Button
+              theme="borderless"
+              size="small"
+              onClick={() => {
+                setDetailId(record.id)
+                navigate(`/samples/${record.id}`)
+              }}
+            >
+              详情
+            </Button>
+            {/* 能不能删由后端下发（`can_delete`）：只有还没走流程的（待审批 / 已驳回）
+                才给「删除」—— 已批准之后的单子连着审批留痕与车间依据。判据别在前端再写一份。 */}
+            {canManage && record.can_delete && (
+              <Popconfirm
+                title="删除后这张打样单不在列表里显示，可在「已删除」里恢复。"
+                onConfirm={() => deleteMutation.mutate(record.id)}
+              >
+                <Button theme="borderless" size="small" type="danger">
+                  删除
+                </Button>
+              </Popconfirm>
+            )}
+          </>
+        )
+      },
     },
   ]
 
@@ -626,8 +702,16 @@ export default function SampleListPage() {
     label: `${row.inquiry_no ?? `编号 ${row.id}`} · ${row.title}`,
   }))
 
+  useEffect(() => {
+    if (detail && searchParams.get('oa') === '1') {
+      setOaTarget(detail.id)
+      setSearchParams((current) => { const next = new URLSearchParams(current); next.delete('oa'); return next }, { replace: true })
+    }
+  }, [detail, searchParams, setSearchParams])
+
   return (
     <div className="page-container">
+      {oaTarget != null && <SampleDingTalkModal key={oaTarget} sampleId={oaTarget} onClose={() => { setOaTarget(null); void refresh() }} />}
       <ConfirmRequiredModal
         visible={sampleGate !== null}
         message={sampleGate?.message ?? ''}
@@ -707,7 +791,7 @@ export default function SampleListPage() {
         onCancel={() => setCreateVisible(false)}
         onOk={() => createMutation.mutate()}
         confirmLoading={createMutation.isPending}
-        okText="创建"
+        okText="保存草稿并填写钉钉申请"
         width={560}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -725,13 +809,18 @@ export default function SampleListPage() {
                   ?? (selectedOpportunityQuery.data?.id === id ? selectedOpportunityQuery.data : undefined)
                 setForm({ ...form, opportunity_id: id, customer_id: opp?.customer_id ?? form.customer_id })
               }}
-              optionList={Array.from(new Map([
-                ...(opportunitiesQuery.data?.items ?? []),
-                ...(selectedOpportunityQuery.data ? [selectedOpportunityQuery.data] : []),
-              ].map((opp) => [opp.id, opp])).values()).map((opp) => ({
-                value: opp.id,
-                label: `${opp.title}${opp.customer_name ? ` · ${opp.customer_name}` : ''}`,
-              }))}
+              optionList={optionsWithCodeOnDuplicate(
+                Array.from(new Map([
+                  ...(opportunitiesQuery.data?.items ?? []),
+                  ...(selectedOpportunityQuery.data ? [selectedOpportunityQuery.data] : []),
+                ].map((opp) => [opp.id, opp])).values()),
+                // 显示文案是「商机名 · 客户名」：同一个客户底下有同名商机时，
+                // 两条会渲染成一模一样的文字，选哪条全靠猜。
+                // 按项目规矩来 —— **撞车才补「编号 N」**（不撞车的仍然只显示文案，
+                // 也不影响按编号搜：搜索走 optionMatcher，编号挂在 value 上）。
+                (opp) => `${opp.title}${opp.customer_name ? ` · ${opp.customer_name}` : ''}`,
+                (opp) => opp.id,
+              )}
             />
           </div>
           <div>
@@ -1040,12 +1129,13 @@ export default function SampleListPage() {
               </div>
             )}
 
-            {canManage && (
+            {canManage && <Button theme="solid" onClick={() => setOaTarget(detail.id)}>钉钉打样申请 / 查看进度</Button>}
+            {canManage && !((detail.source_context as unknown as { dingtalk_oa?: { submitted?: boolean } } | null)?.dingtalk_oa?.submitted) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——
                     主管改判（上次驳错了）、跟单原样重提（认为驳回理由不成立）。
                     这两条是不同角色在办事，缺哪条都会卡住那一半人。 */}
-                {(detail.status === 'pending' || detail.status === 'rejected') && (
+                {(detail.status === 'pending' || detail.status === 'rejected') && !((detail.source_context as unknown as Record<string, unknown> | null)?.dingtalk_oa) && (
                   <>
                     {detail.status === 'pending' && (
                       <Input
@@ -1225,31 +1315,40 @@ export default function SampleListPage() {
                         value={prodForm.purpose}
                         onChange={(v) => setProdForm({ ...prodForm, purpose: v })}
                       />
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <DatePicker
-                          type="date"
-                          format="yyyy-MM-dd"
-                          showClear
-                          style={{ flex: 1 }}
-                          placeholder="选择目标完成日"
-                          value={
-                            prodForm.target_completion_date
-                              ? new Date(prodForm.target_completion_date)
-                              : undefined
-                          }
-                          onChange={(_, dateStr) =>
-                            setProdForm({
-                              ...prodForm,
-                              target_completion_date: (dateStr as string) || '',
-                            })
-                          }
-                        />
-                        <Input
-                          style={{ width: 120 }}
-                          placeholder="费用（留空=未填）"
-                          value={prodForm.sample_fee}
-                          onChange={(v) => setProdForm({ ...prodForm, sample_fee: v })}
-                        />
+                      <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <FormLabel>目标完成日</FormLabel>
+                          <DatePicker
+                            type="date"
+                            format="yyyy-MM-dd"
+                            showClear
+                            style={{ width: '100%' }}
+                            placeholder="选择日期"
+                            value={
+                              prodForm.target_completion_date
+                                ? new Date(prodForm.target_completion_date)
+                                : undefined
+                            }
+                            onChange={(_, dateStr) =>
+                              setProdForm({
+                                ...prodForm,
+                                target_completion_date: (dateStr as string) || '',
+                              })
+                            }
+                          />
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <FormLabel>打样费用（元）</FormLabel>
+                          <Input
+                            style={{ width: '100%' }}
+                            placeholder="请输入金额"
+                            value={prodForm.sample_fee}
+                            onChange={(v) => setProdForm({ ...prodForm, sample_fee: v })}
+                          />
+                          <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                            留空表示未填；免费请填 0
+                          </div>
+                        </div>
                       </div>
                       <TextArea
                         placeholder="验收标准"

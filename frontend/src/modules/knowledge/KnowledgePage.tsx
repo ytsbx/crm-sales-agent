@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
   Dropdown,
+  DatePicker,
   Input,
   InputNumber,
   Modal,
@@ -13,8 +14,13 @@ import {
   Tag,
   TextArea,
   Toast,
+  Upload,
 } from '@douyinfe/semi-ui'
 
+import type { FileItem } from '@douyinfe/semi-ui/lib/es/upload/interface'
+import { listBusinessFiles, uploadFile } from '../../shared/api/file'
+import { approvalProgress } from './approval-progress'
+import AttachmentPanel from '../common/AttachmentPanel'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { parseOptionalNumber } from '../../shared/number-input'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -37,6 +43,7 @@ import { listCustomers } from '../../shared/api/customer'
 import { getOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
   listInquiryApprovals,
+  getInquirySubmissionOptions,
   resolveOaInstance,
   startInquiryApproval,
   type OaApprovalInstance,
@@ -45,7 +52,7 @@ import { reportOperationTiming } from '../../shared/api/analytics'
 import { newRequestKey } from '../../shared/api/requestKey'
 import FormLabel from '../../shared/components/FormLabel'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
 type TagColor = ComponentProps<typeof Tag>['color']
 const STATUS_TONE: Record<string, TagColor> = {
@@ -91,6 +98,13 @@ export default function KnowledgePage() {
   const rawOpportunityId = Number(searchParams.get('opportunity_id'))
   const opportunityFilter = Number.isSafeInteger(rawOpportunityId) && rawOpportunityId > 0 ? rawOpportunityId : undefined
   const { can } = usePermissions()
+  const [moreTargetId, setMoreTargetId] = useState<number | null>(null)
+  const [photoTarget, setPhotoTarget] = useState<CustomInquiryRow | null>(null)
+  const [submitTarget, setSubmitTarget] = useState<CustomInquiryRow | null>(null)
+  const [submitAttachments, setSubmitAttachments] = useState<number[]>([])
+  const [submitFields, setSubmitFields] = useState<Record<string, string>>({})
+  const [submitResubmit, setSubmitResubmit] = useState(false)
+  const [submitQuoteOwner, setSubmitQuoteOwner] = useState<string | undefined>()
   const [draftSourceId, setDraftSourceId] = useState<number | null>(null)
   const [sampleSourceId, setSampleSourceId] = useState<number | null>(null)
   const [statusFilter, setStatusFilter] = useState<string | undefined>()
@@ -103,6 +117,10 @@ export default function KnowledgePage() {
   const [editVisible, setEditVisible] = useState(false)
   const [editing, setEditing] = useState<CustomInquiryRow | null>(null)
   const [form, setForm] = useState<InquiryForm>(EMPTY_FORM)
+  const [pendingPhotos, setPendingPhotos] = useState<FileItem[]>([])
+  const [pendingAttachments, setPendingAttachments] = useState<FileItem[]>([])
+  const saveIntent = useRef(false)
+  const savedInquiry = useRef<CustomInquiryRow | null>(null)
   // 修订（§3.3）：客户改了要求 → 新增一版并留说明，旧版保留
   const [reviseTarget, setReviseTarget] = useState<CustomInquiryRow | null>(null)
   const [reviseForm, setReviseForm] = useState({
@@ -167,17 +185,6 @@ export default function KnowledgePage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
-  // 重提/重试共用「发起审批」接口：两轮之间是"另建一张单"，同一轮内是"再发一次"，
-  // 到底允许哪一个由服务端的 allowed_actions 决定（见下面审批记录表的按钮）
-  const approvalMutation = useMutation({
-    mutationFn: ({ inquiryId, resubmit }: { inquiryId: number; resubmit: boolean }) =>
-      startInquiryApproval(inquiryId, resubmit),
-    onSuccess: (row) => {
-      Toast.success(`钉钉审批：${row.status_label}（第 ${row.submit_round ?? 1} 轮）`)
-      void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
   const approvalRows = approvalsQuery.data ?? []
   // 只有**最新一轮**才谈得上重提/重试：旧轮次即使状态允许，服务端也会按最新一轮拒绝
   const latestApprovalRound = approvalRows.reduce(
@@ -238,7 +245,11 @@ export default function KnowledgePage() {
   })
   const opportunitiesQuery = useQuery({
     queryKey: ['opportunities-for-inquiry', form.customer_id],
-    queryFn: () => listOpportunities({ customer_id: form.customer_id ?? undefined, page_size: 100 }),
+    // 只列「进行中」的商机（理由同「新建样品申请」：已失单/已成交的不该再作为
+    // 「本次采购需求」的关联对象，其它选商机的地方也都带这道过滤）。
+    queryFn: () => listOpportunities({
+      customer_id: form.customer_id ?? undefined, status: 'open', page_size: 100,
+    }),
     enabled: editVisible && Boolean(form.customer_id),
   })
   const selectedOpportunity = useQuery({
@@ -256,12 +267,56 @@ export default function KnowledgePage() {
   }
 
   const saveMutation = useMutation({
-    mutationFn: (payload: CustomInquiryPayload) =>
-      editing ? updateCustomInquiry(editing.id, payload) : createCustomInquiry(payload),
+    mutationFn: async (payload: CustomInquiryPayload) => {
+      const existing = editing ?? savedInquiry.current
+      const options = submissionOptions.data
+      const draft = { fields: submitFields, quote_owner_user_id: submitQuoteOwner ?? options?.selected_quote_owner ?? null, attachment_file_ids: submitAttachments }
+      const data = { ...payload, oa_draft: draft }
+      const row = existing ? await updateCustomInquiry(existing.id, data) : await createCustomInquiry(data)
+      // 创建成功即记住真实 ID；照片失败后重试只能更新这条需求，不能再创建一条。
+      savedInquiry.current = row
+      setEditing(row)
+      refresh()
+      for (const photo of pendingPhotos) {
+        if (!photo.fileInstance) throw new Error('照片内容已失效，请移除后重新选择')
+        try {
+          await uploadFile(photo.fileInstance, { businessType: 'inquiry', businessId: row.id })
+        } catch (error) {
+          throw new Error(`询价已保存，照片尚未全部上传：${error instanceof Error ? error.message : '上传失败'}。请在当前窗口重试保存。`)
+        }
+        setPendingPhotos((current) => current.filter((item) => item.uid !== photo.uid))
+        void queryClient.invalidateQueries({ queryKey: ['business-files', 'inquiry', row.id] })
+      }
+      const ids = [...submitAttachments]
+      for (const file of pendingAttachments) {
+        if (!file.fileInstance) throw new Error('附件内容已失效，请重新选择')
+        const uploaded = await uploadFile(file.fileInstance, { businessType: 'inquiry', businessId: row.id, category: 'oa_attachment' }).catch((error: Error) => {
+          throw new Error(`草稿已保存，附件「${file.name}」上传失败：${error.message}。未发起审批，请在当前窗口重试。`)
+        })
+        ids.push(uploaded.id)
+        setSubmitAttachments([...ids])
+        setPendingAttachments((current) => current.filter((item) => item.uid !== file.uid))
+        void queryClient.invalidateQueries({ queryKey: ['business-files', 'inquiry', row.id] })
+      }
+      await updateCustomInquiry(row.id, { oa_draft: { ...draft, attachment_file_ids: ids } })
+      if (saveIntent.current) {
+        const result = await startInquiryApproval(row.id, false, draft.quote_owner_user_id || undefined, submitFields, ids)
+        if (result.status !== 'pending' || !result.instance_id) {
+          setApprovalTarget(row)
+          throw new Error(`询价已保存；钉钉状态：${result.status_label}。请查看审批记录，结果不明时不要重复提交。`)
+        }
+        Toast.success('已提交到钉钉，生产部将在钉钉处理')
+        setApprovalTarget(row)
+      }
+      return row
+    },
     onSuccess: () => {
-      Toast.success(editing ? '已保存' : '定制询价已记录')
+      if (!saveIntent.current) Toast.success('草稿已保存，尚未发送钉钉审批')
       setEditVisible(false)
       setEditing(null)
+      savedInquiry.current = null
+      setPendingPhotos([])
+      setPendingAttachments([])
       setForm(EMPTY_FORM)
       refresh()
     },
@@ -304,6 +359,12 @@ export default function KnowledgePage() {
   })
 
   const openCreate = () => {
+    savedInquiry.current = null
+    setPendingPhotos([])
+    setPendingAttachments([])
+    setSubmitFields({})
+    setSubmitQuoteOwner(undefined)
+    setSubmitAttachments([])
     setEditing(null)
     setForm(opportunityFilter && linkedOpportunity.data ? {
       ...EMPTY_FORM, customer_id: linkedOpportunity.data.customer_id, opportunity_id: opportunityFilter,
@@ -312,6 +373,12 @@ export default function KnowledgePage() {
   }
 
   const openEdit = (row: CustomInquiryRow) => {
+    savedInquiry.current = null
+    setPendingPhotos([])
+    setPendingAttachments([])
+    setSubmitFields(row.extra?.oa_draft?.fields ?? {})
+    setSubmitQuoteOwner(row.extra?.oa_draft?.quote_owner_user_id ?? undefined)
+    setSubmitAttachments(row.extra?.oa_draft?.attachment_file_ids ?? [])
     setEditing(row)
     setForm({
       title: row.title,
@@ -332,20 +399,39 @@ export default function KnowledgePage() {
       .catch((error: Error) => Toast.error(error.message))
   }
 
-  /** 场景11：从需求发起钉钉询价审批。
-   *  注意这不是"随便试试"——真发起会通知审批人（真人）。
-   *  后端有推送总闸，关着时只会记一条"未发起"，不会打扰任何人。 */
-  const startApproval = async (row: CustomInquiryRow) => {
-    try {
-      const result = await startInquiryApproval(row.id)
-      if (result.status === 'skipped') {
-        Toast.info(`未发起：${result.error ?? '推送已关闭'}`)
-      } else {
-        Toast.success(`钉钉审批：${result.status_label}`)
-      }
-    } catch (error) {
-      Toast.error((error as Error).message)
-    }
+  const submissionOptions = useQuery({
+    queryKey: ['inquiry-oa-submission', submitTarget?.id ?? editing?.id ?? 'new'],
+    queryFn: () => getInquirySubmissionOptions(submitTarget?.id ?? editing?.id),
+    enabled: Boolean(submitTarget) || editVisible,
+  })
+  const submissionFiles = useQuery({
+    queryKey: ['business-files', submissionOptions.data?.file_business_type || 'inquiry', submitTarget?.id ?? editing?.id],
+    queryFn: () => listBusinessFiles(submissionOptions.data?.file_business_type || 'inquiry', (submitTarget?.id ?? editing?.id)!),
+    enabled: Boolean(submitTarget || (editVisible && editing)) && can('file:view'),
+  })
+  const submitMutation = useMutation({
+    mutationFn: ({ inquiryId, quoteOwner, resubmit, fields }: { inquiryId: number; quoteOwner?: string; resubmit: boolean; fields: Record<string, string> }) =>
+      startInquiryApproval(inquiryId, resubmit, quoteOwner, fields, submitAttachments),
+    onSuccess: (result) => {
+      if (result.status === 'pending' && result.instance_id) {
+        Toast.success('询价已提交到钉钉OA，后续由生产部在钉钉处理')
+      } else if (['needs_review', 'submitting'].includes(result.status)) {
+        Toast.warning('提交结果尚未确定，请查看审批记录并核对钉钉，不要重复提交')
+      } else if (['skipped', 'not_sent', 'failed'].includes(result.status)) {
+        Toast.warning(`尚未提交成功：${result.error || result.status_label}`)
+      } else Toast.info(`当前钉钉审批状态：${result.status_label}，请查看审批记录`)
+      setApprovalTarget(submitTarget)
+      setSubmitTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const startApproval = (row: CustomInquiryRow, resubmit = false) => {
+    setSubmitResubmit(resubmit)
+    setSubmitFields(row.extra?.oa_draft?.fields ?? {})
+    setSubmitAttachments(row.extra?.oa_draft?.attachment_file_ids ?? [])
+    setSubmitQuoteOwner(row.extra?.oa_draft?.quote_owner_user_id ?? undefined)
+    setSubmitTarget(row)
   }
 
   /** 场景09：定制件没有 SKU，报价中心选不到它，这里给一条"填两个数就成单"的出口。
@@ -372,7 +458,7 @@ export default function KnowledgePage() {
 
   const columns = [
     {
-      title: '需求',
+      title: '产品名称',
       dataIndex: 'title',
       render: (text: string, record: CustomInquiryRow) => (
         <div>
@@ -458,7 +544,7 @@ export default function KnowledgePage() {
         if (can('sample:manage')) {
           moreActions.push({ key: 'sample', label: '申请打样', onClick: () => setSampleSourceId(record.id) })
         }
-        moreActions.push({ key: 'oa-start', label: '发起审批', onClick: () => { void startApproval(record) } })
+        if (can('quote:manage')) moreActions.push({ key: 'oa-start', label: '提交询价到钉钉', onClick: () => startApproval(record) })
         // 历次审批 + "结果不明"的人工处理入口（认领/重发/作废）
         moreActions.push({ key: 'oa-log', label: '审批记录', onClick: () => setApprovalTarget(record) })
         if ((record.version ?? 1) > 1) {
@@ -483,8 +569,9 @@ export default function KnowledgePage() {
         if (record.status === 'developing') moreMissing.push(`当前状态是「${statusLabel}」，不用再转开发中`)
         if (record.status === 'converted') moreMissing.push(`当前状态是「${statusLabel}」，不能转开发中`)
         if (record.status === 'archived') moreMissing.push(`当前状态是「${statusLabel}」，不能再归档`)
-        return (
+  return (
           <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            {can('quote:manage') && <a onClick={() => setPhotoTarget(record)}>上传照片</a>}
             <a onClick={() => openEdit(record)}>编辑</a>
             <a onClick={() => openRevise(record)}>修订</a>
             {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
@@ -495,10 +582,12 @@ export default function KnowledgePage() {
             <Dropdown
               trigger="click"
               position="bottomRight"
+              visible={moreTargetId === record.id}
+              onVisibleChange={(visible) => setMoreTargetId(visible ? record.id : null)}
               render={
                 <Dropdown.Menu>
                   {moreActions.map((action) => (
-                    <Dropdown.Item key={action.key} onClick={action.onClick}>
+                    <Dropdown.Item key={action.key} onClick={() => { setMoreTargetId(null); action.onClick() }}>
                       {action.label}
                     </Dropdown.Item>
                   ))}
@@ -535,6 +624,84 @@ export default function KnowledgePage() {
     },
   ]
 
+  const renderSubmissionFields = (target: CustomInquiryRow | null) => <>
+    {submissionOptions.isPending && <div>正在读取钉钉询价表单……保存草稿不受影响。</div>}
+    {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>钉钉表单读取失败，仍可保存草稿；请稍后重试提交。</div>}
+          {submissionOptions.data?.quote_owner_required && <div>
+            <FormLabel required>对接报价员</FormLabel>
+            <Select style={{ width: '100%' }} placeholder="选择钉钉对接报价员"
+              disabled={submitMutation.isPending || saveMutation.isPending}
+              value={submitQuoteOwner ?? submissionOptions.data.selected_quote_owner ?? undefined}
+              onChange={(value) => setSubmitQuoteOwner(value as string)}
+              optionList={submissionOptions.data.quote_owners.map((item) => ({ value: item.user_id, label: item.name }))}
+            />
+          </div>}
+          {submissionOptions.data?.fields.map((field) => <div key={field.id}>
+            <FormLabel required={field.required}>{field.label}</FormLabel>
+            {field.type === 'DDAttachment' ? (
+              <>
+                <div style={{ marginBottom: 8 }}>选填，可上传图纸、PDF、表格等文件；与上方产品参考照片分别提交。</div>
+                {editVisible && <Upload action="" uploadTrigger="custom" multiple fileList={pendingAttachments}
+                  disabled={saveMutation.isPending || !can('file:manage')} maxSize={20 * 1024}
+                  onSizeError={() => Toast.warning('单个附件不能超过20 MB')}
+                  onChange={({ fileList }) => setPendingAttachments(fileList)}
+                  prompt="选中的附件会在保存草稿或提交时上传。">
+                  <Button disabled={saveMutation.isPending || !can('file:manage')}>选择附件（可多选）</Button>
+                </Upload>}
+                {target && <AttachmentPanel businessType={submissionOptions.data!.file_business_type} businessId={target.id}
+                  category="oa_attachment" onlyCategory="oa_attachment" writePermission="quote:manage" /> }
+                <Select multiple style={{ width: '100%' }} placeholder="选择本次要提交到钉钉的附件（最多10个）"
+                  value={submitAttachments} disabled={submitMutation.isPending || saveMutation.isPending} maxTagCount={3}
+                  optionList={(submissionFiles.data ?? []).filter((file) => file.category === 'oa_attachment').map((file) => ({ value: file.id, label: file.file_name }))}
+                  onChange={(value) => {
+                    const ids = value as number[]
+                    if (ids.length > 10) { Toast.warning('单次最多提交10个附件'); return }
+                    setSubmitAttachments(ids)
+                  }} />
+                {submissionFiles.isError && <div style={{ color: 'var(--crm-error)' }}>附件列表读取失败，请重试。</div>}
+              </>
+            ) : field.type === 'DDSelectField' ? (
+              <Select style={{ width: '100%' }} placeholder="请选择" disabled={submitMutation.isPending || saveMutation.isPending}
+                value={submitFields[field.id] || undefined}
+                optionList={field.options.map((value) => ({ value, label: value }))}
+                onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value as string }))} />
+            ) : field.type === 'DDDateField' ? (
+              <DatePicker type="dateTime" format="yyyy-MM-dd HH:mm" style={{ width: '100%' }}
+                disabled={submitMutation.isPending || saveMutation.isPending} placeholder="请选择期望回复时间" showClear
+                value={submitFields[field.id] || undefined}
+                onChange={(_, value) => setSubmitFields((current) => ({ ...current, [field.id]: (value as string) || '' }))} />
+            ) : (
+              <TextArea value={submitFields[field.id] || ''} rows={2} disabled={submitMutation.isPending || saveMutation.isPending}
+                placeholder={`填写${field.label}`}
+                onChange={(value) => setSubmitFields((current) => ({ ...current, [field.id]: value }))} />
+            )}
+          </div>)}
+  </>
+
+  const saveForm = (submit: boolean) => {
+    if (saveMutation.isPending) return
+    if (!form.title.trim()) { Toast.warning('产品名称必填'); return }
+    if (submitAttachments.length + pendingAttachments.length > 10) { Toast.warning('单次最多选择10个附件，请移除多余文件'); return }
+    if (submit) {
+      const options = submissionOptions.data
+      if (!options?.configured || !options.enabled) { Toast.warning('钉钉询价暂不可提交，请先保存草稿'); return }
+      if (options.quote_owner_required && !(submitQuoteOwner ?? options.selected_quote_owner)) { Toast.warning('请选择对接报价员'); return }
+      const missing = options.fields.find((field) => field.required && (field.type === 'DDAttachment'
+        ? !submitAttachments.length && !pendingAttachments.length : !submitFields[field.id]?.trim()))
+      if (missing) { Toast.warning(`请填写${missing.label}`); return }
+      if (!form.description.trim() || !form.quantity.trim()) { Toast.warning('提交前请填写材质及工艺要求、预估订购数量'); return }
+      if (options.image_required && !pendingPhotos.length && !(submissionFiles.data ?? []).some((file) => file.category !== 'oa_attachment' && file.mime_type?.startsWith('image/'))) {
+        Toast.warning('提交前请选择产品参考照片'); return
+      }
+    }
+    saveIntent.current = submit
+    saveMutation.mutate({ title: form.title.trim(), description: form.description.trim() || null,
+      customer_id: form.customer_id ?? null, opportunity_id: form.opportunity_id ?? null,
+      quantity: form.quantity.trim() ? parseOptionalNumber(form.quantity) : null,
+      target_price: form.target_price.trim() ? parseOptionalNumber(form.target_price) : null,
+      remark: form.remark.trim() || null, status: editing ? (form.status ?? editing.status) : undefined })
+  }
+
   return (
     <div className="page-container">
       <PageHeader
@@ -556,7 +723,7 @@ export default function KnowledgePage() {
           ))}
           <div style={{ flex: 1 }} />
           <Input
-            placeholder="搜索需求标题"
+            placeholder="搜索产品名称"
             value={keywordInput}
             onChange={setKeywordInput}
             onEnterPress={() => {
@@ -600,37 +767,81 @@ export default function KnowledgePage() {
 
       {draftSourceId != null && <SampleFromSourceModal mode="order" source={{ inquiry_id: draftSourceId }} onClose={() => setDraftSourceId(null)} />}
       {sampleSourceId != null && <SampleFromSourceModal source={{ inquiry_id: sampleSourceId }} onClose={() => setSampleSourceId(null)} />}
+      <Modal title="询价照片与附件" visible={Boolean(photoTarget)} width={720}
+        bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
+        onCancel={() => setPhotoTarget(null)} footer={<Button onClick={() => setPhotoTarget(null)}>完成</Button>}>
+        <div style={{ marginBottom: 12 }}>{photoTarget?.title}：上传的照片会用于这条询价的钉钉审批。</div>
+        {photoTarget && <AttachmentPanel businessType="inquiry" businessId={photoTarget.id} writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />}
+      </Modal>
+      <Modal
+        title="提交询价到钉钉OA"
+        visible={Boolean(submitTarget)}
+        width={720}
+        bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
+        onCancel={() => { if (!submitMutation.isPending) setSubmitTarget(null) }}
+        okText="确认提交到钉钉"
+        confirmLoading={submitMutation.isPending}
+        okButtonProps={{ disabled: submissionOptions.isPending || submissionOptions.isError || !submissionOptions.data?.configured || !submissionOptions.data?.enabled }}
+        onOk={() => {
+          if (!submitTarget || !submissionOptions.data) return
+          const quoteOwner = submitQuoteOwner ?? submissionOptions.data.selected_quote_owner ?? undefined
+          if (submissionOptions.data.quote_owner_required && !quoteOwner) { Toast.warning('请选择对接报价员'); return }
+          const missing = submissionOptions.data.fields.find((field) => field.required && (field.type === 'DDAttachment' ? !submitAttachments.length : !submitFields[field.id]?.trim()))
+          if (missing) { Toast.warning(`请填写${missing.label}`); return }
+          submitMutation.mutate({ inquiryId: submitTarget.id, quoteOwner, resubmit: submitResubmit, fields: submitFields })
+        }}
+      >
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
+          <div>业务员在CRM提交，生产部在钉钉接收并处理。确认提交后才会发起审批，无需在钉钉重复填单。</div>
+          <div><strong>{submitTarget?.title}</strong>（第 {submitTarget?.version ?? 1} 版）</div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>{submitTarget?.description || '尚未填写需求描述'}</div>
+          <div>数量：{submitTarget?.quantity ?? '未填写'}；客户：{submitTarget?.customer_name || '未关联'}</div>
+          {submissionOptions.isError && <div style={{ color: 'var(--crm-error)' }}>{submissionOptions.error.message}</div>}
+          {submissionOptions.data && !submissionOptions.data.configured && <div>尚未配置钉钉询价模板，请联系管理员。</div>}
+          {submissionOptions.data && !submissionOptions.data.enabled && <div>钉钉询价提交暂未开启，请联系管理员。</div>}
+          {submitTarget && submissionOptions.data && <div>
+            <FormLabel required={submissionOptions.data.image_required}>产品参考图片</FormLabel>
+            <div style={{ marginBottom: 8, color: 'var(--crm-text-3)', fontSize: 12 }}>上传真实产品参考图片后再提交；审批结果可在「审批记录」查看，系统会定期从钉钉同步。</div>
+            <AttachmentPanel businessType={submissionOptions.data.file_business_type} businessId={submitTarget.id}
+              writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />
+          </div>}
+          {renderSubmissionFields(submitTarget)}
+
+        </div>
+      </Modal>
+
       <Modal
         title={editing ? '编辑定制询价' : '记录定制询价'}
         visible={editVisible}
-        onCancel={() => setEditVisible(false)}
-        onOk={() => {
-          if (!form.title.trim()) {
-            Toast.warning('需求标题必填')
-            return
-          }
-          saveMutation.mutate({
-            title: form.title.trim(),
-            description: form.description.trim() || null,
-            customer_id: form.customer_id ?? null,
-            opportunity_id: form.opportunity_id ?? null,
-            // 同类：字母会被静默变成 null，转单后数量/目标价为空
-            quantity: form.quantity.trim() ? parseOptionalNumber(form.quantity) : null,
-            target_price: form.target_price.trim()
-              ? parseOptionalNumber(form.target_price)
-              : null,
-            remark: form.remark.trim() || null,
-            status: editing ? (form.status ?? editing.status) : undefined,
-          })
-        }}
-        confirmLoading={saveMutation.isPending}
-        okText="保存"
-        cancelText="取消"
-        width={560}
+        onCancel={() => { if (!saveMutation.isPending) setEditVisible(false) }}
+        cancelButtonProps={{ disabled: saveMutation.isPending }}
+        footer={<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <Button disabled={saveMutation.isPending} onClick={() => setEditVisible(false)}>取消</Button>
+          <Button loading={saveMutation.isPending && !saveIntent.current} disabled={saveMutation.isPending} onClick={() => saveForm(false)}>保存草稿</Button>
+          <Button theme="solid" loading={saveMutation.isPending && saveIntent.current}
+            disabled={saveMutation.isPending || submissionOptions.isPending || submissionOptions.isError} onClick={() => saveForm(true)}>提交到钉钉</Button>
+        </div>}
+        width={760}
+        bodyStyle={{ maxHeight: '65vh', overflowY: 'auto' }}
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div>
-            <FormLabel required>需求标题</FormLabel>
+            <FormLabel>产品参考照片</FormLabel>
+            {(!editing || pendingPhotos.length > 0) && <>
+              <Upload action="" uploadTrigger="custom" multiple accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
+                maxSize={20 * 1024} onSizeError={() => Toast.warning('单张照片不能超过 20 MB')}
+                fileList={pendingPhotos} disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}
+                onChange={({ fileList }) => setPendingPhotos(fileList)}
+                onAcceptInvalid={() => Toast.warning('请选择 JPG、PNG、GIF、WebP 或 BMP 图片')}
+                prompt="先选择照片；点「保存草稿」仅保存，点「提交到钉钉」才会发出审批。">
+                <Button theme="solid" disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}>选择照片（可多选）</Button>
+              </Upload>
+              {(!can('file:manage') || !can('quote:manage')) && <div>上传照片需要文件管理和报价管理权限，请联系管理员。</div>}
+            </>}
+            {editing && <AttachmentPanel businessType="inquiry" businessId={editing.id} writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />}
+          </div>
+          <div>
+            <FormLabel required>产品名称</FormLabel>
             <Input
               value={form.title}
               onChange={(value) => setForm({ ...form, title: value })}
@@ -638,7 +849,7 @@ export default function KnowledgePage() {
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>需求描述</div>
+            <div style={{ marginBottom: 4 }}>材质及工艺要求</div>
             <TextArea
               value={form.description}
               onChange={(value) => setForm({ ...form, description: value })}
@@ -671,10 +882,16 @@ export default function KnowledgePage() {
             <div className="blocked-hint-click" onClick={notifyOpportunityBlocked} style={{ display: 'block' }}>
               <Select value={form.opportunity_id ?? undefined} disabled={!form.customer_id}
                 onChange={(value) => setForm({ ...form, opportunity_id: (value as number) ?? null })}
-                optionList={Array.from(new Map([
-                  ...(opportunitiesQuery.data?.items ?? []),
-                  ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
-                ].map((item) => [item.id, item])).values()).map((item) => ({ value: item.id, label: item.title }))}
+                optionList={optionsWithCodeOnDuplicate(
+                  Array.from(new Map([
+                    ...(opportunitiesQuery.data?.items ?? []),
+                    ...(selectedOpportunity.data && selectedOpportunity.data.customer_id === form.customer_id ? [selectedOpportunity.data] : []),
+                  ].map((item) => [item.id, item])).values()),
+                  // 显示文案就是商机名：同一客户底下同名商机必然撞车，
+                  // 按项目规矩撞车才补「编号 N」。
+                  (item) => item.title,
+                  (item) => item.id,
+                )}
                 filter showClear
                 style={{ width: '100%', ...(form.customer_id ? null : { pointerEvents: 'none' }) }}
                 placeholder="选择该客户的商机，避免重复创建" />
@@ -689,7 +906,7 @@ export default function KnowledgePage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>需求数量</div>
+              <div style={{ marginBottom: 4 }}>预估订购数量</div>
               <Input value={form.quantity} onChange={(value) => setForm({ ...form, quantity: value })} />
             </div>
             <div style={{ flex: 1 }}>
@@ -715,6 +932,8 @@ export default function KnowledgePage() {
             <div style={{ marginBottom: 4 }}>备注</div>
             <Input value={form.remark} onChange={(value) => setForm({ ...form, remark: value })} />
           </div>
+          <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 12 }}>钉钉询价资料：草稿允许暂缺，提交时会检查必填项。</div>
+          {renderSubmissionFields(editing)}
         </div>
       </Modal>
 
@@ -727,7 +946,7 @@ export default function KnowledgePage() {
         okText="生成新版"
         cancelText="取消"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             修订会新增一版（旧版原样保留，可在「历史」里对照），新一版回到「待评估」
           </div>
@@ -808,9 +1027,11 @@ export default function KnowledgePage() {
         visible={Boolean(approvalTarget)}
         onCancel={() => setApprovalTarget(null)}
         footer={null}
-        width={720}
+        width={1000}
+        bodyStyle={{ maxHeight: '70vh', overflowY: 'auto' }}
       >
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
+          点击每行左侧展开按钮可查看钉钉节点、处理意见和时间。后台定期同步，显示可能有延迟。
           发起过程中断时钉钉那边可能已经建了单，而钉钉接口没有"只许建一次"的开关，
           所以「不会自动重发」。请先到钉钉确认，再选「认领 / 重发 / 作废」。
           按钮由服务端返回的可用动作决定——待审批、已通过、结果未知都不会给出「重提」，
@@ -911,9 +1132,12 @@ export default function KnowledgePage() {
                       key="resubmit"
                       title="驳回后重提？"
                       content="会向钉钉「新建一轮」审批（旧轮次保留在记录里）。"
-                      onConfirm={() =>
-                        approvalMutation.mutate({ inquiryId: row.inquiry_id, resubmit: true })
-                      }
+                      onConfirm={() => {
+                        if (!approvalTarget) return
+                        const target = approvalTarget
+                        setApprovalTarget(null)
+                        startApproval(target, true)
+                      }}
                     >
                       <a>驳回后重提</a>
                     </Popconfirm>,
@@ -925,9 +1149,12 @@ export default function KnowledgePage() {
                       key="retry"
                       title="重新发起？"
                       content="沿用同一轮、同一请求号再发一次（外部确认没建单时才适用）。"
-                      onConfirm={() =>
-                        approvalMutation.mutate({ inquiryId: row.inquiry_id, resubmit: false })
-                      }
+                      onConfirm={() => {
+                        if (!approvalTarget) return
+                        const target = approvalTarget
+                        setApprovalTarget(null)
+                        startApproval(target, false)
+                      }}
                     >
                       <a>重新发起</a>
                     </Popconfirm>,
@@ -940,6 +1167,27 @@ export default function KnowledgePage() {
               },
             },
           ]}
+          expandedRowRender={(row?: OaApprovalInstance) => {
+            if (!row) return null
+            const progress = approvalProgress(row.result)
+            return <div style={{ padding: 12, minWidth: 0 }}>
+              <div style={{ marginBottom: 10 }}>审批在钉钉处理，以下为最近同步的过程。
+                最近同步：{row.synced_at ? new Date(row.synced_at).toLocaleString('zh-CN') : '尚未同步'}
+              </div>
+              {progress.length ? <Table dataSource={progress.map((entry, index) => ({ ...entry, key: index }))}
+                rowKey="key" pagination={false} scroll={{ x: 650 }} columns={[
+                  { title: '类别', dataIndex: 'kind', width: 80, render: (kind: string) => kind === 'task' ? '节点' : '操作记录' },
+                  { title: '处理人', dataIndex: 'person', width: 160 },
+                  { title: '节点 / 操作', dataIndex: 'node', width: 150 },
+                  { title: '状态 / 结果', dataIndex: 'status', width: 130 },
+                  { title: '时间', dataIndex: 'time', width: 180, render: (value: string | null) => {
+                    const date = value ? new Date(value) : null
+                    return date && !Number.isNaN(date.getTime()) ? date.toLocaleString('zh-CN') : '未返回'
+                  } },
+                  { title: '处理意见', dataIndex: 'remark', render: (value: string) => value || '—' },
+                ]} /> : <div>钉钉尚未返回节点或操作记录，稍后再查看；最终结果以本轮审批总状态为准。</div>}
+            </div>
+          }}
           dataSource={approvalRows}
           loading={approvalsQuery.isLoading}
           rowKey="id"
@@ -999,7 +1247,7 @@ export default function KnowledgePage() {
         okText="生成报价"
         width={520}
       >
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             {quoteTarget?.customer_name
               ? `客户：${quoteTarget.customer_name}`

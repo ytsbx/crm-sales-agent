@@ -1159,7 +1159,8 @@ export default function SettingsPage() {
           {activeKey === 'dictionaries' && (
             <>
               <div style={{ color: 'var(--crm-text-2)', fontSize: 13, marginBottom: 12 }}>
-                客户等级和产品分类从这里维护；业务表单只允许选择启用的选项，历史数据不会被自动改写。
+                客户等级从这里维护；业务表单只允许选择启用的选项，历史数据不会被自动改写。
+                产品分类已在新建/编辑产品时直接填写，不在这里维护。
               </div>
               <div className="toolbar">
                 <Select
@@ -1168,7 +1169,6 @@ export default function SettingsPage() {
                   onChange={(value) => setDictionaryForm({ ...dictionaryForm, type: String(value) })}
                   optionList={[
                     { value: 'customer_level', label: '客户等级' },
-                    { value: 'product_category', label: '产品分类' },
                   ]}
                 />
                 <Input
@@ -1200,7 +1200,7 @@ export default function SettingsPage() {
               </div>
               <Table<DictionaryItemRow>
                 columns={[
-                  { title: '类型', dataIndex: 'type', width: 140, render: (value: string) => value === 'customer_level' ? '客户等级' : value === 'product_category' ? '产品分类' : value },
+                  { title: '类型', dataIndex: 'type', width: 140, render: (value: string) => value === 'customer_level' ? '客户等级' : value },
                   { title: '编码', dataIndex: 'code', width: 140 },
                   { title: '名称', dataIndex: 'label' },
                   { title: '排序', dataIndex: 'sort_no', width: 80 },

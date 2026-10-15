@@ -13,7 +13,7 @@ from app.core.patch_schema import CreateModel, PatchModel
 class ProductCreate(CreateModel):
     name: str = Field(min_length=1, max_length=200)
     product_line: str | None = None
-    category: str | None = None
+    category: str | None = Field(default=None, max_length=64)
     brand: str | None = None
     description: str | None = None
     knowledge: str | None = None
@@ -24,7 +24,7 @@ class ProductUpdate(PatchModel):
 
     name: str | None = None
     product_line: str | None = None
-    category: str | None = None
+    category: str | None = Field(default=None, max_length=64)
     brand: str | None = None
     description: str | None = None
     knowledge: str | None = None

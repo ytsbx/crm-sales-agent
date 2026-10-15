@@ -44,6 +44,8 @@ interface Props {
   businessType: string
   businessId: number
   category?: string
+  uploadLabel?: string
+  accept?: string
   /**
    * 要不要显示「分类」这一列，**默认不显示**。
    *
@@ -57,6 +59,8 @@ interface Props {
    * 看出"制作依据"和"事后补料"的区别）。
    */
   showCategory?: boolean
+  onlyCategory?: string
+  excludeCategory?: string
   enabled?: boolean
   /**
    * 上传/挂载要**目标模块自己的**写权限码，默认按文件中心（file:manage）。
@@ -70,7 +74,11 @@ export default function AttachmentPanel({
   businessType,
   businessId,
   category,
+  uploadLabel = '上传附件',
+  accept,
   showCategory = false,
+  onlyCategory,
+  excludeCategory,
   enabled = true,
   writePermission = 'file:manage',
 }: Props) {
@@ -194,8 +202,8 @@ export default function AttachmentPanel({
 
   return (
     <>
-      <div className="toolbar">
-        <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
+      <div className="toolbar" style={{ minWidth: 0, maxWidth: '100%' }}>
+        <div style={{ color: 'var(--crm-text-3)', fontSize: 13, flex: '1 1 240px', minWidth: 0 }}>
           合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB
         </div>
         <div style={{ flex: 1 }} />
@@ -204,6 +212,7 @@ export default function AttachmentPanel({
             <input
               ref={inputRef}
               type="file"
+              accept={accept}
               style={{ display: 'none' }}
               onChange={(event) => {
                 const file = event.target.files?.[0]
@@ -215,7 +224,7 @@ export default function AttachmentPanel({
               loading={uploading}
               onClick={() => inputRef.current?.click()}
             >
-              上传附件
+              {uploadLabel}
             </Button>
           </>
         )}
@@ -236,6 +245,8 @@ export default function AttachmentPanel({
         )}
       </div>
       <Table<FileRow>
+        style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}
+        scroll={{ x: 1000 }}
         columns={[
           {
             title: '文件名',
@@ -325,7 +336,7 @@ export default function AttachmentPanel({
             ),
           },
         ]}
-        dataSource={query.data ?? []}
+        dataSource={(query.data ?? []).filter((file) => (!onlyCategory || file.category === onlyCategory) && (!excludeCategory || file.category !== excludeCategory))}
         loading={query.isLoading}
         rowKey="id"
         pagination={false}

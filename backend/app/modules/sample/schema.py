@@ -67,6 +67,7 @@ class SampleItemInput(BaseModel):
 
 
 class SampleCreate(BaseModel):
+    use_dingtalk: bool = False
     model_config = ConfigDict(extra="ignore")
 
     opportunity_id: int | None = None
@@ -149,6 +150,7 @@ class SampleSourceItem(BaseModel):
 
 
 class SampleFromSource(SampleSource):
+    use_dingtalk: bool = False
     request_key: UUID
     items: list[SampleSourceItem] = Field(min_length=1, max_length=200)
     remark: str | None = Field(default=None, max_length=2000)

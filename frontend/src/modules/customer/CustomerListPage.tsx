@@ -46,7 +46,7 @@ const LEVEL_OPTIONS = [
   { value: 'D', label: 'D 级' },
 ]
 
-const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入'].map(
+const SOURCE_OPTIONS = ['展会', '官网', '老客户介绍', '企业微信', 'Excel 导入', '手工录入', '其他'].map(
   (value) => ({ value, label: value }),
 )
 
@@ -114,6 +114,7 @@ export default function CustomerListPage() {
 
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<CustomerPayload>(EMPTY_FORM)
+  const [otherSource, setOtherSource] = useState('')
   // 批量导入导出
   const fileInputRef = useRef<HTMLInputElement>(null)
   // 本次「新建客户」表单的幂等键：打开表单时生成，成功后清空（第八批 8.15）
@@ -282,6 +283,7 @@ export default function CustomerListPage() {
       Toast.success(`客户「${customer.name}」已创建`)
       setModalVisible(false)
       setForm(EMPTY_FORM)
+      setOtherSource('')
       // 这次表单已经用掉了这把键，下一次新建要换新的
       createRequestKeyRef.current = ''
       void queryClient.invalidateQueries({ queryKey: ['customers'] })
@@ -785,7 +787,10 @@ export default function CustomerListPage() {
             Toast.warning('客户名称必填')
             return
           }
-          createMutation.mutate(form)
+          createMutation.mutate({
+            ...form,
+            source: form.source === '其他' ? (otherSource.trim() || '其他') : form.source,
+          })
         }}
         confirmLoading={createMutation.isPending}
         okText="创建"
@@ -794,32 +799,6 @@ export default function CustomerListPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
             <FormLabel required>客户名称</FormLabel>
-            {/* 归属：**可以指定**（主人 2026-10-13：「为啥只能谁创建谁是负责人，
-                不能指定吗，没有指定再是自己」）。后端一直支持（`CustomerCreate.owner_id`
-                + `create_customer` 里"为空才归创建人"），缺的只是这个入口 + 前端类型字段。 */}
-            <div style={{ marginTop: 12 }}>
-              <FormLabel hint="不选就归你自己，之后也能转移">负责人</FormLabel>
-              <Select
-                className="owner-picker"
-                style={{ width: '100%' }}
-                placeholder="不选 = 归你自己"
-                showClear
-                disabled={!can('customer:assign')}
-                value={form.owner_id ?? undefined}
-                onChange={(value) => setForm({ ...form, owner_id: (value as number) ?? null })}
-                loading={ownerOptionsQuery.isLoading}
-                filter={optionMatcher}
-                optionList={(ownerOptionsQuery.data?.items ?? []).map((item) => ({
-                  value: item.id,
-                  label: `${item.name}（${item.department ?? '未分配部门'}）`,
-                }))}
-              />
-              <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
-                {can('customer:assign')
-                  ? '不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。放进公海请创建后用列表里的「放入公海」。'
-                  : '你没有客户分配权限，新客户会归到「你」名下；如需指定其他负责人，请联系管理员。'}
-              </div>
-            </div>
             <Input
               value={form.name}
               onChange={(value) => {
@@ -858,6 +837,41 @@ export default function CustomerListPage() {
               </div>
             </div>
           )}
+
+          {/* 归属：**可以指定**（主人 2026-10-13：「为啥只能谁创建谁是负责人，
+              不能指定吗，没有指定再是自己」）。后端一直支持（`CustomerCreate.owner_id`
+              + `create_customer` 里"为空才归创建人"），缺的只是这个入口 + 前端类型字段。
+
+              位置：**必须独立成一格、排在客户名称之后**。原来它被塞在
+              「客户名称」的标签与输入框之间，界面上就成了「客户名称*」→「负责人」
+              →一个没有标签的输入框，看着像客户名称没地方填（主人 2026-10-15 截图）；
+              错位是 `fd3eb24` 引入的。这一格原来还有 `marginTop: 12`，那是为了跟
+              上面的标签拉开距离用的；现在它是独立一格，网格的 `gap: 12` 已经负责间距，
+              再用就会变成 24、跟其它字段不一致。 */}
+          <div>
+            <FormLabel hint="不选就归你自己，之后也能转移">负责人</FormLabel>
+            <Select
+              className="owner-picker"
+              style={{ width: '100%' }}
+              placeholder="不选 = 归你自己"
+              showClear
+              disabled={!can('customer:assign')}
+              value={form.owner_id ?? undefined}
+              onChange={(value) => setForm({ ...form, owner_id: (value as number) ?? null })}
+              loading={ownerOptionsQuery.isLoading}
+              filter={optionMatcher}
+              optionList={(ownerOptionsQuery.data?.items ?? []).map((item) => ({
+                value: item.id,
+                label: `${item.name}（${item.department ?? '未分配部门'}）`,
+              }))}
+            />
+            <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              {can('customer:assign')
+                ? '不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。放进公海请创建后用列表里的「放入公海」。'
+                : '你没有客户分配权限，新客户会归到「你」名下；如需指定其他负责人，请联系管理员。'}
+            </div>
+          </div>
+
           <div>
             <div style={{ marginBottom: 4 }}>客户简称</div>
             <Input
@@ -892,6 +906,16 @@ export default function CustomerListPage() {
               optionList={SOURCE_OPTIONS}
               style={{ width: '100%' }}
             />
+            {form.source === '其他' && (
+              <Input
+                aria-label="其他客户来源"
+                value={otherSource}
+                onChange={setOtherSource}
+                maxLength={32}
+                placeholder="请输入具体来源，例如：抖音、小红书（最多32字）"
+                style={{ marginTop: 8 }}
+              />
+            )}
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>详细地址</div>

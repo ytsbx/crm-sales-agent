@@ -334,7 +334,7 @@ export default function WeComPage() {
     <div className="page-container">
       <PageHeader
         title="企业微信"
-        subtitle="外部联系人同步、待确认客户确认、离职继承"
+        subtitle="外部联系人同步、客户建档确认、离职继承"
         extra={
           canManage && (
             <>
@@ -404,7 +404,7 @@ export default function WeComPage() {
       <div className="split-multi" style={{ gap: 16 }}>
         {/* 左：待处理外部联系人 */}
         <SectionCard>
-          <div style={{ fontWeight: 600, marginBottom: 10 }}>待处理联系人</div>
+          <div style={{ fontWeight: 600, marginBottom: 10 }}>待确认客户</div>
           <Input
             placeholder="搜索昵称或企业名"
             value={keywordInput}
@@ -417,7 +417,7 @@ export default function WeComPage() {
             style={{ marginBottom: 10 }}
           />
           {rows.length === 0 ? (
-            <Empty description={listQuery.isLoading ? '加载中…' : '没有待确认客户联系人'} />
+            <Empty description={listQuery.isLoading ? '加载中…' : '没有待确认客户'} />
           ) : (
             <div style={{ display: 'grid', gap: 6 }}>
               {rows.map((row) => (
@@ -470,7 +470,7 @@ export default function WeComPage() {
         {/* 中：企业微信详情 */}
         <SectionCard>
           {!active ? (
-            <Empty description="左侧选一条待确认客户联系人" />
+            <Empty description="请在左侧选择一条待确认客户" />
           ) : (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
@@ -507,10 +507,6 @@ export default function WeComPage() {
                   <span>{active.type === '2' ? '企业微信用户' : '微信用户'}</span>
                 </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <span style={{ color: 'var(--crm-text-3)', minWidth: 84 }}>external_userid</span>
-                  <span style={{ wordBreak: 'break-all' }}>{active.external_userid}</span>
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
                   <span style={{ color: 'var(--crm-text-3)', minWidth: 84 }}>同步时间</span>
                   <span>
                     {active.last_sync_at
@@ -536,7 +532,7 @@ export default function WeComPage() {
                         <Tag size="small" color={follower.status === 'active' ? 'blue' : 'grey'}>
                           {follower.status === 'active' ? '跟进中' : follower.status}
                         </Tag>
-                        <span>{follower.wecom_userid}</span>
+                        <span>{follower.name || '姓名待同步'}</span>
                         <span style={{ color: 'var(--crm-text-3)', marginLeft: 'auto' }}>
                           {follower.add_time
                             ? new Date(follower.add_time).toLocaleDateString('zh-CN')

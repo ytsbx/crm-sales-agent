@@ -95,8 +95,11 @@ class NumberingRuleUpdate(PatchModel):
 class DictionaryItemCreate(BaseModel):
     """字典项（03-API §36）。
 
-    用于产品分类、来源、行业这类"受控词表"：以前是自由文本，
-    同一个分类会被录成好几种写法，统计口径就散了。
+    受控词表（目前只有客户等级）：同一份名单集中维护、业务表单只允许选启用的项 ——
+    否则同一个值会被录成好几种写法，统计口径就散了。
+
+    产品分类**曾经**也走这里，2026-10-15 已退役（改成产品页直接填写）；见
+    `model.DictionaryItem.type` 上的说明。
     """
 
     model_config = ConfigDict(extra="ignore")
