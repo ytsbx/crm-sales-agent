@@ -533,3 +533,6 @@ check_dingtalk_signup
 
 # 个人账号设置：密码登录、会话吊销与并发重名
 check_personal_account
+
+# 独立会签权限：通知/待办/转交/否决/撤权一致性
+check_cosign_permission

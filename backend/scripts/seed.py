@@ -88,6 +88,7 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("quote:view", "查看报价", "quote", "view"),
     ("quote:manage", "维护报价", "quote", "manage"),
     ("quote:approve", "报价审批", "quote", "approve"),
+    ("quote:finance_approve", "财务会签", "quote", "finance_approve"),
     ("price:manage", "价格维护", "price", "manage"),
     ("order:view", "查看订单", "order", "view"),
     ("order:manage", "维护订单", "order", "manage"),
@@ -187,6 +188,7 @@ MANAGER_PERMISSIONS = SALES_PERMISSIONS + [
 FINANCE_PERMISSIONS = [
     "customer:view",
     "quote:view",
+    "quote:finance_approve",
     "order:view",
     "payment:view",
     "payment:manage",
@@ -1170,7 +1172,7 @@ async def seed() -> None:
                     {"field": "gross_margin", "op": "lte", "value": 22},
                 ],
                 "action": {
-                    "add_node_role_codes": ["finance"],
+                    "add_node_permission": "quote:finance_approve",
                     "add_node_label": "财务会签",
                     "veto": True,
                 },

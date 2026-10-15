@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -13,7 +13,7 @@ from app.core.deps import CurrentUser, client_ip, get_current_user, require_perm
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.approval.model import ApprovalDefinition, ApprovalInstance, ApprovalRecord
-from app.modules.approval.access import approval_denial
+from app.modules.approval.access import approval_denial, FINANCE_APPROVE_PERMISSION
 from app.modules.approval.rules_engine import strip_approval_summary
 from app.modules.approval.schema import (
     ApprovalDefinitionCreate,
@@ -258,29 +258,60 @@ async def _assert_transfer_target(
         )
 
 
-async def _user_ids_by_roles(session: AsyncSession, role_codes: list[str]) -> list[int]:
-    """按角色编码找在职用户（会签节点的通知对象）。
+async def _co_sign_recipient_ids(session: AsyncSession, instance: ApprovalInstance) -> list[int]:
+    """通知只发给有独立会签权限、在岗且能处理本单的人。"""
+    from app.modules.user.model import ROLE_ACTIVE, Role, Permission, user_roles, role_permissions
+    candidates = (await session.execute(
+        select(User).join(user_roles, user_roles.c.user_id == User.id)
+        .join(Role, Role.id == user_roles.c.role_id)
+        .join(role_permissions, role_permissions.c.role_id == Role.id)
+        .join(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(Role.status == ROLE_ACTIVE, User.status == "active", Permission.code == FINANCE_APPROVE_PERMISSION)
+        .distinct()
+    )).scalars().all()
+    result = []
+    for target in candidates:
+        try:
+            await _assert_transfer_target(session, target, instance)
+        except AppError as exc:
+            if exc.http_status in (403, 404, 422):
+                continue
+            raise
+        result.append(target.id)
+    return result
 
-    只算**启用中**的角色：角色停用后它的人不再是"该角色的在职用户"，
-    否则会签节点会找出一批已经不该参与的人（第十批 10.10）。
-    """
-    from app.modules.user.model import ROLE_ACTIVE, Role, user_roles
 
-    if not role_codes:
-        return []
-    rows = (
-        await session.execute(
-            select(User.id)
-            .join(user_roles, user_roles.c.user_id == User.id)
-            .join(Role, Role.id == user_roles.c.role_id)
-            .where(
-                Role.code.in_(role_codes),
-                Role.status == ROLE_ACTIVE,
-                User.status == "active",
-            )
-        )
-    ).scalars().all()
-    return list(rows)
+@router.get("/approvals/{approval_id}/transfer-candidates")
+async def transfer_candidates(
+    approval_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    # 不开放用户管理列表：仅当前有权处理本单的人可获取合格接收人的编号和姓名。
+    instance = await _load_pending(session, approval_id, user)
+    await _assert_can_approve(session, user, instance)
+    from app.modules.user.model import ROLE_ACTIVE, Role, Permission, user_roles, role_permissions
+    permission = FINANCE_APPROVE_PERMISSION if instance.current_node == "co_sign" else "quote:approve"
+    candidates = (await session.execute(
+        select(User).join(user_roles, user_roles.c.user_id == User.id).join(Role, Role.id == user_roles.c.role_id)
+        .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
+        .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(User.status == "active", Role.status == ROLE_ACTIVE,
+               or_(Permission.code == permission, Role.code == "admin"))
+        .distinct().order_by(User.id)
+    )).scalars().all()
+    result = []
+    for target in candidates:
+        if target.id == user.id:
+            continue
+        try:
+            await _assert_transfer_target(session, target, instance)
+        except AppError as exc:
+            if exc.http_status in (403, 404, 422):
+                continue
+            raise
+        result.append({"id": target.id, "name": target.name})
+    return ok(result)
 
 
 @router.post("/approvals/{approval_id}/approve")
@@ -317,9 +348,7 @@ async def approve(
             summary["co_sign"] = {**co_sign, "status": "pending"}
             instance.summary = summary
             await session.flush()
-            co_sign_user_ids = await _user_ids_by_roles(
-                session, list(co_sign.get("role_codes") or [])
-            )
+            co_sign_user_ids = await _co_sign_recipient_ids(session, instance)
             for uid in co_sign_user_ids:
                 if uid == instance.applicant_id:
                     continue
@@ -488,7 +517,7 @@ async def transfer(
     approval_id: int,
     payload: ApprovalTransfer,
     request: Request,
-    user: CurrentUser = Depends(require_permission("quote:approve")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """把待审批单转交给别人处理。

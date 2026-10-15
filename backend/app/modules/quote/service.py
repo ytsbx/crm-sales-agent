@@ -2643,7 +2643,7 @@ async def submit_for_approval(
             force_first_level = True
         elif decision.kind == "exception_route":
             co_sign = {
-                "role_codes": list(decision.action.get("add_node_role_codes") or ["finance"]),
+                "permission_code": "quote:finance_approve",
                 "label": decision.action.get("add_node_label") or "财务会签",
                 "veto": bool(decision.action.get("veto", True)),
                 "status": "pending",

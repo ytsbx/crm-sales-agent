@@ -252,14 +252,14 @@ class TestEffectSummary:
 
     def test_exception_route_defaults(self):
         text = effect_summary("exception_route", {})
-        assert "财务会签" in text and "finance" in text
+        assert "财务会签" in text and "权限" in text
 
     def test_exception_route_custom_action(self):
         text = effect_summary(
             "exception_route",
             {"add_node_label": "质量会签", "add_node_role_codes": ["qa", "finance"]},
         )
-        assert "质量会签" in text and "qa、finance" in text
+        assert "质量会签" in text and "财务会签权限" in text and "qa、finance" not in text
 
     def test_unknown_kind_echoes(self):
         assert effect_summary("weird", {}) == "weird"

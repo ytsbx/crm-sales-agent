@@ -370,7 +370,7 @@ async def main():
     status, res = call('GET', f'/approvals/{approval_b}', token=admin)
     check_true('带规则痕迹', res['data']['summary'].get('rule_trace', {}).get('kind') == 'exception_route',
                str(res['data']['summary'].get('rule_trace'))[:120])
-    check_true('带会签配置', res['data']['summary'].get('co_sign', {}).get('role_codes') == ['finance'], '')
+    check_true('带会签配置', res['data']['summary'].get('co_sign', {}).get('permission_code') == 'quote:finance_approve', '')
 
     # 财务不能批业务节点
     status, res = call('POST', f'/approvals/{approval_b}/approve', token=wangwu)

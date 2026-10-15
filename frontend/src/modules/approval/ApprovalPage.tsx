@@ -12,7 +12,7 @@ import {
   transferApproval,
   type ApprovalRow,
 } from '../../shared/api/quote'
-import { listUsers } from '../../shared/api/system'
+import { listApprovalTransferCandidates } from '../../shared/api/approval'
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
@@ -52,10 +52,10 @@ export default function ApprovalPage() {
     enabled: activeKey !== 'rules',
   })
 
-  // 转交接收人列表：打开始才拉（有 customer:assign / user:manage 权限的人能看到）
+  // 当前审批的合格接收人列表；不借用用户管理/分配客户权限。
   const usersQuery = useQuery({
-    queryKey: ['transfer-users'],
-    queryFn: () => listUsers({ page_size: 100 }),
+    queryKey: ['approval-transfer-users', transferTarget?.id],
+    queryFn: () => listApprovalTransferCandidates(transferTarget!.id),
     enabled: Boolean(transferTarget),
   })
 
@@ -173,7 +173,7 @@ export default function ApprovalPage() {
               <a style={{ color: 'var(--crm-error)' }} onClick={() => setRejectTarget(record)}>
                 拒绝
               </a>
-              {can('quote:approve') && <a
+              {(can('quote:approve') || can('quote:finance_approve')) && <a
                 style={{ color: 'var(--crm-text-2)' }}
                 onClick={() => {
                   setTransferTarget(record)
@@ -247,9 +247,9 @@ export default function ApprovalPage() {
             style={{ width: '100%' }}
             value={transferUserId}
             onChange={(v) => setTransferUserId(v as number)}
-            optionList={(usersQuery.data?.items ?? []).map((u) => ({
+            optionList={(usersQuery.data ?? []).map((u) => ({
               value: u.id,
-              label: `${u.name}（${(u.roles ?? []).map((r) => r.name).join('、') || '无角色'}）`,
+              label: u.name,
             }))}
           />
           <Input

@@ -67,6 +67,8 @@ async def setup():
             codes = ([] if key == 'noview' else ['quote:view'])
             if key in ('mgr', 'off', 'wrongrole', 'noview'):
                 codes.append('quote:approve')
+            if key == 'finance':
+                codes.append('quote:finance_approve')
             for code in codes:
                 await session.execute(role_permissions.insert().values(
                     role_id=role.id, permission_id=permissions[code]))

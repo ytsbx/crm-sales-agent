@@ -709,8 +709,7 @@ def effect_summary(kind: str, action: dict) -> str:
         return "极速通道：跳过金额分档高层级，由第一级（主管）直接审批"
     if kind == "exception_route":
         label = action.get("add_node_label") or "财务会签"
-        roles = "、".join(action.get("add_node_role_codes") or ["finance"])
-        return f"异常加签：正常分档审批后，追加「{label}」（{roles}）会签，一票否决"
+        return f"异常加签：正常分档审批后，追加「{label}」，由有财务会签权限的人处理，一票否决"
     return kind
 
 

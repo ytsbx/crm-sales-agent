@@ -67,13 +67,10 @@ def _validate_payload(payload: RulePayload) -> None:
         if info["value_type"] == "bool" and not isinstance(cond.value, bool):
             raise AppError(ErrorCode.PARAM_ERROR, f"「{info['label']}」的阈值必须是 true/false", 422)
     if payload.kind == "exception_route":
-        codes = payload.action.get("add_node_role_codes")
-        if not codes or not isinstance(codes, list):
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                "异常加签规则必须指定会签角色（add_node_role_codes）",
-                422,
-            )
+        # 旧规则中的角色字段可读取以兼容历史版本，但不再决定谁能会签。
+        permission = payload.action.get("add_node_permission", "quote:finance_approve")
+        if permission != "quote:finance_approve":
+            raise AppError(ErrorCode.PARAM_ERROR, "异常会签使用独立的财务会签权限", 422)
 
 
 def _snapshot(rule: ApprovalRule) -> dict:
