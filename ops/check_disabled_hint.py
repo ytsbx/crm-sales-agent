@@ -61,6 +61,13 @@ EXEMPT: dict[str, str] = {
     # 设置页：禁用控件旁边都有「（不可修改）」或选中计数
     "modules/settings/SettingsPage.tsx": "标签写明「（不可修改）」/ 旁边有「已选 N 条」",
     "modules/settings/NotificationSettingsPanel.tsx": "总开关与「投递失败 N 条」计数就在同一屏",
+    # 个人账号（2026-10-15 补登记）：4 处 `disabled` 全是 `mutation.isPending`
+    # —— 提交中的瞬时禁用，提交按钮自带 loading；**没有**任何"条件不满足"的禁用。
+    "modules/settings/PersonalAccountPanel.tsx": "只有提交中的瞬时禁用，提交按钮自带 loading",
+    # 未分级规则（2026-10-15 补登记）：4 个输入/开关是 `mutation.isPending`（瞬时）；
+    # 保存按钮多一条 `pools.isError || tasks.isError`，而**紧挨着下面就写着**
+    # 「规则加载失败，请刷新后重试。」（`role="alert"`）—— 原因就在控件旁边。
+    "modules/settings/UnratedRulesPanel.tsx": "保存按钮的禁用旁边就是「规则加载失败，请刷新后重试」，其余为瞬时禁用",
     # 任务列表：状态列与「（已选 N）」就在旁边
     "modules/task/TaskListPage.tsx": "状态列/已选计数就在控件旁",
     # 样品列表：勾选与数量框本身就是原因（本轮已按同一规则叙述）
