@@ -4,7 +4,8 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import FormLabel from '../../shared/components/FormLabel'
 import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
-import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import BlockedHint from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
 import {
   SECONDARY_ACTIONS,
   STAGE_LABEL,
@@ -16,7 +17,6 @@ import {
 } from '../../shared/quote-todo'
 import ReceivablePlanPicker, {
   defaultPlanRows,
-  isPlanValid,
   planBlockedReasons,
   toPlanPayload,
   type ReceivablePlanRow,
@@ -626,18 +626,22 @@ export default function QuoteDetailPage() {
   const planTotal = Number(version?.total_amount ?? 0)
   // 灰键必须说得出为什么（项目口径）：判据与组件内部同源。
   const planBlocked = planBlockedReasons(planMode, planRows, planTotal)
+  // 「能不能点」与「为什么不能点」**必须是同一个判据**（2026-10-15 统一）。
+  // 原来 `!isPlanValid(...)` 在 okButtonProps 与按钮上重复算了三次，
+  // 而原因用的是 `planBlocked`（另一个函数）—— 两处一旦不同步，就会出现
+  // 「按钮能点，旁边却写着不能点」这种自相矛盾的界面。
+  // `planBlockedReasons` 非空 ⟺ `isPlanValid` 为假（逐例比对过），所以这里等价且更稳。
+  const planNotReady = planBlocked.length > 0
 
-  // ⚠️ Hook 必须在**任何 early return 之前**调用（2026-10-14 审查修）。
+  // ⚠️ `planBlocked` / `planTotal` 必须在**任何 early return 之前**算出来（2026-10-14 审查修）。
   //
-  // 原来这三行（`planTotal` / `planBlocked` / 本 hook）都放在下面 `version` 就绪之后，
-  // 也就是**两个 early return 之后**（"加载中"与"报价单不存在或无权查看"）——
-  // 于是那两条渲染路径上少调了一次 hook。React 的 Hooks 规则要求每次渲染的
-  // hook 数量与顺序完全一致，违反时会抛
+  // 原来这两行放在下面 `version` 就绪之后（也就是两个 early return 之后），
+  // 于是"加载中"与"报价单不存在"这两条渲染路径上少算了一次，各处的 hook 数量
+  // 与顺序也不一致。React 的 Hooks 规则要求每次渲染完全一致，违反时会抛
   // "Rendered more hooks than during the previous render"。
-  // 本 hook 眼下是纯函数（内部没有 useState/useEffect）所以还没炸 ——
-  // 但那是运气，不是保证（`oxlint` 的 react-hooks 规则一直在报）。
   // 提到这里之后，`planBlocked` 用的仍是真实原因，灰键该弹的提示一条不少。
-  const notifyPlanBlocked = useBlockedNotify(planBlocked, '生成订单')
+  // （2026-10-15：`useBlockedNotify` 那一行已随 `GuardedButton` 一起去掉，
+  //   这里不再有 hook，但**位置要求不变** —— `planNotReady` 要在 early return 前算好。）
   if (versionsQuery.isLoading || detailQuery.isLoading) {
     return <div className="page-container">加载中…</div>
   }
@@ -1252,26 +1256,22 @@ export default function QuoteDetailPage() {
         onOk={() => convertMutation.mutate(true)}
         confirmLoading={convertMutation.isPending}
         okText="生成订单"
-        okButtonProps={{ disabled: !isPlanValid(planMode, planRows, planTotal) }}
+        okButtonProps={{ disabled: planNotReady }}
         width={620}
         footer={
           <div>
-            <div onClick={notifyPlanBlocked}>
-              <BlockedHint reasons={planBlocked} action="生成订单" />
-            </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
               <Button onClick={() => setConvertVisible(false)}>取消</Button>
-              <div className="blocked-hint-click" onClick={notifyPlanBlocked}>
-                <Button
-                  theme="solid"
-                  loading={convertMutation.isPending}
-                  disabled={!isPlanValid(planMode, planRows, planTotal)}
-                  style={!isPlanValid(planMode, planRows, planTotal) ? { pointerEvents: 'none' } : undefined}
-                  onClick={() => convertMutation.mutate(true)}
-                >
-                  生成订单
-                </Button>
-              </div>
+              <GuardedButton
+                theme="solid"
+                loading={convertMutation.isPending}
+                disabled={planNotReady}
+                blockedReasons={planBlocked}
+                action="生成订单"
+                onClick={() => convertMutation.mutate(true)}
+              >
+                生成订单
+              </GuardedButton>
             </div>
           </div>
         }

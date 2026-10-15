@@ -16,6 +16,7 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
 import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import { listCustomers } from '../../shared/api/customer'
 import { listOrders } from '../../shared/api/order'
@@ -355,11 +356,6 @@ export default function DocumentsPage() {
   // 所以照 SampleFromSourceModal 的做法把**那段说明**做成点击落点；上传键就在正文里，
   // 能直接包一层 —— 灰着的时候点它自己也会弹一句同样的话。
   const notifySignBlocked = useBlockedNotify(signBlockedReasons, '登记签署')
-  const notifyUploadBlocked = useBlockedNotify(
-    canUploadSignFile ? [] : [noFileManageReason],
-    // 起头写「上传」而不是「上传签署件」：这句后面紧跟着的原因里已经有「无法上传签署件」了
-    '上传',
-  )
   const voidNeedsReviewerReason =
     '已签合同的作废需要复核人（主管）操作；请联系主管处理，或请管理员为你开通复核权限后重试。'
   const notifyVoidBlocked = useBlockedNotify([voidNeedsReviewerReason], '作废')
@@ -821,19 +817,17 @@ export default function DocumentsPage() {
             上传签署扫描件（或从已上传的文件里选一份）。签署件与草稿在台账上分开可见。
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {/* 灰按钮要能解释自己（见 BlockedHint.tsx）：禁用态给按钮加 pointerEvents:'none'，
-                按钮对点击透明，落点变成外层容器，容器上的 onClick 才接得住、才弹得出原因。
-                可用态不加这个样式，按钮自己处理点击（冒泡上来的那次由 notifyUploadBlocked 挡掉）。 */}
-            <div className="blocked-hint-click" onClick={notifyUploadBlocked}>
-              <Button
-                loading={signUploading}
-                disabled={!canUploadSignFile}
-                style={canUploadSignFile ? undefined : { pointerEvents: 'none' }}
-                onClick={() => signFileInput.current?.click()}
-              >
-                上传签署件
-              </Button>
-            </div>
+            {/* 灰按钮要能解释自己：用共用件 `GuardedButton`（2026-10-15 换），
+              它内部就是"禁用态 pointerEvents:none + 外层接点击"，页面不用再手写。 */}
+            <GuardedButton
+              loading={signUploading}
+              disabled={!canUploadSignFile}
+              blockedReasons={canUploadSignFile ? [] : [noFileManageReason]}
+              action="上传"
+              onClick={() => signFileInput.current?.click()}
+            >
+              上传签署件
+            </GuardedButton>
             <input
               ref={signFileInput}
               type="file"

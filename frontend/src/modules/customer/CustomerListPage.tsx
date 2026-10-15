@@ -29,6 +29,7 @@ import type { Customer } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
+import GuardedButton from '../../shared/components/GuardedButton'
 
 type Scope = 'mine' | 'pool' | 'all'
 
@@ -481,15 +482,14 @@ export default function CustomerListPage() {
               ⚠️ 判据没放松：disabled 里仍然是同一个 can('customer:export')，
               灰着时按钮加 pointerEvents:'none' 是为了让点击落到外层容器上（原生禁用
               控件不派发点击事件，光包一层收不到 —— 判例见 PriceCenterPage.tsx:880）。 */}
-          <div className="blocked-hint-click" onClick={notifyExportBlocked}>
-            <Button
-              disabled={!canExport}
-              style={canExport ? undefined : { pointerEvents: 'none' }}
-              onClick={() => setExportModalOpen(true)}
-            >
-              导出
-            </Button>
-          </div>
+          <GuardedButton
+            disabled={!canExport}
+            blockedReasons={[CUSTOMER_EXPORT_PERMISSION_REASON]}
+            action="导出"
+            onClick={() => setExportModalOpen(true)}
+          >
+            导出
+          </GuardedButton>
           {!canExport && (
             // flexShrink: 0 + 够宽的 maxWidth —— 这行字不许被工具栏挤成两行（实测第一版
             // 挤成了「…开通「客户导出」权 / 限。」，一句话被劈成两截）；挤不下就整行换到下一行。
