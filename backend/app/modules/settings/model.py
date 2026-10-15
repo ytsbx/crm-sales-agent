@@ -230,7 +230,12 @@ class DictionaryItem(Base, IdMixin):
         Index("ix_dictionary_items_type", "type", "sort_no"),
     )
 
-    # customer_level / product_category / customer_source / industry ...
+    # 目前只有 `customer_level`（客户等级）。
+    # ⚠️ `product_category` 已于 2026-10-15 退役：产品分类改成产品页直接填写
+    # （最多 64 字，后端不再校验成员），字典里那三条没有任何消费方，已清掉。
+    # 后端**没有** type 白名单（`DictionaryItemCreate.type` 是自由字符串），
+    # 所以"有哪些类型"只由前端下拉决定 —— 别在这里加固成枚举，那会把
+    # 将来的字典类型（来源 / 行业）挡在门外。
     type: Mapped[str] = mapped_column(String(32))
     code: Mapped[str] = mapped_column(String(64))
     label: Mapped[str] = mapped_column(String(128))

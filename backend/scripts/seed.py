@@ -33,7 +33,6 @@ from app.modules.pricing.model import (
 from app.modules.task.model import Task
 from app.modules.settings import service as settings_service
 from app.modules.settings.model import (
-    DictionaryItem,
     PublicPoolRule,
     SystemSetting,
     TaskRule,
@@ -385,38 +384,16 @@ async def seed() -> None:
                     )
                 )
 
-        # 5.5 产品分类字典（**必须排在示例产品之前**）
+        # 5.5 产品分类**不再有字典**（2026-10-15 主人确认「彻底清掉」）
         #
-        # 为什么要有这一步（2026-10-13 修）：产品分类在 2026-10-12 之后是**受控字典**，
-        # 新建/编辑产品都会校验"值必须在启用的字典项里"（`ensure_dictionary_value`）。
-        # 而示例产品是**绕过接口直接建库**的，分类写的是 `物流器具 / 包装箱 / 缠绕膜`
-        # —— 迁移里却预置了另一套（`周转箱 / 托盘 / 冷链保温`）。两套词表谁也不挨着，
-        # 于是**示例产品一进编辑页就存不了**：下拉里没有当前值（显示为空）、
-        # 直接保存会被后端 400 拒掉，用户看到的是"什么都没改却存不上"。
+        # 这一段原来会预置 `物流器具 / 包装箱 / 缠绕膜` 三条。那是产品分类还是
+        # **受控字典**的年代留下的：示例产品绕过接口直接建库，分类值必须先在
+        # 字典里存在，否则示例产品一进编辑页就存不上（见 `4b7e2a9c5f31` 迁移）。
         #
-        # 口径（主人 2026-10-13）：**业务字段里的中文就是值**（和客户等级 A/B/C/D 一致），
-        # 所以字典 code 直接用中文，不再另造英文码 —— 免得界面上显示的和库里存的
-        # 是两套东西，导数据、对账、写 SQL 都要多翻译一层。
-        demo_categories = ["物流器具", "包装箱", "缠绕膜"]
-        existing_categories = set(
-            (
-                await session.execute(
-                    select(DictionaryItem.code).where(DictionaryItem.type == "product_category")
-                )
-            ).scalars().all()
-        )
-        for index, code in enumerate(demo_categories, start=1):
-            if code in existing_categories:
-                continue
-            session.add(
-                DictionaryItem(
-                    type="product_category", label=code,
-                    # ⚠️ 按 code 定位：`label` 是给界面看的名字，`code` 才是落库的值。
-                    # 两者相同是这个字典的既定口径，但别把 label 当成 key 用。
-                    code=code, sort_no=100 + index, enabled=True,
-                )
-            )
-        await session.flush()
+        # 现在产品分类改成**产品页直接填写**（最多 64 字，后端不再校验成员），
+        # 字典里那三条**没有任何消费方**了，主人让一并清掉 ——
+        # 所以这里不再预置，字典页的类型下拉里也不再出现「产品分类」。
+        # 下面示例产品的 `category` 保持原样：它现在只是自由文本。
 
         # 6. 示例产品与 SKU（仅为演示，可随时删除；真实产品资料待业务方提供）
         demo_products = [
