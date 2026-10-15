@@ -2,10 +2,45 @@
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.core.patch_schema import CreateModel
+
+
+# ---------------------------------------------------------------- 申请单选项
+#
+# 这三组选项**照抄钉钉模板**（2026-10-15 从实物文件与批注读出），不要自造：
+#   · 样品制作单位的下拉里是「义乌打样部 / 山东生产部 / 外协厂」
+#     （G3 批注补了选择规则：常规款有模具的优先山东生产部或外协厂，
+#       完全新的设计产品走义乌打样部 —— 那是**业务判断**，不在这里硬编码）
+#   · 紧急程度不只是个标记，批注写明它是**交期宽限**：
+#       普通 = 可晚 3~5 天；急 = 可晚 1~3 天；紧急 = **不允许晚**
+#   · 打样目的四项各有明确定义（C4 批注）
+#
+# 用 Literal 而不是自由字符串：钉钉那边是下拉，写错一个字的后果是
+# **导出的 Excel 和钉钉单据对不上**，而人眼很难发现"外协厂打样"和"外协厂"的差别。
+SAMPLE_TYPE_OPTIONS = ("设计研发内部打样", "销售客户打样")
+PRODUCT_CATEGORY_OPTIONS = ("高频类产品", "车缝类产品")
+MAKER_UNIT_OPTIONS = ("义乌打样部", "山东生产部", "外协厂")
+SAMPLE_PURPOSE_OPTIONS = (
+    "客审确认样",
+    "报价核算样",
+    "定制改款样",
+    "送检上架样",
+)
+URGENCY_OPTIONS = ("普通", "急", "紧急")
+SAMPLE_SITUATION_OPTIONS = (
+    "首次设计新品",
+    "设计更改",
+    "客户首次要求",
+    "客户更改",
+    "其他",
+)
+
+#: 积分口径：师傅用时 1 小时 = 10 积分（钉钉表上原文）
+POINTS_PER_HOUR = 10
 
 
 class SampleItemInput(BaseModel):
@@ -47,6 +82,29 @@ class SampleCreate(BaseModel):
     这和 C3-01 是同一类毛病：**入参收了但没往下走**。
     """
     remark: str | None = None
+    # ---- 钉钉《打样申请单》上的格（2026-10-15）----
+    # 见 model.py 同名列的说明；这里只强调**别用自由字符串**：钉钉那边是下拉，
+    # 写错一个字的后果是导出的 Excel 与钉钉单据对不上，而人眼很难发现。
+    sample_type: Literal[SAMPLE_TYPE_OPTIONS] | None = None
+    product_category: Literal[PRODUCT_CATEGORY_OPTIONS] | None = None
+    maker_unit: Literal[MAKER_UNIT_OPTIONS] | None = None
+    sample_purpose: Literal[SAMPLE_PURPOSE_OPTIONS] | None = None
+    urgency: Literal[URGENCY_OPTIONS] | None = None
+    sample_situation: Literal[SAMPLE_SITUATION_OPTIONS] | None = None
+    # 预计工时（小时）→ 积分由系统按 ×10 算，**不收积分入参**（不让手填，避免两人两个数）
+    estimated_hours: Decimal | None = Field(
+        default=None, ge=0, le=Decimal("9999"), max_digits=8, decimal_places=2
+    )
+    # 「打样具体要求」6 格：整段文字，落进 Excel 的 B8~B13
+    material_spec: str | None = None
+    product_size: str | None = None
+    printing: str | None = None
+    accessories: str | None = None
+    packaging: str | None = None
+    craft_requirement: str | None = None
+    # 申请单上「产品名称」只有一格，而明细可以一行多样 —— 显式给，导出时不猜
+    product_name: str | None = Field(default=None, max_length=200)
+
     items: list[SampleItemInput] = []
 
 
@@ -120,6 +178,28 @@ class SampleUpdate(CreateModel):
     # 前端清空输入框时传 null，正好落回"未填"，不会再撞数据库的非空约束。
     sample_fee: Decimal | None = Field(default=None, ge=0, max_digits=16, decimal_places=2)
     production_owner_id: int | None = None
+    # ---- 钉钉《打样申请单》上的格（2026-10-15）----
+    # 见 model.py 同名列的说明；这里只强调**别用自由字符串**：钉钉那边是下拉，
+    # 写错一个字的后果是导出的 Excel 与钉钉单据对不上，而人眼很难发现。
+    sample_type: Literal[SAMPLE_TYPE_OPTIONS] | None = None
+    product_category: Literal[PRODUCT_CATEGORY_OPTIONS] | None = None
+    maker_unit: Literal[MAKER_UNIT_OPTIONS] | None = None
+    sample_purpose: Literal[SAMPLE_PURPOSE_OPTIONS] | None = None
+    urgency: Literal[URGENCY_OPTIONS] | None = None
+    sample_situation: Literal[SAMPLE_SITUATION_OPTIONS] | None = None
+    # 预计工时（小时）→ 积分由系统按 ×10 算，**不收积分入参**（不让手填，避免两人两个数）
+    estimated_hours: Decimal | None = Field(
+        default=None, ge=0, le=Decimal("9999"), max_digits=8, decimal_places=2
+    )
+    # 「打样具体要求」6 格：整段文字，落进 Excel 的 B8~B13
+    material_spec: str | None = None
+    product_size: str | None = None
+    printing: str | None = None
+    accessories: str | None = None
+    packaging: str | None = None
+    craft_requirement: str | None = None
+    # 申请单上「产品名称」只有一格，而明细可以一行多样 —— 显式给，导出时不猜
+    product_name: str | None = Field(default=None, max_length=200)
 
 
 class SampleMade(BaseModel):

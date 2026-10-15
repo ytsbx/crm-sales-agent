@@ -74,6 +74,28 @@ export interface SampleRequestRow {
   shipped_at?: string | null
   signed_at?: string | null
   feedback?: string | null
+  // ---- 钉钉《打样申请单》上的格（2026-10-15）----
+  /** 打样类型 / 产品大类 / 样品制作单位：选项**照抄钉钉下拉**，值就是那几项之一。 */
+  sample_type?: string | null
+  product_category?: string | null
+  maker_unit?: string | null
+  /** 打样目的 / 紧急程度 / 样品情况：同样是钉钉上的勾选项。 */
+  sample_purpose?: string | null
+  urgency?: string | null
+  sample_situation?: string | null
+  /** 预计工时（小时）。打样积分是**派生值** = 工时 × 10，不入参、由后端算。 */
+  estimated_hours?: number | null
+  /** 打样积分（只读）：后端按 `estimated_hours × 10` 现算。 */
+  craft_points?: number | null
+  /** 「打样具体要求」六格：整段文字，导出时落进 Excel 的 B8~B13。 */
+  material_spec?: string | null
+  product_size?: string | null
+  printing?: string | null
+  accessories?: string | null
+  packaging?: string | null
+  craft_requirement?: string | null
+  /** 申请单上只有一格「产品名称」，而明细可以一行多样 —— 显式给。 */
+  product_name?: string | null
   // ---- 生产打样资料（文档 §3.5）----
   // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，跟着 items 走。
   purpose?: string | null
@@ -135,6 +157,20 @@ export function createSample(payload: Record<string, unknown>) {
 export function updateSample(id: number, payload: Record<string, unknown>) {
   return api.patch<SampleRequestRow>(`/samples/${id}`, payload)
 }
+
+/** 导出**填好的**《打样申请单》Excel（钉钉「定制打样审批」那份单子）。
+ *
+ * 为什么要有它：发起打样在 CRM，流程回到钉钉走；钉钉那份单子是公司现有表单
+ * （表头印着"表单编码：D01-003"），格式不能改 —— 所以这里把 CRM 已有的数据
+ * 填进原版式的底稿，业务员**下载即传**，不用重打一遍。
+ *
+ * ⚠️ 单子上采购回复 / 打样部回复 / 打样人 / 完成时间 / 样品确认人**是空的**：
+ * 那是生产部与采购在钉钉里填的（批注原文"此处为采购填写"）。那不是漏了。
+ */
+export function exportSampleApplicationForm(id: number) {
+  return api.download(`/samples/${id}/application-form`)
+}
+
 
 export function approveSample(id: number, approved: boolean, rejectReason?: string) {
   return api.post<SampleRequestRow>(`/samples/${id}/approve`, {

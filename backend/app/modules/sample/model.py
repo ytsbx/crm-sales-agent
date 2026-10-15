@@ -130,6 +130,41 @@ class SampleRequest(Base, IdMixin):
     # 之前是 NOT NULL + default 0，前端清空输入框传 null 会直接撞非空约束。
     sample_fee: Mapped[Decimal | None] = mapped_column(Numeric(16, 2), nullable=True)  # 打样费用
     production_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # 责任人
+    # ---- 打样申请单（钉钉「定制打样审批」那份单子）上的字段 ----
+    # 缘由（2026-10-15）：CRM 原来缺这些格，业务员每次要**手打一遍**再去钉钉传
+    # Excel（钉钉那份《打样申请单》是公司现有表单，格式不能改）。
+    # 补上这些字段后，CRM 可以**一键生成填好的申请单**，业务员下载即传。
+    #
+    # 这四项与钉钉模板一一对应（选项就是钉钉下拉里的那几项，不要自造）：
+    sample_type: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 打样类型
+    product_category: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 打样产品大类
+    maker_unit: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 样品制作单位
+    # 打样积分：口径是**师傅用时 1 小时 = 10 积分**（钉钉表上就这么写的）。
+    # 为什么存两个字段而不是只存积分：积分是**派生值**，存了工时才能解释
+    # "这 30 分是怎么来的"；将来口径若从 ×10 改成别的也能重算。
+    # 申请时填的是**预计**工时（与钉钉表单位置一致：积分格就在申请单上）。
+    estimated_hours: Mapped[Decimal | None] = mapped_column(Numeric(8, 2), nullable=True)  # 预计工时
+    craft_points: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)  # 打样积分
+    # 申请单上的三个勾选项（存中文原文，与钉钉单据上的字面一致，便于肉眼对账）
+    sample_purpose: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 打样目的
+    urgency: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 紧急程度
+    sample_situation: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 样品情况
+    # ---- 「打样具体要求」那 6 格 ----
+    # ⚠️ 与明细上的 `material`(材质) / `craft`(工艺) **不是一回事，别合并**：
+    #   明细那两项是**逐行**的短值（一单两个盒子可能不同），是报价/生产用的结构化数据；
+    #   这 6 项是**申请单上整段的文字要求**（要填进 Excel 的 B8~B13 六个格），
+    #   内容是自由文本、面向车间阅读。
+    # 为避免业务员两遍录入，前端在填这 6 格时**默认带出明细里的材质/工艺**，允许改。
+    material_spec: Mapped[str | None] = mapped_column(Text, nullable=True)  # 主要材质和规格
+    product_size: Mapped[str | None] = mapped_column(Text, nullable=True)  # 产品尺寸
+    printing: Mapped[str | None] = mapped_column(Text, nullable=True)  # 产品印刷
+    accessories: Mapped[str | None] = mapped_column(Text, nullable=True)  # 主要辅料
+    packaging: Mapped[str | None] = mapped_column(Text, nullable=True)  # 包装要求
+    craft_requirement: Mapped[str | None] = mapped_column(Text, nullable=True)  # 做法要求
+    # 导出申请单时「产品名称」用哪个（B2/G2 那格）：
+    # 明细可以一行多样（名称不同），而申请单只有一格 —— 所以**显式存一份**，
+    # 不让导出时去猜"取第一条还是拼起来"。空 = 回退用第一条明细的名称。
+    product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)  # 申请单上的产品名称
     # 制作完成时间：由跟单登记（CRM 管不到车间，所以只记录事实、不当闸门）
     made_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 制作事件（结构化，第一批返修 §3.4）：每条 {key, at, note, by, recorded_at}。
