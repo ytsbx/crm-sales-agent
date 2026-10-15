@@ -119,7 +119,10 @@ def decode_access_token_allow_expired(token: str, *, grace_minutes: int) -> dict
             )
         except jwt.PyJWTError as exc:
             raise AppError(ErrorCode.UNAUTHORIZED, "登录状态无效", 401) from exc
-        expired_at = datetime.fromtimestamp(int(payload.get("exp", 0)), tz=UTC)
+        try:
+            expired_at = datetime.fromtimestamp(int(payload.get("exp", 0)), tz=UTC)
+        except (TypeError, ValueError, OverflowError, OSError) as exc:
+            raise AppError(ErrorCode.UNAUTHORIZED, "登录状态无效", 401) from exc
         if datetime.now(UTC) - expired_at > timedelta(minutes=grace_minutes):
             raise AppError(
                 ErrorCode.TOKEN_EXPIRED,

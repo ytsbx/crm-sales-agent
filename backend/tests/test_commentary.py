@@ -11,6 +11,13 @@
 这组测试守的就是那道闸。
 """
 
+import asyncio
+import sys
+import types
+from types import SimpleNamespace
+
+from app.core.config import settings
+from app.modules.agent import commentary
 from app.modules.agent.commentary import SYSTEM_PROMPT, _compact, _facts_text
 
 #: 原来那句把整件事引爆的文案（接口路径在末尾）。
@@ -54,3 +61,30 @@ def test_prompt_forbids_api_paths_and_code():
     """提示词里必须留着"不许出现接口地址 / 字段名 / 代码"这条纪律 —— 防有人顺手删掉。"""
     assert "接口地址" in SYSTEM_PROMPT
     assert "字段名" in SYSTEM_PROMPT
+
+
+def test_empty_model_choices_are_a_soft_failure(monkeypatch):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=self._create,
+                )
+            )
+
+        async def _create(self, **_kwargs):
+            return SimpleNamespace(choices=[])
+
+        async def close(self):
+            return None
+
+    fake_openai = types.ModuleType("openai")
+    fake_openai.AsyncOpenAI = FakeClient
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setattr(settings, "agent_commentary_enabled", True)
+    monkeypatch.setattr(settings, "deepseek_api_key", "fake")
+
+    text, note = asyncio.run(commentary.build_commentary("risk-analysis", {"count": 1}))
+
+    assert text is None
+    assert note == "模型没有返回叙述内容（本地统计结果不受影响）"

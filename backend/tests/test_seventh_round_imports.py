@@ -176,6 +176,13 @@ class FakeUser:
         return True
 
 
+class CustomerCreateOnlyUser(FakeUser):
+    roles = []
+
+    def has(self, code: str) -> bool:
+        return code == "customer:create"
+
+
 def seed_basics(db: DB) -> None:
     db.raw.add(
         User(id=1, name="测试管理员", username="tester", password_hash="x", status="active")
@@ -517,6 +524,27 @@ def test_customer_import_unknown_owner_fails_instead_of_taking_importer(db):
     assert db.scalars_all(select(Customer)) == []
     assert result["data"]["failed_count"] == 1
     assert "找不到登录名" in result["data"]["failed"][0]["reason"]
+
+
+def test_customer_import_owner_requires_assign_permission(db):
+    """负责人列不能成为绕过 customer:assign 的批量改派入口。"""
+    from app.modules.customer import io_router as customer_io_router
+
+    seed_basics(db)
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            customer_io_router.import_customers(
+                request=FakeRequest(),
+                file=upload(CUSTOMER_HEADER + "越权客户,tester,2025-01-01\n"),
+                preview=False,
+                preview_token=None,
+                user=CustomerCreateOnlyUser(),
+                session=db.session,
+            )
+        )
+    assert caught.value.http_status == 403
+    assert "customer:assign" in caught.value.message
+    assert db.scalars_all(select(Customer)) == []
 
 
 def test_customer_import_marks_unknown_contact_time(db):

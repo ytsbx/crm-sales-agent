@@ -185,7 +185,7 @@ export default function CustomerListPage() {
   const ownerOptionsQuery = useQuery({
     queryKey: ['assignable-users', 'for-create'],
     queryFn: () => listUsers({ page: 1, page_size: 100 }),
-    enabled: modalVisible,
+    enabled: modalVisible && can('customer:assign'),
   })
 
   const refreshList = () => {
@@ -507,6 +507,9 @@ export default function CustomerListPage() {
             onClick={() => {
               // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
               createRequestKeyRef.current = newRequestKey()
+              if (!can('customer:assign')) {
+                setForm((current) => ({ ...current, owner_id: null }))
+              }
               setModalVisible(true)
             }}
           >
@@ -799,6 +802,7 @@ export default function CustomerListPage() {
                 style={{ width: '100%' }}
                 placeholder="不选 = 归你自己"
                 showClear
+                disabled={!can('customer:assign')}
                 value={form.owner_id ?? undefined}
                 onChange={(value) => setForm({ ...form, owner_id: (value as number) ?? null })}
                 loading={ownerOptionsQuery.isLoading}
@@ -808,8 +812,9 @@ export default function CustomerListPage() {
                 }))}
               />
               <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
-                不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。
-                放进公海请创建后用列表里的「放入公海」。
+                {can('customer:assign')
+                  ? '不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。放进公海请创建后用列表里的「放入公海」。'
+                  : '你没有客户分配权限，新客户会归到「你」名下；如需指定其他负责人，请联系管理员。'}
               </div>
             </div>
             <Input

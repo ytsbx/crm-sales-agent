@@ -41,6 +41,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import httpx
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1044,6 +1045,14 @@ async def sync_users(session: AsyncSession) -> dict:
     except DingTalkError as exc:
         raise AppError(
             ErrorCode.EXTERNAL_ERROR, f"读取钉钉通讯录失败：{exc}", 502
+        ) from exc
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+        # 通讯录分页是外部响应边界；网络中断、非 JSON 或结构异常都应翻译成
+        # 可重试的外部错误，不能让设置页直接收到 500。
+        raise AppError(
+            ErrorCode.EXTERNAL_ERROR,
+            f"读取钉钉通讯录失败（{type(exc).__name__}）：{exc}",
+            502,
         ) from exc
 
     await _lock_login_binding(session)

@@ -177,15 +177,33 @@ class DingTalkClient:
         now = time.monotonic()
         if self._token and now < self._token_expires_at:
             return self._token
-        async with httpx.AsyncClient(timeout=10) as http:
-            resp = await http.post(
-                f"{settings.dingtalk_base_url}/v1.0/oauth2/accessToken",
-                json={
-                    "appKey": settings.dingtalk_app_key,
-                    "appSecret": settings.dingtalk_app_secret,
-                },
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/oauth2/accessToken",
+                    json={
+                        "appKey": settings.dingtalk_app_key,
+                        "appSecret": settings.dingtalk_app_secret,
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"获取 access_token 失败：{exc}", api="oauth2/accessToken"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "获取 access_token 的响应不是合法 JSON",
+                api="oauth2/accessToken",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"access_token 响应结构错误：{type(data).__name__}",
+                api="oauth2/accessToken",
+                http_status=resp.status_code,
             )
-        data = resp.json() if resp.content else {}
         if resp.status_code != 200 or not data.get("accessToken"):
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
@@ -381,25 +399,71 @@ class DingTalkClient:
         """
         self._require()
         token = await self.access_token()
-        async with httpx.AsyncClient(timeout=20) as http:
-            resp = await http.post(
-                f"{settings.dingtalk_base_url}/v1.0/contact/users/search",
-                headers={"x-acs-dingtalk-access-token": token},
-                json={"queryWord": name, "offset": 0, "size": 20},
+        try:
+            async with httpx.AsyncClient(timeout=20) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/contact/users/search",
+                    headers={"x-acs-dingtalk-access-token": token},
+                    json={"queryWord": name, "offset": 0, "size": 20},
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"查询钉钉成员失败：{exc}", api="contact/users/search"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "钉钉成员搜索响应不是合法 JSON",
+                api="contact/users/search",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"钉钉成员搜索响应结构错误：{type(data).__name__}",
+                api="contact/users/search",
+                http_status=resp.status_code,
             )
-        data = resp.json() if resp.content else {}
         if resp.status_code != 200:
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
                 api="contact/users/search",
                 http_status=resp.status_code,
             )
-        users = data.get("list") or []
-        # 精确匹配优先：搜"子木"可能带回一串包含这两个字的人
-        for uid in users:
-            if users and len(users) == 1:
-                return str(uid)
-        return str(users[0]) if users else None
+        # 该接口返回的是用户对象列表（通常在 `list`，部分网关会包在
+        # `result.list`），不是 userid 字符串列表。原来直接 `str(user)` 会把
+        # 整个字典写进审批表单，例如 `{'userid': 'u1', 'name': '张三'}`，
+        # 钉钉随后无法识别这个发起人。
+        raw_result = data.get("result")
+        if isinstance(raw_result, list):
+            users = raw_result
+        else:
+            result = raw_result if isinstance(raw_result, dict) else data
+            users = result.get("list") or []
+        if not isinstance(users, list):
+            return None
+
+        requested = name.strip()
+        candidates: list[tuple[str, str | None]] = []
+        for user in users:
+            if isinstance(user, str):
+                userid = user.strip()
+                user_name = None
+            elif isinstance(user, dict):
+                userid = str(user.get("userid") or user.get("userId") or "").strip()
+                user_name = str(user.get("name") or "").strip() or None
+            else:
+                continue
+            if userid:
+                candidates.append((userid, user_name))
+
+        # 精确匹配优先：搜“子木”可能带回一串包含这两个字的人。
+        for userid, user_name in candidates:
+            if user_name == requested:
+                return userid
+        # 响应只有 userid、没有姓名时，多个候选不能擅自挑第一个；调用方应让
+        # 管理员补充绑定，否则可能把审批单记到同名同事名下。
+        return candidates[0][0] if len(candidates) == 1 else None
 
     async def get_user_dept_ids(self, user_id: str) -> list[int]:
         """取某人的部门编号列表（「提报部门」控件要的是部门编号，不是部门名）。"""
@@ -522,17 +586,35 @@ class DingTalkClient:
         授权码**只能用一次**，重复换会失败——本身即一道防重放。
         """
         self._require_login()
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                f"{settings.dingtalk_base_url}/v1.0/oauth2/userAccessToken",
-                json={
-                    "clientId": settings.dingtalk_app_key,
-                    "clientSecret": settings.dingtalk_app_secret,
-                    "code": code,
-                    "grantType": "authorization_code",
-                },
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(
+                    f"{settings.dingtalk_base_url}/v1.0/oauth2/userAccessToken",
+                    json={
+                        "clientId": settings.dingtalk_app_key,
+                        "clientSecret": settings.dingtalk_app_secret,
+                        "code": code,
+                        "grantType": "authorization_code",
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"换取用户令牌失败：{exc}", api="oauth2/userAccessToken"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "用户令牌响应不是合法 JSON",
+                api="oauth2/userAccessToken",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"用户令牌响应结构错误：{type(data).__name__}",
+                api="oauth2/userAccessToken",
+                http_status=resp.status_code,
             )
-        data = resp.json() if resp.content else {}
         if resp.status_code != 200 or not data.get("accessToken"):
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
@@ -548,12 +630,30 @@ class DingTalkClient:
         这是钉钉的设计（见官方"扫码登录第三方网站"）。要 userid 得再换一次。
         """
         self._require_login()
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.get(
-                f"{settings.dingtalk_base_url}/v1.0/contact/users/me",
-                headers={"x-acs-dingtalk-access-token": user_access_token},
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.get(
+                    f"{settings.dingtalk_base_url}/v1.0/contact/users/me",
+                    headers={"x-acs-dingtalk-access-token": user_access_token},
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"读取钉钉用户信息失败：{exc}", api="contact/users/me"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "钉钉用户信息响应不是合法 JSON",
+                api="contact/users/me",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"钉钉用户信息响应结构错误：{type(data).__name__}",
+                api="contact/users/me",
+                http_status=resp.status_code,
             )
-        data = resp.json() if resp.content else {}
         if resp.status_code != 200 or not data.get("unionId"):
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
@@ -570,13 +670,31 @@ class DingTalkClient:
         """
         self._require_login()
         token = await self.access_token(for_login=True)
-        async with httpx.AsyncClient(timeout=15) as http:
-            resp = await http.post(
-                "https://oapi.dingtalk.com/topapi/user/getbyunionid",
-                params={"access_token": token},
-                json={"unionid": unionid},
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post(
+                    "https://oapi.dingtalk.com/topapi/user/getbyunionid",
+                    params={"access_token": token},
+                    json={"unionid": unionid},
+                )
+        except httpx.HTTPError as exc:
+            raise DingTalkError(
+                f"查询钉钉成员失败：{exc}", api="topapi/user/getbyunionid"
+            ) from exc
+        try:
+            data = resp.json() if resp.content else {}
+        except ValueError as exc:
+            raise DingTalkError(
+                "钉钉成员查询响应不是合法 JSON",
+                api="topapi/user/getbyunionid",
+                http_status=resp.status_code,
+            ) from exc
+        if not isinstance(data, dict):
+            raise DingTalkError(
+                f"钉钉成员查询响应结构错误：{type(data).__name__}",
+                api="topapi/user/getbyunionid",
+                http_status=resp.status_code,
             )
-        data = resp.json() if resp.content else {}
         if data.get("errcode"):
             return None
         return (data.get("result") or {}).get("userid") or None

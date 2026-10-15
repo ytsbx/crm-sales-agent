@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
-from app.core.csvio import csv_bytes, parse_csv_bytes
+from app.core.csvio import csv_bytes, parse_csv_bytes, read_upload_bytes
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, ensure_permission, require_permission
 from app.core.errors import AppError, ErrorCode
@@ -133,7 +133,7 @@ async def import_leads(
     第七批 7.1 / 7.6：每行一个 SAVEPOINT（坏行不再把后续行一起拖死）、
     支持 `preview=1`、失败清单全量返回且按唯一行号计数。
     """
-    raw = await file.read()
+    raw = await read_upload_bytes(file)
     file_sha256 = hashlib.sha256(raw).hexdigest()
     rows = parse_csv_bytes(raw, required_headers=["线索名称"], label="文件")
     report = ImportReport("lead", len(rows))
