@@ -26,7 +26,10 @@ import hashlib
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +39,8 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.core.timebase import business_day_start, to_business, today_business
+from app.modules.sample.application_form import render_application_form
+from app.modules.user.model import Department
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Contact
 from app.modules.user.model import User
@@ -314,6 +319,62 @@ async def get_sample(
     return ok(await svc.detail(session, sample))
 
 
+@router.get("/samples/{sample_id}/application-form")
+async def download_application_form(
+    sample_id: int,
+    user: CurrentUser = Depends(require_permission("sample:view")),
+    session: AsyncSession = Depends(get_db),
+):
+    """导出**填好的**《打样申请单》Excel（钉钉「定制打样审批」那份单子）。
+
+    为什么要有这个出口（2026-10-15 主人口径）：
+    - 发起打样**在 CRM**，而流程**回到钉钉**走 —— 钉钉那份申请单是公司现有表单
+      （表头印着"表单编码：D01-003"），格式不能改；
+    - CRM 原来缺它上面一大半的格，业务员每次都要**手打一遍**再去钉钉上传。
+    这里把 CRM 已有的数据填进原版式的底稿，业务员**下载即传**。
+
+    ⚠️ 生成的单子上**采购回复、打样部回复、打样人/完成时间/样品确认人**是空的 ——
+    那是**生产部与采购在钉钉里填**的（批注原文："此处为采购填写"），
+    生产部不在 CRM 里，CRM 填了反而是假的。这不是漏了。
+
+    权限用 `sample:view`：能看这单的人就该能导出它，不需要写权限
+    （导出不改数据）。数据范围由 `get_visible_or_404` 兜住。
+    """
+    sample = await svc.get_visible_or_404(session, user, sample_id)
+    items = (
+        await session.execute(
+            select(SampleItem).where(SampleItem.sample_request_id == sample.id)
+        )
+    ).scalars().all()
+
+    # 申请人与部门：单子上 G3/I3/K3 三格要印
+    applicant_name = ""
+    department_name = ""
+    if sample.created_by:
+        applicant = await session.get(User, sample.created_by)
+        if applicant is not None:
+            applicant_name = applicant.name or applicant.username or ""
+            if applicant.department_id:
+                dept = await session.get(Department, applicant.department_id)
+                if dept is not None:
+                    department_name = dept.name or ""
+
+    content = render_application_form(
+        sample, list(items), applicant_name=applicant_name, department_name=department_name
+    )
+    filename = f"打样申请单-{sample.id}.xlsx"
+    # 导出是**读操作**，不写审计：审计表记的是"谁改了数据"，
+    # 把每次下载都记进去只会把真正要紧的改动淹掉（项目里 PDF 下载同样不记）。
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            # 中文文件名必须走 RFC 5987（`filename*=`），否则某些客户端会乱码
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+        },
+    )
+
+
 @router.patch("/samples/{sample_id}")
 async def update_sample(
     sample_id: int,
@@ -355,6 +416,23 @@ async def update_sample(
         "acceptance_criteria",
         "sample_fee",
         "production_owner_id",
+        # ---- 钉钉《打样申请单》上的格（2026-10-15）----
+        # 不在这个白名单里的字段会被**静默忽略**（PATCH 回 200「没有变化」）——
+        # 与 `extra="ignore"` 是同一类毛病，加字段时**必须同时改这里**。
+        "sample_type",
+        "product_category",
+        "maker_unit",
+        "estimated_hours",
+        "sample_purpose",
+        "urgency",
+        "sample_situation",
+        "material_spec",
+        "product_size",
+        "printing",
+        "accessories",
+        "packaging",
+        "craft_requirement",
+        "product_name",
     ):
         if field in data:
             setattr(sample, field, data[field])

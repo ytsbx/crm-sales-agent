@@ -31,6 +31,7 @@ import {
   approveSample,
   confirmSample,
   createSample,
+  exportSampleApplicationForm,
   feedbackSample,
   getSample,
   listSamples,
@@ -39,11 +40,11 @@ import {
   reviseSample,
   shipSample,
   signSample,
-  updateSample,
-  updateSampleItem,
   type BasisFile,
   type SampleItem,
   type SampleRequestRow,
+  updateSample,
+  updateSampleItem,
 } from '../../shared/api/sample'
 import { listBusinessFiles } from '../../shared/api/file'
 import PageHeader from '../../shared/components/PageHeader'
@@ -189,13 +190,32 @@ export default function SampleListPage() {
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
   // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，在明细行上改（见 itemEdit）。
+  // 打样积分＝预计工时 × 10（钉钉表上的口径），**不让手填** —— 手填必然出现
+  // 两个人填出两个数。这里只存工时，积分由后端算、只读显示。
   const [prodForm, setProdForm] = useState({
     purpose: '',
     target_completion_date: '',
     acceptance_criteria: '',
     sample_fee: '',
+    // ---- 钉钉《打样申请单》上的格 ----
+    sample_type: '',
+    product_category: '',
+    maker_unit: '',
+    sample_purpose: '',
+    urgency: '',
+    sample_situation: '',
+    estimated_hours: '',
+    product_name: '',
+    material_spec: '',
+    product_size: '',
+    printing: '',
+    accessories: '',
+    packaging: '',
+    craft_requirement: '',
   })
   const [prodEditing, setProdEditing] = useState(false)
+  /** 导出申请单 Excel 的进行中标记（防连点，也让按钮有 loading） */
+  const [exportingForm, setExportingForm] = useState(false)
   // 改某一条明细的车间依据（材质 / 工艺 / 图纸版本）
   const [itemEdit, setItemEdit] = useState<{
     id: number
@@ -383,11 +403,36 @@ export default function SampleListPage() {
       if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
         throw new Error('打样费用要填一个不小于 0 的数字（留空表示「未填」）')
       }
+      // 预计工时：留空 = 未填；填了就必须是不小于 0 的数字
+      const rawHours = prodForm.estimated_hours.trim()
+      const hours = rawHours === '' ? null : Number(rawHours)
+      if (hours !== null && (!Number.isFinite(hours) || hours < 0)) {
+        throw new Error('预计工时要填一个不小于 0 的数字（留空表示「未填」）')
+      }
+      // 空串一律发 null：与"没填"同一口径（后端也按 null 处理）
+      const blankToNull = (v: string) => (v.trim() ? v.trim() : null)
+      // 材质/规格这类多行文本保留换行（导出到 Excel 时是有意义的段落）
+      const textOrNull = (v: string) => (v.trim() ? v : null)
       return updateSample(detailId!, {
         purpose: prodForm.purpose || null,
         target_completion_date: prodForm.target_completion_date || null,
         acceptance_criteria: prodForm.acceptance_criteria || null,
         sample_fee: fee,
+        // ---- 钉钉《打样申请单》上的格 ----
+        sample_type: blankToNull(prodForm.sample_type),
+        product_category: blankToNull(prodForm.product_category),
+        maker_unit: blankToNull(prodForm.maker_unit),
+        sample_purpose: blankToNull(prodForm.sample_purpose),
+        urgency: blankToNull(prodForm.urgency),
+        sample_situation: blankToNull(prodForm.sample_situation),
+        estimated_hours: hours,
+        product_name: blankToNull(prodForm.product_name),
+        material_spec: textOrNull(prodForm.material_spec),
+        product_size: textOrNull(prodForm.product_size),
+        printing: textOrNull(prodForm.printing),
+        accessories: textOrNull(prodForm.accessories),
+        packaging: textOrNull(prodForm.packaging),
+        craft_requirement: textOrNull(prodForm.craft_requirement),
       })
     },
     onSuccess: (row: SampleRequestRow) => {
@@ -1119,6 +1164,27 @@ export default function SampleListPage() {
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
                     <div style={{ fontWeight: 600, flex: 1 }}>生产打样资料</div>
+                    {/* 导出**填好的**《打样申请单》Excel：钉钉那份单子是公司现有表单、
+                        格式不能改 —— 这里按原版式把 CRM 的数据填进去，业务员下载即传，
+                        不用重打一遍。生产部/采购回复的那几格留空（他们在钉钉里填）。 */}
+                    <Button
+                      size="small"
+                      theme="borderless"
+                      loading={exportingForm}
+                      onClick={async () => {
+                        setExportingForm(true)
+                        try {
+                          await exportSampleApplicationForm(detailId!)
+                          Toast.success('申请单已导出，下载后传到钉钉即可')
+                        } catch (error) {
+                          Toast.error((error as Error).message || '导出失败，请重试')
+                        } finally {
+                          setExportingForm(false)
+                        }
+                      }}
+                    >
+                      导出打样申请单
+                    </Button>
                     {canManage && !prodEditing && (
                       <a
                         onClick={() => {
@@ -1128,6 +1194,21 @@ export default function SampleListPage() {
                             acceptance_criteria: detail.acceptance_criteria ?? '',
                             sample_fee:
                               detail.sample_fee != null ? String(detail.sample_fee) : '',
+                            sample_type: detail.sample_type ?? '',
+                            product_category: detail.product_category ?? '',
+                            maker_unit: detail.maker_unit ?? '',
+                            sample_purpose: detail.sample_purpose ?? '',
+                            urgency: detail.urgency ?? '',
+                            sample_situation: detail.sample_situation ?? '',
+                            estimated_hours:
+                              detail.estimated_hours != null ? String(detail.estimated_hours) : '',
+                            product_name: detail.product_name ?? '',
+                            material_spec: detail.material_spec ?? '',
+                            product_size: detail.product_size ?? '',
+                            printing: detail.printing ?? '',
+                            accessories: detail.accessories ?? '',
+                            packaging: detail.packaging ?? '',
+                            craft_requirement: detail.craft_requirement ?? '',
                           })
                           setProdEditing(true)
                         }}
@@ -1175,6 +1256,138 @@ export default function SampleListPage() {
                         rows={2}
                         value={prodForm.acceptance_criteria}
                         onChange={(v) => setProdForm({ ...prodForm, acceptance_criteria: v })}
+                      />
+                      {/* ---- 钉钉《打样申请单》上的格（2026-10-15）----
+                          选项**照抄钉钉下拉**（钉钉那边是下拉，写错一个字导出的单子
+                          就和钉钉对不上，而人眼发现不了）。填好这几项之后，
+                          点下面的「导出打样申请单」就能拿到填好的 Excel，直接传钉钉。 */}
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <Select
+                          style={{ width: 170 }}
+                          placeholder="打样类型"
+                          value={prodForm.sample_type || undefined}
+                          onChange={(v) => setProdForm({ ...prodForm, sample_type: (v as string) ?? '' })}
+                          optionList={[
+                            { value: '设计研发内部打样', label: '设计研发内部打样' },
+                            { value: '销售客户打样', label: '销售客户打样' },
+                          ]}
+                        />
+                        <Select
+                          style={{ width: 170 }}
+                          placeholder="打样产品大类"
+                          value={prodForm.product_category || undefined}
+                          onChange={(v) => setProdForm({ ...prodForm, product_category: (v as string) ?? '' })}
+                          optionList={[
+                            { value: '高频类产品', label: '高频类产品' },
+                            { value: '车缝类产品', label: '车缝类产品' },
+                          ]}
+                        />
+                        <Select
+                          style={{ width: 170 }}
+                          placeholder="样品制作单位"
+                          value={prodForm.maker_unit || undefined}
+                          onChange={(v) => setProdForm({ ...prodForm, maker_unit: (v as string) ?? '' })}
+                          optionList={[
+                            { value: '义乌打样部', label: '义乌打样部' },
+                            { value: '山东生产部', label: '山东生产部' },
+                            { value: '外协厂', label: '外协厂' },
+                          ]}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <Select
+                          style={{ width: 170 }}
+                          placeholder="打样目的"
+                          value={prodForm.sample_purpose || undefined}
+                          onChange={(v) => setProdForm({ ...prodForm, sample_purpose: (v as string) ?? '' })}
+                          optionList={[
+                            { value: '客审确认样', label: '客审确认样' },
+                            { value: '报价核算样', label: '报价核算样' },
+                            { value: '定制改款样', label: '定制改款样' },
+                            { value: '送检上架样', label: '送检上架样' },
+                          ]}
+                        />
+                        <Select
+                          style={{ width: 130 }}
+                          placeholder="紧急程度"
+                          value={prodForm.urgency || undefined}
+                          onChange={(v) => setProdForm({ ...prodForm, urgency: (v as string) ?? '' })}
+                          optionList={[
+                            { value: '普通', label: '普通' },
+                            { value: '急', label: '急' },
+                            { value: '紧急', label: '紧急' },
+                          ]}
+                        />
+                        <Select
+                          style={{ width: 170 }}
+                          placeholder="样品情况"
+                          value={prodForm.sample_situation || undefined}
+                          onChange={(v) => setProdForm({ ...prodForm, sample_situation: (v as string) ?? '' })}
+                          optionList={[
+                            { value: '首次设计新品', label: '首次设计新品' },
+                            { value: '设计更改', label: '设计更改' },
+                            { value: '客户首次要求', label: '客户首次要求' },
+                            { value: '客户更改', label: '客户更改' },
+                            { value: '其他', label: '其他' },
+                          ]}
+                        />
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                        紧急程度不只是标记：普通可晚 3~5 天交样、急可晚 1~3 天、
+                        <b>紧急不允许晚</b>（这是钉钉单上的口径）。
+                      </div>
+                      <Input
+                        placeholder="申请单上的「产品名称」（留空则用明细名称，多个用顿号连接）"
+                        value={prodForm.product_name}
+                        onChange={(v) => setProdForm({ ...prodForm, product_name: v })}
+                      />
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <Input
+                          style={{ width: 160 }}
+                          placeholder="预计工时（小时）"
+                          value={prodForm.estimated_hours}
+                          onChange={(v) => setProdForm({ ...prodForm, estimated_hours: v })}
+                        />
+                        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                          打样积分＝工时 × 10 =
+                          <b>
+                            {prodForm.estimated_hours.trim() &&
+                            Number.isFinite(Number(prodForm.estimated_hours))
+                              ? ` ${Number(prodForm.estimated_hours) * 10} `
+                              : ' — '}
+                          </b>
+                          分（系统算，不手填）
+                        </span>
+                      </div>
+                      <Input
+                        placeholder="主要材质和规格（落到申请单「打样具体要求」第 1 行）"
+                        value={prodForm.material_spec}
+                        onChange={(v) => setProdForm({ ...prodForm, material_spec: v })}
+                      />
+                      <Input
+                        placeholder="产品尺寸"
+                        value={prodForm.product_size}
+                        onChange={(v) => setProdForm({ ...prodForm, product_size: v })}
+                      />
+                      <Input
+                        placeholder="产品印刷"
+                        value={prodForm.printing}
+                        onChange={(v) => setProdForm({ ...prodForm, printing: v })}
+                      />
+                      <Input
+                        placeholder="主要辅料"
+                        value={prodForm.accessories}
+                        onChange={(v) => setProdForm({ ...prodForm, accessories: v })}
+                      />
+                      <Input
+                        placeholder="包装要求"
+                        value={prodForm.packaging}
+                        onChange={(v) => setProdForm({ ...prodForm, packaging: v })}
+                      />
+                      <Input
+                        placeholder="做法要求"
+                        value={prodForm.craft_requirement}
+                        onChange={(v) => setProdForm({ ...prodForm, craft_requirement: v })}
                       />
                       <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                         材质、工艺、图纸版本在「样品明细」里逐行填——它们每个商品可能都不一样。

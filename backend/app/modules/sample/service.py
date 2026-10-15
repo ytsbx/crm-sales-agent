@@ -23,6 +23,9 @@ from app.modules.sample.model import (
     SampleShipment,
 )
 
+# 积分口径（工时 × 10）只在 schema 里定义一处，这里引用它算派生值
+from app.modules.sample.schema import POINTS_PER_HOUR  # noqa: E402
+
 ZERO = Decimal(0)
 
 
@@ -139,6 +142,29 @@ def serialize_request(
         # ---- 生产打样资料（文档 §3.5）----
         # 材质 / 工艺 / 图纸版本不在这里：它们逐行不同，挂在明细上（见 items）。
         "purpose": request.purpose,
+        # ---- 钉钉《打样申请单》上的格（2026-10-15）----
+        # 不输出的话前端没法回显、也没法检查"导出前填全了没"。
+        "sample_type": request.sample_type,
+        "product_category": request.product_category,
+        "maker_unit": request.maker_unit,
+        "estimated_hours": _f(request.estimated_hours),
+        # 积分是**派生值**：前端要显示，但**不收它作为入参**（不让手填）。
+        # 这里按口径现算，避免"库里存的"和"该显示的"两套。
+        "craft_points": _f(
+            request.estimated_hours * POINTS_PER_HOUR
+            if request.estimated_hours is not None
+            else request.craft_points
+        ),
+        "sample_purpose": request.sample_purpose,
+        "urgency": request.urgency,
+        "sample_situation": request.sample_situation,
+        "material_spec": request.material_spec,
+        "product_size": request.product_size,
+        "printing": request.printing,
+        "accessories": request.accessories,
+        "packaging": request.packaging,
+        "craft_requirement": request.craft_requirement,
+        "product_name": request.product_name,
         "target_completion_date": (
             request.target_completion_date.isoformat() if request.target_completion_date else None
         ),
