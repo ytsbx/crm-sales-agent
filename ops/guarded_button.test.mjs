@@ -234,3 +234,21 @@ test('提示用**紧凑样式**（不再铺一大块底色）', () => {
   assert.match(html, /还没选客户/)
   assert.match(html, /还不能保存/)
 })
+
+test('hintBelow：提示移到按钮那一列**外面**（横排行里不再挤成一列）', () => {
+  // 主人 2026-10-16：「这段话可以移到添加旁边去，不然左边一大段空白不好看」。
+  // 在横排表单行里，这个件只占**一列** —— 提示挤在那一列宽度内，右边控件下面
+  // 全空着。`hintBelow` 把提示挪到整行之后，宽度够也不挤。
+  const html = render({ disabled: true, blockedReasons: ['还没选客户'], action: '添加明细', hintBelow: true })
+  const buttonClose = html.indexOf('</span>')
+  const hintAt = html.indexOf('blocked-hint-compact')
+  assert.ok(buttonClose > 0, '按钮容器不见了')
+  assert.ok(hintAt > buttonClose, '提示应当落在按钮容器**之后**（那一列外面）')
+
+  // 不传 hintBelow 时保持原样（提示在容器**内部**，跟着按钮走）
+  const inside = render({ disabled: true, blockedReasons: ['还没选客户'], action: '添加明细' })
+  assert.ok(
+    inside.indexOf('blocked-hint-compact') < inside.lastIndexOf('</span>'),
+    '不传 hintBelow 时提示应当仍在容器内部',
+  )
+})

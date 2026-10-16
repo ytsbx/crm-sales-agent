@@ -1067,12 +1067,13 @@ export default function SampleListPage() {
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}
                   />
                   <GuardedButton
-  disabled={!draftReady(newItem)}
-  blockedReasons={['请先选一个产品，或直接把产品名称打进去。']}
-  action="添加明细"
-  loading={addItemMutation.isPending}
-  onClick={() => addItemMutation.mutate()}
->
+                    hintBelow
+                    disabled={!draftReady(newItem)}
+                    blockedReasons={['请先选一个产品，或直接把产品名称打进去。']}
+                    action="添加明细"
+                    loading={addItemMutation.isPending}
+                    onClick={() => addItemMutation.mutate()}
+                  >
   添加
 </GuardedButton>
                 </div>

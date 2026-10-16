@@ -72,12 +72,21 @@ export interface GuardedButtonProps extends Omit<ButtonProps, 'disabled'> {
    * 与 `BlockedHint` 同一个口径，不传就不写这句头。
    */
   action?: string
+  /**
+   * 把提示块移到**整行下面**（而不是紧跟在按钮那一列里）。
+   *
+   * 用在横排表单行里：`GuardedButton` 只占一列，提示挤在那一列宽度内、
+   * 右边控件下面全空着，看着就是"左边一大段空白"（主人 2026-10-16）。
+   * 传上它就变成"按钮留在行里、灰字落到行下面"，宽度够也不挤。
+   */
+  hintBelow?: boolean
 }
 
 export default function GuardedButton({
   disabled = false,
   blockedReasons,
   action,
+  hintBelow = false,
   children,
   ...buttonProps
 }: GuardedButtonProps) {
@@ -92,17 +101,12 @@ export default function GuardedButton({
   // 与 BlockedHint / 提示条同一套判据：去重后还有没有话说
   const hasReason = distinctReasons(reasons.filter((t) => t.trim() !== '')).length > 0
 
-  return (
-    // ⚠️ **必须是一个整体**（2026-10-16 主人截图：「没对齐啊」）。
-    //
-    // 原来返回的是 `<>…<span>按钮</span>…<BlockedHint/></>` —— **两个兄弟节点**。
-    // 放在**横向 flex 行**里（`display:flex` 的工具栏/表单行），这两个节点会变成
-    // **两个 flex 格子**：提示块被当成"第三列"摆到右边，整行就散了。
-    //
-    // 现在外面套一层 `inline-flex + column`：
-    //   · 在横向行里 = **一个 flex 元素**（按钮与提示竖着排在里面）；
-    //   · 在纵向容器里 = 和以前一样（按钮一行、提示一行）。
-    // 这样它才算真正"一个标签替代那八行"，放哪儿都不会把布局撑歪。
+  /** 提示块本体（紧凑样式，见 `BlockedHint` 的 `compact` 说明）。 */
+  const hint = disabled && hasReason
+    ? <BlockedHint reasons={reasons} action={action} compact />
+    : null
+
+  const button = (
     <span
       className="blocked-hint-click"
       style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start' }}
@@ -122,12 +126,24 @@ export default function GuardedButton({
       >
         {children}
       </Button>
-      {/* 只有"被挡住且有原因"时才渲染这行灰字；可用态下它整个不存在 */}
-      {disabled && hasReason ? (
-        // **紧凑模式**：这个件多数用在表单行/工具栏这种窄地方，
-        // 默认那种带底色的大块会把行撑歪（主人 2026-10-16 截图）。
-        <BlockedHint reasons={reasons} action={action} compact />
-      ) : null}
+      {/* 在"跟随按钮"模式下，灰字排在按钮下面 */}
+      {!hintBelow ? hint : null}
     </span>
   )
+
+  // `hintBelow`：按钮留在这一行，**提示落到整行下面**（占满整行宽）。
+  //
+  // 为什么需要它（2026-10-16 主人：「这段话可以移到添加旁边去，不然左边一大段空白
+  // 不好看」）：在横排表单行里，`GuardedButton` 只占**一列** —— 提示被挤在那一列的
+  // 宽度里，而右边那几个控件下面全空着，看着就是"左边一大段空白"。
+  // 传 `hintBelow` 后提示被移出那一列，成为整行之后的独立一块，宽度够、也不再挤。
+  if (hintBelow) {
+    return (
+      <>
+        {button}
+        {hint}
+      </>
+    )
+  }
+  return button
 }
