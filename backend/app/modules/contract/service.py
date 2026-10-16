@@ -278,6 +278,8 @@ def serialize_document(
                          if key != "_supersession_task_states"} if doc.filled_data is not None else None),
         "source_type": filled.get("_source_type", "crm_template"),
         "original_file_id": filled.get("_original_file_id"),
+        "contract_origin": filled.get("_contract_origin"),
+        "contract_origin_label": {"company": "我方合同", "customer": "客户合同"}.get(filled.get("_contract_origin"), "历史未标注"),
         "dingtalk_oa": filled.get("_dingtalk_oa"),
         "missing_fields": missing,
         # 抬头快照（生成时的公司名/客户名/单号）：详情页据此说明"当时是以谁的名义出的"
@@ -636,7 +638,9 @@ async def generate_document(
     filled = {**filled, "_request_fingerprint": request_fingerprint, "_source_type": payload.source_type}
     if original_id:
         filled["_original_file_id"] = original_id
-        content = "客户提供的合同原件，完整条款以随附原文件为准。"
+        if payload.contract_origin:
+            filled["_contract_origin"] = payload.contract_origin
+        content = "上传的合同原件，完整条款以随附原文件为准。"
     # 请求回显：**存客户端当初提交的原值**（2026-10-10 修 C4-06 的自动补全边界）。
     #
     # 为什么需要它：`quote_id` / `quote_version_id` 会**由订单带出**、

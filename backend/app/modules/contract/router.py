@@ -153,6 +153,7 @@ async def start_dingtalk_contract_approval(
         item for item in [
             f"客户：{customer.name}" if customer else "",
             f"合同编号：{doc.doc_no}",
+            "合同来源：" + {"company": "我方合同", "customer": "客户合同"}.get((doc.filled_data or {}).get("_contract_origin"), "历史未标注"),
             f"订单：{header.get('order_no')}" if header.get("order_no") else "",
             f"报价：{header.get('quote_no')}" if header.get("quote_no") else "",
             "合同正文：",
@@ -374,6 +375,8 @@ async def generate_document(
 ):
     if payload.source_type != "customer_drafted" or not payload.original_file_id or payload.template_id is not None:
         raise AppError(ErrorCode.PARAM_ERROR, "系统模板生成已停用，请上传合同 Word 或 PDF 原文件", 422)
+    if not payload.contract_origin:
+        raise AppError(ErrorCode.PARAM_ERROR, "请选择合同来源：我方合同或客户合同", 422)
     if payload.parent_id is not None or payload.supersede_parent:
         raise AppError(ErrorCode.PARAM_ERROR, "请将补充或续签合同作为新合同原文件上传", 422)
     from app.modules.customer import service as customer_service
@@ -482,7 +485,7 @@ async def generate_document(
             after={"doc_no": doc.doc_no, "template_id": doc.template_id,
                    "customer_id": doc.customer_id, "order_id": doc.order_id,
                    "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
-                   "generated_file_id": doc.generated_file_id},
+                   "generated_file_id": doc.generated_file_id, "contract_origin": payload.contract_origin},
             ip=client_ip(request),
         )
         await session.commit()

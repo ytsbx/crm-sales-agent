@@ -75,7 +75,7 @@ export default function DocumentsPage() {
     void queryClient.invalidateQueries({ queryKey: ['contract-documents'] })
   }
 
-  // 上传客户合同原文件
+  // 上传合同原文件，并明确条款版本的提供方
   const [uploadVisible, setUploadVisible] = useState(false)
   // 幂等键：打开弹窗时生成一个，同一张弹窗里的重复提交带的是同一个值。
   // 后端据此把第二次请求认成"刚才那份"，不再多建一份带独立编号的草稿。
@@ -84,6 +84,7 @@ export default function DocumentsPage() {
   const [originalFile, setOriginalFile] = useState<File | null>(null)
   const [originalFileId, setOriginalFileId] = useState<number | null>(null)
   const [contractTitle, setContractTitle] = useState('')
+  const [contractOrigin, setContractOrigin] = useState<'company' | 'customer' | undefined>()
   const [uploadForm, setUploadForm] = useState({
     customer_id: undefined as number | undefined,
     // 正式依据（业务口径：条款可以先备，但登记签署前必须挂上订单或已发出的报价）
@@ -118,8 +119,9 @@ export default function DocumentsPage() {
   const uploadMutation = useMutation({
     mutationFn: async () => {
       if (!uploadForm.customer_id) throw new Error('请选择合同所属客户')
+      if (!contractOrigin) throw new Error('请选择合同来源：我方合同或客户合同')
       let sourceId = originalFileId
-      if (!originalFile) throw new Error('请上传客户提供的合同 Word 或 PDF')
+      if (!originalFile) throw new Error('请上传合同 Word 或 PDF 原文件')
       if (!sourceId) {
         const row = await uploadFile(originalFile)
         sourceId = row.id
@@ -127,6 +129,7 @@ export default function DocumentsPage() {
       }
       return uploadContractDocument({
         original_file_id: sourceId,
+        contract_origin: contractOrigin,
         title: contractTitle.trim() || undefined,
         customer_id: uploadForm.customer_id!,
         order_id: uploadForm.order_id ?? null,
@@ -158,6 +161,7 @@ export default function DocumentsPage() {
     setOriginalFile(null)
     setOriginalFileId(null)
     setContractTitle('')
+    setContractOrigin(undefined)
     setUploadForm({ customer_id: undefined, order_id: undefined, quote_id: undefined,
       quote_version_id: undefined, expiry_date: '', effective_date: '' })
     setUploadRequestKey(newRequestKey())
@@ -306,7 +310,7 @@ export default function DocumentsPage() {
         <SectionCard>
           <div className="toolbar" style={{ marginBottom: 10 }}>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              客户合同直接上传原文件；审批在钉钉办理，CRM 同步进度并跟催回签归档
+              我方合同、客户合同均上传原文件；审批在钉钉办理，CRM 同步进度并跟催回签归档
             </span>
             <div style={{ flex: 1 }} />
             {canManage && (
@@ -320,6 +324,7 @@ export default function DocumentsPage() {
               { title: '编号', dataIndex: 'doc_no', width: 150 },
               { title: '类型', dataIndex: 'doc_type_label', width: 100 },
               { title: '标题', dataIndex: 'title' },
+              { title: '合同来源', width: 110, render: (_: unknown, record: ContractDocument) => record.contract_origin_label || '历史未标注' },
               { title: '客户', dataIndex: 'customer_name', width: 160 },
               {
                 title: '状态',
@@ -481,11 +486,24 @@ export default function DocumentsPage() {
             />
           </div>
           <div>
+            <div style={{ marginBottom: 4 }}>合同来源（必选）</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="选择我方合同或客户合同"
+              value={contractOrigin}
+              onChange={(v) => setContractOrigin(v as 'company' | 'customer')}
+              optionList={[{ value: 'company', label: '我方合同' }, { value: 'customer', label: '客户合同' }]}
+            />
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+              我方合同：使用我方提供的条款版本；客户合同：使用客户提供的条款版本。
+            </div>
+          </div>
+          <div>
             <div style={{ marginBottom: 4 }}>合同名称</div>
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>客户合同原文件（Word / PDF）</div>
+            <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
             <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => {
               const file = e.target.files?.[0] || null
               setOriginalFile(file); setOriginalFileId(null)
@@ -685,6 +703,10 @@ export default function DocumentsPage() {
                 {detail.header_snapshot?.company_name || '（未设置公司抬头）'} · 客户：
                 {detail.header_snapshot?.customer_name ?? detail.customer_name ?? '-'}
               </div>
+            </div>
+            <div>
+              <div style={DETAIL_LABEL}>合同来源</div>
+              <div style={DETAIL_VALUE}>{detail.contract_origin_label || '历史未标注'}</div>
             </div>
             <div>
               <div style={DETAIL_LABEL}>依据</div>

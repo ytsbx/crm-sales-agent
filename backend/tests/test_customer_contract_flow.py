@@ -162,7 +162,7 @@ async def test_original_contract_has_no_generated_template_or_content(sql_sessio
     doc,replayed=await service.generate_document(sql_session,payload=p,user_id=1)
     assert doc.template_id is None and doc.generated_file_id is None
     assert doc.filled_data['_original_file_id']==88
-    assert '客户提供' in doc.content_snapshot
+    assert '上传的合同原件' in doc.content_snapshot
     assert not replayed
 
 
@@ -264,3 +264,43 @@ async def test_contract_entry_accepts_uploads_only(payload):
 def test_template_creation_is_no_longer_a_public_action():
     from app.modules.contract.router import router
     assert not any(getattr(route,'path','')=='/contract-templates' and 'POST' in getattr(route,'methods',set()) for route in router.routes)
+
+
+@pytest.mark.anyio
+async def test_upload_requires_explicit_contract_origin():
+    from app.modules.contract import router
+    p=DocumentCreate(customer_id=1,source_type='customer_drafted',original_file_id=5)
+    with pytest.raises(AppError,match='请选择合同来源'):
+        await router.generate_document(p,Obj(),Obj(),Obj())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('origin,label',[('company','我方合同'),('customer','客户合同')])
+async def test_uploaded_contract_origin_is_frozen_and_displayed(sql_session,monkeypatch,origin,label):
+    from app.modules.customer.model import Customer
+    from app.modules.contract import service
+    from app.modules.settings import numbering
+    sql_session.add(Customer(id=9,name='客户甲',owner_id=1))
+    await sql_session.flush()
+    monkeypatch.setattr(numbering,'generate_for',AsyncMock(return_value='CT-ORIGIN'))
+    p=DocumentCreate(customer_id=9,source_type='customer_drafted',original_file_id=88,title='上传合同',contract_origin=origin)
+    doc,_=await service.generate_document(sql_session,payload=p,user_id=1)
+    result=service.serialize_document(doc)
+    assert result['contract_origin']==origin and result['contract_origin_label']==label
+    assert doc.template_id is None and doc.generated_file_id is None
+
+
+def test_unknown_history_is_not_reclassified_as_customer():
+    from app.modules.contract import service
+    from app.modules.contract.model import ContractDocument
+    doc=ContractDocument(id=99,doc_no='CT-OLD',doc_type='contract',title='旧合同',customer_id=1,status='draft',content_snapshot='',filled_data={'_source_type':'customer_drafted'},created_at=datetime.now(UTC))
+    result=service.serialize_document(doc)
+    assert result['contract_origin'] is None and result['contract_origin_label']=='历史未标注'
+
+
+def test_origin_is_part_of_idempotency_and_unknown_values_are_rejected():
+    from app.modules.contract.service import _request_fingerprint
+    company=DocumentCreate(customer_id=1,source_type='customer_drafted',original_file_id=5,contract_origin='company')
+    customer=company.model_copy(update={'contract_origin':'customer'})
+    assert _request_fingerprint(company)!=_request_fingerprint(customer)
+    with pytest.raises(ValueError):DocumentCreate(customer_id=1,contract_origin='unknown')

@@ -59,6 +59,8 @@ export interface ContractDocument {
   quote_version_no: number | null
   template_id: number | null
   original_file_id?: number | null
+  contract_origin?: 'company' | 'customer' | null
+  contract_origin_label?: string
   content_snapshot: string
   filled_data: Record<string, string> | null
   /** 生成时没填上的占位符：字段 -> 没填上的原因（后端已翻译成人话）。正文里保留着 {{...}} 原文。 */
@@ -133,6 +135,7 @@ export function listContractDocuments(
 /** 合同入口只接收用户上传的原文件，不提供系统模板生成。 */
 export function uploadContractDocument(payload: {
   original_file_id: number
+  contract_origin: 'company' | 'customer'
   customer_id: number
   order_id?: number | null
   quote_id?: number | null

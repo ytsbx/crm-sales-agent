@@ -91,6 +91,7 @@ PATCH_TABLES: dict[str, str] = {
 #: `类名.字段名` → 报错时用的中文名。**没写的用字段名兜底**，
 #: 所以漏写只影响提示好不好看，不影响校验有没有生效。
 FIELD_LABELS: dict[str, str] = {
+    "DocumentCreate.contract_origin": "合同来源",
     # 产品 / SKU
     "ProductUpdate.name": "产品名称",
     "ProductUpdate.status": "产品状态",

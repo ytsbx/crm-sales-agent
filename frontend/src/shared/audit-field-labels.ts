@@ -55,6 +55,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   contact_name_snapshot: '联系人快照',
   content_sha256: '内容校验值',
   content_snapshot: '正文快照',
+  contract_origin: '合同来源',
   converted_contact_id: '转成的联系人',
   converted_customer_id: '转成的客户',
   converted_inquiry_id: '转成的需求',

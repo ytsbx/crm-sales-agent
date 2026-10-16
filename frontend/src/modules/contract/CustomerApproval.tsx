@@ -34,6 +34,7 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
     {entry.error && <p role="alert">{entry.error.message}</p>}
     {entry.data?.mode === 'external_link' && <div style={{ display: 'grid', gap: 12 }}>
       <p>请在钉钉上传本合同的完整原文件，填写后提交。打开页面不代表已提交审批。</p>
+      <div>合同来源：{doc?.contract_origin_label || '历史未标注'}</div>
       <div>合同名称：{doc?.title}</div>
       <div>合同编号：{doc?.doc_no}（钉钉中选择“手动填写”，按此编号填写）</div>
       <div style={{ display: 'flex', gap: 12 }}>
