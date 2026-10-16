@@ -143,13 +143,33 @@ def build_form_component_values(field_map: dict[str, Any]) -> list[dict[str, Any
       **这不是猜的**：实测两张模板共 69 个控件，服务端返回的 `componentType`
       与 id 前缀**全部一致**；推导不出来的（id 里没有下划线）就不带这个字段；
     - 空值**不提交**——钉钉对空值控件会覆盖已有内容，把"没填"当成"清空"，
-      这在"驳回后重提"时会把上一次填的内容抹掉。
+       这在"驳回后重提"时会把上一次填的内容抹掉。
+    - **`value` 一律转成字符串**（2026-10-16 主人：「模板肯定没错，你再试试」）。
+
+      钉钉的 `value` 只认字符串：**传数字时它不报类型错，而是把这格判成"空"**，
+      然后回一句 `Missingvalue / value is mandatory for this action.` ——
+      一个**不说哪个控件**的报错，极难定位。
+
+      实测（同一个模板、同样的字段，只差类型）：
+
+          归属部门 value = 1115706176（数字）  → Missingvalue（"必填项没值"）
+          归属部门 value = "1115706176"（字符串）→ 表单校验通过
+
+      来源就在我们这边：`get_user_dept_ids()` 返回的是**整数数组**，
+      直接塞进 values 就是数字。所以在**唯一的组装处**统一兜住，
+      免得以后每个模块各踩一次。
     """
     items: list[dict[str, Any]] = []
     for component_id, value in field_map.items():
         if value in (None, "", [], {}):
             continue
-        item: dict[str, Any] = {"name": component_id, "id": component_id, "value": value}
+        # 布尔不是钉钉的表单值类型，但真出现也别渲染成 "True"；其余一律 str()
+        text = value if isinstance(value, str) else (
+            "" if isinstance(value, bool) else str(value)
+        )
+        if not text:
+            continue
+        item: dict[str, Any] = {"name": component_id, "id": component_id, "value": text}
         if "_" in component_id:
             item["componentType"] = component_id.split("_", 1)[0]
         items.append(item)
