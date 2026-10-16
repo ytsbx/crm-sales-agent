@@ -164,7 +164,13 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
     else:
         records=[oa.serialize(row) for row in (await session.scalars(select(OaInstance).where(
             OaInstance.inquiry_id==sample.id,OaInstance.inquiry_version==int(sample.version or 1),OaInstance.oa_type=='sample').order_by(OaInstance.id.desc()))).all()]
-    return ok({**options,'draft':{**meta,'fields':{**{'_'+key:str(getattr(sample,key) or '') for key in ('product_name','material_spec','product_size','printing','accessories','packaging','craft_requirement')},**(meta.get('fields') or {})}},'candidates':await inquiry_candidates(session,user,sample),'records':records})
+    # ⚠️ 回填的字段表要**跟 save() 里落库的那批一致**（2026-10-16 补全）：
+    # 原来只回填那 7 项，于是"打样目的 / 紧急程度 / 样品情况 / 打样费用"
+    # 在**重新打开**弹窗时是空的 —— 库里明明存着，界面上却看不见，
+    # 用户会以为没存上、再填一遍（主人这一轮报的就是这类"看不见"）。
+    _PREFILL = ('product_name','material_spec','product_size','printing','accessories',
+                'packaging','craft_requirement','sample_purpose','urgency','sample_situation','sample_fee')
+    return ok({**options,'draft':{**meta,'fields':{**{'_'+key:str(getattr(sample,key) or '') for key in _PREFILL},**(meta.get('fields') or {})}},'candidates':await inquiry_candidates(session,user,sample),'records':records})
 
 
 async def save(session,user,sample,payload):
@@ -194,6 +200,21 @@ async def save(session,user,sample,payload):
             _value = payload.fields.get('_' + _key)
             if _value is not None:
                 setattr(sample, _column, _value or None)
+        # 「打样费用」同样落列（2026-10-16 主人：「打样费用在哪没看见」）——
+        # 它在申请表 C3 那格，以前只能去详情页的「生产打样资料」里填，
+        # 而钉钉弹窗是建完单立刻弹出来的，用户在那儿找不到它。
+        # 空串 = 明确清空（与"没传"区分：没传就不动）。
+        _fee = payload.fields.get('_sample_fee')
+        if _fee is not None:
+            _text = str(_fee).strip()
+            if not _text:
+                sample.sample_fee = None
+            else:
+                try:
+                    from decimal import Decimal as _Decimal
+                    sample.sample_fee = _Decimal(_text)
+                except Exception:
+                    raise AppError(ErrorCode.PARAM_ERROR, '打样费用要填一个不小于 0 的数字', 422)
     await session.flush()
 
 
@@ -260,6 +281,12 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     for key in ('sample_purpose','urgency','sample_situation'):
         value=payload.fields.get('_'+key)
         if value is not None:attrs[key]=value or None
+    # 打样费用（申请表 C3）：同样以**本次提交的值**为准，列值兜底
+    _fee=payload.fields.get('_sample_fee')
+    if _fee is not None:
+        _t=str(_fee).strip()
+        from decimal import Decimal as _D
+        attrs['sample_fee']=_D(_t) if _t else None
     # 这几个值直接取自模板字段（`template()` 已保证这些标签都在），但**选填的日期/积分
     # 可以是空的**：空就别往申请表上写，而不是拿 '' 去 fromisoformat / Decimal ——
     # 那会让"选填留空"在提交的最后一步炸成一个 500。

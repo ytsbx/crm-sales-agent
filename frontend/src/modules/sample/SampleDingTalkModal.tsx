@@ -171,6 +171,15 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
             分（自动填进上面「本次打样积分」那个框，不用你填两遍）
           </span>
         </div>
+        {/* 打样费用（申请表 C3 那一格）。2026-10-16 主人：「打样费用在哪没看见」——
+            它原来只能去详情页的「生产打样资料」里填，而这个弹窗是建完单立刻弹出来的，
+            用户在这里找不到它。留空 = 未填；免费填 0。 */}
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <Input style={{width:150}} placeholder="打样费用（元）" value={draft.fields['_sample_fee']||''}
+            disabled={submitted||mutate.isPending}
+            onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_fee']:value}})}/>
+          <span style={{fontSize:12,color:'var(--crm-text-3)'}}>留空表示未填；免费请填 0</span>
+        </div>
         {([['product_name','产品名称'],['material_spec','主要材质和规格'],['product_size','产品尺寸'],['printing','产品印刷'],['accessories','主要辅料'],['packaging','包装要求'],['craft_requirement','做法要求']] as const).map(([key,label])=><div key={key}>
           <div>{label}</div><TextArea rows={2} value={draft.fields['_'+key]||''} disabled={submitted||mutate.isPending}
             onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value}})}/>
