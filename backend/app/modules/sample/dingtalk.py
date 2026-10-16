@@ -167,6 +167,21 @@ async def save(session,user,sample,payload):
         if payload.source_oa_id not in {r['id'] for r in await inquiry_candidates(session,user,sample)}:
             raise AppError(ErrorCode.PARAM_ERROR,'请选择这张样品真实来源询价的钉钉审批，不能关联其他客户或其他来源',422)
     sample.source_context={**(sample.source_context or {}),META_KEY:payload.model_dump()}
+    # 弹窗里填的「打样目的 / 紧急程度 / 样品情况」**落到正式列**（2026-10-16）。
+    #
+    # 为什么必须落列：申请表 Excel 的 C4/G4/C5 三格是生成器从 `sample_purpose` /
+    # `urgency` / `sample_situation` 这三**列**读的。若只存进 metadata（草稿快照），
+    # 这三格就永远是空的 —— 而钉钉模板里又没有这三项控件，用户**没有任何地方能填**
+    # （主人 2026-10-16：「还有打样目的，紧急程度…为什么不让我填」）。
+    #
+    # ⚠️ 只在**还没提交**时写：提交后那张申请表就是审批快照，不能再改
+    # （重试必须用原始资料，见 submit 里那条 409）。`save()` 的调用方在
+    # 已提交时要么被 `ensure_editable` 拦住、要么显式跳过 save，所以这里再判一次。
+    if not metadata(sample).get('submitted'):
+        for _key, _column in (('sample_purpose','sample_purpose'),('urgency','urgency'),('sample_situation','sample_situation')):
+            _value = payload.fields.get('_' + _key)
+            if _value is not None:
+                setattr(sample, _column, _value or None)
     await session.flush()
 
 
@@ -226,6 +241,13 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     for key in ('product_name','material_spec','product_size','printing','accessories','packaging','craft_requirement'):
         value=payload.fields.get('_'+key)
         if value is not None:attrs[key]=value
+    # 「打样目的 / 紧急程度 / 样品情况」同样以**本次提交的值**为准（其次才是列里已有的）。
+    # 这三项在钉钉模板里没有控件（13 个控件核对过），只能由 CRM 带过去 —— 申请表
+    # 的 C4/G4/C5 三格就是它们。`save()` 已经把值写进列了，这里再兜一道是为了
+    # 兼容"以前只存在草稿 metadata 里"的老单子。
+    for key in ('sample_purpose','urgency','sample_situation'):
+        value=payload.fields.get('_'+key)
+        if value is not None:attrs[key]=value or None
     # 这几个值直接取自模板字段（`template()` 已保证这些标签都在），但**选填的日期/积分
     # 可以是空的**：空就别往申请表上写，而不是拿 '' 去 fromisoformat / Decimal ——
     # 那会让"选填留空"在提交的最后一步炸成一个 500。

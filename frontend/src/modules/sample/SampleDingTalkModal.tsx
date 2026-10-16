@@ -112,6 +112,38 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
           :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
         </div>)}
         <div style={{fontWeight:600}}>打样申请单（下面这些写进随审批上传的那份 Excel 附件）</div>
+        {/* 三个**勾选项**（2026-10-16 补）：申请表上的「打样目的 / 紧急程度 / 样品情况」
+            三格。它们**不在钉钉模板的 13 个控件里**（核对过），所以只能在这里填 ——
+            以前只在详情页的「生产打样资料」里能填，而本弹窗是建完单立刻自动弹出来的，
+            用户看到的是空格子却无处可填（主人：「为什么不让我填」）。
+            选项照抄申请单原件的勾选项，不要自造。 */}
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {([['sample_purpose','打样目的',['客审确认样','报价核算样','定制改款样','送检上架样']],
+             ['urgency','紧急程度',['普通','急','紧急']],
+             ['sample_situation','样品情况',['首次设计新品','设计更改','客户首次要求','客户更改','其他']]] as const).map(([key,label,options])=>
+            <Select key={key} style={{width:190}} placeholder={label} value={draft.fields['_'+key]||undefined}
+              disabled={submitted||mutate.isPending}
+              optionList={options.map(value=>({value,label:value}))}
+              onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value as string}})}/>)}
+        </div>
+        {/* 紧急程度的真实含义（申请单原件的批注原文）：它不只是个标记，是**交期宽限** */}
+        <div style={{fontSize:12,color:'var(--crm-text-3)'}}>
+          紧急程度＝交期宽限：普通可晚 3~5 天交样、急可晚 1~3 天、<b>紧急不允许晚</b>（申请单原件的口径）。
+        </div>
+        {/* 预计工时 → 打样积分（申请单上那格「本次打样积分」＝工时×10）。
+            钉钉模板里有「本次打样积分」控件，提交时会带过去；这里让 CRM 也能算一遍，
+            两边口径同一个（×10），所以数值一致。 */}
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <Input style={{width:150}} placeholder="预计工时（小时）" value={draft.fields['_estimated_hours']||''}
+            disabled={submitted||mutate.isPending}
+            onChange={value=>setEdited({...draft,fields:{...draft.fields,['_estimated_hours']:value}})}/>
+          <span style={{fontSize:12,color:'var(--crm-text-3)'}}>
+            打样积分＝工时 × 10 =
+            <b>{(() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
+              return raw.trim() && Number.isFinite(n) ? ` ${n * 10} ` : ' — ' })()}</b>
+            分（与上面「本次打样积分」同一个口径，两边填一样就行）
+          </span>
+        </div>
         {([['product_name','产品名称'],['material_spec','主要材质和规格'],['product_size','产品尺寸'],['printing','产品印刷'],['accessories','主要辅料'],['packaging','包装要求'],['craft_requirement','做法要求']] as const).map(([key,label])=><div key={key}>
           <div>{label}</div><TextArea rows={2} value={draft.fields['_'+key]||''} disabled={submitted||mutate.isPending}
             onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value}})}/>

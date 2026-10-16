@@ -275,3 +275,37 @@ def test_schema_rejects_negative_hours():
     with pytest.raises(ValidationError):
         SampleUpdate(estimated_hours="-1")
     SampleUpdate(estimated_hours="0")  # 0 小时合法（工时可以很小）
+
+# ------------------------------------------- 申请表上那三个勾选项（C4/G4/C5）
+
+
+@pytest.mark.parametrize(
+    "ref,field,value",
+    [
+        ("C4", "sample_purpose", "报价核算样"),
+        ("G4", "urgency", "急"),
+        ("C5", "sample_situation", "客户首次要求"),
+    ],
+)
+def test_choice_fields_land_in_their_cells(ref, field, value):
+    """打样目的 / 紧急程度 / 样品情况 → 申请表的 C4 / G4 / C5。
+
+    这三项**不在钉钉模板的 13 个控件里**（2026-10-16 拉模板核对过），只能由 CRM 带过去。
+    它们曾经"哪里都填不了"（主人：「还有打样目的，紧急程度…为什么不让我填」）——
+    详情页能填但钉钉弹窗是建完单立刻弹出来的，那时还没填过。现在弹窗里能填了，
+    这条守住"填了真的会出现在表上"。
+    """
+    sample = _sample(**{field: value})
+    assert _cells(render_application_form(sample, []))[ref] == value
+
+
+@pytest.mark.parametrize("ref", ["C4", "G4", "C5"])
+def test_choice_cells_keep_template_text_when_not_filled(ref):
+    """没填时**保留模板原有的勾选文字**，不要拿坏值去凑。
+
+    申请表原件这三格印着「¨客审确认样 ¨报价核算样 …」这样的勾选项 ——
+    没填就让它保持原样（打样师傅/主管看得懂），而不是写个空白或占位符。
+    """
+    sample = _sample(sample_purpose=None, urgency=None, sample_situation=None)
+    text = _cells(render_application_form(sample, []))[ref]
+    assert ("¨" in text) or ("□" in text)
