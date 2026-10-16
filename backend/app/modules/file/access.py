@@ -104,6 +104,7 @@ NO_OWNER_MODELS: dict[str, type] = {"product": Product, "sku": Sku}
 #: 各写一份判断迟早会分叉，分叉出来的那一份就是绕过通道。
 PROTECTED_CATEGORIES: dict[str, str] = {
     "signed": "已签署的原件",
+    "contract_original": "客户合同原稿",
     "generated": "系统生成的原件",
 }
 

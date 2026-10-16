@@ -18,7 +18,8 @@ class TemplateCreate(CreateModel):
 class DocumentCreate(BaseModel):
     """从模板生成合同草稿。extra_fields 是"空白的地方业务员自己填"的部分。"""
 
-    template_id: int
+    template_id: int | None = None
+    original_file_id: int | None = Field(default=None, gt=0)
     customer_id: int
     order_id: int | None = None
     quote_id: int | None = None

@@ -909,6 +909,9 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
                 new_status = None
         else:
             new_status = _STATUS_MAP.get(raw_status)
+        if linked_contract is not None:
+            from app.modules.contract.customer_flow import status_of
+            new_status = status_of(data)
         row.result = {"raw_status": raw_status, "raw_result": raw_result, "payload": data}
         row.synced_at = datetime.now(UTC)
         row.updated_at = datetime.now(UTC)
@@ -945,8 +948,10 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
             # 去重靠**上面那句** `new_status != row.status`：只有状态真的从
             # pending 翻到终态的那一次才进得来（`changed` 也是同一个判据），
             # 所以每份合同每个终态只提醒一次，轮询反复回写同一状态不会重复推送。
-            if new_status in ('approved', 'rejected'):
+            marker = f'{row.id}:{row.status}'
+            if new_status in ('approved', 'rejected') and (linked_contract.filled_data or {}).get('_oa_notified') != marker:
                 await _notify_contract_review_outcome(session, linked_contract, new_status)
+                linked_contract.filled_data = {**linked_contract.filled_data, '_oa_notified': marker}
 
     await session.flush()
     return {"checked": len(rows), "changed": changed}

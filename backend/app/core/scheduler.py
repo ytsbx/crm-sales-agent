@@ -71,6 +71,8 @@ async def run_auto_tasks_job() -> None:
         from app.modules.task.scanning import lock_task_scan
 
         await lock_task_scan(session)
+        from app.modules.contract.customer_flow import remind_countersigns
+        await remind_countersigns(session)
         expired = await contract_service.notify_expiring_monthly(session)
         expired_quotes = await quote_service.notify_expired_quotes(session)
         # 第三个时钟（§2.3）：约定的下次跟进时间到了却没联系 → 推负责人一次

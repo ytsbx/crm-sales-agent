@@ -57,7 +57,8 @@ export interface ContractDocument {
   /** 合同钉死的报价版本。报价后来出 V2/V3 都不影响这一份。 */
   quote_version_id: number | null
   quote_version_no: number | null
-  template_id: number
+  template_id: number | null
+  original_file_id?: number | null
   content_snapshot: string
   filled_data: Record<string, string> | null
   /** 生成时没填上的占位符：字段 -> 没填上的原因（后端已翻译成人话）。正文里保留着 {{...}} 原文。 */
@@ -130,7 +131,8 @@ export function listContractDocuments(
 }
 
 export function generateContractDocument(payload: {
-  template_id: number
+  original_file_id?: number | null
+  template_id?: number | null
   customer_id: number
   order_id?: number | null
   quote_id?: number | null

@@ -1,4 +1,8 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import CustomerApproval, { ApprovalHistory, ContractBasis } from './CustomerApproval'
+import { api } from '../../shared/api/client'
+import { TEMPLATE_FIELDS, displayTemplate, encodeTemplate, templateFieldLabel } from './template-fields'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -30,7 +34,6 @@ import {
   listContractDocuments,
   listContractTemplates,
   signContractDocument,
-  startContractDingTalkApproval,
   withdrawContractDingTalkApproval,
   voidContractDocument,
   type ContractDocument,
@@ -109,10 +112,10 @@ export default function DocumentsPage() {
   const [templateForm, setTemplateForm] = useState({
     doc_type: 'contract',
     name: '',
-    body: '客户：{{customer.name}}\n签约日：{{today}}\n付款方式：{{extra.付款方式}}',
+    body: '客户：【客户名称】\n签约日：【当天日期】\n付款方式：【待填写：付款方式】',
   })
   const createTemplateMutation = useMutation({
-    mutationFn: () => createContractTemplate(templateForm),
+    mutationFn: () => createContractTemplate({ ...templateForm, body: encodeTemplate(templateForm.body) }),
     onSuccess: () => {
       Toast.success('模板版本已保存')
       setTemplateVisible(false)
@@ -126,6 +129,10 @@ export default function DocumentsPage() {
   // 幂等键：打开弹窗时生成一个，同一张弹窗里的重复提交带的是同一个值。
   // 后端据此把第二次请求认成"刚才那份"，不再多建一份带独立编号的草稿。
   const [generateRequestKey, setGenerateRequestKey] = useState('')
+  const [approvalTarget, setApprovalTarget] = useState<ContractDocument | null>(null)
+  const [originalFile, setOriginalFile] = useState<File | null>(null)
+  const [originalFileId, setOriginalFileId] = useState<number | null>(null)
+  const [contractTitle, setContractTitle] = useState('')
   const [generateForm, setGenerateForm] = useState({
     template_id: undefined as number | undefined,
     customer_id: undefined as number | undefined,
@@ -139,14 +146,14 @@ export default function DocumentsPage() {
     // 模板空白项的值：键就是模板里 {{extra.名称}} 的名称。
     // 之所以不再是一个手写的「名称=内容」文本框，见 parseExtraFields 的注释。
     extraValues: {} as Record<string, string>,
-    source_type: 'crm_template' as 'crm_template' | 'customer_drafted',
+    source_type: 'customer_drafted' as 'crm_template' | 'customer_drafted',
   })
   // 当前选中的模板，以及**它要求补充哪几项**（字段名直接从模板正文解析）。
   // 界面上只让用户填值，不再让他自己写 `名称=内容`（见 parseExtraFields）。
   const selectedTemplate = (templatesQuery.data ?? []).find(
     (t) => t.id === generateForm.template_id,
   )
-  const extraFieldNames = selectedTemplate ? parseExtraFields(selectedTemplate.body) : []
+  const extraFieldNames = generateForm.source_type === 'crm_template' && selectedTemplate ? parseExtraFields(selectedTemplate.body) : []
   const unfilledExtras = extraFieldNames.filter(
     (name) => !(generateForm.extraValues[name] ?? '').trim(),
   )
@@ -179,7 +186,17 @@ export default function DocumentsPage() {
   const genVersions = genVersionsQuery.data ?? []
   const selectedOrder = genOrders.find((o) => o.id === generateForm.order_id)
   const generateMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
+      if (!generateForm.customer_id) throw new Error('请选择合同所属客户')
+      let sourceId = originalFileId
+      if (generateForm.source_type === 'customer_drafted') {
+        if (!originalFile) throw new Error('请上传客户提供的合同 Word 或 PDF')
+        if (!sourceId) {
+          const row = await uploadFile(originalFile)
+          sourceId = row.id
+          setOriginalFileId(row.id)
+        }
+      } else if (!generateForm.template_id) throw new Error('请选择合同模板')
       // 只提交**当前模板真正要求**的那几项：中途换过模板时，旧模板的字段值还留在
       // state 里，但新模板里没有它 —— 一并提交出去只会变成没人看的杂项。
       // 空值不提交（后端对"没填"与"填了空"的处理一样，都会登记成缺项）。
@@ -189,7 +206,9 @@ export default function DocumentsPage() {
         if (value) extra_fields[name] = value
       }
       return generateContractDocument({
-        template_id: generateForm.template_id!,
+        template_id: generateForm.source_type === 'customer_drafted' ? null : generateForm.template_id!,
+        original_file_id: generateForm.source_type === 'customer_drafted' ? sourceId : null,
+        title: contractTitle.trim() || undefined,
         customer_id: generateForm.customer_id!,
         order_id: generateForm.order_id ?? null,
         quote_id: generateForm.quote_id ?? null,
@@ -212,7 +231,7 @@ export default function DocumentsPage() {
             (missing.length > 3 ? ` 等 ${missing.length} 处` : ''),
         )
       } else {
-        Toast.success(`草稿已生成：${doc.doc_no}`)
+        Toast.success(`合同已保存：${doc.doc_no}`)
       }
       setGenerateVisible(false)
       setGenerateParent(null)
@@ -221,23 +240,6 @@ export default function DocumentsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
-  const dingtalkMutation = useMutation({
-    mutationFn: (docId: number) => startContractDingTalkApproval(docId),
-    // **按服务端给的结果分支，不再一律报成功**（2026-10-16 修）：
-    // 驳回/撤回/已通过/结果未明这几种状态下再点一次，"提交钉钉签署"其实
-    // 一个请求都不会发出去（后端原样返回旧行），而这里原先固定弹绿色的
-    // "已发起钉钉合同签署申请"。措辞与颜色都由后端的 result.level 决定。
-    onSuccess: (row) => {
-      const result = (row as { result?: { level?: unknown; message?: unknown } }).result
-      const level = typeof result?.level === 'string' ? result.level : 'success'
-      const message = typeof result?.message === 'string' ? result.message : ''
-      if (level === 'success') Toast.success(message || '已发起钉钉合同签署申请')
-      else if (level === 'warning') Toast.warning(message || '本次没有发起新的钉钉审批')
-      else Toast.error(message || '本次没有发起钉钉审批')
-      refresh()
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
   const withdrawDingtalkMutation = useMutation({
     mutationFn: (docId: number) => withdrawContractDingTalkApproval(docId),
     onSuccess: () => {
@@ -249,6 +251,9 @@ export default function DocumentsPage() {
 
   const openGenerateModal = (parent: ContractDocument | null) => {
     setGenerateParent(parent)
+    setOriginalFile(null)
+    setOriginalFileId(null)
+    setContractTitle('')
     // 每次打开都把上一次的续签选项清掉：勾选状态跟着弹窗走，不该跨次留存
     setSupersedeParent(false)
     // 空白项的值也一起清掉：上一次填的"付款方式"是上一份合同的约定，
@@ -257,7 +262,7 @@ export default function DocumentsPage() {
       ...prev,
       effective_date: '',
       extraValues: {},
-      source_type: 'crm_template',
+      source_type: parent ? 'crm_template' : 'customer_drafted',
     }))
     // 每次打开换一个新键：这一次生成对应这一张弹窗，重试才认得出是同一件事
     setGenerateRequestKey(
@@ -340,6 +345,16 @@ export default function DocumentsPage() {
   // 单独拿它当"看签署原件"的入口也是这个道理：只给一个「下载」，
   // 用户会以为拿到的是签回来的那一份，实际是我们自己生成的稿子，事后对账就会扯皮。
   const [detailTarget, setDetailTarget] = useState<ContractDocument | null>(null)
+  const [searchParams] = useSearchParams()
+  const requestedContract = searchParams.get('contract')
+  useEffect(() => {
+    if (!requestedContract || !/^\d+$/.test(requestedContract)) return
+    let active = true
+    getContractDocument(Number(requestedContract)).then((doc) => {
+      if (active) setDetailTarget(doc)
+    }).catch((error: Error) => { if (active) Toast.error(error.message) })
+    return () => { active = false }
+  }, [requestedContract])
   // 认领弹窗（"结果待人工核对"时的三个出口之一）
   const [adoptTarget, setAdoptTarget] = useState<OaApprovalInstance | null>(null)
   const [adoptKey, setAdoptKey] = useState<string | null>(null)
@@ -415,13 +430,12 @@ export default function DocumentsPage() {
         <SectionCard>
           <div className="toolbar" style={{ marginBottom: 10 }}>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              生成即快照：客户资料之后修改不影响已生成的合同；「下载生成稿」和「看签署原件」
-              是两个入口，下载不等于已签
+              客户合同直接上传原文件；审批在钉钉办理，CRM 同步进度并跟催回签归档
             </span>
             <div style={{ flex: 1 }} />
             {canManage && (
               <Button theme="solid" onClick={() => openGenerateModal(null)}>
-                从模板生成
+                新建合同
               </Button>
             )}
           </div>
@@ -467,7 +481,7 @@ export default function DocumentsPage() {
                   <span style={{ display: 'inline-flex', gap: 12, flexWrap: 'wrap' }}>
                     {/* 走共用封装：原件丢失 / 没权限 / 网络失败都要把话说出来，
                         不能 `void` 掉一个会失败的 Promise（那样点了没反应） */}
-                    <a onClick={() => void downloadContractDoc(record)}>下载生成稿</a>
+                    <a onClick={() => void downloadContractDoc(record)}>{record.original_file_id ? '下载客户原稿' : '下载生成稿'}</a>
                     {/* 详情：抬头快照、依据、关系链、签署原件都收在这里。
                         签署原件**光看状态看不出来**，必须点进来才知道拿到的到底是哪一份。 */}
                     <a onClick={() => setDetailTarget(record)}>详情</a>
@@ -491,8 +505,8 @@ export default function DocumentsPage() {
                           </a>
                         </>
                       ) : (
-                        <a onClick={() => dingtalkMutation.mutate(record.id)} style={{ opacity: dingtalkMutation.isPending ? 0.6 : 1 }}>
-                          提交钉钉签署
+                        <a onClick={() => setApprovalTarget(record)}>
+                          钉钉合同审批
                         </a>
                       )
                     )}
@@ -558,7 +572,7 @@ export default function DocumentsPage() {
         <SectionCard>
           <div className="toolbar" style={{ marginBottom: 10 }}>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              占位符：{'{{customer.name}}'}、{'{{order.order_no}}'}、{'{{today}}'}、{'{{extra.自定义项}}'}；改模板=新增版本，旧版本不删
+              生成合同时自动填入客户、订单等信息；修改模板会保存为新版本，历史版本保留
             </span>
             <div style={{ flex: 1 }} />
             {canSet && (
@@ -581,7 +595,7 @@ export default function DocumentsPage() {
               {
                 title: '正文摘要',
                 render: (_: unknown, record: ContractTemplate) =>
-                  record.body.length > 60 ? `${record.body.slice(0, 60)}…` : record.body,
+                  displayTemplate(record.body).length > 60 ? `${displayTemplate(record.body).slice(0, 60)}…` : displayTemplate(record.body),
               },
             ]}
             scroll={{ x: 'max(100%, 800px)' }}
@@ -622,7 +636,20 @@ export default function DocumentsPage() {
             <Input value={templateForm.name} onChange={(v) => setTemplateForm({ ...templateForm, name: v })} />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>正文（用 {'{{}}'} 占位符）</div>
+            <div style={{ marginBottom: 4 }}>合同正文</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {Object.values(TEMPLATE_FIELDS).map((label) => (
+                <Button key={label} size="small" onClick={() => setTemplateForm({
+                  ...templateForm, body: `${templateForm.body}【${label}】`,
+                })}>{label}</Button>
+              ))}
+              <Button size="small" onClick={() => setTemplateForm({
+                ...templateForm, body: `${templateForm.body}【待填写：自定义项】`,
+              })}>新增待填写项</Button>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 6 }}>
+              点击上方字段添加到正文末尾，可剪切到需要的位置。待填写项可直接修改中文名称。
+            </div>
             <TextArea
               rows={8}
               value={templateForm.body}
@@ -633,7 +660,7 @@ export default function DocumentsPage() {
                 否则要等生成合同时正文里留着一串 {{}} 才看得出来。 */}
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
               业务员生成时要补充：
-              {parseExtraFields(templateForm.body).join('、') ||
+              {parseExtraFields(encodeTemplate(templateForm.body)).join('、') ||
                 '（这个模板没有空项，业务员直接生成即可）'}
             </div>
           </div>
@@ -641,15 +668,17 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
-        title={generateParent ? `补充/续签：基于 ${generateParent.doc_no}` : '从模板生成合同'}
+        title={generateParent ? `补充/续签：基于 ${generateParent.doc_no}` : '新建合同'}
         visible={generateVisible}
         onCancel={() => {
+          if (generateMutation.isPending) { Toast.warning('合同正在保存，请稍候'); return }
           setGenerateVisible(false)
           setGenerateParent(null)
         }}
         onOk={() => generateMutation.mutate()}
         confirmLoading={generateMutation.isPending}
-        okText="生成草稿"
+        maskClosable={!generateMutation.isPending}
+        okText="保存合同"
         cancelText="取消"
         width={560}
       >
@@ -659,7 +688,7 @@ export default function DocumentsPage() {
               这份新文档会挂在 <b>{generateParent.doc_no}</b> 下面（原合同不动，历史版本保留）。
             </div>
           )}
-          <div>
+          {generateForm.source_type === 'crm_template' && <div>
             <div style={{ marginBottom: 4 }}>模板（当前版）</div>
             <Select
               style={{ width: '100%' }}
@@ -670,7 +699,7 @@ export default function DocumentsPage() {
                 .filter((t) => t.is_current && t.enabled)
                 .map((t) => ({ value: t.id, label: `${t.doc_type_label} · ${t.name} v${t.version}` }))}
             />
-          </div>
+          </div>}
           <div>
             <div style={{ marginBottom: 4 }}>客户</div>
             <Select
@@ -710,9 +739,22 @@ export default function DocumentsPage() {
                 })
               }
             >
-              客户起草合同（提交钉钉签署申请，并生成“上传回签件”待办）
+              使用客户提供的合同原文件（取消勾选可从模板生成）
             </Checkbox>
           </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>合同名称</div>
+            <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
+          </div>
+          {generateForm.source_type === 'customer_drafted' && <div>
+            <div style={{ marginBottom: 4 }}>客户合同原文件（Word / PDF）</div>
+            <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => {
+              const file = e.target.files?.[0] || null
+              setOriginalFile(file); setOriginalFileId(null)
+              if (file && !contractTitle) setContractTitle(file.name.replace(/\.[^.]+$/, ''))
+            }} />
+            {originalFile && <div>{originalFile.name}</div>}
+          </div>}
           <div>
             <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
             <Select
@@ -1043,6 +1085,7 @@ export default function DocumentsPage() {
                 ))
               )}
             </div>
+            {canManage && detail.status === 'draft' && detail.original_file_id && !detail.order_id && !detail.quote_id && <ContractBasis doc={detail} />}
             {detail.dingtalk_oa && (
               <div>
                 <div style={DETAIL_LABEL}>钉钉合同签署审批</div>
@@ -1053,21 +1096,20 @@ export default function DocumentsPage() {
                       ? '钉钉审批已驳回，请查看钉钉处理意见'
                       : detail.dingtalk_oa.status === 'withdrawn'
                         ? '钉钉审批已撤回'
-                        : `钉钉审批：${detail.dingtalk_oa.status ?? '处理中'}`}
+                        : '钉钉审批处理中或需核对，请刷新进度'}
                   {detail.dingtalk_oa.synced_at
                     ? ` · 最近同步 ${new Date(detail.dingtalk_oa.synced_at).toLocaleString('zh-CN')}`
                     : ''}
                 </div>
-                {detail.dingtalk_oa.result && (
-                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    {Array.isArray((detail.dingtalk_oa.result.payload as { tasks?: unknown[] } | undefined)?.tasks)
-                      ? `节点 ${((detail.dingtalk_oa.result.payload as { tasks: unknown[] }).tasks).length} 个`
-                      : null}
-                    {Array.isArray((detail.dingtalk_oa.result.payload as { operationRecords?: unknown[] } | undefined)?.operationRecords)
-                      ? ` · 操作记录 ${((detail.dingtalk_oa.result.payload as { operationRecords: unknown[] }).operationRecords).length} 条`
-                      : null}
-                  </div>
-                )}
+                {detail.dingtalk_oa.instance_id && canManage && <Button size="small" onClick={async () => {
+                  try {
+                    await api.post(`/contract-documents/${detail.id}/approval-sync`, {})
+                    void queryClient.invalidateQueries({ queryKey: ['contract-detail', detail.id] })
+                    refresh()
+                    Toast.success('审批进度已同步')
+                  } catch (e) { Toast.error(e instanceof Error ? e.message : '同步失败') }
+                }}>刷新钉钉进度</Button>}
+                {detail.dingtalk_oa.result && <ApprovalHistory result={detail.dingtalk_oa.result} />}
                 {/* 「结果待人工核对」的三个出口。按钮由服务端给的 allowed_actions
                     决定：一条超时的发起可能已经在钉钉建了单，自动重发会多出一张，
                     所以只能人来核对后选认领 / 重发 / 作废。合同这条链原先一个
@@ -1089,10 +1131,10 @@ export default function DocumentsPage() {
             )}
             {Object.keys(detail.missing_fields ?? {}).length > 0 && (
               <div>
-                <div style={DETAIL_LABEL}>生成时没填上的地方（正文里留着占位符）</div>
+                <div style={DETAIL_LABEL}>生成时尚未填入的信息</div>
                 <div style={{ fontSize: 12, color: 'var(--crm-warning, #d68000)' }}>
                   {Object.entries(detail.missing_fields)
-                    .map(([token, reason]) => `${token}（${reason}）`)
+                    .map(([token, reason]) => `${templateFieldLabel(token)}（${reason}）`)
                     .join('；')}
                 </div>
               </div>
@@ -1100,6 +1142,7 @@ export default function DocumentsPage() {
           </div>
         )}
       </Modal>
+      <CustomerApproval doc={approvalTarget} onClose={() => setApprovalTarget(null)} />
       <AdoptOaInstanceModal
         target={adoptTarget}
         requestKey={adoptKey}
