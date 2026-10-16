@@ -821,7 +821,7 @@ export default function SampleListPage() {
           </div>
 
           <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>样品明细</div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>打样产品（对应申请单上的「产品名称」与「打样数量」）</div>
             {form.items.map((item, index) => (
               <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                 <Select
@@ -838,7 +838,10 @@ export default function SampleListPage() {
                     setForm({ ...form, items })
                   }}
                   optionList={[
-                    { value: 'sku', label: '现货 SKU' },
+                    // 用业务员自己的词（2026-10-16 主人：「sku 应该就是产品名称，
+                    // 转换一下应该就可以用」）。他们那张《打样申请单》上这一格叫
+                    // 「产品名称」—— 所以下拉里就写「产品名称」，别让他去理解 SKU 是什么。
+                    { value: 'sku', label: '产品名称' },
                     { value: 'custom', label: '定制需求' },
                   ]}
                 />
@@ -858,7 +861,7 @@ export default function SampleListPage() {
                 ) : (
                   <Select
                     style={{ flex: 1 }}
-                    placeholder="选择 SKU"
+                    placeholder="按产品名称选（下拉里有名称和规格）"
                     filter={optionMatcher}
                     value={item.sku_id}
                     onChange={(value) => {
@@ -871,6 +874,7 @@ export default function SampleListPage() {
                 )}
                 <Input
                   style={{ width: 90 }}
+                  placeholder="打样数量"
                   value={item.quantity}
                   onChange={(value) => {
                     const items = [...form.items]
