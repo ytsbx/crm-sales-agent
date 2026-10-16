@@ -237,3 +237,13 @@ def test_association_rejects_empty_or_malformed_attachments(value):
 def test_pasted_approval_link_is_parsed_without_executing_it():
     assert flow.LinkInput(instance_id='https://applink.dingtalk.com/approval?procInstId=instance-123').instance_id=='instance-123'
     with pytest.raises(ValueError):flow.LinkInput(instance_id='https://example.com/unknown')
+
+
+@pytest.mark.anyio
+async def test_withdraw_timeout_explains_uncertainty_and_does_not_close_contract(monkeypatch):
+    from app.modules.dingtalk.client import DingTalkUnknownOutcome
+    row,client,session=setup_withdraw(monkeypatch)
+    client.terminate_process_instance.side_effect=DingTalkUnknownOutcome('timeout')
+    with pytest.raises(AppError,match='本次未作废合同'):
+        await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
+    flow.store_snapshot.assert_not_awaited()
