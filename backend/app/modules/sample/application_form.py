@@ -37,21 +37,27 @@
 
 ## 填写位图（从实物文件逐格读出，别凭印象改）
 
-申请单是 A1:M21，标签在合并块里、**空位是标签右边的格**：
+判据：**值的格 = 标签所在合并块右边第一格**。用合并块边界判，不要"目测第几列" ——
+这一处曾经整体右移一格（交样时间写到 K2、打样人写到 K3），
+结果主持人打开生成的表看到那几格是**空的**，值跑进了右边的空白列：
 
-    C2 打样类型        G2 产品名称        I2 打样数量        K2 交样时间
-    C3 打样费用        G3 申请人          I3 打样部门        K3 打样人
+    C2 打样类型        E2 产品名称        G2 打样数量        I2 交样时间
+    C3 打样费用        E3 申请人          G3 打样部门        I3 打样人
     C4 打样目的（勾选）                   G4 紧急程度（勾选）
     C5 样品情况（勾选）
     B8 主要材质和规格   B9 产品尺寸   B10 产品印刷
     B11 主要辅料       B12 包装要求  B13 做法要求
+    A6 那一块（A6:I6）「产品图片」：图片**浮在上面**，最多 4 张
 
 **刻意留空的格**（不是漏了，是"不该由 CRM 填"）：
 
     B14/B15 采购部门回复内容（采购接收人）—— 批注写着"此处为采购填写"
     B16     打样部回复内容
-    C17/E17/G17 打样人 / 完成时间 / 样品确认人 —— 打样部填
-    A6 区的产品图片 —— 附件形式，CRM 的文件不往 Excel 里塞
+    C17/E17/G17 打样部的打样人 / 完成时间 / 样品确认人 —— 表上另有这三格，留给打样部
+
+> 注意别和上面第 3 行的「打样人」搞混：那两个是**不同的格** ——
+> 第 3 行 H3「打样人」在**申请抬头**里（与申请人/打样部门并列，CRM 会填申请人兜底），
+> 第 17 行那个在**打样部回复内容**区里（谁实际动手打的样，打样部在钉钉里填）。
 
 这四类都是**生产部在钉钉里填**的；生产部不在 CRM 里（主人 2026-10-15 口径），
 CRM 填了反而是假的。
@@ -250,16 +256,24 @@ def render_application_form(sample: Any, items: list[Any], *, applicant_name: st
         _put_text(sheet, ref=ref, value=text)
 
     # ---- 第 2 行：打样类型 / 产品名称 / 打样数量 / 交样时间 ----
-    put("C2", getattr(sample, "sample_type", None))
-    put("G2", _items_product_name(sample, items))
-    put("I2", _total_quantity(items))
-    put("K2", getattr(sample, "target_completion_date", None))
+    #
+    # ⚠️ **值的格 = 标签合并块右边第一格**（2026-10-16 修正一处系统性错位）。
+    # 判据用**合并块边界**，不要用"目测第几列"——模板上 "A2:B2" 是"打样类型"这个
+    # 标签块，值要写在它**右边**的 C2。原来这一行我整体右移了一格
+    # （交样时间写到 K2、打样人写到 K3），于是主持人在生成的表上看不到
+    # 「交样时间 / 打样人」—— 那几格是空的，值跑到右边的空白列里去了。
+    put("C2", getattr(sample, "sample_type", None))       # 标签 A2:B2
+    put("E2", _items_product_name(sample, items))          # 标签 D2
+    put("G2", _total_quantity(items))                      # 标签 F2
+    put("I2", getattr(sample, "target_completion_date", None))  # 标签 H2「交样时间」
 
     # ---- 第 3 行：打样费用 / 申请人 / 打样部门 / 打样人 ----
-    put("C3", getattr(sample, "sample_fee", None))
-    put("G3", applicant_name)
-    put("I3", department_name)
-    put("K3", applicant_name)
+    put("C3", getattr(sample, "sample_fee", None))         # 标签 A3:B3
+    put("E3", applicant_name)                              # 标签 D3「申请人」
+    put("G3", department_name)                             # 标签 F3「打样部门」
+    # 「打样人」= 谁动手打的样。业务员建单时还不知道（那是生产部的人），
+    # 所以先填**申请人**兜底 —— 生产部在钉钉里会改成实际打样的人。
+    put("I3", applicant_name)                              # 标签 H3「打样人」
 
     # ---- 第 4/5 行：三个勾选项 ----
     put("C4", getattr(sample, "sample_purpose", None))

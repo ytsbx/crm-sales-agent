@@ -115,14 +115,14 @@ def _types(data: bytes) -> dict[str, str]:
 @pytest.mark.parametrize(
     "ref,expect",
     [
-        ("C2", "销售客户打样"),          # 打样类型（不是 B2！B2 是合并块的标签）
-        ("G2", "出口纸箱 400×300×250"),  # 产品名称
-        ("I2", "200"),                   # 打样数量 = 明细合计 120+80
-        ("K2", "2026-11-05"),            # 交样时间
+        ("C2", "销售客户打样"),          # 打样类型（标签块 A2:B2 右边第一格）
+        ("E2", "出口纸箱 400×300×250"),  # 产品名称（标签 D2）
+        ("G2", "200"),                   # 打样数量 = 明细合计 120+80（标签 F2）
+        ("I2", "2026-11-05"),            # 交样时间（标签 H2）
         ("C3", "800"),                   # 打样费用
-        ("G3", "张三"),                  # 申请人
-        ("I3", "销售一部"),              # 打样部门
-        ("K3", "张三"),                  # 打样人
+        ("E3", "张三"),                 # 申请人（标签 D3）
+        ("G3", "销售一部"),             # 打样部门（标签 F3）
+        ("I3", "张三"),                 # 打样人（标签 H3）
         ("C4", "报价核算样"),            # 打样目的
         ("G4", "急"),                    # 紧急程度
         ("C5", "客户首次要求"),          # 样品情况
@@ -156,12 +156,12 @@ def test_requirement_cells_keep_the_template_label(ref, keyword):
 def test_multi_item_names_are_joined_not_silently_truncated():
     """一单多样时申请单只有一格：要**都列出来**，不能只取第一条。"""
     data = render_application_form(_sample(product_name=None), _items())
-    assert _cells(data)["G2"] == "出口纸箱 A、出口纸箱 B"
+    assert _cells(data)["E2"] == "出口纸箱 A、出口纸箱 B"
 
 
 def test_explicit_product_name_wins():
     data = render_application_form(_sample(product_name="整单名称"), _items())
-    assert _cells(data)["G2"] == "整单名称"
+    assert _cells(data)["E2"] == "整单名称"
 
 
 # ------------------------------------------------- 生产部/采购的格必须留空
@@ -203,7 +203,7 @@ def test_user_text_never_becomes_a_formula(evil):
     """用户文本进 Excel 必须当**文本**：`=` 开头若被当公式，Excel 打开就求值。"""
     data = render_application_form(_sample(product_name=evil, material_spec=evil), [])
     cells, types = _cells(data), _types(data)
-    assert cells["G2"] == evil and types["G2"] != "f"
+    assert cells["E2"] == evil and types["E2"] != "f"
     assert types["B8"] != "f"
 
 
