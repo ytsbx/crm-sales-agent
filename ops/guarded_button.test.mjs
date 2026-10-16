@@ -186,3 +186,69 @@ test('禁用时点击落到外层容器上（按钮自己不派发 click，只�
   const wrapper = html.slice(0, html.indexOf('>'))
   assert.match(wrapper, /blocked-hint-click/, '外层容器不见了，点击无处可接')
 })
+
+test('只能有一个根节点 —— 放进横向 flex 行时不许变成"两个格子"', () => {
+  // ⚠️ 这条是 2026-10-16 主人截图「没对齐啊」抓出来的：
+  // 原来它返回 `<>…<span>按钮</span>…<BlockedHint/></>` —— **两个兄弟节点**。
+  // 放进 `display:flex` 的横向行里，这两个节点会各占一个 flex 格子，
+  // 于是提示块被当成"第三列"摆到右边，整行就散了。
+  //
+  // 判据：无论禁用与否，渲染结果**只有一个顶层元素** ——
+  // 数一数顶层开标签（缩进为 0 的那些）必须是 1 个。
+  for (const props of [
+    { disabled: true, blockedReasons: ['还没选客户'], action: '保存' },
+    { disabled: true },
+    { disabled: false, blockedReasons: ['还没选客户'], action: '保存' },
+  ]) {
+    const html = render(props)
+    const topLevel = html.match(/^<[a-z]+/g) ?? []
+    assert.equal(
+      topLevel.length,
+      1,
+      `顶层元素应当只有 1 个，实际 ${topLevel.length} 个 → 放进 flex 行里会错位：${html.slice(0, 120)}`,
+    )
+  }
+})
+
+test('按钮与提示在**同一个容器**里（竖着排），不是兄弟节点', () => {
+  // 同一个根因的另一面：提示块必须在根容器**内部**，
+  // 这样它才会跟着按钮一起当"一个元素"参与布局。
+  const html = render({ disabled: true, blockedReasons: ['还没选客户'], action: '保存' })
+  const rootStart = html.indexOf('<span')
+  assert.ok(rootStart === 0, '根节点应当是那个容器 span')
+  const rootEnd = html.lastIndexOf('</span>')
+  const hintAt = html.indexOf('还没选客户')
+  assert.ok(hintAt > 0 && hintAt < rootEnd, '提示块必须落在根容器内部')
+})
+
+test('提示用**紧凑样式**（不再铺一大块底色）', () => {
+  // 主人 2026-10-16 截图（打样「产品名称 + 数量 + 添加」那一行）：
+  // 「红色这一块占着那么一大块空白，不美观」。
+  // 默认的块状样式（警示底色 + 内边距 + 项目符号）是给弹窗底部那种宽松地方用的；
+  // 这个件多数用在**表单行/工具栏**，必须走紧凑版。
+  const html = render({ disabled: true, blockedReasons: ['还没选客户'], action: '保存' })
+  assert.match(html, /blocked-hint-compact/, '没走紧凑样式 —— 会铺一大块底色')
+  assert.doesNotMatch(html, /class="blocked-hint"/, '混进了块状样式')
+  assert.doesNotMatch(html, /<ul/, '紧凑版不该有项目符号列表')
+  // 「看得见」这条不打折：原因仍然常驻
+  assert.match(html, /还没选客户/)
+  assert.match(html, /还不能保存/)
+})
+
+test('hintBelow：提示移到按钮那一列**外面**（横排行里不再挤成一列）', () => {
+  // 主人 2026-10-16：「这段话可以移到添加旁边去，不然左边一大段空白不好看」。
+  // 在横排表单行里，这个件只占**一列** —— 提示挤在那一列宽度内，右边控件下面
+  // 全空着。`hintBelow` 把提示挪到整行之后，宽度够也不挤。
+  const html = render({ disabled: true, blockedReasons: ['还没选客户'], action: '添加明细', hintBelow: true })
+  const buttonClose = html.indexOf('</span>')
+  const hintAt = html.indexOf('blocked-hint-compact')
+  assert.ok(buttonClose > 0, '按钮容器不见了')
+  assert.ok(hintAt > buttonClose, '提示应当落在按钮容器**之后**（那一列外面）')
+
+  // 不传 hintBelow 时保持原样（提示在容器**内部**，跟着按钮走）
+  const inside = render({ disabled: true, blockedReasons: ['还没选客户'], action: '添加明细' })
+  assert.ok(
+    inside.indexOf('blocked-hint-compact') < inside.lastIndexOf('</span>'),
+    '不传 hintBelow 时提示应当仍在容器内部',
+  )
+})

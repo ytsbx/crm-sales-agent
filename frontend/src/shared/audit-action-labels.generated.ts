@@ -138,6 +138,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'sku_master_replay': '重放主数据',
   'sku_master_set_authority': '设定主数据权威来源',
   'sku_master_source_stopped': '主数据来源停用',
+  'start_contract_oa': '发起合同审批',
   'start_oa_approval': '发起钉钉审批',
   'submit': '提交',
   'submit_approval': '提交审批',
@@ -170,4 +171,6 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'win': '标记成交',
   'withdraw': '撤回',
   'withdraw_approval': '撤回审批',
+  'withdraw_contract_oa': '撤回合同审批',
+  'withdraw_oa_instance': '撤回钉钉审批',
 }

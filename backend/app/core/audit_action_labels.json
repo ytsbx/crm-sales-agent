@@ -128,6 +128,7 @@
   "sku_master_replay": "重放主数据",
   "sku_master_set_authority": "设定主数据权威来源",
   "sku_master_source_stopped": "主数据来源停用",
+  "start_contract_oa": "发起合同审批",
   "start_oa_approval": "发起钉钉审批",
   "submit": "提交",
   "submit_approval": "提交审批",
@@ -150,6 +151,7 @@
   "wecom_bind_customer": "企微联系人关联客户",
   "wecom_create_customer": "企微建客户",
   "wecom_ignore_contact": "企微忽略该联系人",
+  "wecom_import_customers": "企微客户批量建档",
   "wecom_sync_departments": "企微同步部门",
   "wecom_sync_external_contacts": "企微同步外部联系人",
   "wecom_sync_follow_relations": "企微同步跟进关系",
@@ -159,5 +161,6 @@
   "win": "标记成交",
   "withdraw": "撤回",
   "withdraw_approval": "撤回审批",
-  "wecom_import_customers": "企微客户批量建档"
+  "withdraw_contract_oa": "撤回合同审批",
+  "withdraw_oa_instance": "撤回钉钉审批"
 }

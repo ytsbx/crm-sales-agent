@@ -1482,6 +1482,17 @@ async def _add_item(
             quantity=quantity,
             remark=remark,
         )
+    elif inquiry_id is None:
+        # 只写了产品名称：产品库/定制需求里都还没有它（往往是新品，打完样才建档）。
+        # 不关联任何 SKU / 需求 —— 申请表上的「产品名称」就是这一格。
+        item = SampleItem(
+            sample_request_id=sample_id,
+            sku_id=None,
+            inquiry_id=None,
+            item_name=named,
+            quantity=quantity,
+            remark=remark,
+        )
     else:
         # 定制需求也要过数据范围：此前只 session.get，能引别人的需求编号
         from app.modules.inquiry import service as inquiry_service

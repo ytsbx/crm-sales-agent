@@ -34,7 +34,9 @@ def _sample(**over):
     base = dict(
         sample_type="销售客户打样",
         product_name="出口纸箱 400×300×250",
-        target_completion_date=date(2026, 11, 5),
+        target_completion_date=date(2026, 11, 5),   # 钉钉的「要求完成日期」
+        deliver_date=date(2026, 11, 20),            # 申请表的「交样时间」（**另一个日期**）
+        sample_maker="李师傅",                       # 申请表的「打样人」
         sample_fee=Decimal("800.00"),
         sample_purpose="报价核算样",
         urgency="急",
@@ -115,14 +117,14 @@ def _types(data: bytes) -> dict[str, str]:
 @pytest.mark.parametrize(
     "ref,expect",
     [
-        ("C2", "销售客户打样"),          # 打样类型（不是 B2！B2 是合并块的标签）
-        ("G2", "出口纸箱 400×300×250"),  # 产品名称
-        ("I2", "200"),                   # 打样数量 = 明细合计 120+80
-        ("K2", "2026-11-05"),            # 交样时间
+        ("C2", "销售客户打样"),          # 打样类型（标签块 A2:B2 右边第一格）
+        ("E2", "出口纸箱 400×300×250"),  # 产品名称（标签 D2）
+        ("G2", "200"),                   # 打样数量 = 明细合计 120+80（标签 F2）
+        ("I2", "2026-11-20"),            # 交样时间（标签 H2）取 deliver_date，不是要求完成日
         ("C3", "800"),                   # 打样费用
-        ("G3", "张三"),                  # 申请人
-        ("I3", "销售一部"),              # 打样部门
-        ("K3", "张三"),                  # 打样人
+        ("E3", "张三"),                 # 申请人（标签 D3）
+        ("G3", "销售一部"),             # 打样部门（标签 F3）
+        ("I3", "李师傅"),               # 打样人（标签 H3）取 sample_maker
         ("C4", "报价核算样"),            # 打样目的
         ("G4", "急"),                    # 紧急程度
         ("C5", "客户首次要求"),          # 样品情况
@@ -130,7 +132,7 @@ def _types(data: bytes) -> dict[str, str]:
 )
 def test_values_land_in_the_right_cells(ref, expect):
     """填错一格的后果是业务员在钉钉里看到错位的单子，所以逐格钉住。"""
-    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部")
+    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部", sample_maker="李师傅")
     assert _cells(data)[ref] == expect
 
 
@@ -156,12 +158,12 @@ def test_requirement_cells_keep_the_template_label(ref, keyword):
 def test_multi_item_names_are_joined_not_silently_truncated():
     """一单多样时申请单只有一格：要**都列出来**，不能只取第一条。"""
     data = render_application_form(_sample(product_name=None), _items())
-    assert _cells(data)["G2"] == "出口纸箱 A、出口纸箱 B"
+    assert _cells(data)["E2"] == "出口纸箱 A、出口纸箱 B"
 
 
 def test_explicit_product_name_wins():
     data = render_application_form(_sample(product_name="整单名称"), _items())
-    assert _cells(data)["G2"] == "整单名称"
+    assert _cells(data)["E2"] == "整单名称"
 
 
 # ------------------------------------------------- 生产部/采购的格必须留空
@@ -173,7 +175,7 @@ def test_production_and_purchase_cells_keep_only_template_labels(ref):
 
     这几格模板里本来就有标签（"采购接收人："等），所以判据是"只有标签、没被追加内容"。
     """
-    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部")
+    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部", sample_maker="李师傅")
     assert _cells(data)[ref] in {"采购接收人：", "打样人：", "完成时间：", "样品确认人："}
 
 
@@ -203,7 +205,7 @@ def test_user_text_never_becomes_a_formula(evil):
     """用户文本进 Excel 必须当**文本**：`=` 开头若被当公式，Excel 打开就求值。"""
     data = render_application_form(_sample(product_name=evil, material_spec=evil), [])
     cells, types = _cells(data), _types(data)
-    assert cells["G2"] == evil and types["G2"] != "f"
+    assert cells["E2"] == evil and types["E2"] != "f"
     assert types["B8"] != "f"
 
 
@@ -275,3 +277,139 @@ def test_schema_rejects_negative_hours():
     with pytest.raises(ValidationError):
         SampleUpdate(estimated_hours="-1")
     SampleUpdate(estimated_hours="0")  # 0 小时合法（工时可以很小）
+
+# ------------------------------------------- 申请表上那三个勾选项（C4/G4/C5）
+
+
+@pytest.mark.parametrize(
+    "ref,field,value",
+    [
+        ("C4", "sample_purpose", "报价核算样"),
+        ("G4", "urgency", "急"),
+        ("C5", "sample_situation", "客户首次要求"),
+    ],
+)
+def test_choice_fields_land_in_their_cells(ref, field, value):
+    """打样目的 / 紧急程度 / 样品情况 → 申请表的 C4 / G4 / C5。
+
+    这三项**不在钉钉模板的 13 个控件里**（2026-10-16 拉模板核对过），只能由 CRM 带过去。
+    它们曾经"哪里都填不了"（主人：「还有打样目的，紧急程度…为什么不让我填」）——
+    详情页能填但钉钉弹窗是建完单立刻弹出来的，那时还没填过。现在弹窗里能填了，
+    这条守住"填了真的会出现在表上"。
+    """
+    sample = _sample(**{field: value})
+    assert _cells(render_application_form(sample, []))[ref] == value
+
+
+@pytest.mark.parametrize("ref", ["C4", "G4", "C5"])
+def test_choice_cells_keep_template_text_when_not_filled(ref):
+    """没填时**保留模板原有的勾选文字**，不要拿坏值去凑。
+
+    申请表原件这三格印着「¨客审确认样 ¨报价核算样 …」这样的勾选项 ——
+    没填就让它保持原样（打样师傅/主管看得懂），而不是写个空白或占位符。
+    """
+    sample = _sample(sample_purpose=None, urgency=None, sample_situation=None)
+    text = _cells(render_application_form(sample, []))[ref]
+    assert ("¨" in text) or ("□" in text)
+
+# ------------------------------------------- 产品图片（浮在 A6:I6 那一块上）
+
+
+def _make_png(path, size=(400, 300), color=(200, 40, 40)):
+    from PIL import Image as PILImage
+
+    PILImage.new("RGB", size, color).save(path)
+    return path
+
+
+def test_product_images_are_embedded_and_scaled(tmp_path):
+    """产品图片**真的进得去**（主人 2026-10-16：「产品图片不是可以放4张吗」）。
+
+    Excel 的单元格装不了图片，图片是**独立的绘图对象**、锚在格子上。所以这条测的是：
+    工作簿里多出图片对象、**尺寸被缩到限值内**、且锚在第 6 行（A6:I6 那一块）。
+
+    ⚠️ 缩放必须是**真的重采样**：实测 openpyxl 保存时会从底图重新算尺寸，
+    只赋 `img.width` 的值会被丢掉（存回来还是 400x300，图就盖住了下面的行）。
+    """
+    import io
+
+    from openpyxl import load_workbook
+
+    paths = [_make_png(tmp_path / f"p{i}.png", size) for i, size in enumerate(
+        [(400, 300), (300, 400), (500, 200), (250, 250)], start=1
+    )]
+    data = render_application_form(_sample(), _items(), product_images=paths)
+    workbook = load_workbook(io.BytesIO(data))
+    sheet = workbook["打样申请单"]
+    on_row6 = [i for i in sheet._images if (i.anchor._from.row + 1) == 6]
+    assert len(on_row6) == 4
+    for image in on_row6:
+        assert image.width <= 180 and image.height <= 140, (image.width, image.height)
+    # 第 6 行被撑高（否则图会盖住下面的「打样具体要求」那一行）
+    assert sheet.row_dimensions[6].height and sheet.row_dimensions[6].height > 40
+    # 下面那一行必须还在（被"推下去"而不是被盖住）
+    assert sheet["A8"].value == "打样具体要求"
+
+
+def test_no_images_keeps_the_template_untouched(tmp_path):
+    """没有图片时不撑行高、不加图 —— 不能因为新功能把正常的单子也改了。"""
+    import io
+
+    from openpyxl import load_workbook
+
+    data = render_application_form(_sample(), _items())
+    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
+    assert [i for i in sheet._images if (i.anchor._from.row + 1) == 6] == []
+    assert sheet.row_dimensions[6].height in (None, 18.75)
+
+
+def test_broken_image_is_skipped_not_fatal(tmp_path):
+    """一张坏图**不能毁掉整份申请表** —— 那会让"发起审批"这个动作整个卡住。
+
+    这里混一张不存在的文件与一张真图：真图照放，坏图跳过，函数不抛。
+    """
+    import io
+
+    from openpyxl import load_workbook
+
+    good = _make_png(tmp_path / "ok.png")
+    missing = tmp_path / "nope.png"  # 不存在
+    data = render_application_form(_sample(), _items(), product_images=[missing, good])
+    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
+    assert len([i for i in sheet._images if (i.anchor._from.row + 1) == 6]) == 1
+
+
+def test_at_most_four_images(tmp_path):
+    """最多 4 张（主人：「产品图片不是可以放4张吗」）—— 多传的忽略，不报错。"""
+    import io
+
+    from openpyxl import load_workbook
+
+    paths = [_make_png(tmp_path / f"q{i}.png") for i in range(6)]
+    data = render_application_form(_sample(), _items(), product_images=paths)
+    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
+    assert len([i for i in sheet._images if (i.anchor._from.row + 1) == 6]) == 4
+
+
+@pytest.mark.parametrize(
+    "filename,mime,expected",
+    [
+        ("照片.jpg", "", True),
+        ("图.PNG", "", True),
+        ("a.bmp", "", True),
+        ("x.pdf", "", False),
+        ("图纸.pdf", "application/pdf", False),
+        ("明细.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", False),
+        ("无扩展名", "image/png", True),
+        ("无扩展名", "", False),
+    ],
+)
+def test_is_image_judgement(filename, mime, expected):
+    """只把**图片**放进产品图片那格；PDF / Excel 不算（它们仍走钉钉附件）。
+
+    两个判据都用（mime 与扩展名），任一命中即算 —— 宁多多试一张，
+    因为生成器里读不出来的图会跳过，不会坏事。
+    """
+    from app.modules.sample.dingtalk import _is_image
+
+    assert _is_image(filename, mime) is expected

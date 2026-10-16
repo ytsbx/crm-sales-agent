@@ -858,6 +858,18 @@ a:not([href]) {
   font-weight: 600;
 }
 
+/* 紧凑模式（打样表单行那种窄地方用，见 BlockedHint.tsx 的 compact 说明）：
+   一行灰字，**不铺底色、不留内边距、不列项目符号** —— 默认那种块状样式放在
+   弹窗底部合适，放进表单行会占掉一大块、把行撑歪（主人 2026-10-16 截图）。
+   「看得见」这条不打折：原因仍然以普通文字常驻在按钮下面。 */
+.blocked-hint-compact {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--crm-text-3);
+  max-width: 260px;
+}
+
 .blocked-hint-list {
   margin: 4px 0 0;
   padding-left: 18px;

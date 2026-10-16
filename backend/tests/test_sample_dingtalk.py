@@ -27,6 +27,15 @@ def setup(monkeypatch):
     monkeypatch.setattr(routes.oa,'create_inquiry_instance',create)
     monkeypatch.setattr(routes.oa,'get_by_business_key',AsyncMock(return_value=None))
     monkeypatch.setattr(routes.oa,'serialize',lambda row:{'status':row.status,'instance_id':row.instance_id})
+    # `save()` / `save_draft()` 要按**控件标签**找「要求完成日期」（那个日期得落进
+    # `target_completion_date` 列 —— Excel 的「交样时间」取的就是它）。这里 stub 掉模板读取：
+    # 本文件用的是假 session，而读设置会走 `session.execute`（连库）。
+    # 返回一个**含该控件**的最小模板 —— 既让"落库"那条路走通，也不碰数据库。
+    monkeypatch.setattr(routes,'template',AsyncMock(return_value=(
+        {'configured':True,'enabled':True,'fields':[
+            {'id':'DDDateField_DUE','label':'要求完成日期','type':'DDDateField',
+             'required':True,'system':False,'options':[],'format':'yyyy-MM-dd'},
+        ]}, None)))
     return sample,session,user,client,create
 
 @pytest.mark.anyio
@@ -170,3 +179,39 @@ async def test_same_numeric_id_cannot_mix_inquiry_and_sample_approvals(monkeypat
         response=await base_routes.list_inquiry_approvals(7,user=Obj(id=1),session=SyncSessionAsAsync(raw))
         assert [r['instance_id'] for r in response['data']]==['inquiry-7']
     engine.dispose()
+
+
+def test_backend_computed_fields_do_not_count_as_snapshot_edits():
+    """守一个**死循环**（主人 2026-10-16：「我没改写啊」）。
+
+    快照里只有**用户填的那批**；而 `申请人员` / `归属部门` / `样品明细明细表`
+    是**每次提交时后端现算**的（钉钉身份、部门、现生成的 Excel 附件），
+    **不在快照里**。前端"重试原申请"把它们一起带回来 ——
+    若按"整个 fields 直接比对"，用户什么都没改却永远被告知"你改写了快照"，
+    而且**永远出不来**（那三项不可能与快照相等）。
+    """
+    from app.modules.sample.dingtalk import snapshot_edit_detail
+
+    snapshot = {'DDSelectField_A': '设计研发内部打样', '_estimated_hours': '1'}
+    incoming = {**snapshot,
+                'InnerContactField_X': '021003563141679555',   # 后端现算
+                'DepartmentField_Y': '1115706176',             # 后端现算
+                'DDAttachment_Z': '[{"fileId":"1"}]'}          # 后端现算（现生成的 Excel）
+    assert snapshot_edit_detail(snapshot, incoming) == '', '后端自己算的字段不该算"改写快照"'
+
+
+def test_real_edits_are_still_reported_with_details():
+    """但**用户真的改了**要填的字段，仍然要认出来，并说清改了哪个、从什么变成什么。"""
+    from app.modules.sample.dingtalk import snapshot_edit_detail
+
+    snapshot = {'DDSelectField_A': '设计研发内部打样'}
+    detail = snapshot_edit_detail(snapshot, {**snapshot, 'DDSelectField_A': '销售客户打样'})
+    assert detail, '真改了却没识别出来 —— 会拿新内容覆盖已发生的审批快照'
+    assert 'DDSelectField_A' in detail and '设计研发内部打样' in detail
+
+
+def test_removing_a_field_counts_as_an_edit():
+    """把已填的字段**清空**也是改写快照（否则会静默丢内容）。"""
+    from app.modules.sample.dingtalk import snapshot_edit_detail
+
+    assert snapshot_edit_detail({'A': 'x'}, {'A': ''}) != ''

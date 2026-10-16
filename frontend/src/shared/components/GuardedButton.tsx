@@ -72,12 +72,21 @@ export interface GuardedButtonProps extends Omit<ButtonProps, 'disabled'> {
    * 与 `BlockedHint` 同一个口径，不传就不写这句头。
    */
   action?: string
+  /**
+   * 把提示块移到**整行下面**（而不是紧跟在按钮那一列里）。
+   *
+   * 用在横排表单行里：`GuardedButton` 只占一列，提示挤在那一列宽度内、
+   * 右边控件下面全空着，看着就是"左边一大段空白"（主人 2026-10-16）。
+   * 传上它就变成"按钮留在行里、灰字落到行下面"，宽度够也不挤。
+   */
+  hintBelow?: boolean
 }
 
 export default function GuardedButton({
   disabled = false,
   blockedReasons,
   action,
+  hintBelow = false,
   children,
   ...buttonProps
 }: GuardedButtonProps) {
@@ -92,30 +101,49 @@ export default function GuardedButton({
   // 与 BlockedHint / 提示条同一套判据：去重后还有没有话说
   const hasReason = distinctReasons(reasons.filter((t) => t.trim() !== '')).length > 0
 
-  return (
-    <>
-      <span
-        className="blocked-hint-click"
-        style={{ display: 'inline-flex' }}
-        onClick={() => {
-          // 可用态下**必须放过去**（不吞事件），否则就成了"能点也不响应"。
-          // `useBlockedNotify` 自己也判了一次（没有原因时什么都不做），
-          // 这里再挡一道是为了不依赖它的内部行为。
-          if (shouldInterceptClick(blockedRef.current)) notifyBlocked()
-        }}
+  /** 提示块本体（紧凑样式，见 `BlockedHint` 的 `compact` 说明）。 */
+  const hint = disabled && hasReason
+    ? <BlockedHint reasons={reasons} action={action} compact />
+    : null
+
+  const button = (
+    <span
+      className="blocked-hint-click"
+      style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start' }}
+      onClick={() => {
+        // 可用态下**必须放过去**（不吞事件），否则就成了"能点也不响应"。
+        // `useBlockedNotify` 自己也判了一次（没有原因时什么都不做），
+        // 这里再挡一道是为了不依赖它的内部行为。
+        if (shouldInterceptClick(blockedRef.current)) notifyBlocked()
+      }}
+    >
+      <Button
+        {...buttonProps}
+        disabled={disabled}
+        // 禁用时让按钮不接事件，点击才能冒泡到上面那层去弹提示。
+        // 可用态**绝不能**这么干 —— 那会把按钮自己的点击也吃掉。
+        style={disabled ? { ...buttonProps.style, pointerEvents: 'none' } : buttonProps.style}
       >
-        <Button
-          {...buttonProps}
-          disabled={disabled}
-          // 禁用时让按钮不接事件，点击才能冒泡到上面那层去弹提示。
-          // 可用态**绝不能**这么干 —— 那会把按钮自己的点击也吃掉。
-          style={disabled ? { ...buttonProps.style, pointerEvents: 'none' } : buttonProps.style}
-        >
-          {children}
-        </Button>
-      </span>
-      {/* 只有"被挡住且有原因"时才渲染这行灰字；可用态下它整个不存在 */}
-      {disabled && hasReason ? <BlockedHint reasons={reasons} action={action} /> : null}
-    </>
+        {children}
+      </Button>
+      {/* 在"跟随按钮"模式下，灰字排在按钮下面 */}
+      {!hintBelow ? hint : null}
+    </span>
   )
+
+  // `hintBelow`：按钮留在这一行，**提示落到整行下面**（占满整行宽）。
+  //
+  // 为什么需要它（2026-10-16 主人：「这段话可以移到添加旁边去，不然左边一大段空白
+  // 不好看」）：在横排表单行里，`GuardedButton` 只占**一列** —— 提示被挤在那一列的
+  // 宽度里，而右边那几个控件下面全空着，看着就是"左边一大段空白"。
+  // 传 `hintBelow` 后提示被移出那一列，成为整行之后的独立一块，宽度够、也不再挤。
+  if (hintBelow) {
+    return (
+      <>
+        {button}
+        {hint}
+      </>
+    )
+  }
+  return button
 }
