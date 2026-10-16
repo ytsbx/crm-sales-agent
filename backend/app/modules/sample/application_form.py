@@ -79,6 +79,13 @@ SHEET_APPLICATION = "打样申请单"
 #: 一单多个明细时，申请单那一格用这个连接（申请单只有一格，装不下多行）
 ITEM_NAME_SEPARATOR = "、"
 
+#: 「产品图片（多方位图片）」那一格最多放几张（主人 2026-10-16：「不是可以放4张吗」）
+MAX_PRODUCT_IMAGES = 4
+
+#: 单张产品图放进去之后的**最大高度**（像素）。撑高第 6 行时以它为准 ——
+#: 太高会把下面的「打样具体要求」推得太靠下，申请表就不像一张单子了。
+MAX_IMAGE_HEIGHT = 140
+
 
 def _patch_wps_styles(raw: bytes) -> bytes:
     """把 WPS 写出的两个空 `<fill/>` 补成合法填充，让 openpyxl 能读。
@@ -152,8 +159,73 @@ def _require_label(existing: Any, label: str, value: str) -> str:
     return f"{base}{value}"
 
 
+def _embed_product_images(sheet: Any, paths: list[Path]) -> int:
+    """把产品图片**浮在「产品图片（多方位图片）」那一块上**（A6:I6），返回放进去的张数。
+
+    ## 为什么是"浮在上面"而不是"存进单元格"
+
+    Excel 的单元格里装不了图片（只能装文字/数字），图片是**独立的绘图对象**、锚在某个格上。
+    实测确认可行：插入后工作簿里会多出 `xl/media/imageN.png` 与 `xl/drawings/drawing1.xml`。
+
+    ## 为什么要把第 6 行撑高
+
+    那一块（A6:I6）**只有一行高**（实测 18.75 磅 ≈ 25 px），横着 839 px 宽。
+    图片若按原尺寸放进去会**盖住下面的行**（紧接着就是第 8 行的「打样具体要求」六格，
+    那是给车间看的正文，被压住就白做了）。所以：
+
+    - **横排 4 张**（主人 2026-10-16：「产品图片不是可以放4张吗」——正好对上"多方位图片"）；
+    - 每张按可用宽度等分并留间隙，**保持长宽比**缩放；
+    - 把第 6 行的高度撑到图片高度 —— 这样下面的内容是被"推下去"，而不是被盖住。
+
+    ## 放不进去的不硬塞
+
+    - 只认 Excel 能嵌的格式（png/jpg/jpeg/gif/bmp）。**webp / heic / pdf 一律跳过** ——
+      转换失败宁可少一张，也不要让整份申请表生成失败（那会让"发起审批"这个动作整个卡住）；
+    - 单张读不出来（文件损坏、权限）**跳过这一张**，不影响其余。
+    """
+    if not paths:
+        return 0
+    try:  # 延迟导入：只有真的要放图时才需要 PIL
+        from openpyxl.drawing.image import Image as XLImage
+        from PIL import Image as PILImage
+    except ImportError:  # pragma: no cover - 依赖缺失时静默跳过，不阻断发单
+        return 0
+
+    # A6:I6 的可用宽度：按各列列宽之和换算（见模块文档里的量法）
+    # A~I 各列宽（像素，模板实测）：31/66/108/87/122/94/115/94/122，合计 839。
+    # 四张图分别锚在 **C / E / G / I** 列（大列），这样每张图落在自己那一列里，
+    # 不会靠"浮在合并块上"去压别人的格子。
+    anchors = ("C6", "E6", "G6", "I6")
+    per_image = 180  # 每张图的最大边长（像素）；C 列 108px 放不下 180 是正常的 ——
+    # 图片是浮动对象，允许略宽于所在列（两侧的 B/D 在本行是同一合并块的空格）
+
+    placed = 0
+    for index, path in enumerate(paths[:MAX_PRODUCT_IMAGES]):
+        try:
+            with PILImage.open(path) as probe:
+                width, height = probe.size
+                scale = min(per_image / width, MAX_IMAGE_HEIGHT / height, 1.0)
+                target = (max(1, int(width * scale)), max(1, int(height * scale)))
+                # ⚠️ 必须**真的把图缩小**（PIL 重采样），不能只设 `img.width`：
+                # 实测 openpyxl 保存时会**从底图重新算尺寸**，赋给 `image.width`
+                # 的值会被丢掉（存回来还是原始尺寸 400x300，图就盖住了下面的行）。
+                buffer = io.BytesIO()
+                probe.convert("RGB").resize(target, PILImage.LANCZOS).save(buffer, format="PNG")
+        except Exception:
+            # 单张坏图不该毁掉整份申请表（否则"发起审批"这个动作会整个卡住）
+            continue
+        sheet.add_image(XLImage(buffer), anchors[index])
+        placed += 1
+
+    if placed:
+        # 撑高第 6 行：图片高度 + 余量（磅 = 像素 × 72 / 96）——
+        # 这样下面的「打样具体要求」是被**推下去**，而不是被盖住。
+        sheet.row_dimensions[6].height = (MAX_IMAGE_HEIGHT + 10) * 72 / 96
+    return placed
+
+
 def render_application_form(sample: Any, items: list[Any], *, applicant_name: str = "",
-                            department_name: str = "") -> bytes:
+                            department_name: str = "", product_images: list[Path] | None = None) -> bytes:
     """生成填好的《打样申请单》xlsx 字节。
 
     `sample`：打样单（`SampleRequest`）；`items`：它的明细（`SampleItem` 列表）。
@@ -203,6 +275,9 @@ def render_application_form(sample: Any, items: list[Any], *, applicant_name: st
     _put_text(sheet, ref="B13", value=_require_label(sheet["B13"].value, "做法要求：", _text(getattr(sample, "craft_requirement", None))))
 
     # 刻意不填：B14/B15/B16、C17/E17/G17（生产部与采购在钉钉里填，见模块文档）
+
+    # 产品图片：浮在 A6:I6 那一块上（见 `_embed_product_images` 的说明）
+    _embed_product_images(sheet, list(product_images or []))
 
     buffer = io.BytesIO()
     workbook.save(buffer)

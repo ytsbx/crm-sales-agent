@@ -34,6 +34,18 @@ def metadata(sample):
     return (sample.source_context or {}).get(META_KEY) or {}
 
 
+def _is_image(filename:str,mime:str)->bool:
+    """这个附件是不是**图片**（决定它能不能放进申请表的「产品图片」那格）。
+
+    两个判据都用：`mime_type` 是上传时写的（可能为空/写错），
+    扩展名是用户文件名的（也可能骗人）—— 任一命中即算，宁可多试一张
+    （生成器里读不出来的图会**跳过**，不影响整份申请表）。
+    PDF / Excel / Word 一律不算 —— 它们放不进格子，仍走钉钉附件那条路。
+    """
+    if mime.startswith('image/'):return True
+    return filename.lower().rsplit('.',1)[-1] in ('png','jpg','jpeg','gif','bmp')
+
+
 def ensure_local_review(sample):
     if metadata(sample):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'此单使用钉钉流程，请在钉钉处理审批，CRM只同步查看',409)
@@ -256,7 +268,6 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
         attrs['target_completion_date']=date.fromisoformat(by_label['要求完成日期'])
     if by_label['本次打样积分']:
         attrs['estimated_hours']=Decimal(by_label['本次打样积分'])/10
-    content=render_application_form(SimpleNamespace(**attrs),list(items),applicant_name=user.name,department_name='（以钉钉归属部门为准）')
     if '样品明细明细表' not in fields:raise AppError(ErrorCode.PARAM_ERROR,'钉钉模板缺少样品明细表字段',422)
     from app.modules.file.model import FileRecord, BusinessFile
     from app.core.deps import ensure_permission
@@ -266,11 +277,18 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     if files:ensure_permission(user,'file:view')
     if len(files)>9:raise AppError(ErrorCode.PARAM_ERROR,'随单资料最多9份（另有1份自动生成的申请表），请先整理附件',422)
     prepared=[]
+    mime_of={}
     for file in files:
         path=absolute_path(file.object_key)
         if not path.is_file() or path.stat().st_size!=file.size:
             raise AppError(ErrorCode.PARAM_ERROR,f'附件「{file.file_name}」缺失或不完整，请重新上传',422)
         prepared.append((file.file_name,path))
+        mime_of[file.file_name]=file.mime_type or ''
+    # 产品图片（2026-10-16 主人：「产品图片不是可以放4张吗」）：把附件里的**图片**挑出来，
+    # 浮到申请表「产品图片（多方位图片）」那一块上（最多 4 张，见生成器的说明）。
+    # 只认图片 —— PDF 图纸/Excel 放不进格子，它们仍作为钉钉附件传上去。
+    _images=[p for f,p in prepared if _is_image(f,mime_of.get(f,''))]
+    content=render_application_form(SimpleNamespace(**attrs),list(items),applicant_name=user.name,department_name='（以钉钉归属部门为准）',product_images=_images)
     try:
         attachments=[await upload_approval_attachment(client,user_id=account.dingtalk_userid,filename=f'打样申请单-{sample.id}.xlsx',content=content)]
         for filename,path in prepared:

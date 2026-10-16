@@ -309,3 +309,105 @@ def test_choice_cells_keep_template_text_when_not_filled(ref):
     sample = _sample(sample_purpose=None, urgency=None, sample_situation=None)
     text = _cells(render_application_form(sample, []))[ref]
     assert ("¨" in text) or ("□" in text)
+
+# ------------------------------------------- 产品图片（浮在 A6:I6 那一块上）
+
+
+def _make_png(path, size=(400, 300), color=(200, 40, 40)):
+    from PIL import Image as PILImage
+
+    PILImage.new("RGB", size, color).save(path)
+    return path
+
+
+def test_product_images_are_embedded_and_scaled(tmp_path):
+    """产品图片**真的进得去**（主人 2026-10-16：「产品图片不是可以放4张吗」）。
+
+    Excel 的单元格装不了图片，图片是**独立的绘图对象**、锚在格子上。所以这条测的是：
+    工作簿里多出图片对象、**尺寸被缩到限值内**、且锚在第 6 行（A6:I6 那一块）。
+
+    ⚠️ 缩放必须是**真的重采样**：实测 openpyxl 保存时会从底图重新算尺寸，
+    只赋 `img.width` 的值会被丢掉（存回来还是 400x300，图就盖住了下面的行）。
+    """
+    import io
+
+    from openpyxl import load_workbook
+
+    paths = [_make_png(tmp_path / f"p{i}.png", size) for i, size in enumerate(
+        [(400, 300), (300, 400), (500, 200), (250, 250)], start=1
+    )]
+    data = render_application_form(_sample(), _items(), product_images=paths)
+    workbook = load_workbook(io.BytesIO(data))
+    sheet = workbook["打样申请单"]
+    on_row6 = [i for i in sheet._images if (i.anchor._from.row + 1) == 6]
+    assert len(on_row6) == 4
+    for image in on_row6:
+        assert image.width <= 180 and image.height <= 140, (image.width, image.height)
+    # 第 6 行被撑高（否则图会盖住下面的「打样具体要求」那一行）
+    assert sheet.row_dimensions[6].height and sheet.row_dimensions[6].height > 40
+    # 下面那一行必须还在（被"推下去"而不是被盖住）
+    assert sheet["A8"].value == "打样具体要求"
+
+
+def test_no_images_keeps_the_template_untouched(tmp_path):
+    """没有图片时不撑行高、不加图 —— 不能因为新功能把正常的单子也改了。"""
+    import io
+
+    from openpyxl import load_workbook
+
+    data = render_application_form(_sample(), _items())
+    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
+    assert [i for i in sheet._images if (i.anchor._from.row + 1) == 6] == []
+    assert sheet.row_dimensions[6].height in (None, 18.75)
+
+
+def test_broken_image_is_skipped_not_fatal(tmp_path):
+    """一张坏图**不能毁掉整份申请表** —— 那会让"发起审批"这个动作整个卡住。
+
+    这里混一张不存在的文件与一张真图：真图照放，坏图跳过，函数不抛。
+    """
+    import io
+
+    from openpyxl import load_workbook
+
+    good = _make_png(tmp_path / "ok.png")
+    missing = tmp_path / "nope.png"  # 不存在
+    data = render_application_form(_sample(), _items(), product_images=[missing, good])
+    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
+    assert len([i for i in sheet._images if (i.anchor._from.row + 1) == 6]) == 1
+
+
+def test_at_most_four_images(tmp_path):
+    """最多 4 张（主人：「产品图片不是可以放4张吗」）—— 多传的忽略，不报错。"""
+    import io
+
+    from openpyxl import load_workbook
+
+    paths = [_make_png(tmp_path / f"q{i}.png") for i in range(6)]
+    data = render_application_form(_sample(), _items(), product_images=paths)
+    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
+    assert len([i for i in sheet._images if (i.anchor._from.row + 1) == 6]) == 4
+
+
+@pytest.mark.parametrize(
+    "filename,mime,expected",
+    [
+        ("照片.jpg", "", True),
+        ("图.PNG", "", True),
+        ("a.bmp", "", True),
+        ("x.pdf", "", False),
+        ("图纸.pdf", "application/pdf", False),
+        ("明细.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", False),
+        ("无扩展名", "image/png", True),
+        ("无扩展名", "", False),
+    ],
+)
+def test_is_image_judgement(filename, mime, expected):
+    """只把**图片**放进产品图片那格；PDF / Excel 不算（它们仍走钉钉附件）。
+
+    两个判据都用（mime 与扩展名），任一命中即算 —— 宁多多试一张，
+    因为生成器里读不出来的图会跳过，不会坏事。
+    """
+    from app.modules.sample.dingtalk import _is_image
+
+    assert _is_image(filename, mime) is expected
