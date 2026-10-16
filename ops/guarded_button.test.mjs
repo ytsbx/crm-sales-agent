@@ -186,3 +186,37 @@ test('禁用时点击落到外层容器上（按钮自己不派发 click，只�
   const wrapper = html.slice(0, html.indexOf('>'))
   assert.match(wrapper, /blocked-hint-click/, '外层容器不见了，点击无处可接')
 })
+
+test('只能有一个根节点 —— 放进横向 flex 行时不许变成"两个格子"', () => {
+  // ⚠️ 这条是 2026-10-16 主人截图「没对齐啊」抓出来的：
+  // 原来它返回 `<>…<span>按钮</span>…<BlockedHint/></>` —— **两个兄弟节点**。
+  // 放进 `display:flex` 的横向行里，这两个节点会各占一个 flex 格子，
+  // 于是提示块被当成"第三列"摆到右边，整行就散了。
+  //
+  // 判据：无论禁用与否，渲染结果**只有一个顶层元素** ——
+  // 数一数顶层开标签（缩进为 0 的那些）必须是 1 个。
+  for (const props of [
+    { disabled: true, blockedReasons: ['还没选客户'], action: '保存' },
+    { disabled: true },
+    { disabled: false, blockedReasons: ['还没选客户'], action: '保存' },
+  ]) {
+    const html = render(props)
+    const topLevel = html.match(/^<[a-z]+/g) ?? []
+    assert.equal(
+      topLevel.length,
+      1,
+      `顶层元素应当只有 1 个，实际 ${topLevel.length} 个 → 放进 flex 行里会错位：${html.slice(0, 120)}`,
+    )
+  }
+})
+
+test('按钮与提示在**同一个容器**里（竖着排），不是兄弟节点', () => {
+  // 同一个根因的另一面：提示块必须在根容器**内部**，
+  // 这样它才会跟着按钮一起当"一个元素"参与布局。
+  const html = render({ disabled: true, blockedReasons: ['还没选客户'], action: '保存' })
+  const rootStart = html.indexOf('<span')
+  assert.ok(rootStart === 0, '根节点应当是那个容器 span')
+  const rootEnd = html.lastIndexOf('</span>')
+  const hintAt = html.indexOf('还没选客户')
+  assert.ok(hintAt > 0 && hintAt < rootEnd, '提示块必须落在根容器内部')
+})

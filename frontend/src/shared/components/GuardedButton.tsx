@@ -93,29 +93,37 @@ export default function GuardedButton({
   const hasReason = distinctReasons(reasons.filter((t) => t.trim() !== '')).length > 0
 
   return (
-    <>
-      <span
-        className="blocked-hint-click"
-        style={{ display: 'inline-flex' }}
-        onClick={() => {
-          // 可用态下**必须放过去**（不吞事件），否则就成了"能点也不响应"。
-          // `useBlockedNotify` 自己也判了一次（没有原因时什么都不做），
-          // 这里再挡一道是为了不依赖它的内部行为。
-          if (shouldInterceptClick(blockedRef.current)) notifyBlocked()
-        }}
+    // ⚠️ **必须是一个整体**（2026-10-16 主人截图：「没对齐啊」）。
+    //
+    // 原来返回的是 `<>…<span>按钮</span>…<BlockedHint/></>` —— **两个兄弟节点**。
+    // 放在**横向 flex 行**里（`display:flex` 的工具栏/表单行），这两个节点会变成
+    // **两个 flex 格子**：提示块被当成"第三列"摆到右边，整行就散了。
+    //
+    // 现在外面套一层 `inline-flex + column`：
+    //   · 在横向行里 = **一个 flex 元素**（按钮与提示竖着排在里面）；
+    //   · 在纵向容器里 = 和以前一样（按钮一行、提示一行）。
+    // 这样它才算真正"一个标签替代那八行"，放哪儿都不会把布局撑歪。
+    <span
+      className="blocked-hint-click"
+      style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start' }}
+      onClick={() => {
+        // 可用态下**必须放过去**（不吞事件），否则就成了"能点也不响应"。
+        // `useBlockedNotify` 自己也判了一次（没有原因时什么都不做），
+        // 这里再挡一道是为了不依赖它的内部行为。
+        if (shouldInterceptClick(blockedRef.current)) notifyBlocked()
+      }}
+    >
+      <Button
+        {...buttonProps}
+        disabled={disabled}
+        // 禁用时让按钮不接事件，点击才能冒泡到上面那层去弹提示。
+        // 可用态**绝不能**这么干 —— 那会把按钮自己的点击也吃掉。
+        style={disabled ? { ...buttonProps.style, pointerEvents: 'none' } : buttonProps.style}
       >
-        <Button
-          {...buttonProps}
-          disabled={disabled}
-          // 禁用时让按钮不接事件，点击才能冒泡到上面那层去弹提示。
-          // 可用态**绝不能**这么干 —— 那会把按钮自己的点击也吃掉。
-          style={disabled ? { ...buttonProps.style, pointerEvents: 'none' } : buttonProps.style}
-        >
-          {children}
-        </Button>
-      </span>
+        {children}
+      </Button>
       {/* 只有"被挡住且有原因"时才渲染这行灰字；可用态下它整个不存在 */}
       {disabled && hasReason ? <BlockedHint reasons={reasons} action={action} /> : null}
-    </>
+    </span>
   )
 }
