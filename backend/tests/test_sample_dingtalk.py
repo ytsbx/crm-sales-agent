@@ -27,6 +27,15 @@ def setup(monkeypatch):
     monkeypatch.setattr(routes.oa,'create_inquiry_instance',create)
     monkeypatch.setattr(routes.oa,'get_by_business_key',AsyncMock(return_value=None))
     monkeypatch.setattr(routes.oa,'serialize',lambda row:{'status':row.status,'instance_id':row.instance_id})
+    # `save()` / `save_draft()` 要按**控件标签**找「要求完成日期」（那个日期得落进
+    # `target_completion_date` 列 —— Excel 的「交样时间」取的就是它）。这里 stub 掉模板读取：
+    # 本文件用的是假 session，而读设置会走 `session.execute`（连库）。
+    # 返回一个**含该控件**的最小模板 —— 既让"落库"那条路走通，也不碰数据库。
+    monkeypatch.setattr(routes,'template',AsyncMock(return_value=(
+        {'configured':True,'enabled':True,'fields':[
+            {'id':'DDDateField_DUE','label':'要求完成日期','type':'DDDateField',
+             'required':True,'system':False,'options':[],'format':'yyyy-MM-dd'},
+        ]}, None)))
     return sample,session,user,client,create
 
 @pytest.mark.anyio

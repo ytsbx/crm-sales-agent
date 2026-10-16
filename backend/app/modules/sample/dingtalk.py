@@ -170,10 +170,18 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
     # 用户会以为没存上、再填一遍（主人这一轮报的就是这类"看不见"）。
     _PREFILL = ('product_name','material_spec','product_size','printing','accessories',
                 'packaging','craft_requirement','sample_purpose','urgency','sample_situation','sample_fee')
-    return ok({**options,'draft':{**meta,'fields':{**{'_'+key:str(getattr(sample,key) or '') for key in _PREFILL},**(meta.get('fields') or {})}},'candidates':await inquiry_candidates(session,user,sample),'records':records})
+    _prefill = {'_' + key: str(getattr(sample, key) or '') for key in _PREFILL}
+    # 「要求完成日期」是**模板自带的控件**（id 由模板给），它的值落在
+    # `sample.target_completion_date` 这一列上（`save()` 里落的）。
+    # 不把列值按控件 id 填回去，重开弹窗那一格就是空的 —— 而 Excel 的
+    # 「交样时间」正是取这一列（主人 2026-10-16 问「交样时间有没有」）。
+    _due_field = next((f for f in (options.get('fields') or []) if f.get('label') == '要求完成日期'), None)
+    if _due_field is not None and sample.target_completion_date:
+        _prefill[_due_field['id']] = sample.target_completion_date.isoformat()
+    return ok({**options,'draft':{**meta,'fields':{**_prefill,**(meta.get('fields') or {})}},'candidates':await inquiry_candidates(session,user,sample),'records':records})
 
 
-async def save(session,user,sample,payload):
+async def save(session,user,sample,payload,options=None):
     if metadata(sample).get('submitted') and payload.resubmit:
         previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample')
         if metadata(sample).get('mode')!='standalone' or payload.mode!='standalone' or previous is None or previous.status!='rejected':
@@ -204,6 +212,27 @@ async def save(session,user,sample,payload):
         # 它在申请表 C3 那格，以前只能去详情页的「生产打样资料」里填，
         # 而钉钉弹窗是建完单立刻弹出来的，用户在那儿找不到它。
         # 空串 = 明确清空（与"没传"区分：没传就不动）。
+        # 「要求完成日期」是**钉钉模板自带的控件**（不是 `_` 前缀那批），
+        # 所以以前只有提交时才带过去、**保存草稿不落库** —— 重开弹窗那一格是空的，
+        # 而 Excel 的「交样时间」正是从这一列取的（主人 2026-10-16 问「交样时间有没有」）。
+        # 这里按**控件标签**找它（id 是模板给的，不写死）。
+        # ⚠️ **不要在这里 await template(session)**（2026-10-16）：
+        # `save()` 是**纯函数式**的（`tests/test_sample_dingtalk.py` 用假 session 调它，
+        # 本意就是"保存草稿不碰模板/不连库"）。我第一版在那里取了模板，四个测试立刻红。
+        # 所以模板由**调用方**传进来 —— 两个路由本来就已经取过它了。
+        _fields = (options or {}).get('fields') or []
+        _due_field = next((f for f in _fields if f.get('label') == '要求完成日期'), None)
+        if _due_field is not None:
+            _due = payload.fields.get(_due_field['id'])
+            if _due is not None:
+                _due_text = str(_due).strip()
+                if not _due_text:
+                    sample.target_completion_date = None
+                else:
+                    try:
+                        sample.target_completion_date = date.fromisoformat(_due_text)
+                    except ValueError:
+                        raise AppError(ErrorCode.PARAM_ERROR, '要求完成日期格式不对（应为 YYYY-MM-DD）', 422)
         _fee = payload.fields.get('_sample_fee')
         if _fee is not None:
             _text = str(_fee).strip()
@@ -221,7 +250,14 @@ async def save(session,user,sample,payload):
 @router.put('/samples/{sample_id}/dingtalk-draft')
 async def save_draft(sample_id:int,payload:Draft,request:Request,user:CurrentUser=Depends(require_permission('sample:manage')),session:AsyncSession=Depends(get_db)):
     sample=await service.get_visible_or_404(session,user,sample_id,for_update=True,allow_external_flow=True)
-    await save(session,user,sample,payload)
+    # 取模板是为了知道**「要求完成日期」那个控件的 id**（按标签找，不写死 id）——
+    # `save()` 要靠它把那个日期落进 `target_completion_date` 列。取不到就给空表，
+    # 保存草稿不该因为钉钉模板读不出来而失败。
+    try:
+        options,_ = await template(session)
+    except AppError:
+        options = {'fields': []}
+    await save(session,user,sample,payload,options)
     await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
                       after={'dingtalk_draft':metadata(sample)},ip=client_ip(request))
     await session.commit()
@@ -243,7 +279,13 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
             return ok(oa.serialize(previous) if previous else None,'已提交或关联，请查看审批过程，不要重复发起')
         if retry and payload.fields!=meta.get('fields',{}):
             raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'重试必须使用已提交的原始资料，不能改写审批快照',409)
-    if not retry:await save(session,user,sample,payload)
+    # 模板**只在独立发起时取**：`save()` 要靠它知道「要求完成日期」那个控件的 id。
+    # 「沿用原询价」那条路不发新的钉钉单，不需要模板 —— 而且那条路在集成测试里
+    # 用的是假 session（读设置要连库），不去取也避免把测试弄红。
+    options=None
+    if payload.mode=='standalone':
+        options,code=await template(session)
+    if not retry:await save(session,user,sample,payload,options)
     if payload.mode=='inquiry':
         if not payload.source_oa_id:raise AppError(ErrorCode.REQUIRED_FIELD_MISSING,'请选择原询价审批单',422)
         sample.source_context={**sample.source_context,META_KEY:{**metadata(sample),'submitted':True}}
@@ -251,7 +293,6 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
                          after={'linked_inquiry_oa':payload.source_oa_id},ip=client_ip(request))
         await session.commit()
         return ok(None,'已关联原询价审批；打样步骤请在原钉钉单继续处理，本次没有新发审批')
-    options,code=await template(session)
     if not options['configured'] or not options['enabled']:
         raise AppError(ErrorCode.PARAM_ERROR,'独立打样模板未配置或钉钉推送未开启，请先保存草稿',422)
     fields={f['label']:f for f in options['fields']}
