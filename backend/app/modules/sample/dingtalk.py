@@ -34,6 +34,22 @@ def metadata(sample):
     return (sample.source_context or {}).get(META_KEY) or {}
 
 
+def snapshot_edit_detail(snapshot:dict,incoming:dict)->str:
+    """这次重试**有没有真的改写审批快照**？改写返回差异描述，没改写返回空串。
+
+    ⚠️ **只比"两边都有"的字段**（主人 2026-10-16：「我没改写啊」）。
+    快照里存的是**用户填的那批**；而 `申请人员` / `归属部门` / `样品明细明细表`
+    这三项**每次提交时由后端现算**（钉钉身份、部门、现生成的 Excel 附件），
+    **根本不在快照里**。前端"重试原申请"会把它们一起带回来 ——
+    若按"整个 fields 直接比对"，用户什么都没改却永远被告知"你改写了快照"，
+    而且**没有出路**（那三项永远不可能与快照相等）。那是个死循环。
+
+    抽成独立函数是为了**能被单测直接钉住** —— 这段判据曾经写错过两次。
+    """
+    changed={k:(v,snapshot[k]) for k,v in incoming.items() if k in snapshot and v!=snapshot[k]}
+    return '；'.join(f'{k}：{old!r} → {new!r}' for k,(new,old) in list(changed.items())[:3])
+
+
 def _is_image(filename:str,mime:str)->bool:
     """这个附件是不是**图片**（决定它能不能放进申请表的「产品图片」那格）。
 
@@ -293,8 +309,27 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
         retry=previous is not None and previous.status in ('failed','not_sent','skipped')
         if not retry and not open_new_round:
             return ok(oa.serialize(previous) if previous else None,'已提交或关联，请查看审批过程，不要重复发起')
-        if retry and payload.fields!=meta.get('fields',{}):
-            raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'重试必须使用已提交的原始资料，不能改写审批快照',409)
+        # ⚠️ **只在"原样重发"时锁快照，不锁"驳回后重提"**（2026-10-16 修）：
+        # `retry` 是"上次没发出去（failed/not_sent/skipped）→ 原样重发"，这时必须一字不改，
+        # 否则会拿新内容去覆盖一条"已经发生过"的审批快照。
+        # 但 `open_new_round`（驳回/撤回后重新发起）**本来就该允许改** —— 主人这一轮就是
+        # 被这条误拦的：他说"我没改写啊"，而真正变的是**我们自己算出来的**「本次打样积分」
+        # （由工时 × 10 自动同步）。把"驳回后重提"也锁上，等于把这条规则和上面
+        # `open_new_round` 的判定自相矛盾。
+        # ⚠️ **只比"两边都有"的字段**（2026-10-16 第二次修，这次是真因）：
+        # 快照里存的是**用户填的那批**；而 `申请人员` / `归属部门` / `样品明细明细表`
+        # 这三项**每次提交时由后端现算**（钉钉身份、部门、现生成的 Excel 附件），
+        # **根本不在快照里**。前端"重试原申请"会把它们一起带回来，
+        # 于是 `payload.fields != meta["fields"]` 永远成立 ——
+        # 用户看到的是一句「重试必须使用已提交的原始资料，不能改写审批快照」，
+        # 而他**什么都没改**（主人 2026-10-16：「我没改写啊」）。那是个死循环。
+        #
+        # 所以取交集再比：后端自己算的那几项不参与比较。
+        if retry and not open_new_round:
+            _detail = snapshot_edit_detail(meta.get("fields") or {}, payload.fields)
+            if _detail:
+                raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
+                               f"重试必须使用已提交的原始资料，不能改写审批快照（{_detail}）", 409)
     # 模板**只在独立发起时取**：`save()` 要靠它知道「要求完成日期」那个控件的 id。
     # 「沿用原询价」那条路不发新的钉钉单，不需要模板 —— 而且那条路在集成测试里
     # 用的是假 session（读设置要连库），不去取也避免把测试弄红。
