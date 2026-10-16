@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
@@ -15,6 +16,20 @@ interface Options {
   draft: Partial<Draft>; candidates: Array<{id:number;label:string}>; records: OaApprovalInstance[]
 }
 const time = (value: string | null | undefined) => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString('zh-CN') : '尚未返回'
+
+/** 表单里一格：**字段名在上、控件在下**，宽度由外层网格决定。
+ *
+ * 为什么要有这个件（主人 2026-10-16：「排版太丑了」）：这个弹窗原先是
+ * "一行行加出来"的 —— 每行的控件宽度各写各的（190 / 150 / 100%），
+ * 于是一屏里三种宽度、左边缘参差、下面还散着没有标签的裸输入框。
+ * 统一走这个件之后：标签与控件成对、两列等宽、纵向间距一致。
+ */
+function Field({label,children,span}:{label:string;children:ReactNode;span?:boolean}) {
+  return <div style={span?{gridColumn:'1 / -1'}:undefined}>
+    <div style={{marginBottom:4,fontSize:13,color:'var(--crm-text-2)'}}>{label}</div>
+    {children}
+  </div>
+}
 export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;onClose:()=>void}) {
   const client=useQueryClient()
   const query=useQuery({queryKey:['sample-dingtalk',sampleId],queryFn:()=>api.get<Options>(`/samples/${sampleId}/dingtalk`),refetchInterval:30000})
@@ -129,77 +144,66 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
             所以这里是两组不同的东西，原来的问题只是"第一组没标题、第二组标题又长又绕"，
             看起来像一团。现在两组各有标题、各说清去哪。 */}
         <div style={{fontWeight:600}}>钉钉审批单（下面这些填进钉钉表单）</div>
-        <div>申请人和部门由当前账号绑定的钉钉身份自动填写；申请编号由钉钉生成；样品明细表由CRM按现有公司底稿生成并随审批上传。</div>
         {/* ⚠️ 「本次打样积分」**不在这里单独给输入框**（2026-10-16）：
-            它与下面「打样积分＝工时 × 10」是**同一个数**。给两个输入框，
+            它与「预计工时 × 10」是**同一个数**。给两个输入框，
             用户填了工时、积分还是旧值 —— 主人原话：「打样积分不还是要填几遍吗」。
-            现在它由工时算出来（见上面的同步 effect 与本块末尾那行说明）。 */}
-        {query.data?.fields.filter(f=>!f.system && f.label!=='本次打样积分').map(field=><div key={field.id}>
-          <div style={{marginBottom:4}}>{field.label}{field.required?' *':'（选填）'}</div>
-            {/* 「要求完成日期」= 申请表上那格「交样时间」（主人 2026-10-16 问
-                「打样时间不还是没有吗」）。说一句，免得用户以为是另一件事。 */}
-            {field.label==='要求完成日期' && <span style={{color:'var(--crm-text-3)',fontWeight:400}}>
-              （就是申请表上的「交样时间」）</span>}
-          {field.type==='DDSelectField'?<Select style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
-            optionList={field.options.map(value=>({value,label:value}))} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value as string}})}/>
-          :field.type==='DDDateField'?<DatePicker type="date" format="yyyy-MM-dd" style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
-            onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,[field.id]:(value as string)||''}})}/>
-          :field.type==='NumberField'?<Input value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} placeholder="填0到99990之间的积分" onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>
-          :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
-        </div>)}
-        <div style={{fontWeight:600}}>打样申请单（下面这些写进随审批上传的那份 Excel 附件）</div>
-        {/* 三个**勾选项**（2026-10-16 补）：申请表上的「打样目的 / 紧急程度 / 样品情况」
-            三格。它们**不在钉钉模板的 13 个控件里**（核对过），所以只能在这里填 ——
-            以前只在详情页的「生产打样资料」里能填，而本弹窗是建完单立刻自动弹出来的，
-            用户看到的是空格子却无处可填（主人：「为什么不让我填」）。
-            选项照抄申请单原件的勾选项，不要自造。 */}
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            现在它由工时算出来（见上面的同步 effect），界面上只在「预计工时」旁边显示算出来的分。 */}
+        {/* 模板控件：**两列网格**，字段名在上、控件在下（与下面那组同一套排法）。 */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px'}}>
+          {query.data?.fields.filter(f=>!f.system && f.label!=='本次打样积分').map(field=>
+            <Field key={field.id} span={!['DDSelectField','DDDateField','NumberField'].includes(field.type)}
+              label={field.label + (field.required ? ' *' : '（选填）')}>
+              {field.type==='DDSelectField'?<Select style={{width:'100%'}} placeholder='请选择' value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
+                optionList={field.options.map(value=>({value,label:value}))} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value as string}})}/>
+              :field.type==='DDDateField'?<DatePicker type='date' format='yyyy-MM-dd' style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
+                onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,[field.id]:(value as string)||''}})}/>
+              :field.type==='NumberField'?<Input style={{width:'100%'}} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>
+              :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
+            </Field>)}
+        </div>
+        {/* 打样申请单上**该由业务员填的格**，一次排齐：两列网格、字段名在上。 */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px',margin:'8px 0'}}>
           {([['sample_purpose','打样目的',['客审确认样','报价核算样','定制改款样','送检上架样']],
              ['urgency','紧急程度',['普通','急','紧急']],
              ['sample_situation','样品情况',['首次设计新品','设计更改','客户首次要求','客户更改','其他']]] as const).map(([key,label,options])=>
-            <Select key={key} style={{width:190}} placeholder={label} value={draft.fields['_'+key]||undefined}
-              disabled={submitted||mutate.isPending}
-              optionList={options.map(value=>({value,label:value}))}
-              onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value as string}})}/>)}
-        </div>
-        {/* 预计工时 → 打样积分（申请单上那格「本次打样积分」＝工时×10）。
-            钉钉模板里有「本次打样积分」控件，提交时会带过去；这里让 CRM 也能算一遍，
-            两边口径同一个（×10），所以数值一致。 */}
-        <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <Input style={{width:150}} placeholder="预计工时（小时）" value={draft.fields['_estimated_hours']||''}
-            disabled={submitted||mutate.isPending}
-            onChange={value=>setEdited({...draft,fields:{...draft.fields,['_estimated_hours']:value}})}/>
-          {/* 只显示算出来的分 —— **不加解释**（主人 2026-10-16：「把解释删了…谁让你解释了」）。没填工时时整行不出现。 */}
+            <Field key={key} label={label}>
+              <Select style={{width:'100%'}} placeholder="请选择" value={draft.fields['_'+key]||undefined}
+                disabled={submitted||mutate.isPending}
+                optionList={options.map(value=>({value,label:value}))}
+                onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value as string}})}/>
+            </Field>)}
           {(() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
-            return raw.trim() && Number.isFinite(n) ? <span style={{fontSize:12,color:'var(--crm-text-3)'}}>
-              打样积分 <b>{n * 10}</b> 分</span> : null })()}
-
+            const points = raw.trim() && Number.isFinite(n) ? n * 10 : null
+            return <>
+              <Field label="预计工时（小时）">
+                <Input style={{width:'100%'}} value={raw} disabled={submitted||mutate.isPending}
+                  onChange={value=>setEdited({...draft,fields:{...draft.fields,['_estimated_hours']:value}})}/>
+              </Field>
+              {points !== null && <Field label="打样积分">
+                <div style={{height:32,lineHeight:'32px',fontSize:13,color:'var(--crm-text-2)'}}>{points} 分</div>
+              </Field>}
+            </> })()}
+          <Field label="打样费用（元）">
+            <Input style={{width:'100%'}} placeholder="留空表示未填；免费请填 0" value={draft.fields['_sample_fee']||''}
+              disabled={submitted||mutate.isPending}
+              onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_fee']:value}})}/>
+          </Field>
+          <Field label="交样时间">
+            <DatePicker type="date" format="yyyy-MM-dd" showClear style={{width:'100%'}}
+              value={draft.fields['_deliver_date'] ? new Date(draft.fields['_deliver_date']) : undefined}
+              disabled={submitted||mutate.isPending}
+              onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,['_deliver_date']:(value as string)||''}})}/>
+          </Field>
+          <Field label="打样人">
+            <Input style={{width:'100%'}} value={draft.fields['_sample_maker']||''} disabled={submitted||mutate.isPending}
+              onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_maker']:value}})}/>
+          </Field>
+          {([['product_name','产品名称'],['material_spec','主要材质和规格'],['product_size','产品尺寸'],['printing','产品印刷'],['accessories','主要辅料'],['packaging','包装要求'],['craft_requirement','做法要求']] as const).map(([key,label])=>
+            <Field key={key} label={label} span>
+              <TextArea rows={2} value={draft.fields['_'+key]||''} disabled={submitted||mutate.isPending}
+                onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value}})}/>
+            </Field>)}
         </div>
-        {/* 打样费用（申请表 C3 那一格）。2026-10-16 主人：「打样费用在哪没看见」——
-            它原来只能去详情页的「生产打样资料」里填，而这个弹窗是建完单立刻弹出来的，
-            用户在这里找不到它。留空 = 未填；免费填 0。 */}
-        <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <Input style={{width:150}} placeholder="打样费用（元）" value={draft.fields['_sample_fee']||''}
-            disabled={submitted||mutate.isPending}
-            onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_fee']:value}})}/>
-          <span style={{fontSize:12,color:'var(--crm-text-3)'}}>留空表示未填；免费请填 0</span>
-        </div>
-        {/* 申请表上的「交样时间」与「打样人」——两个格子，名字照抄申请表。 */}
-
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <DatePicker type="date" format="yyyy-MM-dd" showClear style={{width:190}}
-            placeholder="交样时间"
-            value={draft.fields['_deliver_date'] ? new Date(draft.fields['_deliver_date']) : undefined}
-            disabled={submitted||mutate.isPending}
-            onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,['_deliver_date']:(value as string)||''}})}/>
-          <Input style={{width:190}} placeholder="打样人" value={draft.fields['_sample_maker']||''}
-            disabled={submitted||mutate.isPending}
-            onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_maker']:value}})}/>
-        </div>
-        {([['product_name','产品名称'],['material_spec','主要材质和规格'],['product_size','产品尺寸'],['printing','产品印刷'],['accessories','主要辅料'],['packaging','包装要求'],['craft_requirement','做法要求']] as const).map(([key,label])=><div key={key}>
-          <div>{label}</div><TextArea rows={2} value={draft.fields['_'+key]||''} disabled={submitted||mutate.isPending}
-            onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value}})}/>
-        </div>)}
         {/* 栏名照申请单原件那一格（主人 2026-10-16：「这个就改成产品图片（多方位图片）」）——
             这里上传的图片会**真的印在申请表「产品图片（多方位图片）」那一格上**（最多 4 张），
             其余文件（PDF 图纸、Excel…）作为钉钉附件随单传上去。 */}
