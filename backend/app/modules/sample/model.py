@@ -138,6 +138,12 @@ class SampleRequest(Base, IdMixin):
     # 早先这三项挂在这里（单头），一单多样时只能写进备注，车间拿到的单子看不出区别。
     purpose: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 用途
     target_completion_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 目标完成日
+    # 「交样时间」——申请表 H2 那一格。**与 `target_completion_date` 是两件事**
+    # （主人 2026-10-16：「要求完成时间和交样时间不一定是一个时间」）：
+    #   · `target_completion_date` = 钉钉单上的「要求完成日期」：车间**什么时候做完**；
+    #   · `deliver_date`           = 申请表上的「交样时间」：**什么时候交给客户**。
+    # 我原来把前者直接当后者写进 Excel，等于把两个日期合并成一个 —— 语义就错了。
+    deliver_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 交样时间
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)  # 验收标准
     # 打样费用：**空着 = 未填**，与"免费（0 元）"是两回事，所以列可空、不设默认值。
     # 之前是 NOT NULL + default 0，前端清空输入框传 null 会直接撞非空约束。

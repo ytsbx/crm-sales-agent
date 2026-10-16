@@ -166,6 +166,10 @@ def serialize_request(
         "packaging": request.packaging,
         "craft_requirement": request.craft_requirement,
         "product_name": request.product_name,
+        # 「交样时间」与「要求完成日」是两个不同的日期（主人 2026-10-16）；
+        # 「打样人」= 谁动手打的样（没填则申请表回落到申请人）。
+        "deliver_date": request.deliver_date.isoformat() if request.deliver_date else None,
+        "sample_maker": request.sample_maker,
         "target_completion_date": (
             request.target_completion_date.isoformat() if request.target_completion_date else None
         ),

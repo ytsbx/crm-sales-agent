@@ -34,7 +34,9 @@ def _sample(**over):
     base = dict(
         sample_type="销售客户打样",
         product_name="出口纸箱 400×300×250",
-        target_completion_date=date(2026, 11, 5),
+        target_completion_date=date(2026, 11, 5),   # 钉钉的「要求完成日期」
+        deliver_date=date(2026, 11, 20),            # 申请表的「交样时间」（**另一个日期**）
+        sample_maker="李师傅",                       # 申请表的「打样人」
         sample_fee=Decimal("800.00"),
         sample_purpose="报价核算样",
         urgency="急",
@@ -118,11 +120,11 @@ def _types(data: bytes) -> dict[str, str]:
         ("C2", "销售客户打样"),          # 打样类型（标签块 A2:B2 右边第一格）
         ("E2", "出口纸箱 400×300×250"),  # 产品名称（标签 D2）
         ("G2", "200"),                   # 打样数量 = 明细合计 120+80（标签 F2）
-        ("I2", "2026-11-05"),            # 交样时间（标签 H2）
+        ("I2", "2026-11-20"),            # 交样时间（标签 H2）取 deliver_date，不是要求完成日
         ("C3", "800"),                   # 打样费用
         ("E3", "张三"),                 # 申请人（标签 D3）
         ("G3", "销售一部"),             # 打样部门（标签 F3）
-        ("I3", "张三"),                 # 打样人（标签 H3）
+        ("I3", "李师傅"),               # 打样人（标签 H3）取 sample_maker
         ("C4", "报价核算样"),            # 打样目的
         ("G4", "急"),                    # 紧急程度
         ("C5", "客户首次要求"),          # 样品情况
@@ -130,7 +132,7 @@ def _types(data: bytes) -> dict[str, str]:
 )
 def test_values_land_in_the_right_cells(ref, expect):
     """填错一格的后果是业务员在钉钉里看到错位的单子，所以逐格钉住。"""
-    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部")
+    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部", sample_maker="李师傅")
     assert _cells(data)[ref] == expect
 
 
@@ -173,7 +175,7 @@ def test_production_and_purchase_cells_keep_only_template_labels(ref):
 
     这几格模板里本来就有标签（"采购接收人："等），所以判据是"只有标签、没被追加内容"。
     """
-    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部")
+    data = render_application_form(_sample(), _items(), applicant_name="张三", department_name="销售一部", sample_maker="李师傅")
     assert _cells(data)[ref] in {"采购接收人：", "打样人：", "完成时间：", "样品确认人："}
 
 

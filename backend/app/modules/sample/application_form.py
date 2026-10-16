@@ -231,7 +231,8 @@ def _embed_product_images(sheet: Any, paths: list[Path]) -> int:
 
 
 def render_application_form(sample: Any, items: list[Any], *, applicant_name: str = "",
-                            department_name: str = "", product_images: list[Path] | None = None) -> bytes:
+                            department_name: str = "", product_images: list[Path] | None = None,
+                            sample_maker: str = "") -> bytes:
     """生成填好的《打样申请单》xlsx 字节。
 
     `sample`：打样单（`SampleRequest`）；`items`：它的明细（`SampleItem` 列表）。
@@ -265,15 +266,19 @@ def render_application_form(sample: Any, items: list[Any], *, applicant_name: st
     put("C2", getattr(sample, "sample_type", None))       # 标签 A2:B2
     put("E2", _items_product_name(sample, items))          # 标签 D2
     put("G2", _total_quantity(items))                      # 标签 F2
-    put("I2", getattr(sample, "target_completion_date", None))  # 标签 H2「交样时间」
+    # ⚠️「交样时间」取 `deliver_date`，**不是** `target_completion_date`
+    # （主人 2026-10-16：「要求完成时间和交样时间不一定是一个时间」）：
+    # 前者是"什么时候交给客户"，后者是钉钉单上的"要求完成日期"（车间什么时候做完）。
+    put("I2", getattr(sample, "deliver_date", None))  # 标签 H2「交样时间」
 
     # ---- 第 3 行：打样费用 / 申请人 / 打样部门 / 打样人 ----
     put("C3", getattr(sample, "sample_fee", None))         # 标签 A3:B3
     put("E3", applicant_name)                              # 标签 D3「申请人」
     put("G3", department_name)                             # 标签 F3「打样部门」
-    # 「打样人」= 谁动手打的样。业务员建单时还不知道（那是生产部的人），
-    # 所以先填**申请人**兜底 —— 生产部在钉钉里会改成实际打样的人。
-    put("I3", applicant_name)                              # 标签 H3「打样人」
+    # 「打样人」= 谁动手打的样（主人 2026-10-16：「打样人我也没看见有填的地方」）。
+    # 现在是可以填的（弹窗里一格），填了就写它；没填才回落到申请人 ——
+    # 业务员建单时往往还不知道车间谁做。
+    put("I3", sample_maker or applicant_name)               # 标签 H3「打样人」
 
     # ---- 第 4/5 行：三个勾选项 ----
     put("C4", getattr(sample, "sample_purpose", None))

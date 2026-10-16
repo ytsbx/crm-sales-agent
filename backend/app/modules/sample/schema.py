@@ -105,6 +105,11 @@ class SampleCreate(BaseModel):
     craft_requirement: str | None = None
     # 申请单上「产品名称」只有一格，而明细可以一行多样 —— 显式给，导出时不猜
     product_name: str | None = Field(default=None, max_length=200)
+    # 申请表 H2「交样时间」——与 `target_completion_date`（钉钉的「要求完成日期」）
+    # 是**两个不同的日期**（主人 2026-10-16）。
+    deliver_date: date | None = None
+    # 申请表 H3「打样人」——谁动手打的样（没填则回落到申请人）。
+    sample_maker: str | None = Field(default=None, max_length=64)
 
     items: list[SampleItemInput] = []
 
@@ -202,6 +207,11 @@ class SampleUpdate(CreateModel):
     craft_requirement: str | None = None
     # 申请单上「产品名称」只有一格，而明细可以一行多样 —— 显式给，导出时不猜
     product_name: str | None = Field(default=None, max_length=200)
+    # 申请表 H2「交样时间」——与 `target_completion_date`（钉钉的「要求完成日期」）
+    # 是**两个不同的日期**（主人 2026-10-16）。
+    deliver_date: date | None = None
+    # 申请表 H3「打样人」——谁动手打的样（没填则回落到申请人）。
+    sample_maker: str | None = Field(default=None, max_length=64)
 
 
 class SampleMade(BaseModel):

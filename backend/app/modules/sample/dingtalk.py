@@ -169,7 +169,8 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
     # 在**重新打开**弹窗时是空的 —— 库里明明存着，界面上却看不见，
     # 用户会以为没存上、再填一遍（主人这一轮报的就是这类"看不见"）。
     _PREFILL = ('product_name','material_spec','product_size','printing','accessories',
-                'packaging','craft_requirement','sample_purpose','urgency','sample_situation','sample_fee')
+                'packaging','craft_requirement','sample_purpose','urgency','sample_situation','sample_fee',
+                'deliver_date','sample_maker')
     _prefill = {'_' + key: str(getattr(sample, key) or '') for key in _PREFILL}
     # 「要求完成日期」是**模板自带的控件**（id 由模板给），它的值落在
     # `sample.target_completion_date` 这一列上（`save()` 里落的）。
@@ -233,6 +234,21 @@ async def save(session,user,sample,payload,options=None):
                         sample.target_completion_date = date.fromisoformat(_due_text)
                     except ValueError:
                         raise AppError(ErrorCode.PARAM_ERROR, '要求完成日期格式不对（应为 YYYY-MM-DD）', 422)
+        # 「交样时间」（申请表 H2）与「打样人」（申请表 H3）同样落列 ——
+        # 它们与钉钉的「要求完成日期」是**两件事**（主人 2026-10-16 指出）。
+        _deliver = payload.fields.get('_deliver_date')
+        if _deliver is not None:
+            _dt = str(_deliver).strip()
+            if not _dt:
+                sample.deliver_date = None
+            else:
+                try:
+                    sample.deliver_date = date.fromisoformat(_dt)
+                except ValueError:
+                    raise AppError(ErrorCode.PARAM_ERROR, '交样时间格式不对（应为 YYYY-MM-DD）', 422)
+        _maker = payload.fields.get('_sample_maker')
+        if _maker is not None:
+            sample.sample_maker = str(_maker).strip() or None
         _fee = payload.fields.get('_sample_fee')
         if _fee is not None:
             _text = str(_fee).strip()
@@ -323,6 +339,13 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
         value=payload.fields.get('_'+key)
         if value is not None:attrs[key]=value or None
     # 打样费用（申请表 C3）：同样以**本次提交的值**为准，列值兜底
+    _deliver=payload.fields.get('_deliver_date')
+    if _deliver is not None:
+        from datetime import date as _date
+        _t=str(_deliver).strip()
+        attrs['deliver_date']=_date.fromisoformat(_t) if _t else None
+    _maker=payload.fields.get('_sample_maker')
+    if _maker is not None:attrs['sample_maker']=str(_maker).strip() or None
     _fee=payload.fields.get('_sample_fee')
     if _fee is not None:
         _t=str(_fee).strip()
@@ -356,7 +379,7 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     # 浮到申请表「产品图片（多方位图片）」那一块上（最多 4 张，见生成器的说明）。
     # 只认图片 —— PDF 图纸/Excel 放不进格子，它们仍作为钉钉附件传上去。
     _images=[p for f,p in prepared if _is_image(f,mime_of.get(f,''))]
-    content=render_application_form(SimpleNamespace(**attrs),list(items),applicant_name=user.name,department_name='（以钉钉归属部门为准）',product_images=_images)
+    content=render_application_form(SimpleNamespace(**attrs),list(items),applicant_name=user.name,department_name='（以钉钉归属部门为准）',product_images=_images,sample_maker=attrs.get('sample_maker') or '')
     try:
         attachments=[await upload_approval_attachment(client,user_id=account.dingtalk_userid,filename=f'打样申请单-{sample.id}.xlsx',content=content)]
         for filename,path in prepared:

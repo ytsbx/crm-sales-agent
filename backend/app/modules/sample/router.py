@@ -527,6 +527,8 @@ async def update_sample(
         "packaging",
         "craft_requirement",
         "product_name",
+        "deliver_date",
+        "sample_maker",
     ):
         if field in data:
             setattr(sample, field, data[field])
