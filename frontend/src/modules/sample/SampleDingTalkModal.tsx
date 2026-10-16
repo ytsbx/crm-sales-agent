@@ -95,6 +95,12 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         {query.data&&!query.data.candidates.length&&<div>没有可关联的来源审批。请先把此样品关联真实的询价来源，或选择单独申请；系统不会随便关联同客户的其他单。</div>}
       </>:<>
         {query.data&&!query.data.configured&&<div>独立打样模板尚未配置，可先保存草稿，请联系管理员。</div>}
+        {/* 两组字段要分开写清楚（2026-10-16 主人：「随审批上传的申请表内容 这一段
+            直接改成打样申请单不就行了」）。核对过钉钉模板的 13 个控件：**没有**"产品名称 /
+            主要材质和规格…"这 7 项 —— 它们不是钉钉表单的格，而是**写进附件那份 Excel 的**。
+            所以这里是两组不同的东西，原来的问题只是"第一组没标题、第二组标题又长又绕"，
+            看起来像一团。现在两组各有标题、各说清去哪。 */}
+        <div style={{fontWeight:600}}>钉钉审批单（下面这些填进钉钉表单）</div>
         <div>申请人和部门由当前账号绑定的钉钉身份自动填写；申请编号由钉钉生成；样品明细表由CRM按现有公司底稿生成并随审批上传。</div>
         {query.data?.fields.filter(f=>!f.system).map(field=><div key={field.id}>
           <div style={{marginBottom:4}}>{field.label}{field.required?' *':'（选填）'}</div>
@@ -105,12 +111,12 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
           :field.type==='NumberField'?<Input value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} placeholder="填0到99990之间的积分" onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>
           :<TextArea rows={3} value={draft.fields[field.id]||''} disabled={submitted||mutate.isPending} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value}})}/>}
         </div>)}
-        <div style={{fontWeight:600}}>随审批上传的申请表内容（可先保存草稿，提交前请核对）</div>
+        <div style={{fontWeight:600}}>打样申请单（下面这些写进随审批上传的那份 Excel 附件）</div>
         {([['product_name','产品名称'],['material_spec','主要材质和规格'],['product_size','产品尺寸'],['printing','产品印刷'],['accessories','主要辅料'],['packaging','包装要求'],['craft_requirement','做法要求']] as const).map(([key,label])=><div key={key}>
           <div>{label}</div><TextArea rows={2} value={draft.fields['_'+key]||''} disabled={submitted||mutate.isPending}
             onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value}})}/>
         </div>)}
-        <div>图纸、照片和其他制作资料（保存到当前打样单）</div>
+        <div style={{fontWeight:600}}>图纸、照片和其他制作资料（保存到当前打样单）</div>
         {!submitted && <AttachmentPanel businessType="sample" businessId={sampleId} writePermission="sample:manage"/>}
         {submitted && <div>已提交的资料已冻结，请在钉钉查看本轮附件。</div>}
       </>}
