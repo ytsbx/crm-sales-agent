@@ -16,7 +16,7 @@ from app.modules.user.model import User
 @pytest.fixture
 def setup(monkeypatch):
     inquiry=Obj(id=7,title='需要定制',description='尺寸与材质',quantity=10,target_price=20,
-                inquiry_no='INQ-TEST',version=1,customer_id=None,oa_quote_user_id=None)
+                inquiry_no='INQ-TEST',version=1,customer_id=1,oa_quote_user_id=None)
     cfg={'process_code':'PROC-TEST','field_map':{'title':'title-component'},
          'quote_owner_component':'quote-component','quote_owners':[{'user_id':'ding-quoter','name':'报价员甲'}],
          'originator_component':'originator-component'}

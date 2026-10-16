@@ -111,6 +111,8 @@ MAX_PRODUCT_IMAGES = 4
 #: 单张产品图放进去之后的**最大高度**（像素）。撑高第 6 行时以它为准 ——
 #: 太高会把下面的「打样具体要求」推得太靠下，申请表就不像一张单子了。
 MAX_IMAGE_HEIGHT = 140
+# 图片框的最大宽度，避免宽图在 Excel/WPS 中越过相邻图片框。
+MAX_IMAGE_WIDTH = 180
 
 
 def _patch_wps_styles(raw: bytes) -> bytes:
@@ -213,7 +215,9 @@ def _embed_product_images(sheet: Any, paths: list[Path]) -> int:
             with PILImage.open(path) as raw:
                 image = ImageOps.exif_transpose(raw)
                 scale = min((width - margin * 2) / image.width,
-                            (height - margin * 2) / image.height, 1.0)
+                            (height - margin * 2) / image.height,
+                            MAX_IMAGE_WIDTH / image.width,
+                            MAX_IMAGE_HEIGHT / image.height, 1.0)
                 target = (max(1, int(image.width * scale)), max(1, int(image.height * scale)))
                 buffer = io.BytesIO()
                 image.convert('RGBA').resize(target, PILImage.Resampling.LANCZOS).save(buffer, format='PNG')

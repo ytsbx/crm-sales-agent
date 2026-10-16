@@ -14,7 +14,7 @@ from app.modules.dingtalk.router import SUBMIT_REQUIRED_FIELDS, missing_submit_f
 
 
 def _inquiry(**over):
-    row = Obj(description="铜版纸 300g，四色印刷", quantity=1000)
+    row = Obj(description="铜版纸 300g，四色印刷", quantity=1000, customer_id=1, opportunity_id=None)
     for key, value in over.items():
         setattr(row, key, value)
     return row

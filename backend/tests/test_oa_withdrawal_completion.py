@@ -112,19 +112,21 @@ def test_sample_keeps_each_lines_material_craft_and_drawing_in_body_and_excel():
     summary=submission_summary(sample,items,note='逐项制作')
     for text in ('逐项制作','纸盒','塑料盒','数量：2','数量：3','材质：PP','工艺：压纹','图纸版本：B'):
         assert text in summary
-    sample.oa_submission_summary=summary
     book=load_workbook(io.BytesIO(render_application_form(sample,items)))
-    text='\n'.join(str(row[0] or '') for row in book['提交资料与逐条明细'].values)
-    assert text==summary
+    assert book.sheetnames == ['打样申请单', '物料需求单', '物料信息单']
+    # 完整逐条依据仍由正文快照保留；Excel 使用业务提供的三表模板，
+    # 只填写第一张申请单，不再额外创建“提交资料与逐条明细”工作表。
+    assert '提交资料与逐条明细' not in book.sheetnames
+    assert book['打样申请单']['E2'].value == '两种盒子'
+    assert book['物料需求单']['A1'].value == '打样物料需求单'
+    assert book['物料信息单']['A1'].value == '物料信息单'
 
 
-def test_excel_summary_preserves_long_text_and_formula_like_input():
-    long='详'*40000
-    sample=Obj(id=7,oa_submission_summary='='+long)
+def test_excel_template_keeps_other_tabs_unchanged():
+    sample=Obj(id=7,product_name='测试',material_spec='单头材质')
     book=load_workbook(io.BytesIO(render_application_form(sample,[])))
-    cells=list(book['提交资料与逐条明细']['A'])
-    assert ''.join(cell.value for cell in cells)=='='+long
-    assert all(cell.data_type=='s' for cell in cells)
+    assert book['物料需求单']['A1'].value == '打样物料需求单'
+    assert book['物料信息单']['A1'].value == '物料信息单'
 
 
 @pytest.mark.anyio

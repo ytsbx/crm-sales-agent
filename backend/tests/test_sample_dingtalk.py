@@ -16,7 +16,8 @@ def request():return Request({'type':'http','headers':[],'client':('127.0.0.1',1
 def setup(monkeypatch):
     sample=SampleRequest(id=7,customer_id=2,owner_id=1,status='pending',version=1,source_context={},made_at=None)
     account=Obj(status='active',dingtalk_userid='ding-1')
-    session=Obj(get=AsyncMock(return_value=account),flush=AsyncMock(),commit=AsyncMock())
+    session=Obj(get=AsyncMock(return_value=account),flush=AsyncMock(),commit=AsyncMock(),
+                execute=AsyncMock(return_value=Obj(all=lambda: [])))
     user=Obj(id=1,name='业务员甲',has=lambda _:True)
     client=Obj(get_user_dept_ids=AsyncMock(return_value=[20]))
     monkeypatch.setattr(routes.service,'get_visible_or_404',AsyncMock(return_value=sample))
@@ -113,7 +114,8 @@ async def test_standalone_uses_true_template_identity_and_excel(setup,monkeypatc
     assert '打样明细（共1条）' in generated.call_args.args[0].oa_submission_summary
     assert generated.call_args.kwargs['department_name'] == '义乌打样部'
     assert sent['resubmit'] is bool(previous_status)
-    assert generated.call_args.args[0].product_name=='参考产品'
+    # 产品名称来自样品明细；钉钉弹窗不再提供一套重复的产品名称输入框。
+    assert generated.call_args.args[0].product_name is None
     assert generated.call_args.args[0].estimated_hours==3
     upload.assert_awaited_once()
     assert routes.metadata(sample)['submitted']

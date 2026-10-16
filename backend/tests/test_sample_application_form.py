@@ -341,13 +341,12 @@ def test_product_images_are_embedded_and_scaled(tmp_path):
     data = render_application_form(_sample(), _items(), product_images=paths)
     workbook = load_workbook(io.BytesIO(data))
     sheet = workbook["打样申请单"]
-    on_row6 = [i for i in sheet._images if (i.anchor._from.row + 1) == 6]
-    assert len(on_row6) == 4
-    for image in on_row6:
+    on_row7 = [i for i in sheet._images if (i.anchor._from.row + 1) == 7]
+    assert len(on_row7) == 4
+    for image in on_row7:
         assert image.width <= 180 and image.height <= 140, (image.width, image.height)
-    # 第 6 行被撑高（否则图会盖住下面的「打样具体要求」那一行）
-    assert sheet.row_dimensions[6].height and sheet.row_dimensions[6].height > 40
-    # 下面那一行必须还在（被"推下去"而不是被盖住）
+    # 第 7 行是模板预留的图片框，下面的要求行仍然存在。
+    assert sheet.row_dimensions[7].height and sheet.row_dimensions[7].height > 40
     assert sheet["A8"].value == "打样具体要求"
 
 
@@ -363,32 +362,27 @@ def test_no_images_keeps_the_template_untouched(tmp_path):
     assert sheet.row_dimensions[6].height in (None, 18.75)
 
 
-def test_broken_image_is_skipped_not_fatal(tmp_path):
-    """一张坏图**不能毁掉整份申请表** —— 那会让"发起审批"这个动作整个卡住。
-
-    这里混一张不存在的文件与一张真图：真图照放，坏图跳过，函数不抛。
-    """
+def test_broken_image_is_rejected(tmp_path):
+    """无效图片要明确拒绝，避免把坏附件静默传给钉钉。"""
     import io
 
     from openpyxl import load_workbook
 
     good = _make_png(tmp_path / "ok.png")
     missing = tmp_path / "nope.png"  # 不存在
-    data = render_application_form(_sample(), _items(), product_images=[missing, good])
-    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
-    assert len([i for i in sheet._images if (i.anchor._from.row + 1) == 6]) == 1
+    with pytest.raises(ValueError, match="第1张产品图片无法读取"):
+        render_application_form(_sample(), _items(), product_images=[missing, good])
 
 
 def test_at_most_four_images(tmp_path):
-    """最多 4 张（主人：「产品图片不是可以放4张吗」）—— 多传的忽略，不报错。"""
+    """最多 4 张，超出时明确提示整理附件。"""
     import io
 
     from openpyxl import load_workbook
 
     paths = [_make_png(tmp_path / f"q{i}.png") for i in range(6)]
-    data = render_application_form(_sample(), _items(), product_images=paths)
-    sheet = load_workbook(io.BytesIO(data))["打样申请单"]
-    assert len([i for i in sheet._images if (i.anchor._from.row + 1) == 6]) == 4
+    with pytest.raises(ValueError, match="产品图片最多4张"):
+        render_application_form(_sample(), _items(), product_images=paths)
 
 
 @pytest.mark.parametrize(

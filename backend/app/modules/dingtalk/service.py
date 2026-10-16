@@ -155,7 +155,9 @@ def build_form_component_values(
         if value in (None, "", [], {}):
             continue
         if isinstance(value, bool):
-            raise ValueError(f'审批字段 {component_id} 不能使用布尔值')
+            # 布尔值不是钉钉表单控件支持的文本类型，跳过它，避免把
+            # Python 的 True/False 误提交成用户可见的表单内容。
+            continue
         definition = definitions.get(component_id, {})
         kind = definition.get('type') or (component_id.split('_', 1)[0] if '_' in component_id else None)
         if kind == 'InnerContactField':
