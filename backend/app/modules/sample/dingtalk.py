@@ -385,7 +385,21 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
         for filename,path in prepared:
             attachments.append(await upload_approval_attachment(client,user_id=account.dingtalk_userid,filename=filename,content=path.read_bytes()))
     except (DingTalkError,ValueError,OSError,httpx.HTTPError) as error:
-        raise AppError(ErrorCode.PARAM_ERROR,'打样资料未能传入钉钉，尚未发起审批。请核对附件权限或稍后重试',422) from error
+        # ⚠️ **把真实原因带上**（2026-10-16 主人：「为什么失败了」）：
+        # 原来这里一律抛一句"请核对附件权限或稍后重试"，把 `DingTalkError` 里
+        # 已经写好的**具体是哪一步失败**（附件空间查询 / 上传信息 / 签名 PUT / 入库）
+        # 连同钉钉返回的 HTTP 状态码全吞掉了 —— 用户看到的是一句无从下手的提示，
+        # 我也只能去猜。失败原因要能直接看到，才谈得上修。
+        _detail = str(error) or error.__class__.__name__
+        _status = getattr(error, 'http_status', None)
+        if _status:
+            _detail = f'{_detail}（钉钉 HTTP {_status}）'
+        # 服务端日志也留一条原始记录：接口层面只回一句原因，排查时仍需要完整异常
+        import logging as _logging
+        _logging.getLogger('crm.sample').warning(
+            '打样资料传入钉钉失败 sample=%s filename=%s: %s', sample.id,
+            [f for f, _ in prepared], error, exc_info=True)
+        raise AppError(ErrorCode.PARAM_ERROR,f'打样资料未能传入钉钉，尚未发起审批：{_detail}',422) from error
     values[fields['样品明细明细表']['id']]=json.dumps(attachments,ensure_ascii=False)
     # 先保存流程归属；OA 服务在调用外部前持久化唯一占位，断线不会自动重复建单。
     sample.source_context={**sample.source_context,META_KEY:{**metadata(sample),'submitted':True}}

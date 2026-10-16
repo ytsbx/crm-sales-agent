@@ -25,7 +25,17 @@ async def upload_approval_attachment(client, *, user_id: str, filename: str, con
             except ValueError as exc:
                 raise DingTalkError("附件接口响应无法解析", api=path, http_status=resp.status_code) from exc
             if resp.status_code != 200 or not isinstance(data, dict) or data.get("success") is False:
-                raise DingTalkError("附件上传被拒绝，请管理员核对审批附件及钉盘接口权限", api=path, http_status=resp.status_code)
+                # ⚠️ **把钉钉自己的话带上**（2026-10-16）：403 时钉钉通常会回
+                # `{"code":"Forbidden.AccessDenied.xxx","message":"..."}` —— 缺哪个权限、
+                # 或不属于该组织，看这句话就知道。原来这里只回一句笼统的
+                # "请管理员核对…权限"，把 `code` / `message` 全丢了，
+                # 于是只能靠猜（主人问「为什么失败了」时就是这样）。
+                _code = str(data.get("code") or "")
+                _msg = str(data.get("message") or "")
+                _extra = " ".join(x for x in (_code, _msg) if x)
+                raise DingTalkError(
+                    f"钉钉拒绝了附件上传{'：' + _extra if _extra else ''}",
+                    api=path, http_status=resp.status_code)
             return data
 
         # storage 接口使用 unionId；必须由本次发起人的真实 userid 查询。
