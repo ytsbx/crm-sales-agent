@@ -247,3 +247,20 @@ async def test_withdraw_timeout_explains_uncertainty_and_does_not_close_contract
     with pytest.raises(AppError,match='本次未作废合同'):
         await flow.withdraw_before_void(session,Obj(id=1),Obj(id=2))
     flow.store_snapshot.assert_not_awaited()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('payload',[
+    DocumentCreate(customer_id=1,template_id=2),
+    DocumentCreate(customer_id=1,source_type='customer_drafted'),
+    DocumentCreate(customer_id=1,source_type='customer_drafted',original_file_id=5,template_id=2),
+])
+async def test_contract_entry_accepts_uploads_only(payload):
+    from app.modules.contract import router
+    with pytest.raises(AppError,match='系统模板生成已停用'):
+        await router.generate_document(payload,Obj(),Obj(),Obj())
+
+
+def test_template_creation_is_no_longer_a_public_action():
+    from app.modules.contract.router import router
+    assert not any(getattr(route,'path','')=='/contract-templates' and 'POST' in getattr(route,'methods',set()) for route in router.routes)

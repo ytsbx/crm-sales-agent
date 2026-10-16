@@ -15,7 +15,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.contract import service as svc
-from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid, TemplateCreate
+from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid
 from app.modules.dingtalk import service as dingtalk_service
 from app.modules.dingtalk.model import OaInstance, allowed_actions
 
@@ -336,28 +336,6 @@ async def list_templates(
     return ok(await svc.list_templates(session))
 
 
-@router.post("/contract-templates")
-async def create_template(
-    payload: TemplateCreate,
-    request: Request,
-    user: CurrentUser = Depends(require_permission("settings:manage")),
-    session: AsyncSession = Depends(get_db),
-):
-    """新增模板=新增版本；旧版本保留，已生成的文档钉死当时的版本。"""
-    template = await svc.create_template(session, payload=payload, user_id=user.id)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="create_template",
-        business_type="contract_template",
-        business_id=template.id,
-        after={"name": template.name, "doc_type": template.doc_type, "version": template.version},
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(svc.serialize_template(template, is_current=True), "模板版本已保存")
-
-
 @router.get("/contract-documents")
 async def list_documents(
     customer_id: int | None = Query(None),
@@ -394,6 +372,10 @@ async def generate_document(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    if payload.source_type != "customer_drafted" or not payload.original_file_id or payload.template_id is not None:
+        raise AppError(ErrorCode.PARAM_ERROR, "系统模板生成已停用，请上传合同 Word 或 PDF 原文件", 422)
+    if payload.parent_id is not None or payload.supersede_parent:
+        raise AppError(ErrorCode.PARAM_ERROR, "请将补充或续签合同作为新合同原文件上传", 422)
     from app.modules.customer import service as customer_service
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote

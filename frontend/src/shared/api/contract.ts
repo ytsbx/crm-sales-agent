@@ -130,28 +130,19 @@ export function listContractDocuments(
   return api.get<PageResult<ContractDocument>>('/contract-documents', query)
 }
 
-export function generateContractDocument(payload: {
-  original_file_id?: number | null
-  template_id?: number | null
+/** 合同入口只接收用户上传的原文件，不提供系统模板生成。 */
+export function uploadContractDocument(payload: {
+  original_file_id: number
   customer_id: number
   order_id?: number | null
   quote_id?: number | null
-  /** 钉死依据的报价版本；只传 order_id 时后端会按订单依据的那一版自动带出 */
   quote_version_id?: number | null
   title?: string | null
-  extra_fields: Record<string, string>
   expiry_date?: string | null
-  /** 协议生效日。续签时填：只记到期日处理不了「提前签、未来才生效」的情况 */
   effective_date?: string | null
-  /** 补充协议 / 续签：指向被补充的原文档，原件不动、旧版保留 */
-  parent_id?: number | null
-  /** 续签时是否替代旧协议：勾了才结束旧协议的在办提醒 */
-  supersede_parent?: boolean
-  /** 幂等键：同一张弹窗里的重复提交带同一个值，后端据此返回原来那份，而不是再建一份。 */
   request_key?: string
-  source_type?: 'crm_template' | 'customer_drafted'
 }) {
-  return api.post<ContractDocument>('/contract-documents', payload)
+  return api.post<ContractDocument>('/contract-documents', { ...payload, source_type: 'customer_drafted' })
 }
 
 export function startContractDingTalkApproval(docId: number) {
