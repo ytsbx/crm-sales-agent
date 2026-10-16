@@ -144,6 +144,11 @@ class SampleRequest(Base, IdMixin):
     #   · `deliver_date`           = 申请表上的「交样时间」：**什么时候交给客户**。
     # 我原来把前者直接当后者写进 Excel，等于把两个日期合并成一个 —— 语义就错了。
     deliver_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # 交样时间
+    # 「打样人」——申请表 H3 那一格：**谁动手打的样**。
+    # 与第 17 行那个「打样人」（打样部回复内容区，打样部在钉钉里填）不是同一格；
+    # 与 `production_owner_id`（CRM 里的制作责任人，是个用户外键）也不是一回事：
+    # 这里存的是**写在纸上的名字**（可能是外部师傅，CRM 里没有账号）。
+    sample_maker: Mapped[str | None] = mapped_column(String(64), nullable=True)  # 打样人
     acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)  # 验收标准
     # 打样费用：**空着 = 未填**，与"免费（0 元）"是两回事，所以列可空、不设默认值。
     # 之前是 NOT NULL + default 0，前端清空输入框传 null 会直接撞非空约束。
