@@ -10,6 +10,7 @@ import { newRequestKey } from '../../shared/api/requestKey'
 import { AdoptOaInstanceModal, ResolveOaActions } from '../../shared/components/ResolveOaActions'
 import { approvalProgress } from '../knowledge/approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
+import FormLabel from '../../shared/components/FormLabel'
 
 interface Draft { mode: 'standalone' | 'inquiry'; source_oa_id?: number | null; fields: Record<string,string>; submitted?: boolean; resubmit?: boolean }
 interface Options {
@@ -27,9 +28,9 @@ const time = (value: string | null | undefined) => value && !Number.isNaN(new Da
  * 于是一屏里三种宽度、左边缘参差、下面还散着没有标签的裸输入框。
  * 统一走这个件之后：标签与控件成对、两列等宽、纵向间距一致。
  */
-function Field({label,children,span}:{label:string;children:ReactNode;span?:boolean}) {
+function Field({label,children,span,required,hint}:{label:string;children:ReactNode;span?:boolean;required?:boolean;hint?:string}) {
   return <div style={span?{gridColumn:'1 / -1'}:undefined}>
-    <div style={{marginBottom:4,fontSize:13,color:'var(--crm-text-2)'}}>{label}</div>
+    <FormLabel required={required} hint={hint} style={{fontSize:13,color:'var(--crm-text-2)'}}>{label}</FormLabel>
     {children}
   </div>
 }
@@ -165,7 +166,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px 12px'}}>
           {query.data?.fields.filter(f=>!f.system && f.label!=='本次打样积分').map(field=>
             <Field key={field.id} span={!['DDSelectField','DDDateField','NumberField'].includes(field.type)}
-              label={field.label + (field.required ? ' *' : '（选填）')}>
+              label={field.label} required={field.required} hint={!field.required ? '（选填）' : undefined}>
               {field.type==='DDSelectField'?<Select style={{width:'100%'}} placeholder='请选择' value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
                 optionList={field.options.map(value=>({value,label:value}))} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value as string}})}/>
               :field.type==='DDDateField'?<DatePicker type='date' format='yyyy-MM-dd' style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}

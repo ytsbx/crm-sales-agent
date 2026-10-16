@@ -12,6 +12,7 @@ import type { Product } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
+import { getPersistedAuthToken } from '../../shared/auth-token'
 
 const EMPTY_FORM: ProductPayload = {
   name: '',
@@ -68,7 +69,7 @@ export default function ProductListPage() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
 
   const tokenHeader = () => {
-    const token = JSON.parse(localStorage.getItem('crm-auth') ?? '{}')?.state?.token
+    const token = getPersistedAuthToken()
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
 

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 
 import { calendarDay } from '../calendar-day'
+import { getPersistedAuthToken } from '../auth-token'
 import { Button, Modal, Table, Toast } from '@douyinfe/semi-ui'
 
 /**
@@ -84,7 +85,7 @@ export default function CsvImportButtons({
   const [result, setResult] = useState<ImportSummary | null>(null)
 
   const tokenHeader = () => {
-    const token = JSON.parse(localStorage.getItem('crm-auth') ?? '{}')?.state?.token
+    const token = getPersistedAuthToken()
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
 

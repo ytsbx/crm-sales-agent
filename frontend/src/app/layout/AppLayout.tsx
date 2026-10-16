@@ -13,6 +13,7 @@ import { useAuthStore } from '../../shared/store/auth'
 import { useCurrentUserSync } from '../../shared/hooks/useCurrentUserSync'
 import { useTabsStore } from '../../shared/store/tabs'
 import { useCopilotStore } from '../../shared/store/copilot'
+import { readLocalStorage, writeLocalStorage } from '../../shared/browser-storage'
 
 /** 独立页面（不在左侧菜单里）的页签名 */
 const EXTRA_TABS: Record<string, string> = { '/pricing': '核价', '/order-drafts': '订单草稿' }
@@ -37,11 +38,11 @@ export default function AppLayout() {
   const [siderOpen, setSiderOpen] = useState(false)
   // 桌面端侧边栏折叠：默认展开，状态记住，下次进来保持一致
   const [siderCollapsed, setSiderCollapsed] = useState(
-    () => localStorage.getItem('sider-collapsed') === '1',
+    () => readLocalStorage('sider-collapsed') === '1',
   )
 
   useEffect(() => {
-    localStorage.setItem('sider-collapsed', siderCollapsed ? '1' : '0')
+    writeLocalStorage('sider-collapsed', siderCollapsed ? '1' : '0')
   }, [siderCollapsed])
 
   // 权限**跟着服务器走**：启动拉一次 + 每 60 秒一次（主人 2026-10-12 拍板）。

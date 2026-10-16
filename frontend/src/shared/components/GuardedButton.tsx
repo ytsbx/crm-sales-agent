@@ -1,4 +1,3 @@
-import { useRef } from 'react'
 import { Button } from '@douyinfe/semi-ui'
 import type { ButtonProps } from '@douyinfe/semi-ui/lib/es/button'
 
@@ -91,12 +90,6 @@ export default function GuardedButton({
   ...buttonProps
 }: GuardedButtonProps) {
   const reasons = blockedReasons ?? []
-  // 只在"确实被挡住"时才拦截点击。用 ref 而不是闭包里的 `disabled`：
-  // 处理器挂在**外层**（要接住冒泡过来的点击），而它每次渲染都会重建 ——
-  // 用 ref 能保证读到的永远是最新那次渲染的值。
-  const blockedRef = useRef(disabled)
-  blockedRef.current = disabled
-
   const notifyBlocked = useBlockedNotify(reasons, action)
   // 与 BlockedHint / 提示条同一套判据：去重后还有没有话说
   const hasReason = distinctReasons(reasons.filter((t) => t.trim() !== '')).length > 0
@@ -114,7 +107,7 @@ export default function GuardedButton({
         // 可用态下**必须放过去**（不吞事件），否则就成了"能点也不响应"。
         // `useBlockedNotify` 自己也判了一次（没有原因时什么都不做），
         // 这里再挡一道是为了不依赖它的内部行为。
-        if (shouldInterceptClick(blockedRef.current)) notifyBlocked()
+        if (shouldInterceptClick(disabled)) notifyBlocked()
       }}
     >
       <Button

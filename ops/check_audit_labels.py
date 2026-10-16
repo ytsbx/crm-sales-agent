@@ -34,6 +34,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+# PowerShell on Chinese Windows commonly exposes a GBK stdout.  This check
+# intentionally prints Chinese diagnostics and must remain runnable without
+# requiring every caller to set PYTHONIOENCODING first.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 REPO = Path(__file__).resolve().parent.parent
 BACKEND = REPO / 'backend'
 LABELS_TS = REPO / 'frontend' / 'src' / 'shared' / 'audit-labels.ts'
@@ -177,8 +185,9 @@ def _python_with_backend_deps() -> str | None:
         try:
             probe = subprocess.run(
                 [candidate, '-c', 'import sqlalchemy'],
-                cwd=BACKEND, capture_output=True, text=True, timeout=60,
-                env={**os.environ, 'PYTHONPATH': '.'},
+                cwd=BACKEND, capture_output=True, text=True,
+                encoding='utf-8', errors='replace', timeout=60,
+                env={**os.environ, 'PYTHONPATH': '.', 'PYTHONIOENCODING': 'utf-8'},
             )
         except (OSError, subprocess.SubprocessError):
             continue
@@ -278,7 +287,8 @@ def main() -> int:
         result = subprocess.run(
             [interpreter, 'scripts/gen_audit_field_labels.py'],
             cwd=BACKEND, capture_output=True, text=True,
-            env={**os.environ, 'PYTHONPATH': '.'},
+            encoding='utf-8', errors='replace',
+            env={**os.environ, 'PYTHONPATH': '.', 'PYTHONIOENCODING': 'utf-8'},
         )
     if result is not None and result.returncode != 0:
         problems.append(
@@ -298,7 +308,8 @@ def main() -> int:
         result2 = subprocess.run(
             [interpreter, 'scripts/gen_audit_action_labels.py'],
             cwd=BACKEND, capture_output=True, text=True,
-            env={**os.environ, 'PYTHONPATH': '.'},
+            encoding='utf-8', errors='replace',
+            env={**os.environ, 'PYTHONPATH': '.', 'PYTHONIOENCODING': 'utf-8'},
         )
         if result2.returncode != 0:
             problems.append(
@@ -321,6 +332,7 @@ def main() -> int:
     result3 = subprocess.run(
         [sys.executable, 'ops/gen_audit_type_labels.py'],
         cwd=REPO, capture_output=True, text=True,
+        encoding='utf-8', errors='replace',
     )
     if result3.returncode != 0:
         problems.append(

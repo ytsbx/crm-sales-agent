@@ -30,6 +30,7 @@ import time
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -576,7 +577,7 @@ async def receive_wecom_event(
         await session.execute(
             select(WeComSyncJob.id)
             .where(WeComSyncJob.job_type == "external_contact")
-            .where(WeComSyncJob.detail["fingerprint"].astext == fingerprint)
+            .where(WeComSyncJob.event_fingerprint == fingerprint)
             .limit(1)
         )
     ).scalars().first()
@@ -589,10 +590,23 @@ async def receive_wecom_event(
         status="success",
         success_count=1,
         fail_count=0,
+        event_fingerprint=fingerprint,
         detail={"source": "event_callback", "event": event, "fingerprint": fingerprint},
     )
     session.add(job)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 两个相同回调并发时，唯一索引只允许一个落库；另一个按企微要求
+        # 视为已处理并返回 success，不能把第三方重试风暴放大成 500。
+        await session.rollback()
+        duplicate = await session.execute(
+            select(WeComSyncJob.id)
+            .where(WeComSyncJob.event_fingerprint == fingerprint)
+            .limit(1)
+        )
+        if duplicate.scalar_one_or_none() is None:
+            raise
     # 企微要求回 "success"，否则会重试
     return Response(content="success", media_type="text/plain")
 

@@ -31,8 +31,8 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
   const navigate = useNavigate()
   const client = useQueryClient()
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
-  const requestKey = useRef('')
-  if (!requestKey.current) requestKey.current = newRequestKey()
+  // 初始化时生成一次；重试时仍在事件处理器里换新键，避免渲染阶段读写 ref。
+  const requestKey = useRef(newRequestKey())
   const sending = useRef(false)
   const query = useQuery({ queryKey: ['source-preview', mode, source], queryFn: () => mode === 'order' ? getOrderDraftSource(source) : getSampleSource(source), retry: false, refetchOnWindowFocus: false })
   useEffect(() => {

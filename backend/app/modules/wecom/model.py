@@ -143,6 +143,8 @@ class WeComSyncJob(Base, IdMixin):
     success_count: Mapped[int] = mapped_column(BigInteger, default=0)
     fail_count: Mapped[int] = mapped_column(BigInteger, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 企微回调的密文指纹：独立列并加唯一索引，避免并发回调绕过 JSON 查询去重。
+    event_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 同步/转交的业务明细：拉了哪些页、跳过了哪些人、转交清单等
     detail: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 

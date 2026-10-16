@@ -34,6 +34,8 @@
 正好把"免重复录入"这条验收标准踩没。所以 `build_form_component_values`
 只认调用方给的字段映射，映射从模板字段清单来（见 21-交接说明-2026-10-04.md §7.1 的待外部输入）。
 """
+from collections import deque
+
 
 import json
 import secrets
@@ -1187,10 +1189,11 @@ async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
     匹配阶段自己和自己撞（第一次绑上了，第二次又把它判成"已占用"）。
     """
     members: dict[str, dict[str, Any]] = {}
-    pending: list[int] = [1]
+    # deque 避免在大型部门树上反复 pop(0) 造成 O(n²) 扫描。
+    pending: deque[int] = deque([1])
     seen: set[int] = set()
     while pending:
-        dept_id = pending.pop(0)
+        dept_id = pending.popleft()
         if dept_id in seen:
             continue
         seen.add(dept_id)
@@ -1218,7 +1221,15 @@ async def fetch_all_members(api: Any) -> list[dict[str, Any]]:
             # 反复给同一个 cursor 会死循环（接口异常时的兜底），宁可少拉一页
             if next_cursor in (None, cursor):
                 break
-            cursor = int(next_cursor)
+            # 外部接口返回值不可信；非法 cursor 不应让整次通讯录同步因
+            # ValueError 直接失败，也不能继续请求一个无法确认的分页位置。
+            try:
+                next_cursor = int(next_cursor)
+            except (TypeError, ValueError):
+                break
+            if next_cursor == cursor:
+                break
+            cursor = next_cursor
     return list(members.values())
 
 

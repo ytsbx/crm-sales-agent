@@ -123,6 +123,7 @@ export default function KnowledgePage() {
   const [pendingPhotos, setPendingPhotos] = useState<FileItem[]>([])
   const [pendingAttachments, setPendingAttachments] = useState<FileItem[]>([])
   const saveIntent = useRef(false)
+  const [saveIntentState, setSaveIntentState] = useState(false)
   const savedInquiry = useRef<CustomInquiryRow | null>(null)
   // 修订（§3.3）：客户改了要求 → 新增一版并留说明，旧版保留
   const [reviseTarget, setReviseTarget] = useState<CustomInquiryRow | null>(null)
@@ -316,7 +317,9 @@ export default function KnowledgePage() {
       return row
     },
     onSuccess: () => {
-      if (!saveIntent.current) Toast.success('草稿已保存，尚未发送钉钉审批')
+      const wasSubmit = saveIntent.current
+      setSaveIntentState(false)
+      if (!wasSubmit) Toast.success('草稿已保存，尚未发送钉钉审批')
       setEditVisible(false)
       setEditing(null)
       savedInquiry.current = null
@@ -325,7 +328,7 @@ export default function KnowledgePage() {
       setForm(EMPTY_FORM)
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => { setSaveIntentState(false); Toast.error(error.message) },
   })
 
   const reviseMutation = useMutation({
@@ -709,6 +712,7 @@ export default function KnowledgePage() {
       }
     }
     saveIntent.current = submit
+    setSaveIntentState(submit)
     saveMutation.mutate({ title: form.title.trim(), description: form.description.trim() || null,
       customer_id: form.customer_id ?? null, opportunity_id: form.opportunity_id ?? null,
       quantity: form.quantity.trim() ? parseOptionalNumber(form.quantity) : null,
@@ -831,8 +835,8 @@ export default function KnowledgePage() {
         cancelButtonProps={{ disabled: saveMutation.isPending }}
         footer={<div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <Button disabled={saveMutation.isPending} onClick={() => setEditVisible(false)}>取消</Button>
-          <Button loading={saveMutation.isPending && !saveIntent.current} disabled={saveMutation.isPending} onClick={() => saveForm(false)}>保存草稿</Button>
-          <Button theme="solid" loading={saveMutation.isPending && saveIntent.current}
+          <Button loading={saveMutation.isPending && !saveIntentState} disabled={saveMutation.isPending} onClick={() => saveForm(false)}>保存草稿</Button>
+          <Button theme="solid" loading={saveMutation.isPending && saveIntentState}
             disabled={saveMutation.isPending || submissionOptions.isPending || submissionOptions.isError} onClick={() => saveForm(true)}>提交到钉钉</Button>
         </div>}
         width={760}

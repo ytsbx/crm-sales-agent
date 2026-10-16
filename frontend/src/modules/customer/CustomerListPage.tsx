@@ -30,6 +30,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
+import { getPersistedAuthToken } from '../../shared/auth-token'
 
 type Scope = 'mine' | 'pool' | 'all'
 
@@ -151,7 +152,7 @@ export default function CustomerListPage() {
   const notifyExportPurposeBlocked = useBlockedNotify(exportBlockedReasons, '导出')
 
   const tokenHeader = () => {
-    const token = JSON.parse(localStorage.getItem('crm-auth') ?? '{}')?.state?.token
+    const token = getPersistedAuthToken()
     return token ? { Authorization: `Bearer ${token}` } : {}
   }
 
