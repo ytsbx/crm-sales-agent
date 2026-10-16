@@ -94,6 +94,11 @@ export function resolveOaInstance(oaId: number, payload: OaResolvePayload) {
   return api.post<OaApprovalInstance>(`/oa-instances/${oaId}/resolve`, payload)
 }
 
+/** 撤回仍在钉钉流转中的询价或独立打样审批。 */
+export function withdrawOaInstance(oaId: number) {
+  return api.post<OaApprovalInstance>(`/oa-instances/${oaId}/withdraw`, {})
+}
+
 /** 手动拉一次审批状态（与定时任务同一个函数，验收时不用等）。 */
 export function syncOaApprovals() {
   return api.post<{ checked: number; changed: number; disabled?: boolean; message?: string }>('/dingtalk/oa-sync')

@@ -4,7 +4,7 @@
 所以换模板不用改代码——这正是"业务定了走钉钉"之后还需要的那一步。
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 
 from fastapi import APIRouter, Depends, Request
@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_audit
 from app.core.config import settings as app_settings
 from app.core.database import get_db
-from app.core.deps import CurrentUser, client_ip, require_permission
+from app.core.deps import CurrentUser, client_ip, get_current_user, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.dingtalk import service as svc
@@ -78,6 +78,29 @@ class StartApproval(BaseModel):
     attachment_file_ids: list[PositiveInt] = Field(default_factory=list, max_length=10)
 
 
+#: 发起钉钉询价前，CRM 侧必须已经有的两项。生产部就是拿这两项去报价的。
+#: 为什么放在后端（2026-10-16 补）：它们原先**只在前端拦**
+#: （`KnowledgePage` 保存前校验），而接口接受为空并照发 —— 于是任何直接调接口的
+#: 路径、或"先存草稿 → 清空字段 → 再提交"的人，都会让生产部收到一张没有需求说明、
+#: 没有数量的询价单。文档口径是「提交前检查审批必填项」，检查不能只长在界面上。
+#:
+#: ⚠️ 只用于**提交**，不用于保存草稿：草稿允许暂缺是同一份文档的明确要求。
+SUBMIT_REQUIRED_FIELDS = (("材质及工艺要求", "description"), ("预估订购数量", "quantity"))
+
+
+def missing_submit_fields(inquiry) -> list[str]:
+    """提交前缺哪些必填项（返回中文名列表，空列表表示齐了）。
+
+    `None`、空串、纯空白都算"没填"——前端清空一个字段存下来的就是空串。
+    """
+    missing: list[str] = []
+    for label, attr in SUBMIT_REQUIRED_FIELDS:
+        value = getattr(inquiry, attr, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(label)
+    return missing
+
+
 @router.post("/inquiries/{inquiry_id}/oa-approval")
 async def start_inquiry_approval(
     inquiry_id: int,
@@ -95,6 +118,17 @@ async def start_inquiry_approval(
     from app.modules.inquiry import service as inquiry_service
 
     inquiry = await inquiry_service.get_visible_or_404(session, user, inquiry_id)
+
+    # 提交前的必填项检查（2026-10-16 补，后端侧）：判据见 `missing_submit_fields`。
+    # 只拦**提交**，不拦保存草稿：草稿本来就允许暂缺（同一份文档的明确要求）。
+    missing_required = missing_submit_fields(inquiry)
+    if missing_required:
+        raise AppError(
+            ErrorCode.REQUIRED_FIELD_MISSING,
+            f"提交钉钉询价前请先补齐：{'、'.join(missing_required)}。"
+            "生产部要按这两项报价，缺了报不出来；也可以先保存草稿。",
+            422,
+        )
 
     cfg = await settings_service.get_setting(session, "dingtalk_oa")
     process_code = (cfg or {}).get("process_code") or ""
@@ -114,6 +148,20 @@ async def start_inquiry_approval(
         value = getter(inquiry)
         if value not in (None, ""):
             field_map[component_id] = value
+    content_component = (cfg or {}).get("content_component")
+    if content_component:
+        field_map[str(content_component)] = "\n".join(
+            f"{label}：{value}"
+            for label, value in (
+                ("询价编号", inquiry.inquiry_no),
+                ("产品名称", inquiry.title),
+                ("需求说明", inquiry.description),
+                ("数量", inquiry.quantity),
+                ("目标价", inquiry.target_price),
+                ("版本", inquiry.version),
+            )
+            if value not in (None, "")
+        )
     supplemental_fields = await _submission_fields(cfg or {})
     supplied = payload.extra_fields or {}
     attachment_field = next((f for f in supplemental_fields if f["type"] == "DDAttachment"), None)
@@ -343,12 +391,51 @@ async def _drop_stale_reservation(
     return True
 
 
+async def ensure_oa_type_scope(session, user, row: OaInstance) -> None:
+    """按 `oa_type` 用**该业务模块自己的**可见性判据守这条 OA 记录。
+
+    三个类型各走各的口径，不新写规则：
+      · `inquiry`  → `inquiry.service.get_visible_or_404`（需求的数据范围）
+      · `sample`   → `sample.service.get_visible_or_404(allow_external_flow=True)`
+                     （打样单已提交钉钉后会被冻结，不放开这个开关，发单的人自己都动不了）
+      · `contract` → `contract.visibility` 的归属判据（客户负责人→订单负责人→创建人）
+
+    未知类型**不放行**：新增 oa_type 时必须同时在这里给出判据，默认拒绝。
+    """
+    if row.oa_type == "inquiry":
+        from app.modules.inquiry import service as inquiry_service
+
+        await inquiry_service.get_visible_or_404(session, user, row.inquiry_id)
+        return
+    if row.oa_type == "sample":
+        from app.modules.sample import service as sample_service
+
+        await sample_service.get_visible_or_404(
+            session, user, row.inquiry_id, allow_external_flow=True
+        )
+        return
+    if row.oa_type == "contract":
+        from app.core.data_scope import ensure_in_scope
+        from app.modules.contract.model import ContractDocument
+        from app.modules.contract.visibility import contract_scope_owner_id
+
+        doc = await session.get(ContractDocument, row.inquiry_id)
+        if doc is None or doc.deleted_at is not None:
+            raise AppError(ErrorCode.NOT_FOUND, "合同文档不存在", 404)
+        await ensure_in_scope(
+            session, user,
+            owner_id=await contract_scope_owner_id(session, doc), label="合同文档",
+        )
+        return
+    raise AppError(ErrorCode.NOT_FOUND, "这条审批记录的业务类型无法处理", 404)
+
+
 @router.post("/oa-instances/{oa_id}/resolve")
 async def resolve_oa_instance(
     oa_id: int,
     payload: ResolveOa,
     request: Request,
-    user: CurrentUser = Depends(require_permission("quote:manage")),
+    user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
     """人工处理"结果不明"的钉钉发起（口径 2026-10-04：不自动重发，转人工）。
@@ -364,15 +451,23 @@ async def resolve_oa_instance(
     """
     from app.core.idempotency import complete, release, request_key_from, reserve
     from app.modules.dingtalk.model import OA_ACTION_LABEL, OA_STATUS_LABEL
-    from app.modules.inquiry import service as inquiry_service
 
     row = await session.get(OaInstance, oa_id)
-    if row is not None and row.oa_type != "inquiry":
-        raise AppError(ErrorCode.NOT_FOUND, "询价审批记录不存在", 404)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, "审批记录不存在", 404)
-    # 数据范围跟需求走：能对别人的需求发起审批的人，同样需要能处理它的异常
-    await inquiry_service.get_visible_or_404(session, user, row.inquiry_id)
+    # 数据范围**跟着业务对象走**（2026-10-16 放开到三种类型）：
+    #   · 询价 → 需求（quote:view 那套可见性）
+    #   · 打样 → 打样单（允许已提交钉钉的单据，否则自己发的单自己动不了）
+    #   · 合同 → 合同文档（客户负责人 → 订单负责人 → 创建人）
+    #
+    # 这里原来写死"非 inquiry 直接 404"，于是合同与打样一旦落在「结果待人工核对」
+    # 就**没有任何出口**：不能认领钉钉上可能已建出的那张单、不能重发、不能作废本轮
+    # （而三动作正是共享状态机为这个状态定义的唯一出路）。回退的作法是作废整份单据
+    # 重新发起——那恰恰是状态机要防的重复建单。
+    #
+    # ⚠️ 各分支调用的都是**该模块自己的**可见性判据，不是新写一套：
+    # 少一处就等于给这些单据开了个跨人越权的后门。
+    await ensure_oa_type_scope(session, user, row)
 
     # **同键回放排在状态闸门之前**（8.15 的约定：同键同内容必须回放原结果）。
     # 反过来写的话，`resend` 成功之后状态已经推进到"审批中"，客户端弱网重发
@@ -465,6 +560,53 @@ async def resolve_oa_instance(
         )
     await session.commit()
     return ok(svc.serialize(row), "已处理")
+
+
+@router.post("/oa-instances/{oa_id}/withdraw")
+async def withdraw_oa_instance(
+    oa_id: int,
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """撤回仍在钉钉流转中的询价/打样/合同审批。审批完成后不能从 CRM 撤回。
+
+    ⚠️ 权限不再写死 `quote:manage`（2026-10-16）：打样弹窗由只要
+    `sample:manage` 的接口打开，按钮却打到这里 → 只有打样权限的人点撤回必然 403，
+    而按钮照常显示。改成按 `oa_type` 走各模块自己的可见性判据（与核定入口同一套）。
+    """
+    from app.core.config import settings as app_settings
+    from app.modules.dingtalk.client import get_client
+    from app.modules.user.model import User
+
+    row = await session.get(OaInstance, oa_id, with_for_update=True)
+    if row is None or row.oa_type not in ("inquiry", "sample", "contract"):
+        raise AppError(ErrorCode.NOT_FOUND, "询价、打样或合同审批记录不存在", 404)
+    await ensure_oa_type_scope(session, user, row)
+    if row.status != "pending" or not row.instance_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前审批状态为「{row.status}」，不能撤回", 422)
+    if app_settings.dingtalk_push_off:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法发送撤回请求", 422)
+    account = await session.get(User, user.id)
+    ding_user_id = (account.dingtalk_userid if account else None) or await get_client().search_user_id_by_name(user.name)
+    if not ding_user_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，无法撤回", 422)
+    await get_client().terminate_process_instance(
+        instance_id=row.instance_id,
+        operating_user_id=ding_user_id,
+        remark="CRM 撤回钉钉审批",
+    )
+    row.status = "withdrawn"
+    row.result = {**(row.result or {}), "crm_withdrawn": True, "withdrawn_by": ding_user_id}
+    row.synced_at = datetime.now(UTC)
+    row.updated_at = datetime.now(UTC)
+    await write_audit(
+        session, operator_id=user.id, action="withdraw_oa_instance", business_type="oa_instance",
+        business_id=row.id, after={"oa_type": row.oa_type, "instance_id": row.instance_id, "status": row.status},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(svc.serialize(row), "已撤回钉钉审批")
 
 
 @router.get("/inquiries/{inquiry_id}/oa-approvals")

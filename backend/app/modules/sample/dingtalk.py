@@ -90,6 +90,45 @@ async def inquiry_candidates(session,user,sample):
     return result
 
 
+def collect_template_values(fields_meta, supplied):
+    """按真实模板读这次要提交的值，并做**逐字段**校验。
+
+    返回 `(component_id -> 值, 标签 -> 值)`；后者的用途是生成申请表/预计工时，
+    所以标签键必须来自模板真实字段（`template()` 已保证这些标签都在）。
+
+    ⚠️ 选填字段留空 = "这次不填"，**不是格式错**（2026-10-16 修）：
+    原先对空串直接 `date.fromisoformat('')` / `Decimal('')`，两者都抛，于是
+    用户什么都没填却被告知"要求完成日期格式无效"/"打样积分必须是0到99990之间
+    的有限数字" —— 一句与事实不符的报错。
+    """
+    values = {}
+    by_label = {}
+    for field in fields_meta:
+        if field['system']:
+            continue
+        value = str(supplied.get(field['id'], '') or '').strip()
+        if field['required'] and not value:
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, f'请填写{field["label"]}', 422)
+        if value:
+            if field['options'] and value not in field['options']:
+                raise AppError(ErrorCode.PARAM_ERROR, f'{field["label"]}选项无效', 422)
+            if field['type'] == 'DDDateField':
+                try:
+                    date.fromisoformat(value)
+                except ValueError as error:
+                    raise AppError(ErrorCode.PARAM_ERROR, '要求完成日期格式无效', 422) from error
+            if field['type'] == 'NumberField':
+                try:
+                    number = Decimal(value)
+                    if not number.is_finite() or number < 0 or number > 99990:
+                        raise ValueError()
+                except (InvalidOperation, ValueError) as error:
+                    raise AppError(ErrorCode.PARAM_ERROR, '打样积分必须是0到99990之间的有限数字', 422) from error
+        values[field['id']] = value
+        by_label[field['label']] = value
+    return values, by_label
+
+
 class Draft(BaseModel):
     mode: Literal['standalone','inquiry']
     source_oa_id: int | None = Field(default=None,gt=0)
@@ -146,7 +185,7 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     sample=await service.get_visible_or_404(session,user,sample_id,for_update=True,allow_external_flow=True)
     meta=metadata(sample)
     previous=await oa.get_by_business_key(session,inquiry_id=sample.id,inquiry_version=int(sample.version or 1),oa_type='sample') if payload.mode=='standalone' else None
-    open_new_round=bool(payload.resubmit and previous is not None and previous.status=='rejected')
+    open_new_round=bool(payload.resubmit and previous is not None and previous.status in ('rejected','withdrawn'))
     retry=False
     if meta.get('submitted'):
         if payload.mode!=meta.get('mode') or payload.source_oa_id!=meta.get('source_oa_id'):
@@ -168,21 +207,7 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     if not options['configured'] or not options['enabled']:
         raise AppError(ErrorCode.PARAM_ERROR,'独立打样模板未配置或钉钉推送未开启，请先保存草稿',422)
     fields={f['label']:f for f in options['fields']}
-    values={};by_label={}
-    for field in options['fields']:
-        if field['system']:continue
-        value=payload.fields.get(field['id'],'').strip()
-        if field['required'] and not value:raise AppError(ErrorCode.REQUIRED_FIELD_MISSING,f'请填写{field["label"]}',422)
-        if field['options'] and value not in field['options']:raise AppError(ErrorCode.PARAM_ERROR,f'{field["label"]}选项无效',422)
-        if field['type']=='DDDateField':
-            try:date.fromisoformat(value)
-            except ValueError as error:raise AppError(ErrorCode.PARAM_ERROR,'要求完成日期格式无效',422) from error
-        if field['type']=='NumberField':
-            try:
-                number=Decimal(value)
-                if not number.is_finite() or number<0 or number>99990:raise ValueError()
-            except (InvalidOperation,ValueError) as error:raise AppError(ErrorCode.PARAM_ERROR,'打样积分必须是0到99990之间的有限数字',422) from error
-        values[field['id']]=value;by_label[field['label']]=value
+    values,by_label=collect_template_values(options['fields'],payload.fields)
     from app.modules.user.model import User
     account=await session.get(User,user.id)
     if account is None or account.status!='active' or not account.dingtalk_userid:
@@ -201,8 +226,14 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
     for key in ('product_name','material_spec','product_size','printing','accessories','packaging','craft_requirement'):
         value=payload.fields.get('_'+key)
         if value is not None:attrs[key]=value
-    attrs.update(sample_type=by_label['打样类型'],product_category=by_label['打样产品大类'],maker_unit=by_label['样品制作单位'],
-                 target_completion_date=date.fromisoformat(by_label['要求完成日期']),estimated_hours=Decimal(by_label['本次打样积分'])/10)
+    # 这几个值直接取自模板字段（`template()` 已保证这些标签都在），但**选填的日期/积分
+    # 可以是空的**：空就别往申请表上写，而不是拿 '' 去 fromisoformat / Decimal ——
+    # 那会让"选填留空"在提交的最后一步炸成一个 500。
+    attrs.update(sample_type=by_label['打样类型'],product_category=by_label['打样产品大类'],maker_unit=by_label['样品制作单位'])
+    if by_label['要求完成日期']:
+        attrs['target_completion_date']=date.fromisoformat(by_label['要求完成日期'])
+    if by_label['本次打样积分']:
+        attrs['estimated_hours']=Decimal(by_label['本次打样积分'])/10
     content=render_application_form(SimpleNamespace(**attrs),list(items),applicant_name=user.name,department_name='（以钉钉归属部门为准）')
     if '样品明细明细表' not in fields:raise AppError(ErrorCode.PARAM_ERROR,'钉钉模板缺少样品明细表字段',422)
     from app.modules.file.model import FileRecord, BusinessFile

@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import logging
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -276,6 +276,8 @@ def serialize_document(
         "content_snapshot": doc.content_snapshot,
         "filled_data": ({key: value for key, value in filled.items()
                          if key != "_supersession_task_states"} if doc.filled_data is not None else None),
+        "source_type": filled.get("_source_type", "crm_template"),
+        "dingtalk_oa": filled.get("_dingtalk_oa"),
         "missing_fields": missing,
         # 抬头快照（生成时的公司名/客户名/单号）：详情页据此说明"当时是以谁的名义出的"
         "header_snapshot": header or None,
@@ -621,7 +623,7 @@ async def generate_document(
         # 事实——只在当时弹个提示、过后无据可查，等于没修。
         # 用 `_` 开头是跟项目里"内部键"的约定走，序列化时不会被当成业务字段。
         filled = {**filled, "_missing": missing}
-    filled = {**filled, "_request_fingerprint": request_fingerprint}
+    filled = {**filled, "_request_fingerprint": request_fingerprint, "_source_type": payload.source_type}
     # 请求回显：**存客户端当初提交的原值**（2026-10-10 修 C4-06 的自动补全边界）。
     #
     # 为什么需要它：`quote_id` / `quote_version_id` 会**由订单带出**、
@@ -1207,6 +1209,18 @@ async def sign_document(
     if note:
         doc.filled_data = {**(doc.filled_data or {}), "sign_note": note}
     await session.flush()
+    # 客户起草合同的待办直到回签件真正登记才结束。
+    from app.modules.task.model import Task
+    await session.execute(
+        update(Task)
+        .where(
+            Task.source_business_type == "contract",
+            Task.source_business_id == doc.id,
+            Task.source_key == f"contract:signed-upload:{doc.id}",
+            Task.status.in_(("pending", "doing")),
+        )
+        .values(status="done", completed_at=datetime.now(UTC), completion_note="已上传并登记客户回签文件")
+    )
     if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes"):
         await refresh_supersession(session, doc.parent_id)
 

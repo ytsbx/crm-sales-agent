@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import { api } from '../../shared/api/client'
-import { type OaApprovalInstance } from '../../shared/api/dingtalk'
+import { type OaApprovalInstance, withdrawOaInstance } from '../../shared/api/dingtalk'
+import { newRequestKey } from '../../shared/api/requestKey'
+import { AdoptOaInstanceModal, ResolveOaActions } from '../../shared/components/ResolveOaActions'
 import { approvalProgress } from '../knowledge/approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 
@@ -17,6 +19,9 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   const client=useQueryClient()
   const query=useQuery({queryKey:['sample-dingtalk',sampleId],queryFn:()=>api.get<Options>(`/samples/${sampleId}/dingtalk`),refetchInterval:30000})
   const [edited,setEdited]=useState<Draft | null>(null)
+  // 认领弹窗的目标与"同一次核定"的请求键（键由打开弹窗时生成，弹窗里的重试复用它）
+  const [adoptTarget,setAdoptTarget]=useState<OaApprovalInstance | null>(null)
+  const [adoptKey,setAdoptKey]=useState<string | null>(null)
   const draft=edited ?? {mode:query.data?.draft.mode ?? 'standalone',source_oa_id:query.data?.draft.source_oa_id,fields:query.data?.draft.fields ?? {}, resubmit:query.data?.draft.resubmit ?? false}
   const submitted=Boolean(query.data?.draft.submitted) && !edited?.resubmit
   const mutate=useMutation({
@@ -39,11 +44,18 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
       void query.refetch();void client.invalidateQueries({queryKey:['samples']});void client.invalidateQueries({queryKey:['sample',sampleId]})
     },onError:(error:Error)=>Toast.error(error.message),
   })
+  const withdraw=useMutation({
+    mutationFn:(oaId:number)=>withdrawOaInstance(oaId),
+    onSuccess:()=>{Toast.success('已撤回钉钉打样审批');void query.refetch()},
+    onError:(error:Error)=>Toast.error(error.message),
+  })
   return <Modal visible title="打样钉钉流程" width={900} bodyStyle={{maxHeight:'70vh',overflowY:'auto'}}
     onCancel={()=>{if(!mutate.isPending)onClose()}}
     footer={<div style={{display:'flex',justifyContent:'flex-end',gap:10}}>
       <Button disabled={mutate.isPending} onClick={onClose}>关闭</Button>
       {submitted && query.data?.records[0]?.status==='rejected' && <Button disabled={mutate.isPending} onClick={()=>setEdited({...draft,resubmit:true})}>修改后重新提交</Button>}
+      {submitted && draft.mode==='standalone' && query.data?.records[0]?.status==='pending' && query.data.records[0].instance_id &&
+        <Button type="danger" disabled={mutate.isPending||withdraw.isPending} onClick={()=>Modal.confirm({title:'撤回钉钉打样审批？',content:'只对仍在审批中的钉钉流程生效。',onOk:()=>withdraw.mutate(query.data!.records[0].id)})}>撤回钉钉审批</Button>}
       {/* ⚠️ 这两个按钮**刻意不用** `disabled={!query.data}`（2026-10-15 修）：
           读不到模板时按钮会变灰，而用户看不出"连保存草稿都不行" —— 界面只有一个字
           都不说的灰按钮。改成**可点 + 如实报错**：后端对"模板未配置 / 推送关闭"
@@ -109,8 +121,18 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         <Table dataSource={approvalProgress(row.result).map((r,index)=>({...r,key:index}))} rowKey="key" pagination={false} scroll={{x:700}}
           columns={[{title:'处理人',dataIndex:'person',width:180},{title:'节点/操作',dataIndex:'node',width:150},{title:'状态',dataIndex:'status',width:130},
             {title:'时间',dataIndex:'time',width:180,render:time},{title:'处理意见',dataIndex:'remark'}]}/>
+        {/* 「结果待人工核对」的三个出口（认领/重发/作废）。按钮由服务端的
+            allowed_actions 决定 —— 打样这条链原先一个都没有，超时后单据彻底卡死。 */}
+        <div style={{marginTop:8,display:'flex',gap:12}}>
+          <ResolveOaActions row={row} invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]}
+            onAdopt={target=>{setAdoptTarget(target);setAdoptKey(newRequestKey())}}
+            onDone={()=>void query.refetch()}/>
+        </div>
       </div>)}
       {query.data&&!query.data.records.length&&<div>{submitted?'尚未返回可查看的审批记录，请核对原钉钉单或稍后刷新。':'尚未提交或关联钉钉审批。'}</div>}
+      <AdoptOaInstanceModal target={adoptTarget} requestKey={adoptKey}
+        invalidateKeys={[['sample-dingtalk',sampleId],['samples'],['sample',sampleId]]}
+        onClose={()=>{setAdoptTarget(null);setAdoptKey(null)}}/>
     </div>
   </Modal>
 }

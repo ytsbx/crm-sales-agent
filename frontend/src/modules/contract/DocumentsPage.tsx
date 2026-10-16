@@ -30,6 +30,8 @@ import {
   listContractDocuments,
   listContractTemplates,
   signContractDocument,
+  startContractDingTalkApproval,
+  withdrawContractDingTalkApproval,
   voidContractDocument,
   type ContractDocument,
   type ContractAmendment,
@@ -37,6 +39,12 @@ import {
   type ContractTemplate,
 } from '../../shared/api/contract'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import {
+  AdoptOaInstanceModal,
+  ResolveOaActions,
+} from '../../shared/components/ResolveOaActions'
+import { newRequestKey } from '../../shared/api/requestKey'
+import type { OaApprovalInstance } from '../../shared/api/dingtalk'
 
 const STATUS_TONE: Record<string, 'green' | 'grey' | 'red'> = {
   signed: 'green',
@@ -131,6 +139,7 @@ export default function DocumentsPage() {
     // 模板空白项的值：键就是模板里 {{extra.名称}} 的名称。
     // 之所以不再是一个手写的「名称=内容」文本框，见 parseExtraFields 的注释。
     extraValues: {} as Record<string, string>,
+    source_type: 'crm_template' as 'crm_template' | 'customer_drafted',
   })
   // 当前选中的模板，以及**它要求补充哪几项**（字段名直接从模板正文解析）。
   // 界面上只让用户填值，不再让他自己写 `名称=内容`（见 parseExtraFields）。
@@ -191,6 +200,7 @@ export default function DocumentsPage() {
         parent_id: generateParent?.id ?? null,
         supersede_parent: supersedeParent,
         request_key: generateRequestKey || undefined,
+        source_type: generateForm.source_type,
       })
     },
     onSuccess: (doc) => {
@@ -211,13 +221,44 @@ export default function DocumentsPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const dingtalkMutation = useMutation({
+    mutationFn: (docId: number) => startContractDingTalkApproval(docId),
+    // **按服务端给的结果分支，不再一律报成功**（2026-10-16 修）：
+    // 驳回/撤回/已通过/结果未明这几种状态下再点一次，"提交钉钉签署"其实
+    // 一个请求都不会发出去（后端原样返回旧行），而这里原先固定弹绿色的
+    // "已发起钉钉合同签署申请"。措辞与颜色都由后端的 result.level 决定。
+    onSuccess: (row) => {
+      const result = (row as { result?: { level?: unknown; message?: unknown } }).result
+      const level = typeof result?.level === 'string' ? result.level : 'success'
+      const message = typeof result?.message === 'string' ? result.message : ''
+      if (level === 'success') Toast.success(message || '已发起钉钉合同签署申请')
+      else if (level === 'warning') Toast.warning(message || '本次没有发起新的钉钉审批')
+      else Toast.error(message || '本次没有发起钉钉审批')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const withdrawDingtalkMutation = useMutation({
+    mutationFn: (docId: number) => withdrawContractDingTalkApproval(docId),
+    onSuccess: () => {
+      Toast.success('已撤回钉钉合同签署申请')
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const openGenerateModal = (parent: ContractDocument | null) => {
     setGenerateParent(parent)
     // 每次打开都把上一次的续签选项清掉：勾选状态跟着弹窗走，不该跨次留存
     setSupersedeParent(false)
     // 空白项的值也一起清掉：上一次填的"付款方式"是上一份合同的约定，
     // 留到这一次很容易被顺手带进新合同
-    setGenerateForm((prev) => ({ ...prev, effective_date: '', extraValues: {} }))
+    setGenerateForm((prev) => ({
+      ...prev,
+      effective_date: '',
+      extraValues: {},
+      source_type: 'crm_template',
+    }))
     // 每次打开换一个新键：这一次生成对应这一张弹窗，重试才认得出是同一件事
     setGenerateRequestKey(
       typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}`,
@@ -299,6 +340,9 @@ export default function DocumentsPage() {
   // 单独拿它当"看签署原件"的入口也是这个道理：只给一个「下载」，
   // 用户会以为拿到的是签回来的那一份，实际是我们自己生成的稿子，事后对账就会扯皮。
   const [detailTarget, setDetailTarget] = useState<ContractDocument | null>(null)
+  // 认领弹窗（"结果待人工核对"时的三个出口之一）
+  const [adoptTarget, setAdoptTarget] = useState<OaApprovalInstance | null>(null)
+  const [adoptKey, setAdoptKey] = useState<string | null>(null)
   const detailQuery = useQuery({
     queryKey: ['contract-detail', detailTarget?.id],
     queryFn: () => getContractDocument(detailTarget!.id),
@@ -429,6 +473,28 @@ export default function DocumentsPage() {
                     <a onClick={() => setDetailTarget(record)}>详情</a>
                     {canManage && record.status === 'draft' && (
                       <a onClick={() => openSignModal(record)}>登记签署</a>
+                    )}
+                    {canManage && record.status === 'draft' && record.source_type === 'customer_drafted' && (
+                      record.dingtalk_oa?.status === 'pending' ? (
+                        <>
+                          <a onClick={() => setDetailTarget(record)}>查看钉钉审批</a>
+                          <a
+                            onClick={() =>
+                              Modal.confirm({
+                                title: '撤回钉钉合同签署申请？',
+                                content: '撤回只对仍在审批中的钉钉流程生效，已完成的审批不能撤回。',
+                                onOk: () => withdrawDingtalkMutation.mutate(record.id),
+                              })
+                            }
+                          >
+                            撤回钉钉审批
+                          </a>
+                        </>
+                      ) : (
+                        <a onClick={() => dingtalkMutation.mutate(record.id)} style={{ opacity: dingtalkMutation.isPending ? 0.6 : 1 }}>
+                          提交钉钉签署
+                        </a>
+                      )
                     )}
                     {/* 补充协议 / 续签：从原文档发起，新文档带 parent_id 指回来。
                         原件不动，旧版永远查得到。 */}
@@ -633,6 +699,19 @@ export default function DocumentsPage() {
                 (c) => c.id,
               )}
             />
+          </div>
+          <div>
+            <Checkbox
+              checked={generateForm.source_type === 'customer_drafted'}
+              onChange={(e) =>
+                setGenerateForm({
+                  ...generateForm,
+                  source_type: e.target.checked ? 'customer_drafted' : 'crm_template',
+                })
+              }
+            >
+              客户起草合同（提交钉钉签署申请，并生成“上传回签件”待办）
+            </Checkbox>
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
@@ -964,6 +1043,50 @@ export default function DocumentsPage() {
                 ))
               )}
             </div>
+            {detail.dingtalk_oa && (
+              <div>
+                <div style={DETAIL_LABEL}>钉钉合同签署审批</div>
+                <div style={DETAIL_VALUE}>
+                  {detail.dingtalk_oa.status === 'approved'
+                    ? '钉钉审批已通过，等待上传客户回签文件'
+                    : detail.dingtalk_oa.status === 'rejected'
+                      ? '钉钉审批已驳回，请查看钉钉处理意见'
+                      : detail.dingtalk_oa.status === 'withdrawn'
+                        ? '钉钉审批已撤回'
+                        : `钉钉审批：${detail.dingtalk_oa.status ?? '处理中'}`}
+                  {detail.dingtalk_oa.synced_at
+                    ? ` · 最近同步 ${new Date(detail.dingtalk_oa.synced_at).toLocaleString('zh-CN')}`
+                    : ''}
+                </div>
+                {detail.dingtalk_oa.result && (
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    {Array.isArray((detail.dingtalk_oa.result.payload as { tasks?: unknown[] } | undefined)?.tasks)
+                      ? `节点 ${((detail.dingtalk_oa.result.payload as { tasks: unknown[] }).tasks).length} 个`
+                      : null}
+                    {Array.isArray((detail.dingtalk_oa.result.payload as { operationRecords?: unknown[] } | undefined)?.operationRecords)
+                      ? ` · 操作记录 ${((detail.dingtalk_oa.result.payload as { operationRecords: unknown[] }).operationRecords).length} 条`
+                      : null}
+                  </div>
+                )}
+                {/* 「结果待人工核对」的三个出口。按钮由服务端给的 allowed_actions
+                    决定：一条超时的发起可能已经在钉钉建了单，自动重发会多出一张，
+                    所以只能人来核对后选认领 / 重发 / 作废。合同这条链原先一个
+                    按钮都没有，超时后这份合同彻底卡死。 */}
+                {detail.dingtalk_oa_row && (
+                  <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
+                    <ResolveOaActions
+                      row={detail.dingtalk_oa_row}
+                      invalidateKeys={[['contract-detail', detailTarget?.id]]}
+                      onAdopt={(target) => {
+                        setAdoptTarget(target)
+                        setAdoptKey(newRequestKey())
+                      }}
+                      onDone={() => void detailQuery.refetch()}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
             {Object.keys(detail.missing_fields ?? {}).length > 0 && (
               <div>
                 <div style={DETAIL_LABEL}>生成时没填上的地方（正文里留着占位符）</div>
@@ -977,6 +1100,15 @@ export default function DocumentsPage() {
           </div>
         )}
       </Modal>
+      <AdoptOaInstanceModal
+        target={adoptTarget}
+        requestKey={adoptKey}
+        invalidateKeys={[['contract-detail', detailTarget?.id], ['contract-documents', docPage]]}
+        onClose={() => {
+          setAdoptTarget(null)
+          setAdoptKey(null)
+        }}
+      />
     </div>
   )
 }

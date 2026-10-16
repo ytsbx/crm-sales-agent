@@ -116,6 +116,13 @@ EXEMPT: dict[str, str] = {
     "modules/common/CopilotDrawer.tsx": "流式回复中的瞬时禁用",
     # 弹窗里需要确认的通用件：okButtonProps 的 disabled 由调用方给
     "shared/components/ConfirmRequiredModal.tsx": "通用确认弹窗，disabled 由调用方决定",
+    # 核定共用件（认领弹窗，2026-10-16 加）：禁用只有两种来源，且**都在旁边** ——
+    # ① 钉钉审批单号还是空的：那个空输入框就紧挨在按钮正上方，灰着的原因一眼可见；
+    # ② `adopt.isPending`：提交中的瞬时禁用，按钮自带 loading。
+    # 这里**故意不套 GuardedButton**：它要求"被挡住时给一句能行动的话"，
+    # 而"你还没填单号"这句话本身没有信息量（用户看得见输入框是空的），
+    # 加了只会变成噪音 —— 正是 GuardedButton 说明里"眼睛一看就明白的别用它"那一类。
+    "shared/components/ResolveOaActions.tsx": "禁用原因就在旁边（空输入框 / 提交中 loading）",
 }
 
 

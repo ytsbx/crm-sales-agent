@@ -45,6 +45,7 @@ import {
   listInquiryApprovals,
   getInquirySubmissionOptions,
   resolveOaInstance,
+  withdrawOaInstance,
   startInquiryApproval,
   type OaApprovalInstance,
 } from '../../shared/api/dingtalk'
@@ -422,6 +423,14 @@ export default function KnowledgePage() {
       } else Toast.info(`当前钉钉审批状态：${result.status_label}，请查看审批记录`)
       setApprovalTarget(submitTarget)
       setSubmitTarget(null)
+      void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+  const withdrawMutation = useMutation({
+    mutationFn: (oaId: number) => withdrawOaInstance(oaId),
+    onSuccess: () => {
+      Toast.success('已撤回钉钉审批')
       void queryClient.invalidateQueries({ queryKey: ['inquiry-approvals'] })
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -1157,6 +1166,18 @@ export default function KnowledgePage() {
                       }}
                     >
                       <a>重新发起</a>
+                    </Popconfirm>,
+                  )
+                }
+                if (isLatest && row.status === 'pending' && row.instance_id && row.oa_type === 'inquiry') {
+                  buttons.push(
+                    <Popconfirm
+                      key="withdraw"
+                      title="撤回这张钉钉审批？"
+                      content="只对仍在审批中的钉钉流程生效；已完成的审批不能撤回。"
+                      onConfirm={() => withdrawMutation.mutate(row.id)}
+                    >
+                      <a style={{ color: 'var(--crm-error)' }}>撤回钉钉审批</a>
                     </Popconfirm>,
                   )
                 }

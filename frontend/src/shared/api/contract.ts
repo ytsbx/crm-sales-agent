@@ -1,5 +1,6 @@
 import { api } from './client'
 import type { PageResult } from '../types'
+import type { OaApprovalInstance } from './dingtalk'
 
 export interface ContractTemplate {
   id: number
@@ -76,8 +77,28 @@ export interface ContractDocument {
   parent_doc_no?: string | null
   /** 关系链往下一级：这份被哪几份补充过，只有详情接口返回 */
   amendments?: ContractAmendment[]
+  /**
+   * 最新一轮 OA 行的**活数据**（只有详情接口返回）。
+   *
+   * 与 `dingtalk_oa` 的区别：那个是写进 `filled_data` 的快照，**没有行 id、
+   * 也没有 `allowed_actions`** —— 而"结果待人工核对"时的认领/重发/作废按钮
+   * 必须按服务端给的动作清单渲染，所以详情单独带出这一行。
+   */
+  dingtalk_oa_row?: OaApprovalInstance | null
   signed_at: string | null
   void_reason: string | null
+  source_type?: 'crm_template' | 'customer_drafted'
+  dingtalk_oa?: {
+    oa_instance_id?: number
+    instance_id?: string | null
+    status?: string
+    synced_at?: string | null
+    result?: Record<string, unknown> | null
+    /** 服务端给的"这个状态下还能做什么"，与询价侧同一份口径（类型见 dingtalk.ts 的 `OaAction`）。 */
+    allowed_actions?: string[] | null
+    /** 上一次发起失败/结果未知的原因；前端要显示它，不能只报成功。 */
+    error?: string | null
+  } | null
   created_at: string
 }
 
@@ -126,8 +147,17 @@ export function generateContractDocument(payload: {
   supersede_parent?: boolean
   /** 幂等键：同一张弹窗里的重复提交带同一个值，后端据此返回原来那份，而不是再建一份。 */
   request_key?: string
+  source_type?: 'crm_template' | 'customer_drafted'
 }) {
   return api.post<ContractDocument>('/contract-documents', payload)
+}
+
+export function startContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa`, {})
+}
+
+export function withdrawContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa-withdraw`, {})
 }
 
 export function getContractDocument(docId: number) {

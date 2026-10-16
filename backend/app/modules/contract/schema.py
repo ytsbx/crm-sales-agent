@@ -43,6 +43,7 @@ class DocumentCreate(BaseModel):
     # 幂等键：前端打开生成弹窗时生成一个，重复提交 / 网络重试带同一个值。
     # 不传也能用，但那样重复提交就防不住——所以前端必须带。
     request_key: str | None = Field(default=None, max_length=64)
+    source_type: str = Field(default="crm_template", pattern="^(crm_template|customer_drafted)$")
 
 
 class DocumentSign(BaseModel):
