@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import { api } from '../../shared/api/client'
@@ -36,20 +36,17 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   //   · 「预计工时」是 CRM 这边的输入（顺带让附件那份 Excel 拿到工时）；
   //   · 所以填了工时 → **自动写进那个积分框**，用户不用管积分。
   //
-  // **手改过积分的单子不被覆盖**：`autoPointsRef` 记住"上次自动填的是哪一版"，
   // 只有当积分框仍是那一版（或本来就是空的）时才覆盖 —— 用户自己填过的判断不抹掉。
   const pointsFieldId = query.data?.fields.find((f) => f.label === '本次打样积分')?.id
   const hoursInput = draft.fields['_estimated_hours'] ?? ''
-  const autoPointsRef = useRef<string>('')
   useEffect(() => {
     if (!pointsFieldId || submitted) return
     const raw = hoursInput.trim()
     const n = Number(raw)
     const next = raw && Number.isFinite(n) && n > 0 ? String(n * 10) : ''
     const current = draft.fields[pointsFieldId] ?? ''
-    if (current !== '' && current !== autoPointsRef.current) return
+    // 不再"保护手改过的值"：这两个本来就是**一个数**，永远跟着工时算
     if (current === next) return
-    autoPointsRef.current = next
     setEdited({ ...draft, fields: { ...draft.fields, [pointsFieldId]: next } })
     // `draft` 每次渲染都是新对象，放进依赖会无限循环；这里只跟这三个输入走。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,8 +130,16 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
             看起来像一团。现在两组各有标题、各说清去哪。 */}
         <div style={{fontWeight:600}}>钉钉审批单（下面这些填进钉钉表单）</div>
         <div>申请人和部门由当前账号绑定的钉钉身份自动填写；申请编号由钉钉生成；样品明细表由CRM按现有公司底稿生成并随审批上传。</div>
-        {query.data?.fields.filter(f=>!f.system).map(field=><div key={field.id}>
+        {/* ⚠️ 「本次打样积分」**不在这里单独给输入框**（2026-10-16）：
+            它与下面「打样积分＝工时 × 10」是**同一个数**。给两个输入框，
+            用户填了工时、积分还是旧值 —— 主人原话：「打样积分不还是要填几遍吗」。
+            现在它由工时算出来（见上面的同步 effect 与本块末尾那行说明）。 */}
+        {query.data?.fields.filter(f=>!f.system && f.label!=='本次打样积分').map(field=><div key={field.id}>
           <div style={{marginBottom:4}}>{field.label}{field.required?' *':'（选填）'}</div>
+            {/* 「要求完成日期」= 申请表上那格「交样时间」（主人 2026-10-16 问
+                「打样时间不还是没有吗」）。说一句，免得用户以为是另一件事。 */}
+            {field.label==='要求完成日期' && <span style={{color:'var(--crm-text-3)',fontWeight:400}}>
+              （就是申请表上的「交样时间」）</span>}
           {field.type==='DDSelectField'?<Select style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
             optionList={field.options.map(value=>({value,label:value}))} onChange={value=>setEdited({...draft,fields:{...draft.fields,[field.id]:value as string}})}/>
           :field.type==='DDDateField'?<DatePicker type="date" format="yyyy-MM-dd" style={{width:'100%'}} value={draft.fields[field.id]||undefined} disabled={submitted||mutate.isPending}
