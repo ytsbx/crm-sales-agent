@@ -169,12 +169,11 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
           <Input style={{width:150}} placeholder="预计工时（小时）" value={draft.fields['_estimated_hours']||''}
             disabled={submitted||mutate.isPending}
             onChange={value=>setEdited({...draft,fields:{...draft.fields,['_estimated_hours']:value}})}/>
-          <span style={{fontSize:12,color:'var(--crm-text-3)'}}>
-            打样积分＝工时 × 10 =
-            <b>{(() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
-              return raw.trim() && Number.isFinite(n) ? ` ${n * 10} ` : ' — ' })()}</b>
-            分（自动填进上面「本次打样积分」那个框，不用你填两遍）
-          </span>
+          {/* 只显示算出来的分 —— **不加解释**（主人 2026-10-16：「把解释删了…谁让你解释了」）。没填工时时整行不出现。 */}
+          {(() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
+            return raw.trim() && Number.isFinite(n) ? <span style={{fontSize:12,color:'var(--crm-text-3)'}}>
+              打样积分 <b>{n * 10}</b> 分</span> : null })()}
+
         </div>
         {/* 打样费用（申请表 C3 那一格）。2026-10-16 主人：「打样费用在哪没看见」——
             它原来只能去详情页的「生产打样资料」里填，而这个弹窗是建完单立刻弹出来的，
@@ -185,18 +184,15 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
             onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_fee']:value}})}/>
           <span style={{fontSize:12,color:'var(--crm-text-3)'}}>留空表示未填；免费请填 0</span>
         </div>
-        {/* 申请表的「交样时间」与「打样人」——**与钉钉的「要求完成日期」是两件事**
-            （主人 2026-10-16：「要求完成时间和交样时间不一定是一个时间」）：
-              · 要求完成日期（上面）= 车间什么时候做完；
-              · 交样时间（下面）= 什么时候交给客户，只填进附件那份 Excel。
-            打样人 = 谁动手打的样（不填则申请表回落到申请人）。 */}
+        {/* 申请表上的「交样时间」与「打样人」——两个格子，名字照抄申请表。 */}
+
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
           <DatePicker type="date" format="yyyy-MM-dd" showClear style={{width:190}}
-            placeholder="交样时间（交给客户）"
+            placeholder="交样时间"
             value={draft.fields['_deliver_date'] ? new Date(draft.fields['_deliver_date']) : undefined}
             disabled={submitted||mutate.isPending}
             onChange={(_,value)=>setEdited({...draft,fields:{...draft.fields,['_deliver_date']:(value as string)||''}})}/>
-          <Input style={{width:190}} placeholder="打样人（谁动手打的样）" value={draft.fields['_sample_maker']||''}
+          <Input style={{width:190}} placeholder="打样人" value={draft.fields['_sample_maker']||''}
             disabled={submitted||mutate.isPending}
             onChange={value=>setEdited({...draft,fields:{...draft.fields,['_sample_maker']:value}})}/>
         </div>

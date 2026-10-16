@@ -276,9 +276,10 @@ def render_application_form(sample: Any, items: list[Any], *, applicant_name: st
     put("E3", applicant_name)                              # 标签 D3「申请人」
     put("G3", department_name)                             # 标签 F3「打样部门」
     # 「打样人」= 谁动手打的样（主人 2026-10-16：「打样人我也没看见有填的地方」）。
-    # 现在是可以填的（弹窗里一格），填了就写它；没填才回落到申请人 ——
-    # 业务员建单时往往还不知道车间谁做。
-    put("I3", sample_maker or applicant_name)               # 标签 H3「打样人」
+    # ⚠️ **不填就留空**，不再回落到申请人：那等于替看表的人断言
+    # "申请人就是打样的人"—— 两个是不同的角色（主人 2026-10-16 也否掉了
+    # 我在界面上加的那句"谁动手打的样"的解释）。
+    put("I3", sample_maker)                                # 标签 H3「打样人」
 
     # ---- 第 4/5 行：三个勾选项 ----
     put("C4", getattr(sample, "sample_purpose", None))
