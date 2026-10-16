@@ -1373,10 +1373,6 @@ export default function SampleListPage() {
                           ]}
                         />
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                        紧急程度不只是标记：普通可晚 3~5 天交样、急可晚 1~3 天、
-                        <b>紧急不允许晚</b>（这是钉钉单上的口径）。
-                      </div>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <Input
                           style={{ width: 160 }}

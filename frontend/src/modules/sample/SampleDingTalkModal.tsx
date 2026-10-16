@@ -126,10 +126,6 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
               optionList={options.map(value=>({value,label:value}))}
               onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value as string}})}/>)}
         </div>
-        {/* 紧急程度的真实含义（申请单原件的批注原文）：它不只是个标记，是**交期宽限** */}
-        <div style={{fontSize:12,color:'var(--crm-text-3)'}}>
-          紧急程度＝交期宽限：普通可晚 3~5 天交样、急可晚 1~3 天、<b>紧急不允许晚</b>（申请单原件的口径）。
-        </div>
         {/* 预计工时 → 打样积分（申请单上那格「本次打样积分」＝工时×10）。
             钉钉模板里有「本次打样积分」控件，提交时会带过去；这里让 CRM 也能算一遍，
             两边口径同一个（×10），所以数值一致。 */}
