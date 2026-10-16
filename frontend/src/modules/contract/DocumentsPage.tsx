@@ -17,6 +17,7 @@ import {
 } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
+import FormLabel from '../../shared/components/FormLabel'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
 import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
@@ -121,6 +122,7 @@ export default function DocumentsPage() {
   const uploadMutation = useMutation({
     mutationFn: async () => {
       if (removingOriginal) throw new Error('正在移除文件，请稍候')
+      if (!contractTitle.trim()) throw new Error('请填写合同名称')
       if (!uploadForm.customer_id) throw new Error('请选择合同所属客户')
       if (!contractOrigin) throw new Error('请选择合同来源：我方合同或客户合同')
       let sourceId = originalFileId
@@ -133,7 +135,7 @@ export default function DocumentsPage() {
       return uploadContractDocument({
         original_file_id: sourceId,
         contract_origin: contractOrigin,
-        title: contractTitle.trim() || undefined,
+        title: contractTitle.trim(),
         customer_id: uploadForm.customer_id!,
         order_id: uploadForm.order_id ?? null,
         quote_id: uploadForm.quote_id ?? null,
@@ -502,7 +504,7 @@ export default function DocumentsPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <div style={{ marginBottom: 4 }}>客户</div>
+            <FormLabel required>客户</FormLabel>
             <Select
               style={{ width: '100%' }}
               placeholder="搜索客户名称（服务端搜索，不止前 200 个）"
@@ -531,7 +533,7 @@ export default function DocumentsPage() {
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>合同来源（必选）</div>
+            <FormLabel required>合同来源</FormLabel>
             <Select
               style={{ width: '100%' }}
               placeholder="选择我方合同或客户合同"
@@ -544,11 +546,11 @@ export default function DocumentsPage() {
             </div>
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>合同名称</div>
+            <FormLabel required>合同名称</FormLabel>
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
+            <FormLabel required>合同原文件（Word / PDF）</FormLabel>
             <Button disabled={uploadMutation.isPending || removingOriginal}
               onClick={() => originalFileInput.current?.click()}>
               {originalFile ? '重新选择' : '选择文件'}

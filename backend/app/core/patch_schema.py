@@ -92,6 +92,9 @@ PATCH_TABLES: dict[str, str] = {
 #: 所以漏写只影响提示好不好看，不影响校验有没有生效。
 FIELD_LABELS: dict[str, str] = {
     "DocumentCreate.contract_origin": "合同来源",
+    "DocumentCreate.template_id": "合同模板",
+    "DocumentCreate.original_file_id": "合同原文件",
+    "DocumentCreate.title": "合同名称",
     # 产品 / SKU
     "ProductUpdate.name": "产品名称",
     "ProductUpdate.status": "产品状态",

@@ -377,6 +377,8 @@ async def generate_document(
         raise AppError(ErrorCode.PARAM_ERROR, "系统模板生成已停用，请上传合同 Word 或 PDF 原文件", 422)
     if not payload.contract_origin:
         raise AppError(ErrorCode.PARAM_ERROR, "请选择合同来源：我方合同或客户合同", 422)
+    if not (payload.title or "").strip():
+        raise AppError(ErrorCode.PARAM_ERROR, "请填写合同名称", 422)
     if payload.parent_id is not None or payload.supersede_parent:
         raise AppError(ErrorCode.PARAM_ERROR, "请将补充或续签合同作为新合同原文件上传", 422)
     from app.modules.customer import service as customer_service

@@ -184,6 +184,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   order_id: '订单',
   order_no: '订单号',
   origin: '来源',
+  original_file_id: '合同原文件',
   original_quantity: '原采购数量',
   other_charge_amount: '其他费用',
   overdue_notified_at: '逾期通知时间',
@@ -308,7 +309,6 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
   task_type: '任务类型',
   tax_no: '税号',
   tax_refund_snapshot: '退税快照',
-  template_id: '模板',
   template_key: '模板',
   template_version: '模板版本',
   title_cn: '标题',
@@ -342,7 +342,7 @@ export const AUDIT_FIELD_LABEL: Record<string, string> = {
 }
 
 /** 同名但中文含义随对象而变的字段：**只能**由调用方按对象类型定名。 */
-export const AUDIT_AMBIGUOUS_FIELDS: readonly string[] = ['code', 'content', 'label', 'level', 'name', 'source', 'status', 'title', 'type']
+export const AUDIT_AMBIGUOUS_FIELDS: readonly string[] = ['code', 'content', 'label', 'level', 'name', 'source', 'status', 'template_id', 'title', 'type']
 
 export const AUDIT_TYPE_FIELDS: Record<string, readonly string[]> = {
   biz_doc: ['doc_no', 'doc_type', 'title', 'version', 'parent_id', 'status', 'owner_id', 'customer_id', 'contact_id', 'sample_request_id', 'order_id', 'order_draft_id', 'inquiry_id', 'quote_id', 'source_type', 'source_id', 'source_no', 'source_version', 'source_key', 'template_id', 'template_version', 'input_snapshot', 'content_sha256', 'file_id', 'file_sha256', 'file_size', 'renderer_version', 'void_reason', 'created_by', 'created_at', 'id'],

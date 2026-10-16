@@ -304,3 +304,20 @@ def test_origin_is_part_of_idempotency_and_unknown_values_are_rejected():
     customer=company.model_copy(update={'contract_origin':'customer'})
     assert _request_fingerprint(company)!=_request_fingerprint(customer)
     with pytest.raises(ValueError):DocumentCreate(customer_id=1,contract_origin='unknown')
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('title',[None,'','   '])
+async def test_upload_requires_contract_name_with_chinese_message(title):
+    from app.modules.contract import router
+    p=DocumentCreate(customer_id=1,source_type='customer_drafted',original_file_id=5,contract_origin='company',title=title)
+    with pytest.raises(AppError,match='请填写合同名称'):
+        await router.generate_document(p,Obj(),Obj(),Obj())
+
+
+def test_upload_schema_does_not_require_template_and_errors_use_chinese():
+    from app.core.errors import _field_label
+    assert not DocumentCreate.model_fields['template_id'].is_required()
+    assert _field_label('original_file_id','DocumentCreate')=='合同原文件'
+    assert _field_label('template_id','DocumentCreate')=='合同模板'
+    assert _field_label('title','DocumentCreate')=='合同名称'
