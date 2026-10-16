@@ -883,7 +883,7 @@ export default function SampleListPage() {
                   optionList={productChoices}
                 />
                 <Input
-                  style={{ width: 90 }}
+                  style={{ width: 96 }}
                   placeholder="打样数量"
                   value={item.quantity}
                   onChange={(value) => {
@@ -1061,7 +1061,7 @@ export default function SampleListPage() {
                     optionList={productChoices}
                   />
                   <Input
-                    style={{ width: 80 }}
+                    style={{ width: 96 }}
                     placeholder="打样数量"
                     value={newItem.quantity}
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}

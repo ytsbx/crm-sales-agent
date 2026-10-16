@@ -36,6 +36,7 @@ export default function BlockedHint({
   blocked,
   action,
   style,
+  compact = false,
 }: {
   /** 已经算好的原因文案；空数组 = 不渲染任何东西。 */
   reasons?: readonly string[]
@@ -50,11 +51,37 @@ export default function BlockedHint({
    */
   action?: string
   style?: CSSProperties
+  /**
+   * **紧凑模式**：一行小字，去掉底色/内边距/项目符号。
+   *
+   * 默认的块状样式是给**弹窗底部**那种宽松地方用的（12px 上边距 + 警示底色 +
+   * 内边距 + 项目符号）。放进紧凑的**表单行/工具栏**里就太占地了 ——
+   * 主人 2026-10-16 截图（打样「产品名称 + 数量 + 添加」那一行）：
+   * 「红色这一块占着那么一大块空白，不美观」。
+   *
+   * 紧凑模式仍然**看得见**（规矩① 不打折）：原因以普通灰字显示在按钮下面，
+   * 只是不再铺一大块底色。点一下弹提示（规矩②）完全不变。
+   */
+  compact?: boolean
 }): ReactNode {
   const unique = distinctReasons(
     (reasons ? [...reasons] : collectReasons(blocked)).filter((text) => text.trim() !== ''),
   )
   if (unique.length === 0) return null
+  if (compact) {
+    return (
+      <div
+        className="blocked-hint-compact"
+        style={style}
+        aria-live="polite"
+        data-blocked-hint="1"
+      >
+        {/* 紧凑模式把"要做什么"压成一句话：多条原因用顿号连起来，不列项目符号 */}
+        {action ? `还不能${action}：` : ''}
+        {unique.join('；')}
+      </div>
+    )
+  }
   return (
     <div className="blocked-hint" style={style} aria-live="polite" data-blocked-hint="1">
       <div className="blocked-hint-lead">{action ? `还不能${action}，原因：` : '暂时不能继续，原因：'}</div>

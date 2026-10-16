@@ -123,7 +123,11 @@ export default function GuardedButton({
         {children}
       </Button>
       {/* 只有"被挡住且有原因"时才渲染这行灰字；可用态下它整个不存在 */}
-      {disabled && hasReason ? <BlockedHint reasons={reasons} action={action} /> : null}
+      {disabled && hasReason ? (
+        // **紧凑模式**：这个件多数用在表单行/工具栏这种窄地方，
+        // 默认那种带底色的大块会把行撑歪（主人 2026-10-16 截图）。
+        <BlockedHint reasons={reasons} action={action} compact />
+      ) : null}
     </span>
   )
 }

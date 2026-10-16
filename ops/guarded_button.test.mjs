@@ -220,3 +220,17 @@ test('按钮与提示在**同一个容器**里（竖着排），不是兄弟节�
   const hintAt = html.indexOf('还没选客户')
   assert.ok(hintAt > 0 && hintAt < rootEnd, '提示块必须落在根容器内部')
 })
+
+test('提示用**紧凑样式**（不再铺一大块底色）', () => {
+  // 主人 2026-10-16 截图（打样「产品名称 + 数量 + 添加」那一行）：
+  // 「红色这一块占着那么一大块空白，不美观」。
+  // 默认的块状样式（警示底色 + 内边距 + 项目符号）是给弹窗底部那种宽松地方用的；
+  // 这个件多数用在**表单行/工具栏**，必须走紧凑版。
+  const html = render({ disabled: true, blockedReasons: ['还没选客户'], action: '保存' })
+  assert.match(html, /blocked-hint-compact/, '没走紧凑样式 —— 会铺一大块底色')
+  assert.doesNotMatch(html, /class="blocked-hint"/, '混进了块状样式')
+  assert.doesNotMatch(html, /<ul/, '紧凑版不该有项目符号列表')
+  // 「看得见」这条不打折：原因仍然常驻
+  assert.match(html, /还没选客户/)
+  assert.match(html, /还不能保存/)
+})
