@@ -71,10 +71,14 @@ async def test_unknown_outcome_is_not_resent(setup,monkeypatch):
     create.assert_not_awaited();client.get_user_dept_ids.assert_not_awaited()
 
 @pytest.mark.anyio
-async def test_standalone_uses_true_template_identity_and_excel(setup,monkeypatch):
+@pytest.mark.parametrize('previous_status',[None,'rejected','withdrawn'])
+async def test_standalone_uses_true_template_identity_and_excel(setup,monkeypatch,previous_status):
     from app.modules.sample import application_form
     from app.modules.dingtalk import attachments
     sample,session,user,client,create=setup
+    if previous_status:
+        sample.source_context={'dingtalk_oa':{'mode':'standalone','fields':{},'submitted':True}}
+        monkeypatch.setattr(routes.oa,'get_by_business_key',AsyncMock(return_value=Obj(status=previous_status)))
     labels=[('打样类型','DDSelectField',['销售客户打样']),('打样产品大类','DDSelectField',['高频类产品']),('样品制作单位','DDSelectField',['义乌打样部']),('要求完成日期','DDDateField',[]),('本次打样积分','NumberField',[]),('打样需求说明','TextareaField',[]),('申请人员','InnerContactField',[]),('归属部门','DepartmentField',[]),('样品明细明细表','DDAttachment',[])]
     fields=[{'id':f'id{i}','label':label,'type':kind,'options':options,'required':True,'system':label in routes.SYSTEM_LABELS} for i,(label,kind,options) in enumerate(labels)]
     values=['销售客户打样','高频类产品','义乌打样部','2026-10-20','30','纸质盒打样']
@@ -84,13 +88,22 @@ async def test_standalone_uses_true_template_identity_and_excel(setup,monkeypatc
     monkeypatch.setattr(application_form,'render_application_form',generated)
     upload=AsyncMock(return_value={'spaceId':'space','fileId':'file','fileName':'sample.xlsx','fileSize':9,'fileType':'xlsx'})
     monkeypatch.setattr(attachments,'upload_approval_attachment',upload)
-    payload=routes.Draft(mode='standalone',fields={**{f'id{i}':v for i,v in enumerate(values)},'_product_name':'参考产品'})
+    payload=routes.Draft(mode='standalone',resubmit=bool(previous_status),fields={**{f'id{i}':v for i,v in enumerate(values)},'_product_name':'参考产品'})
     await routes.submit(7,payload,request(),user,session)
     sent=create.await_args.kwargs
     assert sent['oa_type']=='sample' and sent['process_code']=='PROC-SAMPLE'
     assert sent['originator_user_id']=='ding-1'
+    assert sent['dept_id']==20
+    assert sent['field_definitions']==fields
     assert sent['field_map']['id6']=='ding-1' and sent['field_map']['id7']==20
     assert 'fileId' in sent['field_map']['id8']
+    # 钉钉正文只保留说明和附件提示；产品字段、逐条明细仍完整写入 Excel。
+    assert sent['field_map']['id5'] == '打样需求说明：纸质盒打样\n完整产品资料、样品明细和制作要求见附件《打样申请单，打样物料需求单，物料信息单模板，下载后使用.xlsx》。'
+    assert '参考产品' not in sent['field_map']['id5']
+    assert generated.call_args.args[0].oa_submission_summary.startswith('打样申请：7')
+    assert '打样明细（共1条）' in generated.call_args.args[0].oa_submission_summary
+    assert generated.call_args.kwargs['department_name'] == '义乌打样部'
+    assert sent['resubmit'] is bool(previous_status)
     assert generated.call_args.args[0].product_name=='参考产品'
     assert generated.call_args.args[0].estimated_hours==3
     upload.assert_awaited_once()
@@ -107,13 +120,14 @@ def test_local_review_and_mutation_guards(submitted):
     routes.ensure_local_review(Obj(source_context=None))
 
 @pytest.mark.anyio
-async def test_rejected_allows_new_draft_but_pending_does_not(setup,monkeypatch):
+@pytest.mark.parametrize('ended_status',['rejected','withdrawn'])
+async def test_rejected_allows_new_draft_but_pending_does_not(setup,monkeypatch,ended_status):
     sample,session,user,client,create=setup
     sample.status='rejected'
     sample.source_context={'dingtalk_oa':{'mode':'standalone','fields':{},'submitted':True}}
     monkeypatch.setattr(routes.oa,'get_by_business_key',AsyncMock(return_value=Obj(status='pending')))
     with pytest.raises(AppError):await routes.save_draft(7,routes.Draft(mode='standalone',resubmit=True),request(),user,session)
-    monkeypatch.setattr(routes.oa,'get_by_business_key',AsyncMock(return_value=Obj(status='rejected')))
+    monkeypatch.setattr(routes.oa,'get_by_business_key',AsyncMock(return_value=Obj(status=ended_status)))
     await routes.save_draft(7,routes.Draft(mode='standalone',resubmit=True,fields={'note':'改好'}),request(),user,session)
     assert not routes.metadata(sample).get('submitted')
     assert routes.metadata(sample)['resubmit']

@@ -93,27 +93,33 @@ const STATUS_OPTIONS = [
  * 定制件本来就要先打样再定 SKU，强制先建档等于把顺序反过来。
  */
 type ItemDraft = {
-  mode: 'sku' | 'custom'
+  /** 选了产品库里的某个产品 → 关联 sku_id */
   sku_id?: number
+  /** 选了定制需求 → 关联 inquiry_id（那条路还在，只是不再要用户先"选模式"） */
   inquiry_id?: number
+  /** **手填的产品名称**：产品库和定制需求里都还没有它（新品往往打完样才建档）。
+   *  2026-10-16 主人：申请单上就一格「产品名称」，没有"现货还是定制"这个区分。 */
   item_name?: string
   quantity: string
 }
 
 function draftReady(item: ItemDraft): boolean {
-  return item.mode === 'custom' ? Boolean(item.inquiry_id) : Boolean(item.sku_id)
+  // 三条路任一成立就能加：选到产品 / 选到定制需求 / **自己填了名字**
+  return Boolean(item.sku_id ?? item.inquiry_id ?? item.item_name?.trim())
 }
 
 function draftPayload(item: ItemDraft): Record<string, unknown> {
   const quantity = Number(item.quantity) || 1
-  if (item.mode === 'custom') {
+  if (item.sku_id) return { sku_id: item.sku_id, quantity }
+  if (item.inquiry_id) {
     return {
       inquiry_id: item.inquiry_id,
       item_name: item.item_name?.trim() || null,
       quantity,
     }
   }
-  return { sku_id: item.sku_id, quantity }
+  // 只写了产品名称：后端 `_add_item` 有一条"只有名字"的路径（2026-10-16 加）
+  return { item_name: item.item_name?.trim() || null, quantity }
 }
 
 function fmt(value?: string | null) {
@@ -166,7 +172,7 @@ export default function SampleListPage() {
     customer_id?: number
     remark: string
     items: ItemDraft[]
-  }>({ remark: '', items: [{ mode: 'sku', quantity: '1' }] })
+  }>({ remark: '', items: [{ quantity: '1' }] })
   const selectedOpportunityQuery = useQuery({
     queryKey: ['opportunity', form.opportunity_id],
     queryFn: () => getOpportunity(form.opportunity_id!),
@@ -176,7 +182,7 @@ export default function SampleListPage() {
   useEffect(() => {
     if (!createOpportunityId || !createOpportunityQuery.data || !canManage) return
     setForm({ opportunity_id: createOpportunityId, customer_id: createOpportunityQuery.data.customer_id,
-      remark: '', items: [{ mode: 'sku', quantity: '1' }] })
+      remark: '', items: [{ quantity: '1' }] })
     createStartedAt.current = Date.now()
     setCreateVisible(true)
     const next = new URLSearchParams(searchParams)
@@ -192,7 +198,7 @@ export default function SampleListPage() {
   const [rejectReason, setRejectReason] = useState('')
   const [shipForm, setShipForm] = useState({ carrier: '', tracking_no: '', shipping_fee: '' })
   const [feedback, setFeedback] = useState('')
-  const [newItem, setNewItem] = useState<ItemDraft>({ mode: 'sku', quantity: '1' })
+  const [newItem, setNewItem] = useState<ItemDraft>({ quantity: '1' })
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
   // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，在明细行上改（见 itemEdit）。
@@ -309,16 +315,18 @@ export default function SampleListPage() {
   })
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      createSample({
+    mutationFn: () => {
+      if (!form.items.length || form.items.some((item) => !draftReady(item))) {
+        throw new Error('请填写每一行的产品名称')
+      }
+      return createSample({
         use_dingtalk: true,
         opportunity_id: form.opportunity_id ?? null,
         customer_id: form.customer_id ?? null,
         remark: form.remark.trim() || null,
-        items: form.items
-          .filter(draftReady)
-          .map(draftPayload),
-      }),
+        items: form.items.map(draftPayload),
+      })
+    },
     onSuccess: (created) => {
       // 计时上报（场景18）：起点在"点新建"那一刻。上报失败不打扰业务——
       // 埋点是量尺，不该变成新的故障点。
@@ -341,7 +349,7 @@ export default function SampleListPage() {
       Toast.success('打样草稿已创建，请选择钉钉流程并补充申请资料')
       setOaTarget(created.id)
       setCreateVisible(false)
-      setForm({ remark: '', items: [{ mode: 'sku', quantity: '1' }] })
+      setForm({ remark: '', items: [{ quantity: '1' }] })
       void refresh()
     },
     onError,
@@ -560,7 +568,7 @@ export default function SampleListPage() {
       // 往已批准 / 已驳回的单子里加明细也会触发重批：新明细带进来的材质工艺图纸版本
       // 同样是车间依据（后端走同一道闸门）。这里也要说清楚，别让用户以为状态自己变了。
       Toast.success(reopenedHint(detail?.status, row.status) ?? '明细已添加')
-      setNewItem({ mode: 'sku', quantity: '1' })
+      setNewItem({ quantity: '1' })
       void refresh()
     },
     onError,
@@ -676,6 +684,21 @@ export default function SampleListPage() {
     value: row.id,
     label: `${row.inquiry_no ?? `编号 ${row.id}`} · ${row.title}`,
   }))
+  /**
+   * 「产品名称」那**一个框**的全部候选项：产品库 + 定制需求。
+   *
+   * 为什么合成一个（2026-10-16 主人：「我不明白为什么还要选择这个」）：
+   * 申请单原件上就一格「产品名称」，业务员不该先回答"我这是现货还是定制"。
+   * 选项值用**类型区分**，不靠用户选模式：
+   *   · `number`         = 产品库里的 SKU（`sku_id`）
+   *   · `'custom:<id>'`  = 某条定制需求（`inquiry_id`）
+   *   · 其它字符串        = 手填的新产品名（`item_name`，后端有"只有名字"的路径）
+   * 定制需求那条**必须留着**：从定制需求发起打样时，后端靠它校验客户/商机归属一致。
+   */
+  const productChoices = [
+    ...skuOptions,
+    ...inquiryOptions.map((row) => ({ value: `custom:${row.value}`, label: `定制需求 · ${row.label}` })),
+  ]
 
   useEffect(() => {
     if (detail && searchParams.get('oa') === '1') {
@@ -821,56 +844,49 @@ export default function SampleListPage() {
           </div>
 
           <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>样品明细</div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>样品明细（产品名称 *，打样数量 *）</div>
             {form.items.map((item, index) => (
               <div key={index} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                {/* **一个框**（2026-10-16 主人：「我不明白为什么还要选择这个」）：
+                    申请单原件上就一格「产品名称」，没有"现货还是定制"这个区分 ——
+                    那个模式下拉是我们在把自己的数据结构推给业务员。
+                    现在：能搜到产品库里的就选（仍关联 SKU）；搜不到就**直接打名字**
+                    （当新品，后端有一条"只有名字"的路径，打完样才可能建档）。 */}
                 <Select
-                  style={{ width: 92 }}
-                  value={item.mode}
+                  style={{ flex: 1 }}
+                  placeholder="产品名称：能搜到就选，搜不到就直接打字"
+                  filter={optionMatcher}
+                  allowCreate
+                  // 允许清空重选；`allowCreate` 让"没搜到"的名字也能落下来
+                  value={
+                    item.sku_id
+                      ? item.sku_id
+                      : item.inquiry_id
+                        ? `custom:${item.inquiry_id}`
+                        : item.item_name
+                          ? item.item_name
+                          : undefined
+                  }
                   onChange={(value) => {
+                    const raw = value as number | string | undefined
+                    // `custom:<id>` = 选了某条**定制需求**（见 `productChoices`）。
+                    // 那条路保留：从定制需求发起打样时，后端靠它校验客户/商机归属一致。
+                    const custom = typeof raw === 'string' && raw.startsWith('custom:')
                     const items = [...form.items]
                     items[index] = {
                       ...items[index],
-                      mode: value as ItemDraft['mode'],
-                      sku_id: undefined,
-                      inquiry_id: undefined,
+                      // 数字 = 产品库里的某条 → 关联 SKU；`custom:` = 定制需求；其余字符串 = 手填的名字
+                      sku_id: typeof raw === 'number' ? raw : undefined,
+                      inquiry_id: custom ? Number(raw.slice(7)) : undefined,
+                      item_name: typeof raw === 'string' && !custom ? raw : undefined,
                     }
                     setForm({ ...form, items })
                   }}
-                  optionList={[
-                    { value: 'sku', label: '现货 SKU' },
-                    { value: 'custom', label: '定制需求' },
-                  ]}
+                  optionList={productChoices}
                 />
-                {item.mode === 'custom' ? (
-                  <Select
-                    style={{ flex: 1 }}
-                    placeholder="选择定制需求（编号）"
-                    filter={optionMatcher}
-                    value={item.inquiry_id}
-                    onChange={(value) => {
-                      const items = [...form.items]
-                      items[index] = { ...items[index], inquiry_id: value as number }
-                      setForm({ ...form, items })
-                    }}
-                    optionList={inquiryOptions}
-                  />
-                ) : (
-                  <Select
-                    style={{ flex: 1 }}
-                    placeholder="选择 SKU"
-                    filter={optionMatcher}
-                    value={item.sku_id}
-                    onChange={(value) => {
-                      const items = [...form.items]
-                      items[index] = { ...items[index], sku_id: value as number }
-                      setForm({ ...form, items })
-                    }}
-                    optionList={skuOptions}
-                  />
-                )}
                 <Input
-                  style={{ width: 90 }}
+                  style={{ width: 96 }}
+                  placeholder="打样数量"
                   value={item.quantity}
                   onChange={(value) => {
                     const items = [...form.items]
@@ -894,7 +910,7 @@ export default function SampleListPage() {
             <Button
               theme="borderless"
               onClick={() =>
-                setForm({ ...form, items: [...form.items, { mode: 'sku', quantity: '1' }] })
+                setForm({ ...form, items: [...form.items, { quantity: '1' }] })
               }
             >
               + 添加一行
@@ -947,7 +963,7 @@ export default function SampleListPage() {
             </div>
 
             <div>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>样品明细</div>
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>样品明细（产品名称 *，打样数量 *）</div>
               <Table
                 size="small"
                 rowKey="id"
@@ -1018,51 +1034,48 @@ export default function SampleListPage() {
               />
               {canManage && !['shipped', 'signed'].includes(detail.status) && (
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                  {/* 追加明细同样只用**一个框**（与上面新建时一致，
+                      2026-10-16 主人：「我不明白为什么还要选择这个」） */}
                   <Select
-                    style={{ width: 92 }}
-                    value={newItem.mode}
-                    onChange={(value) =>
-                      setNewItem({
-                        mode: value as ItemDraft['mode'],
-                        quantity: newItem.quantity,
-                      })
+                    style={{ flex: 1 }}
+                    placeholder="产品名称：能搜到就选，搜不到就直接打字"
+                    filter={optionMatcher}
+                    allowCreate
+                    value={
+                      newItem.sku_id
+                        ? newItem.sku_id
+                        : newItem.inquiry_id
+                          ? `custom:${newItem.inquiry_id}`
+                          : newItem.item_name
+                            ? newItem.item_name
+                            : undefined
                     }
-                    optionList={[
-                      { value: 'sku', label: '现货 SKU' },
-                      { value: 'custom', label: '定制需求' },
-                    ]}
+                    onChange={(value) => {
+                      const raw = value as number | string | undefined
+                      const custom = typeof raw === 'string' && raw.startsWith('custom:')
+                      setNewItem({
+                        quantity: newItem.quantity,
+                        sku_id: typeof raw === 'number' ? raw : undefined,
+                        inquiry_id: custom ? Number(raw.slice(7)) : undefined,
+                        item_name: typeof raw === 'string' && !custom ? raw : undefined,
+                      })
+                    }}
+                    optionList={productChoices}
                   />
-                  {newItem.mode === 'custom' ? (
-                    <Select
-                      style={{ flex: 1 }}
-                      placeholder="选择定制需求（编号）"
-                      filter={optionMatcher}
-                      value={newItem.inquiry_id}
-                      onChange={(value) => setNewItem({ ...newItem, inquiry_id: value as number })}
-                      optionList={inquiryOptions}
-                    />
-                  ) : (
-                    <Select
-                      style={{ flex: 1 }}
-                      placeholder="追加 SKU"
-                      filter={optionMatcher}
-                      value={newItem.sku_id}
-                      onChange={(value) => setNewItem({ ...newItem, sku_id: value as number })}
-                      optionList={skuOptions}
-                    />
-                  )}
                   <Input
-                    style={{ width: 80 }}
+                    style={{ width: 96 }}
+                    placeholder="打样数量"
                     value={newItem.quantity}
                     onChange={(value) => setNewItem({ ...newItem, quantity: value })}
                   />
                   <GuardedButton
-  disabled={!draftReady(newItem)}
-  blockedReasons={[newItem.mode === 'custom' ? '请先选择一个定制需求编号，再点「添加」。' : '请先选择一个 SKU，再点「添加」。']}
-  action="添加明细"
-  loading={addItemMutation.isPending}
-  onClick={() => addItemMutation.mutate()}
->
+                    hintBelow
+                    disabled={!draftReady(newItem)}
+                    blockedReasons={['请先选一个产品，或直接把产品名称打进去。']}
+                    action="添加明细"
+                    loading={addItemMutation.isPending}
+                    onClick={() => addItemMutation.mutate()}
+                  >
   添加
 </GuardedButton>
                 </div>
@@ -1368,10 +1381,6 @@ export default function SampleListPage() {
                             { value: '其他', label: '其他' },
                           ]}
                         />
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                        紧急程度不只是标记：普通可晚 3~5 天交样、急可晚 1~3 天、
-                        <b>紧急不允许晚</b>（这是钉钉单上的口径）。
                       </div>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <Input

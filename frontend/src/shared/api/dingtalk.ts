@@ -46,6 +46,7 @@ export interface OaApprovalInstance {
   /** 当前允许的动作（服务端口径） */
   allowed_actions?: OaAction[]
   synced_at?: string | null
+  sync_notice?: string | null
   created_at?: string | null
   last_attempt_at?: string | null
 }
@@ -97,6 +98,10 @@ export function resolveOaInstance(oaId: number, payload: OaResolvePayload) {
 /** 撤回仍在钉钉流转中的询价或独立打样审批。 */
 export function withdrawOaInstance(oaId: number) {
   return api.post<OaApprovalInstance>(`/oa-instances/${oaId}/withdraw`, {})
+}
+
+export function syncOaInstance(oaId: number) {
+  return api.post<OaApprovalInstance>(`/oa-instances/${oaId}/sync`, {})
 }
 
 /** 手动拉一次审批状态（与定时任务同一个函数，验收时不用等）。 */

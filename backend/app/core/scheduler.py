@@ -16,6 +16,7 @@
 """
 
 import logging
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -71,6 +72,8 @@ async def run_auto_tasks_job() -> None:
         from app.modules.task.scanning import lock_task_scan
 
         await lock_task_scan(session)
+        from app.modules.contract.customer_flow import remind_countersigns
+        await remind_countersigns(session)
         expired = await contract_service.notify_expiring_monthly(session)
         expired_quotes = await quote_service.notify_expired_quotes(session)
         # 第三个时钟（§2.3）：约定的下次跟进时间到了却没联系 → 推负责人一次
@@ -171,10 +174,23 @@ async def run_oa_sync_job() -> None:
     async with SessionLocal() as session:
         result = await dingtalk_service.sync_pending_instances(session)
         await session.commit()
-    if result["checked"]:
-        logger.info(
-            "OA 审批状态同步：检查 %s 条，状态变更 %s 条", result["checked"], result["changed"]
-        )
+    logger.info(
+        "OA 审批状态同步完成：检查 %s 条，状态变更 %s 条", result["checked"], result["changed"]
+    )
+
+
+def _register_oa_sync_job() -> None:
+    scheduler.add_job(
+        run_oa_sync_job,
+        "interval",
+        minutes=settings.scheduler_oa_sync_minutes,
+        id="oa_sync",
+        name="OA 审批状态同步（周期）",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+        next_run_time=datetime.now(UTC),
+    )
 
 
 def start_scheduler() -> None:
@@ -184,6 +200,11 @@ def start_scheduler() -> None:
     触发只补跑一次（比如机器停了一天，开机后不会连环补跑）。
     """
     if not settings.scheduler_enabled:
+        if settings.scheduler_oa_sync_enabled:
+            _register_oa_sync_job()
+            scheduler.start()
+            logger.info("仅开启 OA 审批自动同步，间隔 %s 分钟；其他定时任务保持关闭", settings.scheduler_oa_sync_minutes)
+            return
         logger.info("定时任务调度已关闭（SCHEDULER_ENABLED=false），公海回收/自动任务需手动触发")
         return
 
@@ -241,16 +262,7 @@ def start_scheduler() -> None:
         coalesce=True,
         misfire_grace_time=3600,
     )
-    scheduler.add_job(
-        run_oa_sync_job,
-        "interval",
-        minutes=settings.scheduler_oa_sync_minutes,
-        id="oa_sync",
-        name="OA 审批状态同步（周期）",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=300,
-    )
+    _register_oa_sync_job()
     scheduler.start()
     logger.info(
         "定时任务调度已启动：公海回收每天 %02d:00、自动任务规则每天 %02d:10、"

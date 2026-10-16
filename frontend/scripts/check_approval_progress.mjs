@@ -18,3 +18,19 @@ const unknown=approvalProgress({payload:{tasks:[{userId:'secret-id',status:'FUTU
 assert.equal(unknown.status,'状态待核对')
 assert.ok(!unknown.person.includes('secret-id'))
 console.log('approval progress snapshot checks passed')
+
+const { oaFormFields } = require('../src/shared/components/oa-form-fields.ts')
+assert.deepEqual(oaFormFields(null), [])
+assert.deepEqual(oaFormFields({payload:{formComponentValues:[
+  {name:'生产报价',value:'12.50'},
+  {name:'附件',value:JSON.stringify([{fileName:'回复图纸.pdf',fileId:'internal-id'}])},
+  {name:'说明',value:'<script>test</script>'},
+  {name:'明细',value:JSON.stringify([{rowValue:[{label:'材质',value:'PP'}]}])},
+  {name:'数量',value:0},
+]}}), [
+  {name:'生产报价',value:'12.50'}, {name:'附件',value:'回复图纸.pdf'},
+  {name:'说明',value:'<script>test</script>'}, {name:'明细',value:'材质：PP'},
+  {name:'数量',value:'0'},
+])
+assert.deepEqual(oaFormFields({payload:{formValueVOS:[{name:'后续回复',value:'确认'}]}}),[{name:'后续回复',value:'确认'}])
+console.log('OA returned form checks passed')

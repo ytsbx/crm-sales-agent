@@ -35,6 +35,7 @@
 只认调用方给的字段映射，映射从模板字段清单来（见 21-交接说明-2026-10-04.md §7.1 的待外部输入）。
 """
 
+import json
 import secrets
 import threading
 import time
@@ -116,8 +117,9 @@ _OUTCOME_HINT = {
 _STATUS_MAP = {
     "RUNNING": "pending",
     "COMPLETED": "approved",
-    "TERMINATED": "rejected",
+    "TERMINATED": "withdrawn",
     "CANCELED": "withdrawn",
+    "CANCELLED": "withdrawn",
 }
 
 
@@ -133,12 +135,14 @@ def _as_utc(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def build_form_component_values(field_map: dict[str, Any]) -> list[dict[str, Any]]:
+def build_form_component_values(
+    field_map: dict[str, Any], *, field_definitions: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     """把 CRM 字段拼成钉钉的 `formComponentValues`（发起审批实例的请求体）。
 
     - `field_map` 的 key 必须是**模板控件的 id**（不是中文名）；
-    - `name` 和 `id` 都填控件 id：新版接口以 `id` 认控件，而 `name` 按官方文档
-      也允许填 id——两个都带上，任一判据都能命中；
+    - 提供当前模板定义时，`name` 使用 label，`id` 使用控件 id。
+      官方创建接口要求 name 与模板 label 一致；旧调用方未提供定义时保留原键。
     - `componentType` 从控件 id 的前缀推导（`TextField_XXX` → `TextField`）。
       **这不是猜的**：实测两张模板共 69 个控件，服务端返回的 `componentType`
       与 id 前缀**全部一致**；推导不出来的（id 里没有下划线）就不带这个字段；
@@ -146,12 +150,27 @@ def build_form_component_values(field_map: dict[str, Any]) -> list[dict[str, Any
       这在"驳回后重提"时会把上一次填的内容抹掉。
     """
     items: list[dict[str, Any]] = []
+    definitions = {field['id']: field for field in (field_definitions or [])}
     for component_id, value in field_map.items():
         if value in (None, "", [], {}):
             continue
-        item: dict[str, Any] = {"name": component_id, "id": component_id, "value": value}
-        if "_" in component_id:
-            item["componentType"] = component_id.split("_", 1)[0]
+        if isinstance(value, bool):
+            raise ValueError(f'审批字段 {component_id} 不能使用布尔值')
+        definition = definitions.get(component_id, {})
+        kind = definition.get('type') or (component_id.split('_', 1)[0] if '_' in component_id else None)
+        if kind == 'InnerContactField':
+            # 创建接口的单人联系人同样使用 userId 数组字符串；详情中的显示姓名不能回填。
+            if isinstance(value, str):
+                value = json.loads(value) if value.lstrip().startswith('[') else [value]
+            if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
+                raise ValueError(f'审批字段 {component_id} 需要真实 userId 数组')
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value, ensure_ascii=False, allow_nan=False)
+        else:
+            value = str(value)
+        item: dict[str, Any] = {"name": definition.get('label') or component_id, "id": component_id, "value": value}
+        if kind:
+            item["componentType"] = kind
         items.append(item)
     return items
 
@@ -295,6 +314,7 @@ async def _call_create_and_record(
     component_values: list[dict[str, Any]],
     process_code: str,
     originator_user_id: str,
+    dept_id: int | None = None,
     resolve_action: str | None = None,
 ) -> OaInstance:
     """真正调一次外部发起，并按**三种后果**落状态（调用前占用已由调用方占到）。
@@ -308,10 +328,12 @@ async def _call_create_and_record(
     row.attempt_count = int(row.attempt_count or 0) + 1
     row.last_attempt_at = now
     try:
+        department_args = {'dept_id': dept_id} if dept_id is not None else {}
         instance_id = await get_client().create_process_instance(
             process_code=process_code,
             form_component_values=component_values,
             originator_user_id=originator_user_id,
+            **department_args,
         )
     except Exception as exc:  # noqa: BLE001 —— 外部怎么炸都要落痕，绝不能假装成功
         outcome = classify_outcome(exc)
@@ -351,6 +373,8 @@ async def create_inquiry_instance(
     field_map: dict[str, Any],
     oa_type: str = "inquiry",
     resubmit: bool = False,
+    field_definitions: list[dict[str, Any]] | None = None,
+    dept_id: int | None = None,
 ) -> OaInstance:
     """发起询价审批。
 
@@ -404,7 +428,10 @@ async def create_inquiry_instance(
     submit_round = (int(latest.submit_round) + 1) if (resubmit and latest) else 1
     idempotency_key = f"{inquiry_id}:{inquiry_version}:{oa_type}:{submit_round}"
 
-    component_values = build_form_component_values(field_map)
+    component_values = build_form_component_values(field_map, field_definitions=field_definitions)
+    form_snapshot = {"formComponentValues": component_values}
+    if dept_id is not None:
+        form_snapshot['deptId'] = dept_id
 
     # 推送总闸（默认关）：测试期绝不向外部系统发起真实审批单。
     # 与企微同一套语义——记 skipped 并写明原因，"没发"不等于"发失败"。
@@ -418,7 +445,7 @@ async def create_inquiry_instance(
             submit_round=submit_round,
             process_code=process_code,
             originator_user_id=originator_user_id,
-            form_snapshot={"formComponentValues": component_values},
+            form_snapshot=form_snapshot,
             status="skipped",
             error=f"{DINGTALK_DISABLED_MESSAGE}；未发起审批",
             created_by=user.id,
@@ -447,7 +474,7 @@ async def create_inquiry_instance(
         row = claimed
         # 刷新报文快照，保证"本次实际发出去的"与记录一致（复用同一行，
         # 所以不需要再走一次"占业务键"的插入与唯一约束处理）
-        row.form_snapshot = {"formComponentValues": component_values}
+        row.form_snapshot = form_snapshot
         row.originator_user_id = originator_user_id
         row.process_code = process_code
         await session.commit()
@@ -457,6 +484,7 @@ async def create_inquiry_instance(
             component_values=component_values,
             process_code=process_code,
             originator_user_id=originator_user_id,
+            dept_id=dept_id,
         )
 
     row = OaInstance(
@@ -468,7 +496,7 @@ async def create_inquiry_instance(
         submit_round=submit_round,
         process_code=process_code,
         originator_user_id=originator_user_id,
-        form_snapshot={"formComponentValues": component_values},
+        form_snapshot=form_snapshot,
         status="pending",
         created_by=user.id,
         created_at=now,
@@ -503,6 +531,7 @@ async def create_inquiry_instance(
         component_values=component_values,
         process_code=process_code,
         originator_user_id=originator_user_id,
+        dept_id=dept_id,
     )
 
 
@@ -843,25 +872,32 @@ async def resend_instance(
         component_values=component_values,
         process_code=row.process_code or "",
         originator_user_id=row.originator_user_id or "",
+        dept_id=(row.form_snapshot or {}).get('deptId'),
         resolve_action="resend",
     )
 
 
-async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> dict:
-    """轮询回写：把还在审批中的实例拉一次状态与结果。
+async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_id: int | None = None) -> dict:
+    """统一回收钉钉快照：事件和手动同步指定单条，定时任务公平轮询未完成记录。
 
-    为什么先做轮询而不是事件订阅：轮询**不需要公网回调地址、也不需要管理员
-    在 OA 后台额外授权**，而且天然不会丢消息——这一轮没查到，下一轮还会查。
-    代价只是延迟几分钟，而询价审批本来就要几小时到几天。
+    同一行只允许一个查询者持锁写回，事件重复投递不会重复创建业务流程。
     """
     if app_settings.dingtalk_push_off:
         return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
+    pending = or_(
+        OaInstance.status == "pending",
+        (OaInstance.status == "withdrawn") &
+        (OaInstance.result['withdraw_snapshot_pending'].as_boolean().is_(True)),
+    )
     rows = (
         await session.execute(
             select(OaInstance)
-            .where(OaInstance.status == "pending", OaInstance.instance_id.is_not(None))
+            .where(OaInstance.id == oa_id if oa_id is not None else pending,
+                   OaInstance.instance_id.is_not(None))
             .order_by(OaInstance.updated_at.asc().nullsfirst(), OaInstance.id.asc())
-            .limit(limit)
+            .limit(1 if oa_id is not None else limit)
+            .with_for_update(skip_locked=True)
+            .execution_options(populate_existing=True)
         )
     ).scalars().all()
     if not rows:
@@ -909,7 +945,18 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
                 new_status = None
         else:
             new_status = _STATUS_MAP.get(raw_status)
-        row.result = {"raw_status": raw_status, "raw_result": raw_result, "payload": data}
+        if row.status in ('approved', 'rejected', 'withdrawn') and new_status == 'pending':
+            # 保留已确认终态及完整快照，等待外部数据收敛。
+            row.updated_at = datetime.now(UTC)
+            continue
+        previous_result = row.result or {}
+        withdrawal_pending = bool(previous_result.get('withdraw_snapshot_pending'))
+        if withdrawal_pending and new_status == 'pending':
+            # 撤回接口已明确成功；钉钉查询短暂返回旧快照时不能退回审批中。
+            new_status = None
+        row.result = {**previous_result, "raw_status": raw_status, "raw_result": raw_result, "payload": data}
+        if withdrawal_pending:
+            row.result = {**row.result, 'withdraw_snapshot_pending': new_status is None}
         row.synced_at = datetime.now(UTC)
         row.updated_at = datetime.now(UTC)
         if new_status and new_status != row.status:
@@ -945,8 +992,10 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50) -> d
             # 去重靠**上面那句** `new_status != row.status`：只有状态真的从
             # pending 翻到终态的那一次才进得来（`changed` 也是同一个判据），
             # 所以每份合同每个终态只提醒一次，轮询反复回写同一状态不会重复推送。
-            if new_status in ('approved', 'rejected'):
+            marker = f'{row.id}:{row.status}'
+            if new_status in ('approved', 'rejected') and (linked_contract.filled_data or {}).get('_oa_notified') != marker:
                 await _notify_contract_review_outcome(session, linked_contract, new_status)
+                linked_contract.filled_data = {**linked_contract.filled_data, '_oa_notified': marker}
 
     await session.flush()
     return {"checked": len(rows), "changed": changed}
@@ -1056,6 +1105,12 @@ def serialize(row: OaInstance) -> dict:
         "instance_id": row.instance_id,
         "status": row.status,
         "status_label": OA_STATUS_LABEL.get(row.status, row.status),
+        "sync_notice": (
+            '钉钉连接当前已关闭，审批记录不会自动更新，请联系管理员确认。'
+            if app_settings.dingtalk_push_off else
+            '当前服务未开启审批自动同步，记录可能滞后，请联系管理员确认。'
+            if not (app_settings.scheduler_enabled or app_settings.scheduler_oa_sync_enabled) else None
+        ),
         # 请求号 / 轮次 / 尝试次数：7.7 要求"保留请求编号、次数与每轮历史"。
         # 轮次看 submit_round（每轮一行，历史不删），同轮内试过几次看 attempt_count。
         "request_no": row.idempotency_key,
@@ -1171,11 +1226,8 @@ async def sync_users(session: AsyncSession) -> dict:
     判据顺序见本段开头三条纪律。返回里把"对不上的"和"还没绑的"分开列出来：
     前者要管理员去处理，后者只是提示"这个人还进不来"。
     """
-    # ⚠️ 判的是**登录闸**，不是审批总闸（2026-10-14 主人拍板）。
-    # 这一步做的是"把人跟钉钉号对上"，本身就是**为了让员工能扫码进来** ——
-    # 属于登录那一组；与审批那种"系统主动发出去"不是一回事。
-    # 所以「只开登录、不开放审批」时，人员同步照样能跑。
-    if app_settings.dingtalk_login_off:
+    # 登录和审批都需要真实人员绑定；只开任一项都能同步，但不因此开启另一项。
+    if app_settings.dingtalk_login_off and app_settings.dingtalk_push_off:
         return {
             "disabled": True,
             "message": DINGTALK_LOGIN_DISABLED_MESSAGE,

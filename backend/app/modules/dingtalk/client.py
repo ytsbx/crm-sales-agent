@@ -63,11 +63,14 @@ class DingTalkError(RuntimeError):
         api: str,
         code: str | None = None,
         http_status: int | None = None,
+        request_id: str | None = None,
     ) -> None:
         self.api = api
         self.code = code
         self.http_status = http_status
-        super().__init__(f"钉钉接口 {api} 返回错误：{message}")
+        self.request_id = request_id
+        suffix = f'（requestId: {request_id}）' if request_id else ''
+        super().__init__(f"钉钉接口 {api} 返回错误：{message}{suffix}")
 
 
 class DingTalkUnknownOutcome(RuntimeError):
@@ -130,6 +133,18 @@ class DingTalkClient:
     def __init__(self) -> None:
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        self._schema_cache: dict = {}
+
+    async def get_display_process_schema(self, process_code: str) -> dict:
+        """只读页面缓存模板，避免页面每次刷新都消耗钉钉配额；提交仍重新读。"""
+        self._require()
+        from copy import deepcopy
+        cached = self._schema_cache.get(process_code)
+        if cached and cached[0] > time.monotonic():
+            return deepcopy(cached[1])
+        schema = await self.get_process_schema(process_code)
+        self._schema_cache[process_code] = (time.monotonic() + 300, deepcopy(schema))
+        return schema
 
     @property
     def configured(self) -> bool:
@@ -274,7 +289,9 @@ class DingTalkClient:
             raise DingTalkError(
                 data.get("message") or resp.text[:200],
                 api="workflow/processInstances",
+                code=data.get('code'),
                 http_status=resp.status_code,
+                request_id=data.get('requestid') or data.get('requestId') or resp.headers.get('x-acs-request-id'),
             )
         return data["instanceId"]
 
@@ -326,6 +343,14 @@ class DingTalkClient:
         inner = data.get("result") or data
         if not inner.get("title") and not inner.get("status"):
             raise DingTalkError("响应里没有审批内容", api="workflow/processInstances:get")
+        # DWS/历史实例使用的别名与新版读取结果归一，原字段仍保留。
+        inner = dict(inner)
+        if not inner.get("result"):
+            inner["result"] = inner.get("processInstanceResult")
+        if not inner.get("formComponentValues"):
+            inner["formComponentValues"] = inner.get("formValueVOS") or []
+        if not inner.get("originatorUserId"):
+            inner["originatorUserId"] = inner.get("originatorUserid")
         return inner
 
     async def terminate_process_instance(
@@ -353,12 +378,16 @@ class DingTalkClient:
             data = resp.json() if resp.content else {}
         except ValueError as exc:
             raise DingTalkUnknownOutcome("撤回审批后响应无法解析，无法确认撤回结果") from exc
+        if not isinstance(data, dict) or resp.status_code >= 500:
+            raise DingTalkUnknownOutcome("钉钉撤回响应异常，请等待同步或核对原单")
         if resp.status_code != 200 or data.get("success") is False or data.get("result") is False:
             raise DingTalkError(
                 data.get("message") or data.get("errmsg") or resp.text[:200],
                 api="workflow/processInstances/terminate",
                 http_status=resp.status_code,
             )
+        if data.get('success') is not True and data.get('result') is not True:
+            raise DingTalkUnknownOutcome('钉钉未明确确认撤回结果，请等待同步或核对原单')
         return data
 
     async def get_process_schema(self, process_code: str) -> dict[str, Any]:
@@ -523,17 +552,23 @@ class DingTalkClient:
     # 逐层取子部门、再取每个部门的成员，自己去重 —— 同一个人可以在多个部门里出现。
     # 去重与遍历放在 service 层（那是业务动作），这里只提供两个原子能力。
 
+    def _require_directory(self) -> None:
+        """人员绑定同时服务登录与审批；任一业务已开启时可读取通讯录。"""
+        if not settings.dingtalk_login_off:
+            self._require_login()
+        else:
+            self._require()
+
     async def list_sub_departments(self, dept_id: int) -> list[dict[str, Any]]:
         """列某个部门下的**直接**子部门（根部门 id 固定为 1）。
 
         参数名是 `dept_id`（下划线），结果在 `result` 里 —— 与 `topapi/v2/user/list`
         同一套写法（这组旧版接口用的是这个形制，别按新版的 `deptId` 写）。
 
-        **挂登录闸**（2026-10-14）：它服务的是"把人和钉钉号对上"，
-        而那是登录的前置步骤 —— 所以「只开登录、不开放审批」时它要能用。
+        人员绑定同时服务扫码登录和审批发起；两项功能任一开启即可读取。
         """
-        self._require_login()
-        token = await self.access_token(for_login=True)
+        self._require_directory()
+        token = await self.access_token(for_login=not settings.dingtalk_login_off)
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.post(
                 "https://oapi.dingtalk.com/topapi/v2/department/listsub",
@@ -561,10 +596,10 @@ class DingTalkClient:
         也可能给满 100 条并把 `has_more` 置 false，按条数判会多要一次空页。
         `size` 上限 100，传大了接口会拒。
 
-        **挂登录闸**（同日，理由同 `list_sub_departments`）。
+        人员绑定的开关口径与 `list_sub_departments` 相同。
         """
-        self._require_login()
-        token = await self.access_token(for_login=True)
+        self._require_directory()
+        token = await self.access_token(for_login=not settings.dingtalk_login_off)
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.post(
                 "https://oapi.dingtalk.com/topapi/v2/user/list",

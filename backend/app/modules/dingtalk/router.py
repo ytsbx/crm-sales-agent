@@ -42,7 +42,7 @@ SUBMISSION_FIELD_LABELS = {
 }
 
 
-async def _submission_fields(cfg: dict) -> list[dict]:
+async def _submission_fields(cfg: dict, *, include_all: bool = False) -> list[dict]:
     from app.modules.dingtalk.client import get_client
     if not cfg.get("process_code") or app_settings.dingtalk_push_off:
         return []
@@ -53,10 +53,11 @@ async def _submission_fields(cfg: dict) -> list[dict]:
     fields = []
     for item in content.get("items", []):
         props = item.get("props") or {}
-        if props.get("label") not in SUBMISSION_FIELD_LABELS or not props.get("id"):
+        if (not include_all and props.get("label") not in SUBMISSION_FIELD_LABELS) or not props.get("id"):
             continue
         kind = item.get("componentName")
-        if kind not in ("TextField", "TextareaField", "DDDateField", "DDSelectField", "DDAttachment"):
+        if kind not in ("TextField", "TextareaField", "DDDateField", "DDSelectField", "DDAttachment",
+                        "DDPhotoField", "NumberField", "InnerContactField", "DepartmentField"):
             raise AppError(ErrorCode.PARAM_ERROR, "询价模板控件已变化，请联系管理员核对", 422)
         options = []
         for option in props.get("options", []):
@@ -98,6 +99,8 @@ def missing_submit_fields(inquiry) -> list[str]:
         value = getattr(inquiry, attr, None)
         if value is None or (isinstance(value, str) and not value.strip()):
             missing.append(label)
+    if getattr(inquiry, "customer_id", None) is None and getattr(inquiry, "opportunity_id", None) is None:
+        missing.append("客户或商机关联")
     return missing
 
 
@@ -163,6 +166,10 @@ async def start_inquiry_approval(
             if value not in (None, "")
         )
     supplemental_fields = await _submission_fields(cfg or {})
+    # 发起接口的 name 必须使用模板真实中文标签，尤其是 DDPhotoField；只传控件 ID
+    # 会导致钉钉接受审批单但把图片控件留空。这里保留一份完整字段定义给状态机，
+    # 界面仍只展示销售需要填写的那组字段。
+    all_field_definitions = await _submission_fields(cfg or {}, include_all=True)
     supplied = payload.extra_fields or {}
     attachment_field = next((f for f in supplemental_fields if f["type"] == "DDAttachment"), None)
     selected_attachments = []
@@ -261,6 +268,23 @@ async def start_inquiry_approval(
         if component_id and value not in (None, ""):
             field_map[component_id] = value
 
+    # 原有材质工艺控件也可承载完整摘要，避免未配置 content_component 时漏正文。
+    summary_component = content_component or mapping.get('description')
+    if summary_component:
+        summary = [f'{label}：{value}' for label, value in (
+            ('询价编号', inquiry.inquiry_no), ('版本', inquiry.version),
+            ('产品名称', inquiry.title), ('材质及工艺要求', inquiry.description),
+            ('预估订购数量', inquiry.quantity), ('目标价', inquiry.target_price),
+            ('备注', getattr(inquiry, 'remark', None)),
+            ('修订说明', getattr(inquiry, 'revision_note', None)),
+        ) if value is not None and value != '']
+        summary.extend(f'{field["label"]}：{supplied[field["id"]]}'
+                       for field in supplemental_fields
+                       if field['type'] != 'DDAttachment' and supplied.get(field['id']))
+        if selected_attachments:
+            summary.append('随单附件：' + '、'.join(name for name, _ in selected_attachments))
+        field_map[str(summary_component)] = '\n'.join(summary)
+
     # 「产品参考图片」是**必填的图片控件**：图不能直接塞进审批单，
     # 得先上传给钉钉换 media_id——**这一步也是对外的**，所以只在总闸打开时真传；
     # 关着的时候只把"会用哪张图"记下来，等真发的时候再传。
@@ -313,6 +337,7 @@ async def start_inquiry_approval(
         originator_user_id=ding_user_id,
         field_map=field_map,
         resubmit=payload.resubmit,
+        field_definitions=all_field_definitions,
     )
     await write_audit(
         session,
@@ -402,6 +427,10 @@ async def ensure_oa_type_scope(session, user, row: OaInstance) -> None:
 
     未知类型**不放行**：新增 oa_type 时必须同时在这里给出判据，默认拒绝。
     """
+    from app.core.deps import ensure_permission
+    permission = {'inquiry': 'quote:manage', 'sample': 'sample:manage', 'contract': 'order:manage'}.get(row.oa_type)
+    if permission:
+        ensure_permission(user, permission)
     if row.oa_type == "inquiry":
         from app.modules.inquiry import service as inquiry_service
 
@@ -562,6 +591,33 @@ async def resolve_oa_instance(
     return ok(svc.serialize(row), "已处理")
 
 
+@router.post("/oa-instances/{oa_id}/sync")
+async def sync_oa_instance(
+    oa_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db),
+):
+    """立即向钉钉查询当前单据；不发起、不撤销、不改变审批决定。"""
+    row = await session.get(OaInstance, oa_id, with_for_update=True)
+    if row is None:
+        raise AppError(ErrorCode.NOT_FOUND, '审批记录不存在', 404)
+    await ensure_oa_type_scope(session, user, row)
+    if app_settings.dingtalk_push_off:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '钉钉连接当前已关闭，请联系管理员', 422)
+    if not row.instance_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '尚无钉钉审批单，请先核对提交状态', 422)
+    # 同一条审批短时间重复点击复用快照；行锁串行化并发请求。
+    synced = row.synced_at
+    if synced is not None and synced.tzinfo is None:
+        synced = synced.replace(tzinfo=UTC)
+    if synced is None or (datetime.now(UTC) - synced).total_seconds() >= 3:
+        await svc.sync_pending_instances(session, oa_id=row.id)
+        await session.commit()
+    if row.error:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, '未能取得钉钉最新记录，请稍后重试', 502)
+    return ok(svc.serialize(row), '已查询钉钉最新记录')
+
+
 @router.post("/oa-instances/{oa_id}/withdraw")
 async def withdraw_oa_instance(
     oa_id: int,
@@ -576,7 +632,7 @@ async def withdraw_oa_instance(
     而按钮照常显示。改成按 `oa_type` 走各模块自己的可见性判据（与核定入口同一套）。
     """
     from app.core.config import settings as app_settings
-    from app.modules.dingtalk.client import get_client
+    from app.modules.dingtalk.client import get_client, DingTalkError, DingTalkUnknownOutcome
     from app.modules.user.model import User
 
     row = await session.get(OaInstance, oa_id, with_for_update=True)
@@ -591,13 +647,22 @@ async def withdraw_oa_instance(
     ding_user_id = (account.dingtalk_userid if account else None) or await get_client().search_user_id_by_name(user.name)
     if not ding_user_id:
         raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，无法撤回", 422)
-    await get_client().terminate_process_instance(
-        instance_id=row.instance_id,
-        operating_user_id=ding_user_id,
-        remark="CRM 撤回钉钉审批",
-    )
+    try:
+        await get_client().terminate_process_instance(
+            instance_id=row.instance_id,
+            operating_user_id=ding_user_id,
+            remark="CRM 撤回钉钉审批",
+        )
+    except DingTalkUnknownOutcome as exc:
+        row.error = '撤回结果暂未确认，请等待同步或在钉钉核对原单，不要重复发起审批'
+        await session.commit()
+        raise AppError(ErrorCode.EXTERNAL_ERROR, row.error, 502) from exc
+    except DingTalkError as exc:
+        raise AppError(ErrorCode.EXTERNAL_ERROR, '钉钉未接受撤回，请确认原单仍在审批中且当前账号有撤回权限', 422) from exc
+    row.error = None
     row.status = "withdrawn"
-    row.result = {**(row.result or {}), "crm_withdrawn": True, "withdrawn_by": ding_user_id}
+    row.result = {**(row.result or {}), "crm_withdrawn": True, "withdrawn_by": ding_user_id,
+                  "withdraw_snapshot_pending": True}
     row.synced_at = datetime.now(UTC)
     row.updated_at = datetime.now(UTC)
     await write_audit(
@@ -663,9 +728,7 @@ async def sync_dingtalk_users(
     """
     result = await svc.sync_users(session)
     if result.get("disabled"):
-        # 登录闸（DINGTALK_LOGIN_OFF）关着：**没去拉通讯录**，也没有数据要提交。
-        # ⚠️ 判的是**登录闸**而不是审批总闸（2026-10-14）：这一步做的是"把人对上"，
-        # 本身就是为了让员工能扫码进来 —— 只开登录时它必须能用。
+        # 登录和审批都关闭时，没有读取通讯录或写入绑定。
         # 如实回报，不假装成功——否则界面上会显示"同步完成 0 人"，
         # 让人以为是"钉钉里没人"，实际是一次请求都没发。
         return ok(result, result.get("message"))

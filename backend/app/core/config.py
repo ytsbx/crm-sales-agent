@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # ---- 定时任务调度（公海回收 / 自动任务规则的每日自动执行）----
     # scheduler_enabled=False 可整体关掉（例如多实例部署时只让一台跑）
     scheduler_enabled: bool = False
+    # 可只开启审批回收，不同时启动公海回收、任务扫描等其它周期任务。
+    scheduler_oa_sync_enabled: bool = False
+    dingtalk_oa_stream_enabled: bool = False
     scheduler_recycle_hour: int = 2   # 公海回收：每天几点跑（24 小时制）
     scheduler_task_rules_hour: int = 2  # 自动任务规则：每天几点跑
     # 通知失败重投：每多少分钟扫一次"到期该重试"的失败通知（文档 §六）。
@@ -107,9 +110,7 @@ class Settings(BaseSettings):
     dingtalk_agent_id: str = ""
     dingtalk_base_url: str = "https://api.dingtalk.com"
     # OA 审批状态轮询：每多少分钟拉一次（文档 §11.3 :152 的"回收状态与结果"）。
-    # 先走轮询而不是事件订阅——不需要公网回调地址、不需要额外的后台授权，
-    # 而且不会丢消息（这轮没查到下轮还会查）。询价审批本身要几小时到几天，
-    # 几分钟延迟无影响。
+    # Stream 事件优先触发对应单据查询；周期轮询用于断线和漏事件时补收。
     scheduler_oa_sync_minutes: int = 3
     #: 钉钉外部调用总闸（**只管"系统主动发起"的那一类**）。**默认 True = 关**：
     #: 阻止 token、人员/部门/模板查询、图片上传、审批发起/重发及状态同步。

@@ -52,6 +52,8 @@ import {
 import { reportOperationTiming } from '../../shared/api/analytics'
 import { newRequestKey } from '../../shared/api/requestKey'
 import FormLabel from '../../shared/components/FormLabel'
+import OaFormSnapshot from '../../shared/components/OaFormSnapshot'
+import SyncOaButton from '../../shared/components/SyncOaButton'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 
@@ -156,6 +158,8 @@ export default function KnowledgePage() {
     queryKey: ['inquiry-approvals', approvalTarget?.id],
     queryFn: () => listInquiryApprovals(approvalTarget!.id),
     enabled: Boolean(approvalTarget),
+    refetchInterval: 5000,
+    refetchOnWindowFocus: true,
   })
   const resolveMutation = useMutation({
     mutationFn: ({
@@ -698,7 +702,8 @@ export default function KnowledgePage() {
       const missing = options.fields.find((field) => field.required && (field.type === 'DDAttachment'
         ? !submitAttachments.length && !pendingAttachments.length : !submitFields[field.id]?.trim()))
       if (missing) { Toast.warning(`请填写${missing.label}`); return }
-      if (!form.description.trim() || !form.quantity.trim()) { Toast.warning('提交前请填写材质及工艺要求、预估订购数量'); return }
+      if (!form.customer_id && !form.opportunity_id) { Toast.warning('提交前请先关联客户或商机'); return }
+      if (!form.description.trim() || !form.quantity.trim()) { Toast.warning('提交钉钉时还需要填写材质及工艺要求、预估订购数量'); return }
       if (options.image_required && !pendingPhotos.length && !(submissionFiles.data ?? []).some((file) => file.category !== 'oa_attachment' && file.mime_type?.startsWith('image/'))) {
         Toast.warning('提交前请选择产品参考照片'); return
       }
@@ -835,7 +840,7 @@ export default function KnowledgePage() {
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div>
-            <FormLabel>产品参考照片</FormLabel>
+            <FormLabel required>产品参考图片</FormLabel>
             {(!editing || pendingPhotos.length > 0) && <>
               <Upload action="" uploadTrigger="custom" multiple accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
                 maxSize={20 * 1024} onSizeError={() => Toast.warning('单张照片不能超过 20 MB')}
@@ -854,11 +859,10 @@ export default function KnowledgePage() {
             <Input
               value={form.title}
               onChange={(value) => setForm({ ...form, title: value })}
-              placeholder="例如：客户想要带磁吸翻盖的礼品盒"
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>材质及工艺要求</div>
+            <FormLabel required>材质及工艺要求</FormLabel>
             <TextArea
               value={form.description}
               onChange={(value) => setForm({ ...form, description: value })}
@@ -867,7 +871,7 @@ export default function KnowledgePage() {
             />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>客户（可选）</div>
+            <div style={{ marginBottom: 4 }}>客户（用于关联 CRM）</div>
             <Select
               value={form.customer_id ?? undefined}
               onChange={(value) => setForm({ ...form, customer_id: (value as number) ?? null, opportunity_id: null })}
@@ -915,7 +919,7 @@ export default function KnowledgePage() {
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>预估订购数量</div>
+              <FormLabel required>预估订购数量</FormLabel>
               <Input value={form.quantity} onChange={(value) => setForm({ ...form, quantity: value })} />
             </div>
             <div style={{ flex: 1 }}>
@@ -926,22 +930,10 @@ export default function KnowledgePage() {
               />
             </div>
           </div>
-          {editing && (
-            <div>
-              <div style={{ marginBottom: 4 }}>状态</div>
-              <Select
-                value={form.status ?? editing.status}
-                onChange={(value) => setForm({ ...form, status: value as string })}
-                optionList={STATUS_OPTIONS}
-                style={{ width: '100%' }}
-              />
-            </div>
-          )}
           <div>
             <div style={{ marginBottom: 4 }}>备注</div>
             <Input value={form.remark} onChange={(value) => setForm({ ...form, remark: value })} />
           </div>
-          <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 12 }}>钉钉询价资料：草稿允许暂缺，提交时会检查必填项。</div>
           {renderSubmissionFields(editing)}
         </div>
       </Modal>
@@ -1040,12 +1032,13 @@ export default function KnowledgePage() {
         bodyStyle={{ maxHeight: '70vh', overflowY: 'auto' }}
       >
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10 }}>
-          点击每行左侧展开按钮可查看钉钉节点、处理意见和时间。后台定期同步，显示可能有延迟。
+          页面每5秒自动更新记录，无需刷新浏览器；如需主动查询钉钉，点击「立即同步」。点击每行左侧展开按钮可查看节点、处理意见和时间。
           发起过程中断时钉钉那边可能已经建了单，而钉钉接口没有"只许建一次"的开关，
           所以「不会自动重发」。请先到钉钉确认，再选「认领 / 重发 / 作废」。
           按钮由服务端返回的可用动作决定——待审批、已通过、结果未知都不会给出「重提」，
           因为那会在钉钉里另建一张单。
         </div>
+        {approvalRows[0]?.sync_notice && <div style={{ color: 'var(--crm-warning)', marginBottom: 10 }}>{approvalRows[0].sync_notice}</div>}
         <Table<OaApprovalInstance>
           columns={[
             { title: '轮次', dataIndex: 'submit_round', width: 60, render: (v: number) => v ?? 1 },
@@ -1073,6 +1066,7 @@ export default function KnowledgePage() {
                     请求号 {row.request_no ?? '-'}｜已发起 {row.attempt_count ?? 0} 次
                   </div>
                   {row.error && <div style={{ color: 'var(--crm-text-3)' }}>{row.error}</div>}
+                  {row.result?.withdraw_snapshot_pending === true && <div>撤回已确认，正在等待钉钉最终过程记录；下方为此前同步的快照。</div>}
                 </div>
               ),
             },
@@ -1085,6 +1079,9 @@ export default function KnowledgePage() {
                 const actions = row.allowed_actions ?? []
                 const isLatest = (row.submit_round ?? 1) === latestApprovalRound
                 const buttons: ReactNode[] = []
+                if (row.instance_id && can('quote:manage')) {
+                  buttons.push(<SyncOaButton key="sync" oaId={row.id} invalidateKeys={[[ 'inquiry-approvals', approvalTarget?.id ]]} />)
+                }
                 if (actions.includes('resolve_adopt')) {
                   buttons.push(
                     <a
@@ -1139,7 +1136,7 @@ export default function KnowledgePage() {
                   buttons.push(
                     <Popconfirm
                       key="resubmit"
-                      title="驳回后重提？"
+                      title="驳回或撤回后重新提交？"
                       content="会向钉钉「新建一轮」审批（旧轮次保留在记录里）。"
                       onConfirm={() => {
                         if (!approvalTarget) return
@@ -1148,7 +1145,7 @@ export default function KnowledgePage() {
                         startApproval(target, true)
                       }}
                     >
-                      <a>驳回后重提</a>
+                      <a>修改后重新提交</a>
                     </Popconfirm>,
                   )
                 }
@@ -1207,6 +1204,7 @@ export default function KnowledgePage() {
                   } },
                   { title: '处理意见', dataIndex: 'remark', render: (value: string) => value || '—' },
                 ]} /> : <div>钉钉尚未返回节点或操作记录，稍后再查看；最终结果以本轮审批总状态为准。</div>}
+              <OaFormSnapshot result={row.result} />
             </div>
           }}
           dataSource={approvalRows}

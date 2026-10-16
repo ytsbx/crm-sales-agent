@@ -454,7 +454,8 @@ async def download_application_form(
     content = render_application_form(
         sample, list(items), applicant_name=applicant_name, department_name=department_name
     )
-    filename = f"打样申请单-{sample.id}.xlsx"
+    from app.modules.sample.application_form import TEMPLATE_FILENAME
+    filename = TEMPLATE_FILENAME
     # 导出是**读操作**，不写审计：审计表记的是"谁改了数据"，
     # 把每次下载都记进去只会把真正要紧的改动淹掉（项目里 PDF 下载同样不记）。
     return Response(
@@ -527,6 +528,8 @@ async def update_sample(
         "packaging",
         "craft_requirement",
         "product_name",
+        "deliver_date",
+        "sample_maker",
     ):
         if field in data:
             setattr(sample, field, data[field])
@@ -1439,15 +1442,22 @@ async def _add_item(
 ) -> SampleItem:
     """加一条打样明细。
 
-    两条路径（场景09）：有 SKU 走 SKU；定制件尚无 SKU 时给需求编号——
-    定制件本来就要先打样再定 SKU，强制先建档等于把顺序反过来。
-    两个都不给直接拒：这条明细得说得清打的是什么。
+    **三条路径**：
+    - 有 SKU 走 SKU（现成产品）；
+    - 定制件尚无 SKU 时给需求编号 —— 定制件本来就要先打样再定 SKU，
+      强制先建档等于把顺序反过来；
+    - **只写产品名称**（2026-10-16 主人）：业务员手上那张《打样申请单》上
+      就只有「产品名称」一格，**没有"现货还是定制"这个区分**。所以允许只给名字 ——
+      名字打了样之后才可能建 SKU，要求先选 SKU 是把顺序反过来。
+      这一条与上面那条的区别：不给需求编号时**没有** inquiry 关联（不校验客户/商机归属），
+      但**必须**有个名字，否则这条明细说不清打的是什么。
 
     车间依据（材质/工艺/图纸版本）随明细一起存：一单多样时每行可以不同。
     """
-    if sku_id is None and inquiry_id is None:
+    named = (item_name or "").strip()
+    if sku_id is None and inquiry_id is None and not named:
         raise AppError(
-            ErrorCode.PARAM_ERROR, "打样明细必须关联 SKU 或定制需求编号", 422
+            ErrorCode.PARAM_ERROR, "打样明细要写清打的是什么：选产品，或填产品名称", 422
         )
     if sku_id is not None:
         sku = await session.get(Sku, sku_id)
@@ -1456,6 +1466,19 @@ async def _add_item(
         item = SampleItem(
             sample_request_id=sample_id,
             sku_id=sku_id,
+            # 把当时的产品名称一起冻结，申请表导出时不依赖实时 SKU 名称。
+            item_name=sku.name,
+            quantity=quantity,
+            remark=remark,
+        )
+    elif inquiry_id is None:
+        # 只写了产品名称：产品库/定制需求里都还没有它（往往是新品，打完样才建档）。
+        # 不关联任何 SKU / 需求 —— 申请表上的「产品名称」就是这一格。
+        item = SampleItem(
+            sample_request_id=sample_id,
+            sku_id=None,
+            inquiry_id=None,
+            item_name=named,
             quantity=quantity,
             remark=remark,
         )

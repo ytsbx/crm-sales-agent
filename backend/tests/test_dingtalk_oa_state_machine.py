@@ -224,6 +224,24 @@ def submit(session, **overrides):
     return svc.create_inquiry_instance(session, **kwargs)
 
 
+def test_submission_and_reviewed_resend_keep_originator_department(db, monkeypatch):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    create = AsyncMock(return_value='FAKE-DEPT')
+    monkeypatch.setattr(svc, 'get_client', lambda: SimpleNamespace(create_process_instance=create))
+    session = open_session(db)
+    row = asyncio.run(submit(session, dept_id=20))
+    assert row.form_snapshot['deptId'] == 20
+    assert create.await_args.kwargs['dept_id'] == 20
+    # 已经人工核定未建单的重发必须保留当初部门，不重新猜部门。
+    row.status = 'needs_review'
+    row.instance_id = None
+    session._session.commit()
+    asyncio.run(svc.resend_instance(session, row))
+    assert create.await_args.kwargs['dept_id'] == 20
+    session._session.close()
+
+
 # --------------------------------------------------------------------------
 # 7.7 状态 → 允许动作：待审批 / 已通过不许"重提另建实例"
 # --------------------------------------------------------------------------

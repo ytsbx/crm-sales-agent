@@ -19,6 +19,7 @@ from app.modules.audit_router import router as audit_router
 from app.modules.bizdoc.router import router as bizdoc_router
 from app.modules.dingtalk.router import router as dingtalk_router
 from app.modules.contract.router import router as contract_router
+from app.modules.contract.customer_flow import router as contract_customer_router
 from app.modules.product_insight.router import router as product_insight_router
 from app.modules.customer.router import router as customer_router
 from app.modules.customer.contacts_router import router as contacts_router
@@ -60,17 +61,25 @@ logging.basicConfig(
 )
 
 
+# HTTP 请求日志可能带钉钉 access_token 查询参数，不记录完整请求 URL。
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # 调度器要等事件循环就绪（AsyncIOScheduler 挂在应用自己的 loop 上）
     from app.core.scheduler import start_scheduler, stop_scheduler
     from app.modules.erp.adapter import reset_adapters
     from app.modules.wecom.client import reset_client
+    from app.modules.dingtalk.oa_stream import oa_stream
 
     start_scheduler()
+    oa_stream.start()
     try:
         yield
     finally:
+        await oa_stream.stop()
         try:
             stop_scheduler()
         finally:
@@ -149,6 +158,7 @@ app.include_router(search_router, prefix=settings.api_prefix)
 app.include_router(agent_router, prefix=settings.api_prefix)
 app.include_router(wecom_router, prefix=settings.api_prefix)
 app.include_router(erp_router, prefix=settings.api_prefix)
+app.include_router(contract_customer_router, prefix=settings.api_prefix)
 app.include_router(contract_router, prefix=settings.api_prefix)
 app.include_router(bizdoc_router, prefix=settings.api_prefix)
 app.include_router(dingtalk_router, prefix=settings.api_prefix)
@@ -166,6 +176,8 @@ async def health() -> dict:
     from sqlalchemy import text
 
     from app.core.database import SessionLocal
+    from app.core.scheduler import scheduler
+    from app.modules.dingtalk.oa_stream import oa_stream
 
     db_ok = True
     try:
@@ -178,5 +190,12 @@ async def health() -> dict:
             "status": "up" if db_ok else "degraded",
             "app": settings.app_name,
             "database": "ok" if db_ok else "error",
+            "dingtalk_oa": {
+                "submission_enabled": not settings.dingtalk_push_off and bool(settings.dingtalk_app_key and settings.dingtalk_app_secret),
+                "sync_running": scheduler.running and scheduler.get_job('oa_sync') is not None,
+                "sync_interval_minutes": settings.scheduler_oa_sync_minutes,
+                "stream_connected": oa_stream.connected,
+                "last_event_at": oa_stream.last_event_at,
+            },
         }
     )

@@ -25,3 +25,7 @@ APScheduler>=3.10,<4
 
 # 中文姓名生成首次钉钉登录名
 pypinyin>=0.53,<1
+# 官方 Stream 帧协议及 WebSocket，接收审批变更事件。
+dingtalk-stream==0.24.3
+# WebSocket 使用系统 SOCKS 代理时需要，保留现有代理配置。
+python-socks[asyncio]>=2.4,<3

@@ -60,6 +60,8 @@ interface Props {
    */
   showCategory?: boolean
   onlyCategory?: string
+  includeUncategorizedImages?: boolean
+  maxFiles?: number
   excludeCategory?: string
   enabled?: boolean
   /**
@@ -68,6 +70,12 @@ interface Props {
    * "按钮能点、接口 403"。删除按钮不看它（删文件本身是文件中心的动作）。
    */
   writePermission?: string
+  /**
+   * 左侧那句说明。**默认那句是通用的**（合同/图纸/回款凭证）——
+   * 但不同场景要的东西不一样：打样那边要的是「产品图片（多方位图片）」，
+   * 于是由调用方传自己那句（2026-10-16 主人）。
+   */
+  hint?: string
 }
 
 export default function AttachmentPanel({
@@ -78,9 +86,12 @@ export default function AttachmentPanel({
   accept,
   showCategory = false,
   onlyCategory,
+  includeUncategorizedImages = false,
+  maxFiles,
   excludeCategory,
   enabled = true,
   writePermission = 'file:manage',
+  hint,
 }: Props) {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
@@ -186,7 +197,10 @@ export default function AttachmentPanel({
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const visibleFiles = (query.data ?? []).filter((file) => (!onlyCategory || file.category === onlyCategory || (includeUncategorizedImages && !file.category && (/^image\//.test(file.mime_type ?? '') || /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(file.file_name)))) && (!excludeCategory || file.category !== excludeCategory))
+
   const handleUpload = async (file: File) => {
+    if (maxFiles && visibleFiles.length >= maxFiles) { Toast.error(`最多上传${maxFiles}张产品图片，请先删除多余图片`); return }
     setUploading(true)
     try {
       await uploadFile(file, { businessType, businessId, category })
@@ -204,7 +218,7 @@ export default function AttachmentPanel({
     <>
       <div className="toolbar" style={{ minWidth: 0, maxWidth: '100%' }}>
         <div style={{ color: 'var(--crm-text-3)', fontSize: 13, flex: '1 1 240px', minWidth: 0 }}>
-          合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB
+          {hint ?? '合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB'}
         </div>
         <div style={{ flex: 1 }} />
         {canWrite && (
@@ -336,7 +350,7 @@ export default function AttachmentPanel({
             ),
           },
         ]}
-        dataSource={(query.data ?? []).filter((file) => (!onlyCategory || file.category === onlyCategory) && (!excludeCategory || file.category !== excludeCategory))}
+        dataSource={visibleFiles}
         loading={query.isLoading}
         rowKey="id"
         pagination={false}

@@ -187,3 +187,20 @@ async def test_missing_department_stops_before_approval(setup):
     client.get_user_dept_ids.return_value=[10]
     await routes.start_inquiry_approval(7,routes.StartApproval(quote_owner_user_id='ding-quoter'),request(),user,session)
     assert create.await_args.kwargs['field_map']['dept-component']==10
+
+
+@pytest.mark.anyio
+async def test_full_inquiry_text_uses_existing_material_control_without_new_config(setup):
+    inquiry,cfg,session,user,client,create=setup
+    cfg['field_map']['description']='TextareaField_material'
+    inquiry.description='完整工艺要求' * 500
+    inquiry.remark='请保留备注'
+    client.get_process_schema.return_value={'schemaContent':{'items':[
+        {'componentName':'TextareaField','props':{'id':'TextareaField_extra','label':'特别说明'}}]}}
+    await routes.start_inquiry_approval(7,routes.StartApproval(
+        quote_owner_user_id='ding-quoter',extra_fields={'TextareaField_extra':'不可折叠'}
+    ),request(),user,session)
+    text=create.await_args.kwargs['field_map']['TextareaField_material']
+    assert inquiry.description in text
+    assert '预估订购数量：10' in text and '目标价：20' in text
+    assert '特别说明：不可折叠' in text and '备注：请保留备注' in text

@@ -131,7 +131,7 @@ export default function ContractDocsPanel({
               </span>
             )}
             <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 12 }}>
-              <a onClick={() => void downloadContractDoc(doc)}>下载生成稿</a>
+              <a onClick={() => void downloadContractDoc(doc)}>下载合同原稿</a>
             </span>
           </div>
         ))}
