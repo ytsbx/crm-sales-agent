@@ -23,7 +23,7 @@ import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
 import { listCustomers } from '../../shared/api/customer'
 import { listOrders } from '../../shared/api/order'
 import { listQuoteVersions, listQuotes } from '../../shared/api/quote'
-import { downloadFile, listBusinessFiles, uploadFile } from '../../shared/api/file'
+import { deleteFile, downloadFile, listBusinessFiles, uploadFile } from '../../shared/api/file'
 import { downloadContractDoc } from '../../shared/download-contract'
 import {
   uploadContractDocument,
@@ -83,6 +83,8 @@ export default function DocumentsPage() {
   const [approvalTarget, setApprovalTarget] = useState<ContractDocument | null>(null)
   const [originalFile, setOriginalFile] = useState<File | null>(null)
   const [originalFileId, setOriginalFileId] = useState<number | null>(null)
+  const originalFileInput = useRef<HTMLInputElement>(null)
+  const [removingOriginal, setRemovingOriginal] = useState(false)
   const [contractTitle, setContractTitle] = useState('')
   const [contractOrigin, setContractOrigin] = useState<'company' | 'customer' | undefined>()
   const [uploadForm, setUploadForm] = useState({
@@ -118,6 +120,7 @@ export default function DocumentsPage() {
   const selectedOrder = genOrders.find((o) => o.id === uploadForm.order_id)
   const uploadMutation = useMutation({
     mutationFn: async () => {
+      if (removingOriginal) throw new Error('正在移除文件，请稍候')
       if (!uploadForm.customer_id) throw new Error('请选择合同所属客户')
       if (!contractOrigin) throw new Error('请选择合同来源：我方合同或客户合同')
       let sourceId = originalFileId
@@ -142,11 +145,50 @@ export default function DocumentsPage() {
     },
     onSuccess: (doc) => {
       Toast.success(`合同已上传：${doc.doc_no}`)
+      // 保存成功后文件已成为合同证据，只清空弹窗状态，不调用文件删除。
+      setOriginalFileId(null)
+      setOriginalFile(null)
+      if (originalFileInput.current) originalFileInput.current.value = ''
       setUploadVisible(false)
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const removeOriginalFile = async (): Promise<boolean> => {
+    if (uploadMutation.isPending || removingOriginal) {
+      Toast.warning('合同正在保存或文件正在移除，请稍候')
+      return false
+    }
+    setRemovingOriginal(true)
+    try {
+      // 选中时只在浏览器暂存；只有提交失败后才可能留下尚未关联的服务器文件。
+      // 删除接口会保护已建档原件：请求结果不明时不能误删已经保存的合同。
+      if (originalFileId) await deleteFile(originalFileId)
+      const automaticTitle = originalFile?.name.replace(/\.[^.]+$/, '')
+      if (contractTitle === automaticTitle) setContractTitle('')
+      setOriginalFile(null)
+      setOriginalFileId(null)
+      if (originalFileInput.current) originalFileInput.current.value = ''
+      setUploadRequestKey(newRequestKey())
+      return true
+    } catch (error) {
+      Toast.error(error instanceof Error ? error.message : '文件暂未移除，请稍后重试')
+      refresh()
+      return false
+    } finally {
+      setRemovingOriginal(false)
+    }
+  }
+
+  const chooseOriginalFile = async (file: File | null) => {
+    if (!file) return
+    if (!await removeOriginalFile()) return
+    setOriginalFile(file)
+    if (!contractTitle || contractTitle === originalFile?.name.replace(/\.[^.]+$/, '')) {
+      setContractTitle(file.name.replace(/\.[^.]+$/, ''))
+    }
+  }
 
   const withdrawDingtalkMutation = useMutation({
     mutationFn: (docId: number) => withdrawContractDingTalkApproval(docId),
@@ -158,6 +200,7 @@ export default function DocumentsPage() {
   })
 
   const openUploadModal = () => {
+    if (originalFileInput.current) originalFileInput.current.value = ''
     setOriginalFile(null)
     setOriginalFileId(null)
     setContractTitle('')
@@ -444,11 +487,13 @@ export default function DocumentsPage() {
       <Modal
         title="上传合同"
         visible={uploadVisible}
-        onCancel={() => {
-          if (uploadMutation.isPending) { Toast.warning('合同正在保存，请稍候'); return }
-          setUploadVisible(false)
-            }}
-        onOk={() => uploadMutation.mutate()}
+        onCancel={async () => {
+          if (await removeOriginalFile()) setUploadVisible(false)
+        }}
+        onOk={() => {
+          if (removingOriginal) { Toast.warning('正在移除文件，请稍候'); return }
+          uploadMutation.mutate()
+        }}
         confirmLoading={uploadMutation.isPending}
         maskClosable={!uploadMutation.isPending}
         okText="上传合同"
@@ -504,12 +549,23 @@ export default function DocumentsPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
-            <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => {
-              const file = e.target.files?.[0] || null
-              setOriginalFile(file); setOriginalFileId(null)
-              if (file && !contractTitle) setContractTitle(file.name.replace(/\.[^.]+$/, ''))
-            }} />
-            {originalFile && <div>{originalFile.name}</div>}
+            <Button disabled={uploadMutation.isPending || removingOriginal}
+              onClick={() => originalFileInput.current?.click()}>
+              {originalFile ? '重新选择' : '选择文件'}
+            </Button>
+            <input ref={originalFileInput} type="file" accept=".pdf,.doc,.docx" hidden
+              disabled={uploadMutation.isPending || removingOriginal}
+              onChange={(e) => void chooseOriginalFile(e.target.files?.[0] || null)}
+            />
+            {originalFile && <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+              <span style={{ overflowWrap: 'anywhere' }}>{originalFile.name}</span>
+              <Button type="danger" theme="borderless" size="small"
+                loading={removingOriginal} disabled={uploadMutation.isPending}
+                onClick={() => void removeOriginalFile()}>移除</Button>
+            </div>}
+            {(uploadMutation.isPending || removingOriginal) && <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+              {uploadMutation.isPending ? '合同正在保存，暂时不能更换或移除文件。' : '正在移除文件，请稍候。'}
+            </div>}
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
