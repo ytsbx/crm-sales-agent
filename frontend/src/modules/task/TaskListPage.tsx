@@ -53,8 +53,8 @@ function primaryTaskLink(record: Task): { label: string; to: string } | null {
   }
   if (record.source_business_type === 'contract' && record.source_business_id) {
     return {
-      label: `月结协议 ${record.source_doc_no}`,
-      to: '/documents',
+      label: `${record.task_type === 'contract_signed_upload' ? '合同' : '月结协议'} ${record.source_doc_no || ''}`,
+      to: `/documents?contract=${record.source_business_id}`,
     }
   }
   if (record.opportunity_id) {
@@ -182,7 +182,8 @@ export default function TaskListPage() {
       render: (_: unknown, record: Task) => (
         <Checkbox
           checked={selectedIds.includes(record.id)}
-          disabled={record.status === 'done' || record.status === 'cancelled'}
+          disabled={record.status === 'done' || record.status === 'cancelled' || record.task_type === 'contract_signed_upload'}
+          title={record.task_type === 'contract_signed_upload' ? '上传回签件归档后自动完成' : undefined}
           onChange={(e) => {
             const on = (e.target as HTMLInputElement).checked
             setSelectedIds((prev) =>
@@ -245,6 +246,8 @@ export default function TaskListPage() {
       render: (_: unknown, record: Task) =>
         record.status === 'done' || record.status === 'cancelled' ? (
           '-'
+        ) : record.task_type === 'contract_signed_upload' ? (
+          <Link to={`/documents?contract=${record.source_business_id}`}>去登记回签（归档后自动完成）</Link>
         ) : (
           <div style={{ display: 'flex', gap: 10 }}>
             <a style={{ color: 'var(--crm-primary)' }} onClick={() => completeMutation.mutate(record.id)}>

@@ -317,6 +317,7 @@ export function auditFieldValue(key: string, value: unknown): string {
     if (BOOL_FIELDS.has(key)) return value ? '是' : '否'
     return value.toLocaleString('zh-CN')
   }
+  if (key === 'contract_origin') return value === 'company' ? '我方合同' : value === 'customer' ? '客户合同' : '历史未标注'
   const text = String(value)
   // 英文枚举值 → 中文（状态类最常见）
   return ENUM_LABEL[text] ?? text

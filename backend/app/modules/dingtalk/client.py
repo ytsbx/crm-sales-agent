@@ -326,6 +326,14 @@ class DingTalkClient:
         inner = data.get("result") or data
         if not inner.get("title") and not inner.get("status"):
             raise DingTalkError("响应里没有审批内容", api="workflow/processInstances:get")
+        # DWS/历史实例使用的别名与新版读取结果归一，原字段仍保留。
+        inner = dict(inner)
+        if not inner.get("result"):
+            inner["result"] = inner.get("processInstanceResult")
+        if not inner.get("formComponentValues"):
+            inner["formComponentValues"] = inner.get("formValueVOS") or []
+        if not inner.get("originatorUserId"):
+            inner["originatorUserId"] = inner.get("originatorUserid")
         return inner
 
     async def terminate_process_instance(

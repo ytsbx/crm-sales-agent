@@ -37,13 +37,15 @@ export function listBusinessFilesBatch(businessType: string, businessIds: number
 
 export async function uploadFile(
   file: File,
-  target: { businessType: string; businessId: number; category?: string },
+  target?: { businessType: string; businessId: number; category?: string },
 ) {
   const form = new FormData()
   form.append('file', file)
-  form.append('business_type', target.businessType)
-  form.append('business_id', String(target.businessId))
-  if (target.category) form.append('category', target.category)
+  if (target) {
+    form.append('business_type', target.businessType)
+    form.append('business_id', String(target.businessId))
+    if (target.category) form.append('category', target.category)
+  }
   return api.upload<FileRow>('/files/upload', form)
 }
 

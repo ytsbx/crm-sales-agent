@@ -156,6 +156,8 @@ async def _guard_task_field(
     # 这时"事后比 client == seen"会成立，两边照样都成功 —— 实测偶发过。
     # 把客户端版本放进 UPDATE 的条件里，判断与写入就是数据库里的**同一条语句**：
     # A 先提交后 `updated_at` 已经变了，B 的 WHERE 不匹配 → 0 行 → 拒绝。
+    if task.task_type == "contract_signed_upload" and ("status" in fields or "due_at" in fields):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "合同回签待办需上传回签件归档或作废合同后自动结束，不能直接完成、取消或延期", 422)
     guard_version = _as_utc(expected_version) if expected_version is not None else seen_updated_at
     result = await session.execute(
         update(Task)
@@ -475,6 +477,8 @@ async def update_task(
     task = await _visible_task(session, user, task_id, for_update=True)
     before = serialize(task)
     changes = payload.model_dump(exclude_unset=True)
+    if task.task_type == "contract_signed_upload" and any(k in changes for k in ("status", "due_at")):
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请在合同台账登记回签归档，不能直接结束或延期回签待办", 422)
 
     # ── 客户端版本校验（第五批审查 P2，2026-10-12）──
     # `TaskUpdate` 一直声明着 `expected_updated_at`，但**这个端点没有用它**：
@@ -771,6 +775,9 @@ async def batch_complete_tasks(
             skipped.append(
                 {"task_id": task_id, "reason": f"任务已{_final_label(task)}"}
             )
+            continue
+        if task.task_type == "contract_signed_upload":
+            skipped.append({"task_id": task_id, "reason": "请在合同台账上传回签件归档"})
             continue
         task.status = "done"
         task.completed_at = now

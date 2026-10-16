@@ -277,6 +277,9 @@ def serialize_document(
         "filled_data": ({key: value for key, value in filled.items()
                          if key != "_supersession_task_states"} if doc.filled_data is not None else None),
         "source_type": filled.get("_source_type", "crm_template"),
+        "original_file_id": filled.get("_original_file_id"),
+        "contract_origin": filled.get("_contract_origin"),
+        "contract_origin_label": {"company": "我方合同", "customer": "客户合同"}.get(filled.get("_contract_origin"), "历史未标注"),
         "dingtalk_oa": filled.get("_dingtalk_oa"),
         "missing_fields": missing,
         # 抬头快照（生成时的公司名/客户名/单号）：详情页据此说明"当时是以谁的名义出的"
@@ -479,9 +482,18 @@ async def generate_document(
                 )
             return replayed, True
 
-    template = await session.get(ContractTemplate, payload.template_id)
-    if template is None or template.deleted_at is not None or not template.enabled:
-        raise AppError(ErrorCode.NOT_FOUND, "模板不存在或已停用", 404)
+    from types import SimpleNamespace
+    original_id = getattr(payload, "original_file_id", None)
+    if original_id:
+        if payload.source_type != "customer_drafted" or payload.template_id is not None:
+            raise AppError(ErrorCode.PARAM_ERROR, "客户原稿不能与生成模板同时使用", 422)
+        template = SimpleNamespace(id=None, doc_type="contract", body="")
+    else:
+        if payload.source_type == "customer_drafted":
+            raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "请上传客户提供的合同原文件", 422)
+        template = await session.get(ContractTemplate, payload.template_id) if payload.template_id else None
+        if template is None or template.deleted_at is not None or not template.enabled:
+            raise AppError(ErrorCode.NOT_FOUND, "请选择可用合同模板", 404)
     customer = await session.get(Customer, payload.customer_id)
     if customer is None or customer.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
@@ -624,6 +636,11 @@ async def generate_document(
         # 用 `_` 开头是跟项目里"内部键"的约定走，序列化时不会被当成业务字段。
         filled = {**filled, "_missing": missing}
     filled = {**filled, "_request_fingerprint": request_fingerprint, "_source_type": payload.source_type}
+    if original_id:
+        filled["_original_file_id"] = original_id
+        if payload.contract_origin:
+            filled["_contract_origin"] = payload.contract_origin
+        content = "上传的合同原件，完整条款以随附原文件为准。"
     # 请求回显：**存客户端当初提交的原值**（2026-10-10 修 C4-06 的自动补全边界）。
     #
     # 为什么需要它：`quote_id` / `quote_version_id` 会**由订单带出**、
@@ -1164,6 +1181,14 @@ async def sign_document(
     if doc.status == "void":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已作废的文档不能签署")
     await _ensure_signable_source(session, doc)
+    original_id = (doc.filled_data or {}).get("_original_file_id")
+    if original_id:
+        from app.modules.dingtalk import service as oa_service
+        row = await oa_service.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
+        if row is None or row.status != "approved":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉合同审批通过后才能登记回签归档", 422)
+        if file_id == original_id:
+            raise AppError(ErrorCode.PARAM_ERROR, "请上传双方签好的合同，不能直接使用提交前的原稿", 422)
     if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes") and doc.effective_date is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "替代旧月结协议前必须填写生效日，请按完整信息重新生成续签协议", 422)
     # 登记签署 = 给一份**已存在**的文件加 `signed` 引用。加引用之前先锁住文件行，
@@ -1178,6 +1203,9 @@ async def sign_document(
     record = await file_service.lock_file_row(session, file_id)
     if record is None:
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在，请先通过 /files/upload 上传", 404)
+    if original_id:
+        from app.modules.contract.customer_flow import verified_content
+        verified_content(record)
     # 不能把系统自己出的生成稿登记成"客户签回来的那一份"：那会让台账上
     # "下载到的到底是生成稿还是签署件"彻底分不清，而且生成稿会因此被列入
     # signed 保护集、看起来像一份真的签署证据。

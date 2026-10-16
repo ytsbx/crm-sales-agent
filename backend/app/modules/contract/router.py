@@ -3,7 +3,6 @@
 import logging
 import json
 import httpx
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
@@ -16,7 +15,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.contract import service as svc
-from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid, TemplateCreate
+from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid
 from app.modules.dingtalk import service as dingtalk_service
 from app.modules.dingtalk.model import OaInstance, allowed_actions
 
@@ -119,6 +118,9 @@ async def start_dingtalk_contract_approval(
     process_code = str(cfg.get("process_code") or "")
     if not process_code:
         raise AppError(ErrorCode.PARAM_ERROR, "尚未配置合同签署钉钉审批模板（dingtalk_contract_oa.process_code）", 422)
+    from app.modules.contract.customer_flow import reject_suite_submission
+    if not app_settings.dingtalk_push_off:
+        await reject_suite_submission(get_client(), process_code)
     # 这一份合同在本模板上的历史轮次，用来决定"换一轮重提"还是原样返回。
     # **必须读在附件上传之前**：附件上传是真实的外部写操作，而"同轮重复点击"
     # 与"终态再点一次"这两种情况下 `create_inquiry_instance` 不会发起审批 ——
@@ -127,13 +129,19 @@ async def start_dingtalk_contract_approval(
         session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract"
     )
     resubmit = _contract_oa_resubmit(previous)
+    if previous is not None and not resubmit and "retry" not in allowed_actions(previous.status, previous.resolve_state):
+        outcome = _contract_oa_result(previous, fresh=False)
+        if previous.status == "pending":
+            outcome = {"level": "warning", "message": "该合同已在钉钉审批中，本次没有重复提交"}
+        return ok({**dingtalk_service.serialize(previous), "result": outcome}, outcome["message"])
+
     account = await session.get(User, user.id)
     if account is None or account.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, "账号不存在或已停用", 401)
     if app_settings.dingtalk_push_off:
         ding_user_id = ""
     else:
-        ding_user_id = account.dingtalk_userid or await get_client().search_user_id_by_name(user.name)
+        ding_user_id = account.dingtalk_userid
         if not ding_user_id:
             raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，请先绑定钉钉账号", 422)
     customer = await session.get(Customer, doc.customer_id)
@@ -145,6 +153,7 @@ async def start_dingtalk_contract_approval(
         item for item in [
             f"客户：{customer.name}" if customer else "",
             f"合同编号：{doc.doc_no}",
+            "合同来源：" + {"company": "我方合同", "customer": "客户合同"}.get((doc.filled_data or {}).get("_contract_origin"), "历史未标注"),
             f"订单：{header.get('order_no')}" if header.get("order_no") else "",
             f"报价：{header.get('quote_no')}" if header.get("quote_no") else "",
             "合同正文：",
@@ -196,6 +205,8 @@ async def start_dingtalk_contract_approval(
     if content_component:
         field_map[str(content_component)] = doc.content_snapshot
     attachment_component = cfg.get("attachment_component")
+    if (doc.filled_data or {}).get("_original_file_id") and not attachment_component:
+        raise AppError(ErrorCode.PARAM_ERROR, "未配置合同正文附件字段，本次不能提交空内容审批", 422)
     if attachment_component:
         if app_settings.dingtalk_push_off:
             field_map[str(attachment_component)] = "（待上传：合同生成 PDF）"
@@ -204,15 +215,18 @@ async def start_dingtalk_contract_approval(
             from app.modules.file.model import FileRecord
             from app.modules.file.storage import absolute_path
             from app.modules.dingtalk.client import DingTalkError
-            if not doc.generated_file_id:
+            source_file_id = (doc.filled_data or {}).get("_original_file_id") or doc.generated_file_id
+            if not source_file_id:
                 raise AppError(ErrorCode.PARAM_ERROR, "合同生成稿尚未落盘，暂不能上传到钉钉", 422)
-            record = await session.get(FileRecord, doc.generated_file_id)
+            record = await session.get(FileRecord, source_file_id)
             path = absolute_path(record.object_key) if record else None
             if record is None or path is None or not path.is_file():
                 raise AppError(ErrorCode.PARAM_ERROR, "合同生成 PDF 不存在，请重新生成合同", 422)
+            from app.modules.contract.customer_flow import verified_content
+            content = verified_content(record)
             try:
                 attachment = await upload_approval_attachment(
-                    get_client(), user_id=ding_user_id, filename=record.file_name, content=path.read_bytes()
+                    get_client(), user_id=ding_user_id, filename=record.file_name, content=content
                 )
             except (DingTalkError, httpx.HTTPError, OSError, ValueError) as exc:
                 raise AppError(ErrorCode.PARAM_ERROR, "合同 PDF 未成功上传到钉钉，本次尚未发起审批", 422) from exc
@@ -278,9 +292,7 @@ async def withdraw_dingtalk_contract_approval(
     """撤回仍在钉钉流转中的合同审批；已完成的审批不能从 CRM 撤回。"""
     from app.core.config import settings as app_settings
     from app.modules.dingtalk import service as dingtalk_service
-    from app.modules.dingtalk.client import get_client
     from app.modules.dingtalk.model import OaInstance
-    from app.modules.user.model import User
 
     doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
     await _ensure_doc_in_scope(session, user, doc)
@@ -299,27 +311,11 @@ async def withdraw_dingtalk_contract_approval(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前钉钉审批状态为「{row.status}」，不能撤回", 422)
     if app_settings.dingtalk_push_off:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法向钉钉发送撤回请求", 422)
-    account = await session.get(User, user.id)
-    ding_user_id = (account.dingtalk_userid if account else None) or await get_client().search_user_id_by_name(user.name)
-    if not ding_user_id:
-        raise AppError(ErrorCode.PARAM_ERROR, "找不到当前用户的钉钉身份，无法撤回", 422)
-    await get_client().terminate_process_instance(
-        instance_id=row.instance_id,
-        operating_user_id=ding_user_id,
-        remark="CRM 撤回合同签署申请",
-    )
-    row.status = "withdrawn"
-    row.result = {**(row.result or {}), "crm_withdrawn": True, "withdrawn_by": ding_user_id}
-    row.synced_at = datetime.now(UTC)
-    row.updated_at = datetime.now(UTC)
-    doc.filled_data = {
-        **(doc.filled_data or {}),
-        "_dingtalk_oa": {
-            **((doc.filled_data or {}).get("_dingtalk_oa") or {}),
-            "status": "withdrawn",
-            "withdrawn_by": user.id,
-        },
-    }
+    from app.modules.contract.customer_flow import withdraw_before_void
+    await withdraw_before_void(session, user, doc)
+    if row.status != "withdrawn":
+        await session.commit()
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "审批已经结束，不能撤回；状态已同步，请刷新", 422)
     await write_audit(
         session,
         operator_id=user.id,
@@ -339,28 +335,6 @@ async def list_templates(
     session: AsyncSession = Depends(get_db),
 ):
     return ok(await svc.list_templates(session))
-
-
-@router.post("/contract-templates")
-async def create_template(
-    payload: TemplateCreate,
-    request: Request,
-    user: CurrentUser = Depends(require_permission("settings:manage")),
-    session: AsyncSession = Depends(get_db),
-):
-    """新增模板=新增版本；旧版本保留，已生成的文档钉死当时的版本。"""
-    template = await svc.create_template(session, payload=payload, user_id=user.id)
-    await write_audit(
-        session,
-        operator_id=user.id,
-        action="create_template",
-        business_type="contract_template",
-        business_id=template.id,
-        after={"name": template.name, "doc_type": template.doc_type, "version": template.version},
-        ip=client_ip(request),
-    )
-    await session.commit()
-    return ok(svc.serialize_template(template, is_current=True), "模板版本已保存")
 
 
 @router.get("/contract-documents")
@@ -399,6 +373,14 @@ async def generate_document(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
+    if payload.source_type != "customer_drafted" or not payload.original_file_id or payload.template_id is not None:
+        raise AppError(ErrorCode.PARAM_ERROR, "系统模板生成已停用，请上传合同 Word 或 PDF 原文件", 422)
+    if not payload.contract_origin:
+        raise AppError(ErrorCode.PARAM_ERROR, "请选择合同来源：我方合同或客户合同", 422)
+    if not (payload.title or "").strip():
+        raise AppError(ErrorCode.PARAM_ERROR, "请填写合同名称", 422)
+    if payload.parent_id is not None or payload.supersede_parent:
+        raise AppError(ErrorCode.PARAM_ERROR, "请将补充或续签合同作为新合同原文件上传", 422)
     from app.modules.customer import service as customer_service
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote
@@ -428,6 +410,9 @@ async def generate_document(
     if payload.order_id is not None and payload.quote_id is not None:
         if order.quote_id is not None and order.quote_id != quote.id:
             raise AppError(ErrorCode.PARAM_ERROR, "所选报价与订单不匹配", 422)
+    if payload.original_file_id:
+        from app.modules.contract.customer_flow import verify_original
+        await verify_original(session, user, payload.original_file_id)
     doc, replayed = await svc.generate_document(session, payload=payload, user_id=user.id)
     if replayed:
         # 重复请求（重试 / 连点两次）：既不建新单，也不再写一条审计 ——
@@ -468,7 +453,12 @@ async def generate_document(
     try:
         # 生成即把 PDF 渲染一次落盘（带 sha256）。之后无论客户改几次名，
         # 下载拿到的都是这一份——同一编号两次下载内容不同是对外文件的硬伤。
-        await svc.attach_generated_pdf(session, doc, user_id=user.id)
+        if payload.original_file_id:
+            from app.modules.file.model import BusinessFile
+            session.add(BusinessFile(business_type="contract", business_id=doc.id,
+                                     file_id=payload.original_file_id, category="contract_original"))
+        else:
+            await svc.attach_generated_pdf(session, doc, user_id=user.id)
         # 补充协议 / 续签是**一次真实的业务动作**，要进客户时间线；
         # 普通草稿生成不记——草稿不代表签约（审查第 9 条明确要求）。
         if doc.parent_id:
@@ -497,7 +487,7 @@ async def generate_document(
             after={"doc_no": doc.doc_no, "template_id": doc.template_id,
                    "customer_id": doc.customer_id, "order_id": doc.order_id,
                    "quote_id": doc.quote_id, "quote_version_id": doc.quote_version_id,
-                   "generated_file_id": doc.generated_file_id},
+                   "generated_file_id": doc.generated_file_id, "contract_origin": payload.contract_origin},
             ip=client_ip(request),
         )
         await session.commit()
@@ -566,6 +556,9 @@ async def get_document(
     ).scalars().first()
     if latest_oa is not None:
         result["dingtalk_oa_row"] = dingtalk_service.serialize(latest_oa)
+    if result.get("dingtalk_oa"):
+        from app.modules.contract.customer_flow import named_history
+        result["dingtalk_oa"] = await named_history(session, result["dingtalk_oa"])
     return ok(result)
 
 
@@ -634,6 +627,18 @@ async def download_document(
 
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_doc_in_scope(session, user, doc)
+    original_id = (doc.filled_data or {}).get("_original_file_id")
+    if original_id:
+        from app.modules.contract.customer_flow import verified_content
+        from urllib.parse import quote
+        record = await session.get(FileRecord, original_id)
+        content = verified_content(record)
+        await write_audit(session, operator_id=user.id, action="download", business_type="contract", business_id=doc.id,
+                          after={"doc_no": doc.doc_no, "source": "customer_original", "file_id": original_id})
+        await session.commit()
+        return Response(content=content, media_type=record.mime_type or "application/octet-stream",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(record.file_name)}"})
+
 
     content: bytes | None = None
     source = "generated"
@@ -747,6 +752,8 @@ async def void_document(
             "已签署的合同要作废，需要主管权限；未签草稿你自己处理即可",
             403,
         )
+    from app.modules.contract.customer_flow import withdraw_before_void
+    await withdraw_before_void(session, user, doc)
     cancelled = await svc.void_document(session, doc, reason=payload.reason)
     await _record_contract_event(
         session,
