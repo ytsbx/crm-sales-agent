@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Modal, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import { api } from '../../shared/api/client'
@@ -24,6 +24,37 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
   const [adoptKey,setAdoptKey]=useState<string | null>(null)
   const draft=edited ?? {mode:query.data?.draft.mode ?? 'standalone',source_oa_id:query.data?.draft.source_oa_id,fields:query.data?.draft.fields ?? {}, resubmit:query.data?.draft.resubmit ?? false}
   const submitted=Boolean(query.data?.draft.submitted) && !edited?.resubmit
+
+  // ---- 预计工时 → 本次打样积分：**自动同步**（2026-10-16 主人）----
+  //
+  // 主人原话：「打样积分＝工时 × 10 = — 分（与上面「本次打样积分」同一个口径，
+  // 两边填一样就行）。**既然是一样的，你不会同步吗**」—— 对，让用户把同一个数
+  // 填两遍是设计错了。
+  //
+  // 口径本来就是 ×10（申请单原件写着「用时 1 小时 = 10 积分」）：
+  //   · 「本次打样积分」是**钉钉模板的必填控件**（真正提交给钉钉的是它）；
+  //   · 「预计工时」是 CRM 这边的输入（顺带让附件那份 Excel 拿到工时）；
+  //   · 所以填了工时 → **自动写进那个积分框**，用户不用管积分。
+  //
+  // **手改过积分的单子不被覆盖**：`autoPointsRef` 记住"上次自动填的是哪一版"，
+  // 只有当积分框仍是那一版（或本来就是空的）时才覆盖 —— 用户自己填过的判断不抹掉。
+  const pointsFieldId = query.data?.fields.find((f) => f.label === '本次打样积分')?.id
+  const hoursInput = draft.fields['_estimated_hours'] ?? ''
+  const autoPointsRef = useRef<string>('')
+  useEffect(() => {
+    if (!pointsFieldId || submitted) return
+    const raw = hoursInput.trim()
+    const n = Number(raw)
+    const next = raw && Number.isFinite(n) && n > 0 ? String(n * 10) : ''
+    const current = draft.fields[pointsFieldId] ?? ''
+    if (current !== '' && current !== autoPointsRef.current) return
+    if (current === next) return
+    autoPointsRef.current = next
+    setEdited({ ...draft, fields: { ...draft.fields, [pointsFieldId]: next } })
+    // `draft` 每次渲染都是新对象，放进依赖会无限循环；这里只跟这三个输入走。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hoursInput, pointsFieldId, submitted])
+
   const mutate=useMutation({
     mutationFn:async(send:boolean)=>{
       if(send && draft.mode==='standalone') {
@@ -137,7 +168,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
             打样积分＝工时 × 10 =
             <b>{(() => { const raw = draft.fields['_estimated_hours'] || ''; const n = Number(raw)
               return raw.trim() && Number.isFinite(n) ? ` ${n * 10} ` : ' — ' })()}</b>
-            分（与上面「本次打样积分」同一个口径，两边填一样就行）
+            分（自动填进上面「本次打样积分」那个框，不用你填两遍）
           </span>
         </div>
         {([['product_name','产品名称'],['material_spec','主要材质和规格'],['product_size','产品尺寸'],['printing','产品印刷'],['accessories','主要辅料'],['packaging','包装要求'],['craft_requirement','做法要求']] as const).map(([key,label])=><div key={key}>
