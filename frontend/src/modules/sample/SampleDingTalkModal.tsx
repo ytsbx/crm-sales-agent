@@ -175,8 +175,12 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
           <div>{label}</div><TextArea rows={2} value={draft.fields['_'+key]||''} disabled={submitted||mutate.isPending}
             onChange={value=>setEdited({...draft,fields:{...draft.fields,['_'+key]:value}})}/>
         </div>)}
-        <div style={{fontWeight:600}}>图纸、照片和其他制作资料（保存到当前打样单）</div>
-        {!submitted && <AttachmentPanel businessType="sample" businessId={sampleId} writePermission="sample:manage"/>}
+        {/* 栏名照申请单原件那一格（主人 2026-10-16：「这个就改成产品图片（多方位图片）」）——
+            这里上传的图片会**真的印在申请表「产品图片（多方位图片）」那一格上**（最多 4 张），
+            其余文件（PDF 图纸、Excel…）作为钉钉附件随单传上去。 */}
+        <div style={{fontWeight:600}}>产品图片（多方位图片）</div>
+        {!submitted && <AttachmentPanel businessType="sample" businessId={sampleId} writePermission="sample:manage"
+          hint="图片会印在申请表「产品图片（多方位图片）」那一格上（最多 4 张）；PDF、Excel 等其他文件随审批上传。单个文件不超过 20 MB"/>}
         {submitted && <div>已提交的资料已冻结，请在钉钉查看本轮附件。</div>}
       </>}
       <div style={{fontWeight:600}}>钉钉审批过程与结果</div>

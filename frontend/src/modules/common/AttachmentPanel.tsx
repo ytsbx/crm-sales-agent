@@ -68,6 +68,12 @@ interface Props {
    * "按钮能点、接口 403"。删除按钮不看它（删文件本身是文件中心的动作）。
    */
   writePermission?: string
+  /**
+   * 左侧那句说明。**默认那句是通用的**（合同/图纸/回款凭证）——
+   * 但不同场景要的东西不一样：打样那边要的是「产品图片（多方位图片）」，
+   * 于是由调用方传自己那句（2026-10-16 主人）。
+   */
+  hint?: string
 }
 
 export default function AttachmentPanel({
@@ -81,6 +87,7 @@ export default function AttachmentPanel({
   excludeCategory,
   enabled = true,
   writePermission = 'file:manage',
+  hint,
 }: Props) {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
@@ -204,7 +211,7 @@ export default function AttachmentPanel({
     <>
       <div className="toolbar" style={{ minWidth: 0, maxWidth: '100%' }}>
         <div style={{ color: 'var(--crm-text-3)', fontSize: 13, flex: '1 1 240px', minWidth: 0 }}>
-          合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB
+          {hint ?? '合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB'}
         </div>
         <div style={{ flex: 1 }} />
         {canWrite && (
