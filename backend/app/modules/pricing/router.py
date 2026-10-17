@@ -1146,10 +1146,14 @@ def _sanitize_pricing_result(result: dict, user: CurrentUser) -> dict:
     for key in (
         "protection_price",
         "minimum_price",
+        "minimum_price_cny",
         # 绝对底价由成本推出（成本×(1+X)），同样能反推成本（D7 判定层）
         "hard_floor_price",
         "profit",
         "profit_rate",
+        # 指导价/协议价可以公开，但与其对应的利润仍能反推成本。
+        "recommended_profit",
+        "recommended_profit_rate",
         "profit_with_refund",
         "profit_rate_with_refund",
         "cost_in_quote_currency",
