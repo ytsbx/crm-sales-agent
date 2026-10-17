@@ -16,7 +16,7 @@ from app.modules.opportunity.model import Opportunity
 from app.modules.product.model import Sku
 from app.modules.sample.model import (
     CONFIRM_STATUS_LABEL,
-    SAMPLE_DELETABLE_STATUSES,
+    can_delete_sample,
     SAMPLE_STATUS_LABEL,
     SAMPLE_TRANSITIONS,
     SampleItem,
@@ -515,7 +515,7 @@ async def list_payload(session: AsyncSession, rows: list[SampleRequest]) -> list
         # 「这张单现在能不能删」（2026-10-15 加软删）：判据只在后端写一遍
         # （`model.SAMPLE_DELETABLE_STATUSES`），这里下发一个布尔，前端据此决定
         # 显示「删除」还是「恢复」—— 前端不要自己复刻一份状态清单。
-        data["can_delete"] = row.deleted_at is None and not ((row.source_context or {}).get("dingtalk_oa") or {}).get("submitted") and row.status in SAMPLE_DELETABLE_STATUSES
+        data["can_delete"] = can_delete_sample(row)
         payload.append(data)
     return payload
 

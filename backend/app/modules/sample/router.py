@@ -57,7 +57,7 @@ from app.modules.opportunity import service as opportunity_service
 from app.modules.product.model import Sku
 from app.modules.sample import service as svc
 from app.modules.sample.model import (
-    SAMPLE_DELETABLE_STATUSES,
+    can_delete_sample,
     SAMPLE_STATUS_LABEL,
     SampleItem,
     SampleRequest,
@@ -244,15 +244,13 @@ async def delete_sample(
     **软删、不是物理删**：行、审计、附件、审批轮次全留着（`deleted_at` 只是打个标记），
     列表默认看不见；需要时按「已删除」筛出来还能恢复。
     """
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
-    from app.modules.sample.dingtalk import ensure_editable
-    ensure_editable(sample)
-    if sample.status not in SAMPLE_DELETABLE_STATUSES:
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    if not can_delete_sample(sample):
         label = SAMPLE_STATUS_LABEL.get(sample.status, sample.status)
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            f"这张打样单已经是「{label}」，不能删除 —— 它连着审批留痕与车间依据，"
-            "删掉会对不上账。只有误建的、还没批的单子能删",
+            f"这张打样单当前为「{label}」，不能删除（移入回收站）。"
+            "仅未提交审批的草稿，或已拒绝、已撤回且未制作和寄送的申请可以删除",
             400,
         )
     before = await svc.detail(session, sample)
@@ -283,7 +281,7 @@ async def restore_sample(
     不为它单开权限码 —— 客户的恢复也是复用 `customer:delete` 这个既有码。
     """
     sample = await svc.get_visible_or_404(
-        session, user, sample_id, for_update=True, allow_deleted=True
+        session, user, sample_id, for_update=True, allow_deleted=True, allow_external_flow=True
     )
     if sample.deleted_at is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "这张单没有被删除，不需要恢复", 400)

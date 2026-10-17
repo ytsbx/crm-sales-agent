@@ -241,6 +241,13 @@ async def main():
     _, res = call('POST', f'/samples/{rejected_id}/approve', token=token,
                   body={'approved': False, 'reject_reason': '规格没写清'})
     check('驳回成功', res.get('code'), 0)
+    # 模拟已同步的钉钉拒绝终态：submitted 是历史标记，不能永远锁住回收入口。
+    import app.main  # 注册外键关联模型，供隔离库 ORM 夹具使用
+    from app.modules.sample.model import SampleRequest
+    async with SessionLocal() as session:
+        rejected = await session.get(SampleRequest, rejected_id)
+        rejected.source_context = {'dingtalk_oa': {'submitted': True, 'mode': 'standalone', 'instance_id': 'fixture-refused'}}
+        await session.commit()
     row = row_of(token, rejected_id)
     check('已驳回的单子状态', row and row['status'], 'rejected')
     check('已驳回的单子可删', row and row['can_delete'], True)
@@ -263,6 +270,12 @@ async def main():
     actions = await audit_actions(rejected_id)
     check('驳回后删掉那张留了删除动作', 'delete' in actions, True)
     check('删除是它最后一条留痕（没顺手写别的）', actions[-1], 'delete')
+    status, _ = call('POST', f'/samples/{rejected_id}/restore', token=token, body={})
+    check('钉钉拒绝申请可从回收站恢复', status, 200)
+    check('恢复后仍是拒绝终态', row_of(token, rejected_id)['status'], 'rejected')
+    async with SessionLocal() as session:
+        restored = await session.get(SampleRequest, rejected_id)
+        check('恢复后保留原审批关联', restored.source_context['dingtalk_oa']['instance_id'], 'fixture-refused')
 
     await cleanup()
 

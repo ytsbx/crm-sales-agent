@@ -64,6 +64,16 @@ SAMPLE_OPEN_STATUSES: tuple[str, ...] = ("pending", "approved", "shipped", "sign
 #: 前端不要自己再拼一份"什么状态能删"，那份迟早和后端分叉。
 SAMPLE_DELETABLE_STATUSES: tuple[str, ...] = ("pending", "rejected")
 
+
+def can_delete_sample(sample) -> bool:
+    """已拒绝/撤回的钉钉申请可软删；审批中和已制作、寄送的单据仍受保护。"""
+    if sample.deleted_at is not None or sample.status not in SAMPLE_DELETABLE_STATUSES:
+        return False
+    if sample.made_at is not None or sample.shipped_at is not None:
+        return False
+    submitted = ((sample.source_context or {}).get('dingtalk_oa') or {}).get('submitted')
+    return not submitted or sample.status == 'rejected'
+
 #: 客户确认状态（文档 §3.5：「客户收到样品不等于样品被接受」）。
 #:
 #: 签收（signed）是物流事实，客户确认才是业务事实——把两者混在一个字段里，
