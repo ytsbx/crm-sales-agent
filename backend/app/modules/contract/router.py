@@ -396,6 +396,11 @@ async def generate_document(
         raise AppError(ErrorCode.PARAM_ERROR, "请填写合同名称", 422)
     if payload.parent_id is not None or payload.supersede_parent:
         raise AppError(ErrorCode.PARAM_ERROR, "请将补充或续签合同作为新合同原文件上传", 422)
+    return await create_document_record(payload, request, user, session)
+
+
+async def create_document_record(payload: DocumentCreate, request: Request, user: CurrentUser, session: AsyncSession):
+    """创建与归档共用实现；历史模板仅供内部迁移和隔离回归夹具使用，不挂 HTTP 路由。"""
     from app.modules.customer import service as customer_service
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import Quote

@@ -189,8 +189,8 @@ async def main():
                 check_true('闸关着时拉成员应被拦', False, '居然没抛异常')
             except DingTalkDisabled as exc:
                 check_true(
-                    '闸关着时拉成员被拦（登录闸）',
-                    'DINGTALK_LOGIN_OFF' in str(exc),
+                    '通讯录两把闸都关闭时被拦（审批闸优先）',
+                    'DINGTALK_PUSH_OFF' in str(exc),
                     str(exc),
                 )
         finally:

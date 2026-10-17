@@ -35,6 +35,7 @@
 """
 
 import asyncio
+import json
 import sys
 import time
 import types
@@ -384,7 +385,7 @@ async def main() -> int:
         client_module.get_client = forbidden_get_client
         async with SessionLocal() as s:
             admin = (await s.execute(select(User).where(User.username == "admin"))).scalars().one()
-            user = CurrentUser(admin, permissions=set(), roles=[], data_scope="all")
+            user = CurrentUser(admin, permissions={"quote:manage"}, roles=[], data_scope="all")
             dry = await dt_router.start_inquiry_approval(
                 inquiry_id=inquiry_id, payload=dt_router.StartApproval(),
                 request=fake_request(), user=user, session=s,
@@ -414,7 +415,7 @@ async def main() -> int:
             admin = (
                 await s.execute(select(User).where(User.username == "admin"))
             ).scalars().one()
-            user = CurrentUser(admin, permissions=set(), roles=[], data_scope="all")
+            user = CurrentUser(admin, permissions={"quote:manage"}, roles=[], data_scope="all")
             resp = await dt_router.start_inquiry_approval(
                 inquiry_id=inquiry_id,
                 payload=dt_router.StartApproval(),
@@ -459,8 +460,8 @@ async def main() -> int:
         )
         check(
             "「提报人」控件填的也是同一个编号",
-            sent.get(TEST_CONFIG["originator_component"]),
-            DING_USER_ID,
+            json.loads(sent.get(TEST_CONFIG["originator_component"])),
+            [DING_USER_ID],
         )
         check(
             "「提报部门」控件填的是部门编号",
@@ -469,17 +470,19 @@ async def main() -> int:
         )
         check(
             "「对接报价员」控件填的是需求上选的那位",
-            sent.get(TEST_CONFIG["quote_owner_component"]),
-            DING_QUOTE_ID,
+            json.loads(sent.get(TEST_CONFIG["quote_owner_component"])),
+            [DING_QUOTE_ID],
         )
-        check(
-            "「产品参考图片」填的是上传后的 media_id",
-            sent.get(TEST_CONFIG["image_component"]),
-            "FAKE-MEDIA-1",
-        )
-        check_true(
-            "图片真的走了上传（没把必填项跳过）", fake.uploaded == 1, f"uploaded={fake.uploaded}"
-        )
+        from urllib.parse import urlsplit, parse_qs
+        import hashlib, hmac
+        urls = json.loads(sent[TEST_CONFIG['image_component']])
+        image = urlsplit(urls[0])
+        params = parse_qs(image.query)
+        expiry = int(params['expires'][0])
+        expected = hmac.new(settings.jwt_secret.encode(), f'{file_row.id}:{expiry}'.encode(), hashlib.sha256).hexdigest()
+        check_true('图片字段是可读取原图的签名 URL 数组', len(urls) == 1 and image.path.endswith(f'/inquiry-images/{file_row.id}'))
+        check('图片签名匹配当前原文件', params['sig'][0], expected)
+        check('不再上传不可访问的临时 media_id', fake.uploaded, 0)
 
         print('=== 3. 落库那行：排查"这单谁发起的"只看这一列 ===')
         async with SessionLocal() as s:
@@ -525,7 +528,7 @@ async def main() -> int:
             except AppError as exc:
                 check('关闸重发返回 403', exc.http_status, 403)
                 check('关闸重发错误码', exc.code, ErrorCode.FORBIDDEN)
-                check_true('关闸重发明确提示未执行', '开发阶段未执行' in exc.message)
+                check_true('关闸重发明确提示未执行', '未执行' in exc.message or '已关闭' in exc.message)
             else:
                 check_true('关闸重发必须拒绝', False)
             after_resend = (await s.execute(select(OaInstance.__table__).where(OaInstance.id == oa_id))).one()

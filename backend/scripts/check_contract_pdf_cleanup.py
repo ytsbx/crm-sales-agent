@@ -254,7 +254,7 @@ async def run_endpoint(customer_id: int, template_id: int, *, fail_audit: bool,
 
                 session.commit = commit_then_boom  # type: ignore[method-assign]
 
-            await contract_router.generate_document(
+            await contract_router.create_document_record(
                 payload=make_payload(template_id, customer_id),
                 request=_Request(),
                 user=_User(),

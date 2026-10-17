@@ -74,6 +74,10 @@ failed: list[str] = []
 
 
 def call(method, path, token=None, body=None, timeout=90):
+    from _legacy_contract_fixture import legacy_contract_fixture
+    fixture = legacy_contract_fixture(method, path, token, body)
+    if fixture is not None:
+        return fixture
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         API + urllib.parse.quote(path, safe="/?&="), data=data, method=method

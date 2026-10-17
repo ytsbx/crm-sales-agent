@@ -3,7 +3,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
@@ -110,10 +110,8 @@ async def config(session):
 async def approval_entry(doc_id: int, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
     from app.core.response import ok
     doc = await visible_doc(session, user, doc_id)
-    cfg = await config(session)
     if doc.status != "draft":
         fail("仅待签合同可办理审批")
-    process = cfg["process_code"]
     # 合同审批沿用已验证的 CRM 直发路径：CRM 负责创建钉钉实例，审批过程仍在钉钉完成。
     # 不再把智能合同模板降级成“打开钉钉后手动粘贴实例号”的外部关联流程。
     mode = "api"

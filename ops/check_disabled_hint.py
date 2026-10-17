@@ -47,6 +47,7 @@ DISABLED_PATTERNS = (re.compile(r"\bdisabled=\{"), re.compile(r"okButtonProps"))
 # 原则：**原因就在控件旁边、用户一眼能看到**的，才可以免解释
 # （例如"保存中""上一页/下一页""旁边就是刚填完的必填框"）。
 EXEMPT: dict[str, str] = {
+    "modules/contract/CustomerApproval.tsx": "仅提交中的取消按钮暂时禁用，旁边提交按钮显示 loading；不涉及缺字段或业务条件不满足",
     # 登录页：按钮变灰只在提交中（且按钮自己带 loading 圈），不存在"不知道为什么"
     "modules/auth/LoginPage.tsx": "只有提交中的瞬时禁用，按钮自带 loading",
     # 分页/翻页：标准语义，灰=到头了，无需解释

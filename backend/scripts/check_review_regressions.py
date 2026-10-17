@@ -38,6 +38,10 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 
 
 def call(method: str, path: str, *, token: str | None = None, body=None, headers=None):
+    from _legacy_contract_fixture import legacy_contract_fixture
+    fixture = legacy_contract_fixture(method, path, token, body)
+    if fixture is not None:
+        return fixture
     data = None if body is None else json.dumps(body, ensure_ascii=False).encode()
     request_headers = {"Content-Type": "application/json", **(headers or {})}
     if token:

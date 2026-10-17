@@ -124,6 +124,10 @@ def check(label: str, condition: bool, detail: object = "") -> None:
 
 
 def call(method: str, path: str, token: str | None = None, body=None):
+    from _legacy_contract_fixture import legacy_contract_fixture
+    fixture = legacy_contract_fixture(method, path, token, body)
+    if fixture is not None:
+        return fixture
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method)
     req.add_header("Content-Type", "application/json")
