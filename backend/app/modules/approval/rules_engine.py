@@ -634,6 +634,11 @@ def strip_approval_summary(summary: dict | None, *, can_see_cost: bool) -> dict 
             for sensitive_name in ("minimum_price", "profit_rate"):
                 if sensitive_name in row:
                     row[sensitive_name] = None
+            reason = row.get("reason")
+            if isinstance(reason, str) and any(term in reason for term in ("利润率", "最低允许价", "最低保护价", "成本")):
+                row["reason"] = "报价超出价格权限，需要审批"
+    if isinstance(safe.get("reason"), str) and any(term in safe["reason"] for term in ("利润率", "最低允许价", "最低保护价", "成本")):
+        safe["reason"] = "报价超出价格权限，需要审批"
     trace = safe.get("rule_trace")
     if isinstance(trace, dict):
         safe["rule_trace"] = strip_cost_context(trace, can_see_cost=False)

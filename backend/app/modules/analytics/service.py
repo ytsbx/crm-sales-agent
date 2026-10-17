@@ -1168,6 +1168,7 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
                     QuoteItem.sku_id,
                     Quote.id.label("quote_id"),
                     QuoteVersion.id.label("version_id"),
+                    QuoteVersion.version_no.label("version_no"),
                     is_formal.label("is_formal"),
                     QuoteItem.quantity,
                     # 预估毛利只在正式版本上累计（草稿的报价还没对外，不该算进"报价毛利"）
@@ -1185,7 +1186,15 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
         )
     ).all()
     quoted: dict[int, dict] = {}
-    for sku_id, quote_id, version_id, formal, quantity, profit in quote_rows:
+    # 同一报价单的 V1/V2 是修订，不是两次独立报价；正式毛利只取该报价单该产品的最新正式版本。
+    latest_formal: dict[tuple[int, int], tuple[int, float, float]] = {}
+    for sku_id, quote_id, version_id, version_no, formal, quantity, profit in quote_rows:
+        if formal:
+            key = (int(sku_id), int(quote_id))
+            current = latest_formal.get(key)
+            if current is None or int(version_no or 0) > current[0]:
+                latest_formal[key] = (int(version_no or 0), float(quantity or 0), float(profit or 0))
+
         acc = quoted.setdefault(
             sku_id,
             {
@@ -1233,7 +1242,8 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     ).all()
     order_won = {int(sku_id): _f(qty) for sku_id, qty in order_rows}
 
-    sku_ids = set(inquiry) | set(quoted)
+    # 手工历史订单可能没有询价/报价记录，订单事实本身也必须出现在产品统计。
+    sku_ids = set(inquiry) | set(quoted) | set(order_won)
     if not sku_ids:
         return []
 
