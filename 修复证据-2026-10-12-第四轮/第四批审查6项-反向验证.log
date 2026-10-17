@@ -1,7 +1,0 @@
-=== 反向验证（撤掉修复 → 对应断言必须变红）===
-① 账期识别：撤掉新识别逻辑 → exit=1（TestPaymentTermsDays 多条失败）
-② 外币拒绝：撤掉 reject 调用 → 单测**仍绿**（只测了闸函数，没测接线）
-    → 已补静态检查 ops/check_foreign_currency_rejected.py，反向验证：撤掉调用 exit=1、还原 exit=0
-③ 未来日期：撤掉校验体 → exit=1（TestReceivedDateNotFuture 失败）
-④ CSV 公式保护：撤掉保护 → exit=1（TestCsvFormulaInjection 失败）
-还原后三个文件与备份 SHA256 逐字节一致。

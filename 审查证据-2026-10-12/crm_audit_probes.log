@@ -1,5 +1,0 @@
-DISCOUNT_BYPASS {'discount': '50%', 'limit': '30%', 'before': True, 'after': False, 'required': False, 'status': 'approved'}
-HARD_FLOOR_BYPASS {'cost': '100', 'net_goods_revenue': '50.00', 'total': '250.00', 'approval_created': True, 'status': 'pending'}
-FOREIGN_NONE TypeError unsupported operand type(s) for /: 'NoneType' and 'decimal.Decimal'
-ROUNDING_MISMATCH {'quote_goods': '100.00', 'order_goods': '100.00', 'sum_order_lines': '99.99', 'order_total': '100.00'}
-DIFF_CONFIRM_OVERWRITE {'first': 'keep_local', 'second': 'take_external', 'second_succeeded': True}
