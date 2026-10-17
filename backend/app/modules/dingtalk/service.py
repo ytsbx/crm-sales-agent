@@ -1084,6 +1084,7 @@ async def first_image_attachment(
     """
     from app.modules.file.model import BusinessFile, FileRecord
     from app.modules.file.storage import absolute_path
+    from app.modules.file.router import preview_media_type
 
     rows = (
         await session.execute(
@@ -1098,8 +1099,9 @@ async def first_image_attachment(
         )
     ).scalars().all()
     for row in rows:
-        mime = (row.mime_type or "").lower()
-        if row.mime_type and not mime.startswith("image/"):
+        # 与公开图片出口使用同一判据，避免选中 SVG 等文件后生成不安全或不可读链接。
+        mime = preview_media_type(row)
+        if mime is None or not mime.startswith("image/"):
             continue
         path = absolute_path(row.object_key)
         if path.exists():

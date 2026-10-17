@@ -306,7 +306,7 @@ async def start_inquiry_approval(
         if found is None:
             raise AppError(
                 ErrorCode.REQUIRED_FIELD_MISSING,
-                "钉钉要求必须上传「产品参考图片」，请先在需求里上传图纸或参考图再发起",
+                "钉钉要求必须上传「产品参考图片」，请先上传 PNG、JPG 等普通图片；SVG 等可执行格式不能作为参考图片",
                 422,
             )
         image_file_id, filename, content = found

@@ -44,7 +44,8 @@ async def public_inquiry_image(file_id: int, expires: int, sig: str, session: As
     ):
         raise AppError(ErrorCode.FORBIDDEN, "图片链接已失效", 403)
     record = await session.get(FileRecord, file_id)
-    if record is None or not (record.mime_type or "").lower().startswith("image/"):
+    safe_type = preview_media_type(record) if record is not None else None
+    if safe_type is None or not safe_type.startswith("image/"):
         raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
     linked = (await session.execute(select(BusinessFile).where(
         BusinessFile.file_id == file_id, BusinessFile.business_type == "inquiry"
@@ -52,7 +53,9 @@ async def public_inquiry_image(file_id: int, expires: int, sig: str, session: As
     path = storage.absolute_path(record.object_key)
     if linked is None or not path.is_file():
         raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
-    return FileResponse(path, media_type=record.mime_type, headers={"Content-Disposition": "inline"})
+    return FileResponse(path, media_type=safe_type, headers={
+        "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff",
+    })
 
 # 原件保护判据（哪些类别不可破坏、对应什么人话）**集中在 access.PROTECTED_CATEGORIES**，
 # 不在这里再维护一份：删除、解绑、以后任何会动到原件的入口都调
