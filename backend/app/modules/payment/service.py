@@ -298,6 +298,28 @@ async def rebalance_order_allocations(
             .order_by(PaymentRecord.received_date.asc(), PaymentRecord.id.asc())
         )
     ).scalars().all()
+    # 先释放本轮要重算的全部自动占位，再按到账顺序重新分配。若逐笔删自己的
+    # 旧分配，后到账的回款会一直占着前面各期的额度，让先到账的钱反而待分配。
+    # 历史人工行代表完整人工决定，即使 allocation_mode 尚未补齐也不能动。
+    record_ids = [record.id for record in records]
+    if record_ids:
+        manual_ids = set((await session.execute(
+            select(PaymentAllocation.payment_id).where(
+                PaymentAllocation.payment_id.in_(record_ids),
+                PaymentAllocation.source == "manual",
+            )
+        )).scalars().all())
+        automatic = [record for record in records
+                     if record.allocation_mode != "manual" and record.id not in manual_ids]
+        if automatic:
+            await session.execute(delete(PaymentAllocation).where(
+                PaymentAllocation.payment_id.in_([record.id for record in automatic]),
+                PaymentAllocation.source == "auto",
+            ))
+            for record in automatic:
+                # 未建分配行的 legacy 回款有隐含归属；同样要先释放，避免抢占额度。
+                record.allocation_mode = "auto"
+            await session.flush()
     for record in records:
         await allocate_payment(session, record, operator_id=operator_id)
     await session.flush()
