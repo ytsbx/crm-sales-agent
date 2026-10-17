@@ -377,10 +377,10 @@ async def retry_execution(
     agent_session = await session.get(AgentSession, row.session_id)
     if agent_session is None or agent_session.user_id != user.id:
         raise AppError(ErrorCode.DATA_SCOPE_DENIED, "该执行记录不在你的数据范围内", 403)
-    if row.status == "success":
+    if row.status != "failed":
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
-            "成功的工具调用不能重试（会造成重复写入）",
+            "只有执行失败的工具调用可以重试；运行中或已完成的记录不能重试",
         )
 
     # ⚠️ 这里**不再**要求 `model_ready()`（2026-10-14 审查修）。

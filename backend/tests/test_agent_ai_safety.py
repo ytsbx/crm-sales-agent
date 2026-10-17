@@ -112,3 +112,17 @@ async def test_failed_agent_action_cannot_be_relabelled_as_cancelled(monkeypatch
         await router.cancel_action(7, SimpleNamespace(reason='不再处理'), make_user(permissions={'agent:use'}), SimpleNamespace())
     assert exc.value.http_status == 400
     assert action.status == 'failed'
+
+
+@pytest.mark.anyio
+async def test_only_failed_agent_execution_can_retry(monkeypatch):
+    from app.modules.agent import router
+    row = SimpleNamespace(id=9, status='running', session_id=3)
+    owner_session = SimpleNamespace(user_id=101)
+    db = SimpleNamespace(get=AsyncMock(side_effect=[row, owner_session]))
+    retry = AsyncMock()
+    monkeypatch.setattr(router.runtime, 'retry_tool_call', retry)
+    with pytest.raises(AppError) as exc:
+        await router.retry_execution(9, make_user(101, permissions={'agent:use'}), db)
+    assert exc.value.http_status == 400
+    retry.assert_not_awaited()
