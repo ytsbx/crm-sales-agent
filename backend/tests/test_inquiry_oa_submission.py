@@ -64,6 +64,7 @@ async def test_submission_uses_bound_identity_and_selected_configured_quoter(set
     assert values['field_map']['originator-component']=='bound-id'
     assert values['field_map']['quote-component']=='ding-quoter'
     assert values['field_map']['title-component']=='需要定制'
+    assert values['dept_id']=='dept'
     assert values['inquiry_id']==7 and values['inquiry_version']==1
 
 

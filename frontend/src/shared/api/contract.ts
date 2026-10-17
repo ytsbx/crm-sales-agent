@@ -148,6 +148,10 @@ export function uploadContractDocument(payload: {
   return api.post<ContractDocument>('/contract-documents', { ...payload, source_type: 'customer_drafted' })
 }
 
+export function autoLinkContractDingTalkApproval(docId: number) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/approval-auto-link`, {})
+}
+
 export function startContractDingTalkApproval(docId: number) {
   return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa`, {})
 }

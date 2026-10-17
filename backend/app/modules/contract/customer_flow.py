@@ -1,7 +1,7 @@
 """客户原合同与钉钉现有审批关联；读取核验后才记录实际审批状态。"""
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, parse_qs
 
@@ -183,6 +183,53 @@ async def store_snapshot(session, doc, row, data):
         await oa._notify_contract_review_outcome(session, doc, row.status)
         doc.filled_data = {**doc.filled_data, "_oa_notified": marker}
 
+
+async def associate_instance(session, user, doc, instance_id, cfg, actor):
+    if (await session.execute(select(OaInstance.id).where(OaInstance.instance_id == instance_id))).first():
+        fail("该审批已关联其他业务，不能重复关联", 409)
+    data = await read_instance(instance_id)
+    verify_instance(data, cfg=cfg, doc=doc, user_id=actor.dingtalk_userid)
+    latest = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
+    row = OaInstance(customer_id=doc.customer_id, inquiry_id=doc.id, inquiry_version=1, oa_type="contract",
+        idempotency_key=f"contract:auto-link:{doc.id}:{hashlib.sha256(instance_id.encode()).hexdigest()}",
+        submit_round=(latest.submit_round + 1 if latest else 1), process_code=cfg["process_code"],
+        originator_user_id=actor.dingtalk_userid, instance_id=instance_id,
+        form_snapshot={"mode":"external_auto_link","doc_no":doc.doc_no,"original_file_id":(doc.filled_data or {}).get("_original_file_id")},
+        status="pending", created_by=user.id, created_at=datetime.now(UTC), updated_at=datetime.now(UTC))
+    session.add(row)
+    try: await session.flush()
+    except IntegrityError as exc: raise AppError(ErrorCode.PARAM_ERROR,"审批已被其他请求关联，请刷新",409) from exc
+    await store_snapshot(session, doc, row, data)
+    return row
+
+
+@router.post("/contract-documents/{doc_id}/approval-auto-link")
+async def auto_link_approval(doc_id: int, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
+    from app.core.response import ok
+    from app.modules.user.model import User
+    from app.core.audit import write_audit
+    doc = await visible_doc(session, user, doc_id, lock=True)
+    if doc.status != "draft": fail("仅待签合同可以关联审批")
+    actor = await session.get(User, user.id)
+    if not actor or not actor.dingtalk_userid: fail("请先绑定本人钉钉账号")
+    if settings.dingtalk_push_off: fail("钉钉外部调用已关闭，无法自动查找审批")
+    cfg = await config(session)
+    latest = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
+    if latest and latest.status not in ("rejected", "withdrawn", "failed", "not_sent", "skipped"):
+        return ok(oa.serialize(latest), "合同已有审批记录")
+    now = datetime.now(UTC); start = int((now - timedelta(days=2)).timestamp() * 1000); end = int((now + timedelta(minutes=2)).timestamp() * 1000)
+    ids = await get_client().list_process_instance_ids(process_code=cfg["process_code"], originator_user_id=actor.dingtalk_userid, start_time_ms=start, end_time_ms=end, size=20)
+    matches=[]
+    for instance_id in ids:
+        try:
+            data=await read_instance(instance_id); verify_instance(data,cfg=cfg,doc=doc,user_id=actor.dingtalk_userid); matches.append(instance_id)
+        except AppError:
+            continue
+    if len(matches)==0: fail("暂未找到匹配的钉钉审批，请确认已提交；系统会继续自动查找")
+    if len(matches)>1: fail("找到多条可能的钉钉审批，请暂时选择要关联的审批",409)
+    row=await associate_instance(session,user,doc,matches[0],cfg,actor)
+    await write_audit(session,operator_id=user.id,action="start_contract_oa",business_type="contract",business_id=doc.id,after={"instance_id":row.instance_id,"mode":"external_auto_link"})
+    await session.commit(); return ok(oa.serialize(row),"已自动找到并关联钉钉审批")
 
 @router.post("/contract-documents/{doc_id}/approval-link")
 async def link_approval(doc_id: int, payload: LinkInput, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):

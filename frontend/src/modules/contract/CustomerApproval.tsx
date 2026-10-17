@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Toast } from '@douyinfe/semi-ui'
 import { api } from '../../shared/api/client'
 import type { ContractDocument } from '../../shared/api/contract'
-import { startContractDingTalkApproval } from '../../shared/api/contract'
+import { autoLinkContractDingTalkApproval, startContractDingTalkApproval } from '../../shared/api/contract'
 import { downloadContractDoc } from '../../shared/download-contract'
 
 type Entry = { mode: string; url: string | null; doc_no: string; title: string }
@@ -11,6 +11,22 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
   const [instanceId, setInstanceId] = useState('')
   const cache = useQueryClient()
   const entry = useQuery({ queryKey: ['contract-approval-entry', doc?.id], queryFn: () => api.get<Entry>(`/contract-documents/${doc!.id}/approval-entry`), enabled: Boolean(doc), retry: false })
+  const autoLink = useMutation({
+    mutationFn: () => autoLinkContractDingTalkApproval(doc!.id),
+    onSuccess: () => {
+      Toast.success('已自动找到并关联钉钉审批')
+      void cache.invalidateQueries({ queryKey: ['contract-documents'] })
+      void cache.invalidateQueries({ queryKey: ['contract-detail', doc?.id] })
+      onClose()
+    },
+    onError: (e: Error) => { if (!/暂未找到匹配/.test(e.message)) Toast.error(e.message) },
+  })
+  useEffect(() => {
+    if (!doc || entry.data?.mode !== 'external_link' || autoLink.isPending) return
+    const timer = window.setInterval(() => autoLink.mutate(), 10000)
+    return () => window.clearInterval(timer)
+  }, [doc, entry.data?.mode, autoLink.isPending])
+
   const submit = useMutation({
     mutationFn: async () => {
       if (entry.data?.mode === 'api') return startContractDingTalkApproval(doc!.id)
@@ -42,11 +58,13 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
         <a href={entry.data.url!} target="_blank" rel="noreferrer">打开钉钉合同审批</a>
       </div>
       <p>提交后，将钉钉审批详情链接（含审批编号）或审批实例编号粘贴到下方。系统核对流程、本人账号、合同名称和编号后关联；请确认钉钉正文附件为本合同原文件。</p>
+      <Button theme="solid" loading={autoLink.isPending} onClick={() => autoLink.mutate()}>立即查找并关联</Button>
+      <details><summary>自动查找不到时，手动关联</summary>
       <Input value={instanceId} onChange={setInstanceId} placeholder="粘贴钉钉审批详情链接或审批实例编号" />
       <Button theme="solid" loading={submit.isPending} onClick={() => {
         if (!instanceId.trim()) { Toast.warning('请粘贴审批详情链接或实例编号'); return }
         submit.mutate()
-      }}>核验并关联审批</Button>
+      }}>手动核验并关联</Button></details>
     </div>}
     {entry.data?.mode === 'api' && <div>
       <p>将上传合同原文件并提交到钉钉，审批操作在钉钉完成。</p>

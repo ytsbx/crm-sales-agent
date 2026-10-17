@@ -295,6 +295,26 @@ class DingTalkClient:
             )
         return data["instanceId"]
 
+    async def list_process_instance_ids(self, *, process_code: str, originator_user_id: str, start_time_ms: int, end_time_ms: int, cursor: int = 0, size: int = 20) -> list[str]:
+        """查询指定发起人和流程的近期审批实例编号，用于自动关联。"""
+        self._require()
+        token = await self.access_token()
+        body = {"process_code": process_code, "start_time": start_time_ms, "end_time": end_time_ms,
+                "cursor": cursor, "size": size, "userid_list": originator_user_id}
+        try:
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.post("https://oapi.dingtalk.com/topapi/processinstance/listids",
+                                       params={"access_token": token}, json=body)
+        except httpx.HTTPError as exc:
+            raise DingTalkUnknownOutcome(f"查询钉钉审批列表时没有得到响应：{exc}") from exc
+        try: data = resp.json() if resp.content else {}
+        except ValueError as exc: raise DingTalkUnknownOutcome("查询钉钉审批列表响应无法解析") from exc
+        if resp.status_code != 200 or data.get("errcode", 0) != 0:
+            raise DingTalkError(data.get("errmsg") or resp.text[:200], api="topapi/processinstance/listids", http_status=resp.status_code)
+        result = data.get("result") or {}
+        values = result.get("list") or result.get("instance_ids") or result.get("instanceIds") or []
+        return [str(value) for value in values if value]
+
     async def get_process_instance(self, instance_id: str) -> dict[str, Any]:
         """查审批实例状态与结果（回写用；没有回调时靠轮询它）。"""
         self._require()

@@ -56,9 +56,12 @@ async def _submission_fields(cfg: dict, *, include_all: bool = False) -> list[di
         if (not include_all and props.get("label") not in SUBMISSION_FIELD_LABELS) or not props.get("id"):
             continue
         kind = item.get("componentName")
+        # 这张“产品询价申请”模板同时承载后续打样、备货节点，完整 schema
+        # 里会出现 SeqNumberField、TableField 等后续节点控件。询价发起阶段
+        # 不会填写这些控件，不能因为它们存在就把整个模板判定为已变化。
         if kind not in ("TextField", "TextareaField", "DDDateField", "DDSelectField", "DDAttachment",
                         "DDPhotoField", "NumberField", "InnerContactField", "DepartmentField"):
-            raise AppError(ErrorCode.PARAM_ERROR, "询价模板控件已变化，请联系管理员核对", 422)
+            continue
         options = []
         for option in props.get("options", []):
             parsed = json.loads(option) if isinstance(option, str) and option.startswith("{") else option
@@ -255,14 +258,19 @@ async def start_inquiry_approval(
     if originator_component:
         field_map[originator_component] = ding_user_id or f"（待查询：{user.name}的钉钉编号）"
     dept_component = (cfg or {}).get("dept_component")
-    if dept_component:
-        if app_settings.dingtalk_push_off:
+    # 钉钉同时要求：部门控件里的值 + 创建审批实例请求体顶层的 deptId。
+    # 之前只填了表单控件，接口仍会报“发起部门 id 错误/发起人不在发起部门”。
+    dept_id = None
+    if app_settings.dingtalk_push_off:
+        if dept_component:
             field_map[dept_component] = "（待查询：钉钉部门编号）"
-        else:
-            dept_ids = await get_client().get_user_dept_ids(ding_user_id)
-            if not dept_ids:
-                raise AppError(ErrorCode.PARAM_ERROR, "钉钉未返回你的提报部门，请先核对员工部门资料", 422)
-            field_map[dept_component] = dept_ids[0]
+    else:
+        dept_ids = await get_client().get_user_dept_ids(ding_user_id)
+        if not dept_ids:
+            raise AppError(ErrorCode.PARAM_ERROR, "钉钉未返回你的提报部门，请先核对员工部门资料", 422)
+        dept_id = dept_ids[0]
+        if dept_component:
+            field_map[dept_component] = dept_id
     # 额外字段（业务临时补的）按 componentId 直接给
     for component_id, value in (payload.extra_fields or {}).items():
         if component_id and value not in (None, ""):
@@ -308,7 +316,11 @@ async def start_inquiry_approval(
             media_id = await get_client().upload_media(
                 content=content, filename=filename, media_type="image"
             )
-            field_map[image_component] = media_id
+            # DDPhotoField 接收的是 JSON 编码的图片 URL 数组；直接传旧版
+            # media_id 会被钉钉当成空值，进而报“产品参考图片”必填未填。
+            field_map[image_component] = json.dumps(
+                [f"https://static.dingtalk.com/media/{media_id}"], ensure_ascii=False
+            )
 
     if selected_attachments:
         values = []
@@ -338,6 +350,7 @@ async def start_inquiry_approval(
         field_map=field_map,
         resubmit=payload.resubmit,
         field_definitions=all_field_definitions,
+        dept_id=dept_id,
     )
     await write_audit(
         session,
