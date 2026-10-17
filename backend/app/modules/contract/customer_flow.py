@@ -114,12 +114,12 @@ async def approval_entry(doc_id: int, user: CurrentUser = Depends(require_permis
     if doc.status != "draft":
         fail("仅待签合同可办理审批")
     process = cfg["process_code"]
-    mode = "external_link" if process == CONTRACT_PROCESS or has_suite(await get_client().get_process_schema(process)) else "api"
-    if mode == "external_link" and not settings.dingtalk_app_key:
+    # 合同审批沿用已验证的 CRM 直发路径：CRM 负责创建钉钉实例，审批过程仍在钉钉完成。
+    # 不再把智能合同模板降级成“打开钉钉后手动粘贴实例号”的外部关联流程。
+    mode = "api"
+    if not settings.dingtalk_app_key:
         fail("未配置 CRM 钉钉应用，请联系管理员")
-    return ok({"mode": mode, "url": "https://applink.dingtalk.com/approval/create?" + urlencode({
-        "corpId": cfg["corp_id"], "processCode": process, "from": settings.dingtalk_app_key,
-    }) if mode == "external_link" else None, "doc_no": doc.doc_no, "title": doc.title})
+    return ok({"mode": mode, "url": None, "doc_no": doc.doc_no, "title": doc.title})
 
 
 class LinkInput(BaseModel):

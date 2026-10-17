@@ -1,6 +1,9 @@
 """文件中心接口（对齐 03-API §31）。"""
 
 import asyncio
+import hashlib
+import hmac
+import time
 import logging
 from pathlib import Path
 from urllib.parse import quote
@@ -32,6 +35,24 @@ from app.modules.user.model import User
 logger = logging.getLogger("crm.file")
 
 router = APIRouter(tags=["File"])
+
+@router.get("/public/inquiry-images/{file_id}")
+async def public_inquiry_image(file_id: int, expires: int, sig: str, session: AsyncSession = Depends(get_db)):
+    """钉钉审批图片控件使用的短期只读图片地址。"""
+    if expires < int(time.time()) or not hmac.compare_digest(
+        hmac.new(settings.jwt_secret.encode(), f"{file_id}:{expires}".encode(), hashlib.sha256).hexdigest(), sig
+    ):
+        raise AppError(ErrorCode.FORBIDDEN, "图片链接已失效", 403)
+    record = await session.get(FileRecord, file_id)
+    if record is None or not (record.mime_type or "").lower().startswith("image/"):
+        raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
+    linked = (await session.execute(select(BusinessFile).where(
+        BusinessFile.file_id == file_id, BusinessFile.business_type == "inquiry"
+    ))).scalars().first()
+    path = storage.absolute_path(record.object_key)
+    if linked is None or not path.is_file():
+        raise AppError(ErrorCode.NOT_FOUND, "图片不存在", 404)
+    return FileResponse(path, media_type=record.mime_type, headers={"Content-Disposition": "inline"})
 
 # 原件保护判据（哪些类别不可破坏、对应什么人话）**集中在 access.PROTECTED_CATEGORIES**，
 # 不在这里再维护一份：删除、解绑、以后任何会动到原件的入口都调

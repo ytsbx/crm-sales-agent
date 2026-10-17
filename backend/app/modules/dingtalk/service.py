@@ -1075,7 +1075,7 @@ async def _notify_contract_review_outcome(
 
 async def first_image_attachment(
     session: AsyncSession, *, business_type: str, business_id: int
-) -> tuple[str, bytes] | None:
+) -> tuple[int, str, bytes] | None:
     """取某个业务对象挂的第一张图片附件，返回 (文件名, 内容)。
 
     钉钉模板里「产品参考图片」是**必填的图片控件**，所以发起前必须有一张图。
@@ -1103,7 +1103,7 @@ async def first_image_attachment(
             continue
         path = absolute_path(row.object_key)
         if path.exists():
-            return row.file_name, path.read_bytes()
+            return row.id, row.file_name, path.read_bytes()
     return None
 
 

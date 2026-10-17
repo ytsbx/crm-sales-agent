@@ -46,7 +46,13 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
     },
     onError: (e: Error) => Toast.error(e.message),
   })
-  return <Modal title="钉钉合同审批" visible={Boolean(doc)} onCancel={onClose} footer={null} width={620}>
+  return <Modal title="钉钉合同审批" visible={Boolean(doc)} onCancel={onClose}
+    width={520} style={{ maxWidth: 'calc(100vw - 32px)' }}
+    bodyStyle={{ paddingTop: 8, paddingBottom: 24 }}
+    footer={entry.data?.mode === 'api' ? <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+      <Button disabled={submit.isPending} onClick={onClose}>取消</Button>
+      <Button theme="solid" loading={submit.isPending} onClick={() => submit.mutate()}>提交钉钉审批</Button>
+    </div> : null}>
     {entry.isLoading && <p>正在核对审批入口…</p>}
     {entry.error && <p role="alert">{entry.error.message}</p>}
     {entry.data?.mode === 'external_link' && <div style={{ display: 'grid', gap: 12 }}>
@@ -67,9 +73,12 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
         submit.mutate()
       }}>手动核验并关联</Button></details>
     </div>}
-    {entry.data?.mode === 'api' && <div>
-      <p>将上传合同原文件并提交到钉钉，审批操作在钉钉完成。</p>
-      <Button theme="solid" loading={submit.isPending} onClick={() => submit.mutate()}>提交钉钉审批</Button>
+    {entry.data?.mode === 'api' && <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ padding: '16px 20px', background: 'var(--semi-color-fill-0)', borderRadius: 8, display: 'grid', gap: 8 }}>
+        <div style={{ fontSize: 15, fontWeight: 600, overflowWrap: 'anywhere' }}>{doc?.title}</div>
+        <div style={{ color: 'var(--semi-color-text-2)', fontSize: 13 }}>合同编号：{doc?.doc_no}</div>
+      </div>
+      <div style={{ lineHeight: 1.7, color: 'var(--semi-color-text-1)' }}>将上传合同原文件并提交到钉钉，审批操作在钉钉完成。</div>
     </div>}
   </Modal>
 }

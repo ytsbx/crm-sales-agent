@@ -183,3 +183,7 @@ export function signContractDocument(docId: number, payload: { file_id: number; 
 export function voidContractDocument(docId: number, reason: string) {
   return api.post<ContractDocument>(`/contract-documents/${docId}/void`, { reason })
 }
+
+export function deleteContractDocument(docId: number) {
+  return api.delete(`/contract-documents/${docId}`)
+}

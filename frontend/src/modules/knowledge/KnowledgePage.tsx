@@ -1061,15 +1061,17 @@ export default function KnowledgePage() {
               ),
             },
             {
-              title: '钉钉单号 / 请求号',
+              title: '审批信息',
               dataIndex: 'instance_id',
               render: (v: string | null, row: OaApprovalInstance) => (
                 <div style={{ fontSize: 12 }}>
-                  <div>{v ?? '-'}</div>
-                  {/* 请求号 + 尝试次数：出问题时拿这两个数与钉钉那一次请求对账 */}
-                  <div style={{ color: 'var(--crm-text-3)' }}>
-                    请求号 {row.request_no ?? '-'}｜已发起 {row.attempt_count ?? 0} 次
-                  </div>
+                  <div>{v ? '已创建钉钉审批' : '尚未创建钉钉审批'}</div>
+                  <div style={{ color: 'var(--crm-text-3)' }}>第 {row.submit_round ?? 1} 轮 · 已尝试 {row.attempt_count ?? 0} 次</div>
+                  {v && <details style={{ color: 'var(--crm-text-3)', marginTop: 3 }}>
+                    <summary style={{ cursor: 'pointer' }}>技术信息</summary>
+                    <div>审批实例：{v}</div>
+                    <div>请求号：{row.request_no ?? '-'}</div>
+                  </details>}
                   {row.error && <div style={{ color: 'var(--crm-text-3)' }}>{row.error}</div>}
                   {row.result?.withdraw_snapshot_pending === true && <div>撤回已确认，正在等待钉钉最终过程记录；下方为此前同步的快照。</div>}
                 </div>

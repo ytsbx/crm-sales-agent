@@ -191,7 +191,7 @@ async def test_missing_department_stops_before_approval(setup):
 
 
 @pytest.mark.anyio
-async def test_full_inquiry_text_uses_existing_material_control_without_new_config(setup):
+async def test_material_control_preserves_original_without_duplicate_summary(setup):
     inquiry,cfg,session,user,client,create=setup
     cfg['field_map']['description']='TextareaField_material'
     inquiry.description='完整工艺要求' * 500
@@ -202,6 +202,5 @@ async def test_full_inquiry_text_uses_existing_material_control_without_new_conf
         quote_owner_user_id='ding-quoter',extra_fields={'TextareaField_extra':'不可折叠'}
     ),request(),user,session)
     text=create.await_args.kwargs['field_map']['TextareaField_material']
-    assert inquiry.description in text
-    assert '预估订购数量：10' in text and '目标价：20' in text
-    assert '特别说明：不可折叠' in text and '备注：请保留备注' in text
+    assert text == inquiry.description
+    assert create.await_args.kwargs['field_map']['TextareaField_extra'] == '不可折叠'

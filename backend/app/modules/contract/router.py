@@ -3,6 +3,7 @@
 import logging
 import json
 import httpx
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
@@ -118,9 +119,7 @@ async def start_dingtalk_contract_approval(
     process_code = str(cfg.get("process_code") or "")
     if not process_code:
         raise AppError(ErrorCode.PARAM_ERROR, "尚未配置合同签署钉钉审批模板（dingtalk_contract_oa.process_code）", 422)
-    from app.modules.contract.customer_flow import reject_suite_submission
-    if not app_settings.dingtalk_push_off:
-        await reject_suite_submission(get_client(), process_code)
+    # 沿用已验证的 CRM 直发合同审批路径；审批节点和结果仍由钉钉处理并同步回 CRM。
     # 这一份合同在本模板上的历史轮次，用来决定"换一轮重提"还是原样返回。
     # **必须读在附件上传之前**：附件上传是真实的外部写操作，而"同轮重复点击"
     # 与"终态再点一次"这两种情况下 `create_inquiry_instance` 不会发起审批 ——
@@ -170,7 +169,9 @@ async def start_dingtalk_contract_approval(
         "number_rule_type": "手动填写",
         "contract_number": doc.doc_no,
         "amount_type": "收入" if amount not in (None, "") else "无金额",
-        "amount": str(amount or 0),
+        # 合同金额为空/无金额时不要给 MoneyField 填 0；钉钉模板把“无金额”
+        # 和金额数值分开校验，传 0 会被判为审批实例参数错误。
+        "amount": str(amount) if amount not in (None, "") else None,
         "term_type": "固定期限" if doc.expiry_date else "无固定期限",
         "period_start": doc.effective_date.isoformat() if doc.effective_date else "",
         "period_end": doc.expiry_date.isoformat() if doc.expiry_date else "",
@@ -191,14 +192,19 @@ async def start_dingtalk_contract_approval(
     if originator_component:
         field_map[str(originator_component)] = ding_user_id or f"（待查询：{user.name}的钉钉编号）"
     dept_component = cfg.get("dept_component")
-    if dept_component:
-        if app_settings.dingtalk_push_off:
+    # 钉钉同时要求部门控件值和请求体顶层 deptId；只填表单控件会被判为
+    # “发起部门 id 错误/发起人不在发起部门中”。
+    dept_id = None
+    if app_settings.dingtalk_push_off:
+        if dept_component:
             field_map[str(dept_component)] = "（待查询：钉钉部门编号）"
-        else:
-            dept_ids = await get_client().get_user_dept_ids(ding_user_id)
-            if not dept_ids:
-                raise AppError(ErrorCode.PARAM_ERROR, "钉钉未返回你的提报部门，请先核对员工部门资料", 422)
-            field_map[str(dept_component)] = dept_ids[0]
+    else:
+        dept_ids = await get_client().get_user_dept_ids(ding_user_id)
+        if not dept_ids:
+            raise AppError(ErrorCode.PARAM_ERROR, "钉钉未返回你的提报部门，请先核对员工部门资料", 422)
+        dept_id = dept_ids[0]
+        if dept_component:
+            field_map[str(dept_component)] = dept_id
     # 正文同时写入多行控件（便于直接在 OA 里阅读），并可上传生成 PDF 作为完整附件，
     # 避免长合同受 OA 文本控件长度限制而被截断。
     content_component = cfg.get("content_component")
@@ -231,6 +237,13 @@ async def start_dingtalk_contract_approval(
             except (DingTalkError, httpx.HTTPError, OSError, ValueError) as exc:
                 raise AppError(ErrorCode.PARAM_ERROR, "合同 PDF 未成功上传到钉钉，本次尚未发起审批", 422) from exc
             field_map[str(attachment_component)] = json.dumps([attachment], ensure_ascii=False)
+    field_definitions = None
+    if not app_settings.dingtalk_push_off:
+        from app.modules.contract.oa_fields import prepare_contract_fields
+        field_map, field_definitions = prepare_contract_fields(
+            await get_client().get_process_schema(process_code), field_map,
+            our_company=cfg.get('our_company'), customer_name=customer.name if customer else None,
+        )
     row = await dingtalk_service.create_inquiry_instance(
         session,
         user=user,
@@ -242,6 +255,8 @@ async def start_dingtalk_contract_approval(
         field_map=field_map,
         oa_type="contract",
         resubmit=resubmit,
+        dept_id=dept_id,
+        field_definitions=field_definitions,
     )
     # **展开合并，不能整体替换**（2026-10-16 修）：轮询回写进 `_dingtalk_oa` 的是
     # `oa_instance_id / instance_id / status / synced_at / result` 五个键，
@@ -777,6 +792,38 @@ async def void_document(
     )
     await session.commit()
     return ok(svc.serialize_document(doc), "文档已作废")
+
+
+@router.delete("/contract-documents/{doc_id}")
+async def delete_document(doc_id: int, request: Request, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
+    await _ensure_doc_in_scope(session, user, doc)
+    if doc.status == "signed":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已签署合同不能删除，请使用作废流程", 422)
+    doc.deleted_at = datetime.now(UTC)
+    await write_audit(session, operator_id=user.id, action="delete", business_type="contract", business_id=doc.id,
+                      after={"doc_no": doc.doc_no, "status": doc.status}, ip=client_ip(request))
+    await session.commit()
+    return ok(None, "合同已移入回收站")
+
+
+@router.post("/contract-documents/{doc_id}/restore")
+async def restore_document(doc_id: int, request: Request, user: CurrentUser = Depends(require_permission("order:manage")), session: AsyncSession = Depends(get_db)):
+    from app.modules.contract.model import ContractDocument
+    from app.modules.customer.model import Customer
+    doc = (await session.execute(select(ContractDocument).where(ContractDocument.id == doc_id).with_for_update())).scalar_one_or_none()
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND, "合同不存在", 404)
+    await _ensure_doc_in_scope(session, user, doc)
+    customer = await session.get(Customer, doc.customer_id)
+    if customer is None or customer.deleted_at is not None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先恢复该合同所属客户", 422)
+    if doc.deleted_at is not None:
+        doc.deleted_at = None
+        await write_audit(session, operator_id=user.id, action="restore", business_type="contract", business_id=doc.id,
+                          after={"doc_no": doc.doc_no}, ip=client_ip(request))
+        await session.commit()
+    return ok(None, "合同已恢复")
 
 
 #: 主管口径：与新品洞察 / 案例库评审共用同一套判断（见 product_insight/router.py）。

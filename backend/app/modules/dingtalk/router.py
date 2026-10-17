@@ -276,8 +276,9 @@ async def start_inquiry_approval(
         if component_id and value not in (None, ""):
             field_map[component_id] = value
 
-    # 原有材质工艺控件也可承载完整摘要，避免未配置 content_component 时漏正文。
-    summary_component = content_component or mapping.get('description')
+    # 只有模板配置了独立的摘要控件时才写完整摘要；不能把摘要回写到
+    # “材质及工艺要求”本身，否则钉钉会显示一整段重复内容。
+    summary_component = content_component
     if summary_component:
         summary = [f'{label}：{value}' for label, value in (
             ('询价编号', inquiry.inquiry_no), ('版本', inquiry.version),
@@ -308,18 +309,18 @@ async def start_inquiry_approval(
                 "钉钉要求必须上传「产品参考图片」，请先在需求里上传图纸或参考图再发起",
                 422,
             )
-        filename, content = found
+        image_file_id, filename, content = found
         if app_settings.dingtalk_push_off:
             # 干跑：不传图，只记下会用哪一张（对外零请求）
             field_map[image_component] = f"（待上传：{filename}）"
         else:
-            media_id = await get_client().upload_media(
-                content=content, filename=filename, media_type="image"
-            )
-            # DDPhotoField 接收的是 JSON 编码的图片 URL 数组；直接传旧版
-            # media_id 会被钉钉当成空值，进而报“产品参考图片”必填未填。
+            import hashlib, hmac, time
+            expires = int(time.time()) + 7 * 24 * 3600
+            message = f"{image_file_id}:{expires}".encode()
+            signature = hmac.new(app_settings.jwt_secret.encode(), message, hashlib.sha256).hexdigest()
+            image_url = f"https://crm.mandla.cn/api/v1/public/inquiry-images/{image_file_id}?expires={expires}&sig={signature}"
             field_map[image_component] = json.dumps(
-                [f"https://static.dingtalk.com/media/{media_id}"], ensure_ascii=False
+                [image_url], ensure_ascii=False
             )
 
     if selected_attachments:

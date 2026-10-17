@@ -248,11 +248,11 @@ async def _deleted_lead_stmt(user: CurrentUser, session: AsyncSession) -> Select
 
 
 async def list_deleted_leads(
-    session: AsyncSession, user: CurrentUser, page: int, page_size: int
+    session: AsyncSession, user: CurrentUser, page: int, page_size: int, keyword: str | None = None
 ) -> tuple[list[dict], int]:
-    rows, total = await paginate(
-        session, await _deleted_lead_stmt(user, session), page, page_size
-    )
+    stmt = await _deleted_lead_stmt(user, session)
+    stmt = _search(stmt, keyword, Lead.name, Lead.company_name, Lead.contact_name, Lead.mobile)
+    rows, total = await paginate(session, stmt, page, page_size)
     audits = await _latest_delete_audits(session, {"lead": [r.id for r in rows]})
     # 负责人和操作人可能不是同一个人，两批 id 一起取名（`owner_names` 就是
     # "按用户 id 取名字"，名字虽有 owner 二字，功能是通用的，不另写一份）
@@ -342,13 +342,14 @@ def serialize_recycle_sku(
 
 
 async def list_deleted_products(
-    session: AsyncSession, page: int, page_size: int
+    session: AsyncSession, page: int, page_size: int, keyword: str | None = None
 ) -> tuple[list[dict], int]:
     stmt = (
         select(Product)
         .where(Product.deleted_at.is_not(None))
         .order_by(Product.deleted_at.desc(), Product.id.desc())
     )
+    stmt = _search(stmt, keyword, Product.name, Product.product_line, Product.category, Product.brand)
     rows, total = await paginate(session, stmt, page, page_size)
 
     counts: dict[int, int] = {}
@@ -411,13 +412,14 @@ async def sku_code_occupied(
 
 
 async def list_deleted_skus(
-    session: AsyncSession, page: int, page_size: int
+    session: AsyncSession, page: int, page_size: int, keyword: str | None = None
 ) -> tuple[list[dict], int]:
     stmt = (
         select(Sku)
         .where(Sku.deleted_at.is_not(None))
         .order_by(Sku.deleted_at.desc(), Sku.id.desc())
     )
+    stmt = _search(stmt, keyword, Sku.name, Sku.sku_code, Sku.specification)
     rows, total = await paginate(session, stmt, page, page_size)
 
     # 产品名字（产品可能也已经删了，名字仍要显示）
@@ -848,7 +850,7 @@ async def _merge_refs(
 
 
 async def list_deleted_customers(
-    session: AsyncSession, user: CurrentUser, page: int, page_size: int
+    session: AsyncSession, user: CurrentUser, page: int, page_size: int, keyword: str | None = None
 ) -> tuple[list[dict], int]:
     """列出被软删的客户（只读）。
 
@@ -867,6 +869,7 @@ async def list_deleted_customers(
         stmt = stmt.where(_visible_customer_predicate(merge, owner_ids))
     stmt = stmt.order_by(Customer.deleted_at.desc(), Customer.id.desc())
 
+    stmt = _search(stmt, keyword, Customer.name, Customer.short_name)
     rows, total = await paginate(session, stmt, page, page_size)
 
     ids = [c.id for c in rows]
@@ -992,3 +995,9 @@ __all__ = [
     "serialize_recycle_sku",
     "sku_code_occupied",
 ]
+
+
+def _search(stmt, keyword, *columns):
+    if keyword and keyword.strip():
+        stmt = stmt.where(or_(*(column.icontains(keyword.strip(), autoescape=True) for column in columns)))
+    return stmt

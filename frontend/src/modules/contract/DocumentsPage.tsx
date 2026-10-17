@@ -33,6 +33,7 @@ import {
   signContractDocument,
   withdrawContractDingTalkApproval,
   voidContractDocument,
+  deleteContractDocument,
   type ContractDocument,
   type ContractAmendment,
   type ContractSignedFile,
@@ -284,6 +285,11 @@ export default function DocumentsPage() {
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deleteContractDocument(id),
+    onSuccess: () => { Toast.success('合同已移入回收站'); refresh(); void queryClient.invalidateQueries({ queryKey: ['recycle', 'contracts'] }) },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   // 已选签署件的文件名：确认前要让用户看清"签的是哪份文件"，光给内部编号看不懂
   const selectedSignFile = (signFilesQuery.data ?? []).find((row) => row.id === signFileId)
@@ -423,6 +429,17 @@ export default function DocumentsPage() {
                           </span>
                         </span>
                       ))}
+                    {canManage && (record.status === 'draft' || record.status === 'void') && (
+                      <a
+                        style={{ color: 'var(--crm-danger, #d45)' }}
+                        onClick={() => Modal.confirm({
+                          title: `删除合同 ${record.doc_no}？`,
+                          content: '合同将移入回收站，可在“回收站 → 合同”中恢复。',
+                          okButtonProps: { type: 'danger' },
+                          onOk: () => deleteMutation.mutate(record.id),
+                        })}
+                      >删除</a>
+                    )}
                   </span>
                 ),
               },

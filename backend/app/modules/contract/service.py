@@ -296,6 +296,7 @@ def serialize_document(
         "parent_doc_no": parent_doc_no,
         "signed_at": doc.signed_at,
         "void_reason": doc.void_reason,
+        "deleted_at": doc.deleted_at,
         "created_at": doc.created_at,
     }
 
@@ -1282,6 +1283,8 @@ async def list_documents(
     quote_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
+    deleted_only: bool = False,
+    keyword: str | None = None,
 ) -> tuple[list[dict], int]:
     """台账（分页）：数据范围跟客户负责人**当前**归属走——
 
@@ -1304,8 +1307,12 @@ async def list_documents(
         # 分页与 `total` 全错（CI 上 `check_contract_documents` 四条断言同时红，
         # 就是我先漏了这个 join）。`outerjoin` 而非 `join`：合同可以没有来源订单。
         .outerjoin(SalesOrder, SalesOrder.id == ContractDocument.order_id)
-        .where(ContractDocument.deleted_at.is_(None))
+        .where(ContractDocument.deleted_at.is_not(None) if deleted_only else ContractDocument.deleted_at.is_(None))
     )
+    if keyword and keyword.strip():
+        stmt = stmt.where(or_(ContractDocument.doc_no.icontains(keyword.strip(), autoescape=True),
+                              ContractDocument.title.icontains(keyword.strip(), autoescape=True),
+                              Customer.name.icontains(keyword.strip(), autoescape=True)))
     if customer_id:
         stmt = stmt.where(ContractDocument.customer_id == customer_id)
     if order_id:

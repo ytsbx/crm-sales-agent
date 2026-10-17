@@ -15,9 +15,12 @@ import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { emptyText } from '../../shared/hooks/emptyText'
+import { api } from '../../shared/api/client'
+import { listSamples, restoreSample, type SampleRequestRow } from '../../shared/api/sample'
+import type { PageResult } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
@@ -47,9 +50,12 @@ const fmt = (value: string | null) => (value ? formatBeijingTime(value) : '-')
 function usePageSize(initial = 10) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(initial)
+  const [keyword, setKeyword] = useState('')
   return {
     page,
     pageSize,
+    keyword,
+    search: (value: string) => { setKeyword(value); setPage(1) },
     setPage,
     // 改每页条数要回到第一页，否则可能停在一个不存在的页码上（表格空）
     changePageSize: (size: number) => {
@@ -129,8 +135,8 @@ function LeadsPanel() {
   const pager = usePageSize()
 
   const query = useQuery({
-    queryKey: ['recycle', 'leads', pager.page, pager.pageSize],
-    queryFn: () => listRecycleLeads({ page: pager.page, page_size: pager.pageSize }),
+    queryKey: ['recycle', 'leads', pager.page, pager.pageSize, pager.keyword],
+    queryFn: () => listRecycleLeads({ page: pager.page, page_size: pager.pageSize, keyword: pager.keyword }),
   })
   // 恢复会让总数变小，停在最后一页时要把页码拉回来（见 useClampPage）
   useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
@@ -182,7 +188,8 @@ function LeadsPanel() {
 
   return (
     <SectionCard>
-      <Table<RecycleLead>
+      <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索线索、公司、联系人或手机" style={{ maxWidth: 380, marginBottom: 16 }} />
+        <Table<RecycleLead>
         columns={columns}
         dataSource={query.data?.items ?? []}
         loading={query.isLoading}
@@ -210,12 +217,12 @@ function ProductsPanel() {
   const skuPager = usePageSize()
 
   const productQuery = useQuery({
-    queryKey: ['recycle', 'products', productPager.page, productPager.pageSize],
-    queryFn: () => listRecycleProducts({ page: productPager.page, page_size: productPager.pageSize }),
+    queryKey: ['recycle', 'products', productPager.page, productPager.pageSize, productPager.keyword],
+    queryFn: () => listRecycleProducts({ page: productPager.page, page_size: productPager.pageSize, keyword: productPager.keyword }),
   })
   const skuQuery = useQuery({
-    queryKey: ['recycle', 'skus', skuPager.page, skuPager.pageSize],
-    queryFn: () => listRecycleSkus({ page: skuPager.page, page_size: skuPager.pageSize }),
+    queryKey: ['recycle', 'skus', skuPager.page, skuPager.pageSize, skuPager.keyword],
+    queryFn: () => listRecycleSkus({ page: skuPager.page, page_size: skuPager.pageSize, keyword: skuPager.keyword }),
   })
   // 产品恢复会**同时**缩短产品和 SKU 两张表的记录，两张表各自钳一次页码
   useClampPage(productQuery.data?.total, productPager.page, productPager.pageSize, productPager.setPage)
@@ -349,6 +356,7 @@ function ProductsPanel() {
   return (
     <>
       <SectionCard title="已删除的产品（恢复时连带恢复它名下的 SKU）">
+        <Input showClear value={productPager.keyword} onChange={productPager.search} placeholder="搜索产品名称、品类或品牌" style={{ maxWidth: 380, marginBottom: 16 }} />
         <Table<RecycleProduct>
           columns={productColumns}
           dataSource={productQuery.data?.items ?? []}
@@ -366,6 +374,7 @@ function ProductsPanel() {
         />
       </SectionCard>
       <SectionCard title="已删除的 SKU">
+        <Input showClear value={skuPager.keyword} onChange={skuPager.search} placeholder="搜索SKU编码、名称或规格" style={{ maxWidth: 380, marginBottom: 16 }} />
         <Table<RecycleSku>
           columns={skuColumns}
           dataSource={skuQuery.data?.items ?? []}
@@ -399,8 +408,8 @@ function CustomersPanel() {
   const canAssign = can('customer:assign')
 
   const query = useQuery({
-    queryKey: ['recycle', 'customers', pager.page, pager.pageSize],
-    queryFn: () => listRecycleCustomers({ page: pager.page, page_size: pager.pageSize }),
+    queryKey: ['recycle', 'customers', pager.page, pager.pageSize, pager.keyword],
+    queryFn: () => listRecycleCustomers({ page: pager.page, page_size: pager.pageSize, keyword: pager.keyword }),
   })
   useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
 
@@ -596,6 +605,7 @@ function CustomersPanel() {
   return (
     <>
       <SectionCard title="被合并掉的客户会显示「已并入某某」，可点进合并后的客户（那一类不提供恢复）；直接删除的可以恢复。原负责人已停用的，恢复时要先指定一位在职的接手人。">
+        <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户名称或简称" style={{ maxWidth: 380, marginBottom: 16 }} />
         <Table<RecycleCustomer>
           columns={columns}
           dataSource={query.data?.items ?? []}
@@ -653,6 +663,48 @@ function CustomersPanel() {
   )
 }
 
+function SamplesPanel() {
+  const { can } = usePermissions()
+  const cache = useQueryClient()
+  const pager = usePageSize()
+  const query = useQuery({ queryKey: ['recycle', 'samples', pager.page, pager.pageSize, pager.keyword],
+    queryFn: () => listSamples({ include_deleted: true, page: pager.page, page_size: pager.pageSize, keyword: pager.keyword }) })
+  useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
+  const restore = useMutation({ mutationFn: restoreSample,
+    onSuccess: () => { Toast.success('样品申请已恢复'); void cache.invalidateQueries({ queryKey: ['recycle', 'samples'] }); void cache.invalidateQueries({ queryKey: ['samples'] }) },
+    onError: (error: Error) => Toast.error(error.message) })
+  return <SectionCard><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户或商机" style={{ maxWidth: 380, marginBottom: 16 }} />
+    <Table<SampleRequestRow> rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading} empty={emptyText(query, '回收站里没有样品')}
+      columns={[{ title: '客户', dataIndex: 'customer_name' }, { title: '商机', dataIndex: 'opportunity_title' },
+        { title: '负责人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
+        { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
+        ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => <a onClick={() => restore.mutate(row.id)}>恢复</a> }] : [])]}
+      pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
+        onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} />
+  </SectionCard>
+}
+
+interface RecycleContract { id: number; doc_no: string; title: string; customer_name: string | null; status_label: string; deleted_at: string | null }
+
+function ContractsPanel() {
+  const { can } = usePermissions()
+  const cache = useQueryClient()
+  const pager = usePageSize()
+  const query = useQuery({ queryKey: ['recycle', 'contracts', pager.page, pager.pageSize, pager.keyword],
+    queryFn: () => api.get<PageResult<RecycleContract>>('/recycle-bin/contracts', { page: pager.page, page_size: pager.pageSize, keyword: pager.keyword }) })
+  useClampPage(query.data?.total, pager.page, pager.pageSize, pager.setPage)
+  const restore = useMutation({ mutationFn: (id: number) => api.post(`/contract-documents/${id}/restore`),
+    onSuccess: () => { Toast.success('合同已恢复'); void cache.invalidateQueries({ queryKey: ['recycle', 'contracts'] }); void cache.invalidateQueries({ queryKey: ['contract-documents'] }) },
+    onError: (error: Error) => Toast.error(error.message) })
+  return <SectionCard><Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索合同编号、名称或客户" style={{ maxWidth: 380, marginBottom: 16 }} /><Table<RecycleContract> rowKey="id" dataSource={query.data?.items ?? []} loading={query.isLoading}
+    empty={emptyText(query, '回收站里没有合同')} columns={[
+      { title: '合同编号', dataIndex: 'doc_no' }, { title: '合同名称', dataIndex: 'title' },
+      { title: '客户', dataIndex: 'customer_name' }, { title: '原状态', dataIndex: 'status_label' },
+      { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
+      ...(can('order:manage') ? [{ title: '操作', render: (_: unknown, row: RecycleContract) => <a onClick={() => restore.mutate(row.id)}>恢复</a> }] : []),
+    ]} pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true, onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} /></SectionCard>
+}
+
 export default function RecycleBinPage() {
   const { can } = usePermissions()
 
@@ -663,6 +715,8 @@ export default function RecycleBinPage() {
         can('lead:view') ? { tab: '线索', itemKey: 'leads' } : null,
         can('product:view') ? { tab: '产品', itemKey: 'products' } : null,
         can('customer:view') ? { tab: '客户', itemKey: 'customers' } : null,
+        can('order:view') ? { tab: '合同', itemKey: 'contracts' } : null,
+        can('sample:view') ? { tab: '样品', itemKey: 'samples' } : null,
       ].filter((item): item is { itemKey: string; tab: string } => item !== null),
     [can],
   )
@@ -687,6 +741,8 @@ export default function RecycleBinPage() {
       {activeKey === 'leads' && <LeadsPanel />}
       {activeKey === 'products' && <ProductsPanel />}
       {activeKey === 'customers' && <CustomersPanel />}
+      {activeKey === 'contracts' && <ContractsPanel />}
+      {activeKey === 'samples' && <SamplesPanel />}
     </div>
   )
 }

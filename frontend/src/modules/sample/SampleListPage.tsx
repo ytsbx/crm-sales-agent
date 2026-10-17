@@ -340,7 +340,8 @@ export default function SampleListPage() {
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteSample(id),
     onSuccess: () => {
-      Toast.success('样品申请已删除，可在「已删除」里恢复')
+      Toast.success('样品申请已移入回收站，可在“回收站 → 样品”中恢复')
+      void queryClient.invalidateQueries({ queryKey: ['recycle', 'samples'] })
       void refresh()
     },
     onError,
@@ -700,9 +701,10 @@ export default function SampleListPage() {
             </Button>
             {/* 能不能删由后端下发（`can_delete`）：只有还没走流程的（待审批 / 已驳回）
                 才给「删除」—— 已批准之后的单子连着审批留痕与车间依据。判据别在前端再写一份。 */}
+            {canManage && !record.can_delete && <span title="已提交钉钉或已进入制作、寄送流程的样品不能直接删除"><Button theme="borderless" size="small" disabled>删除</Button></span>}
             {canManage && record.can_delete && (
               <Popconfirm
-                title="删除后这张打样单不在列表里显示，可在「已删除」里恢复。"
+                title="这张打样单将移入回收站，可在“回收站 → 样品”中恢复。"
                 onConfirm={() => deleteMutation.mutate(record.id)}
               >
                 <Button theme="borderless" size="small" type="danger">
