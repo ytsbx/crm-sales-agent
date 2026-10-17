@@ -163,6 +163,25 @@ async def test_polling_only_maps_standalone_sample_terminal_result(monkeypatch):
     assert rows[0].result['payload']['result']=='agree'
 
 @pytest.mark.anyio
+async def test_polling_maps_withdrawn_sample_to_rejected_resubmittable_state(monkeypatch):
+    from app.core.config import settings
+    from app.modules.dingtalk import service as service
+    from app.modules.dingtalk.model import OaInstance
+    monkeypatch.setattr(settings,'dingtalk_push_off',False)
+    own=Obj(id=7,version=1,status='pending',deleted_at=None,approved_at=None,reject_reason=None,
+            source_context={'dingtalk_oa':{'mode':'standalone','submitted':True}})
+    row=OaInstance(id=1,inquiry_id=7,inquiry_version=1,oa_type='sample',instance_id='A',status='pending')
+    async def get(model,pk,**_): return own
+    session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:[row]))),get=get,flush=AsyncMock())
+    monkeypatch.setattr(service,'get_client',lambda:Obj(get_process_instance=AsyncMock(return_value={
+        'status':'TERMINATED','operationRecords':[{'type':'TERMINATE_PROCESS_INSTANCE'}],
+    })))
+    await service.sync_pending_instances(session)
+    assert row.status=='withdrawn'
+    assert own.status=='rejected'
+    assert '撤回' in own.reject_reason
+
+@pytest.mark.anyio
 async def test_same_numeric_id_cannot_mix_inquiry_and_sample_approvals(monkeypatch):
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session

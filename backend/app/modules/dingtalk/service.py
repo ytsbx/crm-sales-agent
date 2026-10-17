@@ -968,10 +968,17 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
             changed += 1
         if linked_sample is not None and linked_sample.deleted_at is None and int(linked_sample.version or 1)==row.inquiry_version:
             meta=(linked_sample.source_context or {}).get('dingtalk_oa') or {}
-            if meta.get('mode')=='standalone' and meta.get('submitted') and linked_sample.status=='pending' and new_status in ('approved','rejected'):
-                linked_sample.status=new_status
+            if meta.get('mode')=='standalone' and meta.get('submitted') and linked_sample.status=='pending' and new_status in ('approved','rejected','withdrawn'):
+                # 样品主表没有单独的 withdrawn 状态；钉钉撤回后按“已拒绝/可重新提交”
+                # 处理，避免 CRM 继续显示“待审批”并把撤回单当成仍在流转。
+                linked_sample.status='rejected' if new_status=='withdrawn' else new_status
                 linked_sample.approved_at=datetime.now(UTC)
-                linked_sample.reject_reason='钉钉打样审批已拒绝，处理意见见钉钉审批记录' if new_status=='rejected' else None
+                linked_sample.reject_reason=(
+                    '钉钉打样审批已撤回，可重新提交；详情见钉钉审批记录'
+                    if new_status=='withdrawn' else
+                    '钉钉打样审批已拒绝，处理意见见钉钉审批记录'
+                    if new_status=='rejected' else None
+                )
         if linked_contract is not None and linked_contract.deleted_at is None:
             old_meta = (linked_contract.filled_data or {}).get('_dingtalk_oa') or {}
             linked_contract.filled_data = {
