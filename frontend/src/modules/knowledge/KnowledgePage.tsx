@@ -19,7 +19,7 @@ import {
 
 import type { FileItem } from '@douyinfe/semi-ui/lib/es/upload/interface'
 import { listBusinessFiles, uploadFile } from '../../shared/api/file'
-import { approvalProgress } from './approval-progress'
+import { approvalProgress, formatApprovalTime } from './approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { parseOptionalNumber } from '../../shared/number-input'
@@ -1194,7 +1194,7 @@ export default function KnowledgePage() {
             const progress = approvalProgress(row.result)
             return <div style={{ padding: 12, minWidth: 0 }}>
               <div style={{ marginBottom: 10 }}>审批在钉钉处理，以下为最近同步的过程。
-                最近同步：{row.synced_at ? new Date(row.synced_at).toLocaleString('zh-CN') : '尚未同步'}
+                最近同步：{row.synced_at ? formatApprovalTime(row.synced_at) : '尚未同步'}
               </div>
               {progress.length ? <Table dataSource={progress.map((entry, index) => ({ ...entry, key: index }))}
                 rowKey="key" pagination={false} scroll={{ x: 650 }} columns={[
@@ -1203,8 +1203,7 @@ export default function KnowledgePage() {
                   { title: '节点 / 操作', dataIndex: 'node', width: 150 },
                   { title: '状态 / 结果', dataIndex: 'status', width: 130 },
                   { title: '时间', dataIndex: 'time', width: 180, render: (value: string | null) => {
-                    const date = value ? new Date(value) : null
-                    return date && !Number.isNaN(date.getTime()) ? date.toLocaleString('zh-CN') : '未返回'
+                    return formatApprovalTime(value).replace('尚未返回', '未返回')
                   } },
                   { title: '处理意见', dataIndex: 'remark', render: (value: string) => value || '—' },
                 ]} /> : <div>钉钉尚未返回节点或操作记录，稍后再查看；最终结果以本轮审批总状态为准。</div>}

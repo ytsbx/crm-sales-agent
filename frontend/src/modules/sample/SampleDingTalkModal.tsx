@@ -8,7 +8,7 @@ import { api } from '../../shared/api/client'
 import { type OaApprovalInstance, withdrawOaInstance } from '../../shared/api/dingtalk'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { AdoptOaInstanceModal, ResolveOaActions } from '../../shared/components/ResolveOaActions'
-import { approvalProgress } from '../knowledge/approval-progress'
+import { approvalProgress, formatApprovalTime } from '../knowledge/approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 import FormLabel from '../../shared/components/FormLabel'
 
@@ -19,7 +19,7 @@ interface Options {
   fields: Array<{id:string;label:string;type:string;required:boolean;system:boolean;options:string[];format?:string}>
   draft: Partial<Draft>; candidates: Array<{id:number;label:string}>; records: OaApprovalInstance[]
 }
-const time = (value: string | null | undefined) => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString('zh-CN') : '尚未返回'
+const time = formatApprovalTime
 
 /** 表单里一格：**字段名在上、控件在下**，宽度由外层网格决定。
  *

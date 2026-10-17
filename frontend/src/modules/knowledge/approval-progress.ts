@@ -22,6 +22,11 @@ const STATES: Record<string, string> = {
 const obj = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const str = (value: unknown) => typeof value === 'string' ? value : ''
 const rows = (value: unknown) => Array.isArray(value) ? value.map(obj) : []
+export const formatApprovalTime = (value: string | null | undefined) => {
+  if (!value) return '尚未返回'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '尚未返回' : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+}
 export function approvalProgress(result: unknown): ApprovalProgressEntry[] {
   const payload = obj(obj(result).payload)
   const operations = rows(payload.operationRecords)
