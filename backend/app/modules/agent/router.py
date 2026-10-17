@@ -1,5 +1,6 @@
 """Sales Agent 接口（对齐 03-API §37）。"""
 
+import asyncio
 import json
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -171,7 +172,7 @@ async def get_session_detail(
                 if m.role != "tool"
             ],
             "actions": [
-                {**runtime.serialize_action(a), "display": await runtime.action_display(session, a)}
+                {**runtime.serialize_action(a), "display": await runtime.action_display(session, a, user=user)}
                 for a in actions
             ],
         }
@@ -210,9 +211,13 @@ async def send_message(
     session: AsyncSession = Depends(get_db),
 ):
     row = await _get_session(session, session_id, user.id)
-    result = await runtime.run_turn(
-        session, agent_session=row, user=user, text=payload.content
-    )
+    try:
+        async with asyncio.timeout(90):
+            result = await runtime.run_turn(
+                session, agent_session=row, user=user, text=payload.content
+            )
+    except TimeoutError as exc:
+        raise AppError(ErrorCode.SYSTEM_ERROR, runtime.model_error_message(exc), 504) from exc
     return ok(result)
 
 
@@ -270,7 +275,7 @@ async def get_action(
             **runtime.serialize_action(action),
             "status_label": ACTION_STATUS_LABEL.get(action.status, action.status),
             "risk_label": RISK_LABEL.get(action.risk_level, action.risk_level),
-            "display": await runtime.action_display(session, action),
+            "display": await runtime.action_display(session, action, user=user),
         }
     )
 
@@ -413,12 +418,13 @@ async def stream_message(
     async def event_stream():
         yield _sse("start", {"session_id": session_id})
         try:
-            async for kind, data in runtime.run_turn_events(
-                session, agent_session=row, user=user, text=payload.content
-            ):
-                yield _sse(kind, data)
+            async with asyncio.timeout(90):
+                async for kind, data in runtime.run_turn_events(
+                    session, agent_session=row, user=user, text=payload.content
+                ):
+                    yield _sse(kind, data)
         except Exception as exc:  # 流已经开了，500 发不出去；把原因作为最后一个事件告诉前端
-            yield _sse("error", {"message": str(exc)})
+            yield _sse("error", {"message": exc.message if isinstance(exc, AppError) else runtime.model_error_message(exc)})
 
     return StreamingResponse(
         event_stream(),
@@ -456,7 +462,7 @@ async def list_actions(
         {
             **runtime.serialize_action(row),
             "status_label": ACTION_STATUS_LABEL.get(row.status, row.status),
-            "display": await runtime.action_display(session, row),
+            "display": await runtime.action_display(session, row, user=user),
         }
         for row in rows
     ]
@@ -584,6 +590,11 @@ async def list_tools(
 # 永远可用、可测试；模型只负责多给一段人话叙述。
 # 详见 insights.py 的模块说明。
 
+def _ensure_analysis_permissions(user: CurrentUser, *permissions: str) -> None:
+    if 'admin' not in user.roles and any(not user.has(code) for code in permissions):
+        raise AppError(ErrorCode.FORBIDDEN, '没有相关业务模块的查看权限，无法使用这项 AI 分析', 403)
+
+
 async def _with_commentary(topic: str, payload: dict) -> dict:
     """补上 `commentary` 字段：让模型把已经算好的事实讲成人话。
 
@@ -605,6 +616,7 @@ async def customer_summary(
     session: AsyncSession = Depends(get_db),
 ):
     """客户摘要（03-API §37）。"""
+    _ensure_analysis_permissions(user, "customer:view")
     result = await insights.customer_summary(
         session, user, customer_id=payload.customer_id
     )
@@ -618,6 +630,7 @@ async def opportunity_analysis(
     session: AsyncSession = Depends(get_db),
 ):
     """商机分析（03-API §37）：阶段停留时长、逾期任务、缺失信息。"""
+    _ensure_analysis_permissions(user, "opportunity:view")
     result = await insights.opportunity_analysis(
         session, user, opportunity_id=payload.opportunity_id
     )
@@ -631,6 +644,11 @@ async def product_recommendation(
     session: AsyncSession = Depends(get_db),
 ):
     """产品推荐（03-API §37）：复用商机模块的推荐实现。"""
+    _ensure_analysis_permissions(user, 'product:view')
+    if payload.opportunity_id is not None:
+        _ensure_analysis_permissions(user, 'opportunity:view')
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
     result = await insights.product_recommendation(
         session,
         user,
@@ -648,6 +666,9 @@ async def pricing_analysis(
     session: AsyncSession = Depends(get_db),
 ):
     """核价分析（03-API §37）：把核价结果翻译成可执行的判断。"""
+    _ensure_analysis_permissions(user, 'product:view')
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
     result = await insights.pricing_analysis(
         session,
         user,
@@ -665,6 +686,9 @@ async def quote_draft(
     session: AsyncSession = Depends(get_db),
 ):
     """报价草稿建议（03-API §37）：**只给建议，不落库**。"""
+    _ensure_analysis_permissions(user, 'opportunity:view', 'product:view')
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
     result = await insights.quote_draft(
         session,
         user,
@@ -681,6 +705,10 @@ async def followup_suggestion(
     session: AsyncSession = Depends(get_db),
 ):
     """跟进建议（03-API §37）：规则推出来的，每条都能指向具体事实。"""
+    if payload.customer_id is not None:
+        _ensure_analysis_permissions(user, 'customer:view')
+    if payload.lead_id is not None:
+        _ensure_analysis_permissions(user, 'lead:view')
     result = await insights.followup_suggestion(
         session, user, customer_id=payload.customer_id, lead_id=payload.lead_id
     )
@@ -698,5 +726,6 @@ async def risk_analysis(
     纯统计就能给出"有 3 个节点逾期、合计 12 万、最长 45 天"，
     没配模型也照样能报警 —— 这正是它不该依赖大模型的原因。
     """
+    _ensure_analysis_permissions(user, "payment:view")
     result = await insights.receivable_risk(session, user, order_id=payload.order_id)
     return ok(await _with_commentary("risk-analysis", result))

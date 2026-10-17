@@ -6,6 +6,7 @@
 - 写动作统一走 audit，保证"AI 建议了什么、谁确认、改了什么"可追溯。
 """
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -140,7 +141,7 @@ def ensure_tool_permission(spec: ToolSpec, user: CurrentUser) -> None:
         )
 
 
-def openai_tools() -> list[dict]:
+def openai_tools(user: CurrentUser | None = None) -> list[dict]:
     return [
         {
             "type": "function",
@@ -151,7 +152,30 @@ def openai_tools() -> list[dict]:
             },
         }
         for spec in TOOLS.values()
+        if user is None or not missing_permissions(spec, user)
     ]
+
+
+def validate_tool_arguments(spec: ToolSpec, raw: object) -> dict:
+    """校验当前工具声明的扁平参数；模型输出不能直接作为 Python kwargs 执行。"""
+    if not isinstance(raw, dict):
+        raise AppError(ErrorCode.PARAM_ERROR, '工具参数必须是对象', 422)
+    properties = spec.parameters.get('properties', {})
+    required = set(spec.parameters.get('required', []))
+    if required - raw.keys() or raw.keys() - properties.keys():
+        raise AppError(ErrorCode.PARAM_ERROR, '工具参数缺少必填字段或包含未知字段，请按工具定义重新调用', 422)
+    for key, value in raw.items():
+        rule = properties[key]
+        kind = rule.get('type')
+        valid = (
+            (kind == 'string' and isinstance(value, str))
+            or (kind == 'integer' and type(value) is int)
+            or (kind == 'number' and (type(value) is int or (type(value) is float and math.isfinite(value))))
+            or (kind == 'boolean' and type(value) is bool)
+        )
+        if not valid or ('enum' in rule and value not in rule['enum']):
+            raise AppError(ErrorCode.PARAM_ERROR, '工具参数类型或选项不正确，请按工具定义重新调用', 422)
+    return raw
 
 
 def _money(value) -> float | None:
@@ -559,11 +583,15 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
             .where(OpportunityItem.opportunity_id == opportunity_id)
         )
     ).all()
-    quotes = (
-        await ctx.session.execute(
-            select(Quote).where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None))
+    can_quote = 'admin' in ctx.user.roles or ctx.user.has('quote:view')
+    can_followup = 'admin' in ctx.user.roles or ctx.user.has('followup:view')
+    quotes = []
+    if can_quote:
+        quote_stmt = await _scope(
+            select(Quote).where(Quote.opportunity_id == opportunity_id, Quote.deleted_at.is_(None)),
+            ctx, Quote.owner_id,
         )
-    ).scalars().all()
+        quotes = (await ctx.session.execute(quote_stmt)).scalars().all()
     version_info = []
     for quote in quotes:
         versions = (
@@ -589,14 +617,13 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
                 ],
             }
         )
-    followups = (
-        await ctx.session.execute(
-            select(FollowUp)
-            .where(FollowUp.opportunity_id == opportunity_id)
-            .order_by(FollowUp.id.desc())
-            .limit(5)
+    followups = []
+    if can_followup:
+        followup_stmt = await _scope(
+            select(FollowUp).where(FollowUp.opportunity_id == opportunity_id).order_by(FollowUp.id.desc()).limit(5),
+            ctx, FollowUp.owner_id,
         )
-    ).scalars().all()
+        followups = (await ctx.session.execute(followup_stmt)).scalars().all()
     return {
         "opportunity": {
             "id": opportunity.id,
@@ -621,6 +648,7 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
             }
             for item, code, spec in items
         ],
+        "unavailable_blocks": [label for allowed, label in ((can_quote, '报价（需要 quote:view）'), (can_followup, '跟进记录（需要 followup:view）')) if not allowed],
         "quotes": version_info,
         "recent_followups": [
             {

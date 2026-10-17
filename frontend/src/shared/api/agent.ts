@@ -91,7 +91,7 @@ export function deleteAgentSession(id: number) {
 }
 
 export function sendAgentMessage(sessionId: number, content: string) {
-  return api.post<AgentTurnResult>(`/agent/sessions/${sessionId}/messages`, { content })
+  return api.post<AgentTurnResult>(`/agent/sessions/${sessionId}/messages`, { content }, { timeout: 110000 })
 }
 
 // ---------------------------------------------------------------- 流式对话（token 级打字机）
