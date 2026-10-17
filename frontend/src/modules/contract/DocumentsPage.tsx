@@ -1,3 +1,4 @@
+import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import CustomerApproval, { ApprovalHistory, ContractBasis } from './CustomerApproval'
@@ -340,7 +341,7 @@ export default function DocumentsPage() {
               { title: '到期日', dataIndex: 'expiry_date', width: 110, render: (v: string | null) => v ?? '-' },
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
-              { title: '签署时间', dataIndex: 'signed_at', width: 130, render: (v: string | null) => (v ? new Date(v).toLocaleDateString('zh-CN') : '-') },
+              { title: '签署时间', dataIndex: 'signed_at', width: 130, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
               {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
@@ -755,7 +756,7 @@ export default function DocumentsPage() {
                     )}
                     <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       {Math.max(1, Math.round(row.size / 1024))} KB
-                      {row.attached_at ? ` · 登记于 ${new Date(row.attached_at).toLocaleDateString('zh-CN')}` : ''}
+                      {row.attached_at ? ` · 登记于 ${formatBeijingDate(row.attached_at)}` : ''}
                     </span>
                   </div>
                 ))
@@ -776,7 +777,7 @@ export default function DocumentsPage() {
                         ? '钉钉审批已撤回'
                         : '钉钉审批处理中或需核对，页面将自动更新'}
                   {detail.dingtalk_oa.synced_at
-                    ? ` · 最近同步 ${new Date(detail.dingtalk_oa.synced_at).toLocaleString('zh-CN')}`
+                    ? ` · 最近同步 ${formatBeijingTime(detail.dingtalk_oa.synced_at)}`
                     : ''}
                 </div>
                 {detail.dingtalk_oa.instance_id && canManage && <Button size="small" onClick={async () => {

@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Button, DatePicker, Input, Select, SideSheet, Table, Tag, Typography } from '@douyinfe/semi-ui'
@@ -223,7 +224,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             title: '时间',
             dataIndex: 'created_at',
             width: 170,
-            render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+            render: (v: string) => formatBeijingTime(v),
           },
           {
             title: '操作人',
@@ -289,7 +290,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         {detail && (
           <div style={{ display: 'grid', gap: 12 }}>
             <Typography.Text type="tertiary">
-              {`${new Date(detail.created_at).toLocaleString('zh-CN')} · ${
+              {`${formatBeijingTime(detail.created_at)} · ${
                 detail.operator_name ?? '系统'
               } · ${auditTypeLabel(detail.business_type)}${
                 detail.business_id != null ? ` 编号 ${detail.business_id}` : ''

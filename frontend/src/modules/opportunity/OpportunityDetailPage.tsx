@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -372,7 +373,7 @@ export default function OpportunityDetailPage() {
       render: (value: string | null, record: Task) =>
         value ? (
           <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
-            {new Date(value).toLocaleString('zh-CN')}
+            {formatBeijingTime(value)}
             {record.overdue ? '（已逾期）' : ''}
           </span>
         ) : (
@@ -513,7 +514,7 @@ export default function OpportunityDetailPage() {
                 <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />
                 <DetailField label="下一步动作" value={opportunity.next_action ?? '-'} />
                 <DetailField label="来源" value={opportunity.source ?? '-'} />
-                <DetailField label="创建时间" value={new Date(opportunity.created_at).toLocaleString('zh-CN')} />
+                <DetailField label="创建时间" value={formatBeijingTime(opportunity.created_at)} />
                 {opportunity.status === 'loss' && (
                   <DetailField
                     label="失单原因"
@@ -569,7 +570,7 @@ export default function OpportunityDetailPage() {
               </div>
               <Table<FollowUp>
                 columns={[
-                  { title: '时间', dataIndex: 'created_at', width: 180, render: (v: string) => new Date(v).toLocaleString('zh-CN') },
+                  { title: '时间', dataIndex: 'created_at', width: 180, render: (v: string) => formatBeijingTime(v) },
                   { title: '方式', dataIndex: 'followup_type', width: 100 },
                   { title: '内容', dataIndex: 'content' },
                   { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },

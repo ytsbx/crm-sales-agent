@@ -1,3 +1,4 @@
+import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import SampleDingTalkModal from './SampleDingTalkModal'
 import FormLabel from '../../shared/components/FormLabel'
 import { useEffect, useRef, useState } from 'react'
@@ -123,7 +124,7 @@ function draftPayload(item: ItemDraft): Record<string, unknown> {
 }
 
 function fmt(value?: string | null) {
-  return value ? new Date(value).toLocaleString('zh-CN') : '-'
+  return value ? formatBeijingTime(value) : '-'
 }
 
 /**
@@ -1431,7 +1432,7 @@ export default function SampleListPage() {
                       <div>
                         打样费用：{detail.sample_fee != null ? `¥${detail.sample_fee}` : '未填'}
                       </div>
-                      <div>制作完成：{dash(detail.made_at ? new Date(detail.made_at).toLocaleDateString('zh-CN') : null)}</div>
+                      <div>制作完成：{dash(detail.made_at ? formatBeijingDate(detail.made_at) : null)}</div>
                       {/* 制作依据（第一批返修 §3.5）：这次照哪几份文件做的。
                           三种情况必须分开说（返工单 P2-7）：
                             · 还没登记制作 → 不适用；
@@ -1465,7 +1466,7 @@ export default function SampleListPage() {
                           制作记录：
                           {detail.made_events.map((event, index) => (
                             <div key={event.key ?? index} style={{ marginLeft: 8 }}>
-                              · {event.at ? new Date(event.at).toLocaleDateString('zh-CN') : '—'}
+                              · {event.at ? formatBeijingDate(event.at) : '—'}
                               {event.note ? `：${event.note}` : ''}
                             </div>
                           ))}
@@ -1515,7 +1516,7 @@ export default function SampleListPage() {
                   <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 8 }}>
                     当前：{detail.confirm_status_label}
                     {detail.customer_confirmed_at
-                      ? `（${new Date(detail.customer_confirmed_at).toLocaleDateString('zh-CN')}）`
+                      ? `（${formatBeijingDate(detail.customer_confirmed_at)}）`
                       : ''}
                     ｜客户收到样品不等于样品被接受
                   </div>

@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useRef, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -955,7 +956,7 @@ export default function OrderDetailPage() {
                   title: '时间',
                   dataIndex: 'created_at',
                   width: 190,
-                  render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                  render: (v: string) => formatBeijingTime(v),
                 },
               ]}
               dataSource={statusQuery.data ?? []}
@@ -1175,7 +1176,7 @@ export default function OrderDetailPage() {
                       {row.confirmed_at && (
                         <div style={{ marginTop: 2, color: 'var(--crm-text-3)' }}>
                           由 {row.confirmed_by_name ?? row.confirmed_by} 于{' '}
-                          {new Date(row.confirmed_at).toLocaleString('zh-CN')} 确认
+                          {formatBeijingTime(row.confirmed_at)} 确认
                           {row.confirm_remark ? `（${row.confirm_remark}）` : ''}
                         </div>
                       )}

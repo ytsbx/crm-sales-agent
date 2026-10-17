@@ -1,3 +1,4 @@
+import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -726,7 +727,7 @@ export default function CasesPage() {
                       style={{ display: 'flex', alignItems: 'center', gap: 8 }}
                     >
                       <span style={{ color: 'var(--crm-text-3)' }}>
-                        {event.at ? new Date(event.at).toLocaleDateString('zh-CN') : ''}
+                        {event.at ? formatBeijingDate(event.at) : ''}
                       </span>
                       <span style={{ flex: 1 }}>{event.title}</span>
                       {event.source ? (
@@ -966,7 +967,7 @@ export default function CasesPage() {
                           {round.reviewer_name || '—'}
                         </span>
                         <span style={{ color: 'var(--crm-text-3)' }}>
-                          {round.reviewed_at ? new Date(round.reviewed_at).toLocaleString('zh-CN') : ''}
+                          {round.reviewed_at ? formatBeijingTime(round.reviewed_at) : ''}
                         </span>
                       </div>
                       {round.note && (

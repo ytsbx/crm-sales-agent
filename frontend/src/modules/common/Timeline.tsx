@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { Link } from 'react-router-dom'
 import type { TimelineEvent } from '../../shared/api/followup'
 
@@ -75,7 +76,7 @@ export default function Timeline({
               </Link>
             )}
             <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
-              {event.operator_name} · {new Date(event.at).toLocaleString('zh-CN')}
+              {event.operator_name} · {formatBeijingTime(event.at)}
             </div>
           </div>
         </div>

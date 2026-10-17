@@ -1,3 +1,4 @@
+import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -85,7 +86,7 @@ const ROUND_CONTENT_LABEL: Record<string, string> = {
 
 /** 时间戳转成人看的格式。 */
 function fmtTime(value: string | null): string {
-  return value ? new Date(value).toLocaleString('zh-CN') : '—'
+  return value ? formatBeijingTime(value) : '—'
 }
 
 /** 快照里的值转成能看的字：空值说「未填」，而不是显示 null。 */
@@ -401,7 +402,7 @@ export default function ProductInsightsPage() {
                       title={record.review_note}
                     >
                       {/* ⚠️ 原来是切 ISO 串（UTC 取日） */}
-                      意见：{new Date(record.review_note).toLocaleDateString('zh-CN')}
+                      意见：{formatBeijingDate(record.review_note)}
                       {record.review_note.length > 10 ? '…' : ''}
                     </div>
                   )}

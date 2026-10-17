@@ -8,7 +8,7 @@ import { api } from '../../shared/api/client'
 import { type OaApprovalInstance, withdrawOaInstance } from '../../shared/api/dingtalk'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { AdoptOaInstanceModal, ResolveOaActions } from '../../shared/components/ResolveOaActions'
-import { approvalProgress, formatApprovalTime } from '../knowledge/approval-progress'
+import { approvalProgress, formatApprovalTime, formatApprovalEventTime } from '../knowledge/approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 import FormLabel from '../../shared/components/FormLabel'
 
@@ -237,7 +237,7 @@ export default function SampleDingTalkModal({sampleId,onClose}:{sampleId:number;
         {row.error&&<div style={{color:'var(--crm-error)'}}>{row.error}</div>}
         <Table dataSource={approvalProgress(row.result).map((r,index)=>({...r,key:index}))} rowKey="key" pagination={false} scroll={{x:700}}
           columns={[{title:'处理人',dataIndex:'person',width:180},{title:'节点/操作',dataIndex:'node',width:150},{title:'状态',dataIndex:'status',width:130},
-            {title:'时间',dataIndex:'time',width:180,render:time},{title:'处理意见',dataIndex:'remark'}]}/>
+            {title:'时间',dataIndex:'time',width:180,render:formatApprovalEventTime},{title:'处理意见',dataIndex:'remark'}]}/>
         {/* 「结果待人工核对」的三个出口（认领/重发/作废）。按钮由服务端的
             allowed_actions 决定 —— 打样这条链原先一个都没有，超时后单据彻底卡死。 */}
         <div style={{marginTop:8,display:'flex',gap:12}}>

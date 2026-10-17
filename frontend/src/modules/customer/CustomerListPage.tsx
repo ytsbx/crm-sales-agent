@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
 import { useRef, useState, type ComponentProps } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
@@ -421,7 +422,7 @@ export default function CustomerListPage() {
       title: '创建时间',
       dataIndex: 'created_at',
       width: 170,
-      render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+      render: (v: string) => formatBeijingTime(v),
     },
   ]
 

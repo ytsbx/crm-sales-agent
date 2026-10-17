@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState, type ComponentProps } from 'react'
 import {
   ConfirmRequiredModal,
@@ -499,7 +500,7 @@ function VersionDrawer({ rule, onClose }: { rule: ApprovalRuleRow | null; onClos
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>V{version.version_no}</span>
               <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                {new Date(version.published_at).toLocaleString('zh-CN')}
+                {formatBeijingTime(version.published_at)}
                 {version.is_current && <Tag color="cyan" size="small" style={{ marginLeft: 8 }}>当前生效</Tag>}
               </span>
             </div>

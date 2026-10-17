@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -421,7 +422,7 @@ export default function ProductDetailPage() {
       title: '来源更新时间',
       width: 150,
       render: (_: unknown, record: SkuMasterField) =>
-        record.source_updated_at ? new Date(record.source_updated_at).toLocaleString('zh-CN') : '—',
+        record.source_updated_at ? formatBeijingTime(record.source_updated_at) : '—',
     },
     {
       title: '权威归属',
@@ -654,7 +655,7 @@ export default function ProductDetailPage() {
           <>
             <span>品牌：{product.brand ?? '-'}</span>
             <span>SKU 数：{product.sku_count}</span>
-            <span>创建时间：{new Date(product.created_at).toLocaleString('zh-CN')}</span>
+            <span>创建时间：{formatBeijingTime(product.created_at)}</span>
           </>
         }
         extra={

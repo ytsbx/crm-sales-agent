@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevelLabel } from '../../shared/customer-level'
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -619,7 +620,7 @@ export default function CustomerDetailPage() {
                 label="最近跟进"
                 value={
                   customer.last_followup_at
-                    ? new Date(customer.last_followup_at).toLocaleString('zh-CN')
+                    ? formatBeijingTime(customer.last_followup_at)
                     : '-'
                 }
               />
@@ -627,7 +628,7 @@ export default function CustomerDetailPage() {
                 label="最近业务进展"
                 value={
                   customer.last_progress_at
-                    ? new Date(customer.last_progress_at).toLocaleString('zh-CN')
+                    ? formatBeijingTime(customer.last_progress_at)
                     : '-'
                 }
               />
@@ -635,7 +636,7 @@ export default function CustomerDetailPage() {
                 label="约定下次跟进"
                 value={
                   customer.next_followup_at
-                    ? `${new Date(customer.next_followup_at).toLocaleString('zh-CN')}${
+                    ? `${formatBeijingTime(customer.next_followup_at)}${
                         new Date(customer.next_followup_at).getTime() < Date.now()
                           ? '（已到约定时间）'
                           : ''
@@ -775,13 +776,13 @@ export default function CustomerDetailPage() {
                     title: '时间',
                     dataIndex: 'created_at',
                     width: 180,
-                    render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                    render: (v: string) => formatBeijingTime(v),
                   },
                   { title: '方式', dataIndex: 'followup_type', width: 100 },
                   { title: '内容', dataIndex: 'content' },
                   { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },
                   { title: '下一步', dataIndex: 'next_action', render: (v: string | null, row: FollowUp) => v ?? (({ customer_declined: '客户明确拒绝', business_closed: '业务已关闭', waiting_external: '等待外部固定节点' } as Record<string, string>)[row.exemption_reason ?? ''] ?? '-') },
-                  { title: '记录时约定', dataIndex: 'task_due_at', width: 170, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+                  { title: '记录时约定', dataIndex: 'task_due_at', width: 170, render: (v: string | null) => v ? formatBeijingTime(v) : '-' },
                   {
                     title: '附件',
                     width: 90,

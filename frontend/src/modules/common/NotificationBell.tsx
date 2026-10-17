@@ -1,3 +1,4 @@
+import { formatBeijingTime, formatBeijingClock } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -172,7 +173,7 @@ export default function NotificationBell() {
               flexWrap: 'wrap',
             }}
           >
-            <span>{new Date(item.created_at).toLocaleString('zh-CN')}</span>
+            <span>{formatBeijingTime(item.created_at)}</span>
             {item.wecom_status === 'failed' && (
               <Tag color="red" type="light" size="small">
                 企微投递失败
@@ -222,7 +223,7 @@ export default function NotificationBell() {
               {item.wecom_error || (item.wecom_status === 'failed' ? '投递失败' : '未投递')}
               {item.wecom_status === 'failed' &&
                 (item.wecom_next_retry_at
-                  ? `（${new Date(item.wecom_next_retry_at).toLocaleTimeString('zh-CN')} 自动重试，已试 ${item.wecom_attempts ?? 0} 次）`
+                  ? `（${formatBeijingClock(item.wecom_next_retry_at)} 自动重试，已试 ${item.wecom_attempts ?? 0} 次）`
                   : `（已试 ${item.wecom_attempts ?? 0} 次，不再自动重试）`)}
             </div>
           )}

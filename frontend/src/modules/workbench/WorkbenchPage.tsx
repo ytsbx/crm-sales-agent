@@ -1,3 +1,4 @@
+import { formatBeijingDate, formatBeijingClock, formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -37,7 +38,7 @@ const PRIORITY_LABEL: Record<string, string> = { high: '高优先级', normal: '
 const money = (value?: number) => `¥${Math.round(value ?? 0).toLocaleString('zh-CN')}`
 
 function greeting() {
-  const hour = new Date().getHours()
+  const hour = Number(formatBeijingClock(new Date(), { hour: '2-digit' }))
   if (hour < 6) return '凌晨好'
   if (hour < 12) return '早上好'
   if (hour < 14) return '中午好'
@@ -115,8 +116,7 @@ export default function WorkbenchPage() {
   const today = new Date()
   const todayTasks = tasks.filter((task) => {
     if (!task.due_at) return false
-    const due = new Date(task.due_at)
-    return due.toDateString() === today.toDateString()
+    return formatBeijingDate(task.due_at) === formatBeijingDate(today)
   })
 
   // 待跟进客户清单抽屉（审查指出：卡片只报数、看不到是哪几个）
@@ -221,7 +221,7 @@ export default function WorkbenchPage() {
           </div>
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13, marginTop: 6 }}>
             这里是您今天的工作概览 ·{' '}
-            {today.toLocaleDateString('zh-CN', {
+            {formatBeijingDate(today, {
               year: 'numeric',
               month: 'long',
               day: 'numeric',
@@ -231,7 +231,7 @@ export default function WorkbenchPage() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            数据同步时间：{new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+            数据同步时间：{formatBeijingClock(new Date(), { hour: '2-digit', minute: '2-digit' })}
           </span>
           <Button
             icon={<IconRefresh />}
@@ -516,7 +516,7 @@ export default function WorkbenchPage() {
                     <span style={{ fontWeight: 600 }}>{row.operator}</span> {row.title}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--crm-text-3)', marginTop: 2 }}>
-                    {new Date(row.at).toLocaleString('zh-CN', {
+                    {formatBeijingTime(row.at, {
                       month: 'numeric',
                       day: 'numeric',
                       hour: '2-digit',
@@ -597,7 +597,7 @@ export default function WorkbenchPage() {
                     </span>
                     {task.due_at && (
                       <span style={{ fontSize: 12, color: task.overdue ? 'var(--crm-error)' : 'var(--crm-text-3)' }}>
-                        {new Date(task.due_at).toLocaleString('zh-CN', {
+                        {formatBeijingTime(task.due_at, {
                           month: 'numeric',
                           day: 'numeric',
                           hour: '2-digit',
@@ -673,7 +673,7 @@ export default function WorkbenchPage() {
                 <IconCalendar /> 今日日程 ({todayTasks.length})
               </span>
               <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                {today.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}
+                {formatBeijingDate(today, { month: '2-digit', day: '2-digit' })}
               </span>
             </div>
             <div style={{ display: 'grid', gap: 8 }}>
@@ -689,7 +689,7 @@ export default function WorkbenchPage() {
                 >
                   <span style={{ color: 'var(--crm-primary)', marginRight: 8 }}>
                     {task.due_at
-                      ? new Date(task.due_at).toLocaleTimeString('zh-CN', {
+                      ? formatBeijingClock(task.due_at, {
                           hour: '2-digit',
                           minute: '2-digit',
                         })
@@ -821,7 +821,7 @@ export default function WorkbenchPage() {
                     ? ` · 主联系人：${row.contact_name}${row.contact_phone ? `（${row.contact_phone}）` : ''}`
                     : ''}
                   {row.next_followup_at
-                    ? ` · 约定下次跟进：${new Date(row.next_followup_at).toLocaleDateString('zh-CN')}`
+                    ? ` · 约定下次跟进：${formatBeijingDate(row.next_followup_at)}`
                     : ''}
                 </div>
               </div>

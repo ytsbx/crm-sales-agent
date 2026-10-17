@@ -1,3 +1,4 @@
+import { formatBeijingTime, formatDingTalkTime } from '../../shared/beijing-time'
 /** 钉钉返回的已同步快照；不推测尚未返回的未来节点，不把节点通过当整单通过。 */
 export interface ApprovalProgressEntry {
   kind: 'task' | 'operation'
@@ -24,8 +25,12 @@ const str = (value: unknown) => typeof value === 'string' ? value : ''
 const rows = (value: unknown) => Array.isArray(value) ? value.map(obj) : []
 export const formatApprovalTime = (value: string | null | undefined) => {
   if (!value) return '尚未返回'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '尚未返回' : date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+  const text = formatBeijingTime(value)
+  return text === '-' ? '尚未返回' : text
+}
+export const formatApprovalEventTime = (value: string | null | undefined) => {
+  const text = formatDingTalkTime(value)
+  return text === '-' ? '尚未返回' : text
 }
 export function approvalProgress(result: unknown): ApprovalProgressEntry[] {
   const payload = obj(obj(result).payload)

@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
@@ -191,7 +192,7 @@ export default function LogisticsPage() {
       title: '创建时间',
       dataIndex: 'created_at',
       width: 170,
-      render: (value: string | null) => (value ? new Date(value).toLocaleString('zh-CN') : '-'),
+      render: (value: string | null) => (value ? formatBeijingTime(value) : '-'),
     },
   ]
 

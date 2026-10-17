@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import PersonalAccountPanel from './PersonalAccountPanel'
 import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
@@ -73,11 +74,7 @@ const TABS = [
 
 /** 时间显示成"2026-10-06 12:30"（回收复核要看具体哪天）。空值给个短横。 */
 function fmtDay(value: string | null | undefined): string {
-  if (!value) return '-'
-  const at = new Date(value)
-  if (Number.isNaN(at.getTime())) return String(value).slice(0, 16).replace('T', ' ')
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`
+  return formatBeijingTime(value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 export default function SettingsPage() {

@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Popconfirm, Table, Tag, Toast } from '@douyinfe/semi-ui'
@@ -300,7 +301,7 @@ export default function AttachmentPanel({
             title: '上传时间',
             dataIndex: 'created_at',
             width: 190,
-            render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+            render: (v: string) => formatBeijingTime(v),
           },
           {
             title: '存储',

@@ -1,3 +1,4 @@
+import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Empty, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
@@ -510,7 +511,7 @@ export default function WeComPage() {
                   <span style={{ color: 'var(--crm-text-3)', minWidth: 84 }}>同步时间</span>
                   <span>
                     {active.last_sync_at
-                      ? new Date(active.last_sync_at).toLocaleString('zh-CN')
+                      ? formatBeijingTime(active.last_sync_at)
                       : '-'}
                   </span>
                 </div>
@@ -535,7 +536,7 @@ export default function WeComPage() {
                         <span>{follower.name || '姓名待同步'}</span>
                         <span style={{ color: 'var(--crm-text-3)', marginLeft: 'auto' }}>
                           {follower.add_time
-                            ? new Date(follower.add_time).toLocaleDateString('zh-CN')
+                            ? formatBeijingDate(follower.add_time)
                             : '-'}
                           {follower.add_way ? ` · ${follower.add_way}` : ''}
                         </span>
@@ -648,7 +649,7 @@ export default function WeComPage() {
               title: '开始时间',
               dataIndex: 'started_at',
               width: 180,
-              render: (value: string) => new Date(value).toLocaleString('zh-CN'),
+              render: (value: string) => formatBeijingTime(value),
             },
             {
               title: '错误信息',

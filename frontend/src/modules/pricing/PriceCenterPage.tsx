@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -1739,7 +1740,7 @@ export default function PriceCenterPage() {
                     title: '时间',
                     dataIndex: 'created_at',
                     width: 170,
-                    render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                    render: (v: string) => formatBeijingTime(v),
                   },
                   {
                     title: '类型',

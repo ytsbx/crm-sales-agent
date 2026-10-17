@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 /**
  * 回收站。
  *
@@ -40,7 +41,7 @@ import {
   type RemovedVia,
 } from '../../shared/api/recycle'
 
-const fmt = (value: string | null) => (value ? new Date(value).toLocaleString('zh-CN') : '-')
+const fmt = (value: string | null) => (value ? formatBeijingTime(value) : '-')
 
 /** 分页参数：四个分区共用一套写法，各存各的页码。 */
 function usePageSize(initial = 10) {

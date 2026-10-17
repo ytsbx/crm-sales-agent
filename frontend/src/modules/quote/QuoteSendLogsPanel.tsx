@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useQuery } from '@tanstack/react-query'
 import { Empty, Table, Tag } from '@douyinfe/semi-ui'
 
@@ -66,7 +67,7 @@ export default function QuoteSendLogsPanel({
             render: (value: string) => (value ? // ⚠️ 原来是切 ISO 串 —— `sent_at` 是 UTC 瞬时，切片等于按 UTC 显示，
                 // 比北京时间早 8 小时、跨零点显示成前一天；而同一页的审批记录
                 // 用的是 toLocaleString，两种口径同屏并列。
-                new Date(value).toLocaleString('zh-CN') : '-'),
+                formatBeijingTime(value) : '-'),
           },
           {
             title: '渠道',

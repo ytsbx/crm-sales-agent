@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link } from 'react-router-dom'
@@ -226,7 +227,7 @@ export default function TaskListPage() {
       render: (value: string | null, record: Task) =>
         value ? (
           <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
-            {new Date(value).toLocaleString('zh-CN')}
+            {formatBeijingTime(value)}
             {record.overdue ? '（已逾期）' : ''}
           </span>
         ) : (

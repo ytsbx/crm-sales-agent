@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { cloneElement, useState, type ReactElement } from 'react'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -1665,7 +1666,7 @@ export default function QuoteDetailPage() {
                 title: '时间',
                 dataIndex: 'created_at',
                 width: 190,
-                render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+                render: (v: string) => formatBeijingTime(v),
               },
             ]}
             dataSource={detail.approval.records}

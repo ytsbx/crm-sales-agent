@@ -1,3 +1,4 @@
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -19,7 +20,7 @@ import {
 
 import type { FileItem } from '@douyinfe/semi-ui/lib/es/upload/interface'
 import { listBusinessFiles, uploadFile } from '../../shared/api/file'
-import { approvalProgress, formatApprovalTime } from './approval-progress'
+import { approvalProgress, formatApprovalTime, formatApprovalEventTime } from './approval-progress'
 import AttachmentPanel from '../common/AttachmentPanel'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { parseOptionalNumber } from '../../shared/number-input'
@@ -543,7 +544,7 @@ export default function KnowledgePage() {
       title: '记录时间',
       dataIndex: 'created_at',
       width: 160,
-      render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+      render: (v: string) => formatBeijingTime(v),
     },
     {
       title: '操作',
@@ -1017,7 +1018,7 @@ export default function KnowledgePage() {
               title: '时间',
               dataIndex: 'created_at',
               width: 150,
-              render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+              render: (v: string) => formatBeijingTime(v),
             },
           ]}
           dataSource={historyQuery.data ?? []}
@@ -1203,7 +1204,7 @@ export default function KnowledgePage() {
                   { title: '节点 / 操作', dataIndex: 'node', width: 150 },
                   { title: '状态 / 结果', dataIndex: 'status', width: 130 },
                   { title: '时间', dataIndex: 'time', width: 180, render: (value: string | null) => {
-                    return formatApprovalTime(value).replace('尚未返回', '未返回')
+                    return formatApprovalEventTime(value).replace('尚未返回', '未返回')
                   } },
                   { title: '处理意见', dataIndex: 'remark', render: (value: string) => value || '—' },
                 ]} /> : <div>钉钉尚未返回节点或操作记录，稍后再查看；最终结果以本轮审批总状态为准。</div>}

@@ -1,3 +1,4 @@
+import { formatDingTalkTime } from '../../shared/beijing-time'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Input, Modal, Toast } from '@douyinfe/semi-ui'
@@ -79,7 +80,7 @@ export function ApprovalHistory({ result }: { result: Record<string, unknown> })
   const payload = (result.payload || {}) as Record<string, unknown>
   const tasks = Array.isArray(payload.tasks) ? payload.tasks as Record<string, unknown>[] : []
   const records = Array.isArray(payload.operationRecords) ? payload.operationRecords as Record<string, unknown>[] : []
-  const time = (value: unknown) => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN') : ''
+  const time = (value: unknown) => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? formatDingTalkTime(value) : ''
   const person = (row: Record<string, unknown>) => String(row.userName || row.staffName || '钉钉未返回处理人姓名')
   return <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
     <b>审批节点</b>
