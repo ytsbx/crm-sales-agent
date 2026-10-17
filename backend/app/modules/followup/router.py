@@ -355,8 +355,12 @@ async def list_opportunity_followups(
     await opportunity_service.get_visible_opportunity(session, user, opportunity_id)
     rows = (
         await session.execute(
-            select(FollowUp)
-            .where(FollowUp.opportunity_id == opportunity_id)
+            select(FollowUp).where(
+                FollowUp.opportunity_id == opportunity_id,
+                # 系统记录可能包含报价金额、审批过程等敏感内容；商机可见不等于
+                # 来源报价可见。普通人工跟进仍按商机范围保留协作可见性。
+                await followup_visibility_filter(session, user),
+            )
             .order_by(FollowUp.id.desc())
         )
     ).scalars().all()

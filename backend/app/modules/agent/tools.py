@@ -619,9 +619,18 @@ async def get_opportunity_detail(ctx: ToolContext, opportunity_id: int) -> dict:
         )
     followups = []
     if can_followup:
-        followup_stmt = await _scope(
-            select(FollowUp).where(FollowUp.opportunity_id == opportunity_id).order_by(FollowUp.id.desc()).limit(5),
-            ctx, FollowUp.owner_id,
+        # 跟进记录的负责人不是来源单据的权限边界。系统过程记录可能带报价金额，
+        # 必须按统一规则检查报价/订单等来源权限；人工跟进仍按商机范围协作可见。
+        from app.modules.followup.visibility import followup_visibility_filter
+
+        followup_stmt = (
+            select(FollowUp)
+            .where(
+                FollowUp.opportunity_id == opportunity_id,
+                await followup_visibility_filter(ctx.session, ctx.user),
+            )
+            .order_by(FollowUp.id.desc())
+            .limit(5)
         )
         followups = (await ctx.session.execute(followup_stmt)).scalars().all()
     return {

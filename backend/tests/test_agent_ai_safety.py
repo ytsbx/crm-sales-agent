@@ -103,6 +103,37 @@ def test_opportunity_detail_does_not_read_other_modules_without_permission(db_se
     assert result['quotes']==[] and result['recent_followups']==[]
     assert len(result['unavailable_blocks'])==2
 
+
+def test_opportunity_detail_hides_system_followup_without_source_permission(db_session):
+    from app.modules.agent.tools import get_opportunity_detail, ToolContext
+    from app.modules.followup.model import FollowUp
+    from app.modules.opportunity.model import Opportunity, OpportunityItem
+    from app.modules.product.model import Sku
+    from app.modules.quote.model import Quote
+    from app.modules.sample.model import SampleRequest
+
+    for model in (Sku, OpportunityItem, FollowUp, Quote, SampleRequest):
+        model.__table__.create(db_session.get_bind(), checkfirst=True)
+    customer = Customer(name="test-source", level="A", status="active", pool_status="private", owner_id=101)
+    db_session.add(customer)
+    db_session.flush()
+    opp = Opportunity(customer_id=customer.id, title="test-source", owner_id=101, stage_id=1, status="open")
+    db_session.add(opp)
+    db_session.flush()
+    quote = Quote(quote_no="Q-SOURCE", customer_id=customer.id, opportunity_id=opp.id, owner_id=101)
+    db_session.add(quote)
+    db_session.flush()
+    db_session.add_all([
+        FollowUp(opportunity_id=opp.id, quote_id=quote.id, customer_id=customer.id,
+                 owner_id=101, followup_type="系统", content="报价金额 9876.54"),
+        FollowUp(opportunity_id=opp.id, customer_id=customer.id,
+                 owner_id=999, followup_type="电话", content="普通沟通记录"),
+    ])
+    db_session.flush()
+    ctx = ToolContext(SyncSessionAsAsync(db_session), make_user(101, permissions={"opportunity:view", "followup:view"}), 1)
+    result = asyncio.run(get_opportunity_detail(ctx, opp.id))
+    assert [row["content"] for row in result["recent_followups"]] == ["普通沟通记录"]
+
 @pytest.mark.anyio
 async def test_failed_agent_action_cannot_be_relabelled_as_cancelled(monkeypatch):
     from app.modules.agent import router
