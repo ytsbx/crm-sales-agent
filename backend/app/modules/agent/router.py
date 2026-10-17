@@ -297,7 +297,7 @@ async def cancel_action(
     那是业务回滚，得走各自的业务接口。
     """
     action = await _get_action(session, action_id, user.id)
-    if action.status in ("executed", "rejected", "cancelled"):
+    if action.status in ("executed", "rejected", "cancelled", "failed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
             f"动作已是「{ACTION_STATUS_LABEL.get(action.status, action.status)}」，不能取消",

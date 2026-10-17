@@ -102,3 +102,13 @@ def test_opportunity_detail_does_not_read_other_modules_without_permission(db_se
     result=asyncio.run(get_opportunity_detail(ctx,opp.id))
     assert result['quotes']==[] and result['recent_followups']==[]
     assert len(result['unavailable_blocks'])==2
+
+@pytest.mark.anyio
+async def test_failed_agent_action_cannot_be_relabelled_as_cancelled(monkeypatch):
+    from app.modules.agent import router
+    action = SimpleNamespace(id=7, status='failed')
+    monkeypatch.setattr(router, '_get_action', AsyncMock(return_value=action))
+    with pytest.raises(AppError) as exc:
+        await router.cancel_action(7, SimpleNamespace(reason='不再处理'), make_user(permissions={'agent:use'}), SimpleNamespace())
+    assert exc.value.http_status == 400
+    assert action.status == 'failed'
