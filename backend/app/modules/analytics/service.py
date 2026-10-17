@@ -1121,8 +1121,8 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     - `won_times` / `lost_times` 已成交 / 已失单商机的需求明细条数
     - `order_won_quantity`     **实际成交数量**：来自 `sales_order_items`（订单事实，
                                不是商机需求行）—— 这才是真卖出去的量
-    - `quote_estimated_profit` **报价预估毛利**：正式报价明细的
-                               `profit_snapshot × quantity` 累计。
+    - `quote_estimated_profit` **报价预估毛利**：每张报价单、每个产品仅取最新正式版本，
+                               该版本全部明细的 `profit_snapshot × quantity` 累计。
                                ⚠️ 名字里必须带"报价/预估"：它不是实际利润
                                （未成交、未回款、成本未回流），叫「利润」会被当成真赚到的钱。
                                无 `price:manage` 的操作人不返回（issue #5：知道报价和利润
@@ -1187,14 +1187,13 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
     ).all()
     quoted: dict[int, dict] = {}
     # 同一报价单的 V1/V2 是修订，不是两次独立报价；正式毛利只取该报价单该产品的最新正式版本。
-    latest_formal: dict[tuple[int, int], tuple[int, float, float]] = {}
+    latest_formal: dict[tuple[int | None, int], int] = {}
     for sku_id, quote_id, version_id, version_no, formal, quantity, profit in quote_rows:
         if formal:
-            key = (int(sku_id), int(quote_id))
-            current = latest_formal.get(key)
-            if current is None or int(version_no or 0) > current[0]:
-                latest_formal[key] = (int(version_no or 0), float(quantity or 0), float(profit or 0))
+            key = (sku_id, quote_id)
+            latest_formal[key] = max(latest_formal.get(key, 0), version_no or 0)
 
+    for sku_id, quote_id, version_id, version_no, formal, quantity, profit in quote_rows:
         acc = quoted.setdefault(
             sku_id,
             {
@@ -1210,7 +1209,8 @@ async def product_stats(session: AsyncSession, user: CurrentUser, limit: int = 1
         if formal:
             acc["formal_times"] += 1
             acc["formal_quotes"].add(quote_id)
-            acc["profit"] += float(profit or 0)
+            if (version_no or 0) == latest_formal[(sku_id, quote_id)]:
+                acc["profit"] += float(profit or 0)
         else:
             acc["draft_times"] += 1
         acc["quantity"] += float(quantity or 0)
