@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import Text, cast, or_, select, update
+from sqlalchemy import BigInteger, Text, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -1626,6 +1626,7 @@ async def pricing_history(
             ("quote", "quote_item", "product_cost", "price_rule", "customer_price_rule")
         )
     )
+    stmt = await _scope_pricing_history(session, user, stmt, AuditLog)
     if sku_id is not None:
         stmt = _filter_history_by_sku(stmt, AuditLog, sku_id)
     if customer_id is not None:
@@ -1689,6 +1690,68 @@ async def pricing_history(
             page_size,
         )
     )
+
+
+async def _scope_pricing_history(session, user, stmt, audit_model):
+    """在分页、计数和摘要反查之前，按原单权限过滤审计记录。
+
+    明细可能已硬删，所以允许从审计快照追溯父单。无法再追溯有效原单的
+    历史仅保留给全量价格管理员；这不能成为查看仍存在的越权原单的通道。
+    """
+    from app.core.data_scope import scoped_owner_ids
+    from app.modules.quote.model import Quote, QuoteItem, QuoteVersion
+
+    owners = await scoped_owner_ids(session, user)
+    is_admin = "admin" in user.roles
+    full_price_manager = owners is None and (is_admin or user.has("price:manage"))
+
+    def source_id(key, model, column):
+        # 只转换快照编号，保留原单主键上的索引；同时兼容旧快照中的字符串编号。
+        current = (select(column).where(model.id == audit_model.business_id)
+                   .correlate(audit_model).scalar_subquery())
+        return func.coalesce(
+            current,
+            cast(audit_model.after_data[key].as_string(), BigInteger),
+            cast(audit_model.before_data[key].as_string(), BigInteger),
+        )
+
+    def allow(kind, source, visible, has_permission):
+        existing = source.correlate(audit_model).exists()
+        permitted = source.where(*visible).correlate(audit_model).exists()
+        condition = permitted if has_permission else False
+        if full_price_manager:
+            condition = or_(condition, ~existing)
+        return (audit_model.business_type == kind) & condition
+
+    quote_scope = [] if owners is None else [Quote.owner_id.in_(owners)]
+    quote_source = select(Quote.id).where(
+        Quote.id == audit_model.business_id, Quote.deleted_at.is_(None)
+    )
+    version_id = source_id("quote_version_id", QuoteItem, QuoteItem.quote_version_id)
+    item_source = (select(Quote.id).join(QuoteVersion, QuoteVersion.quote_id == Quote.id)
+                   .where(QuoteVersion.id == version_id, Quote.deleted_at.is_(None)))
+    customer_id = source_id("customer_id", CustomerPriceRule, CustomerPriceRule.customer_id)
+    customer_source = select(Customer.id).where(
+        Customer.id == customer_id, Customer.deleted_at.is_(None)
+    )
+    customer_scope = [] if owners is None else [
+        or_(Customer.owner_id.is_(None), Customer.owner_id.in_(owners))
+    ]
+    conditions = [
+        allow("quote", quote_source, quote_scope, is_admin or user.has("quote:view")),
+        allow("quote_item", item_source, quote_scope, is_admin or user.has("quote:view")),
+        allow("customer_price_rule", customer_source, customer_scope,
+              is_admin or user.has("customer:view")),
+    ]
+    # 通用成本和价格规则没有负责人，跟随关联产品的可见性；成本快照仍由原有
+    # price:manage 脱敏规则控制，不扩大普通用户的字段权限。
+    for kind, model in (("product_cost", ProductCost), ("price_rule", PriceRule)):
+        sku_id = source_id("sku_id", model, model.sku_id)
+        source = (select(Sku.id).join(Product, Product.id == Sku.product_id)
+                  .where(Sku.id == sku_id,
+                         Sku.deleted_at.is_(None), Product.deleted_at.is_(None)))
+        conditions.append(allow(kind, source, [], is_admin or user.has("product:view")))
+    return stmt.where(or_(*conditions))
 
 
 def _filter_history_by_sku(stmt, audit_model, sku_id: int):
