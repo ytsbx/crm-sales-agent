@@ -12,6 +12,7 @@ import {
 } from '../../shared/components/ConfirmRequiredModal'
 import { emptyText } from '../../shared/hooks/emptyText'
 import {
+  AutoComplete,
   Button,
   DatePicker,
   Input,
@@ -102,6 +103,45 @@ type ItemDraft = {
    *  2026-10-16 主人：申请单上就一格「产品名称」，没有"现货还是定制"这个区分。 */
   item_name?: string
   quantity: string
+}
+
+/** 产品名称随输入写入草稿，已有产品仍可从候选项关联。 */
+function SampleProductName({ item, choices, onChange }: {
+  item: ItemDraft
+  choices: { value: string | number; label: string }[]
+  onChange: (fields: Pick<ItemDraft, 'sku_id' | 'inquiry_id' | 'item_name'>) => void
+}) {
+  const [search, setSearch] = useState('')
+  const selected = item.sku_id ?? (item.inquiry_id ? `custom:${item.inquiry_id}` : undefined)
+  const text = selected === undefined ? item.item_name ?? '' : choices.find((choice) => choice.value === selected)?.label ?? item.item_name ?? ''
+  const typeName = (name: string) => {
+    setSearch(name)
+    onChange({ sku_id: undefined, inquiry_id: undefined, item_name: name })
+  }
+  return <AutoComplete
+    style={{ flex: 1 }}
+    aria-label="产品名称"
+    placeholder="产品名称：能搜到就选，搜不到就直接打字"
+    value={text}
+    data={choices.filter((choice) => optionMatcher(search, choice))}
+    showClear
+    defaultActiveFirstOption={false}
+    onFocus={() => setSearch('')}
+    onSearch={typeName}
+    onClear={() => typeName('')}
+    onSelectWithObject
+    renderSelectedItem={(choice) => choice.label}
+    onSelect={(choice) => {
+      const raw = choice.value
+      setSearch('')
+      onChange({
+        sku_id: typeof raw === 'number' ? raw : undefined,
+        inquiry_id: typeof raw === 'string' ? Number(raw.slice(7)) : undefined,
+        item_name: undefined,
+      })
+    }}
+    emptyContent="将使用输入的产品名称"
+  />
 }
 
 function draftReady(item: ItemDraft): boolean {
@@ -853,37 +893,13 @@ export default function SampleListPage() {
                     那个模式下拉是我们在把自己的数据结构推给业务员。
                     现在：能搜到产品库里的就选（仍关联 SKU）；搜不到就**直接打名字**
                     （当新品，后端有一条"只有名字"的路径，打完样才可能建档）。 */}
-                <Select
-                  style={{ flex: 1 }}
-                  placeholder="产品名称：能搜到就选，搜不到就直接打字"
-                  filter={optionMatcher}
-                  allowCreate
-                  // 允许清空重选；`allowCreate` 让"没搜到"的名字也能落下来
-                  value={
-                    item.sku_id
-                      ? item.sku_id
-                      : item.inquiry_id
-                        ? `custom:${item.inquiry_id}`
-                        : item.item_name
-                          ? item.item_name
-                          : undefined
-                  }
-                  onChange={(value) => {
-                    const raw = value as number | string | undefined
-                    // `custom:<id>` = 选了某条**定制需求**（见 `productChoices`）。
-                    // 那条路保留：从定制需求发起打样时，后端靠它校验客户/商机归属一致。
-                    const custom = typeof raw === 'string' && raw.startsWith('custom:')
-                    const items = [...form.items]
-                    items[index] = {
-                      ...items[index],
-                      // 数字 = 产品库里的某条 → 关联 SKU；`custom:` = 定制需求；其余字符串 = 手填的名字
-                      sku_id: typeof raw === 'number' ? raw : undefined,
-                      inquiry_id: custom ? Number(raw.slice(7)) : undefined,
-                      item_name: typeof raw === 'string' && !custom ? raw : undefined,
-                    }
-                    setForm({ ...form, items })
-                  }}
-                  optionList={productChoices}
+                <SampleProductName
+                  item={item}
+                  choices={productChoices}
+                  onChange={(fields) => setForm((current) => ({
+                    ...current,
+                    items: current.items.map((row, rowIndex) => rowIndex === index ? { ...row, ...fields } : row),
+                  }))}
                 />
                 <Input
                   style={{ width: 96 }}
@@ -1037,31 +1053,10 @@ export default function SampleListPage() {
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   {/* 追加明细同样只用**一个框**（与上面新建时一致，
                       2026-10-16 主人：「我不明白为什么还要选择这个」） */}
-                  <Select
-                    style={{ flex: 1 }}
-                    placeholder="产品名称：能搜到就选，搜不到就直接打字"
-                    filter={optionMatcher}
-                    allowCreate
-                    value={
-                      newItem.sku_id
-                        ? newItem.sku_id
-                        : newItem.inquiry_id
-                          ? `custom:${newItem.inquiry_id}`
-                          : newItem.item_name
-                            ? newItem.item_name
-                            : undefined
-                    }
-                    onChange={(value) => {
-                      const raw = value as number | string | undefined
-                      const custom = typeof raw === 'string' && raw.startsWith('custom:')
-                      setNewItem({
-                        quantity: newItem.quantity,
-                        sku_id: typeof raw === 'number' ? raw : undefined,
-                        inquiry_id: custom ? Number(raw.slice(7)) : undefined,
-                        item_name: typeof raw === 'string' && !custom ? raw : undefined,
-                      })
-                    }}
-                    optionList={productChoices}
+                  <SampleProductName
+                    item={newItem}
+                    choices={productChoices}
+                    onChange={(fields) => setNewItem((current) => ({ ...current, ...fields }))}
                   />
                   <Input
                     style={{ width: 96 }}
