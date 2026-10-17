@@ -1630,18 +1630,9 @@ async def pricing_history(
     if sku_id is not None:
         stmt = _filter_history_by_sku(stmt, AuditLog, sku_id)
     if customer_id is not None:
-        # ⚠️ **不能用 `.astext`**（2026-10-14 审查修，实测 HTTP 500）。
-        # `AuditLog.after_data` 的类型是 `core/base.py` 的
-        # `JSONType = JSON().with_variant(JSONB(), "postgresql")` —— `with_variant`
-        # 只换**方言实现**，比较器仍是通用 `JSON` 的，而 `.astext` 只存在于原生
-        # `JSONB` 的比较器上。于是这行在**构造语句时**就抛
-        # `AttributeError: ... has no attribute 'astext'`（还没连库），
-        # 被全局兜底成 500 —— 任何带 `customer_id` 的调用必崩。
-        # 同文件 `_filter_history_by_sku` 的注释早就写明"走的是项目自己的 JSONType，
-        # 所以没有 `.astext`"，只有这一行漏改；这里与它统一用 cast 走文本匹配。
         stmt = stmt.where(
             (AuditLog.business_type == "customer_price_rule")
-            & cast(AuditLog.after_data, Text).like(f'%"customer_id": {int(customer_id)}%')
+            & _history_snapshot_id_condition(AuditLog, "customer_id", customer_id)
         )
     rows, total = await paginate(session, stmt.order_by(AuditLog.id.desc()), page, page_size)
 
@@ -1754,21 +1745,23 @@ async def _scope_pricing_history(session, user, stmt, audit_model):
     return stmt.where(or_(*conditions))
 
 
-def _filter_history_by_sku(stmt, audit_model, sku_id: int):
-    """按 SKU 过滤核价历史。
+def _history_snapshot_id_condition(audit_model, field: str, value: int):
+    """匹配完整的 JSON 数字编号，兼容顶层字段和明细数组。
 
-    审计日志的 `before_data` / `after_data` 是 JSON 列（不是 PostgreSQL
-    原生 jsonb 类型，走的是项目自己的 JSONType），所以**没有 `.astext`**。
-    统一用 `cast(Text)` 再按文本匹配：
-
-    - 顶层 `sku_id` 用精确串匹配（带引号，避免 1 命中 12）；
-    - 报价单的明细数组里 SKU 在 `items[*].sku_id`，用 LIKE 兜住。
+    原来的 LIKE 没有编号右边界，查 1 会匹配 12、100。数字后必须是逗号
+    或对象结束符；删除等动作可能只有 before 快照，两份都需要检查。
+    沿用现有 JSONType 序列化后的文本格式；PostgreSQL JSONB 文本输出也使用
+    相同分隔符。field 仅由本模块固定字段名调用，模式通过绑定参数传入。
     """
-    key = f'%"sku_id": {sku_id}'  # JSON 序列化后形如 "sku_id": 12
-    return stmt.where(
-        (cast(audit_model.before_data, Text).like(f'%{key}%'))
-        | (cast(audit_model.after_data, Text).like(f'%{key}%'))
+    return or_(
+        *(cast(snapshot, Text).like(f'%"{field}": {int(value)}{ending}%')
+          for snapshot in (audit_model.before_data, audit_model.after_data)
+          for ending in (",", "}"))
     )
+
+
+def _filter_history_by_sku(stmt, audit_model, sku_id: int):
+    return stmt.where(_history_snapshot_id_condition(audit_model, "sku_id", sku_id))
 
 
 async def _history_targets(session: AsyncSession, rows) -> dict[tuple[str, int], dict]:
