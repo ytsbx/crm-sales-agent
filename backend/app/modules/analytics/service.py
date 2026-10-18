@@ -2116,50 +2116,81 @@ async def team_summary(session: AsyncSession, user: CurrentUser) -> dict:
     stale_date = now - timedelta(
         days=int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
     )
-    per_member: list[dict] = []
-    for member in members:
-        todo = (
+    # 按负责人批量聚合，避免成员数 × 4 次查询（团队 50 人时会变成约 200 次）。
+    # 结果按 member_id 建索引，成员没有数据时仍返回 0，保持原接口结构和口径。
+    member_stats: dict[int, dict[str, object]] = {
+        member_id: {"todo": 0, "overdue": 0, "amount": ZERO, "stale": 0}
+        for member_id in member_ids
+    }
+    if member_ids:
+        task_rows = (
             await session.execute(
-                select(func.count(Task.id)).where(
-                    Task.owner_id == member.id, Task.status.in_(["pending", "doing"])
+                select(
+                    Task.owner_id,
+                    func.count(Task.id).label("todo"),
+                    func.sum(
+                        case(
+                            (
+                                Task.due_at < now,
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("overdue"),
                 )
-            )
-        ).scalar_one()
-        overdue = (
-            await session.execute(
-                select(func.count(Task.id)).where(
-                    Task.owner_id == member.id,
-                    Task.due_at < now,
+                .where(
+                    Task.owner_id.in_(member_ids),
                     Task.status.in_(["pending", "doing"]),
                 )
+                .group_by(Task.owner_id)
             )
-        ).scalar_one()
-        amount = (
+        ).all()
+        for owner_id, todo, overdue in task_rows:
+            member_stats[owner_id]["todo"] = int(todo or 0)
+            member_stats[owner_id]["overdue"] = int(overdue or 0)
+
+        won_rows = (
             await session.execute(
-                select(func.coalesce(func.sum(Opportunity.expected_amount), 0)).where(
-                    Opportunity.owner_id == member.id,
+                select(
+                    Opportunity.owner_id,
+                    func.coalesce(func.sum(Opportunity.expected_amount), 0).label("amount"),
+                )
+                .where(
+                    Opportunity.owner_id.in_(member_ids),
                     Opportunity.id.in_(won_ids),
                 )
+                .group_by(Opportunity.owner_id)
             )
-        ).scalar_one()
-        stale = (
+        ).all()
+        for owner_id, amount in won_rows:
+            member_stats[owner_id]["amount"] = amount or ZERO
+
+        stale_rows = (
             await session.execute(
-                select(func.count(Customer.id)).where(
+                select(Customer.owner_id, func.count(Customer.id).label("stale"))
+                .where(
                     Customer.deleted_at.is_(None),
-                    Customer.owner_id == member.id,
+                    Customer.owner_id.in_(member_ids),
                     Customer.pool_status == "private",
                     _customer_stale_clause(stale_date),
                 )
+                .group_by(Customer.owner_id)
             )
-        ).scalar_one()
+        ).all()
+        for owner_id, stale in stale_rows:
+            member_stats[owner_id]["stale"] = int(stale or 0)
+
+    per_member: list[dict] = []
+    for member in members:
+        stats = member_stats[member.id]
         per_member.append(
             {
                 "user_id": member.id,
                 "name": member.name,
-                "todo_count": int(todo),
-                "overdue_count": int(overdue),
-                "won_amount_this_month": _f(amount),
-                "stale_customer_count": int(stale),
+                "todo_count": int(stats["todo"]),
+                "overdue_count": int(stats["overdue"]),
+                "won_amount_this_month": _f(stats["amount"]),
+                "stale_customer_count": int(stats["stale"]),
             }
         )
 
