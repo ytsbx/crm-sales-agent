@@ -109,15 +109,6 @@ export function listContractTemplates() {
   return api.get<ContractTemplate[]>('/contract-templates')
 }
 
-export function createContractTemplate(payload: {
-  doc_type: string
-  name: string
-  body: string
-  enabled?: boolean
-}) {
-  return api.post<ContractTemplate>('/contract-templates', payload)
-}
-
 export function listContractDocuments(
   query: {
     customer_id?: number
