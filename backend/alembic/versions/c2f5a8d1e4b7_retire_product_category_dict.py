@@ -43,7 +43,6 @@ Create Date: 2026-10-15
 - 线上容器库：3 条（已停用），均无产品引用 → 全删。
 """
 from alembic import op
-from sqlalchemy import text
 
 revision = "c2f5a8d1e4b7"
 # 接在样品软删那条迁移之后（当前主干唯一的 head）。本迁移只动字典表的数据，
@@ -57,45 +56,26 @@ RETIRED_CATEGORIES = ["物流器具", "包装箱", "缠绕膜"]
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-
-    # 先看这个库里到底有哪些产品分类字典项，再逐条决定删还是停用。
-    codes = [
-        row[0]
-        for row in bind.execute(
-            text(
-                "select code from dictionary_items "
-                " where type = 'product_category' "
-                " order by sort_no, code"
-            )
-        )
-    ]
-
-    for code in codes:
-        # 只有"没有任何未删除产品引用这个 code"时才真的删掉。
-        deleted = bind.execute(
-            text(
-                "delete from dictionary_items "
-                " where type = 'product_category' and code = :code "
-                "   and not exists ( "
-                "       select 1 from products p "
-                "        where p.deleted_at is null and p.category = :code "
-                "   )"
-            ),
-            {"code": code},
-        ).rowcount
-
-        if not deleted:
-            # 有产品在引用：退而求其次，只停用，保住引用链不悬空。
-            bind.execute(
-                text(
-                    "update dictionary_items "
-                    "   set enabled = false, "
-                    "       remark = '产品分类已改为产品页直接填写，此字典项退役停用' "
-                    " where type = 'product_category' and code = :code"
-                ),
-                {"code": code},
-            )
+    # 用集合 SQL 表达原先逐条查询/删除/停用的逻辑，既保留在线升级语义，
+    # 又能让 Alembic 离线模式生成可执行脚本（离线模式没有可迭代的查询结果）。
+    op.execute(
+        "UPDATE dictionary_items "
+        "SET enabled = false, "
+        "    remark = '产品分类已改为产品页直接填写，此字典项退役停用' "
+        "WHERE type = 'product_category' "
+        "  AND EXISTS ("
+        "    SELECT 1 FROM products p "
+        "    WHERE p.deleted_at IS NULL AND p.category = dictionary_items.code"
+        "  )"
+    )
+    op.execute(
+        "DELETE FROM dictionary_items "
+        "WHERE type = 'product_category' "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM products p "
+        "    WHERE p.deleted_at IS NULL AND p.category = dictionary_items.code"
+        "  )"
+    )
 
 
 def downgrade() -> None:

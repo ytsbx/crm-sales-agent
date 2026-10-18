@@ -96,7 +96,14 @@ class FakeSession:
                 _filter(
                     self.logs,
                     params,
-                    ("integration_type", "direction", "business_type", "business_id", "status"),
+                    (
+                        "integration_type",
+                        "direction",
+                        "business_type",
+                        "business_id",
+                        "status",
+                        "event_key",
+                    ),
                 )
             )
         # func.count() 之类的聚合：返回计划好的数字（按实体名取）
@@ -324,6 +331,7 @@ def test_unmatched_event_keeps_the_whole_event_and_a_stable_key(monkeypatch):
     assert event["event_key"] == svc.build_status_event_key(
         order_no=None, erp_order_id="ERP-X", raw_status="Sent", remark="顺丰 SF123"
     )
+    assert log.event_key == event["event_key"]
     assert log.response_data["processing_status"] == "unmatched"
     assert log.response_data["event_key"] == event["event_key"]
 

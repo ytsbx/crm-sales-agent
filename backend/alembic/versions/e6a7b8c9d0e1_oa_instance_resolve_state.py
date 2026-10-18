@@ -20,7 +20,7 @@ CRM 这边只认一张，另一张成为隐形挂单（`service.py` 里那段注
 迁移替业务做决定等于篡改历史。检测到重复就报错退出，并把冲突行打出来，
 人工确认清理后再升级。查询语句见报错信息里的 SQL。
 """
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 revision = "e6a7b8c9d0e1"
@@ -40,6 +40,11 @@ having count(*) > 1
 
 
 def _assert_no_duplicates(connection) -> None:
+    # Offline SQL generation has no live connection. The duplicate preflight
+    # remains mandatory for real upgrades, while offline output must be
+    # validated against the target database before execution.
+    if context.is_offline_mode():
+        return
     rows = connection.execute(sa.text(DUP_INSTANCE_SQL)).fetchall()
     if not rows:
         return

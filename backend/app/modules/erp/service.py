@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -81,6 +82,7 @@ LOG_STATUS_CONFLICT = "conflict"      # 双编号不同源 / 本地映射与主�
 LOG_STATUS_UNMATCHED = "unmatched"    # CRM 里找不到对应订单
 LOG_STATUS_DUPLICATE = "duplicate"    # 并发重复请求：另一路已完成，本次让位
 LOG_STATUS_SUPERSEDED = "superseded"  # 同事件键的旧记录，已被后续成功处理取代
+EVENT_KEY_UNIQUE_CONSTRAINT = "uq_integration_logs_erp_success_event"
 
 #: 出现这两个状态说明"上一次推单的结果不知道"，重推之前必须先核对（§8.11）。
 INFLIGHT_PUSH_STATUS = (LOG_STATUS_SENDING, LOG_STATUS_UNKNOWN)
@@ -988,7 +990,7 @@ async def _find_processed_event(session: AsyncSession, event_key: str) -> Integr
             IntegrationLog.integration_type == "erp",
             IntegrationLog.direction == "inbound",
             IntegrationLog.status == LOG_STATUS_SUCCESS,
-            IntegrationLog.response_data["event_key"].as_string() == event_key,
+            IntegrationLog.event_key == event_key,
         )
         .order_by(IntegrationLog.id.desc())
     )
@@ -1002,7 +1004,7 @@ async def _mark_superseded(session: AsyncSession, *, event_key: str, keep_log_id
         IntegrationLog.direction == "inbound",
         IntegrationLog.id != keep_log_id,
         IntegrationLog.status.in_((LOG_STATUS_UNMATCHED, LOG_STATUS_CONFLICT)),
-        IntegrationLog.response_data["event_key"].as_string() == event_key,
+        IntegrationLog.event_key == event_key,
     )
     rows = list((await session.execute(stmt)).scalars().all())
     for row in rows:
@@ -1048,14 +1050,7 @@ async def apply_status_webhook(
     # ① 同事件重放：已处理成功过就直接回报，不再写历史/日志。
     prior = await _find_processed_event(session, event_key)
     if prior is not None:
-        prior_response = prior.response_data if isinstance(prior.response_data, dict) else {}
-        return {
-            "matched": bool(prior_response.get("matched")),
-            "changed": False,
-            "replayed": True,
-            "event_key": event_key,
-            "message": "同一事件此前已处理过（结论一致），本次不重复写入",
-        }
+        return _replayed_event_response(event_key, prior)
 
     event = _build_event_payload(
         event_key=event_key,
@@ -1071,6 +1066,7 @@ async def apply_status_webhook(
         provider=adapter.label,
         direction="inbound",
         business_type="order",
+        event_key=event_key,
         status=EVENT_RECEIVED,
         request_data=event,
         response_data={"event_key": event_key, "processing_status": EVENT_RECEIVED},
@@ -1227,7 +1223,19 @@ async def apply_status_webhook(
     }
     # 同一事件键此前留下的未匹配/冲突记录标成"已被取代"：异常队列里只剩真正待办的。
     await _mark_superseded(session, event_key=event_key, keep_log_id=log.id)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as error:
+        # 两个相同回调可能都在提交前通过了查重查询。部分唯一索引让
+        # 后提交者在这里失败；回滚后读取先提交的成功记录并按重放返回，
+        # 不把一个正常的并发重放暴露成 500。
+        if not _is_event_key_conflict(error):
+            raise
+        await session.rollback()
+        prior = await _find_processed_event(session, event_key)
+        if prior is None:  # pragma: no cover - 唯一索引冲突后应能查到先提交记录
+            raise
+        return _replayed_event_response(event_key, prior)
     return {
         "matched": True,
         "order_id": order.id,
@@ -1239,6 +1247,22 @@ async def apply_status_webhook(
         "event_key": event_key,
         "message": "已处理",
     }
+
+
+def _replayed_event_response(event_key: str, prior: IntegrationLog) -> dict:
+    prior_response = prior.response_data if isinstance(prior.response_data, dict) else {}
+    return {
+        "matched": bool(prior_response.get("matched")),
+        "changed": False,
+        "replayed": True,
+        "event_key": event_key,
+        "message": "同一事件此前已处理过（结论一致），本次不重复写入",
+    }
+
+
+def _is_event_key_conflict(error: IntegrityError) -> bool:
+    diag = getattr(getattr(error, "orig", None), "diag", None)
+    return getattr(diag, "constraint_name", None) == EVENT_KEY_UNIQUE_CONSTRAINT
 
 
 # ---------------------------------------------------------------- 查询

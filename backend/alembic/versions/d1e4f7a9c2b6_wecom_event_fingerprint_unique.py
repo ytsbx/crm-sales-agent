@@ -1,6 +1,7 @@
 """企微事件回调指纹独立列并唯一化，修复并发重复落任务。"""
 
-from alembic import op
+from alembic import context, op
+import sqlalchemy as sa
 
 
 revision = "d1e4f7a9c2b6"
@@ -20,13 +21,23 @@ def upgrade() -> None:
         "WHERE job_type = 'external_contact' AND event_fingerprint IS NULL "
         "AND detail->>'fingerprint' IS NOT NULL"
     )
-    # 历史上并发重复可能已经产生多条，保留最早一条，其余清空指纹后再建唯一索引。
-    op.execute(
-        "UPDATE wecom_sync_jobs AS duplicate SET event_fingerprint = NULL "
-        "WHERE duplicate.event_fingerprint IS NOT NULL AND duplicate.id NOT IN ("
-        "SELECT MIN(id) FROM wecom_sync_jobs WHERE event_fingerprint IS NOT NULL "
-        "GROUP BY event_fingerprint)"
-    )
+    # 历史重复不能由迁移擅自选择或改写；暂停迁移交人工确认。
+    if not context.is_offline_mode():
+        duplicates = op.get_bind().execute(sa.text(
+            "SELECT event_fingerprint, COUNT(*) AS n, "
+            "string_agg(id::text, ',' ORDER BY id) AS row_ids "
+            "FROM wecom_sync_jobs WHERE event_fingerprint IS NOT NULL "
+            "GROUP BY event_fingerprint HAVING COUNT(*) > 1"
+        )).fetchall()
+        if duplicates:
+            detail = "; ".join(
+                f"fingerprint={row[0]} count={row[1]} ids={row[2]}"
+                for row in duplicates[:20]
+            )
+            raise RuntimeError(
+                "wecom_sync_jobs 存在重复企微事件指纹，无法建立唯一约束；"
+                f"请人工确认历史记录后重试迁移：{detail}"
+            )
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_wecom_sync_event_fingerprint "
         "ON wecom_sync_jobs (event_fingerprint) WHERE event_fingerprint IS NOT NULL"

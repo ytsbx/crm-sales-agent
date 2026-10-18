@@ -3,15 +3,13 @@
 `external_mappings` 让「每接一个系统就往业务表加一堆字段」这件事不再发生：
 ERP/MES 的订单号、物料号统一记在这里，业务表只保留自己的主键。
 
-关于第八批 §8.11 的"可信事件 / 推送请求状态"：本轮**不加表也不加列**
-（交接约定不动 alembic/versions），先用 `integration_logs` 现有的
-`status` + `request_data` / `response_data`(JSONB) 承载：
+关于第八批 §8.11 的"可信事件 / 推送请求状态"：事件键现在有独立列，
+并由数据库对已成功处理的入站事件做唯一约束；处理状态仍由 `status` 和
+`response_data`(JSONB) 承载：
   · 推送请求状态 = status（sending / unknown / failed / not_sent / success）；
-  · 事件键与处理状态 = response_data 里的 event_key / processing_status，
-    按事件键查重用 JSONB 路径表达式（`response_data['event_key']`）。
-这条路能用、能查，但每次查重都要扫 JSONB。**建议的迁移**见交接回报：
-给 `integration_logs` 加 `event_key`（String(64)，可空）与
-`integration_type+event_key` 的部分唯一索引，并把历史行的 event_key 回填。
+  · 事件键 = `event_key`；处理状态仍保留在 response_data 的 `processing_status`。
+未成功的事件允许重复键，以便"先未匹配、后补映射"的恢复路径继续工作；
+只有成功的入站 ERP 事件参与唯一约束。
 
 ## 第八批 §8.13 / §8.14 新增的承载表（本节以下）
 
@@ -110,6 +108,9 @@ class IntegrationLog(Base, IdMixin):
     business_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     request_data: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     response_data: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # 回调事件的稳定指纹。未成功的事件允许同键重试，成功的入站 ERP 事件
+    # 由迁移建立部分唯一索引，防止并发请求各写一条成功日志。
+    event_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="success")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

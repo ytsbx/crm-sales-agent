@@ -27,7 +27,7 @@
 没有任何约束，完全可能已有重复链），迁移**报错退出并列出冲突行**，
 不自动删改：保留哪一份是业务判断，迁移替业务决定等于篡改对外台账。
 """
-from alembic import op
+from alembic import context, op
 import sqlalchemy as sa
 
 revision = "a8b9c0d1e2f3"
@@ -60,6 +60,8 @@ HAVING count(*) > 1
 
 
 def _assert_no_duplicate_source_version(connection) -> None:
+    if context.is_offline_mode():
+        return
     rows = connection.execute(sa.text(DUP_SQL)).fetchall()
     if not rows:
         return
@@ -83,8 +85,11 @@ def upgrade():
     )
 
     connection = op.get_bind()
-    connection.execute(sa.text(BACKFILL_SQL))
-    _assert_no_duplicate_source_version(connection)
+    # Backfill is deterministic SQL and must remain in generated offline
+    # scripts; only the data-dependent duplicate assertion needs a live DB.
+    op.execute(BACKFILL_SQL)
+    if not context.is_offline_mode():
+        _assert_no_duplicate_source_version(connection)
 
     op.execute(
         "CREATE UNIQUE INDEX uq_biz_docs_source_version "

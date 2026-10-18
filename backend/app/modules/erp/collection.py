@@ -1349,7 +1349,17 @@ async def record_is_visible(
 
 
 async def get_mapping(session: AsyncSession, mapping_id: int) -> ExternalObjectMapping:
-    row = await session.get(ExternalObjectMapping, mapping_id)
+    # 人工匹配会先检查 match_status，再写入 internal_id。必须在这里锁住并
+    # 刷新数据库中的最新行，否则两个管理员可同时读到 pending，分别指向
+    # 不同本地对象，后提交者会静默覆盖前者，绕过路由层的 409 防重复语义。
+    row = (
+        await session.execute(
+            select(ExternalObjectMapping)
+            .where(ExternalObjectMapping.id == mapping_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, f"外部对象映射编号 {mapping_id} 不存在", 404)
     return row

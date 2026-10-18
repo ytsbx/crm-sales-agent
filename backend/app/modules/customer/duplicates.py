@@ -272,17 +272,28 @@ async def resolve_case(
     if decision not in DECISIONS:
         raise AppError(ErrorCode.PARAM_ERROR, f"裁定类型不合法：{decision}", 422)
 
+    # 路由层的可见性检查与这里的撞单锁之间存在并发窗口：客户可能在等待
+    # 撞单锁时被转给别人。最终写入前必须在客户行锁内重新取数并校验，
+    # 否则原本有权限的操作者仍可能改动已经超出其范围的客户。
+    # 按 ID 固定顺序加锁，避免两个交叉撞单案件互相反向等待。
+    from app.modules.customer import service as customer_service
+
+    locked_customers = {}
+    for cid in sorted({case.customer_id, case.candidate_id}):
+        locked_customers[cid] = await customer_service.get_visible_customer(
+            session, actor, cid, for_update=True
+        )
+
     # 裁定**前**两条客户的归属：与下面的 `resolved_owner_id`（裁定后）配成一对，
     # 事后回看才答得出"这次裁定把谁从谁手里改到了谁名下"。
-    before_owners = {}
-    for cid in (case.customer_id, case.candidate_id):
-        row = await session.get(Customer, cid)
-        before_owners[str(cid)] = row.owner_id if row is not None else None
+    before_owners = {
+        str(cid): customer.owner_id for cid, customer in locked_customers.items()
+    }
 
     if decision in ("assign_existing", "assign_new"):
         if decision == "assign_existing":
-            target = await session.get(Customer, case.candidate_id)
-            if target is None or target.owner_id is None:
+            target = locked_customers[case.candidate_id]
+            if target.owner_id is None:
                 raise AppError(
                     ErrorCode.PARAM_ERROR, "已有客户没有负责人，无法按它归属", 422
                 )
@@ -296,9 +307,7 @@ async def resolve_case(
         from app.modules.customer import service as customer_service
 
         for cid in (case.customer_id, case.candidate_id):
-            customer = await session.get(Customer, cid)
-            if customer is None:
-                continue
+            customer = locked_customers[cid]
             if customer.owner_id != owner_id:
                 await customer_service.transfer_customer(
                     session,

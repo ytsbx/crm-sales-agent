@@ -159,6 +159,9 @@ async def object_key_in_db(object_key: str) -> bool:
 
     from app.core.database import SessionLocal
 
+    # `storage_files()` returns a platform-native relative path; Windows uses
+    # backslashes while object keys are always POSIX-style storage keys.
+    object_key = object_key.replace("\\", "/")
     async with SessionLocal() as session:
         return (
             await session.execute(text(

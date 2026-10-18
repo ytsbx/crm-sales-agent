@@ -148,9 +148,11 @@ async def deduplicate(
     exclude_id = None
 
     if customer_id:
-        existing = await session.get(Customer, customer_id)
-        if existing is None or existing.deleted_at is not None:
-            raise AppError(ErrorCode.NOT_FOUND, "客户不存在", 404)
+        # 编辑场景也必须和详情、合并、批量操作使用同一条数据范围判据。
+        # 直接 session.get 只能判断存在；而且 Customer 没有 mobile 列，旧实现
+        # 继续读取 existing.mobile 会让所有带 customer_id 的查重请求直接 500。
+        # 统一走可见性读取，同时保留请求中的联系人手机号，修复这两个确定问题。
+        existing = await svc.get_visible_customer(session, user, customer_id)
         exclude_id = existing.id
         fields = {
             "company_name": existing.name,
@@ -499,12 +501,6 @@ async def resolve_duplicate_case(
         raise AppError(ErrorCode.NOT_FOUND, "撞单记录不存在", 404)
     await svc.get_visible_customer(session, user, case.customer_id)
     await svc.get_visible_customer(session, user, case.candidate_id)
-    # 裁定**前**的归属：服务层在锁定后还会再取一份权威的存进案件里，
-    # 这里这份用于审计，让审计也能回答"把谁从谁手里改到了谁名下"。
-    before_owners = {}
-    for cid in (case.customer_id, case.candidate_id):
-        row = await session.get(Customer, cid)
-        before_owners[str(cid)] = row.owner_id if row is not None else None
     await dup_service.resolve_case(
         session,
         case=case,
@@ -525,7 +521,7 @@ async def resolve_duplicate_case(
         action="resolve_customer_duplicate",
         business_type="customer_duplicate_case",
         business_id=case.id,
-        before={"owners": before_owners},
+        before={"owners": result.get("before_owners")},
         after=result,
         ip=client_ip(request),
     )
