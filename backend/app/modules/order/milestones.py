@@ -508,6 +508,9 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
                     SalesOrder.status != "cancelled",
                 )
                 .order_by(OrderMilestone.id.asc())
+                # 多个调度器/手工补跑可能同时扫描；先锁住目标节点，
+                # 让后来的扫描跳过正在发送提醒的记录，避免重复创建通知。
+                .with_for_update(skip_locked=True, of=OrderMilestone)
             )
         ).scalars().all()
     )
@@ -602,6 +605,8 @@ async def notify_overdue_batches(session: AsyncSession) -> int:
                     SalesOrder.status != "cancelled",
                 )
                 .order_by(OrderShipmentBatch.id.asc())
+                # 与节点扫描保持同一去重策略：并发扫描跳过已被另一轮领取的批次。
+                .with_for_update(skip_locked=True, of=OrderShipmentBatch)
             )
         ).scalars().all()
     )
