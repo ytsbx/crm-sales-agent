@@ -1,6 +1,6 @@
 """客户标签与合并入参（03-API §7）。"""
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TagCreate(BaseModel):
@@ -39,7 +39,9 @@ class CustomerTagAttach(BaseModel):
 class CustomerBatchTag(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    customer_ids: list[int]
+    # 批量入口会逐条做范围校验、加客户锁并写关联，限制单次事务规模，
+    # 避免一个请求持有数千把锁并长时间占用数据库连接。
+    customer_ids: list[int] = Field(max_length=200)
     tag_ids: list[int]
     mode: str = "add"
     """add = 追加；replace = 先清空再打；remove = 摘除。"""
@@ -65,7 +67,8 @@ class CustomerMergeRequest(BaseModel):
 class CustomerBatchTransfer(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    customer_ids: list[int]
+    # 与批量打标签保持同一上限；超大批量请拆成多次操作。
+    customer_ids: list[int] = Field(max_length=200)
     owner_id: int | None = None
     """为空表示放入公海。"""
     reason: str | None = None
