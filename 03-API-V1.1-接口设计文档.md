@@ -1592,6 +1592,102 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
   逐条走与单条入口**同一套范围校验**，越权的那条按"无权分配"跳过并给出**与单条一致的 code（40302）**，
   且**不改动任何数据**。每条包在 SAVEPOINT 里，单条失败不会留下"历史写了、负责人没改"的半截状态。
 
+## 41.20 前面章节遗漏的现有接口（2026-10-18 补齐）
+
+以下接口已经在服务端注册并被前端或运维流程使用；本节补齐路径，具体权限仍以服务端
+`require_permission` 和数据范围校验为准。这里只补文档，不新增接口。
+
+### 认证、钉钉与文件
+
+- `GET /auth/dingtalk/authorize`：生成钉钉登录授权地址。
+- `GET /auth/dingtalk/callback`：钉钉授权回调入口。
+- `POST /auth/dingtalk/exchange`：用钉钉临时票据换取 CRM 登录令牌。
+- `POST /dingtalk/sync-users`：同步钉钉组织成员及账号绑定状态。
+- `GET /business/{business_id}/files/batch`：批量读取业务对象关联文件。
+- `GET /public/inquiry-images/{file_id}`：带短期签名的询价图片只读地址，供钉钉审批引用。
+
+### 客户、商机、工作台与等级
+
+- `GET /dashboard/stale-customers`：查询超过阈值未跟进的客户。
+- `PATCH /opportunity-items/{item_id}`：修改商机明细项。
+- `PATCH /opportunity-stages/{stage_id}`：修改商机阶段配置或阶段信息。
+- `POST /opportunities/{opportunity_id}/items/batch`：批量维护商机明细项。
+- `POST /customer-levels/unrated/rules`：维护未评级客户的等级规则。
+
+### 合同、审批与对外单据
+
+- `DELETE /contract-documents/{doc_id}`：删除未进入原件保护流程的合同草稿。
+- `GET /contract-documents/{doc_id}/approval-entry`：读取合同审批入口状态。
+- `POST /contract-documents/{doc_id}/approval-auto-link`：按可用依据自动关联审批单。
+- `POST /contract-documents/{doc_id}/approval-link`：关联已有审批实例。
+- `POST /contract-documents/{doc_id}/approval-sync`：同步合同审批状态。
+- `POST /contract-documents/{doc_id}/basis`：设置合同正式业务依据。
+- `POST /contract-documents/{doc_id}/dingtalk-oa`：发起合同钉钉审批。
+- `POST /contract-documents/{doc_id}/dingtalk-oa-withdraw`：撤回合同钉钉审批。
+- `POST /contract-documents/{doc_id}/restore`：恢复合同记录。
+- `POST /oa-instances/{instance_id}/sync`：同步钉钉审批实例。
+- `POST /oa-instances/{instance_id}/withdraw`：撤回钉钉审批实例。
+- `POST /biz-doc-templates/preview`：预览对外单据模板渲染结果。
+- `GET /recycle-bin/contracts`：查询回收站中的合同记录。
+
+### 跟进与询价
+
+- `GET /approvals/{approval_id}/transfer-candidates`：查询审批转交候选人。
+- `GET /inquiries/oa-submission-options`：读取询价发起审批的可选项。
+- `GET /inquiries/{inquiry_id}/oa-submission`：读取询价审批提交状态。
+
+### 订单、回款与报价版本
+
+- `POST /orders/{order_id}/receivables/preview`：预览订单应收计划变更。
+- `PUT /payments/{payment_id}/allocations`：更新回款分摊明细。
+- `GET /quote-versions/{version_id}/master-refresh-preview`：预览报价版本主数据刷新影响。
+- `POST /quote-versions/{version_id}/link-master`：关联报价版本主数据。
+
+### ERP 集成与对账
+
+- `GET /integrations/erp/collection/status`：查询 ERP 收款采集任务状态。
+- `GET /integrations/erp/exception-queue`：查询 ERP 集成异常队列。
+- `GET /integrations/erp/external-mappings`：查询外部单据映射。
+- `GET /integrations/erp/external-records`：查询外部同步记录。
+- `GET /integrations/erp/external-records/{record_id}`：查看单条外部同步记录。
+- `GET /integrations/erp/financial-adjustments`：查询 ERP 财务调整记录。
+- `GET /integrations/erp/reconcile/diffs`：查询对账差异。
+- `GET /integrations/erp/reconcile/diffs/{diff_id}`：查看单条对账差异。
+- `GET /integrations/erp/reconcile/runs`：查询对账批次。
+- `POST /integrations/erp/collection/run`：执行一次 ERP 收款采集。
+- `POST /integrations/erp/external-mappings/replay`：重放外部映射事件。
+- `POST /integrations/erp/external-mappings/{mapping_id}/match`：确认外部映射匹配。
+- `POST /integrations/erp/orders/{order_id}/reconcile`：发起订单对账。
+- `POST /integrations/erp/reconcile/diffs/{diff_id}/confirm`：确认对账差异处理结果。
+- `POST /integrations/erp/reconcile/runs`：创建对账批次。
+- `POST /integrations/erp/sources/verify`：验证 ERP 数据源配置。
+
+### 企微客户导入
+
+- `GET /integrations/wecom/customer-import/preview`：预览企微客户导入结果。
+- `POST /integrations/wecom/customer-import`：执行企微客户导入。
+
+### 打样与钉钉审批
+
+- `GET /samples/{sample_id}/application-form`：下载打样申请单。
+- `GET /samples/{sample_id}/dingtalk`：读取打样钉钉审批状态。
+- `POST /samples/{sample_id}/dingtalk-submit`：提交打样钉钉审批。
+- `PUT /samples/{sample_id}/dingtalk-draft`：保存打样钉钉审批草稿。
+
+### SKU 主数据
+
+- `GET /sku-master/diffs`：查询 SKU 主数据差异。
+- `GET /sku-master/identities`：查询外部 SKU 身份映射。
+- `GET /sku-master/skus/{sku_id}`：查看 SKU 主数据详情。
+- `GET /sku-master/skus/{sku_id}/confirmed`：查询 SKU 主数据确认状态。
+- `POST /sku-master/authority`：维护 SKU 主数据权威来源。
+- `POST /sku-master/diffs/{diff_id}/confirm`：确认 SKU 主数据差异。
+- `POST /sku-master/identities/{identity_id}/rename`：重命名 SKU 外部身份。
+- `POST /sku-master/identities/{identity_id}/replay`：重放 SKU 身份同步事件。
+- `POST /sku-master/identities/{identity_id}/stop`：停止 SKU 身份映射。
+- `POST /sku-master/skus/{sku_id}/confirm-local`：确认本地 SKU 主数据。
+- `POST /sku-master/sources/ingest`：接收 SKU 主数据源数据。
+
 ---
 
 # 42. 回收站（2026-10-07 第一版；2026-10-08 复审修 RB01–RB07；同日晚些加客户恢复；
