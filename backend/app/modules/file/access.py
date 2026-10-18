@@ -330,6 +330,38 @@ async def visible_object(
     return (await session.execute(stmt)).first() is not None
 
 
+async def visible_no_owner_ids(
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    business_type: str,
+    business_ids: list[int],
+) -> set[int]:
+    """批量校验产品/SKU 的附件可见性。
+
+    产品和 SKU 都是全公司可见、没有负责人范围的对象；它们只需要检查模块权限、
+    是否存在以及是否已软删。批量附件接口用这个入口避免对每个 ID 单独调用
+    ``visible_object``，同时保留单条入口的权限和软删口径。
+
+    这里只支持 ``NO_OWNER_MODELS`` 中的对象，避免调用方误把需要复杂数据范围
+    或委托可见性规则的业务类型也套进来。
+    """
+    ids = list(dict.fromkeys(int(value) for value in business_ids))
+    if not ids:
+        return set()
+    perms = BUSINESS_PERMISSIONS.get(business_type)
+    model = NO_OWNER_MODELS.get(business_type)
+    if perms is None or model is None or not _permitted(user, perms[0]):
+        return set()
+
+    stmt = select(model.id).where(model.id.in_(ids))
+    deleted_at = getattr(model, "deleted_at", None)
+    if deleted_at is not None:
+        stmt = stmt.where(deleted_at.is_(None))
+    rows = (await session.execute(stmt)).all()
+    return {int(row[0]) for row in rows}
+
+
 async def can_access_file(
     session: AsyncSession, user: CurrentUser, file_id: int
 ) -> bool:

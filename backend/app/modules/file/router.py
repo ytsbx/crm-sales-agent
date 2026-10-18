@@ -588,13 +588,19 @@ async def list_business_files_batch(
     if len(ids) > 500:
         raise AppError(ErrorCode.PARAM_ERROR, "一次最多查 500 个业务对象", 422)
 
-    visible = [
-        bid
-        for bid in ids
-        if await access.visible_object(
-            session, user, business_type=business_type, business_id=bid
+    if business_type in access.NO_OWNER_MODELS:
+        visible_ids = await access.visible_no_owner_ids(
+            session, user, business_type=business_type, business_ids=ids
         )
-    ]
+        visible = [bid for bid in ids if bid in visible_ids]
+    else:
+        visible = [
+            bid
+            for bid in ids
+            if await access.visible_object(
+                session, user, business_type=business_type, business_id=bid
+            )
+        ]
     if not visible:
         return ok({})
     rows = (
