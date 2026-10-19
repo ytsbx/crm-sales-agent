@@ -292,7 +292,9 @@ async def list_tasks(
             stmt = stmt.where(Task.owner_id.in_(owner_ids))
         if owner_id is not None:
             stmt = stmt.where(Task.owner_id == owner_id)
-    if status:
+    if status == 'active':
+        stmt = stmt.where(Task.status.in_(['pending', 'doing']))
+    elif status:
         stmt = stmt.where(Task.status == status)
     if overdue:
         stmt = stmt.where(

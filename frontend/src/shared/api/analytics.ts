@@ -17,6 +17,7 @@ export interface DashboardSummary extends WithCurrencyWarnings {
   todo_count: number
   overdue_task_count: number
   stale_customer_count: number
+  stale_customer_days: number
   open_opportunity_count: number
   open_opportunity_amount: number
   pending_approval_count: number
@@ -237,7 +238,7 @@ export interface StaleCustomer {
   owner_id: number | null
   owner_name: string | null
   last_followup_at: string | null
-  /** 距上次联系的天数；**从未跟进过**时为 null（界面显示"从未跟进"） */
+  /** 距最近有效跟进/业务进展的天数；无记录时从建档起算。 */
   days_since: number | null
   next_followup_at: string | null
   contact_name: string | null
@@ -252,9 +253,10 @@ export interface StaleCustomer {
  * 与「最近跟进」列 —— 报了警却看不到是哪几个。口径与 `/dashboard/summary` 的
  * `stale_customer_count` 完全一致，避免"卡片说 2 个、清单列出 3 个"。
  */
-export function getStaleCustomers() {
-  return api.get<{ days: number; total: number; items: StaleCustomer[] }>(
+export function getStaleCustomers(query: { page?: number; page_size?: number } = {}) {
+  return api.get<PageResult<StaleCustomer> & { days: number }>(
     '/dashboard/stale-customers',
+    query,
   )
 }
 

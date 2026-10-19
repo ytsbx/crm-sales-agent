@@ -307,9 +307,12 @@ export default function ProductDetailPage() {
         if (!next) throw new Error('未填写新编码')
         return renameSkuIdentity(source.id, next)
       }
-      return stopSkuIdentity(source.id, window.prompt('停用说明（可选）') ?? undefined)
+      const note = window.prompt('确认停用此来源？填写停用说明（可选），取消则不执行。')
+      if (note === null) return { cancelled: true } as const
+      return stopSkuIdentity(source.id, note)
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
+      if (data && typeof data === 'object' && 'cancelled' in data && data.cancelled === true) return
       Toast.success('来源台账已更新')
       void queryClient.invalidateQueries({ queryKey: ['sku-identities', masterSku?.id] })
       void queryClient.invalidateQueries({ queryKey: ['sku-master', masterSku?.id] })
@@ -628,12 +631,9 @@ export default function ProductDetailPage() {
             >
               编辑
             </a>
-            <a
-              style={{ color: 'var(--crm-primary)' }}
-              onClick={() => toggleMutation.mutate({ id: record.id, enable: record.status !== 'active' })}
-            >
-              {record.status === 'active' ? '停用' : '启用'}
-            </a>
+            <Popconfirm title={`确认${record.status === 'active' ? '停用' : '启用'} SKU「${record.sku_code}」？`} onConfirm={() => toggleMutation.mutate({ id: record.id, enable: record.status !== 'active' })}>
+              <a style={{ color: 'var(--crm-primary)' }}>{record.status === 'active' ? '停用' : '启用'}</a>
+            </Popconfirm>
           </>
         ) : (
           '-'

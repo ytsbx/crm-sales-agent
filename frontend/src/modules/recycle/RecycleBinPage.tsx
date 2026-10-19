@@ -15,7 +15,7 @@ import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Input, Modal, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { emptyText } from '../../shared/hooks/emptyText'
 import { api } from '../../shared/api/client'
@@ -179,7 +179,9 @@ function LeadsPanel() {
             title: '操作',
             width: 90,
             render: (_: unknown, record: RecycleLead) => (
-              <a onClick={() => restoreMutation.mutate(record.id)}>恢复</a>
+              <Popconfirm title="确认恢复这条线索？" onConfirm={() => restoreMutation.mutate(record.id)}>
+                <a>恢复</a>
+              </Popconfirm>
             ),
           },
         ]
@@ -289,7 +291,9 @@ function ProductsPanel() {
             title: '操作',
             width: 90,
             render: (_: unknown, record: RecycleProduct) => (
-              <a onClick={() => restoreProductMutation.mutate(record.id)}>恢复</a>
+              <Popconfirm title="确认恢复产品及随产品删除的 SKU？" onConfirm={() => restoreProductMutation.mutate(record.id)}>
+                <a>恢复</a>
+              </Popconfirm>
             ),
           },
         ]
@@ -346,7 +350,9 @@ function ProductsPanel() {
                 // 产品还在回收站时单独恢复 SKU 会造出孤儿，这里不给按钮
                 <span style={{ color: 'var(--crm-text-3)' }}>—</span>
               ) : (
-                <a onClick={() => restoreSkuMutation.mutate(record.id)}>恢复</a>
+                <Popconfirm title="确认恢复这条 SKU？" onConfirm={() => restoreSkuMutation.mutate(record.id)}>
+                  <a>恢复</a>
+                </Popconfirm>
               ),
           },
         ]
@@ -478,7 +484,11 @@ function CustomersPanel() {
       setOwnerPicker(record)
       return
     }
-    restoreMutation.mutate({ id: record.id })
+    Modal.confirm({
+      title: `确认恢复客户「${record.name}」？`,
+      content: '恢复后客户将重新出现在客户中心，并按原归属恢复。',
+      onOk: () => restoreMutation.mutate({ id: record.id }),
+    })
   }
 
   const submitOwnerPick = () => {
@@ -678,7 +688,7 @@ function SamplesPanel() {
       columns={[{ title: '客户', dataIndex: 'customer_name' }, { title: '商机', dataIndex: 'opportunity_title' },
         { title: '负责人', dataIndex: 'owner_name' }, { title: '原状态', dataIndex: 'status_label' },
         { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
-        ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => <a onClick={() => restore.mutate(row.id)}>恢复</a> }] : [])]}
+        ...(can('sample:manage') ? [{ title: '操作', render: (_: unknown, row: SampleRequestRow) => <Popconfirm title="确认恢复这张样品申请？" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : [])]}
       pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true,
         onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} />
   </SectionCard>
@@ -701,7 +711,7 @@ function ContractsPanel() {
       { title: '合同编号', dataIndex: 'doc_no' }, { title: '合同名称', dataIndex: 'title' },
       { title: '客户', dataIndex: 'customer_name' }, { title: '原状态', dataIndex: 'status_label' },
       { title: '删除时间', dataIndex: 'deleted_at', render: fmt },
-      ...(can('order:manage') ? [{ title: '操作', render: (_: unknown, row: RecycleContract) => <a onClick={() => restore.mutate(row.id)}>恢复</a> }] : []),
+      ...(can('order:manage') ? [{ title: '操作', render: (_: unknown, row: RecycleContract) => <Popconfirm title="确认恢复这份合同？相关自动待办可能随之恢复。" onConfirm={() => restore.mutate(row.id)}><a>恢复</a></Popconfirm> }] : []),
     ]} pagination={{ currentPage: pager.page, pageSize: pager.pageSize, total: query.data?.total ?? 0, showSizeChanger: true, onPageChange: pager.setPage, onPageSizeChange: pager.changePageSize }} /></SectionCard>
 }
 

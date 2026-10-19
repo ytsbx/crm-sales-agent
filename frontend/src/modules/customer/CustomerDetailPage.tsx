@@ -564,9 +564,14 @@ export default function CustomerDetailPage() {
               </Popconfirm>
             )}
             {customer.pool_status === 'public' && (
-              <Button theme="solid" loading={poolMutation.isPending} onClick={() => poolMutation.mutate({ action: 'claim' })}>
-                领取到我名下
-              </Button>
+              <Popconfirm
+                title={`确认领取客户「${customer.name}」？`}
+                content="领取后客户将归到你名下，由你负责跟进。"
+                onConfirm={() => poolMutation.mutate({ action: 'claim' })}
+                disabled={poolMutation.isPending}
+              >
+                <Button theme="solid" loading={poolMutation.isPending}>领取到我名下</Button>
+              </Popconfirm>
             )}
           </>
         }

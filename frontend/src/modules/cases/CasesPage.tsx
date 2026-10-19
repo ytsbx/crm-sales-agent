@@ -459,7 +459,7 @@ export default function CasesPage() {
                   {(record.status === 'draft' || record.status === 'rejected') && (
                     <>
                       <a onClick={() => openEdit(record)}>编辑</a>
-                      <a onClick={() => submitMutation.mutate(record.id)}>提交审核</a>
+                      <Popconfirm title="确认提交这份案例审核？" onConfirm={() => submitMutation.mutate(record.id)}><a>提交审核</a></Popconfirm>
                     </>
                   )}
                   {/* 只有**当前发布版**能开修订稿。
@@ -469,7 +469,7 @@ export default function CasesPage() {
                       旧版仍然读得到（见上面的详情弹窗），只是不能从它派生新版本。 */}
                   {record.status === 'published' &&
                     (isReviewer || record.author_id === currentUserId) && (
-                      <a onClick={() => reviseMutation.mutate(record.id)}>开修订稿</a>
+                      <Popconfirm title="确认从当前发布版创建修订稿？" onConfirm={() => reviseMutation.mutate(record.id)}><a>开修订稿</a></Popconfirm>
                     )}
                   {isReviewer && record.status === 'pending_review' && (
                     <>

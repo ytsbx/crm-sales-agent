@@ -2,7 +2,7 @@ import { formatBeijingTime, formatBeijingClock } from '../../shared/beijing-time
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { DatePicker, Popover, Switch, Tag, Toast } from '@douyinfe/semi-ui'
+import { DatePicker, Popconfirm, Popover, Switch, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   getUnreadCount,
@@ -186,15 +186,11 @@ export default function NotificationBell() {
             )}
             {item.can_redispatch && (
               <>
-                <a
-                  style={{ color: 'var(--crm-primary)' }}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    redispatchMutation.mutate(item.id)
-                  }}
-                >
-                  补投
-                </a>
+                <span onClick={(event) => event.stopPropagation()}>
+                  <Popconfirm title="确认补投这条通知？" content="将尝试重新向接收人发送通知。" onConfirm={() => redispatchMutation.mutate(item.id)} disabled={redispatchMutation.isPending}>
+                    <a style={{ color: 'var(--crm-primary)' }}>补投</a>
+                  </Popconfirm>
+                </span>
                 {/* 入口**留着**（主人定的口径：不许"点了没反应也不说为什么"），
                     但把"这次点了会不会有用"讲在明处：
                     卡在配置上的（推送开着没、绑没绑企微）点了也是同一结果。 */}

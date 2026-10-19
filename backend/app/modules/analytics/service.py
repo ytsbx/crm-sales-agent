@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.data_scope import scoped_owner_ids
 from app.core.deps import CurrentUser
+from app.core.response import paginate
 # 人民币这个字面量全项目只留一处（`core/trade_mode.py`），别在这里再写一遍
 from app.core.trade_mode import CNY
 from app.modules.approval.model import ApprovalInstance
@@ -61,10 +62,15 @@ ZERO = Decimal(0)
 
 
 def _customer_stale_clause(stale_date):
-    """只有跟进和业务进展两个时钟都过期时才算待跟进。"""
+    """有效活动均过期才提醒；无活动记录时，从建档时间起算。"""
     return and_(
         or_(Customer.last_followup_at.is_(None), Customer.last_followup_at < stale_date),
         or_(Customer.last_progress_at.is_(None), Customer.last_progress_at < stale_date),
+        or_(
+            Customer.last_followup_at.is_not(None),
+            Customer.last_progress_at.is_not(None),
+            Customer.created_at < stale_date,
+        ),
     )
 
 
@@ -185,7 +191,9 @@ async def currency_note(session: AsyncSession, user: CurrentUser) -> str | None:
     return None
 
 
-async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
+async def stale_customers(
+    session: AsyncSession, user: CurrentUser, *, page: int = 1, page_size: int = 200
+) -> dict:
     """**待跟进客户清单**（审查指出：工作台报了数却看不到是哪几个）。
 
     ## 为什么单独做一个接口，而不是给客户列表加筛选
@@ -204,23 +212,15 @@ async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
     now = datetime.now(UTC)
     stale_date = now - timedelta(days=days)
 
-    rows = (
-        await session.execute(
-            await _scope_filter(
-                select(Customer)
-                .where(
-                    Customer.deleted_at.is_(None),
-                    Customer.pool_status == "private",
-                    _customer_stale_clause(stale_date),
-                )
-                .order_by(Customer.last_followup_at.asc().nullsfirst(), Customer.id)
-                .limit(200),
-                user,
-                Customer.owner_id,
-                session,
-            )
-        )
-    ).scalars().all()
+    stmt = await _scope_filter(
+        select(Customer).where(
+            Customer.deleted_at.is_(None),
+            Customer.pool_status == "private",
+            _customer_stale_clause(stale_date),
+        ).order_by(Customer.last_followup_at.asc().nullsfirst(), Customer.id),
+        user, Customer.owner_id, session,
+    )
+    rows, total = await paginate(session, stmt, page, page_size)
 
     # 负责人姓名：清单上要能看出"这是谁家的客户"
     owner_ids = {c.owner_id for c in rows if c.owner_id}
@@ -275,7 +275,7 @@ async def stale_customers(session: AsyncSession, user: CurrentUser) -> dict:
                 "contact_phone": contacts.get(c.id, (None, None))[1],
             }
         )
-    return {"days": days, "total": len(items), "items": items}
+    return {"days": days, "total": total, "items": items, "page": page, "page_size": page_size}
 
 
 async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
@@ -310,12 +310,11 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).scalar_one()
 
-    # 待跟进客户：30 天内没跟过，或从未跟进
+    # 同明细/团队口径：有效活动超过配置阈值；无记录时从建档起算。
     from app.modules.settings import service as settings_service
 
-    stale_date = now - timedelta(
-        days=int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
-    )
+    stale_days = int(await settings_service.get_number(session, "customer_stale_days", "days", 30))
+    stale_date = now - timedelta(days=stale_days)
     stale_customers = (
         await session.execute(
             await _scope_filter(
@@ -480,6 +479,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         "todo_count": int(todo_count),
         "overdue_task_count": int(overdue_count),
         "stale_customer_count": int(stale_customers),
+        "stale_customer_days": stale_days,
         "open_opportunity_count": int(open_count),
         "open_opportunity_amount": _f(open_amount),
         "pending_approval_count": int(pending_approval),

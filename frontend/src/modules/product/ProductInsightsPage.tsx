@@ -2,7 +2,7 @@ import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
 import { parseOptionalNumber } from '../../shared/number-input'
 import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -427,7 +427,7 @@ export default function ProductInsightsPage() {
                       <a onClick={() => openEdit(record)}>编辑</a>
                     )}
                     {editable && (record.status === 'draft' || record.status === 'rejected') && (
-                      <a onClick={() => submitMutation.mutate(record.id)}>提交评审</a>
+                      <Popconfirm title="确认提交这条新品洞察评审？" onConfirm={() => submitMutation.mutate(record.id)}><a>提交评审</a></Popconfirm>
                     )}
                     {reviewable && (
                       <>

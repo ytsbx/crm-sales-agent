@@ -1122,30 +1122,23 @@ export default function SampleListPage() {
                       />
                     )}
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <Button
-                        theme="solid"
-                        type="primary"
-                        loading={approveMutation.isPending}
-                        onClick={() => approveMutation.mutate(true)}
+                      <Popconfirm
+                        title={detail.status === 'rejected' ? '确认改判为批准？' : '确认批准这张打样申请？'}
+                        onConfirm={() => approveMutation.mutate(true)}
                       >
-                        {detail.status === 'rejected' ? '改判为批准' : '批准'}
-                      </Button>
-                      {detail.status === 'pending' && (
-                        <Button
-                          type="danger"
-                          loading={approveMutation.isPending}
-                          onClick={() => approveMutation.mutate(false)}
-                        >
-                          拒绝
+                        <Button theme="solid" type="primary" loading={approveMutation.isPending}>
+                          {detail.status === 'rejected' ? '改判为批准' : '批准'}
                         </Button>
+                      </Popconfirm>
+                      {detail.status === 'pending' && (
+                        <Popconfirm title="确认拒绝这张打样申请？" onConfirm={() => approveMutation.mutate(false)}>
+                          <Button type="danger" loading={approveMutation.isPending}>拒绝</Button>
+                        </Popconfirm>
                       )}
                       {detail.status === 'rejected' && (
-                        <Button
-                          loading={resubmitMutation.isPending}
-                          onClick={() => resubmitMutation.mutate()}
-                        >
-                          重新提交审批
-                        </Button>
+                        <Popconfirm title="确认重新提交这张打样申请？" onConfirm={() => resubmitMutation.mutate()}>
+                          <Button loading={resubmitMutation.isPending}>重新提交审批</Button>
+                        </Popconfirm>
                       )}
                     </div>
                     {detail.status === 'rejected' && (
@@ -1177,26 +1170,16 @@ export default function SampleListPage() {
                         onChange={(value) => setShipForm({ ...shipForm, shipping_fee: value })}
                       />
                     </div>
-                    <Button
-                      theme="solid"
-                      type="primary"
-                      loading={shipMutation.isPending}
-                      onClick={() => shipMutation.mutate()}
-                    >
-                      登记寄样
-                    </Button>
+                    <Popconfirm title="确认登记寄样？" onConfirm={() => shipMutation.mutate()}>
+                      <Button theme="solid" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
+                    </Popconfirm>
                   </>
                 )}
 
                 {detail.status === 'shipped' && (
-                  <Button
-                    theme="solid"
-                    type="primary"
-                    loading={signMutation.isPending}
-                    onClick={() => signMutation.mutate()}
-                  >
-                    登记签收
-                  </Button>
+                  <Popconfirm title="确认登记客户已签收？" onConfirm={() => signMutation.mutate()}>
+                    <Button theme="solid" type="primary" loading={signMutation.isPending}>登记签收</Button>
+                  </Popconfirm>
                 )}
 
                 {['shipped', 'signed'].includes(detail.status) && (
@@ -1497,13 +1480,11 @@ export default function SampleListPage() {
                   {canManage && !detail.superseded_by
                     && (detail.made_at || detail.status === 'shipped'
                         || detail.status === 'signed') && (
-                    <Button
-                      style={{ marginTop: 8, marginLeft: 8 }}
-                      loading={reviseMutation.isPending}
-                      onClick={() => reviseMutation.mutate()}
-                    >
-                      开新修订版（改车间依据）
-                    </Button>
+                    <Popconfirm title="确认开新修订版？原版将冻结只读。" onConfirm={() => reviseMutation.mutate()}>
+                      <Button style={{ marginTop: 8, marginLeft: 8 }} loading={reviseMutation.isPending}>
+                        开新修订版（改车间依据）
+                      </Button>
+                    </Popconfirm>
                   )}
                 </div>
 

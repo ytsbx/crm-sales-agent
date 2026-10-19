@@ -512,6 +512,8 @@ async def dashboard_tasks(
 
 @router.get("/dashboard/stale-customers")
 async def dashboard_stale_customers(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(200, ge=1, le=200),
     user: CurrentUser = Depends(require_permission("customer:view")),
     session: AsyncSession = Depends(get_db),
 ):
@@ -520,7 +522,7 @@ async def dashboard_stale_customers(
     工作台那个卡片此前只会报数、点进去跳到不带任何筛选的客户列表，
     于是"报了警却不说哪里着火"（审查与主人确认后新增此接口）。
     """
-    return ok(await svc.stale_customers(session, user))
+    return ok(await svc.stale_customers(session, user, page=page, page_size=page_size))
 
 
 @router.get("/dashboard/risks")

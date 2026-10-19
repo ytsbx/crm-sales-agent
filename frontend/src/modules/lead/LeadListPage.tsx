@@ -253,9 +253,14 @@ export default function LeadListPage() {
       render: (_: unknown, record: Lead) => (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {!record.owner_id && (
-            <a style={{ color: 'var(--crm-primary)' }} onClick={() => claimMutation.mutate(record.id)}>
-              领取
-            </a>
+            <Popconfirm
+              title={`确认领取线索「${record.name}」？`}
+              content="领取后你将成为这条线索的负责人。"
+              onConfirm={() => claimMutation.mutate(record.id)}
+              disabled={claimMutation.isPending}
+            >
+              <a style={{ color: 'var(--crm-primary)' }}>领取</a>
+            </Popconfirm>
           )}
           <a style={{ color: 'var(--crm-primary)' }} onClick={() => setFollowupTarget(record)}>
             跟进

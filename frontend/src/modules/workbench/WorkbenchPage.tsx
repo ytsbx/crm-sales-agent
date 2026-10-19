@@ -7,7 +7,7 @@ import {
   IconComment,
   IconRefresh,
 } from '@douyinfe/semi-icons'
-import { Banner, Button, Checkbox, SideSheet, Tag, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Checkbox, Pagination, Popconfirm, SideSheet, Tag, Toast } from '@douyinfe/semi-ui'
 import { Link, useNavigate } from 'react-router-dom'
 
 import {
@@ -121,9 +121,10 @@ export default function WorkbenchPage() {
 
   // 待跟进客户清单抽屉（审查指出：卡片只报数、看不到是哪几个）
   const [staleOpen, setStaleOpen] = useState(false)
+  const [stalePage, setStalePage] = useState(1)
   const staleQuery = useQuery({
-    queryKey: ['stale-customers'],
-    queryFn: getStaleCustomers,
+    queryKey: ['stale-customers', stalePage],
+    queryFn: () => getStaleCustomers({ page: stalePage, page_size: 100 }),
     enabled: staleOpen,
   })
 
@@ -133,17 +134,18 @@ export default function WorkbenchPage() {
       value: String(summary?.todo_count ?? '-'),
       footer: `逾期 ${summary?.overdue_task_count ?? 0} 项`,
       tone: (summary?.overdue_task_count ?? 0) > 0 ? 'chip-error' : 'chip',
-      onClick: () => navigate('/tasks'),
+      onClick: () => navigate('/tasks?mine=false&status=active'),
+      footerTo: '/tasks?mine=false&status=active&overdue=true',
     },
     {
       label: '待跟进客户',
       value: String(summary?.stale_customer_count ?? '-'),
-      footer: '30 天未联系',
+      footer: `${summary?.stale_customer_days ?? '—'} 天无有效跟进或业务进展`,
       tone: (summary?.stale_customer_count ?? 0) > 0 ? 'chip-warning' : 'chip',
       // ⚠️ 从前这里跳 `/customers`（不带任何筛选），而客户列表既没有「待跟进」
       // 筛选项也没有「最近跟进」列 —— 报了警却看不到是哪几个（审查指出）。
       // 现在直接打开清单抽屉，一步到位。
-      onClick: () => setStaleOpen(true),
+      onClick: () => { setStalePage(1); setStaleOpen(true) },
     },
     {
       label: '进行中商机',
@@ -262,7 +264,11 @@ export default function WorkbenchPage() {
             <div className="kpi-label">{card.label}</div>
             <div className="kpi-value">{card.value}</div>
             <div style={{ marginTop: 10 }}>
-              <span className={card.tone}>{card.footer}</span>
+              {card.footerTo ? (
+                <Link className={card.tone} to={card.footerTo} onClick={(event) => event.stopPropagation()}>
+                  {card.footer}
+                </Link>
+              ) : <span className={card.tone}>{card.footer}</span>}
             </div>
           </div>
         ))}
@@ -553,27 +559,11 @@ export default function WorkbenchPage() {
                   borderRadius: 'var(--crm-radius-sm)',
                 }}
               >
-                <Checkbox
-                  // ⚠️ 勾选完成待办必须**受控 + 兜错**（2026-10-14 审查修）。
-                  //
-                  // 原来三处都不对：
-                  //   ① 没有 `checked`：Semi 自己把勾打上，请求失败也不会退回
-                  //      → 界面显示"已完成"而库里没变；
-                  //   ② `onChange` 是 async 且**无 try/catch** ——
-                  //      `completeTask` 抛错（403 / 404 / 后端乐观锁
-                  //      `rowcount==0` 的 409「请刷新后重试」/ 弱网）只会变成
-                  //      unhandled rejection，**一个字都不给用户**；
-                  //   ③ 后端返回非 0 code 时是 `ApiError`，同样无人接。
-                  // 后果：用户以为办完了，实际没办；再点一次仍然静默失败。
-                  // 现在：失败弹人话 + 无论成败都重取（成功更新列表、失败让勾回到
-                  // 真实状态）；请求期间禁用，防连点。
-                  //
-                  // `checked={false}` 是刻意的：这块列表是"今日待办"，
-                  // 提交中不该先显示成已完成（乐观勾选正是原来那个 bug 的形态）；
-                  // 提交后 `refetch` 会让这一行按服务端的真实状态重新渲染。
-                  checked={false}
+                <Popconfirm
+                  title={`确认完成「${task.title}」？`}
+                  content="完成后任务会从未完成列表中移除。"
                   disabled={completingId === task.id}
-                  onChange={async () => {
+                  onConfirm={async () => {
                     setCompletingId(task.id)
                     try {
                       const { completeTask } = await import('../../shared/api/task')
@@ -588,7 +578,12 @@ export default function WorkbenchPage() {
                       void summaryQuery.refetch()
                     }
                   }}
-                />
+                >
+                  {/* 勾选只打开确认框；状态以服务端为准，请求失败不显示完成。 */}
+                  <span style={{ display: 'inline-flex' }}>
+                    <Checkbox checked={false} disabled={completingId === task.id} aria-label={`完成任务：${task.title}`} />
+                  </span>
+                </Popconfirm>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: 13, lineHeight: 1.5 }}>{task.title}</div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
@@ -781,8 +776,8 @@ export default function WorkbenchPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>
             口径：你可见的私海客户里，
-            <b>{staleQuery.data?.days ?? 30} 天</b>内没有人工跟进记录、或从未跟进过的。
-            系统留痕（样品申请、订单生成等）不算跟进。
+            超过 <b>{staleQuery.data?.days ?? summary?.stale_customer_days ?? '—'} 天</b>
+            没有有效跟进或业务进展；从未有活动记录的客户，从建档时间起算。
           </div>
           {staleQuery.isLoading && <div style={{ color: 'var(--crm-text-3)' }}>正在加载…</div>}
           {staleQuery.isError && (
@@ -790,7 +785,7 @@ export default function WorkbenchPage() {
               加载失败：{(staleQuery.error as Error).message}
             </div>
           )}
-          {staleQuery.data && staleQuery.data.items.length === 0 && (
+          {staleQuery.data && staleQuery.data.total === 0 && (
             <div style={{ color: 'var(--crm-text-3)' }}>没有待跟进的客户，保持得很好。</div>
           )}
           {(staleQuery.data?.items ?? []).map((row) => (
@@ -812,7 +807,7 @@ export default function WorkbenchPage() {
                   </Link>
                   {row.level && <Tag size="small">{row.level} 级</Tag>}
                   <Tag size="small" color={row.days_since === null ? 'red' : 'orange'}>
-                    {row.days_since === null ? '从未跟进' : `${row.days_since} 天未联系`}
+                    {row.days_since === null ? '暂无活动时间记录' : `${row.days_since} 天无有效活动`}
                   </Tag>
                 </div>
                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--crm-text-2)' }}>
@@ -833,6 +828,15 @@ export default function WorkbenchPage() {
               </Link>
             </div>
           ))}
+          {staleQuery.data && staleQuery.data.total > 0 && (
+            <Pagination
+              currentPage={stalePage}
+              pageSize={100}
+              total={staleQuery.data.total}
+              showTotal
+              onPageChange={setStalePage}
+            />
+          )}
         </div>
       </SideSheet>
     </div>

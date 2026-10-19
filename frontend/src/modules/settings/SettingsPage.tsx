@@ -415,7 +415,12 @@ export default function SettingsPage() {
     const protected_ = (row.protection ?? []).length > 0
     const needNote = decision !== 'approve' || protected_ || early
     if (!needNote) {
-      decideMutation.mutate({ id: row.id, decision })
+      Modal.confirm({
+        title: `确认回收客户「${row.customer_name ?? '客户编号 ' + row.customer_id}」？`,
+        content: '执行后客户将进入公海，原负责人将不再负责该客户。',
+        okText: '确认回收',
+        onOk: () => decideMutation.mutate({ id: row.id, decision }),
+      })
       return
     }
     const note = window.prompt(
@@ -737,16 +742,15 @@ export default function SettingsPage() {
           >
             编辑
           </Button>
-          <Button
-            theme="borderless"
-            size="small"
-            type={record.status === 'active' ? 'danger' : 'primary'}
-            onClick={() =>
-              userStatusMutation.mutate({ id: record.id, enable: record.status !== 'active' })
-            }
+          <Popconfirm
+            title={`确认${record.status === 'active' ? '停用' : '启用'}账号「${record.name}」？`}
+            content={record.status === 'active' ? '停用后该账号将无法继续使用系统。' : '启用后该账号可按现有权限使用系统。'}
+            onConfirm={() => userStatusMutation.mutate({ id: record.id, enable: record.status !== 'active' })}
           >
-            {record.status === 'active' ? '停用' : '启用'}
-          </Button>
+            <Button theme="borderless" size="small" type={record.status === 'active' ? 'danger' : 'primary'}>
+              {record.status === 'active' ? '停用' : '启用'}
+            </Button>
+          </Popconfirm>
         </>
       ),
     },
@@ -956,12 +960,9 @@ export default function SettingsPage() {
                   }))}
                 />
                 <div style={{ flex: 1 }} />
-                <Button
-                  onClick={() => dtSyncMutation.mutate()}
-                  loading={dtSyncMutation.isPending}
-                >
-                  同步钉钉人员
-                </Button>
+                <Popconfirm title="确认同步钉钉人员？" content="将读取钉钉通讯录并更新本地人员绑定信息。" onConfirm={() => dtSyncMutation.mutate()}>
+                  <Button loading={dtSyncMutation.isPending}>同步钉钉人员</Button>
+                </Popconfirm>
                 <Button
                   theme="solid"
                   onClick={() => {
@@ -1224,7 +1225,14 @@ export default function SettingsPage() {
                           theme="borderless"
                           size="small"
                           loading={dictionaryUpdateMutation.isPending}
-                          onClick={() => dictionaryUpdateMutation.mutate({ id: record.id, changes: { enabled: !record.enabled } })}
+                          onClick={() => {
+                            const enabled = !record.enabled
+                            Modal.confirm({
+                              title: `${enabled ? '启用' : '停用'}字典项？`,
+                              content: `${enabled ? '启用后' : '停用后'}，后续业务表单${enabled ? '可以' : '不再'}选择「${record.label}」；历史数据不会被改写。`,
+                              onOk: () => dictionaryUpdateMutation.mutate({ id: record.id, changes: { enabled } }),
+                            })
+                          }}
                         >
                           {record.enabled ? '停用' : '启用'}
                         </Button>
@@ -1311,12 +1319,9 @@ export default function SettingsPage() {
                   pagination={false}
                 />
                 <div style={{ marginTop: 12 }}>
-                  <Button
-                    onClick={() => recycleMutation.mutate()}
-                    loading={recycleMutation.isPending}
-                  >
-                    扫描并生成回收预告
-                  </Button>
+                  <Popconfirm title="确认扫描并生成回收预告？" content="会按当前规则生成待复核候选，不会直接回收客户。" onConfirm={() => recycleMutation.mutate()}>
+                    <Button loading={recycleMutation.isPending}>扫描并生成回收预告</Button>
+                  </Popconfirm>
                   <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 12 }}>
                     正式运行由定时任务触发；这里只「提名」候选，不会直接回收
                   </span>
@@ -1734,12 +1739,9 @@ export default function SettingsPage() {
                   pagination={false}
                 />
                 <div style={{ marginTop: 12 }}>
-                  <Button
-                    onClick={() => autoTaskMutation.mutate()}
-                    loading={autoTaskMutation.isPending}
-                  >
-                    立即执行一次
-                  </Button>
+                  <Popconfirm title="确认立即执行自动任务规则？" content="将按当前启用的规则生成任务。" onConfirm={() => autoTaskMutation.mutate()}>
+                    <Button loading={autoTaskMutation.isPending}>立即执行一次</Button>
+                  </Popconfirm>
                   <span style={{ color: 'var(--crm-text-3)', fontSize: 12, marginLeft: 12 }}>
                     同一个业务对象不会重复生成任务
                   </span>

@@ -204,7 +204,15 @@ export default function RulesPanel() {
           <Switch
             checked={row.enabled}
             size="small"
-            onChange={(checked) => toggleMutation.mutate({ id: row.id, enabled: checked })}
+            onChange={(checked) => {
+              Modal.confirm({
+                title: `${checked ? '启用' : '停用'}审批规则？`,
+                content: checked
+                  ? `启用后，符合「${row.name}」条件的新报价审批会按此规则处理。`
+                  : `停用后，符合「${row.name}」条件的新报价审批将不再使用此规则。`,
+                onOk: () => toggleMutation.mutate({ id: row.id, enabled: checked }),
+              })
+            }}
           />
           {row.published_version_no === 0 ? (
             <Tag color="grey" size="small">未发布</Tag>

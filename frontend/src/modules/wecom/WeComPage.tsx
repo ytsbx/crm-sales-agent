@@ -1,7 +1,7 @@
 import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Banner, Button, Empty, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Empty, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listUsers } from '../../shared/api/system'
 import KpiStrip from '../../shared/components/KpiStrip'
@@ -346,13 +346,9 @@ export default function WeComPage() {
               )}
               <Button onClick={() => setTransferVisible(true)}>离职继承</Button>
               {SYNC_BUTTONS.map((item) => (
-                <Button
-                  key={item.key}
-                  loading={syncMutation.isPending}
-                  onClick={() => syncMutation.mutate(item.run)}
-                >
-                  {item.label}
-                </Button>
+                <Popconfirm key={item.key} title={`确认${item.label}？`} content="将读取企业微信数据并更新本地同步记录。" disabled={syncMutation.isPending} onConfirm={() => syncMutation.mutate(item.run)}>
+                  <Button loading={syncMutation.isPending}>{item.label}</Button>
+                </Popconfirm>
               ))}
             </>
           )
@@ -587,15 +583,9 @@ export default function WeComPage() {
                       {candidate.reasons.slice(0, 3).join('；')}
                     </div>
                     {canManage && (
-                      <Button
-                        size="small"
-                        theme="solid"
-                        style={{ marginTop: 8 }}
-                        loading={bindMutation.isPending}
-                        onClick={() => bindMutation.mutate(candidate.id)}
-                      >
-                        关联已有客户
-                      </Button>
+                      <Popconfirm title={`确认关联客户「${candidate.name}」？`} content="请核对匹配信息，确认是同一位客户。" disabled={bindMutation.isPending} onConfirm={() => bindMutation.mutate(candidate.id)}>
+                        <Button size="small" theme="solid" style={{ marginTop: 8 }} loading={bindMutation.isPending}>关联已有客户</Button>
+                      </Popconfirm>
                     )}
                   </div>
                 ))}

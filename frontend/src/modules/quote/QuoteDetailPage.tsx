@@ -927,7 +927,16 @@ export default function QuoteDetailPage() {
             },
             {
               label: '撤回审批',
-              element: <Button onClick={() => withdrawMutation.mutate()}>撤回审批</Button>,
+              element: (
+                <Popconfirm
+                  title="确认撤回当前版本的报价审批？"
+                  content="撤回后本次审批结束，报价回到草稿；需要审批时须重新提交。"
+                  onConfirm={() => withdrawMutation.mutate()}
+                  disabled={withdrawMutation.isPending}
+                >
+                  <Button loading={withdrawMutation.isPending}>撤回审批</Button>
+                </Popconfirm>
+              ),
             },
             {
               label: '标记已发送',

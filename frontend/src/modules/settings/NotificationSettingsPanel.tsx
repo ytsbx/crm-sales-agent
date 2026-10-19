@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Banner, Button, Select, Switch, Toast } from '@douyinfe/semi-ui'
+import { Banner, Button, Popconfirm, Select, Switch, Toast } from '@douyinfe/semi-ui'
 
 import SectionCard from '../../shared/components/SectionCard'
 import { getDeliveryFailures, retryFailedNotifications } from '../../shared/api/analytics'
@@ -272,13 +272,9 @@ export default function NotificationSettingsPanel() {
                 </div>
               ))}
             </div>
-            <Button
-              loading={retryMutation.isPending}
-              disabled={stuck === 0}
-              onClick={() => retryMutation.mutate()}
-            >
-              补投失败与未投递的通知
-            </Button>
+            <Popconfirm title="确认补投失败与未投递的通知？" content="将尝试向接收人重新发送通知。" disabled={stuck === 0 || retryMutation.isPending} onConfirm={() => retryMutation.mutate()}>
+              <Button loading={retryMutation.isPending} disabled={stuck === 0}>补投失败与未投递的通知</Button>
+            </Popconfirm>
           </>
         )}
       </SectionCard>

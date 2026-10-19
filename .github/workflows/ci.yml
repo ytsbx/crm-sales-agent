@@ -276,6 +276,14 @@ jobs:
           node --test ../ops/blocked_hint.test.mjs
           node --test ../ops/guarded_button.test.mjs
           node --test ../ops/payment_allocation.test.mjs
+          node --test ../ops/workbench_confirmation.test.mjs
+          node --test ../ops/high_risk_confirmation.test.mjs
+          node --test ../ops/approval_rule_toggle_confirmation.test.mjs
+          node --test ../ops/dictionary_toggle_confirmation.test.mjs
+          node --test ../ops/sku_stop_cancel.test.mjs
+          node --test ../ops/recycle_decision_confirmation.test.mjs
+          # 真实构建 + 隔离浏览器 + 内存模拟 API：取消不提交，确认对象/版本正确。
+          node ../ops/confirmation_browser_smoke.mjs dist
           # 静态检查：含禁用控件的页面必须接了共用件，或在例外清单里写明理由。
           # 单测只测共享件算得对不对，**测不到"页面忘了接"**（这一轮的毛病正是忘了接）。
           python3 ../ops/check_disabled_hint.py

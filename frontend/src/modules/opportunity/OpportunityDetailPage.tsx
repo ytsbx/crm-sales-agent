@@ -391,9 +391,13 @@ export default function OpportunityDetailPage() {
       width: 90,
       render: (_: unknown, record: Task) =>
         record.status !== 'done' ? (
-          <a style={{ color: 'var(--crm-primary)' }} onClick={() => completeTaskMutation.mutate(record.id)}>
-            完成
-          </a>
+          <Popconfirm
+            title="确认完成这条任务？"
+            content="完成后任务会从未完成列表中移除。"
+            onConfirm={() => completeTaskMutation.mutate(record.id)}
+          >
+            <a style={{ color: 'var(--crm-primary)' }}>完成</a>
+          </Popconfirm>
         ) : (
           '-'
         ),

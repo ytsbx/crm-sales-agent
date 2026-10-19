@@ -853,9 +853,14 @@ export default function OrderDetailPage() {
                   本单还没有 ERP/MES 单号：先点左边「推送 ERP/MES」，等对方回单号后才能同步状态
                 </span>
               )}
-              <Button onClick={() => repurchaseMutation.mutate()} loading={repurchaseMutation.isPending}>
-                复购开新商机
-              </Button>
+              <Popconfirm
+                title="确认创建复购商机？"
+                content="将按本订单生成一条新的商机记录，避免误点造成重复商机。"
+                disabled={repurchaseMutation.isPending}
+                onConfirm={() => repurchaseMutation.mutate()}
+              >
+                <Button loading={repurchaseMutation.isPending}>复购开新商机</Button>
+              </Popconfirm>
             </>
           )
         }

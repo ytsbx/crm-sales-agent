@@ -1,11 +1,11 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Checkbox, DatePicker, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
   batchCompleteTasks,
@@ -69,10 +69,21 @@ function primaryTaskLink(record: Task): { label: string; to: string } | null {
 
 export default function TaskListPage() {
   const queryClient = useQueryClient()
-  const [mine, setMine] = useState(true)
-  const [status, setStatus] = useState<string | undefined>('pending')
-  const [overdue, setOverdue] = useState(false)
-  const [page, setPage] = useState(1)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const mine = searchParams.get('mine') !== 'false'
+  const status = searchParams.has('status') ? searchParams.get('status') || undefined : 'pending'
+  const overdue = searchParams.get('overdue') === 'true'
+  const setFilter = (name: string, value: string) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.set(name, value)
+      if (name !== 'page') next.set('page', '1')
+      return next
+    }, { replace: true })
+  }
+  const requestedPage = Number(searchParams.get('page') ?? 1)
+  const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1
+  const setPage = (value: number) => setFilter('page', String(value))
   const [pageSize, setPageSize] = useState(20)
 
   const [createVisible, setCreateVisible] = useState(false)
@@ -251,9 +262,13 @@ export default function TaskListPage() {
           <Link to={`/documents?contract=${record.source_business_id}`}>去登记回签（归档后自动完成）</Link>
         ) : (
           <div style={{ display: 'flex', gap: 10 }}>
-            <a style={{ color: 'var(--crm-primary)' }} onClick={() => completeMutation.mutate(record.id)}>
-              完成
-            </a>
+            <Popconfirm
+              title="确认完成这条任务？"
+              content="完成后任务会从未完成列表中移除。"
+              onConfirm={() => completeMutation.mutate(record.id)}
+            >
+              <a style={{ color: 'var(--crm-primary)' }}>完成</a>
+            </Popconfirm>
             <a
               style={{ color: 'var(--crm-primary)' }}
               onClick={() => {
@@ -290,8 +305,7 @@ export default function TaskListPage() {
           <Checkbox
             checked={mine}
             onChange={(event) => {
-              setMine(Boolean(event.target.checked))
-              setPage(1)
+              setFilter('mine', String(Boolean(event.target.checked)))
             }}
           >
             只看我的
@@ -300,10 +314,10 @@ export default function TaskListPage() {
             placeholder="状态"
             value={status}
             onChange={(value) => {
-              setStatus(value as string | undefined)
-              setPage(1)
+              setFilter('status', (value as string | undefined) ?? '')
             }}
             optionList={[
+              { value: 'active', label: '未完成' },
               { value: 'pending', label: '待处理' },
               { value: 'doing', label: '处理中' },
               { value: 'done', label: '已完成' },
@@ -315,21 +329,25 @@ export default function TaskListPage() {
           <Checkbox
             checked={overdue}
             onChange={(event) => {
-              setOverdue(Boolean(event.target.checked))
-              setPage(1)
+              setFilter('overdue', String(Boolean(event.target.checked)))
             }}
           >
             只看逾期
           </Checkbox>
           <div style={{ flex: 1 }} />
           {/* 批量完成（审查 B2-06）：勾选后一次性完成，成功/跳过与原因都要说清 */}
-          <Button
+          <Popconfirm
+            title={`确认完成选中的 ${selectedIds.length} 条任务？`}
+            onConfirm={() => batchCompleteMutation.mutate()}
             disabled={selectedIds.length === 0 || batchCompleteMutation.isPending}
-            loading={batchCompleteMutation.isPending}
-            onClick={() => batchCompleteMutation.mutate()}
           >
-            批量完成{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
-          </Button>
+            <Button
+              disabled={selectedIds.length === 0 || batchCompleteMutation.isPending}
+              loading={batchCompleteMutation.isPending}
+            >
+              批量完成{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
+            </Button>
+          </Popconfirm>
           <Button theme="solid" onClick={() => setCreateVisible(true)}>
             新建任务
           </Button>
