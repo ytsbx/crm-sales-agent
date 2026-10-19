@@ -26,6 +26,8 @@ const sampleRequests=[]
 const wecomRequests=[]
 const wecomBindings=[]
 const recycleRequests=[]
+const quoteWithdrawals=[]
+const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount:100,charge_amount:0,discount_amount:0,total_amount:100,logistics_amount:0,other_charge_amount:0,pricing_basis:'actual_pass_through',approval_status:'pending',approval_required:true,created_at:new Date().toISOString()})
 const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
@@ -53,6 +55,9 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/tasks')) data={items:[task],total:1,page:1,page_size:20}
     else if(path.endsWith('/tasks/batch-complete') && req.method==='POST') { batchBodies.push(body); data={completed:[7],skipped:[]} }
     else if(path.endsWith('/opportunities')) data={items:[],total:0}
+    else if(path.endsWith('/quotes/121/versions')) data=[quoteVersion(131),quoteVersion(130)]
+    else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:[],charges:[],approval:null}
+    else if(/\/quote-versions\/(130|131)\/withdraw-approval$/.test(path) && req.method==='POST') {quoteWithdrawals.push(Number(path.split('/').at(-2)));data=null}
     else if(path.endsWith('/recycle-bin/leads')) data={items:[{id:21,name:'恢复确认测试线索',status_label:'待处理',created_at:new Date().toISOString(),deleted_at:new Date().toISOString(),deleted_by_pending:true}],total:1,page:1,page_size:10}
     else if(path.endsWith('/leads/21/restore') && req.method==='POST') {restored++;data=null}
     else if(path.endsWith('/recycle-bin/products')) data={items:[recycleRecord(101,'隔离恢复产品',{deleted_sku_count:1})],total:1}
@@ -336,6 +341,26 @@ try {
   for(let i=0;wecomBindings.length===0 && i<30;i++)await sleep(100)
   assert.deepEqual(wecomBindings,[{contact_id:92,customer_id:94}])
   console.log('BROWSER_WECOM_BIND_CANCEL_NO_WRITE_CONFIRM_SECOND_CANDIDATE_ID=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  const withdraw=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='撤回审批')`
+  await waitFor(withdraw)
+  await evaluate(`${withdraw}.click()`)
+  await waitFor(`document.body.innerText.includes('确认撤回当前版本的报价审批')`)
+  assert.equal(quoteWithdrawals.length,0)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  await sleep(250)
+  assert.equal(quoteWithdrawals.length,0)
+  await evaluate(`${withdraw}.click()`)
+  await waitFor(`document.body.innerText.includes('确认撤回当前版本的报价审批')`)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  for(let i=0;quoteWithdrawals.length===0 && i<30;i++)await sleep(100)
+  assert.deepEqual(quoteWithdrawals,[131])
+  console.log('BROWSER_QUOTE_WITHDRAW_CANCEL_NO_WRITE_CONFIRM_CURRENT_VERSION=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=130`})
+  await waitFor(`document.body.innerText.includes('ISO-QUOTE-121')`)
+  assert.equal(await evaluate(`Boolean(${withdraw})`),false,'historical version must not offer withdrawal')
+  assert.deepEqual(quoteWithdrawals,[131])
+  console.log('BROWSER_QUOTE_HISTORICAL_VERSION_NO_WITHDRAW=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/recycle-bin`})
   for(const [tab,name,title,endpoint,modal] of [
     ['产品','隔离恢复产品','确认恢复产品及随产品删除的 SKU','products/101',false],
