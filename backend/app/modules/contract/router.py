@@ -6,7 +6,7 @@ import httpx
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -806,6 +806,23 @@ async def delete_document(doc_id: int, request: Request, user: CurrentUser = Dep
     if doc.status == "signed":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已签署合同不能删除，请使用作废流程", 422)
     doc.deleted_at = datetime.now(UTC)
+    # 合同回签待办的生命周期跟随文档：文档进回收站后，继续显示“去登记回签”
+    # 会把用户带到一个不可见的对象，形成任务数与文档数不一致。
+    from app.modules.task.model import Task
+    await session.execute(
+        update(Task)
+        .where(
+            Task.source_business_type == "contract",
+            Task.source_business_id == doc.id,
+            Task.source_key == f"contract:signed-upload:{doc.id}",
+            Task.status.in_(("pending", "doing")),
+        )
+        .values(
+            status="cancelled",
+            completed_at=datetime.now(UTC),
+            completion_note="合同已移入回收站，待办自动取消",
+        )
+    )
     await write_audit(session, operator_id=user.id, action="delete", business_type="contract", business_id=doc.id,
                       after={"doc_no": doc.doc_no, "status": doc.status}, ip=client_ip(request))
     await session.commit()
@@ -825,6 +842,19 @@ async def restore_document(doc_id: int, request: Request, user: CurrentUser = De
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "请先恢复该合同所属客户", 422)
     if doc.deleted_at is not None:
         doc.deleted_at = None
+        # 只恢复由“删除合同”自动取消的待办；人工取消或已完成的任务不能被恢复。
+        from app.modules.task.model import Task
+        await session.execute(
+            update(Task)
+            .where(
+                Task.source_business_type == "contract",
+                Task.source_business_id == doc.id,
+                Task.source_key == f"contract:signed-upload:{doc.id}",
+                Task.status == "cancelled",
+                Task.completion_note == "合同已移入回收站，待办自动取消",
+            )
+            .values(status="pending", completed_at=None, completion_note=None)
+        )
         await write_audit(session, operator_id=user.id, action="restore", business_type="contract", business_id=doc.id,
                           after={"doc_no": doc.doc_no}, ip=client_ip(request))
         await session.commit()
