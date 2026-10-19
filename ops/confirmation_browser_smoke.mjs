@@ -25,6 +25,8 @@ const approvalsApproved=[], approvalsRejected=[]
 const sampleRequests=[]
 const wecomRequests=[]
 const wecomBindings=[]
+const recycleRequests=[]
+const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
 const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending'})
@@ -53,6 +55,11 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/opportunities')) data={items:[],total:0}
     else if(path.endsWith('/recycle-bin/leads')) data={items:[{id:21,name:'恢复确认测试线索',status_label:'待处理',created_at:new Date().toISOString(),deleted_at:new Date().toISOString(),deleted_by_pending:true}],total:1,page:1,page_size:10}
     else if(path.endsWith('/leads/21/restore') && req.method==='POST') {restored++;data=null}
+    else if(path.endsWith('/recycle-bin/products')) data={items:[recycleRecord(101,'隔离恢复产品',{deleted_sku_count:1})],total:1}
+    else if(path.endsWith('/recycle-bin/skus')) data={items:[recycleRecord(102,'隔离恢复SKU',{sku_code:'ISO-SKU-102',product_deleted:false,removed_via:'direct'}),recycleRecord(107,'随产品删除SKU',{sku_code:'ISO-SKU-107',product_deleted:true,removed_via:'with_product'})],total:2}
+    else if(path.endsWith('/recycle-bin/customers')) data={items:[recycleRecord(103,'隔离恢复客户',{removed_via:'direct',original_owner_id:1,original_owner_name:'隔离负责人',original_owner_active:true,merged_into:null,final_target:null}),recycleRecord(108,'被合并客户',{removed_via:'merged',original_owner_active:true,merged_into:{id:9,name:'合并目标',visible:true,state:'ok'},final_target:null})],total:2}
+    else if(path.endsWith('/recycle-bin/contracts')) data={items:[recycleRecord(105,'隔离恢复合同',{doc_no:'ISO-CONTRACT-105',title:'隔离恢复合同'})],total:1}
+    else if(/\/(products|skus|customers|samples|contract-documents)\/(101|102|103|104|105)\/restore$/.test(path) && req.method==='POST') {recycleRequests.push({path,body});data=path.includes('/products/')?{restored_skus:[],skipped_skus:[]}:null}
     else if(path.endsWith('/leads')) data={items:[{id:31,name:'线索甲',status:'pending',status_label:'待处理',owner_id:null},{id:32,name:'线索乙',status:'pending',status_label:'待处理',owner_id:null}],total:2,page:1,page_size:10}
     else if(/\/leads\/\d+\/claim$/.test(path) && req.method==='POST') {const id=Number(path.split('/').at(-2));claimedLeads.push(id);data={id,owner_id:1}}
     else if(path.endsWith('/customers/9')) data=publicCustomer
@@ -60,7 +67,7 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/approvals')) data={items:[51,52].map(id=>({id,quote_no:`隔离审批-${id}`,version_id:id,quote_id:id,version_no:1,status:'pending',status_label:'待审批',can_approve:true,summary:{}})),total:2,page:1,page_size:50}
     else if(/\/approvals\/\d+\/approve$/.test(path) && req.method==='POST') {approvalsApproved.push(Number(path.split('/').at(-2)));data=null}
     else if(/\/approvals\/\d+\/reject$/.test(path) && req.method==='POST') {approvalsRejected.push({id:Number(path.split('/').at(-2)),comment:url.searchParams.get('comment')});data=null}
-    else if(path.endsWith('/samples')) data={items:[],total:0,page:1,page_size:20}
+    else if(path.endsWith('/samples')) data=url.searchParams.get('include_deleted')==='true'?{items:[recycleRecord(104,'隔离恢复样品',{customer_name:'隔离恢复样品客户'})],total:1}:{items:[],total:0,page:1,page_size:20}
     else if(/\/samples\/\d+$/.test(path)) data=sampleFixture(Number(path.split('/').at(-1)))
     else if(/\/samples\/\d+\/(approve|resubmit|ship|sign|revise)$/.test(path) && req.method==='POST') {
       const id=Number(path.split('/').at(-2)),action=path.split('/').at(-1)
@@ -324,6 +331,40 @@ try {
   for(let i=0;wecomBindings.length===0 && i<30;i++)await sleep(100)
   assert.deepEqual(wecomBindings,[{contact_id:92,customer_id:94}])
   console.log('BROWSER_WECOM_BIND_CANCEL_NO_WRITE_CONFIRM_SECOND_CANDIDATE_ID=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/recycle-bin`})
+  for(const [tab,name,title,endpoint,modal] of [
+    ['产品','隔离恢复产品','确认恢复产品及随产品删除的 SKU','products/101',false],
+    ['产品','ISO-SKU-102','确认恢复这条 SKU','skus/102',false],
+    ['客户','隔离恢复客户','确认恢复客户「隔离恢复客户」','customers/103',true],
+    ['样品','隔离恢复样品客户','确认恢复这张样品申请','samples/104',false],
+    ['合同','ISO-CONTRACT-105','确认恢复这份合同','contract-documents/105',false],
+  ]) {
+    const tabButton=`Array.from(document.querySelectorAll('[role="tab"]')).find(t=>t.innerText.trim()===${JSON.stringify(tab)})`
+    await waitFor(tabButton)
+    await evaluate(`${tabButton}.click()`)
+    const restore=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes(${JSON.stringify(name)}))?.querySelector('a:last-child')`
+    await waitFor(restore)
+    assert.equal(await evaluate(`${restore}.innerText.trim()`),'恢复')
+    if(tab==='产品') assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('ISO-SKU-107')).querySelectorAll('a').length`),0,'SKU whose product is deleted must have no restore action')
+    if(tab==='客户') assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('被合并客户')).innerText.includes('恢复')`),false,'merged customer must have no restore action')
+    const before=recycleRequests.length
+    const container=modal?`document.querySelector('.semi-modal-confirm')`:popup
+    await evaluate(`${restore}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify(title)})`)
+    assert.equal(recycleRequests.length,before)
+    await evaluate(`Array.from(${container}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+    await sleep(250)
+    assert.equal(recycleRequests.length,before)
+    await evaluate(`${restore}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify(title)})`)
+    await evaluate(`Array.from(${container}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+    for(let i=0;recycleRequests.length===before && i<30;i++)await sleep(100)
+    assert.equal(recycleRequests.length,before+1)
+    assert.equal(recycleRequests.at(-1).path,`/api/v1/${endpoint}/restore`)
+    if(modal) assert.deepEqual(recycleRequests.at(-1).body,{owner_id:null})
+    await waitFor(`!${container}`)
+    console.log(`BROWSER_RECYCLE_${endpoint}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true`)
+  }
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
 }
