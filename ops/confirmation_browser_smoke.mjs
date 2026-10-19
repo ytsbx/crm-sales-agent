@@ -23,6 +23,9 @@ const completedBodies=[], batchBodies=[]
 const claimedLeads=[], claimedCustomers=[]
 const approvalsApproved=[], approvalsRejected=[]
 const sampleRequests=[]
+const wecomRequests=[]
+const wecomBindings=[]
+const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
 const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending'})
 const publicCustomer={id:9,name:'领取确认测试客户',pool_status:'public',status:'active',tags:[],owner_id:null}
@@ -62,6 +65,14 @@ const server=createServer(async (req,res)=>{
     else if(/\/samples\/\d+\/(approve|resubmit|ship|sign|revise)$/.test(path) && req.method==='POST') {
       const id=Number(path.split('/').at(-2)),action=path.split('/').at(-1)
       sampleRequests.push({id,action,body});data=sampleFixture(action==='revise'?id+100:id)
+    }
+    else if(path.endsWith('/integrations/wecom/readiness')) data={configured:{corp_id:true,agent_id:true,contact_secret:true,external_contact_secret:true,callback:true},counts:{wecom_users:0,external_contacts:0,follow_relations:0,unbound_contacts:0,unmatched_users:0},can_sync_contact:true,can_sync_external:true}
+    else if(path.endsWith('/integrations/wecom/unbound-contacts')) data={items:[wecomContact],total:1,page:1,page_size:20}
+    else if(path.endsWith('/integrations/wecom/sync-jobs')) data={items:[],total:0,page:1,page_size:20}
+    else if(path.endsWith('/integrations/wecom/unbound-contacts/92/candidates')) data={contact:wecomContact,candidates:[{id:93,name:'隔离匹配客户甲',score:80,reasons:[]},{id:94,name:'隔离匹配客户乙',score:85,reasons:[]}]}
+    else if(path.endsWith('/integrations/wecom/unbound-contacts/92/bind-customer') && req.method==='POST') {wecomBindings.push({contact_id:92,...body});data={contact_id:92,customer_id:body.customer_id,customer_name:'隔离匹配客户乙'}}
+    else if(/\/integrations\/wecom\/sync-(departments|users|external-contacts|follow-relations)$/.test(path) && req.method==='POST') {
+      wecomRequests.push(path.split('/').at(-1));data={id:91,status:'success',success_count:0,fail_count:0}
     }
     res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify({code:0,message:'ok',data})); return
   }
@@ -276,6 +287,43 @@ try {
     if(id===62) assert.equal(sampleRequests.at(-1).body.reject_reason,'隔离样品拒绝原因')
     console.log(`BROWSER_SAMPLE_${id}_${action}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true`)
   }
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/wecom`})
+  for(const [label,endpoint] of [
+    ['同步部门','sync-departments'],['同步成员','sync-users'],
+    ['同步外部联系人','sync-external-contacts'],['同步跟进关系','sync-follow-relations'],
+  ]) {
+    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
+    await waitFor(button)
+    const before=wecomRequests.length
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify('确认'+label+'？')})`)
+    assert.equal(wecomRequests.length,before,'opening sync confirmation must not submit')
+    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+    await sleep(250)
+    assert.equal(wecomRequests.length,before,'cancel sync must not submit')
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify('确认'+label+'？')})`)
+    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+    for(let i=0;wecomRequests.length===before && i<30;i++)await sleep(100)
+    assert.equal(wecomRequests.length,before+1)
+    assert.equal(wecomRequests.at(-1),endpoint,'sync must call its own endpoint')
+    await waitFor(`!${popup}`)
+    console.log(`BROWSER_WECOM_${endpoint}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ENDPOINT=true`)
+  }
+  const bindButton=`Array.from(document.querySelectorAll('button')).filter(b=>b.innerText.trim()==='关联已有客户')[1]`
+  await waitFor(bindButton)
+  await evaluate(`${bindButton}.click()`)
+  await waitFor(`document.body.innerText.includes('确认关联客户「隔离匹配客户乙」')`)
+  assert.equal(wecomBindings.length,0)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  await sleep(250)
+  assert.equal(wecomBindings.length,0)
+  await evaluate(`${bindButton}.click()`)
+  await waitFor(`document.body.innerText.includes('确认关联客户「隔离匹配客户乙」')`)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  for(let i=0;wecomBindings.length===0 && i<30;i++)await sleep(100)
+  assert.deepEqual(wecomBindings,[{contact_id:92,customer_id:94}])
+  console.log('BROWSER_WECOM_BIND_CANCEL_NO_WRITE_CONFIRM_SECOND_CANDIDATE_ID=true')
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
 }
