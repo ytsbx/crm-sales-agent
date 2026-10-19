@@ -307,3 +307,16 @@
 
 - 静态权限守卫列出 4 个“目录中定义但代码文本未直接引用”的权限码。进一步调用链核对确认：`customer:contact_full` 在联系方式脱敏、搜索和 Agent 工具中集中使用；`product:review` 在新品洞察和询价评审服务中使用；`quote:approve` / `quote:finance_approve` 在审批前端入口、审批 access/service、规则会签和数据种子中使用。
 - 这是集中常量/字符串间接引用导致的静态守卫提示，不是权限功能缺失；未修改权限目录或业务能力。
+
+## 隔离 PostgreSQL 事务验证恢复（2026-10-19）
+
+- 环境误判已纠正：本机 PostgreSQL 15 二进制已安装，系统服务未启动不意味着无法运行隔离测试。使用新建临时目录 `/tmp/crm-pg-audit-v0FOd2`、loopback 55432 和空库 `crm_iso_audit`，迁移到 head、生成专用测试夹具；独立测试后端监听 8073。外部消息推送及调度均关闭，健康接口确认 OA submission/sync/stream 全为 false。
+- `check_batch15_financial_lifecycle.py`：退出 0，验证同来源并发核定只保留一笔正确金额、255 字凭证取消、交期计划关闭、月结协议替代/作废后旧提醒恢复。
+- `check_scheduler.py`：退出 0，覆盖调度器装配/关闭、重复扫描幂等、报价过期提醒、约定下次跟进豁免及完成任务后的约定清空。
+- `check_payment_consistency.py`：退出 0，覆盖修前写偏斜复现、重复登记请求键、应收计划并发只落一套、确认/驳回终态一致、币种继承与跨币种拒绝。
+- `check_schedule_confirm_race.py`：13 条通过，真实行锁证明转移负责人和交期确认串行；旧负责人等待中的请求在锁内重判后被拒，交期未被错误改写。
+- `check_order_payment_api.py`：退出 0，覆盖订单履约/取消、应收、回款确认和业绩归属，夹具清理完成。
+- `check_data_scope.py`：首次 3 个旧合同夹具用例返回 401；查明 `_legacy_contract_fixture` 在测试进程验证实际 API 令牌，但测试进程未传与后端相同的 JWT_SECRET。对齐仅测试配置后原断言全部通过，未放宽断言或修改业务实现。它同时覆盖越权列表/详情/批量写、成本脱敏、合同幂等和文件原件保护。
+- 证据日志：`/tmp/crm-audit-{migrate,seed,scheduler,payment,schedule-race,order-payment,data-scope,data-scope-aligned,api}.log`；初次失败日志保留，未隐藏。
+- 收尾：已关闭测试后端 PID 62809 和临时 PostgreSQL PID 62333，确认无 postmaster.pid 后删除本轮临时集群。没有访问生产库、演示库或系统开发库，没有部署或修改产品代码。
+- 本轮未确认新的产品 Bug，无新增待决策方案；此前“无法进行真实事务验证”的环境阻碍已解除。此结果只证明上述具名场景，不能推出全项目、全部资金/并发边界均已完成；余下逐入口浏览器和其他业务边界按新证据继续审查。
