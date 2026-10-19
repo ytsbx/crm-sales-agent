@@ -68,6 +68,7 @@ const EMPTY_FORM = {
   mobile: '',
   email: '',
   source: '手工录入',
+  source_detail: '',
   region: '',
   remark: '',
 }
@@ -385,6 +386,10 @@ export default function LeadListPage() {
             Toast.warning('线索名称必填')
             return
           }
+          if (form.source === '其他渠道' && !form.source_detail.trim()) {
+            Toast.warning('请填写其他渠道说明')
+            return
+          }
           createMutation.mutate()
         }}
         confirmLoading={createMutation.isPending}
@@ -418,7 +423,11 @@ export default function LeadListPage() {
               <div style={{ marginBottom: 4 }}>来源</div>
               <Select
                 value={form.source}
-                onChange={(v) => setForm({ ...form, source: v as string })}
+                onChange={(v) => setForm({
+                  ...form,
+                  source: v as string,
+                  source_detail: v === '其他渠道' ? form.source_detail : '',
+                })}
                 optionList={SOURCE_OPTIONS}
                 style={{ width: '100%' }}
               />
@@ -428,6 +437,16 @@ export default function LeadListPage() {
               <Input value={form.region} onChange={(v) => setForm({ ...form, region: v })} />
             </div>
           </div>
+          {form.source === '其他渠道' && (
+            <div>
+              <FormLabel required>其他渠道说明</FormLabel>
+              <Input
+                value={form.source_detail}
+                onChange={(v) => setForm({ ...form, source_detail: v })}
+                placeholder="请填写具体来源，例如：合作伙伴推荐、线下拜访"
+              />
+            </div>
+          )}
           <div>
             <div style={{ marginBottom: 4 }}>备注</div>
             <TextArea value={form.remark} onChange={(v) => setForm({ ...form, remark: v })} rows={2} />
