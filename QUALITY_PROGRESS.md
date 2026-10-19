@@ -289,3 +289,8 @@
 - 已将本轮已验证修复、回归测试、CI 登记和质量记录提交为 `400a644`（`fix: harden CRM workflows and confirmation safeguards`）。
 - 已成功推送到 GitHub `pending-acceptance` 分支；工作区提交后无未跟踪或未提交文件。
 - `git ls-remote` 的额外只读核对受当前沙箱 SSH 网络限制，但 `git push` 已返回远端从 `f934af7` 更新到 `400a644`。
+
+## 后端前端接口闭环复核（2026-10-19）
+
+- 重新执行 `PYTHONPATH=. .venv/bin/python ../ops/api_gap.py`：文档接口去重后 574 条，实际注册路由 595 条，“文档有、代码没有”0 条。
+- 额外注册路由仍需按内部接口、自动任务和第三方集成区分，未把数量差异误判为用户功能缺失。
