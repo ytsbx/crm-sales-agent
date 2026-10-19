@@ -81,6 +81,7 @@ const server=createServer(async (req,res)=>{
     else if(/\/integrations\/wecom\/sync-(departments|users|external-contacts|follow-relations)$/.test(path) && req.method==='POST') {
       wecomRequests.push(path.split('/').at(-1));data={id:91,status:'success',success_count:0,fail_count:0}
     }
+    if(req.method==='POST' && (path.endsWith('/notifications/41/redispatch') || /\/leads\/\d+\/claim$/.test(path))) await new Promise(resolve=>setTimeout(resolve,700))
     res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify({code:0,message:'ok',data})); return
   }
   const file=path.startsWith('/assets/') ? join(dist,path) : extname(path) ? join(dist,path) : join(dist,'index.html')
@@ -147,6 +148,8 @@ try {
   await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
   for(let i=0;redispatched===0 && i<30;i++)await sleep(100)
   assert.equal(redispatched,1)
+  await waitFor(`document.body.innerText.includes('补投中…')`)
+  await waitFor(`!document.body.innerText.includes('补投中…')`)
   assert.equal(markedRead,0)
   assert.equal(await evaluate('location.pathname'),'/workbench')
   console.log('BROWSER_NOTIFICATION_CANCEL_NO_SEND_AND_NO_NAVIGATION=true')
@@ -216,6 +219,8 @@ try {
   await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
   for(let i=0;claimedLeads.length===0 && i<30;i++)await sleep(100)
   assert.deepEqual(claimedLeads,[32])
+  await waitFor(`document.body.innerText.includes('领取中…')`)
+  await waitFor(`!document.body.innerText.includes('领取中…')`)
   console.log('BROWSER_LEAD_CLAIM_CANCEL_NO_WRITE_CONFIRM_SECOND_ROW_ID=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/customers/9`})
   const claimCustomer=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='领取到我名下')`

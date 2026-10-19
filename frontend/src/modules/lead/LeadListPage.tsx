@@ -259,7 +259,7 @@ export default function LeadListPage() {
               onConfirm={() => claimMutation.mutate(record.id)}
               disabled={claimMutation.isPending}
             >
-              <a style={{ color: 'var(--crm-primary)' }}>领取</a>
+              <a style={{ color: 'var(--crm-primary)' }}>{claimMutation.isPending ? '领取中…' : '领取'}</a>
             </Popconfirm>
           )}
           <a style={{ color: 'var(--crm-primary)' }} onClick={() => setFollowupTarget(record)}>
