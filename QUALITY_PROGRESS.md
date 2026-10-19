@@ -30,6 +30,7 @@
 - 审批/文件针对性单测：`test_dingtalk_oa_state_machine.py`、`test_contract_dingtalk_oa.py`、`test_contract_oa_notification.py`、`test_file_access_authorization.py` 全部通过（68 tests）。静态核对前端路由与菜单覆盖，未发现已注册用户页面没有入口的明确缺口；通知、钉钉和文件的内部/自动接口不计作用户页面遗漏。
 - 第三轮未确认新的修复项：钉钉提交状态区分 `not_sent` / `failed` / `unknown`，结果未知不自动重发；撤回结果未知会保留待核对标记；通知投递使用行锁和退避；现有针对性测试覆盖这些关键分支。
 - 通知重试端到端验证：`check_notification_retry_e2e.py` 使用进程内假企微完成“首次失败 → 退避期不重试 → 到期补发成功 → 达到上限停人工 → 人工补投成功”，全部通过；两个隔离库随后已删除。
+- 公海/客户归属隔离验证：`check_pool_scope_concurrency.py` 与 `check_pool_recycle_and_merge.py` 全部通过，覆盖私有客户/线索越权、部门范围、领取幂等与真实并发锁、公海回收预告、履约保护、批准前复核、恢复冲突、撞单裁定并发和分页；验证库随后已删除。
 - 前端静态检查：`pnpm run lint` 退出码 0，但报告现有 warnings（Fast Refresh 导出、effect 内同步 setState、`Date.now()` 渲染、一个 useEffect 依赖提示）。目前没有证据表明它们造成业务错误；逐项修复会改变组件生命周期或开发热更新行为，先列为待调查，不把 lint warning 当作已确认 Bug。
 - 误报排除：检索输出一度看起来像打样附件锁定提示重复了 `category=supplement`；复读原始文件确认该字符串实际只出现一次，没有修改。
 
