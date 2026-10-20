@@ -31,6 +31,7 @@ import {
   addQuoteCharge,
   createQuoteVersion,
   declineQuote,
+  deleteQuote,
   deleteQuoteCharge,
   downloadQuotePdf,
   getPriceDrift,
@@ -145,6 +146,18 @@ export default function QuoteDetailPage() {
   const currentUser = useAuthStore((state) => state.user)
   const { can } = usePermissions()
   const canManage = can('quote:manage')
+  const [deleteVisible, setDeleteVisible] = useState(false)
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteQuote(quoteId),
+    onSuccess: () => {
+      setDeleteVisible(false)
+      Toast.success('报价单已删除')
+      void queryClient.invalidateQueries({ queryKey: ['quotes'] })
+      void queryClient.invalidateQueries({ queryKey: ['customer-quotes'] })
+      navigate('/quotes', { replace: true })
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
 
   const versionsQuery = useQuery({
     queryKey: ['quote-versions', quoteId],
@@ -834,6 +847,11 @@ export default function QuoteDetailPage() {
       {/* 与客户/商机详情页同排布：标题 + 标签一行，关键信息行在标题下方左对齐 */}
       <DetailHeader
         title={quote.quote_no}
+        extra={canManage && (
+          <Button type="danger" onClick={() => setDeleteVisible(true)}>
+            删除报价
+          </Button>
+        )}
         tags={
           <>
             <Tag color={STATUS_TONE[quote.status] ?? 'grey'}>{quote.status_label}</Tag>
@@ -1151,6 +1169,22 @@ export default function QuoteDetailPage() {
           <BlockedHint reasons={[versionEditBlockedReason]} action="改这一版报价" />
         )}
       </DetailHeader>
+      <Modal
+        title={`确认删除报价「${quote.quote_no}」？`}
+        visible={deleteVisible}
+        okText="确认删除"
+        cancelText="取消"
+        okType="danger"
+        confirmLoading={deleteMutation.isPending}
+        cancelButtonProps={{ disabled: deleteMutation.isPending }}
+        closable={!deleteMutation.isPending}
+        maskClosable={false}
+        onCancel={() => { if (!deleteMutation.isPending) setDeleteVisible(false) }}
+        onOk={() => { if (!deleteMutation.isPending) deleteMutation.mutate() }}
+      >
+        删除的是整张报价单，包含所有版本，不是仅删除当前查看的版本。
+        删除后将从报价列表移除，历史版本和审计记录仍保留。已关联订单的报价不能删除。
+      </Modal>
 
       {/* §8.14 复审：主数据未确认要**常驻显示** —— 不是一闪而过的 Toast。
           刷新页面、隔天再打开、换个人来看，都该看到"这几条不能用做正式报价"。

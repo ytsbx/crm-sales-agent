@@ -276,6 +276,10 @@ export function createQuote(payload: {
   return api.post<WithMasterWarnings<{ quote_id: number; version_id: number; warnings?: string[] }>>('/quotes', payload)
 }
 
+export function deleteQuote(quoteId: number) {
+  return api.delete<null>(`/quotes/${quoteId}`)
+}
+
 export function listQuoteVersions(quoteId: number) {
   return api.get<QuoteVersion[]>(`/quotes/${quoteId}/versions`)
 }

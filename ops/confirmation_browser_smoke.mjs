@@ -27,6 +27,8 @@ const wecomRequests=[]
 const wecomBindings=[]
 const recycleRequests=[]
 const quoteWithdrawals=[]
+const quoteDeletions=[]
+let rejectQuoteDeletion=false
 const settingsRequests=[]
 const customerOwnerWrites=[]
 const ownerRequests=[]
@@ -66,6 +68,15 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/tasks')) data={items:[task],total:1,page:1,page_size:20}
     else if(path.endsWith('/tasks/batch-complete') && req.method==='POST') { batchBodies.push(body); data={completed:[7],skipped:[]} }
     else if(path.endsWith('/opportunities')) data={items:[],total:0}
+    else if(path.endsWith('/quotes/121') && req.method==='DELETE') {
+      quoteDeletions.push(121)
+      if(rejectQuoteDeletion) {
+        res.writeHead(400,{'Content-Type':'application/json'})
+        res.end(JSON.stringify({code:42201,message:'该报价已转成订单（id=999），不能删除',data:null}));return
+      }
+      await new Promise(resolve=>setTimeout(resolve,700))
+      data=null
+    }
     else if(path.endsWith('/quotes/121/versions')) data=[quoteVersion(131),quoteVersion(130)]
     else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:[],charges:[],approval:null}
     else if(/\/quote-versions\/(130|131)\/withdraw-approval$/.test(path) && req.method==='POST') {quoteWithdrawals.push(Number(path.split('/').at(-2)));data=null}
@@ -383,6 +394,30 @@ try {
   assert.equal(await evaluate(`Boolean(${withdraw})`),false,'historical version must not offer withdrawal')
   assert.deepEqual(quoteWithdrawals,[131])
   console.log('BROWSER_QUOTE_HISTORICAL_VERSION_NO_WITHDRAW=true')
+  const deleteQuoteButton=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='删除报价')`
+  await waitFor(deleteQuoteButton)
+  await evaluate(`${deleteQuoteButton}.click()`)
+  await waitFor(`document.body.innerText.includes('确认删除报价「ISO-QUOTE-121」')`)
+  assert.equal(quoteDeletions.length,0)
+  const quoteDeleteDialog=`document.querySelector('.semi-modal-content')`
+  await evaluate(`Array.from(${quoteDeleteDialog}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  await sleep(250)
+  assert.equal(quoteDeletions.length,0)
+  assert.equal(await evaluate('location.pathname'),'/quotes/121')
+  rejectQuoteDeletion=true
+  await evaluate(`${deleteQuoteButton}.click()`)
+  await waitFor(`document.body.innerText.includes('确认删除报价「ISO-QUOTE-121」')`)
+  await evaluate(`Array.from(${quoteDeleteDialog}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确认删除').click()`)
+  await waitFor(`document.body.innerText.includes('该报价已转成订单（id=999），不能删除')`)
+  assert.deepEqual(quoteDeletions,[121])
+  assert.equal(await evaluate('location.pathname'),'/quotes/121')
+  assert.equal(await evaluate(`Boolean(${quoteDeleteDialog})`),true)
+  rejectQuoteDeletion=false
+  await evaluate(`{ const button=Array.from(${quoteDeleteDialog}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确认删除'); button.click(); button.click(); }`)
+  await waitFor(`Array.from(${quoteDeleteDialog}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消')?.disabled`)
+  await waitFor(`location.pathname==='/quotes'`)
+  assert.deepEqual(quoteDeletions,[121,121],'each confirmation sends one whole-quote DELETE, even while viewing a historical version')
+  console.log('BROWSER_QUOTE_DELETE_CANCEL_NO_WRITE_FAILURE_STAYS_SUCCESS_RETURNS_LIST=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/recycle-bin`})
   for(const [tab,name,title,endpoint,modal] of [
     ['产品','隔离恢复产品','确认恢复产品及随产品删除的 SKU','products/101',false],
