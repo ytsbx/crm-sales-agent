@@ -558,3 +558,11 @@
 - 修复前：在既有隔离浏览器回归新增整单删除用例，旧dist运行至删除入口等待失败（/tmp/crm-quote-delete-before.log），之前撤回审批/历史版本检查正常通过，证实缺少入口。
 - 修复后：TypeScript及生产构建通过（/tmp/crm-quote-delete-build.log）；完整既有浏览器确认回归通过，新增验证取消零DELETE、后端关联订单拒绝时仍留详情、历史版本页删除仍提交正确quote_id、等待期按钮禁用、连续点击仅提交一次、成功返回列表（/tmp/crm-quote-delete-after.log）。使用独立浏览器profile及本机内存模拟API，未连接生产数据库或真实外部接口。node语法、git diff --check通过。
 - 无新增依赖、数据库或后端变化。本轮仅完成本地实现及验证，尚未部署，也未删除用户截图中的真实报价。浏览器错误响应为模拟后端既有保护，不能声称已核实该真实报价是否关联订单；后端并发与软删后的所有派生链路未在本轮作新的全面验证。
+
+### 报价删除入口发布（2026-10-20 15:30）
+
+- 用户要求最新代码同步GitHub并部署。实现、回归测试及此前部署记录已完整提交842e384208d02a511159788024e411d75f2d4183，推送github/pending-acceptance；ls-remote确认一致。
+- 后端全部238个Python源码重新只读比对，本地与线上0差异，本次只更新前端，不重启后端、不安装依赖、不迁移或清理数据。报价成本/核价讨论没有产生新的代码改动。
+- 上传去除macOS元数据的构建包，校验index后切换web-dist，保留旧哈希assets以兼容旧标签页；回滚备份/opt/crm-sales-agent/backup/20261020-153058-842e384。WEB_DEPLOYED_COMMIT记录842e384，后端DEPLOYED_COMMIT继续保留c329c71以明确各自发布记录。
+- 完成验证：线上118个本次构建文件SHA256逐一匹配本地（mismatches=[]）；公网index SHA256为21f43cec0682311f34eb377cfe68e8b4165fc4170b31b7944260d483fc64d64f，包含删除入口的QuoteDetailPage-DjAOuJ2R.js公网内容也匹配本地。crm-sales.service active，实际8010健康JSON数据库ok、钉钉sync_running/stream_connected均true。
+- GitHub CI运行https://github.com/ytsbx/crm-sales-agent/actions/runs/39386620059：本轮最终查询UI冒烟success、后端回归仍in_progress，未把它表述为完整远端CI通过；本地构建及完整确认浏览器回归此前已通过。本次未在生产试删真实报价，用户可刷新后进入报价详情查看入口。
