@@ -481,7 +481,7 @@ export default function DocumentsPage() {
             <div style={{ marginBottom: 4 }}>客户</div>
             <Select
               style={{ width: '100%' }}
-              placeholder="搜索客户名称（服务端搜索，不止前 200 个）"
+              placeholder="搜索客户名称"
               filter={optionMatcher}
               // remote：不在本地过滤，把关键字交给服务端查 —— 客户上千条时本地那点数据不够用
               remote
