@@ -128,11 +128,15 @@ try {
     const timer=setTimeout(()=>{pending.delete(id);reject(Error(`browser command timed out: ${method}`))},15000)
     pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}))
   })
-  const evaluate=async expression=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error(r.exceptionDetails.text);return r.result.value}
-  const waitFor=async expression=>{for(let i=0;i<100;i++){if(await evaluate(`Boolean(${expression})`))return;await sleep(100)}throw Error('condition timed out: '+expression+'\n'+await evaluate('document.body.innerText.slice(0,1800)'))}
+  const evaluate=async expression=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error((r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)+'\nExpression: '+expression);return r.result.value}
+  const waitFor=async expression=>{for(let i=0;i<100;i++){if(await evaluate(`Boolean(document.body && (${expression}))`))return;await sleep(100)}throw Error('condition timed out: '+expression+'\n'+await evaluate('document.body?.innerText.slice(0,1800) ?? "<body not ready>"'))}
   await send('Page.enable')
   const auth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
   await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(auth)})`})
+  // 页面导航存在 body 尚未建立的窗口；等待器必须继续等，不能因读取 innerText 抛错。
+  await evaluate(`document.body.remove();setTimeout(()=>{const body=document.createElement('body');body.textContent='navigation-body-ready';document.documentElement.appendChild(body)},200)`)
+  await waitFor(`document.body.innerText.includes('navigation-body-ready')`)
+  console.log('BROWSER_NAVIGATION_BODY_WAIT=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/workbench`})
   const checkbox=`document.querySelector('[aria-label="完成任务：确认保护测试任务"]')`
   await waitFor(checkbox)
@@ -375,7 +379,7 @@ try {
   assert.deepEqual(quoteWithdrawals,[131])
   console.log('BROWSER_QUOTE_WITHDRAW_CANCEL_NO_WRITE_CONFIRM_CURRENT_VERSION=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=130`})
-  await waitFor(`document.body.innerText.includes('ISO-QUOTE-121')`)
+  await waitFor(`location.search==='?version=130' && document.readyState==='complete' && document.body.innerText.includes('ISO-QUOTE-121')`)
   assert.equal(await evaluate(`Boolean(${withdraw})`),false,'historical version must not offer withdrawal')
   assert.deepEqual(quoteWithdrawals,[131])
   console.log('BROWSER_QUOTE_HISTORICAL_VERSION_NO_WITHDRAW=true')

@@ -480,3 +480,28 @@
 - 下一步：推送后核对远端CI；继续其他独立高风险链路，保持质量目标未完成。本次不部署生产。
 
 - Q-017 远端CI运行 https://github.com/ytsbx/crm-sales-agent/actions/runs/39357901301 本轮查询仍in_progress，不把本地1210项结果替代远端最终结果。
+
+
+### Q-019 询价状态索引重复声明阻断模型建表（低，已复现并自主修复，2026-10-20）
+
+- 沿前轮PostgreSQL建库失败证据继续调查：`CustomInquiry.__table_args__`显式Index(ix_custom_inquiries_status,status)，status列又index=True，SQLAlchemy因此注册两份同名同列非唯一索引。不是正常业务查询失败，也未证实当前生产迁移失败。
+- 修复前最小回归：独立内存SQLite创建真实CustomInquiry表，报OperationalError index ix_custom_inquiries_status already exists；日志 `/tmp/crm-inquiry-index-before.log`。此前真实PostgreSQL Base.metadata.create_all也报同名DuplicateTableError，见 `/tmp/crm-file-write-scope-schema-attempt.log`。
+- 同类核查：加载所有业务model.py，逐一按schema+索引名分组，本轮只发现这1组重复，两份的字段及unique属性完全相同。Alembic历史迁移b8f4a6d2c0e9只创建一次该索引。
+- 最小修复：只去掉status列多余的index=True，保留显式Index及名称、字段、非唯一属性。没有删除业务索引或更改数据库实际结构，不新增迁移、不连接现有库、不改查询或状态规则；因此属于重复声明的确定性消除，无额外资源/兼容取舍。
+- 回归：新测试实际内存建表成功、目录确认一个status非唯一索引并保留customer_id索引；询价相关19项通过（`/tmp/crm-inquiry-index-after.log`）；完整pytest 1227项通过（`/tmp/crm-inquiry-index-full.log`）。
+- 额外真实PostgreSQL验证：新空库crm_index_audit，只监听临时Unix socket/55434；全部104张已注册模型表create_all成功，pg_indexes只返回单份CREATE INDEX ix_custom_inquiries_status ON public.custom_inquiries USING btree(status)。日志 `/tmp/crm-index-metadata-postgres.log`。这不等于验证模型结构与迁移结构全量一致，迁移仍是正式建库入口。
+- 收尾：确认临时集群停止、无postmaster.pid后移除本轮临时目录。没有修改生产/演示/开发库，没有部署。本轮前端无改动，不进行无关浏览器重复回归。
+
+## 远端CI发现（2026-10-20）
+
+- 运行 https://github.com/ytsbx/crm-sales-agent/actions/runs/39357901301 （dd373b3）已completed/failure，正在下载具体失败日志；不把本地1210项通过表述为远端通过。
+- 签名修复7d98c76运行 https://github.com/ytsbx/crm-sales-agent/actions/runs/39359273742 查询时仍in_progress，尚不声称成功。
+
+
+### Q-020 浏览器等待器读取尚未创建的正文时抛错（低，已复现并本地修复，2026-10-20）
+
+- CI证据：dd373b3运行39357901301的UI job在报价当前版本撤回场景通过后，切换历史版本并执行waitFor(document.body.innerText...)时出现Error:Uncaught，位置ops/confirmation_browser_smoke.mjs:378。原evaluate丢掉exception对象，仅保留text，因此远端日志不足以断言完整具体异常；未把它归因于Q-017业务权限或产品页面Bug。
+- 最小复现：浏览器about:blank移除body、200ms后建立body，原等待器立即TypeError Cannot read properties of null(reading innerText)，不能等到就绪。日志 `/tmp/crm-browser-body-wait-before.log`。使用独立浏览器profile、本机内存API，未访问真实业务服务。
+- 修复：waitFor正文尚无body时继续既有有界等待，不吞其他异常；evaluate保留实际异常description和表达式以便远端定位；历史报价增加目标URL及document.readyState条件，避免旧页面同名报价标题被误认成新页面就绪。所有取消无写、确认单次请求、精确ID/版本/权限相关断言保留，没有skip或重跑整套来伪造通过。
+- 验证：把无body窗口作为同一脚本的前置回归，输出BROWSER_NAVIGATION_BODY_WAIT=true；完整确认浏览器回归包括历史版本、回收站选人、规则批量操作和客户按需选人全部退出0，日志 `/tmp/crm-browser-body-wait-after.log`。Node语法及diff检查通过。业务前端代码没有改动。
+- 剩余风险：已证实等待器的一种故障并修复；远端原异常的完整细节缺失，不声称已经证明CI所有失败都由它造成。必须以本次推送后的新CI为准，若仍失败用增强诊断继续调查，不能仅凭本地通过宣布远端修复。
