@@ -301,9 +301,9 @@ function ProductsPanel() {
   ]
 
   const skuColumns = [
-    { title: 'SKU 编码', dataIndex: 'sku_code', width: 160 },
     { title: '名称', dataIndex: 'name', render: (v: string | null) => v ?? '-' },
     { title: '规格', dataIndex: 'specification', width: 150, render: (v: string | null) => v ?? '-' },
+    { title: '编码', dataIndex: 'sku_code', width: 160 },
     { title: '所属产品', dataIndex: 'product_name', render: (v: string | null) => v ?? '-' },
     {
       title: '状态',

@@ -471,6 +471,7 @@ check_convert_with_payment_plan
 #   ★P1-4 无 price:manage：版本对比不给成本/毛利，模拟不给成本反推价
 #   ★P2-5/P2-6/P2-7/P2-8/P2-10 见脚本文档
 check_batch7_repairs
+check_sku_auto_code
 # P1-3 的并发交错那一半：必须受控交错才验得出来，单独一套
 check_contract_sign_lock
 # 第九批 8 项（2026-10-13）：分期负数 / 日期退一天 / 差异改判 / 数值约束 /

@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,6 +112,20 @@ async def get_sku_or_404(session: AsyncSession, sku_id: int) -> Sku:
     if sku is None or sku.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "SKU 不存在", 404)
     return sku
+
+
+async def resolve_new_sku_code(session: AsyncSession, provided: str | None) -> str:
+    """编码可不填；只在新建时分配，已存在/已删除的编码都不复用。"""
+    code = (provided or "").strip()
+    if code:
+        await ensure_sku_code_unique(session, code)
+        return code
+    for _ in range(5):
+        code = "SKU-" + uuid4().hex.upper()
+        existing = (await session.execute(select(Sku.id).where(Sku.sku_code == code))).first()
+        if existing is None:
+            return code
+    raise AppError(ErrorCode.DUPLICATE, "自动编码暂时无法分配，请重试", 409)
 
 
 async def ensure_sku_code_unique(

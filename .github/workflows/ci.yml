@@ -281,6 +281,7 @@ jobs:
           node --test ../ops/approval_rule_toggle_confirmation.test.mjs
           node --test ../ops/dictionary_toggle_confirmation.test.mjs
           node --test ../ops/sku_stop_cancel.test.mjs
+          node --test ../ops/sku_label.test.mjs
           node --test ../ops/recycle_decision_confirmation.test.mjs
           # 真实构建 + 隔离浏览器 + 内存模拟 API：取消不提交，确认对象/版本正确。
           node ../ops/confirmation_browser_smoke.mjs dist

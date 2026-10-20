@@ -49,7 +49,7 @@ EXPECTED_ACTIONS = {
     'add_item', 'auto_pass', 'clone', 'copy_version', 'create', 'create_version',
     # enable 目前后端没写（停用后没有再启用的入口），先留着：
     # 一旦有人加了"启用"，这条清单会先失败提醒，免得又漏到界面上
-    'delete', 'delete_item', 'disable', 'expire', 'mark_sent', 'price_refresh',
+    'delete', 'delete_item', 'disable', 'expire', 'mark_sent', 'price_refresh', 'cost_refresh',
     'quote_link_master', 'recalculate', 'refresh_prices', 'send_email',
     'set_items', 'submit_approval', 'supersede_approval', 'update', 'update_charge',
     'update_item', 'update_version', 'withdraw', 'withdraw_approval',

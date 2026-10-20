@@ -264,14 +264,15 @@ async def create_sku(
     product = await svc.lock_product(session, product_id)
     if product is None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
-    await svc.ensure_sku_code_unique(session, payload.sku_code)
-    sku = Sku(**payload.model_dump(), product_id=product.id)
+    data = payload.model_dump()
+    data["sku_code"] = await svc.resolve_new_sku_code(session, payload.sku_code)
+    sku = Sku(**data, product_id=product.id)
     session.add(sku)
     try:
         await session.flush()
     except IntegrityError as exc:
         await session.rollback()
-        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {payload.sku_code} 已存在", 409) from exc
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {data['sku_code']} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,
@@ -512,15 +513,15 @@ async def create_standalone_sku(
     product = await svc.lock_product(session, payload.product_id)
     if product is None or product.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "产品不存在", 404)
-    await svc.ensure_sku_code_unique(session, payload.sku_code)
     data = payload.model_dump(exclude={"product_id"})
+    data["sku_code"] = await svc.resolve_new_sku_code(session, payload.sku_code)
     sku = Sku(**data, product_id=product.id)
     session.add(sku)
     try:
         await session.flush()
     except IntegrityError as exc:
         await session.rollback()
-        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {payload.sku_code} 已存在", 409) from exc
+        raise AppError(ErrorCode.DUPLICATE, f"SKU 编码 {data['sku_code']} 已存在", 409) from exc
     await write_audit(
         session,
         operator_id=user.id,

@@ -38,6 +38,7 @@ export const SHARED_ACTION_LABELS: Record<string, string> = {
   'convert': '线索转化',
   'copy_items': '复制明细',
   'copy_version': '复制版本',
+  'cost_refresh': '更新草稿成本',
   'create': '创建',
   'create_item': '新增明细',
   'create_next_task': '生成下次任务',

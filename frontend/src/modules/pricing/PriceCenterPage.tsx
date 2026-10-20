@@ -1,3 +1,4 @@
+import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
@@ -213,6 +214,7 @@ const ACTION_LABEL: Record<string, string> = {
   reject: '客户拒绝',
   import: '批量导入',
   recalculate: '重新核价',
+  cost_refresh: '更新草稿成本',
   expire: '过期',
   // 价格规则停用（`pricing/router.py` 写的 business_type=price_rule）。
   // 这条是**用静态检查扫出来的第二个同类漏网**（2026-10-12）：
@@ -942,7 +944,7 @@ export default function PriceCenterPage() {
 
   const skuOptions = (skusQuery.data ?? []).map((sku) => ({
     value: sku.id,
-    label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
+    label: skuLabel(sku),
   }))
 
   // 查价的两个必填项。按钮在没选齐时是禁用态，但**禁用≠可以不解释**：
@@ -1342,10 +1344,10 @@ export default function PriceCenterPage() {
                     // 后端 `serialize_price_rule` 现在会带 `sku_name` 回来。
                     render: (v: string | null, record: PriceRuleRow) => (
                       <div>
-                        <div>{v ?? '-'}</div>
-                        {record.sku_name && (
+                        <div>{record.sku_name || v || '未命名产品'}</div>
+                        {v && record.sku_name && (
                           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                            {record.sku_name}
+                            {v}
                           </div>
                         )}
                       </div>
@@ -1496,10 +1498,10 @@ export default function PriceCenterPage() {
                     width: 200,
                     render: (v: string | null, record: CustomerPriceRow) => (
                       <div>
-                        <div>{v ?? '-'}</div>
-                        {record.sku_name && (
+                        <div>{record.sku_name || v || '未命名产品'}</div>
+                        {v && record.sku_name && (
                           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                            {record.sku_name}
+                            {v}
                           </div>
                         )}
                       </div>

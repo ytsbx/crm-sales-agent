@@ -32,6 +32,7 @@ let rejectQuoteDeletion=false
 let quoteCostProblems=[]
 let costDraft=false
 const costRefreshes=[], costPageRequests=[]
+const skuCreates=[]
 const settingsRequests=[]
 const customerOwnerWrites=[]
 const ownerRequests=[]
@@ -84,7 +85,8 @@ const server=createServer(async (req,res)=>{
     else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:[],charges:[],approval:null,cost_problems:quoteCostProblems}
     else if(path.endsWith('/quote-versions/131/cost-refresh') && req.method==='POST') {costRefreshes.push(131);quoteCostProblems=[];data={refreshed:1}}
     else if(path.endsWith('/products/201')) data={id:201,name:'隔离成本产品',status:'active',sku_count:1}
-    else if(path.endsWith('/products/201/skus')) data=[{id:1,product_id:201,sku_code:'COST-SKU',name:'成本SKU',status:'active',cost_status:{state:'missing',label:'成本未维护'}}]
+    else if(path.endsWith('/products/201/skus') && req.method==='POST') {skuCreates.push(body);data={id:202,product_id:201,sku_code:body.sku_code||'SKU-AUTO-202',...body}}
+    else if(path.endsWith('/products/201/skus')) data=[{id:1,product_id:201,sku_code:'COST-SKU',name:'成本SKU',status:'active',cost_status:{state:'missing',label:'成本未维护'}},...skuCreates.map((body,i)=>({id:202+i,product_id:201,sku_code:'SKU-AUTO-202',status:'active',...body}))]
     else if(path.endsWith('/files/batch')) data={}
     else if(path.endsWith('/skus/1/costs')) {costPageRequests.push(path);data=[]}
     else if(path.endsWith('/pricing/sku-options')) data=[{id:1,sku_code:'COST-SKU',name:'成本SKU'}]
@@ -651,6 +653,22 @@ try {
   assert.equal(await evaluate('location.search'),'?tab=costs&sku_id=1')
   assert.ok(costPageRequests.length>0,'cost shortcut loads the exact SKU costs')
   console.log('BROWSER_PRODUCT_COST_STATUS_AND_EXACT_SKU_MAINTENANCE_SHORTCUT=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/products/201`})
+  const newSkuButton=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='新建 SKU')`
+  await waitFor(newSkuButton)
+  await evaluate(`${newSkuButton}.click()`)
+  await waitFor(`document.querySelector('input[placeholder="有公司编码可填写；留空自动生成"]')`)
+  await evaluate(`(()=>{for(const [placeholder,value] of [['例如：冷链保温箱 60L 白色','周转箱蓝色'],['600×400×300mm','600×400']]){const el=document.querySelector('input[placeholder="'+placeholder+'"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,value);el.dispatchEvent(new Event('input',{bubbles:true}))}})()`)
+  await evaluate(`Array.from(document.querySelector('.semi-modal-content').querySelectorAll('button')).find(b=>b.innerText.trim()==='创建').click()`)
+  await waitFor(`!document.querySelector('.semi-modal-content')`)
+  assert.equal(skuCreates.length,1)
+  assert.equal(skuCreates[0].sku_code,undefined)
+  assert.equal(skuCreates[0].name,'周转箱蓝色')
+  assert.equal(skuCreates[0].specification,'600×400')
+  await waitFor(`document.body.innerText.includes('周转箱蓝色') && document.body.innerText.includes('SKU-AUTO-202')`)
+  const skuCell=await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('周转箱蓝色')).querySelector('td').innerText`)
+  assert.ok(skuCell.indexOf('周转箱蓝色')<skuCell.indexOf('SKU-AUTO-202'),'human name precedes auxiliary code')
+  console.log('BROWSER_SKU_EMPTY_CODE_CREATE_PRESERVES_NAME_SPEC_AND_NAME_FIRST=true')
   user.roles=['sales'];user.permissions=['quote:view','product:view']
   const restrictedAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
   await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(restrictedAuth)})`})

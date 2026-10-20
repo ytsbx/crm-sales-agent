@@ -57,7 +57,7 @@ async def main():
                               amount=Decimal('20'),logistics_confirmed_at=datetime.now(UTC)))
             line_ids=[]
             for qty in (10,20):
-                line=QuoteItem(quote_version_id=vid,inquiry_id=iid,inquiry_no_snapshot=marker,sku_name_snapshot=marker,spec_snapshot='规格',quantity=qty,quoted_price=10,cost_snapshot=5)
+                line=QuoteItem(cost_present_snapshot=True,cost_complete_snapshot=True,quote_version_id=vid,inquiry_id=iid,inquiry_no_snapshot=marker,sku_name_snapshot=marker,spec_snapshot='规格',quantity=qty,quoted_price=10,cost_snapshot=5)
                 s.add(line); await s.flush(); line_ids.append(line.id)
             await s.commit()
         source=req('GET',f'/order-drafts/source?quote_version_id={vid}')

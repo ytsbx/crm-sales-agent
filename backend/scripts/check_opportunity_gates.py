@@ -141,6 +141,9 @@ def cleanup():
             await s.execute(text(f"delete from sales_orders where id in ({ids})"))
 
         await s.execute(text("update quotes set current_version_id = null where quote_no like :p"), p)
+        await s.execute(text("delete from quote_items where quote_version_id in "
+                             "(select id from quote_versions where quote_id in "
+                             "(select id from quotes where quote_no like :p))"), p)
         await s.execute(text("delete from quote_versions where quote_id in "
                              "(select id from quotes where quote_no like :p)"), p)
         await s.execute(text("delete from quotes where quote_no like :p"), p)
@@ -169,7 +172,10 @@ def build_fixtures():
     from app.core.security import hash_password
     from app.modules.customer.model import Customer
     from app.modules.opportunity.model import Opportunity
-    from app.modules.quote.model import Quote, QuoteVersion
+    from app.modules.quote.model import Quote, QuoteVersion, QuoteItem
+    # 新增完整核价明细的夹具需要注册其外键目标；不创建或修改产品/定制需求。
+    import app.modules.product.model  # noqa: F401
+    import app.modules.inquiry.model  # noqa: F401
     from app.modules.user.model import (
         Permission,
         Role,
@@ -259,6 +265,12 @@ def build_fixtures():
         s.add(v_ok)
         await s.flush()
         q_ok.current_version_id = v_ok.id
+        # 成交正向夹具具备完整核价明细，保留原权限/状态断言。
+        v_ok.subtotal_amount = Decimal("5000")
+        s.add(QuoteItem(quote_version_id=v_ok.id, sku_name_snapshot='成交夹具',
+                        quantity=Decimal("1"), quoted_price=Decimal("5000"),
+                        cost_snapshot=Decimal("0"), cost_present_snapshot=True,
+                        cost_complete_snapshot=True))
 
         await s.commit()
         FIX.update(dict(u1=u1.id, u2=u2.id, cust=cust.id, opp=opp.id, opp_empty=opp_empty.id,

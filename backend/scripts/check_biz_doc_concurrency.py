@@ -112,6 +112,7 @@ async def _add_quote(tag: str, owner_id: int) -> tuple[int, int]:
         quote.current_version_id = version.id
         s.add(
             QuoteItem(
+            cost_snapshot=Decimal("0"), cost_present_snapshot=True, cost_complete_snapshot=True,
                 quote_version_id=version.id,
                 sku_id=sku.id,
                 sku_name_snapshot=sku.name,
@@ -207,6 +208,7 @@ async def _seed():
             quote.current_version_id = version.id
             s.add(
                 QuoteItem(
+            cost_snapshot=Decimal("0"), cost_present_snapshot=True, cost_complete_snapshot=True,
                     quote_version_id=version.id,
                     sku_id=sku.id,
                     sku_name_snapshot=sku.name,

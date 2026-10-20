@@ -1,3 +1,4 @@
+import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
@@ -312,15 +313,15 @@ export default function OpportunityDetailPage() {
 
   const itemColumns = [
     {
-      title: 'SKU',
+      title: '产品名称',
       dataIndex: 'sku_code',
       width: 170,
       // 编码 + 名称（口径与报价/订单明细一致）。接口已返回 `sku_name`。
       render: (v: string | null, record: OpportunityItem) => (
         <div>
-          <div>{v ?? '-'}</div>
-          {record.sku_name && (
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{record.sku_name}</div>
+          <div>{record.sku_name || v || '未命名产品'}</div>
+          {v && record.sku_name && (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{v}</div>
           )}
         </div>
       ),
@@ -823,7 +824,7 @@ export default function OpportunityDetailPage() {
               }}
               optionList={(skusQuery.data?.items ?? []).map((sku) => ({
                 value: sku.id,
-                label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
+                label: skuLabel(sku),
               }))}
               loading={skusQuery.isLoading}
               filter={optionMatcher}

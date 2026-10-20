@@ -494,17 +494,21 @@ export default function ProductDetailPage() {
   const MASTER_MODAL_WIDTH = 1200
 
   const skuColumns = [
-    { title: 'SKU 编码', dataIndex: 'sku_code', width: 96, ellipsis: true },
     {
       // 单开一列（主人 2026-10-10："单开一列，不要横向滚动"）。
       // 宽度是**算出来的**：原来 13 列合计 1595px，1600 窗口下可用只有 1294px，
       // 即"正常窗口下本来就在横滚"。所以这一列的位置靠合并冗余列 + 压窄换出来
       // （详见下面「规格·尺寸·重量」那一列的注释）。
-      title: 'SKU 名称',
+      title: '名称 / 编码',
       dataIndex: 'name',
       width: 150,
       ellipsis: true,
-      render: (v: string | null) => v || '-',
+      render: (v: string | null, record: Sku) => (
+        <div>
+          <div>{v || product.name}</div>
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }} title={record.sku_code}>{record.sku_code}</div>
+        </div>
+      ),
     },
     {
       // 图片就放在 SKU 列表这儿（主人 2026-10-10 口径）：直接看到图，
@@ -805,12 +809,13 @@ export default function ProductDetailPage() {
           setEditingSku(null)
         }}
         onOk={() => {
-          if (!skuForm.sku_code.trim()) {
-            Toast.warning('SKU 编码必填')
+          if (editingSku && !skuForm.sku_code.trim()) {
+            Toast.warning('已有编码不能清空')
             return
           }
           skuMutation.mutate({
-            sku_code: skuForm.sku_code.trim(),
+            sku_code: skuForm.sku_code.trim() || undefined,
+            name: skuForm.name.trim() || null,
             specification: skuForm.specification || null,
             color: skuForm.color || null,
             material: skuForm.material || null,
@@ -831,11 +836,11 @@ export default function ProductDetailPage() {
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <FormLabel required>SKU 编码</FormLabel>
+              <FormLabel required={Boolean(editingSku)}>编码（新建可不填）</FormLabel>
               <Input
                 value={skuForm.sku_code}
                 onChange={(v) => setSkuForm({ ...skuForm, sku_code: v })}
-                placeholder="ZX-6040-B"
+                placeholder={editingSku ? '保留公司已有编码' : '有公司编码可填写；留空自动生成'}
               />
             </div>
             <div style={{ flex: 1 }}>
@@ -853,7 +858,7 @@ export default function ProductDetailPage() {
                 —— 于是种子数据里 `LL-100L-WH` 的名字被错写成"60L"也没人发现。
                 它和「规格」不是一回事：规格是参数（60L 600×400×400mm），
                 名称是给人看的一句话（冷链保温箱 60L 白色）。 */}
-            <div style={{ marginBottom: 4 }}>SKU 名称（选填）</div>
+            <div style={{ marginBottom: 4 }}>规格名称（选填，未填时显示产品名称）</div>
             <Input
               value={skuForm.name}
               onChange={(v) => setSkuForm({ ...skuForm, name: v })}

@@ -19,7 +19,7 @@ export interface ProductPayload {
 }
 
 export interface SkuPayload {
-  sku_code: string
+  sku_code?: string | null
   name?: string | null
   specification?: string | null
   color?: string | null

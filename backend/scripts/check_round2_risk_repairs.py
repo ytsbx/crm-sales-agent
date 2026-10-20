@@ -173,6 +173,7 @@ async def make_quote(
     session.add(version)
     await session.flush()
     item = QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
         quote_version_id=version.id, sku_id=sku.id, sku_code_snapshot=sku.sku_code,
         sku_name_snapshot=sku.name, spec_snapshot="标准", unit_snapshot="件",
         quantity=quantity, quoted_price=price, cost_snapshot=unit_cost,

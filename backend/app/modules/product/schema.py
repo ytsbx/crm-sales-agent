@@ -44,7 +44,7 @@ def _int_field(name: str) -> FieldInfo:
     return Field(default=None, ge=rule.minimum, le=10 ** rule.max_digits - 1)
 
 class SkuCreate(CreateModel):
-    sku_code: str = Field(min_length=1, max_length=64)
+    sku_code: str | None = Field(default=None, max_length=64)
     name: str | None = None
     specification: str | None = None
     color: str | None = None

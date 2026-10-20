@@ -1,3 +1,4 @@
+import { skuLabel } from '../../shared/sku-label'
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
@@ -161,7 +162,7 @@ export default function PricingPage() {
                 onChange={(value) => setSkuId(value as number)}
                 optionList={(skusQuery.data ?? []).map((sku) => ({
                   value: sku.id,
-                  label: `${sku.product_name ?? ''} ${sku.sku_code} ${sku.specification ?? ''}`,
+                  label: skuLabel(sku),
                 }))}
                 filter={optionMatcher}
                 style={{ width: '100%' }}

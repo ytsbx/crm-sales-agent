@@ -862,10 +862,10 @@ export default function AnalyticsPage() {
               // 与 SKU 名（如"田字塑料托盘 1200×1000 黑色"）不是一回事，两个都要有。
               render: (v: string | null, record: ProductStat) => (
                 <div>
-                  <div>{v ?? '-'}</div>
-                  {record.sku_name && (
+                  <div>{record.sku_name || v || '未命名产品'}</div>
+                  {v && record.sku_name && (
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                      {record.sku_name}
+                      {v}
                     </div>
                   )}
                 </div>

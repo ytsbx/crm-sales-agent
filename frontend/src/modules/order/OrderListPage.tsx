@@ -1,3 +1,4 @@
+import { skuLabel } from '../../shared/sku-label'
 import { useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { Link } from 'react-router-dom'
@@ -516,9 +517,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
                     optionList={(createSkusQuery.data ?? []).map((sku) => ({
                       value: sku.id,
                       // 带上 SKU 名称：同一产品下多个 SKU 光看编码 + 规格分不清
-                      label: [sku.sku_code, sku.name, sku.specification]
-                        .filter(Boolean)
-                        .join(' · '),
+                      label: skuLabel(sku),
                     }))}
                     filter={optionMatcher}
                     style={{ width: '100%' }}

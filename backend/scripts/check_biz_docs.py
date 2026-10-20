@@ -259,6 +259,7 @@ async def main():
             amount=Decimal('-70'), is_discount=True, sort_no=2,
         ))
         s.add(QuoteItem(
+            cost_snapshot=Decimal("0"), cost_present_snapshot=True, cost_complete_snapshot=True,
             quote_version_id=qv.id, sku_id=sku.id, sku_name_snapshot='ZX-6040-B',
             quantity=Decimal('5'), quoted_price=Decimal('100'),
         ))

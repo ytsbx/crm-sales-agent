@@ -1,3 +1,4 @@
+import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { cloneElement, useState, type ReactElement } from 'react'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
@@ -714,27 +715,27 @@ export default function QuoteDetailPage() {
 
   const itemColumns = [
     {
-      title: 'SKU / 需求',
+      title: '产品名称 / 需求',
       dataIndex: 'sku_code',
       width: 170,
       // 定制项（场景09）没有 SKU：显示需求编号 + 定制标记，
       // 否则这一格会是空的，看的人不知道这条是什么
-      // 编码在上、**名称在下**（与订单明细同一口径）。
+      // 名称在上、编码辅助展示；规格仍保留独立列。
       // 从前这里只渲染 `sku_code`，而接口早就返回了 `sku_name`
       // （`quote_items.sku_name_snapshot`）—— 满屏 `TP-1210-ST` 这种编码，
       // 看的人不知道是哪件东西（主人 2026-10-10 指出）。
       render: (v: string | null, record: QuoteItemRow) => (
         <div>
           <div>
-            {v ?? '-'}
+            {record.sku_name || v || '未命名产品'}
             {record.is_custom && (
               <Tag size="small" type="light" style={{ marginLeft: 6 }}>
                 定制
               </Tag>
             )}
           </div>
-          {record.sku_name && (
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{record.sku_name}</div>
+          {v && record.sku_name && (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{v}</div>
           )}
         </div>
       ),
@@ -845,7 +846,7 @@ export default function QuoteDetailPage() {
   const skuOptions = (skusQuery.data ?? []).map((sku) => ({
     value: sku.id,
     // 下拉里带上 SKU 名称：只有 `编码 · 规格` 时，一个产品下几个 SKU 认不出区别
-    label: [sku.sku_code, sku.name, sku.specification].filter(Boolean).join(' · '),
+    label: skuLabel(sku),
   }))
   const inquiryOptions = (inquiriesQuery.data?.items ?? []).map((row) => ({
     value: row.id,

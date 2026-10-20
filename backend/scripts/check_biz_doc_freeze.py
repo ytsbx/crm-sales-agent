@@ -268,6 +268,7 @@ async def main():
         quote.current_version_id = version.id
         s.add(
             QuoteItem(
+            cost_snapshot=Decimal("0"), cost_present_snapshot=True, cost_complete_snapshot=True,
                 quote_version_id=version.id,
                 sku_id=sku.id,
                 sku_code_snapshot=sku.sku_code,

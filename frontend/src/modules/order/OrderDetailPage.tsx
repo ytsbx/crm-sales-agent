@@ -659,7 +659,7 @@ export default function OrderDetailPage() {
   // 一个**裸金额** —— 而列表页早就用 `formatMoney`（空币种会写「币种待核实」）。
   // 同一个数在两个页面口径不同，这里统一成 formatMoney。
   const itemColumns = [
-    { title: 'SKU / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{code || row.inquiry_no_snapshot || '—'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot || ''}</div></div> },
+    { title: '产品名称 / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{row.sku_snapshot || code || row.inquiry_no_snapshot || '未命名产品'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot ? code || row.inquiry_no_snapshot : ''}</div></div> },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 100, render: (v: number) => v.toLocaleString('zh-CN') },
     { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number) => formatMoney(v, order.currency) },

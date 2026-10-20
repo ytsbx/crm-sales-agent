@@ -72,6 +72,11 @@ async def main():
             version = QuoteVersion(quote_id=quote.id, version_no=1, approval_status='approved',
                                    created_at=datetime.now(UTC), total_amount=100)
             s.add(version); await s.flush(); vids.append(version.id)
+            # 本套件验状态推进；使用明确已完整核价的定制明细满足成本前置条件。
+            version.subtotal_amount = 100
+            s.add(QuoteItem(quote_version_id=version.id, sku_name_snapshot='需求流夹具',
+                            quantity=1, quoted_price=100, cost_snapshot=0,
+                            cost_present_snapshot=True, cost_complete_snapshot=True))
             # 当前业务口径：正式发送前必须有已确认的物流费用；0 元也要显式确认。
             s.add(QuoteCharge(
                 quote_version_id=version.id, charge_type='logistics',

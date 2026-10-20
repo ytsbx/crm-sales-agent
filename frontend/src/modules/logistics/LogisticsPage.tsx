@@ -1,3 +1,4 @@
+import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
@@ -250,7 +251,7 @@ export default function LogisticsPage() {
                     onChange={(value) => setSkuId(value as number)}
                     optionList={(skusQuery.data ?? []).map((sku) => ({
                       value: sku.id,
-                      label: [sku.sku_code, sku.name, sku.specification].filter(Boolean).join(' · '),
+                      label: skuLabel(sku),
                     }))}
                   />
                 </div>
