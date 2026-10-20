@@ -39,8 +39,10 @@ router = APIRouter(tags=["File"])
 @router.get("/public/inquiry-images/{file_id}")
 async def public_inquiry_image(file_id: int, expires: int, sig: str, session: AsyncSession = Depends(get_db)):
     """钉钉审批图片控件使用的短期只读图片地址。"""
+    # 按字节比较：非 ASCII 的错误签名也应正常拒绝，不能触发 compare_digest 的 TypeError。
     if expires < int(time.time()) or not hmac.compare_digest(
-        hmac.new(settings.jwt_secret.encode(), f"{file_id}:{expires}".encode(), hashlib.sha256).hexdigest(), sig
+        hmac.new(settings.jwt_secret.encode(), f"{file_id}:{expires}".encode(), hashlib.sha256).hexdigest().encode("ascii"),
+        sig.encode("utf-8"),
     ):
         raise AppError(ErrorCode.FORBIDDEN, "图片链接已失效", 403)
     record = await session.get(FileRecord, file_id)

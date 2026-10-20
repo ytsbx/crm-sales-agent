@@ -829,7 +829,7 @@ def _verify_webhook_secret(request: Request) -> None:
             403,
         )
     provided = (request.headers.get("X-ERP-Secret") or "").strip()
-    if not provided or not secrets.compare_digest(provided, secret):
+    if not provided or not secrets.compare_digest(provided.encode("utf-8"), secret.encode("utf-8")):
         raise AppError(ErrorCode.FORBIDDEN, "回调密钥校验失败", 403)
 
 
