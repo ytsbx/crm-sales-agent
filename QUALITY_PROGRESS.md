@@ -514,3 +514,17 @@
 - 已复读core/trade_mode.py，ensure_currency_allowed固定白名单CNY，配置为export也不得放行；建报价、手工建订单、草稿更新币种已有调用。test_round4_review_fixes.py通过，ops/check_foreign_currency_rejected.py通过，证明上述已覆盖校验及审批上下文接线未失效，不能以此推出全项目所有入口已充分验证。
 - 待调查：trade_mode历史说明仍保留“继承/ERP不拦”等旧例外，resolve_payment_currency及部分源单继承路径也有历史外币兼容。用户此次明确的人民币唯一约束优先于旧说明。后续须逐入口验证是否能实际写入/确认非CNY，确认缺口后按人民币规则补拦截，不通过新增外币展示掩盖；不清洗、换算或覆盖生产历史数据。
 - 回款后端现有状态只有pending转confirmed/rejected，未将“已确认款没有随手撤销入口”认定为Bug或补新功能。本轮先停止外币通知方向，继续人民币金额与数据一致性审查；没有生产改动。
+
+
+## 品牌图标视觉方案（2026-10-20，用户选择A后完成本地替换）
+
+- 用户反馈当前蓝底白色日出图标像灯泡、不美观。定位为 frontend/public/tianchu-logo.svg，侧栏、登录页、favicon共用；没有把其他残留Vite图标误认为当前线上图标。
+- 准备A（TC字母）、B（天字徽标）、C（增长折线）三版原生SVG，保留蓝色，附侧栏30px及标签页16px效果；独立本机浏览器渲染并查看对比，预览 `/tmp/crm-logo-options/preview.png`，SVG在同目录option-A/B/C.svg。
+- 已向用户询问风格选择，推荐B。正式图标、产品界面和服务器尚未修改，不将视觉选择代为决定。初次临时预览脚本字符编码失败，改用显式Unicode字符串后渲染成功；未新增依赖或使用外部素材。
+
+
+### TC图标实施验收（2026-10-20）
+
+- 用户明确选择“A：TC字母”。按预览稿替换 frontend/public/tianchu-logo.svg，侧栏/登录页/浏览器favicon继续共用同一资源；三个引用统一加?v=tc1，避免旧图标缓存导致替换后仍显示日出图形。
+- 生产构建通过。隔离浏览器加载实际dist检查登录页和侧栏图片complete/naturalWidth、实际currentSrc版本及favicon链接均通过；实际侧栏截图 `/tmp/crm-tc-logo-sidebar.png` 已查看，日志 `/tmp/crm-tc-logo-browser.log`。没有新增依赖或业务逻辑变更，不跑无关资金回归或新增镜像测试。
+- 仅本地及GitHub同步，未部署服务器。人民币唯一业务约束保留，图标修改与金额/币种规则无关。

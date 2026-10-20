@@ -126,7 +126,7 @@ export default function LoginPage() {
     <div className="crm-login">
       <aside className="crm-login-story" aria-label="销售协作平台">
         <div className="crm-login-brand">
-          <img className="crm-login-brand-mark" src="/tianchu-logo.svg" alt="" />
+          <img className="crm-login-brand-mark" src="/tianchu-logo.svg?v=tc1" alt="" />
           <span>天初CRM<small>企业协同工作平台</small></span>
         </div>
 

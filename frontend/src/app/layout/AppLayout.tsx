@@ -120,7 +120,7 @@ export default function AppLayout() {
           ×
         </button>
         <div className="sider-brand">
-          <img className="sider-logo" src="/tianchu-logo.svg" alt="" />
+          <img className="sider-logo" src="/tianchu-logo.svg?v=tc1" alt="" />
           <div className="sider-brand-text">
             <div className="sider-brand-name">天初CRM</div>
             <div className="sider-brand-sub">企业协同工作平台</div>
