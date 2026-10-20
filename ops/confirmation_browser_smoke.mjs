@@ -62,9 +62,10 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/leads/21/restore') && req.method==='POST') {restored++;data=null}
     else if(path.endsWith('/recycle-bin/products')) data={items:[recycleRecord(101,'隔离恢复产品',{deleted_sku_count:1})],total:1}
     else if(path.endsWith('/recycle-bin/skus')) data={items:[recycleRecord(102,'隔离恢复SKU',{sku_code:'ISO-SKU-102',product_deleted:false,removed_via:'direct'}),recycleRecord(107,'随产品删除SKU',{sku_code:'ISO-SKU-107',product_deleted:true,removed_via:'with_product'})],total:2}
-    else if(path.endsWith('/recycle-bin/customers')) data={items:[recycleRecord(103,'隔离恢复客户',{removed_via:'direct',original_owner_id:1,original_owner_name:'隔离负责人',original_owner_active:true,merged_into:null,final_target:null}),recycleRecord(108,'被合并客户',{removed_via:'merged',original_owner_active:true,merged_into:{id:9,name:'合并目标',visible:true,state:'ok'},final_target:null})],total:2}
+    else if(path.endsWith('/recycle-bin/customers')) data={items:[recycleRecord(103,'隔离恢复客户',{removed_via:'direct',original_owner_id:1,original_owner_name:'隔离负责人',original_owner_active:true,merged_into:null,final_target:null}),recycleRecord(106,'待重新分配客户',{removed_via:'direct',original_owner_id:2,original_owner_name:'已停用员工',original_owner_active:false,merged_into:null,final_target:null}),recycleRecord(108,'被合并客户',{removed_via:'merged',original_owner_active:true,merged_into:{id:9,name:'合并目标',visible:true,state:'ok'},final_target:null})],total:3}
     else if(path.endsWith('/recycle-bin/contracts')) data={items:[recycleRecord(105,'隔离恢复合同',{doc_no:'ISO-CONTRACT-105',title:'隔离恢复合同'})],total:1}
-    else if(/\/(products|skus|customers|samples|contract-documents)\/(101|102|103|104|105)\/restore$/.test(path) && req.method==='POST') {recycleRequests.push({path,body});data=path.includes('/products/')?{restored_skus:[],skipped_skus:[]}:null}
+    else if(/\/(products|skus|customers|samples|contract-documents)\/(101|102|103|104|105|106)\/restore$/.test(path) && req.method==='POST') {recycleRequests.push({path,body});data=path.includes('/products/')?{restored_skus:[],skipped_skus:[]}:null}
+    else if(path.endsWith('/users')) data={items:[{id:111,name:'在职员工甲',status:'active'},{id:112,name:'在职员工乙',status:'active'}],total:2}
     else if(path.endsWith('/leads')) data={items:[{id:31,name:'线索甲',status:'pending',status_label:'待处理',owner_id:null},{id:32,name:'线索乙',status:'pending',status_label:'待处理',owner_id:null}],total:2,page:1,page_size:10}
     else if(/\/leads\/\d+\/claim$/.test(path) && req.method==='POST') {const id=Number(path.split('/').at(-2));claimedLeads.push(id);data={id,owner_id:1}}
     else if(path.endsWith('/customers/9')) data=publicCustomer
@@ -395,6 +396,38 @@ try {
     await waitFor(`!${container}`)
     console.log(`BROWSER_RECYCLE_${endpoint}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true`)
   }
+  await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(t=>t.innerText.trim()==='客户').click()`)
+  const reassignRestore=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('待重新分配客户'))?.querySelector('a:last-child')`
+  await waitFor(reassignRestore)
+  const beforeReassign=recycleRequests.length
+  await evaluate(`${reassignRestore}.click()`)
+  await waitFor(`document.body.innerText.includes('指定新负责人')`)
+  const ownerModal=`document.querySelector('.semi-modal-content')`
+  const ownerSubmit=`Array.from(${ownerModal}.querySelectorAll('button')).find(b=>b.innerText.trim()==='恢复并交给这位')`
+  await evaluate(`${ownerSubmit}.click()`)
+  await waitFor(`document.body.innerText.includes('请选择一位在职的新负责人')`)
+  assert.equal(recycleRequests.length,beforeReassign,'missing replacement owner must not submit')
+  const ownerSelect=`${ownerModal}.querySelector('.semi-select')`
+  await evaluate(`${ownerSelect}.click()`)
+  const newOwner=`Array.from(document.querySelectorAll('.semi-select-option')).find(o=>o.innerText.trim()==='在职员工乙')`
+  await waitFor(newOwner)
+  await evaluate(`${newOwner}.click()`)
+  await waitFor(`${ownerSelect}.innerText.includes('在职员工乙')`)
+  await evaluate(`Array.from(${ownerModal}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  await sleep(250)
+  assert.equal(recycleRequests.length,beforeReassign,'cancel after selecting replacement owner must not submit')
+  await evaluate(`${reassignRestore}.click()`)
+  await waitFor(`document.body.innerText.includes('指定新负责人')`)
+  assert.equal(await evaluate(`${ownerModal}.innerText.includes('在职员工乙')`),false,'reopening must clear the cancelled selection')
+  await evaluate(`${ownerSelect}.click()`)
+  await waitFor(newOwner)
+  await evaluate(`${newOwner}.click()`)
+  await waitFor(`${ownerSelect}.innerText.includes('在职员工乙')`)
+  await evaluate(`${ownerSubmit}.click()`)
+  for(let i=0;recycleRequests.length===beforeReassign && i<30;i++)await sleep(100)
+  assert.equal(recycleRequests.length,beforeReassign+1,await evaluate('document.body.innerText.slice(-2400)'))
+  assert.deepEqual(recycleRequests.at(-1),{path:'/api/v1/customers/106/restore',body:{owner_id:112}})
+  console.log('BROWSER_RECYCLE_INACTIVE_OWNER_CANCEL_AND_REQUIRED_SELECTION_CORRECT_ID=true')
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
 }
