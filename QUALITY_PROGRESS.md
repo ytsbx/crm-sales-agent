@@ -404,7 +404,7 @@
 - 测试开发时，新增 GET /customers 模拟器起初用 endsWith 匹配，错误截获 /recycle-bin/customers，导致原回收站场景失败；已改为精确路径。未据此认定产品回归，失败日志保留 `/tmp/crm-customer-owner-browser.log`。没有放宽原业务断言。
 - 本次没有部署或改生产数据。其他选人入口和网络失败/重试的逐场景浏览器验证仍未全面覆盖。
 
-### Q-017 线索分配选人权限不匹配（中，已确认，等待权限方案决策，2026-10-20）
+### Q-017 线索分配选人权限不匹配（中，已确认，用户选择B后修复，2026-10-20）
 
 - 调用链证据：LeadListPage 的分配入口和选人查询按 lead:assign 开放；分配接口也接受 lead:assign；但实际 GET /users 依赖仅接受 user:manage/customer:assign。普通默认主管可能同时具备多权限，管理员也绕过检查，因此不能声称所有账号都遇到。
 - 隔离 FastAPI 实际挂载用户 router，覆盖当前用户为非管理员、仅 lead:view/lead:assign，数据库依赖替换为空以防外部读写；线索分配权限 gate 通过，GET /users 返回40301，消息明确要求 user:manage/customer:assign。脚本及日志 `/tmp/crm-lead-assignee-permission-repro.{py,log}`。
@@ -440,3 +440,30 @@
 
 - `50b5818`（新建客户/批量转移按需选人）运行 https://github.com/ytsbx/crm-sales-agent/actions/runs/39355000590 已 completed/success。
 - 文案提交 `0c97a9d` 运行 https://github.com/ytsbx/crm-sales-agent/actions/runs/39355155011 查询时仍 in_progress，不声称最新提交已经通过。生产仍未部署本轮选人及文案修改。
+
+
+## 附件通用读写权限链路调查（2026-10-20）
+
+- 读取 file/router.py、access.py、service.py 和既有附件回归，确认下载/预览均经过 can_access_file → visible_object 的模块查看权及对象数据范围校验；不把“拿到编号即可读取”静态怀疑记为新漏洞。未在本轮声称已逐类业务穷举。
+- 新行为证据：自建临时 PostgreSQL（仅临时Unix socket，端口55433，库crm_file_audit）、临时文件目录；使用真实路由函数、真实SQL/事务和文件操作。账号只有 file:manage/file:view/quote:view，没有 quote:manage；报价在本人范围，附件由另一账号上传、普通类别、单一报价关联、无其他持有人。visible_object(write=True)明确False，但 rename_file 和 delete_file 均返回code0，数据库文件记录/关联及临时磁盘文件被删除，审计实际含 rename/delete。
+- 证据 `/tmp/crm-file-write-scope-repro.py`、`/tmp/crm-file-write-scope-repro.log`。通用改名/删除仅检查可见性与 file:manage，而上传、挂载、解绑使用业务写入授权；是否应统一，需要先说明权限能力收紧及共享文件的处理方案，不能直接替用户更改权限政策。本轮尚未修改产品代码，也未把业务口径未决的行为直接宣称为已批准修复。
+- 初次测试用 Base.metadata.create_all 遇到重复索引，后改用项目 Alembic 升级空库head成功；第一次真实夹具未按用户→客户顺序flush触发外键，修正测试夹具顺序后原行为验证通过。失败日志分别保留 `/tmp/crm-file-write-scope-schema-attempt.log` 和 `/tmp/crm-file-write-scope-fixture-attempt.log`；没有放宽真实数据库约束或业务断言。
+- 收尾：pg_ctl停止临时集群，确认无postmaster.pid后移除本轮 `/tmp/crm-file-audit.ywCpgy`；没有连接生产、演示、开发业务数据库，没有启动应用调度器或发送外部消息。
+- 用户就Q-017询问为什么不推荐B，已解释现有完整员工列表会额外返回联系方式、角色和集成标识；B在用户明确接受该信息可读范围时可以选择，尚未视为批准任何方案。下一步等待Q-017决定，并另行提交附件读写口径的具体方案供确认。
+
+
+#### Q-017 用户批准 B 与修复验收（2026-10-20）
+
+- 用户询问B取舍后，明确选择“复用现有接口，维护简单，但允许读取完整员工资料。”据此只扩展 GET /users 的任一授权集合，加入 lead:assign；不提供新的精简接口，不修改完整输出字段，不开放员工创建/修改/角色管理权限。
+- 修复前新增真实 FastAPI 路由+内存SQLite回归，lead:view/lead:assign账号GET /users预期200实际403，断言失败；日志 `/tmp/crm-lead-users-before-fixed-fixture.log`。初版夹具遗漏必填password_hash触发建库数据错误，补齐仅隔离夹具后才建立上述有效失败证据；初版失败日志保留。
+- 修复后新增7个接口场景通过：lead:assign可读完整员工字段（手机号、邮箱、角色、钉钉/企微标识），姓名/账号搜索及20条分页查询正常；仍不返回password_hash；不能POST /users；无权限/仅lead:view/仅file:manage仍403；原customer:assign、user:manage、admin授权不受影响。新增测试 `backend/tests/test_lead_assignee_user_access.py` 由现有pytest CI自动发现。
+- 与客户创建指定负责人权限、附件权限和存储边界合跑33项全部通过，日志 `/tmp/crm-lead-users-after-final.log`。非管理员浏览器模拟获准的员工接口响应，真实构建分配弹窗候选可见、选择112后仅提交一次owner_id=112，关闭弹窗，日志 `/tmp/crm-lead-assignee-permission-browser-after.log` 退出0；后端权限已单独由真实路由测试证明，未将模拟浏览器当成真实持久化分配验证。
+- 本次仅按B修权限，保留线索选人现有首100条本地筛选交互；没有把此前对两个客户入口的按需加载授权擅自扩到线索入口。线索大员工量边界仍需另行核查和决策。本次没有部署或改生产角色/业务数据。
+
+## 附件读写口径疑点排除（2026-10-20）
+
+- 后续证据改变判断：`AttachmentPanel.tsx:69` 明确规定上传/挂载跟业务写权限，文件本身删除走文件管理权限；改名/删除按钮均按file:manage显示。`03-API-V1.1-接口设计文档.md:893` 明确改名只要求file:manage及文件可见，与真实后端行为一致。
+- 因此上一轮复现的“无quote:manage但有file:manage且文件可见时可改名/删除”，属于当前显式设计口径，不能仅因它与挂载/解绑不同就断言为权限漏洞，也没有发现“前端禁止、后端放行”的差异。本轮将该疑点排除，不向用户要求无必要的权限收紧，不修改现有业务规则。
+- 仍保留合同原件、多业务引用、打样制作依据的既有保护；本轮没有对这些判据作改动。已复读通用删除/解绑的保护调用链，未把静态阅读等同于各类别真实并发验证；继续保留未覆盖边界风险。
+
+- Q-017 全量后端 pytest 最终退出0，1210项通过（`/tmp/crm-lead-users-full-pytest.log`），新增接口测试已纳入。没有访问生产数据库；本次前端代码未变，浏览器仅针对现有分配交互验证。

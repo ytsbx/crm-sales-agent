@@ -1,7 +1,7 @@
 """用户 / 部门 / 角色接口（03-API §3 / §4 / §5）。
 
 共 20 个路径，其中读接口 5 个、写接口 15 个。全部要求 `user:manage`
-（`GET /users` 例外：分配客户时也要能选人，所以对 `customer:assign` 放开）。
+（`GET /users` 例外：分配客户/线索时需要选人，对 `customer:assign` / `lead:assign` 放开）。
 
 注册顺序：`/departments/tree` 必须排在 `/departments/{dept_id}` 之前，
 否则会被动态路由抢先匹配（项目里这个坑踩过三次了）。
@@ -49,8 +49,8 @@ async def list_users(
     department_id: int | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
-    # 有分配客户权限的人也需要选人，所以这里放开给 customer:assign
-    _: CurrentUser = Depends(require_permission("user:manage", "customer:assign")),
+    # 用户确认复用完整员工列表：分配客户/线索的角色可读，用户管理写接口仍单独授权。
+    _: CurrentUser = Depends(require_permission("user:manage", "customer:assign", "lead:assign")),
     session: AsyncSession = Depends(get_db),
 ):
     stmt = svc.base_user_query()
