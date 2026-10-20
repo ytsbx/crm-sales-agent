@@ -28,6 +28,7 @@ const wecomBindings=[]
 const recycleRequests=[]
 const quoteWithdrawals=[]
 const settingsRequests=[]
+const customerOwnerWrites=[]
 const ownerRequests=[]
 const ownerUsers=Array.from({length:201},(_,i)=>({id:111+i,name:i===0?'在职员工甲':i===1?'在职员工乙':i===200?'末页在职员工':`分页员工${i}`,username:i===200?'last.owner':`owner${i}`,status:'active'}))
 const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount:100,charge_amount:0,discount_amount:0,total_amount:100,logistics_amount:0,other_charge_amount:0,pricing_basis:'actual_pass_through',approval_status:'pending',approval_required:true,created_at:new Date().toISOString()})
@@ -50,6 +51,9 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/public-pool/recycle-candidates')) data={items:[141,142,143].map(id=>({id,customer_id:id,customer_name:`隔离回收候选${id}`,owner_name:'隔离负责人',status:'pending',protection:[],status_label:'待复核'})),total:3}
     else if(path.endsWith('/public-pool/run-recycle') && req.method==='POST') {settingsRequests.push({path,body});data={nominated_count:0,protected_count:0}}
     else if(path.endsWith('/tasks/run-auto-rules') && req.method==='POST') {settingsRequests.push({path,body});data={created_count:0,failed_rule_count:0}}
+    else if(path.endsWith('/customers/batch-transfer') && req.method==='POST') {customerOwnerWrites.push({path,body});data={affected:body.customer_ids.length}}
+    else if(path==='/api/v1/customers' && req.method==='POST') {customerOwnerWrites.push({path,body});data={id:151,...body}}
+    else if(path==='/api/v1/customers') data={items:[publicCustomer],total:1}
     else if(path.endsWith('/auth/me')) data=user
     else if(path.endsWith('/notifications/unread-count')) data={count:0}
     else if(path.endsWith('/notifications')) data={items:[{id:41,title:'补投确认测试通知',read:false,wecom_status:'failed',can_redispatch:true,business_type:'customer',business_id:9,created_at:new Date().toISOString()}],total:1}
@@ -520,6 +524,60 @@ try {
     assert.equal(settingsRequests.at(-1).path,path)
     await waitFor(`!${popup}`)
     console.log(`BROWSER_SETTINGS_${path.split('/').at(-1)}_CANCEL_NO_WRITE_CONFIRM_ONCE=true`)
+  }
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/customers`})
+  for (const mode of ['create','batch']) {
+    const buttonLabel=mode==='create'?'新建客户':'批量转移负责人'
+    if (mode==='batch') {
+      const checkbox=`document.querySelector('.semi-table-tbody input[type=checkbox]')`
+      await waitFor(checkbox)
+      await evaluate(`${checkbox}.click()`)
+    }
+    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(buttonLabel)})`
+    await waitFor(button)
+    await evaluate(`${button}.click()`)
+    const modal=`document.querySelector('.semi-modal-content')`
+    const picker=mode==='create'?`${modal}.querySelector('.owner-picker')`:`${modal}.querySelector('.semi-select')`
+    await waitFor(picker)
+    await evaluate(`${picker}.click()`)
+    const input=`${picker}.querySelector('input')`
+    const search=async keyword=>{
+      const before=ownerRequests.length
+      await evaluate(`(()=>{const el=${input};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(keyword)});el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+      for(let i=0;!(ownerRequests.length>before&&ownerRequests.at(-1).keyword===keyword)&&i<40;i++)await sleep(100)
+      assert.equal(ownerRequests.at(-1).keyword,keyword)
+      assert.equal(ownerRequests.at(-1).page_size,'20')
+    }
+    await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='加载更多')`)
+    await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='加载更多').click()`)
+    await waitFor(`Array.from(document.querySelectorAll('.semi-select-option')).some(o=>o.textContent.includes('分页员工20'))`)
+    assert.equal(ownerRequests.at(-1).page,'2')
+    await search('末页在职员工')
+    const lastOption=`Array.from(document.querySelectorAll('.semi-select-option')).find(o=>o.textContent.includes('末页在职员工（last.owner'))`
+    await waitFor(lastOption)
+    await evaluate(`${lastOption}.click()`)
+    await waitFor(`${picker}.innerText.includes('末页在职员工')`)
+    await evaluate(`${picker}.click()`)
+    await search('owner1')
+    await waitFor(`Array.from(document.querySelectorAll('.semi-select-option')).some(o=>o.textContent.includes('在职员工乙'))`)
+    assert.equal(await evaluate(`document.querySelector('.semi-select-option-selected')?.textContent.includes('末页在职员工')`),true,'changing keyword must preserve selected owner')
+    await search('last.owner')
+    await waitFor(lastOption)
+    await evaluate(`${lastOption}.click()`)
+    await waitFor(`${picker}.innerText.includes('末页在职员工')`)
+    if(mode==='create') {
+      await evaluate(`(()=>{const el=${modal}.querySelector('input[placeholder^="公司全称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'隔离按需选人客户');el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+      await waitFor(`${modal}.querySelector('input[placeholder^="公司全称"]').value==='隔离按需选人客户'`)
+    }
+    const before=customerOwnerWrites.length
+    await evaluate(`Array.from(${modal}.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(mode==='create'?'创建':'确认转移')}).click()`)
+    for(let i=0;customerOwnerWrites.length===before&&i<40;i++)await sleep(100)
+    assert.equal(customerOwnerWrites.length,before+1)
+    assert.equal(customerOwnerWrites.at(-1).body.owner_id,311)
+    if(mode==='batch')assert.deepEqual(customerOwnerWrites.at(-1).body.customer_ids,[9])
+    else assert.ok(customerOwnerWrites.at(-1).body.request_key,'create keeps idempotency key')
+    await waitFor(`!${modal}`)
+    console.log(`BROWSER_CUSTOMER_${mode}_OWNER_REMOTE_NAME_ACCOUNT_PAGING_PRESERVE_SUBMIT_ID=true`)
   }
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})

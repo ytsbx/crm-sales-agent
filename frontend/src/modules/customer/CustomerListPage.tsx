@@ -21,8 +21,7 @@ import {
   type DuplicateMatch,
   type CustomerPayload,
 } from '../../shared/api/customer'
-import { listUsers } from '../../shared/api/system'
-import { optionMatcher } from '../../shared/components/optionMatch'
+import UserSearchSelect from '../../shared/components/UserSearchSelect'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
@@ -177,20 +176,6 @@ export default function CustomerListPage() {
   const stageDistQuery = useQuery({
     queryKey: ['customer-stage-distribution'],
     queryFn: () => listStageDistribution(),
-  })
-  const usersQuery = useQuery({
-    queryKey: ['assignable-users'],
-    queryFn: () => listUsers({ page: 1, page_size: 100 }),
-    enabled: batchTransferOpen,
-  })
-  // ⚠️ 新建客户弹窗里的"负责人"选择器要**自己拉一次**用户列表。
-  // 上面那个 `usersQuery` 被 `enabled: batchTransferOpen` 门控着（只有批量转移
-  // 弹窗打开才请求），直接复用它的话，新建客户弹窗里这个下拉**永远是"暂无数据"**
-  // —— 我第一版就是这么写的，截图一眼看出来（三个下拉全空）。
-  const ownerOptionsQuery = useQuery({
-    queryKey: ['assignable-users', 'for-create'],
-    queryFn: () => listUsers({ page: 1, page_size: 100 }),
-    enabled: modalVisible && can('customer:assign'),
   })
 
   const refreshList = () => {
@@ -762,18 +747,13 @@ export default function CustomerListPage() {
         confirmLoading={batchTransferMutation.isPending}
         okText="确认转移"
       >
-        <Select
+        <UserSearchSelect
+          queryScope="customer-batch-transfer"
+          enabled={batchTransferOpen}
           style={{ width: '100%' }}
-          placeholder="选择新的负责人"
-          showClear
+          placeholder="按姓名或登录账号搜索新的负责人"
           value={batchOwnerId ?? undefined}
-          onChange={(value) => setBatchOwnerId((value as number) ?? null)}
-          loading={usersQuery.isLoading}
-          filter={optionMatcher}
-          optionList={(usersQuery.data?.items ?? []).map((item) => ({
-            value: item.id,
-            label: `${item.name}（${item.department ?? '未分配部门'}）`,
-          }))}
+          onChange={(value) => setBatchOwnerId(value ?? null)}
         />
         <div style={{ marginTop: 12, color: 'var(--crm-text-3)', fontSize: 12 }}>
           清空选择后确认 = 把这些客户放入公海。每次转移都会记录负责人变更历史。
@@ -852,20 +832,15 @@ export default function CustomerListPage() {
               再用就会变成 24、跟其它字段不一致。 */}
           <div>
             <FormLabel hint="不选就归你自己，之后也能转移">负责人</FormLabel>
-            <Select
+            <UserSearchSelect
+              queryScope="customer-create"
+              enabled={modalVisible && can('customer:assign')}
               className="owner-picker"
               style={{ width: '100%' }}
-              placeholder="不选 = 归你自己"
-              showClear
+              placeholder="按姓名或登录账号搜索；不选归你自己"
               disabled={!can('customer:assign')}
               value={form.owner_id ?? undefined}
-              onChange={(value) => setForm({ ...form, owner_id: (value as number) ?? null })}
-              loading={ownerOptionsQuery.isLoading}
-              filter={optionMatcher}
-              optionList={(ownerOptionsQuery.data?.items ?? []).map((item) => ({
-                value: item.id,
-                label: `${item.name}（${item.department ?? '未分配部门'}）`,
-              }))}
+              onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
             />
             <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
               {can('customer:assign')

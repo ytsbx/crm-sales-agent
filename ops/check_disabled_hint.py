@@ -47,6 +47,7 @@ DISABLED_PATTERNS = (re.compile(r"\bdisabled=\{"), re.compile(r"okButtonProps"))
 # 原则：**原因就在控件旁边、用户一眼能看到**的，才可以免解释
 # （例如"保存中""上一页/下一页""旁边就是刚填完的必填框"）。
 EXEMPT: dict[str, str] = {
+    "shared/components/UserSearchSelect.tsx": "通用选人控件，disabled 由调用方传入；当前仅客户新建无分配权限时禁用，调用处紧邻文字说明权限及默认归自己",
     "modules/common/NotificationBell.tsx": "仅补投请求中的确认入口暂时禁用，同一入口明确显示「补投中…」",
     "modules/lead/LeadListPage.tsx": "仅领取请求中的确认入口暂时禁用，同一入口明确显示「领取中…」",
     "modules/contract/CustomerApproval.tsx": "仅提交中的取消按钮暂时禁用，旁边提交按钮显示 loading；不涉及缺字段或业务条件不满足",

@@ -390,3 +390,28 @@
 - 独立设置场景完整运行 `/tmp/crm-settings-confirm-browser.log` 已退出 0；本轮没有由这些入口确认新产品缺陷，没有新增业务取舍。
 
 - 本轮整套浏览器确认回归（含按需选人和上述 5 项设置动作）最终退出 0：`/tmp/crm-owner-demand-browser-selected.log`；语法及 diff 检查通过。此前失败为浏览器断言读取方式问题，未隐藏失败证据。
+
+
+### Q-016 新建客户及批量转移选人截断（中，用户批准后修复，2026-10-20）
+
+- 触发条件：员工列表超过 100 人，新建客户指定负责人或批量转移负责人时，目标员工在第一页之后。
+- 代码证据：`CustomerListPage.tsx` 原两个查询均固定 `page=1&page_size=100`，Select 使用本地 optionMatcher，忽略 total 和后续页。不存在服务端搜索或加载后续页的其他入口。
+- 修复前两个独立隔离浏览器案例均实际请求 `[{"page":"1","page_size":"100"}]`，输入“末页在职员工”后显示“暂无数据”，可选择该员工的断言失败。脚本及失败日志：`/tmp/crm-{create,batch}-owner-truncation-repro.{mjs,log}`。使用遵循分页的 201 人内存 API，不曾新建或转移真实客户。
+- 用户先要求解释，未视为同意；解释后明确“可以，就这么改”，并重复批准“输入姓名或登录账号后，到服务器查找……每次显示20人，需要时再加载更多，不一次加载全员”。本次授权范围为上述两个客户入口，不扩展线索或其他页面。
+- 新增共用 UserSearchSelect 供这两个已确认入口使用：20 人一页、姓名/账号服务端关键词防抖搜索、手动加载下一页、保留已选候选、错误重试；查询键按入口和关键词隔离，两个弹窗不会复用彼此搜索结果。保留员工部门展示并加账号，便于辨认同名人员。
+- 保持原有用户状态筛选口径（未擅自新增 active 限制）、权限和提交契约：新建不选仍归自己，批量清空仍传 null 表示公海；原幂等请求键保留。共用控件 disabled 来自调用方，无分配权限的原因仍在新建表单紧邻说明，按既有静态守卫契约登记。
+- 验证：生产构建、lint、禁用原因守卫、Node 相关回归25项通过；最终构建专项浏览器两入口通过，均验证姓名/账号找到第201人、点击才取第二页、关键词改变仍保留选择，最终 body.owner_id=311，批量精确 customer_ids=[9]，创建携 request_key。证据 `/tmp/crm-customer-owner-focused.log`。整套浏览器回归另行记录最终结果。
+- 测试开发时，新增 GET /customers 模拟器起初用 endsWith 匹配，错误截获 /recycle-bin/customers，导致原回收站场景失败；已改为精确路径。未据此认定产品回归，失败日志保留 `/tmp/crm-customer-owner-browser.log`。没有放宽原业务断言。
+- 本次没有部署或改生产数据。其他选人入口和网络失败/重试的逐场景浏览器验证仍未全面覆盖。
+
+### Q-017 线索分配选人权限不匹配（待进一步验证/决策，2026-10-20）
+
+- 调用链证据：LeadListPage 的分配入口和选人查询按 lead:assign 开放；分配接口也接受 lead:assign；但实际 GET /users 依赖仅接受 user:manage/customer:assign。普通默认主管可能同时具备多权限，管理员也绕过检查，因此不能声称所有账号都遇到。
+- 隔离 FastAPI 实际挂载用户 router，覆盖当前用户为非管理员、仅 lead:view/lead:assign，数据库依赖替换为空以防外部读写；线索分配权限 gate 通过，GET /users 返回40301，消息明确要求 user:manage/customer:assign。脚本及日志 `/tmp/crm-lead-assignee-permission-repro.{py,log}`。
+- 页面复现脚本初次误点第一条“领取”链接，断言失败；尚未完成该场景的浏览器验证，不计为完整前后端复现。
+- 未修改权限。不能直接给 lead:assign 放开完整 GET /users：该接口还返回手机号、邮箱、钉钉/企微身份、角色等，权限扩展存在数据暴露取舍。后续应先完成浏览器复现，再提交精简候选接口与扩大现有接口授权的方案比较，等待人工决定。
+
+- Q-015 远端验收：提交 `b133a64` 的 GitHub CI https://github.com/ytsbx/crm-sales-agent/actions/runs/39353308854 已为 completed/success（本轮实际查询），不把本地结果替代远端结果。
+- Q-016 完整确认浏览器回归 `/tmp/crm-customer-owner-full-final.log` 已退出0，覆盖原有所有确认场景及两个新增入口。后续去除共用控件新引入的 effect 同步 setState lint 警告，搜索/关闭重置统一走可取消定时器；重新构建及 lint 通过，最终构建回归另记日志。
+
+- Q-016 最终构建整套浏览器回归 `/tmp/crm-customer-owner-release-browser.log` 已退出0，两个新增入口及全部原有确认场景通过。没有跳过或放宽断言；修改的共用控件无新增 lint 警告，项目已有其他 lint 警告仍保留。
