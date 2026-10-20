@@ -404,7 +404,7 @@
 - 测试开发时，新增 GET /customers 模拟器起初用 endsWith 匹配，错误截获 /recycle-bin/customers，导致原回收站场景失败；已改为精确路径。未据此认定产品回归，失败日志保留 `/tmp/crm-customer-owner-browser.log`。没有放宽原业务断言。
 - 本次没有部署或改生产数据。其他选人入口和网络失败/重试的逐场景浏览器验证仍未全面覆盖。
 
-### Q-017 线索分配选人权限不匹配（待进一步验证/决策，2026-10-20）
+### Q-017 线索分配选人权限不匹配（中，已确认，等待权限方案决策，2026-10-20）
 
 - 调用链证据：LeadListPage 的分配入口和选人查询按 lead:assign 开放；分配接口也接受 lead:assign；但实际 GET /users 依赖仅接受 user:manage/customer:assign。普通默认主管可能同时具备多权限，管理员也绕过检查，因此不能声称所有账号都遇到。
 - 隔离 FastAPI 实际挂载用户 router，覆盖当前用户为非管理员、仅 lead:view/lead:assign，数据库依赖替换为空以防外部读写；线索分配权限 gate 通过，GET /users 返回40301，消息明确要求 user:manage/customer:assign。脚本及日志 `/tmp/crm-lead-assignee-permission-repro.{py,log}`。
@@ -423,3 +423,20 @@
 - 定位 `DocumentsPage.tsx` 上传合同客户选择框，将 placeholder 简化为“搜索客户名称”。仅修改文案，保留现有 keyword 服务端查询、权限及选择行为。
 - 当前源码该查询 page_size=50、page=1；截图无法证明线上实际返回20条，不把用户观察与源码差异直接推断为后端分页缺陷。宽泛关键词超过50个结果时的进一步加载能力未在本次文案修正中擅自扩展。
 - 这次是低影响可逆文案调整，不新建镜像实现的单元测试；使用生产构建与 diff 检查验证。服务器尚未部署。
+
+
+#### Q-017 浏览器验证与待决策方案（2026-10-20）
+
+- 修正隔离复现脚本定位方式：按链接文字精确查找“分配”，不再错误选择行内第一个“领取”。模拟非管理员用户仅有 lead:view/lead:assign，用户候选接口返回前述真实 router 已验证的403响应。浏览器确认分配入口可见、弹窗打开、实际请求 page=1&page_size=100、选人下拉显示暂无数据；日志 `/tmp/crm-lead-assignee-permission-browser-confirmed.log` 退出0。
+- 页面没有显示后端拒绝原因：最初等待错误提示的复现超时，实际查询没有 onError/错误提示，而是将 data?.items 缺失映射为空列表。该超时保留于 `/tmp/crm-lead-assignee-permission-browser-fixed.log`，未将它隐瞒或当成测试通过。
+- 影响限定：普通非管理员角色有 lead:assign、但没有 customer:assign/user:manage 时，合法分配业务无法在前端选择新的接手人。默认主管通常同时拥有这两类分配权限，管理员绕过 gate；未声称所有角色都受影响，未查询生产角色组合。
+- 方案 A（推荐，已向用户提问）：新增受 lead:assign 约束的精简只读候选查询，返回在职员工 id、name、username、department，接入该入口并按姓名/账号搜索、20人一页按需加载，提供请求失败反馈。收益是完成已有分配能力并避免开放联系方式/集成身份等额外信息；代价是维护一个受限接口、前端查询及相应回归。现有 assign_lead 已检查目标必须存在且active，不自行改变可分配范围。
+- 方案 B：扩展现有 GET /users 允许 lead:assign，维护改动少，但现有 serializer 同时返回手机号、邮箱、角色、钉钉/企微标识，造成权限可读范围增加，不能直接自主实施。
+- 也可暂缓，代价是上述自定义权限组合继续无法通过页面选人。本轮只完成调查和提问，未修改任何权限、接口或用户角色。
+- 排除误报：没有认定管理员入口普遍不可用；没有将错误点击“领取”的脚本失败认定为产品分配操作缺陷。UI验证为真实构建+内存API，后端权限为真实router+隔离依赖，尚非真实持久化分配端到端测试。
+- 下一步：待用户选方案后才实施该项；其他模块继续独立审查。没有生产写入、部署或外部消息调用。
+
+## 最近提交远端验收（2026-10-20）
+
+- `50b5818`（新建客户/批量转移按需选人）运行 https://github.com/ytsbx/crm-sales-agent/actions/runs/39355000590 已 completed/success。
+- 文案提交 `0c97a9d` 运行 https://github.com/ytsbx/crm-sales-agent/actions/runs/39355155011 查询时仍 in_progress，不声称最新提交已经通过。生产仍未部署本轮选人及文案修改。
