@@ -241,7 +241,10 @@ async def list_product_skus(
         .order_by(Sku.id.asc())
     )
     rows = (await session.execute(stmt)).scalars().all()
-    return ok([svc.serialize_sku(sku, product_name=product.name) for sku in rows])
+    from app.modules.pricing.service import sku_cost_statuses
+    cost_statuses = await sku_cost_statuses(session, [sku.id for sku in rows])
+    return ok([{**svc.serialize_sku(sku, product_name=product.name),
+                "cost_status": cost_statuses[sku.id]} for sku in rows])
 
 
 @router.post("/products/{product_id}/skus")
@@ -311,7 +314,10 @@ async def list_skus(
     rows = (
         await session.execute(stmt.offset((page - 1) * page_size).limit(page_size))
     ).all()
-    items = [svc.serialize_sku(sku, product_name=name) for sku, name in rows]
+    from app.modules.pricing.service import sku_cost_statuses
+    cost_statuses = await sku_cost_statuses(session, [sku.id for sku, _ in rows])
+    items = [{**svc.serialize_sku(sku, product_name=name),
+              "cost_status": cost_statuses[sku.id]} for sku, name in rows]
     return ok(page_data(items, total, page, page_size))
 
 

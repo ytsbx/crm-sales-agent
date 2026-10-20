@@ -29,11 +29,14 @@ const recycleRequests=[]
 const quoteWithdrawals=[]
 const quoteDeletions=[]
 let rejectQuoteDeletion=false
+let quoteCostProblems=[]
+let costDraft=false
+const costRefreshes=[], costPageRequests=[]
 const settingsRequests=[]
 const customerOwnerWrites=[]
 const ownerRequests=[]
 const ownerUsers=Array.from({length:201},(_,i)=>({id:111+i,name:i===0?'在职员工甲':i===1?'在职员工乙':i===200?'末页在职员工':`分页员工${i}`,username:i===200?'last.owner':`owner${i}`,status:'active'}))
-const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount:100,charge_amount:0,discount_amount:0,total_amount:100,logistics_amount:0,other_charge_amount:0,pricing_basis:'actual_pass_through',approval_status:'pending',approval_required:true,created_at:new Date().toISOString()})
+const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount:100,charge_amount:0,discount_amount:0,total_amount:100,logistics_amount:0,other_charge_amount:0,pricing_basis:'actual_pass_through',approval_status:costDraft?'not_submitted':'pending',approval_required:true,created_at:new Date().toISOString()})
 const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
@@ -78,7 +81,13 @@ const server=createServer(async (req,res)=>{
       data=null
     }
     else if(path.endsWith('/quotes/121/versions')) data=[quoteVersion(131),quoteVersion(130)]
-    else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:[],charges:[],approval:null}
+    else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:[],charges:[],approval:null,cost_problems:quoteCostProblems}
+    else if(path.endsWith('/quote-versions/131/cost-refresh') && req.method==='POST') {costRefreshes.push(131);quoteCostProblems=[];data={refreshed:1}}
+    else if(path.endsWith('/products/201')) data={id:201,name:'隔离成本产品',status:'active',sku_count:1}
+    else if(path.endsWith('/products/201/skus')) data=[{id:1,product_id:201,sku_code:'COST-SKU',name:'成本SKU',status:'active',cost_status:{state:'missing',label:'成本未维护'}}]
+    else if(path.endsWith('/files/batch')) data={}
+    else if(path.endsWith('/skus/1/costs')) {costPageRequests.push(path);data=[]}
+    else if(path.endsWith('/pricing/sku-options')) data=[{id:1,sku_code:'COST-SKU',name:'成本SKU'}]
     else if(/\/quote-versions\/(130|131)\/withdraw-approval$/.test(path) && req.method==='POST') {quoteWithdrawals.push(Number(path.split('/').at(-2)));data=null}
     else if(path.endsWith('/recycle-bin/leads')) data={items:[{id:21,name:'恢复确认测试线索',status_label:'待处理',created_at:new Date().toISOString(),deleted_at:new Date().toISOString(),deleted_by_pending:true}],total:1,page:1,page_size:10}
     else if(path.endsWith('/leads/21/restore') && req.method==='POST') {restored++;data=null}
@@ -618,6 +627,38 @@ try {
     await waitFor(`!${modal}`)
     console.log(`BROWSER_CUSTOMER_${mode}_OWNER_REMOTE_NAME_ACCOUNT_PAGING_PRESERVE_SUBMIT_ID=true`)
   }
+  costDraft=true
+  quoteCostProblems=[{item_id:401,sku_id:1,label:'COST-SKU',reason:'成本未维护'}]
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  await waitFor(`document.getElementById('quote-cost-status')?.innerText.includes('成本未完整确认')`)
+  assert.ok(await evaluate(`document.body.innerText.includes('成本未完整确认，暂不能计算利润')`))
+  assert.equal(await evaluate(`document.querySelector('#quote-cost-status a').getAttribute('href')`),'/prices?tab=costs&sku_id=1')
+  const refreshCostButton=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='更新草稿成本')`
+  await evaluate(`${refreshCostButton}.click()`)
+  await waitFor(`document.body.innerText.includes('用当前成本更新草稿？')`)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  assert.equal(costRefreshes.length,0)
+  await evaluate(`${refreshCostButton}.click()`)
+  await waitFor(`document.body.innerText.includes('用当前成本更新草稿？')`)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  await waitFor(`!document.getElementById('quote-cost-status')`)
+  assert.deepEqual(costRefreshes,[131])
+  console.log('BROWSER_QUOTE_COST_HINT_CANCEL_NO_WRITE_EXPLICIT_REFRESH=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/products/201`})
+  await waitFor(`document.body.innerText.includes('成本未维护')`)
+  await evaluate(`Array.from(document.querySelectorAll('a')).find(a=>a.innerText.trim()==='维护成本').click()`)
+  await waitFor(`location.pathname==='/prices' && document.body.innerText.includes('新增成本')`)
+  assert.equal(await evaluate('location.search'),'?tab=costs&sku_id=1')
+  assert.ok(costPageRequests.length>0,'cost shortcut loads the exact SKU costs')
+  console.log('BROWSER_PRODUCT_COST_STATUS_AND_EXACT_SKU_MAINTENANCE_SHORTCUT=true')
+  user.roles=['sales'];user.permissions=['quote:view','product:view']
+  const restrictedAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+  await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(restrictedAuth)})`})
+  quoteCostProblems=[{item_id:401,sku_id:1,label:'COST-SKU',reason:'成本未维护'}]
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  await waitFor(`document.getElementById('quote-cost-status')?.innerText.includes('请联系价格管理员')`)
+  assert.equal(await evaluate(`document.querySelectorAll('#quote-cost-status a').length`),0)
+  console.log('BROWSER_QUOTE_COST_RESTRICTED_USER_SEES_STATUS_AND_ADMIN_GUIDANCE=true')
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
 }

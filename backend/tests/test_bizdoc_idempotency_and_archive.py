@@ -256,6 +256,7 @@ def _fixture(session):
     quote.current_version_id = version.id
     session.add(
         QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
             quote_version_id=version.id,
             sku_id=sku.id,
             sku_code_snapshot=sku.sku_code,
@@ -615,6 +616,12 @@ def test_same_source_versions_are_sequential_and_isolated(isolated_file_root):
             created_at=datetime.now(UTC),
         )
         raw.add(other_version)
+        raw.flush()
+        source_item = raw.query(QuoteItem).filter_by(quote_version_id=version.id).one()
+        raw.add(QuoteItem(quote_version_id=other_version.id, sku_id=source_item.sku_id,
+                          sku_code_snapshot=source_item.sku_code_snapshot, quantity=Decimal("1"),
+                          quoted_price=Decimal("10"), cost_present_snapshot=True,
+                          cost_complete_snapshot=True))
         raw.flush()
         other_doc = await bizdoc.generate_quote_doc(
             session, quote_version_id=other_version.id, user=current_user

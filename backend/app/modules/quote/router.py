@@ -861,6 +861,22 @@ async def link_master(
     return ok(result, result["message"])
 
 
+@router.post("/quote-versions/{version_id}/cost-refresh")
+async def cost_refresh(
+    version_id: int, request: Request,
+    user: CurrentUser = Depends(require_permission("quote:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    version = await svc.get_visible_version(session, user, version_id, for_update=True)
+    await svc.ensure_version_editable(version)
+    result = await svc.refresh_cost_snapshots(session, version=version, user=user)
+    await write_audit(session, operator_id=user.id, action="cost_refresh",
+                      business_type="quote", business_id=version.quote_id,
+                      after={"version_id": version.id, **result}, ip=client_ip(request))
+    await session.commit()
+    return ok(result, "草稿成本已更新，报价单价未改变")
+
+
 @router.post("/quote-versions/{version_id}/price-refresh")
 async def price_refresh(
     version_id: int,
@@ -1003,6 +1019,7 @@ async def get_version(
     )
     quote = await session.get(Quote, version.quote_id)
     ctx = await _quote_context(session, [quote]) if quote else None
+    cost_problems = svc.item_cost_problems(items)
     body = {
         # ⚠️ 整单利润**也要按权限裁剪**（2026-10-14 审查修，实测泄露）。
         #
@@ -1016,7 +1033,7 @@ async def get_version(
         # 同模块另两个出口本来就有这道闸：`strip_comparison_cost`（版本对比）
         # 与 `serialize_item`（明细），只有这里漏了。
         "version": svc.serialize_version(
-            version, total_profit if _can_see_cost(user) else None
+            version, total_profit if _can_see_cost(user) and not cost_problems else None
         ),
             # 金额汇总由**后端**算好给前端（2026-10-09）：货款 / 运费 / 其他费用 /
             # 优惠 / 应付合计。页面、对客文件、订单共用这一份公式，
@@ -1067,6 +1084,7 @@ async def get_version(
     # 运费未确认同样要**持续可见**（2026-10-09）：草稿允许没填运费，
     # 但页面上要一直提示"正式发送前得先确认运费"，而不是等发送被拒才知道。
     body["freight_unconfirmed_reason"] = svc.quote_freight_unconfirmed_reason(charges)
+    body["cost_problems"] = cost_problems
     return ok(_with_master_warnings(body, set(master_problems)))
 
 
@@ -1664,6 +1682,7 @@ async def download_pdf(
             "报价未通过审批，不能生成正式报价 PDF",
             422,
         )
+    await svc.ensure_items_cost_complete(session, version_id=version_id)
     await svc.ensure_items_master_confirmed(session, version_id=version_id)
     await svc.ensure_freight_confirmed(session, version_id=version_id)
     quote = await svc.get_visible_quote(session, user, version.quote_id)
@@ -2092,6 +2111,7 @@ async def send_email(
         )
     if not payload.receiver:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "收件人必填", 422)
+    await svc.ensure_items_cost_complete(session, version_id=version.id)
 
     now = datetime.now(UTC)
     session.add(

@@ -1,6 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AutoComplete, Button, DatePicker, Input, Modal, Popconfirm, Select, Switch, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
@@ -486,6 +486,7 @@ const emptyCustomerPriceForm = {
 }
 
 export default function PriceCenterPage() {
+  const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { can } = usePermissions()
@@ -497,8 +498,11 @@ export default function PriceCenterPage() {
 
   // 默认落在「客户查价」：这是价格中心最高频的入口，
   // 之前默认停在「成本」，用户进来得先自己找页签。
-  const [activeKey, setActiveKey] = useState('lookup')
-  const [costSkuId, setCostSkuId] = useState<number | undefined>()
+  const [activeKey, setActiveKey] = useState(searchParams.get('tab') === 'costs' ? 'costs' : 'lookup')
+  const [costSkuId, setCostSkuId] = useState<number | undefined>(() => {
+    const id = Number(searchParams.get('sku_id'))
+    return Number.isSafeInteger(id) && id > 0 ? id : undefined
+  })
   const [costVisible, setCostVisible] = useState(false)
   const [costForm, setCostForm] = useState({
     purchase_cost: '',
@@ -623,6 +627,8 @@ export default function PriceCenterPage() {
   })
 
   const refreshAll = () => {
+    void queryClient.invalidateQueries({ queryKey: ['product-skus'] })
+    void queryClient.invalidateQueries({ queryKey: ['skus'] })
     void queryClient.invalidateQueries({ queryKey: ['costs'] })
     void queryClient.invalidateQueries({ queryKey: ['price-rules'] })
     void queryClient.invalidateQueries({ queryKey: ['customer-price-rules'] })
@@ -1833,7 +1839,7 @@ export default function PriceCenterPage() {
               <Input
                 value={costForm[field]}
                 onChange={(value) => setCostForm({ ...costForm, [field]: value })}
-                placeholder="留空按 0 处理"
+                placeholder="留空表示未提供；确实没有此项请填 0"
               />
             </div>
           ))}

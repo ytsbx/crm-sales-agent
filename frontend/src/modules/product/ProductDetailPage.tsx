@@ -1,6 +1,6 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
@@ -588,6 +588,22 @@ export default function ProductDetailPage() {
         >
           来源/待核实/差异
         </a>
+      ),
+    },
+    {
+      title: '成本状态',
+      width: 210,
+      render: (_: unknown, record: Sku) => (
+        <div>
+          <Tag color={record.cost_status?.state === 'complete' ? 'green' : 'orange'}>
+            {record.cost_status?.label ?? '成本状态待查询'}
+          </Tag>
+          {can('price:manage') ? (
+            <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ marginLeft: 8 }}>维护成本</Link>
+          ) : record.cost_status?.state !== 'complete' ? (
+            <div style={{ fontSize: 12 }}>请联系价格管理员补齐</div>
+          ) : null}
+        </div>
       ),
     },
     {

@@ -1992,6 +1992,39 @@ async def master_confirmation_problems(
     return problems
 
 
+def item_cost_problems(items: list[QuoteItem]) -> list[dict]:
+    """只返回完整性和定位信息，不返回成本金额。历史未知快照不能冒充完整。"""
+    problems = []
+    for item in items:
+        if item.cost_complete_snapshot is True and item.cost_present_snapshot is not False:
+            continue
+        label = item.sku_code_snapshot or item.sku_name_snapshot or f"明细 {item.id}"
+        reason = (
+            "成本未维护" if item.cost_present_snapshot is False
+            else "成本未填完整" if item.cost_complete_snapshot is False
+            else "历史成本完整性未确认"
+        )
+        problems.append({"item_id": item.id, "sku_id": item.sku_id,
+                         "label": label, "reason": reason})
+    return problems
+
+
+async def ensure_items_cost_complete(session: AsyncSession, *, version_id: int) -> None:
+    items = await version_items(session, version_id)
+    problems = item_cost_problems(items)
+    if not items:
+        raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "报价没有明细，不能正式报价", 422)
+    if problems:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "成本尚未完整确认，只能保存草稿，不能提交、发送、对客导出或转订单："
+            + "；".join(f"{p['label']}：{p['reason']}" for p in problems)
+            + "。请在价格中心补齐成本（确实没有的费用明确填0），再回报价更新草稿明细；"
+              "已锁定版本请新建版本核对，历史快照不会自动改写。",
+            422,
+        )
+
+
 async def ensure_items_master_confirmed(session: AsyncSession, *, version_id: int) -> None:
     """正式发送前的**硬校验**：印给客户的三个字段必须来自已确认的主数据（§8.14）。
 
@@ -2236,6 +2269,32 @@ async def refresh_prices(
     return {"refreshed": refreshed, "skipped": skipped}
 
 
+async def refresh_cost_snapshots(session: AsyncSession, *, version: QuoteVersion, user) -> dict:
+    """显式更新草稿成本，保留成交单价、数量及对客主数据快照。"""
+    await ensure_version_editable(version)
+    quote = await session.get(Quote, version.quote_id)
+    items = await version_items(session, version.id)
+    refreshed = 0
+    for item in items:
+        if item.sku_id is None:
+            continue
+        rebuilt = await build_item_snapshot(
+            session, version=version, sku_id=item.sku_id, quantity=item.quantity,
+            customer_id=quote.customer_id, quoted_price=item.quoted_price,
+            logistics_cost=item.logistics_cost_snapshot,
+            opportunity_item_id=item.opportunity_item_id,
+            spec_snapshot=item.spec_snapshot, remark=item.remark, role_codes=user.roles,
+        )
+        for field in ("cost_snapshot", "package_cost_snapshot", "cost_complete_snapshot",
+                      "cost_present_snapshot", "minimum_price_snapshot", "profit_snapshot",
+                      "profit_rate_snapshot", "approval_required", "approval_reason"):
+            setattr(item, field, getattr(rebuilt, field))
+        refreshed += 1
+    await session.flush()
+    await recalc_version(session, version)
+    return {"refreshed": refreshed}
+
+
 async def submit_for_approval(
     session: AsyncSession,
     *,
@@ -2256,6 +2315,7 @@ async def submit_for_approval(
     items = await version_items(session, version.id)
     if not items:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "报价单没有任何明细，不能提交")
+    await ensure_items_cost_complete(session, version_id=version.id)
     # ⚠️ **运费闸提前到提交审批**（主人 2026-10-12 拍板，方案 A）。
     #
     # 从前这里对运费零要求，而「附加费用」入口在版本锁死之后一律拒绝 ——

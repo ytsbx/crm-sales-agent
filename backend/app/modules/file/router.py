@@ -222,6 +222,8 @@ async def download_file(
     # 附件挂在业务对象上，必须反查可见性；只校验 file:view 会让任何人按 id 取走别人的文件
     if not await access.can_access_file(session, user, file_id):
         raise AppError(ErrorCode.FORBIDDEN, "该文件所在的业务对象不在你的数据范围内", 403)
+    from app.modules.bizdoc.service import ensure_quote_file_cost_complete
+    await ensure_quote_file_cost_complete(session, file_id)
     path = storage.absolute_path(record.object_key)
     if not path.exists():
         raise AppError(ErrorCode.NOT_FOUND, "文件内容已丢失", 404)
@@ -353,6 +355,8 @@ async def preview_file(
         raise AppError(ErrorCode.NOT_FOUND, "文件不存在", 404)
     if not await access.can_access_file(session, user, file_id):
         raise AppError(ErrorCode.FORBIDDEN, "该文件所在的业务对象不在你的数据范围内", 403)
+    from app.modules.bizdoc.service import ensure_quote_file_cost_complete
+    await ensure_quote_file_cost_complete(session, file_id)
     path = storage.absolute_path(record.object_key)
     if not path.exists():
         raise AppError(ErrorCode.NOT_FOUND, "文件内容已丢失", 404)

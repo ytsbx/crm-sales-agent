@@ -44,6 +44,16 @@ const base = {
 
 const keys = (todos) => todos.map((t) => t.key)
 
+test('成本缺项优先于已审批状态，并给出常驻提示的定位入口', () => {
+  const { quoteTodos, currentStage, quoteActions } = load()
+  const todos = quoteTodos({ ...base, approvalStatus: 'approved', costProblems: ['SKU-A：成本未维护'] })
+  assert.equal(todos[0].key, 'cost_incomplete')
+  assert.equal(todos[0].anchor, 'quote-cost-status')
+  assert.ok(todos[0].reason.includes('SKU-A'))
+  assert.equal(currentStage(todos), 'cost')
+  assert.equal(quoteActions('cost').primary, null)
+})
+
 test('干净草稿：只提示提交审批', () => {
   const { quoteTodos, currentStage } = load()
   const todos = quoteTodos(base)

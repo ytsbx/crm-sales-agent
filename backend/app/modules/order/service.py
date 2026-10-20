@@ -224,6 +224,8 @@ async def create_order_from_quote(
         raise AppError(ErrorCode.NOT_FOUND, "报价关联客户不存在或已删除，不能正式下单", 404)
     if version.approval_status != "approved":
         raise AppError(ErrorCode.APPROVAL_PENDING, "报价未通过审批，不能转订单", 422)
+    from app.modules.quote.service import ensure_items_cost_complete
+    await ensure_items_cost_complete(session, version_id=version.id)
     if quote.status != "accepted" or version.accepted_at is None or version.sent_at is None or version.declined_at is not None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有客户已接受的当前报价版本才能正式下单", 422)
     # 已失效报价不能转单（方案 A13：有效性校验；此前的口子允许过期报价转单）。

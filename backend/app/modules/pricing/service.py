@@ -223,6 +223,36 @@ async def get_effective_cost(
     return rows[0]
 
 
+async def sku_cost_statuses(session: AsyncSession, sku_ids: list[int]) -> dict[int, dict]:
+    """产品页的批量完整性摘要；不向产品查看者暴露任何成本金额。"""
+    if not sku_ids:
+        return {}
+    today = today_business()
+    rows = (await session.execute(select(ProductCost).where(
+        ProductCost.sku_id.in_(sku_ids), ProductCost.stopped_at.is_(None),
+        ProductCost.effective_from <= today,
+        or_(ProductCost.effective_to.is_(None), ProductCost.effective_to >= today),
+    ).order_by(ProductCost.effective_from.desc(), ProductCost.id.desc()))).scalars().all()
+    groups: dict[int, list[ProductCost]] = {}
+    for row in rows:
+        groups.setdefault(row.sku_id, []).append(row)
+    result = {}
+    for sku_id in sku_ids:
+        matches = groups.get(sku_id, [])
+        if not matches:
+            state, label = "missing", "成本未维护"
+        elif sum(r.effective_from == matches[0].effective_from for r in matches) > 1:
+            state, label = "conflict", "成本版本有冲突"
+        elif (matches[0].currency or "CNY").upper() != "CNY":
+            state, label = "invalid", "成本币种必须为人民币"
+        elif not matches[0].is_complete:
+            state, label = "incomplete", "成本未填完整"
+        else:
+            state, label = "complete", "成本已完整维护"
+        result[sku_id] = {"state": state, "label": label}
+    return result
+
+
 async def find_price_rule(
     session: AsyncSession,
     *,
@@ -925,7 +955,7 @@ async def calculate_price(
         # 也不能拿 0 成本算出 100% 的假毛利
         warnings.append(
             "该 SKU 无生效成本：利润不可计算，利润类审批判定停用；"
-            "按已维护售价报价不受影响"
+            "可按已维护售价保存草稿，但补齐成本前不能正式提交、发送、对客导出或转订单"
         )
     purchase = (cost.purchase_cost if cost else None) or ZERO
     production = (cost.production_cost if cost else None) or ZERO

@@ -142,6 +142,7 @@ export interface ApprovalRecordRow {
 export type WithMasterWarnings<T> = T & { master_warnings?: string[] }
 
 export interface QuoteVersionDetail {
+  cost_problems?: { item_id: number; sku_id: number | null; label: string; reason: string }[]
   version: QuoteVersion
   /** 后端统一的金额汇总（货款/运费/其他费用/优惠/合计），页面直接用它 */
   summary?: QuoteAmountSummary
@@ -278,6 +279,10 @@ export function createQuote(payload: {
 
 export function deleteQuote(quoteId: number) {
   return api.delete<null>(`/quotes/${quoteId}`)
+}
+
+export function refreshQuoteCosts(versionId: number) {
+  return api.post<{ refreshed: number }>(`/quote-versions/${versionId}/cost-refresh`)
 }
 
 export function listQuoteVersions(quoteId: number) {

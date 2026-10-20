@@ -192,14 +192,14 @@ def main() -> int:  # noqa: C901 —— 十条判据顺序写下来最清楚
     add_freight(admin, vid_bad)
     status, res = call("POST", f"/quote-versions/{vid_bad}/submit-approval", admin,
                        {"reason": "P1-1 不完整成本"})
-    # ⚠️ 判据是 **`approval_required`**，不是 HTTP 码。第一版我只看了 code/HTTP：
-    # 提交成功本身是 200/code=0（它就是"提交"这个动作成功），
-    # "要不要审批"在返回体的 `approval_required` 里 —— 我差点把修好的当成没修好。
-    bad_data = res.get("data") or {}
-    check_true("★不完整成本：提交后**需要人工审批**（没有被自动放行）",
-               bool(bad_data.get("approval_required")),
-               f"HTTP {status} approval_required={bad_data.get('approval_required')} "
-               f"{str(res.get('message'))[:40]}")
+    # 2026-10-20用户确认：成本未完整时不能提交，人工/自动审批均不能绕过。
+    check_true("★不完整成本：正式提交被拒绝，仍可保留草稿",
+               status == 422 and res.get("code") != 0 and "成本" in res.get("message", ""),
+               f"HTTP {status} {str(res.get('message'))[:80]}")
+    _, blocked_detail = call("GET", f"/quote-versions/{vid_bad}", admin)
+    check_true("拒绝提交没有创建审批状态，详情持续给出成本缺项",
+               blocked_detail["data"]["version"]["approval_status"] not in ("pending", "approved")
+               and bool(blocked_detail["data"].get("cost_problems")), str(blocked_detail.get("data")))
 
     set_cost(sku_id, complete=True)
     _, vid_ok, _ = make_quote(admin, sku_id, "100", "P11好")

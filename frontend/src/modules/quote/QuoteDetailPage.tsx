@@ -39,6 +39,7 @@ import {
   listQuoteVersions,
   markSent,
   refreshPrices,
+  refreshQuoteCosts,
   setQuoteVersionItems,
   submitApproval,
   updateQuoteCharge,
@@ -480,6 +481,12 @@ export default function QuoteDetailPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const costRefreshMutation = useMutation({
+    mutationFn: () => refreshQuoteCosts(versionId!),
+    onSuccess: () => { Toast.success('草稿成本已更新，报价单价未改变'); refresh() },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const priceMutation = useMutation({
     mutationFn: () => updateQuoteItem(priceTarget!.id, { quoted_price: Number(newPrice) }),
     onSuccess: (item) => {
@@ -690,6 +697,7 @@ export default function QuoteDetailPage() {
 
   // 「这一步还差什么」的清单（判据在 shared/quote-todo.ts，单一真源）
   const quoteTodoList = quoteTodos({
+    costProblems: detail.cost_problems?.map((p) => `${p.label}：${p.reason}`),
     masterWarnings: detail?.master_warnings,
     freightUnconfirmedReason: freightUnconfirmed,
     approvalStatus: version?.approval_status,
@@ -740,8 +748,10 @@ export default function QuoteDetailPage() {
       title: legacyBasis ? '成本快照（含运费）' : '商品成本',
       dataIndex: 'cost_snapshot',
       width: 130,
-      render: (v: number, record: QuoteItemRow) =>
-        `¥${(legacyBasis ? v + record.logistics_cost_snapshot : v).toFixed(2)}`,
+      render: (v: number, record: QuoteItemRow) => {
+        const problem = detail.cost_problems?.find((p) => p.item_id === record.id)
+        return problem ? problem.reason : `¥${(legacyBasis ? v + record.logistics_cost_snapshot : v).toFixed(2)}`
+      },
     },
     {
       title: '建议价',
@@ -1185,6 +1195,31 @@ export default function QuoteDetailPage() {
         删除的是整张报价单，包含所有版本，不是仅删除当前查看的版本。
         删除后将从报价列表移除，历史版本和审计记录仍保留。已关联订单的报价不能删除。
       </Modal>
+
+      {(detail.cost_problems ?? []).length > 0 && (
+        <div id="quote-cost-status">
+        <SectionCard title="成本未完整确认：当前只能保存草稿" style={{ marginBottom: 16 }}>
+          <p>补齐成本前不能提交审批、正式发送、对客导出或转订单；未填写不等于成本为零。</p>
+          {detail.cost_problems!.map((problem) => (
+            <div key={problem.item_id} style={{ marginBottom: 8 }}>
+              {problem.label}：{problem.reason}。
+              {problem.sku_id && can('price:manage') ? (
+                <Link to={`/prices?tab=costs&sku_id=${problem.sku_id}`}>去维护成本</Link>
+              ) : problem.sku_id ? '请联系价格管理员补齐成本。' : '请核对定制明细的成本。'}
+            </div>
+          ))}
+          {canManage && editable ? (
+            <>
+              <p>在价格中心保存完整成本后，点击下方更新本草稿；报价单价保持不变。</p>
+              <Popconfirm title="用当前成本更新草稿？报价单价、数量保持不变。"
+                onConfirm={() => costRefreshMutation.mutate()}>
+                <Button loading={costRefreshMutation.isPending}>更新草稿成本</Button>
+              </Popconfirm>
+            </>
+          ) : <p>已锁定或历史版本不会自动改写，请新建版本后核对成本。</p>}
+        </SectionCard>
+        </div>
+      )}
 
       {/* §8.14 复审：主数据未确认要**常驻显示** —— 不是一闪而过的 Toast。
           刷新页面、隔天再打开、换个人来看，都该看到"这几条不能用做正式报价"。
@@ -1685,7 +1720,9 @@ export default function QuoteDetailPage() {
                   看着像"这单不赚钱"，而不是"你没权限看"。 */}
               <span>
                 {version.total_profit == null
-                  ? '无价格权限，不显示利润'
+                  ? can('price:manage') && (detail.cost_problems ?? []).length > 0
+                    ? '成本未完整确认，暂不能计算利润'
+                    : '无价格权限，不显示利润'
                   : `¥${Number(version.total_profit).toFixed(2)}`}
               </span>
             </div>

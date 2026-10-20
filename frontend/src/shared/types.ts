@@ -62,6 +62,7 @@ export interface Product {
 }
 
 export interface Sku {
+  cost_status?: { state: string; label: string }
   id: number
   product_id: number
   product_name?: string | null

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from conftest import make_engine, make_user, SyncSessionAsAsync
+from app.core.errors import AppError
 from app.core.audit import AuditLog
 from app.modules.quote import service as svc, router
 from app.modules.quote.model import Quote, QuoteVersion, QuoteItem, QuoteCharge
@@ -75,6 +76,11 @@ async def test_cost_states_submit(case, cost, amount, required):
     item = await build(raw, session, version, cost=cost, amount=amount)
     assert item.cost_present_snapshot is (cost != "absent")
     assert item.approval_required is required
+    if cost != "complete":
+        with pytest.raises(AppError, match="成本"):
+            await submit(session, quote, version)
+        assert version.approval_status == "not_submitted"
+        return
     instance, needs = await submit(session, quote, version)
     assert needs is required
     assert version.approval_status == ("pending" if required else "approved")
@@ -98,9 +104,13 @@ async def test_copy_retains_snapshot_state(case, operation, flag):
     copied = raw.query(QuoteItem).filter_by(quote_version_id=target.id).one()
     assert copied.cost_complete_snapshot is flag
     assert copied.cost_present_snapshot is (None if flag is None else True)
-    _, needs = await submit(session, target_quote, target)
-    assert needs is (flag is False)
-    assert target.approval_status == ("pending" if flag is False else "approved")
+    if flag is not True:
+        with pytest.raises(AppError, match="成本"):
+            await submit(session, target_quote, target)
+        assert target.approval_status == "not_submitted"
+    else:
+        _, needs = await submit(session, target_quote, target)
+        assert not needs and target.approval_status == "approved"
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("operation", ["edit", "refresh"])
@@ -119,8 +129,9 @@ async def test_rebuild_replaces_complete_cost_with_partial(case, operation):
         result = await svc.refresh_prices(session, version=version, user=USER)
         assert result["refreshed"] == 1
     assert item.cost_complete_snapshot is False and item.cost_present_snapshot is True
-    _, needs = await submit(session, quote, version)
-    assert needs and version.approval_status == "pending"
+    with pytest.raises(AppError, match="成本"):
+        await submit(session, quote, version)
+    assert version.approval_status == "not_submitted"
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("cost", ["partial", "complete"])
@@ -134,6 +145,12 @@ async def test_unrelated_auto_pass_cannot_override_incomplete_cost(case, monkeyp
     from types import SimpleNamespace
     decision = SimpleNamespace(kind="auto_pass", action={}, rule_name="金额免审", trace=lambda: {})
     monkeypatch.setattr(rules_engine, "route", AsyncMock(return_value=decision))
+    if cost == "partial":
+        with pytest.raises(AppError, match="成本"):
+            await submit(session, quote, version)
+        rules_engine.route.assert_not_awaited()
+        assert version.approval_status == "not_submitted"
+        return
     instance, needs = await submit(session, quote, version)
     assert needs
     assert version.approval_status == ("pending" if cost == "partial" else "approved")
@@ -155,25 +172,19 @@ async def test_copy_absent_cost_remains_absent(case, operation):
         target = raw.get(QuoteVersion, target_quote.current_version_id)
     item = raw.query(QuoteItem).filter_by(quote_version_id=target.id).one()
     assert item.cost_present_snapshot is False
-    _, needs = await submit(session, target_quote, target)
-    assert not needs and target.approval_status == "approved"
+    with pytest.raises(AppError, match="成本"):
+        await submit(session, target_quote, target)
+    assert target.approval_status == "not_submitted"
 
 @pytest.mark.anyio
-async def test_incomplete_cost_can_finish_manual_approval(case, monkeypatch):
-    from app.modules.approval import router as approvals
-    from app.modules.notification import service as notifications
-    from app.modules.notification.model import Notification
+async def test_incomplete_cost_cannot_enter_manual_approval(case):
     raw, session, quote, version = case
-    Notification.__table__.create(raw.get_bind(), checkfirst=True)
-    monkeypatch.setattr(notifications, "dispatch_pending", AsyncMock())
     await build(raw, session, version, amount="0")
-    instance, needs = await submit(session, quote, version)
-    assert needs and version.approval_status == "pending"
-    approver = make_user(2, permissions=("quote:view", "quote:approve"), roles=("admin",), data_scope="all")
-    result = await approvals.approve(instance.id, REQUEST, approver, session)
-    assert result["code"] == 0
-    assert version.approval_status == "approved" and quote.status == "approved"
-    assert raw.query(ApprovalRecord).filter_by(approval_instance_id=instance.id, action="approve").count() == 1
+    with pytest.raises(AppError, match="成本"):
+        await submit(session, quote, version)
+    assert version.approval_status == "not_submitted" and quote.status == "draft"
+    assert raw.query(ApprovalInstance).count() == 0
+    assert raw.query(ApprovalRecord).count() == 0
 
 
 @pytest.mark.anyio
@@ -184,6 +195,6 @@ async def test_pre_presence_zero_snapshot_does_not_hide_known_incompleteness(cas
     item.cost_present_snapshot = None
     item.cost_complete_snapshot = complete_flag
     raw.commit()
-    _, needs = await submit(session, quote, version)
-    assert needs is required
-    assert version.approval_status == ("pending" if required else "approved")
+    with pytest.raises(AppError, match="成本"):
+        await submit(session, quote, version)
+    assert version.approval_status == "not_submitted"

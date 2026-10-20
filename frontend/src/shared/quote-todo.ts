@@ -38,6 +38,7 @@ export type QuoteStage =
   | 'converted'   // 已转订单（终态）
 
 export interface QuoteTodoInput {
+  costProblems?: readonly string[]
   /** 版本详情接口附带的 `master_warnings`（后端按快照算） */
   masterWarnings: readonly string[] | null | undefined
   /** 版本详情接口附带的 `freight_unconfirmed_reason`；有值 = 运费没确认 */
@@ -96,6 +97,12 @@ export const STAGE_ORDER: readonly QuoteStage[] = [
  */
 export function quoteTodos(input: QuoteTodoInput): QuoteTodo[] {
   const todos: QuoteTodo[] = []
+  if (input.costProblems?.length) {
+    todos.push({ key: 'cost_incomplete', stage: 'cost',
+      reason: `成本未完整确认，只能保存草稿：${input.costProblems[0]}`,
+      source: 'detail.cost_problems（后端成本完整性校验）',
+      anchor: 'quote-cost-status', action: '查看成本缺项' })
+  }
   const master = (input.masterWarnings ?? []).filter((w) => Boolean(w && w.trim()))
   const approval = input.approvalStatus ?? 'not_submitted'
 

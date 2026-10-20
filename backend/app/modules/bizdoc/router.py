@@ -511,6 +511,7 @@ async def download_doc(
 
     doc = await svc.get_doc_or_404(session, doc_id)
     await _ensure_doc_access(session, user, doc)
+    await svc.ensure_quote_doc_cost_complete(session, doc)
     plan = await svc.plan_download(
         session, doc, mode=mode, allow_rebuild=allow_rebuild
     )

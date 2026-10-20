@@ -229,6 +229,7 @@ def _fixture(session):
     quote.current_version_id = version.id
     session.add(
         QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
             quote_version_id=version.id,
             sku_id=sku.id,
             sku_code_snapshot=sku.sku_code,
@@ -412,6 +413,7 @@ def test_old_version_terms_unaffected_by_current_data_changes():
         await session.flush()
         session.add(
             QuoteItem(
+            cost_present_snapshot=True, cost_complete_snapshot=True,
                 quote_version_id=new_version.id,
                 sku_id=sku.id,
                 sku_name_snapshot=sku.name,

@@ -1120,6 +1120,30 @@ def _quote_doc_charge_lines(charge_rows: list) -> list[dict]:
     return head + discount_lines
 
 
+async def ensure_quote_doc_cost_complete(session: AsyncSession, doc) -> None:
+    if doc.doc_type != "quote_sheet":
+        return
+    from app.modules.quote.model import QuoteVersion
+    from app.modules.quote.service import ensure_items_cost_complete
+    version_id = (await session.execute(select(QuoteVersion.id).where(
+        QuoteVersion.quote_id == doc.quote_id,
+        QuoteVersion.version_no == doc.source_version,
+    ))).scalar_one_or_none()
+    if version_id is None:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
+                       "历史报价成本完整性无法确认，不能对客导出；请新建报价版本核对成本", 422)
+    await ensure_items_cost_complete(session, version_id=version_id)
+
+
+async def ensure_quote_file_cost_complete(session: AsyncSession, file_id: int) -> None:
+    """存档原件也可能从通用文件下载接口取出，必须沿用相同成本规则。"""
+    docs = (await session.execute(select(BizDoc).where(
+        BizDoc.file_id == file_id, BizDoc.doc_type == "quote_sheet",
+    ))).scalars().all()
+    for doc in docs:
+        await ensure_quote_doc_cost_complete(session, doc)
+
+
 async def generate_quote_doc(
     session: AsyncSession,
     *,
@@ -1163,6 +1187,7 @@ async def generate_quote_doc(
     await ensure_in_scope(
         session, user, owner_id=built.get("owner_id"), label="报价单"
     )
+    await quote_service.ensure_items_cost_complete(session, version_id=quote_version_id)
     template = await current_template(session, "quote_sheet", template_id)
 
     reasons: list[str] = []

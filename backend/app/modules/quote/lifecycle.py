@@ -14,6 +14,7 @@ from app.modules.opportunity.model import Opportunity, OpportunityStage
 from app.modules.quote.model import Quote, QuoteSendLog, QuoteVersion
 from app.modules.quote.schema import SendRequest
 from app.modules.quote.service import (
+    ensure_items_cost_complete,
     ensure_freight_confirmed,
     ensure_items_master_confirmed,
     quote_is_expired,
@@ -77,6 +78,7 @@ async def mark_version_sent(
     # §8.14 的出口硬校验：印给客户的名称/规格/单位必须来自**已确认**的主数据。
     # 放在所有写操作之前 —— 拦下就不许写发送记录、不许推进商机。
     # 草稿阶段不受影响（生成明细时只提示），所以这里才是真正的闸门。
+    await ensure_items_cost_complete(session, version_id=version.id)
     await ensure_items_master_confirmed(session, version_id=version.id)
     # 运费闸门（2026-10-09 运费分离口径）：**草稿可以没填运费，正式发送必须已经
     # 确认具体金额**。与上面那条同一位置、同一性质 —— 拦下就不写发送记录、
