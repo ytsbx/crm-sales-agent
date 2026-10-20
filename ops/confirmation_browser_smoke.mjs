@@ -27,6 +27,9 @@ const wecomRequests=[]
 const wecomBindings=[]
 const recycleRequests=[]
 const quoteWithdrawals=[]
+const settingsRequests=[]
+const ownerRequests=[]
+const ownerUsers=Array.from({length:201},(_,i)=>({id:111+i,name:i===0?'在职员工甲':i===1?'在职员工乙':i===200?'末页在职员工':`分页员工${i}`,username:i===200?'last.owner':`owner${i}`,status:'active'}))
 const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount:100,charge_amount:0,discount_amount:0,total_amount:100,logistics_amount:0,other_charge_amount:0,pricing_basis:'actual_pass_through',approval_status:'pending',approval_required:true,created_at:new Date().toISOString()})
 const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
@@ -43,7 +46,11 @@ const server=createServer(async (req,res)=>{
       body=raw ? JSON.parse(raw) : {}
     }
     let data=[]
-    if(path.endsWith('/auth/me')) data=user
+    if(path.endsWith('/public-pool/recycle-candidates/batch-decide') && req.method==='POST') {settingsRequests.push({path,body});data={done:body.candidate_ids.map(id=>({candidate_id:id,status:'approved'})),failed:[]}}
+    else if(path.endsWith('/public-pool/recycle-candidates')) data={items:[141,142,143].map(id=>({id,customer_id:id,customer_name:`隔离回收候选${id}`,owner_name:'隔离负责人',status:'pending',protection:[],status_label:'待复核'})),total:3}
+    else if(path.endsWith('/public-pool/run-recycle') && req.method==='POST') {settingsRequests.push({path,body});data={nominated_count:0,protected_count:0}}
+    else if(path.endsWith('/tasks/run-auto-rules') && req.method==='POST') {settingsRequests.push({path,body});data={created_count:0,failed_rule_count:0}}
+    else if(path.endsWith('/auth/me')) data=user
     else if(path.endsWith('/notifications/unread-count')) data={count:0}
     else if(path.endsWith('/notifications')) data={items:[{id:41,title:'补投确认测试通知',read:false,wecom_status:'failed',can_redispatch:true,business_type:'customer',business_id:9,created_at:new Date().toISOString()}],total:1}
     else if(path.endsWith('/notifications/41/redispatch') && req.method==='POST') {redispatched++;data={sent:true}}
@@ -65,7 +72,13 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/recycle-bin/customers')) data={items:[recycleRecord(103,'隔离恢复客户',{removed_via:'direct',original_owner_id:1,original_owner_name:'隔离负责人',original_owner_active:true,merged_into:null,final_target:null}),recycleRecord(106,'待重新分配客户',{removed_via:'direct',original_owner_id:2,original_owner_name:'已停用员工',original_owner_active:false,merged_into:null,final_target:null}),recycleRecord(108,'被合并客户',{removed_via:'merged',original_owner_active:true,merged_into:{id:9,name:'合并目标',visible:true,state:'ok'},final_target:null})],total:3}
     else if(path.endsWith('/recycle-bin/contracts')) data={items:[recycleRecord(105,'隔离恢复合同',{doc_no:'ISO-CONTRACT-105',title:'隔离恢复合同'})],total:1}
     else if(/\/(products|skus|customers|samples|contract-documents)\/(101|102|103|104|105|106)\/restore$/.test(path) && req.method==='POST') {recycleRequests.push({path,body});data=path.includes('/products/')?{restored_skus:[],skipped_skus:[]}:null}
-    else if(path.endsWith('/users')) data={items:[{id:111,name:'在职员工甲',status:'active'},{id:112,name:'在职员工乙',status:'active'}],total:2}
+    else if(path.endsWith('/users')) {
+      ownerRequests.push(Object.fromEntries(url.searchParams))
+      const keyword=(url.searchParams.get('keyword')??'').toLowerCase()
+      const matches=ownerUsers.filter(u=>u.name.toLowerCase().includes(keyword)||u.username.includes(keyword))
+      const page=Number(url.searchParams.get('page')??1),size=Number(url.searchParams.get('page_size')??20)
+      data={items:matches.slice((page-1)*size,page*size),total:matches.length}
+    }
     else if(path.endsWith('/leads')) data={items:[{id:31,name:'线索甲',status:'pending',status_label:'待处理',owner_id:null},{id:32,name:'线索乙',status:'pending',status_label:'待处理',owner_id:null}],total:2,page:1,page_size:10}
     else if(/\/leads\/\d+\/claim$/.test(path) && req.method==='POST') {const id=Number(path.split('/').at(-2));claimedLeads.push(id);data={id,owner_id:1}}
     else if(path.endsWith('/customers/9')) data=publicCustomer
@@ -409,7 +422,7 @@ try {
   assert.equal(recycleRequests.length,beforeReassign,'missing replacement owner must not submit')
   const ownerSelect=`${ownerModal}.querySelector('.semi-select')`
   await evaluate(`${ownerSelect}.click()`)
-  const newOwner=`Array.from(document.querySelectorAll('.semi-select-option')).find(o=>o.innerText.trim()==='在职员工乙')`
+  const newOwner=`Array.from(document.querySelectorAll('.semi-select-option')).find(o=>o.innerText.includes('在职员工乙（owner1）'))`
   await waitFor(newOwner)
   await evaluate(`${newOwner}.click()`)
   await waitFor(`${ownerSelect}.innerText.includes('在职员工乙')`)
@@ -423,11 +436,91 @@ try {
   await waitFor(newOwner)
   await evaluate(`${newOwner}.click()`)
   await waitFor(`${ownerSelect}.innerText.includes('在职员工乙')`)
+  const ownerInput=`${ownerSelect}.querySelector('input')`
+  const searchOwner=async keyword=>{
+    await evaluate(`(()=>{const input=${ownerInput};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(keyword)});input.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+    for(let i=0;ownerRequests.at(-1)?.keyword!==keyword&&i<40;i++)await sleep(100)
+    await waitFor(`Array.from(document.querySelectorAll('.semi-select-option')).some(o=>o.textContent.includes('末页在职员工（last.owner）'))`)
+    assert.equal(ownerRequests.at(-1).keyword,keyword)
+    assert.equal(ownerRequests.at(-1).page,'1')
+    assert.equal(ownerRequests.at(-1).page_size,'20')
+    assert.equal(ownerRequests.at(-1).status,'active')
+  }
+  assert.ok(ownerRequests.every(r=>r.page==='1'&&r.page_size==='20'),'opening must not fetch every employee')
+  await evaluate(`${ownerSelect}.click()`)
+  await searchOwner('末页在职员工')
+  assert.equal(await evaluate(`document.querySelector('.semi-select-option-selected')?.textContent.includes('在职员工乙')`),true,'search and pagination must preserve selected option')
+  await searchOwner('last.owner')
+  await evaluate(`(()=>{const input=${ownerInput};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'');input.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+  const loadMore=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='加载更多')`
+  for(let i=0;ownerRequests.at(-1)?.keyword!==''&&i<40;i++)await sleep(100)
+  await waitFor(loadMore)
+  await evaluate(`${loadMore}.click()`)
+  await waitFor(`Array.from(document.querySelectorAll('.semi-select-option')).some(o=>o.textContent.includes('分页员工20（owner20）'))`)
+  assert.equal(ownerRequests.at(-1).page,'2')
+  assert.equal(ownerRequests.at(-1).keyword,'')
+  assert.equal(await evaluate(`document.querySelector('.semi-select-option-selected')?.textContent.includes('在职员工乙')`),true,'search and pagination must preserve selected option')
+  await searchOwner('末页在职员工')
+  await evaluate(`Array.from(document.querySelectorAll('.semi-select-option')).find(o=>o.textContent.includes('末页在职员工（last.owner）')).click()`)
+  await waitFor(`${ownerSelect}.innerText.includes('末页在职员工')`)
+  console.log('BROWSER_RECYCLE_OWNER_NAME_USERNAME_SEARCH_ON_DEMAND_PAGING_PRESERVES_SELECTION=true')
   await evaluate(`${ownerSubmit}.click()`)
   for(let i=0;recycleRequests.length===beforeReassign && i<30;i++)await sleep(100)
   assert.equal(recycleRequests.length,beforeReassign+1,await evaluate('document.body.innerText.slice(-2400)'))
-  assert.deepEqual(recycleRequests.at(-1),{path:'/api/v1/customers/106/restore',body:{owner_id:112}})
+  assert.deepEqual(recycleRequests.at(-1),{path:'/api/v1/customers/106/restore',body:{owner_id:311}})
   console.log('BROWSER_RECYCLE_INACTIVE_OWNER_CANCEL_AND_REQUIRED_SELECTION_CORRECT_ID=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/settings?tab=rules`})
+  for(const [label,decision,title] of [
+    ['批量批准','approve','批准选中的 2 条回收候选'],
+    ['批量暂缓','defer','暂缓选中的 2 条回收候选'],
+    ['批量驳回','reject','驳回选中的 2 条回收候选'],
+  ]) {
+    for(const id of [141,143]) {
+      const check=`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('隔离回收候选${id}'))?.querySelector('input[type="checkbox"]')`
+      await waitFor(check)
+      await evaluate(`${check}.click()`)
+    }
+    await waitFor(`document.body.innerText.includes('已选 2 条')`)
+    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
+    const before=settingsRequests.length
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify(title)})`)
+    assert.equal(settingsRequests.length,before)
+    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+    await sleep(250)
+    assert.equal(settingsRequests.length,before)
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify(title)})`)
+    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+    for(let i=0;settingsRequests.length===before && i<30;i++)await sleep(100)
+    assert.equal(settingsRequests.length,before+1)
+    assert.deepEqual(settingsRequests.at(-1),{path:'/api/v1/public-pool/recycle-candidates/batch-decide',body:{candidate_ids:[141,143],decision,early:false}})
+    await waitFor(`document.body.innerText.includes('已选 0 条')`)
+    await waitFor(`!${popup}`)
+    console.log(`BROWSER_SETTINGS_BATCH_${decision}_CANCEL_NO_WRITE_CONFIRM_EXACT_IDS=true`)
+  }
+  for(const [label,title,path] of [
+    ['扫描并生成回收预告','确认扫描并生成回收预告','/api/v1/public-pool/run-recycle'],
+    ['立即执行一次','确认立即执行自动任务规则','/api/v1/tasks/run-auto-rules'],
+  ]) {
+    const button=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(label)})`
+    await waitFor(button)
+    const before=settingsRequests.length
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify(title)})`)
+    assert.equal(settingsRequests.length,before)
+    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+    await sleep(250)
+    assert.equal(settingsRequests.length,before)
+    await evaluate(`${button}.click()`)
+    await waitFor(`document.body.innerText.includes(${JSON.stringify(title)})`)
+    await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+    for(let i=0;settingsRequests.length===before && i<30;i++)await sleep(100)
+    assert.equal(settingsRequests.length,before+1)
+    assert.equal(settingsRequests.at(-1).path,path)
+    await waitFor(`!${popup}`)
+    console.log(`BROWSER_SETTINGS_${path.split('/').at(-1)}_CANCEL_NO_WRITE_CONFIRM_ONCE=true`)
+  }
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
 }

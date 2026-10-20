@@ -14,8 +14,8 @@ import { formatBeijingTime } from '../../shared/beijing-time'
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Button, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { emptyText } from '../../shared/hooks/emptyText'
 import { api } from '../../shared/api/client'
@@ -424,16 +424,37 @@ function CustomersPanel() {
   // 其余情况点「恢复」是**一步到位**的，不该多弹一层。
   const [ownerPicker, setOwnerPicker] = useState<RecycleCustomer | null>(null)
   const [pickedOwnerId, setPickedOwnerId] = useState<number | null>(null)
-  const usersQuery = useQuery({
-    queryKey: ['assignable-users', 'active'],
-    queryFn: () => listUsers({ status: 'active', page: 1, page_size: 200 }),
-    // 真要选人时才去拉名单 —— 这条接口本身要「分配客户」或「用户管理」权限
+  const [ownerSearch, setOwnerSearch] = useState('')
+  const [ownerKeyword, setOwnerKeyword] = useState('')
+  const [pickedOwnerOption, setPickedOwnerOption] = useState<{ label: string; value: number } | null>(null)
+  useEffect(() => {
+    const timer = setTimeout(() => setOwnerKeyword(ownerSearch.trim()), 250)
+    return () => clearTimeout(timer)
+  }, [ownerSearch])
+  const usersQuery = useInfiniteQuery({
+    queryKey: ['recycle-owner-options', ownerKeyword],
+    initialPageParam: 1,
+    queryFn: ({ pageParam }) => listUsers({ status: 'active', keyword: ownerKeyword, page: pageParam, page_size: 20 }),
+    getNextPageParam: (lastPage, pages) =>
+      pages.reduce((count, page) => count + page.items.length, 0) < lastPage.total && lastPage.items.length > 0
+        ? pages.length + 1 : undefined,
+    // 真要选人时才去拉名单；不预取后续页。
     enabled: ownerPicker !== null && canAssign,
   })
-
+  const ownerOptions = (usersQuery.data?.pages.flatMap((page) => page.items) ?? [])
+    .map((item) => ({ label: `${item.name}（${item.username}）`, value: item.id }))
+  if (pickedOwnerOption && !ownerOptions.some((option) => option.value === pickedOwnerOption.value)) {
+    ownerOptions.push(pickedOwnerOption)
+  }
+  const resetOwnerPick = () => {
+    setPickedOwnerId(null)
+    setPickedOwnerOption(null)
+    setOwnerSearch('')
+    setOwnerKeyword('')
+  }
   const closeOwnerPicker = () => {
     setOwnerPicker(null)
-    setPickedOwnerId(null)
+    resetOwnerPick()
   }
 
   const restoreMutation = useMutation({
@@ -457,7 +478,7 @@ function CustomersPanel() {
         }
         const target = (query.data?.items ?? []).find((row) => row.id === vars.id)
         if (target && canAssign) {
-          setPickedOwnerId(null)
+          resetOwnerPick()
           setOwnerPicker(target)
           Toast.warning(error.message)
           return
@@ -480,7 +501,7 @@ function CustomersPanel() {
         )
         return
       }
-      setPickedOwnerId(null)
+      resetOwnerPick()
       setOwnerPicker(record)
       return
     }
@@ -652,15 +673,28 @@ function CustomersPanel() {
             <FormLabel required>新负责人</FormLabel>
             <Select
               value={pickedOwnerId ?? undefined}
-              onChange={(value) => setPickedOwnerId((value as number | undefined) ?? null)}
-              placeholder="从在职同事里选一位"
+              onChange={(value) => {
+                const id = (value as number | undefined) ?? null
+                setPickedOwnerId(id)
+                setPickedOwnerOption(ownerOptions.find((option) => option.value === id) ?? null)
+              }}
+              placeholder="按姓名或登录账号搜索在职同事"
               style={{ width: '100%' }}
               filter
-              loading={usersQuery.isLoading}
-              optionList={(usersQuery.data?.items ?? []).map((item) => ({
-                label: item.name,
-                value: item.id,
-              }))}
+              remote
+              onSearch={setOwnerSearch}
+              loading={usersQuery.isFetching}
+              optionList={ownerOptions}
+              outerBottomSlot={usersQuery.isError ? (
+                <Button theme="borderless" onClick={() => {
+                  if (usersQuery.isFetchNextPageError) void usersQuery.fetchNextPage()
+                  else void usersQuery.refetch()
+                }}>加载失败，点击重试</Button>
+              ) : usersQuery.hasNextPage ? (
+                <Button theme="borderless" loading={usersQuery.isFetchingNextPage} onClick={() => {
+                  if (!usersQuery.isFetching && ownerSearch.trim() === ownerKeyword) void usersQuery.fetchNextPage()
+                }}>加载更多</Button>
+              ) : undefined}
             />
           </div>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
