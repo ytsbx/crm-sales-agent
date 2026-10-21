@@ -1,5 +1,17 @@
 # CRM 质量审查进度
 
+## 2026-10-21 正式统一发布完成
+
+- 授权：用户要求“完成这些”，授权本次预检、正式部署与核验；发现历史迁移源码差异后，用户另行明确批准“备份后仅同步脚本，继续发布”，没有执行数据库升级或清洗。
+- 发布版本：`0ea0b41772d5c7c1de452684795f835586733d11`。GitHub CI 39526817534 的后端回归和 UI 冒烟均 success。此前 e7bd16c 的 UI 登录页失败未单独查明根因；最新通过不能被写成已证明修复该偶发问题。
+- 真实构建：从该提交 Git archive 提取源文件、按已有锁文件构建；发布包 `/tmp/crm-release-0ea0b41.tar.gz`，SHA256 `d44748964c4eff90ea66d28e8aef06112a7f6493e462ea5345932ac4fba16479`。上传服务器 `/tmp/crm-release-0ea0b41.EBv4jR/` 后工具与包哈希均一致。
+- 首次生产预检正确拦截：10个历史迁移脚本不同，未停服或修改运行app。逐文件证明线上版本均与 b136ca5 之前的 Git 版本逐字节一致；revision/down_revision及downgrade AST均未变。完整备份 `/opt/crm-sales-agent/backup/migration-sources-0ea0b41-t00gui1e` 后，仅按批准的10个旧/新哈希同步源码，保护脚本哈希7053b49c…、plan.json留在备份目录。未执行 upgrade/downgrade、数据库结构或数据写入。其余依赖、配置、迁移文件无差异，数据库已在安装head。
+- 随后完整预检通过，正式运行统一入口 `deploy --apply` 返回 status=verified。应用备份 `/opt/crm-sales-agent/backup/unified-0ea0b41772d5-gtwyjg27`。490个新文件哈希、全部后端app文件集合、公网首页及直接引用入口资源、服务/数据库健康均通过；旧哈希资源保留。两个版本记录均为完整0ea0b41 SHA，RELEASE.json状态verified、清单490项。
+- 实际进程核验：crm-sales.service active/running，MainPID=3039608，启动时间2026-10-21 09:37:25 CST，NRestarts=0；8010/health真实JSON status=up、database=ok、钉钉sync_running=true、stream_connected=true。实际运行进程OpenAPI验证SkuCreate的sku_code为可选，草稿cost-refresh路由存在。
+- 浏览器验证：将同一发布包解至本机临时目录，独立浏览器profile+内存模拟API运行完整确认回归，退出0，日志 `/tmp/crm-release-0ea0b41-browser.log`。包含成本常驻提示/维护入口、确认后更新草稿、权限受限引导、SKU空编码创建及名称规格优先展示。线上只做只读核验，没有用真实业务数据创建、删除、发送或刷新单据，不将模拟接口回归描述成生产写入测试。
+- 本次上线事项已完成。持续质量审查仍按后文范围分轮进行；人民币历史继承路径、旧UI偶发登录页失败及整体界面简化仍是后续调查/方案工作，不声称全项目审查结束。对回款币种继承规则静态复核仍见旧兼容说明及旧USD夹具，本次未据此混入未经完整验证的业务修复或生产数据处理。
+- 后续本轮只提交交接/进度/运维文档；生产应用版本保持0ea0b41，文档提交不需要重复重启服务。
+
 ## 2026-10-21 统一发布问题与交接
 
 - 用户要求解决前后端发布遗漏。只读 SSH 确认服务器 `/opt/crm-sales-agent`、`/opt/crm-sales-agent/app` 无 `.git`；版本记录后端 c329c71、前端 842e384。本次未逐文件复核，版本记录不等同于内容验证。
