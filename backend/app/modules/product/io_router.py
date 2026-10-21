@@ -200,7 +200,7 @@ async def sku_import_template(
     _: CurrentUser = Depends(require_permission("product:view")),
 ):
     content = csv_bytes(
-        [["SKU-001", "示例：三层瓦楞纸箱", "中号", "400x300x200", "本色", "瓦楞纸",
+        [["", "示例：三层瓦楞纸箱", "中号", "400x300x200", "本色", "瓦楞纸",
           "400", "300", "200", "0.5", "20", "0.024", "100", "纸箱", "个"]],
         io_util.SKU_TEMPLATE_HEADERS,
     )
@@ -330,7 +330,8 @@ async def import_skus(
 ):
     """批量导入 SKU。
 
-    - `SKU编码` 全局唯一，重复的直接跳过；
+    - `SKU编码` 可以留空；留空时按现有新建规则自动生成内部编码；
+    - 有编码按编码重复直接跳过；无编码按“产品 + 规格”重复直接跳过，避免同一文件重复导入；
     - `产品名称` 必须能匹配到已有产品 —— **不自动建产品**：
       型号录错时自动建会把问题变成一堆重复产品，比导入失败难收拾；
     - 第七批 7.1 / 7.2 / 7.6：每行一个 SAVEPOINT、支持 preview、
@@ -349,10 +350,8 @@ async def import_skus(
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
         product_name = (row.get("产品名称") or "").strip()
-        errs = RowErrors(index, code)
-        if not code:
-            errs.add("SKU编码不能为空")
-        elif len(code) > 64:
+        errs = RowErrors(index, code or product_name)
+        if len(code) > 64:
             errs.add(f"SKU编码长度不能超过 64（当前 {len(code)}）")
         if not product_name:
             errs.add("产品名称不能为空")
@@ -362,19 +361,11 @@ async def import_skus(
             fields = None
             errs.add(str(exc))
         if errs:
-            report.failed_row(index, code, errs.reasons)
+            report.failed_row(index, code or product_name, errs.reasons)
             continue
 
         try:
             async with row_savepoint(session):
-                duplicate = (
-                    await session.execute(
-                        select(Sku).where(Sku.sku_code == code).limit(1)
-                    )
-                ).scalars().first()
-                if duplicate is not None:
-                    raise RowSkipped(f"SKU编码已存在（id={duplicate.id}）")
-
                 # 用开工前统一取好锁的那份映射：拿得到就说明"产品存在 + 未删除 +
                 # 导入期间不会被删"（我们握着它的行锁，删除方得等我们提交）。
                 product_id = locked_products.get(product_name)
@@ -382,18 +373,53 @@ async def import_skus(
                     raise RowRejected(
                         f"找不到产品「{product_name}」，请先导入产品（已删除的产品不算）"
                     )
-                sku = Sku(product_id=product_id, status="active", **(fields or {}))
+                if code:
+                    duplicate = (
+                        await session.execute(
+                            select(Sku).where(Sku.sku_code == code).limit(1)
+                        )
+                    ).scalars().first()
+                else:
+                    # 产品行已在导入开始时锁定。空编码没有外部身份，使用产品和“规格”
+                    # 作为稳定的导入身份；这样同一文件重导时会跳过已存在行，而不会
+                    # 因自动编码每次不同而不断新增 SKU。NULL 规格也必须用 IS NULL，
+                    # 不能用 `== None` 依赖方言把它碰巧翻译正确。
+                    specification = (fields or {}).get("specification")
+                    duplicate_stmt = select(Sku).where(
+                        Sku.product_id == product_id,
+                        Sku.deleted_at.is_(None),
+                    )
+                    if specification is None:
+                        duplicate_stmt = duplicate_stmt.where(Sku.specification.is_(None))
+                    else:
+                        duplicate_stmt = duplicate_stmt.where(Sku.specification == specification)
+                    duplicate = (
+                        await session.execute(duplicate_stmt.order_by(Sku.id.asc()).limit(1))
+                    ).scalars().first()
+                if duplicate is not None:
+                    if code:
+                        raise RowSkipped(f"SKU编码已存在（id={duplicate.id}）")
+                    raise RowSkipped(
+                        f"同一产品和规格已存在（id={duplicate.id}，编码 {duplicate.sku_code}）"
+                    )
+
+                sku = Sku(
+                    product_id=product_id,
+                    status="active",
+                    sku_code=await svc.resolve_new_sku_code(session, None) if not code else code,
+                    **{k: v for k, v in (fields or {}).items() if k != "sku_code"},
+                )
                 session.add(sku)
                 await session.flush()
                 sku_id = sku.id
-            report.created_row(index, code, id=sku_id, sku_code=code)
+            report.created_row(index, code or product_name, id=sku_id, sku_code=sku.sku_code)
         except (RowSkipped, RowRejected) as exc:
             if isinstance(exc, RowSkipped):
-                report.skipped_row(index, code, str(exc))
+                report.skipped_row(index, code or product_name, str(exc))
             else:
-                report.failed_row(index, code, str(exc))
+                report.failed_row(index, code or product_name, str(exc))
         except Exception as exc:  # 单行失败不影响其它行
-            report.failed_row(index, code, f"写入失败：{str(exc)[:160]}")
+            report.failed_row(index, code or product_name, f"写入失败：{str(exc)[:160]}")
 
     return await finalize(
         session,

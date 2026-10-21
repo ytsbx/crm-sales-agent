@@ -226,6 +226,11 @@ export default function ProductListPage() {
               <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
                 批量导入
               </Button>
+              {importKind === 'skus' && (
+                <span style={{ color: 'var(--crm-text-3)', fontSize: 12, maxWidth: 250 }}>
+                  SKU编码可留空；系统会自动生成，重复行按产品和规格跳过
+                </span>
+              )}
               <input
                 ref={fileInputRef}
                 type="file"
