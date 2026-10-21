@@ -676,3 +676,12 @@
 - 前批307d07f的CI运行39392402487已failure：UI检查发现cost_refresh审计动作漏登记/中文名；后端9个套件失败，主要是既有正常流程夹具使用空报价或未知完整性成本，另有失败夹具残留连带影响人员筛选/残留检测。没有把前轮本地通过当成远端通过。日志/tmp/crm-cost-gate-ci-failed.log。
 - 补齐后端审计中文名真源并重新生成前端、价格历史动作映射及EXPECTED_ACTIONS清单。7个受影响套件的正常路径补明确已完整核价的历史快照/明细，保留全部权限、状态、并发、文件冻结、事务回滚断言；并补新明细的外键模型注册和先明细后版本的测试清理顺序，不放宽成本校验、不跳过失败套件。
 - 在新隔离库本地复验：check_biz_docs、check_demand_flow、check_order_drafts、check_biz_doc_freeze、check_biz_doc_concurrency、check_round2_risk_repairs、check_user_list_filters、check_fixture_residue均通过；check_opportunity_gates补外键注册与清理顺序后在另一新库通过。日志/tmp/crm-sku-cost-ci-recheck.log、/tmp/crm-sku-cost-ci-final-check.log；审计动作和生成物检查通过。全144套件尚未在本轮本地重跑，以新推送后的远端CI为准，当前不声称远端失败已最终消除。
+
+### Q-023 删除误导性的“本月成交冲刺机会”快捷按钮（2026-10-21）
+
+- 用户确认只删除工作台/AI 助手中的该条快捷按钮，不删除 AI Sales Agent 卡片、历史会话或其他入口。
+- 代码证据：工作台按钮和 CopilotDrawer 工作台快捷问题都会直接发送“分析本月成交冲刺机会（年月）”预设提问；该内容只是预设 AI 提问，不是真实统计指标，容易造成误解。
+- 修复：移除两处该快捷按钮/快捷问题，保留其余 AI 入口；同步调整 `ops/smoke_ui.mjs` 使用剩余的工作台 AI 问题验证打开、失败重试、无写操作和不跳转行为。
+- 验证：本地生产构建通过，`node --check ops/smoke_ui.mjs`、`git diff --check`通过；提交 `72775c355de9203322e90bb6e9b6841d42f8982f`。构建仍有既有 `lottie-web`/`eval` 警告，不影响构建，本轮未处理该已有取舍。
+- 发布：未等待 GitHub CI；发布包SHA256为 `c7593db0e5420a628688b8dc615f1f2b0ca50bd67acceb5f66d0f251cba43d99`。服务器前后端均已切换到 `72775c3`，备份目录为 `/opt/crm-sales-agent/backup/unified-72775c355de9-tookf2zj`；服务 active、NRestarts=0，健康检查数据库/钉钉同步/Stream正常，公网HTTP 200。
+- 影响范围：未修改数据库、依赖、业务数据或权限规则；旧的工作区文档删除状态仍是此前已有状态，未纳入本次提交。
