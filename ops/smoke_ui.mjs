@@ -1488,8 +1488,8 @@ async function main() {
 
     if (FIXTURES_ENABLED && (auth.user.roles.includes('admin') || auth.user.permissions.includes('agent:use'))) {
       INTERACTIONS.push({
-        name: '42-workbench-copilot-analysis', path: '/workbench', clicks: [],
-        expect: ['Sales Copilot', '当前上下文：工作台', '分析本月成交冲刺机会'],
+        name: '42-workbench-copilot-analysis', path: '/workbench', clicks: ['AI 助手'],
+        expect: ['Sales Copilot', '当前上下文：工作台', '我手上最该先跟的商机是哪个？'],
         expectAll: true, workbenchAnalysis: true,
       })
     }
@@ -1854,13 +1854,13 @@ async function main() {
           else void client.send('Fetch.continueRequest', { requestId: message.params.requestId })
         })
         await client.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/v1/agent/sessions', requestStage: 'Request' }] })
-        await waitForText(client, '分析本月成交冲刺机会', 5000)
+        await waitForText(client, '我手上最该先跟的商机是哪个？', 5000)
         await client.send('Runtime.evaluate', {
-          expression: `(() => { const button = [...document.querySelectorAll('button')].find((el) => el.innerText.includes('分析本月成交冲刺机会')); button.click(); button.click(); })()`,
+          expression: `(() => { const button = [...document.querySelectorAll('aside button')].find((el) => el.innerText.includes('我手上最该先跟的商机是哪个？')); button.click(); button.click(); })()`,
         })
         if (!await waitForText(client, 'Copilot 正在查数据', 5000)
-            || !await waitForText(client, '本次仅提供分析，不新增或修改业务记录', 2000)) {
-          problems.push('工作台分析：没有自动带入提问或创建会话阶段没有等待状态')
+            || !await waitForText(client, '我手上最该先跟的商机是哪个？', 2000)) {
+          problems.push('工作台 AI 提问：创建会话阶段没有显示问题或等待状态')
         }
         if (paused.length !== 1) problems.push(`工作台分析：连续点击创建了 ${paused.length} 个会话请求`)
         const pendingShot = await client.send('Page.captureScreenshot', { format: 'png' })
@@ -1878,7 +1878,7 @@ async function main() {
         const restored = await client.send('Runtime.evaluate', {
           expression: "document.querySelector('aside input')?.value ?? ''", returnByValue: true,
         })
-        if (!restored.result.value.includes('分析本月成交冲刺机会')) problems.push('工作台分析：失败后问题丢失，不能重试')
+        if (!restored.result.value.includes('我手上最该先跟的商机是哪个？')) problems.push('工作台 AI 提问：失败后问题丢失，不能重试')
         await clickByText(client, '发送')
         // 安全前置强制 AI key 为空；验收真实提问已提交，并显示模型未配置的真实结果。
         if (!await waitForText(client, 'Agent 还没有配置模型', 8000)) problems.push('工作台分析：重试后未显示服务端结果')
@@ -1888,9 +1888,9 @@ async function main() {
         if (created.length === 1) {
           const detail = await checkedJson(`/agent/sessions/${created[0].id}`, auth.token)
           const users = detail.messages.filter((message) => message.role === 'user')
-          if (users.length !== 1 || !users[0].content.includes('分析本月成交冲刺机会')
-              || !users[0].content.includes('仅提供分析') || detail.actions.length !== 0) {
-            problems.push('工作台分析：没有唯一自动提问，或产生了非分析写动作')
+          if (users.length !== 1 || !users[0].content.includes('我手上最该先跟的商机是哪个？')
+              || detail.actions.length !== 0) {
+            problems.push('工作台 AI 提问：没有唯一提问，或产生了写动作')
           }
         }
         const location = await client.send('Runtime.evaluate', { expression: 'window.location.pathname', returnByValue: true })

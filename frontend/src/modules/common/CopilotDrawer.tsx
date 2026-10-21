@@ -74,7 +74,7 @@ function resolveContext(pathname: string): PageContext {
   }
 
   const byList: Array<[RegExp, PageContext]> = [
-    [/^\/workbench/, { title: '工作台', questions: ['分析本月成交冲刺机会', '我手上最该先跟的商机是哪个？', '这个月还有多少应收没回来？'] }],
+    [/^\/workbench/, { title: '工作台', questions: ['我手上最该先跟的商机是哪个？', '这个月还有多少应收没回来？'] }],
     [/^\/customers/, { title: '客户中心', questions: ['我手上有哪些客户很久没跟进了？', '帮我查一下客户「宏远包装」'] }],
     [/^\/leads/, { title: '线索中心', questions: ['有哪些新线索还没分配？'] }],
     [/^\/opportunities/, { title: '商机中心', questions: ['我手上最该先跟的商机是哪个？', '这个月能成几单？'] }],
