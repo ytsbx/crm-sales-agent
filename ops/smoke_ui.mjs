@@ -1194,7 +1194,7 @@ async function main() {
     { path: '/settings?tab=notifications', name: '31-settings-notifications', expectText: '通知' },
     { path: '/settings?tab=roles', name: '24-settings-roles', expectText: '角色与数据范围' },
     { path: '/settings?tab=departments', name: '25-settings-departments', expectText: '部门' },
-    { path: '/agent', name: '20-agent', expectText: '新建会话' },
+    { path: '/agent', name: '20-agent', expectText: '开始新对话' },
     // 定制需求（原菜单名「知识库」）：需求列表 + 修订链/钉钉审批入口都在这一页
     { path: '/inquiries', name: '32-inquiries', expectText: '定制需求' },
     { path: '/samples', name: '22-samples', expectText: '样品管理' },
