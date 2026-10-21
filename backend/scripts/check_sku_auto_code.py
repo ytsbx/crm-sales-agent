@@ -1,4 +1,4 @@
-"""新建可省略编码、并发唯一、CSV仍要求编码；仅一次性隔离库可运行。"""
+"""新建与 CSV 导入可省略编码，并验证并发唯一和无编码重导去重；仅一次性隔离库可运行。"""
 import json
 import urllib.error
 import urllib.request
@@ -64,16 +64,22 @@ def main():
             assert status in (400, 422) and result.get("code") != 0
         print("PASS automatic code does not bypass name/spec/numeric validation")
         boundary = "sku-code-isolated-upload"
-        csv = "SKU编码,产品名称,规格名称,规格\n," + marker + ",导入名称,600×400\n"
+        csv = "SKU编码,产品名称,规格名称,规格\n," + marker + ",导入名称,700×901\n"
         multipart = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="sku.csv"\r\n'
                      f'Content-Type: text/csv\r\n\r\n{csv}\r\n--{boundary}--\r\n').encode()
         status, result = call("POST", "/skus/import", raw=multipart,
                               content_type=f"multipart/form-data; boundary={boundary}")
         assert status == 200 and result.get("code") == 0, (status, result)
-        assert result["data"]["failed"] and "SKU编码不能为空" in str(result["data"]["failed"])
+        assert result["data"]["created_count"] == 1 and result["data"]["failed_count"] == 0, result
         all_rows = ok("GET", f"/products/{product_id}/skus")
-        assert len(all_rows) == 17
-        print("PASS CSV still requires code and does not create a row for blank code")
+        imported = [row for row in all_rows if row["specification"] == "700×901"]
+        assert len(all_rows) == 18 and len(imported) == 1 and imported[0]["sku_code"].strip(), all_rows
+        status, repeated = call("POST", "/skus/import", raw=multipart,
+                                content_type=f"multipart/form-data; boundary={boundary}")
+        assert status == 200 and repeated.get("code") == 0, (status, repeated)
+        assert repeated["data"]["created_count"] == 0 and repeated["data"]["skipped_count"] == 1, repeated
+        assert len(ok("GET", f"/products/{product_id}/skus")) == 18
+        print("PASS CSV without code generates one SKU and repeat import skips the same product/spec")
     finally:
         if product_id:
             # 编号来自本脚本创建的记录；护栏已确认是一次性隔离库。
