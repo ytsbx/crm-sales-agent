@@ -1,5 +1,12 @@
 # CRM 质量审查进度
 
+## 2026-10-21 无编码 SKU CSV 导入发布完成
+
+- 用户明确要求部署服务器；发布提交 `ad1e269040ded177bae8471236bd94b027a1e2fd`。发布前 21 项发布工具测试、SKU 相关后端 62 项、前端生产构建和 `git diff --check` 均通过。
+- 统一发布工具预检通过：发布包 SHA256 `44e9ef178be4cf801fa44f1757abc753c14f410463924c5f984a1f849e29fdd9`，数据库迁移 head 已满足要求；没有执行迁移、依赖升级或业务数据清洗。
+- 服务器正式发布返回 `status=verified`，应用备份 `/opt/crm-sales-agent/backup/unified-ad1e269040de-8jqr8118`。后端与前端 `DEPLOYED_COMMIT` / `WEB_DEPLOYED_COMMIT` 均为完整 `ad1e269040ded177bae8471236bd94b027a1e2fd`。
+- 发布后核验：`crm-sales.service` active、`NRestarts=0`；8010/health 返回 status=up、database=ok、钉钉 sync_running=true、stream_connected=true。未执行真实业务导入，只完成服务和版本健康核验。
+
 ## 2026-10-21 正式统一发布完成
 
 - 授权：用户要求“完成这些”，授权本次预检、正式部署与核验；发现历史迁移源码差异后，用户另行明确批准“备份后仅同步脚本，继续发布”，没有执行数据库升级或清洗。
