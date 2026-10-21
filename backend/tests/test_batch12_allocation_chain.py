@@ -77,6 +77,41 @@ async def test_complete_allocation_all_consumers(case):
     assert overdue['data']['total']==0
 
 @pytest.mark.anyio
+async def test_dashboard_order_total_keeps_separate_amounts(case):
+    raw, s, _, _ = case
+    order = raw.get(SalesOrder, 1)
+    order.goods_amount = D(90)
+    order.logistics_amount = D(10)
+    order.other_charge_amount = D(0)
+    order.discount_amount = D(0)
+    order.total_amount = D(100)
+    raw.commit()
+    summary = await analytics.dashboard_summary(s, USER)
+    assert summary['month_won_amount'] == 100
+    assert summary['month_order_goods_amount'] == 90
+    assert summary['month_order_logistics_amount'] == 10
+    assert summary['month_order_other_charge_amount'] == 0
+    assert summary['month_order_discount_amount'] == 0
+    assert summary['month_order_unverified_count'] == 0
+    order.goods_amount = D(91)
+    raw.commit()
+    summary = await analytics.dashboard_summary(s, USER)
+    assert summary['month_won_amount'] == 100
+    assert summary['month_order_unverified_count'] == 1
+    order.goods_amount = D(90)
+    order.logistics_amount = None
+    raw.commit()
+    summary = await analytics.dashboard_summary(s, USER)
+    assert summary['month_won_amount'] == 100
+    assert summary['month_order_goods_amount'] == 0
+    assert summary['month_order_unverified_count'] == 1
+    order.status = 'cancelled'
+    raw.commit()
+    summary = await analytics.dashboard_summary(s, USER)
+    assert summary['month_won_amount'] == 0
+    assert summary['month_order_unverified_count'] == 0
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('amounts',[[],[{'plan_id':1,'amount':'50'}]])
 async def test_manual_intent_survives_every_sync_and_rebalance(case,amounts):
     raw,s,q,v=case;p=receipt(raw);await allocate(raw,s,p)

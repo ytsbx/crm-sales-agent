@@ -22,6 +22,11 @@ export interface DashboardSummary extends WithCurrencyWarnings {
   open_opportunity_amount: number
   pending_approval_count: number
   month_won_amount: number
+  month_order_goods_amount: number
+  month_order_logistics_amount: number
+  month_order_other_charge_amount: number
+  month_order_discount_amount: number
+  month_order_unverified_count: number
   month_received_amount: number
   pending_receivable_amount: number
   overdue_receivable_count: number

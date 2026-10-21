@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useLocation, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Card, Popconfirm, Tag, Toast, Tooltip } from '@douyinfe/semi-ui'
 
@@ -29,6 +29,7 @@ const EXAMPLES = [
 ]
 
 export default function AgentPage() {
+  const location = useLocation()
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const [sessionId, setSessionId] = useState<number | null>(null)
@@ -42,6 +43,7 @@ export default function AgentPage() {
   const [streamText, setStreamText] = useState('')
   const [streamTools, setStreamTools] = useState<AgentToolCall[]>([])
   const busyRef = useRef(false)
+  const previousLocationKey = useRef(location.key)
 
   const contextType = searchParams.get('context')
   const contextId = searchParams.get('id') ? Number(searchParams.get('id')) : undefined
@@ -55,25 +57,17 @@ export default function AgentPage() {
   })
 
   useEffect(() => {
-    if (sessionId || sessionsQuery.data === undefined) return
-    if (sessionsQuery.data.length > 0 && !contextId) {
-      setSessionId(sessionsQuery.data[0].id)
-    }
-  }, [sessionsQuery.data, sessionId, contextId])
+    if (previousLocationKey.current === location.key) return
+    previousLocationKey.current = location.key
+    if (busyRef.current) return
+    setSessionId(null)
+    setInput('')
+    setLastTools([])
+  }, [location.key])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [detailQuery.data?.messages.length, streamText])
-
-  const createMutation = useMutation({
-    mutationFn: (payload: { title?: string; context_type?: string; context_id?: number }) =>
-      createAgentSession(payload),
-    onSuccess: (data) => {
-      setSessionId(data.id)
-      void queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
-    },
-    onError: (error: Error) => Toast.error(error.message),
-  })
 
   const runStream = async (id: number, content: string) => {
     busyRef.current = true
@@ -123,6 +117,8 @@ export default function AgentPage() {
     if (!content || busyRef.current) return
     setInput('')
     if (!sessionId) {
+      busyRef.current = true
+      setStreaming(true)
       createAgentSession({
         title: content.slice(0, 20),
         context_type: contextType ?? undefined,
@@ -132,7 +128,12 @@ export default function AgentPage() {
           setSessionId(created.id)
           await runStream(created.id, content)
         })
-        .catch((error: Error) => Toast.error(error.message))
+        .catch((error: Error) => {
+          busyRef.current = false
+          setStreaming(false)
+          setInput(content)
+          Toast.error(error.message)
+        })
       return
     }
     void runStream(sessionId, content)
@@ -161,8 +162,11 @@ export default function AgentPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => deleteAgentSession(id),
-    onSuccess: () => {
-      setSessionId(null)
+    onSuccess: (_data, deletedId) => {
+      if (sessionId === deletedId) {
+        setSessionId(null)
+        setLastTools([])
+      }
       void queryClient.invalidateQueries({ queryKey: ['agent-sessions'] })
     },
   })
@@ -235,23 +239,21 @@ export default function AgentPage() {
   )
 
   return (
-    // 会话列表固定 240px；用 minmax(0, …) 圈住，宽度不够时它自己缩，不会顶出横向滚动
-    <div className="page-container" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 240px) minmax(0, 1fr)', gap: 16 }}>
+    <div className="page-container agent-page">
       <SectionCard style={{ height: 'fit-content' }}>
         <Button
           block
           theme="solid"
           style={{ marginBottom: 12 }}
           disabled={streaming}
-          onClick={() =>
-            createMutation.mutate({
-              title: '新会话',
-              context_type: contextType ?? undefined,
-              context_id: contextId,
-            })
-          }
+          onClick={() => {
+            if (busyRef.current) return
+            setSessionId(null)
+            setInput('')
+            setLastTools([])
+          }}
         >
-          新建会话
+          新对话
         </Button>
         {(sessionsQuery.data ?? []).map((item) => (
           <div
@@ -262,6 +264,7 @@ export default function AgentPage() {
                 return
               }
               setSessionId(item.id)
+              setLastTools([])
             }}
             style={{
               padding: '8px 10px',
@@ -284,10 +287,9 @@ export default function AgentPage() {
             </Popconfirm>
           </div>
         ))}
-        <div style={{ marginTop: 16, color: 'var(--crm-text-3)', fontSize: 12 }}>
-          Agent 能做什么（{(toolsQuery.data ?? []).length} 个工具）
-        </div>
-        <div style={{ marginTop: 8, display: 'grid', gap: 4 }}>
+        <details className="agent-tools">
+          <summary>能做什么 · {(toolsQuery.data ?? []).length} 项能力</summary>
+          <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
           {(toolsQuery.data ?? []).map((tool) => (
             // 悬停看这个工具具体能干什么。`description` 是后端随 `/agent/tools`
             // 一起下发的「给用户看的中文说明」（和给模型看的函数名不是一回事），
@@ -312,19 +314,24 @@ export default function AgentPage() {
               </div>
             </Tooltip>
           ))}
-        </div>
+          </div>
+        </details>
       </SectionCard>
 
-      <SectionCard style={{ minHeight: 520, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, overflow: 'auto', maxHeight: 560 }}>
-          {messages.length === 0 && (
-            <div style={{ color: 'var(--crm-text-3)', fontSize: 13, marginBottom: 16 }}>
-              问点具体的，比如：
-              <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+      <SectionCard style={{ minHeight: 600, display: 'flex', flexDirection: 'column' }}>
+        <div className="agent-chat-scroll" style={{ flex: 1, overflow: 'auto' }}>
+          {sessionId && detailQuery.isPending && (
+            <div className="agent-empty">正在加载会话…</div>
+          )}
+          {messages.length === 0 && (!sessionId || !detailQuery.isPending) && (
+            <div className="agent-empty">
+              <h2>{sessionId ? '这段对话还没有消息' : '开始新对话'}</h2>
+              <p>直接描述你想查询或处理的业务，也可以试试下面的问题。</p>
+              <div className="agent-examples">
                 {EXAMPLES.map((text) => (
-                  <a key={text} style={{ color: 'var(--crm-primary)' }} onClick={() => handleSend(text)}>
+                  <button key={text} type="button" disabled={streaming} onClick={() => handleSend(text)}>
                     {text}
-                  </a>
+                  </button>
                 ))}
               </div>
             </div>
@@ -419,29 +426,32 @@ export default function AgentPage() {
           <div ref={bottomRef} />
         </div>
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-          <input
+        <div className="agent-composer">
+          <textarea
+            rows={3}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
+              if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault()
                 handleSend(input)
               }
             }}
-            placeholder="问点什么…（回车发送）"
+            placeholder="输入问题或任务…（Enter 发送，Shift + Enter 换行）"
             style={{
               flex: 1,
               padding: '10px 12px',
               border: '1px solid var(--crm-surface-high)',
-              borderRadius: 6,
-              fontSize: 13,
+              borderRadius: 10,
+              fontSize: 14,
               outline: 'none',
+              resize: 'vertical',
             }}
           />
           <Button
             theme="solid"
             loading={streaming}
+            disabled={!input.trim()}
             onClick={() => handleSend(input)}
           >
             {streaming ? '回复中…' : '发送'}

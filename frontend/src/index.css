@@ -1473,3 +1473,32 @@ table:not(.semi-table) td {
   font-size: 12px;
   color: var(--crm-danger, #f5222d);
 }
+.agent-page {
+  display: grid;
+  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.agent-tools {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--crm-surface-high);
+  color: var(--crm-text-2);
+  font-size: 12px;
+}
+
+.agent-tools summary { cursor: pointer; }
+.agent-chat-scroll { max-height: min(68vh, 760px); }
+.agent-empty { max-width: 640px; margin: 48px auto; text-align: center; }
+.agent-empty h2 { margin: 0 0 10px; font-size: 24px; color: var(--crm-text); }
+.agent-empty p { margin: 0 0 26px; font-size: 14px; color: var(--crm-text-3); }
+.agent-examples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; text-align: left; }
+.agent-examples button { padding: 13px 15px; border: 1px solid var(--crm-surface-high); border-radius: 10px; background: var(--crm-surface-low); color: var(--crm-text); font: inherit; text-align: left; cursor: pointer; }
+.agent-examples button:hover { border-color: var(--crm-primary); }
+.agent-composer { display: flex; align-items: flex-end; gap: 10px; padding-top: 16px; border-top: 1px solid var(--crm-surface-high); }
+
+@media (max-width: 768px) {
+  .agent-page { grid-template-columns: minmax(0, 1fr); }
+  .agent-examples { grid-template-columns: minmax(0, 1fr); }
+  .agent-empty { margin: 28px auto; }
+}

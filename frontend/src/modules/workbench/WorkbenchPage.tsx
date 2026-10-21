@@ -18,6 +18,7 @@ import {
   getDashboardTasks,
   getDashboardTrend,
   getTeamSummary,
+  type DashboardSummary,
   type DashboardTask,
   type TrendRow,
 } from '../../shared/api/analytics'
@@ -36,6 +37,21 @@ import { usePermissions } from '../../shared/hooks/permissions'
 const PRIORITY_LABEL: Record<string, string> = { high: '高优先级', normal: '普通', low: '低' }
 
 const money = (value?: number) => `¥${Math.round(value ?? 0).toLocaleString('zh-CN')}`
+const exactMoney = (value?: number) => `¥${(value ?? 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
+
+function orderAmountBreakdown(summary?: DashboardSummary) {
+  if (!summary) return '货款与运费明细加载中'
+  if (summary.month_order_unverified_count > 0) {
+    return `${summary.month_order_unverified_count} 笔订单金额组成待核实`
+  }
+  const parts = [
+    `货款 ${exactMoney(summary.month_order_goods_amount)}`,
+    `运费 ${exactMoney(summary.month_order_logistics_amount)}`,
+  ]
+  if (summary.month_order_other_charge_amount) parts.push(`其他 ${exactMoney(summary.month_order_other_charge_amount)}`)
+  if (summary.month_order_discount_amount) parts.push(`优惠 ${exactMoney(summary.month_order_discount_amount)}`)
+  return parts.join(' + ')
+}
 
 function greeting() {
   const hour = Number(formatBeijingClock(new Date(), { hour: '2-digit' }))
@@ -164,8 +180,8 @@ export default function WorkbenchPage() {
     },
     {
       label: '本月订单金额',
-      value: money(summary?.month_won_amount),
-      footer: '按订单金额统计',
+      value: exactMoney(summary?.month_won_amount),
+      footer: orderAmountBreakdown(summary),
       tone: 'chip',
       onClick: () => navigate('/orders'),
     },

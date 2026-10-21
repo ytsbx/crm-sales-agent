@@ -363,10 +363,33 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         )
     ).scalar_one()
 
-    month_won_amount = (
+    complete_order_amounts = and_(
+        SalesOrder.goods_amount.is_not(None),
+        SalesOrder.logistics_amount.is_not(None),
+        SalesOrder.other_charge_amount.is_not(None),
+        SalesOrder.discount_amount.is_not(None),
+        SalesOrder.goods_amount + SalesOrder.logistics_amount
+        + SalesOrder.other_charge_amount + SalesOrder.discount_amount
+        == SalesOrder.total_amount,
+    )
+    (
+        month_won_amount,
+        month_order_goods_amount,
+        month_order_logistics_amount,
+        month_order_other_charge_amount,
+        month_order_discount_amount,
+        month_order_unverified_count,
+    ) = (
         await session.execute(
             await _scope_filter(
-                select(func.coalesce(func.sum(SalesOrder.total_amount), 0)).where(
+                select(
+                    func.coalesce(func.sum(SalesOrder.total_amount), 0),
+                    func.coalesce(func.sum(case((complete_order_amounts, SalesOrder.goods_amount), else_=0)), 0),
+                    func.coalesce(func.sum(case((complete_order_amounts, SalesOrder.logistics_amount), else_=0)), 0),
+                    func.coalesce(func.sum(case((complete_order_amounts, SalesOrder.other_charge_amount), else_=0)), 0),
+                    func.coalesce(func.sum(case((complete_order_amounts, SalesOrder.discount_amount), else_=0)), 0),
+                    func.coalesce(func.sum(case((complete_order_amounts, 0), else_=1)), 0),
+                ).where(
                     SalesOrder.status != "cancelled", SalesOrder.created_at >= month_start
                 ),
                 user,
@@ -374,7 +397,7 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
                 session,
             )
         )
-    ).scalar_one()
+    ).one()
 
     # 待回款 = 未结清节点的（应收金额 − 财务已确认回款）
     paid_sub = payment_service.plan_received_totals()
@@ -484,6 +507,11 @@ async def dashboard_summary(session: AsyncSession, user: CurrentUser) -> dict:
         "open_opportunity_amount": _f(open_amount),
         "pending_approval_count": int(pending_approval),
         "month_won_amount": _f(month_won_amount),
+        "month_order_goods_amount": _f(month_order_goods_amount),
+        "month_order_logistics_amount": _f(month_order_logistics_amount),
+        "month_order_other_charge_amount": _f(month_order_other_charge_amount),
+        "month_order_discount_amount": _f(month_order_discount_amount),
+        "month_order_unverified_count": int(month_order_unverified_count),
         "month_received_amount": _f(month_received),
         "pending_receivable_amount": _f(pending_receivable),
         "overdue_receivable_count": int(overdue_receivable),
