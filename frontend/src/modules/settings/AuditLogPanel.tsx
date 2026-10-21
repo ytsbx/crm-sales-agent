@@ -39,7 +39,8 @@ import {
  *    所以这里可以放心用；但**不要**因为拿不到用户列表就让筛选失效 ——
  *    下拉是空的，搜索框仍然要能用。
  */
-const PAGE_SIZE = 50
+const DEFAULT_PAGE_SIZE = 15
+const PAGE_SIZE_OPTIONS = [15, 30, 50, 100]
 
 export interface AuditLogPanelProps {
   /** 当前是否在审计页签（不在时不发请求，避免无谓的拉取） */
@@ -55,6 +56,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
   const [operatorId, setOperatorId] = useState<number | undefined>()
   const [range, setRange] = useState<[Date, Date] | undefined>()
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [detail, setDetail] = useState<AuditLogRow | null>(null)
 
   // 输入防抖：审计是海量流水，逐字发请求既慢又吵
@@ -74,11 +76,11 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
   })
 
   const query = useQuery({
-    queryKey: ['audit-logs', page, keyword, businessType, action, operatorId, range?.[0]?.toISOString(), range?.[1]?.toISOString()],
+    queryKey: ['audit-logs', page, pageSize, keyword, businessType, action, operatorId, range?.[0]?.toISOString(), range?.[1]?.toISOString()],
     queryFn: () =>
       listAuditLogs({
         page,
-        page_size: PAGE_SIZE,
+        page_size: pageSize,
         keyword: keyword || undefined,
         business_type: businessType,
         action,
@@ -111,6 +113,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
     setOperatorId(undefined)
     setRange(undefined)
     setPage(1)
+    setPageSize(DEFAULT_PAGE_SIZE)
   }
 
   return (
@@ -214,9 +217,15 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         empty="没有符合条件的记录"
         pagination={{
           currentPage: page,
-          pageSize: PAGE_SIZE,
+          pageSize,
           total,
           onPageChange: setPage,
+          showSizeChanger: true,
+          pageSizeOpts: PAGE_SIZE_OPTIONS,
+          onPageSizeChange: (size: number) => {
+            setPageSize(size)
+            setPage(1)
+          },
           showTotal: true,
         }}
         columns={[

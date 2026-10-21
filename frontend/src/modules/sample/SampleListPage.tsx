@@ -818,6 +818,8 @@ export default function SampleListPage() {
             pageSize,
             total: query.data?.total ?? 0,
             onPageChange: setPage,
+            showSizeChanger: true,
+            pageSizeOpts: [10, 20, 50, 100],
             onPageSizeChange: (size: number) => {
               setPageSize(size)
               setPage(1)

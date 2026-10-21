@@ -107,10 +107,11 @@ export default function ProductInsightsPage() {
   const [status, setStatus] = useState<string | undefined>()
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
 
   const query = useQuery({
-    queryKey: ['product-insights', { status, keyword, page }],
-    queryFn: () => listProductInsights({ status, keyword, page, page_size: 20 }),
+    queryKey: ['product-insights', { status, keyword, page, pageSize }],
+    queryFn: () => listProductInsights({ status, keyword, page, page_size: pageSize }),
   })
 
   // 审核历史（R08）：列表那一行只有**最后一轮**的意见与结果，
@@ -465,9 +466,12 @@ export default function ProductInsightsPage() {
           rowKey="id"
           pagination={{
             currentPage: page,
-            pageSize: 20,
+            pageSize,
             total: query.data?.total ?? 0,
             onPageChange: setPage,
+            showSizeChanger: true,
+            pageSizeOpts: [10, 20, 50, 100],
+            onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
           empty="还没有新品洞察——运营看到好方向就记进来"
         />

@@ -118,6 +118,7 @@ export default function KnowledgePage() {
   const [keywordInput, setKeywordInput] = useState(() => searchParams.get('keyword') ?? '')
   const [keyword, setKeyword] = useState(() => searchParams.get('keyword') ?? '')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [editVisible, setEditVisible] = useState(false)
   const [editing, setEditing] = useState<CustomInquiryRow | null>(null)
   const [form, setForm] = useState<InquiryForm>(EMPTY_FORM)
@@ -242,9 +243,9 @@ export default function KnowledgePage() {
     queryFn: () => customInquiryStatusSummary(),
   })
   const query = useQuery({
-    queryKey: ['custom-inquiries', { statusFilter, keyword, page, opportunityFilter }],
+    queryKey: ['custom-inquiries', { statusFilter, keyword, page, pageSize, opportunityFilter }],
     queryFn: () =>
-      listCustomInquiries({ status: statusFilter, keyword, page, page_size: 20, opportunity_id: opportunityFilter }),
+      listCustomInquiries({ status: statusFilter, keyword, page, page_size: pageSize, opportunity_id: opportunityFilter }),
   })
   const linkedOpportunity = useQuery({
     queryKey: ['opportunity', opportunityFilter],
@@ -777,9 +778,12 @@ export default function KnowledgePage() {
           empty={emptyText(query, '还没有定制询价记录')}
           pagination={{
             currentPage: page,
-            pageSize: 20,
+            pageSize,
             total: query.data?.total ?? 0,
             onPageChange: (nextPage: number) => setPage(nextPage),
+            showSizeChanger: true,
+            pageSizeOpts: [10, 20, 50, 100],
+            onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
         />
       </SectionCard>

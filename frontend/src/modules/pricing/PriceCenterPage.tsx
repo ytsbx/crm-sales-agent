@@ -565,6 +565,7 @@ export default function PriceCenterPage() {
   const [rateForm, setRateForm] = useState(emptyRateForm)
   const [historySkuId, setHistorySkuId] = useState<number | undefined>()
   const [historyPage, setHistoryPage] = useState(1)
+  const [historyPageSize, setHistoryPageSize] = useState(20)
 
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const lookupOppQuery = useQuery({
@@ -622,9 +623,9 @@ export default function PriceCenterPage() {
     enabled: activeKey === 'logistics',
   })
   const historyQuery = useQuery({
-    queryKey: ['pricing-history', historyPage, historySkuId],
+    queryKey: ['pricing-history', historyPage, historyPageSize, historySkuId],
     queryFn: () =>
-      listPricingHistory({ page: historyPage, page_size: 20, sku_id: historySkuId }),
+      listPricingHistory({ page: historyPage, page_size: historyPageSize, sku_id: historySkuId }),
     enabled: activeKey === 'history',
   })
 
@@ -1808,9 +1809,12 @@ export default function PriceCenterPage() {
                 rowKey="id"
                 pagination={{
                   currentPage: historyPage,
-                  pageSize: 20,
+                  pageSize: historyPageSize,
                   total: historyQuery.data?.total ?? 0,
                   onPageChange: setHistoryPage,
+                  showSizeChanger: true,
+                  pageSizeOpts: [10, 20, 50, 100],
+                  onPageSizeChange: (size: number) => { setHistoryPageSize(size); setHistoryPage(1) },
                 }}
                 empty="还没有变更记录"
               />

@@ -28,7 +28,8 @@ export default function OrderDraftsPage() {
   const exportEnabled = (configQuery.data?.trade_mode ?? 'domestic') !== 'domestic'
   const query = useQuery({ queryKey: ['order-draft', draftId], queryFn: () => getOrderDraft(draftId), enabled: !!id, refetchOnWindowFocus: false, refetchOnReconnect: false })
   const [page, setPage] = useState(1)
-  const list = useQuery({ queryKey: ['order-drafts', page], queryFn: () => listOrderDrafts({ page }), enabled: !id })
+  const [pageSize, setPageSize] = useState(20)
+  const list = useQuery({ queryKey: ['order-drafts', page, pageSize], queryFn: () => listOrderDrafts({ page, page_size: pageSize }), enabled: !id })
   const [rows, setRows] = useState<OrderDraftLine[]>([])
   const [form, setForm] = useState({ currency: 'CNY', delivery_date: '', payment_terms: '', remark: '' })
   const [versionId, setVersionId] = useState<number | undefined>()
@@ -84,7 +85,7 @@ export default function OrderDraftsPage() {
   function patch(index: number, change: Partial<OrderDraftLine>) { if (Object.entries(change).every(([key, value]) => rows[index]?.[key as keyof OrderDraftLine] === value)) return; setDirty(true); setRows(old => old.map((row, i) => i === index ? { ...row, ...change } : row)) }
   if (!id) return <div className="page-container"><PageHeader title="订单草稿" subtitle="提前准备资料，不进入生产、应收或成交统计" extra={<Link to="/orders">返回订单中心</Link>} />
     {list.error && <p>{list.error.message}</p>}
-    <SectionCard><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" pagination={{ currentPage: page, pageSize: 20, total: list.data?.total ?? 0, onPageChange: setPage }} columns={[
+    <SectionCard><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" pagination={{ currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
       { title: '草稿', render: (_: unknown, row: OrderDraft) => <Link to={`/order-drafts/${row.id}`}>草稿 #{row.id}</Link> },
       { title: '来源', render: (_: unknown, row: OrderDraft) => `${row.source_context.no} V${row.source_context.version}` },
       { title: '状态', render: (_: unknown, row: OrderDraft) => row.status === 'converted' ? '已转正式订单' : '准备中' },

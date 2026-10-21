@@ -31,6 +31,7 @@ export default function ApprovalPage() {
   const { can } = usePermissions()
   const [activeKey, setActiveKey] = useState('pending')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
   const [rejectTarget, setRejectTarget] = useState<ApprovalRow | null>(null)
   const [rejectComment, setRejectComment] = useState('')
   const [transferTarget, setTransferTarget] = useState<ApprovalRow | null>(null)
@@ -44,11 +45,11 @@ export default function ApprovalPage() {
   ]
 
   const query = useQuery({
-    queryKey: ['approvals', activeKey, page],
+    queryKey: ['approvals', activeKey, page, pageSize],
     queryFn: () =>
       activeKey === 'mine'
-        ? listApprovals({ mine: true, status: '', page, page_size: 50 })
-        : listApprovals({ status: activeKey, pending_for_me: activeKey === 'pending', page, page_size: 50 }),
+        ? listApprovals({ mine: true, status: '', page, page_size: pageSize })
+        : listApprovals({ status: activeKey, pending_for_me: activeKey === 'pending', page, page_size: pageSize }),
     enabled: activeKey !== 'rules',
   })
 
@@ -215,9 +216,12 @@ export default function ApprovalPage() {
               rowKey="id"
               pagination={{
                 currentPage: page,
-                pageSize: 50,
+                pageSize,
                 total: query.data?.total ?? 0,
                 onPageChange: setPage,
+                showSizeChanger: true,
+                pageSizeOpts: [10, 20, 50, 100],
+                onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
               }}
               empty={emptyText(query, '没有待处理的审批')}
               scroll={{ x: 'max(100%, 1440px)' }}

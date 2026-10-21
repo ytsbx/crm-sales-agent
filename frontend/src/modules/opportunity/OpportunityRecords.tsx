@@ -21,33 +21,39 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
   const [inquiryVisible, setInquiryVisible] = useState(false)
   const [inquiryForm, setInquiryForm] = useState({ title, description: '', quantity: '' })
   const [pages, setPages] = useState({ inquiries: 1, quotes: 1, samples: 1, orders: 1, drafts: 1 })
+  const [pageSizes, setPageSizes] = useState({ inquiries: 10, quotes: 10, samples: 10, orders: 10, drafts: 10 })
   // 一次"生成报价"意图一把键（第八批 8.15）：在 mutationFn 里现生成的话，
   // 弱网重试会换新键、服务端仍会建第二条报价。
   const quoteRequestKeyRef = useRef('')
   const inquiries = useQuery({
-    queryKey: ['custom-inquiries', { opportunityId, page: pages.inquiries }],
-    queryFn: () => listCustomInquiries({ opportunity_id: opportunityId, page: pages.inquiries, page_size: 10 }),
+    queryKey: ['custom-inquiries', { opportunityId, page: pages.inquiries, pageSize: pageSizes.inquiries }],
+    queryFn: () => listCustomInquiries({ opportunity_id: opportunityId, page: pages.inquiries, page_size: pageSizes.inquiries }),
     enabled: can('quote:view'),
   })
   const quotes = useQuery({
-    queryKey: ['quotes', { opportunityId, page: pages.quotes }],
-    queryFn: () => listQuotes({ opportunity_id: opportunityId, page: pages.quotes, page_size: 10 }),
+    queryKey: ['quotes', { opportunityId, page: pages.quotes, pageSize: pageSizes.quotes }],
+    queryFn: () => listQuotes({ opportunity_id: opportunityId, page: pages.quotes, page_size: pageSizes.quotes }),
     enabled: can('quote:view'),
   })
   const samples = useQuery({
-    queryKey: ['samples', { opportunityId, page: pages.samples }],
-    queryFn: () => listSamples({ opportunity_id: opportunityId, page: pages.samples, page_size: 10 }),
+    queryKey: ['samples', { opportunityId, page: pages.samples, pageSize: pageSizes.samples }],
+    queryFn: () => listSamples({ opportunity_id: opportunityId, page: pages.samples, page_size: pageSizes.samples }),
     enabled: can('sample:view'),
   })
   const orders = useQuery({
-    queryKey: ['orders', { opportunityId, page: pages.orders }],
-    queryFn: () => listOrders({ opportunity_id: opportunityId, page: pages.orders, page_size: 10 }),
+    queryKey: ['orders', { opportunityId, page: pages.orders, pageSize: pageSizes.orders }],
+    queryFn: () => listOrders({ opportunity_id: opportunityId, page: pages.orders, page_size: pageSizes.orders }),
     enabled: can('order:view'),
   })
-  const drafts = useQuery({ queryKey: ['order-drafts', { opportunityId, page: pages.drafts }], queryFn: () => listOrderDrafts({ opportunity_id: opportunityId, page: pages.drafts, page_size: 10 }), enabled: can('order:view') })
+  const drafts = useQuery({ queryKey: ['order-drafts', { opportunityId, page: pages.drafts, pageSize: pageSizes.drafts }], queryFn: () => listOrderDrafts({ opportunity_id: opportunityId, page: pages.drafts, page_size: pageSizes.drafts }), enabled: can('order:view') })
   const pagination = (key: keyof typeof pages, total: number) => ({
-    currentPage: pages[key], pageSize: 10, total, showSizeChanger: false,
+    currentPage: pages[key], pageSize: pageSizes[key], total, showSizeChanger: true,
+    pageSizeOpts: [10, 20, 50, 100],
     onPageChange: (page: number) => setPages((current) => ({ ...current, [key]: page })),
+    onPageSizeChange: (size: number) => {
+      setPageSizes((current) => ({ ...current, [key]: size }))
+      setPages((current) => ({ ...current, [key]: 1 }))
+    },
   })
   const inquiryMutation = useMutation({
     mutationFn: () => createCustomInquiry({

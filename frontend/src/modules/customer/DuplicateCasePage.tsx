@@ -36,6 +36,7 @@ export default function DuplicateCasePage() {
   const [status, setStatus] = useState('pending')
   // 真分页（返工单 6.5）：改筛选回第 1 页，否则翻到第 3 页再筛会看到空白
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [form, setForm] = useState<{
     visible: boolean
     caseId?: number
@@ -45,8 +46,8 @@ export default function DuplicateCasePage() {
   }>({ visible: false, decision: 'keep_both', remark: '' })
 
   const query = useQuery({
-    queryKey: ['duplicate-cases', status, page],
-    queryFn: () => listDuplicateCases({ status, page, page_size: 20 }),
+    queryKey: ['duplicate-cases', status, page, pageSize],
+    queryFn: () => listDuplicateCases({ status, page, page_size: pageSize }),
   })
   const usersQuery = useQuery({
     queryKey: ['assignable-users'],
@@ -102,9 +103,12 @@ export default function DuplicateCasePage() {
           rowKey="id"
           pagination={{
             currentPage: page,
-            pageSize: 20,
+            pageSize,
             total: query.data?.total ?? 0,
             onPageChange: setPage,
+            showSizeChanger: true,
+            pageSizeOpts: [10, 20, 50, 100],
+            onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
           loading={query.isLoading}
           dataSource={query.data?.items ?? []}

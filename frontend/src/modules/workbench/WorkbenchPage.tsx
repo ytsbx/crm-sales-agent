@@ -122,9 +122,10 @@ export default function WorkbenchPage() {
   // 待跟进客户清单抽屉（审查指出：卡片只报数、看不到是哪几个）
   const [staleOpen, setStaleOpen] = useState(false)
   const [stalePage, setStalePage] = useState(1)
+  const [stalePageSize, setStalePageSize] = useState(100)
   const staleQuery = useQuery({
-    queryKey: ['stale-customers', stalePage],
-    queryFn: () => getStaleCustomers({ page: stalePage, page_size: 100 }),
+    queryKey: ['stale-customers', stalePage, stalePageSize],
+    queryFn: () => getStaleCustomers({ page: stalePage, page_size: stalePageSize }),
     enabled: staleOpen,
   })
 
@@ -831,10 +832,13 @@ export default function WorkbenchPage() {
           {staleQuery.data && staleQuery.data.total > 0 && (
             <Pagination
               currentPage={stalePage}
-              pageSize={100}
+              pageSize={stalePageSize}
               total={staleQuery.data.total}
               showTotal
+              showSizeChanger
+              pageSizeOpts={[10, 20, 50, 100, 200]}
               onPageChange={setStalePage}
+              onPageSizeChange={(size: number) => { setStalePageSize(size); setStalePage(1) }}
             />
           )}
         </div>

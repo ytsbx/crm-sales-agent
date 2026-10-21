@@ -100,6 +100,7 @@ export default function CasesPage() {
     customer_type: undefined as string | undefined,
   })
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
   const [includeHistory, setIncludeHistory] = useState(false)
   //: 「按单据挑」那个下拉当前选中的值（格式 `kind:id`），点「添加」才进证据列表
   const [evidencePick, setEvidencePick] = useState<string | undefined>(undefined)
@@ -112,9 +113,9 @@ export default function CasesPage() {
   }
 
   const casesQuery = useQuery({
-    queryKey: ['cases', filters, page, includeHistory],
+    queryKey: ['cases', filters, page, pageSize, includeHistory],
     queryFn: () =>
-      listCases({ ...filters, page, page_size: 20, include_history: includeHistory }),
+      listCases({ ...filters, page, page_size: pageSize, include_history: includeHistory }),
   })
   const customersQuery = useQuery({
     queryKey: ['case-customers'],
@@ -502,9 +503,12 @@ export default function CasesPage() {
           rowKey="id"
           pagination={{
             currentPage: page,
-            pageSize: 20,
+            pageSize,
             total: casesQuery.data?.total ?? 0,
             onPageChange: setPage,
+            showSizeChanger: true,
+            pageSizeOpts: [10, 20, 50, 100],
+            onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
           empty="还没有案例——把做得好的单子沉淀下来"
         />

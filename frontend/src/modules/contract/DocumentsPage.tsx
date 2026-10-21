@@ -63,9 +63,10 @@ export default function DocumentsPage() {
 
   // 台账真分页：后端原来写死 limit 500，第 501 份合同在页面上永远不出现、也没有提示
   const [docPage, setDocPage] = useState(1)
+  const [docPageSize, setDocPageSize] = useState(20)
   const documentsQuery = useQuery({
-    queryKey: ['contract-documents', docPage],
-    queryFn: () => listContractDocuments({ page: docPage, page_size: 20 }),
+    queryKey: ['contract-documents', docPage, docPageSize],
+    queryFn: () => listContractDocuments({ page: docPage, page_size: docPageSize }),
   })
   // 客户下拉改成服务端搜索：原来只拉前 200 个客户，第 201 个以后根本选不到
   const [customerKeyword, setCustomerKeyword] = useState('')
@@ -450,9 +451,12 @@ export default function DocumentsPage() {
             rowKey="id"
             pagination={{
               currentPage: docPage,
-              pageSize: 20,
+              pageSize: docPageSize,
               total: documentsQuery.data?.total ?? 0,
               onPageChange: setDocPage,
+              showSizeChanger: true,
+              pageSizeOpts: [10, 20, 50, 100],
+              onPageSizeChange: (size: number) => { setDocPageSize(size); setDocPage(1) },
             }}
             empty={
               canManage

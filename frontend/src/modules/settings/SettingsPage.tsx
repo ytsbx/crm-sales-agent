@@ -102,18 +102,18 @@ export default function SettingsPage() {
   const [userStatus, setUserStatus] = useState<string>('')
   const [userDeptId, setUserDeptId] = useState<number | undefined>(undefined)
   const [userPage, setUserPage] = useState(1)
-  const USER_PAGE_SIZE = 20
+  const [userPageSize, setUserPageSize] = useState(20)
   // 任一条件变了都要回到第一页：翻到第 3 页再改条件，"第 3 页"多半已经不存在了
   const resetUserPage = () => setUserPage(1)
   const usersQuery = useQuery({
-    queryKey: ['settings-users', userKeyword, userStatus, userDeptId, userPage],
+    queryKey: ['settings-users', userKeyword, userStatus, userDeptId, userPage, userPageSize],
     queryFn: () =>
       listUsers({
         keyword: userKeyword || undefined,
         status: userStatus || undefined,
         department_id: userDeptId,
         page: userPage,
-        page_size: USER_PAGE_SIZE,
+        page_size: userPageSize,
       }),
     enabled: isAdmin,
   })
@@ -139,15 +139,16 @@ export default function SettingsPage() {
   // 页面上消失（其实还在等期满）、已回收的也找不回来（恢复入口无处可点）。
   // 现在按状态分页签：待复核 / 已暂缓 / 已回收 / 已驳回。
   const [candidatePage, setCandidatePage] = useState(1)
+  const [candidatePageSize, setCandidatePageSize] = useState(20)
   const [candidateStatus, setCandidateStatus] = useState<RecycleStatus>('pending')
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([])
   const candidatesQuery = useQuery({
-    queryKey: ['recycle-candidates', candidateStatus, candidatePage],
+    queryKey: ['recycle-candidates', candidateStatus, candidatePage, candidatePageSize],
     queryFn: () =>
       listRecycleCandidates({
         status: candidateStatus,
         page: candidatePage,
-        page_size: 20,
+        page_size: candidatePageSize,
       }),
     // 有回收复核权（主管）或管理员都能看，不再限死管理员
     enabled: (isAdmin || canReviewPool) && activeKey === 'rules',
@@ -993,9 +994,12 @@ export default function SettingsPage() {
                 }
                 pagination={{
                   currentPage: userPage,
-                  pageSize: USER_PAGE_SIZE,
+                  pageSize: userPageSize,
                   total: usersQuery.data?.total ?? 0,
                   onPageChange: setUserPage,
+                  showSizeChanger: true,
+                  pageSizeOpts: [10, 20, 50, 100],
+                  onPageSizeChange: (size: number) => { setUserPageSize(size); setUserPage(1) },
                 }}
               />
             </>
@@ -1533,9 +1537,12 @@ export default function SettingsPage() {
                   dataSource={candidatesQuery.data?.items ?? []}
                   pagination={{
                     currentPage: candidatePage,
-                    pageSize: 20,
+                    pageSize: candidatePageSize,
                     total: candidatesQuery.data?.total ?? 0,
                     onPageChange: setCandidatePage,
+                    showSizeChanger: true,
+                    pageSizeOpts: [10, 20, 50, 100],
+                    onPageSizeChange: (size: number) => { setCandidatePageSize(size); setCandidatePage(1) },
                   }}
                   rowSelection={
                     candidateStatus === 'pending' || candidateStatus === 'deferred'
