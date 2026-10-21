@@ -208,6 +208,10 @@ CRM 订单状态固定六个值、由各 Adapter 的映射表翻译对方状态�
 幂等靠 `erp_order_id` + `external_mappings` + 请求体 `idempotency_key`；未配置返回 `50203`。
 还差聚水潭的 `sign` 签名算法（公司已有的 `erp-bridge` 里有一份可抄）。
 
+## 应用发布
+
+生产应用发布统一使用 [统一发布入口](ops/deploy/RELEASE.md)：同一 Git SHA 构建前后端，默认只预检；正式执行需明确授权并加 `--apply`，验证两端文件、公网入口和后端健康后才记成功，失败恢复两端。不要以单独上传前端或推送 Git 作为完整发布成功的依据。
+
 ## 用脚本测接口时的两个坑
 
 1. **Windows PowerShell 5.1 发中文 JSON 必须显式转 UTF-8**，否则服务端收到乱码，
