@@ -34,6 +34,7 @@ let costDraft=false
 const costRefreshes=[], costPageRequests=[]
 const skuCreates=[]
 const settingsRequests=[]
+const apiRequests=[]
 const customerOwnerWrites=[]
 const ownerRequests=[]
 const ownerUsers=Array.from({length:201},(_,i)=>({id:111+i,name:i===0?'在职员工甲':i===1?'在职员工乙':i===200?'末页在职员工':`分页员工${i}`,username:i===200?'last.owner':`owner${i}`,status:'active'}))
@@ -47,6 +48,7 @@ const server=createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost')
   const path=url.pathname
   if(path.startsWith('/api/')) {
+    apiRequests.push({path,method:req.method})
     let body={}
     if(req.method==='POST') {
       let raw='';for await (const chunk of req) raw+=chunk
@@ -61,6 +63,7 @@ const server=createServer(async (req,res)=>{
     else if(path==='/api/v1/customers' && req.method==='POST') {customerOwnerWrites.push({path,body});data={id:151,...body}}
     else if(path==='/api/v1/customers') data={items:[publicCustomer],total:1}
     else if(path.endsWith('/auth/me')) data=user
+    else if(path.endsWith('/auth/permissions')) data={permissions:user.permissions,roles:user.roles,permission_names:{}}
     else if(path.endsWith('/notifications/unread-count')) data={count:0}
     else if(path.endsWith('/notifications')) data={items:[{id:41,title:'补投确认测试通知',read:false,wecom_status:'failed',can_redispatch:true,business_type:'customer',business_id:9,created_at:new Date().toISOString()}],total:1}
     else if(path.endsWith('/notifications/41/redispatch') && req.method==='POST') {redispatched++;data={sent:true}}
@@ -677,6 +680,51 @@ try {
   await waitFor(`document.getElementById('quote-cost-status')?.innerText.includes('请联系价格管理员')`)
   assert.equal(await evaluate(`document.querySelectorAll('#quote-cost-status a').length`),0)
   console.log('BROWSER_QUOTE_COST_RESTRICTED_USER_SEES_STATUS_AND_ADMIN_GUIDANCE=true')
+  // 普通业务员的个人页不依赖管理权限，管理深链也只能回到个人页。
+  user.roles=['salesperson'];user.permissions=['customer:view']
+  const salesAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+  await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(salesAuth)})`})
+  const personalStart=apiRequests.length
+  for(const tab of ['profile','roles','rules']) {
+    await send('Page.navigate',{url:`http://127.0.0.1:${port}/settings?tab=${tab}`})
+    await waitFor(`document.querySelector('input[aria-label="个人登录名"]')`)
+    assert.ok(await evaluate(`document.body.innerText.includes('我的信息') && document.body.innerText.includes('我的权限')`))
+    assert.equal(await evaluate(`document.querySelectorAll('.permission-denied').length`),0)
+    assert.equal(await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).some(t=>['用户','角色与数据范围','业务规则'].includes(t.innerText.trim()))`),false)
+  }
+  assert.equal(apiRequests.slice(personalStart).some(r=>/\/(users|roles|departments|settings|public-pool)($|\/)/.test(r.path)),false,'personal view must not request management APIs')
+  console.log('BROWSER_SALESPERSON_PERSONAL_ACCESS_AND_MANAGEMENT_DEEPLINK_BOUNDARY=true')
+  const exportStart=apiRequests.length
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/customers`})
+  await waitFor(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='导出')`)
+  for(const width of [1440,1280,1024]) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false})
+    const layout=await evaluate(`(()=>{
+      const toolbar=document.querySelector('.page-container .toolbar');
+      const button=text=>Array.from(toolbar.querySelectorAll('button')).find(b=>b.innerText.trim()===text);
+      const rect=el=>{const r=el.getBoundingClientRect();return {top:r.top,bottom:r.bottom}};
+      return {export:rect(button('导出')),import:rect(button('批量导入')),hint:rect(toolbar.querySelector('[data-blocked-hint]')),count:toolbar.innerText.split('导出需要单独授权').length-1,disabled:button('导出').disabled};
+    })()`)
+    assert.equal(layout.count,1,'export permission reason must appear once')
+    assert.equal(layout.disabled,true,'missing export permission stays disabled')
+    assert.ok(layout.hint.top>=layout.export.bottom && layout.hint.top>=layout.import.bottom,'hint follows all action buttons')
+  }
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='导出').parentElement.click()`)
+  await waitFor(`document.querySelector('.semi-toast-content')?.innerText.includes('客户导出')`)
+  assert.equal(await evaluate(`document.querySelectorAll('.semi-modal-content').length`),0)
+  assert.equal(apiRequests.slice(exportStart).some(r=>r.path.endsWith('/customers/export')),false)
+  console.log('BROWSER_CUSTOMER_EXPORT_SINGLE_HINT_LAYOUT_AND_NO_UNAUTHORIZED_EXPORT=true')
+  user.permissions=['customer:view','customer:export']
+  const exportAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+  await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(exportAuth)})`})
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/customers`})
+  await waitFor(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='导出' && !b.disabled)`)
+  assert.equal(await evaluate(`document.querySelector('.page-container .toolbar').innerText.includes('导出需要单独授权')`),false)
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='导出').click()`)
+  await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('导出用途')`)
+  assert.equal(apiRequests.slice(exportStart).some(r=>r.path.endsWith('/customers/export')),false,'opening export dialog must not download')
+  console.log('BROWSER_AUTHORIZED_CUSTOMER_EXPORT_OPENS_PURPOSE_DIALOG=true')
+
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
 }

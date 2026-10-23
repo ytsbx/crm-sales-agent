@@ -34,7 +34,9 @@ export default function RoutePermissionGuard() {
 
   // 没有对应菜单项的页面（详情页、工作台等）不在这里判：
   // 详情页的权限由它自己的接口决定，判错了会挡住正常流程
-  if (!menu || hasPermission(user, menu.permission)) {
+  // 设置页包含向全部登录用户开放的「我的」，管理页签由 SettingsPage 自行限制。
+  // 菜单权限在这里仅用于区分名称，不能用它拦住个人账号入口。
+  if (!menu || menu.key === 'settings' || hasPermission(user, menu.permission)) {
     // 无权限路由的**子页面**（详情页等）继承这层的判定，正常放行
     return <Outlet />
   }

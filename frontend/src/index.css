@@ -171,6 +171,14 @@ a:not([href]) {
   margin-bottom: 14px;
 }
 
+/* 导出权限说明独占工具栏末行，避免长说明撑高按钮列或重复挤占横向空间。 */
+.customer-list-toolbar > .blocked-hint-compact {
+  order: 1;
+  flex-basis: 100%;
+  max-width: none;
+  margin-top: 0;
+}
+
 /* ============================================================
    图表区的一行分成几列
 

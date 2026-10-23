@@ -148,7 +148,6 @@ export default function CustomerListPage() {
       ? ['选择「其他」时必须填写导出用途说明。']
       : []),
   ]
-  const notifyExportBlocked = useBlockedNotify(canExport ? [] : [CUSTOMER_EXPORT_PERMISSION_REASON])
   const notifyExportPurposeBlocked = useBlockedNotify(exportBlockedReasons, '导出')
 
   const tokenHeader = () => {
@@ -416,7 +415,7 @@ export default function CustomerListPage() {
       <PageHeader title="客户中心" subtitle="客户、联系人与归属都在这里统一管理" />
 
       <SectionCard>
-        <div className="toolbar">
+        <div className="toolbar customer-list-toolbar">
           <Input
             placeholder="搜索客户名称 / 简称 / 地址"
             value={keywordInput}
@@ -460,16 +459,9 @@ export default function CustomerListPage() {
           <Button onClick={() => downloadCsv('/api/v1/customers/import-template', '客户导入模板.csv')}>
             下载模板
           </Button>
-          {/* 按当前筛选导出（POST /customers/export）：列表页筛出什么就导出什么，
-              数据范围后端强制；导出是独立权限（customer:export），与查看分开。
-              按钮改成**常驻但灰着**：从前没这个权限的角色（四种内置角色都没有）看到的是
-              "工具栏上根本没有导出"，只会以为功能没做。灰着的同时旁边有一行灰字说清
-              缺哪个权限、找谁开，点按钮或点那行字都会弹同一句话（文案同源，见
-              blocked-hint-reasons.ts 的 blockedToastText）。
-              ⚠️ 判据没放松：disabled 里仍然是同一个 can('customer:export')，
-              灰着时按钮加 pointerEvents:'none' 是为了让点击落到外层容器上（原生禁用
-              控件不派发点击事件，光包一层收不到 —— 判例见 PriceCenterPage.tsx:880）。 */}
+          {/* 导出独立授权；提示统一由 GuardedButton 渲染，整行显示在按钮下方。 */}
           <GuardedButton
+            hintBelow
             disabled={!canExport}
             blockedReasons={[CUSTOMER_EXPORT_PERMISSION_REASON]}
             action="导出"
@@ -477,18 +469,6 @@ export default function CustomerListPage() {
           >
             导出
           </GuardedButton>
-          {!canExport && (
-            // flexShrink: 0 + 够宽的 maxWidth —— 这行字不许被工具栏挤成两行（实测第一版
-            // 挤成了「…开通「客户导出」权 / 限。」，一句话被劈成两截）；挤不下就整行换到下一行。
-            <div
-              data-blocked-click="1"
-              className="blocked-hint-click"
-              onClick={notifyExportBlocked}
-              style={{ display: 'block', maxWidth: 340, flexShrink: 0, fontSize: 12, lineHeight: 1.7, color: 'var(--crm-text-3)' }}
-            >
-              {CUSTOMER_EXPORT_PERMISSION_REASON}
-            </div>
-          )}
           <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
             批量导入
           </Button>
