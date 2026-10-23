@@ -1,5 +1,13 @@
 # CRM 质量审查进度
 
+## 2026-10-23 个人页与客户导出工具栏发布完成
+
+- 用户明确要求“把改动部署吧”，并在远端同步单独确认中选择“允许同步到两个现有仓库”。业务修复提交 `c32ed650ee9d9537dfac0b197244963eaa323e3e` 已推送 GitHub/Gitee 的 pending-acceptance。企业微信权限仅核查、未改授权或数据范围；工作区既有 12 个文档删除状态未纳入提交。
+- 本地发布工具 21 项测试通过；从固定提交、以线上实际版本 `72775c355de9203322e90bb6e9b6841d42f8982f` 为基线隔离构建，包 `/tmp/crm-release-c32ed65.tar.gz`，SHA256 `34a28948a2ef6429377bcfbe1dbfdeb075fc3968398ab99d9e70c9da76c88d50`。实际包完整隔离浏览器回归通过，含个人页/管理深链边界及三种宽度导出提示验证；日志 `/tmp/crm-release-c32ed65-browser.log`。本次未等待新提交的远端 CI，不将本地通过表述为远端 CI 通过。
+- 上传目录 `/tmp/crm-release-c32ed65.fXathb`，工具 SHA256 `8347192444e4ecf3347513b78f668b33a4fd62efa49624fc8082f90911ad5cab` 和包哈希均匹配；统一发布入口预检 `preflight_only` 后正式执行 `--apply` 返回 `verified`。备份 `/opt/crm-sales-agent/backup/unified-c32ed650ee9d-gbxp_5uw`。没有执行数据库迁移、依赖升级或业务数据修改。
+- 发布后独立核验：两个版本记录均为完整 `c32ed650ee9d9537dfac0b197244963eaa323e3e`，crm-sales.service active/running、NRestarts=0；实际 8010/health 返回 up/database ok，钉钉同步运行且 Stream 已连接。统一发布工具已验证全部新文件、公网首页及直接入口资源哈希。没有用生产业务数据做改密码或客户导出测试。
+- 后续：用户刷新浏览器后查看“我的”和客户列表；企业微信模块若要向业务员开放仍需明确本人联系人数据范围。发布后文档提交不需要重复部署应用。
+
 ## 2026-10-23 企业微信入口权限核查（未变更）
 
 - 用户询问业务员为何访问企业微信仍提示无权限。代码确认该入口要求 `wecom:view`，后端读取接口同样要求该权限；`backend/scripts/seed.py` 的业务员默认权限不含此项，主管默认包含 `wecom:view/wecom:manage`。这与个人页前后端本已向全部登录人开放、仅路由误拦截的情况不同。
