@@ -1,5 +1,13 @@
 # CRM 质量审查进度
 
+## 2026-10-24 任务关联客户名称部署完成
+
+- 用户明确要求“部署”。发布提交 `d6e147ea0f9fcfac204398636e42c0a8bb50bc16` 已同步 GitHub/Gitee pending-acceptance；只纳入任务客户名称实现、测试及相关记录，未纳入既有 12 个文档删除状态。企业微信权限及业务关联数据未改动。
+- GitHub CI run 40072471799 后端回归与 UI 冒烟均 success；发布工具 21 项隔离测试通过。以线上实际 `c32ed650ee9d9537dfac0b197244963eaa323e3e` 为基线，从固定新提交隔离构建，包 `/tmp/crm-release-d6e147e.tar.gz`，SHA256 `1d8b5719c63a647d35a315418ab2148f1f6372980521e579212d8ccecd62b429`。实际包完整浏览器回归通过（`/tmp/crm-release-d6e147e-browser.log`），含任务名称/详情链接、不可见客户无链接、报价关联优先级。
+- 上传 `/tmp/crm-release-d6e147e.oGM0Xt`，工具及包 SHA256 均匹配。统一发布入口预检返回 `preflight_only`，正式 `--apply` 返回 `verified`；备份 `/opt/crm-sales-agent/backup/unified-d6e147ea0f9f-u1q792a1`。未执行数据库迁移、依赖升级、权限配置或业务数据写入。
+- 发布后独立核验：前后端版本均为完整 `d6e147ea0f9fcfac204398636e42c0a8bb50bc16`；服务 active/running、NRestarts=0；8010/health 为 up/database ok，钉钉同步/Stream 正常，公网首页 HTTP 200。统一入口已核验全部新文件与公网直接入口资源哈希。未用生产账号做任务写入或客户修改测试。
+- 用户刷新任务列表即可查看新展示；记录提交无需重复部署。
+
 ## 2026-10-23 任务关联客户名称（用户批准后已实现）
 
 - 用户回复“做，改”，批准用客户名称替代任务关联列的内部客户编号，并保留详情跳转。本次只修改客户关联展示，不根据任务标题重新绑定客户或订单，不改原有关联优先级。
