@@ -225,6 +225,7 @@ def serialize(
     source_doc_no: str | None = None,
     quote_no: str | None = None,
     order_no: str | None = None,
+    customer_name: str | None = None,
 ) -> dict:
     overdue = False
     if task.due_at and task.status in ("pending", "doing"):
@@ -235,6 +236,7 @@ def serialize(
         "title": task.title,
         "task_type": task.task_type,
         "customer_id": task.customer_id,
+        "customer_name": customer_name,
         "contact_id": task.contact_id,
         "lead_id": task.lead_id,
         "opportunity_id": task.opportunity_id,
@@ -318,6 +320,19 @@ async def list_tasks(
             await session.execute(select(User.id, User.name).where(User.id.in_(owner_ids)))
         ).all()
         names = {int(uid): name for uid, name in name_rows}
+    # 仅补全本页关联且当前用户可查看的客户名称，避免逐条查询或越权泄露。
+    customer_names: dict[int, str] = {}
+    customer_ids = {row.customer_id for row in rows if row.customer_id}
+    if customer_ids and ("admin" in user.roles or user.has("customer:view")):
+        from app.modules.customer.model import Customer
+        from app.modules.customer import service as customer_service
+
+        customer_stmt = await customer_service.apply_data_scope(
+            customer_service.not_deleted(
+                select(Customer.id, Customer.name).where(Customer.id.in_(customer_ids))
+            ), user, session,
+        )
+        customer_names = dict((await session.execute(customer_stmt)).all())
     # 关联单据的编号，批量取一次（别在序列化里逐条查）。
     # 第十一批 11.6 复审：原先只处理"自动待办 → 合同"这一种，报价、订单两类
     # 在任务页上拿不到单号 —— 于是只能退化成"客户 #3"，看不出业务来源是哪一份。
@@ -373,6 +388,7 @@ async def list_tasks(
             doc_nos.get(row.source_business_id) if row.source_business_id else None,
             quote_no=quote_nos.get(row.quote_id) if row.quote_id else None,
             order_no=order_nos.get(row.order_id) if row.order_id else None,
+            customer_name=customer_names.get(row.customer_id),
         )
         for row in rows
     ]

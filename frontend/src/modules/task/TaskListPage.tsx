@@ -61,8 +61,8 @@ function primaryTaskLink(record: Task): { label: string; to: string } | null {
   if (record.opportunity_id) {
     return { label: `商机编号 ${record.opportunity_id}`, to: `/opportunities/${record.opportunity_id}` }
   }
-  if (record.customer_id) {
-    return { label: `客户编号 ${record.customer_id}`, to: `/customers/${record.customer_id}` }
+  if (record.customer_id && record.customer_name) {
+    return { label: record.customer_name, to: `/customers/${record.customer_id}` }
   }
   return null
 }
@@ -215,7 +215,7 @@ export default function TaskListPage() {
         // 就是那份原件（第十一批 11.6 复审：此前只认合同 + 商机 + 客户，
         // 报价/订单/打样一律退化成「客户 #3」，看不出业务来源是哪一份）。
         const link = primaryTaskLink(record)
-        if (!link) return '-'
+        if (!link) return record.customer_id ? '客户不可查看' : '-'
         return (
           <Link to={link.to} style={{ color: 'var(--crm-primary)' }}>
             {link.label}

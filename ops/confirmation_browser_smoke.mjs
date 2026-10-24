@@ -17,7 +17,7 @@ assert.ok(process.argv[2], 'provide the built frontend dist directory')
 const dist=resolve(process.argv[2])
 const profile=mkdtempSync(join(tmpdir(),'crm-confirm-browser-'))
 const user={id:1,name:'隔离测试用户',username:'isolated',roles:['admin'],permissions:[],data_scope:'all'}
-const task={id:7,title:'确认保护测试任务',status:'pending',status_label:'待处理',owner_id:1,priority:'normal',due_at:new Date().toISOString(),updated_at:new Date().toISOString()}
+const task={id:7,customer_id:2,customer_name:'隔离任务客户',title:'确认保护测试任务',status:'pending',status_label:'待处理',owner_id:1,priority:'normal',due_at:new Date().toISOString(),updated_at:new Date().toISOString()}
 let completed=0, redispatched=0, markedRead=0, restored=0, browser, socket
 const completedBodies=[], batchBodies=[]
 const claimedLeads=[], claimedCustomers=[]
@@ -224,6 +224,9 @@ try {
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/tasks?mine=false&status=active`})
   const finishLink=`Array.from(document.querySelectorAll('.semi-table-tbody a')).find(a=>a.innerText.trim()==='完成')`
   await waitFor(finishLink)
+  assert.equal(await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody a')).find(a=>a.innerText.trim()==='隔离任务客户')?.getAttribute('href')`),'/customers/2')
+  assert.equal(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('客户编号')`),false)
+  console.log('BROWSER_TASK_CUSTOMER_NAME_AND_EXACT_DETAIL_LINK=true')
   const completedBefore=completed
   await evaluate(`${finishLink}.click()`)
   await waitFor(`document.body.innerText.includes('确认完成这条任务')`)
@@ -724,6 +727,19 @@ try {
   await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('导出用途')`)
   assert.equal(apiRequests.slice(exportStart).some(r=>r.path.endsWith('/customers/export')),false,'opening export dialog must not download')
   console.log('BROWSER_AUTHORIZED_CUSTOMER_EXPORT_OPENS_PURPOSE_DIALOG=true')
+  user.permissions=['task:view','customer:view']
+  const taskAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+  await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(taskAuth)})`})
+  task.customer_name=null
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/tasks`})
+  await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('客户不可查看')`)
+  assert.equal(await evaluate(`document.querySelectorAll('.semi-table-tbody a[href="/customers/2"]').length`),0)
+  assert.equal(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('客户编号')`),false)
+  task.customer_name='隔离任务客户';task.quote_id=121;task.quote_no='Q-TASK-121'
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/tasks`})
+  await waitFor(`Array.from(document.querySelectorAll('.semi-table-tbody a')).some(a=>a.innerText.trim()==='报价 Q-TASK-121' && a.getAttribute('href')==='/quotes/121')`)
+  console.log('BROWSER_TASK_UNAVAILABLE_CUSTOMER_NO_LINK_AND_QUOTE_PRIORITY_PRESERVED=true')
+
 
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})

@@ -6,6 +6,8 @@ export interface Task {
   title: string
   task_type?: string | null
   customer_id?: number | null
+  /** 仅返回当前用户可查看且未删除的客户名称。 */
+  customer_name?: string | null
   contact_id?: number | null
   opportunity_id?: number | null
   lead_id?: number | null
