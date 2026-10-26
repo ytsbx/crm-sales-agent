@@ -139,8 +139,10 @@ async def test_failed_agent_action_cannot_be_relabelled_as_cancelled(monkeypatch
     from app.modules.agent import router
     action = SimpleNamespace(id=7, status='failed')
     monkeypatch.setattr(router, '_get_action', AsyncMock(return_value=action))
+    session = SimpleNamespace(refresh=AsyncMock())
     with pytest.raises(AppError) as exc:
-        await router.cancel_action(7, SimpleNamespace(reason='不再处理'), make_user(permissions={'agent:use'}), SimpleNamespace())
+        await router.cancel_action(7, SimpleNamespace(reason='不再处理'), make_user(permissions={'agent:use'}), session)
+    session.refresh.assert_awaited_once_with(action, with_for_update=True)
     assert exc.value.http_status == 400
     assert action.status == 'failed'
 

@@ -1,5 +1,238 @@
 # CRM 质量审查进度
 
+## 2026-10-26 Q-032 用户批准后修复成本导入互斥（本地完成，未部署）
+
+- 用户明确选择“修复并验证并发等待（推荐）”，授权同SKU成本导入排队、后到重查，范围本地验证且不部署。承接下方服务器真实PG反例，不改人工新增允许保留成本版本的既有规则，不擅自清理历史重复项。
+- 实现：pricing/io_router.py新增_lock_cost_import_skus，成本导入初读SKU映射后先按产品ID升序锁全部父产品，再按SKU ID升序锁SKU并populate_existing。同日成本的原查询/更新/跳过/歧义拒绝逻辑保持；首次空查询前已有稳定父锁，后到导入等待并看到已提交版本。锁后排除已删除产品/SKU及已改码的旧映射，沿用产品→SKU→成本的锁序，与产品级删除和手工新增成本互斥。没有新依赖、表结构、唯一约束或权限改动；Q-030信息保留决定照常，不实施隐藏。
+- 永久回归：新增backend/scripts/check_cost_import_race.py，登记ops/check_suites.txt（147套件登记检查通过）。修前加载原服务器快照，明确失败于“后到导入未等待，首次空行没有互斥”（`/tmp/crm-cost-import-lock-before.log`）；原始双新增/随后导入歧义日志仍保留。
+- 真PG最终7组全部通过（`/tmp/crm-cost-import-lock-final.log`），两条真实AsyncSession，并由独立PG观察pg_blocking_pids证明后到请求实际等待：同文件首次并发created1/skipped1且成本1；不同内容created1/updated1且仅一版新值20；多产品相反CSV顺序正常完成、后到跳过2；相同新增预览token同时确认第一成功、第二结论变化409并回滚；手工新增成本先持产品/SKU锁时导入等待后跳过、不额外新增；产品级联软删在旧映射读完后先提交，导入刷新后failed1且成本0；SKU改码先提交亦不按旧编码写入。仅真实查询返回处控制时序，不替换SQL/锁/业务写入；不是生产HTTP或浏览器验证。
+- 验证：原导入相关单元先通过，最终完整后端1306项单元通过（`/tmp/crm-cost-import-lock-full.log`），修改应用/脚本pyflakes与git diff检查通过；没有增加重复镜像单元，真实PG回归负责锁行为。永久脚本在app导入前拒绝缺DATABASE_URL、正式库名、远端host三种配置（`/tmp/crm-cost-import-lock-db-guards.log`），仅允许明确本机一次性PG，真实推送/调度关闭。
+- 清理与证据：套件按本次明确ID清理；独立psql确认users/products/skus/product_costs/audit_logs全0，临时PG已停止。脚本修前/修后/最终日志、全量与安全检查及修后源码哈希归档ops/backups/cost-import-race-review-20261026/。未提交/推送/部署，现有其它本地修复与原文档删除状态保留，下方“待决定”历史状态由本条覆盖。
+- 实际限制：为了与级联删除保持同一锁序，同产品的不同SKU相关写操作也可能等待，锁持有至整批预览回滚/确认提交；本轮小夹具验证了所列交错，不声称全系统所有锁图无死锁或大批导入性能已充分验证。手工新增两条同日起成本的既有允许行为不变，也不自动修复历史歧义；未来若要限制须另行决定。下一步可回归独立价格规则/客户专属价导入，或继续其它高风险业务链，不能把此锁回归推定为全项目审查完成。
+
+## 2026-10-26 Q-032 首次并发成本导入创建同日歧义版本（中，已确认，待决定锁策略）
+
+- 在完成Q-030人工决定落盘后转向价格导入。直接SSH读取服务器import_costs，部署仍d6e147e，pricing/io_router.py SHA256 `d732bcdb932840944fce87b13516045181b41f09cd5ff222f7dbcb2734a7e71b` 与隔离服务器快照一致；本地该文件未修改。现有单元已覆盖预览指纹防止覆盖后来更改，本轮选择此前未覆盖的首次同日并发。
+- 代码证据：成本导入文档约定按SKU/生效日起始日幂等；已有ProductCost用FOR UPDATE锁行，但没有记录时SELECT空结果不锁缺口。与价格规则两个导入不同，import_costs未调用批次SKU互斥。ProductCost同日只有普通索引没有唯一约束，现有明确规则是遇到多条同日起成本时导入拒绝猜测。不能仅添加唯一约束替代授权，因为页面新增目前允许成本版本，由人工处理歧义。
+- 真PG复现：全新本机crm_iso_cost_import_review（127.0.0.1:55439），服务器快照迁移；合成用户/产品/SKU，两个实际AsyncSession同时调用原import_costs，真实ProductCost空结果SELECT完成后用事件屏障控制交错，不替换数据库SQL/锁/写入。完全相同的CNY CSV均created1成功，独立查询同日成本2条；随后第三次实际导入failed1，文案明确“同一天已有2条成本版本…无法确定该更新哪一条”。`/tmp/crm-server-cost-import-race-review.py`及同名.log。无生产数据、外部服务或真实推送。
+- 推荐：导入开始按统一产品→SKU顺序为涉及对象取得稳定互斥，再在锁内重读同日成本；多产品/SKU需固定升序，避免文件行顺序相反时死锁。后到请求按原幂等规则重查，不新增多余版本；不强制改动人工新增成本规则、不新增数据库约束、不自动删除历史重复成本。代价为同一产品/SKU相关写操作及大批导入可能短暂等待，需要回归与产品删除/普通成本新增/相反文件顺序的交错。仅复用价格规则的advisory锁可避免两个CSV相撞，但不与现有产品级删除/页面新增的行锁互斥，方案范围须明确。
+- 决定状态：已用“两个人同时导入同一份表，两边都成功却留下两条，以后再导入反而失败”的例子说明，并按AGENTS事务策略规则询问是否允许同一SKU成本导入排队、本地验证且暂不部署。尚未收到决定，未实施锁调整或清洗；不存在审批答复超时自动同意。
+- 清理：按本次明确ID删除所有cost/SKU/product/audit/user，独立psql五表均0，临时PG已停止；脚本/日志/迁移及哈希归档ops/backups/cost-import-race-review-20261026/。无本轮应用/永久测试修改、提交/推送/部署；Q-026/Q-027/Q-029/Q-031已有修复及原文档删除状态保留。后续批准后先做永久修前失败及并发矩阵；未批准则继续其它独立风险链，不能宣称价格导入全面完成。
+
+## 2026-10-26 Q-030 人工决定：保留线索导入查重信息
+
+- 用户在解释“有权看”后被明确问及“无权查看的是否隐藏名称/编号”，回答“不用隐藏”，随后要求继续。按该决定保留线索导入的原有查重提示，不实施Q-030候选方案；不再将本项列为等待批准的修复。复现证据保留作已知行为记录。
+- 此决定仅覆盖线索导入查重提示，不授予其它接口查看范围外资料、不改变lead:view或数据范围、不修改客户/价格导入的权限。未修改应用代码、未部署；历史条目中的“待决定”状态由本条覆盖。继续独立价格导入的事务与预览确认检查。
+
+## 2026-10-26 Q-031 客户导入失败行被误报“已进待裁定”（低，已确认；本地修复未部署）
+
+- 与待决定Q-030独立推进，直接SSH核对服务器customer/io_router.py（db168fd30b7a840ce872104e7ed63c19cb561a8bd670a4c5207c4596444241dd）、duplicates.py、core/importing.py哈希，均与服务器快照相同；部署仍d6e147e。代码证据：导入在客户创建/裁定单生成之前就report.disputed_row；任一写入失败虽回滚行保存点，内存报告不会回滚，finalize仍计入disputed并声称已进待裁定。
+- 真PG复现：全新本机crm_iso_customer_report_review（127.0.0.1:55439）从服务器快照迁移；合成已有同名客户＋CSV同名行的客户简称101字符，实际触发PG varchar(100)写入错误。原服务器实际路由返回created0/failed1/disputed1及“1条疑似撞单已进待裁定”，独立查询只有原客户1条、裁定单0条。脚本 `/tmp/crm-server-customer-report-review.py`，修前日志 `/tmp/crm-server-customer-report-before.log`。不是只根据静态执行顺序推测，没有真实客户资料/生产请求/外部推送。
+- 自主修复依据：已失败且没有裁定单的行不能报告裁定成功，正确行为唯一，不改变撞单识别/权限/归属/数据库/界面交互规则。io_router仅把本行dispute_info暂存为局部字典，开裁定仍在原保存点内；整行成功后再追加report.disputed_row。没有绕过失败行校验、自动清洗或重试数据，没有实施Q-030的信息回显修改。
+- 永久回归新增test_customer_import_dispute_report.py 3项：客户插入失败、客户已flush后裁定生成失败、成功对照，验证保存点回滚后客户行数、created/failed/disputed统计、消息及审计一致，保留原受限范围候选遮蔽。修前2个失败分支明确失败、成功对照通过；修后完整后端1306项通过（`/tmp/crm-customer-report-unit-full.log`），修改文件pyflakes、git diff检查通过。单元的受控错误是回归方法，不声称SQLite能执行PG长度约束。
+- 真PG修后（`/tmp/crm-server-customer-report-final.log`）：原超长简称CSV现在created0/failed1/disputed0，无错误裁定成功消息、数据库仍原客户1/裁定0；合法同名CSV预览仍created1/disputed1且裁定回滚为0，携预览token确认后created1/disputed1、实际新增客户1/裁定1。证明不将合法撞单一概隐藏或改变既有流程。未执行真实HTTP/浏览器，前端无改动。
+- 收尾：精确ID清理后独立psql确认users/customers/customer_duplicate_cases/audit_logs均0，临时PG已停止。脚本/日志/哈希归档ops/backups/customer-dispute-report-review-20261026/。未提交/推送/部署，保留Q-026/Q-027/Q-029及12个原文档删除状态；本轮高价值报告一致性验证完成，长期全项目审查仍未完成。下一独立方向可查价格导入的更新行预览指纹/失败报告或其他未充分覆盖业务链。
+- Q-030决定状态补充：用户回复“啥意思”，已用张三/李四例子解释范围外线索名称、编号泄露与只给普通重复提示的建议；这不是批准，Q-030仍待决定，相关应用源码未改。
+
+## 2026-10-26 Q-030 线索导入查重提示泄露范围外记录身份（中，已确认，待批准修复）
+
+- 恢复质量目标/进度，直接SSH读取服务器customer/io_router、lead/io_router与可见性服务；版本仍d6e147e。lead/io_router修前SHA256 `2f44b5cd48e1022c9751bd015a56dfcd21998a6ccda62927ff43c633c8654fde`，service/model/core/data_scope哈希同服务器快照，归档ops/backups/lead-import-scope-review-20261026/snapshot-hashes.txt。
+- 代码证据：lead/io_router::import_leads为全局手机号与公司/联系人查重；匹配手机号后RowSkipped文案拼入dup_mobile.name和id，公司+联系人匹配也拼入id，没有按lead:view及scoped_owner_ids控制回显。线索详情get_visible_lead却要求当前范围，owner为空可见、范围外owner应403；客户导入已经对范围不足者抑制候选身份。本轮没有将仅存在重复项的普通提示等同于完整资料泄露，确认泄露的是用户未提供的已有名称/内部编号。
+- 隔离复现：`/tmp/crm-server-lead-import-scope-review.py`加载服务器快照，实际线索导入路由与get_visible_lead，在本机内存SQLite构造self范围、lead:create/lead:view用户101及归用户102的敏感线索987654。直接详情因DATA_SCOPE_DENIED被拒，同手机号CSV预览却返回已有线索名称SENSITIVE-OTHER-LEAD与id987654；同公司/同联系人CSV预览返回id987654。两次都skipped1，未新增记录。日志同名.log；没有真实用户资料或生产访问，DATABASE_URL固定localhost:1不可连接隔离地址。此信息回显不依赖PG并发，SQLite足以复现调用链，尚未做真实HTTP/浏览器。
+- 影响与方案：拥有导入创建权的受限业务员可用手机号或公司/联系人组合试探范围外线索身份。推荐保持全局查重及跳过规则，仅在有lead:view且记录满足现有可见范围时回显名称/编号；范围外匹配只给普通重复提示，同公司多联系人提示不暴露范围外精确数量。替代为导入整体要求全量查看权会阻断正常创建，或取消全局查重会改变重复录入规则，均不推荐。
+- 人工决定：按AGENTS“涉及…权限…先记录并请求人工决定”，已通过异步问题请用户批准上述最小回显修复并暂不部署；截至本条未收到决定，没有修改应用或提前实施候选。收到批准后需补受限/本范围/公海/全量/无lead:view及同公司计数矩阵，修前失败、修后通过，保留既有去重与分配行为；不把该待决定项当全部审查的阻塞。
+
+## 2026-10-26 客户/线索混合CSV指定负责人越权与回滚（真PG通过）
+
+- 与Q-030独立推进：现有测试覆盖单行分配权限，本轮新增“首行合法空负责人＋第二行明确指定他人且无assign权限”的真实PG回滚链。全新本机crm_iso_owner_import_review（127.0.0.1:55439），从服务器快照迁移，合成两账号，导入用户只有lead:create/customer:create；真实推送/调度关闭。
+- `/tmp/crm-server-owner-import-review.py`实际调用服务器客户/线索导入路由：客户入口第二行ensure_permission抛FORBIDDEN，经真实get_db.athrow走异常回滚后，前一行客户、联系人、归属历史及审计全0；线索入口在逐行savepoint捕获越权，created1/failed1，唯一合法线索仍归导入人，LeadAssignment0。证明分配闸门与事务清理在这两种既有返回语义下均阻止越权，没有擅自统一它们的错误体验。
+- 独立psql核对users/customers/contacts/customer_owner_history/leads/lead_assignments/audit_logs均0，临时PG已停止；脚本/结果/迁移归档Q-030同一目录。Q-030复现及本轮验证均未改应用/永久测试，没有提交/推送/部署；Q-026/Q-027/Q-029现有修复及文档删除状态保留。下一独立方向可继续客户撞单裁定附属数据的失败行回滚，或其他高风险链；Q-030等待人工回显规则决定。
+
+## 2026-10-26 交接后的订单业绩归属：正常路径通过，NULL历史边界留作数据依赖风险
+
+- 恢复现有质量目标/进度/Git状态，直接SSH读取服务器user停用/管理员保护、wecom离职交接首跑/重试、customer/documents与analytics签单归属实现。仍d6e147e；documents/analytics/service/wecom/service哈希与隔离服务器快照一致，归档ops/backups/handover-attribution-review-20261026/snapshot-hashes.txt。现有check_customer_handover_documents已覆盖带明确sales_owner_id的转移与同事抢先接手，不重复当新问题。
+- 新交叉链：当前负责人改派只更新SalesOrder.owner_id；人员业绩统计_sales_owner_col使用coalesce(sales_owner_id,owner_id)。因此“字段没有改动”不等于所有历史数据下统计归属不变，需要区分明确签单人与NULL兜底。迁移e8c3a6b9d2f5已将当时NULL签单人回填为当时owner_id；现有手工建单/正常报价建单均记录签单人，不能把手造NULL反例扩大为正常新建必然存在该缺陷。
+- 本机内存SQLite验证：`/tmp/crm-server-handover-attribution-review.py`加载服务器快照，实际reassign_customer_documents与analytics.sales_user_stats，用合成A/B用户、两张人民币订单（明确签单人A的100元对照、NULL签单人的200元边界）。真实改派后订单当前负责人均B，原签单字段分别保持A/NULL；再停用合成A账号，业绩统计从A300/B0变为A100/B200。证明明确签单人的业绩不因交接或停用丢失；NULL记录的统计确实跟着现负责人变化。日志 `/tmp/crm-server-handover-attribution-review.log`，脚本/日志归档上述目录。
+- 状态/证据等级：正常已记录签单人的路径通过；NULL边界为已验证的条件行为、待调查的数据依赖风险，未确认生产有此类记录或当前公开入口可制造这种NULL。本轮坚持代码审查范围，未读取生产订单或员工资料；不把合成异常数据说成生产事实，不新增已确认Bug编号。
+- 取舍：没有可靠签单人的历史记录不能擅自猜人、用当前负责人回填或重算业绩；去掉兜底也可能让原本计入的历史金额消失。后续若实际发现NULL记录，需依据签署/报价历史人工确定处理规则，再决定补录、单列待核实或维持现状。本轮不申请泛化的数据清洗授权，也不修改相关统计逻辑。
+- 范围与收尾：只测试实际文档改派帮助函数与人员统计，不宣称完整企微离职交接/HTTP/浏览器或PG并发验证；没有启动PG、外部服务或生产写入，DATABASE_URL明确指向localhost:1不可用隔离地址。无应用改动/提交/推送/部署，原Q-026/Q-027/Q-029修复保留。下一步可转向客户/线索导入的指定负责人权限与撞单裁定回滚，避免重复已充分验证的交接对照。
+
+## 2026-10-26 服务器SKU CSV坏行回滚与预览后数据变化（真PG通过，无代码修改）
+
+- 恢复QUALITY_GOAL/QUALITY_PROGRESS/Git现状后转向导入链。直接SSH读取服务器import_skus、_lock_products_for_import、row_savepoint、finalize，并与现有无编码导入/逐行保存点测试去重。本轮新场景为“坏行真实SQL溢出→紧接同产品同规格合法行→预览后另一请求提交重复对象→确认整体回滚→重新预览成功”，不是只检查解析函数。
+- 服务器仍d6e147e；core/importing、product/io_router、product/io、product/service四文件哈希与隔离加载server-snapshot一致，记录在ops/backups/sku-import-review-20261026/snapshot-hashes.txt。没有使用本地未部署改动推断生产行为。
+- 新建本机crm_iso_sku_import_review（127.0.0.1:55439）从服务器快照迁移。`/tmp/crm-server-sku-import-review.py` 构造合成用户/产品与4行真实CSV，直接调用原import_skus及实际PG保存点；第3行长=1000000000实际超过Numeric(12,3)，不是替换flush抛异常；第4行同规格长=1验证坏行不污染身份查重。仅本机测试库，真实推送/调度关闭，未调用生产接口。
+- 结果 `/tmp/crm-server-sku-import-review.log` 全部通过：首次预览created3/failed1、失败行精确第3行，整次预览SKU0；人为模拟另一请求提交first规格后，旧token确认抛VERSION_CONFLICT，导入尝试新增行整体回滚，只保留另一请求已提交的1条，无import审计；重新预览created2/failed1/skipped1且无落库；新token确认同结果，最终3条SKU，失败规格只保留其后合法行的长1，审计created2/failed_rows=[3]与报告一致。
+- 边界：输入数值超出存储范围已按失败行反馈，本轮不将数据库方言报错文案当作必须自主修改的业务缺陷；没有验证客户/线索/全部价格导入、真实HTTP/浏览器、文件规模或所有并发导入组合。产品锁有序及逐行PG保存点在本场景阻止了半成品/后续行污染，不能推定整个导入系统充分验证。
+- 清理：按本次明确ID删除SKU/产品/审计/用户，独立psql验证四表全0；临时PG已停止。脚本、日志与迁移/哈希归档ops/backups/sku-import-review-20261026/。本轮无新增应用/永久测试修改，无提交/推送/部署；Q-026/Q-027/Q-029原修复和文档删除状态保留。下一独立方向可查客户/线索指定负责人及重复裁定的导入回滚，或账户离职交接链。
+
+## 2026-10-26 业务事件通知的真实PG写入异常与保存点恢复（通过，无代码修改）
+
+- 读取当前目标/进度/Git状态后承接通知事务边界方向。直接SSH检查服务器materialize_business_notifications与record_and_notify/record_progress_event/queue_manager_notification。部署仍d6e147e；通知service/model与followup service/model四文件哈希再次与隔离加载的服务器快照一致，记录于ops/backups/notification-savepoint-review-20261026/snapshot-hashes.txt。
+- 去重与新证据：现有check_process_notifications已覆盖模拟RuntimeError时的保存点回滚，本轮不重复将其当新问题；补验真正PG SQL写入失败后同事务能否继续以及失败事件并发重试。扫描提醒catch异常但无保存点的独立疑点，尚缺实际可达的非数据库异常触发，不能仅替换notify_roles抛异常就报告为已确认重复通知Bug。
+- 隔离验证：新建本机crm_iso_notify_savepoint_review（127.0.0.1:55439），从服务器快照迁移；脚本 `/tmp/crm-server-notify-savepoint-review.py` 构造合成主管/权限/客户，调用真实record_progress_event保留两条业务事实，再对第一个事件的通知payload人为写入201字title，触发真实PG notifications.title长度错误。这是故障注入，不是生产入口会生成超长title的证据，没有把它登记为输入校验缺陷。
+- 结果（`/tmp/crm-server-notify-savepoint-review.log`）：同轮processed=1/failed=1/notifications=2；失败事件无任何部分通知、processed_at为空并保留SQL错误，成功事件给2名接收人各1条；客户及2条FollowUp在外层事务提交后保留。仅修正本次合成错误payload后两会话并发物化，只有一方processed=1，新增通知恰好2条，旧成功事件不重复；失败标记清空，FollowUp仍2条，再物化返回全0。没有模拟业务函数、数据库锁或保存点，没有真实外部调用。
+- 清理：按本次明确ID移除用户/角色/测试权限/客户/留痕/事件/通知。独立psql验证users/roles/customers/followups/business_events/notifications全0；permissions总数3，与空库迁移中的3项权限插入相符，测试创建的customer:view已按ID删除。临时PG已停止。脚本、迁移日志和结果归档ops/backups/notification-savepoint-review-20261026/。
+- 状态：保存点边界针对本次SQL错误成立，未确认新Bug；未新增永久测试或应用修改，原Q-026/Q-027/Q-029本地修复保留，未提交/推送/部署。限制为进程内服务＋真实本机PG，不能证明所有异常类型/进程崩溃/真实外部投递或全系统事务；订单直接提醒异常分支仍只列调查线索。下一步转向尚未充分覆盖的导入/批量业务异常回滚或账户交接链，不在缺少新证据时反复扫描此保存点。
+
+## 2026-10-26 Q-029 订单取消后并发扫描仍新增逾期提醒（中，已确认；批准后本地修复，未部署）
+
+- 直接SSH读取服务器order/milestones.py、router.py、service.py、model.py，部署仍d6e147e；4文件哈希与本轮加载的服务器快照一致。milestones修前SHA256 `c1e0ffbb9cc8a4de0c91a56dd85477120ec82240a48f2ba58f52d4c2070caf79`。未将本地未发布修改当成线上行为；Q-028部分回复按用户选择仍不改。
+- 证据链：原notify_overdue_milestones在初始JOIN中排除cancelled，但只锁节点；后续另查订单不锁、不复核状态。取消入口先锁订单，取消无批次订单时无需碰该节点，故能在扫描选中后先提交；扫描继续仍写催办通知。批次扫描同样是子行锁先于订单状态使用，必须一并保持锁序，不能在子锁后简单追加父锁，否则与取消/发货的父→子顺序相反。
+- 真PG复现：全新本机crm_iso_milestone_review（127.0.0.1:55439）从服务器快照迁移；合成用户/客户/订单/逾期签约节点，两条真实AsyncSession，扫描节点SELECT返回处暂停，另一会话实际调用cancel_order提交，扫描继续。最终cancelled，新增跟单逾期通知1、提醒凭证1，通知created_at与notified_at均晚于cancelled_at；日志 `/tmp/crm-server-milestone-cancel-review.log`，脚本同名.py。顺序控制：订单已取消后再启动新扫描返回0。没有生产写入、真实推送或模型调用。
+- 人工决定：说明数据库锁序、同单操作可能短暂等待与反序死锁风险后，用户明确批准“修复并验证等待与死锁风险（推荐）”，范围暂不部署。没有将先前批准泛化为生产发布。
+- 实现：两个扫描共用_lock_reminder_orders，先按订单ID升序FOR UPDATE SKIP LOCKED锁有效候选父订单（populate_existing），再重查并锁其仍逾期子行；跳过忙碌订单留给下轮。提醒内容、收件人、到期口径、仅一次凭证、外部发送机制均不变；不改表、依赖、历史数据，不撤回已生成通知。扫描批次/节点继续独立计数。
+- 永久PG回归：新增backend/scripts/check_overdue_reminder_race.py，登记ops/check_suites.txt（146套件登记检查通过）。原服务器快照先跑明确失败：取消持有父锁时旧扫描仍返回1；新代码全部通过（`/tmp/crm-overdue-race-final.log`）。覆盖两类对象已取消/父锁被取消持有时跳过；扫描先行时通过pg_blocking_pids实际证明取消正在等待扫描父锁，释放后双事务完成无死锁；同种扫描并发跳过；不同种扫描交错时其它订单仍推进；跳过对象后续补扫、重复扫描不重发。首次新代码矩阵因合成批次漏created_at失败，补齐夹具必填字段后保持业务断言完整重跑。
+- 永久单元：新增test_overdue_reminder_state.py 16项，真实内存SQLite验证节点/批次逾期正常提醒、已完成/未来/无计划/已提醒/取消订单/不适用或取消批次过滤，以及父候选读取后子状态再次变化要重查。SQLite不证明锁行为。完整后端1303项通过（`/tmp/crm-overdue-lock-full-final.log`），修改文件pyflakes、git diff检查通过。没有前端改动，未宣称浏览器或生产HTTP验证。
+- 安全与清理：套件导入app前拒绝缺DATABASE_URL、正式库名、远端数据库3种配置（`/tmp/crm-overdue-race-db-guards.log`）；不允许库名逃生开关绕过，真实推送/调度关闭。保护验证初稿解析了venv解释器符号链接而误用基解释器，改为venv原路径后通过，未修改应用。夹具按明确ID清理，独立psql确认users/customers/orders/milestones/batches/notifications/audits/order_status_history均0；临时PG已停止。
+- 状态与限制：证据、哈希、修前失败及修后日志归档ops/backups/overdue-reminder-review-20261026/。本地修复与回归完成，未提交/推送/部署；Q-026/Q-027及12个既有文档删除状态保留。当前仅证明测试交错不死锁，不保证全系统所有锁图或生产大规模性能；忙碌订单的提醒可能延至后续扫描，属于本次明确批准的方案。下一方向可检查通知生成部分失败时的事务一致性，或其他尚未充分覆盖业务链，不重复将已验证交错作为新问题。
+
+## 2026-10-26 服务器通知并发投递/日报/人工重排队（真PG通过，无代码修改）
+
+- 恢复QUALITY_GOAL、当前进度及Git状态后转向调度链。直接SSH读取服务器scheduler.py、通知service.py的dispatch_pending/send_digest/requeue_for_redispatch与task/scanning.py。当前仍d6e147e；scheduler/通知service/通知model哈希分别b3a413b562f7d6efdd40221e5618d474a8a41134e55d511503c84b09017ee22c、ee116c51cf92b946796a25c9fc108e6700da04092522328ac7d9ddad6dff4634、c4914662cfd24874fca88f2adac87484a39793542eb8c30455cc7e521e9198e8，与本次加载的服务器快照逐字节一致。
+- 调用链证据：调度器各任务max_instances=1/coalesce；通知投递与日报在独立事务内FOR UPDATE SKIP LOCKED抢占通知行，直到发送后写状态并提交；人工重排队同样拿行锁，只选failed/skipped；only_ids投递只选pending，防止自动worker已发送后人工再发。没有只依赖调度器进程锁，也没有凭静态带锁就判定充分验证。
+- 新建本机一次性crm_iso_notify_concurrency_review（127.0.0.1:55439），服务器快照从空库迁移。临时脚本 `/tmp/crm-server-notify-concurrency-review.py` 使用真实AsyncSession/PG锁与实际服务函数，合成用户/通知；仅send_text_card出口替换为有事件屏障的假客户端，其他查询/锁/提交保持真实。导入app前将企微凭据覆盖成合成值、端点固定localhost:1，关闭其它真实外部通道，不调用真实企微。
+- 四组交错通过（`/tmp/crm-server-notify-concurrency-review.log`）：两投递worker只有一次发送/attempt；日报先拿锁时指定ID的即时投递跳过；指定ID即时投递先拿锁时日报跳过；投递途中及发送成功后人工重排队均不重置/重发。每组核对最终sent、attempts=1，日报标记仅日报发送路径存在，成功后再次指定ID投递attempted=0。没有新增业务事件、任务或跟进。
+- 独立psql核对users/notifications/business_events均0，临时PG已停止。脚本/日志/迁移及哈希持久归档 `ops/backups/notification-concurrency-review-20261026/`。原Q-026/Q-027修复和既有文档删除状态保留，未新增应用代码修改、未部署、重启、提交或推送。
+- 限制：本轮只证明活跃并发事务下互斥，不证明外部已接受消息而进程在提交前崩溃时的恰好一次投递；也未模拟真实企微超时、跨主机故障、万级日报性能或所有定时扫描。该类外部副作用/提交间隙需要端到端幂等与运维取舍，不能以本轮全绿宣称根治。下一独立高价值方向可查订单节点/批次逾期提醒与业务完成并发的状态复核；未证实时不作修改。
+
+## 2026-10-26 服务器失败工具重试链路（针对性验证通过，无新增代码修改）
+
+- 承接流式生命周期审查，转向失败执行重试，未重复处理Q-026/Q-027或Q-028。通过SSH读取服务器retry_execution、retry_tool_call、_record_execution；部署仍d6e147e。router/runtime/tools/model四文件哈希与隔离加载的server-snapshot一致，归档 `ops/backups/agent-retry-review-20261026/snapshot-hashes.txt`。
+- 排除“重试导致重复业务写入”疑点：runtime按实际TOOLS注册风险等级，仅允许L1重试；6种非L1工具（跟进、任务、商机下一动作、报价审批、报价草稿、报价版本）均在handler之前拒绝，管理员亦然。未因入口没有并发锁就确认写入幂等缺陷。只读调用重复记录执行历史是现有行为，不能凭记录增加判断业务重复。
+- 新证据：`/tmp/crm-server-agent-retry-review.py`加载服务器快照，在本机内存SQLite调用真实retry路由/runtime与search_customers handler。DATABASE_URL指向localhost:1不可连接隔离地址，没有连接生产/演示库，也不创建模型客户端。验证全部非L1重试拒绝且不新增执行；success/running拒绝；他人会话403；收回customer:view后403；失败记录原snapshot=all而当前self时，两次重试均只返回本人客户，新增成功记录均记self/当前用户，原失败历史不覆盖，客户总行数仍2。
+- 首次脚本把预置success状态夹具也计入“新成功执行”而失败；修正为明确baseline_max之后新增行计数，不修改应用或放宽预期。最终日志 `/tmp/crm-server-agent-retry-review.log` 全部通过，脚本与日志持久归档上述目录。
+- 边界：内存SQLite不能证明PG并发性能、事务等待或外部服务行为；当前只对search_customers真实读链完成重试范围验证，其余L1只检查风险注册/调用链，不宣称每种L1底层都已完整验证。没有新增永久测试或应用修改，没有部署、重启、提交或推送；原两处本地动作锁修复保留。下一步可转向调度任务失败重试与后台事务边界，Q-028部分回复仍按用户选择暂不改动。
+
+## 2026-10-26 流式断线资源审查：真实连接泄漏疑点排除；部分回复保存待决策
+
+- 恢复当前质量目标/进度/Git状态，承接下一独立方向，没有重报Q-026/Q-027。通过SSH直接读取服务器runtime/router/database哈希，仍d6e147e，runtime为 `fe902adb59643e7cf8508818f6d6209dc6646520e566d4a02215830d53d44d37`。确认systemd实际使用backend/.venv；不能用系统Python的依赖版本代替生产虚拟环境。
+- 实际服务器虚拟环境：FastAPI0.143.0、Starlette1.8.0、AnyIO4.15.1、Uvicorn0.54.0；本机分别0.141.1/1.7.0/4.15.1/0.53.0。服务器h11与httptools均声明ASGI spec2.3。直接比对StreamingResponse.__call__/stream_response/listen_for_disconnect源代码SHA256，服务器与本机逐项一致；不把本机验证说成生产HTTP验证。
+- 初始替身反例：加载服务器快照，内存SQLite＋在close中await sleep(0)的FakeModel。显式gen.aclose保存部分回复并完成close；直接Task.cancel未保存部分回复；实际StreamingResponse的http.disconnect取消作用域下，FakeModel关闭开始但被取消打断。新建本机专用crm_iso_agent_stream_review，实际FastAPI进程内ASGI＋真实AsyncSession/get_db进一步重现替身现象；断线后数据库池checkedout=0，只有用户消息，夹具独立清理后users/sessions/messages均0。不能把替身未关闭推断为真实HTTPX连接泄漏。
+- 用户先表示没理解，解释后明确选择“修复连接关闭问题”，范围仅连接关闭、保持半段回复现状且不部署。曾制作临时候选：anyio.move_on_after(5,shield=True)保护_close_client；6个候选单元、真实PG/ASGI及全量1293单元通过。但测试通过不足以证明修复必要，随后继续检查真实依赖保护。
+- 排除关键证据：直接读取服务器OpenAI.close→HTTPX.aclose→httpcore.AsyncConnectionPool._close_connections，底层已有AsyncShieldCancellation。用真实AsyncOpenAI/HTTPX客户端连接仅127.0.0.1临时SSE模型服务，运行原服务器快照并在实际ASGI2.3分支断线；结果close_finished=True、http_client_closed=True、pool_connections=0，模拟服务端实际观测TCP关闭。日志 `/tmp/crm-real-http-stream-before.log`。没有真实密钥/外部模型/生产请求。该证据排除当前默认客户端在此断线时点泄漏的判断，不扩大为所有代理/背压/发送异常场景均无风险。
+- 处理：已明确向用户纠正“连接没关完”的早期判断；撤回本轮runtime候选及仅验证该候选的新增测试，不保留无真实收益证据的补丁。runtime最终字节与服务器快照一致，Q-026/Q-027已有修复原样保留。候选、反例、真实客户端验证及日志归档 `ops/backups/agent-stream-review-20261026/`，README明确标为撤回实验，不能当成有效修复。
+- Q-028（中，已复现、待决策）：runtime只在GeneratorExit保存半段回复；正常网络断线的CancelledError路径不进入该分支。已显示的文本刷新后消失，记录只保留用户问题。已有check_agent_stream的断线用例手动gen.aclose，不能证明ASGI取消也能保存。不能直接捕获CancelledError后commit，因为取消也可发生于工具写入中途，可能提交未完成业务。用户本次选择只处理连接，故本项未修改；后续需要单独设计仅保存已发出文本、隔离未完成业务事务的方案，再请求决定。
+- 最终验证：撤回候选后的活动代码完整1287项单元回归通过（退出0，`/tmp/crm-stream-audit-final-baseline.log`），runtime无Git差异，git diff检查通过。临时PG已停止；无生产写入、部署、重启、提交或推送。没有新增已确认的真实连接泄漏，没有将候选全绿等同于修复成立。下一步转向后台任务/重试的会话和事务生命周期，不继续重复同一替身误报。
+
+## 2026-10-26 Q-027 独立 cancel 接口覆盖已执行状态（高，服务器已复现；本地修复，未部署）
+
+- 承接上一轮服务器直接读取的新线索，检查独立 `/agent/actions/{action_id}/cancel`，不把 Q-026 的 reject 修复当作该接口已覆盖。原服务器 router.py:299 经 `_get_action` 完成归属查询后，使用旧对象判断状态并写 cancelled；runtime.execute_action 已锁动作行，cancel 未共享该锁。服务器基线仍 d6e147e，router 哈希与刚才直接 SSH 读取一致。隔离复现加载 server-snapshot/backend，而非本地修改过的 app。
+- 真PG反例：新建本机 localhost:55439 的 crm_iso_agent_cancel_review，从空库用服务器快照迁移；合成用户/会话/动作，使用两条真实 AsyncSession。取消先读 pending，在真实归属查询返回时暂停；确认实际执行 create_task 并提交；取消继续。两个响应 code0，最终动作 cancelled，但任务1条、成功执行1条，result 仍有 task_id，审计同时有 confirm_agent_action 与 cancel。触发为同一动作并发确认/取消且确认先提交；正常单请求不声称必现。日志 `/tmp/crm-server-cancel-review.log`，脚本 `/tmp/crm-server-cancel-review.py`。
+- 修复依据与实现：服务器函数文档已经明确已执行动作不得取消；沿用确认与 Q-026 的互斥机制，不选择新业务规则。cancel_action 在本人归属检查后、状态判断前增加 `await session.refresh(action, with_for_update=True)` 及注释；锁后重新判断，先成功提交的一方决定终态。未改允许取消的状态集合、权限、审计语义、接口字段、数据库结构或依赖，没有撤销已创建任务或清洗历史记录。
+- 修前单元反例：扩展 test_agent_action_rejection.py 8项取消测试，纠正初稿 audit.after 为真实模型 after_data 后，只有陈旧状态反例失败，其余15项通过；日志 `/tmp/crm-cancel-unit-before-corrected.log`。新增覆盖两种待确认态、四种终态、非本人404、陈旧状态不能覆盖执行结果；SQLite只证明状态重读，不代替PG锁验证。
+- 修后：完整后端1287项单元回归通过（退出0，`/tmp/crm-cancel-unit-full-final.log`，收集清单 `/tmp/crm-cancel-collected.log`）。首次全量发现旧 test_agent_ai_safety.py 的 SimpleNamespace 替身缺 refresh，已加入 AsyncMock 与 refresh(with_for_update=True) 精确断言，原失败动作不得取消断言保留；未放宽状态断言。pyflakes修改文件、登记项检查（145套件）及 git diff检查均通过。
+- 真PG永久回归：既有 check_agent_action_race.py 扩至10组，全部通过（`/tmp/crm-cancel-pg-after.log`）：原确认/拒绝回归保留，并增加并发双取消、确认先提交则迟到取消拒绝、取消先提交则任务0、拒绝与取消并发只一次决策、非本人取消404。直接调用实际路由/工具，没有模拟SQL锁，没有模型或外部调用；未声称覆盖完整HTTP/浏览器或所有业务工具副作用。
+- 收尾：独立psql确认users/tasks/agent_actions/audit_logs均0，临时PG已停止。证据持久备份 `ops/backups/agent-cancel-review-20261026/`（已有忽略目录）含复现、日志、哈希与README。当前未提交、推送或部署；原Q-026修复及12个既有文档删除状态保留，人民币归档修改未恢复。服务器仍未包含Q-026/Q-027修复。
+- 本轮高价值确认/拒绝/取消链路验证已完成；长期全项目审查未完成。下一独立方向为流式响应实际断线的异步生成器关闭与数据库生命周期，当前只有源码追踪，仍需在隔离环境验证，不报告为已确认缺陷。
+
+## 2026-10-26 再次直接读取服务器代码（只读）
+
+- 按用户“就看服务器的代码”，通过 SSH 直接读取 `/opt/crm-sales-agent/app/backend/app/modules/agent/{router.py,runtime.py}` 与 `core/database.py`；前后端部署记录均为 `d6e147ea0f9fcfac204398636e42c0a8bb50bc16`。没有把本地 Q-026 修复当作线上代码，也没有部署或重启。
+- 服务器 router/runtime/database SHA256 分别为 `ce6f6dbd61f597bdcb2ad626ecbe9b0a94d8b7f46a26b21b3d68c0a46f37e421`、`fe902adb59643e7cf8508818f6d6209dc6646520e566d4a02215830d53d44d37`、`94612060fdaa93840ef62386429064050380933febc9ef1cbc98ac3a97fe560a`。
+- 新调用链线索：独立 `/agent/actions/{action_id}/cancel` 使用 `_get_action` 后直接判断并写 cancelled，没有确认路径的动作行锁；它与已复现的 reject 入口不同，尚未独立并发复现，记为待调查，不声称 Q-026 已覆盖该入口。
+- 流式生命周期仅完成源码追踪：runtime 存在 finally 关闭模型客户端及 GeneratorExit 保存部分文本；数据库依赖使用 AsyncSession 上下文。不能由此推断实际客户端断线、任务取消与嵌套异步生成器关闭时序均已验证。下一步在本机服务器同源快照隔离验证这两个方向，禁止在生产制造并发写入或调用模型。此次没有新增应用代码修改或运行生产测试，保留现有工作区。
+
+## 2026-10-26 Q-026 用户批准后正式应用修复（本地完成，先不部署）
+
+- 用户明确补充“确定是服务器的代码bug,可以直接修复”，承接上一轮已确认的AI动作确认/拒绝竞态，批准应用候选。应用前再次只读核对服务器仍d6e147e，agent/router.py SHA256 `ce6f6dbd61f597bdcb2ad626ecbe9b0a94d8b7f46a26b21b3d68c0a46f37e421` 与本地修前一致。沿用刚才询问中的“先不部署”边界，没有把该批准扩大为生产发布或恢复人民币归档改动。
+- 实现：`backend/app/modules/agent/router.py::reject_action` 在本人会话归属检查之后、状态判断之前新增注释及 `await session.refresh(action, with_for_update=True)`，与确认路径共享同一动作行锁；锁后重读状态防止陈旧rejected覆盖executed。先处理成功的一方决定原有终态，后到者仍使用现有“该动作已经处理过了”错误；不撤销已创建业务，不变更权限/风险等级/业务规则/数据库结构/依赖。修后router SHA256 `0018fb2fd15ab4981bfc93101eb56fb2cffcf5ce3f74cdf4e93bdf79982f8607`。
+- 永久单元回归：新增 `backend/tests/test_agent_action_rejection.py` 8项，含归属检查期间另一提交改变动作后不能被旧状态覆盖、两种待确认态正常取消、4种终态拒绝再次取消、非本人拒绝。修前陈旧状态反例明确失败，7项既有行为对照通过（`/tmp/crm-agent-rejection-unit-before.log`）；修后与AI安全用例及后端完整1279项测试均通过（`/tmp/crm-agent-rejection-unit-after.log`、`/tmp/crm-agent-rejection-full.log`）。SQLite只验证重读状态，不声称能验证行锁。
+- 永久真PG回归：新增 `backend/scripts/check_agent_action_race.py` 并登记 `ops/check_suites.txt`。只允许显式本机一次性PG库，库保护先于app导入；无DATABASE_URL、正式库名、远端隔离库地址3种环境前置拒绝均通过，且不允许逃生开关绕过库名检查。全新 `crm_iso_agent_fix`（localhost:55439）从空库迁移后，实际应用代码6场景全过：确认优先而旧拒绝不能覆盖；拒绝优先则任务0；并发双拒绝只有一次决策；并发双确认任务/成功执行各1条；非本人404；撤销工具权限403。使用两条真实AsyncSession及服务器原工具，不调用模型/真实外部服务，边界事件只控制真实归属查询的返回时序。最终日志 `/tmp/crm-agent-fix-pg-final.log`。
+- 清理与检查：套件按本次明确ID清理，独立psql验证users/tasks/agent_actions/audit_logs均0，临时PG已停止；CI登记项检查通过（145个套件），修改文件pyflakes与git diff检查通过。没有跳过或放宽断言；尚未推送，所以不宣称新修复的远端CI已通过。只有Agent路由两行应用变化，人民币归档修改未恢复，12个既有文档删除状态未动。
+- 当前状态：Q-026本地实现与回归完成，未提交/推送/部署；服务器仍旧版本。此条覆盖上文“候选未应用”的历史状态，服务器基线与本地唯一新增应用差异即这处已批准修复。按当前“先不部署”的范围无需操作生产，后续若要求上线，需固定提交并走统一发布预检/备份/核验流程。
+
+## 2026-10-26 Q-026 服务器AI动作确认/拒绝并发终态冲突（高，已确认；候选修复未应用）
+
+- 直接SSH读取服务器 agent/router.py、runtime.py、tools.py、model.py；4文件SHA256与隔离验证所加载的服务器快照完全匹配（`/tmp/crm-server-agent-race-hashes.txt`），部署仍d6e147e。本轮没有恢复已归档人民币修改。
+- 证据链：确认入口调用execute_action，其runtime.py:782刷新动作行并FOR UPDATE，再判待确认状态；拒绝入口router.py:496只get动作，归属检查后:500用未锁定的内存状态判定，:502起直接写rejected。缺少与确认共享的锁及锁后重读，可能用旧状态覆盖刚完成的动作。
+- 真库复现：新建crm_iso_agent_race（localhost:55439），用服务器快照迁移从空库初始化，仅构造合成用户/AgentSession/AgentAction。两条独立AsyncSession：拒绝请求已读awaiting_confirmation后在归属查询处暂停；另一连接实际确认并执行create_task工具、提交；拒绝继续。结果两个响应code均0，任务1条、成功AgentExecution1条，动作最终rejected，且同时出现confirm_agent_action/reject_agent_action审计。`/tmp/crm-server-agent-race.py`、`/tmp/crm-server-agent-race.log`。这不是生产请求、模拟业务工具或SQLite伪并发；仅在get返回边界控制时序，没有替换业务写入或锁实现。
+- 触发与影响：同一动作多页/重复网络请求并发确认与取消，取消先读、确认先提交时可发生；界面说取消而真实任务已创建，动作result也被取消原因覆盖。仅create_task已做真库写入验证，其它工具的具体副作用未逐个复现，不把条件竞态说成正常单次操作必现。
+- 推荐候选：拒绝先完成会话归属校验，然后session.refresh(action, with_for_update=True)，再按锁后状态决定是否允许取消。沿用确认入口已有互斥规则，不引入新状态/数据库结构/依赖，不自动撤销已执行业务。独立副本`/tmp/crm-agent-race-candidate/app`两行补丁，未改当前应用目录或服务器。
+- 候选验证：同一交错下确认code0、迟到拒绝code40002，动作保持executed、任务/成功执行各1条、仅确认审计（`/tmp/crm-server-agent-race-candidate.log`）。另5场景真库通过：拒绝先提交则确认拒绝且任务0；并发双拒绝只有一次成功与一条拒绝审计；并发双确认只有一次执行与一条任务；非本人拒绝404；撤掉task:manage后确认403且动作待确认。`/tmp/crm-agent-candidate-matrix.log`。不声称候选完整CI或生产HTTP/浏览器测试已通过。
+- 可审查产物：`ops/backups/agent-action-race-review-20261026/`（项目既有忽略目录）含reject-action-lock.patch、两份复现/矩阵脚本、服务器哈希与修复前后日志和README。原基线及候选均未调用模型、支付、钉钉或企微；临时PostgreSQL现已停止。
+- 当前授权边界：用户最近要求“就看服务器的代码”且刚将本地同步为服务器，本轮保持只读审查；候选补丁等待用户决定是否应用，不擅自改变当前已同步基线或上线。之前确认缺陷的历史数据不改写。流式取消资源生命周期尚未完成独立验证，下一轮可继续该独立方向，不能因本问题待批准而停止所有审查。
+
+## 2026-10-26 直接读取服务器：旧令牌跨请求撤权/吊销边界（通过，无代码改动）
+
+- 直接只读 SSH 检查服务器 core/deps.py、core/security.py、auth/session.py、auth/router.py、user/service.py 的普通鉴权、续期、登录与改密调用链。auth/service.py并不存在，正确实现分布在router/session；没有据读取路径不存在误判服务失败。服务器仍d6e147e，无生产账号/令牌/密钥读取或业务写入。
+- 当前调用链：get_current_user每请求读账号status、load_active_session、启用角色、当前角色权限和数据范围；refresh复用同一会话有效性入口；用户角色的停用状态同时作用于权限和范围。普通密码登录在读取密码前持有账号行锁，源码已有登录/改密互斥保护，本轮未重复报为新竞态。
+- 新隔离验证角度：在保持同一枚JWT不变的前提下，每次请求使用新的SQLAlchemy Session读取刚提交的角色/权限/账号/会话状态，而非在同一对象上静态调用has()。脚本`/tmp/crm-server-auth-audit.py`运行实际服务器快照的鉴权函数；7个关键逻辑与模型文件再次与服务器SHA256逐一匹配（`/tmp/crm-server-auth-audit-hashes.txt`）。仅本机内存SQLite，JWT由本机随机配置密钥签发、用户和会话为合成夹具，DATABASE_URL指向localhost:1不可用隔离地址，无真实外部调用。
+- 运行结果`/tmp/crm-server-auth-audit.log`全部通过：JWT额外admin/权限/范围claims不能覆盖数据库；同令牌删除客户查看权后权限守卫403；all范围收为self下一请求生效；角色停用后不保留角色特例、权限或all范围；账号停用普通鉴权/刷新均401；退出后两入口均401；空sid和sid用户不匹配均401；按改密路径吊销某人的全部会话后两枚旧令牌均不能访问/续期，其他用户会话不受影响。首次隔离脚本误用AppError.status_code，按真实异常属性http_status修正后通过，未改服务器实现。
+- 证据边界：证明提交后下一请求/续期生效，不证明已经开始的长请求或流式响应会在撤权瞬间中断；SQLite不能证明真实数据库并发、跨进程缓存或密码登录锁竞争，本轮没有执行生产HTTP或修改真实用户。本轮没有新增已确认Bug或扩大权限策略，不做无依据修复。
+- 状态：仅更新本地质量记录，backend/frontend/ops应用源码仍无差异；没有部署、重启、同步或恢复人民币归档修复。下一步直接看服务器流式响应/后台任务的权限复核和资源生命周期，区别正常请求开始时授权与实际可证实的越权动作。
+
+## 2026-10-26 直接读取服务器：文件访问与产品/SKU附件链路（已排除疑点，无代码改动）
+
+- 依据用户“就看服务器的代码”：通过只读 SSH 直接读取部署目录的 file/router.py、file/access.py、file/storage.py、product/router.py、product/service.py，以及委托可见性代码；没有将本地未发布修改视为服务器行为。服务器仍 d6e147ea0f9fcfac204398636e42c0a8bb50bc16。服务器无 rg，改用只读 Python 查找，不安装程序或修改服务器。
+- 与历史去重：此前“有file:manage但无quote:manage可改文件名/删除”已被明确设计排除，本轮没有重复报漏洞。新追踪父产品删除/停用→SKU→单条/批量文件访问，检查是否存在父子级联造成的可见性遗漏。
+- 已完成调用链分析：下载和预览先要求file:view，再经can_access_file反查任一可见挂载对象，模块权限和数据范围在visible_object统一处理；无挂载文件仅上传者可见。产品删除在同一事务将其未删除SKU一起软删；单条与批量SKU附件可见性都检查SKU的deleted_at。产品/SKU停用针对新业务，历史资料可读是已有明确设计，不能当成需要收紧的漏洞。
+- 隔离运行证据：`/tmp/crm-server-file-audit.py` 加载已从服务器拉取的快照模块（日志打印真实__file__，不加载当前活动app目录）；4个关键模块file/access、router、storage、product/service的SHA256与本轮再次直接读取的服务器文件均相同（`/tmp/crm-server-file-audit-hashes.txt`）。仅本机内存SQLite与临时合成文件；DATABASE_URL指向localhost:1不可用隔离地址，未连接生产或本地真实数据库，未调用外部服务。
+- 实际通过（`/tmp/crm-server-file-audit.log`）：正常SKU附件可见；撤销product:view后拒绝；产品停用仍可读历史附件；实际调用lock_product/delete_product使SKU级联软删后单条/批量附件访问均拒绝；无挂载文件非上传者拒绝、上传者放行；同前缀兄弟目录穿越、绝对根外路径、符号链接越界及空路径均拒绝，正常路径放行。首次正常路径断言因macOS路径别名解析差异失败，按真实resolve路径修正隔离脚本后全部通过，没有改产品代码。
+- 验证限制：SQLite不能证明并发锁与事务隔离，本轮不将其描述为真实生产HTTP/浏览器或PostgreSQL并发验证；预览MIME、共享文件任一可见及其他业务对象委托路径只有调用链复核，未新增完整逐角色端到端覆盖。没有发现足以确认的新Bug，不为制造改动修改权限或产品行为。
+- 状态与后续：仅更新本地质量记录，应用源码仍与服务器一致；没有部署、生产写入或恢复归档的人民币修改。后续转向未充分验证的会话/权限撤销或异步任务资源边界，以新证据继续推进。
+
+## 2026-10-25 用户指定以服务器为准，本地代码同步完成（当前基线）
+
+- 用户明确要求“直接看服务器的代码，把本地同步为服务器的，以服务器为准”。本轮据此将当前应用与配套测试同步至实际服务器版本；没有把本地未发布修复上传服务器，也未重启或修改生产环境。后续审查以此实际服务器基线为准，不将归档修复当成当前本地/线上行为。
+- 先备份：`ops/backups/server-sync-20261025-01/`（已被项目既有忽略规则排除），包含 `working-tree.patch`、11个修改/新增文件原件及 SHA256、12个既有文档删除状态清单、各轮隔离验证日志、之前本地 frontend/dist，以及实际服务器快照。备份逐文件校验通过，未丢弃有效修改或审查证据。
+- 拉取：从 `/opt/crm-sales-agent/app` 只读打包实际 backend/app、backend/alembic、requirements.txt、alembic.ini、web-dist 和两个版本记录。不含 .env、虚拟环境、密钥、数据库、上传文件或正式配置。服务器前后端均 `d6e147ea0f9fcfac204398636e42c0a8bb50bc16`。
+- 本地替换与校验：backend/app 241个文件与服务器全部相同；alembic及依赖声明匹配；frontend/dist同步了服务器全部1306个文件（包括1187个旧哈希资源），文件集合与哈希都相同。服务器没有部署前端源码，frontend/src/public/package.json/pnpm-lock.yaml 则经 Git 对应发布 SHA 核实一致，不伪称从服务器取得了这些源码。本地 HEAD 6d930ac 只比发布版多文档记录，未重写 Git 历史。
+- 把本轮新增的 `test_order_quote_currency.py` 保存备份后移出活动测试目录，其余五个本轮改过的测试/脚本恢复为发布提交对应版本，避免旧服务代码配新规则断言。既有12个文档删除状态保持不变；应用、测试及脚本已无未提交差异。质量记录继续保留，不把服务器没有部署的本地资料误当成需删除的应用文件。
+- 下载后再只读核对服务器，1679个同步文件的总 SHA256 指纹 `81fffc53f2597985b50354843e29599d6fdb2799a59349a7414f768e1c73325e` 与所拉快照相同；结果 `ops/backups/server-sync-20261025-01/sync-result.json`。当前基线完整后端测试1271项通过（`/tmp/crm-server-sync-baseline-tests.log`），`git diff --check`通过。测试通过仅证明基线回归，不表示此前已复现的问题不存在。
+- 状态优先说明：下文Q-024/Q-025及编辑/重分配补充的修复现在均为“已备份归档，未在当前本地应用、未部署”。已复现证据不撤销，但不能再描述成当前已修复；不自动恢复归档修改。
+- 被用户指令中断的报价转单审查也已保留：成本完整、已审批/已接受的非 CNY 版本，默认全款/分期6场景均可转单；本地临时修复与2项规范化CNY正向共8场景通过，源码/测试已归档。ERP六类采集事实实际调用采集函数均拒绝USD并接受规范化CNY，未改其业务代码。中断前新修复完整单元1312项通过，但尚未完成报价转单真实HTTP验证，不能报此链端到端完成。临时API及PostgreSQL已停止，无生产写操作。
+- 下一步：以服务器基线继续审查，归档问题如需实施或部署，应另行明确所选方案与范围；本次同步不包含对归档修复的部署授权。
+
+## 2026-10-25 用户要求的服务器/本地完整文件比对（只读）
+
+- 实际服务器版本：DEPLOYED_COMMIT、WEB_DEPLOYED_COMMIT 均为 `d6e147ea0f9fcfac204398636e42c0a8bb50bc16`。本地 HEAD `6d930ac05fcaf370d15af1f39213d98587a4071b` 只比该发布提交多发布记录；backend/app、frontend/src、frontend/public 在两提交之间无差异。
+- 逐文件 SHA256：服务器 backend/app 241 文件与 Git d6e147e 全部一致，没有额外或缺失文件；本地当前 backend/app 也 241 文件，其中只有 `modules/order/service.py`、`modules/payment/router.py`、`modules/payment/schema.py`、`modules/payment/service.py` 四处不同，均为本轮未提交、未部署的人民币校验修复。其它 237 个后端文件相同。未把生产 .env、配置、数据库、用户上传文件纳入或输出。
+- 本地 frontend/dist 的119个文件与服务器 web-dist 对应路径全部同哈希；服务器另有1187个额外文件，核对其路径并结合发布工具保留旧哈希资源的既有机制单独记录，不把额外旧资源算作当前前端缺发。原始只读哈希结果 `/tmp/crm-server-current-hashes.txt`。
+- 结论：服务器与本地已提交的应用基线一致；与本地含新修复的工作区不完全相同。当前没有因这次比较而进行上传、部署、重启或业务数据修改。四处新修复仍待本地验证收尾及另行发布授权。
+
+## 2026-10-25 Q-024/Q-025 补充：编辑与自动重分配链路（已本地修复）
+
+- 本轮有新增调用链与反例：应收编辑调用 `rebalance_order_allocations`，它会处理同单全部已确认回款；新回款确认时，余额也会扣除同单历史已确认回款。前两轮只校验当前记录及期数，不能保证历史已确认回款全为 CNY。另 `update_payment` 仅在显式传 currency 时校验，省略币种只改金额时仍可修改非 CNY 来源记录。
+- 修前证据：新增服务/路由 4 项（订单、后续期、已有已确认回款三种重分配来源＋新确认扣除历史非 CNY 回款）全部未拒绝（`/tmp/crm-cny-rebalance-before.log`）。补完重分配后再验证编辑路径，非 CNY 订单/节点/回款三种待确认编辑仍全部未拒绝；应收编辑三种来源已被前一步新守卫拒绝（`/tmp/crm-cny-edit-before.log` 的 3 failed/3 passed）。不将已被守卫覆盖的三个场景重复报成新缺陷。
+- 修复：自动重分配在删除自动分配/修改分配模式前核对所属订单、全部有效期及本次处理的已确认回款币种；沿用原查询中的记录集合，新增批量节点币种查询。确认入口在改 status 前检查历史已确认回款币种；待确认回款编辑在金额赋值前校验记录/节点/所属订单；应收编辑先拒绝当前非 CNY 节点。统一复用既有人民币拒绝函数，不变更人民币金额规则、先到账先抵扣顺序、人工分配保护、锁序或权限。拒绝时不清洗、不折算历史数据。
+- 单元：相关分配/回款/重分配 66 项通过（`/tmp/crm-cny-rebalance-final.log`）；后端完整 tests 1298 项通过（`/tmp/crm-cny-rebalance-full-final.log`）；修改的应用/单元文件 pyflakes、`git diff --check` 通过。新增 10 项边界回归，包含原分配保留以及模拟 get_db 异常回滚后原应收金额不变。仅内存 SQLite 不能证明 PostgreSQL 锁行为，另做下面真实 HTTP。
+- PostgreSQL：另建全新 `crm_iso_cny_rebalance` 隔离库（localhost:55439），迁移/种子后 API 8019，关闭调度、Stream 与真实外部推送。临时脚本 `/tmp/crm-cny-pg/check_edit_currency.py` 测 7 条真实 HTTP：三种 pending 编辑拒绝原金额不变、三种应收编辑拒绝后独立会话看到原金额及原分配不变、确认拒绝历史非 CNY 来源且没有新分配。首次因脚本引入已有工具时 Python 模块路径缺 scripts 失败，补 `PYTHONPATH=.:scripts` 后全部通过（`/tmp/crm-cny-pg/rebalance-edit-http.log`）。随后完整 `check_payment_consistency.py` 通过（`/tmp/crm-cny-pg/rebalance-full-http.log`），含之前所有人民币幂等/并发/人工分配场景；没有弱化断言。
+- 限制：应收编辑在公共重分配校验前可能已在请求事务中赋值/flush；真实 get_db 异常分支回滚已由独立 HTTP 会话验证，不能把这个入口描述为“在任何赋值前拒绝”。重分配服务本身的拒绝发生在释放旧分配之前。
+- 收尾：临时 API 与 PostgreSQL 均已停止。没有生产写入、部署、推送或新提交；线上仍是最近只读核对的 d6e147e，本轮改动与 Q-024/Q-025 一并保留工作区。原有文档删除未动，未改数据库结构/配置/依赖。前端没有变更，本轮不声称已做新的浏览器验证。
+- 下一步：转向报价转订单、ERP 源单继承以及独立权限/文件链路；历史存量统计/导出口径尚需独立核对，不把本轮确认/编辑/重分配的覆盖推定为全项目资金风险清零。
+
+## 2026-10-25 Q-025 应收生成与人工分配缺失人民币校验（高，已本地修复）
+
+- 承接 Q-024 的剩余入口核查，检查当前文件与上一轮测试进程（会话 12109 已终止且退出 0，针对性 49 项通过），不是无证据重复扫描。没有其他子 Agent 同时修改。
+- 服务器只读证据：前后端记录均为 `d6e147ea0f9fcfac204398636e42c0a8bb50bc16`，服务 active；线上 `payment/router.py` SHA256 `3e998aa7f6f44c334258fcc8872666d72a4875d15caa13871971f71f200e79d2`、`payment/service.py` SHA256 `a72f012c9656b1ad3f2b549665a05c74a101b6f6ca0f082dfe265856f7e75749`，与本地 Git 该发布提交逐字节一致。因此本次审查源码基线和这两个线上文件一致；未在生产制造非 CNY 记录或请求业务写接口，不能证明生产真实数据中已有这种异常。
+- 缺口 A：`_create_plan` 从订单直接继承币种，两个新增应收入口共用它；`generate_receivables/_generate_receivables` 的公共前置检查只看取消状态，预览也直接计算源单金额。非 CNY 订单可继续生成应收，缺少既定人民币规则。缺口 B：`update_payment_allocations` 未检查回款/订单/新目标/旧归属期币种，替换旧分配后还会重算这些期，非 CNY 金额会继续参与人工核销。
+- 修前复现：隔离 SQLite 真实路由新增 8 场景全部未抛异常（`/tmp/crm-cny-entry-before.log`）：全局建应收、订单内建应收、批量生成、预览四入口，以及回款、订单、新目标、旧归属期四种非 CNY 来源人工分配。不是仅根据静态缺少函数就判定。
+- 最小修复：共享 `assert_order_can_add_receivable` 追加既有币种拒绝，覆盖生成前及拿锁后检查、两个手工应收入口；预览在计算前同样拒绝。人工分配在删旧分配/改 allocation_mode 之前核对记录、订单、新目标及旧分配期币种，旧归属批量 JOIN 查询检查，不改变权限、锁序、分配优先级或人民币金额规则。执行已明确的 CNY 唯一约束，不新增外币能力，不擅自覆盖历史金额或币种。
+- 验证：相关回款一致性与分配链 49 项通过（`/tmp/crm-cny-entry-after.log`）；完整后端单元 1288 项通过（`/tmp/crm-cny-entry-full.log`）。修改的应用和单元文件 pyflakes、`git diff --check` 通过。前端没有变更，未新增页面交互或跑浏览器套件。
+- PostgreSQL 真库：启动本轮已有临时集群，另建全新 `crm_iso_cny_entries`（127.0.0.1:55439），从空库迁移/种子，本机 8019 API 明确关闭定时任务、OA Stream、钉钉/企微推送。扩展现有 HTTP 回归，首跑因测试夹具订单编号超过数据库 32 字符上限失败，缩短夹具编号后不改业务限制/断言，完整复跑通过（`/tmp/crm-cny-pg/entry-http-recheck.log`）。人民币幂等、并发确认、生成及终态竞态检查全部保持；新增四个应收入口拒绝且零新增、四种人工分配拒绝且原金额/模式保持。临时 API 和数据库现已停止。
+- 状态：本轮及 Q-024 仍未提交/推送/部署；生产双端仍 d6e147e。原有文档删除未动，无生产数据库/配置/服务写入。涉及历史数据处理或扩大权限的旧待决策项仍未实施。
+- 下一步：继续其他来源继承路径（报价转订单、ERP 等）和独立高风险链路；回款编辑、应收调整触发的自动重分配及历史金额统计尚未在本轮逐入口验证，不把上述 8 个入口的通过扩展为所有资金链完成。
+
+## 2026-10-25 Q-024 回款登记与确认绕过人民币唯一规则（高，已本地修复）
+
+- 恢复：读取用户长期审查说明、AGENTS.md、QUALITY_GOAL.md、现有进度与 Git 状态；当前无其他活动子 Agent。本轮承接之前人民币继承路径待调查项，新增隔离复现证据；保留已有 CI 复跑记录及 12 个文档删除状态。长期审查目标保持进行中，不把单轮资金链验证等同于全项目完成。
+- 代码及触发：`payment/service.py::resolve_payment_currency` 对省略币种直接返回节点币种，显式同币种也放行；`assert_plan_accepts_payment` 仅检查生命周期；`payment/router.py::confirm_payment` 未核对回款、订单、节点币种。因此历史/异常非 CNY 订单或应收可继续登记与财务确认，自动分配还可能把人民币回款抵到同订单的外币后续期。金额被当同单位参与核销，并可发出人民币符号的确认通知，与用户已多次确认的人民币唯一规则冲突。
+- 修复前证据：内存 SQLite 调用真实路由，三种非 CNY 来源登记、三种非 CNY 记录/来源确认均成功而未拒绝；显式 USD 对 CNY 原已拒绝，但旧文案仍指引按节点外币登记。最初新增 7 场景测试均失败，其中该显式不同币种场景仅因拒绝文案不符合人民币规则，不能记成成功落库（`/tmp/crm-cny-before.log`）。另补 CNY 回款/当前期＋USD 后续期确认，修前未拒绝（`/tmp/crm-cny-period-before.log`）。
+- 自主修复依据：执行既有明确 CNY 约束，不引入币种、换汇、折算或历史数据清洗；使用既有 `reject_foreign_currency`。登记校验来源订单、节点和请求币种；确认在任何状态变更、分配、审计、通知前校验回款、所属订单与所有参与分配/重算的有效应收期。将原有有效期查询前移并复用结果，锁序、人民币分配规则、金额/日期校验与权限不变。显式修改币种通过公共解析函数同样只允许 CNY；空节点币种原有拒绝继续保留。
+- 修改：`backend/app/modules/payment/{router.py,service.py,schema.py}`；相关单元回归与 `scripts/check_payment_consistency.py`。旧测试中 USD 正向继承规则与既定人民币规则冲突，改为合法 CNY 规范化正向与外币拒绝断言，保留人民币幂等/锁序/并发检查；新增 9 项登记/确认/后续期/无节点订单边界用例。
+- 单元验证：回款一致性 26 项通过（`/tmp/crm-cny-payment-final.log`）；完整后端 tests 1280 项通过（`/tmp/crm-cny-full-final.log`）。修改的应用及单元文件 pyflakes 与 `git diff --check` 通过。HTTP 脚本保留既有模型注册类 unused-import 静态警告，不把该脚本 pyflakes 描述为全绿。
+- 真库验证：新建 `/tmp/crm-cny-pg/data` PostgreSQL 15、localhost:55439 的一次性 `crm_iso_cny_audit`，从空库迁移、种子，API localhost:8019；关闭钉钉/企微推送、定时任务与 OA Stream。首轮真实回款并发套件通过；扩展确认测试时隔离夹具遗漏应收 created_at，触发 NOT NULL，补齐测试必填时间后未放宽断言，最终整套通过（`/tmp/crm-cny-pg/http-final-recheck.log`）。覆盖同键重试/并发只一条、不同键同额同日保留两条、50+50 并发确认结清、并发生成只一套、确认/驳回唯一终态，以及非 CNY 来源三种登记拒绝零行、记录/订单/当前期/后续期四种确认拒绝且 pending/零分配。
+- 收尾与边界：临时 API 已正常退出、临时 PostgreSQL 已停止，日志保留；未连接生产或演示库、未执行真实外部发送、未部署或同步提交。现有非 CNY 数据保持原样，不擅自改为人民币。没有前端代码变动，本轮未新增前端浏览器验证。幂等旧响应回放不产生新登记，不把它等同于本次新写入路径。
+- 下一步：继续核查手工分配、应收创建/生成、报价转订单及 ERP 等源单继承路径；这些尚未完成新的逐入口复现，暂不宣称 CNY 全入口已封闭。历史非 CNY 数据处理、统计/导出口径及企业微信可见范围仍需独立方案和人工决定，不能由本次拦截推定获准。
+
+## 2026-10-24 CI 浏览器启动超时复核
+
+- 用户报告 CI 报错。运行 40074160606（提交 `6d930ac05fcaf370d15af1f39213d98587a4071b`，仅增加发布记录）首次 UI 检查在 `ops/confirmation_browser_smoke.mjs` 等待 Chrome `DevToolsActivePort` 时超过约 10 秒，报 `Error: browser timeout`；业务页面断言尚未执行。后端回归成功。失败日志 `/tmp/crm-ci-40074160606.log`。
+- 未修改代码或放宽断言，重跑同一运行的失败任务；attempt 2 最终 status=completed、conclusion=success，UI 冒烟与后端回归均 success。链接 https://github.com/ytsbx/crm-sales-agent/actions/runs/40074160606 。已上线功能提交 d6e147e 对应前次 CI 亦通过。
+- 证据仅确认首次浏览器启动未在等待期限内就绪、同提交复跑通过。启动 stderr 被现有脚本忽略，无法区分首次启动慢、进程退出等具体原因；不声称已根治偶发问题。若重复发生，下一步保留启动 stderr/退出码再定位，不修改业务断言掩盖失败。
+- 本轮只重跑隔离 CI 并记录结果，未修改应用代码、生产服务、数据库或部署；无需重新发布。此记录保留工作区，避免为记录本身再触发一次完整 CI。
+
 ## 2026-10-24 任务关联客户名称部署完成
 
 - 用户明确要求“部署”。发布提交 `d6e147ea0f9fcfac204398636e42c0a8bb50bc16` 已同步 GitHub/Gitee pending-acceptance；只纳入任务客户名称实现、测试及相关记录，未纳入既有 12 个文档删除状态。企业微信权限及业务关联数据未改动。

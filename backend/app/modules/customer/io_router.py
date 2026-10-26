@@ -358,6 +358,7 @@ async def import_customers(
             continue
 
         try:
+            dispute_info = None
             async with row_savepoint(session):
                 duplicates = await find_duplicate_customers(
                     session,
@@ -373,9 +374,7 @@ async def import_customers(
                 # 正是文档点名要避免的。
                 if duplicates:
                     top = duplicates[0]
-                    report.disputed_row(
-                        index,
-                        name,
+                    dispute_info = dict(
                         # 范围不足的调用者只得到"这是重复"，拿不到对方是谁
                         candidate=None if scope is not None else top.get("name"),
                         score=None if scope is not None else top.get("score"),
@@ -409,7 +408,7 @@ async def import_customers(
                 )
                 session.add(customer)
                 await session.flush()
-                if report.disputed and report.disputed[-1].get("row") == index:
+                if dispute_info is not None:
                     from app.modules.customer import duplicates as dup_service
 
                     await dup_service.open_cases_for_customer(
@@ -428,6 +427,9 @@ async def import_customers(
                 last_contact_unknown=last_contact is None,
                 owner_id=owner_id,
             )
+            # 只有整行（含裁定单）保存点成功，才能报告“已进待裁定”。
+            if dispute_info is not None:
+                report.disputed_row(index, name, **dispute_info)
             if last_contact is None:
                 unknown_contact_rows.append(
                     {"row": index, "id": customer_id, "name": customer_name}

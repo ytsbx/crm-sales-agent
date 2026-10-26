@@ -13,7 +13,7 @@ import logging
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -485,6 +485,18 @@ async def drop_batch_node(session: AsyncSession, order_id: int, batch_no: int) -
         await session.flush()
 
 
+async def _lock_reminder_orders(session: AsyncSession, overdue_order_ids: Select) -> dict[int, SalesOrder]:
+    """提醒与取消/发货同序：先订单、后节点；忙碌订单留待下轮扫描。"""
+    rows = (await session.execute(
+        select(SalesOrder).where(
+            SalesOrder.id.in_(overdue_order_ids), SalesOrder.status != "cancelled"
+        ).order_by(SalesOrder.id.asc())
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    return {row.id: row for row in rows}
+
+
 async def notify_overdue_milestones(session: AsyncSession) -> int:
     """每日扫描：逾期未完成的节点推给订单负责人 + 业务主管，每节点只推一次。
 
@@ -494,36 +506,27 @@ async def notify_overdue_milestones(session: AsyncSession) -> int:
     from app.modules.notification import service as notification_service
 
     today = today_business()
-    rows = list(
-        (
-            await session.execute(
-                select(OrderMilestone)
-                .join(SalesOrder, SalesOrder.id == OrderMilestone.order_id)
-                .where(
-                    OrderMilestone.actual_date.is_(None),
-                    OrderMilestone.skipped_at.is_(None),
-                    OrderMilestone.planned_date.is_not(None),
-                    OrderMilestone.planned_date < today,
-                    OrderMilestone.overdue_notified_at.is_(None),
-                    SalesOrder.status != "cancelled",
-                )
-                .order_by(OrderMilestone.id.asc())
-                # 多个调度器/手工补跑可能同时扫描；先锁住目标节点，
-                # 让后来的扫描跳过正在发送提醒的记录，避免重复创建通知。
-                .with_for_update(skip_locked=True, of=OrderMilestone)
-            )
-        ).scalars().all()
+    overdue = (
+        OrderMilestone.actual_date.is_(None),
+        OrderMilestone.skipped_at.is_(None),
+        OrderMilestone.planned_date.is_not(None),
+        OrderMilestone.planned_date < today,
+        OrderMilestone.overdue_notified_at.is_(None),
     )
+    orders = await _lock_reminder_orders(
+        session, select(OrderMilestone.order_id).where(*overdue)
+    )
+    if not orders:
+        return 0
+    # 拿到订单锁后重查节点；不得拿着旧扫描结果在订单取消后新增提醒。
+    rows = (await session.execute(
+        select(OrderMilestone).where(OrderMilestone.order_id.in_(orders), *overdue)
+        .order_by(OrderMilestone.id.asc()).with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )).scalars().all()
     if not rows:
         return 0
 
-    order_ids = {r.order_id for r in rows}
-    orders = {
-        o.id: o
-        for o in (
-            await session.execute(select(SalesOrder).where(SalesOrder.id.in_(order_ids)))
-        ).scalars().all()
-    }
     # 主管按"订单负责人所在部门"定位：跨部门不互扰
     from app.modules.user.model import User
 
@@ -592,37 +595,25 @@ async def notify_overdue_batches(session: AsyncSession) -> int:
     from app.modules.order.model import OrderShipmentBatch
 
     today = today_business()
-    rows = list(
-        (
-            await session.execute(
-                select(OrderShipmentBatch)
-                .join(SalesOrder, SalesOrder.id == OrderShipmentBatch.order_id)
-                .where(
-                    OrderShipmentBatch.status == "planned",
-                    OrderShipmentBatch.planned_date.is_not(None),
-                    OrderShipmentBatch.planned_date < today,
-                    OrderShipmentBatch.overdue_notified_at.is_(None),
-                    SalesOrder.status != "cancelled",
-                )
-                .order_by(OrderShipmentBatch.id.asc())
-                # 与节点扫描保持同一去重策略：并发扫描跳过已被另一轮领取的批次。
-                .with_for_update(skip_locked=True, of=OrderShipmentBatch)
-            )
-        ).scalars().all()
+    overdue = (
+        OrderShipmentBatch.status == "planned",
+        OrderShipmentBatch.planned_date.is_not(None),
+        OrderShipmentBatch.planned_date < today,
+        OrderShipmentBatch.overdue_notified_at.is_(None),
     )
+    orders = await _lock_reminder_orders(
+        session, select(OrderShipmentBatch.order_id).where(*overdue)
+    )
+    if not orders:
+        return 0
+    rows = (await session.execute(
+        select(OrderShipmentBatch).where(OrderShipmentBatch.order_id.in_(orders), *overdue)
+        .order_by(OrderShipmentBatch.id.asc()).with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )).scalars().all()
     if not rows:
         return 0
 
-    orders = {
-        o.id: o
-        for o in (
-            await session.execute(
-                select(SalesOrder).where(
-                    SalesOrder.id.in_({r.order_id for r in rows})
-                )
-            )
-        ).scalars().all()
-    }
     from app.modules.user.model import User
 
     owner_ids = {o.owner_id for o in orders.values() if o.owner_id}

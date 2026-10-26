@@ -297,6 +297,8 @@ async def cancel_action(
     那是业务回滚，得走各自的业务接口。
     """
     action = await _get_action(session, action_id, user.id)
+    # 与确认、拒绝共享动作行锁，锁后重读，避免取消覆盖已执行结果。
+    await session.refresh(action, with_for_update=True)
     if action.status in ("executed", "rejected", "cancelled", "failed"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,
@@ -497,6 +499,8 @@ async def reject_action(
     if action is None:
         raise AppError(ErrorCode.NOT_FOUND, "动作不存在", 404)
     await _get_session(session, action.session_id, user.id)
+    # 确认与拒绝共享动作行锁；等待后重读，避免用旧状态覆盖已完成动作。
+    await session.refresh(action, with_for_update=True)
     if action.status not in ("awaiting_confirmation", "approval_required"):
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "该动作已经处理过了")
     action.status = "rejected"

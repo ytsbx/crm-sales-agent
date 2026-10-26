@@ -550,3 +550,12 @@ check_cosign_permission
 
 # 企微批量客户建档：PG并发幂等及手工关联互斥
 check_wecom_customer_import
+
+# AI动作确认/拒绝/取消共享终态：真实PG并发与权限边界
+check_agent_action_race
+
+# 订单逾期提醒与取消共享父子锁序：真实PG等待与跳过回归
+check_overdue_reminder_race
+
+# 成本导入首次空行互斥：真实PG等待/逆序批次/预览确认/删除
+check_cost_import_race

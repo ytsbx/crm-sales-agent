@@ -527,6 +527,27 @@ async def cost_template(_: CurrentUser = Depends(require_permission("price:manag
     )
 
 
+async def _lock_cost_import_skus(session: AsyncSession, sku_map: dict[str, Sku]) -> dict[str, Sku]:
+    """先按ID锁全部产品，再锁SKU；首次无成本行时也能与其它写入口互斥。"""
+    from app.modules.product import service as product_service
+
+    products = {}
+    for product_id in sorted({sku.product_id for sku in sku_map.values()}):
+        product = await product_service.lock_product(session, product_id)
+        if product is not None and product.deleted_at is None:
+            products[product.id] = product
+    locked = {}
+    for code, original in sorted(sku_map.items(), key=lambda item: item[1].id):
+        sku = (await session.execute(
+            select(Sku).where(Sku.id == original.id).with_for_update()
+            .execution_options(populate_existing=True)
+        )).scalar_one_or_none()
+        if (sku is not None and sku.sku_code == code
+                and sku.product_id in products and sku.deleted_at is None):
+            locked[code] = sku
+    return locked
+
+
 @router.post("/costs/import")
 async def import_costs(
     request: Request,
@@ -557,6 +578,7 @@ async def import_costs(
 
     codes = {(row.get("SKU编码") or "").strip() for row in rows}
     sku_map = await _sku_map_by_code(session, codes)
+    sku_map = await _lock_cost_import_skus(session, sku_map)
 
     for index, row in enumerate(rows, start=2):
         code = (row.get("SKU编码") or "").strip()
