@@ -966,6 +966,15 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
         if new_status and new_status != row.status:
             row.status = new_status
             changed += 1
+        if linked_sample is not None or linked_contract is not None:
+            # Stream may deliver an old round after the same business was resubmitted.
+            # Keep that round's snapshot, but only the latest round owns the main record.
+            latest = await get_by_business_key(
+                session, inquiry_id=row.inquiry_id, inquiry_version=row.inquiry_version,
+                oa_type=row.oa_type,
+            )
+            if latest is None or latest.id != row.id:
+                continue
         if linked_sample is not None and linked_sample.deleted_at is None and int(linked_sample.version or 1)==row.inquiry_version:
             meta=(linked_sample.source_context or {}).get('dingtalk_oa') or {}
             if meta.get('mode')=='standalone' and meta.get('submitted') and linked_sample.status=='pending' and new_status in ('approved','rejected','withdrawn'):

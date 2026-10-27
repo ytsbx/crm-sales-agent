@@ -77,8 +77,10 @@ async def system_source_filter(session: AsyncSession, user: CurrentUser):
             stmt = select(model.id).where(model.id == column)
             if owner_ids is not None:
                 stmt = stmt.where(model.owner_id.in_(owner_ids))
-            if kind == "quote":
-                stmt = stmt.where(Quote.deleted_at.is_(None))
+            # Deleted sample facts follow the source into trash; restoring the
+            # sample reveals the existing fact and its attachments again.
+            if kind in ("quote", "sample"):
+                stmt = stmt.where(model.deleted_at.is_(None))
             allowed.append(and_(*higher_sources_empty, stmt.exists()))
         higher_sources_empty.append(column.is_(None))
     return or_(FollowUp.followup_type != "系统", and_(*higher_sources_empty), *allowed)

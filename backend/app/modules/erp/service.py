@@ -1222,8 +1222,10 @@ async def apply_status_webhook(
         "order_no": order.order_no,
     }
     # 同一事件键此前留下的未匹配/冲突记录标成"已被取代"：异常队列里只剩真正待办的。
-    await _mark_superseded(session, event_key=event_key, keep_log_id=log.id)
     try:
+        # This query can autoflush the success row and hit the same unique
+        # event constraint as commit when duplicate callbacks race.
+        await _mark_superseded(session, event_key=event_key, keep_log_id=log.id)
         await session.commit()
     except IntegrityError as error:
         # 两个相同回调可能都在提交前通过了查重查询。部分唯一索引让
@@ -1261,8 +1263,17 @@ def _replayed_event_response(event_key: str, prior: IntegrationLog) -> dict:
 
 
 def _is_event_key_conflict(error: IntegrityError) -> bool:
-    diag = getattr(getattr(error, "orig", None), "diag", None)
-    return getattr(diag, "constraint_name", None) == EVENT_KEY_UNIQUE_CONSTRAINT
+    original = getattr(error, "orig", None)
+    # psycopg exposes diag; SQLAlchemy's asyncpg adapter retains the native
+    # PostgreSQL error (and its constraint_name) as the original cause.
+    for candidate in (original, getattr(original, "__cause__", None)):
+        diag = getattr(candidate, "diag", None)
+        if (
+            getattr(diag, "constraint_name", None) == EVENT_KEY_UNIQUE_CONSTRAINT
+            or getattr(candidate, "constraint_name", None) == EVENT_KEY_UNIQUE_CONSTRAINT
+        ):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------- 查询

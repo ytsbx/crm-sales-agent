@@ -1092,7 +1092,7 @@ async def confirm_payment(
     partial；先锁订单、再锁共同节点后，后到的那个在锁上等，等到时先到者已提交，
     重算才看得到 100 → 节点 paid。
     """
-    record = await svc.get_visible_payment(session, user, payment_id, for_update=True)
+    record = await svc.get_visible_payment(session, user, payment_id, for_update=True, protect_transfer=True)
     svc.ensure_payment_pending(record)
     # 历史回款允许不挂应收节点，但它仍归属订单，不能绕过订单取消状态。
     # get_visible_payment 已锁订单并刷新，这里检查的是锁内最新状态。

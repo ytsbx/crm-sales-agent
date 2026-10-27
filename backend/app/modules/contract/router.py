@@ -590,7 +590,7 @@ async def sign_document(
     user: CurrentUser = Depends(require_permission("order:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    doc = await svc.get_doc_or_404(session, doc_id, for_update=True)
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True, protect_transfer=True)
     await _ensure_doc_in_scope(session, user, doc)
     from app.modules.file.access import can_access_file
 

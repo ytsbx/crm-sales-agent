@@ -156,11 +156,14 @@ async def test_polling_only_maps_standalone_sample_terminal_result(monkeypatch):
           OaInstance(id=2,inquiry_id=8,inquiry_version=1,oa_type='inquiry',instance_id='B',status='pending')]
     async def get(model,pk,**_):return own if pk==7 else original
     session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:rows))),get=get,flush=AsyncMock())
+    latest=AsyncMock(return_value=rows[0])
+    monkeypatch.setattr(service,'get_by_business_key',latest)
     monkeypatch.setattr(service,'get_client',lambda:Obj(get_process_instance=AsyncMock(return_value={'status':'COMPLETED','result':'agree','tasks':[]})))
     await service.sync_pending_instances(session)
     assert own.status=='approved'
     assert original.status=='pending'  # 原询价整体通过不能当打样通过。
     assert rows[0].result['payload']['result']=='agree'
+    latest.assert_awaited_once_with(session,inquiry_id=7,inquiry_version=1,oa_type='sample')
 
 @pytest.mark.anyio
 async def test_polling_maps_withdrawn_sample_to_rejected_resubmittable_state(monkeypatch):
@@ -173,6 +176,8 @@ async def test_polling_maps_withdrawn_sample_to_rejected_resubmittable_state(mon
     row=OaInstance(id=1,inquiry_id=7,inquiry_version=1,oa_type='sample',instance_id='A',status='pending')
     async def get(model,pk,**_): return own
     session=Obj(execute=AsyncMock(return_value=Obj(scalars=lambda:Obj(all=lambda:[row]))),get=get,flush=AsyncMock())
+    latest=AsyncMock(return_value=row)
+    monkeypatch.setattr(service,'get_by_business_key',latest)
     monkeypatch.setattr(service,'get_client',lambda:Obj(get_process_instance=AsyncMock(return_value={
         'status':'TERMINATED','operationRecords':[{'type':'TERMINATE_PROCESS_INSTANCE'}],
     })))
@@ -180,6 +185,7 @@ async def test_polling_maps_withdrawn_sample_to_rejected_resubmittable_state(mon
     assert row.status=='withdrawn'
     assert own.status=='rejected'
     assert '撤回' in own.reject_reason
+    latest.assert_awaited_once_with(session,inquiry_id=7,inquiry_version=1,oa_type='sample')
 
 @pytest.mark.anyio
 async def test_same_numeric_id_cannot_mix_inquiry_and_sample_approvals(monkeypatch):

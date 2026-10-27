@@ -559,3 +559,12 @@ check_overdue_reminder_race
 
 # 成本导入首次空行互斥：真实PG等待/逆序批次/预览确认/删除
 check_cost_import_race
+
+# 公海预告：扫描快照重查、忙碌补扫及候选/客户锁序
+check_pool_scan_race
+
+# ERP同事件并发回调：查询自动flush冲突/真实驱动诊断/取消终态
+check_erp_callback_race
+
+# 客户改派与合同签署/回款确认：真实PG等待、权限刷新和共享锁兼容
+check_customer_transfer_document_race

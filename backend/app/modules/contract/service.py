@@ -703,7 +703,8 @@ async def generate_document(
 
 
 async def get_doc_or_404(
-    session: AsyncSession, doc_id: int, *, for_update: bool = False
+    session: AsyncSession, doc_id: int, *, for_update: bool = False,
+    protect_transfer: bool = False,
 ) -> ContractDocument:
     """取合同文档；`for_update=True` 时加行锁。
 
@@ -711,7 +712,19 @@ async def get_doc_or_404(
     否则两个人同时点「登记签署」，两边都读到 `draft`、都通过检查，
     结果挂上两份签署件、发出两条签署通知——台账上签字页有两张，
     事后说不清哪张才算数。行锁让后来者读到已改的状态，被既有的状态检查挡掉。
+
+    签署入口 protect_transfer=True：在任何合同/来源订单/文件锁之前保护客户
+    引用，与改派的客户排他锁互斥。这里只读标识；权限、状态仍在锁后重查。
     """
+    customer_id = None
+    if protect_transfer:
+        from app.modules.customer.locking import protect_customer_transfer
+
+        customer_id = await session.scalar(
+            select(ContractDocument.customer_id).where(ContractDocument.id == doc_id)
+        )
+        if customer_id is not None:
+            await protect_customer_transfer(session, customer_id)
     if for_update:
         ancestors = []
         current_id = doc_id
@@ -732,6 +745,8 @@ async def get_doc_or_404(
         doc = await session.get(ContractDocument, doc_id)
     if doc is None or doc.deleted_at is not None:
         raise AppError(ErrorCode.NOT_FOUND, "合同文档不存在", 404)
+    if protect_transfer and doc.customer_id != customer_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "合同所属客户已变化，请刷新后重试", 409)
     return doc
 
 

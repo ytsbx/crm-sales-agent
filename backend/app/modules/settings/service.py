@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.modules.customer.levels import level_filter, level_label, level_code
 from app.core.audit import write_audit
@@ -653,13 +654,16 @@ def _protection_reason(label: str, detail: str) -> str:
     return f"{label}：{detail}"
 
 
-async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
+async def protection_detail(
+    session: AsyncSession, *, customer_id: int | None = None
+) -> dict[int, list[str]]:
     """履约保护名单 + **每一笔的具体原因**（返工单 6.4）。
 
     返回 `{客户id: ["在途订单 SH2024-001（生产中）", "有效报价 QT2024-018（已发送，有效期 2026-12-31）"]}`。
 
     为什么要把原因也返回：只给一个 `set[int]` 的话，主管看到"这个客户没被回收"
     却不知道**是被哪张单据拦住的**，想去催也只能靠猜。回收预告页要用它。
+    customer_id 用于扫描锁内定向复核；不传时保留全量查询，保护口径相同。
     """
     # 回收预告里的"今天"按业务日期（§9.10 复审）：与报价过期、客户动态同一个基准
     today = today_business()
@@ -678,6 +682,7 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
                 Quote.status.in_(QUOTE_PROTECTIVE_STATUSES),
                 Quote.valid_until.is_not(None),
                 Quote.valid_until >= today,
+                Quote.customer_id == customer_id if customer_id is not None else True,
             )
         )
     ).all():
@@ -692,7 +697,8 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
     for cid, order_no, status in (
         await session.execute(
             select(SalesOrder.customer_id, SalesOrder.order_no, SalesOrder.status).where(
-                SalesOrder.status.in_(("pending", "in_production", "shipped"))
+                SalesOrder.status.in_(("pending", "in_production", "shipped")),
+                SalesOrder.customer_id == customer_id if customer_id is not None else True,
             )
         )
     ).all():
@@ -712,6 +718,7 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
                 ReceivablePlan.status.in_(("pending", "partial", "overdue")),
                 ReceivablePlan.due_date >= today,
                 SalesOrder.status != "cancelled",
+                SalesOrder.customer_id == customer_id if customer_id is not None else True,
             )
         )
     ).all():
@@ -746,13 +753,13 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
     #
     # "最新版"就是"没有任何单把它当 parent"的那张：V1→V2→V3 时 V1、V2 都出现在
     # 这个集合里，只有 V3 参与判断，规则自动成立，不用递归去追链头。
-    superseded_ids = set(
-        (
-            await session.execute(
-                select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
-            )
-        ).scalars().all()
-    )
+    parents = select(SampleRequest.parent_id).where(SampleRequest.parent_id.is_not(None))
+    if customer_id is not None:
+        parent = aliased(SampleRequest)
+        parents = parents.join(parent, SampleRequest.parent_id == parent.id).where(
+            parent.customer_id == customer_id
+        )
+    superseded_ids = set((await session.execute(parents)).scalars().all())
     sample_stmt = select(
         SampleRequest.customer_id,
         SampleRequest.id,
@@ -767,6 +774,7 @@ async def protection_detail(session: AsyncSession) -> dict[int, list[str]]:
         # 已软删的同样"到此为止"（2026-10-15）：单子都被当作没建过了，
         # 还拿它拦着公海回收说不通 —— 那样"删了"反而保护得更牢。
         SampleRequest.deleted_at.is_(None),
+        SampleRequest.customer_id == customer_id if customer_id is not None else True,
     )
     if superseded_ids:
         sample_stmt = sample_stmt.where(SampleRequest.id.not_in(superseded_ids))
@@ -982,7 +990,6 @@ async def run_public_pool_recycle(
         await get_number(session, "pool_recycle_max_protect_days", "days", 90)
     )
     due_at = now + timedelta(days=notice_days)
-    protection = await protection_detail(session)
 
     nominated: list[dict] = []
     protected_skipped: list[dict] = []
@@ -1020,6 +1027,39 @@ async def run_public_pool_recycle(
         )
         rows = (await session.execute(stmt)).scalars().all()
         for customer in rows:
+            if customer.id in open_ids:
+                already_open.append(customer.id)
+                continue
+            # Initial rows are only candidates: ownership or activity may have changed.
+            # Busy customers are retried next scan; never wait behind an approval
+            # holding candidate -> customer locks while we hold customer locks.
+            customer = (
+                await session.execute(
+                    select(Customer).where(
+                        Customer.id == customer.id,
+                        Customer.owner_id == customer.owner_id,
+                        Customer.deleted_at.is_(None),
+                        Customer.pool_status == "private",
+                        level_filter(Customer.level, rule.level),
+                    ).with_for_update(skip_locked=True)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars().first()
+            if customer is None:
+                continue
+            # A competing scan may have committed after our initial open_ids read.
+            # Plain MVCC read also sees an open candidate held by an approval,
+            # avoiding an insert waiting on its unique index with the customer held.
+            existing = await session.scalar(
+                select(PublicPoolRecycleCandidate.id).where(
+                    PublicPoolRecycleCandidate.customer_id == customer.id,
+                    PublicPoolRecycleCandidate.status.in_(RECYCLE_OPEN_STATUSES),
+                ).limit(1)
+            )
+            if existing is not None:
+                open_ids.add(customer.id)
+                already_open.append(customer.id)
+                continue
             # 联系时间未知 + 没有任何真实业务进展 → 不能按"刚联系过"或"刚建档"算，
             # 也不能直接回收（我们并不知道他是什么时候联系的）。跳过并列入待补核。
             if customer.last_contact_unknown and customer.last_progress_at is None:
@@ -1040,7 +1080,10 @@ async def run_public_pool_recycle(
                 last = last.replace(tzinfo=UTC)
             if last >= cutoff:
                 continue
-            if customer.id in protection:
+            # Recheck current protective documents after locking and refreshing the
+            # customer. An OA draft may add protection without touching activity.
+            reasons = (await protection_detail(session, customer_id=customer.id)).get(customer.id, [])
+            if reasons:
                 # 保护**不是无限期**（2026-10-13 主人拍板）：从最后活跃算起超过
                 # `pool_recycle_max_protect_days` 天仍然没动静的，保护失效、照常提名，
                 # 名单上带出原因让主管重点看（"有在途订单仍被提名"）。
@@ -1055,7 +1098,7 @@ async def run_public_pool_recycle(
                             "level": rule.level,
                             "idle_days": (now - last).days,
                             "max_protect_days": max_protect_days,
-                            "reasons": protection[customer.id],
+                            "reasons": reasons,
                         }
                     )
                     # 不 continue：往下走正常提名
@@ -1067,7 +1110,7 @@ async def run_public_pool_recycle(
                             "customer_id": customer.id,
                             "name": customer.name,
                             "level": rule.level,
-                            "reasons": protection[customer.id],
+                            "reasons": reasons,
                         }
                     )
                     continue
@@ -1090,7 +1133,7 @@ async def run_public_pool_recycle(
                 last_contact_at=customer.last_followup_at,
                 last_progress_at=customer.last_progress_at,
                 last_active_at=last,
-                protection_snapshot=protection.get(customer.id, []),
+                protection_snapshot=reasons,
                 status="pending",
                 notice_at=now,
                 due_at=due_at,
@@ -1124,7 +1167,7 @@ async def run_public_pool_recycle(
                     "last_active_at": last.isoformat(),
                     #: 这份提名是"保护已过最长有效期、仍被提名"（2026-10-13）：
                     #: 非空说明有在途报价/订单/打样/应收，主管复核重点看
-                    "protection_reasons": protection.get(customer.id, []),
+                    "protection_reasons": reasons,
                 }
             )
 

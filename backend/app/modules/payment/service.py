@@ -876,13 +876,17 @@ async def get_visible_plan(
 
 
 async def get_visible_payment(
-    session: AsyncSession, user, payment_id: int, *, for_update: bool = False
+    session: AsyncSession, user, payment_id: int, *, for_update: bool = False,
+    protect_transfer: bool = False,
 ) -> PaymentRecord:
     """取回款并校验数据范围；`for_update=True` 时按统一锁序加锁。
 
     锁序固定为「订单 → 应收节点 → 回款记录」：先读出回款所属订单和节点（这一步
     不加锁，只为知道该锁哪几行），锁订单、锁共同节点，再锁回款记录自己。所有会
     同时碰订单与应收的路径都遵守这条顺序，避免与订单取消互相等待。
+
+    确认入口 protect_transfer=True 在这些锁之前取得客户 KEY SHARE，与改派
+    的 FOR UPDATE 互斥；兼容普通客户进展更新，避免引入客户排他锁的反向等待。
     """
     if for_update:
         # 不加锁地读一次，只为拿到 receivable_plan_id。
@@ -897,9 +901,20 @@ async def get_visible_payment(
             else None
         )
         order_id = known_plan.order_id if known_plan is not None else known.order_id
+        customer_id = None
+        if protect_transfer:
+            from app.modules.customer.locking import protect_customer_transfer
+
+            customer_id = await session.scalar(
+                select(SalesOrder.customer_id).where(SalesOrder.id == order_id)
+            )
+            if customer_id is not None:
+                await protect_customer_transfer(session, customer_id)
         order = await lock_order(session, order_id)
         if order is None:
             raise AppError(ErrorCode.NOT_FOUND, "订单不存在", 404)
+        if protect_transfer and order.customer_id != customer_id:
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "订单所属客户已变化，请刷新后重试", 409)
         locked_plan = None
         if known.receivable_plan_id:
             locked_plan = await lock_plan(session, known.receivable_plan_id)

@@ -18,7 +18,7 @@ from app.core.timebase import to_business
 from app.modules.customer.model import CustomerOwnerHistory
 from app.modules.followup.model import FollowUp
 from app.modules.followup.schema import EXEMPTION_LABELS
-from app.modules.followup.visibility import system_source_filter
+from app.modules.followup.visibility import followup_visibility_filter
 from app.modules.opportunity.model import Opportunity, OpportunityStage, OpportunityStageHistory
 from app.modules.order.model import SalesOrder
 from app.modules.quote.model import Quote
@@ -155,13 +155,13 @@ async def build_timeline(
         "lead": FollowUp.lead_id,
         "opportunity": FollowUp.opportunity_id,
     }.get(business_type)
-    if followup_column is not None:
+    if followup_column is not None and ("admin" in user.roles or user.has("followup:view")):
         followups = (
             await session.execute(
                 select(FollowUp)
                 .where(
                     followup_column == business_id,
-                    await system_source_filter(session, user),
+                    await followup_visibility_filter(session, user),
                 )
                 .order_by(FollowUp.id.desc())
                 .limit(limit)
@@ -198,11 +198,14 @@ async def build_timeline(
         "lead": Task.lead_id,
         "opportunity": Task.opportunity_id,
     }.get(business_type)
-    if task_column is not None:
+    if task_column is not None and ("admin" in user.roles or user.has("task:view")):
+        task_stmt = select(Task).where(task_column == business_id)
+        owner_ids = await scoped_owner_ids(session, user)
+        if owner_ids is not None:
+            task_stmt = task_stmt.where(Task.owner_id.in_(owner_ids))
         tasks = (
             await session.execute(
-                select(Task)
-                .where(task_column == business_id)
+                task_stmt
                 .order_by(Task.id.desc())
                 .limit(limit)
             )
