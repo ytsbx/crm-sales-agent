@@ -7,6 +7,8 @@
 - 发布工具自测 **21 passed**；服务器预检通过后执行 `--apply`，返回 `status=verified`，备份目录为 `/opt/crm-sales-agent/backup/unified-14b717a8815a-ao5nwird`。无数据库迁移、依赖变化或业务数据写入。
 - 发布后只读核验：`crm-sales.service`、`crm-sales-web.service` 均 active；`DEPLOYED_COMMIT` 与 `WEB_DEPLOYED_COMMIT` 均为 `14b717a...`; `RELEASE.json` 为 `status=verified`；后端 `/health` 返回 `status=up`、`database=ok`、钉钉 OA stream connected；公网首页 HTTP 200。
 - 服务器 `agent/runtime.py` SHA256 与 `14b717a` Git blob 一致，确认流式 `CancelledError` 修复已进入运行代码。首次预检失败没有停止服务或改动线上文件。
+- 发布后残余边界：未用真实生产角色执行完整浏览器业务回归，未对真实 AI/钉钉/企微/ERP 网络故障做生产注入，也未完成全系统锁图和大规模性能基准；这些属于后续验证，不把健康检查和隔离测试扩大为全项目无风险结论。
+- 线上运维复核：根分区约 64% 使用率（25G 可用），`crm-sales.service` 重启次数为 0；历史磁盘容量风险当前未复现。
 
 ## 2026-10-27 本地与 GitHub/Gitee 最新提交复核
 
