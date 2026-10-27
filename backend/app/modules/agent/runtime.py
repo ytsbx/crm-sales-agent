@@ -1,5 +1,6 @@
 """Agent 运行时：DeepSeek 对话 + 工具调用 + 风险网关。"""
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
@@ -561,8 +562,10 @@ async def run_turn_events(
                 "tool_calls": tool_trace,
             },
         )
-    except GeneratorExit:
-        # aclose() 允许在清理里 await：提交部分回复后把 GeneratorExit 继续外抛
+    except (GeneratorExit, asyncio.CancelledError):
+        # Starlette 在客户端断开/请求超时时通常向 StreamingResponse 注入
+        # CancelledError；手动 aclose() 则是 GeneratorExit。两条路径都要保存
+        # 已经流出去的部分回复，再把原始取消继续外抛，不能把断线伪装成成功。
         partial = "".join(streamed_parts).strip()
         if partial and not _reply_saved:
             session.add(

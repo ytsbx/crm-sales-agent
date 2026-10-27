@@ -57,6 +57,68 @@ def test_bad_json_shape_becomes_recoverable_tool_result(monkeypatch):
     assert '工具参数必须是对象' in str(create.await_args.kwargs['messages'])
     client.close.assert_awaited_once()
 
+
+@pytest.mark.anyio
+async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch):
+    """ASGI 断线注入 CancelledError 时，已吐出的回复不能从会话历史消失。"""
+    class OneChunkThenWait:
+        def __init__(self):
+            self.sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.sent:
+                self.sent = True
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(
+                        delta=SimpleNamespace(content='部分回复', tool_calls=[]),
+                        finish_reason=None,
+                    )]
+                )
+            await asyncio.Event().wait()
+
+    class Session:
+        def __init__(self):
+            self.rows = []
+            self.commits = 0
+
+        def add(self, row):
+            self.rows.append(row)
+
+        async def commit(self):
+            self.commits += 1
+
+    stream = OneChunkThenWait()
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(
+            create=AsyncMock(return_value=stream),
+        )),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(runtime, '_client', lambda: client)
+    monkeypatch.setattr(runtime, '_history', AsyncMock(return_value=[]))
+    monkeypatch.setattr(settings, 'deepseek_api_key', 'isolated-test-key')
+    session = Session()
+    agent_session = SimpleNamespace(id=1, title='新会话', context_type=None, context_id=None)
+    events = runtime.run_turn_events(
+        session,
+        agent_session=agent_session,
+        user=make_user(permissions=set()),
+        text='你好',
+    )
+
+    assert await events.__anext__() == ('user_message', {'content': '你好'})
+    assert await events.__anext__() == ('delta', {'text': '部分回复'})
+    with pytest.raises(asyncio.CancelledError):
+        await events.athrow(asyncio.CancelledError())
+
+    assistants = [row for row in session.rows if getattr(row, 'role', None) == 'assistant']
+    assert [row.content for row in assistants] == ['部分回复\n\n（连接中断，以上为已生成的部分）']
+    assert session.commits == 2  # 用户消息 + 断线补偿
+    client.close.assert_awaited_once()
+
 def test_commentary_failure_hides_provider_body(monkeypatch):
     import openai
     class Client:
