@@ -151,12 +151,14 @@ async def main():
             o = await s.get(SalesOrder, order_id)
             o.owner_id = finance.id
             await s.flush()
-            viewer.permissions.add('order:view')
+            viewer.permissions.update({'order:view', 'followup:view'})
             assert not [e for e in await build_timeline(s, 'customer', customer_id, user=viewer)
                         if e['kind'] == 'followup']
             await s.rollback()
             # 超过一页的不可见新动态不能挤掉较早的可见事实；历史无来源仍显示。
-            viewer = CurrentUser(sales, {'customer:view', 'order:view'}, ['sales'], 'self')
+            # Pagination probes have followup permission; otherwise the module gate
+            # correctly hides every row and never exercises source filtering.
+            viewer = CurrentUser(sales, {'customer:view', 'order:view', 'followup:view'}, ['sales'], 'self')
             s.add_all([FollowUp(customer_id=customer_id, order_id=-1, followup_type='系统',
                                 content='不可见单据', owner_id=sales.id,
                                 created_at=datetime.now(UTC)) for _ in range(105)])
