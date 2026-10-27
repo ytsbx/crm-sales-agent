@@ -1,5 +1,13 @@
 # CRM 质量审查进度
 
+## 2026-10-27 Agent 流式断开修复正式发布（14b717a）
+
+- 用户明确授权“确定没问题可以部署”。本地已验证提交 `14b717a8815aaae225cafb786d3cee509155ced5` 已推送 GitHub/Gitee `pending-acceptance`，两端引用一致。
+- 统一发布包以服务器实际 `974733e` 为基线构建；首次 Windows `git archive` 受本机 CRLF 配置影响，被服务器预检逐文件拒绝。改用临时 `core.autocrlf=false` 配置重新构建，未修改全局 Git 配置；包 SHA256 为 `aa4e7cb0d4a58c32921069d0f5f9c854ab342fb28e074cc72e8d4618ae9dcafd`。
+- 发布工具自测 **21 passed**；服务器预检通过后执行 `--apply`，返回 `status=verified`，备份目录为 `/opt/crm-sales-agent/backup/unified-14b717a8815a-ao5nwird`。无数据库迁移、依赖变化或业务数据写入。
+- 发布后只读核验：`crm-sales.service`、`crm-sales-web.service` 均 active；`DEPLOYED_COMMIT` 与 `WEB_DEPLOYED_COMMIT` 均为 `14b717a...`; `RELEASE.json` 为 `status=verified`；后端 `/health` 返回 `status=up`、`database=ok`、钉钉 OA stream connected；公网首页 HTTP 200。
+- 服务器 `agent/runtime.py` SHA256 与 `14b717a` Git blob 一致，确认流式 `CancelledError` 修复已进入运行代码。首次预检失败没有停止服务或改动线上文件。
+
 ## 2026-10-27 本地与 GitHub/Gitee 最新提交复核
 
 - `git ls-remote` 复核结果：GitHub 与 Gitee 的 `pending-acceptance` 均指向 `974733edbde05c2e7b4087b4beae4c8ba4c27053`；本地 `HEAD`、`origin/pending-acceptance` 与 `github/pending-acceptance` 也均为该提交。
