@@ -322,7 +322,9 @@ def serialize_item(item: QuoteItem, *, can_see_cost: bool = True) -> dict:
         # §8.14：这条明细按哪一版 SKU 主数据算的（空＝当时还没有确认记录）
         "master_version_no": item.master_version_no,
         "quoted_price": _f(item.quoted_price),
+        "quoted_price_exact": str(item.quoted_price) if item.quoted_price is not None else None,
         "amount": _f(line_amount(item.quantity, item.quoted_price)),
+        "amount_exact": str(line_amount(item.quantity, item.quoted_price)),
         "profit_snapshot": _f(item.profit_snapshot),
         "profit_rate_snapshot": _f(item.profit_rate_snapshot),
         "approval_required": item.approval_required,
@@ -352,6 +354,7 @@ def serialize_charge(charge: QuoteCharge) -> dict:
         "charge_type": charge.charge_type,
         "description": charge.description,
         "amount": _f(charge.amount),
+        "amount_exact": str(charge.amount) if charge.amount is not None else None,
         "is_discount": charge.is_discount,
         "sort_no": charge.sort_no,
         "is_logistics": is_logistics_charge(charge),

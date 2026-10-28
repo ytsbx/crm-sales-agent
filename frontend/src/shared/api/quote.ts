@@ -96,7 +96,9 @@ export interface QuoteItemRow {
   price_source?: string | null
   customer_level_snapshot?: string | null
   quoted_price: number
+  quoted_price_exact?: string | null
   amount: number
+  amount_exact?: string | null
   profit_snapshot: number | null
   profit_rate_snapshot: number | null
   approval_required: boolean
@@ -110,6 +112,7 @@ export interface QuoteChargeRow {
   type_label?: string | null
   description?: string | null
   amount: number
+  amount_exact?: string | null
   is_discount: boolean
   /** 后端判定：这条费用是不是"向客户收取的运费"（只认分类码物流，不看说明文字） */
   is_logistics?: boolean

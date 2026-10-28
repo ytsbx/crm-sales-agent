@@ -157,3 +157,15 @@ def test_quote_version_exposes_exact_total_without_float_rounding(total):
                            total_amount=total, currency='CNY')
     result = quotes.serialize_version(version)
     assert result['total_amount_exact'] == (str(total) if total is not None else None)
+
+
+def test_quote_item_and_charge_expose_exact_amounts_without_float_rounding():
+    from app.modules.quote.model import QuoteItem, QuoteCharge
+    item = QuoteItem(id=1, quote_version_id=1, quantity=Decimal('100'),
+                     quoted_price=Decimal('999999999999.9999'))
+    charge = QuoteCharge(id=1, quote_version_id=1, amount=Decimal('0.01'))
+    item_result = quotes.serialize_item(item)
+    charge_result = quotes.serialize_charge(charge)
+    assert item_result['quoted_price_exact'] == '999999999999.9999'
+    assert item_result['amount_exact'] == '99999999999999.99'
+    assert charge_result['amount_exact'] == '0.01'

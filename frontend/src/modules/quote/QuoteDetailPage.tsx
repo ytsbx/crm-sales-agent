@@ -277,7 +277,7 @@ export default function QuoteDetailPage() {
       sku_id: item.sku_id ?? undefined,
       inquiry_id: item.inquiry_id ?? undefined,
       quantity: String(item.quantity ?? ''),
-      quoted_price: String(item.quoted_price ?? ''),
+      quoted_price: item.quoted_price_exact ?? String(item.quoted_price ?? ''),
       // 定制件的成本快照就是当初人工填的核价成本，回填出来方便改
       unit_cost: item.is_custom ? String(item.cost_snapshot ?? '') : '',
       remark: item.remark ?? '',
@@ -292,13 +292,13 @@ export default function QuoteDetailPage() {
         version!.id,
         itemRows.map((row) => {
           const quantity = Number(row.quantity) || 1
-          const price = row.quoted_price.trim() === '' ? null : Number(row.quoted_price)
+          const price = row.quoted_price.trim() === '' ? null : row.quoted_price.trim()
           if (row.mode === 'custom') {
             return {
               inquiry_id: row.inquiry_id,
               quantity,
               quoted_price: price,
-              unit_cost: row.unit_cost.trim() === '' ? null : Number(row.unit_cost),
+              unit_cost: row.unit_cost.trim() === '' ? null : row.unit_cost.trim(),
               remark: row.remark.trim() || null,
             }
           }
@@ -490,7 +490,7 @@ export default function QuoteDetailPage() {
   })
 
   const priceMutation = useMutation({
-    mutationFn: () => updateQuoteItem(priceTarget!.id, { quoted_price: Number(newPrice) }),
+    mutationFn: () => updateQuoteItem(priceTarget!.id, { quoted_price: newPrice.trim() }),
     onSuccess: (item) => {
       Toast.success(
         item.approval_required ? '已改价：该明细超出你的价格权限，提交后会走审批' : '已改价',
@@ -781,7 +781,7 @@ export default function QuoteDetailPage() {
       width: 150,
       render: (value: number, record: QuoteItemRow) => (
         <span style={{ fontWeight: 600, color: record.approval_required ? 'var(--crm-error)' : 'var(--crm-text)' }}>
-          ¥{value}
+          ¥{record.quoted_price_exact ?? value}
         </span>
       ),
     },
@@ -817,7 +817,7 @@ export default function QuoteDetailPage() {
       title: '金额',
       dataIndex: 'amount',
       width: 130,
-      render: (v: number) => `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number, record: QuoteItemRow) => formatMoney(record.amount_exact ?? v, 'CNY'),
     },
     {
       title: '审批',
@@ -834,7 +834,7 @@ export default function QuoteDetailPage() {
             style={{ color: 'var(--crm-primary)' }}
             onClick={() => {
               setPriceTarget(record)
-              setNewPrice(String(record.quoted_price))
+              setNewPrice(record.quoted_price_exact ?? String(record.quoted_price))
             }}
           >
             改价
