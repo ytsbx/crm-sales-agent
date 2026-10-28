@@ -553,3 +553,29 @@ async def test_create_payment_locks_order_then_plan_before_insert(pay_db, pay):
     assert plan_locks, "登记回款要先锁应收节点"
     assert order_locks[0] < plan_locks[0], f"锁序必须是订单→节点，实际：{pay.statements}"
     assert pay_db.query(PaymentRecord).filter(PaymentRecord.receivable_plan_id == plan.id).count() == 1
+
+
+def test_order_serialization_preserves_exact_amounts_and_one_cent_balance():
+    from app.modules.order.model import SalesOrder
+    from app.modules.order.service import serialize_order
+
+    order = SalesOrder(id=1, order_no='EXACT-1', customer_id=1, currency='CNY',
+                       total_amount=Decimal('99999999999999.99'),
+                       discount_amount=Decimal('-0.01'), status='pending')
+    result = serialize_order(order, received_amount=Decimal('99999999999999.98'))
+    assert result['total_amount_exact'] == '99999999999999.99'
+    assert result['received_amount_exact'] == '99999999999999.98'
+    assert result['unreceived_amount_exact'] == '0.01'
+    assert result['discount_amount_exact'] == '-0.01'
+    assert result['goods_amount_exact'] is None
+
+
+def test_order_item_serialization_preserves_four_decimal_unit_price():
+    from app.modules.order.model import SalesOrderItem
+    from app.modules.order.service import serialize_item
+
+    item = SalesOrderItem(id=1, order_id=1, quantity=Decimal('1000.000'),
+                          unit_price=Decimal('33.3333'), amount=Decimal('33333.30'))
+    result = serialize_item(item)
+    assert result['unit_price_exact'] == '33.3333'
+    assert result['amount_exact'] == '33333.30'

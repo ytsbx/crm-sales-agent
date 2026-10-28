@@ -30,7 +30,10 @@ export function formatMoney(
   let text: string
   if (typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value)) {
     const [whole, fraction] = value.split('.')
-    text = BigInt(whole).toLocaleString('zh-CN') + (fraction === undefined ? '' : `.${fraction}`)
+    // BigInt('-0') 会丢掉负号；小于一元的负数仍须保留原金额方向。
+    const sign = whole.startsWith('-') ? '-' : ''
+    const magnitude = sign ? whole.slice(1) : whole
+    text = sign + BigInt(magnitude).toLocaleString('zh-CN') + (fraction === undefined ? '' : `.${fraction}`)
   } else if (typeof value === 'number') {
     text = value.toLocaleString('zh-CN')
   } else {

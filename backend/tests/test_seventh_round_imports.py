@@ -916,3 +916,36 @@ def test_import_refuses_when_target_row_changed_since_preview(db):
     assert "原数据已被改动" in caught.value.message
     # 关键：库里的 200 不能被 20 覆盖
     assert float(db.scalars_one(select(ProductCost)).purchase_cost) == 200.0
+
+
+@pytest.mark.parametrize("column", range(4))
+@pytest.mark.parametrize("value", ["0.00001", "1e-10000", "10000000000"])
+@pytest.mark.parametrize("preview", [False, True])
+def test_cost_import_rejects_unrepresentable_values(db, column, value, preview):
+    from app.modules.pricing import io_router as pricing_io
+
+    seed_basics(db)
+    fields = ["0", "0", "0", "0"]
+    fields[column] = value
+    csv_text = COST_HEADER + "SKU-1," + ",".join(fields) + ",CNY,2026-10-01,,精度回归\n"
+    result = asyncio.run(pricing_io.import_costs(
+        request=FakeRequest(), file=upload(csv_text), preview=preview,
+        preview_token=None, user=FakeUser(), session=db.session,
+    ))
+    assert result["data"]["failed_count"] == 1
+    assert "精度" in result["data"]["failed"][0]["reason"]
+    assert db.scalars_all(select(ProductCost)) == []
+
+
+@pytest.mark.parametrize("value", ["0", "0.0001", "1.23000", "9999999999.9999"])
+def test_cost_import_preserves_representable_values(db, value):
+    from app.modules.pricing import io_router as pricing_io
+
+    seed_basics(db)
+    csv_text = COST_HEADER + f"SKU-1,{value},,,,CNY,2026-10-01,,合法精度\n"
+    result = asyncio.run(pricing_io.import_costs(
+        request=FakeRequest(), file=upload(csv_text), preview=False,
+        preview_token=None, user=FakeUser(), session=db.session,
+    ))
+    assert result["data"]["created_count"] == 1
+    assert db.scalars_one(select(ProductCost)).purchase_cost == Decimal(value)

@@ -1,3 +1,4 @@
+import { formatMoney } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { cloneElement, useState, type ReactElement } from 'react'
@@ -645,7 +646,7 @@ export default function QuoteDetailPage() {
   }
 
   // 总额传进去：金额太小时「分不出正数期」要在弹窗里就拦住并说明（第九批 ①⑤）
-  const planTotal = Number(version?.total_amount ?? 0)
+  const planTotal = version?.total_amount_exact ?? version?.total_amount ?? 0
   // 灰键必须说得出为什么（项目口径）：判据与组件内部同源。
   const planBlocked = planBlockedReasons(planMode, planRows, planTotal)
   // 「能不能点」与「为什么不能点」**必须是同一个判据**（2026-10-15 统一）。
@@ -1359,12 +1360,12 @@ export default function QuoteDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            将把本报价版本转为销售订单（金额 ¥
-            {Number(version?.total_amount ?? 0).toLocaleString('zh-CN')}
+            将把本报价版本转为销售订单（金额
+            {formatMoney(version?.total_amount_exact ?? version?.total_amount ?? 0, 'CNY')}
             ），并「复制全部明细」。订单是正式履约依据，生成后要改需走订单自己的流程。
           </div>
           <ReceivablePlanPicker
-            totalAmount={Number(version?.total_amount ?? 0)}
+            totalAmount={version?.total_amount_exact ?? version?.total_amount ?? 0}
             currency="CNY"  /* 口径：系统只做人民币（版本上没有 currency 字段，别猜） */
             mode={planMode}
             onModeChange={setPlanMode}
@@ -1713,7 +1714,7 @@ export default function QuoteDetailPage() {
               }}
             >
               <span>应付合计</span>
-              <span style={{ color: 'var(--crm-primary)' }}>¥{summary.total_amount.toLocaleString('zh-CN')}</span>
+              <span style={{ color: 'var(--crm-primary)' }}>{formatMoney(version.total_amount_exact ?? summary.total_amount, 'CNY')}</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--crm-text-3)' }}>预计利润合计</span>

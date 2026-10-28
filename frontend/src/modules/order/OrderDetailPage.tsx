@@ -68,7 +68,7 @@ const PAYMENT_METHODS = ['银行转账', '承兑汇票', '现金', '支票', '�
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { calendarDay, calendarDayOrToday } from '../../shared/calendar-day'
-import { splitAmountsLikeBackend } from '../../shared/quote-todo'
+import { splitAmountsExact } from '../../shared/quote-todo'
 import { planBlockedReasons } from '../../shared/components/ReceivablePlanPicker'
 
 /**
@@ -471,7 +471,7 @@ export default function OrderDetailPage() {
         // 后果不小：收款日期、回款归月/对账、账期与逾期判定全错一天，
         // 而界面只显示"回款已登记"，看不出来。
         received_date: calendarDay(paymentForm.date),
-        received_amount: Number(paymentForm.amount),
+        received_amount: paymentForm.amount.trim(),
         payment_method: paymentForm.method,
         request_key: paymentKeyRef.current,
       })
@@ -662,12 +662,12 @@ export default function OrderDetailPage() {
     { title: '产品名称 / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{row.sku_snapshot || code || row.inquiry_no_snapshot || '未命名产品'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot ? code || row.inquiry_no_snapshot : ''}</div></div> },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 100, render: (v: number) => v.toLocaleString('zh-CN') },
-    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number) => formatMoney(v, order.currency) },
+    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number, row: OrderItem) => formatMoney(row.unit_price_exact ?? v, order.currency) },
     {
       title: '金额',
       dataIndex: 'amount',
       width: 140,
-      render: (v: number) => formatMoney(v, order.currency),
+      render: (v: number, row: OrderItem) => formatMoney(row.amount_exact ?? v, order.currency),
     },
     { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
   ]
@@ -676,9 +676,9 @@ export default function OrderDetailPage() {
     { title: '节点', dataIndex: 'plan_name', width: 110 },
     { title: '应收日期', dataIndex: 'due_date', width: 130 },
     // 行自带币种就优先用它（历史数据里可能与订单币种不一致），没有才退回订单币种
-    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
-    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(v, r.currency ?? order.currency) },
+    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number, r: Receivable) => formatMoney(r.amount_exact ?? v, r.currency ?? order.currency) },
+    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(r.remaining_amount_exact ?? v, r.currency ?? order.currency) },
     {
       title: '状态',
       dataIndex: 'status_label',
@@ -736,7 +736,7 @@ export default function OrderDetailPage() {
                 onClick={() => {
                   setPaymentTarget(record)
                   setPaymentForm({
-                    amount: String(record.remaining_amount),
+                    amount: record.remaining_amount_exact ?? String(record.remaining_amount),
                     date: new Date(),
                     method: '银行转账',
                   })
@@ -868,15 +868,15 @@ export default function OrderDetailPage() {
         <KpiStrip
           style={{ marginTop: 16, marginBottom: 0 }}
           items={[
-            { label: '订单金额', value: formatMoney(order.total_amount, order.currency) },
+            { label: '订单金额', value: formatMoney(order.total_amount_exact ?? order.total_amount, order.currency) },
             {
               label: '实际到账（财务已确认）',
-              value: formatMoney(order.received_amount, order.currency),
+              value: formatMoney(order.received_amount_exact ?? order.received_amount, order.currency),
               tone: 'success',
             },
             {
               label: '尚未到账',
-              value: formatMoney(order.unreceived_amount, order.currency),
+              value: formatMoney(order.unreceived_amount_exact ?? order.unreceived_amount, order.currency),
               tone: order.unreceived_amount > 0 ? 'warning' : 'default',
             },
             {
@@ -915,12 +915,12 @@ export default function OrderDetailPage() {
             }}
           >
             <span>金额组成：</span>
-            <span>产品货款 {formatMoney(order.goods_amount, order.currency)}</span>
-            <span>+ 运费（代收代付） {formatMoney(order.logistics_amount ?? 0, order.currency)}</span>
-            <span>+ 其他费用 {formatMoney(order.other_charge_amount ?? 0, order.currency)}</span>
-            <span>+ 优惠 {formatMoney(order.discount_amount ?? 0, order.currency)}</span>
+            <span>产品货款 {formatMoney(order.goods_amount_exact ?? order.goods_amount, order.currency)}</span>
+            <span>+ 运费（代收代付） {formatMoney(order.logistics_amount_exact ?? order.logistics_amount ?? 0, order.currency)}</span>
+            <span>+ 其他费用 {formatMoney(order.other_charge_amount_exact ?? order.other_charge_amount ?? 0, order.currency)}</span>
+            <span>+ 优惠 {formatMoney(order.discount_amount_exact ?? order.discount_amount ?? 0, order.currency)}</span>
             <span style={{ color: 'var(--crm-text)' }}>
-              = {formatMoney(order.total_amount, order.currency)}
+              = {formatMoney(order.total_amount_exact ?? order.total_amount, order.currency)}
             </span>
           </div>
         ) : (
@@ -1010,9 +1010,9 @@ export default function OrderDetailPage() {
               columns={[
                 { title: '应收节点', dataIndex: 'plan_name', width: 120, render: (v: string | null) => v ?? '-' },
                 { title: '收款日期', dataIndex: 'received_date', width: 130 },
-                { title: '整笔到账', dataIndex: 'received_amount', width: 130, render: (v: number, r: Payment) => formatMoney(v, r.currency ?? order.currency) },
-                { title: '已分配', dataIndex: 'allocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(v, r.currency ?? order.currency) : '-' },
-                { title: '待分配', dataIndex: 'unallocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(v, r.currency ?? order.currency) : '-' },
+                { title: '整笔到账', dataIndex: 'received_amount', width: 130, render: (v: number, r: Payment) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
+                { title: '已分配', dataIndex: 'allocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.allocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
+                { title: '待分配', dataIndex: 'unallocated_amount', width: 120, render: (v: number, r: Payment) => r.status === 'confirmed' ? formatMoney(r.unallocated_amount_exact ?? v, r.currency ?? order.currency) : '-' },
                 { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
                 {
                   title: '回款凭证',
@@ -1728,7 +1728,7 @@ export default function OrderDetailPage() {
           <div>
             即将取消订单 <b>{order.order_no}</b>
             {order.customer_name ? `（${order.customer_name}）` : ''}， 金额{' '}
-            {formatMoney(order.total_amount, order.currency)}。
+            {formatMoney(order.total_amount_exact ?? order.total_amount, order.currency)}。
             <b>取消不可撤销。</b>
           </div>
           <div>取消会连带做这几件事：</div>
@@ -1769,12 +1769,12 @@ export default function OrderDetailPage() {
           // 比例/名称/日期三条，**漏了 `split_amounts` 那条"非正数期直接拒绝"**
           // （金额极小时，前面各期各自进位、末期会变成 0 或负数）——
           // 于是页脚一边红字写"拆不出正数金额"，一边「生成」键还是亮的，点下去 422。
-          disabled: planBlockedReasons('installments', generateRows, Number(order.total_amount ?? 0)).length > 0,
+          disabled: planBlockedReasons('installments', generateRows, order.total_amount_exact ?? order.total_amount ?? 0).length > 0,
         }}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            按订单金额 {formatMoney(order.total_amount, order.currency)} 分几期收。每期填「节点名 / 比例 /
+            按订单金额 {formatMoney(order.total_amount_exact ?? order.total_amount, order.currency)} 分几期收。每期填「节点名 / 比例 /
             到期日」，比例合计必须正好 100%。
           </div>
           {(() => {
@@ -1785,7 +1785,7 @@ export default function OrderDetailPage() {
             const reasons = planBlockedReasons(
               'installments',
               generateRows,
-              Number(order.total_amount ?? 0),
+              order.total_amount_exact ?? order.total_amount ?? 0,
             )
             return reasons.length ? (
               <div style={{ color: 'var(--crm-error, #ba1a1a)', fontSize: 12 }}>
@@ -1802,13 +1802,13 @@ export default function OrderDetailPage() {
             // 两者在「0.05 分两期」这类金额上会给出不同结果（前端 0.03/0.02、后端 0.02/0.03），
             // 而这里原来的注释还写着"与后端同一口径"。后端 docstring 早就点名了这个坑并要求
             // "前端不要自己算预览"（它提到的 `preview_split` 其实**从未实现**，所以只能复用共享件）。
-            // `splitAmountsLikeBackend` 就是那份复刻：bigint 整数运算 + 显式 half-even，
+            // `splitAmountsExact` 就是那份复刻：bigint 整数运算 + 显式 half-even，
             // 且**非正数期返回 null** —— 与后端"明确拒绝"那条校验一致。
-            const split = splitAmountsLikeBackend(
-              Number(order.total_amount ?? 0),
+            const split = splitAmountsExact(
+              order.total_amount_exact ?? order.total_amount ?? 0,
               generateRows.map((row) => (row.percent ?? 0) / 100),
             )
-            const amounts: number[] = split ?? generateRows.map(() => 0)
+            const amounts: string[] = split ?? generateRows.map(() => '0.00')
             const amountInvalid = split === null && generateRows.length > 0
             const update = (index: number, patch: Partial<{ name: string; percent: number | null; due: Date | null }>) => {
               const next = [...generateRows]
@@ -1942,7 +1942,7 @@ export default function OrderDetailPage() {
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
             该节点未收{' '}
             {formatMoney(
-              paymentTarget?.remaining_amount ?? 0,
+              paymentTarget?.remaining_amount_exact ?? paymentTarget?.remaining_amount ?? 0,
               paymentTarget?.currency ?? order.currency,
             )}
           </div>

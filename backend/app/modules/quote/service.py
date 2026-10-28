@@ -407,6 +407,7 @@ def serialize_version(version: QuoteVersion, items_total_profit: Decimal | None 
         "charge_amount": _f(version.charge_amount),
         "discount_amount": _f(version.discount_amount),
         "total_amount": _f(version.total_amount),
+        "total_amount_exact": str(version.total_amount) if version.total_amount is not None else None,
         # 金额拆分（2026-10-09 运费分离）：运费从"附加费用"里单列出来。
         # ⚠️ 这三列都**已经含在** `total_amount` 里了，前端只能拿来分项展示，
         # 不要再加到总额上。恒等式：charge_amount == logistics + other_charge。

@@ -31,6 +31,7 @@ export interface QuoteVersion {
   charge_amount: number
   discount_amount: number
   total_amount: number
+  total_amount_exact?: string | null
   /**
    * 金额拆分（2026-10-09「产品价格与运费分离」）。
    *

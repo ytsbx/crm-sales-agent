@@ -16,6 +16,7 @@ export interface Order {
   sales_owner_name?: string | null
   currency: string
   total_amount: number
+  total_amount_exact?: string | null
   /**
    * 订单金额组成（2026-10-09「产品价格与运费分离」）。
    *
@@ -24,13 +25,19 @@ export interface Order {
    * **不要**回查报价拿今天的数来填。
    */
   goods_amount?: number | null
+  goods_amount_exact?: string | null
   logistics_amount?: number | null
+  logistics_amount_exact?: string | null
   other_charge_amount?: number | null
+  other_charge_amount_exact?: string | null
   discount_amount?: number | null
+  discount_amount_exact?: string | null
   /** 转单时冻结的产品核价口径；null=历史订单（含运费的老口径） */
   pricing_basis?: string | null
   received_amount: number
+  received_amount_exact?: string | null
   unreceived_amount: number
+  unreceived_amount_exact?: string | null
   status: string
   status_label: string
   erp_order_id?: string | null
@@ -56,7 +63,9 @@ export interface OrderItem {
   specification?: string | null
   quantity: number
   unit_price: number
+  unit_price_exact?: string | null
   amount: number
+  amount_exact?: string | null
   remark?: string | null
 }
 
@@ -83,6 +92,7 @@ export interface Receivable {
   received_amount_exact?: string
   received_amount: number
   remaining_amount: number
+  remaining_amount_exact?: string | null
   /**
    * 这一期**有没有任何回款行**（待确认 / 已确认 / 已驳回都算）。
    *
@@ -155,6 +165,7 @@ export interface FinanceSummary {
   unsettled_plan_amount: number
   pending_confirm_amount: number
   unreceived_amount: number
+  unreceived_amount_exact?: string | null
   plan_count: number
   overdue_count: number
 }

@@ -327,15 +327,17 @@ export const SECONDARY_ACTIONS = [
  * 不能先用浮点乘法：0.05 × 0.7 × 100 会变成 3.4999999999999996，
  * 把应当进位的 3.5 分算成 3 分。末期仍补差额，非正数期拒绝。
  */
-export function splitAmountsLikeBackend(
-  total: number,
+export function splitAmountsExact(
+  total: number | string,
   ratios: readonly number[],
-): number[] | null {
-  if (!ratios.length || !Number.isFinite(total) || total <= 0
+): string[] | null {
+  if ((typeof total !== 'number' && typeof total !== 'string')
+    || !ratios.length || !Number.isFinite(Number(total)) || Number(total) <= 0
+    || (typeof total === 'string' && !/^\d+(?:\.\d+)?$/.test(total))
     || ratios.some((ratio) => !Number.isFinite(ratio) || ratio <= 0)) return null
 
   // Number.toString 与 JSON 中的十进制数一致，对应后端 Decimal(str(value))。
-  const decimalParts = (value: number): { coefficient: bigint; scale: number } => {
+  const decimalParts = (value: number | string): { coefficient: bigint; scale: number } => {
     const [mantissa, exponent = '0'] = value.toString().toLowerCase().split('e')
     const [integer, fraction = ''] = mantissa.split('.')
     return {
@@ -365,5 +367,11 @@ export function splitAmountsLikeBackend(
     allocated += part
   }
   if (cents.some((item) => item <= 0n)) return null
-  return cents.map((item) => Number(item) / 100)
+  return cents.map((item) => `${item / 100n}.${String(item % 100n).padStart(2, '0')}`)
+}
+
+/** Legacy numeric callers retain their return contract; exact previews use splitAmountsExact. */
+export function splitAmountsLikeBackend(total: number, ratios: readonly number[]): number[] | null {
+  if (!Number.isFinite(total)) return null
+  return splitAmountsExact(total, ratios)?.map(Number) ?? null
 }

@@ -323,3 +323,11 @@ test('分期金额：各期之和严格等于总额（不允许差一分钱）',
     )
   }
 })
+
+test('exact installment preview preserves large totals and half-even cent tails', () => {
+  const { splitAmountsExact } = load()
+  assert.deepEqual(Array.from(splitAmountsExact('99999999999999.99', [0.5, 0.5])), ['50000000000000.00', '49999999999999.99'])
+  assert.deepEqual(Array.from(splitAmountsExact('0.05', [0.5, 0.5])), ['0.02', '0.03'])
+  assert.deepEqual(Array.from(splitAmountsExact('100.00', [0.3, 0.7])), ['30.00', '70.00'])
+  assert.equal(splitAmountsExact('0.03', [0.2, 0.2, 0.2, 0.2, 0.2]), null)
+})

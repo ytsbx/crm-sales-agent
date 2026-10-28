@@ -492,6 +492,7 @@ async def serialize_plan(session: AsyncSession, plan: ReceivablePlan) -> dict:
         #: 见函数开头的说明：**任何**回款行都算，与删除闸门同一判据
         "has_payment_record": has_payment_record,
         "remaining_amount": _f(balance),
+        "remaining_amount_exact": str(balance),
         "currency": plan.currency,
         "status": status,
         "status_label": PLAN_STATUS_LABEL.get(status, status),

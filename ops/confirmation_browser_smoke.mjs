@@ -32,6 +32,13 @@ let rejectQuoteDeletion=false
 let quoteCostProblems=[]
 let costDraft=false
 let quoteItems=[]
+let exactQuote=false
+let financialRows=false
+let financialPlansEmpty=false
+const financialPayments=[]
+const exactOrder={id:991,order_no:'EXACT-MONEY-991',customer_id:9,currency:'CNY',total_amount:99999999999999.98,total_amount_exact:'99999999999999.99',received_amount:99999999999999.98,received_amount_exact:'99999999999999.98',unreceived_amount:0.01,unreceived_amount_exact:'0.01',status:'pending',status_label:'待生产'}
+const exactPlan={id:992,order_id:991,order_no:exactOrder.order_no,plan_name:'精确应收',due_date:'2027-01-01',currency:'CNY',amount:exactOrder.total_amount,amount_exact:exactOrder.total_amount_exact,received_amount:0,received_amount_exact:'0.00',remaining_amount:exactOrder.total_amount,remaining_amount_exact:exactOrder.total_amount_exact,status:'pending',status_label:'待回款'}
+const exactPayment={id:993,order_id:991,order_no:exactOrder.order_no,currency:'CNY',received_date:'2026-10-27',received_amount:exactOrder.total_amount,received_amount_exact:exactOrder.total_amount_exact,status:'pending',status_label:'待确认'}
 const costRefreshes=[], costPageRequests=[]
 const skuCreates=[]
 const settingsRequests=[]
@@ -39,7 +46,7 @@ const apiRequests=[]
 const customerOwnerWrites=[]
 const ownerRequests=[]
 const ownerUsers=Array.from({length:201},(_,i)=>({id:111+i,name:i===0?'在职员工甲':i===1?'在职员工乙':i===200?'末页在职员工':`分页员工${i}`,username:i===200?'last.owner':`owner${i}`,status:'active'}))
-const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount:100,charge_amount:0,discount_amount:0,total_amount:100,logistics_amount:0,other_charge_amount:0,pricing_basis:'actual_pass_through',approval_status:costDraft?'not_submitted':'pending',approval_required:true,created_at:new Date().toISOString()})
+const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount:100,charge_amount:0,discount_amount:0,total_amount:100,logistics_amount:0,other_charge_amount:0,pricing_basis:'actual_pass_through',approval_status:costDraft?'not_submitted':'pending',approval_required:true,created_at:new Date().toISOString(),...(exactQuote?{total_amount:99999999999999.98,total_amount_exact:'99999999999999.99',approval_status:'approved',accepted_at:new Date().toISOString(),sent_at:new Date().toISOString()}:{} )})
 const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
@@ -63,6 +70,12 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/customers/batch-transfer') && req.method==='POST') {customerOwnerWrites.push({path,body});data={affected:body.customer_ids.length}}
     else if(path==='/api/v1/customers' && req.method==='POST') {customerOwnerWrites.push({path,body});data={id:151,...body}}
     else if(path==='/api/v1/customers') data={items:[publicCustomer],total:1}
+    else if(path==='/api/v1/payments' && req.method==='POST') {financialPayments.push(body);data=exactPayment}
+    else if(path==='/api/v1/orders/994') data={...exactOrder,id:994,order_no:'FOUR-DECIMAL-994',total_amount:33333.3,total_amount_exact:'33333.30',received_amount:0,received_amount_exact:'0.00',unreceived_amount:33333.3,unreceived_amount_exact:'33333.30'}
+    else if(path==='/api/v1/orders/994/items') data=[{id:995,order_id:994,sku_id:1,sku_code:'FOUR-DECIMAL-ITEM',quantity:1000,unit_price:33.3333,unit_price_exact:'33.3333',amount:33333.3,amount_exact:'33333.30'}]
+    else if(path==='/api/v1/orders/991') data=exactOrder
+    else if(path==='/api/v1/orders/991/receivables') data=financialPlansEmpty?[]:[exactPlan]
+    else if(['/api/v1/orders','/api/v1/receivables','/api/v1/payments'].includes(path)) data={items:financialRows?[path.endsWith('/orders')?exactOrder:path.endsWith('/receivables')?exactPlan:exactPayment]:[],total:financialRows?1:0}
     else if(path.endsWith('/auth/me')) data=user
     else if(path.endsWith('/auth/permissions')) data={permissions:user.permissions,roles:user.roles,permission_names:{}}
     else if(path.endsWith('/notifications/unread-count')) data={count:0}
@@ -86,7 +99,7 @@ const server=createServer(async (req,res)=>{
       data=null
     }
     else if(path.endsWith('/quotes/121/versions')) data=[quoteVersion(131),quoteVersion(130)]
-    else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:quoteItems,charges:[],approval:null,cost_problems:quoteCostProblems}
+    else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:exactQuote?'accepted':'pending',status_label:exactQuote?'已接受':'审批中',current_version_id:131},items:quoteItems,charges:[],approval:null,cost_problems:quoteCostProblems}
     else if(path.endsWith('/quote-versions/131/cost-refresh') && req.method==='POST') {costRefreshes.push(131);quoteCostProblems=[];data={refreshed:1}}
     else if(path.endsWith('/products/201')) data={id:201,name:'隔离成本产品',status:'active',sku_count:1}
     else if(path.endsWith('/products/201/skus') && req.method==='POST') {skuCreates.push(body);data={id:202,product_id:201,sku_code:body.sku_code||'SKU-AUTO-202',...body}}
@@ -749,6 +762,58 @@ try {
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/tasks`})
   await waitFor(`Array.from(document.querySelectorAll('.semi-table-tbody a')).some(a=>a.innerText.trim()==='报价 Q-TASK-121' && a.getAttribute('href')==='/quotes/121')`)
   console.log('BROWSER_TASK_UNAVAILABLE_CUSTOMER_NO_LINK_AND_QUOTE_PRIORITY_PRESERVED=true')
+
+  financialRows=true;user.roles=['admin'];user.permissions=[]
+  const financeAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+  await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(financeAuth)})`})
+  for(const route of ['orders','receivables']) {
+    await send('Page.navigate',{url:`http://127.0.0.1:${port}/${route}`})
+    await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('EXACT-MONEY-991')`)
+    assert.ok(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('99,999,999,999,999.99')`),route+' uses exact amount')
+  }
+  await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(el=>el.innerText.includes('回款记录')).click()`)
+  await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('99,999,999,999,999.99')`)
+  console.log('BROWSER_ORDER_RECEIVABLE_PAYMENT_PRESERVE_EXACT_CENTS=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/991`})
+  await waitFor(`Array.from(document.querySelectorAll('[role="tab"]')).some(el=>el.innerText.includes('应收计划'))`)
+  await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(el=>el.innerText.includes('应收计划')).click()`)
+  await waitFor(`Array.from(document.querySelectorAll('a')).some(el=>el.innerText.trim()==='登记回款')`)
+  await evaluate(`Array.from(document.querySelectorAll('a')).find(el=>el.innerText.trim()==='登记回款').click()`)
+  await waitFor(`document.querySelector('input[placeholder="收款金额"]')`)
+  assert.equal(await evaluate(`document.querySelector('input[placeholder="收款金额"]').value`),'99999999999999.99')
+  await evaluate(`Array.from(document.querySelectorAll('.semi-modal-content button')).find(el=>el.innerText.trim()==='登记').click()`)
+  await waitFor(`!document.querySelector('input[placeholder="收款金额"]')`)
+  assert.equal(financialPayments.length,1)
+  assert.equal(financialPayments[0].received_amount,'99999999999999.99')
+  console.log('BROWSER_REGISTER_PAYMENT_PRESERVES_UNEDITED_EXACT_AMOUNT=true')
+  financialPlansEmpty=true
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/991`})
+  await waitFor(`Array.from(document.querySelectorAll('[role="tab"]')).some(el=>el.innerText.includes('应收计划'))`)
+  await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(el=>el.innerText.includes('应收计划')).click()`)
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(el=>el.innerText.trim()==='生成应收计划')`)
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.innerText.trim()==='生成应收计划').click()`)
+  await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('30,000,000,000,000.00')`)
+  assert.ok(await evaluate(`document.querySelector('.semi-modal-content').innerText.includes('69,999,999,999,999.99')`))
+  console.log('BROWSER_INSTALLMENT_PREVIEW_PRESERVES_EXACT_TOTAL_AND_TAIL=true')
+  exactQuote=true
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(el=>el.innerText.trim()==='转销售订单')`)
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.innerText.trim()==='转销售订单').click()`)
+  await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('99,999,999,999,999.99')`)
+  await evaluate(`Array.from(document.querySelectorAll('label,[role="radio"]')).find(el=>el.innerText.includes('分期（拆成多期')).click()`)
+  await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('30,000,000,000,000.00')`)
+  assert.ok(await evaluate(`document.querySelector('.semi-modal-content').innerText.includes('69,999,999,999,999.99')`))
+  console.log('BROWSER_QUOTE_CONVERT_PICKER_USES_EXACT_TOTAL_AND_INSTALLMENTS=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/994`})
+  await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('FOUR-DECIMAL-ITEM')`)
+  const exactItemRow=await evaluate(`document.querySelector('.semi-table-tbody').innerText`)
+  assert.ok(exactItemRow.includes('¥33.3333'))
+  assert.ok(exactItemRow.includes('¥33,333.30'))
+  console.log('BROWSER_ORDER_ITEM_PRESERVES_FOUR_DECIMAL_UNIT_PRICE=true')
+
+
+
+
 
 
 } finally {

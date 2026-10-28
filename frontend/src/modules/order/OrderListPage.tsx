@@ -222,15 +222,15 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '订单金额',
       dataIndex: 'total_amount',
       width: 140,
-      render: (v: number, record: Order) => formatMoney(v, record.currency),
+      render: (v: number, record: Order) => formatMoney(record.total_amount_exact ?? v, record.currency),
     },
     {
       title: '已回款',
       dataIndex: 'received_amount',
       width: 130,
       render: (v: number, record: Order) => (
-        <span style={{ color: v >= record.total_amount ? 'var(--crm-success)' : undefined }}>
-          {formatMoney(v, record.currency)}
+        <span style={{ color: record.unreceived_amount <= 0 ? 'var(--crm-success)' : undefined }}>
+          {formatMoney(record.received_amount_exact ?? v, record.currency)}
         </span>
       ),
     },
@@ -238,7 +238,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '待回款',
       dataIndex: 'unreceived_amount',
       width: 130,
-      render: (v: number, record: Order) => formatMoney(v, record.currency),
+      render: (v: number, record: Order) => formatMoney(record.unreceived_amount_exact ?? v, record.currency),
     },
     {
       title: '履约状态',
@@ -271,13 +271,13 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '已收',
       dataIndex: 'received_amount',
       width: 130,
-      render: (v: number, record: Receivable) => formatMoney(v, record.currency),
+      render: (v: number, record: Receivable) => formatMoney(record.received_amount_exact ?? v, record.currency),
     },
     {
       title: '未收',
       dataIndex: 'remaining_amount',
       width: 130,
-      render: (v: number, record: Receivable) => formatMoney(v, record.currency),
+      render: (v: number, record: Receivable) => formatMoney(record.remaining_amount_exact ?? v, record.currency),
     },
     {
       title: '状态',
@@ -297,7 +297,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '金额',
       dataIndex: 'received_amount',
       width: 130,
-      render: (v: number, record: Payment) => formatMoney(v, record.currency),
+      render: (v: number, record: Payment) => formatMoney(record.received_amount_exact ?? v, record.currency),
     },
     { title: '方式', dataIndex: 'payment_method', width: 120, render: (v: string | null) => v ?? '-' },
     {

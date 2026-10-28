@@ -35,3 +35,17 @@ test('maximum legal amount uses exact strings and keeps the final cent', () => {
 test('sub-cent amounts must be rejected rather than rounded down', () => {
   assert.throws(()=>fill('0.001',[],[]))
 })
+
+const moneySource = readFileSync(new URL('../frontend/src/shared/components/money.ts', import.meta.url), 'utf8')
+const moneyCompiled = ts.transpileModule(moneySource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
+const moneyExports = {}; runInNewContext(moneyCompiled, { exports: moneyExports, module: { exports: moneyExports } })
+test('exact monetary strings retain negative fractions and cent precision', () => {
+  for (const [value, expected] of [
+    ['-0.01', '¥-0.01'], ['-0.99', '¥-0.99'], ['-0.0100', '¥-0.0100'],
+    ['-000.01', '¥-0.01'], ['-1.01', '¥-1.01'], ['0.01', '¥0.01'],
+    ['0', '¥0'], ['99999999999999.99', '¥99,999,999,999,999.99'],
+    ['-99999999999999.99', '¥-99,999,999,999,999.99'],
+  ]) assert.equal(moneyExports.formatMoney(value, 'CNY'), expected)
+  assert.equal(moneyExports.formatMoney(null, 'CNY'), '-')
+  assert.equal(moneyExports.formatMoney(-0.01, 'CNY'), '¥-0.01')
+})

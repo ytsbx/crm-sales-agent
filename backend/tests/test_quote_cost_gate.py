@@ -148,3 +148,12 @@ async def test_detail_cost_problems_no_cost_amounts(case):
     problem = quotes.item_cost_problems([item])[0]
     assert set(problem) == {"item_id", "sku_id", "label", "reason"}
     assert problem["reason"] == "成本未填完整"
+
+
+@pytest.mark.parametrize("total", [Decimal('99999999999999.99'), None])
+def test_quote_version_exposes_exact_total_without_float_rounding(total):
+    from app.modules.quote.model import QuoteVersion
+    version = QuoteVersion(id=1, quote_id=1, version_no=1,
+                           total_amount=total, currency='CNY')
+    result = quotes.serialize_version(version)
+    assert result['total_amount_exact'] == (str(total) if total is not None else None)

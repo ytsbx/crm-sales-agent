@@ -18,6 +18,7 @@ import hashlib
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +36,7 @@ from app.core.importing import (
 from app.modules.customer.model import Customer
 from app.modules.pricing import service as svc
 from app.modules.pricing.model import CustomerPriceRule, PriceRule, ProductCost
+from app.modules.pricing.schema import CostCreate
 from app.modules.product.model import Sku
 
 router = APIRouter(tags=["Pricing"])
@@ -621,6 +623,22 @@ async def import_costs(
             "package_cost": package,
             "processing_cost": processing,
         }
+        # 与页面成本录入使用同一字段约束，避免数据库把微小正数静默舍入为零。
+        try:
+            CostCreate.model_validate({**provided, "effective_from": effective_from})
+        except ValidationError as exc:
+            labels = {
+                "purchase_cost": "采购成本", "production_cost": "生产成本",
+                "package_cost": "包装成本", "processing_cost": "加工成本",
+            }
+            for error in exc.errors():
+                field = str(error["loc"][0])
+                errs.add(
+                    f"{labels.get(field, field)}不符合成本录入精度要求"
+                    "（最多14位数字、4位小数，与页面录入一致）"
+                )
+            report.failed_row(index, code, errs.reasons)
+            continue
         filled = {key: value for key, value in provided.items() if value is not None}
 
         try:

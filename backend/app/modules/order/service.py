@@ -61,6 +61,8 @@ def serialize_order(
         "sales_owner_id": order.sales_owner_id,
         "sales_owner_name": sales_owner_name,
         "total_amount": _f(order.total_amount),
+        **{f"{name}_exact": str(getattr(order, name)) if getattr(order, name) is not None else None
+           for name in ("total_amount", "goods_amount", "logistics_amount", "other_charge_amount", "discount_amount")},
         # 金额组成（2026-10-09 运费分离）：订单页要能解释总额是怎么来的。
         # 这四个值**已经含在** `total_amount` 里，只做拆分展示，不要再相加。
         # 可空 = 历史订单没留存 → 前端写"待核实"，不回查报价拿今天的数来填。
@@ -76,6 +78,8 @@ def serialize_order(
         ),
         "pricing_basis": order.pricing_basis,
         "received_amount": _f(received),
+        "received_amount_exact": str(received),
+        "unreceived_amount_exact": str((order.total_amount or Decimal(0)) - received),
         "unreceived_amount": _f((order.total_amount or Decimal(0)) - received),
         "currency": order.currency,
         "status": order.status,
@@ -115,7 +119,9 @@ def serialize_item(item: SalesOrderItem, sku_code: str | None = None) -> dict:
         "specification": item.specification,
         "quantity": _f(item.quantity),
         "unit_price": _f(item.unit_price),
+        "unit_price_exact": str(item.unit_price) if item.unit_price is not None else None,
         "amount": _f(item.amount),
+        "amount_exact": str(item.amount) if item.amount is not None else None,
         "remark": item.remark,
     }
 

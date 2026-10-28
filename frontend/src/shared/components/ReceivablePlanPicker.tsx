@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { Button, DatePicker, Input, InputNumber, Radio } from '@douyinfe/semi-ui'
 
 import BlockedHint from './BlockedHint'
-import { splitAmountsLikeBackend } from '../quote-todo'
+import { formatMoney } from './money'
+import { splitAmountsExact } from '../quote-todo'
 import { calendarDayOrToday } from '../calendar-day'
 
 /**
@@ -79,7 +80,7 @@ export function toPlanPayload(
 export function planBlockedReasons(
   mode: 'full' | 'installments',
   rows: ReceivablePlanRow[],
-  totalAmount?: number,
+  totalAmount?: number | string,
 ): string[] {
   if (mode === 'full') return []
   const reasons: string[] = []
@@ -95,9 +96,9 @@ export function planBlockedReasons(
   })
   if (
     reasons.length === 0
-    && typeof totalAmount === 'number'
-    && Number.isFinite(totalAmount)
-    && splitAmountsLikeBackend(totalAmount, rows.map((row) => (row.percent ?? 0) / 100)) === null
+    && totalAmount !== undefined
+    && Number.isFinite(Number(totalAmount))
+    && splitAmountsExact(totalAmount, rows.map((row) => (row.percent ?? 0) / 100)) === null
   ) {
     // 金额太小：前面各期四舍五入到分之后，末期会变成 0 或负数
     reasons.push(
@@ -112,7 +113,7 @@ export function planBlockedReasons(
 export function isPlanValid(
   mode: 'full' | 'installments',
   rows: ReceivablePlanRow[],
-  totalAmount?: number,
+  totalAmount?: number | string,
 ): boolean {
   if (mode === 'full') return true
   if (rows.length === 0) return false
@@ -121,8 +122,8 @@ export function isPlanValid(
   if (!rows.every((row) => row.name.trim() && row.due && (row.percent ?? 0) > 0)) return false
   // 金额太小时会分出"不大于 0 的期"（后端同样会 422）：
   // 与其让用户点了再报错，不如在这里就拦住并说明（第九批问题 ①⑤）
-  if (typeof totalAmount === 'number' && Number.isFinite(totalAmount)) {
-    const split = splitAmountsLikeBackend(totalAmount, rows.map((row) => (row.percent ?? 0) / 100))
+  if (totalAmount !== undefined && Number.isFinite(Number(totalAmount))) {
+    const split = splitAmountsExact(totalAmount, rows.map((row) => (row.percent ?? 0) / 100))
     if (split === null) return false
   }
   return true
@@ -144,7 +145,7 @@ export default function ReceivablePlanPicker({
    * 「预计金额」凑**（那是估算，不是订单金额）—— 传 undefined，
    * 组件只显示比例、不显示金额，并说明"金额在转单时按报价版本确定"。
    */
-  totalAmount?: number
+  totalAmount?: number | string
   rows: ReceivablePlanRow[]
   onRowsChange: (rows: ReceivablePlanRow[]) => void
   mode: 'full' | 'installments'
@@ -152,28 +153,31 @@ export default function ReceivablePlanPicker({
   currency?: string
 }) {
   const [touched, setTouched] = useState(false)
-  const money = (value: number) =>
-    `${currency === 'CNY' ? '¥' : ''}${(Number.isFinite(value) ? value : 0).toLocaleString('zh-CN', {
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
-    })}`
+  const money = (value: number | string) => {
+    const text = typeof value === 'string'
+      ? formatMoney(value, 'CNY').slice(1)
+      : (Number.isFinite(value) ? value : 0).toLocaleString('zh-CN', {
+          minimumFractionDigits: 0, maximumFractionDigits: 2,
+        })
+    return `${currency === 'CNY' ? '¥' : ''}${text}`
+  }
 
   const ratioSum = rows.reduce((sum, row) => sum + (row.percent ?? 0), 0)
   const ratioOk = Math.abs(ratioSum - 100) < 0.01
-  const hasTotal = typeof totalAmount === 'number' && Number.isFinite(totalAmount)
+  const hasTotal = totalAmount !== undefined && Number.isFinite(Number(totalAmount))
   // ⚠️ 预览金额**与后端同一套算法**（第九批问题 ⑤）。
   // 原来这里用 `Math.round`（JavaScript 浮点、半分向上），后端用
   // `Decimal`（默认 ROUND_HALF_EVEN）：`0.05` 分两期，页面显示 `0.03 / 0.02`、
   // 后端落库 `0.02 / 0.03` —— 用户确认的和存下去的不是一回事。
-  // 现在统一走 `splitAmountsLikeBackend`，`ops/quote_todo.test.mjs` 用同一批
+  // 现在统一走 `splitAmountsExact`，`ops/quote_todo.test.mjs` 用同一批
   // 用例盯着它与后端一致。
   const split = hasTotal
-    ? splitAmountsLikeBackend(
+    ? splitAmountsExact(
         totalAmount!,
         rows.map((row) => (row.percent ?? 0) / 100),
       )
     : null
-  const amounts: number[] = split ?? rows.map(() => 0)
+  const amounts: string[] = split ?? rows.map(() => '0.00')
 
   const update = (index: number, patch: Partial<ReceivablePlanRow>) => {
     const next = [...rows]
