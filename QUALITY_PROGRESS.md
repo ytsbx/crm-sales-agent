@@ -7,6 +7,7 @@
 - 发布包 SHA256 为 `340564df70f5b52dbef1be79b86800a69fdfa750f8bd67e07c36d046c6f0cbbe`；统一发布入口预检通过后按用户授权执行 `--apply`，返回 `status=verified`，备份为 `/opt/crm-sales-agent/backup/unified-55a7750b14b8-d17tbnz6`。无数据库迁移、依赖升级、配置修改或业务数据写入。
 - 发布后独立核对：`DEPLOYED_COMMIT`/`WEB_DEPLOYED_COMMIT` 均为完整 `55a7750...`，`RELEASE.json` 为 `verified`，`crm-sales.service` active，后端 `/health` 返回 `status=up`、`database=ok`、钉钉 OA/Stream 状态正常，公网首页 HTTP 200；服务器订单序列化已包含 `unit_price_exact` 和 `amount_exact`。
 - 该发布不等同真实生产角色完整浏览器回归或第三方故障注入；既有构建警告和未覆盖的分析/其他金额编辑路径仍按后续审查范围保留。
+- 同一发布提交的 GitHub CI `40638794859` 随后完成：UI 冒烟与后端回归均通过；仅保留 GitHub 关于 Node.js 20 运行时迁移的既有警告。
 
 ## 2026-10-27 Q-047 订单明细四位单价展示丢精度（已发布）
 
