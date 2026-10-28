@@ -59,7 +59,8 @@ def test_bad_json_shape_becomes_recoverable_tool_result(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch):
+@pytest.mark.parametrize('outcome', ['saved', 'failed', 'timeout'])
+async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch, outcome):
     """ASGI 断线注入 CancelledError 时，已吐出的回复不能从会话历史消失。"""
     class OneChunkThenWait:
         def __init__(self):
@@ -83,12 +84,26 @@ async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch):
         def __init__(self):
             self.rows = []
             self.commits = 0
+            self.attempts = 0
+            self.rollbacks = 0
 
         def add(self, row):
             self.rows.append(row)
 
         async def commit(self):
+            self.attempts += 1
+            if self.attempts == 2 and outcome == 'failed':
+                raise RuntimeError('isolated storage failure')
+            if self.attempts == 2 and outcome == 'timeout':
+                await asyncio.Event().wait()
             self.commits += 1
+
+        async def rollback(self):
+            self.rollbacks += 1
+
+        async def get(self, model, identity):
+            assert model.__name__ == 'AgentSession' and identity == 1
+            return agent_session
 
     stream = OneChunkThenWait()
     client = SimpleNamespace(
@@ -100,6 +115,12 @@ async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch):
     monkeypatch.setattr(runtime, '_client', lambda: client)
     monkeypatch.setattr(runtime, '_history', AsyncMock(return_value=[]))
     monkeypatch.setattr(settings, 'deepseek_api_key', 'isolated-test-key')
+    if outcome == 'timeout':
+        original_scope = runtime.anyio.move_on_after
+        def short_scope(seconds, *, shield):
+            assert seconds == 5 and shield
+            return original_scope(0.01, shield=shield)
+        monkeypatch.setattr(runtime.anyio, 'move_on_after', short_scope)
     session = Session()
     agent_session = SimpleNamespace(id=1, title='新会话', context_type=None, context_id=None)
     events = runtime.run_turn_events(
@@ -116,7 +137,8 @@ async def test_stream_cancel_persists_partial_reply_and_propagates(monkeypatch):
 
     assistants = [row for row in session.rows if getattr(row, 'role', None) == 'assistant']
     assert [row.content for row in assistants] == ['部分回复\n\n（连接中断，以上为已生成的部分）']
-    assert session.commits == 2  # 用户消息 + 断线补偿
+    assert session.commits == (2 if outcome == 'saved' else 1)
+    assert session.rollbacks == 1
     client.close.assert_awaited_once()
 
 def test_commentary_failure_hides_provider_body(monkeypatch):

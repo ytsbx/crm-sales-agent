@@ -1,5 +1,36 @@
 # CRM 质量审查进度
 
+## 2026-10-27 Q-028 用户要求修复后完成真实断线补偿（中，本地验证，未部署）
+
+- 用户明确“做”，承接说明的优先修复14b717a半段回复遗漏并继续项目审查；开工已说明先本地修复/隔离验证，不涉及磁盘检查。先只读核实服务器仍14b717a、runtime哈希b441c504…；本机将两个远端一致的e9151bc快进同步，先备份并合并本机发布/审查记录，保留所有另一电脑新增记录和原12项文档删除，没有reset覆盖有效工作。远端仅后两提交为文档，所以应用基线仍服务器14b717a。
+- 修复runtime.py：既有GeneratorExit/CancelledError补偿先回滚未完成事务，再在AnyIO限时5秒shield作用域内重读会话、只保存已经输出的文本及原中断标记。使用既有依赖AnyIO，无新增依赖/表结构/外部调用。捕获会话ID避免rollback后读取过期ORM属性；正常回复使用明确对象引用，取消commit可能已成功时按映射identity重查原回复，存在则不重复写。补偿存储异常或超时仅日志留证，继续原取消异常，不能伪装done成功。
+- 事务边界验证：不对整个旧事务直接shield提交，不恢复/提交未完成的工具业务。已完成工具轮次原本提交的事实保留；未完成轮次先rollback，只有文本补偿进入新事务。用户“做”授权本次缺陷修复，未改L2/L3确认规则、权限、文本格式或工具业务逻辑，不扩展到真实模型连接清理（旧真实HTTPX证据已排除该误报）。
+- 永久check_agent_stream_cancellation.py已登记（151套件）：本机真实PG/实际FastAPI Agent路由/StreamingResponse及get_db，ASGI spec2.3实际http.disconnect持续取消作用域，普通文本断线保存user+assistant；工具处理中断，合成未完成AgentAction及Task真实flush后均rollback且只保留user+assistant；真实commit成功后模拟取消回执，原取消继续抛出且只有一份完整assistant，不重复加半段回复。模型仅假流、鉴权合成CurrentUser，SQL/锁/事务及SSE发送/断线均真实；不声称真实生产角色、浏览器或外部模型故障注入。
+- 修前证据：同一永久套件在独立进程加载服务器精确runtime源码，保持其余实际路由/数据库不变，普通断线第一组明确失败于仅user、没有assistant；修后3组exit0，逐组新Session核对内容、未完成动作/任务不存在及pool checkedout0。没有删断言或放宽期望来通过。
+- 单元在原29项中扩展存储失败、限时到期两个分支，31项全部通过；原取消传播/模型close断言保留，测试仅把5秒时间预算缩短到0.01秒并验证shield确实启用，避免拖慢套件。完整后端1344项通过（进程exit0；原1342增加2项），pyflakes/diff/151登记、987查询JOIN及2176函数输出判据通过。新套件对缺DATABASE_URL、正式库名和远端地址均在导入应用前拒绝，即使ALLOW_DEV_TARGETS=1也拒绝。
+- 证据和同步前文档备份归档ops/backups/agent-stream-cancel-fix-20261027/。测试仅127.0.0.1:55439专用crm_iso_agent_stream_fix_test，推送/调度/Stream关闭，无app lifespan/真实外发；明确ID清理，独立psql确认users/sessions/messages/actions/tasks均0，随后删除专用库并停止PG。当前无提交、推送或部署，服务器仍14b717a；应用修改仅runtime.py，配套单元/PG脚本/登记和记录保留待发布。
+- 残余边界：数据库不可用、超过5秒或进程强制终止时仍可能无法保存，日志明示失败，不承诺必达；裸asyncio再次Task.cancel可越过AnyIO shield，不推断抵御任意强制取消。未完成工具回滚验证为合成待办/动作，不声称所有业务工具外部副作用可回滚；已执行外部操作无法靠数据库回滚撤销。长期审查未完成，下一独立方向可验证实际HTTPX模型断线和事务边界更复杂的工具场景，不擅自扩大生产验证范围。
+
+## 2026-10-27 另一电脑新增修复复核：Q-028真实ASGI断线仍丢部分回复（中，已复现，未修改应用）
+
+- 用户请求查看在另一电脑做的Bug修复。分别fetch GitHub/Gitee，两端pending-acceptance一致为e9151bc；相对本机974733e新增14b717a应用修复及d299b15/e9151bc两条文档提交。净变化仅agent/runtime.py（捕获GeneratorExit扩为同时捕获CancelledError）、test_agent_ai_safety.py新增62行、QUALITY_PROGRESS.md新增142行。没有把本机未提交发布记录或12项原文档删除当作新远端修改，也没有pull/reset覆盖工作区。
+- 实际服务器DEPLOYED_COMMIT/WEB_DEPLOYED_COMMIT均14b717a8815aaae225cafb786d3cee509155ced5，service active、health up/database ok、OA stream connected；服务器runtime SHA256 b441c504b571cc0a867dc858c4c3f489725e151e7ddb618c8ab20d208ea4d298与Git blob逐字节一致。应用已由另一电脑上线，本机工作代码仍974733e；新审查应以实际服务器14b717a为准。CI40528819688 completed/success，链接 https://github.com/ytsbx/crm-sales-agent/actions/runs/40528819688 。
+- 复核结论：修复覆盖手动向生成器athrow一次CancelledError，但没有证明Starlette断线的持续取消作用域中数据库补偿能完成。加载14b717a精确runtime源码到独立测试进程（不覆盖本机文件），新增单元原样通过；整份test_agent_ai_safety.py29项通过。该单元的Session.commit没有真实await数据库I/O，因此无法覆盖取消作用域再次中断提交。
+- 真PG/ASGI反例：全新本机127.0.0.1:55439一次性crm_iso_agent_stream_rereview_test，迁移head；实际FastAPI Agent路由/StreamingResponse/get_db/真实AsyncSession，只替换鉴权为合成CurrentUser与模型为仅本地假流，不调用真实模型。ASGI spec2.3发送delta后receive返回http.disconnect，最终HTTP起始200、delta_sent true，但独立新Session查询只有user消息，没有assistant部分回复，连接池checkedout0。第二次仅增加commit观察代理，原SQL/提交不变：首次用户消息commit finished，断线补偿第二次commit entered后立即commit interrupted: CancelledError，实际仍只有user；期望两角色断言明确失败。服务器与本机StreamingResponse.__call__/stream_response/listen_for_disconnect逐函数源码SHA256完全相同，非仅按版本号猜测。
+- 因而Q-028此前已确认现象在14b717a真实断线分支仍未解决，不另造重复问题编号；当前影响是页面断线后已看到的半段AI回复仍可能消失。本轮没有证明真实模型HTTPX客户端泄漏；假模型close里的await被打断不当真实连接泄漏证据，连接释放已由独立旧证据排除。也没有把未测工具中途取消导致半业务提交静态风险当成新确认Bug。
+- 未改应用、回滚、部署或修改生产数据。后续方案应同时考虑取消作用域内有时限的保护与未完成工具事务隔离，不能简单对现有整个Session.commit加shield就宣称安全；这涉及事务/部分回复口径取舍，按用户原规则需要具体方案和批准后再实施。当前只做用户要求的复核并报告，不自动撤销另一电脑有效工作。
+- 证据归档ops/backups/other-computer-stream-review-20261027/，包括精确远端源码/差异/远端记录、29单元、两次实际PG/ASGI失败及commit观察日志。合成ID精确清理后psql确认users/sessions/messages全0，专用库随后删除、临时PG停止。未推送/重启/真实外发，长期审查目标未完成。
+
+## 2026-10-27 Q-033至Q-039 已发布服务器
+
+- 用户本次明确授权“改动没问题可以直接部署服务器”，据此发布当前已验证7项修复；先前各条“本地未部署”保留为历史，状态由本条覆盖。最终应用固定SHA为974733edbde05c2e7b4087b4beae4c8ba4c27053，已同步GitHub/Gitee现有pending-acceptance分支。包含公海预告锁内归属复查/最新履约保护、旧轮OA回调隔离、软删打样系统动态/附件隐藏、时间线原模块权限过滤、ERP重复事件自动flush冲突处理、改派与签署/回款协调锁；不包含已归档人民币改动、Q-030隐藏提议或原12项文档删除。
+- 发布门禁：本机最终1341单元与21发布安全测试通过，pyflakes/150登记/查询JOIN/输出判据/diff通过。首CI40486160173仅旧时间线分页夹具失败，按下条证据本地复现后只修测试权限，业务代码不变；最终同SHA CI40487656707 completed/success，后端150接口套件、静态/单元及UI构建/浏览器冒烟均通过。CI链接 https://github.com/ytsbx/crm-sales-agent/actions/runs/40487656707 。没有重跑忽略失败或红CI上线。
+- 从git archive固定SHA与真实部署基线8bce10d构建：/tmp/crm-release-974733e.tar.gz，SHA256 6138b4f0eded9c3eb2a7e548a9800ee8d766bd1bc8c681b4347b04373f710e25；统一工具SHA256 8347192444e4ecf3347513b78f668b33a4fd62efa49624fc8082f90911ad5cab。冻结依赖离线安装成功，未改锁文件/升级依赖。远端/tmp/crm-release-974733e的工具与包逐项核对相同；服务器预检通过后才--apply。
+- 统一发布工具在实际基线/配置/迁移head/空间/包完整性守卫通过后备份、短暂停止、切换、启动、核验后端及491个新包文件/公网首页与入口资源，返回status=verified。回滚备份/opt/crm-sales-agent/backup/unified-974733edbde0-3rkvw41e保留。未执行数据库迁移或修改.env/虚拟环境/业务数据/服务配置，未做真实导入或外发测试。
+- 发布后独立SSH复核DEPLOYED_COMMIT/WEB_DEPLOYED_COMMIT/RELEASE.json均974733e完整SHA且verified；crm-sales.service active/running、NRestarts=0，8010健康status=up/database=ok；钉钉OA submission_enabled=true、sync_running=true、stream_connected=true。另独立核对新增customer/locking及timeline/settings源码哈希与本地一致。没有把服务健康等同真实角色端到端业务验收。
+- 构建、两轮CI及夹具修前/修后、本地门禁、服务器预检/apply/独立postcheck、manifest与包摘要归档ops/backups/release-974733e-20261027/（首候选证据另保留release-2799559-20261027）。仅本机隔离测试库crm_iso_release_timeline_test用于复现夹具并已删除、API8029正常停止、临时PG停止。用户原文档删除保持未提交，当前应用代码与最终发布SHA一致。
+- 本次部署请求已完成；长期全面质量目标未完成，不把本次发布泛化为未来独立部署授权或全项目无缺陷声明。后续以当前974733e实际服务器文件为新审查基线，历史快照仅用于取证。
+
 ## 2026-10-27 Agent 流式断开修复正式发布（14b717a）
 
 - 用户明确授权“确定没问题可以部署”。本地已验证提交 `14b717a8815aaae225cafb786d3cee509155ced5` 已推送 GitHub/Gitee `pending-acceptance`，两端引用一致。

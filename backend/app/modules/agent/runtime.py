@@ -6,7 +6,8 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+import anyio
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
@@ -217,7 +218,8 @@ async def run_turn_events(
     没有任何未提交的写状态；tool_call 让出时该工具已处理完毕，
     "写动作挂起等确认"的语义不受影响。
     """
-    user_message = AgentMessage(session_id=agent_session.id, role="user", content=text)
+    chat_id = agent_session.id
+    user_message = AgentMessage(session_id=chat_id, role="user", content=text)
     session.add(user_message)
     await session.commit()
     yield ("user_message", {"content": text})
@@ -311,6 +313,7 @@ async def run_turn_events(
     # 否则会话历史里"AI 说到一半的话"整段消失、刷新后对不上。
     streamed_parts: list[str] = []
     _reply_saved = False
+    reply_message = None
 
     try:
         for _ in range(max(1, min(5, settings.agent_max_tool_rounds))):
@@ -543,9 +546,8 @@ async def run_turn_events(
                     raise AppError(ErrorCode.EXTERNAL_ERROR, 'AI 未返回有效回复，请稍后重试', 502)
                 reply_text = "本轮工具结果已返回，请查看上面的记录；AI 总结暂时不可用。"
 
-        session.add(
-            AgentMessage(session_id=agent_session.id, role="assistant", content=reply_text)
-        )
+        reply_message = AgentMessage(session_id=chat_id, role="assistant", content=reply_text)
+        session.add(reply_message)
         if agent_session.title in ("", "新会话"):
             agent_session.title = text[:20]
         await session.commit()
@@ -563,21 +565,34 @@ async def run_turn_events(
             },
         )
     except (GeneratorExit, asyncio.CancelledError):
-        # Starlette 在客户端断开/请求超时时通常向 StreamingResponse 注入
-        # CancelledError；手动 aclose() 则是 GeneratorExit。两条路径都要保存
-        # 已经流出去的部分回复，再把原始取消继续外抛，不能把断线伪装成成功。
+        # ASGI disconnects keep cancelling subsequent awaits. Bound and shield
+        # compensation, and roll back unfinished tool work before saving text.
         partial = "".join(streamed_parts).strip()
         if partial and not _reply_saved:
-            session.add(
-                AgentMessage(
-                    session_id=agent_session.id,
-                    role="assistant",
-                    content=partial + "\n\n（连接中断，以上为已生成的部分）",
+            identity = inspect(reply_message).identity if reply_message is not None else None
+            with anyio.move_on_after(5, shield=True) as cleanup:
+                try:
+                    await session.rollback()
+                    # A cancelled commit may already have succeeded. Its mapped
+                    # identity survives rollback; don't duplicate that reply.
+                    saved = await session.get(AgentMessage, identity[0]) if identity else None
+                    chat = await session.get(AgentSession, chat_id)
+                    if saved is None and chat is not None:
+                        session.add(AgentMessage(
+                            session_id=chat_id, role="assistant",
+                            content=partial + "\n\n（连接中断，以上为已生成的部分）",
+                        ))
+                        if chat.title in ("", "新会话"):
+                            chat.title = text[:20]
+                        await session.commit()
+                except Exception:
+                    logging.getLogger('crm.agent').warning(
+                        'Could not persist interrupted reply for session %s', chat_id, exc_info=True,
+                    )
+            if cleanup.cancel_called:
+                logging.getLogger('crm.agent').warning(
+                    'Interrupted reply persistence timed out for session %s', chat_id,
                 )
-            )
-            if agent_session.title in ("", "新会话"):
-                agent_session.title = text[:20]
-            await session.commit()
         raise
     finally:
         # 无论正常结束、异常还是用户断线（GeneratorExit），都要关掉模型客户端。
