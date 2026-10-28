@@ -81,12 +81,12 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
   const baseline = useMemo(() => {
     const quantity = items.reduce((sum, item) => sum + item.quantity, 0)
     const amountTotal = items.reduce((sum, item) => sum + item.quantity * item.quoted_price, 0)
-    const costTotal = items.reduce(
-      (sum, item) => sum + item.cost_snapshot * item.quantity,
+    const costTotal = items.some((item) => item.cost_snapshot === null) ? null : items.reduce(
+      (sum, item) => sum + (item.cost_snapshot ?? 0) * item.quantity,
       0,
     )
     const unitCost =
-      currentVersion?.unit_cost ?? (quantity > 0 ? costTotal / quantity : 0)
+      currentVersion?.unit_cost ?? (quantity > 0 && costTotal !== null ? costTotal / quantity : null)
     const unitPrice =
       currentVersion?.unit_price ?? (quantity > 0 ? amountTotal / quantity : 0)
     return { quantity, unitCost, unitPrice, amountTotal }
@@ -98,14 +98,14 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
   const estimateQuantity = baseline.quantity
 
   const projected = useMemo(() => {
-    const unitProfit = basePrice - baseline.unitCost
-    const profitTotal = unitProfit * estimateQuantity
+    const unitProfit = baseline.unitCost === null ? null : basePrice - baseline.unitCost
+    const profitTotal = unitProfit === null ? null : unitProfit * estimateQuantity
     const amountTotal = basePrice * estimateQuantity
     return {
       unitProfit,
       profitTotal,
       amountTotal,
-      margin: amountTotal > 0 ? profitTotal / amountTotal : 0,
+      margin: profitTotal === null ? null : amountTotal > 0 ? profitTotal / amountTotal : 0,
     }
   }, [basePrice, baseline.unitCost, estimateQuantity])
 
@@ -217,7 +217,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
   ]
 
   const startPrice = Number(baseline.unitPrice.toFixed(2))
-  const minPrice = Math.max(0, Math.round(Math.min(startPrice * 0.7, breakEven * 0.8) * 100) / 100)
+  const minPrice = Math.max(0, Math.round(Math.min(startPrice * 0.7, (breakEven ?? startPrice) * 0.8) * 100) / 100)
   const maxPrice = Math.round(Math.max(startPrice * 1.15, (recommended ?? startPrice) * 1.1) * 100) / 100
 
   return (
@@ -342,7 +342,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   <div className="kpi-label">预计利润额</div>
                   <div
                     className="kpi-value"
-                    style={{ fontSize: 20, color: projected.profitTotal < 0 ? 'var(--crm-error)' : undefined }}
+                    style={{ fontSize: 20, color: (projected.profitTotal ?? 0) < 0 ? 'var(--crm-error)' : undefined }}
                   >
                     {money(projected.profitTotal)}
                   </div>
@@ -351,7 +351,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   <div className="kpi-label">预计利润率</div>
                   <div
                     className="kpi-value"
-                    style={{ fontSize: 20, color: projected.margin < 0 ? 'var(--crm-error)' : 'var(--crm-success)' }}
+                    style={{ fontSize: 20, color: projected.margin === null ? undefined : projected.margin < 0 ? 'var(--crm-error)' : 'var(--crm-success)' }}
                   >
                     {percent(projected.margin)}
                   </div>
@@ -387,7 +387,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                 })}
               </div>
 
-              {belowAuthorized || projected.profitTotal < 0 ? (
+              {belowAuthorized || (projected.profitTotal ?? 0) < 0 ? (
                 <div
                   style={{
                     marginTop: 12,
@@ -399,7 +399,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   }}
                 >
                   红线提醒：当前均价 {money(basePrice)}
-                  {projected.profitTotal < 0 ? ' 已经亏损' : ''}
+                  {(projected.profitTotal ?? 0) < 0 ? ' 已经亏损' : ''}
                   {belowAuthorized ? ' 已低于你的授权底价' : ''}
                   ，提交后会转主管审批，不要承诺客户可以特批。
                 </div>
@@ -464,13 +464,13 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   const effective = price ?? 0
                   const quantity = baseline.quantity
                   const amount = effective * quantity
-                  const profit = (effective - baseline.unitCost) * quantity
+                  const profit = baseline.unitCost === null ? null : (effective - baseline.unitCost) * quantity
                   return {
                     label: ['A', 'B', 'C'][index],
                     price,
                     amount,
                     profit,
-                    margin: amount > 0 ? profit / amount : 0,
+                    margin: profit === null ? null : amount > 0 ? profit / amount : 0,
                   }
                 })}
                 rowKey="label"

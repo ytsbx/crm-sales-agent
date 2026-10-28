@@ -86,8 +86,8 @@ export interface QuoteItemRow {
   is_custom?: boolean
   specification?: string | null
   quantity: number
-  cost_snapshot: number
-  logistics_cost_snapshot: number
+  cost_snapshot: number | null
+  logistics_cost_snapshot: number | null
   standard_price_snapshot?: number | null
   recommended_price_snapshot?: number | null
   minimum_price_snapshot?: number | null
@@ -96,8 +96,8 @@ export interface QuoteItemRow {
   customer_level_snapshot?: string | null
   quoted_price: number
   amount: number
-  profit_snapshot: number
-  profit_rate_snapshot: number
+  profit_snapshot: number | null
+  profit_rate_snapshot: number | null
   approval_required: boolean
   approval_reason?: string | null
   remark?: string | null

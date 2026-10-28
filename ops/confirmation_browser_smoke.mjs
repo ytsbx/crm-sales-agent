@@ -31,6 +31,7 @@ const quoteDeletions=[]
 let rejectQuoteDeletion=false
 let quoteCostProblems=[]
 let costDraft=false
+let quoteItems=[]
 const costRefreshes=[], costPageRequests=[]
 const skuCreates=[]
 const settingsRequests=[]
@@ -85,7 +86,7 @@ const server=createServer(async (req,res)=>{
       data=null
     }
     else if(path.endsWith('/quotes/121/versions')) data=[quoteVersion(131),quoteVersion(130)]
-    else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:[],charges:[],approval:null,cost_problems:quoteCostProblems}
+    else if(/\/quote-versions\/(130|131)$/.test(path)) data={version:quoteVersion(Number(path.split('/').at(-1))),quote:{id:121,quote_no:'ISO-QUOTE-121',customer_id:9,customer_name:'隔离报价客户',status:'pending',status_label:'审批中',current_version_id:131},items:quoteItems,charges:[],approval:null,cost_problems:quoteCostProblems}
     else if(path.endsWith('/quote-versions/131/cost-refresh') && req.method==='POST') {costRefreshes.push(131);quoteCostProblems=[];data={refreshed:1}}
     else if(path.endsWith('/products/201')) data={id:201,name:'隔离成本产品',status:'active',sku_count:1}
     else if(path.endsWith('/products/201/skus') && req.method==='POST') {skuCreates.push(body);data={id:202,product_id:201,sku_code:body.sku_code||'SKU-AUTO-202',...body}}
@@ -683,6 +684,15 @@ try {
   await waitFor(`document.getElementById('quote-cost-status')?.innerText.includes('请联系价格管理员')`)
   assert.equal(await evaluate(`document.querySelectorAll('#quote-cost-status a').length`),0)
   console.log('BROWSER_QUOTE_COST_RESTRICTED_USER_SEES_STATUS_AND_ADMIN_GUIDANCE=true')
+  quoteCostProblems=[]
+  quoteItems=[{id:401,sku_id:1,sku_code:'REDACTED-COST-SKU',quantity:10,quoted_price:29,amount:290,cost_snapshot:null,logistics_cost_snapshot:null,profit_snapshot:null,profit_rate_snapshot:null,minimum_price_snapshot:null}]
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('REDACTED-COST-SKU')`)
+  assert.equal(await evaluate(`document.body.innerText.includes('这个页面没能加载出来')`),false)
+  const redactedRow=await evaluate(`Array.from(document.querySelectorAll('.semi-table-tbody tr')).find(r=>r.innerText.includes('REDACTED-COST-SKU')).innerText`)
+  assert.ok(!redactedRow.includes('0.0%'),'redacted profit must not become zero margin')
+  console.log('BROWSER_QUOTE_REDACTED_COST_NULL_RENDERS_WITHOUT_CRASH=true')
+  quoteItems=[]
   // 普通业务员的个人页不依赖管理权限，管理深链也只能回到个人页。
   user.roles=['salesperson'];user.permissions=['customer:view']
   const salesAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})

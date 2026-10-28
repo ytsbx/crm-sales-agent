@@ -749,9 +749,10 @@ export default function QuoteDetailPage() {
       title: legacyBasis ? '成本快照（含运费）' : '商品成本',
       dataIndex: 'cost_snapshot',
       width: 130,
-      render: (v: number, record: QuoteItemRow) => {
+      render: (v: number | null, record: QuoteItemRow) => {
         const problem = detail.cost_problems?.find((p) => p.item_id === record.id)
-        return problem ? problem.reason : `¥${(legacyBasis ? v + record.logistics_cost_snapshot : v).toFixed(2)}`
+        if (v === null || (legacyBasis && record.logistics_cost_snapshot === null)) return '-'
+        return problem ? problem.reason : `¥${(legacyBasis ? v + record.logistics_cost_snapshot! : v).toFixed(2)}`
       },
     },
     {
@@ -809,7 +810,7 @@ export default function QuoteDetailPage() {
       title: '利润率',
       dataIndex: 'profit_rate_snapshot',
       width: 100,
-      render: (v: number) => `${(v * 100).toFixed(2)}%`,
+      render: (v: number | null) => v === null ? '-' : `${(v * 100).toFixed(2)}%`,
     },
     {
       title: '金额',
@@ -1773,7 +1774,8 @@ export default function QuoteDetailPage() {
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            成本 ¥{(priceTarget ? priceTarget.cost_snapshot + priceTarget.logistics_cost_snapshot : 0).toFixed(2)}
+            成本 {priceTarget?.cost_snapshot == null || priceTarget.logistics_cost_snapshot == null
+              ? '-' : `¥${(priceTarget.cost_snapshot + priceTarget.logistics_cost_snapshot).toFixed(2)}`}
             ｜建议价 ¥{priceTarget?.recommended_price_snapshot}
             ｜最低保护价 ¥{priceTarget?.minimum_price_snapshot?.toFixed(2)}
           </div>
