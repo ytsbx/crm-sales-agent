@@ -89,6 +89,8 @@ const server=createServer(async (req,res)=>{
     else if(path.endsWith('/tasks')) data={items:[task],total:1,page:1,page_size:20}
     else if(path.endsWith('/tasks/batch-complete') && req.method==='POST') { batchBodies.push(body); data={completed:[7],skipped:[]} }
     else if(path.endsWith('/opportunities')) data={items:[],total:0}
+    else if(path==='/api/v1/quotes') data={items:exactQuote?[{id:121,quote_no:'EXACT-QUOTE-121',current_version_no:2,current_version_amount:99999999999999.98,current_version_amount_exact:'99999999999999.99',currency:'CNY',status:'accepted',status_label:'已接受'}]:[],total:exactQuote?1:0}
+    else if(path.endsWith('/quotes/121/version-comparison')) data={versions:exactQuote?[{version_id:131,version_no:2,approval_status:'approved',currency:'CNY',quantity:100,item_count:1,sku_count:1,amount_total:99999999999999.98,amount_total_exact:'99999999999999.99',cost_total:null,profit_total:null,margin:null,avg_price:null,charges:[]}]:[],diffs:[],latest_version_id:131}
     else if(path.endsWith('/quotes/121') && req.method==='DELETE') {
       quoteDeletions.push(121)
       if(rejectQuoteDeletion) {
@@ -796,7 +798,13 @@ try {
   assert.ok(await evaluate(`document.querySelector('.semi-modal-content').innerText.includes('69,999,999,999,999.99')`))
   console.log('BROWSER_INSTALLMENT_PREVIEW_PRESERVES_EXACT_TOTAL_AND_TAIL=true')
   exactQuote=true
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes`})
+  await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('EXACT-QUOTE-121')`)
+  assert.ok(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('99,999,999,999,999.99')`))
+  console.log('BROWSER_QUOTE_LIST_PRESERVES_EXACT_TOTAL=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  await waitFor(`Array.from(document.querySelectorAll('.semi-table-tbody')).some(el=>el.innerText.includes('99,999,999,999,999.99'))`)
+  console.log('BROWSER_QUOTE_COMPARISON_PRESERVES_EXACT_AMOUNT=true')
   await waitFor(`Array.from(document.querySelectorAll('button')).some(el=>el.innerText.trim()==='转销售订单')`)
   await evaluate(`Array.from(document.querySelectorAll('button')).find(el=>el.innerText.trim()==='转销售订单').click()`)
   await waitFor(`document.querySelector('.semi-modal-content')?.innerText.includes('99,999,999,999,999.99')`)

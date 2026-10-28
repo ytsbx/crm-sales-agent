@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
+import { formatMoney } from '../../shared/components/money'
 import SectionCard from '../../shared/components/SectionCard'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -112,8 +113,8 @@ export default function QuoteListPage() {
       title: '报价总额',
       dataIndex: 'current_version_amount',
       width: 140,
-      render: (v: number | null) =>
-        v === null || v === undefined ? '-' : `¥${v.toLocaleString('zh-CN')}`,
+      render: (v: number | null, record: Quote) =>
+        formatMoney(record.current_version_amount_exact ?? v, record.currency),
     },
     {
       title: '报价状态',

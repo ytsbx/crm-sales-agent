@@ -169,3 +169,34 @@ def test_quote_item_and_charge_expose_exact_amounts_without_float_rounding():
     assert item_result['quoted_price_exact'] == '999999999999.9999'
     assert item_result['amount_exact'] == '99999999999999.99'
     assert charge_result['amount_exact'] == '0.01'
+
+
+def test_quote_list_preserves_exact_total_and_missing_version():
+    from app.modules.quote.model import Quote, QuoteVersion
+    quote = Quote(id=1, quote_no='Q-EXACT', customer_id=1, status='draft')
+    version = QuoteVersion(id=2, quote_id=1, total_amount=Decimal('99999999999999.99'), currency='CNY')
+    assert quotes.serialize_quote(quote, version=version)['current_version_amount_exact'] == '99999999999999.99'
+    assert quotes.serialize_quote(quote)['current_version_amount_exact'] is None
+
+
+@pytest.mark.anyio
+async def test_comparison_preserves_exact_product_amount_without_exposing_cost():
+    from app.modules.quote.model import QuoteItem, QuoteVersion
+    from unittest.mock import Mock
+    version = QuoteVersion(id=2, quote_id=1, version_no=1, currency='CNY',
+                           total_amount=Decimal('99999999999999.99'))
+    item = QuoteItem(id=1, quote_version_id=2, sku_id=1, quantity=Decimal('100'),
+                     quoted_price=Decimal('999999999999.9999'),
+                     cost_snapshot=Decimal('1'), package_cost_snapshot=Decimal('0'),
+                     logistics_cost_snapshot=Decimal('0'), profit_snapshot=Decimal('999999999998.9999'))
+    results = []
+    for rows in [[version], [item], []]:
+        result = Mock()
+        result.scalars.return_value.all.return_value = rows
+        results.append(result)
+    session = SimpleNamespace(execute=AsyncMock(side_effect=results))
+    data = await quotes.version_comparison(session, 1)
+    assert data['versions'][0]['amount_total_exact'] == '99999999999999.99'
+    redacted = quotes.strip_comparison_cost(data)
+    assert redacted['versions'][0]['amount_total_exact'] == '99999999999999.99'
+    assert redacted['versions'][0]['cost_total'] is None

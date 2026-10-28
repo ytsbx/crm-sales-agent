@@ -9,6 +9,7 @@ import {
 } from '../../shared/api/quote'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import { formatMoney } from '../../shared/components/money'
 
 /**
  * 报价 What-if（UI 设计稿 `ai_sales_agent` 右栏「What-if 边际测算」+ 正文
@@ -176,7 +177,8 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
       dataIndex: 'amount_total',
       width: 120,
       align: 'right' as const,
-      render: (value: number) => money(value),
+      render: (value: number, record: VersionComparisonRow) =>
+        record.amount_total_exact != null ? formatMoney(record.amount_total_exact, record.currency) : money(value),
     },
     {
       title: '成本',

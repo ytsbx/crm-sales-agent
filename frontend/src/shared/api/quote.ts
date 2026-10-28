@@ -15,6 +15,7 @@ export interface Quote {
   current_version_id?: number | null
   current_version_no?: number | null
   current_version_amount?: number | null
+  current_version_amount_exact?: string | null
   /** 当前版本的币种（第九批 §9.9）：金额不能假设是人民币 */
   currency?: string | null
   approval_status?: string | null
@@ -179,6 +180,7 @@ export interface VersionComparisonRow {
   sku_count: number
   quantity: number
   amount_total: number
+  amount_total_exact?: string | null
   charge_amount: number
   discount_amount: number
   total_amount: number
