@@ -212,6 +212,8 @@ export interface VersionComparisonChange {
   field: 'added' | 'removed' | 'quantity' | 'quoted_price' | 'charge_amount' | 'discount_amount'
   before: number | null
   after: number | null
+  before_exact?: string | null
+  after_exact?: string | null
 }
 
 export interface VersionComparisonDiff {
@@ -220,6 +222,7 @@ export interface VersionComparisonDiff {
   amount_delta: number
   amount_delta_exact?: string | null
   profit_delta: number
+  profit_delta_exact?: string | null
   margin_delta: number
   changes: VersionComparisonChange[]
 }

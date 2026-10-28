@@ -228,3 +228,299 @@ async def test_comparison_delta_preserves_cent_changes(before_price, after_price
     data = await quotes.version_comparison(session, 1)
     assert Decimal(str(data['diffs'][0]['amount_delta'])) == Decimal(expected)
     assert data['diffs'][0]['amount_delta_exact'] == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('field,before,after', [
+    ('charge_amount', '99999999999999.98', '99999999999999.99'),
+    ('discount_amount', '-99999999999999.98', '-99999999999999.99'),
+    ('charge_amount', '10.00', '10.01'),
+    ('discount_amount', '-10.00', '-10.01'),
+    ('charge_amount', '10.00', '10.00'),
+    ('discount_amount', '-10.00', '-10.00'),
+])
+async def test_comparison_fee_changes_preserve_exact_values(field, before, after):
+    from app.modules.quote.model import QuoteVersion
+    from unittest.mock import Mock
+    versions = [QuoteVersion(id=i, quote_id=1, version_no=i, currency='CNY',
+                             charge_amount=Decimal('0.00'), discount_amount=Decimal('0.00'))
+                for i in (1, 2)]
+    for version, value in zip(versions, (before, after), strict=True):
+        setattr(version, field, Decimal(value))
+    results = []
+    for rows in (versions, [], []):
+        result = Mock()
+        result.scalars.return_value.all.return_value = rows
+        results.append(result)
+    data = await quotes.version_comparison(SimpleNamespace(execute=AsyncMock(side_effect=results)), 1)
+    changes = data['diffs'][0]['changes']
+    if before == after:
+        assert changes == []
+    else:
+        assert len(changes) == 1
+        assert changes[0]['field'] == field
+        assert changes[0]['before_exact'] == before
+        assert changes[0]['after_exact'] == after
+        assert changes[0]['before'] == float(before)
+        assert changes[0]['after'] == float(after)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('before_profit,after_profit,expected', [
+    ('999999999998.9998', '999999999998.9999', '0.01'),
+    ('999999999998.9999', '999999999998.9998', '-0.01'),
+    ('-999999999998.9998', '-999999999998.9999', '-0.01'),
+    ('1.0000', '1.0001', '0.01'),
+    ('1.0000', '1.0000', '0.00'),
+])
+async def test_comparison_profit_delta_preserves_cents(before_profit, after_profit, expected):
+    from app.modules.quote.model import QuoteItem, QuoteVersion
+    from unittest.mock import Mock
+    versions = [QuoteVersion(id=i, quote_id=1, version_no=i, currency='CNY',
+                             charge_amount=Decimal('0.00'), discount_amount=Decimal('0.00'))
+                for i in (1, 2)]
+    items = [QuoteItem(id=i, quote_version_id=i, sku_id=1, quantity=Decimal('100'),
+                       quoted_price=Decimal('999999999999.9999'),
+                       cost_snapshot=Decimal('1'), logistics_cost_snapshot=Decimal('0'),
+                       profit_snapshot=Decimal(profit))
+             for i, profit in enumerate((before_profit, after_profit), 1)]
+    results = []
+    for rows in (versions, items, []):
+        result = Mock()
+        result.scalars.return_value.all.return_value = rows
+        results.append(result)
+    data = await quotes.version_comparison(SimpleNamespace(execute=AsyncMock(side_effect=results)), 1)
+    assert Decimal(str(data['diffs'][0]['profit_delta'])) == Decimal(expected)
+    assert data['diffs'][0]['profit_delta_exact'] == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('kind', ['quoted_price', 'quantity', 'added', 'removed'])
+async def test_comparison_item_changes_preserve_exact_values(kind):
+    from app.modules.quote.model import QuoteItem, QuoteVersion
+    from unittest.mock import Mock
+    versions = [QuoteVersion(id=i, quote_id=1, version_no=i, currency='CNY',
+                             charge_amount=Decimal('0.00'), discount_amount=Decimal('0.00'))
+                for i in (1, 2)]
+    values = ('9999999999999.988', '9999999999999.989') if kind == 'quantity' else (
+        '999999999999.9991', '999999999999.9992')
+    items = [QuoteItem(id=i, quote_version_id=i, sku_id=1,
+                       quantity=Decimal(value) if kind == 'quantity' else Decimal('1'),
+                       quoted_price=Decimal('0.0001') if kind == 'quantity' else Decimal(value),
+                       cost_snapshot=Decimal('1'), logistics_cost_snapshot=Decimal('0'),
+                       profit_snapshot=Decimal('0'))
+             for i, value in enumerate(values, 1)]
+    if kind == 'added':
+        items = items[1:]
+    elif kind == 'removed':
+        items = items[:1]
+    results = []
+    for rows in (versions, items, []):
+        result = Mock()
+        result.scalars.return_value.all.return_value = rows
+        results.append(result)
+    data = await quotes.version_comparison(SimpleNamespace(execute=AsyncMock(side_effect=results)), 1)
+    change = data['diffs'][0]['changes'][0]
+    assert change['field'] == kind
+    assert change['before_exact'] == (None if kind == 'added' else values[0])
+    assert change['after_exact'] == (None if kind == 'removed' else values[1])
+    assert change['before'] == (None if kind == 'added' else float(values[0]))
+    assert change['after'] == (None if kind == 'removed' else float(values[1]))
+
+
+@pytest.mark.parametrize('value,expected', [
+    ('0', '0.000000'), ('1', '1.000000'), ('-9999', '-9999.000000'),
+    ('-9999.999999', '-9999.999999'), ('9999.999999', '9999.999999'),
+    ('-9999.9999994', '-9999.999999'),
+])
+def test_profit_rate_snapshot_storage_boundary(value, expected):
+    assert quotes._stored_profit_rate(Decimal(value)) == Decimal(expected)
+
+
+@pytest.mark.parametrize('value', ['-10000', '10000', '-199999', '-9999.9999996'])
+def test_profit_rate_snapshot_overflow_has_actionable_error(value):
+    with pytest.raises(AppError, match='亏损率超出可保存范围'):
+        quotes._stored_profit_rate(Decimal(value))
+
+
+@pytest.mark.anyio
+async def test_sku_snapshot_rejects_unstorable_profit_rate(case):
+    raw, session, quote, version = case
+    await build(raw, session, version, cost='complete', amount='20')
+    with pytest.raises(AppError, match='亏损率超出可保存范围'):
+        await quotes.build_item_snapshot(
+            session, version=version, sku_id=1, quantity=Decimal('1'), customer_id=1,
+            quoted_price=Decimal('0.0001'), logistics_cost=Decimal('0'),
+            opportunity_item_id=None, spec_snapshot=None, remark=None, role_codes=USER.roles)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('price,rejected', [('0.0001', True), ('0.0020', False)])
+async def test_basis_refresh_checks_profit_rate_storage(monkeypatch, price, rejected):
+    from app.modules.quote.model import QuoteItem, QuoteVersion
+    item = QuoteItem(id=1, sku_id=None, quote_version_id=1,
+                     quantity=Decimal('1'), quoted_price=Decimal(price),
+                     cost_snapshot=Decimal('20'), package_cost_snapshot=Decimal('0'),
+                     logistics_cost_snapshot=Decimal('0'), tax_refund_snapshot=Decimal('0'),
+                     cost_present_snapshot=True, cost_complete_snapshot=True)
+    version = QuoteVersion(id=1, quote_id=1, currency='CNY')
+    monkeypatch.setattr(pricing, 'resolve_min_margin', AsyncMock(return_value=(Decimal('0'), True)))
+    if rejected:
+        with pytest.raises(AppError, match='亏损率超出可保存范围'):
+            await quotes.apply_current_basis_to_item(SimpleNamespace(), item, version, user=USER)
+    else:
+        await quotes.apply_current_basis_to_item(SimpleNamespace(), item, version, user=USER)
+        assert item.profit_rate_snapshot == Decimal('-9999.000000')
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('discount', [False, True])
+async def test_quote_fee_aggregate_overflow_is_rejected_before_storage(case, discount):
+    from app.modules.quote.model import QuoteCharge
+    raw, session, quote, version = case
+    for is_discount in (discount, not discount, discount):
+        raw.add(QuoteCharge(quote_version_id=version.id, charge_type='other',
+                            amount=Decimal('-60000000000000') if is_discount else Decimal('60000000000000'),
+                            is_discount=is_discount))
+    raw.flush()
+    with pytest.raises(AppError, match='超出可保存范围'):
+        await quotes.recalc_version(session, version)
+
+
+@pytest.mark.anyio
+async def test_quote_fee_offset_with_storable_aggregates_remains_valid(case):
+    from app.modules.quote.model import QuoteCharge
+    raw, session, quote, version = case
+    for is_discount in (False, True):
+        raw.add(QuoteCharge(quote_version_id=version.id, charge_type='other',
+                            amount=Decimal('-60000000000000') if is_discount else Decimal('60000000000000'),
+                            is_discount=is_discount))
+    raw.flush()
+    await quotes.recalc_version(session, version)
+    assert version.total_amount == Decimal('0.00')
+    assert version.charge_amount == Decimal('60000000000000.00')
+    assert version.discount_amount == Decimal('-60000000000000.00')
+
+
+@pytest.mark.parametrize('value,rejected', [
+    ('999999999999.99', False), ('999999999999.9999', False),
+    ('1000000000000.00', True), ('999999999999.99996', True),
+])
+def test_quote_floor_storage_range(value, rejected):
+    if rejected:
+        with pytest.raises(AppError, match='底价超出可保存范围'):
+            quotes._assert_floor_in_range(Decimal(value))
+    else:
+        quotes._assert_floor_in_range(Decimal(value))
+
+
+@pytest.mark.anyio
+async def test_basis_refresh_rejects_floor_rounding_overflow(monkeypatch):
+    from app.modules.quote.model import QuoteItem, QuoteVersion
+    item = QuoteItem(id=1, sku_id=None, quote_version_id=1,
+                     quantity=Decimal('1'), quoted_price=Decimal('999999999999.9999'),
+                     cost_snapshot=Decimal('999999999999.9999'), package_cost_snapshot=Decimal('0'),
+                     logistics_cost_snapshot=Decimal('0'), tax_refund_snapshot=Decimal('0'),
+                     cost_present_snapshot=True, cost_complete_snapshot=True)
+    version = QuoteVersion(id=1, quote_id=1, currency='CNY')
+    monkeypatch.setattr(pricing, 'resolve_min_margin', AsyncMock(return_value=(Decimal('0'), True)))
+    with pytest.raises(AppError, match='底价超出可保存范围'):
+        await quotes.apply_current_basis_to_item(SimpleNamespace(), item, version, user=USER)
+
+
+@pytest.mark.anyio
+async def test_sku_snapshot_rejects_computed_floor_overflow(case, monkeypatch):
+    raw, session, quote, version = case
+    original = pricing.calculate_price
+    async def calculate_with_high_floor(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        result['minimum_price_cny'] = 1000000000000.00
+        kwargs['snapshot_out']['minimum_price_cny'] = Decimal('1000000000000.00')
+        return result
+    monkeypatch.setattr(pricing, 'calculate_price', calculate_with_high_floor)
+    with pytest.raises(AppError, match='底价超出可保存范围'):
+        await quotes.build_item_snapshot(
+            session, version=version, sku_id=1, quantity=Decimal('1'), customer_id=1,
+            quoted_price=Decimal('100'), logistics_cost=Decimal('0'),
+            opportunity_item_id=None, spec_snapshot=None, remark=None, role_codes=USER.roles)
+
+
+@pytest.mark.anyio
+async def test_auto_quote_price_and_price_snapshots_keep_decimal_rule(case, monkeypatch):
+    from app.modules.pricing.model import PriceRule
+    raw, session, quote, version = case
+    expected = Decimal('999999999999.9992')
+    # SQLite Numeric 自身先经浮点存取，不能作为大额 Decimal 源值的证据。
+    # 用原始 Decimal 规则替换查价结果，实际计算和快照构建照常执行。
+    rule = PriceRule(sku_id=1, effective_from=date(2020, 1, 1),
+                     standard_price=expected, guide_price=expected, minimum_price=expected)
+    monkeypatch.setattr(pricing, 'find_price_rule', AsyncMock(return_value=rule))
+    item = await quotes.build_item_snapshot(
+        session, version=version, sku_id=1, quantity=Decimal('100'), customer_id=1,
+        quoted_price=None, logistics_cost=Decimal('0'), opportunity_item_id=None,
+        spec_snapshot=None, remark=None, role_codes=USER.roles)
+    assert item.quoted_price == expected
+    assert item.standard_price_snapshot == expected
+    assert item.recommended_price_snapshot == expected
+    assert item.minimum_price_snapshot == expected
+    snapshots = {}
+    public = await pricing.calculate_price(
+        session, sku_id=1, quantity=Decimal('100'), customer_id=1,
+        role_codes=USER.roles, snapshot_out=snapshots)
+    assert snapshots['recommended_price'] == expected
+    assert snapshots['minimum_price_cny'] == expected
+    assert isinstance(public['recommended_price'], float)
+    assert 'snapshot_out' not in public and 'snapshot_values' not in public
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('changes,expected_source', [
+    ({'quoted_price': Decimal('101')}, None),
+    ({'quoted_price': Decimal('100'), 'quantity': Decimal('2')}, 'general'),
+    ({'remark': '只改备注'}, 'general'),
+])
+async def test_edit_price_marks_manual_only_on_actual_price_change(case, changes, expected_source):
+    from app.modules.quote.schema import QuoteItemUpdate
+    raw, session, quote, version = case
+    item = await build(raw, session, version, cost='complete')
+    item.price_source = 'general'
+    raw.commit()
+    await quote_router.update_item(item.id, QuoteItemUpdate(**changes), REQUEST, USER, session)
+    assert item.price_source == expected_source
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('specific', [False, True])
+async def test_lookup_keeps_decimal_unit_price_for_quote_callers(case, monkeypatch, specific):
+    from app.modules.pricing.model import PriceRule, CustomerPriceRule
+    from app.modules.customer.model import Customer
+    raw, session, quote, version = case
+    expected = Decimal('999999999999.9992')
+    rule = PriceRule(sku_id=1, standard_price=expected, guide_price=expected)
+    agreed = CustomerPriceRule(customer_id=1, sku_id=1, agreed_price=expected) if specific else None
+    monkeypatch.setattr(pricing, 'find_price_rule', AsyncMock(return_value=rule))
+    monkeypatch.setattr(pricing, 'find_customer_price', AsyncMock(return_value=agreed))
+    exact = {}
+    data = await pricing.lookup_applicable_price(
+        session, customer=raw.get(Customer, 1), sku_id=1, quantity=Decimal('100'), snapshot_out=exact)
+    assert exact['unit_price'] == expected
+    assert data['unit_price'] == float(expected)
+    assert 'snapshot_out' not in data
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('status', ['pending', 'approved'])
+@pytest.mark.parametrize('entry', ['price', 'cost'])
+async def test_refresh_locked_version_preserves_item(case, status, entry):
+    raw, session, quote, version = case
+    item = await build(raw, session, version, cost='complete')
+    item.price_source = 'general'
+    version.approval_status = status
+    raw.commit()
+    before = (item.quoted_price, item.cost_snapshot, item.price_source, version.total_amount)
+    with pytest.raises(AppError):
+        if entry == 'price':
+            await quote_router.price_refresh(version.id, REQUEST, USER, session)
+        else:
+            await quote_router.cost_refresh(version.id, REQUEST, USER, session)
+    assert (item.quoted_price, item.cost_snapshot, item.price_source, version.total_amount) == before

@@ -672,6 +672,7 @@ async def lookup_applicable_price(
     quantity: Decimal,
     on_date: date | None = None,
     include_customer_specific: bool | None = None,
+    snapshot_out: dict[str, Decimal | None] | None = None,
 ) -> dict:
     """统一查价（方案 §4：只回答「卖多少、依据是什么」）。
 
@@ -682,6 +683,8 @@ async def lookup_applicable_price(
     - `include_customer_specific` **不传就按客户自动判**（公海客户不参与专属价，
       见 `customer_specific_allowed`）；显式传 `True/False` 可覆盖。
     """
+    if snapshot_out is not None:
+        snapshot_out["unit_price"] = None
     if include_customer_specific is None:
         include_customer_specific = customer_specific_allowed(customer)
     # 停用/删除的 SKU 不给有效价（issue #7 实测：停用后查价仍返回
@@ -693,6 +696,8 @@ async def lookup_applicable_price(
     level = (customer.level or "").strip() or None
 
     async def rule_payload(rule: PriceRule, source: str, note: str | None = None) -> dict:
+        if snapshot_out is not None:
+            snapshot_out["unit_price"] = rule.guide_price
         return {
             "status": "ok",
             "source": source,
@@ -715,6 +720,8 @@ async def lookup_applicable_price(
         else None
     )
     if customer_price is not None:
+        if snapshot_out is not None:
+            snapshot_out["unit_price"] = customer_price.agreed_price
         return {
             "status": "ok",
             "source": "customer_specific",
@@ -900,6 +907,7 @@ async def calculate_price(
     shipping_method: str | None = None,
     payment_terms: str | None = None,
     logistics_in_base_cost: bool = False,
+    snapshot_out: dict[str, Decimal | None] | None = None,
 ) -> dict:
     """核价。
 
@@ -1332,6 +1340,20 @@ async def calculate_price(
                 f"折扣 {discount_pct:.1f}% 超过角色上限 {float(role_discount_limit) * 100:.0f}%"
             )
         warnings.append("该报价需要审批：" + "，".join(reason))
+
+    # 内部报价落库直接接收原始定点值，避免经过下面的 HTTP 浮点序列化。
+    # 不把这些值放进公开响应，继续由调用方原有权限裁剪响应。
+    if snapshot_out is not None:
+        snapshot_out.update({
+            "goods_cost": goods_cost,
+            "package_cost": package,
+            "logistics_cost": logistics,
+            "standard_price": standard_price,
+            "recommended_price": recommended,
+            "minimum_price_cny": floor_price_cny,
+            "cost_in_quote_currency": cost_for_profit,
+            "tax_refund": tax_refund,
+        })
 
     return {
         "sku": {

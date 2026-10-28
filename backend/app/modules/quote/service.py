@@ -904,11 +904,13 @@ async def create_quote(
                     f"SKU {sku_label}：需求含 {'、'.join(context_bits)}，"
                     f"物流/包装费用未计入拟报价，请在附加费用中补充"
                 )
+            lookup_values: dict[str, Decimal | None] = {}
             lookup = await pricing_service.lookup_applicable_price(
                 session,
                 customer=customer_obj,
                 sku_id=opp_item.sku_id,
                 quantity=opp_item.quantity,
+                snapshot_out=lookup_values,
                 # 公海客户不参与专属价：判据已收进
                 # `pricing_service.customer_specific_allowed`（**全项目只此一处**）——
                 # 不传即按客户自动判。原来这里与查价路由各写一份，
@@ -916,7 +918,7 @@ async def create_quote(
             )
             if lookup["status"] == "ok" and lookup["unit_price"] is not None:
                 quoted_price, _ = convert_cny_to(
-                    Decimal(str(lookup["unit_price"])),
+                    lookup_values["unit_price"],
                     to_currency=version.currency,
                     rate=version.exchange_rate_snapshot,
                 )
@@ -1300,6 +1302,7 @@ async def _build_custom_item_snapshot(
         if min_ratio < 1
         else basis_cost.quantize(Decimal("0.01"))
     )  # 人民币
+    _assert_floor_in_range(minimum_price)
     # 利润必须与报价同币种：外币单要先把人民币成本折过去再减，
     # 否则会算出"50 美元 − 350 人民币"这种假数字（与定价服务 cost_in_quote_currency 同口径）
     fx = version.exchange_rate_snapshot
@@ -1351,7 +1354,7 @@ async def _build_custom_item_snapshot(
         customer_level_snapshot=None,
         quoted_price=price,
         profit_snapshot=profit,
-        profit_rate_snapshot=profit_rate.quantize(Decimal("0.000001")),
+        profit_rate_snapshot=_stored_profit_rate(profit_rate),
         tax_refund_snapshot=ZERO,
         profit_with_refund_snapshot=profit,
         approval_required=below_floor,
@@ -1424,6 +1427,28 @@ def _assert_money_in_range(amount: Decimal, *, label: str) -> None:
             "请检查数量与单价是不是多打了几位",
             422,
         )
+
+
+def _assert_floor_in_range(value: Decimal | None) -> None:
+    """派生底价也必须能存入单价快照 Numeric(16,4)。"""
+    if value is not None and abs(value.quantize(Decimal("0.0001"))) >= Decimal("1000000000000"):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "底价超出可保存范围，请检查成本和价格权限配置",
+            422,
+        )
+
+
+def _stored_profit_rate(value: Decimal) -> Decimal:
+    """校验最终六位快照能存入 Numeric(10,6)，避免写库时溢出。"""
+    rounded = value.quantize(Decimal("0.000001"))
+    if abs(rounded) >= Decimal("10000"):
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            "亏损率超出可保存范围，请调整售价或成本",
+            422,
+        )
+    return rounded
 
 
 def item_cost_is_incomplete(item: QuoteItem) -> bool:
@@ -1601,6 +1626,7 @@ async def apply_current_basis_to_item(
     protection_price = max(protection_candidates) if protection_candidates else None
     floors = [v for v in (floor_from_margin, protection_price) if v is not None]
     fresh_floor = max(floors).quantize(Decimal("0.01")) if floors else None
+    _assert_floor_in_range(fresh_floor)
 
     # ---- 「只紧不松」：底价不得低于这条明细**原来那一版**（2026-10-09 与主人确认）----
     #
@@ -1636,9 +1662,9 @@ async def apply_current_basis_to_item(
     cost_in_quote = (basis_cost / fx) if foreign else basis_cost
     profit = price - cost_in_quote
     item.profit_snapshot = profit
-    item.profit_rate_snapshot = (
+    item.profit_rate_snapshot = _stored_profit_rate(
         (profit / price) if price else ZERO
-    ).quantize(Decimal("0.000001"))
+    )
     item.profit_with_refund_snapshot = profit + (item.tax_refund_snapshot or ZERO)
 
 
@@ -1726,6 +1752,7 @@ async def build_item_snapshot(
             f"{sku.sku_code} 的「{'、'.join(master['unconfirmed_labels'])}」主数据尚未确认"
         )
 
+    snapshot_values: dict[str, Decimal | None] = {}
     result = await pricing_service.calculate_price(
         session,
         sku_id=sku_id,
@@ -1742,6 +1769,7 @@ async def build_item_snapshot(
         # 运费是否进产品核价基数 —— 由**这一版的口径**决定，不由全局开关决定。
         # 新报价 False（运费代收代付，不抬高产品价与利润）；历史版本 True（老口径）。
         logistics_in_base_cost=version_logistics_in_base_cost(version),
+        snapshot_out=snapshot_values,
     )
     if quoted_price is not None:
         if Decimal(str(quoted_price)) <= 0:
@@ -1753,7 +1781,7 @@ async def build_item_snapshot(
     ) and result["recommended_price"] is not None:
         # 未传拟报价时只允许采用已维护的客户专属价/指导价；成本反推值仅供内部
         # 试算，不得因为它出现在 recommended_price 中就自动写成对客报价。
-        price = Decimal(str(result["recommended_price"]))
+        price = snapshot_values["recommended_price"]
     else:
         # A06/D5：缺少已批准销售价时，不能把成本推算建议变成正式报价。
         raise AppError(
@@ -1764,12 +1792,14 @@ async def build_item_snapshot(
     # 利润必须与报价同币种，否则会拿美元价减人民币成本（曾算出 -452% 的利润率）。
     # cost_snapshot 等成本类快照仍按本币存：审批判定在人民币口径下做，
     # minimum_price_snapshot 也是人民币，混币种比较会得出错误结论。
-    cost_in_quote_currency = Decimal(str(result["cost_in_quote_currency"]))
+    cost_in_quote_currency = snapshot_values["cost_in_quote_currency"]
     profit = price - cost_in_quote_currency
     profit_rate = (profit / price) if price else ZERO
 
-    tax_refund = Decimal(str(result.get("tax_refund") or 0))
+    tax_refund = snapshot_values["tax_refund"] or ZERO
     profit_with_refund = profit + tax_refund
+    minimum_price = snapshot_values["minimum_price_cny"]
+    _assert_floor_in_range(minimum_price)
 
     return QuoteItem(
         quote_version_id=version.id,
@@ -1795,35 +1825,23 @@ async def build_item_snapshot(
         # §8.14：把"这条明细用的是哪一版主数据"一并落快照（0 → NULL＝当时还没确认过）
         master_version_no=master["version_no"] or None,
         quantity=quantity,
-        cost_snapshot=Decimal(str(result["cost"]["goods_cost"])),
+        cost_snapshot=snapshot_values["goods_cost"],
         # 完整性随快照一起存（第七批 P1-1）：审批读的是快照，不是活成本行；
         # 不落这一列，"只填了一项成本"在审批侧就无法与"成本完整"区分。
         cost_complete_snapshot=result["cost"].get("cost_complete"),
         cost_present_snapshot=result["has_cost"],
-        package_cost_snapshot=Decimal(str(result["cost"]["package_cost"])),
-        logistics_cost_snapshot=Decimal(str(result["cost"]["logistics_cost"] or 0)),
-        standard_price_snapshot=(
-            Decimal(str(result["standard_price"]))
-            if result.get("standard_price") is not None
-            else None
-        ),
-        recommended_price_snapshot=(
-            Decimal(str(result["recommended_price"]))
-            if result.get("recommended_price") is not None
-            else None
-        ),
+        package_cost_snapshot=snapshot_values["package_cost"],
+        logistics_cost_snapshot=snapshot_values["logistics_cost"] or ZERO,
+        standard_price_snapshot=snapshot_values["standard_price"],
+        recommended_price_snapshot=snapshot_values["recommended_price"],
         # 存**人民币**口径（result["minimum_price"] 在外币单上已折成计价币种，
         # 拿它落快照会让审批把 3.6 美元的保护价当成 3.6 人民币去比）
-        minimum_price_snapshot=(
-            Decimal(str(result["minimum_price_cny"]))
-            if result.get("minimum_price_cny") is not None
-            else None
-        ),
+        minimum_price_snapshot=minimum_price,
         price_source=price_source,
         customer_level_snapshot=customer_level_snapshot,
         quoted_price=price,
         profit_snapshot=profit,
-        profit_rate_snapshot=profit_rate.quantize(Decimal("0.000001")),
+        profit_rate_snapshot=_stored_profit_rate(profit_rate),
         tax_refund_snapshot=tax_refund,
         profit_with_refund_snapshot=profit_with_refund,
         approval_required=bool(result["approval_required"]),
@@ -1896,6 +1914,14 @@ async def recalc_version(session: AsyncSession, version: QuoteVersion) -> None:
         ZERO,
     )
     charge_amount = logistics + other_charge
+    # 总额可被折扣抵消，但各合计仍须独立存入 Numeric(16,2)。
+    for amount, label in (
+        (charge_amount, "附加费用合计"),
+        (logistics, "运费合计"),
+        (other_charge, "其他费用合计"),
+        (discount, "折扣合计"),
+    ):
+        _assert_money_in_range(amount, label=label)
     version.subtotal_amount = subtotal.quantize(Decimal("0.01"))
     version.charge_amount = charge_amount.quantize(Decimal("0.01"))
     version.logistics_amount = logistics.quantize(Decimal("0.01"))
@@ -2165,9 +2191,11 @@ async def price_drift(
                 }
             )
             continue
+        lookup_values: dict[str, Decimal | None] = {}
         lookup = (
             await pricing_service.lookup_applicable_price(
-                session, customer=customer, sku_id=item.sku_id, quantity=item.quantity
+                session, customer=customer, sku_id=item.sku_id, quantity=item.quantity,
+                snapshot_out=lookup_values,
             )
             if customer is not None
             else {"status": "pending", "unit_price": None, "source": None}
@@ -2175,7 +2203,7 @@ async def price_drift(
         current = None
         if lookup["status"] == "ok" and lookup["unit_price"] is not None:
             current, _ = convert_cny_to(
-                Decimal(str(lookup["unit_price"])),
+                lookup_values["unit_price"],
                 to_currency=version.currency,
                 rate=fx,
             )
@@ -2219,14 +2247,16 @@ async def refresh_prices(
         if item.price_source is None:
             skipped += 1
             continue
+        lookup_values: dict[str, Decimal | None] = {}
         lookup = await pricing_service.lookup_applicable_price(
-            session, customer=customer, sku_id=item.sku_id, quantity=item.quantity
+            session, customer=customer, sku_id=item.sku_id, quantity=item.quantity,
+            snapshot_out=lookup_values,
         )
         if lookup["status"] != "ok" or lookup["unit_price"] is None:
             skipped += 1
             continue
         new_price, _ = convert_cny_to(
-            Decimal(str(lookup["unit_price"])),
+            lookup_values["unit_price"],
             to_currency=version.currency,
             rate=fx,
         )
@@ -2852,9 +2882,9 @@ _COMPARISON_COST_FIELDS = (
 def strip_comparison_cost(payload: dict) -> dict:
     """把版本对比里的成本派生字段清空（**就地**改，返回同一个 dict）。
 
-    与 `serialize_item(can_see_cost=False)` 同一口径：普通销售能看
-    "两个方案报价差多少、数量差多少"，但看不出成本与毛利。
-    `diffs`（逐项差异）只涉及报价字段，本来就不含成本，不在这里处理。
+    版本汇总按 `serialize_item(can_see_cost=False)` 的口径隐藏成本与毛利。
+    用户于2026-10-28明确决定：`diffs` 中的毛利/毛利率差额维持可见，
+    即使它们可能用于推算成本；本函数不对这些差额执行脱敏。
     """
     for row in payload.get("versions", []):
         for key in _COMPARISON_COST_FIELDS:
@@ -2915,6 +2945,7 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
         charges_by_version.setdefault(charge.quote_version_id, []).append(charge)
 
     rows: list[dict] = []
+    profit_totals: dict[int, Decimal] = {}
     for version in versions:
         v_items = items_by_version.get(version.id, [])
         v_charges = charges_by_version.get(version.id, [])
@@ -2936,6 +2967,7 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
         profit_total = sum((item.profit_snapshot * item.quantity for item in v_items), ZERO)
         if not v_items:
             profit_total = amount_total - cost_total
+        profit_totals[version.id] = profit_total
         margin = (profit_total / amount_total) if amount_total else ZERO
         skus = {item.sku_id for item in v_items}
         rows.append(
@@ -3013,7 +3045,9 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
         )
 
     diffs: list[dict] = []
-    for previous, current in zip(rows, rows[1:], strict=False):
+    for previous, current, previous_version, current_version in zip(
+        rows, rows[1:], versions, versions[1:], strict=False
+    ):
         # No NULL/int sorting and no collapse of custom or repeated-SKU lines.
         # Stable source ids match cloned versions; repeated source lines are paired
         # in their preserved id/order sequence, rather than overwritten in a dict.
@@ -3047,6 +3081,8 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "added",
                         "before": None,
                         "after": _f(after.quoted_price) if after else None,
+                        "before_exact": None,
+                        "after_exact": str(after.quoted_price) if after.quoted_price is not None else None,
                     }
                 )
                 continue
@@ -3058,6 +3094,8 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "removed",
                         "before": _f(before.quoted_price),
                         "after": None,
+                        "before_exact": str(before.quoted_price) if before.quoted_price is not None else None,
+                        "after_exact": None,
                     }
                 )
                 continue
@@ -3069,6 +3107,8 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "quantity",
                         "before": _f(before.quantity),
                         "after": _f(after.quantity),
+                        "before_exact": str(before.quantity) if before.quantity is not None else None,
+                        "after_exact": str(after.quantity) if after.quantity is not None else None,
                     }
                 )
             if before.quoted_price != after.quoted_price:
@@ -3079,9 +3119,11 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                         "field": "quoted_price",
                         "before": _f(before.quoted_price),
                         "after": _f(after.quoted_price),
+                        "before_exact": str(before.quoted_price) if before.quoted_price is not None else None,
+                        "after_exact": str(after.quoted_price) if after.quoted_price is not None else None,
                     }
                 )
-        if previous["charge_amount"] != current["charge_amount"]:
+        if previous_version.charge_amount != current_version.charge_amount:
             changes.append(
                 {
                     "sku_id": None,
@@ -3089,9 +3131,17 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                     "field": "charge_amount",
                     "before": previous["charge_amount"],
                     "after": current["charge_amount"],
+                    "before_exact": (
+                        str(previous_version.charge_amount)
+                        if previous_version.charge_amount is not None else None
+                    ),
+                    "after_exact": (
+                        str(current_version.charge_amount)
+                        if current_version.charge_amount is not None else None
+                    ),
                 }
             )
-        if previous["discount_amount"] != current["discount_amount"]:
+        if previous_version.discount_amount != current_version.discount_amount:
             changes.append(
                 {
                     "sku_id": None,
@@ -3099,10 +3149,21 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                     "field": "discount_amount",
                     "before": previous["discount_amount"],
                     "after": current["discount_amount"],
+                    "before_exact": (
+                        str(previous_version.discount_amount)
+                        if previous_version.discount_amount is not None else None
+                    ),
+                    "after_exact": (
+                        str(current_version.discount_amount)
+                        if current_version.discount_amount is not None else None
+                    ),
                 }
             )
         amount_delta = (
             Decimal(current["amount_total_exact"]) - Decimal(previous["amount_total_exact"])
+        ).quantize(Decimal("0.01"))
+        profit_delta = (
+            profit_totals[current["version_id"]] - profit_totals[previous["version_id"]]
         ).quantize(Decimal("0.01"))
         diffs.append(
             {
@@ -3110,7 +3171,8 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                 "to_version_no": current["version_no"],
                 "amount_delta": _f(amount_delta),
                 "amount_delta_exact": str(amount_delta),
-                "profit_delta": round(current["profit_total"] - previous["profit_total"], 2),
+                "profit_delta": _f(profit_delta),
+                "profit_delta_exact": str(profit_delta),
                 "margin_delta": round(current["margin"] - previous["margin"], 6),
                 "changes": changes,
             }

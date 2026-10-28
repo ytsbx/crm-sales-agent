@@ -263,7 +263,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   <span style={{ marginLeft: 10, color: 'var(--crm-text-3)' }}>
                     金额 {diff.amount_delta >= 0 ? '+' : ''}
                     {diff.amount_delta_exact ?? diff.amount_delta.toFixed(2)}，毛利 {diff.profit_delta >= 0 ? '+' : ''}
-                    {diff.profit_delta.toFixed(2)}，毛利率 {diff.margin_delta >= 0 ? '+' : ''}
+                    {diff.profit_delta_exact ?? diff.profit_delta.toFixed(2)}，毛利率 {diff.margin_delta >= 0 ? '+' : ''}
                     {(diff.margin_delta * 100).toFixed(2)}%
                   </span>
                 </div>
@@ -279,7 +279,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                     >
                       {DIFF_LABEL[change.field] ?? change.field}
                       {change.sku_name ? `·${change.sku_name}` : ''}：
-                      {change.before ?? '—'} → {change.after ?? '—'}
+                      {change.before_exact ?? change.before ?? '—'} → {change.after_exact ?? change.after ?? '—'}
                     </span>
                   ))}
                 </div>

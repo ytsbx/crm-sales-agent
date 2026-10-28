@@ -1225,6 +1225,7 @@ async def update_item(
     quantity = data.get("quantity", item.quantity)
     price = data.get("quoted_price", item.quoted_price)
     old_price = float(item.quoted_price)
+    manual_price_changed = "quoted_price" in data and price != item.quoted_price
     logistics = data.get("logistics_cost")
     if logistics is not None:
         item.logistics_cost_snapshot = logistics
@@ -1305,6 +1306,8 @@ async def update_item(
         "master_version_no",
     ):
         setattr(item, field, getattr(rebuilt, field))
+    if manual_price_changed and item.sku_id is not None:
+        item.price_source = None
     await session.flush()
     await svc.recalc_version(session, version)
     await write_audit(
