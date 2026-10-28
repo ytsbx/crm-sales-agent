@@ -3101,11 +3101,15 @@ async def version_comparison(session: AsyncSession, quote_id: int) -> dict:
                     "after": current["discount_amount"],
                 }
             )
+        amount_delta = (
+            Decimal(current["amount_total_exact"]) - Decimal(previous["amount_total_exact"])
+        ).quantize(Decimal("0.01"))
         diffs.append(
             {
                 "from_version_no": previous["version_no"],
                 "to_version_no": current["version_no"],
-                "amount_delta": round(current["amount_total"] - previous["amount_total"], 2),
+                "amount_delta": _f(amount_delta),
+                "amount_delta_exact": str(amount_delta),
                 "profit_delta": round(current["profit_total"] - previous["profit_total"], 2),
                 "margin_delta": round(current["margin"] - previous["margin"], 6),
                 "changes": changes,

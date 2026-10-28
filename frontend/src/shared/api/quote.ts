@@ -218,6 +218,7 @@ export interface VersionComparisonDiff {
   from_version_no: number
   to_version_no: number
   amount_delta: number
+  amount_delta_exact?: string | null
   profit_delta: number
   margin_delta: number
   changes: VersionComparisonChange[]

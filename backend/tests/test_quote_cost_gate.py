@@ -200,3 +200,31 @@ async def test_comparison_preserves_exact_product_amount_without_exposing_cost()
     redacted = quotes.strip_comparison_cost(data)
     assert redacted['versions'][0]['amount_total_exact'] == '99999999999999.99'
     assert redacted['versions'][0]['cost_total'] is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('before_price,after_price,expected', [
+    ('999999999999.9998', '999999999999.9999', '0.01'),
+    ('999999999999.9999', '999999999999.9998', '-0.01'),
+    ('1.0000', '1.0001', '0.01'),
+    ('1.0000', '1.0000', '0.00'),
+])
+async def test_comparison_delta_preserves_cent_changes(before_price, after_price, expected):
+    from app.modules.quote.model import QuoteItem, QuoteVersion
+    from unittest.mock import Mock
+    versions = [QuoteVersion(id=i, quote_id=1, version_no=i, currency='CNY',
+                             charge_amount=Decimal('0.00'), discount_amount=Decimal('0.00'))
+                for i in (1, 2)]
+    items = [QuoteItem(id=i, quote_version_id=i, sku_id=1, quantity=Decimal('100'),
+                       quoted_price=Decimal(price), cost_snapshot=Decimal('1'),
+                       logistics_cost_snapshot=Decimal('0'), profit_snapshot=Decimal('0'))
+             for i, price in enumerate((before_price, after_price), 1)]
+    results = []
+    for rows in (versions, items, []):
+        result = Mock()
+        result.scalars.return_value.all.return_value = rows
+        results.append(result)
+    session = SimpleNamespace(execute=AsyncMock(side_effect=results))
+    data = await quotes.version_comparison(session, 1)
+    assert Decimal(str(data['diffs'][0]['amount_delta'])) == Decimal(expected)
+    assert data['diffs'][0]['amount_delta_exact'] == expected
