@@ -1,5 +1,14 @@
 # CRM 质量审查进度
 
+## 2026-10-28 Q-051 发布完成（7137866）
+
+- 用户明确“服务器有这个问题就修改部署”。只读 SSH 核对实际基线 `7df01541ec1c6c87b844ba94de9d3b4a1fc3978a`；报价 service SHA256 与该提交一致。当前 RELEASE.json 登记的 QuoteListPage-CyWKfAN8.js、QuoteDetailPage-9gpXW-iu.js 哈希匹配，分别仍以浮点显示列表金额与版本产品金额，确认线上同源问题；未在生产制造报价测试数据。
+- 固定应用提交 `7137866c2df2544838c29c607c7f7a93d88fdbbe` 已同步 GitHub/Gitee 原分支；只包含 Q-051 只读精确字段、两个页面展示、回归及记录，用户原文档删除保持未提交。49 项相关后端测试、21 项发布安全测试、前端构建和固定包完整浏览器回归通过。
+- 正式发布前，同 SHA CI 40659027356 completed/success，UI 冒烟和后端回归通过，链接 https://github.com/ytsbx/crm-sales-agent/actions/runs/40659027356 。期间 gh watch 两次 TLS 超时均为查询失败，随后独立读取同一运行确认成功；未在 CI 未完成时 apply。首次本机解包因系统 Python 不支持 filter 参数停止，改用项目 Python 3.12 安全解包后通过，没有改发布输入。最初取证匹配到 CSS 后查找 JS 字段报错，已限定 manifest 内 .js 重取成功，不以旧资源列表作为当前版本证据。
+- 发布包 SHA256 `b6ce3527d67788fd037f48d44c2722d818678b5a20a46efe5f7d39a1e0d29305`；远端包/工具哈希一致，统一入口预检通过再执行 --apply，返回 verified，回滚备份 `/opt/crm-sales-agent/backup/unified-7137866c2df2-xu5ul9p6`。无依赖、迁移、配置、权限或业务数据修改。
+- 发布后独立复核：两端版本均完整 7137866，RELEASE.json verified，491 个清单文件哈希匹配；服务 active/running、NRestarts=0，后端 health up/database ok、OA/Stream 正常，公网首页 HTTP200；服务器两个 exact 字段均存在。
+- 证据 `ops/backups/release-q051-20261028/`；以下“本地未发布”为历史阶段，由本条覆盖。未做真实生产角色有数据页面回归，不把文件/健康核验说成端到端业务验收。下一步仍为版本差额计算与费用/成本/毛利显示的隔离审查，长期质量目标未完成。
+
 ## 2026-10-28 Q-051 报价列表与版本对比产品金额丢分（本地已修复，未发布）
 
 - 读取质量目标与进度后继续 Q-050 明确留下的列表/版本对比路径。确认 `serialize_quote` 仅返回浮点 `current_version_amount`，`version_comparison` 用 Decimal 计算产品金额后仅返回浮点 `amount_total`。对合法金额 `99999999999999.99`，原列表 `toLocaleString` 显示 `¥99,999,999,999,999.98`，原对比 `toFixed(2)` 显示 `¥99999999999999.98`。本机执行原格式化表达式及真实服务函数证明误差，不以静态搜索作为唯一证据。
