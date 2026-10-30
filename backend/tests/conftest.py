@@ -124,6 +124,7 @@ def make_engine():
 
     from app.core.base import Base
     from app.core.idempotency import RequestKey
+    from app.modules.bizdoc.model import BizDoc, BizDocTemplate
     from app.modules.customer.model import Contact, Customer
     from app.modules.lead.model import Lead
     from app.modules.opportunity.model import Opportunity, OpportunityStage
@@ -163,6 +164,9 @@ def make_engine():
             # 通用请求幂等（第七批 7.9 回款登记 / 8.15 各模块重复提交）：
             # 走 router 的用例需要这张表，缺了会直接 "no such table: request_keys"。
             RequestKey,
+            # 通用文件可见性也反查系统归档原件的当前权限/归属。
+            BizDocTemplate,
+            BizDoc,
         )
     ]
     engine = create_engine("sqlite+pysqlite:///:memory:")

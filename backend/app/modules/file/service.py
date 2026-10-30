@@ -8,6 +8,7 @@
 import logging
 from dataclasses import dataclass, field
 
+import anyio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,7 @@ from app.modules.file.access import file_protection_label, sample_basis_lock_lab
 from app.modules.file.model import BusinessFile, FileRecord
 
 logger = logging.getLogger("crm.file")
+UPLOAD_CLEANUP_TIMEOUT_SECONDS = 5
 
 
 async def discard_unregistered_upload(session: AsyncSession, object_key: str) -> None:
@@ -32,17 +34,26 @@ async def discard_unregistered_upload(session: AsyncSession, object_key: str) ->
     - 删之前**先确认库里确实没有这条登记**。少了这一步，就可能把一条
       **已经提交成功**的记录变成"记录在、文件没了"——那比留个孤儿文件更糟。
     """
-    try:
-        await session.rollback()
-        registered = (
-            await session.execute(
-                select(FileRecord.id).where(FileRecord.object_key == object_key)
-            )
-        ).first()
-        if registered is None:
-            storage.delete_object(object_key)
-    except Exception:  # noqa: BLE001 —— 清理失败不该盖掉真正的登记错误
-        logger.warning("上传登记失败，且临时文件清理失败：%s", object_key, exc_info=True)
+    # 持续取消会在每次数据库 await 再次抛出，故不能只捕获一次 CancelledError。
+    # 仅保护补偿，不提交原事务；超时/无法确认登记时保留文件，继续原异常。
+    with anyio.move_on_after(UPLOAD_CLEANUP_TIMEOUT_SECONDS, shield=True) as cleanup_scope:
+        try:
+            await session.rollback()
+            try:
+                registered = (
+                    await session.execute(
+                        select(FileRecord.id).where(FileRecord.object_key == object_key)
+                    )
+                ).first()
+            finally:
+                # 登记核对即使报错，也在保护范围内结束其只读事务。
+                await session.rollback()
+            if registered is None:
+                storage.delete_object(object_key)
+        except Exception:  # noqa: BLE001 —— 清理失败不该盖掉真正的登记错误
+            logger.warning("上传登记失败，且临时文件清理失败：%s", object_key, exc_info=True)
+    if cleanup_scope.cancel_called:
+        logger.warning("上传登记失败，临时文件清理超时，保留文件待核对：%s", object_key)
 
 
 async def lock_file_row(session: AsyncSession, file_id: int) -> FileRecord | None:

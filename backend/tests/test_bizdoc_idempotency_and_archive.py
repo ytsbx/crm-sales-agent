@@ -388,6 +388,48 @@ def test_generation_archives_real_bytes_and_download_reads_them(isolated_file_ro
     run_case(_case)
 
 
+@pytest.mark.parametrize("doc_hash,file_hash,blocked", [
+    ("actual", "wrong", True),
+    ("wrong", "actual", True),
+    ("wrong", "wrong", True),
+    ("actual", None, False),
+    (None, "actual", False),
+    ("actual", "actual", False),
+])
+def test_archive_checks_each_registered_checksum(
+    isolated_file_root, doc_hash, file_hash, blocked,
+):
+    """任一已登记字节校验值不匹配均拒绝，不丢失单登记值历史兼容。"""
+    from app.modules.file.model import FileRecord
+
+    async def _case(session, current_user, version, **_):
+        doc = await bizdoc.generate_quote_doc(
+            session, quote_version_id=version.id, user=current_user
+        )
+        await session.commit()
+        record = await session.get(FileRecord, doc.file_id)
+        original = _stored_files(isolated_file_root)[0].read_bytes()
+        actual = hashlib.sha256(original).hexdigest()
+        values = {"actual": actual, "wrong": "0" * 64, None: None}
+        doc.file_sha256 = values[doc_hash]
+        record.checksum = values[file_hash]
+        await session.commit()
+        plan = await bizdoc.plan_download(session, doc)
+        if blocked:
+            assert plan.content is None
+            assert plan.blocked_reason is not None
+        else:
+            assert plan.content == original
+            assert plan.source == bizdoc.SOURCE_ARCHIVED
+            assert plan.blocked_reason is None
+        # 下载检查不修登记值、不替换原件。
+        assert doc.file_sha256 == values[doc_hash]
+        assert record.checksum == values[file_hash]
+        assert _stored_files(isolated_file_root)[0].read_bytes() == original
+
+    run_case(_case)
+
+
 def test_state_copy_is_always_rerendered_and_marked(isolated_file_root):
     """§8.10：作废件的"已作废"看**状态副本**，那份不是原件，必须标明。"""
 

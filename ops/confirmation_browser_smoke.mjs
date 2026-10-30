@@ -24,6 +24,8 @@ const claimedLeads=[], claimedCustomers=[]
 const approvalsApproved=[], approvalsRejected=[]
 const sampleRequests=[]
 const wecomRequests=[]
+let rejectWecomSync=false
+const failedWecomJobs=[]
 const wecomBindings=[]
 const recycleRequests=[]
 const quoteWithdrawals=[]
@@ -139,11 +141,16 @@ const server=createServer(async (req,res)=>{
     }
     else if(path.endsWith('/integrations/wecom/readiness')) data={configured:{corp_id:true,agent_id:true,contact_secret:true,external_contact_secret:true,callback:true},counts:{wecom_users:0,external_contacts:0,follow_relations:0,unbound_contacts:0,unmatched_users:0},can_sync_contact:true,can_sync_external:true}
     else if(path.endsWith('/integrations/wecom/unbound-contacts')) data={items:[wecomContact],total:1,page:1,page_size:20}
-    else if(path.endsWith('/integrations/wecom/sync-jobs')) data={items:[],total:0,page:1,page_size:20}
+    else if(path.endsWith('/integrations/wecom/sync-jobs')) data={items:failedWecomJobs,total:failedWecomJobs.length,page:1,page_size:20}
     else if(path.endsWith('/integrations/wecom/unbound-contacts/92/candidates')) data={contact:wecomContact,candidates:[{id:93,name:'隔离匹配客户甲',score:80,reasons:[]},{id:94,name:'隔离匹配客户乙',score:85,reasons:[]}]}
     else if(path.endsWith('/integrations/wecom/unbound-contacts/92/bind-customer') && req.method==='POST') {wecomBindings.push({contact_id:92,...body});data={contact_id:92,customer_id:body.customer_id,customer_name:'隔离匹配客户乙'}}
     else if(/\/integrations\/wecom\/sync-(departments|users|external-contacts|follow-relations)$/.test(path) && req.method==='POST') {
-      wecomRequests.push(path.split('/').at(-1));data={id:91,status:'success',success_count:0,fail_count:0}
+      wecomRequests.push(path.split('/').at(-1))
+      if(rejectWecomSync) {
+        failedWecomJobs.push({id:909,job_type:'department',job_type_label:'隔离失败任务',status:'failed',status_label:'失败',success_count:0,fail_count:1,started_at:new Date().toISOString(),error_message:'连接企业微信失败，请检查网络后重试'})
+        res.writeHead(502,{'Content-Type':'application/json'});res.end(JSON.stringify({code:50202,message:'连接企业微信失败，请检查网络后重试',data:null}));return
+      }
+      data={id:91,status:'success',success_count:0,fail_count:0}
     }
     if(req.method==='POST' && (path.endsWith('/notifications/41/redispatch') || /\/leads\/\d+\/claim$/.test(path))) await new Promise(resolve=>setTimeout(resolve,700))
     res.writeHead(200,{'Content-Type':'application/json'}); res.end(JSON.stringify({code:0,message:'ok',data})); return
@@ -393,6 +400,22 @@ try {
     await waitFor(`!${popup}`)
     console.log(`BROWSER_WECOM_${endpoint}_CANCEL_NO_WRITE_CONFIRM_CORRECT_ENDPOINT=true`)
   }
+  rejectWecomSync=true
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='同步部门').click()`)
+  await waitFor(`document.body.innerText.includes('确认同步部门？')`)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  await waitFor(`document.body.innerText.includes('隔离失败任务')`)
+  assert.equal(failedWecomJobs.length,1)
+  await waitFor(`!${popup}`)
+  rejectWecomSync=false
+  const beforeRetry=wecomRequests.length
+  await evaluate(`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='同步部门').click()`)
+  await waitFor(`document.body.innerText.includes('确认同步部门？')`)
+  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  for(let i=0;wecomRequests.length===beforeRetry && i<30;i++)await sleep(100)
+  assert.equal(wecomRequests.length,beforeRetry+1)
+  await waitFor(`!${popup}`)
+  console.log('BROWSER_WECOM_FAILURE_REFRESH_AND_RETRY=true')
   const bindButton=`Array.from(document.querySelectorAll('button')).filter(b=>b.innerText.trim()==='关联已有客户')[1]`
   await waitFor(bindButton)
   await evaluate(`${bindButton}.click()`)
@@ -802,6 +825,10 @@ try {
   await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('EXACT-QUOTE-121')`)
   assert.ok(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('99,999,999,999,999.99')`))
   console.log('BROWSER_QUOTE_LIST_PRESERVES_EXACT_TOTAL=true')
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/customers/9?tab=quotes`})
+  await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('EXACT-QUOTE-121')`)
+  assert.ok(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('99,999,999,999,999.99')`))
+  console.log('BROWSER_CUSTOMER_QUOTE_LIST_PRESERVES_EXACT_TOTAL=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
   await waitFor(`Array.from(document.querySelectorAll('.semi-table-tbody')).some(el=>el.innerText.includes('99,999,999,999,999.99'))`)
   console.log('BROWSER_QUOTE_COMPARISON_PRESERVES_EXACT_AMOUNT=true')

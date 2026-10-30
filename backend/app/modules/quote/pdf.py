@@ -5,6 +5,7 @@
 """
 
 from io import BytesIO
+from decimal import Decimal
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -26,6 +27,21 @@ def _register_font() -> None:
         pdfmetrics.getFont(CN_FONT)
     except KeyError:
         pdfmetrics.registerFont(UnicodeCIDFont(CN_FONT))
+
+
+def _fit_numeric_cells(rows, widths, columns, *, font_size, start_row=1) -> TableStyle:
+    """仅缩小放不下的数字；保留完整文本、列宽及普通单元格字号。"""
+    commands = []
+    for row in range(start_row, len(rows)):
+        for column in columns:
+            text = rows[row][column]
+            width = pdfmetrics.stringWidth(text, CN_FONT, font_size)
+            # 与Table默认左右各6pt内边距一致。
+            available = widths[column] - 12
+            if width > available:
+                commands.append(("FONTSIZE", (column, row), (column, row),
+                                 font_size * available / width))
+    return TableStyle(commands)
 
 
 def render_quote_pdf(data: dict[str, Any]) -> bytes:
@@ -90,12 +106,15 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     header = ["序号", "SKU", "规格", "数量", "单价(元)", "金额(元)"]
     rows = [header]
     for index, item in enumerate(data.get("items", []), start=1):
+        quantity = format(Decimal(str(item.get("quantity", 0))), "f")
+        if "." in quantity:
+            quantity = quantity.rstrip("0").rstrip(".")
         rows.append(
             [
                 str(index),
                 item.get("sku_code") or "-",
                 item.get("specification") or "-",
-                f"{item.get('quantity', 0):g}",
+                quantity,
                 # 单价保留实际成交精度、末尾不补零（第二轮审查 P2，2026-10-12）：
                 # 截成两位会让"单价 × 数量"对不上金额那一栏
                 # （33.3333 × 1000 印成 33.33 × 1000 = 33330.00，而金额是 33333.30）
@@ -103,7 +122,8 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
                 f"{item.get('amount', 0):.2f}",
             ]
         )
-    items_table = Table(rows, colWidths=[12 * mm, 30 * mm, 60 * mm, 22 * mm, 25 * mm, 25 * mm])
+    item_widths = [12 * mm, 30 * mm, 60 * mm, 22 * mm, 25 * mm, 25 * mm]
+    items_table = Table(rows, colWidths=item_widths)
     items_table.setStyle(
         TableStyle(
             [
@@ -116,6 +136,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
             ]
         )
     )
+    items_table.setStyle(_fit_numeric_cells(rows, item_widths, [3, 4, 5], font_size=9))
     story.append(items_table)
     story.append(Spacer(1, 4 * mm))
 
@@ -130,7 +151,8 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
                     f"{charge.get('amount', 0):.2f}",
                 ]
             )
-        charge_table = Table(charge_rows, colWidths=[30 * mm, 114 * mm, 30 * mm])
+        charge_widths = [30 * mm, 114 * mm, 30 * mm]
+        charge_table = Table(charge_rows, colWidths=charge_widths)
         charge_table.setStyle(
             TableStyle(
                 [
@@ -142,6 +164,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
                 ]
             )
         )
+        charge_table.setStyle(_fit_numeric_cells(charge_rows, charge_widths, [2], font_size=9))
         story.append(charge_table)
         story.append(Spacer(1, 4 * mm))
 
@@ -159,8 +182,8 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
         other_charge = data.get("other_charge_amount")
     total_rows = [["商品货款", f"¥{data.get('subtotal_amount', 0):.2f}"]]
     if logistics is not None:
-        total_rows.append(["运费（代收代付）", f"¥{float(logistics):.2f}"])
-        total_rows.append(["其他费用", f"¥{float(other_charge or 0):.2f}"])
+        total_rows.append(["运费（代收代付）", f"¥{Decimal(str(logistics)):.2f}"])
+        total_rows.append(["其他费用", f"¥{Decimal(str(other_charge or 0)):.2f}"])
     else:
         # 历史文件没有拆分列：保持原来的"附加费用"一行，不改写老口径
         total_rows.append(["附加费用", f"¥{data.get('charge_amount', 0):.2f}"])
@@ -169,7 +192,8 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
     unit_price_note = str(data.get("unit_price_note") or "").strip()
     if unit_price_note:
         total_rows.append([unit_price_note, ""])
-    total_table = Table(total_rows, colWidths=[134 * mm, 40 * mm])
+    total_widths = [134 * mm, 40 * mm]
+    total_table = Table(total_rows, colWidths=total_widths)
     total_table.setStyle(
         TableStyle(
             [
@@ -185,6 +209,7 @@ def render_quote_pdf(data: dict[str, Any]) -> bytes:
             ]
         )
     )
+    total_table.setStyle(_fit_numeric_cells(total_rows, total_widths, [1], font_size=10, start_row=0))
     story.append(total_table)
     story.append(Spacer(1, 6 * mm))
 

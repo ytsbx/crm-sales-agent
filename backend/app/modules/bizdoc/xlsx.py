@@ -15,6 +15,7 @@
 """
 
 from io import BytesIO
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from openpyxl import Workbook
@@ -112,8 +113,8 @@ def _cell_text(key: str, value: Any) -> str:
         return ""
     if key == "amount":
         try:
-            return f"{float(value):,.2f}"
-        except (TypeError, ValueError):
+            return f"{Decimal(str(value)):,.2f}"
+        except (InvalidOperation, TypeError, ValueError):
             return _text(value)
     if key == "unit_price":
         return format_unit_price(value)
@@ -293,7 +294,7 @@ def render_quote_xlsx(data: dict[str, Any]) -> bytes:
     # 2026-10-04 口径：运费与折扣给客户看，所以把这几行补出来。金额一律取快照，
     # 不在这里对明细求和——两处各自算会出现"表内合计与报价版本对不上"的经典扯皮。
     def _money(value: Any) -> str:
-        return "" if value is None else f"{float(value):,.2f}"
+        return "" if value is None else f"{Decimal(str(value)):,.2f}"
 
     summary_row = total_row + 2
     _put_text(sheet, row=summary_row, column=1, value="小计").font = bold

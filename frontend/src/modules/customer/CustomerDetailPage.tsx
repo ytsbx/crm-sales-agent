@@ -832,7 +832,7 @@ export default function CustomerDetailPage() {
                   title: '金额',
                   dataIndex: 'current_version_amount',
                   width: 140,
-                  render: (v: number | null, record: Quote) => formatMoney(v, record.currency),
+                  render: (v: number | null, record: Quote) => formatMoney(record.current_version_amount_exact ?? v, record.currency),
                 },
                 { title: '状态', dataIndex: 'status_label', width: 110 },
                 { title: '有效期', dataIndex: 'valid_until', width: 120, render: (v: string | null) => v ?? '-' },

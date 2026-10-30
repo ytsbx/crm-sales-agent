@@ -154,7 +154,11 @@ export default function WeComPage() {
       // 同步结果里带"哪些人 CRM 没有账号"，直接说清楚，别只报成功条数
       refresh()
     },
-    onError: (error: Error) => Toast.error(error.message),
+    onError: (error: Error) => {
+      Toast.error(error.message)
+      // 整批外部失败也会保存失败任务；刷新列表，避免错误提示后仍显示旧记录。
+      void queryClient.invalidateQueries({ queryKey: ['wecom-jobs'] })
+    },
   })
 
   const importPreviewMutation = useMutation({

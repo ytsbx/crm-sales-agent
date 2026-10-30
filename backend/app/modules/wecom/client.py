@@ -41,6 +41,13 @@ class WeComError(RuntimeError):
         super().__init__(f"企业微信接口 {api} 返回错误 {errcode}：{errmsg}")
 
 
+class WeComResponseError(RuntimeError):
+    """外部响应无法解析；不等同于企微明确返回的业务拒绝。"""
+
+    def __init__(self, api: str) -> None:
+        super().__init__(f"企业微信接口 {api} 响应格式异常，请稍后重试")
+
+
 class WeComNotConfigured(RuntimeError):
     """还没配凭据。接口层据此返回 50202 / 明确的业务提示。"""
 
@@ -95,8 +102,19 @@ class WeComClient:
             json=json_body,
         )
         response.raise_for_status()
-        payload = response.json()
-        errcode = int(payload.get("errcode", 0))
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise WeComResponseError(api) from error
+        if not isinstance(payload, dict):
+            raise WeComResponseError(api)
+        code = payload.get("errcode", 0)
+        if type(code) is not int and not isinstance(code, str):
+            raise WeComResponseError(api)
+        try:
+            errcode = int(code)
+        except ValueError as error:
+            raise WeComResponseError(api) from error
         if errcode != 0:
             raise WeComError(errcode, payload.get("errmsg", ""), api)
         return payload
@@ -135,7 +153,9 @@ class WeComClient:
             "gettoken",
             params={"corpid": settings.wecom_corp_id, "corpsecret": secret},
         )
-        token = str(payload["access_token"])
+        token = payload.get("access_token")
+        if not isinstance(token, str) or not token.strip():
+            raise WeComResponseError("gettoken")
         _token_cache[cache_key] = (token, time.time() + _TOKEN_TTL)
         return token
 
@@ -145,7 +165,15 @@ class WeComClient:
         """拉全部部门。企微这个接口一次性返回整棵部门树，不分页。"""
         token = await self.access_token()
         payload = await self._call("department/list", access_token=token)
-        return list(payload.get("department", []))
+        rows = payload.get("department")
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or type(row.get("id")) not in (int, str)
+            or not str(row["id"]).isdecimal()
+            for row in rows
+        ):
+            raise WeComResponseError("department/list")
+        return rows
 
     async def list_department_users(
         self, department_id: int, *, fetch_child: bool = False
@@ -160,7 +188,15 @@ class WeComClient:
             },
             access_token=token,
         )
-        return list(payload.get("userlist", []))
+        rows = payload.get("userlist")
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("userid"), str)
+            or not row["userid"].strip()
+            for row in rows
+        ):
+            raise WeComResponseError("user/list")
+        return rows
 
     # ---- 外部联系人（PRD §8.2）-------------------------------------------
 
@@ -189,7 +225,11 @@ class WeComClient:
             params={"external_userid": external_userid},
             access_token=token,
         )
-        return payload.get("external_contact", {}) or {}
+        detail = payload.get("external_contact")
+        # 缺失详情不是空联系人；身份错位也不能覆盖当前请求对象。
+        if not isinstance(detail, dict) or detail.get("external_userid") != external_userid:
+            raise WeComResponseError("externalcontact/get")
+        return detail
 
     async def get_follow_users(self, external_userid: str) -> list[dict[str, Any]]:
         """客户详情里的跟进人；get_follow_user_list 只返回企业成员 ID。

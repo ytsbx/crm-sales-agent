@@ -1021,7 +1021,15 @@ async def transfer_relations(
                 # CRM 侧直接记"不涉及"而不是"待处理" —— 否则它会一直挂在
                 # "未完成"清单里，重试也会白跑一趟。
                 crm_status="not_applicable" if kind == "wecom_relation" else "pending",
-                wecom_status="pending" if kind == "wecom_relation" else "not_applicable",
+                # 首份底账就固定“不转企微”的选择：中断后重试不能把它当待转接项。
+                wecom_status=(
+                    ("pending" if transfer_wecom else "skipped")
+                    if kind == "wecom_relation" else "not_applicable"
+                ),
+                wecom_error=(
+                    "本次未要求转接企微关系"
+                    if kind == "wecom_relation" and not transfer_wecom else None
+                ),
                 attempts=0,
             )
             session.add(item)
@@ -1068,6 +1076,8 @@ async def transfer_relations(
     #
     # 注意：不能拖到函数末尾再提交 —— transfer_relations 后面还有一大段
     # CRM 变更（客户/商机/任务/打样/草稿/订单），那些才是容易出错的环节。
+    # 重试依赖双方账号；必须随底账一起保存，不能等整次执行完成才写 detail。
+    job.detail = dict(detail)
     await session.commit()
 
     # 2) 企微客户关系 —— **只转没被冻结的客户**

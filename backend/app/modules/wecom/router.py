@@ -27,6 +27,10 @@
 
 import hashlib
 import time
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+
+import httpx
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import select
@@ -40,7 +44,7 @@ from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data, paginate
 from app.modules.wecom import callback as wecom_callback
 from app.modules.wecom import service as svc
-from app.modules.wecom.client import WeComError, WeComNotConfigured
+from app.modules.wecom.client import WeComError, WeComNotConfigured, WeComResponseError
 from app.modules.wecom.model import WeComSyncJob
 from app.modules.wecom.schema import (
     BindCustomerRequest,
@@ -66,9 +70,35 @@ def _translate(error: Exception) -> AppError:
             f"{error}；配置位置：backend/.env",
             422,
         )
-    if isinstance(error, WeComError):
+    # 不回显HTTP异常原文：URL里可能含access_token、corpsecret。
+    if isinstance(error, httpx.TimeoutException):
+        return AppError(ErrorCode.WECOM_SYNC_FAILED, "连接企业微信超时，请稍后重试", 502)
+    if isinstance(error, httpx.HTTPStatusError):
+        return AppError(ErrorCode.WECOM_SYNC_FAILED,
+                        f"企业微信服务返回 HTTP {error.response.status_code}，请稍后重试", 502)
+    if isinstance(error, httpx.RequestError):
+        return AppError(ErrorCode.WECOM_SYNC_FAILED, "连接企业微信失败，请检查网络后重试", 502)
+    if isinstance(error, (WeComError, WeComResponseError)):
         return AppError(ErrorCode.WECOM_SYNC_FAILED, str(error), 502)
     return AppError(ErrorCode.WECOM_SYNC_FAILED, f"企业微信同步失败：{error}", 502)
+
+
+async def _run_sync(
+    session: AsyncSession, *, user: CurrentUser, job_type: str,
+    operation: Callable[..., Awaitable[WeComSyncJob]],
+) -> WeComSyncJob:
+    """整批外部失败先回滚同步事实，再单独提交一次失败流水。"""
+    started_at = datetime.now(UTC)
+    try:
+        return await operation(session, user=user)
+    except (WeComNotConfigured, WeComError, WeComResponseError, httpx.RequestError, httpx.HTTPStatusError) as error:
+        translated = _translate(error)
+        await session.rollback()
+        job = await svc.start_job(session, job_type=job_type, operator_id=user.id)
+        job.started_at = started_at
+        svc.finish_job(job, success=0, fail=1, error=translated.message)
+        await session.commit()
+        raise translated from error
 
 
 @router.get("/integrations/wecom/readiness")
@@ -86,10 +116,7 @@ async def sync_departments(
     user: CurrentUser = Depends(require_permission("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_departments(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="department", operation=svc.sync_departments)
     await write_audit(
         session,
         operator_id=user.id,
@@ -109,10 +136,7 @@ async def sync_users(
     user: CurrentUser = Depends(require_permission("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_users(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="user", operation=svc.sync_users)
     await write_audit(
         session,
         operator_id=user.id,
@@ -136,10 +160,7 @@ async def sync_external_contacts(
     user: CurrentUser = Depends(require_permission("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_external_contacts(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="external_contact", operation=svc.sync_external_contacts)
     await write_audit(
         session,
         operator_id=user.id,
@@ -162,10 +183,7 @@ async def sync_follow_relations(
     user: CurrentUser = Depends(require_permission("wecom:manage")),
     session: AsyncSession = Depends(get_db),
 ):
-    try:
-        job = await svc.sync_follow_relations(session, user=user)
-    except (WeComNotConfigured, WeComError) as error:
-        raise _translate(error) from error
+    job = await _run_sync(session, user=user, job_type="follow_relation", operation=svc.sync_follow_relations)
     await write_audit(
         session,
         operator_id=user.id,

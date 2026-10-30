@@ -15,6 +15,7 @@ from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
+from app.core.money import line_amount
 from app.core.response import ok, page_data, paginate
 from app.modules.customer import service as customer_service
 from app.modules.customer.model import Customer
@@ -1712,21 +1713,32 @@ async def download_pdf(
         ),
         "status_label": QUOTE_STATUS_LABEL.get(quote.status, quote.status),
         "items": [
-            svc.serialize_item(item, can_see_cost=_can_see_cost(user))
+            {
+                **svc.serialize_item(item, can_see_cost=_can_see_cost(user)),
+                "quantity": item.quantity,
+                "quoted_price": item.quoted_price,
+                "amount": line_amount(item.quantity, item.quoted_price),
+            }
             for item in items
         ],
         "charges": [
-            {**svc.serialize_charge(charge), "type_label": CHARGE_LABEL.get(charge.charge_type)}
+            {**svc.serialize_charge(charge), "amount": charge.amount,
+             "type_label": CHARGE_LABEL.get(charge.charge_type)}
             for charge in charges
         ],
-        "subtotal_amount": float(version.subtotal_amount),
-        "charge_amount": float(version.charge_amount),
-        "discount_amount": float(version.discount_amount),
-        "total_amount": float(version.total_amount),
+        # 渲染器在进程内调用，保留Decimal，避免合法大额经过float后丢分。
+        "subtotal_amount": version.subtotal_amount,
+        "charge_amount": version.charge_amount,
+        "discount_amount": version.discount_amount,
+        "total_amount": version.total_amount,
         # 金额拆分（2026-10-09 运费分离）：对客 PDF 要把运费**单独列一行具体金额**，
         # 不能混在"附加费用"里让客户自己猜。同时给出统一汇总块，
         # 保证 PDF、页面、订单、应收四处口径一致。
-        "summary": svc.amount_summary(version),
+        "summary": {
+            **svc.amount_summary(version),
+            "logistics_amount": version.logistics_amount,
+            "other_charge_amount": version.other_charge_amount,
+        },
         #: 产品单价的对外口径说明：运费分离后必须在客户看得到的文件上说清楚，
         #: 否则客户按"含运费"的旧口径理解，会以为运费已经包在单价里。
         #:

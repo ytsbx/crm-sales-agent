@@ -2019,8 +2019,8 @@ async def load_archived_file(
         # 不能因为路径非法就退回去重新渲染。
         return None, ARCHIVE_MISSING, f"存档文件读不到：{exc.__class__.__name__}"
     actual = hashlib.sha256(content).hexdigest()
-    expected = doc.file_sha256 or record.checksum
-    if expected and actual != expected:
+    expected_checksums = (doc.file_sha256, record.checksum)
+    if any(expected and actual != expected for expected in expected_checksums):
         return None, ARCHIVE_MISSING, "存档文件的字节校验值与登记值不一致（可能被替换或损坏）"
     return content, ARCHIVE_ARCHIVED, None
 

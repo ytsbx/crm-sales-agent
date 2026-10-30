@@ -367,10 +367,12 @@ async def can_access_file(
 ) -> bool:
     """文件是否允许当前用户访问：挂在任一可见对象上即可。
 
-    没有任何挂载记录的文件（刚上传还没关联）只允许上传者本人访问，
+    系统归档原件按档案当前类型权限和负责人范围访问，显式共享挂载仍有效。
+    没有任何业务/档案关联的文件（刚上传还没关联）只允许上传者本人访问，
     否则"上传后尚未关联"的文件会变成人人可取的裸文件。
     """
     from app.modules.file.model import FileRecord
+    from app.modules.bizdoc.model import BizDoc, has_doc_permission
 
     links = (
         await session.execute(
@@ -378,13 +380,27 @@ async def can_access_file(
         )
     ).scalars().all()
 
-    if not links:
-        record = await session.get(FileRecord, file_id)
-        return record is not None and record.uploaded_by == user.id
-
     for link in links:
         if await visible_object(
             session, user, business_type=link.business_type, business_id=link.business_id
         ):
             return True
-    return False
+
+    docs = (
+        await session.execute(
+            select(BizDoc.doc_type, BizDoc.owner_id).where(BizDoc.file_id == file_id)
+        )
+    ).all()
+    permitted_docs = [doc for doc in docs if has_doc_permission(user, doc.doc_type)]
+    if permitted_docs:
+        owner_ids = await scoped_owner_ids(session, user)
+        if owner_ids is None or any(
+            doc.owner_id is not None and doc.owner_id in owner_ids
+            for doc in permitted_docs
+        ):
+            return True
+
+    if links or docs:
+        return False
+    record = await session.get(FileRecord, file_id)
+    return record is not None and record.uploaded_by == user.id
