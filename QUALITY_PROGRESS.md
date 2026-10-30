@@ -1,5 +1,15 @@
 # CRM 质量审查进度
 
+## 2026-10-30 Q-080 用户单独批准后发布完成（8788a89）
+
+- 用户对本项上线询问明确选择“部署这项修复（推荐）”，按就绪固定应用提交8788a89a323e26261199a00fe9e2546766acb6e9执行，本次生产权限已明确，不扩展后续新问题。接到答复前本轮仅开始analytics.targets/结账收集调用链的静态阅读，未创建结账数据或修改应用，不记该方向已确认Bug，随后优先完成本项发布。
+- 再次核对本地工作区应用无未提交变化、发布包SHA256 03b89327906e5b689e4ad7bc6cca86b9c61c3e95c6aa1413e5dbc2f8e8c59ad9及同SHA CI 41032570633成功。1559项本地回归/真实PG金额红绿/实际API摘要浏览器回放证据仍有效；前端web哈希与上一版完全一致。
+- 正式统一发布--apply先重跑完整预检，随后备份、短暂重启、切换与公网/全文件核验，返回status=verified；回滚备份/opt/crm-sales-agent/backup/unified-8788a89a323e-uhtp2556保留。未迁移数据库、修改requirements/正式配置、重写历史金额或生产业务数据，也没有调用真实模型或发送业务通知做测试。
+- 独立发布后核验进程exit0：前后端标记均8788a89，RELEASE.json verified，全部491个发布文件重算SHA256一致，service active，8010/health为up/database ok，钉钉OA stream_connected true。前端入口仍CustomerDetailPage-BedCw4t5.js，符合本次无前端代码变化；新金额字段/Decimal摘要由已验证后端包提供，不靠变更浏览器缓存伪装修复。
+- 应用提交8788a89此前已同步GitHub/Gitee；本次只更新QUALITY_GOAL/本条发布记录，再同步两个既有仓库。文档提交不代表又改变运行应用版本，工作区应用与部署版本保持一致。证据ops/backups/customer-summary-precision-20261030/deploy.log、postcheck.log及同目录前置验证完整保留。
+- Q-080发布任务完成，原等待记录作为历史保留；Q-069/Q-075仍待原具体方案决定。业绩结账金额审查仅静态线索（targets/target_bases早转float、freeze再Decimal），尚未真实复现存档误差，不提前确认或改动。下一步可在隔离库构造历史期间/正式结账与独立SQL对照，长期质量目标保持未完成。
+
+
 ## 2026-10-30 Q-080 发布准备全部通过，等待本项当次上线决定
 
 - Q-080固定应用提交8788a89a323e26261199a00fe9e2546766acb6e9已同步GitHub/Gitee，工作区应用源码无其他未提交变化；后端1559项、真实PG/正式API红绿和实际API摘要浏览器回放均通过。GitHub同SHA CI 41032570633两项job均success（后端6m7s/UI4m27s），完整接口套件及前端构建/冒烟通过，最终run/jobs记录已保存。
