@@ -378,11 +378,11 @@ async def customer_summary(session: AsyncSession, user, *, customer_id: int) -> 
     if len(amounts) == 1:
         single = amounts[0]
         insights.append(
-            f"累计成交 {single['amount']:.2f} {single['currency'] or '（币种待核实）'}"
+            f"累计成交 {Decimal(single.get('amount_exact') or str(single['amount'])):.2f} {single['currency'] or '（币种待核实）'}"
         )
     elif amounts:
         parts = "；".join(
-            f"{item['currency'] or '币种待核实'} {item['amount']:.2f}" for item in amounts
+            f"{item['currency'] or '币种待核实'} {Decimal(item.get('amount_exact') or str(item['amount'])):.2f}" for item in amounts
         )
         insights.append(f"累计成交（分币种）：{parts}")
 

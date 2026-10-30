@@ -299,7 +299,8 @@ async def customer_overview(
         order_amounts = [
             # currency 为空 = 历史数据没记币种，**如实标出来**（curreny 给 null），
             # 不默认当成人民币 —— 那等于给一条没根据的数字。
-            {"currency": currency, "amount": float(total or 0)}
+            {"currency": currency, "amount": float(total or 0),
+             "amount_exact": str(total if total is not None else 0)}
             for currency, total in amount_rows
         ]
         order_rows = (
@@ -405,6 +406,7 @@ async def customer_overview(
                 # 币种跟着金额一起给（第九批 §9.9）：前端不能假设是人民币
                 "currency": row.currency,
                 "total_amount": _f(row.total_amount),
+                "total_amount_exact": str(row.total_amount) if row.total_amount is not None else None,
                 "erp_order_id": row.erp_order_id,
                 "delivery_date": row.delivery_date,
             }
