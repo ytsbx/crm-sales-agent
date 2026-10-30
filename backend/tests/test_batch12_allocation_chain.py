@@ -224,3 +224,22 @@ async def test_maximum_amount_round_trip_is_exact(case):
     assert item['received_amount_exact']=='100.01'
     assert item['allocations'][0]['amount_exact']=='100.01'
     assert item['allocated_amount_exact']=='100.01' and item['unallocated_amount_exact']=='0.00'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('status,days,expected', [
+    ('overdue', 10, 1), ('overdue', 0, 1), ('pending', -2, 1),
+    ('pending', 10, 0), ('cancelled', -2, 0),
+])
+async def test_payment_stats_node_count_matches_shared_rule(case, status, days, expected):
+    raw,s,q,v=case
+    first=raw.get(ReceivablePlan,1)
+    first.due_date=today_business()+timedelta(days=days) if days is not None else None
+    first.status=status
+    raw.get(ReceivablePlan,2).status='cancelled'
+    raw.commit()
+    responsible=await analytics.receivable_stats(s,USER)
+    aging=await analytics.payment_stats(s,USER)
+    assert responsible['overdue_count']==expected
+    assert aging['overdue_amount']==100*expected
+    assert aging['overdue_node_count']==responsible['overdue_count']

@@ -122,14 +122,23 @@ export default function CustomerListPage() {
   // 本次「新建客户」表单的幂等键：打开表单时生成，成功后清空（第八批 8.15）
   const createRequestKeyRef = useRef('')
   const [importing, setImporting] = useState(false)
-  const [importResult, setImportResult] = useState<{
+  type ImportSummary = {
     created_count: number
+    total: number
     skipped_count: number
     failed_count: number
-    created: Array<{ name: string }>
+    created: Array<{ row?: number; id?: number; name: string }>
     skipped: Array<{ name: string; reason: string }>
-    failed: Array<{ name: string; reason: string }>
-  } | null>(null)
+    failed: Array<{ row?: number; name: string; reason: string }>
+    disputed_count?: number
+    disputed?: Array<{ row?: number; name: string; candidate?: string | null; note?: string | null }>
+    failed_total?: number
+    failed_truncated?: boolean
+    preview_token?: string
+  }
+  const [importPreview, setImportPreview] = useState<ImportSummary | null>(null)
+  const [importPreviewFile, setImportPreviewFile] = useState<File | null>(null)
+  const [importResult, setImportResult] = useState<ImportSummary | null>(null)
   const [exportModalOpen, setExportModalOpen] = useState(false)
   const [exportPurpose, setExportPurpose] = useState<CustomerExportPurpose | undefined>()
   const [exportPurposeNote, setExportPurposeNote] = useState('')
@@ -232,19 +241,48 @@ export default function CustomerListPage() {
       const { default: axios } = await import('axios')
       const formData = new FormData()
       formData.append('file', file)
+      formData.append('preview', 'true')
       const response = await axios.post('/api/v1/customers/import', formData, {
         headers: tokenHeader(),
       })
       const body = response.data
-      if (body.code !== 0) throw new Error(body.message)
-      Toast.success(body.message)
-      setImportResult(body.data)
-      void queryClient.invalidateQueries({ queryKey: ['customers'] })
+      if (body.code !== 0) throw new Error(body.message ?? '预览失败')
+      setImportPreview(body.data)
+      setImportPreviewFile(file)
     } catch (error) {
-      Toast.error(error instanceof Error ? error.message : '导入失败')
+      const data = (error as { response?: { data?: { message?: string } } })?.response?.data
+      Toast.error(data?.message || (error instanceof Error ? error.message : '预览失败'))
     } finally {
       setImporting(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const confirmImport = async () => {
+    if (!importPreviewFile || !importPreview?.preview_token) return
+    setImporting(true)
+    try {
+      const { default: axios } = await import('axios')
+      const formData = new FormData()
+      formData.append('file', importPreviewFile)
+      formData.append('preview_token', importPreview.preview_token)
+      const response = await axios.post('/api/v1/customers/import', formData, {
+        headers: tokenHeader(),
+      })
+      const body = response.data
+      if (body.code !== 0) throw new Error(body.message ?? '导入失败')
+      setImportPreview(null)
+      setImportPreviewFile(null)
+      setImportResult(body.data)
+      void queryClient.invalidateQueries({ queryKey: ['customers'] })
+    } catch (error) {
+      const data = (error as { response?: { data?: { message?: string; code?: number } } })?.response?.data
+      const message = data?.message || (error instanceof Error ? error.message : '导入失败')
+      setImportPreview(null)
+      setImportPreviewFile(null)
+      Toast.error(Number(data?.code) === 40902 ? `${message}，请重新选择文件预览` : message)
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -620,6 +658,54 @@ export default function CustomerListPage() {
       </Modal>
 
       <Modal
+        title="导入预览（尚未写入）"
+        visible={Boolean(importPreview)}
+        onCancel={() => {
+          setImportPreview(null)
+          setImportPreviewFile(null)
+        }}
+        onOk={() => void confirmImport()}
+        confirmLoading={importing}
+        okText={`确认导入 ${importPreview?.created_count ?? 0} 条`}
+        cancelText="取消"
+        width={620}
+      >
+        {importPreview && (
+          <div style={{ display: 'grid', gap: 12 }}>
+            <div style={{ display: 'flex', gap: 16 }}>
+              <span className="chip chip-primary">将新增 {importPreview.created_count} 条</span>
+              <span className="chip chip-warning">
+                跳过 {importPreview.skipped_count} 条 · 失败 {importPreview.failed_count} 条
+              </span>
+              {(importPreview.disputed_count ?? 0) > 0 && (
+                <span className="chip chip-warning">待裁定 {importPreview.disputed_count} 条</span>
+              )}
+            </div>
+            {(importPreview.disputed ?? []).length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>疑似重复，导入后进入待裁定</div>
+                {importPreview.disputed?.map((item) => (
+                  <div key={`preview-disputed-${item.row}-${item.name}`} style={{ fontSize: 12, color: 'var(--crm-text-2)', lineHeight: 1.8 }}>
+                    {item.name} {item.candidate ? `—— ${item.candidate}` : ''} {item.note ?? ''}
+                  </div>
+                ))}
+              </div>
+            )}
+            {importPreview.failed.length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>失败的行</div>
+                {importPreview.failed.map((item) => (
+                  <div key={`preview-fail-${item.row}-${item.name}`} style={{ fontSize: 12, color: 'var(--crm-error)', lineHeight: 1.8 }}>
+                    {item.name} —— {item.reason}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
         title="导入结果"
         visible={Boolean(importResult)}
         onCancel={() => setImportResult(null)}
@@ -638,7 +724,20 @@ export default function CustomerListPage() {
               {importResult.failed_count > 0 && (
                 <span className="chip chip-error">失败 {importResult.failed_count} 条</span>
               )}
+              {(importResult.disputed_count ?? 0) > 0 && (
+                <span className="chip chip-warning">待裁定 {importResult.disputed_count} 条</span>
+              )}
             </div>
+            {(importResult.disputed ?? []).length > 0 && (
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>已进入待裁定的疑似重复</div>
+                {importResult.disputed?.map((item) => (
+                  <div key={`result-disputed-${item.row}-${item.name}`} style={{ fontSize: 12, color: 'var(--crm-text-2)', lineHeight: 1.8 }}>
+                    {item.name} {item.candidate ? `—— ${item.candidate}` : ''} {item.note ?? ''}
+                  </div>
+                ))}
+              </div>
+            )}
             {importResult.skipped.length > 0 && (
               <div>
                 <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>被跳过的行</div>

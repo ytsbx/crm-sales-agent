@@ -1618,6 +1618,7 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
     buckets = {"未到期": 0, "1-30 天": 0, "31-60 天": 0, "61-90 天": 0, "90 天以上": 0}
     balances = await _plan_balances(session, plans)
     overdue_amount = ZERO
+    overdue_node_count = 0
     for plan in plans:
         balance = balances.get(plan.id, ZERO)
         if balance <= ZERO:
@@ -1641,10 +1642,11 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
             buckets["未到期"] += 1
             continue
         overdue_amount += balance
+        overdue_node_count += 1
         overdue_days = (today - plan.due_date).days if plan.due_date else 0
         if plan.due_date is None or overdue_days <= 0:
-            # 人工标了逾期、但没有到期日（或到期日还没到）——
-            # 计入逾期金额，但不属于任何账龄区间（区间是按天数定义的）
+            # 人工标了逾期，但到期日还没到（或恰好是今天）——
+            # 计入逾期节点数与金额，但不属于按逾期天数划分的区间
             pass
         elif overdue_days <= 30:
             buckets["1-30 天"] += 1
@@ -1670,7 +1672,7 @@ async def payment_stats(session: AsyncSession, user: CurrentUser) -> dict:
 
     return {
         "plan_count": len(plans),
-        "overdue_node_count": sum(v for k, v in buckets.items() if k != "未到期"),
+        "overdue_node_count": overdue_node_count,
         "overdue_amount": _f(overdue_amount.quantize(Decimal("0.01"))),
         "aging": [{"name": k, "value": v} for k, v in buckets.items()],
         "by_payment_method": [
