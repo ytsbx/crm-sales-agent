@@ -1847,9 +1847,19 @@ async def run_auto_tasks(
             errors.append({"rule_id": rule.id, "code": rule.code, "error": "days 必须是非负整数"})
             continue
 
+        # 天数能转整数，不代表日期可计算；与其它坏配置一样只跳过本规则。
+        try:
+            delta = timedelta(days=days_ahead)
+            if rule.trigger_type == "receivable_due":
+                due_before = today_business() + delta
+            else:
+                cutoff = now - delta
+        except OverflowError:
+            errors.append({"rule_id": rule.id, "code": rule.code, "error": "days 超出日期可计算范围"})
+            continue
+
         if rule.trigger_type == "quote_no_followup":
             # 报价发送后 N 天没有跟进记录 → 提醒负责人
-            cutoff = now - timedelta(days=days_ahead)
             latest_sent = (select(QuoteVersion.quote_id, func.max(QuoteVersion.sent_at).label("sent_at"))
                            .where(QuoteVersion.sent_at.is_not(None))
                            .group_by(QuoteVersion.quote_id).subquery())
@@ -1901,7 +1911,6 @@ async def run_auto_tasks(
 
         elif rule.trigger_type == "customer_silent":
             # 某等级客户 N 天没联系 → 给负责人建跟进任务
-            cutoff = now - timedelta(days=days_ahead)
             levels = config.get("levels") or ["A"]
             if not isinstance(levels, list) or not all(isinstance(level, str) for level in levels):
                 errors.append({"rule_id": rule.id, "code": rule.code, "error": "levels 必须是客户等级列表"})
@@ -1973,7 +1982,6 @@ async def run_auto_tasks(
             # 原来取的是 `now.date()`，而 now 是 UTC —— 北京时间凌晨 0-8 点会比业务日
             # 早一天，而默认的自动任务调度正好是凌晨跑：当天到期的提醒要等到第二天
             # 才发得出来。存储不变（due_date 本来就是 date 列），只换"今天"的取法。
-            due_before = today_business() + timedelta(days=days_ahead)
             rows = (
                 await session.execute(
                     select(ReceivablePlan, SalesOrder)

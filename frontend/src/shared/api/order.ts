@@ -158,12 +158,19 @@ export interface PaymentAllocationRow {
 
 export interface FinanceSummary {
   order_amount: number
+  order_amount_exact?: string | null
   planned_amount: number
+  planned_amount_exact?: string | null
   received_amount: number
+  received_amount_exact?: string | null
   allocated_amount: number
+  allocated_amount_exact?: string | null
   unallocated_amount: number
+  unallocated_amount_exact?: string | null
   unsettled_plan_amount: number
+  unsettled_plan_amount_exact?: string | null
   pending_confirm_amount: number
+  pending_confirm_amount_exact?: string | null
   unreceived_amount: number
   unreceived_amount_exact?: string | null
   plan_count: number

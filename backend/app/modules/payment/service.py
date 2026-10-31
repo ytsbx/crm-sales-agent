@@ -975,15 +975,21 @@ async def order_finance_summary(session: AsyncSession, order_id: int) -> dict:
     balances = await confirmed_amounts(session, [p.id for p in plans])
     totals = (await allocation_totals(session, [order_id])).get(order_id, {})
     total = order.total_amount if order else ZERO
+    amounts = {
+        "order_amount": total,
+        "planned_amount": sum((p.amount for p in plans if p.status != "cancelled"), ZERO),
+        "allocated_amount": totals.get("allocated_amount", ZERO),
+        "unallocated_amount": totals.get("unallocated_amount", ZERO),
+        "unsettled_plan_amount": sum((max(p.amount - balances.get(p.id, ZERO), ZERO) for p in plans if p.status != "cancelled"), ZERO),
+        "received_amount": Decimal(received),
+        "pending_confirm_amount": Decimal(pending_confirm),
+        "unreceived_amount": (total or ZERO) - Decimal(received),
+    }
     return {
-        "order_amount": _f(total),
-        "planned_amount": _f(sum((p.amount for p in plans if p.status != "cancelled"), ZERO)),
-        "allocated_amount": _f(totals.get("allocated_amount", ZERO)),
-        "unallocated_amount": _f(totals.get("unallocated_amount", ZERO)),
-        "unsettled_plan_amount": _f(sum((max(p.amount - balances.get(p.id, ZERO), ZERO) for p in plans if p.status != "cancelled"), ZERO)),
-        "received_amount": _f(Decimal(received)),
-        "pending_confirm_amount": _f(Decimal(pending_confirm)),
-        "unreceived_amount": _f((total or ZERO) - Decimal(received)),
+        **{key: _f(value) for key, value in amounts.items()},
+        # 沿用旧数字字段；页面金额用同次计算的定点值，不能从float反推。
+        **{key + "_exact": format(value, ".2f") if value is not None else None
+           for key, value in amounts.items()},
         "plan_count": len(plans),
         "overdue_count": len(
             [

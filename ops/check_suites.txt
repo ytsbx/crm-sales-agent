@@ -577,3 +577,9 @@ check_target_signed_precision
 
 # 发货业绩：同价同量不同明细、不同价格与分批发货不得漏算
 check_target_shipment_lines
+
+# 团队冻结实绩：三层部门、五指标精确汇总/明细、四范围及源事实消失
+check_target_frozen_scope
+
+# 订单财务概览：合法大额到账/分配/待确认及精确字段兼容
+check_order_finance_precision

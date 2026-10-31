@@ -153,3 +153,19 @@ def test_recycle_candidate_rechecks_rating(db, level, status):
         run(svc.decide_candidate(s,candidate=candidate,decision='approve',operator_id=1))
     assert err.value.http_status==status
     assert run(s.get(Customer,1)).owner_id==1
+
+
+@pytest.mark.parametrize('kind', ['quote_no_followup', 'customer_silent', 'receivable_due'])
+@pytest.mark.parametrize('days', [4000000, 1000000000])
+def test_unrepresentable_rule_date_is_reported_without_aborting_scan(db, kind, days):
+    s, user = db
+    s.add(TaskRule(code='DATE-OVERFLOW',name='日期越界',trigger_type=kind,
+                   trigger_config={'days':days},status='active'))
+    run(s.commit())
+    result=run(run_auto_tasks(s,user.id))
+    assert result['failed_rule_count']==1
+    assert result['rule_errors'][0]['code']=='DATE-OVERFLOW'
+    assert result['rule_errors'][0]['error']=='days 超出日期可计算范围'
+    assert result['created_count']==0
+    audit=run(s.execute(select(AuditLog).where(AuditLog.action=='run_auto_tasks'))).scalar_one()
+    assert audit.after_data['failed_rule_count']==1

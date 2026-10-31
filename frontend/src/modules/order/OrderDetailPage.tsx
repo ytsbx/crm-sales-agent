@@ -881,16 +881,16 @@ export default function OrderDetailPage() {
             },
             {
               label: '已分配到应收期',
-              value: formatMoney(summary?.allocated_amount ?? 0, order.currency),
+              value: formatMoney(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0, order.currency),
             },
             {
               label: '已到账待分配',
-              value: formatMoney(summary?.unallocated_amount ?? 0, order.currency),
+              value: formatMoney(summary?.unallocated_amount_exact ?? summary?.unallocated_amount ?? 0, order.currency),
               tone: (summary?.unallocated_amount ?? 0) > 0 ? 'warning' : 'default',
             },
             {
               label: '待确认回款',
-              value: formatMoney(summary?.pending_confirm_amount ?? 0, order.currency),
+              value: formatMoney(summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0, order.currency),
             },
             {
               label: '逾期应收节点',

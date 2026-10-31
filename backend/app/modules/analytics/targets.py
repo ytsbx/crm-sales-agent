@@ -698,6 +698,14 @@ async def targets_with_actuals(
         # 以「签单」这一项在不在作为"这一行冻过"的标记：结账时四项是一起写的
         # （见 target_actuals.freeze_period），拿它当锚点最稳。
         frozen_row = (scope_key, "sales") in snap
+        # 部门存档按全公司身份生成，可能含当前查看者无权看的下级成员。
+        # 只从已按权限裁剪的个人存档合计，沿用实时行/下钻的成员交集；不查实时金额。
+        frozen_members = None
+        department_id = row.get("department_id")
+        if frozen_row and department_id is not None and allowed_users is not None:
+            members = set(dept_members.get(department_id, []))
+            if not members.issubset(allowed_users):
+                frozen_members = members & allowed_users
         if frozen_row:
             # 逐项取、缺了就回落实时值：结账永远写满四项，但万一历史数据不全，
             # 宁可显示实时值也不要 KeyError 把整张报表打挂。
@@ -705,6 +713,12 @@ async def targets_with_actuals(
                 key = (scope_key, metric)
                 if key not in snap:
                     return live
+                if frozen_members is not None:
+                    value = sum(
+                        (snap.get((target_actuals.scope_key_of(member, None), metric), Decimal(0))
+                         for member in frozen_members), Decimal(0)
+                    )
+                    return int(value) if metric == "new_customer" else round(value, 2)
                 if metric in ("sales", "received", "shipped", "repeat_net"):
                     return round(snap[key], 2)
                 return int(snap[key]) if metric == "new_customer" else round(float(snap[key]), 2)
@@ -855,6 +869,14 @@ async def upsert_target(
         )
     if int(new_customer_target) < 0 or sales_target < 0 or repeat_customer_target < 0:
         raise AppError(ErrorCode.PARAM_ERROR, "目标值不能为负", 422)
+
+    # 不存在的对象无法形成有效目标；离职/停用历史对象仍按原规则保留能力。
+    from app.modules.user.model import Department, User
+
+    if user_id is not None and await session.get(User, user_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, "目标业务员不存在，请刷新后重新选择", 404)
+    if department_id is not None and await session.get(Department, department_id) is None:
+        raise AppError(ErrorCode.NOT_FOUND, "目标部门不存在，请刷新后重新选择", 404)
 
     stmt = select(SalesTarget).where(
         SalesTarget.period == period,

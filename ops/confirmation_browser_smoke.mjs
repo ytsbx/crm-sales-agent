@@ -56,7 +56,9 @@ const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'
 const publicCustomer={id:9,name:'领取确认测试客户',pool_status:'public',status:'active',tags:[],owner_id:null}
 let analyticsExact=false
 const analyticsTargetWrites=[]
+let rejectStaleTarget=false
 const analyticsFixture=JSON.parse(readFileSync(new URL('./fixtures/analytics-whole-yuan.json',import.meta.url),'utf8'))
+const financeSummaryFixture=JSON.parse(readFileSync(new URL('./fixtures/order-finance-exact.json',import.meta.url),'utf8'))
 const server=createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost')
   const path=url.pathname
@@ -64,6 +66,10 @@ const server=createServer(async (req,res)=>{
     let raw='';for await(const chunk of req) raw+=chunk
     const payload=JSON.parse(raw)
     analyticsTargetWrites.push(payload)
+    if(rejectStaleTarget){
+      res.writeHead(409,{'Content-Type':'application/json'})
+      res.end(JSON.stringify({code:40902,message:'这条目标刚被别人改过，请刷新后重新编辑（不要覆盖别人的改动）',data:null}));return
+    }
     const targetId=payload.department_id===analyticsFixture.team_target.department_id ? analyticsFixture.team_target.target_id : analyticsFixture.money_target.target_id
     res.writeHead(200,{'Content-Type':'application/json'})
     res.end(JSON.stringify({code:0,data:{target_id:targetId}}));return
@@ -90,6 +96,7 @@ const server=createServer(async (req,res)=>{
     else if(path==='/api/v1/payments' && req.method==='POST') {financialPayments.push(body);data=exactPayment}
     else if(path==='/api/v1/orders/994') data={...exactOrder,id:994,order_no:'FOUR-DECIMAL-994',total_amount:33333.3,total_amount_exact:'33333.30',received_amount:0,received_amount_exact:'0.00',unreceived_amount:33333.3,unreceived_amount_exact:'33333.30'}
     else if(path==='/api/v1/orders/994/items') data=[{id:995,order_id:994,sku_id:1,sku_code:'FOUR-DECIMAL-ITEM',quantity:1000,unit_price:33.3333,unit_price_exact:'33.3333',amount:33333.3,amount_exact:'33333.30'}]
+    else if(path==='/api/v1/orders/991/finance-summary') data=financeSummaryFixture
     else if(path==='/api/v1/orders/991') data=exactOrder
     else if(path==='/api/v1/orders/991/receivables') data=financialPlansEmpty?[]:[exactPlan]
     else if(['/api/v1/orders','/api/v1/receivables','/api/v1/payments'].includes(path)) data={items:financialRows?[path.endsWith('/orders')?exactOrder:path.endsWith('/receivables')?exactPlan:exactPayment]:[],total:financialRows?1:0}
@@ -818,6 +825,11 @@ try {
   console.log('BROWSER_ORDER_RECEIVABLE_PAYMENT_PRESERVE_EXACT_CENTS=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/991`})
   await waitFor(`Array.from(document.querySelectorAll('[role="tab"]')).some(el=>el.innerText.includes('应收计划'))`)
+  await waitFor(`Array.from(document.querySelectorAll('.kpi-label')).some(el=>el.innerText==='已到账待分配')`)
+  for(const label of ['已分配到应收期','已到账待分配','待确认回款']) {
+    await waitFor(`Array.from(document.querySelectorAll('.kpi-card')).find(el=>el.querySelector('.kpi-label')?.innerText===${JSON.stringify(label)})?.querySelector('.kpi-value')?.innerText==='¥99,999,999,999,999.99'`)
+  }
+  console.log('BROWSER_ORDER_FINANCE_SUMMARY_EXACT_CENTS=true')
   await evaluate(`Array.from(document.querySelectorAll('[role="tab"]')).find(el=>el.innerText.includes('应收计划')).click()`)
   await waitFor(`Array.from(document.querySelectorAll('a')).some(el=>el.innerText.trim()==='登记回款')`)
   await evaluate(`Array.from(document.querySelectorAll('a')).find(el=>el.innerText.trim()==='登记回款').click()`)
@@ -903,6 +915,8 @@ try {
   assert.equal(analyticsTargetWrites[0].department_id,analyticsFixture.team_target.department_id)
   assert.equal(analyticsTargetWrites[0].user_id,null)
   assert.equal(analyticsTargetWrites[0].period,analyticsFixture.team_target.period)
+  assert.equal(analyticsTargetWrites[0].expected_updated_at,analyticsFixture.team_target.expected_updated_at)
+  assert.equal(analyticsTargetWrites[0].remark,analyticsFixture.team_target.remark)
   console.log('BROWSER_TEAM_TARGET_EDIT_KEEPS_DEPARTMENT_AND_CANCEL_DOES_NOT_SAVE=true')
 
 
@@ -934,7 +948,51 @@ try {
   assert.equal(exactTargetPayload.repeat_customer_target,analyticsFixture.money_target.amount)
   assert.equal(exactTargetPayload.user_id,analyticsFixture.money_target.user_id)
   assert.equal(exactTargetPayload.department_id,null)
+  assert.equal(exactTargetPayload.expected_updated_at,analyticsFixture.money_target.expected_updated_at)
+  assert.equal(exactTargetPayload.remark,analyticsFixture.money_target.remark)
   console.log('BROWSER_TARGET_EDIT_PRESERVES_EXACT_AMOUNTS_AND_REJECTS_INVALID_INPUT=true')
+
+
+  await waitFor(`!document.querySelector('.semi-modal')`)
+  rejectStaleTarget=true
+  await evaluate(`Array.from(${moneyTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
+  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  await setTargetInput(targetSalesInput,'123.45')
+  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  await waitFor(`document.body.innerText.includes('刚被别人改过')`)
+  assert.equal(analyticsTargetWrites.length,3)
+  assert.equal(analyticsTargetWrites[2].expected_updated_at,analyticsFixture.money_target.expected_updated_at)
+  assert.equal(analyticsTargetWrites[2].sales_target,'123.45')
+  assert.equal(analyticsTargetWrites[2].remark,analyticsFixture.money_target.remark)
+  assert.equal(await evaluate(`${targetSalesInput}.value`),'123.45','conflict must keep user input')
+  assert.ok(await evaluate(`Boolean(document.querySelector('.semi-modal'))`),'conflict does not close editor')
+  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  assert.equal(analyticsTargetWrites.length,3,'cancel after conflict does not overwrite')
+  rejectStaleTarget=false
+  console.log('BROWSER_TARGET_EDIT_SENDS_VERSION_AND_409_PRESERVES_INPUT=true')
+
+
+  await waitFor(`!document.querySelector('.semi-modal')`)
+  await evaluate(`Array.from(${moneyTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
+  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  const targetMonthSelect=`Array.from(document.querySelectorAll('.semi-modal-body div')).find(el=>el.firstElementChild?.textContent.trim()==='月份')?.querySelector('.semi-select')`
+  await evaluate(`${targetMonthSelect}.click()`)
+  const originalMonth=Number(analyticsFixture.money_target.period.slice(5))
+  const nextMonth=originalMonth===12 ? 1 : originalMonth+1
+  const nextPeriod=analyticsFixture.money_target.period.slice(0,5)+String(nextMonth).padStart(2,'0')
+  const nextMonthOption=`Array.from(document.querySelectorAll('.semi-select-option')).find(el=>el.innerText.trim()==='${analyticsFixture.money_target.period.slice(0,4)} 年 ${nextMonth} 月')`
+  await waitFor(nextMonthOption)
+  await evaluate(`${nextMonthOption}.click()`)
+  await waitFor(`${targetMonthSelect}?.innerText.includes('${analyticsFixture.money_target.period.slice(0,4)} 年 ${nextMonth} 月')`)
+  await sleep(120)
+  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  for(let i=0;analyticsTargetWrites.length<4 && i<50;i++) await sleep(100)
+  assert.equal(analyticsTargetWrites.length,4)
+  assert.equal(analyticsTargetWrites[3].period,nextPeriod)
+  assert.equal(analyticsTargetWrites[3].expected_updated_at,undefined,'different scope must not reuse previous row version')
+  assert.equal(analyticsTargetWrites[3].remark,undefined,'different scope must not copy hidden remark')
+  console.log('BROWSER_TARGET_CHANGED_PERIOD_DOES_NOT_REUSE_VERSION=true')
+  console.log('BROWSER_TARGET_EDIT_PRESERVES_REMARK_WITHOUT_COPYING_TO_OTHER_PERIOD=true')
 
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})

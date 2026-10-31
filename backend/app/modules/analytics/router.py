@@ -103,17 +103,17 @@ async def operation_timing_summary(
     return ok(await usage_svc.timing_summary(session, user=user, days=days))
 class SalesTargetUpsert(BaseModel):
     period: str
-    user_id: int | None = None
+    user_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
     # 团队目标（文档 §六 :121）：与 user_id 互斥——指定部门就是团队目标
-    department_id: int | None = None
-    new_customer_target: int = Field(default=0, ge=0)
+    department_id: int | None = Field(default=None, gt=0, le=9223372036854775807)
+    new_customer_target: int = Field(default=0, ge=0, le=2147483647)
     sales_target: Decimal = Field(default=Decimal(0), ge=0, max_digits=16, decimal_places=2)
     # 复购（老客净额）目标：口径见 modules/analytics/target_bases.py，
     # 以前这个字段只存不算、也没有接口能写，等于设不了
     repeat_customer_target: Decimal = Field(
         default=Decimal(0), ge=0, max_digits=16, decimal_places=2
     )
-    remark: str | None = None
+    remark: str | None = Field(default=None, max_length=255)
     #: 乐观并发（第三批 §4.1.2）：把列表里读到的 `updated_at` 带回来，
     #: 对不上说明这条目标中途被别人改过 → 409，不静默覆盖别人的改动。
     expected_updated_at: datetime | None = None

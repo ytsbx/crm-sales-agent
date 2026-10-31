@@ -600,6 +600,7 @@ export interface SalesTargetRow {
   repeat_customer_target_exact?: string
   sales_variance_exact?: string
   repeat_customer_variance_exact?: string
+  updated_at?: string | null
 }
 
 export interface SalesTargetList {
@@ -729,6 +730,7 @@ export function upsertSalesTarget(payload: {
   /** 复购（老客净额）目标，口径见后端 target_bases.py */
   repeat_customer_target?: number | string
   remark?: string | null
+  expected_updated_at?: string
 }) {
   return api.post<{ target_id: number }>('/sales-targets/upsert', payload)
 }

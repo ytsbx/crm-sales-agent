@@ -202,6 +202,9 @@ export default function AnalyticsPage() {
     visible: boolean
     period?: string
     user_id?: number | null
+    department_id?: number | null
+    expected_updated_at?: string | null
+    remark?: string | null
   }>({ visible: false })
   const [targetForm, setTargetForm] = useState<{ user_id?: number | null; department_id?: number | null; period: string; new_customer_target: string; sales_target: string; repeat_customer_target: string }>({
     user_id: undefined,
@@ -258,6 +261,16 @@ export default function AnalyticsPage() {
         // 否则后端会按"人 + 部门"两个条件去找同一行，谁都匹配不上
         user_id: targetForm.department_id ? null : (targetForm.user_id ?? null),
         department_id: targetForm.department_id ?? null,
+        // 版本属于原期间/对象；切换到另一目标时不能携带原行版本。
+        expected_updated_at: targetModal.period === targetForm.period
+          && (targetModal.user_id ?? null) === (targetForm.department_id ? null : (targetForm.user_id ?? null))
+          && (targetModal.department_id ?? null) === (targetForm.department_id ?? null)
+          ? targetModal.expected_updated_at ?? undefined : undefined,
+        // 备注没有编辑控件，只保留原目标的值，不复制到另一期间/对象。
+        remark: targetModal.period === targetForm.period
+          && (targetModal.user_id ?? null) === (targetForm.department_id ? null : (targetForm.user_id ?? null))
+          && (targetModal.department_id ?? null) === (targetForm.department_id ?? null)
+          ? targetModal.remark : undefined,
         // 不能写 `Number(x || 0)`（2026-10-14 审查修）：字母是 truthy，
         // `|| 0` 不起作用 → NaN → JSON null → 后端当"没提供"，
         // **目标被悄悄清空**，达成率从此显示成"未设目标"。
@@ -382,7 +395,7 @@ export default function AnalyticsPage() {
           ? String(row.repeat_customer_target_exact ?? row.repeat_customer_target)
           : '',
       })
-      setTargetModal({ visible: true, period: row.period, user_id: row.user_id })
+      setTargetModal({ visible: true, period: row.period, user_id: row.user_id, department_id: row.department_id, expected_updated_at: row.target_id ? row.updated_at : undefined, remark: row.remark })
     } else {
       setTargetForm({
         user_id: undefined,

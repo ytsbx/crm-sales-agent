@@ -27,7 +27,7 @@ from app.modules.pricing.model import CustomerPriceRule, PricePermission, PriceR
 from app.modules.pricing.schema import PricingRequest
 from app.modules.product.model import Product, Sku
 from app.modules.settings.model import SystemSetting
-from app.modules.user.model import Role
+from app.modules.user.model import Role, User
 
 
 D = Decimal
@@ -202,9 +202,10 @@ async def test_target_version_full_precision(delta, accepted):
     for constraint in SalesTarget.__table__.constraints:
         if getattr(constraint, "name", None) == "ck_sales_targets_period":
             constraint.ddl_if(dialect="postgresql")
-    engine = engine_with(SalesTarget, AuditLog)
+    engine = engine_with(SalesTarget, AuditLog, User)
     current = datetime(2026, 10, 12, 10, 0, 0, 200000, UTC)
     with Session(engine, expire_on_commit=False) as raw:
+        raw.add(User(id=1, username="version-owner", name="版本校验用户", password_hash="!", status="active"))
         raw.add(SalesTarget(id=1, period="2026-09", user_id=1, sales_target=D(200000),
                             new_customer_target=0, repeat_customer_target=D(0),
                             created_at=current, updated_at=current))
