@@ -1,5 +1,16 @@
 # CRM 质量审查进度
 
+## 2026-10-31 Q-098至107十项发布完成（服务器核实、CI/上线验收通过）
+
+- 当前十项本地已确认/已验证修复按用户“确定服务器有一样的问题就修复部署”的明确授权发布；范围承接下一节发布准备记录，不扩大到Q-096/Q-069/Q-075。源码提交 `953eea2d0f968dca5579afbaafdfc613fa5dcc21`，现有GitHub和Gitee pending-acceptance分支均已同步该提交；本条收尾只补记录，不改变应用内容。
+- 服务器十个实际修改后端文件与修前3c4291d基线SHA256完全相同，server-baseline.json。统一预检进一步通过完整后端基线/依赖/迁移head/包完整性/既有服务等守卫。服务器同码缺口已核实，不宣称生产现有编号配置错误或在生产造数据验证。
+- 本批重新执行21项统一发布安全测试及七个真实隔离PG脚本，联系人两类并发、付款通知/两类建单动态/审批通知动态精度、排批丢失回执/回滚/同键并发/权限/浏览器稳定键、线索255边界、编号七目标规则/实际取号与建单均有对应历史红绿和本批PASS记录。当前完整单元1641项通过；固定提交CI运行41187170262，headSha精确对应953eea2，后端完整接口回归及UI交互两job均completed/success，ci-final.json/ci-watch.log；CI已包含所有新脚本，未绕过失败或放宽断言。
+- 发布包完全来自git archive固定953eea2，基线3c4291d，冻结离线依赖构建通过；包/tmp/crm-release-quality-953eea2.tar.gz，SHA256 `fd4316623293eabffce62dcd2937c466b02a505a37c43c4e9a0cff42b737f41d`。工具SHA256 `8347192444e4ecf3347513b78f668b33a4fd62efa49624fc8082f90911ad5cab`。上传服务器独立临时目录后两SHA再次匹配，预检通过，等待同SHA完整CI成功后才执行--apply。
+- 统一发布完成备份、短暂停止/切换/启动、完整491文件及健康/公网资源校验，返回status=verified/commit953eea2；回滚备份 `/opt/crm-sales-agent/backup/unified-953eea2d0f96-5szaejqt` 保留。未修改.env/生产编号规则/角色授权/业务数据/虚拟环境/迁移或依赖，未清理历史记录，也没有真实外部消息/业务操作测试。
+- 独立postcheck.py以本机固定包manifest为期望，验证线上RELEASE.files整份相等，逐491文件SHA256、DEPLOYED_COMMIT及WEB_DEPLOYED_COMMIT均953eea2、release.status verified、systemd active；8010/health app up/database ok，健康返回钉钉sync_running/stream_connected true。公网首页及当前主入口JS与包内字节相同，postcheck.log两PASS/exit0。这不是实际生产业务账号的创建/付款/审批全流程验证，不将健康字段当第三方故障注入结果。
+- 全部证据ops/backups/release-quality-ten-fixes-20261031/，含manifest、七脚本日志、build/preflight/CI/deploy/postcheck。隔离PG已停止；应用源代码发布提交为953eea2，后续文档收尾提交与其运行内容一致但不另行部署，避免混淆仓库最新文档SHA和应用SHA。
+- 当前十项修复均已部署，无本批应用修改遗留；仍待选择Q-096/Q-069/Q-075，未把本批部署批准扩大至后续新问题。长期质量目标保持用户paused，收尾不自动恢复审查；既有未穷尽生产角色浏览器/第三方故障/全系统锁图与大数据性能范围保持真实边界。
+
 ## 2026-10-31 当前十项修复获准发布（构建/CI/上线验收进行中）
 
 - 用户明确要求“确定服务器有一样的问题就修复部署”，本次具体范围Q-098至107：主联系人并发/改挂提示；回款通知、手工建单动态、报价转单动态、报价审批通知/动态、AI报价卡片精度；排批弱网防重；批量线索原因长度；编号配置/取号长度。只发布已记录方案和验证，不带入Q-096/Q-069/Q-075待决定项，不改生产数据/编号配置/历史记录/数据库结构/依赖。
