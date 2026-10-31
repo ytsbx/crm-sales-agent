@@ -1,5 +1,15 @@
 # CRM 质量审查进度
 
+## 2026-10-31 Q-108/Q-109发布完成（服务器核实、完整CI及线上验收通过）
+
+- 用户本轮“确定服务器有一样的问题就修复部署”已落实，仅当前已修复两项：企微成员清单/客户分页异常响应不再假成功；发货数量输入提交/明细及汇总显示保持十进制精度。审批辅助标记仍待调查，Q-096/Q-069/Q-075原选择未变，未夹带新策略或历史清洗。
+- 发布前只读核实服务器前后端仍953eea2，两个修改后端文件SHA与Git修前基线一致，当前OrderDetailPage实际JS与953固定发布包一致，server-baseline.log。证明线上同样代码缺口，不宣称生产已发生异常企微响应或历史发货数量有误。
+- 本批重新执行check_wecom_follow_member_response/check_shipment_quantity_precision/check_shipment_request_key三个真实隔离PG专项全部通过，企微用MockTransport无真实外部请求，发货仅合成订单；21项发布安全测试通过。既有1670项完整单元、前端类型/构建和浏览器红绿证据保持；固定提交 `9d13165baa7a5f4e83c808f4c3c9e8e1019f931c` 完整CI运行41190468805后端/UI两job均completed/success，ci-final.json，包含本批全部登记脚本/精确数量浏览器断言，未跳过检查或红CI上线。
+- 源码提交已同步GitHub/Gitee原pending-acceptance分支，发布包完全来自该固定SHA的git archive、baseline953eea2、冻结离线构建。包/tmp/crm-release-quality-9d13165.tar.gz，SHA256 `870c53c60439143c7b8a7859246da2e91a4d9456b7c086ef84e53328eb54cf2e`；工具SHA256 `8347192444e4ecf3347513b78f668b33a4fd62efa49624fc8082f90911ad5cab`，服务器两者校验一致。统一完整预检通过后等待同SHA CI全绿才--apply，不放宽基线/迁移守卫。
+- 发布完成旧应用/前端备份、短暂重启切换、完整491文件/公网资源/健康检查，返回status=verified；备份 `/opt/crm-sales-agent/backup/unified-9d13165baa7a-wk5jmicf` 保留。未运行DDL/依赖升级、修改.env/生产企微或编号配置/角色权限/历史业务数量、清理真实文件或执行真实同步/发货测试。
+- 独立postcheck以本地包manifest为期望，与服务器RELEASE.files完整一致，逐491文件哈希、前后端版本标记均9d13165、status verified、systemd active、8010 app up/database ok；健康附带钉钉sync_running/stream_connected true。公网首页及当前入口JS与固定包字节一致，postcheck.log退出0。健康/静态核验不替代真实生产业务角色浏览器/第三方故障注入/全锁图与大数据性能验证。
+- 证据ops/backups/release-wecom-shipment-20261031/，含server-baseline、三专项、发布安全、build、manifest、preflight、CI、deploy、postcheck。隔离PG正常停止。收尾文档单独提交同步两个仓库，应用实际运行SHA保持9d13165而非后续文档提交，未产生应用补丁遗留；长期质量目标未宣称完成，不自动把本次上线授权扩为后续部署授权。
+
 ## 2026-10-31 Q-108/Q-109获准发布（进行中）
 
 - 用户明确授权服务器同样问题后部署，本批仅已复现并本地修好Q-108/Q-109；审批辅助标记差异及Q-096/Q-069/Q-075不纳入。当前服务器前后端标记仍953eea2，两修改后端文件SHA及当前OrderDetailPage实际资源与953eea2固定包一致，server-baseline.log，确认同样代码缺口；不在生产执行同步故障/订单造数据。
