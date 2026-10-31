@@ -178,8 +178,10 @@ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
 const port=server.address().port
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 try {
-  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:'ignore'})
-  for(let i=0;!existsSync(join(profile,'DevToolsActivePort'));i++){if(i>100)throw Error('browser timeout');await sleep(100)}
+  let browserStderr=''
+  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']})
+  browser.stderr.on('data',chunk=>{browserStderr=(browserStderr+chunk.toString()).slice(-8000)})
+  for(let i=0;!existsSync(join(profile,'DevToolsActivePort'));i++){if(i>100)throw Error(`browser timeout (exit=${browser.exitCode}, signal=${browser.signalCode}): ${browserStderr}`);await sleep(100)}
   const debug=readFileSync(join(profile,'DevToolsActivePort'),'utf8').split('\n')[0]
   const target=await (await fetch(`http://127.0.0.1:${debug}/json/new?about:blank`,{method:'PUT'})).json()
   socket=new WebSocket(target.webSocketDebuggerUrl)
