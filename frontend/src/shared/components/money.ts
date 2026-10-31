@@ -58,3 +58,18 @@ export function formatMoneyGroups(
     .map((item) => formatMoney(item.amount, item.currency))
     .join(' ／ ')
 }
+
+/** 分析页保留整元展示；精确字符串按既有Math.round方向取整，不先转Number。 */
+export function formatWholeCny(value: number | string | null | undefined): string {
+  if (typeof value !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(value)) {
+    const numeric = Number(value ?? 0)
+    return Number.isFinite(numeric) ? `¥${Math.round(numeric).toLocaleString('zh-CN')}` : '-'
+  }
+  const negative = value.startsWith('-')
+  const [whole, fraction = ''] = (negative ? value.slice(1) : value).split('.')
+  const first = Number(fraction[0] ?? '0')
+  // Math.round的负数半值向正无穷取整；保留旧页面对负数和负零的显示。
+  const increment = first > 5 || (first === 5 && (!negative || /[1-9]/.test(fraction.slice(1))))
+  const integer = BigInt(whole) + (increment ? 1n : 0n)
+  return `¥${negative ? '-' : ''}${integer.toLocaleString('zh-CN')}`
+}

@@ -28,6 +28,7 @@
 
 import hashlib
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
@@ -72,7 +73,7 @@ ATTRIBUTION_NOTE = (
 BASIS_NOTE = {
     "signed": "签单口径：订单创建月，非取消订单的订单金额",
     "shipped": (
-        "发货口径：按「实际发货批次」分摊——每批金额 = Σ(该批实发数量 × 订单行单价)，"
+        "发货口径：按「实际发货批次」分摊——每批金额 = Σ(该批各行实发金额，逐行四舍五入到分)，"
         "落在该批 `actual_ship_date` 所在月。不再按首批把整单金额归到一个月（§4.1.4）"
     ),
     "received": (
@@ -86,11 +87,11 @@ BASIS_NOTE = {
 }
 
 
-def _bucket(out: dict[str, float], month, amount) -> None:
+def _bucket(out: dict[str, Decimal], month, amount) -> None:
     if month is None:
         return
     key = f"{int(month):02d}"
-    out[key] = out.get(key, 0.0) + float(amount or 0)
+    out[key] = out.get(key, Decimal(0)) + Decimal(str(amount or 0))
 
 
 #: 口径版本：快照与结果都带它，方便回答"这一版是怎么算的"。
@@ -334,6 +335,11 @@ async def basis_for(
     )
 
 
+def shipment_line_amount():
+    """已存三位数量×四位单价，按订单既有逐行四舍五入规则到分。"""
+    return func.round(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price, 2)
+
+
 async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> dict:
     """按年返回六个口径的月度序列（键是 `01`~`12`）。"""
     owner_ids = await scoped_owner_ids(session, user)
@@ -347,7 +353,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     )
 
     # ---- 签单：订单创建月 ----
-    signed: dict[str, float] = {}
+    signed: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -368,14 +374,14 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     # ---- 发货：按**实际发货批次 × 行实发数量**分摊到各批次所在月（§4.1.4）----
     # 原来按"订单首批实际发货日"把**整单金额**归到一个月：10 月发 10 件、11 月发 90 件，
     # 整单都算进 10 月——分批发货直接错期。现在每批各算各的：
-    # 批次金额 = Σ(该批 `shipped_qty` × 订单行 `unit_price`)，落在该批发货日所在月。
-    shipped: dict[str, float] = {}
+    # 批次金额 = Σ(每条实发明细按订单规则先四舍五入到分)，落在该批发货日所在月。
+    shipped: dict[str, Decimal] = {}
     batch_value = (
         select(
             OrderShipmentBatch.order_id.label("order_id"),
             OrderShipmentBatch.actual_ship_date.label("ship_date"),
             func.coalesce(
-                func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
+                func.sum(shipment_line_amount()), 0
             ).label("amount"),
         )
         .select_from(OrderShipmentBatch)
@@ -411,7 +417,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         _bucket(shipped, month, amount)
 
     # ---- 回款：**财务确认时间**归月（返工单第 2 条，与 targets.py 同一口径）----
-    received: dict[str, float] = {}
+    received: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -439,7 +445,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     # 期初 = 该年 1 月 1 日之前已有非取消订单的客户。这份池子来自**基准**
     # （过去年份已冻结，§4.1.5），不再每次从订单状态现算——否则事后取消一张往年
     # 订单，客户就从整年老客池里消失，去年的数今年再看就变了。
-    repeat_net: dict[str, float] = {}
+    repeat_net: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -457,7 +463,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
         _bucket(repeat_net, month, amount)
 
     # ---- 两种新客口径 ----
-    new_by_created: dict[str, float] = {}
+    new_by_created: dict[str, Decimal] = {}
     rows = await session.execute(
         scope(
             select(
@@ -477,7 +483,7 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     # 首次成交用**基准里的那份**（§4.1.5）：过去年份已冻结，当年实时。
     # 不再从 orders 现算 `min(created_at)`——那样事后取消人家的首单，
     # 首次成交月会往后跳，历史指标被就地改写。
-    new_by_first_deal: dict[str, float] = {}
+    new_by_first_deal: dict[str, Decimal] = {}
     deals = {int(cid): month for cid, month in first_deal_month.items()}
     if deals:
         # 数据范围仍按客户**当前负责人**过滤（口径不变，只是基准不再现算）
@@ -502,10 +508,14 @@ async def annual_bases(session: AsyncSession, user: CurrentUser, year: int) -> d
     return {
         "year": year,
         "months": months,
-        "signed": [{"month": m, "value": round(signed.get(m, 0.0), 2)} for m in months],
-        "shipped": [{"month": m, "value": round(shipped.get(m, 0.0), 2)} for m in months],
-        "received": [{"month": m, "value": round(received.get(m, 0.0), 2)} for m in months],
-        "repeat_net": [{"month": m, "value": round(repeat_net.get(m, 0.0), 2)} for m in months],
+        "signed": [{"month": m, "value": float(round(signed.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(signed.get(m, Decimal(0)), 2))} for m in months],
+        "shipped": [{"month": m, "value": float(round(shipped.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(shipped.get(m, Decimal(0)), 2))} for m in months],
+        "received": [{"month": m, "value": float(round(received.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(received.get(m, Decimal(0)), 2))} for m in months],
+        "repeat_net": [{"month": m, "value": float(round(repeat_net.get(m, Decimal(0)), 2)),
+                     "value_exact": str(round(repeat_net.get(m, Decimal(0)), 2))} for m in months],
         "new_by_created": [{"month": m, "value": int(new_by_created.get(m, 0))} for m in months],
         "new_by_first_deal": [
             {"month": m, "value": int(new_by_first_deal.get(m, 0))} for m in months
@@ -527,7 +537,7 @@ async def repeat_net_by_owner(
     year: int,
     *,
     company_wide: bool = False,
-) -> dict[int | None, dict[str, float]]:
+) -> dict[int | None, dict[str, Decimal]]:
     """老客净额，按「签单归属人」拆开的版本（键：负责人 id → 月份 → 金额）。
 
     口径与 `annual_bases` 里那一份**完全相同**（期初固定客户集合、按签单归属、
@@ -562,11 +572,11 @@ async def repeat_net_by_owner(
     if owner_ids is not None and not company_wide:
         stmt = stmt.where(sales_owner.in_(owner_ids or [0]))
 
-    out: dict[int | None, dict[str, float]] = {}
+    out: dict[int | None, dict[str, Decimal]] = {}
     for month, owner_id, amount in (await session.execute(stmt)).all():
         if month is None:
             continue
         bucket = out.setdefault(owner_id, {})
         key = f"{int(month):02d}"
-        bucket[key] = bucket.get(key, 0.0) + float(amount or 0)
+        bucket[key] = bucket.get(key, Decimal(0)) + Decimal(str(amount or 0))
     return out

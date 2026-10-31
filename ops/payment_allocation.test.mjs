@@ -49,3 +49,32 @@ test('exact monetary strings retain negative fractions and cent precision', () =
   assert.equal(moneyExports.formatMoney(null, 'CNY'), '-')
   assert.equal(moneyExports.formatMoney(-0.01, 'CNY'), '¥-0.01')
 })
+
+test('whole-yuan analysis text rounds exact decimal strings without gaining a yuan', () => {
+  assert.equal(moneyExports.formatWholeCny('199999999999999.49'), '¥199,999,999,999,999')
+  assert.equal(moneyExports.formatWholeCny('199999999999999.50'), '¥200,000,000,000,000')
+  assert.equal(String(Math.round(Number('199999999999999.49'))), '200000000000000')
+})
+test('whole-yuan formatting preserves normal Math.round ties, negatives and legacy numbers', () => {
+  for (const value of ['0', '0.49', '0.5', '1.49', '1.5', '-0.49', '-0.5', '-0.51', '-1.49', '-1.5', '-1.5001', '-1.51', '1234.56']) {
+    assert.equal(moneyExports.formatWholeCny(value), `¥${Math.round(Number(value)).toLocaleString('zh-CN')}`)
+    assert.equal(moneyExports.formatWholeCny(Number(value)), `¥${Math.round(Number(value)).toLocaleString('zh-CN')}`)
+  }
+  assert.equal(moneyExports.formatWholeCny(undefined), '¥0')
+  assert.equal(moneyExports.formatWholeCny('abc'), '-')
+  assert.equal(moneyExports.formatWholeCny(Infinity), '-')
+})
+
+const inputSource=readFileSync(new URL('../frontend/src/shared/number-input.ts',import.meta.url),'utf8')
+const inputCompiled=ts.transpileModule(inputSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText
+const inputExports={};runInNewContext(inputCompiled,{exports:inputExports,module:{exports:inputExports}})
+test('decimal financial inputs retain cents, zeros and scientific notation without Number conversion',()=>{
+  for(const value of ['99999999999999.99','3.0300','+1.01','.50','1e2','-1.01','0']) assert.equal(inputExports.parseOptionalDecimal(` ${value} `),value)
+})
+test('decimal input keeps empty, invalid and legacy numeric parsing behavior',()=>{
+  assert.equal(inputExports.parseOptionalDecimal(' '),null)
+  assert.equal(inputExports.parseOptionalDecimal(undefined),null)
+  for(const value of ['abc','1abc','Infinity','NaN']) assert.ok(Number.isNaN(inputExports.parseOptionalDecimal(value)))
+  assert.equal(inputExports.parseOptionalDecimal('0x10'),16)
+  assert.equal(inputExports.parseOptionalNumber('2'),2)
+})

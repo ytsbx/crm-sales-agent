@@ -148,8 +148,10 @@ export interface SalesUserStat {
   opportunity_count: number
   quote_count: number
   order_amount: number
+  order_amount_exact?: string
   followup_count: number
   received_amount: number
+  received_amount_exact?: string
 }
 
 export interface ReceivableStats extends WithCurrencyWarnings {
@@ -590,6 +592,14 @@ export interface SalesTargetRow {
   repeat_customer_variance: number
   repeat_customer_achievement: number | null
   remark?: string | null
+  sales_actual_exact?: string
+  shipped_actual_exact?: string
+  received_actual_exact?: string
+  repeat_customer_actual_exact?: string
+  sales_target_exact?: string
+  repeat_customer_target_exact?: string
+  sales_variance_exact?: string
+  repeat_customer_variance_exact?: string
 }
 
 export interface SalesTargetList {
@@ -687,6 +697,7 @@ export function getSalesTargetDrilldown(params: {
 // 文档要求"销售额分别显示签单、发货、回款"且"系统分别保存计算口径与数据来源"。
 
 export interface TargetBasisRow {
+  value_exact?: string
   month: string
   value: number
 }
@@ -714,9 +725,9 @@ export function upsertSalesTarget(payload: {
   /** 团队目标（文档 §六 :121）：填了就按部门设，与 user_id 互斥 */
   department_id?: number | null
   new_customer_target: number
-  sales_target: number
+  sales_target: number | string
   /** 复购（老客净额）目标，口径见后端 target_bases.py */
-  repeat_customer_target?: number
+  repeat_customer_target?: number | string
   remark?: string | null
 }) {
   return api.post<{ target_id: number }>('/sales-targets/upsert', payload)

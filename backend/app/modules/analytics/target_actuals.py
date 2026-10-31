@@ -138,6 +138,7 @@ async def frozen_items(session: AsyncSession, period: str, metric: str) -> list[
             "label": row.label,
             "owner_id": row.owner_id,
             "amount": round(float(row.amount or 0), 2),
+            "amount_exact": str(row.amount if row.amount is not None else 0),
             "date": row.at_text,
         }
         for row in rows
@@ -230,6 +231,22 @@ async def lock_period(session: AsyncSession, period: str) -> None:
     await session.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': key})
 
 
+# Numeric(16,2)在数据库中先四舍五入到分；达到半分进位边界就会溢出。
+_SNAPSHOT_OVERFLOW_AT = Decimal("99999999999999.995")
+
+
+def _check_snapshot_amount(period: str, metric: str, kind: str, value) -> None:
+    amount = Decimal(str(value or 0))
+    if not amount.is_finite() or amount.copy_abs() >= _SNAPSHOT_OVERFLOW_AT:
+        label = ACTUAL_METRIC_LABEL.get("sales" if metric == "signed" else metric, metric)
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"{period} 的{label}{kind}金额超出可保存范围（绝对值最多99,999,999,999,999.99）。"
+            "本次未保存，请核对数据或联系管理员",
+            422,
+        )
+
+
 async def freeze_period(
     session: AsyncSession,
     *,
@@ -279,6 +296,12 @@ async def freeze_period(
         # 重算必须说明为什么。历史数字被改而没人知道原因，
         # 事后对账就是一笔糊涂账。
         raise AppError(ErrorCode.PARAM_ERROR, "重算历史实绩必须填写原因", 422)
+
+    # 在新增、改写或删除任何存档之前核对整批，重算超限也保留原存档。
+    for (_scope_key, metric), value in values.items():
+        _check_snapshot_amount(period, metric, "汇总", value)
+    for item in items or []:
+        _check_snapshot_amount(period, item["metric"], "明细", item.get("amount"))
 
     now = datetime.now(UTC)
     written = 0

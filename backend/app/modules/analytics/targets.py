@@ -272,18 +272,18 @@ async def targets_with_actuals(
         customer_stmt = customer_stmt.where(Customer.owner_id.in_(owner_ids or [0]))
 
 
-    sales_actual: dict[tuple[str, int | None], float] = {}
+    sales_actual: dict[tuple[str, int | None], Decimal] = {}
     for m, owner_id, total in (await session.execute(sales_stmt)).all():
         key = (f"{year}-{int(m):02d}", owner_id)
-        sales_actual[key] = sales_actual.get(key, 0.0) + float(total or 0)
+        sales_actual[key] = sales_actual.get(key, Decimal(0)) + Decimal(total or 0)
     #: 全公司目标行的签单口径（未按查看者范围收窄）。
-    company_sales_actual: dict[tuple[str, int | None], float] = {}
+    company_sales_actual: dict[tuple[str, int | None], Decimal] = {}
     if company_only:
         for m, owner_id, total in (
             await session.execute(company_stmts["sales"])  # type: ignore[arg-type]
         ).all():
             key = (f"{year}-{int(m):02d}", owner_id)
-            company_sales_actual[key] = company_sales_actual.get(key, 0.0) + float(total or 0)
+            company_sales_actual[key] = company_sales_actual.get(key, Decimal(0)) + Decimal(total or 0)
     else:
         # `data_scope=all`（管理员/财务）本就看不到收窄，收窄后的那份就是全量。
         company_sales_actual = sales_actual
@@ -373,23 +373,15 @@ async def targets_with_actuals(
             func.extract("year", PaymentRecord.received_date) == year,
         )
     )
-    # ---- 发货（展示口径，不进差额）：按**实际发货批次 × 行实发数量**分摊（§4.1.4）----
-    # ⚠️ 发货金额**按批取、不在 SQL 里先加**（第十批审查 ⑨，2026-10-13）。
-    #
-    # 原来这里是 `func.sum(批内数量 × 单价)` 再按月分组：等于"**先加后舍入**"。
-    # 而下钻明细是按批分组、每批 `round(..., 2)` —— "**先舍入后加**"。
-    # 两者在单价带半分时必然对不上，实测（订单 0.05 元、两件各 0.025、分两批）：
-    # 汇总 0.05，明细每批 0.03，下钻合计 0.06，差额一分。
-    #
-    # 口径统一到项目既有的 `money.line_amount`（逐行先到分，再相加），
-    # 所以汇总改为"取每批金额 → 逐批舍入 → 按月相加"，与明细**同一来源**，
-    # 明细之和必然等于汇总。
+    # 发货按每条实发明细先四舍五入到分，再累计到批次/月；与订单line_amount同口径。
+    # 数量已按Numeric(16,3)存储，PG numeric round与ROUND_HALF_UP一致。
+    # 汇总与下钻共用同一SQL金额表达式，不在float上舍入。
     shipped_stmt = (
         select(
             func.extract("month", OrderShipmentBatch.actual_ship_date),
             sales_owner,
             OrderShipmentBatch.id,
-            func.coalesce(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price, 0),
+            func.coalesce(target_bases.shipment_line_amount(), 0),
         )
         .select_from(OrderShipmentBatch)
         .join(
@@ -403,13 +395,6 @@ async def targets_with_actuals(
             OrderShipmentBatch.actual_ship_date.is_not(None),
             func.extract("year", OrderShipmentBatch.actual_ship_date) == year,
             SalesOrder.status != "cancelled",
-        )
-        .group_by(
-            func.extract("month", OrderShipmentBatch.actual_ship_date),
-            sales_owner,
-            OrderShipmentBatch.id,
-            OrderShipmentBatchItem.shipped_qty,
-            SalesOrderItem.unit_price,
         )
     )
     # ⚠️ 捕获必须发生在**收窄之前**：`company_stmts[...]` 要的是未收窄的语句。
@@ -426,42 +411,38 @@ async def targets_with_actuals(
             sales_owner.in_(owner_ids or [0])
         )
 
-    received_actual: dict[tuple[str, int | None], float] = {}
+    received_actual: dict[tuple[str, int | None], Decimal] = {}
     for m, owner_id, total in (await session.execute(received_stmt)).all():
         key = (f"{year}-{int(m):02d}", owner_id)
-        received_actual[key] = received_actual.get(key, 0.0) + float(total or 0)
+        received_actual[key] = received_actual.get(key, Decimal(0)) + (total or Decimal(0))
 
     #: 全公司目标行的回款口径（未按查看者范围收窄）。
-    company_received_actual: dict[tuple[str, int | None], float] = {}
+    company_received_actual: dict[tuple[str, int | None], Decimal] = {}
     if company_only:
         for m, owner_id, total in (
             await session.execute(company_stmts["received"])  # type: ignore[arg-type]
         ).all():
             key = (f"{year}-{int(m):02d}", owner_id)
-            company_received_actual[key] = company_received_actual.get(key, 0.0) + float(total or 0)
+            company_received_actual[key] = company_received_actual.get(key, Decimal(0)) + (total or Decimal(0))
     else:
         company_received_actual = received_actual
-    company_shipped_actual: dict[tuple[str, int | None], float] = {}
+    company_shipped_actual: dict[tuple[str, int | None], Decimal] = {}
     if company_only:
         for m, owner_id, _batch_id, batch_amount in (
             await session.execute(company_stmts["shipped"])  # type: ignore[arg-type]
         ).all():
             key = (f"{year}-{int(m):02d}", owner_id)
-            company_shipped_actual[key] = company_shipped_actual.get(key, 0.0) + round(
-                float(batch_amount or 0), 2
-            )
+            company_shipped_actual[key] = company_shipped_actual.get(key, Decimal(0)) + Decimal(str(batch_amount or 0))
 
     # 本年度「已确认但缺确认时间」的笔数（只提示，不进金额）
     missing_confirmed_count = int(
         (await session.execute(missing_confirmed_stmt)).scalar_one() or 0
     )
 
-    shipped_actual: dict[tuple[str, int | None], float] = {}
+    shipped_actual: dict[tuple[str, int | None], Decimal] = {}
     for m, owner_id, _batch_id, batch_amount in (await session.execute(shipped_stmt)).all():
         key = (f"{year}-{int(m):02d}", owner_id)
-        # 逐批舍入到分（与 `_row` 的 round 同口径），再加到月度合计。
-        # 这样"明细之和 = 汇总"，不会出现"下钻合计比汇总多一分"。
-        shipped_actual[key] = shipped_actual.get(key, 0.0) + round(float(batch_amount or 0), 2)
+        shipped_actual[key] = shipped_actual.get(key, Decimal(0)) + Decimal(str(batch_amount or 0))
     if not company_only:
         company_shipped_actual = shipped_actual
 
@@ -486,7 +467,7 @@ async def targets_with_actuals(
                 session, t.department_id
             )
 
-    def _repeat_actual(month: str, owner_id: int | None, department_id: int | None = None) -> float:
+    def _repeat_actual(month: str, owner_id: int | None, department_id: int | None = None) -> Decimal:
         """复购实际值。
 
         `owner_id is None` 的行是**全公司/团队目标**：销售额与新客在那一行把
@@ -501,13 +482,13 @@ async def targets_with_actuals(
         if department_id is not None:
             members = set(dept_members.get(department_id, []))
             return round(
-                sum(v.get(key, 0.0) for oid, v in repeat_by_owner.items() if oid in members), 2
+                sum(v.get(key, Decimal(0)) for oid, v in repeat_by_owner.items() if oid in members), 2
             )
         if owner_id is None:
             # 全公司行（department_id 也为空）用**全量**复购；团队行已在上面按成员加总。
             source = company_repeat_by_owner if department_id is None else repeat_by_owner
-            return round(sum(bucket.get(key, 0.0) for bucket in source.values()), 2)
-        return round(repeat_by_owner.get(owner_id, {}).get(key, 0.0), 2)
+            return round(sum(bucket.get(key, Decimal(0)) for bucket in source.values()), 2)
+        return round(repeat_by_owner.get(owner_id, {}).get(key, Decimal(0)), 2)
 
     def _sort_key(key: tuple[str, int | None]) -> tuple[str, int]:
         """按「月，人」排序；无归属人（None）排在本月最后一个。"""
@@ -518,7 +499,7 @@ async def targets_with_actuals(
     # ---- 组装行：目标行 + 有实际但没设目标的（月，负责人）补零行 ----
     def actual_for(
         month: str, target_user_id: int | None, department_id: int | None = None
-    ) -> tuple[float, float, float, int, int]:
+    ) -> tuple[Decimal | float, Decimal | float, Decimal | float, int, int]:
         """某个 (月, 作用域) 的实际值：签单 / 回款（考核）/ 发货 / 新客 / 新建档。
 
         三个销售口径都算出来是为了"都能显示"，但**只有考核口径进差额**（§4.3）：
@@ -536,7 +517,7 @@ async def targets_with_actuals(
         #: 于是非管理员看到的是"公司目标 vs 我自己"（实测：张三 0、管理员 580）。
         company_row = target_user_id is None and department_id is None
 
-        def pick(source: dict, restrict_to: set[int] | None, company_source=None) -> float:
+        def pick(source: dict, restrict_to: set[int] | None, company_source=None) -> Decimal | float:
             if restrict_to is not None:
                 return sum(
                     v for (m, o), v in source.items() if m == month and o in restrict_to
@@ -580,7 +561,9 @@ async def targets_with_actuals(
                 "department_id": t.department_id,
                 "new_customer_target": t.new_customer_target,
                 "sales_target": float(t.sales_target or 0),
+                "sales_target_exact": str(t.sales_target or 0),
                 "repeat_customer_target": float(t.repeat_customer_target or 0),
+                "repeat_customer_target_exact": str(t.repeat_customer_target or 0),
                 "new_customer_actual": new,
                 # 过程指标：本月**新建档**的客户数（不参与差额与达成率）。
                 # 与考核值合看才有意义："建档 8 个、成交 1 个"说明前端转化有问题。
@@ -681,7 +664,7 @@ async def targets_with_actuals(
                 "new_customer_created_actual": int(
                     new_customer_created.get((month, owner_id), 0)
                 ),
-                "sales_actual": round(sales_actual.get((month, owner_id), 0.0), 2),
+                "sales_actual": round(sales_actual.get((month, owner_id), Decimal(0)), 2),
                 "repeat_customer_actual": _repeat_actual(month, owner_id),
                 "remark": None,
             }
@@ -696,10 +679,10 @@ async def targets_with_actuals(
         row.setdefault("assess_basis", ASSESS_BASIS)
         row.setdefault("assess_basis_label", ASSESS_BASIS_LABEL)
         row.setdefault(
-            "received_actual", round(received_actual.get((month, owner_id), 0.0), 2)
+            "received_actual", round(received_actual.get((month, owner_id), Decimal(0)), 2)
         )
         row.setdefault(
-            "shipped_actual", round(shipped_actual.get((month, owner_id), 0.0), 2)
+            "shipped_actual", round(shipped_actual.get((month, owner_id), Decimal(0)), 2)
         )
         row.setdefault("assess_actual", row["received_actual"])
         # ---- 已结账的期间：用存档值覆盖实时算出来的数（第三批 §4.1.5 后半）----
@@ -722,6 +705,8 @@ async def targets_with_actuals(
                 key = (scope_key, metric)
                 if key not in snap:
                     return live
+                if metric in ("sales", "received", "shipped", "repeat_net"):
+                    return round(snap[key], 2)
                 return int(snap[key]) if metric == "new_customer" else round(float(snap[key]), 2)
 
             row["sales_actual"] = frozen_value("sales", row.get("sales_actual") or 0)
@@ -739,6 +724,11 @@ async def targets_with_actuals(
         # 这一行的数字是**存档值**还是**实时算的**。界面上必须说清楚：
         # 存档值不会因为后来的退货变小，实时值会——两者对不上时先看这个标志。
         row["actual_frozen"] = frozen_row
+        # 冻结收集直接消费本服务，金额不能在落库前经过float；JSON保留旧数字键。
+        row["sales_actual_exact"] = str(row["sales_actual"])
+        row["received_actual_exact"] = str(row["received_actual"])
+        row["shipped_actual_exact"] = str(row["shipped_actual"])
+        row["repeat_customer_actual_exact"] = str(row["repeat_customer_actual"])
 
     # ---- 差额与达成率（文档 §六 :121 / 场景17）：每个口径都要能回答"差多少" ----
     # **零基期不给百分比**：分母为 0 时算出来的是错误增长率（文档场景17 明确要求
@@ -749,6 +739,8 @@ async def targets_with_actuals(
         # 差额与达成率用**考核口径**（确认回款）。`sales_actual`（签单）与
         # `shipped_actual`（发货）照常展示，但绝不混进差额——§4.3 明确要求。
         actual = float(row.get("assess_actual") or 0)
+        row.setdefault("sales_target_exact", str(row.get("sales_target") or 0))
+        row["sales_variance_exact"] = str(round(Decimal(row["received_actual_exact"]) - Decimal(row["sales_target_exact"]), 2))
         row["sales_variance"] = round(actual - target, 2)
         row["sales_achievement"] = round(actual / target, 4) if target else None
         row["achievement_note"] = (
@@ -763,6 +755,8 @@ async def targets_with_actuals(
         # 复购（老客净额）同样给差额与达成率：文档要求每个口径都能回答"差多少"
         repeat_target = float(row.get("repeat_customer_target") or 0)
         repeat_actual_row = float(row.get("repeat_customer_actual") or 0)
+        row.setdefault("repeat_customer_target_exact", str(row.get("repeat_customer_target") or 0))
+        row["repeat_customer_variance_exact"] = str(round(Decimal(row["repeat_customer_actual_exact"]) - Decimal(row["repeat_customer_target_exact"]), 2))
         row["repeat_customer_variance"] = round(repeat_actual_row - repeat_target, 2)
         row["repeat_customer_achievement"] = (
             round(repeat_actual_row / repeat_target, 4) if repeat_target else None
@@ -958,13 +952,14 @@ def _fmt_at(at) -> str | None:
 
 
 def _row(record_type: str, record_id: int, label: str | None, owner_id: int | None,
-         amount: float, at) -> dict:
+         amount: Decimal | float, at) -> dict:
     return {
         "record_type": record_type,
         "id": record_id,
         "label": label,
         "owner_id": owner_id,
         "amount": round(amount, 2),
+        "amount_exact": str(round(amount, 2)) if isinstance(amount, Decimal) else None,
         "date": _fmt_at(at),
     }
 
@@ -1068,7 +1063,7 @@ async def drilldown(
         if scope_ids is not None:
             stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
         for record_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
-            items.append(_row("order", record_id, order_no, owner, float(amount or 0), at))
+            items.append(_row("order", record_id, order_no, owner, amount or Decimal(0), at))
 
     elif metric == "shipped":
         stmt = (
@@ -1078,7 +1073,7 @@ async def drilldown(
                 OrderShipmentBatch.batch_no,
                 sales_owner,
                 func.coalesce(
-                    func.sum(OrderShipmentBatchItem.shipped_qty * SalesOrderItem.unit_price), 0
+                    func.sum(target_bases.shipment_line_amount()), 0
                 ),
                 OrderShipmentBatch.actual_ship_date,
             )
@@ -1111,7 +1106,7 @@ async def drilldown(
         ).all():
             items.append(
                 _row("shipment_batch", batch_id, f"{order_no} 第{batch_no}批", owner,
-                     float(amount or 0), ship_date)
+                     Decimal(str(amount or 0)), ship_date)
             )
 
     elif metric == "received":
@@ -1137,7 +1132,7 @@ async def drilldown(
             stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
         for pay_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
             items.append(
-                _row("payment", pay_id, order_no, owner, float(amount or 0), at)
+                _row("payment", pay_id, order_no, owner, amount or Decimal(0), at)
             )
 
     elif metric == "new_customer":
@@ -1175,9 +1170,14 @@ async def drilldown(
         if scope_ids is not None:
             stmt = stmt.where(sales_owner.in_(scope_ids or [0]))
         for record_id, order_no, owner, amount, at in (await session.execute(stmt)).all():
-            items.append(_row("order", record_id, order_no, owner, float(amount or 0), at))
+            items.append(_row("order", record_id, order_no, owner, amount or Decimal(0), at))
 
-    total = sum(item["amount"] for item in items)
+    exact_amounts = [item.get("amount_exact") for item in items]
+    exact_total = (
+        sum((Decimal(value) for value in exact_amounts), Decimal(0))
+        if all(value is not None for value in exact_amounts) else None
+    )
+    total = exact_total if exact_total is not None else sum(item["amount"] for item in items)
     items.sort(key=lambda x: (x["date"] or "", -x["amount"]))
     cap = None if unlimited else DRILLDOWN_LIMIT
     return {
@@ -1188,6 +1188,7 @@ async def drilldown(
         "scope_user_ids": scope_ids,
         "count": len(items),
         "total": round(total, 2),
+        "total_exact": str(round(exact_total, 2)) if exact_total is not None else None,
         "items": items if cap is None else items[:cap],
         "truncated": cap is not None and len(items) > cap,
         # 这一份是**存档**（结账那一刻抄的，不会因为后来退货变小）

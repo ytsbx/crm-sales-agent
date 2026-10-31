@@ -54,9 +54,24 @@ const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微�
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
 const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending'})
 const publicCustomer={id:9,name:'领取确认测试客户',pool_status:'public',status:'active',tags:[],owner_id:null}
+let analyticsExact=false
+const analyticsTargetWrites=[]
+const analyticsFixture=JSON.parse(readFileSync(new URL('./fixtures/analytics-whole-yuan.json',import.meta.url),'utf8'))
 const server=createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost')
   const path=url.pathname
+  if(analyticsExact && path==='/api/v1/sales-targets/upsert' && req.method==='POST') {
+    let raw='';for await(const chunk of req) raw+=chunk
+    const payload=JSON.parse(raw)
+    analyticsTargetWrites.push(payload)
+    const targetId=payload.department_id===analyticsFixture.team_target.department_id ? analyticsFixture.team_target.target_id : analyticsFixture.money_target.target_id
+    res.writeHead(200,{'Content-Type':'application/json'})
+    res.end(JSON.stringify({code:0,data:{target_id:targetId}}));return
+  }
+  if(analyticsExact && analyticsFixture.responses[path]) {
+    res.writeHead(200,{'Content-Type':'application/json'})
+    res.end(JSON.stringify(analyticsFixture.responses[path]));return
+  }
   if(path.startsWith('/api/')) {
     apiRequests.push({path,method:req.method})
     let body={}
@@ -858,6 +873,66 @@ try {
 
 
 
+
+
+  analyticsExact=true
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/analytics`})
+  const annualExactRow=`Array.from(document.querySelectorAll('tr')).find(r=>r.innerText.startsWith('${analyticsFixture.period.slice(5)}\t'))`
+  await waitFor(`${annualExactRow}?.innerText.includes('¥199,999,999,999,999')`)
+  await waitFor(`Array.from(document.querySelectorAll('tr')).filter(r=>r.innerText.includes('隔离整元精度')).length>=2`)
+  const performanceRows=await evaluate(`Array.from(document.querySelectorAll('tr')).filter(r=>r.innerText.includes('隔离整元精度')).map(r=>r.innerText)`)
+  assert.ok(performanceRows.every(text=>text.includes('¥199,999,999,999,999') && !text.includes('¥200,000,000,000,000')))
+  console.log('BROWSER_ANALYTICS_ANNUAL_TARGET_AND_PERSONNEL_EXACT_WHOLE_YUAN=true')
+
+
+  const teamTargetRow=`Array.from(document.querySelectorAll('tr')).find(r=>r.innerText.includes('${analyticsFixture.team_target.name}'))`
+  await waitFor(`${teamTargetRow}?.querySelector('a')`)
+  await evaluate(`Array.from(${teamTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
+  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  assert.equal(analyticsTargetWrites.length,0,'opening a team target must not save')
+  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='取消').click()`)
+  await sleep(100)
+  assert.equal(analyticsTargetWrites.length,0,'cancel must not save')
+  await evaluate(`Array.from(${teamTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
+  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  for(let i=0;analyticsTargetWrites.length===0 && i<50;i++) await sleep(100)
+  assert.equal(analyticsTargetWrites.length,1)
+  assert.equal(analyticsTargetWrites[0].department_id,analyticsFixture.team_target.department_id)
+  assert.equal(analyticsTargetWrites[0].user_id,null)
+  assert.equal(analyticsTargetWrites[0].period,analyticsFixture.team_target.period)
+  console.log('BROWSER_TEAM_TARGET_EDIT_KEEPS_DEPARTMENT_AND_CANCEL_DOES_NOT_SAVE=true')
+
+
+  await waitFor(`!document.querySelector('.semi-modal')`)
+  const moneyTargetRow=`Array.from(document.querySelectorAll('tr')).find(r=>r.innerText.includes('${analyticsFixture.money_target.name}'))`
+  await waitFor(`${moneyTargetRow}?.querySelector('a')`)
+  await evaluate(`Array.from(${moneyTargetRow}.querySelectorAll('a')).find(a=>a.innerText.trim()==='编辑').click()`)
+  await waitFor(`document.querySelector('.semi-modal')?.innerText.includes('设定目标')`)
+  const targetInput=label=>`Array.from(document.querySelectorAll('.semi-modal-body div')).find(el=>el.firstElementChild?.textContent.trim()===${JSON.stringify(label)})?.querySelector('input')`
+  const targetSalesInput=targetInput('销售额目标（元）'), targetRepeatInput=targetInput('复购目标（元，老客净额）')
+  assert.deepEqual(await evaluate(`[${targetSalesInput}?.value,${targetRepeatInput}?.value]`),[analyticsFixture.money_target.amount,analyticsFixture.money_target.amount])
+  const setTargetInput=async (input,value)=>{
+    await evaluate(`${input}.focus();${input}.select()`)
+    await send('Input.insertText',{text:value})
+    await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+  }
+  await setTargetInput(targetSalesInput,'abc')
+  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  await waitFor(`document.body.innerText.includes('销售额目标只能填数字')`)
+  assert.equal(analyticsTargetWrites.length,1,'invalid amount must not submit or become null')
+  await setTargetInput(targetSalesInput,analyticsFixture.money_target.amount)
+  // SemiModal确认按钮有leading-only的100ms防连点；输入改正后的重试应跨过该窗口。
+  await sleep(120)
+  await evaluate(`Array.from(document.querySelector('.semi-modal').querySelectorAll('button')).find(b=>b.innerText.trim()==='保存').click()`)
+  for(let i=0;analyticsTargetWrites.length<2 && i<50;i++) await sleep(100)
+  assert.equal(analyticsTargetWrites.length,2)
+  const exactTargetPayload=analyticsTargetWrites[1]
+  assert.equal(exactTargetPayload.sales_target,analyticsFixture.money_target.amount)
+  assert.equal(exactTargetPayload.repeat_customer_target,analyticsFixture.money_target.amount)
+  assert.equal(exactTargetPayload.user_id,analyticsFixture.money_target.user_id)
+  assert.equal(exactTargetPayload.department_id,null)
+  console.log('BROWSER_TARGET_EDIT_PRESERVES_EXACT_AMOUNTS_AND_REJECTS_INVALID_INPUT=true')
 
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})

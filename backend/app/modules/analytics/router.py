@@ -229,13 +229,13 @@ async def _collect_period_actuals(session: AsyncSession, user, period: str) -> d
         if row["period"] != period:
             continue
         key = target_actuals.scope_key_of(row.get("user_id"), row.get("department_id"))
-        values[(key, "sales")] = Decimal(str(row.get("sales_actual") or 0))
-        values[(key, "received")] = Decimal(str(row.get("assess_actual") or 0))
-        values[(key, "shipped")] = Decimal(str(row.get("shipped_actual") or 0))
+        values[(key, "sales")] = Decimal(str(row.get("sales_actual_exact") or row.get("sales_actual") or 0))
+        values[(key, "received")] = Decimal(str(row.get("received_actual_exact") or row.get("assess_actual") or 0))
+        values[(key, "shipped")] = Decimal(str(row.get("shipped_actual_exact") or row.get("shipped_actual") or 0))
         values[(key, "new_customer")] = Decimal(str(row.get("new_customer_actual") or 0))
         # 复购（老客净额）也要落档（返工单第 4 条）：同一行里的四个数就该一起冻，
         # 单留一个实时算的，结账之后它照样漂移，用户看到的是"冻结了一半的报表"。
-        values[(key, "repeat_net")] = Decimal(str(row.get("repeat_customer_actual") or 0))
+        values[(key, "repeat_net")] = Decimal(str(row.get("repeat_customer_actual_exact") or row.get("repeat_customer_actual") or 0))
     return values
 
 

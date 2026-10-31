@@ -34,6 +34,14 @@ export function parseOptionalNumber(raw: unknown): number | null {
   return Number.isFinite(n) ? n : NaN
 }
 
+/** 金额提交保留十进制文本；校验沿用原解析器，旧非十进制数字写法保持原数值。 */
+export function parseOptionalDecimal(raw: unknown): number | string | null {
+  const numeric = parseOptionalNumber(raw)
+  if (numeric === null || Number.isNaN(numeric)) return numeric
+  const text = String(raw).trim()
+  return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text) ? text : numeric
+}
+
 /**
  * 把表单里的数字文本解析成**必填**数字（空串也算坏输入 → `NaN`）。
  *

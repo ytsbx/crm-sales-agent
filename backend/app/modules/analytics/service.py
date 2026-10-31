@@ -1383,8 +1383,10 @@ async def sales_user_stats(
             "opportunity_count": int(opportunities),
             "quote_count": int(quotes),
             "order_amount": _f(order_amount),
+            "order_amount_exact": str(order_amount or 0),
             "followup_count": int(followups),
             "received_amount": _f(received),
+            "received_amount_exact": str(received or 0),
         }
         for uid, name, customers, opportunities, quotes, order_amount, followups, received in rows
     ]

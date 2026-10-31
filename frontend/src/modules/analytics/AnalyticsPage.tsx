@@ -2,7 +2,8 @@ import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
-import { parseOptionalNumber } from '../../shared/number-input'
+import { parseOptionalDecimal, parseOptionalNumber } from '../../shared/number-input'
+import { formatWholeCny } from '../../shared/components/money'
 import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
@@ -184,6 +185,14 @@ function targetNumber(raw: unknown, label: string): number {
   return n ?? 0
 }
 
+function targetMoney(raw: unknown, label: string): number | string {
+  const value = parseOptionalDecimal(raw)
+  if (typeof value === 'number' && Number.isNaN(value)) {
+    throw new Error(`${label}只能填数字`)
+  }
+  return value ?? 0
+}
+
 export default function AnalyticsPage() {
   const { can } = usePermissions()
   const canSetTarget = can('settings:manage')
@@ -253,8 +262,8 @@ export default function AnalyticsPage() {
         // `|| 0` 不起作用 → NaN → JSON null → 后端当"没提供"，
         // **目标被悄悄清空**，达成率从此显示成"未设目标"。
         new_customer_target: targetNumber(targetForm.new_customer_target, '新客目标'),
-        sales_target: targetNumber(targetForm.sales_target, '销售额目标'),
-        repeat_customer_target: targetNumber(targetForm.repeat_customer_target, '复购目标'),
+        sales_target: targetMoney(targetForm.sales_target, '销售额目标'),
+        repeat_customer_target: targetMoney(targetForm.repeat_customer_target, '复购目标'),
       }),
     onSuccess: () => {
       Toast.success('目标已保存')
@@ -365,11 +374,12 @@ export default function AnalyticsPage() {
     if (row) {
       setTargetForm({
         user_id: row.user_id,
+        department_id: row.department_id,
         period: row.period,
         new_customer_target: String(row.new_customer_target),
-        sales_target: String(row.sales_target),
+        sales_target: String(row.sales_target_exact ?? row.sales_target),
         repeat_customer_target: row.repeat_customer_target
-          ? String(row.repeat_customer_target)
+          ? String(row.repeat_customer_target_exact ?? row.repeat_customer_target)
           : '',
       })
       setTargetModal({ visible: true, period: row.period, user_id: row.user_id })
@@ -933,12 +943,12 @@ export default function AnalyticsPage() {
               title: '订单金额',
               dataIndex: 'order_amount',
               width: 150,
-              render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
+              render: (v: number, r: SalesUserStat) => formatWholeCny(r.order_amount_exact ?? v),
             },
             {
               title: '回款额（按订单负责人）',
               dataIndex: 'received_amount',
-              render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
+              render: (v: number, r: SalesUserStat) => formatWholeCny(r.received_amount_exact ?? v),
             },
           ]}
           dataSource={salesQuery.data ?? []}
@@ -956,6 +966,10 @@ export default function AnalyticsPage() {
           if (!b) return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
           const pick = (rows: { month: string; value: number }[], m: string) =>
             rows.find((r) => r.month === m)?.value ?? 0
+          const exact = (rows: { month: string; value: number; value_exact?: string }[], m: string) => {
+            const row = rows.find((item) => item.month === m)
+            return row?.value_exact ?? row?.value ?? 0
+          }
           const months = (b.signed ?? [])
             .map((r) => r.month)
             .filter(
@@ -981,25 +995,25 @@ export default function AnalyticsPage() {
                     title: '签单',
                     width: 130,
                     render: (_: unknown, r: { month: string }) =>
-                      `¥${Math.round(pick(b.signed, r.month)).toLocaleString('zh-CN')}`,
+                      formatWholeCny(exact(b.signed, r.month)),
                   },
                   {
                     title: '发货',
                     width: 130,
                     render: (_: unknown, r: { month: string }) =>
-                      `¥${Math.round(pick(b.shipped, r.month)).toLocaleString('zh-CN')}`,
+                      formatWholeCny(exact(b.shipped, r.month)),
                   },
                   {
                     title: '回款',
                     width: 130,
                     render: (_: unknown, r: { month: string }) =>
-                      `¥${Math.round(pick(b.received, r.month)).toLocaleString('zh-CN')}`,
+                      formatWholeCny(exact(b.received, r.month)),
                   },
                   {
                     title: '老客净额',
                     width: 130,
                     render: (_: unknown, r: { month: string }) =>
-                      `¥${Math.round(pick(b.repeat_net, r.month)).toLocaleString('zh-CN')}`,
+                      formatWholeCny(exact(b.repeat_net, r.month)),
                   },
                   {
                     title: '新客(建档)',
@@ -1153,7 +1167,7 @@ export default function AnalyticsPage() {
               title: '销售目标',
               dataIndex: 'sales_target',
               width: 130,
-              render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
+              render: (v: number, r: SalesTargetRow) => formatWholeCny(r.sales_target_exact ?? v),
             },
             {
               // **考核口径**：确认回款。差额与达成率都是按它算的（§4.3）。
@@ -1164,7 +1178,7 @@ export default function AnalyticsPage() {
               width: 160,
               render: (v: number | undefined, r: SalesTargetRow) => (
                 <span>
-                  ¥{Math.round(v ?? 0).toLocaleString('zh-CN')}
+                  {formatWholeCny(r.received_actual_exact ?? v)}
                   <a style={{ marginLeft: 6, fontSize: 12 }} onClick={() => openDrilldown(r, 'received')}>
                     明细
                   </a>
@@ -1176,14 +1190,14 @@ export default function AnalyticsPage() {
               title: '签单额',
               dataIndex: 'sales_actual',
               width: 120,
-              render: (v?: number) => `¥${Math.round(v ?? 0).toLocaleString('zh-CN')}`,
+              render: (v: number | undefined, r: SalesTargetRow) => formatWholeCny(r.sales_actual_exact ?? v),
             },
             {
               // 展示口径：发货额（按实际发货批次分摊，§4.1.4）
               title: '发货额',
               dataIndex: 'shipped_actual',
               width: 120,
-              render: (v?: number) => `¥${Math.round(v ?? 0).toLocaleString('zh-CN')}`,
+              render: (v: number | undefined, r: SalesTargetRow) => formatWholeCny(r.shipped_actual_exact ?? v),
             },
             {
               title: '达成率',
@@ -1203,13 +1217,13 @@ export default function AnalyticsPage() {
               title: '复购目标',
               dataIndex: 'repeat_customer_target',
               width: 130,
-              render: (v: number) => (v ? `¥${Math.round(v).toLocaleString('zh-CN')}` : '—'),
+              render: (v: number, r: SalesTargetRow) => (v ? formatWholeCny(r.repeat_customer_target_exact ?? v) : '—'),
             },
             {
               title: '复购实际',
               dataIndex: 'repeat_customer_actual',
               width: 130,
-              render: (v: number) => `¥${Math.round(v).toLocaleString('zh-CN')}`,
+              render: (v: number | undefined, r: SalesTargetRow) => formatWholeCny(r.repeat_customer_actual_exact ?? v),
             },
             {
               title: '复购差额',
@@ -1219,7 +1233,7 @@ export default function AnalyticsPage() {
                 r.repeat_customer_target ? (
                   <span style={{ color: v >= 0 ? 'var(--crm-primary)' : 'var(--crm-error)' }}>
                     {v >= 0 ? '+' : ''}
-                    ¥{Math.round(v).toLocaleString('zh-CN')}
+                    {formatWholeCny(r.repeat_customer_variance_exact ?? v)}
                   </span>
                 ) : (
                   <span style={{ color: 'var(--crm-text-3)' }}>—</span>
@@ -1229,9 +1243,9 @@ export default function AnalyticsPage() {
               title: '差额',
               dataIndex: 'sales_variance',
               width: 130,
-              render: (v: number) => (
+              render: (v: number, r: SalesTargetRow) => (
                 <span style={{ color: v >= 0 ? 'var(--crm-primary)' : 'var(--crm-error)' }}>
-                  {v >= 0 ? '+' : '-'}¥{Math.abs(Math.round(v)).toLocaleString('zh-CN')}
+                  {v >= 0 ? '+' : ''}{formatWholeCny(r.sales_variance_exact ?? v).replace('¥-', '-¥')}
                 </span>
               ),
             },

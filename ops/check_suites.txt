@@ -571,3 +571,9 @@ check_customer_transfer_document_race
 
 # Agent真实ASGI取消：半段回复保存/工具回滚/提交已完成去重
 check_agent_stream_cancellation
+
+# 签单/回款/复购结账金额：真实PG/ASGI精度、冻结读取、超限拒绝/重算保留及旧数字兼容
+check_target_signed_precision
+
+# 发货业绩：同价同量不同明细、不同价格与分批发货不得漏算
+check_target_shipment_lines
