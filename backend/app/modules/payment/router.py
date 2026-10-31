@@ -1159,7 +1159,7 @@ async def confirm_payment(
             user_id=order.owner_id,
             type_="payment",
             title="回款已确认",
-            content=f"订单 {order.order_no} 收到 ¥{float(record.received_amount):,.2f}",
+            content=f"订单 {order.order_no} 收到 ¥{record.received_amount:,.2f}",
             business_type="order",
             business_id=order.id,
         )

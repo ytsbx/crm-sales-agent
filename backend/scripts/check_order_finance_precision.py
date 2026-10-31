@@ -53,6 +53,11 @@ async def main():
                 assert stored==(Decimal(expected['order_amount']),Decimal(expected['received_amount']),Decimal(expected['allocated_amount'])),stored
             for k,v in expected.items():assert summary.get(k+'_exact')==v,(k,v,summary.get(k+'_exact'))
             assert all(isinstance(summary[k],(int,float)) for k in expected),summary
+            async with SessionLocal() as s:
+                messages=(await s.execute(text("SELECT content FROM notifications WHERE business_type='order' AND business_id=:o AND title='回款已确认' ORDER BY id"),{'o':oid})).scalars().all()
+                expected_message=f"订单 {order.order_no} 收到 ¥99,999,999,999,999.99"
+                assert messages==[expected_message,expected_message],messages
             print('PASS finance summary exact fields match SQL, legacy numbers retained; order',oid,flush=True)
+            print('PASS both confirmation notifications preserve the exact received amount',flush=True)
     finally:await engine.dispose()
 asyncio.run(main())

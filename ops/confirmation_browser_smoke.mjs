@@ -59,9 +59,20 @@ const analyticsTargetWrites=[]
 let rejectStaleTarget=false
 const analyticsFixture=JSON.parse(readFileSync(new URL('./fixtures/analytics-whole-yuan.json',import.meta.url),'utf8'))
 const financeSummaryFixture=JSON.parse(readFileSync(new URL('./fixtures/order-finance-exact.json',import.meta.url),'utf8'))
+const shipmentBodies=[];const savedShipments=new Map();let firstShipmentFail=true
 const server=createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost')
   const path=url.pathname
+  if(path==='/api/v1/orders/991/shipments') {
+    if(req.method==='POST') {
+      let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);shipmentBodies.push(body)
+      if(!savedShipments.has(body.request_key))savedShipments.set(body.request_key,{batch_id:700+savedShipments.size,batch_no:savedShipments.size+1})
+      if(firstShipmentFail){firstShipmentFail=false;res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({code:50001,message:'隔离模拟：批次已保存但回执异常',data:null}));return}
+      res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({code:0,message:'ok',data:savedShipments.get(body.request_key)}));return
+    }
+    const data={items:[{order_item_id:77,sku:'隔离发货型号',ordered:100,planned:0,shipped:0,unplanned:100,remaining:100,ordered_exact:'100.000',shipped_exact:'0.000',remaining_exact:'100.000',unplanned_exact:'100.000'}],batches:[],summary:{ordered:100,planned:0,shipped:0,remaining:100,all_shipped:false,ordered_exact:'100.000',shipped_exact:'0.000',remaining_exact:'100.000'}}
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({code:0,message:'ok',data}));return
+  }
   if(analyticsExact && path==='/api/v1/sales-targets/upsert' && req.method==='POST') {
     let raw='';for await(const chunk of req) raw+=chunk
     const payload=JSON.parse(raw)
@@ -994,6 +1005,28 @@ try {
   console.log('BROWSER_TARGET_CHANGED_PERIOD_DOES_NOT_REUSE_VERSION=true')
   console.log('BROWSER_TARGET_EDIT_PRESERVES_REMARK_WITHOUT_COPYING_TO_OTHER_PERIOD=true')
 
+  {
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/991?tab=shipments`})
+  await waitFor(`Array.from(document.querySelectorAll('[role=tab]')).some(t=>t.innerText.includes('发货批次'))`)
+  await evaluate(`Array.from(document.querySelectorAll('[role=tab]')).find(t=>t.innerText.includes('发货批次')).click()`)
+  const open=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='排发货批次')`
+  const input=`document.querySelector('input[placeholder="本批数量"]')`
+  const save=`Array.from(document.querySelectorAll('.semi-modal-content button')).find(b=>b.innerText.trim()==='保存批次')`
+  await waitFor(open);await evaluate(`${open}.click()`);await waitFor(input)
+  const fill=async()=>evaluate(`{const i=${input};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'4');i.dispatchEvent(new Event('input',{bubbles:true}))}`)
+  await fill();await sleep(200);await evaluate(`${save}.click()`)
+  await waitFor(`document.body.innerText.includes('隔离模拟：批次已保存但回执异常')`)
+  assert.equal(shipmentBodies.length,1);assert.ok(shipmentBodies[0].request_key)
+  assert.equal(await evaluate(`${input}.value`),'4')
+  await sleep(200);await evaluate(`${save}.click()`)
+  await waitFor(`!(${input})`)
+  assert.equal(shipmentBodies.length,2);assert.deepEqual(shipmentBodies[0],shipmentBodies[1]);assert.equal(savedShipments.size,1)
+  console.log('PASS failed create preserves input and same stable key on retry; sole simulated saved batch')
+  await evaluate(`${open}.click()`);await waitFor(input);await fill();await sleep(200);await evaluate(`${save}.click()`)
+  await waitFor(`!(${input})`)
+  assert.equal(shipmentBodies.length,3);assert.notEqual(shipmentBodies[0].request_key,shipmentBodies[2].request_key);assert.equal(savedShipments.size,2)
+  console.log('PASS explicit new form gets different key and creates next batch')
+  }
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
 }

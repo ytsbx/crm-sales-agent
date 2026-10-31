@@ -512,7 +512,7 @@ export function listOrderShipments(orderId: number) {
 
 export function createOrderShipment(
   orderId: number,
-  payload: { planned_date?: string | null; remark?: string | null; items: Array<{ order_item_id: number; planned_qty: number }> },
+  payload: { request_key?: string; planned_date?: string | null; remark?: string | null; items: Array<{ order_item_id: number; planned_qty: number }> },
 ) {
   return api.post<{ batch_id: number; batch_no: number }>(`/orders/${orderId}/shipments`, payload)
 }

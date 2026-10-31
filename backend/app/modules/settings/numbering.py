@@ -145,6 +145,46 @@ def format_number(rule: NumberingRule, sequence: int, now: datetime) -> str:
     return f"{rule.prefix}{date_part}{sequence:0{rule.seq_length}d}"
 
 
+def _number_column(code: str) -> Any:
+    """当前正式取号入口的目标列；上限直接读取模型，避免与数据库定义分叉。"""
+    from app.modules.bizdoc.model import BizDoc
+    from app.modules.contract.model import ContractDocument
+    from app.modules.inquiry.model import CustomInquiry
+    from app.modules.order.model import SalesOrder
+    from app.modules.quote.model import Quote
+
+    return {
+        "quote": Quote.quote_no,
+        "order": SalesOrder.order_no,
+        "contract": ContractDocument.doc_no,
+        "inquiry": CustomInquiry.inquiry_no,
+        "sample_doc": BizDoc.doc_no,
+        "order_doc": BizDoc.doc_no,
+        "quote_doc": BizDoc.doc_no,
+    }.get(code)
+
+
+def validate_number_length(number: str, max_length: int | None) -> None:
+    if max_length is not None and len(number) > max_length:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"编号过长（{len(number)}位，最多{max_length}位），请管理员缩短编号规则的前缀或流水位数",
+            422,
+        )
+
+
+def validate_rule_length(
+    rule: NumberingRule, current: int | None = None, *, now: datetime | None = None
+) -> None:
+    """保存时核对合并后的规则与下一流水；实际取号仍须检查真实候选号。"""
+    column = _number_column(rule.code)
+    if column is not None:
+        validate_number_length(
+            format_number(rule, (current or 0) + 1, now or datetime.now(UTC)),
+            column.type.length,
+        )
+
+
 async def get_rule(session: AsyncSession, code: str) -> NumberingRule:
     """取规则：库里优先，没有则用内置默认值构造一个（不落库）。"""
     row = (
@@ -291,7 +331,9 @@ async def generate_for(
         return row is not None
 
     seed = await period_max_number(session, model=model, column=column, rule=rule, now=now)
-    return await next_number(session, code, now=now, taken=taken, seed_from=seed)
+    number = await next_number(session, code, now=now, taken=taken, seed_from=seed)
+    validate_number_length(number, column.type.length)
+    return number
 
 
 def serialize_rule(rule: NumberingRule, period: str, current: int | None) -> dict:

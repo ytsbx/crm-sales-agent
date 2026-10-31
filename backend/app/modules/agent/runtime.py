@@ -749,7 +749,7 @@ async def action_display(session: AsyncSession, action: AgentAction, *, user: Cu
                     "value": f"{quote.quote_no} 第 {version.version_no} 版" if quote else f"版本 {version.id}",
                 }
             )
-            fields.append({"label": "报价金额", "value": f"¥{float(version.total_amount):,.2f}"})
+            fields.append({"label": "报价金额", "value": f"¥{version.total_amount:,.2f}"})
         fields.append({"label": "申请原因", "value": payload.get("reason") or "未填写"})
 
     else:

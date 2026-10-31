@@ -21,7 +21,9 @@ from app.modules.settings.model import (
     SystemSetting,
     TaskRule,
 )
-from app.modules.settings.numbering import RESET_PERIODS, period_key, serialize_rule
+from app.modules.settings.numbering import (
+    RESET_PERIODS, period_key, serialize_rule, validate_rule_length,
+)
 from app.modules.settings.schema import (
     CustomerLevelCreate,
     CustomerLevelUpdate,
@@ -631,6 +633,8 @@ async def create_numbering_rule(
         raise AppError(ErrorCode.DUPLICATE, f"编号规则 {payload.code} 已存在", 409)
 
     row = NumberingRule(**payload.model_dump())
+    preview = await _rule_with_current(session, row)
+    validate_rule_length(row, preview["current_no"])
     session.add(row)
     await session.flush()
     await write_audit(
@@ -673,6 +677,12 @@ async def update_numbering_rule(
         raise AppError(ErrorCode.PARAM_ERROR, "流水位数应在 1~12 之间", 422)
 
     before = await _rule_with_current(session, row)
+    candidate = NumberingRule(**{
+        **{field: getattr(row, field) for field in NumberingRuleCreate.model_fields},
+        **data,
+    })
+    preview = await _rule_with_current(session, candidate)
+    validate_rule_length(candidate, preview["current_no"])
     for field, value in data.items():
         setattr(row, field, value)
     await session.flush()

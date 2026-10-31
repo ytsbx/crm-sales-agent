@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.modules.customer.levels import level_filter
 from app.core.data_scope import scoped_owner_ids
@@ -1149,11 +1150,24 @@ async def set_primary_contact(session: AsyncSession, contact: Contact) -> None:
         return
     # 局部 import：`contact_util` 用的是 model 层，不会绕回来，
     # 但这里没必要为了一个函数把模块级依赖连上
-    from app.modules.contact_util import take_primary_slot
+    from app.modules.contact_util import lock_customer_row, take_primary_slot
+
+    # 等待父锁期间可能已改挂；先核对真实归属，不能拿旧客户主位去操作新客户。
+    expected_customer_id = contact.customer_id
+    await lock_customer_row(session, expected_customer_id)
+    current = (await session.execute(select(Contact.customer_id).where(
+        Contact.id == contact.id, Contact.deleted_at.is_(None)
+    ))).first()
+    if current is None:
+        raise AppError(ErrorCode.NOT_FOUND, "联系人不存在", 404)
+    if current[0] != expected_customer_id:
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "联系人已改挂，请刷新后再操作", 409)
 
     # exclude=自己：腾位只腾**别人**，别把这条也刷成 False（见 take_primary_slot 的说明）
     await take_primary_slot(session, contact.customer_id, exclude=contact.id)
     contact.is_primary = True
+    # 等客户锁期间，别的事务可能已取消本人的主标记；不能因内存仍为True漏掉回写。
+    flag_modified(contact, "is_primary")
 
 
 async def move_contact_to_customer(

@@ -409,7 +409,7 @@ async def create_order_from_quote(
         customer_id=quote.customer_id,
         owner_id=order.owner_id,
         title=f"订单已创建 {order.order_no}",
-        content=f"{order.order_no} 金额 ¥{float(version.total_amount):,.2f}（由报价转单）",
+        content=f"{order.order_no} 金额 ¥{version.total_amount:,.2f}（由报价转单）",
         business_type="order",
         business_id=order.id,
         order_id=order.id,

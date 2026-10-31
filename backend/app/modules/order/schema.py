@@ -170,6 +170,7 @@ class ShipmentBatchItemInput(BaseModel):
 
 
 class ShipmentBatchCreate(BaseModel):
+    request_key: str | None = Field(default=None, max_length=128)
     planned_date: date | None = None
     overdue_reason: str | None = None
     remark: str | None = Field(default=None, max_length=255)

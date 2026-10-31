@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import write_audit
+from app.core import idempotency
 from app.core.data_scope import scoped_owner_ids
 from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
@@ -182,7 +183,7 @@ async def create_order(
         customer_id=order.customer_id,
         owner_id=order.owner_id,
         title=f"订单已创建 {order.order_no}",
-        content=f"{order.order_no} 金额 ¥{float(order.total_amount):,.2f}（手工建单）",
+        content=f"{order.order_no} 金额 ¥{order.total_amount:,.2f}（手工建单）",
         business_type="order",
         business_id=order.id,
         order_id=order.id,
@@ -1257,6 +1258,18 @@ async def create_shipment(
     session: AsyncSession = Depends(get_db),
 ):
     order = await svc.get_visible_order(session, user, order_id, for_update=True)
+    # 先验证当前权限/归属，已保存的请求结果不构成永久访问授权。
+    request_key = idempotency.request_key_from(request, payload.request_key)
+    reservation = None
+    if request_key:
+        reservation = await idempotency.reserve(
+            session, user_id=user.id, action="order:create_shipment",
+            request_key=request_key,
+            payload={"order_id": order_id, **payload.model_dump(exclude={"request_key"})},
+            result_type="shipment_batch",
+        )
+        if reservation.should_replay:
+            return ok(reservation.replay_payload, "发货批次已排（本次为重复提交，已返回原批次）")
     if order.status == "cancelled":
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已取消的订单不能再排发货批次")
     batch = await svc.create_shipment_batch(session, order, payload=payload, user_id=user.id)
@@ -1270,8 +1283,12 @@ async def create_shipment(
                "items": [{"order_item_id": i.order_item_id, "planned_qty": str(i.planned_qty)} for i in payload.items]},
         ip=client_ip(request),
     )
+    body = {"batch_id": batch.id, "batch_no": batch.batch_no}
+    if reservation is not None:
+        await idempotency.complete(session, reservation, result_payload=body, result_id=batch.id)
+    # 占位、批次、审计和结果同一事务；提交前失败整体回滚，提交后回执丢失仍可回放。
     await session.commit()
-    return ok({"batch_id": batch.id, "batch_no": batch.batch_no}, "发货批次已排")
+    return ok(body, "发货批次已排")
 
 
 @router.post("/orders/{order_id}/shipments/{batch_id}/ship")

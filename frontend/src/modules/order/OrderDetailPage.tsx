@@ -510,6 +510,7 @@ export default function OrderDetailPage() {
 
   // ---- 发货批次（§3.5/场景13）----
   const [createShipmentVisible, setCreateShipmentVisible] = useState(false)
+  const shipmentKeyRef = useRef('')
   const [plannedQtys, setPlannedQtys] = useState<Record<number, string>>({})
   const [shipTarget, setShipTarget] = useState<ShipmentBatchRow | null>(null)
   const [shipForm, setShipForm] = useState<{ date: Date | undefined; company: string; tracking: string }>({
@@ -527,6 +528,7 @@ export default function OrderDetailPage() {
   const createShipmentMutation = useMutation({
     mutationFn: () =>
       createOrderShipment(orderId, {
+        request_key: shipmentKeyRef.current || (shipmentKeyRef.current = newRequestKey()),
         items: Object.entries(plannedQtys)
           .filter(([, qty]) => Number(qty) > 0)
           .map(([orderItemId, qty]) => ({ order_item_id: Number(orderItemId), planned_qty: Number(qty) })),
@@ -535,6 +537,7 @@ export default function OrderDetailPage() {
       Toast.success('发货批次已排')
       setCreateShipmentVisible(false)
       setPlannedQtys({})
+      shipmentKeyRef.current = ''
       shipmentsRefresh()
     },
     onError: (error: Error) => Toast.error(error.message),
@@ -1263,7 +1266,10 @@ export default function OrderDetailPage() {
                 </span>
                 <div style={{ flex: 1 }} />
                 {can('order:manage') && (
-                  <Button size="small" theme="solid" onClick={() => setCreateShipmentVisible(true)}>
+                  <Button size="small" theme="solid" onClick={() => {
+                    shipmentKeyRef.current = newRequestKey()
+                    setCreateShipmentVisible(true)
+                  }}>
                     排发货批次
                   </Button>
                 )}

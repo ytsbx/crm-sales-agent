@@ -583,3 +583,21 @@ check_target_frozen_scope
 
 # 订单财务概览：合法大额到账/分配/待确认及精确字段兼容
 check_order_finance_precision
+
+# 主联系人：等待客户锁后重复选择原主联系人必须实际持久化
+check_contact_primary_race
+
+# 手工/报价转单客户动态：大额到分、普通金额、应收与重复转单保护
+check_order_progress_precision
+
+# 报价提交审批：大额通知/客户动态到分及重复提交保护
+check_quote_submission_precision
+
+# 排发货批次弱网/并发防重、内容冲突与当前权限
+check_shipment_request_key
+
+# 批量线索分配原因：255字边界/超长拒绝与零写入
+check_lead_batch_reason
+
+# 编号配置组合长度及真实建单取号兜底
+check_numbering_length

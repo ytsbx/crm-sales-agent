@@ -90,7 +90,7 @@ class LeadBatchAssign(BaseModel):
 
     lead_ids: list[int]
     owner_id: int
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class LeadBatchIds(BaseModel):

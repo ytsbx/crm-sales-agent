@@ -1492,7 +1492,7 @@ async def submit_approval(
             session,
             permission_code="quote:approve",
             title=f"待审批报价 {quote.quote_no}",
-            content=f"V{version.version_no} 报价 ¥{float(version.total_amount):,.2f}，{payload.reason or '超出业务员价格权限'}",
+            content=f"V{version.version_no} 报价 ¥{version.total_amount:,.2f}，{payload.reason or '超出业务员价格权限'}",
             business_type="quote",
             business_id=quote.id,
             exclude_user_id=user.id,
@@ -1514,7 +1514,7 @@ async def submit_approval(
         title=f"报价已提交审批 {quote.quote_no}",
         content=(
             f"{quote.quote_no} V{version.version_no} 提交审批，"
-            f"金额 ¥{float(version.total_amount or 0):,.2f}"
+            f"金额 ¥{version.total_amount or 0:,.2f}"
         ),
         business_type="quote",
         business_id=quote.id,
