@@ -212,11 +212,31 @@ class WeComClient:
         params: dict[str, Any] = {"userid": userid}
         if cursor:
             params["cursor"] = cursor
-        return await self._call(
+        payload = await self._call(
             "externalcontact/list",
             params=params,
             access_token=token,
         )
+
+        # 保留已有两种返回形态与优先级；缺清单不等于明确返回空页。
+        rows = payload.get("external_contact_list")
+        ids = payload.get("external_userid")
+        if rows:
+            if not isinstance(rows, list):
+                raise WeComResponseError("externalcontact/list")
+            for row in rows:
+                contact = row.get("external_contact") if isinstance(row, dict) else None
+                userid = contact.get("external_userid") if isinstance(contact, dict) else None
+                if not isinstance(userid, str) or not userid.strip():
+                    raise WeComResponseError("externalcontact/list")
+        elif ids:
+            if not isinstance(ids, list) or any(
+                not isinstance(userid, str) or not userid.strip() for userid in ids
+            ):
+                raise WeComResponseError("externalcontact/list")
+        elif rows != [] and ids != []:
+            raise WeComResponseError("externalcontact/list")
+        return payload
 
     async def get_external_contact(self, external_userid: str) -> dict[str, Any]:
         token = await self.access_token(external=True)
@@ -270,7 +290,12 @@ class WeComClient:
             "externalcontact/get_follow_user_list",
             access_token=token,
         )
-        return [str(uid) for uid in payload.get("follow_user", [])]
+        rows = payload.get("follow_user")
+        if not isinstance(rows, list) or any(
+            not isinstance(userid, str) or not userid.strip() for userid in rows
+        ):
+            raise WeComResponseError("externalcontact/get_follow_user_list")
+        return rows
 
     async def list_all_external_contacts(self) -> list[dict[str, Any]]:
         """按跟进成员翻页拉全量外部联系人，每条带详情（详情接口才给 name/avatar）。

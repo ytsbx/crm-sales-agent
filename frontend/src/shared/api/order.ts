@@ -466,7 +466,7 @@ export interface ShipmentBatchRow {
   late?: boolean
   overdue_reason?: string | null
   remark?: string | null
-  items: Array<{ order_item_id: number; sku: string | null; planned_qty: number; shipped_qty: number }>
+  items: Array<{ order_item_id: number; sku: string | null; planned_qty: number; planned_qty_exact?: string; shipped_qty: number; shipped_qty_exact?: string }>
 }
 
 export interface ShipmentOverview {
@@ -475,17 +475,26 @@ export interface ShipmentOverview {
     sku: string
     specification?: string | null
     ordered: number
+    ordered_exact?: string
     planned: number
+    planned_exact?: string
     shipped: number
+    shipped_exact?: string
     remaining: number
+    remaining_exact?: string
     unplanned: number
+    unplanned_exact?: string
   }>
   batches: ShipmentBatchRow[]
   summary: {
     ordered: number
+    ordered_exact?: string
     planned: number
+    planned_exact?: string
     shipped: number
+    shipped_exact?: string
     remaining: number
+    remaining_exact?: string
     /** 整单是否发完（逐明细按数量判，不是数批次） */
     all_shipped: boolean
     batch_count: number
@@ -512,7 +521,7 @@ export function listOrderShipments(orderId: number) {
 
 export function createOrderShipment(
   orderId: number,
-  payload: { request_key?: string; planned_date?: string | null; remark?: string | null; items: Array<{ order_item_id: number; planned_qty: number }> },
+  payload: { request_key?: string; planned_date?: string | null; remark?: string | null; items: Array<{ order_item_id: number; planned_qty: number | string }> },
 ) {
   return api.post<{ batch_id: number; batch_no: number }>(`/orders/${orderId}/shipments`, payload)
 }

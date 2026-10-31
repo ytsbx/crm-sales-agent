@@ -773,7 +773,9 @@ async def order_shipments(session: AsyncSession, order: SalesOrder) -> dict:
                 "order_item_id": row.order_item_id,
                 "sku": (agg[row.order_item_id]["sku"] if row.order_item_id in agg else row.sku_snapshot),
                 "planned_qty": _f(row.planned_qty),
+                "planned_qty_exact": format(_d(row.planned_qty), "f"),
                 "shipped_qty": _f(row.shipped_qty),
+                "shipped_qty_exact": format(_d(row.shipped_qty), "f"),
             }
             for row in batch_items
             if row.batch_id == batch.id

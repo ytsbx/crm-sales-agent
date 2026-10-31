@@ -71,6 +71,11 @@ import { calendarDay, calendarDayOrToday } from '../../shared/calendar-day'
 import { splitAmountsExact } from '../../shared/quote-todo'
 import { planBlockedReasons } from '../../shared/components/ReceivablePlanPicker'
 
+/** 数量按十进制原文显示，沿用原来不显示尾零的格式。 */
+function shipmentQuantity(value: number | string): string {
+  return String(value).replace(/(\.\d*?[1-9])0+$|\.0+$/, '$1')
+}
+
 /**
  * 整单交期结论（§9.8 复审）。
  *
@@ -98,7 +103,7 @@ function ShipmentVerdict({ summary }: { summary?: ShipmentOverview['summary'] })
       <div style={box}>
         <Tag color="orange">未完成</Tag>
         <span>
-          整单还没发完，还剩 <strong>{summary.remaining}</strong> 件未发
+          整单还没发完，还剩 <strong>{shipmentQuantity(summary.remaining_exact ?? summary.remaining)}</strong> 件未发
           {summary.remaining > 0 && summary.pending_batch_count === 0
             ? '（当前也没有待发批次，请先「排发货批次」）'
             : ''}
@@ -531,7 +536,7 @@ export default function OrderDetailPage() {
         request_key: shipmentKeyRef.current || (shipmentKeyRef.current = newRequestKey()),
         items: Object.entries(plannedQtys)
           .filter(([, qty]) => Number(qty) > 0)
-          .map(([orderItemId, qty]) => ({ order_item_id: Number(orderItemId), planned_qty: Number(qty) })),
+          .map(([orderItemId, qty]) => ({ order_item_id: Number(orderItemId), planned_qty: qty })),
       }),
     onSuccess: () => {
       Toast.success('发货批次已排')
@@ -555,7 +560,7 @@ export default function OrderDetailPage() {
       Toast.success(
         result.summary.all_shipped
           ? '已全部发完，整单可以标记完成了'
-          : `已登记发货，剩余未发 ${result.summary.remaining}`,
+          : `已登记发货，剩余未发 ${shipmentQuantity(result.summary.remaining_exact ?? result.summary.remaining)}`,
       )
       setShipTarget(null)
       shipmentsRefresh()
@@ -1260,8 +1265,8 @@ export default function OrderDetailPage() {
             <>
               <div className="toolbar" style={{ marginBottom: 10 }}>
                 <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                  订购 {shipmentsQuery.data?.summary.ordered ?? 0} ｜ 已发 {shipmentsQuery.data?.summary.shipped ?? 0} ｜
-                  {' '}未发 <strong>{shipmentsQuery.data?.summary.remaining ?? 0}</strong>
+                  订购 {shipmentQuantity(shipmentsQuery.data?.summary.ordered_exact ?? shipmentsQuery.data?.summary.ordered ?? 0)} ｜ 已发 {shipmentQuantity(shipmentsQuery.data?.summary.shipped_exact ?? shipmentsQuery.data?.summary.shipped ?? 0)} ｜
+                  {' '}未发 <strong>{shipmentQuantity(shipmentsQuery.data?.summary.remaining_exact ?? shipmentsQuery.data?.summary.remaining ?? 0)}</strong>
                   ——首批/分批发货只推进到「已发货」，全部发完才能整单完成
                 </span>
                 <div style={{ flex: 1 }} />
@@ -1327,9 +1332,9 @@ export default function OrderDetailPage() {
                       return (
                         record.items
                           .map((item) => {
-                            const qty = shipped ? item.shipped_qty : item.planned_qty
+                            const qty = shipped ? item.shipped_qty_exact ?? item.shipped_qty : item.planned_qty_exact ?? item.planned_qty
                             const tag = shipped ? '实发' : '计划'
-                            return `${item.sku ?? item.order_item_id} ${tag} ${qty}`
+                            return `${item.sku ?? item.order_item_id} ${tag} ${shipmentQuantity(qty)}`
                           })
                           .join('；') || '-'
                       )
@@ -1385,7 +1390,7 @@ export default function OrderDetailPage() {
           {(shipmentsQuery.data?.items ?? []).map((item) => (
             <div key={item.order_item_id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ flex: 1 }}>
-                {item.sku}（订购 {item.ordered}，未计划 {item.unplanned}）
+                {item.sku}（订购 {shipmentQuantity(item.ordered_exact ?? item.ordered)}，未计划 {shipmentQuantity(item.unplanned_exact ?? item.unplanned)}）
               </span>
               <Input
                 style={{ width: 120 }}

@@ -1,5 +1,63 @@
 # CRM 质量审查进度
 
+## 2026-10-31 Q-108/Q-109获准发布（进行中）
+
+- 用户明确授权服务器同样问题后部署，本批仅已复现并本地修好Q-108/Q-109；审批辅助标记差异及Q-096/Q-069/Q-075不纳入。当前服务器前后端标记仍953eea2，两修改后端文件SHA及当前OrderDetailPage实际资源与953eea2固定包一致，server-baseline.log，确认同样代码缺口；不在生产执行同步故障/订单造数据。
+- 证据汇总ops/backups/release-wecom-shipment-20261031/。本次复跑企微响应/实际发货数量/排批防重真实隔离PG，随后固定提交构建、完整同SHA CI及统一发布预检/执行/独立核验，全部成功后另记完成。当前不是发布成功声明，无DDL/依赖/生产数据或配置变化。
+
+## 2026-10-31 报价撤回/失败回滚/重提与旧审批隔离补验（当前链路完成）
+
+- 用户本轮要求“做完”，完成当前已开始的审批撤回链路，不将此解释为新增部署批准。上轮Q-109浏览器/真实PG精度修复为实质进展，已重读目标原文/质量文件/工作区，保留Q-108/Q-109有效修改；已有check_quote_api覆盖版本侧撤回正常请求，本轮新增的是双入口重提、旧申请隔离及写后异常回滚组合。
+- 仅本机55441/crm_iso_analytics_20261030_test，禁推送/调度/Stream。人工非admin申请人角色quote:view/manage+完整成本零毛利明细/确认零运费，CNY100报价，正常JWT/正式ASGI/PG提交真实pending审批。分别正式版本侧withdraw-approval和审批单侧withdraw，均quote=draft、version=not_submitted/submitted_at空、旧instance=withdrawn且只有一次withdraw记录；重提获得新instanceID，旧withdrawn/新pending，两次提交各有独立业务事件/客户系统动态。
+- 用独立admin JWT对旧instance依次approve/reject/withdraw，均400“已处理”；每次独立SQL报价/版本/两实例/审批记录/客户动态/业务事件完整to_jsonb与基线逐值相同，不会批到新申请。重复当前版本submit也400零变化；申请人真实pending/mine收件箱仅该版本新instance，不保留旧实例为待审批。保留真实历史通知，不以旧通知仍在就断言应自动删除。
+- 进一步两入口分别在最终withdraw审计钩子先flush，事务内SQL确认审批withdrawn/版本not_submitted已写，再注入RuntimeError500。独立会话上述六类完整快照等于pending请求前，说明状态/withdraw记录整体回滚；finally恢复钩子，原请求正常重试后执行上述新旧审批隔离仍PASS。指定进程钩子不等同真实断网/连接断开，不冒称全部并发审批锁图或通知故障已验证。
+- 夹具首次事件查询cast参数被asyncpg按text推断而传int报错，initial-query-fixture.log保留；改为独立完整event LIKE参数后sequence-only.log两PASS。再追加写后审计异常，最终probe.py/result.log两PASS/exit0，日志含两次刻意异常栈；未修改应用来迎合夹具。没有在生产操作真实审批/客户或外发消息。
+- 静态及真实SQL观察到辅助字段差异：版本侧撤回清version.approval_required=False但保留旧instance.current_node；实例侧撤回保留approval_required=True但清current_node=None。两者均在本轮阻止旧审批并能重提，不能将辅助字段差异直接等同业务状态损坏。前端QuoteDetailPage按approval_required显示“超出价格权限”，该标记可能表示仍超价格权限而非是否正待审批；业务意图/完整显示影响尚不足，单独待调查，不编新确认编号/不自行改展示或审批口径。本轮没有新增可证业务操作缺陷。
+- 证据ops/backups/quote-withdraw-resubmit-20261031/。git diff --check通过，隔离PG正常停止；没有应用修改/新增永久镜像测试，不重复1670项/前端构建/浏览器或SSH。Q-108/Q-109本地未提交/推送/部署，线上仍953eea2；Q-096/Q-069/Q-075原待选择保持。当前“做完”要求的撤回检查已收尾，长期目标active未完成；后续需针对辅助字段语义寻找明确业务判据，或转其它独立高风险链，不据差异擅自修复。
+
+## 2026-10-31 Q-109发货计划前端大数量丢0.001及数量显示精度（服务器确认，本地修复）
+
+- 上轮正式导出/失败重试补验为实质进展。本轮恢复目标原文/质量文件/工作区，转发货数量精度；ShipmentBatchItemInput/ShipmentShipItem已按Numeric(16,3)校验，未把已有三位限制误报缺失。真正遗漏在前端请求/显示，不重复Q-084金额舍入或已修后端remaining_exact计算。
+- Q-109/P2：OrderDetailPage排批Input与plannedQtys保留字符串，但提交map用Number(qty)。极大合法值9999999999999.999变成9999999999999.998；排批提示、批次明细和顶部/剩余数量原先消费旧浮点，亦显示错尾数。后端已有overview/summary精确字段，但前端类型及读取未接入；批次明细仅给旧浮点字段。
+- 修前真实隔离浏览器运行已发布953eea2包资源，输入原文.999，捕获实际POST planned_qty数字.998，modal订购/未计划也显示.998；browser-red.log及body-red.json。将捕获数量交给本机真实JWT/正式POST排批（仅替换测试订单/明细ID和请求键），合法CNY订单明细订购.999，SQL planned存.998、GET unplanned_exact0.001；api-red.log实证，不仅是Number演示。没有在生产造巨额订单或改历史批次。
+- 只读SSH当前前后端DEPLOYED_COMMIT均953eea2，order/service.py SHA与Git953一致，当前OrderDetailPage哈希资源与固定包manifest相同，server-readonly.log，确认线上实际页面存在相同转换，而非以服务器残留frontend/src推断。未读取真实业务客户/数量。
+- 最小修复：排批直接提交原数量字符串，API planned_qty类型兼容number|string，原正数筛选/校验/权限/稳定键/请求事务不变。前端类型补已有overview/summary exact字段；排批可用量、顶部数量、未完成说明/实发提示优先精确字符串，去尾零保持普通数字原格式。批次接口保留旧数字，补planned_qty_exact/shipped_qty_exact，批次明细按状态选择原计划/实发规则后用exact优先，保留0而不回退计划。没有新数量口径、截断/重算、数据库/锁/依赖或历史数据清洗，属既有三位存储精度的遗漏消费补齐，无需另选业务算法。
+- 新增登记check_shipment_quantity_precision，仅本机隔离PG/禁推送调度。最大量、0.001、1.250三场景：正式排批后SQL数量/明细exact/未计划量精确；同键回放同batch且create审计1；正式自动按计划实发，SQL shipped与明细/summary exact及all_shipped、remaining全部一致。最大订单全部排完unplanned0.000且实发后remaining0.000，不再剩0.001；两个小数对照仍保留各自剩余。订单/明细为本机ORM合法CNY数量及对应逐行金额夹具，不冒称从完整询价/报价生命周期建立的订单。
+- 独立浏览器绿例重新捕获planned_qty字符串.999，将此捕获值再交真实PG排批验证（api-captured-green.log），页面标签/输入/请求均.999，失败重试完整body及键相同、模拟仅一批。正常4与极大值的请求/显示回归已纳入ops/confirmation_browser_smoke.mjs，保留原防重/主动新建场景，新增取消历史批次精确计划量显示；完整full-browser.log exit0并有新增PASS，不称浏览器与PG直连端到端或真实外部发货。
+- 前端TypeScript+生产构建通过，既有lottie eval等警告未改；完整后端1670 passed in17.61s（本轮新增PG脚本而非pytest数量），pyflakes/node语法/diff通过。辅助格式函数随后仅调整注释归属，未改执行逻辑。证据ops/backups/shipment-quantity-precision-20261031/；隔离PG已正常停止，浏览器/server/profile正常退出。
+- Q-109本地修改未提交/推送/部署，Q-108全部有效改动保留，线上仍953eea2。边界：极大合法数量/两正常三位对照、计划创建/回放/自动全批实发/数量展示；未穷尽多SKU巨大合计/全部老客户端/交叉锁竞争，也不修复历史已错误保存的数量或其它模块数量展示。长期目标active未完成；Q-096/Q-069/Q-075原选择不变，下一步可转其它业务链，避免重复已有发货故障模板。
+
+## 2026-10-31 客户导出正式HTTP及失败重试浏览器补验（未发现新缺陷）
+
+- 上轮Q-108客户分页补齐/1670项为实质进展。本轮恢复长期目标/质量文件/工作区，转导出链路。历史已有CSV公式及XLSX文本防护、导出规则静态/单元证据，不能再次凭等号报注入；本轮补的是正常非管理员正式HTTP/文件字节/SQL审计与下载失败真实前端交互，不新增镜像应用实现。
+- 本机55441/crm_iso_analytics_20261030_test，关闭推送/调度/Stream。人工构造self角色仅customer:view/export，三自有未删客户（两展会/一官网）、一自有软删及一他人客户，名称带随机标识、逗号双引号换行及等号开头，地址含引号换行。正式正常JWT与ASGI/PG：列表keyword+source筛选严格本人两条，POST导出解析CSV也严格同两条；GET全本人导出三条，已删/他人均无，未借此扩大默认角色或生产权限。
+- 实际响应UTF8 BOM、text/csv及attachment正确；csv.DictReader严格回读记录数、逗号引号换行、地址/负责人，原等号文本沿既有约定加前导单引号防公式，不宣称完全不转义。独立SQL成功export审计count、customer_ids、filters精确对应导出范围，五客户完整to_jsonb始终不变。GET/POST“其他”用途缺说明分别按既有422/400拒绝，无附件头、不增加export审计；正式管理员PATCH临时配置limit1后本人两条导出413明确超限、无文件/额外export审计，limit2同筛选成功恰2条。finally原样恢复本机export配置，无生产数据或配置写入。
+- 隔离浏览器使用已发布953eea2固定包解出的web资源、独立headless profile和内存API，无真实业务账号/数据库连接。导出用途选择数据核对后，依次模拟HTTP413/403/500：每次只有一次POST、相同用途/筛选body，错误提示可见、弹窗/用途保留、不跳登录、零Blob URL/下载触发。随后200重试关闭弹窗，恰一次CSV下载流程及一次Blob创建/释放，释放地址与创建地址一致。Anchor下载click被计数替身截获以免落桌面文件，不声称Excel打开/真实磁盘下载/与上述PG联合浏览器端到端；错误文案当前通用“检查权限或筛选范围”，无静默成功证据，不擅自改其体验。
+- 证据ops/backups/customer-export-http-20261031/probe.py/result.log两PASS、browser.mjs/browser.log四PASS，均exit0。浏览器/server/profile按finally清理，隔离PG正常停止。没有新确认Bug/应用修改或永久测试/重复1670项/前端构建/远端CI；git diff --check通过，Q-108有效本地改动完整保留，未提交推送部署或SSH读取生产客户。
+- 边界：本机五客户/本人范围、指定用途与source筛选、合成CSV和三种指定HTTP失败；不含大数据内存/并发、真实Excel求值/编码切换、真实网络中断或生成器中途失败。既有机制覆盖本轮，不据此宣称全模块导出安全/性能充分证明。长期目标active未完成，下一独立方向可转文件生成失败/通知投影一致性，避免重复公式字符串探针；Q-108本地未部署，线上仍953eea2，Q-096/Q-069/Q-075原待选择不变。
+
+## 2026-10-31 Q-108同类补查：企微客户分页未知响应假成功（本地补齐并验证）
+
+- 上轮Q-108跟进成员清单修复为实质进展；本轮重读长期目标/质量文件/当前工作区，沿其调用链验证客户页本身，不把同一“未知清单当空清单”的根因重新编号制造问题数。Q-108原修复/测试保留，本批仍未获生产发布授权。
+- 新触发证据：跟进成员返回正常member-a，但externalcontact/list返回{}。正式本机隔离HTTP同步仍200，独立SQL新增success任务、0条；API修前api-red.log保留，且没有把此响应称为明确空页。现有payload.get("external_contact_list") or []及external_userid or []使两清单都缺失时静默结束分页；单元修前11异常失败/5合法通过，unit-red.log，不依赖静态猜测。
+- client.list_external_contacts在返回页前补识别校验：沿原优先级使用非空external_contact_list中的external_contact/external_userid，或external_userid ID列表；实际使用的清单须为列表、身份须非空白字符串。明确[]仍可用；新格式空但旧ID格式非空时仍按原fallback处理，不要求可选名称/follow_info、不重排/改写返回内容。异常抛既有安全WeComResponseError，沿用户已批准Q-064/Q-065“响应不明整次回滚并留失败”的边界；不改变明确企微业务错误的按成员部分成功策略、页数阈值、锁/事务位置、归一规则、权限或依赖。
+- 新增test_wecom_contact_page_response.py16项，覆盖缺失/null/错误容器/错误行/缺身份及五类合法形态（两种空页、纯ID页含后续游标、对象页及新空旧非空fallback），返回内容原样保留；与Q-108原成员及既有客户同步测试合跑38 passed in0.36s。当前完整后端1670 passed in22.74s，full.log，未跳过或放宽旧测试。
+- 扩展现有已登记check_wecom_follow_member_response，不新增镜像脚本/重复登记。正常JWT/正式API/真实PG仅55441/crm_iso_analytics_20261030_test，所有外部响应MockTransport、禁推送/调度/Stream：原10异常成员清单绿例保留；两种明确客户空页各200/success0且四事实表完整不变；缺失页/ID字符串/对象页缺身份三类×第一页或第二页六次均502明确响应格式异常、只新增1条failed任务（success0/fail1），企微客户/关系及CRM客户/联系人四表完整快照不变。第二页场景确实先拉首个客户详情再取第二页，前页缓存不落部分客户。正常两成员/两页/重复客户及重试仍各成功2条且不重复，CRM三表不变。
+- 最终api-green.log四组PASS/exit0；最初API红在第一页{}假成功即按预期失败，未冒称其余五场景均有修前正式HTTP红例，其余由明确调用链/单元红及修后真实API验证。页格式检查只看实际使用分支，未借此拒绝未使用的可选兼容字段，未做游标协议或额外字段新策略。
+- 只读SSH再次确认当前应用953eea2及client.py哈希与Git953原文件一致，server-readonly.log，证明服务器仍有该缺口，不修改生产配置/数据或触发真实企微调用。证据ops/backups/wecom-customer-page-response-20261031/。pyflakes/diff检查通过，隔离PG已正常停止；无前端变更，不重复构建/浏览器。
+- 当前Q-108含成员清单及客户页两处同类遗漏，均本地修好未提交/推送/部署；线上仍953eea2，原十项已发布状态不变。长期目标active未完成，Q-096/Q-069/Q-075原待选择不变。边界：HTTP响应替身/本机SQL，不是真实企微分页故障或全部游标/限流/并发锁图证明；本链明确清单边界已补齐，下一步转其它模块的导出/错误反馈等独立方向，避免继续逐字段穷举低价值模板。
+
+## 2026-10-31 恢复审查：Q-108企微跟进成员响应不完整却同步成功（服务器确认，本地修复）
+
+- 上轮十项953eea2发布/双仓同步完成为实质进展。用户将长期目标设active，恢复目标原文/质量文件/工作区，从已发布基线转集成分页/响应边界，不重做已上线补丁；本项不在上一批生产批准范围，未自动部署。Q-096/Q-069/Q-075原选择保持。
+- Q-108/P2：wecom/client.get_follow_user_ids使用payload.get("follow_user",[])，缺字段当空清单，其他类型未经验证就str转换。其上层list_all_external_contacts在成员为空时返回空结果，sync_external_contacts正常finish_job，路由200“同步完成0条”；无法区分企微明确返回[]与没有提供清单。缺字段具体触发已正式HTTP/PG复现：MockTransport上游get_follow_user_list返回{}，接口200、独立SQL该次job status=success/success_count0/fail_count0，客户/关系事实未变。真实影响是异常同步被误报成功，并非删除了客户或证明生产当前发生漏数。
+- 只读SSH确认服务器DEPLOYED_COMMIT953eea2，wecom/client.py、router.py、service.py三文件SHA256均与本地修前相同，server-readonly.log。不读取企微真实数据/凭据或在生产故障注入。ERP分页候选当前真实适配器fetch_records仍明确拒绝未验收采集，未将仅替身可达的分页猜测记成生产Bug；企微跟进关系分页已有重复游标/页数保护，不重复报告。
+- 最小修复get_follow_user_ids核对follow_user明确为列表、每项为非空白字符串，异常抛既有安全WeComResponseError；明确[]及有效字符串原样返回。此与同客户端已有user/list成员身份校验、Q-065异常响应及用户已批准Q-064失败回滚/留痕规则一致，属于遗漏检查补齐，无新权限、角色、数据归一策略、字段/锁/事务位置、页数阈值、依赖或自动重试选择；原按成员业务错误部分成功边界不变。
+- 新增test_wecom_follow_member_response.py：10种异常（缺失/null/字典/字符串/数值、null、空白、bool、对象成员）和3种合法空/单/多成员。初次夹具漏设MockTransport客户端base_url，13项均为URL夹具失败，initial-fixture.log保留；补mock.invalid地址后真正修前10 failed/3 passed，unit-red.log。修后新13+既有客户同步9项共22通过，完整后端1654 passed in15.79s，unit-green/full.log；未为通过测试放宽断言或改合法响应内容。
+- 新增登记check_wecom_follow_member_response，含本机隔离PG/禁外发/禁调度防呆，真实JWT/正式ASGI/PG，下游全部MockTransport。十异常各HTTP502明确“响应格式异常”，只留一次failed任务（success0/fail1），完整企微客户/关系及CRM客户/联系人SQL快照不变、无客户列表/详情后续请求、响应不含合成token/secret。[]对照HTTP200/success0、四表不变；两成员/两页/跨成员同客户去重，两次同步均成功2条、同两外部联系人更新不重复、每次详情仅2次、CRM客户/联系人/关系三表完整不变。api-red.log保留缺字段假成功；最终api-green.log正式脚本exit0。
+- 证据ops/backups/wecom-follow-member-response-20261031/。pyflakes、git diff --check通过，隔离PG正常停止；只有client小范围应用改动、新永久单元/隔离脚本及清单登记，未改前端，不重复构建/浏览器。既有错误提示组件未在本轮重新操作，不能冒称生产角色浏览器或真实企微网络故障验收。
+- 当前Q-108本地修复未提交/推送/部署，线上仍953eea2，上一批十项保持已发布。当前验证仅成员清单响应完整性与正常两页去重；未穷尽真实企微巨大页数/限流、游标异常的所有部分成功组合、并发同步锁图或ERP外部验收。下一步可转客户分页响应本身的格式校验/错误留痕（先核对已有防线），长期目标active未完成，不将一次生产批准扩大至后续问题。
+
 ## 2026-10-31 Q-098至107十项发布完成（服务器核实、CI/上线验收通过）
 
 - 当前十项本地已确认/已验证修复按用户“确定服务器有一样的问题就修复部署”的明确授权发布；范围承接下一节发布准备记录，不扩大到Q-096/Q-069/Q-075。源码提交 `953eea2d0f968dca5579afbaafdfc613fa5dcc21`，现有GitHub和Gitee pending-acceptance分支均已同步该提交；本条收尾只补记录，不改变应用内容。

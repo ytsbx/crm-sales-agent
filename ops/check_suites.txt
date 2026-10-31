@@ -601,3 +601,9 @@ check_lead_batch_reason
 
 # 编号配置组合长度及真实建单取号兜底
 check_numbering_length
+
+# 企微成员清单未知响应失败留痕；明确空清单/两页去重兼容
+check_wecom_follow_member_response
+
+# 发货计划/实发数量到三位精确字符串与防重回放
+check_shipment_quantity_precision

@@ -59,7 +59,7 @@ const analyticsTargetWrites=[]
 let rejectStaleTarget=false
 const analyticsFixture=JSON.parse(readFileSync(new URL('./fixtures/analytics-whole-yuan.json',import.meta.url),'utf8'))
 const financeSummaryFixture=JSON.parse(readFileSync(new URL('./fixtures/order-finance-exact.json',import.meta.url),'utf8'))
-const shipmentBodies=[];const savedShipments=new Map();let firstShipmentFail=true
+const shipmentBodies=[];const savedShipments=new Map();let firstShipmentFail=true;let shipmentLarge=false
 const server=createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost')
   const path=url.pathname
@@ -71,6 +71,10 @@ const server=createServer(async (req,res)=>{
       res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({code:0,message:'ok',data:savedShipments.get(body.request_key)}));return
     }
     const data={items:[{order_item_id:77,sku:'隔离发货型号',ordered:100,planned:0,shipped:0,unplanned:100,remaining:100,ordered_exact:'100.000',shipped_exact:'0.000',remaining_exact:'100.000',unplanned_exact:'100.000'}],batches:[],summary:{ordered:100,planned:0,shipped:0,remaining:100,all_shipped:false,ordered_exact:'100.000',shipped_exact:'0.000',remaining_exact:'100.000'}}
+    if(shipmentLarge) {
+      for(const target of [data.items[0],data.summary]) for(const field of ['ordered','remaining','unplanned']) {target[field]=9999999999999.998;target[field+'_exact']='9999999999999.999'}
+      data.batches=[{id:999,batch_no:9,status:'cancelled',status_label:'已取消',planned_date:null,actual_ship_date:null,logistics_company:null,tracking_no:null,deviation_days:null,late:false,items:[{order_item_id:77,sku:'隔离旧批次',planned_qty:9999999999999.998,planned_qty_exact:'9999999999999.999',shipped_qty:0,shipped_qty_exact:'0.000'}]}]
+    }
     res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({code:0,message:'ok',data}));return
   }
   if(analyticsExact && path==='/api/v1/sales-targets/upsert' && req.method==='POST') {
@@ -1026,6 +1030,18 @@ try {
   await waitFor(`!(${input})`)
   assert.equal(shipmentBodies.length,3);assert.notEqual(shipmentBodies[0].request_key,shipmentBodies[2].request_key);assert.equal(savedShipments.size,2)
   console.log('PASS explicit new form gets different key and creates next batch')
+  assert.ok(shipmentBodies.every(body=>body.items[0].planned_qty==='4'),'ordinary quantities also submit as exact strings')
+  shipmentLarge=true
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/orders/991`})
+  await waitFor(`Array.from(document.querySelectorAll('[role=tab]')).some(t=>t.innerText.includes('发货批次'))`)
+  await evaluate(`Array.from(document.querySelectorAll('[role=tab]')).find(t=>t.innerText.includes('发货批次')).click()`)
+  await waitFor(`document.querySelector('.semi-table-tbody')?.innerText.includes('隔离旧批次 计划 9999999999999.999')`)
+  await waitFor(open);await evaluate(`${open}.click()`);await waitFor(input)
+  assert.match(await evaluate(`document.querySelector('.semi-modal-content').innerText`),/订购 9999999999999\.999，未计划 9999999999999\.999/)
+  await evaluate(`{const i=${input};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(i,'9999999999999.999');i.dispatchEvent(new Event('input',{bubbles:true}))}`)
+  await sleep(250);await evaluate(`${save}.click()`);await waitFor(`!(${input})`)
+  assert.equal(shipmentBodies.at(-1).items[0].planned_qty,'9999999999999.999')
+  console.log('PASS shipment maximum quantity keeps exact modal/batch display and submitted string')
   }
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
