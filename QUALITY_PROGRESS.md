@@ -1,5 +1,15 @@
 # CRM 质量审查进度
 
+## 2026-10-30 当前7项修复已部署并验证（3c4291d）
+
+- 用户本次明确要求“确认服务器也有相似问题就修复部署”，服务器旧40a6864相关四文件/实际前端基线对应确认后，发布Q-090/091目标版本与备注、Q-092原查看范围汇总、Q-093有效目标对象、Q-094输入边界、Q-095财务概览金额精度、Q-097规则日期异常隔离，共7项。Q-096催收并发锁策略尚待用户决定，没有实现或夹带发布；Q-069/Q-075原选择也未改。
+- 固定应用提交3c4291d3606011195f3d0c0ff357ef81e17b2e1d已推送现有GitHub/Gitee pending-acceptance，ls-remote确认两者一致。完整本地后端1598项、前端构建/完整浏览器及各项真实PG证据见前文；本轮发布工具安全测试21项通过。相同SHA远端CI41176836497两job（UI冒烟、全部后端回归/静态）completed/success，ci-final.json独立核对headSha一致：https://github.com/ytsbx/crm-sales-agent/actions/runs/41176836497 。未跳过失败项或改断言凑通过。
+- 从git archive固定提交及实际40a6864服务器基线独立冻结依赖构建，发布包/tmp/crm-release-quality-3c4291d.tar.gz SHA256 97a814a75dccd5fbed36521be41016c6b96c543cbb329726c1ecb1fb5f039289；统一工具SHA256 8347192444e4ecf3347513b78f668b33a4fd62efa49624fc8082f90911ad5cab。上传/tmp/crm-release-quality-3c4291d后包/工具SHA相同，服务器preflight通过；仅在完整同SHA CI全绿后--apply，返回verified。回滚备份/opt/crm-sales-agent/backup/unified-3c4291d36060-rqv1nvek保留。
+- 独立SSH postcheck：DEPLOYED_COMMIT与WEB_DEPLOYED_COMMIT均上述完整SHA，RELEASE.json status=verified，全部491个发布文件逐一SHA256一致；crm-sales.service active，8010真实健康status up/database ok，钉钉OA submission_enabled/sync_running/stream_connected均true。当前首页实际入口引用AnalyticsPage-DQDpgfP5.js含expected_updated_at等字段，OrderDetailPage-Dr5m7txS.js含三个财务概览exact字段；未以残留frontend/src或SPA /health页面证明成功。统一发布器的公网首页与入口资源校验已通过。
+- 无数据库迁移、依赖升级、正式配置修改或历史业务数据清洗；没有用真实生产账号写客户/订单/回款进行测试。隔离测试PG均已停止。证据ops/backups/release-quality-targets-20261030/：release-tests/build/preflight/deploy/postcheck日志、ci-final.json及核验脚本。
+- 本批应用发布完成；随后同步的质量记录提交仅文档，应用运行SHA仍为3c4291d，不用文档HEAD误报应用未同步。长期质量目标未完成，不把本批授权扩张到之后新问题。Q-096仍待明确方案选择；真实生产各角色全链路、真实第三方故障注入、全系统锁图和性能仍未穷尽。
+
+
 ## 2026-10-30 当前7项修复获批发布准备（尚未上线）
 
 - 用户在明确了解7项尚未部署后授权“确认服务器也有相似问题就修复部署”。本批范围Q-090/091目标版本与备注、Q-092获批原范围汇总、Q-093/094目标有效对象及字段边界、Q-095财务概览精确金额、Q-097规则日期异常隔离；Q-096仍只解释未批准，禁止纳入锁策略调整。GitHub/Gitee沿已有明确同步授权同步本批现有仓库。
