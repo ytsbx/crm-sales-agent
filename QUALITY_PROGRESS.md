@@ -1,5 +1,16 @@
 # CRM 质量审查进度
 
+## 2026-10-30 当前分析/目标修复批次已部署并完成独立核验（40a6864）
+
+- 用户当次“确定服务器上代码有你修复的问题的话就修复部署”及“这个做完”已落实。本批Q-081签单/Q-082回款/Q-085复购结账精度、Q-083发货漏算、Q-084已批准逐行发货舍入（含年度遗漏消费者）、Q-086分析整元精度、Q-087已批准保留范围的超限提示、Q-088团队目标身份和Q-089目标金额编辑均已发布。Q-069/Q-075未决方案、目标版本/备注静态线索不纳入，历史错误存档/目标不自动清洗或重算。
+- 最终应用固定提交40a686422ea3a996c5482804721b0f4e7ba7f600，GitHub/Gitee两现有pending-acceptance已同步并逐一ls-remote核对。本批首次CI暴露的浏览器启动无日志及旧脚本Decimal对float比较，均按前两节保留失败证据并修正测试；未删业务断言/放宽容差/更改浏览器安全参数。最终同SHA CI41159819959（https://github.com/ytsbx/crm-sales-agent/actions/runs/41159819959）后端与UI两job均completed/success，ci-final.json已核实headSha和全部job，不拼接不同提交的成功结果。
+- 最终CI包含空隔离PG迁移/种子、1574后端单测、静态/登记检查、完整接口清单（含旧check_target_actuals及新增金额/超限两套件）、前端类型/构建/Node/完整确认浏览器及后续UI冒烟。实际固定应用包完整浏览器已独立通过；诊断/旧期望两后续提交不改应用文件，最终491文件manifest与原已验证应用包逐项一致，无漏提交的新脚本/fixture。
+- 最终固定包/tmp/crm-release-analytics-40a6864.tar.gz SHA256 9cc6b2f76e9d9ab6f2019535e76696b1e643fce5b4ca47181d528063c3148283；远端工具SHA256 8347192444e4ecf3347513b78f668b33a4fd62efa49624fc8082f90911ad5cab及包SHA均匹配。预检验证全部旧app/迁移/依赖/配置/实际migration head/运行路径守卫；正式apply再次预检后备份切换，返回status=verified，备份/opt/crm-sales-agent/backup/unified-40a686422ea3-law4gmyi保留。没有数据库迁移、依赖升级、业务数据写入或正式配置调整。
+- 独立发布后核验postcheck.py/log：DEPLOYED_COMMIT/WEB_DEPLOYED_COMMIT均40a6864，RELEASE.json verified；491文件全部SHA匹配；crm-sales.service active，直接8010/health status up/database ok，钉钉OA stream_connected true。当前index入口引用AnalyticsPage-Be_vwx_J.js，签单/回款/发货/复购/目标/差额及年度value_exact字段全在实际资源中。统一发布工具另验证公网首页/直接引用入口资源逐字节匹配；未用生产客户/订单造数据验收。
+- 证据ops/backups/release-analytics-20261030/含前后服务器源哈希、固定包构建/原包manifest一致、发布工具21自测、失败CI诊断/旧断言红绿、最终CI/预检/apply及独立后检。隔离8097后端及专用PG此前已正常关闭，无遗留测试进程需要生产处理。
+- 当前发布任务已完成。仅补本条及QUALITY_GOAL发布基线文档并同步两仓库，文档提交不同于应用SHA是正常状态，不再重启服务。残余：图表坐标/旧JSON数字仍浮点近似；历史错误数据保持原样；未穷尽生产角色、第三方故障和全部并发/性能。目标并发版本/备注等仍需复现后判断，长期质量目标不宣称完成，本次授权不自动扩大为未来新问题发布许可。
+
+
 ## 2026-10-30 同提交CI后端发现旧浮点断言，改为严格Decimal期望后继续发布
 
 - 首次a6848d0 CI后端最终失败仅check_target_actuals四处：实际值Decimal('1234.56')/Decimal('2234.56')，旧期望为不可精确表示的float字面量，Python严格相等为False。该脚本直接调用服务读取内部结果；本批本来就让内部服务保留Decimal，JSON数字契约仍保留。其余接口套件，包括两个新金额/超限套件均通过，1574单测/静态通过。失败段ci-backend-failure-excerpt.log保留，不忽略失败或把它算绿。
