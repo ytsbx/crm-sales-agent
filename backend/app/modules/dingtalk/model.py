@@ -165,6 +165,11 @@ class OaInstance(Base, IdMixin):
     #: 第几轮提交（驳回后重提 +1）
     submit_round: Mapped[int] = mapped_column(BigInteger, default=1)
 
+    #: 审批单建在哪：`dingtalk` = 历史钉钉实例；`self_oa` = 2026-11-13 起切到自研 OA。
+    #: 老行默认 dingtalk，只读保留；新合同只写 self_oa。
+    provider: Mapped[str] = mapped_column(
+        String(16), default="dingtalk", server_default=text("'dingtalk'")
+    )
     #: 生成实例时用的模板标识与提交人，排障时要能还原"当时拿什么发的"
     process_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     originator_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

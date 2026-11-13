@@ -92,6 +92,7 @@ export interface ContractDocument {
   void_reason: string | null
   source_type?: 'crm_template' | 'customer_drafted'
   dingtalk_oa?: {
+    provider?: 'dingtalk' | 'self_oa'
     oa_instance_id?: number
     instance_id?: string | null
     status?: string
@@ -145,6 +146,14 @@ export function autoLinkContractDingTalkApproval(docId: number) {
 
 export function startContractDingTalkApproval(docId: number) {
   return api.post<Record<string, unknown>>(`/contract-documents/${docId}/dingtalk-oa`, {})
+}
+
+/** 发起自研 OA 合同审批（2026-11-13 起新入口；审批在 OA 完成）。 */
+export function startContractOaApproval(
+  docId: number,
+  payload: { our_company: string; counterparty_name: string },
+) {
+  return api.post<Record<string, unknown>>(`/contract-documents/${docId}/oa-approval`, payload)
 }
 
 export function withdrawContractDingTalkApproval(docId: number) {

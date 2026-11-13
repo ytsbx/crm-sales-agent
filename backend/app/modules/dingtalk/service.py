@@ -886,8 +886,12 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
 
     同一行只允许一个查询者持锁写回，事件重复投递不会重复创建业务流程。
     """
+    # 钉钉总闸关着且自研 OA 也没配置时，一行都不用查（旧回归明确要求
+    # “关闸时不得访问数据库”）。OA 配置了才需要继续，去处理 self_oa 行。
     if app_settings.dingtalk_push_off:
-        return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
+        from app.modules.oa import client as oa_client
+        if not oa_client.configured():
+            return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
     pending = or_(
         OaInstance.status == "pending",
         (OaInstance.status == "withdrawn") &
@@ -906,10 +910,33 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
     ).scalars().all()
     if not rows:
         return {"checked": 0, "changed": 0}
+    if app_settings.dingtalk_push_off and not any(
+        getattr(row, "provider", "dingtalk") == "self_oa" for row in rows
+    ):
+        return {"checked": 0, "changed": 0, "disabled": True, "message": DINGTALK_DISABLED_MESSAGE}
 
-    client = get_client()
+    client = None
     changed = 0
     for row in rows:
+        if getattr(row, "provider", "dingtalk") == "self_oa":
+            from app.modules.oa import client as oa_client
+            from app.modules.oa import service as oa_service
+
+            try:
+                await oa_service.sync_contract_row(session, row)
+                changed += 1
+            except (oa_client.OaError, oa_client.OaUnknownOutcome) as exc:
+                # 单条失败不影响其它单；下一轮继续。
+                row.error = str(exc)[:500]
+                row.updated_at = datetime.now(UTC)
+            except Exception as exc:  # noqa: BLE001 - 调度不能因单条异常整批中断
+                row.error = f"OA 同步失败：{exc.__class__.__name__}"[:500]
+                row.updated_at = datetime.now(UTC)
+            continue
+        if app_settings.dingtalk_push_off:
+            continue
+        if client is None:
+            client = get_client()
         try:
             data = await client.get_process_instance(row.instance_id or "")
         except (DingTalkError, DingTalkUnknownOutcome) as exc:
@@ -1124,10 +1151,14 @@ def serialize(row: OaInstance) -> dict:
         "inquiry_id": row.inquiry_id,
         "inquiry_version": row.inquiry_version,
         "oa_type": row.oa_type,
+        "provider": getattr(row, "provider", "dingtalk"),
         "instance_id": row.instance_id,
         "status": row.status,
         "status_label": OA_STATUS_LABEL.get(row.status, row.status),
         "sync_notice": (
+            '当前服务未开启审批自动同步，记录可能滞后，可点“查询状态”或联系管理员确认。'
+            if getattr(row, "provider", "dingtalk") == "self_oa" and
+            not (app_settings.scheduler_enabled or app_settings.scheduler_oa_sync_enabled) else
             '钉钉连接当前已关闭，审批记录不会自动更新，请联系管理员确认。'
             if app_settings.dingtalk_push_off else
             '当前服务未开启审批自动同步，记录可能滞后，请联系管理员确认。'

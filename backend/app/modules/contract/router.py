@@ -16,7 +16,7 @@ from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok, page_data
 from app.modules.contract import service as svc
-from app.modules.contract.schema import DocumentCreate, DocumentSign, DocumentVoid
+from app.modules.contract.schema import ContractOaStart, DocumentCreate, DocumentSign, DocumentVoid
 from app.modules.dingtalk import service as dingtalk_service
 from app.modules.dingtalk.model import OaInstance, allowed_actions
 
@@ -93,6 +93,39 @@ def _contract_oa_result(row, *, fresh: bool) -> dict[str, str]:
     }
 
 
+@router.post("/contract-documents/{doc_id}/oa-approval")
+async def start_oa_contract_approval(
+    doc_id: int,
+    payload: ContractOaStart,
+    request: Request,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db),
+):
+    """发起自研 OA 合同审批；审批在 OA 完成，CRM 负责同步与回签。"""
+    from app.modules.oa import service as oa_service
+
+    doc = await svc.get_doc_or_404(session, doc_id, for_update=True, protect_transfer=True)
+    await _ensure_doc_in_scope(session, user, doc)
+    if doc.status != "draft":
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "只有待签草稿合同可以发起审批", 422)
+    row, message = await oa_service.start_contract_approval(
+        session, user, doc,
+        our_company=payload.our_company,
+        counterparty_name=payload.counterparty_name,
+    )
+    await write_audit(
+        session,
+        operator_id=user.id,
+        action="start_contract_oa",
+        business_type="contract",
+        business_id=doc.id,
+        after={"oa_instance_id": row.id, "instance_id": row.instance_id, "status": row.status},
+        ip=client_ip(request),
+    )
+    await session.commit()
+    return ok(oa_service.serialize(row), message)
+
+
 @router.post("/contract-documents/{doc_id}/dingtalk-oa")
 async def start_dingtalk_contract_approval(
     doc_id: int,
@@ -101,11 +134,19 @@ async def start_dingtalk_contract_approval(
     session: AsyncSession = Depends(get_db),
 ):
     """发起合同签署 OA；审批过程在钉钉完成，CRM 只同步状态与过程快照。"""
+    from app.core.config import settings as app_settings
+    # 2026-11-13 起合同审批切到自研 OA；配置了 OA 对接后，旧钉钉入口只保留给
+    # 历史数据核对，不能再从这里新建钉钉单。
+    if app_settings.oa_integration_secret:
+        raise AppError(
+            ErrorCode.STATUS_NOT_ALLOWED,
+            "合同审批已切换到自研 OA，请使用「发起 OA 审批」",
+            410,
+        )
     from app.modules.customer.model import Customer
     from app.modules.order.model import SalesOrder
     from app.modules.quote.model import QuoteVersion
     from app.modules.dingtalk.client import get_client
-    from app.core.config import settings as app_settings
     from app.modules.settings import service as settings_service
     from app.modules.user.model import User
 
@@ -321,9 +362,24 @@ async def withdraw_dingtalk_contract_approval(
         )
     ).scalars().first()
     if row is None or not row.instance_id:
-        raise AppError(ErrorCode.NOT_FOUND, "这份合同还没有可撤回的钉钉审批", 404)
+        raise AppError(ErrorCode.NOT_FOUND, "这份合同还没有可撤回的 OA 审批", 404)
     if row.status != "pending":
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前钉钉审批状态为「{row.status}」，不能撤回", 422)
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前 OA 审批状态为「{row.status}」，不能撤回", 422)
+    if getattr(row, "provider", "dingtalk") == "self_oa":
+        from app.modules.oa import service as oa_service
+        from app.modules.user.model import User
+        actor = await session.get(User, user.id)
+        if not actor or not actor.dingtalk_userid or actor.dingtalk_userid != row.originator_user_id:
+            raise AppError(ErrorCode.FORBIDDEN, "请由该 OA 审批的发起人先撤回，确认后再作废合同", 403)
+        await oa_service.withdraw_contract_row(session, row, "CRM 撤回合同审批")
+        await write_audit(
+            session, operator_id=user.id, action="withdraw_contract_oa", business_type="contract",
+            business_id=doc.id,
+            after={"oa_instance_id": row.id, "instance_id": row.instance_id, "status": row.status},
+            ip=client_ip(request),
+        )
+        await session.commit()
+        return ok(oa_service.serialize(row), "已撤回 OA 合同审批")
     if app_settings.dingtalk_push_off:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法向钉钉发送撤回请求", 422)
     from app.modules.contract.customer_flow import withdraw_before_void

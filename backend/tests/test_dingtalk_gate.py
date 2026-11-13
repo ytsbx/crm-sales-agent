@@ -66,6 +66,8 @@ def test_closed_resend_preserves_unknown_record(monkeypatch):
 
 def test_closed_sync_explicitly_reports_not_executed(monkeypatch):
     monkeypatch.setattr(settings, 'dingtalk_push_off', True)
+    # 2026-11-13：OA 也接进来后，只有“钉钉关 + OA 未配置”才是完全不访问数据库。
+    monkeypatch.setattr(settings, 'oa_integration_secret', '')
     result = asyncio.run(service.sync_pending_instances(NoDatabaseCalls()))
     assert result['checked'] == result['changed'] == 0
     assert result['disabled'] is True

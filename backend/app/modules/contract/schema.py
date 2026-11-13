@@ -49,6 +49,24 @@ class DocumentCreate(BaseModel):
     source_type: str = Field(default="crm_template", pattern="^(crm_template|customer_drafted)$")
 
 
+class ContractOaStart(BaseModel):
+    """发起 OA 合同审批时，由经办人明确填写的两个签约主体。
+
+    2026-11-13 用户明确：主体信息改成**由人填**，不再由系统按客户/公司抬头自动写。
+    """
+
+    our_company: str = Field(min_length=1, max_length=200)
+    counterparty_name: str = Field(min_length=1, max_length=200)
+
+    @field_validator("our_company", "counterparty_name")
+    @classmethod
+    def strip_and_require(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("签约主体不能为空")
+        return value
+
+
 class DocumentSign(BaseModel):
     """登记签署：file_id 来自通用上传接口（/files/upload），签的是扫描件。"""
 

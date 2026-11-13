@@ -616,6 +616,11 @@ async def sync_oa_instance(
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, '审批记录不存在', 404)
     await ensure_oa_type_scope(session, user, row)
+    if getattr(row, 'provider', 'dingtalk') == 'self_oa':
+        from app.modules.oa import service as oa_service
+        await oa_service.sync_contract_row(session, row)
+        await session.commit()
+        return ok(oa_service.serialize(row), '已查询 OA 最新记录')
     if app_settings.dingtalk_push_off:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, '钉钉连接当前已关闭，请联系管理员', 422)
     if not row.instance_id:

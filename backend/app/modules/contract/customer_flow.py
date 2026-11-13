@@ -275,7 +275,12 @@ async def sync_approval(doc_id: int, user: CurrentUser = Depends(require_permiss
     doc = await visible_doc(session, user, doc_id, lock=True)
     row = await oa.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
     if row is None or not row.instance_id:
-        fail("尚未关联钉钉审批")
+        fail("尚未关联 OA 审批")
+    if getattr(row, "provider", "dingtalk") == "self_oa":
+        from app.modules.oa import service as oa_service
+        await oa_service.sync_contract_row(session, row)
+        await session.commit()
+        return ok(oa_service.serialize(row), "已同步 OA 审批")
     if settings.dingtalk_push_off:
         fail("钉钉外部调用已关闭")
     data = await read_instance(row.instance_id)
@@ -289,13 +294,17 @@ async def withdraw_before_void(session, user, doc):
     if row is None or row.status in ("approved", "rejected", "withdrawn", "skipped", "not_sent", "failed"):
         return
     if row.status != "pending" or not row.instance_id:
-        fail("钉钉申请结果未明，请先核对审批，不能直接作废合同")
-    if settings.dingtalk_push_off:
-        fail("钉钉调用关闭，无法撤回在办审批；本次未作废合同")
+        fail("OA 申请结果未明，请先核对审批，不能直接作废合同")
     from app.modules.user.model import User
     actor = await session.get(User, user.id)
     if not actor or not actor.dingtalk_userid or actor.dingtalk_userid != row.originator_user_id:
-        fail("请由该钉钉审批的发起人先撤回，确认后再作废合同", 403)
+        fail("请由该 OA 审批的发起人先撤回，确认后再作废合同", 403)
+    if getattr(row, "provider", "dingtalk") == "self_oa":
+        from app.modules.oa import service as oa_service
+        await oa_service.withdraw_contract_row(session, row, "CRM 作废合同并撤回申请")
+        return
+    if settings.dingtalk_push_off:
+        fail("钉钉调用关闭，无法撤回在办审批；本次未作废合同")
     # 先看真实状态：刚完成的审批不能再撤回，也不能假报已撤回。
     data = await read_instance(row.instance_id)
     if status_of(data) != "pending":

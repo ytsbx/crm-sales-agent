@@ -1198,13 +1198,16 @@ async def sign_document(
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "已作废的文档不能签署")
     await _ensure_signable_source(session, doc)
     original_id = (doc.filled_data or {}).get("_original_file_id")
-    if original_id:
-        from app.modules.dingtalk import service as oa_service
-        row = await oa_service.get_by_business_key(session, inquiry_id=doc.id, inquiry_version=1, oa_type="contract")
-        if row is None or row.status != "approved":
-            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉合同审批通过后才能登记回签归档", 422)
-        if file_id == original_id:
-            raise AppError(ErrorCode.PARAM_ERROR, "请上传双方签好的合同，不能直接使用提交前的原稿", 422)
+    # 只有走过审批的合同才校验审批结果：老 CRM 生成合同可能从未发起 OA，
+    # 没有 `_dingtalk_oa` 标记时保持原有“可登记签署”的行为；一旦发起过，
+    # 无论成功/驳回/撤回，都必须先到“已通过”才能回签归档。
+    if original_id or (doc.filled_data or {}).get("_dingtalk_oa"):
+        from app.modules.oa import service as oa_service
+        approval = await oa_service.latest_contract_row(session, doc.id)
+        if approval is not None and approval.status != "approved":
+            raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "OA 合同审批通过后才能登记回签归档", 422)
+    if original_id and file_id == original_id:
+        raise AppError(ErrorCode.PARAM_ERROR, "请上传双方签好的合同，不能直接使用提交前的原稿", 422)
     if doc.parent_id is not None and (doc.filled_data or {}).get("_supersedes") and doc.effective_date is None:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "替代旧月结协议前必须填写生效日，请按完整信息重新生成续签协议", 422)
     # 登记签署 = 给一份**已存在**的文件加 `signed` 引用。加引用之前先锁住文件行，

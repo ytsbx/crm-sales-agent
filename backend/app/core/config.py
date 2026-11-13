@@ -109,6 +109,15 @@ class Settings(BaseSettings):
     dingtalk_app_secret: str = ""
     dingtalk_agent_id: str = ""
     dingtalk_base_url: str = "https://api.dingtalk.com"
+    # 自研 OA 服务端对接（CRM → OA）。密钥只放环境变量，不进数据库。
+    oa_base_url: str = "http://127.0.0.1:8781"
+    oa_integration_secret: str = ""
+    #: 合同审批模板（OA 里发布后的模板 UUID 或 code；两者填一个）
+    oa_contract_template_id: str = ""
+    oa_contract_template_code: str = ""
+    #: 合同审批固定审批人的钉钉 userid（历史规则：田小秘固定批）。
+    #: 为空则沿用 OA 模板自己的首节点配置。
+    oa_contract_approver_dingtalk_id: str = ""
     # OA 审批状态轮询：每多少分钟拉一次（文档 §11.3 :152 的"回收状态与结果"）。
     # Stream 事件优先触发对应单据查询；周期轮询用于断线和漏事件时补收。
     scheduler_oa_sync_minutes: int = 3

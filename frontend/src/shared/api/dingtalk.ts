@@ -28,6 +28,8 @@ export interface OaApprovalInstance {
   inquiry_id: number
   inquiry_version: number
   oa_type: string
+  /** dingtalk = 历史钉钉单；self_oa = 自研 OA 单 */
+  provider?: 'dingtalk' | 'self_oa'
   instance_id?: string | null
   status: string
   status_label: string

@@ -1,7 +1,7 @@
 import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import CustomerApproval, { ApprovalHistory, ContractBasis } from './CustomerApproval'
+import { ApprovalHistory, ContractBasis } from './CustomerApproval'
 import { api } from '../../shared/api/client'
 import { templateFieldLabel } from './template-fields'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -31,6 +31,7 @@ import {
   getContractDocument,
   listContractDocuments,
   signContractDocument,
+  startContractOaApproval,
   withdrawContractDingTalkApproval,
   voidContractDocument,
   deleteContractDocument,
@@ -84,7 +85,6 @@ export default function DocumentsPage() {
   // 幂等键：打开弹窗时生成一个，同一张弹窗里的重复提交带的是同一个值。
   // 后端据此把第二次请求认成"刚才那份"，不再多建一份带独立编号的草稿。
   const [uploadRequestKey, setUploadRequestKey] = useState('')
-  const [approvalTarget, setApprovalTarget] = useState<ContractDocument | null>(null)
   const [originalFile, setOriginalFile] = useState<File | null>(null)
   const [originalFileId, setOriginalFileId] = useState<number | null>(null)
   const [contractTitle, setContractTitle] = useState('')
@@ -155,11 +155,51 @@ export default function DocumentsPage() {
   const withdrawDingtalkMutation = useMutation({
     mutationFn: (docId: number) => withdrawContractDingTalkApproval(docId),
     onSuccess: () => {
-      Toast.success('已撤回钉钉合同签署申请')
+      Toast.success('已撤回 OA 合同审批')
       refresh()
     },
     onError: (error: Error) => Toast.error(error.message),
   })
+
+  const [oaStartTarget, setOaStartTarget] = useState<ContractDocument | null>(null)
+  const [oaOurCompany, setOaOurCompany] = useState('')
+  const [oaCounterparty, setOaCounterparty] = useState('')
+  const startOaMutation = useMutation({
+    mutationFn: (vars: { id: number; our_company: string; counterparty_name: string }) =>
+      startContractOaApproval(vars.id, {
+        our_company: vars.our_company,
+        counterparty_name: vars.counterparty_name,
+      }),
+    onSuccess: () => {
+      Toast.success('已提交 OA 合同审批')
+      setOaStartTarget(null)
+      refresh()
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
+  const openOaStart = (record: ContractDocument) => {
+    setOaStartTarget(record)
+    // 2026-11-13 用户明确：主体由经办人自己填，系统不自动带值。
+    // 合同抬头/客户只作为参考展示，输入框保持空，必须人工输入。
+    setOaOurCompany('')
+    setOaCounterparty('')
+  }
+
+  const submitOaStart = () => {
+    if (!oaStartTarget) return
+    const our = oaOurCompany.trim()
+    const other = oaCounterparty.trim()
+    if (!our || !other) {
+      Toast.warning('请填写我方主体和对方主体后再提交')
+      return
+    }
+    startOaMutation.mutate({
+      id: oaStartTarget.id,
+      our_company: our,
+      counterparty_name: other,
+    })
+  }
 
   const openUploadModal = () => {
     setOriginalFile(null)
@@ -267,6 +307,7 @@ export default function DocumentsPage() {
     refetchOnWindowFocus: true,
   })
   const detail = detailQuery.data
+  const oaLabel = detail?.dingtalk_oa?.provider === 'self_oa' ? 'OA' : '钉钉'
   const signedFiles: ContractSignedFile[] = detail?.signed_files ?? []
   const amendments: ContractAmendment[] = detail?.amendments ?? []
 
@@ -380,26 +421,28 @@ export default function DocumentsPage() {
                     {canManage && record.status === 'draft' && (
                       <a onClick={() => openSignModal(record)}>登记签署</a>
                     )}
-                    {canManage && record.status === 'draft' && record.source_type === 'customer_drafted' && (
+                    {canManage && record.status === 'draft' && (
                       record.dingtalk_oa?.status === 'pending' ? (
                         <>
-                          <a onClick={() => setDetailTarget(record)}>查看钉钉审批</a>
+                          <a onClick={() => setDetailTarget(record)}>查看 OA 审批</a>
                           <a
                             onClick={() =>
                               Modal.confirm({
-                                title: '撤回钉钉合同签署申请？',
-                                content: '撤回只对仍在审批中的钉钉流程生效，已完成的审批不能撤回。',
+                                title: '撤回 OA 合同审批？',
+                                content: '撤回只对仍在审批中的 OA 流程生效，已完成的审批不能撤回。',
                                 onOk: () => withdrawDingtalkMutation.mutate(record.id),
                               })
                             }
                           >
-                            撤回钉钉审批
+                            撤回 OA 审批
                           </a>
                         </>
-                      ) : (
-                        <a onClick={() => setApprovalTarget(record)}>
-                          钉钉合同审批
+                      ) : record.dingtalk_oa_row?.provider !== 'dingtalk' ? (
+                        <a onClick={() => openOaStart(record)}>
+                          发起 OA 审批
                         </a>
+                      ) : (
+                        <span style={{ color: 'var(--crm-text-3)' }}>历史钉钉审批（只读）</span>
                       )
                     )}
                     {/* 已签合同的作废要复核人（主管）：以前不是复核人时这个入口**整个消失**，
@@ -688,6 +731,45 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
+        title={`发起 OA 合同审批：${oaStartTarget?.doc_no ?? ''}`}
+        visible={Boolean(oaStartTarget)}
+        onCancel={() => setOaStartTarget(null)}
+        onOk={submitOaStart}
+        confirmLoading={startOaMutation.isPending}
+        okText="提交 OA 审批"
+        cancelText="取消"
+      >
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+            主体信息由经办人填写，系统不再自动用公司抬头/客户名代替。
+          </div>
+          <div>
+            <div style={DETAIL_LABEL}>我方主体</div>
+            <Input
+              value={oaOurCompany}
+              onChange={setOaOurCompany}
+              maxLength={200}
+              placeholder="请填写我方签约主体全称"
+            />
+          </div>
+          <div>
+            <div style={DETAIL_LABEL}>对方主体</div>
+            <Input
+              value={oaCounterparty}
+              onChange={setOaCounterparty}
+              maxLength={200}
+              placeholder="请填写对方签约主体全称"
+            />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+            参考：合同客户 {oaStartTarget?.header_snapshot?.customer_name ?? oaStartTarget?.customer_name ?? '-'}；
+            合同抬头 {oaStartTarget?.header_snapshot?.company_name || '未设置'}。
+            请按实际签署合同填写，不要直接照抄。
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         title={`作废：${voidTarget?.doc_no ?? ''}`}
         visible={Boolean(voidTarget)}
         onCancel={closeVoidModal}
@@ -786,17 +868,17 @@ export default function DocumentsPage() {
             {canManage && detail.status === 'draft' && detail.original_file_id && !detail.order_id && !detail.quote_id && <ContractBasis doc={detail} />}
             {detail.dingtalk_oa && (
               <div>
-                <div style={DETAIL_LABEL}>钉钉合同签署审批</div>
+                <div style={DETAIL_LABEL}>{oaLabel} 合同审批</div>
                 <div style={{ fontSize: 12, marginBottom: 8 }}>页面每5秒自动更新记录，无需刷新浏览器。</div>
                 {canManage && detail.dingtalk_oa_row?.instance_id && <SyncOaButton oaId={detail.dingtalk_oa_row.id} invalidateKeys={[[ 'contract-detail',detail.id ],['contract-documents']]}/>}
                 <div style={DETAIL_VALUE}>
                   {detail.dingtalk_oa.status === 'approved'
-                    ? '钉钉审批已通过，等待上传客户回签文件'
+                    ? `${oaLabel} 审批已通过，等待上传客户回签文件`
                     : detail.dingtalk_oa.status === 'rejected'
-                      ? '钉钉审批已驳回，请查看钉钉处理意见'
+                      ? `${oaLabel} 审批已驳回，请查看处理意见`
                       : detail.dingtalk_oa.status === 'withdrawn'
-                        ? '钉钉审批已撤回'
-                        : '钉钉审批处理中或需核对，页面将自动更新'}
+                        ? `${oaLabel} 审批已撤回`
+                        : `${oaLabel} 审批处理中或需核对，页面将自动更新`}
                   {detail.dingtalk_oa.synced_at
                     ? ` · 最近同步 ${formatBeijingTime(detail.dingtalk_oa.synced_at)}`
                     : ''}
@@ -808,13 +890,9 @@ export default function DocumentsPage() {
                     refresh()
                     Toast.success('审批进度已同步')
                   } catch (e) { Toast.error(e instanceof Error ? e.message : '同步失败') }
-                }}>刷新钉钉进度</Button>}
-                {detail.dingtalk_oa.result && <ApprovalHistory result={detail.dingtalk_oa.result} />}
-                {/* 「结果待人工核对」的三个出口。按钮由服务端给的 allowed_actions
-                    决定：一条超时的发起可能已经在钉钉建了单，自动重发会多出一张，
-                    所以只能人来核对后选认领 / 重发 / 作废。合同这条链原先一个
-                    按钮都没有，超时后这份合同彻底卡死。 */}
-                {detail.dingtalk_oa_row && (
+                }}>刷新{oaLabel}进度</Button>}
+                {detail.dingtalk_oa.provider !== 'self_oa' && detail.dingtalk_oa.result && <ApprovalHistory result={detail.dingtalk_oa.result} />}
+                {detail.dingtalk_oa.provider !== 'self_oa' && detail.dingtalk_oa_row && (
                   <div style={{ marginTop: 8, display: 'flex', gap: 12 }}>
                     <ResolveOaActions
                       row={detail.dingtalk_oa_row}
@@ -842,7 +920,6 @@ export default function DocumentsPage() {
           </div>
         )}
       </Modal>
-      <CustomerApproval doc={approvalTarget} onClose={() => setApprovalTarget(null)} />
       <AdoptOaInstanceModal
         target={adoptTarget}
         requestKey={adoptKey}
