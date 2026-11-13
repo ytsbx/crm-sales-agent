@@ -574,9 +574,9 @@ export default function DocumentsPage() {
             <div style={{ marginBottom: 4 }}>合同名称<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
           </div>
-          <div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-  <div style={{ marginBottom: 4 }}>我方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>我方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
               <Input value={ourCompany} onChange={setOurCompany} placeholder="请填写我方签约主体全称" />
             </div>
             <div>
@@ -584,9 +584,9 @@ export default function DocumentsPage() {
               <Input value={counterparty} onChange={setCounterparty} placeholder="请填写对方签约主体全称" />
             </div>
           </div>
-          <div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-  <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
               <Select
                 value={numberRuleType}
                 onChange={(v) => setNumberRuleType(v as 'manual' | 'rule')}
@@ -596,27 +596,29 @@ export default function DocumentsPage() {
                 ]}
               />
             </div>
-            {numberRuleType === 'manual' ? (
-              <div>
-                <div style={{ marginBottom: 4 }}>合同编号</div>
-                <Input
-                  value={contractNumber}
-                  onChange={setContractNumber}
-                  placeholder="选填；留空则使用 CRM 自动生成的编号"
-                />
-              </div>
-            ) : (
-              <div>
-                <div style={{ marginBottom: 4 }}>合同编号规则<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
-                <Input value="系统默认规则" readOnly placeholder="系统默认规则" />
-                <div style={{ fontSize: 12, color: '#8a94a6', marginTop: 4 }}>
-                  系统将根据所选规则自动生成合同编号
-                </div>
-              </div>
-            )}
             <div>
+              {numberRuleType === 'manual' ? (
+                <div>
+                  <div style={{ marginBottom: 4 }}>合同编号</div>
+                  <Input
+                    value={contractNumber}
+                    onChange={setContractNumber}
+                    placeholder="选填；留空则使用 CRM 自动生成的编号"
+                  />
+                </div>
+              ) : (
+                <div>
+                  <div style={{ marginBottom: 4 }}>合同编号规则<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+                  <Input value="系统默认规则" readOnly placeholder="系统默认规则" />
+                  <div style={{ fontSize: 12, color: '#8a94a6', marginTop: 4 }}>
+                    系统将根据所选规则自动生成合同编号
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-          <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
+          <div>
+            <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
             <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => {
               const file = e.target.files?.[0] || null
               setOriginalFile(file); setOriginalFileId(null)
@@ -624,9 +626,9 @@ export default function DocumentsPage() {
             }} />
             {originalFile && <div>{originalFile.name}</div>}
           </div>
-          <div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-  <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
               <Select
                 style={{ width: '100%' }}
                 placeholder={uploadForm.customer_id ? '这张客户下的正式订单' : '先选客户'}
@@ -670,9 +672,9 @@ export default function DocumentsPage() {
               />
             </div>
           </div>
-          <div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-  <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
               <Select
                 style={{ width: '100%' }}
                 placeholder={uploadForm.quote_id ? '选具体版本' : '先选报价单'}
