@@ -789,24 +789,39 @@ export default function DocumentsPage() {
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 10 }}>
-          <div>
-            <div style={DETAIL_LABEL}>我方主体</div>
-            <Input
-              value={oaOurCompany}
-              onChange={setOaOurCompany}
-              maxLength={200}
-              placeholder="请填写我方签约主体全称"
-            />
-          </div>
-          <div>
-            <div style={DETAIL_LABEL}>对方主体</div>
-            <Input
-              value={oaCounterparty}
-              onChange={setOaCounterparty}
-              maxLength={200}
-              placeholder="请填写对方签约主体全称"
-            />
-          </div>
+          {oaStartTarget?.our_company && oaStartTarget?.counterparty_name ? (
+            <>
+              <div>
+                <div style={DETAIL_LABEL}>我方主体</div>
+                <div style={{ fontSize: 14 }}>{oaStartTarget.our_company}</div>
+              </div>
+              <div>
+                <div style={DETAIL_LABEL}>对方主体</div>
+                <div style={{ fontSize: 14 }}>{oaStartTarget.counterparty_name}</div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <div style={DETAIL_LABEL}>我方主体</div>
+                <Input
+                  value={oaOurCompany}
+                  onChange={setOaOurCompany}
+                  maxLength={200}
+                  placeholder="请填写我方签约主体全称"
+                />
+              </div>
+              <div>
+                <div style={DETAIL_LABEL}>对方主体</div>
+                <Input
+                  value={oaCounterparty}
+                  onChange={setOaCounterparty}
+                  maxLength={200}
+                  placeholder="请填写对方签约主体全称"
+                />
+              </div>
+            </>
+          )}
         </div>
       </Modal>
 
