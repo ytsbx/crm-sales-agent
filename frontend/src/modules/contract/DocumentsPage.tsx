@@ -789,9 +789,6 @@ export default function DocumentsPage() {
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
-            主体信息由经办人填写，系统不再自动用公司抬头/客户名代替。
-          </div>
           <div>
             <div style={DETAIL_LABEL}>我方主体</div>
             <Input
@@ -809,11 +806,6 @@ export default function DocumentsPage() {
               maxLength={200}
               placeholder="请填写对方签约主体全称"
             />
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
-            参考：合同客户 {oaStartTarget?.header_snapshot?.customer_name ?? oaStartTarget?.customer_name ?? '-'}；
-            合同抬头 {oaStartTarget?.header_snapshot?.company_name || '未设置'}。
-            请按实际签署合同填写，不要直接照抄。
           </div>
         </div>
       </Modal>
