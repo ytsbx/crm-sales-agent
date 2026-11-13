@@ -525,7 +525,7 @@ export default function DocumentsPage() {
         okText="上传合同"
         cancelText="取消"
         okButtonProps={{ disabled: !contractTitle.trim() || !ourCompany.trim() || !counterparty.trim() }}
-        width={560}
+        width={720}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
