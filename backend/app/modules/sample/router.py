@@ -278,7 +278,8 @@ async def restore_sample(
     """恢复一张被软删的样品申请（2026-10-15 补）。
 
     与删除**共用同一把钥匙**（`sample:manage`）：谁有样品管理权限谁就能捡回来，
-    不为它单开权限码 —— 客户的恢复也是复用 `customer:delete` 这个既有码。
+    不为它单开权限码 —— 客户的恢复也是复用删除那档既有权限码
+    （`customer:delete` / `customer:delete_own`）。
     """
     sample = await svc.get_visible_or_404(
         session, user, sample_id, for_update=True, allow_deleted=True, allow_external_flow=True
