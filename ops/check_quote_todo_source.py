@@ -81,6 +81,7 @@ print(f"清单：解析出 {len(parsed)} 项待办")
 #: 每个 key 对应的"闸门"必须能在这些文件里找到。左边是 key，右边是
 #: (要在哪个文件里找, 要找的片段)。片段写得**足够具体**，避免"文件里恰好有这个词"。
 SOURCE_GATES: dict[str, tuple[Path, str]] = {
+    "cost_incomplete": (QUOTE_PAGE, "costProblems: detail.cost_problems"),
     "master_unconfirmed": (QUOTE_PAGE, "detail.master_warnings"),
     "freight_unconfirmed": (QUOTE_PAGE, "freightUnconfirmed"),
     "submit_approval": (QUOTE_PAGE, "提交审批"),
@@ -217,6 +218,21 @@ def _button_labels(text: str) -> set[str]:
 
 button_labels = _button_labels(page_text)
 for item in parsed:
+    if item["key"] == "cost_incomplete":
+        # 这项action是现有“去处理”锚点链接的导航说明，不是独立按钮。
+        # 不泛化豁免其它action：成本项仍须绑定指定目标和真实点击跳转。
+        if item["anchor"] != "quote-cost-status" or item["action"] != "查看成本缺项":
+            fail("'cost_incomplete' 的成本导航说明或目标锚点与现有处理入口不一致")
+        navigation = re.search(
+            r"\{todo\.anchor\s*&&\s*\(\s*<a\b.*?"
+            r"onClick=\{\(\)\s*=>\s*\{\s*"
+            r"document\.getElementById\(todo\.anchor as string\)\?\.scrollIntoView\(",
+            page_text,
+            re.S,
+        )
+        if navigation is None:
+            fail("'cost_incomplete' 的成本锚点导航没有接入真实的点击跳转")
+        continue
     if item["action"] and item["action"] not in button_labels:
         fail(
             f"'{item['key']}' 让用户点「{item['action']}」，但页面上没有这个文案的按钮 —— "
@@ -229,6 +245,7 @@ for item in parsed:
 #: 页面上"会拦住推进"的闸门，必须都能在清单里被说出来。这些串是**结构事实**
 #: （判据变量名 / 状态分支），不是文案，所以可以扫。
 MUST_BE_COVERED: tuple[tuple[str, Path, str], ...] = (
+    ("成本未完整确认会拦正式报价", QUOTE_PAGE, "detail.cost_problems"),
     ("主数据未确认会拦正式发送", QUOTE_PAGE, "detail.master_warnings"),
     ("运费未确认会拦提交审批", QUOTE_PAGE, "freightUnconfirmed"),
     ("审批中", QUOTE_PAGE, "approval_status === 'pending'"),
@@ -248,6 +265,7 @@ for label, path, needle in MUST_BE_COVERED:
 
 # 明确要求：上面每道闸都要有对应的清单项
 REQUIRED_KEYS = {
+    "cost_incomplete",
     "master_unconfirmed",
     "freight_unconfirmed",
     "submit_approval",
@@ -279,6 +297,7 @@ if "quote-todo" not in page_text:
 #: （计算清单、提交弹窗的 disabled、注释），计数照样 ≥2。
 #: 换成**要求存在真实的渲染条件**：`{gate &&`（真值守卫）或 `gate.length > 0 &&`。
 RENDERED_GATES: tuple[tuple[str, str], ...] = (
+    ("detail.cost_problems", "成本未完整确认的提示块"),
     ("detail.master_warnings", "主数据未确认的提示块"),
     ("freightUnconfirmed", "运费未确认的提示"),
 )

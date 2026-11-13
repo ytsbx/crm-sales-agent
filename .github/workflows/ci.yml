@@ -71,7 +71,7 @@ jobs:
 
       - name: Unified release safety tests (isolated filesystem, no production)
         working-directory: .
-        run: python3 -m unittest discover -s ops/deploy -p test_release.py -v
+        run: python3 ops/shared_checks.py release-safety --profile ci
 
       - uses: actions/setup-python@v5
         with:
@@ -100,9 +100,7 @@ jobs:
 
       - name: 静态检查（pyflakes / 模型列 / 权限码）
         run: |
-          python -m pyflakes app
-          PYTHONPATH=. python scripts/check_model_attrs.py
-          PYTHONPATH=. python scripts/check_permissions.py
+          PYTHONPATH=. python ../ops/shared_checks.py backend-static --profile ci
 
       - name: 单元测试（pytest，纯函数，不依赖数据库）
         run: PYTHONPATH=. python -m pytest
@@ -124,18 +122,8 @@ jobs:
         # 现在它是个能离线跑、能自己测的脚本（`--list` 只列不判失败）。
         working-directory: backend
         run: |
-          PYTHONPATH=. python scripts/check_registered_files.py
-          # 「同一判据有没有在所有出口铺开」—— 2026-10-14 加。这一轮审查报的 20 条里
-          # **至少 8 条**是这个病程（脱敏/范围/软删/日期 在 N 个出口只铺了 M 个），
-          # 而且正确写法常在同一个文件甚至相邻一行。判据成文后就该由 CI 守，不靠人工审。
-          PYTHONPATH=. python scripts/check_output_criteria.py
-          # 软删模型的统计有没有排 `deleted_at`（13 个模型是软删的；漏一处，删掉的数据继续出现在数字里）。
-          PYTHONPATH=. python scripts/check_soft_delete_filters.py
-          # 统计/仪表盘有没有套数据范围（详情有范围、统计漏了 —— 数字对不上没人查代码）。
-          PYTHONPATH=. python scripts/check_stats_data_scope.py
-          # 查询里引用的模型有没有对应的 JOIN（没 join 会变成**笛卡尔积**：行数放大、
-          # 分页与 total 全错，而且不报错 —— 2026-10-14 我就是在 contract 台账上踩的）。
-          PYTHONPATH=. python scripts/check_query_joins.py
+          # 共用项目清单保留CI原有顺序；此阶段仍在pytest之后、接口回归之前。
+          PYTHONPATH=. python ../ops/shared_checks.py backend-guards --profile ci
 
       - name: 接口回归（顺序跑，套件间互不冲突；清单见 ops/check_suites.txt）
         # 三处刻意的写法（2026-10-07 排查 CI 长期失败的产物）：
@@ -274,84 +262,12 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-          # 两个纯逻辑单测：不需要浏览器，也不引测试框架（Node 自带 node:test）。
-          # blocked_hint 那条守的是「灰按钮必须说得出为什么」（主人 2026-10-12）。
-          node --test ../ops/request_key.test.mjs
-          node --test ../ops/blocked_hint.test.mjs
-          node --test ../ops/guarded_button.test.mjs
-          node --test ../ops/payment_allocation.test.mjs
-          node --test ../ops/workbench_confirmation.test.mjs
-          node --test ../ops/high_risk_confirmation.test.mjs
-          node --test ../ops/approval_rule_toggle_confirmation.test.mjs
-          node --test ../ops/dictionary_toggle_confirmation.test.mjs
-          node --test ../ops/sku_stop_cancel.test.mjs
-          node --test ../ops/sku_label.test.mjs
-          node --test ../ops/recycle_decision_confirmation.test.mjs
+          # 与本地共用检查项目；保留CI顺序，遇错仍由当前步骤立即失败。
+          python3 ../ops/shared_checks.py frontend-tests --profile ci
           # 真实构建 + 隔离浏览器 + 内存模拟 API：取消不提交，确认对象/版本正确。
           node ../ops/confirmation_browser_smoke.mjs dist
-          # 静态检查：含禁用控件的页面必须接了共用件，或在例外清单里写明理由。
-          # 单测只测共享件算得对不对，**测不到"页面忘了接"**（这一轮的毛病正是忘了接）。
-          python3 ../ops/check_disabled_hint.py
-          # 静态检查：核价历史里会出现的每个审计动作，界面上必须有中文名。
-          # 后端加了动作而前端没跟 → 屏幕上会印出 skipped/[object Object] 这类机器话，
-          # 而且**不报错、不失败**，只能靠人去看那一页（主人 2026-10-12 就是这么发现的）。
-          # 静态检查：**"必填"这件事有没有标清楚**。
-          # 缘起：主人 2026-10-13 截图案例弹窗——「关键动作/可复用做法」是二选一
-          # （提交审核时才要求），当初故意不打星（打了是撒谎），但只留一行灰字
-          # 不显眼，主人的结论是"必填的怎么没标 * 号"。
-          # 现在分三档（实心红=现在必填 / 空心灰=条件必填 / 无=选填），这条守：
-          # 标了条件必填必须说明条件、hint 里写着"至少填一项"的必须标、两者不许并存。
-          python3 ../ops/check_form_required_marks.py
-          python3 ../ops/check_action_labels.py
-          # 静态检查：审计页三层中文名（对象/动作/字段）+ 生成物是否最新。
-          # 这些漏法**不报错、不失败**，只在那一页上难看（主人 2026-10-12 亲自发现）。
-          python3 ../ops/check_audit_labels.py
-          # 系统配置不能把后端内部 key 直接当成用户可见名称。
-          python3 ../ops/check_setting_labels.py
-          # 静态检查：**不许靠切 ISO 串显示时间**。
-          # 后端下发的是带 UTC 偏移的瞬时，`.slice(0,10)` 等于按 UTC 显示：
-          # 差 8 小时，跨零点**整个日期差一天**，而"约定下次跟进/签署时间/
-          # 发送时间"正是用户据以行动的字段（2026-10-14 审查一次抓到 13 处，
-          # 且同一页里常常两种口径并存）。
-          python3 ../ops/check_frontend_utc_dates.py
-          # AI 分析的信封字段必须有中文名。兜底是「没映射就印英文原词」，
-          # 后端加字段就必然漏一次给用户看（主人 2026-10-13 看到
-          # `overdue_count 0`/`open_amount ¥501` 才发现的）。
-          python3 ../ops/check_agent_analysis_labels.py
-          # 「英文枚举值 → 中文」这几张前端映射表必须覆盖后端会产出的值：
-          # 交期节点、审批状态、价格历史字段与报价状态。写法都是 `MAP[v] ?? v`，
-          # 后端加一个枚举值界面就悄悄多一句英文。
-          python3 ../ops/check_enum_labels.py
-          # 登录态是 localStorage 持久化的，旧版本的旧数据会被新版直接读出来用：
-          # 把 user 的字段当成"一定存在"会让**每一页**崩成 React 的英文报错
-          # （实测：`user.roles.includes` + 登录接口只返回 {id,name,username}）。
-          python3 ../ops/check_persisted_user_shape.py
-          # 静态检查：角色弹窗的权限分组是否覆盖后端所有权限模块。
-          # 漏了会让某个模块的新权限掉进「其他权限」（主人 2026-10-12：
-          # 「要找具体的权限要翻半天」——分组的意义就是不用翻）。
-          python3 ../ops/check_permission_groups.py
-          # 静态检查：用户可见文案里不许再用 `#` 拼编号（主人 2026-10-12：
-          # 「报价单 #8。这个 # 啥意思」——统一成「报价单编号 8」）。
-          python3 ../ops/check_hash_ids.py
-          # 静态检查：会写跟单节点的写接口必须持有订单锁。
-          # 漏了会把"未收齐"写成"收款完成"（第三批复审遗留 P1，真库已复现）；
-          # 真库版脚本是 scripts/check_milestone_lock_race.py（CI 上跑这条离线的）。
-          python3 ../ops/check_milestone_lock.py
-          # 静态检查：用户可见文案里不许出现 Markdown 的 `**`。
-          # 缘起：主人 2026-10-12 看到弹窗里印着「这是**发给客户**的记录」——
-          # React 不认 Markdown，`**` 会原样显示。这种错 tsc 全绿、只有人眼看得到，
-          # 而我自己在同一个弹窗里就犯了两次。
-          python3 ../ops/check_ui_text_no_markdown.py
-          # 静态检查：测试脚本"抠产品文案"的正则不许和文案脱钩。
-          # 缘起：全站把 `打样单 #N` 改成「打样单编号 N」之后，
-          # check_sixth_round_p2 的正则永远匹配空集合 —— 两条断言必红、
-          # 一条假绿，而表象是"实现坏了"（我查了半天，还建了 git 基线对比）。
-          python3 ../ops/check_copy_coupled_assertions.py
-          # 静态检查：算金额的上下文必须拒外币（主人 2026-10-12 口径：
-          # 「没有外币这个东西…有人用外币就给他报错」）。
-          # 单测只能证明闸函数本身好使，证明不了"它被接在这条计算上"——
-          # 反向验证时撤掉调用，单测照样全绿（实测踩过）。
-          python3 ../ops/check_foreign_currency_rejected.py
+          # 此阶段仍在构建/确认浏览器之后，顺序登记在共用清单中。
+          python3 ../ops/shared_checks.py frontend-static --profile ci
 
       - name: 前端：启动 dev server
         working-directory: frontend

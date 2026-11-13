@@ -127,3 +127,11 @@ export function invalidNumberMessage(
   if (!bad.length) return ''
   return `${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}${hint}`
 }
+
+/** 精确数量文本分组展示，不先转浮点；普通小数保留原千分位/去尾零格式。 */
+export function formatQuantityText(value: string): string {
+  if (!/^\d+(?:\.\d+)?$/.test(value)) return value
+  const [whole, fraction] = value.split('.')
+  const tail = fraction?.replace(/0+$/, '')
+  return BigInt(whole).toLocaleString('zh-CN') + (tail ? `.${tail}` : '')
+}

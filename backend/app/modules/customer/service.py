@@ -959,7 +959,48 @@ async def claim_customer(
     return row, True
 
 
+def _ensure_own_customer_operation(
+    user: CurrentUser, customer: Customer, *, action: str
+) -> None:
+    """删除/恢复共用同一档归属规则（2026-11-13 用户确认）。
+
+    两档钥匙：
+
+    - `customer:delete`：沿用原口径，可操作**数据范围内**的客户（主管/管理员）；
+    - `customer:delete_own`：只能操作**负责人是自己**的客户（业务员）。
+
+    为什么不把 `customer:delete` 直接下放给业务员：客户可见范围包含公海
+    （`assert_customer_visible` 对 `owner_id is None` 直接放行），共用一把钥匙
+    会让业务员删掉/恢复整片公海客户。公海没有"自己负责"可言，这一档必须拒。
+    """
+    if "admin" in user.roles or user.has("customer:delete"):
+        return
+    if not user.has("customer:delete_own"):
+        raise AppError(ErrorCode.FORBIDDEN, "无操作权限：需要 customer:delete", 403)
+    if customer.owner_id is None or int(customer.owner_id) != user.id:
+        raise AppError(ErrorCode.FORBIDDEN, f"只能{action}自己负责的客户", 403)
+
+
+def ensure_can_delete_customer(user: CurrentUser, customer: Customer) -> None:
+    """删除的授权边界：主管/管理员按数据范围，业务员只能删自己的客户。"""
+    _ensure_own_customer_operation(user, customer, action="删除")
+
+
+def ensure_can_restore_customer(user: CurrentUser, customer: Customer) -> None:
+    """恢复的授权边界：与删除同一档 —— 业务员只能恢复**负责人是自己**的客户。
+
+    口径按"归属"判，不按"谁删的"判：客户被主管删掉后，原负责人仍是本人，
+    业务员可以把它捡回来。公海客户（无负责人）不在这档里。
+    """
+    _ensure_own_customer_operation(user, customer, action="恢复")
+
+
 async def delete_customer(session: AsyncSession, customer: Customer) -> None:
+    """软删客户：只置 `deleted_at`，名下联系人/商机/报价/订单/跟进一条都不动。
+
+    这是刻意的（03-API §42.1）：恢复时把这些标记一去掉，关联资料自动回来；
+    不物理删除、不改挂，避免"删客户"顺手抹掉业务单据或把单据变成孤儿。
+    """
     customer.deleted_at = datetime.now(UTC)
 
 

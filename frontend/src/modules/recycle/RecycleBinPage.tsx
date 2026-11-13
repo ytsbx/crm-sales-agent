@@ -26,6 +26,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import { listUsers } from '../../shared/api/system'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { useAuthStore } from '../../shared/store/auth'
 import {
   isOwnerRequiredError,
   listRecycleCustomers,
@@ -406,9 +407,16 @@ function CustomersPanel() {
   const pager = usePageSize()
   const { can } = usePermissions()
   const queryClient = useQueryClient()
-  // 恢复与删除**共用同一把钥匙**（后端也是这么定的）：谁删的谁能拾回来，
-  // 不为它单开权限码 —— 与线索、产品那两个模块的恢复一致
-  const canRestore = can('customer:delete')
+  const currentUser = useAuthStore((state) => state.user)
+  // 恢复与删除**共用同一档钥匙**（后端也是这么定的）：主管/管理员凭
+  // `customer:delete` 按数据范围恢复；业务员凭 `customer:delete_own` 只能恢复
+  // **负责人是自己**的客户（2026-11-13 用户确认）。按归属判，不按"谁删的"判。
+  const canRestoreAny = can('customer:delete')
+  const canRestoreOwn = can('customer:delete_own')
+  const canRestoreRow = (record: RecycleCustomer) =>
+    canRestoreAny ||
+    (canRestoreOwn && record.owner_id != null && record.owner_id === currentUser?.id)
+  const showRestoreColumn = canRestoreAny || canRestoreOwn
   // 「恢复时把客户交给别人」= 一次改派，后端**额外**要分配权限（主人口径 2026-10-08）。
   // 界面跟着同一口径给入口：没这个权限就别把选人框弹出来让人白填一遍。
   const canAssign = can('customer:assign')
@@ -614,20 +622,19 @@ function CustomersPanel() {
       render: (v: string | null, record: RecycleCustomer) =>
         renderDeletedBy(v, record.deleted_by_pending),
     },
-    ...(canRestore
+    ...(showRestoreColumn
       ? [
           {
             title: '操作',
             width: 90,
-            render: (_: unknown, record: RecycleCustomer) =>
-              record.removed_via === 'direct' ? (
-                // 原负责人已停用的那条会先弹选人框（`startRestore` 里分派）
-                <a onClick={() => startRestore(record)}>恢复</a>
-              ) : (
-                // 被合并掉的**不给**恢复按钮：它名下已经被搬空，恢复只会得到空壳，
-                // 还会把"已经被合并"这个事实盖掉。去向那一栏本来就有跳转。
-                <span style={{ color: 'var(--crm-text-3)' }}>—</span>
-              ),
+            render: (_: unknown, record: RecycleCustomer) => {
+              // 被合并掉的不给恢复按钮；业务员只看得到自己负责的客户有入口
+              if (record.removed_via !== 'direct' || !canRestoreRow(record)) {
+                return <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+              }
+              // 原负责人已停用的那条会先弹选人框（`startRestore` 里分派）
+              return <a onClick={() => startRestore(record)}>恢复</a>
+            },
           },
         ]
       : []),
@@ -635,7 +642,13 @@ function CustomersPanel() {
 
   return (
     <>
-      <SectionCard title="被合并掉的客户会显示「已并入某某」，可点进合并后的客户（那一类不提供恢复）；直接删除的可以恢复。原负责人已停用的，恢复时要先指定一位在职的接手人。">
+      <SectionCard
+        title={
+          '被合并掉的客户会显示「已并入某某」，可点进合并后的客户（那一类不提供恢复）；' +
+          '直接删除的可以恢复。原负责人已停用的，恢复时要先指定一位在职的接手人。' +
+          (canRestoreOwn && !canRestoreAny ? '你只能恢复自己负责的客户。' : '')
+        }
+      >
         <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户名称或简称" style={{ maxWidth: 380, marginBottom: 16 }} />
         <Table<RecycleCustomer>
           columns={columns}

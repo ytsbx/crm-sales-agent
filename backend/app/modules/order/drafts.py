@@ -55,7 +55,9 @@ async def detail(session, draft):
         'remark': draft.remark, 'revision': draft.revision, 'created_at': draft.created_at,
         'items': [{'id': i.id, 'source_item_id': i.source_snapshot['source_item_id'], 'name': i.name,
             'source_snapshot': i.source_snapshot, 'quantity': float(i.quantity),
+            'quantity_exact': format(i.quantity, 'f'),
             'unit_price': float(i.unit_price) if i.unit_price is not None else None,
+            'unit_price_exact': format(i.unit_price, 'f') if i.unit_price is not None else None,
             'specification': i.specification, 'remark': i.remark} for i in await items(session, draft.id)]}
 
 

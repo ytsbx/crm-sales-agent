@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 本地一键全量验证（与 CI 同一份清单）：静态检查 + 接口回归。
-# 套件清单来自 ops/check_suites.txt（唯一真源），CI 读的是同一个文件。
+# 接口套件读 ops/check_suites.txt；静态检查/Node测试读 ops/shared_checks.json。
+# shared_checks.json 分别保留本地/CI顺序，由 shared_checks.py 校验两边覆盖一致。
 # UI 冒烟默认跳过，加 --ui 一起跑（需要本机 Chrome/Edge + 开发前端 5274 在跑）。
 #
 # ⚠️ 2026-10-08 起：下面这两样**必须显式给**，不给就拒绝跑：
@@ -57,38 +58,42 @@ if ! .venv/bin/python scripts/wait_backend.py "$API_ORIGIN" --attempts 1; then
 fi
 echo "backend ready"
 
-echo
-echo "== 1. 静态检查 =="
-.venv/bin/python -m pyflakes app && echo "OK  pyflakes" || FAILED+=("pyflakes")
-PYTHONPATH=. .venv/bin/python scripts/check_model_attrs.py  >/dev/null && echo "OK  模型列"   || FAILED+=("check_model_attrs")
-PYTHONPATH=. .venv/bin/python scripts/check_permissions.py >/dev/null && echo "OK  权限码"   || FAILED+=("check_permissions")
+# 子进程不会修改当前shell的FAILED；把逐项失败名称接回原有总汇总。
+run_shared_group() {
+  local group="$1" interpreter="$2" failures_file failed_name
+  failures_file="$(mktemp)" || { FAILED+=("$group"); return; }
+  if ! "$interpreter" "$SCRIPT_DIR/shared_checks.py" "$group" --profile local \
+      --keep-going --failures-file "$failures_file"; then
+    if [[ ! -s "$failures_file" ]]; then
+      FAILED+=("$group")  # 清单错误或执行器失败也不能当作通过
+    fi
+  fi
+  while IFS= read -r failed_name; do
+    FAILED+=("$failed_name")
+  done < "$failures_file"
+  rm -f "$failures_file"
+}
 
 echo
-echo "== 1.1 前端侧静态检查（ops/check_*.py，与 CI 用同一批）=="
-# ⚠️ 这一段是 2026-10-13 补的：这些检查此前**只有 CI 在跑**，本地一键脚本一条都不跑
-# —— 于是"本地全绿、推上去 CI 红"成了常态（当天就因此连吃了两次）。
-# 从 `frontend/` 目录跑，与 CI 的 working-directory 一致（脚本里有相对路径推断）。
-for _check in "$SCRIPT_DIR"/check_*.py; do
-  _name="$(basename "$_check")"
-  if (cd "$SCRIPT_DIR/../frontend" && python3 "$_check" >/dev/null 2>&1); then
-    echo "OK  $_name"
-  else
-    echo "FAIL $_name"
-    (cd "$SCRIPT_DIR/../frontend" && python3 "$_check" 2>&1 | tail -4 | sed 's/^/      /')
-    FAILED+=("$_name")
-  fi
-done
-node --test "$SCRIPT_DIR/request_key.test.mjs" >/dev/null 2>&1 && echo "OK  request_key.test.mjs" || FAILED+=("request_key.test.mjs")
-node --test "$SCRIPT_DIR/blocked_hint.test.mjs" >/dev/null 2>&1 && echo "OK  blocked_hint.test.mjs" || FAILED+=("blocked_hint.test.mjs")
-# 报价「这一步还差什么」清单的判据单测（2026-10-13 待办区）
-node --test "$SCRIPT_DIR/quote_todo.test.mjs" >/dev/null 2>&1 && echo "OK  quote_todo.test.mjs" || FAILED+=("quote_todo.test.mjs")
-# 日历日期转换（第九批问题 ②：UTC 截日会退一天）
-node --test "$SCRIPT_DIR/calendar_day.test.mjs" >/dev/null 2>&1 && echo "OK  calendar_day.test.mjs" || FAILED+=("calendar_day.test.mjs")
-node --test "$SCRIPT_DIR/payment_allocation.test.mjs" >/dev/null 2>&1 && echo "OK  payment_allocation.test.mjs" || FAILED+=("payment_allocation.test.mjs")
+echo "== 0.2 检查工具安全测试（隔离文件系统）=="
+run_shared_group release-safety python3
+
+echo
+echo "== 1. 静态检查 =="
+PYTHONPATH=. run_shared_group backend-static .venv/bin/python
+
+echo
+echo "== 1.1 前端侧静态检查（共用项目，保留本地顺序）=="
+run_shared_group frontend-static python3
+run_shared_group frontend-tests python3
 
 echo
 echo "== 1.5 单元测试（pytest，纯函数，不连库不连网）=="
 PYTHONPATH=. .venv/bin/python -m pytest || FAILED+=("pytest")
+
+echo
+echo "== 1.6 登记项与后端静态判据 =="
+PYTHONPATH=. run_shared_group backend-guards .venv/bin/python
 
 echo
 echo "== 1.8 复位业务口径（trade_mode）=="

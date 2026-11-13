@@ -12,6 +12,7 @@ import {
   deduplicateContacts,
   deduplicateCustomers,
   deleteContact,
+  deleteCustomer,
   detachCustomerTag,
   getCustomer,
   getCustomerMergePreview,
@@ -35,6 +36,8 @@ import { listOpportunities, type Opportunity } from '../../shared/api/opportunit
 import { listOrders, type Order } from '../../shared/api/order'
 import { listQuotes, type Quote } from '../../shared/api/quote'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { useTabLabel } from '../../shared/hooks/useTabLabel'
+import { useAuthStore } from '../../shared/store/auth'
 import type { Contact } from '../../shared/types'
 import DetailHeader from '../../shared/components/DetailHeader'
 import SectionCard from '../../shared/components/SectionCard'
@@ -79,6 +82,7 @@ export default function CustomerDetailPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+  const currentUser = useAuthStore((state) => state.user)
   const [activeKey, setActiveKey] = useState(searchParams.get('tab') ?? 'overview')
   const [contactModal, setContactModal] = useState(false)
   const [contactForm, setContactForm] = useState<Partial<Contact>>({ name: '', is_primary: false })
@@ -135,6 +139,8 @@ export default function CustomerDetailPage() {
     queryFn: () => getCustomer(customerId),
     enabled: Number.isFinite(customerId),
   })
+  // 页签标题用客户名，而不是所有客户都叫「客户详情」
+  useTabLabel(customerQuery.data?.name)
   const customerLevelsQuery = useQuery({
     queryKey: ['dictionaries', 'customer_level'],
     queryFn: () => listDictionaries('customer_level'),
@@ -310,6 +316,28 @@ export default function CustomerDetailPage() {
     },
   })
 
+  /**
+   * 软删客户（03-API §7）：只把客户本人置删，名下联系人/商机/报价/订单/跟进
+   * 都保留、不改挂；删完可在回收站恢复。
+   *
+   * 谁能看到这个按钮：`customer:delete`（主管/管理员，按数据范围）或
+   * `customer:delete_own` 且负责人是本人（业务员）。真正的拦截在后端，
+   * 前端只负责别把"点了必 403"的按钮摆出来。
+   */
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteCustomer(customerId),
+    onSuccess: () => {
+      Toast.success('客户已删除')
+      // 列表 / 阶段分布 / 工作台都按"未删除"过滤：删完立刻刷掉缓存，
+      // 否则退回列表还会看到刚删掉的客户。
+      void queryClient.invalidateQueries({ queryKey: ['customers'] })
+      void queryClient.invalidateQueries({ queryKey: ['customer-stage-distribution'] })
+      void queryClient.invalidateQueries({ queryKey: ['workbench'] })
+      navigate('/customers')
+    },
+    onError: (error: Error) => Toast.error(error.message),
+  })
+
   const attachTagsMutation = useMutation({
     mutationFn: (tagIds: number[]) => attachCustomerTags(customerId, tagIds),
     onSuccess: (result) => {
@@ -406,6 +434,13 @@ export default function CustomerDetailPage() {
   }
 
   const canEditContact = can('customer:update')
+  // 删除入口：主管/管理员按数据范围；业务员只能删"负责人是自己"的客户。
+  // 公海客户没有负责人，不满足业务员这一档，按钮不出现（后端同样会拒）。
+  const canDeleteCustomer =
+    can('customer:delete') ||
+    (can('customer:delete_own') &&
+      customer.owner_id != null &&
+      customer.owner_id === currentUser?.id)
   const contactColumns = [
     {
       title: '姓名',
@@ -571,6 +606,17 @@ export default function CustomerDetailPage() {
                 disabled={poolMutation.isPending}
               >
                 <Button theme="solid" loading={poolMutation.isPending}>领取到我名下</Button>
+              </Popconfirm>
+            )}
+            {canDeleteCustomer && (
+              <Popconfirm
+                title={`删除客户「${customer.name}」？`}
+                content="删除后客户从列表和详情中消失，名下的联系人、商机、报价、订单等资料会保留；可在回收站恢复。"
+                okText="删除"
+                okButtonProps={{ type: 'danger' }}
+                onConfirm={() => deleteMutation.mutate()}
+              >
+                <Button type="danger" loading={deleteMutation.isPending}>删除客户</Button>
               </Popconfirm>
             )}
           </>

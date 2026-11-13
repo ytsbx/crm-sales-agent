@@ -259,6 +259,18 @@
 - `POST /customers/import`
 - `POST /customers/export`
 
+**删除客户（2026-11-13 用户确认）**：`DELETE /customers/{id}` 是**软删** —— 只把
+客户本人的 `deleted_at` 置为当前时间；名下的联系人、商机、报价、订单、合同、跟进、
+附件等资料**一条都不删、也不改挂**，恢复见 #42.2。权限分两档：
+
+- `customer:delete`：数据范围内可删（主管 / 管理员沿用原口径）；
+- `customer:delete_own`：只能删 `owner_id` 是本人的客户（业务员）。**公海客户没有
+  负责人，不在这一档里** —— 光"看得见公海"不能删公海。
+
+越权（别人的客户、公海客户）返回 403，且不写任何删除痕迹；删除成功写
+`action=delete` 审计（含删除前快照）。恢复入口与删除同一档：`customer:delete`
+按数据范围，`customer:delete_own` 只能恢复**负责人是自己**的客户。
+
 客户批量导出用途必填，可选值：`customer_follow_up`（客户跟进）、`business_analysis`（经营分析）、
 `management_report`（管理汇报）、`data_reconciliation`（数据核对）、
 `historical_migration`（历史数据迁移）、`other`（其他）。选择 `other` 时，
@@ -1620,13 +1632,14 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
 - `GET /contract-documents/{doc_id}/approval-entry`：读取合同审批入口状态。
 - `POST /contract-documents/{doc_id}/approval-auto-link`：按可用依据自动关联审批单。
 - `POST /contract-documents/{doc_id}/approval-link`：关联已有审批实例。
-- `POST /contract-documents/{doc_id}/approval-sync`：同步合同审批状态。
+- `POST /contract-documents/{doc_id}/approval-sync`：同步合同审批状态（钉钉/自研 OA 按实例来源分流）。
 - `POST /contract-documents/{doc_id}/basis`：设置合同正式业务依据。
-- `POST /contract-documents/{doc_id}/dingtalk-oa`：发起合同钉钉审批。
-- `POST /contract-documents/{doc_id}/dingtalk-oa-withdraw`：撤回合同钉钉审批。
+- `POST /contract-documents/{doc_id}/oa-approval`：发起**自研 OA** 合同审批（2026-11-13 起；CRM 通过服务间 HMAC 调 OA，审批在 OA 完成）。请求体必须带经办人填写的 `our_company`（我方主体）、`counterparty_name`（对方主体），两项非空；系统不再自动用公司抬头/客户名代替。
+- `POST /contract-documents/{doc_id}/dingtalk-oa`：历史钉钉合同审批入口，只保留给旧数据，不再从界面发起。
+- `POST /contract-documents/{doc_id}/dingtalk-oa-withdraw`：撤回合同审批（按实例来源走钉钉或自研 OA）。
 - `POST /contract-documents/{doc_id}/restore`：恢复合同记录。
-- `POST /oa-instances/{instance_id}/sync`：同步钉钉审批实例。
-- `POST /oa-instances/{instance_id}/withdraw`：撤回钉钉审批实例。
+- `POST /oa-instances/{instance_id}/sync`：同步审批实例（钉钉/自研 OA 按来源分流）。
+- `POST /oa-instances/{instance_id}/withdraw`：撤回审批实例。
 - `POST /biz-doc-templates/preview`：预览对外单据模板渲染结果。
 - `GET /recycle-bin/contracts`：查询回收站中的合同记录。
 
@@ -1780,10 +1793,14 @@ AI 的 `create_followup` 使用同一个写入口及权限/数据范围校验；
   不让一次冲突把整批恢复搞崩。
 - `POST /skus/{id}/restore`：需要 `product:manage`。**它所属的产品必须已经恢复** ——
   产品还在回收站时恢复 SKU 会造出"挂在已删产品下"的孤儿，直接 **400** 让你先恢复产品。
-- `POST /customers/{id}/restore`（2026-10-08 加；同日第三轮补权限与改派）：
+- `POST /customers/{id}/restore`（2026-10-08 加；同日第三轮补权限与改派；
+  2026-11-13 补业务员恢复自己的客户）：
   恢复一个被**直接删除**的客户。
-  需要 **`customer:delete`** —— 与删除**共用同一把钥匙**（谁删的谁能拾回来），
+  需要 **`customer:delete` 或 `customer:delete_own`** —— 与删除**共用同一档钥匙**，
   不为它单开权限码；线索、产品那两个模块的恢复也是复用已有码。
+  `customer:delete` 按数据范围恢复；`customer:delete_own` 只能恢复**负责人是自己**的
+  客户（按归属判，不按"谁删的"判：主管删掉、负责人仍是本人的客户，业务员可以捡回来；
+  公海客户没有负责人，不在这一档）。
   入参 `{owner_id?}` 整个可以不传（最常见的情形就是"归还原负责人"）。
   **但传了 `owner_id` 就不再是"捡回来"，而是一次改派** → **额外要求 `customer:assign`**
   （否则只有"删除客户"权限的人借恢复这个入口就能把客户交到别人名下，等于绕开了

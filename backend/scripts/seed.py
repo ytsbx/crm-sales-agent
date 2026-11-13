@@ -56,6 +56,10 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     ("customer:create", "新建客户", "customer", "create"),
     ("customer:update", "编辑客户", "customer", "update"),
     ("customer:delete", "删除客户", "customer", "delete"),
+    # 业务员只能删**自己负责**的客户（2026-11-13 用户确认）。单列一个码，不把
+    # `customer:delete` 直接下放给业务员：客户的可见范围包含公海（无主客户人人可见），
+    # 共用一把钥匙会让业务员能删掉整片公海客户，而不是"自己的客户"。
+    ("customer:delete_own", "删除自己的客户", "customer", "delete_own"),
     ("customer:assign", "分配客户", "customer", "assign"),
     # 导出闸门（§11.2/场景19）：批量导出是独立授权，不给销售默认开通——
     # "能看列表"不再等于"能批量拿走本范围全部客户"
@@ -117,6 +121,8 @@ SALES_PERMISSIONS = [
     "customer:view",
     "customer:create",
     "customer:update",
+    # 业务员可软删自己负责的客户；主管的 `customer:delete` 仍是按数据范围删。
+    "customer:delete_own",
     "product:view",
     "opportunity:view",
     "opportunity:manage",

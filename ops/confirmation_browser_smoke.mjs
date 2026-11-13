@@ -60,9 +60,28 @@ let rejectStaleTarget=false
 const analyticsFixture=JSON.parse(readFileSync(new URL('./fixtures/analytics-whole-yuan.json',import.meta.url),'utf8'))
 const financeSummaryFixture=JSON.parse(readFileSync(new URL('./fixtures/order-finance-exact.json',import.meta.url),'utf8'))
 const shipmentBodies=[];const savedShipments=new Map();let firstShipmentFail=true;let shipmentLarge=false
+const draftPrecisionBodies=[]
+let draftPrecision={id:993,customer_id:2,status:'draft',revision:1,currency:'CNY',source_context:{type:'inquiry',id:1,no:'ISO-DRAFT-PRECISION',version:1},items:[{id:501,source_item_id:1,name:'隔离草稿精确明细',quantity:9999999999999.998,quantity_exact:'9999999999999.999',unit_price:0.0001,unit_price_exact:'0.0001',source_snapshot:{source_item_id:1,original_quantity:'9999999999999.999',specification:null,remark:null},specification:null,remark:null}],remark:null,delivery_date:null,payment_terms:null}
+const sourceCreateBodies={order:[],sample:[]}
+const sourcePrecision={source:{type:'quote_version',id:121,quote_id:121,no:'ISO-SOURCE-PRECISION',version:1,is_historical:false},customer_id:2,customer_name:'隔离来源客户',currency:'CNY',items:[{source_item_id:23,name:'隔离来源精确明细',original_quantity:'9999999999999.999',unit_price:'0.0001',specification:null,remark:null}]}
 const server=createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost')
   const path=url.pathname
+  if(path==='/api/v1/order-drafts/source'||path==='/api/v1/samples/source') {
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({code:0,message:'ok',data:sourcePrecision}));return
+  }
+  if((path==='/api/v1/order-drafts'||path==='/api/v1/samples/from-source')&&req.method==='POST') {
+    const mode=path.endsWith('from-source')?'sample':'order'
+    let raw='';for await(const chunk of req)raw+=chunk;sourceCreateBodies[mode].push(JSON.parse(raw))
+    res.writeHead(500,{'Content-Type':'application/json'});res.end(JSON.stringify({code:50001,message:'隔离模拟来源创建失败',data:null}));return
+  }
+  if(path==='/api/v1/order-drafts/993') {
+    if(req.method==='PATCH') {
+      let raw='';for await(const c of req)raw+=c;const body=JSON.parse(raw);draftPrecisionBodies.push(body)
+      draftPrecision={...draftPrecision,...body,revision:draftPrecision.revision+1,items:body.items.map((row,index)=>({...draftPrecision.items[index],...row,quantity_exact:row.quantity,unit_price_exact:row.unit_price}))}
+    }
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({code:0,message:'ok',data:draftPrecision}));return
+  }
   if(path==='/api/v1/orders/991/shipments') {
     if(req.method==='POST') {
       let raw='';for await(const chunk of req)raw+=chunk;const body=JSON.parse(raw);shipmentBodies.push(body)
@@ -1042,6 +1061,80 @@ try {
   await sleep(250);await evaluate(`${save}.click()`);await waitFor(`!(${input})`)
   assert.equal(shipmentBodies.at(-1).items[0].planned_qty,'9999999999999.999')
   console.log('PASS shipment maximum quantity keeps exact modal/batch display and submitted string')
+  }
+  {
+  user.roles=['admin'];user.permissions=[]
+  const draftAuth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
+  await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(draftAuth)})`})
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/order-drafts/993`})
+  const qty=`document.querySelector('input[aria-label="草稿数量"]')`
+  const price=`document.querySelector('input[aria-label="草稿单价"]')`
+  await waitFor(qty)
+  assert.equal(await evaluate(`${qty}.value`),'9999999999999.999')
+  assert.equal(await evaluate(`${price}.value`),'0.0001')
+  assert.equal(await evaluate(`document.querySelectorAll('.semi-input-number').length`),0)
+  assert.ok(await evaluate(`document.body.innerText.includes('9,999,999,999,999.999')`))
+  const setValue=async (selector,value,type='HTMLInputElement')=>evaluate(`{const e=${selector};Object.getOwnPropertyDescriptor(${type}.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}))}`)
+  const saveDraft=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='保存草稿'&&!b.disabled)`
+  await setValue(`Array.from(document.querySelectorAll('textarea')).at(-1)`,'只改备注','HTMLTextAreaElement')
+  await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
+  assert.equal(draftPrecisionBodies.length,1)
+  assert.equal(draftPrecisionBodies[0].items[0].quantity,'9999999999999.999')
+  assert.equal(draftPrecisionBodies[0].items[0].unit_price,'0.0001')
+  await setValue(qty,'0.001');await setValue(price,'999999999999.9999')
+  await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
+  assert.equal(draftPrecisionBodies.at(-1).items[0].quantity,'0.001')
+  assert.equal(draftPrecisionBodies.at(-1).items[0].unit_price,'999999999999.9999')
+  await setValue(price,'');await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
+  assert.equal(draftPrecisionBodies.at(-1).items[0].unit_price,null)
+  await setValue(price,'0');await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
+  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
+  assert.equal(draftPrecisionBodies.at(-1).items[0].unit_price,'0')
+  assert.equal(draftPrecisionBodies.length,4)
+  console.log('PASS order draft note-only save and edits preserve exact quantity/price; blank and zero distinct; no numeric steppers')
+  }
+  {
+  exactQuote=true
+  await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121`})
+  const fill=async(selector,value)=>evaluate(`{const e=${selector};Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}))}`)
+  for(const mode of ['order','sample']) {
+    const open=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()===${JSON.stringify(mode==='order'?'按此版本建订单草稿':'按此版本申请打样')})`
+    await waitFor(open);await evaluate(`${open}.click()`)
+    const qty=`document.querySelector('.semi-modal-content input[id^="source-quantity-${mode}-"]')`
+    const price=`document.querySelector('.semi-modal-content input[aria-label="草稿单价"]')`
+    const save=`Array.from(document.querySelectorAll('.semi-modal-content button')).find(b=>b.innerText.trim()===${JSON.stringify(mode==='order'?'建立订单草稿':'建立打样申请')}&&!b.disabled)`
+    await waitFor(qty)
+    assert.equal(await evaluate(`${qty}.value`),mode==='order'?'9999999999999.999':'1')
+    assert.equal(await evaluate(`document.querySelectorAll('.semi-modal-content .semi-input-number').length`),0)
+    assert.ok(await evaluate(`document.querySelector('.semi-modal-content').innerText.includes('9,999,999,999,999.999')`))
+    assert.equal(await evaluate(`Boolean(${price})`),mode==='order')
+    const submit=async()=>{const n=sourceCreateBodies[mode].length;await waitFor(save);await sleep(250);await evaluate(`${save}.click()`);for(let i=0;i<50&&sourceCreateBodies[mode].length===n;i++)await sleep(100);assert.equal(sourceCreateBodies[mode].length,n+1);await waitFor(`!document.querySelector('.semi-modal-content .semi-button-loading')`);await sleep(250)}
+    await submit();await submit()
+    assert.deepEqual(sourceCreateBodies[mode][0],sourceCreateBodies[mode][1])
+    assert.equal(sourceCreateBodies[mode][0].items[0].quantity,mode==='order'?'9999999999999.999':'1')
+    if(mode==='order') {
+      assert.equal(sourceCreateBodies.order[0].items[0].unit_price,'0.0001')
+      await fill(qty,'0.001');await fill(price,'999999999999.9999');await submit()
+      assert.equal(sourceCreateBodies.order.at(-1).items[0].quantity,'0.001')
+      assert.equal(sourceCreateBodies.order.at(-1).items[0].unit_price,'999999999999.9999')
+      await fill(price,'');await submit();assert.equal(sourceCreateBodies.order.at(-1).items[0].unit_price,null)
+      await fill(price,'0');await submit();assert.equal(sourceCreateBodies.order.at(-1).items[0].unit_price,'0')
+    } else {
+      assert.equal(sourceCreateBodies.sample[0].use_dingtalk,true)
+      assert.equal('unit_price' in sourceCreateBodies.sample[0].items[0],false)
+      await fill(qty,'9999999999999.999');await submit()
+      assert.equal(sourceCreateBodies.sample.at(-1).items[0].quantity,'9999999999999.999')
+      await fill(qty,'1.250');await submit();assert.equal(sourceCreateBodies.sample.at(-1).items[0].quantity,'1.250')
+    }
+    assert.notEqual(sourceCreateBodies[mode][1].request_key,sourceCreateBodies[mode][2].request_key)
+    for(const invalid of ['', 'abc', '0', '-1']) {await fill(qty,invalid);await sleep(250);assert.equal(await evaluate(`Boolean(${save})`),false);assert.ok(await evaluate(`document.querySelector('.semi-modal-content').innerText.includes('必须大于 0')`))}
+    const cancel=`Array.from(document.querySelectorAll('.semi-modal-content button')).find(b=>b.innerText.trim()==='取消')`
+    await evaluate(`${cancel}.click()`);await waitFor(`!document.querySelector('.semi-modal-content')`)
+    console.log('PASS source '+mode+' exact quantities, default, no steppers, stable failure retry and invalid quantity hints')
+  }
   }
 } finally {
   socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})

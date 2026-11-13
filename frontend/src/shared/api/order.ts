@@ -628,7 +628,7 @@ export function cancelScheduleChange(orderId: number, changeId: number, reason?:
 }
 
 export interface OrderDraftLine {
-  id: number; source_item_id: number; name: string; quantity: number; unit_price: number | null
+  id: number; source_item_id: number; name: string; quantity: number | string; quantity_exact?: string; unit_price: number | string | null; unit_price_exact?: string | null
   specification?: string | null; remark?: string | null
   source_snapshot: { source_item_id: number; original_quantity: string | null; specification?: string | null; remark?: string | null; unit_price?: string | null }
 }

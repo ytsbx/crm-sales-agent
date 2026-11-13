@@ -1,5 +1,172 @@
 # CRM 质量审查进度
 
+## 2026-11-13 生产发布：页签体验 + 客户软删除（a673dde，已验证）
+
+- 用户明确“都要发、OA 先不管”：本次只发页签体验和客户软删除；**不含 OA 合同、Q-110 及其它未发布改动**。生产原基线 `9d13165`，数据库原 head `a1b2c3d4e5f6`。
+- 为隔离未完成改动，从 `9d13165` 建干净发布工作树，只取页签（AppLayout/TabBar/tabs/useTabLabel/样式/详情页标题）和客户软删除（customer router/service、seed、权限迁移、客户详情/回收站/前端 API）文件，提交 `a673ddeb0fcdc39178f4235f4f42c33915d120bf`，推 GitHub `release/customer-tabs-20261113`。
+- 迁移 `d4f7a2c9b1e6`（客户软删除权限）按迁移发布单独处理：先备份生产库到 `/opt/crm-sales-agent/backup/pre-customer-tabs-20261113-164756/crm_prod.dump`（PostgreSQL 18 容器 `crm-sales-db`，pg_restore list 1015 项）及原 alembic 目录；复制迁移文件后在服务器执行 `alembic upgrade head`，权限行与 salesperson 关联各 1 条，DB head `d4f7a2c9b1e6`。
+- 统一发布用合成基线 `690b533`（9d13165 + 仅迁移文件）构建，保证 baseline_app 仍是服务器旧 app、GUARDS 含迁移文件；包 `a52416b3693ebf8536a361a2a49a4aa9612b5a39edf31e5666b3ce3fc3fad13c`。先预检后 `--apply`，输出 `status=verified`，备份 `/opt/crm-sales-agent/backup/unified-a673ddeb0fcd-vkf_hybn`。
+- 发布后核验：`RELEASE.json`/两端记录均为 `a673ddeb0fcd...`，`crm-sales.service` active，`/health` database ok，公网 `https://crm.mandla.cn/` 200，DB head `d4f7a2c9b1e6`，salesperson 的 `customer:delete_own` 关联 1 条；发布工具完成后端/前端文件哈希、健康、公网首页及入口资源核验。未改生产 `.env`、依赖或其它业务数据。
+- 验证边界：本次 CI 同 SHA 未绿；失败为既有日期敏感套件 `check_c4_round_repairs`、`check_round3_risk_repairs`（应收 `due_date=2026-11-01` 已过期，期望 partial/pending、实际 overdue），与本批页签/客户删除改动无关。用户明确不等 CI。发布前在干净工作树跑后端全量 `pytest -q` 通过；前端 `tsc -b`、`vite build`、`oxlint`、`check_disabled_hint`、`git diff --check` 通过。未在生产真实客户上点击删除/恢复，未做浏览器页签点击回归；OA/Q-110 仍未发布；CI 日期夹具待另行修复。
+
+## 2026-11-13 合同 OA 切换（自研 OA 对接，本地完成，未部署）
+
+- 用户要求“CRM 的 OA 换成桌面自研 OA，去掉钉钉 OA”，先做合同、审批后面的流程也要接上；审批人按历史 CRM 规则。查生产 `oa_instances`：两笔成功发起的合同审批任务 `userId` 均为 `610412076029591769`（CRM 用户田小秘 / tianxiaomi，管理员），故合同固定田小秘审批。
+- OA 侧（`~/Desktop/OA/tongxu-workplace`）：新增 `/api/v1/integrations/crm/approvals/`、`.../{id}/`、`.../{id}/withdraw/`、`/files/`、`/templates/`；HMAC 时间戳签名、按 `external_ref` 幂等、按 `applicant_dingtalk_user_id` 找 OA 用户、可传 `approver_dingtalk_user_id` 固定首节点审批人；`Approval` 加 `external_ref` 唯一约束（迁移 `workflow/0007`）。8 项 OA 集成测试通过；本地 OA 库已迁移。
+- CRM 侧：新增 `app/modules/oa/{client,service}.py`；`oa_instances` 加 `provider`（迁移 `e7b3c1d5f9a2`，老行默认 dingtalk）；新增 `POST /contract-documents/{id}/oa-approval`；`sign_document` 的审批闸门改为按 OA 行状态（有 `_dingtalk_oa` 标记才校验；老 CRM 生成且从未发起审批的合同保持原行为）；合同作废前撤回、手动/定时同步均按 provider 分流；旧钉钉发起入口在配置了 OA 后返回 410。
+- 主体字段口径（最终按用户决定）：**我方主体 / 对方主体由经办人填写**，不再由系统自动写。CRM「发起 OA 审批」弹窗要求人工输入两项（空则拒绝提交），后端 `ContractOaStart` 非空校验，OA payload 直接使用人工值，不再回退到 `our_company`/客户名。历史钉钉两笔实例是 CRM 自动填的（我方“东街万创…”、对方客户“测试”），但新 OA 按用户要求改为人工填写；测试已改为断言人工值。
+- 2026-11-13 再次只读拉取线上钉钉合同模板（`PROC-23B3305F-...`）：process_code 未变；线上字段 **27 个**，与 OA v3 的 27 个字段**名称、顺序完全一致，无缺失/多余**。差异只在 OA 支持的等价类型映射（级联→文本、钉钉人员→OA 人员、表格列→OA 表格列）以及两个条件必填项（合同编号规则、合同总额）在 OA 里暂设为选填，避免“无金额/手动编号”场景被误拦。
+- 模板字段按用户纠正对齐：OA 模板改名为**合同审批（审批不盖章）**（v3，`55cfb0f7-c9e8-48d6-90ee-d061dd5e61a8`），字段从原 6 项补到 27 项，覆盖原钉钉表单的合同名称/编号/金额类型/总额/期限/归档人/协同人/合同说明/附件/我方信息/对方信息/印章类型/签署方式/签署日期/备注等；CRM 配置已指向 v3。
+- 前端：合同台账草稿显示“发起 OA 审批”（确认框直接调新接口）；审批中显示“查看/撤回 OA 审批”；详情用“OA/钉钉”动态文案；自研 OA 行不再显示钉钉专用的“认领/重发”按钮；历史钉钉行只读。回签仍复用原“登记签署”（上传客户回签件后才变已签署、关待办、写时间线/审计）。
+- 验证：OA 8 项测试；CRM 新增 `tests/test_oa_contract_flow.py` 2 项（发起行 + 未审批时禁止回签）；CRM 全量 `pytest -q` exit0；前端 `tsc -b`、`vite build`、`oxlint`、`check_disabled_hint`、`git diff --check` 通过。另起独立 OA 实例 8782（与本地 OA 同库、独立密钥），用 CRM `oa` 客户端实际跑通模板列表、附件上传、建单、同 `external_ref` 幂等、查询、撤回；测试审批/附件已清理，8782 已停。确认 OA 处于开发阶段后，又把本地 OA 8781 重启到新代码并配置共享密钥；模板按用户纠正改为 v3「合同审批（审批不盖章）」、字段补到 27 项，用 CRM 真实服务在同一本地库发起一张合同审批（`provider=self_oa`、状态 pending、审批人固定为演示管理员代田小秘的本地占位）、同步、撤回；CRM 合同/客户/文件与 OA 审批/附件已清理，张三的临时钉钉绑定已还原。
+- 部署/配置前提：OA 需设 `CRM_INTEGRATION_SECRET`（与 CRM `OA_INTEGRATION_SECRET` 一致）、执行迁移并重启；CRM 需设 `OA_BASE_URL`、`OA_INTEGRATION_SECRET`、`OA_CONTRACT_TEMPLATE_ID/CODE`、`OA_CONTRACT_APPROVER_DINGTALK_ID`（生产填田小秘钉钉号；OA 里须有她的账号绑定）。未部署、未改生产库、未重启用户正在跑的 OA 8781。
+- 边界：目前只切合同；询价/打样仍走钉钉；OA 自动状态同步依赖 `scheduler_oa_sync_enabled` 或手动“刷新”；没有 OA 主动 webhook、HMAC 未做 nonce 防重放（仅时间窗）；旧 `CustomerApproval` 组件保留但入口已隐藏；未做浏览器点击回归。
+
+## 2026-11-13 OA 切换（讨论 + 本地 OA 合同模板已建）
+
+- 用户要求把 CRM 的 OA 从钉钉切到桌面自研 OA（`~/Desktop/OA/tongxu-workplace`），先做合同。现状：CRM 有三处钉钉 OA（询价/打样/合同）和钉钉登录；自研 OA 有审批引擎、模板设计器和审批单接口，但**没有给外部系统代发起审批的服务端接口**，其 README 仍写“CRM、MES 按要求不接入”。
+- 已做（仅本地 OA，未改两边源码、未部署）：用 OA 模板接口 `POST /api/v1/templates/` + `publish/` 创建并发布「CRM 合同审批」模板，id `96b6dabf-899a-434e-8a32-a75db0e204d1`，code `form-4efa56882ddc4df18540652e209ac196`；字段为合同编号、合同名称、客户名称、合同金额、合同摘要、合同正文（附件），`require_attachments=true`，流程 `routing.initial=$manager`（直属主管单级）。
+- 验证：用本地演示账号 `lin` 登录 OA，上传 PDF、按模板建单并提交成功，审批人落到其直属主管；随后清理了该测试审批和附件，**模板保留**。模板接口要求 `Idempotency-Key`，发布要求 `updated_at`，均已实际通过。
+- 仍未做：OA 侧代发起/查状态/撤回接口、CRM 侧客户端替换、身份映射（CRM 用户钉钉 userid → OA 用户）、旧钉钉在途单处理、生产 OA 访问与密钥。模板 code 是接口自动生成的 `form-*`，CRM 按 id/code 引用即可；若要可读的 `crm-contract` code，需改用服务端命令/新接口创建。
+
+
+## 2026-11-13 页签栏：模块/详情区分 + 自动上限（本地完成，未部署）
+
+- 用户反馈页签栏体验差（截图为 13 个页签挤在一行、出现原生横向滚动条，详情页签都叫“客户详情/报价详情”）。根因：每个详情路由都新开页签且只增不减；页签没有“模块/详情”类型与父级；标题固定通用；`.tab-strip` 用 `overflow-x:auto` 露出原生滚动条；末尾“⋯”只有关闭动作、看不到被挤出的页签。
+- 改动：`TabItem` 增加 `kind`（module/detail）与 `parentKey`；AppLayout 按详情路由标注所属模块。详情页签改为小一号、浅底、带“详情”角标和左边框，模块页签保持原样；详情页数据回来后用 `useTabLabel` 把标题换成客户名/产品名/商机名/报价号/订单号/草稿号。
+- 行为：关闭模块页签时连带关闭它下面的详情页签；关闭当前页签落到左侧相邻页签；关闭其他页签时保留当前详情及其模块父页签。页签栏隐藏原生滚动条，切换页签自动滚入可视区；“⋯”改为“全部页签”列表（模块/详情标记、当前标记、关闭其他/全部）。
+- 自动上限：`TAB_LIMIT=10`。超限时先关最久未用的详情页签，详情关完还不够再关最久未用的模块（连同其详情）；当前页签、工作台、当前详情所属模块不参与淘汰。自动关闭会弹一句提示，“⋯”菜单顶部常驻上限说明。
+- 验证：`tsc -b`、`vite build`、`oxlint src`（0 error，30 条既有 warning）、`ops/check_disabled_hint.py`、`git diff --check` 均通过。另用临时 Node 宿主转译 `tabs.ts` 跑两组序列共 8 组断言：关模块连带关详情、关详情落到左侧、详情真实标题不被通用名覆盖、关闭其他保留父模块、详情超限优先淘汰最久未用、模块超限同样受控、当前详情父模块不被关、重复激活不新增占位；全部 PASS。未做浏览器点击/截图回归；未部署。
+- 边界：上限固定 10（常量，可调）；工作台固定保留，关闭全部后回到工作台；自动关闭是 LRU（最近激活时间），不按创建顺序；未做浏览器点击/截图回归。
+
+
+## 2026-11-13 追加：业务员可恢复自己负责的客户（同一天第二次确认，本地验证完成，未部署）
+
+- 用户追加“可以恢复自己的客户”。不新增权限码：恢复与删除共用 `customer:delete_own` 这一档；按**归属**判，不按“谁删的”判 —— 主管删掉、负责人仍是本人的客户，业务员能捡回来；公海客户（无负责人）不能恢复；把客户交给别人仍额外要 `customer:assign`。主管/管理员的 `customer:delete` 仍按数据范围恢复。
+- 后端：抽出 `_ensure_own_customer_operation`，新增 `ensure_can_restore_customer`；`POST /customers/{id}/restore` 依赖改为 `customer:delete` / `customer:delete_own`，取到已删客户后先判归属再恢复/写审计。被合并来源 400、原负责人停用 422、换人恢复的改派链、公海/私海规则均未改。
+- 前端：回收站客户区“有任一档权限就显示操作列”，逐行只给 `customer:delete` 或（`customer:delete_own` 且 `owner_id`=本人）的行显示“恢复”，其余显示“—”；提示条补“你只能恢复自己负责的客户”；“指定新负责人”仍只对有 `customer:assign` 的人开放。删/恢复共用现有回收站刷新与错误提示。
+- 测试：`tests/test_customer_self_delete.py` 由 9 项扩到 15 项（新增恢复纯规则 4 项 + 路由越权拒绝/本人恢复写审计 2 项），15 项通过；全量 `pytest -q` exit0。隔离 PG 真实 DB 验证：业务员删+恢复自己的客户成功（delete/restore 审计各1）；主管删掉业务员客户后业务员仍可恢复（按归属）；重复删/恢复通过；业务员恢复公海 403“只能恢复自己负责的客户”、恢复别人的客户 403 数据范围；主管恢复公海客户 200（原口径未变）。临时库已 force drop。
+- 静态/构建：`tsc -b`、`vite build`、`pyflakes`、`git diff --check`、`ops/check_disabled_hint.py` 通过；`oxlint src` 0 error（30 条既有 warning）。未做浏览器点击回归，未部署。
+
+
+## 2026-11-13 客户软删除 + 业务员只能删自己负责的客户（功能实现，本地验证完成，未部署）
+
+- 用户要求“做一个软删除，业务员也可以删自己负责的客户”。按现有范式实现：`DELETE /customers/{id}` 只置 `deleted_at`，名下联系人/商机/报价/订单/合同/跟进/附件不删、不改挂，可从回收站恢复；新增 `customer:delete_own` 授予 `salesperson`，`customer:delete` 仍是主管/管理员按数据范围的钥匙。未把 `customer:delete` 直接下放：公海客户无负责人且对所有有 `customer:view` 的人可见，共用一把钥匙会让业务员能删公海。先本地实现验证、未部署，未改生产/演示库、未提交推送。
+- 后端：新增 `customer/service.ensure_can_delete_customer`（admin 或 `customer:delete` 放行；否则必须有 `customer:delete_own` 且 `owner_id` 是本人，公海/别人的客户 403）。`customer/router.delete_customer` 依赖改为 `require_permission("customer:delete", "customer:delete_own")`，先判归属再取快照/写审计；实际删除仍是原 `delete_customer`（仅置 `deleted_at`），`action=delete` 审计和 `before` 快照不变。本节只改删除，恢复入口当时未动；随后按用户同日追加要求改为同一档（见上一条）。
+- 权限数据：`scripts/seed.py` 增加权限目录与 `SALES_PERMISSIONS`；新增幂等迁移 `d4f7a2c9b1e6`（down_revision `a1b2c3d4e5f6`），老库补权限行并授给 `salesperson`，downgrade 对称收回。没有新增表/列、没有改业务单据或历史数据。
+- 前端：`shared/api/customer.ts` 增 `deleteCustomer`；客户详情页在 `customer:delete` 或（`customer:delete_own` 且负责人=本人）时显示“删除客户”二次确认，写清软删/资料保留/可在回收站恢复。删除成功后刷新列表/阶段分布/工作台并回列表。未给列表页加批量删除；回收站恢复入口随后按用户追加要求放开给业务员（见上一条）。
+- 验证：新增 `tests/test_customer_self_delete.py` 9 项（本人/他人/公海/主管/管理员/无权限纯规则 + 路由依赖任一权限 + 路由越权不落删除、本人删除写审计），9 项通过；`pytest -q` 全量 exit0。隔离 PG 实际跑 `upgrade a1b2c3d4e5f6`→插入 salesperson→`upgrade head`：权限行/角色授予正确；`downgrade -1` 后两者为0，再 `upgrade head` 恢复为1；另给自定义角色也授该码后重跑 downgrade，权限行与全部角色关联都能清干净（不撞外键）。全新隔离库迁移+seed 后 salesperson 有 `delete_own`、无 `customer:delete`，主管仍有 `customer:delete`。另在隔离库用 seed 的真实账号跑真实 DB 删除：业务员删自己客户成功、`deleted_at` 已置，联系人/跟进保留且客户ID不变，审计1条；删公海 403“只能删除自己负责的客户”、删别人的客户 403 数据范围、两者均未删除；主管按部门范围删业务员客户成功。临时库均已 force drop。
+- 静态/构建：`tsc -b` exit0；`vite build` exit0；`oxlint src` 0 error（30 条既有 warning）；`pyflakes` 改动后端文件 exit0；`git diff --check` exit0；`ops/check_disabled_hint.py` exit0；`backend/scripts/check_registered_files.py` exit0。
+- 边界：未做浏览器点击回归，只做类型检查/构建与真实 DB 函数级验证；删除入口只在客户详情页，列表无批量删除；本节只落删除，业务员的恢复权限随后按用户同日追加要求补齐（见上一条）；未部署，线上需发布后端、前端及迁移后才生效。
+
+
+## 2026-11-04 报价待办源核对失败修复（检查脚本修复，相关回归通过）
+
+- 用户要求“把失败的修好”，范围仅上轮check_quote_todo_source失败。先重读质量目标/进度并保存本轮前工作区文件SHA256；初始正式脚本exit1，复现cost_incomplete未登记SOURCE_GATES、把“查看成本缺项”判为不存在按钮两个报告，before.log。保留此前Q-110与共用清单未提交修改，无生产/演示库、SSH、提交推送或部署。
+- 调用链证据：QuoteDetailPage:702把detail.cost_problems传给quoteTodos，1202起按cost_problems.length渲染quote-cost-status成本常驻说明；1290起待办的“去处理”锚点链接实际scrollIntoView(todo.anchor)，action字段只渲染为“下一步”说明。quote-todo成本项已指定quote-cost-status及“查看成本缺项”；backend/quote/service.ensure_items_cost_complete及submit_for_approval已有完整成本硬拦截。本次确认的是检查登记遗漏与按钮专用假设造成的误报，不是新发现成本闸门缺失；无需为通过检查新增按钮或改变页面行为。
+- 最小修复ops/check_quote_todo_source.py：登记成本数据到待办的真实输入片段、成本必需项及常驻渲染条件；仅cost_incomplete按其现有锚点导航核验，固定检查说明/目标匹配、锚点存在、真实链接条件与点击scrollIntoView；其它action保持原按钮存在判据，没有泛化跳过或删除失败检查。
+- 在已有ops/test_shared_checks.py增加9项源核对回归，使用临时源码副本：当前结构正向通过；去掉成本输入、成本待办、目标锚点、常驻渲染、锚点链接、正确滚动目标、改错导航说明、移除其它真实操作按钮共8种破坏全部exit1。原9项调度断言原样保留；共18项通过，检查器不会只因登记成本项就无条件通过。
+- 验证：正式脚本exit0；共用清单frontend-static按local及ci两个profile分别运行均16项全部通过（各exit0），原25项quote_todo Node测试全部通过；共用release-safety原21项发布工具测试及现在18项调度/源核对回归全部通过，未增加依赖。两修改Python文件Pyflakes与git diff --check通过；Pyflakes解释器提示检查脚本原有docstring的\s无效转义SyntaxWarning，不影响退出码，本次未顺手调整。证据/tmp/crm-quote-source-fix-20261104/，含修前失败、两profile完整日志、quote-todo/tooling日志及本轮前哈希。
+- 本轮仅改检查脚本、其回归文件及本记录；业务文件、原有业务测试断言、共用清单/入口/隔离保护与工作区其它补丁SHA256均与本轮开始一致。未跑全量pytest/数据库回归、前端构建、浏览器或远端CI；此次不改应用行为，静态检查通过不代表所有线上业务无缺陷。上轮残余的已知检查失败已消除，完成后暂停，不继续其它整理或发布。
+
+
+## 2026-11-04 本地与CI共用检查清单（方案A2完成，既有一项静态检查失败）
+
+- 用户选择方案A后进一步明确A2：共用检查项目，但保留本地与CI各自原有组内顺序。范围仅测试入口/清单/登记自检及必要调度回归，不修改业务代码、既有测试断言或依赖；保留先前Q-110工作区修改。本轮无提交、推送、SSH、部署、生产/演示库操作。
+- 新增ops/shared_checks.json：5组39项（发布工具与调度安全测试2项、后端基础静态3项、后端判据5项、前端静态16项、Node测试13项），每项只登记一次命令及local_order/ci_order。ops/shared_checks.py仅用标准库，校验两边顺序完整/不重复、目标文件存在、原本glob执行的ops/check_*.py没有漏登记。Node范围是原两入口已登记项目的并集；未顺手纳入原两入口都未登记的auth_epoch_401.test.mjs。新增清单项若缺任一profile顺序会失败，不默默跳过。
+- 两入口迁移：run_checks.sh按local顺序执行，既有项目相对顺序不变，原缺的8项Node追加；CI按原顺序执行，原缺的quote_todo/calendar_day两项Node及check_quote_todo_source追加。后端5项判据补在本地pytest之后、业务口径复位/接口回归之前；原CI发布安全测试保持原位置并作为共用组补入本地（后端可达性之后）。CI的构建、确认浏览器、dev server与普通UI冒烟仍原阶段；本地普通UI仍为--ui可选，未为统一清单强行加入本地构建/浏览器前置。pytest与接口套件本已覆盖，两入口原运行方式保留，ops/check_suites.txt不再新增改动。
+- 失败处理：本地继续执行后用临时失败名称文件接回既有FAILED数组，保持原最终失败退出与收尾清扫；CI共用组遇首个失败返回非零，当前run步骤保持原失败退出。原接口套件的两种日志/失败汇总实现、隔离库守卫、环境、端口/禁推送/调度等均保持。check_registered_files.py适配读取共用清单，保留入口直接引用及前端源文件引用检查；没有放宽既有文件存在校验。新增ops/test_shared_checks.py为调度层9项隔离回归，不修改业务测试断言。
+- 覆盖/顺序证据：两入口全部5组各调用一次，两profile各组成员及数量完全一致；将迁移前Node/前端静态的执行序列过滤对照，local/ci四条既有相对顺序全部保持。JSON往返解析、Python AST/Pyflakes、bash -n、git diff --check均通过；现有PyYAML可用，无新增依赖，解析比较确认CI job环境/配置/step数量及非run字段原样，接口回归循环/后端及UI环境段逐字一致；本地隔离守卫至可达性、1.8复位至接口/清扫/UI/最终汇总段逐字一致。
+- 实际安全检查：Node两profile均通过13文件/102项；后端基础3项及判据5项全部通过（登记自检165接口套件/13前端测试/13处源引用）；发布工具原21项与新增调度9项全部通过。前端静态两profile都执行16项，15通过、check_quote_todo_source.py失败。该原脚本直接运行仍exit1，报告cost_incomplete未登记SOURCE_GATES及“查看成本缺项”按钮文案未匹配两点；业务源码与该脚本均与本轮前SHA256一致，属于此次纳入CI后暴露的既有检查失败，不等同已复现业务故障。未改断言、跳过该项或顺手改报价UI，不宣称相关检查全绿或远端CI通过。
+- 流程保护验证：真实run_checks.sh分别以缺失环境、禁止8000端口、禁止crm_sales_agent库名执行，均在防呆阶段exit1，未到后端可达性、无连接请求。另在/tmp临时完整替身工作区运行正式shell/正式调度器：全成功exit0；前端静态失败与Node失败两场景均继续到pytest/后端判据/复位/接口/清扫并exit1，最终FAILED精确包含原失败名；--ui仅在指定时执行。所有命令目标均临时替身，无真实数据库或服务重启；初版夹具漏建frontend目录被新校验拒绝，补临时目录后3场景通过，没有修改实现迎合探针。
+- 证据/tmp/crm-shared-checks-20261104/：迁移前入口/顺序/文件哈希、两profile实际检查日志、失败名称文件、existing-quote-check.log、verify_flow.py及guard/flow日志。尚未运行全量pytest、真实PG/整套本地入口、前端构建、浏览器回归或远端GitHub CI；本次不改其实现且无隔离后端准备，不将替身流程测试冒称真实数据库端到端。剩余风险是现有quote-todo-source失败将使CI相应步骤失败，需用户决定另行调查；本轮仅统一清单，不处理其它整理项，完成后暂停。
+
+
+## 2026-11-04 代码整理与维护性审查（只审查，等待用户选择）
+
+- 用户明确要求全面了解、先列优化清单，本轮不修改任何代码，不增加功能、不改变业务/架构/数据库/API/技术栈；完成后暂停。先读取QUALITY_GOAL和进度近期记录，保留既有Q-110未提交修改及未跟踪专项脚本。本轮仅增加此审查记录，不实施整理、不提交/推送/部署，不访问生产或运行数据库回归。
+- 范围与方法：盘点backend/app的239个Python文件（95065行）、frontend/src的151个TS/TSX文件（48529行）、195个后端脚本及CI/本地检查入口；阅读路由注册、公共工具、主要大页面、报价/核价/目标统计及相关测试，做AST函数长度/重复函数体分析、前端重复片段检查与模块引用图。规模仅作定位，文件长本身不等于功能缺陷；不声称逐行或所有运行路径审计完成。ops/backups中历史源码快照不计作在线业务重复代码，该目录git跟踪文件数0，不建议直接清除证据备份。
+- 优先级1／已确认维护性问题：ops/run_checks.sh:81-87与.github/workflows/ci.yml:279-291分别维护Node测试命令。本地入口缺CI登记的guarded_button、workbench_confirmation、high_risk_confirmation、approval_rule_toggle_confirmation、dictionary_toggle_confirmation、sku_stop_cancel、sku_label、recycle_decision_confirmation八项；CI缺本地登记的calendar_day、quote_todo两项。确认浏览器测试另在CI执行。接口套件已有check_suites唯一清单，无需重造。建议仅统一前端检查清单/调用入口；保留本地/CI环境与隔离守卫、失败汇总差异。当前事实是覆盖不一致，不推断已有功能回归。
+- 优先级2／已确认重复：frontend/src/modules/product/ProductListPage.tsx:73与shared/components/CsvImportButtons.tsx:88的取token和CSV下载实现相同，均动态axios、blob URL、a标签下载/释放。建议只复用下载基础动作；产品直接导入与共用组件的预览确认流程不同，不合并业务流程，不借整理改变401、错误文案、下载文件名或请求方式。
+- 优先级3／已确认职责集中：SettingsPage.tsx2393行，PriceCenterPage.tsx2347行，QuoteDetailPage.tsx2211行；设置页同时管理用户/角色/部门、公海回收、任务规则、字典等多组独立状态和操作。建议先选设置页一个独立面板，在原业务目录内局部提取，保持路由/API/缓存键、权限、弹窗状态与请求时序。已有NotificationSettingsPanel等局部拆分可沿用，无需引入通用页面框架。静态确认测试按文件及mutation名称定位（ops/high_risk_confirmation.test.mjs），移动请求点时必须同步保持防绕过检查，不能删断言以求通过。
+- 优先级4／已确认复杂度集中：analytics/targets.py:182 targets_with_actuals653行，pricing/service.py:889 calculate_price555行，quote/service.py:2333 submit_for_approval478行；查询、范围、口径/快照、计算或审批副作用集中。建议后续按自然阶段提取同模块局部函数，每次只处理一条路径。金额/权限过滤/事务/锁序/校验次序与通知均高风险；必须先建立既有行为对照，不把排序调整、清历史、合并权限规则混入重构。
+- 优先级5／已确认文档过时：README七个本地Markdown目标不存在（08/09/10/11/13/15/19对应链接）；core/trade_mode.py头部仍描述配置放行/继承及ERP例外，与当前固定CNY函数和用户唯一人民币规则的说明不一致；shared/components/money.ts等仍有旧多币种背景说明。建议校正文档导航/当前约束说明，保留有用锁序/精度/历史兼容理由与业务决策证据，不据旧注释修改人民币规则或恢复外币功能。
+- 待调查，不批准删除：pricing/logistics.py:35 serialize_rate在应用源码中未找到调用（但存在__all__）；与pricing/service.py:150序列化函数体相同但两模块_f分别round到四位和直接float，不能仅凭AST相同判为等价。react.svg/vite.svg无源码引用，仅列候选；外币汇率/换算分支仍被旧回归脚本直接使用，是否可删除需穷尽调用/历史契约并由用户选择，发现实际入口绕过CNY应另记规则缺失，不新增外币展示/兼容/换汇。前端TS模块图从src/main.tsx及selftest/main.tsx出发覆盖全部151个TS/TSX文件，未发现可直接整文件删除的孤立模块；引用可达不代表每个导出/分支都有效。小型方言判定等重复收益低，暂不为几行代码引入公共封装。
+- 待调查／低优先级：oxlint src退出0但报React Effect同步setState、依赖及组件混合导出等警告。对象URL生命周期/弹窗初始化等有实际用途，警告不等于功能Bug，不机械删除Effect或补依赖；实际性能与轮询问题需要单独运行证据。没有证据支持本轮架构重写、统一CRUD框架或全项目类型/抽象改造。
+- 验证：frontend/node_modules/.bin/tsc -p tsconfig.app.json --noEmit --incremental false通过，backend/.venv/bin/python -m pyflakes app通过，前端oxlint仅警告；上述均本机静态、无数据库/网络。未重跑pytest/完整构建/浏览器/PG/生产，不把此前1670项结果当成本轮重跑结果。下一步：向用户交付优先清单，建议先统一检查入口，再处理小范围下载重复，随后按需拆一个设置面板；等待明确选择，禁止自行进入修改阶段。
+
+
+## 2026-11-01 Q-110来源创建订单/打样精确输入（用户批准，本地修复验证完成）
+
+- 上轮已按用户选择完成联合调查，实际浏览器与PG证实共用输入的数量丢0.001；本轮用户明确选择“两个入口一起改为精确输入（推荐）”。授权包括共用创建数量及仅订单模式单价去加减箭头，打样默认1、来源原值不改，先本地修复测试、不部署；QUALITY_GOAL同步。此前既有草稿编辑页全部有效修改保留。
+- Q-110/P2最小补齐：SampleFromSourceModal的Draft.quantity/单价改为string/string|null，订单默认直接继承来源精确文本、打样默认'1'；数量/单价Input用decimal输入提示，onChange和POST直接保留原文，空单价仍null、显式'0'仍零。正数/有限判据仍用于禁用和原提示，Number仅用于判据、不写回状态/提交。原采购数量不再转浮点，复用既有草稿编辑页此次提至shared/number-input.ts的formatQuantityText字符串分组格式函数。Sample创建API数量类型兼容原number和string；不改后台模型/接口存储/锁/权限/CNY/请求键、无依赖/迁移/历史清洗。数量三位/单价四位约束仍由正式后台拒绝，不静默四舍五入。
+- 永久浏览器回归加入ops/confirmation_browser_smoke.mjs：真实报价页分别打开订单/打样弹窗；订单默认9999999999999.999/0.0001直接提交文本，打样默认'1'、原OA标记true且不发送单价；两模式无数字箭头，原采购量千分位仍显示正确.999；模拟500后原内容与请求键完全不变再试，改输入才换键。订单编辑0.001及999999999999.9999单价、清空价/null、零价；打样手动极值及1.250均原文提交；两模式空/字母/零/负数量均禁用并保留原提示。聚焦browser-green.log两PASS/exit0，captured.json保留实际body；新增夹具首次忘导入writeFileSync，只在保存捕获时报ReferenceError，browser.log保留，修正探针导入后重跑，未更改应用迎合探针。
+- 新增登记check_source_quantity_precision真实本机PG专项：合成合法CNY报价与明细，正常JWT/正式GET预览/POST创建。订单五组（极大三位量/小四位价、最小量/极大四位价、普通1.250/123.4567、空价、零价），打样四组（默认1、极大量、普通1.250、最小0.001），独立SQL数量/单价精确、来源快照及原报价不变；同键再试同ID，内容冲突409、超小数位/非法或非正数量400且该业务完整快照不变，订单create审计exact正确。询价另覆盖原数量未知与极大数量×订单/打样四场景，正式预览保留None或精确量，未核价仍None，手填/打样默认数量可精确保存且原需求不改。api-green.log共13场景PASS/exit0；只用localhost55441/crm_iso_analytics_20261030_test，禁推送/调度/Stream，打样请求显式use_dingtalk=False，无真实OA或外部发送。
+- 将聚焦浏览器捕获的订单5次/打样4次请求逐项回放正式PG API，仅替换测试来源/明细ID和映射请求键、关闭外部OA；精确量/价、空零、失败重试相同ID均通过，再跑询价四对照，api-captured-green.log共13PASS/exit0。不称浏览器直连PG端到端，也不把模拟500等同真实网络故障；默认1及0.001为原规则，非本轮新增业务阈值。
+- 完整前端TypeScript+生产构建通过，既有lottie/chunk等构建警告保留；完整浏览器full-browser.log exit0，含已有Q-110编辑页和本轮两创建模式PASS。完整后端1670 passed in16.87s（新增永久PG脚本而非新增pytest用例，不虚增数目），pyflakes/node --check/git diff --check通过。证据ops/backups/source-precision-fix-20261101/；后续只增加PG询价/捕获验证与质量记录，无应用代码变化，不重复构建和全量测试。
+- 当前Q-110既有编辑页及两个创建模式修复均在本地未提交/推送/部署；线上应用仍此前已核实9d13165，本轮无新SSH/生产变更。未重算历史已丢精度数量，未穷尽所有打样后续编辑/OA/导出/转订单及其它价格入口；询价正式API已测，本轮浏览器针对报价入口共享组件，未声称询价页面全流程实测。此项输入体验不再待决策，部署仍未获本项批准，长期质量目标保持未完成。下一步可查来源创建后的后续生命周期，避免把所有数量链路都视为已修复。
+
+## 2026-11-01 Q-110来源创建订单/打样联合调查（调查完成，共用控件待决定）
+
+- 用户明确选择“订单草稿与打样一起调查后再决定”，本轮只调查，不将此前既有草稿编辑页输入授权扩大到共用SampleFromSourceModal。上节订单创建红例保留；本轮补打样默认值、手动极大值、普通值、真实持久化与原来源保护，未修改共用组件或其它应用文件。
+- 调用链差异已确认：订单模式默认Number(original_quantity)，无需手动编辑便可能把来源9999999999999.999提交为.998；打样模式默认1，未继承采购数量，这个默认行为正常。两模式数量均使用InputNumber和Number转换；打样手动输入同一合法最大三位数量后，真实浏览器捕获POST /samples/from-source数量.998。两模式“原采购数量”说明还经Number显示为9,999,999,999,999.998，仅显示错误不代表来源被改写。打样没有单价输入，不把订单单价风险推广到打样。
+- 独立headless浏览器运行当前本地构建，正式报价详情打开申请打样，共用组件未改，预览内存响应来自前轮真实来源API。默认输入显示1.000、实际body数量1；手动最大值真实body.998，严格期望.999的browser-quantity-red.log失败，sample-bodies.json保留。browser-controls.log另验证默认1、同一极值错误、原数量显示及手动1.250提交1.25正常，exit0；后者显式检查当前错误以确认行为，不能称修复已绿。最初两次夹具分别错把显示1.000预期为1、错找“申请打样”确认按钮（实际“建立打样申请”），browser.log/browser-red.log保留；只纠正探针选择器/格式判据，未改应用掩盖错误。
+- 仅本机55441/crm_iso_analytics_20261030_test，禁推送/调度/Stream，合成CNY客户/报价/明细，正常admin JWT、正式GET /samples/source和POST /samples/from-source、独立SQL。将浏览器捕获的默认1和错误.998依次交真实API（替换测试来源/明细ID、新请求键，显式use_dingtalk=False避免后续OA流程），HTTP200且SQL实际分别1.000/.998；原quote_items.quantity及每条sample_items.original_quantity均仍.999。直接精确字符串.999对照实际可保存.999，1.250普通对照亦准确，api.log四PASS/exit0。证明前端输入已先丢精度，后端Decimal存储本身能承接正确值。没有真实钉钉审批调用，不称打样OA全流程、真实生产角色或浏览器直连PG端到端验证。
+- 证据ops/backups/source-order-sample-review-20261101/。本轮不新增问题编号，归Q-110同根因来源数量路径；未调查齐所有询价/打样编辑/转单/导出数量路径，也未补测订单来源单价极值，不能宣称这些均无问题。前轮只读线上9d13165后端同码证据保留，本轮没有生产造数或重新验证全量线上资源。
+- 联合建议：两个模式的数量统一改精确文本输入、去加减箭头；仅订单模式有单价，同样保持精确文本。保留打样默认1、订单继承原量、来源只读、现有三位数量/四位单价限制、权限及请求防重。收益是避免创建阶段已丢尾数且两模式操作一致；代价是打样也不能再用加减箭头，需键盘输入。保持现状可保留箭头，但上述极大合法值错误持续存在；仅订单改动则打样手动极值仍有风险。按AGENTS.md的体验取舍要求，等待具体方案决定后才实施。
+- 本轮只有质量文档更新与忽略目录调查证据，原Q-110编辑页有效改动完整保留。未提交/推送/部署，线上仍9d13165；无新应用修改故不重复上轮1670项/构建全量检查。浏览器/server/profile已finally清理，隔离PG正常停止，git diff --check通过。长期目标未完成；本轮联合调查完成，共用控件修复待决定，后续独立审查不受此选择阻塞。
+
+## 2026-11-01 Q-110同类补查：从来源创建订单草稿也会改错默认数量（已复现，待输入体验选择）
+
+- 上轮Q-110既有草稿编辑页修复获用户明确批准/完整后端与浏览器通过为实质进展。本轮重读目标原文/质量文件/工作区，验证其收尾明确未覆盖的SampleFromSourceModal订单创建模式，不把编辑页修复误称全部创建入口已覆盖，不扩大先前输入体验选择到共用打样流程。
+- backend.sample.sources.load_source原采购数量str(Decimal)正确，order.drafts.preview继承来源并以字符串给单价；共用前端useEffect却对mode=order默认数量Number(original_quantity)、单价Number(unit_price)，输入仍InputNumber，提交draft.quantity。故创建前就可能丢0.001，与Q-110同属“准备草稿精确值穿过浮点后持久化”根因，不新编问题编号制造数量。
+- 本机55441/crm_iso_analytics_20261030_test，禁推送/调度/Stream，正常admin JWT/正式API/真实PG；ORM随机客户/合法CNY报价版本及quantity9999999999999.999、price0.0001完整成本明细。正式GET /order-drafts/source?quote_version_id返回original_quantity精确.999；浏览器相同默认Number后POST /order-drafts实际200，SQL新草稿quantity.998，原quote_items.quantity仍.999。api-derived-red.log先由相同Number等价值验证；api-red.log再次使用浏览器真实捕获quantity，只替换本机来源/明细ID及请求键，证明实际持久化影响，不是仅静态Number演示。
+- 隔离headless浏览器运行当前已验证构建（含Q-110编辑页补丁、共用创建弹窗未改），source.json来自正式预览响应，用内存API在真实报价页打开“按此版本建订单草稿”，不改数量直接确认，捕获POST quantity数字.998，browser-red.log/browser-body.json。模拟POST故意500保留界面/捕获，不称浏览器与PG直连；随后上述捕获值回放真实PG。原报价无变化，也不是实际下单/发货。
+- 初次ORM漏QuoteVersion.created_at，建夹具即NOT NULL失败，initial-fixture.log保留；补与模型约定一致的时间后才真正复现，未修改应用或放宽断言。只读SSH当前9d13165，两来源后端文件哈希与该Git基线一致，server-readonly.log；本地共用modal无修改。没有在生产创建草稿/改报价，未声称本轮重新验全量线上前端资源。
+- 当前方案取舍：推荐仅mode=order的数量/单价改为精确字符串文本输入、去加减箭头，保留来源原数量/来源报价、正数与3/4位校验、请求键和打样模式既有操作；会使“订单草稿创建”与“打样”同弹窗内的数量控件按模式不同。另一方向先把打样也完整调查，再单独决定共用模式是否统一改，范围/验证更大。已向用户提出本次具体选择，未擅自改共用组件；Q-110编辑页已批准修复仍完整保留，不回滚也不将问题判断当方案授权。
+- 证据ops/backups/order-draft-source-precision-20261101/，红例均按预期失败、留有真实HTTP200/SQL差异；隔离PG正常停止、浏览器/profile/server正常finally清理。无新应用修改/重复永久测试或1670项/构建，git diff --check通过；未提交/推送/部署。当前Q-110既有编辑修复本地待发布，创建入口本节待决定；线上仍9d13165，原其它待选择不变，长期目标active未完成。等待本项决定期间仍可推进独立审查，不能将该局部选择当全目标blocked。
+
+## 2026-11-01 Q-110订单草稿仅改备注会改写极大数量（用户批准，本地修复完成）
+
+- 上轮应收保存失败真实PG四场景为实质进展。本轮恢复目标原文/质量文件/工作区，按CNY路径检查草稿/继承；已有固定ensure_currency_allowed闸门及历史继承边界记录，未静态推测新外币漏洞。转而在drafts.detail发现quantity/unit_price只返回float，OrderDraftsPage拷贝该值整份提交，编辑InputNumber又Number转换，存在新的持久化精度链，不重复Q-109正式发货排批。
+- Q-110/P2修前：仅本机55441/crm_iso_analytics_20261030_test，合成CNY订单准备草稿/明细（ORM合法Numeric16,3数量9999999999999.999、单价0.0001，不是正式订单），正常admin JWT/正式GET返回数量9999999999999.998。按真实页面仅改顶层备注后整份PATCH，HTTP200，独立SQL数量确实由.999变.998，api-red.log；不是只显示问题，也未对生产数据操作。再用已发布953eea2包解出资源/本机mock正式GET数据，独立浏览器只改备注保存，真实捕获PATCH同.998，browser-red.log/browser-body.json。
+- 只读SSH当前DEPLOYED_COMMIT9d13165，drafts.py SHA与本地修前一致；953到9d的OrderDraftsPage源码无差异，故旧包浏览器证据对应同一草稿页面实现，server-readonly.log。最初尝试解/tmp的9d发布包已被系统清理而失败，未据缺包重新部署；使用留存的953资源并核实该页面源码无变化，不冒称本轮已重新核验线上该页所有资源。
+- 输入组件需要取舍：为全程保留精确字符串，向用户明确提出以数字文本输入替换数量/单价InputNumber、去加减箭头，现有三位数量/四位单价校验保留。用户明确选择“改为精确输入，去掉加减箭头（推荐）”，先本地验证不部署；QUALITY_GOAL已同步。没有把先前发货发布批准当成本项输入体验选择。
+- 修复：drafts.detail保留旧数字字段、补quantity_exact/unit_price_exact字符串（None仍None，显式0仍0.0000）；API类型兼容原数字/字符串并声明exact字段；OrderDraftsPage初始化优先exact后沿原整份提交契约直接发送字符串，两个文本Input用decimal输入提示、去箭头和Number转换。原采购数量显示用BigInt分组/字符串小数去尾零，保持普通千分位格式而不改尾数。权限、修订号、保存/确认/文档流程、CNY、后台Numeric限制及历史源值不改，不新增依赖/DB/锁/查询。
+- 新增登记check_order_draft_precision，真实隔离PG五场景：最大三位数量、最大四位单价、1.250/123.4567正常、未核价None、明确零；GET exact/只改备注PATCH/SQL与更新审计exact保留原值，revision精确前进，重复旧revision409全状态不变；USD400及数量四位/单价五位400都保持草稿/明细完整快照，现有人民币及精度校验未松动。正式保存审计含exact新字段是补充信息，原数字兼容保留。api-green.log及api-captured-green.log五PASS/exit0，后者使用浏览器捕获精确请求值验证SQL。
+- 聚焦真实前端绿例数量输入/只改备注请求均.999、价格0.0001且无数字stepper，browser-green.log；永久ops/confirmation_browser_smoke.mjs新增草稿内存API夹具/场景，检查exact初值/原数量千分位、只改备注、改小数量及极大单价、空单价None与零字符串分开，四次真实页面请求均精确字符串。完整full-browser.log包含新增PASS且exit0；浏览器/mockAPI与真实PG分别验证，不冒称生产账号端到端。
+- 前端TypeScript+生产构建通过（既有lottie eval等警告保持）；完整后端1670 passed in18.64s，新永久回归为PG脚本/浏览器，不虚增pytest数。pyflakes/node语法/git diff --check通过；证据ops/backups/order-draft-precision-20261101/。浏览器/server/profile清理，隔离PG已停止。初次/tmp9d缺包发生于浏览器夹具创建前，不是应用失败。
+- 当前仅Q-110本地应用修改，未提交推送部署，线上仍9d13165，历史草稿不重算。边界：读取/修改既有准备草稿与上述精度/修订/CNY，不含草稿从询价/报价正式创建或转正式订单/生成文件完整生命周期。收尾反查发现SampleFromSourceModal共用order/sample创建弹窗仍有Number数量转换，此为相邻待调查线索，未实测持久化影响/未擅自改共用打样输入体验；下一轮先验证此入口与source preview原数量链，不能将本项完成扩大为所有草稿创建路径已修。Q-096/Q-069/Q-075及审批辅助字段原状态保持，长期目标active未完成。
+
+## 2026-11-01 已收款应收金额修改、重平衡与失败重试补验（未发现新缺陷）
+
+- 上轮自动通知到期重试/状态统计验证为实质进展。本轮重读目标原文/质量文件/工作区；最初选应收删除，核对2026-10-29/30四组真实锁等待已充分覆盖，转未覆盖的修改金额写后失败与提交回执不明，而非重复删除或新增金额口径。
+- 仅本机55441/crm_iso_analytics_20261030_test，正常admin JWT/正式ASGI/PG，显式隔离runner和合成JWT/专用文件目录，禁推送/调度/Stream，无真实外部投递。本机ORM随机CNY200.02订单/客户，正式API建100.01应收、登记并财务确认100.01；随后正式PATCH分别改大为200.02或改小为50.00。已有设计允许应收调整及超收待分配，不擅自将其改为拒绝或新限制。
+- 两金额×两故障四场景：最终receivable_plan:update审计前先真实flush，SQL确认新金额及partial/paid已经写入，注入RuntimeError500；另一类AsyncSession.commit先真实提交再一次抛错500。第一类独立SQL订单/应收/回款/分配/跟单节点/本期审计六类完整to_jsonb与基线完全相同，恢复钩子后正式重试成功；第二类500后已提交状态保留且update审计1，正常重试再记一次合法update审计、不改变已确认回款本金/状态。
+- 最终大额应收partial、分配100.01/待分配0，收款节点actual_date空；小额应收paid、分配50/待分配50.01，收款节点仍已完成。finance-summary精确字段实际到账100.01、已分配及待分配与SQL一致。提交回执不明后重试，订单/应收/回款/跟单节点完整值不变，自动分配全部业务字段（payment_id/plan_id/amount/source/created_by）与首次提交相同，无新增金额或不同归属。
+- 首版探针对提交重试要求自动分配主键/时间也不变，initial-allocation-identity.log断言失败；源码rebalance_order_allocations原本明确删除并重建auto行，不是稳定行ID幂等契约，未据此报告重复记账。进一步全字段比较发现模型还有updated_at，initial-allocation-fields.log及最终allocation comparison明确变化仅时间。最终只将id/created_at/updated_at作为既有重建元信息区别，保留全部业务字段严格比对及SQL总量/回款完整值/审计次数/节点实际日期断言；没有修改应用以制造通过。重建ID在result.log明确记录，不宣称所有关联行字节完全相同。
+- 证据ops/backups/receivable-update-failure-20261101/probe.py/run.py/result.log，最终四PASS/exit0，含刻意故障栈；钩子finally恢复，PG已正常停止，git diff --check通过。没有新确认Bug/应用修改/永久镜像测试，不重复1670项/前端构建/浏览器/CI/SSH，不修改生产数据/历史存档或提交推送部署，当前仅质量进度文档变化。
+- 边界：管理员、一计划/一已确认自动分配回款、两方向金额、指定两类进程故障；不含人工分配受保护路径/多期复杂并发、真实数据库断网或生产角色UI。已有人工归属及删除锁竞争证据不扩大成全部财务锁图验证；本轮已完成保存一致性场景，应转其它独立风险链，长期目标active未完成，Q-096/Q-069/Q-075及审批辅助字段原状态保持，线上仍9d13165。
+
+## 2026-11-01 自动通知重试成功状态与失败统计补验（未确认可见故障）
+
+- 上轮通知并发/人工补投真实PG验证为实质进展。本轮恢复目标原文/质量文件/工作区，查其明确未覆盖的自动到期重试成功后状态/旧错误一致性，不重复人工补投（人工排队会清旧错误）。保留上一轮质量记录，线上应用仍9d13165，无新部署授权。
+- 为避免include_failed全局扫描触碰旧隔离夹具，新建本机55441专用crm_iso_notification_auto_20261101_test空库，正式alembic upgrade head成功，migrate.log；本轮不使用生产/演示库，不清任何既有库。独立runner显式本机数据库/合成JWT/专用文件路径、禁调度Stream/钉钉；先将WeCom单例替为进程内Fake.send_text_card才开启本进程虚假应用配置和推送，不创建真实网络客户端。
+- 合成一接收人/三通知：failed且次数1到期，failed且次数1未来一小时，failed且次数3已达上限；retry配置本专用库enabled/3/[5,30,120]。实际dispatch_pending(include_failed=True)仅尝试到期1条并成功，SQL该行status sent、sent_at非空、attempts2、next_retry空；其余两行完整to_jsonb不变。再次相同扫描attempted0、三行完整值不变且替身发送总次数仍1，未误重发成功、未到期或次数耗尽记录。
+- 实际router.serialize成功行输出已投递/can_redispatchFalse/redispatch_hintNone；delivery_failure_summary真实SQL sent1/failed2/pending0/retrying0，准确排除已成功行。确认wecom_error仍为上次RuntimeError文本，自动成功分支未清除它；但NotificationBell只在failed/skipped渲染错误、仅can_redispatch时显示补投和提示，sent显示已投递，静态调用链不支持“页面同时已投递和投递失败”的初始怀疑。不把数据库辅助字段残留直接当已确认业务故障，也不据此主动清历史错误（其是否应保留需先有契约/用途证据）。
+- 证据ops/backups/notification-auto-status-20261101/probe.py/run.py/migrate.log/result.log，成功状态字段/真实汇总/最终PASS，exit0；正常脚本finally恢复所有临时配置/单例，隔离PG已停止。仅实际服务/SQL/序列化及前端源码判据，本轮未操作浏览器/正式通知HTTP路由/真实企微，不将源码阅读写成端到端实测。
+- 无确认新Bug/应用修改/永久镜像测试，不重复1670项/构建/CI或SSH；git diff --check通过。未提交推送部署，当前仅QUALITY_PROGRESS文档修改；长期目标active未完成，Q-096/Q-069/Q-075及审批辅助字段原调查状态保持。通知当前人工/自动普通成功状态已有独立证据，应转其它高风险链路，避免围绕旧错误字段反复跑同一场景；日报、真实发送成功后提交不明/进程终止等仍不宣称完成。
+
+## 2026-11-01 通知并发投递、单条失败隔离及人工补投补验（未发现新缺陷）
+
+- 上轮已实时核实本地/GitHub/Gitee同b47b6b5、服务器应用9d13165且只差质量文档，提供了当前状态证据。本轮恢复长期目标原文/质量文件/工作区，按用户active继续审查；不将本轮续查当作新生产部署授权。原应用补丁均已上线，本轮从干净工作区开始。
+- 既有check_notification_retry及retry_e2e已经覆盖入选谓词/退避/上限、首次拒绝到成功，历史已检查SKIP LOCKED实现；本轮新增真实PG两并发投递协程与混合失败/未绑定/成功、指定单条人工补投组合，不仅重读源码宣称通过。
+- 仅本机55441/crm_iso_analytics_20261030_test，合成两用户/四通知、only_ids严格本次四ID，业务事件为空，验证普通通知投递而非客户动态可见性。进程内Fake.send_text_card替换单例后才临时开启本进程合成企微配置/推送；无真实HTTP客户端/企微请求，不修改持久配置。首协程真实查询锁住四行，暂停于首个替身发送；第二协程3秒内返回attempted0，首发送调用仍1次、独立SQL完整快照未变。放行后首行注入RuntimeError，后续两行成功/未绑定一行skipped，结果attempted4/sent2/skipped1/failed1。
+- 独立SQL四行状态依次failed/sent/skipped/sent，尝试次数1/1/0/1；失败sent_at空且有next_retry_at及错误，两成功有sent_at，未绑定sent_at空且原因明确。逐字段只允许五个投递状态/错误/次数/下次时间/发送时间变化，通知业务内容/已读等不变。再次dispatch同四ID返回attempted0，三次发送调用总数不变，证明人工/worker重复指定ID不会重发成功或失败终态行。
+- 调用既有requeue_for_redispatch只选首失败ID，返回原ID/1条、状态pending且次数归零；替身恢复正常后dispatch仅首ID成功，最终首行sent/attempts1/error空/next_retry空，其余三行完整快照与上一结果一致、总替身发送4次，首标题仅两次。不新增通知行或重复其它成功/未绑定通知；此为服务层+真实PG，不冒称正式路由/浏览器或真实外部消息投递。
+- 证据ops/backups/notification-dispatch-concurrent-20261101/probe.py/run.py/result.log，两PASS/exit0。旧临时run-fresh依赖的/tmp/crm-local-e2e-20261027/env.json已被系统清理，首次运行在导入业务代码前失败，initial-runner.log保留；改为本轮明确本机隔离URL及合成JWT/专用文件路径的独立runner，未恢复/读取真实secret，不转用生产数据库。所有临时配置/单例在finally恢复，协程限时收尾，PG正常停止。
+- 无新确认Bug/应用修改、未新增重复永久测试/重复1670项/构建/浏览器/远端CI或SSH，git diff --check通过，仅更新质量进度。边界：单实例两协程、普通通知、进程内发送结果替身；不含进程kill或发送成功后commit结果不明、真正网络超时、日报合并、自动到期重试最终错误文案、业务事件权限、全系统锁图/大规模性能。下一步可查自动重试成功后的状态/错误文案一致性或独立通知路径，不重复本轮并发模板；Q-096/Q-069/Q-075及审批辅助标记原状态保持，长期目标active未完成。
+
 ## 2026-10-31 Q-108/Q-109发布完成（服务器核实、完整CI及线上验收通过）
 
 - 用户本轮“确定服务器有一样的问题就修复部署”已落实，仅当前已修复两项：企微成员清单/客户分页异常响应不再假成功；发货数量输入提交/明细及汇总显示保持十进制精度。审批辅助标记仍待调查，Q-096/Q-069/Q-075原选择未变，未夹带新策略或历史清洗。

@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, InputNumber, Popconfirm, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Popconfirm, Select, Table, TextArea, Toast } from '@douyinfe/semi-ui'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import BlockedHint from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
 import { blockedToastText } from '../../shared/components/blocked-hint-reasons'
 import { usePermissions } from '../../shared/hooks/permissions'
+import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { confirmOrderDraft, generateOrderDraftDocument, getOrderDraft, listOrderDrafts, updateOrderDraft, type OrderDraft, type OrderDraftLine } from '../../shared/api/order'
 import { listQuotes } from '../../shared/api/quote'
 import { downloadBizDoc, listBizDocs } from '../../shared/api/bizdoc'
+import { formatQuantityText } from '../../shared/number-input'
 import { newRequestKey } from '../../shared/api/requestKey'
 import { getPublicConfig } from '../../shared/api/settings'
 
@@ -27,6 +29,8 @@ export default function OrderDraftsPage() {
   const configQuery = useQuery({ queryKey: ['public-config'], queryFn: getPublicConfig })
   const exportEnabled = (configQuery.data?.trade_mode ?? 'domestic') !== 'domestic'
   const query = useQuery({ queryKey: ['order-draft', draftId], queryFn: () => getOrderDraft(draftId), enabled: !!id, refetchOnWindowFocus: false, refetchOnReconnect: false })
+  // 页签标题带草稿号，避免多个「订单草稿详情」分不清
+  useTabLabel(id && query.data ? `草稿 #${draftId}` : null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const list = useQuery({ queryKey: ['order-drafts', page, pageSize], queryFn: () => listOrderDrafts({ page, page_size: pageSize }), enabled: !id })
@@ -35,7 +39,7 @@ export default function OrderDraftsPage() {
   const [versionId, setVersionId] = useState<number | undefined>()
   const [dirty, setDirty] = useState(false)
   useEffect(() => { if (query.data) {
-    setRows(query.data.items.map(i => ({ ...i })))
+    setRows(query.data.items.map(i => ({ ...i, quantity: i.quantity_exact ?? String(i.quantity), unit_price: i.unit_price_exact ?? (i.unit_price == null ? null : String(i.unit_price)) })))
     setForm({ currency: query.data.currency, delivery_date: query.data.delivery_date ?? '', payment_terms: query.data.payment_terms ?? '', remark: query.data.remark ?? '' })
     setDirty(false)
   } }, [query.data])
@@ -97,9 +101,9 @@ export default function OrderDraftsPage() {
   return <div className="page-container"><PageHeader title="订单草稿" subtitle="草稿不代表客户已下单，不进入生产、不生成应收、不计成交" extra={<Link to="/order-drafts">全部草稿</Link>} />
     <SectionCard title="来源与本次明细"><p>来源：{draft.source_context.no} V{draft.source_context.version} · 草稿修订 {draft.revision} · 币种 {draft.currency}</p>
       {rows.map((row, index) => <div key={row.id} style={{ borderTop: '1px solid var(--crm-border)', padding: '12px 0' }}>
-        <b>{row.name}</b><p>原采购数量：{row.source_snapshot.original_quantity == null ? '未记录' : Number(row.source_snapshot.original_quantity).toLocaleString('zh-CN')}</p>
-        <div style={{ display: 'flex', gap: 16 }}>本次数量：<InputNumber min={0.001} precision={3} value={row.quantity} disabled={!editable} onChange={v => patch(index, { quantity: Number(v) })} />
-          单价：<InputNumber min={0} precision={4} value={row.unit_price ?? undefined} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' || v == null ? null : Number(v) })} /></div>
+        <b>{row.name}</b><p>原采购数量：{row.source_snapshot.original_quantity == null ? '未记录' : formatQuantityText(row.source_snapshot.original_quantity)}</p>
+        <div style={{ display: 'flex', gap: 16 }}>本次数量：<Input aria-label="草稿数量" inputMode="decimal" value={String(row.quantity)} disabled={!editable} onChange={v => patch(index, { quantity: v })} />
+          单价：<Input aria-label="草稿单价" inputMode="decimal" value={row.unit_price == null ? '' : String(row.unit_price)} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} /></div>
         <p>本次规格</p><TextArea value={row.specification ?? ''} disabled={!editable} onChange={v => patch(index, { specification: v })} />
         {(row.specification ?? '') !== (row.source_snapshot.specification ?? '') && <p>原规格：{row.source_snapshot.specification || '未记录'}</p>}
         <p>本次备注</p><TextArea value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />

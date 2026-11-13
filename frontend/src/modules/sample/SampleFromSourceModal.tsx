@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Checkbox, InputNumber, Modal, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Checkbox, Input, Modal, TextArea, Toast } from '@douyinfe/semi-ui'
 import { createOrderDraft, getOrderDraftSource } from '../../shared/api/order'
 import { createSampleFromSource, getSampleSource, type SampleSourceRef } from '../../shared/api/sample'
+import { formatQuantityText } from '../../shared/number-input'
 import { newRequestKey } from '../../shared/api/requestKey'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 
-type Draft = { selected: boolean; quantity: number; specification: string; remark: string; unit_price: number | null }
+type Draft = { selected: boolean; quantity: string; specification: string; remark: string; unit_price: string | null }
 
 /**
  * 从询价 / 报价版本建订单草稿或打样申请。
@@ -37,7 +38,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
   const query = useQuery({ queryKey: ['source-preview', mode, source], queryFn: () => mode === 'order' ? getOrderDraftSource(source) : getSampleSource(source), retry: false, refetchOnWindowFocus: false })
   useEffect(() => {
     if (query.data) setDrafts(Object.fromEntries(query.data.items.map(row => [row.source_item_id, {
-      selected: true, quantity: mode === 'sample' ? 1 : (row.original_quantity == null ? NaN : Number(row.original_quantity)), unit_price: row.unit_price == null ? null : Number(row.unit_price), specification: row.specification ?? '', remark: row.remark ?? '',
+      selected: true, quantity: mode === 'sample' ? '1' : (row.original_quantity ?? ''), unit_price: row.unit_price ?? null, specification: row.specification ?? '', remark: row.remark ?? '',
     }])))
   }, [query.data, mode])
   const mutation = useMutation<{ id: number }, Error, void>({
@@ -69,7 +70,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
   const rowsWithDraft = rows.map(row => ({ row, draft: drafts[row.source_item_id] })).filter(({ draft }) => Boolean(draft))
   const selected = rowsWithDraft.filter(({ draft }) => draft.selected)
   /** 没填数量的行（来源没记数量时就是这种）。行内与页脚用的是**同一个判据**。 */
-  const quantityMissing = selected.filter(({ draft }) => !Number.isFinite(draft.quantity) || !(draft.quantity > 0))
+  const quantityMissing = selected.filter(({ draft }) => !Number.isFinite(Number(draft.quantity)) || !(Number(draft.quantity) > 0))
   const actionText = mode === 'order' ? '建立订单草稿' : '建立打样申请'
   const quantityFieldText = mode === 'order' ? '本次下单数量' : '本次样品数量'
   // 两条「一条明细都没有」的说法分工不同，不要混：短句进页脚清单，长句在正文里。
@@ -141,15 +142,15 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
         <div>{noRowsDetail}</div>
       </div>}
       {rowsWithDraft.map(({ row, draft }) => {
-        const missing = draft.selected && (!Number.isFinite(draft.quantity) || !(draft.quantity > 0))
+        const missing = draft.selected && (!Number.isFinite(Number(draft.quantity)) || !(Number(draft.quantity) > 0))
         const quantityId = `source-quantity-${mode}-${row.source_item_id}`
         return <div key={row.source_item_id} style={{ borderTop: '1px solid var(--crm-border)', padding: '12px 0' }}>
           <Checkbox checked={draft.selected} disabled={mutation.isPending} onChange={e => change(row.source_item_id, { selected: Boolean(e.target.checked) })}>{row.name}</Checkbox>
-          <p>原采购数量：{row.original_quantity == null ? '未记录' : Number(row.original_quantity).toLocaleString('zh-CN')}</p>
-          <div>{quantityFieldText}：<InputNumber id={quantityId} min={0.001} precision={3} value={Number.isFinite(draft.quantity) ? draft.quantity : undefined}
+          <p>原采购数量：{row.original_quantity == null ? '未记录' : formatQuantityText(row.original_quantity)}</p>
+          <div>{quantityFieldText}：<Input id={quantityId} inputMode="decimal" value={draft.quantity}
             placeholder={row.original_quantity == null ? '来源未记录，请填写' : undefined}
             aria-invalid={missing || undefined} aria-describedby={missing ? `${quantityId}-required` : undefined}
-            disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { quantity: Number(v) })} /></div>
+            disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { quantity: v })} /></div>
           {/* 行内提示：数量为空时数字框就是一个空白框，只说「必填」不够 ——
               要说清为什么空（来源未记录），以及不填就走不下去。 */}
           {missing && <p id={`${quantityId}-required`} className="blocked-hint" style={{ marginTop: 8 }}>
@@ -157,7 +158,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
               ? `来源没有记录原采购数量，请填写${quantityFieldText}（必须大于 0）后再${actionText}。`
               : `请填写${quantityFieldText}（必须大于 0）后再${actionText}。`}
           </p>}
-          {mode === 'order' && <div style={{ marginTop: 8 }}>草稿单价：<InputNumber min={0} precision={4} value={draft.unit_price ?? undefined} placeholder="未核价" disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { unit_price: v === '' || v == null ? null : Number(v) })} /></div>}
+          {mode === 'order' && <div style={{ marginTop: 8 }}>草稿单价：<Input aria-label="草稿单价" inputMode="decimal" value={draft.unit_price ?? ''} placeholder="未核价" disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { unit_price: v === '' ? null : v })} /></div>}
           <p>本次规格</p><TextArea value={draft.specification} disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { specification: v })} />
           {draft.specification !== (row.specification ?? '') && <p>原规格：{row.specification || '未记录'}</p>}
           <p>本次备注</p><TextArea value={draft.remark} disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { remark: v })} />

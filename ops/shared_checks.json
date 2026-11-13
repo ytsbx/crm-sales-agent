@@ -1,0 +1,74 @@
+{
+  "_instructions": "本地与CI共用检查项目；local_order和ci_order分别保留组内顺序。新增检查必须同时填写两边顺序。构建、浏览器、pytest和隔离数据库阶段由各入口管理；接口套件继续使用ops/check_suites.txt。",
+  "groups": {
+    "release-safety": {
+      "cwd": {"local": ".", "ci": "."},
+      "kind": "python",
+      "checks": [
+        {"name": "release_safety", "args": ["-m", "unittest", "discover", "-s", "ops/deploy", "-p", "test_release.py", "-v"], "local_order": 1, "ci_order": 1},
+        {"name": "shared_check_runner", "args": ["-m", "unittest", "discover", "-s", "ops", "-p", "test_shared_checks.py", "-v"], "local_order": 2, "ci_order": 2}
+      ]
+    },
+    "backend-static": {
+      "cwd": {"local": "backend", "ci": "backend"},
+      "kind": "python",
+      "checks": [
+        {"name": "pyflakes", "args": ["-m", "pyflakes", "app"], "local_order": 1, "ci_order": 1},
+        {"name": "check_model_attrs", "args": ["scripts/check_model_attrs.py"], "local_order": 2, "ci_order": 2},
+        {"name": "check_permissions", "args": ["scripts/check_permissions.py"], "local_order": 3, "ci_order": 3}
+      ]
+    },
+    "backend-guards": {
+      "cwd": {"local": "backend", "ci": "backend"},
+      "kind": "python",
+      "checks": [
+        {"name": "check_registered_files.py", "args": ["scripts/check_registered_files.py"], "local_order": 1, "ci_order": 1},
+        {"name": "check_output_criteria.py", "args": ["scripts/check_output_criteria.py"], "local_order": 2, "ci_order": 2},
+        {"name": "check_soft_delete_filters.py", "args": ["scripts/check_soft_delete_filters.py"], "local_order": 3, "ci_order": 3},
+        {"name": "check_stats_data_scope.py", "args": ["scripts/check_stats_data_scope.py"], "local_order": 4, "ci_order": 4},
+        {"name": "check_query_joins.py", "args": ["scripts/check_query_joins.py"], "local_order": 5, "ci_order": 5}
+      ]
+    },
+    "frontend-static": {
+      "cwd": {"local": "frontend", "ci": "frontend"},
+      "kind": "python",
+      "checks": [
+        {"name": "check_action_labels.py", "args": ["{root}/ops/check_action_labels.py"], "local_order": 1, "ci_order": 3},
+        {"name": "check_agent_analysis_labels.py", "args": ["{root}/ops/check_agent_analysis_labels.py"], "local_order": 2, "ci_order": 7},
+        {"name": "check_audit_labels.py", "args": ["{root}/ops/check_audit_labels.py"], "local_order": 3, "ci_order": 4},
+        {"name": "check_copy_coupled_assertions.py", "args": ["{root}/ops/check_copy_coupled_assertions.py"], "local_order": 4, "ci_order": 14},
+        {"name": "check_disabled_hint.py", "args": ["{root}/ops/check_disabled_hint.py"], "local_order": 5, "ci_order": 1},
+        {"name": "check_enum_labels.py", "args": ["{root}/ops/check_enum_labels.py"], "local_order": 6, "ci_order": 8},
+        {"name": "check_foreign_currency_rejected.py", "args": ["{root}/ops/check_foreign_currency_rejected.py"], "local_order": 7, "ci_order": 15},
+        {"name": "check_form_required_marks.py", "args": ["{root}/ops/check_form_required_marks.py"], "local_order": 8, "ci_order": 2},
+        {"name": "check_frontend_utc_dates.py", "args": ["{root}/ops/check_frontend_utc_dates.py"], "local_order": 9, "ci_order": 6},
+        {"name": "check_hash_ids.py", "args": ["{root}/ops/check_hash_ids.py"], "local_order": 10, "ci_order": 11},
+        {"name": "check_milestone_lock.py", "args": ["{root}/ops/check_milestone_lock.py"], "local_order": 11, "ci_order": 12},
+        {"name": "check_permission_groups.py", "args": ["{root}/ops/check_permission_groups.py"], "local_order": 12, "ci_order": 10},
+        {"name": "check_persisted_user_shape.py", "args": ["{root}/ops/check_persisted_user_shape.py"], "local_order": 13, "ci_order": 9},
+        {"name": "check_quote_todo_source.py", "args": ["{root}/ops/check_quote_todo_source.py"], "local_order": 14, "ci_order": 16},
+        {"name": "check_setting_labels.py", "args": ["{root}/ops/check_setting_labels.py"], "local_order": 15, "ci_order": 5},
+        {"name": "check_ui_text_no_markdown.py", "args": ["{root}/ops/check_ui_text_no_markdown.py"], "local_order": 16, "ci_order": 13}
+      ]
+    },
+    "frontend-tests": {
+      "cwd": {"local": "backend", "ci": "frontend"},
+      "kind": "node",
+      "checks": [
+        {"name": "request_key.test.mjs", "args": ["--test", "{root}/ops/request_key.test.mjs"], "local_order": 1, "ci_order": 1},
+        {"name": "blocked_hint.test.mjs", "args": ["--test", "{root}/ops/blocked_hint.test.mjs"], "local_order": 2, "ci_order": 2},
+        {"name": "quote_todo.test.mjs", "args": ["--test", "{root}/ops/quote_todo.test.mjs"], "local_order": 3, "ci_order": 12},
+        {"name": "calendar_day.test.mjs", "args": ["--test", "{root}/ops/calendar_day.test.mjs"], "local_order": 4, "ci_order": 13},
+        {"name": "payment_allocation.test.mjs", "args": ["--test", "{root}/ops/payment_allocation.test.mjs"], "local_order": 5, "ci_order": 4},
+        {"name": "guarded_button.test.mjs", "args": ["--test", "{root}/ops/guarded_button.test.mjs"], "local_order": 6, "ci_order": 3},
+        {"name": "workbench_confirmation.test.mjs", "args": ["--test", "{root}/ops/workbench_confirmation.test.mjs"], "local_order": 7, "ci_order": 5},
+        {"name": "high_risk_confirmation.test.mjs", "args": ["--test", "{root}/ops/high_risk_confirmation.test.mjs"], "local_order": 8, "ci_order": 6},
+        {"name": "approval_rule_toggle_confirmation.test.mjs", "args": ["--test", "{root}/ops/approval_rule_toggle_confirmation.test.mjs"], "local_order": 9, "ci_order": 7},
+        {"name": "dictionary_toggle_confirmation.test.mjs", "args": ["--test", "{root}/ops/dictionary_toggle_confirmation.test.mjs"], "local_order": 10, "ci_order": 8},
+        {"name": "sku_stop_cancel.test.mjs", "args": ["--test", "{root}/ops/sku_stop_cancel.test.mjs"], "local_order": 11, "ci_order": 9},
+        {"name": "sku_label.test.mjs", "args": ["--test", "{root}/ops/sku_label.test.mjs"], "local_order": 12, "ci_order": 10},
+        {"name": "recycle_decision_confirmation.test.mjs", "args": ["--test", "{root}/ops/recycle_decision_confirmation.test.mjs"], "local_order": 13, "ci_order": 11}
+      ]
+    }
+  }
+}

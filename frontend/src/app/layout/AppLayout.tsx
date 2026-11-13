@@ -54,7 +54,7 @@ export default function AppLayout() {
   // 从前直接隐藏入口，用户分不清"没权限"和"没做这个功能"。
   const menuGroups = visibleMenuGroups(user)
   const detailMatch = location.pathname.match(
-    /^\/(customers|products|opportunities|quotes|orders|order-drafts)\/\d+$/,
+    /^\/(customers|products|opportunities|quotes|orders|order-drafts|samples)\/\d+$/,
   )
   const detailLabel = detailMatch
     ? {
@@ -64,24 +64,39 @@ export default function AppLayout() {
         quotes: '报价详情',
         orders: '订单详情',
         'order-drafts': '订单草稿详情',
+        samples: '样品详情',
       }[detailMatch[1]]
     : null
+  // 只把字符串放进依赖；`detailMatch` 是每次渲染新建的数组，放进依赖会触发循环。
+  const detailParent = detailMatch ? `/${detailMatch[1]}` : null
 
   useEffect(() => {
     // 路由变化即收起抽屉：手机上点完菜单立刻看到页面
     setSiderOpen(false)
-    if (detailLabel) {
-      openTab({ key: location.pathname, label: detailLabel, path: location.pathname })
+    if (detailLabel && detailParent) {
+      openTab({
+        key: location.pathname,
+        label: detailLabel,
+        path: location.pathname,
+        kind: 'detail',
+        parentKey: detailParent,
+      })
     } else if (EXTRA_TABS[location.pathname]) {
       openTab({
         key: location.pathname,
         label: EXTRA_TABS[location.pathname],
         path: location.pathname,
+        kind: 'module',
       })
     } else if (currentMenu) {
-      openTab({ key: currentMenu.path, label: currentMenu.label, path: currentMenu.path })
+      openTab({
+        key: currentMenu.path,
+        label: currentMenu.label,
+        path: currentMenu.path,
+        kind: 'module',
+      })
     }
-  }, [location.pathname, currentMenu, detailLabel, openTab])
+  }, [location.pathname, currentMenu, detailLabel, detailParent, openTab])
 
   const handleLogout = () => {
     // 先取 token、再清状态：清完之后请求拦截器就取不到它了，

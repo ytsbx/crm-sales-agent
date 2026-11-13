@@ -45,6 +45,10 @@ SUITES = REPO / "ops" / "check_suites.txt"
 CI_YML = REPO / ".github" / "workflows" / "ci.yml"
 RUN_CHECKS = REPO / "ops" / "run_checks.sh"
 
+# 共用清单是新增检查的登记入口；仍检查旧入口中的直接引用，避免漏查。
+sys.path.insert(0, str(REPO / "ops"))
+from shared_checks import load_manifest
+
 
 def _strip_comments(text: str) -> str:
     """去掉整行注释 —— 否则注释里举的例子会被当成真实登记项。
@@ -66,8 +70,9 @@ def registered_suites() -> list[str]:
 
 
 def registered_frontend_tests() -> list[str]:
-    """`ci.yml` 与 `ops/run_checks.sh` 里登记的前端单测文件名。"""
-    found: set[str] = set()
+    """共用清单及入口直接引用的前端单测文件名。"""
+    groups = load_manifest()
+    found: set[str] = {check['name'] for check in groups['frontend-tests']['checks']}
     for path, pattern in (
         (CI_YML, r"ops/([A-Za-z0-9_.-]+\.test\.mjs)"),
         (RUN_CHECKS, r"\$\{?SCRIPT_DIR\}?/([A-Za-z0-9_.-]+\.test\.mjs)"),
@@ -114,12 +119,16 @@ def main() -> int:
                 f"但 backend/scripts/{name}.py 不在仓库里（脚本还在别人工作区？）"
             )
 
-    tests = registered_frontend_tests()
+    try:
+        tests = registered_frontend_tests()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        missing.append(f"共用检查清单无效：{exc}")
+        tests = []
     for name in tests:
         target = REPO / "ops" / name
         if not target.exists():
             missing.append(
-                f"前端单测登记了 ops/{name}（ci.yml 或 ops/run_checks.sh），"
+                f"前端单测登记了 ops/{name}（shared_checks.json 或检查入口），"
                 "但文件不在仓库里"
             )
 
