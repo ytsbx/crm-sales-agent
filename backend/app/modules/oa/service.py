@@ -164,15 +164,12 @@ async def _build_payload(
         "contract_classify_cascade": "月结协议" if doc.doc_type == "monthly" else "销售合同",
         "contract_sign_mode": "纸质签署",
         "contract_sign_note": "由 CRM 发起，审批过程在 OA 完成",
-        "contract_biz_id": doc.doc_no,
-        "contract_operation_status": "待签署",
-        "contract_performance_status": "未开始",
         "contract_files": [attachment_id],
         "contract_mine_info": [{"mine_company_name": our_company}],
         "contract_opposite_info": [{"opposite_company_name": counterparty_name}],
     }
-    if amount is not None:
-        fields["contract_amount"] = f"{amount:.2f}"
+    # 钉钉模板「合同总额（元）」为必填：无金额时按 0.00 发送，避免留空被拒
+    fields["contract_amount"] = f"{amount:.2f}" if amount is not None else "0.00"
     if doc.effective_date:
         fields["contract_period_start_date"] = doc.effective_date.isoformat()
     if doc.expiry_date:
