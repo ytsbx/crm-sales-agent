@@ -124,6 +124,7 @@ export default function DocumentsPage() {
     mutationFn: async () => {
       if (!uploadForm.customer_id) throw new Error('请选择合同所属客户')
       if (!contractOrigin) throw new Error('请选择合同来源：我方合同或客户合同')
+      if (!contractTitle.trim()) throw new Error('请填写合同名称')
       let sourceId = originalFileId
       if (!originalFile) throw new Error('请上传合同 Word 或 PDF 原文件')
       if (!sourceId) {
@@ -521,6 +522,7 @@ export default function DocumentsPage() {
         maskClosable={!uploadMutation.isPending}
         okText="上传合同"
         cancelText="取消"
+        okButtonProps={{ disabled: !contractTitle.trim() }}
         width={560}
       >
         <div style={{ display: 'grid', gap: 12 }}>
@@ -567,7 +569,7 @@ export default function DocumentsPage() {
             </div>
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>合同名称</div>
+            <div style={{ marginBottom: 4 }}>合同名称<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
           </div>
           <div>
