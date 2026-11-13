@@ -575,44 +575,48 @@ export default function DocumentsPage() {
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>我方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
-            <Input value={ourCompany} onChange={setOurCompany} placeholder="请填写我方签约主体全称" />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>对方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
-            <Input value={counterparty} onChange={setCounterparty} placeholder="请填写对方签约主体全称" />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
-            <Select
-              value={numberRuleType}
-              onChange={(v) => setNumberRuleType(v as 'manual' | 'rule')}
-              optionList={[
-                { value: 'manual', label: '手动填写' },
-                { value: 'rule', label: '选择已有合同编号规则' },
-              ]}
-            />
-          </div>
-          {numberRuleType === 'manual' ? (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+  <div style={{ marginBottom: 4 }}>我方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+              <Input value={ourCompany} onChange={setOurCompany} placeholder="请填写我方签约主体全称" />
+            </div>
             <div>
-              <div style={{ marginBottom: 4 }}>合同编号</div>
-              <Input
-                value={contractNumber}
-                onChange={setContractNumber}
-                placeholder="选填；留空则使用 CRM 自动生成的编号"
+              <div style={{ marginBottom: 4 }}>对方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+              <Input value={counterparty} onChange={setCounterparty} placeholder="请填写对方签约主体全称" />
+            </div>
+          </div>
+          <div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+  <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+              <Select
+                value={numberRuleType}
+                onChange={(v) => setNumberRuleType(v as 'manual' | 'rule')}
+                optionList={[
+                  { value: 'manual', label: '手动填写' },
+                  { value: 'rule', label: '选择已有合同编号规则' },
+                ]}
               />
             </div>
-          ) : (
-            <div>
-              <div style={{ marginBottom: 4 }}>合同编号规则<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
-              <Input value="系统默认规则" readOnly placeholder="系统默认规则" />
-              <div style={{ fontSize: 12, color: '#8a94a6', marginTop: 4 }}>
-                系统将根据所选规则自动生成合同编号
+            {numberRuleType === 'manual' ? (
+              <div>
+                <div style={{ marginBottom: 4 }}>合同编号</div>
+                <Input
+                  value={contractNumber}
+                  onChange={setContractNumber}
+                  placeholder="选填；留空则使用 CRM 自动生成的编号"
+                />
               </div>
-            </div>
-          )}
-          <div>
-            <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
+            ) : (
+              <div>
+                <div style={{ marginBottom: 4 }}>合同编号规则<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+                <Input value="系统默认规则" readOnly placeholder="系统默认规则" />
+                <div style={{ fontSize: 12, color: '#8a94a6', marginTop: 4 }}>
+                  系统将根据所选规则自动生成合同编号
+                </div>
+              </div>
+            )}
+            <div>
+          </div>
+          <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
             <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => {
               const file = e.target.files?.[0] || null
               setOriginalFile(file); setOriginalFileId(null)
@@ -621,81 +625,85 @@ export default function DocumentsPage() {
             {originalFile && <div>{originalFile.name}</div>}
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder={uploadForm.customer_id ? '这张客户下的正式订单' : '先选客户'}
-              filter={optionMatcher}
-              disabled={!uploadForm.customer_id}
-              loading={genOrdersQuery.isFetching}
-              value={uploadForm.order_id}
-              onChange={(v) => setUploadForm({ ...uploadForm, order_id: v as number })}
-              optionList={genOrders.map((o) => ({
-                value: o.id,
-                label: `${o.order_no} · ¥${o.total_amount}`,
-              }))}
-            />
-            {selectedOrder?.quote_version_id && (
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-                这张订单是照某个报价版本转过来的，关联时会自动采用那一版（不用再选）
-              </div>
-            )}
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>关联报价（可选）</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder={uploadForm.customer_id ? '这张客户下的报价单' : '先选客户'}
-              filter={optionMatcher}
-              disabled={!uploadForm.customer_id}
-              loading={genQuotesQuery.isFetching}
-              value={uploadForm.quote_id}
-              onChange={(v) =>
-                setUploadForm({
-                  ...uploadForm,
-                  quote_id: v as number,
-                  // 换报价就清掉版本：那是上一张报价的版本号，挂到新报价上必然对不上
-                  quote_version_id: undefined,
-                })
-              }
-              optionList={genQuotes.map((q) => ({
-                value: q.id,
-                label: `${q.quote_no}（${q.status_label}）`,
-              }))}
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder={uploadForm.quote_id ? '选具体版本' : '先选报价单'}
-              disabled={!uploadForm.quote_id}
-              loading={genVersionsQuery.isFetching}
-              value={uploadForm.quote_version_id}
-              onChange={(v) => setUploadForm({ ...uploadForm, quote_version_id: v as number })}
-              optionList={genVersions.map((v) => ({
-                value: v.id,
-                label: `V${v.version_no} · ¥${v.total_amount}`,
-              }))}
-            />
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-              合同会钉死这一版：报价之后出 V2、V3 都不会改动已保存的合同。
-              不选也能先备条款，但登记签署前必须补上正式依据。
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+  <div style={{ marginBottom: 4 }}>关联订单（可选）</div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={uploadForm.customer_id ? '这张客户下的正式订单' : '先选客户'}
+                filter={optionMatcher}
+                disabled={!uploadForm.customer_id}
+                loading={genOrdersQuery.isFetching}
+                value={uploadForm.order_id}
+                onChange={(v) => setUploadForm({ ...uploadForm, order_id: v as number })}
+                optionList={genOrders.map((o) => ({
+                  value: o.id,
+                  label: `${o.order_no} · ¥${o.total_amount}`,
+                }))}
+              />
+              {selectedOrder?.quote_version_id && (
+                <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                  这张订单是照某个报价版本转过来的，关联时会自动采用那一版（不用再选）
+                </div>
+              )}
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>关联报价（可选）</div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={uploadForm.customer_id ? '这张客户下的报价单' : '先选客户'}
+                filter={optionMatcher}
+                disabled={!uploadForm.customer_id}
+                loading={genQuotesQuery.isFetching}
+                value={uploadForm.quote_id}
+                onChange={(v) =>
+                  setUploadForm({
+                    ...uploadForm,
+                    quote_id: v as number,
+                    // 换报价就清掉版本：那是上一张报价的版本号，挂到新报价上必然对不上
+                    quote_version_id: undefined,
+                  })
+                }
+                optionList={genQuotes.map((q) => ({
+                  value: q.id,
+                  label: `${q.quote_no}（${q.status_label}）`,
+                }))}
+              />
             </div>
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>合同到期日（可选）</div>
-            <DatePicker
-              type="date"
-              format="yyyy-MM-dd"
-              showClear
-              style={{ width: '100%' }}
-              placeholder="选择到期日（可留空）"
-              value={uploadForm.expiry_date ? new Date(uploadForm.expiry_date) : undefined}
-              onChange={(_, dateStr) =>
-                setUploadForm({ ...uploadForm, expiry_date: (dateStr as string) || '' })
-              }
-            />
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+  <div style={{ marginBottom: 4 }}>报价版本（决定合同上的金额与条款）</div>
+              <Select
+                style={{ width: '100%' }}
+                placeholder={uploadForm.quote_id ? '选具体版本' : '先选报价单'}
+                disabled={!uploadForm.quote_id}
+                loading={genVersionsQuery.isFetching}
+                value={uploadForm.quote_version_id}
+                onChange={(v) => setUploadForm({ ...uploadForm, quote_version_id: v as number })}
+                optionList={genVersions.map((v) => ({
+                  value: v.id,
+                  label: `V${v.version_no} · ¥${v.total_amount}`,
+                }))}
+              />
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
+                合同会钉死这一版：报价之后出 V2、V3 都不会改动已保存的合同。
+                不选也能先备条款，但登记签署前必须补上正式依据。
+              </div>
+            </div>
+            <div>
+              <div style={{ marginBottom: 4 }}>合同到期日（可选）</div>
+              <DatePicker
+                type="date"
+                format="yyyy-MM-dd"
+                showClear
+                style={{ width: '100%' }}
+                placeholder="选择到期日（可留空）"
+                value={uploadForm.expiry_date ? new Date(uploadForm.expiry_date) : undefined}
+                onChange={(_, dateStr) =>
+                  setUploadForm({ ...uploadForm, expiry_date: (dateStr as string) || '' })
+                }
+              />
+            </div>
           </div>
         </div>
       </Modal>
