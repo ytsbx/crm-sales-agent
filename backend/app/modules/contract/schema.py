@@ -36,6 +36,9 @@ class DocumentCreate(BaseModel):
     #: 合同编号（钉钉表单里的“合同编号”）：经办人手动填写时用这个；
     #: 留空则沿用 CRM 自动生成的编号（doc_no）。
     contract_number: str | None = Field(default=None, max_length=64)
+    #: 签约主体（钉钉/OA 表单的“我方信息/对方信息”）：上传时由经办人填写
+    our_company: str | None = Field(default=None, max_length=200)
+    counterparty_name: str | None = Field(default=None, max_length=200)
     #: 钉钉/OA 表单的「合同编号生成方式」：manual=手动填写，rule=选择已有规则
     contract_number_rule_type: str | None = Field(default=None, max_length=32)
     #: 「选择已有规则」时的规则名（智能合同目前只提供“系统默认规则”）

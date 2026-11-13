@@ -47,6 +47,8 @@ export interface ContractAmendment {
 export interface ContractDocument {
   id: number
   doc_no: string
+  our_company?: string | null
+  counterparty_name?: string | null
   doc_type: string
   doc_type_label: string
   title: string
@@ -134,6 +136,8 @@ export function uploadContractDocument(payload: {
   quote_version_id?: number | null
   title?: string | null
   contract_number?: string | null
+  our_company?: string | null
+  counterparty_name?: string | null
   contract_number_rule_type?: 'manual' | 'rule' | null
   contract_number_rule_fix?: string | null
   expiry_date?: string | null

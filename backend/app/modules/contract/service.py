@@ -279,6 +279,8 @@ def serialize_document(
         "source_type": filled.get("_source_type", "crm_template"),
         "original_file_id": filled.get("_original_file_id"),
         "contract_origin": filled.get("_contract_origin"),
+        "our_company": filled.get("_our_company"),
+        "counterparty_name": filled.get("_counterparty_name"),
         "contract_origin_label": {"company": "我方合同", "customer": "客户合同"}.get(filled.get("_contract_origin"), "历史未标注"),
         "dingtalk_oa": filled.get("_dingtalk_oa"),
         "missing_fields": missing,
@@ -643,6 +645,10 @@ async def generate_document(
             filled["_contract_origin"] = payload.contract_origin
         if (payload.contract_number or "").strip():
             filled["_contract_number"] = payload.contract_number.strip()
+        if (payload.our_company or "").strip():
+            filled["_our_company"] = payload.our_company.strip()
+        if (payload.counterparty_name or "").strip():
+            filled["_counterparty_name"] = payload.counterparty_name.strip()
         if (payload.contract_number_rule_type or "").strip():
             filled["_contract_number_rule_type"] = payload.contract_number_rule_type.strip()
         if (payload.contract_number_rule_fix or "").strip():

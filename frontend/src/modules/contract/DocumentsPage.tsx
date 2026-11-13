@@ -90,6 +90,8 @@ export default function DocumentsPage() {
   const [contractTitle, setContractTitle] = useState('')
   const [contractNumber, setContractNumber] = useState('')
   const [numberRuleType, setNumberRuleType] = useState<'manual' | 'rule'>('manual')
+  const [ourCompany, setOurCompany] = useState('')
+  const [counterparty, setCounterparty] = useState('')
   const [contractOrigin, setContractOrigin] = useState<'company' | 'customer' | undefined>()
   const [uploadForm, setUploadForm] = useState({
     customer_id: undefined as number | undefined,
@@ -127,6 +129,8 @@ export default function DocumentsPage() {
       if (!uploadForm.customer_id) throw new Error('请选择合同所属客户')
       if (!contractOrigin) throw new Error('请选择合同来源：我方合同或客户合同')
       if (!contractTitle.trim()) throw new Error('请填写合同名称')
+      if (!ourCompany.trim()) throw new Error('请填写我方主体')
+      if (!counterparty.trim()) throw new Error('请填写对方主体')
       let sourceId = originalFileId
       if (!originalFile) throw new Error('请上传合同 Word 或 PDF 原文件')
       if (!sourceId) {
@@ -138,6 +142,8 @@ export default function DocumentsPage() {
         original_file_id: sourceId,
         contract_origin: contractOrigin,
         title: contractTitle.trim(),
+        our_company: ourCompany.trim(),
+        counterparty_name: counterparty.trim(),
         contract_number: numberRuleType === 'manual' ? (contractNumber.trim() || undefined) : undefined,
         contract_number_rule_type: numberRuleType,
         contract_number_rule_fix: numberRuleType === 'rule' ? '系统默认规则' : undefined,
@@ -186,10 +192,9 @@ export default function DocumentsPage() {
 
   const openOaStart = (record: ContractDocument) => {
     setOaStartTarget(record)
-    // 2026-11-13 用户明确：主体由经办人自己填，系统不自动带值。
-    // 合同抬头/客户只作为参考展示，输入框保持空，必须人工输入。
-    setOaOurCompany('')
-    setOaCounterparty('')
+    // 上传时已填写的我方/对方主体直接带出来（仍可修改）；没填过就留空让人工输入。
+    setOaOurCompany(record.our_company ?? '')
+    setOaCounterparty(record.counterparty_name ?? '')
   }
 
   const submitOaStart = () => {
@@ -527,7 +532,7 @@ export default function DocumentsPage() {
         maskClosable={!uploadMutation.isPending}
         okText="上传合同"
         cancelText="取消"
-        okButtonProps={{ disabled: !contractTitle.trim() }}
+        okButtonProps={{ disabled: !contractTitle.trim() || !ourCompany.trim() || !counterparty.trim() }}
         width={560}
       >
         <div style={{ display: 'grid', gap: 12 }}>
@@ -576,6 +581,14 @@ export default function DocumentsPage() {
           <div>
             <div style={{ marginBottom: 4 }}>合同名称<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>我方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+            <Input value={ourCompany} onChange={setOurCompany} placeholder="请填写我方签约主体全称" />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>对方主体<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+            <Input value={counterparty} onChange={setCounterparty} placeholder="请填写对方签约主体全称" />
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
