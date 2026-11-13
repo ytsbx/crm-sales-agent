@@ -174,8 +174,6 @@ export default function DocumentsPage() {
   })
 
   const [oaStartTarget, setOaStartTarget] = useState<ContractDocument | null>(null)
-  const [oaOurCompany, setOaOurCompany] = useState('')
-  const [oaCounterparty, setOaCounterparty] = useState('')
   const startOaMutation = useMutation({
     mutationFn: (vars: { id: number; our_company: string; counterparty_name: string }) =>
       startContractOaApproval(vars.id, {
@@ -192,24 +190,18 @@ export default function DocumentsPage() {
 
   const openOaStart = (record: ContractDocument) => {
     setOaStartTarget(record)
-    // 上传时已填写的我方/对方主体直接带出来（仍可修改）；没填过就留空让人工输入。
-    setOaOurCompany(record.our_company ?? '')
-    setOaCounterparty(record.counterparty_name ?? '')
   }
 
   const submitOaStart = () => {
     if (!oaStartTarget) return
-    const our = oaOurCompany.trim()
-    const other = oaCounterparty.trim()
+    // 主体在上传合同时已填并落库，这里不再让用户确认/修改
+    const our = (oaStartTarget.our_company ?? '').trim()
+    const other = (oaStartTarget.counterparty_name ?? '').trim()
     if (!our || !other) {
-      Toast.warning('请填写我方主体和对方主体后再提交')
+      Toast.warning('这份合同上传时没有填写主体，请重新上传或联系管理员补齐')
       return
     }
-    startOaMutation.mutate({
-      id: oaStartTarget.id,
-      our_company: our,
-      counterparty_name: other,
-    })
+    startOaMutation.mutate({ id: oaStartTarget.id, our_company: our, counterparty_name: other })
   }
 
   const openUploadModal = () => {
@@ -789,39 +781,6 @@ export default function DocumentsPage() {
         cancelText="取消"
       >
         <div style={{ display: 'grid', gap: 10 }}>
-          {oaStartTarget?.our_company && oaStartTarget?.counterparty_name ? (
-            <>
-              <div>
-                <div style={DETAIL_LABEL}>我方主体</div>
-                <div style={{ fontSize: 14 }}>{oaStartTarget.our_company}</div>
-              </div>
-              <div>
-                <div style={DETAIL_LABEL}>对方主体</div>
-                <div style={{ fontSize: 14 }}>{oaStartTarget.counterparty_name}</div>
-              </div>
-            </>
-          ) : (
-            <>
-              <div>
-                <div style={DETAIL_LABEL}>我方主体</div>
-                <Input
-                  value={oaOurCompany}
-                  onChange={setOaOurCompany}
-                  maxLength={200}
-                  placeholder="请填写我方签约主体全称"
-                />
-              </div>
-              <div>
-                <div style={DETAIL_LABEL}>对方主体</div>
-                <Input
-                  value={oaCounterparty}
-                  onChange={setOaCounterparty}
-                  maxLength={200}
-                  placeholder="请填写对方签约主体全称"
-                />
-              </div>
-            </>
-          )}
         </div>
       </Modal>
 
