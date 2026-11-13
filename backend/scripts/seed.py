@@ -1062,7 +1062,7 @@ async def seed() -> None:
                 {"text": settings_service.DEFAULT_DELIVERY_TERMS},
                 "报价单默认交货条件",
             ),
-            ("company_name", {"text": "曼德拉（示例，请替换为公司全称）"}, "报价单抬头公司名"),
+            ("company_name", {"text": "mandla（示例，请替换为公司全称）"}, "报价单抬头公司名"),
             ("default_target_margin", {"ratio": 0.3}, "无价格规则时的默认目标利润率（0.3=30%）"),
             ("default_min_margin", {"ratio": 0.15}, "角色未配价格权限时的最低利润率（0.15=15%）"),
             ("price_range_ratio", {"ratio": 0.04}, "核价建议区间的上下浮动比例（0.04=±4%）"),
