@@ -155,10 +155,12 @@ async def _build_payload(
     )
     fields: dict = {
         "contract_name": doc.title,
-        # 合同编号：经办人在上传时手动填写的优先，没填用 CRM 自动生成的编号
-        "contract_number": ((doc.filled_data or {}).get("_contract_number") or doc.doc_no),
+        # 合同编号：手动模式用经办人填的（没填用 CRM 编号）；规则模式由 OA 按规则生成，不回传编号
+        "contract_number": ((doc.filled_data or {}).get("_contract_number") or doc.doc_no)
+            if (doc.filled_data or {}).get("_contract_number_rule_type") != "rule" else "",
         "start_type": "上传文件发起",
-        "contract_number_rule_type": "手动填写",
+        "contract_number_rule_type": ("选择已有合同编号规则"
+            if (doc.filled_data or {}).get("_contract_number_rule_type") == "rule" else "手动填写"),
         "contract_amount_type": "无金额" if amount is None else "收入",
         "contract_term_type": "固定期限" if doc.expiry_date else "无固定期限",
         "contract_description": description,
@@ -171,6 +173,10 @@ async def _build_payload(
     }
     # 钉钉模板「合同总额（元）」为必填：无金额时按 0.00 发送，避免留空被拒
     fields["contract_amount"] = f"{amount:.2f}" if amount is not None else "0.00"
+    # 「合同编号规则」：选择已有规则时发规则名（智能合同目前只有“系统默认规则”）
+    if (doc.filled_data or {}).get("_contract_number_rule_type") == "rule":
+        fields["contract_number_rule_fix"] = ((doc.filled_data or {}).get("_contract_number_rule_fix")
+                                              or "系统默认规则")
     if doc.effective_date:
         fields["contract_period_start_date"] = doc.effective_date.isoformat()
     if doc.expiry_date:

@@ -89,6 +89,7 @@ export default function DocumentsPage() {
   const [originalFileId, setOriginalFileId] = useState<number | null>(null)
   const [contractTitle, setContractTitle] = useState('')
   const [contractNumber, setContractNumber] = useState('')
+  const [numberRuleType, setNumberRuleType] = useState<'manual' | 'rule'>('manual')
   const [contractOrigin, setContractOrigin] = useState<'company' | 'customer' | undefined>()
   const [uploadForm, setUploadForm] = useState({
     customer_id: undefined as number | undefined,
@@ -137,7 +138,9 @@ export default function DocumentsPage() {
         original_file_id: sourceId,
         contract_origin: contractOrigin,
         title: contractTitle.trim(),
-        contract_number: contractNumber.trim() || undefined,
+        contract_number: numberRuleType === 'manual' ? (contractNumber.trim() || undefined) : undefined,
+        contract_number_rule_type: numberRuleType,
+        contract_number_rule_fix: numberRuleType === 'rule' ? '系统默认规则' : undefined,
         customer_id: uploadForm.customer_id!,
         order_id: uploadForm.order_id ?? null,
         quote_id: uploadForm.quote_id ?? null,
@@ -575,13 +578,34 @@ export default function DocumentsPage() {
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>合同编号</div>
-            <Input
-              value={contractNumber}
-              onChange={setContractNumber}
-              placeholder="选填；留空则使用 CRM 自动生成的编号"
+            <div style={{ marginBottom: 4 }}>合同编号生成方式<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+            <Select
+              value={numberRuleType}
+              onChange={(v) => setNumberRuleType(v as 'manual' | 'rule')}
+              optionList={[
+                { value: 'manual', label: '手动填写' },
+                { value: 'rule', label: '选择已有合同编号规则' },
+              ]}
             />
           </div>
+          {numberRuleType === 'manual' ? (
+            <div>
+              <div style={{ marginBottom: 4 }}>合同编号</div>
+              <Input
+                value={contractNumber}
+                onChange={setContractNumber}
+                placeholder="选填；留空则使用 CRM 自动生成的编号"
+              />
+            </div>
+          ) : (
+            <div>
+              <div style={{ marginBottom: 4 }}>合同编号规则<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
+              <Input value="系统默认规则" readOnly placeholder="系统默认规则" />
+              <div style={{ fontSize: 12, color: '#8a94a6', marginTop: 4 }}>
+                系统将根据所选规则自动生成合同编号
+              </div>
+            </div>
+          )}
           <div>
             <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
             <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => {

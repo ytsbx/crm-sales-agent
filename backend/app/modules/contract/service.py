@@ -643,6 +643,10 @@ async def generate_document(
             filled["_contract_origin"] = payload.contract_origin
         if (payload.contract_number or "").strip():
             filled["_contract_number"] = payload.contract_number.strip()
+        if (payload.contract_number_rule_type or "").strip():
+            filled["_contract_number_rule_type"] = payload.contract_number_rule_type.strip()
+        if (payload.contract_number_rule_fix or "").strip():
+            filled["_contract_number_rule_fix"] = payload.contract_number_rule_fix.strip()
         content = "上传的合同原件，完整条款以随附原文件为准。"
     # 请求回显：**存客户端当初提交的原值**（2026-10-10 修 C4-06 的自动补全边界）。
     #

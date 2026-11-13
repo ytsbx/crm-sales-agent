@@ -36,6 +36,10 @@ class DocumentCreate(BaseModel):
     #: 合同编号（钉钉表单里的“合同编号”）：经办人手动填写时用这个；
     #: 留空则沿用 CRM 自动生成的编号（doc_no）。
     contract_number: str | None = Field(default=None, max_length=64)
+    #: 钉钉/OA 表单的「合同编号生成方式」：manual=手动填写，rule=选择已有规则
+    contract_number_rule_type: str | None = Field(default=None, max_length=32)
+    #: 「选择已有规则」时的规则名（智能合同目前只提供“系统默认规则”）
+    contract_number_rule_fix: str | None = Field(default=None, max_length=64)
     extra_fields: dict[str, str] = Field(default_factory=dict)
     expiry_date: date | None = None
     # 协议生效日。续签时必填（业务口径 2026-10-05）：只记到期日处理不了
