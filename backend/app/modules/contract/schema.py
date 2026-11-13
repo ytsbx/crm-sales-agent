@@ -33,6 +33,9 @@ class DocumentCreate(BaseModel):
     #: 原来完全不限长，传 201+ 字必撞列宽报 500（服务端拼的默认标题也会超，
     #: 那条由 `service.generate_document` 用 `fit_column` 收进列宽）。
     title: str | None = Field(default=None, max_length=200)
+    #: 合同编号（钉钉表单里的“合同编号”）：经办人手动填写时用这个；
+    #: 留空则沿用 CRM 自动生成的编号（doc_no）。
+    contract_number: str | None = Field(default=None, max_length=64)
     extra_fields: dict[str, str] = Field(default_factory=dict)
     expiry_date: date | None = None
     # 协议生效日。续签时必填（业务口径 2026-10-05）：只记到期日处理不了

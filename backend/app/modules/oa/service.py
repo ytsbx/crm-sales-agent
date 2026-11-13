@@ -155,7 +155,8 @@ async def _build_payload(
     )
     fields: dict = {
         "contract_name": doc.title,
-        "contract_number": doc.doc_no,
+        # 合同编号：经办人在上传时手动填写的优先，没填用 CRM 自动生成的编号
+        "contract_number": ((doc.filled_data or {}).get("_contract_number") or doc.doc_no),
         "start_type": "上传文件发起",
         "contract_number_rule_type": "手动填写",
         "contract_amount_type": "无金额" if amount is None else "收入",

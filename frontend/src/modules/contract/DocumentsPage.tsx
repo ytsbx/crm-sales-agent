@@ -88,6 +88,7 @@ export default function DocumentsPage() {
   const [originalFile, setOriginalFile] = useState<File | null>(null)
   const [originalFileId, setOriginalFileId] = useState<number | null>(null)
   const [contractTitle, setContractTitle] = useState('')
+  const [contractNumber, setContractNumber] = useState('')
   const [contractOrigin, setContractOrigin] = useState<'company' | 'customer' | undefined>()
   const [uploadForm, setUploadForm] = useState({
     customer_id: undefined as number | undefined,
@@ -135,7 +136,8 @@ export default function DocumentsPage() {
       return uploadContractDocument({
         original_file_id: sourceId,
         contract_origin: contractOrigin,
-        title: contractTitle.trim() || undefined,
+        title: contractTitle.trim(),
+        contract_number: contractNumber.trim() || undefined,
         customer_id: uploadForm.customer_id!,
         order_id: uploadForm.order_id ?? null,
         quote_id: uploadForm.quote_id ?? null,
@@ -571,6 +573,14 @@ export default function DocumentsPage() {
           <div>
             <div style={{ marginBottom: 4 }}>合同名称<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
             <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>合同编号</div>
+            <Input
+              value={contractNumber}
+              onChange={setContractNumber}
+              placeholder="选填；留空则使用 CRM 自动生成的编号"
+            />
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>

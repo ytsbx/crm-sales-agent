@@ -133,6 +133,7 @@ export function uploadContractDocument(payload: {
   quote_id?: number | null
   quote_version_id?: number | null
   title?: string | null
+  contract_number?: string | null
   expiry_date?: string | null
   effective_date?: string | null
   request_key?: string
