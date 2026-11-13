@@ -1,6 +1,7 @@
 import { formatMoney } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
+import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { cloneElement, useState, type ReactElement } from 'react'
 import SampleFromSourceModal from '../sample/SampleFromSourceModal'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -183,6 +184,8 @@ export default function QuoteDetailPage() {
     queryFn: () => getQuoteVersion(versionId!),
     enabled: Boolean(versionId),
   })
+  // 页签标题用报价单号，避免多个「报价详情」分不清
+  useTabLabel(detailQuery.data?.quote?.quote_no)
 
   const [draftVisible, setDraftVisible] = useState(false)
   const [sampleVisible, setSampleVisible] = useState(false)

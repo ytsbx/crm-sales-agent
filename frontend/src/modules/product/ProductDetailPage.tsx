@@ -1,4 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
+import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -179,6 +180,8 @@ export default function ProductDetailPage() {
     queryFn: () => getProduct(productId),
     enabled: Number.isFinite(productId),
   })
+  // 页签标题用产品名，而不是所有产品都叫「产品详情」
+  useTabLabel(productQuery.data?.name)
   const skuQuery = useQuery({
     queryKey: ['product-skus', productId],
     queryFn: () => listProductSkus(productId),

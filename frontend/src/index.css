@@ -628,18 +628,57 @@ a:not([href]) {
   background: var(--crm-bg);
   border-bottom: 1px solid var(--crm-surface-high);
   overflow-x: auto;
+  /* 页签多时用触控板/滚轮横向翻，不要露一条原生滚动条把整行撑高 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.tab-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .tab-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  max-width: 240px;
   padding: 6px 12px;
   border-radius: var(--crm-radius-sm) var(--crm-radius-sm) 0 0;
   font-size: 13px;
   color: var(--crm-text-2);
   background: var(--crm-surface-mid);
   cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+/* 详情页签：比模块入口小一号、底色更淡，并带一枚“详情”角标。
+   这样一眼能看出“这条是点进去的记录，不是一个模块”。 */
+.tab-chip.detail {
+  gap: 5px;
+  padding: 4px 9px;
+  margin-left: 2px;
+  border: 1px solid var(--crm-surface-high);
+  border-bottom: 0;
+  font-size: 12px;
+  color: var(--crm-text-3);
+  background: #f6f8fb;
+}
+
+.tab-kind {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--crm-surface-mid);
+  color: var(--crm-text-3);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -652,13 +691,67 @@ a:not([href]) {
   box-shadow: inset 0 2px 0 var(--crm-primary);
 }
 
+.tab-chip.detail.active {
+  color: var(--crm-primary);
+  font-weight: 500;
+  box-shadow: inset 0 2px 0 var(--crm-primary);
+}
+
 .tab-chip.active .tab-close {
   color: var(--crm-primary);
   opacity: 0.65;
 }
 
+.tab-chip.active .tab-kind {
+  background: color-mix(in srgb, var(--crm-primary) 14%, #ffffff);
+  color: var(--crm-primary);
+}
+
 .tab-close {
+  flex: 0 0 auto;
   color: var(--crm-text-3);
+  font-size: 11px;
+}
+
+/* “⋯”里的页签清单：模块/详情也分色，长标题省略 */
+.tab-menu-hint {
+  max-width: 240px;
+  padding: 4px 8px 6px;
+  color: var(--crm-text-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.tab-menu-kind {
+  display: inline-block;
+  min-width: 28px;
+  margin-right: 6px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--crm-surface-mid);
+  color: var(--crm-text-3);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.tab-menu-kind.detail {
+  background: #eef3fb;
+  color: var(--crm-primary);
+}
+
+.tab-menu-label {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.tab-menu-active {
+  margin-left: 6px;
+  color: var(--crm-primary);
   font-size: 11px;
 }
 

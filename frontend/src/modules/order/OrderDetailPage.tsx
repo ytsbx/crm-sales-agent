@@ -1,4 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
+import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useRef, useState, type CSSProperties } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -256,6 +257,8 @@ export default function OrderDetailPage() {
     queryFn: () => getOrder(orderId),
     enabled: Number.isFinite(orderId),
   })
+  // 页签标题用订单号，避免多个「订单详情」分不清
+  useTabLabel(orderQuery.data?.order_no)
   const itemsQuery = useQuery({
     queryKey: ['order-items', orderId],
     queryFn: () => listOrderItems(orderId),

@@ -1,5 +1,6 @@
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
+import { useTabLabel } from '../../shared/hooks/useTabLabel'
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -131,6 +132,8 @@ export default function OpportunityDetailPage() {
     queryFn: () => getOpportunity(opportunityId),
     enabled: Number.isFinite(opportunityId),
   })
+  // 页签标题用商机名，避免多个「商机详情」分不清
+  useTabLabel(opportunityQuery.data?.title)
   const itemsQuery = useQuery({
     queryKey: ['opportunity-items', opportunityId],
     queryFn: () => listItems(opportunityId),

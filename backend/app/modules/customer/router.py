@@ -270,10 +270,26 @@ async def update_customer(
 async def delete_customer(
     customer_id: int,
     request: Request,
-    user: CurrentUser = Depends(require_permission("customer:delete")),
+    user: CurrentUser = Depends(
+        require_permission("customer:delete", "customer:delete_own")
+    ),
     session: AsyncSession = Depends(get_db),
 ):
+    """软删客户（03-API §7、§42.1）。
+
+    权限分两档（2026-11-13 用户确认）：
+
+    - `customer:delete`：数据范围内可删（主管/管理员，沿用原口径）；
+    - `customer:delete_own`：只能删**负责人是自己**的客户（业务员）。
+      公海客户没有负责人，不在这档里 —— 不能因为"看得见公海"就把它们删了。
+
+    只置 `deleted_at`，名下联系人/商机/报价/订单/跟进一条都不删、也不改挂；
+    恢复仍在 `POST /customers/{id}/restore`（与删除同一档：`customer:delete` /
+    `customer:delete_own`）。
+    """
     customer = await svc.get_visible_customer(session, user, customer_id, for_update=True)
+    # 先判"这条能不能删"再取快照/写审计：越权的请求不该留下任何删除痕迹
+    svc.ensure_can_delete_customer(user, customer)
     before = svc.serialize_customer(customer)
     await svc.delete_customer(session, customer)
     await write_audit(
@@ -293,14 +309,18 @@ async def delete_customer(
 async def restore_customer(
     customer_id: int,
     request: Request,
-    user: CurrentUser = Depends(require_permission("customer:delete")),
+    user: CurrentUser = Depends(
+        require_permission("customer:delete", "customer:delete_own")
+    ),
     session: AsyncSession = Depends(get_db),
     payload: CustomerRestore | None = None,
 ):
     """恢复一个被**直接删除**的客户（03-API §42.2）。
 
-    与删除**共用同一把钥匙**（`customer:delete`）：谁删的谁能拾回来，不为它单开
-    权限码 —— 线索、产品那两个模块的恢复也都是复用已有码。
+    与删除**共用同一档钥匙**（`customer:delete`）：主管/管理员按数据范围恢复，
+    业务员凭 `customer:delete_own` 只能恢复**负责人是自己**的客户（2026-11-13
+    用户确认）。恢复按"归属"判，不按"谁删的"判：主管删掉的、负责人仍是本人的
+    客户，业务员可以捡回来；公海客户没有负责人，不在这档里。
 
     **但"顺手改归属"要多一把钥匙**（主人口径 2026-10-08）：传了 `owner_id` 就不再是
     "把客户捡回来"，而是一次**改派**——改派本来就归 `customer:assign` 管，这里跟着要。
@@ -324,6 +344,8 @@ async def restore_customer(
     if new_owner_id is not None:
         ensure_permission(user, "customer:assign")
     customer = await svc.lock_deleted_customer(session, user, customer_id)
+    # 先判"这条能不能恢复"再动数据/写审计：越权的请求不该留下任何恢复痕迹
+    svc.ensure_can_restore_customer(user, customer)
     before = svc.serialize_customer(customer)
     # 入参整个可以不传（恢复最常见的情形就是"归还原负责人"），
     # 所以 `payload` 有默认值 —— 不带 body 请求也能恢复，别逼调用方编一个空对象。

@@ -178,6 +178,17 @@ export function updateCustomer(id: number, payload: Partial<CustomerPayload>) {
   return api.patch<Customer>(`/customers/${id}`, payload)
 }
 
+/**
+ * 软删客户（03-API §7 `DELETE /customers/{id}`）。
+ *
+ * 只把客户本人置为已删除：名下的联系人/商机/报价/订单/跟进都保留、不改挂；
+ * 删完可在回收站恢复。权限分两档（后端判）：
+ * `customer:delete` 按数据范围删，`customer:delete_own` 只能删自己负责的。
+ */
+export function deleteCustomer(id: number) {
+  return api.delete<null>(`/customers/${id}`)
+}
+
 export function listContacts(customerId: number) {
   return api.get<Contact[]>(`/customers/${customerId}/contacts`)
 }
