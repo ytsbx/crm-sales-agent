@@ -1041,8 +1041,11 @@ export default function CustomerDetailPage() {
           // 不用淡紫 —— 整套系统主色是蓝，紫插进来会像另一个系统的模块。
           style={{
             marginTop: 16,
-            background: 'linear-gradient(90deg, rgba(31,95,214,0.10), rgba(31,95,214,0.03) 45%, transparent)',
-            borderLeft: '3px solid var(--crm-primary)',
+            // 紫 → 蓝的斜向渐变：紫色给「这是智能功能」的信号，
+            // 收到蓝色这一侧再淡出，和主色接上，不会像另一个系统的模块。
+            background:
+              'linear-gradient(135deg, rgba(124,58,237,0.10) 0%, rgba(31,95,214,0.07) 45%, rgba(31,95,214,0.01) 100%)',
+            borderLeft: '3px solid #7c3aed',
           }}
           extra={
             <>
