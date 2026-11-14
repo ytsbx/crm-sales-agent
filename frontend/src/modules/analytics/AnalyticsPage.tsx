@@ -7,6 +7,7 @@ import { formatWholeCny } from '../../shared/components/money'
 import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
+import GroupHead from '../../shared/components/SectionGroupHead'
 import EChart from '../../shared/components/charts/EChart'
 import DonutLegend from '../../shared/components/charts/DonutLegend'
 import {
@@ -95,32 +96,6 @@ function Card({
     >
       {children}
     </SectionCard>
-  )
-}
-
-/**
- * 分组标题：这六个分组从前只写在 JSX 注释里，界面上一个都看不见，
- * 于是 13 个指标 + 6 组图 + 8 张表成了一片等权平铺的卡片。
- * 现在把「这页分几块、先看哪块」直接写到界面上。
- * primary 只给最该先看的那一组（核心指标），用主色边条拉出主次。
- */
-function GroupHead({
-  index,
-  title,
-  note,
-  primary = false,
-}: {
-  index: string
-  title: string
-  note?: string
-  primary?: boolean
-}) {
-  return (
-    <div className={`section-group-head${primary ? ' primary' : ''}`}>
-      <span className="section-group-index">{index}</span>
-      <span className="section-group-title">{title}</span>
-      {note && <span className="section-group-note">{note}</span>}
-    </div>
   )
 }
 

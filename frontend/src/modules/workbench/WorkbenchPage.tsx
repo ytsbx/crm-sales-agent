@@ -23,6 +23,7 @@ import {
 } from '../../shared/api/analytics'
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
 import PageHeader from '../../shared/components/PageHeader'
+import GroupHead from '../../shared/components/SectionGroupHead'
 import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
 import EChart from '../../shared/components/charts/EChart'
@@ -259,8 +260,19 @@ export default function WorkbenchPage() {
         }
       />
 
+      <GroupHead
+        index="01"
+        title="今天要做什么"
+        note="先看要处理的数，再看下面的走势和安排"
+        primary
+      />
       {/* 6 张 KPI 卡：与列表页/分析页共用一套；数值保持黑色，颜色只给状态标签（主人选甲） */}
-      <KpiStrip items={cards} className="kpi-grid kpi-cols-6" tintValues={false} />
+      <KpiStrip
+        items={cards}
+        className="kpi-grid kpi-cols-6"
+        tintValues={false}
+        style={{ marginTop: 'var(--crm-space-2)' }}
+      />
 
       {/* PRD §4.2 主管视图：只有数据范围 ≥ 部门的人才会拿到 is_team_view */}
       {isTeamView && team && (
@@ -377,8 +389,9 @@ export default function WorkbenchPage() {
         </SectionCard>
       )}
 
+      <GroupHead index="02" title="业务走势" note="漏斗、趋势与最近动态" />
       {/* 漏斗 / 趋势 / 动态 */}
-      <div className="wb-tri-grid">
+      <div className="wb-tri-grid" style={{ marginTop: 'var(--crm-space-2)' }}>
         <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}>
             {/* 标题原本是「全链路销售转化漏斗」，但画的是**存量分布** ——
@@ -499,8 +512,9 @@ export default function WorkbenchPage() {
         </SectionCard>
       </div>
 
+      <GroupHead index="03" title="待办与安排" note="我的任务、重点商机、今日日程" />
       {/* 待办 / 重点商机 / 日程与 AI */}
-      <div className="wb-tri-grid" style={{ marginTop: 16 }}>
+      <div className="wb-tri-grid" style={{ marginTop: 'var(--crm-space-2)' }}>
         <SectionCard>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
             <span className="card-title">我的待办任务</span>
