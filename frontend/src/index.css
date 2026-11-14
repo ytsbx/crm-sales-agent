@@ -1177,6 +1177,16 @@ a:not([href]) {
   padding-top: 9px !important;
   padding-bottom: 9px !important;
 }
+/* 表体单元格一律单行 + 省略号。
+   组件库默认自动换行，列一多就会把长文本压成竖排：报价列表的「商机」列每行
+   只剩一两个字、行高被撑到 130px，一屏看不了四条。列表页要的是「能扫」，
+   要展开看全的走详情页。省略号配合单元格的 title 或列上的 ellipsis 使用。 */
+.semi-table-tbody .semi-table-row-cell {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 斑马纹：列多的时候隔行浅底比画满细线更好横向读 */
 .semi-table-tbody > .semi-table-row:nth-child(even) > .semi-table-row-cell {
   background: #f8fafe;
