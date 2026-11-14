@@ -165,7 +165,8 @@ export default function OpportunityListPage() {
         subtitle="客户需求逐条录入，后续核价与报价都以需求明细为输入"
       />
 
-      <div className="kpi-grid">
+      {/* 7 张阶段卡：4 列排成 4+3，比 auto-fill 的 5+2 平衡（第二行不会只剩两张） */}
+      <div className="kpi-grid kpi-cols-4">
         {(funnelQuery.data ?? [])
           .filter((row) => row.count > 0 || row.sequence <= 4)
           .map((row) => (

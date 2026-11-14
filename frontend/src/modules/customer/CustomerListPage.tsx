@@ -349,8 +349,12 @@ export default function CustomerListPage() {
     {
       title: '客户名称',
       dataIndex: 'name',
+      // 必须给宽度：其余 13 列全写了固定宽，客户名称这列没写就只剩几十像素，
+      // 公司全名会被压成三四行、把每行撑到 90px 高（实测「嘉兴汽/配60厂/【演示/造数】」）
+      width: 200,
+      ellipsis: true,
       render: (text: string, record: Customer) => (
-        <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/customers/${record.id}`)}>
+        <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/customers/${record.id}`)} title={text}>
           {text}
         </a>
       ),
@@ -591,7 +595,9 @@ export default function CustomerListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          empty={emptyText(query, '没有符合条件的客户')}
+          // 14 列在 850px 里本来就塞不下：宁可横向滚，也不要把每一列压到只能显示两个字
+          scroll={{ x: 1040 }}
+          empty={emptyText(query, '没有符合条件的客户', '换个筛选条件试试，或点右上角「新建客户」。')}
           rowSelection={{
             selectedRowKeys: selectedIds,
             onChange: (keys) => setSelectedIds((keys ?? []) as number[]),
