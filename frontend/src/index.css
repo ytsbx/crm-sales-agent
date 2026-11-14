@@ -191,6 +191,46 @@ a:not([href]) {
   color: var(--crm-text);
 }
 
+/* 分组标题：把「这页分几块」写到界面上，而不是只写在代码注释里。
+   组与组之间靠 32px 上留白拉开；组内间距仍由 Row / 卡片自己的 16px 负责。
+   primary 只给最该先看的一组，用主色边条拉出主次。 */
+.section-group-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--crm-space-2);
+  margin-top: var(--crm-space-6);
+  padding-left: 10px;
+  border-left: 3px solid var(--crm-surface-high);
+}
+.section-group-head.primary {
+  margin-top: 0;
+  border-left-color: var(--crm-primary);
+}
+.section-group-index {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-mid);
+  color: var(--crm-text-3);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.section-group-title {
+  font-size: var(--crm-font-card);
+  font-weight: 600;
+  color: var(--crm-text);
+}
+.section-group-note {
+  color: var(--crm-text-3);
+  font-size: 12px;
+}
+.section-group-head.primary .section-group-index {
+  background: var(--crm-primary-soft);
+  color: var(--crm-primary);
+}
+
 .toolbar {
   display: flex;
   gap: var(--crm-space-3);

@@ -98,6 +98,32 @@ function Card({
   )
 }
 
+/**
+ * 分组标题：这六个分组从前只写在 JSX 注释里，界面上一个都看不见，
+ * 于是 13 个指标 + 6 组图 + 8 张表成了一片等权平铺的卡片。
+ * 现在把「这页分几块、先看哪块」直接写到界面上。
+ * primary 只给最该先看的那一组（核心指标），用主色边条拉出主次。
+ */
+function GroupHead({
+  index,
+  title,
+  note,
+  primary = false,
+}: {
+  index: string
+  title: string
+  note?: string
+  primary?: boolean
+}) {
+  return (
+    <div className={`section-group-head${primary ? ' primary' : ''}`}>
+      <span className="section-group-index">{index}</span>
+      <span className="section-group-title">{title}</span>
+      {note && <span className="section-group-note">{note}</span>}
+    </div>
+  )
+}
+
 /** 数量 + 单位：`12 家`。图和提示里都用它，免得一处写"家"一处写"个"。 */
 const asCount = (unit: string) => (value: number) =>
   `${Math.round(value).toLocaleString('zh-CN')} ${unit}`
@@ -468,6 +494,12 @@ export default function AnalyticsPage() {
         </div>
       ))}
 
+      <GroupHead
+        index="01"
+        title="核心指标"
+        note="全站概览 · 先看总量与风险，再看下面的图和明细"
+        primary
+      />
       <KpiStrip
         items={[
           {
@@ -547,6 +579,7 @@ export default function AnalyticsPage() {
       />
 
       {/* ── ① 趋势：随时间变的东西，只有折线说得清 ─────────────────────── */}
+      <GroupHead index="02" title="趋势" note="随时间变化的量，看走向而不是单点" />
       <Row columns={2}>
         <Card title="业绩趋势" note="月度 · 签单 / 发货 / 回款，另附老客净额">
           {trendMonths.length === 0 ? (
@@ -624,6 +657,7 @@ export default function AnalyticsPage() {
       </Row>
 
       {/* ── ② 占比：看"各占几成"，环形比横条直观 ───────────────────────── */}
+      <GroupHead index="03" title="占比" note="看各占几成，环形比横条直观" />
       <Row columns={4}>
         <Card title="客户来源分布">
           <Donut data={customer?.by_source ?? []} format={asCount('家')} centerLabel="家客户" />
@@ -648,6 +682,7 @@ export default function AnalyticsPage() {
       </Row>
 
       {/* ── ③ 分档：每一档各多少，且顺序有意义 ───────────────────────────── */}
+      <GroupHead index="04" title="分档" note="每一档各多少，顺序本身有意义" />
       <Row columns={3}>
         <Card title="线索状态分布">
           <Columns data={lead?.by_status ?? []} unit="条" />
@@ -661,6 +696,7 @@ export default function AnalyticsPage() {
       </Row>
 
       {/* ── ④ 漏斗：只有"到达过"才是逐级减少，才配画成漏斗 ───────────────── */}
+      <GroupHead index="05" title="漏斗" note="累计到达过该阶段，逐级递减" />
       <Row columns={1}>
         <Card title="商机阶段转化" note="到达过该阶段的商机数（累计，逐级递减）">
           {(opportunity?.stage_conversion ?? []).length === 0 ? (
@@ -711,6 +747,7 @@ export default function AnalyticsPage() {
       </Row>
 
       {/* ── ⑤ 排名：比大小、名字长，横着写才读得顺 ───────────────────────── */}
+      <GroupHead index="06" title="排名" note="比大小、名字长，横着写才读得顺" />
       <Row columns={4}>
         <Card title="进行中商机的阶段分布" note="顺序即阶段先后">
           {(opportunity?.funnel ?? []).length === 0 ? (
@@ -804,6 +841,7 @@ export default function AnalyticsPage() {
       </Row>
 
       {/* ── ⑥ 明细表：算账要抄的具体数字，图替代不了 ───────────────────── */}
+      <GroupHead index="07" title="明细数据" note="算账要抄的具体数字，图替代不了" />
       <SectionCard title="交期履约（按负责人）" style={{ marginTop: 16 }}>
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
           准时 = 首批发货日期 ≤ 计划发货日（到货日减运输天数）；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。
