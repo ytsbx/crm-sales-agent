@@ -18,7 +18,9 @@
 
   /* 中性色阶：全部去掉偏紫成分（紫灰铺满整页会发闷），换成中性的冷灰。
      卡片只留一道极淡收边，层次交给「底色差 + 阴影」，不再靠深描边硬切。 */
-  --crm-bg: #f4f6fa;
+  /* 底色压深一档：白卡和底色的明度差是「层次感」的来源。
+     从前 #f4f6fa 和白卡(#fff)只差 4%，卡片像贴在同一张纸上。 */
+  --crm-bg: #eaeef8;
   --crm-surface: #ffffff;
   --crm-surface-low: #eef1f7;
   --crm-surface-mid: #e8ecf4;
@@ -1157,8 +1159,9 @@ a:not([href]) {
 
 /* 表格：统一成设计稿里的轻边框风格 */
 .semi-table-thead > .semi-table-row > .semi-table-row-head {
-  /* 表头用中性浅灰，不用紫调浅填充 —— 紫调铺在白色表格上发「脏」 */
-  background: #f2f5fb !important;
+  /* 表头用冷调浅蓝：和压深的底色呼应，又和白行拉开一层。
+     不用紫调 —— 紫调铺在白色表格上发「脏」。 */
+  background: #e6edfa !important;
   color: var(--crm-text-2) !important;
   font-weight: 600 !important;
   font-size: 12px !important;
