@@ -4,7 +4,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { emptyText } from '../../shared/hooks/emptyText'
+import { emptyNode } from '../../shared/components/EmptyState'
 import { Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import {
@@ -358,7 +358,10 @@ export default function TaskListPage() {
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
           rowKey="id"
-          empty={emptyText(query, '没有任务')}
+          empty={emptyNode(query, {
+            title: '没有任务',
+            hint: '点右上角「新建任务」，把「接下来要做什么」记下来 —— 任务记将来，跟进记过去。',
+          })}
           pagination={{
             currentPage: page,
             pageSize,

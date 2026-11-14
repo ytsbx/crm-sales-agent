@@ -15,7 +15,7 @@ import {
   type Opportunity,
 } from '../../shared/api/opportunity'
 import { usePermissions } from '../../shared/hooks/permissions'
-import { emptyText } from '../../shared/hooks/emptyText'
+import { emptyNode } from '../../shared/components/EmptyState'
 import type { TagTone } from '../../shared/types'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
@@ -264,7 +264,10 @@ export default function OpportunityListPage() {
             loading={query.isLoading}
             rowKey="id"
             size="middle"
-            empty={emptyText(query, '还没有商机')}
+            empty={emptyNode(query, {
+              title: '还没有商机',
+              hint: '点右上角「新建商机」，先把客户要什么逐条录进来，后续核价与报价都以它为准。',
+            })}
             pagination={{
               currentPage: page,
               pageSize,

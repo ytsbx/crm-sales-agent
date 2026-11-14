@@ -1862,6 +1862,39 @@ table:not(.semi-table) td {
   }
 }
 
+/* 列表空态：图标 + 一句结论 + 一句怎么开始，比一行灰字有落点 */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--crm-space-2);
+  padding: var(--crm-space-6) var(--crm-space-4);
+  text-align: center;
+}
+.empty-state-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: var(--crm-space-2);
+  border-radius: 50%;
+  background: var(--crm-surface-low);
+  color: var(--crm-text-3);
+  font-size: 24px;
+}
+.empty-state-title {
+  color: var(--crm-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.empty-state-hint {
+  /* 520 而不是 380：说明大约 38 个字，380 宽会被切成两行、第二行只剩几个字 */
+  max-width: 520px;
+  color: var(--crm-text-3);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
 /* 页面按需加载时的骨架：给内容轮廓，比一个转圈更容易看出「快出什么」。 */
 .skeleton-block,
 .skeleton-card {

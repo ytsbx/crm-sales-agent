@@ -11,7 +11,7 @@ import {
   isConfirmRequired,
   confirmMessageOf,
 } from '../../shared/components/ConfirmRequiredModal'
-import { emptyText } from '../../shared/hooks/emptyText'
+import { emptyNode } from '../../shared/components/EmptyState'
 import {
   AutoComplete,
   Button,
@@ -812,7 +812,10 @@ export default function SampleListPage() {
           loading={query.isLoading}
           columns={columns}
           dataSource={query.data?.items ?? []}
-          empty={emptyText(query, '还没有样品申请')}
+          empty={emptyNode(query, {
+            title: '还没有样品申请',
+            hint: '点右上角「新建样品申请」，登记寄样、签收与反馈，进展会回写到商机的下一步动作。',
+          })}
           pagination={{
             currentPage: page,
             pageSize,

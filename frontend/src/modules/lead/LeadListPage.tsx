@@ -4,7 +4,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { emptyText } from '../../shared/hooks/emptyText'
+import { emptyNode } from '../../shared/components/EmptyState'
 import {
   Button,
   Checkbox,
@@ -367,7 +367,10 @@ export default function LeadListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          empty={emptyText(query, '还没有线索')}
+          empty={emptyNode(query, {
+            title: '还没有线索',
+            hint: '点右上角「新建线索」记下第一条；线索转化时才会产生客户、联系人和商机。',
+          })}
           pagination={{
             currentPage: page,
             pageSize,
