@@ -6,6 +6,16 @@ import test from 'node:test'
 const require = createRequire(new URL('../frontend/package.json', import.meta.url))
 const ts = require('typescript')
 
+/** 从节点往上找第一个满足谓词的祖先（不含自身）。 */
+function findAncestor(node, predicate) {
+  let cursor = node.parent
+  while (cursor) {
+    if (predicate(cursor)) return cursor
+    cursor = cursor.parent
+  }
+  return null
+}
+
 // Guard the actual request sites, not button text: a renamed button must not bypass confirmation.
 for (const [file, mutation, action] of [
   ['quote/QuoteDetailPage.tsx', 'withdrawMutation'],
@@ -43,10 +53,21 @@ for (const [file, mutation, action] of [
           }
         }
         sites++
-        let attribute = node.parent
-        while (attribute && !ts.isJsxAttribute(attribute)) attribute = attribute.parent
-        assert.equal(attribute?.name.getText(source), 'onConfirm', `${mutation} must not run on the initial click`)
-        assert.equal(attribute.parent.parent.tagName.getText(source), 'Popconfirm')
+        // 认两种合规的确认方式，语义等价：Popconfirm 的 onConfirm、Modal.confirm 的 onOk ——
+        // 都必须**点过确认**才执行，不是首击即发。
+        // 后者不是放水：下拉菜单里气泡定位会飘，把「放入公海 / 删除」收进「更多」后
+        // 只能改用弹窗（客户详情 CustomerDetailPage）。任何**没有**确认包裹的调用仍然会红。
+        const onOkProp = findAncestor(node, (n) => ts.isPropertyAssignment(n) && n.name.getText(source) === 'onOk')
+        const confirmedByModal = Boolean(
+          onOkProp &&
+            findAncestor(onOkProp, (n) => ts.isCallExpression(n) && n.expression.getText(source) === 'Modal.confirm'),
+        )
+        if (!confirmedByModal) {
+          let attribute = node.parent
+          while (attribute && !ts.isJsxAttribute(attribute)) attribute = attribute.parent
+          assert.equal(attribute?.name.getText(source), 'onConfirm', `${mutation} must not run on the initial click`)
+          assert.equal(attribute.parent.parent.tagName.getText(source), 'Popconfirm')
+        }
       }
       ts.forEachChild(node, visit)
     }
