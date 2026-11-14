@@ -568,7 +568,9 @@ export default function CustomerDetailPage() {
             <Tag color={customer.pool_status === 'public' ? 'orange' : 'blue'}>
               {customer.pool_status === 'public' ? '公海' : '私海'}
             </Tag>
-            {customer.country && <Tag>{customer.country}</Tag>}
+            {/* 国籍只在「不是中国」时才有信息量：国内客户是绝大多数，
+                默认值挂在这儿既是噪音，又和下面「国家 / 地区」字段重复 */}
+            {customer.country && customer.country !== '中国' && <Tag>{customer.country}</Tag>}
           </>
         }
         meta={
