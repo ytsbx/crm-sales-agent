@@ -68,6 +68,13 @@
   --crm-font-body: 14px;
   --crm-font-note: 13px;
 
+  /* 动效三档：悬停用快的、状态切换用中的、浮层进出用慢的。
+     全站只准用这三个值，别再各写各的 0.12s / 0.15s / 0.2s。 */
+  --crm-dur-fast: 120ms;
+  --crm-dur-base: 200ms;
+  --crm-dur-panel: 240ms;
+  --crm-ease: cubic-bezier(0.2, 0, 0.2, 1);
+
   /* Semi Design 主题变量：让组件库跟随上面的令牌 */
   --semi-color-primary: var(--crm-primary);
   --semi-color-primary-hover: var(--crm-primary-hover);
@@ -273,7 +280,6 @@ a:not([href]) {
   color: var(--crm-text-2);
   font-size: 12px;
   white-space: nowrap;
-  transition: border-color 0.12s ease, color 0.12s ease;
 }
 .detail-jump a:hover {
   border-color: var(--crm-primary);
@@ -366,7 +372,6 @@ a:not([href]) {
   border-radius: var(--crm-radius);
   padding: 16px 18px;
   box-shadow: var(--crm-shadow);
-  transition: box-shadow 0.15s ease;
 }
 
 .kpi-card:hover {
@@ -412,7 +417,7 @@ a:not([href]) {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  transition: width 0.15s ease;
+  transition: width var(--crm-dur-base) var(--crm-ease);
 }
 
 /* 桌面端折叠开关：钉在品牌行最右侧，永远看得见 */
@@ -655,7 +660,6 @@ a:not([href]) {
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
 }
 
 .notice-trigger:hover {
@@ -1241,7 +1245,7 @@ table:not(.semi-table) td {
     bottom: 0;
     z-index: 100;
     transform: translateX(-100%);
-    transition: transform 0.2s ease;
+    transition: transform var(--crm-dur-panel) var(--crm-ease);
     overflow-y: auto;
   }
   .app-shell.sider-open .app-sider {
@@ -1719,4 +1723,52 @@ table:not(.semi-table) td {
   .agent-page { grid-template-columns: minmax(0, 1fr); }
   .agent-examples { grid-template-columns: minmax(0, 1fr); }
   .agent-empty { margin: 28px auto; }
+}
+
+/* ============================================================
+   动效：全站统一手感（放在最后，统一接管上面各处的散装过渡）
+   ============================================================ */
+.sider-collapse-btn,
+.nav-link,
+.nav-link-denied,
+.header-user-trigger,
+.copilot-trigger,
+.notice-trigger,
+.notice-item,
+.tab-chip,
+.tab-more,
+.kpi-card,
+.permission-picker-row,
+.permission-picker-link,
+.detail-jump a,
+.agent-examples button {
+  transition:
+    background-color var(--crm-dur-fast) var(--crm-ease),
+    color var(--crm-dur-fast) var(--crm-ease),
+    border-color var(--crm-dur-fast) var(--crm-ease),
+    opacity var(--crm-dur-fast) var(--crm-ease),
+    box-shadow var(--crm-dur-base) var(--crm-ease),
+    transform var(--crm-dur-fast) var(--crm-ease);
+}
+
+/* 路由切页时页面组件重新挂载，新节点会重新触发这段淡入 —— 硬切变软着陆。
+   只做整页一层，不给每张卡都加动画，避免一屏乱动。 */
+.page-container {
+  animation: crm-page-in var(--crm-dur-base) var(--crm-ease) both;
+}
+@keyframes crm-page-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 系统开了「减少动效」就全部安静下来：包括组件库自带的弹窗进出动画。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
