@@ -16,18 +16,15 @@
   --crm-success: #00b42a;
   --crm-caution: #ff7d00;
 
-  /* 第二版（2026-11-14，主人在真机截图后反馈「还是不够」）：
-     第一版只靠「底色差」把卡片拉出来，实拍仍然分不清边界。这一版底色再压深一档，
-     并给卡片加一层极淡投影 —— 不是 Material 那种浮起感，只是让卡片「贴住」页面。 */
-  --crm-bg: #ecf0f8;
+  /* 中性色阶：全部去掉偏紫成分（紫灰铺满整页会发闷），换成中性的冷灰。
+     卡片只留一道极淡收边，层次交给「底色差 + 阴影」，不再靠深描边硬切。 */
+  --crm-bg: #f4f6fa;
   --crm-surface: #ffffff;
-  /* 浅填充跟着压深，保持比页面底深一档（搜索框/表头/悬停底色才不消失） */
-  --crm-surface-low: #e4e9f6;
-  --crm-surface-mid: #e9edf9;
-  --crm-surface-high: #e0e5f2;
-  /* 卡片专用描边：比表格线略深，只给卡片用，不动表格与页签的细线。 */
-  --crm-card-border: #c6cddf;
-  --crm-outline: #c2c6d8;
+  --crm-surface-low: #eef1f7;
+  --crm-surface-mid: #e8ecf4;
+  --crm-surface-high: #e0e5ef;
+  --crm-card-border: #e7ebf3;
+  --crm-outline: #d3d9e4;
 
   --crm-text: #181c23;
   --crm-text-2: #424655;
@@ -41,8 +38,9 @@
   --crm-radius: 12px; /* 卡片 */
   --crm-radius-sm: 6px; /* 按钮、输入框、导航项 */
   --crm-radius-pill: 999px; /* 标签、胶囊：真胶囊 */
-  /* 双层柔阴影：近处一层定边、远处一层给「浮起」，比单层硬边自然 */
-  --crm-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 6px 16px rgba(16, 24, 40, 0.04);
+  /* 双层柔阴影：近处一层定边、远处一层只往下走（负 spread），
+     卡片看起来是「浮在页面上」而不是「贴着一张灰边」 */
+  --crm-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 28px -12px rgba(16, 24, 40, 0.14);
   --crm-shadow-lg: 0 6px 16px rgba(16, 24, 40, 0.10);
   --crm-surface-highest: #dfe2ed;
   --crm-outline-strong: #727687;
@@ -370,7 +368,10 @@ a:not([href]) {
    ============================================================ */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  /* 用 auto-fill 而不是 auto-fit：指标只有两张时，卡**不再被拉伸占满整行**。
+     从前「履约与风险」两张卡各占半屏、里面只有一个 0，就是 auto-fit 撑的。
+     现在卡宽全站一致，不够就留白。 */
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
   gap: var(--crm-space-3);
   margin-bottom: var(--crm-space-4);
 }
@@ -1465,15 +1466,21 @@ table:not(.semi-table) td {
 .kpi-cols-5 {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
+/* 7 张指标卡用 4 列（4+3）比自动排的 5+2 平衡，第二行不会只剩两张孤零零 */
+.kpi-cols-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 @media (max-width: 1370px) {
   .kpi-cols-6,
-  .kpi-cols-5 {
+  .kpi-cols-5,
+  .kpi-cols-4 {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 @media (max-width: 1000px) {
   .kpi-cols-6,
-  .kpi-cols-5 {
+  .kpi-cols-5,
+  .kpi-cols-4 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1920,6 +1927,37 @@ table:not(.semi-table) td {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================
+   出场动效：卡片错峰浮现
+   ------------------------------------------------------------
+   进页面时不是「啪」一下全出来，而是一张接一张浮上来 ——
+   层次感最直接的来源。只给指标卡用，不给每张卡片都加，
+   否则一屏十几个元素同时动，反而乱。
+   系统开了「减少动效」时由下面的兜底规则统一关掉。
+   ============================================================ */
+@keyframes crm-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.kpi-grid > .kpi-card {
+  animation: crm-rise 380ms var(--crm-ease) both;
+}
+.kpi-grid > .kpi-card:nth-child(1) { animation-delay: 0ms; }
+.kpi-grid > .kpi-card:nth-child(2) { animation-delay: 45ms; }
+.kpi-grid > .kpi-card:nth-child(3) { animation-delay: 90ms; }
+.kpi-grid > .kpi-card:nth-child(4) { animation-delay: 135ms; }
+.kpi-grid > .kpi-card:nth-child(5) { animation-delay: 180ms; }
+.kpi-grid > .kpi-card:nth-child(6) { animation-delay: 225ms; }
+.kpi-grid > .kpi-card:nth-child(7) { animation-delay: 270ms; }
+.kpi-grid > .kpi-card:nth-child(8) { animation-delay: 315ms; }
+.kpi-grid > .kpi-card:nth-child(n + 9) { animation-delay: 360ms; }
 
 /* ============================================================
    侧栏图标着色

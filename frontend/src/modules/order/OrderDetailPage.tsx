@@ -877,6 +877,7 @@ export default function OrderDetailPage() {
         }
       >
         <KpiStrip
+          className="kpi-grid kpi-cols-4"
           style={{ marginTop: 16, marginBottom: 0 }}
           items={[
             { label: '订单金额', value: formatMoney(order.total_amount_exact ?? order.total_amount, order.currency) },
