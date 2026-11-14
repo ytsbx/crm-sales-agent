@@ -517,7 +517,12 @@ export default function CustomerDetailPage() {
         title={customer.name}
         tags={
           <>
-            <Tag color={customer.level === 'A' ? 'green' : customer.level === 'B' ? 'blue' : 'grey'}>
+            {/* 未分级（level 为空）用描边，和列表页一致：它是「还没评」，
+                不是一种等级，实心灰既和 C 级撞脸、又让头部一片脏灰 */}
+            <Tag
+              color={customer.level === 'A' ? 'green' : customer.level === 'B' ? 'blue' : 'grey'}
+              type={customer.level ? 'light' : 'ghost'}
+            >
               {customerLevelLabel(customer.level)}
             </Tag>
             <Tag color={customer.pool_status === 'public' ? 'orange' : 'blue'}>

@@ -362,12 +362,17 @@ export default function CustomerListPage() {
     {
       title: '等级',
       dataIndex: 'level',
-      width: 80,
+      // 96 而不是 80：描边标签（未分级）比实心标签宽，80 时末尾会多出一个省略号
+      width: 96,
       render: (value: string | null) =>
         value ? (
           <Tag color={value === 'A' ? 'green' : value === 'B' ? 'blue' : 'grey'}>{value}</Tag>
         ) : (
-          <Tag color="grey">未分级</Tag>
+          // 「未分级」是**还没评**，不是一种等级：用描边（ghost）而不是实心灰。
+          // 实心灰既和 C 级撞脸，又让整列一片脏灰色块。
+          <Tag color="grey" type="ghost">
+            未分级
+          </Tag>
         ),
     },
     {
