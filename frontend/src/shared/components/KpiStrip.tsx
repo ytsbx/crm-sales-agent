@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 export interface KpiItem {
   label: string
@@ -6,6 +7,8 @@ export interface KpiItem {
   hint?: ReactNode
   tone?: 'default' | 'primary' | 'success' | 'warning' | 'error'
   onClick?: () => void
+  /** 小标签自己要跳的地址；点它不会连带触发整张卡的 onClick。 */
+  href?: string
 }
 
 const TONE_STYLE: Record<string, { color?: string; chip: string }> = {
@@ -16,20 +19,26 @@ const TONE_STYLE: Record<string, { color?: string; chip: string }> = {
   error: { color: 'var(--crm-error)', chip: 'chip chip-error' },
 }
 
-/** 列表页顶部的一排指标卡，与工作台的 KPI 卡同一套样式。 */
+/** 一排指标卡：列表页、分析页、工作台共用这一套，不再各写一份。 */
 export default function KpiStrip({
   items,
   columns,
+  className,
+  tintValues = true,
   style,
 }: {
   items: KpiItem[]
   columns?: number
+  /** 传自定义类名以接住响应式列数（工作台的 kpi-cols-6 / kpi-cols-5）。 */
+  className?: string
+  /** 数值是否跟随状态色。工作台要保住「读数是黑色、颜色只用来提醒」，传 false。 */
+  tintValues?: boolean
   style?: CSSProperties
 }) {
   if (!items.length) return null
   return (
     <div
-      className="kpi-grid"
+      className={className ?? 'kpi-grid'}
       style={{
         ...(columns ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : null),
         ...style,
@@ -45,12 +54,22 @@ export default function KpiStrip({
             onClick={item.onClick}
           >
             <div className="kpi-label">{item.label}</div>
-            <div className="kpi-value" style={{ color: tone.color }}>
+            <div className="kpi-value" style={{ color: tintValues ? tone.color : undefined }}>
               {item.value}
             </div>
             {item.hint && (
               <div style={{ marginTop: 'var(--crm-space-3)' }}>
-                <span className={tone.chip}>{item.hint}</span>
+                {item.href ? (
+                  <Link
+                    className={tone.chip}
+                    to={item.href}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {item.hint}
+                  </Link>
+                ) : (
+                  <span className={tone.chip}>{item.hint}</span>
+                )}
               </div>
             )}
           </div>

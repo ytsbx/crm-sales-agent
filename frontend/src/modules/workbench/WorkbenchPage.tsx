@@ -23,6 +23,7 @@ import {
 } from '../../shared/api/analytics'
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
 import PageHeader from '../../shared/components/PageHeader'
+import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
 import EChart from '../../shared/components/charts/EChart'
 import {
@@ -143,20 +144,20 @@ export default function WorkbenchPage() {
     enabled: staleOpen,
   })
 
-  const cards = [
+  const cards: KpiItem[] = [
     {
       label: '今日待办',
       value: String(summary?.todo_count ?? '-'),
-      footer: `逾期 ${summary?.overdue_task_count ?? 0} 项`,
-      tone: (summary?.overdue_task_count ?? 0) > 0 ? 'chip-error' : 'chip',
+      hint: `逾期 ${summary?.overdue_task_count ?? 0} 项`,
+      tone: (summary?.overdue_task_count ?? 0) > 0 ? 'error' : 'default',
       onClick: () => navigate('/tasks?mine=false&status=active'),
-      footerTo: '/tasks?mine=false&status=active&overdue=true',
+      href: '/tasks?mine=false&status=active&overdue=true',
     },
     {
       label: '待跟进客户',
       value: String(summary?.stale_customer_count ?? '-'),
-      footer: `${summary?.stale_customer_days ?? '—'} 天无有效跟进或业务进展`,
-      tone: (summary?.stale_customer_count ?? 0) > 0 ? 'chip-warning' : 'chip',
+      hint: `${summary?.stale_customer_days ?? '—'} 天无有效跟进或业务进展`,
+      tone: (summary?.stale_customer_count ?? 0) > 0 ? 'warning' : 'default',
       // ⚠️ 从前这里跳 `/customers`（不带任何筛选），而客户列表既没有「待跟进」
       // 筛选项也没有「最近跟进」列 —— 报了警却看不到是哪几个（审查指出）。
       // 现在直接打开清单抽屉，一步到位。
@@ -165,29 +166,29 @@ export default function WorkbenchPage() {
     {
       label: '进行中商机',
       value: String(summary?.open_opportunity_count ?? '-'),
-      footer: `估算货值 ${money(summary?.open_opportunity_amount)}`,
-      tone: 'chip',
+      hint: `估算货值 ${money(summary?.open_opportunity_amount)}`,
+      tone: 'default',
       onClick: () => navigate('/opportunities'),
     },
     {
       label: '待审批报价',
       value: String(summary?.pending_approval_count ?? '-'),
-      footer: '需要你处理',
-      tone: (summary?.pending_approval_count ?? 0) > 0 ? 'chip-warning' : 'chip',
+      hint: '需要你处理',
+      tone: (summary?.pending_approval_count ?? 0) > 0 ? 'warning' : 'default',
       onClick: () => navigate('/approvals'),
     },
     {
       label: '本月订单金额',
       value: exactMoney(summary?.month_won_amount),
-      footer: orderAmountBreakdown(summary),
-      tone: 'chip',
+      hint: orderAmountBreakdown(summary),
+      tone: 'default',
       onClick: () => navigate('/orders'),
     },
     {
       label: '本月回款金额',
       value: money(summary?.month_received_amount),
-      footer: `应收期未结 ${money(summary?.pending_receivable_amount)}（含已到账待分配）`,
-      tone: 'chip',
+      hint: `应收期未结 ${money(summary?.pending_receivable_amount)}（含已到账待分配）`,
+      tone: 'default',
       onClick: () => navigate('/receivables'),
     },
   ]
@@ -258,27 +259,8 @@ export default function WorkbenchPage() {
         }
       />
 
-      {/* 6 张 KPI 卡 */}
-      <div className="kpi-grid kpi-cols-6">
-        {cards.map((card) => (
-          <div
-            key={card.label}
-            className="kpi-card"
-            style={{ cursor: 'pointer' }}
-            onClick={card.onClick}
-          >
-            <div className="kpi-label">{card.label}</div>
-            <div className="kpi-value">{card.value}</div>
-            <div style={{ marginTop: 10 }}>
-              {card.footerTo ? (
-                <Link className={card.tone} to={card.footerTo} onClick={(event) => event.stopPropagation()}>
-                  {card.footer}
-                </Link>
-              ) : <span className={card.tone}>{card.footer}</span>}
-            </div>
-          </div>
-        ))}
-      </div>
+      {/* 6 张 KPI 卡：与列表页/分析页共用一套；数值保持黑色，颜色只给状态标签（主人选甲） */}
+      <KpiStrip items={cards} className="kpi-grid kpi-cols-6" tintValues={false} />
 
       {/* PRD §4.2 主管视图：只有数据范围 ≥ 部门的人才会拿到 is_team_view */}
       {isTeamView && team && (
@@ -299,69 +281,43 @@ export default function WorkbenchPage() {
             </div>
           </div>
 
-          <div className="kpi-grid kpi-cols-5">
-            <div className="kpi-card">
-              <div className="kpi-label">团队待办</div>
-              <div className="kpi-value">{team.team_task_count ?? 0}</div>
-              <div style={{ marginTop: 10 }}>
-                <span
-                  className={(team.team_overdue_count ?? 0) > 0 ? 'chip chip-error' : 'chip'}
-                >
-                  逾期 {team.team_overdue_count ?? 0} 项
-                </span>
-              </div>
-            </div>
-            <div
-              className="kpi-card"
-              style={{ cursor: 'pointer' }}
-              onClick={() => navigate('/approvals')}
-            >
-              <div className="kpi-label">待审批报价</div>
-              <div className="kpi-value">{team.pending_approval_count ?? 0}</div>
-              <div style={{ marginTop: 10 }}>
-                <span
-                  className={(team.pending_approval_count ?? 0) > 0 ? 'chip chip-warning' : 'chip'}
-                >
-                  需要你处理
-                </span>
-              </div>
-            </div>
-            <div
-              className="kpi-card"
-              style={{ cursor: 'pointer' }}
-              onClick={() => navigate('/customers')}
-            >
-              <div className="kpi-label">客户分配</div>
-              <div className="kpi-value">{team.unassigned_customer_count ?? 0}</div>
-              <div style={{ marginTop: 10 }}>
-                <span className="chip">无负责人，待分配</span>
-              </div>
-            </div>
-            <div className="kpi-card">
-              <div className="kpi-label">本月团队成交</div>
-              <div className="kpi-value">{team.team_won_count_this_month ?? 0}</div>
-              <div style={{ marginTop: 10 }}>
-                <span className="chip">
-                  ¥{Math.round(team.team_won_amount_this_month ?? 0).toLocaleString('zh-CN')}
-                </span>
-              </div>
-            </div>
-            <div
-              className="kpi-card"
-              style={{ cursor: 'pointer' }}
-              onClick={() => navigate('/opportunities')}
-            >
-              <div className="kpi-label">风险商机</div>
-              <div className="kpi-value">{team.risky_opportunities?.length ?? 0}</div>
-              <div style={{ marginTop: 10 }}>
-                <span
-                  className={(team.risky_opportunities?.length ?? 0) > 0 ? 'chip chip-error' : 'chip'}
-                >
-                  临近成交 / 长期未更新
-                </span>
-              </div>
-            </div>
-          </div>
+          <KpiStrip
+            className="kpi-grid kpi-cols-5"
+            tintValues={false}
+            items={[
+              {
+                label: '团队待办',
+                value: team.team_task_count ?? 0,
+                hint: `逾期 ${team.team_overdue_count ?? 0} 项`,
+                tone: (team.team_overdue_count ?? 0) > 0 ? 'error' : 'default',
+              },
+              {
+                label: '待审批报价',
+                value: team.pending_approval_count ?? 0,
+                hint: '需要你处理',
+                tone: (team.pending_approval_count ?? 0) > 0 ? 'warning' : 'default',
+                onClick: () => navigate('/approvals'),
+              },
+              {
+                label: '客户分配',
+                value: team.unassigned_customer_count ?? 0,
+                hint: '无负责人，待分配',
+                onClick: () => navigate('/customers'),
+              },
+              {
+                label: '本月团队成交',
+                value: team.team_won_count_this_month ?? 0,
+                hint: `¥${Math.round(team.team_won_amount_this_month ?? 0).toLocaleString('zh-CN')}`,
+              },
+              {
+                label: '风险商机',
+                value: team.risky_opportunities?.length ?? 0,
+                hint: '临近成交 / 长期未更新',
+                tone: (team.risky_opportunities?.length ?? 0) > 0 ? 'error' : 'default',
+                onClick: () => navigate('/opportunities'),
+              },
+            ]}
+          />
 
           {/* 成员明细：谁忙、谁逾期、谁没跟客户 */}
           <div style={{ marginTop: 18 }}>
