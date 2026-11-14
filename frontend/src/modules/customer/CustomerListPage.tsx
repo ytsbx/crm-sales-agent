@@ -344,6 +344,21 @@ export default function CustomerListPage() {
     }
   }
 
+  // 计数格：有值主色加粗，0 用浅灰
+  const countCell = (value?: number) => {
+    const count = value ?? 0
+    return (
+      <span
+        style={{
+          fontWeight: count > 0 ? 600 : 400,
+          color: count > 0 ? 'var(--crm-primary)' : 'var(--crm-text-3)',
+        }}
+      >
+        {count}
+      </span>
+    )
+  }
+
   // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字
   const activityLabel = (value?: string) =>
     value === 'active' ? '活跃' : value === 'stale' ? '沉睡' : value === 'watch' ? '关注' : '待补核'
@@ -399,23 +414,25 @@ export default function CustomerListPage() {
           '-'
         ),
     },
+    // 三个计数列共用：**有值才上色加粗**，0 保持浅灰。
+    // 全是同一种灰时，一列扫过去分不出「这家有 3 个商机」和「这家啥也没有」。
     {
       title: '当前商机',
       dataIndex: 'current_opportunity_count',
       width: 90,
-      render: (value: number | undefined) => value ?? 0,
+      render: (value: number | undefined) => countCell(value),
     },
     {
       title: '近12月项目',
       dataIndex: 'recent_order_count',
       width: 90,
-      render: (value: number | undefined) => value ?? 0,
+      render: (value: number | undefined) => countCell(value),
     },
     {
       title: '历史有效订单',
       dataIndex: 'historical_order_count',
       width: 105,
-      render: (value: number | undefined) => value ?? 0,
+      render: (value: number | undefined) => countCell(value),
     },
     {
       // PRD §6.1：客户列表要能直接看到标签
