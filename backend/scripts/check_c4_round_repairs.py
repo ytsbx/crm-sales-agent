@@ -140,8 +140,13 @@ def sec_c401(admin: str) -> None:
         return db("select id from sales_orders order by id desc limit 1")
 
     def add_plan(oid: str, amt) -> str:
+        # 「未到期」的默认到期日必须是**永远的未来**：从前写死 2026-11-01，
+        # 到 2026-11-14 就过期了，① 等断言会把正确的 overdue 误判成假红
+        # （QUALITY_PROGRESS 2026-11-13 已记录「CI 日期夹具待另行修复」）。
+        # 与下面 ④-b、⑤ 显式改成的 2099-01-01 用同一套表示法。
+        # 只改夹具造数据的日期，断言期望值一个字不动。
         call("POST", f"/orders/{oid}/receivables", admin,
-             {"plan_name": f"{MARK}-测试", "due_date": "2026-11-01", "amount": amt})
+             {"plan_name": f"{MARK}-测试", "due_date": "2099-01-01", "amount": amt})
         return db("select id from receivable_plans order by id desc limit 1")
 
     def pay(pid: str, amt) -> None:

@@ -178,7 +178,9 @@ async def probe_milestones(session, owner_id: int, user):
     print("=== 2. 跟单节点按财务事实重建 ===")
     order = await make_order(session, owner_id=owner_id)
     plan = ReceivablePlan(
-        order_id=order.id, plan_name="全款", due_date=date(2026, 11, 1),
+        # 与 check_c4_round_repairs 同一处日期夹具：写死 2026-11-01 过期后，
+        # 「应收改大后应收状态」会把正确的 overdue 误判成假红。用永远的未来。
+        order_id=order.id, plan_name="全款", due_date=date(2099, 1, 1),
         amount=Decimal("100"), currency="CNY", status="pending",
         created_at=datetime.now(UTC),
     )
@@ -254,7 +256,9 @@ async def probe_milestones(session, owner_id: int, user):
     # 初始化遗漏：先有确认回款、后首次打开跟单页（节点此刻才建）
     order2 = await make_order(session, owner_id=owner_id)
     plan2 = ReceivablePlan(
-        order_id=order2.id, plan_name="全款", due_date=date(2026, 11, 1),
+        # 同上：这单用于「首次打开跟单页补建节点」，同样不能让夹具过期
+        # 把状态带成 overdue，否则补建断言会被污染。
+        order_id=order2.id, plan_name="全款", due_date=date(2099, 1, 1),
         amount=Decimal("100"), currency="CNY", status="pending",
         created_at=datetime.now(UTC),
     )
