@@ -1262,7 +1262,9 @@ async function main() {
     await client.send('Runtime.enable')
     await client.send('Emulation.setDeviceMetricsOverride', {
       width: 1440,
-      height: 900,
+      // 默认 900；长页面（如分析页）要看下半部分时传 SMOKE_VIEWPORT_HEIGHT=2600。
+      // 本应用是「固定视口 + 内容区内部滚动」，captureBeyondViewport 无效，只能拉高视口。
+      height: Number(process.env.SMOKE_VIEWPORT_HEIGHT ?? 900),
       deviceScaleFactor: 1,
       mobile: false,
     })
