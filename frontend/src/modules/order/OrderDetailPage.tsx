@@ -896,20 +896,42 @@ export default function OrderDetailPage() {
               label: '已分配到应收期',
               value: formatMoney(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0, order.currency),
             },
-            {
-              label: '已到账待分配',
-              value: formatMoney(summary?.unallocated_amount_exact ?? summary?.unallocated_amount ?? 0, order.currency),
-              tone: (summary?.unallocated_amount ?? 0) > 0 ? 'warning' : 'default',
-            },
-            {
-              label: '待确认回款',
-              value: formatMoney(summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0, order.currency),
-            },
-            {
-              label: '逾期应收节点',
-              value: summary?.overdue_count ?? 0,
-              tone: (summary?.overdue_count ?? 0) > 0 ? 'error' : 'default',
-            },
+            // 这两张也是「有异常才有意义」：钱都分配完、没有待确认的，
+            // 它们就是两个 ¥0.00 的空卡，把 4+2 的第二行撑出来。
+            ...((summary?.unallocated_amount ?? 0) > 0
+              ? [
+                  {
+                    label: '已到账待分配',
+                    value: formatMoney(
+                      summary?.unallocated_amount_exact ?? summary?.unallocated_amount ?? 0,
+                      order.currency,
+                    ),
+                    tone: 'warning' as const,
+                  },
+                ]
+              : []),
+            ...((summary?.pending_confirm_amount ?? 0) > 0
+              ? [
+                  {
+                    label: '待确认回款',
+                    value: formatMoney(
+                      summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0,
+                      order.currency,
+                    ),
+                  },
+                ]
+              : []),
+            // 逾期是「异常指标」：没有逾期时这张卡永远是 0，白占一个位置，
+            // 还让 7 张卡排成 4+3 的第二行只剩三张。只有真逾期了才显示。
+            ...(summary?.overdue_count
+              ? [
+                  {
+                    label: '逾期应收节点',
+                    value: `${summary.overdue_count}`,
+                    tone: 'error' as const,
+                  },
+                ]
+              : []),
           ]}
         />
         {/* 订单金额组成（2026-10-09「产品价格与运费分离」）：订单页要能解释
