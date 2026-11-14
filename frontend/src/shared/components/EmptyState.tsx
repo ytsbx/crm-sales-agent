@@ -30,15 +30,27 @@ export default function EmptyState({
 
 /**
  * 给 Semi `Table` 的 `empty` 用：查询出错时显示错误原因，否则显示正常空态。
- * 与 `emptyText` 同一套判断（有 message 就是错），只是返回的是节点不是字符串。
+ * 与 `emptyText` 同一套判据（有 message 就是错）。
+ *
+ * 这是**唯一的实现**：`hooks/emptyText.ts` 把 `emptyText` 转发到这里
+ * （那个文件保持 `.ts` 扩展名不动，避免 Vite 模块图失效）。
  */
-export function emptyNode(
+export function emptyTextNode(
   query: { error: unknown },
-  options: { title: string; hint?: string },
+  fallback: string,
+  hint?: string,
 ) {
   const err = query.error as { message?: string } | null | undefined
   if (err?.message) {
     return <EmptyState title="这里没能加载出来" hint={err.message} />
   }
-  return <EmptyState title={options.title} hint={options.hint} />
+  return <EmptyState title={fallback} hint={hint} />
+}
+
+/** 选项式写法（`emptyNode(query, { title, hint })`）：内部就是上面那个函数。 */
+export function emptyNode(
+  query: { error: unknown },
+  options: { title: string; hint?: string },
+) {
+  return emptyTextNode(query, options.title, options.hint)
 }
