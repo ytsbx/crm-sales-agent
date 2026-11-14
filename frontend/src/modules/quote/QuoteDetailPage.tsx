@@ -763,7 +763,9 @@ export default function QuoteDetailPage() {
       title: '建议价',
       dataIndex: 'recommended_price_snapshot',
       width: 100,
-      render: (v: number | null) => (v === null ? '-' : `¥${v}`),
+      // 必须 toFixed(2)：建议价是算出来的（成本 ÷ 系数），不格式化会显示成
+      // ¥142.8571 这种四位小数，和旁边 ¥100.00、¥117.65 对不上
+      render: (v: number | null) => (v === null ? '-' : `¥${v.toFixed(2)}`),
     },
     {
       title: '最低保护价',
@@ -783,8 +785,10 @@ export default function QuoteDetailPage() {
       dataIndex: 'quoted_price',
       width: 150,
       render: (value: number, record: QuoteItemRow) => (
+        // 统一两位小数：quoted_price_exact 是 Decimal 序列化出来的（如 150.0000），
+        // 直接渲染会和同表的 ¥100.00 形成两种精度
         <span style={{ fontWeight: 600, color: record.approval_required ? 'var(--crm-error)' : 'var(--crm-text)' }}>
-          ¥{record.quoted_price_exact ?? value}
+          ¥{Number(record.quoted_price_exact ?? value).toFixed(2)}
         </span>
       ),
     },
