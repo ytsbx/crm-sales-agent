@@ -1,4 +1,3 @@
-import { formatBeijingTime } from '../../shared/beijing-time'
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
 import { useRef, useState, type ComponentProps } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
@@ -420,7 +419,8 @@ export default function CustomerListPage() {
       // PRD §6.1：客户列表要能直接看到标签
       title: '标签',
       dataIndex: 'tags',
-      width: 180,
+      // 180 → 140：标签本来就会折行，收窄后空间让给客户名称
+      width: 140,
       render: (tags: Customer['tags']) =>
         (tags ?? []).length === 0 ? (
           <span style={{ color: 'var(--crm-text-3)' }}>-</span>
@@ -435,11 +435,6 @@ export default function CustomerListPage() {
         ),
     },
     {
-      title: '联系人',
-      dataIndex: 'contact_count',
-      width: 90,
-    },
-    {
       title: '负责人',
       dataIndex: 'owner_name',
       width: 110,
@@ -450,12 +445,6 @@ export default function CustomerListPage() {
       dataIndex: 'status',
       width: 90,
       render: (v: string) => (v === 'active' ? '正常' : v),
-    },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      width: 170,
-      render: (v: string) => formatBeijingTime(v),
     },
   ]
 
@@ -602,9 +591,9 @@ export default function CustomerListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          // 等于各列宽之和（约 1440）。**必须写够**：小于总宽时组件会按比例压缩列，
+          // 等于各列宽之和（约 1180）。**必须写够**：小于总宽时组件会按比例压缩列，
           // 长文本又开始折行；大于总宽则右边多出一段空白。
-          scroll={{ x: 1440 }}
+          scroll={{ x: 1180 }}
           empty={emptyText(query, '没有符合条件的客户', '换个筛选条件试试，或点右上角「新建客户」。')}
           rowSelection={{
             selectedRowKeys: selectedIds,
