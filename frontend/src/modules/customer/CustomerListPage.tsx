@@ -345,18 +345,29 @@ export default function CustomerListPage() {
     }
   }
 
+  // 「活跃状态」原本是独立一列，现在并进客户名称的下方小字
+  const activityLabel = (value?: string) =>
+    value === 'active' ? '活跃' : value === 'stale' ? '沉睡' : value === 'watch' ? '关注' : '待补核'
+
   const columns = [
     {
       title: '客户名称',
       dataIndex: 'name',
-      // 必须给宽度：其余 13 列全写了固定宽，客户名称这列没写就只剩几十像素，
-      // 公司全名会被压成三四行、把每行撑到 90px 高（实测「嘉兴汽/配60厂/【演示/造数】」）
-      width: 200,
-      ellipsis: true,
+      // 两行：上面公司名，下面「地区 · 来源 · 活跃状态」。
+      // 那三列各自只有几个字却各占 90-120px，合到名字下面能省掉三列，
+      // 顺带把横向滚动条也去掉（14 列 → 10 列）。
+      width: 260,
       render: (text: string, record: Customer) => (
-        <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/customers/${record.id}`)} title={text}>
-          {text}
-        </a>
+        <div>
+          <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/customers/${record.id}`)} title={text}>
+            {text}
+          </a>
+          <div style={{ marginTop: 2, color: 'var(--crm-text-3)', fontSize: 12 }}>
+            {[record.region, record.source, activityLabel(record.activity_status)]
+              .filter(Boolean)
+              .join(' · ')}
+          </div>
+        </div>
       ),
     },
     {
@@ -406,14 +417,6 @@ export default function CustomerListPage() {
       render: (value: number | undefined) => value ?? 0,
     },
     {
-      title: '活跃状态',
-      dataIndex: 'activity_status',
-      width: 90,
-      render: (value: string | undefined) =>
-        value === 'active' ? '活跃' : value === 'stale' ? '沉睡' : value === 'watch' ? '关注' : '待补核',
-    },
-    { title: '地区', dataIndex: 'region', width: 100, render: (v: string | null) => v ?? '-' },
-    {
       // PRD §6.1：客户列表要能直接看到标签
       title: '标签',
       dataIndex: 'tags',
@@ -431,7 +434,6 @@ export default function CustomerListPage() {
           </span>
         ),
     },
-    { title: '来源', dataIndex: 'source', width: 120, render: (v: string | null) => v ?? '-' },
     {
       title: '联系人',
       dataIndex: 'contact_count',
@@ -600,8 +602,9 @@ export default function CustomerListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          // 14 列在 850px 里本来就塞不下：宁可横向滚，也不要把每一列压到只能显示两个字
-          scroll={{ x: 1040 }}
+          // 等于各列宽之和（约 1440）。**必须写够**：小于总宽时组件会按比例压缩列，
+          // 长文本又开始折行；大于总宽则右边多出一段空白。
+          scroll={{ x: 1440 }}
           empty={emptyText(query, '没有符合条件的客户', '换个筛选条件试试，或点右上角「新建客户」。')}
           rowSelection={{
             selectedRowKeys: selectedIds,
