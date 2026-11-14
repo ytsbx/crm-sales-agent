@@ -58,6 +58,7 @@ import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/
 import AuditLogPanel from './AuditLogPanel'
 import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
+import EmptyState from '../../shared/components/EmptyState'
 import FormLabel from '../../shared/components/FormLabel'
 import { settingDescription, settingLabel, settingNote } from '../../shared/setting-labels'
 
@@ -1180,7 +1181,12 @@ export default function SettingsPage() {
                 loading={tagsQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有标签"
+                empty={
+                  <EmptyState
+                    title="还没有标签"
+                    hint="标签是受控字典：客户详情里只能从这里建好的标签中选，建好就能用了。"
+                  />
+                }
               />
             </>
           )}

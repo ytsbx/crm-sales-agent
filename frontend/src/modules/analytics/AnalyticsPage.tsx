@@ -480,6 +480,7 @@ export default function AnalyticsPage() {
         <div className="kpi-group">
           <div className="kpi-group-head">成交与转化</div>
           <KpiStrip
+            className="kpi-grid kpi-cols-4"
             items={[
               {
                 label: '商机成交率',
@@ -527,6 +528,7 @@ export default function AnalyticsPage() {
         <div className="kpi-group">
           <div className="kpi-group-head">回款与应收</div>
           <KpiStrip
+            className="kpi-grid kpi-cols-4"
             items={[
               {
                 label: '应收合计',
@@ -554,6 +556,7 @@ export default function AnalyticsPage() {
         <div className="kpi-group">
           <div className="kpi-group-head">履约与风险</div>
           <KpiStrip
+            className="kpi-grid kpi-cols-4"
             items={[
               {
                 label: '准时交付率',

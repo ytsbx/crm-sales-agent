@@ -13,6 +13,7 @@ import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-
 
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import EmptyState from '../../shared/components/EmptyState'
 import { listUsers } from '../../shared/api/system'
 import {
   listDuplicateCases,
@@ -112,7 +113,12 @@ export default function DuplicateCasePage() {
           }}
           loading={query.isLoading}
           dataSource={query.data?.items ?? []}
-          empty="没有待裁定的撞单"
+          empty={
+            <EmptyState
+              title="没有待裁定的撞单"
+              hint="系统只在导入客户或新建时发现疑似重复，才会把候选放到这里；平时是空的，说明没有需要你裁的。"
+            />
+          }
           columns={[
             {
               title: '新导入 / 新建',

@@ -44,6 +44,7 @@ import ReceivablePlanPicker, {
   type ReceivablePlanRow,
 } from '../../shared/components/ReceivablePlanPicker'
 import SectionCard from '../../shared/components/SectionCard'
+import EmptyState from '../../shared/components/EmptyState'
 import AgentInsight from '../../shared/components/AgentInsight'
 import {
   agentOpportunityAnalysis,
@@ -612,7 +613,12 @@ export default function OpportunityDetailPage() {
                 loading={tasksQuery.isLoading}
                 rowKey="id"
                 pagination={false}
-                empty="还没有任务"
+                empty={
+                  <EmptyState
+                    title="还没有任务"
+                    hint="点上方「新建任务」记下要做的事 —— 任务记将来，跟进记过去。"
+                  />
+                }
               />
             </>
           )}
