@@ -258,7 +258,8 @@ a:not([href]) {
   display: flex;
   align-items: center;
   gap: var(--crm-space-2);
-  margin-bottom: var(--crm-space-2);
+  /* 和下面第一张卡留 12px：8px 时分组标题像贴在卡上 */
+  margin-bottom: var(--crm-space-3);
   color: var(--crm-text);
   font-size: 13px;
   font-weight: 600;
@@ -1390,6 +1391,29 @@ table:not(.semi-table) td {
   flex-wrap: wrap;
   gap: 8px;
   flex: 0 1 auto;
+}
+
+/* 按钮区里禁用按钮自带的「受阻原因」块必须藏起来：
+   它是个普通块级元素，会把同一行的按钮顶到边上去 —— 订单详情的
+   「复购开新商机」被挤到最右，就是它撑宽的。
+   原因改由头部下方那一整行 `.detail-hint` 承担；点禁用按钮仍会弹提示，
+   走的是事件提示（`useBlockedNotify`），不依赖这段 DOM。 */
+/* 只在这张头部卡片**确实有 `.detail-hint` 兜底**时才隐藏 ——
+   商机 / 报价详情的按钮区也用 GuardedButton，那边没有替代说明，
+   藏了就等于「点不动还不说为什么」。 */
+.card-block:has(.detail-hint) .dh-actions .blocked-hint-compact {
+  display: none;
+}
+
+/* 头部下方的一整行说明（订单详情「还不能同步履约状态」） */
+.detail-hint {
+  margin-top: var(--crm-space-3);
+  padding: 8px 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 /* 头部卡片里的整行内容（报价版本切换、订单 KPI 等）始终独占一行 */

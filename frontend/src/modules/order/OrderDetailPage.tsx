@@ -632,9 +632,10 @@ export default function OrderDetailPage() {
   /** 「同步履约状态」点不动时说的话（见按钮处的注释）。
    *  ⚠️ 必须与 `disabled` 同源：`erp_order_id` 有值 → 空数组（既不禁用也不解释）；
    *  没有值 → 一句话。这就是 `GuardedButton` 要的形状。 */
+  // 文案要短：它常驻在按钮旁边，四十个字会把按钮区挤成两行
   const statusSyncReasons = order?.erp_order_id
     ? []
-    : ['本单还没有 ERP/MES 单号，无法同步履约状态。请先点「推送 ERP/MES」，等对方回单号后再点这里。']
+    : ['要先有 ERP/MES 单号：点「推送 ERP/MES」等对方回单号']
 
   /**
    * 「交期与跟单计划」里「预览受影响面」的受阻原因。
@@ -859,11 +860,6 @@ export default function OrderDetailPage() {
               >
                 同步履约状态
               </GuardedButton>
-              {!order.erp_order_id && (
-                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                  本单还没有 ERP/MES 单号：先点左边「推送 ERP/MES」，等对方回单号后才能同步状态
-                </span>
-              )}
               <Popconfirm
                 title="确认创建复购商机？"
                 content="将按本订单生成一条新的商机记录，避免误点造成重复商机。"
@@ -876,6 +872,11 @@ export default function OrderDetailPage() {
           )
         }
       >
+        {!order.erp_order_id && (
+          <div className="detail-hint">
+            本单还没有 ERP/MES 单号：先点「推送 ERP/MES」，等对方回单号后才能同步状态。
+          </div>
+        )}
         <KpiStrip
           className="kpi-grid kpi-cols-4"
           style={{ marginTop: 16, marginBottom: 0 }}
