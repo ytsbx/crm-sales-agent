@@ -235,11 +235,20 @@ export default function TaskListPage() {
       title: '截止时间',
       dataIndex: 'due_at',
       width: 190,
+      // 逾期别拼成括号跟在日期后面（「2026/11/2 09:28:47（已逾期）」又长又糊）：
+      // 日期一个色、状态一个小标签，扫一眼就分得出来
       render: (value: string | null, record: Task) =>
         value ? (
-          <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
-            {formatBeijingTime(value)}
-            {record.overdue ? '（已逾期）' : ''}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            {/* 精确到分钟就够：任务截止时间带秒既没用、又把这一列撑得很长 */}
+            <span style={{ color: record.overdue ? 'var(--crm-error)' : undefined }}>
+              {formatBeijingTime(value).slice(0, 16)}
+            </span>
+            {record.overdue && (
+              <Tag color="red" size="small">
+                逾期
+              </Tag>
+            )}
           </span>
         ) : (
           '-'
