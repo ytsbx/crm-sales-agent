@@ -337,13 +337,15 @@ export default function WorkbenchPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                  {/* 数字列给固定宽：整表只有 5 列，不给宽度就会五等分，
+                      「待跟进客户」占 170px 只放一个数，中间空得厉害 */}
                   <th style={{ textAlign: 'left', padding: '6px 0', fontWeight: 500 }}>成员</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>待办</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>逾期</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 100 }}>待办</th>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 100 }}>逾期</th>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 120 }}>
                     待跟进客户
                   </th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500 }}>
+                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 160 }}>
                     本月成交额
                   </th>
                 </tr>
