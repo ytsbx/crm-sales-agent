@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Dropdown, Input, Modal, Table, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { createProduct, listProducts, type ProductPayload } from '../../shared/api/product'
 import PageHeader from '../../shared/components/PageHeader'
@@ -66,6 +66,15 @@ export default function ProductListPage() {
   // 批量导入/导出（产品报价中心 · 第一批：资料库整理入口）
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [importKind, setImportKind] = useState<'products' | 'skus'>('products')
+  // 菜单里点「导入 SKU」后会立刻打开文件选择器，用户选完文件触发 onChange。
+  // 这条链跨了两次异步（setState + 系统文件框），用 state 会读到上一次的种类；
+  // 所以用 ref 同步记住「这次点的是哪一种」，state 只留着给界面提示文字用。
+  const importKindRef = useRef<'products' | 'skus'>('products')
+  const openImport = (kind: 'products' | 'skus') => {
+    importKindRef.current = kind
+    setImportKind(kind)
+    fileInputRef.current?.click()
+  }
   const [importing, setImporting] = useState(false)
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
 
@@ -87,13 +96,13 @@ export default function ProductListPage() {
     window.URL.revokeObjectURL(blobUrl)
   }
 
-  const handleImport = async (file: File) => {
+  const handleImport = async (file: File, kind: 'products' | 'skus') => {
     setImporting(true)
     try {
       const { default: axios } = await import('axios')
       const formData = new FormData()
       formData.append('file', file)
-      const response = await axios.post(`/api/v1/${importKind}/import`, formData, {
+      const response = await axios.post(`/api/v1/${kind}/import`, formData, {
         headers: tokenHeader(),
       })
       const body = response.data
@@ -203,29 +212,38 @@ export default function ProductListPage() {
           )}
           {can('product:manage') && (
             <>
-              <Button onClick={() => downloadCsv('/api/v1/products/import-template', '产品导入模板.csv')}>
-                产品模板
-              </Button>
-              <Button onClick={() => downloadCsv('/api/v1/skus/import-template', 'SKU导入模板.csv')}>
-                SKU模板
-              </Button>
-              <Button
-                onClick={() => downloadCsv('/api/v1/products/export', '产品导出.csv')}
+              {/* 模板下载 / 导出 / 导入都是低频动作：从前 5 个控件平铺在工具栏，
+                  和「查询」「新建产品」抢视线，窄屏还会挤成两行。
+                  收进一个下拉 —— 功能一个不少，右侧只剩「导入 / 导出」+「新建产品」。 */}
+              <Dropdown
+                trigger="click"
+                position="bottomRight"
+                render={
+                  <Dropdown.Menu>
+                    <Dropdown.Item
+                      onClick={() =>
+                        void downloadCsv('/api/v1/products/import-template', '产品导入模板.csv')
+                      }
+                    >
+                      下载产品导入模板
+                    </Dropdown.Item>
+                    <Dropdown.Item
+                      onClick={() => void downloadCsv('/api/v1/skus/import-template', 'SKU导入模板.csv')}
+                    >
+                      下载 SKU 导入模板
+                    </Dropdown.Item>
+                    <Dropdown.Item
+                      onClick={() => void downloadCsv('/api/v1/products/export', '产品导出.csv')}
+                    >
+                      导出全部产品
+                    </Dropdown.Item>
+                    <Dropdown.Item onClick={() => openImport('products')}>导入产品</Dropdown.Item>
+                    <Dropdown.Item onClick={() => openImport('skus')}>导入 SKU</Dropdown.Item>
+                  </Dropdown.Menu>
+                }
               >
-                导出
-              </Button>
-              <Select
-                value={importKind}
-                onChange={(v) => setImportKind(v as 'products' | 'skus')}
-                style={{ width: 110 }}
-                optionList={[
-                  { value: 'products', label: '导入产品' },
-                  { value: 'skus', label: '导入SKU' },
-                ]}
-              />
-              <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
-                批量导入
-              </Button>
+                <Button loading={importing}>导入 / 导出 ▾</Button>
+              </Dropdown>
               {importKind === 'skus' && (
                 <span style={{ color: 'var(--crm-text-3)', fontSize: 12, maxWidth: 250 }}>
                   SKU编码可留空；系统会自动生成，重复行按产品和规格跳过
@@ -238,7 +256,7 @@ export default function ProductListPage() {
                 style={{ display: 'none' }}
                 onChange={(e) => {
                   const file = e.target.files?.[0]
-                  if (file) void handleImport(file)
+                  if (file) void handleImport(file, importKindRef.current)
                 }}
               />
             </>
