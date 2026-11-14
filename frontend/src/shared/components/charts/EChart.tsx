@@ -50,7 +50,14 @@ export default function EChart({
       ref={boxRef}
       role="img"
       aria-label={ariaLabel}
-      style={{ width: '100%', height }}
+      style={{
+        width: '100%',
+        // 不能省：这个 div 常和别的块并排放进 flex/grid 里。
+        // flex 项默认 min-width: auto，ECharts 画布一撑宽，「内容最小宽度」就跟着变大
+        // → div 不肯收缩 → 画布右侧被父级裁掉（环形图右半边被切平就是这个原因）。
+        minWidth: 0,
+        height,
+      }}
     />
   )
 }
