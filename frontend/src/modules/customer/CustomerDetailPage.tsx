@@ -573,10 +573,17 @@ export default function CustomerDetailPage() {
               </Button>
             )}
             {can('followup:create') && (
-              <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
+              // 「记录跟进」是日常最高频的动作，给它实心主色；
+              // 公海客户时「领取」才是主动作，这里让位成次要样式。
+              <Button
+                theme={customer.pool_status === 'public' ? 'light' : 'solid'}
+                onClick={() => setFollowupVisible(true)}
+              >
+                记录跟进
+              </Button>
             )}
             {can('agent:use') && (
-              <Button onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
+              <Button theme="light" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
                 问 Agent
               </Button>
             )}
@@ -1002,7 +1009,13 @@ export default function CustomerDetailPage() {
       {activeKey === 'overview' && can('agent:use') && (
         <SectionCard
           title="AI 分析"
-          style={{ marginTop: 16 }}
+          // 和普通信息卡区分开：极淡的靛蓝底 + 左侧主色竖线。
+          // 不用淡紫 —— 整套系统主色是蓝，紫插进来会像另一个系统的模块。
+          style={{
+            marginTop: 16,
+            background: 'linear-gradient(90deg, rgba(31,95,214,0.05), rgba(31,95,214,0.01) 40%, transparent)',
+            borderLeft: '3px solid var(--crm-primary)',
+          }}
           extra={
             <>
               <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('summary')}>
