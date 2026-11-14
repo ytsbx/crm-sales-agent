@@ -835,7 +835,7 @@ export default function OrderDetailPage() {
                   改状态一直要给，是因为履约状态本来就是逐段推进的。 */}
               {order.status !== 'cancelled' && (
                 <>
-                  <Button onClick={() => setStatusVisible(true)}>更新履约状态</Button>
+                  <Button onClick={() => setStatusVisible(true)}>手动改状态</Button>
                   {/* 取消订单**单独一个入口**，不混在"更新履约状态"的下拉里：
                       它牵动回款与应收（作废应收计划、驳回待确认回款、取消计划批次），
                       混进一个通用下拉，用户既不知道选下去会发生什么，
@@ -856,9 +856,9 @@ export default function OrderDetailPage() {
                 loading={statusSyncMutation.isPending}
                 disabled={!order.erp_order_id}
                 blockedReasons={statusSyncReasons}
-                action="同步履约状态"
+                action="从 ERP 同步"
               >
-                同步履约状态
+                从 ERP 同步
               </GuardedButton>
               <Popconfirm
                 title="确认创建复购商机？"
@@ -1695,7 +1695,7 @@ export default function OrderDetailPage() {
       )}
 
       <Modal
-        title="更新履约状态"
+        title="手动改履约状态"
         visible={statusVisible}
         onCancel={() => setStatusVisible(false)}
         onOk={() => {
