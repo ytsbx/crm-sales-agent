@@ -3,7 +3,8 @@ import { UNRATED_OPTION, customerLevelValue, customerLevelPayload, customerLevel
 import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Checkbox, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, Checkbox, Dropdown, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
+import { IconMore } from '@douyinfe/semi-icons'
 
 import {
   attachCustomerTags,
@@ -535,6 +536,7 @@ export default function CustomerDetailPage() {
         }
         extra={
           <>
+            {/* 台面只留日常最高频的三个动作 */}
             {can('customer:update') && (
               <Button
                 onClick={() => {
@@ -553,11 +555,6 @@ export default function CustomerDetailPage() {
                 编辑客户
               </Button>
             )}
-            {can('customer:update') && (
-              <Button onClick={() => { setRating(customerLevelValue(customer.level)); setRatingModal(true) }}>
-                {customer.level ? '重新评级' : '评定等级'}
-              </Button>
-            )}
             {can('followup:create') && (
               <Button onClick={() => setFollowupVisible(true)}>记录跟进</Button>
             )}
@@ -566,59 +563,98 @@ export default function CustomerDetailPage() {
                 问 Agent
               </Button>
             )}
-            {can('customer:assign') && (
-              <Button onClick={() => setTransferModal(true)}>转移负责人</Button>
-            )}
-            {can('customer:assign') && (
-              <Button
-                loading={duplicateCaseMutation.isPending}
-                disabled={duplicateCaseMutation.isPending}
-                onClick={() => duplicateCaseMutation.mutate()}
-              >
-                撞单检查
-              </Button>
-            )}
-            {can('customer:update') && (
-              <Button
-                onClick={() => {
-                  setMergeTarget(null)
-                  setMergeKeyword('')
-                  setMergeReason('')
-                  setMergeModal(true)
-                }}
-              >
-                合并到其他客户
-              </Button>
-            )}
-            {can('customer:assign') && customer.pool_status !== 'public' && (
-              <Popconfirm
-                title="放入公海后负责人会清空，确认？"
-                onConfirm={() => poolMutation.mutate({ action: 'release' })}
-              >
-                <Button>放入公海</Button>
-              </Popconfirm>
-            )}
+            {/* 公海客户的主动作就是「领取」，不能藏进菜单 */}
             {customer.pool_status === 'public' && (
-              <Popconfirm
-                title={`确认领取客户「${customer.name}」？`}
-                content="领取后客户将归到你名下，由你负责跟进。"
-                onConfirm={() => poolMutation.mutate({ action: 'claim' })}
-                disabled={poolMutation.isPending}
+              <Button
+                theme="solid"
+                loading={poolMutation.isPending}
+                onClick={() =>
+                  Modal.confirm({
+                    title: `确认领取客户「${customer.name}」？`,
+                    content: '领取后客户将归到你名下，由你负责跟进。',
+                    onOk: () => poolMutation.mutate({ action: 'claim' }),
+                  })
+                }
               >
-                <Button theme="solid" loading={poolMutation.isPending}>领取到我名下</Button>
-              </Popconfirm>
+                领取到我名下
+              </Button>
             )}
-            {canDeleteCustomer && (
-              <Popconfirm
-                title={`删除客户「${customer.name}」？`}
-                content="删除后客户从列表和详情中消失，名下的联系人、商机、报价、订单等资料会保留；可在回收站恢复。"
-                okText="删除"
-                okButtonProps={{ type: 'danger' }}
-                onConfirm={() => deleteMutation.mutate()}
-              >
-                <Button type="danger" loading={deleteMutation.isPending}>删除客户</Button>
-              </Popconfirm>
-            )}
+            {/* 其余低频 / 危险动作收进「更多」：台面从 9 个降到 4 个。
+                危险项仍走确认弹窗 —— 藏进菜单不等于少了二次确认。 */}
+            <Dropdown
+              trigger="click"
+              position="bottomRight"
+              render={
+                <Dropdown.Menu>
+                  {can('customer:update') && (
+                    <Dropdown.Item
+                      onClick={() => {
+                        setRating(customerLevelValue(customer.level))
+                        setRatingModal(true)
+                      }}
+                    >
+                      {customer.level ? '重新评级' : '评定等级'}
+                    </Dropdown.Item>
+                  )}
+                  {can('customer:assign') && (
+                    <Dropdown.Item onClick={() => setTransferModal(true)}>转移负责人</Dropdown.Item>
+                  )}
+                  {can('customer:assign') && (
+                    <Dropdown.Item
+                      disabled={duplicateCaseMutation.isPending}
+                      onClick={() => duplicateCaseMutation.mutate()}
+                    >
+                      撞单检查
+                    </Dropdown.Item>
+                  )}
+                  {can('customer:update') && (
+                    <Dropdown.Item
+                      onClick={() => {
+                        setMergeTarget(null)
+                        setMergeKeyword('')
+                        setMergeReason('')
+                        setMergeModal(true)
+                      }}
+                    >
+                      合并到其他客户
+                    </Dropdown.Item>
+                  )}
+                  {(can('customer:assign') || canDeleteCustomer) && <Dropdown.Divider />}
+                  {can('customer:assign') && customer.pool_status !== 'public' && (
+                    <Dropdown.Item
+                      type="danger"
+                      onClick={() =>
+                        Modal.confirm({
+                          title: '放入公海后负责人会清空，确认？',
+                          onOk: () => poolMutation.mutate({ action: 'release' }),
+                        })
+                      }
+                    >
+                      放入公海
+                    </Dropdown.Item>
+                  )}
+                  {canDeleteCustomer && (
+                    <Dropdown.Item
+                      type="danger"
+                      onClick={() =>
+                        Modal.confirm({
+                          title: `删除客户「${customer.name}」？`,
+                          content:
+                            '删除后客户从列表和详情中消失，名下的联系人、商机、报价、订单等资料会保留；可在回收站恢复。',
+                          okText: '删除',
+                          okButtonProps: { type: 'danger' },
+                          onOk: () => deleteMutation.mutate(),
+                        })
+                      }
+                    >
+                      删除客户
+                    </Dropdown.Item>
+                  )}
+                </Dropdown.Menu>
+              }
+            >
+              <Button icon={<IconMore />}>更多</Button>
+            </Dropdown>
           </>
         }
       />
