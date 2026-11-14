@@ -153,8 +153,10 @@ export default function AppLayout() {
           </button>
         </div>
 
-        {menuGroups.map((group) => (
-          <div key={group.title}>
+        {menuGroups.map((group, groupIndex) => (
+          /* nav-group / data-group 只给样式用：三组图标各给一点颜色，
+             整列图标全灰是「素」的最大来源之一（见 index.css 末尾） */
+          <div key={group.title} className="nav-group" data-group={groupIndex}>
             <div className="nav-group-title">{group.title}</div>
             {group.items.map((item) => {
               const Icon = item.icon
