@@ -376,7 +376,9 @@ export default function CustomerListPage() {
       width: 96,
       render: (value: string | null) =>
         value ? (
-          <Tag color={value === 'A' ? 'green' : value === 'B' ? 'blue' : 'grey'}>{value}</Tag>
+          // A 绿 / B 蓝 / C 橙：三档拉开。C 从前也是灰，既和「未分级」撞脸，
+          // 又让整个等级列看起来只有「有等级 / 没等级」两种状态。
+          <Tag color={value === 'A' ? 'green' : value === 'B' ? 'blue' : 'orange'}>{value}</Tag>
         ) : (
           // 「未分级」是**还没评**，不是一种等级：用描边（ghost）而不是实心灰。
           // 实心灰既和 C 级撞脸，又让整列一片脏灰色块。

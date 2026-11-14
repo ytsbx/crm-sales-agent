@@ -67,6 +67,9 @@ const TABS = [
   { tab: '日志', itemKey: 'logs' },
 ]
 
+// 客户头像色板：6 个饱和度接近的颜色 —— 够区分，又不会凑成调色盘
+const AVATAR_TONES = ['#1f5fd6', '#0e9f6e', '#d97706', '#7c3aed', '#0891b2', '#c2410c']
+
 function Field({
   label,
   value,
@@ -526,7 +529,32 @@ export default function CustomerDetailPage() {
     <div className="page-container">
       {/* 头部按设计稿排：标题 + 状态标签一行，关键信息行在标题下方左对齐，按钮贴右 */}
       <DetailHeader
-        title={customer.name}
+        title={
+          // 首字母色块：一屏只有这一个强色块 —— 既给了视觉焦点，也让不同客户有辨识度。
+          // 颜色由名字决定（同一个客户永远是同一个色），不用维护映射表。
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            <span
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 9,
+                flex: 'none',
+                background:
+                  AVATAR_TONES[
+                    (customer.name.charCodeAt(0) + customer.name.length) % AVATAR_TONES.length
+                  ],
+                color: '#fff',
+                display: 'inline-grid',
+                placeItems: 'center',
+                fontSize: 15,
+                fontWeight: 600,
+              }}
+            >
+              {customer.name.slice(0, 1)}
+            </span>
+            {customer.name}
+          </span>
+        }
         tags={
           <>
             {/* 未分级（level 为空）用描边，和列表页一致：它是「还没评」，
@@ -1013,7 +1041,7 @@ export default function CustomerDetailPage() {
           // 不用淡紫 —— 整套系统主色是蓝，紫插进来会像另一个系统的模块。
           style={{
             marginTop: 16,
-            background: 'linear-gradient(90deg, rgba(31,95,214,0.05), rgba(31,95,214,0.01) 40%, transparent)',
+            background: 'linear-gradient(90deg, rgba(31,95,214,0.10), rgba(31,95,214,0.03) 45%, transparent)',
             borderLeft: '3px solid var(--crm-primary)',
           }}
           extra={
