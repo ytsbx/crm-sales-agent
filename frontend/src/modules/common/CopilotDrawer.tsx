@@ -204,7 +204,23 @@ export default function CopilotDrawer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, seed, sending])
 
-  if (!open) return null
+  // 进出场：关闭后先播 240ms 滑出、再卸载 —— 保住原来「关掉即重置」的语义，
+  // 又不至于「说没就没」。这两个 state 与 effect 必须放在下面提前 return 之前。
+  const [mounted, setMounted] = useState(open)
+  const [entered, setEntered] = useState(false)
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      // 先按「屏外」渲染一帧、再切到「就位」，transition 才会真的跑起来
+      const raf = requestAnimationFrame(() => setEntered(true))
+      return () => cancelAnimationFrame(raf)
+    }
+    setEntered(false)
+    const timer = window.setTimeout(() => setMounted(false), 240)
+    return () => window.clearTimeout(timer)
+  }, [open])
+
+  if (!mounted) return null
 
   const messages = detailQuery.data?.messages ?? []
   // L2 待确认 + L3 需审批都要出确认按钮——只认 awaiting_confirmation 的话，
@@ -259,6 +275,9 @@ export default function CopilotDrawer() {
           inset: 0,
           background: 'rgba(24, 28, 35, 0.28)',
           zIndex: 900,
+          opacity: entered ? 1 : 0,
+          pointerEvents: entered ? 'auto' : 'none',
+          transition: 'opacity var(--crm-dur-panel) var(--crm-ease)',
         }}
       />
       <aside
@@ -274,6 +293,9 @@ export default function CopilotDrawer() {
           zIndex: 901,
           display: 'flex',
           flexDirection: 'column',
+          transform: entered ? 'translateX(0)' : 'translateX(100%)',
+          transition: 'transform var(--crm-dur-panel) var(--crm-ease)',
+          willChange: 'transform',
         }}
       >
         <div

@@ -851,9 +851,13 @@ export default function AnalyticsPage() {
           <a
             key={item.id}
             onClick={() =>
-              document
-                .getElementById(item.id)
-                ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              document.getElementById(item.id)?.scrollIntoView({
+                // 系统开了「减少动效」就直接跳，别强行平滑滚一屏
+                behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                  ? 'auto'
+                  : 'smooth',
+                block: 'start',
+              })
             }
           >
             {item.label}

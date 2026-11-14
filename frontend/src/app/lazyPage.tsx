@@ -1,4 +1,3 @@
-import { Spin } from '@douyinfe/semi-ui'
 import { Component, createElement, lazy, Suspense, useEffect, useRef, type ComponentType, type ReactNode } from 'react'
 
 /**
@@ -154,9 +153,17 @@ export function lazyPage<P extends object>(
     return (
       <PageBoundary loadedRef={loadedRef}>
         <Suspense fallback={
-          <div className="page-container" role="status" aria-label="页面加载中"
-            style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 240 }}>
-            <Spin size="large" tip="页面加载中…" />
+          /* 骨架屏替代转圈：给的是「内容轮廓」，让人知道快出什么、还剩多长，
+             而不是一个看不出进度的圆环。宽度全用百分比/弹性，窄屏不溢出。 */
+          <div className="page-container" role="status" aria-label="页面加载中">
+            <div className="skeleton-block skeleton-title" />
+            <div className="skeleton-block skeleton-sub" />
+            <div className="skeleton-row">
+              {[0, 1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className="skeleton-card" />
+              ))}
+            </div>
+            <div className="skeleton-block skeleton-panel" />
           </div>
         }>
           <MarkLoaded loadedRef={loadedRef}>{createElement(Page, props)}</MarkLoaded>
