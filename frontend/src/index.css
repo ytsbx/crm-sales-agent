@@ -1454,7 +1454,10 @@ table:not(.semi-table) td {
   min-width: 0;
 }
 .detail-split > .split-side {
-  flex: 1 1 280px;
+  /* 不放大：从前写 flex:1 时右栏会跟左栏平分宽度，
+     内容只有一行字也硬占一半（商机详情右栏就是一片空白）。
+     现在宽度按 280 的基准走，富余空间全给左栏。 */
+  flex: 0 1 280px;
   min-width: 0;
 }
 

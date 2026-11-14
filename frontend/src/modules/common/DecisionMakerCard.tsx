@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Button, Empty, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Tag, Toast } from '@douyinfe/semi-ui'
 
 import { listContacts } from '../../shared/api/customer'
 import type { Contact } from '../../shared/types'
@@ -69,7 +69,11 @@ export default function DecisionMakerCard({
       {contactsQuery.isLoading ? (
         <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>
       ) : contacts.length === 0 ? (
-        <Empty description="该客户还没有登记联系人（这里只会出现客户单位的人）" style={{ padding: '12px 0' }} />
+        // 不用 <Empty>：它自带一个大图标，150px 高，而这里只有一句话要说 ——
+        // 商机详情右栏本来就窄，一块空态把下面全撑开了。
+        <div style={{ color: 'var(--crm-text-3)', fontSize: 12.5, lineHeight: 1.7 }}>
+          该客户还没有登记联系人。这里只会出现客户单位的人，加上之后就能标出谁拍板。
+        </div>
       ) : (
         <>
           {/* 最关键的一位单独放大，设计稿里的「核心决策人」就是这一块 */}
