@@ -566,8 +566,13 @@ a:not([href]) {
   cursor: pointer;
 }
 
+.nav-link {
+  /* 底色和位移都走 0.15s：鼠标从上到下扫菜单时是「跟过来」的，不是一格一格跳 */
+  transition: background-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
 .nav-link:hover {
   background: var(--crm-surface-low);
+  transform: translateX(2px);
 }
 
 .nav-link.active {
@@ -1182,10 +1187,24 @@ a:not([href]) {
 .page-container > .card-block:nth-child(4) { animation-delay: 0.12s; }
 .page-container > .card-block:nth-child(5) { animation-delay: 0.16s; }
 
-/* 系统开了「减弱动态效果」就不播 —— 这是无障碍底线，不是可选项 */
+/* 已选中的菜单项不位移：它已经是「当前位置」，再动会像没站稳 */
+.nav-link.active:hover {
+  transform: none;
+}
+
+/* 系统开了「减弱动态效果」就全停 —— 这是无障碍底线，不是可选项 */
 @media (prefers-reduced-motion: reduce) {
   .card-block {
     animation: none !important;
+  }
+  .nav-link,
+  .nav-link:hover,
+  .semi-table-tbody .semi-table-row-cell,
+  .semi-button {
+    transition: none !important;
+  }
+  .nav-link:hover {
+    transform: none !important;
   }
 }
 
@@ -1231,9 +1250,15 @@ a:not([href]) {
 .semi-table-tbody > .semi-table-row:nth-child(even) > .semi-table-row-cell {
   background: #f8fafe;
 }
-/* 悬停整行淡蓝（写在斑马纹之后，盖住它） */
+/* 悬停整行淡蓝（写在斑马纹之后，盖住它）。
+   加 0.15s 过渡：鼠标扫过几行时颜色是「跟过来」的，不是一格一格跳。
+   不用 transform 抬起 —— tr 上的 transform 在部分浏览器不生效，
+   而且表格本来就在滚动的容器里，位移会和滚动打架。 */
+.semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+  transition: background-color 0.15s ease;
+}
 .semi-table-tbody > .semi-table-row:hover > .semi-table-row-cell {
-  background: #eff4fd;
+  background: #e7f0ff;
 }
 
 /* 表格内容统一居中（2026-10-06 主人要求：全站表格一律居中，不留特例）。
