@@ -10,19 +10,24 @@ export default function PageHeader({
   title,
   subtitle,
   extra,
+  className,
 }: {
-  title: string
+  /** 纯文字标题，或「标题 + 状态标签」这样的组合（工作台要用）。 */
+  title: ReactNode
   subtitle?: string
   extra?: ReactNode
+  /** 需要窄屏特殊排布的页面挂自己的响应式钩子（工作台的 wb-greeting）。 */
+  className?: string
 }) {
   return (
     <div
+      className={className ? `page-header ${className}` : 'page-header'}
       style={{
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
-        gap: 16,
-        marginBottom: 16,
+        gap: 'var(--crm-space-4)',
+        marginBottom: 'var(--crm-space-4)',
       }}
     >
       <div>
@@ -33,7 +38,11 @@ export default function PageHeader({
           </p>
         )}
       </div>
-      {extra && <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>{extra}</div>}
+      {extra && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--crm-space-3)' }}>
+          {extra}
+        </div>
+      )}
     </div>
   )
 }

@@ -22,6 +22,7 @@ import {
   type TrendRow,
 } from '../../shared/api/analytics'
 import { getFunnel, listOpportunities } from '../../shared/api/opportunity'
+import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import EChart from '../../shared/components/charts/EChart'
 import {
@@ -208,21 +209,13 @@ export default function WorkbenchPage() {
           />
         </div>
       ))}
-      {/* 问候 */}
-      <div
+      {/* 问候：复用全站页面头，标题字号与右侧操作区的间距跟其他页面同一套刻度。
+          wb-greeting 只用来接住窄屏纵向堆叠那条老规则，不自带视觉。 */}
+      <PageHeader
         className="wb-greeting"
-        style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          marginBottom: 18,
-        }}
-      >
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 24, fontWeight: 650, letterSpacing: '-0.3px' }}>
-              {greeting()}，{user?.name ?? ''}
-            </span>
+        title={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--crm-space-2)' }}>
+            {greeting()}，{user?.name ?? ''}
             <span className="chip chip-primary">
               {user?.department ?? '未分配部门'} ·{' '}
               {(
@@ -234,37 +227,36 @@ export default function WorkbenchPage() {
                 } as Record<string, string>
               )[user?.roles?.[0] ?? ''] ?? '无角色'}
             </span>
-          </div>
-          <div style={{ color: 'var(--crm-text-3)', fontSize: 13, marginTop: 6 }}>
-            这里是您今天的工作概览 ·{' '}
-            {formatBeijingDate(today, {
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-              weekday: 'long',
-            })}
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            数据同步时间：{formatBeijingClock(new Date(), { hour: '2-digit', minute: '2-digit' })}
           </span>
-          <Button
-            icon={<IconRefresh />}
-            onClick={() => {
-              void summaryQuery.refetch()
-              void tasksQuery.refetch()
-              void trendQuery.refetch()
-              void activitiesQuery.refetch()
-              void teamQuery.refetch()
-              Toast.success('已刷新')
-            }}
-          />
-          <Button theme="solid" onClick={() => navigate('/leads')}>
-            快速创建
-          </Button>
-        </div>
-      </div>
+        }
+        subtitle={`这里是您今天的工作概览 · ${formatBeijingDate(today, {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          weekday: 'long',
+        })}`}
+        extra={
+          <>
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              数据同步时间：{formatBeijingClock(new Date(), { hour: '2-digit', minute: '2-digit' })}
+            </span>
+            <Button
+              icon={<IconRefresh />}
+              onClick={() => {
+                void summaryQuery.refetch()
+                void tasksQuery.refetch()
+                void trendQuery.refetch()
+                void activitiesQuery.refetch()
+                void teamQuery.refetch()
+                Toast.success('已刷新')
+              }}
+            />
+            <Button theme="solid" onClick={() => navigate('/leads')}>
+              快速创建
+            </Button>
+          </>
+        }
+      />
 
       {/* 6 张 KPI 卡 */}
       <div className="kpi-grid kpi-cols-6">

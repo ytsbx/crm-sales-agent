@@ -61,7 +61,7 @@ export default function FormLabel({
   className?: string
 }) {
   return (
-    <div className={className} style={{ marginBottom: 4, ...style }}>
+    <div className={className} style={{ marginBottom: 'var(--crm-space-1)', ...style }}>
       {children}
       {required && (
         // aria-hidden：读屏器念一声「星号」对使用者没有帮助，必填最终由

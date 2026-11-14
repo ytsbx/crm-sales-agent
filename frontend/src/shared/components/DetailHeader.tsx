@@ -35,11 +35,18 @@ export default function DetailHeader({
   style?: CSSProperties
 }) {
   return (
-    <div className="card-block" style={{ marginBottom: 16, ...style }}>
+    <div className="card-block" style={{ marginBottom: 'var(--crm-space-4)', ...style }}>
       {/* 宽度不够时自动换行：标题在上、操作按钮落到下方靠左（见 index.css） */}
       <div className="detail-header-grid">
         <div className="dh-main">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--crm-space-3)',
+              flexWrap: 'wrap',
+            }}
+          >
             <span className="detail-title">{title}</span>
             {tags}
           </div>

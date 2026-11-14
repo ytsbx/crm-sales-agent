@@ -16,11 +16,17 @@
   --crm-success: #00b42a;
   --crm-caution: #ff7d00;
 
-  --crm-bg: #f9f9ff;
+  /* 页面底色降一档：原来 #f9f9ff 与白卡只差 6/255，肉眼几乎分不出卡片边界。
+     仍是「描边派」（不加静态阴影），靠底色差让白卡浮出来。 */
+  --crm-bg: #f0f2fa;
   --crm-surface: #ffffff;
-  --crm-surface-low: #f1f3ff;
+  /* 页面底降下来之后，浅填充必须跟着降一档：否则搜索框、表头、悬停底色
+     会和背景几乎同色，反而从界面上「消失」。 */
+  --crm-surface-low: #e8ebf7;
   --crm-surface-mid: #ebedf9;
   --crm-surface-high: #e5e8f3;
+  /* 卡片专用描边：比表格线略深，只给卡片用，不动表格与页签的细线。 */
+  --crm-card-border: #cdd3e6;
   --crm-outline: #c2c6d8;
 
   --crm-text: #181c23;
@@ -39,6 +45,28 @@
   --crm-shadow-lg: 0 4px 12px rgba(16, 24, 40, 0.08);
   --crm-surface-highest: #dfe2ed;
   --crm-outline-strong: #727687;
+
+  /* 这三个以前只在页面里被引用、这里从没定义过：
+     --crm-border 那几处边框声明会整条失效；--crm-danger 各页自带兜底，
+     同一个「危险」状态出现过四种红。补上定义后，页面里原有的兜底色
+     会自动让位给这里的值，不必逐个改页面。 */
+  --crm-danger: var(--crm-error);
+  --crm-border: var(--crm-surface-high);
+  --crm-text-1: var(--crm-text);
+
+  /* 间距与字号刻度：以前每个组件各写 14/16/18/24，全站对不齐。
+     新代码只用这几档；本文件里能对上的旧值同步换成令牌，视觉不变。 */
+  --crm-space-1: 4px;
+  --crm-space-2: 8px;
+  --crm-space-3: 12px;
+  --crm-space-4: 16px;
+  --crm-space-5: 24px;
+  --crm-space-6: 32px;
+  --crm-font-page: 22px;
+  --crm-font-detail: 20px;
+  --crm-font-card: 15px;
+  --crm-font-body: 14px;
+  --crm-font-note: 13px;
 
   /* Semi Design 主题变量：让组件库跟随上面的令牌 */
   --semi-color-primary: var(--crm-primary);
@@ -79,7 +107,7 @@ body {
   color: var(--crm-text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
     'Segoe UI', Roboto, sans-serif;
-  font-size: 14px;
+  font-size: var(--crm-font-body);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -113,11 +141,11 @@ a:not([href]) {
    页面骨架
    ============================================================ */
 .page-container {
-  padding: 20px 24px 40px;
+  padding: 20px var(--crm-space-5) 40px;
 }
 
 .page-title {
-  font-size: 22px;
+  font-size: var(--crm-font-page);
   font-weight: 600;
   letter-spacing: -0.2px;
   margin: 0 0 6px;
@@ -125,13 +153,13 @@ a:not([href]) {
 
 .page-subtitle {
   color: var(--crm-text-3);
-  font-size: 13px;
+  font-size: var(--crm-font-note);
   margin: 0 0 18px;
 }
 
 /* 详情页头部：主标题 + 标题下方的关键信息行（见 shared/components/DetailHeader.tsx） */
 .detail-title {
-  font-size: 20px;
+  font-size: var(--crm-font-detail);
   font-weight: 600;
   letter-spacing: -0.2px;
   /* 超长的单号 / 客户名在没有空格时也能断开，不会顶出容器 */
@@ -146,26 +174,26 @@ a:not([href]) {
   flex-wrap: wrap;
   margin-top: 8px;
   color: var(--crm-text-2);
-  font-size: 13px;
+  font-size: var(--crm-font-note);
 }
 
 .card-block {
   background: var(--crm-surface);
-  border: 1px solid var(--crm-surface-high);
+  border: 1px solid var(--crm-card-border);
   border-radius: var(--crm-radius);
   padding: 18px;
   box-shadow: var(--crm-shadow);
 }
 
 .card-title {
-  font-size: 15px;
+  font-size: var(--crm-font-card);
   font-weight: 600;
   color: var(--crm-text);
 }
 
 .toolbar {
   display: flex;
-  gap: 12px;
+  gap: var(--crm-space-3);
   align-items: center;
   flex-wrap: wrap;
   margin-bottom: 14px;
@@ -196,8 +224,8 @@ a:not([href]) {
 .row-3,
 .row-4 {
   display: grid;
-  gap: 16px;
-  margin-top: 16px;
+  gap: var(--crm-space-4);
+  margin-top: var(--crm-space-4);
   align-items: stretch;
 }
 
@@ -240,12 +268,12 @@ a:not([href]) {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 14px;
-  margin-bottom: 16px;
+  margin-bottom: var(--crm-space-4);
 }
 
 .kpi-card {
   background: var(--crm-surface);
-  border: 1px solid var(--crm-surface-high);
+  border: 1px solid var(--crm-card-border);
   border-radius: var(--crm-radius);
   padding: 16px 18px;
   box-shadow: var(--crm-shadow);

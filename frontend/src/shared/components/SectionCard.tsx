@@ -23,7 +23,7 @@ export default function SectionCard({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            marginBottom: 14,
+            marginBottom: 'var(--crm-space-4)',
           }}
         >
           {typeof title === 'string' ? <span className="card-title">{title}</span> : title}

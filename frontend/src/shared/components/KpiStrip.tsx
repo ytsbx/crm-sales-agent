@@ -49,7 +49,7 @@ export default function KpiStrip({
               {item.value}
             </div>
             {item.hint && (
-              <div style={{ marginTop: 10 }}>
+              <div style={{ marginTop: 'var(--crm-space-3)' }}>
                 <span className={tone.chip}>{item.hint}</span>
               </div>
             )}
