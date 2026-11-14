@@ -90,6 +90,21 @@ export default function SettingsPage() {
   const activeKey = visibleTabs.some((item) => item.itemKey === searchParams.get('tab'))
     ? searchParams.get('tab')! : (isAdmin ? 'users' : 'profile')
 
+  // 设置页按「这是谁的事」分四组：个人 / 组织与人 / 业务配置 / 系统。
+  // 组内一个可见页签都没有的组直接不渲染 —— 普通用户只看到「我的」，
+  // 不会冒出三个空标题；只有公海复核权的人只多出「业务配置」一组。
+  const tabGroups = [
+    { title: '个人', keys: ['profile'] },
+    { title: '组织与权限', keys: ['users', 'roles', 'departments'] },
+    { title: '业务配置', keys: ['tags', 'dictionaries', 'rules'] },
+    { title: '系统', keys: ['notifications', 'audit'] },
+  ]
+    .map((group) => ({
+      title: group.title,
+      items: visibleTabs.filter((item) => group.keys.includes(item.itemKey)),
+    }))
+    .filter((group) => group.items.length > 0)
+
   // 用户列表：搜索与筛选（后端 `GET /users` 本来就支持 keyword / status /
   // department_id / 分页，从前前端一个都没接 —— 只能靠肉眼在一屏里找人，
   // 而且**超过 50 人后面的人根本显示不出来**（没有翻页，静默截断）。
@@ -891,15 +906,26 @@ export default function SettingsPage() {
         }
       />
       <SectionCard>
-        <Tabs
-          type="line"
-          activeKey={activeKey}
-          onChange={(key) => {
-            setSearchParams({ tab: key })
-          }}
-          tabList={visibleTabs}
-        />
-        <div style={{ marginTop: 16 }}>
+        <div className="settings-shell">
+          <nav className="settings-nav" aria-label="设置分类">
+            {tabGroups.map((group) => (
+              <div className="settings-nav-group" key={group.title}>
+                <div className="settings-nav-title">{group.title}</div>
+                {group.items.map((item) => (
+                  <a
+                    key={item.itemKey}
+                    className={`settings-nav-item${activeKey === item.itemKey ? ' active' : ''}`}
+                    onClick={() => {
+                      setSearchParams({ tab: item.itemKey })
+                    }}
+                  >
+                    {item.tab}
+                  </a>
+                ))}
+              </div>
+            ))}
+          </nav>
+          <div className="settings-content">
           {activeKey === 'profile' && (
             <div style={{ display: 'grid', gap: 16 }}>
               {/* 先给"能改的"（登录名 / 密码），再给"只能看的"（资料 / 权限）：
@@ -1821,6 +1847,7 @@ export default function SettingsPage() {
               )}
             </div>
           )}
+          </div>
         </div>
       </SectionCard>
 

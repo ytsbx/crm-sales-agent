@@ -1725,6 +1725,72 @@ table:not(.semi-table) td {
   .agent-empty { margin: 28px auto; }
 }
 
+/* 设置页：左侧按「谁的事」分组，右侧是内容。
+   低频页也要能一眼看出「用户/角色/部门」和「标签/字典/规则」不是一类东西。 */
+.settings-shell {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--crm-space-5);
+}
+.settings-nav {
+  flex: 0 0 168px;
+  min-width: 0;
+}
+.settings-nav-group + .settings-nav-group {
+  margin-top: var(--crm-space-4);
+}
+.settings-nav-title {
+  padding: 0 10px 6px;
+  color: var(--crm-text-3);
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
+/* 用 a + onClick 的项目写法（不带 href），这里要压过全局 a:not([href]) 的主色 */
+.settings-nav .settings-nav-item {
+  display: block;
+  padding: 7px 10px;
+  border-radius: var(--crm-radius-sm);
+  color: var(--crm-text-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background-color var(--crm-dur-fast) var(--crm-ease),
+    color var(--crm-dur-fast) var(--crm-ease);
+}
+.settings-nav .settings-nav-item:hover {
+  background: var(--crm-surface-low);
+  color: var(--crm-text);
+}
+.settings-nav .settings-nav-item.active {
+  background: var(--crm-primary-soft);
+  color: var(--crm-primary);
+  font-weight: 600;
+}
+.settings-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 窄屏：左侧竖排变一组可换行的横排标签，分组标题收起（组本身不丢） */
+@media (max-width: 900px) {
+  .settings-shell {
+    flex-direction: column;
+    gap: var(--crm-space-4);
+  }
+  .settings-nav {
+    flex: 1 1 auto;
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .settings-nav-group {
+    display: contents;
+  }
+  .settings-nav-title {
+    display: none;
+  }
+}
+
 /* 页面按需加载时的骨架：给内容轮廓，比一个转圈更容易看出「快出什么」。 */
 .skeleton-block,
 .skeleton-card {
