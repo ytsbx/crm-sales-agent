@@ -500,83 +500,103 @@ export default function AnalyticsPage() {
         note="全站概览 · 先看总量与风险，再看下面的图和明细"
         primary
       />
-      <KpiStrip
-        items={[
-          {
-            label: '商机成交率',
-            value: `${((opportunity?.win_rate ?? 0) * 100).toFixed(0)}%`,
-            hint: `成交 ${opportunity?.won_count ?? 0} / 失单 ${opportunity?.loss_count ?? 0}`,
-          },
-          {
-            label: '报价接受率',
-            value: `${((quote?.accept_rate ?? 0) * 100).toFixed(0)}%`,
-            hint: `报价单 ${quote?.quote_count ?? 0} 张`,
-          },
-          {
-            label: '平均让价幅度',
-            value: `${((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
-            hint: `平均版本数 ${quote?.average_versions ?? 0}`,
-          },
-          {
-            label: '低价审批比例',
-            value: `${((quote?.approval_rate ?? 0) * 100).toFixed(0)}%`,
-            hint: `需审批 ${quote?.approval_required_count ?? 0} 次`,
-          },
-          {
-            label: '应收合计',
-            value: money(receivable?.plan_amount),
-            hint: `实际到账 ${money(receivable?.received_amount)} · 已分配 ${money(receivable?.allocated_amount)}`,
-          },
-          {
-            label: '尚未到账',
-            value: money(receivable?.unreceived_amount),
-            hint: `逾期节点 ${receivable?.overdue_count ?? 0}`,
-          },
-          {
-            label: '已到账待分配',
-            value: money(receivable?.unallocated_amount),
-            hint: `应收期未结 ${money(receivable?.unsettled_plan_amount)}，请先核对分配再催款`,
-          },
-          {
-            label: '线索转化率',
-            value: `${((lead?.conversion_rate ?? 0) * 100).toFixed(0)}%`,
-            hint:
-              lead?.average_conversion_days != null
-                ? `平均 ${lead.average_conversion_days} 天转化`
-                : `线索 ${lead?.total ?? 0} 条`,
-          },
-          {
-            label: '客户活跃 / 沉睡',
-            value: `${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`,
-            hint: `复购客户 ${customer?.repeat_customer_count ?? 0} 家`,
-          },
-          {
-            label: '平均成交周期',
-            value: cycle?.average_days != null ? `${cycle.average_days} 天` : '-',
-            hint: cycle?.won_with_history
-              ? `基于 ${cycle.won_with_history} 个有阶段记录的成交商机`
-              : '暂无成交商机',
-          },
-          {
-            label: '逾期应收',
-            value: money(payment?.overdue_amount),
-            hint: `逾期节点 ${payment?.overdue_node_count ?? 0} 个`,
-          },
-          {
-            label: '准时交付率',
-            // 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟"
-            value: deliverySummary?.delivered_order_count
-              ? `${(deliverySummary.on_time_rate * 100).toFixed(0)}%`
-              : '-',
-            hint: `准时 ${deliverySummary?.on_time_count ?? 0} / 延迟 ${deliverySummary?.late_count ?? 0}`,
-          },
-          {
-            label: '交期风险',
-            value: `${deliverySummary?.risk_order_count ?? 0} 单`,
-            hint: `${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`,
-          },
-        ]}
-      />
+      {/* 13 个指标按业务口径分三组。顺序按组重排，数值和口径一个没改。 */}
+      <div className="kpi-groups">
+        <div className="kpi-group">
+          <div className="kpi-group-head">成交与转化</div>
+          <KpiStrip
+            items={[
+              {
+                label: '商机成交率',
+                value: `${((opportunity?.win_rate ?? 0) * 100).toFixed(0)}%`,
+                hint: `成交 ${opportunity?.won_count ?? 0} / 失单 ${opportunity?.loss_count ?? 0}`,
+              },
+              {
+                label: '报价接受率',
+                value: `${((quote?.accept_rate ?? 0) * 100).toFixed(0)}%`,
+                hint: `报价单 ${quote?.quote_count ?? 0} 张`,
+              },
+              {
+                label: '平均让价幅度',
+                value: `${((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
+                hint: `平均版本数 ${quote?.average_versions ?? 0}`,
+              },
+              {
+                label: '低价审批比例',
+                value: `${((quote?.approval_rate ?? 0) * 100).toFixed(0)}%`,
+                hint: `需审批 ${quote?.approval_required_count ?? 0} 次`,
+              },
+              {
+                label: '线索转化率',
+                value: `${((lead?.conversion_rate ?? 0) * 100).toFixed(0)}%`,
+                hint:
+                  lead?.average_conversion_days != null
+                    ? `平均 ${lead.average_conversion_days} 天转化`
+                    : `线索 ${lead?.total ?? 0} 条`,
+              },
+              {
+                label: '客户活跃 / 沉睡',
+                value: `${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`,
+                hint: `复购客户 ${customer?.repeat_customer_count ?? 0} 家`,
+              },
+              {
+                label: '平均成交周期',
+                value: cycle?.average_days != null ? `${cycle.average_days} 天` : '-',
+                hint: cycle?.won_with_history
+                  ? `基于 ${cycle.won_with_history} 个有阶段记录的成交商机`
+                  : '暂无成交商机',
+              },
+            ]}
+          />
+        </div>
+        <div className="kpi-group">
+          <div className="kpi-group-head">回款与应收</div>
+          <KpiStrip
+            items={[
+              {
+                label: '应收合计',
+                value: money(receivable?.plan_amount),
+                hint: `实际到账 ${money(receivable?.received_amount)} · 已分配 ${money(receivable?.allocated_amount)}`,
+              },
+              {
+                label: '尚未到账',
+                value: money(receivable?.unreceived_amount),
+                hint: `逾期节点 ${receivable?.overdue_count ?? 0}`,
+              },
+              {
+                label: '已到账待分配',
+                value: money(receivable?.unallocated_amount),
+                hint: `应收期未结 ${money(receivable?.unsettled_plan_amount)}，请先核对分配再催款`,
+              },
+              {
+                label: '逾期应收',
+                value: money(payment?.overdue_amount),
+                hint: `逾期节点 ${payment?.overdue_node_count ?? 0} 个`,
+              },
+            ]}
+          />
+        </div>
+        <div className="kpi-group">
+          <div className="kpi-group-head">履约与风险</div>
+          <KpiStrip
+            items={[
+              {
+                label: '准时交付率',
+                // 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟"
+                value: deliverySummary?.delivered_order_count
+                  ? `${(deliverySummary.on_time_rate * 100).toFixed(0)}%`
+                  : '-',
+                hint: `准时 ${deliverySummary?.on_time_count ?? 0} / 延迟 ${deliverySummary?.late_count ?? 0}`,
+              },
+              {
+                label: '交期风险',
+                value: `${deliverySummary?.risk_order_count ?? 0} 单`,
+                hint: `${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`,
+              },
+            ]}
+          />
+        </div>
+      </div>
 
       {/* ── ① 趋势：随时间变的东西，只有折线说得清 ─────────────────────── */}
       <GroupHead index="02" title="趋势" note="随时间变化的量，看走向而不是单点" />
@@ -842,7 +862,30 @@ export default function AnalyticsPage() {
 
       {/* ── ⑥ 明细表：算账要抄的具体数字，图替代不了 ───────────────────── */}
       <GroupHead index="07" title="明细数据" note="算账要抄的具体数字，图替代不了" />
-      <SectionCard title="交期履约（按负责人）" style={{ marginTop: 16 }}>
+      {/* 页内目录：只做跳转，不折叠、不藏数据，主列表 7 张表全在下面。 */}
+      <div className="detail-jump">
+        {[
+          { id: 'detail-delivery', label: '交期履约' },
+          { id: 'detail-risk-order', label: '交期风险单' },
+          { id: 'detail-product', label: '产品表现' },
+          { id: 'detail-sales', label: '业务员表现' },
+          { id: 'detail-basis', label: '目标口径明细' },
+          { id: 'detail-timing', label: '操作耗时' },
+          { id: 'detail-target', label: '目标 vs 实际' },
+        ].map((item) => (
+          <a
+            key={item.id}
+            onClick={() =>
+              document
+                .getElementById(item.id)
+                ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+            }
+          >
+            {item.label}
+          </a>
+        ))}
+      </div>
+      <SectionCard id="detail-delivery" title="交期履约（按负责人）" style={{ marginTop: 16 }}>
         <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 10, lineHeight: 1.7 }}>
           准时 = 首批发货日期 ≤ 计划发货日（到货日减运输天数）；统计近 {deliverySummary?.window_months ?? 12} 个月内已发首批货的订单。
           缺少交期或交期类型未确认的已发货单不进准时率分母（当前 {deliverySummary?.undated_delivered_count ?? 0} 单）。
@@ -876,7 +919,7 @@ export default function AnalyticsPage() {
         )}
       </SectionCard>
 
-      <SectionCard title="交期风险单（已过交期仍未发货）" style={{ marginTop: 16 }}>
+      <SectionCard id="detail-risk-order" title="交期风险单（已过交期仍未发货）" style={{ marginTop: 16 }}>
         <Table<DeliveryRiskOrder>
           columns={[
             { title: '订单号', dataIndex: 'order_no', width: 170 },
@@ -911,7 +954,7 @@ export default function AnalyticsPage() {
         />
       </SectionCard>
 
-      <SectionCard title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）" style={{ marginTop: 16 }}>
+      <SectionCard id="detail-product" title="产品表现（询盘 / 报价 / 成交 / 失单 / 利润）" style={{ marginTop: 16 }}>
         <Table<ProductStat>
           columns={[
             {
@@ -982,7 +1025,7 @@ export default function AnalyticsPage() {
         />
       </SectionCard>
 
-      <SectionCard title="业务员表现" style={{ marginTop: 16 }}>
+      <SectionCard id="detail-sales" title="业务员表现" style={{ marginTop: 16 }}>
         <Table<SalesUserStat>
           columns={[
             { title: '姓名', dataIndex: 'name', width: 120 },
@@ -1011,7 +1054,7 @@ export default function AnalyticsPage() {
       </SectionCard>
 
       {/* 场景17：三个销售额口径必须分开看，否则"回款没到但签了单"会被当成已完成 */}
-      <SectionCard title="目标口径明细（签单 / 发货 / 回款 + 老客净额）" style={{ marginTop: 16 }}>
+      <SectionCard id="detail-basis" title="目标口径明细（签单 / 发货 / 回款 + 老客净额）" style={{ marginTop: 16 }}>
         {(() => {
           const b = basesQuery.data
           if (!b) return <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>暂无数据</div>
@@ -1090,7 +1133,7 @@ export default function AnalyticsPage() {
         })()}
       </SectionCard>
 
-      <SectionCard title="操作耗时（场景18：拿它跟表格流程比）" style={{ marginTop: 16 }}>
+      <SectionCard id="detail-timing" title="操作耗时（场景18：拿它跟表格流程比）" style={{ marginTop: 16 }}>
         <Table
           size="small"
           pagination={false}
@@ -1132,7 +1175,7 @@ export default function AnalyticsPage() {
         )}
       </SectionCard>
 
-      <SectionCard title="目标 vs 实际（模块⑧）" style={{ marginTop: 16 }}>
+      <SectionCard id="detail-target" title="目标 vs 实际（模块⑧）" style={{ marginTop: 16 }}>
         <div className="toolbar" style={{ marginBottom: 12 }}>
           <Select
             value={targetYear}

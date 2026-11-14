@@ -231,6 +231,55 @@ a:not([href]) {
   color: var(--crm-primary);
 }
 
+/* 核心指标内部再分三堆：组名比卡片小一号，组间 16px，组内不留额外下边距。 */
+.kpi-groups {
+  margin-bottom: var(--crm-space-4);
+}
+.kpi-group + .kpi-group {
+  margin-top: var(--crm-space-4);
+}
+.kpi-group .kpi-grid {
+  margin-bottom: 0;
+}
+.kpi-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--crm-space-2);
+  margin-bottom: var(--crm-space-2);
+  color: var(--crm-text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.kpi-group-head::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--crm-outline);
+}
+
+/* 明细表页内目录：只跳转不折叠，7 张表始终全在页面上。 */
+.detail-jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--crm-space-2);
+  margin-bottom: var(--crm-space-3);
+}
+.detail-jump a {
+  padding: 3px 10px;
+  border: 1px solid var(--crm-card-border);
+  border-radius: var(--crm-radius-pill);
+  background: var(--crm-surface);
+  color: var(--crm-text-2);
+  font-size: 12px;
+  white-space: nowrap;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+.detail-jump a:hover {
+  border-color: var(--crm-primary);
+  color: var(--crm-primary);
+}
+
 .toolbar {
   display: flex;
   gap: var(--crm-space-3);
