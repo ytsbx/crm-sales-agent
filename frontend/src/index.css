@@ -434,7 +434,10 @@ a:not([href]) {
   /* 用 auto-fill 而不是 auto-fit：指标只有两张时，卡**不再被拉伸占满整行**。
      从前「履约与风险」两张卡各占半屏、里面只有一个 0，就是 auto-fit 撑的。
      现在卡宽全站一致，不够就留白。 */
-  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  /* 最小卡宽 196 → 240：1130 可用宽度下 196 能塞 5 列，指标 7 张就排成
+     5+2，第二行只剩两张还贴左边，看着参差。240 时正好 4 列，7 张 = 4+3、
+     4 张 = 4、3 张 = 3，各页的列数终于对齐（2026-11-16）。 */
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: var(--crm-space-3);
   margin-bottom: var(--crm-space-4);
 }
@@ -1157,6 +1160,18 @@ a:not([href]) {
   margin-top: -2.5px;
   border-radius: 50%;
   background: currentColor;
+}
+
+/* 行内危险链接（设置页每行的「停用」）：平时跟普通次要文字一样灰，
+   鼠标移上去才变红。一屏九行全红会把页面喊成一片噪音（2026-11-16）。 */
+.crm-danger-hover.semi-button,
+.crm-danger-hover.semi-button .semi-button-content {
+  color: var(--crm-text-2);
+}
+
+.crm-danger-hover.semi-button:hover,
+.crm-danger-hover.semi-button:hover .semi-button-content {
+  color: var(--crm-error);
 }
 
 .chip-ai {

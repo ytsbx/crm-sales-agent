@@ -795,7 +795,15 @@ export default function SettingsPage() {
             content={record.status === 'active' ? '停用后该账号将无法继续使用系统。' : '启用后该账号可按现有权限使用系统。'}
             onConfirm={() => userStatusMutation.mutate({ id: record.id, enable: record.status !== 'active' })}
           >
-            <Button theme="borderless" size="small" type={record.status === 'active' ? 'danger' : 'primary'}>
+            {/* 停用是危险动作，但一屏九行每行一个红字，等于每行都在喊「我是危险
+                操作」，反而看不出哪一行真要留意。改成平时灰字、鼠标移上去才变红
+                的悬停式危险色（规则见 index.css .crm-danger-hover）。 */}
+            <Button
+              theme="borderless"
+              size="small"
+              className={record.status === 'active' ? 'crm-danger-hover' : undefined}
+              type={record.status === 'active' ? 'tertiary' : 'primary'}
+            >
               {record.status === 'active' ? '停用' : '启用'}
             </Button>
           </Popconfirm>
