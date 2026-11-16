@@ -19,11 +19,31 @@ export default function TabBar() {
     tabRefs.current[activeKey]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [activeKey, tabs])
 
-  // 到上限后自动关掉的页签要让人知道，不能无声消失。
+  /* 到上限后自动关掉的页签要让人知道，不能无声消失。
+     但连续切几个页面时会一次次触发（实测连开 4 个新页就弹 4 条、叠成一摞），
+     所以这里改成「先攒着、半秒后再报一次」：这半秒内关掉的合成一条，
+     只报总数和前几个名字；半秒后没有新的关闭了，就只报那一个。
+     攒的时候立刻把 store 里那条清掉，避免同一条被重复计入。 */
+  const pendingClosedRef = useRef<string[]>([])
+  const flushTimerRef = useRef<number | null>(null)
   useEffect(() => {
     if (!autoClosed) return
-    Toast.info(`页签最多保留 ${TAB_LIMIT} 个，已自动关闭最久未用的「${autoClosed.label}」`)
+    pendingClosedRef.current.push(autoClosed.label)
     clearAutoClosed()
+    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current)
+    flushTimerRef.current = window.setTimeout(() => {
+      const labels = pendingClosedRef.current
+      pendingClosedRef.current = []
+      if (!labels.length) return
+      if (labels.length === 1) {
+        Toast.info(`页签最多保留 ${TAB_LIMIT} 个，已自动关闭最久未用的「${labels[0]}」`)
+        return
+      }
+      const names = labels.slice(0, 3).join('、')
+      Toast.info(
+        `页签最多保留 ${TAB_LIMIT} 个，本次自动关闭了 ${labels.length} 个最久未用的：${names}${labels.length > 3 ? ' 等' : ''}`,
+      )
+    }, 500)
   }, [autoClosed, clearAutoClosed])
 
   const handleActivate = (tab: TabItem) => {
