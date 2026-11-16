@@ -1131,6 +1131,34 @@ a:not([href]) {
   color: var(--crm-error);
 }
 
+/* 指标卡上的提示（逾期 24 项 / 需要你处理 / 30 天无有效跟进）原来是浅橙、浅绿底
+   的小胶囊 —— 一屏六张卡里三张各挂一个色块，是工作台最花的地方。颜色是有用的
+   （它说明"这条要留意"），但不需要靠底色说明。改成「小圆点 + 同色文字」：
+   跟表格里的状态圆点同一套语言，块没了，颜色还在（2026-11-16）。 */
+.kpi-card .chip-primary,
+.kpi-card .chip-success,
+.kpi-card .chip-warning,
+.kpi-card .chip-error {
+  padding: 0 0 0 11px;
+  background: transparent;
+  position: relative;
+}
+
+.kpi-card .chip-primary::before,
+.kpi-card .chip-success::before,
+.kpi-card .chip-warning::before,
+.kpi-card .chip-error::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 .chip-ai {
   background: var(--crm-secondary-soft);
   color: var(--crm-secondary);

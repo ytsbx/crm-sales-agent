@@ -149,8 +149,10 @@ export default function ApprovalPage() {
     {
       title: '操作',
       width: 215,
+      // 「看报价 通过 拒绝 转交」四个动作挤在 10px 间距里，字号又小，读起来是
+      // 一串没断开的字。间距拉到 16，四个动作才分得开（2026-11-16）。
       render: (_: unknown, record: ApprovalRow) => (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
           {record.version_id && (
             <Link to={`/quotes/${record.quote_id}?version=${record.version_id}`} style={{ color: 'var(--crm-primary)' }}>
               看报价
