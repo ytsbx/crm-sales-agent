@@ -214,13 +214,25 @@ export const AUDIT_FIELD_LABEL_BY_TYPE: Record<string, Record<string, string>> =
  * 返回 `null` 表示"这个名字真认不出"：调用方**不要**把英文列名印到屏幕上，
  * 而是跳过它、并提示"还有 N 处可在原始数据里看"。
  */
+const FIELD_LABEL_PATCH: Record<string, string> = {
+  channel: '发送渠道',
+  receiver: '收件人',
+}
+
 export function auditFieldLabel(
   type: string | null | undefined,
   field: string,
 ): string | null {
-  // 先按对象类型（管住同名不同义的那几个），再退回通用表（后端那张唯一表的导出）
+  // 先按对象类型（管住同名不同义的那几个），再退回通用表（后端那张唯一表的导出），
+  // 最后才看前端这张**极小的**补丁表。
+  //
+  // 补丁表只收"有真实语义、但后端通用表里还没登记"的字段，比如发送记录里的
+  // `channel`（值是「邮件」）。这类字段确实有话说，缺个中文名就被整条跳过，
+  // 于是「发送」那一行的变更内容只剩一个横杠 —— 不是没内容，是名字没翻出来。
+  // **纯内部编号（version_id、order_id 这种）故意不补**：翻出来也只是
+  // 「报价版本 38」，38 是数据库主键，对读的人没有意义，宁可老实留横杠。
   const byType = type ? AUDIT_FIELD_LABEL_BY_TYPE[type] : undefined
-  return byType?.[field] ?? AUDIT_FIELD_LABEL[field] ?? null
+  return byType?.[field] ?? AUDIT_FIELD_LABEL[field] ?? FIELD_LABEL_PATCH[field] ?? null
 }
 
 

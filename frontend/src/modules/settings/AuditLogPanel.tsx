@@ -50,7 +50,8 @@ const PAGE_SIZE_OPTIONS = [15, 30, 50, 100]
  *
  *   · 绿 = 有结果（审批通过、客户接受、中标、完成…），一眼看到"事情落地了"；
  *   · 红 = 被否掉（驳回、失单、作废、撤回审批…），出事要第一眼看到；
- *   · 蓝 = 常规动作（新建、修改、提交、发送…），有信息量但不用喊；
+ *   · 青 = 新产生的（新建、生成、导入、上传…），"无中生有"这一类；
+ *   · 蓝 = 其余常规动作（修改、提交、发送、替换明细…），有信息量但不用喊；
  *   · 登录 / 退出登录**不上色、不加标签**，压成浅灰小字 ——
  *     它只是流水，把它染成和「审批通过」一样重，等于把噪音当信号。
  *
@@ -74,14 +75,21 @@ const ACTION_TONE: Record<string, 'green' | 'red'> = {
 /** 「撤回审批」里带着 approve，所以显式表必须先生效，词根兜底排在它后面。 */
 const GREEN_ACTION_HINTS = ['approve', 'confirm', 'win', 'accept', 'complete', 'resolve', 'settle', 'paid']
 const RED_ACTION_HINTS = ['reject', 'lose', 'void', 'cancel', 'decline', 'discard', 'delete', 'remove', 'withdraw', 'fail']
+/**
+ * 「新产生了一条东西」这一类，单独给青色。
+ * 不往 `add` 这种两三个字母的短词上挂：`includes` 是子串匹配，
+ * `add` 会连带命中 `address_...` 这种根本不是新建的动作码。
+ */
+const CREATION_ACTION_HINTS = ['create', 'new', 'generate', 'import', 'upload', 'copy']
 /** 纯流水：不染色、不加标签，压成浅灰小字。 */
 const QUIET_ACTIONS = new Set(['login', 'logout'])
 
-function actionTone(action: string): 'blue' | 'green' | 'red' {
+function actionTone(action: string): 'blue' | 'green' | 'red' | 'cyan' {
   const explicit = ACTION_TONE[action]
   if (explicit) return explicit
   if (RED_ACTION_HINTS.some((hint) => action.includes(hint))) return 'red'
   if (GREEN_ACTION_HINTS.some((hint) => action.includes(hint))) return 'green'
+  if (CREATION_ACTION_HINTS.some((hint) => action.includes(hint))) return 'cyan'
   return 'blue'
 }
 
