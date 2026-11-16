@@ -240,11 +240,13 @@ export default function AgentPage() {
 
   return (
     <div className="page-container agent-page">
-      <SectionCard style={{ height: 'fit-content' }}>
+      {/* 左栏原来写死 height: fit-content —— 会话只有一两条时，卡片就一小块飘在上头，
+          下面空出大半屏。现在让它跟右栏等高、拉满整页。 */}
+      <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
         <Button
           block
           theme="solid"
-          style={{ marginBottom: 12 }}
+          style={{ marginBottom: 12, flexShrink: 0 }}
           disabled={streaming}
           onClick={() => {
             if (busyRef.current) return
@@ -255,6 +257,8 @@ export default function AgentPage() {
         >
           新对话
         </Button>
+        {/* 会话列表自己滚，把卡片中间那块空间占住；列表短的时候也不至于空一片。 */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', marginBottom: 4 }}>
         {(sessionsQuery.data ?? []).map((item) => (
           <div
             key={item.id}
@@ -288,7 +292,8 @@ export default function AgentPage() {
             </Popconfirm>
           </div>
         ))}
-        <details className="agent-tools">
+        </div>
+        <details className="agent-tools" style={{ marginTop: 'auto', flexShrink: 0 }}>
           <summary>能做什么 · {(toolsQuery.data ?? []).length} 项能力</summary>
           <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
           {(toolsQuery.data ?? []).map((tool) => (

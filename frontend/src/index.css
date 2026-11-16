@@ -1938,7 +1938,7 @@ table:not(.semi-table) td {
   /* 这是一个「对话工作台」：右边那块应该一直铺到窗口底。
      原来卡片固定 600 高，下面拖着一大条灰底，看着像页面没加载完。
      左栏卡片自己写了 height: fit-content，不会被一起拉长。 */
-  min-height: calc(100vh - 190px);
+  min-height: calc(100vh - 96px);
 }
 
 .agent-tools {
