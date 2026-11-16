@@ -1653,8 +1653,15 @@ export default function QuoteDetailPage() {
         </Collapse.Panel>
       </Collapse>
 
-      {/* 两张卡里各有一张表，列宽不能写死 1fr（会被表的固有宽度顶住、整页横向滚动） */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+      {/* 三张卡不等宽：附加费用那张表有 4 列（类型/说明/金额/操作），
+          等宽 333 塞不下 —— 表体 516 撑出卡片，底下挂一条横向滚动条，
+          「金额」整列被推到卡片外面（2026-11-16 发现）。按 1.7 : 1 : 1 分，
+          附加费用拿到约 490，另外两张各约 288（金额汇总都只有"标签 + 数字"、
+          决策关系图此时是空态，288 足够）。minmax(0, …) 是防止内容把列顶宽。 */}
+      {/* alignItems: start —— 三张卡不强制等高。客户决策关系图在空态时只有
+          三行说明，被拉到和「附加费用」一样高就是大半张空白（主人反复说
+          "没有数据的页面又丑又空"）。各自按内容高度收。 */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
         <SectionCard
           id="quote-charges"
           title="附加费用"
@@ -1680,12 +1687,17 @@ export default function QuoteDetailPage() {
         >
           <Table<QuoteChargeRow>
             columns={[
-              { title: '类型', dataIndex: 'type_label', width: 100 },
+              { title: '类型', dataIndex: 'type_label', width: 90 },
               {
                 // 运费要能一眼看出"确认了没有"：金额 0 不等于已确认零运费，
                 // 空输入与明确零运费必须分得开（正式发送要求后者）。
                 title: '说明',
                 dataIndex: 'description',
+                // 写死宽度：这一列原来不写 width，靠内容自适应，「演示运费」后面
+                // 还挂「运费已确认」标签，一撑就把 4 列推到 516（卡内只有 ~486），
+                // 底下挂横滚条。90 + 165 + 120 + 100 = 475，卡内约 505，留 30px 余量
+                // （Semi 摊平列宽时会吃掉几个像素，「改 删除」也要 100 才不把"除"切掉）。
+                width: 165,
                 render: (v: string | null, record: QuoteChargeRow) => (
                   <span>
                     {v ?? '-'}
@@ -1706,8 +1718,18 @@ export default function QuoteDetailPage() {
                 title: '金额',
                 dataIndex: 'amount',
                 width: 120,
+                // 「（代收代付）」原来跟在金额后面一行写：「¥30.00（代收代付）」要 154px，
+                // 把 120 的列宽撑到 154，整张表超出卡片、底下挂滚动条，
+                // 「删除」按钮被推到卡片外面看不见。拆成两行，口径说明用灰色小字放下面。
                 render: (v: number, record: QuoteChargeRow) =>
-                  record.is_logistics ? `¥${v.toFixed(2)}（代收代付）` : `¥${v.toFixed(2)}`,
+                  record.is_logistics ? (
+                    <div style={{ lineHeight: 1.35 }}>
+                      <div>{`¥${v.toFixed(2)}`}</div>
+                      <div style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>代收代付</div>
+                    </div>
+                  ) : (
+                    `¥${v.toFixed(2)}`
+                  ),
               },
               {
                 // 锁版之后这一列**照旧露出运费的那两个动作**（2026-10-14 修）。
@@ -1718,7 +1740,7 @@ export default function QuoteDetailPage() {
                 // 多条运费会被累加进总额 —— 那张「订单 501 / 报价 581」就是这么来的。
                 // 判据与「补填运费」按钮同源（`canEditFreightOnly`），没另立一套。
                 title: '',
-                width: 96,
+                width: 100,
                 render: (_: unknown, record: QuoteChargeRow) => {
                   if (!canManage) return null
                   const touchable = editable || (Boolean(record.is_logistics) && canEditFreightOnly)
@@ -1739,6 +1761,9 @@ export default function QuoteDetailPage() {
             ]}
             dataSource={detail.charges}
             rowKey="id"
+            // 列宽合计 306 + 说明列，卡片内宽 500 左右时会差几个像素，
+            // 底下就挂一条横向滚动条。scroll.x='100%' 让各列按卡片宽度摊平。
+            scroll={{ x: '100%' }}
             pagination={false}
             empty="没有附加费用"
           />
