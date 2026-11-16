@@ -685,6 +685,17 @@ export default function SettingsPage() {
     { value: 'all', label: '全部' },
   ]
 
+  // 角色标签按「身份」配色，不按顺序随机：同一个角色在任何屏幕上都是同一个色，
+  // 管理员=蓝（最高权限）/ 销售主管=橙（管理层）/ 业务员=青（一线）/
+  // 财务=紫（钱相关）/ 产品·开发评审=绿（技术）。没映射到的自定义角色给灰色。
+  const ROLE_TONE: Record<string, 'blue' | 'orange' | 'cyan' | 'violet' | 'green'> = {
+    admin: 'blue',
+    sales_manager: 'orange',
+    salesperson: 'cyan',
+    finance: 'violet',
+    product_reviewer: 'green',
+  }
+
   const userColumns = [
     {
       // 登录名并到姓名下方一行小字：这两列本来就成对出现，
@@ -694,7 +705,7 @@ export default function SettingsPage() {
       width: 135,
       render: (name: string, record: SystemUser) => (
         <div>
-          <div>{name}</div>
+          <div style={{ fontWeight: 500 }}>{name}</div>
           <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
             {record.username}
           </div>
@@ -717,7 +728,12 @@ export default function SettingsPage() {
               // 「这个人明明有权限却进不去」会变成排查不了的谜题（第十批 10.10）。
               const disabled = Boolean(role.status) && role.status !== 'active'
               return (
-                <Tag key={role.id} size="small" style={disabled ? { opacity: 0.6 } : undefined}>
+                <Tag
+                  key={role.id}
+                  size="small"
+                  color={disabled ? 'grey' : ROLE_TONE[role.code] ?? 'grey'}
+                  type={disabled ? 'ghost' : 'light'}
+                >
                   {role.name}
                   {disabled ? '（已停用）' : ''}
                 </Tag>
