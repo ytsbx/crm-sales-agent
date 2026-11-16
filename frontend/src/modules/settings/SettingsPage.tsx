@@ -1485,7 +1485,7 @@ export default function SettingsPage() {
                       <Input
                         key={`notice-${noticeSetting?.value?.days ?? ''}`}
                         defaultValue={String(noticeSetting?.value?.days ?? 7)}
-                        style={{ width: 140 }}
+                        style={{ width: 220 }}
                         onBlur={(event) => {
                           const raw = (event.target as HTMLInputElement).value.trim()
                           const next = Number(raw)
@@ -1512,7 +1512,7 @@ export default function SettingsPage() {
                       <Input
                         key={`defer-${deferSetting?.value?.days ?? ''}`}
                         defaultValue={String(deferSetting?.value?.days ?? 30)}
-                        style={{ width: 140 }}
+                        style={{ width: 220 }}
                         onBlur={(event) => {
                           const raw = (event.target as HTMLInputElement).value.trim()
                           const next = Number(raw)
@@ -1538,7 +1538,9 @@ export default function SettingsPage() {
                       <FormLabel>恢复已回收客户所需权限</FormLabel>
                       <Select
                         value={String(restoreSetting?.value?.text ?? 'customer:assign')}
-                        style={{ width: '100%' }}
+                        /* 240 而不是 220：下拉里是「分配客户（customer:assign）」这种
+                           "中文名 + 权限码"，220 会把尾巴截掉。 */
+                        style={{ width: 240 }}
                         onChange={(value) =>
                           settingMutation.mutate({
                             key: 'pool_recycle_restore_permission',
@@ -1682,11 +1684,27 @@ export default function SettingsPage() {
                         }
                       : undefined
                   }
-                  empty={`没有${
-                    { pending: '待复核', deferred: '已暂缓', executed: '已回收', rejected: '已驳回' }[
-                      candidateStatus
-                    ]
-                  }的回收候选`}
+                  empty={
+                    // 空表格只有一行灰字，看着像"页面坏了"。待复核为空其实是**正常且好**的
+                    // 状态（说明没客户该被回收），得把这句话说出来，再给个能动的入口
+                    // （2026-11-16）。
+                    <div style={{ padding: '20px 0 10px' }}>
+                      <div style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>
+                        {candidateStatus === 'pending'
+                          ? '没有待复核的候选'
+                          : `没有${
+                              { pending: '待复核', deferred: '已暂缓', executed: '已回收', rejected: '已驳回' }[
+                                candidateStatus
+                              ]
+                            }的候选`}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>
+                        {candidateStatus === 'pending'
+                          ? '当前没有客户达到回收条件 —— 这是正常状态。想现在就看有没有能回收的，点上面的「扫描并生成回收预告」。'
+                          : '按上面的标签切回「待复核」可以看到现在需要处理的候选。'}
+                      </div>
+                    </div>
+                  }
                   columns={[
                     {
                       title: '客户',
