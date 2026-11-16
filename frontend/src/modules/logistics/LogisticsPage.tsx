@@ -69,6 +69,12 @@ export default function LogisticsPage() {
   // 手工覆盖：分包装或特殊装载时，SKU 上的重量体积不准
   const [weightOverride, setWeightOverride] = useState('')
   const [volumeOverride, setVolumeOverride] = useState('')
+  // 包装方式 / 单件重量 / 单件体积 是「可选覆盖」，默认收起。
+  // 三项铺开会把「试算」按钮和它下面那句"请先选择 SKU"挤出屏幕 ——
+  // 那句话正是解释按钮为什么点不动，看不到就等于没解释。
+  // 填了任何一项就强制保持展开，否则用户收起后看不见自己填了什么。
+  const [showOverrides, setShowOverrides] = useState(false)
+  const overridesOpen = showOverrides || Boolean(packageType || weightOverride || volumeOverride)
 
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const routesQuery = useQuery({ queryKey: ['logistics-routes'], queryFn: listLogisticsRoutes })
@@ -276,7 +282,7 @@ export default function LogisticsPage() {
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>运输方式</div>
                   <Select
                     style={{ width: '100%' }}
-                    placeholder="不填则列出全部方案"
+                    placeholder="全部运输方式"
                     showClear
                     value={shippingMethod}
                     onChange={(value) => setShippingMethod(value as string | undefined)}
@@ -284,24 +290,33 @@ export default function LogisticsPage() {
                   />
                 </div>
 
-                <div>
-                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>包装方式</div>
-                  <Input value={packageType} onChange={setPackageType} placeholder="仅作记录，如：纸箱" />
-                </div>
+                {overridesOpen && (
+                  <>
+                    <div>
+                      <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>包装方式</div>
+                      <Input value={packageType} onChange={setPackageType} placeholder="仅作记录，如：纸箱" />
+                    </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-                      单件重量 kg（可选）
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: 12 }}>
+                      <div>
+                        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                          单件重量 kg（可选）
+                        </div>
+                        <Input value={weightOverride} onChange={setWeightOverride} placeholder="覆盖 SKU" />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                          单件体积 m³（可选）
+                        </div>
+                        <Input value={volumeOverride} onChange={setVolumeOverride} placeholder="覆盖 SKU" />
+                      </div>
                     </div>
-                    <Input value={weightOverride} onChange={setWeightOverride} placeholder="覆盖 SKU" />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-                      单件体积 m³（可选）
-                    </div>
-                    <Input value={volumeOverride} onChange={setVolumeOverride} placeholder="覆盖 SKU" />
-                  </div>
+                  </>
+                )}
+                <div style={{ fontSize: 12 }}>
+                  <a onClick={() => setShowOverrides((v) => !v)}>
+                    {overridesOpen ? '收起可选设置' : '可选设置：包装方式 / 单件重量 / 单件体积'}
+                  </a>
                 </div>
 
                 <Button
@@ -324,8 +339,16 @@ export default function LogisticsPage() {
               <div className="card-title">试算结果</div>
 
               {!canCalc && (
-                <div style={{ color: 'var(--crm-text-3)', padding: '24px 0' }}>
-                  选择 SKU 后这里会显示计费重与各承运商方案。
+                // 原来是一行灰字缩在左上角，右边一大片空白，看着像页面没加载完。
+                // 居中安置，并且把「还要填数量」这半句补上 —— 原来只说"选择 SKU"，
+                // 可只选 SKU 点不动「试算」，用户会以为坏了。
+                <div style={{ padding: '90px 0', textAlign: 'center' }}>
+                  <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 6 }}>
+                    还没有试算结果
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    选好 SKU 和数量，点「试算」后这里会显示计费重与各承运商方案
+                  </div>
                 </div>
               )}
 
