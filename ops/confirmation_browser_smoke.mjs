@@ -1078,27 +1078,34 @@ try {
   assert.ok(await evaluate(`document.body.innerText.includes('9,999,999,999,999.999')`))
   const setValue=async (selector,value,type='HTMLInputElement')=>evaluate(`{const e=${selector};Object.getOwnPropertyDescriptor(${type}.prototype,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event('input',{bubbles:true}))}`)
   const saveDraft=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='保存草稿'&&!b.disabled)`
-  await setValue(`Array.from(document.querySelectorAll('textarea')).at(-1)`,'只改备注','HTMLTextAreaElement')
+  // 「改完值站得住」才继续：保存的响应回填表单（setRows）可能落在下一笔编辑之后，
+  // 把新值冲回旧值、第二笔按旧值提交（2026-11-16 两层偶发红的真根因）。
+  // Semi 按钮的 loading 在 DOM 上毫无痕迹（类名被注释），区分不了「提交中」和「干净」，
+  // 所以不猜状态：改完读回校验，被冲掉就再改，连续两次读到新值才算落定。
+  const setStable=async (selector,value,type)=>{
+    for(let i=0;i<20;i++){
+      await setValue(selector,value,type)
+      await sleep(150)
+      if(await evaluate(`${selector}.value`)===value){await sleep(150);if(await evaluate(`${selector}.value`)===value)return}
+    }
+    throw Error('输入值被回填冲掉且重试无效：'+selector)
+  }
+  await setStable(`Array.from(document.querySelectorAll('textarea')).at(-1)`,'只改备注','HTMLTextAreaElement')
   await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
-  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
-  // 断言请求体前必须等它**真的被记录**：按钮变灰只说明提交已开始，本地回环也来得及
-  // 把还没落地的请求甩在断言后面 —— 读到的就是上一笔的旧值（偶发红根因，2026-11-16）。
+  // 断言请求体前先等记录落地，读到的才不是上一笔的旧值
   for(let i=0;draftPrecisionBodies.length<1 && i<30;i++)await sleep(100)
   assert.equal(draftPrecisionBodies.length,1)
   assert.equal(draftPrecisionBodies[0].items[0].quantity,'9999999999999.999')
   assert.equal(draftPrecisionBodies[0].items[0].unit_price,'0.0001')
-  await setValue(qty,'0.001');await setValue(price,'999999999999.9999')
+  await setStable(qty,'0.001');await setStable(price,'999999999999.9999')
   await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
-  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
   for(let i=0;draftPrecisionBodies.length<2 && i<30;i++)await sleep(100)
   assert.equal(draftPrecisionBodies.at(-1).items[0].quantity,'0.001')
   assert.equal(draftPrecisionBodies.at(-1).items[0].unit_price,'999999999999.9999')
-  await setValue(price,'');await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
-  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
+  await setStable(price,'');await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
   for(let i=0;draftPrecisionBodies.length<3 && i<30;i++)await sleep(100)
   assert.equal(draftPrecisionBodies.at(-1).items[0].unit_price,null)
-  await setValue(price,'0');await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
-  await waitFor(`Array.from(document.querySelectorAll('button')).some(b=>b.innerText.trim()==='保存草稿'&&b.disabled)`)
+  await setStable(price,'0');await waitFor(saveDraft);await sleep(250);await evaluate(`${saveDraft}.click()`)
   for(let i=0;draftPrecisionBodies.length<4 && i<30;i++)await sleep(100)
   assert.equal(draftPrecisionBodies.at(-1).items[0].unit_price,'0')
   assert.equal(draftPrecisionBodies.length,4)
