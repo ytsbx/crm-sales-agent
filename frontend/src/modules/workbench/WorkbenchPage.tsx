@@ -723,7 +723,7 @@ export default function WorkbenchPage() {
         title={`待跟进客户${staleQuery.data ? `（${staleQuery.data.total} 个）` : ''}`}
         visible={staleOpen}
         onCancel={() => setStaleOpen(false)}
-        width={720}
+        width={680}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-2)' }}>

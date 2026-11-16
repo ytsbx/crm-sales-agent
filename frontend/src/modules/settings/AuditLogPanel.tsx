@@ -492,7 +492,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         title="变更明细"
         visible={detail !== null}
         onCancel={() => setDetail(null)}
-        width={560}
+        width={520}
       >
         {detail && (
           <div style={{ display: 'grid', gap: 12 }}>
