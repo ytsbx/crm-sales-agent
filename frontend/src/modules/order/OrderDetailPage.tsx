@@ -935,7 +935,9 @@ export default function OrderDetailPage() {
               ? [
                   {
                     label: '逾期应收节点',
-                    value: `${summary.overdue_count}`,
+                    // 这一张是「几个节点」不是金额。只写一个「1」跟旁边四张 ¥ 金额
+                    // 并排，会被读成 ¥1（2026-11-16 订单详情巡检）。
+                    value: `${summary.overdue_count} 个`,
                     tone: 'error' as const,
                   },
                 ]
