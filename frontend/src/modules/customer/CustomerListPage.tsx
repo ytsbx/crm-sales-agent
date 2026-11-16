@@ -74,6 +74,17 @@ const CUSTOMER_EXPORT_PERMISSION_REASON =
 
 // 领导六阶段（自动推导，非人工填写）：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购
 type TagColor = ComponentProps<typeof Tag>['color']
+// 阶段原本每个占一个彩色块，一列扫过去像彩灯；改成小圆点 + 文字：
+// 颜色还在（阶段越靠后越"熟"），但不再是一排色块抢眼。
+const STAGE_DOT: Record<string, string> = {
+  understanding: '#9aa0ab',
+  quote: '#1f4fa8',
+  sample: '#b45309',
+  first_order: '#0891b2',
+  repeat: '#7431d3',
+  stable: '#00b42a',
+}
+
 const STAGE_TONE: Record<string, TagColor> = {
   understanding: 'grey',
   quote: 'blue',
@@ -391,15 +402,24 @@ export default function CustomerListPage() {
       width: 96,
       render: (value: string | null) =>
         value ? (
-          // A 绿 / B 蓝 / C 橙：三档拉开。C 从前也是灰，既和「未分级」撞脸，
-          // 又让整个等级列看起来只有「有等级 / 没等级」两种状态。
-          <Tag color={value === 'A' ? 'green' : value === 'B' ? 'blue' : 'orange'}>{value}</Tag>
+          // A 绿 / B 蓝 / C 橙：字母本身已经够辨识，不必再套一个色块。
+          // 一列十几行色块叠在一起，整张表就是"彩灯"。
+          <span
+            style={{
+              fontWeight: 600,
+              color:
+                value === 'A'
+                  ? 'var(--crm-success)'
+                  : value === 'B'
+                    ? 'var(--crm-primary)'
+                    : 'var(--crm-warning)',
+            }}
+          >
+            {value}
+          </span>
         ) : (
-          // 「未分级」是**还没评**，不是一种等级：用描边（ghost）而不是实心灰。
-          // 实心灰既和 C 级撞脸，又让整列一片脏灰色块。
-          <Tag color="grey" type="ghost">
-            未分级
-          </Tag>
+          // 「未分级」是**还没评**，不是一种等级：灰字即可
+          <span style={{ color: 'var(--crm-text-3)' }}>未分级</span>
         ),
     },
     {
@@ -409,7 +429,18 @@ export default function CustomerListPage() {
       width: 96,
       render: (_: unknown, record: Customer) =>
         record.stage ? (
-          <Tag color={STAGE_TONE[record.stage] ?? 'grey'}>{record.stage_label ?? record.stage}</Tag>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                flexShrink: 0,
+                background: STAGE_DOT[record.stage] ?? '#9aa0ab',
+              }}
+            />
+            {record.stage_label ?? record.stage}
+          </span>
         ) : (
           '-'
         ),
@@ -440,18 +471,23 @@ export default function CustomerListPage() {
       dataIndex: 'tags',
       // 180 → 140：标签本来就会折行，收窄后空间让给客户名称
       width: 140,
-      render: (tags: Customer['tags']) =>
-        (tags ?? []).length === 0 ? (
-          <span style={{ color: 'var(--crm-text-3)' }}>-</span>
-        ) : (
-          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 4 }}>
-            {(tags ?? []).map((tag) => (
-              <Tag key={tag.id} size="small">
-                {tag.name}
-              </Tag>
-            ))}
+      render: (tags: Customer['tags']) => {
+        const list = tags ?? []
+        if (list.length === 0) {
+          return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
+        }
+        // 标签不再一个个套灰胶囊：两个胶囊就折成两行，行高被撑、整表节奏被拉乱。
+        // 改成一行灰字、「·」分隔，最多两个，多出来的收成「+N」。
+        return (
+          <span style={{ fontSize: 12, color: 'var(--crm-text-2)', whiteSpace: 'nowrap' }}>
+            {list
+              .slice(0, 2)
+              .map((tag) => tag.name)
+              .join('·')}
+            {list.length > 2 && ` +${list.length - 2}`}
           </span>
-        ),
+        )
+      }
     },
     {
       title: '负责人',
