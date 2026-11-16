@@ -895,6 +895,10 @@ try {
   assert.ok(await evaluate(`document.querySelector('.semi-table-tbody').innerText.includes('99,999,999,999,999.99')`))
   console.log('BROWSER_CUSTOMER_QUOTE_LIST_PRESERVES_EXACT_TOTAL=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/quotes/121?version=131`})
+  // 「版本与方案对比 · 边际测算」2026-11-16 起收进折叠区、默认收起（报价详情去臃肿）。
+  // 对比表与差额文案都在折叠区里，收起时页面读不到 —— 先点开面板标题再断言。
+  await waitFor(`Array.from(document.querySelectorAll('.semi-collapse-header')).some(el=>el.innerText.includes('版本与方案对比'))`)
+  await evaluate(`Array.from(document.querySelectorAll('.semi-collapse-header')).find(el=>el.innerText.includes('版本与方案对比')).click()`)
   await waitFor(`Array.from(document.querySelectorAll('.semi-table-tbody')).some(el=>el.innerText.includes('99,999,999,999,999.99'))`)
   console.log('BROWSER_QUOTE_COMPARISON_PRESERVES_EXACT_AMOUNT=true')
   await waitFor(`document.body.innerText.includes('金额 +0.01，毛利')`)
