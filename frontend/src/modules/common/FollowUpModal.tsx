@@ -105,11 +105,11 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
       }}
       confirmLoading={mutation.isPending}
       okText="保存"
-      width={560}
+      width={520}
     >
       <div style={{ display: 'grid', gap: 12 }}>
         <div>
-          <div style={{ marginBottom: 4 }}>跟进方式</div>
+          <FormLabel>跟进方式</FormLabel>
           <Select
             value={typeOption.selectValue}
             onChange={typeOption.onSelect}
@@ -135,11 +135,11 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
           />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>客户反馈</div>
+          <FormLabel>客户反馈</FormLabel>
           <TextArea value={feedback} onChange={setFeedback} rows={2} />
         </div>
         <div>
-          <div style={{ marginBottom: 4 }}>后续安排</div>
+          <FormLabel>后续安排</FormLabel>
           <Select
             value={exemptionReason ?? 'plan'}
             onChange={(value) => setExemptionReason(value === 'plan' ? null : String(value))}

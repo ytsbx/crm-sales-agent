@@ -1412,6 +1412,59 @@ table:not(.semi-table) td {
   font-size: 13px;
 }
 
+/* 表单控件几何统一（2026-11-16 主人「这种我也不喜欢」之后重做）。
+   ------------------------------------------------------------
+   Semi 默认是 32px 高、4px 圆角、14px 字号、灰底实心 —— 摆在弹窗里
+   像十年前的后台。这一版统一成：36px 高、8px 圆角、13px 字号、白底描边。
+   只动外观：placeholder、校验态、禁用态、可搜索下拉的逻辑都由 Semi 自己管。 */
+.semi-input-wrapper,
+.semi-select {
+  min-height: 36px;
+  border-radius: 8px !important;
+}
+.semi-input-wrapper .semi-input {
+  font-size: 13px;
+  padding: 0 12px;
+}
+.semi-select .semi-select-selection .semi-select-selection-text,
+.semi-select .semi-select-selection .semi-select-selection-placeholder {
+  font-size: 13px;
+}
+.semi-input-textarea-wrapper {
+  border-radius: 8px !important;
+  padding: 10px 12px;
+}
+.semi-input-textarea-wrapper .semi-input-textarea {
+  font-size: 13px;
+  line-height: 1.65;
+}
+/* placeholder 统一一档浅灰：太淡会像没画内容，太深又像已经填好了 */
+.semi-input::placeholder,
+.semi-select .semi-select-selection-placeholder,
+.semi-input-textarea::placeholder {
+  color: #9aa0ab;
+  font-size: 13px;
+}
+/* 表单标签：13px、500 字重、次级色 —— 比控件字重轻一档，视线先看值再看名 */
+.semi-form-field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--crm-text-2);
+}
+.semi-form-field-label + * {
+  margin-top: 0;
+}
+/* 弹窗内边距与字段节奏：左右 24、上下 20 → 16，字段间距交给表单自己的 16 */
+.semi-modal-body {
+  padding: 16px 24px 20px;
+}
+.semi-modal-header {
+  padding: 20px 24px 0;
+}
+.semi-modal-footer {
+  padding: 14px 24px 18px;
+}
+
 /* 表单控件统一成「白底 + 1px 细描边」。
    Semi 默认是浅灰实心块（--semi-color-fill-0），在浅灰页面上几乎看不出边界：
    一个弹窗里四五个字段叠下来，整块面板像一张没画完的草图 —— 这也是「看着廉价」
