@@ -10,7 +10,10 @@
   --crm-secondary-soft: #ecdcff;
   --crm-error: #ba1a1a;
   --crm-error-soft: #ffdad6;
-  --crm-warning: #9e3300;
+  /* 原来 #9e3300 是深棕红，跟 --crm-error #ba1a1a 并排时几乎分不出来 ——
+     订单详情那排金额卡里「尚未到账」（还没到期，只是没收到）和「逾期应收节点 1」
+     （真出事）亮着同一个红，看着像两个警报。改成琥珀色，警告归警告、错误归错误。 */
+  --crm-warning: #b45309;
   --crm-warning-soft: #ffdbcf;
   /* 状态色：用于"已回款/已完成"这类正向态，以及"待处理/需关注"这类提醒态 */
   --crm-success: #00b42a;

@@ -795,6 +795,7 @@ export default function OrderDetailPage() {
             {order.erp_order_id ? <Tag color="blue">ERP/MES：{order.erp_order_id}</Tag> : <Tag>未推送 ERP/MES</Tag>}
           </>
         }
+        metaFull
         meta={
           <>
             <span>
@@ -811,7 +812,10 @@ export default function OrderDetailPage() {
                 业绩归属：{order.sales_owner_name}（签单时的负责人，交接不改）
               </span>
             )}
-            <span>客户要求{order.delivery_kind === 'arrival' ? '到货日' : order.delivery_kind === 'shipping' ? '发货日' : '交期（类型待确认）'}：{order.delivery_date ?? '-'}</span>
+            {/* 原来 delivery_kind 没填时会渲染成「交期（类型待确认）」——
+                "类型"指的是"发货日还是到货日"，是内部字段状态，摆在客户名旁边
+                没人看得懂。分不清是哪种就一律叫「交期」，只在有明确类型时才细分。 */}
+            <span>客户要求{order.delivery_kind === 'arrival' ? '到货日' : order.delivery_kind === 'shipping' ? '发货日' : '交期'}：{order.delivery_date ?? '-'}</span>
             {order.shipment_date && <span>计划发货日：{order.shipment_date}{order.delivery_kind === 'arrival' ? `（运输 ${order.transit_days} 天）` : ''}</span>}
             <span>付款条件：{order.payment_terms ?? '-'}</span>
             {order.quote_id && (
@@ -878,7 +882,11 @@ export default function OrderDetailPage() {
           </div>
         )}
         <KpiStrip
-          className="kpi-grid kpi-cols-4"
+          // 原来是 kpi-cols-4（固定四列）：这页卡片数量是浮动的 —— 订单金额、实际到账、
+          // 尚未到账、已分配这 4 张常在，加上"逾期应收节点"就是 5 张，四列会把最后
+          // 一张甩到第二行、右边空出四分之三。交给 kpi-grid 的 auto-fill（最小 196px）
+          // 自己排：5 张刚好一行，少几张也不会被拉伸占满。
+          className="kpi-grid"
           style={{ marginTop: 16, marginBottom: 0 }}
           items={[
             { label: '订单金额', value: formatMoney(order.total_amount_exact ?? order.total_amount, order.currency) },

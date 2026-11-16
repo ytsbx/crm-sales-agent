@@ -426,6 +426,7 @@ export default function OpportunityDetailPage() {
             )}
           </>
         }
+        metaFull
         meta={
           <>
             <span>
@@ -507,12 +508,13 @@ export default function OpportunityDetailPage() {
                 className="split-main"
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  // 200px 时左栏只有 3 列，8 个字段排成 3+3+2、最后一行空一格；
+                  // 收到 190 刚好 4 列，两行排满
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
                   gap: 20,
                   alignContent: 'start',
                 }}
               >
-                <DetailField label="商机名称" value={opportunity.title} />
                 <DetailField label="客户" value={opportunity.customer_name} />
                 <DetailField label="当前阶段" value={opportunity.stage_name} />
                 <DetailField

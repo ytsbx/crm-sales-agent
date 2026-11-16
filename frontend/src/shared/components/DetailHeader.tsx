@@ -21,6 +21,7 @@ export default function DetailHeader({
   extra,
   children,
   style,
+  metaFull = false,
 }: {
   /** 主标题：客户名 / 商机名 / 报价单号 / 订单号 */
   title: ReactNode
@@ -28,6 +29,12 @@ export default function DetailHeader({
   tags?: ReactNode
   /** 标题下方的关键信息行（左对齐） */
   meta?: ReactNode
+  /**
+   * 信息行是否独占整个头部宽度（默认与右上角按钮并排、让出按钮那块位置）。
+   * 按钮一多（订单详情有 5 个），信息行只剩 600 宽，5 项就得折成「4 + 1」，
+   * 最后一项孤零零一行。开了这个开关，信息行排到按钮下方、占满整宽。
+   */
+  metaFull?: boolean
   /** 右上角操作区 */
   extra?: ReactNode
   /** 头部卡片里的其余内容（如报价版本切换、订单 KPI），跨整行显示 */
@@ -50,9 +57,10 @@ export default function DetailHeader({
             <span className="detail-title">{title}</span>
             {tags}
           </div>
-          {meta && <div className="detail-meta">{meta}</div>}
+          {meta && !metaFull && <div className="detail-meta">{meta}</div>}
         </div>
         {extra && <div className="dh-actions">{extra}</div>}
+        {meta && metaFull && <div className="detail-meta dh-full">{meta}</div>}
         {children && <div className="dh-full">{children}</div>}
       </div>
     </div>
