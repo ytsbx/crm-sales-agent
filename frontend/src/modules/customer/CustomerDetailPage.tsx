@@ -774,6 +774,9 @@ export default function CustomerDetailPage() {
                   {(customer.tags ?? []).map((tag) => (
                     <Tag
                       key={tag.id}
+                      // 灰底色块一多，整块区域就糊成一片（主人反复反馈过色块泛滥）。
+                      // 用描边款：只留一圈细线，文字退到正文色，靠形状而不是底色区分。
+                      className="tag-plain"
                       closable={can('customer:update')}
                       onClose={() => detachTagMutation.mutate(tag.id)}
                     >

@@ -16,7 +16,7 @@
 import { Fragment, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Tag } from '@douyinfe/semi-ui'
+import { Button, Tag } from '@douyinfe/semi-ui'
 
 import { listContractDocuments, type ContractDocument } from '../api/contract'
 import { downloadContractDoc } from '../download-contract'
@@ -88,15 +88,27 @@ export default function ContractDocsPanel({
     body = <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>读取中…</div>
   } else if (rows.length === 0) {
     body = (
-      <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
-        {empty}
-        <div style={{ marginTop: 4 }}>
-          如果合同是从订单发起的、当时没关联报价，这里按报价筛就看不到 —— 去
-          <Link to="/documents" style={{ margin: '0 2px' }}>
-            合同台账
-          </Link>
-          按客户查。
-        </div>
+      // 原来是两行灰字 + 卡片底部一大片空白，整张卡看着像「半截」
+      // （2026-11-16 客户详情巡检）。合成一行，右侧给一个明确的去处。
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          flexWrap: 'wrap',
+          color: 'var(--crm-text-3)',
+          fontSize: 13,
+        }}
+      >
+        <span>
+          {empty}。如果合同是从订单发起的、当时没关联报价，按报价筛就看不到。
+        </span>
+        <Link to="/documents">
+          <Button size="small" theme="borderless">
+            去合同台账按客户查
+          </Button>
+        </Link>
       </div>
     )
   } else {

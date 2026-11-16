@@ -1383,6 +1383,19 @@ a:not([href]) {
   width: 100%;
 }
 
+/* 描边款标签：白底 + 一圈细线。用在「标签」这种会并列出现好几个的地方，
+   比一排灰底色块安静得多（客户详情、设置页都在用）。 */
+.tag-plain.semi-tag {
+  background: transparent;
+  border: 1px solid #e3e5ea;
+  color: var(--crm-text-2);
+  font-weight: 400;
+}
+.tag-plain.semi-tag:hover {
+  border-color: var(--crm-primary);
+  color: var(--crm-primary);
+}
+
 /* 表格正文单元格统一用箭头光标。
    Semi 没给 td 设 cursor，于是继承浏览器的 auto —— 鼠标落在文字上就变成
    文本输入那条 I 字线（主人 2026-11-16：「鼠标样式变成一条横线了」），
