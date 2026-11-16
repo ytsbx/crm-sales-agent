@@ -1574,7 +1574,7 @@ async function main() {
       if (item.orderDraft) {
         if (!await waitForText(client, '按此版本建订单草稿')) throw new Error('报价缺少草稿入口')
         await clickByText(client, '按此版本建订单草稿')
-        if (!await waitForText(client, '本次下单数量：')) throw new Error('建草稿弹窗未打开')
+        if (!await waitForText(client, '本次下单数量')) throw new Error('建草稿弹窗未打开')
         // 数量框 2026-11 起是精确输入（Input + id=source-quantity-*），不是 InputNumber 步进器
         const quantity = await client.send('Runtime.evaluate', { expression: `document.querySelector('.semi-modal-content input[id^="source-quantity-"]')?.value`, returnByValue: true })
         if (Number(quantity.result.value) !== 10000) throw new Error('订单草稿数量没有沿用来源')
@@ -1674,7 +1674,7 @@ async function main() {
       if (item.sampleSource) {
         if (!await waitForText(client, '按此版本申请打样')) throw new Error('草稿报价缺少打样入口')
         await clickByText(client, '按此版本申请打样')
-        if (!await waitForText(client, '原采购数量：10,000')) throw new Error('原采购数量未展示')
+        if (!await waitForText(client, '原采购数量 10,000')) throw new Error('原采购数量未展示')
         const defaultQty = await client.send('Runtime.evaluate', {
           expression: `document.querySelector('.semi-modal-content input[id^="source-quantity-"]')?.value`, returnByValue: true,
         })
@@ -1722,7 +1722,7 @@ async function main() {
         if (await clickByText(client, '申请打样', { tag: '.semi-dropdown-item' }) !== 'clicked') {
           throw new Error('询价没有打样入口（「更多」菜单里也没有）')
         }
-        if (!await waitForText(client, '原采购数量：10,000')) throw new Error('询价未带入原数量')
+        if (!await waitForText(client, '原采购数量 10,000')) throw new Error('询价未带入原数量')
         await clickByText(client, '取消')
         await checkedJson(`/custom-inquiries/${item.sampleSource.inquiryId}/revise`, auth.token, {
           method: 'POST', body: JSON.stringify({ quantity: 20000, revision_note: 'UI 历史版本验收' }),
@@ -1748,7 +1748,7 @@ async function main() {
           await sleep(250)
         }
         if (!choseV1) throw new Error('无法在历史表选择 V1')
-        if (!await waitForText(client, '（历史版本）') || !await waitForText(client, '原采购数量：10,000')) throw new Error('询价历史版本未按原数量取用')
+        if (!await waitForText(client, '（历史版本）') || !await waitForText(client, '原采购数量 10,000')) throw new Error('询价历史版本未按原数量取用')
         await clickByText(client, '取消')
         await client.send('Page.navigate', { url: `${APP_BASE}/samples/${sample.id}` })
         await waitForText(client, '打样来源')
