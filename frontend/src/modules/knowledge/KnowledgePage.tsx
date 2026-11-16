@@ -480,74 +480,54 @@ export default function KnowledgePage() {
     {
       title: '产品名称',
       dataIndex: 'title',
-      width: 297,
+      width: 237,
       // 这一列原来不设宽，标题一长就把整表顶到 1320、横滑才能看到操作列。
       // 定宽 320，标题正文超过 14 字截断（悬停看全），编号仍然完整显示 ——
       // 编号是报价 / 打样明细回溯用的，一个字都不能少。
       render: (text: string, record: CustomInquiryRow) => (
         <div>
-          <div style={{ fontWeight: 600 }}>
-            {/* 需求编号（场景09）：报价/打样明细引用它溯源，比自增 id 可读。
-                以前用主色，看起来像能点的链接、点下去却没反应（主人 2026-11-16
-                截图指出「点不进去什么链接」）—— 这里退回次要灰字，只当编号看。 */}
-            {record.inquiry_no && (
-              <span
-                style={{
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  color: 'var(--crm-text-3)',
-                  marginRight: 6,
-                }}
-              >
-                {record.inquiry_no}
-              </span>
-            )}
-            {/* 不再按字数截：按字数截遇到窄窗口/宽窗口都不合适，而且鼠标移入
-                整格会重新排版（主人说「莫名其妙会变形」）。改成按容器宽度省略。 */}
-            <span title={text}>
-              {text && text.length > 15 ? `${text.slice(0, 15)}…` : text}
-            </span>
+          {/* 编号从第一行挪到第二行（和说明并列）：
+              原来编号 + 标题挤在一行，13 位的等宽编号占掉 90px，
+              标题只剩 10 来字就被截。现在标题独占一整行。 */}
+          <div style={{ fontWeight: 600 }} title={text}>
+            {text && text.length > 17 ? `${text.slice(0, 17)}…` : text}
             {record.version && record.version > 1 && (
               <Tag size="small" style={{ marginLeft: 6 }}>{`v${record.version}`}</Tag>
             )}
           </div>
-          {record.revision_note && (
-            <div style={{ fontSize: 12, color: 'var(--crm-warning, #d97706)' }}>
-              本次修改：{record.revision_note}
-            </div>
-          )}
-          {record.description && (
-            // 说明文字原来用 pre-wrap 自由折行：有说明的行高 76、没说明的 64，
-            // 一屏里行高参差，鼠标扫过去像整块在变形（主人 2026-11-16 反馈）。
-            // 收成单行省略，行高统一，全称悬停看 title。
-            <div
-              title={record.description}
-              style={{
-                fontSize: 12,
-                color: 'var(--crm-text-3)',
-                maxWidth: 290,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {record.description}
-            </div>
-          )}
+          <div style={{ fontSize: 12, color: 'var(--crm-text-3)', display: 'flex', gap: 8, marginTop: 2 }}>
+            {record.inquiry_no && (
+              <span style={{ fontFamily: 'monospace', flexShrink: 0 }}>{record.inquiry_no}</span>
+            )}
+            {record.revision_note && (
+              <span style={{ color: 'var(--crm-warning, #d97706)', flexShrink: 0 }}>
+                本次修改：{record.revision_note}
+              </span>
+            )}
+            {record.description && (
+              <span
+                title={record.description}
+                style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}
+              >
+                {record.description}
+              </span>
+            )}
+          </div>
         </div>
       ),
     },
     {
       title: '客户',
       dataIndex: 'customer_name',
-      width: 162,
+      width: 190,
+      // 交给 Semi 按列宽省略（ellipsis）—— 不再按字数硬截。
+      // 主人 2026-11-16：「还有这么多空间怎么还是省略呢」：宽屏下这一列
+      // 会跟着拉宽，按字数截就永远只显示 13 个字。
+      ellipsis: true,
       // 客户名带场景后缀能到 12 字（"宁波家电01厂【演示造数】"），
       // 这一列给不了 180 —— 整表要塞进 1130，一张卡片看全不许横向拖。
       // 超过 10 字截断，鼠标悬停看全称。
-      render: (v: string | null) => {
-        if (!v) return '-'
-        return <span title={v}>{v.length > 13 ? `${v.slice(0, 13)}…` : v}</span>
-      },
+      render: (v: string | null) => v || '-',
     },
     { title: '数量', dataIndex: 'quantity', width: 62, render: (v: number | null) => v ?? '-' },
     {
@@ -559,7 +539,7 @@ export default function KnowledgePage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 76,
+      width: 96,
       render: (v: string) => (
         <StatusDot
           label={STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v}
@@ -567,11 +547,11 @@ export default function KnowledgePage() {
         />
       ),
     },
-    { title: '记录人', dataIndex: 'creator_name', width: 80, render: (v: string | null) => v ?? '-' },
+    { title: '记录人', dataIndex: 'creator_name', width: 96, render: (v: string | null) => v ?? '-' },
     {
       title: '记录时间',
       dataIndex: 'created_at',
-      width: 96,
+      width: 102,
       // 列表里精确到秒没有意义，反而把这一列撑到 160。
       // 只给日期，具体时分秒在详情里看。
       render: (v: string) => formatBeijingDate(v),
