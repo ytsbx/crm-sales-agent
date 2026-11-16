@@ -104,7 +104,7 @@ export default function ApprovalPage() {
     {
       title: '报价单号',
       dataIndex: 'quote_no',
-      width: 145,
+      width: 175,
       render: (v: string | null, record: ApprovalRow) => (
         <div style={{ display: 'grid', gap: 2 }}>
           <span>{v ?? '-'}</span>
@@ -114,64 +114,18 @@ export default function ApprovalPage() {
         </div>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 140, render: (v: string | null) => v ?? '-' },
-    { title: '申请人', dataIndex: 'applicant_name', width: 95, render: (v: string | null) => v ?? '-' },
+    { title: '客户', dataIndex: 'customer_name', width: 230, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    { title: '申请人', dataIndex: 'applicant_name', width: 110, render: (v: string | null) => v ?? '-' },
     {
       title: '报价总额',
       dataIndex: 'total_amount',
-      width: 125,
+      width: 150,
       render: (v: number | null) => (v === null || v === undefined ? '-' : `¥${v.toLocaleString('zh-CN')}`),
-    },
-    {
-      /* 「申请说明」和「超权限明细」原来各占一列（180 + 380），而且两列的
-         内容都是长文本，九列加起来 1500 多，比内容区宽出整整一屏。
-         合成一列：上面一行是申请理由，下面每行是一条超权限原因。
-         审批人看的就是这两样，信息一点没丢，宽度只剩一列。 */
-      title: '申请说明 / 超权限',
-      width: 300,
-      /* 这列在列表里只求「知道有没有超权限」，全文在展开的审批详情里看。
-         用 ellipsis 收成一行：长文本不会再按自身宽度去撑列。 */
-      ellipsis: true,
-      render: (_: unknown, record: ApprovalRow) => {
-        const reason = record.summary?.reason
-        const offending = record.summary?.offending ?? []
-        if (!reason && !offending.length) return '-'
-        return (
-          <div
-            style={{
-              fontSize: 12,
-              color: 'var(--crm-text-2)',
-              lineHeight: 1.6,
-              whiteSpace: 'normal',
-              wordBreak: 'break-word',
-            }}
-          >
-            {[
-              reason ? `申请：${reason}` : '',
-              offending.length
-                ? offending
-                    .map(
-                      (item) =>
-                        `${item.sku_code}：${
-                          item.reason ??
-                          `报 ¥${item.quoted_price ?? '-'}，最低 ¥${item.minimum_price ?? '-'}，利润率 ${
-                            item.profit_rate == null ? '未评估' : `${(item.profit_rate * 100).toFixed(2)}%`
-                          }`
-                        }`,
-                    )
-                    .join('；')
-                : '',
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </div>
-        )
-      },
     },
     {
       title: '状态',
       dataIndex: 'status_label',
-      width: 110,
+      width: 155,
       render: (value: string, record: ApprovalRow) => {
         // 规则加签的单子：本级通过后停在会签节点，要让人一眼看出现在轮到谁
         const coSign = record.current_node === 'co_sign' ? record.summary?.co_sign : null
@@ -190,7 +144,7 @@ export default function ApprovalPage() {
     },
     {
       title: '操作',
-      width: 125,
+      width: 215,
       render: (_: unknown, record: ApprovalRow) => (
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           {record.version_id && (
@@ -251,7 +205,42 @@ export default function ApprovalPage() {
               /* 默认列宽按内容算：明细里一条长说明就能把整张表顶宽。
                  固定列宽布局后，宽度完全按 columns 里写的 width 分配。 */
               tableLayout="fixed"
+              className="approval-table"
               columns={columns}
+              /* 「申请说明 / 超权限」那一列原来把整张表顶到 1440，而内容区只有 1130，
+                 右边一直被裁。它本质是「一行一段说明」，不是能横向对照的字段，
+                 挪进点行展开：列表留六个对照列，想细看的点左边箭头。
+                 信息一点没丢。 */
+              expandedRowRender={(record?: ApprovalRow) => {
+                if (!record) return null
+                const reason = record.summary?.reason
+                const offending = record.summary?.offending ?? []
+                if (!reason && offending.length === 0) return null
+                return (
+                  <div style={{ display: 'grid', gap: 6, padding: '4px 10px', textAlign: 'left' }}>
+                    {reason && (
+                      <div style={{ fontSize: 13, lineHeight: 1.7 }}>
+                        <span style={{ color: 'var(--crm-text-3)' }}>申请说明：</span>
+                        {reason}
+                      </div>
+                    )}
+                    {offending.map((item) => (
+                      <div key={item.sku_code} style={{ fontSize: 13, lineHeight: 1.7 }}>
+                        <span style={{ color: 'var(--crm-text-3)' }}>超权限：</span>
+                        {item.sku_code}
+                        {' —— '}
+                        {item.reason ??
+                          `报 ¥${item.quoted_price ?? '-'}，最低 ¥${item.minimum_price ?? '-'}，利润率 ${
+                            item.profit_rate == null ? '未评估' : `${(item.profit_rate * 100).toFixed(2)}%`
+                          }`}
+                      </div>
+                    ))}
+                  </div>
+                )
+              }}
+              rowExpandable={(record?: ApprovalRow) =>
+                Boolean(record?.summary?.reason) || (record?.summary?.offending ?? []).length > 0
+              }
               dataSource={query.data?.items ?? []}
               loading={query.isLoading}
               rowKey="id"
