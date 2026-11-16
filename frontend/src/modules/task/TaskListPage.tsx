@@ -391,6 +391,7 @@ export default function TaskListPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="新建任务"
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
@@ -448,6 +449,7 @@ export default function TaskListPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`延期任务：${postponeTarget?.title ?? ''}`}
         visible={Boolean(postponeTarget)}
         onCancel={() => setPostponeTarget(null)}
@@ -471,6 +473,7 @@ export default function TaskListPage() {
 
       {/* 转交（审查 B2-06）：目标只列在职人员，停用的后端也会拦 */}
       <Modal
+        width={520}
         title={`转交任务：${transferTarget?.title ?? ''}`}
         visible={Boolean(transferTarget)}
         onCancel={() => {

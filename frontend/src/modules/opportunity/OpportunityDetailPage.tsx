@@ -687,6 +687,7 @@ export default function OpportunityDetailPage() {
       />
 
       <Modal
+        width={520}
         title="推进阶段"
         visible={stageVisible}
         onCancel={() => setStageVisible(false)}
@@ -774,6 +775,7 @@ export default function OpportunityDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title="标记失单"
         visible={loseVisible}
         onCancel={() => setLoseVisible(false)}
@@ -909,6 +911,7 @@ export default function OpportunityDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title="新建任务"
         visible={taskVisible}
         onCancel={() => setTaskVisible(false)}

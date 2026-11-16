@@ -1373,6 +1373,7 @@ export default function AnalyticsPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title={freezeModal.mode === 'freeze' ? '结账存档' : '重算已结账的实绩'}
         visible={freezeModal.visible}
         onCancel={() => setFreezeModal({ visible: false, mode: 'freeze' })}
@@ -1498,6 +1499,7 @@ export default function AnalyticsPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={targetModal.period ? '设定目标' : '设定目标'}
         visible={targetModal.visible}
         onCancel={() => setTargetModal({ visible: false })}

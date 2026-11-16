@@ -1583,6 +1583,7 @@ export default function SampleListPage() {
           「照哪几份文件做的」必须在这里点一次：不点，事后出了质量问题连
           比对对象都没有；而"制作依据"这个字段后端早就存了，只是页面一直没接。 */}
       <Modal
+        width={520}
         title="登记制作完成"
         visible={madeModal}
         onCancel={() => setMadeModal(false)}
@@ -1661,6 +1662,7 @@ export default function SampleListPage() {
       </Modal>
 
       <Modal
+        width={520}
         title="修改车间依据"
         visible={itemEdit !== null}
         onCancel={() => setItemEdit(null)}

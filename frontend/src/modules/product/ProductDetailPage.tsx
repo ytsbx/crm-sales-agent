@@ -763,6 +763,7 @@ export default function ProductDetailPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="编辑产品资料"
         visible={editVisible}
         onCancel={() => setEditVisible(false)}

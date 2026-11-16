@@ -203,6 +203,7 @@ export default function DuplicateCasePage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="裁定撞单"
         visible={form.visible}
         onCancel={() => setForm({ ...form, visible: false })}

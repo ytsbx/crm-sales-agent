@@ -143,7 +143,8 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
           { title: '金额', render: (_: unknown, row: Order) => row.total_amount.toLocaleString('zh-CN') },
         ]} />
     </div>}
-    <Modal title="记录本次需求的定制询价" visible={inquiryVisible} onCancel={() => setInquiryVisible(false)}
+    <Modal
+      width={520} title="记录本次需求的定制询价" visible={inquiryVisible} onCancel={() => setInquiryVisible(false)}
       confirmLoading={inquiryMutation.isPending} okText="保存" onOk={() => {
         if (!inquiryForm.title.trim()) { Toast.warning('需求标题必填'); return }
         if (inquiryForm.quantity.trim() && (!Number.isFinite(Number(inquiryForm.quantity)) || Number(inquiryForm.quantity) <= 0)) {

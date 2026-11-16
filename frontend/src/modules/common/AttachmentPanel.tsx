@@ -360,6 +360,7 @@ export default function AttachmentPanel({
 
       {/* 改名弹窗：只改展示名，磁盘上的文件不动 */}
       <Modal
+        width={520}
         title="改文件名"
         visible={renameTarget !== null}
         onCancel={() => setRenameTarget(null)}

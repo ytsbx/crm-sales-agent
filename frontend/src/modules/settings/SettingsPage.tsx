@@ -2000,6 +2000,7 @@ export default function SettingsPage() {
 
       {/* 用户新增/编辑 */}
       <Modal
+        width={520}
         title={userEditTarget ? `编辑用户：${userEditTarget.name}` : '新建用户'}
         visible={userModal}
         onCancel={() => setUserModal(false)}
@@ -2169,6 +2170,7 @@ export default function SettingsPage() {
 
       {/* 部门新增/编辑 */}
       <Modal
+        width={520}
         title={deptEditTarget ? `编辑部门：${deptEditTarget.name}` : '新建部门'}
         visible={deptModal}
         onCancel={() => setDeptModal(false)}
@@ -2214,6 +2216,7 @@ export default function SettingsPage() {
 
       {/* 标签编辑 */}
       <Modal
+        width={520}
         title="编辑标签"
         visible={tagEditTarget !== null}
         onCancel={() => setTagEditTarget(null)}

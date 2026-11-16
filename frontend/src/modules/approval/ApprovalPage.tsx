@@ -265,6 +265,7 @@ export default function ApprovalPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title={`转交审批：${transferTarget?.quote_no ?? ''}`}
         visible={Boolean(transferTarget)}
         onCancel={() => setTransferTarget(null)}
@@ -299,6 +300,7 @@ export default function ApprovalPage() {
       </Modal>
 
       <Modal
+        width={520}
         title="拒绝报价"
         visible={Boolean(rejectTarget)}
         onCancel={() => setRejectTarget(null)}

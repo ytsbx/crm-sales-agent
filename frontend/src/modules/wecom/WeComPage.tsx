@@ -665,6 +665,7 @@ export default function WeComPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="创建新客户"
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}

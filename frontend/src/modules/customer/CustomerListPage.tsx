@@ -673,6 +673,7 @@ export default function CustomerListPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="导出客户"
         visible={exportModalOpen}
         onCancel={() => setExportModalOpen(false)}
@@ -831,6 +832,7 @@ export default function CustomerListPage() {
 
       {/* 批量打标签 */}
       <Modal
+        width={520}
         title={`批量打标签（已选 ${selectedIds.length} 个客户）`}
         visible={batchTagOpen}
         onCancel={() => setBatchTagOpen(false)}

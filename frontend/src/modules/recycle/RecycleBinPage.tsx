@@ -667,6 +667,7 @@ function CustomersPanel() {
         />
       </SectionCard>
       <Modal
+        width={520}
         title="指定新负责人"
         visible={ownerPicker !== null}
         // 取消不清"已经选过的人"以外的东西；选项本身在这里清掉是安全的

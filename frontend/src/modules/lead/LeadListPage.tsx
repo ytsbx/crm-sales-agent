@@ -477,6 +477,7 @@ export default function LeadListPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`分配线索：${assignTarget?.name ?? ''}`}
         visible={Boolean(assignTarget)}
         onCancel={() => setAssignTarget(null)}
@@ -498,6 +499,7 @@ export default function LeadListPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`废弃线索：${discardTarget?.name ?? ''}`}
         visible={Boolean(discardTarget)}
         onCancel={() => setDiscardTarget(null)}

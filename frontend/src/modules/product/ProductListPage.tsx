@@ -292,6 +292,7 @@ export default function ProductListPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="新建产品"
         visible={modalVisible}
         onCancel={() => setModalVisible(false)}

@@ -686,6 +686,7 @@ export default function CustomerDetailPage() {
       />
 
       <Modal
+        width={520}
         title="撞单检查结果"
         visible={duplicateCaseCount > 0}
         okText="查看撞单裁定"
@@ -1221,7 +1222,8 @@ export default function CustomerDetailPage() {
         </div>
       </Modal>
 
-      <Modal title="客户评级" visible={ratingModal} onCancel={() => setRatingModal(false)}
+      <Modal
+        width={520} title="客户评级" visible={ratingModal} onCancel={() => setRatingModal(false)}
         onOk={() => ratingMutation.mutate()} confirmLoading={ratingMutation.isPending}>
         <div style={{ marginBottom: 12 }}>了解客户后再评级；也可以恢复为未分级。评级会影响后续等级定价和管理规则。</div>
         <Select value={rating} onChange={(value) => setRating(String(value))} style={{ width: '100%' }}
@@ -1229,6 +1231,7 @@ export default function CustomerDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title="编辑客户"
         visible={editModal}
         onCancel={() => setEditModal(false)}
@@ -1331,6 +1334,7 @@ export default function CustomerDetailPage() {
 
       {/* 添加标签 */}
       <Modal
+        width={520}
         title="添加客户标签"
         visible={tagPickerOpen}
         onCancel={() => setTagPickerOpen(false)}

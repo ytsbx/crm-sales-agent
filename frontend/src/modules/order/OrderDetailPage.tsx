@@ -1410,6 +1410,7 @@ export default function OrderDetailPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="排发货批次"
         visible={createShipmentVisible}
         onCancel={() => setCreateShipmentVisible(false)}
@@ -1439,6 +1440,7 @@ export default function OrderDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`第 ${shipTarget?.batch_no ?? ''} 批登记发货`}
         visible={Boolean(shipTarget)}
         onCancel={() => setShipTarget(null)}
@@ -1614,6 +1616,7 @@ export default function OrderDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`登记里程碑：${milestoneEdit?.label ?? ''}`}
         visible={Boolean(milestoneEdit)}
         onCancel={() => setMilestoneEdit(null)}
@@ -1725,6 +1728,7 @@ export default function OrderDetailPage() {
       )}
 
       <Modal
+        width={520}
         title="人工更新履约状态"
         visible={statusVisible}
         onCancel={() => setStatusVisible(false)}
@@ -1761,6 +1765,7 @@ export default function OrderDetailPage() {
 
       {/* 取消订单：把"取消到底会影响什么"写在确认之前 */}
       <Modal
+        width={520}
         title="取消订单"
         visible={cancelVisible}
         onCancel={() => setCancelVisible(false)}
@@ -1803,6 +1808,7 @@ export default function OrderDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title="生成应收计划"
         visible={generateVisible}
         onCancel={() => setGenerateVisible(false)}
@@ -1971,6 +1977,7 @@ export default function OrderDetailPage() {
       />
 
       <Modal
+        width={520}
         title={`登记回款：${paymentTarget?.plan_name ?? ''}`}
         visible={Boolean(paymentTarget)}
         onCancel={() => setPaymentTarget(null)}

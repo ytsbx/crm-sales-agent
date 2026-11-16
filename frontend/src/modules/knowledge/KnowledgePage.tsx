@@ -959,6 +959,7 @@ export default function KnowledgePage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`修订：${reviseTarget?.title ?? ''}`}
         visible={Boolean(reviseTarget)}
         onCancel={() => setReviseTarget(null)}

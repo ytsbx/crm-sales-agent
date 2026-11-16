@@ -1886,6 +1886,7 @@ export default function PriceCenterPage() {
       </SectionCard>
 
       <Modal
+        width={520}
         title="新增成本"
         visible={costVisible}
         onCancel={() => setCostVisible(false)}
@@ -2079,6 +2080,7 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={customerPriceEditing ? '编辑客户特殊价' : '新增客户特殊价'}
         visible={customerPriceVisible}
         onCancel={closeCustomerPriceModal}
@@ -2237,6 +2239,7 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`调整价格权限：${permissionTarget?.role_name ?? ''}`}
         visible={Boolean(permissionTarget)}
         onCancel={() => setPermissionTarget(null)}
@@ -2263,6 +2266,7 @@ export default function PriceCenterPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={rateEditing ? `修改运费费率：${rateEditing.provider}` : '新增运费费率'}
         visible={rateVisible}
         onCancel={closeRateModal}

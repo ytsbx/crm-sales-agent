@@ -759,6 +759,7 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`登记签署：${signTarget?.doc_no ?? ''}`}
         visible={Boolean(signTarget)}
         onCancel={closeSignModal}
@@ -830,6 +831,7 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`发起 OA 合同审批：${oaStartTarget?.doc_no ?? ''}`}
         visible={Boolean(oaStartTarget)}
         onCancel={() => setOaStartTarget(null)}
@@ -843,6 +845,7 @@ export default function DocumentsPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={`作废：${voidTarget?.doc_no ?? ''}`}
         visible={Boolean(voidTarget)}
         onCancel={closeVoidModal}

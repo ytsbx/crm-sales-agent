@@ -1825,6 +1825,7 @@ export default function QuoteDetailPage() {
       )}
 
       <Modal
+        width={520}
         title={`改价：${priceTarget?.sku_code ?? ''}`}
         visible={Boolean(priceTarget)}
         onCancel={() => setPriceTarget(null)}
@@ -1965,6 +1966,7 @@ export default function QuoteDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title={editable ? '添加附加费用' : '补填运费'}
         visible={chargeVisible}
         onCancel={() => setChargeVisible(false)}
@@ -2044,6 +2046,7 @@ export default function QuoteDetailPage() {
           这里**只暴露说明与金额**：分类码锁版后不能改（后端会拒），草稿态想换分类
           直接删了重加更直白，给它一个下拉反而像支持切换分类。 */}
       <Modal
+        width={520}
         title={editCharge?.is_logistics ? '改这条运费' : '改这条费用'}
         visible={Boolean(editCharge)}
         onCancel={() => setEditCharge(null)}
@@ -2127,6 +2130,7 @@ export default function QuoteDetailPage() {
       </Modal>
 
       <Modal
+        width={520}
         title="记录客户拒绝"
         visible={declineVisible}
         onCancel={() => setDeclineVisible(false)}
