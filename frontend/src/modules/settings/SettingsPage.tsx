@@ -1196,7 +1196,13 @@ export default function SettingsPage() {
               <Table<TagRow>
                 columns={[
                   { title: '标签名', dataIndex: 'name' },
-                  { title: '分组', dataIndex: 'type', width: 120 },
+                  {
+                    // 后端存的是 type 原值（custom），直接渲染会把英文印给用户
+                    title: '分组',
+                    dataIndex: 'type',
+                    width: 120,
+                    render: (v: string) => (v === 'custom' ? '自定义' : v),
+                  },
                   {
                     title: '状态',
                     dataIndex: 'status',
