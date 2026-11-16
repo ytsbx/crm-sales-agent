@@ -686,13 +686,26 @@ export default function SettingsPage() {
   ]
 
   const userColumns = [
-    { title: '姓名', dataIndex: 'name', width: 140 },
-    { title: '登录名', dataIndex: 'username', width: 150 },
-    { title: '部门', dataIndex: 'department', width: 140, render: (v: string | null) => v ?? '-' },
+    {
+      // 登录名并到姓名下方一行小字：这两列本来就成对出现，
+      // 拆成两列各占 140+150，是这张表横向滚动的最大一块。
+      title: '姓名',
+      dataIndex: 'name',
+      width: 135,
+      render: (name: string, record: SystemUser) => (
+        <div>
+          <div>{name}</div>
+          <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {record.username}
+          </div>
+        </div>
+      ),
+    },
+    { title: '部门', dataIndex: 'department', width: 85, render: (v: string | null) => v ?? '-' },
     {
       title: '角色',
       dataIndex: 'roles',
-      width: 180,
+      width: 130,
       render: (roles: SystemUser['roles']) =>
         (roles ?? []).length === 0 ? (
           <span style={{ color: 'var(--crm-text-3)' }}>-</span>
@@ -713,13 +726,13 @@ export default function SettingsPage() {
           </span>
         ),
     },
-    { title: '手机', dataIndex: 'mobile', width: 140, render: (v: string | null) => v ?? '-' },
+    { title: '手机', dataIndex: 'mobile', width: 120, render: (v: string | null) => v ?? '-' },
     {
       // 钉钉：**有值才能用钉钉登录**。列上只显示"绑没绑"，编号放进 title 里
       // （管理员平时不需要看那串号，要排查时鼠标一停就能看见）。
       title: '钉钉',
       dataIndex: 'dingtalk_userid',
-      width: 110,
+      width: 75,
       render: (v: string | null) =>
         v ? (
           <span title={v}>
@@ -732,12 +745,16 @@ export default function SettingsPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      width: 65,
       render: (v: string) => (v === 'active' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
     },
     {
       title: '操作',
-      width: 160,
+      // 120 不是 100：两个无边框小按钮（编辑 / 停用）加上单元格内边距，
+      // 100 时「停用」会被省略成「…」，等于把功能藏掉了
+      width: 120,
+      // 表格比容器宽时固定在右侧：编辑/停用这两个按钮永远看得见
+      fixed: 'right' as const,
       render: (_: unknown, record: SystemUser) => (
         <>
           <Button
@@ -1010,6 +1027,9 @@ export default function SettingsPage() {
                 </Button>
               </div>
               <Table<SystemUser>
+                // 等于各列宽之和（730）。设置页左侧还有一条二级导航，
+                // 表格区只有约 660 —— 写够总宽再配 fixed 操作列，比把列压扁可读
+                scroll={{ x: 730 }}
                 columns={userColumns}
                 dataSource={usersQuery.data?.items ?? []}
                 loading={usersQuery.isLoading}
