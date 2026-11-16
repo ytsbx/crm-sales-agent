@@ -1892,12 +1892,17 @@ table:not(.semi-table) td {
   padding: 0 10px 6px;
   color: var(--crm-text-3);
   font-size: 11px;
-  letter-spacing: 0.3px;
+  /* 加粗 + 字距：分组名和下面的页签要从「字号」上就分得开。
+     从前 11px 常规 vs 13px，缩进又完全一样，「个人」（组名）和
+     「我的」（页签）看着像两个平级条目。 */
+  font-weight: 600;
+  letter-spacing: 0.4px;
 }
 /* 用 a + onClick 的项目写法（不带 href），这里要压过全局 a:not([href]) 的主色 */
 .settings-nav .settings-nav-item {
   display: block;
-  padding: 7px 10px;
+  /* 左缩进 16 而不是 10：页签比分组名往里退一级，层级从缩进上就能看出来 */
+  padding: 7px 10px 7px 16px;
   border-radius: var(--crm-radius-sm);
   color: var(--crm-text-2);
   font-size: 13px;
