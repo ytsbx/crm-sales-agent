@@ -1616,6 +1616,14 @@ table:not(.semi-table) td {
   min-width: 0;
 }
 
+/* 企业微信这页：左栏是长列表，中栏（联系人详情）、右栏（疑似客户）内容都很少。
+   三栏默认 align-items: flex-start，中右两栏各自只有内容那么高，
+   下面拖出一大片空白 —— 从页面看就像「右半边没加载完」。
+   这里让三栏等高，内容再在卡片内部上下分布（见页面里的 margin-top: auto）。 */
+.wecom-split {
+  align-items: stretch;
+}
+
 /* 手机上：多页签横向滑动；全局搜索收窄不挤占顶栏（场景23） */
 @media (max-width: 768px) {
   .tab-strip {

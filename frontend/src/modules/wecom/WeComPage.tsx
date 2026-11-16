@@ -402,7 +402,7 @@ export default function WeComPage() {
       />
 
       {/* 三栏原来写死 300px + 320px，窗口一窄就先把自己撑破（整页横向滚动） */}
-      <div className="split-multi" style={{ gap: 16 }}>
+      <div className="split-multi wecom-split" style={{ gap: 16 }}>
         {/* 左：待处理外部联系人 */}
         <SectionCard>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>待确认客户</div>
@@ -420,7 +420,9 @@ export default function WeComPage() {
           {rows.length === 0 ? (
             <Empty description={listQuery.isLoading ? '加载中…' : '没有待确认客户'} />
           ) : (
-            <div style={{ display: 'grid', gap: 6 }}>
+            // 列表自己滚，不把整页往下拉：这一栏原来有多少人就有多长，
+            // 一页 20 条会把三栏卡片撑到视口外面，中右两栏跟着变成一整块空白。
+            <div style={{ display: 'grid', gap: 6, maxHeight: 'min(40vh, 392px)', overflowY: 'auto', paddingRight: 2 }}>
               {rows.map((row) => (
                 <div
                   key={row.id}
@@ -468,8 +470,9 @@ export default function WeComPage() {
           </div>
         </SectionCard>
 
-        {/* 中：企业微信详情 */}
-        <SectionCard>
+        {/* 中：企业微信详情。纵向弹性 + 底下那块 margin-top auto：
+            卡片被拉到与左栏等高后，内容不会全挤在上半截、下半截空一大片。 */}
+        <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
           {!active ? (
             <Empty description="请在左侧选择一条待确认客户" />
           ) : (
@@ -517,7 +520,7 @@ export default function WeComPage() {
                 </div>
               </div>
 
-              <div style={{ marginTop: 14 }}>
+              <div style={{ marginTop: 'auto', paddingTop: 14 }}>
                 <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>跟进员工</div>
                 {active.followers.length === 0 ? (
                   <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>
@@ -549,8 +552,9 @@ export default function WeComPage() {
           )}
         </SectionCard>
 
-        {/* 右：系统候选客户 */}
-        <SectionCard>
+        {/* 右：系统候选客户。候选列表在上、两个操作按钮贴底 ——
+            否则卡片拉高以后，按钮会悬在半空、下面空出一截。 */}
+        <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
           <div style={{ fontWeight: 600, marginBottom: 10 }}>疑似客户</div>
           {!active ? (
             <Empty description="选中联系人后显示候选" />
@@ -596,7 +600,7 @@ export default function WeComPage() {
               </div>
 
               {canManage && active && (
-                <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+                <div style={{ display: 'grid', gap: 8, marginTop: 'auto', paddingTop: 12 }}>
                   <Button
                     onClick={() => {
                       setCreateForm({
