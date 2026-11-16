@@ -442,11 +442,11 @@ export default function QuoteDetailPage() {
   const versionEditBlockedReason = !version || !canManage
     ? ''
     : !isCurrentVersion
-      ? `这是历史版本（V${version.version_no}），历史版本不能再提交审批、录入明细或加费用；要改动请切到当前版本，或新建一版。`
+      ? `历史版本（V${version.version_no}）不能再提交审批、录入明细或加费用；要改请切到当前版本或新建一版。`
       : version.sent_at
-        ? '该版本已经发送给客户，明细和费用不能再改（运费例外，可以补或改）；需要改动请新建一版。'
+        ? '已发送给客户，明细和费用不可改（运费例外）；要改请新建一版。'
         : version.approval_status === 'approved'
-          ? '该版本已审批通过，明细和费用不能再改（运费例外，可以补或改）；需要改动请新建一版。'
+          ? '已审批通过，明细和费用不可改（运费例外）；要改请新建一版。'
           : ''
 
   // A09 后半：草稿版本检测"价格已有更新"（系统带价的明细与当前适用价比对）
@@ -852,7 +852,9 @@ export default function QuoteDetailPage() {
       <DetailHeader
         title={quote.quote_no}
         extra={canManage && (
-          <Button type="danger" onClick={() => setDeleteVisible(true)}>
+          // 删除是低频且不可逆的动作，红框按钮摆页头最显眼的位置会抢掉
+          // 「转销售订单」的注意力。改成无边框次级按钮，仍可点、仍二次确认。
+          <Button theme="borderless" type="danger" onClick={() => setDeleteVisible(true)}>
             删除报价
           </Button>
         )}
