@@ -1252,37 +1252,50 @@ export default function SettingsPage() {
           )}
           {activeKey === 'dictionaries' && (
             <>
-              <div style={{ color: 'var(--crm-text-2)', fontSize: 13, marginBottom: 12 }}>
-                客户等级从这里维护；业务表单只允许选择启用的选项，历史数据不会被自动改写。
-                产品分类已在新建/编辑产品时直接填写，不在这里维护。
+              {/* 原来顶着一整段说明书，还夹了一句"产品分类在别处维护" —— 那是别的页的事，
+                  读者在这儿只需要知道"我停用一个选项会发生什么"。只留这一句。 */}
+              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 10 }}>
+                业务表单只能选择启用的选项；停用只是不再可选，历史数据不会被改写。
+              </div>
+              {/* 类型原来是个下拉，可点开**只有「客户等级」一项**（库里就这一种类型），
+                  等于一个只能选自己的下拉。改成一句静态标题，顺带报个数。 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>客户等级</span>
+                <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                  共 {(dictionariesQuery.data ?? []).length} 项
+                </span>
               </div>
               <div className="toolbar">
-                <Select
-                  style={{ width: 150 }}
-                  value={dictionaryForm.type}
-                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, type: String(value) })}
-                  optionList={[
-                    { value: 'customer_level', label: '客户等级' },
-                  ]}
-                />
-                <Input
-                  style={{ width: 150 }}
-                  placeholder="编码，如 A"
-                  value={dictionaryForm.code}
-                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, code: value })}
-                />
-                <Input
-                  style={{ width: 180 }}
-                  placeholder="显示名称"
-                  value={dictionaryForm.label}
-                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, label: value })}
-                />
-                <Input
-                  style={{ width: 100 }}
-                  placeholder="排序"
-                  value={dictionaryForm.sort_no}
-                  onChange={(value) => setDictionaryForm({ ...dictionaryForm, sort_no: value })}
-                />
+                {/* 这几个框以前全靠 placeholder 自我介绍：鼠标一进去字就消失，
+                    只剩三个空格子；「排序」那个框尤其像天书（0 代表什么？）。
+                    给每个框配一个固定的小标签，输入时也看得见自己在填什么。 */}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>编码</span>
+                  <Input
+                    style={{ width: 130 }}
+                    placeholder="如 A"
+                    value={dictionaryForm.code}
+                    onChange={(value) => setDictionaryForm({ ...dictionaryForm, code: value })}
+                  />
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>名称</span>
+                  <Input
+                    style={{ width: 170 }}
+                    placeholder="如 甲级客户"
+                    value={dictionaryForm.label}
+                    onChange={(value) => setDictionaryForm({ ...dictionaryForm, label: value })}
+                  />
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>排序</span>
+                  <Input
+                    style={{ width: 90 }}
+                    placeholder="越小越前"
+                    value={dictionaryForm.sort_no}
+                    onChange={(value) => setDictionaryForm({ ...dictionaryForm, sort_no: value })}
+                  />
+                </span>
                 <Button
                   theme="solid"
                   loading={dictionaryMutation.isPending}
@@ -1294,12 +1307,13 @@ export default function SettingsPage() {
               </div>
               <Table<DictionaryItemRow>
                 columns={[
-                  { title: '类型', dataIndex: 'type', width: 140, render: (value: string) => value === 'customer_level' ? '客户等级' : value },
-                  { title: '编码', dataIndex: 'code', width: 140 },
+                  // 「类型」这一列删了：库里只有 customer_level 一种，四行全是同一个词，
+                  // 140px 换不来任何信息 —— 类型已经在表格上方写死了。
+                  { title: '编码', dataIndex: 'code', width: 90 },
                   { title: '名称', dataIndex: 'label' },
-                  { title: '排序', dataIndex: 'sort_no', width: 80 },
+                  { title: '排序', dataIndex: 'sort_no', width: 70 },
                   {
-                    title: '状态', dataIndex: 'enabled', width: 100,
+                    title: '状态', dataIndex: 'enabled', width: 90,
                     render: (value: boolean) => <Tag color={value ? 'green' : 'grey'}>{value ? '启用' : '停用'}</Tag>,
                   },
                   {
@@ -1318,7 +1332,10 @@ export default function SettingsPage() {
                           编辑
                         </Button>
                         <Button
+                          // 停用会让业务表单里选不到这一项，是"有后果"的动作；
+                          // 和左边的「编辑」一样染成蓝色，等于把危险动作藏进普通操作里。
                           theme="borderless"
+                          type={record.enabled ? 'danger' : 'primary'}
                           size="small"
                           loading={dictionaryUpdateMutation.isPending}
                           onClick={() => {
