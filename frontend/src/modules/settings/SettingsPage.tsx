@@ -60,6 +60,8 @@ import NotificationSettingsPanel from './NotificationSettingsPanel'
 import SectionCard from '../../shared/components/SectionCard'
 import EmptyState from '../../shared/components/EmptyState'
 import FormLabel from '../../shared/components/FormLabel'
+import StatusDot from '../../shared/components/StatusDot'
+import type { TagTone } from '../../shared/types'
 import { settingDescription, settingLabel, settingNote } from '../../shared/setting-labels'
 
 const TABS = [
@@ -728,15 +730,11 @@ export default function SettingsPage() {
               // 「这个人明明有权限却进不去」会变成排查不了的谜题（第十批 10.10）。
               const disabled = Boolean(role.status) && role.status !== 'active'
               return (
-                <Tag
+                <StatusDot
                   key={role.id}
-                  size="small"
-                  color={disabled ? 'grey' : ROLE_TONE[role.code] ?? 'grey'}
-                  type={disabled ? 'ghost' : 'light'}
-                >
-                  {role.name}
-                  {disabled ? '（已停用）' : ''}
-                </Tag>
+                  label={role.name + (disabled ? '（已停用）' : '')}
+                  tone={(disabled ? 'grey' : ROLE_TONE[role.code] ?? 'grey') as TagTone}
+                />
               )
             })}
           </span>
@@ -752,17 +750,17 @@ export default function SettingsPage() {
       render: (v: string | null) =>
         v ? (
           <span title={v}>
-            <Tag color="green">已绑定</Tag>
+            <StatusDot label="已绑定" tone="green" />
           </span>
         ) : (
-          <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
+          <StatusDot label="未绑定" tone="grey" />
         ),
     },
     {
       title: '状态',
       dataIndex: 'status',
       width: 65,
-      render: (v: string) => (v === 'active' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
+      render: (v: string) => <StatusDot label={v === 'active' ? '启用' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />,
     },
     {
       title: '操作',
@@ -828,7 +826,7 @@ export default function SettingsPage() {
       title: '状态',
       dataIndex: 'status',
       width: 70,
-      render: (v: string) => (v === 'active' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
+      render: (v: string) => <StatusDot label={v === 'active' ? '启用' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />,
     },
     {
       title: '数据范围',
@@ -900,7 +898,7 @@ export default function SettingsPage() {
       dataIndex: 'status',
       width: 100,
       // 和角色表统一用 Tag：同一页里两张表的状态长得不一样，用户会以为是两种东西
-      render: (v: string) => (v === 'active' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
+      render: (v: string) => <StatusDot label={v === 'active' ? '启用' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />,
     },
     {
       title: '操作',

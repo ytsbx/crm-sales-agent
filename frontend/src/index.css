@@ -1365,6 +1365,13 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 产品详情的 SKU 表：列宽合计 1159 + 内边距 > 内容区 1130，
+   右下「操作」被裁、底部常驻横向滚动条。和报价明细同一套处理方式。 */
+.product-sku-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+
 /* 报价详情明细表：原来写死 scroll.x = max(100%, 1300px)，容器只有 1130，
    于是表格底部常驻一条横向滚动条、「金额 / 审批 / 操作」三列要滑着看。
    这里改成等容器宽 + 固定表布局，列宽按 width 比例压进 1130。 */

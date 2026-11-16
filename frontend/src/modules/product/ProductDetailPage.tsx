@@ -47,6 +47,7 @@ import SkuImageCell from './SkuImageCell'
 import PendingImagePicker from './PendingImagePicker'
 import { listBusinessFilesBatch, uploadFile, type FileRow } from '../../shared/api/file'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
 import type { Sku } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
 
@@ -504,7 +505,7 @@ export default function ProductDetailPage() {
       // （详见下面「规格·尺寸·重量」那一列的注释）。
       title: '名称 / 编码',
       dataIndex: 'name',
-      width: 150,
+      width: 140,
       ellipsis: true,
       render: (v: string | null, record: Sku) => (
         <div>
@@ -535,7 +536,7 @@ export default function ProductDetailPage() {
       // 颜色与材质并进这一列的第二行：它们原来各占一列（56 + 66），
       // 窄到列头都被压成「颜…」「装…」，而内容只有两个字
       title: '规格 / 尺寸',
-      width: 200,
+      width: 175,
       ellipsis: true,
       render: (_: unknown, record: Sku) => {
         const size =
@@ -573,15 +574,17 @@ export default function ProductDetailPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 64,
-      render: (v: string) => (v === 'active' ? <Tag color="green">在售</Tag> : <Tag>停用</Tag>),
+      width: 84,
+      render: (v: string) => (
+        <StatusDot label={v === 'active' ? '在售' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />
+      ),
     },
     {
       // 列头留空：内容本身就是"来源/待核实/差异"这个入口，
       // 标题再写一遍"来源"是重复，还白占宽度。
       // 150 而不是 120：120 时「来源/待核实/差异」被省略成「来源/待核…」
       title: '',
-      width: 150,
+      width: 138,
       render: (_: unknown, record: Sku) => (
         <a
           style={{ color: 'var(--crm-primary)' }}
@@ -600,14 +603,15 @@ export default function ProductDetailPage() {
     },
     {
       title: '成本状态',
-      width: 210,
+      width: 168,
       render: (_: unknown, record: Sku) => (
-        <div>
-          <Tag color={record.cost_status?.state === 'complete' ? 'green' : 'orange'}>
-            {record.cost_status?.label ?? '成本状态待查询'}
-          </Tag>
+        <div style={{ display: 'grid', gap: 2, justifyItems: 'start' }}>
+          <StatusDot
+            label={record.cost_status?.label ?? '成本状态待查询'}
+            tone={record.cost_status?.state === 'complete' ? 'green' : 'orange'}
+          />
           {can('price:manage') ? (
-            <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ marginLeft: 8 }}>维护成本</Link>
+            <Link to={`/prices?tab=costs&sku_id=${record.id}`} style={{ fontSize: 12 }}>维护成本</Link>
           ) : record.cost_status?.state !== 'complete' ? (
             <div style={{ fontSize: 12 }}>请联系价格管理员补齐</div>
           ) : null}
@@ -733,6 +737,7 @@ export default function ProductDetailPage() {
         }
       >
         <Table<Sku>
+          className="product-sku-table"
           columns={skuColumns}
           dataSource={skuQuery.data ?? []}
           loading={skuQuery.isLoading}
