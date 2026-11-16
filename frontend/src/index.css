@@ -3,9 +3,12 @@
    改这里 = 全局改风格；页面里不写死颜色。
    ============================================================ */
 :root {
-  --crm-primary: #004ec6;
-  --crm-primary-hover: #0064fa;
-  --crm-primary-soft: #dae1ff;
+  /* 主色降饱和：#004ec6 是 100% 彩度的纯蓝，大面积实心按钮压不住，
+     整屏只剩「一块很蓝的色块」。换成彩度约 68%、明度 38% 的墨蓝，
+     蓝的识别度还在，但不刺眼。 */
+  --crm-primary: #1f4fa8;
+  --crm-primary-hover: #2a63c4;
+  --crm-primary-soft: #e3ebf7;
   --crm-secondary: #7431d3;
   --crm-secondary-soft: #ecdcff;
   --crm-error: #ba1a1a;
@@ -88,7 +91,7 @@
   --semi-color-primary-hover: var(--crm-primary-hover);
   --semi-color-primary-active: var(--crm-primary);
   --semi-color-primary-light-default: var(--crm-primary-soft);
-  --semi-color-primary-light-hover: #eef2ff;
+  --semi-color-primary-light-hover: #edf3fb;
   --semi-color-danger: var(--crm-error);
   --semi-color-warning: var(--crm-warning);
   --semi-color-info: var(--crm-primary);
@@ -200,8 +203,10 @@ a:not([href]) {
      浅灰底上的白卡本身就有边界，让阴影单独负责「浮起来」这件事。 */
   border: 1px solid transparent;
   border-radius: var(--crm-radius);
-  /* 卡内留白要**大于**卡间距（20 vs 12~14）：内松外紧，卡片才不粘在一起 */
-  padding: 20px;
+  /* 卡内留白要**大于**卡间距：内松外紧，卡片才不粘在一起。
+     纵向从 20 提到 24（版面更从容），横向保持 20 —— 横向再收会挤窄表格，
+     订单中心这类满列的表会多出一条横向滚动条。 */
+  padding: 24px 20px;
   box-shadow: var(--crm-shadow);
 }
 
@@ -390,7 +395,7 @@ a:not([href]) {
   background: var(--crm-surface);
   border: 1px solid transparent;
   border-radius: var(--crm-radius);
-  padding: 18px 20px;
+  padding: 20px 24px;
   box-shadow: var(--crm-shadow);
 }
 
@@ -422,6 +427,13 @@ a:not([href]) {
   padding: 0;
   background: transparent;
   color: var(--crm-text-3);
+}
+
+/* 卡中卡：外层已经是白卡 + 阴影，内层再叠一层白卡 + 阴影，两层边界同时出现，
+   看着像贴了两张贴纸。内层改成浅灰底、不投影，当"分段"用，不当"又一张卡"。 */
+.card-block .kpi-card {
+  background: var(--crm-surface-low);
+  box-shadow: none;
 }
 
 /* 空表格不画横向滚动条：Semi 对列宽合计超出容器的表，即使没有数据也会渲染
