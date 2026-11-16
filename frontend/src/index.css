@@ -1174,6 +1174,12 @@ a:not([href]) {
   color: var(--crm-error);
 }
 
+/* 审计日志：登录/登出整行压灰，让业务变更自己浮出来（2026-11-16）。 */
+.audit-quiet-row .semi-table-tbody td,
+.audit-quiet-row .semi-table-row-cell {
+  color: var(--crm-text-3);
+}
+
 .chip-ai {
   background: var(--crm-secondary-soft);
   color: var(--crm-secondary);

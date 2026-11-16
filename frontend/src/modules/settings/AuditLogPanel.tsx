@@ -39,7 +39,9 @@ import {
  *    所以这里可以放心用；但**不要**因为拿不到用户列表就让筛选失效 ——
  *    下拉是空的，搜索框仍然要能用。
  */
-const DEFAULT_PAGE_SIZE = 15
+/* 默认每页 30（原来 15）：登录/登出占了全部记录的八成，一页 15 条时
+   一眼望去全是登录，想翻到一条业务变更要翻十几页（2026-11-16 主人「看的慢」）。 */
+const DEFAULT_PAGE_SIZE = 30
 const PAGE_SIZE_OPTIONS = [15, 30, 50, 100]
 
 /**
@@ -332,6 +334,10 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         loading={query.isFetching}
         dataSource={rows}
         rowKey="id"
+        // 登录/登出整行压成三级灰。原来只把「动作」那一格变灰，时间、操作人、
+        // 对象、来源还是正常色，整行照样抢眼；整行一起压下去，业务变更那几行
+        // 才会自己浮出来（需要查登录时间时仍一眼能找到，没有隐藏）。
+        rowClassName={(row: AuditLogRow) => (QUIET_ACTIONS.has(row.action) ? 'audit-quiet-row' : '')}
         // 这里**故意不设 scroll.x**：试过 `x: 900`，结果 Semi 把列宽和 scroll 宽度
         // 各算各的，最后一列被分到 622px、整表反而撑到 1255（容器只有 923）。
         // 不设 scroll 时表格跟着容器走，列宽和 885 由 Semi 自己摊平，最稳。
