@@ -885,7 +885,9 @@ export default function SettingsPage() {
   ]
 
   const deptColumns = [
-    { title: '部门名称', dataIndex: 'name' },
+    // 给固定宽：不写宽度时这一列会吃掉全部剩余空间（实测 435px 只放「销售部」三个字），
+    // 右边几列被挤成一条
+    { title: '部门名称', dataIndex: 'name', width: 300 },
     {
       title: '上级部门',
       dataIndex: 'parent_id',
@@ -897,7 +899,8 @@ export default function SettingsPage() {
       title: '状态',
       dataIndex: 'status',
       width: 100,
-      render: (v: string) => (v === 'active' ? '启用' : '停用'),
+      // 和角色表统一用 Tag：同一页里两张表的状态长得不一样，用户会以为是两种东西
+      render: (v: string) => (v === 'active' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
     },
     {
       title: '操作',
