@@ -1,7 +1,7 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Select, SideSheet, Table, Tag, Typography } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Radio, RadioGroup, Select, SideSheet, Table, Tag, Typography } from '@douyinfe/semi-ui'
 
 import { listAuditLogs, type AuditLogRow } from '../../shared/api/analytics'
 import { listUsers } from '../../shared/api/system'
@@ -177,7 +177,22 @@ export interface AuditLogPanelProps {
   active: boolean
 }
 
+/**
+ * 三档视图：全部 / 只看业务变更 / 只看登录。
+ *
+ * 库里登录（含登出、刷新令牌）占了八成，翻到一条业务变更要翻十几页。
+ * 后端 2026-11-16 加了 `exclude_actions` 参数（支持"某几类不要"，
+ * 而 `action` 只能"只要某一类"），这里就接成三个按钮。
+ *
+ * 注意"只看登录"只能传 `action=login`：后端没有 include 多选，
+ * 所以登出、刷新令牌这两类在这一档里看不到（它们在"全部"里仍然在）。
+ */
+const LOGIN_ACTIONS = 'login,logout,refresh'
+
+type AuditView = 'all' | 'biz' | 'login'
+
 export default function AuditLogPanel({ active }: AuditLogPanelProps) {
+  const [view, setView] = useState<AuditView>('all')
   const [keywordInput, setKeywordInput] = useState('')
   // 关键字与输入框分开：输入框每敲一下都会变，直接进 queryKey 会每敲一下就发一次请求
   const [keyword, setKeyword] = useState('')
@@ -188,6 +203,12 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [detail, setDetail] = useState<AuditLogRow | null>(null)
+
+  // 换视图等于换了一套数据，页码必须归 1，否则会停在"第 8 页的第 8 页"那种空页
+  const changeView = (next: AuditView) => {
+    setView(next)
+    setPage(1)
+  }
 
   // 输入防抖：审计是海量流水，逐字发请求既慢又吵
   useEffect(() => {
@@ -206,14 +227,17 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
   })
 
   const query = useQuery({
-    queryKey: ['audit-logs', page, pageSize, keyword, businessType, action, operatorId, range?.[0]?.toISOString(), range?.[1]?.toISOString()],
+    queryKey: ['audit-logs', view, page, pageSize, keyword, businessType, action, operatorId, range?.[0]?.toISOString(), range?.[1]?.toISOString()],
     queryFn: () =>
       listAuditLogs({
         page,
         page_size: pageSize,
         keyword: keyword || undefined,
         business_type: businessType,
-        action,
+        // 「只看业务变更」= 把登录/登出/刷新令牌三类排除掉，其余照常分页；
+        // 「只看登录」= 后端 action 精确匹配 login（登出、刷新这一档看不到）。
+        action: view === 'login' ? 'login' : action,
+        exclude_actions: view === 'biz' ? LOGIN_ACTIONS : undefined,
         operator_id: operatorId,
         // 时间范围：后端按 created_at 过滤。结束那天要**含当天**
         // （用户选"到今天"是想看到今天发生的，而不是到昨天 24:00 为止）。
@@ -233,9 +257,10 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
   }))
 
   const hasFilter = Boolean(
-    keyword || businessType || action || operatorId || range,
+    view !== 'all' || keyword || businessType || action || operatorId || range,
   )
   const resetAll = () => {
+    setView('all')
     setKeywordInput('')
     setKeyword('')
     setBusinessType(undefined)
@@ -345,9 +370,21 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
           minHeight: 24,
         }}
       >
-        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-          {hasFilter ? `筛选出 ${total} 条` : `共 ${total} 条`}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
+          <RadioGroup
+            type="button"
+            buttonSize="small"
+            value={view}
+            onChange={(e) => changeView(e.target.value as AuditView)}
+          >
+            <Radio value="all">全部</Radio>
+            <Radio value="biz">只看业务变更</Radio>
+            <Radio value="login">只看登录</Radio>
+          </RadioGroup>
+          <span style={{ fontSize: 12, color: 'var(--crm-text-3)', whiteSpace: 'nowrap' }}>
+            {hasFilter ? `筛选出 ${total} 条` : `共 ${total} 条`}
+          </span>
+        </div>
         {hasFilter && (
           <Button size="small" theme="borderless" onClick={resetAll}>
             清除筛选
@@ -364,9 +401,11 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         // 才会自己浮出来（需要查登录时间时仍一眼能找到，没有隐藏）。
         rowClassName={(row: AuditLogRow) =>
           QUIET_ACTIONS.has(row.action) ? 'audit-quiet-row' : 'audit-biz-row'}
-        // 这里**故意不设 scroll.x**：试过 `x: 900`，结果 Semi 把列宽和 scroll 宽度
-        // 各算各的，最后一列被分到 622px、整表反而撑到 1255（容器只有 923）。
-        // 不设 scroll 时表格跟着容器走，列宽和 885 由 Semi 自己摊平，最稳。
+        // `scroll.x: '100%'` 不是"给个滚动宽度"，而是告诉 Semi「表格宽度就是容器宽度」。
+        // 试过写死 `x: 900`，Semi 会把列宽和 scroll 宽度各算各的，最后一列被分到
+        // 622px、整表反而撑到 1255（容器只有 923）。写 '100%' 之后各列按比例摊到
+        // 容器里，不会再出现"表体 928 / 容器 923"这种 5px 的横向滚动。
+        scroll={{ x: '100%' }}
         empty="没有符合条件的记录"
         pagination={{
           currentPage: page,
@@ -408,7 +447,11 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 原来「报价单 编号 3」整列一种字重，一个两位数是可有可无的定位信息，
             // 却和"这是哪类单据"占一样的分量。
             title: '对象',
-            width: 190,
+            // 165 是量出来的：155 放不下「报价单 Q202611160010」（类型 42 + 空格 6 +
+            // 单号 110 ≈ 158），190 让整表 942 超容器 923 多出 19px 横向滚动，
+            // 170 仍剩 5px。Semi 摊平列宽时会吃几个像素，最后落在 165 ——
+            // 总宽 919，容器 923，留 4px 余量（纵向滚动条一出现就要吃 15px）。
+            width: 165,
             render: (_: unknown, record: AuditLogRow) => {
               if (!record.business_type) return '-'
               const label = objectLabel(record)
@@ -478,7 +521,9 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 内容短的时候没事，一旦摘要变长（「报价状态 草稿；币种 人民币；…」），
             // 列宽就跟着内容一起长，**整张表被撑出卡片右边界**。
             title: '变更内容',
-            width: 280,
+            // 280 → 270：对象列加宽后总宽 929、容器 923，多出来的 5px 会在表底下
+            // 留一条横向滚动条。往下压 10px 后落在 919，留 4px 余量给纵向滚动条。
+            width: 270,
             render: (_: unknown, record: AuditLogRow) => {
               const summary = auditChangeSummary(record)
               const hidden = auditHiddenFieldCount(record)

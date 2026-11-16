@@ -542,6 +542,12 @@ export function listAuditLogs(query: {
   /** 时间范围（ISO 字符串，后端按 created_at 过滤） */
   start?: string
   end?: string
+  /**
+   * 要**排除**的动作，英文逗号分隔（后端 2026-11-16 新增）。
+   * 传 `login,logout,refresh` 就是"登录相关的全不要，只看业务变更"。
+   * 跟 `action` 不冲突：`action` 是"只要某一种"，`exclude_actions` 是"某几种不要"。
+   */
+  exclude_actions?: string
   page?: number
   page_size?: number
 }) {
