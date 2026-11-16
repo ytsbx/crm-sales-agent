@@ -49,6 +49,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import CsvImportButtons from '../../shared/components/CsvImportButtons'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import { listDictionaries } from '../../shared/api/settings'
@@ -176,6 +177,9 @@ const SKIP_FIELDS = new Set([
   'quote_version_id',
   'version_id',
   'converted_inquiry_id',
+  // 审计日志里的事件键（quote:send:38:initial 这种）：纯粹的机器标识，
+  // 印在「变更内容」里对用户没有任何信息量（2026-11-16）
+  'event_key',
 ])
 
 /**
@@ -209,6 +213,7 @@ const ACTION_LABEL: Record<string, string> = {
   auto_pass: '自动通过',
   mark_sent: '标记已发送',
   send_email: '发送邮件',
+  send: '发送',
   accept: '客户接受',
   decline: '客户拒绝',
   reject: '客户拒绝',
@@ -385,6 +390,13 @@ function historySummary(row: PricingHistoryRow): string {
   if (row.action === 'submit_approval') return '提交审批'
   if (row.action === 'withdraw_approval') return '撤回审批'
   if (row.action === 'mark_sent') return '标记为已发送'
+  if (row.action === 'send') {
+    // 这个动作的快照里只有 channel / event_key / version_id 这些内部字段，
+    // 兜底分支拼出来是「channel 邮件；event_key quote:send:38:initial」——
+    // 非技术同事看不懂，也看不出"到底干了什么"。直接说人话（2026-11-16）。
+    const channel = after.channel
+    return channel === '邮件' || channel === 'email' ? '通过邮件把报价单发送给了客户' : '把报价单发送给了客户'
+  }
   if (row.action === 'clone') {
     const n = after.copied_items ?? after.copied
     return n === null || n === undefined ? '复制了一份明细' : `复制了 ${n} 条明细`
@@ -1312,9 +1324,10 @@ export default function PriceCenterPage() {
                     dataIndex: 'stopped_at',
                     width: 140,
                     render: (stopped: string | null, record: { effective_to?: string | null }) => {
-                      if (stopped) return <Tag color="grey">已停用</Tag>
-                      if (record.effective_to) return <Tag>到 {record.effective_to} 止</Tag>
-                      return <Tag color="green">生效中</Tag>
+                      if (stopped) return <StatusDot label="已停用" tone="grey" />
+                      // 「到某天止」不是状态、是一个日期，用正文色写清楚比挂个没颜色的标签好看
+                      if (record.effective_to) return <StatusDot label={`到 ${record.effective_to} 止`} tone="grey" />
+                      return <StatusDot label="生效中" tone="green" />
                     },
                   },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
@@ -1437,11 +1450,11 @@ export default function PriceCenterPage() {
                     width: 90,
                     render: (v: string) =>
                       v === 'active' ? (
-                        <Tag color="green">生效</Tag>
+                        <StatusDot label="生效" tone="green" />
                       ) : v === 'historical' ? (
-                        <Tag color="grey">历史</Tag>
+                        <StatusDot label="历史" tone="grey" />
                       ) : (
-                        <Tag>停用</Tag>
+                        <StatusDot label="停用" tone="grey" />
                       ),
                   },
                   {
