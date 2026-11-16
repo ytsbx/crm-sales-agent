@@ -1,3 +1,28 @@
+/* 实心主按钮的"凸起"：顶上叠一层极淡的高光（不是另一套配色，只借一点光），
+   底下压一道短投影。纯色平涂的按钮在浅灰底上永远是"贴上去的"，
+   有光有影才会"按得到"。用 background-image 叠在 background-color 上，
+   悬停换底色时这层高光仍然在。 */
+.semi-button-primary {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.16) 0%,
+    rgba(255, 255, 255, 0.04) 52%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.18), 0 6px 14px -8px rgba(31, 79, 168, 0.55);
+  transition: box-shadow var(--crm-dur-base) var(--crm-ease),
+    transform var(--crm-dur-fast) var(--crm-ease);
+}
+
+.semi-button-primary:hover {
+  box-shadow: 0 2px 4px rgba(16, 24, 40, 0.2), 0 10px 20px -10px rgba(31, 79, 168, 0.6);
+}
+
+.semi-button-primary:active {
+  transform: translateY(1px);
+  box-shadow: 0 1px 1px rgba(16, 24, 40, 0.16);
+}
+
 /* ============================================================
    设计令牌（取自 Stitch 设计稿的 Material 3 色板）
    改这里 = 全局改风格；页面里不写死颜色。
@@ -43,7 +68,8 @@
   /* 圆角规格取自设计稿的 tailwind.config：
      DEFAULT 2px / lg 4px / xl 8px / full 12px */
   /* 浅色界面靠「圆角 + 柔阴影」取软；8px 在浅灰底上还是偏硬 */
-  --crm-radius: 12px; /* 卡片 */
+  /* 卡片圆角 12 → 14：12 在浅灰底上仍偏"硬"，14 是柔而不圆的分界点 */
+  --crm-radius: 14px; /* 卡片 */
   --crm-radius-sm: 6px; /* 按钮、输入框、导航项 */
   --crm-radius-pill: 999px; /* 标签、胶囊：真胶囊 */
   /* 双层柔阴影：近处一层定边、远处一层只往下走（负 spread），
@@ -342,7 +368,8 @@ a:not([href]) {
   display: grid;
   /* 卡间距收到 12，比卡内留白 20 更小 —— 内松外紧 */
   gap: var(--crm-space-3);
-  margin-top: var(--crm-space-4);
+  /* 区块之间 16 → 20：组与组之间要喘得开，页面才不像被"排满" */
+  margin-top: 20px;
   align-items: stretch;
 }
 
@@ -401,6 +428,15 @@ a:not([href]) {
 
 .kpi-card:hover {
   box-shadow: var(--crm-shadow-lg);
+  /* 上抬 2px：光标扫过整排卡片时能感觉到"按下去的是卡片"，
+     只有阴影变深的话，浅灰底上几乎看不出来 */
+  transform: translateY(-2px);
+}
+
+/* 位移和阴影都走 200ms：扫过一排卡片是"跟过来"的，不是一格格跳 */
+.kpi-card {
+  transition: box-shadow var(--crm-dur-base) var(--crm-ease),
+    transform var(--crm-dur-base) var(--crm-ease);
 }
 
 .kpi-label {
