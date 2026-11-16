@@ -2289,18 +2289,35 @@ table:not(.semi-table) td {
   flex: 0 0 168px;
   min-width: 0;
 }
+/* 组与组之间拉一条分隔线：光靠字号和 6px 缩进，「个人」和下面的「我的」、
+   「系统」和下面的「通知」永远像平级条目。分隔线把每一组框成一段，
+   读起来是"分区标题 + 分区里的几项"（2026-11-16 主人反馈：区分太不明显）。 */
 .settings-nav-group + .settings-nav-group {
   margin-top: var(--crm-space-4);
+  padding-top: var(--crm-space-4);
+  border-top: 1px solid var(--crm-border);
 }
+/* 分组标题：11px 灰字 + 左侧一根 2px 短竖条。
+   字号差 2px 在中文里几乎看不出（汉字没有 x-height 那种明显差异），
+   竖条是"形态"上的差异 —— 一眼就知道这行不是可以点的条目。 */
 .settings-nav-title {
-  padding: 0 10px 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 8px;
   color: var(--crm-text-3);
   font-size: 11px;
-  /* 加粗 + 字距：分组名和下面的页签要从「字号」上就分得开。
-     从前 11px 常规 vs 13px，缩进又完全一样，「个人」（组名）和
-     「我的」（页签）看着像两个平级条目。 */
   font-weight: 600;
   letter-spacing: 0.4px;
+}
+
+.settings-nav-title::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 2px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--crm-text-3);
 }
 /* 用 a + onClick 的项目写法（不带 href），这里要压过全局 a:not([href]) 的主色 */
 .settings-nav .settings-nav-item {
