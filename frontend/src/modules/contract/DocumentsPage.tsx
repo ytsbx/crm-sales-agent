@@ -376,11 +376,12 @@ export default function DocumentsPage() {
           </div>
           <Table<ContractDocument>
             columns={[
-              { title: '编号', dataIndex: 'doc_no', width: 150 },
+              { title: '编号', dataIndex: 'doc_no', width: 140 },
               { title: '类型', dataIndex: 'doc_type_label', width: 100 },
-              { title: '标题', dataIndex: 'title' },
-              { title: '合同来源', width: 110, render: (_: unknown, record: ContractDocument) => record.contract_origin_label || '历史未标注' },
-              { title: '客户', dataIndex: 'customer_name', width: 160 },
+              // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
+              // 把后面的列全顶到屏幕外；200 是"销售合同-甲"这类标题的实测上限再留些余量。
+              { title: '标题', dataIndex: 'title', width: 200 },
+              { title: '客户', dataIndex: 'customer_name', width: 110 },
               {
                 title: '状态',
                 dataIndex: 'status_label',
@@ -389,10 +390,6 @@ export default function DocumentsPage() {
                   <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
                 ),
               },
-              { title: '到期日', dataIndex: 'expiry_date', width: 110, render: (v: string | null) => v ?? '-' },
-              // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
-              // 北京时间凌晨签的会显示成前一天。
-              { title: '签署时间', dataIndex: 'signed_at', width: 130, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
               {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
@@ -408,16 +405,35 @@ export default function DocumentsPage() {
                   return <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
                 },
               },
+              // 「合同来源」从第 4 位挪到「依据」后面：它是"我方合同 / 客户合同"，
+              // 实际数据里满屏都是「历史未标注」，占着黄金位置却没信息；
+              // 让位给「依据」——那份合同到底照哪一版报价签的，才是要一眼看到的。
+              // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
+              // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
+              // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
+              { title: '到期日', dataIndex: 'expiry_date', width: 110, render: (v: string | null) => v ?? '-' },
+              // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
+              // 北京时间凌晨签的会显示成前一天。
+              { title: '签署时间', dataIndex: 'signed_at', width: 120, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
+              { title: '合同来源', width: 105, render: (_: unknown, record: ContractDocument) => record.contract_origin_label || '历史未标注' },
               {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
                 title: '操作',
-                width: 260,
+                width: 175,
+                // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
+                // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
+                // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
+                // 170 是按"下载合同原稿 + 详情"两个链接实测的，少了会变省略号。
+                fixed: 'right',
                 render: (_: unknown, record: ContractDocument) => (
                   <span style={{ display: 'inline-flex', gap: 12, flexWrap: 'wrap' }}>
                     {/* 走共用封装：原件丢失 / 没权限 / 网络失败都要把话说出来，
                         不能 `void` 掉一个会失败的 Promise（那样点了没反应） */}
-                    <a onClick={() => void downloadContractDoc(record)}>下载合同原稿</a>
+                    {/* 文案从「下载合同原稿」收到「下载原稿」：在合同台账里，
+                        下载的就是这份合同的原稿，四个字已经说得清；
+                        多那两个字会把同一列的「删除」挤到第二行，行高白涨一截。 */}
+                    <a onClick={() => void downloadContractDoc(record)}>下载原稿</a>
                     {/* 详情：抬头快照、依据、关系链、签署原件都收在这里。
                         签署原件**光看状态看不出来**，必须点进来才知道拿到的到底是哪一份。 */}
                     <a onClick={() => setDetailTarget(record)}>详情</a>
