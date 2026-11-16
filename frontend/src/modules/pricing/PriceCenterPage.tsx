@@ -634,6 +634,16 @@ export default function PriceCenterPage() {
     queryFn: listLogisticsRates,
     enabled: activeKey === 'logistics',
   })
+  /* 「客户查价」tab 在还没查价时，下方是一整片空白（结果区只在有 lookupResult 时
+     才渲染）。与其留白，不如把「最近发生过几次核价变更」拉出来 —— 用户第一次
+     进这个模块看到的就是真实的记录，而不是一句解释 + 半屏白（2026-11-16）。
+     单独开一个 query，不跟「核价历史」tab 分页状态互相干扰。 */
+  const recentHistoryQuery = useQuery({
+    queryKey: ['pricing-history', 'recent'],
+    queryFn: () => listPricingHistory({ page: 1, page_size: 5 }),
+    enabled: activeKey === 'lookup' && !lookupResult,
+  })
+
   const historyQuery = useQuery({
     queryKey: ['pricing-history', historyPage, historyPageSize, historySkuId],
     queryFn: () =>
@@ -1113,6 +1123,52 @@ export default function PriceCenterPage() {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+
+              {/* 查价前下方这块空白用真数据填：最近 5 次核价变更。
+                  改了什么、谁改的、什么时候 —— 比一块静态说明更能说明
+                  「这个工具在管什么」（2026-11-16）。 */}
+              {!lookupResult && (recentHistoryQuery.data?.items?.length ?? 0) > 0 && (
+                <div
+                  style={{
+                    marginTop: 16,
+                    border: '1px solid var(--crm-border)',
+                    borderRadius: 8,
+                    padding: '14px 20px',
+                    display: 'grid',
+                    gap: 10,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      justifyContent: 'space-between',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: 'var(--crm-text-2)',
+                    }}
+                  >
+                    <span>最近核价记录</span>
+                    <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                      共 {recentHistoryQuery.data?.total ?? 0} 条，这里只显示最近 5 条
+                    </span>
+                  </div>
+                  {(recentHistoryQuery.data?.items ?? []).map((row) => (
+                    <div
+                      key={row.id}
+                      style={{ display: 'flex', gap: 14, fontSize: 13, alignItems: 'baseline' }}
+                    >
+                      <span style={{ width: 148, flexShrink: 0, color: 'var(--crm-text-3)' }}>
+                        {formatBeijingTime(row.created_at)}
+                      </span>
+                      <span style={{ width: 72, flexShrink: 0, color: 'var(--crm-text-3)' }}>
+                        {row.operator_name ?? '-'}
+                      </span>
+                      <span style={{ color: 'var(--crm-text-2)' }}>{historySummary(row)}</span>
+                    </div>
+                  ))}
                 </div>
               )}
               {lookupResult?.status === 'ok' && (
