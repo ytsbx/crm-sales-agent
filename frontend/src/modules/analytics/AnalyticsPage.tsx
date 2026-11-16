@@ -118,8 +118,11 @@ function Donut({
   if (!data.length) return <NoData />
   const total = data.reduce((sum, item) => sum + item.value, 0)
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-      <div style={{ width: 146, flex: 'none' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }}>
+      {/* 环形图原来是写死的 146：四列卡只有 278 宽、卡内只剩 238，
+          「146 + 间距 + 图例最小宽」正好撑破卡片，把整页顶出一条横向滚动条。
+          改成跟着卡片宽度走（最窄 96、最宽 146），四列卡里自动收到 105。 */}
+      <div style={{ width: '46%', minWidth: 96, maxWidth: 146, flex: 'none' }}>
         <EChart
           height={146}
           ariaLabel={`占比环形图，共 ${format(total)}`}

@@ -221,18 +221,27 @@ export default function LeadListPage() {
   })
 
   const columns = [
-    { title: '线索名称', dataIndex: 'name', width: 220 },
+    // 名称列收窄并允许省略：9 列加起来 1350，比内容区还宽，表格内部多出一条横向滚动条。
+    { title: '线索名称', dataIndex: 'name', width: 170, ellipsis: true },
     {
       title: '公司',
       dataIndex: 'company_name',
-      width: 220,
+      width: 150,
       ellipsis: true,
       render: (v: string | null) => v ?? '-',
     },
-    { title: '联系人', dataIndex: 'contact_name', width: 100, render: (v: string | null) => v ?? '-' },
+    { title: '联系人', dataIndex: 'contact_name', width: 90, render: (v: string | null) => v ?? '-' },
+    // 手机号 11 位放 120 会被截成「138269363…」，看着像号码错了；130 刚好放满
     { title: '手机', dataIndex: 'mobile', width: 130, render: (v: string | null) => v ?? '-' },
-    { title: '来源', dataIndex: 'source', width: 110, render: (v: string | null) => v ?? '-' },
-    { title: '地区', dataIndex: 'region', width: 90, render: (v: string | null) => v ?? '-' },
+    /* 「来源」和「地区」各占一列、内容都只有两三个字。并成一列「来源 · 地区」：
+       两列 190 变一列 150，信息一点没少，正好把表格从 1150 收回到内容区里。 */
+    {
+      title: '来源 · 地区',
+      dataIndex: 'source',
+      width: 150,
+      render: (_: string | null, record: Lead) =>
+        [record.source, record.region].filter((v) => v && v !== '-').join(' · ') || '-',
+    },
     {
       title: '状态',
       dataIndex: 'status',
@@ -249,9 +258,11 @@ export default function LeadListPage() {
     },
     {
       title: '操作',
-      width: 280,
+      // 操作最多同时出现五个文字链（领取/跟进/分配/转客户/释放/废弃里取五），
+      // 220 才够一行放下；130 会折成三行、把行高顶得乱七八糟。
+      width: 220,
       render: (_: unknown, record: Lead) => (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'nowrap', whiteSpace: 'nowrap', fontSize: 13 }}>
           {!record.owner_id && (
             <Popconfirm
               title={`确认领取线索「${record.name}」？`}

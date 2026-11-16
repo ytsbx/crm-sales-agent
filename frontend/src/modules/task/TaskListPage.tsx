@@ -234,7 +234,9 @@ export default function TaskListPage() {
     {
       title: '截止时间',
       dataIndex: 'due_at',
-      width: 190,
+      /* 190 放不下「2026/11/2 09:28 + 逾期标签」，日期被折成了两行；
+         日期和标签必须待在同一行，否则整表的行高参差不齐。 */
+      width: 215,
       // 逾期别拼成括号跟在日期后面（「2026/11/2 09:28:47（已逾期）」又长又糊）：
       // 日期一个色、状态一个小标签，扫一眼就分得出来
       render: (value: string | null, record: Task) =>
