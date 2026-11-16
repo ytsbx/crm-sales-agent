@@ -1,4 +1,4 @@
-import { formatBeijingTime } from '../../shared/beijing-time'
+import { formatBeijingDate, formatBeijingTime } from '../../shared/beijing-time'
 import { useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -478,6 +478,10 @@ export default function KnowledgePage() {
     {
       title: '产品名称',
       dataIndex: 'title',
+      width: 316,
+      // 这一列原来不设宽，标题一长就把整表顶到 1320、横滑才能看到操作列。
+      // 定宽 320，标题正文超过 14 字截断（悬停看全），编号仍然完整显示 ——
+      // 编号是报价 / 打样明细回溯用的，一个字都不能少。
       render: (text: string, record: CustomInquiryRow) => (
         <div>
           <div style={{ fontWeight: 600 }}>
@@ -494,7 +498,9 @@ export default function KnowledgePage() {
                 {record.inquiry_no}
               </span>
             )}
-            {text}
+            <span title={text}>
+              {text && text.length > 14 ? `${text.slice(0, 14)}…` : text}
+            </span>
             {record.version && record.version > 1 && (
               <Tag size="small" style={{ marginLeft: 6 }}>{`v${record.version}`}</Tag>
             )}
@@ -509,7 +515,7 @@ export default function KnowledgePage() {
               style={{
                 fontSize: 12,
                 color: 'var(--crm-text-3)',
-                maxWidth: 420,
+                maxWidth: 290,
                 whiteSpace: 'pre-wrap',
               }}
             >
@@ -522,34 +528,42 @@ export default function KnowledgePage() {
     {
       title: '客户',
       dataIndex: 'customer_name',
-      width: 180,
-      render: (v: string | null) => v ?? '-',
+      width: 160,
+      // 客户名带场景后缀能到 12 字（"宁波家电01厂【演示造数】"），
+      // 这一列给不了 180 —— 整表要塞进 1130，一张卡片看全不许横向拖。
+      // 超过 10 字截断，鼠标悬停看全称。
+      render: (v: string | null) => {
+        if (!v) return '-'
+        return <span title={v}>{v.length > 10 ? `${v.slice(0, 10)}…` : v}</span>
+      },
     },
-    { title: '数量', dataIndex: 'quantity', width: 90, render: (v: number | null) => v ?? '-' },
+    { title: '数量', dataIndex: 'quantity', width: 75, render: (v: number | null) => v ?? '-' },
     {
       title: '目标价',
       dataIndex: 'target_price',
-      width: 100,
+      width: 85,
       render: (v: number | null) => (v != null ? `¥${v}` : '-'),
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
+      width: 90,
       render: (v: string) => (
         <Tag color={STATUS_TONE[v] ?? 'grey'}>{STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v}</Tag>
       ),
     },
-    { title: '记录人', dataIndex: 'creator_name', width: 100, render: (v: string | null) => v ?? '-' },
+    { title: '记录人', dataIndex: 'creator_name', width: 85, render: (v: string | null) => v ?? '-' },
     {
       title: '记录时间',
       dataIndex: 'created_at',
-      width: 160,
-      render: (v: string) => formatBeijingTime(v),
+      width: 105,
+      // 列表里精确到秒没有意义，反而把这一列撑到 160。
+      // 只给日期，具体时分秒在详情里看。
+      render: (v: string) => formatBeijingDate(v),
     },
     {
       title: '操作',
-      width: 250,
+      width: 190,
       render: (_: unknown, record: CustomInquiryRow) => {
         // 次要动作收进「更多」下拉。原来 9~11 个操作全铺在这一格里，容器是
         // inline-flex 且 flex-wrap: nowrap —— 挤不下时每个链接被压扁成
@@ -562,7 +576,11 @@ export default function KnowledgePage() {
         if (can('sample:manage')) {
           moreActions.push({ key: 'sample', label: '申请打样', onClick: () => setSampleSourceId(record.id) })
         }
-        if (can('quote:manage')) moreActions.push({ key: 'oa-start', label: '提交询价到钉钉', onClick: () => startApproval(record) })
+        if (can('quote:manage')) moreActions.push({ key: 'photo', label: '上传照片', onClick: () => setPhotoTarget(record) })
+    // 「上传照片」和「修订」原来铺在外面，六个动作一个格塞不下，换行成两排；
+    // 它们都不是常用动作，收进「更多」，外边只留 编辑 / 转报价 / 删除。
+    moreActions.push({ key: 'revise', label: '修订', onClick: () => openRevise(record) })
+    if (can('quote:manage')) moreActions.push({ key: 'oa-start', label: '提交询价到钉钉', onClick: () => startApproval(record) })
         // 历次审批 + "结果不明"的人工处理入口（认领/重发/作废）
         moreActions.push({ key: 'oa-log', label: '审批记录', onClick: () => setApprovalTarget(record) })
         if ((record.version ?? 1) > 1) {
@@ -589,9 +607,7 @@ export default function KnowledgePage() {
         if (record.status === 'archived') moreMissing.push(`当前状态是「${statusLabel}」，不能再归档`)
   return (
           <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            {can('quote:manage') && <a onClick={() => setPhotoTarget(record)}>上传照片</a>}
             <a onClick={() => openEdit(record)}>编辑</a>
-            <a onClick={() => openRevise(record)}>修订</a>
             {/* 定制件没有 SKU，报价中心选不到它——这里直接转报价（场景09） */}
             <a onClick={() => openQuote(record)}>转报价</a>
             <Popconfirm title="删除这条定制询价？" onConfirm={() => deleteMutation.mutate(record.id)}>
