@@ -27,6 +27,8 @@ import { parseOptionalNumber } from '../../shared/number-input'
 import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
+import type { TagTone } from '../../shared/types'
 import { emptyText } from '../../shared/hooks/emptyText'
 import {
   createCustomInquiry,
@@ -478,28 +480,32 @@ export default function KnowledgePage() {
     {
       title: '产品名称',
       dataIndex: 'title',
-      width: 316,
+      width: 310,
       // 这一列原来不设宽，标题一长就把整表顶到 1320、横滑才能看到操作列。
       // 定宽 320，标题正文超过 14 字截断（悬停看全），编号仍然完整显示 ——
       // 编号是报价 / 打样明细回溯用的，一个字都不能少。
       render: (text: string, record: CustomInquiryRow) => (
         <div>
           <div style={{ fontWeight: 600 }}>
-            {/* 需求编号（场景09）：报价/打样明细引用它溯源，比自增 id 可读 */}
+            {/* 需求编号（场景09）：报价/打样明细引用它溯源，比自增 id 可读。
+                以前用主色，看起来像能点的链接、点下去却没反应（主人 2026-11-16
+                截图指出「点不进去什么链接」）—— 这里退回次要灰字，只当编号看。 */}
             {record.inquiry_no && (
               <span
                 style={{
                   fontFamily: 'monospace',
                   fontSize: 12,
-                  color: 'var(--crm-primary)',
+                  color: 'var(--crm-text-3)',
                   marginRight: 6,
                 }}
               >
                 {record.inquiry_no}
               </span>
             )}
+            {/* 不再按字数截：按字数截遇到窄窗口/宽窗口都不合适，而且鼠标移入
+                整格会重新排版（主人说「莫名其妙会变形」）。改成按容器宽度省略。 */}
             <span title={text}>
-              {text && text.length > 14 ? `${text.slice(0, 14)}…` : text}
+              {text && text.length > 15 ? `${text.slice(0, 15)}…` : text}
             </span>
             {record.version && record.version > 1 && (
               <Tag size="small" style={{ marginLeft: 6 }}>{`v${record.version}`}</Tag>
@@ -528,42 +534,45 @@ export default function KnowledgePage() {
     {
       title: '客户',
       dataIndex: 'customer_name',
-      width: 160,
+      width: 190,
       // 客户名带场景后缀能到 12 字（"宁波家电01厂【演示造数】"），
       // 这一列给不了 180 —— 整表要塞进 1130，一张卡片看全不许横向拖。
       // 超过 10 字截断，鼠标悬停看全称。
       render: (v: string | null) => {
         if (!v) return '-'
-        return <span title={v}>{v.length > 10 ? `${v.slice(0, 10)}…` : v}</span>
+        return <span title={v}>{v.length > 13 ? `${v.slice(0, 13)}…` : v}</span>
       },
     },
-    { title: '数量', dataIndex: 'quantity', width: 75, render: (v: number | null) => v ?? '-' },
+    { title: '数量', dataIndex: 'quantity', width: 62, render: (v: number | null) => v ?? '-' },
     {
       title: '目标价',
       dataIndex: 'target_price',
-      width: 85,
+      width: 72,
       render: (v: number | null) => (v != null ? `¥${v}` : '-'),
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      width: 76,
       render: (v: string) => (
-        <Tag color={STATUS_TONE[v] ?? 'grey'}>{STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v}</Tag>
+        <StatusDot
+          label={STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v}
+          tone={(STATUS_TONE[v] ?? 'grey') as TagTone}
+        />
       ),
     },
-    { title: '记录人', dataIndex: 'creator_name', width: 85, render: (v: string | null) => v ?? '-' },
+    { title: '记录人', dataIndex: 'creator_name', width: 80, render: (v: string | null) => v ?? '-' },
     {
       title: '记录时间',
       dataIndex: 'created_at',
-      width: 105,
+      width: 96,
       // 列表里精确到秒没有意义，反而把这一列撑到 160。
       // 只给日期，具体时分秒在详情里看。
       render: (v: string) => formatBeijingDate(v),
     },
     {
       title: '操作',
-      width: 190,
+      width: 182,
       render: (_: unknown, record: CustomInquiryRow) => {
         // 次要动作收进「更多」下拉。原来 9~11 个操作全铺在这一格里，容器是
         // inline-flex 且 flex-wrap: nowrap —— 挤不下时每个链接被压扁成
