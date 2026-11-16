@@ -997,7 +997,8 @@ export default function PriceCenterPage() {
                 <Input
                   value={lookupQty}
                   onChange={setLookupQty}
-                  style={{ width: 120 }}
+                  // flex: none：工具栏是 flex 布局，两个大下拉一挤，数量框会被压成一小条
+                  style={{ width: 120, flex: 'none' }}
                   placeholder="数量"
                 />
                 {/* 禁用按钮必须能解释自己（主人 2026-10-06：「查价按钮灰着没有任何解释
@@ -1054,6 +1055,54 @@ export default function PriceCenterPage() {
                   </span>
                 )}
               </div>
+              {/* 查价前下方整片是空的（结果区只在有 lookupResult 时渲染）。
+                  放一个朴素的说明块：告诉用户这个工具算什么、算完会看到什么，
+                  而不是留 60% 白屏。不加图标、不做装饰 —— 只讲人话。 */}
+              {!lookupResult && (
+                <div
+                  style={{
+                    background: 'rgba(31,95,214,0.035)',
+                    border: '1px solid var(--crm-border)',
+                    borderRadius: 8,
+                    padding: '18px 20px',
+                    display: 'grid',
+                    gap: 14,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--crm-text-2)' }}>
+                    查一次价，会看到这些
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                      gap: 18,
+                    }}
+                  >
+                    {[
+                      ['适用单价', '客户专属价、等级价、通用指导价里，系统自动取用的一档'],
+                      ['价格来源', '标明这价由哪条规则决定，方便向客户解释'],
+                      ['有效期', '价格生效区间，避免用了过期的价'],
+                    ].map(([title, desc]) => (
+                      <div key={title}>
+                        <div
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: 'var(--crm-primary)',
+                            marginBottom: 4,
+                          }}
+                        >
+                          {title}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--crm-text-3)', lineHeight: 1.7 }}>
+                          {desc}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {lookupResult?.status === 'ok' && (
                 <div className="toolbar">
                   <span style={{ fontSize: 13, color: 'var(--crm-text-2)' }}>选品下单：</span>
