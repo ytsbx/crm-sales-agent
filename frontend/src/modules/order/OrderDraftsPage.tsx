@@ -38,11 +38,30 @@ export default function OrderDraftsPage() {
   const [form, setForm] = useState({ currency: 'CNY', delivery_date: '', payment_terms: '', remark: '' })
   const [versionId, setVersionId] = useState<number | undefined>()
   const [dirty, setDirty] = useState(false)
-  useEffect(() => { if (query.data) {
+  /* dirty 的镜像：setState 是异步的，effect 里读 state 可能读到旧值，
+     所以再存一份 ref，让「保存回来时用户手上有没有没保存的改动」能当场判断。 */
+  const dirtyRef = useRef(false)
+  /* 已经灌过哪一份草稿。保存成功回来的那份不再灌（见下面的 effect）。 */
+  const hydratedRef = useRef<number | null>(null)
+  const markDirty = (value: boolean) => {
+    dirtyRef.current = value
+    setDirty(value)
+  }
+  /* 这份 effect 只负责「把服务器数据灌进本地一次」：进来一份新草稿（id 变了）才灌。
+     保存成功后 save 会把服务器返回的整份草稿 setQueryData 回来，query.data 会变成
+     一个新对象、同样会触发这里 —— 如果每次都照灌，就等于拿服务器那份把桌面全换掉，
+     用户正在改、还没保存的行和表头会被一起冲掉（还会把 dirty 清成 false，
+     让「草稿有未保存改动，请先保存再下单」这道拦截失效）。
+     所以用 hydratedRef 记住「这份草稿已经灌过了」，之后 query.data 再怎么变（都是保存
+     回来的服务器版），都不再整份覆盖本地。 */
+  useEffect(() => {
+    if (!query.data) return
+    if (hydratedRef.current === query.data.id) return
+    hydratedRef.current = query.data.id
     setRows(query.data.items.map(i => ({ ...i, quantity: i.quantity_exact ?? String(i.quantity), unit_price: i.unit_price_exact ?? (i.unit_price == null ? null : String(i.unit_price)) })))
     setForm({ currency: query.data.currency, delivery_date: query.data.delivery_date ?? '', payment_terms: query.data.payment_terms ?? '', remark: query.data.remark ?? '' })
-    setDirty(false)
-  } }, [query.data])
+    markDirty(false)
+  }, [query.data])
   const quotes = useQuery({ queryKey: ['draft-confirmed-quotes', query.data?.customer_id, query.data?.opportunity_id],
     queryFn: async () => {
       const filter = { status: 'accepted', customer_id: query.data!.customer_id, opportunity_id: query.data!.opportunity_id ?? undefined, page_size: 100 }
@@ -57,7 +76,13 @@ export default function OrderDraftsPage() {
   const save = useMutation({ mutationFn: () => updateOrderDraft(draftId, { revision: query.data!.revision,
     ...form, delivery_date: form.delivery_date || null, items: rows.map(i => ({ source_item_id: i.source_item_id, quantity: i.quantity,
       unit_price: i.unit_price, specification: i.specification, remark: i.remark })) }),
-    onSuccess: data => { client.setQueryData(['order-draft', draftId], data); Toast.success('草稿已保存') }, onError: error })
+    onSuccess: data => {
+      client.setQueryData(['order-draft', draftId], data)
+      /* 这一下确实把点按钮那一刻的改动存下了，脏标记该清；
+         但本地 rows/form 保持原样，不跟着服务器版整份重画。 */
+      markDirty(false)
+      Toast.success('草稿已保存')
+    }, onError: error })
   const confirm = useMutation({ mutationFn: () => confirmOrderDraft(draftId, query.data!.revision, versionId!),
     onSuccess: data => { void client.invalidateQueries({ queryKey: ['orders'] }); void client.invalidateQueries({ queryKey: ['order-drafts'] }); navigate(`/orders/${data.order_id}`); Toast.success('已正式下单') }, onError: error })
   // 幂等键（§8.9）：同一把键在成功之前保持不变，弱网重试才不会多出一份；
@@ -86,7 +111,7 @@ export default function OrderDraftsPage() {
             : ''
     if (reason) Toast.warning(blockedToastText([reason], '正式下单'))
   }
-  function patch(index: number, change: Partial<OrderDraftLine>) { if (Object.entries(change).every(([key, value]) => rows[index]?.[key as keyof OrderDraftLine] === value)) return; setDirty(true); setRows(old => old.map((row, i) => i === index ? { ...row, ...change } : row)) }
+  function patch(index: number, change: Partial<OrderDraftLine>) { if (Object.entries(change).every(([key, value]) => rows[index]?.[key as keyof OrderDraftLine] === value)) return; markDirty(true); setRows(old => old.map((row, i) => i === index ? { ...row, ...change } : row)) }
   if (!id) return <div className="page-container"><PageHeader title="订单草稿" subtitle="提前准备资料，不进入生产、应收或成交统计" extra={<Link to="/orders">返回订单中心</Link>} />
     {list.error && <p>{list.error.message}</p>}
     <SectionCard><Table<OrderDraft> dataSource={list.data?.items ?? []} loading={list.isPending} rowKey="id" pagination={{ currentPage: page, pageSize, total: list.data?.total ?? 0, onPageChange: setPage, showSizeChanger: true, pageSizeOpts: [10, 20, 50, 100], onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) } }} columns={[
@@ -108,10 +133,10 @@ export default function OrderDraftsPage() {
         {(row.specification ?? '') !== (row.source_snapshot.specification ?? '') && <p>原规格：{row.source_snapshot.specification || '未记录'}</p>}
         <p>本次备注</p><TextArea value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />
       </div>)}
-      {exportEnabled && (<><p>币种</p><Input value={form.currency} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, currency: v.toUpperCase() }) }} /></>)}
-      <p>计划交期</p><DatePicker type="date" format="yyyy-MM-dd" showClear style={{ width: '100%' }} placeholder="选择计划交期" value={form.delivery_date ? new Date(form.delivery_date) : undefined} disabled={!editable} onChange={(_, v) => { setDirty(true); setForm({ ...form, delivery_date: (v as string) || '' }) }} />
-      <p>付款条件</p><Input value={form.payment_terms} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, payment_terms: v }) }} />
-      <p>备注</p><TextArea value={form.remark} disabled={!editable} onChange={v => { setDirty(true); setForm({ ...form, remark: v }) }} />
+      {exportEnabled && (<><p>币种</p><Input value={form.currency} disabled={!editable} onChange={v => { markDirty(true); setForm({ ...form, currency: v.toUpperCase() }) }} /></>)}
+      <p>计划交期</p><DatePicker type="date" format="yyyy-MM-dd" showClear style={{ width: '100%' }} placeholder="选择计划交期" value={form.delivery_date ? new Date(form.delivery_date) : undefined} disabled={!editable} onChange={(_, v) => { markDirty(true); setForm({ ...form, delivery_date: (v as string) || '' }) }} />
+      <p>付款条件</p><Input value={form.payment_terms} disabled={!editable} onChange={v => { markDirty(true); setForm({ ...form, payment_terms: v }) }} />
+      <p>备注</p><TextArea value={form.remark} disabled={!editable} onChange={v => { markDirty(true); setForm({ ...form, remark: v }) }} />
       {/* 全页表单是灰的时候必须说清为什么（主人 2026-10-12：「点又点不了，又不给
           提示为什么点不了」）。这里只有一个判据 `editable`，三种原因分开写。 */}
       <BlockedHint blocked={[
