@@ -726,7 +726,7 @@ export default function CustomerListPage() {
         confirmLoading={importing}
         okText={`确认导入 ${importPreview?.created_count ?? 0} 条`}
         cancelText="取消"
-        width={620}
+        width={680}
       >
         {importPreview && (
           <div style={{ display: 'grid', gap: 12 }}>
@@ -770,7 +770,7 @@ export default function CustomerListPage() {
         onOk={() => setImportResult(null)}
         okText="知道了"
         cancelText="关闭"
-        width={620}
+        width={680}
       >
         {importResult && (
           <div style={{ display: 'grid', gap: 12 }}>

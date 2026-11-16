@@ -467,7 +467,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         onOk={submitCreate}
         confirmLoading={createMutation.isPending}
         okText="创建订单"
-        width={720}
+        width={680}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 12 }}>

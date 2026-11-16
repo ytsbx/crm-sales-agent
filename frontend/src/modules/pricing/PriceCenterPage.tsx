@@ -1918,7 +1918,7 @@ export default function PriceCenterPage() {
       <Modal
         title={ruleEditing ? `编辑价格规则编号 ${ruleEditing.id}` : '新增价格规则'}
         visible={ruleVisible}
-        width={620}
+        width={680}
         onCancel={closeRuleModal}
         onOk={() => {
           if (!ruleEditing && !ruleForm.sku_id) {

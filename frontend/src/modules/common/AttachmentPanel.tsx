@@ -390,7 +390,7 @@ export default function AttachmentPanel({
         visible={preview !== null}
         onCancel={() => setPreview(null)}
         footer={null}
-        width={880}
+        width={900}
         bodyStyle={{ padding: 12 }}
       >
         {preview && (

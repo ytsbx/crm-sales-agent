@@ -736,7 +736,7 @@ export default function OpportunityDetailPage() {
         confirmLoading={confirmWinMutation.isPending}
         okText="确认成交并建单"
         okButtonProps={{ disabled: planNotReady }}
-        width={620}
+        width={680}
         footer={
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
@@ -806,7 +806,7 @@ export default function OpportunityDetailPage() {
       <Modal
         title="添加需求商品"
         visible={itemVisible}
-        width={620}
+        width={680}
         onCancel={() => setItemVisible(false)}
         onOk={() => {
           if (!itemForm.sku_id) {

@@ -374,7 +374,7 @@ export default function ImageGallery({
             </div>
           ) : null
         }
-        width={920}
+        width={900}
         bodyStyle={{ padding: 12 }}
       >
         <div style={{ minHeight: 200, textAlign: 'center' }}>

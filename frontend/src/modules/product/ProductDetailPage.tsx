@@ -811,7 +811,7 @@ export default function ProductDetailPage() {
       <Modal
         title={editingSku ? `编辑 SKU：${editingSku.sku_code}` : '新建 SKU'}
         visible={skuVisible}
-        width={640}
+        width={680}
         onCancel={() => {
           setSkuVisible(false)
           setEditingSku(null)
@@ -1241,7 +1241,7 @@ export default function ProductDetailPage() {
         visible={imageSku !== null}
         onCancel={() => setImageSku(null)}
         footer={null}
-        width={880}
+        width={900}
         bodyStyle={{ padding: 16 }}
       >
         {imageSku && (

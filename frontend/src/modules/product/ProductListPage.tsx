@@ -351,7 +351,7 @@ export default function ProductListPage() {
         okText="知道了"
         cancelText="关闭"
         footer={null}
-        width={620}
+        width={680}
       >
         {importResult && (
           <div style={{ display: 'grid', gap: 12 }}>

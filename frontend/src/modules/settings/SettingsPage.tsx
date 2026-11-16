@@ -1947,7 +1947,7 @@ export default function SettingsPage() {
             知道了
           </Button>
         }
-        width={720}
+        width={680}
       >
         {dtSyncResult?.disabled ? (
           <>
@@ -2097,7 +2097,7 @@ export default function SettingsPage() {
         onOk={() => roleSaveMutation.mutate()}
         confirmLoading={roleSaveMutation.isPending}
         okText="保存"
-        width={620}
+        width={680}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', gap: 12 }}>

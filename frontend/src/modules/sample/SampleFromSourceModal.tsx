@@ -120,7 +120,7 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
   // 而「点那段说明有反应」已经实打实成立（浏览器实测见证据目录）。
   const notifyBlocked = useBlockedNotify(blockedReasons, actionText)
   const okBlocked = !query.data || blockedReasons.length > 0
-  return <Modal visible title={mode === 'order' ? '从来源建立订单草稿' : '从来源申请打样'} width={720} confirmLoading={mutation.isPending}
+  return <Modal visible title={mode === 'order' ? '从来源建立订单草稿' : '从来源申请打样'} width={680} confirmLoading={mutation.isPending}
     okText={actionText}
     okButtonProps={{ disabled: okBlocked }}
     cancelButtonProps={{ disabled: mutation.isPending }} maskClosable={!mutation.isPending}

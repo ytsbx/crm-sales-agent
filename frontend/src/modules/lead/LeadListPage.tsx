@@ -531,7 +531,7 @@ export default function LeadListPage() {
         }}
         confirmLoading={convertMutation.isPending}
         okText="确认转化"
-        width={560}
+        width={520}
       >
         <div style={{ display: 'grid', gap: 16 }}>
           <div>

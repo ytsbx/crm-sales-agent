@@ -306,7 +306,7 @@ export default function RulesPanel() {
           saveMutation.mutate(editing)
         }}
         confirmLoading={saveMutation.isPending}
-        width={640}
+        width={680}
         okText="保存草稿"
       >
         {editing && (
@@ -501,7 +501,7 @@ function VersionDrawer({ rule, onClose }: { rule: ApprovalRuleRow | null; onClos
     enabled: Boolean(rule),
   })
   return (
-    <Modal title={rule ? `版本历史：${rule.name}` : ''} visible={Boolean(rule)} onCancel={onClose} footer={null} width={620}>
+    <Modal title={rule ? `版本历史：${rule.name}` : ''} visible={Boolean(rule)} onCancel={onClose} footer={null} width={680}>
       <div style={{ display: 'grid', gap: 10, maxHeight: 420, overflow: 'auto' }}>
         {(versionsQuery.data ?? []).map((version) => (
           <SectionCard key={version.id}>

@@ -1073,7 +1073,7 @@ export default function CustomerDetailPage() {
         }}
         confirmLoading={contactMutation.isPending || contactEditMutation.isPending}
         okText="保存"
-        width={640}
+        width={680}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div>

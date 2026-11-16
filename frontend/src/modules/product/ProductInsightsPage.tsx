@@ -499,7 +499,7 @@ export default function ProductInsightsPage() {
         confirmLoading={saveMutation.isPending}
         okText="保存"
         cancelText="取消"
-        width={620}
+        width={680}
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div>
@@ -622,7 +622,7 @@ export default function ProductInsightsPage() {
         confirmLoading={convertMutation.isPending}
         okText="确认转换"
         cancelText="取消"
-        width={600}
+        width={520}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -698,7 +698,7 @@ export default function ProductInsightsPage() {
             )}
           </div>
         }
-        width={460}
+        width={520}
       >
         {convertResult && (
           <div style={{ display: 'grid', gap: 6 }}>
@@ -725,7 +725,7 @@ export default function ProductInsightsPage() {
         visible={Boolean(historyTarget)}
         onCancel={() => setHistoryTarget(null)}
         footer={<Button onClick={() => setHistoryTarget(null)}>关闭</Button>}
-        width={620}
+        width={680}
       >
         {roundsQuery.isLoading && (
           <div style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>加载中…</div>

@@ -18,7 +18,7 @@ export default function FollowUpAttachmentsButton({ followupId }: { followupId: 
         visible={visible}
         onCancel={() => setVisible(false)}
         footer={null}
-        width={760}
+        width={680}
       >
         <AttachmentPanel businessType="followup" businessId={followupId} enabled={visible} />
       </Modal>

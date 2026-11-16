@@ -146,7 +146,7 @@ function initialAmounts(payment: Payment | null): Record<number, string> {
       title={`调整回款分配${payment ? `：${formatMoney(payment.received_amount_exact ?? payment.received_amount, currency)}` : ''}`}
       visible={visible}
       onCancel={onClose}
-      width={640}
+      width={680}
       footer={
         <>
           <Button onClick={onClose}>取消</Button>

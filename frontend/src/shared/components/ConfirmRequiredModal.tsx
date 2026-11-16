@@ -105,7 +105,7 @@ export function ConfirmRequiredModal(props: {
       onCancel={onCancel}
       okText={confirmText}
       cancelText="取消"
-      width={560}
+      width={520}
       style={{ maxWidth: 'calc(100vw - 48px)' }}
     >
       <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', lineHeight: 1.9, fontSize: 13 }}>

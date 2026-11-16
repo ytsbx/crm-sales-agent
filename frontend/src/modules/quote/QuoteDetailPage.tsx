@@ -1333,7 +1333,7 @@ export default function QuoteDetailPage() {
         confirmLoading={convertMutation.isPending}
         okText="生成订单"
         okButtonProps={{ disabled: planNotReady }}
-        width={620}
+        width={680}
         footer={
           <div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
@@ -1389,7 +1389,7 @@ export default function QuoteDetailPage() {
         visible={masterPreviewOpen}
         footer={null}
         onCancel={() => setMasterPreviewOpen(false)}
-        width={640}
+        width={680}
         style={{ maxWidth: 'calc(100vw - 48px)' }}
       >
         {masterPreviewQuery.isLoading && <div>正在比对…</div>}

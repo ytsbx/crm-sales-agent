@@ -1487,7 +1487,7 @@ export default function OrderDetailPage() {
         title="交期与跟单计划"
         visible={scheduleVisible}
         onCancel={() => setScheduleVisible(false)}
-        width={720}
+        width={680}
         footer={
           <div>
             {/* 页脚正上方写清「预览受影响面」为什么点不动（7 个数字框 + 客户要求

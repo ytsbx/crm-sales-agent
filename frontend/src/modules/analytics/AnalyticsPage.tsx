@@ -1428,7 +1428,7 @@ export default function AnalyticsPage() {
         visible={drilldown.visible}
         onCancel={() => setDrilldown({ visible: false, metric: 'received' })}
         footer={null}
-        width={780}
+        width={900}
       >
         <div style={{ marginBottom: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
           <Select
