@@ -1156,5 +1156,21 @@ try {
   }
   }
 } finally {
-  socket?.close();browser?.kill('SIGTERM');await sleep(500);server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:200})
+  // 先让浏览器真的退出再删档案目录：没退干净就删会撞 ENOTEMPTY（它还在往里写），
+  // 2026-11-16 就因此假红过一次（断言全过、收尾炸了）。清理失败**不能算测试失败**，
+  // 口径同 smoke_ui：留个临时目录无害，别把真正的结论盖掉。
+  socket?.close()
+  if(browser){
+    browser.kill('SIGTERM')
+    const exited=await Promise.race([new Promise(r=>browser.once('exit',()=>r(true))),sleep(3000).then(()=>false)])
+    if(!exited)browser.kill('SIGKILL')
+  }
+  server.closeAllConnections();server.close()
+  for(let attempt=0;attempt<3;attempt++){
+    try{rmSync(profile,{recursive:true,force:true});break}
+    catch(error){
+      if(attempt===2)console.log(`（提示：临时目录 ${profile} 没清掉，不影响本次测试结论：${error.code ?? error.message}）`)
+      else await sleep(500)
+    }
+  }
 }
