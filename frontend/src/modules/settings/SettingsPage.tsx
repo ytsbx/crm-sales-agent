@@ -807,20 +807,33 @@ export default function SettingsPage() {
   ]
 
   const roleColumns = [
-    { title: '角色码', dataIndex: 'code', width: 150 },
-    { title: '角色名', dataIndex: 'name', width: 130 },
+    {
+      // 角色码并到角色名下面一行小字（同用户表把登录名并进姓名）：
+      // 这两列成对出现、各占 150+130，是这张表横向滚动的最大一块。
+      title: '角色',
+      dataIndex: 'name',
+      width: 145,
+      render: (name: string, record: SystemRole) => (
+        <div>
+          <div style={{ fontWeight: 500 }}>{name}</div>
+          <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {record.code}
+          </div>
+        </div>
+      ),
+    },
     {
       // 停用状态必须能一眼看到：停用的角色仍然挂在人身上，但已经不参与
       // 权限与数据范围计算（第十批 10.10）。
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      width: 70,
       render: (v: string) => (v === 'active' ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
     },
     {
       title: '数据范围',
       dataIndex: 'data_scope',
-      width: 130,
+      width: 105,
       render: (v: string) =>
         ({ self: '仅本人', department: '本部门', department_and_sub: '本部门及下级', all: '全部' })[
           v
@@ -829,13 +842,15 @@ export default function SettingsPage() {
     {
       title: '权限数',
       dataIndex: 'permission_codes',
-      width: 90,
+      width: 70,
       render: (codes: string[] | undefined) => (codes ?? []).length,
     },
-    { title: '说明', dataIndex: 'description', render: (v: string | null) => v ?? '-' },
+    // 说明给固定宽而不是自适应：不写宽度时它会被挤到几十像素、每行折成三行
+    { title: '说明', dataIndex: 'description', width: 170, render: (v: string | null) => v ?? '-' },
     {
       title: '操作',
-      width: 140,
+      // 120：编辑 + 删除两个无边框小按钮，100 时「删除」会被省略成「…」
+      width: 120,
       render: (_: unknown, record: SystemRole) => (
         <>
           <Button
