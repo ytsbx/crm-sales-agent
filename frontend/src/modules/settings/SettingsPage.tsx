@@ -2017,22 +2017,26 @@ export default function SettingsPage() {
         okText="保存"
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <FormLabel required style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>姓名</FormLabel>
-            <Input
-              value={userForm.name}
-              onChange={(value) => setUserForm({ ...userForm, name: value })}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              登录名<span className="required-mark" aria-hidden="true">*</span>{userEditTarget ? '（由本人在个人设置修改）' : ''}
+          {/* 姓名和登录名都是短输入，竖着排把弹窗拉高了 70px；
+              并排放两列（手机号、邮箱那排也是这么做的）。 */}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <FormLabel required style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>姓名</FormLabel>
+              <Input
+                value={userForm.name}
+                onChange={(value) => setUserForm({ ...userForm, name: value })}
+              />
             </div>
-            <Input
-              value={userForm.username}
-              disabled={Boolean(userEditTarget)}
-              onChange={(value) => setUserForm({ ...userForm, username: value })}
-            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
+                <FormLabel required style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>登录名</FormLabel>
+              </div>
+              <Input
+                value={userForm.username}
+                disabled={Boolean(userEditTarget)}
+                onChange={(value) => setUserForm({ ...userForm, username: value })}
+              />
+            </div>
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
@@ -2081,9 +2085,7 @@ export default function SettingsPage() {
             />
           </div>
           <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>
-              角色（数据范围取所有角色中最大的一个）
-            </div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>角色</div>
             <Select
               multiple
               style={{ width: '100%' }}
@@ -2092,6 +2094,11 @@ export default function SettingsPage() {
               onChange={(value) => setUserForm({ ...userForm, role_ids: (value as number[]) ?? [] })}
               optionList={roleOptions}
             />
+            {/* 这句原来塞在「角色」标签的括号里，把标签撑成 18 个字、跟上面几行
+                标签长度全不一样。说明本来该在下拉框下面。 */}
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>
+              可多选；数据范围取所选角色里最大的一个。
+            </div>
           </div>
         </div>
       </Modal>
