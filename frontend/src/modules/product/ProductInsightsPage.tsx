@@ -1,4 +1,4 @@
-import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
+import { formatBeijingTime } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -303,12 +303,11 @@ export default function ProductInsightsPage() {
       <SectionCard>
         <div className="toolbar" style={{ marginBottom: 10 }}>
           <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            运营选品沉淀：市场来源 → 产品方向 → 评审通过 → 转需求。
-            价格只是内部假设，未经确认不会成为正式指导价
+            市场来源 → 产品方向 → 评审 → 转需求；价格均为内部假设，不构成正式指导价
           </span>
           <div style={{ flex: 1 }} />
           <Input
-            style={{ width: 200 }}
+            style={{ width: 150 }}
             placeholder="搜标题"
             value={keyword}
             onChange={setKeyword}
@@ -381,8 +380,9 @@ export default function ProductInsightsPage() {
               title: '价格假设',
               dataIndex: 'price_assumption',
               width: 100,
-              render: (v: number | null) =>
-                v == null ? '-' : <span style={{ color: 'var(--crm-text-3)' }}>¥{v}（假设）</span>,
+              // 每行都挂"（假设）"是纯噪音：表头已经写着「价格假设」，
+              // 一列四行重复同样四个字，反而把数字本身压得看不出来。
+              render: (v: number | null) => (v == null ? '-' : `¥${v}`),
             },
             { title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' },
             {
@@ -402,9 +402,12 @@ export default function ProductInsightsPage() {
                       style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
                       title={record.review_note}
                     >
-                      {/* ⚠️ 原来是切 ISO 串（UTC 取日） */}
-                      意见：{formatBeijingDate(record.review_note)}
-                      {record.review_note.length > 10 ? '…' : ''}
+                      {/* ⚠️ 这里原来写的是 formatBeijingDate(record.review_note) ——
+                          把**评审意见这段文字**当日期去格式化，结果整行只渲染出
+                          "意见：…"，评审为什么打回这条信息是空的。正文直接截断显示。 */}
+                      意见：{record.review_note.length > 6
+                        ? `${record.review_note.slice(0, 6)}…`
+                        : record.review_note}
                     </div>
                   )}
                 </div>
@@ -412,7 +415,7 @@ export default function ProductInsightsPage() {
             },
             {
               title: '操作',
-              width: 230,
+              width: 200,
               render: (_: unknown, record: ProductInsightRow) => {
                 // 逐条可操作性（R08）：后端随每一行下发"这条归不归我管""我现在能不能评"。
                 // 原来只按权限码判，于是**数据范围外**的那几条也长着「编辑 / 提交评审 /
@@ -473,7 +476,18 @@ export default function ProductInsightsPage() {
             pageSizeOpts: [10, 20, 50, 100],
             onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
           }}
-          empty="还没有新品洞察——运营看到好方向就记进来"
+          empty={
+            // 空态是新人第一次打开这页看到的全部内容，只说"还没有"等于什么都没说。
+            // 补一句这页是干什么的、记进来之后会怎样。
+            <div style={{ padding: '28px 0', textAlign: 'center' }}>
+              <div style={{ fontSize: 13, color: 'var(--crm-text-2)', marginBottom: 6 }}>
+                还没有新品洞察
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                运营看到值得做的方向就记在这里，评审通过后可一键转成定制需求
+              </div>
+            </div>
+          }
         />
       </SectionCard>
 
