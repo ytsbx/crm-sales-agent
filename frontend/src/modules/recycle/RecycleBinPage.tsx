@@ -791,9 +791,12 @@ export default function RecycleBinPage() {
       {tabs.length === 0 ? (
         <SectionCard>你没有查看任何回收站分区的权限。</SectionCard>
       ) : (
-        <SectionCard>
+        // 原来 tab 条自己占一张卡、下面的内容又是一张卡，两张卡上下叠着，
+        // 中间还留一条缝 —— 看着像「半截卡片」（2026-11-16 巡检）。
+        // tab 条改成不带卡片的横条，直接骑在下面那张卡的头上。
+        <div className="panel-tabs">
           <Tabs type="line" activeKey={activeKey} onChange={(key) => setPicked(key)} tabList={tabs} />
-        </SectionCard>
+        </div>
       )}
       {activeKey === 'leads' && <LeadsPanel />}
       {activeKey === 'products' && <ProductsPanel />}

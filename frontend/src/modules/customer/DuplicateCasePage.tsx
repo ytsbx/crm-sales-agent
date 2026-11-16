@@ -79,13 +79,12 @@ export default function DuplicateCasePage() {
       />
 
       <SectionCard
-        title={
-          // 总数用后端给的 `total`：不能拿"本页条数"当总数 ——
-          // 那会让用户以为"一共就这么些"，旧案件永远翻不到（返工单 6.5）
-          `${status === 'pending' ? '待裁定' : '已裁定'}（${query.data?.total ?? 0} 条）`
-        }
-      >
-        <div className="toolbar" style={{ marginBottom: 12 }}>
+        // 原来标题写「待裁定（N 条）」，下面紧跟着一个下拉，选的也是「待裁定」——
+        // 同一句话说两遍。标题改成泛称，状态交给右侧下拉（2026-11-16 巡检）。
+        title={`撞单记录（共 ${query.data?.total ?? 0} 条）`}
+        // 总数用后端给的 total：不能拿"本页条数"当总数 ——
+        // 那会让用户以为"一共就这么些"，旧案件永远翻不到（返工单 6.5）
+        extra={
           <Select
             value={status}
             onChange={(v) => {
@@ -98,7 +97,8 @@ export default function DuplicateCasePage() {
             ]}
             style={{ width: 140 }}
           />
-        </div>
+        }
+      >
 
         <Table<DuplicateCase>
           rowKey="id"

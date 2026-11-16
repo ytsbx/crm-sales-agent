@@ -1372,6 +1372,17 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 骑在卡片头上的 tab 条：不带卡片背景，避免出现「一张卡放 tab、一张卡放内容」
+   的上下叠层。和它下面的卡片共用同一条页面对齐线。 */
+.panel-tabs {
+  display: flex;
+  padding: 0 4px;
+  margin: 4px 0 -1px;
+}
+.panel-tabs .semi-tabs {
+  width: 100%;
+}
+
 /* 表格正文单元格统一用箭头光标。
    Semi 没给 td 设 cursor，于是继承浏览器的 auto —— 鼠标落在文字上就变成
    文本输入那条 I 字线（主人 2026-11-16：「鼠标样式变成一条横线了」），

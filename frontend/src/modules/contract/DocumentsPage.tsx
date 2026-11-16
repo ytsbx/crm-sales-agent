@@ -12,12 +12,14 @@ import {
   Modal,
   Select,
   Table,
-  Tag,
   Toast,
   TextArea,
 } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
+import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
+import type { TagTone } from '../../shared/types'
 import BlockedHint, { useBlockedNotify } from '../../shared/components/BlockedHint'
 import GuardedButton from '../../shared/components/GuardedButton'
 import { blockedReasons } from '../../shared/components/blocked-hint-reasons'
@@ -362,11 +364,14 @@ export default function DocumentsPage() {
 
   return (
     <div className="page-container">
+        {/* 原来直接从卡片开始，没有标题区；其他模块都有「XX 中心 + 一句说明」，
+            切过来会觉得少了一块（2026-11-16 巡检）。 */}
+        <PageHeader
+          title="文档管理"
+          subtitle="我方合同、客户合同均上传原文件；审批在钉钉办理，CRM 同步进度并跟催回签归档"
+        />
         <SectionCard>
           <div className="toolbar" style={{ marginBottom: 10 }}>
-            <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-              我方合同、客户合同均上传原文件；审批在钉钉办理，CRM 同步进度并跟催回签归档
-            </span>
             <div style={{ flex: 1 }} />
             {canManage && (
               <Button theme="solid" onClick={() => openUploadModal()}>
@@ -376,7 +381,9 @@ export default function DocumentsPage() {
           </div>
           <Table<ContractDocument>
             columns={[
-              { title: '编号', dataIndex: 'doc_no', width: 140 },
+              // 140 放不下 12 位的合同编号（实测被截成「CT202610140…」）。
+              // 156 是刚好够 + 又不把表格撑出横向滚动条的宽度。
+              { title: '编号', dataIndex: 'doc_no', width: 156 },
               { title: '类型', dataIndex: 'doc_type_label', width: 85 },
               // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
               // 把后面的列全顶到屏幕外；200 是"销售合同-甲"这类标题的实测上限再留些余量。
@@ -387,7 +394,7 @@ export default function DocumentsPage() {
                 dataIndex: 'status_label',
                 width: 100,
                 render: (v: string, record: ContractDocument) => (
-                  <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
+                  <StatusDot label={v} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
                 ),
               },
               {
@@ -428,7 +435,7 @@ export default function DocumentsPage() {
               // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
               // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
               // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
-              { title: '到期日', dataIndex: 'expiry_date', width: 105, render: (v: string | null) => v ?? '-' },
+              { title: '到期日', dataIndex: 'expiry_date', width: 92, render: (v: string | null) => v ?? '-' },
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
               { title: '签署时间', dataIndex: 'signed_at', width: 115, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
@@ -436,7 +443,10 @@ export default function DocumentsPage() {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
                 title: '操作',
-                width: 170,
+                // 九个列宽加起来 1146，比内容区（1130）多 16，挤出横向滚动条。
+                // 从「到期日」和「操作」各让一点：操作 165 刚好一行放三个链接，
+                // 到期日 90 够放 2026-11-16。
+                width: 165,
                 // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
                 // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
                 // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
@@ -527,6 +537,9 @@ export default function DocumentsPage() {
             // 于是无论怎么调列宽都还是 1400、永远留着横向滚动条（容器只有 1130）。
             // Semi 对这类字符串写法会直接当 min-width 用。现在列宽和约 1110 < 1130，
             // 去掉它，表格就跟着容器走，一屏看完不用横滑。
+            // 但少了 scroll 参数后 Semi 会按列宽合计撑开（实测 1146 > 容器 1130），
+            // 所以补一条 x: '100%' 明确要求「宽度跟容器」，列多时按比例压。
+            scroll={{ x: '100%' }}
             dataSource={documents}
             loading={documentsQuery.isLoading}
             rowKey="id"
