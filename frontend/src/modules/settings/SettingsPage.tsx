@@ -881,7 +881,7 @@ export default function SettingsPage() {
             title={`删除角色「${record.name}」？`}
             onConfirm={() => deleteRoleMutation.mutate(record.id)}
           >
-            <Button theme="borderless" type="danger" size="small">
+            <Button theme="borderless" type="tertiary" size="small" className="crm-danger-hover">
               删除
             </Button>
           </Popconfirm>
@@ -932,7 +932,7 @@ export default function SettingsPage() {
             title={`删除部门「${record.name}」？下级部门或用户非空时会拒绝。`}
             onConfirm={() => deleteDeptMutation.mutate(record.id)}
           >
-            <Button theme="borderless" type="danger" size="small">
+            <Button theme="borderless" type="tertiary" size="small" className="crm-danger-hover">
               删除
             </Button>
           </Popconfirm>
@@ -1235,7 +1235,7 @@ export default function SettingsPage() {
                           title="删除标签会同时移除所有客户上的这个标签，确认？"
                           onConfirm={() => deleteTagMutation.mutate(record.id)}
                         >
-                          <Button theme="borderless" type="danger" size="small">
+                          <Button theme="borderless" type="tertiary" size="small" className="crm-danger-hover">
                             删除
                           </Button>
                         </Popconfirm>
