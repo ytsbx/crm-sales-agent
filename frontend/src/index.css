@@ -414,11 +414,21 @@ a:not([href]) {
 /* 数字是这一屏的主角：比页面标题还大一号，负字距让万元数字不散 */
 .kpi-value {
   font-size: var(--crm-font-kpi);
-  font-weight: 600;
+  /* 数字用等宽字形（tabular-nums）：一排卡片里「60」「1」「¥30,300」的字符
+     宽度各自不同，眼睛会跟着数字跳；等宽后每张卡的数都踩在同一条格线上。
+     中文 700 才看得出"重"，600 在大字号上仍是常规粗细。 */
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
   line-height: 1.15;
-  letter-spacing: -1px;
+  letter-spacing: -1.2px;
   margin-top: 8px;
   color: var(--crm-text);
+}
+
+/* 表格里的数字同样走等宽：金额、数量、日期列每行都在同一格，扫读时不跳 */
+.semi-table-row-cell,
+.semi-table-row-head {
+  font-variant-numeric: tabular-nums;
 }
 
 /* KPI 卡里「无状态」的小标签不要灰底 —— 灰底铺在白卡上像一块补丁。
