@@ -192,6 +192,21 @@ a:not([href]) {
    ============================================================ */
 .page-container {
   padding: 20px var(--crm-space-5) 40px;
+  /* 纵向弹性 + 最小高度 = 内容区可视高度：
+     列表页数据少时（比如案例库只有 6 条），卡片原来只有内容那么高，
+     下面半屏全是灰底，看着像没加载完。现在只有一个区块的页面，
+     那张卡会自动把剩下的高度吃掉（规则见下一条）。 */
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 130px);
+}
+
+/* 只有一张卡的页面（有没有页头都算），让那张卡把剩余高度吃掉。
+   注意这里不能用 :only-of-type —— 它按「标签类型」判断，
+   带页面标题的页面里标题也是 div，卡就不算唯一了（销售任务页就是这么漏的）。
+   改成「没有第二张卡」来判断：card-block ~ card-block 表示它后面还有一张卡。 */
+.page-container:not(:has(.card-block ~ .card-block)) > .card-block {
+  flex: 1 1 auto;
 }
 
 .page-title {
