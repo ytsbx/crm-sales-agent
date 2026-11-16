@@ -23,13 +23,13 @@
      卡片只留一道极淡收边，层次交给「底色差 + 阴影」，不再靠深描边硬切。 */
   /* 底色压深一档：白卡和底色的明度差是「层次感」的来源。
      从前 #f4f6fa 和白卡(#fff)只差 4%，卡片像贴在同一张纸上。 */
-  --crm-bg: #eaeef8;
+  --crm-bg: #f2f3f6;
   --crm-surface: #ffffff;
-  --crm-surface-low: #eef1f7;
-  --crm-surface-mid: #e8ecf4;
-  --crm-surface-high: #e0e5ef;
-  --crm-card-border: #e7ebf3;
-  --crm-outline: #d3d9e4;
+  --crm-surface-low: #f3f4f7;
+  --crm-surface-mid: #eceef2;
+  --crm-surface-high: #e3e6eb;
+  --crm-card-border: #e6e8ee;
+  --crm-outline: #d5d9e0;
 
   --crm-text: #181c23;
   --crm-text-2: #424655;
@@ -45,8 +45,8 @@
   --crm-radius-pill: 999px; /* 标签、胶囊：真胶囊 */
   /* 双层柔阴影：近处一层定边、远处一层只往下走（负 spread），
      卡片看起来是「浮在页面上」而不是「贴着一张灰边」 */
-  --crm-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 12px 28px -12px rgba(16, 24, 40, 0.14);
-  --crm-shadow-lg: 0 6px 16px rgba(16, 24, 40, 0.10);
+  --crm-shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 16px 32px -16px rgba(16, 24, 40, 0.18);
+  --crm-shadow-lg: 0 8px 24px -6px rgba(16, 24, 40, 0.16);
   --crm-surface-highest: #dfe2ed;
   --crm-outline-strong: #727687;
 
@@ -161,8 +161,10 @@ a:not([href]) {
 
 .page-title {
   font-size: var(--crm-font-page);
-  font-weight: 600;
-  letter-spacing: -0.2px;
+  /* 中文的 600 只在拉丁字形上明显，中文字库里基本还是常规粗细 ——
+     抬到 700，标题才真的「立」在页面上 */
+  font-weight: 700;
+  letter-spacing: -0.5px;
   margin: 0 0 6px;
 }
 
@@ -194,7 +196,9 @@ a:not([href]) {
 
 .card-block {
   background: var(--crm-surface);
-  border: 1px solid var(--crm-card-border);
+  /* 不再描 1px 硬边：边框和阴影同时存在时，卡片边缘会积一道灰、显脏。
+     浅灰底上的白卡本身就有边界，让阴影单独负责「浮起来」这件事。 */
+  border: 1px solid transparent;
   border-radius: var(--crm-radius);
   /* 卡内留白要**大于**卡间距（20 vs 12~14）：内松外紧，卡片才不粘在一起 */
   padding: 20px;
@@ -384,7 +388,7 @@ a:not([href]) {
 
 .kpi-card {
   background: var(--crm-surface);
-  border: 1px solid var(--crm-card-border);
+  border: 1px solid transparent;
   border-radius: var(--crm-radius);
   padding: 18px 20px;
   box-shadow: var(--crm-shadow);
