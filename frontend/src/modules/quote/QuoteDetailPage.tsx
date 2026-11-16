@@ -1666,11 +1666,17 @@ export default function QuoteDetailPage() {
           左列两张叠起来总高约 320，跟右列金额汇总（约 290）自然接近，
           空白没了，也不用手动补内容。
           （2026-11-16 主人圈出这块问"这个改了吗"。） */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: 16 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+      <div
+        className="quote-money-block"
+        style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: 28 }}
+      >
         <SectionCard
           id="quote-charges"
           title="附加费用"
+          /* 撑满整卡高度，让「费用合计」落在这栏的底边 ——
+             两栏并排时右栏（金额汇总）通常更高，左栏若按内容收高，
+             底下会空出一截（2026-11-16 主人说"那一块突出来了"）。 */
+          style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
           extra={
             canManage &&
             (editable || canEditFreightOnly) && (
@@ -1775,13 +1781,30 @@ export default function QuoteDetailPage() {
           />
           {/* 表格下方补一行合计：这张卡比右边「金额汇总」矮一截，底边对齐后
               会留一块空白；把"费用合计"摆在末尾，既填了空，也是个该有的数字。 */}
+          {/* 口径说明（2026-10-09 运费分离）：产品单价不含运费，运费按已确认的
+              实际金额代收代付。从右边"金额汇总"挪到这一栏 ——
+              它讲的就是运费口径，跟运费明细放一起才讲得通；
+              顺带把左右两栏的内容高度拉平（2026-11-16）。 */}
+          {!legacyBasis && (
+            <div
+              style={{
+                color: 'var(--crm-text-3)',
+                fontSize: 12,
+                lineHeight: 1.6,
+                marginTop: 10,
+              }}
+            >
+              产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付
+              （公司不赚不赔，产品利润不受运费影响）。
+            </div>
+          )}
           {detail.charges.length > 0 && (
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'baseline',
-                marginTop: 12,
+                marginTop: 'auto',
                 paddingTop: 12,
                 borderTop: '1px solid var(--crm-border)',
                 fontSize: 13,
@@ -1795,40 +1818,13 @@ export default function QuoteDetailPage() {
           )}
         </SectionCard>
 
-          {/* 客户决策关系图（设计稿报价详情右栏）：报价要发给谁、谁能拍板都在这。
-              跟「附加费用」同列上下叠，两张都在左列里按内容高度排。 */}
-          <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" />
-        </div>
-
         {/* 两列等高（格子默认 stretch）：这一卡撑满整行高度，多出来的空间
             分给"明细"和"合计"之间 —— 明细在上、合计贴底。
             原来 alignItems:start，右列按内容收高，比左列矮 50px，
             底部齐不了，看起来就是"那一块突出来了"（2026-11-16 主人原话）。
             现在空白落在分隔线附近，读起来是呼吸，不是漏了一块。 */}
-        <SectionCard
-          title="金额汇总"
-          style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-              fontSize: 14,
-              flex: 1,
-              minHeight: 0,
-            }}
-          >
-            {/* 口径说明（2026-10-09 运费分离）：产品单价不含运费，运费按已确认的
-                实际金额代收代付。写在汇总最上方，避免客户/业务员按旧口径理解。
-                ⚠️ 同样只在"单价不含运费"口径下显示（见列头的说明）：历史口径的
-                单价里含运费，写这句话就是替它改口径。 */}
-            {!legacyBasis && (
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
-                产品单价不含运费。运费单列，按已确认的实际金额由本公司代收代付
-                （公司不赚不赔，产品利润不受运费影响）。
-              </div>
-            )}
+        <SectionCard title="金额汇总">
+          <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
             <div style={{ display: 'grid', gap: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>产品货款</span>
@@ -1852,7 +1848,6 @@ export default function QuoteDetailPage() {
             {/* 合计贴底：marginTop:auto 吃掉多出来的高度 */}
             <div
               style={{
-                marginTop: 'auto',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: 10,
@@ -1882,6 +1877,11 @@ export default function QuoteDetailPage() {
         </SectionCard>
 
       </div>
+
+      {/* 客户决策关系图：报价要发给谁、谁能拍板都在这。
+          客户还没登记联系人时（0 位）收成一行注脚，不再占一整张卡 —
+          "一张卡只装一句话"正是这块反复空着的原因（2026-11-16）。 */}
+      <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" footnoteOnEmpty />
 
       {detail.approval && (
         <SectionCard title="审批记录" style={{ marginTop: 16 }}>

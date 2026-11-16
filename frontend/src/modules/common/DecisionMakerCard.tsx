@@ -34,6 +34,12 @@ interface Props {
   compact?: boolean
   /** 是否自带 .card-block 外壳；嵌在已有卡片里时传 false。 */
   boxed?: boolean
+  /**
+   * 空态降级成一行注脚（不带卡片外壳、不带标题栏）。
+   * 用在"客户还没登记联系人"的场景：一张卡只装一句话，会把整块版面撑空，
+   * 反复被主人圈"空着"（2026-11-16）。有联系人时照旧渲染卡片。
+   */
+  footnoteOnEmpty?: boolean
 }
 
 export default function DecisionMakerCard({
@@ -41,6 +47,7 @@ export default function DecisionMakerCard({
   title = '核心决策人',
   compact = false,
   boxed = true,
+  footnoteOnEmpty = false,
 }: Props) {
   const navigate = useNavigate()
   const contactsQuery = useQuery({
@@ -57,6 +64,34 @@ export default function DecisionMakerCard({
   const primary = contacts[0]
 
   if (!customerId) return null
+
+  // 空态降级：一行说明 + 去加联系人的入口，不占一整张卡
+  if (footnoteOnEmpty && !contactsQuery.isLoading && contacts.length === 0) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          flexWrap: 'wrap',
+          fontSize: 12.5,
+          color: 'var(--crm-text-3)',
+          padding: '0 2px',
+        }}
+      >
+        <span style={{ color: 'var(--crm-text-2)', fontWeight: 600 }}>{title}</span>
+        <span>该客户还没有登记联系人 — 报价要发给谁、谁能拍板都标不出来。</span>
+        <Button
+          size="small"
+          theme="borderless"
+          style={{ padding: 0, height: 'auto', fontSize: 12.5 }}
+          onClick={() => navigate(`/customers/${customerId}`)}
+        >
+          去客户详情加联系人 →
+        </Button>
+      </div>
+    )
+  }
 
   return (
     <div className={boxed ? 'card-block' : undefined}>

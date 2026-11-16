@@ -1174,6 +1174,26 @@ a:not([href]) {
   color: var(--crm-error);
 }
 
+/* ===== 报价详情：金额区合并成"一张卡、内部两栏" =====
+   附加费用（一张表，约 3 行）和金额汇总（4 行 + 合计）内容量本来就接近，
+   装进同一张卡的两栏，卡高由内容决定 —— 谁也不用去凑谁的高度。
+   之前在网格里各占一卡时，不管并排还是叠放都会剩一块空白：
+   并排 → 矮的那张下面空；两列叠 → 高的那列把另一列撑出空。 */
+.quote-money-block {
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-border);
+  border-radius: var(--crm-radius);
+  padding: 20px;
+}
+
+/* 栏内的两张"卡"降级成普通分区：去掉各自的底、框、内边距 */
+.quote-money-block > .card-block {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
 /* ===== 业务规则页：把"平铺的小标题"收成一张张卡片 =====
    原来这一页是 6 个区块直接平铺：一个 13px 加粗标题 + 内容，块与块之间只靠
    20px 空白隔开。没有任何卡片边界，一屏三段说明加两张表，看上去就是"一大坨字"。
