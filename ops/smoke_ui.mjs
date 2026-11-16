@@ -1527,7 +1527,7 @@ async function main() {
       // 它会计入这一版的 `total_amount`（正式订单取的就是客户确认的报价版本总额），
       // 因此下面"建立正式订单"那条断言的总金额也要跟着 +30。
       await ensureFixtureFreight(auth.token, quote.version_id)
-      INTERACTIONS.push({ name: '50-order-draft-flow', path: `/quotes/${quote.quote_id}`, clicks: [], expect: ['订单详情'], orderDraft: { ...quote, inquiryId: inquiry.id } })
+      INTERACTIONS.push({ name: '50-order-draft-flow', path: `/quotes/${quote.quote_id}`, clicks: [], expect: ['订单明细'], orderDraft: { ...quote, inquiryId: inquiry.id } })
     }
 
     for (const item of (process.env.SMOKE_ORDER_DRAFT_ONLY === '1' ? INTERACTIONS.filter((item) => item.orderDraft) : process.env.SMOKE_SAMPLE_SOURCE_ONLY === '1' ? INTERACTIONS.filter((item) => item.sampleSource) : process.env.SMOKE_DEMAND_ONLY === '1' ? INTERACTIONS.filter((item) => item.demandFlow) : process.env.SMOKE_COPILOT_ONLY === '1' ? INTERACTIONS.filter((item) => item.workbenchAnalysis) : process.env.SMOKE_QUOTE_ONLY === '1' ? INTERACTIONS.filter((item) => item.quoteLifecycle) : process.env.SMOKE_RULES_ONLY === '1' ? INTERACTIONS.filter((item) => item.ruleSave) : process.env.SMOKE_FOLLOWUP_ONLY === '1' ? INTERACTIONS.filter((item) => item.followupPlan || item.followupExemption || item.followupSchedule) : INTERACTIONS)) {
@@ -1575,7 +1575,8 @@ async function main() {
         if (!await waitForText(client, '按此版本建订单草稿')) throw new Error('报价缺少草稿入口')
         await clickByText(client, '按此版本建订单草稿')
         if (!await waitForText(client, '本次下单数量：')) throw new Error('建草稿弹窗未打开')
-        const quantity = await client.send('Runtime.evaluate', { expression: `document.querySelector('.semi-modal-content .semi-input-number input')?.value`, returnByValue: true })
+        // 数量框 2026-11 起是精确输入（Input + id=source-quantity-*），不是 InputNumber 步进器
+        const quantity = await client.send('Runtime.evaluate', { expression: `document.querySelector('.semi-modal-content input[id^="source-quantity-"]')?.value`, returnByValue: true })
         if (Number(quantity.result.value) !== 10000) throw new Error('订单草稿数量没有沿用来源')
         await clickByText(client, '建立订单草稿')
         if (!await waitForText(client, '确认正式下单')) throw new Error('订单草稿详情未打开')
@@ -1586,7 +1587,7 @@ async function main() {
         const shot = await client.send('Page.captureScreenshot', { format: 'png' })
         writeFileSync(join(OUT_DIR, '50-order-draft-detail.png'), Buffer.from(shot.data, 'base64'))
         const setQuantity = async value => {
-          const result=await client.send('Runtime.evaluate', { expression: `(() => { const input=document.querySelector('.page-container .semi-input-number input'); if(!input) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input, ${JSON.stringify(''+value)}); input.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`,returnByValue:true })
+          const result=await client.send('Runtime.evaluate', { expression: `(() => { const input=document.querySelector('.page-container input[aria-label="草稿数量"]'); if(!input) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input, ${JSON.stringify(''+value)}); input.dispatchEvent(new Event('input',{bubbles:true})); return true; })()`,returnByValue:true })
           if(!result.result.value) throw new Error('无法编辑草稿数量')
           await sleep(150); await clickByText(client,'保存草稿'); await sleep(500)
         }
@@ -1615,7 +1616,9 @@ async function main() {
         await clickByText(client,'确认正式下单')
         await sleep(300)
         if (await clickPopconfirm(client) !== 'clicked') throw new Error('正式下单的二次确认没弹出来')
-        if(!await waitForText(client,'订单详情')) throw new Error('核对一致后没有进入正式订单')
+        // 「订单详情」只是页签栏默认标题，订单数据一加载就换成订单号（页签体验改版）——
+        // 等它等于赌加载窗口；改等页面上稳定的「订单明细」页签。
+        if(!await waitForText(client,'订单明细')) throw new Error('核对一致后没有进入正式订单')
         const orders=await checkedJson(`/orders?opportunity_id=${item.orderDraft.opportunity_id}`,auth.token)
         // 200000 = 明细 10000 × 20；+30 = 上面补的那条已确认运费。
         // 正式订单取的是**客户确认的报价版本**总额，而该口径里运费是单列计入应付的
@@ -1673,7 +1676,7 @@ async function main() {
         await clickByText(client, '按此版本申请打样')
         if (!await waitForText(client, '原采购数量：10,000')) throw new Error('原采购数量未展示')
         const defaultQty = await client.send('Runtime.evaluate', {
-          expression: `document.querySelector('.semi-modal-content .semi-input-number input')?.value`, returnByValue: true,
+          expression: `document.querySelector('.semi-modal-content input[id^="source-quantity-"]')?.value`, returnByValue: true,
         })
         if (Number(defaultQty.result.value) !== 1) throw new Error(`样品数量非默认 1：${defaultQty.result.value}`)
         const sourceShot = await client.send('Page.captureScreenshot', { format: 'png' })
@@ -1689,7 +1692,7 @@ async function main() {
         const changed = await client.send('Runtime.evaluate', {
           expression: `(() => {
             const dialog = document.querySelector('.semi-modal-content');
-            const input = dialog?.querySelector('.semi-input-number input');
+            const input = dialog?.querySelector('input[id^="source-quantity-"]');
             const spec = dialog?.querySelector('textarea');
             if (!input || !spec) return false;
             Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '2');
