@@ -1927,6 +1927,10 @@ table:not(.semi-table) td {
   display: grid;
   grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
   gap: 16px;
+  /* 这是一个「对话工作台」：右边那块应该一直铺到窗口底。
+     原来卡片固定 600 高，下面拖着一大条灰底，看着像页面没加载完。
+     左栏卡片自己写了 height: fit-content，不会被一起拉长。 */
+  min-height: calc(100vh - 190px);
 }
 
 .agent-tools {
@@ -1960,6 +1964,24 @@ table:not(.semi-table) td {
    标题大一号就把注意力吃掉了。 */
 .agent-empty h2 { margin: 0 0 8px; font-size: 20px; color: var(--crm-text-2); }
 .agent-empty p { margin: 0 0 22px; font-size: 13px; color: var(--crm-text-3); }
+.agent-empty-mark {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 14px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--crm-primary), #3b7ddd);
+  box-shadow: 0 6px 16px rgba(31, 79, 168, 0.26);
+}
+/* 会话列表原来没有任何悬停反馈，鼠标划过去不知道能不能点。 */
+.agent-session-item:hover { background: var(--crm-surface-low) !important; }
+
 .agent-examples {
   display: grid;
   /* 固定两列：四个块正好 2×2 铺满整行；用 auto-fit 会算成三列，
@@ -1977,9 +1999,9 @@ table:not(.semi-table) td {
   align-items: center;
   min-height: 72px;
   padding: 12px 15px;
-  border: 1px solid var(--crm-surface-high);
+  border: 1px solid #e3e6ec;
   border-radius: 10px;
-  background: var(--crm-surface-low);
+  background: var(--crm-surface);
   color: var(--crm-text);
   font: inherit;
   font-weight: 500;
@@ -1992,7 +2014,7 @@ table:not(.semi-table) td {
 .agent-examples button:hover {
   border-color: var(--crm-primary);
   background: var(--crm-surface);
-  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 6px 18px rgba(31, 79, 168, 0.12);
   transform: translateY(-1px);
 }
 /* 键盘 Tab 走到这里时也要能看见选中在哪 —— 只靠鼠标反馈，纯键盘用户会迷路。 */
@@ -2000,7 +2022,37 @@ table:not(.semi-table) td {
   outline: 2px solid var(--crm-primary);
   outline-offset: 2px;
 }
-.agent-composer { display: flex; align-items: flex-end; gap: 10px; padding-top: 16px; border-top: 1px solid var(--crm-surface-high); }
+/* 输入框聚焦时给一圈品牌色光晕：这页只有它一个真正的交互件，得让人看得出光标在哪儿。 */
+.agent-composer textarea:focus {
+  border-color: var(--crm-primary) !important;
+  box-shadow: 0 0 0 3px rgba(31, 79, 168, 0.12);
+}
+
+/* 输入区改成「一个框 + 按钮坐在框里右下角」：原来按钮单独杵在框外右下，
+   既占横向空间又跟输入框对不齐，看着像两件不相干的东西。 */
+.agent-composer {
+  position: relative;
+  padding-top: 16px;
+  border-top: 1px solid var(--crm-surface-high);
+}
+.agent-composer textarea {
+  width: 100% !important;
+  min-height: 92px;
+  padding-right: 92px !important;
+  background: var(--crm-surface);
+}
+.agent-composer .agent-send {
+  position: absolute;
+  right: 10px;
+  bottom: 12px;
+}
+/* 用法说明落在输入框下面一行小字：既交代能力边界，也把「这块是对话区」这句话说圆。 */
+.agent-composer-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--crm-text-3);
+  line-height: 1.6;
+}
 
 @media (max-width: 768px) {
   .agent-page { grid-template-columns: minmax(0, 1fr); }

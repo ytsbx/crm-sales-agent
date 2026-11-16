@@ -266,6 +266,7 @@ export default function AgentPage() {
               setSessionId(item.id)
               setLastTools([])
             }}
+            className="agent-session-item"
             style={{
               padding: '8px 10px',
               borderRadius: 6,
@@ -325,6 +326,9 @@ export default function AgentPage() {
           )}
           {messages.length === 0 && (!sessionId || !detailQuery.isPending) && (
             <div className="agent-empty">
+              {/* 这页通体白卡 + 灰块，进来第一眼分不出「这是个助手」还是「一张空表」。
+                  加一枚小小的品牌标识，给这页一个能认的身份。 */}
+              <div className="agent-empty-mark" aria-hidden>AI</div>
               <h2>{sessionId ? '这段对话还没有消息' : '开始新对话'}</h2>
               <p>直接描述你想查询或处理的业务，也可以试试下面的问题。</p>
               <div className="agent-examples">
@@ -449,6 +453,7 @@ export default function AgentPage() {
             }}
           />
           <Button
+            className="agent-send"
             theme="solid"
             loading={streaming}
             disabled={!input.trim()}
@@ -456,6 +461,10 @@ export default function AgentPage() {
           >
             {streaming ? '回复中…' : '发送'}
           </Button>
+          {/* 说清楚它到底在干什么：这页最容易被误解成「能随便聊的客服机器人」。 */}
+          <p className="agent-composer-hint">
+            会直接读系统里的客户、商机、报价、应收数据；涉及改动的动作会先停下来等你确认。
+          </p>
         </div>
       </SectionCard>
     </div>
