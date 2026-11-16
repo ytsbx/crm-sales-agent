@@ -697,6 +697,18 @@ export default function QuoteDetailPage() {
     pricing_basis: version.pricing_basis,
     pricing_basis_label: version.pricing_basis_label,
   }
+  /**
+   * 本页统一的金额写法：`¥14,286.00`。
+   * 原来这张汇总卡里"产品货款"用 toLocaleString（¥14,286，没有小数）、
+   * "运费"用 toFixed(2)（¥30.00）、"应付合计"用 formatMoney（带小数但不带千分位），
+   * 同一张卡三种写法并排，看着就廉价（2026-11-16 统一）。
+   */
+  const cny = (v: number | string) => {
+    const n = Number(v)
+    if (!Number.isFinite(n)) return '-'
+    return `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
+
   /** 运费未确认的人话原因（后端给）；有值就要一直显示 */
   const freightUnconfirmed = detail.freight_unconfirmed_reason ?? null
 
@@ -1831,21 +1843,21 @@ export default function QuoteDetailPage() {
             <div style={{ display: 'grid', gap: 10 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>产品货款</span>
-                <span>¥{summary.goods_amount.toLocaleString('zh-CN')}</span>
+                <span>{cny(summary.goods_amount)}</span>
               </div>
               {/* 运费从"附加费用"里**单独一行**列具体金额，不再混在一起让客户自己猜。
                   注意：下面这几行都**已经含在**应付合计里，只是拆分展示，不再相加。 */}
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>运费（代收代付）</span>
-                <span>¥{summary.logistics_amount.toFixed(2)}</span>
+                <span>{cny(summary.logistics_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>其他费用</span>
-                <span>¥{summary.other_charge_amount.toFixed(2)}</span>
+                <span>{cny(summary.other_charge_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>优惠</span>
-                <span>¥{summary.discount_amount.toFixed(2)}</span>
+                <span>{cny(summary.discount_amount)}</span>
               </div>
             </div>
             {/* 合计贴底：marginTop:auto 吃掉多出来的高度 */}
@@ -1860,7 +1872,7 @@ export default function QuoteDetailPage() {
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, fontSize: 16 }}>
                 <span>应付合计</span>
-                <span style={{ color: 'var(--crm-primary)' }}>{formatMoney(version.total_amount_exact ?? summary.total_amount, 'CNY')}</span>
+                <span style={{ color: 'var(--crm-primary)' }}>{cny(version.total_amount_exact ?? summary.total_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>预计利润合计</span>
@@ -1872,7 +1884,7 @@ export default function QuoteDetailPage() {
                     ? can('price:manage') && (detail.cost_problems ?? []).length > 0
                       ? '成本未完整确认，暂不能计算利润'
                       : '无价格权限，不显示利润'
-                    : `¥${Number(version.total_profit).toFixed(2)}`}
+                    : cny(version.total_profit)}
                 </span>
               </div>
             </div>
