@@ -1347,7 +1347,10 @@ export default function SettingsPage() {
             <AuditLogPanel active={activeKey === 'audit'} />
           )}
           {activeKey === 'rules' && (
-            <div style={{ display: 'grid', gap: 20 }}>
+            // 必须写 gridTemplateColumns: 'minmax(0, 1fr)'：单列 grid 的默认列宽是 auto，
+            // 会被子项的最小宽度撑开 —— 实测被撑到 1320（容器只有 923），
+            // 于是整页出现横向滚动条、右边第三列输入框被裁到框外。
+            <div style={{ display: 'grid', gap: 20, gridTemplateColumns: 'minmax(0, 1fr)' }}>
               {isAdmin && <UnratedRulesPanel />}
               {/* ⚠️ 下面这三块（公海回收规则 / 自动任务规则 / 系统配置）都是**管理员**的活儿：
                   改规则、调参数、跑扫描，后端一律要 `settings:manage`。
