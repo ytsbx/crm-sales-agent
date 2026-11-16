@@ -37,9 +37,9 @@
   /* 主色降饱和：#004ec6 是 100% 彩度的纯蓝，大面积实心按钮压不住，
      整屏只剩「一块很蓝的色块」。换成彩度约 68%、明度 38% 的墨蓝，
      蓝的识别度还在，但不刺眼。 */
-  --crm-primary: #1f4fa8;
-  --crm-primary-hover: #2a63c4;
-  --crm-primary-soft: #e3ebf7;
+  --crm-primary: #2f6df6;
+  --crm-primary-hover: #4a80f8;
+  --crm-primary-soft: #eaf1fe;
   --crm-secondary: #7431d3;
   --crm-secondary-soft: #ecdcff;
   --crm-error: #ba1a1a;

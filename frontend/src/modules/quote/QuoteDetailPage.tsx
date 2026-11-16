@@ -861,7 +861,9 @@ export default function QuoteDetailPage() {
         tags={
           <>
             <Tag color={STATUS_TONE[quote.status] ?? 'grey'}>{quote.status_label}</Tag>
-            <Tag>V{version.version_no}</Tag>
+            {/* 版本号原来是个实心蓝标签，跟主按钮抢眼、也把页头压得很重。
+                版本号是次要信息，用描边款就够了（2026-11-16）。 */}
+            <Tag className="tag-plain">V{version.version_no}</Tag>
             {version.approval_required && <Tag color="orange">超出价格权限</Tag>}
           </>
         }
@@ -1160,7 +1162,9 @@ export default function QuoteDetailPage() {
             <Button
               key={item.id}
               size="small"
-              theme={item.id === version.id ? 'solid' : 'borderless'}
+              // 当前版本原来是一块实心主色按钮，在页头下面又压一个深色块。
+              // 换成浅色底（light）：仍是选中态，但不跟「转销售订单」抢。
+              theme={item.id === version.id ? 'light' : 'borderless'}
               onClick={() => setSearchParams({ version: String(item.id) })}
             >
               V{item.version_no}

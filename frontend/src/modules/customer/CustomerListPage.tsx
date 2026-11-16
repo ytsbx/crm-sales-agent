@@ -1,11 +1,11 @@
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
-import { useRef, useState, type ComponentProps } from 'react'
+import { useRef, useState } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Tag, Toast, TextArea } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Table, Toast, TextArea } from '@douyinfe/semi-ui'
 
 import {
   batchTagCustomers,
@@ -73,7 +73,6 @@ const CUSTOMER_EXPORT_PERMISSION_REASON =
   '导出需要单独授权，请联系管理员开通「客户导出」权限。'
 
 // 领导六阶段（自动推导，非人工填写）：了解 → 报价 → 打样 → 首单 → 返单 → 稳定复购
-type TagColor = ComponentProps<typeof Tag>['color']
 // 阶段原本每个占一个彩色块，一列扫过去像彩灯；改成小圆点 + 文字：
 // 颜色还在（阶段越靠后越"熟"），但不再是一排色块抢眼。
 const STAGE_DOT: Record<string, string> = {
@@ -83,15 +82,6 @@ const STAGE_DOT: Record<string, string> = {
   first_order: '#0891b2',
   repeat: '#7431d3',
   stable: '#00b42a',
-}
-
-const STAGE_TONE: Record<string, TagColor> = {
-  understanding: 'grey',
-  quote: 'blue',
-  sample: 'orange',
-  first_order: 'cyan',
-  repeat: 'purple',
-  stable: 'green',
 }
 
 const EMPTY_FORM: CustomerPayload = {
@@ -594,10 +584,20 @@ export default function CustomerListPage() {
             }}
           >
             <span style={{ fontSize: 13, color: 'var(--crm-text-3)' }}>客户阶段分布</span>
-            {stageDistQuery.data.map((item) => (
-              <Tag key={item.stage} color={STAGE_TONE[item.stage] ?? 'grey'} type="light">
-                {item.label} {item.count}
-              </Tag>
+            {stageDistQuery.data.map((item, idx) => (
+              // 原来这排是五种颜色的浅底色块（蓝/橙/绿/紫/青各一个），一横排五个
+              // 色块是最花的地方；换成白底描边小胶囊后，在灰底上边框几乎看不见，
+              // 只剩六个字飘着。最终做成「灰字 + 亮蓝数字 + 细竖线」：
+              // 一行读得完，颜色只在数字上出现，够区分也不花（2026-11-16）。
+              <span key={item.stage} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {idx > 0 && (
+                  <span style={{ width: 1, height: 12, background: 'var(--crm-border, #e3e5ea)' }} />
+                )}
+                <span style={{ fontSize: 13, color: 'var(--crm-text-3)' }}>
+                  {item.label}
+                  <strong style={{ marginLeft: 4, color: 'var(--crm-primary)' }}>{item.count}</strong>
+                </span>
+              </span>
             ))}
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
