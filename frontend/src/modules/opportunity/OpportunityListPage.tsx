@@ -16,7 +16,6 @@ import {
 } from '../../shared/api/opportunity'
 import { usePermissions } from '../../shared/hooks/permissions'
 import { emptyNode } from '../../shared/components/EmptyState'
-import type { TagTone } from '../../shared/types'
 import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
@@ -29,8 +28,12 @@ const STATUS_OPTIONS = [
   { value: 'loss', label: '已失单' },
 ]
 
-const RISK_COLOR: Record<string, TagTone> = { high: 'red', medium: 'orange', low: 'green' }
 const RISK_LABEL: Record<string, string> = { high: '高风险', medium: '中风险', low: '低风险' }
+
+/** 空值占位：一条淡灰横线。比 '-' 更像"这里本来就没东西"，不会读成减号。 */
+function EmptyMark() {
+  return <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+}
 
 export default function OpportunityListPage() {
   const navigate = useNavigate()
@@ -134,31 +137,31 @@ export default function OpportunityListPage() {
         />
       ),
     },
+    // 原来这里是四列：预计金额 / 需求条数 / 预计成交日 / 风险。
+    // 演示库里这四列几乎全是 `-` 和 `0`，一行里四个空位并排 ——
+    // 视觉噪音比信息多（2026-11-16 巡检）。两两并成一列：
+    // 「有值就显示、没值就一条淡灰横线」，空的时候一行只剩一个占位符。
     {
-      title: '预计金额',
-      dataIndex: 'expected_amount',
-      width: 130,
-      render: (value: number | null) => (value ? `¥${value.toLocaleString('zh-CN')}` : '-'),
+      title: '金额 / 需求',
+      width: 260,
+      render: (_: unknown, record: Opportunity) => {
+        const parts: string[] = []
+        if (record.expected_amount) parts.push(`¥${record.expected_amount.toLocaleString('zh-CN')}`)
+        if (record.item_count) parts.push(`${record.item_count} 条需求`)
+        return parts.length ? parts.join(' · ') : <EmptyMark />
+      },
     },
     {
-      title: '需求条数',
-      dataIndex: 'item_count',
-      width: 100,
+      title: '成交日 / 风险',
+      width: 200,
+      render: (_: unknown, record: Opportunity) => {
+        const parts: string[] = []
+        if (record.expected_close_date) parts.push(record.expected_close_date)
+        if (record.risk_level) parts.push(RISK_LABEL[record.risk_level] ?? record.risk_level)
+        return parts.length ? parts.join(' · ') : <EmptyMark />
+      },
     },
-    {
-      title: '预计成交日',
-      dataIndex: 'expected_close_date',
-      width: 130,
-      render: (v: string | null) => v ?? '-',
-    },
-    {
-      title: '风险',
-      dataIndex: 'risk_level',
-      width: 100,
-      render: (v: string | null) =>
-        v ? <StatusDot label={RISK_LABEL[v] ?? v} tone={(RISK_COLOR[v] ?? 'grey') as TagTone} /> : '-',
-    },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? <EmptyMark /> },
   ]
 
   return (
