@@ -330,9 +330,20 @@ export default function SettingsPage() {
     }
     const first = Object.values(raw)[0]
     const key = Object.keys(raw)[0] ?? 'text'
+    // 有些配置项的值不是标量而是对象（钉钉审批配置里 template_id / 字段映射装在
+    // 一层对象里），直接 String(它) 出来就是 `[object Object]` —— 既看不懂也改不了，
+    // 还占着一个输入框。这种就显示"已配置（N 项）"，并写明在哪改。
+    if (first !== null && typeof first === 'object') {
+      const count = Array.isArray(first) ? first.length : Object.keys(first as object).length
+      return (
+        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+          已配置（{count} 项）
+        </span>
+      )
+    }
     return (
       <Input
-        defaultValue={first === undefined ? '' : String(first)}
+        defaultValue={first === undefined || first === null ? '' : String(first)}
         // 宽度跟着列走，不写死 260：列宽 263 的时候 260 会把输入框顶出卡片右边。
         style={{ width: '100%' }}
         onBlur={(event) => {
@@ -1388,8 +1399,8 @@ export default function SettingsPage() {
                   所以对非管理员**整块不渲染** —— 返修单 R12 要求"主管只进入本团队
                   复核功能"，露着不能用的按钮比藏起来更糟。 */}
               {isAdmin && (
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>公海回收规则</div>
+              <div className="rule-block">
+                <div className="rule-block-title">公海回收规则</div>
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
                   客户超过设定天数没有跟进记录，就会被提名成回收候选。
                   回收不会自动发生 —— 要先预告、再由主管逐条或批量批准；
@@ -1453,8 +1464,8 @@ export default function SettingsPage() {
               )}
 
               {isAdmin && (
-                <div>
-                  <div style={{ fontWeight: 600, marginBottom: 8 }}>回收节奏与恢复权限</div>
+                <div className="rule-block">
+                  <div className="rule-block-title">回收节奏与恢复权限</div>
                   <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
                     <b>预告期与暂缓期现在跑的是开发默认值（7 天 / 30 天），还没经过业务确认</b>
                     —— 口径定了在这里改。改完<b>立刻生效</b>：已经提名、还没结案的候选
@@ -1550,8 +1561,8 @@ export default function SettingsPage() {
                 </div>
               )}
 
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>回收复核</div>
+              <div className="rule-block">
+                <div className="rule-block-title">回收复核</div>
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
                   扫描只「提名」；批准后才真的回收，并且<b>必须等预告期/暂缓期满了</b>才能批
                   —— 没满要走「提前回收」这个例外动作，得填原因。
@@ -1815,8 +1826,8 @@ export default function SettingsPage() {
               </div>
 
               {isAdmin && (
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>自动任务规则</div>
+              <div className="rule-block">
+                <div className="rule-block-title">自动任务规则</div>
                 <Table<TaskRuleRow>
                   columns={[
                     { title: '规则', dataIndex: 'name', width: 220 },
@@ -1876,8 +1887,8 @@ export default function SettingsPage() {
               )}
 
               {isAdmin && (
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>系统配置</div>
+              <div className="rule-block">
+                <div className="rule-block-title">系统配置</div>
                 <Table<SystemSettingRow>
                   columns={[
                     {
@@ -1891,7 +1902,7 @@ export default function SettingsPage() {
                     },
                     {
                       title: '说明',
-                      width: 420,
+                      width: 360,
                       render: (_: unknown, record: SystemSettingRow) => {
                         // 一批配置**默认就取最保守的值**（关着 / 0 / 留空），
                         // 因为底价口径、体积重系数、钉钉模板号这些属于业务口径，
@@ -1904,7 +1915,19 @@ export default function SettingsPage() {
                           // 那条说明有 40 多个字，不换行就把整列撑到 738px，
                           // 第三列「值」直接被推到卡片外面看不见（2026-11-16 发现：
                           // 系统配置表只剩两个表头，值根本改不了）。
-                          <div style={{ whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                          // textAlign: left —— 表格行内容全局居中，单行数字居中好看，
+                          // 但「说明」是多行段落，居中之后每行都从中间开始，
+                          // 读起来像一排标题（2026-11-16 截图里"只有客户起草的合同能发起。"
+                          // 就缩在中间一小条）。
+                          <div
+                            style={{
+                              whiteSpace: 'normal',
+                              wordBreak: 'break-word',
+                              overflowWrap: 'anywhere',
+                              textAlign: 'left',
+                              lineHeight: 1.6,
+                            }}
+                          >
                             <span>{settingDescription(record.key, record.description)}</span>
                             {note && (
                               <div style={{ marginTop: 4 }}>
@@ -1931,7 +1954,8 @@ export default function SettingsPage() {
                       key: 'value',
                       // 这一列原来只写 render、不写 key/width，Semi 摊列宽时把它压成了 0，
                       // 界面上就只剩「配置项」「说明」两个表头，「值」整列消失（2026-11-16 发现）。
-                      width: 260,
+                      // 300 才够放「曼德拉（示例，请替换为公司全称）」这类长值。
+                      width: 300,
                       render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record),
                     },
                   ]}

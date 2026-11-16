@@ -1174,6 +1174,37 @@ a:not([href]) {
   color: var(--crm-error);
 }
 
+/* ===== 业务规则页：把"平铺的小标题"收成一张张卡片 =====
+   原来这一页是 6 个区块直接平铺：一个 13px 加粗标题 + 内容，块与块之间只靠
+   20px 空白隔开。没有任何卡片边界，一屏三段说明加两张表，看上去就是"一大坨字"。
+   现在每块都装进白底描边卡，标题左边一根 3px 主色竖条 —— 一屏几块、每块说什么，
+   扫一眼就分得开。 */
+.rule-block {
+  background: var(--crm-surface, #fff);
+  border: 1px solid var(--crm-border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  min-width: 0;
+}
+
+.rule-block-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.rule-block-title::before {
+  content: '';
+  width: 3px;
+  height: 13px;
+  border-radius: 2px;
+  background: var(--crm-primary);
+  flex: 0 0 auto;
+}
+
 /* 审计日志：业务变更行左侧一条 3px 主色条，登录行只留一条 1px 极浅灰边。
    一屏文字再多，靠这条左边也分得开"哪几行是真的改了东西"
    （tr 是 display: table-row，不支持 box-shadow，挂在第一格上）。 */

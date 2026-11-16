@@ -42,9 +42,10 @@ export default function UnratedRulesPanel() {
       })
     } catch (error) { Toast.warning((error as Error).message) }
   }
-  return <div>
-    <div style={{ fontWeight: 600, marginBottom: 8 }}>未分级客户规则</div>
-    <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
+  // 跟业务规则页其它 5 块统一：白底描边卡 + 主色竖条标题（见 index.css 的 .rule-block）
+  return <div className="rule-block">
+    <div className="rule-block-title">未分级客户规则</div>
+    <div style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 14 }}>
       新客户默认未分级。两项规则默认关闭，填写天数并保存后可启用；回收仍需预告与主管复核。
     </div>
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'center' }}>
