@@ -340,13 +340,13 @@ export default function CasesPage() {
       <SectionCard>
         <div className="toolbar" style={{ marginBottom: 10 }}>
           <Input
-            style={{ width: 200 }}
+            style={{ width: 190 }}
             placeholder="搜标题 / 做法 / 关键动作"
             value={filters.keyword}
             onChange={(v) => applyFilter({ keyword: v })}
           />
           <Select
-            style={{ width: 120 }}
+            style={{ width: 105 }}
             placeholder="状态"
             value={filters.status}
             onChange={(v) => applyFilter({ status: v as string | undefined })}
@@ -360,7 +360,7 @@ export default function CasesPage() {
           />
           {/* 行业/产品线是自由文本，用输入框（后端按包含匹配，不用打全称） */}
           <Input
-            style={{ width: 110 }}
+            style={{ width: 100 }}
             placeholder="行业"
             value={filters.industry ?? ''}
             onChange={(v) => applyFilter({ industry: v || undefined })}
@@ -368,7 +368,7 @@ export default function CasesPage() {
           {/* 客户类型：企业 / 个人。取自关联客户档案，
               与上面那个「行业」是两件事（一个企业客户可以属于任何行业）。 */}
           <Select
-            style={{ width: 110 }}
+            style={{ width: 105 }}
             placeholder="客户类型"
             value={filters.customer_type}
             showClear
@@ -379,13 +379,13 @@ export default function CasesPage() {
             ]}
           />
           <Input
-            style={{ width: 110 }}
+            style={{ width: 100 }}
             placeholder="产品线"
             value={filters.product_line ?? ''}
             onChange={(v) => applyFilter({ product_line: v || undefined })}
           />
           <Select
-            style={{ width: 110 }}
+            style={{ width: 100 }}
             placeholder="阶段"
             value={filters.stage}
             onChange={(v) => applyFilter({ stage: v as string | undefined })}
@@ -393,7 +393,7 @@ export default function CasesPage() {
             showClear
           />
           <Input
-            style={{ width: 110 }}
+            style={{ width: 100 }}
             placeholder="问题标签"
             value={filters.problem_tags ?? ''}
             onChange={(v) => applyFilter({ problem_tags: v || undefined })}
@@ -420,25 +420,31 @@ export default function CasesPage() {
         </div>
         <Table<CaseRow>
           columns={[
-            { title: '标题', dataIndex: 'title' },
-            { title: '作者', dataIndex: 'author_name', width: 100 },
-            { title: '行业', dataIndex: 'industry', width: 100, render: (v: string | null) => v ?? '-' },
-            { title: '产品线', dataIndex: 'product_line', width: 100, render: (v: string | null) => v ?? '-' },
             {
-              title: '阶段',
-              dataIndex: 'stage_reached',
-              width: 90,
-              render: (v: string | null) => (v ? STAGE_LABEL[v] ?? v : '-'),
+              title: '标题',
+              dataIndex: 'title',
+              // 案例标题常是一整句（"预算卡死在 5 万：拆成两期交付…"），
+              // 而这张表要塞 8 列在 1130 里，标题给不了无限宽度。
+              // 超过 22 字物理截断 + 省略号，鼠标悬停(title 属性)能看到全文；
+              // 光靠 CSS ellipsis 在 table-layout:auto 下管不住列的最小宽度。
+              render: (v: string) => (
+                <span title={v}>
+                  {v.length > 22 ? `${v.slice(0, 22)}…` : v}
+                </span>
+              ),
             },
+            // 列顺序按「看这份案例时要先判断什么」排：给哪个客户做的、审到哪一步了，
+            // 比"谁写的"重要得多。原来作者排第 2，客户和状态被挤到第 6、第 7 位，
+            // 一屏扫过去先看到作者名，而不是能不能用。
             {
               title: '客户',
-              width: 150,
+              width: 180,
               render: (_: unknown, record: CaseRow) => record.customer_name ?? record.customer_label ?? '-',
             },
             {
               title: '状态',
               dataIndex: 'status_label',
-              width: 150,
+              width: 115,
               render: (v: string, record: CaseRow) => (
                 <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                   <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
@@ -452,8 +458,25 @@ export default function CasesPage() {
               ),
             },
             {
+              title: '阶段',
+              dataIndex: 'stage_reached',
+              width: 90,
+              render: (v: string | null) => (v ? STAGE_LABEL[v] ?? v : '-'),
+            },
+            { title: '作者', dataIndex: 'author_name', width: 90 },
+            // 行业 / 产品线合成一列：两者都是"这条经验适合什么场景"的分类标签，
+            // 分开占两列各 100 宽，把标题挤得只剩 300；合并成一列省下 100。
+            {
+              title: '行业 / 产品线',
+              width: 145,
+              render: (_: unknown, record: CaseRow) => {
+                const parts = [record.industry, record.product_line].filter(Boolean)
+                return parts.length ? parts.join(' · ') : '-'
+              },
+            },
+            {
               title: '操作',
-              width: 240,
+              width: 160,
               render: (_: unknown, record: CaseRow) => (
                 <span style={{ display: 'inline-flex', gap: 10 }}>
                   <a onClick={() => void openDetail(record)}>详情</a>
