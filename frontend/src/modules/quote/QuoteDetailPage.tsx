@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import FormLabel from '../../shared/components/FormLabel'
 import { ConfirmRequiredModal, isConfirmRequired, confirmMessageOf } from '../../shared/components/ConfirmRequiredModal'
 import BlockedHint from '../../shared/components/BlockedHint'
+import StatusDot from '../../shared/components/StatusDot'
 import GuardedButton from '../../shared/components/GuardedButton'
 import {
   SECONDARY_ACTIONS,
@@ -25,7 +26,7 @@ import ReceivablePlanPicker, {
   toPlanPayload,
   type ReceivablePlanRow,
 } from '../../shared/components/ReceivablePlanPicker'
-import { Button, Dropdown, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
+import { Button, Collapse, Dropdown, Input, Modal, Popconfirm, Select, Table, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
 
 import {
   linkMasterData,
@@ -721,7 +722,7 @@ export default function QuoteDetailPage() {
     {
       title: '产品名称 / 需求',
       dataIndex: 'sku_code',
-      width: 170,
+      width: 190,
       // 定制项（场景09）没有 SKU：显示需求编号 + 定制标记，
       // 否则这一格会是空的，看的人不知道这条是什么
       // 名称在上、编码辅助展示；规格仍保留独立列。
@@ -729,7 +730,7 @@ export default function QuoteDetailPage() {
       // （`quote_items.sku_name_snapshot`）—— 满屏 `TP-1210-ST` 这种编码，
       // 看的人不知道是哪件东西（主人 2026-10-10 指出）。
       render: (v: string | null, record: QuoteItemRow) => (
-        <div>
+        <div style={{ lineHeight: 1.5 }}>
           <div>
             {record.sku_name || v || '未命名产品'}
             {record.is_custom && (
@@ -738,43 +739,17 @@ export default function QuoteDetailPage() {
               </Tag>
             )}
           </div>
-          {v && record.sku_name && (
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{v}</div>
+          {/* 规格并进这一格，不再单占一列：它和产品是「同一条东西」的两行字，
+              分两列反而要多横着看一次（十二列挤在 1130 里就是这个代价）。 */}
+          {(record.specification || (v && record.sku_name)) && (
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+              {[record.specification || '', v && record.sku_name ? v : ''].filter(Boolean).join(' · ')}
+            </div>
           )}
         </div>
       ),
     },
-    { title: '规格', dataIndex: 'specification', width: 180, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 90, render: (v: number) => v.toLocaleString('zh-CN') },
-    {
-      // 产品核价成本（2026-10-09 运费分离）：新口径下**就是商品成本**，
-      // 运费不参与产品定价与产品利润，所以这一格不再加 `logistics_cost_snapshot`。
-      // 历史版本（legacy）沿用老口径"商品成本 + 单件运费"，与当时的审批结论一致。
-      title: legacyBasis ? '成本快照（含运费）' : '商品成本',
-      dataIndex: 'cost_snapshot',
-      width: 130,
-      render: (v: number | null, record: QuoteItemRow) => {
-        const problem = detail.cost_problems?.find((p) => p.item_id === record.id)
-        // == null：成本脱敏时字段可能是 null 或整字段缺失（undefined），两种都显示 '-'
-        if (v == null || (legacyBasis && record.logistics_cost_snapshot == null)) return '-'
-        return problem ? problem.reason : `¥${(legacyBasis ? v + record.logistics_cost_snapshot! : v).toFixed(2)}`
-      },
-    },
-    {
-      title: '建议价',
-      dataIndex: 'recommended_price_snapshot',
-      width: 100,
-      // 必须 toFixed(2)：建议价是算出来的（成本 ÷ 系数），不格式化会显示成
-      // ¥142.8571 这种四位小数，和旁边 ¥100.00、¥117.65 对不上
-      // == null：脱敏时该字段可能整字段缺失（undefined），只判 null 会在 toFixed 上崩
-      render: (v: number | null) => (v == null ? '-' : `¥${v.toFixed(2)}`),
-    },
-    {
-      title: '最低保护价',
-      dataIndex: 'minimum_price_snapshot',
-      width: 120,
-      render: (v: number | null) => (v == null ? '-' : `¥${v.toFixed(2)}`),
-    },
     {
       // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
       // 按含运费的旧口径理解，列头不写就会各理解一套。
@@ -786,33 +761,38 @@ export default function QuoteDetailPage() {
       title: legacyBasis ? '实际报价（含运费）' : '实际报价（不含运费）',
       dataIndex: 'quoted_price',
       width: 150,
-      render: (value: number, record: QuoteItemRow) => (
-        // 统一两位小数：quoted_price_exact 是 Decimal 序列化出来的（如 150.0000），
-        // 直接渲染会和同表的 ¥100.00 形成两种精度
-        <span style={{ fontWeight: 600, color: record.approval_required ? 'var(--crm-error)' : 'var(--crm-text)' }}>
-          ¥{Number(record.quoted_price_exact ?? value).toFixed(2)}
-        </span>
-      ),
-    },
-    {
-      // 方案 §4.1"显示价格来源"：拟报价的依据（客户专属价/等级价/通用指导价/手工）
-      title: '价格来源',
-      dataIndex: 'price_source',
-      width: 110,
-      render: (v: string | null, record: QuoteItemRow) => {
-        const label =
-          v === 'customer_specific'
+      render: (value: number, record: QuoteItemRow) => {
+        // 方案 §4.1"显示价格来源"：拟报价的依据（客户专属价/等级价/通用指导价/手工）
+        const sourceLabel =
+          record.price_source === 'customer_specific'
             ? '客户专属价'
-            : v === 'level'
+            : record.price_source === 'level'
               ? '客户等级价'
-              : v === 'general'
+              : record.price_source === 'general'
                 ? '通用指导价'
-                : '手工价'
+                : record.price_source
+                  ? '手工价'
+                  : ''
         return (
-          <Tag type="light" color={v ? 'blue' : 'grey'} size="small">
-            {label}
-            {record.customer_level_snapshot ? `（${record.customer_level_snapshot}）` : ''}
-          </Tag>
+          <div style={{ lineHeight: 1.5 }}>
+            {/* 统一两位小数：quoted_price_exact 是 Decimal 序列化出来的（如 150.0000），
+                直接渲染会和同表的 ¥100.00 形成两种精度 */}
+            <span
+              style={{
+                fontWeight: 600,
+                color: record.approval_required ? 'var(--crm-error)' : 'var(--crm-text)',
+              }}
+            >
+              ¥{Number(record.quoted_price_exact ?? value).toFixed(2)}
+            </span>
+            {/* 价格来源并进这一格：它解释的就是「这个价从哪来」，与金额同一行读最顺 */}
+            {sourceLabel && (
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                {sourceLabel}
+                {record.customer_level_snapshot ? `（${record.customer_level_snapshot}）` : ''}
+              </div>
+            )}
+          </div>
         )
       },
     },
@@ -831,8 +811,10 @@ export default function QuoteDetailPage() {
     {
       title: '审批',
       dataIndex: 'approval_required',
-      width: 110,
-      render: (v: boolean) => (v ? <Tag color="orange">需审批</Tag> : <Tag color="green">权限内</Tag>),
+      width: 90,
+      render: (v: boolean) => (
+        <StatusDot label={v ? '需审批' : '权限内'} tone={v ? 'orange' : 'green'} bold={v} />
+      ),
     },
     {
       title: '操作',
@@ -1188,7 +1170,10 @@ export default function QuoteDetailPage() {
             提交审批、批量录入、添加费用都会整块消失（判据 `canManage && editable`）。
             常驻一行说明它们为什么不在这儿、下一步该怎么做（规矩见 shared/components/BlockedHint.tsx）。 */}
         {versionEditBlockedReason && (
-          <BlockedHint reasons={[versionEditBlockedReason]} action="改这一版报价" />
+          /* 这块原来是橙底 + 项目符号 + 内边距的整块警示，在页头占掉整整一行高。
+             它本质是一句「为什么改不了」，压成一行灰字就够了 —— 放在工具栏下面，
+             不抢「现在这一步」的注意力。 */
+          <BlockedHint compact reasons={[versionEditBlockedReason]} action="改这一版报价" />
         )}
       </DetailHeader>
       <Modal
@@ -1580,7 +1565,60 @@ export default function QuoteDetailPage() {
           dataSource={detail.items}
           rowKey="id"
           pagination={false}
-          scroll={{ x: 'max(100%, 1300px)' }}
+          className="quote-items-table"
+          /* 成本 / 建议价 / 最低保护价 是内部核价参考，不是对客户的报价字段。
+             它们在列表里常驻要占三列（110 + 100 + 110），十列一起把整张表顶出
+             容器、右下角「操作」被裁掉。挪进点行展开：要核对毛利的人点左侧箭头，
+             成本口径、建议价、保护价、成本异常说明都在里面，列表只留报价字段。 */
+          expandedRowRender={(record?: QuoteItemRow) => {
+            if (!record) return null
+            const costValue =
+              record.cost_snapshot == null
+                ? null
+                : legacyBasis
+                  ? record.cost_snapshot + (record.logistics_cost_snapshot ?? 0)
+                  : record.cost_snapshot
+            const problem = detail.cost_problems?.find((p) => p.item_id === record.id)
+            return (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                  gap: '8px 24px',
+                  padding: '6px 10px',
+                  textAlign: 'left',
+                  fontSize: 13,
+                  lineHeight: 1.7,
+                }}
+              >
+                <div>
+                  <span style={{ color: 'var(--crm-text-3)' }}>
+                    {legacyBasis ? '成本快照（含运费）：' : '商品成本：'}
+                  </span>
+                  {costValue == null ? '-' : `¥${costValue.toFixed(2)}`}
+                </div>
+                <div>
+                  <span style={{ color: 'var(--crm-text-3)' }}>建议价：</span>
+                  {record.recommended_price_snapshot == null
+                    ? '-'
+                    : `¥${record.recommended_price_snapshot.toFixed(2)}`}
+                </div>
+                <div>
+                  <span style={{ color: 'var(--crm-text-3)' }}>最低保护价：</span>
+                  {record.minimum_price_snapshot == null
+                    ? '-'
+                    : `¥${record.minimum_price_snapshot.toFixed(2)}`}
+                </div>
+                {problem && (
+                  <div style={{ color: 'var(--crm-error)' }}>
+                    <span style={{ color: 'var(--crm-text-3)' }}>成本问题：</span>
+                    {problem.reason}
+                  </div>
+                )}
+              </div>
+            )
+          }}
+          rowExpandable={() => true}
           empty="没有明细"
         />
       </SectionCard>
@@ -1588,8 +1626,26 @@ export default function QuoteDetailPage() {
       {draftVisible && <SampleFromSourceModal mode="order" source={{ quote_version_id: version.id }} onClose={() => setDraftVisible(false)} />}
       {sampleVisible && <SampleFromSourceModal source={{ quote_version_id: version.id }} onClose={() => setSampleVisible(false)} />}
 
-      {/* What-if：版本方案对比 + 边际测算（设计稿 Sales Copilot 右栏那个滑杆） */}
-      <WhatIfPanel quoteId={quoteId} versionId={version.id} items={detail.items} />
+      {/* What-if：版本方案对比 + 边际测算（设计稿 Sales Copilot 右栏那个滑杆）。
+          这两块是「准备改价、要比较几套方案」时才看的工具，不是每天都要看的
+          主流程信息；原来常驻展开，详情页一屏就叠了七块（状态、步骤、警示、
+          明细、两套 what-if、附加费用……）。收进折叠区，默认收起，
+          需要时点开 —— 内容一个字没减。 */}
+      <Collapse style={{ marginTop: 16 }} className="quote-whatif-collapse">
+        <Collapse.Panel
+          itemKey="whatif"
+          header={
+            <span style={{ fontSize: 14, fontWeight: 600 }}>
+              版本与方案对比 · 边际测算（What-if）
+              <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+              要改价、要比较几套方案时点开看
+              </span>
+            </span>
+          }
+        >
+          <WhatIfPanel quoteId={quoteId} versionId={version.id} items={detail.items} />
+        </Collapse.Panel>
+      </Collapse>
 
       {/* 两张卡里各有一张表，列宽不能写死 1fr（会被表的固有宽度顶住、整页横向滚动） */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>

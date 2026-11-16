@@ -1365,6 +1365,14 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 报价详情明细表：原来写死 scroll.x = max(100%, 1300px)，容器只有 1130，
+   于是表格底部常驻一条横向滚动条、「金额 / 审批 / 操作」三列要滑着看。
+   这里改成等容器宽 + 固定表布局，列宽按 width 比例压进 1130。 */
+.quote-items-table .semi-table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+
 /* 表格内容统一居中（2026-10-06 主人要求：全站表格一律居中，不留特例）。
    为什么要 !important：Semi 只在列上单独声明 align 时才给单元格写内联的
    对齐样式，全项目 80 张表里只有 8 个列写过（报价试算 7 列右对齐、洞察
@@ -1402,6 +1410,30 @@ table:not(.semi-table) td {
 .semi-button {
   border-radius: var(--crm-radius-sm);
   font-size: 13px;
+}
+
+/* 表单控件统一成「白底 + 1px 细描边」。
+   Semi 默认是浅灰实心块（--semi-color-fill-0），在浅灰页面上几乎看不出边界：
+   一个弹窗里四五个字段叠下来，整块面板像一张没画完的草图 —— 这也是「看着廉价」
+   的来源之一。白底 + 细描边 + focus 主色描边，才看得出「这里可以填」。
+   只动外观：placeholder、校验态、禁用态都由 Semi 自己管。 */
+.semi-input-wrapper,
+.semi-select,
+.semi-input-textarea-wrapper {
+  background: var(--crm-surface) !important;
+  border: 1px solid var(--crm-outline) !important;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.semi-input-wrapper:hover,
+.semi-select:hover {
+  border-color: rgba(31, 79, 168, .42) !important;
+}
+.semi-input-wrapper:focus-within,
+.semi-select-focus,
+.semi-select:hover.semi-select-focus,
+.semi-input-textarea-wrapper:focus-within {
+  border-color: var(--crm-primary) !important;
+  box-shadow: 0 0 0 3px rgba(31, 79, 168, .10) !important;
 }
 
 .semi-input-wrapper,
