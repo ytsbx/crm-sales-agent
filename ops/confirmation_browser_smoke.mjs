@@ -360,16 +360,18 @@ try {
   console.log('BROWSER_LEAD_CLAIM_CANCEL_NO_WRITE_CONFIRM_SECOND_ROW_ID=true')
   await send('Page.navigate',{url:`http://127.0.0.1:${port}/customers/9`})
   const claimCustomer=`Array.from(document.querySelectorAll('button')).find(b=>b.innerText.trim()==='领取到我名下')`
+  // 领取确认自 2b88f5c 起走 Modal.confirm（弹窗），不是 Popconfirm（气泡）——容器要对准 .semi-modal-content
+  const claimModal=`document.querySelector('.semi-modal-content')`
   await waitFor(claimCustomer)
   await evaluate(`${claimCustomer}.click()`)
   await waitFor(`document.body.innerText.includes('确认领取客户「领取确认测试客户」')`)
   assert.equal(claimedCustomers.length,0)
-  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.includes('取消')).click()`)
+  await evaluate(`Array.from(${claimModal}.querySelectorAll('button')).find(b=>b.innerText.includes('取消')).click()`)
   await sleep(250)
   assert.equal(claimedCustomers.length,0)
   await evaluate(`${claimCustomer}.click()`)
   await waitFor(`document.body.innerText.includes('确认领取客户「领取确认测试客户」')`)
-  await evaluate(`Array.from(${popup}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
+  await evaluate(`Array.from(${claimModal}.querySelectorAll('button')).find(b=>b.innerText.trim()==='确定').click()`)
   for(let i=0;claimedCustomers.length===0 && i<30;i++)await sleep(100)
   assert.deepEqual(claimedCustomers,[9])
   console.log('BROWSER_CUSTOMER_CLAIM_CANCEL_NO_WRITE_CONFIRM_CORRECT_ID=true')

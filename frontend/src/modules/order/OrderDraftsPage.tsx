@@ -29,8 +29,8 @@ export default function OrderDraftsPage() {
   const configQuery = useQuery({ queryKey: ['public-config'], queryFn: getPublicConfig })
   const exportEnabled = (configQuery.data?.trade_mode ?? 'domestic') !== 'domestic'
   const query = useQuery({ queryKey: ['order-draft', draftId], queryFn: () => getOrderDraft(draftId), enabled: !!id, refetchOnWindowFocus: false, refetchOnReconnect: false })
-  // 页签标题带草稿号，避免多个「订单草稿详情」分不清
-  useTabLabel(id && query.data ? `草稿 #${draftId}` : null)
+  // 页签标题带草稿号，避免多个「订单草稿详情」分不清（编号写法照 2026-10-12 口径：不用 #）
+  useTabLabel(id && query.data ? `草稿编号 ${draftId}` : null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const list = useQuery({ queryKey: ['order-drafts', page, pageSize], queryFn: () => listOrderDrafts({ page, page_size: pageSize }), enabled: !id })

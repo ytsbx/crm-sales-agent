@@ -755,7 +755,8 @@ export default function QuoteDetailPage() {
       width: 130,
       render: (v: number | null, record: QuoteItemRow) => {
         const problem = detail.cost_problems?.find((p) => p.item_id === record.id)
-        if (v === null || (legacyBasis && record.logistics_cost_snapshot === null)) return '-'
+        // == null：成本脱敏时字段可能是 null 或整字段缺失（undefined），两种都显示 '-'
+        if (v == null || (legacyBasis && record.logistics_cost_snapshot == null)) return '-'
         return problem ? problem.reason : `¥${(legacyBasis ? v + record.logistics_cost_snapshot! : v).toFixed(2)}`
       },
     },
@@ -765,13 +766,14 @@ export default function QuoteDetailPage() {
       width: 100,
       // 必须 toFixed(2)：建议价是算出来的（成本 ÷ 系数），不格式化会显示成
       // ¥142.8571 这种四位小数，和旁边 ¥100.00、¥117.65 对不上
-      render: (v: number | null) => (v === null ? '-' : `¥${v.toFixed(2)}`),
+      // == null：脱敏时该字段可能整字段缺失（undefined），只判 null 会在 toFixed 上崩
+      render: (v: number | null) => (v == null ? '-' : `¥${v.toFixed(2)}`),
     },
     {
       title: '最低保护价',
       dataIndex: 'minimum_price_snapshot',
       width: 120,
-      render: (v: number | null) => (v === null ? '-' : `¥${v.toFixed(2)}`),
+      render: (v: number | null) => (v == null ? '-' : `¥${v.toFixed(2)}`),
     },
     {
       // 单价口径必须在列头写清"不含运费"：运费分离之后，客户与业务员都容易
@@ -818,7 +820,7 @@ export default function QuoteDetailPage() {
       title: '利润率',
       dataIndex: 'profit_rate_snapshot',
       width: 100,
-      render: (v: number | null) => v === null ? '-' : `${(v * 100).toFixed(2)}%`,
+      render: (v: number | null) => v == null ? '-' : `${(v * 100).toFixed(2)}%`,
     },
     {
       title: '金额',
