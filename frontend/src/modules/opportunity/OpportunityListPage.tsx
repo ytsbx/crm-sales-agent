@@ -4,7 +4,7 @@ import { calendarDay } from '../../shared/calendar-day'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, DatePicker, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import { listCustomers } from '../../shared/api/customer'
 import {
@@ -21,6 +21,7 @@ import OpportunityBoard from './OpportunityBoard'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import StatusDot from '../../shared/components/StatusDot'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -127,9 +128,10 @@ export default function OpportunityListPage() {
       dataIndex: 'stage_name',
       width: 110,
       render: (value: string | null, record: Opportunity) => (
-        <Tag color={record.status === 'win' ? 'green' : record.status === 'loss' ? 'grey' : 'blue'}>
-          {value ?? '-'}
-        </Tag>
+        <StatusDot
+          label={value ?? '-'}
+          tone={record.status === 'win' ? 'green' : record.status === 'loss' ? 'grey' : 'blue'}
+        />
       ),
     },
     {
@@ -153,7 +155,8 @@ export default function OpportunityListPage() {
       title: '风险',
       dataIndex: 'risk_level',
       width: 100,
-      render: (v: string | null) => (v ? <Tag color={RISK_COLOR[v] ?? 'grey'}>{RISK_LABEL[v] ?? v}</Tag> : '-'),
+      render: (v: string | null) =>
+        v ? <StatusDot label={RISK_LABEL[v] ?? v} tone={(RISK_COLOR[v] ?? 'grey') as TagTone} /> : '-',
     },
     { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
   ]

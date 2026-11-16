@@ -14,6 +14,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import { useBlockedNotify } from '../../shared/components/BlockedHint'
 import { getPersistedAuthToken } from '../../shared/auth-token'
+import StatusDot from '../../shared/components/StatusDot'
 
 const EMPTY_FORM: ProductPayload = {
   name: '',
@@ -153,7 +154,9 @@ export default function ProductListPage() {
       title: '状态',
       dataIndex: 'status',
       width: 90,
-      render: (v: string) => (v === 'active' ? <Tag color="green">在售</Tag> : <Tag>停用</Tag>),
+      render: (v: string) => (
+        <StatusDot label={v === 'active' ? '在售' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />
+      ),
     },
     {
       title: '创建时间',

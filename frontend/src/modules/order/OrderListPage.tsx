@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, DatePicker, Input, Modal, Popconfirm, Select, Table, Tabs, Toast } from '@douyinfe/semi-ui'
 
 import {
   confirmPayment,
@@ -24,6 +24,7 @@ import { listUsers } from '../../shared/api/system'
 import { useAuthStore } from '../../shared/store/auth'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
+import StatusDot from '../../shared/components/StatusDot'
 import SectionCard from '../../shared/components/SectionCard'
 import PaymentVoucherControl from '../common/PaymentVoucherControl'
 import FormLabel from '../../shared/components/FormLabel'
@@ -245,7 +246,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'status_label',
       width: 120,
       render: (value: string, record: Order) => (
-        <Tag color={ORDER_TONE[record.status] ?? 'grey'}>{value}</Tag>
+        <StatusDot label={value} tone={ORDER_TONE[record.status] ?? 'grey'} />
       ),
     },
     {
@@ -284,7 +285,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'status_label',
       width: 110,
       render: (value: string, record: Receivable) => (
-        <Tag color={PLAN_TONE[record.status] ?? 'grey'}>{value}</Tag>
+        <StatusDot label={value} tone={PLAN_TONE[record.status] ?? 'grey'} bold={record.status === 'overdue'} />
       ),
     },
   ]
@@ -315,7 +316,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       dataIndex: 'status_label',
       width: 130,
       render: (value: string) => (
-        <Tag color={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'}>{value}</Tag>
+        <StatusDot label={value} tone={value === '已确认' ? 'green' : value === '已驳回' ? 'red' : 'orange'} />
       ),
     },
     {

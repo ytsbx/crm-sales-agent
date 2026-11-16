@@ -16,7 +16,6 @@ import {
   RadioGroup,
   Select,
   Table,
-  Tag,
   TextArea,
   Toast,
 } from '@douyinfe/semi-ui'
@@ -40,6 +39,7 @@ import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import StatusDot from '../../shared/components/StatusDot'
 
 const STATUS_OPTIONS = [
   { value: 'pending', label: '待分配' },
@@ -247,7 +247,7 @@ export default function LeadListPage() {
       dataIndex: 'status',
       width: 100,
       render: (value: string, record: Lead) => (
-        <Tag color={STATUS_COLOR[value] ?? 'grey'}>{record.status_label}</Tag>
+        <StatusDot label={record.status_label} tone={(STATUS_COLOR[value] ?? 'grey') as TagTone} />
       ),
     },
     {

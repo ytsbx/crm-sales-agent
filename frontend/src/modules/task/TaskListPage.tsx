@@ -5,7 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyNode } from '../../shared/components/EmptyState'
-import { Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Checkbox, DatePicker, Input, Modal, Popconfirm, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import {
   batchCompleteTasks,
@@ -20,6 +20,7 @@ import { listUsers } from '../../shared/api/system'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
+import StatusDot from '../../shared/components/StatusDot'
 
 const PRIORITY_COLOR: Record<string, TagTone> = { high: 'red', normal: 'blue', low: 'grey' }
 
@@ -228,7 +229,7 @@ export default function TaskListPage() {
       dataIndex: 'priority',
       width: 90,
       render: (value: string, record: Task) => (
-        <Tag color={PRIORITY_COLOR[value] ?? 'grey'}>{record.priority_label}</Tag>
+        <StatusDot label={record.priority_label} tone={(PRIORITY_COLOR[value] ?? 'grey') as TagTone} />
       ),
     },
     {
@@ -247,9 +248,7 @@ export default function TaskListPage() {
               {formatBeijingTime(value).slice(0, 16)}
             </span>
             {record.overdue && (
-              <Tag color="red" size="small">
-                逾期
-              </Tag>
+              <StatusDot label="逾期" tone="red" bold />
             )}
           </span>
         ) : (
@@ -260,7 +259,11 @@ export default function TaskListPage() {
       title: '状态',
       dataIndex: 'status_label',
       width: 100,
-      render: (value: string) => (value === '已完成' ? <Tag color="green">{value}</Tag> : value),
+      // 状态一列也统一成圆点：只有「已完成」上绿点，其余保持灰点，
+      // 和「优先级」列的写法对齐，整行不会一半是色块一半是裸文字。
+      render: (value: string) => (
+        <StatusDot label={value} tone={value === '已完成' ? 'green' : value === '逾期' ? 'red' : 'grey'} />
+      ),
     },
     { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
     {

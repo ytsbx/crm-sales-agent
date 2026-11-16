@@ -6,7 +6,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { emptyText } from '../../shared/hooks/emptyText'
-import { Button, Input, Modal, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import { listOpportunities } from '../../shared/api/opportunity'
 import { createQuote, listQuotes, type Quote } from '../../shared/api/quote'
@@ -14,6 +14,7 @@ import { newRequestKey } from '../../shared/api/requestKey'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { TagTone } from '../../shared/types'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
+import StatusDot from '../../shared/components/StatusDot'
 
 const STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
@@ -134,7 +135,7 @@ export default function QuoteListPage() {
       dataIndex: 'status_label',
       width: 100,
       render: (value: string, record: Quote) => (
-        <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{value}</Tag>
+        <StatusDot label={value} tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone} />
       ),
     },
     {
@@ -143,13 +144,13 @@ export default function QuoteListPage() {
       width: 95,
       render: (value: string | null) =>
         value === 'approved' ? (
-          <Tag color="green">已通过</Tag>
+          <StatusDot label="已通过" tone="green" />
         ) : value === 'pending' ? (
-          <Tag color="orange">审批中</Tag>
+          <StatusDot label="审批中" tone="orange" />
         ) : value === 'rejected' ? (
-          <Tag color="red">被拒</Tag>
+          <StatusDot label="被拒" tone="red" />
         ) : (
-          <Tag>未提交</Tag>
+          <StatusDot label="未提交" tone="grey" />
         ),
     },
     {
