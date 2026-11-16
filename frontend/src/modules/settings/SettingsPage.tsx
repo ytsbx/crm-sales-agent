@@ -333,7 +333,8 @@ export default function SettingsPage() {
     return (
       <Input
         defaultValue={first === undefined ? '' : String(first)}
-        style={{ width: 260 }}
+        // 宽度跟着列走，不写死 260：列宽 263 的时候 260 会把输入框顶出卡片右边。
+        style={{ width: '100%' }}
         onBlur={(event) => {
           const next = (event.target as HTMLInputElement).value
           if (next === String(first ?? '')) return
@@ -1899,7 +1900,11 @@ export default function SettingsPage() {
                         // `setting-labels.ts` 的 SETTING_NOTES，只登记这类项）。
                         const note = settingNote(record.key)
                         return (
-                          <div>
+                          // 必须显式打开换行：Semi 单元格默认 nowrap，"钉钉合同签署审批"
+                          // 那条说明有 40 多个字，不换行就把整列撑到 738px，
+                          // 第三列「值」直接被推到卡片外面看不见（2026-11-16 发现：
+                          // 系统配置表只剩两个表头，值根本改不了）。
+                          <div style={{ whiteSpace: 'normal', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
                             <span>{settingDescription(record.key, record.description)}</span>
                             {note && (
                               <div style={{ marginTop: 4 }}>
@@ -1921,9 +1926,20 @@ export default function SettingsPage() {
                         )
                       },
                     },
-                    { title: '值', render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record) },
+                    {
+                      title: '值',
+                      key: 'value',
+                      // 这一列原来只写 render、不写 key/width，Semi 摊列宽时把它压成了 0，
+                      // 界面上就只剩「配置项」「说明」两个表头，「值」整列消失（2026-11-16 发现）。
+                      width: 260,
+                      render: (_: unknown, record: SystemSettingRow) => renderSettingValue(record),
+                    },
                   ]}
-                  dataSource={settingsQuery.data ?? []}
+                  // 「报价审批分级」在下面单独成块，不混进这张表 ——
+                  // 它是多档编辑器（每档有上限输入框、角色多选、删除按钮），
+                  // 塞进「值」列的一个单元格里，整行会被撑到 180px，
+                  // 中间一大片空白，子表格还顶出 738px 的格子。
+                  dataSource={(settingsQuery.data ?? []).filter((row) => row.key !== 'approval_levels')}
                   loading={settingsQuery.isLoading}
                   // 用 key 而不是 id 当行标识（2026-10-06 修）：
                   // `/settings` 返回的行里有一批是**代码内置默认项**，库里没有对应
@@ -1935,6 +1951,39 @@ export default function SettingsPage() {
                   rowKey="key"
                   pagination={false}
                 />
+
+                {/* 报价审批分级：从上面那张表里拿出来的独立区块。
+                    它本来就是"一张会改的子表格"，跟上面那些"一行一个键值"的
+                    配置项不是同一类东西，硬塞进一格只会把行高顶爆。 */}
+                {(() => {
+                  const approvalRow = (settingsQuery.data ?? []).find((row) => row.key === 'approval_levels')
+                  const levels = approvalRow?.value?.levels
+                  if (!approvalRow || !Array.isArray(levels)) return null
+                  return (
+                    <div
+                      style={{
+                        marginTop: 24,
+                        paddingTop: 20,
+                        borderTop: '1px solid var(--crm-border)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 10 }}>
+                        <span style={{ fontSize: 14, fontWeight: 600 }}>报价审批分级</span>
+                        <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                          按报价金额决定审批级别和可审批角色；表格顺序就是判定顺序
+                        </span>
+                      </div>
+                      <ApprovalLevelsEditor
+                        key={JSON.stringify(approvalRow.value)}
+                        levels={levels as Array<Record<string, unknown>>}
+                        saving={settingMutation.isPending}
+                        onSave={(next) =>
+                          settingMutation.mutate({ key: approvalRow.key, value: { levels: next } })
+                        }
+                      />
+                    </div>
+                  )
+                })()}
               </div>
               )}
             </div>
