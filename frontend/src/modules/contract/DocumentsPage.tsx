@@ -377,11 +377,11 @@ export default function DocumentsPage() {
           <Table<ContractDocument>
             columns={[
               { title: '编号', dataIndex: 'doc_no', width: 140 },
-              { title: '类型', dataIndex: 'doc_type_label', width: 100 },
+              { title: '类型', dataIndex: 'doc_type_label', width: 85 },
               // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
               // 把后面的列全顶到屏幕外；200 是"销售合同-甲"这类标题的实测上限再留些余量。
-              { title: '标题', dataIndex: 'title', width: 200 },
-              { title: '客户', dataIndex: 'customer_name', width: 110 },
+              { title: '标题', dataIndex: 'title', width: 160 },
+              { title: '客户', dataIndex: 'customer_name', width: 95 },
               {
                 title: '状态',
                 dataIndex: 'status_label',
@@ -393,16 +393,33 @@ export default function DocumentsPage() {
               {
                 // 「依据」= 这份合同是照哪一版报价 / 哪张订单签的。
                 // 报价能出 V2/V3，不写清版本，台账上光看单号证明不了金额依据。
-                title: '依据',
-                width: 170,
+                title: '依据 / 来源',
+                width: 160,
                 render: (_: unknown, record: ContractDocument) => {
                   const header = record.header_snapshot
-                  if (record.quote_version_no) {
-                    return `${header?.quote_no ?? '报价'} V${record.quote_version_no}`
-                  }
-                  if (header?.order_no) return `订单 ${header.order_no}`
-                  if (header?.quote_no) return `报价 ${header.quote_no}`
-                  return <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
+                  const basis = record.quote_version_no
+                    ? `${header?.quote_no ?? '报价'} V${record.quote_version_no}`
+                    : header?.order_no
+                      ? `订单 ${header.order_no}`
+                      : header?.quote_no
+                        ? `报价 ${header.quote_no}`
+                        : ''
+                  // 「依据」和「合同来源」合成一列：前者是照哪版报价签的，
+                  // 后者是我方合同 / 客户合同，都属"这份合同从哪来"。
+                  // 两列各占 170 / 105，加起来把整表顶出卡片；合成一列后
+                  // 来源退成第二行小灰字，一屏就塞得下了，也省得横向拖。
+                  return (
+                    <div style={{ display: 'grid', gap: 2 }}>
+                      {basis ? (
+                        <span>{basis}</span>
+                      ) : (
+                        <span style={{ color: 'var(--crm-text-3)' }}>未绑定</span>
+                      )}
+                      <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>
+                        {record.contract_origin_label || '来源未标注'}
+                      </span>
+                    </div>
+                  )
                 },
               },
               // 「合同来源」从第 4 位挪到「依据」后面：它是"我方合同 / 客户合同"，
@@ -411,16 +428,15 @@ export default function DocumentsPage() {
               // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
               // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
               // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
-              { title: '到期日', dataIndex: 'expiry_date', width: 110, render: (v: string | null) => v ?? '-' },
+              { title: '到期日', dataIndex: 'expiry_date', width: 105, render: (v: string | null) => v ?? '-' },
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
-              { title: '签署时间', dataIndex: 'signed_at', width: 120, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
-              { title: '合同来源', width: 105, render: (_: unknown, record: ContractDocument) => record.contract_origin_label || '历史未标注' },
+              { title: '签署时间', dataIndex: 'signed_at', width: 115, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
               {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
                 title: '操作',
-                width: 175,
+                width: 170,
                 // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
                 // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
                 // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
@@ -507,7 +523,10 @@ export default function DocumentsPage() {
                 ),
               },
             ]}
-            scroll={{ x: 'max(100%, 1400px)' }}
+            // 原来这里是 scroll={{ x: 'max(100%, 1400px)' }} —— 把表格最小宽硬锁在 1400，
+            // 于是无论怎么调列宽都还是 1400、永远留着横向滚动条（容器只有 1130）。
+            // Semi 对这类字符串写法会直接当 min-width 用。现在列宽和约 1110 < 1130，
+            // 去掉它，表格就跟着容器走，一屏看完不用横滑。
             dataSource={documents}
             loading={documentsQuery.isLoading}
             rowKey="id"
