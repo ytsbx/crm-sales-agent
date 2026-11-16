@@ -279,7 +279,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                     >
                       {DIFF_LABEL[change.field] ?? change.field}
                       {change.sku_name ? `·${change.sku_name}` : ''}：
-                      {change.before_exact ?? change.before ?? '—'} → {change.after_exact ?? change.after ?? '—'}
+                      {change.before_exact ?? change.before ?? '-'} → {change.after_exact ?? change.after ?? '-'}
                     </span>
                   ))}
                 </div>

@@ -563,7 +563,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
                     }}
                     title={summary ?? undefined}
                   >
-                    {summary ? truncateSummary(summary) : '—'}
+                    {summary ? truncateSummary(summary) : '-'}
                   </span>
                   {/* 「还有 N 项」只在**已经有一句摘要**时才挂；
                       没有摘要的时候它只制造矛盾，不提供信息。 */}
