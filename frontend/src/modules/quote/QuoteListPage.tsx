@@ -92,34 +92,47 @@ export default function QuoteListPage() {
 
   const columns = [
     {
+      // 版本号并到单号下面一行小字：V1/V2 单独占一整列（100px 放两个字）太奢侈，
+      // 而看单子又必须知道是第几版 —— 和单号放一起最省地方
       title: '报价单号',
       dataIndex: 'quote_no',
-      width: 160,
+      width: 145,
       render: (text: string, record: Quote) => (
-        <Link to={`/quotes/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
-          {text}
-        </Link>
+        <div>
+          <Link to={`/quotes/${record.id}`} style={{ color: 'var(--crm-primary)' }}>
+            {text}
+          </Link>
+          <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {record.current_version_no ? `第 ${record.current_version_no} 版` : '无版本'}
+          </div>
+        </div>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 200, render: (v: string | null) => v ?? '-' },
-    { title: '商机', dataIndex: 'opportunity_title', render: (v: string | null) => v ?? '-' },
     {
-      title: '当前版本',
-      dataIndex: 'current_version_no',
-      width: 100,
-      render: (v: number | null) => (v ? `V${v}` : '-'),
+      // 商机名同理：并到客户名下面做小字，省掉一整个自适应列
+      title: '客户 / 商机',
+      dataIndex: 'customer_name',
+      width: 175,
+      render: (v: string | null, record: Quote) => (
+        <div>
+          <div>{v ?? '-'}</div>
+          <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+            {record.opportunity_title ?? '未关联商机'}
+          </div>
+        </div>
+      ),
     },
     {
       title: '报价总额',
       dataIndex: 'current_version_amount',
-      width: 140,
+      width: 115,
       render: (v: number | null, record: Quote) =>
         formatMoney(record.current_version_amount_exact ?? v, record.currency),
     },
     {
       title: '报价状态',
       dataIndex: 'status_label',
-      width: 120,
+      width: 100,
       render: (value: string, record: Quote) => (
         <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{value}</Tag>
       ),
@@ -127,7 +140,7 @@ export default function QuoteListPage() {
     {
       title: '审批',
       dataIndex: 'approval_status',
-      width: 110,
+      width: 95,
       render: (value: string | null) =>
         value === 'approved' ? (
           <Tag color="green">已通过</Tag>
@@ -142,10 +155,10 @@ export default function QuoteListPage() {
     {
       title: '有效期',
       dataIndex: 'valid_until',
-      width: 120,
+      width: 105,
       render: (v: string | null) => v ?? '-',
     },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? '-' },
+    { title: '负责人', dataIndex: 'owner_name', width: 90, render: (v: string | null) => v ?? '-' },
   ]
 
   return (
