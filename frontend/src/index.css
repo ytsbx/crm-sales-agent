@@ -1234,26 +1234,31 @@ a:not([href]) {
 
 /* 表格：统一成设计稿里的轻边框风格 */
 .semi-table-thead > .semi-table-row > .semi-table-row-head {
-  /* 表头用冷调浅蓝：和压深的底色呼应，又和白行拉开一层。
-     不用紫调 —— 紫调铺在白色表格上发「脏」。 */
-  background: #e6edfa !important;
-  color: var(--crm-text-2) !important;
+  /* 表头不再铺冷调浅蓝色块：一块灰蓝压在表上方，整张表看着像 Excel 的冻结行。
+     改成与卡面同色（transparent）、只靠字色和字距把表头"收起"，
+     再用底下一条略深的分隔线把表头和表体分开。 */
+  background: transparent !important;
+  color: var(--crm-text-3) !important;
   font-weight: 600 !important;
   font-size: 12px !important;
-  letter-spacing: 0.2px;
+  letter-spacing: 0.4px;
   /* 不换行：否则「客户名称」这种四字表头在窄列里会被挤成竖排 */
   white-space: nowrap;
+  /* 表头底边比普通行线深半档，作为唯一的"分隔带" */
+  border-bottom: 1px solid #dfe3ea !important;
 }
 
 .semi-table-row-head,
 .semi-table-row-cell {
-  border-bottom: 1px solid var(--crm-surface-high) !important;
+  /* 行线压到极淡：#e3e6eb 逐条画满，表格就回到"网格纸"。留一线只是暗示行的边界 */
+  border-bottom: 1px solid #f0f2f6 !important;
 }
 
 /* 行高收紧：原来一行五十多像素，一屏看不了几行，像 Word 表格而不是数据表 */
 .semi-table-tbody > .semi-table-row > .semi-table-row-cell {
-  padding-top: 9px !important;
-  padding-bottom: 9px !important;
+  /* 行高 9 → 11：行与行之间松一点，扫读不费劲，也不会把一屏行数压到太少 */
+  padding-top: 11px !important;
+  padding-bottom: 11px !important;
 }
 /* 表体单元格一律单行 + 省略号。
    组件库默认自动换行，列一多就会把长文本压成竖排：报价列表的「商机」列每行
@@ -1267,7 +1272,9 @@ a:not([href]) {
 
 /* 斑马纹：列多的时候隔行浅底比画满细线更好横向读 */
 .semi-table-tbody > .semi-table-row:nth-child(even) > .semi-table-row-cell {
-  background: #f8fafe;
+  /* 不再叠斑马纹：行线已经在暗示边界，再加一层浅蓝底就是两套分隔信号打架，
+     表格会显得密且脏。保留极淡的一层（几乎看不见）只为了让明显的宽列有归属。 */
+  background: #fcfcfd;
 }
 /* 悬停整行淡蓝（写在斑马纹之后，盖住它）。
    加 0.15s 过渡：鼠标扫过几行时颜色是「跟过来」的，不是一格一格跳。
@@ -1277,7 +1284,8 @@ a:not([href]) {
   transition: background-color 0.15s ease;
 }
 .semi-table-tbody > .semi-table-row:hover > .semi-table-row-cell {
-  background: #e7f0ff;
+  /* 悬停用中性浅灰，不用蓝：整张表唯一的蓝应该是链接和主操作 */
+  background: #f5f7fa;
 }
 
 /* 表格内容统一居中（2026-10-06 主人要求：全站表格一律居中，不留特例）。
