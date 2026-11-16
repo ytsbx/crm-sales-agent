@@ -356,10 +356,21 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
 
   return (
     <div className="page-container">
+      {/* 这个组件同时挂在 /orders 与 /receivables 两条路由上（侧栏是两个独立
+          菜单项）。标题跟着入口走 —— 以前从「回款中心」进来，页头还写「订单
+          中心」，页签又写「应收计划」，三个名字打架（2026-11-16 巡检发现）。 */}
       <PageHeader
-        title="订单中心"
-        extra={<Link to="/order-drafts"><Button>订单草稿</Button></Link>}
-        subtitle="成交报价转成订单后，履约由 ERP/MES 负责、回款由财务确认；CRM 只保留关键节点"
+        title={initialTab === 'receivables' ? '回款中心' : '订单中心'}
+        extra={
+          initialTab === 'receivables' ? undefined : (
+            <Link to="/order-drafts"><Button>订单草稿</Button></Link>
+          )
+        }
+        subtitle={
+          initialTab === 'receivables'
+            ? '按应收计划看每笔订单该收多少、已收多少、逾期多少；回款由财务确认'
+            : '成交报价转成订单后，履约由 ERP/MES 负责、回款由财务确认；CRM 只保留关键节点'
+        }
       />
 
       <SectionCard>

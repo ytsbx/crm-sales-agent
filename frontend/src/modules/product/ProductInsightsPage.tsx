@@ -6,7 +6,10 @@ import { Button, Input, Modal, Popconfirm, Select, Table, Tag, Toast, TextArea }
 import { parseOptionalNumber } from '../../shared/number-input'
 import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
+import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
+import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
 import { listCustomers } from '../../shared/api/customer'
 import {
@@ -300,11 +303,14 @@ export default function ProductInsightsPage() {
 
   return (
     <div className="page-container">
+      {/* 这页原来直接从卡片开始，没有页头 —— 从别的模块切过来会觉得「少了点什么」。
+          补一个与其他页一致的标题区（2026-11-16 巡检）。 */}
+      <PageHeader
+        title="新品洞察"
+        subtitle="市场来源 → 产品方向 → 评审 → 转需求；价格为内部假设，不构成正式指导价"
+      />
       <SectionCard>
         <div className="toolbar" style={{ marginBottom: 10 }}>
-          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            市场来源 → 产品方向 → 评审 → 转需求；价格均为内部假设，不构成正式指导价
-          </span>
           <div style={{ flex: 1 }} />
           <Input
             style={{ width: 150 }}
@@ -387,10 +393,13 @@ export default function ProductInsightsPage() {
             { title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' },
             {
               title: '状态',
-              width: 120,
+              width: 170,
               render: (_: unknown, record: ProductInsightRow) => (
                 <div>
-                  <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{record.status_label}</Tag>
+                  <StatusDot
+                    label={record.status_label ?? record.status}
+                    tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone}
+                  />
                   {/* 轮次：驳回过几次、现在是第几轮，一眼看得出（§6.1(1)） */}
                   {(record.review_round ?? 1) > 1 && (
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -399,15 +408,20 @@ export default function ProductInsightsPage() {
                   )}
                   {record.review_note && (
                     <div
-                      style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--crm-text-3)',
+                        maxWidth: 150,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
                       title={record.review_note}
                     >
                       {/* ⚠️ 这里原来写的是 formatBeijingDate(record.review_note) ——
                           把**评审意见这段文字**当日期去格式化，结果整行只渲染出
                           "意见：…"，评审为什么打回这条信息是空的。正文直接截断显示。 */}
-                      意见：{record.review_note.length > 6
-                        ? `${record.review_note.slice(0, 6)}…`
-                        : record.review_note}
+                      意见：{record.review_note}
                     </div>
                   )}
                 </div>
