@@ -1372,6 +1372,15 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 表格正文单元格统一用箭头光标。
+   Semi 没给 td 设 cursor，于是继承浏览器的 auto —— 鼠标落在文字上就变成
+   文本输入那条 I 字线（主人 2026-11-16：「鼠标样式变成一条横线了」），
+   看着像要去选字。可点的链接另行覆盖成手型（见上方 a:not([href])）。 */
+.semi-table-tbody td,
+.semi-table-header th {
+  cursor: default;
+}
+
 /* 报价详情明细表：原来写死 scroll.x = max(100%, 1300px)，容器只有 1130，
    于是表格底部常驻一条横向滚动条、「金额 / 审批 / 操作」三列要滑着看。
    这里改成等容器宽 + 固定表布局，列宽按 width 比例压进 1130。 */

@@ -480,7 +480,7 @@ export default function KnowledgePage() {
     {
       title: '产品名称',
       dataIndex: 'title',
-      width: 310,
+      width: 297,
       // 这一列原来不设宽，标题一长就把整表顶到 1320、横滑才能看到操作列。
       // 定宽 320，标题正文超过 14 字截断（悬停看全），编号仍然完整显示 ——
       // 编号是报价 / 打样明细回溯用的，一个字都不能少。
@@ -517,12 +517,18 @@ export default function KnowledgePage() {
             </div>
           )}
           {record.description && (
+            // 说明文字原来用 pre-wrap 自由折行：有说明的行高 76、没说明的 64，
+            // 一屏里行高参差，鼠标扫过去像整块在变形（主人 2026-11-16 反馈）。
+            // 收成单行省略，行高统一，全称悬停看 title。
             <div
+              title={record.description}
               style={{
                 fontSize: 12,
                 color: 'var(--crm-text-3)',
                 maxWidth: 290,
-                whiteSpace: 'pre-wrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
               }}
             >
               {record.description}
@@ -534,7 +540,7 @@ export default function KnowledgePage() {
     {
       title: '客户',
       dataIndex: 'customer_name',
-      width: 190,
+      width: 162,
       // 客户名带场景后缀能到 12 字（"宁波家电01厂【演示造数】"），
       // 这一列给不了 180 —— 整表要塞进 1130，一张卡片看全不许横向拖。
       // 超过 10 字截断，鼠标悬停看全称。
@@ -547,7 +553,7 @@ export default function KnowledgePage() {
     {
       title: '目标价',
       dataIndex: 'target_price',
-      width: 72,
+      width: 88,
       render: (v: number | null) => (v != null ? `¥${v}` : '-'),
     },
     {
@@ -572,7 +578,7 @@ export default function KnowledgePage() {
     },
     {
       title: '操作',
-      width: 182,
+      width: 193,
       render: (_: unknown, record: CustomInquiryRow) => {
         // 次要动作收进「更多」下拉。原来 9~11 个操作全铺在这一格里，容器是
         // inline-flex 且 flex-wrap: nowrap —— 挤不下时每个链接被压扁成
