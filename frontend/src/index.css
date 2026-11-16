@@ -1174,6 +1174,17 @@ a:not([href]) {
   color: var(--crm-error);
 }
 
+/* 审计日志：业务变更行左侧一条 3px 主色条，登录行只留一条 1px 极浅灰边。
+   一屏文字再多，靠这条左边也分得开"哪几行是真的改了东西"
+   （tr 是 display: table-row，不支持 box-shadow，挂在第一格上）。 */
+.audit-biz-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--crm-primary);
+}
+
+.audit-quiet-row td:first-child {
+  box-shadow: inset 2px 0 0 var(--crm-border);
+}
+
 /* 审计日志：登录/登出整行压灰，让业务变更自己浮出来。
    注意用的是二级灰（text-2）不是三级（text-3）：三级灰压得太狠，
    一页 30 条登录时整页发白，反而像"数据加载失败/全部失效"

@@ -86,6 +86,31 @@ const CREATION_ACTION_HINTS = ['create', 'new', 'generate', 'import', 'upload', 
 /** 纯流水：不染色、不加标签，压成浅灰小字。 */
 const QUIET_ACTIONS = new Set(['login', 'logout'])
 
+/**
+ * 对象列要显示"这是哪一张单 / 哪一个人"，而不是内部编号。
+ *
+ * 后端 /audit-logs 只给 business_type + business_id（不像核价历史那样带
+ * target_label），所以这里从这条记录自己的快照里找可读标识：单号、名字、编码。
+ * 找不到就只显示类型 —— 宁可少一段，也不要把 `编号 198` 这种"内部数据库
+ * 自增号"摆在用户面前（2026-11-16 主人：不用显示编号）。
+ */
+const OBJECT_LABEL_KEYS = [
+  'quote_no', 'order_no', 'sample_no', 'contract_no', 'inquiry_no', 'doc_no',
+  'customer_name', 'name', 'title', 'code', 'username',
+]
+
+function objectLabel(record: AuditLogRow): string | null {
+  const snapshots = [record.after_data, record.before_data]
+  for (const snap of snapshots) {
+    if (!snap) continue
+    for (const key of OBJECT_LABEL_KEYS) {
+      const value = snap[key]
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+  }
+  return null
+}
+
 function actionTone(action: string): 'blue' | 'green' | 'red' | 'cyan' {
   const explicit = ACTION_TONE[action]
   if (explicit) return explicit
@@ -337,7 +362,8 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         // 登录/登出整行压成三级灰。原来只把「动作」那一格变灰，时间、操作人、
         // 对象、来源还是正常色，整行照样抢眼；整行一起压下去，业务变更那几行
         // 才会自己浮出来（需要查登录时间时仍一眼能找到，没有隐藏）。
-        rowClassName={(row: AuditLogRow) => (QUIET_ACTIONS.has(row.action) ? 'audit-quiet-row' : '')}
+        rowClassName={(row: AuditLogRow) =>
+          QUIET_ACTIONS.has(row.action) ? 'audit-quiet-row' : 'audit-biz-row'}
         // 这里**故意不设 scroll.x**：试过 `x: 900`，结果 Semi 把列宽和 scroll 宽度
         // 各算各的，最后一列被分到 622px、整表反而撑到 1255（容器只有 923）。
         // 不设 scroll 时表格跟着容器走，列宽和 885 由 Semi 自己摊平，最稳。
@@ -382,15 +408,25 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 原来「报价单 编号 3」整列一种字重，一个两位数是可有可无的定位信息，
             // 却和"这是哪类单据"占一样的分量。
             title: '对象',
-            width: 155,
+            width: 190,
             render: (_: unknown, record: AuditLogRow) => {
               if (!record.business_type) return '-'
+              const label = objectLabel(record)
               return (
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
-                  <span>{auditTypeLabel(record.business_type)}</span>
-                  {record.business_id != null && (
-                    <span style={{ fontSize: 12, color: 'var(--crm-text-3)', whiteSpace: 'nowrap' }}>
-                      {`编号 ${record.business_id}`}
+                  <span style={{ whiteSpace: 'nowrap' }}>{auditTypeLabel(record.business_type)}</span>
+                  {label && (
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--crm-text-2)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={label}
+                    >
+                      {label}
                     </span>
                   )}
                 </div>
@@ -513,7 +549,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
               {`${formatBeijingTime(detail.created_at)} · ${
                 detail.operator_name ?? '系统'
               } · ${auditTypeLabel(detail.business_type)}${
-                detail.business_id != null ? ` 编号 ${detail.business_id}` : ''
+                objectLabel(detail) ? ` ${objectLabel(detail)}` : ''
               } · ${actionLabel(detail.action)}`}
             </Typography.Text>
             {detail.ip && (
