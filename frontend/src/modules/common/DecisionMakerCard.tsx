@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Button, Tag, Toast } from '@douyinfe/semi-ui'
 
@@ -41,6 +42,7 @@ export default function DecisionMakerCard({
   compact = false,
   boxed = true,
 }: Props) {
+  const navigate = useNavigate()
   const contactsQuery = useQuery({
     queryKey: ['contacts', customerId],
     queryFn: () => listContacts(customerId!),
@@ -71,8 +73,21 @@ export default function DecisionMakerCard({
       ) : contacts.length === 0 ? (
         // 不用 <Empty>：它自带一个大图标，150px 高，而这里只有一句话要说 ——
         // 商机详情右栏本来就窄，一块空态把下面全撑开了。
-        <div style={{ color: 'var(--crm-text-3)', fontSize: 12.5, lineHeight: 1.7 }}>
-          该客户还没有登记联系人。这里只会出现客户单位的人，加上之后就能标出谁拍板。
+        <div>
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 12.5, lineHeight: 1.7 }}>
+            该客户还没有登记联系人。这里只会出现客户单位的人，加上之后就能标出谁拍板。
+          </div>
+          {/* 空态补一个入口：原来只有一句说明，这张卡比左右两张矮一截，
+              底边对齐后下半块全空（2026-11-16）。给个能点的地方，
+              空态才不是"死胡同"；点过去就是客户详情的联系人区。 */}
+          <Button
+            size="small"
+            theme="borderless"
+            style={{ padding: 0, marginTop: 8, fontSize: 12 }}
+            onClick={() => navigate(`/customers/${customerId}`)}
+          >
+            去客户详情加联系人 →
+          </Button>
         </div>
       ) : (
         <>

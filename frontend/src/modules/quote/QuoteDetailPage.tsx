@@ -1658,10 +1658,16 @@ export default function QuoteDetailPage() {
           「金额」整列被推到卡片外面（2026-11-16 发现）。按 1.7 : 1 : 1 分，
           附加费用拿到约 490，另外两张各约 288（金额汇总都只有"标签 + 数字"、
           决策关系图此时是空态，288 足够）。minmax(0, …) 是防止内容把列顶宽。 */}
-      {/* alignItems: start —— 三张卡不强制等高。客户决策关系图在空态时只有
-          三行说明，被拉到和「附加费用」一样高就是大半张空白（主人反复说
-          "没有数据的页面又丑又空"）。各自按内容高度收。 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+      {/* 三张卡改成**两列**：左边两卡上下叠（附加费用 + 客户决策关系图），
+          右边一卡（金额汇总）。
+          原来三张并排、强制等高：内容少的附加费用和决策图下方各留一大块空白；
+          改成 alignItems:start 让各自收高，底边又参差不齐、下方同样一条空白带。
+          这两个毛病都是"三张卡内容量差太多还硬要并排"造成的 ——
+          左列两张叠起来总高约 320，跟右列金额汇总（约 290）自然接近，
+          空白没了，也不用手动补内容。
+          （2026-11-16 主人圈出这块问"这个改了吗"。） */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
         <SectionCard
           id="quote-charges"
           title="附加费用"
@@ -1767,7 +1773,32 @@ export default function QuoteDetailPage() {
             pagination={false}
             empty="没有附加费用"
           />
+          {/* 表格下方补一行合计：这张卡比右边「金额汇总」矮一截，底边对齐后
+              会留一块空白；把"费用合计"摆在末尾，既填了空，也是个该有的数字。 */}
+          {detail.charges.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'baseline',
+                marginTop: 12,
+                paddingTop: 12,
+                borderTop: '1px solid var(--crm-border)',
+                fontSize: 13,
+              }}
+            >
+              <span style={{ color: 'var(--crm-text-3)' }}>费用合计</span>
+              <span style={{ fontWeight: 600 }}>
+                {`¥${detail.charges.reduce((sum, charge) => sum + Number(charge.amount ?? 0), 0).toFixed(2)}`}
+              </span>
+            </div>
+          )}
         </SectionCard>
+
+          {/* 客户决策关系图（设计稿报价详情右栏）：报价要发给谁、谁能拍板都在这。
+              跟「附加费用」同列上下叠，两张都在左列里按内容高度排。 */}
+          <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" />
+        </div>
 
         <SectionCard title="金额汇总">
           <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
@@ -1828,8 +1859,6 @@ export default function QuoteDetailPage() {
           </div>
         </SectionCard>
 
-        {/* 客户决策关系图（设计稿报价详情右栏），报价要发给谁、谁能拍板都在这 */}
-        <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" />
       </div>
 
       {detail.approval && (
