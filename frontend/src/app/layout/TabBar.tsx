@@ -1,6 +1,6 @@
 import { useEffect, useRef, type MouseEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Dropdown, Toast } from '@douyinfe/semi-ui'
+import { Dropdown } from '@douyinfe/semi-ui'
 
 import { TAB_LIMIT, useTabsStore, type TabItem } from '../../shared/store/tabs'
 
@@ -10,8 +10,6 @@ export default function TabBar() {
   const tabs = useTabsStore((state) => state.tabs)
   const activeKey = useTabsStore((state) => state.activeKey)
   const closeTab = useTabsStore((state) => state.closeTab)
-  const autoClosed = useTabsStore((state) => state.autoClosed)
-  const clearAutoClosed = useTabsStore((state) => state.clearAutoClosed)
   const tabRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // 打开/切换页签后把它滚进可视区：页签多时，新开的那个不能藏在右边看不见。
@@ -19,33 +17,11 @@ export default function TabBar() {
     tabRefs.current[activeKey]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }, [activeKey, tabs])
 
-  /* 到上限后自动关掉的页签要让人知道，不能无声消失。
-     但连续切几个页面时会一次次触发（实测连开 4 个新页就弹 4 条、叠成一摞），
-     所以这里改成「先攒着、半秒后再报一次」：这半秒内关掉的合成一条，
-     只报总数和前几个名字；半秒后没有新的关闭了，就只报那一个。
-     攒的时候立刻把 store 里那条清掉，避免同一条被重复计入。 */
-  const pendingClosedRef = useRef<string[]>([])
-  const flushTimerRef = useRef<number | null>(null)
-  useEffect(() => {
-    if (!autoClosed) return
-    pendingClosedRef.current.push(autoClosed.label)
-    clearAutoClosed()
-    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current)
-    flushTimerRef.current = window.setTimeout(() => {
-      const labels = pendingClosedRef.current
-      pendingClosedRef.current = []
-      if (!labels.length) return
-      if (labels.length === 1) {
-        Toast.info(`页签最多保留 ${TAB_LIMIT} 个，已自动关闭最久未用的「${labels[0]}」`)
-        return
-      }
-      const names = labels.slice(0, 3).join('、')
-      Toast.info(
-        `页签最多保留 ${TAB_LIMIT} 个，本次自动关闭了 ${labels.length} 个最久未用的：${names}${labels.length > 3 ? ' 等' : ''}`,
-      )
-    }, 500)
-  }, [autoClosed, clearAutoClosed])
-
+  /* 页签到上限会被自动收起，但**不弹提示**。
+     这属于系统自己的整理动作：页签在栏里少了一个，本来就看得见；
+     而真正会出现的情况是「一边干活一边来回切页面」——每切几次就顶到上限，
+     提示就会一条接一条叠在屏幕上，正好压在标题和表格上。
+     页签栏右侧的「⋯」里可以随时看到/手动整理，不需要额外提醒。 */
   const handleActivate = (tab: TabItem) => {
     useTabsStore.getState().setActive(tab.key)
     navigate(tab.path)
