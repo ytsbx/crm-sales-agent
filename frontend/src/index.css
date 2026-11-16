@@ -1938,14 +1938,37 @@ table:not(.semi-table) td {
 }
 
 .agent-tools summary { cursor: pointer; }
-.agent-chat-scroll { max-height: min(68vh, 760px); }
-.agent-empty { max-width: 640px; margin: 44px auto; text-align: center; }
+.agent-chat-scroll {
+  max-height: min(68vh, 760px);
+  /* 换成纵向弹性容器：空态那一块可以靠上下 auto 外边距自动居中，
+     不再死贴顶部、把下半截留成一大片空白。 */
+  display: flex;
+  flex-direction: column;
+}
+/* 空态原来限宽 640：在 1264 宽的内容区里只占中间一半，左右各空出三百多像素，
+   而它下面的输入框是整行宽的 —— 上下两条边线怎么都对不上，看着就是"没填满"。
+   现在跟输入框一样铺满整行；四个示例块顺势排成一行（宽度不够时自动降为两列）。 */
+.agent-empty {
+  max-width: none;
+  /* 上下 auto：在弹性容器里自动垂直居中；左右 auto 保持水平居中。 */
+  margin: auto;
+  padding: 16px 0;
+  text-align: center;
+}
 /* 标题从 24 降到 20、颜色退一档：这页真正有用的不是「开始新对话」这四个字
    （进到这一页的人已经知道自己在开新对话），而是下面那四个能直接点的问题。
    标题大一号就把注意力吃掉了。 */
 .agent-empty h2 { margin: 0 0 8px; font-size: 20px; color: var(--crm-text-2); }
 .agent-empty p { margin: 0 0 22px; font-size: 13px; color: var(--crm-text-3); }
-.agent-examples { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; text-align: left; }
+.agent-examples {
+  display: grid;
+  /* 固定两列：四个块正好 2×2 铺满整行；用 auto-fit 会算成三列，
+     最后一个孤零零挂在第二行左边，反而更空。 */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  text-align: left;
+  margin-top: 4px;
+}
 /* 四个块的文字行数不一样（三个一句话、一个两句话），原来量出来是
    48/48/68/68 —— 同一排齐、两排之间差 20px，看着就像没对齐。
    统一 min-height 68 再让文字垂直居中，四块就一样高。 */
