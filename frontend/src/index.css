@@ -1174,10 +1174,13 @@ a:not([href]) {
   color: var(--crm-error);
 }
 
-/* 审计日志：登录/登出整行压灰，让业务变更自己浮出来（2026-11-16）。 */
+/* 审计日志：登录/登出整行压灰，让业务变更自己浮出来。
+   注意用的是二级灰（text-2）不是三级（text-3）：三级灰压得太狠，
+   一页 30 条登录时整页发白，反而像"数据加载失败/全部失效"
+   （2026-11-16 主人反馈：颜色太单调）。二级灰是"往后退一档"而不是"退到底"。 */
 .audit-quiet-row .semi-table-tbody td,
 .audit-quiet-row .semi-table-row-cell {
-  color: var(--crm-text-3);
+  color: var(--crm-text-2);
 }
 
 .chip-ai {

@@ -405,7 +405,14 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             render: (v: string) => {
               if (!v) return '-'
               if (QUIET_ACTIONS.has(v)) {
-                return <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{actionLabel(v)}</span>
+                // 登录/登出不套彩色标签，但给一个 5px 灰圆点：一眼能认出"这是一条
+                // 登录"，跟上面业务变更的彩色标签在形态上分开（2026-11-16）。
+                return (
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-2)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--crm-text-3)', flex: '0 0 auto' }} />
+                    {actionLabel(v)}
+                  </span>
+                )
               }
               return (
                 <Tag size="small" type="light" color={actionTone(v)}>
