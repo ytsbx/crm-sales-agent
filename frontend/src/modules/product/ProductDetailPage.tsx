@@ -532,8 +532,10 @@ export default function ProductDetailPage() {
     // `60L 600×400×400mm`，尺寸列又是 `600×400×400`，两列说的是同一件事。
     // 现在「规格」显示原始规格文字，尺寸/重量作为次要信息跟在后面。
     {
+      // 颜色与材质并进这一列的第二行：它们原来各占一列（56 + 66），
+      // 窄到列头都被压成「颜…」「装…」，而内容只有两个字
       title: '规格 / 尺寸',
-      width: 178,
+      width: 200,
       ellipsis: true,
       render: (_: unknown, record: Sku) => {
         const size =
@@ -541,21 +543,19 @@ export default function ProductDetailPage() {
             ? `${record.length ?? '-'}×${record.width ?? '-'}×${record.height ?? '-'}`
             : null
         const weight = record.weight ? `${record.weight}kg` : null
-        const extra = [size, weight].filter(Boolean).join(' · ')
+        const extra = [size, weight, record.color, record.material].filter(Boolean).join(' · ')
         const spec = record.specification || ''
         if (!spec && !extra) return '-'
         return (
-          <span>
-            {spec || '-'}
+          <div>
+            <div>{spec || '-'}</div>
             {extra && (
-              <span style={{ color: 'var(--crm-text-3)', marginLeft: 6 }}>({extra})</span>
+              <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>{extra}</div>
             )}
-          </span>
+          </div>
         )
       },
     },
-    { title: '颜色', dataIndex: 'color', width: 56, ellipsis: true, render: (v: string | null) => v ?? '-' },
-    { title: '材质', dataIndex: 'material', width: 66, ellipsis: true, render: (v: string | null) => v ?? '-' },
     { title: '起订量', dataIndex: 'moq', width: 64, render: (v: number | null) => v ?? '-' },
     {
       // 原来「装箱数」单独一列（70px）。并进「包装」省一整列宽度，信息不丢：
@@ -579,8 +579,9 @@ export default function ProductDetailPage() {
     {
       // 列头留空：内容本身就是"来源/待核实/差异"这个入口，
       // 标题再写一遍"来源"是重复，还白占宽度。
+      // 150 而不是 120：120 时「来源/待核实/差异」被省略成「来源/待核…」
       title: '',
-      width: 120,
+      width: 150,
       render: (_: unknown, record: Sku) => (
         <a
           style={{ color: 'var(--crm-primary)' }}
@@ -617,7 +618,10 @@ export default function ProductDetailPage() {
       title: '操作',
       // 130 → 185 是因为多了「图片」这一项；现在图片挂在缩略图格上，
       // 操作列收到 145（编辑 / 删除）—— 这是让 1440 窗口不出现横滚的最后一刀。
+      // 现在颜色/材质并进规格列后总宽仍超过容器（会横向滚动），
+      // 固定在右侧，「图片 / 编辑 / 停用」才不会被滚出视野。
       width: 145,
+      fixed: 'right' as const,
       render: (_: unknown, record: Sku) =>
         canManage ? (
           <>
@@ -737,7 +741,8 @@ export default function ProductDetailPage() {
           empty="还没有 SKU，先加一个"
           // 与上面各列 width **之和一致**（1123）。写大了会在 1440 窗口下多出 6px 横向滚动条
           // ——列宽总和才是真实内容宽度，`scroll.x` 必须对齐它。
-          scroll={{ x: 'max(100%, 1115px)' }}
+          // 用数字：字符串 max(100%, Npx) 在容器比 N 小时不会真的撑开，列会被压窄
+          scroll={{ x: 1107 }}
         />
       </SectionCard>
 
