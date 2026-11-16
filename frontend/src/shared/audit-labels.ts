@@ -320,7 +320,16 @@ export function auditFieldValue(key: string, value: unknown): string {
   if (key === 'contract_origin') return value === 'company' ? '我方合同' : value === 'customer' ? '客户合同' : '历史未标注'
   const text = String(value)
   // 英文枚举值 → 中文（状态类最常见）
-  return ENUM_LABEL[text] ?? text
+  const mapped = ENUM_LABEL[text]
+  if (mapped) return mapped
+  // 字典里没有、但长得就像**英文码值**的（`logistics`、`quote`、`CNY` 这类），
+  // **不许原样上屏**（全站铁律：界面不出现英文原词）。返回空串，调用方会跳过
+  // 这个字段 —— 原始值仍在「明细」里，取证不受影响。
+  //
+  // 判定要严，别把正常内容吞了：报价编号 `Q202611140001`（含数字）、
+  // SKU 编码 `ZX-6040-B`（带横杠）、中文描述都不会命中下面两条。
+  if (/^[a-z][a-z0-9_]{1,24}$/.test(text) || /^[A-Z]{2,6}$/.test(text)) return ''
+  return text
 }
 
 /** 英文枚举值 → 中文。快照里存的是 `approved` 这种值，直接上屏是机器话。 */
@@ -374,6 +383,16 @@ export const ENUM_LABEL: Record<string, string> = {
   email: '邮件',
   visit: '拜访',
   other: '其他',
+  // 2026-11-16：造演示数据时这些码值直接冒到屏幕上（「商机来源 quote」
+  // 「费用类型 logistics」「币种 CNY」）。字典要跟着业务长，否则只能靠下面
+  // 那条"认不出就不显示"的兜底把字段吞掉 —— 吞掉是下策，能给中文就给。
+  CNY: '人民币',
+  quote: '报价转化',
+  logistics: '运费',
+  express: '快递',
+  self_pickup: '自提',
+  sample: '样品',
+  discount: '优惠',
 }
 
 /**

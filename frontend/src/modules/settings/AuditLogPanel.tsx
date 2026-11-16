@@ -126,6 +126,17 @@ function actionLabel(action: string | null | undefined): string {
   return ACTION_LABEL_PATCH[action] ?? auditActionLabel(action)
 }
 
+/**
+ * 「变更内容」这一列只有 280px，一行放得下约 20 个汉字，两行 40 个字。
+ * 超出的部分直接截掉 —— 不是偷懒，是因为这页的表格是 table-layout:auto，
+ * CSS 的省略号管不了"这一列最小要多宽"，长句会把整张表撑出容器。
+ * 原文一点没丢：`title` 悬停看全文，右侧「明细」展开完整快照。
+ */
+const SUMMARY_MAX_CHARS = 40
+function truncateSummary(summary: string): string {
+  return summary.length > SUMMARY_MAX_CHARS ? `${summary.slice(0, SUMMARY_MAX_CHARS)}…` : summary
+}
+
 export interface AuditLogPanelProps {
   /** 当前是否在审计页签（不在时不发请求，避免无谓的拉取） */
   active: boolean
@@ -313,6 +324,9 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         loading={query.isFetching}
         dataSource={rows}
         rowKey="id"
+        // 这里**故意不设 scroll.x**：试过 `x: 900`，结果 Semi 把列宽和 scroll 宽度
+        // 各算各的，最后一列被分到 622px、整表反而撑到 1255（容器只有 923）。
+        // 不设 scroll 时表格跟着容器走，列宽和 885 由 Semi 自己摊平，最稳。
         empty="没有符合条件的记录"
         pagination={{
           currentPage: page,
@@ -335,7 +349,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 牺牲 4 条纵向信息，不划算。所以只把宽度从 170 收到 150（不换行）。
             title: '时间',
             dataIndex: 'created_at',
-            width: 150,
+            width: 145,
             render: (v: string) => (
               <span style={{ whiteSpace: 'nowrap' }}>{formatBeijingTime(v)}</span>
             ),
@@ -343,7 +357,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
           {
             title: '操作人',
             dataIndex: 'operator_name',
-            width: 100,
+            width: 95,
             // 没有操作人的记录（定时任务、集成回调）说「系统」，
             // 但用灰字 —— 它不是一个人名，别和真人姓名抢注意力。
             render: (v: string | null) =>
@@ -354,7 +368,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 原来「报价单 编号 3」整列一种字重，一个两位数是可有可无的定位信息，
             // 却和"这是哪类单据"占一样的分量。
             title: '对象',
-            width: 160,
+            width: 155,
             render: (_: unknown, record: AuditLogRow) => {
               if (!record.business_type) return '-'
               return (
@@ -373,7 +387,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 动作按"有没有结果"上色；登录/退出登录只留浅灰小字（见文件头 ACTION_TONE）
             title: '动作',
             dataIndex: 'action',
-            width: 130,
+            width: 125,
             render: (v: string) => {
               if (!v) return '-'
               if (QUIET_ACTIONS.has(v)) {
@@ -390,27 +404,53 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 来源：只显示中文，不再印 `WEB`/`AGENT` 这种码
             title: '来源',
             dataIndex: 'source',
-            width: 90,
+            width: 85,
             render: (v: string | null) =>
               v ? ENUM_LABEL[v] ?? v : <span style={{ color: 'var(--crm-text-3)' }}>-</span>,
           },
           {
             // 变更内容：摘要给人看，**原文不能丢** —— 这一页是合规取证用的。
             // 翻不出来的字段不硬凑英文名，而是给一个"看原始数据"的入口。
+            //
+            // 必须写死宽度：这一列原来不写 `width`、靠自适应吃剩余空间，
+            // 内容短的时候没事，一旦摘要变长（「报价状态 草稿；币种 人民币；…」），
+            // 列宽就跟着内容一起长，**整张表被撑出卡片右边界**。
             title: '变更内容',
+            width: 280,
             render: (_: unknown, record: AuditLogRow) => {
               const summary = auditChangeSummary(record)
               const hidden = auditHiddenFieldCount(record)
               const raw = record.after_data ?? record.before_data
               return (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                   {/* 翻不出中文摘要就留一个短横，**不要写「无变更」** ——
                       「客户接受」「中标」这类记录的快照里只有 `version_id`、`order_id`
                       这种内部外键，翻译不出中文，但它们并不是"没改东西"。
                       写「无变更」再接一个「还有 1 项」，就是当场自相矛盾。
                       真要看原文，右边的「明细」按钮一直在。 */}
-                  <span style={{ flex: 1, color: summary ? undefined : 'var(--crm-text-3)' }}>
-                    {summary || '—'}
+                  {/* 摘要可能很长（「报价状态 草稿；币种 人民币；负责人 2；…」），
+                      单行省略、把「明细」按钮固定在右边 —— 否则内容一长，
+                      按钮就被挤出可见区，等于没有入口看原文。 */}
+                  {/* 摘要按列宽物理截断（约两行 40 字），不用 CSS 省略号兜：
+                      表格是 table-layout:auto，CSS 的 overflow/ellipsis 管不住
+                      "这一列最少要多宽"，长句照样把表撑到 1399px（真翻过车，
+                      body 得横向拖才能看全）。截断后列宽就真的落在 280 里了；
+                      完整摘要挂 title，原文在「明细」里。 */}
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      color: summary ? undefined : 'var(--crm-text-3)',
+                      // Semi 的表格单元格默认是 nowrap，子元素不显式打开换行的话，
+                      // 这一格会按"整句不换行"的自然宽度去参与布局 —— 列宽直接被
+                      // 顶到 622px。这三行就是用来盖掉单元格那条 nowrap 的。
+                      whiteSpace: 'normal',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
+                    }}
+                    title={summary ?? undefined}
+                  >
+                    {summary ? truncateSummary(summary) : '—'}
                   </span>
                   {/* 「还有 N 项」只在**已经有一句摘要**时才挂；
                       没有摘要的时候它只制造矛盾，不提供信息。 */}
