@@ -292,6 +292,7 @@ export default function OpportunityListPage() {
 
       <Modal
         title="新建商机"
+        width={520}
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {

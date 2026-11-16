@@ -400,6 +400,7 @@ export default function LeadListPage() {
 
       <Modal
         title="新建线索"
+        width={520}
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {

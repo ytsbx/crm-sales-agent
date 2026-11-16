@@ -902,7 +902,9 @@ export default function CustomerListPage() {
 
       <Modal
         title="新建客户"
+        // 不写 width 时 Semi 用 448，表单挤成一条竖线、八个字段拉出一屏半高。
         visible={modalVisible}
+        width={520}
         onCancel={() => setModalVisible(false)}
         onOk={() => {
           if (!form.name.trim()) {
@@ -918,8 +920,8 @@ export default function CustomerListPage() {
         okText="创建"
         cancelText="取消"
       >
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 16px' }}>
+          <div style={{ gridColumn: '1 / -1' }}>
             <FormLabel required>客户名称</FormLabel>
             <Input
               value={form.name}
@@ -939,10 +941,11 @@ export default function CustomerListPage() {
           {dupMatches.length > 0 && (
             <div
               style={{
+                gridColumn: '1 / -1',
                 background: 'var(--crm-warning-soft)',
                 color: 'var(--crm-warning)',
                 padding: 10,
-                borderRadius: 4,
+                borderRadius: 8,
                 fontSize: 13,
               }}
             >
@@ -970,7 +973,7 @@ export default function CustomerListPage() {
               错位是 `fd3eb24` 引入的。这一格原来还有 `marginTop: 12`，那是为了跟
               上面的标签拉开距离用的；现在它是独立一格，网格的 `gap: 12` 已经负责间距，
               再用就会变成 24、跟其它字段不一致。 */}
-          <div>
+          <div style={{ gridColumn: '1 / -1' }}>
             <FormLabel hint="不选就归你自己，之后也能转移">负责人</FormLabel>
             <UserSearchSelect
               queryScope="customer-create"
@@ -982,41 +985,42 @@ export default function CustomerListPage() {
               value={form.owner_id ?? undefined}
               onChange={(value) => setForm({ ...form, owner_id: value ?? null })}
             />
+            {/* 这段原来是三行灰字（"不指定就归你；指定给别人时…放进公海请创建后用列表里的…"），
+                在 520 宽的弹窗里折成三行、把弹窗又撑高一大截。规则本身没变，
+                只是压成一行；细节（转移、放公海）列表页里都有入口。 */}
             <div style={{ marginTop: 6, fontSize: 12, color: 'var(--crm-text-3)' }}>
               {can('customer:assign')
-                ? '不指定就归「你」；指定给别人时，这位客户从一开始就记在他名下。放进公海请创建后用列表里的「放入公海」。'
-                : '你没有客户分配权限，新客户会归到「你」名下；如需指定其他负责人，请联系管理员。'}
+                ? '不指定就归你；之后可在列表里转移或放入公海。'
+                : '没有分配权限时新客户归你；要指定别人请联系管理员。'}
             </div>
           </div>
 
           <div>
-            <div style={{ marginBottom: 4 }}>客户简称</div>
+            <FormLabel>客户简称</FormLabel>
             <Input
               value={form.short_name ?? ''}
               onChange={(value) => setForm({ ...form, short_name: value })}
             />
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>省份 / 地区</div>
-              <Input
-                value={form.region ?? ''}
-                onChange={(value) => setForm({ ...form, region: value })}
-                placeholder="浙江"
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>客户等级</div>
-              <Select
-                value={customerLevelValue(form.level)}
-                onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
-                optionList={LEVEL_OPTIONS}
-                style={{ width: '100%' }}
-              />
-            </div>
+          <div>
+            <FormLabel>客户等级</FormLabel>
+            <Select
+              value={customerLevelValue(form.level)}
+              onChange={(value) => setForm({ ...form, level: customerLevelPayload(value) })}
+              optionList={LEVEL_OPTIONS}
+              style={{ width: '100%' }}
+            />
           </div>
           <div>
-            <div style={{ marginBottom: 4 }}>客户来源</div>
+            <FormLabel>省份 / 地区</FormLabel>
+            <Input
+              value={form.region ?? ''}
+              onChange={(value) => setForm({ ...form, region: value })}
+              placeholder="浙江"
+            />
+          </div>
+          <div>
+            <FormLabel>客户来源</FormLabel>
             <Select
               value={form.source ?? undefined}
               onChange={(value) => setForm({ ...form, source: value as string })}
@@ -1034,15 +1038,15 @@ export default function CustomerListPage() {
               />
             )}
           </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>详细地址</div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <FormLabel>详细地址</FormLabel>
             <Input
               value={form.address ?? ''}
               onChange={(value) => setForm({ ...form, address: value })}
             />
           </div>
-          <div>
-            <div style={{ marginBottom: 4 }}>备注</div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <FormLabel>备注</FormLabel>
             <Input
               value={form.remark ?? ''}
               onChange={(value) => setForm({ ...form, remark: value })}

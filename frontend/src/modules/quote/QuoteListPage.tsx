@@ -239,6 +239,8 @@ export default function QuoteListPage() {
 
       <Modal
         title="新建报价"
+        // 不写 width 时 Semi 用 448（比全站小表单还窄 72）
+        width={520}
         visible={createVisible}
         onCancel={() => setCreateVisible(false)}
         onOk={() => {
