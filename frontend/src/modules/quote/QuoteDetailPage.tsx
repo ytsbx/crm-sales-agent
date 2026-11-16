@@ -1666,7 +1666,7 @@ export default function QuoteDetailPage() {
           左列两张叠起来总高约 320，跟右列金额汇总（约 290）自然接近，
           空白没了，也不用手动补内容。
           （2026-11-16 主人圈出这块问"这个改了吗"。） */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: 16, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: 16 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
         <SectionCard
           id="quote-charges"
@@ -1800,8 +1800,25 @@ export default function QuoteDetailPage() {
           <DecisionMakerCard customerId={quote.customer_id} title="客户决策关系图" />
         </div>
 
-        <SectionCard title="金额汇总">
-          <div style={{ display: 'grid', gap: 10, fontSize: 14 }}>
+        {/* 两列等高（格子默认 stretch）：这一卡撑满整行高度，多出来的空间
+            分给"明细"和"合计"之间 —— 明细在上、合计贴底。
+            原来 alignItems:start，右列按内容收高，比左列矮 50px，
+            底部齐不了，看起来就是"那一块突出来了"（2026-11-16 主人原话）。
+            现在空白落在分隔线附近，读起来是呼吸，不是漏了一块。 */}
+        <SectionCard
+          title="金额汇总"
+          style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              fontSize: 14,
+              flex: 1,
+              minHeight: 0,
+            }}
+          >
             {/* 口径说明（2026-10-09 运费分离）：产品单价不含运费，运费按已确认的
                 实际金额代收代付。写在汇总最上方，避免客户/业务员按旧口径理解。
                 ⚠️ 同样只在"单价不含运费"口径下显示（见列头的说明）：历史口径的
@@ -1812,49 +1829,54 @@ export default function QuoteDetailPage() {
                 （公司不赚不赔，产品利润不受运费影响）。
               </div>
             )}
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>产品货款</span>
-              <span>¥{summary.goods_amount.toLocaleString('zh-CN')}</span>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--crm-text-3)' }}>产品货款</span>
+                <span>¥{summary.goods_amount.toLocaleString('zh-CN')}</span>
+              </div>
+              {/* 运费从"附加费用"里**单独一行**列具体金额，不再混在一起让客户自己猜。
+                  注意：下面这几行都**已经含在**应付合计里，只是拆分展示，不再相加。 */}
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--crm-text-3)' }}>运费（代收代付）</span>
+                <span>¥{summary.logistics_amount.toFixed(2)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--crm-text-3)' }}>其他费用</span>
+                <span>¥{summary.other_charge_amount.toFixed(2)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--crm-text-3)' }}>优惠</span>
+                <span>¥{summary.discount_amount.toFixed(2)}</span>
+              </div>
             </div>
-            {/* 运费从"附加费用"里**单独一行**列具体金额，不再混在一起让客户自己猜。
-                注意：下面这几行都**已经含在**应付合计里，只是拆分展示，不再相加。 */}
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>运费（代收代付）</span>
-              <span>¥{summary.logistics_amount.toFixed(2)}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>其他费用</span>
-              <span>¥{summary.other_charge_amount.toFixed(2)}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>优惠</span>
-              <span>¥{summary.discount_amount.toFixed(2)}</span>
-            </div>
+            {/* 合计贴底：marginTop:auto 吃掉多出来的高度 */}
             <div
               style={{
+                marginTop: 'auto',
                 display: 'flex',
-                justifyContent: 'space-between',
-                paddingTop: 10,
+                flexDirection: 'column',
+                gap: 10,
+                paddingTop: 12,
                 borderTop: '1px solid var(--crm-surface-high)',
-                fontWeight: 600,
-                fontSize: 16,
               }}
             >
-              <span>应付合计</span>
-              <span style={{ color: 'var(--crm-primary)' }}>{formatMoney(version.total_amount_exact ?? summary.total_amount, 'CNY')}</span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span style={{ color: 'var(--crm-text-3)' }}>预计利润合计</span>
-              {/* ⚠️ 无 `price:manage` 时后端会把 `total_profit` 置 null
-                  （2026-10-14 审查修）—— 原来写 `?? 0` 会显示成「¥0.00」，
-                  看着像"这单不赚钱"，而不是"你没权限看"。 */}
-              <span>
-                {version.total_profit == null
-                  ? can('price:manage') && (detail.cost_problems ?? []).length > 0
-                    ? '成本未完整确认，暂不能计算利润'
-                    : '无价格权限，不显示利润'
-                  : `¥${Number(version.total_profit).toFixed(2)}`}
-              </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, fontSize: 16 }}>
+                <span>应付合计</span>
+                <span style={{ color: 'var(--crm-primary)' }}>{formatMoney(version.total_amount_exact ?? summary.total_amount, 'CNY')}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ color: 'var(--crm-text-3)' }}>预计利润合计</span>
+                {/* ⚠️ 无 `price:manage` 时后端会把 `total_profit` 置 null
+                    （2026-10-14 审查修）—— 原来写 `?? 0` 会显示成「¥0.00」，
+                    看着像"这单不赚钱"，而不是"你没权限看"。 */}
+                <span>
+                  {version.total_profit == null
+                    ? can('price:manage') && (detail.cost_problems ?? []).length > 0
+                      ? '成本未完整确认，暂不能计算利润'
+                      : '无价格权限，不显示利润'
+                    : `¥${Number(version.total_profit).toFixed(2)}`}
+                </span>
+              </div>
             </div>
           </div>
         </SectionCard>
