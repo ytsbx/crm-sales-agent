@@ -405,8 +405,13 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             title: '来源',
             dataIndex: 'source',
             width: 85,
-            render: (v: string | null) =>
-              v ? ENUM_LABEL[v] ?? v : <span style={{ color: 'var(--crm-text-3)' }}>-</span>,
+            // 来源全部是「网页操作」，信息量最低、也不需要一眼分辨：
+            // 压成浅灰小字让位给动作列，页面上的颜色才集中在真正要看的那一列。
+            render: (v: string | null) => (
+              <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                {v ? ENUM_LABEL[v] ?? v : '-'}
+              </span>
+            ),
           },
           {
             // 变更内容：摘要给人看，**原文不能丢** —— 这一页是合规取证用的。
@@ -447,6 +452,12 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
                       whiteSpace: 'normal',
                       wordBreak: 'break-word',
                       overflowWrap: 'anywhere',
+                      // 统一压成两行：三行会把行高参差不齐，一屏能看的条数也变少。
+                      // 40 字保底 + 两行封顶，两种保险都留着。
+                      display: '-webkit-box',
+                      WebkitBoxOrient: 'vertical',
+                      WebkitLineClamp: 2,
+                      overflow: 'hidden',
                     }}
                     title={summary ?? undefined}
                   >
