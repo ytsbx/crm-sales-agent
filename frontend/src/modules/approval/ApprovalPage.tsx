@@ -16,6 +16,7 @@ import { listApprovalTransferCandidates } from '../../shared/api/approval'
 import PageHeader from '../../shared/components/PageHeader'
 import { usePermissions } from '../../shared/hooks/permissions'
 import SectionCard from '../../shared/components/SectionCard'
+import StatusDot from '../../shared/components/StatusDot'
 import RulesPanel from './RulesPanel'
 import { optionMatcher } from '../../shared/components/optionMatch'
 
@@ -131,7 +132,10 @@ export default function ApprovalPage() {
         const coSign = record.current_node === 'co_sign' ? record.summary?.co_sign : null
         return (
           <div style={{ display: 'grid', gap: 2 }}>
-            <Tag color={value === '待审批' ? 'orange' : value === '已通过' ? 'green' : 'grey'}>{value}</Tag>
+            <StatusDot
+              label={String(value)}
+              tone={value === '待审批' ? 'orange' : value === '已通过' ? 'green' : 'grey'}
+            />
             {coSign && (
               <Tag color="red" size="small">
                 待{coSign.label ?? '会签'}
@@ -254,7 +258,7 @@ export default function ApprovalPage() {
                 onPageSizeChange: (size: number) => { setPageSize(size); setPage(1) },
               }}
               empty={emptyText(query, '没有待处理的审批')}
-              scroll={{ x: 'max(100%, 1440px)' }}
+              scroll={{ x: '100%' }}
             />
           </div>
         )}

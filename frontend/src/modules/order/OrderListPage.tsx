@@ -222,7 +222,9 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: '订单金额',
       dataIndex: 'total_amount',
-      width: 140,
+      // 140 → 124：8 列合计本来正好 1130，但列表一长出现纵向滚动条，
+      // 它占掉 15px，body 只剩 1115 → 横向滚动条又冒出来（2026-11-16 实测）。
+      width: 124,
       render: (v: number, record: Order) => formatMoney(record.total_amount_exact ?? v, record.currency),
     },
     {

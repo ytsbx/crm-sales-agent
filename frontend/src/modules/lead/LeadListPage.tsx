@@ -222,7 +222,9 @@ export default function LeadListPage() {
 
   const columns = [
     // 名称列收窄并允许省略：9 列加起来 1350，比内容区还宽，表格内部多出一条横向滚动条。
-    { title: '线索名称', dataIndex: 'name', width: 170, ellipsis: true },
+    // 170 → 200：12 字的线索名（「天津线索30【演示造数】」）实测要 178，
+    // 170 时有 5px 溢出（2026-11-16 全站表格扫描）。
+    { title: '线索名称', dataIndex: 'name', width: 200, ellipsis: true },
     {
       title: '公司',
       dataIndex: 'company_name',

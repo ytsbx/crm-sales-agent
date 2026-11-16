@@ -381,7 +381,9 @@ export default function CustomerListPage() {
       // 两行：上面公司名，下面「地区 · 来源 · 活跃状态」。
       // 那三列各自只有几个字却各占 90-120px，合到名字下面能省掉三列，
       // 顺带把横向滚动条也去掉（14 列 → 10 列）。
-      width: 260,
+      // 260 → 210：实测这一列 268 时整表 1180 > 内容区 1130，横向滚动条又回来了
+      // （2026-11-16 全站表格扫描）。210 仍够放「宁波家电01厂【演示造数】」。
+      width: 210,
       render: (text: string, record: Customer) => (
         <div>
           <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/customers/${record.id}`)} title={text}>
@@ -399,7 +401,7 @@ export default function CustomerListPage() {
       title: '等级',
       dataIndex: 'level',
       // 96 而不是 80：描边标签（未分级）比实心标签宽，80 时末尾会多出一个省略号
-      width: 96,
+      width: 70,
       render: (value: string | null) =>
         value ? (
           // A 绿 / B 蓝 / C 橙：字母本身已经够辨识，不必再套一个色块。
@@ -426,7 +428,7 @@ export default function CustomerListPage() {
       // 领导六阶段：由订单/打样/报价事实自动推导（customer/stage.py），不占销售一分钟
       title: '阶段',
       dataIndex: 'stage',
-      width: 96,
+      width: 70,
       render: (_: unknown, record: Customer) =>
         record.stage ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -646,9 +648,10 @@ export default function CustomerListPage() {
           loading={query.isLoading}
           rowKey="id"
           size="middle"
-          // 等于各列宽之和（约 1180）。**必须写够**：小于总宽时组件会按比例压缩列，
-          // 长文本又开始折行；大于总宽则右边多出一段空白。
-          scroll={{ x: 1180 }}
+          // 原来写死 1180，比内容区（1130）宽 50 —— 横向滚动条常驻，右边
+          // 「操作」被切一半（2026-11-16 全站表格扫描抓到）。
+          // 改成跟容器走：列多时按比例压缩，宁可略微挤一点也不横滚。
+          scroll={{ x: '100%' }}
           empty={emptyText(query, '没有符合条件的客户', '换个筛选条件试试，或点右上角「新建客户」。')}
           rowSelection={{
             selectedRowKeys: selectedIds,
