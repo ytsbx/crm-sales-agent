@@ -146,22 +146,27 @@ export default function SampleFromSourceModal({ source, onClose, mode = 'sample'
         const quantityId = `source-quantity-${mode}-${row.source_item_id}`
         return <div key={row.source_item_id} style={{ borderTop: '1px solid var(--crm-border)', padding: '12px 0' }}>
           <Checkbox checked={draft.selected} disabled={mutation.isPending} onChange={e => change(row.source_item_id, { selected: Boolean(e.target.checked) })}>{row.name}</Checkbox>
-          <p>原采购数量：{row.original_quantity == null ? '未记录' : formatQuantityText(row.original_quantity)}</p>
-          <div>{quantityFieldText}：<Input id={quantityId} inputMode="decimal" value={draft.quantity}
+          <p>原采购数量 {row.original_quantity == null ? '未记录' : formatQuantityText(row.original_quantity)}</p>
+          {/* 下单数量和草稿单价都是短数字框，竖着排白白多占一行。
+              这一排包在 flex 里（后面草稿单价那块一起进这个容器）。 */}
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 190 }}>{quantityFieldText}<Input id={quantityId} inputMode="decimal" value={draft.quantity}
             placeholder={row.original_quantity == null ? '来源未记录，请填写' : undefined}
             aria-invalid={missing || undefined} aria-describedby={missing ? `${quantityId}-required` : undefined}
             disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { quantity: v })} /></div>
           {/* 行内提示：数量为空时数字框就是一个空白框，只说「必填」不够 ——
               要说清为什么空（来源未记录），以及不填就走不下去。 */}
+          {mode === 'order' && <div style={{ flex: 1, minWidth: 190 }}>草稿单价<Input aria-label="草稿单价" inputMode="decimal" value={draft.unit_price ?? ''} placeholder="未核价" disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { unit_price: v === '' ? null : v })} /></div>}
+          </div>
+          {/* 数量没填时的提示单独一行，不挤进上面并排的两个框之间 */}
           {missing && <p id={`${quantityId}-required`} className="blocked-hint" style={{ marginTop: 8 }}>
             {row.original_quantity == null
               ? `来源没有记录原采购数量，请填写${quantityFieldText}（必须大于 0）后再${actionText}。`
               : `请填写${quantityFieldText}（必须大于 0）后再${actionText}。`}
           </p>}
-          {mode === 'order' && <div style={{ marginTop: 8 }}>草稿单价：<Input aria-label="草稿单价" inputMode="decimal" value={draft.unit_price ?? ''} placeholder="未核价" disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { unit_price: v === '' ? null : v })} /></div>}
-          <p>本次规格</p><TextArea value={draft.specification} disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { specification: v })} />
+          <p>本次规格</p><TextArea rows={2} value={draft.specification} disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { specification: v })} />
           {draft.specification !== (row.specification ?? '') && <p>原规格：{row.specification || '未记录'}</p>}
-          <p>本次备注</p><TextArea value={draft.remark} disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { remark: v })} />
+          <p>本次备注</p><TextArea rows={2} value={draft.remark} disabled={mutation.isPending || !draft.selected} onChange={v => change(row.source_item_id, { remark: v })} />
         </div>
       })}
       {/* 页脚正上方：确认按钮灰着的时候，原因必须在同一屏里看得见。

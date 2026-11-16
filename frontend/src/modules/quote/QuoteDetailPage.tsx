@@ -1993,12 +1993,11 @@ export default function QuoteDetailPage() {
             <div className="send-context">
               <div className="send-context-line">
                 这一版已经有一条运费 ¥{existingFreight.amount.toFixed(2)}
-                {existingFreight.description ? `（说明：${existingFreight.description}）` : '（没有写说明）'}
+                {existingFreight.description ? `（${existingFreight.description}）` : '（没写说明）'}
                 ，不能再新增第二条。
               </div>
               <div className="send-context-hint">
-                一个版本只能有一条运费 —— 两条会各自累加进总额，看起来像「多收了一笔」。
-                请到上面的「附加费用」里点那一条的「改」修正金额；补错了可以点「删除」。
+                一个版本只能有一条运费（两条会各自累加进总额）；改金额请去上面「附加费用」点「改」，补错了点「删除」。
               </div>
             </div>
           ) : (
@@ -2007,9 +2006,8 @@ export default function QuoteDetailPage() {
                 这一版已经{version?.sent_at ? '发送给客户' : '审批通过'}，只有「物流」类费用还能补填。
               </div>
               <div className="send-context-hint">
-                运费是代收代付、不进产品价，所以补它「不需要重新走审批」；
-                其他费用与折扣要改动，请新建版本。
-                {version?.sent_at ? '另外：补完运费这一版的「已发送」会被清掉，需要重新登记一次发送。' : ''}
+                运费是代收代付、不进产品价，补它不用重走审批；其他费用和折扣要改，请新建版本。
+                {version?.sent_at ? '补完运费后，这一版的「已发送」会被清掉，需要重新登记发送。' : ''}
               </div>
             </div>
           ))}
