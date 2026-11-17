@@ -787,7 +787,13 @@ export default function SampleListPage() {
         }
       />
 
-      <SectionCard>
+      {/* 一条样品都没有时，卡片不该跟着撑满整屏（样式里单卡页面会自动拉满）：
+          空态是一句话的事，给一张正好装下这句话的卡，底下露页面底色。 */}
+      <SectionCard
+        style={
+          !query.isLoading && (query.data?.items?.length ?? 0) === 0 ? { flex: '0 0 auto' } : undefined
+        }
+      >
         <div className="toolbar">
           <Input
             style={{ width: 220 }}
