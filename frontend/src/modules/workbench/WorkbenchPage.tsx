@@ -1,4 +1,4 @@
-import { formatBeijingDate, formatBeijingClock, formatBeijingTime } from '../../shared/beijing-time'
+import { formatBeijingDate, formatBeijingDateTime, formatBeijingClock, formatBeijingWeekdayCN } from '../../shared/beijing-time'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -234,12 +234,7 @@ export default function WorkbenchPage() {
             </span>
           </span>
         }
-        subtitle={`这里是您今天的工作概览 · ${formatBeijingDate(today, {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-          weekday: 'long',
-        })}`}
+        subtitle={`这里是您今天的工作概览 · ${formatBeijingDate(today)} ${formatBeijingWeekdayCN(today)}`}
         extra={
           <>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -494,12 +489,9 @@ export default function WorkbenchPage() {
                     <span style={{ fontWeight: 600 }}>{row.operator}</span> {humanizeActivityTitle(row.title)}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--crm-text-3)', marginTop: 2 }}>
-                    {formatBeijingTime(row.at, {
-                      month: 'numeric',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
+                    {/* 原来是 month/day 数字，zh-CN 输出 `11/16 16:38`；
+                        站内其它页都是 `2026-11-16`，统一成 YYYY-MM-DD HH:mm */}
+                    {formatBeijingDateTime(row.at)}
                   </div>
                 </div>
               </div>
@@ -565,12 +557,8 @@ export default function WorkbenchPage() {
                     </span>
                     {task.due_at && (
                       <span style={{ fontSize: 12, color: task.overdue ? 'var(--crm-error)' : 'var(--crm-text-3)' }}>
-                        {formatBeijingTime(task.due_at, {
-                          month: 'numeric',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
+                        {/* 到期时间同上：一律 2026-11-16 16:38，不再 `11/16 16:38` */}
+                        {formatBeijingDateTime(task.due_at)}
                         {task.overdue ? '（已逾期）' : ''}
                       </span>
                     )}
@@ -641,7 +629,8 @@ export default function WorkbenchPage() {
                 <IconCalendar /> 今日日程 ({todayTasks.length})
               </span>
               <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                {formatBeijingDate(today, { month: '2-digit', day: '2-digit' })}
+                {/* 卡片右上角原来是 `11/17`，缺年份；统一成 2026-11-17 */}
+                {formatBeijingDate(today)}
               </span>
             </div>
             <div style={{ display: 'grid', gap: 8 }}>

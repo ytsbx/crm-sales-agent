@@ -1,4 +1,4 @@
-import { formatBeijingTime } from '../../shared/beijing-time'
+import { formatBeijingDateTime } from '../../shared/beijing-time'
 import PersonalAccountPanel from './PersonalAccountPanel'
 import PersonalProfilePanel from './PersonalProfilePanel'
 import UnratedRulesPanel from './UnratedRulesPanel'
@@ -75,9 +75,10 @@ const TABS = [
   { tab: '业务规则', itemKey: 'rules' },
 ]
 
-/** 时间显示成"2026-10-06 12:30"（回收复核要看具体哪天）。空值给个短横。 */
+/** 时间显示成"2026-10-06 12:30"（回收复核要看具体哪天）。空值给个短横。
+ *  原来传 options 走 zh-CN，出来是 `2026/10/06 12:30`（斜杠，2026-11-17 复验 R-02）。 */
 function fmtDay(value: string | null | undefined): string {
-  return formatBeijingTime(value, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return formatBeijingDateTime(value)
 }
 
 export default function SettingsPage() {

@@ -155,7 +155,7 @@ export default function NotificationSettingsPanel() {
             type="warning"
             closeIcon={null}
             style={{ marginTop: 12 }}
-            description="企微渠道已开启，但后端还没配置企微应用（缺 WECOM_AGENT_ID）。当前投递会被标为「未投递」并写明原因，配好密钥后重启后端即可生效。"
+            description="企业微信渠道已开启，但后端还没填企业微信应用 ID。当前投递会被标为「未投递」并写明原因，填好应用 ID 并重启后端即可生效。"
           />
         )}
       </SectionCard>

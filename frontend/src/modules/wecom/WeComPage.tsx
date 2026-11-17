@@ -1,4 +1,5 @@
 import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
+import { humanizeBackendText } from '../../shared/humanize-text'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Empty, Input, Modal, Popconfirm, Select, Table, Tag, Toast } from '@douyinfe/semi-ui'
@@ -959,7 +960,7 @@ export default function WeComPage() {
                       dataIndex: 'crm_status_label',
                       width: 110,
                       render: (v: string, row) => (
-                        <span title={row.crm_error ?? ''}>
+                        <span title={humanizeBackendText(row.crm_error)}>
                           <Tag color={row.crm_status === 'failed' ? 'red' : 'grey'} size="small">
                             {v}
                           </Tag>
@@ -971,7 +972,7 @@ export default function WeComPage() {
                       dataIndex: 'wecom_status_label',
                       width: 110,
                       render: (v: string, row) => (
-                        <span title={row.wecom_error ?? ''}>
+                        <span title={humanizeBackendText(row.wecom_error)}>
                           <Tag
                             color={row.wecom_status === 'failed' ? 'red' : 'grey'}
                             size="small"

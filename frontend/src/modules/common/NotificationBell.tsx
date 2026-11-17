@@ -1,4 +1,5 @@
 import { formatBeijingTime, formatBeijingClock } from '../../shared/beijing-time'
+import { humanizeBackendText } from '../../shared/humanize-text'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -86,7 +87,7 @@ export default function NotificationBell() {
       } else {
         // 后端原因里可能带内部开关名（如「推送已临时关闭（WECOM_PUSH_OFF）」），
         // 展示前把括号里的英文环境变量抹掉，只留人话（2026-11-17 视觉审视 5.3）
-        Toast.warning(`仍未投出：${stripEnvCode(data.wecom_error) || '原因未记录'}`)
+        Toast.warning(`仍未投出：${humanizeBackendText(data.wecom_error) || '原因未记录'}`)
       }
       refresh()
     },
@@ -198,7 +199,7 @@ export default function NotificationBell() {
                     卡在配置上的（推送开着没、绑没绑企微）点了也是同一结果。 */}
                 {item.redispatch_hint && (
                   <span style={{ color: 'var(--crm-text-3)', fontSize: 11 }}>
-                    （{item.redispatch_hint}）
+                    （{humanizeBackendText(item.redispatch_hint)}）
                   </span>
                 )}
               </>
@@ -218,7 +219,10 @@ export default function NotificationBell() {
                 marginTop: 2,
               }}
             >
-              {item.wecom_error || (item.wecom_status === 'failed' ? '投递失败' : '未投递')}
+              {/* 后端原文可能带内部开关名（WECOM_PUSH_OFF / WECOM_AGENT_ID），
+                  列表里一律换成业务说法；找不到对应说法时兜底抹掉括号代号（R-01） */}
+              {humanizeBackendText(item.wecom_error) ||
+                (item.wecom_status === 'failed' ? '投递失败' : '未投递')}
               {item.wecom_status === 'failed' &&
                 (item.wecom_next_retry_at
                   ? `（${formatBeijingClock(item.wecom_next_retry_at)} 自动重试，已试 ${item.wecom_attempts ?? 0} 次）`
@@ -252,12 +256,3 @@ export default function NotificationBell() {
   )
 }
 
-
-/**
- * 把后端文案里的英文环境变量名去掉：`推送已临时关闭（WECOM_PUSH_OFF）` → `推送已临时关闭`。
- * 只认括号内「全大写 + 下划线」的词，正常中文括号内容不会被误删。
- */
-function stripEnvCode(text?: string | null): string {
-  if (!text) return ''
-  return text.replace(/[（(]\s*[A-Z][A-Z0-9_]{3,}\s*[）)]/g, '').replace(/\s{2,}/g, ' ').trim()
-}
