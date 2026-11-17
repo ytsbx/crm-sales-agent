@@ -62,7 +62,7 @@ import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import { agentRiskAnalysis, type AnalysisEnvelope } from '../../shared/api/agent'
 import { otherOption } from '../../shared/components/otherOption'
-import { formatMoney } from '../../shared/components/money'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 /** 收款方式。值是中文本身（后端 `payment_method` 是自由文本），
  *  选中「其他」后写的内容可以直接存回该字段。 */
@@ -677,7 +677,14 @@ export default function OrderDetailPage() {
     { title: '产品名称 / 需求', dataIndex: 'sku_code', width: 180, render: (code: string | null, row: OrderItem) => <div>{row.sku_snapshot || code || row.inquiry_no_snapshot || '未命名产品'}<div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{row.sku_snapshot ? code || row.inquiry_no_snapshot : ''}</div></div> },
     { title: '规格', dataIndex: 'specification', width: 200, render: (v: string | null) => v ?? '-' },
     { title: '数量', dataIndex: 'quantity', width: 100, render: (v: number) => v.toLocaleString('zh-CN') },
-    { title: '单价', dataIndex: 'unit_price', width: 110, render: (v: number, row: OrderItem) => formatMoney(row.unit_price_exact ?? v, order.currency) },
+    // 单价库里是 numeric(16,4)，直接印精确串会显示成 ¥150.0000；
+     // 同一张表的金额只有两位，四位的单价看着像另一套系统。统一补成两位。
+    {
+      title: '单价',
+      dataIndex: 'unit_price',
+      width: 110,
+      render: (v: number, row: OrderItem) => formatMoney(toTwoDecimals(row.unit_price_exact ?? v), order.currency),
+    },
     {
       title: '金额',
       dataIndex: 'amount',

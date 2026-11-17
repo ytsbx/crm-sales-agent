@@ -45,6 +45,24 @@ export default function QuoteSendLogsPanel({
 
   const rows = queries.data ?? []
 
+  // 一条记录都没有时，原来还画三列表头 + 一大块空态图，占 ~90px 却没内容。
+  // 空就只说一句：这一块在「对外与归档」卡里只是三小段之一，
+  // 让一段空态把整张卡撑高，比不显示更糟。
+  if (!queries.isLoading && rows.length === 0) {
+    return (
+      <div
+        style={{
+          ...style,
+          padding: '4px 0',
+          fontSize: 12,
+          color: 'var(--crm-text-3)',
+        }}
+      >
+        还没有发送记录 —— 点上方「标记已发送」登记这次发给谁、走的什么渠道。
+      </div>
+    )
+  }
+
   return (
     <div style={style}>
       <Table<QuoteSendLogRow>
