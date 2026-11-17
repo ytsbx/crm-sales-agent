@@ -57,6 +57,7 @@ import { listBusinessFiles } from '../../shared/api/file'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
 import AttachmentPanel from '../common/AttachmentPanel'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 import { usePermissions } from '../../shared/hooks/permissions'
 import BizDocPanel from '../../shared/components/BizDocPanel'
 import type { TagTone } from '../../shared/types'
@@ -1427,7 +1428,8 @@ export default function SampleListPage() {
                       <div>目标完成日：{dash(detail.target_completion_date)}</div>
                       <div>验收标准：{dash(detail.acceptance_criteria)}</div>
                       <div>
-                        打样费用：{detail.sample_fee != null ? `¥${detail.sample_fee}` : '未填'}
+                        {/* 金额统一两位小数（2026-11-17 视觉审视 V-05）：原来 ¥120 与 ¥120.50 混排 */}
+                        打样费用：{detail.sample_fee != null ? formatMoney(toTwoDecimals(detail.sample_fee), 'CNY') : '未填'}
                       </div>
                       <div>制作完成：{dash(detail.made_at ? formatBeijingDate(detail.made_at) : null)}</div>
                       {/* 制作依据（第一批返修 §3.5）：这次照哪几份文件做的。
@@ -1564,11 +1566,14 @@ export default function SampleListPage() {
                       和制作依据分开记 —— 事后补进来的资料不能和「当时照哪份做的」混在一起。
                     </div>
                   )}
+                  {/* 默认说明是「合同、图纸、回款凭证」—— 那是合同页的语境，
+                      放在打样申请里等于让人传回款凭证，明显错位（2026-11-17 视觉审视 V2-11 同类） */}
                   <AttachmentPanel
                     businessType="sample"
                     businessId={detail.id}
                     writePermission="sample:manage"
                     showCategory
+                    hint="放样品实物照片、尺寸图、客户确认截图，单个文件不超过 20 MB"
                     category={detail.attachment_locked ? 'supplement' : undefined}
                   />
                 </div>

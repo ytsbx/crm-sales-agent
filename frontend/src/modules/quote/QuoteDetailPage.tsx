@@ -745,6 +745,10 @@ export default function QuoteDetailPage() {
       title: '产品名称 / 需求',
       dataIndex: 'sku_code',
       width: 190,
+      // Semi 的单元格默认 `nowrap + ellipsis + overflow:hidden`：文案超过列宽就被裁成
+      // 一个「…」，只在 render 里写 whiteSpace 不够（格子自己的 nowrap 仍会接管）。
+      // 这一列是识别列，宁可折成两行也不能只剩省略号（2026-11-17 视觉审视 V2-06）。
+      onCell: () => ({ style: { whiteSpace: 'normal' as const, textOverflow: 'clip', overflow: 'visible' } }),
       // 定制项（场景09）没有 SKU：显示需求编号 + 定制标记，
       // 否则这一格会是空的，看的人不知道这条是什么
       // 名称在上、编码辅助展示；规格仍保留独立列。
@@ -755,7 +759,12 @@ export default function QuoteDetailPage() {
         <div style={{ lineHeight: 1.5 }}>
           {/* 名称在窄屏被挤时不再只剩「…」：允许折行，鼠标停上去给完整名称
               （2026-11-17 视觉审视 V2-06：首列是识别列，不能只剩省略号） */}
-          <div title={record.sku_name || v || '未命名产品'} style={{ overflowWrap: 'anywhere' }}>
+          {/* 表格单元格默认 `nowrap + ellipsis`，只写 overflowWrap 不生效 ——
+              必须显式 whiteSpace: normal 才能折行（实测：内层 div 宽 474 被 190 宽的格子裁成「…」） */}
+          <div
+            title={record.sku_name || v || '未命名产品'}
+            style={{ overflowWrap: 'anywhere', whiteSpace: 'normal' }}
+          >
             {record.sku_name || v || '未命名产品'}
             {record.is_custom && (
               <Tag size="small" type="light" style={{ marginLeft: 6 }}>
