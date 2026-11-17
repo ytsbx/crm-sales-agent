@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Checkbox, Dropdown, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
-import { IconAIEditLevel1, IconFile, IconMore } from '@douyinfe/semi-icons'
+import { IconAIEditLevel1, IconFile, IconHistogram, IconMore } from '@douyinfe/semi-icons'
 
 import {
   attachCustomerTags,
@@ -421,12 +421,13 @@ export default function CustomerDetailPage() {
   const quotesQuery = useQuery({
     queryKey: ['customer-quotes', customerId],
     queryFn: () => listQuotes({ customer_id: customerId, page_size: 50 }),
-    enabled: Number.isFinite(customerId) && activeKey === 'quotes',
+    // 概览页签也要读它的 total（业务全景四个数字之一），所以 overview 时同样要取
+    enabled: Number.isFinite(customerId) && (activeKey === 'quotes' || activeKey === 'overview'),
   })
   const ordersQuery = useQuery({
     queryKey: ['customer-orders', customerId],
     queryFn: () => listOrders({ customer_id: customerId, page_size: 50 }),
-    enabled: Number.isFinite(customerId) && activeKey === 'orders',
+    enabled: Number.isFinite(customerId) && (activeKey === 'orders' || activeKey === 'overview'),
   })
 
   const customer = customerQuery.data
@@ -796,6 +797,54 @@ export default function CustomerDetailPage() {
                       + 添加标签
                     </Button>
                   )}
+                </div>
+              </div>
+
+              {/* 业务全景：原来概览里只有七八条静态字段，而这家客户其实有 5 个商机、
+                  3 份报价、2 张订单 —— 全藏在别的页签里，一进详情看不出它走到哪一步，
+                  卡片又矮，页面下半截空着一大片（2026-11-17 主人选了"把空白换成信息"）。
+                  四个数字各自可点，点一下直接跳到对应页签。 */}
+              <div style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--crm-border)', paddingTop: 14 }}>
+                <div className="customer-info-head">
+                  <span className="customer-info-icon" style={{ background: '#eaf1fe', color: '#2f6df6' }}>
+                    <IconHistogram size="small" />
+                  </span>
+                  业务全景
+                  <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                    点数字直接跳到对应页签
+                  </span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+                  {([
+                    { key: 'contacts', label: '联系人', value: (contactsQuery.data ?? []).length },
+                    { key: 'opportunities', label: '商机', value: opportunitiesQuery.data?.total },
+                    { key: 'quotes', label: '报价', value: quotesQuery.data?.total },
+                    { key: 'orders', label: '订单', value: ordersQuery.data?.total },
+                  ] as const).map((tile) => {
+                    const jump = () => {
+                      setActiveKey(tile.key)
+                      setSearchParams({ tab: tile.key })
+                    }
+                    return (
+                      <button
+                        key={tile.key}
+                        type="button"
+                        className="cust-pano-tile"
+                        onClick={jump}
+                        title={`跳到「${tile.label}」页签`}
+                      >
+                        <span className="cust-pano-label">{tile.label}</span>
+                        <span className="cust-pano-value">
+                          {/* 查不到就是查不到：没权限时接口会 403，这里显示「—」
+                              而不是 0 —— 0 会被读成"这家客户没有订单"。 */}
+                          {tile.value === undefined || tile.value === null ? '—' : tile.value}
+                          {tile.value !== undefined && tile.value !== null && (
+                            <span className="cust-pano-unit">条</span>
+                          )}
+                        </span>
+                      </button>
+                    )
+                  })}
                 </div>
               </div>
 

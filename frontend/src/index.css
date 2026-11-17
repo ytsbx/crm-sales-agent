@@ -320,6 +320,44 @@ a:not([href]) {
    先在报价详情「对外与归档」用上，订单详情的「合同与 AI 回款风险」复用同一套。
    13px/600 比卡片标题小一档、比正文大一档，配一枚 22×22 圆角小图标，
    段落之间再拉一条 1px 分隔线 —— 不然两段文字会连成一片，分不清是两块内容。 */
+/* 客户详情的「业务全景」四格：轻底色 + 无边框，hover 才浮出一圈细边。
+   刻意不用深色块：这四格只是"有多少条"，颜色一重就抢掉上面客户名的注意力。
+   数字比标签大两档，扫一眼就能读出量级。 */
+.cust-pano-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 12px 16px;
+  background: var(--crm-surface-low);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.cust-pano-tile:hover {
+  background: var(--crm-surface-mid);
+  border-color: var(--crm-outline);
+}
+.cust-pano-label {
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+.cust-pano-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--crm-text);
+}
+.cust-pano-unit {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--crm-text-3);
+  margin-left: 3px;
+}
+
 .card-sub-head {
   display: flex;
   align-items: center;
