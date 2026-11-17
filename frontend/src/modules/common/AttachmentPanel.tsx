@@ -298,7 +298,10 @@ export default function AttachmentPanel({
             lineHeight: 1.6,
           }}
         >
-          还没有附件 —— 点右上角「上传附件」添加
+          {/* 空态那句话跟着真实按钮走：调用方传「上传照片」时，这里也写「上传照片」，
+              否则界面左边说照片、右边说附件，像两个功能。
+              没给上传入口（showUpload=false）时只说"还没有附件"，不教人去点不存在的按钮。 */}
+          {showUpload ? `还没有附件 —— 点右上角「${uploadLabel}」添加` : '还没有附件'}
         </div>
       ) : (
       <Table<FileRow>
