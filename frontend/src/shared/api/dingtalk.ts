@@ -158,9 +158,10 @@ export interface InquirySubmissionOptions {
    *
    * 它只是表单的初始值，真正写进审批的是后端读取的当前人员与部门，
    * 前端改不动身份（见 AGENTS.md：不得伪造提报人）。字段可选：
-   * 未配置同序/没有钉钉账号时后端不返回，界面就留空让人手填。
+   * 未配置同序/没有钉钉账号时后端整个字段不返回，界面就留空让人手填；
+   * 返回时两个键一定都在（部门可能为空串）。
    */
-  prefill?: { applicant_name?: string; department?: string }
+  prefill?: { applicant_name: string; department: string }
   configured: boolean
   enabled: boolean
   quote_owner_required: boolean
