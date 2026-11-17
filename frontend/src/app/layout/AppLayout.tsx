@@ -1,4 +1,4 @@
-import { Button, Dropdown, Modal } from '@douyinfe/semi-ui'
+import { Button, Dropdown, Modal, Tooltip } from '@douyinfe/semi-ui'
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { IconIndentLeft, IconIndentRight } from '@douyinfe/semi-icons'
@@ -168,7 +168,7 @@ export default function AppLayout() {
               // 但不改变"点得动"这件事，否则又回到"点了没反应"。
               const denied = !hasPermission(user, item.permission)
               const hint = denied ? `${label}（当前角色没有权限，点开有说明）` : label
-              return (
+              const link = (
                 <Link
                   key={item.key}
                   to={item.path}
@@ -177,13 +177,31 @@ export default function AppLayout() {
                     active ? 'active' : '',
                     denied ? 'nav-link-denied' : '',
                   ].filter(Boolean).join(' ')}
-                  title={siderCollapsed || denied ? hint : undefined}
+                  /* 收起态不用系统原生 title（那个要等一秒、还是灰底小框），
+                     改用下面的 Semi Tooltip 立刻浮出来；展开态有文字，不需要提示。 */
+                  title={!siderCollapsed && denied ? hint : undefined}
                 >
                   <span className="nav-icon">
                     <Icon />
                   </span>
                   <span>{label}</span>
                 </Link>
+              )
+              /* 收起后只剩图标，鼠标必须能立刻知道这是哪个模块 ——
+                 2026-11-17 主人问「鼠标放哪做悬浮效果，显示是哪个模块」。
+                 鼠标移到任意一条竖条（43px 宽、整条都算）就往右浮出模块名，
+                 mouseEnterDelay 0.12s：扫过菜单时不会闪成一片，稍停一下才出来。 */
+              if (!siderCollapsed) return link
+              return (
+                <Tooltip
+                  key={item.key}
+                  content={<span style={{ fontWeight: 600 }}>{hint}</span>}
+                  position="right"
+                  mouseEnterDelay={0.12}
+                  mouseLeaveDelay={0.05}
+                >
+                  {link}
+                </Tooltip>
               )
             })}
           </div>

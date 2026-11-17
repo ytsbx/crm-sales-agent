@@ -594,6 +594,14 @@ a:not([href]) {
   .app-shell.sider-collapsed .nav-link {
     justify-content: center;
     padding: 8px 0;
+    /* 收起后整条 43px 都是可点区域，hover 时整条给底色、不做横向位移：
+       `translateX(2px)` 在 60px 宽的栏里会把图标推出边被裁掉一半。 */
+    margin: 2px 8px;
+    border-radius: var(--crm-radius-sm);
+  }
+  .app-shell.sider-collapsed .nav-link:hover {
+    transform: none;
+    background: var(--crm-surface-low);
   }
   /* ⚠️ 必须用 `>` 选直接子元素。
      写成 `span:not(.nav-icon)` 会**连图标一起隐藏**：Semi 图标本身就是一个
