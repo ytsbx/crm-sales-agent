@@ -190,14 +190,20 @@ function LeadsPanel() {
   ]
 
   return (
-    <SectionCard>
+    /* 一条记录都没有时，卡片不该跟着撑满整屏：空态只有一句话，
+       给它一张正好装得下这句话的卡，底下露页面底色（与样品管理空态同一处理）。 */
+    <SectionCard
+      style={
+        !query.isLoading && (query.data?.items?.length ?? 0) === 0 ? { flex: '0 0 auto' } : undefined
+      }
+    >
       <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索线索、公司、联系人或手机" style={{ maxWidth: 380, marginBottom: 16 }} />
         <Table<RecycleLead>
         columns={columns}
         dataSource={query.data?.items ?? []}
         loading={query.isLoading}
         rowKey="id"
-        empty={emptyText(query, '回收站里没有线索')}
+        empty={emptyText(query, '回收站里没有线索', '被删除的线索会落在这里，随时能取回；客户类只读、不能恢复。')}
         pagination={{
           currentPage: pager.page,
           pageSize: pager.pageSize,

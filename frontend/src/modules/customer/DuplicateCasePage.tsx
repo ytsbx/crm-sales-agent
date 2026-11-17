@@ -79,6 +79,11 @@ export default function DuplicateCasePage() {
       />
 
       <SectionCard
+        // 一条都没有时别把卡撑满整屏：空态是一句话的事，
+        // 卡按内容高度收住，底下露页面底色（与样品管理、回收站同一处理）。
+        style={
+          !query.isLoading && (query.data?.items?.length ?? 0) === 0 ? { flex: '0 0 auto' } : undefined
+        }
         // 原来标题写「待裁定（N 条）」，下面紧跟着一个下拉，选的也是「待裁定」——
         // 同一句话说两遍。标题改成泛称，状态交给右侧下拉（2026-11-16 巡检）。
         title={`撞单记录（共 ${query.data?.total ?? 0} 条）`}
@@ -116,7 +121,7 @@ export default function DuplicateCasePage() {
           empty={
             <EmptyState
               title="没有待裁定的撞单"
-              hint="系统只在导入客户或新建时发现疑似重复，才会把候选放到这里；平时是空的，说明没有需要你裁的。"
+              hint="只在导入客户或新建时发现疑似重复才会放到这里；空着就是没有要裁的。"
             />
           }
           columns={[
