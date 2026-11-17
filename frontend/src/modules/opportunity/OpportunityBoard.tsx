@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Empty, Tag, Toast } from '@douyinfe/semi-ui'
@@ -62,6 +62,31 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
     return map
   }, [stages, boardQuery.data])
 
+  /* 横向滚动提示：ref 挂在滚动容器上，fadeRight 决定右侧渐隐要不要露。
+     首次渲染、窗口缩放、阶段列数变化都要重算 —— 少算一次，遮罩就会一直挂着
+     （或者滑不动的时候也挂着，等于骗人"右边还有"）。 */
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const [fadeRight, setFadeRight] = useState(false)
+  const updateFade = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    // 留 2px 容差：浏览器算出来的 scrollWidth 常比 clientWidth 多一两个小数
+    setFadeRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 2)
+  }, [])
+
+  useEffect(() => {
+    updateFade()
+    const el = scrollRef.current
+    if (!el) return undefined
+    const observer = new ResizeObserver(updateFade)
+    observer.observe(el)
+    window.addEventListener('resize', updateFade)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateFade)
+    }
+  }, [updateFade, boardQuery.data, stages])
+
   const move = async (row: Opportunity, direction: 1 | -1) => {
     const index = stages.findIndex((stage) => stage.id === row.stage_id)
     // 保留停用阶段列以展示旧商机，推进目标只选择启用中的普通阶段。
@@ -89,7 +114,17 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
   }
 
   return (
-    <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
+    /* 8 列 × 248 = 约 2000px，内容区只有 1070 —— 这屏注定要横向滑。
+       问题是滑不滑得动**看不出来**：最右边那一列被从中间切断，
+       又没有渐隐提示，人只会以为"卡片被裁了"。
+       这里给一个右侧渐隐遮罩，出现与否由"还能不能继续往右滑"决定：
+       滑到尽头就收掉，免得最后一张卡永远像被抹了一层灰。 */
+    <div style={{ position: 'relative' }}>
+      <div
+        ref={scrollRef}
+        onScroll={updateFade}
+        style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}
+      >
       {stages.map((stage) => {
         const rows = grouped.get(stage.id) ?? []
         const amount = rows.reduce((sum, row) => sum + (row.expected_amount ?? 0), 0)
@@ -201,10 +236,20 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
                       style={{ display: 'flex', gap: 8, marginTop: 8 }}
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <a style={{ fontSize: 12 }} onClick={() => void move(row, -1)}>
+                      {/* 两个动作原来都是默认链接色 —— 一样蓝、一样重，
+                          于是在卡片底部看不出"哪个是往前的"。
+                          退回是反向/低频动作，降到灰色；推进是这一列唯一该做的事，
+                          保留主色并加粗一点。 */}
+                      <a
+                        style={{ fontSize: 12, color: 'var(--crm-text-3)' }}
+                        onClick={() => void move(row, -1)}
+                      >
                         ← 退回
                       </a>
-                      <a style={{ fontSize: 12 }} onClick={() => void move(row, 1)}>
+                      <a
+                        style={{ fontSize: 12, fontWeight: 500 }}
+                        onClick={() => void move(row, 1)}
+                      >
                         推进 →
                       </a>
                     </div>
@@ -215,6 +260,23 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
           </div>
         )
       })}
+      </div>
+      {/* 渐隐遮罩：pointer-events:none，不挡点击，只做"还有内容在右边"的提示 */}
+      {fadeRight && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            bottom: 8,
+            width: 56,
+            pointerEvents: 'none',
+            background:
+              'linear-gradient(to right, rgba(255,255,255,0), var(--crm-surface) 78%)',
+          }}
+        />
+      )}
     </div>
   )
 }
