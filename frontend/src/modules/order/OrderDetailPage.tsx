@@ -1739,7 +1739,7 @@ export default function OrderDetailPage() {
             >
               <span className="cust-pano-label">{tile.label}</span>
               <span className="cust-pano-value">
-                {tile.value === undefined || tile.value === null ? '—' : tile.value}
+                {tile.value === undefined || tile.value === null ? '-' : tile.value}
                 {tile.value !== undefined && tile.value !== null && (
                   <span className="cust-pano-unit">条</span>
                 )}

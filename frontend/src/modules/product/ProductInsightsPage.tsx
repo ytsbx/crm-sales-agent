@@ -89,7 +89,7 @@ const ROUND_CONTENT_LABEL: Record<string, string> = {
 
 /** 时间戳转成人看的格式。 */
 function fmtTime(value: string | null): string {
-  return value ? formatBeijingTime(value) : '—'
+  return value ? formatBeijingTime(value) : '-'
 }
 
 /** 快照里的值转成能看的字：空值说「未填」，而不是显示 null。 */
@@ -768,7 +768,7 @@ export default function ProductInsightsPage() {
                   </Tag>
                   <div style={{ flex: 1 }} />
                   <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    提交：{round.submitted_by_name ?? '—'} · {fmtTime(round.submitted_at)}
+                    提交：{round.submitted_by_name ?? '-'} · {fmtTime(round.submitted_at)}
                   </span>
                 </div>
 
@@ -800,7 +800,7 @@ export default function ProductInsightsPage() {
                 )}
                 {round.reviewed_at && (
                   <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                    评审：{round.reviewer_name ?? '—'} · {fmtTime(round.reviewed_at)}
+                    评审：{round.reviewer_name ?? '-'} · {fmtTime(round.reviewed_at)}
                   </div>
                 )}
               </div>

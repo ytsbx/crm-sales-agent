@@ -649,7 +649,7 @@ export default function AnalyticsPage() {
               {
                 title: '准时率',
                 render: (_: unknown, r: DeliveryTrendRow) =>
-                  r.on_time + r.late ? `${((r.on_time / (r.on_time + r.late)) * 100).toFixed(0)}%` : '—',
+                  r.on_time + r.late ? `${((r.on_time / (r.on_time + r.late)) * 100).toFixed(0)}%` : '-',
               },
             ]}
             empty="近 12 个月还没有发货记录"
@@ -834,8 +834,8 @@ export default function AnalyticsPage() {
               平均延迟：
               {deliverySummary?.average_delay_days != null
                 ? `${deliverySummary.average_delay_days} 天`
-                : '—'}
-              （最长 {deliverySummary?.max_delay_days ?? '—'} 天）
+                : '-'}
+              （最长 {deliverySummary?.max_delay_days ?? '-'} 天）
             </div>
           </div>
         </Card>
@@ -897,7 +897,7 @@ export default function AnalyticsPage() {
               {
                 title: '平均延迟',
                 dataIndex: 'average_delay_days',
-                render: (v: number | null) => (v == null ? '—' : `${v} 天`),
+                render: (v: number | null) => (v == null ? '-' : `${v} 天`),
               },
             ]}
           />
@@ -1131,25 +1131,25 @@ export default function AnalyticsPage() {
               title: '平均耗时',
               dataIndex: 'avg_ms',
               width: 110,
-              render: (v: number | null) => (v == null ? '—' : `${Math.round(v / 1000)} 秒`),
+              render: (v: number | null) => (v == null ? '-' : `${Math.round(v / 1000)} 秒`),
             },
             {
               title: '中位数',
               dataIndex: 'median_ms',
               width: 100,
-              render: (v: number | null) => (v == null ? '—' : `${Math.round(v / 1000)} 秒`),
+              render: (v: number | null) => (v == null ? '-' : `${Math.round(v / 1000)} 秒`),
             },
             {
               title: 'P90',
               dataIndex: 'p90_ms',
               width: 100,
-              render: (v: number | null) => (v == null ? '—' : `${Math.round(v / 1000)} 秒`),
+              render: (v: number | null) => (v == null ? '-' : `${Math.round(v / 1000)} 秒`),
             },
             {
               title: '平均手输字段',
               dataIndex: 'avg_typed_fields',
               width: 120,
-              render: (v: number | null) => v ?? '—',
+              render: (v: number | null) => v ?? '-',
             },
           ]}
         />
@@ -1296,7 +1296,7 @@ export default function AnalyticsPage() {
               title: '复购目标',
               dataIndex: 'repeat_customer_target',
               width: 130,
-              render: (v: number, r: SalesTargetRow) => (v ? formatWholeCny(r.repeat_customer_target_exact ?? v) : '—'),
+              render: (v: number, r: SalesTargetRow) => (v ? formatWholeCny(r.repeat_customer_target_exact ?? v) : '-'),
             },
             {
               title: '复购实际',
@@ -1481,7 +1481,7 @@ export default function AnalyticsPage() {
               // 没冻日期，这里就是空的 —— 如实说「未记录」，不拿现在的订单
               // 重算一个顶上（那正是自相矛盾的来源：归属一月、日期跳三月）。
               render: (v?: string | null, r?: { record_type?: string }) =>
-                v ?? (r?.record_type === 'customer' ? '未记录' : '—'),
+                v ?? (r?.record_type === 'customer' ? '未记录' : '-'),
             },
           ]}
           dataSource={drilldownQuery.data?.items ?? []}

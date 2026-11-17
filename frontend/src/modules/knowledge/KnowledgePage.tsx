@@ -1224,7 +1224,7 @@ export default function KnowledgePage() {
                   { title: '时间', dataIndex: 'time', width: 180, render: (value: string | null) => {
                     return formatApprovalEventTime(value).replace('尚未返回', '未返回')
                   } },
-                  { title: '处理意见', dataIndex: 'remark', render: (value: string) => value || '—' },
+                  { title: '处理意见', dataIndex: 'remark', render: (value: string) => value || '-' },
                 ]} /> : <div>钉钉尚未返回节点或操作记录，稍后再查看；最终结果以本轮审批总状态为准。</div>}
               <OaFormSnapshot result={row.result} />
             </div>

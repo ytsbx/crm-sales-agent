@@ -64,8 +64,8 @@ export default function PersonalProfilePanel() {
     <div style={{ display: 'grid', gap: 16 }}>
       <SectionCard title="我的信息">
         <div style={{ display: 'grid', gap: 10, fontSize: 13 }}>
-          <Row label="姓名" value={user?.name ?? '—'} />
-          <Row label="登录账号" value={user?.username ?? '—'} />
+          <Row label="姓名" value={user?.name ?? '-'} />
+          <Row label="登录账号" value={user?.username ?? '-'} />
           <Row label="部门" value={user?.department ?? '未分配部门'} />
           <Row
             label="角色"
@@ -76,7 +76,7 @@ export default function PersonalProfilePanel() {
           />
           <Row
             label="数据范围"
-            value={SCOPE_LABEL[user?.data_scope ?? ''] ?? user?.data_scope ?? '—'}
+            value={SCOPE_LABEL[user?.data_scope ?? ''] ?? user?.data_scope ?? '-'}
           />
         </div>
         <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)' }}>

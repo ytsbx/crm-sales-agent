@@ -183,7 +183,7 @@ function reopenedHint(before: string | undefined, after: string): string | null 
 
 /** 生产资料这类"可有可无"的字段统一显示成 —，而不是一片空白。 */
 function dash(value?: string | null) {
-  return value && value.trim() ? value : '—'
+  return value && value.trim() ? value : '-'
 }
 
 export default function SampleListPage() {
@@ -1026,12 +1026,12 @@ export default function SampleListPage() {
                     title: '车间依据',
                     render: (_: unknown, row: SampleItem) => {
                       const spec = [row.material, row.craft].filter(Boolean).join(' / ')
-                      if (!row.drawing_version) return spec || '—'
+                      if (!row.drawing_version) return spec || '-'
                       return spec ? `${spec}（图纸 ${row.drawing_version}）` : `图纸 ${row.drawing_version}`
                     },
                   },
-                  { title: '本次备注', dataIndex: 'remark', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '—'}{row.source_snapshot && (v || '') !== (row.source_snapshot.remark || '') && <div style={{ fontSize: 12 }}>原备注：{row.source_snapshot.remark || '未记录'}</div>}</div> },
-                  { title: '本次规格', dataIndex: 'specification', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '—'}{row.source_snapshot && v !== row.source_snapshot.specification && <div style={{ fontSize: 12 }}>原规格：{row.source_snapshot.specification || '未记录'}</div>}</div> },
+                  { title: '本次备注', dataIndex: 'remark', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '-'}{row.source_snapshot && (v || '') !== (row.source_snapshot.remark || '') && <div style={{ fontSize: 12 }}>原备注：{row.source_snapshot.remark || '未记录'}</div>}</div> },
+                  { title: '本次规格', dataIndex: 'specification', render: (v: string | null, row: SampleRequestRow['items'][number]) => <div>{v || '-'}{row.source_snapshot && v !== row.source_snapshot.specification && <div style={{ fontSize: 12 }}>原规格：{row.source_snapshot.specification || '未记录'}</div>}</div> },
                   // 已寄样/已签收不给改：后端也会拒，这里不显示入口省得点了才报错
                   ...(canManage && !['shipped', 'signed'].includes(detail.status)
                     ? [
@@ -1452,7 +1452,7 @@ export default function SampleListPage() {
                           制作记录：
                           {detail.made_events.map((event, index) => (
                             <div key={event.key ?? index} style={{ marginLeft: 8 }}>
-                              · {event.at ? formatBeijingDate(event.at) : '—'}
+                              · {event.at ? formatBeijingDate(event.at) : '-'}
                               {event.note ? `：${event.note}` : ''}
                             </div>
                           ))}

@@ -1302,7 +1302,7 @@ export default function PriceCenterPage() {
                       {lookupResult.can_see_cost && (
                         <div style={{ color: 'var(--crm-text-3)' }}>
                           货成本：
-                          {lookupResult.cost ?? '—'}
+                          {lookupResult.cost ?? '-'}
                           {lookupResult.cost_note ? `（${lookupResult.cost_note}）` : ''}
                           {lookupResult.minimum_price != null
                             ? ` · 保护价 ${lookupResult.minimum_price}`

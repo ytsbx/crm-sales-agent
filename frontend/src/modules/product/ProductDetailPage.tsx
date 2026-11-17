@@ -410,7 +410,7 @@ export default function ProductDetailPage() {
       title: '来源',
       width: 100,
       ellipsis: true,
-      render: (_: unknown, record: SkuMasterField) => record.source_system ?? '—',
+      render: (_: unknown, record: SkuMasterField) => record.source_system ?? '-',
     },
     {
       title: '来源状态',
@@ -430,7 +430,7 @@ export default function ProductDetailPage() {
       title: '来源更新时间',
       width: 150,
       render: (_: unknown, record: SkuMasterField) =>
-        record.source_updated_at ? formatBeijingTime(record.source_updated_at) : '—',
+        record.source_updated_at ? formatBeijingTime(record.source_updated_at) : '-',
     },
     {
       title: '权威归属',
@@ -470,14 +470,14 @@ export default function ProductDetailPage() {
             {record.local_differs_from_confirmed && ' ← 本地已改'}
           </span>
         ) : (
-          '—'
+          '-'
         ),
     },
     {
       title: '确认版本',
       width: 92,
       render: (_: unknown, record: SkuMasterField) =>
-        record.confirmed_version > 0 ? `v${record.confirmed_version}` : '—',
+        record.confirmed_version > 0 ? `v${record.confirmed_version}` : '-',
     },
     {
       title: '状态',
@@ -1007,7 +1007,7 @@ export default function ProductDetailPage() {
                 columns={[
                   { title: '来源系统', dataIndex: 'system_type', width: 110 },
                   { title: '外部编码', dataIndex: 'external_code', width: 150 },
-                  { title: '外部名称', dataIndex: 'external_name', width: 150, render: (v: string | null) => v ?? '—' },
+                  { title: '外部名称', dataIndex: 'external_name', width: 150, render: (v: string | null) => v ?? '-' },
                   {
                     title: '状态', dataIndex: 'match_status', width: 100,
                     render: (v: string) => ({ matched: '已匹配', pending: '待匹配', conflict: '有冲突', renamed: '已改码', stopped: '已停用' }[v] ?? v),
@@ -1182,7 +1182,7 @@ export default function ProductDetailPage() {
                     <Tag color="orange">{DIFF_TYPE_LABELS[diff.diff_type] ?? diff.diff_type}</Tag>
                     {diff.field_label && <span>{diff.field_label}</span>}
                     <span style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-                      本地 {String(diff.current_value ?? '—')} → 来源{' '}
+                      本地 {String(diff.current_value ?? '-')} → 来源{' '}
                       {diff.incoming_value === null || diff.incoming_value === undefined
                         ? '空值'
                         : String(diff.incoming_value)}

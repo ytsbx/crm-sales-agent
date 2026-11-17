@@ -947,7 +947,7 @@ export default function WeComPage() {
                     {
                       title: '对象',
                       dataIndex: 'label',
-                      render: (v: string | null) => v || '—',
+                      render: (v: string | null) => v || '-',
                     },
                     {
                       title: 'CRM 侧',
@@ -1011,7 +1011,7 @@ export default function WeComPage() {
                       dataIndex: 'label',
                       width: 200,
                       ellipsis: true,
-                      render: (v: string | null) => v || '—',
+                      render: (v: string | null) => v || '-',
                     },
                     {
                       title: 'CRM 侧',
@@ -1027,7 +1027,7 @@ export default function WeComPage() {
                       title: '说明',
                       dataIndex: 'crm_error',
                       ellipsis: true,
-                      render: (v: string | null) => v || '—',
+                      render: (v: string | null) => v || '-',
                     },
                   ]}
                 />

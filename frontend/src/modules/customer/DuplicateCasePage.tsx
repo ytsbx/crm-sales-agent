@@ -151,7 +151,7 @@ export default function DuplicateCasePage() {
               title: '相似度',
               dataIndex: 'score',
               width: 90,
-              render: (v: number | null) => (v == null ? '—' : `${v} 分`),
+              render: (v: number | null) => (v == null ? '-' : `${v} 分`),
             },
             {
               title: '来源',
@@ -174,7 +174,7 @@ export default function DuplicateCasePage() {
                     待裁定
                   </Tag>
                 ) : (
-                  (v ?? '—')
+                  (v ?? '-')
                 ),
             },
             {

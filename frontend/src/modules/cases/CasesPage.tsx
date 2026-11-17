@@ -991,7 +991,7 @@ export default function CasesPage() {
                         </span>
                         <span style={{ flex: 1 }} />
                         <span style={{ color: 'var(--crm-text-3)' }}>
-                          {round.reviewer_name || '—'}
+                          {round.reviewer_name || '-'}
                         </span>
                         <span style={{ color: 'var(--crm-text-3)' }}>
                           {round.reviewed_at ? formatBeijingTime(round.reviewed_at) : ''}

@@ -91,7 +91,7 @@ function useClampPage(
 
 /** 去向里"打不开的那些情况"该显示什么 —— 别让用户对着空白猜。 */
 const MERGE_STATE_TEXT: Record<MergeRef['state'], string> = {
-  ok: '—',
+  ok: '-',
   forbidden: '合并目标无查看权限',
   gone: '合并目标已不存在',
   loop: '合并去向异常',
@@ -112,13 +112,13 @@ const HINT: CSSProperties = { color: 'var(--crm-text-3)' }
 const CUSTOMER_REMOVED_TEXT: Record<RemovedVia, string> = {
   direct: '直接删除',
   merged: '被合并移除',
-  with_product: '—',
+  with_product: '-',
 }
 
 const SKU_REMOVED_TEXT: Record<RemovedVia, string> = {
   direct: '单独删除',
   with_product: '随产品删除',
-  merged: '—',
+  merged: '-',
 }
 
 /**
@@ -128,7 +128,7 @@ const SKU_REMOVED_TEXT: Record<RemovedVia, string> = {
  * 负责人说的是"这客户归谁管"，跟"谁删的"是两件事，混起来会让人找错人。
  */
 const renderDeletedBy = (name: string | null, pending: boolean) =>
-  pending ? <span style={HINT}>历史操作人待核实</span> : (name ?? '—')
+  pending ? <span style={HINT}>历史操作人待核实</span> : (name ?? '-')
 
 function LeadsPanel() {
   const { can } = usePermissions()

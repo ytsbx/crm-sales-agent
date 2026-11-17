@@ -837,7 +837,7 @@ export default function CustomerDetailPage() {
                         <span className="cust-pano-value">
                           {/* 查不到就是查不到：没权限时接口会 403，这里显示「—」
                               而不是 0 —— 0 会被读成"这家客户没有订单"。 */}
-                          {tile.value === undefined || tile.value === null ? '—' : tile.value}
+                          {tile.value === undefined || tile.value === null ? '-' : tile.value}
                           {tile.value !== undefined && tile.value !== null && (
                             <span className="cust-pano-unit">条</span>
                           )}
