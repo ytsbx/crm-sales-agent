@@ -222,7 +222,8 @@ try {
   let browserStderr=''
   browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']})
   browser.stderr.on('data',chunk=>{browserStderr=(browserStderr+chunk.toString()).slice(-8000)})
-  for(let i=0;!existsSync(join(profile,'DevToolsActivePort'));i++){if(i>100)throw Error(`browser timeout (exit=${browser.exitCode}, signal=${browser.signalCode}): ${browserStderr}`);await sleep(100)}
+  // CI 机器忙时 Chrome 启动能超 10 秒（2026-11-16 晚两条 browser timeout 假红），上限放宽到 60 秒
+  for(let i=0;!existsSync(join(profile,'DevToolsActivePort'));i++){if(i>600)throw Error(`browser timeout (exit=${browser.exitCode}, signal=${browser.signalCode}): ${browserStderr}`);await sleep(100)}
   const debug=readFileSync(join(profile,'DevToolsActivePort'),'utf8').split('\n')[0]
   const target=await (await fetch(`http://127.0.0.1:${debug}/json/new?about:blank`,{method:'PUT'})).json()
   socket=new WebSocket(target.webSocketDebuggerUrl)
@@ -235,7 +236,7 @@ try {
     pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}))
   })
   const evaluate=async expression=>{const r=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw Error((r.exceptionDetails.exception?.description ?? r.exceptionDetails.text)+'\nExpression: '+expression);return r.result.value}
-  const waitFor=async expression=>{for(let i=0;i<100;i++){if(await evaluate(`Boolean(document.body && (${expression}))`))return;await sleep(100)}throw Error('condition timed out: '+expression+'\n'+await evaluate('document.body?.innerText.slice(0,1800) ?? "<body not ready>"'))}
+  const waitFor=async expression=>{for(let i=0;i<200;i++){if(await evaluate(`Boolean(document.body && (${expression}))`))return;await sleep(100)}throw Error('condition timed out: '+expression+'\n'+await evaluate('document.body?.innerText.slice(0,1800) ?? "<body not ready>"'))}
   await send('Page.enable')
   const auth=JSON.stringify({state:{token:'isolated-local-only',user},version:0})
   await send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('crm-auth',${JSON.stringify(auth)})`})

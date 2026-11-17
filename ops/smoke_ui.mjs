@@ -63,7 +63,10 @@ const APP_BASE = process.env.APP_BASE ?? 'http://localhost:5274'
 const API_BASE = process.env.API_BASE ?? 'http://127.0.0.1:8008'
 const USERNAME = process.env.SMOKE_USER ?? 'admin'
 const PASSWORD = process.env.SMOKE_PASSWORD ?? 'admin123'
-const CDP_PORT = Number(process.env.CDP_PORT ?? 9333)
+// 默认端口按进程号取（档案目录名跟着端口走）：写死 9333 时两套冒烟同时跑会抢
+// 同一个端口和同一个档案目录，渲染卡死 / ENOTEMPTY 假红都撞过（2026-11-17）。
+// 两套同时跑在多 agent 并行的开发机上很常见。显式传 CDP_PORT 仍可固定端口。
+const CDP_PORT = Number(process.env.CDP_PORT ?? (20000 + (process.pid % 20000)))
 const OUT_DIR = process.env.SMOKE_OUT ?? join(tmpdir(), 'crm-smoke')
 const PROFILE_DIR = join(tmpdir(), `crm-smoke-profile-${CDP_PORT}`)
 const FIXTURES_ENABLED = process.env.SMOKE_ENABLE_FIXTURES === '1'
@@ -574,7 +577,7 @@ async function pickInFieldDropdown(client, labelPart, optionText) {
   return 'no-option'
 }
 
-async function waitForText(client, text, timeoutMs = 8000) {
+async function waitForText(client, text, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const result = await client.send('Runtime.evaluate', {
@@ -1040,7 +1043,8 @@ async function apiLogin() {
 }
 
 async function waitForCdp() {
-  for (let i = 0; i < 60; i += 1) {
+  // CI 机器忙时 Chrome 启动能超 15 秒，上限放宽到 60 秒（2026-11-16 晚 browser timeout 假红）
+  for (let i = 0; i < 240; i += 1) {
     try {
       const response = await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`)
       if (response.ok) return
@@ -1076,8 +1080,8 @@ function connect(wsUrl) {
           return new Promise((res, rej) => {
             const timer = setTimeout(() => {
               pending.delete(id)
-              rej(new Error(`浏览器命令 ${method} 超过 30 秒未响应`))
-            }, 30000)
+              rej(new Error(`浏览器命令 ${method} 超过 60 秒未响应`))
+            }, 60000)
             pending.set(id, { resolve: res, reject: rej, timer })
             socket.send(JSON.stringify({ id, method, params }))
           })
@@ -1108,7 +1112,13 @@ function connect(wsUrl) {
 
 async function main() {
   assertSafeTargets()
-  rmSync(PROFILE_DIR, { recursive: true, force: true })
+  // 上次运行卡死时浏览器可能还占着这个目录（2026-11-17 实测连撞两次 ENOTEMPTY）：
+  // 清不掉也别当场死，交给启动等待报「调试端口没有就绪」——那才是人看得懂的错误。
+  try {
+    rmSync(PROFILE_DIR, { recursive: true, force: true })
+  } catch (error) {
+    console.log(`（提示：残留的临时目录没清掉（${error.code ?? error.message}），继续尝试启动浏览器）`)
+  }
   mkdirSync(OUT_DIR, { recursive: true })
   // 收尾清扫的时间窗起点：本脚本之前产生的通知一律不动
   const runStartedAt = new Date().toISOString()
@@ -2174,7 +2184,11 @@ async function main() {
       await Promise.race([client.send('Browser.close').catch(() => {}), sleep(1000)])
       client.close()
     }
+    // 温和退不掉就强杀：卡死的浏览器（命令无响应那种）不认 SIGTERM，尸体会占着
+    // 固定档案目录，下一轮启动清理直接被 ENOTEMPTY 打死（2026-11-17 实测连撞两次）。
     browser.kill()
+    const exited = await Promise.race([new Promise(r => browser.once('exit', () => r(true))), sleep(3000).then(() => false)])
+    if (!exited) browser.kill('SIGKILL')
     await sleep(300)
     // 清理临时 profile。这里失败**不能算测试失败**：
     // 上一次运行被强杀时浏览器进程可能还占着目录（Windows 上会 EPERM），
