@@ -26,7 +26,10 @@ const EVENT_ROWS: Array<{ key: keyof NotificationSettings['wecom_events']; label
   { key: 'payment', label: '回款提醒（收到款 / 确认）' },
   // 领导口径的"过程可见"：报价提交 / 打样 / 下单自动留痕推业务主管。
   // 后端早就支持这一类，界面漏了开关——等于领导要么全收、要么一类都收不到
-  { key: 'followup', label: '业务过程通知（跟进 / 报价 / 打样 / 订单 / 交期 / 发货 / 回款 → 主管）' },
+  // 括注原先把七种事件全列一遍（"跟进 / 报价 / 打样 / 订单 / 交期 / 发货 / 回款 → 主管"），
+  // 在分级表的 200px 标签列里折成三行、把行高撑乱；同一批事件上面「企微通知范围」
+  // 已经列全，这里收成一句能走完一行的话。
+  { key: 'followup', label: '业务过程通知（给主管）' },
 ]
 
 export default function NotificationSettingsPanel() {
@@ -110,7 +113,7 @@ export default function NotificationSettingsPanel() {
   }
 
   return (
-    <div style={{ display: 'grid', gap: 16, maxWidth: 720 }}>
+    <div style={{ display: 'grid', gap: 16, maxWidth: 920 }}>
       <SectionCard>
         <div style={{ fontWeight: 600, marginBottom: 12 }}>通知渠道</div>
         <div style={{ display: 'grid', gap: 14 }}>
@@ -188,7 +191,7 @@ export default function NotificationSettingsPanel() {
         {policy && (
           <div style={{ display: 'grid', gap: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontSize: 13, width: 120 }}>默认（未指定类型）</span>
+              <span style={{ fontSize: 13, width: 200 }}>默认（未指定类型）</span>
               <Select
                 value={policy.default_level}
                 onChange={(v) => setPolicy({ ...policy, default_level: v as string })}
@@ -201,7 +204,7 @@ export default function NotificationSettingsPanel() {
             </div>
             {EVENT_ROWS.map((row) => (
               <div key={row.key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 13, width: 120 }}>{row.label}</span>
+                <span style={{ fontSize: 13, width: 200 }}>{row.label}</span>
                 <Select
                   value={policy.by_type[row.key] ?? ''}
                   onChange={(v) =>
