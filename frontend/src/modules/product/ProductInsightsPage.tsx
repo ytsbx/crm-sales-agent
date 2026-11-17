@@ -8,6 +8,7 @@ import { isSafeExternalUrl, safeExternalUrls } from '../../shared/safe-url'
 import { usePermissions } from '../../shared/hooks/permissions'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 import StatusDot from '../../shared/components/StatusDot'
 import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
@@ -392,7 +393,9 @@ export default function ProductInsightsPage() {
               width: 100,
               // 每行都挂"（假设）"是纯噪音：表头已经写着「价格假设」，
               // 一列四行重复同样四个字，反而把数字本身压得看不出来。
-              render: (v: number | null) => (v == null ? '-' : `¥${v}`),
+              // 单价统一两位小数（2026-11-17 视觉审视 V-05）：¥2.3 / ¥86 / ¥4.8 混着看，
+              // 同一列的数字不像一套系统。统计卡是否用整数另行讨论，单价这层先统一。
+              render: (v: number | null) => (v == null ? '-' : formatMoney(toTwoDecimals(v), 'CNY')),
             },
             { title: '负责人', dataIndex: 'owner_name', width: 80, render: (v: string | null) => v ?? '-' },
             {

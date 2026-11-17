@@ -13,7 +13,7 @@ import {
   requiredNumberOrThrow,
 } from '../../shared/number-input'
 import { calendarDayOrToday } from '../../shared/calendar-day'
-import { toTwoDecimals } from '../../shared/components/money'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
@@ -103,6 +103,14 @@ const HISTORY_FIELD_LABEL: Record<string, string> = {
   quoted_price: '单价',
   amount: '金额',
   total_amount: '总额',
+  // 报价单详情的这几条后端用的是 `total` / `subtotal` 这类简称，
+  // 之前没登记，于是「变更内容」直接印出英文 `total: 14,286 → 14,316`
+  total: '报价总额',
+  subtotal: '小计',
+  grand_total: '应付合计',
+  freight_amount: '运费',
+  other_fee: '其他费用',
+  discount_amount: '优惠',
   sku_id: '产品',
   sku_code: '产品编码',
   sku_name: '产品名称',
@@ -153,6 +161,12 @@ const MONEY_FIELDS = new Set([
   'guide_price',
   'minimum_price',
   'agreed_price',
+  'total',
+  'subtotal',
+  'grand_total',
+  'freight_amount',
+  'other_fee',
+  'discount_amount',
 ])
 
 /**
@@ -467,7 +481,13 @@ function historySummary(row: PricingHistoryRow): string {
   return fallback ? `重算：${fallback}` : '无字段变化'
 }
 
-const money = (value?: number | null) => (value === null || value === undefined ? '-' : `¥${value}`)
+/**
+ * 价格中心的金额展示：空值给 `-`，有值统一两位小数。
+ * 原来直接 `¥${value}`，于是同一页能看到 `¥90`、`¥0.9`、`¥3.5`
+ * —— 单价这种要跟客户对账的数字不该省小数位（2026-11-17 视觉审视 V-05 / 5.2）。
+ */
+const money = (value?: number | null) =>
+  value === null || value === undefined ? '-' : formatMoney(toTwoDecimals(value), 'CNY')
 
 /**
  * 价格规则 / 客户特殊价弹窗的**空表单**（模块级常量）。
@@ -1918,7 +1938,14 @@ export default function PriceCenterPage() {
                   {
                     title: '变更内容',
                     dataIndex: 'after',
-                    render: (_: unknown, record: PricingHistoryRow) => historySummary(record),
+                    // 原来这列继承表格的省略号，长一点的变更只剩「新增：报价单号…」，
+                    // 关键的「状态 / 报价总额」全被吃掉（2026-11-17 视觉审视）。
+                    // 允许折行，最多两行由行高自然撑开。
+                    render: (_: unknown, record: PricingHistoryRow) => (
+                      <span style={{ display: 'inline-block', whiteSpace: 'normal', textAlign: 'left', maxWidth: 360 }}>
+                        {historySummary(record)}
+                      </span>
+                    ),
                   },
                   {
                     title: '操作人',
