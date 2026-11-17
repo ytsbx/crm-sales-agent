@@ -1834,7 +1834,9 @@ export default function QuoteDetailPage() {
                 // 版本一审批通过就只剩「补填运费」，用户想录真实运费**只能再加一条**，
                 // 多条运费会被累加进总额 —— 那张「订单 501 / 报价 581」就是这么来的。
                 // 判据与「补填运费」按钮同源（`canEditFreightOnly`），没另立一套。
-                title: '',
+                // 表头原来留空（title: ''）—— 一张表的最后一列没有列名，
+                // 只能靠"改/删除"这两个词猜它是操作列；补上「操作」。
+                title: '操作',
                 width: 100,
                 render: (_: unknown, record: QuoteChargeRow) => {
                   if (!canManage) return null

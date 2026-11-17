@@ -1708,6 +1708,21 @@ a:not([href]) {
   table-layout: fixed;
 }
 
+/* 展开箭头（2026-11-17）：Semi 把 `semi-table-expand-icon` 塞进第一个单元格里，
+   它自己是个 inline 的 span，而我们的名称是两个块级 div —— 块级元素一律另起一行，
+   于是箭头孤零零吊在名称上方、还占掉一行高度（报价明细只有一条时特别明显）。
+   把首列内容改成 inline-block：箭头与名称回到同一行、名称的规格行仍在下面，
+   整组在格里居中（全站表格内容居中这条规矩照旧）。 */
+.quote-items-table .semi-table-row-cell:first-child > div {
+  display: inline-block;
+  vertical-align: top;
+}
+
+/* 箭头和名称之间留一点气，不要顶在一起 */
+.quote-items-table .semi-table-expand-icon {
+  margin-right: 6px;
+}
+
 /* 表格内容统一居中（2026-10-06 主人要求：全站表格一律居中，不留特例）。
    为什么要 !important：Semi 只在列上单独声明 align 时才给单元格写内联的
    对齐样式，全项目 80 张表里只有 8 个列写过（报价试算 7 列右对齐、洞察
