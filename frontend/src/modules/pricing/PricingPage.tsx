@@ -56,13 +56,17 @@ export default function PricingPage() {
   })
   const skusQuery = useQuery({ queryKey: ['skus-for-pricing'], queryFn: listSkusForPricing })
   const quantityNumber = Number(quantity)
+  // 金额/单价一律按**字符串**原样提交（2026-11-17）：后端这几个字段是 Decimal，
+  // 认得 "1.2345" 这种十进制字符串。先在浏览器里 `Number(...)` 转一道浮点，
+  // 位数一多就会丢精度（15 位以上的大金额会被写成 1e+18 或尾数乱跳），
+  // 后端再精确也救不回来。
   const payload = {
     sku_id: skuId,
     quantity: Number.isFinite(quantityNumber) && quantityNumber > 0 ? quantityNumber : 1,
     customer_id: customerId ?? null,
-    logistics_cost: logisticsCost.trim() ? Number(logisticsCost) : null,
-    target_margin: targetMargin.trim() ? Number(targetMargin) : null,
-    quoted_price: quotedPrice.trim() ? Number(quotedPrice) : null,
+    logistics_cost: logisticsCost.trim() ? logisticsCost.trim() : null,
+    target_margin: targetMargin.trim() ? targetMargin.trim() : null,
+    quoted_price: quotedPrice.trim() ? quotedPrice.trim() : null,
   }
 
   const resultQuery = useQuery({
@@ -98,10 +102,12 @@ export default function PricingPage() {
     mutationFn: () =>
       simulatePricing({
         base: payload,
+        // 候选价同样原样交给后端：这里只做「是不是正数」的过滤，
+        // 不再 Number() 转浮点 —— 极大单价转完就已经不是原来那个数了。
         candidates: candidatesText
           .split(/,|，/)
-          .map((item) => Number(item.trim()))
-          .filter((item) => Number.isFinite(item) && item > 0),
+          .map((item) => item.trim())
+          .filter((item) => /^\d+(?:\.\d+)?$/.test(item) && Number(item) > 0),
       }),
     onSuccess: (data) => setSimulation(data),
     onError: (error: Error) => Toast.error(error.message),
