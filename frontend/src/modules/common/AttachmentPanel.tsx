@@ -77,6 +77,23 @@ interface Props {
    * 于是由调用方传自己那句（2026-10-16 主人）。
    */
   hint?: string
+  /**
+   * 紧凑模式：不画顶部那句说明、表格用小号。
+   *
+   * 用在哪：它被塞进「发起审批」的表单里（询价提交弹窗），外面已经有一句
+   * 「先上传文件，再选择本次随申请提交的附件」，再重复一遍说明是废话；
+   * 表单里也经不起一张标准行高的表把弹窗顶长。
+   * 只是**排版变紧**，读取、上传、改名、删除的判据一个没变。
+   */
+  compact?: boolean
+  /**
+   * 要不要显示上传入口，默认显示。
+   *
+   * 用在哪：同一个弹窗里，「先传」和「回头管理已传文件」是两件事 ——
+   * 后者只需要看列表、删错传的，不该再摆一个上传按钮把人绕回去。
+   * 关掉时只是不显示按钮和文件选择框，列表与操作照旧。
+   */
+  showUpload?: boolean
 }
 
 export default function AttachmentPanel({
@@ -93,6 +110,8 @@ export default function AttachmentPanel({
   enabled = true,
   writePermission = 'file:manage',
   hint,
+  compact = false,
+  showUpload = true,
 }: Props) {
   const queryClient = useQueryClient()
   const { can } = usePermissions()
@@ -218,11 +237,14 @@ export default function AttachmentPanel({
   return (
     <>
       <div className="toolbar" style={{ minWidth: 0, maxWidth: '100%' }}>
-        <div style={{ color: 'var(--crm-text-3)', fontSize: 13, flex: '1 1 240px', minWidth: 0 }}>
-          {hint ?? '合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB'}
-        </div>
+        {/* 紧凑模式（塞在发起表单里）不画这句：外面已经写过一次要传什么 */}
+        {!compact && (
+          <div style={{ color: 'var(--crm-text-3)', fontSize: 13, flex: '1 1 240px', minWidth: 0 }}>
+            {hint ?? '合同、图纸、回款凭证都可以放在这里，单个文件不超过 20 MB'}
+          </div>
+        )}
         <div style={{ flex: 1 }} />
-        {canWrite && (
+        {canWrite && showUpload && (
           <>
             <input
               ref={inputRef}
@@ -247,7 +269,7 @@ export default function AttachmentPanel({
         {/* 没有写权限时，上传按钮的位置上放这段灰字：为什么传不了、缺哪个权限、找谁办。
             行内的「改名 / 删除」用的是同一道权限（file:manage），所以这句话一并说清，
             用户不会误以为"只是这一份文件不给改"（判据没动，那两个链接照旧按权限渲染）。 */}
-        {!canWrite && (
+        {!canWrite && showUpload && (
           <div
             data-blocked-click="1"
             className="blocked-hint-click"
@@ -269,7 +291,7 @@ export default function AttachmentPanel({
           style={{
             border: '1px dashed var(--crm-outline)',
             borderRadius: 'var(--crm-radius)',
-            padding: '18px 16px',
+            padding: compact ? '12px 12px' : '18px 16px',
             textAlign: 'center',
             color: 'var(--crm-text-3)',
             fontSize: 13,
@@ -372,6 +394,7 @@ export default function AttachmentPanel({
           },
         ]}
         dataSource={visibleFiles}
+        size={compact ? 'small' : 'default'}
         loading={query.isLoading}
         rowKey="id"
         pagination={false}

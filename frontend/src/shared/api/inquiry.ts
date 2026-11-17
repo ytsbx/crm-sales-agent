@@ -26,6 +26,15 @@ export interface CustomInquiryRow {
   version?: number
   root_id?: number | null
   revision_note?: string | null
+  /**
+   * 这条需求已经转出来的报价（后端 `linked_quotes_for` 按需求 id 聚合）。
+   *
+   * 为什么要有：同一条需求转成的报价是「原报价」，再点一次不该再生成一张新的，
+   * 而要能把人带回原报价上去改价或加版本。字段是后端已经在返回的，
+   * 前端类型这里补齐，页面才有判据（缺了它就只剩「生成报价」一个按钮）。
+   * 目前只返回 id 和报价号：够做入口，不需要金额口径。
+   */
+  linked_quotes?: Array<{ id: number; quote_no: string }>
   /** 已被新版取代（取代是版本属性，不覆盖业务 status） */
   superseded_at?: string | null
   is_superseded?: boolean

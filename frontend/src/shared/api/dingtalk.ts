@@ -153,6 +153,14 @@ export interface DingTalkSyncResult {
 
 
 export interface InquirySubmissionOptions {
+  /**
+   * 后端按**当前登录账号**算好的预填值（申请人姓名、部门）。
+   *
+   * 它只是表单的初始值，真正写进审批的是后端读取的当前人员与部门，
+   * 前端改不动身份（见 AGENTS.md：不得伪造提报人）。字段可选：
+   * 未配置同序/没有钉钉账号时后端不返回，界面就留空让人手填。
+   */
+  prefill?: { applicant_name?: string; department?: string }
   configured: boolean
   enabled: boolean
   quote_owner_required: boolean
