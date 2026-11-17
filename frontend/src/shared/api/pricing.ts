@@ -408,10 +408,19 @@ export interface PricePermissionVerdict {
 }
 
 export interface PricingScenario {
+  /** 兼容字段：浮点单价，仅供旧代码读取；展示请优先用 `quoted_price_exact`。 */
   quoted_price: number | null
+  /**
+   * 单价的十进制字符串（后端 2026-11-17 起返回）。
+   * 浮点会带出 1.234499999 这种尾数，前端一律读这个再交给 formatUnitPrice。
+   */
+  quoted_price_exact?: string | null
   profit: number | null
   profit_rate: number | null
+  /** 兼容字段：浮点订单金额，展示请优先用 `amount_exact`。 */
   amount: number | null
+  /** 订单金额的十进制字符串（后端按 line_amount 逐行到分），带两位到分。 */
+  amount_exact?: string | null
   approval_required: boolean
   reasons: string[]
 }

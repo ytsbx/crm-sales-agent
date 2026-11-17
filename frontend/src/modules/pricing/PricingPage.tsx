@@ -7,7 +7,7 @@ import { Banner, Button, Input, Select, Table, Tag, Toast } from '@douyinfe/semi
 import { listCustomers } from '../../shared/api/customer'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
-import { formatUnitPrice } from '../../shared/components/money'
+import { formatUnitPrice, formatMoney, toTwoDecimals } from '../../shared/components/money'
 import {
   calculatePrice,
   checkPricePermission,
@@ -422,7 +422,12 @@ export default function PricingPage() {
                   title: '候选报价',
                   dataIndex: 'quoted_price',
                   width: 120,
-                  render: (v: number | null) => money(v),
+                  // 后端 2026-11-17 起同时给浮点与十进制字符串：浮点可能带
+                  // 1.2344999 这种尾数，优先读 quoted_price_exact。
+                  render: (_: unknown, record: PricingScenario) =>
+                    record.quoted_price_exact != null || record.quoted_price != null
+                      ? formatUnitPrice(record.quoted_price_exact ?? record.quoted_price, 'CNY')
+                      : '-',
                 },
                 { title: '利润', dataIndex: 'profit', width: 110, render: (v: number | null) => money(v) },
                 {
@@ -435,7 +440,12 @@ export default function PricingPage() {
                   title: '订单金额',
                   dataIndex: 'amount',
                   width: 130,
-                  render: (v: number | null) => (v === null ? '-' : `¥${v.toLocaleString('zh-CN')}`),
+                  // 原来 `¥${v.toLocaleString()}`：数量 3、单价 1.2345 显示成「¥3.7」，
+                  // 既没有两位小数也没有千分位。金额读 amount_exact（后端逐行到分）。
+                  render: (_: unknown, record: PricingScenario) => {
+                    const exact = record.amount_exact ?? record.amount
+                    return exact == null ? '-' : formatMoney(toTwoDecimals(exact), 'CNY')
+                  },
                 },
                 {
                   title: '结论',
@@ -451,7 +461,10 @@ export default function PricingPage() {
                 },
               ]}
               dataSource={simulation.scenarios}
-              rowKey="quoted_price"
+              // 浮点单价做 key 会在 1.2345 / 1.23450 这类值上撞车；用精确字符串。
+              rowKey={(record?: PricingScenario) =>
+                String(record?.quoted_price_exact ?? record?.quoted_price ?? '')
+              }
               pagination={false}
               empty="没有可模拟的价格"
             />
