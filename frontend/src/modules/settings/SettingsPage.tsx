@@ -1482,14 +1482,19 @@ export default function SettingsPage() {
                     并存；已回收 / 已驳回 / 已作废的不动。三项的改动都会记进审计
                     （含修改前后值、以及同步重算了几条候选）。
                   </Typography.Paragraph>
-                  <div
-                    style={{
-                      display: 'grid',
-                      gap: 16,
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
-                    }}
-                  >
-                    <div>
+                  {/* 三项原来横排成三列，每列下面挂一段三四行的灰色说明 ——
+                      三段说明离得远、又都压在下沿，读起来像三张便签贴在一起。
+                      改成一行一项：名称 200px、控件 200 上下、说明右对齐占剩下的宽度，
+                      每项一行或两行，纵向是一条干净的左边缘。 */}
+                  <div style={{ display: 'grid', gap: 18 }}>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
+                        gap: 16,
+                        alignItems: 'start',
+                      }}
+                    >
                       <FormLabel>回收预告期（天）</FormLabel>
                       <Input
                         key={`notice-${noticeSetting?.value?.days ?? ''}`}
@@ -1516,7 +1521,14 @@ export default function SettingsPage() {
                         {noticeSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
-                    <div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
+                        gap: 16,
+                        alignItems: 'start',
+                      }}
+                    >
                       <FormLabel>主管暂缓等待期（天）</FormLabel>
                       <Input
                         key={`defer-${deferSetting?.value?.days ?? ''}`}
@@ -1543,7 +1555,14 @@ export default function SettingsPage() {
                         {deferSetting?.is_default ? '（当前为开发默认值）' : ''}
                       </div>
                     </div>
-                    <div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '210px 240px minmax(0, 1fr)',
+                        gap: 16,
+                        alignItems: 'start',
+                      }}
+                    >
                       <FormLabel>恢复已回收客户所需权限</FormLabel>
                       <Select
                         value={String(restoreSetting?.value?.text ?? 'customer:assign')}
