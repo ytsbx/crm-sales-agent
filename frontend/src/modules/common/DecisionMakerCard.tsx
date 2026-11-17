@@ -137,22 +137,9 @@ export default function DecisionMakerCard({
               border: '1px solid var(--crm-surface-high)',
             }}
           >
-            <div
-              style={{
-                width: 40,
-                height: 40,
-                flex: '0 0 40px',
-                borderRadius: '50%',
-                background: 'var(--crm-primary-soft)',
-                color: 'var(--crm-primary)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 600,
-              }}
-            >
-              {primary.name.slice(0, 1)}
-            </div>
+            {/* 头像占位去掉了（2026-11-17）：原来是个 40px 圆形，里面放姓名的第一个字。
+                姓名常常以「【全场景演示】」开头，第一个字就是「【」，
+                圆形里孤零零一个方括号，比没有还难看。姓名本身就是最好的标识。 */}
             <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span style={{ fontWeight: 600 }}>{primary.name}</span>

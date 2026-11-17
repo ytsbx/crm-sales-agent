@@ -478,22 +478,9 @@ export default function WorkbenchPage() {
           <div style={{ display: 'grid', gap: 12 }}>
             {activities.map((row) => (
               <div key={row.id} style={{ display: 'flex', gap: 10 }}>
-                <span
-                  style={{
-                    width: 26,
-                    height: 26,
-                    borderRadius: 8,
-                    flexShrink: 0,
-                    background: 'var(--crm-surface-low)',
-                    color: 'var(--crm-primary)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 12,
-                  }}
-                >
-                  {row.operator.slice(0, 1)}
-                </span>
+                {/* 头像方块去掉了（2026-11-17）：26px 灰色小方块里放操作人姓名的第一个字，
+                    一个方框包一个字，既不像头像也不提供任何信息。
+                    操作人本身就在下一行加粗显示，直接去掉更干净。 */}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13 }}>
                     <span style={{ fontWeight: 600 }}>{row.operator}</span> {row.title}

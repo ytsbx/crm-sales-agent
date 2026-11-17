@@ -840,7 +840,8 @@ export default function CustomerDetailPage() {
                       （查重会回显数据范围内联系人的信息）。 */}
                   {canEditContact && (
                     <Button
-                      theme="solid"
+                      theme="outline"
+                      type="primary"
                       onClick={() => {
                         setContactEditing(null)
                         setContactForm({ name: '', is_primary: false })
