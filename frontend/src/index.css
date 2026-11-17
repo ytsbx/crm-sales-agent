@@ -336,6 +336,10 @@ a:not([href]) {
   font-size: var(--crm-font-card);
   font-weight: 600;
   color: var(--crm-text);
+  /* 标题一律不折行：窄屏下被压成一列字（「报/价/明/细」）比省略号更难看。
+     真放不下时让同一行的按钮换行，而不是让标题竖起来。 */
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* 分组标题：把「这页分几块」写到界面上，而不是只写在代码注释里。
@@ -1534,10 +1538,23 @@ a:not([href]) {
 }
 
 .quote-money-block {
+  display: grid;
+  /* 左列宽一点：附加费用表有 4 列；右列金额汇总只有"标签 + 数字" */
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 28px;
   background: var(--crm-surface);
   border: 1px solid var(--crm-border);
   border-radius: var(--crm-radius);
   padding: 20px;
+}
+
+/* 窄屏塌成单列：两栏并排时各只剩约 180px，「应付合计」这类标签会被压成
+   逐字竖排（461px 实测）。上下叠不会更丑，只是要滚。 */
+@media (max-width: 760px) {
+  .quote-money-block {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
 }
 
 /* 栏内的两张"卡"降级成普通分区：去掉各自的底、框、内边距 */

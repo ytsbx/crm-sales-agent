@@ -1276,11 +1276,15 @@ export default function QuoteDetailPage() {
                 alignItems: 'flex-start',
                 gap: 8,
                 padding: '4px 0',
+                // 窄屏（461px）下这一行里还挂着「去处理」「下一步：…」两个不收缩的元素，
+                // 说明文字被挤成一条两三字的窄柱（右半屏全空）。允许换行后，
+                // 说明先占满整行，那两个标签掉到下一行。
+                flexWrap: 'wrap',
                 color: index === 0 ? 'var(--crm-text-1)' : 'var(--crm-text-3)',
               }}
             >
               <span style={{ flexShrink: 0 }}>{index === 0 ? '·' : '·'}</span>
-              <span style={{ flex: 1 }}>{todo.reason}</span>
+              <span style={{ flex: '1 1 220px', minWidth: 0 }}>{todo.reason}</span>
               {/* 能点的必须给去处：只说明"差什么"而不给入口，等于把问题换个地方放着 */}
               {todo.anchor && (
                 <a
@@ -1752,10 +1756,23 @@ export default function QuoteDetailPage() {
              （读 node_modules/@douyinfe/semi-ui/lib/es/collapse/item.js 确认）。
              所以这里在 header 内部自己排：左边标题、右边数字，用 flex 两端对齐。 */
           header={
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 16 }}>
-              <span style={{ fontSize: 14, fontWeight: 600, minWidth: 0 }}>
-                版本与方案对比 · 边际测算（What-if）
-                <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+            /* 窄屏（461px）下左侧标题被右侧「3 个版本 / 均价 / 毛利率」挤成一字一行。
+               这里允许换行、标题不折字：标题占一行，那几个数整组掉到下一行。 */
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 12, flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'baseline',
+                  flexWrap: 'wrap',
+                  columnGap: 8,
+                  rowGap: 2,
+                  fontSize: 14,
+                  fontWeight: 600,
+                  minWidth: 0,
+                }}
+              >
+                <span style={{ whiteSpace: 'nowrap' }}>版本与方案对比 · 边际测算（What-if）</span>
+                <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
                   要改价、要比较几套方案时点开看
                 </span>
               </span>
@@ -1839,10 +1856,10 @@ export default function QuoteDetailPage() {
           左列两张叠起来总高约 320，跟右列金额汇总（约 290）自然接近，
           空白没了，也不用手动补内容。
           （2026-11-16 主人圈出这块问"这个改了吗"。） */}
-      <div
-        className="quote-money-block"
-        style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.7fr) minmax(0, 1fr)', gap: 28 }}
-      >
+      {/* 列宽交给 index.css 的 .quote-money-block：宽屏 1.7:1.0、窄屏（≤760px）单列。
+          原来列宽写死在内联样式里，窄屏也不会塌成单列，两栏各剩约 180px，
+          右栏「应付合计」被压成逐字竖排（2026-11-17 461px 实拍）。 */}
+      <div className="quote-money-block">
         <SectionCard
           id="quote-charges"
           title="附加费用"

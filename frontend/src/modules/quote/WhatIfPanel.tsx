@@ -245,7 +245,9 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
     <>
       <SectionCard style={{ marginBottom: 16 }}>
         <div className="toolbar" style={{ marginBottom: 12 }}>
-          <div style={{ fontWeight: 600 }}>版本与方案对比（What-if）</div>
+          {/* 标题不折行：461px 下它和右边的说明抢同一行，被压成「版/本/与/方/案…」
+              逐字竖排（2026-11-17 窄屏复验）。让说明整句换到下一行。 */}
+          <div style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>版本与方案对比（What-if）</div>
           <div style={{ flex: 1 }} />
           <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
             旧版本不可覆盖，改价请新建版本

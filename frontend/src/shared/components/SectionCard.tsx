@@ -33,6 +33,11 @@ export default function SectionCard({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            // 窄屏下标题与按钮抢同一行，标题会被压成一个字一行（461px 实测
+            // 「报价明细」逐字竖排、按钮压进表格）。这里允许换行：
+            // 标题仍占一行，按钮整组掉到下一行，谁也不挤谁。
+            flexWrap: 'wrap',
+            gap: 12,
             marginBottom: 'var(--crm-space-4)',
           }}
         >

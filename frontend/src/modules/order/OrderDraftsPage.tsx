@@ -127,8 +127,17 @@ export default function OrderDraftsPage() {
     <SectionCard title="来源与本次明细"><p>来源：{draft.source_context.no} V{draft.source_context.version} · 草稿修订 {draft.revision} · 币种 {draft.currency}</p>
       {rows.map((row, index) => <div key={row.id} style={{ borderTop: '1px solid var(--crm-border)', padding: '12px 0' }}>
         <b>{row.name}</b><p>原采购数量：{row.source_snapshot.original_quantity == null ? '未记录' : formatQuantityText(row.source_snapshot.original_quantity)}</p>
-        <div style={{ display: 'flex', gap: 16 }}>本次数量：<Input aria-label="草稿数量" inputMode="decimal" value={String(row.quantity)} disabled={!editable} onChange={v => patch(index, { quantity: v })} />
-          单价：<Input aria-label="草稿单价" inputMode="decimal" value={row.unit_price == null ? '' : String(row.unit_price)} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} /></div>
+        {/* 「本次数量：」「单价：」原来跟输入框平铺在一个 flex 行里：窄屏放不下时，
+            标签会被压成「本/次/数/量」逐字换行（461px 实拍）。现在每组包一层
+            nowrap 小盒子，整组往下掉，标签和输入框不会被拆开。 */}
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+            本次数量：<Input style={{ width: 130 }} aria-label="草稿数量" inputMode="decimal" value={String(row.quantity)} disabled={!editable} onChange={v => patch(index, { quantity: v })} />
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+            单价：<Input style={{ width: 130 }} aria-label="草稿单价" inputMode="decimal" value={row.unit_price == null ? '' : String(row.unit_price)} placeholder="未核价" disabled={!editable} onChange={v => patch(index, { unit_price: v === '' ? null : v })} />
+          </span>
+        </div>
         <p>本次规格</p><TextArea value={row.specification ?? ''} disabled={!editable} onChange={v => patch(index, { specification: v })} />
         {(row.specification ?? '') !== (row.source_snapshot.specification ?? '') && <p>原规格：{row.source_snapshot.specification || '未记录'}</p>}
         <p>本次备注</p><TextArea value={row.remark ?? ''} disabled={!editable} onChange={v => patch(index, { remark: v })} />
