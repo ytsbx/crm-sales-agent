@@ -260,6 +260,25 @@ export default function AttachmentPanel({
           </div>
         )}
       </div>
+      {/* 一个附件都没有的时候不要再画"表头 + 一行『还没有附件』"：
+          六列空表头配一行灰字，像一张没加载完的表（报价、产品、客户、订单
+          四处都共用这个组件，四张页面底部都挂着这么一条空壳）。
+          改成一块虚线空框，说的是"这里就是放附件的地方，点右上角传"。 */}
+      {visibleFiles.length === 0 && !query.isLoading ? (
+        <div
+          style={{
+            border: '1px dashed var(--crm-outline)',
+            borderRadius: 'var(--crm-radius)',
+            padding: '18px 16px',
+            textAlign: 'center',
+            color: 'var(--crm-text-3)',
+            fontSize: 13,
+            lineHeight: 1.6,
+          }}
+        >
+          还没有附件 —— 点右上角「上传附件」添加
+        </div>
+      ) : (
       <Table<FileRow>
         style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}
         scroll={{ x: 1000 }}
@@ -358,6 +377,7 @@ export default function AttachmentPanel({
         pagination={false}
         empty="还没有附件"
       />
+      )}
 
       {/* 改名弹窗：只改展示名，磁盘上的文件不动 */}
       <Modal
