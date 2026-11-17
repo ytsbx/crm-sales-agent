@@ -137,7 +137,7 @@ export default function NotificationSettingsPanel() {
             <div>
               <div style={{ fontSize: 14 }}>企业微信通知</div>
               <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                通过企微应用发应用消息；需要成员已绑定企微 userid
+                通过企业微信发应用消息；成员需要先在企微绑定 CRM 账号
               </div>
             </div>
           </div>

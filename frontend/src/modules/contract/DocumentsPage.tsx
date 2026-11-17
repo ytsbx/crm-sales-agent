@@ -392,7 +392,18 @@ export default function DocumentsPage() {
               { title: '类型', dataIndex: 'doc_type_label', width: 85 },
               // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
               // 把后面的列全顶到屏幕外；200 是"销售合同-甲"这类标题的实测上限再留些余量。
-              { title: '标题', dataIndex: 'title', width: 160 },
+              {
+                title: '标题',
+                dataIndex: 'title',
+                width: 160,
+                // 标题超过列宽会被省略成「【全场景演示】销售…」，悬停要看得到全文
+                // （2026-11-17 视觉审视 V-03）。同时给 title 属性，键盘/读屏也能读到。
+                render: (v: string) => (
+                  <span title={v} style={{ display: 'inline-block', maxWidth: '100%' }}>
+                    {v}
+                  </span>
+                ),
+              },
               { title: '客户', dataIndex: 'customer_name', width: 95 },
               {
                 title: '状态',

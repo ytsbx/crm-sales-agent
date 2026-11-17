@@ -84,7 +84,9 @@ export default function NotificationBell() {
       if (data.sent) {
         Toast.success('已补投')
       } else {
-        Toast.warning(`仍未投出：${data.wecom_error ?? '原因未记录'}`)
+        // 后端原因里可能带内部开关名（如「推送已临时关闭（WECOM_PUSH_OFF）」），
+        // 展示前把括号里的英文环境变量抹掉，只留人话（2026-11-17 视觉审视 5.3）
+        Toast.warning(`仍未投出：${stripEnvCode(data.wecom_error) || '原因未记录'}`)
       }
       refresh()
     },
@@ -248,4 +250,14 @@ export default function NotificationBell() {
       </button>
     </Popover>
   )
+}
+
+
+/**
+ * 把后端文案里的英文环境变量名去掉：`推送已临时关闭（WECOM_PUSH_OFF）` → `推送已临时关闭`。
+ * 只认括号内「全大写 + 下划线」的词，正常中文括号内容不会被误删。
+ */
+function stripEnvCode(text?: string | null): string {
+  if (!text) return ''
+  return text.replace(/[（(]\s*[A-Z][A-Z0-9_]{3,}\s*[）)]/g, '').replace(/\s{2,}/g, ' ').trim()
 }

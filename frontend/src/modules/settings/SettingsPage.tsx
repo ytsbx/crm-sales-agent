@@ -1322,6 +1322,13 @@ export default function SettingsPage() {
                 >
                   新建字典项
                 </Button>
+                {/* 按钮置灰却不说为什么，用户只能猜（2026-11-17 视觉审视 V-04）。
+                    原因常驻在按钮旁边，填全了自动消失。 */}
+                {(!dictionaryForm.code.trim() || !dictionaryForm.label.trim()) && (
+                  <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                    请先填写编码和名称
+                  </span>
+                )}
               </div>
               <Table<DictionaryItemRow>
                 columns={[
