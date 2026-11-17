@@ -171,15 +171,20 @@ export default function OpportunityListPage() {
         subtitle="客户需求逐条录入，后续核价与报价都以需求明细为输入"
       />
 
-      {/* 7 张阶段卡：4 列排成 4+3，比 auto-fill 的 5+2 平衡（第二行不会只剩两张） */}
-      <div className="kpi-grid kpi-cols-4">
+      {/* 阶段漏斗：原来这里是 8 张 kpi-card（4+4 两行、每张 155 高），
+          每张卡里只有「条数 + 金额」两个数 —— 内容少却占了三百像素，
+          主人说的"内容少就别给大卡"就是这个。改成一条 8 格的漏斗条：
+          同一个阶段还是同一个位置，数字和金额都在，只是不再各占一张卡。 */}
+      <div className="stage-strip">
         {(funnelQuery.data ?? [])
           .filter((row) => row.count > 0 || row.sequence <= 4)
           .map((row) => (
-            <div className="kpi-card" key={row.stage_id}>
-              <div className="kpi-label">{row.stage_name}</div>
-              <div className="kpi-value">{row.count}</div>
-              <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginTop: 4 }}>
+            <div className="stage-tile" key={row.stage_id}>
+              <div className="stage-tile-label" title={row.stage_name}>
+                {row.stage_name}
+              </div>
+              <div className="stage-tile-value">{row.count}</div>
+              <div className="stage-tile-amount">
                 ¥{Math.round(row.amount).toLocaleString('zh-CN')}
               </div>
             </div>

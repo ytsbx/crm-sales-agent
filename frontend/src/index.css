@@ -550,6 +550,75 @@ a:not([href]) {
   align-items: center;
 }
 
+/* ============================================================
+   商机漏斗条（2026-11-17）
+   ------------------------------------------------------------
+   商机中心顶部 8 个阶段，每个阶段只有「条数 + 金额」两个数，
+   原来一律套 .kpi-card：8 张卡排成 4+4 两行、每张 155 高，
+   页面一进来先被两三百像素的白块吃掉，而每块里只有一个数字 ——
+   这正是主人反复说的"内容少却给大卡"。
+
+   改成一条：8 格并排在同一张白卡里，格与格用 1px 竖线分开，
+   高度压到 80 上下。它本来就是"漏斗各段的数量"，一条读起来
+   比八张卡更像一件事；数字与金额仍在，一个都没少。
+   窄屏用 auto-fit 自动换行，换行后竖线也跟着断开，不会出现
+   悬在行首的短线。
+   ============================================================ */
+.stage-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  background: var(--crm-surface);
+  border: 1px solid transparent;
+  border-radius: var(--crm-radius);
+  box-shadow: var(--crm-shadow);
+  margin-bottom: var(--crm-space-4);
+  overflow: hidden;
+}
+
+.stage-tile {
+  position: relative;
+  padding: 13px 16px 14px;
+  min-width: 0;
+}
+
+/* 分隔线只画在两格之间；每行的最后一格也会画，但下一行的首格
+   不会跟着有 —— auto-fit 换行时靠 :not(:last-child) 让最后一条不出现 */
+.stage-strip > .stage-tile + .stage-tile::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--crm-card-border);
+}
+
+.stage-tile-label {
+  color: var(--crm-text-3);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-tile-value {
+  color: var(--crm-text);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-tile-amount {
+  color: var(--crm-text-3);
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 数字是这一屏的主角：比页面标题还大一号，负字距让万元数字不散 */
 .kpi-value {
   font-size: var(--crm-font-kpi);
