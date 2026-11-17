@@ -13,6 +13,7 @@ import {
   Select,
   Table,
   Tag,
+  TextArea,
   Toast,
 } from '@douyinfe/semi-ui'
 
@@ -806,7 +807,10 @@ export default function ProductDetailPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>销售说明</div>
-            <Input
+            {/* 销售说明是给客户看的整句话，原来挤在单行输入框里 ——
+                写两句就看不见开头。换成两行文本域。 */}
+            <TextArea
+              rows={2}
               value={productForm.description ?? ''}
               onChange={(v) => setProductForm({ ...productForm, description: v })}
             />
@@ -907,12 +911,17 @@ export default function ProductDetailPage() {
               />
             </div>
           )}
+          {/* 尺寸/重量这些数字字段原来排成「3 列 + 4 列」两行 —— 左边缘对不齐，
+              一行只有三格时右边还空一格，看着像漏填了什么。
+              统一成四列两行，纵向一条线；单位从包装方式那行提上来，
+              包装方式单独通栏（它的例子是三个词，短了放不下）。 */}
           <div style={{ display: 'flex', gap: 12 }}>
             {(
               [
                 ['length', '长 (mm)'],
                 ['width', '宽 (mm)'],
                 ['height', '高 (mm)'],
+                ['weight', '单重 (kg)'],
               ] as const
             ).map(([field, label]) => (
               <div style={{ flex: 1 }} key={field}>
@@ -928,10 +937,10 @@ export default function ProductDetailPage() {
           <div style={{ display: 'flex', gap: 12 }}>
             {(
               [
-                ['weight', '单重 (kg)'],
                 ['carton_qty', '装箱数'],
                 ['carton_volume', '箱体积 (m³)'],
                 ['moq', '起订量（MOQ）'],
+                ['unit', '单位'],
               ] as const
             ).map(([field, label]) => (
               <div style={{ flex: 1 }} key={field}>
@@ -939,24 +948,18 @@ export default function ProductDetailPage() {
                 <Input
                   value={skuForm[field]}
                   onChange={(v) => setSkuForm({ ...skuForm, [field]: v })}
-                  placeholder="数字"
+                  placeholder={field === 'unit' ? '件' : '数字'}
                 />
               </div>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>包装方式</div>
-              <Input
-                value={skuForm.package_type}
-                onChange={(v) => setSkuForm({ ...skuForm, package_type: v })}
-                placeholder="编织袋 / 托盘 / 纸箱"
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ marginBottom: 4 }}>单位</div>
-              <Input value={skuForm.unit} onChange={(v) => setSkuForm({ ...skuForm, unit: v })} />
-            </div>
+          <div>
+            <div style={{ marginBottom: 4 }}>包装方式</div>
+            <Input
+              value={skuForm.package_type}
+              onChange={(v) => setSkuForm({ ...skuForm, package_type: v })}
+              placeholder="编织袋 / 托盘 / 纸箱"
+            />
           </div>
         </div>
       </Modal>

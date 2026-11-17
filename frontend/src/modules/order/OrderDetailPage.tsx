@@ -284,7 +284,8 @@ export default function OrderDetailPage() {
   const paymentsQuery = useQuery({
     queryKey: ['order-payments', orderId],
     queryFn: () => listOrderPayments(orderId),
-    enabled: Number.isFinite(orderId) && activeKey === 'payments',
+    // 底部「订单全景」要报收款笔数，所以不再只等页签激活
+    enabled: Number.isFinite(orderId),
   })
   const summaryQuery = useQuery({
     queryKey: ['order-finance', orderId],
@@ -295,7 +296,8 @@ export default function OrderDetailPage() {
   const shipmentsQuery = useQuery({
     queryKey: ['order-shipments', orderId],
     queryFn: () => listOrderShipments(orderId),
-    enabled: Number.isFinite(orderId) && activeKey === 'shipments',
+    // 同上：全景要报发货批次数
+    enabled: Number.isFinite(orderId),
   })
 
   const milestonesRefresh = () => {
@@ -1717,6 +1719,36 @@ export default function OrderDetailPage() {
           两件事都是"这单的外部凭据 / 这单的风险怎么看"，合成一张卡：
           段间用 1px 分隔线，每段一个 13px 小标题配一枚 22px 圆角小图标，
           和报价详情「对外与归档」同一套节奏。内容一个字没减。 */}
+      {/* 订单全景：这页到下面那张卡结束，底部还空三百来像素；
+          而"这单几行明细、排了几期应收、收了几笔、发了几批"散在五个页签里。
+          四个数字摆一条，点一下跳过去 —— 和客户/商机详情同一套做法。 */}
+      <SectionCard title="订单全景" style={{ marginTop: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+          {([
+            { key: 'items', label: '订单明细', value: itemsQuery.data?.length },
+            { key: 'receivables', label: '应收计划', value: receivablesQuery.data?.length },
+            { key: 'payments', label: '回款记录', value: paymentsQuery.data?.length },
+            { key: 'shipments', label: '发货批次', value: shipmentsQuery.data?.batches?.length },
+          ] as const).map((tile) => (
+            <button
+              key={tile.label}
+              type="button"
+              className="cust-pano-tile"
+              onClick={() => setActiveKey(tile.key)}
+              title={`跳到「${TABS.find((t) => t.itemKey === tile.key)?.tab ?? tile.key}」页签`}
+            >
+              <span className="cust-pano-label">{tile.label}</span>
+              <span className="cust-pano-value">
+                {tile.value === undefined || tile.value === null ? '—' : tile.value}
+                {tile.value !== undefined && tile.value !== null && (
+                  <span className="cust-pano-unit">条</span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+      </SectionCard>
+
       {(can('order:view') || can('agent:use')) && (
         <SectionCard style={{ marginTop: 16 }}>
           {can('order:view') && (

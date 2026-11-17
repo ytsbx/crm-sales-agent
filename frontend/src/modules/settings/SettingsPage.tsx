@@ -52,7 +52,7 @@ import {
   type TaskRuleRow,
   type DictionaryItemRow,
 } from '../../shared/api/settings'
-import { Button, Input, Modal, Popconfirm, Select, Switch, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Popconfirm, Select, Switch, TextArea, Toast } from '@douyinfe/semi-ui'
 import { usePermissions } from '../../shared/hooks/permissions'
 import type { SystemDepartment, SystemRole, SystemUser } from '../../shared/api/system'
 import AuditLogPanel from './AuditLogPanel'
@@ -2237,26 +2237,31 @@ export default function SettingsPage() {
               />
             </div>
           </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>状态</div>
-            <Select
-              style={{ width: '100%' }}
-              value={roleForm.status}
-              onChange={(value) => setRoleForm({ ...roleForm, status: value as string })}
-              optionList={[
-                { value: 'active', label: '启用' },
-                { value: 'disabled', label: '停用（该角色不再参与权限与数据范围）' },
-              ]}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>数据范围</div>
-            <Select
-              style={{ width: '100%' }}
-              value={roleForm.data_scope}
-              onChange={(value) => setRoleForm({ ...roleForm, data_scope: value as string })}
-              optionList={scopeOptions}
-            />
+          {/* 状态和数据范围都是两个字的下拉，各占一整行会把弹窗顶到 929px
+              （1440×1100 的屏幕只剩 70px 余量，1366×768 的笔记本直接溢出）。
+              并成一行，弹窗矮 60px，也跟上面「角色编码 / 角色名」形成同一节奏：短字段两列并排。 */}
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>状态</div>
+              <Select
+                style={{ width: '100%' }}
+                value={roleForm.status}
+                onChange={(value) => setRoleForm({ ...roleForm, status: value as string })}
+                optionList={[
+                  { value: 'active', label: '启用' },
+                  { value: 'disabled', label: '停用（该角色不再参与权限与数据范围）' },
+                ]}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>数据范围</div>
+              <Select
+                style={{ width: '100%' }}
+                value={roleForm.data_scope}
+                onChange={(value) => setRoleForm({ ...roleForm, data_scope: value as string })}
+                optionList={scopeOptions}
+              />
+            </div>
           </div>
           <div>
             <FormLabel style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>权限</FormLabel>
@@ -2278,7 +2283,10 @@ export default function SettingsPage() {
           </div>
           <div>
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>说明</div>
-            <Input
+            {/* 原来是个单行输入框 —— 一行高、右侧一大片空，写"这个角色干什么用"
+                只能看见小半句。换成两行文本域，高度和上面的搜索框一致。 */}
+            <TextArea
+              rows={2}
               value={roleForm.description}
               onChange={(value) => setRoleForm({ ...roleForm, description: value })}
             />
@@ -2317,7 +2325,7 @@ export default function SettingsPage() {
               optionList={deptOptions.filter((d) => d.value !== deptEditTarget?.id)}
             />
             <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 4 }}>
-              不能选自己或自己的下级，否则部门树会成环（后端会拦）。
+              不能选它自己，也不能选它的下级 —— 否则层级会绕成一个圈。
             </div>
           </div>
           <div>

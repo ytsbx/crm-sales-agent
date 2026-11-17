@@ -2210,9 +2210,25 @@ table:not(.semi-table) td {
  * 命名沿用项目习惯（`--crm-*` 变量，不写死颜色）。
  */
 .permission-picker {
+  position: relative;
   border: 1px solid var(--crm-border);
   border-radius: var(--crm-radius-sm);
   background: var(--crm-surface);
+}
+
+/* 权限列表是固定高度可滚的：滚到一半时最后一行被容器底边横着切一刀，
+   看着像"内容没加载完"。底部盖一层 28px 的白色渐隐，告诉眼睛"下面还有"，
+   切口就不刺眼了。pointer-events:none，不挡点击。 */
+.permission-picker::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 28px;
+  border-radius: 0 0 var(--crm-radius-sm) var(--crm-radius-sm);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--crm-surface) 72%);
+  pointer-events: none;
 }
 
 .permission-picker-bar {

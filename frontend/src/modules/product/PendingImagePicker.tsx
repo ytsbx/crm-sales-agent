@@ -64,10 +64,12 @@ export default function PendingImagePicker({
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+      {/* 提示语原来写两句话，在 680 宽的弹窗里折成三行，右边「选择图片」按钮
+          被挤到整块文字的垂直中间 —— 和左边文字基线对不上，看着像错位。
+          缩成一句能走完一行的话，按钮就稳稳停在第一行右侧。 */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
         <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
-          可以先选好图片，「点保存时一并上传」（单张不超过 {maxSizeMb} MB）。
-          保存后也能在列表的「图片」列随时补。
+          单张不超过 {maxSizeMb} MB，点保存时一起上传；存好后也能在列表里补。
         </div>
         <>
           <input

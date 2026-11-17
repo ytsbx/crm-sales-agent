@@ -110,11 +110,13 @@ export default function FollowUpModal({ visible, onClose, target, onCreated }: P
       <div style={{ display: 'grid', gap: 12 }}>
         <div>
           <FormLabel>跟进方式</FormLabel>
+          {/* 原来固定 180px：一张 520 宽的弹窗里，别的控件都通栏，只有它缩在左边，
+              看着像没对齐。改成通栏，整列左边缘一条线。 */}
           <Select
             value={typeOption.selectValue}
             onChange={typeOption.onSelect}
             optionList={TYPES}
-            style={{ width: 180 }}
+            style={{ width: '100%' }}
           />
           {typeOption.showInput && (
             <Input
