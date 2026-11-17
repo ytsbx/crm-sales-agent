@@ -53,10 +53,7 @@ export default function KpiStrip({
             style={{ cursor: item.onClick ? 'pointer' : 'default' }}
             onClick={item.onClick}
           >
-            <div className="kpi-label">
-              {item.tone && item.tone !== 'default' && <span className="kpi-dot" />}
-              {item.label}
-            </div>
+            <div className="kpi-label">{item.label}</div>
             <div className="kpi-value" style={{ color: tintValues ? tone.color : undefined }}>
               {item.value}
             </div>

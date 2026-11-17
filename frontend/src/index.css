@@ -642,110 +642,16 @@ a:not([href]) {
 .kpi-card.tone-warning { --kpi-accent: var(--crm-warning); }
 .kpi-card.tone-error   { --kpi-accent: var(--crm-error); }
 
-/* 色带画在卡片最上沿，同时给卡面加一层极淡的同色（6% → 白）。 */
+/* 颜色只留一条细边：2px 顶线，且压淡（与白色混到 35% 浓度）。
+   上一版用"顶线 + 7% 同色渐变"整块染色 —— 13 张卡铺满一屏后颜色面积太大，
+   主人说"太花了"。颜色在这里的作用只是让一类数认得出，不是装饰。 */
 .kpi-card.tone-primary,
 .kpi-card.tone-success,
 .kpi-card.tone-warning,
 .kpi-card.tone-error {
-  border-top: 3px solid var(--kpi-accent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--kpi-accent) 7%, #fff) 0%, #fff 58%)
-      padding-box,
-    var(--crm-surface);
+  border-top: 2px solid color-mix(in srgb, var(--kpi-accent) 38%, #fff);
 }
 
-/* 标签前的小圆点：颜色和色带同一支，扫一眼就知道这张卡属于哪一类 */
-.kpi-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--kpi-accent);
-  margin-right: 6px;
-  vertical-align: middle;
-  flex: none;
-}
-.kpi-label {
-  color: var(--crm-text-3);
-  font-size: 13px;
-  display: flex;
-  /* 小圆点 + 标签要贴左边一起走。原来是 space-between（为早年"标签左、数值右"
-     那套留的），加上圆点后圆点会被顶到最左、标签被推到最右，看着像两个东西。 */
-  justify-content: flex-start;
-  align-items: center;
-  gap: 2px;
-}
-
-/* ============================================================
-   商机漏斗条（2026-11-17）
-   ------------------------------------------------------------
-   商机中心顶部 8 个阶段，每个阶段只有「条数 + 金额」两个数，
-   原来一律套 .kpi-card：8 张卡排成 4+4 两行、每张 155 高，
-   页面一进来先被两三百像素的白块吃掉，而每块里只有一个数字 ——
-   这正是主人反复说的"内容少却给大卡"。
-
-   改成一条：8 格并排在同一张白卡里，格与格用 1px 竖线分开，
-   高度压到 80 上下。它本来就是"漏斗各段的数量"，一条读起来
-   比八张卡更像一件事；数字与金额仍在，一个都没少。
-   窄屏用 auto-fit 自动换行，换行后竖线也跟着断开，不会出现
-   悬在行首的短线。
-   ============================================================ */
-.stage-strip {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
-  background: var(--crm-surface);
-  border: 1px solid transparent;
-  border-radius: var(--crm-radius);
-  box-shadow: var(--crm-shadow);
-  margin-bottom: var(--crm-space-4);
-  overflow: hidden;
-}
-
-.stage-tile {
-  position: relative;
-  padding: 13px 16px 14px;
-  min-width: 0;
-}
-
-/* 分隔线只画在两格之间；每行的最后一格也会画，但下一行的首格
-   不会跟着有 —— auto-fit 换行时靠 :not(:last-child) 让最后一条不出现 */
-.stage-strip > .stage-tile + .stage-tile::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 12px;
-  bottom: 12px;
-  width: 1px;
-  background: var(--crm-card-border);
-}
-
-.stage-tile-label {
-  color: var(--crm-text-3);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.stage-tile-value {
-  color: var(--crm-text);
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 1.25;
-  margin-top: 2px;
-  font-variant-numeric: tabular-nums;
-}
-
-.stage-tile-amount {
-  color: var(--crm-text-3);
-  font-size: 11px;
-  line-height: 1.4;
-  margin-top: 1px;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 数字是这一屏的主角：比页面标题还大一号，负字距让万元数字不散 */
 .kpi-value {
   font-size: var(--crm-font-kpi);
   /* 数字用等宽字形（tabular-nums）：一排卡片里「60」「1」「¥30,300」的字符
@@ -2393,10 +2299,48 @@ table:not(.semi-table) td {
   display: flex;
   flex-wrap: wrap;
 }
+.kpi-pair {
+  /* 两个"只有一两个数"的指标并成一张卡：宽卡里塞两个数字，比两张半屏卡实在 */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  background: var(--crm-surface);
+  border: 1px solid transparent;
+  border-radius: var(--crm-radius);
+  box-shadow: var(--crm-shadow);
+  margin-bottom: var(--crm-space-4);
+  overflow: hidden;
+}
+.kpi-pair-cell {
+  position: relative;
+  padding: 16px 20px 18px;
+  min-width: 0;
+}
+/* 分隔线只画在"右邻有内容"的地方：换行成两行时不会在上方悬一条短线 */
+.kpi-pair-cell + .kpi-pair-cell {
+  border-left: 1px solid var(--crm-border);
+}
+.kpi-pair-cell.tone-success::before,
+.kpi-pair-cell.tone-error::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  height: 2px;
+  background: color-mix(in srgb, var(--crm-success) 38%, #fff);
+}
+.kpi-pair-cell.tone-error::before {
+  background: color-mix(in srgb, var(--crm-error) 38%, #fff);
+}
+.kpi-pair-hint {
+  margin-top: var(--crm-space-3);
+}
 .kpi-group .kpi-grid > .kpi-card {
   /* 基准 25% 必须扣掉卡间距（每行 4 张有 3 个 16px 空隙，摊到每张约 12px），
      否则 25%×4 + 间隙 > 100%，只能放下三张 */
-  flex: 0 0 calc(25% - 12px);
+  /* 从 0 0 25% 改成 1 1 25%：四张一行时宽度不变；只剩三张时这三张平分整行，
+     不再把右下角留成一块空白（主人原话「空着也不好看」）。 */
+  flex: 1 1 calc(25% - 12px);
   min-width: 196px;
   max-width: 100%;
 }

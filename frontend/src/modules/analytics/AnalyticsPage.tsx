@@ -571,27 +571,34 @@ export default function AnalyticsPage() {
         </div>
         <div className="kpi-group">
           <div className="kpi-group-head">履约与风险</div>
-          <KpiStrip
-            tintValues={false}
-            className="kpi-grid kpi-cols-4"
-            items={[
-              {
-                label: '准时交付率',
-                tone: 'success',
-                // 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟"
-                value: deliverySummary?.delivered_order_count
+          {/* 这两项各只有一个数，铺成两张半屏宽的大卡，卡里全是白 ——
+              正是主人反复说的"内容少却给大卡"。并成一张卡、两格并排：
+              读数、口径一句不少，占的高度只有原来的三分之一。 */}
+          <div className="kpi-pair">
+            <div className="kpi-pair-cell tone-success">
+              <div className="kpi-label">准时交付率</div>
+              <div className="kpi-value">
+                {/* 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟" */}
+                {deliverySummary?.delivered_order_count
                   ? `${(deliverySummary.on_time_rate * 100).toFixed(0)}%`
-                  : '-',
-                hint: `准时 ${deliverySummary?.on_time_count ?? 0} / 延迟 ${deliverySummary?.late_count ?? 0}`,
-              },
-              {
-                label: '交期风险',
-                tone: 'error',
-                value: `${deliverySummary?.risk_order_count ?? 0} 单`,
-                hint: `${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`,
-              },
-            ]}
-          />
+                  : '-'}
+              </div>
+              <div className="kpi-pair-hint">
+                <span className="chip chip-success">
+                  准时 {deliverySummary?.on_time_count ?? 0} / 延迟 {deliverySummary?.late_count ?? 0}
+                </span>
+              </div>
+            </div>
+            <div className="kpi-pair-cell tone-error">
+              <div className="kpi-label">交期风险</div>
+              <div className="kpi-value">{`${deliverySummary?.risk_order_count ?? 0} 单`}</div>
+              <div className="kpi-pair-hint">
+                <span className="chip chip-error">
+                  {`${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`}
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
