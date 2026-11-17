@@ -32,7 +32,7 @@ const RISK_LABEL: Record<string, string> = { high: '高风险', medium: '中风�
 
 /** 空值占位：一条淡灰横线。比 '-' 更像"这里本来就没东西"，不会读成减号。 */
 function EmptyMark() {
-  return <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+  return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
 }
 
 export default function OpportunityListPage() {

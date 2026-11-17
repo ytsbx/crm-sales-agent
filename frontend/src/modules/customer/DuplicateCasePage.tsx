@@ -148,7 +148,7 @@ export default function DuplicateCasePage() {
                 return reasons.length ? (
                   <span style={{ fontSize: 12 }}>{reasons.join('、')}</span>
                 ) : (
-                  <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                  <span style={{ color: 'var(--crm-text-3)' }}>-</span>
                 )
               },
             },
@@ -200,7 +200,7 @@ export default function DuplicateCasePage() {
                     裁定
                   </a>
                 ) : (
-                  <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                  <span style={{ color: 'var(--crm-text-3)' }}>-</span>
                 ),
             },
           ]}

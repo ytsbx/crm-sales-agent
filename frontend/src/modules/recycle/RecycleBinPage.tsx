@@ -355,7 +355,7 @@ function ProductsPanel() {
             render: (_: unknown, record: RecycleSku) =>
               record.product_deleted ? (
                 // 产品还在回收站时单独恢复 SKU 会造出孤儿，这里不给按钮
-                <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                <span style={{ color: 'var(--crm-text-3)' }}>-</span>
               ) : (
                 <Popconfirm title="确认恢复这条 SKU？" onConfirm={() => restoreSkuMutation.mutate(record.id)}>
                   <a>恢复</a>
@@ -594,7 +594,7 @@ function CustomersPanel() {
       width: 280,
       render: (merged: RecycleCustomer['merged_into'], record: RecycleCustomer) => {
         // 没有去向＝没人接手。操作方式那一栏已经说了"直接删除"，这里不再重复一遍
-        if (!merged) return <span style={HINT}>—</span>
+        if (!merged) return <span style={HINT}>-</span>
         return (
           <div>
             <div>已并入 {renderTarget(merged)}</div>
@@ -616,7 +616,7 @@ function CustomersPanel() {
       title: '合并原因',
       dataIndex: 'merge_reason',
       width: 200,
-      render: (v: string | null) => v || <span style={HINT}>—</span>,
+      render: (v: string | null) => v || <span style={HINT}>-</span>,
     },
     { title: '删除时间', dataIndex: 'deleted_at', width: 170, render: fmt },
     {
@@ -636,7 +636,7 @@ function CustomersPanel() {
             render: (_: unknown, record: RecycleCustomer) => {
               // 被合并掉的不给恢复按钮；业务员只看得到自己负责的客户有入口
               if (record.removed_via !== 'direct' || !canRestoreRow(record)) {
-                return <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                return <span style={{ color: 'var(--crm-text-3)' }}>-</span>
               }
               // 原负责人已停用的那条会先弹选人框（`startRestore` 里分派）
               return <a onClick={() => startRestore(record)}>恢复</a>

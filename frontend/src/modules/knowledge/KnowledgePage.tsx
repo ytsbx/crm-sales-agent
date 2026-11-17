@@ -1206,7 +1206,7 @@ export default function KnowledgePage() {
                   )
                 }
                 if (buttons.length === 0) {
-                  return <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>—</span>
+                  return <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>-</span>
                 }
                 return <span style={{ display: 'inline-flex', gap: 10 }}>{buttons}</span>
               },

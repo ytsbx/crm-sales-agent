@@ -31,7 +31,7 @@ import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 // 金额一律带**实际币种**（第九批 §9.9）：列表以前写死 `¥`，
 // 有外币订单时显示的就是错的数字。
-import { formatMoney } from '../../shared/components/money'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 const TABS = [
   { tab: '销售订单', itemKey: 'orders' },
@@ -225,15 +225,19 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       // 140 → 124：8 列合计本来正好 1130，但列表一长出现纵向滚动条，
       // 它占掉 15px，body 只剩 1115 → 横向滚动条又冒出来（2026-11-16 实测）。
       width: 124,
-      render: (v: number, record: Order) => formatMoney(record.total_amount_exact ?? v, record.currency),
+      render: (v: number, record: Order) =>
+        formatMoney(toTwoDecimals(record.total_amount_exact ?? v), record.currency),
     },
     {
       title: '已回款',
       dataIndex: 'received_amount',
       width: 130,
+      /* 这一列原来混着两种写法：有的行取到库里的精确字符串（¥2,100.00），
+         有的行只有后端给的 number（¥0）—— 同一列里一半带两位小数、一半不带。
+         没有精确字符串时把 number 补成两位小数再交给 formatMoney。 */
       render: (v: number, record: Order) => (
         <span style={{ color: record.unreceived_amount <= 0 ? 'var(--crm-success)' : undefined }}>
-          {formatMoney(record.received_amount_exact ?? v, record.currency)}
+          {formatMoney(toTwoDecimals(record.received_amount_exact ?? v), record.currency)}
         </span>
       ),
     },
@@ -241,7 +245,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '待回款',
       dataIndex: 'unreceived_amount',
       width: 130,
-      render: (v: number, record: Order) => formatMoney(record.unreceived_amount_exact ?? v, record.currency),
+      render: (v: number, record: Order) =>
+        formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? v), record.currency),
     },
     {
       title: '履约状态',

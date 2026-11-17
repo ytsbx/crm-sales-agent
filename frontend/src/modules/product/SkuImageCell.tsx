@@ -109,7 +109,7 @@ export default function SkuImageCell({ images, canWrite = false, onClick, size =
         ) : canWrite ? (
           <span style={{ fontSize: 16, lineHeight: 1 }}>+</span>
         ) : (
-          <span>—</span>
+          <span>-</span>
         )}
       </div>
       {images.length > 1 && <span style={{ fontSize: 11, color: 'var(--crm-text-3)' }}>{images.length}</span>}

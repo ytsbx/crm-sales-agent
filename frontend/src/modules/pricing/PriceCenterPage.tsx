@@ -1400,9 +1400,9 @@ export default function PriceCenterPage() {
                       const alreadyStopped = Boolean(record.stopped_at)
                       const naturallyExpired = Boolean(record.effective_to)
                       if (alreadyStopped || naturallyExpired) {
-                        return <span style={{ color: 'var(--semi-color-text-2)' }}>—</span>
+                        return <span style={{ color: 'var(--semi-color-text-2)' }}>-</span>
                       }
-                      if (!canManage) return <span style={{ color: 'var(--semi-color-text-2)' }}>—</span>
+                      if (!canManage) return <span style={{ color: 'var(--semi-color-text-2)' }}>-</span>
                       return (
                         <Popconfirm
                           title="停用这条成本？"
@@ -1781,7 +1781,7 @@ export default function PriceCenterPage() {
                     dataIndex: 'unit_price_per_volume',
                     width: 100,
                     render: (value: number | null) =>
-                      value == null ? <span style={HINT}>—</span> : `¥${value}/m³`,
+                      value == null ? <span style={HINT}>-</span> : `¥${value}/m³`,
                   },
                   {
                     title: '最低收费',

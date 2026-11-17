@@ -12,6 +12,29 @@
  * - 这里**不做任何跨币种折算** —— 那是业务规则，拍板前不替它决定。
  */
 
+/**
+ * 把金额补成**两位小数**，只补位数、不改数值（"0" → "0.00"，"2100.5" → "2100.50"）。
+ *
+ * 为什么要它：库里的精确金额是十进制字符串，但**位数并不统一** ——
+ * 一分没付的那几行存的是 "0"，收到钱的那几行是 "2100.00"。
+ * 同一列里一半带两位、一半不带，看着像两个系统拼出来的。
+ * 先补位再交给 `formatMoney`，千分位与币种仍由它负责。
+ * 浮点不要参与：数字走 `toFixed(2)`，字符串按小数点切段补零。
+ */
+export function toTwoDecimals(
+  value: number | string | null | undefined,
+): number | string | null | undefined {
+  if (value === null || value === undefined) return value
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return value
+    return value.toFixed(2)
+  }
+  if (!/^-?\d+(?:\.\d+)?$/.test(value)) return value
+  const [whole, fraction = ''] = value.split('.')
+  if (fraction.length >= 2) return `${whole}.${fraction.slice(0, 2)}`
+  return `${whole}.${fraction.padEnd(2, '0')}`
+}
+
 export function currencyPrefix(currency?: string | null): string {
   if (!currency) return ''
   return currency === 'CNY' ? '¥' : `${currency} `

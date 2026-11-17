@@ -735,7 +735,7 @@ export default function AnalyticsPage() {
                     dataIndex: 'conversion_from_previous',
                     render: (v: number | null) =>
                       v === null ? (
-                        <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                        <span style={{ color: 'var(--crm-text-3)' }}>-</span>
                       ) : (
                         `${(v * 100).toFixed(0)}%`
                       ),
@@ -1239,7 +1239,7 @@ export default function AnalyticsPage() {
               // 零基期不给百分比（文档场景17）：没设目标时后端返回 null
               render: (_: unknown, r: SalesTargetRow) =>
                 r.new_customer_achievement == null
-                  ? <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                  ? <span style={{ color: 'var(--crm-text-3)' }}>-</span>
                   : rate(r.new_customer_actual, r.new_customer_target),
             },
             {
@@ -1287,7 +1287,7 @@ export default function AnalyticsPage() {
               // 不是同一个算法，两个数都"有道理"却互相打脸。
               render: (_: unknown, r: SalesTargetRow) =>
                 r.sales_achievement == null
-                  ? <span style={{ color: 'var(--crm-text-3)' }} title={r.achievement_note ?? ''}>—</span>
+                  ? <span style={{ color: 'var(--crm-text-3)' }} title={r.achievement_note ?? ''}>-</span>
                   : rate(r.assess_actual ?? r.sales_actual, r.sales_target),
             },
             {
@@ -1315,7 +1315,7 @@ export default function AnalyticsPage() {
                     {formatWholeCny(r.repeat_customer_variance_exact ?? v)}
                   </span>
                 ) : (
-                  <span style={{ color: 'var(--crm-text-3)' }}>—</span>
+                  <span style={{ color: 'var(--crm-text-3)' }}>-</span>
                 ),
             },
             {
