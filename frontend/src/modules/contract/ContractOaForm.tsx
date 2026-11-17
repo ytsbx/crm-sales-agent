@@ -40,7 +40,9 @@ export default function ContractOaForm({ docId, values, onChange, onBusy }: { do
                 } catch (error) { Toast.error(error instanceof Error ? error.message : '上传失败') }
                 finally { setUploading(false) }
               }} />
-              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>已选 {Array.isArray(value) ? value.length : 0} 个附件</div>
+              {/* 上传中禁用文件钮必须给文字（check_disabled_hint 门规，照「补投中…」先例）：
+                  灰钮旁边要让用户看见「上传中…」，不然就是"界面一个字不说" */}
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>{uploading ? '上传中…' : `已选 ${Array.isArray(value) ? value.length : 0} 个附件`}</div>
             </div>
           : ['choice', 'multi_choice', 'user'].includes(field.type) ? <Select style={{ width: '100%' }} multiple={field.type === 'multi_choice'} showClear
               value={value || undefined} onChange={v => set(field.id, v ?? '')}

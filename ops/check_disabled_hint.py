@@ -127,6 +127,9 @@ EXEMPT: dict[str, str] = {
     # 而"你还没填单号"这句话本身没有信息量（用户看得见输入框是空的），
     # 加了只会变成噪音 —— 正是 GuardedButton 说明里"眼睛一看就明白的别用它"那一类。
     "shared/components/ResolveOaActions.tsx": "禁用原因就在旁边（空输入框 / 提交中 loading）",
+    # 合同 OA 动态表单（2026-11-17 加）：附件上传中的瞬时禁用，同一入口明确显示「上传中…」
+    # （补文字前是裸灰钮，按门规不算覆盖；文字与本登记同一提交落地，照 NotificationBell 先例）
+    "modules/contract/ContractOaForm.tsx": "仅上传中的瞬时禁用，同一入口明确显示「上传中…」",
 }
 
 
