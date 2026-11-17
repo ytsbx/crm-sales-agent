@@ -7,8 +7,9 @@
 1. 库名含 `crm_sales_agent`（领导看的库）→ 直接拒绝；
 2. 库名不含 `prod` / `demo` / `test` → 拒绝。
 
-幂等：所有造出来的客户名带 `【演示造数】` 标记；重跑时先删掉上一批
-（连同其商机），再重新生成。**只删带标记的**，不碰真实数据。
+幂等：客户不再往名字里塞 `【演示造数】`（那是给人看的列表，名字里挂一笔很碍眼），
+改成统一打「演示数据」标签；重跑时靠这个标签认出上一批，拦下来让人决定。
+产品/线索的名字里仍保留标记（它们的名字不占列表主位）。**只认自己的**，不碰真实数据。
 
 用法：
     cd backend
@@ -21,10 +22,10 @@ import os
 import random
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, or_, select
 
 from app.core.database import SessionLocal
-from app.modules.customer.model import Customer
+from app.modules.customer.model import Customer, Tag, customer_tags
 from app.modules.lead.model import Lead
 from app.modules.opportunity.model import (
     LossReason,
@@ -36,6 +37,9 @@ from app.modules.product.model import Product, Sku
 from app.modules.user.model import User
 
 MARK = '【演示造数】'
+# 客户改认标签：名字洗掉之后，靠这个名字标记已经认不出上一批了（2026-11-17）。
+# 标签名与库里已有的「演示数据」保持一致，sort_no 90 排在常用标签后面。
+DEMO_TAG = '演示数据'
 CUSTOMER_COUNT = 60
 OPPORTUNITY_COUNT = 45
 PRODUCT_COUNT = 12
@@ -104,9 +108,29 @@ async def main() -> None:
         if missing:
             raise SystemExit(f'商机阶段缺失：{sorted(missing)}，先跑 scripts.seed')
 
-        # ---- 幂等：清掉上一批（只删带标记的） ----
+        # ---- 幂等：认出上一批（客户认「演示数据」标签，产品/线索仍认名字标记） ----
+        # 标签不存在就先建：让第一次跑的人也能正常走完，不必手工建标签。
+        demo_tag = (
+            await session.execute(select(Tag).where(Tag.name == DEMO_TAG))
+        ).scalar_one_or_none()
+        if demo_tag is None:
+            demo_tag = Tag(name=DEMO_TAG, type='custom', status='active', sort_no=90)
+            session.add(demo_tag)
+            await session.flush()
+
+        # 两路都认：老库里的客户名可能还带标记，新库里只有标签。任一条命中都算自己的。
+        tagged_customer_ids = select(customer_tags.c.customer_id).where(
+            customer_tags.c.tag_id == demo_tag.id
+        )
         old_customers = (
-            await session.execute(select(Customer).where(Customer.name.like(f'%{MARK}%')))
+            await session.execute(
+                select(Customer).where(
+                    or_(
+                        Customer.name.like(f'%{MARK}%'),
+                        Customer.id.in_(tagged_customer_ids),
+                    )
+                )
+            )
         ).scalars().all()
         if old_customers:
             # **不自动删**：客户下面挂着 报价 → 订单 → 应收 → 回款 一整条链，
@@ -114,7 +138,7 @@ async def main() -> None:
             # 而且清错一个就把演示链路弄断。直接拦下来，让人决定。
             raise SystemExit(
                 f'已存在 {len(old_customers)} 个演示客户，本脚本不会重复造、也不会自动删。\n'
-                f'只想补线索/失单：用一次性脚本追加；要彻底重造：先手工删掉名字带「{MARK}」的客户及其下单据。'
+                f'只想补线索/失单：用一次性脚本追加；要彻底重造：先手工删掉带「{DEMO_TAG}」标签的客户及其下单据。'
             )
 
         old_leads = (
@@ -142,7 +166,7 @@ async def main() -> None:
             industry = rng.choice(INDUSTRIES)
             created = now - timedelta(days=rng.randint(5, 330), hours=rng.randint(0, 20))
             customer = Customer(
-                name=f'{city}{industry}{index + 1:02d}厂{MARK}',
+                name=f'{city}{industry}{index + 1:02d}厂',
                 short_name=f'{city}{industry}{index + 1:02d}',
                 customer_type='企业',
                 country='中国',
@@ -160,7 +184,13 @@ async def main() -> None:
             session.add(customer)
             customers.append(customer)
         await session.flush()
-        print(f'客户 {len(customers)} 个')
+        # 造完立刻打标签，下一轮才认得出这批（不打的话重跑会重复建）
+        await session.execute(
+            insert(customer_tags).values(
+                [{'customer_id': customer.id, 'tag_id': demo_tag.id} for customer in customers]
+            )
+        )
+        print(f'客户 {len(customers)} 个（已打「{DEMO_TAG}」标签）')
 
         # ---- 产品 + SKU ----
         products = 0
