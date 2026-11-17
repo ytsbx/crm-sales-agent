@@ -151,8 +151,8 @@ export function AdoptOaInstanceModal({
             取消
           </Button>
           {/* 空单号不发请求：后端也会拦，但让用户点一个必然失败的按钮没意义 */}
-          <Button
-            theme="solid"
+          <Button type="primary"
+            theme="outline"
             disabled={!instanceId.trim() || adopt.isPending}
             loading={adopt.isPending}
             onClick={() => adopt.mutate()}

@@ -1033,8 +1033,8 @@ export default function OrderDetailPage() {
                 </div>
                 <div style={{ flex: 1 }} />
                 {canPayment && !(receivablesQuery.data ?? []).length && (
-                  <Button
-                    theme="solid"
+                  <Button type="primary"
+                    theme="outline"
                     onClick={() => {
                       // 每次打开都回到默认两行（定金 30% / 尾款 70%），不留上次的残状态
                       setGenerateRows([
@@ -1141,9 +1141,9 @@ export default function OrderDetailPage() {
                 </span>
                 <div style={{ flex: 1 }} />
                 {can('order:manage') && (
-                  <Button
+                  <Button type="primary"
                     size="small"
-                    theme="solid"
+                    theme="outline"
                     style={{ marginLeft: 8 }}
                     onClick={() => {
                       setScheduleForm({
@@ -1197,9 +1197,9 @@ export default function OrderDetailPage() {
                               content="确认后这张变更单会生效，相关批次的计划日期会被改写。"
                               onConfirm={() => confirmScheduleMutation.mutate(row.id)}
                             >
-                              <Button
+                              <Button type="primary"
                                 size="small"
-                                theme="solid"
+                                theme="outline"
                                 loading={confirmScheduleMutation.isPending}
                               >
                                 确认并重排
@@ -1317,7 +1317,7 @@ export default function OrderDetailPage() {
                 </span>
                 <div style={{ flex: 1 }} />
                 {can('order:manage') && (
-                  <Button size="small" theme="solid" onClick={() => {
+                  <Button type="primary" size="small" theme="outline" onClick={() => {
                     shipmentKeyRef.current = newRequestKey()
                     setCreateShipmentVisible(true)
                   }}>

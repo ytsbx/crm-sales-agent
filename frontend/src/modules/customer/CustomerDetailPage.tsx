@@ -592,8 +592,8 @@ export default function CustomerDetailPage() {
             )}
             {/* 公海客户的主动作就是「领取」，不能藏进菜单 */}
             {customer.pool_status === 'public' && (
-              <Button
-                theme="solid"
+              <Button type="primary"
+                theme="outline"
                 loading={poolMutation.isPending}
                 onClick={() =>
                   Modal.confirm({

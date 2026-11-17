@@ -56,7 +56,7 @@ export default function RoutePermissionGuard() {
         </p>
         <div className="permission-denied-actions">
           <Link to="/workbench">
-            <Button theme="solid" type="primary">
+            <Button theme="outline" type="primary">
               回到工作台
             </Button>
           </Link>

@@ -968,7 +968,7 @@ export default function QuoteDetailPage() {
             {
               label: '提交审批',
               element: (
-                <Button theme="solid" onClick={() => setSubmitVisible(true)}>
+                <Button type="primary" theme="outline" onClick={() => setSubmitVisible(true)}>
                   提交审批
                 </Button>
               ),
@@ -1053,8 +1053,8 @@ export default function QuoteDetailPage() {
             {
               label: '转销售订单',
               element: (
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   loading={convertMutation.isPending}
                   onClick={() => {
                     // 每次打开都回到默认：全款 + 默认两行（定金 30% / 尾款 70%）
@@ -1340,7 +1340,7 @@ export default function QuoteDetailPage() {
           {/* 刷新入口就放在这条提示里：用户看到"不能用做正式报价"时，
               下一步动作就在眼前，不用去别处找。 */}
           <div style={{ marginTop: 8 }}>
-            <Button size="small" theme="solid" onClick={() => setMasterPreviewOpen(true)}>
+            <Button type="primary" size="small" theme="outline" onClick={() => setMasterPreviewOpen(true)}>
               已确认？重新核价接入
             </Button>
           </div>
@@ -1512,8 +1512,8 @@ export default function QuoteDetailPage() {
                   setMasterPreviewOpen(false)
                 }}
               >
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   disabled={!masterPreviewQuery.data.refreshable}
                   loading={refreshMutation.isPending}
                 >

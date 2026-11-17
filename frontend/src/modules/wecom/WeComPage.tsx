@@ -344,7 +344,7 @@ export default function WeComPage() {
           canManage && (
             <>
               {can('customer:create') && can('customer:assign') && (
-                <Button theme="solid" loading={importPreviewMutation.isPending}
+                <Button type="primary" theme="outline" loading={importPreviewMutation.isPending}
                   disabled={syncMutation.isPending || importCustomersMutation.isPending}
                   onClick={() => importPreviewMutation.mutate()}>导入客户中心</Button>
               )}
@@ -741,8 +741,8 @@ export default function WeComPage() {
           transferStage === 'form' ? (
             <>
               <Button onClick={resetTransfer}>取消</Button>
-              <Button
-                theme="solid"
+              <Button type="primary"
+                theme="outline"
                 loading={previewMutation.isPending}
                 onClick={() => {
                   if (!transferForm.handover_user_id || !transferForm.takeover_user_id) {
@@ -758,8 +758,8 @@ export default function WeComPage() {
           ) : transferStage === 'preview' ? (
             <>
               <Button onClick={() => setTransferStage('form')}>返回修改</Button>
-              <Button
-                theme="solid"
+              <Button type="primary"
+                theme="outline"
                 loading={transferMutation.isPending}
                 onClick={() => transferMutation.mutate()}
               >
@@ -770,8 +770,8 @@ export default function WeComPage() {
             <>
               <Button onClick={resetTransfer}>关闭</Button>
               {transferOpen.length > 0 && (
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   loading={retryMutation.isPending}
                   onClick={() => retryMutation.mutate()}
                 >

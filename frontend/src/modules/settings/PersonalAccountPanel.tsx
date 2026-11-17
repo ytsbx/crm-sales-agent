@@ -43,6 +43,6 @@ export default function PersonalAccountPanel() {
     <div><div style={{ marginBottom: 6 }}>新密码（留空则不修改）</div><Input aria-label="新密码" mode="password" autoComplete="new-password" value={password} onChange={setPassword} disabled={mutation.isPending} /></div>
     <div><div style={{ marginBottom: 6 }}>确认新密码</div><Input aria-label="确认新密码" mode="password" autoComplete="new-password" value={confirmation} onChange={setConfirmation} disabled={mutation.isPending} /></div>
     <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>修改登录名或密码后需要重新登录，钉钉绑定和角色不受影响。</div>
-    <div><Button theme="solid" loading={mutation.isPending} onClick={save}>保存个人账号</Button></div>
+    <div><Button type="primary" theme="outline" loading={mutation.isPending} onClick={save}>保存个人账号</Button></div>
   </div>
 }

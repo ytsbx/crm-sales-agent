@@ -188,7 +188,7 @@ export default function OrderDraftsPage() {
           onConfirm={() => confirm.mutate()}
         >
           <div className="blocked-hint-click" style={{ marginLeft: 12 }} onClick={notifyConfirmBlocked}>
-            <Button theme="solid" disabled={busy || dirty || !versionId || !can('order:manage')} loading={confirm.isPending}
+            <Button type="primary" theme="outline" disabled={busy || dirty || !versionId || !can('order:manage')} loading={confirm.isPending}
               style={busy || dirty || !versionId || !can('order:manage') ? { pointerEvents: 'none', cursor: 'not-allowed' } : undefined}>
               确认正式下单
             </Button>

@@ -341,7 +341,7 @@ export default function ProductInsightsPage() {
             ]}
           />
           {canManage && (
-            <Button theme="solid" onClick={openCreate}>
+            <Button type="primary" theme="outline" onClick={openCreate}>
               记录新品洞察
             </Button>
           )}
@@ -697,7 +697,7 @@ export default function ProductInsightsPage() {
             <Button onClick={() => setConvertResult(null)}>知道了</Button>
             {convertResult && (
               <Link to={`/inquiries?keyword=${encodeURIComponent(convertResult.inquiry_no ?? '')}`}>
-                <Button theme="solid">去看这条需求</Button>
+                <Button type="primary" theme="outline">去看这条需求</Button>
               </Link>
             )}
           </div>

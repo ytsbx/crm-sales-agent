@@ -1060,8 +1060,8 @@ export default function SettingsPage() {
                 <Popconfirm title="确认同步钉钉人员？" content="将读取钉钉通讯录并更新本地人员绑定信息。" onConfirm={() => dtSyncMutation.mutate()}>
                   <Button loading={dtSyncMutation.isPending}>同步钉钉人员</Button>
                 </Popconfirm>
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   onClick={() => {
                     setUserEditTarget(null)
                     setUserForm({
@@ -1115,8 +1115,8 @@ export default function SettingsPage() {
                   showClear
                 />
                 <div style={{ flex: 1 }} />
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   onClick={() => {
                     setRoleEditTarget(null)
                     setRoleForm({
@@ -1155,8 +1155,8 @@ export default function SettingsPage() {
                   showClear
                 />
                 <div style={{ flex: 1 }} />
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   onClick={() => {
                     setDeptEditTarget(null)
                     setDeptForm({ name: '', wecom_department_id: '' })
@@ -1198,8 +1198,8 @@ export default function SettingsPage() {
                     { value: 'channel', label: '渠道' },
                   ]}
                 />
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   loading={createTagMutation.isPending}
                   disabled={!tagForm.name.trim()}
                   onClick={() => createTagMutation.mutate()}
@@ -1314,8 +1314,8 @@ export default function SettingsPage() {
                     onChange={(value) => setDictionaryForm({ ...dictionaryForm, sort_no: value })}
                   />
                 </span>
-                <Button
-                  theme="solid"
+                <Button type="primary"
+                  theme="outline"
                   loading={dictionaryMutation.isPending}
                   disabled={!dictionaryForm.code.trim() || !dictionaryForm.label.trim()}
                   onClick={() => dictionaryMutation.mutate()}
@@ -2639,7 +2639,7 @@ function ApprovalLevelsEditor({
         <Button size="small" onClick={addRow}>
           增加一档
         </Button>
-        <Button size="small" theme="solid" loading={saving} onClick={submit}>
+        <Button type="primary" size="small" theme="outline" loading={saving} onClick={submit}>
           保存
         </Button>
       </div>

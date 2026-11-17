@@ -363,7 +363,7 @@ export default function TaskListPage() {
               批量完成{selectedIds.length ? `（已选 ${selectedIds.length}）` : ''}
             </Button>
           </Popconfirm>
-          <Button theme="solid" onClick={() => setCreateVisible(true)}>
+          <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
             新建任务
           </Button>
         </div>

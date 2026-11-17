@@ -225,8 +225,8 @@ export default function NotificationSettingsPanel() {
               </div>
             ))}
             <div>
-              <Button
-                theme="solid"
+              <Button type="primary"
+                theme="outline"
                 loading={levelMutation.isPending}
                 onClick={() => levelMutation.mutate()}
               >
@@ -283,8 +283,8 @@ export default function NotificationSettingsPanel() {
       </SectionCard>
 
       <div style={{ display: 'flex', gap: 10 }}>
-        <Button
-          theme="solid"
+        <Button type="primary"
+          theme="outline"
           disabled={!dirty}
           loading={saveMutation.isPending}
           onClick={() => saveMutation.mutate(form)}

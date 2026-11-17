@@ -779,7 +779,7 @@ export default function KnowledgePage() {
             style={{ width: 130 }}
             showClear
           />
-          <Button theme="solid" onClick={openCreate}>
+          <Button type="primary" theme="outline" onClick={openCreate}>
             记录定制询价
           </Button>
         </div>
@@ -872,7 +872,7 @@ export default function KnowledgePage() {
                 onChange={({ fileList }) => setPendingPhotos(fileList)}
                 onAcceptInvalid={() => Toast.warning('请选择 JPG、PNG、GIF、WebP 或 BMP 图片')}
                 prompt="先选择照片；点「保存草稿」仅保存，点「提交到钉钉」才会发出审批。">
-                <Button theme="solid" disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}>选择照片（可多选）</Button>
+                <Button type="primary" theme="outline" disabled={saveMutation.isPending || !can('file:manage') || !can('quote:manage')}>选择照片（可多选）</Button>
               </Upload>
               {(!can('file:manage') || !can('quote:manage')) && <div>上传照片需要文件管理和报价管理权限，请联系管理员。</div>}
             </>}

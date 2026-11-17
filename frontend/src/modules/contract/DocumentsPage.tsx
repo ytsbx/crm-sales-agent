@@ -377,7 +377,7 @@ export default function DocumentsPage() {
             {/* 这里原来有个 flex:1 占位把工具栏全推到右边；全站其他列表页筛选从左边起头，
                 这一页孤零零靠右，看着像浮在卡上。去掉。 */}
             {canManage && (
-              <Button theme="solid" onClick={() => openUploadModal()}>
+              <Button type="primary" theme="outline" onClick={() => openUploadModal()}>
                 上传合同
               </Button>
             )}

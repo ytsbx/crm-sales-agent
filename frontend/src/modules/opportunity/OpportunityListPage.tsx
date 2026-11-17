@@ -254,7 +254,7 @@ export default function OpportunityListPage() {
             </Button>
           </div>
           {can('opportunity:manage') && (
-            <Button theme="solid" onClick={() => setCreateVisible(true)}>
+            <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
               新建商机
             </Button>
           )}

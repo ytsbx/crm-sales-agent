@@ -980,7 +980,7 @@ export default function PriceCenterPage() {
         title="价格中心"
         subtitle="核价引擎的全部依据都在这一页：成本、标准价与最低保护价、客户特殊价、各角色的让价权限、运费费率"
         extra={
-          <Button theme="solid" onClick={() => navigate('/pricing')}>
+          <Button type="primary" theme="outline" onClick={() => navigate('/pricing')}>
             打开核价
           </Button>
         }
@@ -1047,8 +1047,8 @@ export default function PriceCenterPage() {
                     }
                   }}
                 >
-                  <Button
-                    theme="solid"
+                  <Button type="primary"
+                    theme="outline"
                     loading={!lookupResult && lookupLoading}
                     disabled={!lookupReady}
                     style={lookupReady ? undefined : { pointerEvents: 'none' }}
@@ -1349,8 +1349,8 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/costs/import"
                       invalidateQueryKeys={['costs']}
                     />
-                    <Button
-                      theme="solid"
+                    <Button type="primary"
+                      theme="outline"
                       disabled={!costSkuId}
                       onClick={() => setCostVisible(true)}
                     >
@@ -1447,7 +1447,7 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/price-rules/import"
                       invalidateQueryKeys={['price-rules']}
                     />
-                    <Button theme="solid" onClick={() => openRuleModal()}>
+                    <Button type="primary" theme="outline" onClick={() => openRuleModal()}>
                       新增价格规则
                     </Button>
                   </>
@@ -1602,7 +1602,7 @@ export default function PriceCenterPage() {
                       importUrl="/api/v1/customer-price-rules/import"
                       invalidateQueryKeys={['customer-price-rules']}
                     />
-                    <Button theme="solid" onClick={() => openCustomerPriceModal()}>
+                    <Button type="primary" theme="outline" onClick={() => openCustomerPriceModal()}>
                       新增客户特殊价
                     </Button>
                   </>
@@ -1747,7 +1747,7 @@ export default function PriceCenterPage() {
                 </div>
                 <div style={{ flex: 1 }} />
                 {canManage && (
-                  <Button theme="solid" onClick={() => openRateModal()}>
+                  <Button type="primary" theme="outline" onClick={() => openRateModal()}>
                     新增运费费率
                   </Button>
                 )}

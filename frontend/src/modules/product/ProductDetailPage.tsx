@@ -723,8 +723,8 @@ export default function ProductDetailPage() {
         title="SKU 列表"
         extra={
           canManage && (
-            <Button
-              theme="solid"
+            <Button type="primary"
+              theme="outline"
               onClick={() => {
                 setEditingSku(null)
                 setSkuForm(EMPTY_SKU)
@@ -1149,7 +1149,7 @@ export default function ProductDetailPage() {
                       })
                     }}
                   >
-                    <Button theme="solid" type="warning" loading={confirmLocalMutation.isPending}>
+                    <Button theme="outline" type="warning" loading={confirmLocalMutation.isPending}>
                       确认选中的 {confirmFields.length} 个字段
                     </Button>
                   </Popconfirm>
@@ -1209,8 +1209,8 @@ export default function ProductDetailPage() {
                         value={notes[diff.id] ?? ''}
                         onChange={(value: string) => setNotes({ ...notes, [diff.id]: value })}
                       />
-                      <Button
-                        theme="solid"
+                      <Button type="primary"
+                        theme="outline"
                         loading={confirmDiffMutation.isPending}
                         onClick={() => {
                           const resolution = resolutions[diff.id]

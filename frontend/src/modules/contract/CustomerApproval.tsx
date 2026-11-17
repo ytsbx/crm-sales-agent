@@ -65,10 +65,10 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
         <a href={entry.data.url!} target="_blank" rel="noreferrer">打开钉钉合同审批</a>
       </div>
       <p>提交后，将钉钉审批详情链接（含审批编号）或审批实例编号粘贴到下方。系统核对流程、本人账号、合同名称和编号后关联；请确认钉钉正文附件为本合同原文件。</p>
-      <Button theme="solid" loading={autoLink.isPending} onClick={() => autoLink.mutate()}>立即查找并关联</Button>
+      <Button type="primary" theme="outline" loading={autoLink.isPending} onClick={() => autoLink.mutate()}>立即查找并关联</Button>
       <details><summary>自动查找不到时，手动关联</summary>
       <Input value={instanceId} onChange={setInstanceId} placeholder="粘贴钉钉审批详情链接或审批实例编号" />
-      <Button theme="solid" loading={submit.isPending} onClick={() => {
+      <Button type="primary" theme="outline" loading={submit.isPending} onClick={() => {
         if (!instanceId.trim()) { Toast.warning('请粘贴审批详情链接或实例编号'); return }
         submit.mutate()
       }}>手动核验并关联</Button></details>

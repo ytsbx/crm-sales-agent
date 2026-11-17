@@ -203,8 +203,8 @@ export default function QuoteListPage() {
           </Button>
           <div style={{ flex: 1 }} />
           {can('quote:manage') && (
-            <Button
-              theme="solid"
+            <Button type="primary"
+              theme="outline"
               onClick={() => {
                 // 每次打开"新建报价"都是一次新意图 → 换一把新的幂等键
                 createRequestKeyRef.current = newRequestKey()

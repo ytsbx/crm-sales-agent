@@ -1177,7 +1177,7 @@ export default function AnalyticsPage() {
               结账存档
             </Button>
           )}
-          {canSetTarget && <Button theme="solid" onClick={() => openTargetModal()}>设定目标</Button>}
+          {canSetTarget && <Button type="primary" theme="outline" onClick={() => openTargetModal()}>设定目标</Button>}
         </div>
         <Table<SalesTargetRow>
           scroll={{ x: 'max(100%, 2060px)' }}

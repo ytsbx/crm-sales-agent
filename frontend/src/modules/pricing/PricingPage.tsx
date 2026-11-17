@@ -398,8 +398,8 @@ export default function PricingPage() {
                 onChange={setCandidatesText}
                 style={{ width: 260 }}
               />
-              <Button
-                theme="solid"
+              <Button type="primary"
+                theme="outline"
                 loading={simulateMutation.isPending}
                 onClick={() => simulateMutation.mutate()}
               >

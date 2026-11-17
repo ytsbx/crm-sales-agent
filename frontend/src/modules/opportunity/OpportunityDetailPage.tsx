@@ -495,8 +495,8 @@ export default function OpportunityDetailPage() {
                 <Button onClick={() => setTaskVisible(true)}>新建任务</Button>
                 {opportunity.status === 'open' && (
                   <>
-                    <Button
-                      theme="solid"
+                    <Button type="primary"
+                      theme="outline"
                       loading={confirmWinMutation.isPending}
                       onClick={() => {
                         setPlanMode('full')
@@ -616,7 +616,7 @@ export default function OpportunityDetailPage() {
                 </div>
                 <div style={{ flex: 1 }} />
                 {canManage && (
-                  <Button theme="solid" onClick={() => setItemVisible(true)}>
+                  <Button type="primary" theme="outline" onClick={() => setItemVisible(true)}>
                     添加需求商品
                   </Button>
                 )}

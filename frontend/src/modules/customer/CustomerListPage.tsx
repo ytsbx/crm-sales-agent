@@ -569,8 +569,8 @@ export default function CustomerListPage() {
           <Button loading={importing} onClick={() => fileInputRef.current?.click()}>
             批量导入
           </Button>
-          <Button
-            theme="solid"
+          <Button type="primary"
+            theme="outline"
             onClick={() => {
               // 每次打开"新建客户"都是一次新表单 → 换一把新的幂等键
               createRequestKeyRef.current = newRequestKey()

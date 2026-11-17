@@ -14,6 +14,16 @@
     transform var(--crm-dur-fast) var(--crm-ease);
 }
 
+.semi-button-outline.semi-button-primary {
+  border: 1px solid var(--crm-primary);
+  color: var(--crm-primary);
+  background: transparent;
+}
+
+.semi-button-outline.semi-button-primary:hover {
+  background: var(--crm-primary-soft);
+}
+
 .semi-button-primary:hover {
   box-shadow: 0 2px 4px rgba(16, 24, 40, 0.2), 0 10px 20px -10px rgba(31, 79, 168, 0.6);
 }

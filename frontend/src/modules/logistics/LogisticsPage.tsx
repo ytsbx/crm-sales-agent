@@ -320,7 +320,7 @@ export default function LogisticsPage() {
                 </div>
 
                 <Button
-                  theme="solid"
+                  theme="outline"
                   type="primary"
                   block
                   loading={resultQuery.isFetching}

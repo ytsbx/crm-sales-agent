@@ -415,7 +415,7 @@ export default function CasesPage() {
           </div>
           <div style={{ flex: 1 }} />
           {can('quote:view') && (
-            <Button theme="solid" onClick={openCreate}>
+            <Button type="primary" theme="outline" onClick={openCreate}>
               新建案例
             </Button>
           )}

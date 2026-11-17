@@ -265,7 +265,7 @@ export default function ProductListPage() {
             </>
           )}
           {can('product:manage') && (
-            <Button theme="solid" onClick={() => setModalVisible(true)}>
+            <Button type="primary" theme="outline" onClick={() => setModalVisible(true)}>
               新建产品
             </Button>
           )}

@@ -371,7 +371,7 @@ export default function LeadListPage() {
           </Button>
           <div style={{ flex: 1 }} />
           {can('lead:create') && (
-            <Button theme="solid" onClick={() => setCreateVisible(true)}>
+            <Button type="primary" theme="outline" onClick={() => setCreateVisible(true)}>
               新建线索
             </Button>
           )}

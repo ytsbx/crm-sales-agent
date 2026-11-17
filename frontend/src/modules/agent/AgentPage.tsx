@@ -208,8 +208,8 @@ export default function AgentPage() {
       )}
       {pending ? (
         <div style={{ display: 'flex', gap: 10 }}>
-          <Button
-            theme="solid"
+          <Button type="primary"
+            theme="outline"
             size="small"
             loading={confirmMutation.isPending}
             onClick={() => confirmMutation.mutate(action.id)}
@@ -458,9 +458,9 @@ export default function AgentPage() {
               resize: 'vertical',
             }}
           />
-          <Button
+          <Button type="primary"
             className="agent-send"
-            theme="solid"
+            theme="outline"
             loading={streaming}
             disabled={!input.trim()}
             onClick={() => handleSend(input)}

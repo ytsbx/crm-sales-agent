@@ -253,7 +253,7 @@ export default function WorkbenchPage() {
                 Toast.success('已刷新')
               }}
             />
-            <Button theme="solid" onClick={() => navigate('/leads')}>
+            <Button type="primary" theme="outline" onClick={() => navigate('/leads')}>
               快速创建
             </Button>
           </>

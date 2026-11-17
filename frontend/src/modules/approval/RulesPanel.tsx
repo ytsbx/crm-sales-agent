@@ -277,7 +277,7 @@ export default function RulesPanel() {
             报价提交审批时按优先级逐条求值，第一条命中的规则决定走向；
             草稿发布后才生效，启停立即生效
           </div>
-          <Button theme="solid" onClick={() => setEditing(emptyDraft())}>
+          <Button type="primary" theme="outline" onClick={() => setEditing(emptyDraft())}>
             新建规则
           </Button>
         </div>

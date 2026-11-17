@@ -773,7 +773,7 @@ export default function SampleListPage() {
         extra={
           canManage && (
             <Button
-              theme="solid"
+              theme="outline"
               type="primary"
               onClick={() => {
                 // 耗时埋点（场景18）：起点在这里——点开"新建样品申请"那一刻
@@ -1138,7 +1138,7 @@ export default function SampleListPage() {
                         title={detail.status === 'rejected' ? '确认改判为批准？' : '确认批准这张打样申请？'}
                         onConfirm={() => approveMutation.mutate(true)}
                       >
-                        <Button theme="solid" type="primary" loading={approveMutation.isPending}>
+                        <Button theme="outline" type="primary" loading={approveMutation.isPending}>
                           {detail.status === 'rejected' ? '改判为批准' : '批准'}
                         </Button>
                       </Popconfirm>
@@ -1183,14 +1183,14 @@ export default function SampleListPage() {
                       />
                     </div>
                     <Popconfirm title="确认登记寄样？" onConfirm={() => shipMutation.mutate()}>
-                      <Button theme="solid" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
+                      <Button theme="outline" type="primary" loading={shipMutation.isPending}>登记寄样</Button>
                     </Popconfirm>
                   </>
                 )}
 
                 {detail.status === 'shipped' && (
                   <Popconfirm title="确认登记客户已签收？" onConfirm={() => signMutation.mutate()}>
-                    <Button theme="solid" type="primary" loading={signMutation.isPending}>登记签收</Button>
+                    <Button theme="outline" type="primary" loading={signMutation.isPending}>登记签收</Button>
                   </Popconfirm>
                 )}
 
@@ -1406,7 +1406,7 @@ export default function SampleListPage() {
                       </div>
                       <div style={{ display: 'flex', gap: 8 }}>
                         <Button
-                          theme="solid"
+                          theme="outline"
                           type="primary"
                           loading={saveProdMutation.isPending}
                           onClick={() => saveProdMutation.mutate()}

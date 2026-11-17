@@ -251,8 +251,8 @@ export default function CopilotDrawer() {
         </div>
       ))}
       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Button
-          theme="solid"
+        <Button type="primary"
+          theme="outline"
           size="small"
           loading={confirmMutation.isPending}
           onClick={() => confirmMutation.mutate(action.id)}
@@ -412,7 +412,7 @@ export default function CopilotDrawer() {
             onEnterPress={() => send(input)}
             disabled={sending}
           />
-          <Button theme="solid" loading={sending} onClick={() => send(input)}>
+          <Button type="primary" theme="outline" loading={sending} onClick={() => send(input)}>
             发送
           </Button>
         </div>
