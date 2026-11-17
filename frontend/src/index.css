@@ -205,6 +205,13 @@ a:not([href]) {
    注意这里不能用 :only-of-type —— 它按「标签类型」判断，
    带页面标题的页面里标题也是 div，卡就不算唯一了（销售任务页就是这么漏的）。
    改成「没有第二张卡」来判断：card-block ~ card-block 表示它后面还有一张卡。 */
+/* 内容很少的列表页：卡片按内容高度收住，不被单卡规则拉满整屏。
+   典型是「只有 1~5 行数据」的表格 —— 拉满之后卡片下半截全是白的，
+   看着像没加载完。页面上明明只有这一张卡时，留白交给页面底色更自然。 */
+.card-block.auto-height {
+  flex: 0 0 auto !important;
+}
+
 .page-container:not(:has(.card-block ~ .card-block)) > .card-block {
   flex: 1 1 auto;
 }
@@ -1727,6 +1734,19 @@ a:not([href]) {
 .approval-table .semi-table {
   width: 100% !important;
   table-layout: fixed;
+}
+
+/* 审批表也有可展开行（申请说明/超权限点行展开）。和报价明细同一个毛病：
+   展开箭头是 inline 的 span，首列内容是块级 div → 箭头被顶到单独一行，
+   「报价单号」被挤成第二行、下面还有「第 N 版」，一行变三行高。
+   首列内容改 inline-block，箭头与单号回到同一行（与 .quote-items-table 同一处理）。 */
+.approval-table .semi-table-row-cell:first-child > div {
+  display: inline-block;
+  vertical-align: top;
+}
+
+.approval-table .semi-table-expand-icon {
+  margin-right: 6px;
 }
 
 /* 产品详情的 SKU 表：列宽合计 1159 + 内边距 > 内容区 1130，

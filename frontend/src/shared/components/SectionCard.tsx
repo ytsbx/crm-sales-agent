@@ -8,11 +8,14 @@ export default function SectionCard({
   style,
   id,
   accent,
+  className,
 }: {
   title?: ReactNode
   extra?: ReactNode
   children: ReactNode
   style?: CSSProperties
+  /** 额外的类名（例如 card-hug：内容很少时不要被拉满整屏） */
+  className?: string
   /** 页内锚点：待办区之类的地方要能 `scrollIntoView` 定位到这一块 */
   id?: string
   /**
@@ -23,7 +26,7 @@ export default function SectionCard({
   accent?: string
 }) {
   return (
-    <div className="card-block" id={id} style={style}>
+    <div className={className ? `card-block ${className}` : 'card-block'} id={id} style={style}>
       {(title || extra) && (
         <div
           style={{

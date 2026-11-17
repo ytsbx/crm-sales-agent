@@ -105,17 +105,23 @@ export default function ApprovalPage() {
     {
       title: '报价单号',
       dataIndex: 'quote_no',
-      width: 175,
+      /* 175 放不下「箭头 + 单号 + 版本」一整行，版本被挤成「第 …」；190 刚好 */
+      width: 190,
+      /* 原来单号与「第 N 版」是上下两行的块级 div —— 左边那个展开箭头是 inline 的，
+         块级内容一定另起一行，于是箭头独占一行、单号再一行、版本第三行。
+         改成同一行的两个 inline 片段：箭头 + 单号 + 小字版本，整行只占一行高。 */
       render: (v: string | null, record: ApprovalRow) => (
-        <div style={{ display: 'grid', gap: 2 }}>
-          <span>{v ?? '-'}</span>
-          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-            {record.version_no ? `第 ${record.version_no} 版` : ''}
-          </span>
-        </div>
+        <span>
+          {v ?? '-'}
+          {record.version_no ? (
+            <span style={{ fontSize: 12, color: 'var(--crm-text-3)', marginLeft: 6 }}>
+              V{record.version_no}
+            </span>
+          ) : null}
+        </span>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 230, ellipsis: true, render: (v: string | null) => v ?? '-' },
+    { title: '客户', dataIndex: 'customer_name', width: 215, ellipsis: true, render: (v: string | null) => v ?? '-' },
     { title: '申请人', dataIndex: 'applicant_name', width: 110, render: (v: string | null) => v ?? '-' },
     {
       title: '报价总额',
@@ -196,7 +202,12 @@ export default function ApprovalPage() {
         subtitle="业务员报价低于自己的价格权限时，必须经审批才能对外发送；审批只看超出权限的部分"
       />
 
-      <SectionCard>
+      {/* 待审批常常只有一两条：卡按内容收住，不拉满整屏 */}
+      <SectionCard
+        className={
+          activeKey !== 'rules' && (query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined
+        }
+      >
         <Tabs type="line" activeKey={activeKey} onChange={(key) => {
           setActiveKey(key)
           setPage(1)

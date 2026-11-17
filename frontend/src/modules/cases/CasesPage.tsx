@@ -337,7 +337,9 @@ export default function CasesPage() {
 
   return (
     <div className="page-container">
-      <SectionCard>
+      <SectionCard
+        className={(casesQuery.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
+      >
         <div className="toolbar" style={{ marginBottom: 10 }}>
           <Input
             style={{ width: 190 }}

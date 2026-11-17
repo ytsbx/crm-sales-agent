@@ -314,7 +314,8 @@ export default function TaskListPage() {
         subtitle="任务记录的是「接下来要做什么」，跟进记录的是「已经发生了什么」"
       />
 
-      <SectionCard>
+      {/* 只有几行任务时，卡片不该被拉满整屏（详见 .card-block.auto-height） */}
+      <SectionCard className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}>
         <div className="toolbar">
           <Checkbox
             checked={mine}
