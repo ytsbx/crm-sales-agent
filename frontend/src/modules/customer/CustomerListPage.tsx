@@ -180,6 +180,18 @@ export default function CustomerListPage() {
     queryFn: () => listTags(false),
     enabled: batchTagOpen,
   })
+  // 六个阶段各一种色相 —— 颜色只落在数字上，标签仍是灰字：
+  // 一排数字能一眼区分「哪个阶段人多」，又不会像色块墙那样抢走整行注意力。
+  // 色值取自设计稿状态色板（与 StatusDot 同源），保证和列表里的小圆点一致。
+  const STAGE_COLOR: Record<string, string> = {
+    understanding: '#727687', // 了解：中性灰，还没开始动作
+    quote: '#1f6fe0',         // 报价：蓝
+    sample: '#c2710a',        // 打样：琥珀
+    first_order: '#0d9488',   // 首单：青
+    repeat: '#65a30d',        // 返单：绿
+    stable: '#7a4fd3',        // 稳定复购：紫（周期最长的阶段）
+  }
+
   // 六阶段分布（后端按当前数据范围自动推导）
   const stageDistQuery = useQuery({
     queryKey: ['customer-stage-distribution'],
@@ -585,17 +597,19 @@ export default function CustomerListPage() {
           >
             <span style={{ fontSize: 13, color: 'var(--crm-text-3)' }}>客户阶段分布</span>
             {stageDistQuery.data.map((item, idx) => (
-              // 原来这排是五种颜色的浅底色块（蓝/橙/绿/紫/青各一个），一横排五个
-              // 色块是最花的地方；换成白底描边小胶囊后，在灰底上边框几乎看不见，
-              // 只剩六个字飘着。最终做成「灰字 + 亮蓝数字 + 细竖线」：
-              // 一行读得完，颜色只在数字上出现，够区分也不花（2026-11-16）。
+              // 颜色只落在数字上（标签保持灰字），六个阶段六种色相：
+              // 2026-11-16 那版把六个数字统一成主色蓝，主人 2026-11-17 反馈
+              // 「怎么变一个色了，以前好几种颜色吧」—— 一排数字全同色等于没区分。
+              // 现在按阶段给色相，仍不做色块。
               <span key={item.stage} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 {idx > 0 && (
                   <span style={{ width: 1, height: 12, background: 'var(--crm-border, #e3e5ea)' }} />
                 )}
                 <span style={{ fontSize: 13, color: 'var(--crm-text-3)' }}>
                   {item.label}
-                  <strong style={{ marginLeft: 4, color: 'var(--crm-primary)' }}>{item.count}</strong>
+                  <strong style={{ marginLeft: 4, color: STAGE_COLOR[item.stage] ?? 'var(--crm-text-2)' }}>
+                    {item.count}
+                  </strong>
                 </span>
               </span>
             ))}

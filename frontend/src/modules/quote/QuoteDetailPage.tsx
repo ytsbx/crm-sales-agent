@@ -981,7 +981,8 @@ export default function QuoteDetailPage() {
               label: '标记已发送',
               element: (
                 <Button
-                  theme="solid"
+                  theme="outline"
+                  type="primary"
                   onClick={() => {
                     setSendForm({
                       ...sendForm,
@@ -1002,7 +1003,8 @@ export default function QuoteDetailPage() {
               label: '登记再次发送',
               element: (
                 <Button
-                  theme="solid"
+                  theme="outline"
+                  type="primary"
                   onClick={() => {
                     setSendForm({
                       ...sendForm,
@@ -1540,7 +1542,8 @@ export default function QuoteDetailPage() {
           </span>
           <Button
             size="small"
-            theme="solid"
+            theme="outline"
+            type="primary"
             loading={refreshMutation.isPending}
             onClick={() => refreshMutation.mutate()}
           >

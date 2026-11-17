@@ -235,7 +235,8 @@ export default function AttachmentPanel({
               }}
             />
             <Button
-              theme="solid"
+              theme="outline"
+              type="primary"
               loading={uploading}
               onClick={() => inputRef.current?.click()}
             >

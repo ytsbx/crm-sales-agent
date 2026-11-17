@@ -592,7 +592,7 @@ export default function WeComPage() {
                     </div>
                     {canManage && (
                       <Popconfirm title={`确认关联客户「${candidate.name}」？`} content="请核对匹配信息，确认是同一位客户。" disabled={bindMutation.isPending} onConfirm={() => bindMutation.mutate(candidate.id)}>
-                        <Button size="small" theme="solid" style={{ marginTop: 8 }} loading={bindMutation.isPending}>关联已有客户</Button>
+                        <Button size="small" theme="outline" type="primary" style={{ marginTop: 8 }} loading={bindMutation.isPending}>关联已有客户</Button>
                       </Popconfirm>
                     )}
                   </div>

@@ -585,7 +585,7 @@ export default function CustomerDetailPage() {
               </Button>
             )}
             {can('agent:use') && (
-              <Button theme="light" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
+              <Button theme="outline" type="primary" onClick={() => navigate(`/agent?context=customer&id=${customerId}`)}>
                 问 Agent
               </Button>
             )}

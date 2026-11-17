@@ -140,10 +140,11 @@ export default function BizDocPanel({
             </>
           )}
         </span>
-        {/* 浅底主色（theme="light"）：还是主色家族，但不再是白底上的一块深蓝。
-            这块是归档区里的次要动作，不该和页头「转销售订单」抢同一档视觉重量。 */}
+        {/* 描边按钮（白底 + 主色细边 + 主色文字）：这块是归档区里的次要动作。
+            主人 2026-11-17「只是不喜欢深蓝」—— 实心/浅底都是色块，描边不是：
+            蓝色仍在，但不再是一整块颜色压在灰白页面上。 */}
         {canManage && (
-          <Button theme="light" loading={generateMutation.isPending} onClick={() => generateMutation.mutate()}>
+          <Button theme="outline" type="primary" loading={generateMutation.isPending} onClick={() => generateMutation.mutate()}>
             生成一份
           </Button>
         )}

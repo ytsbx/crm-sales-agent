@@ -1112,7 +1112,7 @@ export default function SampleListPage() {
               </div>
             )}
 
-            {canManage && <Button theme="solid" onClick={() => setOaTarget(detail.id)}>钉钉打样申请 / 查看进度</Button>}
+            {canManage && <Button theme="outline" type="primary" onClick={() => setOaTarget(detail.id)}>钉钉打样申请 / 查看进度</Button>}
             {canManage && !((detail.source_context as unknown as { dingtalk_oa?: { submitted?: boolean } } | null)?.dingtalk_oa?.submitted) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——

@@ -774,7 +774,7 @@ export default function WorkbenchPage() {
               </div>
               {/* 直接跳到该客户的跟进页签，落地就能记录 */}
               <Link to={`/customers/${row.id}?tab=followups`}>
-                <Button size="small" theme="solid">
+                <Button size="small" theme="outline" type="primary">
                   去记录跟进
                 </Button>
               </Link>
