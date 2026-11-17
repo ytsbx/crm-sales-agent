@@ -1626,41 +1626,59 @@ export default function QuoteDetailPage() {
                   ? record.cost_snapshot + (record.logistics_cost_snapshot ?? 0)
                   : record.cost_snapshot
             const problem = detail.cost_problems?.find((p) => p.item_id === record.id)
+            // 展开区原来是「整行灰底 + 三行字挤在中间」，左右各有大半屏空白：
+            // 看着像页面没加载完（主人 2026-11-17 截图指出「折叠很丑」）。
+            // 改成横向的一条核算依据：小标题在左，三组「标签 + 金额」并排，
+            // 数字用等宽的感觉（右对齐不需要，这里是一句话不是账表）。
+            const facts: { label: string; value: string }[] = [
+              {
+                label: legacyBasis ? '成本快照（含运费）' : '商品成本',
+                value: costValue == null ? '-' : `¥${costValue.toFixed(2)}`,
+              },
+              {
+                label: '建议价',
+                value:
+                  record.recommended_price_snapshot == null
+                    ? '-'
+                    : `¥${record.recommended_price_snapshot.toFixed(2)}`,
+              },
+              {
+                label: '最低保护价',
+                value:
+                  record.minimum_price_snapshot == null
+                    ? '-'
+                    : `¥${record.minimum_price_snapshot.toFixed(2)}`,
+              },
+            ]
             return (
               <div
                 style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                  gap: '8px 24px',
-                  padding: '6px 10px',
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'baseline',
+                  justifyContent: 'flex-start',
+                  // 宽度必须写满：单元格默认 text-align center，不写 width 时
+                  // 这行字会飘在整行灰带的中间（主人说像没加载完）
+                  width: '100%',
+                  gap: '4px 32px',
+                  padding: '2px 0 2px 2px',
                   textAlign: 'left',
-                  fontSize: 13,
-                  lineHeight: 1.7,
+                  fontSize: 12.5,
+                  lineHeight: 1.8,
                 }}
               >
-                <div>
-                  <span style={{ color: 'var(--crm-text-3)' }}>
-                    {legacyBasis ? '成本快照（含运费）：' : '商品成本：'}
+                <span style={{ color: 'var(--crm-text-3)' }}>这条怎么核出来的</span>
+                {facts.map((f) => (
+                  <span key={f.label} style={{ whiteSpace: 'nowrap' }}>
+                    <span style={{ color: 'var(--crm-text-3)' }}>{f.label} </span>
+                    <span style={{ color: 'var(--crm-text)', fontWeight: 600 }}>{f.value}</span>
                   </span>
-                  {costValue == null ? '-' : `¥${costValue.toFixed(2)}`}
-                </div>
-                <div>
-                  <span style={{ color: 'var(--crm-text-3)' }}>建议价：</span>
-                  {record.recommended_price_snapshot == null
-                    ? '-'
-                    : `¥${record.recommended_price_snapshot.toFixed(2)}`}
-                </div>
-                <div>
-                  <span style={{ color: 'var(--crm-text-3)' }}>最低保护价：</span>
-                  {record.minimum_price_snapshot == null
-                    ? '-'
-                    : `¥${record.minimum_price_snapshot.toFixed(2)}`}
-                </div>
+                ))}
                 {problem && (
-                  <div style={{ color: 'var(--crm-error)' }}>
-                    <span style={{ color: 'var(--crm-text-3)' }}>成本问题：</span>
+                  <span style={{ color: 'var(--crm-error)' }}>
+                    <span style={{ color: 'var(--crm-text-3)' }}>成本问题 </span>
                     {problem.reason}
-                  </div>
+                  </span>
                 )}
               </div>
             )
