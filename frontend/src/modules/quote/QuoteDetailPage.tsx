@@ -1656,7 +1656,9 @@ export default function QuoteDetailPage() {
           主流程信息；原来常驻展开，详情页一屏就叠了七块（状态、步骤、警示、
           明细、两套 what-if、附加费用……）。收进折叠区，默认收起，
           需要时点开 —— 内容一个字没减。 */}
-      <Collapse style={{ marginTop: 16 }} className="quote-whatif-collapse">
+      {/* 上边距交给上一张卡自己的 margin-bottom，这里不再加：
+          两边各加 16 会叠成 32，比其它卡片之间的 16 空一倍（2026-11-17 实测）。 */}
+      <Collapse className="quote-whatif-collapse">
         <Collapse.Panel
           itemKey="whatif"
           header={

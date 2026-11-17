@@ -1200,6 +1200,42 @@ a:not([href]) {
   flex-shrink: 0;
 }
 
+/* What-if 折叠区：给它一张和其它卡片一样的外壳（白底 / 12px 圆角 / 1px 细边）。
+   原来用的是 Semi Collapse 的默认皮肤 —— 白底、默认内边距、默认边框圆角，
+   和其它卡片放在一起时，标题比卡片标题更靠左、圆角也不一样，
+   整行像"贴在两张卡中间的一条",主人 2026-11-17 说「折叠这一块有点奇怪」。
+   现在：外壳与卡片一致，header 内边距与卡片标题对齐（20px），
+   展开后的内容也留在同一张卡里。 */
+.quote-whatif-collapse {
+  background: var(--crm-surface);
+  border: 1px solid var(--crm-border, #e6e8ee);
+  border-radius: 12px;
+  overflow: hidden;
+  /* 四个方向都写死 0：卡片之间的 16px 间距由上一张卡的 margin-bottom 提供，
+     这里再加一边就会叠成 32px，比其它卡片空一倍（2026-11-17 实测 gap=32）。 */
+  margin: 0;
+}
+
+.quote-whatif-collapse .semi-collapse-item {
+  border: 0;
+  background: transparent;
+}
+
+.quote-whatif-collapse .semi-collapse-header {
+  padding: 16px 20px;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.quote-whatif-collapse .semi-collapse-header:hover {
+  background: var(--crm-surface-low, #f3f4f7);
+}
+
+.quote-whatif-collapse .semi-collapse-content {
+  padding: 0 20px 18px;
+}
+
 .quote-archive-head {
   display: flex;
   align-items: center;
