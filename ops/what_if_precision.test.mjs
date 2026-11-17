@@ -30,7 +30,14 @@ function setup(unitCost = 1) {
       if (id === '@tanstack/react-query') return { useQuery: () => ({ data: { versions: [] } }) }
       if (id === '@douyinfe/semi-ui') return Object.fromEntries(['Button', 'Input', 'Slider', 'Table', 'Tag', 'Toast'].map((name) => [name, name]))
       if (id.endsWith('/SectionCard')) return { default: 'SectionCard' }
-      if (id.endsWith('/money')) return { formatMoney: String }
+      // 「标签全家」：mock 必须覆盖 WhatIfPanel 实际用到的 money 全部导出。
+      // 2026-11-17 教训：formatUnitPrice/toTwoDecimals 缺席即 TypeError，
+      // 三条用例连环红——替身家族要跟着组件真实 import 走。
+      if (id.endsWith('/money')) return {
+        formatMoney: String,
+        formatUnitPrice: (value) => `¥${value}`,
+        toTwoDecimals: String,
+      }
       if (id.endsWith('/api/quote')) return {}
       return require(id)
     },
