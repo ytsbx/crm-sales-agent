@@ -126,7 +126,10 @@ export default function NotificationBell() {
           type="dateRange"
           size="small"
           density="compact"
-          placeholder={['开始日期', '结束日期']}
+          // 面板宽度只有 220，Semi 默认的「开始日期/结束日期」放不下，
+          // 会被截成「开始…/结束…」，用户得猜哪个框填什么。
+          // 换成两字占位，四个字正好放下（2026-11-17 复验补充项）。
+          placeholder={['起始', '截止']}
           // Semi 的 DatePicker 不接受 null，要 undefined；项目里通行写法是 `?? undefined`
           // （本文件 45/46 行也是这个写法）。上一版的 `dateRange` 是 `[Date,Date] | null`，
           // tsc 报 TS2322 且 `tsc -b` 整条失败 → 前端构建挂、CI 红。
