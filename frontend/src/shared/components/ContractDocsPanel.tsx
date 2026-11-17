@@ -100,7 +100,9 @@ export default function ContractDocsPanel({
           justifyContent: 'space-between',
           gap: 12,
           flexWrap: 'wrap',
-          color: 'var(--crm-text-3)',
+          /* 空态说明原来用三级灰，在浅灰底上几乎看不见（主人 2026-11-17："太淡了"）。
+             二级灰仍属次要文字，但至少能读清。 */
+          color: 'var(--crm-text-2)',
           fontSize: 13,
         }}
       >

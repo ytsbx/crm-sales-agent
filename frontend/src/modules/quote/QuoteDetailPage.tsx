@@ -1,3 +1,4 @@
+import { IconExport, IconFile, IconMail } from '@douyinfe/semi-icons'
 import { formatMoney } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
@@ -2362,13 +2363,23 @@ export default function QuoteDetailPage() {
         <div style={{ display: 'grid', gap: 0, minWidth: 0 }}>
           {/* 发过给谁：按整单看 —— V1 发给客户、现在走到 V3，那份发送事实仍要看得见 */}
           <div style={{ paddingBottom: 14, borderBottom: '1px solid var(--crm-border)', minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>发送记录</div>
+            <div className="quote-archive-head">
+              <span className="quote-archive-icon" style={{ background: '#e8f1fd', color: '#1f6fe0' }}>
+                <IconMail size="small" />
+              </span>
+              发送记录
+            </div>
             <QuoteSendLogsPanel versionIds={allVersionIds} />
           </div>
 
           {/* 签了什么：合同会钉死"依据的是哪一版"，所以也按整单筛 */}
           <div style={{ padding: '14px 0', borderBottom: '1px solid var(--crm-border)', minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>合同文档</div>
+            <div className="quote-archive-head">
+              <span className="quote-archive-icon" style={{ background: '#e6f6f2', color: '#0d9488' }}>
+                <IconFile size="small" />
+              </span>
+              合同文档
+            </div>
             <ContractDocsPanel
               quoteId={quoteId}
               boxed={false}
@@ -2379,7 +2390,10 @@ export default function QuoteDetailPage() {
           {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
               之后改价或改模板都不会影响已导出的那份 */}
           <div style={{ paddingTop: 14, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+            <div className="quote-archive-head">
+              <span className="quote-archive-icon" style={{ background: '#fdf1e3', color: '#c2710a' }}>
+                <IconExport size="small" />
+              </span>
               对外单据（对客报价 Excel）
             </div>
             <BizDocPanel

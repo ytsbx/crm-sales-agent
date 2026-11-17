@@ -125,7 +125,7 @@ export default function BizDocPanel({
           gap: 12,
           marginBottom: compactEmpty ? 0 : 10,
           fontSize: 12,
-          color: 'var(--crm-text-3)',
+          color: 'var(--crm-text-2)',
           lineHeight: 1.7,
         }}
       >
@@ -140,8 +140,10 @@ export default function BizDocPanel({
             </>
           )}
         </span>
+        {/* 浅底主色（theme="light"）：还是主色家族，但不再是白底上的一块深蓝。
+            这块是归档区里的次要动作，不该和页头「转销售订单」抢同一档视觉重量。 */}
         {canManage && (
-          <Button theme="solid" loading={generateMutation.isPending} onClick={() => generateMutation.mutate()}>
+          <Button theme="light" loading={generateMutation.isPending} onClick={() => generateMutation.mutate()}>
             生成一份
           </Button>
         )}
