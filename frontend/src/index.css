@@ -340,6 +340,12 @@ a:not([href]) {
      真放不下时让同一行的按钮换行，而不是让标题竖起来。 */
   white-space: nowrap;
   min-width: 0;
+  /* 放不下就省略号：标题 nowrap 但不裁切时，长标题（分析页的图表卡标题）
+     会直接溢出卡片右侧、把整页顶出一条 5px 的横向滚动条。
+     裁在卡片里，鼠标停下能看到全文（SectionCard 同时把 title 挂成原生提示）。 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 /* 分组标题：把「这页分几块」写到界面上，而不是只写在代码注释里。
@@ -1827,6 +1833,13 @@ a:not([href]) {
 
 /* 产品详情的 SKU 表：列宽合计 1159 + 内边距 > 内容区 1130，
    右下「操作」被裁、底部常驻横向滚动条。和报价明细同一套处理方式。 */
+.samples-table .semi-table {
+  /* 样品表同病：列宽合计 + 内边距 > 内容区，右下「操作」被裁、底部常驻
+     一条横向滚动条。强制表格宽 = 容器，列按固定布局分。 */
+  width: 100% !important;
+  table-layout: fixed;
+}
+
 .product-sku-table .semi-table {
   width: 100% !important;
   table-layout: fixed;

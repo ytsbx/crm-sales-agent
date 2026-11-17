@@ -648,7 +648,14 @@ export default function SampleListPage() {
         items.length === 0 ? (
           <span style={{ color: 'var(--crm-text-3)' }}>无明细</span>
         ) : (
-          <span style={{ fontSize: 12 }}>
+          // 列宽固定后长明细会省略号截断；把全文挂到 title，
+          // 鼠标停下能看全，不用为此再开一列
+          <span
+            style={{ fontSize: 12 }}
+            title={items
+              .map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? String(item.sku_id) })} ×${item.quantity}`)
+              .join('、')}
+          >
             {items.map((item) => `${skuLabel({ name: item.sku_name, sku_code: item.sku_code ?? String(item.sku_id) })} ×${item.quantity}`).join('、')}
           </span>
         ),
@@ -815,6 +822,8 @@ export default function SampleListPage() {
 
         <Table
           size="small"
+          className="samples-table"
+          tableLayout="fixed"
           rowKey="id"
           loading={query.isLoading}
           columns={columns}

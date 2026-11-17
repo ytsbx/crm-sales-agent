@@ -54,7 +54,7 @@ export default function SectionCard({
                 }}
               />
             )}
-            {typeof title === 'string' ? <span className="card-title">{title}</span> : title}
+            {typeof title === 'string' ? <span className="card-title" title={title}>{title}</span> : title}
           </span>
           {extra}
         </div>
