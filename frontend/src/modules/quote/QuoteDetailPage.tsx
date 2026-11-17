@@ -650,6 +650,15 @@ export default function QuoteDetailPage() {
     })
   }
 
+  // 折叠区收起时要显示「本版均价」：接口的 QuoteVersion 上没有 unit_price，
+  // 按明细的加权均价算（金额 ÷ 数量），和 WhatIfPanel 里 baseline.unitPrice 同一口径。
+  const whatifUnitPrice = (() => {
+    const rows = detail?.items ?? []
+    const qty = rows.reduce((sum, item) => sum + (item.quantity ?? 0), 0)
+    const amount = rows.reduce((sum, item) => sum + (item.quantity ?? 0) * (item.quoted_price ?? 0), 0)
+    return qty > 0 ? amount / qty : 0
+  })()
+
   // 总额传进去：金额太小时「分不出正数期」要在弹窗里就拦住并说明（第九批 ①⑤）
   const planTotal = version?.total_amount_exact ?? version?.total_amount ?? 0
   // 灰键必须说得出为什么（项目口径）：判据与组件内部同源。
@@ -1661,13 +1670,66 @@ export default function QuoteDetailPage() {
       <Collapse className="quote-whatif-collapse">
         <Collapse.Panel
           itemKey="whatif"
+          /* 收起时别做"盲盒"（2026-11-17 主人说「折叠之后什么都看不见，
+             却还可以点，不就是盲点吗」）—— 把里面最关心的几个数摆到标题行右侧：
+             几个版本、本版均价、毛利率。收起状态下先看到数，再决定要不要点开；
+             点开是为了对比和试算，不是为了看这几个数。
+             ⚠️ 不能把数字放进 `extra`：Semi 这个版本的 `renderHeader` 只在
+             `typeof header === 'string'` 时才渲染 `extra`，传 ReactNode 会被直接丢掉
+             （读 node_modules/@douyinfe/semi-ui/lib/es/collapse/item.js 确认）。
+             所以这里在 header 内部自己排：左边标题、右边数字，用 flex 两端对齐。 */
           header={
-            <span style={{ fontSize: 14, fontWeight: 600 }}>
-              版本与方案对比 · 边际测算（What-if）
-              <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
-              要改价、要比较几套方案时点开看
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 16 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, minWidth: 0 }}>
+                版本与方案对比 · 边际测算（What-if）
+                <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                  要改价、要比较几套方案时点开看
+                </span>
               </span>
-            </span>
+              <span
+                className="quote-whatif-summary"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 16,
+                  fontSize: 12,
+                  color: 'var(--crm-text-3)',
+                  flexShrink: 0,
+                  // 右侧让开折叠箭头：header 是 flex 两端对齐，数字紧贴箭头会挤在一起
+                  marginRight: 10,
+                }}
+              >
+                <span>
+                  <b style={{ fontWeight: 600, color: 'var(--crm-text-2)' }}>{(versionsQuery.data ?? []).length}</b>
+                  {' 个版本'}
+                </span>
+                <span>
+                  {'均价 '}
+                  <b style={{ fontWeight: 600, color: 'var(--crm-text-2)' }}>{cny(whatifUnitPrice)}</b>
+                </span>
+                <span>
+                  {'毛利率 '}
+                  <b
+                    style={{
+                      fontWeight: 600,
+                      color:
+                        version.total_profit == null || !version.subtotal_amount
+                          ? 'var(--crm-text-3)'
+                          : version.total_profit / version.subtotal_amount < 0
+                            ? 'var(--crm-error, #e34d59)'
+                            : 'var(--crm-success, #00b42a)',
+                    }}
+                  >
+                    {/* 分母必须用**货款**（subtotal_amount），不能用含运费的 total_amount：
+                        运费是代收代付，不进利润口径。用 total_amount 算出来是 29.94%，
+                        而上方明细表里同一版显示 30.00%，同屏两个毛利率会让人以为哪个算错了。 */}
+                    {version.total_profit == null || !version.subtotal_amount
+                      ? '-'
+                      : `${((version.total_profit / version.subtotal_amount) * 100).toFixed(2)}%`}
+                  </b>
+                </span>
+              </span>
+            </div>
           }
         >
           <WhatIfPanel quoteId={quoteId} versionId={version.id} items={detail.items} />
