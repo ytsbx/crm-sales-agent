@@ -61,9 +61,13 @@ const DIFF_LABEL: Record<string, string> = {
  */
 const money = (value?: number | null, digits: 2 | 4 = 2) => {
   if (value === null || value === undefined) return '-'
-  return digits === 4
-    ? formatUnitPrice(value, 'CNY')
-    : formatMoney(toTwoDecimals(value), 'CNY')
+  // 负数要写成「-¥6,666.67」而不是「¥-6,666.67」：币种永远贴在数字前面，
+  // 负号放到最外层（亏损的预计利润额会走到这里）
+  const negative = value < 0
+  const body = digits === 4
+    ? formatUnitPrice(Math.abs(value), 'CNY')
+    : formatMoney(toTwoDecimals(Math.abs(value)), 'CNY')
+  return negative ? `-${body}` : body
 }
 const percent = (value?: number | null) =>
   value === null || value === undefined ? '-' : `${(value * 100).toFixed(2)}%`
@@ -106,7 +110,9 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
     return { quantity, unitCost, unitPrice, amountTotal }
   }, [items, currentVersion])
 
-  const basePrice = targetPrice ?? Number(baseline.unitPrice.toFixed(2))
+  // 试算起点保真到 4 位：库里单价是 numeric(16,4)，砍成两位会让「按原价试算」
+  // 算出来的毛利和原版对不上（2026-11-17，单价保真口径）
+  const basePrice = Number((targetPrice ?? baseline.unitPrice).toFixed(4))
   // 价格和数量是两个独立的情景假设。只拖动价格时固定本版数量，
   // 避免“涨价就自动增加销量”的未经验证推断（Issue #21）。
   const estimateQuantity = baseline.quantity
@@ -231,9 +237,9 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
     },
   ]
 
-  const startPrice = Number(baseline.unitPrice.toFixed(2))
-  const minPrice = Math.max(0, Math.round(Math.min(startPrice * 0.7, (breakEven ?? startPrice) * 0.8) * 100) / 100)
-  const maxPrice = Math.round(Math.max(startPrice * 1.15, (recommended ?? startPrice) * 1.1) * 100) / 100
+  const startPrice = Number(baseline.unitPrice.toFixed(4))
+  const minPrice = Math.max(0, Math.round(Math.min(startPrice * 0.7, (breakEven ?? startPrice) * 0.8) * 10000) / 10000)
+  const maxPrice = Math.round(Math.max(startPrice * 1.15, (recommended ?? startPrice) * 1.1) * 10000) / 10000
 
   return (
     <>
@@ -274,10 +280,19 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                     V{diff.from_version_no} → V{diff.to_version_no}
                   </span>
                   <span style={{ marginLeft: 10, color: 'var(--crm-text-3)' }}>
-                    金额 {diff.amount_delta >= 0 ? '+' : ''}
-                    {diff.amount_delta_exact ?? diff.amount_delta.toFixed(2)}，毛利 {diff.profit_delta >= 0 ? '+' : ''}
-                    {diff.profit_delta_exact ?? diff.profit_delta.toFixed(2)}，毛利率 {diff.margin_delta >= 0 ? '+' : ''}
-                    {(diff.margin_delta * 100).toFixed(2)}%
+                    {/* 差异也是金额：补 ¥ 与千分位，符号单独放最前面（原来直接贴 toFixed(2)） */}
+                    {(() => {
+                      const amount = Number(diff.amount_delta_exact ?? diff.amount_delta ?? 0)
+                      const profit = Number(diff.profit_delta_exact ?? diff.profit_delta ?? 0)
+                      return (
+                        <>
+                          金额 {amount >= 0 ? '+' : '-'}
+                          {formatMoney(toTwoDecimals(Math.abs(amount)), 'CNY')}，毛利 {profit >= 0 ? '+' : '-'}
+                          {formatMoney(toTwoDecimals(Math.abs(profit)), 'CNY')}，毛利率 {diff.margin_delta >= 0 ? '+' : ''}
+                          {(diff.margin_delta * 100).toFixed(2)}%
+                        </>
+                      )
+                    })()}
                   </span>
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -327,13 +342,13 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   <Slider
                     min={minPrice}
                     max={maxPrice}
-                    step={0.01}
+                    step={0.0001}
                     value={basePrice}
                     onChange={(value) => {
                       const next = Array.isArray(value) ? value[0] : value
                       if (typeof next === 'number') setTargetPrice(next)
                     }}
-                    tipFormatter={(value) => `¥${Number(value).toFixed(2)}`}
+                    tipFormatter={(value) => money(Number(value), 4)}
                   />
                 </div>
                 <Input
@@ -394,8 +409,8 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                         {value === null
                           ? '本版快照没有这一项'
                           : basePrice >= value
-                            ? `高出 ${(basePrice - value).toFixed(2)}`
-                            : `还差 ${(value - basePrice).toFixed(2)}`}
+                            ? `高出 ${money(basePrice - value, 4)}`
+                            : `还差 ${money(value - basePrice, 4)}`}
                       </span>
                     </div>
                   )
@@ -431,7 +446,8 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                     size="small"
                     onClick={() => {
                       const next = [...scenarios]
-                      next[index] = Number(basePrice.toFixed(2))
+                      // 直接用当前均价（已保真 4 位），不再四舍五入到分
+                      next[index] = basePrice
                       setScenarios(next)
                     }}
                   >
