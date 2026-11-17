@@ -216,7 +216,8 @@ export default function AppLayout() {
           >
             退出登录
           </a>
-          <div>Semi Design 风格 · v1.1</div>
+          {/* 侧栏底部原来印「Semi Design 风格 · v1.1」—— 技术栈版本信息，
+              跟业务同事每天的工作无关，还稀释了整块界面的完整度（V-01）。删掉不补装饰。 */}
         </div>
       </aside>
 

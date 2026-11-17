@@ -226,6 +226,39 @@ a:not([href]) {
   flex: 1 1 auto;
 }
 
+.page-header {
+  /* 标题区不许被右侧操作区挤成「一字一列」的竖排（2026-11-17 视觉审视 V2-03：
+     企业微信 681px 下标题变竖排、操作按钮溢出屏外）。
+     给标题区一个可收缩但保留最小可读宽度的底线，操作区自己换行。 */
+}
+
+.page-header-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--crm-space-3);
+  /* 按钮多的时候在右侧内部换行，而不是把整行顶出屏幕 */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 窄屏（≤900px）：标题与操作区分两行，操作区左对齐并继续换行。
+   宽屏不受影响，仍是「左标题 / 右操作」。 */
+@media (max-width: 900px) {
+  .page-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .page-header-actions {
+    justify-content: flex-start;
+  }
+}
+
 .page-title {
   font-size: var(--crm-font-page);
   /* 中文的 600 只在拉丁字形上明显，中文字库里基本还是常规粗细 ——
@@ -272,6 +305,31 @@ a:not([href]) {
      订单中心这类满列的表会多出一条横向滚动条。 */
   padding: 24px 20px;
   box-shadow: var(--crm-shadow);
+}
+
+.case-empty-body {
+  /* 空正文的说明：浅灰底、左对齐，不摆大插图 —— 它是"还没写"，不是"出错了" */
+  padding: 14px 16px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.case-empty-hint {
+  margin-top: 4px;
+  color: var(--crm-text-3);
+  font-size: 12px;
+}
+
+.card-hint {
+  /* 卡片里的说明文字：常规字重、比正文小一号、灰。
+     它不是标题，不能抢数据的注意力（回收站那条 V2-13 就是这么翻车的）。 */
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--crm-text-3);
+  margin: 0 0 14px;
 }
 
 .card-title {
@@ -1805,6 +1863,16 @@ a:not([href]) {
 .quote-items-table .semi-table {
   width: 100% !important;
   table-layout: fixed;
+  /* 列宽合计 840：窄屏还硬压到 666，首列（产品名称/需求）就只剩一个省略号。
+     给表格一个最小宽度，空间不够时让「表格自己横向滚」，列宽守住不变形
+     （2026-11-17 视觉审视 V2-06）。 */
+  min-width: 840px;
+}
+
+/* 表格专用的横向滚动壳：页面主体不滚，只有表格能左右拖 */
+.table-x-scroll {
+  width: 100%;
+  overflow-x: auto;
 }
 
 /* 展开箭头（2026-11-17）：Semi 把 `semi-table-expand-icon` 塞进第一个单元格里，
@@ -2567,6 +2635,31 @@ table:not(.semi-table) td {
    标题大一号就把注意力吃掉了。 */
 .agent-empty h2 { margin: 0 0 8px; font-size: 20px; color: var(--crm-text-2); }
 .agent-empty p { margin: 0 0 22px; font-size: 13px; color: var(--crm-text-3); }
+.agent-context-bar {
+  /* 从客户详情跳进 AI 后的「当前客户」条：浅灰底、不加蓝底，
+     靠一枚蓝色小标签点出身份，避免又变成一块色块（V2-05）。 */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border-radius: var(--crm-radius-sm);
+  background: var(--crm-surface-low);
+  font-size: 12.5px;
+  color: var(--crm-text-2);
+  flex-shrink: 0;
+}
+
+.agent-context-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--crm-text);
+  font-weight: 600;
+}
+
 .agent-empty-mark {
   width: 44px;
   height: 44px;
@@ -2731,11 +2824,24 @@ table:not(.semi-table) td {
 .settings-content {
   flex: 1 1 auto;
   min-width: 0;
+  /* 设置页里几张表（角色/业务规则/回收候选…）没开 Semi 的 scroll.x，
+     窄屏下会顶破卡片、逼整页左右拖。让横向滚动发生在表格壳里，
+     页面主体不跟着滚（2026-11-17 视觉审视 5.1）。 */
+  overflow-x: hidden;
+}
+
+.settings-content .semi-table-wrapper {
+  overflow-x: auto;
 }
 /* 窄屏：左侧竖排变一组可换行的横排标签，分组标题收起（组本身不丢） */
 @media (max-width: 900px) {
   .settings-shell {
     flex-direction: column;
+    /* 基础样式里有 align-items: flex-start（竖排时给左栏用），
+       换成 column 之后它会让右栏按内容宽度撑开、顶破页面 ——
+       所以这里必须改成 stretch，让内容区老老实实占满可用宽度
+       （2026-11-17 视觉审视 5.1：设置各页签横向溢出）。 */
+    align-items: stretch;
     gap: var(--crm-space-4);
   }
   .settings-nav {

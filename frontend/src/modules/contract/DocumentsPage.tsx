@@ -223,6 +223,8 @@ export default function DocumentsPage() {
   const [signFileId, setSignFileId] = useState<number | null>(null)
   const [signUploading, setSignUploading] = useState(false)
   const signFileInput = useRef<HTMLInputElement>(null)
+  /** 合同原文件的隐藏输入框：可见触发器是按钮，不再露出浏览器原生控件 */
+  const originalFileInput = useRef<HTMLInputElement>(null)
   // 弹窗里当前是哪份合同。上传是异步的，回来时得靠它判断"还是不是同一份合同"——
   // 直接读 state 只会拿到发起上传那一刻的旧值，中途切了合同也照样回填。
   const signTargetIdRef = useRef<number | null>(null)
@@ -670,12 +672,38 @@ export default function DocumentsPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>合同原文件（Word / PDF）</div>
-            <input type="file" accept=".pdf,.doc,.docx" onChange={(e) => {
-              const file = e.target.files?.[0] || null
-              setOriginalFile(file); setOriginalFileId(null)
-              if (file && !contractTitle) setContractTitle(file.name.replace(/\.[^.]+$/, ''))
-            }} />
-            {originalFile && <div>{originalFile.name}</div>}
+            {/* 原来直接摆一个浏览器原生「选择文件 / 未选择任何文件」，
+                和同页 Semi 控件不是一个物种（2026-11-17 视觉审视 V2-12）。
+                改成和「上传签署件」同一套：自定义按钮 + 隐藏输入框，
+                系统文件选择窗口仍然是浏览器原生的（这层该原生就原生）。 */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <Button onClick={() => originalFileInput.current?.click()}>选择文件</Button>
+              <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
+                {originalFile ? originalFile.name : '尚未选择文件（支持 .pdf / .doc / .docx）'}
+              </span>
+              {originalFile && (
+                <a
+                  onClick={() => {
+                    setOriginalFile(null)
+                    setOriginalFileId(null)
+                    if (originalFileInput.current) originalFileInput.current.value = ''
+                  }}
+                >
+                  清除
+                </a>
+              )}
+            </div>
+            <input
+              ref={originalFileInput}
+              type="file"
+              accept=".pdf,.doc,.docx"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null
+                setOriginalFile(file); setOriginalFileId(null)
+                if (file && !contractTitle) setContractTitle(file.name.replace(/\.[^.]+$/, ''))
+              }}
+            />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>

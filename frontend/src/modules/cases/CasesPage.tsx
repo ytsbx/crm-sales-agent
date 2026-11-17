@@ -754,28 +754,62 @@ export default function CasesPage() {
                     fontSize: 12.5,
                   }}
                 >
-                  {(formTimelineQuery.data ?? []).map((event, index) => (
-                    <div
-                      key={`${event.at}-${index}`}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8 }}
-                    >
-                      <span style={{ color: 'var(--crm-text-3)' }}>
-                        {event.at ? formatBeijingDate(event.at) : ''}
-                      </span>
-                      <span style={{ flex: 1 }}>{event.title}</span>
-                      {event.source ? (
-                        <a
-                          onClick={() =>
-                            addEvidence(`${event.source!.type}:${event.source!.id}`)
-                          }
-                        >
-                          设为证据
-                        </a>
-                      ) : (
-                        <span style={{ color: 'var(--crm-text-3)' }}>非单据</span>
-                      )}
-                    </div>
-                  ))}
+                  {(formTimelineQuery.data ?? []).map((event, index) => {
+                    /* 原来一行只有「日期 + 类型」：连着十条「2026-11-14 业务进展」，
+                       根本分不清哪条能证明这次的做法（2026-11-17 视觉审视 V2-10）。
+                       改成三段：日期降为小字，中间放事件摘要（没有摘要退回标题），
+                       下面一行补事件类型、操作人，主次一眼分得开。 */
+                    const summary = (event.detail ?? '').replace(/\s+/g, ' ').trim()
+                    const main = summary || event.title
+                    const sub = [event.title, event.operator_name].filter(Boolean).join(' · ')
+                    return (
+                      <div
+                        key={`${event.at}-${index}`}
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+                      >
+                        <span style={{ color: 'var(--crm-text-3)', flex: '0 0 auto' }}>
+                          {event.at ? formatBeijingDate(event.at) : ''}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            title={main}
+                            style={{
+                              color: 'var(--crm-text)',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {main}
+                          </div>
+                          {sub && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: 'var(--crm-text-3)',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {sub}
+                            </div>
+                          )}
+                        </div>
+                        {event.source ? (
+                          <a
+                            onClick={() =>
+                              addEvidence(`${event.source!.type}:${event.source!.id}`)
+                            }
+                          >
+                            设为证据
+                          </a>
+                        ) : (
+                          <span style={{ color: 'var(--crm-text-3)', flex: '0 0 auto' }}>非单据</span>
+                        )}
+                      </div>
+                    )
+                  })}
                   {(formTimelineQuery.data ?? []).length === 0 && (
                     <div style={{ color: 'var(--crm-text-3)' }}>这个客户还没有时间线事件</div>
                   )}
@@ -925,22 +959,35 @@ export default function CasesPage() {
               {detail.product_line ? ` · ${detail.product_line}` : ''}
               {detail.stage_reached ? ` · ${STAGE_LABEL[detail.stage_reached] ?? detail.stage_reached}` : ''}
             </div>
-            {([
-              ['客户背景', detail.background],
-              ['客户目标', detail.goal],
-              ['关键动作', detail.key_actions],
-              ['异议处理', detail.objection_handling],
-              ['报价/打样经过', detail.process],
-              ['结果', detail.result],
-              ['可复用做法', detail.lessons],
-            ] as const)
-              .filter(([, text]) => text)
-              .map(([label, text]) => (
+            {(() => {
+              const sections = ([
+                ['客户背景', detail.background],
+                ['客户目标', detail.goal],
+                ['关键动作', detail.key_actions],
+                ['异议处理', detail.objection_handling],
+                ['报价/打样经过', detail.process],
+                ['结果', detail.result],
+                ['可复用做法', detail.lessons],
+              ] as const).filter(([, text]) => text)
+              // 正文一段都没填时，整块会只剩大片空白，看的人以为加载失败
+              // （2026-11-17 视觉审视 V2-09）。这里明确说「还没写」，并指出在哪补。
+              if (sections.length === 0) {
+                return (
+                  <div className="case-empty-body">
+                    <div>这条案例的正文还没有填写：客户目标、关键动作、结果、可复用做法都是空的。</div>
+                    <div className="case-empty-hint">
+                      点右上角「编辑」把这几段补上，审核通过后它才会成为可培训的案例。
+                    </div>
+                  </div>
+                )
+              }
+              return sections.map(([label, text]) => (
                 <div key={label}>
                   <div style={{ fontWeight: 600, marginBottom: 2 }}>{label}</div>
                   <div style={{ whiteSpace: 'pre-wrap', color: 'var(--crm-text-2)' }}>{text}</div>
                 </div>
-              ))}
+              ))
+            })()}
             {(detail.evidences ?? []).length > 0 ? (
               <div style={{ display: 'grid', gap: 4, fontSize: 13 }}>
                 <span style={{ color: 'var(--crm-text-3)' }}>

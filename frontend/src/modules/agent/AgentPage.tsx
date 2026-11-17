@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useLocation, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Card, Popconfirm, Tag, Toast, Tooltip } from '@douyinfe/semi-ui'
 
@@ -18,6 +18,7 @@ import {
 } from '../../shared/api/agent'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
+import { getCustomer } from '../../shared/api/customer'
 
 const RISK_TONE: Record<string, TagTone> = { L1: 'green', L2: 'orange', L3: 'red' }
 
@@ -47,6 +48,18 @@ export default function AgentPage() {
 
   const contextType = searchParams.get('context')
   const contextId = searchParams.get('id') ? Number(searchParams.get('id')) : undefined
+
+  /* 从客户详情「跳到 AI」带过来的上下文（/agent?context=customer&id=270）。
+     以前 URL 上有参数、页面上却什么标识都没有：用户看到的还是「宏远包装」的示例，
+     根本不知道自己问的是哪个客户（2026-11-17 视觉审视 V2-05）。
+     这里把来源客户读出来，顶部亮明「当前客户」，示例也换成围绕这家客户的。 */
+  const customerContextQuery = useQuery({
+    queryKey: ['customer', contextId],
+    queryFn: () => getCustomer(contextId!),
+    enabled: contextType === 'customer' && Boolean(contextId),
+  })
+  const contextCustomerName = customerContextQuery.data?.name as string | undefined
+  const navigate = useNavigate()
 
   const sessionsQuery = useQuery({ queryKey: ['agent-sessions'], queryFn: listAgentSessions })
   const toolsQuery = useQuery({ queryKey: ['agent-tools'], queryFn: listAgentTools })
@@ -326,6 +339,24 @@ export default function AgentPage() {
       </SectionCard>
 
       <SectionCard style={{ minHeight: 600, display: 'flex', flexDirection: 'column' }}>
+        {/* 来源客户标识：有上下文时常驻在对话区顶部，随时看得见「现在问的是谁」 */}
+        {contextType === 'customer' && contextId && (
+          <div className="agent-context-bar">
+            <Tag size="small" color="blue">当前客户</Tag>
+            <span className="agent-context-name">
+              {/* 客户查不到时不露内部编号（主人明确不喜欢看 ID），只说明「来源客户已不可用」 */}
+              {contextCustomerName ??
+                (customerContextQuery.isLoading ? '读取中…' : '客户信息已失效')}
+            </span>
+            <Button
+              size="small"
+              theme="borderless"
+              onClick={() => navigate('/agent')}
+            >
+              清除上下文
+            </Button>
+          </div>
+        )}
         <div className="agent-chat-scroll" style={{ flex: 1, overflow: 'auto' }}>
           {sessionId && detailQuery.isPending && (
             <div className="agent-empty">正在加载会话…</div>
@@ -338,7 +369,19 @@ export default function AgentPage() {
               <h2>{sessionId ? '这段对话还没有消息' : '开始新对话'}</h2>
               <p>直接描述你想查询或处理的业务，也可以试试下面的问题。</p>
               <div className="agent-examples">
-                {EXAMPLES.map((text) => (
+                {(() => {
+                  /* 有客户上下文时，绝不摆「宏远包装」这类跟来源无关的示例：
+                     知道名字就用名字，名字没拿到就用「这个客户」，语义照样指着它。 */
+                  if (contextType === 'customer' && contextId) {
+                    const who = contextCustomerName ?? '这个客户'
+                    return [
+                      `${who} 现在跟进到什么阶段？`,
+                      `帮我梳理 ${who} 的应收和回款风险`,
+                      `给 ${who} 拟一份报价建议`,
+                    ]
+                  }
+                  return EXAMPLES
+                })().map((text) => (
                   <button key={text} type="button" disabled={streaming} onClick={() => handleSend(text)}>
                     {text}
                   </button>

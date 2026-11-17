@@ -128,10 +128,23 @@ export function invalidNumberMessage(
   return `${NUMBER_FIELD_LABEL[bad[0]] ?? bad[0]}${hint}`
 }
 
-/** 精确数量文本分组展示，不先转浮点；普通小数保留原千分位/去尾零格式。 */
-export function formatQuantityText(value: string): string {
-  if (!/^\d+(?:\.\d+)?$/.test(value)) return value
-  const [whole, fraction] = value.split('.')
+/**
+ * 精确数量文本分组展示，不先转浮点；普通小数保留原千分位/去尾零格式。
+ *
+ * ⚠️ 2026-11-17 视觉审视报了 P0：订单草稿详情整页白屏，
+ * 控制台是 `TypeError: value.split is not a function`。
+ * 根因就在这里：调用方（OrderDraftsPage / SampleFromSourceModal）把
+ * `original_quantity` 直接传进来，而后端有时给字符串、有时给数字。
+ * 正则 `test()` 会把数字隐式转成字符串、照样通过，于是下一行
+ * `value.split()` 落在数字上 —— 一个字段的格式问题把整页错误边界打穿。
+ *
+ * 所以入参先统一成字符串再处理；数字/字符串/空值都不会再抛异常。
+ */
+export function formatQuantityText(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '-'
+  const text = typeof value === 'string' ? value : String(value)
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return text
+  const [whole, fraction] = text.split('.')
   const tail = fraction?.replace(/0+$/, '')
   return BigInt(whole).toLocaleString('zh-CN') + (tail ? `.${tail}` : '')
 }

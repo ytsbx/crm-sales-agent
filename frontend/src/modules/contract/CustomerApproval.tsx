@@ -1,7 +1,7 @@
 import { formatDingTalkTime } from '../../shared/beijing-time'
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Button, Input, Modal, Toast } from '@douyinfe/semi-ui'
+import { Button, Input, Modal, Select, Toast } from '@douyinfe/semi-ui'
 import { api } from '../../shared/api/client'
 import type { ContractDocument } from '../../shared/api/contract'
 import { autoLinkContractDingTalkApproval, startContractDingTalkApproval } from '../../shared/api/contract'
@@ -115,10 +115,17 @@ export function ContractBasis({ doc }: { doc: ContractDocument }) {
   }, onSuccess: () => { Toast.success('业务依据已保存'); void cache.invalidateQueries({ queryKey: ['contract-detail', doc.id] }); void cache.invalidateQueries({ queryKey: ['contract-documents'] }) }, onError: (e: Error) => Toast.error(e.message) })
   return <div style={{ display: 'grid', gap: 8 }}>
     <div>归档前请补充正式订单或客户已收到的有效报价：</div>
-    <select aria-label="合同业务依据" value={choice} onChange={(e) => setChoice(e.target.value)}>
-      <option value="">选择订单或报价</option>
-      {(choices.data || []).map((v) => <option key={v.key} value={v.key}>{v.text}</option>)}
-    </select>
+    {/* 原生 <select> 的边框、字号、高度都和同页 Semi 控件对不上（V2-12），换成 Semi Select */}
+    <Select
+      aria-label="合同业务依据"
+      placeholder="选择订单或报价"
+      value={choice || undefined}
+      onChange={(value) => setChoice(String(value ?? ''))}
+      loading={choices.isLoading}
+      filter
+      optionList={(choices.data || []).map((v) => ({ value: v.key, label: v.text }))}
+      style={{ width: '100%' }}
+    />
     <Button loading={save.isPending} onClick={() => { if (!choice) Toast.warning('请选择业务依据'); else save.mutate() }}>保存业务依据</Button>
     {choices.error && <span role="alert">{choices.error.message}</span>}
   </div>

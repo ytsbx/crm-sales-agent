@@ -753,7 +753,9 @@ export default function QuoteDetailPage() {
       // 看的人不知道是哪件东西（主人 2026-10-10 指出）。
       render: (v: string | null, record: QuoteItemRow) => (
         <div style={{ lineHeight: 1.5 }}>
-          <div>
+          {/* 名称在窄屏被挤时不再只剩「…」：允许折行，鼠标停上去给完整名称
+              （2026-11-17 视觉审视 V2-06：首列是识别列，不能只剩省略号） */}
+          <div title={record.sku_name || v || '未命名产品'} style={{ overflowWrap: 'anywhere' }}>
             {record.sku_name || v || '未命名产品'}
             {record.is_custom && (
               <Tag size="small" type="light" style={{ marginLeft: 6 }}>
@@ -1594,6 +1596,8 @@ export default function QuoteDetailPage() {
           </div>
         }
       >
+        {/* 窄屏（681px）下让滚动发生在表格自己身上，而不是把列压扁到只剩省略号 */}
+        <div className="table-x-scroll">
         <Table<QuoteItemRow>
           columns={itemColumns}
           dataSource={detail.items}
@@ -1655,6 +1659,7 @@ export default function QuoteDetailPage() {
           rowExpandable={() => true}
           empty="没有明细"
         />
+        </div>
       </SectionCard>
 
       {draftVisible && <SampleFromSourceModal mode="order" source={{ quote_version_id: version.id }} onClose={() => setDraftVisible(false)} />}
@@ -2052,7 +2057,8 @@ export default function QuoteDetailPage() {
         onOk={() => itemsMutation.mutate()}
         confirmLoading={itemsMutation.isPending}
         okText="保存整版明细"
-        width={900}
+        /* 固定 900 在 681px 视口下会顶出屏幕，改成跟着视口收窄 */
+        width={Math.min(900, window.innerWidth - 24)}
       >
         <div style={{ display: 'grid', gap: 10 }}>
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
@@ -2065,6 +2071,7 @@ export default function QuoteDetailPage() {
               key={index}
               style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}
             >
+              <ItemField label="录入方式">
               <Select
                 /* 96 时「现货 SKU」被截成「现货 S…」—— 这一格的选择决定了
                    后面那个下拉是选产品还是选定制需求，截断了就看不懂自己在选什么。
@@ -2083,8 +2090,10 @@ export default function QuoteDetailPage() {
                   { value: 'custom', label: '定制需求' },
                 ]}
               />
+              </ItemField>
               {row.mode === 'custom' ? (
                 <>
+                  <ItemField label="定制需求">
                   <Select
                     style={{ width: 240 }}
                     placeholder={inquiryOptions.length > 0 ? '选择定制需求' : '本客户还没有定制需求'}
@@ -2093,6 +2102,7 @@ export default function QuoteDetailPage() {
                     onChange={(value) => patchRow(index, { inquiry_id: value as number })}
                     optionList={inquiryOptions}
                   />
+                  </ItemField>
                   {/* 下拉只列**本客户**的需求（2026-10-12 主人提问核实）：空的时候要说清
                       是"这个客户还没有需求"，而不是让用户以为系统里没数据、或者去别处找。 */}
                   {inquiryOptions.length === 0 && (
@@ -2102,6 +2112,7 @@ export default function QuoteDetailPage() {
                   )}
                 </>
               ) : (
+                <ItemField label="现货 SKU">
                 <Select
                   style={{ width: 240 }}
                   placeholder="选择 SKU"
@@ -2110,33 +2121,42 @@ export default function QuoteDetailPage() {
                   onChange={(value) => patchRow(index, { sku_id: value as number })}
                   optionList={skuOptions}
                 />
+                </ItemField>
               )}
+              <ItemField label="数量">
               <Input
                 style={{ width: 84 }}
                 placeholder="数量"
                 value={row.quantity}
                 onChange={(value) => patchRow(index, { quantity: value })}
               />
+              </ItemField>
+              <ItemField label="报价单价（元）">
               <Input
                 style={{ width: 104 }}
                 placeholder="报价单价"
                 value={row.quoted_price}
                 onChange={(value) => patchRow(index, { quoted_price: value })}
               />
+              </ItemField>
               {row.mode === 'custom' && (
+                <ItemField label="成本（元，必填）">
                 <Input
                   style={{ width: 104 }}
                   placeholder="成本(必填)"
                   value={row.unit_cost}
                   onChange={(value) => patchRow(index, { unit_cost: value })}
                 />
+                </ItemField>
               )}
+              <ItemField label="备注">
               <Input
                 style={{ width: 160 }}
                 placeholder="备注"
                 value={row.remark}
                 onChange={(value) => patchRow(index, { remark: value })}
               />
+              </ItemField>
               <Button
                 theme="borderless"
                 type="danger"
@@ -2530,6 +2550,21 @@ export default function QuoteDetailPage() {
           </div>
         </div>
       </SectionCard>
+    </div>
+  )
+}
+
+
+/**
+ * 批量录入里「标签 + 控件」的小竖排（2026-11-17 视觉审视 V2-07：输入框一旦有值、
+ * placeholder 就消失，用户只能凭数字猜这是数量还是单价）。
+ * 标签常驻在控件上方，窄屏换行、横向滚动都不影响「标签跟控件在一起」。
+ */
+function ItemField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ fontSize: 11, color: 'var(--crm-text-3)', lineHeight: 1 }}>{label}</span>
+      {children}
     </div>
   )
 }

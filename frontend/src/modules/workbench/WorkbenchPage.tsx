@@ -26,6 +26,7 @@ import PageHeader from '../../shared/components/PageHeader'
 import GroupHead from '../../shared/components/SectionGroupHead'
 import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
+import { AUDIT_ACTION_LABEL } from '../../shared/audit-labels'
 import EChart from '../../shared/components/charts/EChart'
 import {
   asMoney,
@@ -483,7 +484,7 @@ export default function WorkbenchPage() {
                     操作人本身就在下一行加粗显示，直接去掉更干净。 */}
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 13 }}>
-                    <span style={{ fontWeight: 600 }}>{row.operator}</span> {row.title}
+                    <span style={{ fontWeight: 600 }}>{row.operator}</span> {humanizeActivityTitle(row.title)}
                   </div>
                   <div style={{ fontSize: 11, color: 'var(--crm-text-3)', marginTop: 2 }}>
                     {formatBeijingTime(row.at, {
@@ -783,4 +784,23 @@ export default function WorkbenchPage() {
       </SideSheet>
     </div>
   )
+}
+
+
+/**
+ * 业务动态的标题说人话（2026-11-17 视觉审视 V-01）。
+ * 后端把「动作码 + 对象」直接拼在一起下发，例如
+ * `open_customer_duplicate_cases客户`、`create_quote记录`：
+ * 非技术同事看到的是一串英文加中文硬拼。
+ * 这里拿审计日志那张已经维护好的动作中文表（156 条）做前缀匹配，
+ * 认得的就翻成中文、认不得的原样保留 —— 不改后端、不改数据。
+ */
+const ACTIVITY_ACTION_CODES = Object.keys(AUDIT_ACTION_LABEL).sort((a, b) => b.length - a.length)
+
+function humanizeActivityTitle(title: string): string {
+  const code = ACTIVITY_ACTION_CODES.find((item) => title.startsWith(item))
+  if (!code) return title
+  const rest = title.slice(code.length).replace(/^记录/, '').trim()
+  const label = AUDIT_ACTION_LABEL[code]
+  return rest ? `${label} · ${rest}` : label
 }

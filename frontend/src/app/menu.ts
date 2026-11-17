@@ -128,7 +128,7 @@ export const MENU_GROUPS: MenuGroup[] = [
   {
     title: '智能与协同',
     items: [
-      { key: 'agent', path: '/agent', label: 'AI Sales Agent', icon: IconComment, ready: true, permission: 'agent:use' },
+      { key: 'agent', path: '/agent', label: 'AI 助手', icon: IconComment, ready: true, permission: 'agent:use' },
       { key: 'wecom', path: '/wecom', label: '企业微信', icon: IconAt, ready: true, permission: 'wecom:view' },
       {
         key: 'settings',

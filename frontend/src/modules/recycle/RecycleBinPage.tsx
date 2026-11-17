@@ -648,13 +648,18 @@ function CustomersPanel() {
 
   return (
     <>
-      <SectionCard
-        title={
-          '被合并掉的客户会显示「已并入某某」，可点进合并后的客户（那一类不提供恢复）；' +
-          '直接删除的可以恢复。原负责人已停用的，恢复时要先指定一位在职的接手人。' +
-          (canRestoreOwn && !canRestoreAny ? '你只能恢复自己负责的客户。' : '')
-        }
-      >
+      <SectionCard title="客户回收站">
+        {/* 说明原来整段塞在卡片标题里：加粗、字号接近区块标题，压得下面唯一一条
+            数据抬不起头（2026-11-17 视觉审视 V2-13）。改成普通说明文字，
+            真正要紧的两句（不可恢复 / 要先指定接手人）单独加一点色重，而不是整段加粗。 */}
+        <p className="card-hint">
+          被合并掉的客户会显示「已并入某某」，可点进合并后的客户，那一类不提供恢复；
+          直接删除的可以恢复。
+          <span style={{ color: 'var(--crm-text-2)' }}>
+            原负责人已停用的，恢复时要先指定一位在职的接手人。
+          </span>
+          {canRestoreOwn && !canRestoreAny ? '你只能恢复自己负责的客户。' : ''}
+        </p>
         <Input showClear value={pager.keyword} onChange={pager.search} placeholder="搜索客户名称或简称" style={{ maxWidth: 380, marginBottom: 16 }} />
         <Table<RecycleCustomer>
           columns={columns}

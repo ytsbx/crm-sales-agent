@@ -964,8 +964,13 @@ export default function SampleListPage() {
         title={detail ? `样品申请编号 ${detail.id}` : '样品申请'}
         visible={detailId !== null}
         onCancel={closeDetail}
-        width={760}
+        /* 固定 760 在 681px 视口下会把抽屉顶出屏幕左侧（2026-11-17 V2-04），
+           改成跟着视口收窄，永远左右各留 12px 呼吸位 */
+        width={Math.min(760, window.innerWidth - 24)}
       >
+        {!detail && (
+          <div style={{ color: 'var(--crm-text-3)' }}>正在读取样品申请…</div>
+        )}
         {detail && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div>

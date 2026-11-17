@@ -876,7 +876,20 @@ export default function KnowledgePage() {
               </Upload>
               {(!can('file:manage') || !can('quote:manage')) && <div>上传照片需要文件管理和报价管理权限，请联系管理员。</div>}
             </>}
-            {editing && <AttachmentPanel businessType="inquiry" businessId={editing.id} writePermission="quote:manage" excludeCategory="oa_attachment" uploadLabel="上传照片" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" />}
+            {editing && (
+              /* 编辑态原来沿用通用附件说明「合同、图纸、回款凭证都可以放在这里」，
+                 跟「产品参考图片」这个字段完全不搭（2026-11-17 视觉审视 V2-11）。
+                 这里给一句只讲产品照片的说明，文件大小限制照旧。 */
+              <AttachmentPanel
+                businessType="inquiry"
+                businessId={editing.id}
+                writePermission="quote:manage"
+                excludeCategory="oa_attachment"
+                uploadLabel="上传照片"
+                hint="放产品照片、图纸或参考截图，单张不超过 20 MB（JPG / PNG / GIF / WebP / BMP）"
+                accept="image/jpeg,image/png,image/gif,image/webp,image/bmp"
+              />
+            )}
           </div>
           <div>
             <FormLabel required>产品名称</FormLabel>

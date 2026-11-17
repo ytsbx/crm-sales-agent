@@ -30,7 +30,7 @@ export default function PageHeader({
         marginBottom: 'var(--crm-space-4)',
       }}
     >
-      <div>
+      <div className="page-header-title">
         <h2 className="page-title">{title}</h2>
         {subtitle && (
           <p className="page-subtitle" style={{ marginBottom: 0 }}>
@@ -39,7 +39,7 @@ export default function PageHeader({
         )}
       </div>
       {extra && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--crm-space-3)' }}>
+        <div className="page-header-actions">
           {extra}
         </div>
       )}

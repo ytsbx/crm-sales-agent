@@ -849,12 +849,17 @@ export default function ProductDetailPage() {
           })
         }}
         confirmLoading={skuMutation.isPending}
-        okText="创建"
+        /* 编辑态写「保存修改」、新建态才写「创建」：同一个弹窗复用文案会让编辑的人
+           以为自己会另建一条（2026-11-17 视觉审视 V2-08） */
+        okText={editingSku ? '保存修改' : '创建'}
       >
         <div style={{ display: 'grid', gap: 12 }}>
           <div style={{ display: 'flex', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <FormLabel required={Boolean(editingSku)}>编码（新建可不填）</FormLabel>
+              {/* 编辑态编码是已有值，不该再挂「新建可不填」这句新建规则 */}
+              <FormLabel required={Boolean(editingSku)}>
+                {editingSku ? '编码（修改会影响历史单据引用）' : '编码（新建可不填）'}
+              </FormLabel>
               <Input
                 value={skuForm.sku_code}
                 onChange={(v) => setSkuForm({ ...skuForm, sku_code: v })}
