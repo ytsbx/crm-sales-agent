@@ -485,8 +485,22 @@ export default function DocumentsPage() {
                         ? { label: '看 OA', onClick: () => setDetailTarget(record) }
                         : { label: '签署', onClick: () => openSignModal(record) }
                       : null
+                  // 主操作只能有一个（2026-11-17 复验 D-01 收尾）：
+                  // 草稿态是「签署 / 看 OA」，其余状态（已签、作废）就是「下载」——
+                  // 那一行的下一步动作本来就是把这单原件发出去。
+                  const primaryAction = stageAction ?? {
+                    label: '下载',
+                    onClick: () => void downloadContractDoc(record),
+                  }
+                  // 「下载」不做主操作时退到「更多」里，仍是同一个入口、同一个权限判断，
+                  // 只是不再跟主操作抢同一行的视觉重量。
+                  const downloadInMore = Boolean(stageAction)
 
                   const more: { key: string; label: string; onClick?: () => void; danger?: boolean }[] = []
+
+                  if (downloadInMore) {
+                    more.push({ key: 'download', label: '下载原件', onClick: () => void downloadContractDoc(record) })
+                  }
 
                   if (canManage && record.status === 'draft') {
                     if (oaPending) {
@@ -543,18 +557,21 @@ export default function DocumentsPage() {
                   return (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', fontSize: 13, paddingRight: 2 }}>
                       <a onClick={() => setDetailTarget(record)}>详情</a>
-                      {/* 「下载原稿」收成「下载」：在合同台账里，能下载的就是这份合同的原件，
-                          省下的两个字刚好让「签署」不用换行（一行放不下就整行被撑高）。 */}
-                      <a title="下载合同原件" onClick={() => void downloadContractDoc(record)}>下载</a>
-                      {stageAction && (
-                        <a
-                          title={stageAction.label === '签署' ? '登记签署（填签署日期与原件）' : '查看 OA 审批进度'}
-                          style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
-                          onClick={stageAction.onClick}
-                        >
-                          {stageAction.label}
-                        </a>
-                      )}
+                      {/* 收敛后只剩三样：详情（看）、一个主操作（做）、更多（长尾）。
+                          原来「下载」和阶段动作并排都是蓝的，看不出这行该干什么。 */}
+                      <a
+                        title={
+                          primaryAction.label === '签署'
+                            ? '登记签署（填签署日期与原件）'
+                            : primaryAction.label === '看 OA'
+                              ? '查看 OA 审批进度'
+                              : '下载合同原件'
+                        }
+                        style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
+                        onClick={primaryAction.onClick}
+                      >
+                        {primaryAction.label}
+                      </a>
                       {more.length > 0 && (
                         <Dropdown
                           trigger="click"
