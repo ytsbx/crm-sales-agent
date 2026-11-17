@@ -68,6 +68,10 @@ export default function DecisionMakerCard({
   // 空态降级：一行说明 + 去加联系人的入口，不占一整张卡
   if (footnoteOnEmpty && !contactsQuery.isLoading && contacts.length === 0) {
     return (
+      /* 收起成一行，但**不能裸着挂在上一张卡下面**（2026-11-17 发现）：
+         之前 padding 只有 `0 2px`、也没有外壳，看上去像上一张卡掉出来的一截尾巴，
+         文字直接贴着卡边。这里补一条窄卡壳：白底 + 圆角 + 细边 + 上下 14px 内边距，
+         和上面卡片同宽、同样 16px 间距 —— 一行也算一张卡，只是个子矮。 */
       <div
         style={{
           display: 'flex',
@@ -76,7 +80,11 @@ export default function DecisionMakerCard({
           flexWrap: 'wrap',
           fontSize: 12.5,
           color: 'var(--crm-text-3)',
-          padding: '0 2px',
+          marginTop: 16,
+          padding: '14px 20px',
+          background: 'var(--crm-surface)',
+          border: '1px solid var(--crm-border, #e6e8ee)',
+          borderRadius: 12,
         }}
       >
         <span style={{ color: 'var(--crm-text-2)', fontWeight: 600 }}>{title}</span>
