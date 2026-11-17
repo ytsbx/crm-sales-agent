@@ -85,7 +85,10 @@ export default function LeadListPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
 
-  const [createVisible, setCreateVisible] = useState(false)
+  // 工作台右上「新建线索」跳到 /leads?new=1 时，直接把新建弹窗打开 ——
+  // 否则用户点完只看到一张列表，还得自己再找一次按钮（2026-11-17 视觉审视 D2-04）。
+  const openCreateFromUrl = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('new') === '1'
+  const [createVisible, setCreateVisible] = useState(openCreateFromUrl)
   const [form, setForm] = useState({ ...EMPTY_FORM })
 
   const [assignTarget, setAssignTarget] = useState<Lead | null>(null)

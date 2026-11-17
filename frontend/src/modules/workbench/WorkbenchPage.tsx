@@ -256,8 +256,11 @@ export default function WorkbenchPage() {
                 Toast.success('已刷新')
               }}
             />
-            <Button type="primary" theme="outline" onClick={() => navigate('/leads')}>
-              快速创建
+            {/* 原来叫「快速创建」，点了只是跳到线索列表 —— 既不快、也没创建，
+                用户点完会以为自己点错了（2026-11-17 视觉审视 D2-04）。
+                现在名字和行为对上：叫「新建线索」，点开就是新建表单。 */}
+            <Button type="primary" theme="outline" onClick={() => navigate('/leads?new=1')}>
+              新建线索
             </Button>
           </>
         }

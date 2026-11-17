@@ -8,7 +8,8 @@ import {
   isConfirmRequired,
   confirmMessageOf,
 } from '../../shared/components/ConfirmRequiredModal'
-import { Button, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
+import type { ReactNode } from 'react'
+import { Button, DatePicker, Dropdown, Input, InputNumber, Modal, Popconfirm, Select, Table, Tabs, Tag, Toast } from '@douyinfe/semi-ui'
 import AllocationAdjustModal from './AllocationAdjustModal'
 import FormLabel from '../../shared/components/FormLabel'
 import GuardedButton from '../../shared/components/GuardedButton'
@@ -904,44 +905,134 @@ export default function OrderDetailPage() {
         extra={
           canManage && (
             <>
-              {/* 已取消是**终态**，状态不能再改、也不能再取消：
-                  入口留着只会让人点了必然失败（后端会拒），所以两个都不给。
-                  改状态一直要给，是因为履约状态本来就是逐段推进的。 */}
-              {order.status !== 'cancelled' && (
-                <>
-                  <Button onClick={() => setStatusVisible(true)}>人工更新</Button>
-                  {/* 取消订单**单独一个入口**，不混在"更新履约状态"的下拉里：
-                      它牵动回款与应收（作废应收计划、驳回待确认回款、取消计划批次），
-                      混进一个通用下拉，用户既不知道选下去会发生什么，
-                      也会绕过取消规则（已收到确认回款的订单本不该能取消）。 */}
-                  <Button type="danger" onClick={() => setCancelVisible(true)}>
-                    取消订单
-                  </Button>
-                </>
-              )}
-              <Button onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
-                推送 ERP/MES
-              </Button>
-              {/* 灰按钮要能解释自己（主人 2026-10-12：「点又点不了，又不给提示为什么
-                  点不了」）：`erp_order_id` 是推送 ERP/MES 之后由对方回填的，没回填
-                  之前这个键点不动，而界面上原来一个字都没说。 */}
-              <GuardedButton
-                onClick={() => statusSyncMutation.mutate()}
-                loading={statusSyncMutation.isPending}
-                disabled={!order.erp_order_id}
-                blockedReasons={statusSyncReasons}
-                action="从 ERP 同步"
-              >
-                从 ERP 同步
-              </GuardedButton>
-              <Popconfirm
-                title="确认创建复购商机？"
-                content="将按本订单生成一条新的商机记录，避免误点造成重复商机。"
-                disabled={repurchaseMutation.isPending}
-                onConfirm={() => repurchaseMutation.mutate()}
-              >
-                <Button loading={repurchaseMutation.isPending}>复购开新商机</Button>
-              </Popconfirm>
+              {/* 主按钮随履约阶段走（2026-11-17 视觉审视 D-02）：原来 5 个按钮一样大、
+                  一样显眼，其中「取消订单」是不可逆的，却和「推送 ERP/MES」并排站。
+                  现在按状态只突出一个，其余进「更多操作」；每个按钮原来的权限判据一个字没动。 */}
+              {(() => {
+                const stage = order.status
+                // 该做的那一件事
+                const primary =
+                  stage === 'cancelled'
+                    ? null
+                    : !order.erp_order_id
+                      ? 'push_erp'
+                      : stage === 'pending' || stage === 'in_production'
+                        ? 'update_status'
+                        : stage === 'shipped'
+                          ? 'update_status'
+                          : 'repurchase'
+
+                // 「更多」里的长尾动作（顺序即展示顺序）
+                const more: { key: string; label: string; node: ReactNode }[] = []
+
+                if (!primary || primary !== 'push_erp') {
+                  more.push({
+                    key: 'push_erp',
+                    label: '推送 ERP/MES',
+                    node: (
+                      <Button onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
+                        推送 ERP/MES
+                      </Button>
+                    ),
+                  })
+                }
+                if (primary !== 'update_status' && stage !== 'cancelled') {
+                  more.push({
+                    key: 'update_status',
+                    label: '人工更新履约状态',
+                    node: <Button onClick={() => setStatusVisible(true)}>人工更新</Button>,
+                  })
+                }
+                more.push({
+                  key: 'sync_erp',
+                  label: '从 ERP 同步',
+                  node: (
+                    <GuardedButton
+                      onClick={() => statusSyncMutation.mutate()}
+                      loading={statusSyncMutation.isPending}
+                      disabled={!order.erp_order_id}
+                      blockedReasons={statusSyncReasons}
+                      action="从 ERP 同步"
+                    >
+                      从 ERP 同步
+                    </GuardedButton>
+                  ),
+                })
+                if (primary !== 'repurchase') {
+                  more.push({
+                    key: 'repurchase',
+                    label: '复购开新商机',
+                    node: (
+                      <Popconfirm
+                        title="确认创建复购商机？"
+                        content="将按本订单生成一条新的商机记录，避免误点造成重复商机。"
+                        disabled={repurchaseMutation.isPending}
+                        onConfirm={() => repurchaseMutation.mutate()}
+                      >
+                        <Button loading={repurchaseMutation.isPending}>复购开新商机</Button>
+                      </Popconfirm>
+                    ),
+                  })
+                }
+                if (stage !== 'cancelled') {
+                  more.push({
+                    key: 'cancel',
+                    label: '取消订单',
+                    node: (
+                      <Button type="danger" onClick={() => setCancelVisible(true)}>
+                        取消订单
+                      </Button>
+                    ),
+                  })
+                }
+
+                return (
+                  <>
+                    {primary === 'push_erp' && (
+                      <Button type="primary" onClick={() => syncMutation.mutate(false)} loading={syncMutation.isPending}>
+                        推送 ERP/MES
+                      </Button>
+                    )}
+                    {primary === 'update_status' && (
+                      <Button type="primary" onClick={() => setStatusVisible(true)}>
+                        人工更新履约状态
+                      </Button>
+                    )}
+                    {primary === 'repurchase' && (
+                      <Popconfirm
+                        title="确认创建复购商机？"
+                        content="将按本订单生成一条新的商机记录，避免误点造成重复商机。"
+                        disabled={repurchaseMutation.isPending}
+                        onConfirm={() => repurchaseMutation.mutate()}
+                      >
+                        <Button type="primary" loading={repurchaseMutation.isPending}>
+                          复购开新商机
+                        </Button>
+                      </Popconfirm>
+                    )}
+                    {more.length > 0 && (
+                      <Dropdown
+                        trigger="click"
+                        position="bottomRight"
+                        clickToHide
+                        render={
+                          <Dropdown.Menu>
+                            {more.map((item) => (
+                              <Dropdown.Item key={item.key}>
+                                <div onClick={(e) => e.stopPropagation()}>{item.node}</div>
+                              </Dropdown.Item>
+                            ))}
+                          </Dropdown.Menu>
+                        }
+                      >
+                        <Button theme="borderless" style={{ marginLeft: 8 }}>
+                          更多操作 ▾
+                        </Button>
+                      </Dropdown>
+                    )}
+                  </>
+                )
+              })()}
             </>
           )
         }

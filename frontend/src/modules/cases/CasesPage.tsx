@@ -17,6 +17,7 @@ import {
 import { usePermissions } from '../../shared/hooks/permissions'
 import { useAuthStore } from '../../shared/store/auth'
 import SectionCard from '../../shared/components/SectionCard'
+import PageHeader from '../../shared/components/PageHeader'
 import FormLabel from '../../shared/components/FormLabel'
 import {
   createCase,
@@ -337,6 +338,21 @@ export default function CasesPage() {
 
   return (
     <div className="page-container">
+      {/* 案例库原来没有页头（2026-11-17 视觉审视 D-03）：从侧栏点进来，
+          屏幕最上面直接就是搜索框，不知道自己在哪个模块，也没有全局动作的位置。
+          补一个标准页头：标题 + 一句"这些案子能干什么"的副标题 + 右上新建。
+          新建按钮从工具条挪到页头右上，工具条只留筛选。 */}
+      <PageHeader
+        title="案例库"
+        subtitle="审核通过的案例才能拿去培训；编写中与待审核的只有相关人能看见"
+        extra={
+          can('quote:view') && (
+            <Button type="primary" theme="outline" onClick={openCreate}>
+              新建案例
+            </Button>
+          )
+        }
+      />
       <SectionCard
         className={(casesQuery.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
       >
@@ -413,12 +429,6 @@ export default function CasesPage() {
               含历史版本
             </span>
           </div>
-          <div style={{ flex: 1 }} />
-          {can('quote:view') && (
-            <Button type="primary" theme="outline" onClick={openCreate}>
-              新建案例
-            </Button>
-          )}
         </div>
         <Table<CaseRow>
           columns={[

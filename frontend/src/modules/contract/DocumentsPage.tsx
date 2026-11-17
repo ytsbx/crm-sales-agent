@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Button,
   DatePicker,
+  Dropdown,
   Input,
   Modal,
   Select,
@@ -451,102 +452,135 @@ export default function DocumentsPage() {
               // 到期日 / 签署时间是两个**经常为空**的列（草稿合同一律是横杠），
               // 却排在首屏位置上，把真正有内容的「依据」挤到了滚动区。
               // 有值的往前、空着的往后 —— 用户不用横滑就能看见这段合同照哪版报价签的。
-              { title: '到期日', dataIndex: 'expiry_date', width: 92, render: (v: string | null) => v ?? '-' },
+              { title: '到期日', dataIndex: 'expiry_date', width: 90, render: (v: string | null) => v ?? '-' },
               // ⚠️ 原来是 `.slice(0, 10)`（UTC 取日）；签署时间是 UTC 瞬时，
               // 北京时间凌晨签的会显示成前一天。
-              { title: '签署时间', dataIndex: 'signed_at', width: 115, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
+              { title: '签署时间', dataIndex: 'signed_at', width: 112, render: (v: string | null) => (v ? formatBeijingDate(v) : '-') },
               {
                 // 「下载」不跟管理操作挤在一起：下载接口要的是 order:view，
                 // 原来整列挂在 canManage 下，只读用户连下载入口都看不见。
                 title: '操作',
                 // 九个列宽加起来 1146，比内容区（1130）多 16，挤出横向滚动条。
-                // 从「到期日」和「操作」各让一点：操作 165 刚好一行放三个链接，
-                // 到期日 90 够放 2026-11-16。
+                // 从「到期日」和「操作」各让一点：到期日 90 够放 2026-11-16。
+                // 165 不变：加宽会把整张表撑出横向滚动条（2026-11-17 实拍到 200 就滚了）。
+                // 所以这里靠"每个词只占该占的字数"来省地方：下载、签署都是两个字的动作词。
                 width: 165,
                 // 这一列原来是 260 宽、还排在最后：整张表 1400、容器只有 1130，
                 // 结果「下载 / 详情 / 登记签署」全被推到屏幕外，必须横向拖才能点 ——
                 // 高频操作用户最不该找不着。固定在右侧，横滑时它始终在。
                 // 170 是按"下载合同原稿 + 详情"两个链接实测的，少了会变省略号。
                 fixed: 'right',
-                render: (_: unknown, record: ContractDocument) => (
-                  <span style={{ display: 'inline-flex', gap: 12, flexWrap: 'wrap' }}>
-                    {/* 走共用封装：原件丢失 / 没权限 / 网络失败都要把话说出来，
-                        不能 `void` 掉一个会失败的 Promise（那样点了没反应） */}
-                    {/* 文案从「下载合同原稿」收到「下载原稿」：在合同台账里，
-                        下载的就是这份合同的原稿，四个字已经说得清；
-                        多那两个字会把同一列的「删除」挤到第二行，行高白涨一截。 */}
-                    <a onClick={() => void downloadContractDoc(record)}>下载原稿</a>
-                    {/* 详情：抬头快照、依据、关系链、签署原件都收在这里。
-                        签署原件**光看状态看不出来**，必须点进来才知道拿到的到底是哪一份。 */}
-                    <a onClick={() => setDetailTarget(record)}>详情</a>
-                    {canManage && record.status === 'draft' && (
-                      <a onClick={() => openSignModal(record)}>登记签署</a>
-                    )}
-                    {canManage && record.status === 'draft' && (
-                      record.dingtalk_oa?.status === 'pending' ? (
-                        <>
-                          <a onClick={() => setDetailTarget(record)}>查看 OA 审批</a>
-                          <a
-                            onClick={() =>
-                              Modal.confirm({
-                                title: '撤回 OA 合同审批？',
-                                content: '撤回只对仍在审批中的 OA 流程生效，已完成的审批不能撤回。',
-                                onOk: () => withdrawDingtalkMutation.mutate(record.id),
-                              })
-                            }
-                          >
-                            撤回 OA 审批
-                          </a>
-                        </>
-                      ) : record.dingtalk_oa_row?.provider !== 'dingtalk' ? (
-                        <a onClick={() => openOaStart(record)}>
-                          发起 OA 审批
-                        </a>
-                      ) : (
-                        <span style={{ color: 'var(--crm-text-3)' }}>历史钉钉审批（只读）</span>
-                      )
-                    )}
-                    {/* 已签合同的作废要复核人（主管）：以前不是复核人时这个入口**整个消失**，
-                        用户只看到「作废」不见了，不知道为什么、也不知道该找谁 —— 正是主人
-                        2026-10-12 说的那一类。现在灰着并写明原因，点一下还会弹同一句话
-                        （见 BlockedHint.tsx）；能不能作废的判据一个字没动。 */}
-                    {canManage &&
-                      record.status !== 'void' &&
-                      (record.status !== 'signed' || isReviewer ? (
-                        <a
-                          style={{ color: 'var(--crm-danger, #d45)' }}
-                          onClick={() => {
-                            setVoidTarget(record)
-                            setVoidReason('')
-                          }}
-                        >
-                          作废
-                        </a>
-                      ) : (
-                        <span
-                          className="blocked-hint-click"
-                          style={{ gap: 6, cursor: 'not-allowed' }}
-                          onClick={notifyVoidBlocked}
-                        >
-                          <span style={{ color: 'var(--crm-text-3)', pointerEvents: 'none' }}>作废</span>
-                          <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
-                            需复核人（主管）操作
-                          </span>
-                        </span>
-                      ))}
-                    {canManage && (record.status === 'draft' || record.status === 'void') && (
-                      <a
-                        style={{ color: 'var(--crm-danger, #d45)' }}
-                        onClick={() => Modal.confirm({
+                // 操作列收敛（2026-11-17 视觉审视 D-01）：原来最多 7 个文字链接挤在
+                // 165px 里，竖成 4 行、整行被撑高，看着像一列乱码。现在分三层：
+                //   ① 详情 / 下载原稿       —— 谁都要用的两个
+                //   ② 当前阶段该做的那一个   —— 草稿态是「登记签署」，OA 审批中是「查看 OA 审批」
+                //   ③ 「更多」下拉          —— 撤回 OA / 发起 OA / 作废 / 删除这些长尾
+                // 判据一个没动：能不能点、点了会失败还是成功，仍走原来的权限与状态判断；
+                // 只是把"入口摆在哪"改了。作废被复核人挡住时，条目仍给，点一下弹原因。
+                render: (_: unknown, record: ContractDocument) => {
+                  const oaPending = Boolean(record.dingtalk_oa && record.dingtalk_oa.status === 'pending')
+                  const stageAction =
+                    canManage && record.status === 'draft'
+                      ? oaPending
+                        ? { label: '看 OA', onClick: () => setDetailTarget(record) }
+                        : { label: '签署', onClick: () => openSignModal(record) }
+                      : null
+
+                  const more: { key: string; label: string; onClick?: () => void; danger?: boolean }[] = []
+
+                  if (canManage && record.status === 'draft') {
+                    if (oaPending) {
+                      more.push({
+                        key: 'withdraw-oa',
+                        label: '撤回 OA 审批',
+                        onClick: () =>
+                          Modal.confirm({
+                            title: '撤回 OA 合同审批？',
+                            content: '撤回只对仍在审批中的 OA 流程生效，已完成的审批不能撤回。',
+                            onOk: () => withdrawDingtalkMutation.mutate(record.id),
+                          }),
+                      })
+                    } else if (record.dingtalk_oa_row?.provider !== 'dingtalk') {
+                      more.push({ key: 'start-oa', label: '发起 OA 审批', onClick: () => openOaStart(record) })
+                    } else {
+                      // 只读的历史钉钉审批：给一行说明，不占主位
+                      more.push({ key: 'oa-readonly', label: '历史钉钉审批（只读，不能重提）' })
+                    }
+                  }
+
+                  if (canManage && record.status !== 'void') {
+                    if (record.status !== 'signed' || isReviewer) {
+                      more.push({
+                        key: 'void',
+                        danger: true,
+                        label: '作废',
+                        onClick: () => {
+                          setVoidTarget(record)
+                          setVoidReason('')
+                        },
+                      })
+                    } else {
+                      // 不是复核人：条目照样给，点一下把原因说出来（不静默消失）
+                      more.push({ key: 'void-blocked', label: '作废（需复核人操作）', onClick: notifyVoidBlocked })
+                    }
+                  }
+
+                  if (canManage && (record.status === 'draft' || record.status === 'void')) {
+                    more.push({
+                      key: 'delete',
+                      danger: true,
+                      label: '删除',
+                      onClick: () =>
+                        Modal.confirm({
                           title: `删除合同 ${record.doc_no}？`,
-                          content: '合同将移入回收站，可在“回收站 → 合同”中恢复。',
+                          content: '合同将移入回收站，可在"回收站 → 合同"中恢复。',
                           okButtonProps: { type: 'danger' },
                           onOk: () => deleteMutation.mutate(record.id),
-                        })}
-                      >删除</a>
-                    )}
-                  </span>
-                ),
+                        }),
+                    })
+                  }
+
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', fontSize: 13, paddingRight: 2 }}>
+                      <a onClick={() => setDetailTarget(record)}>详情</a>
+                      {/* 「下载原稿」收成「下载」：在合同台账里，能下载的就是这份合同的原件，
+                          省下的两个字刚好让「签署」不用换行（一行放不下就整行被撑高）。 */}
+                      <a title="下载合同原件" onClick={() => void downloadContractDoc(record)}>下载</a>
+                      {stageAction && (
+                        <a
+                          title={stageAction.label === '签署' ? '登记签署（填签署日期与原件）' : '查看 OA 审批进度'}
+                          style={{ color: 'var(--crm-primary)', fontWeight: 600 }}
+                          onClick={stageAction.onClick}
+                        >
+                          {stageAction.label}
+                        </a>
+                      )}
+                      {more.length > 0 && (
+                        <Dropdown
+                          trigger="click"
+                          position="bottomRight"
+                          clickToHide
+                          render={
+                            <Dropdown.Menu>
+                              {more.map((item) => (
+                                <Dropdown.Item
+                                  key={item.key}
+                                  onClick={item.onClick ?? (() => Toast.info(item.label))}
+                                >
+                                  <span style={{ color: item.danger ? 'var(--crm-danger, #d45)' : undefined }}>
+                                    {item.label}
+                                  </span>
+                                </Dropdown.Item>
+                              ))}
+                            </Dropdown.Menu>
+                          }
+                        >
+                          <a style={{ color: 'var(--crm-text-2)' }}>更多</a>
+                        </Dropdown>
+                      )}
+                    </span>
+                  )
+                },
               },
             ]}
             // 原来这里是 scroll={{ x: 'max(100%, 1400px)' }} —— 把表格最小宽硬锁在 1400，
