@@ -309,7 +309,9 @@ export default function ProductInsightsPage() {
         title="新品洞察"
         subtitle="市场来源 → 产品方向 → 评审 → 转需求；价格为内部假设，不构成正式指导价"
       />
-      <SectionCard>
+      <SectionCard
+        className={(query.data?.items?.length ?? 0) <= 8 ? 'auto-height' : undefined}
+      >
         <div className="toolbar" style={{ marginBottom: 10 }}>
           {/* 原来这里有一个 flex:1 占位，把搜索/状态/按钮全推到最右边 ——
               全站其他列表页的筛选都在左边起头，这一页孤零零靠右，看着像浮在卡上。

@@ -370,9 +370,12 @@ export default function DocumentsPage() {
           title="文档管理"
           subtitle="我方合同、客户合同均上传原文件；审批在钉钉办理，CRM 同步进度并跟催回签归档"
         />
-        <SectionCard>
+        <SectionCard
+          className={(documents?.length ?? 0) <= 8 ? 'auto-height' : undefined}
+        >
           <div className="toolbar" style={{ marginBottom: 10 }}>
-            <div style={{ flex: 1 }} />
+            {/* 这里原来有个 flex:1 占位把工具栏全推到右边；全站其他列表页筛选从左边起头，
+                这一页孤零零靠右，看着像浮在卡上。去掉。 */}
             {canManage && (
               <Button theme="solid" onClick={() => openUploadModal()}>
                 上传合同
