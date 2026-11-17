@@ -1225,6 +1225,10 @@ export default function KnowledgePage() {
               },
             },
           ]}
+          // 小三角换成文字触发器（同报价明细/审批表）
+          expandIcon={(expanded?: boolean) => (
+            <span className="expand-toggle">{expanded ? '收起' : '展开'}</span>
+          )}
           expandedRowRender={(row?: OaApprovalInstance) => {
             if (!row) return null
             const progress = approvalProgress(row.result)

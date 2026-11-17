@@ -228,6 +228,10 @@ export default function ApprovalPage() {
                  右边一直被裁。它本质是「一行一段说明」，不是能横向对照的字段，
                  挪进点行展开：列表留六个对照列，想细看的点左边箭头。
                  信息一点没丢。 */
+              // 同上：小三角换成文字，减少"这行能点吗"的犹豫
+              expandIcon={(expanded?: boolean) => (
+                <span className="expand-toggle">{expanded ? '收起' : '展开'}</span>
+              )}
               expandedRowRender={(record?: ApprovalRow) => {
                 if (!record) return null
                 const reason = record.summary?.reason

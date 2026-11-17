@@ -146,6 +146,11 @@ type ItemDraftRow = {
 export default function QuoteDetailPage() {
   const params = useParams()
   const quoteId = Number(params.id)
+  // What-if 折叠区是否展开（折叠触发器是文字键，需要状态）
+  const [whatifOpen, setWhatifOpen] = useState<string[]>([])
+  // 报价明细哪几行展开了「核算依据」：触发器挪进「操作」列，展开状态由本页管理
+  // （Semi 自带的图标位只有十几像素宽，塞不进「展开 / 收起」两个字，实拍会被切成一条）
+  const [expandedItemIds, setExpandedItemIds] = useState<(string | number)[]>([])
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -851,21 +856,35 @@ export default function QuoteDetailPage() {
     },
     {
       title: '操作',
-      width: 90,
-      render: (_: unknown, record: QuoteItemRow) =>
-        canManage && editable ? (
-          <a
-            style={{ color: 'var(--crm-primary)' }}
-            onClick={() => {
-              setPriceTarget(record)
-              setNewPrice(record.quoted_price_exact ?? String(record.quoted_price))
-            }}
-          >
-            改价
-          </a>
-        ) : (
-          '-'
-        ),
+      // 明细行的「核算依据」触发器（展开/收起）挪到这一列：
+      // Semi 自带的图标位只有十几像素宽，两个字塞不进去（2026-11-17 实拍被切成一条竖线）；
+      // 放在操作列里和其他动作同高同字号，「改价 · 展开」一眼就能看到。
+      width: 120,
+      render: (_: unknown, record: QuoteItemRow) => {
+        const open = expandedItemIds.includes(record.id)
+        const toggle = () =>
+          setExpandedItemIds((keys) =>
+            open ? keys.filter((k) => k !== record.id) : [...keys, record.id],
+          )
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, whiteSpace: 'nowrap' }}>
+            {canManage && editable && (
+              <a
+                style={{ color: 'var(--crm-primary)' }}
+                onClick={() => {
+                  setPriceTarget(record)
+                  setNewPrice(record.quoted_price_exact ?? String(record.quoted_price))
+                }}
+              >
+                改价
+              </a>
+            )}
+            <a style={{ color: 'var(--crm-text-2)' }} onClick={toggle}>
+              {open ? '收起' : '展开'}
+            </a>
+          </span>
+        )
+      },
     },
   ]
 
@@ -1617,6 +1636,14 @@ export default function QuoteDetailPage() {
              它们在列表里常驻要占三列（110 + 100 + 110），十列一起把整张表顶出
              容器、右下角「操作」被裁掉。挪进点行展开：要核对毛利的人点左侧箭头，
              成本口径、建议价、保护价、成本异常说明都在里面，列表只留报价字段。 */
+          /* 展开触发器不在图标位，而是「操作」列里的「展开 / 收起」（2026-11-17 主人：
+             不喜欢小三角）。所以把 Semi 那列藏掉，展开状态由本页的 expandedItemIds 控制。 */
+          hideExpandedColumn
+          expandedRowKeys={expandedItemIds}
+          onExpandedRowsChange={(keys) =>
+            // 这里没有分组行，keys 一定是 rowKey（明细 id）
+            setExpandedItemIds(keys as unknown as (string | number)[])
+          }
           expandedRowRender={(record?: QuoteItemRow) => {
             if (!record) return null
             const costValue =
@@ -1699,7 +1726,19 @@ export default function QuoteDetailPage() {
           需要时点开 —— 内容一个字没减。 */}
       {/* 上边距交给上一张卡自己的 margin-bottom，这里不再加：
           两边各加 16 会叠成 32，比其它卡片之间的 16 空一倍（2026-11-17 实测）。 */}
-      <Collapse className="quote-whatif-collapse">
+      {/* 折叠触发器换成文字（2026-11-17 主人：不喜欢小三角，不是不喜欢折叠）。
+          Semi 的默认触发器是一个小三角，收起/展开只靠它转向来区分，太小、也不
+          说明"点了会发生什么"。这里改成右侧一颗「展开 / 收起」的文字键：
+          收起时写「展开」，展开时写「收起」，按下就是换一边。
+          为了知道当前状态，Collapse 改成受控（activeKey + onChange）。 */}
+      <Collapse
+        className="quote-whatif-collapse"
+        activeKey={whatifOpen}
+        onChange={(keys) => {
+          const arr = Array.isArray(keys) ? keys : keys ? [keys] : []
+          setWhatifOpen(arr as string[])
+        }}
+      >
         <Collapse.Panel
           itemKey="whatif"
           /* 收起时别做"盲盒"（2026-11-17 主人说「折叠之后什么都看不见，
@@ -1727,8 +1766,8 @@ export default function QuoteDetailPage() {
                   fontSize: 12,
                   color: 'var(--crm-text-3)',
                   flexShrink: 0,
-                  // 右侧让开折叠箭头：header 是 flex 两端对齐，数字紧贴箭头会挤在一起
-                  marginRight: 10,
+                  // 右侧紧挨着「展开 / 收起」文字键，留一点呼吸
+                  marginRight: 4,
                 }}
               >
                 <span>
@@ -1760,6 +1799,22 @@ export default function QuoteDetailPage() {
                       : `${((version.total_profit / version.subtotal_amount) * 100).toFixed(2)}%`}
                   </b>
                 </span>
+              </span>
+              {/* 折叠触发器：文字键代替小三角。收起时是「展开」，展开时是「收起」。 */}
+              <span
+                style={{
+                  flexShrink: 0,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--crm-primary)',
+                  cursor: 'pointer',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  whiteSpace: 'nowrap',
+                }}
+                className="expand-toggle"
+              >
+                {whatifOpen.includes('whatif') ? '收起' : '展开'}
               </span>
             </div>
           }

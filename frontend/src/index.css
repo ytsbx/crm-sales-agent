@@ -1475,8 +1475,37 @@ a:not([href]) {
   background: transparent;
 }
 
+/* 折叠区默认的小三角藏掉：触发器已经换成标题右侧的文字键 */
+.quote-whatif-collapse .semi-collapse-header-icon,
+.quote-whatif-collapse .semi-collapse-header-icon-left {
+  display: none !important;
+}
+
 .quote-whatif-collapse .semi-collapse-header:hover {
   background: var(--crm-surface-low, #f3f4f7);
+}
+
+.expand-toggle {
+  /* 折叠触发器：文字「展开 / 收起」代替小三角（2026-11-17 主人要求）。
+     颜色用主题蓝、12px、字重 600 —— 和旁边链接同一套语言，但不是链接蓝得像可跳转。 */
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--crm-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 1px 4px;
+  border-radius: 4px;
+  user-select: none;
+  /* 触发器不许被名称挤窄：被挤到 1 个字宽时「收起」会竖着排下来（实测） */
+  flex: 0 0 auto;
+  word-break: keep-all;
+  /* 12px 的两个汉字约 24px，容器给窄了就会一字一行（实拍踩过） */
+  display: inline-block;
+  text-align: center;
+}
+
+.expand-toggle:hover {
+  background: var(--crm-surface-mid, #eceef2);
 }
 
 .quote-whatif-collapse .semi-collapse-content {
@@ -1875,19 +1904,16 @@ a:not([href]) {
   overflow-x: auto;
 }
 
-/* 展开箭头（2026-11-17）：Semi 把 `semi-table-expand-icon` 塞进第一个单元格里，
-   它自己是个 inline 的 span，而我们的名称是两个块级 div —— 块级元素一律另起一行，
-   于是箭头孤零零吊在名称上方、还占掉一行高度（报价明细只有一条时特别明显）。
-   把首列内容改成 inline-block：箭头与名称回到同一行、名称的规格行仍在下面，
-   整组在格里居中（全站表格内容居中这条规矩照旧）。 */
-.quote-items-table .semi-table-row-cell:first-child > div {
-  display: inline-block;
-  vertical-align: top;
+/* 报价明细的展开触发器已经挪到「操作」列（文字「展开 / 收起」），
+   Semi 自带的那个小三角直接藏掉 —— 它是个十几像素的窄槽，塞不进两个字，
+   硬塞进去会被切成一条竖线（2026-11-17 实拍）。单元格恢复普通居中排版。 */
+.quote-items-table .semi-table-row-cell:first-child .semi-table-expand-icon,
+.quote-items-table .semi-table-thead .semi-table-row-head:first-child .semi-table-expand-icon {
+  display: none !important;
 }
 
-/* 箭头和名称之间留一点气，不要顶在一起 */
-.quote-items-table .semi-table-expand-icon {
-  margin-right: 6px;
+.quote-items-table .semi-table-row-cell:first-child {
+  text-align: center;
 }
 
 /* 表格内容统一居中（2026-10-06 主人要求：全站表格一律居中，不留特例）。
