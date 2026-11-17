@@ -1,5 +1,5 @@
 import { IconExport, IconFile, IconMail } from '@douyinfe/semi-icons'
-import { formatMoney } from '../../shared/components/money'
+import { formatMoney, formatUnitPrice } from '../../shared/components/money'
 import { skuLabel } from '../../shared/sku-label'
 import { formatBeijingTime } from '../../shared/beijing-time'
 import { useTabLabel } from '../../shared/hooks/useTabLabel'
@@ -821,7 +821,9 @@ export default function QuoteDetailPage() {
                 color: record.approval_required ? 'var(--crm-error)' : 'var(--crm-text)',
               }}
             >
-              ¥{Number(record.quoted_price_exact ?? value).toFixed(2)}
+              {/* 单价保真（2026-11-17）：曾经这里用 toFixed(2)，33.3333 会被四舍五入成 33.33，
+                  和金额对不上。统一走 formatUnitPrice。 */}
+              {formatUnitPrice(record.quoted_price_exact ?? value, 'CNY')}
             </span>
             {/* 价格来源并进这一格：它解释的就是「这个价从哪来」，与金额同一行读最顺 */}
             {sourceLabel && (
@@ -1660,21 +1662,21 @@ export default function QuoteDetailPage() {
             const facts: { label: string; value: string }[] = [
               {
                 label: legacyBasis ? '成本快照（含运费）' : '商品成本',
-                value: costValue == null ? '-' : `¥${costValue.toFixed(2)}`,
+                value: costValue == null ? '-' : formatUnitPrice(costValue, 'CNY'),
               },
               {
                 label: '建议价',
                 value:
                   record.recommended_price_snapshot == null
                     ? '-'
-                    : `¥${record.recommended_price_snapshot.toFixed(2)}`,
+                    : formatUnitPrice(record.recommended_price_snapshot, 'CNY'),
               },
               {
                 label: '最低保护价',
                 value:
                   record.minimum_price_snapshot == null
                     ? '-'
-                    : `¥${record.minimum_price_snapshot.toFixed(2)}`,
+                    : formatUnitPrice(record.minimum_price_snapshot, 'CNY'),
               },
             ]
             return (
@@ -1776,7 +1778,8 @@ export default function QuoteDetailPage() {
                 </span>
                 <span>
                   {'均价 '}
-                  <b style={{ fontWeight: 600, color: 'var(--crm-text-2)' }}>{cny(whatifUnitPrice)}</b>
+                  {/* 均价是单价，同样保真：33.3333 的均价不能显示成 33.33 */}
+                  <b style={{ fontWeight: 600, color: 'var(--crm-text-2)' }}>{formatUnitPrice(whatifUnitPrice, 'CNY')}</b>
                 </span>
                 <span>
                   {'毛利率 '}
@@ -2102,7 +2105,7 @@ export default function QuoteDetailPage() {
               <strong style={{ color: 'var(--crm-text-2)' }}>
                 {priceTarget?.cost_snapshot == null || priceTarget.logistics_cost_snapshot == null
                   ? '-'
-                  : `¥${(priceTarget.cost_snapshot + priceTarget.logistics_cost_snapshot).toFixed(2)}`}
+                  : formatUnitPrice(priceTarget.cost_snapshot + priceTarget.logistics_cost_snapshot, 'CNY')}
               </strong>
             </span>
             <span>
@@ -2111,13 +2114,15 @@ export default function QuoteDetailPage() {
                 {/* 建议价原来直接印库里的四位小数（¥142.8571），和左右两栏的两位小数不一样 */}
                 {priceTarget?.recommended_price_snapshot == null
                   ? '-'
-                  : `¥${priceTarget.recommended_price_snapshot.toFixed(2)}`}
+                  : formatUnitPrice(priceTarget.recommended_price_snapshot, 'CNY')}
               </strong>
             </span>
             <span>
               最低保护价{' '}
               <strong style={{ color: 'var(--crm-text-2)' }}>
-                ¥{priceTarget?.minimum_price_snapshot?.toFixed(2)}
+                {priceTarget?.minimum_price_snapshot == null
+                  ? '-'
+                  : formatUnitPrice(priceTarget.minimum_price_snapshot, 'CNY')}
               </strong>
             </span>
           </div>

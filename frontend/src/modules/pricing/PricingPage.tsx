@@ -7,6 +7,7 @@ import { Banner, Button, Input, Select, Table, Tag, Toast } from '@douyinfe/semi
 import { listCustomers } from '../../shared/api/customer'
 import PageHeader from '../../shared/components/PageHeader'
 import SectionCard from '../../shared/components/SectionCard'
+import { formatUnitPrice } from '../../shared/components/money'
 import {
   calculatePrice,
   checkPricePermission,
@@ -123,8 +124,10 @@ export default function PricingPage() {
   })
 
   const result = resultQuery.data
+  // 核价页显示的都是**单价**（成本/标准价/建议价/最低价），一律保真：
+  // 用 toFixed(2) 会把 4 位成本的尾数抹掉，和"单价×数量=金额"对不上（2026-11-17）
   const money = (value?: number | null) =>
-    value === null || value === undefined ? '-' : `¥${value.toFixed(2)}`
+    value === null || value === undefined ? '-' : formatUnitPrice(value, 'CNY')
   const percent = (value?: number | null) =>
     value === null || value === undefined ? '-' : `${(value * 100).toFixed(2)}%`
 

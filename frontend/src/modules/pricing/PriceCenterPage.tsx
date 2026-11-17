@@ -1233,7 +1233,8 @@ export default function PriceCenterPage() {
                             target_price: lookupResult.unit_price,
                           })
                           Toast.success(
-                            `已把 ${lookupResult.sku.sku_code}（${money(lookupResult.unit_price)}）加入商机需求`,
+                            // toast 里同样是单价：走 formatUnitPrice，别拿金额口径去装单价
+                            `已把 ${lookupResult.sku.sku_code}（${formatUnitPrice(lookupResult.unit_price, 'CNY')}）加入商机需求`,
                           )
                         } catch (error) {
                           Toast.error(error instanceof Error ? error.message : '加入失败')
