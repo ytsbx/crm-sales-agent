@@ -9,7 +9,7 @@ import {
 } from '../../shared/api/quote'
 import type { TagTone } from '../../shared/types'
 import SectionCard from '../../shared/components/SectionCard'
-import { formatMoney } from '../../shared/components/money'
+import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
 
 /**
  * 报价 What-if（UI 设计稿 `ai_sales_agent` 右栏「What-if 边际测算」+ 正文
@@ -50,8 +50,21 @@ const DIFF_LABEL: Record<string, string> = {
   discount_amount: '折扣',
 }
 
-const money = (value?: number | null) =>
-  value === null || value === undefined ? '-' : `¥${value.toFixed(2)}`
+/**
+ * 本页金额/单价的统一写法（2026-11-17）。
+ *
+ * 原来是自己写死 `¥${value.toFixed(2)}`：一万块的「成本」显示成 ¥10000.00，
+ * 紧挨着「报价金额」却用 formatMoney 的 ¥14,286.00 —— 同一张表两种写法，
+ * 而且单价被砍成两位。现在按口径分流：
+ * - 默认（digits=2）是金额：千分位 + 两位，交给 formatMoney；
+ * - digits=4 是单价（均价 / 标准价 / 建议价）：交给 formatUnitPrice 保真。
+ */
+const money = (value?: number | null, digits: 2 | 4 = 2) => {
+  if (value === null || value === undefined) return '-'
+  return digits === 4
+    ? formatUnitPrice(value, 'CNY')
+    : formatMoney(toTwoDecimals(value), 'CNY')
+}
 const percent = (value?: number | null) =>
   value === null || value === undefined ? '-' : `${(value * 100).toFixed(2)}%`
 
@@ -214,7 +227,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
       dataIndex: 'avg_price',
       width: 90,
       align: 'right' as const,
-      render: (value: number | null) => money(value),
+      render: (value: number | null) => money(value, 4),
     },
   ]
 
@@ -373,7 +386,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   return (
                     <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span style={{ color: 'var(--crm-text-3)', minWidth: 168 }}>{label}</span>
-                      <span style={{ minWidth: 90 }}>{money(value)}</span>
+                      <span style={{ minWidth: 90 }}>{money(value, 4)}</span>
                       <Tag color={reached ? 'green' : 'red'} size="small">
                         {reached ? '已满足' : '未达到'}
                       </Tag>
@@ -400,7 +413,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                     fontSize: 12.5,
                   }}
                 >
-                  红线提醒：当前均价 {money(basePrice)}
+                  红线提醒：当前均价 {money(basePrice, 4)}
                   {(projected.profitTotal ?? 0) < 0 ? ' 已经亏损' : ''}
                   {belowAuthorized ? ' 已低于你的授权底价' : ''}
                   ，提交后会转主管审批，不要承诺客户可以特批。
@@ -436,7 +449,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   {
                     title: '成交均价',
                     dataIndex: 'price',
-                    render: (value: number | null) => money(value),
+                    render: (value: number | null) => money(value, 4),
                   },
                   {
                     title: '订单金额',
