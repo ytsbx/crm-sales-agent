@@ -315,7 +315,7 @@ export default function DocumentsPage() {
     refetchOnWindowFocus: true,
   })
   const detail = detailQuery.data
-  const oaLabel = detail?.dingtalk_oa?.provider === 'self_oa' ? 'OA' : '钉钉'
+  const oaLabel = detail?.dingtalk_oa?.provider === 'self_oa' ? 'OA' : '同序 OA'
   const signedFiles: ContractSignedFile[] = detail?.signed_files ?? []
   const amendments: ContractAmendment[] = detail?.amendments ?? []
 
@@ -371,7 +371,7 @@ export default function DocumentsPage() {
             切过来会觉得少了一块（2026-11-16 巡检）。 */}
         <PageHeader
           title="文档管理"
-          subtitle="我方合同、客户合同均上传原文件；审批在钉钉办理，CRM 同步进度并跟催回签归档"
+          subtitle="我方合同、客户合同均上传原文件；审批在同序 OA 办理，CRM 同步进度并跟催回签归档"
         />
         <SectionCard
           className={(documents?.length ?? 0) <= 8 ? 'auto-height' : undefined}
@@ -385,7 +385,7 @@ export default function DocumentsPage() {
               </Button>
             )}
           </div>
-          <Table<ContractDocument>
+          <Table<ContractDocument> className="table-center"
             columns={[
               // 140 放不下 12 位的合同编号（实测被截成「CT202610140…」）。
               // 156 是刚好够 + 又不把表格撑出横向滚动条的宽度。
@@ -517,8 +517,8 @@ export default function DocumentsPage() {
                     } else if (record.dingtalk_oa_row?.provider !== 'dingtalk') {
                       more.push({ key: 'start-oa', label: '发起 OA 审批', onClick: () => openOaStart(record) })
                     } else {
-                      // 只读的历史钉钉审批：给一行说明，不占主位
-                      more.push({ key: 'oa-readonly', label: '历史钉钉审批（只读，不能重提）' })
+                      // 只读的历史同序 OA 审批：给一行说明，不占主位
+                      more.push({ key: 'oa-readonly', label: '历史同序 OA 审批（只读，不能重提）' })
                     }
                   }
 
@@ -687,7 +687,7 @@ export default function DocumentsPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4 }}>合同名称<span style={{ color: '#f56c6c', marginLeft: 2 }}>*</span></div>
-            <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与钉钉一致" />
+            <Input value={contractTitle} onChange={setContractTitle} placeholder="填写合同名称，需与同序 OA 一致" />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div>

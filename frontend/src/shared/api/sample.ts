@@ -74,12 +74,12 @@ export interface SampleRequestRow {
   shipped_at?: string | null
   signed_at?: string | null
   feedback?: string | null
-  // ---- 钉钉《打样申请单》上的格（2026-10-15）----
-  /** 打样类型 / 产品大类 / 样品制作单位：选项**照抄钉钉下拉**，值就是那几项之一。 */
+  // ---- 同序 OA《打样申请单》上的格（2026-10-15）----
+  /** 打样类型 / 产品大类 / 样品制作单位：选项**照抄同序 OA 下拉**，值就是那几项之一。 */
   sample_type?: string | null
   product_category?: string | null
   maker_unit?: string | null
-  /** 打样目的 / 紧急程度 / 样品情况：同样是钉钉上的勾选项。 */
+  /** 打样目的 / 紧急程度 / 样品情况：同样是同序 OA 上的勾选项。 */
   sample_purpose?: string | null
   urgency?: string | null
   sample_situation?: string | null
@@ -190,14 +190,14 @@ export function restoreSample(id: number) {
   return api.post<null>(`/samples/${id}/restore`)
 }
 
-/** 导出**填好的**《打样申请单》Excel（钉钉「定制打样审批」那份单子）。
+/** 导出**填好的**《打样申请单》Excel（同序 OA「定制打样审批」那份单子）。
  *
- * 为什么要有它：发起打样在 CRM，流程回到钉钉走；钉钉那份单子是公司现有表单
+ * 为什么要有它：发起打样在 CRM，流程回到同序 OA 走；同序 OA 那份单子是公司现有表单
  * （表头印着"表单编码：D01-003"），格式不能改 —— 所以这里把 CRM 已有的数据
  * 填进原版式的底稿，业务员**下载即传**，不用重打一遍。
  *
  * ⚠️ 单子上采购回复 / 打样部回复 / 打样人 / 完成时间 / 样品确认人**是空的**：
- * 那是生产部与采购在钉钉里填的（批注原文"此处为采购填写"）。那不是漏了。
+ * 那是生产部与采购在同序 OA 里填的（批注原文"此处为采购填写"）。那不是漏了。
  */
 export function exportSampleApplicationForm(id: number) {
   return api.download(`/samples/${id}/application-form`)

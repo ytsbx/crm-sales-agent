@@ -15,7 +15,7 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
   const autoLink = useMutation({
     mutationFn: () => autoLinkContractDingTalkApproval(doc!.id),
     onSuccess: () => {
-      Toast.success('已自动找到并关联钉钉审批')
+      Toast.success('已自动找到并关联同序 OA 审批')
       void cache.invalidateQueries({ queryKey: ['contract-documents'] })
       void cache.invalidateQueries({ queryKey: ['contract-detail', doc?.id] })
       onClose()
@@ -38,7 +38,7 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
         const outcome = (result as { result?: { level?: string; message?: string } }).result
         if (outcome?.level !== 'success') { Toast.warning(outcome?.message || '请核对审批状态'); return }
       }
-      Toast.success(entry.data?.mode === 'api' ? '已提交钉钉审批' : '已核验并关联审批')
+      Toast.success(entry.data?.mode === 'api' ? '已提交同序 OA 审批' : '已核验并关联审批')
       void cache.invalidateQueries({ queryKey: ['contract-documents'] })
       void cache.invalidateQueries({ queryKey: ['contract-detail', doc?.id] })
       setInstanceId('')
@@ -46,28 +46,28 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
     },
     onError: (e: Error) => Toast.error(e.message),
   })
-  return <Modal title="钉钉合同审批" visible={Boolean(doc)} onCancel={onClose}
+  return <Modal title="同序 OA 合同审批" visible={Boolean(doc)} onCancel={onClose}
     width={520} style={{ maxWidth: 'calc(100vw - 32px)' }}
     bodyStyle={{ paddingTop: 8, paddingBottom: 24 }}
     footer={entry.data?.mode === 'api' ? <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
       <Button disabled={submit.isPending} onClick={onClose}>取消</Button>
-      <Button theme="solid" loading={submit.isPending} onClick={() => submit.mutate()}>提交钉钉审批</Button>
+      <Button theme="solid" loading={submit.isPending} onClick={() => submit.mutate()}>提交同序 OA 审批</Button>
     </div> : null}>
     {entry.isLoading && <p>正在核对审批入口…</p>}
     {entry.error && <p role="alert">{entry.error.message}</p>}
     {entry.data?.mode === 'external_link' && <div style={{ display: 'grid', gap: 12 }}>
-      <p>请在钉钉上传本合同的完整原文件，填写后提交。打开页面不代表已提交审批。</p>
+      <p>请在同序 OA 上传本合同的完整原文件，填写后提交。打开页面不代表已提交审批。</p>
       <div>合同来源：{doc?.contract_origin_label || '历史未标注'}</div>
       <div>合同名称：{doc?.title}</div>
-      <div>合同编号：{doc?.doc_no}（钉钉中选择“手动填写”，按此编号填写）</div>
+      <div>合同编号：{doc?.doc_no}（同序 OA 中选择“手动填写”，按此编号填写）</div>
       <div style={{ display: 'flex', gap: 12 }}>
         <Button onClick={() => void downloadContractDoc(doc!)}>下载合同原文件</Button>
-        <a href={entry.data.url!} target="_blank" rel="noreferrer">打开钉钉合同审批</a>
+        <a href={entry.data.url!} target="_blank" rel="noreferrer">打开同序 OA 合同审批</a>
       </div>
-      <p>提交后，将钉钉审批详情链接（含审批编号）或审批实例编号粘贴到下方。系统核对流程、本人账号、合同名称和编号后关联；请确认钉钉正文附件为本合同原文件。</p>
+      <p>提交后，将同序 OA 审批详情链接（含审批编号）或审批实例编号粘贴到下方。系统核对流程、本人账号、合同名称和编号后关联；请确认同序 OA 正文附件为本合同原文件。</p>
       <Button type="primary" theme="outline" loading={autoLink.isPending} onClick={() => autoLink.mutate()}>立即查找并关联</Button>
       <details><summary>自动查找不到时，手动关联</summary>
-      <Input value={instanceId} onChange={setInstanceId} placeholder="粘贴钉钉审批详情链接或审批实例编号" />
+      <Input value={instanceId} onChange={setInstanceId} placeholder="粘贴同序 OA 审批详情链接或审批实例编号" />
       <Button type="primary" theme="outline" loading={submit.isPending} onClick={() => {
         if (!instanceId.trim()) { Toast.warning('请粘贴审批详情链接或实例编号'); return }
         submit.mutate()
@@ -78,7 +78,7 @@ export default function CustomerApproval({ doc, onClose }: { doc: ContractDocume
         <div style={{ fontSize: 15, fontWeight: 600, overflowWrap: 'anywhere' }}>{doc?.title}</div>
         <div style={{ color: 'var(--semi-color-text-2)', fontSize: 13 }}>合同编号：{doc?.doc_no}</div>
       </div>
-      <div style={{ lineHeight: 1.7, color: 'var(--semi-color-text-1)' }}>将上传合同原文件并提交到钉钉，审批操作在钉钉完成。</div>
+      <div style={{ lineHeight: 1.7, color: 'var(--semi-color-text-1)' }}>将上传合同原文件并提交到同序 OA，审批操作在同序 OA 完成。</div>
     </div>}
   </Modal>
 }
@@ -90,10 +90,10 @@ export function ApprovalHistory({ result }: { result: Record<string, unknown> })
   const tasks = Array.isArray(payload.tasks) ? payload.tasks as Record<string, unknown>[] : []
   const records = Array.isArray(payload.operationRecords) ? payload.operationRecords as Record<string, unknown>[] : []
   const time = (value: unknown) => typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? formatDingTalkTime(value) : ''
-  const person = (row: Record<string, unknown>) => String(row.userName || row.staffName || '钉钉未返回处理人姓名')
+  const person = (row: Record<string, unknown>) => String(row.userName || row.staffName || '同序 OA 未返回处理人姓名')
   return <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
     <b>审批节点</b>
-    {tasks.length ? tasks.map((row, i) => <div key={i}>{person(row)}{row.activityName ? ` · ${String(row.activityName)}` : ''} · {label(row.taskStatus || row.status)} {label(row.taskResult || row.result)} · {time(row.finishTime || row.endTime || row.createTime)}</div>) : <div>钉钉尚未返回节点明细</div>}
+    {tasks.length ? tasks.map((row, i) => <div key={i}>{person(row)}{row.activityName ? ` · ${String(row.activityName)}` : ''} · {label(row.taskStatus || row.status)} {label(row.taskResult || row.result)} · {time(row.finishTime || row.endTime || row.createTime)}</div>) : <div>同序 OA 尚未返回节点明细</div>}
     <b>处理记录</b>
     {records.length ? records.map((row, i) => <div key={i}>{person(row)}{row.showName ? ` · ${String(row.showName)}` : ''} · {label(row.operationType || row.type || row.result)} · {time(row.date || row.createTime)}{row.remark ? ` · ${String(row.remark)}` : ''}</div>) : <div>暂无处理记录</div>}
   </div>

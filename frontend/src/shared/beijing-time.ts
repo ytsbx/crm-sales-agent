@@ -105,9 +105,9 @@ export function formatBeijingClock(value: TimeValue, options: Intl.DateTimeForma
   return date ? date.toLocaleTimeString('zh-CN', { hour12: false, ...options, timeZone: BUSINESS_TIME_ZONE }) : '-'
 }
 
-/** 钉钉 workflow 实测以北京时间生成分钟精度的 wall time，却附加 Z。
+/** 同序 OA workflow 实测以北京时间生成分钟精度的 wall time，却附加 Z。
  * 仅对这个已验证的格式兼容；秒精度 Z、显式偏移和 epoch 仍保留其瞬时语义。
- * 仅用于钉钉原始节点/操作时间，不能用于 CRM synced_at / created_at。
+ * 仅用于同序 OA 原始节点/操作时间，不能用于 CRM synced_at / created_at。
  */
 export function formatDingTalkTime(value: TimeValue): string {
   const input = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$/.test(value)

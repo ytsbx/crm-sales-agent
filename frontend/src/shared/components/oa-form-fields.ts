@@ -1,10 +1,10 @@
-/** 读取已同步的钉钉表单，包括生产部后续填写的回复；不渲染外部 HTML。 */
+/** 读取已同步的同序 OA 表单，包括生产部后续填写的回复；不渲染外部 HTML。 */
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 
 function text(value: unknown, depth = 0): string {
   if (value === null || value === undefined || value === '') return ''
-  if (depth > 10) return '复杂内容请在钉钉查看'
+  if (depth > 10) return '复杂内容请在同序 OA 查看'
   if (typeof value === 'string') {
     const trimmed = value.trim()
     if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
@@ -26,7 +26,7 @@ function text(value: unknown, depth = 0): string {
   if (typeof row.text === 'string') return row.text
   // 表格明细采用 rowValue；未知复杂结构不把内部字段名和编号直接印到业务页面。
   if ('rowValue' in row) return text(row.rowValue, depth + 1)
-  return '复杂内容请在钉钉查看'
+  return '复杂内容请在同序 OA 查看'
 }
 
 export function oaFormFields(result: unknown): Array<{ name: string; value: string }> {
@@ -35,6 +35,6 @@ export function oaFormFields(result: unknown): Array<{ name: string; value: stri
   if (!Array.isArray(fields)) return []
   return fields.map(field => {
     const row = object(field)
-    return { name: typeof row.name === 'string' ? row.name : '钉钉表单字段', value: text(row.value) }
+    return { name: typeof row.name === 'string' ? row.name : '同序 OA 表单字段', value: text(row.value) }
   }).filter(field => field.value !== '')
 }

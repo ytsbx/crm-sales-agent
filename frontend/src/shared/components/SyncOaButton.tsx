@@ -8,7 +8,7 @@ export default function SyncOaButton({ oaId, invalidateKeys }: { oaId: number; i
     mutationFn: () => syncOaInstance(oaId),
     onSuccess: async () => {
       await Promise.all(invalidateKeys.map(key => cache.invalidateQueries({ queryKey: key })))
-      Toast.success('已查询钉钉最新记录')
+      Toast.success('已查询同序 OA 最新记录')
     },
     onError: (error: Error) => Toast.error(error.message),
   })

@@ -331,7 +331,7 @@ export default function SettingsPage() {
     }
     const first = Object.values(raw)[0]
     const key = Object.keys(raw)[0] ?? 'text'
-    // 有些配置项的值不是标量而是对象（钉钉审批配置里 template_id / 字段映射装在
+    // 有些配置项的值不是标量而是对象（同序 OA 审批配置里 template_id / 字段映射装在
     // 一层对象里），直接 String(它) 出来就是 `[object Object]` —— 既看不懂也改不了，
     // 还占着一个输入框。这种就显示"已配置（N 项）"，并写明在哪改。
     if (first !== null && typeof first === 'object') {
@@ -493,7 +493,7 @@ export default function SettingsPage() {
   })
 
   // ---- 用户 / 角色 / 部门 的增删改（03-API §3 / §4 / §5） ----
-  // 钉钉同步的结果要**逐条看得见**（谁没对上、谁还没绑），所以用弹窗而不是一句话提示：
+  // 同序 OA 同步的结果要**逐条看得见**（谁没对上、谁还没绑），所以用弹窗而不是一句话提示：
   // 对不上的人是要管理员去处理的，一闪而过的提示等于没给。
   const [dtSyncVisible, setDtSyncVisible] = useState(false)
   const [dtSyncResult, setDtSyncResult] = useState<DingTalkSyncResult | null>(null)
@@ -589,10 +589,10 @@ export default function SettingsPage() {
   })
 
   /**
-   * 同步钉钉人员：把账号和钉钉通讯录里的人对上。
+   * 同步同序 OA 人员：把账号和同序 OA 通讯录里的人对上。
    *
    * 结果**不看 `disabled` 就当成功**：总闸关着时后端一次请求都没发，
-   * 数字全是 0 —— 那和"钉钉里确实没人"是两回事，提示语必须分开。
+   * 数字全是 0 —— 那和"同序 OA 里确实没人"是两回事，提示语必须分开。
    */
   const dtSyncMutation = useMutation({
     mutationFn: syncDingTalkUsers,
@@ -1058,8 +1058,8 @@ export default function SettingsPage() {
                   }))}
                 />
                 <div style={{ flex: 1 }} />
-                <Popconfirm title="确认同步钉钉人员？" content="将读取钉钉通讯录并更新本地人员绑定信息。" onConfirm={() => dtSyncMutation.mutate()}>
-                  <Button loading={dtSyncMutation.isPending}>同步钉钉人员</Button>
+                <Popconfirm title="确认同步同序 OA 人员？" content="将读取同序 OA 通讯录并更新本地人员绑定信息。" onConfirm={() => dtSyncMutation.mutate()}>
+                  <Button loading={dtSyncMutation.isPending}>同步同序 OA 人员</Button>
                 </Popconfirm>
                 <Button type="primary"
                   theme="outline"
@@ -1962,13 +1962,13 @@ export default function SettingsPage() {
                       width: 360,
                       render: (_: unknown, record: SystemSettingRow) => {
                         // 一批配置**默认就取最保守的值**（关着 / 0 / 留空），
-                        // 因为底价口径、体积重系数、钉钉模板号这些属于业务口径，
+                        // 因为底价口径、体积重系数、同序 OA 模板号这些属于业务口径，
                         // 开发不替业务拍板。它们光看说明跟"坏了"一样，
                         // 所以这里单独挂一条"当前为什么看不出效果"（文案单点在
                         // `setting-labels.ts` 的 SETTING_NOTES，只登记这类项）。
                         const note = settingNote(record.key)
                         return (
-                          // 必须显式打开换行：Semi 单元格默认 nowrap，"钉钉合同签署审批"
+                          // 必须显式打开换行：Semi 单元格默认 nowrap，"同序 OA 合同签署审批"
                           // 那条说明有 40 多个字，不换行就把整列撑到 738px，
                           // 第三列「值」直接被推到卡片外面看不见（2026-11-16 发现：
                           // 系统配置表只剩两个表头，值根本改不了）。
@@ -2073,9 +2073,9 @@ export default function SettingsPage() {
         </div>
       </SectionCard>
 
-      {/* 钉钉人员同步的结果：对不上的人必须逐条看得见，否则等于没报 */}
+      {/* 同序 OA 人员同步的结果：对不上的人必须逐条看得见，否则等于没报 */}
       <Modal
-        title="钉钉人员同步"
+        title="同序 OA 人员同步"
         visible={dtSyncVisible}
         onCancel={() => setDtSyncVisible(false)}
         footer={
@@ -2087,13 +2087,13 @@ export default function SettingsPage() {
       >
         {dtSyncResult?.disabled ? (
           <>
-            <p>本次没有读取钉钉通讯录，一个人都没动。</p>
+            <p>本次没有读取同序 OA 通讯录，一个人都没动。</p>
             <p style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>{dtSyncResult.message}</p>
           </>
         ) : (
           <>
             <p>
-              钉钉通讯录共 {dtSyncResult?.total ?? 0} 人：本次绑定 {dtSyncResult?.bound ?? 0} 人，
+              同序 OA 通讯录共 {dtSyncResult?.total ?? 0} 人：本次绑定 {dtSyncResult?.bound ?? 0} 人，
               之前已绑定 {dtSyncResult?.already_bound ?? 0} 人。
             </p>
 
@@ -2115,7 +2115,7 @@ export default function SettingsPage() {
                 />
               </div>
             ) : (
-              <p style={{ color: 'var(--crm-text-3)' }}>钉钉那边的人全都对上了。</p>
+              <p style={{ color: 'var(--crm-text-3)' }}>同序 OA 那边的人全都对上了。</p>
             )}
 
             {(dtSyncResult?.unbound_crm ?? []).length > 0 && (

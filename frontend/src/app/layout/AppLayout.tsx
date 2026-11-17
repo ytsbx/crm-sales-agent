@@ -288,7 +288,7 @@ export default function AppLayout() {
           <Button theme="solid" onClick={() => { setCredentialsDismissed(user?.id ?? null); navigate('/settings?tab=profile') }}>去修改账号密码</Button></>}>
         <p>登录名：<strong style={{ overflowWrap: 'anywhere' }}>{user?.username}</strong></p>
         <p>初始密码：<strong>123456</strong></p>
-        <p>以后可使用账号密码或钉钉扫码登录；在「我的」里可以自行修改（点头像也能进）。</p>
+        <p>以后可使用账号密码或同序 OA 扫码登录；在「我的」里可以自行修改（点头像也能进）。</p>
       </Modal>
     </div>
   )

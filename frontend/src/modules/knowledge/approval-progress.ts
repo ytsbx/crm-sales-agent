@@ -1,5 +1,5 @@
 import { formatBeijingTime, formatDingTalkTime } from '../../shared/beijing-time'
-/** 钉钉返回的已同步快照；不推测尚未返回的未来节点，不把节点通过当整单通过。 */
+/** 同序 OA 返回的已同步快照；不推测尚未返回的未来节点，不把节点通过当整单通过。 */
 export interface ApprovalProgressEntry {
   kind: 'task' | 'operation'
   person: string
@@ -36,7 +36,7 @@ export function approvalProgress(result: unknown): ApprovalProgressEntry[] {
   const payload = obj(obj(result).payload)
   const operations = rows(payload.operationRecords)
   const names = new Map(operations.map((row) => [str(row.userId), str(row.showName)] as [string, string]).filter(([id, name]) => id && name))
-  const person = (row: Record<string, unknown>) => str(row.showName) || names.get(str(row.userId)) || '钉钉处理人（姓名未返回）'
+  const person = (row: Record<string, unknown>) => str(row.showName) || names.get(str(row.userId)) || '同序 OA 处理人（姓名未返回）'
   const tasks: ApprovalProgressEntry[] = rows(payload.tasks).map((row) => {
     const state = STATES[str(row.status).toUpperCase()] || '状态待核对'
     const decision = STATES[str(row.result).toUpperCase()] || ''

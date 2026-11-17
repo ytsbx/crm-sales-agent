@@ -12,7 +12,7 @@ export interface SystemUser {
   department_id?: number | null
   department?: string | null
   wecom_userid?: string | null
-  /** 钉钉 userid：**有值才代表这个人能用钉钉登录**（没绑定就是空）。 */
+  /** 同序 OA userid：**有值才代表这个人能用同序 OA 登录**（没绑定就是空）。 */
   dingtalk_userid?: string | null
   status: string
   /** 关联的角色。**含已停用的角色**（管理页要能看出"挂着但已停用"），逐项带 status。 */

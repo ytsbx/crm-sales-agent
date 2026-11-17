@@ -19,9 +19,9 @@ const SENTENCE_RULES: Array<[RegExp, string]> = [
   ],
   [
     /钉钉外部调用已关闭[（(]\s*DINGTALK_PUSH_OFF\s*[）)][，,]?\s*开发阶段未执行外部请求/g,
-    '钉钉推送已关闭，恢复后可补投',
+    '同序 OA 推送已关闭，恢复后可补投',
   ],
-  [/钉钉外部调用已关闭[（(]\s*DINGTALK_PUSH_OFF\s*[）)]/g, '钉钉推送已关闭，恢复后可补投'],
+  [/钉钉外部调用已关闭[（(]\s*DINGTALK_PUSH_OFF\s*[）)]/g, '同序 OA 推送已关闭，恢复后可补投'],
   [/钉钉扫码登录已关闭[（(]\s*DINGTALK_LOGIN_OFF\s*[）)]/g, '钉钉扫码登录暂未开放'],
 ]
 
@@ -40,14 +40,18 @@ export function humanizeBackendText(text?: string | null): string {
   // 再抹掉裸出现的代号本身（避免 `WECOM_AGENT_ID 未配置` 这种残留）。
   result = result.replace(/[（(]\s*[A-Z][A-Z0-9_]{3,}\s*[）)]/g, '')
   result = result.replace(/\b[A-Z][A-Z0-9_]{3,}\b/g, (code) => KNOWN_BARE[code] ?? '')
+  // 兜底第二条：后端有些失败文案直接写「钉钉外部调用已关闭，无法自动查找审批」
+  // 这类没登记成整句的，统一把平台名换成用户现在的叫法。
+  // ⚠ 扫码登录那条排除在外：登录走的仍是钉钉，改成「同序 OA 扫码登录」会把人指错地方。
+  result = result.replace(/钉钉(?![扫码登录绑定])/g, '同序 OA')
   return result.replace(/\s{2,}/g, ' ').replace(/[，,]\s*$/, '').trim()
 }
 
 /** 代号裸着出现时（没有括号包裹）用的说法；没登记的留空，直接删掉。 */
 const KNOWN_BARE: Record<string, string> = {
   WECOM_PUSH_OFF: '企业微信推送开关',
-  DINGTALK_PUSH_OFF: '钉钉推送开关',
+  DINGTALK_PUSH_OFF: '同序 OA 推送开关',
   WECOM_AGENT_ID: '企业微信应用 ID',
-  DINGTALK_AGENT_ID: '钉钉应用 ID',
+  DINGTALK_AGENT_ID: '同序 OA 应用 ID',
   SCHEDULER_ENABLED: '定时任务开关',
 }

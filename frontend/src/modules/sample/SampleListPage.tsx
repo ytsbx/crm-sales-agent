@@ -245,14 +245,14 @@ export default function SampleListPage() {
   // 生产打样资料（文档 §3.5）：跟单在这一栏把车间要的东西补全，
   // 打样需求单出图时逐项带给车间。
   // 材质 / 工艺 / 图纸版本**不在这里**：它们逐行不同，在明细行上改（见 itemEdit）。
-  // 打样积分＝预计工时 × 10（钉钉表上的口径），**不让手填** —— 手填必然出现
+  // 打样积分＝预计工时 × 10（同序 OA 表上的口径），**不让手填** —— 手填必然出现
   // 两个人填出两个数。这里只存工时，积分由后端算、只读显示。
   const [prodForm, setProdForm] = useState({
     purpose: '',
     target_completion_date: '',
     acceptance_criteria: '',
     sample_fee: '',
-    // ---- 钉钉《打样申请单》上的格 ----
+    // ---- 同序 OA《打样申请单》上的格 ----
     sample_type: '',
     product_category: '',
     maker_unit: '',
@@ -390,7 +390,7 @@ export default function SampleListPage() {
           }).catch(() => undefined)
         }
       }
-      Toast.success('打样草稿已创建，请选择钉钉流程并补充申请资料')
+      Toast.success('打样草稿已创建，请选择同序 OA 流程并补充申请资料')
       setOaTarget(created.id)
       setCreateVisible(false)
       setForm({ remark: '', items: [{ quantity: '1' }] })
@@ -494,7 +494,7 @@ export default function SampleListPage() {
         target_completion_date: prodForm.target_completion_date || null,
         acceptance_criteria: prodForm.acceptance_criteria || null,
         sample_fee: fee,
-        // ---- 钉钉《打样申请单》上的格 ----
+        // ---- 同序 OA《打样申请单》上的格 ----
         sample_type: blankToNull(prodForm.sample_type),
         product_category: blankToNull(prodForm.product_category),
         maker_unit: blankToNull(prodForm.maker_unit),
@@ -503,7 +503,7 @@ export default function SampleListPage() {
         sample_situation: blankToNull(prodForm.sample_situation),
         estimated_hours: hours,
         // ⚠️ `product_name` 与那 6 项「打样具体要求」**刻意不在这里发**：
-        // 它们已从本页表单移除（改到「钉钉打样申请」弹窗里填），若在这里发 null
+        // 它们已从本页表单移除（改到「同序 OA 打样申请」弹窗里填），若在这里发 null
         // 就会**把弹窗里填好的值擦掉**。PATCH 只改传了的字段，不发就保持原值。
       })
     },
@@ -703,7 +703,7 @@ export default function SampleListPage() {
             </Button>
             {/* 能不能删由后端下发（`can_delete`）：只有还没走流程的（待审批 / 已驳回）
                 才给「删除」—— 已批准之后的单子连着审批留痕与车间依据。判据别在前端再写一份。 */}
-            {canManage && !record.can_delete && <span title="已提交钉钉或已进入制作、寄送流程的样品不能直接删除"><Button theme="borderless" size="small" disabled>删除</Button></span>}
+            {canManage && !record.can_delete && <span title="已提交同序 OA 或已进入制作、寄送流程的样品不能直接删除"><Button theme="borderless" size="small" disabled>删除</Button></span>}
             {canManage && record.can_delete && (
               <Popconfirm
                 title="这张打样单将移入回收站，可在“回收站 → 样品”中恢复。"
@@ -845,7 +845,7 @@ export default function SampleListPage() {
         onCancel={() => setCreateVisible(false)}
         onOk={() => createMutation.mutate()}
         confirmLoading={createMutation.isPending}
-        okText="保存草稿并填写钉钉申请"
+        okText="保存草稿并填写同序 OA 申请"
         width={560}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1124,7 +1124,7 @@ export default function SampleListPage() {
               </div>
             )}
 
-            {canManage && <Button theme="outline" type="primary" onClick={() => setOaTarget(detail.id)}>钉钉打样申请 / 查看进度</Button>}
+            {canManage && <Button theme="outline" type="primary" onClick={() => setOaTarget(detail.id)}>同序 OA 打样申请 / 查看进度</Button>}
             {canManage && !((detail.source_context as unknown as { dingtalk_oa?: { submitted?: boolean } } | null)?.dingtalk_oa?.submitted) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 {/* 待审批时是「批准 / 拒绝」；已驳回时给两条纠错的路 ——
@@ -1306,10 +1306,10 @@ export default function SampleListPage() {
                         value={prodForm.acceptance_criteria}
                         onChange={(v) => setProdForm({ ...prodForm, acceptance_criteria: v })}
                       />
-                      {/* ---- 钉钉《打样申请单》上的格（2026-10-15）----
-                          选项**照抄钉钉下拉**（钉钉那边是下拉，写错一个字导出的单子
-                          就和钉钉对不上，而人眼发现不了）。填好这几项之后，
-                          点下面的「导出打样申请单」就能拿到填好的 Excel，直接传钉钉。 */}
+                      {/* ---- 同序 OA《打样申请单》上的格（2026-10-15）----
+                          选项**照抄同序 OA 下拉**（同序 OA 那边是下拉，写错一个字导出的单子
+                          就和同序 OA 对不上，而人眼发现不了）。填好这几项之后，
+                          点下面的「导出打样申请单」就能拿到填好的 Excel，直接传同序 OA。 */}
                       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                         <Select
                           style={{ width: 170 }}
@@ -1400,12 +1400,12 @@ export default function SampleListPage() {
                         </span>
                       </div>
                       {/* 2026-10-16：申请单上的**产品名称 + 打样具体要求 6 项**在这里
-                          删掉了 —— 它们与「钉钉打样申请」弹窗里那一组是**同一批字段**
+                          删掉了 —— 它们与「同序 OA 打样申请」弹窗里那一组是**同一批字段**
                           （弹窗从库里回填，两处读写同源），两套输入框只会让人不知道该填哪、
                           或者以为要填两遍。现在只在弹窗那一处填。
                           下面「用途 / 目标完成日 / 费用 / 验收标准」以及
                           「打样类型 / 产品大类 / 制作单位 / 预计工时」是**这里独有**的
-                          （钉钉模板上没有对应格），所以留在本页。 */}
+                          （同序 OA 模板上没有对应格），所以留在本页。 */}
                       <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                         材质、工艺、图纸版本在「样品明细」里逐行填——它们每个商品可能都不一样。
                         改这几项（或这里的交期、验收标准）会让已批准的单子退回「待审批」。

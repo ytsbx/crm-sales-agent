@@ -35,12 +35,12 @@ export const SETTING_LABELS: Record<string, { label: string; description: string
   pool_recycle_restore_permission: { label: '公海回收恢复权限', description: '允许把已回收客户恢复的权限。' },
   notification_channels: { label: '通知渠道', description: '站内通知和企业微信通知的开关与适用类型。' },
   notification_levels: { label: '通知分级', description: '不同通知类型采用即时发送或日报汇总。' },
-  dingtalk_sample_oa: { label: '钉钉独立打样审批', description: '独立打样审批模板编号；沿用原询价时不发新单。' },
+  dingtalk_sample_oa: { label: '同序 OA 独立打样审批', description: '独立打样审批模板编号；沿用原询价时不发新单。' },
   dingtalk_contract_oa: {
-    label: '钉钉合同签署审批',
-    description: '客户起草合同发起钉钉签署时用的模板编号与控件映射；只有客户起草的合同能发起。',
+    label: '同序 OA 合同签署审批',
+    description: '客户起草合同发起同序 OA 签署时用的模板编号与控件映射；只有客户起草的合同能发起。',
   },
-  dingtalk_oa: { label: '钉钉审批配置', description: '钉钉审批模板、字段映射和发起人来源。' },
+  dingtalk_oa: { label: '同序 OA 审批配置', description: '同序 OA 审批模板、字段映射和发起人来源。' },
 }
 
 export function settingLabel(key: string): string {
@@ -55,7 +55,7 @@ export function settingDescription(key: string, fallback?: string | null): strin
  * 「这一项当前为什么看不出效果」——按配置项逐项说清，给设置页展示。
  *
  * 为什么需要（主人 2026-10-13）：设置列表里有一批配置**默认就取最保守的值**
- * （关着 / 0 / 留空）。原因是底价怎么定、体积重系数给多少、走哪个钉钉模板
+ * （关着 / 0 / 留空）。原因是底价怎么定、体积重系数给多少、走哪个同序 OA 模板
  * 这类东西属于**业务口径**，开发不该替业务拍板 —— 所以做成开关，等业务给数。
  * 但它们的界面表现跟"坏了"一模一样，管理员会反复来问。
  *
@@ -83,11 +83,11 @@ export const SETTING_NOTES: Record<string, { tag: string; text: string }> = {
   },
   dingtalk_oa: {
     tag: '待配置',
-    text: '审批模板编号还是空的；业务定了用哪个钉钉模板后填上即生效，不用改代码。',
+    text: '审批模板编号还是空的；业务定了用哪个同序 OA 模板后填上即生效，不用改代码。',
   },
   dingtalk_contract_oa: {
     tag: '待配置',
-    text: '合同签署审批模板编号和控件映射还是空的；没配之前，客户起草合同点「提交钉钉签署」会被明确拒绝，不会发出审批。',
+    text: '合同签署审批模板编号和控件映射还是空的；没配之前，客户起草合同点「提交同序 OA 签署」会被明确拒绝，不会发出审批。',
   },
   notification_channels: {
     tag: '企微默认关闭',
