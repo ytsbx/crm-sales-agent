@@ -18,7 +18,10 @@ import {
   Toast,
 } from '@douyinfe/semi-ui'
 
+import { IconApps, IconFile, IconHistogram } from '@douyinfe/semi-icons'
 import { getOpportunityTimeline, listFollowups, type FollowUp } from '../../shared/api/followup'
+import { listQuotes } from '../../shared/api/quote'
+import { listOrders } from '../../shared/api/order'
 import {
   changeStage,
   createItem,
@@ -89,6 +92,9 @@ export default function OpportunityDetailPage() {
 
   // AI 分析（API §37 专用接口，需 agent:use）
   const [aiEnvelope, setAiEnvelope] = useState<AnalysisEnvelope | null>(null)
+  // 记一下最近跑的是哪一项：三段各自只在自己的结果区里显示，避免
+  // "点了产品推荐，结果跑到商机分析下面去"这种张冠李戴。
+  const [aiKind, setAiKind] = useState<'analysis' | 'recommend' | 'draft' | null>(null)
   const aiMutation = useMutation({
     mutationFn: (kind: 'analysis' | 'recommend' | 'draft') => {
       if (kind === 'analysis') return agentOpportunityAnalysis({ opportunity_id: opportunityId })
@@ -149,6 +155,19 @@ export default function OpportunityDetailPage() {
     queryKey: ['tasks', { opportunity_id: opportunityId }],
     queryFn: () => listTasks({ opportunity_id: opportunityId, page_size: 100 }),
     enabled: Number.isFinite(opportunityId),
+  })
+  // 概览「商机全景」要报"这单开了几张报价、出了几张订单"。
+  // 这两个数只有 total 有用，page_size 压到 1，别把整张表拉回来。
+  // 没有该模块权限（quote:view / order:view）就不发请求，格子显示「—」。
+  const quoteCountQuery = useQuery({
+    queryKey: ['opportunity-quote-count', opportunityId],
+    queryFn: () => listQuotes({ opportunity_id: opportunityId, page_size: 1 }),
+    enabled: Number.isFinite(opportunityId) && activeKey === 'overview' && can('quote:view'),
+  })
+  const orderCountQuery = useQuery({
+    queryKey: ['opportunity-order-count', opportunityId],
+    queryFn: () => listOrders({ opportunity_id: opportunityId, page_size: 1 }),
+    enabled: Number.isFinite(opportunityId) && activeKey === 'overview' && can('order:view'),
   })
   const timelineQuery = useQuery({
     queryKey: ['timeline', 'opportunity', opportunityId],
@@ -545,6 +564,50 @@ export default function OpportunityDetailPage() {
             </div>
           )}
 
+          {activeKey === 'overview' && (
+            /* 商机全景：这几张卡本来只到 640px 就结束了，下面空出半屏灰底；
+               而"这单要了几个商品、开了几张报价、出了几张订单、跟了几次、剩几个任务"
+               全散在别的页签里。五个数字摆一条，点一下跳过去。
+               和客户详情概览同一套（主人 2026-11-17 定的方案二：把空白换成信息）。 */
+            <div style={{ marginTop: 18, borderTop: '1px solid var(--crm-border)', paddingTop: 14 }}>
+              <div className="customer-info-head">
+                <span className="customer-info-icon" style={{ background: '#eaf1fe', color: '#2f6df6' }}>
+                  <IconHistogram size="small" />
+                </span>
+                商机全景
+                <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                  点数字直接跳到对应页签
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+                {([
+                  { key: 'items', label: '需求商品', value: itemsQuery.data?.length },
+                  { key: 'records', label: '报价', value: quoteCountQuery.data?.total },
+                  { key: 'records', label: '订单', value: orderCountQuery.data?.total },
+                  { key: 'followups', label: '跟进记录', value: followupsQuery.data?.total ?? followupsQuery.data?.items?.length },
+                  { key: 'tasks', label: '任务', value: tasksQuery.data?.total ?? tasksQuery.data?.items?.length },
+                  // 报价与订单都落在「关联单据」页签里，所以这两个格子跳同一个地方
+                ] as const).map((tile) => (
+                  <button
+                    key={tile.label}
+                    type="button"
+                    className="cust-pano-tile"
+                    onClick={() => setActiveKey(tile.key)}
+                    title={`跳到「${TABS.find((t) => t.itemKey === tile.key)?.tab ?? tile.key}」页签`}
+                  >
+                    <span className="cust-pano-label">{tile.label}</span>
+                    <span className="cust-pano-value">
+                      {tile.value === undefined || tile.value === null ? '—' : tile.value}
+                      {tile.value !== undefined && tile.value !== null && (
+                        <span className="cust-pano-unit">条</span>
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {activeKey === 'items' && (
             <>
               <div className="toolbar">
@@ -643,39 +706,74 @@ export default function OpportunityDetailPage() {
       </SectionCard>
 
       {can('agent:use') && (
-        <SectionCard
-          title="AI 分析"
-          style={{ marginTop: 16 }}
-          extra={
-            <>
-              <Button
-                size="small"
-                loading={aiMutation.isPending}
-                onClick={() => aiMutation.mutate('analysis')}
-              >
-                商机分析
-              </Button>
-              <Button
-                size="small"
-                loading={aiMutation.isPending}
-                onClick={() => aiMutation.mutate('recommend')}
-              >
-                产品推荐
-              </Button>
-              <Button
-                size="small"
-                loading={aiMutation.isPending}
-                onClick={() => aiMutation.mutate('draft')}
-              >
-                报价草稿建议
-              </Button>
-            </>
-          }
-        >
-          <AgentInsight
-            envelope={aiEnvelope}
-            empty="点右上角按钮运行：商机分析看阶段停留与风险；产品推荐按客户成交历史；报价草稿建议只给建议不落库"
-          />
+        <SectionCard title="AI 分析" style={{ marginTop: 16 }}>
+          {/* 原来三个按钮并排挤在标题右边，下面一句总说明把三件事混在一起说 ——
+              看不出哪个按钮管什么，点完的结果也看不出属于哪一项。
+              现在三个动作各占一段：小标题 + 一句人话说明 + 右侧按钮，
+              结果就落在自己那段下面（跑哪项就亮哪项）。 */}
+          <div className="card-sub-head">
+            <span className="card-sub-icon" style={{ background: '#eaf1fe', color: '#2f6df6' }}>
+              <IconHistogram size="small" />
+            </span>
+            商机分析
+            <Button
+              size="small"
+              style={{ marginLeft: 'auto' }}
+              loading={aiMutation.isPending && aiKind === 'analysis'}
+              onClick={() => {
+                setAiKind('analysis')
+                aiMutation.mutate('analysis')
+              }}
+            >
+              运行
+            </Button>
+          </div>
+          <div className="card-sub-desc">这单卡在哪个阶段、停了多久、有没有丢单的风险</div>
+          {aiKind === 'analysis' && <AgentInsight envelope={aiEnvelope} empty="正在分析…" />}
+
+          <div className="card-sub-divider" />
+
+          <div className="card-sub-head">
+            <span className="card-sub-icon" style={{ background: '#e6f6f2', color: '#0d9488' }}>
+              <IconApps size="small" />
+            </span>
+            产品推荐
+            <Button
+              size="small"
+              style={{ marginLeft: 'auto' }}
+              loading={aiMutation.isPending && aiKind === 'recommend'}
+              onClick={() => {
+                setAiKind('recommend')
+                aiMutation.mutate('recommend')
+              }}
+            >
+              运行
+            </Button>
+          </div>
+          <div className="card-sub-desc">按这家客户过去成交过什么，给这次该推的产品</div>
+          {aiKind === 'recommend' && <AgentInsight envelope={aiEnvelope} empty="正在推荐…" />}
+
+          <div className="card-sub-divider" />
+
+          <div className="card-sub-head">
+            <span className="card-sub-icon" style={{ background: '#f1ecfe', color: '#7a4fd3' }}>
+              <IconFile size="small" />
+            </span>
+            报价草稿建议
+            <Button
+              size="small"
+              style={{ marginLeft: 'auto' }}
+              loading={aiMutation.isPending && aiKind === 'draft'}
+              onClick={() => {
+                setAiKind('draft')
+                aiMutation.mutate('draft')
+              }}
+            >
+              运行
+            </Button>
+          </div>
+          <div className="card-sub-desc">按需求商品给一份报价草稿，只给建议、不落库</div>
+          {aiKind === 'draft' && <AgentInsight envelope={aiEnvelope} empty="正在起草…" />}
         </SectionCard>
       )}
 
