@@ -49,6 +49,8 @@ interface Props {
   pageSize?: number
   empty?: string
   style?: React.CSSProperties
+  /** 是否自带卡片外壳。塞进别的卡片里时传 false，避免卡片套卡片。 */
+  boxed?: boolean
 }
 
 export default function ContractDocsPanel({
@@ -59,6 +61,7 @@ export default function ContractDocsPanel({
   pageSize = 5,
   empty = '还没有挂着这家客户的合同文档',
   style,
+  boxed = true,
 }: Props) {
   const { can } = usePermissions()
   // 列表接口要的是 order:view：没这个权限的角色不该看见入口（后端也会拦）
@@ -156,6 +159,10 @@ export default function ContractDocsPanel({
       </Fragment>
     )
   }
+
+  // boxed=false：调用方要把这块塞进它自己的卡片里（比如报价详情的「对外与归档」），
+  // 再包一层 SectionCard 就成了卡片套卡片。
+  if (!boxed) return <>{body}</>
 
   return (
     <SectionCard title={title} style={style}>

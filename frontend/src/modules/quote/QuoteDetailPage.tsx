@@ -2346,29 +2346,52 @@ export default function QuoteDetailPage() {
         </div>
       </Modal>
 
-      {/* 这份报价**发过给谁**（主人 2026-10-12：登记完就再也看不到自己登记了什么）。
-          与合同一样按整单看：V1 发给客户、现在走到 V3，那份发送事实仍要看得见。 */}
-      <SectionCard title="发送记录" style={{ marginTop: 16 }}>
-        <QuoteSendLogsPanel versionIds={allVersionIds} />
-      </SectionCard>
+      {/* ===== 对外与归档：三块合成一张卡 =====
+          原来是三张独立的卡（发送记录 / 合同文档 / 对外单据），每张里
+          往往只有**一句话**：一条发送记录、一句"还没有关联合同"、一行导出说明。
+          一张卡一句话，四周还要留白、带标题、占一整行 —— 三张卡约 480px 高，
+          拆开看每条信息都不到 20 个字。这就是"内容少却占大块地方"的来源
+          （2026-11-17 主人认可这个思路）。
 
-      {/* 这份报价签了什么：合同会钉死"依据的是哪一版"，所以按报价单整单筛，
-          不是只看当前版本 —— 早期按 V1 签、现在报价走到 V3，那份合同仍要看得见 */}
-      <ContractDocsPanel
-        quoteId={quoteId}
-        style={{ marginTop: 16 }}
-        empty="这份报价还没有关联的合同文档"
-      />
+          三件事本来就同类：这份报价对客户那边发生过什么、留下了什么文件。
+          收进一张卡，段与段用分隔线隔开，标题降级成 13px 小标题 ——
+          整块从 480px 压到约 220px，一条也没丢。 */}
+      <SectionCard title="对外与归档" style={{ marginTop: 16 }}>
+        {/* minWidth:0 是必须的：grid 子项默认 min-width:auto，内层表格/按钮组的
+            固有宽度会把卡片撑出容器（实测两个按钮各被切掉一截）。 */}
+        <div style={{ display: 'grid', gap: 0, minWidth: 0 }}>
+          {/* 发过给谁：按整单看 —— V1 发给客户、现在走到 V3，那份发送事实仍要看得见 */}
+          <div style={{ paddingBottom: 14, borderBottom: '1px solid var(--crm-border)', minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>发送记录</div>
+            <QuoteSendLogsPanel versionIds={allVersionIds} />
+          </div>
 
-      {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
-          之后改价或改模板都不会影响已导出的那份 */}
-      <SectionCard title="对外单据（对客报价 Excel）" style={{ marginTop: 16 }}>
-        <BizDocPanel
-          docType="quote_sheet"
-          quoteId={quoteId}
-          quoteVersionId={versionId}
-          canManage={canManage}
-        />
+          {/* 签了什么：合同会钉死"依据的是哪一版"，所以也按整单筛 */}
+          <div style={{ padding: '14px 0', borderBottom: '1px solid var(--crm-border)', minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>合同文档</div>
+            <ContractDocsPanel
+              quoteId={quoteId}
+              boxed={false}
+              empty="这份报价还没有关联的合同文档"
+            />
+          </div>
+
+          {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
+              之后改价或改模板都不会影响已导出的那份 */}
+          <div style={{ paddingTop: 14, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+              对外单据（对客报价 Excel）
+            </div>
+            <BizDocPanel
+              docType="quote_sheet"
+              quoteId={quoteId}
+              quoteVersionId={versionId}
+              canManage={canManage}
+              compact
+              compactEmptyText="还没有生成过对客报价 Excel —— 生成的是这一刻的快照，之后改价或改模板不影响已出的文件。"
+            />
+          </div>
+        </div>
       </SectionCard>
     </div>
   )

@@ -38,6 +38,15 @@ interface Props {
   /** 当前选中的报价版本 id（生成时按这一版的快照出图） */
   quoteVersionId?: number
   canManage: boolean
+  /**
+   * 紧凑模式：一份都没生成过时，只留一行「还没有生成过 + 生成一份」，
+   * 不画那张 9 列的空表头。9 列表头 + 一行"还没有生成过"占 90px、
+   * 信息量为零 —— 就是主人说的"内容少却给大卡"。
+   * 默认关，只有调用方确认自己要紧凑时才开。
+   */
+  compact?: boolean
+  /** 紧凑模式下的空态文案（不传用通用的） */
+  compactEmptyText?: string
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -52,6 +61,8 @@ export default function BizDocPanel({
   quoteId,
   quoteVersionId,
   canManage,
+  compact = false,
+  compactEmptyText = '还没有生成过',
 }: Props) {
   const queryClient = useQueryClient()
   const queryKey = ['biz-docs', docType, sampleRequestId ?? orderId ?? quoteId]
@@ -101,6 +112,10 @@ export default function BizDocPanel({
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  const rows = listQuery.data ?? []
+  // 紧凑模式 + 一份都没生成过 → 只留一行，不画空表头
+  const compactEmpty = compact && !listQuery.isLoading && rows.length === 0
+
   return (
     <div>
       <div
@@ -108,16 +123,22 @@ export default function BizDocPanel({
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          marginBottom: 10,
+          marginBottom: compactEmpty ? 0 : 10,
           fontSize: 12,
           color: 'var(--crm-text-3)',
           lineHeight: 1.7,
         }}
       >
         <span style={{ flex: 1 }}>
-          正文取生成时的快照：之后改客户资料、价格或交期，已出的文件不会跟着变。
-          需要更新请再生成一份，旧版会保留（不覆盖）。下载默认给「生成时存档的原件」，
-          重复下载内容一致；标了「无存档原件」的历史件拿到的是按快照重建的副本。
+          {compactEmpty ? (
+            compactEmptyText
+          ) : (
+            <>
+              正文取生成时的快照：之后改客户资料、价格或交期，已出的文件不会跟着变。
+              需要更新请再生成一份，旧版会保留（不覆盖）。下载默认给「生成时存档的原件」，
+              重复下载内容一致；标了「无存档原件」的历史件拿到的是按快照重建的副本。
+            </>
+          )}
         </span>
         {canManage && (
           <Button theme="solid" loading={generateMutation.isPending} onClick={() => generateMutation.mutate()}>
@@ -126,12 +147,13 @@ export default function BizDocPanel({
         )}
       </div>
 
+      {compactEmpty ? null : (
       <Table<BizDocRow>
         size="small"
         rowKey="id"
         pagination={false}
         loading={listQuery.isLoading}
-        dataSource={listQuery.data ?? []}
+        dataSource={rows}
         empty="还没有生成过"
         columns={[
           { title: '单号', dataIndex: 'doc_no', width: 170 },
@@ -209,6 +231,7 @@ export default function BizDocPanel({
           },
         ]}
       />
+      )}
     </div>
   )
 }
