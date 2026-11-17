@@ -694,13 +694,15 @@ export default function OrderDetailPage() {
     { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
   ]
 
+  // 应收计划属于「要跟财务对账」的单据数据 → 金额一律两位小数（主人 2026-11-17 口径）。
+  // formatMoney 只做千分位，不补位，所以先过 toTwoDecimals。
   const receivableColumns = [
     { title: '节点', dataIndex: 'plan_name', width: 110 },
     { title: '应收日期', dataIndex: 'due_date', width: 130 },
     // 行自带币种就优先用它（历史数据里可能与订单币种不一致），没有才退回订单币种
-    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number, r: Receivable) => formatMoney(r.amount_exact ?? v, r.currency ?? order.currency) },
-    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(r.received_amount_exact ?? v, r.currency ?? order.currency) },
-    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(r.remaining_amount_exact ?? v, r.currency ?? order.currency) },
+    { title: '应收金额', dataIndex: 'amount', width: 130, render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '已收', dataIndex: 'received_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.received_amount_exact ?? v), r.currency ?? order.currency) },
+    { title: '未收', dataIndex: 'remaining_amount', width: 130, render: (v: number, r: Receivable) => formatMoney(toTwoDecimals(r.remaining_amount_exact ?? v), r.currency ?? order.currency) },
     {
       title: '状态',
       dataIndex: 'status_label',

@@ -277,7 +277,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
          这里原来传的是 number（900）—— 一行里一半带两位小数、一半不带，
          看着像两个系统拼起来的。统一成精确值。 */
       render: (v: number, record: Receivable) =>
-        formatMoney(record.amount_exact ?? v, record.currency),
+        formatMoney(toTwoDecimals(record.amount_exact ?? v), record.currency),
     },
     {
       title: '已收',

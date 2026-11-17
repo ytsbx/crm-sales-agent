@@ -181,7 +181,9 @@ export default function WorkbenchPage() {
     },
     {
       label: '本月订单金额',
-      value: exactMoney(summary?.month_won_amount),
+      // 统计卡金额走整数（主人 2026-11-17 拍板的口径）：概览大数字只用来看量级，
+      // 加 .00 只会让六张卡显得啰嗦；带小数的账在单据页看。`money` 就是整数写法。
+      value: money(summary?.month_won_amount),
       hint: orderAmountBreakdown(summary),
       tone: 'default',
       onClick: () => navigate('/orders'),
@@ -319,8 +321,10 @@ export default function WorkbenchPage() {
               },
               {
                 label: '本月团队成交',
-                value: team.team_won_count_this_month ?? 0,
-                hint: `¥${Math.round(team.team_won_amount_this_month ?? 0).toLocaleString('zh-CN')}`,
+                // 大数字给金额、小字给笔数：这张卡的名字是「成交」，一眼要能看出成交额；
+                // 原来大数字是笔数（10），旁边小字才是金额，读起来像「成交 10 元」。
+                value: money(team.team_won_amount_this_month),
+                hint: `${team.team_won_count_this_month ?? 0} 笔`,
               },
               {
                 label: '风险商机',

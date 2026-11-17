@@ -1233,7 +1233,7 @@ export default function PriceCenterPage() {
                             target_price: lookupResult.unit_price,
                           })
                           Toast.success(
-                            `已把 ${lookupResult.sku.sku_code}（¥${lookupResult.unit_price}）加入商机需求`,
+                            `已把 ${lookupResult.sku.sku_code}（${money(lookupResult.unit_price)}）加入商机需求`,
                           )
                         } catch (error) {
                           Toast.error(error instanceof Error ? error.message : '加入失败')
