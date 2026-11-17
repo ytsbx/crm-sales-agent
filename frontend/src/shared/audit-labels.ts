@@ -65,6 +65,9 @@ export const AUDIT_TYPE_LABEL: Record<string, string> = {
   followup: '跟进记录',
   integration: '外部集成',
   integration_diff: '集成差异',
+  // 定制询价 OA 对象（3ef972c 引入）：中文名与业务词典对齐
+  // （backend/app/modules/dingtalk/model.py 与 oa/business_gates.py 都叫「定制询价」）
+  inquiry: '定制询价',
   lead: '线索',
   logistics_quote: '物流试算',
   logistics_rate: '运费费率',
