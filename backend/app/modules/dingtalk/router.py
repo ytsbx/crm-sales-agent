@@ -19,6 +19,8 @@ from app.core.deps import CurrentUser, client_ip, get_current_user, require_perm
 from app.core.errors import AppError, ErrorCode
 from app.core.response import ok
 from app.modules.dingtalk import service as svc
+from app.modules.oa import client as oa_client
+from app.modules.oa import inquiry as oa_inquiry
 from app.modules.dingtalk.model import OaInstance, allowed_actions
 
 router = APIRouter(tags=["DingTalk"])
@@ -124,6 +126,7 @@ async def start_inquiry_approval(
     from app.modules.inquiry import service as inquiry_service
 
     inquiry = await inquiry_service.get_visible_or_404(session, user, inquiry_id)
+    oa_inquiry.require_submittable(inquiry)
 
     # 提交前的必填项检查（2026-10-16 补，后端侧）：判据见 `missing_submit_fields`。
     # 只拦**提交**，不拦保存草稿：草稿本来就允许暂缺（同一份文档的明确要求）。
@@ -131,11 +134,20 @@ async def start_inquiry_approval(
     if missing_required:
         raise AppError(
             ErrorCode.REQUIRED_FIELD_MISSING,
-            f"提交钉钉询价前请先补齐：{'、'.join(missing_required)}。"
+            f"提交询价审批前请先补齐：{'、'.join(missing_required)}。"
             "生产部要按这两项报价，缺了报不出来；也可以先保存草稿。",
             422,
         )
 
+    if oa_client.configured() and (app_settings.oa_inquiry_template_id or app_settings.oa_inquiry_template_code):
+        row, message = await oa_inquiry.start_inquiry_approval(session, user, inquiry, payload)
+        await write_audit(
+            session, operator_id=user.id, action="update", business_type="inquiry",
+            business_id=inquiry.id, after={"oa_provider": "self_oa", "oa_status": row.status,
+                                           "instance_id": row.instance_id}, ip=client_ip(request),
+        )
+        await session.commit()
+        return ok(svc.serialize(row), message)
     cfg = await settings_service.get_setting(session, "dingtalk_oa")
     process_code = (cfg or {}).get("process_code") or ""
     if not process_code:
@@ -611,14 +623,18 @@ async def sync_oa_instance(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db),
 ):
-    """立即向钉钉查询当前单据；不发起、不撤销、不改变审批决定。"""
-    row = await session.get(OaInstance, oa_id, with_for_update=True)
+    """向当前审批系统查询单据；不发起、不撤销、不改变审批决定。"""
+    row = await session.get(OaInstance, oa_id, with_for_update=True, populate_existing=True)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, '审批记录不存在', 404)
     await ensure_oa_type_scope(session, user, row)
     if getattr(row, 'provider', 'dingtalk') == 'self_oa':
         from app.modules.oa import service as oa_service
-        await oa_service.sync_contract_row(session, row)
+        synced = row.synced_at
+        if synced is not None and synced.tzinfo is None:
+            synced = synced.replace(tzinfo=UTC)
+        if row.error or synced is None or (datetime.now(UTC) - synced).total_seconds() >= 3:
+            await oa_service.sync_self_oa_row(session, row)
         await session.commit()
         return ok(oa_service.serialize(row), '已查询 OA 最新记录')
     if app_settings.dingtalk_push_off:
@@ -660,6 +676,23 @@ async def withdraw_oa_instance(
     await ensure_oa_type_scope(session, user, row)
     if row.status != "pending" or not row.instance_id:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, f"当前审批状态为「{row.status}」，不能撤回", 422)
+    if getattr(row, "provider", "dingtalk") == "self_oa":
+        from app.modules.oa import service as oa_service
+        try:
+            await oa_service.withdraw_self_oa_row(session, row, "CRM 撤回 OA 审批")
+        except oa_service.client.OaUnknownOutcome as exc:
+            row.error = "撤回结果暂未确认，请等待同步或到 OA 核对原单，不要重复发起审批"
+            await session.commit()
+            raise AppError(ErrorCode.EXTERNAL_ERROR, row.error, 502) from exc
+        except oa_service.client.OaError as exc:
+            raise AppError(ErrorCode.EXTERNAL_ERROR, f"OA 未接受撤回：{exc.message}", 422) from exc
+        await write_audit(
+            session, operator_id=user.id, action="withdraw_oa_instance", business_type="oa_instance",
+            business_id=row.id, after={"oa_type": row.oa_type, "instance_id": row.instance_id, "status": row.status},
+            ip=client_ip(request),
+        )
+        await session.commit()
+        return ok(svc.serialize(row), "已撤回 OA 审批")
     if app_settings.dingtalk_push_off:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED, "钉钉推送已关闭，无法发送撤回请求", 422)
     account = await session.get(User, user.id)
@@ -781,7 +814,7 @@ async def inquiry_submission_options(
     """仅准备CRM提交界面，不创建审批、不上传钉钉、不触发通知。"""
     from app.modules.inquiry.service import get_visible_or_404
     inquiry = await get_visible_or_404(session, user, inquiry_id)
-    return await _submission_options(session, inquiry.oa_quote_user_id)
+    return await _submission_options(session, inquiry.oa_quote_user_id, applicant=user)
 
 
 @router.get("/inquiries/oa-submission-options")
@@ -790,10 +823,42 @@ async def new_inquiry_submission_options(
     session: AsyncSession = Depends(get_db),
 ):
     """新建表单只读模板；不创建需求、审批或附件。"""
-    return await _submission_options(session)
+    return await _submission_options(session, applicant=user)
 
 
-async def _submission_options(session, selected_quote_owner=None):
+async def _submission_options(session, selected_quote_owner=None, *, applicant=None):
+    if oa_client.configured() and (app_settings.oa_inquiry_template_id or app_settings.oa_inquiry_template_code):
+        from app.modules.user.model import User
+        account = await session.get(User, applicant.id) if applicant is not None else None
+        prefill = {"applicant_name": getattr(account, "name", "") or "",
+                   "department": await oa_inquiry._department_name(session, account)
+                   if getattr(account, "department_id", None) else ""}
+        form_fields = oa_inquiry.oa_template_fields()
+        if getattr(account, 'dingtalk_userid', None):
+            try:
+                templates = await oa_client.list_templates(account.dingtalk_userid)
+            except (oa_client.OaError, oa_client.OaNotConfigured, oa_client.OaUnknownOutcome) as exc:
+                raise AppError(ErrorCode.EXTERNAL_ERROR, '无法读取同序报价人员，请检查同序服务后重试；仍可保存草稿', 502) from exc
+            matches = [t for t in templates if (t['id'] == app_settings.oa_inquiry_template_id
+                       if app_settings.oa_inquiry_template_id else t['code'] == app_settings.oa_inquiry_template_code)]
+            people = max(matches, key=lambda t: t['version']).get('people', []) if matches else []
+            names = list(dict.fromkeys(p['name'] for p in people))
+            if names:
+                for field in form_fields:
+                    if field['id'] == 'quote_owner':
+                        field.update(type='DDSelectField', options=names)
+        return ok({
+            "prefill": prefill,
+            "configured": True,
+            "enabled": True,
+            "provider": "self_oa",
+            "quote_owner_required": False,
+            "quote_owners": [],
+            "selected_quote_owner": None,
+            "image_required": True,
+            "file_business_type": "inquiry",
+            "fields": form_fields,
+        })
     from app.modules.settings.service import get_setting
     cfg = await get_setting(session, "dingtalk_oa") or {}
     owners = [{"user_id": str(item["user_id"]), "name": str(item.get("name") or "报价员")}

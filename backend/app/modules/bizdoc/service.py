@@ -1132,7 +1132,7 @@ async def ensure_quote_doc_cost_complete(session: AsyncSession, doc) -> None:
     if version_id is None:
         raise AppError(ErrorCode.STATUS_NOT_ALLOWED,
                        "历史报价成本完整性无法确认，不能对客导出；请新建报价版本核对成本", 422)
-    await ensure_items_cost_complete(session, version_id=version_id)
+    await ensure_items_cost_complete(session, version_id=version_id, check_inquiry_approval=getattr(doc, "status", None) != "draft")
 
 
 async def ensure_quote_file_cost_complete(session: AsyncSession, file_id: int) -> None:
@@ -1187,10 +1187,15 @@ async def generate_quote_doc(
     await ensure_in_scope(
         session, user, owner_id=built.get("owner_id"), label="报价单"
     )
-    await quote_service.ensure_items_cost_complete(session, version_id=quote_version_id)
+    await quote_service.ensure_items_cost_complete(session, version_id=quote_version_id, check_inquiry_approval=False)
     template = await current_template(session, "quote_sheet", template_id)
 
     reasons: list[str] = []
+    from app.modules.oa.business_gates import require_inquiry_items_approved
+    try:
+        await require_inquiry_items_approved(session, await quote_service.version_items(session, quote_version_id))
+    except AppError as exc:
+        reasons.append(str(exc))
     if version_row.approval_status != "approved":
         reasons.append(
             "报价未通过审批（当前状态："

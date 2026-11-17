@@ -1,6 +1,7 @@
 """审计日志查询（对齐 03-API §33）。"""
 
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -21,6 +22,7 @@ router = APIRouter(tags=["Audit"])
 async def list_audit_logs(
     business_type: str | None = None,
     action: str | None = None,
+    exclude_actions: Annotated[str | None, Query(max_length=1000, description="排除的动作，多个值用英文逗号分隔，例如 login,logout,refresh")] = None,
     operator_id: int | None = None,
     keyword: str | None = None,
     start: datetime | None = None,
@@ -35,6 +37,10 @@ async def list_audit_logs(
         stmt = stmt.where(AuditLog.business_type == business_type)
     if action:
         stmt = stmt.where(AuditLog.action == action)
+    if exclude_actions:
+        excluded = {value.strip() for value in exclude_actions.split(",") if value.strip()}
+        if excluded:
+            stmt = stmt.where(AuditLog.action.not_in(excluded))
     if operator_id:
         stmt = stmt.where(AuditLog.operator_id == operator_id)
     if start:

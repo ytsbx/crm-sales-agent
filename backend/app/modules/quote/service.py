@@ -2040,8 +2040,11 @@ def item_cost_problems(items: list[QuoteItem]) -> list[dict]:
     return problems
 
 
-async def ensure_items_cost_complete(session: AsyncSession, *, version_id: int) -> None:
+async def ensure_items_cost_complete(session: AsyncSession, *, version_id: int, check_inquiry_approval: bool = True) -> None:
     items = await version_items(session, version_id)
+    from app.modules.oa.business_gates import require_inquiry_items_approved
+    if check_inquiry_approval:
+        await require_inquiry_items_approved(session, items)
     problems = item_cost_problems(items)
     if not items:
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "报价没有明细，不能正式报价", 422)

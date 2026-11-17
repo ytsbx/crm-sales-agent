@@ -39,6 +39,12 @@ class OaUnknownOutcome(OaError):
         super().__init__(message, code="oa_unknown_outcome", status=502)
 
 
+def approval_external_ref(kind: str, business_id: int, round_no: int) -> str:
+    reference = f"crm-{kind}:{business_id}:{round_no}"
+    namespace = settings.oa_external_ref_namespace
+    return f"{namespace}:{reference}" if namespace else reference
+
+
 def configured() -> bool:
     return bool(settings.oa_base_url and settings.oa_integration_secret)
 

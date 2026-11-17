@@ -901,7 +901,8 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
         await session.execute(
             select(OaInstance)
             .where(OaInstance.id == oa_id if oa_id is not None else pending,
-                   OaInstance.instance_id.is_not(None))
+                   OaInstance.instance_id.is_not(None),
+                   OaInstance.provider == "self_oa" if app_settings.dingtalk_push_off else True)
             .order_by(OaInstance.updated_at.asc().nullsfirst(), OaInstance.id.asc())
             .limit(1 if oa_id is not None else limit)
             .with_for_update(skip_locked=True)
@@ -923,7 +924,7 @@ async def sync_pending_instances(session: AsyncSession, *, limit: int = 50, oa_i
             from app.modules.oa import service as oa_service
 
             try:
-                await oa_service.sync_contract_row(session, row)
+                await oa_service.sync_self_oa_row(session, row)
                 changed += 1
             except (oa_client.OaError, oa_client.OaUnknownOutcome) as exc:
                 # 单条失败不影响其它单；下一轮继续。

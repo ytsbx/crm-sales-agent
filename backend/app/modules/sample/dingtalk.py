@@ -20,6 +20,8 @@ from app.core.response import ok
 from app.modules.dingtalk import service as oa
 from app.modules.dingtalk.client import get_client, DingTalkError
 from app.modules.dingtalk.model import OaInstance
+from app.modules.oa import client as oa_client
+from app.modules.oa import sample as oa_sample
 from app.modules.sample import service
 from app.modules.sample.model import SampleItem
 
@@ -64,15 +66,18 @@ def _is_image(filename:str,mime:str)->bool:
 
 def ensure_local_review(sample):
     if metadata(sample):
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'此单使用钉钉流程，请在钉钉处理审批，CRM只同步查看',409)
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'此单使用外部审批流程，请在对应审批系统处理，CRM只同步查看',409)
 
 
 def ensure_editable(sample):
     if metadata(sample).get('submitted'):
-        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'这张打样申请已经关联或提交钉钉，不能在CRM修改、删除或重批；请先在钉钉处理原单',409)
+        raise AppError(ErrorCode.STATUS_NOT_ALLOWED,'这张打样申请已经关联或提交审批，不能在CRM修改、删除或重批；请先在对应审批系统处理原单',409)
 
 
 async def template(session, *, for_display=False):
+    # 自研 OA 已配置时，CRM 动态表单直接返回 OA 字段；下面 submit 走 OA 分支。
+    if oa_client.configured() and (settings.oa_sample_template_id or settings.oa_sample_template_code):
+        return {'configured': True, 'enabled': True, 'provider': 'self_oa', 'fields': oa_sample.oa_template_fields()}, None
     from app.modules.settings.service import get_setting
     cfg = await get_setting(session, CONFIG_KEY) or {}
     code = cfg.get('process_code')
@@ -198,6 +203,14 @@ async def detail(sample_id:int,user:CurrentUser=Depends(require_permission('samp
     _due_field = next((f for f in (options.get('fields') or []) if f.get('label') == '要求完成日期'), None)
     if _due_field is not None and sample.target_completion_date:
         _prefill[_due_field['id']] = sample.target_completion_date.isoformat()
+    if options.get('provider') == 'self_oa':
+        from app.modules.user.model import User
+        from app.modules.oa.inquiry import _department_name
+        account = await session.get(User, user.id)
+        options['prefill'] = {
+            'applicant_name': getattr(account, 'name', '') or '',
+            'department': await _department_name(session, account) if getattr(account, 'department_id', None) else '',
+        }
     return ok({**options,'item_count':item_count,'draft':{**meta,'fields':{**_prefill,**(meta.get('fields') or {})}},'candidates':await inquiry_candidates(session,user,sample),'records':records})
 
 
@@ -296,7 +309,7 @@ async def save_draft(sample_id:int,payload:Draft,request:Request,user:CurrentUse
     await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
                       after={'dingtalk_draft':metadata(sample)},ip=client_ip(request))
     await session.commit()
-    return ok(None,'草稿已保存，未发起钉钉审批')
+    return ok(None,'草稿已保存，未发起审批')
 
 
 @router.post('/samples/{sample_id}/dingtalk-submit')
@@ -347,6 +360,12 @@ async def submit(sample_id:int,payload:Draft,request:Request,user:CurrentUser=De
                          after={'linked_inquiry_oa':payload.source_oa_id},ip=client_ip(request))
         await session.commit()
         return ok(None,'已关联原询价审批；打样步骤请在原钉钉单继续处理，本次没有新发审批')
+    if oa_client.configured() and (settings.oa_sample_template_id or settings.oa_sample_template_code):
+        row,message=await oa_sample.start_sample_approval(session,user,sample,payload.fields)
+        await write_audit(session,operator_id=user.id,action='update',business_type='sample',business_id=sample.id,
+                         after={'oa_provider':'self_oa','oa_status':row.status,'instance_id':row.instance_id},ip=client_ip(request))
+        await session.commit()
+        return ok(oa.serialize(row),message)
     if not options['configured'] or not options['enabled']:
         raise AppError(ErrorCode.PARAM_ERROR,'独立打样模板未配置或钉钉推送未开启，请先保存草稿',422)
     fields={f['label']:f for f in options['fields']}

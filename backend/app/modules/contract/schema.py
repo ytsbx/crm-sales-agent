@@ -1,7 +1,7 @@
 """合同模板与文档接口的请求体。"""
 
 from datetime import date
-from typing import Literal
+from typing import Literal, Any
 
 from pydantic import BaseModel, Field, field_validator
 from app.core.patch_schema import CreateModel
@@ -64,6 +64,8 @@ class ContractOaStart(BaseModel):
 
     2026-11-13 用户明确：主体信息改成**由人填**，不再由系统按客户/公司抬头自动写。
     """
+
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
 
     our_company: str = Field(min_length=1, max_length=200)
     counterparty_name: str = Field(min_length=1, max_length=200)

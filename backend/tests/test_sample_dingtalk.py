@@ -242,3 +242,22 @@ def test_removing_a_field_counts_as_an_edit():
     from app.modules.sample.dingtalk import snapshot_edit_detail
 
     assert snapshot_edit_detail({'A': 'x'}, {'A': ''}) != ''
+
+
+@pytest.mark.anyio
+async def test_oa_config_branches_before_dingtalk(setup, monkeypatch):
+    sample, session, user, client, create = setup
+    monkeypatch.setattr(routes.oa_client, "configured", lambda: True)
+    monkeypatch.setattr(routes.settings, "oa_sample_template_id", "tpl-oa")
+    row = Obj(status="pending", instance_id="oa-sample-1")
+    start = AsyncMock(return_value=(row, "已发起 OA 打样审批"))
+    monkeypatch.setattr(routes.oa_sample, "start_sample_approval", start)
+    result = await routes.submit(
+        7,
+        routes.Draft(mode="standalone", fields={"sample_type": "销售客户打样"}),
+        request(), user, session,
+    )
+    assert result["data"]["status"] == "pending"
+    start.assert_awaited_once()
+    create.assert_not_awaited()
+    assert sample.status == "pending"

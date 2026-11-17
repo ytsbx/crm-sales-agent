@@ -122,3 +122,44 @@ async def test_display_template_cached_but_submission_schema_not_cached(monkeypa
     assert read.await_count==1
     await client.get_process_schema('PROC')
     assert read.await_count==2
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('age,error,calls', [(None,None,1),(1,None,0),(4,None,1),(1,'temporary',1)])
+async def test_self_oa_polling_coalesces_recent_queries_after_permission_check(monkeypatch, age, error, calls):
+    from app.modules.oa import service as own
+    row = Obj(id=7, provider='self_oa', synced_at=None if age is None else datetime.now(UTC)-timedelta(seconds=age), error=error)
+    session = Obj(get=AsyncMock(return_value=row), commit=AsyncMock())
+    scope = AsyncMock()
+    monkeypatch.setattr(router, 'ensure_oa_type_scope', scope)
+    sync = AsyncMock()
+    monkeypatch.setattr(own, 'sync_self_oa_row', sync)
+    monkeypatch.setattr(own, 'serialize', lambda row: {'id':row.id})
+    await router.sync_oa_instance(7,Obj(),session)
+    assert sync.await_count == calls
+    scope.assert_awaited_once()
+    session.get.assert_awaited_once_with(OaInstance,7,with_for_update=True,populate_existing=True)
+
+
+@pytest.mark.anyio
+async def test_disabled_legacy_rows_cannot_starve_live_oa_polling(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from tests.conftest import SyncSessionAsAsync, _register_sqlite_bigint_as_integer
+    from app.modules.oa import client as own_client, service as own
+    _register_sqlite_bigint_as_integer()
+    engine=create_engine('sqlite://')
+    OaInstance.__table__.create(engine)
+    monkeypatch.setattr(settings,'dingtalk_push_off',True)
+    monkeypatch.setattr(own_client,'configured',lambda:True)
+    sync=AsyncMock()
+    monkeypatch.setattr(own,'sync_self_oa_row',sync)
+    with Session(engine) as raw:
+        for identity,provider in [(1,'dingtalk'),(2,'self_oa')]:
+            raw.add(OaInstance(id=identity,inquiry_id=identity,inquiry_version=1,provider=provider,
+                oa_type='inquiry',instance_id=str(identity),status='pending',idempotency_key=str(identity),created_at=datetime.now(UTC)))
+        raw.commit()
+        result=await service.sync_pending_instances(SyncSessionAsAsync(raw),limit=1)
+        assert result['checked']==1
+        assert sync.await_args.args[1].id==2
+    engine.dispose()

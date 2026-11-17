@@ -822,7 +822,9 @@ async def ship_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """寄样：登记承运商与快递单号（PRD §19 的「寄样 / 快递单号」）。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     svc.ensure_transition(sample.status, "shipped")
 
     # 日期口径与校验（审查 C3-04）：北京日历日 → UTC 瞬时；不能晚于今天
@@ -881,7 +883,9 @@ async def sign_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """签收确认（PRD §19 的「签收」）。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     svc.ensure_transition(sample.status, "signed")
 
     # 签收不能早于寄出（审查 C3-04）；只比前后顺序，保留历史补录能力
@@ -929,7 +933,9 @@ async def feedback_sample(
     session: AsyncSession = Depends(get_db),
 ):
     """登记客户反馈（PRD §19 的「反馈」）。"""
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     if not payload.feedback.strip():
         raise AppError(ErrorCode.REQUIRED_FIELD_MISSING, "反馈内容不能为空")
 
@@ -976,7 +982,9 @@ async def register_sample_made(
     """
     from datetime import UTC, datetime
 
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     if sample.status in ("pending", "rejected"):
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED, "还没批准的打样申请不能登记制作完成", 422
@@ -1166,7 +1174,9 @@ async def confirm_sample(
 
     from app.modules.sample.model import CONFIRM_ACCEPTED, CONFIRM_REJECTED
 
-    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True)
+    sample = await svc.get_visible_or_404(session, user, sample_id, for_update=True, allow_external_flow=True)
+    from app.modules.oa.business_gates import require_sample_approved
+    await require_sample_approved(session, sample)
     if sample.signed_at is None:
         raise AppError(
             ErrorCode.STATUS_NOT_ALLOWED,

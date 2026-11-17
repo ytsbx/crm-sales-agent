@@ -109,6 +109,7 @@ def serialize(
     *,
     customer_name: str | None = None,
     creator_name: str | None = None,
+    linked_quotes: list | None = None,
 ) -> dict:
     return {
         "id": inquiry.id,
@@ -137,6 +138,7 @@ def serialize(
         # 若这里不回 `extra`，V2 的回链就彻底看不出来了——而"这条需求是从哪条
         # 洞察转来的"正是内部开发需求唯一的价值锚点。`extra` 会随修订复制。
         "extra": inquiry.extra,
+        "linked_quotes": linked_quotes or [],
         # 修订链（§3.3）：第几版、本版改了什么、链条首版、投产后关联的 SKU
         "version": inquiry.version or 1,
         "root_id": inquiry.root_id,
@@ -244,6 +246,10 @@ async def create_quote_from_inquiry(
     root = (await session.execute(select(CustomInquiry).where(CustomInquiry.id == root_id)
             .with_for_update().execution_options(populate_existing=True))).scalar_one()
     await session.refresh(inquiry)
+    links = (await linked_quotes_for(session, [inquiry.id])).get(inquiry.id, [])
+    if links:
+        raise AppError(ErrorCode.DUPLICATE_CONVERT,
+            f"这条需求已关联报价 {links[0]['quote_no']}，请打开原报价调整或新增报价版本，不要重复生成", 409)
     chain = (await session.execute(not_deleted(select(CustomInquiry)).where(
         (CustomInquiry.id == root_id) | (CustomInquiry.root_id == root_id)
     ).execution_options(populate_existing=True))).scalars().all()
@@ -322,3 +328,16 @@ async def create_quote_from_inquiry(
 
     await customer_service.touch_progress(session, customer.id)
     return {"quote": quote, "version": version, "item": item, "opportunity": opportunity}
+
+
+async def linked_quotes_for(session, identities):
+    from app.modules.quote.model import Quote, QuoteVersion, QuoteItem
+    rows = (await session.execute(select(QuoteItem.inquiry_id, Quote.id, Quote.quote_no)
+        .join(QuoteVersion, QuoteVersion.id == QuoteItem.quote_version_id)
+        .join(Quote, Quote.id == QuoteVersion.quote_id)
+        .where(QuoteItem.inquiry_id.in_(identities), Quote.deleted_at.is_(None))
+        .distinct().order_by(Quote.id.desc()))).all()
+    result = {}
+    for inquiry_id, quote_id, quote_no in rows:
+        result.setdefault(inquiry_id, []).append({'id':quote_id, 'quote_no':quote_no})
+    return result

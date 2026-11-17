@@ -6,7 +6,7 @@
 from functools import lru_cache
 from secrets import token_urlsafe
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -112,12 +112,22 @@ class Settings(BaseSettings):
     # 自研 OA 服务端对接（CRM → OA）。密钥只放环境变量，不进数据库。
     oa_base_url: str = "http://127.0.0.1:8781"
     oa_integration_secret: str = ""
+    # Separate local database copies must not reuse approvals from another data set.
+    oa_external_ref_namespace: str = Field(default="", pattern=r"^[A-Za-z0-9_-]{0,48}$")
     #: 合同审批模板（OA 里发布后的模板 UUID 或 code；两者填一个）
     oa_contract_template_id: str = ""
     oa_contract_template_code: str = ""
-    #: 合同审批固定审批人的钉钉 userid（历史规则：田小秘固定批）。
+    #: 合同审批固定审批人的钉钉 userid（可选；默认使用 OA 直属主管流程）。
     #: 为空则沿用 OA 模板自己的首节点配置。
     oa_contract_approver_dingtalk_id: str = ""
+    oa_sample_template_id: str = ""
+    oa_sample_template_code: str = ""
+    oa_sample_approver_dingtalk_ids: str = ""
+    oa_sample_approver_mode: str = "all"
+    oa_inquiry_template_id: str = ""
+    oa_inquiry_template_code: str = ""
+    oa_inquiry_approver_dingtalk_id: str = ""
+    oa_inquiry_approver_mode: str = "sequential"
     # OA 审批状态轮询：每多少分钟拉一次（文档 §11.3 :152 的"回收状态与结果"）。
     # Stream 事件优先触发对应单据查询；周期轮询用于断线和漏事件时补收。
     scheduler_oa_sync_minutes: int = 3

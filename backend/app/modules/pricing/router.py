@@ -1,7 +1,7 @@
 """价格中心与核价接口（对齐 03-API §16 ~ §19）。"""
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import BigInteger, Text, cast, func, or_, select, update
@@ -12,6 +12,7 @@ from app.core.database import get_db
 from app.core.deps import CurrentUser, client_ip, require_permission
 from app.core.errors import AppError, ErrorCode
 from app.core.importing import RowErrors
+from app.core.money import line_amount
 from app.core.response import ok, page_data, paginate
 from app.core.trade_mode import ensure_currency_allowed
 from app.modules.customer.model import Customer
@@ -1468,7 +1469,7 @@ async def simulate_pricing(
         session, user, customer_id=payload.base.customer_id, requested_level=payload.base.customer_level
     )
     base = payload.base
-    quantize = Decimal("0.01")
+    quantize = Decimal("0.0001")
 
     common = dict(
         sku_id=base.sku_id,
@@ -1508,7 +1509,11 @@ async def simulate_pricing(
             if margin is None or margin <= 0 or margin >= 1:
                 continue
             # 价 = 成本 / (1 - 利润率)
-            candidates.append((cost / (Decimal(1) - Decimal(str(margin)))).quantize(quantize))
+            candidates.append(
+                (cost / (Decimal(1) - Decimal(str(margin)))).quantize(
+                    quantize, rounding=ROUND_HALF_UP
+                )
+            )
     if blocked_margin_simulation:
         # 明确回"算不了 + 为什么"，而不是给一个空列表让人猜（主人反复提过的口径：
         # 点不了 / 出不来结果都必须说明原因）。
@@ -1525,7 +1530,7 @@ async def simulate_pricing(
         ):
             value = Decimal(str(anchor)) if anchor is not None else None
             if value is not None and value > 0:
-                candidates.append(value.quantize(quantize))
+                candidates.append(value.quantize(quantize, rounding=ROUND_HALF_UP))
 
     # 去重并保序，避免同一档位算两遍
     seen: set[str] = set()
@@ -1539,6 +1544,8 @@ async def simulate_pricing(
     rows = []
     for price in unique:
         result = await svc.calculate_price(session, quoted_price=price, **common)
+        # 与正式报价逐行到分同源，不从浮点响应反算金额。
+        amount = line_amount(base.quantity, price)
         triggers = result["approval_triggers"]
         reasons = []
         if triggers["below_protection_price"]:
@@ -1552,13 +1559,11 @@ async def simulate_pricing(
         rows.append(
             {
                 "quoted_price": result["quoted_price"],
+                "quoted_price_exact": str(price),
                 "profit": result["profit"],
                 "profit_rate": result["profit_rate"],
-                "amount": (
-                    float(Decimal(str(result["quoted_price"])) * Decimal(str(base.quantity)))
-                    if result["quoted_price"] is not None
-                    else None
-                ),
+                "amount": float(amount),
+                "amount_exact": str(amount),
                 "approval_required": result["approval_required"],
                 "reasons": reasons,
             }

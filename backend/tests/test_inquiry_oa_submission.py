@@ -204,3 +204,31 @@ async def test_material_control_preserves_original_without_duplicate_summary(set
     text=create.await_args.kwargs['field_map']['TextareaField_material']
     assert text == inquiry.description
     assert create.await_args.kwargs['field_map']['TextareaField_extra'] == '不可折叠'
+
+
+@pytest.mark.anyio
+async def test_oa_config_switches_options_and_start(setup, monkeypatch):
+    inquiry, cfg, session, user, client, create = setup
+    monkeypatch.setattr(routes.app_settings, "oa_inquiry_template_id", "tpl-oa")
+    monkeypatch.setattr(routes.oa_client, "configured", lambda: True)
+    monkeypatch.setattr(routes.oa_client, "list_templates", AsyncMock(return_value=[{
+        "id":"tpl-oa", "code":"inquiry", "version":1,
+        "people":[{"id":"person-1", "name":"报价同事"}]}]))
+    options = await routes.inquiry_submission_options(7, user=user, session=session)
+    data = options["data"]
+    assert data["provider"] == "self_oa"
+    assert data["quote_owner_required"] is False
+    owner_field = next(f for f in data['fields'] if f['id'] == 'quote_owner')
+    assert owner_field['type'] == 'DDSelectField'
+    assert owner_field['options'] == ['报价同事']
+    assert {"quote_scope", "quote_owner", "product_reference"} <= {f["id"] for f in data["fields"]}
+
+    row = Obj(id=1, status="pending", instance_id="oa-1")
+    start = AsyncMock(return_value=(row, "已发起 OA 定制询价审批"))
+    monkeypatch.setattr(routes.oa_inquiry, "start_inquiry_approval", start)
+    result = await routes.start_inquiry_approval(
+        7, routes.StartApproval(extra_fields={"quote_scope": "全系列"}), request(), user, session,
+    )
+    assert result["data"]["status"] == "pending"
+    start.assert_awaited_once()
+    create.assert_not_awaited()

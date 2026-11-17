@@ -174,6 +174,18 @@ def make_engine():
     return engine
 
 
+@pytest.fixture(autouse=True)
+def _disable_self_oa_business_templates(monkeypatch):
+    """本地 `.env` 配了 OA 时，不让打样/询价测试误走自研 OA。
+
+    自研 OA 的合同/打样/询价都有独立模板开关；合同测试自己会打开，
+    这里只清掉打样/询价，保证既有钉钉用例按原路径回归。
+    """
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "oa_sample_template_id", "")
+    monkeypatch.setattr(settings, "oa_inquiry_template_id", "")
+
+
 @pytest.fixture()
 def db_session():
     """一个全新的内存库 + 替身会话（同步用，用例里直接 `db_session.add(...)`）。"""

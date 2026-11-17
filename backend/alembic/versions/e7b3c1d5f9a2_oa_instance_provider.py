@@ -4,7 +4,6 @@
 老钉钉行只读保留（provider=dingtalk），新合同行 provider=self_oa。
 """
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "e7b3c1d5f9a2"
@@ -14,16 +13,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "oa_instances",
-        sa.Column(
-            "provider",
-            sa.String(length=16),
-            nullable=False,
-            server_default=sa.text("'dingtalk'"),
-        ),
+    # 本地曾手工补列但未推进迁移版本，正式升级仍需补齐索引。
+    op.execute(
+        "ALTER TABLE oa_instances ADD COLUMN IF NOT EXISTS "
+        "provider VARCHAR(16) NOT NULL DEFAULT 'dingtalk'"
     )
-    op.create_index("ix_oa_instances_provider", "oa_instances", ["provider"])
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_oa_instances_provider "
+        "ON oa_instances (provider)"
+    )
 
 
 def downgrade() -> None:

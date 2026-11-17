@@ -118,6 +118,7 @@ async def _build_payload(
     *,
     our_company: str,
     counterparty_name: str,
+    extra_fields: dict | None = None,
 ) -> dict:
     template_id, template_code = _template_config()
     customer = await session.get(Customer, doc.customer_id)
@@ -153,7 +154,10 @@ async def _build_payload(
             doc.content_snapshot,
         ] if item
     )
+    from app.modules.oa.inquiry import _department_name
     fields: dict = {
+        "applicant_name": user.name,
+        "department": await _department_name(session, user),
         "contract_name": doc.title,
         # 合同编号：手动模式用经办人填的（没填用 CRM 编号）；规则模式由 OA 按规则生成，不回传编号
         "contract_number": ((doc.filled_data or {}).get("_contract_number") or doc.doc_no)
@@ -190,6 +194,9 @@ async def _build_payload(
         "fields": fields,
         "attachment_ids": [attachment_id],
     }
+    if extra_fields:
+        from app.modules.oa.contract_form import apply_extra_fields
+        await apply_extra_fields(session, user, doc, payload, extra_fields)
     if template_id:
         payload["template_id"] = template_id
     else:
@@ -206,6 +213,7 @@ async def start_contract_approval(
     *,
     our_company: str,
     counterparty_name: str,
+    extra_fields: dict | None = None,
 ) -> tuple[OaInstance, str]:
     """发起合同 OA 审批，返回 (行, 给用户看的结果说明)。"""
     from app.modules.user.model import User
@@ -239,7 +247,7 @@ async def start_contract_approval(
         external_ref = row.idempotency_key
     else:
         round_no = (latest.submit_round + 1) if latest is not None else 1
-        external_ref = f"crm-contract:{doc.id}:{round_no}"
+        external_ref = client.approval_external_ref("contract", doc.id, round_no)
         row = OaInstance(
             customer_id=doc.customer_id,
             inquiry_id=doc.id,
@@ -263,6 +271,7 @@ async def start_contract_approval(
         payload = await _build_payload(
             session, doc, user, external_ref,
             our_company=our_company, counterparty_name=counterparty_name,
+            extra_fields=extra_fields,
         )
         row.form_snapshot = payload.get("fields")
         summary = await client.create_approval(payload)
@@ -294,6 +303,7 @@ async def start_contract_approval(
     row.updated_at = row.synced_at
     doc.filled_data = {
         **(doc.filled_data or {}),
+        "_oa_fields": {**(doc.filled_data or {}).get("_oa_fields", {}), **(extra_fields or {})},
         "_dingtalk_oa": {
             "provider": PROVIDER,
             "oa_instance_id": row.id,
@@ -365,3 +375,24 @@ async def withdraw_contract_row(session: AsyncSession, row: OaInstance, note: st
 async def contract_approval_approved(session: AsyncSession, doc_id: int) -> bool:
     row = await latest_contract_row(session, doc_id)
     return row is not None and row.status == "approved"
+
+
+async def sync_self_oa_row(session: AsyncSession, row: OaInstance) -> OaInstance:
+    """按业务类型分发自研 OA 同步（合同/打样/询价）。"""
+    if row.oa_type == "sample":
+        from app.modules.oa import sample as sample_service
+        return await sample_service.sync_sample_row(session, row)
+    if row.oa_type == "inquiry":
+        from app.modules.oa import inquiry as inquiry_service
+        return await inquiry_service.sync_inquiry_row(session, row)
+    return await sync_contract_row(session, row)
+
+
+async def withdraw_self_oa_row(session: AsyncSession, row: OaInstance, note: str) -> OaInstance:
+    if row.oa_type == "sample":
+        from app.modules.oa import sample as sample_service
+        return await sample_service.withdraw_sample_row(session, row, note)
+    if row.oa_type == "inquiry":
+        from app.modules.oa import inquiry as inquiry_service
+        return await inquiry_service.withdraw_inquiry_row(session, row, note)
+    return await withdraw_contract_row(session, row, note)

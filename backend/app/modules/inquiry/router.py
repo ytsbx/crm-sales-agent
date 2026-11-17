@@ -36,10 +36,12 @@ async def _ctx_names(session: AsyncSession, rows: list[CustomInquiry]) -> dict[i
     if creator_ids:
         rows_ = await session.execute(select(User.id, User.name).where(User.id.in_(creator_ids)))
         creator_names = {uid: name for uid, name in rows_.all()}
+    quote_links = await svc.linked_quotes_for(session, [r.id for r in rows]) if rows else {}
     return {
         r.id: {
             "customer_name": customer_names.get(r.customer_id),
             "creator_name": creator_names.get(r.created_by),
+            "linked_quotes": quote_links.get(r.id, []),
         }
         for r in rows
     }
@@ -185,6 +187,9 @@ async def create_quote_from_inquiry(
         {
             "quote_id": quote.id,
             "quote_no": quote.quote_no,
+            "quote_status": quote.status,
+            "is_draft": quote.status == "draft",
+            "notice": "内部报价草稿已生成，原需求保留供追溯；正式对外报价前须完成同序核价/报价复核",
             "version_id": version.id,
             "opportunity_id": created["opportunity"].id,
             "inquiry_no": inquiry.inquiry_no,

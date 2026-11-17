@@ -112,6 +112,7 @@ async def start_oa_contract_approval(
         session, user, doc,
         our_company=payload.our_company,
         counterparty_name=payload.counterparty_name,
+        extra_fields=payload.extra_fields,
     )
     await write_audit(
         session,
@@ -1000,3 +1001,13 @@ async def _ensure_doc_in_scope(session: AsyncSession, user, doc) -> None:
 
     owner_id = await contract_scope_owner_id(session, doc)
     await ensure_in_scope(session, user, owner_id=owner_id, label="合同文档")
+
+
+@router.get("/contract-documents/{doc_id}/oa-form")
+async def contract_oa_form(doc_id: int,
+    user: CurrentUser = Depends(require_permission("order:manage")),
+    session: AsyncSession = Depends(get_db)):
+    from app.modules.oa.contract_form import submission_form
+    doc = await svc.get_doc_or_404(session, doc_id)
+    await _ensure_doc_in_scope(session, user, doc)
+    return ok(await submission_form(session, user, doc))

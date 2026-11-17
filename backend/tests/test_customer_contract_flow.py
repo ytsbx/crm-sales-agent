@@ -204,6 +204,8 @@ async def test_pending_or_rejected_approval_cannot_archive(sql_session,monkeypat
         with pytest.raises(AppError):await service.sign_document(sql_session,doc,file_id=99,note=None)
         assert doc.status=='draft'
     monkeypatch.setattr(flow.oa,'get_by_business_key',AsyncMock(return_value=Obj(status='approved')))
+    from app.modules.oa import service as self_oa
+    monkeypatch.setattr(self_oa, 'latest_contract_row', AsyncMock(return_value=Obj(status='approved')))
     with pytest.raises(AppError):await service.sign_document(sql_session,doc,file_id=88,note=None)
 
 
@@ -215,6 +217,8 @@ async def test_approved_contract_archive_completes_real_return_task(sql_session,
     from app.modules.task.model import Task
     monkeypatch.setattr(service,'_ensure_signable_source',AsyncMock())
     monkeypatch.setattr(flow.oa,'get_by_business_key',AsyncMock(return_value=Obj(status='approved')))
+    from app.modules.oa import service as self_oa
+    monkeypatch.setattr(self_oa, 'latest_contract_row', AsyncMock(return_value=Obj(status='approved')))
     doc=ContractDocument(id=31,doc_no='CT-031',doc_type='contract',title='原稿',customer_id=9,content_snapshot='',filled_data={'_original_file_id':88},status='draft',created_at=datetime.now(UTC))
     path=tmp_path/'signed.pdf';path.write_bytes(b'%PDF-signed')
     monkeypatch.setattr(flow,'absolute_path',lambda _:path)

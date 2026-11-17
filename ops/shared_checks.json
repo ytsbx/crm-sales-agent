@@ -67,7 +67,8 @@
         {"name": "dictionary_toggle_confirmation.test.mjs", "args": ["--test", "{root}/ops/dictionary_toggle_confirmation.test.mjs"], "local_order": 10, "ci_order": 8},
         {"name": "sku_stop_cancel.test.mjs", "args": ["--test", "{root}/ops/sku_stop_cancel.test.mjs"], "local_order": 11, "ci_order": 9},
         {"name": "sku_label.test.mjs", "args": ["--test", "{root}/ops/sku_label.test.mjs"], "local_order": 12, "ci_order": 10},
-        {"name": "recycle_decision_confirmation.test.mjs", "args": ["--test", "{root}/ops/recycle_decision_confirmation.test.mjs"], "local_order": 13, "ci_order": 11}
+        {"name": "recycle_decision_confirmation.test.mjs", "args": ["--test", "{root}/ops/recycle_decision_confirmation.test.mjs"], "local_order": 13, "ci_order": 11},
+        {"name": "what_if_precision.test.mjs", "args": ["--test", "{root}/ops/what_if_precision.test.mjs"], "local_order": 14, "ci_order": 14}
       ]
     }
   }
