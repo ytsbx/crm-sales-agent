@@ -6,7 +6,7 @@ import { customerLevelLabel } from '../../shared/customer-level'
 import { useState, type CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Table, Tabs, Tag } from '@douyinfe/semi-ui'
+import { Table, Tabs, Tag, Typography } from '@douyinfe/semi-ui'
 
 import {
   createDepartment,
@@ -1401,12 +1401,18 @@ export default function SettingsPage() {
               {isAdmin && (
               <div className="rule-block">
                 <div className="rule-block-title">公海回收规则</div>
-                <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
+                {/* 说明收成两行 + 「展开」：这四句话合起来二十多行灰字，把下面那张表
+                    压到屏幕外去了。默认两行够看明白"这规则干嘛的"，要抠细节再展开
+                    （2026-11-17）。 */}
+                <Typography.Paragraph
+                  ellipsis={{ rows: 2, expandable: true }}
+                  style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
+                >
                   客户超过设定天数没有跟进记录，就会被提名成回收候选。
                   回收不会自动发生 —— 要先预告、再由主管逐条或批量批准；
                   批准时还会再检查一遍这期间有没有新的跟进、报价、订单或回款。
                   客户手上还有在途订单、未结应收、有效正式报价或在途打样时会被保护。
-                </div>
+                </Typography.Paragraph>
                 <Table<PublicPoolRuleRow>
                   columns={[
                     { title: '客户等级', dataIndex: 'level', width: 110, render: (v: string) => customerLevelLabel(v) },
@@ -1466,13 +1472,16 @@ export default function SettingsPage() {
               {isAdmin && (
                 <div className="rule-block">
                   <div className="rule-block-title">回收节奏与恢复权限</div>
-                  <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
+                  <Typography.Paragraph
+                    ellipsis={{ rows: 2, expandable: true }}
+                    style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
+                  >
                     <b>预告期与暂缓期现在跑的是开发默认值（7 天 / 30 天），还没经过业务确认</b>
                     —— 口径定了在这里改。改完<b>立刻生效</b>：已经提名、还没结案的候选
                     （待复核 / 已暂缓）会按新天数<b>一起重算到期时间</b>，不会新旧两套天数
                     并存；已回收 / 已驳回 / 已作废的不动。三项的改动都会记进审计
                     （含修改前后值、以及同步重算了几条候选）。
-                  </div>
+                  </Typography.Paragraph>
                   <div
                     style={{
                       display: 'grid',
@@ -1565,12 +1574,15 @@ export default function SettingsPage() {
 
               <div className="rule-block">
                 <div className="rule-block-title">回收复核</div>
-                <div style={{ color: 'var(--crm-text-3)', fontSize: 12, marginBottom: 12 }}>
+                <Typography.Paragraph
+                  ellipsis={{ rows: 2, expandable: true }}
+                  style={{ color: 'var(--crm-text-2)', fontSize: 12, lineHeight: 1.65, marginBottom: 12 }}
+                >
                   扫描只「提名」；批准后才真的回收，并且<b>必须等预告期/暂缓期满了</b>才能批
                   —— 没满要走「提前回收」这个例外动作，得填原因。
                   「驳回」不受等待期限制（表示不用回收了，随时可结案）。
                   客户手上还有在途订单、未结应收、有效正式报价或在途打样时，批准会被拦下。
-                </div>
+                </Typography.Paragraph>
                 <Tabs
                   type="button"
                   activeKey={candidateStatus}
