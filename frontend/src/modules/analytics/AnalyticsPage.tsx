@@ -476,7 +476,6 @@ export default function AnalyticsPage() {
         index="01"
         title="核心指标"
         note="全站概览 · 先看总量与风险，再看下面的图和明细"
-        primary
       />
       {/* 13 个指标按业务口径分三组。顺序按组重排，数值和口径一个没改。 */}
       <div className="kpi-groups">
