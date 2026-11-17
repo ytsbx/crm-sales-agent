@@ -33,7 +33,16 @@ function render({ fail = false } = {}) {
     '../../shared/store/auth': { useAuthStore: selector => selector({ user: { name: '测试用户' } }) },
     '../../shared/store/copilot': { useCopilotStore: selector => selector({ openWith() {} }) },
     '../../shared/hooks/permissions': { usePermissions: () => ({ can: () => true }) },
-    '../../shared/beijing-time': { formatBeijingDate: () => '2026-10-19', formatBeijingClock: () => '12', formatBeijingTime: () => '12:00' },
+    // 「标签全家」：mock 必须覆盖 WorkbenchPage 实际用到的 beijing-time 全部导出。
+    // 2026-11-17 教训：日期统一新增 formatBeijingWeekdayCN 后 mock 没跟上，
+    // 调用即 TypeError（is not a function），两条用例连环红。
+    '../../shared/beijing-time': {
+      formatBeijingDate: () => '2026-10-19',
+      formatBeijingClock: () => '12',
+      formatBeijingTime: () => '12:00',
+      formatBeijingDateTime: () => '2026-10-19 12:00',
+      formatBeijingWeekdayCN: () => '周一',
+    },
     '../../shared/api/task': { completeTask: async id => {
       calls.completed.push(id)
       if (fail) throw new Error('完成失败')
