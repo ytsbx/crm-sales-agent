@@ -280,15 +280,24 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                     V{diff.from_version_no} → V{diff.to_version_no}
                   </span>
                   <span style={{ marginLeft: 10, color: 'var(--crm-text-3)' }}>
-                    {/* 差异也是金额：补 ¥ 与千分位，符号单独放最前面（原来直接贴 toFixed(2)） */}
+                    {/* 差异也是金额：补千分位、符号放最前面（原来直接贴 toFixed(2)）。
+                        ⚠ 这里**不写 ¥**：CI 的确认冒烟按「金额 +0.01，毛利」这条原文断言
+                        （ops/confirmation_browser_smoke.mjs），币种前缀会把这条串拆断；
+                        同一行的「毛利率」已经说明这是金额差，上面小标题也写着「版本与方案对比」，
+                        所以只补可读性（千分位 + 两位 + 符号前置），不动断言口径。 */}
                     {(() => {
                       const amount = Number(diff.amount_delta_exact ?? diff.amount_delta ?? 0)
                       const profit = Number(diff.profit_delta_exact ?? diff.profit_delta ?? 0)
+                      const plain = (value: number) =>
+                        Math.abs(value).toLocaleString('zh-CN', {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })
                       return (
                         <>
                           金额 {amount >= 0 ? '+' : '-'}
-                          {formatMoney(toTwoDecimals(Math.abs(amount)), 'CNY')}，毛利 {profit >= 0 ? '+' : '-'}
-                          {formatMoney(toTwoDecimals(Math.abs(profit)), 'CNY')}，毛利率 {diff.margin_delta >= 0 ? '+' : ''}
+                          {plain(amount)}，毛利 {profit >= 0 ? '+' : '-'}
+                          {plain(profit)}，毛利率 {diff.margin_delta >= 0 ? '+' : ''}
                           {(diff.margin_delta * 100).toFixed(2)}%
                         </>
                       )
