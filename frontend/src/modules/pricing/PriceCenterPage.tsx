@@ -13,6 +13,7 @@ import {
   requiredNumberOrThrow,
 } from '../../shared/number-input'
 import { calendarDayOrToday } from '../../shared/calendar-day'
+import { toTwoDecimals } from '../../shared/components/money'
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
@@ -986,7 +987,10 @@ export default function PriceCenterPage() {
         }
       />
 
-      <SectionCard>
+      {/* auto-height：这一页只有一张卡，全局规则会把它拉到满屏高。
+          而「成本」tab 没选 SKU 时只有一行「请先选择 SKU」，
+          下面就是 600px 纯白 —— 内容少就别给大卡，改成按内容收住。 */}
+      <SectionCard className="auto-height">
         <Tabs type="line" activeKey={activeKey} onChange={setActiveKey} tabList={TABS} />
 
         <div style={{ marginTop: 16 }}>
@@ -1774,20 +1778,21 @@ export default function PriceCenterPage() {
                     title: '公斤单价',
                     dataIndex: 'unit_price_per_kg',
                     width: 100,
-                    render: (value: number) => `¥${value}`,
+                    // 库里是十进制、位数不定（0.9 / 3.5 / 50），同一列要统一两位
+                    render: (value: number) => `¥${toTwoDecimals(value)}`,
                   },
                   {
                     title: '体积单价',
                     dataIndex: 'unit_price_per_volume',
                     width: 100,
                     render: (value: number | null) =>
-                      value == null ? <span style={HINT}>-</span> : `¥${value}/m³`,
+                      value == null ? <span style={HINT}>-</span> : `¥${toTwoDecimals(value)}/m³`,
                   },
                   {
                     title: '最低收费',
                     dataIndex: 'min_charge',
                     width: 100,
-                    render: (value: number) => `¥${value}`,
+                    render: (value: number) => `¥${toTwoDecimals(value)}`,
                   },
                   {
                     title: '时效（天）',
