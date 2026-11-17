@@ -228,26 +228,26 @@ export default function LeadListPage() {
     {
       title: '公司',
       dataIndex: 'company_name',
-      width: 150,
+      width: 130,
       ellipsis: true,
       render: (v: string | null) => v ?? '-',
     },
-    { title: '联系人', dataIndex: 'contact_name', width: 90, render: (v: string | null) => v ?? '-' },
-    // 手机号 11 位放 120 会被截成「138269363…」，看着像号码错了；130 刚好放满
-    { title: '手机', dataIndex: 'mobile', width: 130, render: (v: string | null) => v ?? '-' },
+    { title: '联系人', dataIndex: 'contact_name', width: 80, render: (v: string | null) => v ?? '-' },
+    // 手机号 11 位：118 刚好放满（120 那会儿是先被整表压缩才截断的，不是列宽的锅）
+    { title: '手机', dataIndex: 'mobile', width: 118, render: (v: string | null) => v ?? '-' },
     /* 「来源」和「地区」各占一列、内容都只有两三个字。并成一列「来源 · 地区」：
        两列 190 变一列 150，信息一点没少，正好把表格从 1150 收回到内容区里。 */
     {
       title: '来源 · 地区',
       dataIndex: 'source',
-      width: 150,
+      width: 126,
       render: (_: string | null, record: Lead) =>
         [record.source, record.region].filter((v) => v && v !== '-').join(' · ') || '-',
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
+      width: 96,
       render: (value: string, record: Lead) => (
         <StatusDot label={record.status_label} tone={(STATUS_COLOR[value] ?? 'grey') as TagTone} />
       ),
@@ -260,8 +260,11 @@ export default function LeadListPage() {
     },
     {
       title: '操作',
-      // 操作最多同时出现五个文字链（领取/跟进/分配/转客户/释放/废弃里取五），
-      // 220 才够一行放下；130 会折成三行、把行高顶得乱七八糟。
+      // 操作最多同时出现五个文字链（领取/跟进/分配/转客户/释放/废弃里取五）。
+      // 220 那会儿总宽 1140 > 内容区 1100：表格先挂横滚条，操作列又被压窄，
+      // 于是「释放/废弃」折到第二行、行高一格一格不一样。
+      // 现在把 公司 150→130、联系人 90→80、来源 150→110、状态 100→96 让出 74px，
+      // 操作列仍是 220，五个链接一行放完、横滚条也不出现了（合计 1066 < 内容区 1070）。
       width: 220,
       render: (_: unknown, record: Lead) => (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'nowrap', whiteSpace: 'nowrap', fontSize: 13 }}>
