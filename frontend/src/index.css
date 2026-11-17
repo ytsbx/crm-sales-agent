@@ -2170,7 +2170,10 @@ table:not(.semi-table) td {
    下面拖出一大片空白 —— 从页面看就像「右半边没加载完」。
    这里让三栏等高，内容再在卡片内部上下分布（见页面里的 margin-top: auto）。 */
 .wecom-split {
-  align-items: stretch;
+  /* 原来是 stretch：三栏被拉到和左边那个长名单一样高，
+     中栏只有「姓名 + 两行来源」、右栏只有一句空态提示，于是整栏变成大白块。
+     内容少就别给大卡 —— 改成按内容高度收住。 */
+  align-items: start;
 }
 
 /* 手机上：多页签横向滑动；全局搜索收窄不挤占顶栏（场景23） */
@@ -2565,8 +2568,10 @@ table:not(.semi-table) td {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.6px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--crm-primary), #3b7ddd);
+  /* 原来是深蓝渐变底 + 白字，一块实心色压在空白页正中，比标题还重。
+     改成浅色底 + 主色字：标识还在，视觉重量让给标题。 */
+  color: var(--crm-primary);
+  background: var(--crm-primary-soft);
   box-shadow: 0 6px 16px rgba(31, 79, 168, 0.26);
 }
 /* 会话列表原来没有任何悬停反馈，鼠标划过去不知道能不能点。 */

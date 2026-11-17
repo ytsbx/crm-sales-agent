@@ -2007,13 +2007,38 @@ export default function QuoteDetailPage() {
         okText="保存"
       >
         <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ color: 'var(--crm-text-2)', fontSize: 13 }}>
-            成本 {priceTarget?.cost_snapshot == null || priceTarget.logistics_cost_snapshot == null
-              ? '-' : `¥${(priceTarget.cost_snapshot + priceTarget.logistics_cost_snapshot).toFixed(2)}`}
-            ｜建议价 ¥{priceTarget?.recommended_price_snapshot}
-            ｜最低保护价 ¥{priceTarget?.minimum_price_snapshot?.toFixed(2)}
+          {/* 三个参考价原来挤成一行「成本 ｜建议价 ｜最低保护价」，用竖线硬分隔；
+              拆成三小段固定宽度，数字加粗，扫一眼就知道哪个是底线。 */}
+          <div style={{ display: 'flex', gap: 20, fontSize: 12, color: 'var(--crm-text-3)' }}>
+            <span>
+              成本{' '}
+              <strong style={{ color: 'var(--crm-text-2)' }}>
+                {priceTarget?.cost_snapshot == null || priceTarget.logistics_cost_snapshot == null
+                  ? '-'
+                  : `¥${(priceTarget.cost_snapshot + priceTarget.logistics_cost_snapshot).toFixed(2)}`}
+              </strong>
+            </span>
+            <span>
+              建议价{' '}
+              <strong style={{ color: 'var(--crm-text-2)' }}>
+                {/* 建议价原来直接印库里的四位小数（¥142.8571），和左右两栏的两位小数不一样 */}
+                {priceTarget?.recommended_price_snapshot == null
+                  ? '-'
+                  : `¥${priceTarget.recommended_price_snapshot.toFixed(2)}`}
+              </strong>
+            </span>
+            <span>
+              最低保护价{' '}
+              <strong style={{ color: 'var(--crm-text-2)' }}>
+                ¥{priceTarget?.minimum_price_snapshot?.toFixed(2)}
+              </strong>
+            </span>
           </div>
-          <Input value={newPrice} onChange={setNewPrice} placeholder="实际报价（元）" />
+          {/* 输入框只有 placeholder 自我介绍，点进去字就没了 —— 补固定标签 */}
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>实际报价</div>
+            <Input value={newPrice} onChange={setNewPrice} placeholder="填数字，单位元" />
+          </div>
           <div style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
             保存后会按你的价格权限重新判断是否需要审批。
           </div>

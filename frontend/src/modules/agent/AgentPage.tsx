@@ -243,9 +243,10 @@ export default function AgentPage() {
       {/* 左栏原来写死 height: fit-content —— 会话只有一两条时，卡片就一小块飘在上头，
           下面空出大半屏。现在让它跟右栏等高、拉满整页。 */}
       <SectionCard style={{ display: 'flex', flexDirection: 'column' }}>
+        {/* 原来是一块通栏的深蓝实心按钮，压在这一页最顶上，比右边的对话框还抢眼。
+            换成浅色描边按钮：位置不变、还能点，但不再当色块用。 */}
         <Button
           block
-          theme="solid"
           style={{ marginBottom: 12, flexShrink: 0 }}
           disabled={streaming}
           onClick={() => {

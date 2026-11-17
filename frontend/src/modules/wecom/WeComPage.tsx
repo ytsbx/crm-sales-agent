@@ -379,7 +379,11 @@ export default function WeComPage() {
         description="导入步骤：同步外部联系人和跟进关系 → 绑定原跟进员工的CRM账号 → 点击「导入客户中心」预览确认。有公司全称的按公司建档，无公司信息的按个人建档；负责人未匹配、公司简称或同名冲突的保留待确认，不进入公海。"
       />
 
+      {/* 五项指标按全局 4 列网格排，第五张「未建账号」被挤到第二行左边孤零零一张，
+          下面又接着三栏卡片 —— 中间多出一条断掉的半行。
+          这页正好五项，直接给五列，一行收完。 */}
       <KpiStrip
+        className="kpi-grid kpi-cols-5"
         items={[
           {
             label: '企微成员',
@@ -600,7 +604,8 @@ export default function WeComPage() {
               </div>
 
               {canManage && active && (
-                <div style={{ display: 'grid', gap: 8, marginTop: 'auto', paddingTop: 12 }}>
+                // 两个出口原来各占一整行、通栏灰块，像张表单；并排放在一行就够了
+                <div style={{ display: 'flex', gap: 8, paddingTop: 12 }}>
                   <Button
                     onClick={() => {
                       setCreateForm({
