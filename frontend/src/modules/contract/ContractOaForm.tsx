@@ -27,7 +27,7 @@ export default function ContractOaForm({ docId, values, onChange, onBusy }: { do
       const value = values[field.id] ?? data.defaults[field.id] ?? ''
       const wide = ['attachment', 'table'].includes(field.type) || field.multiline
       return <div key={field.id} style={wide ? { gridColumn: '1 / -1' } : undefined}>
-        <div style={{ fontWeight: 500, marginBottom: 7 }}>{field.label}{field.required && <span style={{ color: '#e5484d' }}> *</span>}</div>
+        <div style={{ fontWeight: 500, marginBottom: 7 }}>{field.label}{field.required && <span style={{ color: 'var(--crm-error)' }}> *</span>}</div>
         {field.locked ? <Input readOnly value={display(value)} placeholder="系统自动带入" />
           : field.type === 'attachment' ? <div>
               <input type="file" multiple disabled={uploading} onChange={async event => {
@@ -40,12 +40,12 @@ export default function ContractOaForm({ docId, values, onChange, onBusy }: { do
                 } catch (error) { Toast.error(error instanceof Error ? error.message : '上传失败') }
                 finally { setUploading(false) }
               }} />
-              <div style={{ fontSize: 12, color: '#768096', marginTop: 6 }}>已选 {Array.isArray(value) ? value.length : 0} 个附件</div>
+              <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginTop: 6 }}>已选 {Array.isArray(value) ? value.length : 0} 个附件</div>
             </div>
           : ['choice', 'multi_choice', 'user'].includes(field.type) ? <Select style={{ width: '100%' }} multiple={field.type === 'multi_choice'} showClear
               value={value || undefined} onChange={v => set(field.id, v ?? '')}
               optionList={field.type === 'user' ? data.people.map(p => ({ value: p.id, label: p.name })) : (field.options ?? []).map(v => ({ value: v, label: v }))} />
-          : field.type === 'date' ? <input type="date" style={{ width: '100%', padding: 8, border: '1px solid #dce1e9', borderRadius: 6 }} value={String(value)} onChange={e => set(field.id, e.target.value)} />
+          : field.type === 'date' ? <input type="date" style={{ width: '100%', padding: 8, border: '1px solid var(--crm-border)', borderRadius: 6 }} value={String(value)} onChange={e => set(field.id, e.target.value)} />
           : field.multiline || field.id === 'contract_description' ? <TextArea value={String(value)} onChange={v => set(field.id, v)} />
           : <Input value={String(value)} onChange={v => set(field.id, v)} />}
       </div>

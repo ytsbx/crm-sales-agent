@@ -672,7 +672,7 @@ export default function KnowledgePage() {
           {submissionOptions.data?.fields.map((field) => <div key={field.id}>
             <FormLabel required={field.required}>{field.label}</FormLabel>
             {field.type === 'DDAttachment' ? (
-              <section style={{ display: 'grid', gap: 18, padding: 18, border: '1px solid #e4e9f0', borderRadius: 10, background: '#fafbfd', minWidth: 0 }}>
+              <section style={{ display: 'grid', gap: 18, padding: 18, border: '1px solid var(--crm-border)', borderRadius: 10, background: 'var(--crm-surface-low)', minWidth: 0 }}>
                 <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.7 }}>
                   图纸、PDF、表格等补充资料 · 单个文件不超过 20 MB<br />
                   与上方产品参考照片分开提交，最多 10 个附件。
@@ -695,7 +695,7 @@ export default function KnowledgePage() {
                   <div style={{ marginTop: 12 }}><AttachmentPanel businessType={submissionOptions.data!.file_business_type} businessId={target.id}
                     category="oa_attachment" onlyCategory="oa_attachment" writePermission="quote:manage" compact showUpload={false} /></div>
                 </details>}
-                {(submissionFiles.data ?? []).some(file => file.category === 'oa_attachment') && <div style={{ borderTop: '1px solid #e4e9f0', paddingTop: 16 }}>
+                {(submissionFiles.data ?? []).some(file => file.category === 'oa_attachment') && <div style={{ borderTop: '1px solid var(--crm-border)', paddingTop: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, marginBottom: 9, fontSize: 13 }}>
                     <span>本次随申请提交</span><span style={{ color: 'var(--crm-text-3)' }}>已选 {submitAttachments.length} / 10</span>
                   </div>
@@ -1324,7 +1324,7 @@ export default function KnowledgePage() {
         width={520}
       >
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
-          <div style={{ padding: 12, borderRadius: 8, background: '#f5f8ff', color: '#526078', lineHeight: 1.7 }}>可以先准备内部报价草稿；正式对外报价需先通过核价及报价复核，无需等待后续打样、采购或备货结束。</div>
+          <div style={{ padding: 12, borderRadius: 8, background: 'var(--crm-surface-low)', color: 'var(--crm-text-2)', lineHeight: 1.7 }}>可以先准备内部报价草稿；正式对外报价需先通过核价及报价复核，无需等待后续打样、采购或备货结束。</div>
 
           <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
             {quoteTarget?.customer_name

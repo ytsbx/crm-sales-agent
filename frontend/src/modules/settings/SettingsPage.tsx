@@ -1079,7 +1079,7 @@ export default function SettingsPage() {
                   新建用户
                 </Button>
               </div>
-              <Table<SystemUser>
+              <Table<SystemUser> className="table-center"
                 // 等于各列宽之和（730）。设置页左侧还有一条二级导航，
                 // 表格区只有约 660 —— 写够总宽再配 fixed 操作列，比把列压扁可读
                 scroll={{ x: 730 }}
@@ -1134,7 +1134,7 @@ export default function SettingsPage() {
                   新建角色
                 </Button>
               </div>
-              <Table<SystemRole>
+              <Table<SystemRole> className="table-center"
                 columns={roleColumns}
                 dataSource={filteredRoles}
                 loading={rolesQuery.isLoading}
@@ -1167,7 +1167,7 @@ export default function SettingsPage() {
                   新建部门
                 </Button>
               </div>
-              <Table<SystemDepartment>
+              <Table<SystemDepartment> className="table-center"
                 columns={deptColumns}
                 dataSource={filteredDepts}
                 loading={deptsQuery.isLoading}
@@ -1212,7 +1212,7 @@ export default function SettingsPage() {
                   标签是受控字典，客户详情里只能从这里维护的标签中选择
                 </span>
               </div>
-              <Table<TagRow>
+              <Table<TagRow> className="table-center"
                 columns={[
                   { title: '标签名', dataIndex: 'name' },
                   {
@@ -1331,7 +1331,7 @@ export default function SettingsPage() {
                   </span>
                 )}
               </div>
-              <Table<DictionaryItemRow>
+              <Table<DictionaryItemRow> className="table-center"
                 columns={[
                   // 「类型」这一列删了：库里只有 customer_level 一种，四行全是同一个词，
                   // 140px 换不来任何信息 —— 类型已经在表格上方写死了。
@@ -1421,7 +1421,7 @@ export default function SettingsPage() {
                   批准时还会再检查一遍这期间有没有新的跟进、报价、订单或回款。
                   客户手上还有在途订单、未结应收、有效正式报价或在途打样时会被保护。
                 </Typography.Paragraph>
-                <Table<PublicPoolRuleRow>
+                <Table<PublicPoolRuleRow> className="table-center"
                   columns={[
                     { title: '客户等级', dataIndex: 'level', width: 110, render: (v: string) => customerLevelLabel(v) },
                     {

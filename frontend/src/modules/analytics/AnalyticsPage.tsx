@@ -1179,6 +1179,10 @@ export default function AnalyticsPage() {
           )}
           {canSetTarget && <Button type="primary" theme="outline" onClick={() => openTargetModal()}>设定目标</Button>}
         </div>
+        {/* 包一层横向滚动容器：Semi 自带的 scroll 只让表体可滚，
+            表头按 2060px 撑出去的部分仍会把整页顶出 5px——1440 实拍见过
+            页面级横向滚动条。让溢出发生在容器里，页面本身不横滚。 */}
+        <div className="table-x-scroll">
         <Table<SalesTargetRow>
           scroll={{ x: 'max(100%, 2060px)' }}
           columns={[
@@ -1357,6 +1361,7 @@ export default function AnalyticsPage() {
           pagination={false}
           empty="还没有目标数据"
         />
+        </div>
         <div style={{ marginTop: 10, fontSize: 12, color: 'var(--crm-text-3)' }}>
           {targetsQuery.data?.attribution_note ??
             '归属口径（业绩口径）：按订单签单归属——交接后钱仍算签单人。汇总、差额、明细同一政策。'}

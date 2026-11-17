@@ -1807,6 +1807,15 @@ a:not([href]) {
 }
 
 /* 行高收紧：原来一行五十多像素，一屏看不了几行，像 Word 表格而不是数据表 */
+
+/* 主人定的硬规则：表格内容一律居中（2026-11-17 明确「表格内容一律居中」）。
+   这里不做全局强制 —— 有些表刻意把数字右对齐（金额列对齐小数点才好读），
+   那一类由列自己声明 align。给"内容是三五个字的标签"的表挂 .table-center，
+   避免左边一列短词、右边一片空，看着像没排过版。 */
+.table-center .semi-table-thead .semi-table-row-head,
+.table-center .semi-table-tbody .semi-table-row-cell {
+  text-align: center !important;
+}
 .semi-table-tbody > .semi-table-row > .semi-table-row-cell {
   /* 行高 9 → 11：行与行之间松一点，扫读不费劲，也不会把一屏行数压到太少 */
   padding-top: 11px !important;
