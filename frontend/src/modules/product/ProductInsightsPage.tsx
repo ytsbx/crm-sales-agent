@@ -311,7 +311,9 @@ export default function ProductInsightsPage() {
       />
       <SectionCard>
         <div className="toolbar" style={{ marginBottom: 10 }}>
-          <div style={{ flex: 1 }} />
+          {/* 原来这里有一个 flex:1 占位，把搜索/状态/按钮全推到最右边 ——
+              全站其他列表页的筛选都在左边起头，这一页孤零零靠右，看着像浮在卡上。
+              去掉占位，与别页一致。 */}
           <Input
             style={{ width: 150 }}
             placeholder="搜标题"
@@ -395,7 +397,11 @@ export default function ProductInsightsPage() {
               title: '状态',
               width: 170,
               render: (_: unknown, record: ProductInsightRow) => (
-                <div>
+                /* 这一格原来塞三行：状态 / 第 N 轮 / 意见（还被截成"…"），
+                   于是同一张表里这行比别的行高出一截，节奏全乱。
+                   意见本来就有「审核历史」可看全文，这里收进悬停提示，
+                   格子只留"到哪一步了、第几轮"。 */
+                <div title={record.review_note ? `意见：${record.review_note}` : undefined}>
                   <StatusDot
                     label={record.status_label ?? record.status}
                     tone={(STATUS_TONE[record.status] ?? 'grey') as TagTone}
@@ -404,24 +410,6 @@ export default function ProductInsightsPage() {
                   {(record.review_round ?? 1) > 1 && (
                     <div style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
                       第 {record.review_round} 轮
-                    </div>
-                  )}
-                  {record.review_note && (
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: 'var(--crm-text-3)',
-                        maxWidth: 150,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                      title={record.review_note}
-                    >
-                      {/* ⚠️ 这里原来写的是 formatBeijingDate(record.review_note) ——
-                          把**评审意见这段文字**当日期去格式化，结果整行只渲染出
-                          "意见：…"，评审为什么打回这条信息是空的。正文直接截断显示。 */}
-                      意见：{record.review_note}
                     </div>
                   )}
                 </div>

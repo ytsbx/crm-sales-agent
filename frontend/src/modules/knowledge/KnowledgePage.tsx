@@ -529,17 +529,17 @@ export default function KnowledgePage() {
       // 超过 10 字截断，鼠标悬停看全称。
       render: (v: string | null) => v || '-',
     },
-    { title: '数量', dataIndex: 'quantity', width: 62, render: (v: number | null) => v ?? '-' },
+    { title: '数量', dataIndex: 'quantity', width: 60, render: (v: number | null) => v ?? '-' },
     {
       title: '目标价',
       dataIndex: 'target_price',
-      width: 88,
+      width: 84,
       render: (v: number | null) => (v != null ? `¥${v}` : '-'),
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 96,
+      width: 90,
       render: (v: string) => (
         <StatusDot
           label={STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v}
@@ -551,14 +551,18 @@ export default function KnowledgePage() {
     {
       title: '记录时间',
       dataIndex: 'created_at',
-      width: 102,
+      /* 102 装不下 "2026-11-16"：单元格左右各有 16 内边距，只剩 70px，
+         日期被截成 "2026-11-…" —— 这一列等于白给。118 刚好。 */
+      width: 118,
       // 列表里精确到秒没有意义，反而把这一列撑到 160。
       // 只给日期，具体时分秒在详情里看。
       render: (v: string) => formatBeijingDate(v),
     },
     {
       title: '操作',
-      width: 193,
+      /* 193 放不下「编辑 生成报价草稿 删除 更多」四个入口，
+         「更多」被挤到第二行、整行高出一截。228 一行放得下。 */
+      width: 228,
       render: (_: unknown, record: CustomInquiryRow) => {
         // 次要动作收进「更多」下拉。原来 9~11 个操作全铺在这一格里，容器是
         // inline-flex 且 flex-wrap: nowrap —— 挤不下时每个链接被压扁成
