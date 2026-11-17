@@ -621,12 +621,59 @@ a:not([href]) {
     transform var(--crm-dur-base) var(--crm-ease);
 }
 
+
+/* ============================================================
+   指标卡的色带（2026-11-17）
+   ------------------------------------------------------------
+   原来所有 kpi-card 都是一个白块，13 张排下来整页只有灰和黑，
+   主人说"太单调了"。
+   做法：按业务口径给一张卡一个**色带**——顶部 3px 竖条 + 自上而下
+   一层极淡的同色渐变（到卡片中段就收成白）。只用 6~7% 的浓度，
+   不会变成"蓝底色块"（那种深色底正主人明确不喜欢的）。
+   颜色语义：蓝=成交/线索（推进中）、绿=回款/到账（钱进来了）、
+   橙=让价/待审批（要留意）、红=逾期（已经出问题）、灰=纯读数。
+   ============================================================ */
+.kpi-card {
+  /* 默认无色带：纯读数的卡片（平均周期这类）不需要颜色来抢注意力 */
+  --kpi-accent: transparent;
+}
+.kpi-card.tone-primary { --kpi-accent: var(--crm-primary); }
+.kpi-card.tone-success { --kpi-accent: var(--crm-success); }
+.kpi-card.tone-warning { --kpi-accent: var(--crm-warning); }
+.kpi-card.tone-error   { --kpi-accent: var(--crm-error); }
+
+/* 色带画在卡片最上沿，同时给卡面加一层极淡的同色（6% → 白）。 */
+.kpi-card.tone-primary,
+.kpi-card.tone-success,
+.kpi-card.tone-warning,
+.kpi-card.tone-error {
+  border-top: 3px solid var(--kpi-accent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--kpi-accent) 7%, #fff) 0%, #fff 58%)
+      padding-box,
+    var(--crm-surface);
+}
+
+/* 标签前的小圆点：颜色和色带同一支，扫一眼就知道这张卡属于哪一类 */
+.kpi-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--kpi-accent);
+  margin-right: 6px;
+  vertical-align: middle;
+  flex: none;
+}
 .kpi-label {
   color: var(--crm-text-3);
   font-size: 13px;
   display: flex;
-  justify-content: space-between;
+  /* 小圆点 + 标签要贴左边一起走。原来是 space-between（为早年"标签左、数值右"
+     那套留的），加上圆点后圆点会被顶到最左、标签被推到最右，看着像两个东西。 */
+  justify-content: flex-start;
   align-items: center;
+  gap: 2px;
 }
 
 /* ============================================================

@@ -483,30 +483,36 @@ export default function AnalyticsPage() {
         <div className="kpi-group">
           <div className="kpi-group-head">成交与转化</div>
           <KpiStrip
+            tintValues={false}
             className="kpi-grid kpi-cols-4"
             items={[
               {
                 label: '商机成交率',
+                tone: 'primary',
                 value: `${((opportunity?.win_rate ?? 0) * 100).toFixed(0)}%`,
                 hint: `成交 ${opportunity?.won_count ?? 0} / 失单 ${opportunity?.loss_count ?? 0}`,
               },
               {
                 label: '报价接受率',
+                tone: 'success',
                 value: `${((quote?.accept_rate ?? 0) * 100).toFixed(0)}%`,
                 hint: `报价单 ${quote?.quote_count ?? 0} 张`,
               },
               {
                 label: '平均让价幅度',
+                tone: 'warning',
                 value: `${((quote?.average_discount ?? 0) * 100).toFixed(2)}%`,
                 hint: `平均版本数 ${quote?.average_versions ?? 0}`,
               },
               {
                 label: '低价审批比例',
+                tone: 'warning',
                 value: `${((quote?.approval_rate ?? 0) * 100).toFixed(0)}%`,
                 hint: `需审批 ${quote?.approval_required_count ?? 0} 次`,
               },
               {
                 label: '线索转化率',
+                tone: 'primary',
                 value: `${((lead?.conversion_rate ?? 0) * 100).toFixed(0)}%`,
                 hint:
                   lead?.average_conversion_days != null
@@ -515,11 +521,13 @@ export default function AnalyticsPage() {
               },
               {
                 label: '客户活跃 / 沉睡',
+                tone: 'success',
                 value: `${customer?.active_count ?? 0} / ${customer?.dormant_count ?? 0}`,
                 hint: `复购客户 ${customer?.repeat_customer_count ?? 0} 家`,
               },
               {
                 label: '平均成交周期',
+                tone: 'default',
                 value: cycle?.average_days != null ? `${cycle.average_days} 天` : '-',
                 hint: cycle?.won_with_history
                   ? `基于 ${cycle.won_with_history} 个有阶段记录的成交商机`
@@ -531,25 +539,30 @@ export default function AnalyticsPage() {
         <div className="kpi-group">
           <div className="kpi-group-head">回款与应收</div>
           <KpiStrip
+            tintValues={false}
             className="kpi-grid kpi-cols-4"
             items={[
               {
                 label: '应收合计',
+                tone: 'primary',
                 value: money(receivable?.plan_amount),
                 hint: `实际到账 ${money(receivable?.received_amount)} · 已分配 ${money(receivable?.allocated_amount)}`,
               },
               {
                 label: '尚未到账',
+                tone: 'warning',
                 value: money(receivable?.unreceived_amount),
                 hint: `逾期节点 ${receivable?.overdue_count ?? 0}`,
               },
               {
                 label: '已到账待分配',
+                tone: 'success',
                 value: money(receivable?.unallocated_amount),
                 hint: `应收期未结 ${money(receivable?.unsettled_plan_amount)}，请先核对分配再催款`,
               },
               {
                 label: '逾期应收',
+                tone: 'error',
                 value: money(payment?.overdue_amount),
                 hint: `逾期节点 ${payment?.overdue_node_count ?? 0} 个`,
               },
@@ -559,10 +572,12 @@ export default function AnalyticsPage() {
         <div className="kpi-group">
           <div className="kpi-group-head">履约与风险</div>
           <KpiStrip
+            tintValues={false}
             className="kpi-grid kpi-cols-4"
             items={[
               {
                 label: '准时交付率',
+                tone: 'success',
                 // 没有已交付样本时给 "-" 而不是 0%——0% 会被读成"全都延迟"
                 value: deliverySummary?.delivered_order_count
                   ? `${(deliverySummary.on_time_rate * 100).toFixed(0)}%`
@@ -571,6 +586,7 @@ export default function AnalyticsPage() {
               },
               {
                 label: '交期风险',
+                tone: 'error',
                 value: `${deliverySummary?.risk_order_count ?? 0} 单`,
                 hint: `${deliverySummary?.due_soon_days ?? 7} 天内到期 ${deliverySummary?.due_soon_order_count ?? 0} 单`,
               },
