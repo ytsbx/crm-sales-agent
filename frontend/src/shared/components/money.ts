@@ -35,6 +35,38 @@ export function toTwoDecimals(
   return `${whole}.${fraction.padEnd(2, '0')}`
 }
 
+/**
+ * 单价与费率的展示：**保真**（最多保留 4 位），最少补到 2 位，多余的尾零去掉。
+ *
+ * 为什么不能像金额那样截两位（2026-11-17，CI 抓到）：
+ * 库里 `unit_price` 是 numeric(16,4)，一张 1000 件、单价 33.3333 的单子
+ * 金额是 33,333.30。单价截成 ¥33.33 之后，"单价 × 数量" 就不再等于金额，
+ * 客户一对账就能发现差 3 块多。CI 的 confirmation_browser_smoke 断言
+ * 订单明细单价必须显示 ¥33.3333，正是这条防线。
+ *
+ * 反过来也不能原样印 "150.0000"：那是库里的存储格式，不是给人看的数字，
+ * 所以尾零要去掉、最少留两位（¥150.00）。
+ *
+ * 一句话：金额（总额/应收/回款）两位；单价、费率保真。
+ */
+export function formatUnitPrice(
+  value: number | string | null | undefined,
+  currency?: string | null,
+): string {
+  if (value === null || value === undefined) return '-'
+  const raw = typeof value === 'number'
+    ? (Number.isFinite(value) ? String(value) : '')
+    : String(value).trim()
+  // 非纯数字（'abc'、'1e5'）交回 formatMoney 处理，那里会给出 '-' 或合理兜底
+  if (!/^-?\d+(?:\.\d+)?$/.test(raw)) return formatMoney(value, currency)
+  const [whole, fraction = ''] = raw.split('.')
+  // 只保留 4 位（库里就是 4 位），再把尾零去掉；少于两位补齐
+  const trimmed = fraction.slice(0, 4).replace(/0+$/, '')
+  const frac = trimmed.length < 2 ? trimmed.padEnd(2, '0') : trimmed
+  // 千分位仍交给 formatMoney：它认得 "1234.56" 这种字符串
+  return formatMoney(`${whole}.${frac}`, currency)
+}
+
 export function currencyPrefix(currency?: string | null): string {
   if (!currency) return ''
   return currency === 'CNY' ? '¥' : `${currency} `

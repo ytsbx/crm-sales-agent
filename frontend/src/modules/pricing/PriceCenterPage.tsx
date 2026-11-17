@@ -13,7 +13,7 @@ import {
   requiredNumberOrThrow,
 } from '../../shared/number-input'
 import { calendarDayOrToday } from '../../shared/calendar-day'
-import { formatMoney, toTwoDecimals } from '../../shared/components/money'
+import { formatMoney, formatUnitPrice, toTwoDecimals } from '../../shared/components/money'
 import { listCustomers } from '../../shared/api/customer'
 import { createItem, createOpportunity, listOpportunities } from '../../shared/api/opportunity'
 import {
@@ -1508,14 +1508,15 @@ export default function PriceCenterPage() {
                     render: (_: unknown, record: PriceRuleRow) =>
                       `${record.min_qty} ~ ${record.max_qty ?? '不限'}`,
                   },
-                  { title: '标准价', dataIndex: 'standard_price', width: 100, render: money },
-                  { title: '指导价', dataIndex: 'guide_price', width: 100, render: money },
+                  // 标准价/指导价/最低保护价都是**单价**：口径同订单明细，保真不截断
+                  { title: '标准价', dataIndex: 'standard_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
+                  { title: '指导价', dataIndex: 'guide_price', width: 100, render: (v: number) => formatUnitPrice(v, 'CNY') },
                   {
                     title: '最低保护价',
                     dataIndex: 'minimum_price',
                     width: 120,
                     render: (value: number | null) => (
-                      <span style={{ fontWeight: 600, color: 'var(--crm-error)' }}>{money(value)}</span>
+                      <span style={{ fontWeight: 600, color: 'var(--crm-error)' }}>{formatUnitPrice(value, 'CNY')}</span>
                     ),
                   },
                   {
@@ -1659,9 +1660,9 @@ export default function PriceCenterPage() {
                     title: '约定价',
                     dataIndex: 'agreed_price',
                     width: 110,
-                    render: (value: number) => <span style={{ fontWeight: 600 }}>{money(value)}</span>,
+                    render: (value: number) => <span style={{ fontWeight: 600 }}>{formatUnitPrice(value, 'CNY')}</span>,
                   },
-                  { title: '最低价', dataIndex: 'minimum_price', width: 110, render: money },
+                  { title: '最低价', dataIndex: 'minimum_price', width: 110, render: (v: number) => formatUnitPrice(v, 'CNY') },
                   { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                   {
                     title: '操作',
@@ -1798,15 +1799,15 @@ export default function PriceCenterPage() {
                     title: '公斤单价',
                     dataIndex: 'unit_price_per_kg',
                     width: 100,
-                    // 库里是十进制、位数不定（0.9 / 3.5 / 50），同一列要统一两位
-                    render: (value: number) => `¥${toTwoDecimals(value)}`,
+                    // 费率同样是单价：保真（0.9 → ¥0.90，4.125 → ¥4.1250 不再被截成 4.13）
+                    render: (value: number) => formatUnitPrice(value, 'CNY'),
                   },
                   {
                     title: '体积单价',
                     dataIndex: 'unit_price_per_volume',
                     width: 100,
                     render: (value: number | null) =>
-                      value == null ? <span style={HINT}>-</span> : `¥${toTwoDecimals(value)}/m³`,
+                      value == null ? <span style={HINT}>-</span> : `${formatUnitPrice(value, 'CNY')}/m³`,
                   },
                   {
                     title: '最低收费',
