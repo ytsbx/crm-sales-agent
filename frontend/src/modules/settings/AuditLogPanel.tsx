@@ -285,7 +285,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
           第一行看着像断了一半才是真难看。 */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' }}>
         <Input
-          style={{ width: 240 }}
+          style={{ width: 240, flexShrink: 0 }}
           prefix="搜索"
           showClear
           // 提示语要短到能**在一行里放完**：200px 宽塞 18 个字会被截成
@@ -296,7 +296,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
           onChange={setKeywordInput}
         />
         <Select
-          style={{ width: 140 }}
+          style={{ width: 140, flexShrink: 0 }}
           placeholder="全部对象类型"
           showClear
           value={businessType}
@@ -322,7 +322,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
           ]}
         />
         <Select
-          style={{ width: 130 }}
+          style={{ width: 130, flexShrink: 0 }}
           placeholder="全部动作"
           showClear
           filter
@@ -334,7 +334,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
           optionList={ACTION_OPTIONS}
         />
         <Select
-          style={{ width: 130 }}
+          style={{ width: 130, flexShrink: 0 }}
           placeholder="全部操作人"
           showClear
           filter
@@ -347,7 +347,10 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
         />
         <DatePicker
           type="dateRange"
-          style={{ width: 220 }}
+          /* 260 而不是 220：dateRange 是两个输入框并排，220 时每个只剩 70 上下，
+             「开始日期」四个字放不下，被截成「开始…」，看着不知道这框选什么。
+             flexShrink:0 —— 不加的话它还会被前四个控件继续压缩，宁可换行也不缩。 */
+          style={{ width: 260, flexShrink: 0 }}
           placeholder={['开始日期', '结束日期']}
           value={range}
           onChange={(v) => {
