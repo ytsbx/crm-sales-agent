@@ -315,6 +315,38 @@ a:not([href]) {
 .kpi-group .kpi-grid {
   margin-bottom: 0;
 }
+
+/* 卡内分段小标题：一张卡里装两件事时，用来分隔段落。
+   先在报价详情「对外与归档」用上，订单详情的「合同与 AI 回款风险」复用同一套。
+   13px/600 比卡片标题小一档、比正文大一档，配一枚 22×22 圆角小图标，
+   段落之间再拉一条 1px 分隔线 —— 不然两段文字会连成一片，分不清是两块内容。 */
+.card-sub-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text-1, var(--crm-text));
+  margin-bottom: 10px;
+}
+
+.card-sub-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* 段间分隔线：上下各留 16px，避免贴着上一段的最后一行字 */
+.card-sub-divider {
+  height: 1px;
+  background: var(--crm-surface-high);
+  margin: 16px 0;
+}
+
 .kpi-group-head {
   display: flex;
   align-items: center;

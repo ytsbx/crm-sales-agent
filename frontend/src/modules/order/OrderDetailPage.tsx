@@ -54,8 +54,9 @@ import { listUsers } from '../../shared/api/system'
 import { optionMatcher } from '../../shared/components/optionMatch'
 import { usePermissions } from '../../shared/hooks/permissions'
 import DetailHeader from '../../shared/components/DetailHeader'
-import KpiStrip from '../../shared/components/KpiStrip'
+import KpiStrip, { type KpiItem } from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
+import { IconFile, IconAIEditLevel1 } from '@douyinfe/semi-icons'
 import ContractDocsPanel from '../../shared/components/ContractDocsPanel'
 import AgentInsight from '../../shared/components/AgentInsight'
 import BizDocPanel from '../../shared/components/BizDocPanel'
@@ -774,6 +775,64 @@ export default function OrderDetailPage() {
     },
   ]
 
+  // 指标卡数据（放在 return 之前，好让上面的 <KpiStrip> 按张数选列数）。
+  // 「有异常才有意义」的三张只在有值时出现：0 的时候摆出来就是几张 ¥0.00 的空卡。
+  const orderKpis: KpiItem[] = [
+    { label: '订单金额', value: formatMoney(order.total_amount_exact ?? order.total_amount, order.currency) },
+    {
+      label: '实际到账（财务已确认）',
+      value: formatMoney(order.received_amount_exact ?? order.received_amount, order.currency),
+      tone: 'success',
+    },
+    {
+      label: '尚未到账',
+      value: formatMoney(order.unreceived_amount_exact ?? order.unreceived_amount, order.currency),
+      tone: order.unreceived_amount > 0 ? 'warning' : 'default',
+    },
+    {
+      label: '已分配到应收期',
+      value: formatMoney(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0, order.currency),
+    },
+    // 这两张也是「有异常才有意义」：钱都分配完、没有待确认的，
+    // 它们就是两个 ¥0.00 的空卡，把 4+2 的第二行撑出来。
+    ...((summary?.unallocated_amount ?? 0) > 0
+      ? [
+          {
+            label: '已到账待分配',
+            value: formatMoney(
+              summary?.unallocated_amount_exact ?? summary?.unallocated_amount ?? 0,
+              order.currency,
+            ),
+            tone: 'warning' as const,
+          },
+        ]
+      : []),
+    ...((summary?.pending_confirm_amount ?? 0) > 0
+      ? [
+          {
+            label: '待确认回款',
+            value: formatMoney(
+              summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0,
+              order.currency,
+            ),
+          },
+        ]
+      : []),
+    // 逾期是「异常指标」：没有逾期时这张卡永远是 0，白占一个位置，
+    // 还让 7 张卡排成 4+3 的第二行只剩三张。只有真逾期了才显示。
+    ...(summary?.overdue_count
+      ? [
+          {
+            label: '逾期应收节点',
+            // 这一张是「几个节点」不是金额。只写一个「1」跟旁边四张 ¥ 金额
+            // 并排，会被读成 ¥1（2026-11-16 订单详情巡检）。
+            value: `${summary.overdue_count} 个`,
+            tone: 'error' as const,
+          },
+        ]
+      : []),
+  ]
+
   return (
     <div className="page-container">
       <ConfirmRequiredModal
@@ -882,67 +941,15 @@ export default function OrderDetailPage() {
           </div>
         )}
         <KpiStrip
-          // 原来是 kpi-cols-4（固定四列）：这页卡片数量是浮动的 —— 订单金额、实际到账、
-          // 尚未到账、已分配这 4 张常在，加上"逾期应收节点"就是 5 张，四列会把最后
-          // 一张甩到第二行、右边空出四分之三。交给 kpi-grid 的 auto-fill（最小 196px）
-          // 自己排：5 张刚好一行，少几张也不会被拉伸占满。
-          className="kpi-grid"
+          // 指标个数是浮动的：订单金额 / 实际到账 / 尚未到账 / 已分配到应收期 这 4 张常在，
+          // 再加上逾期、已到账待分配、待确认回款，最多 7 张。
+          // kpi-grid 的最小卡宽是 240px，1130 可用宽度下只排得下 4 列 ——
+          // 5 张时第 5 张被甩到第二行、右边空出四分之三（2026-11-17 巡检）。
+          // 5 张走 kpi-cols-5、6 张走 kpi-cols-6，都是一行排满；7 张仍按 4+3，
+          // 再挤数字就认不出来了。这两个类自带窄屏断点（≤1370 三列、≤1000 两列）。
+          className={`kpi-grid${orderKpis.length === 5 ? ' kpi-cols-5' : orderKpis.length === 6 ? ' kpi-cols-6' : ''}`}
           style={{ marginTop: 16, marginBottom: 0 }}
-          items={[
-            { label: '订单金额', value: formatMoney(order.total_amount_exact ?? order.total_amount, order.currency) },
-            {
-              label: '实际到账（财务已确认）',
-              value: formatMoney(order.received_amount_exact ?? order.received_amount, order.currency),
-              tone: 'success',
-            },
-            {
-              label: '尚未到账',
-              value: formatMoney(order.unreceived_amount_exact ?? order.unreceived_amount, order.currency),
-              tone: order.unreceived_amount > 0 ? 'warning' : 'default',
-            },
-            {
-              label: '已分配到应收期',
-              value: formatMoney(summary?.allocated_amount_exact ?? summary?.allocated_amount ?? 0, order.currency),
-            },
-            // 这两张也是「有异常才有意义」：钱都分配完、没有待确认的，
-            // 它们就是两个 ¥0.00 的空卡，把 4+2 的第二行撑出来。
-            ...((summary?.unallocated_amount ?? 0) > 0
-              ? [
-                  {
-                    label: '已到账待分配',
-                    value: formatMoney(
-                      summary?.unallocated_amount_exact ?? summary?.unallocated_amount ?? 0,
-                      order.currency,
-                    ),
-                    tone: 'warning' as const,
-                  },
-                ]
-              : []),
-            ...((summary?.pending_confirm_amount ?? 0) > 0
-              ? [
-                  {
-                    label: '待确认回款',
-                    value: formatMoney(
-                      summary?.pending_confirm_amount_exact ?? summary?.pending_confirm_amount ?? 0,
-                      order.currency,
-                    ),
-                  },
-                ]
-              : []),
-            // 逾期是「异常指标」：没有逾期时这张卡永远是 0，白占一个位置，
-            // 还让 7 张卡排成 4+3 的第二行只剩三张。只有真逾期了才显示。
-            ...(summary?.overdue_count
-              ? [
-                  {
-                    label: '逾期应收节点',
-                    // 这一张是「几个节点」不是金额。只写一个「1」跟旁边四张 ¥ 金额
-                    // 并排，会被读成 ¥1（2026-11-16 订单详情巡检）。
-                    value: `${summary.overdue_count} 个`,
-                    tone: 'error' as const,
-                  },
-                ]
-              : []),
-          ]}
+          items={orderKpis}
         />
         {/* 订单金额组成（2026-10-09「产品价格与运费分离」）：订单页要能解释
             "这个总额是怎么来的"，不能只给一个数。运费是代收代付的钱 ——
@@ -1704,28 +1711,54 @@ export default function OrderDetailPage() {
         </div>
       </Modal>
 
-      {/* 这单签了什么，在订单页就能看到：合同向来是照着报价/订单出的，
-          以前只有合同台账那一头能查，从订单倒着找不回去 */}
-      <ContractDocsPanel
-        orderId={orderId}
-        style={{ marginTop: 16 }}
-        empty="这单还没有关联的合同文档"
-      />
+      {/* 合同文档 + AI 回款风险：原来是两张"一句话卡"——
+          每张都占一整块白卡，里面只有一行字加一个按钮，
+          底下还是大片空白（2026-11-17 订单详情巡检）。
+          两件事都是"这单的外部凭据 / 这单的风险怎么看"，合成一张卡：
+          段间用 1px 分隔线，每段一个 13px 小标题配一枚 22px 圆角小图标，
+          和报价详情「对外与归档」同一套节奏。内容一个字没减。 */}
+      {(can('order:view') || can('agent:use')) && (
+        <SectionCard style={{ marginTop: 16 }}>
+          {can('order:view') && (
+            <>
+              {/* 这单签了什么，在订单页就能看到：合同向来是照着报价/订单出的，
+                  以前只有合同台账那一头能查，从订单倒着找不回去 */}
+              <div className="card-sub-head">
+                <span className="card-sub-icon" style={{ background: '#e6f6f2', color: '#0d9488' }}>
+                  <IconFile size="small" />
+                </span>
+                合同文档
+              </div>
+              <ContractDocsPanel orderId={orderId} boxed={false} empty="这单还没有关联的合同文档" />
+            </>
+          )}
 
-      {can('agent:use') && (
-        <SectionCard
-          title="AI 分析"
-          style={{ marginTop: 16 }}
-          extra={
-            <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate()}>
-              回款风险
-            </Button>
-          }
-        >
-          <AgentInsight
-            envelope={aiEnvelope}
-            empty="点右上角按钮运行：统计逾期应收节点、金额与集中度，没配模型也能给出风险等级"
-          />
+          {can('agent:use') && (
+            <>
+              {can('order:view') && <div className="card-sub-divider" />}
+              <div className="card-sub-head">
+                <span className="card-sub-icon" style={{ background: '#f1ecfe', color: '#7a4fd3' }}>
+                  <IconAIEditLevel1 size="small" />
+                </span>
+                AI 回款风险
+                <span style={{ marginLeft: 'auto' }}>
+                  <Button
+                    size="small"
+                    theme="outline"
+                    type="primary"
+                    loading={aiMutation.isPending}
+                    onClick={() => aiMutation.mutate()}
+                  >
+                    运行分析
+                  </Button>
+                </span>
+              </div>
+              <AgentInsight
+                envelope={aiEnvelope}
+                empty="点右上角「运行分析」：统计逾期应收节点、金额与集中度，没配模型也能给出风险等级"
+              />
+            </>
+          )}
         </SectionCard>
       )}
 
