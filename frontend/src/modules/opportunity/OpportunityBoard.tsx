@@ -167,9 +167,16 @@ export default function OpportunityBoard({ keyword, onChanged, canManage }: Prop
                     {row.customer_name ?? '-'}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 13, color: 'var(--crm-primary)', fontWeight: 600 }}>
-                      {money(row.expected_amount)}
-                    </span>
+                    {/* 没填预计金额时原来是「money() 的默认值 '-'」——
+                        一个蓝色粗体的破折号孤零零占一行，看着像个渲染错误。
+                        改成灰色小字「未填金额」：说的是一件事，不是一个符号。 */}
+                    {row.expected_amount ? (
+                      <span style={{ fontSize: 13, color: 'var(--crm-primary)', fontWeight: 600 }}>
+                        {money(row.expected_amount)}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>未填金额</span>
+                    )}
                     {row.risk_level && (
                       <Tag color={RISK_TONE[row.risk_level] ?? 'grey'} size="small">
                         {RISK_LABEL[row.risk_level] ?? row.risk_level}风险
