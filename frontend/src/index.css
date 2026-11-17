@@ -1179,6 +1179,27 @@ a:not([href]) {
    装进同一张卡的两栏，卡高由内容决定 —— 谁也不用去凑谁的高度。
    之前在网格里各占一卡时，不管并排还是叠放都会剩一块空白：
    并排 → 矮的那张下面空；两列叠 → 高的那列把另一列撑出空。 */
+.customer-info-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text-1);
+  margin-bottom: 10px;
+}
+
+.customer-info-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
 .quote-archive-head {
   display: flex;
   align-items: center;

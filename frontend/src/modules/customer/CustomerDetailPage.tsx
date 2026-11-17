@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Checkbox, Dropdown, Input, Modal, Popconfirm, Select, Table, Tabs, Tag, TextArea, Toast } from '@douyinfe/semi-ui'
-import { IconMore } from '@douyinfe/semi-icons'
+import { IconAIEditLevel1, IconFile, IconMore } from '@douyinfe/semi-icons'
 
 import {
   attachCustomerTags,
@@ -798,6 +798,22 @@ export default function CustomerDetailPage() {
                   )}
                 </div>
               </div>
+
+              {/* 合同文档：和上面那些字段同属「这家客户的基础事实」，所以并进同一张卡，
+                  用一条分隔线隔开。原来是独立一张卡，空态只有一句话却占 100px 高。 */}
+              <div style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--crm-border)', paddingTop: 14 }}>
+                <div className="customer-info-head">
+                  <span className="customer-info-icon" style={{ background: '#e6f6f2', color: '#0d9488' }}>
+                    <IconFile size="small" />
+                  </span>
+                  合同文档
+                </div>
+                <ContractDocsPanel
+                  customerId={customerId}
+                  boxed={false}
+                  empty="这家客户还没有合同文档——去合同台账按模板生成"
+                />
+              </div>
             </div>
           )}
 
@@ -1004,27 +1020,21 @@ export default function CustomerDetailPage() {
         </div>
       </SectionCard>
 
-      {activeKey === 'overview' && (
-        <ContractDocsPanel
-          customerId={customerId}
-          style={{ marginTop: 16 }}
-          empty="这家客户还没有合同文档——去合同台账按模板生成"
-        />
-      )}
-
       {activeKey === 'overview' && can('agent:use') && (
         <SectionCard
-          title="AI 分析"
-          // 和普通信息卡区分开：极淡的靛蓝底 + 左侧主色竖线。
-          // 不用淡紫 —— 整套系统主色是蓝，紫插进来会像另一个系统的模块。
-          style={{
-            marginTop: 16,
-            // 紫 → 蓝的斜向渐变：紫色给「这是智能功能」的信号，
-            // 收到蓝色这一侧再淡出，和主色接上，不会像另一个系统的模块。
-            background:
-              'linear-gradient(135deg, rgba(124,58,237,0.10) 0%, rgba(31,95,214,0.07) 45%, rgba(31,95,214,0.01) 100%)',
-            borderLeft: '3px solid #7c3aed',
-          }}
+          title={
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <span className="customer-info-icon" style={{ background: '#efe9fd', color: '#7a4fd3' }}>
+                <IconAIEditLevel1 size="small" />
+              </span>
+              AI 分析
+            </span>
+          }
+          // 去掉原来的紫色斜向渐变 + 紫色左边条（2026-11-17）：
+          // 全站主色是蓝，一块淡紫铺在灰白页面里像另一个系统的模块；
+          // 而且这张卡多数时候只有一行空态文案，不值得用"特殊皮肤"强调。
+          // 现在与普通卡片同底色，靠标题前那个小图标做识别。
+          style={{ marginTop: 16 }}
           extra={
             <>
               <Button size="small" loading={aiMutation.isPending} onClick={() => aiMutation.mutate('summary')}>
