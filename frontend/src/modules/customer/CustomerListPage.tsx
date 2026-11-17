@@ -1,5 +1,5 @@
 import { UNRATED_OPTION, customerLevelValue, customerLevelPayload } from '../../shared/customer-level'
-import { useRef, useState } from 'react'
+import { useRef, useState, type CSSProperties } from 'react'
 import PageHeader from '../../shared/components/PageHeader'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -122,16 +122,52 @@ export default function CustomerListPage() {
   // 本次「新建客户」表单的幂等键：打开表单时生成，成功后清空（第八批 8.15）
   const createRequestKeyRef = useRef('')
   const [importing, setImporting] = useState(false)
+  // 导入预览 / 导入结果共用的行排版（2026-11-17 导入页审视）。
+  // 原来是「名字 —— 原因」一行行往下堆，几十条失败原因长得一模一样，
+  // 既不知道是 Excel 第几行，名称空着时前面只剩一个破折号。
+  // 现在：行号单独一列对齐，名称占主位，原因换到第二行。
+  const importSectionTitle: CSSProperties = {
+    fontWeight: 600,
+    fontSize: 13,
+    color: 'var(--crm-text)',
+    marginBottom: 6,
+  }
+  const importRow: CSSProperties = { display: 'flex', gap: 8, padding: '3px 0', fontSize: 13, lineHeight: 1.7 }
+  const importRowNo: CSSProperties = {
+    flex: '0 0 auto',
+    minWidth: 58,
+    fontSize: 12,
+    color: 'var(--crm-text-3)',
+    fontVariantNumeric: 'tabular-nums',
+  }
+  const importRowText: CSSProperties = { minWidth: 0, overflowWrap: 'anywhere', color: 'var(--crm-text-2)' }
+  const importScroll: CSSProperties = {
+    // 关键：正文自己滚。不设上限时四十多行失败原因会把弹窗顶出屏幕，
+    // 「确认导入 / 取消」跟着一起被顶出去，等于没法操作。
+    maxHeight: 'min(56vh, 520px)',
+    overflowY: 'auto',
+    paddingRight: 6,
+  }
   type ImportSummary = {
     created_count: number
     total: number
     skipped_count: number
     failed_count: number
     created: Array<{ row?: number; id?: number; name: string }>
-    skipped: Array<{ name: string; reason: string }>
-    failed: Array<{ row?: number; name: string; reason: string }>
+    skipped: Array<{ row?: number; name: string; reason: string }>
+    failed: Array<{ row?: number; name: string; reason: string; problems?: string[] }>
     disputed_count?: number
-    disputed?: Array<{ row?: number; name: string; candidate?: string | null; note?: string | null }>
+    disputed?: Array<{
+      row?: number
+      name: string
+      candidate?: string | null
+      note?: string | null
+      score?: number
+      reasons?: string[]
+    }>
+    // 后端一直有这三个字段（preview 与结果共用同一结构），前端类型没声明：
+    // 更新了几条、失败总共有多少、是否被截断都拿不到，只能干说一个数。
+    updated_count?: number
     failed_total?: number
     failed_truncated?: boolean
     preview_token?: string
@@ -747,35 +783,86 @@ export default function CustomerListPage() {
         width={680}
       >
         {importPreview && (
-          <div style={{ display: 'grid', gap: 12 }}>
-            <div style={{ display: 'flex', gap: 16 }}>
+          <div style={importScroll}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
               <span className="chip chip-primary">将新增 {importPreview.created_count} 条</span>
-              <span className="chip chip-warning">
-                跳过 {importPreview.skipped_count} 条 · 失败 {importPreview.failed_count} 条
-              </span>
+              {(importPreview.updated_count ?? 0) > 0 && (
+                <span className="chip chip-success">更新 {importPreview.updated_count} 条</span>
+              )}
+              {/* 跳过是中性结果（同名/空行，不算错），原来和失败一样橙，分不出轻重 */}
+              <span className="chip">跳过 {importPreview.skipped_count} 条</span>
+              <span className="chip chip-error">失败 {importPreview.failed_count} 条</span>
               {(importPreview.disputed_count ?? 0) > 0 && (
                 <span className="chip chip-warning">待裁定 {importPreview.disputed_count} 条</span>
               )}
             </div>
-            {(importPreview.disputed ?? []).length > 0 && (
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>疑似重复，导入后进入待裁定</div>
-                {importPreview.disputed?.map((item) => (
-                  <div key={`preview-disputed-${item.row}-${item.name}`} style={{ fontSize: 12, color: 'var(--crm-text-2)', lineHeight: 1.8 }}>
-                    {item.name} {item.candidate ? `—— ${item.candidate}` : ''} {item.note ?? ''}
-                  </div>
-                ))}
-              </div>
+
+            {importPreview.created.length > 0 && (
+              <section style={{ marginBottom: 16 }}>
+                <div style={importSectionTitle}>这次会新增的客户</div>
+                {importPreview.created.map((item) => {
+                  // 同一行既在「新增」又在「待裁定」时，光看两个名单会以为重复导入 ——
+                  // 实际是"先建、再挂起等你裁定"，这里说清楚。
+                  const suspended = (importPreview.disputed ?? []).some((d) => d.row === item.row)
+                  return (
+                    <div key={`preview-new-${item.row ?? item.name}`} style={importRow}>
+                      <span style={importRowNo}>{item.row ? `第 ${item.row} 行` : '—'}</span>
+                      <span style={importRowText}>
+                        {item.name}
+                        {suspended && (
+                          <span style={{ color: 'var(--crm-warning)' }}> — 会先挂起，等你在疑似重复里裁定</span>
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
+              </section>
             )}
-            {importPreview.failed.length > 0 && (
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>失败的行</div>
-                {importPreview.failed.map((item) => (
-                  <div key={`preview-fail-${item.row}-${item.name}`} style={{ fontSize: 12, color: 'var(--crm-error)', lineHeight: 1.8 }}>
-                    {item.name} —— {item.reason}
+
+            {(importPreview.disputed ?? []).length > 0 && (
+              <section style={{ marginBottom: 16 }}>
+                <div style={importSectionTitle}>疑似重复：导入后先挂起，等你裁定</div>
+                {(importPreview.disputed ?? []).map((item) => (
+                  <div key={`preview-disputed-${item.row}-${item.name}`} style={importRow}>
+                    <span style={importRowNo}>{item.row ? `第 ${item.row} 行` : '—'}</span>
+                    <span style={importRowText}>
+                      {item.name}
+                      <span style={{ color: 'var(--crm-text-3)' }}>
+                        {item.candidate && item.candidate !== item.name
+                          ? ` — 与已有客户「${item.candidate}」相似${item.score ? `（${item.score} 分）` : ''}`
+                          : ' — 与系统里已有客户同名'}
+                      </span>
+                      {(item.reasons ?? []).length > 0 && (
+                        <span style={{ color: 'var(--crm-text-3)' }}>：{(item.reasons ?? []).join('、')}</span>
+                      )}
+                    </span>
                   </div>
                 ))}
-              </div>
+              </section>
+            )}
+
+            {importPreview.failed.length > 0 && (
+              <section>
+                <div style={importSectionTitle}>
+                  失败的行
+                  {(importPreview.failed_truncated ?? false) && (
+                    <span style={{ fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                      （只列出前 {importPreview.failed.length} 行，共 {importPreview.failed_total ?? importPreview.failed_count} 行）
+                    </span>
+                  )}
+                </div>
+                {importPreview.failed.map((item) => (
+                  <div key={`preview-fail-${item.row}-${item.name}`} style={importRow}>
+                    <span style={importRowNo}>{item.row ? `第 ${item.row} 行` : '—'}</span>
+                    <span style={importRowText}>
+                      {item.name || (
+                        <span style={{ color: 'var(--crm-text-3)' }}>（这一行没填客户名称）</span>
+                      )}
+                      <div style={{ color: 'var(--crm-error)' }}>{item.reason}</div>
+                    </span>
+                  </div>
+                ))}
+              </section>
             )}
           </div>
         )}
@@ -791,12 +878,13 @@ export default function CustomerListPage() {
         width={680}
       >
         {importResult && (
-          <div style={{ display: 'grid', gap: 12 }}>
-            <div style={{ display: 'flex', gap: 16 }}>
-              <span className="chip chip-primary">成功 {importResult.created_count} 条</span>
-              <span className="chip chip-warning">
-                跳过疑似重复 {importResult.skipped_count} 条
-              </span>
+          <div style={importScroll}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+              <span className="chip chip-success">成功 {importResult.created_count} 条</span>
+              {(importResult.updated_count ?? 0) > 0 && (
+                <span className="chip chip-success">更新 {importResult.updated_count} 条</span>
+              )}
+              <span className="chip">跳过 {importResult.skipped_count} 条</span>
               {importResult.failed_count > 0 && (
                 <span className="chip chip-error">失败 {importResult.failed_count} 条</span>
               )}
@@ -804,41 +892,87 @@ export default function CustomerListPage() {
                 <span className="chip chip-warning">待裁定 {importResult.disputed_count} 条</span>
               )}
             </div>
+
+            {/* 结果页原来只说「成功 4 条」，不说是哪 4 个 —— 导完还得自己去客户列表里翻。 */}
+            {importResult.created.length > 0 && (
+              <section style={{ marginBottom: 16 }}>
+                <div style={importSectionTitle}>已新增的客户</div>
+                {importResult.created.map((item) => {
+                  const suspended = (importResult.disputed ?? []).some((d) => d.row === item.row)
+                  return (
+                    <div key={`result-new-${item.row ?? item.name}`} style={importRow}>
+                      <span style={importRowNo}>{item.row ? `第 ${item.row} 行` : '—'}</span>
+                      <span style={importRowText}>
+                        {item.name}
+                        {suspended && (
+                          <span style={{ color: 'var(--crm-warning)' }}> — 已建，但挂起等你在疑似重复里裁定</span>
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
+              </section>
+            )}
+
             {(importResult.disputed ?? []).length > 0 && (
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>已进入待裁定的疑似重复</div>
-                {importResult.disputed?.map((item) => (
-                  <div key={`result-disputed-${item.row}-${item.name}`} style={{ fontSize: 12, color: 'var(--crm-text-2)', lineHeight: 1.8 }}>
-                    {item.name} {item.candidate ? `—— ${item.candidate}` : ''} {item.note ?? ''}
+              <section style={{ marginBottom: 16 }}>
+                <div style={importSectionTitle}>已进入待裁定的疑似重复</div>
+                {(importResult.disputed ?? []).map((item) => (
+                  <div key={`result-disputed-${item.row}-${item.name}`} style={importRow}>
+                    <span style={importRowNo}>{item.row ? `第 ${item.row} 行` : '—'}</span>
+                    <span style={importRowText}>
+                      {item.name}
+                      <span style={{ color: 'var(--crm-text-3)' }}>
+                        {item.candidate && item.candidate !== item.name
+                          ? ` — 与已有客户「${item.candidate}」相似${item.score ? `（${item.score} 分）` : ''}`
+                          : ' — 与系统里已有客户同名'}
+                      </span>
+                      {(item.reasons ?? []).length > 0 && (
+                        <span style={{ color: 'var(--crm-text-3)' }}>：{(item.reasons ?? []).join('、')}</span>
+                      )}
+                    </span>
                   </div>
                 ))}
-              </div>
+              </section>
             )}
+
             {importResult.skipped.length > 0 && (
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>被跳过的行</div>
+              <section style={{ marginBottom: 16 }}>
+                <div style={importSectionTitle}>被跳过的行</div>
                 {importResult.skipped.map((item) => (
-                  <div
-                    key={`skip-${item.name}`}
-                    style={{ fontSize: 12, color: 'var(--crm-text-2)', lineHeight: 1.8 }}
-                  >
-                    {item.name} —— {item.reason}
+                  <div key={`skip-${item.row ?? ''}-${item.name}`} style={importRow}>
+                    <span style={importRowNo}>{item.row ? `第 ${item.row} 行` : '—'}</span>
+                    <span style={importRowText}>
+                      {item.name}
+                      <div style={{ color: 'var(--crm-text-3)' }}>{item.reason}</div>
+                    </span>
                   </div>
                 ))}
-              </div>
+              </section>
             )}
+
             {importResult.failed.length > 0 && (
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>失败的行</div>
+              <section>
+                <div style={importSectionTitle}>
+                  失败的行
+                  {(importResult.failed_truncated ?? false) && (
+                    <span style={{ fontWeight: 400, color: 'var(--crm-text-3)' }}>
+                      （只列出前 {importResult.failed.length} 行，共 {importResult.failed_total ?? importResult.failed_count} 行）
+                    </span>
+                  )}
+                </div>
                 {importResult.failed.map((item) => (
-                  <div
-                    key={`fail-${item.name}`}
-                    style={{ fontSize: 12, color: 'var(--crm-error)', lineHeight: 1.8 }}
-                  >
-                    {item.name} —— {item.reason}
+                  <div key={`fail-${item.row ?? ''}-${item.name}`} style={importRow}>
+                    <span style={importRowNo}>{item.row ? `第 ${item.row} 行` : '—'}</span>
+                    <span style={importRowText}>
+                      {item.name || (
+                        <span style={{ color: 'var(--crm-text-3)' }}>（这一行没填客户名称）</span>
+                      )}
+                      <div style={{ color: 'var(--crm-error)' }}>{item.reason}</div>
+                    </span>
                   </div>
                 ))}
-              </div>
+              </section>
             )}
           </div>
         )}
