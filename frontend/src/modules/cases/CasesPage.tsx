@@ -423,13 +423,17 @@ export default function CasesPage() {
             {
               title: '标题',
               dataIndex: 'title',
-              // 案例标题常是一整句（"预算卡死在 5 万：拆成两期交付…"），
-              // 而这张表要塞 8 列在 1130 里，标题给不了无限宽度。
-              // 超过 22 字物理截断 + 省略号，鼠标悬停(title 属性)能看到全文；
-              // 光靠 CSS ellipsis 在 table-layout:auto 下管不住列的最小宽度。
+              /* 原来是"超过 22 个字就切掉"：这个 22 是按当年列宽估的，
+                 字宽一变就切得多余或不够；标题短一点明明放得下也被切。
+                 改成给这一列定宽 + CSS 省略号 —— 有多少空间就显示多少，
+                 悬停看全文。 */
+              width: 316,
               render: (v: string) => (
-                <span title={v}>
-                  {v.length > 22 ? `${v.slice(0, 22)}…` : v}
+                <span
+                  title={v}
+                  style={{ display: 'block', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {v}
                 </span>
               ),
             },
@@ -438,13 +442,13 @@ export default function CasesPage() {
             // 一屏扫过去先看到作者名，而不是能不能用。
             {
               title: '客户',
-              width: 180,
+              width: 146,
               render: (_: unknown, record: CaseRow) => record.customer_name ?? record.customer_label ?? '-',
             },
             {
               title: '状态',
               dataIndex: 'status_label',
-              width: 115,
+              width: 108,
               render: (v: string, record: CaseRow) => (
                 <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                   <Tag color={STATUS_TONE[record.status] ?? 'grey'}>{v}</Tag>
@@ -460,15 +464,15 @@ export default function CasesPage() {
             {
               title: '阶段',
               dataIndex: 'stage_reached',
-              width: 90,
+              width: 86,
               render: (v: string | null) => (v ? STAGE_LABEL[v] ?? v : '-'),
             },
-            { title: '作者', dataIndex: 'author_name', width: 90 },
+            { title: '作者', dataIndex: 'author_name', width: 78 },
             // 行业 / 产品线合成一列：两者都是"这条经验适合什么场景"的分类标签，
             // 分开占两列各 100 宽，把标题挤得只剩 300；合并成一列省下 100。
             {
               title: '行业 / 产品线',
-              width: 145,
+              width: 132,
               render: (_: unknown, record: CaseRow) => {
                 const parts = [record.industry, record.product_line].filter(Boolean)
                 return parts.length ? parts.join(' · ') : '-'
