@@ -578,14 +578,30 @@ a:not([href]) {
     height: 30px;
     font-size: 15px;
   }
+  /* 分组标题文字在收起态没地方放，但**分组本身不能消失** ——
+     三组菜单（销售作业 / 运营管理 / 智能与协同）如果连成一片，
+     收起后就是一长串没有分界的小图标，靠得更近反而更认不出来。 */
   .app-shell.sider-collapsed .nav-group-title {
-    display: none;
+    display: block;
+    height: 1px;
+    padding: 0;
+    margin: 8px 14px;
+    overflow: hidden;
+    font-size: 0;
+    background: var(--crm-surface-high);
+    border-radius: 1px;
   }
   .app-shell.sider-collapsed .nav-link {
     justify-content: center;
     padding: 8px 0;
   }
-  .app-shell.sider-collapsed .nav-link span:not(.nav-icon) {
+  /* ⚠️ 必须用 `>` 选直接子元素。
+     写成 `span:not(.nav-icon)` 会**连图标一起隐藏**：Semi 图标本身就是一个
+     `<span class="semi-icon">`，它不带 nav-icon 类，于是被这条选择器匹配到，
+     收起侧栏后每个菜单项变成一片空白的可点区域 ——
+     2026-11-17 主人贴图说「折叠之后什么都看不见，却还可以点，不就是盲点吗」。
+     加了 `>` 之后只隐藏包着文字的那个直接子 span，图标原样留下。 */
+  .app-shell.sider-collapsed .nav-link > span:not(.nav-icon) {
     display: none;
   }
   .app-shell.sider-collapsed .sider-version {
