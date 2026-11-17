@@ -2041,7 +2041,10 @@ export default function QuoteDetailPage() {
               style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}
             >
               <Select
-                style={{ width: 96 }}
+                /* 96 时「现货 SKU」被截成「现货 S…」—— 这一格的选择决定了
+                   后面那个下拉是选产品还是选定制需求，截断了就看不懂自己在选什么。
+                   110 刚好放下五个字 + 箭头 + 内边距。 */
+                style={{ width: 110 }}
                 value={row.mode}
                 onChange={(value) =>
                   patchRow(index, {
@@ -2118,8 +2121,21 @@ export default function QuoteDetailPage() {
               </Button>
             </div>
           ))}
+          {/* 「+ 添加一行」原来被撑成一条通栏白框，看着像又一行空记录。
+              收成一个靠左的小字按钮：它是"往列表里加东西"的动作，不是一行数据。 */}
           <Button
             theme="borderless"
+            /* 父容器是 display:grid —— 子项默认会被拉满整列，
+               alignSelf 管不了这种拉伸，必须用 justifySelf: 'start'。 */
+            style={{
+              justifySelf: 'start',
+              width: 'auto',
+              padding: '0 4px',
+              border: 'none',
+              background: 'transparent',
+              justifyContent: 'flex-start',
+              color: 'var(--crm-primary)',
+            }}
             onClick={() =>
               setItemRows((rows) => [
                 ...rows,
@@ -2172,29 +2188,42 @@ export default function QuoteDetailPage() {
               </div>
             </div>
           ))}
-          <Select
-            value={chargeForm.charge_type}
-            onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
-            optionList={editable ? CHARGE_TYPES : CHARGE_TYPES.filter((item) => item.value === 'logistics')}
-            disabled={!editable}
-            style={{ width: '100%' }}
-          />
-          <Input
-            value={chargeForm.description}
-            onChange={(value) => setChargeForm({ ...chargeForm, description: value })}
-            placeholder="说明，例如：宁波到苏州运费"
-            disabled={!editable && Boolean(existingFreight)}
-          />
-          <Input
-            value={chargeForm.amount}
-            onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
-            placeholder={
-              chargeForm.charge_type === 'discount'
-                ? '优惠金额（填正数，系统自动扣减）'
-                : '金额；确属零运费请显式填 0，不要留空'
-            }
-            disabled={!editable && Boolean(existingFreight)}
-          />
+          {/* 三个框原来全靠 placeholder 自我介绍：一点进去字就没了，
+              三个空格子长得一模一样，填完也看不出这格是"说明"还是"金额"。
+              每格上面配一个固定小标签（和数据字典、回收节奏同一套做法），
+              placeholder 只留"怎么填"的例子。 */}
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>类型</div>
+            <Select
+              value={chargeForm.charge_type}
+              onChange={(value) => setChargeForm({ ...chargeForm, charge_type: value as string })}
+              optionList={editable ? CHARGE_TYPES : CHARGE_TYPES.filter((item) => item.value === 'logistics')}
+              disabled={!editable}
+              style={{ width: '100%' }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>说明</div>
+            <Input
+              value={chargeForm.description}
+              onChange={(value) => setChargeForm({ ...chargeForm, description: value })}
+              placeholder="例如：宁波到苏州运费"
+              disabled={!editable && Boolean(existingFreight)}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: 'var(--crm-text-3)', marginBottom: 4 }}>金额</div>
+            <Input
+              value={chargeForm.amount}
+              onChange={(value) => setChargeForm({ ...chargeForm, amount: value })}
+              placeholder={
+                chargeForm.charge_type === 'discount'
+                  ? '填正数，系统自动扣减'
+                  : '确属零运费请显式填 0，不要留空'
+              }
+              disabled={!editable && Boolean(existingFreight)}
+            />
+          </div>
           {chargeForm.charge_type === 'logistics' && (
             <div style={{ color: 'var(--crm-text-3)', fontSize: 12, lineHeight: 1.6 }}>
               运费的支出金额与向客户收取的金额<b>共用这一份数据</b>：客户全额承担、
