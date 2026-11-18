@@ -3315,7 +3315,7 @@ table:not(.semi-table) td {
   padding-bottom: 0;
 }
 .semi-modal-body:has(.crm-confirm-body) {
-  padding: 12px 28px 0;
+  padding: 16px 28px 0;
 }
 /* 动作区和正文之间拉一条细线：现在按钮直接贴在正文末尾，
    一大块留白里突然冒出两个按钮，看着挤又散。 */
@@ -3349,11 +3349,16 @@ table:not(.semi-table) td {
 .crm-confirm-header {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px;
   /* 自定义 header 不进 Semi 的 .semi-modal-header 包裹，那边加的 padding 落空，
      标题被顶到卡片上沿（实拍只剩 3px）。这里补足 24px 顶部呼吸位。 */
-  padding-top: 24px;
+  padding: 24px 24px 18px;
+  /* 通栏暖色头：用负边距吃掉 content 的左右 24，让底色铺到卡片两边，
+     和下面的正文、按钮形成"上重下轻"的自然分区，而不是一片白里飘着两行字。 */
+  margin: 0 -24px;
+  /* 头带只做一根极淡的主色下边线，不铺底色 —— 全站弹窗都是白底，
+     单独给确认弹窗染一层色会显得像另一个系统的组件。 */
+  border-bottom: 1px solid rgba(47, 109, 246, .10);
 }
 .crm-confirm-icon {
   width: 30px;
@@ -3377,12 +3382,11 @@ table:not(.semi-table) td {
   letter-spacing: .3px;
 }
 .crm-confirm-sub {
-  width: 100%;
-  margin-left: 40px;
-  margin-top: 2px;
+  margin-left: auto;
   font-size: 12.5px;
-  letter-spacing: .2px;
+  letter-spacing: .4px;
   color: var(--crm-text-3);
+  white-space: nowrap;
 }
 .crm-confirm-body {
   padding: 0;

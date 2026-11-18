@@ -143,6 +143,8 @@ export function ConfirmRequiredModal(props: {
           <span className="crm-confirm-icon" aria-hidden="true">!</span>
           {/* 标题写成"要你确认的是什么事"，不是系统口吻的"这个操作需要确认" */}
           <span className="crm-confirm-title">请确认这次操作</span>
+          {/* 副标题不再另起一行（原来标题下面吊一行灰字，头部显高又空）；
+              改成贴在同一条水平线上靠右，像"生效说明"的标签。 */}
           <span className="crm-confirm-sub">确认后立即生效</span>
         </div>
       }
