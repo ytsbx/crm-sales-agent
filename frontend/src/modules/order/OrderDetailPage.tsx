@@ -1113,7 +1113,7 @@ export default function OrderDetailPage() {
                 { title: '操作人', dataIndex: 'operator_name', width: 110, render: (v: string | null) => v ?? '系统' },
                 { title: '备注', dataIndex: 'remark', render: (v: string | null) => v ?? '-' },
                 {
-                  title: '时间',
+                  title: '变更时间',
                   dataIndex: 'created_at',
                   width: 190,
                   render: (v: string) => formatBeijingTime(v),

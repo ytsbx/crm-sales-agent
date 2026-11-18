@@ -644,7 +644,7 @@ export default function OpportunityDetailPage() {
               </div>
               <Table<FollowUp>
                 columns={[
-                  { title: '时间', dataIndex: 'created_at', width: 180, render: (v: string) => formatBeijingTime(v) },
+                  { title: '跟进时间', dataIndex: 'created_at', width: 180, render: (v: string) => formatBeijingTime(v) },
                   { title: '方式', dataIndex: 'followup_type', width: 100 },
                   { title: '内容', dataIndex: 'content' },
                   { title: '客户反馈', dataIndex: 'customer_feedback', render: (v: string | null) => v ?? '-' },

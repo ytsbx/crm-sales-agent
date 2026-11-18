@@ -2085,7 +2085,7 @@ export default function QuoteDetailPage() {
               { title: '处理人', dataIndex: 'approver_name', width: 120, render: (v: string | null) => v ?? '-' },
               { title: '意见', dataIndex: 'comment', render: (v: string | null) => v ?? '-' },
               {
-                title: '时间',
+                title: '审批时间',
                 dataIndex: 'created_at',
                 width: 190,
                 render: (v: string) => formatBeijingTime(v),

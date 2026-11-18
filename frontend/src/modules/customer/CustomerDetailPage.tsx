@@ -961,7 +961,7 @@ export default function CustomerDetailPage() {
               <Table<FollowUp>
                 columns={[
                   {
-                    title: '时间',
+                    title: '跟进时间',
                     dataIndex: 'created_at',
                     width: 180,
                     render: (v: string) => formatBeijingTime(v),

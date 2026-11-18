@@ -1501,7 +1501,7 @@ export default function AnalyticsPage() {
               render: (v?: number) => `¥${Math.round(v ?? 0).toLocaleString('zh-CN')}`,
             },
             {
-              title: '时间',
+              title: '单据日期',
               dataIndex: 'date',
               width: 150,
               // 新客行的日期取自**冻结快照**（R07）。旧版快照只冻了归属月份、

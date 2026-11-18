@@ -429,7 +429,7 @@ export default function AuditLogPanel({ active }: AuditLogPanelProps) {
             // 时间**必须单行**。试过拆成「日期 / 时分秒」两行，宽度是省了 20px，
             // 但行高从 40 撑到 60，一屏从 15 条掉到 11 条 —— 为了省 20px 横向
             // 牺牲 4 条纵向信息，不划算。所以只把宽度从 170 收到 150（不换行）。
-            title: '时间',
+            title: '操作时间',
             dataIndex: 'created_at',
             width: 145,
             render: (v: string) => (

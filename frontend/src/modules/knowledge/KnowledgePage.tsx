@@ -1066,7 +1066,7 @@ export default function KnowledgePage() {
             { title: '本版说明', dataIndex: 'revision_note', render: (v: string | null) => v ?? '（原始要求）' },
             { title: '操作', render: (_: unknown, row: CustomInquiryRow) => <div>{can('sample:manage') && <a onClick={() => { setHistoryTarget(null); setSampleSourceId(row.id) }}>按此版本申请打样</a>}{can('order:manage') && <a style={{ display: 'block' }} onClick={() => { setHistoryTarget(null); setDraftSourceId(row.id) }}>按此版本建订单草稿</a>}</div> },
             {
-              title: '时间',
+              title: '提交时间',
               dataIndex: 'created_at',
               width: 150,
               render: (v: string) => formatBeijingTime(v),
@@ -1255,7 +1255,7 @@ export default function KnowledgePage() {
                   { title: '处理人', dataIndex: 'person', width: 160 },
                   { title: '节点 / 操作', dataIndex: 'node', width: 150 },
                   { title: '状态 / 结果', dataIndex: 'status', width: 130 },
-                  { title: '时间', dataIndex: 'time', width: 180, render: (value: string | null) => {
+                  { title: '发生时间', dataIndex: 'time', width: 180, render: (value: string | null) => {
                     return formatApprovalEventTime(value).replace('尚未返回', '未返回')
                   } },
                   { title: '处理意见', dataIndex: 'remark', render: (value: string) => value || '—' },

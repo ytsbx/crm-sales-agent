@@ -1891,7 +1891,7 @@ export default function PriceCenterPage() {
               <Table<PricingHistoryRow>
                 columns={[
                   {
-                    title: '时间',
+                    title: '变更时间',
                     dataIndex: 'created_at',
                     width: 170,
                     render: (v: string) => formatBeijingTime(v),
