@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { parseOptionalNumber } from '../../shared/number-input'
 import { calendarDay } from '../../shared/calendar-day'
 import PageHeader from '../../shared/components/PageHeader'
@@ -40,6 +40,16 @@ export default function OpportunityListPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { can } = usePermissions()
+
+  /* 1024 宽内容区约 700px，商机表六列合计 890px+，「成交日 / 风险 / 负责人」
+     被裁到卡片外。窄屏切紧凑档：负责人并进客户第二行，金额/需求、
+     成交日/风险各拆两行，列宽整体收紧。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
@@ -120,17 +130,47 @@ export default function OpportunityListPage() {
     {
       title: '商机名称',
       dataIndex: 'title',
+      width: compact ? 150 : undefined,
       render: (text: string, record: Opportunity) => (
-        <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/opportunities/${record.id}`)}>
+        <a
+          title={text}
+          style={{
+            color: 'var(--crm-primary)',
+            display: 'block',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          onClick={() => navigate(`/opportunities/${record.id}`)}
+        >
           {text}
         </a>
       ),
     },
-    { title: '客户', dataIndex: 'customer_name', width: 220, render: (v: string | null) => v ?? '-' },
+    {
+      title: '客户',
+      dataIndex: 'customer_name',
+      width: compact ? 160 : 220,
+      render: (v: string | null, record: Opportunity) => (
+        <div style={{ minWidth: 0 }}>
+          <div
+            title={v ?? '-'}
+            style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {v ?? '-'}
+          </div>
+          {compact && (
+            <div style={{ marginTop: 2, fontSize: 12, color: 'var(--crm-text-3)' }}>
+              负责人 {record.owner_name ?? '-'}
+            </div>
+          )}
+        </div>
+      ),
+    },
     {
       title: '阶段',
       dataIndex: 'stage_name',
-      width: 110,
+      width: compact ? 96 : 110,
       render: (value: string | null, record: Opportunity) => (
         <StatusDot
           label={value ?? '-'}
@@ -144,25 +184,48 @@ export default function OpportunityListPage() {
     // 「有值就显示、没值就一条淡灰横线」，空的时候一行只剩一个占位符。
     {
       title: '金额 / 需求',
-      width: 260,
+      width: compact ? 120 : 260,
       render: (_: unknown, record: Opportunity) => {
-        const parts: string[] = []
-        if (record.expected_amount) parts.push(formatMoney(toTwoDecimals(record.expected_amount), 'CNY'))
-        if (record.item_count) parts.push(`${record.item_count} 条需求`)
+        const amount = record.expected_amount
+          ? formatMoney(toTwoDecimals(record.expected_amount), 'CNY')
+          : null
+        const items = record.item_count ? `${record.item_count} 条需求` : null
+        if (compact) {
+          /* 窄屏拆两行：金额一行、需求条数一行，120px 才放得下完整金额 */
+          if (!amount && !items) return <EmptyMark />
+          return (
+            <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+              {amount && <span>{amount}</span>}
+              {items && <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{items}</span>}
+            </div>
+          )
+        }
+        const parts = [amount, items].filter(Boolean) as string[]
         return parts.length ? parts.join(' · ') : <EmptyMark />
       },
     },
     {
       title: '成交日 / 风险',
-      width: 200,
+      width: compact ? 116 : 200,
       render: (_: unknown, record: Opportunity) => {
-        const parts: string[] = []
-        if (record.expected_close_date) parts.push(record.expected_close_date)
-        if (record.risk_level) parts.push(RISK_LABEL[record.risk_level] ?? record.risk_level)
+        const date = record.expected_close_date ?? null
+        const risk = record.risk_level ? (RISK_LABEL[record.risk_level] ?? record.risk_level) : null
+        if (compact) {
+          if (!date && !risk) return <EmptyMark />
+          return (
+            <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+              {date && <span>{date}</span>}
+              {risk && <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>{risk}</span>}
+            </div>
+          )
+        }
+        const parts = [date, risk].filter(Boolean) as string[]
         return parts.length ? parts.join(' · ') : <EmptyMark />
       },
     },
-    { title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? <EmptyMark /> },
+    ...(compact
+      ? []
+      : [{ title: '负责人', dataIndex: 'owner_name', width: 100, render: (v: string | null) => v ?? <EmptyMark /> }]),
   ]
 
   return (
@@ -272,6 +335,7 @@ export default function OpportunityListPage() {
           />
         ) : (
           <Table<Opportunity>
+            className="opportunities-table"
             columns={columns}
             dataSource={query.data?.items ?? []}
             loading={query.isLoading}

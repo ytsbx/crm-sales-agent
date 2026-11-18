@@ -4216,3 +4216,75 @@ table:not(.semi-table) td {
   .wi-bench { grid-template-columns: minmax(120px, 1fr) 88px 54px; }
   .wi-bench-delta { grid-column: 1 / -1; padding-left: 2px; }
 }
+
+/* 产品中心列表：七列合计 730px+ > 1024 宽内容区 699px，
+   「状态 / 创建时间」被裁。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .products-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .products-table .semi-table-row-head,
+  .products-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 商机中心列表：六列合计 890px+ > 1024 宽内容区 699px，
+   「成交日 / 风险 / 负责人」被裁在卡片外。窄屏已并列，这里强制固定布局。 */
+@media (max-width: 1200px) {
+  .opportunities-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .opportunities-table .semi-table-row-head,
+  .opportunities-table .semi-table-row-cell {
+    overflow: hidden;
+  }
+}
+
+/* 商机阶段漏斗：auto-fit 在 1024 宽会排成 5~6 列，8 个阶段变成「6 + 2」，
+   第二行右边空四格（2026-11-18 截图）。窄屏固定 4 列，8 格正好 4×2 填满；
+   换行后第一格的左侧分隔线要藏掉，否则贴着卡片左边悬一条线。 */
+@media (max-width: 1200px) {
+  .stage-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .stage-strip > .stage-tile:nth-child(4n + 1)::before {
+    display: none;
+  }
+}
+
+/* 企业微信：窄屏下 6 个同步按钮会排成「5 + 1」，最后一颗单独占一行；
+   限宽后自动成 3 + 3。五项指标卡在 1370 以下原本 3 + 2，第二行右边空一格。
+   给这张卡 6 格网格：前三张各占 2 格（3×2 满行），后两张各占 3 格（3+3 满行）。
+   放在文件末尾，才能盖住前面 .kpi-cols-5 的媒体查询。 */
+@media (max-width: 1370px) {
+  .page-header.wecom-header .page-header-actions {
+    max-width: 350px;
+  }
+  .kpi-grid.wecom-kpi {
+    grid-template-columns: repeat(6, minmax(0, 1fr)) !important;
+  }
+  .kpi-grid.wecom-kpi > .kpi-card {
+    grid-column: span 2;
+  }
+  .kpi-grid.wecom-kpi > .kpi-card:nth-child(4),
+  .kpi-grid.wecom-kpi > .kpi-card:nth-child(5) {
+    grid-column: span 3;
+  }
+}
+
+/* 回收站三张表（线索 / 产品 / SKU）在 1024 下合计 870～1000px，
+   右侧「删除人」「操作」被推到卡片外。窄屏列宽已在页面里收紧并合并次要列，
+   这里再固定布局兜底，保证表格宽度等于容器、不横向溢出。 */
+@media (max-width: 1200px) {
+  .recycle-table .semi-table {
+    width: 100% !important;
+    table-layout: fixed;
+  }
+  .recycle-table .semi-table-row-head .semi-table-row-cell,
+  .recycle-table .semi-table-row .semi-table-row-cell {
+    overflow: hidden;
+  }
+}

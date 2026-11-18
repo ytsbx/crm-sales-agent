@@ -339,6 +339,7 @@ export default function WeComPage() {
   return (
     <div className="page-container">
       <PageHeader
+        className="wecom-header"
         title="企业微信"
         subtitle="外部联系人同步、客户建档确认、离职继承"
         extra={

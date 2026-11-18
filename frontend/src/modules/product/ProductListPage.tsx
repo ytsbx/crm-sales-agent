@@ -1,5 +1,5 @@
 import { formatBeijingTime } from '../../shared/beijing-time'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -136,34 +136,56 @@ export default function ProductListPage() {
     onError: (error: Error) => Toast.error(error.message),
   })
 
+  /* 1024 宽内容区约 700px，产品表七列合计 730px+，「状态 / 创建时间」
+     被裁到卡片外。窄屏切紧凑档：列宽收紧，创建时间在详情里能看，列表先不占位。 */
+  const [compact, setCompact] = useState(() => window.innerWidth < 1200)
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < 1200)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const columns = [
     {
       title: '产品名称',
       dataIndex: 'name',
+      width: compact ? 200 : undefined,
       render: (text: string, record: Product) => (
-        <a style={{ color: 'var(--crm-primary)' }} onClick={() => navigate(`/products/${record.id}`)}>
+        <a
+          title={text}
+          style={{
+            color: 'var(--crm-primary)',
+            display: 'block',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          onClick={() => navigate(`/products/${record.id}`)}
+        >
           {text}
         </a>
       ),
     },
-    { title: '产品线', dataIndex: 'product_line', width: 140, render: (v: string | null) => v ?? '-' },
-    { title: '分类', dataIndex: 'category', width: 120, render: (v: string | null) => v ?? '-' },
-    { title: '品牌', dataIndex: 'brand', width: 120, render: (v: string | null) => v ?? '-' },
-    { title: 'SKU 数', dataIndex: 'sku_count', width: 90 },
+    { title: '产品线', dataIndex: 'product_line', width: compact ? 100 : 140, render: (v: string | null) => v ?? '-' },
+    { title: '分类', dataIndex: 'category', width: compact ? 100 : 120, render: (v: string | null) => v ?? '-' },
+    { title: '品牌', dataIndex: 'brand', width: compact ? 90 : 120, render: (v: string | null) => v ?? '-' },
+    { title: 'SKU 数', dataIndex: 'sku_count', width: compact ? 70 : 90 },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      width: compact ? 70 : 90,
       render: (v: string) => (
         <StatusDot label={v === 'active' ? '在售' : '停用'} tone={v === 'active' ? 'green' : 'grey'} />
       ),
     },
-    {
-      title: '创建时间',
-      dataIndex: 'created_at',
-      width: 170,
-      render: (v: string) => formatBeijingTime(v),
-    },
+    ...(compact
+      ? []
+      : [{
+          title: '创建时间',
+          dataIndex: 'created_at',
+          width: 170,
+          render: (v: string) => formatBeijingTime(v),
+        }]),
   ]
 
   return (
@@ -272,6 +294,7 @@ export default function ProductListPage() {
         </div>
 
         <Table<Product>
+          className="products-table"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
