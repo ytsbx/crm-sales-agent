@@ -1928,7 +1928,9 @@ export default function QuoteDetailPage() {
           /* 撑满整卡高度，让「费用合计」落在这栏的底边 ——
              两栏并排时右栏（金额汇总）通常更高，左栏若按内容收高，
              底下会空出一截（2026-11-16 主人说"那一块突出来了"）。 */
-          style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+          /* 不再撑满行高：两张卡各自按内容收高，费用合计自然落在自己卡内，
+             不会压到卡底边；两卡底边不齐也没关系，比"贴边"好看。 */
+          style={{ display: 'flex', flexDirection: 'column' }}
           extra={
             canManage &&
             (editable || canEditFreightOnly) && (

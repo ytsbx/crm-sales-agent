@@ -1491,16 +1491,18 @@ a:not([href]) {
 
 .quote-money-block {
   display: grid;
-  /* 左列宽一点：附加费用表有 4 列；右列金额汇总只有"标签 + 数字" */
-  /* 右栏给一个下限：金额汇总里「应付合计 + 数字」必须一行放得下，
-     给 0 下限时窄屏会被压成"标签一行、数字贴右边缘"甚至折行。 */
-  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr);
-  gap: 28px;
-  background: var(--crm-surface);
-  border: 1px solid var(--crm-border);
-  border-radius: var(--crm-radius);
-  /* 外圈再松一点：数字与表格原来离卡片边只有 20px，1024 下看着贴框 */
-  padding: 22px 26px;
+  /* 左右各是一张**独立白卡**，不是一个白底里塞两段内容。
+     原来把两张卡降级成透明分区、共用一层底 —— 结果右栏标题紧贴左栏按钮，
+     左栏的"费用合计"落在公共底边线上，右边金额贴着公共右边：
+     所有"挤在框边"都是这层公共边框造成的。
+     现在各卡自带 padding 与阴影，中间 16px 间距，谁的边都只属于自己。 */
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+  gap: 16px;
+  align-items: start;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
 }
 
 /* 窄屏塌成单列：两栏并排时各只剩约 180px，「应付合计」这类标签会被压成
@@ -1516,12 +1518,13 @@ a:not([href]) {
   }
 }
 
-/* 栏内的两张"卡"降级成普通分区：去掉各自的底、框、内边距 */
+/* 两张卡各自恢复完整卡片：白底、圆角、阴影、内边距 20（与站内其它卡一致） */
 .quote-money-block > .card-block {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
+  background: var(--crm-surface);
+  border: 1px solid transparent;
+  border-radius: var(--crm-radius);
+  padding: 20px 20px 22px;
+  box-shadow: var(--crm-shadow);
 }
 
 /* ===== 业务规则页：把"平铺的小标题"收成一张张卡片 =====
