@@ -3877,3 +3877,70 @@ table:not(.semi-table) td {
   .quote-todo-row { flex-wrap: wrap; }
   .quote-todo-side { margin-left: 16px; }
 }
+
+/* ===== 金额汇总的合计块 =====
+   原来四行明细和「应付合计」是同一套字号/颜色，扫一眼分不出最终要付多少。
+   合计两行放进浅灰底、圆角 10，金额 18/650 用主色，利润行退成次级色。 */
+.quote-summary-total {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--crm-surface-low);
+}
+.qst-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.qst-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text);
+}
+.qst-amount {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--crm-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ===== 对外与归档：宽屏两列 =====
+   原来三块全宽竖排，发送记录表只有三列却铺满整行，右边半屏空白。
+   宽屏拆成"左发送记录 / 右合同+单据"，左列与右列之间用一条竖线分隔；
+   窄屏（<1100）回到单列，分隔线换回横线。 */
+.quote-archive-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  min-width: 0;
+}
+.qa-col {
+  padding-right: 22px;
+  border-right: 1px solid var(--crm-border);
+  min-width: 0;
+}
+.qa-col-last {
+  padding-right: 0;
+  padding-left: 22px;
+  border-right: 0;
+}
+/* 中间列也吃一份左内边距，三列间距才均匀 */
+.qa-col:nth-child(2) { padding-left: 22px; }
+@media (max-width: 1100px) {
+  .quote-archive-grid { grid-template-columns: minmax(0, 1fr); }
+  .qa-col {
+    padding: 0 0 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--crm-border);
+  }
+  .qa-col:nth-child(2) { padding-left: 0; }
+  .qa-col-last {
+    padding: 14px 0 0;
+    border-bottom: 0;
+  }
+}

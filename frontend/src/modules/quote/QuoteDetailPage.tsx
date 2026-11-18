@@ -2147,18 +2147,13 @@ export default function QuoteDetailPage() {
               </div>
             </div>
             {/* 合计贴底：marginTop:auto 吃掉多出来的高度 */}
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 10,
-                paddingTop: 12,
-                borderTop: '1px solid var(--crm-surface-high)',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600, fontSize: 16 }}>
-                <span>应付合计</span>
-                <span style={{ color: 'var(--crm-primary)' }}>{cny(version.total_amount_exact ?? summary.total_amount)}</span>
+            {/* 合计不再是一行裸字：浅灰底托住"应付合计 + 预计利润"两行，
+                让整张卡有个明确的落点。原来四行明细和合计长得一样，
+                扫一眼分不出哪个是"最终要付的钱"。 */}
+            <div className="quote-summary-total">
+              <div className="qst-main">
+                <span className="qst-label">应付合计</span>
+                <span className="qst-amount">{cny(version.total_amount_exact ?? summary.total_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
                 <span style={{ color: 'var(--crm-text-3)', flexShrink: 0 }}>预计利润合计</span>
@@ -2792,9 +2787,12 @@ export default function QuoteDetailPage() {
       <SectionCard title="对外与归档" style={{ marginTop: 16 }}>
         {/* minWidth:0 是必须的：grid 子项默认 min-width:auto，内层表格/按钮组的
             固有宽度会把卡片撑出容器（实测两个按钮各被切掉一截）。 */}
-        <div style={{ display: 'grid', gap: 0, minWidth: 0 }}>
-          {/* 发过给谁：按整单看 —— V1 发给客户、现在走到 V3，那份发送事实仍要看得见 */}
-          <div style={{ paddingBottom: 14, borderBottom: '1px solid var(--crm-border)', minWidth: 0 }}>
+        {/* 桌面宽度下拆成两列：左边发送记录（一条记录也要占住左半），
+            右边合同 + 对客单据上下叠。原来三块全宽竖排，每块右边空出半屏
+            （发送记录表只有三列，却铺满 1100px）。窄屏回到单列。 */}
+        <div className="quote-archive-grid">
+          <div className="qa-col">
+            {/* 发过给谁：按整单看 —— V1 发给客户、现在走到 V3，那份发送事实仍要看得见 */}
             <div className="quote-archive-head">
               <span className="quote-archive-icon" style={{ background: '#e8f1fd', color: '#1f6fe0' }}>
                 <IconMail size="small" />
@@ -2804,8 +2802,8 @@ export default function QuoteDetailPage() {
             <QuoteSendLogsPanel versionIds={allVersionIds} />
           </div>
 
-          {/* 签了什么：合同会钉死"依据的是哪一版"，所以也按整单筛 */}
-          <div style={{ padding: '14px 0', borderBottom: '1px solid var(--crm-border)', minWidth: 0 }}>
+          <div className="qa-col">
+            {/* 签了什么：合同会钉死"依据的是哪一版"，所以也按整单筛 */}
             <div className="quote-archive-head">
               <span className="quote-archive-icon" style={{ background: '#e6f6f2', color: '#0d9488' }}>
                 <IconFile size="small" />
@@ -2819,9 +2817,9 @@ export default function QuoteDetailPage() {
             />
           </div>
 
-          {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
-              之后改价或改模板都不会影响已导出的那份 */}
-          <div style={{ paddingTop: 14, minWidth: 0 }}>
+          <div className="qa-col qa-col-last">
+            {/* 场景10：对客 Excel 报价单——金额取自当前选中版本的快照，
+                之后改价或改模板都不会影响已导出的那份 */}
             <div className="quote-archive-head">
               <span className="quote-archive-icon" style={{ background: '#fdf1e3', color: '#c2710a' }}>
                 <IconExport size="small" />
