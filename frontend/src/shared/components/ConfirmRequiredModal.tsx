@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Modal, Typography } from '@douyinfe/semi-ui'
+import { Modal } from '@douyinfe/semi-ui'
 
 /**
  * 需要**明确确认**才能执行的动作，统一的确认弹窗。
@@ -88,6 +88,20 @@ export function useConfirmGate() {
   return { ...state, run, proceed, cancel }
 }
 
+/**
+ * 后端文案里用 `**...**` 标重点（例如「**没有撤销入口**」）。
+ * 原来整段原样塞进 <p>，星号直接显示出来，像没渲染完的 Markdown；
+ * 这里只认这一种标记：成对的 `**` 之间加粗 + 换成正文色，其余按原文。
+ */
+const RISK_PATTERN = /没有撤销|不可撤销|无法撤回|不可恢复|不能撤销|不可逆|无法撤销/
+
+function renderEmphasis(text: string) {
+  const parts = text.split(/\*\*(.+?)\*\*/g)
+  return parts.map((part, index) =>
+    index % 2 === 1 ? <strong key={index}>{part}</strong> : <span key={index}>{part}</span>,
+  )
+}
+
 /** 展示后端那段"点了会怎样"的确认弹窗。 */
 export function ConfirmRequiredModal(props: {
   visible: boolean
@@ -97,20 +111,62 @@ export function ConfirmRequiredModal(props: {
   confirmText?: string
 }) {
   const { visible, message, onConfirm, onCancel, confirmText = '确认执行' } = props
+  // 后端文案有时是一段、有时带换行；按行分段落，行距交给 CSS，不再靠 pre-wrap 硬撑
+  const paragraphs = message.split(/\n+/).filter((line) => line.trim())
+  // 长句子再拆一层：`……请确认后继续：A；B；C` 这种，把 A/B/C 摆成三条，
+  // 比一整段"分号连读"好扫。没有冒号分号的保持原样，不硬拆。
+  const structured = paragraphs.map((line) => {
+    const idx = line.indexOf('：')
+    if (idx > 0) {
+      const lead = line.slice(0, idx + 1)
+      const items = line
+        .slice(idx + 1)
+        .split(/[；;]/)
+        .map((part) => part.trim())
+        .filter(Boolean)
+      if (items.length > 1) return { lead, items }
+    }
+    return { lead: '', items: [line] }
+  })
   return (
     <Modal
-      title="这个操作需要确认"
       visible={visible}
       onOk={onConfirm}
       onCancel={onCancel}
       okText={confirmText}
       cancelText="取消"
-      width={520}
+      width={560}
+      className="crm-confirm-modal"
       style={{ maxWidth: 'calc(100vw - 48px)' }}
+      header={
+        <div className="crm-confirm-header">
+          <span className="crm-confirm-icon" aria-hidden="true">!</span>
+          {/* 标题写成"要你确认的是什么事"，不是系统口吻的"这个操作需要确认" */}
+          <span className="crm-confirm-title">请确认这次操作</span>
+          <span className="crm-confirm-sub">这一步会立刻生效，确认后无法自动撤回</span>
+        </div>
+      }
     >
-      <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', lineHeight: 1.9, fontSize: 13 }}>
-        {message}
-      </Typography.Paragraph>
+      <div className="crm-confirm-body">
+        {structured.map((block, index) => (
+          <div key={index} className="crm-confirm-block">
+            {block.lead && <p className="crm-confirm-lead">{renderEmphasis(block.lead)}</p>}
+            {block.items.length === 1 && !block.lead ? (
+              <p className={RISK_PATTERN.test(block.items[0]) ? 'crm-confirm-risk' : undefined}>
+                {renderEmphasis(block.items[0])}
+              </p>
+            ) : (
+              <ul className="crm-confirm-list">
+                {block.items.map((item, i) => (
+                  <li key={i} className={RISK_PATTERN.test(item) ? 'crm-confirm-risk' : undefined}>
+                    {renderEmphasis(item)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
     </Modal>
   )
 }
