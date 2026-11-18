@@ -1854,6 +1854,7 @@ a:not([href]) {
   margin-right: 6px;
 }
 
+
 /* 产品详情的 SKU 表：列宽合计 1159 + 内边距 > 内容区 1130，
    右下「操作」被裁、底部常驻横向滚动条。和报价明细同一套处理方式。 */
 .samples-table .semi-table {

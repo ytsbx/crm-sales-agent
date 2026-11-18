@@ -140,7 +140,9 @@ export default function ApprovalPage() {
         // 规则加签的单子：本级通过后停在会签节点，要让人一眼看出现在轮到谁
         const coSign = record.current_node === 'co_sign' ? record.summary?.co_sign : null
         return (
-          <div style={{ display: 'grid', gap: 2 }}>
+          // 单元格里是块级 grid：全站表头/内容居中，块级内容要显式居中，
+          // 否则「状态」两个字在列中间、「● 待审批」贴着列左边起，上下错半格。
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
             <StatusDot
               label={String(value)}
               tone={value === '待审批' ? 'orange' : value === '已通过' ? 'green' : 'grey'}
@@ -161,7 +163,16 @@ export default function ApprovalPage() {
       // 「看报价 通过 拒绝 转交」四个动作挤在 10px 间距里，字号又小，读起来是
       // 一串没断开的字。间距拉到 16，四个动作才分得开（2026-11-16）。
       render: (_: unknown, record: ApprovalRow) => (
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div
+          style={{
+            display: 'flex',
+            gap: 16,
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            // 同上：flex 容器默认靠左，补 justifyContent 才和表头「操作」同一条中线
+            justifyContent: 'center',
+          }}
+        >
           {record.version_id && (
             <Link to={`/quotes/${record.quote_id}?version=${record.version_id}`} style={{ color: 'var(--crm-primary)' }}>
               看报价
