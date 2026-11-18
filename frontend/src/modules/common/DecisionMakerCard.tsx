@@ -89,10 +89,12 @@ export default function DecisionMakerCard({
       >
         <span style={{ color: 'var(--crm-text-2)', fontWeight: 600 }}>{title}</span>
         <span>该客户还没有登记联系人 — 报价要发给谁、谁能拍板都标不出来。</span>
+        {/* 按钮推到最右：这一条只有一句话，原来整条右边空出大半屏。
+            现在"说明在左、入口贴右"，和上面主数据警告条同一套排法。 */}
         <Button
           size="small"
           theme="borderless"
-          style={{ padding: 0, height: 'auto', fontSize: 12.5 }}
+          style={{ padding: 0, height: 'auto', fontSize: 12.5, marginLeft: 'auto' }}
           onClick={() => navigate(`/customers/${customerId}`)}
         >
           去客户详情加联系人 →
