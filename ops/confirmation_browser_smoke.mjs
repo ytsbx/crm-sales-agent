@@ -14,6 +14,10 @@ const executable=process.env.CRM_SMOKE_BROWSER ?? [
 ].find(existsSync)
 assert.ok(executable, 'set CRM_SMOKE_BROWSER to an installed Chrome/Edge binary')
 assert.ok(process.argv[2], 'provide the built frontend dist directory')
+// 本地受限环境（例如 WorkBuddy 沙箱里）Chrome 自家沙箱会把渲染进程摔死
+// （Page.enable 永不回执、Inspector.targetCrashed）——本地验证可用
+// CRM_SMOKE_BROWSER_FLAGS=--no-sandbox 放行。CI 的 Linux 上没这病，不设即可。
+const extraFlags=(process.env.CRM_SMOKE_BROWSER_FLAGS ?? '').split(' ').filter(Boolean)
 const dist=resolve(process.argv[2])
 const profile=mkdtempSync(join(tmpdir(),'crm-confirm-browser-'))
 const user={id:1,name:'隔离测试用户',username:'isolated',roles:['admin'],permissions:[],data_scope:'all'}
@@ -52,7 +56,10 @@ const quoteVersion=id=>({id,quote_id:121,version_no:id===131?2:1,subtotal_amount
 const recycleRecord=(id,name,extra={})=>({id,name,status_label:'已删除',deleted_by_pending:true,deleted_at:new Date().toISOString(),...extra})
 const wecomContact={id:92,external_userid:'isolated-contact',name:'隔离企微联系人',corp_name:'隔离公司',normalize_status:'pending',normalize_status_label:'待确认',followers:[]}
 const sampleStatuses={61:'pending',62:'pending',63:'rejected',64:'approved',65:'shipped',66:'shipped',67:'rejected'}
-const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending'})
+// 64 测的是「登记寄样」的确认弹窗纪律。产品 69d90f2 起批准后按业务顺序给按钮：
+// 先「登记制作完成」，登记过（made_at 有值）才出「登记寄样」——夹具直接给出
+// 已制作完成的样品，让寄样按钮现身；制作登记是表单弹窗，不在这条冒烟的清单里。
+const sampleFixture=id=>({id,status:sampleStatuses[id]??'pending',status_label:'隔离样品状态',customer_name:'隔离样品客户',items:[],shipments:[],confirm_status:'pending',...(id===64?{made_at:'2026-11-01T10:00:00+08:00'}:{})})
 const publicCustomer={id:9,name:'领取确认测试客户',pool_status:'public',status:'active',tags:[],owner_id:null}
 let analyticsExact=false
 const analyticsTargetWrites=[]
@@ -220,7 +227,7 @@ const port=server.address().port
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 try {
   let browserStderr=''
-  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'],{stdio:['ignore','ignore','pipe']})
+  browser=spawn(executable,['--headless=new','--no-first-run','--no-default-browser-check','--disable-background-networking','--disable-extensions','--remote-debugging-port=0',`--user-data-dir=${profile}`,...extraFlags,'about:blank'],{stdio:['ignore','ignore','pipe']})
   browser.stderr.on('data',chunk=>{browserStderr=(browserStderr+chunk.toString()).slice(-8000)})
   // CI 机器忙时 Chrome 启动能超 10 秒（2026-11-16 晚两条 browser timeout 假红），上限放宽到 60 秒
   for(let i=0;!existsSync(join(profile,'DevToolsActivePort'));i++){if(i>600)throw Error(`browser timeout (exit=${browser.exitCode}, signal=${browser.signalCode}): ${browserStderr}`);await sleep(100)}
