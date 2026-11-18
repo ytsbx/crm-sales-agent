@@ -693,6 +693,7 @@ export default function CustomerListPage() {
         )}
 
         <Table<Customer>
+          className="table-center"
           columns={columns}
           dataSource={query.data?.items ?? []}
           loading={query.isLoading}
