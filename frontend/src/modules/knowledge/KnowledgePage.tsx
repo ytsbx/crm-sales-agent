@@ -483,7 +483,8 @@ export default function KnowledgePage() {
     {
       title: '产品名称',
       dataIndex: 'title',
-      width: 237,
+      /* 237 → 225：给「客户 / 状态 / 记录人」各让出几个像素，八列合计压在 1130 以内。 */
+      width: 225,
       // 这一列原来不设宽，标题一长就把整表顶到 1320、横滑才能看到操作列。
       // 定宽 320，标题正文超过 14 字截断（悬停看全），编号仍然完整显示 ——
       // 编号是报价 / 打样明细回溯用的，一个字都不能少。
@@ -522,7 +523,8 @@ export default function KnowledgePage() {
     {
       title: '客户',
       dataIndex: 'customer_name',
-      width: 190,
+      /* 190 → 202：客户名带「【全场景演示】」前缀时 190 差两三个字就被截。 */
+      width: 202,
       // 交给 Semi 按列宽省略（ellipsis）—— 不再按字数硬截。
       // 主人 2026-11-16：「还有这么多空间怎么还是省略呢」：宽屏下这一列
       // 会跟着拉宽，按字数截就永远只显示 13 个字。
@@ -542,7 +544,8 @@ export default function KnowledgePage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 90,
+      /* 90 放不下「● 已转商机」四个字 + 圆点，一律截成「已转商机…」。102 刚好。 */
+      width: 102,
       render: (v: string) => (
         <StatusDot
           label={STATUS_OPTIONS.find((o) => o.value === v)?.label ?? v}
@@ -550,7 +553,8 @@ export default function KnowledgePage() {
         />
       ),
     },
-    { title: '记录人', dataIndex: 'creator_name', width: 96, render: (v: string | null) => v ?? '-' },
+    /* 96 放在「系统管理员」五个字上差两三个像素，永远是「系统管理…」。108 才装得下。 */
+    { title: '记录人', dataIndex: 'creator_name', width: 108, render: (v: string | null) => v ?? '-' },
     {
       title: '记录时间',
       dataIndex: 'created_at',
