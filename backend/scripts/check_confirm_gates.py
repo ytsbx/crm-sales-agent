@@ -142,6 +142,9 @@ def _cleanup() -> None:
         # 于是夹具残留（本套件自己插过一条待审批实例）。
         "delete from approval_records where approval_instance_id in (select id from approval_instances where business_type='quote_version' and business_id in (select id from quote_versions where quote_id in (select id from quotes where customer_id in " + custs + ")))",
         "delete from approval_instances where business_type='quote_version' and business_id in (select id from quote_versions where quote_id in (select id from quotes where customer_id in " + custs + "))",
+        # 发布夹具规则（②）：版本快照先删再删规则本身
+        f"delete from approval_rule_versions where rule_id in (select id from approval_rules where name like '{MARK}%')",
+        f"delete from approval_rules where name like '{MARK}%'",
         f"delete from quote_items where quote_version_id in (select id from quote_versions where quote_id in (select id from quotes where customer_id in {custs}))",
         f"delete from quote_versions where quote_id in (select id from quotes where customer_id in {custs})",
         f"delete from quotes where customer_id in {custs}",
@@ -271,7 +274,21 @@ def main() -> int:
              f"and business_id={v2} order by id desc limit 1"), "pending")
 
     print("\n=== ② 审批规则发布：必须确认 ===")
-    rid = int(db("select id from approval_rules order by id limit 1"))
+    # 夹具用**自建规则**（条件落在种子里三条默认规则都不碰的「账期天数」上）：
+    # 7cf37a17 起发布/启用要过「同字段区间重叠 409」冲突闸，而种子默认规则
+    # （毛利率 ≥25 / ≥22 / ≤22）在该判据下两两相撞，重发任何一条都会被拒——
+    # 那是冲突闸与默认规则的口径问题（冲突闸有专测
+    # test_approval_rule_conflict_route），不是本节验的 confirm 闸门。
+    # 本节只管「不带 confirm 必拒、带上才真的执行」，夹具要能合法发布才测得下去。
+    status, res = call("POST", "/approval-rules", admin, {
+        "name": f"{MARK}确认闸发布夹具",
+        "kind": "auto_pass",
+        "priority": 99,
+        "conditions": [{"field": "payment_terms_days", "op": "lte", "value": 3}],
+        "action": {},
+    })
+    check_api("夹具：建规则成功", res, 0)
+    rid = int((res.get("data") or {}).get("id"))
     published_before = db(f"select published_version_no from approval_rules where id={rid}")
     status, res = call("POST", f"/approval-rules/{rid}/publish", admin, {})
     check_api("不带 confirm 被拒", res, CONFIRM_CODE)
@@ -283,6 +300,7 @@ def main() -> int:
                ("≥" in msg or "≤" in msg or "属于" in msg), msg[:100])
     status, res = call("POST", f"/approval-rules/{rid}/publish?confirm=true", admin, {})
     check_true("带 confirm 正常执行", res.get("code") == 0, f"code={res.get('code')}")
+    call("DELETE", f"/approval-rules/{rid}", admin, {})
 
     print("\n=== ③ 转销售订单：必须确认 ===")
     vid = int(db(f"select id from quote_versions where quote_id={qid} order by id desc limit 1"))
