@@ -2071,6 +2071,16 @@ export default function QuoteDetailPage() {
                   )
                 },
               },
+              {
+                // 弹性空列：四列都是写死宽度（90+165+120+100=475），
+                // 宽屏下 Semi 会把剩余宽度**平均摊到每一列**，于是「类型」一列
+                // 拉到 220px、表头和"物流"两个字浮在中间，四列之间全是空档。
+                // 补一个不写宽度的空列吃掉剩余空间，四个真实列保持原宽、
+                // 内容从左边排起；窄屏（卡内 <475）时它自动归零，不产生横滚条。
+                title: '',
+                dataIndex: '__spacer',
+                render: () => null,
+              }
             ]}
             dataSource={detail.charges}
             rowKey="id"

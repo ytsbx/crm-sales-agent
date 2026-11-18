@@ -3944,3 +3944,40 @@ table:not(.semi-table) td {
     border-bottom: 0;
   }
 }
+
+/* ===== 边际测算：KPI 分隔 + 基准线四列网格 ===== */
+.wi-kpis {
+  display: flex;
+  gap: 26px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.wi-kpi { min-width: 0; }
+.wi-kpi + .wi-kpi {
+  padding-left: 26px;
+  border-left: 1px solid var(--crm-border);
+}
+@media (max-width: 900px) {
+  .wi-kpi + .wi-kpi { padding-left: 18px; }
+}
+.wi-bench {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.35fr) 96px 54px minmax(110px, 1fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+}
+.wi-bench-label { color: var(--crm-text-3); }
+.wi-bench-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.wi-bench-delta {
+  color: var(--crm-text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 760px) {
+  .wi-bench { grid-template-columns: minmax(120px, 1fr) 88px 54px; }
+  .wi-bench-delta { grid-column: 1 / -1; padding-left: 2px; }
+}

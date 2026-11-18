@@ -372,14 +372,16 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: 20, marginTop: 12 }}>
-                <div>
+              {/* 三格 KPI 之间加竖线分隔：原来三组数字只靠 20px 间距区分，
+                  扫的时候容易把"利润额"的位数接到"成交金额"上。 */}
+              <div className="wi-kpis">
+                <div className="wi-kpi">
                   <div className="kpi-label">预计成交金额</div>
                   <div className="kpi-value" style={{ fontSize: 20 }}>
                     {money(projected.amountTotal)}
                   </div>
                 </div>
-                <div>
+                <div className="wi-kpi">
                   <div className="kpi-label">预计利润额</div>
                   <div
                     className="kpi-value"
@@ -388,7 +390,7 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                     {money(projected.profitTotal)}
                   </div>
                 </div>
-                <div>
+                <div className="wi-kpi">
                   <div className="kpi-label">预计利润率</div>
                   <div
                     className="kpi-value"
@@ -409,14 +411,17 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   ] as Array<[string, number | null]>
                 ).map(([label, value]) => {
                   const reached = value !== null && basePrice >= value
+                  // 四条基准线以前是"各写各的宽度"，标签、金额、标签签、差额
+                  // 每一行的起点都不一样。改成四列固定网格，数字列右对齐，
+                  // 竖着扫能直接比大小。
                   return (
-                    <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ color: 'var(--crm-text-3)', minWidth: 168 }}>{label}</span>
-                      <span style={{ minWidth: 90 }}>{money(value, 4)}</span>
+                    <div key={label} className="wi-bench">
+                      <span className="wi-bench-label">{label}</span>
+                      <span className="wi-bench-value">{money(value, 4)}</span>
                       <Tag color={reached ? 'green' : 'red'} size="small">
                         {reached ? '已满足' : '未达到'}
                       </Tag>
-                      <span style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
+                      <span className="wi-bench-delta">
                         {value === null
                           ? '本版快照没有这一项'
                           : basePrice >= value
@@ -481,13 +486,13 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   {
                     title: '订单金额',
                     dataIndex: 'amount',
-                    render: (value: number) => money(value),
+                    render: (value: number | null) => money(value),
                   },
                   {
                     title: '利润额',
                     dataIndex: 'profit',
-                    render: (value: number) => (
-                      <span style={{ color: value < 0 ? 'var(--crm-error)' : undefined }}>
+                    render: (value: number | null) => (
+                      <span style={{ color: value != null && value < 0 ? 'var(--crm-error)' : undefined }}>
                         {money(value)}
                       </span>
                     ),
@@ -495,18 +500,24 @@ export default function WhatIfPanel({ quoteId, versionId, items }: Props) {
                   {
                     title: '利润率',
                     dataIndex: 'margin',
-                    render: (value: number) => (
-                      <span style={{ color: value < 0 ? 'var(--crm-error)' : 'var(--crm-success)' }}>
+                    render: (value: number | null) => (
+                      <span style={{ color: value == null ? undefined : value < 0 ? 'var(--crm-error)' : 'var(--crm-success)' }}>
                         {percent(value)}
                       </span>
                     ),
                   },
                 ]}
                 dataSource={scenarios.map((price, index) => {
-                  const effective = price ?? 0
+                  // 没记录过的方案不能按 0 元去算：原来写成 `price ?? 0`，
+                  // 未记录的 B/C 会算出"订单金额 ¥0.00、利润 -¥10,000.00"，
+                  // 看着像"这三个方案都在亏钱"。空方案四个字段一律 null，
+                  // 表格统一显示 '-'（列渲染里 money/percent 已处理 null）。
+                  if (price === null) {
+                    return { label: ['A', 'B', 'C'][index], price: null, amount: null, profit: null, margin: null }
+                  }
                   const quantity = baseline.quantity
-                  const amount = effective * quantity
-                  const profit = baseline.unitCost === null ? null : (effective - baseline.unitCost) * quantity
+                  const amount = price * quantity
+                  const profit = baseline.unitCost === null ? null : (price - baseline.unitCost) * quantity
                   return {
                     label: ['A', 'B', 'C'][index],
                     price,
