@@ -1,4 +1,5 @@
 import { skuLabel } from '../../shared/sku-label'
+import { humanizeBackendText } from '../../shared/humanize-text'
 import { formatBeijingTime, formatBeijingDate } from '../../shared/beijing-time'
 import SampleDingTalkModal from './SampleDingTalkModal'
 import FormLabel from '../../shared/components/FormLabel'
@@ -1266,7 +1267,10 @@ export default function SampleListPage() {
                   </div>
                 )}
 
-                {detail.source_context && <p>打样来源：{detail.source_context.no} V{detail.source_context.version}{detail.source_context.is_historical ? '（取用时为历史版本）' : ''}</p>}
+                {/* 只挂了 `dingtalk_oa` 而没有单号时（例如只登记了 OA 提交状态），
+                    原来会印出「打样来源： V」—— 两个值都是 undefined。
+                    没有来源单号就整行不显示。 */}
+                {detail.source_context?.no && <p>打样来源：{detail.source_context.no} V{detail.source_context.version}{detail.source_context.is_historical ? '（取用时为历史版本）' : ''}</p>}
                 {/* 生产打样资料（文档 §3.5）：车间照着这张单子干活——
                     这里放的是**整单属性**（用途 / 交期 / 验收标准 / 费用）；
                     材质、工艺、图纸版本逐行不同，在上面的明细行里改 */}
@@ -1594,7 +1598,11 @@ export default function SampleListPage() {
                         color: 'var(--crm-warning)',
                       }}
                     >
-                      {detail.attachment_lock}：现在上传的附件会自动归到「后续补充资料」，
+                      {/* 锁定原因由后端下发，原文里有「钉钉」这种旧平台名
+                          （`file/access.py`：「打样申请已提交或关联钉钉，制作资料已经冻结」）。
+                          过一层 humanize：平台名按现在实际用的「同序 OA」显示，
+                          冒号也换成句号，别让两句话粘成一句。 */}
+                      {humanizeBackendText(detail.attachment_lock)}。现在上传的附件会自动归到「后续补充资料」，
                       和制作依据分开记 —— 事后补进来的资料不能和「当时照哪份做的」混在一起。
                     </div>
                   )}
