@@ -3169,9 +3169,10 @@ table:not(.semi-table) td {
 .oa-inquiry-card {
   padding: 26px 28px;
 }
-/* 询价审批行：一条审批 = 两行信息。
-   第一行"需求编号 ↔ 状态"，第二行"阶段/轮次/同步 ↔ 立即同步"，两端对齐；
-   不再摊成六栏表格 —— 那种排法要么贴边、要么中间空一条。 */
+/* 询价审批行：一格"审批概况" + 一个动作按钮。
+   状态标签跟在编号后面（不再单独飘到右上角），
+   阶段/轮次/同步与绿字在同一列向下排，
+   按钮只在右侧垂直居中一个 —— 右上角不再挤两个东西。 */
 .oa-inquiry-list {
   display: flex;
   flex-direction: column;
@@ -3180,17 +3181,24 @@ table:not(.semi-table) td {
 }
 .oa-inquiry-row {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
   padding: 14px 18px;
   border-radius: 10px;
   background: var(--crm-surface-low);
 }
+.oa-inquiry-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
 .oa-inquiry-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
 }
 .oa-inquiry-no {
   font-size: 14px;
@@ -3198,16 +3206,9 @@ table:not(.semi-table) td {
   letter-spacing: 0.2px;
   color: var(--crm-text);
 }
-.oa-inquiry-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
 .oa-inquiry-meta {
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.5;
   color: var(--crm-text-3);
 }
 .oa-inquiry-meta strong {
@@ -3236,3 +3237,59 @@ table:not(.semi-table) td {
 }
 
 
+
+/* 商机中心阶段漏斗条：32a081b 收敛指标卡时把这段一起删了，
+   但 JSX 仍在用 .stage-strip / .stage-tile（商机中心会散成一列文字）。
+   原样恢复 bb0c739 的样式。 */
+.stage-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  background: var(--crm-surface);
+  border: 1px solid transparent;
+  border-radius: var(--crm-radius);
+  box-shadow: var(--crm-shadow);
+  margin-bottom: var(--crm-space-4);
+  overflow: hidden;
+}
+
+.stage-tile {
+  position: relative;
+  padding: 13px 16px 14px;
+  min-width: 0;
+}
+
+.stage-strip > .stage-tile + .stage-tile::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 1px;
+  background: var(--crm-card-border);
+}
+
+.stage-tile-label {
+  color: var(--crm-text-3);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.stage-tile-value {
+  color: var(--crm-text);
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-tile-amount {
+  color: var(--crm-text-3);
+  font-size: 11px;
+  line-height: 1.4;
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
