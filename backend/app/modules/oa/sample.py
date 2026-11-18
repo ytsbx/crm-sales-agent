@@ -223,7 +223,10 @@ async def start_sample_approval(session: AsyncSession, current_user, sample: Sam
             "external_ref": external_ref,
             "applicant_dingtalk_user_id": user.dingtalk_userid,
             ("template_id" if settings.oa_sample_template_id.strip() else "template_code"): template_id,
-            "title": f"打样申请 · {sample.customer_name or sample.id}" if hasattr(sample, "customer_name") else f"打样申请 · {sample.id}",
+            # customer_name 在 SampleRequest 上不存在（全库模型无此字段，hasattr 永假），
+            # 旧写法是"先探再用"的死分支，行为恒等于用单号；check_model_attrs 会拦
+            # 对不存在列的访问。要标题带客户名需给 SampleRequest 补 customer 关系再改这里。
+            "title": f"打样申请 · {sample.id}",
             "reason": f"CRM 打样申请 {sample.id}",
             "amount": "0",
             "fields": fields,
