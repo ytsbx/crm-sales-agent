@@ -3459,18 +3459,65 @@ table:not(.semi-table) td {
 }
 
 
-/* 全站弹窗的基础排版：标题 16/600、正文 13.5/1.75 次级色。
-   原来标题和正文一个字号一个颜色，一整块灰字，看着"没有力气"。 */
-.semi-modal-title {
-  font-size: 16px;
-  font-weight: 600;
+/* ===== 全站弹窗基础：轮廓、头身脚节奏、按钮 =====
+   原来每个弹窗都是 Semi 出厂样子：8px 圆角、浓阴影、正文 12/1.5 灰字、
+   页脚再带 24px 下外边距。主人反复说"弹窗看着廉价"，根子在这里 ——
+   先把底座统一了，专项弹窗（确认/主数据预览）再在底座上做加法。 */
+.semi-modal-content {
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, .06);
+  box-shadow:
+    0 24px 64px -24px rgba(15, 23, 42, .22),
+    0 2px 8px rgba(15, 23, 42, .05);
+  animation: crm-modal-in .2s cubic-bezier(.22, 1, .36, 1) both;
+}
+@keyframes crm-modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(.99); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .semi-modal-content { animation: none; }
+}
+/* 用双类名提高权重：Semi 自己的 18px 规则在打包后加载得更晚，
+   单类名压不住（实测计算值仍是 18px）。 */
+.semi-modal-content .semi-modal-title {
+  font-size: 16.5px;
+  font-weight: 650;
   color: var(--crm-text);
   letter-spacing: .2px;
 }
+.semi-modal-header {
+  /* Semi 的 header 上下各带 24px 外边距 —— 标题下面那 24px 的缝就是它。
+     归零后上下留白全由 padding 决定：顶部 20、标题与正文之间 8。 */
+  margin: 0;
+  padding: 20px 26px 8px;
+  align-items: center;
+}
 .semi-modal-body {
+  /* Semi 的 body 自带 margin，头尾各多出 20 多像素的缝；统一归零，
+     上下留白只由 padding 控制，一处改、处处一致。 */
+  margin: 0;
+  padding: 8px 26px 18px;
   font-size: 13.5px;
-  line-height: 1.75;
+  line-height: 1.8;
   color: var(--crm-text-2);
+}
+/* 页脚统一：上边一条细线、上 14 下 16、按钮间距 12；
+   Semi 默认的 24px 下外边距必须抹掉 —— 否则按钮下面永远空一截。 */
+.semi-modal-footer {
+  padding: 14px 26px 16px;
+  margin: 0 !important;
+  border-top: 1px solid var(--crm-border);
+  gap: 12px;
+}
+/* 主按钮一层同色淡影，按下去收掉；全站统一，不只是确认弹窗。 */
+.semi-modal-footer .semi-button-primary {
+  box-shadow: 0 4px 12px -6px rgba(47, 109, 246, .5);
+  transition: box-shadow .18s ease, transform .12s ease;
+}
+.semi-modal-footer .semi-button-primary:active {
+  box-shadow: 0 1px 4px -2px rgba(47, 109, 246, .45);
+  transform: translateY(1px);
 }
 
 
