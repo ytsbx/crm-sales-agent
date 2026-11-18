@@ -406,7 +406,22 @@ export default function DocumentsPage() {
                   </span>
                 ),
               },
-              { title: '客户', dataIndex: 'customer_name', width: 95 },
+              {
+                title: '客户',
+                dataIndex: 'customer_name',
+                width: 140,
+                // 客户名是台账的识别维度：95px 只放得下七八个字，满屏
+                // 「【全场景演示】…」等于没有客户列。放宽到 140 并允许两行，
+                // 从标题（160→120）和到期日（90→80）各让一点，总宽不变。
+                render: (v: string | null) => (
+                  <span
+                    title={v ?? ''}
+                    style={{ display: 'block', whiteSpace: 'normal', lineHeight: 1.45 }}
+                  >
+                    {v || '-'}
+                  </span>
+                ),
+              },
               {
                 title: '状态',
                 dataIndex: 'status_label',

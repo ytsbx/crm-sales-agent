@@ -340,18 +340,20 @@ export default function WorkbenchPage() {
           {/* 成员明细：谁忙、谁逾期、谁没跟客户 */}
           <div style={{ marginTop: 18 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>成员明细</div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            {/* team-table：五列撑满整卡时列间全是空气（主人 2026-11-18「空太多了，
+                也没有对齐」）。类里补列分隔线 + 斑马纹，格子显出来才对得上眼。 */}
+            <table className="team-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
                 <tr style={{ color: 'var(--crm-text-3)', fontSize: 12 }}>
                   {/* 数字列给固定宽：整表只有 5 列，不给宽度就会五等分，
                       「待跟进客户」占 170px 只放一个数，中间空得厉害 */}
-                  <th style={{ textAlign: 'left', padding: '6px 0', fontWeight: 500 }}>成员</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 100 }}>待办</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 100 }}>逾期</th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 120 }}>
+                  <th style={{ textAlign: 'left', padding: '6px 12px', fontWeight: 500 }}>成员</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 100 }}>待办</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 100 }}>逾期</th>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 120 }}>
                     待跟进客户
                   </th>
-                  <th style={{ textAlign: 'right', padding: '6px 0', fontWeight: 500, width: 160 }}>
+                  <th style={{ textAlign: 'right', padding: '6px 12px', fontWeight: 500, width: 160 }}>
                     本月成交额
                   </th>
                 </tr>
@@ -359,12 +361,12 @@ export default function WorkbenchPage() {
               <tbody>
                 {(team.members ?? []).map((member) => (
                   <tr key={member.user_id} style={{ borderTop: '1px solid var(--crm-surface-high)' }}>
-                    <td style={{ padding: '8px 0' }}>{member.name}</td>
-                    <td style={{ textAlign: 'right', padding: '8px 0' }}>{member.todo_count}</td>
+                    <td style={{ padding: '8px 12px' }}>{member.name}</td>
+                    <td style={{ textAlign: 'right', padding: '8px 12px' }}>{member.todo_count}</td>
                     <td
                       style={{
                         textAlign: 'right',
-                        padding: '8px 0',
+                        padding: '8px 12px',
                         color: member.overdue_count > 0 ? 'var(--crm-error)' : undefined,
                       }}
                     >
@@ -373,13 +375,13 @@ export default function WorkbenchPage() {
                     <td
                       style={{
                         textAlign: 'right',
-                        padding: '8px 0',
+                        padding: '8px 12px',
                         color: member.stale_customer_count > 0 ? 'var(--crm-warning)' : undefined,
                       }}
                     >
                       {member.stale_customer_count}
                     </td>
-                    <td style={{ textAlign: 'right', padding: '8px 0' }}>
+                    <td style={{ textAlign: 'right', padding: '8px 12px' }}>
                       ¥{Math.round(member.won_amount_this_month).toLocaleString('zh-CN')}
                     </td>
                   </tr>
