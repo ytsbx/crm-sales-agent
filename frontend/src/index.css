@@ -2402,6 +2402,14 @@ table:not(.semi-table) td {
     grid-column: 1 / -1;
   }
 }
+
+/* 两栏在 900px 以下也太挤：一张卡只剩 260px 宽，阶段名和数值挤成两行。
+   小窗口直接单列堆叠。 */
+@media (max-width: 900px) {
+  .wb-tri-grid {
+    grid-template-columns: 1fr;
+  }
+}
 @media (max-width: 768px) {
   /* 漏斗/趋势/动态：两栏 → 单列堆叠，卡片内文字不再被压成竖排 */
   .wb-tri-grid {
