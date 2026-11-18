@@ -2404,6 +2404,12 @@ table:not(.semi-table) td {
   .wb-tri-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  /* 三张卡降到两栏时会剩下一格：前两张并排，第三张自动落到第二行左列，
+     右列就空着 —— 主人 2026-11-18 截图里的"一大片空白"就是它。
+     让第三张横跨两列：既补上空格，内容本身（动态列表 / 日程日历）也铺得开。 */
+  .wb-tri-grid > :nth-child(3) {
+    grid-column: 1 / -1;
+  }
 }
 @media (max-width: 768px) {
   /* 漏斗/趋势/动态：两栏 → 单列堆叠，卡片内文字不再被压成竖排 */
