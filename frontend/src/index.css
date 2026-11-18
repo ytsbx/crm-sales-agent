@@ -3181,7 +3181,9 @@ table:not(.semi-table) td {
 .oa-inquiry-row {
   display: grid;
   grid-template-columns: minmax(140px, 1.05fr) minmax(88px, 0.6fr) minmax(70px, 0.5fr) minmax(140px, 1fr) minmax(150px, 1fr) auto;
-  align-items: center;
+  /* 顶部对齐：有一栏是两行（当前阶段 + 已通过），居中对齐会让六栏的标签
+     各落一条水平线上，看着"没对齐"。顶部对齐后标签同一行、值也同一行。 */
+  align-items: start;
   column-gap: 24px;
   padding: 12px 20px;
   border-radius: 8px;
@@ -3195,11 +3197,12 @@ table:not(.semi-table) td {
 }
 .oa-cell-label {
   font-size: 11px;
-  line-height: 1;
+  line-height: 1.2;
   color: var(--crm-text-3);
 }
 .oa-cell-value {
   font-size: 13px;
+  line-height: 1.4;
   color: var(--crm-text);
   /* 阶段名可能很长（核价 / 报价复核 / 财务复核），最多两行，不把整行撑高 */
   overflow-wrap: anywhere;
@@ -3222,6 +3225,8 @@ table:not(.semi-table) td {
   align-items: center;
   gap: 10px;
   justify-self: end;
+  /* 按钮本身仍按整行垂直居中，不跟着两行的阶段栏往下沉 */
+  align-self: center;
 }
 
 
