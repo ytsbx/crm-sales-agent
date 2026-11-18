@@ -3803,3 +3803,77 @@ table:not(.semi-table) td {
   background: #FFFDF7;
   border-color: rgba(180, 83, 9, .5);
 }
+
+/* ===== 版本行：左切换、右事实 ===== */
+.quote-version-row {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--crm-surface-high);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.quote-version-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.quote-version-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  font-size: 12.5px;
+  color: var(--crm-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.qvm-chip {
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  background: var(--crm-surface-low);
+  color: var(--crm-text-2);
+}
+.qvm-chip-ok {
+  background: rgba(16, 185, 129, .10);
+  color: #0F766E;
+}
+.qvm-chip-bad {
+  background: rgba(220, 38, 38, .08);
+  color: #B91C1C;
+}
+
+/* ===== 待办行：说明在左、动作在右 ===== */
+.quote-todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 0;
+}
+.quote-todo-dot { flex: 0 0 auto; }
+.quote-todo-reason {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.8;
+}
+.quote-todo-side {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 1px;
+  white-space: nowrap;
+}
+.qt-next { color: var(--crm-text-3); }
+.qt-link {
+  color: var(--crm-primary);
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .quote-todo-row { flex-wrap: wrap; }
+  .quote-todo-side { margin-left: 16px; }
+}

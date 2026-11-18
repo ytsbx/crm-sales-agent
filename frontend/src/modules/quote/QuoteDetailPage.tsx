@@ -1325,30 +1325,38 @@ export default function QuoteDetailPage() {
           )
         })()}
 
-        <div
-          style={{
-            marginTop: 12,
-            paddingTop: 12,
-            borderTop: '1px solid var(--crm-surface-high)',
-            display: 'flex',
-            gap: 8,
-            flexWrap: 'wrap',
-            alignItems: 'center',
-          }}
-        >
-          <span style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>版本：</span>
-          {(versionsQuery.data ?? []).map((item) => (
-            <Button
-              key={item.id}
-              size="small"
-              // 当前版本原来是一块实心主色按钮，在页头下面又压一个深色块。
-              // 换成浅色底（light）：仍是选中态，但不跟「转销售订单」抢。
-              theme={item.id === version.id ? 'light' : 'borderless'}
-              onClick={() => setSearchParams({ version: String(item.id) })}
-            >
-              V{item.version_no}
-            </Button>
-          ))}
+        {/* 版本行：左边是版本切换，右边放这一版的事实（什么时候发的、客户接没接）。
+            原来这一行只有几个 V1/V2 按钮贴着左边，右边整条空着 —— 白白浪费一行高度。 */}
+        <div className="quote-version-row">
+          <div className="quote-version-tabs">
+            <span style={{ color: 'var(--crm-text-3)', fontSize: 13 }}>版本：</span>
+            {(versionsQuery.data ?? []).map((item) => (
+              <Button
+                key={item.id}
+                size="small"
+                // 当前版本原来是一块实心主色按钮，在页头下面又压一个深色块。
+                // 换成浅色底（light）：仍是选中态，但不跟「转销售订单」抢。
+                theme={item.id === version.id ? 'light' : 'borderless'}
+                onClick={() => setSearchParams({ version: String(item.id) })}
+              >
+                V{item.version_no}
+              </Button>
+            ))}
+          </div>
+          <div className="quote-version-meta">
+            {version.approval_status === 'approved' && <span className="qvm-chip">审批通过</span>}
+            {version.sent_at && (
+              <span>已发送 {String(version.sent_at).slice(0, 10)}</span>
+            )}
+            {version.accepted_at && (
+              <span className="qvm-chip qvm-chip-ok">
+                客户已接受 {String(version.accepted_at).slice(0, 10)}
+              </span>
+            )}
+            {version.declined_at && (
+              <span className="qvm-chip qvm-chip-bad">客户已拒绝</span>
+            )}
+          </div>
         </div>
 
         {/* 版本页签下面正是「按钮突然全没了」发生的地方：切到历史版本、或这一版已经发送/审批通过时，
@@ -1394,39 +1402,33 @@ export default function QuoteDetailPage() {
           {quoteTodoList.map((todo: QuoteTodo, index: number) => (
             <div
               key={todo.key}
-              style={{
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 8,
-                padding: '4px 0',
-                // 窄屏（461px）下这一行里还挂着「去处理」「下一步：…」两个不收缩的元素，
-                // 说明文字被挤成一条两三字的窄柱（右半屏全空）。允许换行后，
-                // 说明先占满整行，那两个标签掉到下一行。
-                flexWrap: 'wrap',
-                color: index === 0 ? 'var(--crm-text-1)' : 'var(--crm-text-3)',
-              }}
+              className="quote-todo-row"
+              // 原来「去处理」「下一步：…」直接挂在长句末尾，句子一长就把两个标签
+              // 顶到最右边、和正文挤在同一条基线上。现在说明独占左侧、可换行，
+              // 两个标签收进右侧固定列，永远贴右边对齐。
+              style={{ color: index === 0 ? 'var(--crm-text-1)' : 'var(--crm-text-3)' }}
             >
-              <span style={{ flexShrink: 0 }}>{index === 0 ? '·' : '·'}</span>
-              <span style={{ flex: '1 1 220px', minWidth: 0 }}>{todo.reason}</span>
-              {/* 能点的必须给去处：只说明"差什么"而不给入口，等于把问题换个地方放着 */}
-              {todo.anchor && (
-                <a
-                  style={{ flexShrink: 0, color: 'var(--crm-primary)' }}
-                  onClick={() => {
-                    document.getElementById(todo.anchor as string)?.scrollIntoView({
-                      behavior: 'smooth',
-                      block: 'center',
-                    })
-                  }}
-                >
-                  去处理
-                </a>
-              )}
-              {todo.action && index === 0 && (
-                <span style={{ flexShrink: 0, color: 'var(--crm-text-3)' }}>
-                  下一步：{todo.action}
-                </span>
-              )}
+              <span className="quote-todo-dot">·</span>
+              <span className="quote-todo-reason">{todo.reason}</span>
+              <span className="quote-todo-side">
+                {todo.action && index === 0 && (
+                  <span className="qt-next">下一步：{todo.action}</span>
+                )}
+                {/* 能点的必须给去处：只说明"差什么"而不给入口，等于把问题换个地方放着 */}
+                {todo.anchor && (
+                  <a
+                    className="qt-link"
+                    onClick={() => {
+                      document.getElementById(todo.anchor as string)?.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'center',
+                      })
+                    }}
+                  >
+                    去处理
+                  </a>
+                )}
+              </span>
             </div>
           ))}
         </div>
