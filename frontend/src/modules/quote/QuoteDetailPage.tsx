@@ -2179,12 +2179,12 @@ export default function QuoteDetailPage() {
           <div className="oa-inquiry-list">
             {inquiryApprovalRows.map((row) => (
               <div className="oa-inquiry-row" key={row.key}>
-                <div className="oa-cell">
-                  <span className="oa-cell-label">需求编号</span>
-                  <span className="oa-cell-value oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</span>
-                </div>
-                <div className="oa-cell">
-                  <span className="oa-cell-label">审批状态</span>
+                {/* 两行结构，不再摊成六栏：
+                    第一行"这是什么 + 现在什么状态"，两端对齐；
+                    第二行"走到哪一步 + 动作"，同样两端对齐。
+                    这样左右都不空、也不挤，读起来是"一条审批"而不是一张表。 */}
+                <div className="oa-inquiry-head">
+                  <span className="oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</span>
                   {row.latest ? (
                     <Tag
                       color={row.latest.status === 'approved' ? 'green'
@@ -2198,29 +2198,20 @@ export default function QuoteDetailPage() {
                     <Tag color="grey" type="light">未发起</Tag>
                   )}
                 </div>
-                <div className="oa-cell">
-                  <span className="oa-cell-label">轮次</span>
-                  <span className="oa-cell-value">{row.latest ? `第 ${row.latest.submit_round ?? 1} 轮` : '—'}</span>
-                </div>
-                <div className="oa-cell oa-cell-stage">
-                  <span className="oa-cell-label">当前阶段</span>
-                  <span className="oa-cell-value">{row.stageText || (row.latest?.status === 'pending' ? '同步后可见' : '—')}</span>
-                  {/* 报价这一关过了就明说，别让整单的"待审批"盖住它 */}
-                  {row.quotation?.approved && (
-                    <span className="oa-stage-approved">核价 / 报价复核已通过</span>
-                  )}
-                </div>
-                <div className="oa-cell">
-                  <span className="oa-cell-label">最近同步</span>
-                  <span className="oa-cell-value">
-                    {row.latest?.synced_at ? formatBeijingTime(row.latest.synced_at) : '从未同步'}
+                <div className="oa-inquiry-foot">
+                  <span className="oa-inquiry-meta">
+                    {row.latest ? (
+                      <>
+                        {'当前阶段 '}
+                        <strong>{row.stageText || (row.latest.status === 'pending' ? '同步后可见' : '—')}</strong>
+                        {` · 第 ${row.latest.submit_round ?? 1} 轮 · 最近同步 ${row.latest.synced_at ? formatBeijingTime(row.latest.synced_at) : '从未同步'}`}
+                      </>
+                    ) : (
+                      '还没有发起同序 OA 审批'
+                    )}
                   </span>
-                </div>
-                <div className="oa-inquiry-action">
-                  {/* 同步是有权限动作：只读用户点了只会拿到 403，所以按钮和自动轮询都不给
-                      （「无权查看」和「查看但没权限同步」是两件事，后者不该假装有动作）。 */}
                   {row.latest && canManage && (
-                    <>
+                    <span className="oa-inquiry-action">
                       {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
                       <AutoOaSync
                         row={row.latest}
@@ -2238,9 +2229,13 @@ export default function QuoteDetailPage() {
                           ['quote-versions', quoteId],
                         ]}
                       />
-                    </>
+                    </span>
                   )}
                 </div>
+                {/* 报价这一关过了就单独标出来，别被整单的"审批中"盖掉 */}
+                {row.quotation?.approved && (
+                  <span className="oa-stage-approved">✓ 核价 / 报价复核已通过</span>
+                )}
               </div>
             ))}
           </div>
