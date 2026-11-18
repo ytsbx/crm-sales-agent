@@ -1234,6 +1234,15 @@ export default function QuoteDetailPage() {
             if (element) rendered.push(element)
           }
 
+          // 「新建版本」「下载 PDF」不再收进"更多操作"（2026-11-18 主人：
+          // "这里也没必要折叠到更多操作里"）。它们是常用、可预期的动作，
+          // 藏进下拉反而多一次点击；只有"一键刷新到最新适用价"这种低频、
+          // 且要带原因说明的，才留在折叠区。
+          for (const label of ['新建版本', '下载 PDF']) {
+            const element = take(label)
+            if (element) rendered.push(element)
+          }
+
           // 折叠区：与当前阶段推进无关的低频入口
           const moreOrder = [...SECONDARY_ACTIONS]
           const more = moreOrder
@@ -1246,10 +1255,13 @@ export default function QuoteDetailPage() {
           const moreNotes: string[] = []
           if (hasDrift && !editable) moreNotes.push('当前报价版本已锁定，如需改价，请新建版本')
 
+          // 折叠区没有可点的动作、也没有要说明的缺项时，整个「更多操作」不出现
+          const hasMore = more.length > 0 || moreNotes.length > 0
+
           return (
             <div style={{ marginTop: 14, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               {rendered}
-              {more.length > 0 && (
+              {hasMore && (
                 <Dropdown
                   trigger="click"
                   position="bottomRight"
