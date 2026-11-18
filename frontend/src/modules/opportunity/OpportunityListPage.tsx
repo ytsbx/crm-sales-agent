@@ -21,6 +21,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher, optionsWithCodeOnDuplicate } from '../../shared/components/optionMatch'
 import StatusDot from '../../shared/components/StatusDot'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 const STATUS_OPTIONS = [
   { value: 'open', label: '进行中' },
@@ -146,7 +147,7 @@ export default function OpportunityListPage() {
       width: 260,
       render: (_: unknown, record: Opportunity) => {
         const parts: string[] = []
-        if (record.expected_amount) parts.push(`¥${record.expected_amount.toLocaleString('zh-CN')}`)
+        if (record.expected_amount) parts.push(formatMoney(toTwoDecimals(record.expected_amount), 'CNY'))
         if (record.item_count) parts.push(`${record.item_count} 条需求`)
         return parts.length ? parts.join(' · ') : <EmptyMark />
       },

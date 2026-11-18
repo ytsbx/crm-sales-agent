@@ -10,6 +10,7 @@ import { listOrders, listOrderDrafts, type OrderDraft, type Order } from '../../
 import { usePermissions } from '../../shared/hooks/permissions'
 import { emptyText } from '../../shared/hooks/emptyText'
 import FormLabel from '../../shared/components/FormLabel'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 /** 一条商机承载一次独立采购需求，各单据保留自己的业务状态。 */
 export default function OpportunityRecords({ opportunityId, customerId, title }: {
@@ -140,7 +141,7 @@ export default function OpportunityRecords({ opportunityId, customerId, title }:
         empty={emptyText(orders, '暂无关联订单')} pagination={pagination('orders', orders.data?.total ?? 0)} columns={[
           { title: '订单单号', render: (_: unknown, row: Order) => <Link to={`/orders/${row.id}`}>{row.order_no}</Link> },
           { title: '状态', dataIndex: 'status_label' },
-          { title: '金额', render: (_: unknown, row: Order) => row.total_amount.toLocaleString('zh-CN') },
+          { title: '金额', render: (_: unknown, row: Order) => formatMoney(toTwoDecimals(row.total_amount), 'CNY') },
         ]} />
     </div>}
     <Modal

@@ -65,6 +65,7 @@ import OpportunityRecords from './OpportunityRecords'
 import type { TagTone } from '../../shared/types'
 import FormLabel from '../../shared/components/FormLabel'
 import { optionMatcher } from '../../shared/components/optionMatch'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 const TABS = [
   { tab: '概览', itemKey: 'overview' },
@@ -458,7 +459,7 @@ export default function OpportunityDetailPage() {
             <span>
               预计金额：
               {opportunity.expected_amount
-                ? `¥${opportunity.expected_amount.toLocaleString('zh-CN')}`
+                ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY')
                 : '-'}
             </span>
             <span>预计成交：{opportunity.expected_close_date ?? '-'}</span>
@@ -538,7 +539,7 @@ export default function OpportunityDetailPage() {
                 <DetailField label="当前阶段" value={opportunity.stage_name} />
                 <DetailField
                   label="预计金额"
-                  value={opportunity.expected_amount ? `¥${opportunity.expected_amount.toLocaleString('zh-CN')}` : '-'}
+                  value={opportunity.expected_amount ? formatMoney(toTwoDecimals(opportunity.expected_amount), 'CNY') : '-'}
                 />
                 <DetailField label="预计成交日期" value={opportunity.expected_close_date ?? '-'} />
                 <DetailField label="竞争对手" value={opportunity.competitor ?? '-'} />

@@ -19,6 +19,7 @@ import SectionCard from '../../shared/components/SectionCard'
 import StatusDot from '../../shared/components/StatusDot'
 import RulesPanel from './RulesPanel'
 import { optionMatcher } from '../../shared/components/optionMatch'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 const TABS = [
   { tab: '待我审批', itemKey: 'pending' },
@@ -127,7 +128,9 @@ export default function ApprovalPage() {
       title: '报价总额',
       dataIndex: 'total_amount',
       width: 150,
-      render: (v: number | null) => (v === null || v === undefined ? '-' : `¥${v.toLocaleString('zh-CN')}`),
+      // 报价总额是业务单据上的钱，按全站口径必须两位小数（¥84,030.00），
+      // 不能像统计卡那样取整。
+      render: (v: number | null) => (v === null || v === undefined ? '-' : formatMoney(toTwoDecimals(v), 'CNY')),
     },
     {
       title: '状态',

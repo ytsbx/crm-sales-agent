@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Banner, Button, Input, Modal, Select, Table, Toast } from '@douyinfe/semi-ui'
 
 import { parseOptionalDecimal, parseOptionalNumber } from '../../shared/number-input'
-import { formatWholeCny } from '../../shared/components/money'
+import { formatMoney, formatWholeCny, toTwoDecimals } from '../../shared/components/money'
 import PageHeader from '../../shared/components/PageHeader'
 import KpiStrip from '../../shared/components/KpiStrip'
 import SectionCard from '../../shared/components/SectionCard'
@@ -1498,7 +1498,8 @@ export default function AnalyticsPage() {
               title: '金额',
               dataIndex: 'amount',
               width: 130,
-              render: (v?: number) => `¥${Math.round(v ?? 0).toLocaleString('zh-CN')}`,
+              // 下钻出来的是**具体单据**的金额，不是概览统计，按单据口径两位小数。
+              render: (v?: number) => formatMoney(toTwoDecimals(v ?? 0), 'CNY'),
             },
             {
               title: '单据日期',

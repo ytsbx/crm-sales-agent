@@ -10,6 +10,7 @@ import {
   type Opportunity,
 } from '../../shared/api/opportunity'
 import type { TagTone } from '../../shared/types'
+import { formatMoney, toTwoDecimals } from '../../shared/components/money'
 
 /**
  * 商机 Kanban 看板（PRD §9 阶段可视化）。
@@ -26,7 +27,7 @@ const RISK_TONE: Record<string, TagTone> = { high: 'red', medium: 'orange', low:
 const RISK_LABEL: Record<string, string> = { high: '高', medium: '中', low: '低' }
 
 const money = (value?: number | null) =>
-  value ? `¥${Math.round(value).toLocaleString('zh-CN')}` : '-'
+  value ? formatMoney(toTwoDecimals(value), 'CNY') : '-'
 
 interface Props {
   /** 关键字/负责人等筛选由列表页统一控制，看板只负责按阶段分列展示。 */

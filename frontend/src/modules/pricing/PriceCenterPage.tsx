@@ -308,7 +308,9 @@ function fmtField(key: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? '是' : '否'
   if (typeof value === 'string' && VALUE_LABEL[value]) return VALUE_LABEL[value]
   if (typeof value === 'number') {
-    if (MONEY_FIELDS.has(key)) return `¥${value.toLocaleString('zh-CN')}`
+    // 价格中心里全是单价/报价，两位小数且带千分位（¥14,316.00），
+    // 不能用 `¥${toTwoDecimals(v)}` —— 那个不带千分位。
+    if (MONEY_FIELDS.has(key)) return formatMoney(toTwoDecimals(value), 'CNY')
     // 比率类存的是小数（0.15 = 15%），直接显示 0.15 会让人以为是 0.15%
     if (key === 'target_margin') return `${(value * 100).toFixed(1)}%`
     return value.toLocaleString('zh-CN')
