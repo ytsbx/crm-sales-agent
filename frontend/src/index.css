@@ -3150,3 +3150,41 @@ table:not(.semi-table) td {
   font-size: 13px;
   line-height: 1.7;
 }
+
+/* 关联询价审批：一两行信息用不着表格，表格会把词摊到整屏宽、两头贴边。
+   左栏放"是什么"（需求号 + 轮次/同步时间），右栏放"现在怎样"（状态 + 动作）。 */
+.oa-inquiry-list {
+  display: flex;
+  flex-direction: column;
+}
+.oa-inquiry-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 0;
+  border-top: 1px solid var(--crm-border);
+}
+.oa-inquiry-row:first-child {
+  border-top: 0;
+  padding-top: 4px;
+}
+.oa-inquiry-main {
+  min-width: 0;
+}
+.oa-inquiry-no {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--crm-text);
+}
+.oa-inquiry-meta {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--crm-text-3);
+}
+.oa-inquiry-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}

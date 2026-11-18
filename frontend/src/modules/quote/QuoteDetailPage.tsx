@@ -2142,53 +2142,42 @@ export default function QuoteDetailPage() {
               暂时无法确认关联询价的审批进度；这不影响保存草稿，请稍后重试。
             </div>
           )}
-          <Table
-            columns={[
-              {
-                title: '需求编号',
-                dataIndex: 'inquiryNo',
-                width: 150,
-                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) => row.inquiry.inquiryNo ?? '-',
-              },
-              {
-                title: '轮次',
-                width: 80,
-                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) =>
-                  row.latest ? `第 ${row.latest.submit_round ?? 1} 轮` : '-',
-              },
-              {
-                title: '状态',
-                width: 130,
-                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) => {
-                  if (!row.latest) return <Tag color="grey" type="light">未发起</Tag>
-                  const tone = row.latest.status === 'approved' ? 'green'
-                    : row.latest.status === 'pending' ? 'orange'
-                      : row.latest.status === 'rejected' ? 'red' : 'grey'
-                  return <Tag color={tone} type="light">{row.latest.status_label}</Tag>
-                },
-              },
-              {
-                title: '最近同步',
-                width: 170,
-                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) =>
-                  row.latest?.synced_at ? formatBeijingTime(row.latest.synced_at) : '-',
-              },
-              {
-                title: '操作',
-                width: 160,
-                render: (_: unknown, row: (typeof inquiryApprovalRows)[number]) => row.latest ? (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                    {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
-                    <AutoOaSync row={row.latest} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
-                    <SyncOaButton oaId={row.latest.id} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
-                  </span>
-                ) : '—',
-              },
-            ]}
-            dataSource={inquiryApprovalRows}
-            rowKey="key"
-            pagination={false}
-          />
+          {/* 不用表格：这里最多一两条，五列表格会把两三个词摊到一屏宽，
+              两头都贴着卡片边，看着像被挤出来的一排字。
+              改成"左主信息 + 右状态/动作"的两栏行，行与行之间一条细线。 */}
+          <div className="oa-inquiry-list">
+            {inquiryApprovalRows.map((row) => (
+              <div className="oa-inquiry-row" key={row.key}>
+                <div className="oa-inquiry-main">
+                  <div className="oa-inquiry-no">{row.inquiry.inquiryNo ?? '未编号需求'}</div>
+                  <div className="oa-inquiry-meta">
+                    {row.latest
+                      ? `第 ${row.latest.submit_round ?? 1} 轮 · 最近同步 ${row.latest.synced_at ? formatBeijingTime(row.latest.synced_at) : '从未同步'}`
+                      : '该需求还没有发起同序 OA 审批'}
+                  </div>
+                </div>
+                <div className="oa-inquiry-side">
+                  {row.latest ? (
+                    <>
+                      <Tag
+                        color={row.latest.status === 'approved' ? 'green'
+                          : row.latest.status === 'pending' ? 'orange'
+                            : row.latest.status === 'rejected' ? 'red' : 'grey'}
+                        type="light"
+                      >
+                        {row.latest.status_label}
+                      </Tag>
+                      {/* 待审时打开页面就先对一次，之后每 10 秒对一次 —— 别让用户看见过期的"待审批" */}
+                      <AutoOaSync row={row.latest} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
+                      <SyncOaButton oaId={row.latest.id} invalidateKeys={[['quote-linked-inquiry-approvals', linkedInquiryKey], ['quote-detail', quoteId]]} />
+                    </>
+                  ) : (
+                    <Tag color="grey" type="light">未发起</Tag>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
         </SectionCard>
       )}
 
