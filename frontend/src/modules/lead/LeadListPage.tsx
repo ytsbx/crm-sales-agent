@@ -83,7 +83,7 @@ export default function LeadListPage() {
   const [status, setStatus] = useState<string | undefined>()
   const [onlyUnassigned, setOnlyUnassigned] = useState(false)
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(20)
 
   // 工作台右上「新建线索」跳到 /leads?new=1 时，直接把新建弹窗打开 ——
   // 否则用户点完只看到一张列表，还得自己再找一次按钮（2026-11-17 视觉审视 D2-04）。

@@ -389,7 +389,7 @@ export default function DocumentsPage() {
             columns={[
               // 140 放不下 12 位的合同编号（实测被截成「CT202610140…」）。
               // 156 是刚好够 + 又不把表格撑出横向滚动条的宽度。
-              { title: '编号', dataIndex: 'doc_no', width: 156 },
+              { title: '合同编号', dataIndex: 'doc_no', width: 156 },
               { title: '类型', dataIndex: 'doc_type_label', width: 85 },
               // 标题不给上限时它会吃掉所有剩余宽度（实测 270px），
               // 把后面的列全顶到屏幕外；200 是"销售合同-甲"这类标题的实测上限再留些余量。

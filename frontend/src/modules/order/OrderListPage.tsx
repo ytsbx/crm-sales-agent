@@ -67,7 +67,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<string | undefined>()
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(20)
   const [createVisible, setCreateVisible] = useState(false)
   const [createForm, setCreateForm] = useState({
     customer_id: null as number | null,

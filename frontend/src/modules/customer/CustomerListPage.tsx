@@ -112,7 +112,7 @@ export default function CustomerListPage() {
     currentUser?.data_scope === 'all' ? 'all' : 'mine',
   )
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(20)
 
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<CustomerPayload>(EMPTY_FORM)
@@ -713,7 +713,7 @@ export default function CustomerListPage() {
             pageSize,
             total: query.data?.total ?? 0,
             showSizeChanger: true,
-            pageSizeOpts: [10, 20, 50],
+            pageSizeOpts: [10, 20, 50, 100],
             onPageChange: (nextPage: number) => setPage(nextPage),
             onPageSizeChange: (nextSize: number) => {
               setPageSize(nextSize)

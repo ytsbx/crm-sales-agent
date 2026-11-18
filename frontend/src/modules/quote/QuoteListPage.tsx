@@ -45,7 +45,7 @@ export default function QuoteListPage() {
   const [keyword, setKeyword] = useState('')
   const [status, setStatus] = useState<string | undefined>()
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(20)
   const [createVisible, setCreateVisible] = useState(false)
   const [opportunityId, setOpportunityId] = useState<number | null>(null)
   // 一次"新建报价"意图一把键（第八批 8.15）：在 mutationFn 里现生成的话，

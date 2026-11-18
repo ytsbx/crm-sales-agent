@@ -60,7 +60,7 @@ export default function ProductListPage() {
   const [keywordInput, setKeywordInput] = useState('')
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(20)
   const [modalVisible, setModalVisible] = useState(false)
   const [form, setForm] = useState<ProductPayload>(EMPTY_FORM)
 

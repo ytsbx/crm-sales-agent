@@ -1588,7 +1588,7 @@ export default function PriceCenterPage() {
                   pageSize: rulePageSize,
                   total: rulesQuery.data?.total ?? 0,
                   showSizeChanger: true,
-                  pageSizeOpts: [20, 50, 100, 200],
+                  pageSizeOpts: [10, 20, 50, 100],
                   onPageChange: setRulePage,
                   onPageSizeChange: (size: number) => {
                     setRulePageSize(size)
@@ -1696,7 +1696,7 @@ export default function PriceCenterPage() {
                   pageSize: cpPageSize,
                   total: customerPricesQuery.data?.total ?? 0,
                   showSizeChanger: true,
-                  pageSizeOpts: [20, 50, 100, 200],
+                  pageSizeOpts: [10, 20, 50, 100],
                   onPageChange: setCpPage,
                   onPageSizeChange: (size: number) => {
                     setCpPageSize(size)

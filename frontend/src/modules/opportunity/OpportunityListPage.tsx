@@ -46,7 +46,7 @@ export default function OpportunityListPage() {
   const [stageId, setStageId] = useState<number | undefined>()
   const [view, setView] = useState<'table' | 'board'>('table')
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const [pageSize, setPageSize] = useState(20)
 
   const [createVisible, setCreateVisible] = useState(false)
   const [form, setForm] = useState({
