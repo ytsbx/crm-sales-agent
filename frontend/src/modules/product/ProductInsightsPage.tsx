@@ -433,7 +433,10 @@ export default function ProductInsightsPage() {
                 const reviewable =
                   record.can_review ?? (canReview && record.status === 'under_review')
                 return (
-                  <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap' }}>
+                  /* 操作列原来是 inline-flex，按钮组按内容宽度贴左，
+                     表头「操作」却居中 —— 一行三四个动作时表头和数据错开十几像素。
+                     改成占满整格的 flex + 居中：动作多也始终压在表头下方。 */
+                  <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
                     {editable && record.status !== 'converted' && record.status !== 'under_review' && (
                       <a onClick={() => openEdit(record)}>编辑</a>
                     )}

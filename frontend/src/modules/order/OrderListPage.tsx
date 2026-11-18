@@ -254,6 +254,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: '订单金额',
       dataIndex: 'total_amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
       // 140 → 124：8 列合计本来正好 1130，但列表一长出现纵向滚动条，
       // 它占掉 15px，body 只剩 1115 → 横向滚动条又冒出来（2026-11-16 实测）。
       width: compact ? 108 : 124,
@@ -263,6 +265,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: compact ? '回款' : '已回款',
       dataIndex: 'received_amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
       width: compact ? 116 : 130,
       /* 这一列原来混着两种写法：有的行取到库里的精确字符串（¥2,100.00），
          有的行只有后端给的 number（¥0）—— 同一列里一半带两位小数、一半不带。
@@ -276,7 +280,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         if (!compact) return received
         /* 窄屏：上一行「已回」、下一行「待回」，省掉一列 */
         return (
-          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>已回 {received}</span>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
               待回 {formatMoney(toTwoDecimals(record.unreceived_amount_exact ?? record.unreceived_amount), record.currency)}
@@ -331,6 +335,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: '应收金额',
       dataIndex: 'amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
       width: compact ? 100 : 130,
       /* 同一行里「已收/未收」走的是库里的精确十进制字符串（900.00），
          这里原来传的是 number（900）—— 一行里一半带两位小数、一半不带，
@@ -341,13 +347,15 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: compact ? '已收 / 未收' : '已收',
       dataIndex: 'received_amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
       width: compact ? 110 : 130,
       render: (v: number, record: Receivable) => {
         const received = formatMoney(record.received_amount_exact ?? v, record.currency)
         if (!compact) return received
         /* 窄屏：上一行已收、下一行未收，两张钱合并一列 */
         return (
-          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>已收 {received}</span>
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
               未收 {formatMoney(record.remaining_amount_exact ?? record.remaining_amount, record.currency)}
@@ -361,6 +369,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       : [{
           title: '未收',
           dataIndex: 'remaining_amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
           width: 130,
           render: (v: number, record: Receivable) =>
             formatMoney(record.remaining_amount_exact ?? v, record.currency),
@@ -400,6 +410,8 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
     {
       title: '金额',
       dataIndex: 'received_amount',
+      /* 金额右对齐：位数不同的钱左对齐时右边界参差，一眼读不出量级。 */
+      align: 'right' as const,
       width: compact ? 104 : 118,
       render: (v: number, record: Payment) => formatMoney(record.received_amount_exact ?? v, record.currency),
     },
@@ -410,7 +422,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
       title: '回款凭证',
       width: compact ? 120 : 170,
       render: (_: unknown, record: Payment) => (
-        <div style={{ display: 'grid', gap: 2, justifyItems: 'center', minWidth: 0 }}>
+        <div style={{ display: 'grid', gap: 2, justifyItems: 'end', minWidth: 0 }}>
           <PaymentVoucherControl
             payment={record}
             onChanged={() => void queryClient.invalidateQueries({ queryKey: ['payments'] })}
@@ -431,7 +443,7 @@ export default function OrderListPage({ initialTab = 'orders' }: { initialTab?: 
         )
         if (!compact) return dot
         return (
-          <div style={{ display: 'grid', gap: 2, justifyItems: 'center' }}>
+          <div style={{ display: 'grid', gap: 2, justifyItems: 'end' }}>
             {dot}
             <span style={{ fontSize: 12, color: 'var(--crm-text-3)' }}>
               确认人 {record.confirmed_by_name ?? '-'}

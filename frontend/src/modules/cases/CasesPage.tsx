@@ -440,10 +440,13 @@ export default function CasesPage() {
                  改成给这一列定宽 + CSS 省略号 —— 有多少空间就显示多少，
                  悬停看全文。 */
               width: 316,
+              /* 标题是这份案例的主体，原来卡在 300px 单行、一律省略成
+                 「…毛利只…」，看不出讲的是什么。宽屏放开成最多两行：
+                 316px 一列两行就能装下，悬停仍可看全文。 */
               render: (v: string) => (
                 <span
                   title={v}
-                  style={{ display: 'block', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  style={{ display: 'block', overflow: 'hidden', whiteSpace: 'normal', lineHeight: 1.45 }}
                 >
                   {v}
                 </span>
@@ -494,7 +497,9 @@ export default function CasesPage() {
               title: '操作',
               width: 160,
               render: (_: unknown, record: CaseRow) => (
-                <span style={{ display: 'inline-flex', gap: 10 }}>
+                /* 原来 inline-flex 贴左、表头居中，一行三个动作时表头和数据错开。
+                   改成占满整格 + 居中，动作组始终压在「操作」下面。 */
+                <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
                   <a onClick={() => void openDetail(record)}>详情</a>
                   {(record.status === 'draft' || record.status === 'rejected') && (
                     <>
