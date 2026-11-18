@@ -2305,6 +2305,11 @@ export default function SettingsPage() {
                 // `resource` 在接口里可空；空的归到"其他"，**不丢权限**
                 resource: perm.resource ?? 'other',
                 action: perm.action ?? '',
+                // 「用户管理」是能改别人账号和权限的钥匙：勾上时在选项下面说清它到底能做什么，
+                // 只作说明，不拦保存（2026-11-18 主人要求）
+                note: perm.code === 'user:manage'
+                  ? '授予后，此人可以重置他人密码、分配管理员角色，以及修改角色权限和数据范围。请确认授权对象。'
+                  : undefined,
               }))}
             />
           </div>

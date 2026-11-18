@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { Checkbox, Input } from '@douyinfe/semi-ui'
 
 /**
@@ -33,6 +33,9 @@ export interface PermissionOption {
   name: string
   resource: string
   action: string
+  /** 勾上之后要额外说一句的权限（例如「用户管理」能改别人的账号与权限）。
+      只在**已勾选**时显示，取消勾选就消失；纯说明，不影响保存。 */
+  note?: string
 }
 
 /** 业务条线：权限归到哪一块。与左侧菜单的分区口径保持一致。 */
@@ -201,16 +204,21 @@ export default function PermissionPicker({ options, value, onChange, loading }: 
               </div>
             ) : (
               matched.map((option) => (
-                <label key={option.code} className="permission-picker-row">
-                  <Checkbox
-                    checked={selected.has(option.code)}
-                    onChange={(event) => toggle(option.code, Boolean(event.target.checked))}
-                  />
-                  <span className="permission-picker-name">{option.name}</span>
-                  <span className="permission-picker-code">
-                    {resourceLabel(option.resource)} · {option.code}
-                  </span>
-                </label>
+                <Fragment key={option.code}>
+                  <label className="permission-picker-row">
+                    <Checkbox
+                      checked={selected.has(option.code)}
+                      onChange={(event) => toggle(option.code, Boolean(event.target.checked))}
+                    />
+                    <span className="permission-picker-name">{option.name}</span>
+                    <span className="permission-picker-code">
+                      {resourceLabel(option.resource)} · {option.code}
+                    </span>
+                  </label>
+                  {selected.has(option.code) && option.note && (
+                    <div className="permission-picker-note">{option.note}</div>
+                  )}
+                </Fragment>
               ))
             )}
           </>
@@ -243,15 +251,20 @@ export default function PermissionPicker({ options, value, onChange, loading }: 
                     </div>
                     <div className="permission-picker-grid">
                       {group.items.map((option) => (
-                        <label key={option.code} className="permission-picker-row" title={option.code}>
-                          <Checkbox
-                            checked={selected.has(option.code)}
-                            onChange={(event) =>
-                              toggle(option.code, Boolean(event.target.checked))
-                            }
-                          />
-                          <span className="permission-picker-name">{option.name}</span>
-                        </label>
+                        <Fragment key={option.code}>
+                          <label className="permission-picker-row" title={option.code}>
+                            <Checkbox
+                              checked={selected.has(option.code)}
+                              onChange={(event) =>
+                                toggle(option.code, Boolean(event.target.checked))
+                              }
+                            />
+                            <span className="permission-picker-name">{option.name}</span>
+                          </label>
+                          {selected.has(option.code) && option.note && (
+                            <div className="permission-picker-note">{option.note}</div>
+                          )}
+                        </Fragment>
                       ))}
                     </div>
                   </div>

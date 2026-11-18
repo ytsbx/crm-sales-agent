@@ -4288,3 +4288,17 @@ table:not(.semi-table) td {
     overflow: hidden;
   }
 }
+
+/* 勾上「用户管理」这类高危权限后，在选项下方紧跟一句说明：
+   跨满整行、左侧缩进对齐复选框，用中性浅底 + 主色左边线，只提示不报错。 */
+.permission-picker-note {
+  grid-column: 1 / -1;
+  margin: 2px 0 6px 22px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--crm-text-2);
+  background: var(--crm-surface-low);
+  border-left: 2px solid var(--crm-primary);
+  border-radius: var(--crm-radius-sm);
+}
