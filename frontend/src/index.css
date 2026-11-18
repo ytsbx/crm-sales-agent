@@ -1498,7 +1498,12 @@ a:not([href]) {
      现在各卡自带 padding 与阴影，中间 16px 间距，谁的边都只属于自己。 */
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
   gap: 16px;
-  align-items: start;
+  /* 上和下的留白必须一样：上面贴着 What-if 折叠块时原来间距是 0，
+     下面却是 16，读起来像被挤在折叠块屁股上（2026-11-18 主人圈的就是这段）。 */
+  margin-top: 16px;
+  /* 两卡等高（默认 stretch）：底边齐，下面的间距才是一条平整的白带；
+     align-items:start 时左卡按内容收高，比右卡矮三十来像素，
+    卡底下方就多出一块空白 —— 2026-11-18 主人圈的就是这一块。 */
   background: none;
   border: 0;
   border-radius: 0;
